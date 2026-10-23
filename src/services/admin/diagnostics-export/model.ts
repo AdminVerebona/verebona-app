@@ -26,7 +26,7 @@
  *     renforcé » (accès existant `AI_MODEL_OUTPUT_ADMIN_IDS`, journalisé).
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { kcBaseKey, maskRuleFor, masked, isMarker, type MaskOptions } from '@/services/admin/account-data/model';
+import { kcBaseKey, maskRuleFor, masked, isMarker, type ExtractionStatus, type MaskOptions } from '@/services/admin/account-data/model';
 import { maskSensitiveString } from '@/services/business-operations/diagnostics/model';
 
 export const DIAG_SCHEMA = 'verebona.bo.diagnostic-technique/1';
@@ -48,44 +48,51 @@ export const DIAG_SCOPE_LABELS: Readonly<Record<DiagScope, string>> = {
 export const DIAG_TREATMENTS = ['T1', 'T3', 'T4'] as const;
 export type DiagTreatment = (typeof DIAG_TREATMENTS)[number];
 
-/** Bornes explicites (ticket §5 « limitation des volumes ») — reprises dans le manifeste. */
+/**
+ * Lot 81C — paramètres TECHNIQUES de génération, repris dans le manifeste.
+ * AUCUN n'écarte de données : les plafonds fonctionnels du lot 77C (période
+ * ≤ 366 jours, 500 lignes par liste et par section de dossier, 25 dossiers
+ * d'équipement, 10 de document, 10 biens TCO, 400 lignes TCO tracées,
+ * 200 lignes et 20 rapports d'exécution, 10 comptes, 40 Mo) sont SUPPRIMÉS
+ * (inventaire : `DIAG_REMOVED_CAPS`).
+ */
 export const DIAG_LIMITS = Object.freeze({
-  /** Durée maximale de la période (jours). */
-  periodMaxDays: 366,
-  /** Période par défaut (jours, jusqu'à aujourd'hui). */
+  /** Période par défaut (jours, jusqu'à aujourd'hui) — « Tout l'historique disponible » possible. */
   periodDefaultDays: 30,
-  /** Lignes par liste (journaux, appels IA, rapports…). */
-  listRows: 500,
-  /** Lignes par section d'un dossier d'entité (« Données du compte »). */
-  dossierSectionRows: 500,
-  /** Dossiers d'équipement joints à un diagnostic de bien. */
-  equipmentDossiers: 25,
-  /** Dossiers de document joints à un diagnostic d'Opération. */
-  documentDossiers: 10,
-  /** Biens dont le TCO est recalculé (document, Opération). */
-  tcoAssets: 10,
-  /** Lignes de TCO tracées par bien. */
-  tcoTracedLines: 400,
-  /** Lignes de rapport d'exécution par rapport, rapports détaillés. */
-  reportEntries: 200,
-  reportsWithEntries: 20,
-  /** Comptes d'un utilisateur. */
-  userAccounts: 10,
-  /** Diagnostic renforcé : traces dont les sorties modèle sont jointes, caractères par sortie. */
+  /** Lignes par lot de lecture (pagination technique par curseur). */
+  batchRows: 500,
+  /** Découpage technique d'un fichier de liste en parties (`…part-0001.json`), toutes dans l'archive. */
+  partRows: 50_000,
+  /** Générations simultanées par instance (mémoire du conteneur). */
+  concurrent: 2,
+  /**
+   * REQUALIFIÉS (restriction d'accès aux sorties IA sensibles, inchangée) :
+   * diagnostic renforcé — traces dont les sorties modèle sont jointes,
+   * caractères par sortie. Tout dépassement est signalé (fichier PARTIAL).
+   */
   modelOutputTraces: 10,
   modelOutputChars: 50_000,
-  /** Taille maximale du contenu (octets, avant compression) : au-delà, refus motivé. */
-  totalBytes: 40 * 1024 * 1024,
-  /** Générations simultanées par instance. */
-  concurrent: 2,
 });
+
+/** Lot 81C — plafonds fonctionnels supprimés (manifeste, rapport, recette). */
+export const DIAG_REMOVED_CAPS: readonly string[] = [
+  'Période limitée à 366 jours → aucune limite ; « Tout l’historique disponible ».',
+  'Listes (journaux, traitements, rapports, appels IA, opérations IA, diagnostics d’appels, historique, identité économique, T6) : 500 lignes → toutes.',
+  'Sections des dossiers « Données du compte » : 500 lignes (2 000 au tiroir) → toutes, par lots.',
+  'Dossiers d’équipement joints : 25 → tous ; dossiers de document joints : 10 → tous.',
+  'Biens dont le TCO est recalculé : 10 → tous ; lignes TCO tracées : 400 → toutes.',
+  'Lignes de rapport d’exécution : 200 par rapport, 20 rapports → toutes, tous.',
+  'Comptes d’un utilisateur : 10 → tous ; adhésions : 50 → toutes.',
+  'Périmètre (équipements, documents, Opérations liés) : 2 000 identifiants → tous.',
+  'Taille totale : 40 Mo (refus) → aucune ; archive générée en flux, fichiers découpés en parties.',
+];
 
 export interface DiagRequest {
   scope: DiagScope;
   /** Identifiant de l'objet ciblé (null : global). */
   id: number | null;
-  /** Période inclusive, jours UTC `YYYY-MM-DD`. */
-  from: string;
+  /** Période inclusive, jours UTC `YYYY-MM-DD` ; `from` null : tout l'historique disponible (lot 81C). */
+  from: string | null;
   to: string;
   /** Vide : tous les traitements. */
   treatments: DiagTreatment[];
@@ -116,11 +123,11 @@ export function parseDiagRequest(sp: { get(k: string): string | null }, now: Dat
   }
   const today = dayOf(now);
   const to = (sp.get('to') ?? '').trim() || today;
-  const from = (sp.get('from') ?? '').trim() || dayOf(new Date(new Date(`${to}T00:00:00Z`).getTime() - (DIAG_LIMITS.periodDefaultDays - 1) * DAY_MS));
-  if (!validDay(from) || !validDay(to)) return { ok: false, code: 'INVALID_PERIOD', message: 'Période invalide (dates AAAA-MM-JJ).' };
-  if (from > to) return { ok: false, code: 'INVALID_PERIOD', message: 'La date de début est postérieure à la date de fin.' };
-  const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS) + 1;
-  if (days > DIAG_LIMITS.periodMaxDays) return { ok: false, code: 'PERIOD_TOO_LONG', message: `Période limitée à ${DIAG_LIMITS.periodMaxDays} jours.` };
+  // Lot 81C : « Tout l'historique disponible » (aucune borne de début) ; aucune limite de durée.
+  const all = sp.get('period') === 'all';
+  const from = all ? null : (sp.get('from') ?? '').trim() || dayOf(new Date(new Date(`${to}T00:00:00Z`).getTime() - (DIAG_LIMITS.periodDefaultDays - 1) * DAY_MS));
+  if ((from !== null && !validDay(from)) || !validDay(to)) return { ok: false, code: 'INVALID_PERIOD', message: 'Période invalide (dates AAAA-MM-JJ).' };
+  if (from !== null && from > to) return { ok: false, code: 'INVALID_PERIOD', message: 'La date de début est postérieure à la date de fin.' };
   const rawT = (sp.get('treatments') ?? '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
   if (rawT.some((t) => !(DIAG_TREATMENTS as readonly string[]).includes(t))) return { ok: false, code: 'INVALID_TREATMENT', message: 'Traitement inconnu (T1, T3, T4).' };
   const treatments = DIAG_TREATMENTS.filter((t) => rawT.includes(t));
@@ -128,9 +135,14 @@ export function parseDiagRequest(sp: { get(k: string): string | null }, now: Dat
   return { ok: true, value: { scope: scope as DiagScope, id, from, to, treatments, reinforced } };
 }
 
-/** Bornes SQL de la période : [from 00:00 UTC ; to + 1 jour 00:00 UTC[. */
+/** Bornes SQL de la période : [from 00:00 UTC ; to + 1 jour 00:00 UTC[ ; tout l'historique : début `-infinity`. */
 export function periodBounds(r: Pick<DiagRequest, 'from' | 'to'>): { start: string; end: string } {
-  return { start: `${r.from}T00:00:00.000Z`, end: new Date(Date.parse(`${r.to}T00:00:00Z`) + DAY_MS).toISOString() };
+  return { start: r.from === null ? '-infinity' : `${r.from}T00:00:00.000Z`, end: new Date(Date.parse(`${r.to}T00:00:00Z`) + DAY_MS).toISOString() };
+}
+
+/** Libellé de la période (rapport, écran). */
+export function periodLabel(r: Pick<DiagRequest, 'from' | 'to'>): string {
+  return r.from === null ? `tout l’historique disponible jusqu’au ${r.to} inclus (UTC)` : `du ${r.from} au ${r.to} inclus (UTC)`;
 }
 
 // ── Masquage ────────────────────────────────────────────────────────────────
@@ -191,6 +203,8 @@ const KEY_COLUMNS = ['field_key', 'canonical_key', 'fact_key', 'data_key', 'targ
 const VALUE_COLUMNS = new Set([
   'value_json', 'normalized_value', 'raw_value', 'evidence_excerpt', 'value_text', 'value_number', 'old_value', 'new_value',
   'previous_value', 'proposed_value_json', 'final_value_json', 'excerpt', 'original_payload', 'proposals_json', 'trigger_context',
+  // Lot 81C : registre des incohérences.
+  'current_value', 'proposed_value',
 ]);
 
 /**
@@ -338,9 +352,19 @@ export function candidateIdFromSourceVersion(v: unknown): number | null {
 export interface DiagFileInfo {
   path: string;
   description: string;
-  /** Lignes / éléments (listes), le cas échéant. */
+  /** Lignes / éléments EXPORTÉS (listes), le cas échéant. */
   count?: number;
+  /** Lot 81C : statut COMPLETE (exporté = attendu, aucune erreur). */
   complete: boolean;
+  /** Lot 81C — attendu (`count(*)` dans l'instantané), lots, statut, erreur, intégrité (octets, SHA-256 du contenu non compressé). */
+  expected?: number | null;
+  batches?: number;
+  status?: ExtractionStatus;
+  error?: string | null;
+  bytes?: number;
+  sha256?: string;
+  /** Découpage technique : partie `index` sur `of` du fichier logique `group`. */
+  part?: { index: number; of: number; group: string };
 }
 
 export interface DiagUnavailable { element: string; motif: string }
@@ -355,6 +379,11 @@ export interface DiagManifest {
   /** Objet ciblé résolu (compte(s), libellé). */
   target: { label: string; accountIds: number[] };
   limits: typeof DIAG_LIMITS;
+  /** Lot 81C — statut global : COMPLETE seulement si tous les fichiers le sont. */
+  status?: ExtractionStatus;
+  /** Lot 81C — instantané de lecture : instant de référence, isolation, vérification, exceptions. */
+  snapshot?: { isolation: string; at: string; snapshot: string | null; verification: string; exceptions: string[] };
+  removedCaps?: readonly string[];
   files: DiagFileInfo[];
   /** Bornes atteintes, sections non chargées. */
   warnings: string[];
@@ -395,8 +424,28 @@ function compact(v: unknown): string {
   return s.length > 240 ? `${s.slice(0, 240)}…` : s;
 }
 
+/** Lignes du rapport pour UN montant tracé (produites au fil de la génération, lot 81C). */
+export function traceReportLines(t: AmountTrace): string[] {
+  const L: string[] = [];
+  const l = t.ligne;
+  L.push('', `* Ligne ${String(l.id)} — ${String(l.label ?? '')}${t.assetId ? ` (bien #${t.assetId})` : ''}`);
+  L.push(`  Montant ${fmtEur(l.eurCents)} · retenu ${fmtEur(l.includedCents)} · statut ${String(l.status ?? 'n/d')}${l.reason ? ` (${String(l.reason)})` : ''} · provenance ${String(l.provenance ?? 'n/d')}`);
+  L.push(`  Valeurs : source=${compact(t.valeurs.source)} | proposée IA=${compact(t.valeurs.proposeeIA)} | enregistrée=${compact(t.valeurs.enregistree)}`);
+  for (const s of t.chaine) {
+    const refs = s.references.length ? ` [${s.references.map((r) => `${r.table}#${r.id}`).join(', ')}]` : '';
+    L.push(`  - ${s.libelle} : ${s.statut.toUpperCase().replace('_', ' ')}${refs}${s.motif ? ` — ${s.motif}` : ''}`);
+  }
+  L.push(`  Rupture de la trace : ${t.rupture ? TRACE_STEP_LABELS[t.rupture] : 'aucune'}`);
+  return L;
+}
+
 /** Rapport lisible (TXT) : contexte, filtres, synthèse, traçabilité des montants, limites. */
 export function buildReportText(m: DiagManifest, summary: Array<[string, string | number]>, traces: AmountTrace[]): string {
+  return buildReportTextFromLines(m, summary, traces.flatMap(traceReportLines));
+}
+
+/** Lot 81C — rapport depuis des lignes de traçabilité déjà rendues (génération en flux). */
+export function buildReportTextFromLines(m: DiagManifest, summary: Array<[string, string | number]>, traceLines: string[]): string {
   const L: string[] = [];
   L.push('VEREBONA — DIAGNOSTIC TECHNIQUE', '='.repeat(31));
   L.push(`Généré le        : ${m.generatedAt} (UTC)`);
@@ -405,37 +454,36 @@ export function buildReportText(m: DiagManifest, summary: Array<[string, string 
   L.push(`Version          : ${m.build.version}${m.build.commit ? ` — commit ${m.build.commit} (${m.build.commitSource})` : ' — commit non disponible'}${m.build.container ? ` — conteneur ${m.build.container}` : ''}`);
   L.push(`Périmètre        : ${m.request.scopeLabel}${m.request.id ? ` #${m.request.id}` : ''} — ${m.target.label}`);
   L.push(`Comptes          : ${m.target.accountIds.length ? m.target.accountIds.map((a) => `#${a}`).join(', ') : '— (global)'}`);
-  L.push(`Période          : du ${m.request.from} au ${m.request.to} inclus (UTC) — journaux et traitements ; l’état métier est l’état courant.`);
+  L.push(`Période          : ${periodLabel(m.request)} — journaux et traitements ; l’état métier est celui de l’instantané de lecture.`);
+  if (m.snapshot) L.push(`Instantané       : ${m.snapshot.isolation} — instant de référence ${m.snapshot.at}${m.snapshot.snapshot ? ` — pg_snapshot ${m.snapshot.snapshot}` : ''}`);
+  if (m.status) L.push(`Statut           : ${m.status}${m.status === 'COMPLETE' ? ' — toutes les données du périmètre exportées' : ' — voir « Fichiers » et « Avertissements »'}`);
   L.push(`Traitements      : ${m.request.treatments.length ? m.request.treatments.join(', ') : 'tous'} (filtre : file des traitements et rapports d’exécution)`);
   L.push(`Diagnostic renforcé : ${m.request.reinforced ? 'oui (sorties modèle jointes si conservées et autorisées)' : 'non'}`);
   L.push('', READ_ONLY_NOTE);
   L.push('', '-- Synthèse --');
   for (const [k, v] of summary) L.push(`${k} : ${v}`);
 
-  if (traces.length) {
+  if (traceLines.length) {
     L.push('', '-- Traçabilité des montants (Document → Extraction IA → Décision → Enregistrement → Rapprochement → Calcul → Affichage) --');
-    for (const t of traces) {
-      const l = t.ligne;
-      L.push('', `* Ligne ${String(l.id)} — ${String(l.label ?? '')}${t.assetId ? ` (bien #${t.assetId})` : ''}`);
-      L.push(`  Montant ${fmtEur(l.eurCents)} · retenu ${fmtEur(l.includedCents)} · statut ${String(l.status ?? 'n/d')}${l.reason ? ` (${String(l.reason)})` : ''} · provenance ${String(l.provenance ?? 'n/d')}`);
-      L.push(`  Valeurs : source=${compact(t.valeurs.source)} | proposée IA=${compact(t.valeurs.proposeeIA)} | enregistrée=${compact(t.valeurs.enregistree)}`);
-      for (const s of t.chaine) {
-        const refs = s.references.length ? ` [${s.references.map((r) => `${r.table}#${r.id}`).join(', ')}]` : '';
-        L.push(`  - ${s.libelle} : ${s.statut.toUpperCase().replace('_', ' ')}${refs}${s.motif ? ` — ${s.motif}` : ''}`);
-      }
-      L.push(`  Rupture de la trace : ${t.rupture ? TRACE_STEP_LABELS[t.rupture] : 'aucune'}`);
-    }
+    L.push(...traceLines);
   }
   L.push('', '-- Informations non disponibles (signalées, jamais reconstruites) --');
   if (!m.unavailable.length) L.push('(aucune)');
   for (const u of m.unavailable) L.push(`- ${u.element} : ${u.motif}`);
-  L.push('', '-- Avertissements (bornes, sections non chargées) --');
+  L.push('', '-- Avertissements (sections non chargées, exports partiels) --');
   if (!m.warnings.length) L.push('(aucun)');
   for (const w of m.warnings) L.push(`- ${w}`);
   L.push('', '-- Masquage --');
   for (const n of m.masking) L.push(`- ${n}`);
   L.push('', '-- Contenu de l’archive --');
-  for (const f of m.files) L.push(`- ${f.path}${f.count !== undefined ? ` (${f.count})` : ''}${f.complete ? '' : ' — INCOMPLET'} : ${f.description}`);
+  for (const f of m.files) {
+    const n = f.count !== undefined ? ` (${f.count}${f.expected !== undefined && f.expected !== null ? ` / ${f.expected} attendu(s)` : ''})` : '';
+    L.push(`- ${f.path}${n}${f.status ? ` — ${f.status}` : f.complete ? '' : ' — INCOMPLET'}${f.error ? ` — ${f.error}` : ''} : ${f.description}`);
+  }
+  if (m.removedCaps?.length) {
+    L.push('', '-- Plafonds d’extraction supprimés (lot 81C) --');
+    for (const c of m.removedCaps) L.push(`- ${c}`);
+  }
   return `${L.join('\n')}\n`;
 }
 

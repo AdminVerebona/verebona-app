@@ -16,7 +16,8 @@
  *   L80A-D07 lignes non ajoutables (montant inconnu, devise, autre bien…) ;
  *   L80A-D08 la plus récente l'emporte ; décisions sans ligne remontées (BO) ;
  *   L80A-D09 DTO : gestes calculés côté serveur ;
- *   L80A-D10 prévision ajoutée : comptée comme dépense réalisée, future signalée ;
+ *   L80A-D10 prévision ajoutée : comptée comme dépense réalisée ; lot 81D (prime) :
+ *            une prévision datée après la date de référence n'est pas ajoutable ;
  *   L80A-D11 T2 : ajout pris en compte une seule fois ;
  *   L80A-D12 règles PO inchangées sans décision (achat sans lien non incorporé,
  *            même montant compté une fois, moyenne dès 30 jours) ;
@@ -73,7 +74,7 @@ const entree = (o: Partial<TcoInput> = {}): TcoInput => ({
 const dec = (key: string, decision: 'INCLUDE' | 'EXCLUDE', decidedAt = '2026-10-22T10:00:00.000Z'): TcoUserDecision => ({ key, decision, decidedAt, decidedByUserId: 1 });
 const coherent = (t: TcoResult) => {
   const a = t.annual;
-  const somme = a.years.reduce((n, y) => n + y.netCents, 0) + (a.undated.costsCents - a.undated.creditsCents) + (a.future.costsCents - a.future.creditsCents);
+  const somme = a.years.reduce((n, y) => n + y.netCents, 0) + (a.undated.costsCents - a.undated.creditsCents);  // 81D : plus de dépenses « futures » retenues
   expect(somme).toBe(t.summary.cumulativeCostCents);
   expect(a.average.totalCents).toBe(t.summary.cumulativeCostCents);
   expect(t.reliability.anomalies.filter((x) => x.code === 'SUM_MISMATCH' || x.code === 'DUPLICATE_COMPONENT' || x.code === 'UNALLOCATED_COUNTED')).toEqual([]);
@@ -265,16 +266,24 @@ describe('L80A-D — décisions « Ajouter / Retirer du TCO »', () => {
     expect(ex.lines.find((l) => l.fileId === 1001)!.actions).toMatchObject({ addable: true, duplicateWarning: null });
   });
 
-  it('L80A-D10 — prévision ajoutée : comptée comme dépense réalisée ; datée dans le futur : au total, signalée « future »', () => {
+  // Lot 81D (le ticket du 22/10 prime sur 80A) : une dépense non réalisée ne contribue à AUCUN indicateur, même ajoutée.
+  it('L80A-D10 — prévision ajoutée : comptée comme dépense réalisée ; datée dans le futur : non ajoutable (81D), décision existante sans effet', () => {
+    const passe = doc(1102, 40_000, '2026-03-15', { typeCode: 'WORKS_QUOTE' }, { sourceRole: 'QUOTE', statusHint: 'ENVISAGED', hints: [hint('FORECAST_COST', 40_000, { economicDate: '2026-03-15' })] });
+    const sansP = computeTco(entree({ documents: [passe] }));
+    const lp = ligneDoc(sansP, 1102);
+    expect(tcoLineAddable(lp).ok).toBe(true);
+    const avecP = computeTco(entree({ documents: [passe], userDecisions: [dec(lp.decisionKey!, 'INCLUDE')] }));
+    expect(avecP.summary.cumulativeCostCents).toBe(sansP.summary.cumulativeCostCents + 40_000);
+    expect(ligneDoc(avecP, 1102)).toMatchObject({ kind: 'REALIZED_COST', status: 'RETAINED_DIRECT', annualYear: 2026 });
+    coherent(avecP);
     const devis = doc(1101, 80_000, '2026-12-15', { typeCode: 'WORKS_QUOTE' }, { sourceRole: 'QUOTE', statusHint: 'ENVISAGED', hints: [hint('FORECAST_COST', 80_000, { economicDate: '2026-12-15' })] });
     const sans = computeTco(entree({ documents: [devis] }));
     const l = ligneDoc(sans, 1101);
     expect(l.includedCents).toBe(0);
-    expect(tcoLineAddable(l).ok).toBe(true);
+    expect(tcoLineAddable(l)).toMatchObject({ ok: false, reason: expect.stringMatching(/non encore réalisée/) });
     const avec = computeTco(entree({ documents: [devis], userDecisions: [dec(l.decisionKey!, 'INCLUDE')] }));
-    expect(avec.summary.cumulativeCostCents).toBe(sans.summary.cumulativeCostCents + 80_000);
-    expect(ligneDoc(avec, 1101)).toMatchObject({ kind: 'REALIZED_COST', status: 'RETAINED_DIRECT' });
-    expect(avec.annual.future).toMatchObject({ count: 1, costsCents: 80_000 });
+    expect(avec.summary.cumulativeCostCents).toBe(sans.summary.cumulativeCostCents);
+    expect(ligneDoc(avec, 1101)).toMatchObject({ includedCents: 0, userDecision: { applied: false } });
     coherent(avec);
   });
 
@@ -292,14 +301,15 @@ describe('L80A-D — décisions « Ajouter / Retirer du TCO »', () => {
     expect(operations).toEqual([{ operationId: 4, amountCents: 1_000, theme: 'other' }]);
   });
 
-  it('L80A-D12 — sans décision, règles PO inchangées (achat sans lien non incorporé, même montant compté une fois, moyenne dès 30 jours)', () => {
+  // Lot 81D (prime) : la moyenne annuelle n'a plus de seuil de durée (« dès 30 jours » remplacé par « dès le premier jour »).
+  it('L80A-D12 — sans décision, règles PO inchangées (achat sans lien non incorporé, même montant compté une fois) ; moyenne sans seuil (81D)', () => {
     const { o, provenance } = operation76();
     const t = computeTco(entree({ operations: [o], componentProvenance: provenance }));
     expect(t.lines.filter((l) => l.userDecision)).toEqual([]);
     expect(t.userDecisions).toEqual({ applied: 0, includedDuplicates: 0, orphans: [] });
     expect(t.reliability.warnings).toEqual(expect.arrayContaining(['NOT_OWNERSHIP_COSTS', 'PRESUMED_DUPLICATES']));
     expect(t.reliability.warnings).not.toContain('USER_DECISIONS');
-    expect(t.annual.average.minDays).toBe(30);
+    expect(t.annual.average).not.toHaveProperty('minDays');
   });
 
   it('L80A-D13 — corps de la requête validé (geste, ligne)', () => {
@@ -342,7 +352,8 @@ describe('L80A-UI — sous-tiroirs et gestes (desktop et mobile, même composant
     // Lecture seule (Standard verrouillé, droits insuffisants) : aucun geste.
     expect(ui).toMatch(/canEdit && onDecide && actions && !confirm/);
     // Les deux sous-tiroirs et les ajustements passent les gestes.
-    expect((ui.match(/canEdit=\{canEdit\} onDecide=\{decide\}/g) ?? []).length).toBe(3);
+    // Lot 81D : + avoirs / remboursements / indemnités de l'année dans le sous-tiroir des retenues.
+    expect((ui.match(/canEdit=\{canEdit\} onDecide=\{decide\}/g) ?? []).length).toBe(4);
   });
 });
 

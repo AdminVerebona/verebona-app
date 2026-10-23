@@ -362,7 +362,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
       ref={rootRef}
       data-fullscreen-screen
       {...(mobile ? { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'prep-title' } : {})}
-      className="fixed inset-0 z-50 flex flex-col bg-background lg:static lg:z-auto lg:block lg:bg-transparent"
+      className="fixed inset-0 z-50 flex flex-col bg-background pt-[var(--vb-safe-top)] lg:static lg:z-auto lg:block lg:bg-transparent lg:pt-0"
     >
       {/* ── En-tête (PREP-HEADER, PREP-HEA-001 à 010) ── */}
       <header className="sticky top-0 z-10 shrink-0 border-b border-border bg-background px-4 py-3 lg:-mx-8 lg:-mt-8 lg:mb-6 lg:px-8 lg:py-4">

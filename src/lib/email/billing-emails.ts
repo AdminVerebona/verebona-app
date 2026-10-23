@@ -7,56 +7,58 @@ import { eq } from 'drizzle-orm';
 const appUrl = (): string => (process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || 'https://app.verebona.fr').replace(/\/+$/, '');
 
 /**
- * Envoie l'email de confirmation d'abonnement (gabarit PREMIUM_CONFIRMATION,
- * objet « Confirmation de votre abonnement Verebona Premium »).
+ * Variables de la confirmation d'abonnement (gabarit PREMIUM_CONFIRMATION,
+ * objet « Confirmation de votre abonnement Verebona Premium ») — pures.
  *
  * ⚠️ Le gabarit affiche `{{nextBillingDate}}` ; la date était transmise sous
  * le nom `premiumUntil`, que le gabarit ne connaît pas : « Prochaine
- * échéance » partait vide. Les deux noms sont désormais transmis.
+ * échéance » partait vide. Les deux noms sont transmis.
  *
- * C'est l'UNIQUE email de confirmation : la notification « Offre activée /
- * modifiée » qui l'accompagne n'envoie plus son propre email (« Votre
- * abonnement Verebona »), cf. `subscription-sync.service`.
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 81E — PLUS D'ENVOI « FIRE AND FORGET »
+ *
+ * La confirmation partait dans une promesse détachée, après que la
+ * notification « Offre activée / modifiée » avait été marquée
+ * `confirmationEmailSent: true` : un échec de l'envoi supprimait en silence
+ * la confirmation contractuelle ET l'e-mail générique. Elle est désormais
+ * enregistrée DURABLEMENT, une fois par opération, dans la transaction de la
+ * transition (`subscription-communications.service`) et envoyée par la file
+ * des lots 57A / 72F (`transactional-email-jobs.service`, type
+ * PREMIUM_CONFIRMATION) avec les données contractuelles FIGÉES de
+ * l'opération (offre, montant, périodicité, échéance).
+ * ══════════════════════════════════════════════════════════════════════════
  */
-export async function sendPremiumConfirmationEmail(
-  userId: number,
+export function premiumConfirmationVariables(
+  firstName: string,
   nextBillingDate: Date,
   /**
    * Montant et périodicité de l'OPÉRATION concernée (prix contractuel lu sur
    * l'abonnement Stripe, CDC lookup_key LK-78) — jamais la grille courante.
    */
   details?: { planLabel?: string; unitAmountCents?: number | null; billingPeriod?: 'monthly' | 'yearly' | null },
-): Promise<void> {
-  try {
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
+): Record<string, string> {
+  const formattedDate = formatBillingDate(nextBillingDate);
+  return {
+    firstName,
+    nextBillingDate: formattedDate,
+    // Ancien nom, conservé pour un gabarit personnalisé qui l'utiliserait.
+    premiumUntil: formattedDate,
+    ...confirmationDetails(details),
+  };
+}
 
-    if (!user || !user.email) {
-      throw new Error('User not found or has no email');
-    }
-
-    const formattedDate = formatBillingDate(nextBillingDate);
-
-    await emailService.send({
-      templateCode: 'PREMIUM_CONFIRMATION',
-      to: user.email,
-      variables: {
-        firstName: user.firstName ?? '',
-        nextBillingDate: formattedDate,
-        // Ancien nom, conservé pour un gabarit personnalisé qui l'utiliserait.
-        premiumUntil: formattedDate,
-        ...confirmationDetails(details),
-      },
-      userId: user.id,
-    });
-
-  } catch (error) {
-    console.error('Error sending premium confirmation email:', error);
-    throw error;
-  }
+/**
+ * Variables de l'e-mail de fin d'offre (gabarit DOWNGRADE_NOTIFICATION :
+ * « Votre offre Verebona a changé » — passage à une offre inférieure, jamais
+ * présentation de Standard comme offre sans frais). Lot 81E : envoyé par la file DURABLE, une fois par
+ * opération (type DOWNGRADE_NOTIFICATION).
+ */
+export function downgradeNotificationVariables(firstName: string): Record<string, string> {
+  return {
+    firstName,
+    // Lot 70A : le gabarit en base affiche « Revoir mon offre : {{actionUrl}} ».
+    actionUrl: `${appUrl()}/mon-compte/offres`,
+  };
 }
 
 /** Variables d'offre, de montant et de périodicité (pures, LK-78). */
@@ -82,53 +84,6 @@ export function formatBillingDate(date: Date): string {
     day: 'numeric',
     timeZone: 'Europe/Paris',
   });
-}
-
-/**
- * Envoie un email de notification de downgrade vers Standard
- */
-export async function sendDowngradeToStandardEmail(
-  userId: number
-): Promise<void> {
-  try {
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-
-    if (!user || !user.email) {
-      throw new Error('User not found or has no email');
-    }
-
-    const subject = 'Votre abonnement Verebona Premium a été résilié';
-    
-    const body = `Bonjour ${user.firstName},
-
-Votre abonnement Verebona Premium a été résilié.
-
-Vous êtes désormais sur l'offre Standard gratuite de Verebona. Certaines fonctionnalités Premium ne sont plus accessibles, mais vous pouvez continuer à utiliser les fonctionnalités de base gratuitement.
-
-Si vous souhaitez réactiver votre abonnement Premium, vous pouvez le faire à tout moment depuis votre page d'abonnement.
-
-L'équipe Verebona`;
-
-    await emailService.send({
-      templateCode: 'DOWNGRADE_NOTIFICATION',
-      to: user.email,
-      variables: {
-        firstName: user.firstName,
-        // Lot 70A : le gabarit en base affiche « Revoir mon offre : {{actionUrl}} »,
-        // variable jusqu'ici jamais fournie (lien mort).
-        actionUrl: `${appUrl()}/mon-compte/offres`,
-      },
-      userId: user.id,
-    });
-
-  } catch (error) {
-    console.error('Error sending downgrade email:', error);
-    throw error;
-  }
 }
 
 /**

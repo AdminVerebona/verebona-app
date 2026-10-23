@@ -26,7 +26,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import {
-  EXCLUDED_KEYS, getField, isFieldApplicableToAsset, listFields, toAssetFamily,
+  EXCLUDED_KEYS, getField, isFieldApplicableToAsset, listFields, normalizeDateValue, toAssetFamily,
   type CanonicalFieldDef, type CanonicalTargetType,
 } from '@/services/canonical/registry';
 import type { CurrentValue, ReconciliationDecision } from '../types';
@@ -190,7 +190,13 @@ export interface AcquisitionCrossResult {
   signature: string | null;
 }
 
-const jour = (v: unknown): string | null => (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : null);
+/**
+ * Jour calendaire d'une date (pure). Lot 81A : normaliseur MÉTIER du registre
+ * (`normalizeDateValue` : ISO avec ou sans heure, JJ/MM/AAAA, objet Date) —
+ * avant, seule une chaîne ISO était lue : une fiche au 06/05/2021 passait
+ * pour VIDE face à l'agenda, une date d'agenda en objet Date était ignorée.
+ */
+const jour = (v: unknown): string | null => normalizeDateValue(v);
 
 /** Signature stable d'un arbitrage croisé (pure). */
 export function crossSignature(fieldKey: string, current: unknown, proposed: string, refIds: number[]): string {

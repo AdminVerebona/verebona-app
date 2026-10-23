@@ -6,7 +6,8 @@
  *     Dashboard › Supervision (lien vers `/admin/diagnostics`) ;
  *   · L77C-S03 le service n'écrit rien : aucun INSERT / UPDATE / DELETE dans
  *     le module, lectures en transaction READ ONLY réutilisée ;
- *   · L77C-S04 ZIP généré côté serveur avec la dépendance existante `jszip`.
+ *   · L77C-S04 ZIP généré côté serveur avec la dépendance existante `jszip`
+ *     (lot 81C : en flux, `generateNodeStream` + `streamFiles`).
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -35,12 +36,16 @@ describe('L77C route et emplacement', () => {
       const src = read(`${dir}/${f}`);
       expect(src, f).not.toMatch(/\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|TRUNCATE|ALTER\s+TABLE)\b/i);
     }
-    expect(read(`${dir}/collect.ts`)).toContain('readOnlyDossierExecutor');
+    // Lot 81C (adapté) : une session REPEATABLE READ READ ONLY (instantané unique) pour tout le diagnostic.
+    expect(read(`${dir}/collect.ts`)).toContain('openReadSession');
+    expect(read('src/services/admin/account-data/session.ts')).toContain('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
   });
   it('L77C-S04 jszip déjà déclaré, utilisé côté serveur', () => {
     const pkg = JSON.parse(read('package.json'));
     expect(pkg.dependencies.jszip).toBeTruthy();
     expect(read('src/services/admin/diagnostics-export/zip.ts')).toContain("from 'jszip'");
+    expect(read('src/services/admin/diagnostics-export/zip.ts')).toContain('generateNodeStream');
+    expect(read('src/services/admin/diagnostics-export/zip.ts')).toContain('streamFiles: true');
     expect(read('src/app/admin/diagnostics/page.tsx')).not.toContain('jszip');
   });
 });

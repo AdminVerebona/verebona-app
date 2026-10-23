@@ -549,7 +549,7 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
   const { job } = detail;
   return (
     <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex justify-end bg-[color:var(--veil)]" onClick={onClose}>
-      <div className="w-full max-w-xl h-full overflow-y-auto bg-[color:var(--bg-card)] p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+      <div className="w-full max-w-xl h-full overflow-y-auto bg-[color:var(--bg-card)] p-5 pt-[calc(var(--vb-safe-top)+1.25rem)] pb-[calc(var(--vb-safe-bottom)+1.25rem)] space-y-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h2 className="vb-app-section">Exécution — appel {detail.call.id}</h2>
           <div className="flex items-center gap-1.5">

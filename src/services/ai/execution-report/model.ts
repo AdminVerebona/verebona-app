@@ -193,6 +193,8 @@ const REASON_TO_NORMALIZED: Record<string, T3NotWrittenReason> = {
   // Lot 76J (T3 complétude).
   CONFIRMED_AGENDA_CONTRADICTION: 'SOURCE_CONFLICT',
   FREE_TEXT_PROTECTED: 'USER_VALUE_PROTECTED',
+  // Lot 81A : proposition équivalente à la valeur en place — aucun arbitrage.
+  EQUIVALENT_VALUES: 'SAME_VALUE',
 };
 
 /** Résultat de la primitive d'écriture → motif normalisé quand rien n'est écrit (pur). */

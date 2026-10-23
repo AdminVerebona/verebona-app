@@ -27,14 +27,17 @@
  *      archivés — jamais automatique, journalisé et restaurable ;
  *  12. Agenda : doublons d'interventions (lot 76H, ticket P1) — aussi lancé
  *      automatiquement UNE fois par `agenda-intervention-duplicates-reprise`,
- *      journalisé et restaurable.
+ *      journalisé et restaurable ;
+ *  13. « À traiter » : faux arbitrages entre valeurs équivalentes (lot 81A,
+ *      ticket P1) — aussi lancé automatiquement (campagne bornée de la tâche
+ *      `to-process-relevance-reevaluation`), jamais d'écriture sur la fiche.
  *
  * Chaque bloc n'offre que ce que le script permet (simulation, application,
  * restauration). Les scripts CLI restent utilisables et appellent les mêmes
  * services.
  */
 
-export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates';
+export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -233,6 +236,22 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'n’écrit rien (rapport des actions envisagées) ; l’application est journalisée et se restaure par son identifiant. Lancé '
       + 'automatiquement une fois au démarrage (même service) ; rejoué, il ne change rien.',
     actions: ['simulate', 'apply', 'restore'],
+    accountFilter: true,
+  },
+  {
+    script: 'to-process-false-arbitrations',
+    order: 13,
+    label: '« À traiter » : faux arbitrages (valeurs équivalentes)',
+    command: 'tâche planifiée « to-process-relevance-reevaluation » (automatique, campagne bornée)',
+    description: 'Lot 81A : cartes « À arbitrer » dont une proposition est équivalente à la valeur actuelle après normalisation '
+      + '(ex. « 06/05/2021 » contre « 06/05/2021 ») ou en double. Chaque carte est RÉÉVALUÉE par le moteur T3 corrigé, en lecture '
+      + 'seule (preuves actives, valeur de la fiche, décisions déjà prises par l’utilisateur) : une vraie contradiction (troisième '
+      + 'valeur, preuve divergente) met la carte à jour avec les bonnes valeurs ; sans contradiction, la carte est close « sans objet ». '
+      + 'Aucune valeur de la fiche n’est modifiée, aucune carte n’est supprimée ; chaque carte réexaminée est tracée (valeur actuelle, '
+      + 'valeurs candidates, preuves, motif initial, décision corrective) dans l’historique de la carte (Données du compte). Les cartes '
+      + 'd’autres familles (documents…) sont seulement comptées. La simulation n’écrit rien. Aussi lancé automatiquement toutes les '
+      + 'heures (campagne « l81-faux-arbitrages-1 », bornée et reprise après redémarrage) ; rejoué, il ne change rien.',
+    actions: ['simulate', 'apply'],
     accountFilter: true,
   },
 ];

@@ -519,6 +519,11 @@ export function diagnosticLinkFor(domain: string, detail: Record<string, unknown
     const compte = typeof detail.accountId === 'number' ? `&accountId=${detail.accountId}` : '';
     return { href: `/admin/ai-executions?tab=reports&treatment=T6${compte}`, label: 'Ouvrir les rapports T6 du compte' };
   }
+  // Lot 81B (F) : tâche de pré-génération de la mascotte inactive — état et
+  // réactivation dans BO › Exploitation › Tâches planifiées.
+  if (detail?.kind === 't6_pregen_scheduler') {
+    return { href: '/admin/exploitation?tab=taches', label: 'Ouvrir les tâches planifiées' };
+  }
   const operationId = detail?.operationId;
   if (typeof operationId === 'string' || typeof operationId === 'number') {
     return { href: `/admin/ai-executions?operationId=${encodeURIComponent(String(operationId))}`, label: 'Ouvrir dans Exécutions IA' };

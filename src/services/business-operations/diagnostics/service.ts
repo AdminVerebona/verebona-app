@@ -14,8 +14,12 @@
  *
  *   · listes paginées (25 par défaut, 100 au plus), tri stable `created_at,
  *     id` (index 0325 `(created_at)` et `(account_id, created_at)`) ;
- *   · détail : listes bornées à `DETAIL_LIMIT` lignes, toutes par l'index de
- *     l'Opération (`operation_id`) ;
+ *   · détail : listes d'AFFICHAGE bornées à `DETAIL_LIMIT` lignes (écran),
+ *     toutes par l'index de l'Opération (`operation_id`) ; une liste tronquée
+ *     à l'écran porte son total réel (`listTotals`) — lot 81C : les mêmes
+ *     requêtes, SANS borne, alimentent les exports (`OPERATION_DETAIL_LISTS`,
+ *     « Données du compte » › Opération : consultation paginée et export
+ *     intégral) ;
  *   · indicateurs : période d'au plus 366 jours (index 0325 sur les dates
  *     d'événement), état courant par les index partiels « actifs » ;
  *   · anomalies dures : décompte + échantillon de 20 (fenêtre `count(*) OVER
@@ -179,6 +183,12 @@ export interface OperationDetail {
   agendaItems: Row[];
   projectionSuppressions: Row[];
   candidates: Row[];
+  /**
+   * Lot 81C — listes tronquées À L'ÉCRAN (`displayLimit` lignes) : total réel.
+   * Consultation paginée et export intégral : « Données du compte » › Opération.
+   */
+  listTotals?: Partial<Record<OperationDetailList, number>>;
+  displayLimit?: number;
   /** Lot 78A (§5, §6) : contrôles d'identité économique (séparations, doutes, doublons) concernant l'Opération. */
   identityReviews?: Row[];
   /** Lot 78A (§2C, §6) : provenance des valeurs conservées et contradictions d'attributs. */
@@ -319,6 +329,72 @@ const ACC = (col: string) => `($1::int IS NULL OR ${col} = $1::int)`;
 
 /** Clé numérique d'une source (`source_entity_key`), sinon NULL (jamais d'erreur de conversion). */
 const KEY = (col: string) => `(CASE WHEN ${col} ~ '^[0-9]{1,9}$' THEN ${col}::int END)`;
+
+/**
+ * Lot 81C — listes du détail d'une Opération, SANS borne : `$1` = Opération,
+ * `$2` = compte (contrôle d'appartenance). Ordre total (identifiant en
+ * départage). Le détail d'écran y ajoute `LIMIT DETAIL_LIMIT` ; les exports
+ * (« Données du compte ») les lisent intégralement, par lots.
+ */
+export const OPERATION_DETAIL_LISTS = {
+  assetLinks: { table: 'business_operation_asset_links', sql: `SELECT al.id, al.asset_id, a.name AS asset_name, a.deleted_at IS NOT NULL AS asset_deleted, al.link_role, al.authority,
+                al.source_operation_source_id AS source_id, al.active, al.created_at, al.updated_at
+           FROM business_operation_asset_links al LEFT JOIN assets a ON a.id = al.asset_id
+          WHERE al.operation_id = $1 AND al.account_id = $2 ORDER BY al.active DESC, al.id` },
+  equipmentLinks: { table: 'business_operation_equipment_links', sql: `SELECT el.id, el.equipment_id, e.name AS equipment_name, el.asset_id, el.authority,
+                el.source_operation_source_id AS source_id, el.active, el.created_at
+           FROM business_operation_equipment_links el LEFT JOIN equipments e ON e.id = el.equipment_id
+          WHERE el.operation_id = $1 AND el.account_id = $2 ORDER BY el.active DESC, el.id` },
+  sources: { table: 'business_operation_sources', sql: `SELECT s.id, s.source_kind, s.source_entity_key, s.source_version, s.source_role, s.locator, s.authority,
+                s.confidence, s.match_method, s.match_reason, s.active, s.superseded_at, s.created_at,
+                f.id AS file_id, f.document_type AS file_document_type, f.created_at AS file_created_at,
+                f.deleted_at AS file_deleted_at, f.asset_id AS file_asset_id
+           FROM business_operation_sources s
+           LEFT JOIN asset_files f ON s.source_kind = 'DOCUMENT' AND f.id = ${KEY('s.source_entity_key')} AND f.account_id = s.account_id
+          WHERE s.operation_id = $1 AND s.account_id = $2 ORDER BY s.active DESC, s.created_at, s.id` },
+  components: { table: 'business_operation_financial_components', sql: `SELECT c.id, c.kind, c.amount_minor, c.currency, c.amount_eur_cents, c.economic_date::text AS economic_date,
+                c.period_start::text AS period_start, c.period_end::text AS period_end, c.target_asset_id, c.target_equipment_id,
+                c.label, c.fingerprint, c.active, c.superseded_at, c.created_at,
+                (SELECT coalesce(json_agg(json_build_object('sourceId', cs.operation_source_id, 'evidenceRole', cs.evidence_role,
+                                                             'isPrimary', cs.is_primary, 'sourceActive', s.active,
+                                                             -- Lot 78A : indices T1 et faits qui justifient le montant (0609).
+                                                             'evidence', to_jsonb(cs) -> 'evidence')
+                                          ORDER BY cs.is_primary DESC, cs.operation_source_id), '[]'::json)
+                   FROM business_operation_financial_component_sources cs
+                   LEFT JOIN business_operation_sources s ON s.id = cs.operation_source_id
+                  WHERE cs.component_id = c.id) AS sources
+           FROM business_operation_financial_components c
+          WHERE c.operation_id = $1 AND c.account_id = $2 ORDER BY c.active DESC, c.id` },
+  references: { table: 'business_operation_references', sql: `SELECT id, reference_kind, reference_value, normalized_value, source_id, active, superseded_at, created_at
+           FROM business_operation_references WHERE operation_id = $1 AND $2::int IS NOT NULL ORDER BY active DESC, id` },
+  children: { table: 'business_operations', sql: `SELECT id, type_code, status, technical_label, invalidated_at FROM business_operations
+          WHERE parent_operation_id = $1 AND account_id = $2 ORDER BY id` },
+  mergedFrom: { table: 'business_operations', sql: `SELECT id, type_code, status, technical_label, invalidated_at, invalidation_reason FROM business_operations
+          WHERE merged_into_operation_id = $1 AND account_id = $2 ORDER BY id` },
+  history: { table: 'business_operation_history', sql: `SELECT id, event_type, reason_code, source_id, actor_user_id, before_json, after_json, correlation_id, created_at
+           FROM business_operation_history WHERE operation_id = $1 AND $2::int IS NOT NULL ORDER BY created_at DESC, id DESC` },
+  matchDecisions: { table: 'business_operation_match_decisions', sql: `SELECT id, source_kind, source_entity_key, source_version, decision, origin, reason_code, active, created_at, updated_at
+           FROM business_operation_match_decisions WHERE candidate_operation_id = $1 AND account_id = $2
+          ORDER BY active DESC, id DESC` },
+  agendaItems: { table: 'agenda_items', sql: `SELECT id, title, start_date::text AS start_date, end_date::text AS end_date, projection_origin,
+                projection_correlation_id, manual_status, created_at
+           FROM agenda_items WHERE business_operation_id = $1 AND account_id = $2 ORDER BY id` },
+  projectionSuppressions: { table: 'business_operation_projection_suppressions', sql: `SELECT id, projection_kind, projection_key, user_id, created_at
+           FROM business_operation_projection_suppressions WHERE operation_id = $1 AND $2::int IS NOT NULL ORDER BY id` },
+  candidates: { table: 'document_operation_candidates', sql: `SELECT c.id, c.file_id, c.candidate_key, c.established, c.confidence, c.type_hint, c.status_hint, c.summary,
+                c.status, c.trigger_code, c.t3_pending, c.t3_outcome, c.t3_reason, c.t3_operation_id, c.t3_processed_at,
+                c.t3_detail, c.created_at, c.superseded_at
+           FROM document_operation_candidates c
+          WHERE c.account_id = $2
+            AND (c.t3_operation_id = $1
+                 OR c.file_id IN (SELECT ${KEY('s.source_entity_key')} FROM business_operation_sources s
+                                   WHERE s.operation_id = $1 AND s.source_kind = 'DOCUMENT')
+                 -- Lot 55B (E) : documents qui attendent une décision sur CETTE Opération.
+                 OR (c.status = 'ACTIVE' AND (COALESCE(c.t3_detail->'plausible', '[]'::jsonb) @> to_jsonb($1::bigint)
+                      OR COALESCE(c.t3_detail->'arbitration'->'operationIds', '[]'::jsonb) @> to_jsonb($1::bigint))))
+          ORDER BY c.created_at DESC, c.id DESC` },
+} as const satisfies Record<string, { table: string; sql: string }>;
+export type OperationDetailList = keyof typeof OPERATION_DETAIL_LISTS;
 
 /** Lot 78A : anomalies d'identité dont la table / colonne (0609) peut manquer — sondées avant exécution. */
 const IDENTITY_ANOMALY_SQL: Readonly<Record<'IDENTITY_SUSPECT_ATTACHMENT' | 'IDENTITY_ATTRIBUTE_CONFLICT', { probe: string; sql: string }>> = {
@@ -618,7 +694,7 @@ export class OperationDiagnosticsService {
       const reasons = await q(
         `SELECT c.t3_outcome AS outcome, c.t3_reason AS reason, count(*)::int AS n
            FROM document_operation_candidates c WHERE ${base.join(' AND ')}
-          GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2 LIMIT 100`,
+          GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2`,
         baseParams,
       );
       const [pending] = await q(
@@ -681,41 +757,21 @@ export class OperationDiagnosticsService {
         canonical = c ? Number(c.id) : null;
       }
 
-      const assetLinks = await q(
-        `SELECT al.id, al.asset_id, a.name AS asset_name, a.deleted_at IS NOT NULL AS asset_deleted, al.link_role, al.authority,
-                al.source_operation_source_id AS source_id, al.active, al.created_at, al.updated_at
-           FROM business_operation_asset_links al LEFT JOIN assets a ON a.id = al.asset_id
-          WHERE al.operation_id = $1 ORDER BY al.active DESC, al.id LIMIT ${L}`, [id]);
-      const equipmentLinks = await q(
-        `SELECT el.id, el.equipment_id, e.name AS equipment_name, el.asset_id, el.authority,
-                el.source_operation_source_id AS source_id, el.active, el.created_at
-           FROM business_operation_equipment_links el LEFT JOIN equipments e ON e.id = el.equipment_id
-          WHERE el.operation_id = $1 ORDER BY el.active DESC, el.id LIMIT ${L}`, [id]);
-      const sources = await q(
-        `SELECT s.id, s.source_kind, s.source_entity_key, s.source_version, s.source_role, s.locator, s.authority,
-                s.confidence, s.match_method, s.match_reason, s.active, s.superseded_at, s.created_at,
-                f.id AS file_id, f.document_type AS file_document_type, f.created_at AS file_created_at,
-                f.deleted_at AS file_deleted_at, f.asset_id AS file_asset_id
-           FROM business_operation_sources s
-           LEFT JOIN asset_files f ON s.source_kind = 'DOCUMENT' AND f.id = ${KEY('s.source_entity_key')} AND f.account_id = s.account_id
-          WHERE s.operation_id = $1 ORDER BY s.active DESC, s.created_at, s.id LIMIT ${L}`, [id]);
-      const components = await q(
-        `SELECT c.id, c.kind, c.amount_minor, c.currency, c.amount_eur_cents, c.economic_date::text AS economic_date,
-                c.period_start::text AS period_start, c.period_end::text AS period_end, c.target_asset_id, c.target_equipment_id,
-                c.label, c.fingerprint, c.active, c.superseded_at, c.created_at,
-                (SELECT coalesce(json_agg(json_build_object('sourceId', cs.operation_source_id, 'evidenceRole', cs.evidence_role,
-                                                             'isPrimary', cs.is_primary, 'sourceActive', s.active,
-                                                             -- Lot 78A : indices T1 et faits qui justifient le montant (0609).
-                                                             'evidence', to_jsonb(cs) -> 'evidence')
-                                          ORDER BY cs.is_primary DESC, cs.operation_source_id), '[]'::json)
-                   FROM business_operation_financial_component_sources cs
-                   LEFT JOIN business_operation_sources s ON s.id = cs.operation_source_id
-                  WHERE cs.component_id = c.id) AS sources
-           FROM business_operation_financial_components c
-          WHERE c.operation_id = $1 ORDER BY c.active DESC, c.id LIMIT ${L}`, [id]);
-      const references = await q(
-        `SELECT id, reference_kind, reference_value, normalized_value, source_id, active, superseded_at, created_at
-           FROM business_operation_references WHERE operation_id = $1 ORDER BY active DESC, id LIMIT ${L}`, [id]);
+      // Listes d'AFFICHAGE (écran) : `DETAIL_LIMIT` lignes ; total réel d'une liste tronquée (`listTotals`).
+      const listTotals: Partial<Record<OperationDetailList, number>> = {};
+      const list = async (k: OperationDetailList): Promise<Row[]> => {
+        const rows = await q(`${OPERATION_DETAIL_LISTS[k].sql} LIMIT ${L}`, [id, accountId]);
+        if (rows.length >= L) {
+          const [c] = await q(`SELECT count(*)::int AS n FROM (${OPERATION_DETAIL_LISTS[k].sql}) x`, [id, accountId]);
+          listTotals[k] = int(c?.n);
+        }
+        return rows;
+      };
+      const assetLinks = await list('assetLinks');
+      const equipmentLinks = await list('equipmentLinks');
+      const sources = await list('sources');
+      const components = await list('components');
+      const references = await list('references');
       const [contractDetails] = await q(
         `SELECT contract_reference, periodicity, effective_from::text AS effective_from, effective_to::text AS effective_to, updated_at
            FROM business_operation_contract_details WHERE operation_id = $1`, [id]);
@@ -736,39 +792,13 @@ export class OperationDiagnosticsService {
         ? await q(`SELECT id, type_code, status, technical_label, invalidated_at FROM business_operations WHERE id = $1 AND account_id = $2`,
           [base.parentOperationId, accountId])
         : [];
-      const children = await q(
-        `SELECT id, type_code, status, technical_label, invalidated_at FROM business_operations
-          WHERE parent_operation_id = $1 AND account_id = $2 ORDER BY id LIMIT ${L}`, [id, accountId]);
-      const mergedFrom = await q(
-        `SELECT id, type_code, status, technical_label, invalidated_at, invalidation_reason FROM business_operations
-          WHERE merged_into_operation_id = $1 AND account_id = $2 ORDER BY id LIMIT ${L}`, [id, accountId]);
-      const history = await q(
-        `SELECT id, event_type, reason_code, source_id, actor_user_id, before_json, after_json, correlation_id, created_at
-           FROM business_operation_history WHERE operation_id = $1 ORDER BY created_at DESC, id DESC LIMIT ${L}`, [id]);
-      const matchDecisions = await q(
-        `SELECT id, source_kind, source_entity_key, source_version, decision, origin, reason_code, active, created_at, updated_at
-           FROM business_operation_match_decisions WHERE candidate_operation_id = $1 AND account_id = $2
-          ORDER BY active DESC, id DESC LIMIT ${L}`, [id, accountId]);
-      const agendaItems = await q(
-        `SELECT id, title, start_date::text AS start_date, end_date::text AS end_date, projection_origin,
-                projection_correlation_id, manual_status, created_at
-           FROM agenda_items WHERE business_operation_id = $1 AND account_id = $2 ORDER BY id LIMIT ${L}`, [id, accountId]);
-      const projectionSuppressions = await q(
-        `SELECT id, projection_kind, projection_key, user_id, created_at
-           FROM business_operation_projection_suppressions WHERE operation_id = $1 ORDER BY id LIMIT ${L}`, [id]);
-      const candidates = await q(
-        `SELECT c.id, c.file_id, c.candidate_key, c.established, c.confidence, c.type_hint, c.status_hint, c.summary,
-                c.status, c.trigger_code, c.t3_pending, c.t3_outcome, c.t3_reason, c.t3_operation_id, c.t3_processed_at,
-                c.t3_detail, c.created_at, c.superseded_at
-           FROM document_operation_candidates c
-          WHERE c.account_id = $2
-            AND (c.t3_operation_id = $1
-                 OR c.file_id IN (SELECT ${KEY('s.source_entity_key')} FROM business_operation_sources s
-                                   WHERE s.operation_id = $1 AND s.source_kind = 'DOCUMENT')
-                 -- Lot 55B (E) : documents qui attendent une décision sur CETTE Opération.
-                 OR (c.status = 'ACTIVE' AND (COALESCE(c.t3_detail->'plausible', '[]'::jsonb) @> to_jsonb($1::bigint)
-                      OR COALESCE(c.t3_detail->'arbitration'->'operationIds', '[]'::jsonb) @> to_jsonb($1::bigint))))
-          ORDER BY c.created_at DESC, c.id DESC LIMIT ${L}`, [id, accountId]);
+      const children = await list('children');
+      const mergedFrom = await list('mergedFrom');
+      const history = await list('history');
+      const matchDecisions = await list('matchDecisions');
+      const agendaItems = await list('agendaItems');
+      const projectionSuppressions = await list('projectionSuppressions');
+      const candidates = await list('candidates');
       // Lot 55B (E) : traitements T3 encore dus pour cette Opération — documents
       // rattachés ou proposés, et documents du même bien (une facture en échec
       // n'est rattachée à rien) : en attente ou bloqués.
@@ -845,6 +875,8 @@ export class OperationDiagnosticsService {
         matchDecisions: withReason(matchDecisions, 'reason_code'),
         agendaItems,
         projectionSuppressions,
+        listTotals,
+        displayLimit: L,
         identityReviews,
         attributeProvenance: (prov?.p as Row | null) ?? null,
         candidates: withReason(candidates, 't3_reason').map((c) => ({
@@ -921,7 +953,7 @@ export class OperationDiagnosticsService {
         `SELECT c.t3_outcome AS outcome, c.t3_reason AS reason, count(*)::int AS n FROM document_operation_candidates c
           WHERE c.status = 'ACTIVE' AND c.t3_outcome IN ('HOLD_UNRESOLVED', 'ARBITRATION_REQUIRED')
             AND ($1::int IS NULL OR c.account_id = $1::int)
-          GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 100`, [accountId]);
+          GROUP BY 1, 2 ORDER BY 3 DESC, 1, 2`, [accountId]);
       const { OPERATION_CARD_RULES } = await import('@/services/to-process/operation-cards');
       const cards = await q(
         `SELECT rule_code, count(*)::int AS n FROM to_process_actions

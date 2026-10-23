@@ -543,6 +543,39 @@ function agendaInterventionDuplicates(action: BackfillAction, out: RawBackfillOu
   };
 }
 
+/** Lot 81A : faux arbitrages « À traiter » (simulation, application). */
+function falseArbitrations(out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as import('@/services/to-process/arbitration-equivalence-reprise').RepriseRunResult;
+  const c = r.counters;
+  const sim = r.mode === 'SIMULATE';
+  const ligne = (i: (typeof r.items)[number]) => `compte ${i.accountId} · ${i.targetType} ${i.targetId} · ${i.fieldKey} · carte ${i.actionId} : `
+    + `${(i.before ?? []).map((p) => `${p.isCurrentValue ? 'actuelle ' : ''}${String(p.value)}`).join(' / ')}`
+    + `${i.after ? ` → ${i.after.map((p) => `${p.isCurrentValue ? 'actuelle ' : ''}${String(p.value)}`).join(' / ')}` : ''}`
+    + `${i.initial?.registryReason ? ` (motif initial ${i.initial.registryReason})` : ''}${i.error ? ` — ${i.error}` : ''}`;
+  return {
+    headline: `${sim ? 'Simulation' : 'Application'} : ${c.scanned} carte(s) « À arbitrer » parcourue(s), ${c.suspects} faux arbitrage(s) — `
+      + `${c.CORRECTED} ${sim ? 'à corriger' : 'corrigé(s)'} (contradiction réelle), ${c.OBSOLETE} ${sim ? 'à clore' : 'clos'} sans objet, `
+      + `${c.OUT_OF_SCOPE} hors périmètre T3, ${c.ERROR} en erreur. Aucune valeur de fiche modifiée.`,
+    scriptRunId: null,
+    restorable: false,
+    counters: [
+      { label: 'Cartes parcourues', value: c.scanned },
+      { label: 'Faux arbitrages détectés', value: c.suspects },
+      { label: sim ? 'À corriger (contradiction réelle)' : 'Corrigées (contradiction réelle)', value: c.CORRECTED },
+      { label: sim ? 'À clore sans objet' : 'Closes sans objet', value: c.OBSOLETE },
+      { label: 'Hors périmètre T3 (signalées, non traitées)', value: c.OUT_OF_SCOPE },
+      { label: 'Cible introuvable', value: c.TARGET_MISSING },
+      { label: 'Erreurs', value: c.ERROR },
+    ],
+    ambiguous: { count: c.CORRECTED, samples: echantillon(r.items.filter((i) => i.outcome === 'CORRECTED'), ligne) },
+    conflicts: { count: c.ERROR, samples: echantillon(r.items.filter((i) => i.outcome === 'ERROR'), ligne) },
+    warnings: [
+      ...r.items.filter((i) => i.outcome === 'OBSOLETE').slice(0, SAMPLE_LIMIT).map((i) => `Sans objet : ${ligne(i)}`),
+      ...r.items.filter((i) => i.outcome === 'OUT_OF_SCOPE' || i.outcome === 'TARGET_MISSING').slice(0, SAMPLE_LIMIT).map((i) => `${i.outcome === 'OUT_OF_SCOPE' ? 'Hors périmètre' : 'Cible introuvable'} : ${ligne(i)}`),
+    ],
+  };
+}
+
 /** Synthèse lisible d'une exécution terminée (pure). */
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
@@ -558,6 +591,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'document-validation': return documentValidation(out);
     case 'duo-shared-account': return duoSharedAccount(action, out);
     case 'agenda-intervention-duplicates': return agendaInterventionDuplicates(action, out);
+    case 'to-process-false-arbitrations': return falseArbitrations(out);
   }
 }
 

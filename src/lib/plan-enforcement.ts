@@ -7,10 +7,7 @@ import { db } from '@/db';
 import { accounts, users, accountMemberships, duoAccounts, duoMemberships, subscriptionHistory } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { duoStatusForAccountStatus, fillDuoStart, isDuoInOffer, openingStart, pickDuoStartDate } from '@/services/duo/duo-period';
-import {
-  sendDowngradeToStandardEmail,
-  sendMemberRemovedDueToDowngradeEmail,
-} from '@/lib/email/billing-emails';
+import { sendMemberRemovedDueToDowngradeEmail } from '@/lib/email/billing-emails';
 import { endMembership, isDuoUnpaid } from '@/services/duo/duo-exit.service';
 import { afterMembershipEnded } from '@/services/account/membership.service';
 
@@ -185,8 +182,16 @@ export async function applyPlanChange(opts: PlanChangeOptions): Promise<void> {
   // 5. Standard enforcement: remove excess members (assets are never deactivated)
   if (newPlanType === 'STANDARD') {
     await enforceStandardLimits(accountId, ownerUserId, sendEmails);
+    // Lot 81E : e-mail de fin d'offre inscrit comme OPÉRATION (clé stable :
+    // compte, ancienne → nouvelle offre, instant du changement BO) et envoyé
+    // par la file DURABLE — plus d'envoi « fire and forget ».
     if (sendEmails && oldPlanType !== 'STANDARD') {
-      sendDowngradeToStandardEmail(ownerUserId).catch(console.error);
+      const { recordAndDispatchSubscriptionTransition } = await import('@/services/billing/subscription-communications.service');
+      await recordAndDispatchSubscriptionTransition({
+        kind: 'ADMIN_PLAN_CHANGE', accountId, ownerUserId, subscriptionId: null,
+        oldPlan: oldPlanType, newPlan: newPlanType, oldStatus: null, newStatus: newSubStatus,
+        effectiveAt: new Date(), notify: true, source,
+      });
     }
   }
 }

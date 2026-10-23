@@ -36,6 +36,21 @@ export interface ReconciliationDecision {
   sourcePriority?: number;
   /** true si la décision a été prise par règle, false si un modèle a tranché. */
   deterministic: boolean;
+  /**
+   * Lot 81A — conflit : TOUTES les valeurs que les règles d'autorité ne
+   * permettent pas de départager, réellement différentes de la valeur en
+   * place (la première est `proposedValue`). Aucune n'est masquée
+   * arbitrairement ; absent pour les autres actions.
+   */
+  alternatives?: DecisionAlternative[];
+}
+
+/** Valeur candidate d'un conflit (lot 81A). */
+export interface DecisionAlternative {
+  value: unknown;
+  evidenceIds: number[];
+  confidence: EvidenceConfidence;
+  sourcePriority?: number;
 }
 
 /** Valeur actuellement portée par la fiche. */

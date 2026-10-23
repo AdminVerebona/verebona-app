@@ -36,6 +36,7 @@ import type { ActionKind, ActionProposal } from './action-model';
 import { findRule } from './rules-catalog';
 import { isFieldApplicableToAsset } from '@/services/canonical/registry';
 import { resolveActionsForData, upsertAction } from './to-process-action.service';
+import { realAlternatives } from '@/services/ai/reconciliation/decision/equivalence';
 
 /**
  * Conversion confiance qualitative → score.
@@ -86,23 +87,18 @@ export function mapReconciliationDecision(
 
   switch (action) {
     case 'create_conflict': {
-      const proposals: ActionProposal[] = [
-        {
-          value: normalize(decision.proposedValue),
-          label: String(decision.proposedValue ?? ''),
-          confidence: confidenceToScore(decision.confidence),
-          evidenceIds: decision.evidenceIds.map(String),
-        },
-      ];
-      // La valeur en place est jointe pour pouvoir être confirmée (§8.5).
-      if (decision.currentValue !== null && decision.currentValue !== undefined) {
-        proposals.push({
-          value: normalize(decision.currentValue),
-          label: String(decision.currentValue),
-          confidence: 1,
-          isCurrentValue: true,
-        });
-      }
+      // ════════════════════════════════════════════════════════════════
+      // LOT 81A — CONTRÔLE D'ÉQUIVALENCE AVANT L'ARBITRAGE
+      //
+      // Toutes les valeurs que le moteur n'a pas départagées (`alternatives`,
+      // sinon `proposedValue`) — sauf celles ÉQUIVALENTES à la valeur en
+      // place (normaliseurs métier, clé canonique) et les doublons. Sans
+      // véritable alternative : AUCUNE intention — ni carte, ni fermeture
+      // (une contradiction réelle n'est pas déclarée résolue parce que la
+      // proposition reçue était mal choisie).
+      // ════════════════════════════════════════════════════════════════
+      const proposals = arbitrationProposals(decision);
+      if (!proposals) return null;
       return {
         kind: 'UPSERT',
         fieldKey,
@@ -116,6 +112,8 @@ export function mapReconciliationDecision(
     case 'ignore': {
       // Aucune preuve exploitable. Le §10.1 ne crée une complétion que si une
       // règle rend la donnée attendue — et seulement si elle est VIDE.
+      // Lot 81A : conflit écarté pour valeurs équivalentes — ni carte, ni fermeture.
+      if (decision.reasonCode === 'EQUIVALENT_VALUES') return null;
       if (decision.currentValue !== null && decision.currentValue !== undefined) return null;
       if (rule.completePriority === null) return null;
       return {
@@ -146,6 +144,38 @@ export function mapReconciliationDecision(
       // l'utilisateur aurait vu passer une question qui ne le concernait pas.
       return null;
   }
+}
+
+/**
+ * Lot 81A — propositions d'arbitrage d'une décision (pure) : toutes les
+ * valeurs non départagées (`alternatives`, sinon `proposedValue`), sauf
+ * celles ÉQUIVALENTES à la valeur en place (normaliseurs métier, clé
+ * canonique) et les doublons, puis la valeur en place (§8.5). `null` : aucune
+ * véritable alternative — pas d'arbitrage.
+ */
+export function arbitrationProposals(decision: ReconciliationDecision): ActionProposal[] | null {
+  const valeurs = decision.alternatives?.length
+    ? decision.alternatives
+    : [{ value: decision.proposedValue, evidenceIds: decision.evidenceIds, confidence: decision.confidence }];
+  const reelles = realAlternatives(decision.fieldKey, decision.currentValue, valeurs, (v) => v.value);
+  if (reelles.length === 0) return null;
+  const proposals: ActionProposal[] = reelles.map((v) => ({
+    value: normalize(v.value),
+    label: String(v.value ?? ''),
+    // Confiance de la DÉCISION (comme avant) : l'ordre du moteur est conservé.
+    confidence: confidenceToScore(decision.confidence),
+    evidenceIds: v.evidenceIds.map(String),
+  }));
+  // La valeur en place est jointe pour pouvoir être confirmée (§8.5).
+  if (decision.currentValue !== null && decision.currentValue !== undefined) {
+    proposals.push({
+      value: normalize(decision.currentValue),
+      label: String(decision.currentValue),
+      confidence: 1,
+      isCurrentValue: true,
+    });
+  }
+  return proposals;
 }
 
 export interface SyncReconciliationInput {

@@ -7,8 +7,15 @@
  *     empile l'entité précédente dans un historique (« Retour ») ; jamais
  *     deux tiroirs ;
  *   · en-tête : type, nom, identifiant BDD, statut réel ; actions Copier
- *     (texte lisible / JSON), Télécharger (JSON, CSV, TXT — générés par le
- *     serveur, complets), Actualiser, Fermer ;
+ *     (texte lisible / JSON), Télécharger (JSON, CSV, TXT), Actualiser,
+ *     Fermer ;
+ *   · lot 81C — CONSULTATION PAGINÉE / EXPORT INTÉGRAL : le tiroir affiche
+ *     une page par section avec son total réel (navigation et recherche par
+ *     le serveur) ; « Copier tout » et « Télécharger » récupèrent l'EXPORT
+ *     INTÉGRAL généré par le serveur (jamais les lignes affichées), dont le
+ *     statut (COMPLETE / PARTIAL / FAILED) est lu en fin de fichier et
+ *     affiché ; au-delà de `COPY_MAX_ROWS` lignes, la copie propose
+ *     l'export intégral (fichier) au lieu du presse-papiers ;
  *   · onglets Synthèse, Données BDD, Relations, Preuves et historique ;
  *     Opération : vue de diagnostic existante (`OperationDetailView`) ;
  *   · lecture seule : uniquement des GET ; copier ne ferme pas le tiroir.
@@ -26,21 +33,38 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
-  ENTITY_LABELS, TABS, TAB_LABELS, dossierToJson, dossierToText, exportFileName,
-  type EntityDossier, type EntityType, type ExportFormat,
+  COPY_MAX_ROWS, ENTITY_LABELS, TABS, TAB_LABELS, exportFileName, exportStatusFromTail,
+  type DossierSection, type EntityDossier, type EntityType, type ExportFormat, type ExtractionStatus,
 } from '@/services/admin/account-data/model';
 import type { OperationDetail } from '@/services/business-operations/diagnostics/service';
 import { OperationDetailView } from '@/app/admin/operations/_components/views';
-import { CopyButton, SectionCard, copyWithFeedback } from './DossierView';
+import { CopyButton, SectionCard, fmtInt, type SectionActions } from './DossierView';
+import { copyText } from '@/app/admin/ai-executions/_components/CopyJson';
 
 export interface EntityRefValue { type: EntityType; id: number }
 
-export function entityUrl(accountId: number, ref: EntityRefValue, format?: ExportFormat, section?: string): string {
+export function entityUrl(accountId: number, ref: EntityRefValue, format?: ExportFormat, section?: string, page?: { offset: number; q: string | null }): string {
   const qs = new URLSearchParams();
   if (format) qs.set('format', format);
   if (section) qs.set('section', section);
+  if (page) {
+    qs.set('offset', String(page.offset));
+    if (page.q) qs.set('q', page.q);
+  }
   const q = qs.toString();
   return `/api/admin/accounts/${accountId}/entities/${ref.type}/${ref.id}${q ? `?${q}` : ''}`;
+}
+
+/** Lot 81C — éléments d'un dossier en base (total réel des sections paginées + champs) : seuil de la copie. */
+export function dossierRowCount(d: Pick<EntityDossier, 'sections'>): number {
+  return d.sections.reduce((n, s) => n + (s.window?.total ?? s.table?.rows.length ?? s.relations?.length ?? 0) + (s.fields?.length ?? 0), 0);
+}
+
+/** Statut d'un export lu en fin de fichier (marque écrite en dernier par le serveur). */
+async function statusOf(blob: Blob, format: ExportFormat): Promise<ExtractionStatus | null> {
+  if (format === 'csv' && blob.size === 0) return null;
+  const tail = await blob.slice(Math.max(0, blob.size - 16_384)).text();
+  return exportStatusFromTail(format, tail);
 }
 
 /** Historique de navigation du tiroir (pur, testé). */
@@ -64,6 +88,9 @@ export function EntityDrawer({ accountId, current, openSeq, onChange, onClose }:
   const [loading, setLoading] = useState(false);
   const [tab, setTab] = useState<string>('synthese');
   const [downloading, setDownloading] = useState<ExportFormat | null>(null);
+  const [copying, setCopying] = useState(false);
+  /** Dernier export intégral : format, statut lu en fin de fichier, génération. */
+  const [lastExport, setLastExport] = useState<{ format: ExportFormat; status: ExtractionStatus | 'INTERROMPU'; id: string | null; section: string | null } | null>(null);
 
   const load = useCallback(async (ref: EntityRefValue) => {
     setLoading(true);
@@ -102,18 +129,38 @@ export function EntityDrawer({ accountId, current, openSeq, onChange, onClose }:
     onChange(prev);
   };
 
+  /** Export intégral généré par le serveur (dossier ou section) : contenu, statut, génération. */
+  const fetchExport = useCallback(async (format: ExportFormat, section?: string) => {
+    if (!current) throw new Error('aucune entité');
+    const res = await fetch(entityUrl(accountId, current, format, section), { credentials: 'include', cache: 'no-store' });
+    if (!res.ok) {
+      const b = await res.json().catch(() => ({}));
+      throw new Error(b.error || `Erreur ${res.status}`);
+    }
+    const id = res.headers.get('X-Verebona-Export-Id');
+    let blob: Blob;
+    try {
+      blob = await res.blob();
+    } catch {
+      setLastExport({ format, status: 'INTERROMPU', id, section: section ?? null });
+      throw new Error('export interrompu avant la fin : fichier incomplet, non enregistré');
+    }
+    // CSV d'une section : pas de marque (un échec interrompt le flux) — reçu en entier = complet.
+    const status = format === 'csv' && section ? 'COMPLETE' : await statusOf(blob, format);
+    if (!status) {
+      setLastExport({ format, status: 'INTERROMPU', id, section: section ?? null });
+      throw new Error('fin de fichier absente : export interrompu, non enregistré');
+    }
+    setLastExport({ format, status, id, section: section ?? null });
+    const cd = res.headers.get('Content-Disposition') ?? '';
+    return { blob, status, name: /filename="([^"]+)"/.exec(cd)?.[1] ?? `verebona-export.${format}` };
+  }, [accountId, current]);
+
   const download = async (format: ExportFormat) => {
     if (!current) return;
     setDownloading(format);
     try {
-      const res = await fetch(entityUrl(accountId, current, format), { credentials: 'include', cache: 'no-store' });
-      if (!res.ok) {
-        const b = await res.json().catch(() => ({}));
-        throw new Error(b.error || `Erreur ${res.status}`);
-      }
-      const blob = await res.blob();
-      const cd = res.headers.get('Content-Disposition') ?? '';
-      const name = /filename="([^"]+)"/.exec(cd)?.[1] ?? `verebona-export.${format}`;
+      const { blob, status, name } = await fetchExport(format);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -122,14 +169,69 @@ export function EntityDrawer({ accountId, current, openSeq, onChange, onClose }:
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      if (res.headers.get('X-Verebona-Export-Complete') === 'false') toast.warning('Export téléchargé : extraction INCOMPLÈTE (voir les avertissements du fichier).');
-      else toast.success(`Fichier ${format.toUpperCase()} téléchargé.`, { duration: 1500 });
+      if (status !== 'COMPLETE') toast.warning(`Export ${format.toUpperCase()} téléchargé : statut ${status} — le fichier le signale (complétude en fin de fichier).`);
+      else toast.success(`Export intégral ${format.toUpperCase()} téléchargé (COMPLETE).`, { duration: 2000 });
     } catch (e) {
       toast.error(`Téléchargement impossible : ${e instanceof Error ? e.message : 'erreur'}`);
     } finally {
       setDownloading(null);
     }
   };
+
+  /**
+   * « Copier tout » / copie de section : export INTÉGRAL du serveur copié dans
+   * le presse-papiers ; au-delà de `COPY_MAX_ROWS`, l'export intégral
+   * (fichier) est proposé à la place — jamais de copie partielle.
+   */
+  const copyExport = async (format: 'txt' | 'json', rows: number, section?: DossierSection) => {
+    const what = section ? `la section « ${section.title} »` : 'le dossier';
+    if (rows > COPY_MAX_ROWS) {
+      toast.warning(`${fmtInt(rows)} éléments : trop volumineux pour le presse-papiers. Utilisez l’export intégral (fichier).`, {
+        duration: 8000,
+        action: { label: 'Télécharger', onClick: () => { if (section) window.location.assign(entityUrl(accountId, current!, 'csv', section.id)); else void download(format); } },
+      });
+      return;
+    }
+    setCopying(true);
+    try {
+      let status: ExtractionStatus = 'COMPLETE';
+      const text = async () => { const r = await fetchExport(format, section?.id); status = r.status; return r.blob.text(); };
+      let ok = false;
+      // Presse-papiers asynchrone (Safari exige le geste : promesse dans le ClipboardItem).
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'text/plain': text().then((t) => new Blob([t], { type: 'text/plain' })) })]);
+          ok = true;
+        } catch (e) {
+          if (e instanceof Error && /interrompu|absente|Erreur/.test(e.message)) throw e;
+        }
+      }
+      if (!ok) ok = await copyText(await text());
+      if (!ok) { toast.error('Copie impossible dans ce navigateur : utilisez « Télécharger ».'); return; }
+      if (status !== 'COMPLETE') toast.warning(`Copié : ${what} — statut ${status} (le texte copié le signale).`);
+      else toast.success(`Copié : ${what} en entier (${format === 'txt' ? 'texte' : 'JSON'}).`, { duration: 1800 });
+    } catch (e) {
+      toast.error(`Copie impossible : ${e instanceof Error ? e.message : 'erreur'}`);
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  /** Page d'une section (navigation, recherche) : remplace la section dans le dossier affiché. */
+  const loadPage = useCallback(async (sectionId: string, offset: number, q: string | null) => {
+    if (!current) return;
+    const res = await fetch(entityUrl(accountId, current, undefined, sectionId, { offset, q }), { credentials: 'include', cache: 'no-store' });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || `Erreur ${res.status}`);
+    const sec = body.section as DossierSection;
+    setData((d) => (d ? { ...d, sections: d.sections.map((x) => (x.id === sec.id ? sec : x)) } : d));
+  }, [accountId, current]);
+
+  const actions: SectionActions | undefined = current ? {
+    loadPage,
+    exportUrl: (sid, format) => entityUrl(accountId, current, format, sid),
+    copySection: (sec) => copyExport('json', (sec.window?.total ?? 0) + (sec.fields?.length ?? 0), sec),
+  } : undefined;
 
   const csvName = useMemo(() => (sid: string) => (data ? exportFileName(data, 'csv', sid) : `${sid}.csv`), [data]);
   const op = data?.entity.type === 'operation' ? (data.operationDetail as OperationDetail | undefined) : undefined;
@@ -162,12 +264,16 @@ export function EntityDrawer({ accountId, current, openSeq, onChange, onClose }:
           <div className="flex flex-wrap items-center gap-1.5">
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" disabled={!data} className="gap-1.5"><Copy className="h-3.5 w-3.5" />Copier tout<ChevronDown className="h-3 w-3" /></Button>
+                <Button variant="outline" size="sm" disabled={!data || copying} className="gap-1.5">
+                  {copying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Copy className="h-3.5 w-3.5" />}Copier tout<ChevronDown className="h-3 w-3" />
+                </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
-                <DropdownMenuLabel>Contenu complet du tiroir</DropdownMenuLabel>
-                <DropdownMenuItem onSelect={() => data && void copyWithFeedback(dossierToText(data), 'Texte lisible')}>Texte lisible</DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => data && void copyWithFeedback(dossierToJson(data), 'JSON')}>JSON</DropdownMenuItem>
+                <DropdownMenuLabel>Dossier entier (export intégral du serveur{data ? ` — ${fmtInt(dossierRowCount(data))} éléments` : ''})</DropdownMenuLabel>
+                <DropdownMenuItem onSelect={() => data && void copyExport('txt', dossierRowCount(data))}>Texte lisible</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => data && void copyExport('json', dossierRowCount(data))}>JSON</DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className="font-normal text-[11px] text-muted-foreground">Au-delà de {fmtInt(COPY_MAX_ROWS)} éléments : export intégral (fichier)</DropdownMenuLabel>
               </DropdownMenuContent>
             </DropdownMenu>
             <DropdownMenu>
@@ -177,7 +283,7 @@ export function EntityDrawer({ accountId, current, openSeq, onChange, onClose }:
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
-                <DropdownMenuLabel>Export complet (généré par le serveur)</DropdownMenuLabel>
+                <DropdownMenuLabel>Export intégral (généré par le serveur, toutes les lignes)</DropdownMenuLabel>
                 <DropdownMenuItem onSelect={() => void download('json')}>JSON — format de référence</DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => void download('csv')}>CSV — toutes les sections</DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => void download('txt')}>TXT — lecture humaine</DropdownMenuItem>
@@ -191,9 +297,20 @@ export function EntityDrawer({ accountId, current, openSeq, onChange, onClose }:
           </div>
           {data && !data.complete && (
             <div role="alert" className="rounded-lg border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] px-3 py-2 text-xs">
-              <p className="font-medium">Extraction incomplète — la copie et les exports le signalent.</p>
+              <p className="font-medium">Sections non chargées — la copie et les exports le signalent.</p>
               <ul className="list-disc pl-4">{data.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
             </div>
+          )}
+          {data && (
+            <p className="text-[11px] text-muted-foreground" data-consultation-note>
+              Consultation paginée ({fmtInt(dossierRowCount(data))} éléments en base, instantané {data.snapshot?.at ?? data.extractedAt}) ; « Copier tout » et « Télécharger » produisent l’export intégral.
+            </p>
+          )}
+          {lastExport && (
+            <p role="status" data-last-export className={`text-[11px] ${lastExport.status === 'COMPLETE' ? 'text-muted-foreground' : 'text-[color:var(--text-danger)] font-medium'}`}>
+              Dernier export {lastExport.format.toUpperCase()}{lastExport.section ? ` (section ${lastExport.section})` : ''} : {lastExport.status === 'INTERROMPU' ? 'INTERROMPU — fichier non enregistré' : lastExport.status}
+              {lastExport.id ? ` · génération ${lastExport.id.slice(0, 8)}` : ''}
+            </p>
           )}
         </div>
 
@@ -222,7 +339,7 @@ export function EntityDrawer({ accountId, current, openSeq, onChange, onClose }:
                     </div>
                   )}
                   {data.sections.filter((s) => s.tab === t).map((s) => (
-                    <SectionCard key={s.id} s={s} onNavigate={navigate} csvName={csvName} />
+                    <SectionCard key={s.id} s={s} onNavigate={navigate} csvName={csvName} actions={actions} />
                   ))}
                 </TabsContent>
               ))}

@@ -27,8 +27,19 @@
  *     (cache T6 du compte) — une situation déjà formulée coûte une lecture ;
  *   · par exécution : `MASCOT_PREGEN_BATCH` comptes au plus (défaut 20) ;
  *   · par compte : `MASCOT_PREGEN_DAILY_MAX` générations T6 de
- *     pré-génération par 24 h (défaut 24) — au-delà, la demande est close
- *     (`capped`) et l'affichage garde le chemin habituel ;
+ *     pré-génération par 24 h (défaut 24) — au-delà, la FORMULATION n'est
+ *     plus demandée (`capped`) et l'affichage garde le chemin habituel.
+ *     Lot 81B (A) : ce plafond est celui de la FORMULATION seulement — le
+ *     cycle EVALUATE du passage s'exécute quand même (bornes propres :
+ *     8 par appel, tentatives et délais de `t6_evaluation_runs`, plafond IA
+ *     mensuel du compte) et une demande dont des évaluations restent à faire
+ *     est REPORTÉE, jamais close `capped` ;
+ *   · lot 81B (C) : `PREGEN_MAX_ATTEMPTS` prises sans aboutir épuisent la
+ *     DEMANDE (distinctes des tentatives des évaluations T6) : état explicite
+ *     `attempts_exhausted`, évaluations encore en attente rendues
+ *     UNAVAILABLE (`pregen_exhausted`), reprise automatique après
+ *     `PREGEN_EXHAUSTED_REARM_MS` au plus `PREGEN_EXHAUSTED_MAX_REARMS` fois,
+ *     puis reprise explicite (BO › Supervision) — supervision signalée ;
  *   · plafond IA mensuel du compte, disjoncteur et arrêt d'urgence T6 : ceux
  *     de `formulateWithT6`, inchangés.
  * Rien n'est jamais remplacé à l'écran : la présentation affichée reste celle
@@ -53,8 +64,35 @@ export const mascotPregenDailyMax = (env: Record<string, string | undefined> = p
 export const PREGEN_SETTLE_MS = 3_000;
 /** Bail d'une prise en charge. */
 const CLAIM_MS = 5 * 60_000;
-/** Essais au plus quand T6 n'a pas pu formuler (panne passagère). */
-const MAX_ATTEMPTS = 3;
+/**
+ * Prises au plus d'une DEMANDE sans aboutir (T6 n'a pas pu formuler, panne,
+ * évaluations prenables qui n'avancent pas). Distinctes des tentatives des
+ * évaluations T6 (`t6_evaluation_runs.attempts`, `MASCOT_T6_EVAL_MAX_ATTEMPTS`).
+ */
+export const PREGEN_MAX_ATTEMPTS = 3;
+const MAX_ATTEMPTS = PREGEN_MAX_ATTEMPTS;
+/** Lot 81B (C) : reprise automatique d'une demande épuisée après ce délai… */
+export const PREGEN_EXHAUSTED_REARM_MS = 2 * 3600_000;
+/** … au plus ce nombre de fois de suite sans progrès ; ensuite reprise explicite (BO). */
+export const PREGEN_EXHAUSTED_MAX_REARMS = 3;
+
+/** Lot 81B (C) : colonnes 0629 (`exhausted_count`, `exhausted_at`) présentes ? Mémorisé (présentes : définitivement). */
+let colonnesEpuisement: boolean | null = null;
+async function exhaustColumnsReady(): Promise<boolean> {
+  if (colonnesEpuisement) return true;
+  try {
+    const [r] = await rows(
+      `SELECT count(*)::int AS n FROM information_schema.columns
+        WHERE table_name = 'home_mascot_pregen_requests' AND column_name IN ('exhausted_count', 'exhausted_at')`,
+    );
+    colonnesEpuisement = Number(r?.n ?? 0) === 2;
+  } catch {
+    colonnesEpuisement = false;
+  }
+  return colonnesEpuisement;
+}
+/** Réservé aux tests. */
+export function resetPregenColumnsProbe(): void { colonnesEpuisement = null; }
 
 /** Événements du bus qui changent la situation présentée par la mascotte. */
 export const PREGEN_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -71,17 +109,68 @@ export const PREGEN_EVENT_TYPES: ReadonlySet<string> = new Set([
 export async function requestMascotPregeneration(accountId: number, reason: string): Promise<void> {
   if (!Number.isSafeInteger(accountId) || accountId <= 0) return;
   try {
+    // Lot 81B (C) : un nouveau signal remet aussi à zéro l'épuisement (situation nouvelle).
+    const epuisement = await exhaustColumnsReady() ? ', exhausted_count = 0' : '';
     await rows(
       `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
        VALUES ($1, clock_timestamp(), $2)
        ON CONFLICT (account_id) DO UPDATE
-         SET requested_at = clock_timestamp(), reason = EXCLUDED.reason, attempts = 0`,
+         SET requested_at = clock_timestamp(), reason = EXCLUDED.reason, attempts = 0${epuisement}`,
       [accountId, reason.slice(0, 60)],
     );
   } catch (e) {
     // Table absente (migration 0271 en cours) ou base indisponible : le chemin
     // en mémoire et l'affichage suffisent.
     console.warn('[mascotte] demande de pré-génération non enregistrée :', (e as Error).message);
+  }
+}
+
+/**
+ * Lot 81B (G) — demande DIFFÉRÉE : la pré-génération du compte repassera au
+ * plus tôt dans `delayMs` (clôture technique d'une évaluation en échec : le
+ * passage suivant l'expiration du bail rattrape l'état durable, sans visite).
+ * Une demande en attente plus tardive n'est pas avancée. Ne lève jamais.
+ */
+export async function requestMascotPregenerationAt(accountId: number, reason: string, delayMs: number): Promise<void> {
+  if (!Number.isSafeInteger(accountId) || accountId <= 0) return;
+  try {
+    await rows(
+      `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
+       VALUES ($1, clock_timestamp() + ($3::int * INTERVAL '1 millisecond'), $2)
+       ON CONFLICT (account_id) DO UPDATE
+         SET requested_at = GREATEST(home_mascot_pregen_requests.requested_at, EXCLUDED.requested_at), reason = EXCLUDED.reason, attempts = 0`,
+      [accountId, reason.slice(0, 60), Math.max(0, Math.round(delayMs))],
+    );
+  } catch (e) {
+    console.warn('[mascotte] demande de pré-génération différée non enregistrée :', (e as Error).message);
+  }
+}
+
+/**
+ * Lot 81B (B) — une demande DURABLE existe-t-elle pour le compte ? Sinon (ou
+ * déjà traitée) elle est créée ; une demande en attente — reportée à
+ * l'instant attendu, par exemple — n'est PAS avancée (aucun passage
+ * supplémentaire à chaque visite). Sert quand des évaluations éligibles
+ * attendent sans exécution possible (T6 indisponible) : leur reprise au
+ * rétablissement ne dépend d'aucune nouvelle visite. Ne lève jamais.
+ */
+export async function ensureMascotPregeneration(accountId: number, reason: string): Promise<boolean> {
+  if (!Number.isSafeInteger(accountId) || accountId <= 0) return false;
+  try {
+    const r = await rows(
+      `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
+       VALUES ($1, clock_timestamp(), $2)
+       ON CONFLICT (account_id) DO UPDATE
+         SET requested_at = clock_timestamp(), reason = EXCLUDED.reason, attempts = 0
+       WHERE home_mascot_pregen_requests.processed_at IS NOT NULL
+         AND home_mascot_pregen_requests.requested_at <= home_mascot_pregen_requests.processed_at
+       RETURNING account_id`,
+      [accountId, reason.slice(0, 60)],
+    );
+    return r.length > 0;
+  } catch (e) {
+    console.warn('[mascotte] demande de pré-génération non enregistrée :', (e as Error).message);
+    return false;
   }
 }
 
@@ -138,7 +227,9 @@ async function pregenGeneratedToday(accountId: number): Promise<number> {
  * supervision, reprise explicite au BO). « Rien à afficher » n'est jamais
  * pris pour « toutes les échéances évaluées ».
  */
-export type PregenOutcome = 'formulated' | 'nothing_to_say' | 'fallback' | 'capped' | 'error' | 'resumed' | 'evaluation_waiting' | 'evaluation_failed';
+export type PregenOutcome = 'formulated' | 'nothing_to_say' | 'fallback' | 'capped' | 'error' | 'resumed' | 'evaluation_waiting' | 'evaluation_failed'
+  /** Lot 81B (C) : tentatives de la demande épuisées (balayage de la tâche). */
+  | 'attempts_exhausted';
 
 /** Report minimal / maximal d'une demande en attente d'évaluations (aucune boucle serrée). */
 export const PREGEN_EVALUATION_DEFER_MIN_MS = 30_000;
@@ -203,16 +294,17 @@ async function close(c: Claim, status: PregenOutcome, contextHash: string | null
 /** Traite une demande prise en charge. Ne lève jamais. */
 async function processClaim(c: Claim): Promise<PregenOutcome> {
   try {
-    if (await pregenGeneratedToday(c.accountId) >= mascotPregenDailyMax()) {
-      await close(c, 'capped', null, false);
-      return 'capped';
-    }
+    // Lot 81B (A) : le plafond quotidien porte sur la FORMULATION — il ne clôt
+    // jamais la demande avant de connaître l'état des évaluations : le cycle
+    // EVALUATE s'exécute (ses propres bornes), seule la formulation est omise.
+    const plafond = await pregenGeneratedToday(c.accountId) >= mascotPregenDailyMax();
     const { getMascotPresentation } = await import('./mascot.service');
     let reprise = false;
     let progres: import('./t6-interpellation.service').T6EvaluationProgress | null = null;
     const p = await getMascotPresentation(c.accountId, 'pregen', null, {
       onResume: () => { reprise = true; },
       onEvaluation: (x) => { progres = x; },
+      formulate: !plafond,
     });
     const formulable = p.paragraphs.some((x) => x.sourceCode !== 'CLEAR');
     // Lot 78C : des évaluations éligibles restent à traiter — jamais clos
@@ -224,9 +316,11 @@ async function processClaim(c: Claim): Promise<PregenOutcome> {
     }
     // Lot 71G (T6-03) : évaluation partielle, reprise déjà redemandée — demande close normalement.
     const outcome: PregenOutcome = reprise ? 'resumed' : evaluations?.outcome === 'evaluation_failed' ? 'evaluation_failed'
-      : !formulable ? 'nothing_to_say' : p.source === 't6' ? 'formulated' : 'fallback';
+      // Lot 81B (A) : évaluations achevées (ou sans objet), formulation plafonnée.
+      : plafond ? 'capped'
+        : !formulable ? 'nothing_to_say' : p.source === 't6' ? 'formulated' : 'fallback';
     // T6 n'a pas formulé (panne passagère, disjoncteur) : nouvel essai borné.
-    await close(c, outcome, p.contextHash, outcome === 'fallback');
+    await close(c, outcome, outcome === 'capped' ? null : p.contextHash, outcome === 'fallback');
     return outcome;
   } catch (e) {
     console.error(`[mascotte] pré-génération du compte ${c.accountId} en échec :`, (e as Error).message);
@@ -263,11 +357,73 @@ export interface PregenRunResult {
   capped: number;
   nothing: number;
   errors: number;
+  /** Lot 81B (C) : demandes aux tentatives épuisées (reprise planifiée / reprise explicite). */
+  exhausted?: number;
+  exhaustedFinal?: number;
+}
+
+export interface PregenExhaustion { accountId: number; exhaustedCount: number; final: boolean; retryAt: string | null; runsMarked: number }
+
+/**
+ * Lot 81B (C) — demandes en attente dont les `PREGEN_MAX_ATTEMPTS` prises
+ * n'ont pas abouti : jamais laissées non sélectionnables sans état. Elles
+ * reçoivent l'état explicite `attempts_exhausted` (compteur, date), et :
+ *   · reprise AUTOMATIQUE après `PREGEN_EXHAUSTED_REARM_MS`, au plus
+ *     `PREGEN_EXHAUSTED_MAX_REARMS` fois de suite (aucune boucle) ;
+ *   · au-delà, demande close : reprise EXPLICITE (BO › Supervision › Relancer
+ *     les évaluations T6), ou nouveau signal du compte.
+ * Les évaluations du compte encore PENDING passent UNAVAILABLE
+ * (`pregen_exhausted`) avec la date de reprise : aucune attente orpheline ;
+ * la supervision les signale. Bornée, prise SKIP LOCKED. Table 0629 absente : rien.
+ */
+export async function sweepExhaustedPregenRequests(opts: { limit?: number; accountId?: number | null; rearmMs?: number; maxRearms?: number } = {}): Promise<PregenExhaustion[]> {
+  if (!(await exhaustColumnsReady())) return [];
+  const r = await rows(
+    `UPDATE home_mascot_pregen_requests r SET
+        exhausted_count = r.exhausted_count + 1, exhausted_at = clock_timestamp(),
+        last_status = 'attempts_exhausted', attempts = 0, claimed_until = NULL,
+        requested_at = CASE WHEN r.exhausted_count + 1 <= $3::int
+                            THEN GREATEST(r.requested_at, clock_timestamp() + ($2::int * INTERVAL '1 millisecond')) ELSE r.requested_at END,
+        processed_at = CASE WHEN r.exhausted_count + 1 <= $3::int THEN r.processed_at
+                            ELSE GREATEST(coalesce(r.processed_at, '-infinity'::timestamptz), r.requested_at) END
+      WHERE r.account_id IN (
+        SELECT account_id FROM home_mascot_pregen_requests
+         WHERE (processed_at IS NULL OR requested_at > processed_at) AND attempts >= ${MAX_ATTEMPTS}
+           AND (claimed_until IS NULL OR claimed_until < clock_timestamp())
+           AND ($4::int IS NULL OR account_id = $4::int)
+         ORDER BY account_id LIMIT $1
+         FOR UPDATE SKIP LOCKED)
+      RETURNING r.account_id, r.exhausted_count, r.requested_at, (r.exhausted_count > $3::int) AS final`,
+    [opts.limit ?? 200, Math.round(opts.rearmMs ?? PREGEN_EXHAUSTED_REARM_MS), opts.maxRearms ?? PREGEN_EXHAUSTED_MAX_REARMS, opts.accountId ?? null],
+  );
+  const out: PregenExhaustion[] = [];
+  const { markT6RunsPregenExhausted, t6RunsReady } = await import('./t6-evaluation-runs');
+  const pret = await t6RunsReady();
+  for (const x of r) {
+    const final = x.final === true;
+    const retryAt = final ? null : new Date(String(x.requested_at instanceof Date ? x.requested_at.toISOString() : x.requested_at));
+    const marquees = pret ? await markT6RunsPregenExhausted(Number(x.account_id), retryAt).catch((e) => {
+      console.error('[mascotte] évaluations de la demande épuisée non marquées :', (e as Error).message);
+      return 0;
+    }) : 0;
+    out.push({ accountId: Number(x.account_id), exhaustedCount: Number(x.exhausted_count), final, retryAt: retryAt?.toISOString() ?? null, runsMarked: marquees });
+  }
+  if (out.length > 0) console.warn(`[mascotte] ${out.length} demande(s) de pré-génération aux tentatives épuisées (${out.filter((x) => x.final).length} close(s), reprise explicite).`);
+  return out;
 }
 
 /** Tâche planifiée `mascot-pregeneration` : un lot borné de demandes en attente. */
 export async function runMascotPregeneration(opts: { deadline?: number; batch?: number } = {}): Promise<PregenRunResult> {
   const out: PregenRunResult = { claimed: 0, formulated: 0, fallback: 0, capped: 0, nothing: 0, errors: 0 };
+  // Lot 81B (C) : demandes épuisées — état explicite, jamais laissées en suspens.
+  const epuisees = await sweepExhaustedPregenRequests().catch((e) => {
+    console.error('[mascotte] balayage des demandes épuisées impossible :', (e as Error).message);
+    return [] as PregenExhaustion[];
+  });
+  if (epuisees.length > 0) {
+    out.exhausted = epuisees.length;
+    out.exhaustedFinal = epuisees.filter((x) => x.final).length;
+  }
   const claims = await claimBatch(opts.batch ?? mascotPregenBatch());
   out.claimed = claims.length;
   for (const c of claims) {

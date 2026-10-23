@@ -34,6 +34,9 @@ export async function GET(request: NextRequest) {
       createdAt: notificationOutbox.createdAt,
       processedAt: notificationOutbox.processedAt,
       lastError: notificationOutbox.lastError,
+      // Lot 81E : cause d'un événement ignoré, incident de référence d'un regroupé.
+      outcomeReason: notificationOutbox.outcomeReason,
+      groupedWithId: notificationOutbox.groupedWithId,
     })
     .from(notificationOutbox)
     .where(conditions.length ? and(...conditions) : undefined)

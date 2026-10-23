@@ -121,11 +121,12 @@ describe('lecture des indicateurs (§20.1)', () => {
 
   it('distingue « aucune tentative » de « zéro pour cent »', () => {
     // Un taux de 0 % sur zéro envoi laisserait croire à une panne.
-    expect(SANTE).toMatch(/tauxSucces: c\.total > 0 \? .* : null/);
+    // Lot 81E : taux calculé sur les seuls envois TENTÉS (envoyés + échecs) — un canal ignoré ne le dégrade pas.
+    expect(SANTE).toMatch(/tauxSucces: c\.envoyees \+ c\.echouees > 0 \? .* : null/);
   });
 
   it('n’alerte pas sur un volume insignifiant', () => {
     // Deux échecs sur trois envois ne signalent rien d'exploitable.
-    expect(SANTE).toMatch(/c\.total >= \d+/);
+    expect(SANTE).toMatch(/c\.envoyees \+ c\.echouees >= \d+/);
   });
 });

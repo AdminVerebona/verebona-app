@@ -53,7 +53,13 @@ describe('L75N-S02 lecture seule des services', () => {
       const src = lire(f).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
       expect(src).not.toMatch(/\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|TRUNCATE|ALTER\s+TABLE|CREATE\s+TABLE|DROP\s+)/i);
     }
-    expect(lire('src/services/admin/account-data/dossier.ts')).toContain('readOnlyExecutor');
+    // Lot 81C (adapté) : session de lecture cohérente REPEATABLE READ READ ONLY (instantané) au lieu de `readOnlyExecutor`.
+    expect(lire('src/services/admin/account-data/dossier.ts')).toContain('withReadSession');
+    expect(lire('src/services/admin/account-data/session.ts')).toContain("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    for (const f of ['src/services/admin/account-data/session.ts', 'src/services/admin/account-data/export.ts']) {
+      const src = lire(f).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+      expect(src, f).not.toMatch(/\b(INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|TRUNCATE|ALTER\s+TABLE|CREATE\s+TABLE|DROP\s+)/i);
+    }
     expect(lire('src/services/admin/account-data/lists.ts')).toContain('readOnlyExecutor');
     expect(lire('src/services/admin/account-data/dossier.ts')).not.toMatch(/enqueue|t3-queue|reconcile\w*\(/);
   });

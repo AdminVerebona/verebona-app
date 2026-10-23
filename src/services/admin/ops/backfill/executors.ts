@@ -19,6 +19,8 @@
  *                         simulation = lecture seule ; journal 0521)
  *   agenda-intervention-duplicates  runAgendaDuplicatesReprise / restoreAgendaDuplicatesReprise
  *                         (lot 76H ; simulation = plans de projection sans écriture ; journal 0591)
+ *   to-process-false-arbitrations  runArbitrationReprise (lot 81A ; simulation = lecture seule ;
+ *                         traces dans to_process_action_events, campagne 0626)
  *
  * Services chargés à la demande : la route reste légère.
  */
@@ -194,6 +196,12 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
         hooks.progress({ cursor: r.cursor, ...r.counters });
         r = await m.runAgendaDuplicatesReprise({ mode: r.mode, origin: 'BO', accountId: req.accountId, resumeRunId: r.runId, log: hooks.log, sql });
       }
+      return { result: r };
+    }
+    case 'to-process-false-arbitrations': {
+      // Lot 81A : même service que la campagne automatique (réexamen T3 en lecture seule).
+      const { runArbitrationReprise } = await import('@/services/to-process/arbitration-equivalence-reprise');
+      const r = await runArbitrationReprise({ apply: req.action === 'apply', accountId: req.accountId, origin: 'BO', log: hooks.log });
       return { result: r };
     }
   }

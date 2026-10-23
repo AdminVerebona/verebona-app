@@ -8,7 +8,8 @@
  *     bruts (longueur seule), compteurs de jetons non confondus avec un
  *     secret, idempotence ;
  *   · L77C-U03 validité JSON des fichiers et du ZIP (relu par JSZip) ;
- *   · L77C-U04 bornes explicites et nommage de l'archive ;
+ *   · L77C-U04 paramètres techniques (lot 81C : plus aucun plafond
+ *     fonctionnel — adapté) et nommage de l'archive ;
  *   · L77C-U05 traçabilité : identifiants de ligne TCO, candidat de la
  *     source T3, ordre des étapes, rupture, rapport TXT (contexte, filtres,
  *     informations non disponibles).
@@ -38,11 +39,14 @@ describe('L77C-U01 paramètres du diagnostic', () => {
     }
     expect(parseDiagRequest(sp({ scope: 'accounts' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_SCOPE' });
   });
-  it('période : dates valides, ordre, borne de 366 jours', () => {
+  it('période : dates valides, ordre ; lot 81C : AUCUNE borne de durée, « tout l’historique disponible »', () => {
     expect(parseDiagRequest(sp({ from: '2026-02-30' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_PERIOD' });
     expect(parseDiagRequest(sp({ from: '2026-10-22', to: '2026-10-21' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_PERIOD' });
-    expect(parseDiagRequest(sp({ from: '2025-10-20', to: '2026-10-21' }), NOW)).toMatchObject({ ok: false, code: 'PERIOD_TOO_LONG' });
+    // L81C-U01 : plus de PERIOD_TOO_LONG (366 jours) — 10 ans acceptés ; `period=all` → from null.
+    expect(parseDiagRequest(sp({ from: '2016-10-20', to: '2026-10-21' }), NOW)).toMatchObject({ ok: true, value: { from: '2016-10-20', to: '2026-10-21' } });
     expect(parseDiagRequest(sp({ from: '2025-10-21', to: '2026-10-21' }), NOW)).toMatchObject({ ok: true });
+    expect(parseDiagRequest(sp({ period: 'all' }), NOW)).toMatchObject({ ok: true, value: { from: null, to: '2026-10-21' } });
+    expect(periodBounds({ from: null, to: '2026-10-21' })).toEqual({ start: '-infinity', end: '2026-10-22T00:00:00.000Z' });
     expect(periodBounds({ from: '2026-10-01', to: '2026-10-21' })).toEqual({ start: '2026-10-01T00:00:00.000Z', end: '2026-10-22T00:00:00.000Z' });
   });
   it('traitements en liste blanche, ordre canonique ; option renforcée', () => {
@@ -138,9 +142,12 @@ describe('L77C-U03 validité JSON et ZIP', () => {
 });
 
 describe('L77C-U04 bornes et nommage', () => {
-  it('bornes explicites, figées', () => {
+  it('paramètres techniques figés ; L81C-U02 : plafonds fonctionnels supprimés (période, lignes, dossiers, TCO, taille)', () => {
     expect(Object.isFrozen(DIAG_LIMITS)).toBe(true);
-    expect(DIAG_LIMITS).toMatchObject({ periodMaxDays: 366, listRows: 500, dossierSectionRows: 500, totalBytes: 40 * 1024 * 1024, concurrent: 2 });
+    expect(DIAG_LIMITS).toMatchObject({ batchRows: 500, partRows: 50_000, concurrent: 2 });
+    for (const k of ['periodMaxDays', 'listRows', 'dossierSectionRows', 'equipmentDossiers', 'documentDossiers', 'tcoAssets', 'tcoTracedLines', 'reportEntries', 'reportsWithEntries', 'userAccounts', 'totalBytes']) {
+      expect(DIAG_LIMITS, k).not.toHaveProperty(k);
+    }
   });
   it('nom d’archive : périmètre, identifiant, date, génération', () => {
     expect(zipFileName({ request: { scope: 'asset', id: 12 } as never, generatedAt: '2026-10-21T10:00:00.000Z', generationId: 'abcdef0123456789' }))

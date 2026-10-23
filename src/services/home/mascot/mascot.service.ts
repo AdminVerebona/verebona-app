@@ -65,6 +65,12 @@ export async function getMascotPresentation(
      * incomplète). `null` : état durable inconnu (table non déployée).
      */
     onEvaluation?: (progress: T6EvaluationProgress | null) => void;
+    /**
+     * Lot 81B (A) : `false` — pré-génération au plafond quotidien de
+     * FORMULATION : le cycle EVALUATE s'exécute, la formulation est omise
+     * (texte déterministe, aucun appel FORMULATE).
+     */
+    formulate?: boolean;
   } = {},
 ): Promise<MascotPresentation> {
   let raw;
@@ -109,7 +115,9 @@ export async function getMascotPresentation(
       // validée, ou état « indisponible » explicite après un échec).
       const o = await evaluation;
       const examines = interpellation.examined ?? 0;
-      if (o.status !== 'disabled') interpellation = await prepare(accountId, userId, raw, mode);
+      // Lot 81B (B) : relu aussi après une indisponibilité (état UNAVAILABLE
+      // enregistré entre-temps) — l'avancement rendu est l'état RÉEL.
+      interpellation = await prepare(accountId, userId, raw, mode);
       // Lot 71G (T6-03) : candidats restés hors de ce passage (8 par appel) —
       // REPRIS par une nouvelle demande durable, tant que l'évaluation progresse
       // (jamais de relance en boucle sur un échec : plafonds de coût inchangés).
@@ -133,6 +141,12 @@ export async function getMascotPresentation(
       void (async () => (await import('./pregen-queue')).requestMascotPregeneration(accountId, 't6-evaluation'))().catch(() => {});
       void evaluation.then((o) => { if (o.persisted > 0) scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-assessment'); });
     }
+  }
+  // Lot 81B (B) : T6 indisponible — évaluations éligibles enregistrées
+  // UNAVAILABLE ; une demande DURABLE garantit leur reprise au rétablissement
+  // sans nouvelle visite (une demande déjà en attente n'est pas avancée).
+  if (mode !== 'pregen' && interpellation.evaluationProgress?.t6Unavailable && interpellation.evaluationProgress.eligible > 0) {
+    void import('./pregen-queue').then((q) => q.ensureMascotPregeneration(accountId, 't6-unavailable')).catch(() => {});
   }
   // Lot 78C : évaluations prenables au-delà du plafond par appel, à l'affichage —
   // la pré-génération durable du compte les prend en charge (sans visite).
@@ -195,7 +209,9 @@ export async function getMascotPresentation(
   // canonique du compte, ses biens et ses échéances. Données partielles
   // (source en panne) : aucune question plutôt qu'une question trompeuse.
   let questions: T6SuggestionBundle | null = null;
-  if (!candidates.degraded && await questionsP) {
+  // Lot 81B (A) : formulation plafonnée — ni questions ni FORMULATE.
+  const formuler = opts.formulate !== false;
+  if (formuler && !candidates.degraded && await questionsP) {
     const speech = composeSpeech({ presentation: secours, empty: false }).text;
     const attentionToday = (secours.state?.actions ?? 0) > 0;
     // Lot 60 / 61 : questions construites sur la SÉLECTION RETENUE — une
@@ -217,7 +233,7 @@ export async function getMascotPresentation(
   // RUN-013 : rien à formuler ni à suggérer — pas de FORMULATE. Lot 71G :
   // évaluation en cours de reprise (pré-génération) — la situation n'est pas
   // stable, la formulation attend le passage qui l'achève (aucun appel inutile).
-  if ((subjects.length === 0 && !questions) || reprise) {
+  if ((subjects.length === 0 && !questions) || reprise || !formuler) {
     rapport(secours, null, null);
     return withRefreshHint(secours, interpellation);
   }

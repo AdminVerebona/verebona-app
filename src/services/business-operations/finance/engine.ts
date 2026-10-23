@@ -32,7 +32,13 @@
  *     ciblée, elle n'est attribuée implicitement que si l'Opération ne
  *     concerne QUE le périmètre ; sinon « non ventilée », jamais répartie ;
  *   · une composante (identifiant) n'est comptée qu'une fois, quels que
- *     soient ses justificatifs.
+ *     soient ses justificatifs ;
+ *   · lot 81D : dates civiles STRICTES (`isIsoDate`, jamais normalisées) ;
+ *     avec une date de référence (`asOf`, `civilDateParis`), une dépense
+ *     datée après n'est pas réalisée (`FUTURE_DATED`) ; une Opération PRÉVUE
+ *     n'est réalisée que par un paiement daté (jamais la date planifiée) et
+ *     justifié (`NOT_REALIZED` sinon) ; les contradictions statut / date /
+ *     nature sont tracées (`contradiction`), jamais corrigées en silence.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { FinancialComponentKind } from '../model';
@@ -123,7 +129,43 @@ export function attributeComponent(
 
 const DAY = 86_400_000;
 const toDay = (d: string): number => Math.floor(Date.parse(`${d.slice(0, 10)}T00:00:00Z`) / DAY);
-export const isIsoDate = (d: string | null | undefined): d is string => !!d && /^\d{4}-\d{2}-\d{2}/.test(d) && !Number.isNaN(Date.parse(`${d.slice(0, 10)}T00:00:00Z`));
+
+/**
+ * Lot 81D — date civile STRICTE (`YYYY-MM-DD`, éventuellement suivie d'une
+ * heure `T…` ou ` …`) : mois 01–12, jour existant dans le calendrier
+ * (années bissextiles grégoriennes). Validation CENTRALISÉE : `Date.parse`
+ * acceptait le 29/02/2025 ou le 30/02/2026 en les normalisant silencieusement
+ * au 1er / 2 mars. Aucune borne d'ancienneté : une acquisition historique
+ * (avant 1900) reste valide.
+ */
+export const isIsoDate = (d: string | null | undefined): d is string => {
+  if (typeof d !== 'string') return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:$|[T ])/.exec(d);
+  if (!m) return false;
+  const [y, mo, j] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (y < 1 || mo < 1 || mo > 12 || j < 1) return false;
+  const bissextile = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const jours = [31, bissextile ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+  return j <= jours;
+};
+
+/** Lot 81D — jour civil d'une date valide (`YYYY-MM-DD`), ou null (absente ou impossible) — jamais normalisée. */
+export const isoDayOrNull = (d: string | null | undefined): string | null => (isIsoDate(d) ? d.slice(0, 10) : null);
+
+/** Fuseau des dates civiles de Verebona (convention métier). */
+export const VEREBONA_TIME_ZONE = 'Europe/Paris';
+
+/**
+ * Lot 81D — date civile à Paris de l'instant `now` (`YYYY-MM-DD`) : date de
+ * référence UNIQUE du TCO (cumul, annualisation, dépenses de l'année), au
+ * lieu de la date UTC du serveur (décalée entre minuit et 1 h / 2 h).
+ * Injectable : les tests passent l'instant ou la date de référence.
+ */
+export function civilDateParis(now: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: VEREBONA_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(now);
+  const v = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  return `${v('year')}-${v('month')}-${v('day')}`;
+}
 
 /** Nombre de jours de `from` à `to` INCLUS (≥ 0). */
 export function daysInclusive(from: string, to: string): number {
@@ -155,7 +197,11 @@ export type ExclusionReason =
   | 'OUT_OF_SCOPE'             // autre bien
   | 'AFTER_DISPOSAL'           // datée après la cession (hors frais de cession)
   | 'PRORATA_AFTER_DISPOSAL'   // part d'une période payée postérieure à la cession
-  | 'OPERATION_CANCELLED';     // Opération annulée
+  | 'OPERATION_CANCELLED'      // Opération annulée
+  // Lot 81D : dépense non réalisée — Opération prévue sans paiement daté et justifié (une composante
+  // « coût réalisé » ne suffit pas), ou dépense datée après la date de référence (jamais anticipée).
+  | 'NOT_REALIZED'
+  | 'FUTURE_DATED';
 
 export const EXCLUSION_LABELS: Readonly<Record<ExclusionReason, string>> = {
   FORECAST: 'Prévision ou devis, non réalisé',
@@ -165,7 +211,15 @@ export const EXCLUSION_LABELS: Readonly<Record<ExclusionReason, string>> = {
   AFTER_DISPOSAL: 'Postérieur à la cession',
   PRORATA_AFTER_DISPOSAL: 'Part de la période postérieure à la cession',
   OPERATION_CANCELLED: 'Opération annulée',
+  NOT_REALIZED: 'Dépense prévue, non réalisée : aucun paiement daté et justifié',
+  FUTURE_DATED: 'Datée après aujourd’hui : non encore réalisée',
 };
+
+/** Lot 81D : contradiction entre statut, date et nature d'une composante (signalée, jamais corrigée en silence). */
+export type LedgerContradiction =
+  | 'PLANNED_WITHOUT_PROOF'   // Opération prévue portant un « coût réalisé » sans paiement daté et justifié
+  | 'PLANNED_WITH_PAYMENT'    // Opération prévue, paiement daté et justifié : compté, statut à vérifier
+  | 'REALIZED_FUTURE_DATE';   // Opération réalisée, dépense datée après la date de référence
 
 export interface LedgerEntry {
   componentId: number;
@@ -185,6 +239,10 @@ export interface LedgerEntry {
   prorata?: { days: number; totalDays: number } | null;
   /** Lot 61 : identifiant stable d'une ligne non consolidée (voir `LedgerComponent.lineId`). */
   lineId?: string;
+  /** Lot 81D : contradiction statut / date / nature constatée. */
+  contradiction?: LedgerContradiction;
+  /** Lot 81D : date fournie mais impossible (ex. 29/02/2025) — ignorée, jamais normalisée. */
+  dateRejected?: string;
 }
 
 export interface EvaluateContext {
@@ -198,27 +256,58 @@ export interface EvaluateContext {
   isDisposalOperation?: boolean;
   /** Un remboursement réel existe sur l'Opération : il remplace l'ajustement théorique (C17). */
   hasRefund?: boolean;
-  /** Date de repli (date de l'Opération). */
+  /** Date de repli (date EFFECTIVE de l'Opération : réalisation, début — jamais la date planifiée). */
   fallbackDate?: string | null;
+  /**
+   * Lot 81D : date de référence (date civile, `civilDateParis`). Une dépense
+   * datée APRÈS n'est pas réalisée : exclue (`FUTURE_DATED`). Absente : aucun
+   * contrôle (compatibilité des appelants sans date de référence).
+   */
+  asOf?: string | null;
+  /**
+   * Lot 81D : la composante est portée par un justificatif (preuve de
+   * paiement) — seule une composante d'Opération PRÉVUE datée ET justifiée
+   * est comptée comme réalisée.
+   */
+  realizationEvidence?: boolean;
 }
+
+/** Lot 81D : statuts d'Opération non réalisée (ENVISAGED ; PLANNED : ancien libellé). */
+const PREVUE = new Set(['ENVISAGED', 'PLANNED']);
 
 /** Évalue UNE composante : effet, EUR, attribution, inclusion ou motif d'exclusion (pure). */
 export function evaluateComponent(c: LedgerComponent, ctx: EvaluateContext): LedgerEntry {
   const effect = COMPONENT_EFFECT[c.kind];
   const eur = componentEurMinor(c);
   const attribution = attributeComponent(c, ctx.operationAssetIds, ctx.scope, ctx.equipmentAssets);
-  const date = c.economicDate ?? ctx.fallbackDate ?? null;
+  // Lot 81D : dates STRICTES (jamais normalisées) ; Opération prévue : seule la date propre de la dépense
+  // (paiement) la date — ni la date planifiée, ni la date de l'Opération.
+  const prevue = PREVUE.has(String(ctx.operationStatus ?? ''));
+  const propre = isoDayOrNull(c.economicDate);
+  const repli = prevue ? null : isoDayOrNull(ctx.fallbackDate);
+  const date = propre ?? repli;
+  const rejetee = c.economicDate && !propre ? c.economicDate : !c.economicDate && !prevue && ctx.fallbackDate && !repli ? ctx.fallbackDate : null;
   const base: LedgerEntry = {
     componentId: c.id, operationId: c.operationId, kind: c.kind, effect, amountMinor: c.amountMinor, currency: String(c.currency).trim().toUpperCase(),
     eurMinor: eur, includedEurMinor: 0, included: false, exclusion: null, attribution, date,
     ...(c.lineId ? { lineId: c.lineId } : {}),
+    ...(rejetee ? { dateRejected: String(rejetee) } : {}),
   };
-  const exclu = (r: ExclusionReason): LedgerEntry => ({ ...base, exclusion: r });
+  const exclu = (r: ExclusionReason, contradiction?: LedgerContradiction): LedgerEntry => ({ ...base, exclusion: r, ...(contradiction ? { contradiction } : {}) });
   if (attribution === 'OUT') return exclu('OUT_OF_SCOPE');
   if (effect === 'FORECAST') return exclu('FORECAST');
   if (ctx.operationStatus === 'CANCELLED') return exclu('OPERATION_CANCELLED');
+  // Lot 81D : une Opération PRÉVUE ne devient pas réalisée par la seule présence d'un « coût réalisé » — il faut un
+  // paiement DATÉ (jamais la date planifiée), non futur, et JUSTIFIÉ ; sinon non réalisé (contradiction signalée).
+  let contradiction: LedgerContradiction | undefined;
+  if (prevue) {
+    if (!propre || (ctx.asOf && propre > ctx.asOf) || !ctx.realizationEvidence) return exclu('NOT_REALIZED', 'PLANNED_WITHOUT_PROOF');
+    contradiction = 'PLANNED_WITH_PAYMENT';
+  }
+  // Lot 81D : datée après la date de référence → non encore réalisée (exclue des trois indicateurs du TCO).
+  if (ctx.asOf && date && date > ctx.asOf) return exclu('FUTURE_DATED', ctx.operationStatus === 'REALIZED' ? 'REALIZED_FUTURE_DATE' : undefined);
   if (attribution === 'UNALLOCATED') return exclu('UNALLOCATED_MULTI_ASSET');
-  if (eur == null) return exclu('UNCONVERTED_CURRENCY');
+  if (eur == null) return { ...exclu('UNCONVERTED_CURRENCY'), ...(contradiction ? { contradiction } : {}) };
   let retenu = eur;
   let prorata: LedgerEntry['prorata'] = null;
   if (ctx.disposalDate && effect !== 'PROCEED' && !ctx.isDisposalOperation) {
@@ -230,7 +319,7 @@ export function evaluateComponent(c: LedgerComponent, ctx: EvaluateContext): Led
       if (p) { retenu = p.amountMinor; prorata = { days: p.days, totalDays: p.totalDays }; }
     }
   }
-  return { ...base, included: true, includedEurMinor: retenu, prorata };
+  return { ...base, included: true, includedEurMinor: retenu, prorata, ...(contradiction ? { contradiction } : {}) };
 }
 
 // ── Synthèse et complétude (§4.4) ──────────────────────────────────────────

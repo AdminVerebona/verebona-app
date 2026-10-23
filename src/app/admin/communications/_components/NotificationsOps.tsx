@@ -24,8 +24,10 @@ import { formatDateTime } from '@/lib/admin/format';
 
 interface Health {
   fenetreHeures: number;
-  livraisonsParCanal: Array<{ canal: string; total: number; envoyees: number; echouees: number; tauxSucces: number | null }>;
+  livraisonsParCanal: Array<{ canal: string; total: number; envoyees: number; echouees: number; ignorees?: number; livrees?: number; tauxSucces: number | null }>;
   outbox: { enAttente: number; enErreur: number; bloquesDepuisSeuil: number; plusAncienEnAttenteMinutes: number | null };
+  /** Lot 81E : statut réel des événements de la fenêtre. */
+  evenementsParStatut?: { envoyes: number; partiels: number; echecs: number; ignores: number; regroupes: number; enAttente: number };
   sain: boolean;
   alertes: string[];
 }
@@ -33,6 +35,23 @@ interface Metrics { windowDays: number; successRate: number | null; failedEmails
 interface Event {
   id: string; eventType: string; recipientUserId: number | null; status: string; createdAt: string;
   lastError: string | null; deliveries: Array<{ channel: string; status: string; count: number }>;
+  /** Lot 81E : cause d'un événement ignoré, incident de référence d'un événement regroupé. */
+  outcomeReason?: string | null; groupedWithId?: string | null;
+}
+
+/**
+ * Lot 81E — statut lisible : « Envoyé » seulement si au moins un canal a
+ * accepté ; ignoré et regroupé distincts (jamais comptés envoyés).
+ */
+const STATUT_LIBELLE: Record<string, string> = {
+  pending: 'En attente', processing: 'En cours', sent: 'Envoyé', partial: 'Envoi partiel', failed: 'Échec',
+  skipped: 'Ignoré', grouped: 'Regroupé', cancelled: 'Annulé', reemitted: 'Réémis',
+};
+function statutEvenement(e: Pick<Event, 'status' | 'outcomeReason' | 'groupedWithId'>): string {
+  const libelle = STATUT_LIBELLE[e.status] ?? e.status;
+  if (e.status === 'skipped' && e.outcomeReason) return `${libelle} (${e.outcomeReason})`;
+  if (e.status === 'grouped' && e.groupedWithId) return `${libelle} avec ${e.groupedWithId.slice(0, 8)}…`;
+  return libelle;
 }
 interface Preview { eventType: string; destinataire: number | null; statutOrigine: string; soumisAConsentement: boolean }
 
@@ -130,6 +149,7 @@ export function NotificationsOps() {
                   <tr className="text-left text-xs text-muted-foreground">
                     <th className="px-2 py-1 font-medium">Canal</th><th className="px-2 py-1 font-medium text-right">Livraisons</th>
                     <th className="px-2 py-1 font-medium text-right">Envoyées</th><th className="px-2 py-1 font-medium text-right">Échecs</th>
+                    <th className="px-2 py-1 font-medium text-right">Ignorées</th><th className="px-2 py-1 font-medium text-right">Remises</th>
                     <th className="px-2 py-1 font-medium text-right">Succès</th>
                   </tr>
                 </thead>
@@ -140,12 +160,21 @@ export function NotificationsOps() {
                       <td className="px-2 py-1 text-right tabular-nums">{c.total}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{c.envoyees}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{c.echouees}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{c.ignorees ?? '—'}</td>
+                      <td className="px-2 py-1 text-right tabular-nums">{c.canal === 'email' ? (c.livrees ?? '—') : '—'}</td>
                       <td className="px-2 py-1 text-right tabular-nums">{c.tauxSucces == null ? '—' : `${c.tauxSucces} %`}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            {health.evenementsParStatut && (
+              <p className="text-xs text-muted-foreground">
+                Événements : {health.evenementsParStatut.envoyes} envoyé(s) · {health.evenementsParStatut.partiels} partiel(s) ·{' '}
+                {health.evenementsParStatut.echecs} en échec · {health.evenementsParStatut.ignores} ignoré(s) ·{' '}
+                {health.evenementsParStatut.regroupes} regroupé(s) · {health.evenementsParStatut.enAttente} en attente
+              </p>
+            )}
           </>
         )}
         {metrics && (
@@ -182,7 +211,7 @@ export function NotificationsOps() {
                     <td className="px-2 py-1 text-xs">{formatDateTime(e.createdAt)}</td>
                     <td className="px-2 py-1">{e.eventType}</td>
                     <td className="px-2 py-1 tabular-nums">{e.recipientUserId ?? '—'}</td>
-                    <td className="px-2 py-1">{e.status}{e.lastError ? <span className="block text-xs text-[color:var(--text-danger)]">{e.lastError}</span> : null}</td>
+                    <td className="px-2 py-1">{statutEvenement(e)}{e.lastError && e.status !== 'grouped' ? <span className="block text-xs text-[color:var(--text-danger)]">{e.lastError}</span> : null}</td>
                     <td className="px-2 py-1 text-xs">{e.deliveries.map((d) => `${d.channel} ${d.status} (${d.count})`).join(' · ') || '—'}</td>
                     <td className="px-2 py-1 text-right">
                       <Button size="sm" variant="ghost" onClick={() => void ouvrir(e)}>Réémettre…</Button>

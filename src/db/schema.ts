@@ -1871,8 +1871,15 @@ export const documentLots = pgTable('document_lots', {
   status: text('status').notNull().default('draft'),
   createdAt: pgTimestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   committedAt: pgTimestamp('committed_at', { withTimezone: true }),
+  // Lot 81E (0638) : notification du RÉSULTAT du lot (états réels persistés).
+  notificationState: text('notification_state'),
+  notificationUserId: integer('notification_user_id').references(() => users.id, { onDelete: 'set null' }),
+  notificationOutcome: text('notification_outcome'),
+  notificationSettledAt: pgTimestamp('notification_settled_at', { withTimezone: true }),
+  notificationAbsorbedInto: integer('notification_absorbed_into'),
 }, (table) => ({
   accountIdIdx: index('document_lots_account_id_idx').on(table.accountId),
+  notificationStateCheck: check('document_lots_notification_state_check', sql`${table.notificationState} IS NULL OR ${table.notificationState} IN ('awaiting','notified','absorbed','silent','expired')`),
   statusIdx: index('document_lots_status_idx').on(table.status),
   statusCheck: check('document_lots_status_check', sql`${table.status} IN ('draft','uploaded','analyzing','analyzed','committing','committed','partially_failed')`),
 }));
@@ -2869,10 +2876,15 @@ export const notificationOutbox = pgTable('notification_outbox', {
   dedupeKey: text('dedupe_key').notNull().unique(),
   scheduledFor: tstzOptional('scheduled_for'),
   // pending | processing | sent | partial | failed | cancelled | reemitted
-  // (`reemitted` : échec réémis depuis le BO, §20.3 — hors santé, migration 0230).
+  // (`reemitted` : échec réémis depuis le BO, §20.3 — hors santé, migration 0230)
+  // | skipped (aucun canal envoyé, sans échec) | grouped (regroupé) — lot 81E, 0638.
   status: text('status').notNull().default('pending'),
   attemptCount: integer('attempt_count').notNull().default(0),
   lastError: text('last_error'),
+  // Lot 81E (0638) : cause d'un événement ignoré / incident de référence d'un
+  // événement regroupé.
+  outcomeReason: text('outcome_reason'),
+  groupedWithId: uuid('grouped_with_id'),
   createdAt: tstz('created_at'),
   processedAt: tstzOptional('processed_at'),
 }, (table) => ({
@@ -2882,7 +2894,7 @@ export const notificationOutbox = pgTable('notification_outbox', {
   priorityCheck: check('notification_outbox_priority_check',
     sql`${table.priority} IN ('low','normal','high')`),
   statusCheck: check('notification_outbox_status_check',
-    sql`${table.status} IN ('pending','processing','sent','partial','failed','cancelled','reemitted')`),
+    sql`${table.status} IN ('pending','processing','sent','partial','failed','cancelled','reemitted','skipped','grouped')`),
 }));
 
 // §12.4 — Journal de livraison multicanal. Une ligne par canal et, pour le
@@ -4284,7 +4296,7 @@ export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
   /** Lot 76D (0585) : neutralisée par le retour aux rappels Stripe (jamais reprise ; issue du prestataire conservée). */
   neutralizedAt: tstzOptional('neutralized_at'),
 }, (t) => ({
-  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER', 'DUO_INVITATION_DECLINED')`),
+  kindCheck: check('transactional_email_jobs_kind_check', sql`${t.kind} IN ('EMAIL_VERIFICATION', 'DUO_INVITATION', 'DUO_MEMBERSHIP_ENDED', 'DUO_MEMBERSHIP_LEFT', 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER', 'DUO_INVITATION_DECLINED', 'PREMIUM_CONFIRMATION', 'DOWNGRADE_NOTIFICATION')`),
   statusCheck: check('transactional_email_jobs_status_check', sql`${t.status} IN ('pending', 'sending', 'accepted', 'failed', 'cancelled', 'uncertain')`),
   dueIdx: index('transactional_email_jobs_due_idx').on(t.nextAttemptAt).where(sql`status IN ('pending', 'sending')`),
   userIdx: index('transactional_email_jobs_user_idx').on(t.userId, t.kind),
@@ -4292,6 +4304,35 @@ export const transactionalEmailJobs = pgTable('transactional_email_jobs', {
   dedupeIdx: uniqueIndex('transactional_email_jobs_dedupe_key_idx').on(t.dedupeKey).where(sql`dedupe_key IS NOT NULL`),
   /** Lot 76D (0585 idx 1). */
   neutralizedIdx: index('transactional_email_jobs_neutralized_idx').on(t.kind, t.status).where(sql`neutralized_at IS NOT NULL`),
+}));
+
+/**
+ * Lot 81E (0639) — une ligne par OPÉRATION d'abonnement (transition métier),
+ * clé stable : une seule communication par opération, quels que soient le
+ * nombre, l'ordre et la simultanéité des webhooks (`subscription-communications.service`).
+ */
+export const subscriptionCommunicationOperations = pgTable('subscription_communication_operations', {
+  id: serial('id').primaryKey(),
+  operationKey: text('operation_key').notNull(),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+  stripeSubscriptionId: text('stripe_subscription_id'),
+  kind: text('kind').notNull(),
+  oldPlan: text('old_plan'),
+  newPlan: text('new_plan'),
+  oldStatus: text('old_status'),
+  newStatus: text('new_status'),
+  effectiveAt: tstzOptional('effective_at'),
+  source: text('source'),
+  notificationType: text('notification_type'),
+  notificationDedupeKey: text('notification_dedupe_key'),
+  emailJobId: integer('email_job_id'),
+  communicationsSkipped: text('communications_skipped'),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  keyIdx: uniqueIndex('subscription_communication_operations_key_idx').on(t.operationKey),
+  accountIdx: index('subscription_communication_operations_account_idx').on(t.accountId, t.createdAt),
+  kindCheck: check('subscription_communication_operations_kind_check', sql`${t.kind} IN ('ACTIVATION', 'PLAN_CHANGE', 'CANCELLATION_SCHEDULED', 'CANCELLATION_EFFECTIVE', 'ADMIN_PLAN_CHANGE')`),
 }));
 
 /**

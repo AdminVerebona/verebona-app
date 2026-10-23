@@ -20,8 +20,9 @@
  * qu'un arbitrage ciblé est nécessaire.
  */
 import type {
-  DecisionInput, ReconciliationDecision, EvidenceCandidate, CurrentValue,
+  DecisionInput, ReconciliationDecision, EvidenceCandidate, CurrentValue, DecisionAlternative,
 } from '../types';
+import { areBusinessEquivalent, realAlternatives } from './equivalence';
 import { AUTHORITY_EQUIVALENCE_MARGIN, isAtLeast, weakestConfidence, confidenceRank } from './confidence';
 import { checkCriticalGate } from './critical-fields';
 import { canRequestAiReview } from './ai-exclusion';
@@ -48,40 +49,67 @@ export function decide(input: DecisionInput): ReconciliationDecision {
 
   // ── Étapes 2 à 4 : autorité, puis date ─────────────────────────────────
   const ranked = [...usable].sort(compareByAuthorityThenDate);
-  const groups = groupByNormalizedValue(ranked);
+  // Lot 81A : groupes de valeurs ÉQUIVALENTES au sens métier (registre
+  // canonique + normalisation historique) — « 06/05/2021 » et « 2021-05-06 »
+  // sont une seule valeur, quelle que soit la clé de preuve (alias compris).
+  const groups = groupByEquivalence(input.fieldKey, ranked);
   const best = ranked[0];
-  const bestGroup = groups.get(best.normalized!)!;
+  const bestGroup = groups[0];
+  const filled = !isEmpty(input.current);
+  /** La preuve porte-t-elle la valeur EN PLACE (après normalisation métier) ? */
+  const matchesCurrent = (c: EvidenceCandidate): boolean => filled && (
+    c.normalized === input.current!.normalized || areBusinessEquivalent(input.fieldKey, c.value, input.current!.value));
 
   // ── Divergence entre sources ───────────────────────────────────────────
-  if (groups.size > 1) {
-    const rivals = [...groups.values()]
-      .filter((g) => g[0].normalized !== best.normalized)
-      .map((g) => g[0]);
-    const closestRival = rivals[0];
+  if (groups.length > 1) {
+    const closestRival = groups[1][0];
     const gap = best.authorityScore - closestRival.authorityScore;
 
     // Aucune règle ne permet de départager : conflit, sans écrasement (§4.2.4).
     if (gap <= AUTHORITY_EQUIVALENCE_MARGIN) {
-      return {
-        ...base,
-        proposedValue: best.value,
-        action: 'create_conflict',
-        reasonCode: gap === 0 ? 'NO_AUTHORITY_RULE' : 'EQUAL_AUTHORITY_DIVERGENCE',
-        confidence: 'conflictual',
-        evidenceIds: [...bestGroup, closestRival].map((c) => c.evidenceId),
-        sourcePriority: best.authorityScore,
-      };
+      // ══════════════════════════════════════════════════════════════════
+      // LOT 81A — LA CONTRADICTION RÉELLE, PAS LA MEILLEURE PREUVE
+      //
+      // Avant : la proposition était TOUJOURS `best.value`, même quand elle
+      // égalait la valeur en place (acte A = fiche = 06/05/2021, acte B =
+      // 17/05/2021 → « 06/05/2021 ou 06/05/2021 ? »). Désormais, parmi les
+      // valeurs que l'autorité ne départage pas, seules celles qui DIFFÈRENT
+      // de la valeur en place sont proposées — toutes, sans en masquer une.
+      // Les preuves des deux côtés restent citées (signature inchangée pour
+      // deux valeurs : mémoire des arbitrages déjà tranchés préservée).
+      // ══════════════════════════════════════════════════════════════════
+      const contenders = groups.filter((g) => best.authorityScore - g[0].authorityScore <= AUTHORITY_EQUIVALENCE_MARGIN);
+      const divergent = contenders.filter((g) => !matchesCurrent(g[0]));
+      if (divergent.length > 0) {
+        const first = divergent[0][0];
+        const evidenceIds = [...new Set([
+          ...bestGroup.map((c) => c.evidenceId), closestRival.evidenceId, ...contenders.slice(2).map((g) => g[0].evidenceId),
+        ])];
+        return {
+          ...base,
+          proposedValue: first.value,
+          action: 'create_conflict',
+          reasonCode: gap === 0 ? 'NO_AUTHORITY_RULE' : 'EQUAL_AUTHORITY_DIVERGENCE',
+          confidence: 'conflictual',
+          evidenceIds,
+          sourcePriority: first.authorityScore,
+          alternatives: divergent.map((g) => ({
+            value: g[0].value, evidenceIds: g.map((c) => c.evidenceId), confidence: g[0].confidence, sourcePriority: g[0].authorityScore,
+          })),
+        };
+      }
+      // Toutes les valeurs non départagées égalent la valeur en place : rien à arbitrer.
     }
     // Écart net : la source prioritaire l'emporte et l'historique est conservé.
   }
 
   // ── Champ vide ─────────────────────────────────────────────────────────
-  if (isEmpty(input.current)) {
+  if (!filled) {
     return decideOnEmptyField(base, input, best, bestGroup);
   }
 
   // ── Valeur confirmée ───────────────────────────────────────────────────
-  if (input.current!.normalized === best.normalized) {
+  if (matchesCurrent(best)) {
     return {
       ...base,
       proposedValue: input.current!.value,
@@ -227,17 +255,42 @@ function compareByAuthorityThenDate(a: EvidenceCandidate, b: EvidenceCandidate):
   return b.evidenceId - a.evidenceId;
 }
 
-function groupByNormalizedValue(
-  candidates: EvidenceCandidate[],
-): Map<string, EvidenceCandidate[]> {
-  const groups = new Map<string, EvidenceCandidate[]>();
+/**
+ * Groupes de preuves de valeurs équivalentes, dans l'ordre d'autorité (le
+ * premier groupe porte la meilleure preuve). Lot 81A : l'équivalence est
+ * MÉTIER (`areBusinessEquivalent`) — même valeur normalisée, ou même valeur
+ * pour le registre canonique.
+ */
+function groupByEquivalence(fieldKey: string, candidates: EvidenceCandidate[]): EvidenceCandidate[][] {
+  const groups: EvidenceCandidate[][] = [];
   for (const c of candidates) {
-    const key = c.normalized!;
-    const existing = groups.get(key);
-    if (existing) existing.push(c);
-    else groups.set(key, [c]);
+    const g = groups.find((x) => x[0].normalized === c.normalized || areBusinessEquivalent(fieldKey, x[0].value, c.value));
+    if (g) g.push(c);
+    else groups.push([c]);
   }
   return groups;
+}
+
+/**
+ * Lot 81A — garde finale d'un conflit (pure) : les valeurs proposées
+ * équivalentes à la valeur en place (ou en double) sont écartées. Sans
+ * aucune véritable alternative, le conflit n'en est pas un : abstention
+ * `EQUIVALENT_VALUES` — ni carte, ni fermeture d'une carte existante (une
+ * contradiction réelle n'est jamais déclarée résolue parce qu'une
+ * proposition était mal choisie). Filet de sécurité pour les décisions qui
+ * ne viennent pas de `decide` (revue ciblée, confrontation agenda).
+ */
+export function withoutEquivalentProposals(d: ReconciliationDecision): ReconciliationDecision {
+  if (d.action !== 'create_conflict') return d;
+  const valeurs: DecisionAlternative[] = d.alternatives?.length
+    ? d.alternatives
+    : [{ value: d.proposedValue, evidenceIds: d.evidenceIds, confidence: d.confidence, sourcePriority: d.sourcePriority }];
+  const reelles = realAlternatives(d.fieldKey, d.currentValue, valeurs, (a) => a.value);
+  if (reelles.length === 0) {
+    return { ...d, action: 'ignore', proposedValue: null, reasonCode: 'EQUIVALENT_VALUES', alternatives: undefined };
+  }
+  if (reelles.length === valeurs.length) return d;
+  return { ...d, proposedValue: reelles[0].value, ...(d.alternatives ? { alternatives: reelles } : {}) };
 }
 
 function isEmpty(current: CurrentValue | null): boolean {

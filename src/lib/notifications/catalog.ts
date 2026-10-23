@@ -19,7 +19,7 @@
  *    (`neverBell`).
  */
 
-import { lotNotificationText } from '@/services/ai/source-analysis/lot-notification-text';
+import { lotNotificationText, lotFailureText, lotPartialFailureText, ANALYSIS_RETRY_ACTION } from '@/services/ai/source-analysis/lot-notification-text';
 import { drawerHref } from '@/lib/drawers';
 import { z } from 'zod';
 import { NOTIFICATION_TYPES, type NotificationType } from '@/types/notifications';
@@ -47,6 +47,12 @@ export interface RenderedContent {
   pushTitle: string;
   pushBody: string;
   emailTemplateCode?: string;
+  /**
+   * Lot 81E : pas d'e-mail générique parce qu'une communication DURABLE le
+   * couvre (confirmation contractuelle, fin d'offre) — cause tracée sur la
+   * livraison, jamais présentée comme un envoi.
+   */
+  emailSkipReason?: string;
 }
 
 export interface CatalogEntry {
@@ -99,8 +105,8 @@ const T = NOTIFICATION_TYPES;
 
 // ── Lot 79C : textes partagés ───────────────────────────────────────────────
 const RETIRED_ANALYSIS_EMAIL = 'Supprimé (lot 79) : le résultat de l’analyse est présenté dans l’application.';
-/** Action réellement possible après un échec d'analyse. */
-export const ANALYSIS_RETRY_ACTION = 'Vous pouvez relancer l’analyse depuis la fiche du document, dans Documents.';
+/** Action réellement possible après un échec d'analyse (source : `lot-notification-text`). */
+export { ANALYSIS_RETRY_ACTION };
 /** Action attendue quand la banque demande une authentification (3D Secure). */
 export const PAYMENT_AUTHENTICATION_ACTION = 'Votre banque demande une validation : confirmez le paiement depuis Mon compte › Offres.';
 
@@ -113,6 +119,19 @@ export function failedDocumentsText(documents?: Array<{ title: string }> | null)
   return ` Documents concernés : ${montres}${reste > 0 ? ` (et ${reste} autre${reste > 1 ? 's' : ''})` : ''}.`;
 }
 
+
+/**
+ * Lot 81E — e-mail générique « Votre abonnement Verebona » omis SEULEMENT
+ * quand la confirmation contractuelle de la même opération est enregistrée
+ * DURABLEMENT (`confirmationJobId`, file des e-mails transactionnels : reprise,
+ * supervision). L'ancien drapeau `confirmationEmailSent` (posé avant l'envoi,
+ * simple intention) n'est plus une preuve : l'e-mail générique part.
+ */
+function contractCovered(base: RenderedContent, p: { confirmationJobId?: number } | null | undefined): RenderedContent {
+  return typeof p?.confirmationJobId === 'number'
+    ? { ...base, emailTemplateCode: undefined, emailSkipReason: `covered_by_contract_confirmation:${p.confirmationJobId}` }
+    : base;
+}
 
 // Petit utilitaire : contenu identique cloche/push (contenu déjà générique).
 function content(bellTitle: string, bellBody: string, push?: { title?: string; body?: string }, emailTemplateCode?: string): RenderedContent {
@@ -175,6 +194,8 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       assetFileId: z.number().optional(),
       documentTitle: z.string().optional(),
       documents: z.array(z.object({ assetFileId: z.number(), title: z.string() })).optional(),
+      /** Lot 81E : doublons détectés (analysés, fusion proposée) — jamais des échecs. */
+      duplicateCount: z.number().optional(),
     }),
   },
   // ── Lot 32 (décision PO Q18/Q19) : envoi réussi ─────────────────────────
@@ -231,16 +252,19 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     mandatoryBell: false, mandatoryEmail: false, neverBell: false,
     defaults: { push: true, email: false }, retentionDays: 90,
     retiredChannels: { email: RETIRED_ANALYSIS_EMAIL },
+    // Lot 81E : émis depuis le résultat RÉEL du lot (documents en échec
+    // définitif nommés), une seule fois par lot.
     render: (p) => content(
       'Analyse terminée avec une anomalie',
-      `${p.analysedCount} document(s) analysé(s), ${p.failedCount} à vérifier.${failedDocumentsText(p.documents)} ${ANALYSIS_RETRY_ACTION}`,
+      lotPartialFailureText(p ?? {}),
       { body: 'Certains documents n\'ont pas pu être analysés.' },
       'notif_document_batch_failed',
     ),
-    deepLink: () => '/documents',
+    deepLink: (p) => (p?.assetFileId ? drawerHref({ kind: 'document', id: p.assetFileId }, '/documents') : '/documents'),
     payloadSchema: z.object({
       lotId: z.number(), analysedCount: z.number(), failedCount: z.number(),
       documents: z.array(z.object({ assetFileId: z.number(), title: z.string() })).optional(),
+      assetFileId: z.number().optional(),
     }),
   },
   [T.DOCUMENT_BATCH_FAILED]: {
@@ -252,14 +276,15 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     retiredChannels: { email: RETIRED_ANALYSIS_EMAIL },
     render: (p) => content(
       'Analyse impossible',
-      `Nous n\'avons pas pu analyser vos documents.${failedDocumentsText(p?.documents)} ${ANALYSIS_RETRY_ACTION}`,
+      lotFailureText(p ?? {}),
       { body: 'Nous n\'avons pas pu analyser vos documents.' },
       'notif_document_batch_failed',
     ),
-    deepLink: () => '/documents',
+    deepLink: (p) => (p?.assetFileId ? drawerHref({ kind: 'document', id: p.assetFileId }, '/documents') : '/documents'),
     payloadSchema: z.object({
       lotId: z.number(), analysedCount: z.number(), failedCount: z.number(),
       documents: z.array(z.object({ assetFileId: z.number(), title: z.string() })).optional(),
+      assetFileId: z.number().optional(),
     }),
   },
   [T.ANALYSIS_FAILED_PERSISTENT]: {
@@ -279,7 +304,9 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       'notif_document_batch_failed',
     ),
     deepLink: (p) => (p.assetFileId ? `/documents/${p.assetFileId}` : '/documents'),
-    payloadSchema: z.object({ assetFileId: z.number(), documentTitle: z.string().optional(), errorReason: z.string().optional() }),
+    // Lot 81E : `lotId` = identité de l'incident (document × lot) ; sans lot,
+    // l'événement (historique) n'est rapproché d'aucun autre.
+    payloadSchema: z.object({ assetFileId: z.number(), lotId: z.number().optional(), documentTitle: z.string().optional(), errorReason: z.string().optional() }),
   },
 
   // ── À traiter (Lot 4 — jamais dans la cloche) ──────────────────────────────
@@ -506,11 +533,13 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     ...accountConfigurable(T.SUBSCRIPTION_RENEWED, 'Abonnement renouvelé', 'Votre abonnement a été renouvelé.', 'notif_subscription'),
     // Lot 79C : plus de push systématique à chaque échéance.
     retiredChannels: { push: 'Supprimé (lot 79) : un renouvellement n’appelle aucune action.' },
-    render: (p: { planCode?: string; receiptCovered?: boolean }) => {
+    // Lot 81E : `receipt_number` (reçu Stripe) ne prouve ni l'envoi ni la
+    // réception d'un justificatif — il ne supprime plus l'e-mail (y compris
+    // pour une ligne déjà en file portant `receiptCovered`). Règle explicite
+    // dans `lib/billing/invoice-receipt.ts`.
+    render: (p: { planCode?: string; billingPeriod?: string | null; nextRenewalAt?: string | null }) => {
       const corps = subscriptionNotificationText('SUBSCRIPTION_RENEWED', p) ?? 'Votre abonnement a été renouvelé.';
-      // Lot 79C : pas d'e-mail générique quand le reçu de paiement Stripe de
-      // la même facture couvre déjà ce renouvellement (`receipt_number`).
-      return content('Abonnement renouvelé', corps, { body: corps }, p?.receiptCovered ? undefined : 'notif_subscription');
+      return content('Abonnement renouvelé', corps, { body: corps }, 'notif_subscription');
     },
   },
   // ══════════════════════════════════════════════════════════════════════════
@@ -528,26 +557,22 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   // « Votre offre a été modifiée. Nouvelle offre : Premium (formule annuelle) »
   [T.SUBSCRIPTION_ACTIVATED]: {
     ...accountConfigurable(T.SUBSCRIPTION_ACTIVATED, 'Offre activée', 'Votre offre a été activée.', 'notif_subscription'),
-    render: (p: { planCode?: string; planLabel?: string; billingPeriod?: string | null; confirmationEmailSent?: boolean }) => {
+    render: (p: { planCode?: string; planLabel?: string; billingPeriod?: string | null; confirmationJobId?: number }) => {
       const corps = subscriptionNotificationText('SUBSCRIPTION_ACTIVATED', p) ?? 'Votre offre a été activée.';
-      // Email « Votre abonnement Verebona » non envoyé quand l'email de
-      // confirmation d'abonnement part déjà (un seul email par souscription).
-      return content('Offre activée', corps, { body: corps }, p.confirmationEmailSent ? undefined : 'notif_subscription');
+      return contractCovered(content('Offre activée', corps, { body: corps }, 'notif_subscription'), p);
     },
     payloadSchema: z.object({
       planCode: z.string(),
       planLabel: z.string(),
       billingPeriod: z.enum(['monthly', 'yearly']).nullish(),
-      confirmationEmailSent: z.boolean().optional(),
+      confirmationJobId: z.number().optional(),
     }).passthrough(),
   },
   [T.SUBSCRIPTION_CHANGED]: {
     ...accountConfigurable(T.SUBSCRIPTION_CHANGED, 'Offre modifiée', 'Votre offre a été modifiée.', 'notif_subscription'),
-    render: (p: { planCode?: string; planLabel?: string; billingPeriod?: string | null; confirmationEmailSent?: boolean }) => {
+    render: (p: { planCode?: string; planLabel?: string; billingPeriod?: string | null; confirmationJobId?: number }) => {
       const corps = subscriptionNotificationText('SUBSCRIPTION_CHANGED', p) ?? 'Votre offre a été modifiée.';
-      // Email « Votre abonnement Verebona » non envoyé quand l'email de
-      // confirmation d'abonnement part déjà (un seul email par souscription).
-      return content('Offre modifiée', corps, { body: corps }, p.confirmationEmailSent ? undefined : 'notif_subscription');
+      return contractCovered(content('Offre modifiée', corps, { body: corps }, 'notif_subscription'), p);
     },
     payloadSchema: z.object({
       planCode: z.string(),
@@ -556,7 +581,7 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       previousPlanCode: z.string().optional(),
       previousPlanLabel: z.string().optional(),
       direction: z.enum(['upgrade', 'downgrade', 'lateral']),
-      confirmationEmailSent: z.boolean().optional(),
+      confirmationJobId: z.number().optional(),
     }).passthrough(),
   },
   [T.SUBSCRIPTION_CHANGE_SCHEDULED]: {
@@ -571,16 +596,29 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
       effectiveAt: z.string().nullish(),
     }).passthrough(),
   },
-  [T.SUBSCRIPTION_CANCELLATION_SCHEDULED]: accountConfigurable(T.SUBSCRIPTION_CANCELLATION_SCHEDULED, 'Résiliation programmée', 'La résiliation de votre abonnement est programmée.', 'notif_subscription'),
+  // Lot 81E : résiliation PROGRAMMÉE (demande enregistrée, accès conservé
+  // jusqu'à l'échéance) — étape distincte de la prise d'effet, produite une
+  // fois par demande (`subscription-communications.service`).
+  [T.SUBSCRIPTION_CANCELLATION_SCHEDULED]: {
+    ...accountConfigurable(T.SUBSCRIPTION_CANCELLATION_SCHEDULED, 'Résiliation programmée', 'La résiliation de votre abonnement est programmée.', 'notif_subscription'),
+    render: (p: { effectiveAt?: string }) => {
+      const corps = subscriptionNotificationText('SUBSCRIPTION_CANCELLATION_SCHEDULED', p) ?? 'La résiliation de votre abonnement est programmée.';
+      return content('Résiliation programmée', corps, { body: corps }, 'notif_subscription');
+    },
+  },
   [T.SUBSCRIPTION_CANCELLED]: {
     ...accountConfigurable(T.SUBSCRIPTION_CANCELLED, 'Abonnement résilié', 'Votre abonnement a été résilié.', 'notif_subscription'),
-    // Lot 79C : la résiliation effective envoie déjà l'e-mail transactionnel
-    // DOWNGRADE_NOTIFICATION (« Votre abonnement … a été résilié ») — jamais
-    // un second e-mail équivalent. Cloche et push inchangés.
-    render: (p: { downgradeEmailSent?: boolean }) => content(
-      'Abonnement résilié', 'Votre abonnement a été résilié.', { body: 'Votre abonnement a été résilié.' },
-      p?.downgradeEmailSent ? undefined : 'notif_subscription',
-    ),
+    // Lot 79C / 81E : la prise d'effet d'une résiliation d'offre supérieure
+    // enregistre l'e-mail transactionnel DURABLE DOWNGRADE_NOTIFICATION pour
+    // la MÊME opération (`endedEmailJobId`) — pas de second e-mail
+    // équivalent. Sans demande durable (ou ancienne ligne `downgradeEmailSent`,
+    // simple intention), l'e-mail générique part. Cloche et push inchangés.
+    render: (p: { endedEmailJobId?: number }) => {
+      const base = content('Abonnement résilié', 'Votre abonnement a été résilié.', { body: 'Votre abonnement a été résilié.' }, 'notif_subscription');
+      return typeof p?.endedEmailJobId === 'number'
+        ? { ...base, emailTemplateCode: undefined, emailSkipReason: `covered_by_end_of_offer_email:${p.endedEmailJobId}` }
+        : base;
+    },
   },
 
   [T.REFERRAL_REWARD_GRANTED]: {

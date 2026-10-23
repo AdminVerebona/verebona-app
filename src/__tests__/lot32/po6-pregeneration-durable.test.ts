@@ -17,6 +17,8 @@ const h = vi.hoisted(() => ({
   generatedToday: 0,
   claimable: [] as number[],
   presentation: vi.fn(),
+  /** Lot 81B (A) : options transmises à la présentation (formulation plafonnée). */
+  opts: [] as unknown[],
 }));
 
 vi.mock('@/db', () => ({
@@ -42,7 +44,7 @@ vi.mock('@/db', () => ({
 }));
 vi.mock('@/services/home/mascot/mascot.service', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  getMascotPresentation: (a: number, m: string) => h.presentation(a, m),
+  getMascotPresentation: (a: number, m: string, _u: unknown, o: unknown) => { h.opts.push(o); return h.presentation(a, m); },
 }));
 
 const Q = await import('@/services/home/mascot/pregen-queue');
@@ -53,7 +55,7 @@ const pres = (source: 't6' | 'fallback' | 'deterministic', paragraphs = 1) => ({
 });
 
 afterEach(() => {
-  h.calls.length = 0; h.claimable = []; h.generatedToday = 0; h.presentation.mockReset();
+  h.calls.length = 0; h.claimable = []; h.generatedToday = 0; h.presentation.mockReset(); h.opts.length = 0;
   delete process.env.MASCOT_PREGEN_DAILY_MAX; delete process.env.MASCOT_PREGEN_BATCH;
 });
 
@@ -64,7 +66,8 @@ describe('PO6 — pré-génération durable du texte T6', () => {
     expect(c.sql).toMatch(/ON CONFLICT \(account_id\) DO UPDATE/);
     expect(c.p).toEqual([7, 'TO_PROCESS_ITEM_UPDATED']);
     await Q.requestMascotPregeneration(0, 'x');
-    expect(h.calls).toHaveLength(1); // identifiant invalide : rien
+    // Identifiant invalide : rien (lot 81B : seule la sonde des colonnes 0629 s'ajoute à la demande valide).
+    expect(h.calls.filter((x) => /INSERT INTO home_mascot_pregen_requests/.test(x.sql))).toHaveLength(1);
   });
 
   it('PO6 — la tâche traite un lot borné ; la situation formulée est notée (dédup par situation via le cache T6)', async () => {
@@ -80,13 +83,17 @@ describe('PO6 — pré-génération durable du texte T6', () => {
     expect(h.claimable).toEqual([3]);
   });
 
-  it('PO6 — coût plafonné par compte et par 24 h (MASCOT_PREGEN_DAILY_MAX) : demande close sans appel T6', async () => {
+  it('PO6 — coût plafonné par compte et par 24 h (MASCOT_PREGEN_DAILY_MAX) : formulation omise (lot 81B : évaluations conservées)', async () => {
     process.env.MASCOT_PREGEN_DAILY_MAX = '2';
     h.generatedToday = 2;
     h.claimable = [5];
+    h.presentation.mockImplementation(async () => pres('deterministic', 0));
     const r = await Q.runMascotPregeneration();
     expect(r).toMatchObject({ claimed: 1, capped: 1 });
-    expect(h.presentation).not.toHaveBeenCalled();
+    // Lot 81B (A) : la demande n'est plus close AVANT de connaître l'état des
+    // évaluations — le passage s'exécute sans formulation (aucun appel FORMULATE).
+    expect(h.presentation).toHaveBeenCalledTimes(1);
+    expect(h.opts[0]).toMatchObject({ formulate: false });
     expect(Q.mascotPregenDailyMax({})).toBe(24);
     expect(Q.mascotPregenBatch({ MASCOT_PREGEN_BATCH: '9999' })).toBe(200);
   });

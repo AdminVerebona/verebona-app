@@ -292,7 +292,9 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
     // Filtres invalides : 400, jamais de requête libre.
     expect((await appel('scope=global&treatments=T9')).status).toBe(400);
     expect((await appel('scope=asset')).status).toBe(400);
-    expect((await appel('scope=global&from=2020-01-01&to=2026-01-01')).status).toBe(400);
+    // Lot 81C : plus de borne de 366 jours (période longue et « tout l'historique » acceptées) ; dates invalides : 400.
+    expect((await appel('scope=global&from=2020-01-01&to=2026-01-01')).status).toBe(200);
+    expect((await appel('scope=global&from=2026-01-02&to=2026-01-01')).status).toBe(400);
   });
 
   it('L77C-E07 isolation : aucun objet d’un autre compte ; objet inconnu 404', async () => {

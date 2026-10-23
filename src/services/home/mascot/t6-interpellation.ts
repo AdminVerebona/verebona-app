@@ -1095,7 +1095,15 @@ export interface T6InterpellationBundle {
    * antérieurs). Lève si l'écriture échoue : RIEN n'est alors conservé
    * (transaction du lot accepté).
    */
-  persist: (list: import('./t6-contract').T6ValidatedDecision[], meta: { promptVersion: string; traceId: string | null; contractRevision?: number }) => Promise<number | T6PersistResult>;
+  persist: (list: import('./t6-contract').T6ValidatedDecision[], meta: {
+    promptVersion: string; traceId: string | null; contractRevision?: number;
+    /**
+     * Lot 81B (D) : exécution DURABLE qui écrit (`t6_evaluation_runs.run_id`) —
+     * sa propriété est vérifiée DANS la transaction d'écriture : seules les
+     * décisions des évaluations qu'elle détient encore sont enregistrées.
+     */
+    run?: { runId: string; leaseMs?: number } | null;
+  }) => Promise<number | T6PersistResult>;
   /** Lot 78C : signature de configuration EVALUATE courante (état durable des exécutions). */
   evaluationSignature?: string | null;
 }
@@ -1105,6 +1113,8 @@ export interface T6PersistResult {
   persisted: number;
   /** `subjectId` (C1…Cn) effectivement enregistrés ; absent : inconnu (nombre seul). */
   persistedSubjectIds?: string[];
+  /** Lot 81B (D) : décisions NON écrites parce que l'exécution n'en détient plus l'évaluation (bail repris ailleurs). */
+  lostSubjectIds?: string[];
 }
 
 const PRIORITE_DEFAUT: Record<T6Decision, T6Priority> = { SHOW_NOW: 'MEDIUM', DEFER: 'LOW', SUPPRESS: 'LOW' };

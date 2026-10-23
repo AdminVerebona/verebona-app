@@ -425,6 +425,14 @@ export function OperationDetailView({ d, onNavigate, identityAction }: {
   return (
     <div className="space-y-4">
       <ReadOnlyNotice />
+      {d.listTotals && Object.keys(d.listTotals).length > 0 && (
+        // Lot 81C : borne d'AFFICHAGE seulement — total réel, consultation paginée et export intégral ailleurs.
+        <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 text-xs" data-display-limit>
+          Affichage limité à {d.displayLimit ?? 200} lignes par liste ; totaux réels :{' '}
+          {Object.entries(d.listTotals).map(([k, n], i) => <span key={k}>{i ? ', ' : ''}{k} {n}</span>)}.
+          {' '}Toutes les lignes : BO › Comptes › compte › Données du compte › Opération (consultation paginée, export intégral JSON / CSV / TXT) ou Diagnostics techniques.
+        </div>
+      )}
       {d.canonicalOperationId && d.canonicalOperationId !== o.id && (
         <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 text-sm">
           Opération fusionnée : l’Opération canonique est {opLink(d.canonicalOperationId)}.

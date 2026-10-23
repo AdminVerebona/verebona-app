@@ -34,6 +34,7 @@ import type { ActionProposal, ResolutionReason } from './action-model';
 import type { DbClient, ResolveOptions, ResolveResult } from './resolve-action.service';
 import { resolveActionsForData, upsertAction } from './to-process-action.service';
 import { perimer, valueLabel } from './migration-review-cards';
+import { realAlternatives } from '@/services/ai/reconciliation/decision/equivalence';
 
 export const ENTITY_FIELD_RULE = 'ENTITY-FIELD';
 export const ENTITY_FIELD_ROOM_RULE = 'ENTITY-FIELD-ROOM';
@@ -47,19 +48,27 @@ type Scalar = string | number | boolean | null;
 const scalar = (v: unknown): Scalar => (v === null || v === undefined ? null
   : typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean' ? v : JSON.stringify(v));
 
-/** Propositions d'un conflit (pures, testées) : preuve proposée, puis valeur en place. */
+/**
+ * Propositions d'un conflit (pures, testées) : preuves proposées, puis valeur
+ * en place. Lot 81A : toutes les valeurs non départagées (`alternatives`),
+ * sauf celles ÉQUIVALENTES à la valeur en place (normaliseurs métier) et les
+ * doublons — sans véritable alternative, aucune proposition (pas de carte).
+ */
 export function entityConflictProposals(d: ReconciliationDecision): ActionProposal[] {
   const proposals: ActionProposal[] = [];
-  const proposee = scalar(d.proposedValue);
-  if (proposee !== null) {
+  const valeurs = d.alternatives?.length ? d.alternatives : [{ value: d.proposedValue, evidenceIds: d.evidenceIds }];
+  for (const v of realAlternatives(d.fieldKey, d.currentValue, valeurs, (x) => x.value)) {
+    const proposee = scalar(v.value);
+    if (proposee === null) continue;
     proposals.push({
       value: proposee, label: valueLabel(d.fieldKey, proposee),
       confidence: d.confidence === 'certain' ? 1 : d.confidence === 'probable' ? 0.6 : 0.3,
-      evidenceIds: d.evidenceIds.map(String),
+      evidenceIds: v.evidenceIds.map(String),
     });
   }
+  if (proposals.length === 0) return [];
   const courante = scalar(d.currentValue);
-  if (courante !== null && courante !== proposee) {
+  if (courante !== null) {
     proposals.push({ value: courante, label: valueLabel(d.fieldKey, courante), confidence: 1, isCurrentValue: true });
   }
   return proposals;

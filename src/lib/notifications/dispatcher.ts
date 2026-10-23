@@ -4,24 +4,29 @@
  * Réclame les événements dus dans l'outbox, résout les canaux (préférences +
  * obligatoire), rend le contenu, crée une livraison par canal (et par appareil
  * pour le push) puis envoie. Journalise chaque tentative dans
- * `notification_deliveries` et agrège le statut de l'outbox :
- *   - tout envoyé/ignoré sans échec → `sent` ;
- *   - au moins un canal en échec avec un autre réussi → `partial` ;
- *   - tous les canaux en échec → `failed`.
+ * `notification_deliveries` et agrège le statut de l'outbox (lot 81E) :
+ *   - au moins un canal ENVOYÉ (accepté par le canal), aucun échec → `sent` ;
+ *   - au moins un canal envoyé et au moins un en échec → `partial` ;
+ *   - au moins un canal en échec, aucun envoyé → `failed` ;
+ *   - aucun canal envoyé, sans échec (supprimé, désactivé, sans destinataire,
+ *     sans appareil, préférences) → `skipped`, cause dans `outcome_reason` —
+ *     jamais compté « envoyé » (auparavant : `sent`) ;
+ *   - incident déjà porté par un autre événement → `grouped`
+ *     (`grouped_with_id`) ; si ce porteur n'est finalement envoyé par aucun
+ *     canal, les événements regroupés sont remis en file.
  *
  * Le traitement d'un événement en échec n'interrompt pas les autres (§13.4).
  */
 
 import { db } from '@/db';
-import { notificationDeliveries, notificationOutbox } from '@/db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { notificationDeliveries } from '@/db/schema';
 import { getCatalogEntry } from './catalog';
 import { renderContent } from './content-renderer';
 import { resolveChannels } from './policy-resolver';
 import { applyChannelActivation, loadDisabledChannels, CHANNEL_DISABLED_ERROR_CODE } from './channel-activation';
 import { deliverBell, deliverEmail, deliverWebPush, type DeliveryOutcome, type DeliveryContext } from './channels';
 import { lireRestrictionReemission, appliquerRestrictionReemission } from './reemission-restriction';
-import { claimByIds, claimPending, markProcessed, releaseOrFail, type OutboxRow } from './outbox';
+import { claimByIds, claimPending, markGrouped, markProcessed, releaseOrFail, reopenGroupedBy, type OutboxRow } from './outbox';
 import { applyRetiredChannels, CHANNEL_RETIRED_ERROR_CODE } from './retired-channels';
 import { resolveIncidentGrouping, GROUPED_INCIDENT_ERROR_CODE } from './incident-grouping';
 
@@ -79,12 +84,17 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
         status: 'skipped_unavailable', errorCode: GROUPED_INCIDENT_ERROR_CODE, errorMessage: `regroupé avec ${grouping.absorbedBy}`,
       });
     }
-    await db.update(notificationOutbox)
-      .set({
-        status: 'cancelled', processedAt: new Date(), lastError: `grouped_with:${grouping.absorbedBy}`,
-        attemptCount: sql`${notificationOutbox.attemptCount} + 1`,
-      })
-      .where(eq(notificationOutbox.id, row.id));
+    await markGrouped(row.id, grouping.absorbedBy);
+    return 'skipped';
+  }
+  // Lot 81E : incident sans objet au moment de l'envoi (facture réglée ou
+  // annulée entre-temps) — ignoré, cause tracée, jamais une anomalie.
+  if (grouping.skipReason) {
+    for (const channel of (['bell', 'email', 'push'] as const).filter((c) => restricted[c])) {
+      await recordDelivery(row.id, row.recipient_user_id, channel, { status: 'skipped_unavailable', errorCode: grouping.skipReason });
+    }
+    await markProcessed(row.id, 'skipped', { reason: grouping.skipReason });
+    await afterProcessed(row, 'skipped');
     return 'skipped';
   }
   const payload = grouping.payloadPatch ? { ...payloadBrut, ...grouping.payloadPatch } : payloadBrut;
@@ -119,18 +129,26 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
   };
 
   const outcomes: DeliveryOutcome['status'][] = [];
+  /** Lot 81E : causes des canaux ignorés (motif d'un événement `skipped`). */
+  const skipCodes: string[] = [];
+  const noter = (o: DeliveryOutcome) => {
+    outcomes.push(o.status);
+    if (o.status !== 'sent' && o.status !== 'failed') skipCodes.push(o.errorCode ?? o.status);
+  };
 
   // Trace : canal supprimé (lot 79C) — ni envoi, ni échec.
   for (const channel of retired) {
-    await recordDelivery(row.id, ctx.userId, channel, { status: 'skipped_unavailable', errorCode: CHANNEL_RETIRED_ERROR_CODE });
-    outcomes.push('skipped_unavailable');
+    const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: CHANNEL_RETIRED_ERROR_CODE };
+    await recordDelivery(row.id, ctx.userId, channel, o);
+    noter(o);
   }
 
   // Trace de diagnostic : le canal était prévu mais a été coupé par l'admin.
   // « skipped_* » n'est pas un échec (§18.4) et n'est pas compté comme envoi.
   for (const channel of blocked) {
-    await recordDelivery(row.id, ctx.userId, channel, { status: 'skipped_unavailable', errorCode: CHANNEL_DISABLED_ERROR_CODE });
-    outcomes.push('skipped_unavailable');
+    const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: CHANNEL_DISABLED_ERROR_CODE };
+    await recordDelivery(row.id, ctx.userId, channel, o);
+    noter(o);
   }
 
   let bellNotificationId: number | undefined;
@@ -138,37 +156,73 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     const o = await deliverBell(ctx, entry, rendered);
     bellNotificationId = o.notificationId;
     await recordDelivery(row.id, ctx.userId, 'bell', o);
-    outcomes.push(o.status);
+    noter(o);
   }
   if (channels.email) {
     const o = await deliverEmail(ctx, entry, rendered);
     await recordDelivery(row.id, ctx.userId, 'email', o);
-    outcomes.push(o.status);
+    noter(o);
   }
   if (channels.push) {
     // Une livraison par appareil (§12.4). Aucun appareil → une ligne skipped.
     const pushResults = await deliverWebPush(ctx, rendered, bellNotificationId);
     if (pushResults.length === 0) {
-      await recordDelivery(row.id, ctx.userId, 'push', { status: 'skipped_unavailable', errorCode: 'no_active_subscription' });
-      outcomes.push('skipped_unavailable');
+      const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: 'no_active_subscription' };
+      await recordDelivery(row.id, ctx.userId, 'push', o);
+      noter(o);
     } else {
       for (const r of pushResults) {
         await recordDelivery(row.id, ctx.userId, 'push', r.outcome, r.subscriptionId);
-        outcomes.push(r.outcome.status);
+        noter(r.outcome);
       }
     }
   }
 
-  // Agrégation : un « skipped_* » n'est pas un échec (§18.4).
+  // Agrégation (lot 81E) : « envoyé » exige au moins un canal ENVOYÉ ; un
+  // « skipped_* » n'est ni un envoi ni un échec (§18.4).
+  const finalStatus = aggregateOutboxStatus(outcomes);
+  const reason = finalStatus === 'skipped' ? skippedReason(skipCodes, outcomes.length) : null;
+
+  await markProcessed(row.id, finalStatus, { reason });
+  await afterProcessed(row, finalStatus);
+  return finalStatus;
+}
+
+/** Statut agrégé d'un événement à partir des livraisons de ses canaux (pur, lot 81E). */
+export function aggregateOutboxStatus(outcomes: readonly DeliveryOutcome['status'][]): 'sent' | 'partial' | 'failed' | 'skipped' {
   const anySent = outcomes.includes('sent');
   const anyFailed = outcomes.includes('failed');
-  const finalStatus: 'sent' | 'partial' | 'failed' =
-    anyFailed && anySent ? 'partial'
-    : anyFailed && !anySent ? 'failed'
-    : 'sent';
+  if (anySent && anyFailed) return 'partial';
+  if (anySent) return 'sent';
+  if (anyFailed) return 'failed';
+  return 'skipped';
+}
 
-  await markProcessed(row.id, finalStatus);
-  return outcomes.length === 0 ? 'skipped' : finalStatus;
+/** Cause d'un événement ignoré : codes des livraisons, ou aucun canal retenu. */
+function skippedReason(codes: readonly string[], attempted: number): string {
+  const uniques = [...new Set(codes)].sort();
+  if (uniques.length) return uniques.join(',');
+  return attempted === 0 ? 'no_channel_selected' : 'not_delivered';
+}
+
+/** Suites d'un traitement : reprise des événements regroupés, état du récapitulatif. */
+async function afterProcessed(row: OutboxRow, status: 'sent' | 'partial' | 'failed' | 'skipped'): Promise<void> {
+  if (status === 'failed' || status === 'skipped') {
+    try {
+      const rouverts = await reopenGroupedBy(row.id);
+      if (rouverts.length) await processOutboxIds(rouverts);
+    } catch (e) {
+      console.error(`[notifications] reprise des événements regroupés avec ${row.id} :`, (e as Error).message);
+    }
+  }
+  if (row.event_type === 'TO_PROCESS_DAILY_DIGEST') {
+    try {
+      const { recordDigestOutcome } = await import('./scheduled/to-process-digest');
+      await recordDigestOutcome(row.id);
+    } catch (e) {
+      console.error(`[notifications] état du récapitulatif ${row.id} :`, (e as Error).message);
+    }
+  }
 }
 
 async function processRows(rows: OutboxRow[]): Promise<DispatchSummary> {

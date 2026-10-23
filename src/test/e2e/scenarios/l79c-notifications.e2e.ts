@@ -20,7 +20,13 @@
  *               choix explicite d'un administrateur préservé ;
  *   L79C-E2E-08 (AC04/AC08) paiement : échec + authentification de la même
  *               facture → un message ; autre facture et rappels conservés ;
- *   L79C-E2E-09 (AC08) renouvellement : sans push ; sans e-mail si le reçu couvre.
+ *   L79C-E2E-09 (AC08) renouvellement : sans push ; lot 81E — `receipt_number`
+ *               n'est plus une preuve : e-mail selon la préférence.
+ *
+ * Lot 81E (écarts résiduels) : statuts `grouped` / `skipped`, identité des
+ * incidents (document × lot) ; scénarios des producteurs réels (webhooks
+ * Stripe, file des e-mails, pipeline T1, récapitulatif) dans
+ * `l81e-notifications-residuels.e2e.ts` (`npm run test:e2e:notifications`).
  */
 import { afterAll, beforeEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -134,9 +140,12 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
     const [lot] = await sql<{ id: number }[]>`INSERT INTO document_lots (account_id, status) VALUES (${c.id}, 'partially_failed') RETURNING id`;
     await sql`INSERT INTO document_lot_items (lot_id, asset_file_id, position, analysis_status) VALUES (${lot.id}, ${f1.id}, 0, 'failed'), (${lot.id}, ${f2.id}, 1, 'failed')`;
 
-    const lotRow = await enFile(c, 'DOCUMENT_BATCH_FAILED', { lotId: lot.id, analysedCount: 0, failedCount: 2 });
+    // Lot 81E : l'alerte de lot NOMME ses documents ; l'alerte du document
+    // porte son identité (document × lot).
+    const lotRow = await enFile(c, 'DOCUMENT_BATCH_FAILED', { lotId: lot.id, analysedCount: 0, failedCount: 2,
+      documents: [{ assetFileId: f1.id, title: 'Facture garage' }, { assetFileId: f2.id, title: 'Devis' }] });
     await traiter();
-    const docRow = await enFile(c, 'ANALYSIS_FAILED_PERSISTENT', { assetFileId: f1.id, documentTitle: 'Facture garage' });
+    const docRow = await enFile(c, 'ANALYSIS_FAILED_PERSISTENT', { assetFileId: f1.id, lotId: lot.id, documentTitle: 'Facture garage' });
     await traiter();
 
     expect(await livraisons(lotRow)).toEqual([
@@ -144,8 +153,8 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
       { channel: 'email', status: 'skipped_unavailable', last_error_code: 'channel_retired' },
       { channel: 'push', status: 'sent', last_error_code: null },
     ]);
-    const [doc] = await sql<{ status: string; last_error: string }[]>`SELECT status, last_error FROM notification_outbox WHERE id = ${docRow}::uuid`;
-    expect(doc).toEqual({ status: 'cancelled', last_error: `grouped_with:${lotRow}` });
+    const [doc] = await sql<{ status: string; grouped_with_id: string }[]>`SELECT status, grouped_with_id::text FROM notification_outbox WHERE id = ${docRow}::uuid`;
+    expect(doc).toEqual({ status: 'grouped', grouped_with_id: lotRow });
     expect((await livraisons(docRow)).every((l) => l.status === 'skipped_unavailable' && l.last_error_code === 'grouped_incident')).toBe(true);
     expect(await sql`SELECT 1 FROM notifications WHERE user_id = ${c.userId} AND type IN ('DOCUMENT_BATCH_FAILED', 'ANALYSIS_FAILED_PERSISTENT')`).toHaveLength(1);
     const [cloche] = await sql<{ body: string }[]>`SELECT body FROM notifications WHERE user_id = ${c.userId} AND type = 'DOCUMENT_BATCH_FAILED'`;
@@ -320,7 +329,7 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
     const rows = await sql<{ event_type: string; entity_id: string; status: string; last_error: string | null }[]>`
       SELECT event_type, entity_id, status, last_error FROM notification_outbox WHERE recipient_user_id = ${c.userId} ORDER BY event_type, entity_id`;
     expect(rows.map((r) => [r.event_type, r.entity_id, r.status])).toEqual([
-      ['PAYMENT_ACTION_REQUIRED', 'in_l79c_A', 'cancelled'],
+      ['PAYMENT_ACTION_REQUIRED', 'in_l79c_A', 'grouped'],
       ['PAYMENT_ACTION_REQUIRED', 'in_l79c_B', 'sent'],
       ['PAYMENT_FAILED', 'in_l79c_A', 'sent'],
     ]);
@@ -331,15 +340,17 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
     expect(mailsA(c.email)).toHaveLength(2);
   });
 
-  it('L79C-E2E-09 (AC08) renouvellement : sans push ; sans e-mail générique si le reçu Stripe couvre la facture', async () => {
+  it('L79C-E2E-09 (AC08, révisé L81E) renouvellement : sans push ; `receipt_number` n’est plus une preuve — e-mail selon la préférence', async () => {
     const c = await compte();
     const { emit } = await import('@/lib/notifications');
     const passe = new Date(Date.now() - 1000);
+    // Ligne déjà en file portant l'ancien drapeau : il ne supprime plus l'e-mail.
     await emit({ type: 'SUBSCRIPTION_RENEWED', accountId: c.id, entityType: 'invoice', entityId: 'in_r1', payload: { planCode: 'PREMIUM', receiptCovered: true },
       dedupeKey: `l79c:ren:1:${c.id}`, scheduledFor: passe });
     await traiter();
-    expect(mailsA(c.email)).toHaveLength(0);
+    expect(mailsA(c.email)).toHaveLength(1);
     expect(pushesA(c.endpoint)).toHaveLength(0);
+    etat.mails.splice(0, etat.mails.length, ...etat.mails.filter((m) => !mailsA(c.email).includes(m)));
     await emit({ type: 'SUBSCRIPTION_RENEWED', accountId: c.id, entityType: 'invoice', entityId: 'in_r2', payload: { planCode: 'PREMIUM' },
       dedupeKey: `l79c:ren:2:${c.id}`, scheduledFor: passe });
     await traiter();

@@ -21,6 +21,8 @@
  *   notifications-dispatch          toutes les minutes            FOR UPDATE SKIP LOCKED
  *   notifications-to-process-scan   toutes les 10 min             dedupe_key unique
  *   notifications-scheduled-events  /15 min de 8 h 30 à 11 h      dedupe_key par date locale
+ *   document-lot-notifications      toutes les 10 min             transition conditionnelle awaiting →
+ *                                                                 notified + dedupe_key par lot (lot 81E)
  *   notifications-purge             chaque jour à 5 h 20          suppressions idempotentes
  *   expire-trials                   toutes les heures             UPDATE … RETURNING atomique
  *   to-process-scan                 toutes les heures (critique)  bail `to-process-scan`
@@ -32,6 +34,9 @@
  *                                   que des demandes subsistent
  *   mascot-pregeneration            toutes les minutes            FOR UPDATE SKIP LOCKED + bail par compte
  *   mascot-pregeneration-deadlines  chaque jour à 5 h 40          une ligne par compte (upsert) ; nettoyage rappels T6 (lot 60)
+ *   mascot-t6-supervision           toutes les 5 min (critique)   lecture + anomalies consolidées par empreinte ;
+ *                                                                 supervise mascot-pregeneration SANS dépendre
+ *                                                                 d'elle (lot 81B, écart F)
  *   mascot-t6-reevaluations         toutes les heures             une ligne par compte (upsert), critère « non
  *                                                                 réévalué depuis » (lot 71G, T6-05)
  *   t1-invalid-output-replay        au démarrage, puis /h tant    contrainte unique (document,
@@ -217,6 +222,20 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     },
   },
   {
+    // Lot 81E : filet du résultat des lots d'analyse (lot resté « en attente »
+    // après une remise en file perdue ou un arrêt de processus).
+    code: 'document-lot-notifications',
+    label: 'Résultat des lots d’analyse (notifications en attente)',
+    schedule: { kind: 'interval', everyMs: 10 * MIN },
+    timeoutMs: 5 * MIN,
+    startupDelayMs: 4 * MIN,
+    run: async () => {
+      const { runLotNotificationSweep } = await import('@/services/ai/source-analysis/lot-notification');
+      const r = await runLotNotificationSweep();
+      if (r.evaluated > 0 || r.expired > 0) return { note: JSON.stringify(r) };
+    },
+  },
+  {
     code: 'notifications-scheduled-events',
     label: 'Rappels du matin (échéances, récapitulatif, fin d’essai)',
     // Envoi à 8 h 30 ; passages suivants jusqu'à 11 h pour rattraper un
@@ -364,15 +383,29 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     run: async ({ deadline }) => {
       const { runMascotPregeneration } = await import('@/services/home/mascot/pregen-queue');
       const r = await runMascotPregeneration({ deadline: Math.min(deadline, Date.now() + 25_000) });
-      // Lot 78C : supervision des évaluations T6 bloquées ou en échec (au plus
-      // toutes les 5 min, toutes instances confondues) — anomalie BO par compte.
-      const { claimEvaluatorRun } = await import('@/services/ai/alerts/alerts.repository');
-      if (await claimEvaluatorRun('t6-evaluation-supervision', 300).catch(() => false)) {
-        const { superviseT6Evaluations } = await import('@/services/home/mascot/t6-evaluation-runs');
-        const s = await superviseT6Evaluations();
-        if (s.reported > 0 || s.resolved > 0) return { note: JSON.stringify({ ...r, t6Supervision: s }) };
-      }
-      if (r.claimed > 0) return { note: JSON.stringify(r) };
+      // Lot 81B (F) : la supervision des évaluations T6 n'est PLUS portée par
+      // cette tâche (elle cessait avec elle) — tâche `mascot-t6-supervision`.
+      if (r.claimed > 0 || (r.exhausted ?? 0) > 0) return { note: JSON.stringify(r) };
+    },
+  },
+  {
+    // Lot 81B (F) — supervision des évaluations T6 INDÉPENDANTE de la tâche
+    // `mascot-pregeneration` : comptes bloqués ou en échec (balayage paginé,
+    // résolution vérifiée), tâche de pré-génération inactive (état partagé du
+    // planificateur : arrêtée, suspendue ou silencieuse) avec les comptes dont
+    // les évaluations attendent — sans aucune visite. Critique : le chien de
+    // garde du planificateur (mécanisme existant) alerte si elle-même cesse.
+    code: 'mascot-t6-supervision',
+    label: 'Mascotte : supervision des évaluations T6 et de la pré-génération',
+    schedule: { kind: 'interval', everyMs: 5 * MIN },
+    timeoutMs: 4 * MIN,
+    startupDelayMs: 3 * MIN,
+    critical: { staleAfterMs: 30 * MIN },
+    run: async () => {
+      const { superviseT6Evaluations } = await import('@/services/home/mascot/t6-evaluation-runs');
+      const s = await superviseT6Evaluations();
+      if (s.error) return { note: JSON.stringify(s), error: `supervision T6 interrompue : ${s.error}` };
+      if (s.reported > 0 || s.resolved > 0 || s.schedulerInactive) return { note: JSON.stringify(s) };
     },
   },
   {
@@ -760,11 +793,24 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const traces = await replayPendingTraces({ limit: 200, deadline: Math.min(deadline, Date.now() + MIN) });
       const traceNote = traces.examined > 0
         ? ` — traces reprises : ${traces.replayed} écrite(s), ${traces.superseded} remplacée(s), ${traces.failed} en échec, ${traces.abandoned} abandonnée(s)` : '';
+      // Lot 81A : rattrapage BORNÉ des faux arbitrages (propositions équivalentes à la
+      // valeur actuelle) — réexamen en lecture seule, carte corrigée ou close (0626).
+      let fauxNote = '';
+      try {
+        const { runArbitrationRepriseCampaign } = await import('@/services/to-process/arbitration-equivalence-reprise');
+        const fa = await runArbitrationRepriseCampaign({ deadline: Math.min(deadline, Date.now() + 90_000), limit: 100 });
+        if (!fa.disabled && (fa.counters.scanned > 0 || fa.counters.suspects > 0)) {
+          fauxNote = ` — faux arbitrages (${fa.campaign}) : ${fa.counters.scanned} carte(s) parcourue(s), ${fa.counters.suspects} suspecte(s), `
+            + `${fa.counters.CORRECTED} corrigée(s), ${fa.counters.OBSOLETE} close(s) sans objet, ${fa.counters.ERROR} en erreur${fa.done ? ' — terminé' : ''}`;
+        }
+      } catch (e) {
+        fauxNote = ` — faux arbitrages : passage en échec (${String((e as Error).message).slice(0, 200)})`;
+      }
       const r = await runRelevanceCampaign({ deadline: Math.min(deadline, Date.now() + 8 * MIN), trigger });
-      if (r.disabled) return { note: `migration 0445 absente : rien à faire${purgeNote}${traceNote}` };
-      if (r.done && r.examined === 0 && !r.campaignId) return { note: `aucune campagne en cours${purgeNote}${traceNote}` };
+      if (r.disabled) return { note: `migration 0445 absente : rien à faire${purgeNote}${traceNote}${fauxNote}` };
+      if (r.done && r.examined === 0 && !r.campaignId) return { note: `aucune campagne en cours${purgeNote}${traceNote}${fauxNote}` };
       return {
-        note: `campagne ${r.code ?? '?'}${r.phase ? ` (phase ${r.phase})` : ''} : ${r.examined} élément(s) examiné(s), ${r.retried ?? 0} repris — ${JSON.stringify(r.outcomes)}${r.done ? (r.status === 'DONE_WITH_ERRORS' ? ` — parcours terminé, ${r.remainingErrors} erreur(s) maintenue(s) bloquante(s)` : ' — terminée') : ''}${purgeNote}${traceNote}`.slice(0, 1500),
+        note: `campagne ${r.code ?? '?'}${r.phase ? ` (phase ${r.phase})` : ''} : ${r.examined} élément(s) examiné(s), ${r.retried ?? 0} repris — ${JSON.stringify(r.outcomes)}${r.done ? (r.status === 'DONE_WITH_ERRORS' ? ` — parcours terminé, ${r.remainingErrors} erreur(s) maintenue(s) bloquante(s)` : ' — terminée') : ''}${purgeNote}${traceNote}${fauxNote}`.slice(0, 1500),
         again: r.more,
         // Lot 76 (C7 / C8) : erreurs maintenues ou traces abandonnées → passage signalé en erreur (jamais un faux succès).
         ...(r.errors > 0 && r.examined > 0 && r.errors >= r.examined ? { error: `${r.errors} carte(s) en erreur` }

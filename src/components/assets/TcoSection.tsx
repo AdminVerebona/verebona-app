@@ -40,13 +40,20 @@
  *     calculés par le serveur (`line.actions`). « Justificatif » ouvre le
  *     tiroir document existant (`TcoJustificatif`, bug de la page
  *     `/documents/<id>` corrigé).
+ *   · Lot 81D : aucune règle financière ici — le détail de l'année est la
+ *     sélection du moteur (`line.annualYear`, `?linesYear=` si la liste est
+ *     abrégée) ; brut / net de l'année, année « potentiellement incomplète »
+ *     (dépenses sans date), dépenses non réalisées (exclues des trois
+ *     indicateurs) ; moyenne sans seuil (« Valeur extrapolée… » fournie par le
+ *     moteur) ; actualisation automatique sur les événements de mutation
+ *     existants, regroupés (`./tco-refresh`), année choisie conservée.
  *
  * Aucun bouton « Modifier » du total : les corrections se font sur les
  * sources (fiche, document) ou par « Ajouter / Retirer du TCO » ligne par
  * ligne. Standard : présentation verrouillée, AUCUN montant reçu (403 serveur
  * avant toute lecture). Lecture seule (`canEdit` faux) : aucun geste.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
@@ -61,6 +68,8 @@ import { toast } from 'sonner';
 // Types seulement : les libellés viennent de la réponse (aucun module serveur ni registre dans le paquet client).
 import type { TcoDto } from '@/services/business-operations/tco/dto';
 import { TcoJustificatif } from './tco-justificatif';
+import { createCoalescedRefresh, type CoalescedRefresh } from '@/lib/home/coalesced-refresh';
+import { tcoKeptYear, TCO_REFRESH_WINDOW_MS, watchTcoMutations } from './tco-refresh';
 
 interface Props {
   assetId: number;
@@ -77,16 +86,18 @@ function ansFr(n: number): string {
   return `${v} an${n >= 2 ? 's' : ''}`;
 }
 
-/** Lot 76G : explication du TCO moyen annuel (calculé ou motif de non-calcul). */
+/** Lot 76G / 81D : explication du TCO moyen annuel (calculé ou motif de non-calcul) — aucun seuil de durée. */
 function moyenneExplication(a: Annual['average'], endSource: string): string {
   switch (a.status) {
     case 'COMPUTED': {
       const fin = endSource === 'TODAY' ? 'à aujourd’hui' : `au ${dateFr(a.end)}`;
-      return `Sur ${ansFr(a.years ?? 0)} de possession (du ${dateFr(a.start)} ${fin}).${a.extrapolated ? ' Moins d’un an de possession : valeur extrapolée.' : ''}`;
+      return `Sur ${a.days === 1 ? '1 jour' : (a.days ?? 0) < 365 ? `${a.days} jours` : ansFr(a.years ?? 0)} de possession (du ${dateFr(a.start)} ${fin}).`;
     }
     case 'ACQUISITION_DATE_MISSING': return 'Date d’achat inconnue : moyenne non calculée. Renseignez la date d’achat de la fiche.';
-    case 'ACQUISITION_DATE_INCOHERENT': return 'Date d’achat incohérente (postérieure à aujourd’hui ou à la cession) : moyenne non calculée.';
-    case 'TOO_RECENT': return `Moins de ${a.minDays} jours de possession : moyenne non calculée (elle serait trompeuse).`;
+    case 'ACQUISITION_DATE_INCOHERENT':
+      return a.incoherence === 'INVALID_DATE' ? 'Date d’achat impossible (jour inexistant) : moyenne non calculée. Corrigez la date d’achat de la fiche.'
+        : a.incoherence === 'AFTER_DISPOSAL' ? 'Date d’achat postérieure à la cession : moyenne non calculée. Vérifiez les dates de la fiche.'
+          : 'Date d’achat postérieure à aujourd’hui : moyenne non calculée. Vérifiez la date d’achat de la fiche.';
     default: return '';
   }
 }
@@ -239,44 +250,69 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const [amountError, setAmountError] = useState(false);
   useEffect(() => { if (!form) setAmountError(false); }, [form]);
   const [saving, setSaving] = useState(false);
-  const [refresh, setRefresh] = useState(0);
   // Lot 75D (J) : lignes des pages suivantes (chargement complémentaire), remises à zéro à chaque recalcul.
   const [extra, setExtra] = useState<Line[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
   // Lot 76G : année des « Dépenses de l'année » (null : année par défaut du calcul) — conservée aux recalculs.
   const [year, setYear] = useState<number | null>(null);
+  // Lot 81D : détail d'une année quand la liste est abrégée — lignes sélectionnées par le moteur (`?linesYear=`).
+  const [yearLines, setYearLines] = useState<{ year: number; lines: Line[]; total: number } | null>(null);
   const [retainedOpen, setRetainedOpen] = useState(false); // L76G : sous-tiroir fermé par défaut
   const [retainedFilter, setRetainedFilter] = useState<'ALL' | 'YEAR'>('ALL');
   const [excludedOpen, setExcludedOpen] = useState(false); // L80A : sous-tiroir des non retenues fermé par défaut
 
-  // Recalcul à chaque ouverture et après toute modification de la fiche (même événement que les autres sections).
+  // Lot 81D : lecture du TCO par le mécanisme existant de rafraîchissement regroupé (une lecture par rafale
+  // d'événements, réponses anciennes écartées, données affichées conservées pendant la relecture).
+  const coordinator = useRef<CoalescedRefresh | null>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
+  const hasData = useRef(false);
+  /** Écriture faite par le TCO lui-même en cours : son `verebona:data-mutated` ne relance pas de lecture. */
+  const ownWrite = useRef(false);
   useEffect(() => {
-    const handler = (e: Event) => {
-      const id = (e as CustomEvent<{ assetId?: number }>).detail?.assetId;
-      if (!id || id === assetId) setRefresh((n) => n + 1);
-    };
-    window.addEventListener('asset-details-updated', handler);
-    return () => window.removeEventListener('asset-details-updated', handler);
-  }, [assetId]);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(false);
-    try {
-      const r = await apiClient.get<{ tco: TcoDto; canEdit: boolean }>(`/api/assets/${assetId}/tco`);
-      setData(r.tco);
-      setExtra([]);
-      setCanEdit(!!r.canEdit && !readOnly);
-      setLocked(false);
-    } catch (e) {
-      if ((e as { code?: string }).code === 'PREMIUM_REQUIRED') { setLocked(true); setData(null); }
-      else { setError(true); setData(null); }
-    } finally {
-      setLoading(false);
-    }
+    const c = createCoalescedRefresh<{ tco: TcoDto; canEdit: boolean }>({
+      windowMs: TCO_REFRESH_WINDOW_MS,
+      load: ({ signal }) => apiClient.get<{ tco: TcoDto; canEdit: boolean }>(`/api/assets/${assetId}/tco`, { signal }),
+      apply: (r) => {
+        hasData.current = true;
+        setData(r.tco);
+        setExtra([]);
+        setYearLines(null);
+        setCanEdit(!!r.canEdit && !readOnly);
+        setLocked(false);
+        setError(false);
+      },
+      onError: (e) => {
+        if ((e as { code?: string }).code === 'PREMIUM_REQUIRED') { hasData.current = false; setLocked(true); setData(null); return; }
+        // Relecture d'arrière-plan en échec : les valeurs affichées restent ; premier chargement : erreur.
+        if (!hasData.current) { setError(true); setData(null); }
+      },
+      onBusyChange: setLoading,
+    });
+    coordinator.current = c;
+    return () => { c.dispose(); if (coordinator.current === c) coordinator.current = null; };
   }, [assetId, readOnly]);
 
-  useEffect(() => { if (open) void load(); }, [open, load, refresh]);
+  const load = useCallback(async () => { coordinator.current?.refreshNow(); }, []);
+
+  // Recalcul à chaque ouverture (et après « Réessayer »).
+  useEffect(() => { if (open) coordinator.current?.refreshNow(); }, [open, assetId, readOnly]);
+
+  // Lot 81D : actualisation automatique après toute mutation pertinente (événements existants, regroupés).
+  useEffect(() => {
+    // TCO_REFRESH_EVENTS : événements existants (`./tco-refresh`), regroupés par `createCoalescedRefresh`.
+    const stop = watchTcoMutations({
+      target: window, assetId, isOpen: () => openRef.current, isOwnWrite: () => ownWrite.current,
+      invalidate: () => coordinator.current?.invalidate(),
+    });
+    // Retour sur l'onglet : une analyse ou une consolidation a pu aboutir en arrière-plan.
+    const onVisible = () => { if (document.visibilityState === 'visible' && openRef.current) coordinator.current?.invalidate(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [assetId]);
 
   const loadMore = async () => {
     if (!data) return;
@@ -285,7 +321,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
       const offset = data.linesOffset + data.lines.length + extra.length;
       const r = await apiClient.get<{ tco: TcoDto }>(`/api/assets/${assetId}/tco?linesOffset=${offset}`);
       // Données recalculées entre-temps : on repart de la première page (aucun mélange de deux calculs).
-      if (r.tco.linesTotal !== data.linesTotal || r.tco.summary.cumulativeCostCents !== data.summary.cumulativeCostCents) { void load(); return; }
+      if (r.tco.linesTotal !== data.linesTotal || r.tco.summary.cumulativeCostCents !== data.summary.cumulativeCostCents) { coordinator.current?.refreshNow(); return; }
       const vus = new Set([...data.lines, ...extra].map((l) => l.id));
       setExtra((prev) => [...prev, ...r.tco.lines.filter((l) => !vus.has(l.id))]);
     } catch {
@@ -301,6 +337,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
     if (!montant.ok) { setAmountError(true); toast.error(`Montant : ${montant.error}`); return; }
     if (montant.cents == null) { toast.error('Le montant est requis'); return; }
     setSaving(true);
+    ownWrite.current = true;
     try {
       const body = {
         category: form.category, label: form.label.trim() || null, amountMinor: montant.cents, currency: 'EUR',
@@ -314,18 +351,23 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
     } catch (e) {
       toast.error((e as { serverMessage?: string }).serverMessage ?? 'Erreur lors de l’enregistrement');
     } finally {
+      ownWrite.current = false;
       setSaving(false);
     }
   };
 
   // Lot 80A : « Ajouter / Retirer du TCO » — décision persistée ; le serveur rend le TCO recalculé (totaux à jour).
   const decide: Decide = async (l, action, confirmDuplicate) => {
+    ownWrite.current = true;
     try {
       const r = await apiClient.post<{ tco: TcoDto; outcome: string }>(`/api/assets/${assetId}/tco/decisions`, {
         lineId: l.id, lineKey: l.decisionKey ?? null, action, confirmDuplicate,
       });
+      // Le serveur rend le TCO recalculé : toute lecture encore en vol est désormais obsolète.
+      coordinator.current?.supersede();
       setData(r.tco);
       setExtra([]);
+      setYearLines(null);
       toast.success(action === 'EXCLUDE' ? 'Dépense retirée du coût de possession' : 'Dépense ajoutée au coût de possession');
       return { ok: true };
     } catch (e) {
@@ -334,16 +376,21 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
       toast.error(err.serverMessage ?? 'La décision n’a pas pu être enregistrée');
       if (err.code === 'LINE_NOT_FOUND') void load();
       return { ok: false };
+    } finally {
+      ownWrite.current = false;
     }
   };
 
   const removeBudget = async (id: number) => {
+    ownWrite.current = true;
     try {
       await apiClient.delete(`/api/assets/${assetId}/usage-budgets/${id}`);
       await load();
       toast.success('Forfait supprimé');
     } catch {
       toast.error('Suppression impossible');
+    } finally {
+      ownWrite.current = false;
     }
   };
 
@@ -361,9 +408,26 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const ecartees = toutes.filter((l) => !RETENUE.has(l.status) && l.status !== 'OUT_OF_SCOPE');
   // Lot 76G : indicateurs annuels calculés par le moteur (aucun recalcul ici).
   const annual = t?.annual ?? null;
-  const anneeSel = annual ? (year != null && annual.years.some((y) => y.year === year) ? year : annual.defaultYear) : null;
+  const anneeSel = annual ? tcoKeptYear(year, annual.years, annual.defaultYear) : null;
   const anneeCourante = annual?.years.find((y) => y.year === anneeSel) ?? null;
-  const depensesFiltrees = retainedFilter === 'YEAR' && anneeSel != null ? depenses.filter((l) => l.date?.slice(0, 4) === String(anneeSel)) : depenses;
+  // Lot 81D : détail de l'année = lignes que le MOTEUR rattache à l'année (`annualYear`) — jamais un filtrage sur la
+  // date affichée ; liste abrégée : lignes de l'année demandées au serveur (`?linesYear=`).
+  const filtreAnnee = retainedFilter === 'YEAR' && anneeSel != null;
+  const lignesAnnee: Line[] | null = !filtreAnnee || !t ? null
+    : t.linesTruncated ? (yearLines?.year === anneeSel ? yearLines.lines : [])
+      : toutes.filter((l) => RETENUE.has(l.status) && l.annualYear === anneeSel);
+  const depensesFiltrees = lignesAnnee ? lignesAnnee.filter((l) => l.kind === 'REALIZED_COST') : depenses;
+  const creditsAnnee = lignesAnnee ? lignesAnnee.filter((l) => l.kind && NEGATIVE.has(l.kind)) : [];
+  const chargementAnnee = filtreAnnee && !!t?.linesTruncated && yearLines?.year !== anneeSel;
+  const besoinAnnee = retainedOpen && chargementAnnee ? anneeSel : null;
+  useEffect(() => {
+    if (besoinAnnee == null) return;
+    let actif = true;
+    apiClient.get<{ tco: TcoDto }>(`/api/assets/${assetId}/tco?linesYear=${besoinAnnee}&linesLimit=1000`)
+      .then((r) => { if (actif) setYearLines({ year: besoinAnnee, lines: r.tco.lines, total: r.tco.linesTotal }); })
+      .catch(() => { if (actif) toast.error('Chargement des dépenses de l’année impossible'); });
+    return () => { actif = false; };
+  }, [besoinAnnee, assetId, data]);
 
   return (
     <div id="asset-section-tco" className="border border-border rounded-lg overflow-hidden" data-asset-tco>
@@ -406,7 +470,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 <p className="text-[13px] font-semibold text-primary mb-1">Coût cumulé documenté</p>
                 <p className="text-2xl font-bold text-[color:var(--text-primary)] tabular-nums">{eur(t.summary.cumulativeCostCents)}</p>
                 <p className="text-xs text-muted-foreground mt-1">
-                  {t.period.start ? `Du ${dateFr(t.period.start)} ` : 'Date d’acquisition non renseignée — '}
+                  {t.annual?.average.incoherence ? 'Date d’acquisition incohérente — ' : t.period.start ? `Du ${dateFr(t.period.start)} ` : 'Date d’acquisition non renseignée — '}
                   {t.period.endSource === 'TODAY' ? 'à aujourd’hui' : `au ${dateFr(t.period.end)} (cession)`}
                 </p>
                 <div className="mt-3 divide-y divide-border">
@@ -434,7 +498,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                       <p className="text-xs text-muted-foreground">TCO total</p>
                       <p className="text-lg font-semibold text-[color:var(--text-primary)] tabular-nums">{eur(annual.average.totalCents)}</p>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Coût cumulé {t.period.start ? `depuis le ${dateFr(t.period.start)}` : 'documenté'}{t.period.endSource === 'TODAY' ? '' : ` jusqu’à la cession (${dateFr(t.period.end)})`}.
+                        Coût cumulé {t.period.start && !annual.average.incoherence ? `depuis le ${dateFr(t.period.start)}` : 'documenté'}{t.period.endSource === 'TODAY' ? '' : ` jusqu’à la cession (${dateFr(t.period.end)})`}.
                       </p>
                     </div>
                     <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="average" data-tco-average-status={annual.average.status}>
@@ -443,6 +507,9 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                         {annual.average.cents != null ? `${eur(annual.average.cents)} / an` : 'Non calculé'}
                       </p>
                       <p className="text-xs text-muted-foreground mt-1 break-words">{moyenneExplication(annual.average, t.period.endSource)}</p>
+                      {annual.average.extrapolationLabel && (
+                        <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-average-extrapolated>{annual.average.extrapolationLabel}.</p>
+                      )}
                       {annual.average.cents != null && annual.average.incomplete && (
                         <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5">Données manquantes : valeur incomplète (voir les alertes).</p>
                       )}
@@ -461,10 +528,18 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                       <p className="text-xs text-muted-foreground mt-1">
                         {anneeCourante.count === 0
                           ? `Aucune dépense datée du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)}.`
-                          : `${anneeCourante.count} dépense(s) réellement constatée(s) du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)}.`}
+                          : `${anneeCourante.count} dépense(s) réellement constatée(s) du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)} (montant brut).`}
                       </p>
-                      {anneeCourante.creditsCents > 0 && (
-                        <p className="text-xs text-muted-foreground mt-0.5">Avoirs, remboursements et indemnités de l’année : − {eur(anneeCourante.creditsCents)} (net {eur(anneeCourante.netCents)}).</p>
+                      {/* Lot 81D : brut et net de l'année, tels que calculés par le moteur. */}
+                      {anneeCourante.creditsCents !== 0 && (
+                        <p className="text-xs text-muted-foreground mt-0.5" data-tco-year-net={anneeCourante.netCents}>
+                          Avoirs, remboursements et indemnités : − {eur(anneeCourante.creditsCents)} · net de l’année {eur(anneeCourante.netCents)}.
+                        </p>
+                      )}
+                      {anneeCourante.possiblyIncomplete && (
+                        <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-year-incomplete>
+                          {anneeCourante.count === 0 ? 'Absence de dépense non certaine : ' : 'Montant potentiellement incomplet : '}des dépenses sans date ne sont rattachées à aucune année.
+                        </p>
                       )}
                     </div>
                   </div>
@@ -472,14 +547,14 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                     Le TCO moyen annuel est un coût annualisé : l’achat initial y est inclus, ce n’est donc pas le budget annuel récurrent d’utilisation.
                     Les dépenses de l’année sont les dépenses réellement constatées, à leur date, pendant l’année choisie.
                   </p>
-                  {annual.undated.count > 0 && (
+                  {(annual.undated.count > 0 || annual.undated.creditsCents > 0) && (
                     <p className="text-xs text-[color:var(--attention-on-soft)]" data-tco-annual-undated>
-                      {annual.undated.count} dépense(s) sans date ({eur(annual.undated.costsCents)}) : comptée(s) dans le TCO total, rattachée(s) à aucune année.
+                      {annual.undated.count} dépense(s) sans date fiable ({eur(annual.undated.costsCents)}) : comptée(s) dans le TCO total, rattachée(s) à aucune année — les montants par année peuvent être incomplets.
                     </p>
                   )}
-                  {annual.future.count > 0 && (
-                    <p className="text-xs text-[color:var(--attention-on-soft)]" data-tco-annual-future>
-                      {annual.future.count} dépense(s) datée(s) après aujourd’hui ({eur(annual.future.costsCents)}) : non encore réalisée(s), comptée(s) dans aucune année.
+                  {annual.notRealized.count > 0 && (
+                    <p className="text-xs text-muted-foreground" data-tco-annual-not-realized>
+                      {annual.notRealized.count} dépense(s) prévue(s) ou datée(s) après aujourd’hui{annual.notRealized.costsCents > 0 ? ` (${eur(annual.notRealized.costsCents)})` : ''} : non encore réalisée(s), comptée(s) dans aucun indicateur (voir « Dépenses non retenues »).
                     </p>
                   )}
                 </section>
@@ -666,7 +741,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
               <SheetTitle>{`Dépenses retenues (${depensesFiltrees.length}${t.linesTruncated ? ' · liste abrégée' : ''})`}</SheetTitle>
               <SheetDescription>
                 {retainedFilter === 'YEAR' && anneeCourante
-                  ? `Dépenses datées de ${anneeCourante.year} : ${eur(anneeCourante.costsCents)} (${anneeCourante.count} dépense(s)).`
+                  ? `Dépenses de ${anneeCourante.year} : ${eur(anneeCourante.costsCents)} bruts (${anneeCourante.count} dépense(s))${anneeCourante.creditsCents !== 0 ? `, net ${eur(anneeCourante.netCents)} après avoirs, remboursements et indemnités` : ''}.`
                   : `Toutes les dépenses retenues dans le coût cumulé (${eur(t.summary.cumulativeCostCents)}).`}
               </SheetDescription>
               {anneeCourante && (
@@ -682,21 +757,32 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
             </SheetHeader>
             <div className="flex-1 overflow-y-auto px-5 py-3">
               <div className="divide-y divide-border">
-                {depensesFiltrees.length === 0 && (
+                {chargementAnnee && <div className="flex justify-center py-4"><Loader2 className="w-4 h-4 animate-spin text-muted-foreground" /></div>}
+                {!chargementAnnee && depensesFiltrees.length === 0 && (
                   <p className="text-sm text-muted-foreground py-1.5">{retainedFilter === 'YEAR' ? 'Aucune dépense retenue datée de cette année.' : 'Aucune dépense retenue.'}</p>
                 )}
                 {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} />)}
               </div>
+              {/* Lot 81D : avoirs, remboursements et indemnités de l'année (net de l'indicateur, même sélection). */}
+              {creditsAnnee.length > 0 && (
+                <div className="pt-3" data-tco-retained-year-credits>
+                  <p className="vb-app-subsection m-0">Avoirs, remboursements et indemnités de l’année</p>
+                  <div className="divide-y divide-border">{creditsAnnee.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} />)}</div>
+                </div>
+              )}
               {retainedFilter === 'YEAR' && annual && annual.undated.count > 0 && (
                 <p className="text-xs text-muted-foreground pt-2">Les dépenses sans date ne sont rattachées à aucune année : choisissez « Toutes les années » pour les voir.</p>
               )}
-              {t.linesTruncated && restantes > 0 && (
+              {!filtreAnnee && t.linesTruncated && restantes > 0 && (
                 <div className="pt-3 space-y-2">
                   <p className="text-xs text-muted-foreground">Liste abrégée : {affichees} ligne(s) présentée(s) sur {t.linesTotal}. Les totaux portent sur toutes les lignes.</p>
                   <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void loadMore()} disabled={loadingMore}>
                     {loadingMore && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}Afficher les lignes suivantes ({restantes})
                   </Button>
                 </div>
+              )}
+              {filtreAnnee && yearLines && yearLines.year === anneeSel && yearLines.lines.length < yearLines.total && (
+                <p className="text-xs text-muted-foreground pt-2">Liste abrégée : {yearLines.lines.length} ligne(s) présentée(s) sur {yearLines.total}. Les totaux de l’année portent sur toutes les lignes.</p>
               )}
             </div>
           </SheetContent>

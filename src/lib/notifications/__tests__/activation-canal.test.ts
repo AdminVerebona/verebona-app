@@ -33,6 +33,9 @@ vi.mock('../outbox', () => ({
   claimByIds: async () => claimed,
   claimPending: async () => claimed,
   markProcessed: async (id: string, status: string) => { processed.push([id, status]); },
+  // Lot 81E : regroupement / reprise des événements regroupés.
+  markGrouped: async (id: string) => { processed.push([id, 'grouped']); },
+  reopenGroupedBy: async () => [],
   releaseOrFail: async () => {},
 }));
 

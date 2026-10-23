@@ -13,7 +13,7 @@
 
 import { db } from '@/db';
 import { notificationOutbox } from '@/db/schema';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { autoResolveNotificationChannels, reportNotificationFailure } from '@/services/admin/anomaly.service';
 
 // db et une transaction Drizzle partagent la même API de requête.
@@ -69,16 +69,57 @@ export async function claimByIds(ids: string[]): Promise<OutboxRow[]> {
   return result as unknown as OutboxRow[];
 }
 
-export type OutboxFinalStatus = 'sent' | 'partial' | 'failed';
+/**
+ * Statut terminal d'un événement traité (lot 81E) :
+ *   · sent    — au moins un canal a ENVOYÉ (accepté par le canal), aucun échec ;
+ *   · partial — au moins un canal envoyé ET au moins un canal en échec ;
+ *   · failed  — au moins un canal en échec, aucun envoyé ;
+ *   · skipped — aucun canal n'a envoyé, sans échec : canal supprimé ou
+ *               désactivé, sans destinataire, sans appareil, préférence…
+ *               (`outcome_reason` porte la cause). Jamais « envoyé », jamais
+ *               une anomalie technique.
+ */
+export type OutboxFinalStatus = 'sent' | 'partial' | 'failed' | 'skipped';
 
-export async function markProcessed(id: string, status: OutboxFinalStatus): Promise<void> {
+export async function markProcessed(id: string, status: OutboxFinalStatus, opts: { reason?: string | null } = {}): Promise<void> {
   await db.update(notificationOutbox)
-    .set({ status, processedAt: new Date(), attemptCount: sql`${notificationOutbox.attemptCount} + 1` })
+    .set({
+      status, processedAt: new Date(), attemptCount: sql`${notificationOutbox.attemptCount} + 1`,
+      outcomeReason: opts.reason ? opts.reason.slice(0, 200) : null,
+    })
     .where(eq(notificationOutbox.id, id));
   // Supervision (CDC BO SUP-008/009) : un canal en échec au traitement est un
   // échec final (pas de relance par canal) ; un canal délivré résout l'anomalie.
-  if (status !== 'failed') await autoResolveNotificationChannels(id);
-  if (status !== 'sent') await reportNotificationFailure(id);
+  // Lot 81E : un événement volontairement ignoré n'est pas un incident technique.
+  if (status === 'sent' || status === 'partial') await autoResolveNotificationChannels(id);
+  if (status === 'failed' || status === 'partial') await reportNotificationFailure(id);
+}
+
+/**
+ * Lot 81E — événement regroupé avec l'incident porté par `carrierId` : statut
+ * `grouped`, référence conservée (jamais compté envoyé, jamais une anomalie).
+ */
+export async function markGrouped(id: string, carrierId: string): Promise<void> {
+  await db.update(notificationOutbox)
+    .set({
+      status: 'grouped', processedAt: new Date(), groupedWithId: carrierId, outcomeReason: 'grouped_incident',
+      lastError: `grouped_with:${carrierId}`, attemptCount: sql`${notificationOutbox.attemptCount} + 1`,
+    })
+    .where(eq(notificationOutbox.id, id));
+}
+
+/**
+ * Lot 81E — l'événement qui portait un incident n'a été envoyé par AUCUN canal
+ * (échec, ignoré) : les événements regroupés avec lui sont remis en file — une
+ * information n'est jamais supprimée au profit d'une communication qui n'est
+ * pas partie. À leur traitement, le porteur en échec ne les absorbe plus.
+ */
+export async function reopenGroupedBy(carrierId: string): Promise<string[]> {
+  const rows = await db.update(notificationOutbox)
+    .set({ status: 'pending', groupedWithId: null, outcomeReason: 'carrier_not_sent', processedAt: null, scheduledFor: null })
+    .where(and(eq(notificationOutbox.groupedWithId, carrierId), eq(notificationOutbox.status, 'grouped')))
+    .returning({ id: notificationOutbox.id });
+  return rows.map((r: { id: string }) => r.id);
 }
 
 /** Remet un événement en file (échec technique retryable) ou le marque failed. */

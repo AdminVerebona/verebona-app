@@ -64,7 +64,7 @@ const ligneD = (t: ReturnType<typeof computeTco>, fileId: number) => t.lines.fil
 /** Cohérence 76G : Σ nets des années + non datées + futures = TCO total (aucun second moteur). */
 const coherent = (t: ReturnType<typeof computeTco>) => {
   const a = t.annual;
-  const somme = a.years.reduce((n, y) => n + y.netCents, 0) + a.undated.costsCents - a.undated.creditsCents + a.future.costsCents - a.future.creditsCents;
+  const somme = a.years.reduce((n, y) => n + y.netCents, 0) + a.undated.costsCents - a.undated.creditsCents;  // 81D : plus de dépenses « futures » retenues
   expect(somme).toBe(t.summary.cumulativeCostCents);
   expect(t.reliability.anomalies.filter((x) => x.code === 'SUM_MISMATCH' || x.code === 'DUPLICATE_COMPONENT')).toEqual([]);
 };
@@ -233,7 +233,7 @@ describe('L78B-§7 — chaises, maison, taxe foncière, prévisionnel / réalis�
     expect(computeTco(entree({ assetPrice: prix(49_000_000), operations: [contrat], componentProvenance: new Map([[e1.id, pv([43])], [e2.id, pv([44])]]) })).summary.cumulativeCostCents).toBe(49_009_000);
   });
 
-  it('L78B-05 — prévisionnel et réalisé : devis et facture de même montant comptés une fois ; échéance future non anticipée ; dépense réalisée datée future comptée et signalée (décision PO 76G)', () => {
+  it('L78B-05 — prévisionnel et réalisé : devis et facture de même montant comptés une fois ; échéance future non anticipée ; dépense réalisée datée future exclue (81D)', () => {
     const devis = comp('FORECAST_COST', 150_000, { economicDate: '2026-03-01' });
     const facture = comp('REALIZED_COST', 150_000, { economicDate: '2026-04-01' });
     const o = op(60, 'INTERVENTION', [devis, facture], { realizedDate: '2026-04-01' });
@@ -252,11 +252,13 @@ describe('L78B-§7 — chaises, maison, taxe foncière, prévisionnel / réalis�
     }));
     expect(d.summary.cumulativeCostCents).toBe(49_150_000);
     expect(ligneD(d, 55)[0]).toMatchObject({ status: 'FORECAST', reason: 'FUTURE_INSTALLMENT' });
-    // Décision PO 76G : une dépense RÉALISÉE datée dans le futur est comptée au total, hors de toute année, signalée.
+    // Lot 81D (le ticket du 22/10 prime sur la décision PO 76G) : une dépense datée après la date de référence n'est pas
+    // réalisée — exclue du TCO total, de la moyenne et de toute année, conservée avec son motif et signalée.
     const futur = comp('REALIZED_COST', 20_000, { economicDate: '2026-12-01' });
     const f = computeTco(entree({ assetPrice: prix(49_000_000), operations: [op(61, 'INTERVENTION', [futur], { realizedDate: '2026-12-01' })], componentProvenance: new Map([[futur.id, pv([56])]]) }));
-    expect(f.summary.cumulativeCostCents).toBe(49_020_000);
-    expect(f.annual.future).toMatchObject({ count: 1, costsCents: 20_000 });
+    expect(f.summary.cumulativeCostCents).toBe(49_000_000);
+    expect(f.annual.notRealized).toMatchObject({ count: 1, costsCents: 20_000 });
+    expect(f.reliability.warnings).toEqual(expect.arrayContaining(['NOT_REALIZED_EXPENSES', 'STATUS_CONTRADICTIONS']));
     coherent(f);
   });
 

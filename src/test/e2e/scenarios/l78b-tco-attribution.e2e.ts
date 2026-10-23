@@ -48,7 +48,7 @@ scenario('L78B', 'TCO — attribution des montants, doublons financiers, pertine
     VALUES (${compte.id}, ${assetId}, 'acquisitionPrice', ${String(eur)}::jsonb, 'document', ${fileId}, 'certain', ${`e2e-l78b-${fileId}`}, ${`Prix ${eur} €`})`;
   const coherent = (t: Awaited<ReturnType<typeof tco>>) => {
     const a = t.annual;
-    expect(a.years.reduce((n, y) => n + y.netCents, 0) + a.undated.costsCents - a.undated.creditsCents + a.future.costsCents - a.future.creditsCents)
+    expect(a.years.reduce((n, y) => n + y.netCents, 0) + a.undated.costsCents - a.undated.creditsCents) // 81D : plus de « futures » retenues
       .toBe(t.summary.cumulativeCostCents);
     expect(t.reliability.anomalies.filter((x) => x.code === 'SUM_MISMATCH' || x.code === 'DUPLICATE_COMPONENT')).toEqual([]);
   };

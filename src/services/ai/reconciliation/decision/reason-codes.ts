@@ -47,6 +47,9 @@ export const REASON_CODES = {
   ALREADY_DECIDED: 'Décision identique déjà prise sur cette version',
   // Lot 76J : texte libre (description, notes) jamais réécrit automatiquement.
   FREE_TEXT_PROTECTED: 'Texte libre en place : jamais réécrit automatiquement',
+  // Lot 81A : proposition équivalente à la valeur en place après normalisation
+  // métier — aucun arbitrage (ni carte, ni fermeture d'une carte existante).
+  EQUIVALENT_VALUES: 'Valeurs équivalentes après normalisation : aucun arbitrage',
   // Historique : observation de la réconciliation négative (mode retiré au
   // lot 16b-3) — libellés conservés pour relire les décisions déjà en base.
   SHADOW_WOULD_RETRACT: 'Observation : cette valeur automatique serait retirée',

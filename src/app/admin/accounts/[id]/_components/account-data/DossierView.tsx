@@ -6,19 +6,44 @@
  * Chaque champ, cellule de relation et ligne de table a une action « Copier »
  * accessible au clavier, qui copie la valeur COMPLÈTE (jamais la version
  * tronquée de l'écran). Les états absent / NULL / masqué / non chargé sont
- * affichés explicitement. Les longues tables sont repliées à l'écran (50
- * lignes, « Afficher tout ») : la copie et l'export restent intégraux.
+ * affichés explicitement.
+ *
+ * Lot 81C — CONSULTATION PAGINÉE PAR LE SERVEUR : une section tabulaire ou
+ * de relations affiche une page (50 lignes) et son total RÉEL en base ;
+ * navigation jusqu'à la dernière page et recherche sur TOUTES les lignes
+ * (serveur) ; jamais de chargement massif dans le navigateur. La copie et le
+ * CSV d'une section sont générés par le SERVEUR (export intégral), jamais
+ * depuis la page affichée.
  */
 import { useState, type ReactNode } from 'react';
-import { Check, Copy, Download } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Copy, Download, Loader2, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import {
-  CELL_STATE_LABELS, ENTITY_LABELS, cellState, fieldCopyText, rawText, sectionToCsv,
-  type DossierField, type DossierRelation, type DossierSection, type DossierTable, type EntityType,
+  CELL_STATE_LABELS, DOSSIER_PAGE_SIZE, ENTITY_LABELS, cellState, fieldCopyText, rawText, sectionToCsv,
+  type DossierField, type DossierRelation, type DossierSection, type DossierTable, type DossierWindow, type EntityType, type ExportFormat,
 } from '@/services/admin/account-data/model';
 import { copyText } from '@/app/admin/ai-executions/_components/CopyJson';
 
-export const SCREEN_ROWS = 50;
+/** Taille de page de la consultation (pagination serveur). */
+export const SCREEN_ROWS = DOSSIER_PAGE_SIZE;
+
+/** Entier lisible (« 17 938 »). */
+export const fmtInt = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+
+/** Actions serveur d'une section (tiroir) : page / recherche, export intégral, copie intégrale. */
+export interface SectionActions {
+  loadPage: (sectionId: string, offset: number, q: string | null) => Promise<void>;
+  exportUrl: (sectionId: string, format: ExportFormat) => string;
+  copySection: (s: DossierSection) => Promise<void>;
+}
+
+/** Vrai si la section affichée ne contient pas tous ses éléments (fenêtre ou recherche). */
+export function isPartialView(s: DossierSection): boolean {
+  const w = s.window;
+  if (!w) return false;
+  const shown = s.table?.rows.length ?? s.relations?.length ?? 0;
+  return w.query ? true : (w.total ?? 0) > shown;
+}
 
 /** Copie avec confirmation discrète ; le tiroir reste ouvert. */
 export async function copyWithFeedback(text: string, what: string): Promise<boolean> {
@@ -112,9 +137,14 @@ export function FieldsList({ fields }: { fields: DossierField[] }) {
   );
 }
 
-export function RelationsList({ relations, onNavigate }: { relations: DossierRelation[]; onNavigate: (type: EntityType, id: number) => void }) {
-  if (!relations.length) return <p className="text-xs text-muted-foreground italic">Aucune relation.</p>;
+export function RelationsList({ relations, onNavigate, window: w, onPage, busy = false }: {
+  relations: DossierRelation[]; onNavigate: (type: EntityType, id: number) => void;
+  window?: DossierWindow; onPage?: (offset: number, q: string | null) => void; busy?: boolean;
+}) {
+  if (!relations.length && !w?.query) return <p className="text-xs text-muted-foreground italic">Aucune relation.</p>;
   return (
+    <div className="space-y-2">
+    {w && onPage && <Pager w={w} shown={relations.length} onPage={onPage} busy={busy} unit="relation(s)" />}
     <ul className="divide-y">
       {relations.map((r, i) => (
         <li key={`${r.type}-${r.id}-${i}`} className="flex items-start gap-2 py-1.5">
@@ -130,6 +160,48 @@ export function RelationsList({ relations, onNavigate }: { relations: DossierRel
         </li>
       ))}
     </ul>
+    </div>
+  );
+}
+
+/**
+ * Pagination SERVEUR d'une section : total réel, page courante, première /
+ * précédente / suivante / dernière, recherche sur toutes les lignes.
+ * Desktop : une ligne ; mobile : boutons d'au moins 32 px qui passent à la ligne.
+ */
+export function Pager({ w, shown, onPage, busy, unit = 'ligne(s)' }: { w: DossierWindow; shown: number; onPage: (offset: number, q: string | null) => void; busy: boolean; unit?: string }) {
+  const [q, setQ] = useState(w.query ?? '');
+  const size = w.size ?? DOSSIER_PAGE_SIZE;
+  const count = w.query ? (w.matched ?? 0) : (w.total ?? 0);
+  const pages = Math.max(1, Math.ceil(count / size));
+  const page = Math.floor(w.offset / size) + 1;
+  const go = (p: number) => onPage(Math.max(0, Math.min(pages - 1, p - 1)) * size, w.query ?? null);
+  const btn = 'inline-flex h-8 w-8 sm:h-7 sm:w-7 items-center justify-center rounded border text-[color:var(--text-muted)] hover:bg-[color:var(--bg-hover)] disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--accent)]';
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-muted-foreground" data-pager>
+      <span>
+        {count ? `${unit === 'ligne(s)' ? 'Lignes' : 'Éléments'} ${fmtInt(w.offset + 1)}–${fmtInt(w.offset + shown)} sur ${fmtInt(count)}` : 'Aucun résultat'}
+        {w.query ? ` correspondant à « ${w.query} » (${fmtInt(w.total ?? 0)} en base)` : ` ${unit} en base`}
+      </span>
+      {pages > 1 && (
+        <span className="inline-flex items-center gap-1" role="group" aria-label="Pagination">
+          <button type="button" className={btn} disabled={busy || page <= 1} onClick={() => go(1)} aria-label="Première page"><ChevronsLeft className="h-3.5 w-3.5" /></button>
+          <button type="button" className={btn} disabled={busy || page <= 1} onClick={() => go(page - 1)} aria-label="Page précédente"><ChevronLeft className="h-3.5 w-3.5" /></button>
+          <span className="tabular-nums px-1">Page {fmtInt(page)} / {fmtInt(pages)}</span>
+          <button type="button" className={btn} disabled={busy || page >= pages} onClick={() => go(page + 1)} aria-label="Page suivante"><ChevronRight className="h-3.5 w-3.5" /></button>
+          <button type="button" className={btn} disabled={busy || page >= pages} onClick={() => go(pages)} aria-label="Dernière page"><ChevronsRight className="h-3.5 w-3.5" /></button>
+        </span>
+      )}
+      {((w.total ?? 0) > size || w.query) && (
+        <form className="inline-flex items-center gap-1" onSubmit={(e) => { e.preventDefault(); onPage(0, q.trim() || null); }} role="search">
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Rechercher dans toutes les lignes" aria-label="Rechercher dans toutes les lignes de la section"
+            className="h-8 sm:h-7 w-44 sm:w-56 rounded border bg-background px-2 text-[11px] text-foreground" maxLength={200} />
+          <button type="submit" className={btn} disabled={busy} aria-label="Rechercher"><Search className="h-3.5 w-3.5" /></button>
+          {w.query && <button type="button" className="underline" disabled={busy} onClick={() => { setQ(''); onPage(0, null); }}>Effacer</button>}
+        </form>
+      )}
+      {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-label="Chargement" />}
+    </div>
   );
 }
 
@@ -140,39 +212,40 @@ function Cell({ v }: { v: unknown }) {
   return <span className="block max-w-[22rem] truncate" title={t.length > 2000 ? `${t.slice(0, 2000)}… (copier la ligne pour la valeur complète)` : t}>{t}</span>;
 }
 
-export function TableView({ table }: { table: DossierTable }) {
-  const [all, setAll] = useState(false);
-  if (!table.rows.length) return <p className="text-xs text-muted-foreground italic">Aucune ligne en base ({table.table}).</p>;
-  const rows = all ? table.rows : table.rows.slice(0, SCREEN_ROWS);
+export function TableView({ table, window: w, onPage, busy = false }: {
+  table: DossierTable; window?: DossierWindow; onPage?: (offset: number, q: string | null) => void; busy?: boolean;
+}) {
+  if (!table.rows.length && !w?.query) return <p className="text-xs text-muted-foreground italic">Aucune ligne en base ({table.table}).</p>;
+  const off = w?.offset ?? 0;
   return (
     <div className="space-y-2">
-      <div className="overflow-x-auto -mx-4 px-4">
-        <table className="w-full text-[11px]">
-          <thead>
-            <tr className="text-left text-muted-foreground border-b">
-              <th className="px-1 py-1 w-7"><span className="sr-only">Copier</span></th>
-              {table.columns.map((c) => <th key={c} className="px-2 py-1 font-mono font-medium whitespace-nowrap">{c}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i} className="border-b last:border-b-0 align-top">
-                <td className="px-1 py-1"><CopyButton text={() => JSON.stringify(r, null, 2)} label={`la ligne ${i + 1} (JSON)`} /></td>
-                {table.columns.map((c) => <td key={c} className="px-2 py-1"><Cell v={r[c]} /></td>)}
+      {w && onPage && <Pager w={w} shown={table.rows.length} onPage={onPage} busy={busy} />}
+      {table.rows.length > 0 && (
+        <div className="overflow-x-auto -mx-4 px-4">
+          <table className="w-full text-[11px]">
+            <thead>
+              <tr className="text-left text-muted-foreground border-b">
+                <th className="px-1 py-1 w-7"><span className="sr-only">Copier</span></th>
+                {table.columns.map((c) => <th key={c} className="px-2 py-1 font-mono font-medium whitespace-nowrap">{c}</th>)}
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-[11px] text-muted-foreground">
-        {table.rows.length} ligne(s) extraite(s){table.total !== null ? ` sur ${table.total} en base` : ''}
-        {!table.complete && <span className="text-[color:var(--text-danger)] font-medium"> — extraction incomplète (borne {table.limit})</span>}
-        {table.rows.length > SCREEN_ROWS && (
-          <button type="button" className="ml-2 underline" onClick={() => setAll(!all)}>
-            {all ? `Replier (${SCREEN_ROWS} lignes)` : `Afficher les ${table.rows.length} lignes`}
-          </button>
-        )}
-      </p>
+            </thead>
+            <tbody>
+              {table.rows.map((r, i) => (
+                <tr key={off + i} className="border-b last:border-b-0 align-top">
+                  <td className="px-1 py-1"><CopyButton text={() => JSON.stringify(r, null, 2)} label={`la ligne ${off + i + 1} (JSON)`} /></td>
+                  {table.columns.map((c) => <td key={c} className="px-2 py-1"><Cell v={r[c]} /></td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!w && (
+        <p className="text-[11px] text-muted-foreground">
+          {fmtInt(table.rows.length)} ligne(s){table.total !== null ? ` sur ${fmtInt(table.total)} en base` : ''}
+          {!table.complete && <span className="text-[color:var(--text-danger)] font-medium"> — lecture incomplète</span>}
+        </p>
+      )}
     </div>
   );
 }
@@ -189,14 +262,30 @@ function downloadText(text: string, fileName: string, type: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function SectionCard({ s, onNavigate, csvName, extra }: {
+export function SectionCard({ s, onNavigate, csvName, extra, actions }: {
   s: DossierSection;
   onNavigate: (type: EntityType, id: number) => void;
   /** Nom du CSV de section (même convention que l'export serveur). */
   csvName: (sectionId: string) => string;
   extra?: ReactNode;
+  /** Lot 81C : pagination, export et copie INTÉGRAUX par le serveur (tiroir). */
+  actions?: SectionActions;
 }) {
-  const csv = () => sectionToCsv(s);
+  const [busy, setBusy] = useState(false);
+  const partial = isPartialView(s);
+  const onPage = actions ? (offset: number, q: string | null) => {
+    setBusy(true);
+    actions.loadPage(s.id, offset, q).catch((e) => toast.error(`Chargement impossible : ${e instanceof Error ? e.message : 'erreur'}`)).finally(() => setBusy(false));
+  } : undefined;
+  const copyJson = async () => {
+    if (actions && (partial || s.window)) {
+      setBusy(true);
+      try { await actions.copySection(s); } finally { setBusy(false); }
+      return;
+    }
+    await copyWithFeedback(JSON.stringify(s, null, 2), `la section « ${s.title} » (JSON)`);
+  };
+  const dlCls = 'inline-flex h-7 w-7 sm:h-6 sm:w-6 items-center justify-center rounded text-[color:var(--text-muted)] hover:bg-[color:var(--bg-hover)] hover:text-[color:var(--text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--accent)]';
   return (
     <section className="rounded-xl border bg-card" data-section={s.id}>
       <div className="flex items-start justify-between gap-2 px-4 py-2.5 border-b">
@@ -205,26 +294,34 @@ export function SectionCard({ s, onNavigate, csvName, extra }: {
           {s.description && <p className="text-[11px] text-muted-foreground">{s.description}</p>}
         </div>
         <div className="flex items-center gap-0.5 shrink-0">
-          <CopyButton text={() => JSON.stringify(s, null, 2)} label={`la section « ${s.title} » (JSON)`} />
-          {!s.error && (
+          <button type="button" aria-label={`Copier la section « ${s.title} » (JSON${s.window ? ', intégrale' : ''})`} title={s.window ? 'Copier la section entière (générée par le serveur)' : 'Copier la section (JSON)'}
+            onClick={(e) => { e.stopPropagation(); void copyJson(); }} className={dlCls} disabled={busy}>
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+          {!s.error && (actions ? (
+            <a href={actions.exportUrl(s.id, 'csv')} download aria-label={`Télécharger la section « ${s.title} » en CSV`} title="Télécharger la section entière (CSV généré par le serveur)" className={dlCls}>
+              <Download className="h-3.5 w-3.5" />
+            </a>
+          ) : (
             <button
               type="button"
               aria-label={`Télécharger la section « ${s.title} » en CSV`}
-              title="Télécharger cette section (CSV)"
-              onClick={() => { const t = csv(); if (t) downloadText(t, csvName(s.id), 'text/csv;charset=utf-8'); }}
-              className="inline-flex h-7 w-7 sm:h-6 sm:w-6 items-center justify-center rounded text-[color:var(--text-muted)] hover:bg-[color:var(--bg-hover)] hover:text-[color:var(--text-primary)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[color:var(--accent)]"
+              title={partial ? 'Export intégral : depuis le tiroir (serveur)' : 'Télécharger cette section (CSV)'}
+              disabled={partial}
+              onClick={() => { const t = sectionToCsv(s); if (t) downloadText(t, csvName(s.id), 'text/csv;charset=utf-8'); }}
+              className={dlCls}
             >
               <Download className="h-3.5 w-3.5" />
             </button>
-          )}
+          ))}
         </div>
       </div>
       <div className="px-4 py-2.5 space-y-2">
         {s.error && <StateBadge state="not_loaded" note={s.error} />}
         {extra}
         {s.fields && <FieldsList fields={s.fields} />}
-        {s.relations && <RelationsList relations={s.relations} onNavigate={onNavigate} />}
-        {s.table && <TableView table={s.table} />}
+        {s.relations && <RelationsList relations={s.relations} onNavigate={onNavigate} window={s.window} onPage={onPage} busy={busy} />}
+        {s.table && <TableView table={s.table} window={s.window} onPage={onPage} busy={busy} />}
       </div>
     </section>
   );

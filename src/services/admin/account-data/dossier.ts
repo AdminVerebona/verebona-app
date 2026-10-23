@@ -6,8 +6,9 @@
  *
  *   · toutes les requêtes sont écrites ici, par type d'entité (aucune table
  *     ni colonne fournie par l'appelant) ; chacune est bornée au compte ;
- *   · une transaction `READ ONLY` par dossier (`readOnlyExecutor`) : une
- *     écriture serait refusée par PostgreSQL lui-même ;
+ *   · une transaction `REPEATABLE READ, READ ONLY` par dossier
+ *     (`withReadSession`, lot 81C) : un seul instantané pour toutes les
+ *     sections ; une écriture serait refusée par PostgreSQL lui-même ;
  *   · l'entité est d'abord relue PAR LE COMPTE (bien parent pour un
  *     équipement / une pièce) : une entité d'un autre compte est « introuvable »
  *     (404), jamais servie ;
@@ -15,33 +16,30 @@
  *     (`buildCanonicalAssetState`, `loadEntityRow` + `buildCanonicalEntityState`),
  *     Opérations par `OperationDiagnosticsService.detail` : aucune règle de
  *     consolidation n'est réécrite ; aucun traitement IA n'est déclenché ;
- *   · sections tabulaires lues par lots de `CHUNK` lignes jusqu'à
- *     `SECTION_LIMIT` (borne explicite) : au-delà, la section est marquée
- *     incomplète et le dossier aussi (avertissement, jamais de troncature
- *     silencieuse) ;
+ *   · lot 81C — AUCUN PLAFOND D'EXTRACTION : chaque section tabulaire ou de
+ *     relations est une SOURCE (requête écrite ici, ordre total) lue
+ *     · en consultation (tiroir) : par PAGE (`DOSSIER_PAGE_SIZE`, navigation
+ *       jusqu'à la dernière ligne, recherche serveur) avec son total réel ;
+ *     · à l'export (`export.ts`) : INTÉGRALEMENT, par curseur, lot par lot,
+ *       décompte attendu et statut COMPLETE / PARTIAL / FAILED par section ;
  *   · masquage (`maskRow`) avant toute sortie : le tiroir, la copie et les
  *     exports partagent donc les mêmes restrictions.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import {
-  DIAG_STATEMENT_TIMEOUT_MS, readOnlyExecutor, OperationDiagnosticsService, type DiagExecutor, type DiagQuery, type OperationDetail,
+  OPERATION_DETAIL_LISTS, OperationDiagnosticsService, type DiagExecutor, type DiagQuery, type OperationDetail,
 } from '@/services/business-operations/diagnostics/service';
-import { DETAIL_LIMIT } from '@/services/business-operations/diagnostics/model';
 import { CANONICAL_FIELDS, getField, resolveAlias, type CanonicalFieldDef } from '@/services/canonical/registry';
 import { buildCanonicalAssetState, fromMirrorColumn, parseKc, sameCanonicalValue, type AssetRowJson, type SqlRunner, type CanonicalFieldState } from '@/services/canonical/asset-state';
 import { ENTITY_MIRRORS, buildCanonicalEntityState, loadEntityRow } from '@/services/canonical/entity-state';
 import { fromEntityMirror, mirrorId } from '@/services/canonical/entity-state/entity-view';
 import { ASSET_STATUS_LABELS } from '@/lib/asset-status';
 import {
-  ACCOUNT_DATA_SCHEMA, ENTITY_LABELS, ENTITY_TABLES, columnField, formatEur, formatMinor, isMarker, kcBaseKey, maskDeep, maskRow,
-  originLabel, rowFields, type DossierField, type DossierRelation, type DossierSection, type DossierTable, type EntityDossier,
+  ACCOUNT_DATA_SCHEMA, DOSSIER_PAGE_MAX, DOSSIER_PAGE_SIZE, ENTITY_LABELS, ENTITY_TABLES, columnField, formatEur, formatMinor, isMarker, kcBaseKey,
+  maskDeep, maskRow, originLabel, rowFields, type DossierField, type DossierRelation, type DossierSection, type DossierWindow, type EntityDossier,
   type EntityType, type MaskOptions, type Tab,
 } from './model';
-
-/** Borne explicite d'une section tabulaire (lignes). */
-export const SECTION_LIMIT = 2000;
-/** Taille d'un lot de lecture interne. */
-export const CHUNK = 500;
+import { countRows, decodeJsonRow, jsonBatches, withReadSession, type ReadSession, type SessionWrap } from './session';
 
 export class EntityNotFoundError extends Error {
   constructor() { super('Entité introuvable dans ce compte'); }
@@ -70,39 +68,35 @@ function maskAssetRow(row: Row): Row {
 const num = (v: unknown) => Number(v ?? 0);
 const str = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
 
-/** Point de reprise : exécute `fn` dans une sous-transaction (SAVEPOINT postgres.js). */
-export type Savepoint = <T>(fn: (q: DiagQuery) => Promise<T>) => Promise<T>;
-/** Session de lecture d'un dossier : requêtes + points de reprise (null : sans reprise, tests). */
-export type DossierExecutor = <T>(fn: (q: DiagQuery, savepoint: Savepoint | null) => Promise<T>) => Promise<T>;
+/** Session de lecture d'un dossier (instantané, curseur, points de reprise). */
+export type DossierExecutor = <T>(fn: (s: ReadSession) => Promise<T>) => Promise<T>;
 
 /**
- * Transaction READ ONLY avec délai côté base et POINTS DE REPRISE réels :
- * postgres.js fait échouer toute la transaction dès qu'une requête échoue,
- * même rattrapée ; chaque section s'exécute donc dans `tx.savepoint`, pour
- * qu'une section en erreur n'empêche pas la lecture des suivantes.
- * `wrap` : interception des requêtes (tests de panne).
+ * Session REPEATABLE READ READ ONLY avec délai côté base et POINTS DE
+ * REPRISE réels (`SAVEPOINT`) : une section en erreur n'empêche pas la
+ * lecture des suivantes. `wrap` : interception des requêtes (fonction) ou
+ * des requêtes ET des curseurs (objet) — tests de panne.
  */
-export function readOnlyDossierExecutor(wrap: (q: DiagQuery) => DiagQuery = (q) => q): DossierExecutor {
-  return async <T>(fn: (q: DiagQuery, savepoint: Savepoint | null) => Promise<T>): Promise<T> => {
-    const { pgClient } = await import('@/db');
-    type Tx = { unsafe: (sql: string, params?: never[]) => Promise<unknown>; savepoint: (cb: (sp: Tx) => Promise<unknown>) => Promise<unknown> };
-    const out = await pgClient.begin('read only', async (tx) => {
-      await tx.unsafe(`SET LOCAL statement_timeout = ${DIAG_STATEMENT_TIMEOUT_MS}`);
-      const mk = (t: Tx): DiagQuery => wrap(async (sql, params = []) => (await t.unsafe(sql, params as never[])) as unknown as Row[]);
-      const savepoint: Savepoint = <R>(f: (q: DiagQuery) => Promise<R>) => (tx as unknown as Tx).savepoint((sp) => f(mk(sp))) as Promise<R>;
-      return [await fn(mk(tx as unknown as Tx), savepoint)];
-    });
-    return (out as unknown as T[])[0];
-  };
+export function readOnlyDossierExecutor(wrap?: ((q: DiagQuery) => DiagQuery) | SessionWrap): DossierExecutor {
+  const w: SessionWrap = typeof wrap === 'function' ? { q: wrap } : (wrap ?? {});
+  return <T>(fn: (s: ReadSession) => Promise<T>) => withReadSession(fn, w);
 }
 
+/** Source d'une section : requête écrite ici (table / relations) ou lignes calculées (moteur existant). */
+export type SectionSource =
+  | { kind: 'table'; table: string; sql: string; params: unknown[] }
+  | { kind: 'relations'; sql: string; params: unknown[] }
+  | { kind: 'static'; table: string; rows: Row[] };
+
 interface Ctx {
+  s: ReadSession;
   q: DiagQuery;
-  savepoint: Savepoint | null;
   accountId: number;
-  limit: number;
   warnings: string[];
   sections: DossierSection[];
+  sources: Map<string, SectionSource>;
+  /** Consultation d'UNE section (page suivante, recherche) : les autres ne sont pas lues. */
+  only: string | null;
 }
 
 // ── Primitives ──────────────────────────────────────────────────────────────
@@ -111,53 +105,38 @@ interface Ctx {
 async function oneRow(q: DiagQuery, sql: string, params: unknown[]): Promise<Row | null> {
   const [r] = await q(`SELECT row_to_json(t) AS r FROM (${sql}) t`, params);
   if (!r) return null;
-  const v = r.r;
-  return (typeof v === 'string' ? JSON.parse(v) : v) as Row;
+  return decodeJsonRow(r.r);
 }
 
-/** Lignes en JSON PostgreSQL (valeurs fidèles : numeric en nombre, dates ISO), bornées par l'appelant. */
+/** Lignes en JSON PostgreSQL (valeurs fidèles : numeric en nombre, dates ISO) — lectures de synthèse ; masquées. */
 async function jsonRows(q: DiagQuery, sql: string, params: unknown[]): Promise<Row[]> {
   const rows = await q(`SELECT row_to_json(t) AS r FROM (${sql}) t`, params);
-  return rows.map((x) => maskRow((typeof x.r === 'string' ? JSON.parse(x.r as string) : x.r) as Row, MASK));
+  return rows.map((x) => maskRow(decodeJsonRow(x.r), MASK));
 }
 
-/** Lignes d'une section, par lots, jusqu'à la borne ; masquées. */
-export async function readTable(q: DiagQuery, table: string, sql: string, params: unknown[], limit = SECTION_LIMIT): Promise<DossierTable> {
-  const rows: Row[] = [];
-  let offset = 0;
-  let more = true;
-  while (more && rows.length <= limit) {
-    const lot = await q(`SELECT row_to_json(t) AS r FROM (${sql} LIMIT ${CHUNK} OFFSET ${offset}) t`, params);
-    for (const x of lot) rows.push((typeof x.r === 'string' ? JSON.parse(x.r as string) : x.r) as Row);
-    more = lot.length === CHUNK;
-    offset += CHUNK;
-  }
-  const complete = rows.length <= limit;
-  let total: number | null = rows.length;
-  if (!complete) {
-    const [c] = await q(`SELECT count(*)::int AS n FROM (${sql}) c`, params);
-    total = num(c?.n);
-  }
-  const kept = rows.slice(0, limit).map((r) => maskRow(r, MASK));
-  const columns = kept.length ? Object.keys(kept[0]) : [];
-  return { table, columns, rows: kept, total, complete, limit };
+/** Masquage d'une ligne de section (tiroir, copie, exports : mêmes restrictions). */
+export const maskSectionRow = (r: Row): Row => maskRow(r, MASK);
+
+/** Relation d'une ligne de requête (colonnes : type, id, label, nature, status, origin, via). */
+export function toRelation(r: Row): DossierRelation {
+  return {
+    type: String(r.type) as EntityType, id: num(r.id), label: str(r.label) ?? `#${r.id}`, nature: String(r.nature),
+    status: str(r.status), origin: str(r.origin), via: String(r.via),
+  };
 }
 
-async function section(ctx: Ctx, s: { id: string; tab: Tab; title: string; description?: string }, build: () => Promise<Partial<DossierSection>>): Promise<void> {
+const errCode = (e: unknown): string | undefined => (e as { code?: string })?.code;
+
+async function section(ctx: Ctx, s: { id: string; tab: Tab; title: string; description?: string }, build: () => Promise<Partial<DossierSection> | null>): Promise<void> {
+  if (ctx.only && s.id !== ctx.only) return;
   // Point de reprise : une section en erreur n'interrompt pas la transaction
   // de lecture (les sections suivantes restent lisibles).
-  const outer = ctx.q;
-  const run = (): Promise<Partial<DossierSection>> => (ctx.savepoint
-    ? ctx.savepoint(async (sq) => { ctx.q = sq; try { return await build(); } finally { ctx.q = outer; } })
-    : build());
   try {
-    const out = { ...s, ...(await run()) } as DossierSection;
-    if (out.table && !out.table.complete) {
-      ctx.warnings.push(`Section « ${s.title} » : ${out.table.rows.length} ligne(s) extraite(s) sur ${out.table.total ?? '?'} (borne ${out.table.limit}).`);
-    }
-    ctx.sections.push(out);
+    const built = await ctx.s.savepoint(build);
+    if (built === null) return; // section sans objet (aucune ligne de détail)
+    ctx.sections.push({ ...s, ...built } as DossierSection);
   } catch (e) {
-    const code = (e as { code?: string })?.code;
+    const code = errCode(e);
     if (code === '25006') throw e; // une écriture tentée est une erreur de programmation : jamais masquée
     console.error(`[admin/account-data] section ${s.id} :`, (e as Error)?.message ?? e);
     ctx.warnings.push(`Section « ${s.title} » non chargée (erreur de lecture${code ? ` ${code}` : ''}).`);
@@ -165,20 +144,29 @@ async function section(ctx: Ctx, s: { id: string; tab: Tab; title: string; descr
   }
 }
 
-const tableSection = (ctx: Ctx, id: string, tab: Tab, title: string, table: string, sql: string, params: unknown[], description?: string) =>
-  section(ctx, { id, tab, title, description }, async () => ({ table: await readTable(ctx.q, table, sql, params, ctx.limit) }));
-
-/** Relations décrites par une requête (colonnes : type, id, label, nature, status, origin, via). */
-async function relationsOf(q: DiagQuery, sql: string, params: unknown[]): Promise<DossierRelation[]> {
-  const rows = await q(`${sql} LIMIT ${SECTION_LIMIT}`, params);
-  return rows.map((r) => ({
-    type: String(r.type) as EntityType, id: num(r.id), label: str(r.label) ?? `#${r.id}`, nature: String(r.nature),
-    status: str(r.status), origin: str(r.origin), via: String(r.via),
-  }));
+/** Section tabulaire : requête enregistrée comme SOURCE (lue par page ou intégralement, plus tard). */
+function tableSection(ctx: Ctx, id: string, tab: Tab, title: string, table: string, sql: string, params: unknown[], description?: string): Promise<void> {
+  if (ctx.only && id !== ctx.only) return Promise.resolve();
+  ctx.sources.set(id, { kind: 'table', table, sql, params });
+  ctx.sections.push({ id, tab, title, ...(description ? { description } : {}), table: { table, columns: [], rows: [], total: null, complete: false } });
+  return Promise.resolve();
 }
 
-const relSection = (ctx: Ctx, id: string, title: string, sql: string, params: unknown[]) =>
-  section(ctx, { id, tab: 'relations', title }, async () => ({ relations: await relationsOf(ctx.q, sql, params) }));
+/** Section de relations : requête enregistrée comme SOURCE. */
+function relSection(ctx: Ctx, id: string, title: string, sql: string, params: unknown[]): Promise<void> {
+  if (ctx.only && id !== ctx.only) return Promise.resolve();
+  // Ordre total (pages stables d'une consultation à l'autre) : type, id, via, nature si la requête n'en fixe pas.
+  const ordered = /\bORDER\s+BY\b[^()]*$/i.test(sql.trim()) ? sql : `${sql}\n ORDER BY 1, 2, 7, 4`;
+  ctx.sources.set(id, { kind: 'relations', sql: ordered, params });
+  ctx.sections.push({ id, tab: 'relations', title, relations: [] });
+  return Promise.resolve();
+}
+
+/** Lignes calculées par un moteur existant (TCO) : source statique, masquée. */
+function registerStatic(ctx: Ctx, id: string, table: string, rows: Row[]): DossierSection['table'] {
+  ctx.sources.set(id, { kind: 'static', table, rows: rows.map((r) => maskRow(r, MASK)) });
+  return { table, columns: [], rows: [], total: rows.length, complete: false };
+}
 
 /** Champs « Données BDD » d'une ligne (masquée), dans l'ordre des colonnes. */
 function bddFields(table: string, row: Row): DossierField[] {
@@ -285,7 +273,7 @@ async function targetEvidence(ctx: Ctx, target: 'ASSET' | 'EQUIPMENT' | 'ROOM', 
   await tableSection(ctx, 'to-process-decisions', 'preuves', 'Décisions du moteur « À traiter » (to_process_decisions)', 'to_process_decisions',
     `SELECT * FROM to_process_decisions WHERE account_id = $1 AND upper(target_type) = '${target}' AND target_id = $2 ORDER BY last_seen_at DESC NULLS LAST, id DESC`, [A, id]);
   await tableSection(ctx, 't3-states', 'preuves', 'États de réconciliation continue T3 (t3_reconciliation_states)', 't3_reconciliation_states',
-    `SELECT * FROM t3_reconciliation_states WHERE account_id = $1 AND subject_id = $2 AND lower(subject_type) IN ('${lower}', '${target}') ORDER BY evaluated_at DESC NULLS LAST`, [A, id]);
+    `SELECT * FROM t3_reconciliation_states WHERE account_id = $1 AND subject_id = $2 AND lower(subject_type) IN ('${lower}', '${target}') ORDER BY evaluated_at DESC NULLS LAST, relation, subject_type`, [A, id]);
   await tableSection(ctx, 'execution-reports', 'preuves', 'Rapports d’exécution T1 / T3 (ai_execution_reports) — synthèse', 'ai_execution_reports',
     target === 'ASSET'
       ? `SELECT id, treatment, scope, status, report_complete, trigger_code, job_id, file_id, asset_id, target_type, target_id, entry_count, counters, created_at
@@ -301,7 +289,7 @@ const OP_REL = (filter: string) => `
   SELECT 'operation' AS type, o.id, coalesce(o.technical_label, o.type_code, 'Opération') AS label, x.nature, o.status || CASE WHEN o.merged_into_operation_id IS NOT NULL THEN ' (fusionnée)' WHEN o.invalidated_at IS NOT NULL THEN ' (invalidée)' ELSE '' END AS status,
          x.origin, x.via
     FROM (${filter}) x JOIN business_operations o ON o.id = x.op_id AND o.account_id = $1
-   ORDER BY o.id, x.nature`;
+   ORDER BY o.id, x.nature, x.via`;
 
 // ── Constructeurs par type ──────────────────────────────────────────────────
 
@@ -334,7 +322,8 @@ async function assetDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity
     return { fields };
   });
   if (!deleted) {
-    await section(ctx, { id: 'tco', tab: 'synthese', title: 'Coût de possession (diagnostic TCO existant, recalculé en lecture)' }, async () => {
+    await section(ctx, { id: 'tco', tab: 'synthese', title: 'Coût de possession (diagnostic TCO existant, recalculé en lecture)',
+      description: 'Moteur TCO existant (readAssetTco), recalculé à l’instant de la lecture (hors instantané de la transaction du dossier). Toutes les lignes économiques.' }, async () => {
       const { readAssetTco } = await import('@/services/business-operations/tco/service');
       const { entries: _entries, ...tco } = await readAssetTco(A, id);
       void _entries;
@@ -345,14 +334,14 @@ async function assetDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity
           ...Object.keys(s).map((k) => columnField('tco.summary', k, s[k], s, k)),
           columnField('tco', 'reliability', tco.reliability, undefined, 'Fiabilité (avertissements, anomalies)'),
         ],
-        table: { table: 'tco.lines', columns: tco.lines.length ? Object.keys(tco.lines[0]) : [], rows: tco.lines.map((l) => maskRow(l as unknown as Row, MASK)), total: tco.lines.length, complete: true, limit: tco.lines.length },
+        table: registerStatic(ctx, 'tco', 'tco.lines', tco.lines as unknown as Row[]),
       };
     });
   }
 
   await section(ctx, { id: 'bdd-assets', tab: 'bdd', title: 'assets — colonnes persistées' }, async () => ({ fields: bddFields('assets', { ...row, key_characteristics: row.key_characteristics == null ? null : '(voir section key_characteristics)' }) }));
   await section(ctx, { id: 'bdd-kc', tab: 'bdd', title: 'assets.key_characteristics — fiche canonique (clés et métadonnées)' }, async () => ({ fields: kcFields('assets', 'key_characteristics', row.key_characteristics) }));
-  await tableSection(ctx, 'bdd-additional', 'bdd', 'asset_additional_infos', 'asset_additional_infos', `SELECT * FROM asset_additional_infos WHERE asset_id = $1 AND account_id = $2`, [id, A]);
+  await tableSection(ctx, 'bdd-additional', 'bdd', 'asset_additional_infos', 'asset_additional_infos', `SELECT * FROM asset_additional_infos WHERE asset_id = $1 AND account_id = $2 ORDER BY asset_id`, [id, A]);
   await tableSection(ctx, 'bdd-cil', 'bdd', 'asset_cil_profiles', 'asset_cil_profiles', `SELECT c.* FROM asset_cil_profiles c JOIN assets a ON a.id = c.asset_id AND a.account_id = $2 WHERE c.asset_id = $1 ORDER BY c.id`, [id, A]);
   await tableSection(ctx, 'bdd-custom', 'bdd', 'Champs personnalisés (asset_custom_field_values)', 'asset_custom_field_values',
     `SELECT v.* FROM asset_custom_field_values v JOIN assets a ON a.id = v.asset_id AND a.account_id = $2 WHERE v.asset_id = $1 ORDER BY v.id`, [id, A]);
@@ -371,7 +360,7 @@ async function assetDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity
             UNION ALL SELECT id, 'lié (linked_asset_id)', NULL, 'asset_files.linked_asset_id' FROM asset_files WHERE account_id = $1 AND linked_asset_id = $2
             UNION ALL SELECT file_id, 'lien ' || coalesce(link_role, '') || ' (' || coalesce(status, '') || ')', origin, 'document_asset_links' FROM document_asset_links WHERE account_id = $1 AND asset_id = $2) x
       JOIN asset_files f ON f.id = x.fid AND f.account_id = $1
-     ORDER BY f.id`, [A, id]);
+     ORDER BY f.id, x.via, x.nature`, [A, id]);
   await relSection(ctx, 'rel-agenda', 'Échéances (agenda)', `
     SELECT 'agenda' AS type, i.id, i.title AS label, 'échéance liée au bien' AS nature, i.manual_status AS status, i.origin_type AS origin, 'agenda_asset_links' AS via
       FROM agenda_asset_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1 WHERE l.asset_id = $2 ORDER BY i.start_date, i.id`, [A, id]);
@@ -387,10 +376,17 @@ async function assetDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity
     `SELECT * FROM reconciliation_decisions WHERE account_id = $1 AND asset_id = $2 ORDER BY created_at DESC, id DESC`, [A, id]);
   await tableSection(ctx, 'reco-runs', 'preuves', 'Passages de réconciliation (reconciliation_runs)', 'reconciliation_runs',
     `SELECT * FROM reconciliation_runs WHERE account_id = $1 AND asset_id = $2 ORDER BY started_at DESC NULLS LAST, id DESC`, [A, id]);
+  // Lot 81C (complément 81A) : registre des incohérences et contrôle exhaustif T3 de l'onglet Informations (lot 76J).
+  await tableSection(ctx, 'inconsistencies', 'preuves', 'Registre des incohérences (inconsistency_registry) — toutes, y compris résolues', 'inconsistency_registry',
+    `SELECT * FROM inconsistency_registry WHERE account_id = $1 AND asset_id = $2 ORDER BY created_at DESC NULLS LAST, id DESC`, [A, id],
+    'current_value / proposed_value : valeur en place et proposée (masquées si la clé est sensible) ; current_evidence_ids / proposed_evidence_ids → field_evidence.id ; status / resolution : décision.');
+  await tableSection(ctx, 't3-information-checks', 'preuves', 'Contrôle T3 de l’onglet Informations (t3_information_checks)', 't3_information_checks',
+    `SELECT * FROM t3_information_checks WHERE account_id = $1 AND asset_id = $2 ORDER BY asset_id`, [A, id],
+    'Version de contrôle appliquée, synthèse et arbitrages croisés déjà proposés (lot 76J).');
   await tableSection(ctx, 'events', 'preuves', 'Historique du bien (events)', 'events',
     `SELECT * FROM events WHERE account_id = $1 AND (asset_id = $2 OR linked_asset_id = $2) AND equipment_id IS NULL ORDER BY date_evenement DESC NULLS LAST, id DESC`, [A, id]);
   await tableSection(ctx, 'space-moves', 'preuves', 'Déplacements entre espaces (asset_space_moves)', 'asset_space_moves',
-    `SELECT * FROM asset_space_moves WHERE asset_id = $2 AND (from_account_id = $1 OR to_account_id = $1) ORDER BY created_at DESC`, [A, id]);
+    `SELECT * FROM asset_space_moves WHERE asset_id = $2 AND (from_account_id = $1 OR to_account_id = $1) ORDER BY created_at DESC, id DESC`, [A, id]);
 
   return { type: 'asset', typeLabel: ENTITY_LABELS.asset, id, table: 'assets', name: str(row.name) ?? `Bien #${id}`, status: str(row.status), statusLabel };
 }
@@ -433,7 +429,7 @@ async function equipmentDossier(ctx: Ctx, id: number): Promise<EntityDossier['en
     fields.push(columnField('equipments', 'purchase_price_cents', row.purchase_price_cents, row, 'Prix d’achat — colonne miroir'));
     const ev = await jsonRows(ctx.q, `SELECT id, value_json, normalized_value, raw_value, canonical_unit, source_type, source_id, evidence_origin, status, lifecycle_status, confidence, extracted_at
                               FROM field_evidence WHERE account_id = $1 AND target_type = 'EQUIPMENT' AND target_entity_id = $2
-                               AND (canonical_key = 'acquisitionPrice' OR field_key = 'acquisitionPrice') ORDER BY extracted_at DESC NULLS LAST, id DESC LIMIT 200`, [A, id]);
+                               AND (canonical_key = 'acquisitionPrice' OR field_key = 'acquisitionPrice') ORDER BY extracted_at DESC NULLS LAST, id DESC`, [A, id]);
     for (const e of ev) {
       const f = columnField('field_evidence', 'value_json', e.value_json, e, `Preuve #${e.id} (${str(e.source_type) ?? '?'} #${str(e.source_id) ?? '?'})`);
       f.unit = str(e.canonical_unit);
@@ -443,7 +439,7 @@ async function equipmentDossier(ctx: Ctx, id: number): Promise<EntityDossier['en
     }
     const facts = await jsonRows(ctx.q, `SELECT id, file_id, value_number, value_text, value_unit, canonical_unit, raw_value, label, confidence, status
                                  FROM document_facts WHERE account_id = $1 AND target_type = 'EQUIPMENT' AND target_entity_id = $2 AND canonical_key = 'acquisitionPrice'
-                                 ORDER BY id LIMIT 200`, [A, id]);
+                                 ORDER BY id`, [A, id]);
     for (const x of facts) {
       const f = columnField('document_facts', 'value_number', x.value_number, x, `Fait T1 #${x.id} (document #${x.file_id})`);
       f.unit = str(x.value_unit) ?? str(x.canonical_unit);
@@ -454,7 +450,7 @@ async function equipmentDossier(ctx: Ctx, id: number): Promise<EntityDossier['en
     }
     const cards = await jsonRows(ctx.q, `SELECT id, rule_code, action_kind, question, proposals_json, trigger_context, resolved_at, resolution_reason, created_at
                                  FROM to_process_actions WHERE account_id = $1 AND upper(target_type) = 'EQUIPMENT' AND target_id = $2 AND field_key = 'acquisitionPrice'
-                                 ORDER BY resolved_at DESC NULLS FIRST, id DESC LIMIT 50`, [A, id]);
+                                 ORDER BY resolved_at DESC NULLS FIRST, id DESC`, [A, id]);
     for (const c of cards) {
       const f = columnField('to_process_actions', 'proposals_json', c.proposals_json, c, `Carte « À traiter » #${c.id} (${str(c.rule_code)}) — propositions`);
       f.note = `${c.resolved_at ? `résolue ${str(c.resolution_reason) ?? ''}` : 'OUVERTE'} ; question=${str(c.question) ?? ''}`;
@@ -484,7 +480,7 @@ async function equipmentDossier(ctx: Ctx, id: number): Promise<EntityDossier['en
             UNION ALL SELECT DISTINCT file_id, 'source de faits ciblés', 'DOCUMENT_EXTRACTION', 'document_facts.target_entity_id' FROM document_facts WHERE account_id = $1 AND target_type = 'EQUIPMENT' AND target_entity_id = $2
             UNION ALL SELECT DISTINCT source_id, 'source de preuves', 'DOCUMENT_EXTRACTION', 'field_evidence.source_id' FROM field_evidence WHERE account_id = $1 AND target_type = 'EQUIPMENT' AND target_entity_id = $2 AND source_type = 'document') x
       JOIN asset_files f ON f.id = x.fid AND f.account_id = $1
-     ORDER BY f.id`, [A, id]);
+     ORDER BY f.id, x.via, x.nature`, [A, id]);
   await relSection(ctx, 'rel-agenda', 'Échéances et historique', `
     SELECT 'agenda' AS type, i.id, i.title AS label, 'échéance de l’équipement' AS nature, i.manual_status AS status, i.origin_type AS origin, 'agenda_equipment_links' AS via
       FROM agenda_equipment_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1 WHERE l.equipment_id = $2
@@ -545,7 +541,7 @@ async function roomDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity'
             UNION ALL SELECT f.id, 'indirect : équipement #' || e.id, NULL, 'asset_files.equipment_id → equipments.substructure_id'
               FROM equipments e JOIN asset_files f ON f.equipment_id = e.id AND f.account_id = $1 WHERE e.substructure_id = $2) x
       JOIN asset_files f ON f.id = x.fid AND f.account_id = $1
-     ORDER BY f.id, x.nature`, [A, id]);
+     ORDER BY f.id, x.nature, x.via`, [A, id]);
   await relSection(ctx, 'rel-agenda', 'Échéances', `
     SELECT 'agenda' AS type, i.id, i.title AS label, 'échéance de la pièce' AS nature, i.manual_status AS status, i.origin_type AS origin, 'agenda_room_links' AS via
       FROM agenda_room_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1 WHERE l.substructure_id = $2
@@ -586,7 +582,7 @@ async function documentDossier(ctx: Ctx, id: number): Promise<EntityDossier['ent
   await tableSection(ctx, 'bdd-runs', 'bdd', 'Analyses (document_analysis_runs)', 'document_analysis_runs',
     `SELECT * FROM document_analysis_runs WHERE account_id = $1 AND asset_file_id = $2 ORDER BY created_at DESC, id DESC`, [A, id]);
   await tableSection(ctx, 'bdd-cil', 'bdd', 'document_cil_metadata', 'document_cil_metadata',
-    `SELECT m.* FROM document_cil_metadata m JOIN asset_files f ON f.id = m.asset_file_id AND f.account_id = $1 WHERE m.asset_file_id = $2`, [A, id]);
+    `SELECT m.* FROM document_cil_metadata m JOIN asset_files f ON f.id = m.asset_file_id AND f.account_id = $1 WHERE m.asset_file_id = $2 ORDER BY m.id`, [A, id]);
 
   await relSection(ctx, 'rel-cibles', 'Biens, équipements et pièces associés', `
     SELECT * FROM (
@@ -617,7 +613,7 @@ async function documentDossier(ctx: Ctx, id: number): Promise<EntityDossier['ent
       FROM (SELECT agenda_item_id AS iid, 'document lié' AS nature, NULL AS origin, 'agenda_file_links' AS via FROM agenda_file_links WHERE asset_file_id = $2
             UNION ALL SELECT agenda_item_id, 'source : ' || coalesce(effect_type, '') || coalesce(' / ' || source_role, ''), 'DOCUMENT_EXTRACTION', 'agenda_item_sources' FROM agenda_item_sources WHERE asset_file_id = $2) x
       JOIN agenda_items i ON i.id = x.iid AND i.account_id = $1
-     ORDER BY i.id`, [A, id]);
+     ORDER BY i.id, x.via, x.nature`, [A, id]);
   await relSection(ctx, 'rel-operations', 'Opérations générées ou associées', OP_REL(`
     SELECT operation_id AS op_id, 'source ' || coalesce(source_role, source_kind) || CASE WHEN active THEN '' ELSE ' (supersédée)' END AS nature, authority AS origin, 'business_operation_sources' AS via
       FROM business_operation_sources WHERE account_id = $1 AND source_kind = 'DOCUMENT' AND source_entity_key = ($2::int)::text
@@ -742,11 +738,11 @@ async function interventionDuplicatesSections(ctx: Ctx, fileId: number): Promise
       WHERE account_id = $1 AND ((rule_code = 'AGENDA-PROJECTION-MATCH' AND (trigger_context->>'operationId')::bigint IN (SELECT id FROM (${opsSql}) o))
          OR (upper(target_type) IN ('AGENDA_ITEM', 'AGENDA') AND target_id IN (SELECT id FROM (${itemsSql}) it)))
       ORDER BY resolved_at DESC NULLS FIRST, id DESC`, [A, fileId]);
-  await tableSection(ctx, 'doublons-projection-jobs', 'preuves', 'Doublons d’interventions — passages de la projection Agenda du compte (échecs compris)', 'ai_job_queue',
+  await tableSection(ctx, 'doublons-projection-jobs', 'preuves', 'Doublons d’interventions — passages de la projection Agenda du compte (tous, échecs compris)', 'ai_job_queue',
     `SELECT * FROM (SELECT id, status, origin, trigger_code, business_result, attempts, last_error, created_at, finished_at,
             payload -> 'events' -> -1 ->> 'correlationId' AS correlation_id
        FROM ai_job_queue WHERE treatment = 'T3' AND account_id = $1 AND target_type = 'business_operations_agenda' AND $2::int IS NOT NULL
-      ORDER BY id DESC LIMIT 20) j`, [A, fileId],
+      ) j ORDER BY j.id DESC`, [A, fileId],
     'business_result : APPLIED / NO_CHANGE et compteurs (consolidated, abstained, matchCards…) ; last_error : échec technique de projection (rejoué).');
   await tableSection(ctx, 'doublons-journal', 'preuves', 'Doublons d’interventions — consolidations appliquées (journal 0591, restaurable)', 'agenda_intervention_consolidations',
     `SELECT id, run_id, origin, kind, operation_id, principal_item_id, absorbed_item_id, reason, correlation_id, created_at, restored_at, restore_run_id,
@@ -816,108 +812,269 @@ async function deadlineDossier(ctx: Ctx, id: number): Promise<EntityDossier['ent
   return { type: 'deadline', typeLabel: ENTITY_LABELS.deadline, id, table: 'deadlines', name: str(row.label) ?? `Échéance historique #${id}`, status: row.is_done ? 'DONE' : 'OPEN', statusLabel: row.is_done ? 'faite' : 'ouverte' };
 }
 
-/** Lignes d'une liste du détail d'Opération (bornée à DETAIL_LIMIT par le service). */
-function opTable(table: string, rows: Row[]): DossierTable {
-  const kept = rows.map((r) => maskRow(r, MASK));
-  return { table, columns: kept.length ? Object.keys(kept[0]) : [], rows: kept, total: rows.length >= DETAIL_LIMIT ? null : rows.length, complete: rows.length < DETAIL_LIMIT, limit: DETAIL_LIMIT };
-}
+/** Sections du détail d'Opération exportées intégralement (mêmes requêtes que l'écran, sans borne). */
+const OP_SECTIONS: Array<[string, Tab, string, keyof typeof OPERATION_DETAIL_LISTS]> = [
+  ['components', 'synthese', 'Composantes financières', 'components'],
+  ['sources', 'preuves', 'Sources (actives et historiques)', 'sources'],
+  ['references', 'preuves', 'Références', 'references'],
+  ['match-decisions', 'preuves', 'Décisions de rapprochement', 'matchDecisions'],
+  ['candidates', 'preuves', 'Candidats T1 liés et issue T3', 'candidates'],
+  ['history', 'preuves', 'Historique', 'history'],
+  ['agenda', 'preuves', 'Agenda (projection)', 'agendaItems'],
+  ['suppressions', 'preuves', 'Suppressions durables de projection', 'projectionSuppressions'],
+];
 
-async function operationDossier(ctx: Ctx, id: number, exec: DiagExecutor): Promise<{ entity: EntityDossier['entity']; detail: OperationDetail }> {
+async function operationDossier(ctx: Ctx, id: number, withDetail: boolean): Promise<{ entity: EntityDossier['entity']; detail: OperationDetail | null }> {
   const A = ctx.accountId;
   const row = await oneRow(ctx.q, `SELECT * FROM business_operations WHERE id = $1 AND account_id = $2`, [id, A]);
   if (!row) throw new EntityNotFoundError();
-  const detail = await new OperationDiagnosticsService(exec).detail(id);
-  if (!detail || detail.operation.accountId !== A) throw new EntityNotFoundError();
-  const o = detail.operation;
+  // Détail d'écran (listes d'AFFICHAGE) lu DANS l'instantané du dossier, en point de reprise.
+  const exec: DiagExecutor = <T>(fn: (q: DiagQuery) => Promise<T>) => ctx.s.savepoint(() => fn(ctx.q));
+  const detail = withDetail ? await new OperationDiagnosticsService(exec).detail(id) : null;
+  if (withDetail && (!detail || detail.operation.accountId !== A)) throw new EntityNotFoundError();
 
-  await section(ctx, { id: 'identite', tab: 'synthese', title: 'Opération (OperationDiagnosticsService)', description: 'Détail complet rendu par la vue de diagnostic existante ; ci-dessous les données BDD et relations.' }, async () => ({
+  await section(ctx, { id: 'identite', tab: 'synthese', title: 'Opération (OperationDiagnosticsService)', description: 'Détail rendu par la vue de diagnostic existante (listes d’affichage) ; ci-dessous les données BDD, relations et listes INTÉGRALES.' }, async () => ({
     fields: pick('business_operations', row, [['id', 'Identifiant'], ['type_code', 'Type'], ['status', 'Statut'], ['technical_label', 'Libellé technique'], ['provider', 'Prestataire'],
       ['planned_date', 'Date prévue'], ['start_date', 'Début'], ['realized_date', 'Réalisation'], ['end_date', 'Fin'], ['invalidated_at', 'Invalidée le'], ['invalidation_reason', 'Motif d’invalidation'],
       ['merged_into_operation_id', 'Fusionnée dans'], ['parent_operation_id', 'Parent'], ['last_reconciled_at', 'Dernière réconciliation'], ['created_at', 'Créée le'], ['updated_at', 'Modifiée le']]),
   }));
-  await section(ctx, { id: 'components', tab: 'synthese', title: 'Composantes financières' }, async () => ({ table: opTable('business_operation_financial_components', detail.components) }));
+  await tableSection(ctx, 'components', 'synthese', 'Composantes financières', OPERATION_DETAIL_LISTS.components.table, OPERATION_DETAIL_LISTS.components.sql, [id, A]);
   await section(ctx, { id: 'bdd-operation', tab: 'bdd', title: 'business_operations — colonnes persistées' }, async () => ({ fields: bddFields('business_operations', row) }));
-  if (detail.contractDetails) await section(ctx, { id: 'bdd-contract', tab: 'bdd', title: 'business_operation_contract_details' }, async () => ({ fields: bddFields('business_operation_contract_details', detail.contractDetails!) }));
-  if (detail.financingDetails) await section(ctx, { id: 'bdd-financing', tab: 'bdd', title: 'business_operation_financing_details' }, async () => ({ fields: bddFields('business_operation_financing_details', detail.financingDetails!) }));
-  if (detail.claimDetails) await section(ctx, { id: 'bdd-claim', tab: 'bdd', title: 'business_operation_claim_details (champs structurés)' }, async () => ({ fields: bddFields('business_operation_claim_details', detail.claimDetails!) }));
-
-  await section(ctx, { id: 'rel-operation', tab: 'relations', title: 'Biens, équipements, documents, échéances et Opérations liées' }, async () => {
-    const rels: DossierRelation[] = [];
-    for (const l of detail.assetLinks) rels.push({ type: 'asset', id: num(l.asset_id), label: str(l.asset_name) ?? 'Bien', nature: `bien ${str(l.link_role) ?? ''}${l.active ? '' : ' (lien inactif)'}`, status: l.asset_deleted ? 'supprimé' : null, origin: str(l.authority), via: 'business_operation_asset_links' });
-    for (const l of detail.equipmentLinks) rels.push({ type: 'equipment', id: num(l.equipment_id), label: str(l.equipment_name) ?? 'Équipement', nature: `équipement${l.active ? '' : ' (lien inactif)'}`, status: null, origin: str(l.authority), via: 'business_operation_equipment_links' });
-    for (const c of detail.components) {
-      if (c.target_asset_id) rels.push({ type: 'asset', id: num(c.target_asset_id), label: `Bien #${c.target_asset_id}`, nature: `cible de la composante #${c.id} (${str(c.kind)}) — TCO`, status: c.active ? 'active' : 'inactive', origin: null, via: 'business_operation_financial_components.target_asset_id' });
-      if (c.target_equipment_id) rels.push({ type: 'equipment', id: num(c.target_equipment_id), label: `Équipement #${c.target_equipment_id}`, nature: `cible de la composante #${c.id} (${str(c.kind)}) — TCO`, status: c.active ? 'active' : 'inactive', origin: null, via: 'business_operation_financial_components.target_equipment_id' });
-    }
-    for (const s of detail.sources) if (s.file_id) rels.push({ type: 'document', id: num(s.file_id), label: `${str(s.file_document_type) ?? 'Document'} #${s.file_id}`, nature: `source ${str(s.source_role) ?? str(s.source_kind)}${s.active ? '' : ' (supersédée)'}`, status: s.file_deleted_at ? 'supprimé' : null, origin: str(s.authority), via: 'business_operation_sources' });
-    for (const a of detail.agendaItems) rels.push({ type: 'agenda', id: num(a.id), label: str(a.title) ?? 'Échéance', nature: a.projection_origin === 'OPERATION' ? 'échéance projetée (T4)' : 'échéance rapprochée', status: str(a.manual_status), origin: str(a.projection_origin), via: 'agenda_items.business_operation_id' });
-    if (detail.parent) rels.push({ type: 'operation', id: num(detail.parent.id), label: str(detail.parent.technical_label) ?? str(detail.parent.type_code) ?? 'Opération', nature: 'Opération parente', status: str(detail.parent.status), origin: null, via: 'business_operations.parent_operation_id' });
-    for (const c of detail.children) rels.push({ type: 'operation', id: num(c.id), label: str(c.technical_label) ?? str(c.type_code) ?? 'Opération', nature: 'Opération enfant', status: str(c.status), origin: null, via: 'business_operations.parent_operation_id' });
-    if (o.mergedIntoOperationId) rels.push({ type: 'operation', id: o.mergedIntoOperationId, label: `Opération #${o.mergedIntoOperationId}`, nature: 'fusionnée dans', status: null, origin: null, via: 'business_operations.merged_into_operation_id' });
-    for (const m of detail.mergedFrom) rels.push({ type: 'operation', id: num(m.id), label: str(m.technical_label) ?? 'Opération', nature: 'a absorbé', status: str(m.status), origin: null, via: 'business_operations.merged_into_operation_id' });
-    for (const c of detail.candidates) if (c.file_id) rels.push({ type: 'document', id: num(c.file_id), label: `Document #${c.file_id}`, nature: `candidat T1 ${str(c.candidate_key)} (${str(c.t3_outcome) ?? 'en attente T3'})`, status: str(c.status), origin: 'DOCUMENT_EXTRACTION', via: 'document_operation_candidates' });
-    return { relations: rels };
-  });
-
-  const T: Array<[string, string, string, Row[]]> = [
-    ['sources', 'Sources (actives et historiques)', 'business_operation_sources', detail.sources],
-    ['references', 'Références', 'business_operation_references', detail.references],
-    ['match-decisions', 'Décisions de rapprochement', 'business_operation_match_decisions', detail.matchDecisions],
-    ['candidates', 'Candidats T1 liés et issue T3', 'document_operation_candidates', detail.candidates],
-    ['history', 'Historique', 'business_operation_history', detail.history],
-    ['agenda', 'Agenda (projection)', 'agenda_items', detail.agendaItems],
-    ['suppressions', 'Suppressions durables de projection', 'business_operation_projection_suppressions', detail.projectionSuppressions],
+  const details: Array<[string, string, string]> = [
+    ['bdd-contract', 'business_operation_contract_details', `SELECT contract_reference, periodicity, effective_from::text AS effective_from, effective_to::text AS effective_to, updated_at
+       FROM business_operation_contract_details WHERE operation_id = $1`],
+    ['bdd-financing', 'business_operation_financing_details', `SELECT financing_reference, lender, principal_amount_minor, principal_currency,
+       effective_from::text AS effective_from, effective_to::text AS effective_to, updated_at FROM business_operation_financing_details WHERE operation_id = $1`],
+    // Sinistre : champs structurés et décomptes seulement — aucun texte libre.
+    ['bdd-claim', 'business_operation_claim_details (champs structurés)', `SELECT cd.claim_type, cd.declared_on::text AS declared_on, cd.insurer_claim_ref, cd.insurance_contract_operation_id,
+       cd.status, cd.estimated_damage_minor, cd.updated_at,
+       (SELECT count(*) FROM business_operation_claim_damages d WHERE d.operation_id = cd.operation_id)::int AS damages,
+       (SELECT count(*) FROM business_operation_claim_actions a WHERE a.operation_id = cd.operation_id)::int AS actions,
+       (SELECT count(*) FROM business_operation_claim_exchanges x WHERE x.operation_id = cd.operation_id)::int AS exchanges
+       FROM business_operation_claim_details cd WHERE cd.operation_id = $1`],
   ];
-  for (const [sid, title, table, rows] of T) await section(ctx, { id: sid, tab: 'preuves', title }, async () => ({ table: opTable(table, rows) }));
-  await section(ctx, { id: 'reconciliation', tab: 'preuves', title: 'État de réconciliation et dernier passage T3' }, async () => ({
-    fields: [
-      columnField('diagnostic', 'reconciliation', detail.reconciliation, undefined, 'État de réconciliation'),
-      columnField('ai_job_queue', 'last_t3_pass', detail.lastT3Pass ?? null, undefined, 'Dernier passage T3 du compte'),
-    ],
-  }));
+  for (const [sid, title, sql] of details) {
+    await section(ctx, { id: sid, tab: 'bdd', title }, async () => {
+      const r = await oneRow(ctx.q, sql, [id]);
+      return r ? { fields: bddFields(title.split(' ')[0], r) } : null;
+    });
+  }
+
+  await relSection(ctx, 'rel-operation', 'Biens, équipements, documents, échéances et Opérations liées', `
+    SELECT 'asset' AS type, al.asset_id AS id, coalesce(a.name, 'Bien') AS label, 'bien ' || coalesce(al.link_role, '') || CASE WHEN al.active THEN '' ELSE ' (lien inactif)' END AS nature,
+           CASE WHEN a.deleted_at IS NOT NULL THEN 'supprimé' END AS status, al.authority AS origin, 'business_operation_asset_links' AS via
+      FROM business_operation_asset_links al LEFT JOIN assets a ON a.id = al.asset_id AND a.account_id = $2 WHERE al.operation_id = $1 AND al.account_id = $2
+    UNION ALL
+    SELECT 'equipment', el.equipment_id, coalesce(e.name, 'Équipement'), 'équipement' || CASE WHEN el.active THEN '' ELSE ' (lien inactif)' END, NULL, el.authority, 'business_operation_equipment_links'
+      FROM business_operation_equipment_links el LEFT JOIN equipments e ON e.id = el.equipment_id WHERE el.operation_id = $1 AND el.account_id = $2
+    UNION ALL
+    SELECT 'asset', c.target_asset_id, 'Bien #' || c.target_asset_id, 'cible de la composante #' || c.id || ' (' || c.kind || ') — TCO', CASE WHEN c.active THEN 'active' ELSE 'inactive' END, NULL, 'business_operation_financial_components.target_asset_id'
+      FROM business_operation_financial_components c WHERE c.operation_id = $1 AND c.account_id = $2 AND c.target_asset_id IS NOT NULL
+    UNION ALL
+    SELECT 'equipment', c.target_equipment_id, 'Équipement #' || c.target_equipment_id, 'cible de la composante #' || c.id || ' (' || c.kind || ') — TCO', CASE WHEN c.active THEN 'active' ELSE 'inactive' END, NULL, 'business_operation_financial_components.target_equipment_id'
+      FROM business_operation_financial_components c WHERE c.operation_id = $1 AND c.account_id = $2 AND c.target_equipment_id IS NOT NULL
+    UNION ALL
+    SELECT 'document', f.id, coalesce(f.document_type, 'Document') || ' #' || f.id, 'source ' || coalesce(s.source_role, s.source_kind) || CASE WHEN s.active THEN '' ELSE ' (supersédée)' END,
+           CASE WHEN f.deleted_at IS NOT NULL THEN 'supprimé' END, s.authority, 'business_operation_sources'
+      FROM business_operation_sources s JOIN asset_files f ON f.id = (CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END) AND f.account_id = s.account_id
+     WHERE s.operation_id = $1 AND s.account_id = $2 AND s.source_kind = 'DOCUMENT'
+    UNION ALL
+    SELECT 'agenda', i.id, coalesce(i.title, 'Échéance'), CASE WHEN i.projection_origin = 'OPERATION' THEN 'échéance projetée (T4)' ELSE 'échéance rapprochée' END, i.manual_status, i.projection_origin, 'agenda_items.business_operation_id'
+      FROM agenda_items i WHERE i.business_operation_id = $1 AND i.account_id = $2
+    UNION ALL
+    SELECT 'operation', p.id, coalesce(p.technical_label, p.type_code, 'Opération'), 'Opération parente', p.status, NULL, 'business_operations.parent_operation_id'
+      FROM business_operations o JOIN business_operations p ON p.id = o.parent_operation_id AND p.account_id = $2 WHERE o.id = $1
+    UNION ALL
+    SELECT 'operation', c.id, coalesce(c.technical_label, c.type_code, 'Opération'), 'Opération enfant', c.status, NULL, 'business_operations.parent_operation_id'
+      FROM business_operations c WHERE c.parent_operation_id = $1 AND c.account_id = $2
+    UNION ALL
+    SELECT 'operation', m.id, 'Opération #' || m.id, 'fusionnée dans', NULL, NULL, 'business_operations.merged_into_operation_id'
+      FROM business_operations o JOIN business_operations m ON m.id = o.merged_into_operation_id AND m.account_id = $2 WHERE o.id = $1
+    UNION ALL
+    SELECT 'operation', m.id, coalesce(m.technical_label, 'Opération'), 'a absorbé', m.status, NULL, 'business_operations.merged_into_operation_id'
+      FROM business_operations m WHERE m.merged_into_operation_id = $1 AND m.account_id = $2
+    UNION ALL
+    SELECT 'document', c.file_id, 'Document #' || c.file_id, 'candidat T1 ' || c.candidate_key || ' (' || coalesce(c.t3_outcome, 'en attente T3') || ')', c.status, 'DOCUMENT_EXTRACTION', 'document_operation_candidates'
+      FROM (${OPERATION_DETAIL_LISTS.candidates.sql}) c WHERE c.file_id IS NOT NULL`, [id, A]);
+
+  for (const [sid, tab, title, k] of OP_SECTIONS.slice(1)) {
+    await tableSection(ctx, sid, tab, title, OPERATION_DETAIL_LISTS[k].table, OPERATION_DETAIL_LISTS[k].sql, [id, A]);
+  }
+  if (detail) {
+    await section(ctx, { id: 'reconciliation', tab: 'preuves', title: 'État de réconciliation et dernier passage T3' }, async () => ({
+      fields: [
+        columnField('diagnostic', 'reconciliation', detail.reconciliation, undefined, 'État de réconciliation'),
+        columnField('ai_job_queue', 'last_t3_pass', detail.lastT3Pass ?? null, undefined, 'Dernier passage T3 du compte'),
+      ],
+    }));
+  }
+  const label = str(row.technical_label) ?? str(row.type_code) ?? 'Opération';
+  const status = String(row.status);
   return {
-    entity: { type: 'operation', typeLabel: ENTITY_LABELS.operation, id, table: 'business_operations', name: o.label ?? o.typeLabel, status: o.status, statusLabel: `${o.status}${o.mergedIntoOperationId ? ' — fusionnée' : o.invalidatedAt ? ' — invalidée' : ''}` },
+    entity: { type: 'operation', typeLabel: ENTITY_LABELS.operation, id, table: 'business_operations', name: detail ? (detail.operation.label ?? detail.operation.typeLabel) : label, status,
+      statusLabel: `${status}${row.merged_into_operation_id ? ' — fusionnée' : row.invalidated_at ? ' — invalidée' : ''}` },
     detail,
   };
 }
 
+// ── Plan, consultation paginée ──────────────────────────────────────────────
+
+/** Dossier planifié : sections (données des sources non encore lues) + sources. */
+export interface DossierPlan {
+  dossier: EntityDossier;
+  sources: Map<string, SectionSource>;
+}
+
 /**
- * Dossier complet d'une entité du compte. Lève `EntityNotFoundError` si
- * l'entité n'existe pas DANS CE COMPTE.
+ * Construit le dossier DANS une session : entité relue PAR LE COMPTE
+ * (`EntityNotFoundError` sinon), champs et sections calculées lues, sections
+ * tabulaires et de relations enregistrées comme SOURCES (lues ensuite par
+ * page — `fillPage` — ou intégralement — `export.ts`).
+ */
+export async function planEntityDossier(
+  s: ReadSession, accountId: number, type: EntityType, id: number,
+  opts: { only?: string | null; now?: () => Date; mode?: 'consultation' | 'export' } = {},
+): Promise<DossierPlan> {
+  const extractedAt = (opts.now ?? (() => new Date()))().toISOString();
+  const ctx: Ctx = { s, q: s.q, accountId, warnings: [], sections: [], sources: new Map(), only: opts.only ?? null };
+  let entity: EntityDossier['entity'];
+  let operationDetail: unknown;
+  switch (type) {
+    case 'asset': entity = await assetDossier(ctx, id); break;
+    case 'equipment': entity = await equipmentDossier(ctx, id); break;
+    case 'room': entity = await roomDossier(ctx, id); break;
+    case 'document': entity = await documentDossier(ctx, id); break;
+    case 'agenda': entity = await agendaDossier(ctx, id); break;
+    case 'deadline': entity = await deadlineDossier(ctx, id); break;
+    case 'operation': {
+      // Détail d'écran : seulement pour le dossier complet (pas pour une page d'une section).
+      const r = await operationDossier(ctx, id, !ctx.only || ctx.only === 'reconciliation');
+      entity = r.entity;
+      if (r.detail) operationDetail = r.detail;
+      break;
+    }
+    default: throw new EntityNotFoundError();
+  }
+  const dossier: EntityDossier = {
+    schema: ACCOUNT_DATA_SCHEMA, extractedAt, accountId,
+    entity: { ...entity, table: ENTITY_TABLES[type] },
+    complete: ctx.warnings.length === 0, warnings: ctx.warnings, sections: ctx.sections,
+    mode: opts.mode ?? 'consultation',
+    snapshot: { isolation: s.info.isolation, at: s.info.at, snapshot: s.info.snapshot },
+  };
+  if (operationDetail !== undefined) dossier.operationDetail = operationDetail;
+  return { dossier, sources: ctx.sources };
+}
+
+export interface PageRequest { offset?: number; size?: number; q?: string | null }
+
+/** Fenêtre normalisée (pagination technique : taille bornée à `DOSSIER_PAGE_MAX`). */
+export function normalizePage(p: PageRequest = {}): { offset: number; size: number; q: string | null } {
+  const size = Math.min(DOSSIER_PAGE_MAX, Math.max(1, Math.floor(Number(p.size) || DOSSIER_PAGE_SIZE)));
+  const offset = Math.max(0, Math.floor(Number(p.offset) || 0));
+  const q = typeof p.q === 'string' && p.q.trim() ? p.q.trim().slice(0, 200) : null;
+  return { offset, size, q };
+}
+
+const matches = (needle: string) => (v: unknown) => JSON.stringify(v).toLowerCase().includes(needle);
+
+/**
+ * Remplit la fenêtre d'une section : total réel (instantané), page
+ * `[offset, offset + size[`. Recherche : parcours INTÉGRAL par curseur des
+ * lignes masquées (jamais limitée aux lignes chargées), page des
+ * correspondances et leur nombre.
+ */
+async function fillPage(s: ReadSession, sec: DossierSection, src: SectionSource, page: { offset: number; size: number; q: string | null }): Promise<void> {
+  const masker = src.kind === 'relations' ? (r: Row) => toRelation(r) as unknown as Row : (r: Row) => (src.kind === 'static' ? r : maskRow(r, MASK));
+  let total: number;
+  let window: Row[] = [];
+  let matched: number | null = null;
+  if (src.kind === 'static') {
+    const all = page.q ? src.rows.filter(matches(page.q.toLowerCase())) : src.rows;
+    total = src.rows.length;
+    matched = page.q ? all.length : null;
+    window = all.slice(page.offset, page.offset + page.size);
+  } else if (!page.q) {
+    total = await countRows(s.q, src.sql, src.params);
+    const rows = await s.q(`SELECT row_to_json(t) AS r FROM (${src.sql}) t LIMIT ${page.size} OFFSET ${page.offset}`, src.params);
+    window = rows.map((x) => masker(decodeJsonRow(x.r)));
+  } else {
+    const test = matches(page.q.toLowerCase());
+    total = 0;
+    matched = 0;
+    for await (const lot of jsonBatches(s, src.sql, src.params)) {
+      for (const raw of lot) {
+        total++;
+        const r = masker(raw);
+        if (!test(r)) continue;
+        if (matched >= page.offset && window.length < page.size) window.push(r);
+        matched++;
+      }
+    }
+  }
+  const w: DossierWindow = { total, offset: page.offset, size: page.size, ...(page.q ? { query: page.q, matched } : {}) };
+  sec.window = w;
+  if (src.kind === 'relations') {
+    sec.relations = window as unknown as DossierRelation[];
+  } else {
+    sec.table = { table: src.table, columns: window.length ? Object.keys(window[0]) : [], rows: window, total, complete: true };
+  }
+}
+
+/** Remplit toutes les sources d'un dossier planifié (point de reprise par section). */
+async function fillPages(s: ReadSession, plan: DossierPlan, page: { offset: number; size: number; q: string | null }): Promise<void> {
+  const d = plan.dossier;
+  for (const sec of d.sections) {
+    const src = plan.sources.get(sec.id);
+    if (!src) continue;
+    try {
+      await s.savepoint(() => fillPage(s, sec, src, page));
+    } catch (e) {
+      const code = errCode(e);
+      if (code === '25006') throw e;
+      console.error(`[admin/account-data] section ${sec.id} :`, (e as Error)?.message ?? e);
+      d.warnings.push(`Section « ${sec.title} » non chargée (erreur de lecture${code ? ` ${code}` : ''}).`);
+      sec.error = `lecture impossible${code ? ` (${code})` : ''}`;
+      delete sec.table;
+      delete sec.relations;
+    }
+  }
+  d.complete = d.warnings.length === 0;
+}
+
+/**
+ * Dossier complet d'une entité du compte, en CONSULTATION : chaque section
+ * tabulaire ou de relations porte sa première page et son total réel.
+ * Lève `EntityNotFoundError` si l'entité n'existe pas DANS CE COMPTE.
  */
 export async function buildEntityDossier(
   accountId: number, type: EntityType, id: number,
-  opts: { exec?: DossierExecutor; operationsExec?: DiagExecutor; limit?: number; now?: () => Date } = {},
+  opts: { exec?: DossierExecutor; page?: PageRequest; now?: () => Date } = {},
 ): Promise<EntityDossier> {
   const exec = opts.exec ?? readOnlyDossierExecutor();
-  const extractedAt = (opts.now ?? (() => new Date()))().toISOString();
-  const limit = Math.max(1, Math.min(opts.limit ?? SECTION_LIMIT, SECTION_LIMIT));
-  return exec(async (q, savepoint) => {
-    const ctx: Ctx = { q, savepoint, accountId, limit, warnings: [], sections: [] };
-    let entity: EntityDossier['entity'];
-    let operationDetail: unknown;
-    switch (type) {
-      case 'asset': entity = await assetDossier(ctx, id); break;
-      case 'equipment': entity = await equipmentDossier(ctx, id); break;
-      case 'room': entity = await roomDossier(ctx, id); break;
-      case 'document': entity = await documentDossier(ctx, id); break;
-      case 'agenda': entity = await agendaDossier(ctx, id); break;
-      case 'deadline': entity = await deadlineDossier(ctx, id); break;
-      case 'operation': {
-        const r = await operationDossier(ctx, id, opts.operationsExec ?? readOnlyExecutor);
-        entity = r.entity;
-        operationDetail = r.detail;
-        break;
-      }
-      default: throw new EntityNotFoundError();
-    }
-    const dossier: EntityDossier = {
-      schema: ACCOUNT_DATA_SCHEMA, extractedAt, accountId,
-      entity: { ...entity, table: ENTITY_TABLES[type] },
-      complete: ctx.warnings.length === 0, warnings: ctx.warnings, sections: ctx.sections,
-    };
-    if (operationDetail !== undefined) dossier.operationDetail = operationDetail;
-    return dossier;
+  return exec(async (s) => {
+    const plan = await planEntityDossier(s, accountId, type, id, { now: opts.now });
+    await fillPages(s, plan, normalizePage(opts.page));
+    return plan.dossier;
+  });
+}
+
+/**
+ * Lot 81C — page d'UNE section (navigation, recherche serveur). Mêmes
+ * contrôles que le dossier (entité relue par le compte, masquage).
+ * `null` : section inconnue.
+ */
+export async function loadSectionPage(
+  accountId: number, type: EntityType, id: number, sectionId: string, page: PageRequest = {},
+  opts: { exec?: DossierExecutor; now?: () => Date } = {},
+): Promise<DossierSection | null> {
+  const exec = opts.exec ?? readOnlyDossierExecutor();
+  return exec(async (s) => {
+    const plan = await planEntityDossier(s, accountId, type, id, { only: sectionId, now: opts.now });
+    const sec = plan.dossier.sections.find((x) => x.id === sectionId);
+    if (!sec) return null;
+    await fillPages(s, plan, normalizePage(page));
+    return sec;
   });
 }
 

@@ -131,6 +131,18 @@
   --app-sidebar: 240px;
   --app-sidebar-collapsed: 64px;
   --app-header: 60px;
+
+  /* Zones sûres (lot 81F). L'application s'étend sous la barre d'état et la
+     barre d'accueil (`viewport-fit=cover` + `black-translucent`, layout.tsx ;
+     WebView Capacitor en recouvrement) : tout panneau plein écran réserve
+     ces encarts. `env()` est renseigné par Safari iOS, la PWA installée et
+     le WKWebView ; `--safe-area-inset-*` (posé sur <html> par un greffon
+     natif, ou par les tests) prend le relais là où `env()` vaut 0 (WebView
+     Android bord à bord). Hors mobile, toutes valent 0 : aucun décalage. */
+  --vb-safe-top: max(var(--safe-area-inset-top, 0px), env(safe-area-inset-top, 0px));
+  --vb-safe-right: max(var(--safe-area-inset-right, 0px), env(safe-area-inset-right, 0px));
+  --vb-safe-bottom: max(var(--safe-area-inset-bottom, 0px), env(safe-area-inset-bottom, 0px));
+  --vb-safe-left: max(var(--safe-area-inset-left, 0px), env(safe-area-inset-left, 0px));
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

@@ -24,6 +24,7 @@
  * actives — index partiel `WHERE resolved_at IS NULL` (§13.4).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { areBusinessEquivalent } from '@/services/ai/reconciliation/decision/equivalence';
 
 /** §7.2 — les deux seules natures d'action de la V2. */
 export type ActionKind = 'ARBITRATE' | 'COMPLETE';
@@ -135,8 +136,43 @@ export function actionIdentityKey(
  * proposition est affichable. » Une valeur actuelle seule ne suffit pas —
  * confirmer une valeur qu'aucune autre ne conteste ne résout rien.
  */
-export function isDisplayableArbitration(proposals: ActionProposal[]): boolean {
-  return proposals.some((p) => !p.isCurrentValue);
+export function isDisplayableArbitration(proposals: ActionProposal[], fieldKey: string | null = null): boolean {
+  // Lot 81A : une proposition équivalente à la valeur actuelle n'est pas une
+  // alternative (« 06/05/2021 ou 06/05/2021 ? » n'est pas un arbitrage).
+  return sanitizeArbitrationProposals(proposals, fieldKey).some((p) => !p.isCurrentValue);
+}
+
+/**
+ * Lot 81A — contrôle DÉTERMINISTE d'équivalence avant création ou mise à jour
+ * d'un arbitrage (pur). Avec une clé de DONNÉE (`fieldKey`), comparaison
+ * MÉTIER (normaliseurs du registre et du moteur, clé canonique résolue) :
+ *   · une proposition équivalente à la valeur actuelle est écartée ;
+ *   · deux propositions équivalentes n'en font qu'une (preuves fusionnées,
+ *     la première — la plus confiante — est gardée).
+ * Sans clé de donnée (relation), seules des valeurs strictement identiques
+ * sont confondues. Valeurs vides : jamais écartées ici (un choix « aucune »
+ * reste un choix). L'ordre est conservé.
+ */
+export function sanitizeArbitrationProposals(proposals: ActionProposal[], fieldKey: string | null = null): ActionProposal[] {
+  const same = (a: ActionProposal['value'], b: ActionProposal['value']): boolean => {
+    if (a === null || b === null || a === undefined || b === undefined) return false;
+    if (fieldKey) return areBusinessEquivalent(fieldKey, a, b);
+    return JSON.stringify(a) === JSON.stringify(b);
+  };
+  const courantes = proposals.filter((p) => p.isCurrentValue);
+  const out: ActionProposal[] = [];
+  for (const p of proposals) {
+    if (p.isCurrentValue) { out.push(p); continue; }
+    if (courantes.some((c) => same(c.value, p.value))) continue;
+    const doublon = out.findIndex((o) => !o.isCurrentValue && same(o.value, p.value));
+    if (doublon >= 0) {
+      const o = out[doublon];
+      if (p.evidenceIds?.length) out[doublon] = { ...o, evidenceIds: [...new Set([...(o.evidenceIds ?? []), ...p.evidenceIds])], confidence: Math.max(o.confidence, p.confidence) };
+      continue;
+    }
+    out.push(p);
+  }
+  return out;
 }
 
 /**

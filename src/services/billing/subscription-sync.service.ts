@@ -41,7 +41,9 @@ import { periodOfInterval } from '@/lib/billing/plan-catalog';
 import { PriceRecognitionError, primaryItem } from '@/services/billing/price-history.service';
 import { invalidateAccountReadCache, invalidateUserReadCache } from '@/lib/server-cache';
 import { markTrialConverted } from '@/services/trial.service';
-import { sendDowngradeToStandardEmail, sendPremiumConfirmationEmail } from '@/lib/email/billing-emails';
+import {
+  detectSubscriptionTransitions, dispatchRecordedOperation, recordSubscriptionTransition, type RecordedOperation,
+} from '@/services/billing/subscription-communications.service';
 import { endDuoSharing, enforceStandardLimits } from '@/lib/plan-enforcement';
 import { unpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 import { duoStartCandidates, fillDuoStart, isDuoActive, isDuoInOffer, openingStart, pickDuoStartDate } from '@/services/duo/duo-period';
@@ -332,7 +334,6 @@ async function synchroniserAbonnement(
   const periodEnd = toDate(item?.current_period_end);
   const startedAt = toDate(subscription.start_date) ?? now;
   const isNewSubscription = account.stripeSubscriptionId !== subscription.id;
-  const activated = isPaid && (isNewSubscription || account.subscriptionStatus !== 'ACTIVE');
 
   const [existingRow] = await db
     .select({
@@ -445,7 +446,36 @@ async function synchroniserAbonnement(
   const duoLeaves = !!duoBefore && planTier !== 'premium_duo'
     && duoBefore.billingOwnerUserId === account.ownerUserId && isDuoActive(duoBefore.status);
 
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 81E — TRANSITION CONSTATÉE SOUS VERROU, COMMUNICATIONS PAR OPÉRATION
+  //
+  // L'état AVANT était lu hors transaction : deux webhooks simultanés (ou
+  // le retour de paiement et un webhook) constataient chacun la même
+  // transition et envoyaient chacun leurs communications. Il est relu ici
+  // sous verrou de ligne : une seule transaction constate chaque transition,
+  // et l'inscrit (avec ses communications, durables) dans la même
+  // transaction (`subscription-communications.service`).
+  // ══════════════════════════════════════════════════════════════════════
+  let avant = {
+    planType: account.planType as string | null, status: account.subscriptionStatus as string | null,
+    subscriptionId: account.stripeSubscriptionId as string | null, premiumUntil: account.premiumUntil as number | null,
+  };
+  const operations: Array<RecordedOperation | null> = [];
+
   await db.transaction(async (tx) => {
+    const [verrou] = await tx
+      .select({
+        planType: accounts.planType, subscriptionStatus: accounts.subscriptionStatus,
+        stripeSubscriptionId: accounts.stripeSubscriptionId, premiumUntil: accounts.premiumUntil,
+      })
+      .from(accounts).where(eq(accounts.id, account.id)).for('update');
+    const [ligneAvant] = await tx
+      .select({ cancelAtPeriodEnd: accountSubscriptions.cancelAtPeriodEnd, stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId })
+      .from(accountSubscriptions).where(eq(accountSubscriptions.accountId, account.id)).for('update');
+    if (verrou) {
+      avant = { planType: verrou.planType, status: verrou.subscriptionStatus, subscriptionId: verrou.stripeSubscriptionId, premiumUntil: verrou.premiumUntil };
+    }
+
     await tx
       .update(accounts)
       .set({
@@ -532,7 +562,29 @@ async function synchroniserAbonnement(
         .set({ subscriptionStatus: 'CANCELED', updatedAt: now })
         .where(eq(duoAccounts.id, duoBefore.id));
     }
+
+    // Lot 81E : opérations constatées et leurs communications (même transaction).
+    const transitions = detectSubscriptionTransitions({
+      before: {
+        planType: avant.planType, status: avant.status, subscriptionId: avant.subscriptionId,
+        cancelAtPeriodEnd: ligneAvant?.stripeSubscriptionId === subscription.id && !!ligneAvant.cancelAtPeriodEnd,
+      },
+      after: { planType: newPlanType, status: newStatus },
+      subscription,
+      isPaid, isTerminal, withdrawn, periodEnd, now,
+    });
+    for (const tr of transitions) {
+      operations.push(await recordSubscriptionTransition(tx, {
+        ...tr,
+        accountId: account.id, ownerUserId: account.ownerUserId, subscriptionId: subscription.id,
+        oldPlan: avant.planType, newPlan: newPlanType, oldStatus: avant.status, newStatus,
+        billingPeriod, unitAmountCents: price?.unit_amount ?? null,
+        nextBillingDate: isPaid ? periodEnd : null, isPaid,
+        notify: effectiveNotify, silent: adminEcho, source: effectiveSource,
+      }));
+    }
   });
+  for (const op of operations) await dispatchRecordedOperation(op);
 
   // Rétractation (lot 63B) : sortie de Duo complète — second utilisateur,
   // invitation. Idempotente ; jamais bloquante pour la synchronisation.
@@ -542,7 +594,10 @@ async function synchroniserAbonnement(
     );
   }
 
-  if (activated) {
+  // État AVANT relu sous verrou (lot 81E) : une transition déjà appliquée par
+  // une synchronisation concurrente n'est pas rejouée ici.
+  const activatedLocked = isPaid && (avant.subscriptionId !== subscription.id || avant.status !== 'ACTIVE');
+  if (activatedLocked) {
     const [owner] = await db
       .select({ email: users.email })
       .from(users)
@@ -571,17 +626,20 @@ async function synchroniserAbonnement(
     .then((m) => m.reconcileRevaluationFromSubscription(subscription))
     .catch(() => undefined);
 
-  const result: SubscriptionSyncResult = { ...base, newPlanType, newStatus, activated, unitAmountCents: price?.unit_amount ?? null };
+  const result: SubscriptionSyncResult = {
+    ...base, oldPlanType: avant.planType ?? base.oldPlanType, oldStatus: avant.status ?? base.oldStatus,
+    newPlanType, newStatus, activated: activatedLocked, unitAmountCents: price?.unit_amount ?? null,
+  };
   await applyTransitionEffects(result, {
     source: effectiveSource,
     notify: effectiveNotify,
     silent: adminEcho,
     premiumUntil: isPaid && periodEnd ? Math.floor(periodEnd.getTime() / 1000) : null,
-    oldPremiumUntil: account.premiumUntil,
+    oldPremiumUntil: avant.premiumUntil,
   });
 
   console.info(
-    `[subscription-sync] ${source} : compte ${account.id} ${account.planType}/${account.subscriptionStatus} → ` +
+    `[subscription-sync] ${source} : compte ${account.id} ${avant.planType}/${avant.status} → ` +
     `${newPlanType}/${newStatus} (${subscription.id}, ${billingPeriod ?? 'périodicité ?'})`,
   );
 
@@ -630,23 +688,13 @@ async function applyTransitionEffects(
   }
 
   const becomesPremium = PREMIUM_PLANS.includes(newPlanType) && !PREMIUM_PLANS.includes(oldPlanType);
-  // Un seul email par souscription : quand l'email de confirmation part, la
-  // notification « Offre activée / modifiée » reste dans la cloche (et en
-  // push) mais n'envoie pas son propre email « Votre abonnement Verebona ».
-  const confirmationEmail = becomesPremium && opts.notify && !!opts.premiumUntil;
-
-  if (!opts.silent) {
-    await notifierChangementDeStatut(result, { confirmationEmailSent: confirmationEmail });
-  }
+  // Lot 81E : notification « Offre activée / modifiée », confirmation
+  // contractuelle et e-mail de fin d'offre sont décidés PAR OPÉRATION dans
+  // la transaction de la transition (`subscription-communications.service`),
+  // e-mails enregistrés dans la file DURABLE — plus d'envoi « fire and
+  // forget » ni de drapeau « e-mail envoyé » posé avant l'envoi.
 
   if (becomesPremium) {
-    if (confirmationEmail && opts.premiumUntil) {
-      sendPremiumConfirmationEmail(ownerUserId, new Date(opts.premiumUntil * 1000), {
-        planLabel: LIBELLE_OFFRE[newPlanType] ?? newPlanType,
-        unitAmountCents: result.unitAmountCents ?? null,
-        billingPeriod: result.billingPeriod,
-      }).catch(console.error);
-    }
     // V4 — Analyse rétroactive via service dédié (batch de 5, throttle 2s)
     import('@/services/document-ai/retroactive-analysis.service')
       .then(({ scheduleRetroactiveAnalysis }) => scheduleRetroactiveAnalysis(accountId))
@@ -663,113 +711,10 @@ async function applyTransitionEffects(
 
   const leavesPremium = newPlanType === 'STANDARD' && PREMIUM_PLANS.includes(oldPlanType);
   if (leavesPremium) {
-    // Un passage à Standard payé n'est pas une perte d'abonnement.
-    if (opts.notify && !result.isPaid) {
-      sendDowngradeToStandardEmail(ownerUserId).catch(console.error);
-    }
     // Courriels de retrait des membres : pas sur un changement admin.
     await enforceStandardLimits(accountId, ownerUserId, !opts.silent).catch((e: Error) =>
       console.error('[subscription-sync] limites Standard non appliquées :', e.message),
     );
-  }
-}
-
-/** Libellé d'offre affiché au client. */
-const LIBELLE_OFFRE: Record<string, string> = {
-  STANDARD: 'Standard',
-  PREMIUM: 'Premium',
-  PREMIUM_DUO: 'Premium Duo',
-  PREMIUM_PRO: 'Premium Pro',
-};
-
-/** Rang des offres, pour distinguer une montée d'une baisse de gamme. */
-const RANG_OFFRE: Record<string, number> = {
-  STANDARD: 1,
-  PREMIUM: 2,
-  PREMIUM_DUO: 3,
-  PREMIUM_PRO: 4,
-};
-
-/** Statuts de compte qui signifient « une offre payante était en place ». */
-const STATUTS_AVEC_OFFRE = ['ACTIVE', 'PAST_DUE', 'CANCELED'];
-
-/**
- * Prévient le client que le statut de son compte a changé.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * DEUX MOMENTS DISTINCTS, DEUX MESSAGES
- *
- *   · activation — le compte n'avait aucune offre (essai terminé, compte
- *     restreint, réabonnement) : « Votre compte a été activé avec une offre
- *     Standard. » ;
- *   · changement — le compte était déjà abonné et change d'offre :
- *     « Votre compte a été upgradé vers une offre Premium. »
- *
- * Émis ici, et nulle part ailleurs : c'est le seul endroit qui connaisse à
- * la fois l'état précédent et le nouvel état, quel que soit le chemin
- * emprunté (webhook, retour de paiement, resynchronisation admin).
- *
- * La fin d'une offre a déjà ses propres notifications (résiliation,
- * suspension, compte en lecture seule) : elle n'est pas traitée ici.
- *
- * Une notification ne doit jamais faire échouer une synchronisation
- * d'abonnement : toute erreur est journalisée et ignorée.
- * ══════════════════════════════════════════════════════════════════════════
- */
-async function notifierChangementDeStatut(
-  result: SubscriptionSyncResult,
-  opts: { confirmationEmailSent: boolean } = { confirmationEmailSent: false },
-): Promise<void> {
-  if (!result.isPaid) return;
-
-  const { accountId, oldPlanType, newPlanType, oldStatus, subscriptionId } = result;
-  const avaitUneOffre = STATUTS_AVEC_OFFRE.includes((oldStatus ?? '').toUpperCase());
-  const libelle = LIBELLE_OFFRE[newPlanType] ?? newPlanType;
-
-  try {
-    const { emit } = await import('@/lib/notifications');
-
-    if (!avaitUneOffre) {
-      await emit({
-        type: 'SUBSCRIPTION_ACTIVATED',
-        payload: {
-          planCode: newPlanType,
-          planLabel: libelle,
-          billingPeriod: result.billingPeriod,
-          confirmationEmailSent: opts.confirmationEmailSent,
-        },
-        accountId,
-        entityType: 'subscription',
-        entityId: subscriptionId,
-        // Une seule notification par abonnement et par offre activée, même
-        // si plusieurs chemins synchronisent le même paiement.
-        dedupeKey: `subscription:${subscriptionId}:activated:${newPlanType}`,
-      });
-      return;
-    }
-
-    if (oldPlanType === newPlanType) return;
-
-    const avant = RANG_OFFRE[oldPlanType] ?? 0;
-    const apres = RANG_OFFRE[newPlanType] ?? 0;
-    await emit({
-      type: 'SUBSCRIPTION_CHANGED',
-      payload: {
-        planCode: newPlanType,
-        planLabel: libelle,
-        billingPeriod: result.billingPeriod,
-        previousPlanCode: oldPlanType,
-        previousPlanLabel: LIBELLE_OFFRE[oldPlanType] ?? oldPlanType,
-        direction: apres > avant ? 'upgrade' : apres < avant ? 'downgrade' : 'lateral',
-        confirmationEmailSent: opts.confirmationEmailSent,
-      },
-      accountId,
-      entityType: 'subscription',
-      entityId: subscriptionId,
-      dedupeKey: `subscription:${subscriptionId}:changed:${oldPlanType}:${newPlanType}`,
-    });
-  } catch (e) {
-    console.error('[subscription-sync] notification de changement de statut :', (e as Error).message);
   }
 }
 

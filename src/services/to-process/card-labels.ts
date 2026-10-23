@@ -24,7 +24,7 @@
  * Module PUR (aucun accès base) : testé famille par famille.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { getField } from '@/services/canonical/registry';
+import { getField, normalizeDateValue, normalizeValue, resolveAliasDetailed } from '@/services/canonical/registry';
 import type { ActionProposal, TargetType } from './action-model';
 
 /** Motif interdit dans un libellé affiché à l'utilisateur. */
@@ -161,8 +161,41 @@ function valueText(label: string, fieldKey: string | null): string {
   return t;
 }
 
+/**
+ * Lot 81A (ticket faux arbitrages, D) — l'affichage ne masque jamais une
+ * différence de comparaison : pour une DATE ou un MONTANT du registre dont
+ * le libellé n'est qu'une valeur, le texte affiché est calculé depuis la
+ * VALEUR comparée (normaliseur métier), pas depuis le libellé enregistré.
+ * Deux propositions qui s'affichent pareil sont donc équivalentes pour le
+ * moteur ; deux valeurs différentes ne s'affichent jamais pareil. Pure.
+ * `null` : pas de rendu métier (libellé conservé).
+ */
+export function businessValueLabel(fieldKey: string | null, value: unknown, label: string | null | undefined): string | null {
+  if (!fieldKey || value === null || value === undefined || value === '') return null;
+  const alias = resolveAliasDetailed(fieldKey);
+  const def = getField(alias?.key ?? fieldKey);
+  if (!def) return null;
+  const lib = String(label ?? '').trim();
+  if (def.valueType === 'date') {
+    // Libellé « valeur seule » (date) : sinon (« Garder 06/05/2021 »), il reste tel quel.
+    if (lib && normalizeDateValue(lib) === null) return null;
+    const d = normalizeDateValue(value);
+    return d ? frIso(d) : null;
+  }
+  if (def.valueType === 'money_eur' || def.valueType === 'money_cents') {
+    if (lib && !/^[\d\s.,€\u00a0-]+(?:eur|euros?)?$/i.test(lib)) return null;
+    const r = normalizeValue(def.key, value, alias?.sourceUnit ? { sourceUnit: alias.sourceUnit } : {});
+    if (!r.ok || typeof r.value !== 'number') return null;
+    const eur = def.valueType === 'money_cents' ? r.value / 100 : r.value;
+    return `${new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 }).format(eur)} €`;
+  }
+  return null;
+}
+
 /** Libellé d'une proposition, formulation utilisateur (lecture). Pure. */
-export function userProposalLabel(label: string | null | undefined, fieldKey: string | null = null): string {
+export function userProposalLabel(label: string | null | undefined, fieldKey: string | null = null, value?: unknown): string {
+  const metier = value === undefined ? null : businessValueLabel(fieldKey, value, label);
+  if (metier) return metier;
   const t = humanizeIsoDates(valueText(String(label ?? ''), fieldKey));
   const repli = /^(Bien|Équipement|Pièce) \d+$/.exec(t);
   if (repli) return unnamedLabel(repli[1] === 'Bien' ? 'ASSET' : repli[1] === 'Équipement' ? 'EQUIPMENT' : 'ROOM');
@@ -197,7 +230,8 @@ export function presentCardLabels<T extends CardLabelView>(view: T, ruleQuestion
   const question = humanizeIsoDates(view.question ?? '');
   const linkAsset = view.targetType === 'DOCUMENT' && view.relationKey === 'assetIds';
   const proposals = view.proposals.map((p) => {
-    const libelle = userProposalLabel(p.label, view.fieldKey);
+    // Lot 81A : rendu depuis la valeur comparée (dates, montants) — jamais un faux « identique ».
+    const libelle = userProposalLabel(p.label, view.fieldKey, view.relationKey ? undefined : p.value);
     const { sourceContext, ...reste } = p;
     const source = sourceContext
       ? userSourceLabel(sourceContext.label, { assetName: linkAsset ? libelle : view.target.assetName ?? null })

@@ -25,8 +25,8 @@
  *  L78C-07  plusieurs échéances : lot de 8, les restantes PENDING puis reprises
  *  L78C-08  pré-génération sans sujet à afficher mais évaluations incomplètes :
  *           demande NON close (reportée), jamais « nothing_to_say »
- *  L78C-09  T6 indisponible (aucun appel, aucun état fictif) ; plafond IA du
- *           compte (UNAVAILABLE, essai planifié)
+ *  L78C-09  T6 indisponible (aucun appel, aucun état fictif ; lot 81B : état
+ *           UNAVAILABLE explicite) ; plafond IA du compte (UNAVAILABLE, essai planifié)
  *  L78C-10  absence de boucle : passages répétés sans appel IA ; décision
  *           enregistrée encore réclamée à contexte inchangé bornée (3 / 20 h)
  *  L78C-11  supervision : demande non prise au-delà du délai, tâche planifiée
@@ -410,7 +410,10 @@ scenario('L78C-T6', 'Lot 78C — évaluations T6 : états réels persistés, rep
       const p = await pregen(c.id);
       expect(etat(p)).toBe('UNAVAILABLE');
       expect(appels()).toBe(0);
-      expect(await runs(c.id)).toEqual([]); // jamais d'attente fictive
+      // Lot 81B (B) : jamais d'attente fictive (aucun PENDING) — mais l'évaluation
+      // éligible a désormais un état EXPLICITE (UNAVAILABLE, `t6_unavailable`),
+      // repris au rétablissement (auparavant : aucune ligne, aucune reprise garantie).
+      expect((await runs(c.id)).map((r) => [r.status, r.last_error_kind])).toEqual([['UNAVAILABLE', 't6_unavailable']]);
     } finally {
       await sql`UPDATE ai_treatment_state SET state = 'ENABLED', updated_at = now() WHERE treatment = 'T6'`;
     }

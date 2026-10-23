@@ -52,3 +52,67 @@ export function lotNotificationText(p: {
   return `${n} documents ont été analysés : ${titres.join(', ')}${autres > 0 ? ` et ${autres} autre${autres > 1 ? 's' : ''}` : ''}`;
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 81E — RÉSULTAT RÉEL DU LOT : RÉUSSITE, RÉUSSITE PARTIELLE, ÉCHEC
+//
+// Le résultat est établi depuis les états PERSISTÉS des documents
+// (`lot-notification.ts`), jamais depuis un compteur. Un doublon ou un
+// regroupement légitime n'est pas un échec ; une analyse encore en cours ou
+// reprise automatiquement n'est pas présentée comme définitive. Textes
+// partagés par le catalogue (cloche, push) et la cloche (lignes existantes).
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Action réellement possible après un échec d'analyse (tiroir du document). */
+export const ANALYSIS_RETRY_ACTION = 'Vous pouvez relancer l’analyse depuis la fiche du document, dans Documents.';
+
+export type LotOutcomeType = 'DOCUMENT_BATCH_COMPLETED' | 'DOCUMENT_BATCH_PARTIALLY_FAILED' | 'DOCUMENT_BATCH_FAILED';
+
+/** Contenu d'une notification d'échec (total ou partiel) d'un lot. */
+export interface LotFailurePayload {
+  lotId: number;
+  analysedCount: number;
+  failedCount: number;
+  /** Documents qui n'ont pas pu être analysés (nommés). */
+  documents?: LotDocument[];
+  /** Un seul document en échec : il s'ouvre en tiroir. */
+  assetFileId?: number;
+}
+
+/** Charge utile d'un lot en échec total ou partiel (pure). */
+export function lotFailurePayload(lotId: number, analysedCount: number, failed: LotDocument[]): LotFailurePayload {
+  const docs = failed.filter((d) => d.title.trim()).slice(0, LOT_DOCUMENTS_MAX);
+  return {
+    lotId, analysedCount, failedCount: failed.length,
+    ...(docs.length ? { documents: docs } : {}),
+    ...(failed.length === 1 ? { assetFileId: failed[0].assetFileId } : {}),
+  };
+}
+
+function titres(docs: LotDocument[] | undefined, total: number): string {
+  const t = (docs ?? []).filter((d) => d?.title?.trim()).map((d) => `“${d.title}”`);
+  if (t.length === 0) return '';
+  const autres = total - t.length;
+  return ` : ${t.join(', ')}${autres > 0 ? ` et ${autres} autre${autres > 1 ? 's' : ''}` : ''}`;
+}
+
+/** Texte d'un lot partiellement en échec (cloche, catalogue). */
+export function lotPartialFailureText(p: Partial<LotFailurePayload>): string {
+  const ok = p.analysedCount ?? 0;
+  const ko = p.failedCount ?? p.documents?.length ?? 0;
+  const analyses = `${ok} document${ok > 1 ? 's' : ''} analysé${ok > 1 ? 's' : ''}`;
+  const echecs = ko > 1 ? `${ko} n’ont pas pu l’être` : `${ko} n’a pas pu l’être`;
+  return `${analyses}, ${echecs}${titres(p.documents, ko)}. ${ANALYSIS_RETRY_ACTION}`;
+}
+
+/** Texte d'un lot entièrement en échec (cloche, catalogue). */
+export function lotFailureText(p: Partial<LotFailurePayload>): string {
+  const ko = p.failedCount ?? p.documents?.length ?? 0;
+  const docs = (p.documents ?? []).filter((d) => d?.title?.trim());
+  if (ko <= 1) {
+    return docs.length
+      ? `Le document “${docs[0].title}” n’a pas pu être analysé. ${ANALYSIS_RETRY_ACTION}`
+      : `Votre document n’a pas pu être analysé. ${ANALYSIS_RETRY_ACTION}`;
+  }
+  return `${ko} documents n’ont pas pu être analysés${titres(docs, ko)}. ${ANALYSIS_RETRY_ACTION}`;
+}

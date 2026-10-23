@@ -122,7 +122,8 @@ describe('catalogue', () => {
     expect(SCHEDULED_TASKS.filter((t) => t.critical).map((t) => t.code).sort())
       // Lot 57A : la reprise des e-mails de vérification / d'invitation Duo
       // conditionne l'accès des nouveaux comptes.
-      .toEqual(['expire-trials', 'notifications-dispatch', 'to-process-scan', 'transactional-emails-retry', 'withdrawal-process']);
+      // Lot 81B (F) : la supervision des évaluations T6 — son arrêt est détecté par le chien de garde.
+      .toEqual(['expire-trials', 'mascot-t6-supervision', 'notifications-dispatch', 'to-process-scan', 'transactional-emails-retry', 'withdrawal-process']);
   });
 
   it('aucun créneau fixe dans la nuit de sauvegarde ni dans la plage 2 h – 3 h', () => {

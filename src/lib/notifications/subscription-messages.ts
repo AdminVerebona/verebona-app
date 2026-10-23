@@ -48,6 +48,8 @@ export interface SubscriptionNotificationPayload {
   previousPlanLabel?: string;
   direction?: string;
   effectiveAt?: string;
+  /** Lot 81E : renouvellement — fin de la nouvelle période (prochaine échéance). */
+  nextRenewalAt?: string | null;
 }
 
 /** Libellé d'offre : celui du payload, sinon déduit du code (`premium_duo` → « Premium Duo »). */
@@ -99,10 +101,17 @@ export function subscriptionNotificationText(
         ? `Changement d’offre programmé. Nouvelle offre : ${offre}${formule(p.billingPeriod)}.${quand}`
         : `Changement d’offre programmé.${quand}`;
     }
-    case 'SUBSCRIPTION_RENEWED':
-      return offre
-        ? `Votre abonnement a été renouvelé. Offre : ${offre}`
+    case 'SUBSCRIPTION_RENEWED': {
+      const base = offre
+        ? `Votre abonnement a été renouvelé. Offre : ${offre}${formule(p.billingPeriod)}`
         : 'Votre abonnement a été renouvelé.';
+      // Lot 81E : prochaine échéance et accès aux justificatifs (le reçu
+      // Stripe n'est jamais présumé envoyé).
+      const date = dateLongue(p.nextRenewalAt ?? undefined);
+      return date
+        ? `${base.replace(/\.$/, '')}. Prochaine échéance : ${date}. Votre facture est disponible dans Mon compte › Offres.`
+        : base;
+    }
     case 'SUBSCRIPTION_CANCELLATION_SCHEDULED': {
       const date = dateLongue(p.effectiveAt);
       return date

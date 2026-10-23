@@ -7,7 +7,7 @@ import { fr } from 'date-fns/locale';
 import { createPortal } from 'react-dom';
 import { apiClient } from '@/lib/api-client';
 import { drawerHref, openDrawer } from '@/lib/drawers';
-import { lotNotificationText } from '@/services/ai/source-analysis/lot-notification-text';
+import { lotFailureText, lotNotificationText, lotPartialFailureText } from '@/services/ai/source-analysis/lot-notification-text';
 import { uploadNotificationText } from '@/lib/notifications/upload-notification-text';
 import { toast } from 'sonner';
 import { useIsMobile } from '@/hooks/use-mobile';
@@ -132,10 +132,12 @@ function getNotificationText(
       }).body;
     case 'DOCUMENT_BATCH_COMPLETED':
       return lotNotificationText(p);
+    // Lot 81E : textes partagés avec le catalogue (résultat réel du lot,
+    // documents nommés, action réellement disponible).
     case 'DOCUMENT_BATCH_PARTIALLY_FAILED':
-      return `Analyse terminée avec une anomalie : ${p.analysedCount ?? 0} document(s) analysé(s), ${p.failedCount ?? 0} à vérifier`;
+      return lotPartialFailureText(p as never);
     case 'DOCUMENT_BATCH_FAILED':
-      return `Analyse impossible — notre équipe en est informée`;
+      return lotFailureText(p as never);
     // DOCUMENT_ANALYZED : conservé pour les lignes historiques (cf. CDC §22.1).
     case 'DOCUMENT_ANALYZED':
       if (p.failedCount && !p.analysedCount) {
@@ -264,6 +266,9 @@ function getNotificationHref(type: string, payload: NotificationPayload | null):
   }
   // Documents : vue du document concerné, ou liste des documents pour un lot.
   if ((type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_ANALYZED' || type === 'DOCUMENT_UPLOAD_COMPLETED') && p.assetFileId) {
+    return drawerHref({ kind: 'document', id: p.assetFileId }, '/documents');
+  }
+  if ((type === 'DOCUMENT_BATCH_PARTIALLY_FAILED' || type === 'DOCUMENT_BATCH_FAILED') && p.assetFileId) {
     return drawerHref({ kind: 'document', id: p.assetFileId }, '/documents');
   }
   if (type === 'DOCUMENT_BATCH_COMPLETED' || type === 'DOCUMENT_BATCH_PARTIALLY_FAILED' || type === 'DOCUMENT_BATCH_FAILED' || type === 'DOCUMENT_ANALYZED' || type === 'DOCUMENT_UPLOAD_COMPLETED') {

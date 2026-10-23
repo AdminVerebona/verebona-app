@@ -28,10 +28,17 @@ export const DIAG_MAX_PAGE_SIZE = 100;
 /** Période maximale d'un calcul d'indicateurs (requêtes bornées). */
 export const DIAG_MAX_PERIOD_DAYS = 366;
 export const DIAG_DEFAULT_PERIOD_DAYS = 30;
-/** Échantillon d'identifiants rendu par anomalie dure. */
+/** Échantillon d'identifiants rendu par anomalie dure (AFFICHAGE ; le décompte est exact). */
 export const DIAG_ANOMALY_SAMPLE = 20;
-/** Bornes des listes du détail (une Opération très sourcée reste lisible). */
+/**
+ * Borne d'AFFICHAGE des listes du détail à l'écran (une Opération très
+ * sourcée reste lisible). Lot 81C : ce n'est PAS une borne d'extraction —
+ * une liste tronquée porte son total réel (`listTotals`) et les exports
+ * (« Données du compte » › Opération, diagnostics techniques) lisent les
+ * mêmes requêtes intégralement (`OPERATION_DETAIL_LISTS`).
+ */
 export const DETAIL_LIMIT = 200;
+export const DETAIL_DISPLAY_LIMIT = DETAIL_LIMIT;
 
 export type OperationState = 'all' | 'active' | 'invalidated' | 'merged';
 export const OPERATION_STATES: readonly OperationState[] = ['all', 'active', 'invalidated', 'merged'];

@@ -12,8 +12,10 @@
  *     navigation Équipement → Facture → Opération → Échéance → retour ;
  *     valeurs techniques identiques à celles des lecteurs canoniques ;
  *   · L75N-E04 téléchargements JSON / CSV / TXT complets (nommage, en-têtes,
- *     journal), JSON identique au tiroir, export sans troncature au-delà d'un
- *     lot interne (650 preuves), borne explicite → « incomplet » signalé ;
+ *     journal), export sans troncature au-delà d'un lot interne (650
+ *     preuves). Lot 81C (adapté) : le tiroir est une CONSULTATION PAGINÉE
+ *     (première page + total réel), l'export est INTÉGRAL (plus de borne
+ *     « incomplet » : une section en panne est FAILED, l'export PARTIAL) ;
  *   · L75N-E05 sécurité : entité d'un autre compte → 404 (tentative
  *     journalisée DENIED), masquage (clé de stockage, nom et texte du fichier,
  *     IBAN, donnée sensible du registre), aucune URL de fichier ;
@@ -255,9 +257,13 @@ scenario('L75N', 'BO Données du compte : six catégories, tiroir, copie, export
     // Données de l'équipement ≠ données du bien parent.
     expect(sec('bdd-equipments').fields.find((f: { column: string }) => f.column === 'name').raw).toBe('Robot aspirateur Roborock S8 Pro Ultra');
     expect(JSON.stringify(sec('canonique'))).not.toContain('12 rue des Lilas');
-    // Preuves : 651 lignes en trois lots internes, sans troncature.
+    // Preuves : 651 lignes — lot 81C : consultation PAGINÉE (première page, total réel), navigation jusqu'à la dernière ligne.
     expect(sec('field-evidence').table).toMatchObject({ total: 651, complete: true });
-    expect(sec('field-evidence').table.rows).toHaveLength(651);
+    expect(sec('field-evidence').window).toMatchObject({ total: 651, offset: 0, size: 50 });
+    expect(sec('field-evidence').table.rows).toHaveLength(50);
+    const derniere = await (await r.entity(A.id, 'equipment', ids.equipment, 'section=field-evidence&offset=650')).json();
+    expect(derniere.section.window).toMatchObject({ total: 651, offset: 650 });
+    expect(derniere.section.table.rows).toHaveLength(1);
     expect(sec('to-process').table.rows[0].id).toBe(ids.card);
     expect(sec('canonical-writes').table.rows[0]).toMatchObject({ origin: 'RECONCILIATION', target_type: 'EQUIPMENT' });
 
@@ -320,12 +326,15 @@ scenario('L75N', 'BO Données du compte : six catégories, tiroir, copie, export
     expect(json.status).toBe(200);
     expect(json.headers.get('Content-Disposition')).toBe(`attachment; filename="verebona-compte-${A.id}-equipement-${ids.equipment}-${day}.json"`);
     expect(json.headers.get('Content-Type')).toContain('application/json');
-    expect(json.headers.get('X-Verebona-Export-Complete')).toBe('true');
+    expect(json.headers.get('X-Verebona-Export-Id')).toMatch(/^[0-9a-f-]{36}$/);
     const exported = JSON.parse(await json.text());
     const tiroir = await (await r.entity(A.id, 'equipment', ids.equipment)).json();
-    const sansHorodatage = (x: { extractedAt?: string }) => ({ ...x, extractedAt: 'X' });
-    expect(sansHorodatage(exported)).toEqual(sansHorodatage(tiroir));
+    // Lot 81C : mêmes sections et mêmes champs que le tiroir ; les tables sont INTÉGRALES (le tiroir : une page).
+    expect(exported.sections.map((s: { id: string }) => s.id)).toEqual(tiroir.sections.map((s: { id: string }) => s.id));
+    expect(exported.sections.find((s: { id: string }) => s.id === 'prix-achat').fields).toEqual(tiroir.sections.find((s: { id: string }) => s.id === 'prix-achat').fields);
     expect(exported.sections.find((s: { id: string }) => s.id === 'field-evidence').table.rows).toHaveLength(651);
+    expect(exported.sections.find((s: { id: string }) => s.id === 'field-evidence').table.rows.slice(0, 50)).toEqual(tiroir.sections.find((s: { id: string }) => s.id === 'field-evidence').table.rows);
+    expect(exported).toMatchObject({ complete: true, exportStatus: 'COMPLETE', export: { status: 'COMPLETE', format: 'json' } });
 
     const csv = await r.entity(A.id, 'equipment', ids.equipment, 'format=csv');
     const csvBytes = new Uint8Array(await csv.arrayBuffer());
@@ -353,22 +362,14 @@ scenario('L75N', 'BO Données du compte : six catégories, tiroir, copie, export
     expect(audit[0]).toMatchObject({ target_type: 'ACCOUNT', target_id: A.id, result: 'SUCCESS' });
     expect(JSON.parse(audit[0].details as string)).toMatchObject({ entityType: 'equipment', entityId: ids.equipment, format: 'json', complete: true, fileName: `verebona-compte-${A.id}-equipement-${ids.equipment}-${day}.json` });
 
-    // Borne explicite (service) : section incomplète, dossier incomplet, avertissement, total réel.
+    // Lot 81C (adapté) : plus de borne de section — l'export TXT donne le statut en FIN de fichier.
+    expect(t.trimEnd().split('\n').pop()).toMatch(/^Statut de l’export : COMPLETE — \d+ élément\(s\) exporté\(s\) sur \d+ attendu\(s\)/);
     const { buildEntityDossier } = await import('@/services/admin/account-data/dossier');
-    const { dossierToText } = await import('@/services/admin/account-data/model');
-    const borne = await buildEntityDossier(A.id, 'equipment', ids.equipment, { limit: 100 });
-    const ev = borne.sections.find((s) => s.id === 'field-evidence')!.table!;
-    expect(ev).toMatchObject({ complete: false, total: 651, limit: 100 });
-    expect(ev.rows).toHaveLength(100);
-    expect(borne.complete).toBe(false);
-    expect(borne.warnings.join(' ')).toContain('100 ligne(s) extraite(s) sur 651');
-    expect(dossierToText(borne)).toContain('EXTRACTION INCOMPLÈTE');
-
     // Section en erreur (simulée) : point de reprise, sections suivantes lues, avertissement explicite.
     const { readOnlyDossierExecutor } = await import('@/services/admin/account-data/dossier');
     let n = 0;
     const panne = readOnlyDossierExecutor((q) => async (text, params) => {
-      if (/FROM field_evidence WHERE/.test(text) && /LIMIT 500 OFFSET/.test(text) && n++ === 0) return q('SELECT 1/0 AS x', []);
+      if (/count\(\*\)::bigint AS n FROM \(SELECT \* FROM field_evidence WHERE/.test(text) && n++ === 0) return q('SELECT 1/0 AS x', []);
       return q(text, params);
     });
     const partiel = await buildEntityDossier(A.id, 'equipment', ids.equipment, { exec: panne });

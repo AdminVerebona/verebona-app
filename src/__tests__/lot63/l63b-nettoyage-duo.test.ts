@@ -103,7 +103,7 @@ describe('L63-DUO — gardes des chemins webhook (rétractation)', () => {
     expect(bloc).toContain('const withdrawnAccountId = await withdrawnAccountOfDuo(duoAccount.id, duoAccount.billingOwnerUserId);');
     // La garde précède la rétrogradation (qui écrit EXPIRED et envoie l'e-mail).
     expect(bloc.indexOf('await closeDuoForWithdrawal(withdrawnAccountId);')).toBeGreaterThan(-1);
-    expect(bloc.indexOf('await closeDuoForWithdrawal(withdrawnAccountId);')).toBeLessThan(bloc.indexOf('await downgradeDuoAccount(duoAccount.id);'));
+    expect(bloc.indexOf('await closeDuoForWithdrawal(withdrawnAccountId);')).toBeLessThan(bloc.indexOf('await downgradeDuoAccount(duoAccount.id, subscriptionId, subscription.ended_at ?? null);'));
   });
 
   it('L63-DUO-08 — activation Duo (Checkout / passage à Duo) : jamais sur un compte rétracté', () => {

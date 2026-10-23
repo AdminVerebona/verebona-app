@@ -155,8 +155,38 @@ jobs:
           cache: npm
       - name: Installation
         run: npm ci
-      - name: Scénarios E2E mascotte et T6 (lots 71F, 71G, 72A, 75E)
+      - name: Scénarios E2E mascotte et T6 (lots 71F, 71G, 72A, 75E, 76A, 78C, 81B)
         run: npm run test:e2e:mascotte-t6
+
+  e2e-tco:
+    name: E2E TCO (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.13.0"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Scénarios E2E TCO (lots 61, 75D, 76G, 78B, 80A, 81D)
+        run: npm run test:e2e:tco
 
   conformity-report:
     name: Rapport de conformité

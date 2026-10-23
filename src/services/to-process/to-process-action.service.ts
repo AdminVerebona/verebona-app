@@ -36,7 +36,7 @@ import type {
   TargetType,
   ToProcessAction,
 } from './action-model';
-import { isDisplayableArbitration, selectDisplayedProposals } from './action-model';
+import { isDisplayableArbitration, sanitizeArbitrationProposals, selectDisplayedProposals } from './action-model';
 import { getRule, priorityForRule } from './rules-catalog';
 import { admitToDoFirst, resolvePriority, type PriorityCandidate } from './priority';
 
@@ -63,7 +63,7 @@ export interface UpsertActionInput {
 export interface UpsertActionResult {
   status: 'CREATED' | 'UPDATED' | 'SKIPPED';
   /** Motif machine d'un SKIPPED, quand il y en a un. */
-  code?: 'NOT_APPLICABLE_UNCHANGED';
+  code?: 'NOT_APPLICABLE_UNCHANGED' | 'NO_REAL_ALTERNATIVE';
   actionId?: number;
   priority?: ActionPriority;
   /** Action rétrogradée pour faire place à l'entrante (§9.3). */
@@ -137,12 +137,24 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
     return { status: 'SKIPPED', reason: `Règle inconnue : ${input.ruleCode}.` };
   }
 
-  const proposals = input.proposals ?? [];
-  if (input.actionKind === 'ARBITRATE' && !isDisplayableArbitration(proposals)) {
+  // Lot 81A : contrôle déterministe d'équivalence avant création OU mise à
+  // jour d'un arbitrage — propositions équivalentes à la valeur actuelle
+  // écartées (clé canonique, normaliseurs métier), doublons fusionnés.
+  const brutes = input.proposals ?? [];
+  const proposals = input.actionKind === 'ARBITRATE'
+    ? sanitizeArbitrationProposals(brutes, input.fieldKey ?? null)
+    : brutes;
+  if (input.actionKind === 'ARBITRATE' && !isDisplayableArbitration(proposals, input.fieldKey ?? null)) {
+    // Aucune véritable alternative : rien n'est créé NI fermé — une carte
+    // existante n'est jamais déclarée résolue sur une proposition mal choisie
+    // (le moteur ou le rattrapage la réévaluent).
+    const equivalentes = brutes.some((p) => !p.isCurrentValue);
     return {
       status: 'SKIPPED',
-      reason:
-        'Arbitrage sans proposition affichable : l’action n’est pas créée (ATP-05).',
+      ...(equivalentes ? { code: 'NO_REAL_ALTERNATIVE' as const } : {}),
+      reason: equivalentes
+        ? 'Arbitrage sans véritable alternative : toutes les propositions sont équivalentes à la valeur actuelle (lot 81A).'
+        : 'Arbitrage sans proposition affichable : l’action n’est pas créée (ATP-05).',
     };
   }
 

@@ -21,6 +21,10 @@
  *     `t3_detail`), historique `business_operation_history`, décisions de
  *     rapprochement `business_operation_match_decisions`.
  *
+ * Lot 81C : aucune borne sur les lignes citées par une étape (rapports T1,
+ * appels IA, historique, décisions, liens, écritures, preuves, faits,
+ * cartes, documents sources) — toutes celles conservées sont exportées.
+ *
  * Le lien composante → indice T1 n'est pas persisté : les indices du
  * candidat sont TOUS exportés et ceux de même montant et devise sont
  * signalés « correspondance de valeur » (jamais présentés comme le lien
@@ -146,10 +150,10 @@ async function documentRow(q: DiagQuery, A: number, fileId: number): Promise<Row
 /** Extraction T1 + appels IA corrélés (trace) + rapports T1 du document. */
 async function extractionBundle(q: DiagQuery, A: number, fileId: number, extractionId: number | null): Promise<{ extraction: Row | null; reports: Row[]; calls: Row[] }> {
   const extraction = await oneRow(q, `SELECT ${EXTR_COLS} FROM document_extractions WHERE account_id = $1 AND ${extractionId ? 'id = $2' : 'file_id = $2'}`, [A, extractionId ?? fileId]);
-  const reports = await jsonRows(q, `SELECT ${REPORT_COLS} FROM ai_execution_reports WHERE account_id = $1 AND treatment = 'T1' AND file_id = $2 ORDER BY id DESC LIMIT 5`, [A, fileId]);
+  const reports = await jsonRows(q, `SELECT ${REPORT_COLS} FROM ai_execution_reports WHERE account_id = $1 AND treatment = 'T1' AND file_id = $2 ORDER BY id DESC`, [A, fileId]);
   const traces = [...new Set([extraction?.operation_trace_id, ...reports.flatMap((r) => (Array.isArray(r.trace_ids) ? r.trace_ids : []))].filter((t): t is string => typeof t === 'string' && t.length > 0))];
   const calls = traces.length
-    ? await jsonRows(q, `SELECT ${USAGE_COLS} FROM ai_usage_event WHERE account_id = $1 AND metadata->>'traceId' = ANY($2::text[]) ORDER BY id LIMIT 50`, [A, traces])
+    ? await jsonRows(q, `SELECT ${USAGE_COLS} FROM ai_usage_event WHERE account_id = $1 AND metadata->>'traceId' = ANY($2::text[]) ORDER BY id`, [A, traces])
     : [];
   return { extraction, reports, calls };
 }
@@ -231,10 +235,10 @@ export async function traceComponent(q: DiagQuery, A: number, componentId: numbe
        AND (event_type IN ('CREATED', 'MERGED', 'INVALIDATED')
             OR (event_type = 'FINANCIAL_CHANGED' AND ((after_json->>'component_id') = $3 OR (before_json->>'component_id') = $3))
             OR source_id = ANY($4::bigint[]))
-     ORDER BY created_at, id LIMIT 200`, [A, opId, String(componentId), sources.map((s) => Number(s.id))]);
+     ORDER BY created_at, id`, [A, opId, String(componentId), sources.map((s) => Number(s.id))]);
   const matchDecisions = await jsonRows(q, `
     SELECT id, source_kind, source_entity_key, source_version, candidate_operation_id, decision, origin, reason_code, active, created_at, updated_at
-      FROM business_operation_match_decisions WHERE account_id = $1 AND candidate_operation_id = $2 ORDER BY id LIMIT 100`, [A, opId]);
+      FROM business_operation_match_decisions WHERE account_id = $1 AND candidate_operation_id = $2 ORDER BY id`, [A, opId]);
 
   // Source documentaire principale (la première DOCUMENT, primaire d'abord).
   const docSource = sources.find((s) => s.source_kind === 'DOCUMENT') ?? null;
@@ -354,7 +358,7 @@ async function traceDocumentLine(q: DiagQuery, A: number, ctx: TcoContext, line:
   const record = step('ENREGISTREMENT', 'sans_objet', [{ table: 'asset_files', id: p.fileId }],
     { montantDocument: doc?.amount_cents ?? null, operationCouvrante: line.operationId },
     line.operationId ? `montant repris par l’Opération #${line.operationId} (statut ${line.status})` : 'dépense comptée directement depuis le document : aucune composante enregistrée');
-  const links = await jsonRows(q, `SELECT id, asset_id, equipment_id, substructure_id, link_role, status, origin, removed_at FROM document_asset_links WHERE account_id = $1 AND file_id = $2 ORDER BY id LIMIT 50`, [A, p.fileId]);
+  const links = await jsonRows(q, `SELECT id, asset_id, equipment_id, substructure_id, link_role, status, origin, removed_at FROM document_asset_links WHERE account_id = $1 AND file_id = $2 ORDER BY id`, [A, p.fileId]);
   const rappr = step('RAPPROCHEMENT', 'disponible', [{ table: 'asset_files', id: p.fileId }, ...links.map((l) => ({ table: 'document_asset_links', id: Number(l.id) }))],
     { rattachement: doc ? { asset_id: doc.asset_id, linked_asset_id: doc.linked_asset_id, equipment_id: doc.equipment_id } : null, liens: links, ciblesIndiceT1: candidate?.target_hints ?? null });
   const c = calcSteps(ctx, line, '');
@@ -377,25 +381,25 @@ async function tracePriceLine(q: DiagQuery, A: number, ctx: TcoContext, line: Tc
       FROM canonical_field_writes
      WHERE account_id = $1 AND canonical_key = 'acquisitionPrice'
        AND ${isAsset ? `asset_id = $2 AND coalesce(upper(target_type), 'ASSET') = 'ASSET'` : `upper(target_type) = 'EQUIPMENT' AND target_id = $2`}
-     ORDER BY created_at DESC, id DESC LIMIT 20`, [A, target.id]);
+     ORDER BY created_at DESC, id DESC`, [A, target.id]);
   const evidence = await jsonRows(q, `
     SELECT id, field_key, canonical_key, value_json, normalized_value, raw_value, canonical_unit, source_type, source_id, evidence_origin, confidence,
            status, lifecycle_status, evidence_excerpt, extracted_at
       FROM field_evidence
      WHERE account_id = $1 AND (canonical_key = 'acquisitionPrice' OR field_key = 'acquisitionPrice')
        AND ${isAsset ? `asset_id = $2 AND (target_type IS NULL OR target_type = 'ASSET')` : `target_type = 'EQUIPMENT' AND target_entity_id = $2`}
-     ORDER BY extracted_at DESC NULLS LAST, id DESC LIMIT 50`, [A, target.id]);
+     ORDER BY extracted_at DESC NULLS LAST, id DESC`, [A, target.id]);
   const last = writes[0] ?? null;
   const docIds = [...new Set([
     ...(last && String(last.source_type ?? '').toLowerCase() === 'document' ? [num(last.source_id)] : []),
     ...evidence.filter((e) => String(e.source_type).toLowerCase() === 'document').map((e) => num(e.source_id)),
-  ].filter((x): x is number => x !== null))].slice(0, 5);
+  ].filter((x): x is number => x !== null))];
   const fileId = docIds[0] ?? line.fileId ?? null;
   const doc = fileId ? await documentRow(q, A, fileId) : null;
-  const facts = docIds.length ? await jsonRows(q, `SELECT ${FACT_COLS} FROM document_facts WHERE account_id = $1 AND file_id = ANY($2::int[]) AND canonical_key = 'acquisitionPrice' ORDER BY id LIMIT 20`, [A, docIds]) : [];
+  const facts = docIds.length ? await jsonRows(q, `SELECT ${FACT_COLS} FROM document_facts WHERE account_id = $1 AND file_id = ANY($2::int[]) AND canonical_key = 'acquisitionPrice' ORDER BY id`, [A, docIds]) : [];
   const ext = fileId ? await extractionBundle(q, A, fileId, null) : { extraction: null, reports: [], calls: [] };
   const cards = await jsonRows(q, `SELECT id, rule_code, action_kind, question, proposals_json, resolved_at, resolution_reason, created_at FROM to_process_actions
-                                     WHERE account_id = $1 AND field_key = 'acquisitionPrice' AND upper(target_type) = $2 AND target_id = $3 ORDER BY id DESC LIMIT 20`, [A, target.type, target.id]);
+                                     WHERE account_id = $1 AND field_key = 'acquisitionPrice' AND upper(target_type) = $2 AND target_id = $3 ORDER BY id DESC`, [A, target.type, target.id]);
   const userOrigin = last && ['USER', 'ADMIN'].includes(String(last.origin).toUpperCase());
   const c = calcSteps(ctx, line, '');
   const where = { table: isAsset ? 'assets' : 'equipments', id: target.id };

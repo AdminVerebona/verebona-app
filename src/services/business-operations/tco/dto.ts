@@ -35,6 +35,10 @@ export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
   NOT_OWNERSHIP_COSTS: 'Des achats d’objets distincts rattachés à ce bien ne sont pas comptés dans son coût de possession (rattachez-les comme équipements pour les inclure).',
   USER_DECISIONS: 'Vous avez ajouté ou retiré des dépenses : le coût de possession reflète vos choix (réversibles depuis les listes de dépenses).',
   USER_INCLUDED_DUPLICATES: 'Une dépense que vous avez ajoutée ressemble à une dépense déjà comptée : vérifiez qu’il ne s’agit pas du même paiement.',
+  NOT_REALIZED_EXPENSES: 'Des dépenses prévues ou datées après aujourd’hui ne sont pas encore réalisées : elles ne sont comptées dans aucun indicateur (elles le seront à leur date de paiement).',
+  STATUS_CONTRADICTIONS: 'Des dépenses ont un statut et une date contradictoires (prévue mais payée, réalisée mais datée après aujourd’hui) : vérifiez-les.',
+  INVALID_DATES: 'Des dates impossibles ou incohérentes ont été ignorées : les dépenses concernées ne sont rattachées à aucune année.',
+  ACQUISITION_DATE_INCOHERENT: 'Date d’acquisition incohérente (impossible, future ou postérieure à la cession) : la moyenne annuelle n’est pas calculée.',
 };
 
 /** Lot 61 : libellé du motif d'une ligne économique (moteur ou qualification documentaire). */
@@ -150,19 +154,30 @@ export type TcoDto = Omit<TcoResult, 'entries' | 'lines' | 'citedOnlyDocuments'>
   usageLabels: { categories: typeof USAGE_BUDGET_CATEGORY_LABELS; periodicities: typeof USAGE_BUDGET_PERIODICITY_LABELS };
   /** Nombre de composantes examinées (trace complète côté serveur). */
   componentsExamined: number;
+  /** Lot 81D : année du détail demandé (`linesYear`), ou null (toutes les lignes). */
+  linesYear: number | null;
 };
 
-/** Lot 75D (J) : paramètres de page (`linesOffset`, `linesLimit`) — valeurs bornées, jamais d'erreur. */
-export function parseTcoLinesPage(params: { get(k: string): string | null }): { linesOffset: number; linesLimit: number } {
+/**
+ * Lot 75D (J) : paramètres de page (`linesOffset`, `linesLimit`) — valeurs bornées, jamais d'erreur.
+ * Lot 81D : `linesYear` — détail d'une année : les lignes RETENUES que le moteur rattache à cette année
+ * (`annualYear`), exactement celles de l'indicateur ; les totaux restent ceux de la trace complète.
+ */
+export function parseTcoLinesPage(params: { get(k: string): string | null }): { linesOffset: number; linesLimit: number; linesYear?: number } {
   const n = (v: string | null, d: number) => (v && /^\d{1,7}$/.test(v) ? Number(v) : d);
-  return { linesOffset: n(params.get('linesOffset'), 0), linesLimit: Math.min(Math.max(n(params.get('linesLimit'), TCO_DTO_MAX_LINES), 1), TCO_DTO_MAX_PAGE) };
+  const y = params.get('linesYear');
+  return {
+    linesOffset: n(params.get('linesOffset'), 0), linesLimit: Math.min(Math.max(n(params.get('linesLimit'), TCO_DTO_MAX_LINES), 1), TCO_DTO_MAX_PAGE),
+    ...(y && /^\d{4}$/.test(y) ? { linesYear: Number(y) } : {}),
+  };
 }
 
-export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?: number } = {}): TcoDto {
+export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?: number; linesYear?: number } = {}): TcoDto {
   // `citedOnlyDocuments` : diagnostic BO seulement (lot 68), jamais transmis à la fiche.
   const { entries, lines: toutes, citedOnlyDocuments: _bo, ...rest } = t;
   const vue = tcoUserView(toutes);
-  const lines = vue.lines;
+  // Lot 81D : détail d'une année = lignes retenues rattachées à cette année par le moteur (aucune règle ailleurs).
+  const lines = page.linesYear != null ? vue.lines.filter((l) => RETENUE(l.status) && l.annualYear === page.linesYear) : vue.lines;
   // Retenues d'abord, puis écartées : la liste d'un bien très documenté reste lisible. Ordre STABLE (identifiant
   // en dernier critère) : les pages successives ne se recouvrent pas.
   const rang = (s: EconomicLineStatus) => (RETENUE(s) ? 0 : 1);
@@ -188,6 +203,7 @@ export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?
     warningLabels: t.reliability.warnings.map((w) => TCO_WARNING_LABELS[w]),
     usageLabels: { categories: USAGE_BUDGET_CATEGORY_LABELS, periodicities: USAGE_BUDGET_PERIODICITY_LABELS },
     componentsExamined: entries.length,
+    linesYear: page.linesYear ?? null,
   };
 }
 

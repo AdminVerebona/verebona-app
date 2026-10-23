@@ -17,7 +17,7 @@
  */
 import { randomUUID } from 'crypto';
 import { collectAssetEvidenceState } from './evidence-collector';
-import { decide } from './decision/decision-matrix';
+import { decide, withoutEquivalentProposals } from './decision/decision-matrix';
 import { canRequestAiReview } from './decision/ai-exclusion';
 import { resolveAmbiguity } from './ambiguity-resolver';
 import { applyDecision, retractAutomaticValue } from './apply-decision';
@@ -29,6 +29,7 @@ import { writeConflict, resolveObsoleteConflict } from './conflict-writer';
 import { openRun, closeRun, recordDecisions, failRun } from './reconciliation-run.repository';
 import { syncReconciliationToProcess } from '@/services/to-process/reconciliation-bridge';
 import type { ReconciliationDecision, ReconciliationRun } from './types';
+import type { CollectedField } from './evidence-collector';
 import { assertJobActive } from '../queue/execution-control';
 import { T3ExecutionRecorder, writeT3Report } from '../execution-report/t3-report';
 import { isRegistryKey } from './canonical-key';
@@ -168,6 +169,13 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
         break;
 
       case 'keep':
+        // Lot 81A (§3.4) : la contradiction a disparu (valeur confirmée, preuve
+        // plus faible, arbitrage déjà tranché) — le conflit ouvert du registre
+        // est fermé comme la carte (pont « À traiter » : RESOLVE).
+        await resolveObsoleteConflict(
+          input.accountId, input.assetId, decision.fieldKey, `sans objet : ${decision.reasonCode}`,
+        );
+        break;
       case 'ignore':
       case 'request_ai_review':
         break;
@@ -185,15 +193,7 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
   for (const field of collected) {
     // D-M (lot 20) : date tranchée par T4 → la preuve révisée corrige la
     // valeur automatique qu'elle remplace (jamais une valeur USER/ADMIN).
-    const revision = isT4DateRevision(field.unproven, field.input);
-    let decision = field.unproven || revision
-      ? decide(withoutStaleAuthority(field.input))
-      : decide(field.input);
-    if (revision && decision.action === 'update') {
-      decision = { ...decision, reasonCode: T4_REVISION_REASON };
-    } else if (field.unproven && decision.action === 'update') {
-      decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
-    }
+    let decision = decideCollectedField(field);
 
     // Étape 7 du §4.2.8 : appel modèle UNIQUEMENT si le déterminisme n'a pas
     // tranché — et jamais sur un champ exclu du périmètre modèle.
@@ -211,6 +211,8 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
     // Lot 76J : texte libre (description, notes) jamais réécrit automatiquement ;
     // arbitrage déjà tranché à l'identique : conservé, sans nouvelle carte.
     decision = guardFreeText(decision);
+    // Lot 81A : garde finale — jamais un conflit entre valeurs équivalentes.
+    decision = withoutEquivalentProposals(decision);
     if (memoire) decision = await memoire.filter(decision);
 
     decisions.push(decision);
@@ -239,7 +241,8 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
       rec?.cross.push(...croise.records);
       signatureCroisee = croise.signature;
       if (croise.decision) {
-        const d = croise.decision;
+        // Lot 81A : même garde finale pour la décision croisée (agenda confirmé).
+        const d = withoutEquivalentProposals(croise.decision);
         if (croise.replaces) decisions.splice(decisions.indexOf(croise.replaces), 1);
         decisions.push(d);
         const courant = asset.current(d.fieldKey);
@@ -340,4 +343,61 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
     }
   }
   return summary;
+}
+
+/**
+ * Décision du moteur pour UN champ collecté (pure) — commune au passage T3
+ * et au rattrapage des faux arbitrages (lot 81A, un seul moteur) :
+ * réconciliation négative (T3-04), date révisée par T4 (D-M).
+ */
+export function decideCollectedField(field: CollectedField): ReconciliationDecision {
+  // D-M (lot 20) : date tranchée par T4 → la preuve révisée corrige la
+  // valeur automatique qu'elle remplace (jamais une valeur USER/ADMIN).
+  const revision = isT4DateRevision(field.unproven, field.input);
+  const decision = field.unproven || revision
+    ? decide(withoutStaleAuthority(field.input))
+    : decide(field.input);
+  if (revision && decision.action === 'update') return { ...decision, reasonCode: T4_REVISION_REASON };
+  if (field.unproven && decision.action === 'update') return { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
+  return decision;
+}
+
+/** Réévaluation en LECTURE SEULE d'un champ de bien (lot 81A). */
+export interface AssetFieldEvaluation {
+  /** Bien introuvable (supprimé, autre compte). */
+  missing: boolean;
+  /** Valeur en place, telle que la fiche l'affiche. */
+  current: import('./types').CurrentValue | null;
+  /** Champs collectés (clé de preuve, alias compris) visant cette clé canonique. */
+  fields: CollectedField[];
+  /** Décisions que le moteur prendrait (aucune revue IA, aucune écriture). */
+  decisions: ReconciliationDecision[];
+}
+
+/**
+ * Lot 81A — mêmes étapes que `runEngine` pour UNE clé canonique, SANS AUCUNE
+ * ÉCRITURE (ni valeur, ni preuve, ni carte, ni journal) : collecte, décision,
+ * texte libre protégé, garde d'équivalence, mémoire des arbitrages tranchés,
+ * confrontation de la date d'achat à l'agenda confirmé. Sert le rattrapage
+ * des cartes existantes, qui ne modifie jamais la fiche.
+ */
+export async function evaluateAssetField(accountId: number, assetId: number, canonicalKey: string): Promise<AssetFieldEvaluation> {
+  const { kc, fields: collected, asset } = await collectAssetEvidenceState(accountId, assetId);
+  if (!asset) return { missing: true, current: null, fields: [], decisions: [] };
+  const fields = collected.filter((f) => canonicalKeyOf(f.fieldKey) === canonicalKey);
+  const memoire = await loadConflictMemory(accountId, assetId);
+  const decisions: ReconciliationDecision[] = [];
+  for (const field of fields) {
+    let d = guardFreeText(decideCollectedField(field));
+    d = withoutEquivalentProposals(d);
+    decisions.push(await memoire.filter(d));
+  }
+  if (canonicalKey === 'acquisitionDate' && kc) {
+    const croise = await crossCheckAsset({ accountId, assetId, asset, kc, collected, decisions });
+    if (croise?.decision) {
+      if (croise.replaces) decisions.splice(decisions.indexOf(croise.replaces), 1);
+      decisions.push(withoutEquivalentProposals(croise.decision));
+    }
+  }
+  return { missing: false, current: asset.current(canonicalKey), fields, decisions };
 }

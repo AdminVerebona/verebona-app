@@ -120,6 +120,8 @@ describe('VALID-09 — plus aucun producteur de l’état « à valider »', () 
       'src/services/admin/account-documents.service.ts',
       'src/services/ai/reconciliation/document-asset/question-gate.ts',
       'src/services/ai/reconciliation/document-asset/resolve-document-asset.service.ts',
+      // Lot 81E : lecture seule (état abouti → document « analysé » dans le résultat du lot).
+      'src/services/ai/source-analysis/lot-notification.ts',
       'src/services/ai/source-analysis/pipeline.ts',
       'src/services/coherence/coherence-maintenance.service.ts',
       'src/services/documents/validation-reprise.ts',

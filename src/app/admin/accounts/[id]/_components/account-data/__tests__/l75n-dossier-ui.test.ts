@@ -55,13 +55,20 @@ describe('L75N-UI02 relations et tables', () => {
     expect(html).toMatch(/<button type="button"[^>]*>.*Document #789 — Facture d’acquisition/);
     expect(html).toContain('aria-label="Copier l’identifiant 789"');
   });
-  it(`table longue : ${SCREEN_ROWS} lignes à l’écran, « Afficher les N lignes », copie par ligne`, () => {
-    const rows = Array.from({ length: 120 }, (_, i) => ({ id: i + 1, value_json: { n: i }, s3_key: masked('clé de stockage') }));
-    const html = renderToStaticMarkup(h(SectionCard, { s: { id: 'ev', tab: 'preuves', title: 'Preuves', table: { table: 'field_evidence', columns: ['id', 'value_json', 's3_key'], rows, total: 120, complete: true, limit: 2000 } }, onNavigate: noop, csvName }));
+  it(`table longue (lot 81C, adapté) : page de ${SCREEN_ROWS} lignes et total réel, pagination SERVEUR, plus d’« Afficher tout »`, () => {
+    const rows = Array.from({ length: SCREEN_ROWS }, (_, i) => ({ id: i + 1, value_json: { n: i }, s3_key: masked('clé de stockage') }));
+    const s: DossierSection = { id: 'ev', tab: 'preuves', title: 'Preuves', table: { table: 'field_evidence', columns: ['id', 'value_json', 's3_key'], rows, total: 17938, complete: true }, window: { total: 17938, offset: 0, size: SCREEN_ROWS } };
+    const actions = { loadPage: async () => undefined, exportUrl: (sid: string, f: string) => `/x?section=${sid}&format=${f}`, copySection: async () => undefined };
+    const html = renderToStaticMarkup(h(SectionCard, { s, onNavigate: noop, csvName, actions }));
     expect(html.match(/<tr class="border-b/g)).toHaveLength(SCREEN_ROWS);
-    expect(html).toContain('Afficher les 120 lignes');
-    expect(html).toContain('120 ligne(s) extraite(s) sur 120 en base');
+    expect(html).toContain('Lignes 1–50 sur 17 938 ligne(s) en base');
+    expect(html).toContain('Page 1 / 359');
+    expect(html).toContain('aria-label="Dernière page"');
+    expect(html).toContain('aria-label="Rechercher dans toutes les lignes de la section"');
+    expect(html).not.toContain('Afficher les');
     expect(html).toContain('aria-label="Copier la ligne 1 (JSON)"');
+    // CSV de section : export INTÉGRAL du serveur (lien), jamais la page affichée.
+    expect(html).toContain('href="/x?section=ev&amp;format=csv"');
   });
   it('section en erreur : « non chargé » explicite', () => {
     const html = renderToStaticMarkup(h(SectionCard, { s: { id: 'x', tab: 'preuves', title: 'X', error: 'lecture impossible (57014)' }, onNavigate: noop, csvName }));

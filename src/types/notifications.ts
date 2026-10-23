@@ -101,10 +101,12 @@ export interface NotificationPayloadMap {
     /** Un seul document analysé : il est nommé et s'ouvre en tiroir. */
     assetFileId?: number; documentTitle?: string;
     documents?: Array<{ assetFileId: number; title: string }>;
+    /** Lot 81E : doublons détectés (analysés, fusion proposée). */
+    duplicateCount?: number;
   };
-  DOCUMENT_BATCH_PARTIALLY_FAILED: { lotId: number; analysedCount: number; failedCount: number; documents?: Array<{ assetFileId: number; title: string }> };
-  DOCUMENT_BATCH_FAILED: { lotId: number; analysedCount: number; failedCount: number; documents?: Array<{ assetFileId: number; title: string }> };
-  ANALYSIS_FAILED_PERSISTENT: { assetFileId: number; documentTitle?: string; errorReason?: string };
+  DOCUMENT_BATCH_PARTIALLY_FAILED: { lotId: number; analysedCount: number; failedCount: number; documents?: Array<{ assetFileId: number; title: string }>; assetFileId?: number };
+  DOCUMENT_BATCH_FAILED: { lotId: number; analysedCount: number; failedCount: number; documents?: Array<{ assetFileId: number; title: string }>; assetFileId?: number };
+  ANALYSIS_FAILED_PERSISTENT: { assetFileId: number; lotId?: number; documentTitle?: string; errorReason?: string };
   DOCUMENT_UPLOAD_COMPLETED: {
     /** Documents du lot effectivement ajoutés. */
     count: number;

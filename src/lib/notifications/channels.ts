@@ -80,7 +80,9 @@ export async function deliverEmail(
 ): Promise<DeliveryOutcome> {
   const templateCode = rendered.emailTemplateCode;
   if (!templateCode) {
-    return { status: 'skipped_unavailable', errorCode: 'no_email_template' };
+    // Lot 81E : cause explicite quand l'e-mail générique est couvert par une
+    // communication durable (confirmation contractuelle, fin d'offre).
+    return { status: 'skipped_unavailable', errorCode: rendered.emailSkipReason ?? 'no_email_template' };
   }
 
   // Adresse du destinataire.
@@ -108,7 +110,9 @@ export async function deliverEmail(
   // L'activation du canal a déjà été contrôlée par le dispatcher, par type
   // d'événement (CDC BO COM-011) : pas de second contrôle par gabarit.
   const res = await emailService.send({ templateCode, to: user.email, variables, userId: ctx.userId, skipChannelCheck: true });
-  if (res.success) return { status: 'sent' };
+  // `sent` = ACCEPTÉ par le prestataire ; la livraison finale se lit sur le
+  // journal des envois (`email_logs.delivery_status`, même identifiant).
+  if (res.success) return { status: 'sent', ...(res.providerMessageId ? { providerMessageId: res.providerMessageId } : {}) };
   return { status: 'failed', errorCode: 'email_send_error', errorMessage: res.error };
 }
 

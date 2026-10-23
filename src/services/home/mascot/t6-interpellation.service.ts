@@ -38,7 +38,8 @@ import {
   type T6EvaluationCandidate, type T6EvaluationFact, type T6EvidenceRef, type T6ValidatedDecision,
 } from './t6-contract';
 import {
-  displayGroupOf, effectiveRunState, loadT6Runs, requestT6Runs, runStateCounters, t6RunsReady,
+  T6_RUN_UNAVAILABLE_RECHECK_S, displayGroupOf, effectiveRunState, loadT6Runs, markT6RunsUnavailable, reconcileT6RunsWithDecision, requestT6Runs,
+  runStateCounters, t6RunsReady,
   type T6EffectiveRunState, type T6RunRow, type T6RunSubject,
 } from './t6-evaluation-runs';
 
@@ -581,8 +582,12 @@ export async function persistT6AssessmentsDetailed(
   accountId: number, today: string,
   refs: T6InterpellationBundle['refs'],
   list: readonly T6ValidatedDecision[],
-  meta: { promptVersion: string; traceId: string | null; contractRevision?: number; evaluationSignature?: string | null },
-): Promise<{ persisted: number; persistedSubjectIds: string[] }> {
+  meta: {
+    promptVersion: string; traceId: string | null; contractRevision?: number; evaluationSignature?: string | null;
+    /** Lot 81B (D) : exécution durable qui écrit — propriété vérifiée dans la transaction. */
+    run?: { runId: string; leaseMs?: number } | null;
+  },
+): Promise<{ persisted: number; persistedSubjectIds: string[]; lostSubjectIds?: string[] }> {
   // Lot 68 : révision 2 seulement si la version du prompt qui a évalué connaît
   // le rappel informatif (sinon l'évaluation sera renouvelée après activation).
   const revision = meta.contractRevision === T6_ASSESSMENT_REVISION_REMINDER ? T6_ASSESSMENT_REVISION_REMINDER : 1;
@@ -590,9 +595,21 @@ export async function persistT6AssessmentsDetailed(
   const [avecRevision, avecPreuves, avecSignature] = await Promise.all([hasContractRevision(), hasEvidenceSnapshot(), hasEvaluationSignature()]);
   const lignes = list.map((d) => ({ d, c: refs.get(d.subjectId) })).filter((x): x is { d: T6ValidatedDecision; c: T6CandidateRef } => !!x.c);
   if (lignes.length === 0) return { persisted: 0, persistedSubjectIds: [] };
+  const perdues: string[] = [];
   const ecrire = async (q: (sql: string, params: unknown[]) => Promise<Row[]>): Promise<string[]> => {
     const ok: string[] = [];
+    perdues.length = 0;
+    // Lot 81B (D) : propriété de l'exécution contrôlée AU MOMENT de l'écriture,
+    // sous le verrou du compte et des lignes d'exécution (même transaction) —
+    // une instance dépossédée (bail repris ailleurs) n'écrit rien, et ne peut
+    // donc pas écraser la décision d'une exécution plus récente.
+    let detenues: Set<number> | null = null;
+    if (meta.run) {
+      const { lockOwnedT6Runs } = await import('./t6-evaluation-runs');
+      detenues = await lockOwnedT6Runs(q, { accountId, runId: meta.run.runId, ids: lignes.map((x) => x.c.agendaItemId), leaseMs: meta.run.leaseMs });
+    }
     for (const { d, c } of lignes) {
+      if (detenues && !detenues.has(c.agendaItemId)) { perdues.push(d.subjectId); continue; }
       // Lot 75E (C) : statut des faits transmis — l'intitulé d'un document ou un
       // fait incertain ne fondent jamais une exception au seuil.
       const a = assessmentFromDecision(d, c.evidenceVersions);
@@ -642,7 +659,8 @@ export async function persistT6AssessmentsDetailed(
     ? await client.begin((tx) => ecrire(async (sql, params) => (await tx.unsafe(sql, params as never[])) as unknown as Row[]))
     // Client simulé sans transaction (tests unitaires historiques) : écriture séquentielle.
     : await ecrire(rows);
-  return { persisted: ids.length, persistedSubjectIds: ids };
+  if (perdues.length > 0) console.warn(`[mascotte] ${perdues.length} décision(s) EVALUATE non écrite(s) : exécution dépossédée (bail repris par une autre instance).`);
+  return { persisted: ids.length, persistedSubjectIds: ids, ...(meta.run ? { lostSubjectIds: [...perdues] } : {}) };
 }
 
 /** Nombre de décisions enregistrées (appelants antérieurs) — voir `persistT6AssessmentsDetailed`. */
@@ -838,6 +856,8 @@ export interface T6EvaluationProgress {
   waitingUntil: string | null;
   /** Compteurs par état réel. */
   counters: Record<string, number>;
+  /** Lot 81B (B) : T6 indisponible — évaluations non exécutées, état explicite, reprise au rétablissement. */
+  t6Unavailable?: boolean;
 }
 
 export type T6EvaluationState = 'OK' | 'PENDING' | 'UNAVAILABLE';
@@ -910,9 +930,20 @@ export interface T6RunLoaders {
   ready: () => Promise<boolean>;
   request: (accountId: number, subjects: readonly T6RunSubject[]) => Promise<number>;
   load: (accountId: number, ids: readonly number[]) => Promise<Map<number, T6RunRow>>;
+  /**
+   * Lot 81B (B) : T6 indisponible — évaluations éligibles enregistrées
+   * UNAVAILABLE (`t6_unavailable`), reprises au rétablissement. Absent : rien
+   * n'est enregistré (comportement du lot 78C).
+   */
+  markUnavailable?: (accountId: number, subjects: readonly T6RunSubject[]) => Promise<number[]>;
+  /** Lot 81B (G) : décisions valides enregistrées dont l'état durable n'a pas été clos — clôture rattrapée. */
+  reconcile?: (accountId: number, subjects: ReadonlyArray<{ agendaItemId: number; fingerprint: string | null }>) => Promise<number[]>;
 }
 
-export const T6_RUN_LOADERS: T6RunLoaders = { ready: t6RunsReady, request: requestT6Runs, load: loadT6Runs };
+export const T6_RUN_LOADERS: T6RunLoaders = {
+  ready: t6RunsReady, request: requestT6Runs, load: loadT6Runs, markUnavailable: (a, s) => markT6RunsUnavailable(a, s),
+  reconcile: reconcileT6RunsWithDecision,
+};
 
 /** Lot 71G : sources lues par la préparation, chacune isolément. */
 export interface T6Loaders {
@@ -1042,6 +1073,13 @@ export async function prepareT6Interpellation(
     historique = await loadDisplayHistory(p.accountId, p.userId, depuis, today).catch(() => { echecs.push('history'); return new Map(); });
   }
 
+  // Lot 81B (B) : T6 INDISPONIBLE (désactivé, suspendu, prompt sans EVALUATE)
+  // mais décisions lisibles — évaluations qui SERAIENT demandées, pour leur
+  // donner un état explicite et une reprise au rétablissement.
+  const t6Indisponible = !aiCapableBrut && evalsR.ok;
+  const ombre = new Map<number, boolean>();
+  const sansReevaluationParAge = (row: MascotAgendaRow, assessment: T6StoredAssessment | null, d0: T6DecisionResult) =>
+    row.t6LongOverdue && assessment?.decision === 'SUPPRESS' && d0.needsAssessment && d0.reevaluationReason && REEVALUATION_PAR_AGE.has(d0.reevaluationReason);
   const decisions: T6DecisionTrace[] = candidats.map(({ candidate: c, row }) => {
     const assessment = evaluations.get(c.agendaItemId) ?? null;
     const displayedDays = historique.get(c.agendaItemId) ?? 0;
@@ -1051,17 +1089,22 @@ export async function prepareT6Interpellation(
     const exceptionGrounded = assessment && preuvesR.ok
       ? exceptionEvidenceGrounded(assessment, { description: ev?.description ?? null, facts: ev?.facts ?? [] })
       : undefined;
-    const d0 = decideT6Interpellation({
+    const entree = {
       candidate: c, today, thresholdDays, aiCapable, assessment,
       preferences: preferencesFor(prefs, c.agendaItemId, c.seriesKey, c.cycleKey ?? null),
       history: { displayedDays }, reminderCapable, preferencesUnavailable: !prefsR.ok, evaluationConfig,
       toProcessUnavailable: atpInconnu || (regleesInconnues && !!c.dueDate && c.dueDate <= today),
       exceptionGrounded,
-    });
+    };
+    const d0 = decideT6Interpellation(entree);
+    if (t6Indisponible) {
+      const o = decideT6Interpellation({ ...entree, aiCapable: true });
+      ombre.set(c.agendaItemId, o.needsAssessment && !sansReevaluationParAge(row, assessment, o));
+    }
     // Lot 75E (A) : échéance dépassée de longue date déjà ÉCARTÉE, données
     // inchangées — jamais réévaluée pour le seul vieillissement de la décision
     // (aucun appel répété) ; un changement de ses données la réévalue.
-    const d = row.t6LongOverdue && assessment?.decision === 'SUPPRESS' && d0.needsAssessment && d0.reevaluationReason && REEVALUATION_PAR_AGE.has(d0.reevaluationReason)
+    const d = sansReevaluationParAge(row, assessment, d0)
       ? { ...d0, needsAssessment: false, reevaluationReason: null }
       : d0;
     // Lot 71G (T6-05) : report arrivé à sa date (un utilisateur du compte),
@@ -1121,6 +1164,15 @@ export async function prepareT6Interpellation(
     // essai planifié, ni en échec définitif) sont transmises ; les autres ont
     // un motif explicite (`runStates`). Table absente : lot 77.
     let eligibles = toutes;
+    // Lot 81B (G) : décision valide déjà enregistrée (rien à demander) mais
+    // état durable resté ouvert (clôture technique en échec) — rattrapé par la
+    // pré-génération du compte (jamais une écriture à chaque affichage).
+    const decidees = p.userId != null ? [] : decisions.filter((d) => !d.needsAssessment && d.assessmentFresh && !!d.fingerprint && !!d.assessment
+      && d.assessment.fingerprint === d.fingerprint);
+    if (deps.runs?.reconcile && decidees.length > 0 && await deps.runs.ready().catch(() => false)) {
+      await deps.runs.reconcile(p.accountId, decidees.map((d) => ({ agendaItemId: d.agendaItemId, fingerprint: d.fingerprint ?? null })))
+        .catch((e) => console.error('[mascotte] décision T6 : clôtures non rattrapées —', (e as Error).message));
+    }
     if (deps.runs && toutes.length > 0 && await deps.runs.ready().catch(() => false)) {
       try {
         const sujets = toutes.map((d) => ({ agendaItemId: d.agendaItemId, fingerprint: d.fingerprint ?? null, signature: evaluationConfig?.signature ?? null }));
@@ -1200,6 +1252,43 @@ export async function prepareT6Interpellation(
         },
         evaluationSignature: evaluationConfig?.signature ?? null,
       };
+    }
+  } else if (t6Indisponible && deps.runs?.markUnavailable && preuvesR.ok) {
+    // Lot 81B (B) — T6 indisponible : les évaluations éligibles (mêmes règles
+    // d'horizon et de preuve qu'en service) reçoivent un état EXPLICITE
+    // (UNAVAILABLE `t6_unavailable`), jamais une absence ni un PENDING fictif ;
+    // reprises dès le rétablissement par la pré-génération durable, sans
+    // nouvelle visite. Aucun appel IA. Échec : comportement du lot 78C.
+    const horizon = addDays(today, assessmentHorizonDays(thresholdDays));
+    const sujets: T6RunSubject[] = candidats
+      .filter(({ candidate: c }) => ombre.get(c.agendaItemId) === true && !!c.dueDate && !c.fingerprintUnavailable
+        && (c.dueDate <= horizon || !!c.hasDocumentaryEvidence))
+      .map(({ candidate: c }) => ({ agendaItemId: c.agendaItemId, fingerprint: c.fingerprint ?? null, signature: evaluationConfig?.signature ?? null }));
+    if (sujets.length > 0 && await deps.runs.ready().catch(() => false)) {
+      try {
+        await deps.runs.markUnavailable(p.accountId, sujets);
+        const lignes = await deps.runs.load(p.accountId, sujets.map((x) => x.agendaItemId));
+        const maintenant = (deps.now ?? (() => new Date()))();
+        runStates = new Map(sujets.map((x) => [x.agendaItemId, effectiveRunState(lignes.get(x.agendaItemId) ?? null, maintenant)]));
+        const etats = [...runStates.values()];
+        const attentes = etats.map((x) => x.waitingUntil).filter((x): x is string => !!x).sort();
+        // Rien n'est prenable tant que T6 est indisponible : attente jusqu'à
+        // la prochaine vérification (aucun essai consommé, aucune boucle).
+        const verification = new Date(maintenant.getTime() + T6_RUN_UNAVAILABLE_RECHECK_S * 1000).toISOString();
+        evaluationProgress = {
+          eligible: sujets.length, claimable: 0, inBundle: 0,
+          waiting: etats.filter((x) => x.state !== 'FAILED').length,
+          failed: etats.filter((x) => x.state === 'FAILED').length,
+          unavailable: etats.filter((x) => x.state === 'UNAVAILABLE').length,
+          stale: etats.filter((x) => x.stale).length,
+          waitingUntil: attentes.find((x) => x > maintenant.toISOString()) ?? verification,
+          counters: runStateCounters(etats),
+          t6Unavailable: true,
+        };
+      } catch (e) {
+        console.error('[mascotte] décision T6 : indisponibilité des évaluations non enregistrée —', (e as Error).message);
+        runStates = null;
+      }
     }
   }
 
@@ -1526,11 +1615,36 @@ function ecrite(t: T6EvaluationTrace, subjectId: string): boolean {
   return t.persisted >= t.accepted.length;
 }
 
-/** Statut de l'exécution EVALUATE au reporting (pure) — jamais SUCCESS sans écriture complète (AC05). */
-export function t6EvaluationReportStatus(t: T6EvaluationTrace): 'SUCCESS' | 'PARTIAL' | 'FAILED' {
-  if (t.status === 'generated') return t.rejected.length || (t.notPersisted?.length ?? 0) ? 'PARTIAL' : 'SUCCESS';
-  if (t.status === 'partially_persisted') return 'PARTIAL';
-  return 'FAILED';
+/** Lot 81B (G) : refus de prise sans exécution (exécution vivante ailleurs, essai planifié, délai anti-boucle). */
+const REFUS_SANS_EXECUTION = new Set(['running_elsewhere', 'retry_wait', 'cooldown']);
+
+/**
+ * Lot 81B (G) — la clôture technique de l'exécution durable est-elle
+ * COMPLÈTE (pure) ? Chaque évaluation prise a reçu son état ; `true` sans
+ * exécution durable (table non déployée).
+ */
+export function t6RunClosed(t: Pick<T6EvaluationTrace, 'run'>): boolean {
+  if (!t.run?.claimed) return true;
+  return !!t.run.finished && (t.run.notClosed?.length ?? 0) === 0 && !t.run.closeError;
+}
+
+/**
+ * Statut de l'exécution EVALUATE au reporting (pure) — jamais SUCCESS sans
+ * écriture complète (AC05). Lot 81B (G) : calculé sur la validation, la
+ * persistance métier ET la clôture technique — SUCCESS seulement si les trois
+ * ont abouti ; PARTIAL si une partie est enregistrée (décisions écrites mais
+ * clôture en échec, rejets, écriture partielle, dépossession partielle) ;
+ * FAILED si rien d'exploitable n'est enregistré ; NO_CHANGE pour un refus de
+ * prise sans exécution (tracé, motif et instant attendu).
+ */
+export function t6EvaluationReportStatus(t: T6EvaluationTrace): 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'NO_CHANGE' {
+  if (t.status === 'skipped' && t.run && !t.run.claimed && REFUS_SANS_EXECUTION.has(t.run.refusal?.reason ?? '')) return 'NO_CHANGE';
+  let s: 'SUCCESS' | 'PARTIAL' | 'FAILED';
+  if (t.status === 'generated') s = t.rejected.length || (t.notPersisted?.length ?? 0) ? 'PARTIAL' : 'SUCCESS';
+  else if (t.status === 'partially_persisted') s = 'PARTIAL';
+  else s = 'FAILED';
+  if (s === 'SUCCESS' && (!t6RunClosed(t) || (t.run?.ownershipLost?.length ?? 0) > 0)) s = 'PARTIAL';
+  return s;
 }
 
 /** Mode d'exécution lisible (AC08) : à l'affichage ou en pré-génération. */
@@ -1552,6 +1666,8 @@ function runOf(t: T6EvaluationTrace, agendaItemId: number) {
     // `null` : clôture non enregistrée (l'évaluation sera reprise à l'expiration du bail).
     status: f?.status ?? null, nextAttemptAt: f?.nextAttemptAt ?? null,
     errorKind: res?.errorKind ?? null, interrupted: (t.run.interrupted ?? []).includes(agendaItemId),
+    // Lot 81B (D, G) : clôture écrite ou non, propriété perdue.
+    closed: !!f, ownershipLost: (t.run.ownershipLost ?? []).includes(agendaItemId),
   };
 }
 
@@ -1593,15 +1709,19 @@ export async function readPregenState(accountId: number): Promise<Record<string,
   try {
     const [r] = await rows(
       `SELECT last_status, reason, attempts, requested_at, processed_at, claimed_until,
-              (processed_at IS NULL OR requested_at > processed_at) AS pending
-         FROM home_mascot_pregen_requests WHERE account_id = $1`,
+              (processed_at IS NULL OR requested_at > processed_at) AS pending,
+              -- Lot 81B (C, 0629) : épuisements, lus sans dépendre des colonnes.
+              to_jsonb(r) ->> 'exhausted_count' AS exhausted_count, to_jsonb(r) ->> 'exhausted_at' AS exhausted_at
+         FROM home_mascot_pregen_requests r WHERE account_id = $1`,
       [accountId],
     );
     if (!r) return { exists: false };
     const d = (v: unknown) => (v == null ? null : new Date(String(v instanceof Date ? v.toISOString() : v)).toISOString());
     return {
       exists: true, pending: r.pending === true, lastStatus: (r.last_status as string | null) ?? null, reason: (r.reason as string | null) ?? null,
+      // Lot 81B (C) : tentatives de la DEMANDE (distinctes de celles des évaluations, par échéance).
       attempts: Number(r.attempts ?? 0), requestedAt: d(r.requested_at), processedAt: d(r.processed_at), claimedUntil: d(r.claimed_until),
+      exhaustedCount: r.exhausted_count == null ? null : Number(r.exhausted_count), exhaustedAt: d(r.exhausted_at),
     };
   } catch {
     return null;
@@ -1625,11 +1745,26 @@ export async function writeT6EvaluationReport(p: {
     const callerMode = t.callerMode ?? (p.mode === 'display' ? 'displayed' : 'pregeneration');
     const executionMode = executionModeOf(t.callerMode, p.mode);
     const evalOk = ['generated', 'partially_persisted', 'persist_failed'].includes(t.status);
+    const statut = t6EvaluationReportStatus(t);
+    const entries = t6EvaluationEntries(t, p.bundle.refs);
+    // Lot 81B (G) : refus, indisponibilité, prise impossible — tracés, mais pas
+    // à chaque affichage identique (même issue que le dernier rapport : rien).
+    if (!t.run?.claimed && !evalOk) {
+      const empreinte = entriesFingerprint(entries);
+      const [prev] = await rows(
+        `SELECT entries_fingerprint FROM ai_execution_reports
+          WHERE account_id = $1 AND treatment = 'T6' AND trigger_code = $2 ORDER BY id DESC LIMIT 1`,
+        [p.accountId, `evaluate:${p.mode}`],
+      );
+      if (prev && prev.entries_fingerprint === empreinte) return null;
+    }
+    const refus = t.run && !t.run.claimed ? t.run.refusal ?? null : null;
+    const cloture = t6RunClosed(t);
     return await repo.writeExecutionReport({
       accountId: p.accountId, treatment: 'T6', scope: 'HOME', targetType: null, targetId: null,
       triggerCode: `evaluate:${p.mode}`, traceIds: t.traceId ? [t.traceId] : [],
-      // Lot 72A (AC05) : statut RÉEL — écriture comprise.
-      status: t6EvaluationReportStatus(t),
+      // Lot 72A (AC05) : statut RÉEL — écriture comprise ; lot 81B (G) : clôture technique comprise.
+      status: statut,
       counters: {
         evaluated: p.bundle.refs.size, accepted: t.accepted.length, rejected: t.rejected.length, persisted: t.persisted, notPersisted,
         showNow: compte('SHOW_NOW'), defer: compte('DEFER'), suppress: compte('SUPPRESS'),
@@ -1639,12 +1774,21 @@ export async function writeT6EvaluationReport(p: {
         ...(t.run ? {
           runCompleted: parEtat('COMPLETED'), runRetryWait: parEtat('RETRY_WAIT'), runFailed: parEtat('FAILED'),
           runUnavailable: parEtat('UNAVAILABLE'), runInterrupted: (t.run.interrupted ?? []).length,
+          // Lot 81B : clôtures non écrites, dépossessions, renouvellements du bail, indisponibilité T6.
+          runNotClosed: t.run.claimed ? (t.run.finished ? (t.run.notClosed ?? []).length : (t.run.results ?? []).length) : 0,
+          runOwnershipLost: (t.run.ownershipLost ?? []).length, runRenewals: t.run.renewals ?? 0,
+          runT6Unavailable: (t.run.unavailable ?? []).length,
         } : {}),
       },
       steps: [
         {
-          step: 'evaluate', status: evalOk ? 'OK' as const : 'FAILED' as const, error: evalOk ? null : t.error,
-          detail: { mode: 'EVALUATE', promptVersion: t.promptVersion, inputContract: t.inputContract, outputContract: t.outputContract, callerMode, executionMode },
+          step: 'evaluate',
+          // Lot 81B (G) : refus de prise sans exécution — étape ignorée, motif tracé.
+          status: evalOk ? 'OK' as const : statut === 'NO_CHANGE' ? 'SKIPPED' as const : 'FAILED' as const, error: evalOk ? null : t.error,
+          detail: {
+            mode: 'EVALUATE', promptVersion: t.promptVersion, inputContract: t.inputContract, outputContract: t.outputContract, callerMode, executionMode,
+            ...(refus ? { refusal: refus } : {}),
+          },
         },
         ...(evalOk && t.accepted.length > 0 ? [{
           step: 'persist', status: t.status === 'persist_failed' ? 'FAILED' as const : 'OK' as const,
@@ -1653,17 +1797,26 @@ export async function writeT6EvaluationReport(p: {
           detail: { persisted: t.persisted, notPersisted, transactional: true },
         }] : []),
         // Lot 78C : prise en charge et clôture durables (statut réel, tentatives, prochain essai).
-        ...(t.run ? [{
-          step: 'run_state', status: t.run.finished ? 'OK' as const : 'FAILED' as const,
-          error: t.run.finished ? null : 'état d’exécution non enregistré : reprise à l’expiration du bail',
+        ...(t.run?.claimed ? [{
+          step: 'run_state', status: cloture ? 'OK' as const : 'FAILED' as const,
+          error: cloture ? null
+            : !t.run.finished ? `état d’exécution non enregistré${t.run.closeError ? ` (${t.run.closeError.slice(0, 160)})` : ''} : reprise à l’expiration du bail`
+              : `clôture non écrite pour ${(t.run.notClosed ?? []).length} évaluation(s) : exécution dépossédée`,
           detail: {
             runId: t.run.runId, attempts: t.run.attempts ?? {}, interrupted: t.run.interrupted ?? [],
             finished: fins.map((f) => ({ agendaItemId: f.agendaItemId, status: f.status, attempts: f.attempts, nextAttemptAt: f.nextAttemptAt, errorKind: f.errorKind })),
+            notClosed: t.run.notClosed ?? [], ownershipLost: t.run.ownershipLost ?? [], renewals: t.run.renewals ?? 0,
+            closeError: t.run.closeError ?? null,
           },
+        }] : []),
+        // Lot 81B (B, G) : prise refusée / T6 indisponible — motif, instant attendu, évaluations marquées.
+        ...(t.run && !t.run.claimed ? [{
+          step: 'run_state', status: 'SKIPPED' as const, error: null,
+          detail: { claimed: false, refusal: t.run.refusal ?? null, unavailable: t.run.unavailable ?? [] },
         }] : []),
       ],
       sources: { mode: 'EVALUATE', promptVersion: t.promptVersion, callerMode, executionMode, runId: t.run?.runId ?? null, pregen },
-    }, t6EvaluationEntries(t, p.bundle.refs));
+    }, entries);
   } catch (e) {
     console.error('[mascotte] rapport EVALUATE non écrit :', (e as Error).message);
     return null;

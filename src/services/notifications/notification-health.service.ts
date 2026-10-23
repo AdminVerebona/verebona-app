@@ -34,14 +34,24 @@ export interface NotificationHealth {
   fenetreHeures: number;
   /** Événements produits par type (§20.1). */
   evenementsParType: Array<{ type: string; total: number }>;
-  /** Livraisons par canal, avec leur taux de succès. */
+  /**
+   * Livraisons par canal, avec leur taux de succès. Lot 81E : `envoyees` =
+   * acceptées par le canal ; `ignorees` (canal supprimé, désactivé, sans
+   * destinataire, sans appareil, regroupé) ne sont ni des envois ni des
+   * échecs et sortent du taux ; `livrees` = remise CONFIRMÉE par le
+   * prestataire (e-mail, webhooks Resend), quand elle est connue.
+   */
   livraisonsParCanal: Array<{
     canal: string;
     total: number;
     envoyees: number;
     echouees: number;
+    ignorees: number;
+    livrees: number;
     tauxSucces: number | null;
   }>;
+  /** Lot 81E : événements traités par statut réel (fenêtre). */
+  evenementsParStatut: { envoyes: number; partiels: number; echecs: number; ignores: number; regroupes: number; enAttente: number };
   /** Erreurs push par code — le code seul, jamais le point de terminaison. */
   erreursPushParCode: Array<{ code: string; total: number }>;
   /** Emails en échec, par gabarit. */
@@ -80,6 +90,7 @@ export async function getNotificationHealth(
     abonnements,
     fileAttente,
     recap,
+    parStatut,
   ] = await Promise.all([
     pgClient<{ type: string; total: number }[]>`
       SELECT event_type AS type, count(*)::int AS total
@@ -88,13 +99,17 @@ export async function getNotificationHealth(
       GROUP BY event_type ORDER BY total DESC LIMIT 30
     `,
 
-    pgClient<{ canal: string; total: number; envoyees: number; echouees: number }[]>`
+    pgClient<{ canal: string; total: number; envoyees: number; echouees: number; ignorees: number; livrees: number }[]>`
       SELECT channel                                              AS canal,
              count(*)::int                                        AS total,
              count(*) FILTER (WHERE status = 'sent')::int         AS envoyees,
              count(*) FILTER (WHERE status = 'failed' AND NOT EXISTS (
                SELECT 1 FROM notification_outbox o
-               WHERE o.id = d.outbox_id AND o.status = 'reemitted'))::int AS echouees
+               WHERE o.id = d.outbox_id AND o.status = 'reemitted'))::int AS echouees,
+             count(*) FILTER (WHERE status NOT IN ('sent', 'failed'))::int AS ignorees,
+             count(*) FILTER (WHERE status = 'sent' AND channel = 'email' AND EXISTS (
+               SELECT 1 FROM email_logs l
+               WHERE l.provider_message_id = d.provider_message_id AND l.delivery_status = 'delivered'))::int AS livrees
       FROM notification_deliveries d
       WHERE created_at > now() - ${depuis}::interval
       GROUP BY channel ORDER BY total DESC
@@ -113,7 +128,9 @@ export async function getNotificationHealth(
     pgClient<{ gabarit: string; total: number }[]>`
       SELECT template_code AS gabarit, count(*)::int AS total
       FROM email_logs
-      WHERE status <> 'sent' AND sent_at > now() - ${depuis}::interval
+      -- Lot 81E : un e-mail volontairement ignoré (supprimé, désactivé) n'est
+      -- pas un échec.
+      WHERE status = 'failed' AND sent_at > now() - ${depuis}::interval
       GROUP BY template_code ORDER BY total DESC LIMIT 20
     `,
 
@@ -141,11 +158,24 @@ export async function getNotificationHealth(
     // le comportement attendu quand rien ne s'est produit. Le §20.1 demande
     // néanmoins de le compter, pour distinguer « rien à dire » de « panne ».
     pgClient<{ envoyes: number; ignores: number }[]>`
-      SELECT count(*) FILTER (WHERE status = 'sent')::int    AS envoyes,
+      SELECT count(*) FILTER (WHERE status IN ('sent', 'partial'))::int AS envoyes,
              count(*) FILTER (WHERE status = 'skipped')::int AS ignores
       FROM notification_outbox
-      WHERE event_type LIKE '%digest%'
+      WHERE event_type LIKE '%DIGEST%'
         AND created_at > now() - ${depuis}::interval
+    `,
+
+    // Lot 81E : statut RÉEL des événements (« envoyé » = au moins un canal
+    // accepté ; ignoré et regroupé distincts, jamais comptés envoyés).
+    pgClient<{ envoyes: number; partiels: number; echecs: number; ignores: number; regroupes: number; enAttente: number }[]>`
+      SELECT count(*) FILTER (WHERE status = 'sent')::int    AS envoyes,
+             count(*) FILTER (WHERE status = 'partial')::int AS partiels,
+             count(*) FILTER (WHERE status = 'failed')::int  AS echecs,
+             count(*) FILTER (WHERE status = 'skipped')::int AS ignores,
+             count(*) FILTER (WHERE status = 'grouped')::int AS regroupes,
+             count(*) FILTER (WHERE status IN ('pending', 'processing'))::int AS "enAttente"
+      FROM notification_outbox
+      WHERE created_at > now() - ${depuis}::interval
     `,
   ]);
 
@@ -154,9 +184,13 @@ export async function getNotificationHealth(
     total: c.total,
     envoyees: c.envoyees,
     echouees: c.echouees,
+    ignorees: c.ignorees,
+    livrees: c.livrees,
     // `null` et non 0 quand rien n'a été tenté : un taux de 0 % laisserait
-    // croire à une panne là où il ne s'est simplement rien passé.
-    tauxSucces: c.total > 0 ? Math.round((c.envoyees / c.total) * 100) : null,
+    // croire à une panne là où il ne s'est simplement rien passé. Lot 81E :
+    // sur les seuls envois TENTÉS (envoyés + échecs) — un canal ignoré
+    // volontairement ne dégrade pas le taux.
+    tauxSucces: c.envoyees + c.echouees > 0 ? Math.round((c.envoyees / (c.envoyees + c.echouees)) * 100) : null,
   }));
 
   const file = fileAttente[0] ?? { enAttente: 0, enErreur: 0, bloques: 0, plusAncien: null };
@@ -171,7 +205,7 @@ export async function getNotificationHealth(
   for (const c of livraisonsParCanal) {
     // Seuil sur un volume significatif : deux échecs sur trois envois ne
     // signalent rien d'exploitable.
-    if (c.tauxSucces !== null && c.tauxSucces < 80 && c.total >= 20) {
+    if (c.tauxSucces !== null && c.tauxSucces < 80 && c.envoyees + c.echouees >= 20) {
       alertes.push(`Canal ${c.canal} : ${c.tauxSucces} % de succès seulement.`);
     }
   }
@@ -197,6 +231,7 @@ export async function getNotificationHealth(
       envoyes: recap[0]?.envoyes ?? 0,
       ignoresCarVides: recap[0]?.ignores ?? 0,
     },
+    evenementsParStatut: parStatut[0] ?? { envoyes: 0, partiels: 0, echecs: 0, ignores: 0, regroupes: 0, enAttente: 0 },
     sain: alertes.length === 0,
     alertes,
   };
@@ -225,6 +260,10 @@ export interface LigneRecherche {
   attemptCount: number;
   /** Motif d'échec, tronqué. Jamais le contenu de la notification. */
   lastError: string | null;
+  /** Lot 81E : cause d'un événement ignoré. */
+  outcomeReason: string | null;
+  /** Lot 81E : incident de référence d'un événement regroupé. */
+  groupedWithId: string | null;
 }
 
 /**
@@ -248,7 +287,9 @@ export async function rechercherNotifications(
            created_at        AS "createdAt",
            processed_at      AS "processedAt",
            attempt_count     AS "attemptCount",
-           left(last_error, 200) AS "lastError"
+           left(last_error, 200) AS "lastError",
+           outcome_reason    AS "outcomeReason",
+           grouped_with_id::text AS "groupedWithId"
     FROM notification_outbox
     WHERE (${criteres.eventId ?? null}::text IS NULL OR id::text = ${criteres.eventId ?? null})
       AND (${criteres.userId ?? null}::int IS NULL OR recipient_user_id = ${criteres.userId ?? null})

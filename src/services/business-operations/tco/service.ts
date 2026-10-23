@@ -25,10 +25,10 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import { BusinessOperationReadService, type AssistantOperationRead } from '../read-service';
-import { computeTco, type TcoAssetPrice, type TcoEquipmentPrice, type TcoOperation, type TcoResult, type UsageBudget } from './model';
+import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipmentPrice, type TcoOperation, type TcoResult, type UsageBudget } from './model';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
 import type { TcoUserDecision } from './user-decisions';
-import type { LedgerComponent } from '../finance/engine';
+import { civilDateParis, type LedgerComponent } from '../finance/engine';
 import { operationCoverage, type EconomicDocumentInput, type EconomicHint } from '../finance/economic-lines';
 import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asset-state/canonical-asset-view';
 import { ASSET_LIST_LINK_ROLES_SQL } from '@/services/documents/asset-document-scope';
@@ -43,7 +43,6 @@ interface Runner { execute: (q: SQL) => Promise<unknown> }
 const rows = async <T = Row>(r: Runner, q: SQL): Promise<T[]> => (await r.execute(q)) as unknown as T[];
 const txt = (v: unknown): string | null => (v === null || v === undefined || v === '' ? null : String(v));
 const intArray = (v: readonly number[]): string => `{${[...new Set(v)].filter((x) => Number.isSafeInteger(x)).join(',')}}`;
-const todayUtc = () => new Date().toISOString().slice(0, 10);
 
 const NOMS: Record<string, string> = {
   ACQUISITION: 'Achat', INTERVENTION: 'Intervention', CONTRACT: 'Contrat', FINANCING: 'Financement', CLAIM: 'Sinistre', DISPOSAL: 'Cession', OTHER: 'Dépense',
@@ -77,14 +76,34 @@ async function operationIdsOfAsset(r: Runner, accountId: number, assetId: number
   }
 }
 
-/** Calcule le TCO d'un bien du compte (lecture seule). */
+/**
+ * Lot 81D — dates d'acquisition et de cession CANONIQUES de la fiche (vue
+ * canonique existante, `readCanonicalValue`) : clé `acquisitionDate`, puis
+ * ses alias historiques (`purchaseDate`, `dateAchat`…), puis la colonne
+ * historique miroir `assets.purchase_date` — même référentiel que l'API de
+ * détail du bien. Jamais la date d'ajout dans Verebona (`created_at`). Valeur
+ * brute rendue telle quelle : la validation stricte est celle du moteur.
+ */
+export function assetTcoDatesOf(row: AssetRowJson): { acquisitionDate: string | null; saleDate: string | null } {
+  const v = (k: string): string | null => {
+    const x = readCanonicalValue(row, k)?.value;
+    return typeof x === 'string' && x.trim() ? x.trim() : null;
+  };
+  return { acquisitionDate: v('acquisitionDate'), saleDate: v('saleDate') };
+}
+
+/**
+ * Calcule le TCO d'un bien du compte (lecture seule). Lot 81D : date de
+ * référence = date civile à Paris (`civilDateParis`), injectable (`today`).
+ */
 export async function readAssetTco(accountId: number, assetId: number, opts: { today?: string; runner?: Runner } = {}): Promise<TcoResult> {
   const r = opts.runner ?? db;
   const [asset] = await rows(r, sql`
-    SELECT a.id, a.status, a.category, a.key_characteristics FROM assets a WHERE a.id = ${assetId} AND a.account_id = ${accountId} AND a.deleted_at IS NULL`);
+    SELECT a.id, a.status, a.category, a.key_characteristics, row_to_json(a) AS j FROM assets a WHERE a.id = ${assetId} AND a.account_id = ${accountId} AND a.deleted_at IS NULL`);
   if (!asset) throw new AssetNotFoundForTcoError();
   let kc: Record<string, unknown> = {};
   try { kc = typeof asset.key_characteristics === 'string' ? JSON.parse(asset.key_characteristics) : ((asset.key_characteristics as Record<string, unknown> | null) ?? {}); } catch { kc = {}; }
+  const dates = assetTcoDatesOf(asJson(asset.j) as AssetRowJson);
 
   const lecteur = new BusinessOperationReadService(r as never);
   const ids = await operationIdsOfAsset(r, accountId, assetId);
@@ -164,8 +183,8 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
   }] : []);
 
   const result = computeTco({
-    assetId, today: opts.today ?? todayUtc(), operations, equipmentAssets,
-    assetAcquisitionDate: txt(kc.acquisitionDate), assetSaleDate: txt(kc.saleDate), assetStatus: txt(asset.status),
+    assetId, today: opts.today ?? civilDateParis(), operations, equipmentAssets,
+    assetAcquisitionDate: dates.acquisitionDate, assetSaleDate: dates.saleDate, assetStatus: txt(asset.status),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete && equipementsComplets,
     documents: doc.documents, assetPrice, equipmentPrices, acquisitionExpected,
     assetCategory: txt(asset.category), componentProvenance, userDecisions,
@@ -178,8 +197,9 @@ const CITED_MAX = 200;
 
 /** Lot 78B : motifs du TCO qui retirent une composante ou un justificatif du total (règle partagée avec T2). */
 // Lot 80A : + retrait décidé par l'utilisateur (USER_EXCLUDED) — même effet sur T2 que sur le TCO du bien.
-const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET', 'USER_EXCLUDED']);
-const MOTIFS_78B_DOCUMENT: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'USER_EXCLUDED']);
+// Lot 81D : + dépense non réalisée (prévue sans paiement daté et justifié, datée après la date de référence).
+const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET', 'USER_EXCLUDED', 'NOT_REALIZED', 'FUTURE_DATED']);
+const MOTIFS_78B_DOCUMENT: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'USER_EXCLUDED', 'FUTURE_DATED']);
 
 /** Lot 80A : dépense ajoutée au TCO du bien par l'utilisateur (T2 la compte si ses propres règles ne la comptent pas). */
 export interface T2UserAddedExpense {
@@ -205,20 +225,24 @@ export interface T2UserAddedExpense {
  *     immobilier ou un achat non incorporé) ;
  *   · compte entier ou plusieurs biens : les règles qui ne dépendent d'aucun
  *     bien (`presumedDuplicateComponents`, `unjustifiedComponent` : doublon
- *     présumé dans une Opération, justificatif retiré) — un achat d'objet reste
+ *     présumé dans une Opération, justificatif retiré ; lot 81D :
+ *     `nonRealizedComponentIds`, dépense non réalisée) — un achat d'objet reste
  *     une dépense du compte.
+ * Lot 81D : même date de référence que le TCO (date civile à Paris, injectable).
  */
 export async function t2CostExclusions(
   accountId: number,
-  ops: ReadonlyArray<Pick<AssistantOperationRead, 'id' | 'typeCode' | 'components'>>,
+  ops: ReadonlyArray<Pick<AssistantOperationRead, 'id' | 'typeCode' | 'components' | 'status' | 'realizedDate' | 'startDate'>>,
   assetIds: readonly number[] | null,
   r: Runner = db,
+  opts: { today?: string } = {},
 ): Promise<{ components: Set<number>; files: Set<number>; userAdded: T2UserAddedExpense[] }> {
+  const today = opts.today ?? civilDateParis();
   const components = new Set<number>();
   const files = new Set<number>();
   const userAdded: T2UserAddedExpense[] = [];
   if (assetIds?.length === 1) {
-    const t = await readAssetTco(accountId, assetIds[0], { runner: r });
+    const t = await readAssetTco(accountId, assetIds[0], { runner: r, today });
     // Lot 80A : dépenses AJOUTÉES par l'utilisateur au TCO de ce bien (décision prioritaire) — T2 les compte aussi.
     for (const l of t.lines) {
       if (!l.userDecision?.applied || l.userDecision.decision !== 'INCLUDE' || l.includedCents <= 0) continue;
@@ -255,6 +279,8 @@ export async function t2CostExclusions(
     });
     for (const id of presumedDuplicateComponents({ typeCode: o.typeCode, components: comps }, prov, force).keys()) components.add(id);
     for (const c of comps) if (unjustifiedComponent(prov.get(c.id)) === 'SOURCES_WITHDRAWN') components.add(c.id);
+    // Lot 81D : non-réalisation (règle du moteur partagé, indépendante de tout bien).
+    for (const id of nonRealizedComponentIds([{ status: o.status, realizedDate: o.realizedDate, startDate: o.startDate, components: comps }], prov, today)) components.add(id);
   }
   return { components, files, userAdded };
 }

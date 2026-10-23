@@ -65,7 +65,7 @@ import {
   type T6EvaluationRejection, type T6ValidatedDecision,
 } from './t6-contract';
 import {
-  claimT6Runs, finishT6Runs, t6RunsReady,
+  T6_RUN_LEASE_MAX_MS, T6_RUN_LEASE_MS, T6_RUN_RENEW_EVERY_MS, claimT6Runs, finishT6Runs, markT6RunsUnavailable, renewT6Runs, t6RunsReady,
   type T6ClaimResult, type T6FinishedRun, type T6RunResult, type T6RunSubject,
 } from './t6-evaluation-runs';
 
@@ -808,8 +808,12 @@ export interface T6EvaluationOutcome {
   persisted: number;
   /** Lot 72A : `subjectId` réellement enregistrés (null : inconnu, persistance qui ne rend qu'un nombre). */
   persistedSubjectIds?: string[] | null;
-  /** Lot 72A : décisions validées NON enregistrées et motif (`write_failed`, `not_written`). */
-  notPersisted?: Array<{ subjectId: string; reason: 'write_failed' | 'not_written' }>;
+  /**
+   * Lot 72A : décisions validées NON enregistrées et motif (`write_failed`,
+   * `not_written`) ; lot 81B (D) : `ownership_lost` — l'exécution ne détenait
+   * plus l'évaluation au moment de l'écriture (bail repris par une autre instance).
+   */
+  notPersisted?: Array<{ subjectId: string; reason: 'write_failed' | 'not_written' | 'ownership_lost' }>;
   /** Lot 72A (AC08) : mode d'appel déclaré à la passerelle. */
   callerMode?: 'displayed' | 'pregeneration';
   error?: string | null;
@@ -840,16 +844,37 @@ export interface T6EvaluationRunTrace {
   finished?: T6FinishedRun[] | null;
   /** Issue prévue par échéance (avant écriture). */
   results?: T6RunResult[];
+  /** Lot 81B (G) : erreur de la clôture technique (état durable non écrit). */
+  closeError?: string | null;
+  /** Lot 81B (G) : échéances dont la clôture n'a pas été écrite (dépossédée ou échec). */
+  notClosed?: number[];
+  /** Lot 81B (D) : échéances dont l'exécution a perdu la propriété (renouvellement ou écriture refusés). */
+  ownershipLost?: number[];
+  /** Lot 81B (D) : renouvellements du bail effectués pendant l'exécution. */
+  renewals?: number;
+  /** Lot 81B (B) : T6 indisponible — échéances enregistrées UNAVAILABLE (`t6_unavailable`). */
+  unavailable?: number[];
 }
 
 /** Lot 78C : persistance des exécutions (injectable : base, tests). */
 export interface T6RunStore {
   ready: () => Promise<boolean>;
-  claim: (p: { accountId: number; runId: string; mode: string; subjects: readonly T6RunSubject[] }) => Promise<T6ClaimResult>;
+  claim: (p: { accountId: number; runId: string; mode: string; subjects: readonly T6RunSubject[]; leaseMs?: number }) => Promise<T6ClaimResult>;
   finish: (p: { accountId: number; runId: string; results: readonly T6RunResult[]; traceId?: string | null }) => Promise<T6FinishedRun[]>;
+  /** Lot 81B (D) : renouvellement du bail ; rend les échéances encore détenues. Absent : aucun renouvellement. */
+  renew?: (p: { accountId: number; runId: string; ids: readonly number[]; leaseMs?: number }) => Promise<number[]>;
+  /** Lot 81B (B) : T6 indisponible — état explicite des évaluations non exécutées. */
+  markUnavailable?: (accountId: number, subjects: readonly T6RunSubject[]) => Promise<number[]>;
+  /** Lot 81B (D) : bail, période de renouvellement, durée maximale (défauts : 5 min, 100 s, 30 min ; tests). */
+  leaseMs?: number;
+  renewEveryMs?: number;
+  leaseMaxMs?: number;
 }
 
-export const t6RunDbStore: T6RunStore = { ready: t6RunsReady, claim: claimT6Runs, finish: finishT6Runs };
+export const t6RunDbStore: T6RunStore = {
+  ready: t6RunsReady, claim: claimT6Runs, finish: finishT6Runs, renew: renewT6Runs,
+  markUnavailable: (a, s) => markT6RunsUnavailable(a, s),
+};
 
 /**
  * Lot 78C — issue d'une évaluation, échéance par échéance (pure, testée) :
@@ -878,6 +903,10 @@ export function t6RunResultsOf(o: T6EvaluationOutcome, refs: T6InterpellationBun
     const np = o.notPersisted?.find((d) => d.subjectId === subjectId);
     if (a && !np && persistes.includes(subjectId)) {
       out.push({ agendaItemId: id, outcome: 'COMPLETED', detail: `${a.decision}/${a.reasonCode}` });
+    } else if (a && np?.reason === 'ownership_lost') {
+      // Lot 81B (D) : rien écrit (dépossédée) ; la clôture, conditionnée par
+      // l'exécution, sera elle aussi sans effet — l'état reste celui du détenteur.
+      out.push({ agendaItemId: id, outcome: 'RETRY', errorKind: 'ownership_lost', error: 'exécution dépossédée : décision non écrite', detail: 'non enregistrée (ownership_lost)' });
     } else if (a) {
       out.push({ agendaItemId: id, outcome: 'RETRY', errorKind: 'write_failed', error: o.error ?? 'décision non enregistrée', detail: `non enregistrée (${np?.reason ?? 'write_failed'})` });
     } else if (r) {
@@ -979,17 +1008,38 @@ export async function evaluateWithT6(
   const callerMode = gatewayCallerMode(p.mode);
   const vide = (status: T6EvaluationStatus, error: string | null, promptVersion: string | null = null): T6EvaluationOutcome =>
     ({ status, promptVersion, accepted: [], rejected: [], persisted: 0, error, callerMode });
+  // Lot 81B (G) : refus, indisponibilités et prises impossibles sont TRACÉS
+  // (rapport evaluate:<mode>), jamais silencieux.
+  const tracer = async (o: T6EvaluationOutcome): Promise<T6EvaluationOutcome> => {
+    try { await deps.report?.(o); } catch { /* le reporting ne bloque jamais */ }
+    return o;
+  };
+  const sujetsDurables = (): T6RunSubject[] => [...p.bundle.refs.values()].map((c) => ({
+    agendaItemId: c.agendaItemId, fingerprint: c.fingerprint, signature: p.bundle.evaluationSignature ?? null,
+  }));
   let promptVersion: string;
   let reminder = false;
   try {
     const [ok, v, r] = await Promise.all([
       deps.available(), deps.promptVersion(), deps.reminderCapable ? deps.reminderCapable().catch(() => false) : Promise.resolve(false),
     ]);
-    if (!ok) return vide('disabled', 'T6 indisponible ou version du prompt sans branche EVALUATE');
+    if (!ok) {
+      // Lot 81B (B) : T6 devenu indisponible entre la décision et l'exécution —
+      // état explicite (UNAVAILABLE), jamais une demande PENDING sans exécution.
+      const o = vide('disabled', 'T6 indisponible ou version du prompt sans branche EVALUATE');
+      if (deps.runs?.markUnavailable && await deps.runs.ready().catch(() => false)) {
+        const marquees = await deps.runs.markUnavailable(p.accountId, sujetsDurables()).catch((e) => {
+          console.error('[mascotte] indisponibilité EVALUATE non enregistrée :', (e as Error).message);
+          return [] as number[];
+        });
+        o.run = { runId: null, claimed: false, refusal: { reason: 't6_unavailable', waitingUntil: null, agendaItemId: marquees[0] ?? 0 }, unavailable: marquees };
+      }
+      return tracer(o);
+    }
     promptVersion = v;
     reminder = r;
   } catch (e) {
-    return vide('error', (e as Error).message);
+    return tracer(vide('error', (e as Error).message));
   }
   const key = sha256(canonicalJson({ accountId: p.accountId, input: p.bundle.context, promptVersion, out: T6_EVALUATION_OUTPUT_SCHEMA_VERSION }));
   // Lot 78C : état DURABLE des évaluations (0616) — l'attente avant un nouvel
@@ -1010,22 +1060,48 @@ export async function evaluateWithT6(
     // Lot 78C : PRISE EN CHARGE durable (tout ou rien, verrou du compte) —
     // jamais d'exécution concurrente d'une même évaluation entre instances.
     let claim: T6ClaimResult | null = null;
-    if (durable && deps.runs) {
-      const subjects: T6RunSubject[] = [...p.bundle.refs.values()].map((c) => ({
-        agendaItemId: c.agendaItemId, fingerprint: c.fingerprint, signature: p.bundle.evaluationSignature ?? null,
-      }));
+    const store = durable ? deps.runs ?? null : null;
+    const leaseMs = store?.leaseMs ?? T6_RUN_LEASE_MS;
+    if (store) {
       try {
-        claim = await deps.runs.claim({ accountId: p.accountId, runId: randomUUID(), mode: p.mode, subjects });
+        claim = await store.claim({ accountId: p.accountId, runId: randomUUID(), mode: p.mode, subjects: sujetsDurables(), ...(store.leaseMs ? { leaseMs } : {}) });
       } catch (e) {
         // Base indisponible : aucune exécution non tracée (reprise au passage suivant).
-        return vide('skipped', `prise en charge impossible : ${(e as Error).message?.slice(0, 200) ?? 'erreur'}`, promptVersion);
+        const msg = (e as Error).message?.slice(0, 200) ?? 'erreur';
+        return tracer({
+          ...vide('skipped', `prise en charge impossible : ${msg}`, promptVersion),
+          run: { runId: null, claimed: false, refusal: { reason: 'claim_failed', waitingUntil: null, agendaItemId: 0 } },
+        });
       }
       if (!claim.ok) {
-        return {
+        return tracer({
           ...vide('skipped', `évaluation non prise (${claim.reason})`, promptVersion),
           run: { runId: null, claimed: false, refusal: { reason: claim.reason, waitingUntil: claim.waitingUntil, agendaItemId: claim.agendaItemId } },
-        };
+        });
       }
+    }
+    // Lot 81B (D) : bail RENOUVELÉ pendant l'exécution (au plus `leaseMaxMs`
+    // après la prise) ; une ligne qui n'est plus détenue = propriété perdue.
+    const detenues = claim?.ok ? [...claim.attempts.keys()] : [];
+    const perdues = new Set<number>();
+    let renouvellements = 0;
+    let minuterie: ReturnType<typeof setInterval> | undefined;
+    if (claim?.ok && store?.renew && detenues.length > 0) {
+      const runId = claim.runId;
+      const limite = startedAt + (store.leaseMaxMs ?? T6_RUN_LEASE_MAX_MS);
+      let enCours = false;
+      minuterie = setInterval(() => {
+        if (enCours || Date.now() >= limite) return;
+        enCours = true;
+        void store.renew!({ accountId: p.accountId, runId, ids: detenues.filter((x) => !perdues.has(x)), leaseMs })
+          .then((ok) => {
+            renouvellements += 1;
+            for (const id of detenues) if (!ok.includes(id)) perdues.add(id);
+          })
+          .catch((e) => console.error('[mascotte] bail EVALUATE non renouvelé :', (e as Error).message))
+          .finally(() => { enCours = false; });
+      }, Math.max(50, store.renewEveryMs ?? T6_RUN_RENEW_EVERY_MS));
+      (minuterie as unknown as { unref?: () => void }).unref?.();
     }
     let plafond = false;
     try {
@@ -1054,29 +1130,40 @@ export async function evaluateWithT6(
         };
       } else {
         // 2. Persister le lot accepté (transaction), 3. contrôler le nombre enregistré.
-        let ecrit: { persisted: number; ids: string[] | null } | null = null;
+        // Lot 81B (D) : propriété de l'exécution vérifiée DANS la transaction.
+        let ecrit: { persisted: number; ids: string[] | null; lost: string[] } | null = null;
         let erreur: string | null = null;
         try {
           const r: number | T6PersistResult = await p.bundle.persist(v.accepted, {
             promptVersion, traceId: res.traceId ?? null, contractRevision: reminder ? T6_ASSESSMENT_REVISION_REMINDER : 1,
+            ...(claim?.ok ? { run: { runId: claim.runId, leaseMs } } : {}),
           });
-          ecrit = typeof r === 'number' ? { persisted: r, ids: null } : { persisted: r.persisted, ids: r.persistedSubjectIds ?? null };
+          ecrit = typeof r === 'number' ? { persisted: r, ids: null, lost: [] } : { persisted: r.persisted, ids: r.persistedSubjectIds ?? null, lost: r.lostSubjectIds ?? [] };
         } catch (e) {
           erreur = (e as Error).message?.slice(0, 300) ?? 'écriture en échec';
           console.error('[mascotte] décisions EVALUATE non enregistrées :', erreur);
         }
+        for (const sid of ecrit?.lost ?? []) {
+          const id = p.bundle.refs.get(sid)?.agendaItemId;
+          if (id != null) perdues.add(id);
+        }
+        const perdu = (sid: string) => (ecrit?.lost ?? []).includes(sid);
         const persisted = Math.min(ecrit?.persisted ?? 0, v.accepted.length);
         const ids = ecrit ? (ecrit.ids ?? (persisted >= v.accepted.length ? v.accepted.map((d) => d.subjectId) : null)) : [];
         const notPersisted = !ecrit
           ? v.accepted.map((d) => ({ subjectId: d.subjectId, reason: 'write_failed' as const }))
-          : ids ? v.accepted.filter((d) => !ids.includes(d.subjectId)).map((d) => ({ subjectId: d.subjectId, reason: 'not_written' as const })) : [];
+          : ids ? v.accepted.filter((d) => !ids.includes(d.subjectId))
+            .map((d) => ({ subjectId: d.subjectId, reason: perdu(d.subjectId) ? 'ownership_lost' as const : 'not_written' as const })) : [];
         // 4. Statut final et disjoncteur : jamais « generated » sans écriture complète.
         const status: T6EvaluationStatus = persisted === 0 ? 'persist_failed' : persisted < v.accepted.length ? 'partially_persisted' : 'generated';
-        evalRecord(status !== 'persist_failed', key, p.accountId);
+        // Une dépossession n'est pas une panne du modèle : pas d'échec au disjoncteur.
+        evalRecord(status !== 'persist_failed' || (ecrit?.lost.length ?? 0) > 0, key, p.accountId);
+        const nbPerdues = notPersisted.filter((x) => x.reason === 'ownership_lost').length;
         const motifs = [
           v.rejected.length ? `${v.rejected.length} décision(s) rejetée(s)` : null,
-          status === 'persist_failed' ? `aucune décision enregistrée${erreur ? ` : ${erreur}` : ''}` : null,
-          status === 'partially_persisted' ? `${v.accepted.length - persisted} décision(s) non enregistrée(s)` : null,
+          nbPerdues ? `${nbPerdues} décision(s) non écrite(s) : exécution dépossédée (bail repris par une autre instance)` : null,
+          status === 'persist_failed' && !nbPerdues ? `aucune décision enregistrée${erreur ? ` : ${erreur}` : ''}` : null,
+          status === 'partially_persisted' && !nbPerdues ? `${v.accepted.length - persisted} décision(s) non enregistrée(s)` : null,
         ].filter(Boolean);
         outcome = {
           ...base, status, accepted: v.accepted, rejected: v.rejected, persisted, persistedSubjectIds: ids, notPersisted,
@@ -1089,26 +1176,42 @@ export async function evaluateWithT6(
       if (!plafond) evalRecord(false, key, p.accountId);
       outcome = vide('error', plafond ? 'plafond IA du mois du compte atteint' : (e as Error).message?.slice(0, 500) ?? 'erreur', promptVersion);
       outcome.latencyMs = Date.now() - startedAt;
+    } finally {
+      if (minuterie) clearInterval(minuterie);
     }
     // Lot 78C : CLÔTURE durable — état terminal ou reprise planifiée de chaque
     // évaluation, conditionnée par l'exécution (une instance dépossédée n'écrit plus).
-    if (claim?.ok && deps.runs) {
+    if (claim?.ok && store) {
       const results = t6RunResultsOf(outcome, p.bundle.refs, plafond);
       let finished: T6FinishedRun[] | null = null;
+      let closeError: string | null = null;
       try {
-        finished = await deps.runs.finish({ accountId: p.accountId, runId: claim.runId, results, traceId: outcome.traceId ?? null });
+        finished = await store.finish({ accountId: p.accountId, runId: claim.runId, results, traceId: outcome.traceId ?? null });
       } catch (e) {
         // Bail non clôturé : l'évaluation sera reprise à son expiration (interruption tracée).
-        console.error('[mascotte] état des évaluations EVALUATE non enregistré :', (e as Error).message);
+        closeError = (e as Error).message?.slice(0, 300) ?? 'erreur';
+        console.error('[mascotte] état des évaluations EVALUATE non enregistré :', closeError);
         outcome.error = [outcome.error, 'état d’exécution non enregistré'].filter(Boolean).join(' ; ');
+        // Lot 81B (G) : reprise DURABLE après l'expiration du bail — la
+        // pré-génération du compte rattrape l'état (décision enregistrée :
+        // clôture sans appel IA ; sinon nouvel essai), sans nouvelle visite.
+        void import('./pregen-queue').then((q) => q.requestMascotPregenerationAt(p.accountId, 't6-close-retry', leaseMs + 5_000)).catch(() => {});
+      }
+      // Lot 81B (G) : clôture INCOMPLÈTE (lignes reprises entre-temps par une
+      // autre exécution) distinguée d'une clôture complète.
+      const closes = new Set((finished ?? []).map((f) => f.agendaItemId));
+      const notClosed = results.map((r) => r.agendaItemId).filter((id) => !closes.has(id));
+      if (finished && notClosed.length > 0) {
+        for (const id of notClosed) perdues.add(id);
+        outcome.error = [outcome.error, `clôture non écrite pour ${notClosed.length} évaluation(s) (exécution dépossédée)`].filter(Boolean).join(' ; ');
       }
       outcome.run = {
         runId: claim.runId, claimed: true, attempts: Object.fromEntries(claim.attempts), interrupted: claim.interrupted, finished, results,
+        closeError, notClosed, ownershipLost: [...perdues].sort((a, b) => a - b), renewals: renouvellements,
       };
     }
-    // 5. Reporting conforme au résultat réel (après l'écriture).
-    try { await deps.report?.(outcome); } catch { /* le reporting ne bloque jamais */ }
-    return outcome;
+    // 5. Reporting conforme au résultat réel (après l'écriture et la clôture).
+    return tracer(outcome);
   })().finally(() => evalInflight.delete(key));
   evalInflight.set(key, run);
   return run;

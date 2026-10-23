@@ -122,6 +122,8 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
       } : null,
       t1ReportId: runId != null ? t1ByRun.get(runId) ?? null : null,
       candidates: f.candidates.map((c) => ({ evidenceId: c.evidenceId, value: c.value, confidence: c.confidence, authority: c.authorityScore, sourceId: c.sourceId, documentDate: c.documentDate })),
+      // Lot 81A : toutes les valeurs proposées d'un conflit (aucune masquée).
+      ...(d.alternatives?.length ? { alternatives: d.alternatives.map((a) => ({ value: a.value, evidenceIds: a.evidenceIds, authority: a.sourcePriority ?? null })) } : {}),
     };
     const isWrite = d.action === 'apply' || d.action === 'update';
     const j = byKey.get(f.fieldKey);

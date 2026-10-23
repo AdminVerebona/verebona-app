@@ -30,7 +30,7 @@ function dossier(): EntityDossier {
         { type: 'document', id: 789, label: 'Facture d’acquisition', nature: 'source de preuves', status: 'ANALYZED', origin: 'DOCUMENT_EXTRACTION', via: 'field_evidence.source_id' },
       ] },
       { id: 'evidence', tab: 'preuves', title: 'Preuves', table: {
-        table: 'field_evidence', columns: ['id', 'value_json', 'raw_value', 'evidence_excerpt', 'excerpt_long'], total: 1, complete: true, limit: 2000,
+        table: 'field_evidence', columns: ['id', 'value_json', 'raw_value', 'evidence_excerpt', 'excerpt_long'], total: 1, complete: true,
         rows: [{ id: 11, value_json: { amount: 1399, unit: 'EUR' }, raw_value: '1 399,00 € TTC; "total"', evidence_excerpt: null, excerpt_long: notLoaded('borne') }],
       } },
     ],

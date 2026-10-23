@@ -38,7 +38,8 @@
  *     est comptée comme une dépense réalisée ;
  *   · jamais ajoutable : montant inconnu, devise sans contre-valeur, autre
  *     bien, ligne déjà portée par une autre dépense, document qui n'est pas
- *     une dépense (règlement, capital, prix de vente) ;
+ *     une dépense (règlement, capital, prix de vente) ; lot 81D : dépense non
+ *     réalisée (prévue, ou datée après la date de référence) ;
  *   · doublon présumé (`tcoAddDuplicateRisk`) : la confirmation l'annonce
  *     explicitement (refus serveur sans confirmation), la ligne ajoutée reste
  *     signalée (USER_INCLUDED_DUPLICATES) — jamais un double comptage à
@@ -99,8 +100,10 @@ export function tcoLineRemovable(l: Pick<TcoEconomicLine, 'status' | 'kind'>): b
 }
 
 /** Une ligne non retenue peut-elle être ajoutée ? Motif en langage utilisateur sinon (pure). */
-export function tcoLineAddable(l: Pick<TcoEconomicLine, 'status' | 'kind' | 'eurCents' | 'amountUnknown'>): { ok: true } | { ok: false; reason: string } {
+export function tcoLineAddable(l: Pick<TcoEconomicLine, 'status' | 'kind' | 'eurCents' | 'amountUnknown' | 'notRealized'>): { ok: true } | { ok: false; reason: string } {
   if (RETENUE(l.status)) return { ok: false, reason: 'Déjà retenue dans le coût de possession.' };
+  // Lot 81D : une dépense non réalisée ne contribue à aucun indicateur, même sur décision (jamais de date de réalisation inventée).
+  if (l.notRealized) return { ok: false, reason: 'Dépense non encore réalisée : elle sera comptée à sa date de paiement, une fois réalisée.' };
   if (l.amountUnknown) return { ok: false, reason: 'Montant inconnu : renseignez le montant du document pour pouvoir l’ajouter.' };
   if (l.status === 'OUT_OF_SCOPE') return { ok: false, reason: 'Dépense attribuée à un autre bien.' };
   if (l.status === 'CONSOLIDATED_ELSEWHERE') return { ok: false, reason: 'Déjà comptée par une autre dépense : utilisez la dépense qui la porte.' };

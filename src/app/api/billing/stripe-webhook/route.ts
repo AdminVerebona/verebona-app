@@ -18,9 +18,9 @@ import {
   accountSubscriptions,
 } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
-import { sendDowngradeToStandardEmail } from '@/lib/email/billing-emails';
 import { PAYMENT_ACTION_GROUPING_DELAY_MS } from '@/lib/notifications/incident-grouping';
-import { invoiceReceiptCovered } from '@/lib/billing/invoice-receipt';
+import { renewalNotificationPayload } from '@/lib/billing/invoice-receipt';
+import { dispatchRecordedOperation, recordAndDispatchSubscriptionTransition, recordSubscriptionTransition } from '@/services/billing/subscription-communications.service';
 import { getStripeServer, getStripeKeyMode } from '@/lib/stripe';
 import { claimWebhookEvent, claimInvoiceEffect, handleCatalogEvent, isCatalogEvent } from '@/services/billing/webhook-catalog.service';
 import {
@@ -381,7 +381,7 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
     }
 
     // Downgrade le compte lié en STANDARD
-    await downgradeDuoAccount(duoAccount.id);
+    await downgradeDuoAccount(duoAccount.id, subscriptionId, subscription.ended_at ?? null);
     return;
   }
 
@@ -397,74 +397,88 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
     return;
   }
 
-  const oldPlanType = account.planType;
+  // Lot 81E : fin d'un ANCIEN abonnement alors qu'un autre est en place
+  // (webhook tardif ou désordonné) — rien n'est rétrogradé ni annoncé
+  // (même règle que la synchronisation : STALE_SUBSCRIPTION).
+  if (account.stripeSubscriptionId && account.stripeSubscriptionId !== subscriptionId) {
+    console.info(`[Webhook] subscription.deleted ${subscriptionId} ignoré : abonnement courant ${account.stripeSubscriptionId}`);
+    return;
+  }
 
-  await db
-    .update(accounts)
-    .set({
-      planType: 'STANDARD',
-      subscriptionTier: 'free',
-      subscriptionStatus: 'EXPIRED',
-      premiumUntil: null,
-      updatedAt: new Date(),
-    })
-    .where(eq(accounts.id, account.id));
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 81E — PRISE D'EFFET DE LA RÉSILIATION : UNE OPÉRATION, UNE COMMUNICATION
+  //
+  // L'état AVANT est relu sous verrou, la rétrogradation et l'inscription de
+  // l'opération (notification SUBSCRIPTION_CANCELLED + e-mail DURABLE
+  // DOWNGRADE_NOTIFICATION) se font dans la même transaction. La
+  // synchronisation d'un abonnement `canceled` produit la MÊME opération
+  // (clé : l'abonnement) : jamais deux communications. Plus de déduplication
+  // « e-mail envoyé à ce titulaire dans les dernières 24 h ».
+  // ══════════════════════════════════════════════════════════════════════
+  let oldPlanType = account.planType;
+  const operation = await db.transaction(async (tx) => {
+    const [verrou] = await tx
+      .select({ planType: accounts.planType, subscriptionStatus: accounts.subscriptionStatus, premiumUntil: accounts.premiumUntil })
+      .from(accounts).where(eq(accounts.id, account.id)).for('update');
+    oldPlanType = verrou?.planType ?? account.planType;
+    const oldStatus = verrou?.subscriptionStatus ?? account.subscriptionStatus;
 
-  // Les droits se lisent sur `account_subscriptions` (entitlements) : sans
-  // cette écriture, un abonnement terminé restait `active` et continuait
-  // d'ouvrir l'écriture. Une rétractation (`readonly`) garde son statut.
-  // Un cycle d'impayé en cours se poursuit (colonnes unpaid_* inchangées)
-  // jusqu'à régularisation ou J+90.
-  await db
-    .update(accountSubscriptions)
-    .set({ status: 'canceled', updatedAt: new Date() })
-    .where(and(
-      eq(accountSubscriptions.accountId, account.id),
-      eq(accountSubscriptions.stripeSubscriptionId, subscriptionId),
-      sql`${accountSubscriptions.status} <> 'readonly'`,
-    ));
+    await tx
+      .update(accounts)
+      .set({
+        planType: 'STANDARD',
+        subscriptionTier: 'free',
+        subscriptionStatus: 'EXPIRED',
+        premiumUntil: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(accounts.id, account.id));
 
-  await db.insert(subscriptionHistory).values({
-    userId: account.ownerUserId,
-    accountId: account.id,
-    oldTier: oldPlanType,
-    newTier: 'STANDARD',
-    oldPremiumUntil: account.premiumUntil,
-    newPremiumUntil: null,
-    source: 'webhook:customer.subscription.deleted',
-    createdAt: new Date(),
-  });
+    // Les droits se lisent sur `account_subscriptions` (entitlements) : sans
+    // cette écriture, un abonnement terminé restait `active` et continuait
+    // d'ouvrir l'écriture. Une rétractation (`readonly`) garde son statut.
+    // Un cycle d'impayé en cours se poursuit (colonnes unpaid_* inchangées)
+    // jusqu'à régularisation ou J+90.
+    await tx
+      .update(accountSubscriptions)
+      .set({ status: 'canceled', updatedAt: new Date() })
+      .where(and(
+        eq(accountSubscriptions.accountId, account.id),
+        eq(accountSubscriptions.stripeSubscriptionId, subscriptionId),
+        sql`${accountSubscriptions.status} <> 'readonly'`,
+      ));
 
-  // Résiliation d'abonnement (configurable, cloche + email par défaut, CDC §7.6).
-  // Lot 79C : l'e-mail transactionnel DOWNGRADE_NOTIFICATION (« Votre
-  // abonnement … a été résilié ») part ci-dessous, ou est déjà parti par la
-  // synchronisation de l'abonnement : la notification garde cloche et push,
-  // sans second e-mail équivalent.
-  const downgradeEmailSent = oldPlanType !== 'STANDARD'
-    || await downgradeEmailRecentlySent(account.ownerUserId).catch(() => false);
-  try {
-    await emit({
-      type: 'SUBSCRIPTION_CANCELLED',
+    await tx.insert(subscriptionHistory).values({
+      userId: account.ownerUserId,
       accountId: account.id,
-      entityType: 'subscription',
-      entityId: subscription.id,
-      payload: downgradeEmailSent ? { downgradeEmailSent: true } : {},
-      dedupeKey: `account:subscription-cancelled:${subscription.id}`,
+      oldTier: oldPlanType,
+      newTier: 'STANDARD',
+      oldPremiumUntil: verrou?.premiumUntil ?? account.premiumUntil,
+      newPremiumUntil: null,
+      source: 'webhook:customer.subscription.deleted',
+      createdAt: new Date(),
     });
-  } catch (err) {
-    console.error('[stripe-webhook] emit SUBSCRIPTION_CANCELLED échoué:', err);
-  }
 
-  // Sync users.planType so the badge matches
-  if (oldPlanType !== 'STANDARD') {
-    await db
-      .update(users)
-      .set({ planType: 'STANDARD', updatedAt: new Date() })
-      .where(eq(users.id, account.ownerUserId));
-  }
+    // Sync users.planType so the badge matches
+    if (oldPlanType !== 'STANDARD') {
+      await tx
+        .update(users)
+        .set({ planType: 'STANDARD', updatedAt: new Date() })
+        .where(eq(users.id, account.ownerUserId));
+    }
+
+    // Résiliation d'abonnement (configurable, cloche + email par défaut, CDC §7.6).
+    return recordSubscriptionTransition(tx, {
+      kind: 'CANCELLATION_EFFECTIVE',
+      accountId: account.id, ownerUserId: account.ownerUserId, subscriptionId,
+      oldPlan: oldPlanType, newPlan: 'STANDARD', oldStatus, newStatus: 'EXPIRED',
+      effectiveAt: subscription.ended_at ? new Date(subscription.ended_at * 1000) : new Date(),
+      notify: true, source: 'webhook:customer.subscription.deleted',
+    });
+  });
+  await dispatchRecordedOperation(operation);
 
   if (oldPlanType !== 'STANDARD') {
-    sendDowngradeToStandardEmail(account.ownerUserId).catch(console.error);
     await enforceStandardLimits(account.id, account.ownerUserId);
   }
 }
@@ -510,9 +524,10 @@ async function handlePaymentSucceeded(invoice: Stripe.Invoice) {
         accountId,
         entityType: 'invoice',
         entityId: invoice.id,
-        // Lot 79C : `receipt_number` = Stripe a émis le reçu de paiement de
-        // cette facture (e-mail de reçu) — pas de second e-mail générique.
-        payload: { planCode: result.newPlanType, ...(invoiceReceiptCovered(invoice) ? { receiptCovered: true } : {}) },
+        // Lot 81E : règle explicite (`invoice-receipt.ts`) — `receipt_number`
+        // ne prouve pas qu'un reçu a été envoyé ni reçu : jamais utilisé pour
+        // supprimer l'e-mail. Offre, formule, prochaine échéance, justificatifs.
+        payload: renewalNotificationPayload(invoice, { planCode: result.newPlanType, billingPeriod: result.billingPeriod }),
         dedupeKey: `account:subscription-renewed:${invoice.id}`,
       });
     } catch (err) {
@@ -711,16 +726,6 @@ async function handlePaymentFailed(invoice: Stripe.Invoice) {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Lot 79C — e-mail DOWNGRADE_NOTIFICATION déjà émis pour ce titulaire dans les dernières 24 h ? */
-async function downgradeEmailRecentlySent(userId: number): Promise<boolean> {
-  const rows = await db.execute(sql`
-    SELECT 1 FROM email_logs
-     WHERE upper(template_code) = 'DOWNGRADE_NOTIFICATION' AND recipient_user_id = ${userId}
-       AND status IN ('sent', 'pending') AND sent_at > now() - interval '24 hours'
-     LIMIT 1`);
-  return (rows as unknown as unknown[]).length > 0;
-}
-
 /**
  * Set accounts.planType = 'PREMIUM_DUO', users.planType = 'PREMIUM_DUO', maxMembers = 2 when a PREMIUM_DUO sub becomes active.
  * Uses accounts.duoAccountId to find the linked account.
@@ -836,7 +841,7 @@ async function activateDuoOnAccount(duoAccountId: number) {
  * Downgrade the account linked to a PREMIUM_DUO subscription back to STANDARD.
  * Removes the second member from accountMemberships.
  */
-async function downgradeDuoAccount(duoAccountId: number) {
+async function downgradeDuoAccount(duoAccountId: number, subscriptionId: string, endedAt: number | null) {
   const [linked] = await db
     .select({ id: accounts.id, ownerUserId: accounts.ownerUserId, planType: accounts.planType })
     .from(accounts)
@@ -859,17 +864,19 @@ async function downgradeDuoAccount(duoAccountId: number) {
         .limit(1);
 
       if (byOwner) {
-        await performDuoDowngrade(byOwner.id, byOwner.ownerUserId);
+        await performDuoDowngrade(byOwner.id, byOwner.ownerUserId, subscriptionId, endedAt);
       }
     }
     return;
   }
 
-  await performDuoDowngrade(linked.id, linked.ownerUserId);
+  await performDuoDowngrade(linked.id, linked.ownerUserId, subscriptionId, endedAt);
 }
 
-async function performDuoDowngrade(accountId: number, ownerUserId: number) {
-  const oldPlanType = (await db.select({ planType: accounts.planType }).from(accounts).where(eq(accounts.id, accountId)).limit(1))[0]?.planType;
+async function performDuoDowngrade(accountId: number, ownerUserId: number, subscriptionId: string, endedAt: number | null) {
+  const [before] = await db.select({ planType: accounts.planType, subscriptionStatus: accounts.subscriptionStatus })
+    .from(accounts).where(eq(accounts.id, accountId)).limit(1);
+  const oldPlanType = before?.planType;
 
   await db
     .update(accounts)
@@ -914,7 +921,15 @@ async function performDuoDowngrade(accountId: number, ownerUserId: number) {
     createdAt: new Date(),
   });
 
-  sendDowngradeToStandardEmail(ownerUserId).catch(console.error);
+  // Lot 81E : même opération que la synchronisation de l'abonnement Duo
+  // terminé (clé : l'abonnement) — une seule communication, e-mail durable.
+  await recordAndDispatchSubscriptionTransition({
+    kind: 'CANCELLATION_EFFECTIVE',
+    accountId, ownerUserId, subscriptionId,
+    oldPlan: oldPlanType ?? 'PREMIUM_DUO', newPlan: 'STANDARD', oldStatus: before?.subscriptionStatus ?? null, newStatus: 'EXPIRED',
+    effectiveAt: endedAt ? new Date(endedAt * 1000) : new Date(),
+    notify: true, source: 'webhook:customer.subscription.deleted:duo',
+  });
   await enforceStandardLimits(accountId, ownerUserId);
 
 }
@@ -928,6 +943,10 @@ async function performDuoDowngrade(accountId: number, ownerUserId: number) {
  */
 async function handlePaymentActionRequired(invoice: Stripe.Invoice) {
   const customerId = typeof invoice.customer === 'string' ? invoice.customer : invoice.customer?.id;
+  // Lot 81E : registre des factures tenu à jour (état réel du paiement lu au
+  // moment de l'envoi : une facture réglée entre-temps n'est plus signalée).
+  await recordStripeInvoice(invoice, { eventType: 'invoice.payment_action_required' }).catch((e: Error) =>
+    console.error('[stripe-webhook] registre de la facture (action requise) :', e.message));
   console.warn('[stripe-webhook] action requise (3DS) pour le client', customerId, 'facture', invoice.id);
 
   await db
@@ -948,9 +967,10 @@ async function handlePaymentActionRequired(invoice: Stripe.Invoice) {
           entityId: invoice.id,
           payload: { accountId: account.id },
           dedupeKey: `account:payment-action-required:${invoice.id}`,
-          // Lot 79C : Stripe émet aussi `invoice.payment_failed` pour la même
-          // facture ; l'envoi est différé de 2 min pour que l'incident soit
-          // porté par UN message (regroupement au dispatcher).
+          // Lot 79C / 81E : Stripe émet aussi `invoice.payment_failed` pour la
+          // même facture. Le regroupement est décidé au dispatcher par
+          // facture et état réel (quel que soit l'ordre des webhooks) ; ce
+          // délai de 2 min ne fait que lisser l'ordre habituel.
           scheduledFor: new Date(Date.now() + PAYMENT_ACTION_GROUPING_DELAY_MS),
         });
       }

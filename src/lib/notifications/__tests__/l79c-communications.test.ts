@@ -24,7 +24,7 @@ const { digestHasNews, digestItemKey } = await import('../scheduled/to-process-d
 const { transactionalRetiredReason, RETIRED_TRANSACTIONAL_EMAILS } = await import('../channel-activation');
 const { listEventDefinitions, TRANSACTIONAL_EMAILS } = await import('@/services/admin/communications.service');
 const { retirerCanauxSupprimes } = await import('@/services/notifications/notification-reemission.service');
-const { invoiceReceiptCovered } = await import('@/lib/billing/invoice-receipt');
+const { renewalNotificationPayload } = await import('@/lib/billing/invoice-receipt');
 
 const entry = (t: string) => getCatalogEntry(t)!;
 const tousCanaux = { bell: true, push: true, email: true };
@@ -84,7 +84,8 @@ describe('L79C-AC04 — un incident, un message (contenu)', () => {
       lotId: 1, analysedCount: 2, failedCount: 2,
       documents: [{ assetFileId: 1, title: 'Facture garage' }, { assetFileId: 2, title: 'Devis' }],
     });
-    expect(r.bellBody).toContain('Documents concernés : Facture garage, Devis.');
+    // Lot 81E : documents nommés (texte partagé avec la cloche), jamais « à vérifier ».
+    expect(r.bellBody).toBe('2 documents analysés, 2 n’ont pas pu l’être : “Facture garage”, “Devis”. Vous pouvez relancer l’analyse depuis la fiche du document, dans Documents.');
     expect(r.bellBody).toMatch(/relancer l’analyse depuis la fiche du document/);
     expect(failedDocumentsText([{ title: 'a' }, { title: 'b' }, { title: 'c' }, { title: 'd' }, { title: 'e' }])).toBe(' Documents concernés : a, b, c (et 2 autres).');
     expect(failedDocumentsText(undefined)).toBe('');
@@ -177,25 +178,30 @@ describe('L79C-AC08 — doublons d’accueil, de paiement et d’abonnement', ()
     expect(TRANSACTIONAL_EMAILS.find((t) => t.templateCode === 'TRIAL_CONFIRMATION')?.label).toMatch(/NON UTILISÉ/);
   });
 
-  it('renouvellement : pas d’e-mail générique quand le reçu Stripe couvre la facture', () => {
-    expect(invoiceReceiptCovered({ receipt_number: '2471-1234' })).toBe(true);
-    expect(invoiceReceiptCovered({ receipt_number: null })).toBe(false);
-    expect(invoiceReceiptCovered({})).toBe(false);
+  it('renouvellement (lot 81E) : `receipt_number` n’est plus une preuve — l’e-mail générique part selon la préférence', () => {
     const e = entry('SUBSCRIPTION_RENEWED');
-    expect(e.render({ planCode: 'PREMIUM', receiptCovered: true }).emailTemplateCode).toBeUndefined();
+    // Ancienne ligne en file portant encore `receiptCovered` : ignoré.
+    expect(e.render({ planCode: 'PREMIUM', receiptCovered: true }).emailTemplateCode).toBe('notif_subscription');
     expect(e.render({ planCode: 'PREMIUM' }).emailTemplateCode).toBe('notif_subscription');
+    const p = renewalNotificationPayload({ id: 'in_1', receipt_number: '2471-1234', lines: { data: [{ period: { end: 1823385600 } }] } } as never, { planCode: 'PREMIUM', billingPeriod: 'yearly' });
+    expect(p).toEqual({ planCode: 'PREMIUM', billingPeriod: 'yearly', nextRenewalAt: new Date(1823385600 * 1000).toISOString(), invoiceId: 'in_1' });
+    expect(p).not.toHaveProperty('receiptCovered');
   });
 
-  it('résiliation : un seul e-mail (DOWNGRADE_NOTIFICATION) — la notification garde cloche et push', () => {
+  it('résiliation (lot 81E) : e-mail générique omis seulement si l’e-mail durable de fin d’offre de la même opération est enregistré', () => {
     const e = entry('SUBSCRIPTION_CANCELLED');
-    expect(e.render({ downgradeEmailSent: true }).emailTemplateCode).toBeUndefined();
+    expect(e.render({ endedEmailJobId: 9 }).emailTemplateCode).toBeUndefined();
+    expect(e.render({ endedEmailJobId: 9 }).emailSkipReason).toBe('covered_by_end_of_offer_email:9');
+    // Ancien drapeau d'intention (heuristique « 24 h ») : plus une preuve.
+    expect(e.render({ downgradeEmailSent: true }).emailTemplateCode).toBe('notif_subscription');
     expect(e.render({}).emailTemplateCode).toBe('notif_subscription');
     const webhook = readFileSync(join(process.cwd(), 'src/app/api/billing/stripe-webhook/route.ts'), 'utf8');
-    expect(webhook).toMatch(/payload: downgradeEmailSent \? \{ downgradeEmailSent: true \} : \{\}/);
+    expect(webhook).not.toMatch(/downgradeEmailRecentlySent|interval '24 hours'/);
   });
 
-  it('activation / changement : l’e-mail de confirmation contractuel reste unique (existant, inchangé)', () => {
-    expect(entry('SUBSCRIPTION_ACTIVATED').render({ planCode: 'PREMIUM', planLabel: 'Premium', confirmationEmailSent: true }).emailTemplateCode).toBeUndefined();
+  it('activation / changement (lot 81E) : confirmation contractuelle durable — l’intention ne vaut plus envoi', () => {
+    expect(entry('SUBSCRIPTION_ACTIVATED').render({ planCode: 'PREMIUM', planLabel: 'Premium', confirmationJobId: 3 }).emailTemplateCode).toBeUndefined();
+    expect(entry('SUBSCRIPTION_ACTIVATED').render({ planCode: 'PREMIUM', planLabel: 'Premium', confirmationEmailSent: true }).emailTemplateCode).toBe('notif_subscription');
   });
 
   it('paiement : action requise différée et regroupée avec l’échec de la même facture', () => {
@@ -247,5 +253,162 @@ describe('L79C-AC11 — diagnostic des déconnexions lisible au BO (sans SQL)', 
       .toEqual({ result: 'session_revoked', detail: 'Sessions révoquées par précaution : ancien jeton présenté 45 s après son renouvellement' });
     expect(describeLoginActivity('AUTH_TOKEN_REUSE_DETECTED', JSON.stringify({ severity: 'security_incident', sessionsRevoked: false })).detail)
       .toBe('Sessions révoquées par précaution : ancien jeton présenté (révocation non confirmée)');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 81E — écarts résiduels du lot 79C (parties pures ; moteur réel sur
+// PostgreSQL 16 : `l79c-notifications.e2e.ts`, scénarios L81E-E2E-*).
+// ══════════════════════════════════════════════════════════════════════════
+
+const { classifyLotItem, resolveLotOutcome, resolveLotNotificationType } = await import('@/services/ai/source-analysis/lot-notification');
+const { lotFailurePayload, lotFailureText, lotPartialFailureText } = await import('@/services/ai/source-analysis/lot-notification-text');
+const { analysisIncidentKey, actionRequiredCoveredBy, invoiceResolvedReason } = await import('../incident-grouping');
+const { subscriptionOperationKey, detectSubscriptionTransitions, plannedCommunications } = await import('@/services/billing/subscription-communications.service');
+const { digestChanges, digestItemFingerprint } = await import('../scheduled/to-process-digest');
+const { aggregateOutboxStatus } = await import('../dispatcher');
+
+const item = (id: number, over: Record<string, unknown> = {}) => ({
+  assetFileId: id, title: `Doc ${id}`, analysisState: 'ANALYZED', analysisFailReason: null,
+  deleted: false, groupedInto: null, liveJob: false, retryExpected: false, ...over,
+});
+
+describe('L81E-U01 — fin d’analyse : résultat établi depuis les états réels', () => {
+  it('réussite totale, réussite partielle, échec total — une issue par lot', () => {
+    expect(resolveLotOutcome([item(1), item(2)]).type).toBe('DOCUMENT_BATCH_COMPLETED');
+    const partiel = resolveLotOutcome([item(1), item(2, { analysisState: 'ANALYSIS_FAILED' })]);
+    expect(partiel).toMatchObject({ final: true, type: 'DOCUMENT_BATCH_PARTIALLY_FAILED', failed: [{ assetFileId: 2, title: 'Doc 2' }] });
+    // Lot entièrement échoué : plus jamais silencieux.
+    expect(resolveLotOutcome([item(1, { analysisState: 'ANALYSIS_FAILED' })]).type).toBe('DOCUMENT_BATCH_FAILED');
+    expect(resolveLotNotificationType(0, 1)).toBe('DOCUMENT_BATCH_FAILED');
+    expect(resolveLotNotificationType(2, 1)).toBe('DOCUMENT_BATCH_PARTIALLY_FAILED');
+  });
+
+  it('doublons et regroupements légitimes ne sont jamais des échecs', () => {
+    const r = resolveLotOutcome([
+      item(1), item(2, { analysisState: 'FUSION_SUGGESTED' }),
+      item(3, { deleted: true, groupedInto: 1, analysisState: 'ANALYZED' }),
+    ]);
+    expect(r).toMatchObject({ final: true, type: 'DOCUMENT_BATCH_COMPLETED', duplicates: 1, failed: [] });
+    expect(r.analysed.map((d) => d.assetFileId)).toEqual([1, 2]);
+    expect(classifyLotItem(item(4, { deleted: true }))).toBe('REMOVED');
+  });
+
+  it('un traitement en cours ou repris automatiquement n’est jamais présenté comme définitif', () => {
+    for (const over of [{ analysisState: 'ANALYSIS_FAILED', liveJob: true }, { analysisState: 'ANALYSIS_FAILED', retryExpected: true },
+      { analysisState: 'ANALYZING' }, { analysisState: 'UPLOADED' }, { analysisState: null }]) {
+      expect(resolveLotOutcome([item(1), item(2, over)])).toMatchObject({ final: false, type: null });
+    }
+    // Reporté au mois suivant (plafond de coût IA) : annoncé avec son propre lot.
+    const reporte = item(2, { analysisState: 'UPLOADED', analysisFailReason: 'Plafond IA du mois atteint : reprise le 1er novembre' });
+    expect(resolveLotOutcome([item(1), reporte])).toMatchObject({ final: true, type: 'DOCUMENT_BATCH_COMPLETED' });
+  });
+
+  it('documents concernés nommés, action réellement disponible, document unique ouvert en tiroir', () => {
+    const p = lotFailurePayload(7, 0, [{ assetFileId: 42, title: 'Facture garage' }]);
+    expect(p).toEqual({ lotId: 7, analysedCount: 0, failedCount: 1, documents: [{ assetFileId: 42, title: 'Facture garage' }], assetFileId: 42 });
+    expect(lotFailureText(p)).toBe('Le document “Facture garage” n’a pas pu être analysé. Vous pouvez relancer l’analyse depuis la fiche du document, dans Documents.');
+    expect(entry('DOCUMENT_BATCH_FAILED').deepLink(p)).toBe('/documents?tiroir=document%3A42');
+    expect(lotPartialFailureText({ analysedCount: 1, failedCount: 1, documents: [{ assetFileId: 2, title: 'Devis' }] }))
+      .toBe('1 document analysé, 1 n’a pas pu l’être : “Devis”. Vous pouvez relancer l’analyse depuis la fiche du document, dans Documents.');
+    // Canaux du lot 79C conservés : aucun e-mail d'analyse.
+    for (const t of ['DOCUMENT_BATCH_COMPLETED', 'DOCUMENT_BATCH_PARTIALLY_FAILED', 'DOCUMENT_BATCH_FAILED']) {
+      expect(applyRetiredChannels(tousCanaux, entry(t)).channels).toEqual({ bell: true, push: true, email: false });
+    }
+  });
+});
+
+describe('L81E-U02 — identité des incidents', () => {
+  it('analyse : document × lot ; identité incomplète → jamais rapprochée', () => {
+    expect(analysisIncidentKey({ assetFileId: 5, lotId: 9 })).toBe('doc:5:lot:9');
+    expect(analysisIncidentKey({ assetFileId: 5, lotId: 10 })).not.toBe(analysisIncidentKey({ assetFileId: 5, lotId: 9 }));
+    expect(analysisIncidentKey({ assetFileId: 5 })).toBeNull();
+  });
+
+  it('paiement : l’authentification n’est absorbée que par un échec qui la porte ou qui n’est pas encore parti', () => {
+    expect(actionRequiredCoveredBy(null)).toBe(false);
+    expect(actionRequiredCoveredBy({ status: 'pending', authenticationRequired: false })).toBe(true);
+    expect(actionRequiredCoveredBy({ status: 'sent', authenticationRequired: true })).toBe(true);
+    // Échec déjà envoyé SANS l'action (webhook tardif) : évolution significative, envoyée.
+    expect(actionRequiredCoveredBy({ status: 'sent', authenticationRequired: false })).toBe(false);
+    // Porteur en échec : jamais.
+    expect(actionRequiredCoveredBy({ status: 'failed', authenticationRequired: true })).toBe(false);
+    expect(invoiceResolvedReason('paid')).toBe('incident_resolved:invoice_paid');
+    expect(invoiceResolvedReason('open')).toBeNull();
+  });
+});
+
+describe('L81E-U03 — communications d’abonnement : une décision par opération', () => {
+  const t = {
+    kind: 'PLAN_CHANGE' as const, accountId: 1, subscriptionId: 'sub_1', oldPlan: 'PREMIUM', newPlan: 'PREMIUM_DUO',
+    oldStatus: 'ACTIVE', newStatus: 'ACTIVE', effectiveAt: new Date('2026-10-23T08:00:00Z'),
+  };
+  it('clé stable par opération ; deux opérations distinctes du même utilisateur en moins de 24 h restent distinctes', () => {
+    expect(subscriptionOperationKey(t)).toBe(subscriptionOperationKey({ ...t }));
+    expect(subscriptionOperationKey({ ...t, effectiveAt: new Date('2026-10-23T09:00:00Z') })).not.toBe(subscriptionOperationKey(t));
+    expect(subscriptionOperationKey({ ...t, oldPlan: 'PREMIUM_DUO', newPlan: 'PREMIUM' })).not.toBe(subscriptionOperationKey(t));
+    // Prise d'effet : l'abonnement seul (webhook `deleted` et synchronisation → même opération).
+    const fin = { ...t, kind: 'CANCELLATION_EFFECTIVE' as const };
+    expect(subscriptionOperationKey({ ...fin, oldStatus: 'CANCELED' })).toBe(subscriptionOperationKey({ ...fin, oldStatus: 'ACTIVE', effectiveAt: null }));
+    // Résiliation programmée puis reprise puis nouvelle résiliation : deux opérations.
+    const prog = { ...t, kind: 'CANCELLATION_SCHEDULED' as const };
+    expect(subscriptionOperationKey({ ...prog, requestedAt: new Date('2026-10-23T08:00:00Z') }))
+      .not.toBe(subscriptionOperationKey({ ...prog, requestedAt: new Date('2026-10-23T10:00:00Z') }));
+  });
+
+  it('résiliation programmée et prise d’effet : deux étapes distinctes', () => {
+    const base = {
+      before: { planType: 'PREMIUM', status: 'ACTIVE', subscriptionId: 'sub_1', cancelAtPeriodEnd: false },
+      after: { planType: 'PREMIUM', status: 'CANCELED' },
+      subscription: { id: 'sub_1', cancel_at_period_end: true, cancel_at: 1830000000, canceled_at: 1820000000 },
+      isPaid: true, isTerminal: false, withdrawn: false, periodEnd: null, now: new Date(),
+    };
+    expect(detectSubscriptionTransitions(base).map((x) => x.kind)).toEqual(['CANCELLATION_SCHEDULED']);
+    // Rejeu (déjà programmée) : rien.
+    expect(detectSubscriptionTransitions({ ...base, before: { ...base.before, cancelAtPeriodEnd: true } })).toEqual([]);
+    const fin = detectSubscriptionTransitions({ ...base, after: { planType: 'STANDARD', status: 'EXPIRED' }, isPaid: false, isTerminal: true });
+    expect(fin.map((x) => x.kind)).toEqual(['CANCELLATION_EFFECTIVE']);
+    // Déjà rétrogradé (autre producteur) : rien.
+    expect(detectSubscriptionTransitions({ ...base, before: { ...base.before, planType: 'STANDARD', status: 'EXPIRED' }, after: { planType: 'STANDARD', status: 'EXPIRED' }, isPaid: false, isTerminal: true })).toEqual([]);
+  });
+
+  it('confirmation contractuelle : données exactes de l’opération ; Standard jamais présenté comme gratuit', () => {
+    const p = plannedCommunications({
+      ...t, kind: 'ACTIVATION', ownerUserId: 3, oldPlan: 'STANDARD', newPlan: 'PREMIUM', oldStatus: 'TRIALING',
+      billingPeriod: 'yearly', unitAmountCents: 5900, nextBillingDate: new Date('2027-10-23T00:00:00Z'), isPaid: true, notify: true, source: 'x',
+    });
+    expect(p.email).toEqual({ kind: 'PREMIUM_CONFIRMATION', context: expect.objectContaining({ planLabel: 'Premium', unitAmountCents: 5900, billingPeriod: 'yearly', nextBillingDate: '2027-10-23T00:00:00.000Z' }) });
+    expect(p.notification?.type).toBe('SUBSCRIPTION_ACTIVATED');
+    const fin = plannedCommunications({ ...t, kind: 'CANCELLATION_EFFECTIVE', ownerUserId: 3, newPlan: 'STANDARD', notify: true, source: 'x' });
+    expect(fin.email?.kind).toBe('DOWNGRADE_NOTIFICATION');
+    expect(plannedCommunications({ ...t, kind: 'CANCELLATION_EFFECTIVE', ownerUserId: 3, oldPlan: 'STANDARD', newPlan: 'STANDARD', notify: true, source: 'x' }).email).toBeNull();
+    const billing = readFileSync(join(process.cwd(), 'src/lib/email/billing-emails.ts'), 'utf8');
+    expect(billing).not.toMatch(/Standard gratuite|gratuitement/);
+  });
+});
+
+describe('L81E-U04 — récapitulatif : nouveautés et évolutions significatives', () => {
+  const a = { publicId: 'a', cycleNumber: 1, actionKind: 'ARBITRATE', priority: 'DO_NEXT', question: 'Prix ?' };
+  it('nouvelle action, nouveau cycle, priorité ou contenu modifiés → nouveauté ; inchangé ou résolu → rien', () => {
+    const fa = digestItemFingerprint(a);
+    expect(digestChanges([fa], null, null)).toEqual({ news: true, reasons: ['NEW_ACTION'] });
+    expect(digestChanges([fa], [fa], ['a:c1']).news).toBe(false);
+    expect(digestChanges([], [fa], ['a:c1']).news).toBe(false);
+    expect(digestChanges([digestItemFingerprint({ ...a, priority: 'DO_FIRST' })], [fa], ['a:c1']).reasons).toEqual(['PRIORITY_CHANGED']);
+    expect(digestChanges([digestItemFingerprint({ ...a, question: 'Prix d’achat ?' })], [fa], ['a:c1']).reasons).toEqual(['CONTENT_CHANGED']);
+    expect(digestChanges([digestItemFingerprint({ ...a, cycleNumber: 2 })], [fa], ['a:c1']).reasons).toEqual(['NEW_CYCLE']);
+    // État antérieur au lot 81E (clés seules) : aucun renvoi en masse au déploiement.
+    expect(digestChanges([digestItemFingerprint({ ...a, priority: 'DO_FIRST' })], null, ['a:c1']).news).toBe(false);
+  });
+});
+
+describe('L81E-U05 — statuts de l’outbox fidèles', () => {
+  it('« envoyé » exige un canal accepté ; aucun canal envoyé sans échec → ignoré', () => {
+    expect(aggregateOutboxStatus(['sent', 'skipped_unavailable'])).toBe('sent');
+    expect(aggregateOutboxStatus(['sent', 'failed'])).toBe('partial');
+    expect(aggregateOutboxStatus(['failed', 'skipped_unavailable'])).toBe('failed');
+    expect(aggregateOutboxStatus(['skipped_unavailable', 'skipped_unavailable'])).toBe('skipped');
+    expect(aggregateOutboxStatus(['expired'])).toBe('skipped');
+    expect(aggregateOutboxStatus([])).toBe('skipped');
   });
 });

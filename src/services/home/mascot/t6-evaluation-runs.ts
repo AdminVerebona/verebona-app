@@ -52,7 +52,13 @@ export type T6RunStatus = (typeof T6_RUN_STATUSES)[number];
  * (constatée par la supervision seulement).
  */
 export type T6RunErrorKind =
-  | 'model_unavailable' | 'invalid_output' | 'rejected' | 'write_failed' | 'interrupted' | 'cost_cap' | 'scheduler_inactive';
+  | 'model_unavailable' | 'invalid_output' | 'rejected' | 'write_failed' | 'interrupted' | 'cost_cap' | 'scheduler_inactive'
+  /** Lot 81B (B) : T6 désactivé, suspendu, arrêt d'urgence ou prompt sans EVALUATE — reprise au rétablissement. */
+  | 't6_unavailable'
+  /** Lot 81B (C) : tentatives de la DEMANDE de pré-génération épuisées sans progrès. */
+  | 'pregen_exhausted'
+  /** Lot 81B (D) : exécution dépossédée (bail repris par une autre instance) — rien écrit. */
+  | 'ownership_lost';
 
 /** Espace des verrous consultatifs de prise en charge (par compte). */
 export const T6_RUN_LOCK_SPACE = 78016;
@@ -71,6 +77,19 @@ export const T6_RUN_SAME_CONTEXT_MAX = 3;
 export const T6_RUN_RETRY_DELAYS_S: readonly number[] = [10 * 60, 30 * 60, 2 * 3600, 6 * 3600];
 /** Plafond IA du compte atteint : nouvel essai planifié (le plafond est mensuel). */
 export const T6_RUN_COST_CAP_RETRY_S = 6 * 3600;
+/**
+ * Lot 81B (B) : T6 indisponible — nouvelle vérification (sans appel IA) au
+ * plus tôt dans ce délai ; au rétablissement, l'évaluation redevient
+ * prenable aussitôt (`requestT6Runs`).
+ */
+export const T6_RUN_UNAVAILABLE_RECHECK_S = 15 * 60;
+/**
+ * Lot 81B (D) : renouvellement du bail pendant l'exécution (toutes les
+ * `T6_RUN_LEASE_MS / 3`), au plus `T6_RUN_LEASE_MAX_MS` après la prise — une
+ * exécution bloquée ne retient jamais l'évaluation indéfiniment.
+ */
+export const T6_RUN_RENEW_EVERY_MS = Math.floor(T6_RUN_LEASE_MS / 3);
+export const T6_RUN_LEASE_MAX_MS = 30 * 60_000;
 
 /** Tentatives au plus avant FAILED (`MASCOT_T6_EVAL_MAX_ATTEMPTS`, défaut 3, 1 à 10). */
 export function t6RunMaxAttempts(env: Record<string, string | undefined> = process.env): number {
@@ -276,10 +295,176 @@ const UPSERT_DEMANDE = (cooldownS: number) => `
  */
 export async function requestT6Runs(accountId: number, subjects: readonly T6RunSubject[]): Promise<number> {
   if (subjects.length === 0) return 0;
+  // Lot 81B (B) : T6 rétabli — les évaluations non exécutées pour cause
+  // d'indisponibilité redeviennent prenables AUSSITÔT (sans nouvelle visite ni
+  // attente du délai de vérification), tentatives conservées.
+  await releaseT6UnavailableRuns(accountId, subjects.map((s) => s.agendaItemId));
   const r = await q(`${UPSERT_DEMANDE(T6_RUN_COMPLETED_COOLDOWN_MS / 1000)} RETURNING agenda_item_id`, [
     accountId, subjects.map((s) => s.agendaItemId), subjects.map((s) => s.fingerprint), subjects.map((s) => s.signature),
   ]);
   return r.length;
+}
+
+/**
+ * Lot 81B (B) — T6 INDISPONIBLE (désactivé, suspendu, arrêt d'urgence, prompt
+ * sans branche EVALUATE) : les évaluations éligibles sont ENREGISTRÉES avec
+ * un état explicite (UNAVAILABLE, `t6_unavailable`, nouvelle vérification à
+ * `T6_RUN_UNAVAILABLE_RECHECK_S`) — jamais absentes, jamais PENDING. Une
+ * exécution vivante, une décision enregistrée ou un échec définitif du MÊME
+ * contexte ne sont pas touchés ; une indisponibilité d'une autre nature
+ * (plafond IA du compte, tentatives de pré-génération épuisées) garde son
+ * motif. Tentatives conservées (aucune remise à zéro). Rend les échéances
+ * marquées. Lève si la base échoue.
+ */
+export async function markT6RunsUnavailable(accountId: number, subjects: readonly T6RunSubject[], o: {
+  kind?: T6RunErrorKind; error?: string; recheckS?: number;
+} = {}): Promise<number[]> {
+  if (subjects.length === 0) return [];
+  const kind = o.kind ?? 't6_unavailable';
+  const recheck = Math.max(1, Math.floor(o.recheckS ?? T6_RUN_UNAVAILABLE_RECHECK_S));
+  const r = await q(
+    `INSERT INTO t6_evaluation_runs (agenda_item_id, account_id, status, context_fingerprint, evaluation_signature, requested_at,
+                                     finished_at, next_attempt_at, last_error_kind, last_error, last_outcome)
+     SELECT i.id, $1, 'UNAVAILABLE', m.fp, m.sig, now(), now(), now() + make_interval(secs => $5::int), $6, left($7, 500), 'non exécutée : T6 indisponible'
+       FROM unnest($2::int[], $3::text[], $4::text[]) AS m(id, fp, sig)
+       JOIN agenda_items i ON i.id = m.id AND i.account_id = $1
+     ON CONFLICT (agenda_item_id) DO UPDATE SET
+       account_id = EXCLUDED.account_id, status = 'UNAVAILABLE',
+       attempts = CASE WHEN ${MEME_CONTEXTE} THEN t6_evaluation_runs.attempts ELSE 0 END,
+       requested_at = CASE WHEN ${MEME_CONTEXTE} THEN t6_evaluation_runs.requested_at ELSE now() END,
+       same_context_runs = CASE WHEN ${MEME_CONTEXTE} THEN t6_evaluation_runs.same_context_runs ELSE 0 END,
+       context_fingerprint = EXCLUDED.context_fingerprint, evaluation_signature = EXCLUDED.evaluation_signature,
+       interrupted_count = t6_evaluation_runs.interrupted_count + CASE WHEN t6_evaluation_runs.status = 'RUNNING' THEN 1 ELSE 0 END,
+       run_id = NULL, lease_until = NULL, finished_at = now(),
+       next_attempt_at = CASE WHEN ${MEME_CONTEXTE}
+                              THEN GREATEST(coalesce(t6_evaluation_runs.next_attempt_at, now()), EXCLUDED.next_attempt_at)
+                              ELSE EXCLUDED.next_attempt_at END,
+       last_error_kind = EXCLUDED.last_error_kind, last_error = EXCLUDED.last_error, last_outcome = EXCLUDED.last_outcome,
+       updated_at = now()
+     WHERE NOT (t6_evaluation_runs.status = 'RUNNING' AND t6_evaluation_runs.lease_until > now())
+       AND (NOT (${MEME_CONTEXTE})
+            OR t6_evaluation_runs.status IN ('PENDING', 'RETRY_WAIT', 'RUNNING')
+            -- Déjà indisponible pour ce motif : réécrite seulement à l'échéance de
+            -- la vérification (aucune écriture à chaque visite).
+            OR (t6_evaluation_runs.status = 'UNAVAILABLE' AND t6_evaluation_runs.last_error_kind = $6
+                AND coalesce(t6_evaluation_runs.next_attempt_at, '-infinity'::timestamptz) <= now()))
+     RETURNING agenda_item_id`,
+    [accountId, subjects.map((s) => s.agendaItemId), subjects.map((s) => s.fingerprint), subjects.map((s) => s.signature),
+      recheck, kind, o.error ?? 'T6 indisponible (désactivé, suspendu ou arrêt d’urgence)'],
+  );
+  return r.map((x) => Number(x.agenda_item_id));
+}
+
+/**
+ * Lot 81B (B) — rétablissement de T6 : les évaluations `t6_unavailable` des
+ * échéances données redeviennent prenables tout de suite (PENDING, ou essai
+ * dû si des tentatives avaient déjà eu lieu). Rend le nombre libéré.
+ */
+export async function releaseT6UnavailableRuns(accountId: number, ids: readonly number[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const r = await q(
+    `UPDATE t6_evaluation_runs SET
+       status = CASE WHEN attempts > 0 THEN 'RETRY_WAIT' ELSE 'PENDING' END,
+       next_attempt_at = CASE WHEN attempts > 0 THEN now() ELSE NULL END,
+       requested_at = CASE WHEN attempts > 0 THEN requested_at ELSE now() END,
+       last_outcome = 'T6 rétabli : reprise', updated_at = now()
+     WHERE account_id = $1 AND agenda_item_id = ANY($2::int[]) AND status = 'UNAVAILABLE' AND last_error_kind = 't6_unavailable'
+     RETURNING agenda_item_id`,
+    [accountId, [...ids]],
+  );
+  return r.length;
+}
+
+/**
+ * Lot 81B (C) — tentatives de la DEMANDE de pré-génération épuisées sans
+ * progrès : aucune évaluation du compte ne reste PENDING « orpheline ». Les
+ * demandes non prises (et les exécutions au bail expiré) passent
+ * UNAVAILABLE (`pregen_exhausted`) avec la date de reprise automatique
+ * (`retryAt`), ou sans date (reprise explicite : BO, visite) — état explicite,
+ * signalé par la supervision. Rend le nombre d'évaluations marquées.
+ */
+export async function markT6RunsPregenExhausted(accountId: number, retryAt: Date | null): Promise<number> {
+  const r = await q(
+    `UPDATE t6_evaluation_runs SET
+       status = 'UNAVAILABLE', last_error_kind = 'pregen_exhausted',
+       last_error = 'tentatives de la pré-génération épuisées sans progrès',
+       last_outcome = CASE WHEN $2::timestamptz IS NULL THEN 'reprise explicite requise (BO › Supervision)' ELSE 'reprise automatique planifiée' END,
+       interrupted_count = interrupted_count + CASE WHEN status = 'RUNNING' THEN 1 ELSE 0 END,
+       run_id = NULL, lease_until = NULL, finished_at = now(), next_attempt_at = $2::timestamptz, updated_at = now()
+     WHERE account_id = $1 AND (status = 'PENDING' OR (status = 'RUNNING' AND lease_until <= now()))
+     RETURNING agenda_item_id`,
+    [accountId, retryAt ? retryAt.toISOString() : null],
+  );
+  return r.length;
+}
+
+/**
+ * Lot 81B (G) — CLÔTURE RATTRAPÉE : une décision valide est enregistrée pour
+ * ce contexte (empreinte identique) mais l'état durable n'a pas été clos
+ * (clôture technique en échec après la persistance métier) — l'évaluation
+ * passe COMPLETED, sans nouvel appel IA. Jamais pendant une exécution
+ * vivante. Rend les échéances rattrapées.
+ */
+export async function reconcileT6RunsWithDecision(accountId: number, subjects: ReadonlyArray<{ agendaItemId: number; fingerprint: string | null }>): Promise<number[]> {
+  const sujets = subjects.filter((x) => !!x.fingerprint);
+  if (sujets.length === 0) return [];
+  const r = await q(
+    `UPDATE t6_evaluation_runs r SET status = 'COMPLETED', run_id = NULL, lease_until = NULL, next_attempt_at = NULL,
+            finished_at = now(), last_error_kind = NULL, last_error = NULL,
+            last_outcome = 'décision enregistrée constatée : clôture rattrapée', updated_at = now()
+       FROM unnest($2::int[], $3::text[]) AS m(id, fp)
+      WHERE r.account_id = $1 AND r.agenda_item_id = m.id AND r.context_fingerprint = m.fp
+        AND r.status <> 'COMPLETED' AND NOT (r.status = 'RUNNING' AND r.lease_until > now())
+     RETURNING r.agenda_item_id`,
+    [accountId, sujets.map((x) => x.agendaItemId), sujets.map((x) => x.fingerprint)],
+  );
+  return r.map((x) => Number(x.agenda_item_id));
+}
+
+/**
+ * Lot 81B (D) — RENOUVELLEMENT du bail pendant l'exécution : seules les
+ * lignes encore détenues par `runId` (RUNNING) sont prolongées. Rend les
+ * échéances encore détenues ; une ligne absente = propriété PERDUE (bail
+ * repris par une autre instance) : l'exécution ne doit plus rien écrire.
+ */
+export async function renewT6Runs(p: { accountId: number; runId: string; ids: readonly number[]; leaseMs?: number }): Promise<number[]> {
+  if (p.ids.length === 0) return [];
+  const lease = Math.max(1, Math.floor((p.leaseMs ?? T6_RUN_LEASE_MS) / 1000));
+  const r = await q(
+    `UPDATE t6_evaluation_runs SET lease_until = now() + make_interval(secs => $4::int), updated_at = now()
+      WHERE account_id = $1 AND run_id = $2 AND status = 'RUNNING' AND agenda_item_id = ANY($3::int[])
+     RETURNING agenda_item_id`,
+    [p.accountId, p.runId, [...p.ids], lease],
+  );
+  return r.map((x) => Number(x.agenda_item_id));
+}
+
+/**
+ * Lot 81B (D) — CONTRÔLE DE PROPRIÉTÉ au moment de la persistance métier,
+ * DANS la transaction d'écriture des décisions : verrou consultatif du compte
+ * (le même que la prise : aucune reprise concurrente pendant l'écriture),
+ * puis verrou des lignes encore détenues par `runId`, dont le bail est
+ * prolongé jusqu'à la clôture. Rend les échéances détenues : seules leurs
+ * décisions peuvent être écrites — une instance dépossédée n'écrase jamais
+ * la décision d'une exécution plus récente.
+ */
+export async function lockOwnedT6Runs(
+  tq: (sql: string, params: unknown[]) => Promise<Row[]>,
+  p: { accountId: number; runId: string; ids: readonly number[]; leaseMs?: number },
+): Promise<Set<number>> {
+  if (p.ids.length === 0) return new Set();
+  const lease = Math.max(1, Math.floor((p.leaseMs ?? T6_RUN_LEASE_MS) / 1000));
+  await tq(`SELECT pg_advisory_xact_lock($1::int, $2::int)`, [T6_RUN_LOCK_SPACE, p.accountId]);
+  const r = await tq(
+    `UPDATE t6_evaluation_runs SET lease_until = GREATEST(coalesce(lease_until, now()), now() + make_interval(secs => $4::int)), updated_at = now()
+      WHERE agenda_item_id IN (
+        SELECT agenda_item_id FROM t6_evaluation_runs
+         WHERE account_id = $1 AND run_id = $2 AND status = 'RUNNING' AND agenda_item_id = ANY($3::int[])
+         ORDER BY agenda_item_id FOR UPDATE)
+     RETURNING agenda_item_id`,
+    [p.accountId, p.runId, [...p.ids], lease],
+  );
+  return new Set(r.map((x) => Number(x.agenda_item_id)));
 }
 
 export type T6ClaimResult =
@@ -416,102 +601,221 @@ export interface T6SupervisionAccount {
   failed: number;
   stalePending: number;
   staleRunning: number;
+  /** Essai planifié dû et non exécuté, ou indisponibilité sans reprise planifiée. */
   overdueRetry: number;
   oldestSince: string | null;
+  /** Lot 81B (E) : nombre d'évaluations BLOQUÉES par cause (et non un simple drapeau). */
   kinds: Record<string, number>;
+  /** Lot 81B (C) : demande de pré-génération aux tentatives épuisées, évaluations encore incomplètes. */
+  pregenExhausted?: boolean;
+  /** Lot 81B : évaluations non abouties du compte (bloquées ou non). */
+  incomplete?: number;
 }
 
-export interface T6SupervisionResult { blockedAccounts: number; reported: number; resolved: number; schedulerInactive: boolean }
+export interface T6SupervisionResult {
+  blockedAccounts: number;
+  reported: number;
+  resolved: number;
+  schedulerInactive: boolean;
+  /** Lot 81B (E) : balayage complet (toutes les pages lues) ; faux : aucune conclusion sur les comptes non lus. */
+  complete?: boolean;
+  pages?: number;
+  /** Lot 81B (E) : anomalies ouvertes contrôlées une à une (retour à la normale vérifié). */
+  verified?: number;
+  /** Lot 81B (F) : anomalie « tâche de pré-génération inactive » signalée / résolue. */
+  schedulerReported?: boolean;
+  schedulerResolved?: boolean;
+  /** Lot 81B : supervision interrompue (base) — la tâche planifiée le signale en échec. */
+  error?: string | null;
+}
+
+/** Lot 81B (E) : taille d'une page du balayage de supervision. */
+export const T6_SUPERVISION_PAGE_SIZE = 200;
+/** Lot 81B (E) : pages au plus par passage (au-delà : balayage incomplet, rien n'est résolu par absence). */
+export const T6_SUPERVISION_MAX_PAGES = 500;
 
 /**
  * Comptes dont des évaluations sont BLOQUÉES ou EN ÉCHEC : tentatives
  * épuisées (FAILED), demande non prise au-delà du délai, exécution
- * interrompue non reprise, essai planifié dû et non exécuté. Borné.
+ * interrompue non reprise, essai planifié dû et non exécuté, indisponibilité
+ * sans reprise planifiée ; lot 81B (C) : ou demande de pré-génération aux
+ * tentatives épuisées avec des évaluations encore incomplètes.
+ *
+ * Lot 81B (E) — UNE PAGE, triée par compte (pagination par clé : `afterAccountId`) ;
+ * filtre d'un compte APPLIQUÉ DANS LA REQUÊTE (`onlyAccountId`). Les causes
+ * sont comptées sur les seules évaluations bloquées.
  */
-export async function blockedT6Accounts(alertMinutes = t6PendingAlertMinutes(), limit = 200): Promise<T6SupervisionAccount[]> {
+export async function blockedT6Accounts(
+  alertMinutes = t6PendingAlertMinutes(),
+  opts: number | { limit?: number; afterAccountId?: number; onlyAccountId?: number | null } = {},
+): Promise<T6SupervisionAccount[]> {
+  const o = typeof opts === 'number' ? { limit: opts } : opts;
+  const limit = Math.max(1, Math.floor(o.limit ?? T6_SUPERVISION_PAGE_SIZE));
   const r = await q(
-    `SELECT account_id,
-            count(*) FILTER (WHERE status = 'FAILED')::int AS failed,
-            count(*) FILTER (WHERE status = 'PENDING' AND requested_at < now() - make_interval(mins => $1::int))::int AS stale_pending,
-            count(*) FILTER (WHERE status = 'RUNNING' AND lease_until < now() - make_interval(mins => $1::int))::int AS stale_running,
-            count(*) FILTER (WHERE status IN ('RETRY_WAIT', 'UNAVAILABLE') AND next_attempt_at < now() - make_interval(mins => $1::int))::int AS overdue_retry,
-            min(CASE WHEN status = 'PENDING' THEN requested_at WHEN status = 'RUNNING' THEN lease_until ELSE coalesce(next_attempt_at, finished_at) END) AS oldest,
-            jsonb_object_agg(coalesce(last_error_kind, 'none'), 1) AS kinds
-       FROM t6_evaluation_runs
-      WHERE status <> 'COMPLETED'
-      GROUP BY account_id
-     HAVING count(*) FILTER (WHERE status = 'FAILED'
-                             OR (status = 'PENDING' AND requested_at < now() - make_interval(mins => $1::int))
-                             OR (status = 'RUNNING' AND lease_until < now() - make_interval(mins => $1::int))
-                             OR (status IN ('RETRY_WAIT', 'UNAVAILABLE') AND next_attempt_at < now() - make_interval(mins => $1::int))) > 0
-      ORDER BY account_id
+    `WITH x AS (
+       SELECT account_id, coalesce(last_error_kind, 'none') AS kind,
+              status = 'FAILED' AS f,
+              (status = 'PENDING' AND requested_at < now() - make_interval(mins => $1::int)) AS sp,
+              (status = 'RUNNING' AND lease_until < now() - make_interval(mins => $1::int)) AS sr,
+              (status IN ('RETRY_WAIT', 'UNAVAILABLE')
+               AND (next_attempt_at IS NULL OR next_attempt_at < now() - make_interval(mins => $1::int))) AS od,
+              CASE WHEN status = 'PENDING' THEN requested_at WHEN status = 'RUNNING' THEN lease_until
+                   ELSE coalesce(next_attempt_at, finished_at) END AS since
+         FROM t6_evaluation_runs
+        WHERE status <> 'COMPLETED' AND ($3::int IS NULL OR account_id = $3::int) AND account_id > $4::int
+     ), e AS (
+       SELECT account_id FROM home_mascot_pregen_requests
+        WHERE last_status = 'attempts_exhausted' AND ($3::int IS NULL OR account_id = $3::int) AND account_id > $4::int
+     ), y AS (
+       SELECT x.*, (x.f OR x.sp OR x.sr OR x.od) AS bloquee, (e.account_id IS NOT NULL) AS epuisee
+         FROM x LEFT JOIN e ON e.account_id = x.account_id
+     ), k AS (
+       SELECT account_id, jsonb_object_agg(kind, n) AS kinds
+         FROM (SELECT account_id, kind, count(*)::int AS n FROM y WHERE bloquee OR epuisee GROUP BY account_id, kind) z
+        GROUP BY account_id
+     )
+     SELECT y.account_id,
+            count(*) FILTER (WHERE f)::int AS failed,
+            count(*) FILTER (WHERE sp)::int AS stale_pending,
+            count(*) FILTER (WHERE sr)::int AS stale_running,
+            count(*) FILTER (WHERE od)::int AS overdue_retry,
+            count(*)::int AS incomplete,
+            bool_or(epuisee) AS pregen_exhausted,
+            min(since) FILTER (WHERE bloquee OR epuisee) AS oldest,
+            max(k.kinds::text)::jsonb AS kinds
+       FROM y LEFT JOIN k ON k.account_id = y.account_id
+      GROUP BY y.account_id
+     HAVING count(*) FILTER (WHERE bloquee) > 0 OR bool_or(epuisee)
+      ORDER BY y.account_id
       LIMIT $2`,
-    [alertMinutes, limit],
+    [alertMinutes, limit, o.onlyAccountId ?? null, o.afterAccountId ?? 0],
   );
   return r.map((x) => ({
     accountId: Number(x.account_id), failed: Number(x.failed), stalePending: Number(x.stale_pending), staleRunning: Number(x.stale_running),
     overdueRetry: Number(x.overdue_retry), oldestSince: iso(x.oldest), kinds: (x.kinds ?? {}) as Record<string, number>,
+    pregenExhausted: x.pregen_exhausted === true, incomplete: Number(x.incomplete ?? 0),
   }));
+}
+
+export const PREGEN_TASK_CODE = 'mascot-pregeneration';
+
+/** Lot 81B (F) : état de la tâche de pré-génération, lu dans l'état du planificateur (`scheduled_task_state`). */
+export interface PregenSchedulerState {
+  /** `unknown` : état illisible — jamais une accusation, jamais une résolution. */
+  state: 'active' | 'inactive' | 'unknown';
+  adminDisabled?: boolean;
+  envDisabled?: boolean;
+  lastFinishedAt?: string | null;
+  lastSuccessAt?: string | null;
+}
+
+/**
+ * Lot 81B (F) — la tâche `mascot-pregeneration` tourne-t-elle ? Lu dans
+ * l'état PARTAGÉ du planificateur (pas dans la tâche elle-même) : arrêtée
+ * par variable, suspendue depuis le BO, ou sans passage terminé depuis
+ * `maxSilenceMinutes` → inactive. Ne lève jamais.
+ */
+export async function pregenSchedulerState(maxSilenceMinutes = 10, env: Record<string, string | undefined> = process.env): Promise<PregenSchedulerState> {
+  try {
+    const { isTaskEnabled } = await import('@/services/scheduling/scheduled-tasks.catalog');
+    const envDisabled = !isTaskEnabled(PREGEN_TASK_CODE, env);
+    const [r] = await q(
+      `SELECT COALESCE((to_jsonb(s) ->> 'admin_disabled')::boolean, false) AS admin_disabled,
+              coalesce(s.last_finished_at, s.last_started_at) > now() - make_interval(mins => $1::int) AS recent,
+              coalesce(s.last_finished_at, s.last_started_at) AS last_finished_at, s.last_success_at
+         FROM scheduled_task_state s WHERE s.code = $2`,
+      [maxSilenceMinutes, PREGEN_TASK_CODE],
+    );
+    const base = {
+      adminDisabled: r?.admin_disabled === true, envDisabled,
+      lastFinishedAt: iso(r?.last_finished_at ?? null), lastSuccessAt: iso(r?.last_success_at ?? null),
+    };
+    // Ligne absente : la tâche n'a jamais tourné.
+    const actif = !envDisabled && !!r && r.admin_disabled !== true && r.recent === true;
+    return { state: actif ? 'active' : 'inactive', ...base };
+  } catch {
+    return { state: 'unknown' };
+  }
 }
 
 /** La tâche `mascot-pregeneration` tourne-t-elle (dernier passage récent, non suspendue) ? Ne lève jamais. */
 export async function pregenSchedulerActive(maxSilenceMinutes = 10): Promise<boolean> {
-  try {
-    const [r] = await q(
-      `SELECT (COALESCE((to_jsonb(s) ->> 'admin_disabled')::boolean, false) = false
-               AND coalesce(s.last_finished_at, s.last_started_at) > now() - make_interval(mins => $1::int)) AS ok
-         FROM scheduled_task_state s WHERE s.code = 'mascot-pregeneration'`,
-      [maxSilenceMinutes],
-    );
-    return r?.ok === true;
-  } catch {
-    return true; // état illisible : jamais d'accusation sans preuve
-  }
+  // État illisible : jamais d'accusation sans preuve.
+  return (await pregenSchedulerState(maxSilenceMinutes)).state !== 'inactive';
 }
 
 /**
  * Diagnostic d'un compte bloqué (pur) : causes distinguées — modèle
  * indisponible, sortie invalide / décisions rejetées, échec d'écriture,
- * traitement interrompu, plafond IA, tâche planifiée inactive.
+ * traitement interrompu, plafond IA, tâche planifiée inactive ; lot 81B :
+ * T6 indisponible, tentatives de pré-génération épuisées, dépossession.
  */
 export function t6BlockedDiagnosis(a: T6SupervisionAccount, schedulerActive: boolean): { causes: string[]; summary: string } {
   const causes = new Set<string>();
   for (const k of Object.keys(a.kinds)) if (k !== 'none') causes.add(k);
   if (a.staleRunning > 0) causes.add('interrupted');
-  if (!schedulerActive && (a.stalePending > 0 || a.overdueRetry > 0 || a.staleRunning > 0)) causes.add('scheduler_inactive');
+  if (a.pregenExhausted) causes.add('pregen_exhausted');
+  if (!schedulerActive && (a.stalePending > 0 || a.overdueRetry > 0 || a.staleRunning > 0 || a.pregenExhausted)) causes.add('scheduler_inactive');
   if (causes.size === 0 && a.stalePending > 0) causes.add('not_picked_up');
   const parts = [
     a.failed ? `${a.failed} en échec (tentatives épuisées)` : null,
     a.stalePending ? `${a.stalePending} demandée(s) non prise(s) en charge` : null,
     a.staleRunning ? `${a.staleRunning} interrompue(s) non reprise(s)` : null,
     a.overdueRetry ? `${a.overdueRetry} nouvel(s) essai(s) dû(s) non exécuté(s)` : null,
+    a.pregenExhausted ? `pré-génération aux tentatives épuisées (${a.incomplete ?? 0} évaluation(s) incomplète(s))` : null,
   ].filter(Boolean);
   return { causes: [...causes].sort(), summary: parts.join(', ') };
+}
+
+/** Lot 81B (F) : empreinte de l'anomalie « tâche de pré-génération inactive, évaluations en attente ». */
+export const T6_PREGEN_SCHEDULER_ANOMALY = 'ai:t6-pregen-scheduler';
+
+/** Compte d'une empreinte d'anomalie de compte (pure) ; `null` si ce n'en est pas une. */
+export function accountOfT6Anomaly(fingerprint: string): number | null {
+  if (!fingerprint.startsWith(T6_EVALUATION_ANOMALY_PREFIX)) return null;
+  const n = Number(fingerprint.slice(T6_EVALUATION_ANOMALY_PREFIX.length));
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
 /**
  * Supervision des évaluations T6 : une anomalie (BO › Supervision, domaine
  * IA) par compte bloqué ou en échec, consolidée ; résolue automatiquement
  * quand le compte n'a plus d'évaluation bloquée. Ne lève jamais.
+ *
+ * Lot 81B (E) — balayage PAGINÉ sans perte de comptes (clé : compte) ; filtre
+ * d'un compte dans la requête ; une anomalie ouverte n'est JAMAIS résolue
+ * parce que son compte manque d'un résultat borné : le retour à la normale
+ * est vérifié POSITIVEMENT, compte par compte (requête ciblée) — encore
+ * bloqué, l'anomalie est maintenue (et actualisée).
+ *
+ * Lot 81B (F) — tâche de pré-génération inactive (état du planificateur) :
+ * cause `scheduler_inactive` des comptes bloqués et anomalie globale
+ * (`T6_PREGEN_SCHEDULER_ANOMALY`) identifiant les comptes dont des
+ * évaluations attendent, résolue quand la tâche est de nouveau active.
+ * Appelée par la tâche planifiée DISTINCTE `mascot-t6-supervision`.
  */
 export async function superviseT6Evaluations(opts: {
   alertMinutes?: number; onlyAccountId?: number | null;
   report?: (a: import('@/services/admin/anomaly.service').ReportAnomalyInput) => Promise<unknown>;
   resolve?: (fingerprint: string, o: { origin: string; cause?: string | null }) => Promise<unknown>;
+  /** Lot 81B : taille de page et pages au plus (tests). */
+  pageSize?: number; maxPages?: number;
+  /** Lot 81B : état de la tâche de pré-génération (injectable). */
+  scheduler?: () => Promise<PregenSchedulerState>;
 } = {}): Promise<T6SupervisionResult> {
-  const out: T6SupervisionResult = { blockedAccounts: 0, reported: 0, resolved: 0, schedulerInactive: false };
+  const out: T6SupervisionResult = { blockedAccounts: 0, reported: 0, resolved: 0, schedulerInactive: false, complete: false, pages: 0, verified: 0 };
   try {
     if (!(await t6RunsReady())) return out;
     const alertMinutes = opts.alertMinutes ?? t6PendingAlertMinutes();
     const anomaly = await import('@/services/admin/anomaly.service');
     const report = opts.report ?? anomaly.reportAnomaly;
     const resolve = opts.resolve ?? anomaly.autoResolveAnomaly;
-    let bloques = await blockedT6Accounts(alertMinutes);
-    if (opts.onlyAccountId != null) bloques = bloques.filter((a) => a.accountId === opts.onlyAccountId);
-    const actif = await pregenSchedulerActive();
+    const pageSize = Math.max(1, Math.floor(opts.pageSize ?? T6_SUPERVISION_PAGE_SIZE));
+    const maxPages = Math.max(1, Math.floor(opts.maxPages ?? T6_SUPERVISION_MAX_PAGES));
+    const ordo = await (opts.scheduler ?? (() => pregenSchedulerState()))();
+    const actif = ordo.state !== 'inactive';
     out.schedulerInactive = !actif;
-    out.blockedAccounts = bloques.length;
-    for (const a of bloques) {
+    const signaler = async (a: T6SupervisionAccount) => {
       const d = t6BlockedDiagnosis(a, actif);
       await report({
         domain: 'ai', fingerprint: t6EvaluationAnomalyFingerprint(a.accountId), accountId: a.accountId,
@@ -519,24 +823,107 @@ export async function superviseT6Evaluations(opts: {
         detail: {
           kind: 't6_evaluation', accountId: a.accountId, operation: 't6_evaluate', causes: d.causes, failed: a.failed, stalePending: a.stalePending,
           staleRunning: a.staleRunning, overdueRetry: a.overdueRetry, oldestSince: a.oldestSince, alertMinutes, schedulerActive: actif,
+          kinds: a.kinds, pregenExhausted: a.pregenExhausted === true, incomplete: a.incomplete ?? null,
         },
       });
       out.reported += 1;
+    };
+    // 1. Balayage paginé (clé : compte) — jamais tronqué en silence.
+    const bloques = new Set<number>();
+    let apres = 0;
+    let pages = 0;
+    for (;;) {
+      const page = await blockedT6Accounts(alertMinutes, { limit: pageSize, afterAccountId: apres, onlyAccountId: opts.onlyAccountId ?? null });
+      pages += 1;
+      out.pages = pages;
+      for (const a of page) {
+        bloques.add(a.accountId);
+        await signaler(a);
+      }
+      if (page.length < pageSize) { out.complete = true; break; }
+      apres = page[page.length - 1].accountId;
+      if (pages >= maxPages) break;
     }
-    // Retour à la normale : anomalies ouvertes des comptes qui ne sont plus bloqués.
-    const ouvertes = await q(
-      `SELECT fingerprint, account_id FROM admin_anomalies WHERE status = 'open' AND fingerprint LIKE $1 LIMIT 500`,
-      [`${T6_EVALUATION_ANOMALY_PREFIX}%`],
-    );
-    const encore = new Set(bloques.map((a) => t6EvaluationAnomalyFingerprint(a.accountId)));
-    for (const o of ouvertes) {
-      const fp = String(o.fingerprint);
-      if (encore.has(fp)) continue;
-      if (opts.onlyAccountId != null && fp !== t6EvaluationAnomalyFingerprint(opts.onlyAccountId)) continue;
-      if (await resolve(fp, { origin: 't6_evaluations_completed', cause: 'évaluations terminées ou relancées' })) out.resolved += 1;
+    out.blockedAccounts = bloques.size;
+    // 2. Retour à la normale : chaque anomalie ouverte (paginée, filtrée sur le
+    //    compte dans la requête) est contrôlée POSITIVEMENT avant résolution.
+    const seul = opts.onlyAccountId != null ? t6EvaluationAnomalyFingerprint(opts.onlyAccountId) : null;
+    let dernier = 0;
+    for (;;) {
+      const ouvertes = await q(
+        `SELECT id, fingerprint FROM admin_anomalies
+          WHERE status = 'open' AND fingerprint LIKE $1 AND ($2::text IS NULL OR fingerprint = $2) AND id > $3
+          ORDER BY id LIMIT 500`,
+        [`${T6_EVALUATION_ANOMALY_PREFIX}%`, seul, dernier],
+      );
+      for (const o of ouvertes) {
+        dernier = Number(o.id);
+        const fp = String(o.fingerprint);
+        const compte = accountOfT6Anomaly(fp);
+        if (compte == null || bloques.has(compte)) continue;
+        try {
+          const encore = await blockedT6Accounts(alertMinutes, { limit: 1, onlyAccountId: compte });
+          out.verified = (out.verified ?? 0) + 1;
+          if (encore.length > 0) {
+            // Absent d'un résultat borné mais toujours bloqué : maintenue.
+            bloques.add(compte);
+            await signaler(encore[0]);
+            continue;
+          }
+          if (await resolve(fp, { origin: 't6_evaluations_completed', cause: 'évaluations terminées ou relancées (vérifié)' })) out.resolved += 1;
+        } catch (e) {
+          // Vérification impossible : l'anomalie reste ouverte.
+          console.error('[mascotte] supervision T6 : vérification du compte impossible —', (e as Error).message);
+        }
+      }
+      if (ouvertes.length < 500) break;
     }
+    out.blockedAccounts = bloques.size;
+    // 3. Tâche de pré-génération inactive (balayage global seulement).
+    if (opts.onlyAccountId == null) await superviseScheduler(ordo, report, resolve, out);
   } catch (e) {
-    console.error('[mascotte] supervision des évaluations T6 impossible :', (e as Error).message);
+    out.error = (e as Error).message?.slice(0, 300) ?? 'erreur';
+    console.error('[mascotte] supervision des évaluations T6 impossible :', out.error);
   }
   return out;
+}
+
+/**
+ * Lot 81B (F) — anomalie globale quand la tâche `mascot-pregeneration` est
+ * inactive ET que des évaluations ou des demandes de pré-génération
+ * attendent : comptes identifiés (nombre et premiers identifiants). Résolue
+ * seulement sur preuve que la tâche tourne de nouveau.
+ */
+async function superviseScheduler(
+  ordo: PregenSchedulerState,
+  report: (a: import('@/services/admin/anomaly.service').ReportAnomalyInput) => Promise<unknown>,
+  resolve: (fingerprint: string, o: { origin: string; cause?: string | null }) => Promise<unknown>,
+  out: T6SupervisionResult,
+): Promise<void> {
+  if (ordo.state === 'active') {
+    out.schedulerResolved = !!(await resolve(T6_PREGEN_SCHEDULER_ANOMALY, { origin: 'pregen_scheduler_active', cause: 'tâche de pré-génération de nouveau active' }));
+    return;
+  }
+  if (ordo.state !== 'inactive') return;
+  const [r] = await q(
+    `SELECT (SELECT count(DISTINCT account_id) FROM t6_evaluation_runs WHERE status NOT IN ('COMPLETED', 'FAILED'))::int AS accounts,
+            (SELECT array_agg(account_id ORDER BY account_id) FROM (
+               SELECT DISTINCT account_id FROM t6_evaluation_runs WHERE status NOT IN ('COMPLETED', 'FAILED') ORDER BY account_id LIMIT 50) z) AS ids,
+            (SELECT count(*) FROM home_mascot_pregen_requests WHERE processed_at IS NULL OR requested_at > processed_at)::int AS requests`,
+    [],
+  );
+  const comptes = Number(r?.accounts ?? 0);
+  const demandes = Number(r?.requests ?? 0);
+  if (comptes === 0 && demandes === 0) return;
+  await report({
+    domain: 'ai', fingerprint: T6_PREGEN_SCHEDULER_ANOMALY,
+    title: `Tâche « mascot-pregeneration » inactive : ${comptes} compte(s) avec des évaluations T6 en attente`,
+    detail: {
+      kind: 't6_pregen_scheduler', cause: 'scheduler_inactive', task: PREGEN_TASK_CODE,
+      accountsWaiting: comptes, accountIds: (r?.ids as number[] | null) ?? [], pendingRequests: demandes,
+      adminDisabled: ordo.adminDisabled ?? null, envDisabled: ordo.envDisabled ?? null,
+      lastFinishedAt: ordo.lastFinishedAt ?? null, lastSuccessAt: ordo.lastSuccessAt ?? null,
+    },
+  });
+  out.schedulerReported = true;
 }

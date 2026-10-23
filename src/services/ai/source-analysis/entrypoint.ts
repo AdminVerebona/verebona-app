@@ -123,6 +123,10 @@ export async function analyzeFileSources(
     && (options.sourceType === undefined || options.sourceType === 'file')
   ) {
     await requeueFailedSources(outcome.failedSourceIds, accountId, options);
+    // Lot 81E : remise en file faite (ou impossible) — résultat des lots en
+    // attente réévalué (un échec sans reprise devient définitif).
+    const { settleLotNotificationsForFiles } = await import('./lot-notification');
+    await settleLotNotificationsForFiles(outcome.failedSourceIds);
   }
 
   // Lot 22 — hors file, plafond mensuel de coût IA du compte atteint : rien
@@ -286,6 +290,9 @@ async function runUnified(
       linkedAssetId: options.linkedAssetId ?? null,
       billable: options.billable,
       guard: options.guard,
+      // Lot 81E : un échec remis en file (`analyzeFileSources`) n'est pas
+      // annoncé comme définitif dans le résultat du lot.
+      retryOnFailure: options.retryOnFailure !== false,
     });
 
     if (outcome.skippedReason) {
@@ -328,6 +335,8 @@ export async function analyzeWebLinkSource(
     sourceIds: [webLinkId],
     accountId,
     userId: options.userId,
+    // Lot 81E : aucune remise en file ici — l'issue est définitive.
+    retryOnFailure: false,
   });
 }
 

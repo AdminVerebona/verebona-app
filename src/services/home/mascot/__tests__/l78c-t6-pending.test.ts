@@ -421,7 +421,9 @@ describe('L78C-H — supervision : causes distinguées', () => {
     expect(lire('src/app/admin/supervision/[id]/page.tsx')).toContain('Relancer les évaluations T6');
     const { diagnosticLinkFor } = await import('@/services/admin/anomaly.service');
     expect(diagnosticLinkFor('ai', { kind: 't6_evaluation', accountId: 7 })).toEqual({ href: '/admin/ai-executions?tab=reports&treatment=T6&accountId=7', label: 'Ouvrir les rapports T6 du compte' });
-    expect(lire('src/services/scheduling/scheduled-tasks.catalog.ts')).toContain("claimEvaluatorRun('t6-evaluation-supervision', 300)");
+    // Lot 81B (F) : supervision portée par une tâche DISTINCTE de mascot-pregeneration.
+    const { findTask } = await import('@/services/scheduling/scheduled-tasks.catalog');
+    expect(findTask('mascot-t6-supervision')).toMatchObject({ critical: { staleAfterMs: 30 * 60_000 } });
   });
 });
 

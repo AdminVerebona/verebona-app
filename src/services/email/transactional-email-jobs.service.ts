@@ -83,7 +83,17 @@ import { pgClient } from '@/db';
 import { emailService } from '@/lib/email/email-service';
 import { buildEmailVerificationUrl, EMAIL_VERIFICATION_TTL_MS } from '@/services/auth/email-verification.service';
 
-export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT' | 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' | 'DUO_INVITATION_DECLINED';
+export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT' | 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' | 'DUO_INVITATION_DECLINED'
+  | 'PREMIUM_CONFIRMATION' | 'DOWNGRADE_NOTIFICATION';
+
+/**
+ * Lot 81E — e-mails CONTRACTUELS (confirmation de souscription, fin d'offre),
+ * enregistrés par `subscription-communications.service` (une demande par
+ * opération, `dedupe_key`). Un échec définitif ou une acceptation incertaine
+ * non résolue ouvre une anomalie de Supervision (domaine communications) ;
+ * une acceptation la résout.
+ */
+export const CONTRACTUAL_EMAIL_KINDS: ReadonlySet<EmailJobKind> = new Set(['PREMIUM_CONFIRMATION', 'DOWNGRADE_NOTIFICATION']);
 export type EmailJobStatus = 'pending' | 'sending' | 'accepted' | 'failed' | 'cancelled' | 'uncertain';
 
 const MIN = 60_000;
@@ -257,7 +267,7 @@ export function enqueueDuoInvitationEmail(input: {
 
 type Exec = { unsafe: typeof pgClient.unsafe };
 type Built =
-  | { ok: true; templateCode: EmailJobKind; variables: Record<string, string>; recipientUserId: number | null; triggeredByUserId: number | null; onAccepted?: (now: Date, tx: Exec) => Promise<void>; /** Adresse actuelle du destinataire (sinon celle de la demande). */ to?: string }
+  | { ok: true; templateCode: string; variables: Record<string, string>; recipientUserId: number | null; triggeredByUserId: number | null; onAccepted?: (now: Date, tx: Exec) => Promise<void>; /** Adresse actuelle du destinataire (sinon celle de la demande). */ to?: string }
   | { ok: false; reason: string; /** Lot 68C : échec temporaire (reprise), pas une annulation. */ temporary?: boolean };
 
 function contextOf(job: JobRow): Record<string, unknown> {
@@ -478,6 +488,69 @@ async function buildAnnualRenewal(job: JobRow, now: Date, contentAt: Date = now)
   };
 }
 
+/**
+ * Lot 81E — confirmation contractuelle (PREMIUM_CONFIRMATION) : données
+ * FIGÉES à l'opération (offre, montant, périodicité, échéance), destinataire
+ * = adresse ACTUELLE du titulaire. Contexte illisible : échec TEMPORAIRE
+ * (jamais une annulation silencieuse — l'échec final est supervisé).
+ */
+async function buildPremiumConfirmation(job: JobRow): Promise<Built> {
+  if (job.user_id == null) return { ok: false, reason: 'ACCOUNT_GONE' };
+  const [user] = await pgClient.unsafe<{ id: number; email: string; first_name: string | null; status: string | null }[]>(
+    `SELECT id, email, first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
+  if (!user || !user.email) return { ok: false, reason: 'ACCOUNT_GONE' };
+  if (CLOSED_ACCOUNT_STATUSES.has(String(user.status ?? '').toUpperCase())) return { ok: false, reason: 'ACCOUNT_CLOSED' };
+  const ctx = contextOf(job);
+  const next = typeof ctx.nextBillingDate === 'string' ? new Date(ctx.nextBillingDate) : null;
+  if (!next || Number.isNaN(next.getTime())) return { ok: false, reason: 'CONTRACT_CONTEXT_INVALID', temporary: true };
+  const { premiumConfirmationVariables } = await import('@/lib/email/billing-emails');
+  const period = ctx.billingPeriod === 'monthly' || ctx.billingPeriod === 'yearly' ? ctx.billingPeriod : null;
+  const variables = premiumConfirmationVariables(escapeHtml((user.first_name ?? '').trim()), next, {
+    planLabel: typeof ctx.planLabel === 'string' ? ctx.planLabel : undefined,
+    unitAmountCents: typeof ctx.unitAmountCents === 'number' ? ctx.unitAmountCents : null,
+    billingPeriod: period,
+  });
+  return { ok: true, templateCode: 'PREMIUM_CONFIRMATION', variables, recipientUserId: user.id, triggeredByUserId: null, to: user.email };
+}
+
+/** Lot 81E — fin d'offre (DOWNGRADE_NOTIFICATION), une fois par opération. */
+async function buildDowngradeNotification(job: JobRow): Promise<Built> {
+  if (job.user_id == null) return { ok: false, reason: 'ACCOUNT_GONE' };
+  const [user] = await pgClient.unsafe<{ id: number; email: string; first_name: string | null; status: string | null }[]>(
+    `SELECT id, email, first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
+  if (!user || !user.email) return { ok: false, reason: 'ACCOUNT_GONE' };
+  if (CLOSED_ACCOUNT_STATUSES.has(String(user.status ?? '').toUpperCase())) return { ok: false, reason: 'ACCOUNT_CLOSED' };
+  const { downgradeNotificationVariables } = await import('@/lib/email/billing-emails');
+  return {
+    ok: true, templateCode: 'DOWNGRADE_NOTIFICATION', variables: downgradeNotificationVariables(escapeHtml((user.first_name ?? '').trim())),
+    recipientUserId: user.id, triggeredByUserId: null, to: user.email,
+  };
+}
+
+/** Lot 81E — supervision des e-mails contractuels (ne lève jamais). */
+async function superviseContractual(job: Pick<JobRow, 'id' | 'kind' | 'user_id'>, status: EmailJobStatus, detail: string | null): Promise<void> {
+  if (!CONTRACTUAL_EMAIL_KINDS.has(job.kind)) return;
+  try {
+    const { reportAnomaly, autoResolveAnomaly } = await import('@/services/admin/anomaly.service');
+    const fingerprint = `communications:transactional:${job.kind.toLowerCase()}:${job.id}`;
+    if (status === 'accepted') {
+      await autoResolveAnomaly(fingerprint, { origin: 'email_accepted' });
+    } else if (status === 'failed' || status === 'uncertain') {
+      await reportAnomaly({
+        domain: 'communications',
+        fingerprint,
+        title: status === 'failed'
+          ? `E-mail contractuel non envoyé : ${job.kind} (demande ${job.id})`
+          : `E-mail contractuel à acceptation incertaine : ${job.kind} (demande ${job.id})`,
+        userId: job.user_id ?? null,
+        detail: { jobId: job.id, kind: job.kind, status, detail },
+      });
+    }
+  } catch (e) {
+    console.error(`[transactional-email] supervision de la demande ${job.id} impossible :`, (e as Error)?.message ?? e);
+  }
+}
+
 /** Mise à jour de clôture / report d'une tentative (lot 72F : état du prestataire). */
 interface CloseFields {
   error?: string | null;
@@ -496,6 +569,10 @@ type Close = (status: EmailJobStatus, fields?: CloseFields, exec?: Exec) => Prom
 
 function closerFor(job: JobRow, now: Date): Close {
   return async (status, fields = {}, exec = pgClient) => {
+    // Lot 81E : e-mail contractuel — échec ou incertitude supervisés au BO.
+    if (CONTRACTUAL_EMAIL_KINDS.has(job.kind) && (status === 'accepted' || status === 'failed' || status === 'uncertain')) {
+      await superviseContractual(job, status, fields.error ?? fields.providerDetail ?? null);
+    }
     await exec.unsafe(
       `UPDATE transactional_email_jobs
           SET status = $2, locked_until = NULL, last_error = $3,
@@ -714,6 +791,8 @@ export async function processEmailJob(jobId: number, now: Date = new Date()): Pr
       : job.kind === 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' ? await buildAnnualRenewal(job, now, contentAt)
       : job.kind === 'DUO_INVITATION' ? await buildDuoInvitation(job, now)
       : job.kind === 'DUO_INVITATION_DECLINED' ? await buildDuoInvitationDeclined(job)
+      : job.kind === 'PREMIUM_CONFIRMATION' ? await buildPremiumConfirmation(job)
+      : job.kind === 'DOWNGRADE_NOTIFICATION' ? await buildDowngradeNotification(job)
       : ({ ok: false, reason: 'UNKNOWN_KIND' } as Built);
     if (!built.ok && built.temporary) {
       return await failed(job, built.reason, null, now, close);

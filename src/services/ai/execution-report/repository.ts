@@ -211,7 +211,7 @@ export async function reportsForExecution(p: { accountId: number | null; jobId: 
     `SELECT ${HEADER_COLS} FROM ai_execution_reports
       WHERE account_id = $1
         AND (($2::int IS NOT NULL AND job_id = $2::int) OR ($3::text IS NOT NULL AND $3::text = ANY(trace_ids)))
-      ORDER BY id LIMIT 500`,
+      ORDER BY id`,
     [p.accountId, p.jobId, p.traceId] as never[],
   )) as unknown as Row[];
   return rows.map(toSummary);
@@ -313,20 +313,20 @@ export async function resolveRef(accountId: number, e: Pick<ReportEntryView, 'ta
   return { state: 'TRACED', content: v };
 }
 
-/** Rapports corrélés : T1 d'origine et T3 déclenchés ensuite (même compte). */
+/** Rapports corrélés : T1 d'origine et T3 déclenchés ensuite (même compte) — tous (lot 81C : plus de borne 500 / 50). */
 export async function correlatedReports(s: ReportSummary): Promise<{ origin: ReportSummary | null; followups: ReportSummary[]; previousForSameDocument: ReportSummary[] }> {
   const origin = s.originT1ReportId
     ? (await pgClient.unsafe(`SELECT ${HEADER_COLS} FROM ai_execution_reports WHERE id = $1 AND account_id = $2`, [s.originT1ReportId, s.accountId] as never[])) as unknown as Row[]
     : [];
   const followups = s.treatment === 'T1'
     ? (await pgClient.unsafe(
-      `SELECT ${HEADER_COLS} FROM ai_execution_reports WHERE origin_t1_report_id = $1 AND account_id = $2 ORDER BY id LIMIT 500`,
+      `SELECT ${HEADER_COLS} FROM ai_execution_reports WHERE origin_t1_report_id = $1 AND account_id = $2 ORDER BY id`,
       [s.id, s.accountId] as never[],
     )) as unknown as Row[]
     : [];
   const previous = s.treatment === 'T1' && s.fileId != null
     ? (await pgClient.unsafe(
-      `SELECT ${HEADER_COLS} FROM ai_execution_reports WHERE account_id = $1 AND file_id = $2 AND treatment = 'T1' AND id <> $3 ORDER BY id DESC LIMIT 50`,
+      `SELECT ${HEADER_COLS} FROM ai_execution_reports WHERE account_id = $1 AND file_id = $2 AND treatment = 'T1' AND id <> $3 ORDER BY id DESC`,
       [s.accountId, s.fileId, s.id] as never[],
     )) as unknown as Row[]
     : [];

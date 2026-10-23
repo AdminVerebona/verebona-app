@@ -12,10 +12,11 @@ import { pgClient } from '@/db';
 import { getActiveEvidence, evidenceReadFilter } from '../evidence/field-evidence.service';
 import { resolveAuthority } from './decision/authority-matrix';
 import { normalize } from './decision/normalizers';
+import { areBusinessEquivalent } from './decision/equivalence';
 import { readOrigin } from './field-origin';
 import { isCriticalField } from './decision/critical-fields';
 import { EVIDENCE_BASED_ORIGINS } from './negative-reconciliation';
-import { getField, isFieldApplicableToAsset, isInputOnlyKey } from '@/services/canonical/registry';
+import { getField, isFieldApplicableToAsset, isInputOnlyKey, resolveAlias } from '@/services/canonical/registry';
 import {
   indexKcAliases, isEmptyValue, loadAssetRow, readFieldState, rowFamily, type AssetRowJson,
 } from '@/services/canonical/asset-state/canonical-asset-view';
@@ -92,7 +93,7 @@ export async function collectAssetEvidenceState(
         candidates,
         isCritical: isCriticalField(fieldKey),
       },
-      unproven: isUnprovenAutomaticValue(current, candidates),
+      unproven: isUnprovenAutomaticValue(current, candidates, fieldKey),
     });
   }
 
@@ -146,7 +147,7 @@ export function toEvidenceCandidates(fieldKey: string, evidences: FieldEvidence[
  * preuve candidate (normalisée) ne reproduit : elle ne tient plus que par
  * l'autorité mémorisée d'une preuve retirée ou remplacée (T3-04).
  */
-export function isUnprovenAutomaticValue(current: CurrentValue | null, candidates: EvidenceCandidate[]): boolean {
+export function isUnprovenAutomaticValue(current: CurrentValue | null, candidates: EvidenceCandidate[], fieldKey?: string): boolean {
   if (!current || current.normalized === null || current.normalized === '') return false;
   // Seules les origines fondées sur une preuve documentaire (comme
   // `planRetractions`) : USER/ADMIN, IMPORT et SYSTEM_RULE ne perdent jamais
@@ -154,7 +155,8 @@ export function isUnprovenAutomaticValue(current: CurrentValue | null, candidate
   if (!EVIDENCE_BASED_ORIGINS.includes(current.origin)) return false;
   const utilisables = candidates.filter((c) => c.normalized !== null && c.normalized !== '');
   if (utilisables.length === 0) return false;
-  return !utilisables.some((c) => c.normalized === current.normalized);
+  // Lot 81A : « reproduit » au sens MÉTIER (même règle que le moteur de décision).
+  return !utilisables.some((c) => c.normalized === current.normalized || (fieldKey !== undefined && areBusinessEquivalent(fieldKey, c.value, current.value)));
 }
 
 /**
@@ -173,12 +175,15 @@ export function currentValueReader(kc: Record<string, unknown>, row: AssetRowJso
   let alias: ReturnType<typeof indexKcAliases> | null = null;
   return (fieldKey: string) => {
     if (!isEmptyValue(kc[fieldKey])) return buildCurrentValue(fieldKey, kc);
-    const def = getField(fieldKey);
+    // Lot 81A : une preuve portée par un ALIAS (`acquisitionDay`) est comparée
+    // à la valeur EN PLACE de sa clé canonique — avant, la fiche passait pour
+    // vide (aucune définition sous le nom de l'alias).
+    const def = getField(fieldKey) ?? getField(resolveAlias(fieldKey) ?? '');
     if (!def) return buildCurrentValue(fieldKey, kc);
     alias ??= indexKcAliases(kc, family);
     const st = readFieldState(def, kc, row as Record<string, unknown>, alias.get(def.key));
     if (!st) return buildCurrentValue(fieldKey, kc);
-    const base = st.from === 'alias' && st.fromName ? st.fromName : fieldKey;
+    const base = st.from === 'alias' && st.fromName ? st.fromName : def.key;
     return {
       value: st.value,
       normalized: normalize(fieldKey, st.value),

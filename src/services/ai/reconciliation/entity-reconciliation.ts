@@ -27,7 +27,7 @@
  * objet. Équipement archivé : ignoré.
  */
 import { randomUUID } from 'crypto';
-import { decide } from './decision/decision-matrix';
+import { decide, withoutEquivalentProposals } from './decision/decision-matrix';
 import { isCriticalField } from './decision/critical-fields';
 import { normalize } from './decision/normalizers';
 import { toEvidenceCandidates, isUnprovenAutomaticValue } from './evidence-collector';
@@ -137,13 +137,15 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
     const candidates = toEvidenceCandidates(def.key, evidences);
     if (candidates.length) prouves.push(def.key);
     const current = entityCurrentValue(state, def.key);
-    const unproven = isUnprovenAutomaticValue(current, candidates);
+    const unproven = isUnprovenAutomaticValue(current, candidates, def.key);
     const entree = { fieldKey: def.key, current, candidates, isCritical: isCriticalField(def.key) };
     // D-M (lot 20) : date tranchée par T4 → la preuve révisée corrige la valeur automatique.
     const revision = isT4DateRevision(unproven, entree);
     let decision = unproven || revision ? decide(withoutStaleAuthority(entree)) : decide(entree);
     if (revision && decision.action === 'update') decision = { ...decision, reasonCode: T4_REVISION_REASON };
     else if (unproven && decision.action === 'update') decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
+    // Lot 81A : jamais un conflit entre valeurs équivalentes.
+    decision = withoutEquivalentProposals(decision);
     out.decisions.push(decision);
     const trace: import('../execution-report/t3-report').T3FieldRecord = { fieldKey: def.key, current, candidates, decision, registry: true };
     rec.fields.push(trace);
@@ -225,4 +227,35 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
   }));
   await rapport();
   return out;
+}
+
+/**
+ * Lot 81A — réévaluation en LECTURE SEULE d'un champ d'équipement ou de
+ * pièce (rattrapage des faux arbitrages) : mêmes étapes que
+ * `reconcileEntity` pour cette clé, sans écriture ni carte. `missing` :
+ * entité introuvable ou archivée.
+ */
+export async function evaluateEntityField(
+  accountId: number, target: CanonicalEntityTarget, key: string, deps?: EntityReconcileDeps,
+): Promise<{ missing: boolean; current: CurrentValue | null; decisions: ReconciliationDecision[]; candidates: import('./types').EvidenceCandidate[] }> {
+  const d = deps ?? await defaultDeps();
+  const state = await d.loadState(accountId, target);
+  if (!state || state.archived) return { missing: true, current: null, decisions: [], candidates: [] };
+  const decisions: ReconciliationDecision[] = [];
+  const tous: import('./types').EvidenceCandidate[] = [];
+  for (const rawKey of await d.evidenceKeys(accountId, target)) {
+    const def = resolveEntityDef(rawKey);
+    if (!def || def.key !== key || !fieldTargetsEntity(def, target.type) || def.inputOnly) continue;
+    const candidates = toEvidenceCandidates(def.key, await d.activeEvidence(accountId, rawKey, target));
+    tous.push(...candidates);
+    const current = entityCurrentValue(state, def.key);
+    const unproven = isUnprovenAutomaticValue(current, candidates, def.key);
+    const entree = { fieldKey: def.key, current, candidates, isCritical: isCriticalField(def.key) };
+    const revision = isT4DateRevision(unproven, entree);
+    let decision = unproven || revision ? decide(withoutStaleAuthority(entree)) : decide(entree);
+    if (revision && decision.action === 'update') decision = { ...decision, reasonCode: T4_REVISION_REASON };
+    else if (unproven && decision.action === 'update') decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
+    decisions.push(withoutEquivalentProposals(decision));
+  }
+  return { missing: false, current: entityCurrentValue(state, key), decisions, candidates: tous };
 }

@@ -92,6 +92,12 @@ export interface RunSourceAnalysisInput {
    * l'appel IA répond après l'interruption.
    */
   guard?: ExecutionGuard;
+  /**
+   * Lot 81E : hors file, l'appelant remet-il en file durable les sources en
+   * échec (`entrypoint`, défaut oui) ? Sert seulement à ne pas annoncer comme
+   * définitif un échec qui va être repris automatiquement.
+   */
+  retryOnFailure?: boolean;
 }
 
 export interface RunSourceAnalysisOutput {
@@ -175,7 +181,7 @@ export async function runSourceAnalysis(
 
   const guard = req.guard;
   await guard?.assertActive('ouverture du lot');
-  const lotId = await openLot(req.accountId, pendingIds);
+  const lotId = await openLot(req.accountId, pendingIds, req.userId);
   await setState(pendingIds, 'ANALYZING');
 
   // ── Étapes 2 et 3 : qualification et préparation par l'adaptateur ───────
@@ -788,7 +794,13 @@ export async function runSourceAnalysis(
   try { await closeLot(lotId); } catch (e) { console.error('[source-analysis] clôture du lot impossible :', (e as Error).message); }
 
   // ══════════════════════════════════════════════════════════════════════
-  // NOTIFICATION DE FIN DE LOT — CDC notifications §7.2
+  // NOTIFICATION DU RÉSULTAT DU LOT — CDC notifications §7.2, lot 81E
+  //
+  // Le résultat est relu depuis les états persistés des documents
+  // (`lot-notification.ts`) : réussite, réussite partielle ou échec total,
+  // une seule notification. Un échec qui va être repris automatiquement
+  // (file durable, ou remise en file par l'entrée unique hors file) n'est
+  // jamais annoncé comme définitif : le lot reste en attente jusqu'à l'issue.
   //
   // Seule pièce que l'ancien pipeline émettait et que le nouveau avait
   // perdue. Sans elle, la bascule aurait rendu l'analyse muette : le
@@ -806,7 +818,9 @@ export async function runSourceAnalysis(
       userId: req.userId,
       lotId,
       analysedCount,
-      failedCount: Math.max(0, pendingIds.length - analysedCount),
+      // Lot 81E : échecs RÉELS de cette exécution (jamais doublons ni regroupés).
+      failedCount: failedSourceIds.length,
+      retryExpectedSourceIds: req.guard || req.retryOnFailure !== false ? failedSourceIds : [],
     });
   } catch (e) {
     console.error('[source-analysis] notification de fin de lot impossible :', (e as Error).message);
@@ -1058,9 +1072,11 @@ async function softDeleteSecondarySources(leadId: number, ids: number[], lotId: 
   }
 }
 
-async function openLot(accountId: number, ids: number[]): Promise<number> {
+async function openLot(accountId: number, ids: number[], userId?: number | null): Promise<number> {
+  // Lot 81E : le résultat du lot sera notifié au demandeur, une fois
+  // définitif (`lot-notification.ts`) ; sans demandeur, rien à notifier.
   const [lot] = await db.insert(documentLots)
-    .values({ accountId, status: 'analyzing' })
+    .values({ accountId, status: 'analyzing', notificationState: userId ? 'awaiting' : 'silent', notificationUserId: userId ?? null })
     .returning({ id: documentLots.id });
 
   await db.insert(documentLotItems).values(

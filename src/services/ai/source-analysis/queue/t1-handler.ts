@@ -387,6 +387,15 @@ export async function onT1JobSettled(job: QueuedJob, outcome: JobOutcome): Promi
   const payloadFileId = (job.payload as { fileId?: unknown } | null)?.fileId;
   const fileId = Number(payloadFileId ?? job.targetId);
   if (!Number.isInteger(fileId)) return;
+  await applyT1SettledState(job, outcome, fileId);
+  // Lot 81E : issue de cette exécution connue (reprise prévue ou non) — le
+  // résultat des lots en attente qui contiennent ce document est réévalué.
+  const { settleLotNotificationsForFiles } = await import('../lot-notification');
+  await settleLotNotificationsForFiles([fileId]);
+}
+
+async function applyT1SettledState(job: QueuedJob, outcome: JobOutcome, fileId: number): Promise<void> {
+  if (job.accountId == null) return;
 
   switch (outcome.kind) {
     case 'done':

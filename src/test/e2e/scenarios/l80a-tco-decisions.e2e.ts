@@ -53,7 +53,7 @@ scenario('L80A', 'TCO — décisions utilisateur « Ajouter / Retirer du TCO »'
   };
   const coherent = (tco: Json) => {
     const a = tco.annual;
-    expect(a.years.reduce((n: number, y: Json) => n + y.netCents, 0) + a.undated.costsCents - a.undated.creditsCents + a.future.costsCents - a.future.creditsCents)
+    expect(a.years.reduce((n: number, y: Json) => n + y.netCents, 0) + a.undated.costsCents - a.undated.creditsCents) // 81D : plus de « futures » retenues
       .toBe(tco.summary.cumulativeCostCents);
     expect(a.average.totalCents).toBe(tco.summary.cumulativeCostCents);
   };

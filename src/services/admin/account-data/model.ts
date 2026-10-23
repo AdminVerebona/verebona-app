@@ -154,12 +154,46 @@ export interface DossierTable {
   table: string;
   columns: string[];
   rows: Array<Record<string, unknown>>;
-  /** Nombre réel de lignes en base (null si non compté). */
+  /** Nombre réel de lignes en base, lu dans l'instantané de lecture (null : non établi, erreur). */
   total: number | null;
-  /** Toutes les lignes ont été extraites (sinon : borne atteinte, avertissement). */
+  /**
+   * Lot 81C — lecture réussie : en CONSULTATION, le total est établi et
+   * toutes les pages sont accessibles ; en EXPORT, toutes les lignes ont été
+   * exportées (exportées = attendues). Plus aucune borne fonctionnelle.
+   */
   complete: boolean;
-  limit: number;
 }
+
+/** Lot 81C — statut d'extraction (section, fichier, génération). */
+export type ExtractionStatus = 'COMPLETE' | 'PARTIAL' | 'FAILED';
+export const EXTRACTION_STATUSES: readonly ExtractionStatus[] = ['COMPLETE', 'PARTIAL', 'FAILED'];
+
+/**
+ * Lot 81C — fenêtre d'une section tabulaire ou de relations.
+ * Consultation : page `[offset, offset + size[` du résultat (pagination
+ * TECHNIQUE, navigation jusqu'à la dernière ligne). Export : `size` null,
+ * toutes les lignes.
+ */
+export interface DossierWindow {
+  /** Nombre réel d'éléments (instantané de lecture) ; null : non établi. */
+  total: number | null;
+  offset: number;
+  /** Taille de page ; null : extraction intégrale. */
+  size: number | null;
+  /** Recherche serveur (sur les lignes masquées) et nombre de correspondances. */
+  query?: string | null;
+  matched?: number | null;
+}
+
+/** Pagination technique de la consultation (tiroir). */
+export const DOSSIER_PAGE_SIZE = 50;
+export const DOSSIER_PAGE_MAX = 200;
+/**
+ * Au-delà, « Copier tout » propose l'export intégral (fichier) au lieu du
+ * presse-papiers : limite d'usage du presse-papiers, JAMAIS une troncature
+ * (aucune copie partielle n'est produite).
+ */
+export const COPY_MAX_ROWS = 20_000;
 
 export interface DossierRelation {
   type: EntityType;
@@ -183,6 +217,8 @@ export interface DossierSection {
   relations?: DossierRelation[];
   /** Section non chargée (erreur de lecture) : motif. */
   error?: string;
+  /** Lot 81C — fenêtre (consultation paginée) ou extraction intégrale (export). */
+  window?: DossierWindow;
 }
 
 export interface EntityDossier {
@@ -198,12 +234,84 @@ export interface EntityDossier {
     status: string | null;
     statusLabel: string | null;
   };
-  /** false : au moins une section bornée ou en erreur (voir `warnings`). */
+  /** false : au moins une section en erreur (voir `warnings`) ou, à l'export, exportées ≠ attendues. */
   complete: boolean;
   warnings: string[];
   sections: DossierSection[];
-  /** Opération : détail `OperationDiagnosticsService` (rendu par `OperationDetailView`). */
+  /** Opération : détail `OperationDiagnosticsService` (rendu par `OperationDetailView`, listes d'AFFICHAGE). */
   operationDetail?: unknown;
+  /** Lot 81C — consultation paginée (tiroir) ou export intégral. */
+  mode?: 'consultation' | 'export';
+  /** Lot 81C — instantané de lecture (instant de référence, isolation). */
+  snapshot?: { isolation: string; at: string; snapshot: string | null };
+  /** Lot 81C — export : manifeste de complétude (dernière clé du JSON). */
+  export?: ExportManifest;
+}
+
+// ── Lot 81C : manifeste de complétude d'un export ──────────────────────────
+
+export const EXPORT_MANIFEST_SCHEMA = 'verebona.bo.export-manifeste/1';
+
+/** Suivi d'une section exportée (ticket §4.4). */
+export interface SectionExportStat {
+  id: string;
+  title: string;
+  /** Table (ou source) concernée ; null : champs calculés. */
+  table: string | null;
+  /** Lignes attendues (`count(*)` dans l'instantané) ; null : section sans lignes (champs). */
+  expected: number | null;
+  exported: number;
+  batches: number;
+  status: ExtractionStatus;
+  error: string | null;
+  finishedAt: string;
+}
+
+export interface ExportManifest {
+  schema: typeof EXPORT_MANIFEST_SCHEMA;
+  generationId: string;
+  kind: 'ACCOUNT_DATA';
+  format: ExportFormat;
+  /** Périmètre et filtres : compte, entité, section éventuelle. */
+  perimeter: { accountId: number; entityType: EntityType; entityId: number; section: string | null };
+  startedAt: string;
+  finishedAt: string;
+  snapshot: { isolation: string; at: string; snapshot: string | null; verification: string };
+  batchRows: number;
+  sections: SectionExportStat[];
+  totals: { expected: number; exported: number; batches: number };
+  status: ExtractionStatus;
+  error: string | null;
+}
+
+export const SNAPSHOT_VERIFICATION = 'Toutes les lectures dans UNE transaction REPEATABLE READ READ ONLY (instantané PostgreSQL) ; attendu = count(*) dans le même instantané ; '
+  + 'exporté = lignes effectivement écrites (curseur, lots ordonnés par identifiant) ; COMPLETE seulement si exporté = attendu pour chaque section et aucune erreur.';
+
+/** Statut global : COMPLETE si toutes les sections le sont ; FAILED si aucune ne l'est ; PARTIAL sinon. */
+export function globalStatus(stats: Array<{ status: ExtractionStatus }>, fatal = false): ExtractionStatus {
+  if (fatal) return 'FAILED';
+  if (stats.every((s) => s.status === 'COMPLETE')) return 'COMPLETE';
+  return stats.some((s) => s.status === 'COMPLETE') ? 'PARTIAL' : 'FAILED';
+}
+
+/** Statut d'une section : COMPLETE seulement si exporté = attendu et aucune erreur. */
+export function sectionStatus(expected: number | null, exported: number, error: string | null): ExtractionStatus {
+  if (error) return exported > 0 ? 'PARTIAL' : 'FAILED';
+  if (expected !== null && exported !== expected) return 'PARTIAL';
+  return 'COMPLETE';
+}
+
+/**
+ * Statut d'un export lu dans les DERNIERS octets du fichier (le manifeste
+ * est écrit en fin de flux) ; null : marque absente — fichier interrompu,
+ * jamais considéré comme complet.
+ */
+export function exportStatusFromTail(format: ExportFormat, tail: string): ExtractionStatus | null {
+  const re = format === 'json' ? /"exportStatus":\s*"(COMPLETE|PARTIAL|FAILED)"\s*}\s*$/
+    : format === 'txt' ? /Statut de l’export : (COMPLETE|PARTIAL|FAILED)[^\n]*\n?$/
+      : /export;statut;[^\r\n]*;(COMPLETE|PARTIAL|FAILED)(?:\r\n)?$/;
+  const m = re.exec(tail);
+  return m ? (m[1] as ExtractionStatus) : null;
 }
 
 // ── Origines ────────────────────────────────────────────────────────────────
@@ -283,6 +391,8 @@ const KEY_COLUMNS = ['field_key', 'canonical_key', 'fact_key', 'data_key', 'targ
 const VALUE_COLUMNS = new Set([
   'value_json', 'normalized_value', 'raw_value', 'evidence_excerpt', 'value_text', 'value_number', 'old_value', 'new_value',
   'previous_value', 'proposed_value_json', 'final_value_json', 'excerpt', 'original_payload', 'proposals_json', 'trigger_context',
+  // Lot 81C : registre des incohérences.
+  'current_value', 'proposed_value',
 ]);
 
 /**
@@ -412,12 +522,17 @@ export function exportFileName(d: Pick<EntityDossier, 'accountId' | 'entity' | '
 }
 
 // ── Sérialiseurs (même structure pour la copie et le téléchargement) ─────────
+//
+// Lot 81C : chaque format est produit par MORCEAUX (en-tête, section, ligne,
+// pied) : le serveur les écrit en flux, lot par lot (`export.ts`), et les
+// fonctions « dossierTo… » ci-dessous les composent pour un dossier déjà en
+// mémoire (tests, petits dossiers). Une seule mise en forme.
 
 export function dossierToJson(d: EntityDossier): string {
   return JSON.stringify(d, null, 2);
 }
 
-function fieldLine(f: DossierField): string {
+export function fieldLine(f: DossierField): string {
   const where = `${f.table}.${f.column}${f.path ? ` › ${f.path}` : ''}`;
   const parts: string[] = [];
   if (f.state === 'value' || f.state === 'null') parts.push(`brut=${rawText(f.raw)}`);
@@ -430,44 +545,80 @@ function fieldLine(f: DossierField): string {
   return `- ${f.label} [${where}] : ${parts.join(' | ')}`;
 }
 
-function relationLine(r: DossierRelation): string {
+export function relationLine(r: DossierRelation): string {
   const extra = [r.status ? `statut ${r.status}` : null, r.origin ? `origine ${r.origin}` : null, `via ${r.via}`].filter(Boolean).join(', ');
   return `- ${r.nature} : ${ENTITY_LABELS[r.type]} #${r.id} « ${r.label} » (${extra})`;
 }
 
-function tableLines(t: DossierTable): string[] {
-  const out = [`Table ${t.table} — ${t.rows.length} ligne(s) extraite(s)${t.total !== null ? ` sur ${t.total}` : ''}${t.complete ? '' : ` — INCOMPLET (borne ${t.limit})`}`];
-  t.rows.forEach((r, i) => {
-    out.push(`  [${i + 1}] ${t.columns.map((c) => `${c}=${rawText(r[c])}`).join(' ; ')}`);
-  });
-  return out;
+type DossierHead = Pick<EntityDossier, 'schema' | 'extractedAt' | 'accountId' | 'entity'> & Partial<Pick<EntityDossier, 'mode' | 'snapshot'>>;
+
+/** TXT — en-tête (la complétude est donnée en FIN de fichier, une fois l'extraction terminée). */
+export function textHeader(d: DossierHead): string[] {
+  const L = [
+    `Verebona — Back-office — Données du compte #${d.accountId}`,
+    `${d.entity.typeLabel} #${d.entity.id} — ${d.entity.name}`,
+    `Table principale : ${d.entity.table} · Statut : ${d.entity.statusLabel ?? d.entity.status ?? 'NULL'}`,
+    `Extraction : ${d.extractedAt} (format ${d.schema})`,
+  ];
+  if (d.snapshot) L.push(`Instantané de lecture : ${d.snapshot.isolation} — instant de référence ${d.snapshot.at}${d.snapshot.snapshot ? ` — pg_snapshot ${d.snapshot.snapshot}` : ''}`);
+  return L;
+}
+export const textTabHeader = (tab: Tab): string[] => ['', `######## ${TAB_LABELS[tab]} ########`];
+/** TXT — titre, description, erreur et champs d'une section. */
+export function textSectionHead(s: DossierSection): string[] {
+  const L = ['', `== ${s.title} ==`];
+  if (s.description) L.push(s.description);
+  if (s.error) L.push(`[non chargé : ${s.error}]`);
+  for (const f of s.fields ?? []) L.push(fieldLine(f));
+  return L;
+}
+export const textTableHead = (table: string, total: number | null): string => `Table ${table} — ${total === null ? 'total non établi' : `${total} ligne(s) en base`}`;
+export const textRowLine = (rank: number, columns: string[], r: Record<string, unknown>): string => `  [${rank}] ${columns.map((c) => `${c}=${rawText(r[c])}`).join(' ; ')}`;
+export function textStatLine(st: SectionExportStat): string {
+  return `→ ${st.exported} élément(s) exporté(s)${st.expected !== null ? ` sur ${st.expected} attendu(s)` : ''} — ${st.status} (${st.batches} lot(s))${st.error ? ` — erreur : ${st.error}` : ''}`;
+}
+/** TXT — pied : bilan par section et statut global (DERNIÈRE ligne : marque lue par le BO). */
+export function textFooter(m: ExportManifest): string[] {
+  const L = ['', '######## Complétude de l’export ########',
+    `Génération : ${m.generationId} · format ${m.format} · ${m.startedAt} → ${m.finishedAt}`,
+    `Instantané : ${m.snapshot.isolation} — instant de référence ${m.snapshot.at}${m.snapshot.snapshot ? ` — pg_snapshot ${m.snapshot.snapshot}` : ''}`,
+    `Vérification : ${m.snapshot.verification}`,
+    `Lots de ${m.batchRows} lignes (pagination technique, aucun plafond).`];
+  for (const st of m.sections) L.push(`- ${st.title}${st.table ? ` [${st.table}]` : ''} : ${textStatLine(st).slice(2)}`);
+  if (m.error) L.push(`Erreur : ${m.error}`);
+  L.push(`Statut de l’export : ${m.status} — ${m.totals.exported} élément(s) exporté(s) sur ${m.totals.expected} attendu(s), ${m.sections.length} section(s)`);
+  return L;
 }
 
 /** Version lisible (« Copier tout » texte, export TXT) — intégrale, sans troncature. */
 export function dossierToText(d: EntityDossier): string {
-  const L: string[] = [];
-  L.push(`Verebona — Back-office — Données du compte #${d.accountId}`);
-  L.push(`${d.entity.typeLabel} #${d.entity.id} — ${d.entity.name}`);
-  L.push(`Table principale : ${d.entity.table} · Statut : ${d.entity.statusLabel ?? d.entity.status ?? 'NULL'}`);
-  L.push(`Extraction : ${d.extractedAt} (format ${d.schema})`);
-  L.push(d.complete ? 'Complétude : extraction complète.' : 'Complétude : EXTRACTION INCOMPLÈTE — voir les avertissements.');
+  const L: string[] = textHeader(d);
+  if (!d.export) L.push(d.complete ? 'Complétude : lecture complète.' : 'Complétude : EXTRACTION INCOMPLÈTE — voir les avertissements.');
   for (const w of d.warnings) L.push(`AVERTISSEMENT : ${w}`);
   for (const tab of TABS) {
     const sections = d.sections.filter((s) => s.tab === tab);
     if (!sections.length) continue;
-    L.push('', `######## ${TAB_LABELS[tab]} ########`);
+    L.push(...textTabHeader(tab));
     for (const s of sections) {
-      L.push('', `== ${s.title} ==`);
-      if (s.description) L.push(s.description);
-      if (s.error) L.push(`[non chargé : ${s.error}]`);
-      for (const f of s.fields ?? []) L.push(fieldLine(f));
+      L.push(...textSectionHead(s));
       if (s.relations) {
         if (!s.relations.length) L.push('(aucune relation)');
         for (const r of s.relations) L.push(relationLine(r));
       }
-      if (s.table) L.push(...tableLines(s.table));
+      if (s.table) {
+        L.push(textTableHead(s.table.table, s.table.total));
+        const off = s.window?.offset ?? 0;
+        s.table.rows.forEach((r, i) => L.push(textRowLine(off + i + 1, s.table!.columns, r)));
+      }
+      const w = s.window;
+      if (w && w.size !== null) {
+        L.push(`Fenêtre de consultation : éléments ${w.total ? w.offset + 1 : 0}–${w.offset + (s.table?.rows.length ?? s.relations?.length ?? 0)} sur ${w.total ?? '?'}${w.query ? ` (recherche « ${w.query} » : ${w.matched ?? '?'} correspondance(s))` : ''} — l’export intégral contient tous les éléments.`);
+      }
+      const st = d.export?.sections.find((x) => x.id === s.id);
+      if (st) L.push(textStatLine(st));
     }
   }
+  if (d.export) L.push(...textFooter(d.export));
   return `${L.join('\n')}\n`;
 }
 
@@ -478,59 +629,86 @@ export function csvCell(v: string): string {
   const safe = /^[=+@\t\r]/.test(v) ? `'${v}` : v;
   return /[;"\r\n]/.test(safe) || safe !== safe.trim() ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
-const csvLine = (cells: string[]) => cells.map(csvCell).join(';');
-/** BOM UTF-8 (accents lus correctement par Excel) + fins de ligne CRLF. */
-const csvDoc = (lines: string[]) => `﻿${lines.join('\r\n')}\r\n`;
+export const csvLine = (cells: string[]) => cells.map(csvCell).join(';');
+/** BOM UTF-8 (accents lus correctement par Excel) ; fins de ligne CRLF. */
+export const CSV_BOM = '\uFEFF';
+const csvDoc = (lines: string[]) => `${CSV_BOM}${lines.join('\r\n')}\r\n`;
 
 export const CSV_COLUMNS = ['onglet', 'section', 'table', 'ligne', 'champ', 'libelle', 'etat', 'valeur_brute', 'valeur_affichee', 'unite', 'origine', 'modifie_le', 'note'] as const;
 
+/** CSV long — ligne méta d'en-tête (horodatage, instantané). */
+export function csvMetaLines(d: DossierHead): string[] {
+  const L = [csvLine(['meta', 'extraction', '', '', 'extractedAt', 'Horodatage d’extraction', 'valeur', d.extractedAt, '', '', '', '', d.mode ?? ''])];
+  if (d.snapshot) L.push(csvLine(['meta', 'instantane', '', '', 'snapshot', 'Instantané de lecture', 'valeur', d.snapshot.at, d.snapshot.snapshot ?? '', '', '', '', d.snapshot.isolation]));
+  return L;
+}
+/** CSV long — lignes « champs » et erreur d'une section. */
+export function csvSectionHeadLines(s: DossierSection): string[] {
+  const tab = TAB_LABELS[s.tab];
+  const L: string[] = [];
+  if (s.error) L.push(csvLine([tab, s.title, '', '', '', '', 'non chargé', '', '', '', '', '', s.error]));
+  for (const f of s.fields ?? []) {
+    L.push(csvLine([tab, s.title, f.table, '', f.path ? `${f.column}.${f.path}` : f.column, f.label, CELL_STATE_LABELS[f.state],
+      f.state === 'value' || f.state === 'null' ? rawText(f.raw) : '', f.display ?? '', f.unit ?? '', f.originLabel ?? f.origin ?? '', f.updatedAt ?? '', f.note ?? '']));
+  }
+  return L;
+}
+export function csvRelationLine(s: Pick<DossierSection, 'tab' | 'title'>, r: DossierRelation): string {
+  return csvLine([TAB_LABELS[s.tab], s.title, r.via, String(r.id), r.type, ENTITY_LABELS[r.type], 'valeur', String(r.id), r.label, '', r.origin ?? '', '', `${r.nature}${r.status ? ` ; statut ${r.status}` : ''}`]);
+}
+/** CSV long — une ligne par cellule d'une ligne de table. */
+export function csvRowLines(s: Pick<DossierSection, 'tab' | 'title'>, table: string, columns: string[], row: Record<string, unknown>, rank: number): string[] {
+  const tab = TAB_LABELS[s.tab];
+  const ligne = row.id !== undefined && !isMarker(row.id) ? String(row.id) : String(rank);
+  return columns.map((c) => {
+    const v = row[c];
+    const st = cellState(v);
+    const { display, unit } = st === 'value' ? formatColumn(c, v, row) : { display: '', unit: null };
+    return csvLine([tab, s.title, table, ligne, c, c, CELL_STATE_LABELS[st], st === 'value' || st === 'null' ? rawText(v) : '', display, unit ?? '', '', '', isMarker(v) ? rawText(v) : '']);
+  });
+}
+/** CSV long — bilan par section puis statut global (DERNIÈRE ligne : marque lue par le BO). */
+export function csvFooterLines(m: ExportManifest): string[] {
+  const L = m.sections.map((st) => csvLine(['export', 'section', st.table ?? '', '', st.id, st.title, st.status, String(st.exported), st.expected === null ? '' : String(st.expected), String(st.batches), '', st.finishedAt, st.error ?? '']));
+  L.push(csvLine(['export', 'statut', '', '', m.generationId, `${m.totals.exported} exporté(s) sur ${m.totals.expected} attendu(s)`, m.snapshot.at, m.snapshot.snapshot ?? '', m.error ?? '', '', '', m.finishedAt, m.status]));
+  return L;
+}
+
 /** CSV « long » de tout le dossier : une ligne par champ, par cellule et par relation. */
 export function dossierToCsv(d: EntityDossier): string {
-  const lines = [csvLine([...CSV_COLUMNS])];
-  lines.push(csvLine(['meta', 'extraction', '', '', 'extractedAt', 'Horodatage d’extraction', 'valeur', d.extractedAt, '', '', '', '', d.complete ? 'complète' : `INCOMPLÈTE : ${d.warnings.join(' / ')}`]));
+  const lines = [csvLine([...CSV_COLUMNS]), ...csvMetaLines(d)];
+  if (!d.export && !d.complete) lines.push(csvLine(['meta', 'completude', '', '', '', '', 'non chargé', '', '', '', '', '', `INCOMPLÈTE : ${d.warnings.join(' / ')}`]));
   for (const s of d.sections) {
-    const tab = TAB_LABELS[s.tab];
-    if (s.error) lines.push(csvLine([tab, s.title, '', '', '', '', 'non chargé', '', '', '', '', '', s.error]));
-    for (const f of s.fields ?? []) {
-      lines.push(csvLine([tab, s.title, f.table, '', f.path ? `${f.column}.${f.path}` : f.column, f.label, CELL_STATE_LABELS[f.state],
-        f.state === 'value' || f.state === 'null' ? rawText(f.raw) : '', f.display ?? '', f.unit ?? '', f.originLabel ?? f.origin ?? '', f.updatedAt ?? '', f.note ?? '']));
-    }
-    for (const r of s.relations ?? []) {
-      lines.push(csvLine([tab, s.title, r.via, String(r.id), r.type, ENTITY_LABELS[r.type], 'valeur', String(r.id), r.label, '', r.origin ?? '', '', `${r.nature}${r.status ? ` ; statut ${r.status}` : ''}`]));
-    }
+    lines.push(...csvSectionHeadLines(s));
+    for (const r of s.relations ?? []) lines.push(csvRelationLine(s, r));
     if (s.table) {
-      const t = s.table;
-      t.rows.forEach((row, i) => {
-        const ligne = row.id !== undefined && !isMarker(row.id) ? String(row.id) : String(i + 1);
-        for (const c of t.columns) {
-          const v = row[c];
-          const st = cellState(v);
-          const { display, unit } = st === 'value' ? formatColumn(c, v, row) : { display: '', unit: null };
-          lines.push(csvLine([tab, s.title, t.table, ligne, c, c, CELL_STATE_LABELS[st], st === 'value' || st === 'null' ? rawText(v) : '', display, unit ?? '', '', '', isMarker(v) ? rawText(v) : '']));
-        }
-      });
-      if (!t.complete) lines.push(csvLine([tab, s.title, t.table, '', '', '', 'non chargé', '', '', '', '', '', `INCOMPLET : ${t.rows.length} ligne(s) extraite(s) sur ${t.total ?? '?'} (borne ${t.limit})`]));
+      const off = s.window?.offset ?? 0;
+      s.table.rows.forEach((row, i) => lines.push(...csvRowLines(s, s.table!.table, s.table!.columns, row, off + i + 1)));
+    }
+    if (s.window && s.window.size !== null) {
+      lines.push(csvLine([TAB_LABELS[s.tab], s.title, s.table?.table ?? '', '', '', '', 'fenêtre', '', '', '', '', '', `consultation paginée : ${s.window.offset}+${s.table?.rows.length ?? s.relations?.length ?? 0} sur ${s.window.total ?? '?'} — export intégral pour toutes les lignes`]));
     }
   }
+  if (d.export) lines.push(...csvFooterLines(d.export));
   return csvDoc(lines);
 }
 
-/** CSV « large » d'UNE section tabulaire (colonnes de la table conservées). */
+export const csvWideHeader = (columns: string[]): string => csvLine(columns);
+export const csvWideRow = (columns: string[], r: Record<string, unknown>): string => csvLine(columns.map((c) => rawText(r[c])));
+export const FIELDS_CSV_COLUMNS = ['table', 'colonne', 'chemin', 'libelle', 'etat', 'valeur_brute', 'valeur_affichee', 'unite', 'origine', 'modifie_le', 'note'];
+export const fieldsCsvRow = (f: DossierField): string => csvLine([f.table, f.column, f.path ?? '', f.label, CELL_STATE_LABELS[f.state],
+  f.state === 'value' || f.state === 'null' ? rawText(f.raw) : '', f.display ?? '', f.unit ?? '', f.originLabel ?? f.origin ?? '', f.updatedAt ?? '', f.note ?? '']);
+export const RELATIONS_CSV_COLUMNS = ['type', 'id', 'libelle', 'nature', 'statut', 'origine', 'via'];
+export const relationsCsvRow = (r: DossierRelation): string => csvLine([r.type, String(r.id), r.label, r.nature, r.status ?? '', r.origin ?? '', r.via]);
+
+/** CSV « large » d'UNE section DÉJÀ EN MÉMOIRE (colonnes de la table conservées). Export intégral : route `section=`. */
 export function sectionToCsv(s: DossierSection): string | null {
   if (s.table) {
     const t = s.table;
-    const lines = [csvLine(t.columns), ...t.rows.map((r) => csvLine(t.columns.map((c) => rawText(r[c]))))];
-    return csvDoc(lines);
+    return csvDoc([csvWideHeader(t.columns), ...t.rows.map((r) => csvWideRow(t.columns, r))]);
   }
-  if (s.fields) {
-    const cols = ['table', 'colonne', 'chemin', 'libelle', 'etat', 'valeur_brute', 'valeur_affichee', 'unite', 'origine', 'modifie_le', 'note'];
-    return csvDoc([csvLine(cols), ...s.fields.map((f) => csvLine([f.table, f.column, f.path ?? '', f.label, CELL_STATE_LABELS[f.state],
-      f.state === 'value' || f.state === 'null' ? rawText(f.raw) : '', f.display ?? '', f.unit ?? '', f.originLabel ?? f.origin ?? '', f.updatedAt ?? '', f.note ?? '']))]);
-  }
-  if (s.relations) {
-    const cols = ['type', 'id', 'libelle', 'nature', 'statut', 'origine', 'via'];
-    return csvDoc([csvLine(cols), ...s.relations.map((r) => csvLine([r.type, String(r.id), r.label, r.nature, r.status ?? '', r.origin ?? '', r.via]))]);
-  }
+  if (s.fields) return csvDoc([csvLine(FIELDS_CSV_COLUMNS), ...s.fields.map(fieldsCsvRow)]);
+  if (s.relations) return csvDoc([csvLine(RELATIONS_CSV_COLUMNS), ...s.relations.map(relationsCsvRow)]);
   return null;
 }
 

@@ -157,7 +157,7 @@ export function AdminMobileHeader() {
   return (
     <>
       {/* Mobile top bar */}
-      <div className="flex items-center justify-between h-14 px-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] md:hidden flex-shrink-0">
+      <div className="flex items-center justify-between h-[calc(3.5rem+var(--vb-safe-top))] pt-[var(--vb-safe-top)] px-4 border-b border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] md:hidden flex-shrink-0">
         <div className="flex flex-col">
           <Logo size={24} withText={true} />
           <p className="text-[11px] text-[color:var(--text-muted)] ml-9">Administration</p>
@@ -178,11 +178,12 @@ export function AdminMobileHeader() {
             className="fixed inset-0 z-40 bg-[color:var(--veil)] md:hidden"
             onClick={() => setOpen(false)}
           />
-          <div className="fixed inset-y-0 left-0 z-50 w-72 md:hidden">
+          {/* Lot 81F : zones sûres (barre d'état, barre d'accueil) en mobile. */}
+          <div className="fixed inset-y-0 left-0 z-50 w-72 bg-[color:var(--sidebar)] pt-[var(--vb-safe-top)] pb-[var(--vb-safe-bottom)] pl-[var(--vb-safe-left)] md:hidden">
             <div className="relative h-full">
               <button
                 onClick={() => setOpen(false)}
-                className="absolute top-3 right-3 z-10 p-1.5 rounded-[10px] text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] transition-colors"
+                className="absolute top-2 right-2 z-10 flex size-11 items-center justify-center rounded-[10px] text-[color:var(--text-muted)] hover:bg-[color:var(--accent-soft)] hover:text-[color:var(--text-primary)] transition-colors"
                 aria-label="Fermer le menu"
               >
                 <X className="h-4 w-4" />
