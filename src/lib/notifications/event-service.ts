@@ -17,7 +17,7 @@
  * fait métier (atomicité). Dans ce cas, la livraison est faite par le cron.
  */
 
-import { getCatalogEntry } from './catalog';
+import { getCatalogEntry, isContentNotificationCategory } from './catalog';
 import { resolveRecipients } from './recipient-resolver';
 import { enqueue, type NewOutboxRow, type DbHandle } from './outbox';
 import { processOutboxIds } from './dispatcher';
@@ -54,6 +54,18 @@ export async function emit<T extends NotificationType>(input: EmitInput<T>): Pro
     throw new Error(`[notifications] Payload invalide pour ${input.type}: ${parsed.error.message}`);
   }
   const payload = parsed.data as Record<string, unknown>;
+
+  // Lot 82A (C-Q10, §3.3) : notification de CONTENU d'un compte non actif,
+  // suspendu ou en lecture seule — non émise (opération non indispensable).
+  // Revérifié à l'envoi (dispatcher) pour les événements déjà en file.
+  if (input.accountId != null && isContentNotificationCategory(entry.category)) {
+    const { checkAccountProcessingEligibility } = await import('@/services/account/processing-eligibility');
+    const e = await checkAccountProcessingEligibility(input.accountId, { maxAgeMs: 5_000 });
+    if (!e.eligible) {
+      console.info(JSON.stringify({ event: 'account.processing_refused', stage: 'notification_emit', type: input.type, accountId: input.accountId, reason: e.reason }));
+      return;
+    }
+  }
 
   const recipients = await resolveRecipients({
     recipientUserIds: input.recipientUserIds,

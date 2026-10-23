@@ -42,9 +42,17 @@ export function factories(sql: Sql) {
     /**
      * Compte avec son titulaire (créé si absent) et l'adhésion `owner`.
      * `plan` : abonnement actif à cette offre (droits effectifs, capacités
-     * pièces / équipements) ; absent, aucun abonnement (comme avant).
+     * pièces / équipements).
+     *
+     * Lot 82A (décision PO C-Q10) : seuls les comptes ACTIFS et modifiables
+     * reçoivent des traitements. Absent, le compte de test est donc un compte
+     * RÉEL en service : abonnement Standard actif (aucune capacité pièces /
+     * équipements ni fonction Premium — comme l'ancien « sans abonnement » —
+     * mais éligible aux traitements). `plan: null` : aucun abonnement
+     * (compte restreint, non éligible), pour les scénarios qui posent eux-
+     * mêmes l'abonnement ou testent le mode restreint.
      */
-    async account(over: { owner?: UserRow; name?: string; plan?: 'standard' | 'premium' | 'premium_duo' | 'premium_pro' } = {}): Promise<AccountRow & { owner: UserRow }> {
+    async account(over: { owner?: UserRow; name?: string; plan?: 'standard' | 'premium' | 'premium_duo' | 'premium_pro' | null } = {}): Promise<AccountRow & { owner: UserRow }> {
       const owner = over.owner ?? await this.user();
       const [a] = await sql<{ id: number }[]>`
         INSERT INTO accounts (name, owner_user_id) VALUES (${over.name ?? uid('compte')}, ${owner.id}) RETURNING id`;
@@ -53,6 +61,8 @@ export function factories(sql: Sql) {
       if (over.plan) {
         await sql`INSERT INTO account_subscriptions (account_id, plan_code, status, first_billed_at)
                   VALUES (${a.id}, ${over.plan}, 'active', now())`;
+      } else if (over.plan === undefined) {
+        await sql`INSERT INTO account_subscriptions (account_id, plan_code, status) VALUES (${a.id}, 'standard', 'active')`;
       }
       return { id: a.id, ownerUserId: owner.id, owner };
     },

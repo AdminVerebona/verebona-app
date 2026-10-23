@@ -54,6 +54,7 @@
  * puis appelle `guard.assertActive()` ; le moteur fait de même avant chaque
  * écriture (`assertJobActive`).
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { randomUUID } from 'crypto';
 import type { QueuedJob } from '../queue/job-queue.repository';
 import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
@@ -678,6 +679,8 @@ export async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<nu
   // identifiant croissant : curseur stable, aucun compte sauté.
   const requete = (nommage: boolean) => `SELECT a.id FROM accounts a
       WHERE a.id > $2
+        -- Lot 82A (C-Q10, §3.3) : balayage T3 des seuls comptes éligibles.
+        AND ${processingEligibleSql('a.id')}
         AND (EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
              -- Lot 49B : une ligne « À traiter » ouverte est un problème actif, réexaminé à chaque cycle.
              OR EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = a.id AND t.resolved_at IS NULL)${nommage ? `

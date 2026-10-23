@@ -123,7 +123,7 @@ describe('VALID-09 — plus aucun producteur de l’état « à valider »', () 
       // Lot 81E : lecture seule (état abouti → document « analysé » dans le résultat du lot).
       'src/services/ai/source-analysis/lot-notification.ts',
       'src/services/ai/source-analysis/pipeline.ts',
-      'src/services/coherence/coherence-maintenance.service.ts',
+      // Lot 82B : coherence-maintenance.service.ts retiré (maintenance horaire remplacée par le registre de cohérence).
       'src/services/documents/validation-reprise.ts',
       'src/services/home/home-blocks.ts',
       'src/services/to-process/document-rule-bridge.ts',

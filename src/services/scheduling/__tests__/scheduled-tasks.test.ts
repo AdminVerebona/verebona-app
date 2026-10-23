@@ -123,7 +123,8 @@ describe('catalogue', () => {
       // Lot 57A : la reprise des e-mails de vérification / d'invitation Duo
       // conditionne l'accès des nouveaux comptes.
       // Lot 81B (F) : la supervision des évaluations T6 — son arrêt est détecté par le chien de garde.
-      .toEqual(['expire-trials', 'mascot-t6-supervision', 'notifications-dispatch', 'to-process-scan', 'transactional-emails-retry', 'withdrawal-process']);
+      // Lot 82A (C-Q10) : transitions d'éligibilité des comptes (neutralisation, reprise + rattrapage).
+      .toEqual(['account-eligibility-sync', 'expire-trials', 'mascot-t6-supervision', 'notifications-dispatch', 'to-process-scan', 'transactional-emails-retry', 'withdrawal-process']);
   });
 
   it('aucun créneau fixe dans la nuit de sauvegarde ni dans la plage 2 h – 3 h', () => {

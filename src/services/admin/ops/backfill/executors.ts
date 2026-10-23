@@ -21,6 +21,8 @@
  *                         (lot 76H ; simulation = plans de projection sans écriture ; journal 0591)
  *   to-process-false-arbitrations  runArbitrationReprise (lot 81A ; simulation = lecture seule ;
  *                         traces dans to_process_action_events, campagne 0626)
+ *   database-restore-point runDatabaseBackup('admin') / restoreDatabaseBackup (lot 82E ; point de
+ *                         restauration = sauvegarde format 2 ; restauration tout ou rien)
  *
  * Services chargés à la demande : la route reste légère.
  */
@@ -38,8 +40,23 @@ export interface ExecutionHooks {
 /** Échantillons gardés par la synthèse texte des scripts (`--report --samples`). */
 const SCRIPT_SAMPLES = 50;
 
-export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, hooks: ExecutionHooks): Promise<RawBackfillOutput> {
+export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, hooks: ExecutionHooks, admin?: { id: number }): Promise<RawBackfillOutput> {
   switch (req.script) {
+    case 'database-restore-point': {
+      // Lot 82E (C-Q8, D13) : même mécanisme que la sauvegarde nocturne ; restauration tout ou rien.
+      if (req.action === 'restore') {
+        const { restoreDatabaseBackup } = await import('@/services/backup/database-restore.service');
+        const r = await restoreDatabaseBackup(sql, req.runId!, { reason: req.reason ?? '', adminUserId: admin?.id ?? null, log: hooks.log, progress: hooks.progress });
+        return { result: r };
+      }
+      const { runDatabaseBackup } = await import('@/services/backup/database-backup.service');
+      const m = await runDatabaseBackup('admin', {
+        label: req.reason, adminUserId: admin?.id ?? null,
+        onTable: (table, rows, i, n) => { hooks.progress({ tables: `${i}/${n}` }); if (rows > 0) hooks.log(`${table} : ${rows} ligne(s)`); },
+      });
+      // Rapport : signature des colonnes omise (elle reste dans le manifeste de la sauvegarde).
+      return { result: { ...m, tables: m.tables.map(({ name, rows }) => ({ name, rows })) } };
+    }
     case 'merge-rooms': {
       const m = await import('@/services/migration/rooms-merge');
       if (req.action === 'restore') {

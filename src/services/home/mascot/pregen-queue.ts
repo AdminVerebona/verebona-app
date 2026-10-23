@@ -46,6 +46,7 @@
  * du premier rendu (RUN-001) ; seul le prochain affichage en profite.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { pgClient } from '@/db';
 import { envNumber } from '@/lib/env-number';
 
@@ -112,8 +113,10 @@ export async function requestMascotPregeneration(accountId: number, reason: stri
     // Lot 81B (C) : un nouveau signal remet aussi à zéro l'épuisement (situation nouvelle).
     const epuisement = await exhaustColumnsReady() ? ', exhausted_count = 0' : '';
     await rows(
+      // Lot 82A (C-Q10) : aucune demande pour un compte non éligible (non
+      // actif, suspendu, lecture seule) — la reprise en redemande une.
       `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
-       VALUES ($1, clock_timestamp(), $2)
+       SELECT $1::int, clock_timestamp(), $2 WHERE ${ELIGIBLE_PARAM}
        ON CONFLICT (account_id) DO UPDATE
          SET requested_at = clock_timestamp(), reason = EXCLUDED.reason, attempts = 0${epuisement}`,
       [accountId, reason.slice(0, 60)],
@@ -136,7 +139,7 @@ export async function requestMascotPregenerationAt(accountId: number, reason: st
   try {
     await rows(
       `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
-       VALUES ($1, clock_timestamp() + ($3::int * INTERVAL '1 millisecond'), $2)
+       SELECT $1::int, clock_timestamp() + ($3::int * INTERVAL '1 millisecond'), $2 WHERE ${ELIGIBLE_PARAM}
        ON CONFLICT (account_id) DO UPDATE
          SET requested_at = GREATEST(home_mascot_pregen_requests.requested_at, EXCLUDED.requested_at), reason = EXCLUDED.reason, attempts = 0`,
       [accountId, reason.slice(0, 60), Math.max(0, Math.round(delayMs))],
@@ -159,7 +162,7 @@ export async function ensureMascotPregeneration(accountId: number, reason: strin
   try {
     const r = await rows(
       `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
-       VALUES ($1, clock_timestamp(), $2)
+       SELECT $1::int, clock_timestamp(), $2 WHERE ${ELIGIBLE_PARAM}
        ON CONFLICT (account_id) DO UPDATE
          SET requested_at = clock_timestamp(), reason = EXCLUDED.reason, attempts = 0
        WHERE home_mascot_pregen_requests.processed_at IS NOT NULL
@@ -174,10 +177,17 @@ export async function ensureMascotPregeneration(accountId: number, reason: strin
   }
 }
 
+/** Lot 82A (C-Q10) : le compte `$1` de la demande est éligible aux traitements. */
+const ELIGIBLE_PARAM = processingEligibleSql('$1::int');
+
+// Lot 82A (C-Q10, §3.3) : une demande d'un compte non éligible (essai échu,
+// suspendu, lecture seule) n'est JAMAIS prise — elle reste en place, sans
+// doublon (une ligne par compte), et repart d'elle-même à la réactivation.
 const EN_ATTENTE = `(processed_at IS NULL OR requested_at > processed_at)
   AND requested_at <= clock_timestamp() - ($1::int * INTERVAL '1 millisecond')
   AND (claimed_until IS NULL OR claimed_until < clock_timestamp())
-  AND attempts < ${MAX_ATTEMPTS}`;
+  AND attempts < ${MAX_ATTEMPTS}
+  AND ${processingEligibleSql('home_mascot_pregen_requests.account_id')}`;
 
 interface Claim { accountId: number; requestedAt: string }
 
@@ -466,6 +476,8 @@ export async function enqueueDeadlineSituations(today: string, lookbackDays: num
          FROM agenda_items i
          JOIN accounts a ON a.id = i.account_id
         WHERE (i.manual_status IS NULL OR trim(i.manual_status) = '')
+          -- Lot 82A (C-Q10) : comptes éligibles seulement.
+          AND ${processingEligibleSql('a.id')}
           AND (i.start_date IN ($1::date, $1::date - 1, $1::date - ($2::int + 1))
                -- Lot 60 (T6) : le seuil d'interpellation est franchi aujourd'hui
                -- (60 jours par défaut) — l'échéance est réévaluée.
@@ -542,7 +554,7 @@ export async function enqueueT6DueReevaluations(today: string, limit = 5_000): P
   const comptes = dus.map((x) => Number(x.account_id));
   const r = await rows(
     `INSERT INTO home_mascot_pregen_requests (account_id, requested_at, reason)
-     SELECT a.id, clock_timestamp(), 't6-due' FROM accounts a WHERE a.id = ANY($1::int[])
+     SELECT a.id, clock_timestamp(), 't6-due' FROM accounts a WHERE a.id = ANY($1::int[]) AND ${processingEligibleSql('a.id')}
      ON CONFLICT (account_id) DO UPDATE SET requested_at = clock_timestamp(), reason = 't6-due', attempts = 0
        WHERE home_mascot_pregen_requests.requested_at < clock_timestamp() - INTERVAL '${T6_DUE_REQUEST_MIN_INTERVAL}'
      RETURNING account_id`,

@@ -1,5 +1,6 @@
 /**
- * Archivage S3 des logs IA — WF-25, WF-45, LOG-UI-09.
+ * Archivage S3 des logs IA — WF-25, WF-45, LOG-UI-09 ; lot 82C (décision PO
+ * n° 10 : copie de sauvegarde, lignes CONSERVÉES en base, aucun agrégat).
  */
 import { gunzipSync } from 'node:zlib';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -42,7 +43,7 @@ describe('CDC Mascotte LOG-006 : journal T6 soumis à la rétention BO IA', () =
     expect(row).toMatchObject({ id: 1, status: 'generated', trace_id: 't', input_json: null, output_json: null });
   });
 
-  it('une journée échue du journal T6 est déposée, enregistrée puis retirée (sans agrégat de coûts)', async () => {
+  it('L82C-ARCH-02 — une journée échue du journal T6 est déposée et enregistrée, jamais retirée', async () => {
     const put = vi.fn(async () => {});
     unsafe.mockImplementation(async (sql: string) => {
       if (/SELECT DISTINCT/.test(sql) && /FROM home_mascot_generations/.test(sql)) return [{ d: '2026-06-02' }];
@@ -60,9 +61,9 @@ describe('CDC Mascotte LOG-006 : journal T6 soumis à la rétention BO IA', () =
     const [key, body] = put.mock.calls[0] as unknown as [string, Buffer];
     expect(key).toMatch(/home_mascot_generations\/2026\/06\/2026-06-02-part-000/);
     expect(gunzipSync(body).toString('utf8')).not.toMatch(/Maison/);
-    const tx = txUnsafe.mock.calls.map(([q]) => String(q));
-    expect(tx.some((q) => /ai_usage_daily_rollup/.test(q))).toBe(false);
-    expect(tx.at(-1)).toMatch(/DELETE FROM home_mascot_generations/);
+    const toutes = [...unsafe.mock.calls, ...txUnsafe.mock.calls].map(([q]) => String(q));
+    expect(toutes.some((q) => /ai_usage_daily_rollup/.test(q))).toBe(false);
+    expect(toutes.some((q) => /DELETE FROM/.test(q))).toBe(false);
   });
 });
 
@@ -72,7 +73,7 @@ describe('archivage (WF-25)', () => {
     expect(archiveKey('production', 'ai_usage_event', '2026-06-01', 2)).toBe('ai-logs/production/ai_usage_event/2026/06/2026-06-01-part-002.ndjson.gz');
   });
 
-  it('dépose d’abord sur S3, puis registre + agrégats + suppression dans une transaction', async () => {
+  it('L82C-ARCH-01 — dépose sur S3 puis enregistre l’archive (lignes conservées), sans agrégat ni suppression', async () => {
     const put = vi.fn(async () => {});
     unsafe.mockImplementation(async (sql: string) => {
       if (/SELECT DISTINCT/.test(sql) && /FROM ai_usage_event/.test(sql)) return [{ d: '2026-06-01' }];
@@ -93,13 +94,27 @@ describe('archivage (WF-25)', () => {
     const lignes = gunzipSync(body).toString('utf8').trim().split('\n').map((l) => JSON.parse(l));
     expect(lignes).toHaveLength(2);
     expect(JSON.stringify(lignes)).not.toMatch(/secret/);
-    const tx = txUnsafe.mock.calls.map(([q]) => String(q));
-    expect(tx[0]).toMatch(/INSERT INTO ai_log_archives/);
-    expect(tx[1]).toMatch(/INSERT INTO ai_usage_daily_rollup/);
-    expect(tx[2]).toMatch(/DELETE FROM ai_usage_event/);
+    const toutes = [...unsafe.mock.calls, ...txUnsafe.mock.calls].map(([q]) => String(q));
+    const registre = unsafe.mock.calls.find(([q]) => /INSERT INTO ai_log_archives/.test(String(q)));
+    expect(String(registre?.[0])).toMatch(/source_rows_kept/);
+    expect(toutes.some((q) => /ai_usage_daily_rollup/.test(q))).toBe(false);
+    expect(toutes.some((q) => /DELETE FROM/.test(q))).toBe(false);
   });
 
-  it('échec du dépôt S3 : rien n’est supprimé', async () => {
+  it('L82C-ARCH-03 — reprise après la plus haute ligne déjà archivée : une ligne n’est archivée qu’une fois', async () => {
+    unsafe.mockImplementation(async (sql: string, p: unknown[]) => {
+      if (/MAX\(max_id\)/.test(sql)) return [{ w: 41 }];
+      if (/SELECT DISTINCT/.test(sql)) { expect(p).toEqual([88, 41]); return []; }
+      return [];
+    });
+    const r = await archiveAiLogs({ store: { put: vi.fn(async () => {}) }, chunk: 10 });
+    expect(r.archives).toBe(0);
+    const distincts = unsafe.mock.calls.filter(([q]) => /SELECT DISTINCT/.test(String(q)));
+    expect(distincts).toHaveLength(3);
+    expect(distincts.every(([q]) => /id > \$2/.test(String(q)))).toBe(true);
+  });
+
+  it('échec du dépôt S3 : rien n’est enregistré', async () => {
     unsafe.mockImplementation(async (sql: string) => {
       if (/SELECT DISTINCT/.test(sql) && /ai_usage_event/.test(sql)) return [{ d: '2026-06-01' }];
       if (/SELECT \* FROM ai_usage_event/.test(sql)) return [{ id: 1 }];
@@ -107,6 +122,6 @@ describe('archivage (WF-25)', () => {
       return [];
     });
     await expect(archiveAiLogs({ store: { put: async () => { throw new Error('S3 KO'); } } })).rejects.toThrow('S3 KO');
-    expect(txUnsafe).not.toHaveBeenCalled();
+    expect(unsafe.mock.calls.some(([q]) => /INSERT INTO ai_log_archives/.test(String(q)))).toBe(false);
   });
 });

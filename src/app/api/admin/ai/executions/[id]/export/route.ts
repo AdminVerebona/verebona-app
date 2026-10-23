@@ -7,7 +7,8 @@
  * s'applique. `?download=1` : proposé en fichier `.json`.
  * Lot 33D : `?includeModelOutput=1` ajoute les sorties du modèle conservées
  * (appels en échec ou corrigés) — même règle d'accès et même journal que la
- * route `…/model-output`.
+ * route `…/model-output`. Lot 82C : avec les échanges capturés à la source
+ * (`captures`), complets, sous le même droit et le même journal.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getExecutionDetail } from '@/services/ai/telemetry/execution-log.repository';
@@ -25,12 +26,14 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ id: 
     if (!detail) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
     const now = new Date();
     let modelOutputs;
+    let captures;
     if (req.nextUrl.searchParams.get('includeModelOutput') === '1') {
-      const acces = await readModelOutputsForAdmin({ adminUserId: guard.ctx.adminUserId, callId: detail.call.id, purpose: 'export' });
+      const acces = await readModelOutputsForAdmin({ adminUserId: guard.ctx.adminUserId, callId: detail.call.id, purpose: 'export', includeCaptures: true });
       if (!acces.ok) return NextResponse.json({ error: acces.code, message: acces.message }, { status: acces.code === 'FORBIDDEN' ? 403 : 404 });
       modelOutputs = acces.outputs;
+      captures = acces.captures;
     }
-    const body = buildExecutionExport(detail, now, modelOutputs ? { modelOutputs } : {});
+    const body = buildExecutionExport(detail, now, { ...(modelOutputs ? { modelOutputs } : {}), ...(captures ? { captures } : {}) });
     const headers: Record<string, string> = { 'cache-control': 'no-store' };
     if (req.nextUrl.searchParams.get('download') === '1') {
       headers['content-disposition'] = `attachment; filename="${executionExportFileName(detail.call.id, now)}"`;

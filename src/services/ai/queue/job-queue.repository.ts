@@ -162,7 +162,9 @@ export interface EnqueueResult {
 }
 
 /** Motifs de non-création rendus par `enqueue` (sous-ensemble des motifs T3 tracés). */
-export type EnqueueReasonCode = 'CROSS_ACCOUNT_SCOPE' | 'DUPLICATE_PENDING' | 'DUPLICATE_RUNNING' | 'ALREADY_QUEUED';
+export type EnqueueReasonCode = 'CROSS_ACCOUNT_SCOPE' | 'DUPLICATE_PENDING' | 'DUPLICATE_RUNNING' | 'ALREADY_QUEUED'
+  /** Lot 82A (C-Q10) : compte non actif, suspendu ou en lecture seule — rien n'est écrit, `jobId` nul. */
+  | 'ACCOUNT_INELIGIBLE';
 
 /** Trace `[t3-enqueue]` d'une issue d'`enqueue` (T3 seulement, jamais bloquante). */
 async function tracerT3(input: EnqueueInput, r: EnqueueResult | null, error?: unknown): Promise<void> {
@@ -172,7 +174,7 @@ async function tracerT3(input: EnqueueInput, r: EnqueueResult | null, error?: un
   await traceT3Enqueue({
     origin: input.origin ?? 'automatic', triggerCode: input.triggerCode ?? null, accountId: scope.accountId ?? null,
     targetType: scope.targetType ?? null, targetId: scope.targetId ?? null,
-    decision: error ? 'error' : r?.reasonCode === 'CROSS_ACCOUNT_SCOPE' ? 'refused' : (r?.decision ?? 'error'),
+    decision: error ? 'error' : r?.reasonCode === 'CROSS_ACCOUNT_SCOPE' || r?.reasonCode === 'ACCOUNT_INELIGIBLE' ? 'refused' : (r?.decision ?? 'error'),
     reason: error ? 'INSERT_FAILED' : r?.reasonCode ?? null,
     jobId: r?.jobId ?? null,
     // RETURNING relit la ligne écrite dans la même instruction.
@@ -211,6 +213,15 @@ async function enqueueUntraced(input: EnqueueInput): Promise<EnqueueResult> {
   {
     const { enqueueScopeAllowed } = await import('./job-scope');
     if (!(await enqueueScopeAllowed(input))) return { decision: 'skip', jobId: null, reasonCode: 'CROSS_ACCOUNT_SCOPE' };
+  }
+
+  // Lot 82A (C-Q10, §3.3) : un compte non actif (essai échu), suspendu ou en
+  // lecture seule ne reçoit AUCUN travail — automatique ou manuel, quel que
+  // soit le traitement. Rien n'est écrit ; `jobId` nul. Contrôle refait à
+  // l'exécution (`queue-worker`). Lecture impossible : refus (fail closed,
+  // comme le contrôle de périmètre).
+  if (input.scope?.accountId != null && !(await enqueueEligibilityAllowed(input))) {
+    return { decision: 'skip', jobId: null, reasonCode: 'ACCOUNT_INELIGIBLE' };
   }
 
   if (input.onlyIfNeverQueued) return enqueueOnce(input, key, origin);
@@ -308,6 +319,27 @@ async function enqueueUntraced(input: EnqueueInput): Promise<EnqueueResult> {
     throw new Error(`[queue] Job ${row.id} persisté sans son contexte de reprise : la demande n'est pas acquittée.`);
   }
   return { decision, jobId: Number(row.id), reasonCode: null };
+}
+
+/** Contrôle d'éligibilité de MISE EN FILE (lot 82A). `false` : refus journalisé. */
+async function enqueueEligibilityAllowed(input: EnqueueInput): Promise<boolean> {
+  const accountId = Number(input.scope?.accountId);
+  try {
+    const { checkAccountProcessingEligibility, INELIGIBILITY_LABELS } = await import('@/services/account/processing-eligibility');
+    const e = await checkAccountProcessingEligibility(accountId);
+    if (e.eligible) return true;
+    console.info(JSON.stringify({
+      event: 'account.processing_refused', stage: 'enqueue', treatment: input.treatment, accountId,
+      targetType: input.scope?.targetType ?? null, reason: e.reason, label: e.reason ? INELIGIBILITY_LABELS[e.reason] : null,
+    }));
+    return false;
+  } catch (e) {
+    console.error(JSON.stringify({
+      event: 'account.eligibility_unavailable', stage: 'enqueue', treatment: input.treatment, accountId,
+      reason: String((e as Error).message ?? e).slice(0, 200),
+    }));
+    return false;
+  }
 }
 
 /**
@@ -841,6 +873,34 @@ export async function releaseInterruptedJob(
       WHERE id = $1 AND execution_id = $2::uuid AND status = 'RUNNING'
       RETURNING id`,
     [jobId, executionId, `interrompu : ${reason}`.slice(0, 2000)] as never[],
+  );
+  return (rows as unknown as Row[]).length > 0;
+}
+
+/**
+ * Lot 82A (C-Q10) — NEUTRALISE l'exécution d'un travail dont le compte n'est
+ * plus éligible (constaté au démarrage ou refusé par la passerelle IA) :
+ * CANCELLED, tentative rendue, jeton révoqué, marqueur de réexamen
+ * (`payload.accountIneligible`, voir `processing-lifecycle`). Ni échec ni
+ * report : aucune suite métier (le fichier n'est pas marqué en échec).
+ * Conditionné au jeton, comme `failJob`.
+ */
+export async function neutralizeIneligibleJob(
+  jobId: number,
+  executionId: string | null,
+  reason: import('@/services/account/processing-eligibility').IneligibilityReason,
+): Promise<boolean> {
+  const { neutralizedMessage } = await import('@/services/account/processing-eligibility');
+  const rows = await pgClient.unsafe(
+    `UPDATE ai_job_queue
+        SET status = 'CANCELLED', finished_at = NOW(), last_error = $3,
+            attempts = GREATEST(attempts - 1, 0),
+            execution_id = NULL, worker_id = NULL, lease_expires_at = NULL,
+            payload = COALESCE(payload, '{}'::jsonb) || jsonb_build_object('accountIneligible',
+              jsonb_build_object('reason', $4::text, 'at', NOW()::text, 'previousStatus', 'RUNNING'))
+      WHERE id = $1 AND status = 'RUNNING' AND ($2::uuid IS NULL OR execution_id = $2::uuid)
+      RETURNING id`,
+    [jobId, executionId, neutralizedMessage(reason), reason] as never[],
   );
   return (rows as unknown as Row[]).length > 0;
 }

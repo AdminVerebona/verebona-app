@@ -166,7 +166,8 @@ export async function backfillAgendaSourceLinks(sql: Sql, opts: {
       if (r.deletedAt) { report.orphans.push({ agendaItemId: id, accountId: r.accountId, originRefId: r.refId, reason: 'DELETED' }); continue; }
       if (!r.linked) {
         if (opts.apply) {
-          const ins = await sql`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id) VALUES (${id}, ${r.refId}) ON CONFLICT DO NOTHING RETURNING id`;
+          // Lot 82D (CDC v5 §7.4) : document d'origine d'un élément automatique → provenance AI_DIRECT.
+          const ins = await sql`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id, provenances) VALUES (${id}, ${r.refId}, ARRAY['AI_DIRECT']::text[]) ON CONFLICT DO NOTHING RETURNING id`;
           report.fileLinksCreated += ins.length;
         } else {
           report.fileLinksCreated += 1;

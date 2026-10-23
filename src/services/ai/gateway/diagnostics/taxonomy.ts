@@ -56,6 +56,15 @@ export const INVALID_OUTPUT_SUBTYPES = [
    * l'utilisateur final.
    */
   'RUNTIME_CONTRACT_MISMATCH',
+  /**
+   * Lot 82C (LOG-04, R02 — incident 4694) : requête refusée par le
+   * fournisseur parce qu'un PARAMÈTRE nommé n'est pas accepté par ce modèle
+   * (niveau ou budget de raisonnement, plafond de sortie, température…).
+   * Famille `INPUT_ERROR` (incompatibilité de requête), jamais une
+   * indisponibilité du fournisseur ni `UNKNOWN` ; le paramètre est dans
+   * `provider.rejectedParameter`.
+   */
+  'PARAMETER_REJECTED',
   'UNKNOWN',
 ] as const;
 export type InvalidOutputSubtype = (typeof INVALID_OUTPUT_SUBTYPES)[number];
@@ -167,6 +176,8 @@ export interface ProviderCallMetadata {
   providerErrorCode?: string | null;
   providerErrorMessage?: string | null;
   httpStatus?: number | null;
+  /** Lot 82C : paramètre refusé par le fournisseur (`generationConfig.thinkingConfig.thinkingLevel`…). */
+  rejectedParameter?: string | null;
 }
 
 /** Transformation appliquée à une sortie avant acceptation (ticket 2, rapport). */
@@ -261,6 +272,7 @@ export const SUBTYPE_LABELS: Record<InvalidOutputSubtype, string> = {
   PARSER_ERROR: 'erreur du parseur',
   BUSINESS_VALIDATION_FAILED: 'règle métier non respectée',
   RUNTIME_CONTRACT_MISMATCH: 'contrat runtime incohérent (moteur)',
+  PARAMETER_REJECTED: 'paramètre refusé par le modèle',
   UNKNOWN: 'non classé',
 };
 
@@ -330,16 +342,19 @@ export function isStructuredOutputRetry(a: Pick<ProviderAttemptTrace, 'kind'>): 
  * Lot 52B — nature d'un échec AVANT sortie, pour le BO : un HTTP 400
  * INVALID_ARGUMENT n'est jamais une indisponibilité du fournisseur.
  */
-export type ProviderFailureCategory = 'PROVIDER_UNAVAILABLE' | 'REQUEST_REJECTED' | 'STRUCTURED_OUTPUT_REJECTED';
+export type ProviderFailureCategory = 'PROVIDER_UNAVAILABLE' | 'REQUEST_REJECTED' | 'STRUCTURED_OUTPUT_REJECTED' | 'PARAMETER_REJECTED';
 
 export const PROVIDER_FAILURE_CATEGORY_LABELS: Record<ProviderFailureCategory, string> = {
   PROVIDER_UNAVAILABLE: 'Fournisseur indisponible',
   REQUEST_REJECTED: 'Requête refusée par le fournisseur',
   STRUCTURED_OUTPUT_REJECTED: 'Structured output refusé',
+  PARAMETER_REJECTED: 'Paramètre refusé par le modèle',
 };
 
 export function providerFailureCategory(family: string | null | undefined, subtype: string | null | undefined): ProviderFailureCategory | null {
   if (subtype === 'STRUCTURED_OUTPUT_REJECTED') return 'STRUCTURED_OUTPUT_REJECTED';
+  // Lot 82C (LOG-04, R02) : incompatibilité de paramètre, jamais une indisponibilité.
+  if (subtype === 'PARAMETER_REJECTED') return 'PARAMETER_REJECTED';
   switch (family) {
     case 'INPUT_ERROR': case 'CONTEXT_TOO_LARGE': case 'AUTH_ERROR': return 'REQUEST_REJECTED';
     case 'PROVIDER_ERROR': case 'NETWORK_ERROR': case 'TIMEOUT': case 'RATE_LIMIT': return 'PROVIDER_UNAVAILABLE';
@@ -356,11 +371,13 @@ export function providerFailureCategory(family: string | null | undefined, subty
 export function displayErrorCode(errorCode: string | null, family: string | null | undefined, subtype?: string | null): string | null {
   if (errorCode !== 'PROVIDER_UNAVAILABLE') return errorCode;
   const cat = providerFailureCategory(family, subtype);
-  return cat === 'REQUEST_REJECTED' || cat === 'STRUCTURED_OUTPUT_REJECTED' ? 'PROVIDER_REQUEST_REJECTED' : errorCode;
+  return cat === 'REQUEST_REJECTED' || cat === 'STRUCTURED_OUTPUT_REJECTED' || cat === 'PARAMETER_REJECTED' ? 'PROVIDER_REQUEST_REJECTED' : errorCode;
 }
 
 /** Code affiché : `INVALID_OUTPUT / SCHEMA_VALIDATION_FAILED`, `TIMEOUT`… */
 export function displayCause(family: AiFailureFamily | null, subtype: InvalidOutputSubtype | null): string | null {
   if (!family) return null;
-  return family === 'INVALID_OUTPUT' ? `INVALID_OUTPUT / ${subtype ?? 'UNKNOWN'}` : family;
+  if (family === 'INVALID_OUTPUT') return `INVALID_OUTPUT / ${subtype ?? 'UNKNOWN'}`;
+  // Lot 82C : le refus d'un paramètre se distingue d'un refus générique.
+  return subtype === 'PARAMETER_REJECTED' ? `${family} / PARAMETER_REJECTED` : family;
 }

@@ -3,8 +3,8 @@
  *
  * · historique conversationnel : 90 jours — décision produit « 3 mois »
  *   (CDC Centre d'aide GAP-16), qui prime sur les 7 jours du §24.1 ;
- * · journaux : 90 j (logs techniques sans contenu), 30 j (traces détaillées
- *   expurgées), 13 mois (agrégats, feedback) — §29.7.
+ * · agrégats et feedback : 13 mois — §29.7. Lot 82C : les traces IA ne sont
+ *   plus purgées par ancienneté (décisions PO n° 01 et 10 du 22/10).
  * La décision « 3 mois » du Centre d'aide (GAP-16) reste possible par
  * environnement.
  */
@@ -24,7 +24,7 @@ const initial = process.env[ENV];
 afterEach(() => {
   if (initial === undefined) delete process.env[ENV];
   else process.env[ENV] = initial;
-  delete process.env.AI_TRACE_TECHNICAL_RETENTION_DAYS;
+  delete process.env.AI_FEEDBACK_RETENTION_MONTHS;
 });
 
 describe('durée d’historique (§24.1)', () => {
@@ -45,18 +45,18 @@ describe('durée d’historique (§24.1)', () => {
 });
 
 describe('politique de purge (§29.7)', () => {
-  it('distingue historique et journaux', () => {
+  it('distingue historique et agrégats ; L82C : plus aucune durée pour les traces IA', () => {
     delete process.env[ENV];
     expect(retentionPolicy()).toEqual({
-      conversationDays: 90, detailedTraceDays: 30, technicalLogDays: 90, aggregateMonths: 13, feedbackMonths: 13,
+      conversationDays: 90, aggregateMonths: 13, feedbackMonths: 13,
     });
   });
 
   it('la purge lit la même variable que l’assistant, à chaque exécution', () => {
     process.env[ENV] = '30';
-    process.env.AI_TRACE_TECHNICAL_RETENTION_DAYS = 'x';
+    process.env.AI_FEEDBACK_RETENTION_MONTHS = 'x';
     const p = retentionPolicy();
     expect(p.conversationDays).toBe(30);
-    expect(p.technicalLogDays).toBe(90);
+    expect(p.feedbackMonths).toBe(13);
   });
 });

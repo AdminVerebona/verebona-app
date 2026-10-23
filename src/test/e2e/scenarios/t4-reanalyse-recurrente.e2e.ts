@@ -17,9 +17,6 @@ vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () 
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (orig) => ({
-  ...(await orig<object>()), emitAgendaItemCreated: async () => {},
-}));
 
 /** Décision T4 telle que A la produit en enabled (sémantique recopiée du candidat). */
 const occurrence = (fileId: number, date: string, over: Partial<AgendaDecision> = {}): AgendaDecision => ({

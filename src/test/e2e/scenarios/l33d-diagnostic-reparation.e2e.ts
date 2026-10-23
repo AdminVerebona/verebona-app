@@ -12,7 +12,7 @@
  *   · E2E-REPAIR-02 (cas 8) : document déjà en échec INVALID_OUTPUT → rejeu
  *     automatique (tâche planifiée) → analyse réussie, idempotent (aucun
  *     second rejeu, aucun fait dupliqué) ;
- *   · migrations 0284 / 0285 idempotentes ; purge à l'horizon de rétention.
+ *   · migrations 0284 / 0285 idempotentes ; lot 82C : plus de purge par ancienneté.
  */
 import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
@@ -218,15 +218,17 @@ scenario('L33D', 'Diagnostic des échecs IA, réparation des sorties et rejeu au
     expect(await etatMetier()).toEqual(avant);
   });
 
-  it('purge à l’horizon de rétention des traces IA (sortie modèle comprise)', async () => {
+  // Lot 82C (décisions PO n° 01 et 10 du 22/10) : la purge à l'horizon de
+  // rétention est RETIRÉE — le test historique attendait la suppression.
+  it('L82C — plus de purge par ancienneté des diagnostics (sortie modèle comprise)', async () => {
     const [vieux] = await sql<{ id: number }[]>`
       INSERT INTO ai_call_diagnostics (created_at, trace_id, operation_code, outcome, raw_output)
       VALUES (now() - interval '120 days', 'e2e-purge', 't1_analyze_document', 'FAILED', 'secret') RETURNING id`;
-    const [recent] = await sql<{ id: number }[]>`
-      INSERT INTO ai_call_diagnostics (trace_id, operation_code, outcome) VALUES ('e2e-purge', 't1_analyze_document', 'FAILED') RETURNING id`;
-    const { purgeCallDiagnostics } = await import('@/services/ai/gateway/diagnostics/diagnostic.repository');
-    expect(await purgeCallDiagnostics({ olderThanDays: 88 })).toBeGreaterThanOrEqual(1);
-    const restants = await sql<{ id: number }[]>`SELECT id FROM ai_call_diagnostics WHERE id = ANY(${[vieux.id, recent.id]})`;
-    expect(restants.map((r) => Number(r.id))).toEqual([Number(recent.id)]);
+    const { SCHEDULED_TASKS } = await import('@/services/scheduling/scheduled-tasks.catalog');
+    expect(SCHEDULED_TASKS.map((t) => t.code)).not.toContain('ai-call-diagnostics-purge');
+    const repo = await import('@/services/ai/gateway/diagnostics/diagnostic.repository');
+    expect('purgeCallDiagnostics' in repo).toBe(false);
+    const restants = await sql<{ id: number }[]>`SELECT id FROM ai_call_diagnostics WHERE id = ${vieux.id}`;
+    expect(restants).toHaveLength(1);
   });
 });

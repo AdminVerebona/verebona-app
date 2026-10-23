@@ -512,6 +512,16 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       FROM ai_call_diagnostics
      WHERE ${ACC()} AND ${PERIOD('created_at')} ${entityScope ? `AND (trace_id IN ${TRACES} OR source_ids && {{fileIds}}::int[])` : ''}
      ORDER BY id DESC`);
+  // Lot 82C (CDC Pilotage IA V2 P1) : état de la capture complète à la source de chaque tentative — SANS contenu
+  // (statuts, tailles, empreintes, durées). Le contenu (prompt, réponse) reste lisible au détail d'exécution, sous
+  // l'accès réservé et journalisé. Table absente (migration 0649) : liste en erreur, signalée par le manifeste.
+  await list('ia/captures-appels.json', 'Captures à la source des appels IA (ai_call_captures) : statut de capture, du prompt et de la réponse, tailles, empreintes, durées — sans contenu', `
+    SELECT id, captured_at, trace_id, usage_event_id, call_index, call_kind, origin, account_id, use_case_code, operation_code, task, model, model_rank,
+           capture_status, capture_reason, capture_attempts, prompt_status, prompt_chars, prompt_sha256, response_status, response_chars, response_sha256,
+           attempt_duration_ms, execution_elapsed_ms, source_ids
+      FROM ai_call_captures
+     WHERE ${ACC()} AND ${PERIOD('captured_at')} ${entityScope ? `AND (trace_id IN ${TRACES} OR source_ids && {{fileIds}}::int[])` : ''}
+     ORDER BY id DESC`, undefined, { onlyIfRows: true });
   // Chronologie corrélée : mêmes lignes que les fichiers ci-dessus, ordonnées par horodatage (SQL, en flux).
   const tl: string[] = [
     `SELECT a.last_seen_at AS h, 1 AS k, a.id AS i, json_build_object('horodatage', a.last_seen_at, 'type', 'ANOMALIE', 'table', 'admin_anomalies', 'id', a.id, 'statut', a.status, 'compte', a.account_id, 'libelle', a.title) AS ev FROM (${ANOMALIES}) a`,
@@ -665,7 +675,7 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       }
       if (refus) unavailable.push({ element: 'Diagnostic renforcé', motif: 'refusé : consultation des sorties modèle réservée (AI_MODEL_OUTPUT_ADMIN_IDS) — refus journalisé' });
       else if (!all.length) unavailable.push({ element: 'Diagnostic renforcé', motif: 'aucune trace IA dans le périmètre et la période' });
-      else if (!sorties.length) unavailable.push({ element: 'Diagnostic renforcé', motif: 'aucune sortie modèle conservée (rétention ai-call-diagnostics-purge, ou appels sans sortie)' });
+      else if (!sorties.length) unavailable.push({ element: 'Diagnostic renforcé', motif: 'aucune sortie modèle conservée (diagnostics antérieurs au lot 82C purgés à 88 jours, ou appels sans sortie)' });
       const restreint = all.length > traceIds.length;
       if (restreint) unavailable.push({ element: `Sorties modèle de ${all.length - traceIds.length} trace(s)`, motif: `restriction d’accès aux sorties IA sensibles (inchangée) : ${DIAG_LIMITS.modelOutputTraces} traces jointes sur ${all.length}` });
       await w(`${JSON.stringify(sorties.map((x) => M(x)), null, 2)}\n`);
@@ -682,7 +692,7 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   const buildManifest = (): DiagManifest => {
     if (finalManifest) return finalManifest;
     if (!infos.some((f) => f.path === 'ia/rapports-execution.json' && (f.count ?? 0) > 0) && !nReports) {
-      unavailable.push({ element: 'Rapports d’exécution T1 / T3', motif: 'aucun rapport conservé sur la période (rétention ai-call-diagnostics-purge ou traitements antérieurs au lot 58C)' });
+      unavailable.push({ element: 'Rapports d’exécution T1 / T3', motif: 'aucun rapport conservé sur la période (rapports antérieurs au lot 82C purgés à 88 jours, ou traitements antérieurs au lot 58C)' });
     }
     if (entityScope && nRuptures) unavailable.push({ element: `Traçabilité de ${nRuptures} montant(s) sur ${nTraces}`, motif: 'au moins une étape non disponible (voir « rupture » de chaque ligne dans tracabilite/montants.json)' });
     if (entityScope && nSansLien) unavailable.push({ element: `Lien composante → indice T1 (${nSansLien} montant(s))`, motif: 'non encore persisté (composante antérieure au lot 78A, pas encore reconsolidée) : indices du candidat exportés, correspondance de valeur signalée comme telle' });

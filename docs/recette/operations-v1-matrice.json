@@ -2279,7 +2279,7 @@
    "trace": "Valorisation — C18 — Valuation service/coherence",
    "tests": [
     "src/services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts",
-    "src/services/coherence/__tests__/o0-propagations-generiques.test.ts"
+    "src/services/coherence/__tests__/l82b-registre-socle.test.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -2292,7 +2292,7 @@
    "trace": "Valorisation — C18 — Valuation service/coherence",
    "tests": [
     "src/services/ai/source-analysis/projection/__tests__/o0-acquisition-contextualisee.test.ts",
-    "src/services/coherence/__tests__/o0-propagations-generiques.test.ts"
+    "src/services/coherence/__tests__/l82b-registre-socle.test.ts"
    ],
    "statut": "AUTOMATISE"
   },
@@ -2304,7 +2304,7 @@
    "attendu": "Agenda/T4 prioritaire, Operation contexte.",
    "trace": "Valorisation — C18 — Valuation service/coherence",
    "tests": [
-    "src/services/coherence/__tests__/o0-propagations-generiques.test.ts"
+    "src/services/coherence/__tests__/l82b-registre-socle.test.ts"
    ],
    "statut": "AUTOMATISE"
   },

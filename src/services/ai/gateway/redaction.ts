@@ -21,6 +21,30 @@ export function redact(input: string): string {
 }
 
 /**
+ * Lot 82C (LOG-07, LOG-08) — même masquage que `redact`, avec le relevé des
+ * masques appliqués (`[IBAN_MASQUE]` → nombre) : une capture distingue ainsi
+ * « contenu masqué » de « contenu capturé tel quel ». Pur.
+ */
+export function redactWithReport(input: string): { text: string; masks: Record<string, number> } {
+  const masks: Record<string, number> = {};
+  const text = PATTERNS.reduce((acc, p) => acc.replace(p.re, () => {
+    masks[p.replacement] = (masks[p.replacement] ?? 0) + 1;
+    return p.replacement;
+  }), input);
+  return { text, masks };
+}
+
+/** Marqueurs de masquage présents dans un texte déjà masqué (prompt construit sur variables masquées). Pur. */
+export function maskMarkersIn(text: string): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const m of new Set(PATTERNS.map((p) => p.replacement))) {
+    const n = text.split(m).length - 1;
+    if (n > 0) out[m] = n;
+  }
+  return out;
+}
+
+/**
  * Masque récursivement les valeurs texte d'un objet de variables de prompt.
  * Lot 16b : plus aucune exemption (relais historiques retirés).
  */

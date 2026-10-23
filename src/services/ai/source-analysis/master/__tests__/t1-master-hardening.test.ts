@@ -10,8 +10,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const enqueueT3 = vi.hoisted(() => vi.fn());
 vi.mock('../../../reconciliation/t3-queue', () => ({ enqueueT3ForAnalyzedAsset: (...a: unknown[]) => enqueueT3(...a) }));
-const emitAssetUpdated = vi.hoisted(() => vi.fn());
-vi.mock('@/services/coherence/impact-propagation.service', () => ({ emitAssetUpdated: (...a: unknown[]) => emitAssetUpdated(...a) }));
 
 const { T1AnalyzeDocumentTolerantOutput, splitNormalisation } = await import('../tolerant-output');
 const { verifyExcerpts } = await import('../../steps/analyze-document.step');
@@ -138,7 +136,6 @@ describe('EXTRACTED_CONTENT en donnée délimitée', () => {
 describe('réconciliation de chaque bien touché (T1-04, T1-05)', () => {
   beforeEach(() => {
     enqueueT3.mockReset(); enqueueT3.mockResolvedValue(1);
-    emitAssetUpdated.mockReset(); emitAssetUpdated.mockResolvedValue(undefined);
   });
 
   it('P-T1-04 sans bien connu : T3 pour les biens 12 et 13', async () => {
@@ -160,8 +157,8 @@ describe('réconciliation de chaque bien touché (T1-04, T1-05)', () => {
       const r = await enqueueT3ForAffectedAssets({ accountId: 1, userId: 2, leadSourceId: 1000, affectedAssetIds: [12, 13], documentAssetId: 12 });
       expect(r).toEqual({ enqueued: [13] });
     } finally { vi.unstubAllEnvs(); }
+    // Lot 82B : l'ancien pont (`coherence/impact-propagation`) n'existe plus du tout.
     expect(enqueueT3).toHaveBeenCalledTimes(1);
-    expect(emitAssetUpdated).not.toHaveBeenCalled();
   });
 
   it('aucun moteur n’a pris les biens : journalisé explicitement', async () => {

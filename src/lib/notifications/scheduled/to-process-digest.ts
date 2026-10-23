@@ -52,6 +52,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { createHash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
@@ -342,8 +343,10 @@ export async function runToProcessDigest(now: Date = new Date(), opts: number | 
     let cursor = Number(run?.cursor_account_id ?? 0);
     for (;;) {
       const page = await pgClient.unsafe<{ account_id: number }[]>(
+        // Lot 82A (C-Q10) : récapitulatif de contenu — comptes éligibles seulement.
         `SELECT DISTINCT account_id FROM to_process_actions
-          WHERE resolved_at IS NULL AND account_id > $1 ORDER BY account_id LIMIT $2`,
+          WHERE resolved_at IS NULL AND account_id > $1 AND ${processingEligibleSql('to_process_actions.account_id')}
+          ORDER BY account_id LIMIT $2`,
         [cursor, pageSize] as never[]);
       if (page.length === 0) {
         await pgClient.unsafe(
@@ -374,7 +377,7 @@ export async function runToProcessDigest(now: Date = new Date(), opts: number | 
     const reprises = await pgClient.unsafe<{ account_id: number }[]>(
       `SELECT DISTINCT account_id FROM to_process_digest_state
         WHERE last_attempt_date = $1::date AND prepared_outbox_id IS NULL AND last_outcome IN ('failed', 'lost')
-          AND attempts_on_date < $2
+          AND attempts_on_date < $2 AND ${processingEligibleSql('to_process_digest_state.account_id')}
         ORDER BY account_id`,
       [localDate, DIGEST_MAX_ATTEMPTS_PER_DAY] as never[]);
     for (const { account_id: accountId } of reprises) {

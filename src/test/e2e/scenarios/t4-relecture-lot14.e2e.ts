@@ -18,9 +18,6 @@ vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () 
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (orig) => ({
-  ...(await orig<object>()), emitAgendaItemCreated: async () => {},
-}));
 
 const echeance = (fileId: number, field: string, date: string, over: Partial<AgendaDecision> = {}): AgendaDecision => ({
   action: 'create', title: field, date, category: 'action', confidence: 'certain', reasonCode: 'E2E', deterministic: true,

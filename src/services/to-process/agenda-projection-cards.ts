@@ -192,15 +192,20 @@ export async function resolveAgendaProjectionMatch(
   let stale = !op;
   let linkedItemId: number | null = null;
   if (!stale && choice.kind === 'ITEM') {
-    const r = (await t.execute(sql`
-      UPDATE agenda_items i SET business_operation_id = ${ctx.operationId}, updated_at = now()
-       WHERE i.id = ${choice.itemId} AND i.account_id = ${accountId}
-         AND (i.business_operation_id IS NULL OR i.business_operation_id = ${ctx.operationId} OR NOT EXISTS (
-               SELECT 1 FROM business_operations o WHERE o.id = i.business_operation_id
-                  AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL))
-      RETURNING i.id`)) as unknown as Array<{ id: number }>;
-    if (!r.length) stale = true;
-    else linkedItemId = Number(r[0].id);
+    // Lot 82D (CDC v5 O-1) : service unique de regroupement — l'élément choisi représente la réalité
+    // (rôle de la projection : événement global → principal), choix mémorisé ; jamais l'élément d'une
+    // autre réalité active.
+    const { attachAgendaItem, runnerContext } = await import('@/services/business-operations/grouping/service');
+    const { drizzleRunner } = await import('@/services/business-operations/grouping/runner');
+    const { projectionRoleOf } = await import('@/services/business-operations/grouping/model');
+    const r = await attachAgendaItem(runnerContext(drizzleRunner(t), accountId, { actorUserId: options.userId ?? null }), {
+      operationId: ctx.operationId, itemId: choice.itemId, role: projectionRoleOf(ctx.projectionKey), origin: 'USER', reasonCode: 'TO_PROCESS_AGENDA_MATCH',
+    }).catch((e: unknown) => {
+      if ((e as { name?: string }).name === 'GroupingError') return null;
+      throw e;
+    });
+    if (!r || r.skipped === 'LINKED_ELSEWHERE') stale = true;
+    else linkedItemId = choice.itemId;
   }
   if (!stale && choice.kind === 'NONE') {
     await t.execute(sql`
@@ -257,9 +262,13 @@ export async function undoAgendaProjectionMatch(action: Action, accountId: numbe
       .orderBy(desc(toProcessActionEvents.id)).limit(1);
     const v = (ev?.newValue ?? null) as { kind?: string; linkedItemId?: number | null } | null;
     if (v?.kind === 'ITEM' && v.linkedItemId) {
-      await tx.execute(sql`
-        UPDATE agenda_items SET business_operation_id = NULL, updated_at = now()
-         WHERE id = ${v.linkedItemId} AND account_id = ${accountId} AND business_operation_id = ${ctx.operationId} AND projection_origin IS NULL`);
+      // Lot 82D : retrait par le service de regroupement (rôle et propagation retirés).
+      const { detachAgendaItem, runnerContext } = await import('@/services/business-operations/grouping/service');
+      const { drizzleRunner } = await import('@/services/business-operations/grouping/runner');
+      const [it] = (await tx.execute(sql`SELECT projection_origin FROM agenda_items WHERE id = ${v.linkedItemId} AND account_id = ${accountId}`)) as unknown as Array<{ projection_origin: string | null }>;
+      if (it && it.projection_origin === null) {
+        await detachAgendaItem(runnerContext(drizzleRunner(tx), accountId), { itemId: v.linkedItemId, operationId: ctx.operationId, origin: 'SYSTEM', reasonCode: 'TO_PROCESS_AGENDA_MATCH_UNDONE' });
+      }
     }
     if (v?.kind === 'NONE') {
       await tx.execute(sql`

@@ -102,6 +102,11 @@ export interface IdentityContext {
   liveAssetIds: ReadonlySet<number>;
   /** Équipement → bien parent (équipements du compte encore présents). */
   equipmentAssets: ReadonlyMap<number, number>;
+  /**
+   * Lot 82D (CDC v5 §27.4) : Pièce → bien porteur (Pièces = `substructures`
+   * des biens du compte encore présents). Absent : aucune Pièce consolidée.
+   */
+  roomAssets?: ReadonlyMap<number, number>;
 }
 
 // ── Identité candidate ─────────────────────────────────────────────────────
@@ -137,6 +142,8 @@ export interface CandidateIdentity {
   /** USER : bien de la donnée structurée elle-même (source ASSET_DATA, lot 43). */
   targetAuthority: 'DOCUMENT' | 'INFERENCE' | 'USER' | null;
   equipmentIds: number[];
+  /** Lot 82D : Pièces existantes désignées avec certitude par T1 (cible ROOM). */
+  roomIds?: number[];
   refs: NormalizedReference[];
   dates: CandidateDates;
   hints: PersistedFinancialHint[];
@@ -189,6 +196,9 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   const role = isRole(p.sourceRoleHint) ? p.sourceRoleHint : null;
   const certain = (p.targetHints ?? []).filter((t) => t.confidence === 'certain' && typeof t.entityId === 'number');
   const equipmentIds = [...new Set(certain.filter((t) => t.type === 'EQUIPMENT' && ctx.equipmentAssets.has(t.entityId as number)).map((t) => t.entityId as number))];
+  // Lot 82D : Pièce EXISTANTE d'un bien vivant du compte (jamais créée, V-Q6 ; « ne pas inventer de pièce », §18.3).
+  const roomIds = [...new Set(certain.filter((t) => t.type === 'ROOM' && ctx.roomAssets?.has(t.entityId as number)
+    && ctx.liveAssetIds.has(ctx.roomAssets.get(t.entityId as number)!)).map((t) => t.entityId as number))].sort((a, b) => a - b);
   const explicites = new Set<number>();
   for (const t of certain) {
     if (t.type === 'ASSET' && ctx.liveAssetIds.has(t.entityId as number)) explicites.add(t.entityId as number);
@@ -231,6 +241,7 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
     assetIds,
     targetAuthority,
     equipmentIds,
+    ...(roomIds.length ? { roomIds } : {}),
     refs,
     dates: {
       plannedDate: dateOrNull(t.plannedDate),
@@ -658,6 +669,8 @@ export interface ConsolidatedState {
   provider: string | null;
   assets: Array<{ assetId: number; sourceId: number; authority: 'DOCUMENT' | 'INFERENCE' | 'USER' }>;
   equipments: Array<{ equipmentId: number; sourceId: number }>;
+  /** Lot 82D (CDC v5 §27.4) : Pièces concernées (cibles ROOM certaines). */
+  rooms?: Array<{ substructureId: number; sourceId: number }>;
   references: Array<NormalizedReference & { sourceId: number }>;
   components: ComponentContribution[];
   /** Montants contradictoires de même rôle (lot 42, B19). */
@@ -856,6 +869,9 @@ export function consolidateOperationState(
   const equipments: ConsolidatedState['equipments'] = [];
   const vusE = new Set<number>();
   for (const s of srcs) for (const e of s.identity.equipmentIds) if (!vusE.has(e)) { vusE.add(e); equipments.push({ equipmentId: e, sourceId: s.sourceId }); }
+  const rooms: NonNullable<ConsolidatedState['rooms']> = [];
+  const vusP = new Set<number>();
+  for (const s of srcs) for (const r of s.identity.roomIds ?? []) if (!vusP.has(r)) { vusP.add(r); rooms.push({ substructureId: r, sourceId: s.sourceId }); }
 
   const references: ConsolidatedState['references'] = [];
   const vusR = new Set<string>();
@@ -915,6 +931,7 @@ export function consolidateOperationState(
     provider,
     assets: cibles,
     equipments,
+    ...(rooms.length ? { rooms } : {}),
     references,
     components: retenues,
     amountConflicts: amountConflicts.filter((c) => retenues.some((r) => r.fingerprint === c.fingerprint)),

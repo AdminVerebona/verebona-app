@@ -14,7 +14,7 @@ import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15Migra
   businessOperationContractDetails, businessOperationFinancingDetails, businessOperationClaimDetails, businessOperationClaimDamages,
   businessOperationClaimDamageDocuments, businessOperationClaimDamagePhotos, businessOperationClaimActions, businessOperationClaimExchanges,
   businessOperationAssetDataMarks, businessOperationClaimMigrationMarks, stripeCatalogRecoveries, businessOperationIdentityReviews,
-  transactionalEmailJobs, emailProviderEvents, documentRawExtracts,
+  transactionalEmailJobs, emailProviderEvents, documentRawExtracts, businessOperationRoomLinks, businessOperationDocuments,
   annualRenewalReminderState, annualRenewalReminderChecks, emailTemplateVersions,
 } from '../schema';
 
@@ -100,6 +100,9 @@ const CAS: Array<[PgTable, string, string]> = [
   [businessOperationProjectionSuppressions, '0316_business_operations.sql', 'business_operation_projection_suppressions'],
   [businessOperationReferences, '0316_business_operations.sql', 'business_operation_references'],
   [businessOperationIdentityReviews, '0609_l78a_identite_economique.sql', 'business_operation_identity_reviews'],
+  // Lot 82D (CDC v5 O-1) : Pièces d'une Opération, appartenance des documents.
+  [businessOperationRoomLinks, '0655_l82d_operation_rooms_documents.sql', 'business_operation_room_links'],
+  [businessOperationDocuments, '0655_l82d_operation_rooms_documents.sql', 'business_operation_documents'],
   [documentOperationCandidates, '0317_business_operation_details.sql', 'document_operation_candidates'],
   [businessOperationMatchDecisions, '0317_business_operation_details.sql', 'business_operation_match_decisions'],
   [businessOperationContractDetails, '0317_business_operation_details.sql', 'business_operation_contract_details'],

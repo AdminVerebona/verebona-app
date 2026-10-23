@@ -268,6 +268,8 @@ const PROBE_RANKS = ['primary', 'fallback_1', 'fallback_2'] as const;
 export async function recordProbeTrace(p: {
   treatment: Treatment; model: string; rank: number; ok: boolean;
   inputTokens: number; outputTokens: number; durationMs: number; error?: string;
+  /** Lot 82C (LOG-01) : capture complète de la sonde (prompt, paramètres, réponse). */
+  capture?: import('../telemetry/call-capture').CallCaptureInput;
 }): Promise<void> {
   const [{ recordCallTrace }, { calcCostMicros }, { getTreatment }] = await Promise.all([
     import('../telemetry/ai-trace.service'),
@@ -294,6 +296,7 @@ export async function recordProbeTrace(p: {
     errorMessage: p.error?.slice(0, 500),
     billable: false,
     shadow: false,
+    ...(p.capture ? { capture: p.capture } : {}),
   });
 }
 
@@ -312,11 +315,14 @@ async function defaultProbe(model: string, treatment?: Treatment, rank = 0): Pro
   let ok = false;
   let tokens = { inputTokens: 0, outputTokens: 0 };
   let error: string | undefined;
+  const input = {
+    model, prompt: PROBE_PROMPT, attachments: [],
+    timeoutMs: PROBE_TIMEOUT_MS, maxOutputTokens: 16,
+  };
+  let raw: string | null = null;
   try {
-    const out = await provider.call({
-      model, prompt: PROBE_PROMPT, attachments: [],
-      timeoutMs: PROBE_TIMEOUT_MS, maxOutputTokens: 16,
-    });
+    const out = await provider.call(input);
+    raw = out.rawText;
     tokens = { inputTokens: out.inputTokens ?? 0, outputTokens: out.outputTokens ?? 0 };
     ok = out.rawText.trim().length > 0;
     if (!ok) error = 'réponse vide';
@@ -325,7 +331,9 @@ async function defaultProbe(model: string, treatment?: Treatment, rank = 0): Pro
     console.warn(`[circuit-breaker] sonde ${model} en échec :`, error);
   }
   if (treatment) {
-    await recordProbeTrace({ treatment, model, rank, ok, ...tokens, durationMs: Date.now() - started, error })
+    const { technicalCapture } = await import('../telemetry/call-capture');
+    const capture = technicalCapture({ origin: 'circuit_breaker_probe', input, responseRaw: raw, error: raw === null ? error : null, durationMs: Date.now() - started });
+    await recordProbeTrace({ treatment, model, rank, ok, ...tokens, durationMs: Date.now() - started, error, capture })
       .catch((e) => console.warn('[circuit-breaker] trace de sonde impossible :', (e as Error).message));
   }
   return ok;

@@ -103,6 +103,8 @@ export async function testProviderKey(
   const detail: TestDetail = {
     authenticated: false, modelsListed: null, generationOk: false, model,
   };
+  // Lot 82C (LOG-01) : la génération de test est capturée comme tout appel modèle.
+  let generationSent = false;
 
   try {
     // 1. Authentification et catalogue.
@@ -136,6 +138,7 @@ export async function testProviderKey(
     }
 
     // 2. Génération minimale — la seule qui prouve que le modèle est servi.
+    generationSent = true;
     const generation = await fetch(
       `${MODELS_ENDPOINT}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(secret)}`,
       {
@@ -151,7 +154,7 @@ export async function testProviderKey(
       // Le message du fournisseur est conservé : c'est lui qui dit « no longer
       // available to new users » plutôt qu'un « erreur 404 » inexploitable.
       detail.error = `Génération refusée (${generation.status}) : ${nettoyer(texte, secret)}`;
-      await trace(accountId, userId, model, false, Date.now() - started, detail.error);
+      await trace(accountId, userId, model, false, Date.now() - started, detail.error, undefined, { sent: true, responseRaw: null });
       // Lot 32B (§1.H) : état opérationnel du modèle POUR CETTE CLÉ (empreinte,
       // jamais la clé) — ignoré tant que la clé n'est pas l'active. Lot 49 :
       // CLASSÉ — une erreur de clé, de quota ou de serveur n'est pas une
@@ -177,11 +180,11 @@ export async function testProviderKey(
     await trace(accountId, userId, model, true, Date.now() - started, undefined, {
       inputTokens: Number(usage?.promptTokenCount ?? 0),
       outputTokens: Number(usage?.candidatesTokenCount ?? 0),
-    });
+    }, { sent: true, responseRaw: texteGenere });
     return { ok: true, detail };
   } catch (e) {
     detail.error = nettoyer((e as Error).message ?? 'erreur inconnue', secret);
-    await trace(accountId, userId, model, false, Date.now() - started, detail.error);
+    await trace(accountId, userId, model, false, Date.now() - started, detail.error, undefined, { sent: generationSent, responseRaw: null });
     return { ok: false, detail };
   }
 }
@@ -206,7 +209,10 @@ async function trace(
   accountId: number, userId: number, model: string,
   ok: boolean, durationMs: number, error?: string,
   tokens: { inputTokens: number; outputTokens: number } = { inputTokens: 0, outputTokens: 0 },
+  /** Lot 82C : génération transmise ou non, et réponse brute (capture complète). */
+  exchange: { sent: boolean; responseRaw: string | null } = { sent: false, responseRaw: null },
 ): Promise<void> {
+  const body = providerTestGenerationBody(model);
   await recordCallTrace({
     traceId: crypto.randomUUID(),
     useCaseCode: 'AI_GOVERNANCE',
@@ -230,5 +236,16 @@ async function trace(
     // métier du jour.
     billable: false,
     shadow: false,
+    capture: {
+      origin: 'provider_test', callKind: 'test',
+      // Corps transmis tel quel (jamais la clé : elle est dans l'URL, non capturée).
+      sent: exchange.sent ? [{
+        kind: 'test', prompt: PROBE_PROMPT, generationConfig: { model, ...(body.generationConfig as Record<string, unknown>) },
+        timeoutMs: PROBE_TIMEOUT_MS, outcome: ok ? 'SUCCESS' : 'FAILED', error: error ?? null,
+      }] : [],
+      params: { model, endpoint: 'generateContent (test du fournisseur)' },
+      responseRaw: exchange.responseRaw, attemptDurationMs: durationMs, executionElapsedMs: durationMs,
+      ...(error ? { diagnostic: { error } } : {}),
+    },
   });
 }

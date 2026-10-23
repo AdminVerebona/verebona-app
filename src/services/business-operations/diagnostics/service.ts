@@ -30,6 +30,7 @@
  * texte libre de sinistre : seulement ce que le BO montre déjà.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import {
   CORRECTION_PROCEDURE, DETAIL_LIMIT, DIAG_ANOMALY_SAMPLE, HARD_ANOMALY_CODES, HARD_ANOMALY_LABELS, INDICATORS,
   aiRunLabel, explainReason, reconciliationView, indicativeNetCents, maskSensitive, pct, principalDate, toM3ProgressView, typeLabel,
@@ -583,10 +584,11 @@ const HIERARCHY_SQL = `
       FROM up GROUP BY start_id, account_id
   )`;
 
-async function sampled(q: DiagQuery, inner: string, accountId: number | null): Promise<{ count: number; samples: HardAnomalySample[] }> {
+async function sampled(q: DiagQuery, inner: string, accountId: number | null, eligibleOnly = false): Promise<{ count: number; samples: HardAnomalySample[] }> {
   const rows = await q(
     `SELECT x.account_id, x.operation_id, x.detail, count(*) OVER () AS total
        FROM (${inner}) x(account_id, operation_id, detail)
+      ${eligibleOnly ? `WHERE ${processingEligibleSql('x.account_id')}` : ''}
       ORDER BY x.account_id, x.operation_id NULLS LAST LIMIT ${DIAG_ANOMALY_SAMPLE}`,
     [accountId],
   );
@@ -604,29 +606,36 @@ function result(code: HardAnomalyCode, count: number, samples: HardAnomalySample
   };
 }
 
-async function detectHardAnomalies(q: DiagQuery, accountId: number | null): Promise<HardAnomalyResult[]> {
+/**
+ * `eligibleOnly` (lot 82A, C-Q10) : contrôle PLANIFIÉ — comptes éligibles
+ * seulement (« aucun contrôle, même en simple constat, sur un compte non
+ * actif, suspendu ou en lecture seule »). Les écrans BO (consultation par
+ * l'administrateur) gardent la vue complète.
+ */
+async function detectHardAnomalies(q: DiagQuery, accountId: number | null, eligibleOnly = false): Promise<HardAnomalyResult[]> {
   const out = new Map<HardAnomalyCode, HardAnomalyResult>();
   for (const [code, inner] of Object.entries(ANOMALY_SQL) as Array<[HardAnomalyCode, string]>) {
-    const r = await sampled(q, inner, accountId);
+    const r = await sampled(q, inner, accountId, eligibleOnly);
     out.set(code, result(code, r.count, r.samples));
   }
   for (const [code, x] of Object.entries(IDENTITY_ANOMALY_SQL) as Array<[HardAnomalyCode, { probe: string; sql: string }]>) {
     const [p] = await q(x.probe, [accountId]);
-    const r = p?.ok ? await sampled(q, x.sql, accountId) : { count: 0, samples: [] };
+    const r = p?.ok ? await sampled(q, x.sql, accountId, eligibleOnly) : { count: 0, samples: [] };
     out.set(code, result(code, r.count, r.samples));
   }
+  const elig = eligibleOnly ? ` AND ${processingEligibleSql('agg.account_id')}` : '';
   const [counts] = await q(
     `${HIERARCHY_SQL}
      SELECT count(*) FILTER (WHERE cycle)::int AS cycles,
             count(*) FILTER (WHERE NOT cycle AND levels > 3)::int AS deep
-       FROM agg`,
+       FROM agg WHERE true${elig}`,
     [accountId],
   );
   const hier = await q(
     `${HIERARCHY_SQL}
-     (SELECT account_id, start_id, cycle, levels FROM agg WHERE cycle ORDER BY account_id, start_id LIMIT ${DIAG_ANOMALY_SAMPLE})
+     (SELECT account_id, start_id, cycle, levels FROM agg WHERE cycle${elig} ORDER BY account_id, start_id LIMIT ${DIAG_ANOMALY_SAMPLE})
      UNION ALL
-     (SELECT account_id, start_id, cycle, levels FROM agg WHERE NOT cycle AND levels > 3 ORDER BY account_id, start_id LIMIT ${DIAG_ANOMALY_SAMPLE})`,
+     (SELECT account_id, start_id, cycle, levels FROM agg WHERE NOT cycle AND levels > 3${elig} ORDER BY account_id, start_id LIMIT ${DIAG_ANOMALY_SAMPLE})`,
     [accountId],
   );
   const s = (cycle: boolean) => hier.filter((r) => Boolean(r.cycle) === cycle).map((r) => ({
@@ -899,8 +908,8 @@ export class OperationDiagnosticsService {
   }
 
   /** Anomalies dures seules (tâche planifiée, alerte d'exploitation). */
-  async hardAnomalies(accountId: number | null = null): Promise<HardAnomalyResult[]> {
-    return this.exec((q) => detectHardAnomalies(q, accountId));
+  async hardAnomalies(accountId: number | null = null, opts: { eligibleOnly?: boolean } = {}): Promise<HardAnomalyResult[]> {
+    return this.exec((q) => detectHardAnomalies(q, accountId, opts.eligibleOnly === true));
   }
 
   /** Les 13 indicateurs C26.2 (compte ou global, période) + anomalies dures. */

@@ -52,6 +52,7 @@
  * filtre « compte » du BO limite la sélection.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { randomUUID } from 'node:crypto';
 import { pgClient } from '@/db';
 
@@ -106,6 +107,8 @@ async function selectLegacyDocuments(accountId: number | null, afterId: number, 
   const rows = (await pgClient.unsafe(
     `SELECT f.id, f.account_id FROM asset_files f
       WHERE f.analysis_state = $1 AND f.id > $2 AND ($3::int IS NULL OR f.account_id = $3::int)
+        -- Lot 82A (C-Q10, §3.3) : comptes éligibles seulement (repris après réactivation).
+        AND ${processingEligibleSql('f.account_id')}
       ORDER BY f.id LIMIT $4`,
     [LEGACY_VALIDATION_STATE, afterId, accountId, limit] as never[],
   )) as unknown as Row[];

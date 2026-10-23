@@ -37,6 +37,15 @@ export async function GET(req: NextRequest, context: { params: Promise<{ token: 
       return new NextResponse('Fonctionnalité premium requise', { status: 403 });
     }
 
+    // Lot 82A (décision PO C-Q10, §3.3) : synchronisation de CONTENU — aucune
+    // pour un compte non actif (essai échu), suspendu ou en lecture seule.
+    // Reprend d'elle-même à la réactivation (même jeton). Les données restent
+    // consultables et exportables dans l'application.
+    const { checkAccountProcessingEligibility } = await import('@/services/account/processing-eligibility');
+    if (!(await checkAccountProcessingEligibility(account.id)).eligible) {
+      return new NextResponse('Synchronisation du calendrier suspendue : compte inactif ou en lecture seule', { status: 403 });
+    }
+
     const items = await getAgendaItems({
       accountId: account.id,
       includeCancelled: false,

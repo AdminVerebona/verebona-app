@@ -12,9 +12,11 @@
  *     journal d'accès (`readModelOutput`) — jamais par le détail ordinaire ;
  *   · jamais écrite dans les journaux serveur ni dans l'archive S3, jamais
  *     transmise à un outil de supervision externe ;
- *   · supprimée à l'horizon de rétention des traces IA existant
- *     (`archiveAfterDays`, AI_LOG_ARCHIVE_AFTER_DAYS, 88 jours) ;
- *   · jamais conservée pour l'assistant (T2, CDC Assistant §29.6).
+ *   · conservée sans limite d'âge (lot 82C, décisions PO n° 01 et 10 du
+ *     22/10 : la purge à 88 jours est retirée) ; supprimée avec le compte ;
+ *   · jamais conservée ICI pour l'assistant (T2, CDC Assistant §29.6) : les
+ *     échanges complets de tous les appels, T2 compris, sont dans la capture
+ *     à la source (`ai_call_captures`, lot 82C).
  *
  * La télémétrie ne fait jamais échouer un traitement : toute écriture est
  * isolée et silencieuse en cas d'échec (une ligne d'erreur sans contenu).
@@ -223,28 +225,4 @@ export async function readTraceModelOutputs(traceId: string): Promise<ModelOutpu
     extracted: x.extracted_output == null ? null : String(x.extracted_output),
     parsed: typeof x.parsed_output === 'string' ? JSON.parse(x.parsed_output) : x.parsed_output ?? null,
   }));
-}
-
-/**
- * Purge à l'horizon de rétention des traces IA (`archiveAfterDays`), par lots
- * bornés. Rend le nombre de lignes supprimées.
- */
-export async function purgeCallDiagnostics(opts: { olderThanDays: number; batch?: number; deadline?: number }): Promise<number> {
-  if (!(await tableReady())) return 0;
-  const { pgClient } = await import('@/db');
-  const batch = Math.max(100, Math.min(opts.batch ?? 5_000, 50_000));
-  let total = 0;
-  for (;;) {
-    const r = (await pgClient.unsafe(
-      `WITH old AS (
-         SELECT id FROM ai_call_diagnostics
-          WHERE created_at < NOW() - ($1::int * interval '1 day')
-          ORDER BY id LIMIT $2)
-       DELETE FROM ai_call_diagnostics d USING old WHERE d.id = old.id RETURNING d.id`,
-      [opts.olderThanDays, batch] as never[],
-    )) as unknown as Row[];
-    total += r.length;
-    if (r.length < batch || (opts.deadline && Date.now() >= opts.deadline)) break;
-  }
-  return total;
 }

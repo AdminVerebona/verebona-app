@@ -77,6 +77,11 @@ export async function suspendAccount(accountId: number): Promise<AccountStatusOu
     await revokeUserSessionsNow(userId, 'ADMIN_ACCOUNT_SUSPEND');
   }
 
+  // Lot 82A (C-Q10, §3.3) : compte suspendu — plus aucun traitement métier ;
+  // travaux en attente ou en cours neutralisés tout de suite.
+  const { syncAccountEligibilitySafe } = await import('@/services/account/processing-lifecycle');
+  await syncAccountEligibilitySafe(accountId, 'admin_suspend');
+
   return { ok: true, wasActive: account.isActive, isActive: false, revokedUserIds: userIds };
 }
 
@@ -89,5 +94,10 @@ export async function reactivateAccount(accountId: number): Promise<AccountStatu
   if (!account) return { ok: false, code: 'ACCOUNT_NOT_FOUND' };
 
   await db.update(accounts).set({ isActive: true, updatedAt: new Date() }).where(eq(accounts.id, accountId));
+  // Lot 82A (C-Q10, §3.3) : réactivation — si le compte est de nouveau
+  // éligible (abonnement en règle), reprise des travaux neutralisés et
+  // contrôle de rattrapage (`onAccountReactivated`).
+  const { syncAccountEligibilitySafe } = await import('@/services/account/processing-lifecycle');
+  await syncAccountEligibilitySafe(accountId, 'admin_reactivate');
   return { ok: true, wasActive: account.isActive, isActive: true, revokedUserIds: [] };
 }

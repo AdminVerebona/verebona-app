@@ -166,6 +166,12 @@ export async function registerNode(): Promise<void> {
   const { registerMascotPregenerationHandler } = await import('@/services/home/mascot/pregen-queue');
   await registerMascotPregenerationHandler().catch((e) =>
     console.error('[startup] pré-génération de la mascotte non abonnée :', (e as Error).message));
+  // Lot 82B : contrôles de cohérence CIBLÉS — fin d'analyse T1 et événements
+  // métier marquent en base les objets dépendants à recontrôler (tâche
+  // planifiée `coherence-control`).
+  const { registerCoherenceTriggers } = await import('@/services/coherence/events');
+  await registerCoherenceTriggers().catch((e) =>
+    console.error('[startup] déclencheurs du contrôle de cohérence non abonnés :', (e as Error).message));
   await runAssistantStartupCheck('startup').catch((e) =>
     console.error('[startup] contrôle du registre de l’assistant impossible :', (e as Error).message));
 

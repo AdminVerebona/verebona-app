@@ -38,6 +38,8 @@ export const T3_ENQUEUE_REASONS = [
   'INSERT_FAILED',
   'PERSISTENCE_NOT_CONFIRMED',
   'EMERGENCY_STOP',
+  // Lot 82A (C-Q10) : compte non actif, suspendu ou en lecture seule.
+  'ACCOUNT_INELIGIBLE',
 ] as const;
 export type T3EnqueueReason = (typeof T3_ENQUEUE_REASONS)[number];
 
@@ -56,6 +58,7 @@ export const T3_ENQUEUE_REASON_LABEL: Readonly<Record<T3EnqueueReason, string>> 
   INSERT_FAILED: 'écriture en base impossible (erreur technique)',
   PERSISTENCE_NOT_CONFIRMED: 'job introuvable à la relecture après création',
   EMERGENCY_STOP: 'arrêt d’urgence engagé',
+  ACCOUNT_INELIGIBLE: 'compte non éligible aux traitements (non actif, suspendu ou en lecture seule — C-Q10)',
 };
 
 export interface T3EnqueueTrace {

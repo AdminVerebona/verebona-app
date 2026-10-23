@@ -1784,3 +1784,86 @@ export async function resolveDocumentRuleFromKnowledge(
   if (o.proposals.length === 0) return res({ ...base, status: 'NO_EVIDENCE', reasonCode: 'FIELD_NOT_IN_T1' });
   return res({ ...base, status: 'ARBITRATE', reasonCode: o.proposals.length > 1 ? 'AMBIGUOUS' : 'INSUFFICIENT_EVIDENCE' });
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 82B — DIAGNOSTIC EN LECTURE SEULE D'UNE CARTE DOCUMENTAIRE (contrôle de cohérence)
+// ══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Diagnostic d'une carte « À traiter » documentaire OUVERTE, SANS AUCUNE
+ * écriture ni appel IA (contrôle de cohérence COH-TODO-DOCUMENT-FIELDS, mode
+ * à blanc compris). Mêmes lectures que `resolveDocumentRuleFromKnowledge`,
+ * qui reste le SEUL chemin de réparation (réévaluation de la règle par la
+ * décision centrale, jamais de relance T1) :
+ *   · TARGET_GONE / NO_ACTIVE_CARD : plus rien à décider ici ;
+ *   · RESOLVABLE_FROM_STATE : la réévaluation d'état la ferme (donnée déjà
+ *     renseignée, règle plus pertinente pour ce Type…) ;
+ *   · ALREADY_SATISFIED : valeur lue ou saisie déjà présente ;
+ *   · USER_PROTECTED : valeur retirée par l'utilisateur — rien à faire ;
+ *   · DECISION_CURRENT : la décision centrale a déjà jugé CETTE connaissance
+ *     (même moteur, même révision, aucun report échu) — carte justifiée ;
+ *   · ANSWER_AVAILABLE : une seule valeur dans la connaissance T1 persistée,
+ *     non encore jugée par le moteur courant ;
+ *   · CONFLICTING_VALUES : plusieurs valeurs — l'arbitrage existant reste seul juge ;
+ *   · DECISION_STALE : aucune valeur, décision absente, d'un moteur antérieur,
+ *     d'une connaissance changée ou report échu — réévaluation (« information
+ *     non nécessaire » comprise) ;
+ *   · KNOWLEDGE_UNREADABLE : lecture en échec — jamais une absence de donnée.
+ */
+export interface DocumentRuleCardDiagnosis {
+  kind: 'TARGET_GONE' | 'NO_ACTIVE_CARD' | 'NOT_A_FIELD' | 'RESOLVABLE_FROM_STATE' | 'ALREADY_SATISFIED' | 'USER_PROTECTED'
+    | 'DECISION_CURRENT' | 'ANSWER_AVAILABLE' | 'CONFLICTING_VALUES' | 'DECISION_STALE' | 'KNOWLEDGE_UNREADABLE';
+  reason: string;
+  /** Valeurs distinctes lues dans la connaissance T1 (≤ 5). */
+  values?: string[];
+  /** Révision de connaissance et version du moteur comparées. */
+  knowledgeRev?: string | null;
+  lastDecision?: { engineVersion: string; knowledgeRev: string | null; outcome: string | null } | null;
+}
+
+export async function diagnoseDocumentRuleCard(accountId: number, fileId: number, ruleCode: string, now: Date = new Date()): Promise<DocumentRuleCardDiagnosis> {
+  const { getRule } = await import('./rules-catalog');
+  const rule = getRule(ruleCode);
+  if (!rule || rule.producer !== 'DOCUMENT_BRIDGE' || !rule.fieldKey) return { kind: 'NOT_A_FIELD', reason: 'NOT_A_FIELD' };
+  const key = ruleDataKey(rule);
+  const ctx = await loadContext(accountId, fileId);
+  if (!ctx.exists) return { kind: 'TARGET_GONE', reason: 'TARGET_DELETED' };
+  const actives = await activeActions(accountId, fileId);
+  const active = actives.get(key) ?? null;
+  if (!active) return { kind: 'NO_ACTIVE_CARD', reason: 'NO_ACTIVE_CARD' };
+  const slot = documentSlotFor(key);
+  const state = await slot.read(db, accountId, fileId);
+  const relevant = isRuleRelevantForDocument(rule, ctx.documentTypeCode);
+  const present = !isEmpty(state.value);
+  const etat = planDocumentRule({ rule, state, proposals: [], mode: 'state', relevant, active, mayCreate: false });
+  if (etat.kind === 'RESOLVE') return { kind: 'RESOLVABLE_FROM_STATE', reason: etat.reason };
+  if (state.userValidated && !present) return { kind: 'USER_PROTECTED', reason: 'USER_DECISION_PROTECTED' };
+  if (present && (state.userValidated || (await readValueKind(accountId, fileId, key)).kind !== 'CALCULATED')) {
+    return { kind: 'ALREADY_SATISFIED', reason: 'ALREADY_SATISFIED' };
+  }
+  const rev = await currentKnowledgeRev(accountId, fileId);
+  let last: DocumentRuleCardDiagnosis['lastDecision'] = null;
+  let current = false;
+  if (await ruleEvaluationsReady() && await relevanceColumnsReady()) {
+    const [d] = (await pgClient.unsafe(
+      `SELECT engine_version, knowledge_rev, outcome, reevaluate_at FROM document_rule_evaluations
+        WHERE account_id = $1 AND file_id = $2 AND rule_code = $3 ORDER BY id DESC LIMIT 1`,
+      [accountId, fileId, rule.code] as never[],
+    )) as unknown as Array<{ engine_version: string; knowledge_rev: string | null; outcome: string | null; reevaluate_at: Date | string | null }>;
+    if (d) {
+      last = { engineVersion: d.engine_version, knowledgeRev: d.knowledge_rev, outcome: d.outcome };
+      const echu = d.outcome === 'DEFER' && d.reevaluate_at !== null && new Date(d.reevaluate_at).getTime() <= now.getTime();
+      // Une décision de FERMETURE (ou en erreur) alors que la carte est encore ouverte n'est pas appliquée : à rejouer.
+      const maintient = d.outcome === null || ['KEEP', 'CREATE_ACTION', 'DEFER'].includes(d.outcome);
+      current = d.engine_version === DOCUMENT_RULE_ENGINE_VERSION && (d.knowledge_rev === null || d.knowledge_rev === rev) && !echu && maintient;
+    }
+  }
+  if (current) return { kind: 'DECISION_CURRENT', reason: 'DECISION_CURRENT', knowledgeRev: rev, lastDecision: last };
+  if (slot.kind !== 'field') return { kind: 'DECISION_STALE', reason: last ? 'DECISION_OUTDATED' : 'NO_DECISION', knowledgeRev: rev, lastDecision: last };
+  const ev = await gatherFieldEvidence(accountId, fileId, key);
+  if (ev.errors.length) return { kind: 'KNOWLEDGE_UNREADABLE', reason: ev.errors.join(' ; ').slice(0, 300), knowledgeRev: rev, lastDecision: last };
+  const values = [...new Set(ev.facts.map((f) => String(f.value)))];
+  if (values.length === 1) return { kind: 'ANSWER_AVAILABLE', reason: 'ANSWER_IN_T1_KNOWLEDGE', values, knowledgeRev: rev, lastDecision: last };
+  if (values.length > 1) return { kind: 'CONFLICTING_VALUES', reason: 'CONFLICTING_T1_VALUES', values: values.slice(0, 5), knowledgeRev: rev, lastDecision: last };
+  return { kind: 'DECISION_STALE', reason: last ? 'DECISION_OUTDATED' : 'NO_DECISION', knowledgeRev: rev, lastDecision: last };
+}

@@ -43,6 +43,7 @@
  * critère d'éligibilité.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import type { QueuedJob } from '../queue/job-queue.repository';
 import type { ExecutionGuard } from '../queue/execution-control';
 import { PermanentJobError, type JobBusinessResult } from '../queue/queue-policy';
@@ -91,6 +92,8 @@ export const TITLE_SWEEP_SQL = `
   SELECT f.id, f.account_id
     FROM asset_files f
    WHERE ($3::int IS NULL OR f.account_id = $3::int)
+     -- Lot 82A (C-Q10) : documents des seuls comptes éligibles.
+     AND ${processingEligibleSql('f.account_id')}
      AND f.id > $1::int
      AND f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL
      AND COALESCE(f.is_draft, false) = false AND COALESCE(f.is_ignored, false) = false

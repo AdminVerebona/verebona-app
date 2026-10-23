@@ -171,6 +171,8 @@ export const ACCOUNT_OWNED_TABLES: Readonly<Record<string, string>> = {
   business_operation_asset_exclusions: 'Opérations : décision de l’utilisateur sur SON sinistre (lot 53, Q17 — bien retiré, exclusion mémorisée) — le sinistre reste au compte ; l’exclusion ne concerne que lui (sans effet sur le compte cible)',
   deadlines_compat_view: 'vue de compatibilité (deadlines)',
   business_operation_identity_reviews: 'Opérations : journal des contrôles d’identité économique (lot 78A, trace d’exploitation BO) — suit l’Opération, jamais le document ; reste au compte',
+  business_operation_room_links: 'Opérations : Pièces d’une Opération (lot 82D) — suivent l’Opération (transferAssetOperationsInTx, clé composée) ; lien intercomptes retiré (detachCrossAccountGroupingInTx)',
+  business_operation_documents: 'Opérations : appartenance d’un document à une Opération (lot 82D) — SOURCE suit les sources (déclencheur 0655), USER intercomptes retiré (detachCrossAccountGroupingInTx)',
 };
 
 export interface AssetDataTransferResult {
@@ -493,10 +495,11 @@ export async function transferAssetDataInTx(
   await transferSuppliers(tx, { A, E, M, from, to }, out);
 
   // ── 9. Opérations : aucune source ni lien Agenda entre deux comptes ───────
-  await tx.execute(sql`
-    UPDATE agenda_items ai SET business_operation_id = NULL, updated_at = now()
-     WHERE ai.account_id IN (${from}, ${to}) AND ai.business_operation_id IS NOT NULL
-       AND EXISTS (SELECT 1 FROM business_operations o WHERE o.id = ai.business_operation_id AND o.account_id <> ai.account_id)`);
+  // Lot 82D (CDC v5 §28) : par le service unique de regroupement — éléments d'agenda
+  // (rôle, propagation vers le principal), appartenance USER des documents et Pièces.
+  const { detachCrossAccountGroupingInTx } = await import('@/services/business-operations/grouping/service');
+  const { drizzleRunner } = await import('@/services/business-operations/grouping/runner');
+  await detachCrossAccountGroupingInTx(drizzleRunner(tx), [from, to]);
   await detachCrossAccountOperationSources(tx, { from, to, reason, actorUserId: p.actorUserId ?? null }, out);
 
   // Le bien perd des preuves (documents restés) : réconciliation T3 dans son nouveau compte.

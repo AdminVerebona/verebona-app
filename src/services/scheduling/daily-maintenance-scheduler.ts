@@ -61,10 +61,12 @@
  *                           durable, APP-PERF-18 ; même traitement que
  *                           GET /api/cron/billing-pending-checkouts ;
  *                           PENDING_CHECKOUT_RECONCILE=off la retire ;
- *   · coherence-maintenance — HORAIRE (bail de 55 min, de 5 h à minuit) :
- *                           phases déterministes de l'ancienne route
- *                           /api/cron/hourly-enrichment, supprimée au lot
- *                           16b-3 avec sa revue IA (D-H1).
+ *   · (coherence-maintenance — RETIRÉE au lot 82B, arbitrage C-Q9 : marquage
+ *                           « vérifié » sans contrôle, détachement silencieux
+ *                           de documents, statut utilisateur « annulé » posé
+ *                           sur l'agenda, file `impact_queue` sans règle ;
+ *                           remplacée par la tâche planifiée `coherence-control`
+ *                           du catalogue — registre unique de cohérence).
  *
  * Les routes restent disponibles pour un déclenchement externe ou manuel :
  * les traitements sont idempotents, un double passage est sans effet.
@@ -303,24 +305,6 @@ export function dailyTasks(env: NodeJS.ProcessEnv = process.env): DailyTask[] {
       },
     });
   }
-
-  // Maintenance déterministe de la file de cohérence (impact_queue) —
-  // phases sans IA de l'ancienne route /api/cron/hourly-enrichment (lot
-  // 16b-3, D-H1). Toutes les heures environ (bail de 55 min, tour de 30 min),
-  // de 5 h à minuit.
-  tasks.push({
-    lock: 'hourly-coherence-maintenance',
-    // Hors de la fenêtre de sauvegarde de nuit (1 h – 5 h).
-    window: [5, 24],
-    leaseMs: 55 * 60 * 1000,
-    run: async () => {
-      const { runCoherenceMaintenance } = await import('@/services/coherence/coherence-maintenance.service');
-      const r = await runCoherenceMaintenance();
-      if (r.queueImpactsProcessed || r.staleRecovered || r.coherenceIssues || r.errors) {
-        console.info('[daily-jobs] coherence-maintenance :', JSON.stringify(r));
-      }
-    },
-  });
 
   // Rattrapage borné des miniatures de documents (APP-PERF-06/27) : au plus
   // 100 documents existants sans miniature à jour par passage, mis dans la

@@ -18,9 +18,6 @@ vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () 
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (orig) => ({
-  ...(await orig<object>()), emitAgendaItemCreated: async () => {},
-}));
 
 scenario('T4-L14-UNIFIE', 'Écriture agenda unifiée', ({ sql, make }) => {
   const env = { ...process.env };

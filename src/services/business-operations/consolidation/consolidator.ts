@@ -42,6 +42,7 @@
  * durables (C6.3 : CONFIRMED / REJECTED, parent Sinistre, montant retenu).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { sql, type SQL } from 'drizzle-orm';
 import { isBusinessOperationIntegrityError } from '../errors';
 import type { DbTx } from '../lock';
@@ -74,6 +75,10 @@ import {
   splitArbitratedConflicts, type IdentityReviewEntry,
 } from './identity-review';
 import { computeProvenance, type AttributeProvenance, type ComponentEvidence } from './model';
+// Lot 82D (CDC v5 O-1) : Pièces et décisions utilisateur par le service unique de regroupement.
+import { rejectedSubjects } from '../grouping/decisions';
+import { runnerContext, syncOperationRoomsFromT3 } from '../grouping/service';
+import { drizzleRunner } from '../grouping/runner';
 
 /**
  * Sources AGENDA actives dont l'élément n'existe plus dans le compte (lot
@@ -218,8 +223,8 @@ export async function prepareOperationMatch(accountId: number, candidateId: numb
     const file = await loadFile(tx, accountId, c.fileId);
     if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) return null;
     const ids = targetIdsOf([c], file.assetId);
-    const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments);
-    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments });
+    const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
+    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms });
     // Lot 53 (D7) : le LOT courant de l'examen progressif (au plus 5 Opérations),
     // à défaut (trace antérieure au lot 53) les Opérations plausibles.
     const lot = (c.t3Detail?.m3Batch ?? c.t3Detail?.plausible) as unknown[] | undefined;
@@ -258,10 +263,20 @@ async function loadDocumentSources(tx: DbTx, accountId: number, fileId: number):
   }));
 }
 
-interface AssetContext { live: Set<number>; status: Map<number, string>; equipments: Map<number, number> }
+interface AssetContext { live: Set<number>; status: Map<number, string>; equipments: Map<number, number>; rooms: Map<number, number> }
 
-export async function loadAssetContext(tx: DbTx, accountId: number, assetIds: number[], equipmentIds: number[]): Promise<AssetContext> {
-  const ctx: AssetContext = { live: new Set(), status: new Map(), equipments: new Map() };
+export async function loadAssetContext(tx: DbTx, accountId: number, assetIds: number[], equipmentIds: number[], roomIds: number[] = []): Promise<AssetContext> {
+  const ctx: AssetContext = { live: new Set(), status: new Map(), equipments: new Map(), rooms: new Map() };
+  // Lot 82D : Pièces (substructures) des biens du compte — cibles ROOM de T1.
+  if (roomIds.length) {
+    const p = await rows<{ id: number; asset_id: number }>(tx, sql`
+      SELECT s.id, s.asset_id FROM substructures s JOIN assets a ON a.id = s.asset_id
+       WHERE s.id = ANY(${intArray(roomIds)}::int[]) AND a.account_id = ${accountId} AND a.deleted_at IS NULL`);
+    for (const x of p) {
+      ctx.rooms.set(Number(x.id), Number(x.asset_id));
+      assetIds.push(Number(x.asset_id));
+    }
+  }
   if (equipmentIds.length) {
     const e = await rows<{ id: number; asset_id: number }>(tx, sql`
       SELECT e.id, e.asset_id FROM equipments e JOIN assets a ON a.id = e.asset_id
@@ -283,17 +298,19 @@ export async function loadAssetContext(tx: DbTx, accountId: number, assetIds: nu
   return ctx;
 }
 
-function targetIdsOf(cands: CandidateRecord[], fileAssetId: number | null): { assets: number[]; equipments: number[] } {
+function targetIdsOf(cands: CandidateRecord[], fileAssetId: number | null): { assets: number[]; equipments: number[]; rooms: number[] } {
   const assets: number[] = fileAssetId !== null ? [fileAssetId] : [];
   const equipments: number[] = [];
+  const rooms: number[] = [];
   for (const c of cands) {
     for (const t of c.payload?.targetHints ?? []) {
       if (typeof t.entityId !== 'number') continue;
       if (t.type === 'ASSET') assets.push(t.entityId);
       if (t.type === 'EQUIPMENT') equipments.push(t.entityId);
+      if (t.type === 'ROOM') rooms.push(t.entityId);
     }
   }
-  return { assets, equipments };
+  return { assets, equipments, rooms };
 }
 
 /** Borne des Opérations examinées par candidat (NFR-OP-010 : jamais de scan global). */
@@ -564,10 +581,10 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
   const [c] = (await loadCandidates(tx, accountId, fileId)).filter((x) => x.status === 'ACTIVE' && x.candidateKey === s.key && x.established);
   if (!c || c.confidence === 'conflictual') return null;
   const ids = targetIdsOf([c], file.assetId);
-  const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments);
+  const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
   return {
     sourceId: s.id,
-    identity: buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments }),
+    identity: buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms }),
   };
 }
 
@@ -731,6 +748,8 @@ export async function reconsolidateOperation(
   }
   await syncAssets(repo, tx, operationId, managedIds, assetsVoulus, changes);
   await syncEquipments(repo, tx, operationId, managedIds, state.equipments, changes);
+  // Lot 82D (CDC v5 §27.4) : Pièces de l'Opération, par le service unique de regroupement.
+  changes.track(await syncOperationRoomsFromT3(runnerContext(drizzleRunner(tx), accountId), operationId, state.rooms ?? [], managedIds));
   await syncReferences(repo, tx, operationId, managedIds, activeIds, state.references, changes);
   // Lot 44 (C19, Q4) : l'indemnité SAISIE d'un sinistre (formulaire ou ancien
   // formulaire migré) prime sur celle d'un document — jamais deux indemnités
@@ -1019,7 +1038,10 @@ async function syncEquipments(
       changes.track(await repo.unlinkEquipment(opId, Number(l.equipment_id), 'T3_TARGET_WITHDRAWN'));
     }
   }
+  // Lot 82D (§10) : un équipement retiré par l'utilisateur n'est jamais relié à nouveau par inférence.
+  const refuses = new Set(await rejectedSubjects(drizzleRunner(tx), repo.accountId, opId, 'EQUIPMENT'));
   for (const d of desired) {
+    if (refuses.has(d.equipmentId)) continue;
     changes.track(await repo.linkEquipment(opId, { equipmentId: d.equipmentId, authority: 'DOCUMENT', sourceId: d.sourceId }, 'T3_TARGET_LINKED'));
   }
 }
@@ -1387,7 +1409,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       const actifs = cands.filter((c) => c.status === 'ACTIVE');
       const docSources = await loadDocumentSources(tx, accountId, fileId);
       const ids = targetIdsOf(actifs, file?.assetId ?? null);
-      const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments);
+      const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
 
       const claimed = new Map<number, number>(); // sourceId -> operationId
       const createdHere = new Set<number>();
@@ -1403,7 +1425,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       cards.reviewedFiles.push(fileId);
       // Lot 78A (§2A) : identités de tous les candidats actifs du document, et
       // Opérations où chacun a déjà sa source (doublons d'un même document à la réanalyse).
-      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments })]));
+      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms })]));
       const opsDuDocument = new Map<number, CandidateIdentity[]>();
       for (const s of docSources.filter((x) => x.active && !x.opMerged && !x.opInvalidated)) {
         const autre = actifs.find((x) => x.candidateKey === s.key);
@@ -1972,7 +1994,10 @@ export async function listAccountsToConsolidate(afterAccountId: number, limit: n
        UNION
        -- Lot 78A (§5) : candidats pas encore réévalués par le contrôle d'identité économique.
        SELECT c.account_id FROM document_operation_candidates c WHERE c.account_id > $1 AND ${IDENTITY_REVIEW_PENDING_SQL}
-     ) x ORDER BY account_id LIMIT $2`,
+     ) x
+     -- Lot 82A (C-Q10, §3.3) : balayage des seuls comptes éligibles.
+     WHERE ${processingEligibleSql('x.account_id')}
+     ORDER BY account_id LIMIT $2`,
     [afterAccountId, limit, m3PromptVersion] as never[],
   )) as unknown as Array<{ account_id: number }>;
   return r.map((x) => Number(x.account_id));

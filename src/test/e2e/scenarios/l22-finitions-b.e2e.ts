@@ -8,13 +8,12 @@
  *     champ du bien ;
  *  2. cache des ambiguïtés de date T4 partagé en base (`ai_operation_
  *     idempotency`, préfixe `t4-temporal:`), purge des entrées expirées ;
- *  3. moteur de propagation de cohérence : écriture par la primitive
- *     canonique (SYSTEM_RULE), valeur USER jamais écrasée (conflit « À
- *     traiter ») ;
+ *  3. (lot 82B) moteur de propagation de cohérence RETIRÉ — remplacé par le
+ *     registre unique de contrôle de cohérence (scénario L82B) ;
  *  4. référentiel fournisseurs alimenté par la projection T1 (nom, SIRET) :
  *     idempotent, sans doublon, fiche utilisateur jamais modifiée.
  */
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { beforeAll, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { scenario } from '../scenario';
 
@@ -178,55 +177,9 @@ scenario('L22-B', 'Lot 22 — finitions (journal des entités, cache T4, cohére
   });
 
   // ── 3. Cohérence ──────────────────────────────────────────────────────────
-  describeCoherence();
-  function describeCoherence() {
-    let regle = 0;
-    afterAll(async () => {
-      if (regle) await sql`DELETE FROM field_dependencies WHERE id = ${regle}`;
-      (await import('@/services/coherence/field-dependency.service')).clearDependencyCache();
-    });
-
-    it('propagation : primitive canonique (SYSTEM_RULE) ; valeur USER jamais écrasée → conflit « À traiter »', async () => {
-      // Lot 38 (O0) : une règle générique vers l'acquisition ou la valorisation
-      // n'a plus d'effet — le moteur est éprouvé sur une cible ordinaire
-      // (`charges`, centimes → euros).
-      const [r] = await sql<{ id: number }[]>`
-        INSERT INTO field_dependencies (source_field, target_field, category, impact_type, transform_rule, confidence, is_active)
-        VALUES ('l22ChargesCents', 'charges', NULL, 'propagation', 'cents_to_euros', 'certain', true) RETURNING id`;
-      regle = r.id;
-      (await import('@/services/coherence/field-dependency.service')).clearDependencyCache();
-      const { enqueue } = await import('@/services/coherence/impact-queue.service');
-      const { processPendingImpacts } = await import('@/services/coherence/impact-propagation.service');
-
-      const compte = await make.account();
-      const vide = await make.asset(compte, { category: 'IMMOBILIER', name: 'Vide' });
-      // Charges saisies à l'écran : valeur sans origine → USER (vue canonique).
-      const saisi = await make.asset(compte, { category: 'IMMOBILIER', name: 'Saisi', keyCharacteristics: { charges: 1500 } });
-      for (const a of [vide, saisi]) {
-        await enqueue({ accountId: compte.id, assetId: a.id, triggerType: 'manual_request', source: 'e2e', metadata: { changedFields: { l22ChargesCents: 189900 } }, priority: 0 });
-      }
-      const res = await processPendingImpacts(25, compte.id);
-      expect(res).toMatchObject({ fieldsApplied: 1, fieldsConflicted: 1, errors: 0 });
-
-      const [v] = await sql<{ kc: string | null }[]>`SELECT key_characteristics AS kc FROM assets WHERE id = ${vide.id}`;
-      expect(JSON.parse(v.kc ?? '{}')).toMatchObject({ charges: 1899, charges__origin: 'SYSTEM_RULE' });
-      const [j] = await sql<{ origin: string; source_type: string; source_id: string }[]>`
-        SELECT origin, source_type, source_id FROM canonical_field_writes WHERE asset_id = ${vide.id} AND canonical_key = 'charges'`;
-      expect(j).toEqual({ origin: 'SYSTEM_RULE', source_type: 'impact_propagation', source_id: 'l22ChargesCents' });
-      const [{ n: traces }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM ai_field_updates WHERE asset_id = ${vide.id} AND field_key = 'charges'`;
-      expect(traces).toBe(1);
-
-      const [s] = await sql<{ kc: string | null }[]>`SELECT key_characteristics AS kc FROM assets WHERE id = ${saisi.id}`;
-      expect(JSON.parse(s.kc ?? '{}').charges).toBe(1500);
-      const conflits = await sql<{ field_key: string; current_value: string; proposed_value: string; source_type: string; status: string }[]>`
-        SELECT field_key, current_value, proposed_value, source_type, status FROM inconsistency_registry WHERE asset_id = ${saisi.id}`;
-      expect(conflits).toEqual([{ field_key: 'charges', current_value: '1500', proposed_value: '1899', source_type: 'reconciliation', status: 'open' }]);
-      // La carte existe dans « À traiter » (À arbitrer).
-      const { listOpenReconciliationConflicts } = await import('@/services/ai/reconciliation/to-process-conflicts');
-      const cartes = await listOpenReconciliationConflicts(compte.id);
-      expect(cartes.map((c) => c.objectId)).toContain(saisi.id);
-    });
-  }
+  // Lot 82B (C-Q9) : le moteur de propagation générique (`impact_queue`, règles `field_dependencies`) est
+  // RETIRÉ — il n'avait plus aucune règle active ni aucun émetteur ; la cohérence passe par le registre unique
+  // (`services/coherence/registry`, scénario L82B).
 
   // ── 4. Fournisseurs ───────────────────────────────────────────────────────
   it('référentiel fournisseurs : création, rapprochement, idempotence, fiche utilisateur intacte, document édité ignoré', async () => {

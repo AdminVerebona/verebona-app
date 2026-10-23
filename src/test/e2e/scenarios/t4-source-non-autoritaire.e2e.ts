@@ -18,9 +18,6 @@ vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () 
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (orig) => ({
-  ...(await orig<object>()), emitAgendaItemCreated: async () => {},
-}));
 
 const devis = (fileId: number, date = '2027-05-12', over: Partial<AgendaDecision> = {}): AgendaDecision => ({
   action: 'propose', title: 'Remplacement de la chaudière', date, category: 'action', confidence: 'certain',

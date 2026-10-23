@@ -31,6 +31,7 @@
  *    (10) documents par passage. Arrêt : `SCHEDULED_TASK_T1_COMPLETENESS_RETRY=off`.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { buildSourceUnits } from './build-units';
 import {
   buildCompletenessReport, computeCoverage, resolveTableParents, selectRepairUnits, selectSourceRereadUnits, SourceUnitLinker, withRepairStates,
@@ -177,6 +178,8 @@ export async function runSourceUnitsBackfill(opts: { deadline?: number; env?: Re
          FROM document_extractions e
          JOIN asset_files af ON af.id = e.file_id AND af.deleted_at IS NULL
         WHERE e.id > $2 AND NOT EXISTS (SELECT 1 FROM document_extraction_coverage c WHERE c.file_id = e.file_id)
+          -- Lot 82A (C-Q10, §3.3) : comptes éligibles seulement (repris après réactivation).
+          AND ${processingEligibleSql('e.account_id')}
         ORDER BY e.id
         LIMIT $1`,
       [s.backfillBatch + 1, apres] as never[],
@@ -254,6 +257,9 @@ export async function runCompletenessRetry(opts: { deadline?: number; env?: Reco
        SELECT c.file_id FROM document_extraction_coverage c
          JOIN asset_files af ON af.id = c.file_id AND af.deleted_at IS NULL
         WHERE c.next_retry_at IS NOT NULL AND c.next_retry_at <= NOW()
+          -- Lot 82A (C-Q10, §3.3) : aucune reprise (ni tentative consommée) pour
+          -- un compte non éligible ; la demande reste due et repart à la réactivation.
+          AND ${processingEligibleSql('c.account_id')}
         ORDER BY c.next_retry_at
         LIMIT $1
         FOR UPDATE OF c SKIP LOCKED

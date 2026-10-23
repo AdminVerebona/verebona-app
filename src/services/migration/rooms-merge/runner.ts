@@ -545,7 +545,7 @@ export async function runRoomsMerge(o: MergeOptions): Promise<MergeResult> {
               await (o.reenqueue ?? reenqueueDefaut)({ accountId: j.accountId, userId: j.userId, targets: [{ type: 'ROOM', id: outcome.substructureId }] });
               await o.sql.unsafe(
                 `UPDATE ai_job_queue SET last_error = last_error || $2 WHERE id = $1`,
-                [j.jobId, ` [relancée : sous-structure ${outcome.substructureId}]`] as never[],
+                [j.jobId, ` [relancée : pièce ${outcome.substructureId}]`] as never[],
               );
               counts.reenqueued = (counts.reenqueued ?? 0) + 1;
             } catch (e) {
@@ -641,7 +641,7 @@ export async function restoreRoomsMerge(sql: postgres.Sql, runId: string, log: (
         await tx.unsafe(`UPDATE room_merge_changes SET restored_at = now() WHERE id = ANY($1::bigint[])`, [fait] as never[]);
       }
       await tx.unsafe(`UPDATE room_merge_runs SET status = 'RESTORED', restored_at = now() WHERE run_id = $1::uuid`, [runId] as never[]);
-      log(`restauration ${runId} : ${out.restored} valeur(s), ${out.deletedSubstructures} sous-structure(s) supprimée(s), ${out.conflicts.length} conflit(s)`);
+      log(`restauration ${runId} : ${out.restored} valeur(s), ${out.deletedSubstructures} Pièce(s) créée(s) par la reprise supprimée(s), ${out.conflicts.length} conflit(s)`);
       return out;
     }) as RestoreResult;
   } finally {

@@ -173,7 +173,7 @@ scenario('L81E', 'Notifications : écarts résiduels 79C (abonnement, paiement, 
   });
 
   async function compte(o: { plan?: 'STANDARD' | 'PREMIUM'; status?: string; subId?: string } = {}) {
-    const acc = await make.account();
+    const acc = await make.account({ plan: null });
     const customer = `cus_${uid('l81e')}`;
     await sql`UPDATE accounts SET stripe_customer_id = ${customer}, plan_type = ${o.plan ?? 'STANDARD'},
                 subscription_status = ${o.status ?? 'TRIALING'}, stripe_subscription_id = ${o.subId ?? null}
@@ -448,6 +448,8 @@ scenario('L81E', 'Notifications : écarts résiduels 79C (abonnement, paiement, 
   it('L81E-E2E-06 récapitulatif : préparé ≠ envoyé, reprise, inchangé, priorité, concurrence, plus de 1 000 comptes', async () => {
     const { runToProcessDigest } = await import('@/lib/notifications/scheduled/to-process-digest');
     const c = await compte();
+    // Lot 82A (C-Q10) : récapitulatif de CONTENU — compte éligible (abonnement en service).
+    await sql`INSERT INTO account_subscriptions (account_id, plan_code, status) VALUES (${c.id}, 'standard', 'active')`;
     await sql`INSERT INTO notification_preferences (user_id, category, delivery_mode, channel, enabled)
               VALUES (${c.userId}, 'to_process', 'daily_digest', 'email', true)`;
     const action = async (q: string) => {
@@ -497,6 +499,9 @@ scenario('L81E', 'Notifications : écarts résiduels 79C (abonnement, paiement, 
         INSERT INTO accounts (name, owner_user_id) SELECT ${tag}, id FROM u RETURNING id, owner_user_id
       ), m AS (
         INSERT INTO account_memberships (account_id, user_id, role, status) SELECT id, owner_user_id, 'owner', 'active' FROM a RETURNING account_id
+      ), s AS (
+        -- Lot 82A (C-Q10) : comptes en service (éligibles au récapitulatif de contenu).
+        INSERT INTO account_subscriptions (account_id, plan_code, status) SELECT id, 'standard', 'active' FROM a RETURNING account_id
       ), b AS (
         INSERT INTO assets (user_id, account_id, category, name) SELECT owner_user_id, id, 'VEHICULE', ${tag} FROM a RETURNING id, account_id
       )
@@ -519,6 +524,8 @@ scenario('L81E', 'Notifications : écarts résiduels 79C (abonnement, paiement, 
 
   it('L81E-E2E-07 statuts outbox / BO fidèles ; migrations 0638 et 0640 sur données historiques', async () => {
     const c = await compte();
+    // Lot 82A (C-Q10) : notification de CONTENU — compte éligible (abonnement en service).
+    await sql`INSERT INTO account_subscriptions (account_id, plan_code, status) VALUES (${c.id}, 'standard', 'active')`;
     const { emit } = await import('@/lib/notifications');
     const passe = new Date(Date.now() - 1000);
     // Aucun canal réellement envoyé (canaux supprimés, malgré d'anciennes préférences

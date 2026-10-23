@@ -54,6 +54,8 @@ export async function recordAgendaItemSources(
   client: any,
   agendaItemId: number,
   sources: AgendaSourceRef[],
+  /** Lot 82D (CDC v5 §7.4) : provenance du lien Document ↔ Agenda (T4 : AI_DIRECT ; agenda manuel : MANUAL_DIRECT). */
+  provenance: 'AI_DIRECT' | 'MANUAL_DIRECT' = 'AI_DIRECT',
 ): Promise<void> {
   const liste = sources.filter(valide);
   if (liste.length === 0) return;
@@ -67,9 +69,10 @@ export async function recordAgendaItemSources(
     const { AgendaOwnershipError } = await import('./write-agenda-item');
     throw new AgendaOwnershipError();
   }
-  await client.insert(agendaFileLinks)
-    .values(fichiers.map((assetFileId) => ({ agendaItemId, assetFileId })))
-    .onConflictDoNothing();
+  const { addFileLinkProvenance } = await import('@/services/business-operations/grouping/provenance');
+  const { drizzleRunner } = await import('@/services/business-operations/grouping/runner');
+  // Agenda manuel : seuls les liens absents sont créés (un lien propagé ou T4 garde ses justifications).
+  await addFileLinkProvenance(drizzleRunner(client), agendaItemId, fichiers, provenance, { onlyNew: provenance === 'MANUAL_DIRECT' });
   if (!(await agendaSourcesColumnsReady())) return;
   for (const s of liste) {
     await client.execute(sql`

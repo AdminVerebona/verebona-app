@@ -360,28 +360,3 @@ export async function* exportReportChunks(s: ReportSummary, now: Date): AsyncGen
   const expected = s.entriesReportId ? null : s.entryCount;
   yield `\n  ],\n  "entriesExported": ${exported},\n  "entriesExpected": ${expected === null ? exported : expected},\n  "complete": ${expected === null || expected === exported}\n}\n`;
 }
-
-/**
- * Rétention (tâche `ai-call-diagnostics-purge`) : rapports plus anciens que
- * l'horizon, sauf ceux dont un rapport plus récent partage les lignes.
- */
-export async function purgeExecutionReports(opts: { olderThanDays: number; deadline?: number; batch?: number }): Promise<number> {
-  if (!(await executionReportsReady())) return 0;
-  const batch = Math.max(100, Math.min(opts.batch ?? 2_000, 20_000));
-  let total = 0;
-  for (;;) {
-    const r = (await pgClient.unsafe(
-      `WITH old AS (
-         SELECT r.id FROM ai_execution_reports r
-          WHERE r.created_at < now() - ($1::int * interval '1 day')
-            AND NOT EXISTS (SELECT 1 FROM ai_execution_reports n WHERE n.entries_report_id = r.id AND n.id <> r.id
-                              AND n.created_at >= now() - ($1::int * interval '1 day'))
-          ORDER BY r.id LIMIT $2)
-       DELETE FROM ai_execution_reports d USING old WHERE d.id = old.id RETURNING d.id`,
-      [opts.olderThanDays, batch] as never[],
-    )) as unknown as Row[];
-    total += r.length;
-    if (r.length < batch || (opts.deadline && Date.now() >= opts.deadline)) break;
-  }
-  return total;
-}

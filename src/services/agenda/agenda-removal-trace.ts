@@ -24,8 +24,10 @@ type Sql = postgres.Sql;
  * OPERATION_PROJECTION (lot 46, O7) : projection d'une Opération retirée (Opération invalidée, doublon de fusion, orpheline).
  * OPERATION_CONSOLIDATION (lot 76H) : représentation T4 équivalente absorbée par l'élément principal de l'Opération
  * (journal 0591 `agenda_intervention_consolidations`, restaurable).
+ * ORPHAN_ASSET_FIELD (lot 82B) : échéance de fiche sans plus aucun rattachement vivant, retirée par le contrôle de
+ * cohérence COH-AGENDA-ORPHANS (remplace l'ancien statut utilisateur « annulé » posé sans trace par la maintenance horaire).
  */
-export type AgendaRemovalReason = 'SOURCE_SYNC' | 'DEDUPE_14_6' | 'OPERATION_PROJECTION' | 'OPERATION_CONSOLIDATION';
+export type AgendaRemovalReason = 'SOURCE_SYNC' | 'DEDUPE_14_6' | 'OPERATION_PROJECTION' | 'OPERATION_CONSOLIDATION' | 'ORPHAN_ASSET_FIELD';
 
 let pret: { ready: boolean; at: number } | null = null;
 

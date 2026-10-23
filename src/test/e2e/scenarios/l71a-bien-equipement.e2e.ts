@@ -27,6 +27,12 @@
  *         rattachés, journal 0489, idempotence, isolation des comptes.
  * EQP-E08 Isolation des comptes : aucun équipement d'un autre compte n'est
  *         jamais rattaché ; choix de l'utilisateur jamais contredit.
+ *
+ * Lot 82E (test instable) : la file vidée par `drainQueues` et l'enregistreur
+ * du rejeu sont partagés par tout le processus. Les comptes d'appels IA ne
+ * portent plus que sur CE compte (`ai_usage_event.account_id`) et CES objets
+ * (bien parent / équipement candidat cités dans le contexte) ; EQP-E02 met
+ * en file un traitement T3 d'un autre compte pour le prouver (L82E-EQP-ISOL).
  */
 import { NextRequest } from 'next/server';
 import { expect, it, vi } from 'vitest';
@@ -102,6 +108,41 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
     return replay;
   };
   const appels = (replay: { calls: Array<{ operationCode?: string; prompt?: string }> }, op: string) => replay.calls.filter((x) => x.operationCode === op);
+  /**
+   * L82E — appels d'une opération qui concernent CES objets (bien parent ou
+   * équipement candidat cités dans le contexte transmis) : l'enregistreur du
+   * rejeu reçoit aussi les appels des traitements d'autres comptes vidés par
+   * `drainQueues` (file partagée par le processus).
+   */
+  const appelsDe = (replay: { calls: Array<{ operationCode?: string; prompt?: string }> }, op: string, o: { assetIds?: number[]; equipmentIds?: number[] }) =>
+    appels(replay, op).filter((x) => (o.assetIds ?? []).some((id) => new RegExp(`bien parent:#${id}(?!\\d)`).test(x.prompt ?? ''))
+      || (o.equipmentIds ?? []).some((id) => new RegExp(`"candidateId":\\s*${id}(?!\\d)`).test(x.prompt ?? '')));
+  /** L82E — appels IA d'une opération journalisés pour CE compte (`ai_usage_event`, écrit avant le retour de l'appel). */
+  const appelsDuCompte = async (accountId: number, op: string) =>
+    sql`SELECT id FROM ai_usage_event WHERE account_id = ${accountId} AND operation_code = ${op}`;
+  /**
+   * L82E — bruit : un AUTRE compte dont un document reste ambigu entre deux
+   * robots semblables (aucun indice discriminant), puis un traitement T3
+   * « documents de l'équipement » mis en file SANS la vider : il sera
+   * exécuté (et appellera T3) par le prochain `drainQueues`, celui d'un
+   * autre test.
+   */
+  const bruitT3AutreCompte = async () => {
+    const autre = await make.account({ plan: 'premium' });
+    const mb = await maison(autre);
+    const r1 = await equipement(mb.id, 'Robot aspirateur bas', { brand: 'iRobot', model: 'Roomba i7' });
+    await equipement(mb.id, 'Robot aspirateur haut', { brand: 'iRobot', model: 'Roomba i7' });
+    const d = await make.assetFile(autre, { assetId: mb.id });
+    await analyser(autre, d.id, sortieT1({
+      title: 'Notice robot aspirateur', date: '2025-01-02', documentTypeCode: 'USER_MANUAL', canonicalType: 'NOTICE',
+      assets: [{ id: mb.id, label: 'Maison' }], facts: [fait(null, 'Roomba i7', 'Modèle Roomba i7', { rawKey: 'modele', label: 'Modèle', assetId: mb.id })],
+    }), [T3_ABSTENTION]);
+    const avant = (await appelsDuCompte(autre.id, 't3_link_ambiguity')).length;
+    const { requestEquipmentDocumentSync } = await import('@/services/equipment/equipment-document-queue');
+    const job = await requestEquipmentDocumentSync(autre.id, r1, { reason: 'created' });
+    await sql`UPDATE ai_job_queue SET available_at = now() WHERE id = ${job}`;
+    return { accountId: autre.id, assetId: mb.id, avant };
+  };
   const fait = (canonicalKey: string | null, value: string | number, excerpt: string, o: Partial<FaitT1> = {}): FaitT1 => ({
     canonicalKey, value, excerpt, assetId: null,
     valueType: canonicalKey === 'acquisitionPrice' ? 'money_eur' : canonicalKey?.endsWith('Date') ? 'date' : 'string', ...o,
@@ -149,6 +190,12 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
   // ══ EQP-E02 ════════════════════════════════════════════════════════════
 
   it('EQP-E02 — facture du robot déposée sur la maison : date / prix sur le robot, jamais sur la maison ; document rattaché au robot, visible des deux côtés', async () => {
+    // L82E-EQP-ISOL : la file T3 vidée par `drainQueues` et l'enregistreur du
+    // rejeu sont PARTAGÉS par tout le processus (autres tests, autres
+    // fichiers). Un traitement T3 d'un AUTRE compte, en attente au moment du
+    // vidage, appelle T3 sur l'enregistreur de ce test : les assertions ne
+    // portent donc que sur les appels de CE compte / CE document.
+    const bruit = await bruitT3AutreCompte();
     const c = await make.account({ plan: 'premium' });
     const m = await maison(c);
     const robot = await equipement(m.id, 'Robot aspirateur');
@@ -169,7 +216,12 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
     // Document ↔ équipement : lien N-N + colonne, sans IA, sans duplication.
     expect(await liensEq(f.id)).toEqual([expect.objectContaining({ equipment_id: robot, asset_id: m.id, link_role: 'SECONDARY' })]);
     expect(await colonneEq(f.id)).toBe(robot);
-    expect(appels(replay, 't3_link_ambiguity')).toHaveLength(0);
+    // Aucun appel T3 pour CE compte / CE document (le déterministe suffit).
+    expect(appelsDe(replay, 't3_link_ambiguity', { assetIds: [m.id], equipmentIds: [robot] })).toHaveLength(0);
+    expect(await appelsDuCompte(c.id, 't3_link_ambiguity')).toHaveLength(0);
+    // Le bruit a bien été traité pendant ce vidage (le filtre est donc réellement exercé).
+    expect(appelsDe(replay, 't3_link_ambiguity', { assetIds: [bruit.assetId] }).length).toBeGreaterThan(0);
+    expect((await appelsDuCompte(bruit.accountId, 't3_link_ambiguity')).length).toBeGreaterThan(bruit.avant);
     expect(await docsDeLEquipement(c, robot)).toEqual([f.id]);
     expect(await docsDuBien(c, m.id)).toEqual([f.id]);
     expect((await sql`SELECT id FROM asset_files WHERE account_id = ${c.id}`)).toHaveLength(1);
@@ -189,7 +241,8 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
       assets: [{ id: m.id, label: 'Maison' }],
       facts: [fait(null, 'R7-2024-0002', 'S/N : R7-2024-0002', { rawKey: 'numeroSerie', label: 'Numéro de série', assetId: m.id })],
     }), [T3_ABSTENTION]);
-    expect(appels(rep1, 't3_link_ambiguity')).toHaveLength(0);
+    expect(appelsDe(rep1, 't3_link_ambiguity', { assetIds: [m.id], equipmentIds: [r1, r2] })).toHaveLength(0);
+    expect(await appelsDuCompte(c.id, 't3_link_ambiguity')).toHaveLength(0);
     expect((await liensEq(g.id)).map((x) => x.equipment_id)).toEqual([r2]);
     expect(await docsDeLEquipement(c, r2)).toEqual([g.id]);
     expect(await docsDeLEquipement(c, r1)).toEqual([]);
@@ -200,8 +253,9 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
       title: 'Notice robot aspirateur', date: '2025-01-02', documentTypeCode: 'USER_MANUAL', canonicalType: 'NOTICE',
       assets: [{ id: m.id, label: 'Maison' }], facts: [fait(null, 'Roomba i7', 'Modèle Roomba i7', { rawKey: 'modele', label: 'Modèle', assetId: m.id })],
     }), [T3_ABSTENTION]);
-    const t3 = appels(rep2, 't3_link_ambiguity');
+    const t3 = appelsDe(rep2, 't3_link_ambiguity', { assetIds: [m.id], equipmentIds: [r1, r2] });
     expect(t3).toHaveLength(1);
+    expect(await appelsDuCompte(c.id, 't3_link_ambiguity')).toHaveLength(1);
     // Contexte réellement transmis : candidats enrichis, faits T1 du document.
     expect(t3[0].prompt).toMatch(new RegExp(`"candidateId":\\s*${r1}`));
     expect(t3[0].prompt).toContain('n° de série:R7-2024-0001');
@@ -244,6 +298,7 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
     }), [T3_ABSTENTION]);
     expect(await liensEq(f.id)).toEqual([]);
     // Création par la route (nom sans rapport) puis n° de série saisi → rapprochement.
+    const t3Avant = (await appelsDuCompte(c.id, 't3_link_ambiguity')).length;
     const replay = await rejouer([T3_ABSTENTION]);
     as(c);
     const { POST } = await import('@/app/api/assets/[id]/equipments/route');
@@ -254,7 +309,8 @@ scenario('L71A', 'Séparation bien / équipement et rapprochement documentaire',
     const { syncEquipmentDocumentLinks } = await import('@/services/equipment/document-equipment-link.service');
     const r = await syncEquipmentDocumentLinks({ accountId: c.id, equipmentId: pac, allowAi: true });
     expect(r).toMatchObject({ found: true, linkedDocuments: [f.id], aiCalls: 0 });
-    expect(appels(replay, 't3_link_ambiguity')).toHaveLength(0);
+    expect(appelsDe(replay, 't3_link_ambiguity', { assetIds: [m.id], equipmentIds: [pac] })).toHaveLength(0);
+    expect(await appelsDuCompte(c.id, 't3_link_ambiguity')).toHaveLength(t3Avant);
     expect(await docsDeLEquipement(c, pac)).toEqual([f.id]);
     // Rejoué : aucun lien de plus.
     expect((await syncEquipmentDocumentLinks({ accountId: c.id, equipmentId: pac })).created).toBe(0);

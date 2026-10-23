@@ -293,11 +293,11 @@ export function defaultQualificationCall(secret?: string | null): QualificationC
     try {
       const r = await getAiProvider().call(input);
       await traceTechnicalCall('model_qualification_probe', input.model, true, Date.now() - started,
-        { inputTokens: r.inputTokens ?? 0, outputTokens: r.outputTokens ?? 0 }, null);
+        { inputTokens: r.inputTokens ?? 0, outputTokens: r.outputTokens ?? 0 }, null, { input, responseRaw: r.rawText });
       return r;
     } catch (e) {
       await traceTechnicalCall('model_qualification_probe', input.model, false, Date.now() - started,
-        { inputTokens: 0, outputTokens: 0 }, sanitizeProviderError(e, secret).slice(0, 300));
+        { inputTokens: 0, outputTokens: 0 }, sanitizeProviderError(e, secret).slice(0, 300), { input, responseRaw: null });
       throw e;
     }
   };

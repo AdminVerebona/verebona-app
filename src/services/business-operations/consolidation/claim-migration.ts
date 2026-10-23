@@ -41,6 +41,7 @@
  * Rejouée sans changement : aucune écriture (repère à jour, NFR-OP-005).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import { sanitizeSection, type AdditionalInfoSectionData } from '@/lib/assets/additional-infos';
@@ -285,6 +286,8 @@ export async function listAssetsWithLegacyClaim(limit: number, afterAssetId = 0,
       LEFT JOIN business_operation_claim_migration_marks m ON m.asset_id = a.id
      WHERE a.deleted_at IS NULL AND a.account_id IS NOT NULL AND a.id > ${afterAssetId}
        AND (${accountId}::int IS NULL OR a.account_id = ${accountId}::int)
+       -- Lot 82A (C-Q10, §3.3) : comptes éligibles seulement (repère conservé : repris à la réactivation).
+       AND ${sql.raw(processingEligibleSql('a.account_id'))}
        AND (ai.claim_json <> '{}'::jsonb OR m.asset_id IS NOT NULL)
        AND (m.asset_id IS NULL OR m.migration_version <> ${CLAIM_MIGRATION_VERSION} OR m.account_id <> a.account_id
             OR m.data_fingerprint <> md5(ai.claim_json::text))

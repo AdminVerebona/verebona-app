@@ -125,7 +125,11 @@ export async function detacherSourcePartagee(p: { accountId: number; sourceFileI
     const ids = rows.map((r) => Number(r.id));
     if (ids.length) {
       await pgClient.unsafe(`DELETE FROM agenda_item_sources WHERE agenda_item_id = ANY($1::int[]) AND asset_file_id = $2`, [ids, p.sourceFileId] as never[]);
-      await pgClient.unsafe(`DELETE FROM agenda_file_links WHERE agenda_item_id = ANY($1::int[]) AND asset_file_id = $2`, [ids, p.sourceFileId] as never[]);
+      // Lot 82D (CDC v5 §7.4) : seule la provenance AI_DIRECT est retirée ; un lien encore
+      // justifié (geste de l'utilisateur, propagation vers le principal) est conservé.
+      const { removeFileLinkProvenance } = await import('@/services/business-operations/grouping/provenance');
+      const { postgresRunner } = await import('@/services/business-operations/grouping/runner');
+      await removeFileLinkProvenance(postgresRunner(pgClient), ids, [p.sourceFileId], 'AI_DIRECT');
     }
     return ids;
   } catch (e) {

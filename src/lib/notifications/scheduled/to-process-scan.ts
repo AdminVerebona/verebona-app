@@ -30,7 +30,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import { db } from '@/db';
 import { accounts, toProcessActions } from '@/db/schema';
 import { emit } from '@/lib/notifications';
@@ -73,7 +74,9 @@ export async function runToProcessScan(
   if (!itemCreatedHasChannel()) return { accountsProcessed: 0, created: 0, resolved: 0, capped: false };
   const depuis = new Date(now.getTime() - windowMs);
 
-  const accountList = await db.select({ id: accounts.id }).from(accounts).limit(limit + 1);
+  // Lot 82A (C-Q10) : notifications de contenu — comptes éligibles seulement.
+  const accountList = await db.select({ id: accounts.id }).from(accounts)
+    .where(sql.raw(processingEligibleSql('"accounts"."id"'))).limit(limit + 1);
   const capped = accountList.length > limit;
   const toScan = capped ? accountList.slice(0, limit) : accountList;
 

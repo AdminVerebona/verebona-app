@@ -36,6 +36,7 @@
 import type postgres from 'postgres';
 import { pgClient } from '@/db';
 import { removeAgendaItemsTraced } from '@/services/agenda/agenda-removal-trace';
+import { postgresRunner } from '../grouping/runner';
 
 type Sql = postgres.Sql;
 type Tx = postgres.TransactionSql;
@@ -86,6 +87,15 @@ export const ABSORBABLE_SQL = `
                    WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
                      AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))`;
 
+/**
+ * Lot 82D (V-Q4) : la fusion reste réservée aux occurrences réellement identiques — un élément ABSORBÉ n'est
+ * jamais le principal d'une Opération, ni un élément que l'utilisateur a rattaché comme élément distinct
+ * (étape, échéance). (Le changement d'intitulé du principal garde `ABSORBABLE_SQL` seul.)
+ */
+export const ABSORBABLE_ROLE_SQL = `
+  AND i.operation_role IS DISTINCT FROM 'PRINCIPAL'
+  AND i.operation_role_origin IS DISTINCT FROM 'USER'`;
+
 export interface ConsolidationInput {
   accountId: number;
   operationId: number;
@@ -134,8 +144,11 @@ export async function consolidateAgendaRepresentations(p: ConsolidationInput, sq
         `SELECT 1 FROM agenda_intervention_consolidations k WHERE k.account_id = $1 AND k.restored_at IS NOT NULL
             AND k.kind = 'LINK' AND k.principal_item_id = $2 LIMIT 1`, [p.accountId, p.principalId] as never[]);
       if (restaure) return { ...vide, protectedIds: absorbes, skipped: 'PRINCIPAL_NOT_LINKED' as const };
-      await tx`UPDATE agenda_items SET business_operation_id = ${p.operationId}, updated_at = now()
-                WHERE id = ${p.principalId} AND account_id = ${p.accountId}`;
+      // Lot 82D : service unique de regroupement — l'élément devient le principal (représentation T4 de l'intervention).
+      const { attachAgendaItem, runnerContext } = await import('../grouping/service');
+      const r = await attachAgendaItem(runnerContext(postgresRunner(tx), p.accountId, { correlationId: p.correlationId ?? null }),
+        { operationId: p.operationId, itemId: p.principalId, role: 'PRINCIPAL', origin: 'T4', reasonCode: 'T4_AGENDA_CONSOLIDATION_LINK' });
+      if (!r.changed && r.skipped) return { ...vide, protectedIds: absorbes, skipped: r.skipped === 'USER_REJECTED' ? 'PRINCIPAL_NOT_LINKED' as const : 'PRINCIPAL_LINKED_ELSEWHERE' as const };
       await journal(tx, p, 'LINK', null, { previousOperationId: lieA });
       linked = true;
     }
@@ -146,7 +159,7 @@ export async function consolidateAgendaRepresentations(p: ConsolidationInput, sq
         WHERE i.account_id = $1 AND i.id = ANY($2::int[])
           AND (i.business_operation_id IS NULL OR i.business_operation_id = $3
                OR lo.id IS NULL OR lo.invalidated_at IS NOT NULL OR lo.merged_into_operation_id IS NOT NULL)
-          AND ${ABSORBABLE_SQL}
+          AND ${ABSORBABLE_SQL} ${ABSORBABLE_ROLE_SQL}
         ORDER BY i.id
         FOR UPDATE OF i`,
       [p.accountId, intArray(absorbes), p.operationId] as never[],
@@ -160,6 +173,7 @@ export async function consolidateAgendaRepresentations(p: ConsolidationInput, sq
         `SELECT
            COALESCE((SELECT jsonb_agg(asset_id ORDER BY asset_id) FROM agenda_asset_links WHERE agenda_item_id = $1), '[]') AS assets,
            COALESCE((SELECT jsonb_agg(asset_file_id ORDER BY asset_file_id) FROM agenda_file_links WHERE agenda_item_id = $1), '[]') AS files,
+           COALESCE((SELECT jsonb_object_agg(asset_file_id::text, provenances) FROM agenda_file_links WHERE agenda_item_id = $1), '{}') AS file_provenances,
            COALESCE((SELECT jsonb_agg(substructure_id ORDER BY substructure_id) FROM agenda_room_links WHERE agenda_item_id = $1), '[]') AS rooms,
            COALESCE((SELECT jsonb_agg(equipment_id ORDER BY equipment_id) FROM agenda_equipment_links WHERE agenda_item_id = $1), '[]') AS equipments,
            COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id) FROM agenda_occurrence_events e WHERE e.agenda_item_id = $1), '[]') AS occurrence_events`,
@@ -168,8 +182,11 @@ export async function consolidateAgendaRepresentations(p: ConsolidationInput, sq
       const added = {
         assets: (await tx.unsafe<Row[]>(`INSERT INTO agenda_asset_links (agenda_item_id, asset_id)
             SELECT $1, asset_id FROM agenda_asset_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING asset_id`, [p.principalId, id] as never[])).map((r) => Number(r.asset_id)),
-        files: (await tx.unsafe<Row[]>(`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id)
-            SELECT $1, asset_file_id FROM agenda_file_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING asset_file_id`, [p.principalId, id] as never[])).map((r) => Number(r.asset_file_id)),
+        // Lot 82D : provenances reprises (un élément absorbé n'est jamais principal : aucune propagation copiée).
+        files: (await tx.unsafe<Row[]>(`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id, provenances)
+            SELECT $1, asset_file_id, CASE WHEN cardinality(array_remove(provenances, 'OPERATION_PRINCIPAL')) > 0
+                                           THEN array_remove(provenances, 'OPERATION_PRINCIPAL') ELSE ARRAY['AI_DIRECT']::text[] END
+              FROM agenda_file_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING asset_file_id`, [p.principalId, id] as never[])).map((r) => Number(r.asset_file_id)),
         rooms: (await tx.unsafe<Row[]>(`INSERT INTO agenda_room_links (agenda_item_id, substructure_id)
             SELECT $1, substructure_id FROM agenda_room_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING substructure_id`, [p.principalId, id] as never[])).map((r) => Number(r.substructure_id)),
         equipments: (await tx.unsafe<Row[]>(`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id)
@@ -295,9 +312,14 @@ export async function restoreAgendaConsolidations(sql: Sql, p: { runId?: string;
               AND is_automatic AND NOT COALESCE(is_automatic_modified, false)`,
           [principal, accountId, String(d.from ?? ''), String(d.to ?? '')] as never[]);
       } else if (l.kind === 'LINK') {
-        await tx.unsafe(
-          `UPDATE agenda_items SET business_operation_id = $3, updated_at = now() WHERE id = $1 AND account_id = $2 AND business_operation_id = $4`,
-          [principal, accountId, d.previousOperationId ?? null, l.operation_id] as never[]);
+        // Lot 82D : retour arrière par le service de regroupement (rôle et propagation retirés, puis lien antérieur rétabli s'il vaut encore).
+        const { attachAgendaItem, detachAgendaItem, runnerContext } = await import('../grouping/service');
+        const ctx = runnerContext(postgresRunner(tx), accountId);
+        const r = await detachAgendaItem(ctx, { itemId: principal, operationId: Number(l.operation_id), origin: 'SYSTEM', reasonCode: 'AGENDA_CONSOLIDATION_RESTORED' });
+        const avant = d.previousOperationId == null ? null : Number(d.previousOperationId);
+        if (r.changed && avant !== null) {
+          await attachAgendaItem(ctx, { operationId: avant, itemId: principal, origin: 'SYSTEM', reasonCode: 'AGENDA_CONSOLIDATION_RESTORED' }).catch(() => undefined);
+        }
       } else {
         const id = Number(l.absorbed_item_id);
         const item = d.item as Row | undefined;
@@ -312,7 +334,10 @@ export async function restoreAgendaConsolidations(sql: Sql, p: { runId?: string;
         const links = (d.links ?? {}) as Record<string, unknown>;
         const ids = (k: string) => intArray(Array.isArray(links[k]) ? (links[k] as unknown[]).map(Number) : []);
         await tx.unsafe(`INSERT INTO agenda_asset_links (agenda_item_id, asset_id) SELECT $1, a.id FROM assets a WHERE a.id = ANY($2::int[]) ON CONFLICT DO NOTHING`, [id, ids('assets')] as never[]);
-        await tx.unsafe(`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id) SELECT $1, f.id FROM asset_files f WHERE f.id = ANY($2::int[]) ON CONFLICT DO NOTHING`, [id, ids('files')] as never[]);
+        // Lot 82D : provenances de l'instantané (journal antérieur : provenance de l'élément automatique).
+        await tx.unsafe(`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id, provenances)
+            SELECT $1, f.id, COALESCE((SELECT array_agg(x) FROM jsonb_array_elements_text($3::text::jsonb -> f.id::text) AS x), ARRAY['AI_DIRECT']::text[])
+              FROM asset_files f WHERE f.id = ANY($2::int[]) ON CONFLICT DO NOTHING`, [id, ids('files'), JSON.stringify(links.file_provenances ?? {})] as never[]);
         await tx.unsafe(`INSERT INTO agenda_room_links (agenda_item_id, substructure_id) SELECT $1, s.id FROM substructures s WHERE s.id = ANY($2::int[]) ON CONFLICT DO NOTHING`, [id, ids('rooms')] as never[]);
         await tx.unsafe(`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id) SELECT $1, e.id FROM equipments e WHERE e.id = ANY($2::int[]) ON CONFLICT DO NOTHING`, [id, ids('equipments')] as never[]);
         const evts = Array.isArray(links.occurrence_events) ? links.occurrence_events : [];

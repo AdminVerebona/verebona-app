@@ -56,7 +56,7 @@ import type { Treatment } from '../config/treatments';
 import { listBatchTreatments } from '../config/treatments';
 import {
   claimNext, completeJob, failJob, deferJob, deferJobUntil, renewLease, recoverAbandonedJobs, isExecutionActive, LEASE_SECONDS,
-  releaseInterruptedJob, recordJobAttempt, type QueuedJob,
+  releaseInterruptedJob, recordJobAttempt, neutralizeIneligibleJob, type QueuedJob,
 } from './job-queue.repository';
 import { isCostCapReached, costCapResumeAt } from '../gateway/errors';
 import { isJobDeferred, isPermanentJobError, isBusinessResult, type JobBusinessResult } from './queue-policy';
@@ -66,6 +66,7 @@ import {
 } from './execution-control';
 import { runInJobContext, executionTimeoutMs } from './job-context';
 import { isAiBlocked } from './runnable-guard';
+import { isAccountIneligibleError, ineligibilityReasonOf } from '@/services/account/processing-eligibility';
 import { noteWorkerClaim, noteWorkerError, noteScheduleEvaluation, writeWorkerHeartbeat } from './worker-heartbeat';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -265,6 +266,14 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
       async () => {
         const { checkJobScope } = await import('./job-scope');
         await checkJobScope(job);
+        // Lot 82A (C-Q10, §3.3) : éligibilité du compte revérifiée à CHAQUE
+        // exécution (jobs anciens, différés, planifiés avant la fin d'essai,
+        // relancés) — compte non actif, suspendu ou en lecture seule :
+        // travail neutralisé, aucune écriture.
+        if (job.accountId != null) {
+          const { assertAccountProcessingEligible } = await import('@/services/account/processing-eligibility');
+          await assertAccountProcessingEligible(job.accountId);
+        }
         return handler(job, guard);
       },
     );
@@ -301,6 +310,17 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
       const { permanent, stale } = await failJob(job.id, (e as Error).message, job.executionId);
       if (!stale) outcome = { kind: 'failed', permanent, timedOut: true, error: (e as Error).message };
       console.error(`[queue] ${treatment} job ${job.id} : ${(e as Error).message}${permanent ? ' — échec définitif' : ''}.`);
+    } else if (isAccountIneligibleError(e)) {
+      // Lot 82A (C-Q10) : compte devenu non éligible (constaté au démarrage,
+      // ou appel IA refusé par la passerelle en cours d'exécution). Ni échec
+      // ni report : le travail est NEUTRALISÉ (CANCELLED, tentative rendue,
+      // marqué pour réexamen à la réactivation — `onAccountReactivated`).
+      // Aucune suite métier : le fichier n'est pas marqué en échec.
+      const reason = ineligibilityReasonOf(e) ?? 'READ_ONLY';
+      const neutralise = await neutralizeIneligibleJob(job.id, job.executionId, reason).catch(() => false);
+      console.info(JSON.stringify({
+        event: 'account.processing_refused', stage: 'execution', treatment, jobId: job.id, accountId: job.accountId, reason, neutralized: neutralise,
+      }));
     } else if (treatment === 'T1' && isCostCapReached(e) && !controller.signal.aborted) {
       // Lot 22 : plafond mensuel de coût IA du compte atteint (refus de la
       // passerelle, avant tout appel). T1 SEULEMENT (T3/T4 appliquent leur

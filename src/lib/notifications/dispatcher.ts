@@ -20,7 +20,7 @@
 
 import { db } from '@/db';
 import { notificationDeliveries } from '@/db/schema';
-import { getCatalogEntry } from './catalog';
+import { getCatalogEntry, isContentNotificationCategory, ACCOUNT_INELIGIBLE_SKIP_REASON } from './catalog';
 import { renderContent } from './content-renderer';
 import { resolveChannels } from './policy-resolver';
 import { applyChannelActivation, loadDisabledChannels, CHANNEL_DISABLED_ERROR_CODE } from './channel-activation';
@@ -66,6 +66,20 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     // Type hors catalogue : ne devrait pas arriver (emit valide). On échoue proprement.
     await releaseOrFail(row.id, row.attempt_count ?? 0, `unknown_event_type:${row.event_type}`);
     return 'failed';
+  }
+
+  // Lot 82A (C-Q10, §3.3) : notification de CONTENU d'un compte devenu non
+  // éligible (fin d'essai, suspension, lecture seule) depuis sa mise en file —
+  // ignorée, cause tracée, jamais un incident. Lecture impossible : l'erreur
+  // remonte (reprise normale), rien n'est envoyé à l'aveugle.
+  if (row.account_id != null && isContentNotificationCategory(entry.category)) {
+    const { checkAccountProcessingEligibility } = await import('@/services/account/processing-eligibility');
+    const e = await checkAccountProcessingEligibility(Number(row.account_id), { maxAgeMs: 5_000 });
+    if (!e.eligible) {
+      await markProcessed(row.id, 'skipped', { reason: `${ACCOUNT_INELIGIBLE_SKIP_REASON}:${e.reason ?? 'READ_ONLY'}` });
+      await afterProcessed(row, 'skipped');
+      return 'skipped';
+    }
   }
 
   // Réémission (§20.3) : seuls les canaux en échec de la ligne d'origine sont

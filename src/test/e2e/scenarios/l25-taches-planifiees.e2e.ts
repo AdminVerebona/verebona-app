@@ -110,7 +110,7 @@ scenario('L25-A', 'Tâches planifiées internes', ({ sql, make }) => {
   });
 
   it('exécution manuelle par la route BO : fin d’essai, exclusivité, audit', async () => {
-    const acc = await make.account();
+    const acc = await make.account({ plan: null });
     admin.id = acc.ownerUserId;
     await sql`INSERT INTO account_subscriptions (account_id, plan_code, status, trial_ends_at)
               VALUES (${acc.id}, 'premium', 'trialing', now() - interval '1 hour')`;

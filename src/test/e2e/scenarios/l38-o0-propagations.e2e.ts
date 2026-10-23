@@ -1,6 +1,6 @@
 /**
  * Lot 38 — O0 (CDC Opérations V1 §19, §24, B18, B24, C18) — base PostgreSQL
- * réelle : migration 0315, moteur de propagation, primitive canonique et
+ * réelle : migration 0315 (moteur de propagation retiré au lot 82B), primitive canonique et
  * `valuationHistory` (décision PO Q12).
  */
 import { readFileSync } from 'node:fs';
@@ -9,7 +9,7 @@ import { expect, it } from 'vitest';
 import { scenario } from '../scenario';
 
 scenario('L38-O0', 'Propagations génériques neutralisées, valorisation tracée', ({ sql, make }) => {
-  it('O0-E2E-01 migration 0315 : règles génériques désactivées, idempotente ; le moteur les ignore même actives', async () => {
+  it('O0-E2E-01 migration 0315 : règles génériques désactivées, idempotente (lot 82B : le moteur qui les lisait est retiré)', async () => {
     const regles = await sql<{ id: number }[]>`
       INSERT INTO field_dependencies (source_field, target_field, category, impact_type, transform_rule, confidence, is_active)
       VALUES ('amountCents', 'acquisitionPrice', NULL, 'propagation', 'cents_to_euros', 'certain', true),
@@ -20,34 +20,17 @@ scenario('L38-O0', 'Propagations génériques neutralisées, valorisation tracé
       RETURNING id`;
     const ids = regles.map((r) => r.id);
     try {
-      // Le moteur, règles ACTIVES : rien d'écrit, rien de proposé, aucun agenda.
-      const { clearDependencyCache } = await import('@/services/coherence/field-dependency.service');
-      clearDependencyCache();
-      const { enqueue } = await import('@/services/coherence/impact-queue.service');
-      const { processPendingImpacts } = await import('@/services/coherence/impact-propagation.service');
-      const compte = await make.account();
-      const bien = await make.asset(compte, { category: 'OBJECT', name: 'Vélo' });
-      await enqueue({ accountId: compte.id, assetId: bien.id, triggerType: 'manual_request', source: 'e2e',
-        metadata: { changedFields: { amountCents: 129900, documentDate: '2026-04-24' } }, priority: 0 });
-      const res = await processPendingImpacts(25, compte.id);
-      expect(res).toMatchObject({ fieldsApplied: 0, fieldsProposed: 0, fieldsConflicted: 0, agendaItemsCreated: 0, errors: 0 });
-      const [a] = await sql<{ kc: string | null; ppc: number | null; pd: string | null }[]>`
-        SELECT key_characteristics AS kc, purchase_price_cents AS ppc, purchase_date::text AS pd FROM assets WHERE id = ${bien.id}`;
-      expect(a.ppc).toBeNull();
-      expect(a.pd).toBeNull();
-      expect(JSON.parse(a.kc ?? '{}')).not.toHaveProperty('estimatedValue');
-      const [{ n: incoherences }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM inconsistency_registry WHERE asset_id = ${bien.id}`;
-      expect(incoherences).toBe(0);
-
       // La migration désactive ; rejouée, elle ne change plus rien.
       const migration = readFileSync(join(process.cwd(), 'src/db/migrations/0315_neutralize_generic_propagations.sql'), 'utf8');
       await sql.unsafe(migration);
       await sql.unsafe(migration);
       const etats = await sql<{ active: boolean }[]>`SELECT is_active AS active FROM field_dependencies WHERE id = ANY(${ids})`;
       expect(etats.map((e) => e.active)).toEqual([false, false, false, false]);
+      // Lot 82B (C-Q9) : plus aucun moteur ne lit ces règles.
+      const { existsSync } = await import('node:fs');
+      expect(existsSync(join(process.cwd(), 'src/services/coherence/impact-propagation.service.ts'))).toBe(false);
     } finally {
       await sql`DELETE FROM field_dependencies WHERE id = ANY(${ids})`;
-      (await import('@/services/coherence/field-dependency.service')).clearDependencyCache();
     }
   });
 

@@ -246,7 +246,11 @@ scenario('L47A-O9', 'BO diagnostic des Opérations : liste, détail, 13 indicate
                VALUES (${C.id}, ${croise}, ${bienB.id}, 'PRIMARY', 'DOCUMENT', true)`;
     });                                                                          // A3 : bien de B
     await src(C, croise, { key: fichierB.id });                                 // A3 : document de B
-    await sql`INSERT INTO agenda_items (account_id, title, business_operation_id) VALUES (${B.id}, 'Agenda B', ${croise})`; // A3
+    // A3 : élément d'agenda de B — relation HISTORIQUE refusée en base depuis le lot 82D (clé composée 0652) : injectée hors gardes.
+    await sql.begin(async (tx) => {
+      await tx`SET LOCAL session_replication_role = replica`;
+      await tx`INSERT INTO agenda_items (account_id, title, business_operation_id) VALUES (${B.id}, 'Agenda B', ${croise})`;
+    });
     const x = await op(C, {});
     const y = await op(C, { parent: x });
     await src(C, x, {}); await src(C, y, {});

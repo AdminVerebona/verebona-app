@@ -26,6 +26,12 @@
  *     (`?includeModelOutput=1`), sous la même garde et avec journal d'accès ;
  *   · le contenu conversationnel T2 (accès restreint, justifié et tracé,
  *     LOG-UI-08) n'est pas inclus : seulement les références des sources ;
+ *   · lot 82C : les échanges CAPTURÉS À LA SOURCE (prompt final, contexte,
+ *     paramètres, réponse brute, sortie parsée — T2 compris) ne sont joints
+ *     (`captures`, complets) que sur la même demande explicite et sous la
+ *     même autorisation journalisée ; `renderedPrompt` est alors le prompt
+ *     réellement transmis pour cet appel. Un appel antérieur à la capture
+ *     porte la mention « non conservé historiquement » ;
  *   · les textes libres (extraits, messages d'erreur, charge utile du job,
  *     détails) repassent par le même masquage que la passerelle (`redact`),
  *     par précaution — un masquage déjà appliqué reste inchangé.
@@ -35,6 +41,7 @@ import { redact } from '@/services/ai/gateway/redaction';
 import type { ExecutionDetail, ExecutionRow, ExecutionStep } from './execution-log.repository';
 import { buildExecutionDiagnosis, type ExecutionDiagnosis } from './execution-diagnosis';
 import type { ModelOutputView } from '../gateway/diagnostics/diagnostic.repository';
+import type { CallCaptureView } from './call-capture';
 
 export const EXECUTION_EXPORT_FORMAT = 'verebona.ai-execution/v1';
 
@@ -137,7 +144,7 @@ export interface ExecutionExport {
   };
   appliedConfiguration: Record<string, unknown>;
   modelIO: {
-    renderedPrompt: null;
+    renderedPrompt: string | null;
     renderedPromptNote: string;
     promptVersion: string | null;
     masterPrompt: { code: string; version: string | null } | null;
@@ -170,6 +177,8 @@ export interface ExecutionExport {
   diagnosis: ExecutionDiagnosis;
   /** Lot 33D — sorties du modèle, UNIQUEMENT sur demande explicite (route, accès journalisé). */
   modelOutputs?: ModelOutputView[];
+  /** Lot 82C — échanges capturés à la source, UNIQUEMENT sur demande explicite (même accès journalisé). */
+  captures?: CallCaptureView[];
   redaction: string;
 }
 
@@ -178,9 +187,10 @@ export interface ExecutionExport {
  * aucune lecture en base, testé).
  */
 export function buildExecutionExport(
-  detail: ExecutionDetail, now: Date = new Date(), opts: { modelOutputs?: ModelOutputView[] } = {},
+  detail: ExecutionDetail, now: Date = new Date(), opts: { modelOutputs?: ModelOutputView[]; captures?: CallCaptureView[] } = {},
 ): ExecutionExport {
   const c = detail.call;
+  const captureDeCetAppel = opts.captures?.find((x) => x.usageEventId === c.id) ?? null;
   const calls = (detail.calls.length ? detail.calls : [c]);
   const steps = [...detail.steps].sort((a, b) => a.stepOrder - b.stepOrder);
   const job = detail.job;
@@ -221,8 +231,12 @@ export function buildExecutionExport(
       appVersion: c.appVersion,
     },
     modelIO: {
-      renderedPrompt: null,
-      renderedPromptNote: 'Prompt rendu non conservé par la passerelle IA (aucun texte envoyé au modèle n’est stocké) : voir promptVersion, masterPrompt et task.',
+      renderedPrompt: captureDeCetAppel?.prompt ?? null,
+      renderedPromptNote: captureDeCetAppel?.prompt
+        ? 'Prompt réellement transmis au modèle, capturé à la source (lot 82C) — voir aussi « captures ».'
+        : captureDeCetAppel
+          ? `Prompt ${captureDeCetAppel.promptStatus === 'NOT_RETAINED_HISTORICALLY' ? 'non conservé historiquement (appel antérieur à la capture, lot 82C)' : captureDeCetAppel.promptStatus === 'NOT_SENT' ? 'non transmis (aucun appel fournisseur)' : 'non capturé'} : voir promptVersion, masterPrompt et task.`
+          : 'Prompt transmis : capturé à la source depuis le lot 82C, joint avec ?includeModelOutput=1 (accès journalisé) ; appels antérieurs : non conservé historiquement. Voir promptVersion, masterPrompt et task.',
       promptVersion: c.promptVersion,
       masterPrompt: c.masterPromptCode ? { code: c.masterPromptCode, version: c.masterPromptVersion } : null,
       task: c.task,
@@ -240,6 +254,8 @@ export function buildExecutionExport(
       totalCostUsd: usd(totalCostMicros) ?? 0,
       inputTokens: somme((x) => x.inputTokens),
       outputTokens: somme((x) => x.outputTokens),
+      // Lot 82C : somme des durées PROPRES des appels (sans double comptage) ;
+      // pour des appels antérieurs au lot 82C, chaque durée incluait les précédentes.
       totalDurationMs: somme((x) => x.durationMs),
       calls: calls.length,
       failedCalls: calls.filter((x) => x.status === 'error').length,
@@ -264,6 +280,8 @@ export function buildExecutionExport(
       treatment: c.treatment, calls, diagnostics: [], job: job ? { status: job.status, attempts: job.attempts } : null,
     })) as ExecutionDiagnosis,
     ...(opts.modelOutputs ? { modelOutputs: masquer(opts.modelOutputs) as ModelOutputView[] } : {}),
+    // Lot 82C : déjà masqués à l'écriture (statuts MASKED), joints tels quels — l'export autorisé est complet.
+    ...(opts.captures ? { captures: opts.captures } : {}),
     redaction: 'Export limité au détail affiché dans le BO ; textes libres repassés par le masquage de la passerelle (IBAN, cartes, clés d’API, NIR).',
   };
 }

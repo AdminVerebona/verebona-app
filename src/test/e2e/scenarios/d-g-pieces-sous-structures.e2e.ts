@@ -167,7 +167,7 @@ scenario('D-G', 'Pièces rooms → substructures : migration 0229 et reprise', (
     expect(liens).not.toContainEqual(expect.objectContaining({ file_id: f1.id, room_id: salon }));
     expect(liens).toContainEqual({ file_id: f3.id, asset_id: bien.id, room_id: null, substructure_id: sSalon.id, origin: 'AI' });
     expect(relances).toEqual([{ accountId: compte.id, userId: compte.ownerUserId, targets: [{ type: 'ROOM', id: sSalon.id }] }]);
-    expect((await sql`SELECT last_error FROM ai_job_queue WHERE id = ${job.id}`)[0].last_error).toContain(`[relancée : sous-structure ${sSalon.id}]`);
+    expect((await sql`SELECT last_error FROM ai_job_queue WHERE id = ${job.id}`)[0].last_error).toContain(`[relancée : pièce ${sSalon.id}]`); // Lot 82D (V-Q6) : « Pièce » seul terme métier
     // Fiche canonique de la pièce : lue sur la sous-structure (D-G).
     const etat = await getCanonicalEntityState({ type: 'ROOM', id: sSalon.id }, compte.id, sql as never);
     expect(etat?.fields.roomArea).toMatchObject({ value: 18.5, origin: 'USER' });

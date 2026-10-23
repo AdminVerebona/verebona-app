@@ -45,6 +45,7 @@
  * empreinte identique → CONFIRMED_NO_CHANGE, aucun appel (ticket « couche
  * exhaustive T1 », §8, AC6).
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import type { QueuedJob } from '../../queue/job-queue.repository';
 import type { ExecutionGuard } from '../../queue/execution-control';
 import { isPermanentFailure, PermanentJobError, type JobBusinessResult } from '../../queue/queue-policy';
@@ -348,6 +349,8 @@ export const SWEEP_SQL = `
     JOIN document_extractions e ON e.file_id = f.id AND e.account_id = f.account_id
     LEFT JOIN document_asset_resolutions r ON r.file_id = f.id
    WHERE ($3::int IS NULL OR f.account_id = $3::int)
+     -- Lot 82A (C-Q10) : documents des seuls comptes éligibles.
+     AND ${processingEligibleSql('f.account_id')}
      AND f.id > $4::int
      AND ($6::int[] IS NULL OR f.id = ANY($6::int[]))
      AND f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL

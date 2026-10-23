@@ -17,6 +17,14 @@ import { emit } from '@/lib/notifications';
 export async function runTrialExpiry(now: Date = new Date()): Promise<{ expired: number }> {
   const { expired, accountIds } = await expireOverdueTrials(now);
 
+  // Lot 82A (C-Q10, §3.3) : fin des 7 jours d'essai sans souscription — plus
+  // aucun traitement métier ; travaux en attente ou en cours neutralisés tout
+  // de suite (la mise en file et l'exécution le vérifient de toute façon).
+  const { syncAccountEligibilitySafe } = await import('@/services/account/processing-lifecycle');
+  for (const accountId of accountIds) {
+    await syncAccountEligibilitySafe(accountId, 'trial_expiry');
+  }
+
   for (const accountId of accountIds) {
     void trackFunnelEvent({ event: 'expired_without_conversion', accountId });
     // Fin d'essai (configurable, cloche + email par défaut, CDC §7.6).

@@ -7,7 +7,9 @@
  * en échec ou corrigés. Données issues des documents des utilisateurs :
  * garde administrateur, liste optionnelle `AI_MODEL_OUTPUT_ADMIN_IDS`, chaque
  * consultation journalisée. POST (jamais mis en cache, jamais préchargé) et
- * réponse `no-store`.
+ * réponse `no-store`. Lot 82C : avec les échanges capturés à la source de
+ * TOUS les appels de l'exécution (`captures` : prompt final, contexte,
+ * paramètres envoyés, réponse brute, sortie parsée, statut de capture).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { readModelOutputsForAdmin } from '@/services/ai/telemetry/model-output-access';
@@ -21,7 +23,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const { id } = await params;
   if (!/^\d{1,15}$/.test(id)) return NextResponse.json({ error: 'INVALID_ID' }, { status: 400 });
   try {
-    const r = await readModelOutputsForAdmin({ adminUserId: guard.ctx.adminUserId, callId: Number(id), purpose: 'detail' });
+    // Lot 82C : sorties des diagnostics ET échanges capturés à la source (même droit, même journal).
+    const r = await readModelOutputsForAdmin({ adminUserId: guard.ctx.adminUserId, callId: Number(id), purpose: 'detail', includeCaptures: true });
     if (!r.ok) return NextResponse.json({ error: r.code, message: r.message }, { status: STATUS[r.code] });
     return NextResponse.json(r, { headers: { 'Cache-Control': 'no-store' } });
   } catch (e) {

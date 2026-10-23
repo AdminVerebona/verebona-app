@@ -25,7 +25,8 @@
  * produisent aucune.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { asc, eq, gt } from 'drizzle-orm';
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
 import { accounts } from '@/db/schema';
 import { withJobLockOrSkip } from '@/lib/job-lock';
@@ -204,10 +205,14 @@ export async function runToProcessFullScan(
     const runId = await traceStart(opts.trigger ?? 'route');
     const from = await resumeCursor();
 
+    // Lot 82A (C-Q10, §3.3) : production « À traiter » des seuls comptes
+    // éligibles (ni essai échu, ni suspendus, ni en lecture seule) ; le
+    // curseur avance sur les comptes éligibles, la reprise rattrape les autres.
+    const eligible = sql.raw(processingEligibleSql('"accounts"."id"'));
     const cibles = opts.accountId
-      ? await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.id, opts.accountId))
+      ? await db.select({ id: accounts.id }).from(accounts).where(and(eq(accounts.id, opts.accountId), eligible))
       : await db.select({ id: accounts.id }).from(accounts)
-        .where(gt(accounts.id, from)).orderBy(asc(accounts.id)).limit(limit + 1);
+        .where(and(gt(accounts.id, from), eligible)).orderBy(asc(accounts.id)).limit(limit + 1);
 
     // Une ligne de plus que la limite : elle dit s'il reste des comptes.
     const plusQueLaLimite = !opts.accountId && cibles.length > limit;

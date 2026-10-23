@@ -1764,6 +1764,16 @@ export const agendaItems = pgTable('agenda_items', {
   /** correlation_id de la chaîne T3 → T4 (C16.2). */
   projectionCorrelationId: text('projection_correlation_id'),
   /**
+   * Lot 82D (0652, CDC v5 §27.2) — rôle INTERNE de l'élément dans son
+   * Opération : PRINCIPAL (événement global, au plus un par Opération) ou
+   * RELATED ; NULL hors Opération (déclencheur `agenda_items_operation_role_sync`).
+   * Jamais affiché (P1). Écrit par le service unique de regroupement
+   * (`business-operations/grouping`).
+   */
+  operationRole: text('operation_role'),
+  /** Lot 82D (0652) — auteur du rôle : T4 (projection), USER, T3, SYSTEM (reprise). */
+  operationRoleOrigin: text('operation_role_origin'),
+  /**
    * Lot 77A (migration 0600) — tâche « Sans échéance » déclarée par
    * l'UTILISATEUR : aucune date à réclamer (« À traiter » DATA-AGENDA-DATE).
    * Incompatible avec une date : le déclencheur `agenda_items_no_deadline_clear`
@@ -1792,6 +1802,16 @@ export const agendaItems = pgTable('agenda_items', {
   projectionOriginCheck: check('agenda_items_projection_origin_check', sql`${table.projectionOrigin} IS NULL OR ${table.projectionOrigin} = 'OPERATION'`),
   businessOperationIdx: index('agenda_items_business_operation_idx').on(table.businessOperationId)
     .where(sql`business_operation_id IS NOT NULL`),
+  // Lot 82D (0652) — intégrité compte (E26) : la clé composée
+  // `agenda_items_business_operation_account_fk` (business_operation_id,
+  // account_id) → business_operations (id, account_id) est DIFFÉRÉE
+  // (DEFERRABLE INITIALLY DEFERRED : déplacement d'un bien entre comptes en
+  // plusieurs étapes) — non exprimable ici, donc posée par la seule migration.
+  // Rôle et principal unique :
+  operationRoleCheck: check('agenda_items_operation_role_check', sql`${table.operationRole} IS NULL OR ${table.operationRole} IN ('PRINCIPAL', 'RELATED')`),
+  operationRoleOriginCheck: check('agenda_items_operation_role_origin_check', sql`${table.operationRoleOrigin} IS NULL OR ${table.operationRoleOrigin} IN ('T4', 'USER', 'T3', 'SYSTEM')`),
+  operationPrincipalUidx: uniqueIndex('agenda_items_operation_principal_uidx').on(table.businessOperationId)
+    .where(sql`operation_role = 'PRINCIPAL'`),
   // Lot 46 (O7) — 0324_idx_1 : projections d'Opération (orphelines, balayage).
   projectionOriginIdx: index('agenda_items_projection_origin_idx').on(table.accountId)
     .where(sql`projection_origin IS NOT NULL`),
@@ -1811,9 +1831,16 @@ export const agendaFileLinks = pgTable('agenda_file_links', {
   id: serial('id').primaryKey(),
   agendaItemId: integer('agenda_item_id').notNull().references(() => agendaItems.id, { onDelete: 'cascade' }),
   assetFileId: integer('asset_file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  /**
+   * Lot 82D (0654, CDC v5 §7.4) — justifications du lien : MANUAL_DIRECT,
+   * AI_DIRECT, OPERATION_PRINCIPAL. Le lien n'est supprimé que sans
+   * provenance restante (`business-operations/grouping/provenance.ts`).
+   */
+  provenances: text('provenances').array().notNull().default(sql`'{}'::text[]`),
 }, (table) => ({
   agendaItemIdIdx: index('agenda_file_links_agenda_item_id_idx').on(table.agendaItemId),
   uniqueLink: uniqueIndex('agenda_file_links_unique_idx').on(table.agendaItemId, table.assetFileId),
+  provenancesCheck: check('agenda_file_links_provenances_check', sql`${table.provenances} <@ ARRAY['MANUAL_DIRECT', 'AI_DIRECT', 'OPERATION_PRINCIPAL']::text[]`),
 }));
 
 export const agendaRoomLinks = pgTable('agenda_room_links', {
@@ -3869,6 +3896,50 @@ export const businessOperationEquipmentLinks = pgTable('business_operation_equip
   assetIdx: index('business_operation_equipment_links_asset_idx').on(t.assetId),
 }));
 
+/**
+ * Lot 82D (0655, CDC v5 §27.4, E17) — Pièces concernées par une Opération.
+ * La Pièce est `substructures` (seule représentation depuis D-G, 0229 ; V-Q6 :
+ * aucun second modèle). Bien porteur recopié par le déclencheur de garde.
+ */
+export const businessOperationRoomLinks = pgTable('business_operation_room_links', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  substructureId: integer('substructure_id').notNull().references(() => substructures.id, { onDelete: 'cascade' }),
+  assetId: integer('asset_id').notNull().references(() => assets.id, { onDelete: 'cascade' }),
+  authority: text('authority').notNull(),
+  sourceOperationSourceId: bigint('source_operation_source_id', { mode: 'number' }).references(() => businessOperationSources.id, { onDelete: 'set null' }),
+  active: boolean('active').notNull().default(true),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_room_links_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  authorityChk: check('business_operation_room_links_authority_chk', sql`${t.authority} IN (${BO_AUTHORITIES_SQL})`),
+  pairUidx: uniqueIndex('business_operation_room_links_pair_uidx').on(t.operationId, t.substructureId),
+  substructureIdx: index('business_operation_room_links_substructure_idx').on(t.substructureId, t.operationId),
+}));
+
+/**
+ * Lot 82D (0655, CDC v5 §27.3) — APPARTENANCE d'un document à une Opération,
+ * distincte de la provenance (`business_operation_sources`). `origins` :
+ * SOURCE (tenue par le déclencheur des sources) | USER ; `active` calculé.
+ */
+export const businessOperationDocuments = pgTable('business_operation_documents', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull(),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  fileId: integer('file_id').notNull().references(() => assetFiles.id, { onDelete: 'cascade' }),
+  origins: text('origins').array().notNull().default(sql`'{}'::text[]`),
+  active: boolean('active').generatedAlwaysAs(sql`cardinality(origins) > 0`),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_documents_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  originsChk: check('business_operation_documents_origins_chk', sql`${t.origins} <@ ARRAY['SOURCE', 'USER']::text[]`),
+  pairUidx: uniqueIndex('business_operation_documents_pair_uidx').on(t.operationId, t.fileId),
+  fileIdx: index('business_operation_documents_file_idx').on(t.accountId, t.fileId).where(sql`active`),
+}));
+
 /** C12 / C20 — faits économiques consolidés (montant ≥ 0, signe porté par `kind`). */
 export const businessOperationFinancialComponents = pgTable('business_operation_financial_components', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
@@ -4080,7 +4151,8 @@ export const businessOperationMatchDecisions = pgTable('business_operation_match
   updatedAt: tstz('updated_at'),
 }, (t) => ({
   operationFk: foreignKey({ name: 'business_operation_match_decisions_operation_fk', columns: [t.candidateOperationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
-  kindChk: check('business_operation_match_decisions_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL})`),
+  // Lot 82D (0656) : objets du regroupement v5 (Pièce, équipement, lien propagé vers le principal).
+  kindChk: check('business_operation_match_decisions_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL}, 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK')`),
   decisionChk: check('business_operation_match_decisions_decision_chk', sql`${t.decision} IN ('CONFIRMED', 'REJECTED')`),
   originChk: check('business_operation_match_decisions_origin_chk', sql`${t.origin} IN ('USER_ARBITRATION', 'SYSTEM_EXPLICIT_REFERENCE', 'ADMIN_REVIEW')`),
   activeUidx: uniqueIndex('business_operation_match_decisions_active_uidx')

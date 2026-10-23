@@ -17,14 +17,13 @@ import type { AgendaDecision } from '@/services/ai/agenda';
 const notifications = vi.hoisted(() => [] as Array<{ assetId: number; itemId: number }>);
 vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () => ({ allowed: true }) }));
 vi.mock('@/services/ai/reconciliation/coherence-impact', () => ({ hasCoherenceImpact: async () => false }));
+// Lot 82B : notification de création = événement métier AGENDA_ITEM_CREATED (une fois par élément ; l'ancien
+// relais `coherence/impact-propagation`, une notification par bien, est retiré).
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
-  emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
-}));
-vi.mock('@/services/coherence/impact-propagation.service', async (orig) => ({
-  ...(await orig<object>()),
-  emitAgendaItemCreated: async (_accountId: number, assetId: number, itemId: number) => {
-    notifications.push({ assetId, itemId });
+  emitBusinessEvent: async (e: { type: string; entityId?: number | null }) => {
+    if (e.type === 'AGENDA_ITEM_CREATED' && e.entityId) notifications.push({ assetId: 0, itemId: Number(e.entityId) });
   },
+  emitBusinessEvents: async () => {},
 }));
 
 const decision = (fileId: number, date: string, over: Partial<AgendaDecision> = {}): AgendaDecision => ({

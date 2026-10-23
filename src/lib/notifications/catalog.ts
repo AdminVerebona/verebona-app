@@ -37,6 +37,24 @@ export type NotificationCategory =
   | 'security'
   | 'news';
 
+/**
+ * Lot 82A (décision PO C-Q10, §3.3) — catégories de CONTENU : nées du
+ * traitement des données d'un compte (échéances, résultats d'analyse,
+ * « À traiter »). Non indispensables : jamais émises ni envoyées pour un
+ * compte non actif, suspendu ou en lecture seule. Les autres catégories
+ * (compte, sécurité, Duo, transmissions, actualités consenties) relèvent
+ * d'opérations indispensables ou d'un autre compte : jamais bloquées ici.
+ */
+export const CONTENT_NOTIFICATION_CATEGORIES: ReadonlySet<NotificationCategory> = new Set<NotificationCategory>(['deadlines', 'documents', 'to_process']);
+
+/** Notification de contenu (soumise à l'éligibilité du compte) ? */
+export function isContentNotificationCategory(category: string | null | undefined): boolean {
+  return CONTENT_NOTIFICATION_CATEGORIES.has(category as NotificationCategory);
+}
+
+/** Motif d'un événement ignoré (outbox `outcome_reason`) : compte non éligible. */
+export const ACCOUNT_INELIGIBLE_SKIP_REASON = 'account_ineligible';
+
 export type NotificationChannel = 'bell' | 'push' | 'email';
 export type DeliveryMode = 'immediate' | 'daily_digest';
 export type NotificationPriority = 'low' | 'normal' | 'high';

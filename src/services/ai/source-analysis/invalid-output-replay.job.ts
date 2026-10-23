@@ -33,6 +33,7 @@
  * listée). Arrêt de la tâche : `SCHEDULED_TASK_T1_INVALID_OUTPUT_REPLAY=off`.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { createHash } from 'crypto';
 
 /**
@@ -173,6 +174,9 @@ export async function runInvalidOutputReplay(opts: { maxPerRun?: number; version
           WHERE x.outcome = 'FAILED' AND x.call_kind = 'analysis' AND x.source_ids @> ARRAY[f.id]
           ORDER BY x.id DESC LIMIT 1) d ON TRUE
       WHERE f.analysis_state = 'ANALYSIS_FAILED' AND f.deleted_at IS NULL AND f.account_id IS NOT NULL
+        -- Lot 82A (C-Q10, §3.3) : rejeu des seuls comptes éligibles (les autres
+        -- restent candidats, rejoués après la réactivation).
+        AND ${processingEligibleSql('f.account_id')}
         AND NOT EXISTS (SELECT 1 FROM ai_output_replays r WHERE r.file_id = f.id AND r.resolution_version = $1)
         AND (d.failure_family IS NOT NULL OR f.analysis_fail_reason ~ $2)
       ORDER BY f.id

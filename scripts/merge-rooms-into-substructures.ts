@@ -35,7 +35,7 @@ async function main() {
   if (a.kind === 'help') { console.log(a.message); return; }
   if (a.kind === 'restore') {
     const r = await restoreRoomsMerge(pgClient, a.runId);
-    console.log(`${P} restauration ${a.runId} — ${r.restored} valeur(s) restaurée(s), ${r.deletedSubstructures} sous-structure(s) `
+    console.log(`${P} restauration ${a.runId} — ${r.restored} valeur(s) restaurée(s), ${r.deletedSubstructures} Pièce(s) créée(s) par la reprise `
       + `supprimée(s), ${r.conflicts.length} conflit(s)${r.conflicts.length
         ? ` : ${r.conflicts.slice(0, 50).map((c) => `${c.table}#${c.rowId} ${c.reason}`).join(', ')}` : ''}.`);
     if (r.conflicts.length) process.exitCode = 1;

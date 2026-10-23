@@ -58,6 +58,7 @@ import { findDuplicate } from '@/services/ai/agenda/dedupe.service';
 import { natureTokens } from '../consolidation/matching';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
+import { projectionRoleOf, type OperationRole } from '../grouping/model';
 
 /** Valeur de `agenda_items.projection_origin` d'un événement GÉNÉRÉ (0318). */
 export const PROJECTION_ORIGIN = 'OPERATION';
@@ -153,6 +154,13 @@ export interface AgendaItemSnapshot {
    * intervention, jamais une autre.
    */
   coveredByOperationId?: number | null;
+  /**
+   * Lot 82D (0652, CDC v5 §27.2) : rôle de l'élément dans son Opération
+   * (PRINCIPAL | RELATED ; null hors Opération) et son auteur. `undefined` :
+   * non lu (instantané de test) — aucune action de rôle n'est alors planifiée.
+   */
+  operationRole?: OperationRole | null;
+  operationRoleOrigin?: string | null;
 }
 
 // ── Projection attendue ────────────────────────────────────────────────────
@@ -420,6 +428,9 @@ export function coveredEquivalents(op: OperationSnapshot, desired: DesiredProjec
     if (vus.has(c.id)) return false;
     vus.add(c.id);
     return !!c.date && !c.projected && c.isAutomatic && !isTouched(c) && c.pendingStatus !== true
+      // Lot 82D (V-Q4) : un principal n'est jamais absorbé, ni un élément
+      // que l'utilisateur a rattaché comme élément distinct (étape).
+      && c.operationRole !== 'PRINCIPAL' && c.operationRoleOrigin !== 'USER'
       && (c.businessOperationId === null || c.businessOperationId === op.id || !c.linkedOperationActive)
       && c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId)
       && c.businessType !== null && CONSOLIDABLE_INTERVENTION_TYPES.includes(c.businessType)
@@ -483,7 +494,8 @@ export interface ItemSync {
   functionalKey?: string;
   manualStatus?: 'realise';
   businessOperationId?: number;
-  links?: { assetIds: number[]; equipmentIds: number[]; fileIds: number[] };
+  /** Lot 82D : `fileIds` absent pour un principal (documents propagés par le service de regroupement). */
+  links?: { assetIds: number[]; equipmentIds: number[]; fileIds?: number[] };
 }
 
 export type ProjectionAction =
@@ -510,7 +522,14 @@ export type ProjectionAction =
     /** Clé de projection concernée (carte, décision « ne rien ajouter »). */
     key?: string;
   }
-  | { kind: 'SUPPRESSED'; key: string };
+  | { kind: 'SUPPRESSED'; key: string }
+  /**
+   * Lot 82D (CDC v5 §11, V-Q5) : rôle de l'élément qui représente
+   * l'Opération selon la projection T4 (événement global → PRINCIPAL,
+   * échéance → RELATED), appliqué par le service de regroupement (un
+   * principal choisi par l'utilisateur n'est jamais remplacé).
+   */
+  | { kind: 'ROLE'; itemId: number; role: OperationRole };
 
 export interface PlanInput {
   op: OperationSnapshot;
@@ -541,8 +560,19 @@ const sameSet = (a: readonly number[], b: readonly number[]): boolean => {
 
 /** Ordre de préférence de l'élément principal : saisi / T4 avant projeté, intact après touché, plus ancien. */
 function principal(linked: readonly AgendaItemSnapshot[]): AgendaItemSnapshot {
-  return [...linked].sort((a, b) => Number(a.projected) - Number(b.projected)
+  // Lot 82D : un principal désigné par l'UTILISATEUR d'abord (jamais remplacé) ; sinon la règle de
+  // représentation de la projection (T4) s'applique à nouveau — elle a produit le principal T4 en place.
+  const choixUtilisateur = (i: AgendaItemSnapshot) => Number(i.operationRole === 'PRINCIPAL' && i.operationRoleOrigin === 'USER');
+  return [...linked].sort((a, b) => choixUtilisateur(b) - choixUtilisateur(a)
+    || Number(a.projected) - Number(b.projected)
     || Number(isTouched(b)) - Number(isTouched(a)) || a.id - b.id)[0];
+}
+
+/** Lot 82D : action de rôle si l'élément représentatif n'a pas le rôle voulu par la projection. */
+function roleActions(item: AgendaItemSnapshot, key: string): ProjectionAction[] {
+  if (item.operationRole === undefined) return [];
+  const voulu = projectionRoleOf(key);
+  return item.operationRole === voulu ? [] : [{ kind: 'ROLE', itemId: item.id, role: voulu }];
 }
 
 /**
@@ -580,9 +610,14 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
 
   if (p.linked.length) {
     item = principal(p.linked);
-    // Doublons (fusion, lien posé à côté d'une projection) : projections intactes retirées (C22 « unifier »).
+    // Doublons (fusion, lien posé à côté d'une projection) : projections intactes de la MÊME clé
+    // retirées (C22 « unifier ») — lot 82D (V-Q4) : une projection d'une autre clé (autre
+    // échéance d'un contrat) est une occurrence distincte, jamais retirée.
     for (const autre of p.linked) {
-      if (autre.id !== item.id && autre.projected && !isTouched(autre)) actions.push({ kind: 'REMOVE', itemId: autre.id, reason: 'DUPLICATE_PROJECTION' });
+      const cle = parseProjectionFunctionalKey(autre.functionalKey)?.key ?? null;
+      if (autre.id !== item.id && autre.projected && !isTouched(autre) && (cle === null || cle === d.key)) {
+        actions.push({ kind: 'REMOVE', itemId: autre.id, reason: 'DUPLICATE_PROJECTION' });
+      }
     }
   } else {
     if (p.suppressedKeys.has(d.key)) return [{ kind: 'SUPPRESSED', key: d.key }];
@@ -660,11 +695,18 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
     if (item.functionalKey !== fk) changes.functionalKey = fk;
     if (item.businessOperationId !== op.id) changes.businessOperationId = op.id;
     if (!d.date && d.target === 'REALIZED' && nature !== 'HISTORICAL' && !item.manualStatus) changes.manualStatus = 'realise';
-    const links = { assetIds: op.assetIds, equipmentIds: op.equipmentIds, fileIds: op.documentFileIds };
-    if (!sameSet(item.assetIds, links.assetIds) || !sameSet(item.equipmentIds, links.equipmentIds) || !sameSet(item.fileIds, links.fileIds)) {
+    // Lot 82D (§7.1) : les documents d'un PRINCIPAL sont propagés par le service de
+    // regroupement (OPERATION_PRINCIPAL, refus utilisateur respectés) — la projection
+    // ne les recopie plus ; une échéance garde ses liens directs (AI_DIRECT).
+    const principalVoulu = projectionRoleOf(d.key) === 'PRINCIPAL';
+    const links = principalVoulu
+      ? { assetIds: op.assetIds, equipmentIds: op.equipmentIds }
+      : { assetIds: op.assetIds, equipmentIds: op.equipmentIds, fileIds: op.documentFileIds };
+    if (!sameSet(item.assetIds, links.assetIds) || !sameSet(item.equipmentIds, links.equipmentIds) || (!principalVoulu && !sameSet(item.fileIds, op.documentFileIds))) {
       changes.links = links;
     }
     if (Object.keys(changes).length) actions.push({ kind: 'SYNC', itemId: item.id, changes });
+    actions.push(...roleActions(item, d.key));
     return actions;
   }
   // Élément saisi, produit par T4, ou projeté puis modifié : jamais réécrit
@@ -672,6 +714,7 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   // T4 intact cède à la description précise et prouvée de l'Opération.
   actions.push(...retitleActions(op, item));
   actions.push(...statusActions(op, item, d, cards));
+  actions.push(...roleActions(item, d.key));
   return actions;
 }
 

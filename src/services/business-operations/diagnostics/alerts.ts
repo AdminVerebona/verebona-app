@@ -52,7 +52,8 @@ async function defaultDeps(): Promise<QualityCheckDeps> {
     import('./service'), import('@/services/admin/anomaly.service'), import('@/db'),
   ]);
   return {
-    detect: () => new OperationDiagnosticsService().hardAnomalies(null),
+    // Lot 82A (C-Q10) : contrôle planifié des seuls comptes éligibles.
+    detect: () => new OperationDiagnosticsService().hardAnomalies(null, { eligibleOnly: true }),
     openFingerprints: async () => ((await pgClient.unsafe(
       `SELECT fingerprint FROM admin_anomalies WHERE status = 'open' AND fingerprint LIKE $1`,
       [`${OPERATIONS_ANOMALY_PREFIX}%`] as never[],

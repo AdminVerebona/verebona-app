@@ -37,9 +37,10 @@
  *     direct.
  */
 
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { db } from '@/db';
 import { assetFiles, accounts } from '@/db/schema';
-import { eq, inArray, isNull, and, lt, or } from 'drizzle-orm';
+import { eq, inArray, isNull, and, lt, or, sql } from 'drizzle-orm';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { withJobLock } from '@/lib/job-lock';
 import { MAX_ANALYSIS_RETRIES } from '@/services/ai/source-analysis/failure-policy';
@@ -89,9 +90,13 @@ async function runInterne(targetAccountId?: number): Promise<RecoveryResult> {
     const stuckThreshold = new Date(Date.now() - STUCK_THRESHOLD_MS);
 
     // 1. Récupérer les comptes à vérifier
+    // Lot 82A (C-Q10, §3.3) : comptes éligibles seulement (ni essai échu, ni
+    // suspendus, ni en lecture seule) — leurs documents en attente repartent
+    // d'eux-mêmes à la réactivation.
+    const eligible = sql.raw(processingEligibleSql('"accounts"."id"'));
     const allAccounts = targetAccountId
-      ? await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.id, targetAccountId))
-      : await db.select({ id: accounts.id }).from(accounts);
+      ? await db.select({ id: accounts.id }).from(accounts).where(and(eq(accounts.id, targetAccountId), eligible))
+      : await db.select({ id: accounts.id }).from(accounts).where(eligible);
 
     if (allAccounts.length === 0) return result;
 

@@ -19,9 +19,6 @@ import { cand, cible, operationsKit, ref, type OperationsKit } from '../datasets
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (o) => ({
-  ...(await o<object>()), emitAgendaItemCreated: async () => {},
-}));
 
 const JOUR = '2021-07-07';
 type Json = Record<string, any>;

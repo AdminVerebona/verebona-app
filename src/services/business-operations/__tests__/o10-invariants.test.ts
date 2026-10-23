@@ -41,6 +41,11 @@ const ECRIVAINS: Record<string, string> = {
   'src/services/business-operations/consolidation/asset-exclusions.ts': 'T3 : exclusion mémorisée d’un bien retiré d’un sinistre (lot 53, Q17)',
   'src/services/to-process/agenda-projection-cards.ts': 'T4 : « ne rien ajouter à l’agenda » = suppression de projection (C16.1, lot 53 D14)',
   'src/services/business-operations/consolidation/identity-review.ts': 'T3 : journal des contrôles d’identité économique et rétablissement d’une séparation par décision M0 (lot 78A)',
+  // Lot 82D (CDC v5 O-1) : service UNIQUE de regroupement (agenda, documents, Pièces, décisions utilisateur).
+  'src/services/business-operations/grouping/service.ts': 'regroupement v5 : appartenance, principal, Pièces, historique — par le dépôt pour création / fusion / invalidation',
+  'src/services/business-operations/grouping/merge.ts': 'regroupement v5 : part regroupement de la fusion existante du dépôt',
+  'src/services/business-operations/grouping/decisions.ts': 'regroupement v5 : mémoire des décisions utilisateur (match_decisions réutilisée)',
+  'src/services/business-operations/grouping/runner.ts': 'regroupement v5 : exécuteur et verrou du compte (documentation)',
 };
 
 describe('INV-FINAL-009 / INV-006 / INV-FINAL-013 / INV-031 — T3 seul moteur ; TCO et autres modules consommateurs seulement', () => {

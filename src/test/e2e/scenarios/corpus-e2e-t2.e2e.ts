@@ -391,7 +391,8 @@ scenario('CORPUS-T2', 'Corpus §15 — assistant T2 (enabled / master)', ({ sql,
 
   it('E2E-T2-21 — vraie modification (enabled/master) : aperçu → confirmation → origine USER', async () => {
     const c = await compteDe();
-    await sql`INSERT INTO account_subscriptions (account_id, plan_code, status) VALUES (${c.id}, 'premium', 'active')`;
+    // Lot 82A : le compte de test a désormais un abonnement (Standard) — passé en Premium.
+    await sql`UPDATE account_subscriptions SET plan_code = 'premium', status = 'active' WHERE account_id = ${c.id}`;
     const clio = await bien(c, 'Clio', { keyCharacteristics: { mileage: 47000 } });
     process.env.VEREBONA_ASSISTANT_WRITE_COMMANDS = 'true';
     try {

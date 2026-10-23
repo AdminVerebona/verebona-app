@@ -360,7 +360,7 @@ scenario('L75B-PIECES', 'Pièces bidirectionnelles : tiroir, Mes documents, Mon 
     expect((await cands('document', 'chaudière')).map((c) => c.id)).toEqual([ids.dChaud]);
 
     // Compte sans abonnement (lecture seule) : écriture refusée, lecture permise.
-    const lecteur = await make.account();
+    const lecteur = await make.account({ plan: null });
     const bien = (await make.asset(lecteur as never, { name: 'Lecture', category: 'IMMOBILIER' })).id;
     const piece = await room(bien, 'Entrée');
     const eqL = await equipment(bien, 'Portail', null);

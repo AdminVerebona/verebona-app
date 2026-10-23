@@ -893,7 +893,15 @@ export async function clearUserHistory(
             FOR UPDATE`,
       conversationId == null ? [accountId, userId] : [accountId, userId, conversationId],
     )) as unknown as Array<{ id: number }>;
-    return purgeConversationData(tx as unknown as SqlRunner, rows.map((r) => r.id));
+    const ids = rows.map((r) => r.id);
+    const purge = await purgeConversationData(tx as unknown as SqlRunner, ids);
+    // Lot 82C : l'effacement par l'utilisateur est un droit de suppression
+    // maintenu (décision PO n° 01) — les échanges IA capturés de ces
+    // conversations sont supprimés dans la même transaction. La purge
+    // automatique à 90 jours (`purgeExpired`) ne les touche pas.
+    const { purgeConversationCaptures } = await import('@/services/ai/telemetry/call-capture');
+    await purgeConversationCaptures(tx as unknown as SqlRunner, ids);
+    return purge;
   }) as Promise<ConversationPurge>;
 }
 

@@ -142,9 +142,10 @@ export function loadAssistantConfig(): AssistantConfig {
     // prévoyait 7 jours, mais le cadrage produit, repris par le CDC Centre
     // d'aide (GAP-16, bloquant), a fixé 3 mois — décision la plus récente,
     // déjà livrée au lot 1 et décrite dans les articles d'aide. Seul
-    // l'historique suit cette durée ; les journaux ont leurs propres durées
-    // (§29.7 : logs techniques 90 j, traces détaillées expurgées 30 j,
-    // agrégats et feedback 13 mois — `purge-assistant-logs.job.ts`).
+    // l'historique suit cette durée ; agrégats et feedback : 13 mois
+    // (`purge-assistant-logs.job.ts`). Lot 82C : les traces IA (journaux
+    // techniques, traces détaillées, échanges avec le modèle) ne sont plus
+    // purgées par ancienneté (décisions PO n° 01 et 10 du 22/10).
     // La purge lit cette même valeur.
     historyDays: num('VEREBONA_ASSISTANT_HISTORY_DAYS', 90),
     rateLimitPerMinute: num('VEREBONA_ASSISTANT_RATE_LIMIT_PER_MINUTE', 10),

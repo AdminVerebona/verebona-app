@@ -35,6 +35,7 @@
  *     application, éventuellement limitée à un compte.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
 import { toProcessActionEvents, toProcessActions } from '@/db/schema';
@@ -284,6 +285,8 @@ async function pageCartes(cursor: number, accountId: number | null, ids?: number
     `SELECT id, account_id, target_type, target_id, field_key, rule_code, proposals_json FROM to_process_actions
       WHERE resolved_at IS NULL AND action_kind = 'ARBITRATE' AND field_key IS NOT NULL AND id > $1
         AND ($2::int IS NULL OR account_id = $2::int) AND ($3::int[] IS NULL OR id = ANY($3::int[]))
+        -- Lot 82A (C-Q10, §3.3) : rattrapage des seuls comptes éligibles.
+        AND ${processingEligibleSql('to_process_actions.account_id')}
       ORDER BY id LIMIT $4`,
     [cursor, accountId, ids ?? null, PAGE],
   );

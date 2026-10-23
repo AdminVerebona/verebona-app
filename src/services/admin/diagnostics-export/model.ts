@@ -196,6 +196,20 @@ function keyRule(k: string) {
   for (const r of KEY_RULES) if (r.test.test(k)) return r;
   return null;
 }
+
+/**
+ * Lot 82E — règle de masquage appliquée par `maskForExport` à une colonne
+ * (par son NOM), sans rien masquer : documentation des fichiers de l'export
+ * de recette (dictionnaire) et repérage des colonnes de contenu brut
+ * (`length` : texte intégral d'un document ou d'un échange IA). Les clés
+ * canoniques sensibles du registre (dans les fiches JSON) s'y ajoutent.
+ */
+export function exportMaskingRule(column: string): { motif: string; content: boolean; email: boolean } | null {
+  const base = maskRuleFor(column);
+  if (base) return { motif: base.motif, content: !!base.length, email: false };
+  const r = keyRule(column);
+  return r ? { motif: r.motif, content: !!r.length, email: !!r.email } : null;
+}
 const lengthOf = (v: unknown): number => (typeof v === 'string' ? v.length : JSON.stringify(v)?.length ?? 0);
 
 /** Colonnes de clé de champ / de valeur des tables de preuves (même liste que « Données du compte »). */

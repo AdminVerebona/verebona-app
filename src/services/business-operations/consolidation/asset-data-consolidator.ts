@@ -42,6 +42,7 @@
  * (P19) ; rien de visible pour l'utilisateur (P09).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import { isBusinessOperationIntegrityError } from '../errors';
@@ -268,6 +269,8 @@ export async function listAssetsToReconcile(limit: number, afterAssetId = 0, acc
       LEFT JOIN business_operation_asset_data_marks m ON m.asset_id = a.id
      WHERE a.deleted_at IS NULL AND a.account_id IS NOT NULL AND a.id > ${afterAssetId}
        AND (${accountId}::int IS NULL OR a.account_id = ${accountId}::int)
+       -- Lot 82A (C-Q10, §3.3) : comptes éligibles seulement (repère conservé : repris à la réactivation).
+       AND ${sql.raw(processingEligibleSql('a.account_id'))}
        AND (m.asset_id IS NULL OR m.migration_version <> ${ASSET_DATA_MIGRATION_VERSION} OR m.account_id <> a.account_id
             OR (a.operations_data_changed_at IS NOT NULL AND a.operations_data_changed_at > m.processed_at))
      ORDER BY a.id

@@ -22,9 +22,6 @@ vi.mock('@/lib/session-service', () => ({
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (o) => ({
-  ...(await o<object>()), emitAgendaItemCreated: async () => {},
-}));
 
 const jour = (d: number) => new Date(Date.now() + d * 86_400_000).toISOString().slice(0, 10);
 

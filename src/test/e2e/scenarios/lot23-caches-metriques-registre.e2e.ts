@@ -104,6 +104,8 @@ scenario('LOT23', 'Caches (état, invalidation multi-instances, journal), export
     for (let i = 0; i < 5; i++) comptes.push(await make.account());
     const rare = await make.account();
     await sql`UPDATE accounts SET plan_type = 'PREMIUM' WHERE id = ${rare.id}`;
+    // Lot 82A : le compte de test porte désormais un abonnement (Standard) — offre alignée.
+    await sql`UPDATE account_subscriptions SET plan_code = 'premium' WHERE account_id = ${rare.id}`;
     for (const [i, c] of comptes.entries()) {
       await sql`INSERT INTO verebona_request_runs (request_id, account_id, user_id, intent, mode, status, latency_ms, cache_hit, created_at)
                 VALUES (${`e2e-l23-r${i}`}, ${c.id}, ${c.ownerUserId}, 'ACCOUNT_SUMMARY', 'ai', 'ok', ${1000 + i}, ${i === 0}, ${`${JOUR}T10:00:00+01:00`})`;

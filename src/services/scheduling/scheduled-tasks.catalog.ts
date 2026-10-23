@@ -41,7 +41,6 @@
  *                                                                 réévalué depuis » (lot 71G, T6-05)
  *   t1-invalid-output-replay        au démarrage, puis /h tant    contrainte unique (document,
  *                                   qu'il reste des rejeux        version de résolution) — 0285
- *   ai-call-diagnostics-purge       chaque jour à 5 h 50          suppressions idempotentes
  *   ai-output-coherence-check       au démarrage                  lecture seule (diagnostic)
  *   t1-source-units-backfill        au démarrage, puis /h tant    NOT EXISTS + remplacement par
  *                                   qu'il reste des documents     document (idempotent) — 0295
@@ -89,6 +88,10 @@
  *                                   une seule requête)             (0495, unique) ; cartes « À traiter »
  *                                                                  uniques (lot 71B : plus de validation
  *                                                                  sur les fiches)
+ *   coherence-control               toutes les 15 min (5 h – 24 h) bail de la tâche ; preuve par objet ×
+ *                                                                 contrôle (clé unique) ; campagne du jour
+ *                                                                 unique (index) ; réparations par les
+ *                                                                 services métier (lot 82B)
  *   subscription-annual-renewal-reminders  /h de 8 h 30 à 20 h    dedupe_key par abonnement × échéance
  *                                   (créée suspendue, lot 68C)    + verrou consultatif ; revalidation
  *                                                                 Stripe avant l'envoi (file lot 57A) ;
@@ -96,6 +99,10 @@
  *   subscription-annual-renewal-reconcile  chaque jour à 7 h 40   lecture Stripe ; resynchronisation par
  *                                   (créée suspendue, lot 72F)    subscription-sync (idempotente) ;
  *                                                                 journal par abonnement × échéance
+ *   account-eligibility-sync        toutes les 5 min (critique)   verrou de ligne par compte (0641) :
+ *                                                                 une transition traitée une seule fois
+ *                                                                 (lot 82A, C-Q10 : neutralisation /
+ *                                                                 reprise + rattrapage)
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -462,25 +469,10 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       return { note: JSON.stringify(r), again: r.more || r.pending > 0 || r.enqueued > 0 };
     },
   },
-  {
-    // Lot 33D : diagnostics d'appel et sorties modèle conservées — même
-    // horizon que les traces IA (AI_LOG_ARCHIVE_AFTER_DAYS, 88 jours).
-    code: 'ai-call-diagnostics-purge',
-    label: 'IA : purge des diagnostics et sorties modèle (rétention)',
-    schedule: { kind: 'daily', at: [5, 50], graceMs: 6 * HOUR },
-    timeoutMs: 15 * MIN,
-    run: async ({ deadline }) => {
-      const [{ purgeCallDiagnostics }, { archiveAfterDays }] = await Promise.all([
-        import('@/services/ai/gateway/diagnostics/diagnostic.repository'),
-        import('@/services/ai/telemetry/log-archive.job'),
-      ]);
-      const n = await purgeCallDiagnostics({ olderThanDays: archiveAfterDays(), deadline });
-      // Lot 58C : rapports d'exécution T1 / T3 — même horizon que les traces.
-      const { purgeExecutionReports } = await import('@/services/ai/execution-report/repository');
-      const r = await purgeExecutionReports({ olderThanDays: archiveAfterDays(), deadline });
-      return { note: `${n} diagnostic(s), ${r} rapport(s) d’exécution supprimé(s) (plus de ${archiveAfterDays()} jours)` };
-    },
-  },
+  // Lot 82C : tâche `ai-call-diagnostics-purge` (purge à 88 jours des
+  // diagnostics, sorties modèle et rapports d'exécution IA) RETIRÉE —
+  // décisions PO n° 01 et 10 du 22/10 : aucune perte par ancienneté des
+  // traces IA ; son état partagé est supprimé par la migration 0651.
   {
     // Lot 33D (§26) : cohérence prompt ↔ schéma ↔ adaptateurs au démarrage.
     // Diagnostic seulement : ne bloque jamais rien (résultat dans la note).
@@ -841,20 +833,28 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     },
   },
   {
-    // Lot 76H (ticket P1 Opérations → Agenda) : rattrapage PONCTUEL des
-    // doublons d'interventions — une seule exécution AUTO de la plateforme
-    // (simulation puis application par compte, journal 0591 restaurable
-    // depuis BO › Exploitation › Rattrapages), reprise de son curseur après
-    // un redémarrage, puis plus rien (« déjà exécuté »). Aucun traitement
-    // récurrent : la convergence courante est faite par la projection.
-    code: 'agenda-intervention-duplicates-reprise',
-    label: 'Agenda : rattrapage des doublons d’interventions (une fois)',
-    schedule: { kind: 'startup', delayMs: 11 * MIN, retryMs: HOUR },
-    timeoutMs: 10 * MIN,
-    run: async ({ deadline }) => {
-      const { runAutomaticAgendaDuplicatesReprise } = await import('@/services/business-operations/agenda-projection/duplicates-reprise');
-      const r = await runAutomaticAgendaDuplicatesReprise({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
-      return { note: r.note.slice(0, 1500), again: r.again };
+    // Lot 82B (arbitrages PO C-Q1 à C-Q5, C-Q9, C-Q10) : contrôle de cohérence
+    // global — orchestrateur UNIQUE du registre des contrôles. À chaque
+    // passage : rattrapages de réactivation (comptes réactivés), contrôles
+    // CIBLÉS des objets touchés par un changement, puis avancée de la campagne
+    // EXHAUSTIVE quotidienne (tous les objets des comptes éligibles, y compris
+    // inchangés ; curseur en base, reprise ; PARTIAL si la couverture n'est
+    // pas atteinte à l'échéance). « Exécuter » depuis le BO sans campagne en
+    // cours : campagne MANUELLE exhaustive. Mode à blanc par défaut
+    // (COHERENCE_CAMPAIGN_MODE=corrective pour réparer, par les services
+    // métier). Remplace l'ancienne maintenance horaire (`coherence-
+    // maintenance`) et le rattrapage ponctuel des doublons d'agenda 76H
+    // (`agenda-intervention-duplicates-reprise`), retirés. Échecs, constats
+    // persistants et campagnes partielles : BO › Supervision.
+    code: 'coherence-control',
+    label: 'Contrôle de cohérence global (campagne quotidienne exhaustive et contrôles ciblés)',
+    schedule: { kind: 'interval', everyMs: 15 * MIN, window: { from: [5, 0], to: [24, 0] } },
+    startupDelayMs: 12 * MIN,
+    timeoutMs: 14 * MIN,
+    run: async ({ deadline, trigger }) => {
+      const { runCoherenceControl } = await import('@/services/coherence/orchestrator');
+      const r = await runCoherenceControl({ deadline: Math.min(deadline, Date.now() + 12 * MIN), trigger });
+      return { note: r.note.slice(0, 1500) };
     },
   },
   {
@@ -909,6 +909,29 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const r = await runAnnualRenewalReconciliation({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
       // Lot 76D : un passage partiel ou en erreur n'est jamais présenté comme réussi.
       return describeReconcileRun(r);
+    },
+  },
+  {
+    // Lot 82A (décision PO C-Q10, §3.3) : transitions d'éligibilité des comptes
+    // non portées par un événement (essai échu par la seule date, offre
+    // changée par un autre chemin) — compte devenu non éligible : travaux de
+    // la file IA neutralisés ; redevenu éligible : `onAccountReactivated`
+    // (réexamen des travaux, contrôle de rattrapage). Rien à faire : une
+    // requête. Critique : sans elle, une reprise ne déclencherait aucun
+    // rattrapage (la protection, elle, est à la mise en file et à l'exécution).
+    code: 'account-eligibility-sync',
+    label: 'Comptes : éligibilité aux traitements (neutralisation, reprise et rattrapage)',
+    schedule: { kind: 'interval', everyMs: 5 * MIN },
+    timeoutMs: 4 * MIN,
+    startupDelayMs: 2 * MIN,
+    critical: { staleAfterMs: 30 * MIN },
+    run: async ({ deadline }) => {
+      const { runAccountEligibilitySync } = await import('@/services/account/processing-lifecycle');
+      const r = await runAccountEligibilitySync({ deadline: Math.min(deadline, Date.now() + 3 * MIN) });
+      if (r.disabled) return { note: 'migration 0641 absente : rien à faire' };
+      const note = JSON.stringify(r);
+      if (r.errors > 0 && r.errors >= r.examined) return { note, error: `${r.errors} compte(s) en échec` };
+      if (r.examined > 0) return { note, again: r.more };
     },
   },
 ];

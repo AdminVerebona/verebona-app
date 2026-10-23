@@ -108,11 +108,13 @@ describe('points d’émission branchés (§25.7)', () => {
   it.each([
     ['src/app/api/assets/route.ts', 'ASSET_CREATED'],
     ['src/app/api/assets/route.ts', 'ASSET_DELETED'],
-    ['src/services/coherence/impact-propagation.service.ts', 'ASSET_UPDATED'],
-    ['src/services/coherence/impact-propagation.service.ts', 'DOCUMENT_ANALYSIS_COMPLETED'],
+    // Lot 82B (C-Q9) : l'ancien relais `coherence/impact-propagation` (file `impact_queue`) est retiré.
+    // DOCUMENT_ANALYSIS_COMPLETED n'y était publié que par `emitDocumentAnalyzed`, SANS AUCUN appelant
+    // (code mort) : aucune publication réelle n'existait — point ouvert signalé au rapport du lot 82B.
+    ['src/app/api/assets/route.ts', 'ASSET_UPDATED'],
     ['src/app/api/documents/[id]/route.ts', 'DOCUMENT_UPDATED'],
     ['src/app/api/files/[id]/route.ts', 'DOCUMENT_DELETED'],
-    ['src/services/coherence/impact-propagation.service.ts', 'AGENDA_ITEM_CREATED'],
+    ['src/services/agenda/write-agenda-item.ts', 'AGENDA_ITEM_CREATED'],
     ['src/app/api/agenda/[id]/route.ts', 'AGENDA_ITEM_UPDATED'],
     ['src/app/api/agenda/[id]/route.ts', 'AGENDA_ITEM_DELETED'],
     ['src/app/api/v2/to-process/[publicId]/resolve/route.ts', 'TO_PROCESS_ITEM_UPDATED'],

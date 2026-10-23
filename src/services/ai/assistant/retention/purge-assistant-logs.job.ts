@@ -10,10 +10,23 @@
  * Durées imposées par le §29.7 :
  *   · conversations et messages ........  90 jours (décision produit
  *                                         « 3 mois », GAP-16 ; §24.1 : 7 j)
- *   · traces détaillées expurgées ......  30 jours
- *   · logs techniques sans contenu .....  90 jours
  *   · agrégats coût et performance .....  13 mois
  *   · feedback .........................  13 mois
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 82C — PLUS AUCUNE PERTE PAR ÂGE DES TRACES IA (CDC Pilotage IA V2
+ * LOG-06, LOG-09, R65 ; décisions PO n° 01 et 10 du 22/10)
+ *
+ * Retirés de cette purge : l'expurgation à 30 jours des traces détaillées
+ * (`ai_pipeline_step.output_preview` / `error_message`), la suppression des
+ * étapes à 90 jours (`AI_LOG_ARCHIVE=off`) et celle des traces d'exécution
+ * T2 (`verebona_request_runs`, `verebona_ai_runs`). Les variables
+ * `AI_TRACE_DETAILED_RETENTION_DAYS` / `AI_TRACE_TECHNICAL_RETENTION_DAYS`
+ * ne sont plus lues. RESTENT : l'historique conversationnel affiché à
+ * l'utilisateur (90 j, GAP-16 — comportement utilisateur inchangé ; les
+ * échanges avec le modèle restent capturés dans `ai_call_captures`, à
+ * soumettre au DPO), le feedback, les indicateurs anonymes et le cache.
+ * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
 import {
@@ -24,7 +37,7 @@ import {
 import { loadAssistantConfig } from '@/services/verebona-assistant/config/assistant-config';
 
 /** Entier positif lu dans l'environnement ; sinon la valeur du CDC. */
-function jours(name: string, def: number): number {
+function duree(name: string, def: number): number {
   const n = Number(process.env[name]);
   return Number.isInteger(n) && n > 0 ? n : def;
 }
@@ -32,10 +45,6 @@ function jours(name: string, def: number): number {
 export interface RetentionPolicy {
   /** Historique conversationnel — 90 jours (décision produit GAP-16). */
   conversationDays: number;
-  /** Traces détaillées expurgées — §29.7 : 30 jours. */
-  detailedTraceDays: number;
-  /** Logs techniques sans contenu — §29.7 : 90 jours. */
-  technicalLogDays: number;
   /** Agrégats de coût et performance — §29.7 : 13 mois. */
   aggregateMonths: number;
   /** Feedback — §29.7 : 13 mois. */
@@ -48,18 +57,11 @@ export interface RetentionPolicy {
  * EXACTEMENT la même valeur que l'assistant (`historyDays`, défaut 90 j) :
  * l'expiration posée à l'écriture et la purge ne peuvent pas diverger.
  */
-/** Archivage S3 des logs IA actif ? Même lecture que le planificateur quotidien. */
-export function logArchiveEnabled(env: Record<string, string | undefined> = process.env): boolean {
-  return !['off', 'false', '0'].includes((env.AI_LOG_ARCHIVE ?? '').trim().toLowerCase());
-}
-
 export function retentionPolicy(): RetentionPolicy {
   return {
     conversationDays: loadAssistantConfig().historyDays > 0 ? loadAssistantConfig().historyDays : 90,
-    detailedTraceDays: jours('AI_TRACE_DETAILED_RETENTION_DAYS', 30),
-    technicalLogDays: jours('AI_TRACE_TECHNICAL_RETENTION_DAYS', 90),
-    aggregateMonths: jours('AI_AGGREGATE_RETENTION_MONTHS', 13),
-    feedbackMonths: jours('AI_FEEDBACK_RETENTION_MONTHS', 13),
+    aggregateMonths: duree('AI_AGGREGATE_RETENTION_MONTHS', 13),
+    feedbackMonths: duree('AI_FEEDBACK_RETENTION_MONTHS', 13),
   };
 }
 
@@ -69,11 +71,7 @@ export const RETENTION: Readonly<RetentionPolicy> = retentionPolicy();
 export interface PurgeReport {
   messagesDeleted: number;
   conversationsDeleted: number;
-  tracesRedacted: number;
-  technicalLogsDeleted: number;
   feedbackDeleted: number;
-  /** Traces de demandes et d'appels modèle de l'assistant (§29.7 : 90 j). */
-  assistantRunsDeleted: number;
   /** Événements d'usage anonymes (§32.3, D-J7 : rétention des agrégats, 13 mois). */
   usageEventsDeleted?: number;
   /**
@@ -110,29 +108,8 @@ export async function purgeAssistantData(now = new Date()): Promise<PurgeReport>
     `created_at < NOW() - INTERVAL '${RETENTION.conversationDays} days'`,
   );
 
-  // 3. Traces détaillées : le CONTENU est expurgé, la ligne technique reste.
-  //    C'est ce qui permet de conserver 90 jours de mesures sans conserver
-  //    90 jours de données personnelles.
-  const traces = await execute(
-    `UPDATE ai_pipeline_step
-        SET output_preview = NULL, error_message = NULL
-      WHERE created_at < NOW() - INTERVAL '${RETENTION.detailedTraceDays} days'
-        AND (output_preview IS NOT NULL OR error_message IS NOT NULL)`,
-  );
-
-  // 4. Logs techniques sans contenu.
-  //    Quand l'archivage S3 est actif (défaut), c'est LUI qui supprime les
-  //    étapes, une fois l'archive déposée et enregistrée (`log-archive.job`).
-  //    La purge ne supprime donc rien ici : si l'archivage échoue (S3 absent,
-  //    erreur réseau, retard de plus de 14 jours), les lignes restent en base
-  //    au lieu d'être perdues. Avec AI_LOG_ARCHIVE=off, l'exploitation a
-  //    renoncé à l'archive : la purge applique alors la rétention seule.
-  const technical = logArchiveEnabled()
-    ? 0
-    : await deleteWhere(
-      'ai_pipeline_step',
-      `created_at < NOW() - INTERVAL '${RETENTION.technicalLogDays} days'`,
-    );
+  // 3 et 4 (expurgation à 30 jours et suppression des étapes IA) : retirées
+  //    au lot 82C — aucune perte par âge des traces IA (décision PO n° 10).
 
   // 5. Feedback.
   const feedback = await deleteWhere(
@@ -140,14 +117,9 @@ export async function purgeAssistantData(now = new Date()): Promise<PurgeReport>
     `created_at < NOW() - INTERVAL '${RETENTION.feedbackMonths} months'`,
   ).catch(() => 0);  // table optionnelle selon l'état du déploiement
 
-  // 6. Traces de l'assistant (§29.7, audit P3) : `verebona_request_runs` et
-  //    `verebona_ai_runs` n'étaient jamais purgées. Sans texte de
-  //    conversation (seulement identifiants, coûts, versions), elles suivent
-  //    la durée des logs techniques. Le mois courant reste toujours lisible
-  //    pour le plafond budgétaire mensuel (90 j > 1 mois).
-  const assistantRuns =
-    await deleteWhere('verebona_request_runs', `created_at < NOW() - INTERVAL '${RETENTION.technicalLogDays} days'`).catch(() => 0)
-    + await deleteWhere('verebona_ai_runs', `created_at < NOW() - INTERVAL '${RETENTION.technicalLogDays} days'`).catch(() => 0);
+  // 6. Traces d'exécution de l'assistant (`verebona_request_runs`,
+  //    `verebona_ai_runs`) : plus supprimées à 90 jours depuis le lot 82C
+  //    (traces IA T2 conservées, décisions PO n° 01 et 10).
 
   // 7. Indicateurs d'usage anonymes (§32.3, D-J7) : même rétention que les
   //    agrégats et le feedback (13 mois) ; compteurs du limiteur partagé
@@ -167,10 +139,7 @@ export async function purgeAssistantData(now = new Date()): Promise<PurgeReport>
   return {
     messagesDeleted: messages,
     conversationsDeleted: conversations,
-    tracesRedacted: traces,
-    technicalLogsDeleted: technical,
     feedbackDeleted: feedback,
-    assistantRunsDeleted: assistantRuns,
     usageEventsDeleted: usageEvents,
     expiredCacheDeleted: expiredCache,
     durationMs: Date.now() - startedAt,

@@ -42,7 +42,7 @@ export async function loadClaimRecords(x: SqlExecutor, accountId: number, by: { 
            d.policy_reference_text, d.status AS file_status, d.status_detail, d.circumstances, d.consequences, d.measures_summary,
            d.exchanges_summary, d.estimated_damage_minor,
            (SELECT ev.id FROM events ev WHERE ev.id = d.history_event_id AND ev.account_id = o.account_id) AS history_event_id,
-           (SELECT ai.id FROM agenda_items ai WHERE ai.business_operation_id = o.id AND ai.account_id = o.account_id ORDER BY (ai.projection_origin IS NULL) DESC, ai.id LIMIT 1) AS agenda_item_id,
+           (SELECT ai.id FROM agenda_items ai WHERE ai.business_operation_id = o.id AND ai.account_id = o.account_id ORDER BY (ai.operation_role IS NOT DISTINCT FROM 'PRINCIPAL') DESC, (ai.projection_origin IS NULL) DESC, ai.id LIMIT 1) AS agenda_item_id,
            (SELECT NULLIF(concat_ws(' · ', k.provider, CASE WHEN cd.contract_reference IS NOT NULL THEN 'n° ' || cd.contract_reference END), '')
               FROM business_operations k LEFT JOIN business_operation_contract_details cd ON cd.operation_id = k.id
              WHERE k.id = d.insurance_contract_operation_id AND k.account_id = o.account_id) AS contract_label

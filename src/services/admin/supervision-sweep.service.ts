@@ -13,7 +13,11 @@
  *   IA
  *   · traitement suspendu automatiquement par le disjoncteur (MOD-011) ;
  *   · jobs de la file en échec définitif (FAILED, après les reprises avec
- *     backoff) sans job réussi ultérieur du même traitement.
+ *     backoff) sans job réussi ultérieur du même traitement ;
+ *   · lot 82C (CDC Pilotage IA V2 LOG-07) : appels IA SANS capture complète
+ *     depuis la mise en service de la capture (échec d'écriture, reprises
+ *     épuisées, capture coupée par `AI_CALL_CAPTURE=off`) — l'erreur de
+ *     capture est visible, jamais silencieuse.
  *
  * Résolution automatique (SUP-008) dès que la condition disparaît. Une
  * condition déjà signalée n'est pas re-signalée à chaque balayage : seule une
@@ -51,6 +55,7 @@ export const exportFailureFingerprint = (assetId: number, exportType: string) =>
 export const exportStuckFingerprint = (exportId: number) => buildFingerprint('exports', 'stuck', exportId);
 export const aiSuspendedFingerprint = (treatment: string) => buildFingerprint('ai', 'treatment-suspended', treatment);
 export const aiJobsFailedFingerprint = (treatment: string) => buildFingerprint('ai', 'jobs-failed', treatment);
+export const aiCaptureGapFingerprint = () => buildFingerprint('ai', 'capture-gap');
 
 /**
  * Pur : faut-il signaler la condition ? Oui si aucune anomalie ouverte, ou si
@@ -190,6 +195,25 @@ export async function collectAiConditions(): Promise<Condition[]> {
         fingerprint: aiJobsFailedFingerprint(t),
         title: `Jobs IA ${t} en échec définitif`,
         detail: { treatment: t, failedJobs: Number(r.n), lastJobId: Number(r.last_id), error: (r.last_error as string) ?? null },
+      },
+    });
+  }
+  // Lot 82C (LOG-07) : capture complète des échanges IA en défaut.
+  const { captureGap } = await import('@/services/ai/telemetry/call-capture');
+  const gap = await captureGap(SWEEP_LOOKBACK_DAYS);
+  if (gap && (gap.missing > 0 || gap.notCaptured > 0)) {
+    out.push({
+      fingerprint: aiCaptureGapFingerprint(),
+      occurredAt: gap.lastAt ?? new Date(),
+      input: {
+        domain: 'ai',
+        fingerprint: aiCaptureGapFingerprint(),
+        title: 'Capture des échanges IA incomplète',
+        detail: {
+          appelsSansCapture: gap.missing, capturesAbandonnees: gap.notCaptured, dernierMotif: gap.lastReason,
+          fenetreJours: SWEEP_LOOKBACK_DAYS,
+          aide: 'Échanges non capturés (prompt, contexte, réponse) : ils ne seront jamais reconstitués. Vérifier la base et AI_CALL_CAPTURE.',
+        },
       },
     });
   }

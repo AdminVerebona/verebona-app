@@ -35,7 +35,7 @@
  */
 import { db } from '@/db';
 import {
-  agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
+  agendaItems, agendaAssetLinks, agendaRoomLinks, agendaEquipmentLinks,
   assets, assetFiles, substructures, equipments,
 } from '@/db/schema';
 import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm';
@@ -44,6 +44,9 @@ import { agendaFunctionalColumnsReady } from './agenda-columns';
 import { recordAgendaItemSources, type AgendaSourceRef } from './agenda-source-links';
 import { resolveEventSemantics, type AgendaEventNature } from './agenda-functional-key';
 import { findRejectedRefs, logCrossAccountRefusal, type SqlExecutor } from '@/services/security/account-ownership';
+import { addFileLinkProvenance, replaceDirectFileLinks } from '@/services/business-operations/grouping/provenance';
+import { recordGroupingDecision } from '@/services/business-operations/grouping/decisions';
+import { drizzleRunner } from '@/services/business-operations/grouping/runner';
 
 type ItemInsert = typeof agendaItems.$inferInsert;
 
@@ -220,6 +223,15 @@ export async function writeAgendaLinks(
   links: AgendaItemLinks,
   mode: 'replace' | 'add',
   accountId: number,
+  /**
+   * Lot 82D (CDC v5 §7.4) : provenance des liens DOCUMENT écrits (agenda
+   * manuel : MANUAL_DIRECT ; T4 : AI_DIRECT). Liens documents : `fileIds`
+   * absent = inchangés (la propagation vers le principal relève du service de
+   * regroupement) ; en `replace`, un document retiré par l'UTILISATEUR perd
+   * toutes ses provenances (le refus de propagation est mémorisé) ; retiré
+   * par T4, seule la provenance AI_DIRECT est retirée.
+   */
+  fileProvenance: 'MANUAL_DIRECT' | 'AI_DIRECT' = 'MANUAL_DIRECT',
 ): Promise<void> {
   const assetIds = links.assetIds ?? [];
   const fileIds = links.fileIds ?? [];
@@ -230,8 +242,6 @@ export async function writeAgendaLinks(
     const biensDuCompte = tx.select({ id: assets.id }).from(assets).where(eq(assets.accountId, accountId));
     await Promise.all([
       tx.delete(agendaAssetLinks).where(and(eq(agendaAssetLinks.agendaItemId, agendaItemId), inArray(agendaAssetLinks.assetId, biensDuCompte))),
-      tx.delete(agendaFileLinks).where(and(eq(agendaFileLinks.agendaItemId, agendaItemId),
-        inArray(agendaFileLinks.assetFileId, tx.select({ id: assetFiles.id }).from(assetFiles).where(eq(assetFiles.accountId, accountId))))),
       tx.delete(agendaRoomLinks).where(and(eq(agendaRoomLinks.agendaItemId, agendaItemId),
         inArray(agendaRoomLinks.substructureId, tx.select({ id: substructures.id }).from(substructures).where(inArray(substructures.assetId, biensDuCompte))))),
       tx.delete(agendaEquipmentLinks).where(and(eq(agendaEquipmentLinks.agendaItemId, agendaItemId),
@@ -241,8 +251,23 @@ export async function writeAgendaLinks(
   if (assetIds.length > 0) {
     await tx.insert(agendaAssetLinks).values(assetIds.map((id) => ({ agendaItemId, assetId: id }))).onConflictDoNothing();
   }
-  if (fileIds.length > 0) {
-    await tx.insert(agendaFileLinks).values(fileIds.map((id) => ({ agendaItemId, assetFileId: id }))).onConflictDoNothing();
+  if (links.fileIds !== undefined && (mode === 'replace' || fileIds.length > 0)) {
+    const runner = drizzleRunner(tx);
+    if (mode === 'replace') {
+      const user = fileProvenance === 'MANUAL_DIRECT';
+      const { removedPrincipalFileIds } = await replaceDirectFileLinks(runner, agendaItemId, fileIds, fileProvenance, accountId, { userRemovesAll: user });
+      // Lien propagé retiré par l'utilisateur : la propagation ne le recrée pas (§10).
+      if (user && removedPrincipalFileIds.length) {
+        const [it] = (await tx.execute(sql`SELECT business_operation_id AS op FROM agenda_items WHERE id = ${agendaItemId} AND account_id = ${accountId}`)) as Array<{ op: number | null }>;
+        if (it?.op != null) {
+          for (const fileId of removedPrincipalFileIds) {
+            await recordGroupingDecision(runner, { accountId, operationId: Number(it.op), subject: 'PRINCIPAL_LINK', entityId: fileId, decision: 'REJECTED', reasonCode: 'USER_AGENDA_LINK_REMOVED' });
+          }
+        }
+      }
+    } else {
+      await addFileLinkProvenance(runner, agendaItemId, fileIds, fileProvenance);
+    }
   }
   if (substructureIds.length > 0) {
     await tx.insert(agendaRoomLinks).values(substructureIds.map((id) => ({ agendaItemId, substructureId: id }))).onConflictDoNothing();
@@ -310,7 +335,7 @@ export async function writeAgendaItem(
       // Élément d'un autre compte (ou disparu) : aucun lien n'est écrit.
       if (touchees.length === 0) throw new AgendaValidationError('Validation : élément introuvable dans le compte');
     }
-    if (input.links) await writeAgendaLinks(tx, itemId, input.links, opts.linkMode ?? 'replace', opts.accountId);
+    if (input.links) await writeAgendaLinks(tx, itemId, input.links, opts.linkMode ?? 'replace', opts.accountId, opts.channel === 'T4' ? 'AI_DIRECT' : 'MANUAL_DIRECT');
 
     if (effets) {
       // Colonnes 0223 (non déclarées dans Drizzle) : SQL direct, même transaction.
@@ -319,7 +344,7 @@ export async function writeAgendaItem(
               business_type = COALESCE(${semantics.businessType}, business_type),
               functional_key = COALESCE(${input.functionalKey ?? null}, functional_key)
         WHERE id = ${itemId} AND account_id = ${opts.accountId}`);
-      await recordAgendaItemSources(tx, itemId, input.sources ?? []);
+      await recordAgendaItemSources(tx, itemId, input.sources ?? [], opts.channel === 'T4' ? 'AI_DIRECT' : 'MANUAL_DIRECT');
     }
     return itemId;
   });
@@ -340,11 +365,10 @@ export async function writeAgendaItem(
   }
 
   const notifiable = semantics.notifiable;
-  if (opts.notify && creation && notifiable) {
-    const { emitAgendaItemCreated } = await import('@/services/coherence/impact-propagation.service');
-    for (const aid of input.links?.assetIds ?? []) {
-      emitAgendaItemCreated(opts.accountId, aid, id).catch(() => {});
-    }
+  if (opts.notify && creation && notifiable && (input.links?.assetIds ?? []).length > 0) {
+    // Lot 82B : événement métier publié directement (l'ancien relais par la file
+    // `impact_queue`, sans plus aucune règle à appliquer, est retiré — C-Q9).
+    await publierCreationAgenda(opts.accountId, id);
   }
 
   // D-15 : un événement historique « vente » ou « sinistre » créé
@@ -511,11 +535,20 @@ export async function agendaEffectsAfterCommit(p: {
         }
       }
     }
-    if (p.created && nature !== 'HISTORICAL') {
-      const { emitAgendaItemCreated } = await import('@/services/coherence/impact-propagation.service');
-      for (const assetId of assetIds) await emitAgendaItemCreated(p.accountId, assetId, p.itemId).catch(() => {});
-    }
+    if (p.created && nature !== 'HISTORICAL' && assetIds.length > 0) await publierCreationAgenda(p.accountId, p.itemId);
   } catch (e) {
     console.error(`[agenda] effets après validation de l'élément ${p.itemId} :`, (e as Error).message);
   }
+}
+
+/**
+ * Événement métier AGENDA_ITEM_CREATED (CDC Assistant §25.7 : caches, mascotte,
+ * contrôle de cohérence ciblé). Import différé, jamais bloquant.
+ */
+async function publierCreationAgenda(accountId: number, itemId: number): Promise<void> {
+  try {
+    const { emitBusinessEvent } = await import('@/services/verebona-assistant/events/business-events');
+    // Émis sans être attendu : l'écriture d'agenda ne patiente pas pour ses abonnés.
+    void emitBusinessEvent({ type: 'AGENDA_ITEM_CREATED', accountId, entityId: itemId }).catch(() => { /* non bloquant */ });
+  } catch { /* non bloquant */ }
 }

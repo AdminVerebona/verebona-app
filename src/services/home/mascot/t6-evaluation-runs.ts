@@ -35,6 +35,7 @@
  * l'appelant garde le comportement du lot 77 (mémoire de l'instance).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { pgClient } from '@/db';
 import { envNumber } from '@/lib/env-number';
 
@@ -663,9 +664,13 @@ export async function blockedT6Accounts(
                    ELSE coalesce(next_attempt_at, finished_at) END AS since
          FROM t6_evaluation_runs
         WHERE status <> 'COMPLETED' AND ($3::int IS NULL OR account_id = $3::int) AND account_id > $4::int
+          -- Lot 82A (C-Q10) : un compte non éligible ne reçoit aucun traitement ;
+          -- ses évaluations en attente ne sont pas des blocages (reprise à la réactivation).
+          AND ${processingEligibleSql('t6_evaluation_runs.account_id')}
      ), e AS (
        SELECT account_id FROM home_mascot_pregen_requests
         WHERE last_status = 'attempts_exhausted' AND ($3::int IS NULL OR account_id = $3::int) AND account_id > $4::int
+          AND ${processingEligibleSql('home_mascot_pregen_requests.account_id')}
      ), y AS (
        SELECT x.*, (x.f OR x.sp OR x.sr OR x.od) AS bloquee, (e.account_id IS NOT NULL) AS epuisee
          FROM x LEFT JOIN e ON e.account_id = x.account_id
@@ -906,10 +911,14 @@ async function superviseScheduler(
   }
   if (ordo.state !== 'inactive') return;
   const [r] = await q(
-    `SELECT (SELECT count(DISTINCT account_id) FROM t6_evaluation_runs WHERE status NOT IN ('COMPLETED', 'FAILED'))::int AS accounts,
+    // Lot 82A (C-Q10) : comptes éligibles seulement (les autres n'attendent rien).
+    `SELECT (SELECT count(DISTINCT account_id) FROM t6_evaluation_runs WHERE status NOT IN ('COMPLETED', 'FAILED')
+               AND ${processingEligibleSql('t6_evaluation_runs.account_id')})::int AS accounts,
             (SELECT array_agg(account_id ORDER BY account_id) FROM (
-               SELECT DISTINCT account_id FROM t6_evaluation_runs WHERE status NOT IN ('COMPLETED', 'FAILED') ORDER BY account_id LIMIT 50) z) AS ids,
-            (SELECT count(*) FROM home_mascot_pregen_requests WHERE processed_at IS NULL OR requested_at > processed_at)::int AS requests`,
+               SELECT DISTINCT account_id FROM t6_evaluation_runs WHERE status NOT IN ('COMPLETED', 'FAILED')
+                  AND ${processingEligibleSql('t6_evaluation_runs.account_id')} ORDER BY account_id LIMIT 50) z) AS ids,
+            (SELECT count(*) FROM home_mascot_pregen_requests WHERE (processed_at IS NULL OR requested_at > processed_at)
+               AND ${processingEligibleSql('home_mascot_pregen_requests.account_id')})::int AS requests`,
     [],
   );
   const comptes = Number(r?.accounts ?? 0);

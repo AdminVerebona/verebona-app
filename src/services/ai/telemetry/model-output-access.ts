@@ -9,10 +9,19 @@
  *   · chaque consultation — accordée ou refusée — est journalisée
  *     (`admin_audit_log`, action `AI_MODEL_OUTPUT_READ`) ;
  *   · jamais écrite dans les journaux serveur ; réponse `no-store`.
- * Rétention : celle des traces IA (`ai-call-diagnostics-purge`).
+ * Rétention : aucune purge par ancienneté (lot 82C, décisions PO n° 01 et
+ * 10 du 22/10) ; suppression avec le compte.
+ *
+ * Lot 82C (CDC Pilotage IA V2 LOG-01, LOG-07, LOG-10 ; décision PO n° 15) :
+ * la MÊME autorisation, sans nouveau rôle ni élargissement, couvre la
+ * consultation et l'export des échanges capturés à la source
+ * (`ai_call_captures` : prompt final, contexte, paramètres, réponse brute,
+ * sortie parsée) ; chaque lecture est journalisée (acteur, date, périmètre :
+ * appel et trace, nombre d'éléments, action).
  */
 import { pgClient } from '@/db';
 import { readTraceModelOutputs, type ModelOutputView } from '../gateway/diagnostics/diagnostic.repository';
+import type { CallCaptureView } from './call-capture';
 
 /** Pur : l'administrateur est-il autorisé ? Liste vide ou absente = tous les administrateurs. */
 export function isModelOutputAccessAllowed(adminUserId: number, raw: string | undefined = process.env.AI_MODEL_OUTPUT_ADMIN_IDS): boolean {
@@ -21,23 +30,27 @@ export function isModelOutputAccessAllowed(adminUserId: number, raw: string | un
 }
 
 export type ModelOutputAccess =
-  | { ok: true; callId: number; traceId: string; outputs: ModelOutputView[] }
+  | { ok: true; callId: number; traceId: string; outputs: ModelOutputView[]; captures?: CallCaptureView[] }
   | { ok: false; code: 'FORBIDDEN' | 'NOT_FOUND'; message: string };
 
-async function journal(adminUserId: number, callId: number, purpose: string, result: 'SUCCESS' | 'DENIED' | 'FAILURE', count: number): Promise<void> {
+async function journal(adminUserId: number, callId: number, purpose: string, result: 'SUCCESS' | 'DENIED' | 'FAILURE', count: number, extra: Record<string, unknown> = {}): Promise<void> {
   await import('@/lib/admin-audit').then(({ logAdminAction }) => logAdminAction({
     adminId: adminUserId,
     action: 'AI_MODEL_OUTPUT_READ',
     targetType: 'AI_EXECUTION',
     targetId: callId,
     result,
-    details: { purpose, outputs: count },
+    details: { purpose, outputs: count, ...extra },
   })).catch((e: Error) => console.error('[ai-model-output] journal admin non écrit :', String(e.message).slice(0, 200)));
 }
 
-export async function readModelOutputsForAdmin(p: { adminUserId: number; callId: number; purpose: 'detail' | 'export' }): Promise<ModelOutputAccess> {
+export async function readModelOutputsForAdmin(p: {
+  adminUserId: number; callId: number; purpose: 'detail' | 'export';
+  /** Lot 82C : joindre les échanges capturés à la source (`ai_call_captures`) de la trace. */
+  includeCaptures?: boolean;
+}): Promise<ModelOutputAccess> {
   if (!isModelOutputAccessAllowed(p.adminUserId)) {
-    await journal(p.adminUserId, p.callId, p.purpose, 'DENIED', 0);
+    await journal(p.adminUserId, p.callId, p.purpose, 'DENIED', 0, p.includeCaptures ? { captures: 0 } : {});
     return { ok: false, code: 'FORBIDDEN', message: 'Consultation des sorties modèle réservée (AI_MODEL_OUTPUT_ADMIN_IDS).' };
   }
   const rows = (await pgClient.unsafe(
@@ -50,6 +63,15 @@ export async function readModelOutputsForAdmin(p: { adminUserId: number; callId:
     return { ok: false, code: 'NOT_FOUND', message: 'Appel introuvable ou sans trace.' };
   }
   const outputs = (await readTraceModelOutputs(traceId)).filter((o) => o.raw !== null || o.extracted !== null || o.parsed !== null);
-  await journal(p.adminUserId, p.callId, p.purpose, 'SUCCESS', outputs.length);
-  return { ok: true, callId: p.callId, traceId, outputs };
+  if (!p.includeCaptures) {
+    await journal(p.adminUserId, p.callId, p.purpose, 'SUCCESS', outputs.length);
+    return { ok: true, callId: p.callId, traceId, outputs };
+  }
+  const { readTraceCaptures } = await import('./call-capture');
+  const captures = await readTraceCaptures(traceId);
+  // Journal : acteur, date (horodatage du journal), périmètre (appel, trace) et action (détail / export).
+  await journal(p.adminUserId, p.callId, p.purpose, 'SUCCESS', outputs.length, {
+    traceId, captures: captures.filter((c) => c.captureId !== null).length,
+  });
+  return { ok: true, callId: p.callId, traceId, outputs, captures };
 }

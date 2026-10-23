@@ -70,7 +70,7 @@ function fakeSub(o: {
 
 scenario('FUNC31-PERF18', 'Impayé sans grâce et paiement en attente', ({ sql, make }) => {
   async function compte(plan?: 'standard' | 'premium' | 'premium_duo') {
-    const acc = await make.account({ plan });
+    const acc = await make.account({ plan: plan ?? null });
     const customer = `cus_${uid('e2e')}`;
     const subId = `sub_${uid('e2e')}`;
     await sql`UPDATE accounts SET stripe_customer_id = ${customer}, stripe_subscription_id = ${plan ? subId : null},

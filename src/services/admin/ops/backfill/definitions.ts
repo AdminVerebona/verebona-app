@@ -4,7 +4,7 @@
  * `/api/admin/ops/backfills` et par la page (`/admin/exploitation`).
  *
  * Ordre recommandé (celui de l'affichage) :
- *   1. fusion pièces → sous-structures (`npm run db:merge-rooms`) ;
+ *   1. reprise des anciennes pièces `rooms` dans les Pièces `substructures` (`npm run db:merge-rooms`) ;
  *   2. liens document ↔ bien (`scripts/backfill-document-asset-links.ts`) ;
  *   3. agenda (`scripts/agenda-backfill.ts`, `source-links` puis `dedupe`) ;
  *   4. rattrapage CDC 15 (`scripts/cdc15-backfill.ts --step all`) ;
@@ -25,19 +25,25 @@
  *  11. Premium Duo en compte partagé (lot 72D, ticket P0) : adhésions des
  *      membres Duo au compte du titulaire, comptes artificiels vides
  *      archivés — jamais automatique, journalisé et restaurable ;
- *  12. Agenda : doublons d'interventions (lot 76H, ticket P1) — aussi lancé
- *      automatiquement UNE fois par `agenda-intervention-duplicates-reprise`,
- *      journalisé et restaurable ;
+ *  12. Agenda : doublons d'interventions (lot 76H, ticket P1) — même
+ *      détection et même projection que le contrôle de cohérence quotidien
+ *      COH-AGENDA-OCCURRENCES (lot 82B, qui remplace l'ancienne exécution
+ *      automatique au démarrage), journalisé et restaurable ;
  *  13. « À traiter » : faux arbitrages entre valeurs équivalentes (lot 81A,
  *      ticket P1) — aussi lancé automatiquement (campagne bornée de la tâche
  *      `to-process-relevance-reevaluation`), jamais d'écriture sur la fiche.
+ *   0. Point de restauration de la base (lot 82E, décisions PO C-Q8 / D13) :
+ *      « Appliquer » crée un point (même mécanisme que la sauvegarde
+ *      nocturne) ; « Restaurer » ramène la base à un point (contrôle de
+ *      schéma, point de l'état courant pris avant, tout ou rien). Affiché en
+ *      tête : à faire AVANT une campagne de recette.
  *
  * Chaque bloc n'offre que ce que le script permet (simulation, application,
  * restauration). Les scripts CLI restent utilisables et appellent les mêmes
  * services.
  */
 
-export type BackfillScript = 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations';
+export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'operations-claims' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -59,11 +65,28 @@ export interface BackfillDefinition {
 
 export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
   {
+    script: 'database-restore-point',
+    order: 0,
+    label: 'Point de restauration de la base (recettes)',
+    command: 'BO uniquement (aucune commande) — même mécanisme que la sauvegarde nocturne',
+    description: 'Avant une campagne de recette (contrôle de cohérence, rattrapage, réanalyse) : « Appliquer » crée un point de '
+      + 'restauration — sauvegarde complète de la base lue dans UN instantané cohérent, au format exact de PostgreSQL, avec la '
+      + 'signature du schéma (stockage OVH, conservée 30 jours, comme la sauvegarde nocturne). « Restaurer » ramène TOUTE la base au '
+      + 'dernier point créé ici (ou à un point choisi dans Exploitation › Sauvegardes et recette) : contrôle du schéma (refus sans '
+      + 'aucune écriture s’il a changé), point de l’état actuel pris juste avant, puis rechargement en une seule transaction '
+      + '(relations revalidées, nombre de lignes de chaque table vérifié, identifiants conservés, envois en attente neutralisés). '
+      + 'Journaux d’administration, d’exports, de rattrapages et de tâches planifiées conservés en l’état.',
+    actions: ['apply', 'restore'],
+    accountFilter: false,
+    warning: 'Restaurer remplace les données de TOUS les comptes par celles du point et bloque l’application pendant le rechargement '
+      + '(quelques minutes). Les fichiers du stockage ne sont pas concernés.',
+  },
+  {
     script: 'merge-rooms',
     order: 1,
-    label: 'Fusion des pièces dans les sous-structures',
+    label: 'Reprise des anciennes pièces dans les Pièces',
     command: 'npm run db:merge-rooms',
-    description: 'Reprise des pièces (rooms) dans les sous-structures (décision D-G). La simulation écrit seulement son rapport ; '
+    description: 'Reprise des anciennes pièces (table rooms) dans les Pièces (table substructures, décision D-G). La simulation écrit seulement son rapport ; '
       + 'l’application est journalisée ligne à ligne et restaurable par son identifiant d’exécution.',
     actions: ['simulate', 'apply', 'restore'],
     accountFilter: true,
@@ -225,7 +248,7 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     script: 'agenda-intervention-duplicates',
     order: 12,
     label: 'Agenda : doublons d’interventions',
-    command: 'tâche de démarrage « agenda-intervention-duplicates-reprise » (automatique, une seule fois)',
+    command: 'tâche planifiée « coherence-control » (contrôle COH-AGENDA-OCCURRENCES, quotidien et ciblé)',
     description: 'Lot 76H : une intervention établie par les Opérations n’a plus qu’UN événement d’agenda. Pour chaque intervention '
       + 'dont un document a produit plusieurs événements automatiques équivalents (ex. « Réparation — Maison » et « Entretien réalisé — '
       + 'Prestation » du même jour), la projection Opérations → Agenda est rejouée : si T3 a établi que toute la preuve d’intervention '
@@ -233,8 +256,8 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'les autres sont absorbés (preuves, liens, historique conservés ; retrait tracé et restaurable) et l’intitulé générique cède à la '
       + 'description précise de l’intervention. Identité incertaine : carte « À traiter » (aucune fusion). Interventions distinctes, '
       + 'événements modifiés, confirmés ou « à qualifier » : jamais touchés. Doublons sans Opération : signalés seulement. La simulation '
-      + 'n’écrit rien (rapport des actions envisagées) ; l’application est journalisée et se restaure par son identifiant. Lancé '
-      + 'automatiquement une fois au démarrage (même service) ; rejoué, il ne change rien.',
+      + 'n’écrit rien (rapport des actions envisagées) ; l’application est journalisée et se restaure par son identifiant. La convergence '
+      + 'courante est assurée chaque jour par le contrôle de cohérence (même détection, même projection) ; rejoué, il ne change rien.',
     actions: ['simulate', 'apply', 'restore'],
     accountFilter: true,
   },

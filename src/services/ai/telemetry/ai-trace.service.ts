@@ -17,6 +17,8 @@ import { getExecutionContext, type ModelRank } from './execution-context';
 import { currentJobContext } from '../queue/job-context';
 import { getCachedPrice } from '../gateway/pricing/pricing.repository';
 import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
+import type { CallCaptureInput } from './call-capture';
+import type { AiAttachment } from '../gateway/types';
 
 export interface CallTrace {
   traceId: string;
@@ -34,7 +36,14 @@ export interface CallTrace {
   outputTokens: number;
   /** `null` = tarif inconnu, coût non calculable (COST-008) — jamais inventé. */
   costMicros: number | null;
+  /**
+   * Lot 82C (LOG-05, R29) : durée PROPRE de cet appel (tentative), jamais le
+   * cumul depuis le début de l'exécution — les durées d'une exécution se
+   * somment sans double comptage. Le temps total est `executionElapsedMs`.
+   */
   durationMs: number;
+  /** Lot 82C : durée murale écoulée de l'exécution à la fin de cet appel (ne pas sommer). */
+  executionElapsedMs?: number;
   status: 'success' | 'error';
   errorCode?: string;
   errorMessage?: string;
@@ -120,6 +129,14 @@ export interface CallTrace {
    */
   providerRequest?: ProviderRequestTrace;
   providerAttempts?: ProviderAttemptTrace[];
+  /**
+   * Lot 82C (LOG-01) — capture complète de l'appel (prompt final, contexte,
+   * paramètres envoyés, réponse brute, sortie parsée), écrite dans
+   * `ai_call_captures` après l'événement d'usage, jamais dans `metadata`.
+   */
+  capture?: CallCaptureInput;
+  /** Lot 82C : transport des pièces jointes selon l'adaptateur (référence de capture). */
+  captureTransportOf?: (a: AiAttachment) => string;
 }
 
 /** Contrat runtime tracé avec un appel (lot 34D). */
@@ -268,6 +285,10 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
         // lieu — BO › Exécutions IA regroupe la cascade de modèles par
         // tentative (fallback modèle ≠ retry du job).
         ...jobAttemptMetadata(t),
+        // Lot 82C (LOG-05) : `duration_ms` = durée propre de l'appel ; temps
+        // total de l'exécution à part. Marqueur : les traces antérieures
+        // portaient le cumul depuis le début de l'exécution.
+        durations: { semantics: 'attempt', ...(t.executionElapsedMs !== undefined ? { executionElapsedMs: Math.max(0, Math.round(t.executionElapsedMs)) } : {}) },
       },
       useCaseCode: t.useCaseCode,
       operationCode: t.operationCode,
@@ -282,10 +303,29 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
       jobId: t.jobId ?? currentJobContext()?.jobId ?? null,
     } as never), aiUsageEvent.id);
     await writeMasterFields('ai_usage_event', rows?.[0]?.id, master);
-    return rows?.[0]?.id ?? null;
+    const id = rows?.[0]?.id ?? null;
+    await captureOf(t, id);
+    return id;
   } catch (e) {
     console.error('[ai-trace] événement d\'usage non écrit (non bloquant) :', (e as Error).message);
+    // La capture reste écrite (sans rattachement) : l'échange n'est pas perdu.
+    await captureOf(t, null);
     return null;
+  }
+}
+
+/** Lot 82C : capture de l'appel, rattachée à son événement d'usage. Ne lève jamais. */
+async function captureOf(t: CallTrace, usageEventId: number | null): Promise<void> {
+  if (!t.capture) return;
+  try {
+    const { recordCallCapture } = await import('./call-capture');
+    await recordCallCapture({
+      usageEventId, traceId: t.traceId, accountId: t.accountId, userId: t.userId ?? null,
+      jobId: t.jobId ?? currentJobContext()?.jobId ?? null, useCaseCode: t.useCaseCode, operationCode: t.operationCode,
+      task: t.task ?? null, model: t.model, modelRank: t.modelRank ?? (t.usedFallback ? null : 'primary'),
+    }, t.capture, t.captureTransportOf);
+  } catch (e) {
+    console.error('[ai-trace] capture non écrite (non bloquant) :', String((e as Error).message ?? e).slice(0, 200));
   }
 }
 

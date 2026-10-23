@@ -24,9 +24,6 @@ vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () 
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (orig) => ({
-  ...(await orig<object>()), emitAgendaItemCreated: async () => {},
-}));
 
 type Json = Record<string, any>;
 const TODAY = '2026-10-14';

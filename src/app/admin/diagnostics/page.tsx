@@ -330,7 +330,7 @@ function Generations({ refreshKey }: { refreshKey: string }) {
               <tr key={r.id} className="border-b last:border-b-0 align-top">
                 <td className="px-3 py-2 text-xs whitespace-nowrap">{new Date(r.startedAt).toLocaleString('fr-FR')}</td>
                 <td className="px-3 py-2 text-xs">
-                  {r.kind === 'TECH_DIAGNOSTIC' ? 'Diagnostic' : 'Données du compte'} · {r.mode}{r.targetType ? ` · ${r.targetType}${r.targetId ? ` #${r.targetId}` : ''}` : ''}
+                  {r.kind === 'TECH_DIAGNOSTIC' ? 'Diagnostic' : r.kind === 'RECETTE_EXPORT' ? 'Export de recette' : 'Données du compte'} · {r.mode}{r.targetType ? ` · ${r.targetType}${r.targetId ? ` #${r.targetId}` : ''}` : ''}
                   {r.targetAccountId ? <span className="text-muted-foreground"> · compte #{r.targetAccountId}</span> : null}
                   <span className="block font-mono text-[10px] text-muted-foreground">{r.id.slice(0, 8)}{r.fileName ? ` · ${r.fileName}` : ''}</span>
                 </td>

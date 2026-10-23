@@ -16,7 +16,7 @@ import { AiGatewayError, isAiGatewayError, isDeterministicLocalError, type AiErr
 import { getOperation, isMasterOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
 import { errorOf } from './output-validator';
-import { redactVariables, previewForLog, outputDigestForLog, stripRawExcerpt } from './redaction';
+import { redactVariables, redactWithReport, previewForLog, outputDigestForLog, stripRawExcerpt } from './redaction';
 import { resolveOutput, reporterCompteurs, type Resolution } from './output-resolution/resolve-output';
 import { parseModelOutput } from './output-resolution/json-repair';
 import {
@@ -39,18 +39,20 @@ import {
   type CallDiagnostic, type ProviderCallMetadata, type ProviderAttemptTrace, type ProviderRequestTrace,
 } from './diagnostics/taxonomy';
 import { describeGenerationConfig } from './providers/gemini-generation-config';
-import { describeAttachments } from './providers/gemini-files';
+import { describeAttachments, attachmentTransport } from './providers/gemini-files';
+import { subjectRefOfIdempotencyKey, capturedRequestOf, type CallCaptureInput, type CapturedRequest } from '../telemetry/call-capture';
 import { recordCallDiagnostic } from './diagnostics/diagnostic.repository';
 import { getAiProvider } from './providers';
 import { resolvePrompt, resolveMasterPrompt, masterPromptVersionOf, loadMasterTemplate, MasterPromptError } from '../prompts/prompt-loader';
 import { resolveOperationConfig, composePrompt } from '../config/config-resolver';
 import { recordCallTrace } from '../telemetry/ai-trace.service';
 import { buildIdempotencyKey, withIdempotency } from '../idempotency/idempotency.service';
-import { treatmentOfUseCase, type Treatment } from '../config/treatments';
+import { treatmentOfUseCase, isTechnicalUseCase, type Treatment } from '../config/treatments';
 import { assertTreatmentRunnable } from '../queue/runnable-guard';
 import { noteGatewayOutcome as noteTreatmentOutcome, type GatewayOutcome, type ModelAttempt } from '../queue/circuit-breaker.repository';
 import { currentJobContext } from '../queue/job-context';
 import { assertAccountCostCap } from './account-cost-cap';
+import { checkAccountProcessingEligibility, INELIGIBILITY_LABELS } from '@/services/account/processing-eligibility';
 import { baseMaxOutputTokens, reasoningAtRank } from './generation-profile';
 import type { ModelRank } from '../telemetry/execution-context';
 import type { AiProvider, ProviderCallInput, ProviderCallOutput, ProviderResponseMeta } from './providers/provider.port';
@@ -108,6 +110,15 @@ export class AiGateway {
     // part, et l'on ne sert pas non plus de résultat mis en cache comme si
     // l'IA tournait. Cache de 5 s (runnable-guard).
     await assertTreatmentRunnable(treatmentOfUseCase(op.useCaseCode), op.operationCode);
+
+    // ── Éligibilité du compte (lot 82A, décision PO C-Q10, §3.3) ───────────
+    // Même point de passage obligé : aucun appel modèle pour un compte non
+    // actif (essai échu), suspendu ou en lecture seule — y compris pour une
+    // exécution DÉJÀ EN COURS quand l'éligibilité disparaît. Exemptés : appels
+    // sans compte, usage technique AI_GOVERNANCE, compte technique des
+    // campagnes. Cache de 5 s (chemin chaud) ; la file durable revérifie
+    // sans cache au démarrage de chaque travail.
+    await assertAccountEligibleForAi(req.accountId, op.useCaseCode, op.operationCode);
 
     // ── Idempotence (CDC §5.7) ─────────────────────────────────────────────
     // Opération master : la version résolue du master entre dans la clé
@@ -192,6 +203,9 @@ export class AiGateway {
     // Masquage AVANT construction du prompt (CDC §5.2, §5.6). Lot 16b : plus
     // aucune exemption (les prompts historiques relayés sont retirés).
     const safeVariables = redactVariables(req.promptVariables);
+    // Lot 82C (LOG-07, LOG-08) : masques appliqués, relevés pour la capture
+    // (« contenu masqué » ≠ « contenu capturé tel quel »).
+    const variableMasks = masksOfVariables(req.promptVariables);
 
     // Prompt fourni à l'appel : uniquement pour les opérations déclarées
     // `dynamicPrompt` — en pratique l'évaluation d'une version candidate.
@@ -482,6 +496,58 @@ export class AiGateway {
     let callIndex = 0;
     let previousFailure: CallDiagnostic | null = null;
 
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 82C — CAPTURE COMPLÈTE À LA SOURCE (CDC Pilotage IA V2, LOG-01)
+    //
+    // Chaque requête réellement transmise au fournisseur (essais internes du
+    // même modèle et passes de réparation compris) est relevée AU POINT
+    // D'APPEL : prompt final, paramètres de génération construits, délai,
+    // issue. La capture de chaque tentative accompagne sa trace
+    // (`recordCallTrace` → `ai_call_captures`) : rien n'est reconstitué
+    // ensuite à partir de la configuration courante.
+    // ══════════════════════════════════════════════════════════════════════
+    const sent: CapturedRequest[] = [];
+    const capturing: AiProvider = {
+      name: provider.name,
+      isConfigured: () => provider.isConfigured(),
+      call: async (i: ProviderCallInput) => {
+        const entry = capturedRequestOf(i, psHash);
+        sent.push(entry);
+        try {
+          const o = await provider.call(i);
+          entry.outcome = 'SUCCESS';
+          return o;
+        } catch (e) {
+          entry.outcome = 'FAILED';
+          entry.error = e instanceof Error ? e.message : String(e);
+          throw e;
+        }
+      },
+    };
+    const subjectRef = subjectRefOfIdempotencyKey(req.idempotencyKey);
+    const configuredMax = configuration.maxOutputTokens ?? null;
+    /** Paramètres résolus d'une tentative (rang, raisonnement, plafond demandé / hérité / adapté / envoyé). */
+    const paramsOf = (p: { model: string; rankIndex: number; reasoning: ProviderCallInput['reasoning'] | null; timeoutMs: number; soStatus: string | null; requests: CapturedRequest[] }): Record<string, unknown> => {
+      const lastCfg = p.requests[p.requests.length - 1]?.generationConfig ?? null;
+      const envoye = lastCfg && typeof lastCfg.maxOutputTokens === 'number' ? lastCfg.maxOutputTokens : null;
+      return {
+        provider: provider.name, model: p.model, rank: rankAt(p.rankIndex), reasoning: p.reasoning ?? null,
+        maxOutputTokens: {
+          requested: configuredMax, operationFloor: op.minOutputTokens ?? null, callerCap: req.maxOutputTokensCap ?? null,
+          inherited: p.rankIndex > 0 ? baseMaxOutputTokens(op, configuration) ?? null : null,
+          adapted: maxOutputTokens ?? null, sent: p.requests.length ? envoye : null,
+        },
+        timeoutMs: p.timeoutMs, jsonResponse, structuredOutput: p.soStatus, providerSchemaHash: psHash,
+        contract: { id: contract.contractId, version: contract.contractVersion, schemaVersion: contract.schemaVersion, schemaHash: contract.schemaHash },
+        promptVersion, masterPrompt: master ? { code: master.masterPromptCode, version: master.masterPromptVersion, task: master.task } : null,
+        executionMode: structuredTrace?.mode ?? null, configVersionId: configuration.configVersionId ?? null,
+        configRevisionId: configuration.configRevisionId ?? null, informedOfPreviousError: undefined,
+      };
+    };
+    const captureOf = (c: Omit<CallCaptureInput, 'origin' | 'variables' | 'variableMasks' | 'subjectRef' | 'sourceIds'>): CallCaptureInput => ({
+      origin: 'gateway', variables: safeVariables, variableMasks, subjectRef, sourceIds, ...c,
+    });
+
     // ── Lot 34D : refus AVANT tout appel fournisseur (contrat T4 violé,
     //    contrat runtime incohérent) — tracé et diagnostiqué au BO, 0 appel ──
     if (preCallRefusal) {
@@ -501,11 +567,18 @@ export class AiGateway {
         parentOperationId: req.parentOperationId, provider: provider.name, model, promptVersion, usedFallback: false,
         shadow: Boolean(req.shadow), modelRank: rankAt(premierRang), jobId, configVersionId: configuration.configVersionId,
         callerMode: req.callerMode, ...traceConfig, reasoning: null, maxOutputTokens: maxOutputTokens ?? null,
-        inputTokens: 0, outputTokens: 0, costMicros: 0, durationMs: Date.now() - startedAt, status: 'error',
+        // Lot 82C (LOG-05) : aucun appel fournisseur → durée propre nulle ; temps écoulé à part.
+        inputTokens: 0, outputTokens: 0, costMicros: 0, durationMs: 0, executionElapsedMs: Date.now() - startedAt, status: 'error',
         errorCode: refus.code, errorMessage: refus.message, billable: false,
         failure: failureSummary(diag), callKind: 'analysis',
         runtimeContract: contractTraceOf(null, mismatch),
         ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
+        capture: captureOf({
+          callKind: 'pre_call_refusal', sent: [], attachments: req.attachments ?? [], callIndex: 0,
+          params: paramsOf({ model, rankIndex: premierRang, reasoning: reasoningAtRank(configuration, premierRang), timeoutMs: op.timeoutMs, soStatus: null, requests: [] }),
+          responseRaw: null, diagnostic: { ...diag, contractRefusal: refus.detail }, attemptDurationMs: 0, executionElapsedMs: Date.now() - startedAt,
+        }),
+        captureTransportOf: attachmentTransport,
       }).catch(() => null);
       await recordCallDiagnostic({
         traceId, usageEventId: usageId ?? null, callIndex: 0, accountId: req.accountId, useCaseCode: op.useCaseCode,
@@ -533,6 +606,7 @@ export class AiGateway {
         const sendSchema = providerSchema?.schema && !schemaRejectedRecently(model, contract.schemaHash) ? providerSchema.schema : null;
         const attemptPrompt = `${withContract(!sendSchema)}${notice}`;
         const attemptStart = Date.now();
+        const attemptFrom = sent.length;
         // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
         // les jetons ont été consommés et facturés — COST-005 exige de garder
         // le coût réel de l'appel échoué.
@@ -560,7 +634,7 @@ export class AiGateway {
         };
 
         try {
-          out = await callWithSchemaFallback(provider, {
+          out = await callWithSchemaFallback(capturing, {
             model, prompt: attemptPrompt, attachments: req.attachments ?? [], timeoutMs, maxOutputTokens, reasoning, operationCode,
             ...(traceConfig.task ? { task: traceConfig.task } : {}),
             ...(jsonResponse ? { jsonResponse: true } : {}),
@@ -599,18 +673,29 @@ export class AiGateway {
             provider: providerMetaOf(provider.name, model, blockedMeta, tokens, Date.now() - attemptStart, maxOutputTokens, soStatus, c),
             schema: schemaRefOf(soStatus), repairs: [], informedOfPreviousError: informed,
           });
+          const requests = withTrailKinds(sent.slice(attemptFrom), trail);
+          const attemptMs = Date.now() - attemptStart;
+          const elapsedMs = Date.now() - startedAt;
           const usageId = await recordCallTrace({
             ...baseTrace,
             // COST-005 : aucune réponse → rien de consommé (blocage : jetons réels).
             inputTokens: tokens.input, outputTokens: tokens.output,
             costMicros: tokens.input || tokens.output ? calcCostMicros(model, tokens.input, tokens.output, op.provider) : 0,
-            durationMs: Date.now() - startedAt, status: 'error',
+            // Lot 82C (LOG-05, R29) : durée PROPRE de la tentative (corrige le
+            // cumul depuis le début de l'exécution) ; temps total à part.
+            durationMs: attemptMs, executionElapsedMs: elapsedMs, status: 'error',
             errorCode: lastFailureCode, errorMessage: sansSortieBrute(op.useCaseCode) ? stripRawExcerpt(message) : message,
             billable: Boolean(tokens.input || tokens.output) && op.billable && !req.shadow,
             failure: failureSummary(diag), providerMeta: compactProviderMeta(diag.provider), callKind: 'analysis',
             providerRequest, providerAttempts: trail,
             runtimeContract: contractTraceOf(soStatus),
             ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
+            capture: captureOf({
+              callKind: 'analysis', sent: requests, attachments: req.attachments ?? [], callIndex,
+              params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests }), informedOfPreviousError: informed },
+              responseRaw: null, diagnostic: diag, attemptDurationMs: attemptMs, executionElapsedMs: elapsedMs,
+            }),
+            captureTransportOf: attachmentTransport,
           }).catch(() => null);
           await recordCallDiagnostic({
             traceId, usageEventId: usageId ?? null, callIndex: callIndex++, accountId: req.accountId, useCaseCode: op.useCaseCode,
@@ -628,6 +713,8 @@ export class AiGateway {
 
         // ── Sortie reçue : résolution progressive ─────────────────────────
         const analysisDuration = Date.now() - attemptStart;
+        const analysisRequests = withTrailKinds(sent.slice(attemptFrom), trail);
+        const repairFrom = sent.length;
         const meta = providerMetaOf(provider.name, model, out.meta, { input: out.inputTokens, output: out.outputTokens }, analysisDuration, maxOutputTokens, soStatus, null);
         // Lot 34D : validation avec le contrat runtime FIGÉ (celui de la génération).
         const resolveBase = {
@@ -642,7 +729,7 @@ export class AiGateway {
         let repairRun: RepairRun | null = null;
         if (!first.ok && repairAllowed && first.repairable && !first.taskMismatch) {
           repairRun = await this.repairPass({
-            provider, model, operationCode, op, resolveBase, first, reasoning, maxOutputTokens, timeoutMs,
+            provider: capturing, model, operationCode, op, resolveBase, first, reasoning, maxOutputTokens, timeoutMs,
             providerSchema: providerSchema?.schema && !schemaRejectedRecently(model, contract.schemaHash) ? providerSchema.schema : null,
             discriminant, traceConfig, contract, schemaRefOf,
           });
@@ -656,6 +743,7 @@ export class AiGateway {
 
         const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider);
         const succeeded = final.ok;
+        const elapsedAtTrace = Date.now() - startedAt;
         const diag = buildDiagnostic({
           outcome: succeeded ? (final.repairs.length > 0 || repairRun?.resolution?.ok ? 'REPAIRED' : 'SUCCEEDED') : 'FAILED',
           callKind: 'analysis',
@@ -692,7 +780,9 @@ export class AiGateway {
           // COST-005 / COST-008 : coût réel, y compris d'un appel rejeté ;
           // sans tarif, NULL (« non calculable »), jamais 0.
           costMicros,
-          durationMs: Date.now() - startedAt,
+          // Lot 82C (LOG-05, R29) : durée PROPRE de l'appel d'analyse (sans la
+          // passe de réparation, tracée à part) ; temps total de l'exécution à part.
+          durationMs: analysisDuration, executionElapsedMs: elapsedAtTrace,
           status: succeeded ? 'success' : 'error',
           ...(succeeded ? {} : {
             errorCode: 'INVALID_OUTPUT',
@@ -712,6 +802,15 @@ export class AiGateway {
           runtimeContract: contractTraceOf(soStatus, first.ok ? null : first.contractMismatch ?? null),
           transformations: transformationsOf(final.ok ? final.repairs : first.repairs, repairRun),
           ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
+          capture: captureOf({
+            callKind: 'analysis', sent: analysisRequests, attachments: req.attachments ?? [], callIndex,
+            params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests: analysisRequests }), informedOfPreviousError: informed },
+            responseRaw: out.rawText,
+            // LOG-03 : sortie d'origine (`response_raw`), parsing du premier passage, sortie acceptée après normalisation / réparation.
+            parsed: { firstPass: first.parsed ?? null, accepted: final.ok ? final.data : null },
+            diagnostic: diag, attemptDurationMs: analysisDuration, executionElapsedMs: elapsedAtTrace,
+          }),
+          captureTransportOf: attachmentTransport,
         }).catch(() => null);
         const thisIndex = callIndex++;
         if (diag.outcome !== 'SUCCEEDED') {
@@ -731,7 +830,7 @@ export class AiGateway {
             inputTokens: repairRun.inputTokens, outputTokens: repairRun.outputTokens,
             costMicros: repairRun.inputTokens || repairRun.outputTokens
               ? calcCostMicros(model, repairRun.inputTokens, repairRun.outputTokens, op.provider) : 0,
-            durationMs: repairRun.durationMs,
+            durationMs: repairRun.durationMs, executionElapsedMs: Date.now() - startedAt,
             status: repairRun.diagnostic.outcome === 'FAILED' ? 'error' : 'success',
             ...(repairRun.diagnostic.outcome === 'FAILED'
               ? { errorCode: repairRun.errorCode ?? 'INVALID_OUTPUT', errorMessage: redactMessage(repairRun.errorMessage ?? 'Réparation insuffisante', keepRawOutput) }
@@ -742,6 +841,13 @@ export class AiGateway {
             runtimeContract: contractTraceOf(repairRun.diagnostic.provider.structuredOutputStatus ?? null),
             transformations: transformationsOf(repairRun.resolution?.repairs ?? [], repairRun),
             ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
+            capture: captureOf({
+              callKind: 'repair', sent: sent.slice(repairFrom).map((r) => ({ ...r, kind: 'repair' })), attachments: [], callIndex,
+              params: paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs: Math.min(timeoutMs, 60_000), soStatus: repairRun.diagnostic.provider.structuredOutputStatus ?? null, requests: sent.slice(repairFrom) }),
+              responseRaw: repairRun.rawText,
+              parsed: { firstPass: null, accepted: repairRun.resolution?.ok ? repairRun.resolution.data : null },
+              diagnostic: repairRun.diagnostic, attemptDurationMs: repairRun.durationMs, executionElapsedMs: Date.now() - startedAt,
+            }),
           }).catch(() => null);
           await recordCallDiagnostic({
             traceId, usageEventId: repairUsage ?? null, callIndex: callIndex++, accountId: req.accountId, useCaseCode: op.useCaseCode,
@@ -1076,6 +1182,7 @@ function providerMetaOf(
     providerErrorCode: c?.providerErrorCode ?? null,
     providerErrorMessage: c?.providerErrorMessage ?? null,
     httpStatus: c?.httpStatus ?? null,
+    ...(c?.rejectedParameter ? { rejectedParameter: c.rejectedParameter } : {}),
   };
   m.maxTokensReached = String(m.finishReason ?? '').toUpperCase() === 'MAX_TOKENS';
   return m;
@@ -1093,7 +1200,7 @@ export function gatewayCodeOf(e: unknown, c: Pick<ClassifiedFailure, 'family' | 
   // Lot 61 : erreur locale déterministe — jamais une indisponibilité fournisseur.
   if (isDeterministicLocalError(e)) return 'REQUEST_BUILD_FAILED';
   const cat = providerFailureCategory(c.family, c.subtype);
-  return cat === 'REQUEST_REJECTED' || cat === 'STRUCTURED_OUTPUT_REJECTED' ? 'PROVIDER_REQUEST_REJECTED' : 'PROVIDER_UNAVAILABLE';
+  return cat === 'REQUEST_REJECTED' || cat === 'STRUCTURED_OUTPUT_REJECTED' || cat === 'PARAMETER_REJECTED' ? 'PROVIDER_REQUEST_REJECTED' : 'PROVIDER_UNAVAILABLE';
 }
 
 /** Lot 52B — requête fournisseur d'un appel, sans contenu (BO › Exécutions IA). */
@@ -1120,8 +1227,30 @@ function providerRequestOf(p: {
 }
 
 /** Résumé d'échec figé dans `ai_usage_event.metadata` (listes, filtres). */
-function failureSummary(d: CallDiagnostic): { family: string; subtype: string | null; stage: string | null; signature: string | null } | undefined {
-  return d.family ? { family: d.family, subtype: d.subtype, stage: d.stage, signature: d.signature } : undefined;
+function failureSummary(d: CallDiagnostic): { family: string; subtype: string | null; stage: string | null; signature: string | null; parameter?: string } | undefined {
+  return d.family ? {
+    family: d.family, subtype: d.subtype, stage: d.stage, signature: d.signature,
+    // Lot 82C (LOG-04) : paramètre refusé, lisible dans les listes et filtres.
+    ...(d.provider?.rejectedParameter ? { parameter: d.provider.rejectedParameter } : {}),
+  } : undefined;
+}
+
+/** Lot 82C — masques appliqués aux variables d'un appel (sans conserver les valeurs d'origine). Pur. */
+export function masksOfVariables(vars: Record<string, unknown>): Record<string, number> {
+  const out: Record<string, number> = {};
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') {
+      for (const [k, n] of Object.entries(redactWithReport(v).masks)) out[k] = (out[k] ?? 0) + n;
+    } else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') Object.values(v as Record<string, unknown>).forEach(walk);
+  };
+  walk(vars);
+  return out;
+}
+
+/** Nature des essais internes d'un appel (structuré, puis sans schéma), dans l'ordre des requêtes. Pur. */
+function withTrailKinds(requests: CapturedRequest[], trail: ProviderAttemptTrace[]): CapturedRequest[] {
+  return requests.map((r, k) => (trail[k] ? { ...r, kind: trail[k].kind } : r));
 }
 
 /** Métadonnées fournisseur figées dans `ai_usage_event.metadata` (sans contenu). */
@@ -1181,4 +1310,24 @@ function transformationsOf(repairs: OutputRepairStep[], repairRun: RepairRun | n
     pruned: repairs.filter((r) => r.stage === 'field_pruning').slice(0, 50).map(ligne),
   };
   return t.normalizations.length || t.compatMappings.length || t.repair || t.pruned.length ? t : undefined;
+}
+
+/** Délai de prise d'effet d'une perte d'éligibilité pour les appels modèle (lot 82A). */
+const ELIGIBILITY_CACHE_MS = 5_000;
+
+/**
+ * Lot 82A (C-Q10) : refuse un appel modèle pour un compte non éligible
+ * (`ACCOUNT_INELIGIBLE`, non récupérable, motif dans `reason`). Lecture
+ * impossible : l'erreur remonte (aucun appel à l'aveugle) — dans la file,
+ * reprise technique normale.
+ */
+async function assertAccountEligibleForAi(accountId: number | null | undefined, useCaseCode: string, operationCode: string): Promise<void> {
+  if (!accountId || accountId <= 0 || isTechnicalUseCase(useCaseCode)) return;
+  const e = await checkAccountProcessingEligibility(accountId, { maxAgeMs: ELIGIBILITY_CACHE_MS });
+  if (e.eligible) return;
+  const err = new AiGatewayError('ACCOUNT_INELIGIBLE', operationCode,
+    `Appel IA refusé : compte ${accountId} non éligible aux traitements (${INELIGIBILITY_LABELS[e.reason ?? 'READ_ONLY']}) — décision PO C-Q10.`,
+    { recoverable: false });
+  Object.defineProperty(err, 'reason', { value: e.reason ?? 'READ_ONLY', enumerable: true });
+  throw err;
 }

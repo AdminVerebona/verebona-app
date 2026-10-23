@@ -14,6 +14,13 @@
  *
  * La sortie du modèle n'est JAMAIS dans le détail : « Afficher la sortie
  * modèle » la demande à la route dédiée (accès journalisé).
+ *
+ * Lot 82C (CDC Pilotage IA V2 P1, exposition minimale en attendant les
+ * écrans « Exécutions & logs » de P3) : le même bouton, proposé pour TOUTE
+ * exécution, joint les échanges capturés à la source de chaque appel —
+ * statut de capture (capturé, masqué, non capturé, non conservé
+ * historiquement), prompt final, contexte, paramètres envoyés, réponse
+ * brute, sortie parsée, durées. Même route, même droit, même journal.
  */
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
@@ -64,6 +71,27 @@ export interface DiagnosisView {
 
 interface ModelOutput { diagnosticId: number; model: string | null; callIndex: number; raw: string | null; extracted: string | null; parsed: unknown }
 
+/** Échange capturé à la source (lot 82C) — vue `CallCaptureView` du serveur. */
+interface CapturedCall {
+  captureId: number | null; usageEventId: number; callIndex: number | null; callKind: string | null; origin: string | null;
+  model: string | null; modelRank: string | null; captureStatus: string; captureReason: string | null;
+  promptStatus: string; responseStatus: string; prompt: string | null; promptChars: number | null;
+  variables: unknown; messages: unknown; attachments: unknown; requestParams: unknown; providerSteps: unknown;
+  response: string | null; responseChars: number | null; parsed: unknown; diagnostic: unknown; masking: unknown;
+  attemptDurationMs: number | null; executionElapsedMs: number | null;
+}
+
+/** Mentions LOG-08 : absence de réponse ≠ non capturé ≠ masqué ≠ non conservé historiquement. */
+const CONTENT_LABEL: Record<string, string> = {
+  CAPTURED: 'capturé', MASKED: 'capturé, masqué (IBAN, cartes, clés, NIR)', NOT_SENT: 'aucun envoi au modèle',
+  NO_RESPONSE: 'aucune réponse du modèle', NOT_CAPTURED: 'non capturé',
+  NOT_RETAINED_HISTORICALLY: 'non conservé historiquement (appel antérieur à la capture)',
+};
+const CAPTURE_LABEL: Record<string, string> = {
+  CAPTURED: 'capturé', PARTIAL: 'capture partielle', NOT_CAPTURED: 'non capturé', PENDING: 'capture en cours d’écriture',
+  NOT_RETAINED_HISTORICALLY: 'non conservé historiquement',
+};
+
 const STATE: Record<ControlState, { mark: string; label: string; tone: string }> = {
   passed: { mark: '✓', label: 'valide', tone: 'text-[color:var(--text-success)]' },
   repaired: { mark: '✓', label: 'corrigé automatiquement', tone: 'text-[color:var(--text-warning-soft)]' },
@@ -88,7 +116,7 @@ const fmtInt = (n: number | null | undefined) => (n === null || n === undefined 
 function causeLabel(d: CallDiagnostic | null): string | null {
   if (!d?.family) return null;
   const fam = FAMILY_LABELS[d.family] ?? d.family;
-  return d.family === 'INVALID_OUTPUT' && d.subtype ? `${fam} — ${SUBTYPE_LABELS[d.subtype] ?? d.subtype}` : fam;
+  return (d.family === 'INVALID_OUTPUT' || d.subtype === 'PARAMETER_REJECTED') && d.subtype ? `${fam} — ${SUBTYPE_LABELS[d.subtype] ?? d.subtype}` : fam;
 }
 
 const ATTEMPT_KIND: Record<ProviderAttemptTrace['kind'], string> = {
@@ -238,6 +266,7 @@ function CallCard({ r }: { r: CallReportView }) {
                 ['Stop reason', p?.stopReason], ['Raison de sécurité', p?.safetyReason], ['Structured output', p?.structuredOutputStatus],
                 ['Latence', p?.latencyMs != null ? fmtDuration(p.latencyMs) : null], ['Code erreur fournisseur', p?.providerErrorCode],
                 ['Message fournisseur', p?.providerErrorMessage], ['HTTP', p?.httpStatus],
+                ['Paramètre refusé', p?.rejectedParameter ?? null],
                 ['Schéma de sortie', d.schema ? `${d.schema.version} · ${d.schema.hash}` : null],
                 ['Signature d’échec', d.signature],
                 ['Repli informé de l’erreur précédente', d.informedOfPreviousError ? 'oui' : null],
@@ -264,11 +293,13 @@ function CallCard({ r }: { r: CallReportView }) {
 function ModelOutputs({ callId }: { callId: number }) {
   const [state, setState] = useState<'idle' | 'loading' | 'done'>('idle');
   const [outputs, setOutputs] = useState<ModelOutput[]>([]);
+  const [captures, setCaptures] = useState<CapturedCall[]>([]);
   const charger = async () => {
     setState('loading');
     try {
-      const r = await apiClient.post<{ outputs: ModelOutput[] }>(`/api/admin/ai/executions/${callId}/model-output`, {});
+      const r = await apiClient.post<{ outputs: ModelOutput[]; captures?: CapturedCall[] }>(`/api/admin/ai/executions/${callId}/model-output`, {});
       setOutputs(r.outputs ?? []);
+      setCaptures(r.captures ?? []);
       setState('done');
     } catch (e) {
       toast.error((e as Error).message || 'Sortie modèle indisponible');
@@ -278,11 +309,67 @@ function ModelOutputs({ callId }: { callId: number }) {
   if (state !== 'done') {
     return (
       <Button size="sm" variant="outline" onClick={charger} disabled={state === 'loading'} data-testid="execution-model-output-button">
-        {state === 'loading' && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />}Afficher la sortie modèle
+        {state === 'loading' && <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" />}Afficher les échanges et la sortie modèle
       </Button>
     );
   }
-  if (outputs.length === 0) return <p className="text-xs text-[color:var(--text-muted)]">Aucune sortie conservée (appels réussis tels quels, assistant, ou rétention dépassée).</p>;
+  return (
+    <div className="space-y-3 w-full min-w-0">
+      <CapturedExchanges captures={captures} />
+      {outputs.length === 0
+        ? <p className="text-xs text-[color:var(--text-muted)]">Aucune sortie de diagnostic conservée (appels réussis tels quels ou assistant) : voir les échanges capturés ci-dessus.</p>
+        : <DiagnosticOutputs outputs={outputs} />}
+    </div>
+  );
+}
+
+/** Lot 82C — échanges capturés à la source, un bloc par appel (repliable, desktop et mobile). */
+function CapturedExchanges({ captures }: { captures: CapturedCall[] }) {
+  if (captures.length === 0) return <p className="text-xs text-[color:var(--text-muted)]" data-testid="execution-captures-empty">Aucun appel tracé pour cette exécution.</p>;
+  const bloc = (label: string, v: unknown, key: string) => (v === null || v === undefined || (Array.isArray(v) && v.length === 0) ? null : (
+    <details key={key} className="min-w-0">
+      <summary className="cursor-pointer text-[color:var(--text-muted)] flex items-center gap-1">
+        {label}<CopyBlockButton value={v} label={label.toLowerCase()} />
+      </summary>
+      <pre className="whitespace-pre-wrap break-all max-h-64 overflow-y-auto text-[color:var(--text-secondary)]">{typeof v === 'string' ? v : JSON.stringify(v, null, 2)}</pre>
+    </details>
+  ));
+  return (
+    <div className="space-y-2" data-testid="execution-captures">
+      <p className="text-xs text-[color:var(--text-muted)]">Échanges capturés à la source — données issues des documents et conversations des utilisateurs, consultation journalisée.</p>
+      {captures.map((c, i) => (
+        <div key={c.captureId ?? `e${c.usageEventId}-${i}`} className="rounded-lg border border-[color:var(--border-subtle)] p-2 text-xs space-y-1 min-w-0" data-testid="execution-capture">
+          <p className="font-medium text-[color:var(--text-primary)] break-words">
+            Appel {c.usageEventId}{c.callKind ? ` · ${c.callKind}` : ''} — {c.model ?? 'modèle inconnu'}{c.modelRank ? ` (${c.modelRank})` : ''}
+          </p>
+          <p className="text-[color:var(--text-secondary)] break-words" data-testid="execution-capture-status">
+            Capture : {CAPTURE_LABEL[c.captureStatus] ?? c.captureStatus}{c.captureReason ? ` — ${c.captureReason}` : ''}
+            {' · '}Prompt : {CONTENT_LABEL[c.promptStatus] ?? c.promptStatus}{c.promptChars != null ? ` (${c.promptChars} car.)` : ''}
+            {' · '}Réponse : {CONTENT_LABEL[c.responseStatus] ?? c.responseStatus}{c.responseChars != null ? ` (${c.responseChars} car.)` : ''}
+          </p>
+          {(c.attemptDurationMs != null || c.executionElapsedMs != null) && (
+            <p className="text-[color:var(--text-muted)]">
+              Durée de l’appel : {c.attemptDurationMs ?? '—'} ms · temps écoulé de l’exécution : {c.executionElapsedMs ?? '—'} ms
+            </p>
+          )}
+          {bloc('Paramètres envoyés', c.requestParams, 'p')}
+          {bloc('Prompt final transmis', c.prompt, 'pr')}
+          {bloc('Variables résolues', c.variables, 'v')}
+          {bloc('Ordre des messages', c.messages, 'm')}
+          {bloc('Pièces jointes (références)', c.attachments, 'a')}
+          {bloc('Essais internes du même modèle', c.providerSteps, 's')}
+          {bloc('Réponse brute', c.response, 'r')}
+          {bloc('Sortie parsée', c.parsed, 'o')}
+          {bloc('Diagnostic', c.diagnostic, 'd')}
+          {bloc('Masquage', c.masking, 'k')}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Sorties conservées par les diagnostics (lot 33D). */
+function DiagnosticOutputs({ outputs }: { outputs: ModelOutput[] }) {
   return (
     <div className="space-y-2" data-testid="execution-model-outputs">
       <p className="text-xs text-[color:var(--text-muted)]">Données issues des documents de l’utilisateur — consultation journalisée.</p>
@@ -348,9 +435,10 @@ export function ExecutionDiagnosisPanel({ callId, diagnosis }: { callId: number;
       )}
 
       <section className="space-y-2">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h3 className="vb-app-subsection">Appels de la chaîne de modèles</h3>
-          {diagnosis.calls.some((c) => c.hasModelOutput) && <ModelOutputs callId={callId} />}
+          {/* Lot 82C : proposé pour toute exécution (échanges capturés à la source). */}
+          <ModelOutputs callId={callId} />
         </div>
         {diagnosis.calls.map((r) => <CallCard key={r.callId} r={r} />)}
       </section>

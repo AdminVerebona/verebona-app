@@ -170,6 +170,8 @@ interface T2Source {
 interface ArchiveItem {
   id: number; sourceTable: string; periodDay: string; part: number; s3Key: string;
   rowCount: number; bytes: number; sha256: string; t2ContentExcluded: boolean; createdAt: string;
+  /** Lot 82C : lignes restées en base (copie de sauvegarde). */
+  sourceRowsKept?: boolean;
 }
 interface Archives {
   items: ArchiveItem[];
@@ -766,8 +768,10 @@ function ArchivesPanel({ archives }: { archives: Archives | null }) {
   return (
     <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3">
       <p className="text-sm text-[color:var(--text-secondary)]">
-        Les appels et étapes de plus de 90 jours sont archivés sur S3 puis retirés de la recherche
-        (restauration technique hors parcours). Le contenu conversationnel T2 n&apos;est jamais archivé.
+        Les appels et étapes de plus de 88 jours sont copiés sur S3 (sauvegarde) et restent consultables
+        dans les autres onglets : plus aucune suppression en base par ancienneté (décision du 22/10). Les
+        archives antérieures (« En base : non ») portent des lignes retirées de la base (restauration
+        technique hors parcours). Le contenu conversationnel T2 n&apos;est jamais copié dans l&apos;archive.
       </p>
       <p className="text-xs text-[color:var(--text-muted)]">
         {archives.totals.archives} archive(s) · {archives.totals.rows.toLocaleString('fr-FR')} ligne(s) · {mo(archives.totals.bytes)}
@@ -781,7 +785,7 @@ function ArchivesPanel({ archives }: { archives: Archives | null }) {
             <thead>
               <tr className="text-left text-[color:var(--text-muted)]">
                 <th className="py-1 pr-3">Jour</th><th className="py-1 pr-3">Table</th><th className="py-1 pr-3">Lignes</th>
-                <th className="py-1 pr-3">Taille</th><th className="py-1 pr-3">Objet S3</th><th className="py-1 pr-3">SHA-256</th>
+                <th className="py-1 pr-3">Taille</th><th className="py-1 pr-3">En base</th><th className="py-1 pr-3">Objet S3</th><th className="py-1 pr-3">SHA-256</th>
               </tr>
             </thead>
             <tbody>
@@ -791,6 +795,7 @@ function ArchivesPanel({ archives }: { archives: Archives | null }) {
                   <td className="py-1 pr-3">{a.sourceTable}</td>
                   <td className="py-1 pr-3">{a.rowCount}</td>
                   <td className="py-1 pr-3">{mo(a.bytes)}</td>
+                  <td className="py-1 pr-3" data-testid="archive-rows-kept">{a.sourceRowsKept ? 'oui' : 'non'}</td>
                   <td className="py-1 pr-3 break-all">{a.s3Key}</td>
                   <td className="py-1 pr-3 font-mono">{a.sha256.slice(0, 12)}…</td>
                 </tr>

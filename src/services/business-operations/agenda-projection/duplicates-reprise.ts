@@ -26,8 +26,13 @@
  * Rejoué, il ne fait rien de plus (la projection est idempotente ; une
  * consolidation restaurée n'est jamais rejouée). Exécutions tracées
  * (`agenda_intervention_reprise_runs`) : compteurs, curseur, rapport borné.
+ *
+ * Lot 82B : la détection (`detectOperations`) et la projection sont aussi
+ * celles du contrôle de cohérence COH-AGENDA-OCCURRENCES (quotidien, ciblé) ;
+ * l'ancienne exécution AUTO au démarrage est retirée (une seule chaîne).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import { pgClient } from '@/db';
@@ -115,7 +120,10 @@ export async function detectAccounts(sql: Sql, cursor: number, limit: number, ac
       SELECT i.account_id FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id
        WHERE (o.merged_into_operation_id IS NOT NULL OR o.invalidated_at IS NOT NULL)
          AND i.account_id > $1 AND ($3::int IS NULL OR i.account_id = $3::int)
-    ) x ORDER BY account_id LIMIT $2`, [cursor, limit, accountId] as never[]);
+    ) x
+    -- Lot 82A (C-Q10, §3.3) : rattrapage des seuls comptes éligibles.
+    WHERE ${processingEligibleSql('x.account_id')}
+    ORDER BY account_id LIMIT $2`, [cursor, limit, accountId] as never[]);
   return r.map((x) => Number(x.account_id));
 }
 
@@ -288,21 +296,6 @@ export async function restoreAgendaDuplicatesReprise(sql: Sql, runId: string, op
   return { restoreRunId, ...r };
 }
 
-// ── Tâche de démarrage (ponctuelle) ─────────────────────────────────────────
-
-/**
- * Rattrapage AUTOMATIQUE ponctuel (tâche de démarrage) : une seule exécution
- * AUTO de la plateforme, reprise de son curseur après un redémarrage, puis
- * plus jamais (une exécution AUTO terminée = rien à faire). Bornée par appel.
- */
-export async function runAutomaticAgendaDuplicatesReprise(p: { deadline: number; maxAccounts?: number; sql?: Sql }): Promise<{ note: string; again: boolean }> {
-  const sql = p.sql ?? pgClient;
-  if (!(await consolidationJournalReady(sql))) return { note: 'migration 0591 absente : rien à faire', again: false };
-  const [dernier] = await sql.unsafe<Row[]>(
-    `SELECT id::text AS id, status FROM agenda_intervention_reprise_runs WHERE origin = 'AUTO' AND mode = 'APPLY' ORDER BY started_at DESC LIMIT 1`);
-  if (dernier?.status === 'succeeded') return { note: `déjà exécuté (${String(dernier.id)}) : rien à faire`, again: false };
-  const r = await runAgendaDuplicatesReprise({
-    mode: 'APPLY', origin: 'AUTO', resumeRunId: dernier ? String(dernier.id) : null, deadline: p.deadline, maxAccounts: p.maxAccounts, sql,
-  });
-  return { note: JSON.stringify({ runId: r.runId, status: r.status, cursor: r.cursor, ...r.counters }), again: r.more };
-}
+// Lot 82B (C-Q9) : la tâche de démarrage ponctuelle (`runAutomaticAgendaDuplicatesReprise`) est RETIRÉE —
+// la détection et la convergence sont reprises CHAQUE JOUR par le contrôle de cohérence COH-AGENDA-OCCURRENCES
+// (même détection, même projection, même journal 0591). Restent ici : le rattrapage BO (simuler, appliquer, restaurer).

@@ -59,6 +59,8 @@ import { loadClaimRecords } from '../claims/read';
 import { emptyCardNeeds, type OperationCardNeeds } from './card-needs';
 import { Changes, reconsolidateOperation } from './consolidator';
 import { excludeAsset, releaseExclusion } from './asset-exclusions';
+import { designatePrincipal, detachAgendaItem, groupingContext, runnerContext } from '../grouping/service';
+import { drizzleRunner } from '../grouping/runner';
 
 type Row = Record<string, unknown>;
 const rows = async <T = Row>(tx: DbTx, q: SQL): Promise<T[]> => (await tx.execute(q)) as unknown as T[];
@@ -192,9 +194,9 @@ export async function linkClaimEvent(tx: DbTx, accountId: number, claimId: numbe
     if (a.op !== null && Number(a.op) !== claimId && a.op_active) {
       throw new ClaimFormError('EVENT_ALREADY_LINKED', 'Cet événement est déjà rattaché à un autre sinistre.', { path: 'claim.claimEventKey' });
     }
-    if (a.op === null || Number(a.op) !== claimId) {
-      await tx.execute(sql`UPDATE agenda_items SET business_operation_id = ${claimId}, updated_at = now() WHERE id = ${agendaId}`);
-    }
+    // Lot 82D (CDC v5 §11.2) : l'événement choisi par l'utilisateur est le principal du sinistre
+    // (service unique de regroupement ; rôle mémorisé, propagation des documents).
+    await designatePrincipal(runnerContext(drizzleRunner(tx), accountId), { operationId: claimId, itemId: agendaId, origin: 'USER', reasonCode: 'CLAIM_FORM_EVENT' });
   }
   if (eventId !== null) {
     const [e] = await rows(tx, sql`
@@ -202,11 +204,14 @@ export async function linkClaimEvent(tx: DbTx, accountId: number, claimId: numbe
          AND (asset_id = ANY(${intArray(assetIds)}::int[]) OR linked_asset_id = ANY(${intArray(assetIds)}::int[]))`);
     if (!e) throw new ClaimFormError('EVENT_NOT_FOUND', 'Événement introuvable pour ce bien.', { path: 'claim.claimEventKey' });
   }
-  // Liens utilisateur vers un autre élément d'agenda : retirés (une seule ancre).
-  await tx.execute(sql`
-    UPDATE agenda_items SET business_operation_id = NULL, updated_at = now()
-     WHERE business_operation_id = ${claimId} AND account_id = ${accountId} AND projection_origin IS NULL
-       AND (${agendaId}::int IS NULL OR id <> ${agendaId}::int)`);
+  // Liens utilisateur vers un autre élément d'agenda : retirés (une seule ancre du formulaire,
+  // lot 44 — formulaire retiré au lot O-8) ; par le service de regroupement.
+  const autres = await rows<{ id: number }>(tx, sql`
+    SELECT id FROM agenda_items WHERE business_operation_id = ${claimId} AND account_id = ${accountId} AND projection_origin IS NULL
+       AND (${agendaId}::int IS NULL OR id <> ${agendaId}::int) ORDER BY id`);
+  for (const x of autres) {
+    await detachAgendaItem(runnerContext(drizzleRunner(tx), accountId), { itemId: Number(x.id), operationId: claimId, origin: 'SYSTEM', reasonCode: 'CLAIM_FORM_EVENT_REPLACED' });
+  }
   return { historyEventId: eventId };
 }
 
@@ -454,9 +459,11 @@ export async function removeClaimInSession(session: WriteSession, accountId: num
   const srcs = await rows<{ id: string }>(tx, sql`
     SELECT id FROM business_operation_sources WHERE operation_id = ${p.claimId} AND active AND source_kind IN ('CLAIM_FORM', 'MIGRATION')`);
   for (const s of srcs) changes.track(await repo.deactivateSource(Number(s.id), 'CLAIM_FORM_REMOVED'));
-  await tx.execute(sql`
-    UPDATE agenda_items SET business_operation_id = NULL, updated_at = now()
-     WHERE business_operation_id = ${p.claimId} AND account_id = ${accountId} AND projection_origin IS NULL`);
+  const lies = await rows<{ id: number }>(tx, sql`
+    SELECT id FROM agenda_items WHERE business_operation_id = ${p.claimId} AND account_id = ${accountId} AND projection_origin IS NULL ORDER BY id`);
+  for (const x of lies) {
+    await detachAgendaItem(groupingContext(session, accountId), { itemId: Number(x.id), operationId: p.claimId, origin: 'SYSTEM', reasonCode: 'CLAIM_FORM_REMOVED' });
+  }
   const invalidated = await repo.invalidateIfUnsupported(p.claimId, 'CLAIM_FORM_REMOVED_NO_SOURCE');
   changes.track(invalidated);
   if (!invalidated) await reconsolidateOperation(repo, tx, p.claimId, todayUtc(), changes, p.cards ?? emptyCardNeeds());

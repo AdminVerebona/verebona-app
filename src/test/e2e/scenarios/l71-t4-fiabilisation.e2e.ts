@@ -27,9 +27,6 @@ vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () 
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (orig) => ({
-  ...(await orig<object>()), emitAgendaItemCreated: async () => {},
-}));
 // T4-FIX-05 : écriture simulée en échec pour UN titre (toutes les autres passent).
 vi.mock('@/services/agenda/agenda-write-primitive', async (orig) => {
   const m = await orig<typeof import('@/services/agenda/agenda-write-primitive')>();

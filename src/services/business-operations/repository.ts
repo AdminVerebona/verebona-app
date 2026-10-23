@@ -28,6 +28,8 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { BusinessOperationIntegrityError } from './errors';
+import { reassignGroupingOnMerge } from './grouping/merge';
+import { drizzleRunner } from './grouping/runner';
 import type { BusinessOperationEventBuffer } from './events';
 import type { DbTx } from './lock';
 import {
@@ -711,10 +713,15 @@ export class BusinessOperationRepository {
       UPDATE business_operation_equipment_links SET active = false, updated_at = now()
        WHERE operation_id = ${id} AND account_id = ${this.accountId} AND asset_id = ${assetId} AND active
       RETURNING equipment_id`);
-    if (links.length || equip.length) {
+    // Lot 82D (0655) : les Pièces du bien quittent l'Opération avec lui.
+    const pieces = await rows<{ substructure_id: number }>(this.tx, sql`
+      UPDATE business_operation_room_links SET active = false, updated_at = now()
+       WHERE operation_id = ${id} AND account_id = ${this.accountId} AND asset_id = ${assetId} AND active
+      RETURNING substructure_id`);
+    if (links.length || equip.length || pieces.length) {
       changed = true;
       await this.history(id, 'TARGET_CHANGED', reasonCode,
-        { asset_id: assetId, active: true, equipments: equip.map((e) => e.equipment_id) },
+        { asset_id: assetId, active: true, equipments: equip.map((e) => e.equipment_id), ...(pieces.length ? { rooms: pieces.map((p) => p.substructure_id) } : {}) },
         { asset_id: assetId, active: false });
       this.emit('BUSINESS_OPERATION_TARGET_CHANGED', id, reasonCode);
     }
@@ -1279,7 +1286,9 @@ export class BusinessOperationRepository {
    *     additionnée ; sinon déplacée ;
    *   · liens biens / équipements, références (relations identiques
    *     dédoublonnées), détails par type absents de la canonique, listes du
-   *     Sinistre, suppressions de projection, échéances Agenda liées ;
+   *     Sinistre, suppressions de projection ; éléments d'agenda, principal
+   *     unique, appartenance USER des documents et Pièces par le service de
+   *     regroupement (`grouping/merge.ts`, lot 82D : aucune absorption) ;
    *   · enfants (re-parentés, C8.1 revérifié) et parent si la canonique n'en
    *     a pas ; références croisées (contrat d'assurance d'un Sinistre,
    *     sous-Opération d'une action Sinistre) ;
@@ -1399,7 +1408,9 @@ export class BusinessOperationRepository {
       INSERT INTO business_operation_projection_suppressions (account_id, operation_id, projection_kind, projection_key, user_id, created_at)
       SELECT account_id, ${C}, projection_kind, projection_key, user_id, created_at FROM business_operation_projection_suppressions
        WHERE operation_id = ${A} ON CONFLICT DO NOTHING`);
-    await this.tx.execute(sql`UPDATE agenda_items SET business_operation_id = ${C} WHERE business_operation_id = ${A} AND account_id = ${acct}`);
+    // Lot 82D (CDC v5 O-1) : éléments d'agenda, principal unique, appartenance USER
+    // des documents et Pièces par le service unique de regroupement (aucune absorption).
+    await reassignGroupingOnMerge(drizzleRunner(this.tx), acct, A, C);
     await this.tx.execute(sql`UPDATE document_operation_candidates SET t3_operation_id = ${C} WHERE t3_operation_id = ${A} AND account_id = ${acct}`);
     await step('details');
 

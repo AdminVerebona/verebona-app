@@ -22,12 +22,12 @@ vi.mock('@/lib/session-service', () => ({
     handleSessionError: (e: unknown) => { throw e; },
   },
 }));
+// Lot 82B : la notification de création d'agenda est l'événement métier AGENDA_ITEM_CREATED (l'ancien relais
+// `coherence/impact-propagation` est retiré) — capturé ici.
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
-  ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
-}));
-vi.mock('@/services/coherence/impact-propagation.service', async (o) => ({
   ...(await o<object>()),
-  emitAgendaItemCreated: async (_a: number, _b: number, itemId: number) => { notifs.created.push(itemId); },
+  emitBusinessEvent: async (e: { type: string; entityId?: number | null }) => { if (e.type === 'AGENDA_ITEM_CREATED' && e.entityId) notifs.created.push(Number(e.entityId)); },
+  emitBusinessEvents: async () => {},
 }));
 
 const AUJOURDHUI = new Date().toISOString().slice(0, 10);

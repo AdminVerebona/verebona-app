@@ -29,9 +29,6 @@ vi.mock('@/lib/asset-quota-guard', () => ({ assetModificationDecision: async () 
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (orig) => ({
-  ...(await orig<object>()), emitAgendaItemCreated: async () => {},
-}));
 // T4-RES-11 : échec SQL simulé PENDANT le retrait tracé (DELETE + journal).
 vi.mock('@/services/agenda/agenda-removal-trace', async (orig) => {
   const m = await orig<typeof import('@/services/agenda/agenda-removal-trace')>();

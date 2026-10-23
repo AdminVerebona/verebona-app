@@ -9,6 +9,7 @@ import { setAiProvider, FakeProvider } from '@/services/ai/gateway/providers';
 import { __setJobScopeCheckForTests } from '@/services/ai/queue/job-scope';
 import { __setT3EnqueueTraceWriterForTests } from '@/services/ai/queue/t3-enqueue-trace';
 import { __setAccountAccessCheckForTests } from '@/lib/auth/account-access';
+import { __setProcessingEligibilityForTests } from '@/services/account/processing-eligibility-override';
 
 export const fakeProvider = new FakeProvider();
 
@@ -29,6 +30,10 @@ beforeEach(() => {
   // accordé en test unitaire ; exercé par les e2e PostgreSQL et par
   // `account-access.test.ts`.
   __setAccountAccessCheckForTests(async () => true);
+  // Lot 82A (C-Q10) : éligibilité des comptes aux traitements (requête en
+  // base) accordée en test unitaire ; exercée par les e2e PostgreSQL
+  // (`l82a-eligibilite-comptes`) et par `processing-eligibility.test.ts`.
+  __setProcessingEligibilityForTests(async () => ({ eligible: true, reason: null }));
   // Plus aucun drapeau de moteur : AI_INTELLIGENT_ASSISTANT, AI_AGENDA_ENGINE
   // (lot 16b-2), AI_UNIFIED_SOURCE_ANALYSIS et AI_RECONCILIATION_ENGINE
   // (lot 16b-3) retirés.

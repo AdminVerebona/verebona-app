@@ -143,12 +143,17 @@ export type AdminActionType =
   // Lot 79A : BO › Opérations › détail — « Rétablir » une séparation
   // automatique d'identité économique (lot 78A) : seule exception à la lecture
   // seule du détail (Q9). Motif, identifiant de séparation, avant / après.
-  | 'OPERATION_IDENTITY_RESTORE';
+  | 'OPERATION_IDENTITY_RESTORE'
+  // Lot 82E : BO › Exploitation › « Sauvegardes et recette » — export complet
+  // de recette (lancement, fin : statut, volumes, option contenus sensibles)
+  // et téléchargement d'un fichier ou de l'archive complète.
+  | 'RECETTE_EXPORT'
+  | 'RECETTE_EXPORT_DOWNLOAD';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
   | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG' | 'AI_EXECUTION_REPORT' | 'EMAIL_SETTINGS'
-  | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL' | 'TECH_DIAGNOSTIC' | 'OPERATION_IDENTITY_REVIEW';
+  | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL' | 'TECH_DIAGNOSTIC' | 'OPERATION_IDENTITY_REVIEW' | 'RECETTE_EXPORT';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

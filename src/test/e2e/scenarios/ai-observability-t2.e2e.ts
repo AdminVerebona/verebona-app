@@ -23,6 +23,8 @@ scenario('AI-OBS-T2', 'Observabilité assistant : §32.2, §32.5, PUB-01', ({ sq
     const premium = await make.account();
     const standard = await make.account();
     await sql`UPDATE accounts SET plan_type = 'PREMIUM' WHERE id = ${premium.id}`;
+    // Lot 82A : le compte de test porte désormais un abonnement (Standard) — offre alignée.
+    await sql`UPDATE account_subscriptions SET plan_code = 'premium' WHERE account_id = ${premium.id}`;
     await sql`UPDATE accounts SET plan_type = 'STANDARD' WHERE id = ${standard.id}`;
 
     const run = (over: { status?: string; error?: string | null; candidates?: number; sources?: number; trace?: Record<string, unknown> }) => sql`

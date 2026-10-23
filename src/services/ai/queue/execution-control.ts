@@ -66,7 +66,11 @@ export function isExecutionCancelled(e: unknown): boolean {
   if (e instanceof ExecutionCancelledError) return true;
   const code = typeof e === 'object' && e !== null ? (e as { code?: string }).code : undefined;
   if (code === 'EXECUTION_CANCELLED') return true;
-  return code === 'AI_BLOCKED' && currentJobContext() !== null;
+  // Lot 82A (C-Q10) : `ACCOUNT_INELIGIBLE` (compte devenu non actif, suspendu
+  // ou en lecture seule — passerelle IA) est, dans une exécution de file, une
+  // interruption : les exécutants la laissent remonter SANS repli déterministe
+  // ni écriture, et la file neutralise le travail (`queue-worker`).
+  return (code === 'AI_BLOCKED' || code === 'ACCOUNT_INELIGIBLE') && currentJobContext() !== null;
 }
 
 /** Garde transmise à l'exécutant : signal + contrôle avant écriture. */

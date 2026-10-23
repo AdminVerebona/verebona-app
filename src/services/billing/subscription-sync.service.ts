@@ -241,6 +241,14 @@ export async function syncSubscriptionFromStripe(
     void import('@/services/verebona-assistant/events/business-events')
       .then(({ emitBusinessEvent }) => emitBusinessEvent({ type: 'PLAN_CHANGED', accountId: result.accountId }))
       .catch(() => { /* non bloquant */ });
+    // Lot 82A (C-Q10, §3.3) : transition d'éligibilité aux traitements
+    // (abonnement devenu actif → reprise + contrôle de rattrapage ; impayé,
+    // fin d'abonnement → neutralisation). Jamais bloquant pour la facturation :
+    // à défaut, la tâche `account-eligibility-sync` la traite (≤ 5 min).
+    const accountId = result.accountId;
+    void import('@/services/account/processing-lifecycle')
+      .then(({ syncAccountEligibilitySafe }) => syncAccountEligibilitySafe(accountId, 'subscription_sync'))
+      .catch(() => { /* non bloquant */ });
   }
   return result;
 }

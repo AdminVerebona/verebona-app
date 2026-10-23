@@ -168,6 +168,7 @@ export function stageOfSubtype(subtype: InvalidOutputSubtype): AiFailureStage {
     case 'OUTPUT_TRUNCATED': return 'response_reception';
     case 'MALFORMED_JSON': return 'json_parse';
     case 'STRUCTURED_OUTPUT_REJECTED': return 'structured_output';
+    case 'PARAMETER_REJECTED': return 'provider_request';
     case 'PARSER_ERROR': return 'result_mapping';
     case 'BUSINESS_VALIDATION_FAILED': return 'business_validation';
     case 'UNKNOWN': return 'post_processing';
@@ -207,6 +208,50 @@ export interface ClassifiedFailure {
   providerErrorCode: string | null;
   providerErrorMessage: string | null;
   error: { message: string; exception: string | null; stack: string | null };
+  /** Lot 82C : paramètre de requête refusé par le fournisseur (`PARAMETER_REJECTED`). */
+  rejectedParameter?: string | null;
+}
+
+/** `generation_config.thinking_config` → `generationConfig.thinkingConfig`. Pur. */
+function camelPath(path: string): string {
+  return path.split('.').map((seg) => seg.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase())).join('.');
+}
+
+const PARAMETER_PATTERNS: Array<{ re: RegExp; param: string }> = [
+  { re: /thinking[_ ]?level/i, param: 'generationConfig.thinkingConfig.thinkingLevel' },
+  { re: /thinking[_ ]?budget|\bbudget \d+ is invalid|only works in thinking mode/i, param: 'generationConfig.thinkingConfig.thinkingBudget' },
+  { re: /include[_ ]?thoughts/i, param: 'generationConfig.thinkingConfig.includeThoughts' },
+  { re: /thinking[_ ]?config|thinking is not supported|does not support thinking/i, param: 'generationConfig.thinkingConfig' },
+  { re: /max[_ ]?output[_ ]?tokens/i, param: 'generationConfig.maxOutputTokens' },
+  { re: /\btemperature\b/i, param: 'generationConfig.temperature' },
+  { re: /\btop[_ ]?p\b/i, param: 'generationConfig.topP' },
+  { re: /\btop[_ ]?k\b/i, param: 'generationConfig.topK' },
+  { re: /candidate[_ ]?count/i, param: 'generationConfig.candidateCount' },
+  { re: /response[_ ]?mime[_ ]?type/i, param: 'generationConfig.responseMimeType' },
+  { re: /media[_ ]?resolution/i, param: 'generationConfig.mediaResolution' },
+  { re: /presence[_ ]?penalty|frequency[_ ]?penalty/i, param: 'generationConfig.penalty' },
+];
+
+/**
+ * Lot 82C (LOG-04, R02) — paramètre NOMMÉ par un refus de requête du
+ * fournisseur (400 / INVALID_ARGUMENT), `null` si le message n'en cite
+ * aucun (refus générique : il reste `INPUT_ERROR` sans sous-type). Les
+ * refus du schéma de sortie relèvent de `STRUCTURED_OUTPUT_REJECTED`. Pur.
+ *
+ *   « Invalid JSON payload received. Unknown name "thinkingLevel" at
+ *     'generation_config.thinking_config' » → generationConfig.thinkingConfig.thinkingLevel
+ *   « Invalid value at 'generation_config.max_output_tokens' » → generationConfig.maxOutputTokens
+ *   « Thinking level is not supported for this model. » → generationConfig.thinkingConfig.thinkingLevel
+ */
+export function rejectedParameterOf(message: string): string | null {
+  const msg = String(message ?? '');
+  if (/response_?schema|responseJsonSchema|response_json_schema/i.test(msg)) return null;
+  const unknown = /Unknown name "([A-Za-z_][A-Za-z0-9_]*)"(?: at '([A-Za-z0-9_.]+)')?/.exec(msg);
+  if (unknown) return camelPath(unknown[2] ? `${unknown[2]}.${unknown[1]}` : unknown[1]);
+  const at = /Invalid value at '([A-Za-z0-9_.]+)'/.exec(msg);
+  if (at && !/contents|parts|system_instruction/i.test(at[1])) return camelPath(at[1]);
+  for (const p of PARAMETER_PATTERNS) if (p.re.test(msg)) return p.param;
+  return null;
 }
 
 const NETWORK_CODES = new Set([
@@ -277,6 +322,13 @@ export function classifyCallError(err: unknown): ClassifiedFailure {
   }
   if (/(input|prompt) token count|exceeds the maximum number of tokens|context (window|length)|too (long|large)|request payload size|maximum context/i.test(message)) {
     return out('CONTEXT_TOO_LARGE', 'provider_request');
+  }
+  // Lot 82C (LOG-04, R02 — incident 4694) : 400 / INVALID_ARGUMENT qui NOMME
+  // un paramètre refusé par ce modèle → incompatibilité de requête, avec le
+  // paramètre concerné ; jamais une indisponibilité ni un refus générique.
+  if ((status === 400 || pStatus === 'INVALID_ARGUMENT') && !(e.blocked === true)) {
+    const param = rejectedParameterOf(message);
+    if (param) return { ...out('INPUT_ERROR', 'provider_request', 'PARAMETER_REJECTED'), rejectedParameter: param };
   }
   if (code && NETWORK_CODES.has(code)) return out('NETWORK_ERROR', 'provider_request');
   const cause = e.cause as { code?: unknown } | undefined;

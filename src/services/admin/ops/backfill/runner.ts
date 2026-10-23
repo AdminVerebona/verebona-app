@@ -126,7 +126,7 @@ const COLONNES = `id::text AS id, script, action, step, params, status, reason, 
 export interface RunnerDeps {
   /** Client PostgreSQL dédié à UNE exécution (fermé à la fin). */
   openClient: () => postgres.Sql;
-  execute: (sql: postgres.Sql, req: BackfillRequest, hooks: ExecutionHooks) => Promise<RawBackfillOutput>;
+  execute: (sql: postgres.Sql, req: BackfillRequest, hooks: ExecutionHooks, admin?: { id: number }) => Promise<RawBackfillOutput>;
   audit: (entry: AdminActionEntry) => Promise<void>;
 }
 
@@ -299,7 +299,7 @@ async function executerEnFond(
   let report: unknown = null;
   let erreur: string | null = null;
   try {
-    const out = await deps.execute(sql, req, hooks);
+    const out = await deps.execute(sql, req, hooks, { id: admin.id });
     summary = summarizeBackfill(req.script, req.action, req.step, out);
     report = boundReport({
       runId: run.id, script: req.script, action: req.action, step: req.step, params: run.params,

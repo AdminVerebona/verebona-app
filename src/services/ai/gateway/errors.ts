@@ -47,6 +47,14 @@ export type AiErrorCode =
    */
   | 'COST_CAP_REACHED'
   /**
+   * Lot 82A (C-Q10, §3.3) : compte non actif (essai échu), suspendu ou en
+   * lecture seule — aucun traitement métier (T1, T2, T3, T4, T6). Refusé
+   * AVANT tout contact fournisseur, jamais récupérable : dans une exécution
+   * de file, c'est une interruption (le travail est neutralisé) ; hors file,
+   * l'appelant prend son repli sans IA.
+   */
+  | 'ACCOUNT_INELIGIBLE'
+  /**
    * Lot 34D (contrat runtime source unique) : le schéma de validation n'est
    * pas celui transmis au modèle (empreintes différentes) — défaut INTERNE du
    * moteur, détecté avant tout appel fournisseur. Jamais récupérable ;

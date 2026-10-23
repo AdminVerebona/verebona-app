@@ -1,6 +1,24 @@
 /**
- * Archivage S3 des logs IA de plus de 90 jours — CDC BO IA WF-25, WF-45,
- * LOG-UI-09.
+ * Archivage S3 des logs IA de plus de 88 jours — CDC BO IA WF-25, WF-45,
+ * LOG-UI-09 ; lot 82C (CDC Pilotage IA V2 LOG-06, R26, R65 ; décision PO
+ * n° 10 du 22/10).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 82C : COPIE DE SAUVEGARDE, PLUS AUCUNE SUPPRESSION EN BASE
+ *
+ * Décision PO n° 10 : la suppression des traces IA après 88 jours est
+ * suspendue ; les archives gardent leur rôle de SAUVEGARDE. Les journées
+ * échues sont toujours déposées sur S3 et enregistrées dans
+ * `ai_log_archives` (`source_rows_kept = TRUE`), mais les lignes RESTENT en
+ * base, lisibles au BO comme les autres. Conséquences :
+ *   · plus d'agrégat `ai_usage_daily_rollup` pour ces journées (les lignes
+ *     restent dans `ai_usage_event` : les sommer deux fois doublerait l'écran
+ *     Coûts) — les agrégats antérieurs, de lignes réellement supprimées,
+ *     restent valables ;
+ *   · une ligne n'est archivée qu'une fois : reprise après la plus haute
+ *     ligne déjà archivée de la table (`max_id`), et non plus « la tête de
+ *     la journée » (qui n'est plus vidée).
+ * Les paragraphes ci-dessous décrivent l'archivage historique (avant 82C).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * CE QUI EST ARCHIVÉ, ET COMMENT
@@ -161,26 +179,35 @@ export async function archiveAiLogs(opts: { maxDays?: number; chunk?: number; st
   };
 
   for (const table of ARCHIVED_TABLES) {
+    // Lot 82C : les lignes archivées restent en base — reprise APRÈS la plus
+    // haute ligne déjà archivée de la table (les archives antérieures portent
+    // des lignes supprimées, d'identifiants inférieurs).
+    const [w] = (await pgClient.unsafe(
+      `SELECT COALESCE(MAX(max_id), 0)::bigint AS w FROM ai_log_archives WHERE source_table = $1`,
+      [table] as never[],
+    )) as unknown as Row[];
+    let watermark = Number(w?.w ?? 0);
     const days = (await pgClient.unsafe(
       `SELECT DISTINCT (created_at AT TIME ZONE 'UTC')::date AS d
          FROM ${table}
-        WHERE created_at < (date_trunc('day', NOW() AT TIME ZONE 'UTC') - make_interval(days => $1::int)) AT TIME ZONE 'UTC'
+        WHERE id > $2
+          AND created_at < (date_trunc('day', NOW() AT TIME ZONE 'UTC') - make_interval(days => $1::int)) AT TIME ZONE 'UTC'
         ORDER BY d LIMIT ${Math.max(1, maxDays)}`,
-      [after] as never[],
+      [after, watermark] as never[],
     )) as unknown as Row[];
 
     for (const d of days) {
       const day = iso(d.d);
       if (!report.days.includes(day)) report.days.push(day);
-      // Boucle par paquets : chaque paquet archivé est supprimé, le suivant
-      // relit la tête de la journée.
+      // Boucle par paquets : chaque paquet archivé fait avancer la reprise.
       for (;;) {
         const rows = (await pgClient.unsafe(
           `SELECT * FROM ${table}
-            WHERE created_at >= ($1::date)::timestamp AT TIME ZONE 'UTC'
+            WHERE id > $2
+              AND created_at >= ($1::date)::timestamp AT TIME ZONE 'UTC'
               AND created_at <  ($1::date + 1)::timestamp AT TIME ZONE 'UTC'
             ORDER BY id LIMIT ${chunk}`,
-          [day] as never[],
+          [day, watermark] as never[],
         )) as unknown as Row[];
         if (rows.length === 0) break;
 
@@ -194,38 +221,20 @@ export async function archiveAiLogs(opts: { maxDays?: number; chunk?: number; st
         const body = toNdjsonGzip(rows.map((r) => sanitizeForArchive(table, r)));
         const sha256 = createHash('sha256').update(body).digest('hex');
         const key = archiveKey(environment, table, day, part);
-        // 1. Dépôt d'abord : une suppression ne précède jamais une archive.
+        // 1. Dépôt d'abord.
         await store.put(key, body);
 
         const ids = rows.map((r) => Number(r.id));
-        // 2. Registre, agrégats et retrait, atomiquement.
-        await pgClient.begin(async (tx) => {
-          const t = tx as unknown as { unsafe: (q: string, p?: never[]) => Promise<unknown> };
-          await t.unsafe(
-            `INSERT INTO ai_log_archives
-               (source_table, period_day, part, s3_key, row_count, min_id, max_id, bytes, sha256, t2_content_excluded, environment)
-             VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, TRUE, $10)
-             ON CONFLICT (source_table, period_day, part) DO NOTHING`,
-            [table, day, part, key, rows.length, Math.min(...ids), Math.max(...ids), body.length, sha256, environment] as never[],
-          );
-          if (table === 'ai_usage_event') {
-            await t.unsafe(
-              `INSERT INTO ai_usage_daily_rollup
-                 (day, use_case_code, account_id, config_version_id, model, model_rank, is_billable,
-                  calls, failed_calls, unpriced_calls, input_tokens, output_tokens, cost_micros)
-               SELECT $2::date, use_case_code, account_id, config_version_id, model, model_rank, is_billable,
-                      COUNT(*)::int,
-                      COUNT(*) FILTER (WHERE status = 'error')::int,
-                      COUNT(*) FILTER (WHERE cost_micros IS NULL OR (cost_micros = 0 AND COALESCE(input_tokens, 0) > 0))::int,
-                      COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cost_micros), 0)
-                 FROM ai_usage_event WHERE id = ANY($1::int[])
-                GROUP BY use_case_code, account_id, config_version_id, model, model_rank, is_billable`,
-              [ids, day] as never[],
-            );
-          }
-          // bigint[] : `home_mascot_generations.id` est un BIGSERIAL.
-          await t.unsafe(`DELETE FROM ${table} WHERE id = ANY($1::bigint[])`, [ids] as never[]);
-        });
+        // 2. Registre seulement (lot 82C, décision PO 10) : les lignes restent
+        //    en base, aucun agrégat (elles sont toujours comptées en direct).
+        await pgClient.unsafe(
+          `INSERT INTO ai_log_archives
+             (source_table, period_day, part, s3_key, row_count, min_id, max_id, bytes, sha256, t2_content_excluded, environment, source_rows_kept)
+           VALUES ($1, $2::date, $3, $4, $5, $6, $7, $8, $9, TRUE, $10, TRUE)
+           ON CONFLICT (source_table, period_day, part) DO NOTHING`,
+          [table, day, part, key, rows.length, Math.min(...ids), Math.max(...ids), body.length, sha256, environment] as never[],
+        );
+        watermark = Math.max(watermark, ...ids);
 
         report.archives += 1;
         report.rowsArchived[table] += rows.length;
@@ -248,6 +257,8 @@ export interface ArchiveListItem {
   bytes: number;
   sha256: string;
   t2ContentExcluded: boolean;
+  /** Lot 82C : lignes restées en base (copie de sauvegarde) ; faux : archive antérieure, lignes supprimées. */
+  sourceRowsKept: boolean;
   createdAt: string;
 }
 
@@ -259,7 +270,8 @@ export async function listAiLogArchives(limit = 60): Promise<{ items: ArchiveLis
   const lim = Math.min(Math.max(limit, 1), 200);
   const [rows, totals] = await Promise.all([
     pgClient.unsafe(
-      `SELECT id, source_table, period_day, part, s3_key, row_count, bytes, sha256, t2_content_excluded, created_at
+      `SELECT id, source_table, period_day, part, s3_key, row_count, bytes, sha256, t2_content_excluded, created_at,
+              COALESCE((to_jsonb(ai_log_archives) ->> 'source_rows_kept')::boolean, false) AS source_rows_kept
          FROM ai_log_archives ORDER BY period_day DESC, source_table, part DESC LIMIT ${lim}`,
     ),
     pgClient.unsafe(
@@ -280,6 +292,7 @@ export async function listAiLogArchives(limit = 60): Promise<{ items: ArchiveLis
       bytes: Number(r.bytes),
       sha256: String(r.sha256),
       t2ContentExcluded: Boolean(r.t2_content_excluded),
+      sourceRowsKept: Boolean(r.source_rows_kept),
       createdAt: new Date(String(r.created_at)).toISOString(),
     })),
     totals: {

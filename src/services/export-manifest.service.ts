@@ -87,7 +87,7 @@ function buildSections(exportType: ExportType, snapshot: AssetSnapshot, customSe
     { key: 'documents', label: 'Documents associés', include: true },
     { key: 'photos', label: 'Photos', include: snapshot.photos.length > 0 },
     { key: 'equipments', label: 'Équipements', include: snapshot.equipments.length > 0 },
-    { key: 'rooms', label: 'Pièces / sous-structures', include: snapshot.substructures.length > 0 },
+    { key: 'rooms', label: 'Pièces', include: snapshot.substructures.length > 0 },
     { key: 'insurance', label: 'Assurance', include: true },
   ];
 

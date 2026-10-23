@@ -20,6 +20,8 @@ import type { DataSeparationReport } from '@/services/equipment/data-separation-
 import type { ValidationRepriseReport } from '@/services/documents/validation-reprise';
 import type { BackfillAction, BackfillScript } from './definitions';
 import type { DuoSharedAccountReport, RestoreReport as DuoRestoreReport } from '@/services/account/duo-shared-account-backfill';
+import type { BackupManifestV2 } from '@/services/backup/database-backup.service';
+import type { RestoreReport as DatabaseRestoreReport } from '@/services/backup/database-restore.service';
 
 export interface BackfillSummary {
   headline: string;
@@ -57,12 +59,12 @@ function mergeRooms(action: BackfillAction, out: RawBackfillOutput): BackfillSum
   if (action === 'restore') {
     const r = out.result as RoomsRestoreResult & { runId?: string };
     return {
-      headline: `Restauration : ${r.restored} valeur(s) restaurée(s), ${r.deletedSubstructures} sous-structure(s) supprimée(s), ${r.conflicts.length} conflit(s).`,
+      headline: `Restauration : ${r.restored} valeur(s) restaurée(s), ${r.deletedSubstructures} Pièce(s) créée(s) par la reprise supprimée(s), ${r.conflicts.length} conflit(s).`,
       scriptRunId: r.runId ?? null,
       restorable: false,
       counters: [
         { label: 'Valeurs restaurées', value: r.restored },
-        { label: 'Sous-structures supprimées', value: r.deletedSubstructures },
+        { label: 'Pièces créées par la reprise supprimées', value: r.deletedSubstructures },
         { label: 'Conflits (non restaurés)', value: r.conflicts.length },
       ],
       ambiguous: { count: 0, samples: [] },
@@ -577,8 +579,60 @@ function falseArbitrations(out: RawBackfillOutput): BackfillSummary {
 }
 
 /** Synthèse lisible d'une exécution terminée (pure). */
+/** Lot 82E — point de restauration (sauvegarde format 2) et restauration de la base. */
+function databaseRestorePoint(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as DatabaseRestoreReport;
+    const neutralises = r.neutralized.reduce((n, x) => n + x.rows, 0);
+    return {
+      headline: `Restauration au point ${r.backupId} (instantané du ${r.backupSnapshotAt}) : ${r.rows} ligne(s) rechargée(s) dans ${r.restoredTables} table(s), `
+        + `${r.foreignKeys.restored} relation(s) revalidée(s)${neutralises ? `, ${neutralises} envoi(s) en attente neutralisé(s)` : ''}.`,
+      // Le point de l'état d'avant la restauration : restaurable à son tour (retour arrière).
+      scriptRunId: r.safetyBackupId,
+      restorable: false,
+      counters: [
+        { label: 'Lignes rechargées', value: r.rows },
+        { label: 'Tables restaurées', value: r.restoredTables },
+        { label: 'Tables conservées en l’état', value: r.keptTables.length },
+        { label: 'Contraintes de clé étrangère revalidées', value: r.foreignKeys.restored },
+        { label: 'Déclencheurs suspendus pendant le rechargement', value: r.triggersSuspended },
+        { label: 'Point de l’état d’avant restauration', value: r.safetyBackupId ?? '—' },
+        ...r.neutralized.map((x) => ({ label: x.label, value: x.rows })),
+        { label: 'Durée (s)', value: Math.round(r.durationMs / 1000) },
+      ],
+      ambiguous: { count: 0, samples: [] },
+      conflicts: { count: 0, samples: [] },
+      warnings: [
+        ...(r.foreignKeys.keptNotValid.length ? [`Journaux conservés citant des objets absents du point (contrainte gardée « NOT VALID ») : ${r.foreignKeys.keptNotValid.join(', ')}.`] : []),
+        ...(r.sequencesAdvanced.length ? [`Séquences avancées : ${r.sequencesAdvanced.join(', ')}.`] : []),
+        'Les fichiers du stockage ne sont pas restaurés (un document supprimé définitivement après le point reste absent).',
+      ],
+    };
+  }
+  const m = out.result as Omit<BackupManifestV2, 'tables'> & { tables: Array<{ name: string; rows: number }> };
+  return {
+    headline: `Point de restauration créé : ${m.backupId} — ${m.totalRows} ligne(s), ${m.tables.length} table(s), instantané du ${m.snapshot.at}.`,
+    scriptRunId: m.backupId,
+    restorable: true,
+    counters: [
+      { label: 'Identifiant du point', value: m.backupId },
+      { label: 'Instantané (instant de cohérence)', value: m.snapshot.at },
+      { label: 'Lignes', value: m.totalRows },
+      { label: 'Tables', value: m.tables.length },
+      { label: 'Taille compressée (octets)', value: m.sizeBytes },
+      { label: 'Empreinte du schéma', value: m.schema.fingerprint },
+      { label: 'Dernière migration', value: m.schema.lastMigration ?? '—' },
+      { label: 'Durée (s)', value: Math.round(m.durationMs / 1000) },
+    ],
+    ambiguous: { count: 0, samples: [] },
+    conflicts: { count: 0, samples: [] },
+    warnings: ['Point conservé 30 jours (rétention des sauvegardes). Restaurable tant que le schéma ne change pas (pas de nouvelle migration).'],
+  };
+}
+
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
+    case 'database-restore-point': return databaseRestorePoint(action, out);
     case 'merge-rooms': return mergeRooms(action, out);
     case 'document-asset-links': return documentAssetLinks(out);
     case 'agenda': return agenda(step, out);

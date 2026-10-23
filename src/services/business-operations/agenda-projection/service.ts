@@ -47,6 +47,7 @@ import {
 } from './model';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
 import type { BusinessOperationStatus, BusinessOperationTypeCode } from '../model';
+import { projectionRoleOf } from '../grouping/model';
 
 type Row = Record<string, unknown>;
 interface Executor { execute: (q: SQL) => Promise<unknown> }
@@ -160,6 +161,9 @@ export interface ProjectionRunResult {
   retitled?: number;
   /** Lot 76H : plans calculés d'une simulation (`dryRun`), Opérations avec au moins une action. */
   plans?: PlannedOperation[];
+  /** Lot 82D : rôles d'éléments posés ; liens propagés vers le principal (ajoutés + retirés). */
+  roles?: number;
+  principalLinks?: number;
   /** Lot 54D (E07) : pages traitées (passage complet), dernier identifiant atteint. */
   pages?: number;
   lastOperationId?: number | null;
@@ -258,7 +262,7 @@ const itemColumnsSql = (journal: boolean) => sql.raw(`
    ${journal ? `OR EXISTS (SELECT 1 FROM agenda_intervention_consolidations k
                  WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
                    AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))` : ''}) AS pending_status,
-  i.origin_field_key,
+  i.origin_field_key, i.operation_role, i.operation_role_origin,
   (SELECT count(*)::int FROM agenda_item_sources s WHERE s.agenda_item_id = i.id) AS source_count`);
 
 /**
@@ -294,6 +298,8 @@ function toItem(x: Row): AgendaItemSnapshot {
     pendingStatus: x.pending_status === true,
     originFieldKey: txt(x.origin_field_key),
     sourceCount: Number(x.source_count ?? 0),
+    operationRole: (txt(x.operation_role) as 'PRINCIPAL' | 'RELATED' | null),
+    operationRoleOrigin: txt(x.operation_role_origin),
   };
 }
 
@@ -375,16 +381,33 @@ function syncValues(changes: ItemSync, correlationId: string | null): Partial<Ag
     ...(changes.date !== undefined ? { startDate: changes.date } : {}),
     ...(changes.homeCategory !== undefined ? { homeCategory: changes.homeCategory } : {}),
     ...(changes.manualStatus !== undefined ? { manualStatus: changes.manualStatus } : {}),
-    ...(changes.businessOperationId !== undefined ? { businessOperationId: changes.businessOperationId, originRefId: changes.businessOperationId } : {}),
+    // Lot 82D : l'appartenance (`business_operation_id`, rôle) est écrite par le service de regroupement.
+    ...(changes.businessOperationId !== undefined ? { originRefId: changes.businessOperationId } : {}),
     projectionOrigin: PROJECTION_ORIGIN,
     projectionCorrelationId: correlationId,
     updatedAt: new Date(),
   };
 }
 
+/**
+ * Lot 82D (CDC v5 O-1) : écriture d'appartenance par le service UNIQUE de
+ * regroupement, dans sa transaction (verrou du compte), décision T4.
+ */
+async function grouping<T>(accountId: number, correlationId: string | null, fn: (ctx: import('../grouping/service').GroupingContext) => Promise<T>): Promise<T> {
+  const { runnerContext } = await import('../grouping/service');
+  const { drizzleRunner } = await import('../grouping/runner');
+  return db.transaction((tx) => fn(runnerContext(drizzleRunner(tx), accountId, { correlationId })));
+}
+
+async function attachProjected(op: OperationSnapshot, itemId: number, role: 'PRINCIPAL' | 'RELATED', correlationId: string | null, reasonCode: string): Promise<boolean> {
+  const { attachAgendaItem } = await import('../grouping/service');
+  const r = await grouping(op.accountId, correlationId, (ctx) => attachAgendaItem(ctx, { operationId: op.id, itemId, role, origin: 'T4', reasonCode }));
+  return r.changed;
+}
+
 async function applyAction(
   op: OperationSnapshot, a: ProjectionAction, res: ProjectionRunResult,
-  opts: Required<Pick<ProjectionRunOptions, 'beforeWrite'>> & { correlationId: string | null; runId?: string | null },
+  opts: Required<Pick<ProjectionRunOptions, 'beforeWrite'>> & { correlationId: string | null; runId?: string | null; role: 'PRINCIPAL' | 'RELATED' },
 ): Promise<number | null> {
   const accountId = op.accountId;
   const garde = (what: string) => opts.beforeWrite(`T4 projection — ${what}`);
@@ -397,9 +420,12 @@ async function applyAction(
         isAutomatic: true, isAutomaticModified: false, requiresQualification: false,
         originType: PROJECTION_ORIGIN_TYPE, originRefType: PROJECTION_ORIGIN_REF_TYPE, originRefId: op.id, originFieldKey: null,
         occurrenceNature: 'CONFIRMED', dateSource: 'EXPLICIT_DATE',
-        businessOperationId: op.id, projectionOrigin: PROJECTION_ORIGIN, projectionCorrelationId: opts.correlationId,
+        projectionOrigin: PROJECTION_ORIGIN, projectionCorrelationId: opts.correlationId,
       };
-      const links = { assetIds: op.assetIds, equipmentIds: op.equipmentIds, fileIds: op.documentFileIds, substructureIds: [] };
+      // Lot 82D : documents d'un principal propagés par le service de regroupement (OPERATION_PRINCIPAL).
+      const links = opts.role === 'PRINCIPAL'
+        ? { assetIds: op.assetIds, equipmentIds: op.equipmentIds, substructureIds: [] }
+        : { assetIds: op.assetIds, equipmentIds: op.equipmentIds, fileIds: op.documentFileIds, substructureIds: [] };
       const write = (itemId?: number) => writeAgendaItem({
         ...(itemId !== undefined ? { itemId } : {}),
         values: itemId !== undefined ? { ...values, updatedAt: new Date() } : values,
@@ -410,23 +436,25 @@ async function applyAction(
       });
       // Élément de même clé déjà présent (reprise après échec) : adopté.
       const existant = await itemIdByKey(accountId, a.functionalKey);
+      let w: Awaited<ReturnType<typeof write>>;
       try {
-        const w = await write(existant ?? undefined);
+        w = await write(existant ?? undefined);
         if (w.protected) return null;
         if (w.created) res.created++; else res.updated++;
         res.changes++;
-        return w.id;
       } catch (e) {
         if (existant === null && /agenda_items_functional_key_uidx/.test(`${(e as Error).message} ${String((e as { cause?: Error }).cause?.message ?? '')}`)) {
           const id = await itemIdByKey(accountId, a.functionalKey);
-          if (id !== null) {
-            const w = await write(id);
-            if (!w.protected) { res.updated++; res.changes++; }
-            return w.id;
-          }
+          if (id === null) throw e;
+          w = await write(id);
+          if (w.protected) return w.id;
+          res.updated++; res.changes++;
+        } else {
+          throw e;
         }
-        throw e;
       }
+      await attachProjected(op, w.id, opts.role, opts.correlationId, 'T4_PROJECTION_CREATED');
+      return w.id;
     }
     case 'SYNC': {
       await garde('mise à jour');
@@ -438,20 +466,23 @@ async function applyAction(
         semantics: { businessType: c.businessType ?? null, nature: c.nature ?? null },
         functionalKey: c.functionalKey ?? null,
       }, { accountId, channel: 'T4', linkMode: 'replace', onlyIfUntouched: true, notify: false, statusProposal: false });
-      if (!w.protected) { res.updated++; res.changes++; }
+      if (!w.protected) {
+        res.updated++; res.changes++;
+        if (c.businessOperationId !== undefined) await attachProjected(op, a.itemId, opts.role, opts.correlationId, 'T4_PROJECTION_SYNC');
+      }
       return null;
     }
     case 'LINK': {
       await garde('rapprochement');
-      const r = await rows(db, sql`
-        UPDATE agenda_items i SET business_operation_id = ${op.id}, updated_at = now()
-         WHERE i.id = ${a.itemId} AND i.account_id = ${accountId}
-           AND (i.business_operation_id IS NULL OR NOT EXISTS (
-                 SELECT 1 FROM business_operations o WHERE o.id = i.business_operation_id
-                    AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL))
-        RETURNING i.id`);
-      if (r.length) { res.linked++; res.changes++; }
-      console.info(JSON.stringify({ event: 't4.operation_projection_link', accountId, operationId: op.id, itemId: a.itemId, reason: a.reason, applied: r.length > 0 }));
+      // Lot 82D : service unique de regroupement — jamais un élément d'une autre Opération active, refus utilisateur respecté.
+      const applied = await attachProjected(op, a.itemId, opts.role, opts.correlationId, 'T4_PROJECTION_LINK');
+      if (applied) { res.linked++; res.changes++; }
+      console.info(JSON.stringify({ event: 't4.operation_projection_link', accountId, operationId: op.id, itemId: a.itemId, reason: a.reason, applied }));
+      return null;
+    }
+    case 'ROLE': {
+      await garde('rôle de l’élément');
+      if (await attachProjected(op, a.itemId, a.role, opts.correlationId, 'T4_PROJECTION_ROLE')) { res.roles = (res.roles ?? 0) + 1; res.changes++; }
       return null;
     }
     case 'CONSOLIDATE': {
@@ -530,13 +561,9 @@ async function applyAction(
  * par la canonique d'une fusion dans le même passage n'est jamais détaché).
  */
 async function detachItem(accountId: number, itemId: number, operationId: number | null = null): Promise<void> {
-  await db.execute(sql`
-    UPDATE agenda_items
-       SET business_operation_id = NULL,
-           functional_key = CASE WHEN projection_origin = ${PROJECTION_ORIGIN} THEN NULL ELSE functional_key END,
-           projection_origin = NULL, projection_correlation_id = NULL, updated_at = now()
-     WHERE id = ${itemId} AND account_id = ${accountId}
-       ${operationId === null ? sql`` : sql`AND business_operation_id = ${operationId}`}`);
+  // Lot 82D : service unique de regroupement (rôle et propagation retirés), marques de projection effacées.
+  const { detachAgendaItem } = await import('../grouping/service');
+  await grouping(accountId, null, (ctx) => detachAgendaItem(ctx, { itemId, operationId, origin: 'T4', reasonCode: 'T4_PROJECTION_DETACH', clearProjectionMarks: true }));
 }
 
 /** Projections orphelines (Opération disparue, lien coupé par un transfert) : retirées, ou détachées si touchées. */
@@ -654,8 +681,21 @@ async function projectIds(
         });
       }
       if (opts.dryRun) continue;
-      const created = await applyAction(op, action, res, { beforeWrite, correlationId, runId: opts.runId ?? null });
+      const role = decision.kind === 'PROJECT' ? projectionRoleOf(decision.desired.key) : 'RELATED';
+      const created = await applyAction(op, action, res, { beforeWrite, correlationId, runId: opts.runId ?? null, role });
       if (created !== null) taken.add(created);
+    }
+    // Lot 82D (CDC v5 §7.1, P4) : documents de l'Opération propagés vers son principal (idempotent) —
+    // seulement pour une Opération qui a (ou vient de recevoir) des éléments d'agenda.
+    const representee = linked.some((i) => i.businessOperationId === op.id)
+      || plan.some((a) => a.kind === 'CREATE' || a.kind === 'LINK' || a.kind === 'CONSOLIDATE' || a.kind === 'ROLE');
+    if (!opts.dryRun && representee) {
+      const { recomputePrincipal } = await import('../grouping/service');
+      const r = await grouping(accountId, correlationId, (ctx) => recomputePrincipal(ctx, op.id));
+      if (r.added + r.removed > 0) {
+        res.principalLinks = (res.principalLinks ?? 0) + r.added + r.removed;
+        res.changes++;
+      }
     }
     if (opts.dryRun && plan.length) {
       (res.plans ??= []).push({ operationId: op.id, typeCode: op.typeCode, decision: decision.kind === 'PROJECT' ? 'PROJECT' : decision.reason, actions: plan });

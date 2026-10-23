@@ -107,8 +107,25 @@ export async function getEntitlements(
     .where(eq(accountSubscriptions.accountId, accountId))
     .limit(1);
 
-  const row = rows[0];
+  return entitlementsFromSubscription(rows[0] ?? null, now);
+}
 
+/** Ligne d'abonnement lue par les droits (`account_subscriptions`). */
+export interface SubscriptionRightsRow {
+  planCode: string | null;
+  status: string;
+  trialEndsAt: Date | null;
+  firstBilledAt: Date | null;
+}
+
+/**
+ * Droits effectifs à partir de la ligne d'abonnement (pure, testée).
+ *
+ * Lot 82A (C-Q10) : extraite de `getEntitlements` pour que l'éligibilité des
+ * comptes aux traitements (`account/processing-eligibility.ts`) applique
+ * EXACTEMENT les mêmes règles de mode restreint, sans les recopier.
+ */
+export function entitlementsFromSubscription(row: SubscriptionRightsRow | null, now: Date = new Date()): Entitlements {
   // Aucun abonnement : compte sans droits (ni essai, ni offre).
   if (!row) {
     return {

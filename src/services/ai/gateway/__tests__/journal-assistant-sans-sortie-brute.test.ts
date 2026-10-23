@@ -3,6 +3,12 @@
  * validée ». Pour l'assistant, la trace d'appel ne garde de la sortie du
  * modèle qu'une empreinte et une longueur ; l'extrait cité par une erreur de
  * validation est retiré. Les autres usages gardent leur extrait expurgé.
+ *
+ * Lot 82C (décision PO n° 01 du 22/10 : échanges T2 conservés) : la réponse
+ * brute T2 n'entre toujours PAS dans le journal (`ai_usage_event`), mais elle
+ * est capturée à la source dans le stockage protégé (`capture`, écrit dans
+ * `ai_call_captures`, accès réservé et journalisé) — d'où l'exclusion de
+ * `capture` des assertions « journal ».
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { z } from 'zod';
@@ -38,18 +44,21 @@ describe('trace d’un appel de l’assistant', () => {
   it('succès : empreinte et longueur, jamais le texte', async () => {
     fake.onAny(() => ({ rawText: '{"mode":"ANSWER","ok":true,"secret":"IBAN FR76"}', inputTokens: 1, outputTokens: 1 }));
     await AiGateway.execute(req('INTELLIGENT_ASSISTANT', 't2_answer', z.object({ mode: z.literal('ANSWER'), ok: z.boolean() }).passthrough()));
-    const t = h.traces.at(-1)!;
+    const { capture, ...t } = h.traces.at(-1)! as Record<string, unknown> & { capture?: { responseRaw: string | null } };
     expect(String(t.outputPreview)).toMatch(/^sha256:[0-9a-f]{12} len:\d+$/);
     expect(JSON.stringify(t)).not.toMatch(/IBAN|secret/);
+    // L82C-CAP-T2 : la réponse T2 est capturée à la source (stockage protégé).
+    expect(capture?.responseRaw).toBe('{"mode":"ANSWER","ok":true,"secret":"IBAN FR76"}');
   });
 
   it('sortie invalide : message d’erreur sans l’extrait brut', async () => {
     fake.onAny(() => ({ rawText: 'pas du json IBAN FR76', inputTokens: 1, outputTokens: 1 }));
     await AiGateway.execute(req('INTELLIGENT_ASSISTANT', 't2_answer', z.object({ mode: z.literal('ANSWER'), ok: z.boolean() }))).catch(() => null);
-    const t = h.traces.at(-1)!;
+    const { capture, ...t } = h.traces.at(-1)! as Record<string, unknown> & { capture?: { responseRaw: string | null } };
     expect(t.status).toBe('error');
     expect(String(t.errorMessage)).toMatch(/\[extrait non conservé\]/);
     expect(JSON.stringify(t)).not.toMatch(/IBAN/);
+    expect(capture?.responseRaw).toBe('pas du json IBAN FR76');
   });
 
   it('diagnostic explicite (flag) : extrait expurgé, comme les autres usages', async () => {

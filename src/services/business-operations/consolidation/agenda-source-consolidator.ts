@@ -52,6 +52,9 @@ import {
 } from './consolidator';
 import { decideCandidate } from './matching';
 import { consolidateOperationState } from './model';
+// Lot 82D : appartenance Agenda ↔ Opération par le service unique de regroupement.
+import { attachAgendaItem, runnerContext } from '../grouping/service';
+import { drizzleRunner } from '../grouping/runner';
 
 type Row = Record<string, unknown>;
 const rows = async <T = Row>(tx: DbTx, q: SQL): Promise<T[]> => (await tx.execute(q)) as unknown as T[];
@@ -72,16 +75,15 @@ export interface AgendaSourceResult {
   error?: string;
 }
 
-/** Relie l'élément à l'Opération (si non relié, ou relié à une Opération inactive). Rend vrai si écrit. */
+/**
+ * Relie l'élément à l'Opération (si non relié, ou relié à une Opération
+ * inactive). Rend vrai si écrit. Lot 82D : service unique de regroupement
+ * (décision T3 ; élément lié — le principal reste la décision de la
+ * projection T4 ; un refus de l'utilisateur est respecté).
+ */
 async function linkItem(tx: DbTx, accountId: number, itemId: number, operationId: number): Promise<boolean> {
-  const r = await rows(tx, sql`
-    UPDATE agenda_items i SET business_operation_id = ${operationId}, updated_at = now()
-     WHERE i.id = ${itemId} AND i.account_id = ${accountId}
-       AND (i.business_operation_id IS NULL OR NOT EXISTS (
-             SELECT 1 FROM business_operations o WHERE o.id = i.business_operation_id
-                AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL))
-    RETURNING i.id`);
-  return r.length > 0;
+  const r = await attachAgendaItem(runnerContext(drizzleRunner(tx), accountId), { operationId, itemId, origin: 'T3', reasonCode: 'T3_AGENDA_SOURCE_LINK' });
+  return r.changed;
 }
 
 /** Type de l'Opération (null : introuvable ou inactive). */

@@ -96,7 +96,7 @@ scenario('L34H2', 'Préparation des dossiers (droit Dossiers) et vignettes de «
       expect(res.status, plan).toBe(200);
       expect((await ligne(bien.id))?.commercial?.desiredSalePriceCents).toBe(900_000);
     }
-    const essai = await make.account();
+    const essai = await make.account({ plan: null });
     await sql`INSERT INTO account_subscriptions (account_id, plan_code, status, trial_ends_at)
               VALUES (${essai.id}, 'premium', 'trialing', now() + interval '10 days')`;
     const bien = await make.asset(essai, { category: 'VEHICULE' });

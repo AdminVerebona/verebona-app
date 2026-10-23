@@ -64,13 +64,14 @@ export interface TcoContext {
 }
 
 /** TCO recalculé en lecture par le moteur existant (aucun second calcul). */
-export async function loadTcoContext(accountId: number, assetId: number, today?: string): Promise<TcoContext> {
+export async function loadTcoContext(accountId: number, assetId: number, today?: string, runner?: { execute: (q: import('drizzle-orm').SQL) => Promise<unknown> }): Promise<TcoContext> {
   const [{ readAssetTco, AssetNotFoundForTcoError }, { tcoUserView, TCO_HIDDEN_REASON_LABELS }] = await Promise.all([
     import('@/services/business-operations/tco/service'),
     import('@/services/business-operations/tco/dto'),
   ]);
   try {
-    const result = await readAssetTco(accountId, assetId, today ? { today } : {});
+    // Lot 82E : `runner` facultatif — lecture dans l'instantané de l'export (session 81C).
+    const result = await readAssetTco(accountId, assetId, { ...(today ? { today } : {}), ...(runner ? { runner } : {}) });
     const view = tcoUserView(result.lines);
     const hidden: Record<string, string> = {};
     for (const [id, r] of Object.entries(view.hidden)) hidden[id] = `${r} — ${TCO_HIDDEN_REASON_LABELS[r as keyof typeof TCO_HIDDEN_REASON_LABELS] ?? r}`;

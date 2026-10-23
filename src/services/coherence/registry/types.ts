@@ -1,0 +1,142 @@
+/**
+ * Contrat d'un contrôle du registre de cohérence — lot 82B (CDC « Contrôle
+ * de cohérence global » §3.2, arbitrages PO C-Q1, C-Q2, C-Q4, §3.2).
+ *
+ * Un contrôle est DÉCLARATIF : il dit ce qu'il examine, avec quelles
+ * sources, quel invariant, quelles réparations sont permises et lesquelles
+ * sont interdites, quels services métier il sollicite, sur quels événements
+ * il se redéclenche. Il n'écrit JAMAIS lui-même : `inspect` est en lecture
+ * seule ; `repair` délègue au service métier existant qui fait autorité
+ * (aucune écriture arbitraire, C-Q2). L'orchestrateur (`../engine.ts`)
+ * enchaîne inspection → réparation (mode correctif seulement) → recontrôle,
+ * et consigne la preuve de contrôle de chaque objet (C-Q4).
+ */
+import type postgres from 'postgres';
+
+export type Sql = postgres.Sql;
+
+/** Mode d'exécution : à blanc (aucune écriture métier) ou correctif (C-Q5). */
+export type CoherenceMode = 'DRY_RUN' | 'CORRECTIVE';
+
+/** Déclencheur d'un contrôle d'objet. */
+export type ControlTrigger = 'DAILY' | 'CATCHUP' | 'MANUAL' | 'TARGETED';
+
+/**
+ * Maillon de la chaîne de vérification (§3.2) : document source et extract,
+ * sortie T1, traitements T3 / T4, persistance et exploitation (liens,
+ * projections, cartes), réparation ciblée.
+ */
+export type ChainLink = 'EXTRACT' | 'T1' | 'T3' | 'T4' | 'PERSISTENCE' | 'LINK' | 'PROJECTION' | 'TO_PROCESS';
+
+/**
+ * Verdict d'une inspection (lecture seule) :
+ *   CONSISTENT  conforme (ou absence justifiée d'exploitation) ;
+ *   REPAIRABLE  écart au diagnostic FIABLE, réparable par le service métier ;
+ *   AMBIGUOUS   preuves insuffisantes ou contradictoires : aucune écriture,
+ *               le mécanisme d'arbitrage existant reste seul juge ;
+ *   FINDING     écart constaté qu'aucune chaîne automatique ne peut réparer
+ *               aujourd'hui (cause racine à traiter, contrat IA attendu…) ;
+ *   GONE        objet disparu entre l'énumération et l'inspection.
+ */
+export type Verdict = 'CONSISTENT' | 'REPAIRABLE' | 'AMBIGUOUS' | 'FINDING' | 'GONE';
+
+export interface Inspection {
+  verdict: Verdict;
+  /** Code de l'anomalie (stable, `ANSWER_AVAILABLE`, `CERTAIN_LINK_MISSING`…). */
+  anomaly?: string;
+  /** Premier maillon incohérent (§3.2). */
+  faultyLink?: ChainLink;
+  expected?: unknown;
+  observed?: unknown;
+  /** Détail borné (identifiants, motifs) — jamais de contenu de document. */
+  detail?: Record<string, unknown>;
+  /**
+   * Empreinte des ENTRÉES du constat : une réparation déjà tentée sur les
+   * mêmes entrées sans succès n'est pas rejouée (anti-boucle, C-Q2).
+   */
+  inputHash?: string;
+}
+
+/** Résultat d'une réparation déléguée au service métier. */
+export interface RepairResult {
+  /** Le service a effectivement été appelé (même s'il n'a rien changé). */
+  called: boolean;
+  /** Service métier sollicité (`syncDocumentEquipmentLinks`…). */
+  service: string;
+  /** Résumé borné de la réponse du service. */
+  result?: Record<string, unknown>;
+  /** Appels IA déclenchés par le service (mesure, C-Q1). */
+  aiCalls?: number;
+  /** Référence de retour arrière dans le journal du domaine (journal 0591, 0223, événements de carte…). */
+  rollbackRef?: string | null;
+}
+
+export interface CheckContext {
+  sql: Sql;
+  now: Date;
+  /** Date civile de référence (Paris), injectable pour les tests. */
+  today: string;
+  mode: CoherenceMode;
+  /** Corrélation des écritures déléguées (`coherence:<campagne|ciblé>:<contrôle>`). */
+  correlationId: string;
+}
+
+export interface CheckEvent {
+  /** Type d'événement métier (`DOCUMENT_UPDATED`, `SOURCE_ANALYZED`…). */
+  type: string;
+  entityId: number | null;
+  /** Bien concerné, s'il est connu (analyse T1). */
+  assetId?: number | null;
+}
+
+export interface CoherenceCheck {
+  /** Identifiant stable (`COH-…`). */
+  id: string;
+  /** Version des règles : la changer rend le stock à réexaminer (§6.4). */
+  version: number;
+  /**
+   * ACTIVE : exécuté par l'orchestrateur ; PLANNED : point d'extension
+   * DÉCLARÉ (jamais exécuté ni compté comme couvert) — la couverture le
+   * signale comme lacune explicite.
+   */
+  status: 'ACTIVE' | 'PLANNED';
+  title: string;
+  domain: string;
+  /** N1 structure, N2 cohérence métier, N3 exhaustivité fonctionnelle (CDC §3.3). */
+  level: 'N1' | 'N2' | 'N3';
+  /** Type d'objet contrôlé (preuve par objet). */
+  objectType: string;
+  /** Objets examinés (périmètre exact). */
+  scope: string;
+  sources: readonly string[];
+  applicability: string;
+  invariant: string;
+  anomalies: readonly string[];
+  autoRepairWhen: string;
+  forbiddenRepairs: readonly string[];
+  services: readonly string[];
+  /** Maillons vérifiés, dans l'ordre de la chaîne (§3.2). */
+  chain: readonly ChainLink[];
+  /** Événements métier qui demandent un contrôle ciblé. */
+  triggers: readonly string[];
+  frequency: string;
+  criticality: 'LOW' | 'MEDIUM' | 'HIGH';
+  /** Tests de non-régression associés (identifiants). */
+  tests: readonly string[];
+  /** Objets du compte, ordonnés par identifiant croissant, après `afterId`. */
+  listObjects?(ctx: CheckContext, accountId: number, afterId: number, limit: number): Promise<number[]>;
+  /** Objets du compte touchés par un événement (contrôle ciblé). */
+  objectsForEvent?(ctx: CheckContext, accountId: number, event: CheckEvent): Promise<number[]>;
+  /** Inspection en LECTURE SEULE d'un lot d'objets du compte. */
+  inspect?(ctx: CheckContext, accountId: number, ids: readonly number[]): Promise<Map<number, Inspection>>;
+  /** Réparation déléguée aux services métier (mode correctif seulement). */
+  repair?(ctx: CheckContext, accountId: number, items: ReadonlyArray<{ id: number; inspection: Inspection }>): Promise<Map<number, RepairResult>>;
+}
+
+/** Résultat consigné dans la preuve de contrôle d'un objet. */
+export type ControlResult =
+  | 'CONSISTENT' | 'GONE' | 'REPAIRED' | 'WOULD_REPAIR' | 'AMBIGUOUS' | 'FINDING'
+  | 'REPAIR_FAILED' | 'REPAIR_INEFFECTIVE' | 'REPAIR_SUPPRESSED' | 'ERROR';
+
+/** Résultats « cohérents » (aucun constat ouvert). */
+export const RESOLVED_RESULTS: ReadonlySet<ControlResult> = new Set(['CONSISTENT', 'GONE', 'REPAIRED']);

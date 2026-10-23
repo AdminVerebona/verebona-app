@@ -26,9 +26,6 @@ vi.mock('@/lib/session-service', () => ({
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (o) => ({
-  ...(await o<object>()), emitAgendaItemCreated: async () => {},
-}));
 
 const AUJOURDHUI = new Date().toISOString().slice(0, 10);
 const plus = (jours: number) => new Date(Date.now() + jours * 86_400_000).toISOString().slice(0, 10);
@@ -106,7 +103,10 @@ scenario('L47B', 'Agenda source T3 (TRG-012 à 014) et historique passé affich�
     expect(op).toMatchObject({ type_code: 'INTERVENTION', status: 'ENVISAGED', planned_date: prevu, realized_date: null, invalidated: false });
     expect(await sourcesAgenda(op.id)).toEqual([{ entity: String(evt.id), active: true, authority: 'USER' }]);
     expect((await items(compte))[0]).toMatchObject({ id: evt.id, op: op.id, projection_origin: null });
-    // Projection : l'élément de l'utilisateur représente déjà l'Opération (C16.1).
+    // Projection : l'élément de l'utilisateur représente déjà l'Opération (C16.1) — lot 82D (CDC v5
+    // §11.2) : la projection T4 le désigne PRINCIPAL (une écriture de rôle), puis plus rien.
+    expect(await projeter(compte, [op.id])).toMatchObject({ created: 0, roles: 1, changes: 1 });
+    expect(await sql`SELECT operation_role, operation_role_origin FROM agenda_items WHERE id = ${evt.id}`).toEqual([{ operation_role: 'PRINCIPAL', operation_role_origin: 'T4' }]);
     expect(await projeter(compte, [op.id])).toMatchObject({ created: 0, changes: 0 });
     expect(await items(compte)).toHaveLength(1);
     // Idempotence (NFR-OP-004) : second passage sans écriture.

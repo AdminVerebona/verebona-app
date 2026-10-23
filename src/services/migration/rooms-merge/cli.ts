@@ -18,7 +18,7 @@ export const ROOMS_MERGE_HELP = [
   'Reprise des pièces `rooms` dans `substructures` (décision PO D-G, lot 20 ; migration 0229).',
   '  (défaut) / --dry-run  SIMULATION : mêmes instructions, transaction annulée par pièce ; seul le rapport',
   '                        (room_merge_runs, room_merge_changes) est écrit — --no-db-report : rien du tout.',
-  '  --apply               écrit : une sous-structure par pièce (reprise d’une sous-structure du même bien et du',
+  '  --apply               écrit : une Pièce (`substructures`) par ancienne pièce (reprise de la Pièce du même bien et du',
   '                        même nom si elle est unique), références repointées, journal pour la restauration.',
   '  --account             un seul compte.   --limit  nombre maximal de pièces (relançable).',
   '  --report <runId>      synthèse d’une exécution.',

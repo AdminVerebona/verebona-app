@@ -54,6 +54,7 @@
  *     que les décisions que le lot 76 a pu rendre périmées.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { processingEligibleSql } from '@/services/account/processing-eligibility';
 import { pgClient } from '@/db';
 import { DOCUMENT_RULE_ENGINE_VERSION } from './document-field-evidence';
 import { documentBridgeRules, getRule } from './rules-catalog';
@@ -77,7 +78,9 @@ const RETRY_BACKOFF_MIN = 10;
 
 export type CampaignOutcome = 'KEPT' | 'AUTO_RESOLVED' | 'DEFERRED' | 'REMOVED' | 'REPLACED_BY_INTERVENTION' | 'RESOLVED_ELSEWHERE' | 'ERROR'
   /** Phase décisions (lot 72) : décision sans carte confirmée, carte devenue justifiée. */
-  | 'NO_CARD' | 'CREATED';
+  | 'NO_CARD' | 'CREATED'
+  /** Lot 82A (C-Q10) : erreur à reprendre d'un compte devenu non éligible — non traitée (rattrapage à la réactivation). */
+  | 'SKIPPED_INELIGIBLE';
 
 type Raw = Record<string, unknown>;
 const q = async (sql: string, params: unknown[] = []): Promise<Raw[]> => (await pgClient.unsafe(sql, params as never[])) as unknown as Raw[];
@@ -320,8 +323,10 @@ async function produireEtat(family: string, accountId: number, opts: { trigger: 
  */
 async function lotCartes(campaignId: number, code: string, cursor: number, multi: boolean): Promise<{ lignes: ItemRow[]; next: number | null; errorSample: string | null }> {
   const lot = await q(
+    // Lot 82A (C-Q10, §3.3) : campagne des seuls comptes éligibles.
     `SELECT id, account_id, target_type, target_id, rule_code, action_kind FROM to_process_actions
       WHERE resolved_at IS NULL AND rule_code = ANY($1::text[]) AND id > $2 ${multi ? '' : `AND target_type = 'DOCUMENT'`}
+        AND ${processingEligibleSql('to_process_actions.account_id')}
       ORDER BY id LIMIT $3`,
     [campaignRuleCodes(multi), cursor, BATCH],
   );
@@ -426,6 +431,7 @@ async function lotDecisions(code: string, cursorFile: number): Promise<{ lignes:
         ORDER BY x.account_id, x.file_id, x.rule_code, x.id DESC) e
       JOIN asset_files f ON f.id = e.file_id AND f.account_id = e.account_id AND f.deleted_at IS NULL
       WHERE e.outcome IN ('NO_ACTION', 'DEFER', 'AUTO_RESOLVED')
+        AND ${processingEligibleSql('e.account_id')}
         AND NOT EXISTS (SELECT 1 FROM to_process_actions a WHERE a.account_id = e.account_id AND a.target_type = 'DOCUMENT'
                           AND a.target_id = e.file_id AND a.resolved_at IS NULL AND a.rule_code = e.rule_code)
         AND (e.engine_version IS DISTINCT FROM $3
@@ -468,6 +474,14 @@ async function lotDecisions(code: string, cursorFile: number): Promise<{ lignes:
  * première erreur conservée. `waiting` : des reprises restent programmées.
  */
 async function lotReprise(campaignId: number, code: string): Promise<{ processed: number; waiting: boolean; errorSample: string | null; outcomes: string[] }> {
+  // Lot 82A (C-Q10) : erreurs d'un compte devenu non éligible — non reprises,
+  // issue tracée (`SKIPPED_INELIGIBLE`), plus bloquantes ; le contrôle de
+  // rattrapage de la réactivation les reprend.
+  await q(
+    `UPDATE to_process_relevance_campaign_items SET final_outcome = 'SKIPPED_INELIGIBLE', last_error = NULL, retry_after = NULL, retried_at = now()
+      WHERE campaign_id = $1 AND last_error IS NOT NULL AND NOT ${processingEligibleSql('to_process_relevance_campaign_items.account_id')}`,
+    [campaignId],
+  );
   const items = await q(
     `SELECT id, action_id, account_id, target_type, target_id, file_id, rule_code, phase FROM to_process_relevance_campaign_items
       WHERE campaign_id = $1 AND last_error IS NOT NULL AND attempts < $2 AND (retry_after IS NULL OR retry_after <= now())

@@ -23,9 +23,6 @@ vi.mock('@/services/ai/reconciliation/coherence-impact', () => ({ hasCoherenceIm
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({
   emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
 }));
-vi.mock('@/services/coherence/impact-propagation.service', async (orig) => ({
-  ...(await orig<object>()), emitAgendaItemCreated: async () => {},
-}));
 
 const trace = {
   traceIds: [], operationCodes: [], totalInputTokens: 0, totalOutputTokens: 0,

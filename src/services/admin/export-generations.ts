@@ -16,11 +16,18 @@
  */
 import type { ExtractionStatus } from '@/services/admin/account-data/model';
 
-export type ExportKind = 'ACCOUNT_DATA' | 'TECH_DIAGNOSTIC';
+/** Lot 82E : une génération précise (export de recette : détail, téléchargement). */
+export async function getGeneration(id: string): Promise<GenerationRow | null> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) return null;
+  return (await listGenerations({ id, pageSize: 1 })).items[0] ?? null;
+}
 
-/** Générations simultanées par instance (au-delà : 429, réessayer). */
-export const MAX_CONCURRENT: Readonly<Record<ExportKind, number>> = { ACCOUNT_DATA: 3, TECH_DIAGNOSTIC: 2 };
-const running: Record<ExportKind, number> = { ACCOUNT_DATA: 0, TECH_DIAGNOSTIC: 0 };
+export type ExportKind = 'ACCOUNT_DATA' | 'TECH_DIAGNOSTIC' | 'RECETTE_EXPORT';
+export const EXPORT_KINDS: readonly ExportKind[] = ['ACCOUNT_DATA', 'TECH_DIAGNOSTIC', 'RECETTE_EXPORT'];
+
+/** Générations simultanées par instance (au-delà : 429, réessayer). Lot 82E : un seul export de recette. */
+export const MAX_CONCURRENT: Readonly<Record<ExportKind, number>> = { ACCOUNT_DATA: 3, TECH_DIAGNOSTIC: 2, RECETTE_EXPORT: 1 };
+const running: Record<ExportKind, number> = { ACCOUNT_DATA: 0, TECH_DIAGNOSTIC: 0, RECETTE_EXPORT: 0 };
 
 /** Réserve une place de génération ; `release` à appeler une fois (idempotent). */
 export function tryAcquireExportSlot(kind: ExportKind): { release: () => void } | null {
@@ -32,6 +39,19 @@ export function tryAcquireExportSlot(kind: ExportKind): { release: () => void } 
 
 /** Au-delà, une génération encore RUNNING est considérée interrompue (processus arrêté). */
 export const STALE_RUNNING_MS = 2 * 60 * 60_000;
+/**
+ * Lot 82E — génération en tâche de fond (export de recette) : interrompue si
+ * son dernier signe de vie (`heartbeat_at`, écrit au moins toutes les 30 s)
+ * date de plus de 10 minutes — quelle que soit sa durée totale.
+ */
+export const STALE_HEARTBEAT_MS = 10 * 60_000;
+
+/** Interrompue (processus arrêté) ? Pure. */
+export function isInterrupted(r: { status: string; startedAt: string; heartbeatAt?: string | null }, now: number): boolean {
+  if (r.status !== 'RUNNING') return false;
+  if (r.heartbeatAt) return now - Date.parse(r.heartbeatAt) > STALE_HEARTBEAT_MS;
+  return now - Date.parse(r.startedAt) > STALE_RUNNING_MS;
+}
 
 export interface GenerationStart {
   id: string;
@@ -42,6 +62,8 @@ export interface GenerationStart {
   targetId: number | null;
   targetAccountId: number | null;
   perimeter: Record<string, unknown>;
+  /** Lot 82E : préfixe de stockage des fichiers (génération stockée). */
+  storagePrefix?: string | null;
 }
 
 export interface GenerationEnd {
@@ -62,9 +84,12 @@ export async function startGeneration(g: GenerationStart): Promise<void> {
   try {
     const { pgClient } = await import('@/db');
     await pgClient.unsafe(
-      `INSERT INTO admin_export_generations (id, kind, mode, admin_user_id, target_type, target_id, target_account_id, perimeter)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb) ON CONFLICT (id) DO NOTHING`,
-      [g.id, g.kind, g.mode, g.adminUserId, g.targetType, g.targetId, g.targetAccountId, JSON.stringify(g.perimeter)] as never[],
+      g.storagePrefix
+        ? `INSERT INTO admin_export_generations (id, kind, mode, admin_user_id, target_type, target_id, target_account_id, perimeter, storage_prefix, heartbeat_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, now()) ON CONFLICT (id) DO NOTHING`
+        : `INSERT INTO admin_export_generations (id, kind, mode, admin_user_id, target_type, target_id, target_account_id, perimeter)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb) ON CONFLICT (id) DO NOTHING`,
+      [g.id, g.kind, g.mode, g.adminUserId, g.targetType, g.targetId, g.targetAccountId, JSON.stringify(g.perimeter), ...(g.storagePrefix ? [g.storagePrefix] : [])] as never[],
     );
   } catch (e) {
     console.error('[admin/export-generations] début non journalisé :', (e as Error)?.message ?? e);
@@ -84,6 +109,20 @@ export async function finishGeneration(id: string, e: GenerationEnd): Promise<vo
     );
   } catch (err) {
     console.error('[admin/export-generations] fin non journalisée :', (err as Error)?.message ?? err);
+  }
+}
+
+/** Lot 82E — signe de vie et progression d'une génération en tâche de fond (jamais bloquant). */
+export async function heartbeatGeneration(id: string, p: { rowsExported?: number; files?: number; bytes?: number } = {}): Promise<void> {
+  try {
+    const { pgClient } = await import('@/db');
+    await pgClient.unsafe(
+      `UPDATE admin_export_generations SET heartbeat_at = now(), rows_exported = COALESCE($2, rows_exported), files = COALESCE($3, files), bytes = COALESCE($4, bytes)
+        WHERE id = $1 AND status = 'RUNNING'`,
+      [id, p.rowsExported ?? null, p.files ?? null, p.bytes ?? null] as never[],
+    );
+  } catch (e) {
+    console.error('[admin/export-generations] signe de vie non écrit :', (e as Error)?.message ?? e);
   }
 }
 
@@ -110,28 +149,34 @@ export interface GenerationRow {
   fileName: string | null;
   startedAt: string;
   finishedAt: string | null;
+  /** Lot 82E : génération stockée (préfixe) et dernier signe de vie. */
+  storagePrefix: string | null;
+  heartbeatAt: string | null;
 }
 
 /** Générations récentes (pagination technique : `pageSize` ≤ 100, toutes les pages accessibles). */
-export async function listGenerations(opts: { page?: number; pageSize?: number; kind?: ExportKind | null; now?: Date } = {}): Promise<{ items: GenerationRow[]; total: number; page: number; pageSize: number }> {
+export async function listGenerations(opts: { page?: number; pageSize?: number; kind?: ExportKind | null; now?: Date; id?: string | null } = {}): Promise<{ items: GenerationRow[]; total: number; page: number; pageSize: number }> {
   const { readOnlyExecutor } = await import('@/services/business-operations/diagnostics/service');
   const pageSize = Math.min(100, Math.max(1, Math.floor(opts.pageSize ?? 20)));
   const page = Math.max(1, Math.floor(opts.page ?? 1));
   const now = (opts.now ?? new Date()).getTime();
   return readOnlyExecutor(async (q) => {
-    const [c] = await q(`SELECT count(*)::int AS n FROM admin_export_generations WHERE ($1::text IS NULL OR kind = $1)`, [opts.kind ?? null]);
+    const where = `($1::text IS NULL OR kind = $1) AND ($2::uuid IS NULL OR id = $2::uuid)`;
+    const params = [opts.kind ?? null, opts.id ?? null];
+    const [c] = await q(`SELECT count(*)::int AS n FROM admin_export_generations WHERE ${where}`, params);
     const rows = await q(
       `SELECT id::text, kind, mode, admin_user_id, target_type, target_id, target_account_id, perimeter, status, snapshot_at, rows_expected, rows_exported,
-              batches, bytes, files, sections, error, file_name, started_at, finished_at
-         FROM admin_export_generations WHERE ($1::text IS NULL OR kind = $1)
-        ORDER BY started_at DESC, id LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, [opts.kind ?? null]);
+              batches, bytes, files, sections, error, file_name, started_at, finished_at, storage_prefix, heartbeat_at
+         FROM admin_export_generations WHERE ${where}
+        ORDER BY started_at DESC, id LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, params);
     const iso = (v: unknown) => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
     const n = (v: unknown) => (v == null ? null : Number(v));
     return {
       total: Number(c?.n ?? 0), page, pageSize,
       items: rows.map((r) => {
         const startedAt = iso(r.started_at)!;
-        const interrupted = r.status === 'RUNNING' && now - Date.parse(startedAt) > STALE_RUNNING_MS;
+        const heartbeatAt = iso(r.heartbeat_at);
+        const interrupted = isInterrupted({ status: String(r.status), startedAt, heartbeatAt }, now);
         return {
           id: String(r.id), kind: r.kind as ExportKind, mode: String(r.mode), adminUserId: n(r.admin_user_id), targetType: r.target_type == null ? null : String(r.target_type),
           targetId: n(r.target_id), targetAccountId: n(r.target_account_id), perimeter: (r.perimeter ?? {}) as Record<string, unknown>,
@@ -140,6 +185,7 @@ export async function listGenerations(opts: { page?: number; pageSize?: number; 
           sections: Array.isArray(r.sections) ? r.sections : [],
           error: interrupted ? 'génération interrompue (processus arrêté avant la fin) — relancer la génération' : (r.error == null ? null : String(r.error)),
           fileName: r.file_name == null ? null : String(r.file_name), startedAt, finishedAt: iso(r.finished_at),
+          storagePrefix: r.storage_prefix == null ? null : String(r.storage_prefix), heartbeatAt,
         };
       }),
     };

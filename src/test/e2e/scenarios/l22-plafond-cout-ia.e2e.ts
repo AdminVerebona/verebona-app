@@ -66,6 +66,8 @@ scenario('L22-A', 'Plafond mensuel de coût IA par compte (offre, dérogation, r
   const compteDuo = async () => {
     const c = await make.account();
     await sql`UPDATE accounts SET plan_type = 'PREMIUM_DUO' WHERE id = ${c.id}`;
+    // Lot 82A : le compte de test porte désormais un abonnement (Standard) — offre alignée.
+    await sql`UPDATE account_subscriptions SET plan_code = 'premium_duo' WHERE account_id = ${c.id}`;
     return c;
   };
   const depenser = async (accountId: number, micros: number, useCase = 'SOURCE_ANALYSIS') => {

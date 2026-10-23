@@ -252,16 +252,19 @@ async function controle(model: string, secret: string, call: ProbeCall, traced: 
   const started = Date.now();
   let tokens = { inputTokens: 0, outputTokens: 0 };
   let outcome: ProbeOutcome;
+  let raw: string | null = null;
   try {
     const r = await call(model);
+    raw = r.rawText;
     tokens = { inputTokens: r.inputTokens ?? 0, outputTokens: r.outputTokens ?? 0 };
     outcome = classifyProbeResponse(r.rawText);
   } catch (e) {
     outcome = classifyProbeFailure(e, { model, secret });
   }
   if (traced) {
+    const error = outcome.status === 'ok' ? null : outcome.error;
     await traceTechnicalCall('model_operational_probe', model, outcome.status === 'ok', Date.now() - started, tokens,
-      outcome.status === 'ok' ? null : outcome.error);
+      error, { input: probeCallInput(model), responseRaw: raw });
   }
   return outcome;
 }
@@ -315,6 +318,8 @@ export async function traceTechnicalCall(
   operationCode: 'model_operational_probe' | 'model_qualification_probe',
   model: string, ok: boolean, durationMs: number,
   tokens: { inputTokens: number; outputTokens: number }, error: string | null,
+  /** Lot 82C (LOG-01) : requête transmise et réponse brute, pour la capture complète. */
+  exchange?: { input: import('../gateway/providers/provider.port').ProviderCallInput; responseRaw: string | null },
 ): Promise<void> {
   try {
     const [{ recordCallTrace }, { calcCostMicros }] = await Promise.all([
@@ -339,6 +344,12 @@ export async function traceTechnicalCall(
       errorMessage: error ? sanitizeProviderError(error) : undefined,
       billable: false,
       shadow: false,
+      ...(exchange ? {
+        capture: (await import('../telemetry/call-capture')).technicalCapture({
+          origin: operationCode, input: exchange.input, responseRaw: exchange.responseRaw,
+          error: error ? sanitizeProviderError(error) : null, durationMs,
+        }),
+      } : {}),
     });
   } catch (e) {
     console.warn('[model-operational] trace de sonde impossible :', sanitizeProviderError((e as Error).message));

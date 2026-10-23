@@ -21,6 +21,7 @@
  * Le moteur décide QUOI, T6 décide COMMENT le dire, le front COMMENT
  * l'afficher, les parcours existants COMMENT modifier les données (§5).
  */
+import { isAccountProcessingEligible } from '@/services/account/processing-eligibility';
 import { collectMascotData } from './collector';
 import { buildCandidates, openOverdueCount } from './signals';
 import { buildSecondaries, selectSubjects, withSuggestedQuestions } from './selector';
@@ -100,7 +101,12 @@ export async function getMascotPresentation(
   // décisions.
   let interpellation = await prepare(accountId, userId, raw, mode);
   let reprise = false;
-  if (interpellation.bundle) {
+  // Lot 82A (C-Q10, §3.3) : compte non actif, suspendu ou en lecture seule —
+  // aucun traitement T6 (ni évaluation ni formulation, ni pré-génération) :
+  // l'accueil reste consultable avec son texte déterministe. Lecture
+  // impossible : prudence, pas d'appel T6.
+  const t6Permis = await isAccountProcessingEligible(accountId, { maxAgeMs: 5_000 }).catch(() => false);
+  if (interpellation.bundle && t6Permis) {
     const bundle = interpellation.bundle;
     const evaluation = evaluateWithT6({ accountId, bundle, mode }, {
       ...t6EvaluationDefaultDeps,
@@ -210,7 +216,7 @@ export async function getMascotPresentation(
   // (source en panne) : aucune question plutôt qu'une question trompeuse.
   let questions: T6SuggestionBundle | null = null;
   // Lot 81B (A) : formulation plafonnée — ni questions ni FORMULATE.
-  const formuler = opts.formulate !== false;
+  const formuler = opts.formulate !== false && t6Permis;
   if (formuler && !candidates.degraded && await questionsP) {
     const speech = composeSpeech({ presentation: secours, empty: false }).text;
     const attentionToday = (secours.state?.actions ?? 0) > 0;

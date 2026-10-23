@@ -350,7 +350,7 @@ async function assetDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity
     SELECT 'equipment' AS type, e.id, e.name AS label, 'équipement du bien' AS nature,
            coalesce(e.status, '') || CASE WHEN e.archived_at IS NOT NULL THEN ' (archivé)' ELSE '' END AS status, NULL AS origin, 'equipments.asset_id' AS via
       FROM equipments e WHERE e.asset_id = $2 AND $1::int IS NOT NULL ORDER BY e.id`, [A, id]);
-  await relSection(ctx, 'rel-pieces', 'Pièces (sous-structures)', `
+  await relSection(ctx, 'rel-pieces', 'Pièces', `
     SELECT 'room' AS type, s.id, s.name AS label, 'pièce du bien' AS nature, s.room_type AS status, NULL AS origin, 'substructures.asset_id' AS via
       FROM substructures s WHERE s.asset_id = $2 AND $1::int IS NOT NULL ORDER BY s.id`, [A, id]);
   await relSection(ctx, 'rel-documents', 'Documents', `
@@ -507,7 +507,7 @@ async function roomDossier(ctx: Ctx, id: number): Promise<EntityDossier['entity'
   if (!row) throw new EntityNotFoundError();
   const [parent] = await ctx.q(`SELECT deleted_at FROM assets WHERE id = $1 AND account_id = $2`, [row.asset_id, A]);
 
-  await section(ctx, { id: 'identite', tab: 'synthese', title: 'Identité de la pièce (sous-structure)', description: 'Table substructures — l’ancienne table rooms n’est pas une source métier (D-G).' }, async () => ({
+  await section(ctx, { id: 'identite', tab: 'synthese', title: 'Identité de la pièce', description: 'Table technique substructures (Pièces, décision D-G) — l’ancienne table rooms n’est pas une source métier.' }, async () => ({
     fields: pick('substructures', row, [['id', 'Identifiant'], ['name', 'Nom'], ['room_type', 'Type'], ['area', 'Surface — colonne miroir'], ['asset_id', 'Bien parent (id)'],
       ['legacy_room_id', 'Ancienne pièce (rooms.id, historique)'], ['created_at', 'Créée le'], ['updated_at', 'Modifiée le']]),
   }));
