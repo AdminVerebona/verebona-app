@@ -5,6 +5,7 @@ import { db } from '@/db';
 import { assetFiles, adminAuditLog, documentTypes } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { isKnownStorageDocumentCode } from '@/lib/referential/document-codes';
 import { analyzeFileSources } from '@/services/ai/source-analysis/entrypoint';
 import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
@@ -34,6 +35,9 @@ export async function PUT(
         { status: 400 }
       );
     }
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
     const { id: rawId } = await params;
     const documentId = parseInt(rawId);
 

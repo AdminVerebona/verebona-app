@@ -51,6 +51,13 @@ export interface ComponentProvenance {
    * AUTRE bien (T1 y a lu le prix d'acquisition de cet autre bien).
    */
   otherAssetAcquisition?: boolean;
+  /**
+   * Lot 85A (O-9) : identités STABLES de ses sources non documentaires
+   * reproductibles (`tcoSourceIdentity` : donnée structurée du bien ou de
+   * l'équipement, élément d'agenda) — elles survivent à une reconstruction des
+   * Opérations (O-2), contrairement à l'identifiant d'Opération.
+   */
+  otherSourceKeys?: readonly string[];
 }
 
 /** Relation récurrente : des échéances de même montant à des dates différentes sont des paiements distincts. */

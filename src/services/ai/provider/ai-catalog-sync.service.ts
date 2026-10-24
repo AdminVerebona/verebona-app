@@ -6,13 +6,18 @@
  * UNE SEULE FONCTION MÉTIER
  *
  * `syncAiCatalog` est appelée À L'IDENTIQUE par :
- *   · la tâche planifiée interne `ai-catalog-sync` (toutes les 6 h) ;
+ *   · la tâche planifiée interne `ai-catalog-sync` (lot 85C, CAT-01 : chaque
+ *     jour — plus toutes les 6 h) ;
  *   · le bouton « Actualiser le catalogue » (Fournisseur IA) ;
  * il n'existe pas deux implémentations. Elle enchaîne :
  *   1. catalogue modèles : `GET /v1beta/models` avec la clé active —
  *      découverte, statut fournisseur, disparition (`refreshModelCatalog`) ;
- *   2. qualification technique automatique des modèles listés jamais (ou
- *      plus récemment) qualifiés, hors expérimentaux — bornée par passage ;
+ *   1 bis. lot 85C (CAT-03) : FICHES DE CAPACITÉS figées dans le catalogue ;
+ *      un changement de fiche est journalisé et marque « requalification
+ *      nécessaire » (événement) — un passage sans changement ne lance rien (R46) ;
+ *   2. qualification technique automatique des modèles listés jamais
+ *      qualifiés ou marqués à requalifier (plus jamais par ancienneté), hors
+ *      expérimentaux ET Preview (décision PO 02) — bornée par passage ;
  *   3. statut opérationnel : génération minimale des modèles déjà
  *      utilisables (registre ou qualifiés) ;
  *   4. catalogue tarifaire : page officielle Google (`syncPricingCatalog`) —
@@ -39,6 +44,8 @@ export interface AiCatalogSyncResult {
   trigger: SyncTrigger;
   catalog: { ok: boolean; modelsSeen: number; discovered: string[]; disappeared: string[]; error?: string };
   qualification: { qualified: string[]; failed: string[]; inconclusive: string[]; remaining: number };
+  /** Lot 85C : fiches de capacités (changements, requalifications marquées). */
+  capabilities?: { checked: number; changed: string[]; requalificationMarked: string[] };
   operational: { probed: number; failed: string[] };
   pricing: Pick<PricingSyncResult, 'status' | 'sourceRead' | 'error'> & { known: number; unknown: number; changed: number };
   baseline: boolean;
@@ -86,7 +93,9 @@ async function defaultLock(): Promise<{ release: () => Promise<void> } | null> {
  * Ordre de qualification : modèles découverts à ce passage (ceux qu'on
  * attend), modèles des configurations actives (déjà utilisables par leur
  * qualification historique), registre, puis les autres (identifiants les plus
- * récents d'abord). Les expérimentaux ne sont jamais qualifiés.
+ * récents d'abord). Les expérimentaux ne sont jamais qualifiés ; lot 85C
+ * (décision PO 02, CAT-02, R01, R69) : les Preview non plus — visibles au
+ * catalogue pour information seulement.
  */
 export function qualificationOrder(
   listed: readonly Pick<ListedModel, 'model' | 'lifecycle'>[],
@@ -94,7 +103,7 @@ export function qualificationOrder(
 ): string[] {
   const rang = (m: string) => (priority.discovered?.has(m) ? 0 : priority.active.has(m) ? 1 : priority.declared.has(m) ? 2 : 3);
   return listed
-    .filter((m) => m.lifecycle !== 'experimental')
+    .filter((m) => m.lifecycle !== 'experimental' && m.lifecycle !== 'preview')
     .map((m) => m.model)
     .sort((a, b) => rang(a) - rang(b) || b.localeCompare(a));
 }
@@ -130,11 +139,18 @@ export async function syncAiCatalog(
     const { getProviderSecret } = await import('./provider-secret');
     const secret = await getProviderSecret('gemini').catch(() => null);
 
+    // 1 bis. Lot 85C : fiches de capacités ; changement → requalification marquée.
+    const { recordCapabilitySnapshot } = await import('./model-capabilities.repository');
+    if (cat.ok) {
+      const c = await recordCapabilitySnapshot({ trigger: opts.trigger, markRequalification: true, now });
+      result.capabilities = { checked: c.checked, changed: c.changed, requalificationMarked: c.requalificationMarked };
+    }
+
     if (cat.ok && secret && cat.listed?.length) {
       // 2. Qualification automatique.
-      const [Q, { DECLARED_MODELS }, { loadActiveChains }, { recordOperationalCheck, probeModels }, { thinkingConfigFor }] = await Promise.all([
+      const [Q, { DECLARED_MODELS }, { loadActiveChains }, { recordOperationalCheck, probeModels }, { capabilitiesOf }] = await Promise.all([
         import('./model-qualification.service'), import('../registry/models'), import('./active-model-anomalies'),
-        import('./model-operational.service'), import('../gateway/providers/gemini-generation-config'),
+        import('./model-operational.service'), import('./model-capabilities'),
       ]);
       const stored = await Q.loadQualifications(secret);
       const actifs = new Set((await loadActiveChains().catch(() => [])).map((c) => c.model));
@@ -159,9 +175,9 @@ export async function syncAiCatalog(
         traites += paquet.length;
         const resultats = await Promise.all(paquet.map(async (model) => ({
           model,
+          // Lot 85C : épreuves construites d'après la fiche de capacités (constructeur unique).
           r: await Q.qualifyModel(model, call, {
-            secret, supportsThinking: parModele.get(model)?.supportsThinking ?? null,
-            thinkingConfigured: (m) => thinkingConfigFor(m, 'étendu') !== undefined,
+            secret, supportsThinking: parModele.get(model)?.supportsThinking ?? null, capabilities: capabilitiesOf(model),
           }),
         })));
         for (const { model, r } of resultats) {
@@ -183,11 +199,16 @@ export async function syncAiCatalog(
         }
       }
       result.qualification.remaining = Math.max(0, aQualifier.length - traites);
+      // Lot 85C : constats des sondes reportés dans les fiches, SANS marquer de
+      // requalification (changement issu de la qualification elle-même).
+      if (qualifiesIci.size > 0) await recordCapabilitySnapshot({ trigger: 'qualification', markRequalification: false, now });
 
       // 3. Statut opérationnel des modèles déjà utilisables.
       const apres = await Q.loadQualifications(secret);
+      // Lot 85C (décision 02) : aucun appel à un modèle Preview, sonde comprise.
+      const previews = new Set(cat.listed.filter((m) => m.lifecycle === 'preview').map((m) => m.model));
       const aSonder = cat.listed.map((m) => m.model)
-        .filter((m) => !qualifiesIci.has(m) && (aConfirmer.has(m) || declares.has(m) || apres.get(m)?.generate))
+        .filter((m) => !previews.has(m) && !qualifiesIci.has(m) && (aConfirmer.has(m) || declares.has(m) || apres.get(m)?.generate))
         .sort((a, b) => Number(aConfirmer.has(b) || actifs.has(b)) - Number(aConfirmer.has(a) || actifs.has(a)))
         .slice(0, MAX_PROBES);
       if (aSonder.length > 0) {
@@ -249,6 +270,7 @@ export function summaryOf(r: AiCatalogSyncResult): Record<string, unknown> {
     qualified: r.qualification.qualified, failed: r.qualification.failed,
     ...(r.qualification.inconclusive.length ? { inconclusive: r.qualification.inconclusive } : {}),
     ...(r.qualification.remaining ? { remaining: r.qualification.remaining } : {}),
+    ...(r.capabilities ? { capabilities: { checked: r.capabilities.checked, changed: r.capabilities.changed, requalify: r.capabilities.requalificationMarked } } : {}),
     probed: r.operational.probed, notOperational: r.operational.failed,
     pricing: { status: r.pricing.status, known: r.pricing.known, unknown: r.pricing.unknown, changed: r.pricing.changed, ...(r.pricing.error ? { error: r.pricing.error } : {}) },
     ...(r.baseline ? { baseline: true } : {}),

@@ -235,11 +235,9 @@ scenario('L53B-D23', 'Relations intercomptes : inventaire, neutralisation, corre
     await route('GET /api/equipments/[id]/suppliers', () => eqSup.GET(req(`/api/equipments/${moi.equip}/suppliers`), ctx('id', moi.equip)));
     const eqAg = await import('@/app/api/equipments/[id]/agenda/route');
     await route('GET /api/equipments/[id]/agenda', () => eqAg.GET(req(`/api/equipments/${moi.equip}/agenda`), ctx('id', moi.equip)));
-    const evs = await import('@/app/api/events/route');
-    await route('GET /api/events?assetId', () => evs.GET(req(`/api/events?assetId=${moi.bien.id}`)));
-    // Lot 84A (O-10, E25) : GET /api/events/[id]/documents retiré (aucun appelant) ; lecture équivalente : /api/documents/[id]/events.
-    const dev = await import('@/app/api/documents/[id]/events/route');
-    await route('GET /api/documents/[id]/events', () => dev.GET(req(`/api/documents/${moi.fichier}/events`), ctx('id', moi.fichier)));
+    // Lot 85D : routes « events » retirées (dernières : GET /api/events, /api/documents/[id]/events) ; lecture équivalente : liens Agenda du document.
+    const dev = await import('@/app/api/documents/[id]/agenda-liens/route');
+    await route('GET /api/documents/[id]/agenda-liens', () => dev.GET(req(`/api/documents/${moi.fichier}/agenda-liens`), ctx('id', moi.fichier)));
     const sup = await import('@/app/api/suppliers/[id]/route');
     await route('GET /api/suppliers/[id]', () => sup.GET(req(`/api/suppliers/${moi.fourn}`), ctx('id', moi.fourn)));
     // Assistant (T2) : lectures canoniques.
@@ -390,9 +388,9 @@ scenario('L53B-D23', 'Relations intercomptes : inventaire, neutralisation, corre
     expect(await sql`SELECT 1 FROM event_documents WHERE event_id = ${P.evt} AND file_id = ${P.fichier}`).toHaveLength(1);
     expect(await sql`SELECT 1 FROM equipment_suppliers WHERE equipment_id = ${P.equip} AND supplier_id = ${P.fourn}`).toHaveLength(1);
     as(P.acc, membre.id);
-    // Lot 84A (O-10, E25) : lecture par le document (GET /api/events/[id]/documents retiré).
-    const dev = await import('@/app/api/documents/[id]/events/route');
-    expect((await (await dev.GET(req(`/api/documents/${P.fichier}/events`), ctx('id', P.fichier))).json()).total).toBe(1);
+    // Lot 85D : routes « events » retirées — la relation historique reste en base (ci-dessus), le document reste lisible par le membre.
+    const dev = await import('@/app/api/documents/[id]/agenda-liens/route');
+    expect((await dev.GET(req(`/api/documents/${P.fichier}/agenda-liens`), ctx('id', P.fichier))).status).toBe(200);
     const docs = await import('@/app/api/documents/route');
     const liste = await (await docs.GET(req(`/api/documents?assetId=${P.bien.id}`))).json() as { data: Array<{ id: number; asset: { name: string } | null }> };
     expect(liste.data.find((d) => d.id === P.fichier)?.asset?.name).toContain('PARTAGE-maison');

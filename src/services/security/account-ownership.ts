@@ -225,41 +225,10 @@ export async function assertTargetInAccount(
   }
 }
 
-/**
- * Lot 54 (SEC-03 « écritures concurrentes ») : même contrôle que
- * `assertTargetInAccount`, mais DANS la transaction de l'écriture et APRÈS
- * avoir verrouillé (FOR SHARE) le bien, la pièce et l'équipement visés et le
- * bien porteur de chacun. Un changement de compte ou de rattachement
- * concurrent (UPDATE de `assets.account_id`, `equipments.asset_id`…) attend
- * la fin de la transaction : l'appartenance vérifiée est celle du moment
- * effectif de l'écriture. Filet en base : garde différée 0373.
- *
- * À appeler avec l'exécutant de la transaction (`db.transaction(tx => …)`).
- */
-export async function lockTargetInAccount(
-  accountId: number,
-  t: { assetId?: number | null; substructureId?: number | null; equipmentId?: number | null },
-  tx: SqlExecutor,
-): Promise<void> {
-  const sid = t.substructureId ?? null;
-  const eid = t.equipmentId ?? null;
-  if (sid) await tx.execute(sql`SELECT id FROM substructures WHERE id = ${sid}::int FOR SHARE`);
-  if (eid) await tx.execute(sql`SELECT id FROM equipments WHERE id = ${eid}::int FOR SHARE`);
-  await tx.execute(sql`
-    SELECT b.id FROM assets b
-     WHERE b.id IN (${t.assetId ?? null}::int,
-                    (SELECT asset_id FROM substructures WHERE id = ${sid}::int),
-                    (SELECT asset_id FROM equipments WHERE id = ${eid}::int))
-     ORDER BY b.id
-       FOR SHARE`);
-  await assertTargetInAccount(accountId, t, tx);
-}
-
-/** Refus de la garde en base (0332 / 0373) : `CROSS_ACCOUNT_LINK`, SQLSTATE 23514. */
-export function isCrossAccountDbRefusal(e: unknown): boolean {
-  const x = e as { message?: unknown; cause?: { message?: unknown } } | null;
-  return /CROSS_ACCOUNT_LINK/.test(`${String(x?.message ?? '')} ${String(x?.cause?.message ?? '')}`);
-}
+// Lot 85D : `lockTargetInAccount` (verrou FOR SHARE des cibles dans la
+// transaction d'écriture, lot 54 SEC-03) et `isCrossAccountDbRefusal` sont
+// retirés avec leur seul appelant, `POST /api/events`. La garde différée en
+// base (0373) reste le filet de toute écriture.
 
 // ── Condition de compte DANS le SQL d'une écriture ──────────────────────────
 

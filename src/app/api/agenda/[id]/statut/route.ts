@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { updateManualStatus } from '@/services/agenda/AgendaWriteService';
 
 /** `params` est une promesse depuis Next.js 15 — cf. `../route.ts`. */
@@ -20,6 +21,10 @@ export async function PATCH(req: NextRequest, context: RouteContext) {
     const { id: rawId } = await context.params;
     const id = parseInt(rawId, 10);
     if (isNaN(id)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
+
+    // Lot 85D : changer le statut est une écriture — refusée en lecture seule.
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     const body = await req.json();
     const { manualStatus } = body;

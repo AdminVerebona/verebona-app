@@ -73,9 +73,10 @@ describe('CAT-01 à CAT-04 — nouveau modèle découvert, qualifié, proposé s
 });
 
 describe('CAT-05 à CAT-07 — Preview et tarif inconnu', () => {
-  it('CAT-05 — preview qualifié : proposé, statut Preview visible (y compris en production, pour T2)', () => {
-    expect(noms('T2')).toContain('gemini-9-pro-preview');
-    expect(usableModelsForTreatment('T2', ctx()).find((m) => m.model === 'gemini-9-pro-preview')?.status).toBe('preview');
+  // Lot 85C (décision PO 02) : remplace « preview proposé » du lot 35B.
+  it('CAT-05 (lot 85C) — preview : jamais proposé, même qualifié, y compris en production, pour T2', () => {
+    expect(noms('T2')).not.toContain('gemini-9-pro-preview');
+    expect(usableModelsForTreatment('T2', ctx()).find((m) => m.model === 'gemini-9-pro-preview')).toBeUndefined();
   });
   it('CAT-06/CAT-07 — sans tarif récupérable : proposé quand même, priced=false (UNKNOWN), aucun montant', () => {
     const m = usableModelsForTreatment('T2', ctx()).find((x) => x.model === 'gemini-9-flash');

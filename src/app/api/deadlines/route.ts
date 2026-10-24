@@ -21,6 +21,7 @@ import { db } from '@/db';
 import { parsePaginationParams, buildPaginationResponse, getCursorId } from '@/lib/pagination';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 
 const VALID_DEADLINE_TYPES = ['ENTRETIEN', 'CONTROLE_TECHNIQUE', 'ASSURANCE', 'GARANTIE', 'ADMINISTRATIF', 'AUTRE'] as const;
 
@@ -166,6 +167,9 @@ export async function POST(request: NextRequest) {
     if (!session.currentAccountId) {
       return apiError(401, 'UNAUTHORIZED', 'No account selected');
     }
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
 
     const body = await request.json();
     const { assetId, label, deadlineDate, deadlineType, isDone, doneDate, notes, substructureId, equipmentId } = body;
@@ -241,6 +245,9 @@ export async function PUT(request: NextRequest) {
     if (!session.currentAccountId) {
       return apiError(401, 'UNAUTHORIZED', 'No account selected');
     }
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
 
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
@@ -307,6 +314,9 @@ export async function DELETE(request: NextRequest) {
     if (!session.currentAccountId) {
       return apiError(401, 'UNAUTHORIZED', 'No account selected');
     }
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
 
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');

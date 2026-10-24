@@ -175,7 +175,7 @@ describe('CFG-01 : le service de versions invalide les caches après chaque écr
       getMasterPromptVersionRef: async () => null,
       ConfigVersionRefused: class extends Error {},
     }));
-    vi.doMock('../config-validation.service', () => ({ validateVersion: () => ({ valid: true, issues: [] }) }));
+    vi.doMock('../config-validation.service', () => ({ validateVersion: () => ({ valid: true, issues: [] }), capabilityIssues: () => [] }));
     vi.doMock('../../gateway/pricing/gemini-public-catalog', () => ({ GEMINI_PUBLIC_CATALOG: [] }));
     vi.doMock('../../gateway/pricing/pricing.repository', () => ({
       getCachedPrice: () => null, loadPricingCache: async () => undefined, getCacheState: () => ({ loadedAt: new Date() }),

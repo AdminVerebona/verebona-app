@@ -329,14 +329,18 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     onClose();
   }, [mode, dirty, onClose]);
 
-  // Ce tiroir n'a pas de mode édition séparé : la garde porte donc sur
-  // l'enregistrement. L'ouverture reste possible — consulter une échéance
-  // n'est pas une écriture.
+  // L'ouverture reste possible — consulter une échéance n'est pas une
+  // écriture. La garde porte sur « Modifier » (lot 85D : pas de formulaire
+  // rempli pour rien, comme le tiroir document), puis sur chaque écriture.
   const { garder } = useWriteGuard();
+  /**
+   * Lot 85D : toute écriture du tiroir (enregistrer, statut, confirmation de
+   * date, suppression) passe par la garde partagée — compte en lecture seule :
+   * fenêtre habituelle, aucun appel. Le serveur refuse de toute façon (403).
+   */
+  const autorise = () => { let ok = false; garder(() => { ok = true; }); return ok; };
   const handleSave = async () => {
-    let autorise = false;
-    garder(() => { autorise = true; });
-    if (!autorise) return;
+    if (!autorise()) return;
 
     if (!item) return;
     setSaving(true);
@@ -384,33 +388,34 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
   };
 
   const handleStatusChange = async (val: string) => {
-    if (!item) return;
+    if (!item || !autorise()) return;
     const manualStatus = val === "null" ? null : (val as "realise" | "annule");
     try {
       await apiClient.patch(`/api/agenda/${item.id}/statut`, { manualStatus });
       toast.success("Statut mis à jour");
       dispatchAgendaMutated();
       onMutated();
-    } catch {
-      toast.error("Erreur lors de la mise à jour du statut");
+    } catch (err: any) {
+      // 403 de droits : la fenêtre de fin d'essai est déjà ouverte (api-client).
+      if (err?.status !== 403) toast.error("Erreur lors de la mise à jour du statut");
     }
   };
 
   // Occurrence prévisionnelle : l'utilisateur peut la confirmer telle quelle.
   const handleConfirmForecast = async () => {
-    if (!item) return;
+    if (!item || !autorise()) return;
     try {
       await apiClient.post(`/api/agenda/${item.id}/confirm`, {});
       toast.success("Date confirmée");
       dispatchAgendaMutated();
       onMutated();
-    } catch {
-      toast.error("La confirmation n’a pas abouti");
+    } catch (err: any) {
+      if (err?.status !== 403) toast.error("La confirmation n’a pas abouti");
     }
   };
 
   const handleDelete = async () => {
-    if (!item) return;
+    if (!item || !autorise()) return;
     setDeleting(true);
 
     const confirmDeleted = () => {
@@ -435,10 +440,13 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       // Le message du serveur remplace le libellé générique : c'est lui qui
       // rend une violation de contrainte diagnosticable sans ouvrir les
       // journaux.
-      console.error("[agenda] suppression échouée", err);
-      toast.error(
-        err?.serverMessage || err?.message || "Erreur lors de la suppression",
-      );
+      // 403 de droits : la fenêtre de fin d'essai est déjà ouverte (api-client).
+      if (err?.status !== 403) {
+        console.error("[agenda] suppression échouée", err);
+        toast.error(
+          err?.serverMessage || err?.message || "Erreur lors de la suppression",
+        );
+      }
     } finally {
       setDeleting(false);
       setShowDeleteConfirm(false);
@@ -1053,7 +1061,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                 <button
                   type="button"
                   className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-muted/60 transition-colors text-foreground"
-                  onClick={startEdit}
+                  onClick={() => { if (autorise()) startEdit(); }}
                 >
                   <Edit className="w-4 h-4" />
                   <span className="text-[12px] font-semibold">Modifier</span>
@@ -1062,7 +1070,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                 <button
                   type="button"
                   className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-destructive/10 transition-colors text-destructive"
-                  onClick={() => setShowDeleteConfirm(true)}
+                  onClick={() => { if (autorise()) setShowDeleteConfirm(true); }}
                 >
                   <Trash2 className="w-4 h-4" />
                   <span className="text-[12px] font-semibold">Supprimer</span>

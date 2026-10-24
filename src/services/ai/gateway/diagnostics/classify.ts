@@ -169,6 +169,7 @@ export function stageOfSubtype(subtype: InvalidOutputSubtype): AiFailureStage {
     case 'MALFORMED_JSON': return 'json_parse';
     case 'STRUCTURED_OUTPUT_REJECTED': return 'structured_output';
     case 'PARAMETER_REJECTED': return 'provider_request';
+    case 'PARAMETER_INCOMPATIBLE': return 'request_build';
     case 'PARSER_ERROR': return 'result_mapping';
     case 'BUSINESS_VALIDATION_FAILED': return 'business_validation';
     case 'UNKNOWN': return 'post_processing';
@@ -304,6 +305,10 @@ export function classifyCallError(err: unknown): ClassifiedFailure {
   // autre règle : le message d'origine peut contenir des nombres ou des mots
   // qui ressemblent à un statut fournisseur.
   if (code === 'REQUEST_BUILD_FAILED') return out('INTERNAL_ERROR', 'request_build');
+  // Lot 85C (P4, CFG-03) : combinaison connue comme incompatible, refusée avant appel.
+  if (code === 'MODEL_PARAMETERS_INCOMPATIBLE') {
+    return { ...out('INPUT_ERROR', 'request_build', 'PARAMETER_INCOMPATIBLE'), rejectedParameter: typeof e.rejectedParameter === 'string' ? e.rejectedParameter : null };
+  }
   if (code === 'TIMEOUT' || e.name === 'AbortError' || status === 408 || status === 504 || pStatus === 'DEADLINE_EXCEEDED') {
     return out('TIMEOUT', 'provider_generation');
   }

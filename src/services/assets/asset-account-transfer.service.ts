@@ -121,6 +121,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['to_process_relevance_campaign_items', 'file_id'],
   // Lot 61 : historique des renommages (harmonisation T3) — suit le document (0450).
   ['document_rename_events', 'file_id'],
+  // Lot 85F : interprétations T3 de la connaissance T1 du document (0720) — suivent le document.
+  ['t3_knowledge_queries', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */

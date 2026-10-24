@@ -29,6 +29,7 @@ import { afterAll, beforeAll, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { setDefaultResponder } from '../replay-gateway';
 import { useTargetState } from '../chain';
+import { useKnowledgeQueryDelivered } from '../knowledge-query';
 
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
@@ -36,12 +37,19 @@ vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
 
 type Compte = { id: number; ownerUserId: number };
 
-/** Date relative au jour (ISO) et ses écritures documentaires. */
+/**
+ * Date relative au jour (ISO) et ses écritures documentaires. Lot 85F (stabilisation, aucune assertion
+ * changée) : la date n'est JAMAIS d'ordre jour / mois ambigu (jour et mois ≤ 12 et différents) — une telle
+ * date n'est volontairement jamais « certaine » (lot 72, C1) et rendait ECH-03/04, 09, 12 et 16 dépendants
+ * du jour d'exécution (ex. le 24/10/2026 : J+250 = 01/07/2027). On s'éloigne d'aujourd'hui (≤ 12 jours).
+ */
 const jour = (decalage: number) => {
-  const d = new Date(Date.now() + decalage * 86_400_000);
-  const iso = d.toISOString().slice(0, 10);
-  const [y, m, j] = iso.split('-');
-  return { iso, deuxPoints: `${j}:${m}:${y}`, slash: `${j}/${m}/${y}`, point: `${j}.${m}.${y}` };
+  for (let n = decalage; ; n += decalage < 0 ? -1 : 1) {
+    const iso = new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
+    const [y, m, j] = iso.split('-');
+    if (Number(j) <= 12 && Number(m) <= 12 && j !== m) continue;
+    return { iso, deuxPoints: `${j}:${m}:${y}`, slash: `${j}/${m}/${y}`, point: `${j}.${m}.${y}` };
+  }
 };
 const PASSE = jour(-117);
 const FUTUR = jour(250);
@@ -77,6 +85,8 @@ function t4Simule(input: { prompt: string }): unknown {
 
 scenario('L58B-ECH', 'À traiter : échéances passées et données déjà connues (ECH-01 à ECH-16)', ({ sql, make, useRecordings: rejouer }) => {
   useTargetState({}, { masters: ['T1', 'T4'], t4Responder: null });
+  // Lot 85F : donnée inconnue de TOUTE la connaissance T1 — capacité T3 KNOWLEDGE_QUERY livrée, interprétation sans résultat.
+  useKnowledgeQueryDelivered();
   beforeAll(() => { setDefaultResponder('t4_classify_event', 'CLASSIFY_EVENT', t4Simule); });
   afterAll(() => { setDefaultResponder('t4_classify_event', 'CLASSIFY_EVENT', null); });
 

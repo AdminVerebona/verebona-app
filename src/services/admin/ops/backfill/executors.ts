@@ -25,6 +25,9 @@
  *                         (lot 76H ; simulation = plans de projection sans écriture ; journal 0591)
  *   to-process-false-arbitrations  runArbitrationReprise (lot 81A ; simulation = lecture seule ;
  *                         traces dans to_process_action_events, campagne 0626)
+ *   operations-v5-rebuild runOperationsRebuild / restoreOperationsRebuild (lot 85A, CDC v5 O-2 ;
+ *                         simulation = inventaire en lecture seule ; application refusée sans
+ *                         point de restauration < 24 h ; journal 0700, restauration exacte)
  *   database-restore-point runDatabaseBackup('admin') / restoreDatabaseBackup (lot 82E ; point de
  *                         restauration = sauvegarde format 2 ; restauration tout ou rien)
  *
@@ -228,6 +231,21 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
         hooks.progress({ cursor: r.cursor, ...r.counters });
         r = await m.runAgendaDuplicatesReprise({ mode: r.mode, origin: 'BO', accountId: req.accountId, resumeRunId: r.runId, log: hooks.log, sql });
       }
+      return { result: r };
+    }
+    case 'operations-v5-rebuild': {
+      // Lot 85A (CDC v5 O-2) : refus SANS écriture s'il n'existe aucun point de restauration de moins de 24 h.
+      const m = await import('@/services/business-operations/rebuild/service');
+      if (req.action === 'restore') {
+        const r = await m.restoreOperationsRebuild(sql, req.runId!, { reason: req.reason, adminUserId: admin?.id ?? null });
+        hooks.log(`restauration ${req.runId} : ${r.restored.length} compte(s) restauré(s), ${r.refused.length} refusé(s)`);
+        return { result: { ...r, action: 'restore' } };
+      }
+      const r = await m.runOperationsRebuild({
+        sql, mode: req.action === 'apply' ? 'APPLY' : 'SIMULATE', accountId: req.accountId, reason: req.reason,
+        adminUserId: admin?.id ?? null, log: hooks.log,
+      });
+      if (r.status === 'refused') throw Object.assign(new Error(r.refusal ?? 'Point de restauration requis.'), { code: 'RESTORE_POINT_REQUIRED' });
       return { result: r };
     }
     case 'to-process-false-arbitrations': {

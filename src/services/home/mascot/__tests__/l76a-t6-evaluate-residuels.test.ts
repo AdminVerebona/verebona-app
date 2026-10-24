@@ -256,7 +256,8 @@ describe('L76A-T6 P1 — signature de configuration EVALUATE complète', () => {
     expect(effectiveGenerationProfile({ minOutputTokens: 8000 }, { primaryModel: 'a', maxOutputTokens: 4096 }).maxOutputTokens).toBe(8000);
     const gw = readFileSync(join(process.cwd(), 'src/services/ai/gateway/ai-gateway.ts'), 'utf8');
     expect(gw).toMatch(/plafonnerSortie\(baseMaxOutputTokens\(op, configuration\), req\.maxOutputTokensCap\)/);
-    expect(gw).toMatch(/reasoningAtRank\(configuration, i \+ premierRang\)/);
+    // Lot 85C : la passerelle résout chaque rang par le même module (`rankSettings` → `rankProfile`, profil d'opération compris).
+    expect(gw).toMatch(/rankSettings\(op, configuration, i \+ premierRang\)/);
   });
 
   it('AC05 — FORMULATE seule, version administrative, préambule : aucune invalidation', async () => {

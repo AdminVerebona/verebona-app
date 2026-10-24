@@ -98,7 +98,12 @@ describe('§5 — activation (lot 54 : plus de mise à l’essai)', () => {
     await expect(svc.activate(7, 1)).rejects.toMatchObject({ code: 'MODEL_NOT_USABLE', details: [expect.objectContaining({ treatment: 'T1', field: 'fallback2' })] });
     expect(repo.activateVersion).not.toHaveBeenCalled();
     repo.getVersion.mockResolvedValue({ ...brouillon({ T1: { fallback2: 'gemini-3.5-flash' } }), status: 'VALIDATED', activatedAt: new Date() });
-    // Réactivation d'une version déjà active par le passé : jamais bloquée, sans interruption.
+    // Lot 85C (décision PO 06) : la réactivation garde les contrôles TECHNIQUES —
+    // un modèle que la clé ne sert plus la bloque (aucun test métier imposé).
+    await expect(svc.rollback(7, 1)).rejects.toMatchObject({ code: 'TECHNICAL_CHECK_FAILED' });
+    expect(repo.activateVersion).not.toHaveBeenCalled();
+    // Modèle de nouveau servi : réactivation possible, sans interruption.
+    disponible.add('gemini-3.5-flash');
     await expect(svc.rollback(7, 1)).resolves.toMatchObject({ interrupts: false });
   });
 

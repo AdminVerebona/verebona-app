@@ -330,10 +330,19 @@ export function buildCaptureRow(ctx: CaptureContext, c: CallCaptureInput, transp
  * sortie étant remplacé par son empreinte (dérivé du contrat, déjà tracé). Pur.
  */
 export function capturedRequestOf(i: ProviderCallInput, providerSchemaHashValue: string | null): CapturedRequest {
-  const cfg = buildGenerationConfig({
-    model: i.model, maxOutputTokens: i.maxOutputTokens, reasoning: i.reasoning, jsonResponse: i.jsonResponse,
-    ...(i.responseSchema ? { responseSchema: i.responseSchema } : {}),
-  });
+  // Lot 85C : paramètres résolus par le constructeur unique (fournis par la
+  // passerelle, sinon reconstruits par la même fonction) ; une combinaison
+  // refusée avant appel est capturée comme telle.
+  let cfg: Record<string, unknown>;
+  try {
+    cfg = buildGenerationConfig({
+      model: i.model, maxOutputTokens: i.maxOutputTokens, reasoning: i.reasoning, jsonResponse: i.jsonResponse,
+      ...(i.responseSchema ? { responseSchema: i.responseSchema } : {}),
+      ...(i.generation ? { generation: i.generation } : {}),
+    });
+  } catch (e) {
+    cfg = { refusedBeforeCall: (e as { rejectedParameter?: string }).rejectedParameter ?? true };
+  }
   if (cfg.responseJsonSchema !== undefined) cfg.responseJsonSchema = { sent: true, providerSchemaHash: providerSchemaHashValue };
   return {
     kind: i.callKind === 'repair' ? 'repair' : 'initial', prompt: i.prompt, timeoutMs: i.timeoutMs,

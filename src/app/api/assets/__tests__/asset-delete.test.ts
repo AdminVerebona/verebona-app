@@ -24,6 +24,8 @@ vi.mock('@/lib/session-service', () => ({
 }));
 vi.mock('@/services/assets/asset-deletion.service', () => ({ deleteAssetCompletely, getAssetDeletionSummary }));
 vi.mock('@/services/entitlements.service', () => ({}));
+// Lot 85D : la suppression passe par la garde de lecture seule — compte actif ici (le refus est éprouvé par l'e2e L85D-E03).
+vi.mock('@/lib/write-access-guard', () => ({ refuserSiLectureSeule: async () => null }));
 vi.mock('@/services/funnel-analytics.service', () => ({ trackFunnelEvent: async () => undefined }));
 vi.mock('@/lib/feature-flags', () => ({}));
 

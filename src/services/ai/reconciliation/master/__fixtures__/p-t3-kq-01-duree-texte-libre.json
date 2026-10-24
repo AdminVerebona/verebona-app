@@ -1,0 +1,130 @@
+{
+  "case": "P-T3-KQ-01",
+  "description": "KNOWLEDGE_QUERY — cas constaté (offre de crédit) : durée comprise dans un bloc de texte, constituants retournés avec leur preuve, aucune date inventée.",
+  "context": {
+    "knowledgeQuery": {
+      "question": {
+        "key": "contractEndDate",
+        "label": "Date de fin de contrat",
+        "valueType": "date",
+        "businessQuestion": "Quelle est la date de fin de ce contrat ?",
+        "ruleCode": "DATA-CONTRACT-END",
+        "constituents": [
+          {
+            "role": "start",
+            "key": "contractStartDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "duration",
+            "key": "contractDurationMonths",
+            "label": null,
+            "valueType": "duration"
+          },
+          {
+            "role": "firstInstalment",
+            "key": "firstInstalmentDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "lastInstalment",
+            "key": "lastInstalmentDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "count",
+            "key": "instalmentCount",
+            "label": null,
+            "valueType": "count"
+          },
+          {
+            "role": "periodicity",
+            "key": "instalmentPeriodicity",
+            "label": null,
+            "valueType": "periodicity"
+          },
+          {
+            "role": "disbursement",
+            "key": "disbursementDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "repayment",
+            "key": "repaymentSchedule",
+            "label": null,
+            "valueType": "indicator"
+          }
+        ]
+      },
+      "documents": [
+        {
+          "ref": "D0",
+          "fileId": 1,
+          "role": "TARGET",
+          "relation": null,
+          "title": "Offre de crédit immobilier",
+          "documentType": "FINANCING_CONTRACT"
+        }
+      ],
+      "elements": [
+        {
+          "ref": "U-1",
+          "document": "D0",
+          "fileId": 1,
+          "layer": "SOURCE_UNIT",
+          "kind": "TEXT_BLOCK",
+          "label": null,
+          "value": null,
+          "text": "Le montant du prêt est de 490000,00 euros. La durée est égale à 22 ans",
+          "confidence": "certain",
+          "page": 1
+        }
+      ],
+      "today": "2026-10-24"
+    }
+  },
+  "recording": {
+    "operationCode": "t3_knowledge_query",
+    "task": "KNOWLEDGE_QUERY",
+    "output": {
+      "task": "KNOWLEDGE_QUERY",
+      "outcome": "CONSTITUENTS",
+      "findings": [
+        {
+          "target": "duration",
+          "rawValue": "22 ans",
+          "value": 264,
+          "evidenceRefs": [
+            "U-1"
+          ],
+          "excerpt": "La durée est égale à 22 ans",
+          "confidence": "certain",
+          "meaning": "durée totale du prêt immobilier"
+        },
+        {
+          "target": "repayment",
+          "rawValue": "La durée est égale à 22 ans",
+          "value": null,
+          "evidenceRefs": [
+            "U-1"
+          ],
+          "excerpt": "Le montant du prêt est de 490000,00 euros. La durée est égale à 22 ans",
+          "confidence": "certain",
+          "meaning": "prêt remboursé sur sa durée"
+        }
+      ],
+      "reason": "La durée du financement est écrite ; aucune date de fin n'est écrite."
+    }
+  },
+  "expected": {
+    "outcome": "CONSTITUENTS",
+    "findings": {
+      "duration": "264",
+      "repayment": "La durée est égale à 22 ans"
+    }
+  }
+}

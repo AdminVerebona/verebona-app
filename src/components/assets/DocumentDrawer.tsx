@@ -50,6 +50,7 @@ import { openDrawer, restoreFocusOnClose } from '@/lib/drawers';
 import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
+import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
 // Lot 84B (CDC v5 O-3, §8.1, §14.4) : événement de référence + liens précis ; lien manuel vers un élément d'agenda.
 import { GroupingPicker } from '@/components/agenda/AgendaGroupingPanel';
 import { GROUPING_LABELS } from '@/lib/agenda/grouping-view';
@@ -794,6 +795,14 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       });
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
+        // Lot 85D : refus de droits (403, lecture seule) → fenêtre habituelle,
+        // pas de message d'erreur générique par-dessus.
+        const refus = parseWriteBlocked(err);
+        if (refus) {
+          notifyWriteBlocked(refus);
+          setIsEditing(false);
+          return;
+        }
         throw new Error(err.message || 'Erreur lors de la sauvegarde');
       }
 

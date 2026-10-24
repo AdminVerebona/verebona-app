@@ -41,6 +41,15 @@ export interface ProviderCallInput {
    */
   responseSchema?: Record<string, unknown>;
   /**
+   * Lot 85C (CDC Pilotage IA V2 P4, CFG-03) : paramètres de génération
+   * RÉSOLUS par le constructeur de requête unique (`request-builder.ts`)
+   * d'après les capacités du modèle. Fournis par la passerelle : l'adaptateur
+   * les transmet tels quels (même requête que celle validée et tracée).
+   * Absents (appel technique direct) : l'adaptateur les fait résoudre par le
+   * même constructeur à partir de `reasoning` et `maxOutputTokens`.
+   */
+  generation?: import('../request-builder').ResolvedGenerationParams;
+  /**
    * Opération et branche TASK de l'appel — information seulement : les
    * fournisseurs réels l'ignorent. Sert au rejeu des sorties enregistrées du
    * harnais E2E (CDC 15 T2-41, `src/test/e2e/replay-gateway.ts`).

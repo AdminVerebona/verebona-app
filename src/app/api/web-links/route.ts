@@ -3,6 +3,7 @@ import { db } from '@/db';
 import { assetFiles, assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { AccountService } from '@/services/account-service';
 
 export const dynamic = 'force-dynamic';
@@ -58,6 +59,10 @@ export async function POST(request: NextRequest) {
 
     const accountId = await resolveAccountId(session.userId, session.currentAccountId);
     if (!accountId) return NextResponse.json({ error: 'NO_ACCOUNT', message: 'Aucun compte trouvé' }, { status: 401 });
+    // Lot 85D : ajouter un lien web crée un document — refusé en lecture seule
+    // (même règle que le dépôt d'un fichier, `files/presign` et `files/confirm`).
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     let body: Record<string, unknown>;
     try { body = await request.json(); }

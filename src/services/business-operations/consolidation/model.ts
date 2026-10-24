@@ -152,7 +152,13 @@ export interface CandidateIdentity {
    * ASSET_DATA, `asset-data.ts`) et non d'un candidat T1 — sa nature et
    * l'origine de sa date (champ saisi, ou repli « passage au statut »).
    */
-  structured?: { nature: string; dateBasis?: 'FIELD' | 'STATUS_CHANGE' | null };
+  structured?: {
+    nature: string; dateBasis?: 'FIELD' | 'STATUS_CHANGE' | null;
+    /** Lot 85E : date canonique AUTOMATIQUE du bien (enrichissement d'une ACQUISITION existante seulement). */
+    canonicalDate?: { date: string; origin: string };
+    /** Lot 85E : établie par cette seule date — ni preuve d'existence, ni statut, ni montant. */
+    enrichmentOnly?: true;
+  };
   /**
    * Lot 47B : identité d'un élément d'AGENDA saisi / corrigé par
    * l'utilisateur (source AGENDA, `agenda-source.ts`).
@@ -695,7 +701,11 @@ export interface ConsolidatedState {
 }
 
 export type ProvenancedField = 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
-export type AttributeProvenance = Partial<Record<ProvenancedField, { sourceId: number; value: string }>>;
+export type AttributeProvenance = Partial<Record<ProvenancedField, {
+  sourceId: number; value: string;
+  /** Lot 85E : origine de la valeur canonique du bien qui a daté l'Opération (T1, T3, document…). */
+  origin?: string;
+}>>;
 export interface AttributeConflict {
   field: ProvenancedField;
   /** Valeurs distinctes et sources qui les portent (ordre des sources). */
@@ -746,7 +756,10 @@ export function computeProvenance(
     const s = (k === 'realizedDate' ? srcs.find((x) => x.identity.agenda?.realizedDate === val) : undefined)
       ?? srcs.find((x) => x.identity.dates[k] === val)
       ?? (k === 'realizedDate' ? srcs.find((x) => x.identity.hints.some((h) => h.economicDate === val) || x.identity.dates.endDate === val) : undefined);
-    if (s) out[k] = { sourceId: s.sourceId, value: val };
+    if (s) { out[k] = { sourceId: s.sourceId, value: val }; continue; }
+    // Lot 85E : date posée par la date canonique automatique du bien — source ASSET_DATA et origine de la valeur.
+    const canon = k === 'realizedDate' ? srcs.find((x) => x.identity.structured?.canonicalDate?.date === val) : undefined;
+    if (canon) out[k] = { sourceId: canon.sourceId, value: val, origin: canon.identity.structured!.canonicalDate!.origin };
   }
   if (v.provider) {
     const s = srcs.find((x) => x.identity.provider === v.provider);

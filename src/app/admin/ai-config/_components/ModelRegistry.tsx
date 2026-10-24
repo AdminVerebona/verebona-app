@@ -50,7 +50,7 @@ const STATUT: Record<string, string> = {
   stable: 'text-[color:var(--text-success)]', preview: 'text-[color:var(--text-warning-soft)]', experimental: 'text-[color:var(--text-warning-soft)]', deprecated: 'text-[color:var(--text-danger)]', unknown: 'text-[color:var(--text-muted)]',
 };
 const LIBELLE: Record<string, string> = {
-  stable: 'Stable', preview: 'Preview', experimental: 'Expérimental (exclu)', deprecated: 'Déprécié', unknown: 'Non communiqué',
+  stable: 'Stable', preview: 'Preview (exclu, information)', experimental: 'Expérimental (exclu)', deprecated: 'Déprécié', unknown: 'Non communiqué',
 };
 const CAP: Record<string, string> = { structured_output: 'sorties structurées', multimodal: 'multimodal', thinking: 'raisonnement' };
 const QCAP: Array<[keyof Qualification, string]> = [['generate', 'génération'], ['structured', 'schéma JSON'], ['multimodal', 'multimodal'], ['thinking', 'raisonnement']];
@@ -104,8 +104,8 @@ export function ModelRegistry() {
         <div className="px-4 pb-4 space-y-5">
           <p className="text-xs text-[color:var(--text-muted)]">
             Lecture seule ({data.registryVersion} · {data.declaredModelsVersion}). Les alias changent par une version de configuration.
-            Un modèle est utilisable s’il est servi par la clé active et a réussi sa qualification technique (preview compris, statut
-            affiché ; expérimental exclu). Prix : page officielle Google synchronisée (USD par million de jetons) ; UNKNOWN = coût non
+            Un modèle est utilisable s’il est servi par la clé active et a réussi sa qualification technique (Preview et expérimental
+            exclus, affichés pour information). Prix : page officielle Google synchronisée (USD par million de jetons) ; UNKNOWN = coût non
             calculable, jamais estimé.
           </p>
 

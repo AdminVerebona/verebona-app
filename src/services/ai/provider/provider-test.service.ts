@@ -39,9 +39,15 @@ import {
  * paramètres que la sonde — raisonnement `minimal` explicite, plafond 512.
  */
 export function providerTestGenerationBody(model: string): Record<string, unknown> {
-  const { temperature: _t, ...generationConfig } = buildGenerationConfig({
-    model, maxOutputTokens: PROBE_MAX_OUTPUT_TOKENS, reasoning: PROBE_REASONING,
-  });
+  // Lot 85C : constructeur unique (capacités du modèle) ; niveau refusé
+  // d'avance pour ce modèle → même épreuve sans réglage de raisonnement.
+  let built: Record<string, unknown>;
+  try {
+    built = buildGenerationConfig({ model, maxOutputTokens: PROBE_MAX_OUTPUT_TOKENS, reasoning: PROBE_REASONING });
+  } catch {
+    built = buildGenerationConfig({ model, maxOutputTokens: PROBE_MAX_OUTPUT_TOKENS, reasoning: null });
+  }
+  const { temperature: _t, ...generationConfig } = built;
   return { contents: [{ parts: [{ text: PROBE_PROMPT }] }], generationConfig };
 }
 

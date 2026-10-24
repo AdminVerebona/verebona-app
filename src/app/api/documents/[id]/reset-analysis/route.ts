@@ -8,6 +8,7 @@ import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
+import { refuserSiPasDIA } from '@/lib/write-access-guard';
 
 export async function POST(
   request: NextRequest,
@@ -21,6 +22,9 @@ export async function POST(
     if (!accountId) {
       return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
     }
+    // Lot 85D : relancer une analyse est un traitement IA — refusé en lecture seule.
+    const refus = await refuserSiPasDIA(accountId);
+    if (refus) return refus;
 
     const assetFileId = parseInt(rawId);
     if (isNaN(assetFileId)) {

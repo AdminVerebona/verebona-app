@@ -332,6 +332,27 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     timeoutMs: 45_000, jsonResponse: true,
     outputSchema: 'T3DocumentNamingOutput', active: true, billable: false,
   },
+  // Lot 85F (ticket P1 « T3 doit exploiter toute la connaissance T1 persistée
+  // avant de conclure qu'une information manque ») : compréhension sémantique,
+  // dans un contexte T1 FERMÉ, d'une question métier sur une donnée
+  // documentaire (valeur, constituants de calcul, contradiction, abstention,
+  // preuves citées). Appelée par la décision centrale « À traiter »
+  // (`knowledge-query/service.ts`) quand le niveau déterministe n'a rien lu,
+  // une fois par entrée (mémoire 0720) et dans le budget du compte
+  // (`T3_KNOWLEDGE_QUERY_DAILY_MAX`). Réutilise les six emplacements existants :
+  // aucun nouvel emplacement. Branche FACULTATIVE dont le TEXTE est attendu de
+  // l'équipe IA (`MASTER_TASKS_TEXT_PENDING`, demande
+  // `85F-t3-comprehension-connaissance-t1`) : sans la section « BRANCHE TASK =
+  // KNOWLEDGE_QUERY » dans la version ACTIVE du prompt maître T3, aucun appel
+  // (« interprétation en attente »). Non facturée (traitement de fond).
+  t3_knowledge_query: {
+    operationCode: 't3_knowledge_query', useCaseCode: 'DATA_RECONCILIATION',
+    label: 'T3 master — compréhension de la connaissance T1 persistée pour une donnée (TASK=KNOWLEDGE_QUERY)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'KNOWLEDGE_QUERY', promptVariables: T3_MASTER_VARIABLES,
+    timeoutMs: 45_000, jsonResponse: true, defaultMaxOutputTokens: 1_500,
+    outputSchema: 'T3KnowledgeQueryOutput', active: true, billable: false,
+  },
 
   // ── Usage 3 — Assistant (CDC §4.3.4) ──────────────────────────────────────
   retrieve_data: {

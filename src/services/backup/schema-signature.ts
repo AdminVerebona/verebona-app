@@ -41,12 +41,16 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'claim_legacy_cleanup_runs', 'claim_legacy_cleanup_journal',
   // Lot 84E : journal des reconsolidations ciblées (trace d'exécution, comme les autres journaux).
   'business_operation_targeted_runs',
+  // Lot 85A : journal de la purge et reconstruction des Opérations (image avant par exécution, rapports par compte).
+  'operations_rebuild_runs', 'operations_rebuild_accounts', 'operations_rebuild_snapshots',
   'revoked_tokens', 'user_session_revocations', 'auth_rate_limits',
   'admin_anomalies', 'admin_anomaly_occurrences',
   'ai_usage_event', 'ai_usage_events', 'ai_usage_daily_rollup', 'ai_usage_account_counter', 'ai_call_diagnostics', 'ai_operation',
   'ai_pipeline_step', 'ai_log_archives', 'ai_admin_audit_log', 'ai_t2_content_access_log', 'ai_execution_reports', 'ai_execution_report_entries',
   'ai_call_captures', 'ai_call_capture_state',
   'ai_evaluator_runs', 'ai_master_corpus_runs', 'ai_master_prompt_test_runs', 'ai_prompt_test_runs', 'ai_model_qualification',
+  // Lot 85C : journal des changements de capacités des modèles (trace, comme la qualification).
+  'ai_model_capability_changes',
   'email_logs', 'email_provider_events', 'stripe_webhook_logs', 'legal_audit_log',
 ];
 

@@ -23,6 +23,7 @@
  * intéressent vraiment : ajouté, retiré, modifié.
  */
 import { TREATMENTS, type Treatment } from './treatments';
+import { normalizeOperationProfiles, renderOperationProfile } from './operation-profiles';
 import {
   FIELD_LABELS, promptArchitectureOf, masterPromptOf,
   type ConfigFieldKey, type TreatmentConfig,
@@ -139,8 +140,23 @@ export function diffTreatment(base: TreatmentConfig, candidate: TreatmentConfig)
       ...diffByCode('triggers', base.triggers, candidate.triggers, renderTrigger),
       ...diffCascade(base, candidate),
       ...diffArchitecture(base, candidate),
+      ...diffOperationProfiles(base, candidate),
     ],
   };
+}
+
+/** Lot 85C : profils par opération, comparés opération par opération. */
+function diffOperationProfiles(base: TreatmentConfig, candidate: TreatmentConfig): FieldChange[] {
+  const a = normalizeOperationProfiles(base.operationProfiles);
+  const b = normalizeOperationProfiles(candidate.operationProfiles);
+  const out: FieldChange[] = [];
+  for (const code of [...new Set([...Object.keys(a), ...Object.keys(b)])].sort()) {
+    const avant = renderOperationProfile(a[code]);
+    const apres = renderOperationProfile(b[code]);
+    if (avant === apres) continue;
+    out.push({ field: 'operationProfiles', label: `${FIELD_LABELS.operationProfiles} — ${code}`, kind: kindOf(avant, apres), before: avant, after: apres });
+  }
+  return out;
 }
 
 /**

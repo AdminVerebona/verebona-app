@@ -36,6 +36,9 @@ import {
   type TreatmentConfig, type ConfigFieldKey,
 } from './config-types';
 import { masterConfigIssues } from './prompt-architecture';
+import { validateOperationProfiles } from './operation-profiles';
+import { treatmentRequestPlan } from './profile-check';
+import type { ModelCapabilities } from '../provider/model-capabilities';
 
 export interface ValidationIssue {
   treatment: Treatment;
@@ -81,6 +84,12 @@ export interface ConfigCatalogs {
    * l'arbitrage n'est pas rendu ; avertissement par défaut.
    */
   requireActiveTrigger?: boolean;
+  /**
+   * Lot 85C : fiche de capacités d'un modèle (injection de test) ; défaut :
+   * registre en mémoire (`capabilitiesOf`). Les contrôles de compatibilité
+   * passent par le constructeur de requête UNIQUE de l'exécution.
+   */
+  capabilities?: (model: string) => ModelCapabilities;
 }
 
 /**
@@ -395,6 +404,43 @@ export function unavailableModels(
   return out;
 }
 
+/**
+ * Lot 85C (CDC Pilotage IA V2 P4, CFG-03, R02, R03) — compatibilité de
+ * CHAQUE opération du traitement, à CHAQUE rang, avec les capacités du
+ * modèle : la requête est construite par le constructeur unique de
+ * l'exécution (`profile-check`). Combinaison connue comme incompatible →
+ * bloquant ; adaptation (plafond ramené à la limite du modèle, capacité
+ * inconnue) → signalée. Profils structurellement invalides → bloquants.
+ */
+export function capabilityIssues(c: TreatmentConfig, cat: Pick<ConfigCatalogs, 'capabilities'>): ValidationIssue[] {
+  const out: ValidationIssue[] = [];
+  const t = c.treatment;
+  for (const p of validateOperationProfiles(t, c.operationProfiles ?? {})) {
+    out.push(issue(t, 'operationProfiles', `${p.operationCode} : ${p.message}`));
+  }
+  const vus = new Set<string>();
+  for (const plan of treatmentRequestPlan(c, cat.capabilities ? { capabilities: cat.capabilities } : {})) {
+    const rang = plan.rank === 0 ? 'principal' : `repli ${plan.rank}`;
+    if (!plan.result.ok) {
+      out.push(issue(t, plan.slot, `${plan.operationCode} (${rang}, « ${plan.model} ») : ${plan.result.refusal.message}`));
+      continue;
+    }
+    for (const a of plan.result.trace.adaptations) {
+      const cle = `${plan.model}:${a.parameter}:${a.reason}:${String(a.requested)}`;
+      if (vus.has(cle)) continue;
+      vus.add(cle);
+      const msg = a.reason === 'MODEL_OUTPUT_LIMIT'
+        ? `plafond de sortie ${String(a.requested)} ramené à la limite du modèle (${String(a.sent)})`
+        : a.reason === 'CAPABILITY_UNKNOWN'
+          ? `capacité « ${a.parameter} » inconnue pour ce modèle : réglage non transmis (défaut du modèle)`
+          : a.reason === 'MODEL_DOES_NOT_THINK' ? 'le modèle ne raisonne pas : niveau sans effet'
+            : `température non transmise (${a.reason})`;
+      out.push(issue(t, plan.slot, `${plan.operationCode} (${rang}, « ${plan.model} ») : ${msg}.`, false));
+    }
+  }
+  return out;
+}
+
 export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssue[] {
   const out: ValidationIssue[] = [];
   // Lot 16b : le préambule des étapes (`prompt`) n'est plus OBLIGATOIRE — il
@@ -411,6 +457,7 @@ export function validateTreatment(c: TreatmentConfig, cat: ConfigCatalogs): Vali
   out.push(...validateGuardrails(c, cat));
   out.push(...validateTriggers(c, cat));
   out.push(...validateCascade(c));
+  out.push(...capabilityIssues(c, cat));
   return out;
 }
 

@@ -48,6 +48,10 @@ const ECRIVAINS: Record<string, string> = {
   // Lot 84E (CDC v5 O-6) : reconsolidation ciblée — n'écrit que son JOURNAL (`business_operation_targeted_runs`, 0696) ;
   // tout le métier passe par la consolidation T3 et le service de regroupement.
   'src/services/business-operations/consolidation/targeted.ts': 'reconsolidation ciblée O-6 : journal d’exécution seulement (métier délégué à T3 et au regroupement)',
+  // Lot 85A (CDC v5 O-2, §20.3) : rattrapage BO de purge et reconstruction en préproduction — purge des seules données
+  // DÉRIVÉES (point de restauration exigé, image avant journalisée 0700, restauration exacte) ; la reconstruction passe par T3.
+  'src/services/business-operations/rebuild/purge.ts': 'rattrapage BO O-2 : purge des données dérivées d’un compte (image avant, restaurable) — reconstruction déléguée à T3',
+  'src/services/business-operations/rebuild/snapshot.ts': 'rattrapage BO O-2 : restauration exacte de l’image avant d’un compte (journal 0700)',
 };
 
 describe('INV-FINAL-009 / INV-006 / INV-FINAL-013 / INV-031 — T3 seul moteur ; TCO et autres modules consommateurs seulement', () => {

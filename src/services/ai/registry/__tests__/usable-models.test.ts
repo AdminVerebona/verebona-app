@@ -119,19 +119,20 @@ describe('MOD — exceptions documentées et capacités (§1.C)', () => {
 });
 
 describe('MOD — règles Verebona, preview, dépréciation, tarif, état opérationnel (§1.D à §1.H)', () => {
-  it('MOD-08 (lot 35B) — preview : proposé dans les mêmes conditions qu’un stable, statut visible', () => {
-    for (const t of TREATMENTS) expect(noms(t)).toContain('gemini-preview');
-    expect(motifs('T4', 'gemini-preview')).toEqual([]);
-    expect(usableModelsForTreatment('T4', ctx()).find((m) => m.model === 'gemini-preview')?.status).toBe('preview');
+  // Lot 85C (décision PO 02, CAT-02, R69) : remplace MOD-08 à MOD-10 du lot
+  // 35B (« preview proposé comme un stable ») — exclu de toute sélection en V1.
+  it('MOD-08 (lot 85C, décision 02) — preview : exclu de la sélection, motif nommé (information au catalogue)', () => {
+    for (const t of TREATMENTS) expect(noms(t)).not.toContain('gemini-preview');
+    expect(motifs('T4', 'gemini-preview')).toEqual(['PREVIEW']);
   });
-  it('MOD-09 (lot 35B) — preview : écarté seulement par les autres règles (exception documentée, catalogue)', () => {
+  it('MOD-09 (lot 85C) — preview : motif PREVIEW cumulé avec les autres règles', () => {
     const c = ctx({ declared: [...REGISTRE, decl('gemini-preview-sans-t2', { status: 'preview', excludedPrompts: SANS_T2 })] });
-    expect(motifs('T2', 'gemini-preview-sans-t2', c)).toEqual(['NOT_LISTED', 'EXCLUDED']);
+    expect(motifs('T2', 'gemini-preview-sans-t2', c)).toEqual(['NOT_LISTED', 'PREVIEW', 'EXCLUDED']);
   });
-  it('MOD-10 (lot 35B) — plus aucune politique preview : même verdict en production, en préproduction, pour T2 comme pour T1', () => {
+  it('MOD-10 (lot 85C) — même verdict en production, en préproduction, pour T2 comme pour T1', () => {
     for (const environment of ['production', 'preprod', 'local'] as const) {
-      expect(noms('T2', ctx({ environment }))).toContain('gemini-preview');
-      expect(noms('T1', ctx({ environment }))).toContain('gemini-preview');
+      expect(noms('T2', ctx({ environment }))).not.toContain('gemini-preview');
+      expect(noms('T1', ctx({ environment }))).not.toContain('gemini-preview');
     }
   });
   it('MOD-11 — déprécié ou arrivé à sa date de retrait : absent pour une nouvelle sélection', () => {
@@ -250,9 +251,9 @@ describe('PRO — T2 : éligibilité par les caractéristiques réelles, jamais 
     expect(motifs('T2', 'gemini-2.5-pro', reel)).toEqual(['DEPRECATED']);
     expect(motifs('T4', 'gemini-2.5-pro', reel)).toEqual(['DEPRECATED']);
   });
-  it('PRO-11 (lot 35B) — Pro preview : éligible dès que le reste est satisfait (plus d’autorisation preview)', () => {
-    expect(motifs('T2', 'gemini-9-pro-preview')).toEqual([]);
-    expect(noms('T2')).toContain('gemini-9-pro-preview');
+  it('PRO-11 (lot 85C, décision 02) — Pro preview : exclu pour son seul statut Preview, jamais pour son nom « Pro »', () => {
+    expect(motifs('T2', 'gemini-9-pro-preview')).toEqual(['PREVIEW']);
+    expect(noms('T2')).not.toContain('gemini-9-pro-preview');
   });
   it('PRO-12 — Flash incompatible : refusé au même titre qu’un Pro incompatible', () => {
     expect(motifs('T2', 'gemini-9-flash-incompatible')).toEqual(motifs('T2', 'gemini-9-pro-incompatible'));

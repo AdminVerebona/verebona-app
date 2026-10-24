@@ -6,6 +6,8 @@
  * Colonnes §5.1 : nom, offre, statut, utilisateurs, biens, documents,
  * stockage, création, dernière connexion. Recherche SERVEUR (ACC-L02) sur le
  * nom du compte et l'identité / l'e-mail de tout utilisateur rattaché.
+ * Lot 85E : identifiant du compte affiché et copiable sous le nom (desktop et
+ * mobile, colonne visible sans défilement), recherche par ID (« 42 », « #42 »).
  * En tête : total et synthèse par statut (ACC-L01). Filtres offre et statut
  * (ACC-L03), tri (ACC-L04), pagination classique (ACC-L05). UX-004 : état
  * porté par l'URL (retour arrière conservé). ERR-001 : écran d'erreur.
@@ -20,6 +22,7 @@ import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { AdminPagination, SortHeader, nextSort } from '../subscriptions/_components/list-controls';
 import { formatBytes, formatDate, formatDateTime } from '@/lib/admin/format';
 import { getPlanTheme } from '@/lib/plan-theme';
+import { AccountIdBadge } from '@/components/admin/AccountIdBadge';
 
 type AccountStatus = 'active' | 'suspended' | 'deletion_pending';
 
@@ -216,7 +219,7 @@ function AccountsScreen() {
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
-            placeholder="Rechercher par nom de compte, nom, prénom ou e-mail d'un utilisateur…"
+            placeholder="Rechercher par ID ou nom de compte, nom, prénom ou e-mail d'un utilisateur…"
             value={search}
             onChange={e => setSearch(e.target.value)}
             className="pl-9"
@@ -276,6 +279,7 @@ function AccountsScreen() {
                       {account.ownerEmail && (
                         <div className="text-xs text-muted-foreground truncate max-w-[16rem]">{account.ownerEmail}</div>
                       )}
+                      <AccountIdBadge id={account.id} className="-ml-0.5" />
                     </TableCell>
                     <TableCell>
                       <PlanBadge plan={account.planType} />

@@ -53,7 +53,9 @@ import { noteGatewayOutcome as noteTreatmentOutcome, type GatewayOutcome, type M
 import { currentJobContext } from '../queue/job-context';
 import { assertAccountCostCap } from './account-cost-cap';
 import { checkAccountProcessingEligibility, INELIGIBILITY_LABELS } from '@/services/account/processing-eligibility';
-import { baseMaxOutputTokens, reasoningAtRank } from './generation-profile';
+import { baseMaxOutputTokens, reasoningAtRank, rankSettings } from './generation-profile';
+import { buildModelRequest, type ModelRequestResult, type RequestTrace } from './request-builder';
+import { ensureModelCapabilitiesLoaded } from '../provider/model-capabilities.repository';
 import type { ModelRank } from '../telemetry/execution-context';
 import type { AiProvider, ProviderCallInput, ProviderCallOutput, ProviderResponseMeta } from './providers/provider.port';
 import type { ZodType } from 'zod';
@@ -232,6 +234,9 @@ export class AiGateway {
     // autre chose que ce qui est soumis.
     // ══════════════════════════════════════════════════════════════════════
     const configuration = await resolveOperationConfig(operationCode);
+    // Lot 85C (P4, CAT-03) : fiches de capacités des modèles à jour (lecture
+    // bornée, cache) — le constructeur de requête unique les lit ensuite.
+    await ensureModelCapabilitiesLoaded();
 
     // ══════════════════════════════════════════════════════════════════════
     // PROMPT MAÎTRE (CDC 15 §22.3, §29.1, D-03, ARCH-03, DP-05)
@@ -527,16 +532,25 @@ export class AiGateway {
     const subjectRef = subjectRefOfIdempotencyKey(req.idempotencyKey);
     const configuredMax = configuration.maxOutputTokens ?? null;
     /** Paramètres résolus d'une tentative (rang, raisonnement, plafond demandé / hérité / adapté / envoyé). */
-    const paramsOf = (p: { model: string; rankIndex: number; reasoning: ProviderCallInput['reasoning'] | null; timeoutMs: number; soStatus: string | null; requests: CapturedRequest[] }): Record<string, unknown> => {
+    const paramsOf = (p: { model: string; rankIndex: number; reasoning: ProviderCallInput['reasoning'] | null; timeoutMs: number; soStatus: string | null; requests: CapturedRequest[]; request?: RequestTrace | null }): Record<string, unknown> => {
       const lastCfg = p.requests[p.requests.length - 1]?.generationConfig ?? null;
       const envoye = lastCfg && typeof lastCfg.maxOutputTokens === 'number' ? lastCfg.maxOutputTokens : null;
+      const rt = p.request ?? null;
       return {
         provider: provider.name, model: p.model, rank: rankAt(p.rankIndex), reasoning: p.reasoning ?? null,
+        // Lot 85C (CFG-02, décision 08) : demandé / hérité / adapté / envoyé,
+        // tels que résolus par le constructeur de requête unique.
         maxOutputTokens: {
-          requested: configuredMax, operationFloor: op.minOutputTokens ?? null, callerCap: req.maxOutputTokensCap ?? null,
-          inherited: p.rankIndex > 0 ? baseMaxOutputTokens(op, configuration) ?? null : null,
-          adapted: maxOutputTokens ?? null, sent: p.requests.length ? envoye : null,
+          requested: rt ? rt.maxOutputTokens.requested : configuredMax, origin: rt?.maxOutputTokens.origin ?? null,
+          operationFloor: op.minOutputTokens ?? null, callerCap: req.maxOutputTokensCap ?? null,
+          inherited: p.rankIndex > 0 && rt && rt.maxOutputTokens.origin !== 'operation_rank' ? rt.maxOutputTokens.requested : null,
+          modelLimit: rt?.maxOutputTokens.modelLimit ?? null,
+          adapted: rt ? rt.maxOutputTokens.adapted : maxOutputTokens ?? null, sent: p.requests.length ? envoye : null,
         },
+        ...(rt ? {
+          reasoningSent: rt.reasoning.sent, temperature: rt.temperature, family: rt.family,
+          adaptations: rt.adaptations, capabilitySources: rt.capabilitySources,
+        } : {}),
         timeoutMs: p.timeoutMs, jsonResponse, structuredOutput: p.soStatus, providerSchemaHash: psHash,
         contract: { id: contract.contractId, version: contract.contractVersion, schemaVersion: contract.schemaVersion, schemaHash: contract.schemaHash },
         promptVersion, masterPrompt: master ? { code: master.masterPromptCode, version: master.masterPromptVersion, task: master.task } : null,
@@ -596,8 +610,20 @@ export class AiGateway {
         // T1-UI-06, T2-UI-03, T3-UI-03, T4-UI-03 : niveau du rang RÉELLEMENT
         // sollicité. Indexé sur le rang dans la chaîne complète : une escalade
         // (`firstModelIndex`) ne doit pas recevoir le niveau du principal.
-        const reasoning = reasoningAtRank(configuration, i + premierRang);
-        const timeoutMs = req.timeoutMsCap && req.timeoutMsCap > 0 ? Math.min(op.timeoutMs, req.timeoutMsCap) : op.timeoutMs;
+        // Lot 85C (P4, CFG-01/02, OP-03, décision 08) : réglage PROPRE au rang
+        // (profil de l'opération, sinon référence du traitement), puis
+        // paramètres effectifs construits d'après les CAPACITÉS du modèle par
+        // le constructeur unique — même fonction que la validation et la
+        // qualification. Un repli ne copie plus aveuglément le principal.
+        const rang = rankSettings(op, configuration, i + premierRang);
+        const reasoning = rang.reasoning;
+        const timeoutMs = req.timeoutMsCap && req.timeoutMsCap > 0 ? Math.min(rang.timeoutMs, req.timeoutMsCap) : rang.timeoutMs;
+        const built: ModelRequestResult = buildModelRequest({
+          model, reasoning, maxOutputTokens: rang.maxOutputTokens, maxOutputTokensOrigin: rang.maxOutputTokensOrigin,
+          minOutputTokens: op.minOutputTokens ?? null, callerCap: req.maxOutputTokensCap ?? null,
+          needsImageInput: needsImageInput(req.attachments),
+        });
+        const maxOutputTokens = built.ok ? built.params.maxOutputTokens ?? undefined : undefined;
         // §21 : un repli après une sortie invalide connaît l'erreur précédente.
         const informed = previousFailure?.family === 'INVALID_OUTPUT' && previousFailure.subtype !== 'OUTPUT_TRUNCATED'
           && previousFailure.subtype !== 'EMPTY_RESPONSE';
@@ -619,6 +645,7 @@ export class AiGateway {
         const trail: ProviderAttemptTrace[] = [];
         const providerRequest = providerRequestOf({
           model, maxOutputTokens, reasoning, jsonResponse, sendSchema, attachments: req.attachments ?? [],
+          generation: built.ok ? built.params : undefined,
           psHash, providerSchema, omittedReason: sendSchema ? null
             : !(op.structuredOutput ?? (jsonResponse && isMasterOperation(op))) ? 'not_requested'
               : !structuredOutputEnabled() ? 'structured_output_off'
@@ -633,9 +660,46 @@ export class AiGateway {
           callerMode: req.callerMode, ...traceConfig, reasoning, maxOutputTokens: maxOutputTokens ?? null,
         };
 
+        // ── Lot 85C (CFG-03, R02) : combinaison CONNUE comme incompatible →
+        //    refus AVANT appel, catégorie explicite (journal P3), aucun coût ;
+        //    le rang suivant, avec son propre profil, peut prendre le relais. ──
+        if (!built.ok) {
+          const refus = built.refusal;
+          failures.push(`${model} : ${refus.message}`);
+          lastFailureCode = 'MODEL_PARAMETERS_INCOMPATIBLE';
+          const c = classifyCallError(Object.assign(new AiGatewayError('MODEL_PARAMETERS_INCOMPATIBLE', operationCode, refus.message, { recoverable: true }), { rejectedParameter: refus.parameter }));
+          const diag = buildDiagnostic({
+            outcome: 'FAILED', callKind: 'analysis', family: c.family, subtype: c.subtype, stage: c.stage,
+            outputReceived: false, error: c.error, issues: [], issueCount: 0, controls: emptyControlChain(),
+            provider: providerMetaOf(provider.name, model, undefined, { input: 0, output: 0 }, 0, undefined, 'none', c),
+            schema: schemaRefOf(null), repairs: [], informedOfPreviousError: informed,
+          });
+          const elapsedMs = Date.now() - startedAt;
+          const usageId = await recordCallTrace({
+            ...baseTrace,
+            inputTokens: 0, outputTokens: 0, costMicros: 0, durationMs: 0, executionElapsedMs: elapsedMs, status: 'error',
+            errorCode: 'MODEL_PARAMETERS_INCOMPATIBLE', errorMessage: refus.message, billable: false,
+            failure: failureSummary(diag), callKind: 'analysis', runtimeContract: contractTraceOf(null),
+            ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
+            capture: captureOf({
+              callKind: 'pre_call_refusal', sent: [], attachments: req.attachments ?? [], callIndex,
+              params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus: null, requests: [], request: built.trace }), refusal: refus },
+              responseRaw: null, diagnostic: { ...diag, parameterRefusal: refus }, attemptDurationMs: 0, executionElapsedMs: elapsedMs,
+            }),
+            captureTransportOf: attachmentTransport,
+          }).catch(() => null);
+          await recordCallDiagnostic({
+            traceId, usageEventId: usageId ?? null, callIndex: callIndex++, accountId: req.accountId, useCaseCode: op.useCaseCode,
+            operationCode, task: traceConfig.task, model, modelRank, sourceIds, diagnostic: diag, output: null,
+          });
+          previousFailure = diag;
+          continue;
+        }
+
         try {
           out = await callWithSchemaFallback(capturing, {
             model, prompt: attemptPrompt, attachments: req.attachments ?? [], timeoutMs, maxOutputTokens, reasoning, operationCode,
+            generation: built.params,
             ...(traceConfig.task ? { task: traceConfig.task } : {}),
             ...(jsonResponse ? { jsonResponse: true } : {}),
             ...(attachmentSession ? { attachmentSession } : {}),
@@ -692,7 +756,7 @@ export class AiGateway {
             ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
             capture: captureOf({
               callKind: 'analysis', sent: requests, attachments: req.attachments ?? [], callIndex,
-              params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests }), informedOfPreviousError: informed },
+              params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests, request: built.trace }), informedOfPreviousError: informed },
               responseRaw: null, diagnostic: diag, attemptDurationMs: attemptMs, executionElapsedMs: elapsedMs,
             }),
             captureTransportOf: attachmentTransport,
@@ -729,7 +793,7 @@ export class AiGateway {
         let repairRun: RepairRun | null = null;
         if (!first.ok && repairAllowed && first.repairable && !first.taskMismatch) {
           repairRun = await this.repairPass({
-            provider: capturing, model, operationCode, op, resolveBase, first, reasoning, maxOutputTokens, timeoutMs,
+            provider: capturing, model, operationCode, op, resolveBase, first, reasoning, maxOutputTokens, timeoutMs, generation: built.params,
             providerSchema: providerSchema?.schema && !schemaRejectedRecently(model, contract.schemaHash) ? providerSchema.schema : null,
             discriminant, traceConfig, contract, schemaRefOf,
           });
@@ -804,7 +868,7 @@ export class AiGateway {
           ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
           capture: captureOf({
             callKind: 'analysis', sent: analysisRequests, attachments: req.attachments ?? [], callIndex,
-            params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests: analysisRequests }), informedOfPreviousError: informed },
+            params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests: analysisRequests, request: built.trace }), informedOfPreviousError: informed },
             responseRaw: out.rawText,
             // LOG-03 : sortie d'origine (`response_raw`), parsing du premier passage, sortie acceptée après normalisation / réparation.
             parsed: { firstPass: first.parsed ?? null, accepted: final.ok ? final.data : null },
@@ -843,7 +907,7 @@ export class AiGateway {
             ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
             capture: captureOf({
               callKind: 'repair', sent: sent.slice(repairFrom).map((r) => ({ ...r, kind: 'repair' })), attachments: [], callIndex,
-              params: paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs: Math.min(timeoutMs, 60_000), soStatus: repairRun.diagnostic.provider.structuredOutputStatus ?? null, requests: sent.slice(repairFrom) }),
+              params: paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs: Math.min(timeoutMs, 60_000), soStatus: repairRun.diagnostic.provider.structuredOutputStatus ?? null, requests: sent.slice(repairFrom), request: built.trace }),
               responseRaw: repairRun.rawText,
               parsed: { firstPass: null, accepted: repairRun.resolution?.ok ? repairRun.resolution.data : null },
               diagnostic: repairRun.diagnostic, attemptDurationMs: repairRun.durationMs, executionElapsedMs: Date.now() - startedAt,
@@ -890,7 +954,9 @@ export class AiGateway {
       }
 
       noteGatewayOutcome({
-        attempts, chainSucceeded: chaineComplete ? false : null,
+        // Lot 85C : une chaîne entièrement refusée AVANT appel (configuration
+        // incompatible) n'est pas une panne de modèle : le disjoncteur n'avance pas.
+        attempts, chainSucceeded: chaineComplete && attempts.length > 0 ? false : null,
         // Revue L16b-3 : un même document ne fait progresser le disjoncteur
         // qu'une fois par fenêtre (`recordChainOutcome`).
         target: req.sourceIds && req.sourceIds.length > 0 ? `sources:${[...req.sourceIds].sort((x, y) => x - y).join(',')}` : null,
@@ -913,6 +979,8 @@ export class AiGateway {
     resolveBase: Omit<Parameters<typeof resolveOutput>[0], 'raw' | 'allowPruning' | 'candidate'>;
     first: Extract<Resolution, { ok: false }>;
     reasoning: ProviderCallInput['reasoning']; maxOutputTokens: number | undefined; timeoutMs: number;
+    /** Lot 85C : paramètres résolus du rang (même constructeur que l'analyse). */
+    generation?: ProviderCallInput['generation'];
     providerSchema: Record<string, unknown> | null;
     discriminant: { field: string; value: string } | null;
     traceConfig: { task: string | null };
@@ -940,6 +1008,7 @@ export class AiGateway {
       out = await callWithSchemaFallback(p.provider, {
         model: p.model, prompt, attachments: [], timeoutMs: Math.min(p.timeoutMs, 60_000),
         maxOutputTokens: p.maxOutputTokens, reasoning: p.reasoning, operationCode: p.operationCode,
+        ...(p.generation ? { generation: p.generation } : {}),
         ...(p.traceConfig.task ? { task: p.traceConfig.task } : {}), jsonResponse: true, callKind: 'repair',
       }, p.providerSchema, (s) => { soStatus = s; }, () => noteSchemaRejected(p.model, schemaHash));
     } catch (e) {
@@ -994,6 +1063,11 @@ export class AiGateway {
     };
   }
 
+}
+
+/** Lot 85C : l'appel transmet une image ou un PDF (modalité d'entrée exigée du modèle). */
+export function needsImageInput(attachments: ReadonlyArray<{ mimeType?: string | null }> | undefined): boolean {
+  return (attachments ?? []).some((a) => typeof a.mimeType === 'string' && (a.mimeType.startsWith('image/') || a.mimeType === 'application/pdf'));
 }
 
 /**
@@ -1206,11 +1280,13 @@ export function gatewayCodeOf(e: unknown, c: Pick<ClassifiedFailure, 'family' | 
 /** Lot 52B — requête fournisseur d'un appel, sans contenu (BO › Exécutions IA). */
 function providerRequestOf(p: {
   model: string; maxOutputTokens: number | undefined; reasoning: ProviderCallInput['reasoning']; jsonResponse: boolean;
+  generation?: ProviderCallInput['generation'];
   sendSchema: Record<string, unknown> | null; attachments: ProviderCallInput['attachments'];
   psHash: string | null; providerSchema: { nodes: number; dropped: string[] } | null; omittedReason: string | null;
 }): ProviderRequestTrace {
   const g = describeGenerationConfig({
     model: p.model, maxOutputTokens: p.maxOutputTokens, reasoning: p.reasoning, jsonResponse: p.jsonResponse,
+    ...(p.generation ? { generation: p.generation } : {}),
     ...(p.sendSchema ? { responseSchema: p.sendSchema } : {}),
   });
   return {

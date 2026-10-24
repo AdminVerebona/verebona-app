@@ -49,6 +49,7 @@ import { AccountWithdrawals } from './_components/AccountWithdrawals';
 import { AccountDocuments } from './_components/AccountDocuments';
 import { AccountDataSection } from './_components/account-data/AccountDataSection';
 import { ReconsolidateAccountButton } from '../../operations/_components/ReconsolidateAccountButton';
+import { AccountIdBadge } from '@/components/admin/AccountIdBadge';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -373,6 +374,8 @@ export default function AccountDetailPage() {
             <p className="text-sm text-muted-foreground">
               Créé le {formatDate(account.createdAt)} · Dernière connexion : {formatDateTime(account.lastLoginAt)}
             </p>
+            {/* Lot 85E : identifiant du compte, copiable (desktop et mobile). */}
+            <AccountIdBadge id={account.id} className="mt-0.5" />
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">

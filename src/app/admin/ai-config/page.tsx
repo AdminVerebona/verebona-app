@@ -41,6 +41,8 @@ import { apiClient } from '@/lib/api-client';
 import { TreatmentStateControl, type TreatmentRuntimeState } from './_components/TreatmentStateControl';
 import { AssistantSettings } from './_components/AssistantSettings';
 import { ModelRegistry } from './_components/ModelRegistry';
+import { ModelCapabilities } from './_components/ModelCapabilities';
+import { OperationProfilesEditor, type OperationProfile, type ProfiledOperation, type PlanView } from './_components/OperationProfilesEditor';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { CatalogBanners } from './_components/CatalogBanners';
@@ -89,6 +91,8 @@ interface Catalogs {
   reasoningLevels: string[];
   guardrailReactions: string[];
   treatments: TreatmentCatalog[];
+  /** Lot 85C : opérations modèle de chaque traitement (registre, serveur). */
+  operationsByTreatment?: Partial<Record<Treatment, ProfiledOperation[]>>;
   /**
    * Catalogue COMPLET des déclencheurs (libellés, applicabilité, retraits) :
    * sert à nommer et expliquer une entrée enregistrée incompatible.
@@ -126,6 +130,8 @@ interface Entry {
   promptArchitecture?: PromptArchitecture;
   /** CDC 15 D-03 : texte complet du prompt maître, distinct du préambule. */
   masterPrompt?: string | null;
+  /** Lot 85C : profils par opération et par rang (vide : référence du traitement). */
+  operationProfiles?: Record<string, OperationProfile>;
 }
 
 interface Version {
@@ -240,12 +246,15 @@ const selectClass =
 // ─── Éditeur d'un traitement ──────────────────────────────────────────────────
 
 function TreatmentEditor({
-  entry, catalog, catalogs, readOnly, onChange, onRetryCatalogs,
+  entry, catalog, catalogs, readOnly, onChange, onRetryCatalogs, plans, unsaved,
 }: {
   entry: Entry;
   catalog: TreatmentCatalog;
   catalogs: Catalogs;
   readOnly: boolean;
+  /** Lot 85C : profils effectifs de la version enregistrée (serveur). */
+  plans: PlanView[] | null;
+  unsaved: boolean;
   onChange: (next: Entry) => void;
   /** Relit le catalogue (déclencheurs) sans recharger la version. */
   onRetryCatalogs: () => void;
@@ -360,7 +369,7 @@ function TreatmentEditor({
 
       <Field
         label="Tokens de sortie"
-        hint="S'applique au modèle principal ; les replis en héritent."
+        hint="Référence du traitement : les replis en héritent, sauf profil d’opération ci-dessous ; ramené si besoin à la limite de chaque modèle."
       >
         <Input
           type="number" min={1}
@@ -370,6 +379,17 @@ function TreatmentEditor({
           className="bg-[color:var(--bg-input)] max-w-[200px]"
         />
       </Field>
+
+      <OperationProfilesEditor
+        entry={entry}
+        operations={catalogs.operationsByTreatment?.[entry.treatment] ?? []}
+        reasoningLevels={catalogs.reasoningLevels}
+        profiles={entry.operationProfiles ?? {}}
+        plans={plans}
+        readOnly={readOnly}
+        unsaved={unsaved}
+        onChange={(next) => set('operationProfiles', next)}
+      />
 
       <div className="space-y-2">
         <span className="text-sm font-medium text-[color:var(--text-primary)]">Garde-fous</span>
@@ -522,6 +542,16 @@ export default function AiConfigPage() {
   const [versions, setVersions] = useState<Version[]>([]);
   const [deleted, setDeleted] = useState<Version[] | null>(null);
   const [current, setCurrent] = useState<VersionDetail | null>(null);
+  // Lot 85C : profils effectifs (constructeur de requête de l'exécution) de la version ouverte.
+  const [plans, setPlans] = useState<Partial<Record<Treatment, PlanView[]>> | null>(null);
+  useEffect(() => {
+    if (!current) { setPlans(null); return; }
+    let vivant = true;
+    apiClient.get<{ plans: Partial<Record<Treatment, PlanView[]>> | null }>(`/api/admin/ai/model-capabilities?versionId=${current.id}`)
+      .then((r) => { if (vivant) setPlans(r.plans ?? null); })
+      .catch(() => { if (vivant) setPlans(null); });
+    return () => { vivant = false; };
+  }, [current]);
   const [tab, setTab] = useState<Treatment>('T1');
   const [drafts, setDrafts] = useState<Record<string, Entry>>({});
   const [dirty, setDirty] = useState<Set<Treatment>>(new Set());
@@ -1013,6 +1043,9 @@ export default function AiConfigPage() {
       {/* Lot 23 (§15.12, §32.6) : registre des modèles, lecture seule. */}
       <ModelRegistry />
 
+      {/* Lot 85C (Pilotage IA V2 P4) : capacités des modèles, lecture seule. */}
+      <ModelCapabilities />
+
       {/* Liste des versions */}
       <section className="space-y-2">
         <h2 className="vb-app-section">Versions</h2>
@@ -1221,6 +1254,8 @@ export default function AiConfigPage() {
                         catalog={t}
                         catalogs={catalogs}
                         readOnly={readOnly}
+                        plans={plans?.[t.code] ?? null}
+                        unsaved={dirty.has(t.code)}
                         onRetryCatalogs={reloadCatalogs}
                         onChange={(next) => {
                           setDrafts((d) => ({ ...d, [t.code]: next }));

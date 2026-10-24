@@ -218,6 +218,8 @@ const CONTRACTS: readonly OutputContract[] = [
   { name: 'T3OperationMatchOutput', label: 't3_operation_match', version: 1, adapters: [] },
   // Lot 61 : `document_renames` facultative (absente = aucune proposition).
   { name: 'T3DocumentNamingOutput', label: 't3_document_naming', version: 1, adapters: [] },
+  // Lot 85F : contrat `t3-knowledge-query-v1` (demande à l'équipe IA 85F).
+  { name: 'T3KnowledgeQueryOutput', label: 't3_knowledge_query', version: 1, adapters: [] },
   { name: 'T4ClassifyEventOutput', label: 't4_classify_event', version: 1, adapters: [] },
   // Lot 54 : même contrat (T4_CLASSIFY_EVENT), version 2 — schéma distinct,
   // choisi par le contrat de sortie `t4_output_v2` de la version de prompt.

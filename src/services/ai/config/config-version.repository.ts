@@ -46,6 +46,7 @@ import {
   type ConfigSnapshot, type MasterPromptRef,
 } from './config-snapshot';
 import type { MasterExecutionConfig } from '../master-prompts/structured-context';
+import { normalizeOperationProfiles } from './operation-profiles';
 
 type Row = Record<string, unknown>;
 /** Sous-ensemble du client `postgres` (connexion ou transaction). */
@@ -110,6 +111,8 @@ function toEntry(r: Row): TreatmentConfig {
       promptArchitecture: isPromptArchitecture(r.prompt_architecture) ? r.prompt_architecture : DEFAULT_PROMPT_ARCHITECTURE,
     }),
     masterPrompt: r.master_prompt == null || String(r.master_prompt).trim() === '' ? null : String(r.master_prompt),
+    // Lot 85C (0710) : profils par opération ; colonne absente → aucun profil.
+    operationProfiles: normalizeOperationProfiles(r.operation_profiles ?? null),
   };
 }
 
@@ -193,8 +196,8 @@ async function readEntries(versionId: number, sql: SqlLike = pgClient as unknown
   const all = await q(sql,
     `SELECT treatment, prompt, primary_model, fallback_1, fallback_2,
             reasoning_primary, reasoning_fallback_1, reasoning_fallback_2,
-            max_output_tokens, guardrails, triggers, cascade, ${architecture}
-       FROM ai_config_entries WHERE version_id = $1 ORDER BY treatment`, [versionId]);
+            max_output_tokens, guardrails, triggers, to_jsonb(e) -> 'operation_profiles' AS operation_profiles, cascade, ${architecture}
+       FROM ai_config_entries e WHERE version_id = $1 ORDER BY treatment`, [versionId]);
   return {
     entries: all.filter((r) => isTreatment(String(r.treatment))).map(toEntry),
     retired: all.map((r) => String(r.treatment)).filter((t) => isRetiredTreatment(t)),
@@ -975,4 +978,41 @@ async function upsertEntry(sql: SqlLike, versionId: number, config: TreatmentCon
       ...(column ? [architecture, masterPrompt] : []),
     ] as never[],
   );
+  // Lot 85C (0710) : profils par opération, dans la même transaction.
+  const profils = normalizeOperationProfiles(c.operationProfiles);
+  const avecProfils = Object.keys(profils).length > 0;
+  if (await hasOperationProfilesColumn(sql)) {
+    await sql.unsafe(
+      `UPDATE ai_config_entries SET operation_profiles = $3::jsonb WHERE version_id = $1 AND treatment = $2`,
+      [versionId, c.treatment, JSON.stringify(profils)] as never[],
+    );
+  } else if (avecProfils) {
+    throw new Error('[config] Profils par opération impossibles à enregistrer : colonne `ai_config_entries.operation_profiles` absente (migration 0710 non appliquée).');
+  }
+}
+
+let profilesColumn: { ready: boolean; checkedAt: number } | null = null;
+
+/** Colonne 0710 présente ? (cache ; recontrôle tant qu'absente). */
+export async function hasOperationProfilesColumn(sql: SqlLike = pgClient as unknown as SqlLike): Promise<boolean> {
+  const e = profilesColumn;
+  if (e && (e.ready || Date.now() - e.checkedAt < RECONTROLE_MS)) return e.ready;
+  let ready = false;
+  try {
+    const rows = (await sql.unsafe(
+      `SELECT COUNT(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'ai_config_entries' AND column_name = 'operation_profiles'`,
+      [] as never[],
+    )) as Array<{ n: number }>;
+    ready = probeCount(rows) === 1;
+  } catch {
+    ready = false;
+  }
+  profilesColumn = { ready, checkedAt: Date.now() };
+  return ready;
+}
+
+/** Réservé aux tests. */
+export function __resetOperationProfilesColumnForTests(): void {
+  profilesColumn = null;
 }

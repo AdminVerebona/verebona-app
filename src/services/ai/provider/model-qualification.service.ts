@@ -42,6 +42,10 @@ import type { ProviderCallInput } from '../gateway/providers/provider.port';
 import {
   classifyProbeFailure, classifyProbeResponse, sanitizeProviderError, type ProbeErrorKind, type ProbeOutcome,
 } from './probe-classification';
+import { buildModelRequest } from '../gateway/request-builder';
+import { classifyCallError } from '../gateway/diagnostics/classify';
+import { capabilitiesOf, capabilitiesSha256, effectiveCapabilities, storedCapabilityInputsOf, type ModelCapabilities } from './model-capabilities';
+import type { ReasoningLevel } from '../config/config-types';
 
 type Row = Record<string, unknown>;
 
@@ -62,6 +66,12 @@ export interface QualificationResult {
    * échec présumé ou définitif) — enregistrée dans l'état opérationnel.
    */
   generateOutcome?: ProbeOutcome;
+  /**
+   * Lot 85C (R45) : paramètres EXPLICITEMENT refusés par le modèle pendant
+   * les épreuves (`chemin=valeur`) — incompatibilité de réglage, jamais une
+   * indisponibilité ; retirés des réglages admissibles de sa fiche.
+   */
+  rejectedParameters?: string[];
 }
 
 export interface StoredQualification {
@@ -72,6 +82,10 @@ export interface StoredQualification {
   errors: Partial<Record<QualifiedCapability, string>>;
   qualifiedAt: string;
   version: string;
+  /** Lot 85C : « requalification nécessaire » marquée sur événement (changement de capacités). */
+  requalificationRequiredAt?: string | null;
+  requalificationReason?: string | null;
+  rejectedParameters?: string[];
 }
 
 export type QualificationCall = (input: ProviderCallInput) => Promise<{ rawText: string; inputTokens?: number; outputTokens?: number }>;
@@ -163,25 +177,67 @@ async function epreuveGeneration(
  * Épreuves de qualification d'un modèle (pur si `call` est injecté).
  * Génération en échec définitif : les autres épreuves ne sont pas jouées
  * (le modèle est inutilisable de toute façon).
+ *
+ * Lot 85C (P4, CFG-03, R45) : chaque épreuve est construite par le
+ * CONSTRUCTEUR DE REQUÊTE UNIQUE d'après la fiche de capacités du modèle —
+ * mêmes paramètres effectifs qu'en exécution. Un paramètre REFUSÉ par le
+ * modèle (`PARAMETER_REJECTED`) est une incompatibilité de réglage : il est
+ * relevé, et l'épreuve est rejouée UNE fois avec le profil admissible
+ * suivant (sans ce réglage) — jamais une indisponibilité du modèle.
  */
 export async function qualifyModel(
   model: string,
   call: QualificationCall,
-  opts: { supportsThinking?: boolean | null; secret?: string | null; thinkingConfigured?: (model: string) => boolean } = {},
+  opts: { supportsThinking?: boolean | null; secret?: string | null; capabilities?: ModelCapabilities } = {},
 ): Promise<QualificationResult> {
   const secret = opts.secret ?? null;
-  const base = { model, attachments: [], timeoutMs: TIMEOUT_MS, maxOutputTokens: MAX_OUT, reasoning: 'minimal' as const };
+  const rejected: string[] = [];
+  let cap = opts.capabilities ?? capabilitiesOf(model);
+  if (opts.supportsThinking === false && cap.thinking.mode !== 'none') {
+    cap = effectiveCapabilities(model, { model, api: { supportsThinking: false } });
+  }
+  /** Requête d'épreuve par le constructeur unique ; niveau refusé d'avance → profil sans réglage. */
+  const requete = (reasoning: ReasoningLevel | null, maxOutputTokens: number): ProviderCallInput | null => {
+    const r = buildModelRequest({ model, capabilities: { ...cap, rejected: [...cap.rejected, ...rejected] }, reasoning, maxOutputTokens, maxOutputTokensOrigin: 'probe' });
+    if (!r.ok) return null;
+    return { model, prompt: '', attachments: [], timeoutMs: TIMEOUT_MS, maxOutputTokens: r.params.maxOutputTokens ?? undefined, reasoning, generation: r.params };
+  };
+  const base = (): ProviderCallInput => requete('minimal', MAX_OUT) ?? requete(null, MAX_OUT)!;
   const errors: QualificationResult['errors'] = {};
+  /** Paramètre refusé par le modèle ? relevé, `true` si un profil alternatif reste à essayer. */
+  const refusParametre = (e: unknown, input: ProviderCallInput): boolean => {
+    const c = classifyCallError(e);
+    if (c.subtype !== 'PARAMETER_REJECTED' || !c.rejectedParameter) return false;
+    const t = input.generation?.thinking;
+    const valeur = c.rejectedParameter.endsWith('thinkingLevel') && t && 'thinkingLevel' in t ? t.thinkingLevel
+      : c.rejectedParameter.endsWith('thinkingBudget') && t && 'thinkingBudget' in t ? t.thinkingBudget
+        : c.rejectedParameter.endsWith('temperature') ? input.generation?.temperature
+          : c.rejectedParameter.endsWith('maxOutputTokens') ? input.generation?.maxOutputTokens : null;
+    rejected.push(`${c.rejectedParameter}=${valeur ?? ''}`);
+    return true;
+  };
+  /** Appel d'épreuve ; refus de paramètre → un seul nouvel essai avec le profil admissible suivant. */
+  const run = async (build: () => ProviderCallInput | null, extra: Partial<ProviderCallInput>) => {
+    const first = build();
+    if (!first) throw Object.assign(new Error('Aucun réglage admissible pour cette épreuve (capacités).'), { noAdmissibleProfile: true });
+    try {
+      return await call({ ...first, ...extra });
+    } catch (e) {
+      if (!refusParametre(e, first)) throw e;
+      const alt = build();
+      if (!alt) throw e;
+      return call({ ...alt, ...extra });
+    }
+  };
 
-  const gen = await epreuveGeneration(() => call({ ...base, prompt: 'Réponds exactement : OK' }), model, secret);
+  const gen = await epreuveGeneration(() => run(base, { prompt: 'Réponds exactement : OK' }), model, secret);
   if (gen.error) errors.generate = gen.error;
   if (gen.value !== true) {
-    return { generate: gen.value, structured: null, multimodal: null, thinking: null, errors, ...(gen.outcome ? { generateOutcome: gen.outcome } : {}) };
+    return { generate: gen.value, structured: null, multimodal: null, thinking: null, errors, ...(gen.outcome ? { generateOutcome: gen.outcome } : {}), ...(rejected.length ? { rejectedParameters: rejected } : {}) };
   }
 
   const structured = await epreuve(
-    () => call({
-      ...base,
+    () => run(base, {
       prompt: 'Renvoie uniquement un objet JSON : "ok" vaut true et "mot" vaut "verebona".',
       jsonResponse: true,
       responseSchema: QUALIFICATION_SCHEMA as unknown as Record<string, unknown>,
@@ -191,8 +247,7 @@ export async function qualifyModel(
   if (structured.error) errors.structured = structured.error;
 
   const multimodal = await epreuve(
-    () => call({
-      ...base,
+    () => run(base, {
       prompt: 'Quelle est la couleur dominante de cette image ? Réponds en un mot.',
       attachments: [{ url: 'inline:qualification.png', mimeType: 'image/png', displayName: 'qualification.png', data: QUALIFICATION_IMAGE_PNG }],
     }),
@@ -201,39 +256,68 @@ export async function qualifyModel(
   if (multimodal.error) errors.multimodal = multimodal.error;
 
   let thinking: boolean | null;
-  if (opts.supportsThinking === false) {
+  if (cap.thinking.mode === 'none') {
     thinking = false;
-    errors.thinking = 'raisonnement non déclaré par le catalogue du fournisseur';
-  } else if (opts.thinkingConfigured && !opts.thinkingConfigured(model)) {
-    // Aucun réglage de raisonnement connu pour cette famille : l'appel ne
-    // prouverait rien. Le catalogue Google fait foi s'il le déclare.
-    thinking = opts.supportsThinking === true ? true : null;
+    errors.thinking = cap.sources.thinking?.source === 'api' ? 'raisonnement non déclaré par le catalogue du fournisseur' : 'raisonnement non réglable (capacités)';
+  } else if (cap.thinking.mode === 'unknown') {
+    // Aucun réglage documenté : l'appel ne prouverait rien, aucun réglage
+    // n'est inventé (CAT-03 — interface en attente d'adaptation).
+    thinking = null;
+    errors.thinking = 'réglage de raisonnement non documenté pour ce modèle (en attente de référence)';
   } else {
     const t = await epreuve(
-      () => call({ ...base, reasoning: 'étendu', maxOutputTokens: 2048, prompt: 'Combien font 17 × 3 ? Réponds par le nombre seul.' }),
+      () => run(() => requete('étendu', 2048) ?? requete('minimal', 2048), { prompt: 'Combien font 17 × 3 ? Réponds par le nombre seul.' }),
       (raw) => raw.trim().length > 0, secret, 'réponse vide avec raisonnement étendu',
     );
     thinking = t.value;
     if (t.error) errors.thinking = t.error;
   }
 
-  return { generate: true, structured: structured.value, multimodal: multimodal.value, thinking, errors, generateOutcome: { status: 'ok' } };
+  return {
+    generate: true, structured: structured.value, multimodal: multimodal.value, thinking, errors, generateOutcome: { status: 'ok' },
+    ...(rejected.length ? { rejectedParameters: [...new Set(rejected)] } : {}),
+  };
 }
 
-/** Faut-il (re)qualifier ? Jamais qualifié, version changée, échec de plus de 7 j, succès de plus de 30 j. */
-export function needsQualification(q: StoredQualification | undefined, now: Date = new Date()): boolean {
+/**
+ * Faut-il (re)qualifier ? Lot 85C (QUAL-06, CAT-01, R46) : SUR ÉVÉNEMENT
+ * seulement — jamais qualifié, version des épreuves changée, ou
+ * « requalification nécessaire » marquée par un changement de capacités.
+ * Plus aucune requalification par ancienneté (ancien critère 7 / 30 jours
+ * retiré). `_now` conservé pour la compatibilité des appelants.
+ */
+export function needsQualification(q: StoredQualification | undefined, _now?: Date): boolean {
   if (!q) return true;
   if (q.version !== QUALIFICATION_VERSION) return true;
-  const age = now.getTime() - new Date(q.qualifiedAt).getTime();
-  const echec = !q.generate || q.structured === false || q.multimodal === false;
-  return age > (echec ? 7 : 30) * 24 * 3600_000;
+  return Boolean(q.requalificationRequiredAt);
 }
 
 /** Enregistre un résultat CONCLUANT sur la génération (best effort : ne lève jamais). */
 export async function recordQualification(model: string, secret: string, r: QualificationResult): Promise<boolean> {
   if (r.generate === null) return false;
   try {
+    // Lot 85C (0708) : paramètres refusés, fiche de capacités sous laquelle la
+    // qualification a eu lieu ; la marque « requalification nécessaire » est effacée.
+    const fiche = effectiveCapabilities(model, {
+      ...(storedCapabilityInputsOf(model) ?? {}), model, probe: { imageInput: r.multimodal, structuredOutput: r.structured, rejected: r.rejectedParameters ?? [] },
+    });
     await pgClient.unsafe(
+      `INSERT INTO ai_model_qualification
+         (provider, model, key_fingerprint, qualification_version, generate_ok, structured_ok, multimodal_ok, thinking_ok, errors, qualified_at,
+          rejected_parameters, capabilities_sha256, requalification_required_at, requalification_reason)
+       VALUES ('gemini', $1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW(), $9::jsonb, $10, NULL, NULL)
+       ON CONFLICT (provider, model) DO UPDATE SET key_fingerprint = EXCLUDED.key_fingerprint,
+         qualification_version = EXCLUDED.qualification_version, generate_ok = EXCLUDED.generate_ok,
+         structured_ok = EXCLUDED.structured_ok, multimodal_ok = EXCLUDED.multimodal_ok,
+         thinking_ok = EXCLUDED.thinking_ok, errors = EXCLUDED.errors, qualified_at = NOW(),
+         rejected_parameters = EXCLUDED.rejected_parameters, capabilities_sha256 = EXCLUDED.capabilities_sha256,
+         requalification_required_at = NULL, requalification_reason = NULL`,
+      [model, keyFingerprint(secret), QUALIFICATION_VERSION, r.generate, r.structured, r.multimodal, r.thinking, JSON.stringify(r.errors),
+        JSON.stringify(r.rejectedParameters ?? []), capabilitiesSha256(fiche)] as never[],
+    ).catch(async (e: { code?: string }) => {
+      if (e?.code !== '42703') throw e;
+      // Colonnes 0708 absentes : écriture historique.
+      await pgClient.unsafe(
       `INSERT INTO ai_model_qualification
          (provider, model, key_fingerprint, qualification_version, generate_ok, structured_ok, multimodal_ok, thinking_ok, errors, qualified_at)
        VALUES ('gemini', $1, $2, $3, $4, $5, $6, $7, $8::jsonb, NOW())
@@ -242,7 +326,8 @@ export async function recordQualification(model: string, secret: string, r: Qual
          structured_ok = EXCLUDED.structured_ok, multimodal_ok = EXCLUDED.multimodal_ok,
          thinking_ok = EXCLUDED.thinking_ok, errors = EXCLUDED.errors, qualified_at = NOW()`,
       [model, keyFingerprint(secret), QUALIFICATION_VERSION, r.generate, r.structured, r.multimodal, r.thinking, JSON.stringify(r.errors)] as never[],
-    );
+      );
+    });
     return true;
   } catch (e) {
     console.warn('[model-qualification] résultat non enregistré :', (e as Error).message);
@@ -262,8 +347,11 @@ export async function loadQualifications(activeSecret?: string | null): Promise<
       : activeSecret;
     if (!secret) return out;
     const rows = (await pgClient.unsafe(
-      `SELECT model, generate_ok, structured_ok, multimodal_ok, thinking_ok, errors, qualified_at, qualification_version
-         FROM ai_model_qualification WHERE provider = 'gemini' AND key_fingerprint = $1`,
+      `SELECT model, generate_ok, structured_ok, multimodal_ok, thinking_ok, errors, qualified_at, qualification_version,
+              to_jsonb(q) -> 'requalification_required_at' AS requalification_required_at,
+              to_jsonb(q) -> 'requalification_reason' AS requalification_reason,
+              to_jsonb(q) -> 'rejected_parameters' AS rejected_parameters
+         FROM ai_model_qualification q WHERE provider = 'gemini' AND key_fingerprint = $1`,
       [keyFingerprint(secret)] as never[],
     )) as unknown as Row[];
     const b = (v: unknown) => (v == null ? null : Boolean(v));
@@ -276,6 +364,9 @@ export async function loadQualifications(activeSecret?: string | null): Promise<
         errors: (r.errors && typeof r.errors === 'object' ? r.errors : {}) as StoredQualification['errors'],
         qualifiedAt: new Date(String(r.qualified_at)).toISOString(),
         version: String(r.qualification_version),
+        requalificationRequiredAt: r.requalification_required_at == null ? null : new Date(String(r.requalification_required_at)).toISOString(),
+        requalificationReason: r.requalification_reason == null ? null : String(r.requalification_reason),
+        rejectedParameters: Array.isArray(r.rejected_parameters) ? (r.rejected_parameters as unknown[]).map(String) : [],
       });
     }
   } catch {

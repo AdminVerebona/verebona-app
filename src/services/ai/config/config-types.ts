@@ -8,6 +8,7 @@
 import type { Treatment } from './treatments';
 import type { AiEnvironment } from './environment';
 import type { ConfigVersionStatus } from './version-state-machine';
+import type { OperationProfiles } from './operation-profiles';
 
 /**
  * Niveau de raisonnement demandé au modèle.
@@ -118,8 +119,19 @@ export interface TreatmentConfig {
   reasoningPrimary: ReasoningLevel | null;
   reasoningFallback1: ReasoningLevel | null;
   reasoningFallback2: ReasoningLevel | null;
-  /** §2.1 — modèle principal uniquement ; les fallbacks héritent. */
+  /**
+   * Plafond de sortie de RÉFÉRENCE du traitement (§2.1). Lot 85C (décision
+   * 08) : un rang de repli en hérite SAUF profil d'opération propre au rang,
+   * et la valeur héritée est ADAPTÉE à la limite du modèle sollicité.
+   */
   maxOutputTokens: number | null;
+  /**
+   * Lot 85C (CDC Pilotage IA V2 P4, CFG-01, OP-03) : profils par opération et
+   * par rang (raisonnement, plafond de sortie, délai) — vide : la référence du
+   * traitement s'applique à toutes ses opérations. Absent (client antérieur) :
+   * valeur en place conservée à l'enregistrement.
+   */
+  operationProfiles?: OperationProfiles;
   guardrails: GuardrailSetting[];
   /** Vide pour T2 et T6, hors file globale (GEN-004). */
   triggers: TriggerSetting[];
@@ -211,7 +223,8 @@ export type ConfigFieldKey =
   | 'triggers'
   | 'cascade'
   | 'promptArchitecture'
-  | 'masterPrompt';
+  | 'masterPrompt'
+  | 'operationProfiles';
 
 /** Libellés lisibles, pour les écrans et les messages d'erreur. */
 export const FIELD_LABELS: Readonly<Record<ConfigFieldKey, string>> = {
@@ -228,6 +241,7 @@ export const FIELD_LABELS: Readonly<Record<ConfigFieldKey, string>> = {
   cascade: 'Cascade coût/qualité',
   promptArchitecture: 'Architecture des prompts',
   masterPrompt: 'Prompt maître',
+  operationProfiles: 'Profil d’opération',
 };
 
 /** Configuration vide d'un traitement — base d'une première version. */
@@ -247,5 +261,6 @@ export function emptyTreatmentConfig(treatment: Treatment): TreatmentConfig {
     cascade: null,
     promptArchitecture: defaultPromptArchitectureFor(treatment),
     masterPrompt: null,
+    operationProfiles: {},
   };
 }

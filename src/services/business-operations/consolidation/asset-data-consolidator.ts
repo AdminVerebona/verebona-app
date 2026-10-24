@@ -37,6 +37,16 @@
  * depuis — `assets.operations_data_changed_at`, 0322) et BO › Exploitation ›
  * Rattrapages (Simuler = exécution réelle dans une transaction ANNULÉE).
  *
+ * Lot 85E (ticket PO P1 du 23/10) — CRÉER n'est pas ENRICHIR : la fiche est
+ * lue avec sa date d'acquisition canonique AUTOMATIQUE (`enrichment`). Une
+ * réalité établie par cette seule date (`enrichmentOnly`) ne passe JAMAIS
+ * par la recherche avant création : elle ne fait que s'attacher, comme
+ * source d'enrichissement, à l'UNIQUE Opération ACQUISITION active du bien
+ * restée réalisée sans date (`loadEnrichableAcquisition`) ; sans elle → rien
+ * (aucune création), plusieurs → rien (ambiguïté : le contrôle
+ * COH-OPS-ACQUISITION-DATE la constate). La date est ensuite posée par la
+ * reconsolidation (`applyStructuredAuthority`), provenance conservée.
+ *
  * Aucune réécriture de la fiche (B1 : le bien reste la source de vérité de
  * ses champs ; pas de boucle fiche ↔ Opération) ; aucun document réanalysé
  * (P19) ; rien de visible pour l'utilisateur (P09).
@@ -67,6 +77,8 @@ export type AssetDataOutcome =
   | 'NONE'              // la fiche n'établit pas cette réalité, aucune source
   | 'LINKED'            // source déjà liée : version suivie, Opération reconsolidée
   | 'WITHDRAWN'         // la fiche ne l'établit plus : source retirée
+  // Lot 85E : la date automatique seule n'établit rien à créer (reason : AUTOMATIC_VALUE_NO_CREATION,
+  // ACQUISITION_ALREADY_DATED, ACQUISITION_DATE_AMBIGUOUS) — issue NONE avec motif.
   | Extract<T3Outcome, 'CREATE_NEW' | 'MATCH_AND_ENRICH' | 'HOLD_UNRESOLVED' | 'ARBITRATION_REQUIRED'>;
 
 export interface AssetDataNatureResult {
@@ -95,6 +107,29 @@ function perimeterStatus(nature: AssetDataNature, status: string | null | undefi
 }
 
 interface AssetDataSourceRow { id: number; operationId: number; active: boolean; nature: string; merged: boolean }
+
+/** Lot 85E : motif de la source d'enrichissement (date d'acquisition automatique de la fiche). */
+export const ASSET_DATA_DATE_ENRICHMENT_REASON = 'ASSET_DATA_DATE_ENRICHMENT';
+
+/**
+ * Lot 85E — Opération ACQUISITION que la date automatique du bien peut
+ * DATER : l'unique ACQUISITION active (ni invalidée, ni fusionnée) liée au
+ * bien. `target` seulement si elle est réalisée et sans date ; sinon le motif.
+ */
+export async function loadEnrichableAcquisition(tx: DbTx, accountId: number, assetId: number): Promise<
+  { target: number; reason: null } | { target: null; reason: 'AUTOMATIC_VALUE_NO_CREATION' | 'ACQUISITION_ALREADY_DATED' | 'ACQUISITION_DATE_AMBIGUOUS' }
+> {
+  const r = await rows<Row>(tx, sql`
+    SELECT o.id, o.status, o.realized_date::text AS realized_date
+      FROM business_operations o
+     WHERE o.account_id = ${accountId} AND o.type_code = 'ACQUISITION' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+       AND EXISTS (SELECT 1 FROM business_operation_asset_links l WHERE l.operation_id = o.id AND l.asset_id = ${assetId} AND l.active)
+     ORDER BY o.id`);
+  if (!r.length) return { target: null, reason: 'AUTOMATIC_VALUE_NO_CREATION' };
+  if (r.length > 1) return { target: null, reason: 'ACQUISITION_DATE_AMBIGUOUS' };
+  if (r[0].status !== 'REALIZED' || r[0].realized_date !== null) return { target: null, reason: 'ACQUISITION_ALREADY_DATED' };
+  return { target: Number(r[0].id), reason: null };
+}
 
 async function loadAssetDataSources(tx: DbTx, accountId: number, assetId: number): Promise<AssetDataSourceRow[]> {
   const r = await rows<Row>(tx, sql`
@@ -137,7 +172,8 @@ export async function reconcileAssetDataInSession(
     return result;
   }
 
-  const facts = assetDataFacts(row);
+  // Lot 85E : lecture d'enrichissement (date d'acquisition automatique comprise) ; la création reste gardée ci-dessous.
+  const facts = assetDataFacts(row, { enrichment: true });
   for (const nature of ASSET_DATA_NATURES) {
     const fact = facts[nature];
     const actives = sources.filter((s) => s.nature === nature && s.active && !s.merged);
@@ -154,6 +190,25 @@ export async function reconcileAssetDataInSession(
       await repo.refreshSourceVersion(actives[0].id, version);
       touched.add(actives[0].operationId);
       result.natures.push({ nature, outcome: 'LINKED', reason: null, operationId: actives[0].operationId });
+      continue;
+    }
+
+    // Lot 85E : date automatique seule — ENRICHIR l'acquisition existante, jamais créer ni rapprocher.
+    if (fact.enrichmentOnly) {
+      const e = await loadEnrichableAcquisition(tx, accountId, assetId);
+      if (e.target === null) {
+        result.natures.push({ nature, outcome: 'NONE', reason: e.reason, operationId: null });
+        continue;
+      }
+      const avant = await rows<{ id: string }>(tx, sql`SELECT id FROM business_operation_sources WHERE operation_id = ${e.target} AND active`);
+      const sourceId = await repo.addSource(e.target, {
+        kind: 'ASSET_DATA', entityKey: assetId, version, role: null, locator: { nature }, authority: 'STRUCTURED', confidence: 'certain',
+        matchMethod: null, matchReason: ASSET_DATA_DATE_ENRICHMENT_REASON,
+      }, 'ASSET_DATA_DATE_ENRICH');
+      if (!avant.some((x) => Number(x.id) === sourceId)) changes.track(true);
+      await repo.refreshSourceVersion(sourceId, version);
+      touched.add(e.target);
+      result.natures.push({ nature, outcome: 'MATCH_AND_ENRICH', reason: ASSET_DATA_DATE_ENRICHMENT_REASON, operationId: e.target });
       continue;
     }
 
@@ -311,6 +366,33 @@ async function simulerBien(c: AssetToReconcile, today?: string): Promise<AssetDa
     if (!(e instanceof Simulation)) throw e;
   }
   return res!;
+}
+
+/**
+ * Lot 85E — APERÇU exact de la réconciliation d'un bien (contrôle de
+ * cohérence COH-OPS-ACQUISITION-DATE) : exécution réelle dans une
+ * transaction ANNULÉE (aucune écriture, aucun événement), puis lecture de la
+ * date de réalisation que les Opérations demandées AURAIENT reçue.
+ */
+export async function previewAssetDataReconciliation(
+  accountId: number, assetId: number, operationIds: readonly number[], today?: string,
+): Promise<{ result: AssetDataResult; realizedDates: Map<number, string | null> }> {
+  let out: { result: AssetDataResult; realizedDates: Map<number, string | null> } | null = null;
+  try {
+    await db.transaction(async (tx) => {
+      const { result } = await withBusinessOperationWriteInTx(tx, [accountId], (session) =>
+        reconcileAssetDataInSession(session, accountId, assetId, { today, origin: 'EVENT' }));
+      const ids = [...new Set(operationIds.filter((x) => Number.isSafeInteger(x)))];
+      const r = ids.length ? await rows<Row>(tx, sql`
+        SELECT id, realized_date::text AS realized_date FROM business_operations
+         WHERE account_id = ${accountId} AND id = ANY(${`{${ids.join(',')}}`}::bigint[])`) : [];
+      out = { result, realizedDates: new Map(r.map((x) => [Number(x.id), (x.realized_date as string | null) ?? null])) };
+      throw new Simulation();
+    });
+  } catch (e) {
+    if (!(e instanceof Simulation)) throw e;
+  }
+  return out!;
 }
 
 /**

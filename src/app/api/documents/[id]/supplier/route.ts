@@ -4,6 +4,7 @@ import { db } from '@/db';
 import { documentSuppliers, assetFiles, suppliers } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
 import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
 
@@ -18,6 +19,9 @@ export async function PUT(
 
     const accountId = session.currentAccountId;
     if (!accountId) return apiError(401, 'UNAUTHORIZED', 'No account selected');
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     const { id } = await params;
     const documentId = parseInt(id);
@@ -91,6 +95,9 @@ export async function DELETE(
 
     const accountId = session.currentAccountId;
     if (!accountId) return apiError(401, 'UNAUTHORIZED', 'No account selected');
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     const { id } = await params;
     const documentId = parseInt(id);

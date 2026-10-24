@@ -1,61 +1,61 @@
 /**
- * Paramètres de génération Gemini — CDC BO IA GEN-011, §2.1 (raisonnement).
+ * Paramètres de génération Gemini — CDC BO IA §2.1 ; lot 85C (CDC Pilotage
+ * IA V2 P4, INV-03, CAT-03, CFG-03).
  *
- * Isolés de l'adaptateur pour être testés sans appel réseau : ce sont les deux
- * réglages qui changent le comportement du modèle à chaque appel.
+ * Projection, sur le `generationConfig` de l'API Gemini, des paramètres
+ * RÉSOLUS par le constructeur de requête unique (`request-builder.ts`) à
+ * partir des CAPACITÉS du modèle (`model-capabilities.ts`). Ce module ne lit
+ * plus jamais le nom du modèle : plus de « famille 3.x → thinkingLevel »,
+ * « 2.5 Pro → budget 128 » ni de température imposée à tous (lot 85C — ces
+ * règles sont désormais des RÉFÉRENCES documentées et datées, par
+ * identifiant exact, dans la fiche de capacités).
+ *
+ * Validation, qualification et exécution passent par la même fonction : un
+ * appel qui a fourni ses paramètres résolus (`generation`, passerelle) les
+ * réutilise tels quels ; un appel technique direct (sonde, test de clé) les
+ * fait résoudre par le même constructeur.
  */
 import type { ReasoningLevel } from '../../config/config-types';
-
-/**
- * Température — GEN-011 : « très basse/glaciale et définie dans le code ».
- *
- * Constante, jamais administrable : le §2.1 range la température parmi les
- * paramètres hors BO. Zéro rend l'extraction et la classification aussi
- * reproductibles que le fournisseur le permet — deux analyses du même document
- * doivent produire les mêmes faits.
- */
-export const GEMINI_TEMPERATURE = 0;
+import { AiGatewayError } from '../errors';
+import {
+  buildModelRequest, thinkingParamLabel, type ModelRequestResult, type ResolvedGenerationParams,
+} from '../request-builder';
 
 /** Configuration de raisonnement transmise dans `generationConfig.thinkingConfig`. */
-export type GeminiThinkingConfig =
-  | { thinkingLevel: 'low' | 'high' }
-  | { thinkingBudget: number };
-
-/**
- * Projection du niveau administré (minimal / standard / étendu) sur le réglage
- * du modèle.
- *
- * ⚠️ Les familles ne parlent pas la même langue :
- *   · Gemini 3.x : `thinkingLevel` (low / high) ;
- *   · Gemini 2.5 : `thinkingBudget` en jetons, avec des bornes propres au
- *     modèle — 2.5 Pro ne peut pas désactiver le raisonnement (minimum 128),
- *     Flash et Flash-Lite le peuvent (0).
- * Envoyer un réglage hors bornes fait échouer l'APPEL, donc en production :
- * chaque valeur ci-dessous est dans les bornes documentées du modèle.
- *
- * `standard` et `null` ne transmettent rien : le défaut du modèle (raisonnement
- * dynamique) EST le niveau standard. Un modèle d'une autre famille (2.0, 1.5)
- * ne raisonne pas : rien n'est transmis, plutôt qu'un paramètre refusé.
- */
-export function thinkingConfigFor(model: string, level: ReasoningLevel | null | undefined): GeminiThinkingConfig | undefined {
-  if (!level || level === 'standard') return undefined;
-  const m = model.toLowerCase();
-  if (/^gemini-3(\.|-)/.test(m)) {
-    return { thinkingLevel: level === 'minimal' ? 'low' : 'high' };
-  }
-  if (m.startsWith('gemini-2.5-pro')) {
-    return { thinkingBudget: level === 'minimal' ? 128 : 32_768 };
-  }
-  if (m.startsWith('gemini-2.5-')) {
-    return { thinkingBudget: level === 'minimal' ? 0 : 24_576 };
-  }
-  return undefined;
-}
+export type GeminiThinkingConfig = { thinkingLevel: string } | { thinkingBudget: number };
 
 /** Libellé BO du raisonnement transmis : `aucun`, `low`, `high`, `budget N`. */
-export function thinkingConfigLabel(tc: GeminiThinkingConfig | undefined): string {
-  if (!tc) return 'aucun';
-  return 'thinkingLevel' in tc ? tc.thinkingLevel : `budget ${tc.thinkingBudget}`;
+export function thinkingConfigLabel(tc: GeminiThinkingConfig | undefined | null): string {
+  return thinkingParamLabel(tc ?? null);
+}
+
+export interface GenerationConfigInput {
+  model: string;
+  maxOutputTokens?: number;
+  reasoning?: ReasoningLevel | null;
+  jsonResponse?: boolean;
+  /** Lot 33D : schéma JSON réduit (structured output). Implique le mode JSON. */
+  responseSchema?: Record<string, unknown>;
+  /** Lot 85C : paramètres déjà résolus par le constructeur unique (passerelle). */
+  generation?: ResolvedGenerationParams;
+}
+
+/**
+ * Paramètres résolus d'un appel : ceux fournis par la passerelle, sinon ceux
+ * du constructeur unique appliqué au niveau et au plafond demandés.
+ */
+export function resolveGenerationParams(input: GenerationConfigInput): ModelRequestResult {
+  if (input.generation) {
+    return {
+      ok: true, params: input.generation,
+      trace: {
+        model: input.model, family: null, reasoning: { requested: input.reasoning ?? null, sent: thinkingParamLabel(input.generation.thinking) },
+        maxOutputTokens: { requested: input.maxOutputTokens ?? null, origin: 'none', operationFloor: null, callerCap: null, modelLimit: null, adapted: input.generation.maxOutputTokens, sent: input.generation.maxOutputTokens },
+        temperature: { profile: null, sent: input.generation.temperature }, adaptations: [], capabilitySources: {},
+      },
+    };
+  }
+  return buildModelRequest({ model: input.model, reasoning: input.reasoning ?? null, maxOutputTokens: input.maxOutputTokens ?? null, maxOutputTokensOrigin: 'probe' });
 }
 
 /**
@@ -63,39 +63,52 @@ export function thinkingConfigLabel(tc: GeminiThinkingConfig | undefined): strin
  * réellement construit (même fonction que l'adaptateur) : rien n'est
  * recalculé à part. Aucun contenu : ni prompt, ni schéma.
  */
-export function describeGenerationConfig(input: Parameters<typeof buildGenerationConfig>[0]): {
+export function describeGenerationConfig(input: GenerationConfigInput): {
   responseSchemaSent: boolean; responseMimeType: string | null; maxOutputTokens: number | null; thinkingConfig: string;
+  temperature: number | null; refused: string | null;
 } {
-  const cfg = buildGenerationConfig(input);
+  const r = resolveGenerationParams(input);
+  if (!r.ok) {
+    return { responseSchemaSent: false, responseMimeType: null, maxOutputTokens: null, thinkingConfig: 'refusé', temperature: null, refused: r.refusal.parameter };
+  }
+  const cfg = generationConfigOf(r.params, input);
   return {
     responseSchemaSent: cfg.responseJsonSchema !== undefined,
     responseMimeType: typeof cfg.responseMimeType === 'string' ? cfg.responseMimeType : null,
     maxOutputTokens: typeof cfg.maxOutputTokens === 'number' ? cfg.maxOutputTokens : null,
     thinkingConfig: thinkingConfigLabel(cfg.thinkingConfig as GeminiThinkingConfig | undefined),
+    temperature: typeof cfg.temperature === 'number' ? cfg.temperature : null,
+    refused: null,
   };
 }
 
-/** `generationConfig` complet d'un appel. */
-export function buildGenerationConfig(input: {
-  model: string;
-  maxOutputTokens?: number;
-  reasoning?: ReasoningLevel | null;
-  jsonResponse?: boolean;
-  /** Lot 33D : schéma JSON réduit (structured output). Implique le mode JSON. */
-  responseSchema?: Record<string, unknown>;
-}): Record<string, unknown> {
-  const thinkingConfig = thinkingConfigFor(input.model, input.reasoning);
+/** `generationConfig` Gemini d'un jeu de paramètres résolus (pur). */
+export function generationConfigOf(p: ResolvedGenerationParams, input: Pick<GenerationConfigInput, 'jsonResponse' | 'responseSchema'>): Record<string, unknown> {
   return {
-    temperature: GEMINI_TEMPERATURE,
+    ...(p.temperature !== null ? { temperature: p.temperature } : {}),
     // Absent = défaut du fournisseur. Le §2.1 rend ce plafond administrable ;
     // l'appliquer ici est ce qui empêche le champ d'être décoratif.
-    ...(input.maxOutputTokens ? { maxOutputTokens: input.maxOutputTokens } : {}),
-    ...(thinkingConfig ? { thinkingConfig } : {}),
-    // Mode JSON natif, déclaré par l'opération : repris des modules
-    // historiques qui l'utilisaient (analyse documentaire, enrichissement).
+    ...(p.maxOutputTokens ? { maxOutputTokens: p.maxOutputTokens } : {}),
+    ...(p.thinking ? { thinkingConfig: p.thinking } : {}),
+    // Mode JSON natif, déclaré par l'opération.
     ...(input.jsonResponse || input.responseSchema ? { responseMimeType: 'application/json' } : {}),
     // Structured output (lot 33D, §23) : la génération est contrainte par le
     // schéma ; la normalisation et la validation restent appliquées ensuite.
     ...(input.responseSchema ? { responseJsonSchema: input.responseSchema } : {}),
   };
+}
+
+/**
+ * `generationConfig` complet d'un appel. Combinaison connue comme
+ * incompatible : refus AVANT appel (`MODEL_PARAMETERS_INCOMPATIBLE`, étape
+ * `request_build`, récupérable — un autre modèle de la chaîne peut convenir).
+ */
+export function buildGenerationConfig(input: GenerationConfigInput): Record<string, unknown> {
+  const r = resolveGenerationParams(input);
+  if (!r.ok) {
+    throw Object.assign(new AiGatewayError('MODEL_PARAMETERS_INCOMPATIBLE', 'n/a', r.refusal.message, { recoverable: true }), {
+      aiStage: 'request_build', rejectedParameter: r.refusal.parameter,
+    });
+  }
+  return generationConfigOf(r.params, input);
 }

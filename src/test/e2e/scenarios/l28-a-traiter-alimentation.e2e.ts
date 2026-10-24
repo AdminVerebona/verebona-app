@@ -15,6 +15,7 @@ import { expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { scenario } from '../scenario';
 import { analyserDocument, sortieT1, useTargetState, type FaitT1 } from '../chain';
+import { useKnowledgeQueryDelivered } from '../knowledge-query';
 
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
@@ -29,6 +30,8 @@ interface Ligne {
 
 scenario('L28-ATP', 'À traiter : production réelle, déduplication, résolution depuis tous les écrans, balayage tracé', ({ sql, make, useRecordings }) => {
   useTargetState();
+  // Lot 85F : donnée inconnue de TOUTE la connaissance T1 — capacité T3 KNOWLEDGE_QUERY livrée, interprétation sans résultat.
+  useKnowledgeQueryDelivered();
 
   type Compte = { id: number; ownerUserId: number };
   // Lot 31B : sans bien certain, T3 DOCUMENT_ASSET reprend (file vidée par

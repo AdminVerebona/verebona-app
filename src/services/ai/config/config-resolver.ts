@@ -48,6 +48,7 @@ import {
   type PromptArchitecture, type ReasoningLevel, type TreatmentConfig,
 } from './config-types';
 import { currentJobContext } from '../queue/job-context';
+import { normalizeOperationProfiles, profileForChain, type OperationProfile } from './operation-profiles';
 import { hasTestCounterStore, readConfigVersionCounter } from './config-cache-version';
 import {
   activeMasterPromptsTestOverride, loadActiveMasterPrompts, type ActiveMasterPrompt,
@@ -103,6 +104,13 @@ export interface ResolvedOperationConfig {
    */
   configRevisionId?: number | null;
   configRevisionNumber?: number | null;
+  /**
+   * Lot 85C (CDC Pilotage IA V2 P4, CFG-01, OP-03) : profil de CETTE
+   * opération (raisonnement, plafond de sortie par rang, délai), ramené aux
+   * rangs de la chaîne effective. Absent : la référence du traitement vaut
+   * pour tous les rangs (héritage explicite, `rankProfile`).
+   */
+  operationProfile?: OperationProfile | null;
 }
 
 const CACHE_TTL_MS = 30_000;
@@ -496,11 +504,21 @@ export async function resolveOperationConfig(
       ? [entry.reasoningPrimary ?? null, ...reasoningFallbacks]
       : [],
     ...promptOf(entry),
+    // Lot 85C : profil de l'opération, emplacements ramenés aux rangs de la
+    // chaîne (même décalage que les niveaux de raisonnement). Principal du
+    // code conservé : aucun profil administré ne s'applique.
+    ...(entry.primaryModel ? operationProfileOf(entry, operationCode) : {}),
     configVersionId: effective.versionId,
     visibleNumber: effective.visibleNumber,
     configRevisionId: effective.revisionId ?? null,
     configRevisionNumber: effective.revisionNumber ?? null,
   });
+}
+
+function operationProfileOf(entry: TreatmentConfig, operationCode: string): Pick<ResolvedOperationConfig, 'operationProfile'> {
+  const p = normalizeOperationProfiles(entry.operationProfiles)[operationCode];
+  const chaine = profileForChain(p, [true, Boolean(entry.fallback1), Boolean(entry.fallback2)]);
+  return chaine ? { operationProfile: chaine } : {};
 }
 
 /**

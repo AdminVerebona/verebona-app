@@ -13,7 +13,7 @@ import { __setProcessingEligibilityForTests } from '@/services/account/processin
 
 export const fakeProvider = new FakeProvider();
 
-beforeEach(() => {
+beforeEach(async () => {
   fakeProvider.reset();
   setAiProvider(fakeProvider);
   process.env.GEMINI_API_KEY = 'test-key-not-used';
@@ -34,6 +34,14 @@ beforeEach(() => {
   // base) accordée en test unitaire ; exercée par les e2e PostgreSQL
   // (`l82a-eligibilite-comptes`) et par `processing-eligibility.test.ts`.
   __setProcessingEligibilityForTests(async () => ({ eligible: true, reason: null }));
+  // Lot 85C : fiches de capacités sans base — références documentées du code
+  // seules (aucune donnée de catalogue) ; exercées en base par l'e2e L85C.
+  // Import dynamique : n'évalue pas `@/db` avant les `vi.mock` du fichier de test.
+  const [{ __setModelCapabilityLoaderForTests }, { setStoredCapabilityInputs }] = await Promise.all([
+    import('@/services/ai/provider/model-capabilities.repository'), import('@/services/ai/provider/model-capabilities'),
+  ]);
+  __setModelCapabilityLoaderForTests(async () => new Map());
+  setStoredCapabilityInputs(new Map());
   // Plus aucun drapeau de moteur : AI_INTELLIGENT_ASSISTANT, AI_AGENDA_ENGINE
   // (lot 16b-2), AI_UNIFIED_SOURCE_ANALYSIS et AI_RECONCILIATION_ENGINE
   // (lot 16b-3) retirés.

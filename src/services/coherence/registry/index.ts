@@ -26,6 +26,12 @@ import { t6EvaluationsCheck, notificationOutboxCheck, subscriptionCommunications
 import { billingStripeCheck, entitlementsCheck, duoRelationsCheck } from './checks/billing';
 // Lot 84E — O-6 : factures d'un même service non regroupées (réparation : reconsolidation ciblée).
 import { operationsRecurringSeriesCheck } from './checks/operations-recurrence';
+// Lot 85B — familles « À traiter » restantes (producteur de la famille en réparation).
+import { toProcessFamilyChecks } from './checks/to-process-families';
+// Lot 85E — acquisition réalisée sans date alors que la date du bien est connue (réparation : T3 du bien puis T4).
+import { operationsAcquisitionDateCheck } from './checks/operations-acquisition-date';
+// Lot 85F — connaissance T1 persistée exploitée par T3 avant toute conclusion « information absente ».
+import { t1KnowledgeConsumptionCheck } from './checks/t1-knowledge-consumption';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -54,6 +60,12 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   duoRelationsCheck,
   // Lot 84E (ajouté en fin de liste, sans réordonner l'existant).
   operationsRecurringSeriesCheck,
+  // Lot 85B (ajoutés en fin de liste, sans réordonner l'existant).
+  ...toProcessFamilyChecks,
+  // Lot 85E (ajouté en fin de liste, sans réordonner l'existant).
+  operationsAcquisitionDateCheck,
+  // Lot 85F (ajouté en fin de liste, sans réordonner l'existant).
+  t1KnowledgeConsumptionCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

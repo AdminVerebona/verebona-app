@@ -210,6 +210,10 @@ const REASONS: Readonly<Record<string, string>> = {
   T3_CREATE_NEW: 'création par la consolidation T3',
   ASSET_DATA_CREATE: 'création depuis les données du bien',
   ASSET_DATA_MIGRATION_CREATE: 'création par la migration des données du bien',
+  // Lot 85E : date d'acquisition automatique de la fiche — enrichissement d'un achat existant, jamais une création.
+  ASSET_DATA_DATE_ENRICHMENT: 'date d’acquisition de la fiche du bien reportée sur l’achat existant (enrichissement)',
+  ASSET_DATA_DATE_ENRICH: 'date d’acquisition de la fiche du bien reportée sur l’achat existant (enrichissement)',
+  ASSET_DATA_ENRICHMENT_ONLY: 'date automatique de la fiche seule : ne prouve pas l’achat (source retirée)',
   CLAIM_MIGRATION_CREATE: 'création par la reprise des sinistres',
   CLAIM_FORM_CREATE: 'création depuis le formulaire Sinistre',
   CLAIM_FORM_REALIZED: 'sinistre réalisé (formulaire)',
@@ -375,10 +379,16 @@ export interface ReconciliationView {
  * même bien (ou rattaché / proposé à l'Opération) reste bloqué ou en attente
  * — le résultat affiché n'est alors pas définitif.
  */
-export function reconciliationView(x: { pending: number; blocked: number; lastReconciledAt: string | null; active: boolean }): ReconciliationView {
+export function reconciliationView(x: {
+  pending: number; blocked: number; lastReconciledAt: string | null; active: boolean;
+  /** Lot 85E : acquisition réalisée sans date alors que la fiche du bien porte une date d'acquisition exploitable. */
+  knownDateMissing?: boolean;
+}): ReconciliationView {
   const base = { pending: x.pending, blocked: x.blocked, lastReconciledAt: x.lastReconciledAt };
   if (x.blocked > 0) return { ...base, state: 'BLOQUEE', label: `non définitive : ${x.blocked} document(s) bloqué(s) (erreur technique ou IA indisponible), reprise automatique` };
   if (x.pending > 0) return { ...base, state: 'EN_ATTENTE', label: `non définitive : ${x.pending} document(s) en cours d’examen (file T3, IA ou arbitrage utilisateur)` };
+  // Lot 85E (ticket PO P1) : jamais « à jour » tant que la date connue n'est pas reportée (reprise : COH-OPS-ACQUISITION-DATE).
+  if (x.active && x.knownDateMissing) return { ...base, state: 'EN_ATTENTE', label: 'non définitive : date d’acquisition connue sur la fiche du bien, pas encore reportée (reprise automatique par le contrôle de cohérence)' };
   if (x.active && !x.lastReconciledAt) return { ...base, state: 'JAMAIS', label: 'aucune réconciliation T3 enregistrée depuis le lot 55B (prochain passage)' };
   return { ...base, state: 'A_JOUR', label: 'à jour : aucun traitement en attente' };
 }

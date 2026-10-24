@@ -149,6 +149,9 @@ export const REASON_CODES = [
   'CONFLICT_STILL_VALID', 'NO_ASSET',
   // Lot 58B : échéance historique, aucune intervention attendue (T4) — carte fermée, motif tracé.
   'NO_ACTION_NEEDED',
+  // Lot 85F : connaissance T1 non structurée pas encore interprétée par T3 (capacité IA non livrée,
+  // budget, panne, contexte trop grand) — jamais « information absente » ; carte conservée.
+  'INTERPRETATION_PENDING',
 ] as const;
 export type ReasonCode = (typeof REASON_CODES)[number];
 
@@ -904,10 +907,15 @@ async function reexamineOther(accountId: number, row: ActionRow, base: Base, res
         deterministicAttempted: true, newResolution: r.status, knowledgeSources: r.sources, missingSources: r.missingSources,
         candidateCount: r.proposals, decision: `FIELD:${r.status}${r.pertinence ? `:${r.pertinence}` : ''}`, confidence: r.confidence, writeAttempted: r.writeAttempted,
         writeVerified: r.writeAttempted || r.status === 'RESOLVED' || r.status === 'NO_ACTION_NEEDED' ? r.verified : null,
-        aiReason: r.aiCalled ? 'DEADLINE_PERTINENCE' : 'DETERMINISTIC_PROOF',
+        aiReason: r.knowledgeQuery?.aiCalled ? 'T1_KNOWLEDGE_INTERPRETATION' : r.aiCalled ? 'DEADLINE_PERTINENCE' : 'DETERMINISTIC_PROOF',
         candidateOrigins: Object.keys(r.sources).length ? r.sources : null,
         // Lot 58B : pertinence d'une échéance passée demandée à T4 (branche existante).
         ...(r.aiCalled ? { aiCalled: true, aiOperation: 't4_classify_event', aiTraceId: r.aiTraceId ?? null, aiStatus: (r.aiStatus === 'ERROR' ? 'ERROR' : 'OK') as 'ERROR' | 'OK' } : {}),
+        // Lot 85F : interprétation sémantique T3 de la connaissance T1 (KNOWLEDGE_QUERY).
+        ...(r.knowledgeQuery?.aiCalled ? {
+          aiCalled: true, aiOperation: 't3_knowledge_query', aiTraceId: r.knowledgeQuery.traceIds[0] ?? null,
+          aiStatus: (r.knowledgeQuery.status === 'PENDING' ? 'ERROR' : 'OK') as 'ERROR' | 'OK',
+        } : {}),
       };
       if (r.status === 'TARGET_GONE') return entry({ ...commun, actionEffect: 'SUPERSEDED', note: 'document_gone', evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, reasonCode: 'TARGET_GONE' });
       if (r.status === 'NO_ACTION_NEEDED') {
@@ -922,9 +930,11 @@ async function reexamineOther(accountId: number, row: ActionRow, base: Base, res
       if (r.status === 'WRITTEN') {
         return entry({ ...commun, actionEffect: 'ERROR', evaluationMode: 'ERROR', resolutionAttempted: true, reasonCode: 'PERSISTENCE_FAILED', lastStep: 'WRITE', failedStep: 'VERIFY', note: 'write_not_verified' });
       }
+      // Lot 85F : FIELD_NOT_IN_T1 seulement quand le résolveur le conclut (toute la connaissance examinée et interprétée).
       const rc: ReasonCode = r.reasonCode === 'USER_DECISION_PROTECTED' ? 'USER_DECISION_PROTECTED'
-        : r.status === 'NO_T1_KNOWLEDGE' ? 'NO_T1_KNOWLEDGE' : r.status === 'NO_EVIDENCE' ? 'FIELD_NOT_IN_T1'
-          : r.reasonCode === 'AMBIGUOUS' ? 'AMBIGUOUS' : r.status === 'NOT_A_FIELD' ? 'NOT_T3' : 'INSUFFICIENT_EVIDENCE';
+        : r.status === 'NO_T1_KNOWLEDGE' ? 'NO_T1_KNOWLEDGE' : r.status === 'INTERPRETATION_PENDING' ? 'INTERPRETATION_PENDING'
+          : r.status === 'NO_EVIDENCE' ? (r.reasonCode === 'FIELD_NOT_IN_T1' ? 'FIELD_NOT_IN_T1' : 'INSUFFICIENT_EVIDENCE')
+            : r.reasonCode === 'AMBIGUOUS' ? 'AMBIGUOUS' : r.status === 'NOT_A_FIELD' ? 'NOT_T3' : 'INSUFFICIENT_EVIDENCE';
       return entry({
         ...commun, actionEffect: apres === null ? 'SUPERSEDED' : apres !== avant ? 'UPDATED' : 'STILL_OPEN',
         evaluationMode: 'DETERMINISTIC_REEVALUATION', resolutionAttempted: r.status !== 'NOT_A_FIELD', reasonCode: rc,

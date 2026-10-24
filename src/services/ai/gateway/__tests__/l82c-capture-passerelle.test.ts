@@ -90,7 +90,9 @@ describe('L82C-CAP — capture à la source, toutes tentatives', () => {
     // Prompt FINAL réellement transmis (jamais reconstitué) : identique à l'appel fournisseur.
     expect(c.sent).toHaveLength(1);
     expect(c.sent[0].prompt).toBe(fake.calls[0].prompt);
-    expect(c.sent[0].generationConfig).toMatchObject({ model: 'm-a', temperature: 0, maxOutputTokens: 3000, responseMimeType: 'application/json', attachments: 1 });
+    // Lot 85C : modèle sans fiche de capacités → aucune température inventée (constructeur unique).
+    expect(c.sent[0].generationConfig).toMatchObject({ model: 'm-a', maxOutputTokens: 3000, responseMimeType: 'application/json', attachments: 1 });
+    expect(c.sent[0].generationConfig).not.toHaveProperty('temperature');
     // Variables résolues APRÈS masquage, masques relevés.
     expect(JSON.stringify(c.variables)).not.toMatch(/3000 6000/);
     expect(c.variableMasks).toEqual({ '[IBAN_MASQUE]': 1 });

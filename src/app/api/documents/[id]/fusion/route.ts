@@ -9,6 +9,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { getSession } from '@/lib/auth-guards';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -25,6 +26,9 @@ export async function POST(
     if (!accountId) {
       return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
     }
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     const assetFileId = parseInt(rawId);
     if (isNaN(assetFileId)) {

@@ -29,6 +29,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { pgClient } from '@/db';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
 
 const RESOLUTIONS = ['keep_current', 'use_detected', 'ignored'] as const;
@@ -48,6 +49,9 @@ export async function POST(
 
     const accountId = session.currentAccountId;
     if (!accountId) return apiError(401, 'UNAUTHORIZED', 'No account selected');
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     const { id } = await params;
     const conflictId = parseInt(id, 10);

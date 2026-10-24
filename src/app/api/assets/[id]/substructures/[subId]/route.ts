@@ -5,6 +5,7 @@ import { substructures, assets } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 
 export async function PUT(
   request: NextRequest,
@@ -40,6 +41,10 @@ export async function PUT(
     if (asset.length === 0) {
       return apiError(404, 'NOT_FOUND', 'Asset not found');
     }
+
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
 
     const body = await request.json();
     const { name } = body;
@@ -102,6 +107,10 @@ export async function DELETE(
     if (asset.length === 0) {
       return apiError(404, 'NOT_FOUND', 'Asset not found');
     }
+
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
 
     const [deletedSubstructure] = await db
       .delete(substructures)

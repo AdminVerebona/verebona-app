@@ -337,7 +337,8 @@ describe('Classification BO — fournisseur indisponible ≠ requête refusée �
 describe('Observabilité — requête fournisseur sans contenu', () => {
   it('thinkingConfig effectif et pièces jointes (nombre, MIME, transport)', () => {
     expect(describeGenerationConfig({ model: 'gemini-3.6-flash', reasoning: 'minimal', maxOutputTokens: 8000, jsonResponse: true }))
-      .toEqual({ responseSchemaSent: false, responseMimeType: 'application/json', maxOutputTokens: 8000, thinkingConfig: 'low' });
+      // Lot 85C : température et refus éventuel décrits aussi (constructeur unique).
+      .toEqual({ responseSchemaSent: false, responseMimeType: 'application/json', maxOutputTokens: 8000, thinkingConfig: 'low', temperature: 0, refused: null });
     expect(describeGenerationConfig({ model: 'gemini-2.5-flash', reasoning: 'étendu' }).thinkingConfig).toBe('budget 24576');
     expect(describeGenerationConfig({ model: 'gemini-3.6-flash' })).toMatchObject({ thinkingConfig: 'aucun', responseMimeType: null, maxOutputTokens: null });
     expect(describeAttachments([

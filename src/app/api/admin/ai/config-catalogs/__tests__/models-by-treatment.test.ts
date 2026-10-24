@@ -50,14 +50,13 @@ describe('MOD — API du catalogue', () => {
     };
     // Lot 49 (T12-AC05) : cinq traitements, plus de T5.
     expect(Object.keys(body.modelsByTreatment)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
-    // Lot 35B : le preview est proposé (statut visible), y compris pour T2.
-    expect(body.modelsByTreatment.T2.map((m) => m.model)).toEqual(['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.1-pro-preview']);
+    // Lot 85C (décision PO 02) : le preview n'est plus proposé — motif nommé dans les exclus.
+    expect(body.modelsByTreatment.T2.map((m) => m.model)).toEqual(['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite']);
     expect(body.modelsByTreatment.T2[0]).toMatchObject({ priced: true, verified: false });
-    expect(body.modelsByTreatment.T2[2]).toMatchObject({ status: 'preview' });
     // Déprécié, non opérationnel : absents, motif nommé.
     const exclus = Object.fromEntries(body.excludedByTreatment.T2.map((x) => [x.model, x.reasonText]));
     expect(exclus['gemini-2.5-pro']).toBe('déprécié');
-    expect(exclus['gemini-3.1-pro-preview']).toBeUndefined();
+    expect(exclus['gemini-3.1-pro-preview']).toMatch(/Preview/);
     expect(exclus['gemini-3.6-flash']).toBe('non opérationnel avec la clé active');
     // T6 : exception documentée (latence) pour les Pro.
     expect(body.modelsByTreatment.T6.map((m) => m.model)).not.toContain('gemini-3.1-pro-preview');

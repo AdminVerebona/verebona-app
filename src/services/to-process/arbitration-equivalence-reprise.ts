@@ -27,10 +27,12 @@
  * (documents…) sont comptées `OUT_OF_SCOPE`, jamais touchées : leur
  * producteur passe déjà par le contrôle d'équivalence de `upsertAction`.
  *
- * Deux pilotes, même code :
- *   · campagne automatique `l81-faux-arbitrages-1` (tâche planifiée interne
- *     `to-process-relevance-reevaluation`, toutes les heures) : bornée par
- *     passage, curseur en base (0626), reprise des erreurs (3 essais) ;
+ * Deux pilotes, même code (`reexamineCard`) :
+ *   · le contrôle de cohérence COH-TODO-T3-FIELD-CARDS (lot 85B, campagne
+ *     exhaustive quotidienne `coherence-control` : preuve par objet, mode à
+ *     blanc / correctif, anti-boucle, journal des réparations, Supervision) —
+ *     il REMPLACE la campagne automatique `l81-faux-arbitrages-1` (C-Q9 : une
+ *     seule chaîne ; la table 0626 garde l'historique de cette campagne) ;
  *   · BO › Exploitation › Rattrapages : simulation (aucune écriture) ou
  *     application, éventuellement limitée à un compte.
  * ══════════════════════════════════════════════════════════════════════════
@@ -44,12 +46,10 @@ import { areBusinessEquivalent, businessKey } from '@/services/ai/reconciliation
 import { sanitizeArbitrationProposals, type ActionProposal } from './action-model';
 import { findRule, canonicalAssetKey } from './rules-catalog';
 
-/** Campagne automatique du lot 81A. */
+/** Campagne du lot 81A (historique 0626 ; libellé du rattrapage BO). */
 export const ARBITRATION_REPRISE_CAMPAIGN = 'l81-faux-arbitrages-1';
 /** Cartes lues par page. */
 const PAGE = 200;
-/** Traitements au plus d'une carte en erreur (premier passage compris). */
-export const REPRISE_MAX_ATTEMPTS = 3;
 
 export type RepriseOutcome =
   /** Contradiction réelle : carte mise à jour avec les bonnes valeurs. */
@@ -301,7 +301,7 @@ export interface RepriseRunResult {
   campaign: string;
   counters: RepriseCounters;
   items: RepriseItem[];
-  /** Reste à parcourir (campagne : prochain passage). */
+  /** Reste à parcourir. */
   more: boolean;
   done: boolean;
   disabled?: boolean;
@@ -311,7 +311,7 @@ export interface RepriseRunResult {
 /**
  * BO › Exploitation › Rattrapages : parcours COMPLET des cartes actives
  * (simulation : aucune écriture ; application : corrections et
- * fermetures tracées). Indépendant de la campagne automatique (même code).
+ * fermetures tracées). Même code que le contrôle COH-TODO-T3-FIELD-CARDS.
  */
 export async function runArbitrationReprise(p: {
   apply: boolean; accountId?: number | null; origin?: 'SCHEDULED' | 'BO'; log?: (m: string) => void; maxCards?: number;
@@ -337,113 +337,4 @@ export async function runArbitrationReprise(p: {
     if (counters.scanned >= max) break;
   }
   return { mode: p.apply ? 'APPLY' : 'SIMULATE', campaign: ARBITRATION_REPRISE_CAMPAIGN, counters, items, more: false, done: true, cursor };
-}
-
-/** Table 0626 présente ? */
-export async function repriseTableReady(): Promise<boolean> {
-  try {
-    const [r] = await q(`SELECT to_regclass('to_process_arbitration_reprises') IS NOT NULL AS ok`);
-    return r?.ok === true;
-  } catch { return false; }
-}
-
-/**
- * Campagne AUTOMATIQUE (tâche planifiée) : bornée (`limit` cartes suspectes
- * et `deadline`), curseur en base, erreurs reprises après le parcours
- * (`REPRISE_MAX_ATTEMPTS` traitements). Terminée : une seule requête par
- * passage. Ne lève pas pour une carte (issue ERROR).
- */
-export async function runArbitrationRepriseCampaign(p: { deadline: number; limit?: number; code?: string }): Promise<RepriseRunResult> {
-  const code = p.code ?? ARBITRATION_REPRISE_CAMPAIGN;
-  const vide = (o: Partial<RepriseRunResult> = {}): RepriseRunResult => ({
-    mode: 'APPLY', campaign: code, counters: zero(), items: [], more: false, done: true, ...o,
-  });
-  if (!(await repriseTableReady())) return vide({ disabled: true });
-  await q(`INSERT INTO to_process_arbitration_reprises (code) VALUES ($1) ON CONFLICT (code) DO NOTHING`, [code]);
-  const [etat] = await q(`SELECT status, cursor_action_id, counters FROM to_process_arbitration_reprises WHERE code = $1`, [code]);
-  if (!etat || etat.status === 'DONE') return vide();
-  const limit = p.limit ?? 50;
-  const counters = zero();
-  const items: RepriseItem[] = [];
-  let cursor = Number(etat.cursor_action_id ?? 0);
-  const prev = (etat.counters ?? {}) as Record<string, unknown>;
-  const retryIds = new Set<number>(Array.isArray(prev.retryIds) ? (prev.retryIds as unknown[]).map(Number) : []);
-  let parcours = prev.traversalDone === true;
-  let errorSample: string | null = null;
-  let traites = 0;
-
-  const traiter = async (c: Card) => {
-    const s = suspectArbitration(c.fieldKey, c.proposals);
-    if (!s) { retryIds.delete(c.id); return; }
-    counters.suspects += 1;
-    const it = await reexamineCard(c, s, { apply: true, campaign: code, origin: 'SCHEDULED' });
-    counters[it.outcome] += 1;
-    items.push(it);
-    traites += 1;
-    if (it.outcome === 'ERROR') {
-      errorSample ??= `carte ${c.id} (compte ${c.accountId}, ${c.targetType} ${c.targetId}, ${c.fieldKey}) : ${it.error}`.slice(0, 500);
-      retryIds.add(c.id);
-    } else retryIds.delete(c.id);
-  };
-
-  // Parcours par curseur.
-  while (!parcours && traites < limit && Date.now() < p.deadline) {
-    const page = await pageCartes(cursor, null);
-    if (page.length === 0) { parcours = true; break; }
-    for (const c of page) {
-      if (traites >= limit || Date.now() >= p.deadline) break;
-      counters.scanned += 1;
-      await traiter(c);
-      cursor = c.id;
-    }
-  }
-  // Reprise des erreurs (bornée par le nombre d'essais tracés).
-  if (parcours && retryIds.size && traites < limit && Date.now() < p.deadline) {
-    const essais = await q(
-      `SELECT action_id, count(*)::int AS n FROM to_process_action_events
-        WHERE event = 'REPRISE_ERROR' AND action_id = ANY($1::int[]) AND details ->> 'campaign' = $2 GROUP BY action_id`,
-      [[...retryIds], code],
-    );
-    const nb = new Map(essais.map((e) => [Number(e.action_id), Number(e.n)]));
-    const aReprendre = [...retryIds].filter((id) => (nb.get(id) ?? 0) < REPRISE_MAX_ATTEMPTS);
-    const cartes = aReprendre.length ? await pageCartes(0, null, aReprendre) : [];
-    const actives = new Set(cartes.map((c) => c.id));
-    for (const id of aReprendre) if (!actives.has(id)) retryIds.delete(id); // carte fermée entre-temps
-    for (const c of cartes) {
-      if (traites >= limit || Date.now() >= p.deadline) break;
-      await traiter(c);
-    }
-  }
-  const restantes = [...retryIds];
-  let bloquantes = 0;
-  if (parcours && restantes.length) {
-    const essais = await q(
-      `SELECT action_id, count(*)::int AS n FROM to_process_action_events
-        WHERE event = 'REPRISE_ERROR' AND action_id = ANY($1::int[]) AND details ->> 'campaign' = $2 GROUP BY action_id`,
-      [restantes, code],
-    );
-    bloquantes = essais.filter((e) => Number(e.n) >= REPRISE_MAX_ATTEMPTS).length;
-  }
-  const done = parcours && restantes.length === bloquantes;
-
-  // Compteurs cumulés (idempotents par passage : chaque carte n'est traitée qu'une fois par passage).
-  const cumul: Record<string, unknown> = { ...prev };
-  for (const [k, v] of Object.entries(counters)) cumul[k] = Number(cumul[k] ?? 0) + v;
-  cumul.retryIds = restantes.slice(0, 500);
-  cumul.traversalDone = parcours;
-  cumul.blockingErrors = bloquantes;
-  await q(
-    `UPDATE to_process_arbitration_reprises SET cursor_action_id = $2, counters = $3::jsonb, runs = runs + 1, last_run_at = now(),
-            error_sample = COALESCE($4, error_sample), status = $5, finished_at = CASE WHEN $5 = 'DONE' THEN now() ELSE finished_at END
-      WHERE code = $1`,
-    [code, cursor, JSON.stringify(cumul), errorSample, done ? 'DONE' : 'RUNNING'],
-  );
-  return { mode: 'APPLY', campaign: code, counters, items, more: !done && (traites >= limit || !parcours), done, cursor };
-}
-
-/** État de la campagne (BO, tâches planifiées). */
-export async function readArbitrationRepriseState(code = ARBITRATION_REPRISE_CAMPAIGN): Promise<Raw | null> {
-  if (!(await repriseTableReady())) return null;
-  const [r] = await q(`SELECT * FROM to_process_arbitration_reprises WHERE code = $1`, [code]);
-  return r ?? null;
 }

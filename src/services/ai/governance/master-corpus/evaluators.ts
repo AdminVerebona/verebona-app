@@ -195,6 +195,24 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(familles === undefined || cle(obtenues) === cle(familles), `familles ${cle(obtenues)} ≠ ${familles ? cle(familles) : ''}`),
     ];
   },
+  // Lot 85F — KNOWLEDGE_QUERY : validation SERVEUR réelle (`validateKnowledgeAnswer` :
+  // monde fermé, extrait recopié, valeur exprimée et normalisée, contradiction).
+  // Attendus : `outcome` (issue effective), `findings` (cible → valeur normalisée,
+  // facultatif), `rejected` (motifs de refus, facultatif).
+  async t3_knowledge_query(c, output) {
+    const { validateKnowledgeAnswer } = await import('../../reconciliation/knowledge-query/validate');
+    const { defaultNormalizers } = await import('../../reconciliation/knowledge-query/service');
+    const x = (c.context as { knowledgeQuery: { question: never; elements: never[] } }).knowledgeQuery;
+    const v = validateKnowledgeAnswer(output as never, x.question, x.elements, await defaultNormalizers());
+    const obtenus = Object.fromEntries(v.findings.map((f) => [f.target, f.normalized ?? f.rawValue]));
+    const attendus = exp<Record<string, string>>(c, 'findings');
+    const refus = v.rejected.map((r) => r.code).sort();
+    return [
+      ...ecart(v.outcome === exp(c, 'outcome'), `issue ${v.outcome} ≠ ${String(exp(c, 'outcome'))}`),
+      ...ecart(attendus === undefined || JSON.stringify(obtenus) === JSON.stringify(attendus), `constats ${JSON.stringify(obtenus)}`),
+      ...ecart(exp(c, 'rejected') === undefined || JSON.stringify(refus) === JSON.stringify(exp(c, 'rejected')), `refus ${JSON.stringify(refus)}`),
+    ];
+  },
   // ── T4 ─────────────────────────────────────────────────────────────────────
   async t4_classify_event(c, output) {
     const { translateClassifyEvent, translateEventDecision } = await import('../../agenda/master/classify-event');

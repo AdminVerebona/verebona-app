@@ -40,6 +40,7 @@ import { selectableModels } from '@/services/ai/provider/model-catalog.service';
 import {
   loadUsableModelsContext, usableModelsByTreatment, excludedModelsByTreatment,
 } from '@/services/ai/registry/usable-models';
+import { profiledOperationsOf, PROFILE_MIN_TIMEOUT_MS } from '@/services/ai/config/operation-profiles';
 
 export async function GET(req: NextRequest) {
   const guard = await requireAdminContext(req);
@@ -72,6 +73,14 @@ export async function GET(req: NextRequest) {
       excludedByTreatment: excludedModelsByTreatment(ctx),
       catalogRefreshedAt: state.refreshedAt,
       reasoningLevels: REASONING_LEVELS,
+      // Lot 85C (CDC Pilotage IA V2 P4) : opérations modèle de chaque
+      // traitement, lues dans le registre (source unique, OP-01), pour
+      // l'éditeur des profils par opération et par rang.
+      operationsByTreatment: Object.fromEntries(TREATMENTS.map((t) => [t, profiledOperationsOf(t).map((o) => ({
+        operationCode: o.operationCode, label: o.label, task: o.task ?? null, timeoutMs: o.timeoutMs,
+        minTimeoutMs: PROFILE_MIN_TIMEOUT_MS, minOutputTokens: o.minOutputTokens ?? null,
+        imageInput: (o.requiredCapabilities ?? []).includes('multimodal'),
+      }))])),
       guardrailReactions: GUARDRAIL_REACTIONS,
       // Lot 16b : `master` seule architecture (`steps` retiré).
       promptArchitectures: ['master'],

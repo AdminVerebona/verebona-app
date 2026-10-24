@@ -23,6 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { resolveErrorMessage } from '@/lib/to-process-resolve-errors';
 import {
   markNotApplicable,
@@ -57,6 +58,9 @@ export async function POST(
   if (!accountId) {
     return NextResponse.json({ error: 'NO_ACCOUNT_SELECTED' }, { status: 400 });
   }
+  // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+  const refus = await refuserSiLectureSeule(accountId);
+  if (refus) return refus;
 
   const { publicId } = await context.params;
 

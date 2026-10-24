@@ -308,7 +308,8 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
  *     l'accueil — sans la branche, dégradation prudente.
  */
 export const OPTIONAL_MASTER_TASKS: Readonly<Record<string, readonly string[]>> = {
-  t3_master_v1: ['OPERATION_MATCH', 'DOCUMENT_NAMING'],
+  // Lot 85F : KNOWLEDGE_QUERY — compréhension de la connaissance T1 persistée (texte attendu de l'équipe IA).
+  t3_master_v1: ['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY'],
   // Lot 61 : mode EVALUATE de T6 (pertinence des interpellations). Sans lui
   // (version BO antérieure), aucune échéance non évaluée n'est présentée
   // d'office et l'accueil dit que l'examen des échéances est indisponible.
@@ -324,8 +325,13 @@ export const OPTIONAL_MASTER_TASKS: Readonly<Record<string, readonly string[]>> 
  *     (retiré de la liste ; la branche reste FACULTATIVE pour les versions
  *     BO antérieures, `OPTIONAL_MASTER_TASKS`). Liste vide : toute branche
  *     déclarée absente du fichier du dépôt est une ERREUR de `prompts:check`.
+ *   · lot 85F : t3_master_v1 / KNOWLEDGE_QUERY — texte attendu de l'équipe IA.
  */
-export const MASTER_TASKS_TEXT_PENDING: Readonly<Record<string, readonly string[]>> = {};
+export const MASTER_TASKS_TEXT_PENDING: Readonly<Record<string, readonly string[]>> = {
+  // Lot 85F : texte de la branche demandé à l'équipe IA (`85F-t3-comprehension-connaissance-t1`) ;
+  // Claude ne modifie aucun prompt. À retirer d'ici à la livraison du texte dans le fichier du dépôt.
+  t3_master_v1: ['KNOWLEDGE_QUERY'],
+};
 
 /** Texte de cette branche attendu d'un ticket séparé (`MASTER_TASKS_TEXT_PENDING`). */
 export function isMasterTaskTextPending(masterPromptCode: string, task: string): boolean {

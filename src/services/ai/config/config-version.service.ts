@@ -27,7 +27,7 @@
  */
 import { diffVersions, type ConfigDiff } from './config-diff.service';
 import {
-  validateVersion, type ConfigCatalogs, type ValidationResult,
+  validateVersion, capabilityIssues, type ConfigCatalogs, type ValidationResult,
 } from './config-validation.service';
 import { guardrailCodes, triggerCodes } from './catalogs';
 import * as repo from './config-version.repository';
@@ -64,6 +64,8 @@ function asRefusal(e: unknown): never {
  * 32B/35B : un seul contexte, celui de `usableModelsForTreatment`).
  */
 async function buildCatalogs(): Promise<ConfigCatalogs> {
+  // Lot 85C : fiches de capacités à jour pour les contrôles techniques.
+  await (await import('../provider/model-capabilities.repository')).ensureModelCapabilitiesLoaded();
   const { loadUsableModelsContext, evaluateModelForTreatment } = await import('../registry/usable-models');
   const { selectableModels } = await import('../provider/model-catalog.service');
   const ctx = await loadUsableModelsContext();
@@ -111,6 +113,61 @@ export async function assertNewModelSelections(
   }
   if (refus.length > 0) {
     throw new ConfigOperationRefused('MODEL_NOT_USABLE', refus.map((r) => r.message).join(' '), refus);
+  }
+}
+
+/** Incompatibilités techniques BLOQUANTES d'une ligne (profils, capacités), par message. */
+function bloquantes(entry: TreatmentConfig | null): Set<string> {
+  if (!entry) return new Set();
+  return new Set(capabilityIssues(entry, {}).filter((i) => i.blocking).map((i) => `${i.field}|${i.message}`));
+}
+
+/**
+ * Lot 85C — enregistrement : refuse une incompatibilité technique NOUVELLE
+ * (absente de la ligne enregistrée) ; une incompatibilité déjà présente
+ * (capacités changées depuis) reste signalée sans empêcher d'enregistrer
+ * d'autres champs.
+ */
+export function assertNoNewTechnicalIncompatibility(current: TreatmentConfig | null, next: TreatmentConfig): void {
+  const avant = bloquantes(current);
+  const nouvelles = [...bloquantes(next)].filter((k) => !avant.has(k));
+  if (nouvelles.length > 0) {
+    throw new ConfigOperationRefused('MODEL_PARAMETERS_INCOMPATIBLE',
+      `Configuration techniquement incompatible pour ${next.treatment} : ${nouvelles.map((k) => k.split('|').slice(1).join('|')).join(' ')}`,
+      nouvelles.map((k) => ({ field: k.split('|')[0], message: k.split('|').slice(1).join('|') })));
+  }
+}
+
+/** Motifs d'éligibilité qui restent BLOQUANTS à une réactivation (contrôles techniques, décision PO 06). */
+const REACTIVATION_BLOCKING = new Set(['PREVIEW', 'NOT_LISTED', 'PROVIDER_UNAVAILABLE', 'EXPERIMENTAL', 'FORBIDDEN', 'RETIRED', 'NO_GENERATE_CONTENT']);
+
+/**
+ * Lot 85C (décisions PO 02 et 06, CFG-03) — contrôles TECHNIQUES de toute
+ * activation, réactivation comprise : combinaisons modèle / paramètres
+ * connues comme incompatibles (constructeur unique), modèle Preview (aucune
+ * nouvelle activation non conforme), modèle non servi par la clé active.
+ * Aucun test métier imposé.
+ */
+export async function assertVersionTechnicallyCompatible(
+  version: Pick<ConfigVersionWithEntries, 'entries'>,
+  catalogs?: Pick<ConfigCatalogs, 'modelEligibility' | 'capabilities'>,
+): Promise<void> {
+  const cat = catalogs ?? await buildCatalogs();
+  const refus: Array<{ treatment: string; field: string; message: string }> = [];
+  for (const e of version.entries) {
+    for (const i of capabilityIssues(e, cat)) {
+      if (i.blocking) refus.push({ treatment: e.treatment, field: i.field, message: `${e.treatment} · ${i.message}` });
+    }
+    for (const f of MODEL_FIELDS) {
+      const model = e[f];
+      if (!model || !cat.modelEligibility) continue;
+      const r = cat.modelEligibility(e.treatment, model);
+      const motifs = r.reasons.filter((x) => REACTIVATION_BLOCKING.has(x));
+      if (motifs.length) refus.push({ treatment: e.treatment, field: f, message: `${e.treatment} · « ${model} » : ${r.reasonText}.` });
+    }
+  }
+  if (refus.length > 0) {
+    throw new ConfigOperationRefused('TECHNICAL_CHECK_FAILED', `Activation impossible (contrôles techniques) : ${refus.map((r) => r.message).join(' ')}`, refus);
   }
 }
 
@@ -235,6 +292,7 @@ export async function saveConfiguration(versionId: number, input: SaveInput, use
   }
   const entries: TreatmentConfig[] = [];
   let catalogs: ConfigCatalogs | null = null;
+  if ((input.entries ?? []).length) await (await import('../provider/model-capabilities.repository')).ensureModelCapabilitiesLoaded();
   for (const raw of input.entries ?? []) {
     if (!isTreatment(String(raw.treatment))) {
       throw new ConfigOperationRefused('UNKNOWN_TREATMENT', `Traitement « ${String(raw.treatment)} » inconnu ou retiré.`);
@@ -249,12 +307,18 @@ export async function saveConfiguration(versionId: number, input: SaveInput, use
     if (!decision.allowed) throw new ConfigOperationRefused(decision.code, decision.message);
     const masterPrompt = raw.masterPrompt === undefined ? (current?.masterPrompt ?? null) : raw.masterPrompt;
     const entry: TreatmentConfig = { ...raw, promptArchitecture: next, masterPrompt };
+    // Lot 85C : champ omis (client antérieur) → profils en place conservés.
+    if (raw.operationProfiles === undefined) entry.operationProfiles = current?.operationProfiles ?? {};
     // Lot 32B, §5 : le filtrage du BO n'est pas une règle de sécurité.
     const nouveaux = MODEL_FIELDS.some((f) => entry[f] && entry[f] !== (current?.[f] ?? null));
     if (nouveaux) {
       catalogs ??= await buildCatalogs();
       await assertNewModelSelections(current, entry, catalogs);
     }
+    // Lot 85C (ACT-02, CFG-03) : modification directe autorisée sans tests
+    // métier, mais une incompatibilité TECHNIQUE nouvelle (profil invalide,
+    // combinaison modèle / paramètres connue comme refusée) reste bloquante.
+    assertNoNewTechnicalIncompatibility(current ?? null, entry);
     entries.push(entry);
   }
   const masterPrompts = await resolveMasterPromptRefs(input.masterPromptVersionIds, version.environment);
@@ -442,11 +506,16 @@ export async function activate(versionId: number, userId: number, opts: { confir
   }
   let warnings: string[] = [];
   // Version jamais active : mêmes contrôles qu'avant (lot 23, 32B). Déjà
-  // active par le passé : retour arrière, jamais bloqué (WF-06).
+  // active par le passé : retour arrière sans test métier (WF-06), MAIS
+  // lot 85C (décision PO 06) : les contrôles TECHNIQUES (capacités, Preview,
+  // modèle servi par la clé) s'appliquent à toute activation.
+  const catalogs = await buildCatalogs();
   if (version.activatedAt === null && !version.active) {
-    await assertVersionModelsUsable(version);
+    await assertVersionModelsUsable(version, catalogs);
+    await assertVersionTechnicallyCompatible(version, catalogs);
     warnings = (await assertModelRegistryCoherence(version)).map((i) => i.message);
   } else {
+    if (!version.active) await assertVersionTechnicallyCompatible(version, catalogs);
     warnings = (await assertModelRegistryCoherence(version).catch((e: ConfigOperationRefused) => [{ message: e.message }])).map((i) => i.message);
   }
   const r = await repo.activateVersion(versionId, userId).catch(asRefusal);

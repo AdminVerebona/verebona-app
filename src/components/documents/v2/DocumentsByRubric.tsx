@@ -787,8 +787,6 @@ export function DocumentsByRubric({
           preselectedAssetId={assetId}
           availableAssets={[{ id: assetId, name: assetName ?? '' }] as never}
           allowAssetSelection={false}
-          allowEventCreation
-          allowEventAssociation={false}
           onSuccess={() => { setUploadOpen(false); void load(); }}
         />
       ) : (

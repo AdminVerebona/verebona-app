@@ -4,6 +4,7 @@ import { db } from '@/db';
 import { supplierReviewItems, suppliers, documentSuppliers, assetFiles } from '@/db/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
 import { refsInAccount } from '@/services/security/account-ownership';
 
@@ -23,6 +24,9 @@ export async function POST(
 
     const accountId = session.currentAccountId;
     if (!accountId) return apiError(401, 'UNAUTHORIZED', 'No account selected');
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     const { id } = await params;
     const reviewItemId = parseInt(id);

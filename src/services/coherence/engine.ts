@@ -64,6 +64,8 @@ export class AccountNoLongerEligibleError extends Error {
 }
 
 export interface ProofState {
+  /** Lot 85B : version de règles du dernier contrôle abouti (absent : preuve antérieure non lue). */
+  rules_version?: number | null;
   last_result: string | null;
   last_repair_hash: string | null;
   repair_attempts: number;
@@ -125,9 +127,14 @@ export function resultOfVerdict(i: Inspection, mode: CheckContext['mode'], repai
  * Inefficace ou supprimée sur les mêmes entrées : non. Échec technique sur
  * les mêmes entrées : au plus `MAX_REPAIR_RETRIES` tentatives.
  */
-export function repairAllowed(prev: ProofState | undefined, inputHash: string | undefined): boolean {
+export function repairAllowed(prev: ProofState | undefined, inputHash: string | undefined, rulesVersion?: number): boolean {
   if (!prev || !inputHash || prev.last_repair_hash !== inputHash) return true;
-  if (prev.last_result === 'REPAIR_INEFFECTIVE' || prev.last_result === 'REPAIR_SUPPRESSED' || prev.last_result === 'REPAIR_PENDING') return false;
+  // Relance asynchrone en attente : jamais une seconde, même sous une nouvelle version de règles.
+  if (prev.last_result === 'REPAIR_PENDING') return false;
+  // Lot 85B (CDC §6.4, CA-11) : NOUVELLE version des règles du contrôle → les mêmes entrées sont réévaluées et la
+  // réparation retentée une fois (la règle corrigée peut réussir là où l'ancienne a échoué) ; anti-boucle ensuite.
+  if (rulesVersion !== undefined && prev.rules_version != null && prev.rules_version !== rulesVersion) return true;
+  if (prev.last_result === 'REPAIR_INEFFECTIVE' || prev.last_result === 'REPAIR_SUPPRESSED') return false;
   if (prev.last_result === 'REPAIR_FAILED') return prev.repair_attempts < MAX_REPAIR_RETRIES;
   return true;
 }
@@ -178,10 +185,11 @@ async function markStarted(sql: Sql, p: { accountId: number; check: CoherenceChe
 
 async function readProofs(sql: Sql, accountId: number, checkId: string, ids: readonly number[]): Promise<Map<number, ProofState>> {
   const r = await rows(sql, `
-    SELECT object_id, last_result, last_repair_hash, repair_attempts, finding_streak, consecutive_errors, first_detected_at
+    SELECT object_id, rules_version, last_result, last_repair_hash, repair_attempts, finding_streak, consecutive_errors, first_detected_at
       FROM coherence_object_proofs WHERE account_id = $1 AND check_id = $2 AND object_id = ANY($3::bigint[])`,
   [accountId, checkId, intArray(ids)]);
   return new Map(r.map((x: Row) => [Number(x.object_id), {
+    rules_version: x.rules_version == null ? null : Number(x.rules_version),
     last_result: (x.last_result as string | null) ?? null, last_repair_hash: (x.last_repair_hash as string | null) ?? null,
     repair_attempts: Number(x.repair_attempts ?? 0), finding_streak: Number(x.finding_streak ?? 0),
     consecutive_errors: Number(x.consecutive_errors ?? 0), first_detected_at: x.first_detected_at ? new Date(x.first_detected_at as string) : null,
@@ -208,8 +216,11 @@ async function completeProof(sql: Sql, p: {
   };
   const retry = erreur ? new Date(p.now.getTime() + ERROR_RETRY_MINUTES * 60_000 * Math.min(8, c.consecutiveErrors)) : null;
   await exec(sql, 
+    // Lot 85B (§6.4) : la version de règles est celle du DERNIER CONTRÔLE ABOUTI — une erreur la laisse
+    // inchangée (elle ne prouve rien selon la nouvelle version).
     `UPDATE coherence_object_proofs p
-        SET rules_version = $4::int, registry_version = $5::text, last_completed_at = $6::timestamptz,
+        SET rules_version = CASE WHEN $7::boolean THEN p.rules_version ELSE $4::int END,
+            registry_version = CASE WHEN $7::boolean THEN p.registry_version ELSE $5::text END, last_completed_at = $6::timestamptz,
             last_success_at = CASE WHEN $7::boolean THEN p.last_success_at ELSE $6 END,
             last_result = $8::text,
             finding = CASE WHEN $7::boolean THEN p.finding ELSE $9::text::jsonb END,
@@ -341,7 +352,7 @@ export async function controlObjects(p: ControlBatchInput): Promise<BatchSummary
       const r = resultOfVerdict(insp, ctx.mode, repairPermittedInScope(check, ctx.accountScope ?? 'ELIGIBLE'));
       if (r !== 'TRY_REPAIR') {
         o = { id, result: r, inspection: insp, repairAttempted: false, aiCalls: 0 };
-      } else if (!repairAllowed(avant, insp.inputHash)) {
+      } else if (!repairAllowed(avant, insp.inputHash, check.version)) {
         o = { id, result: 'REPAIR_SUPPRESSED', inspection: insp, repairAttempted: false, aiCalls: 0 };
       } else {
         if (!eligibiliteVerifiee) {

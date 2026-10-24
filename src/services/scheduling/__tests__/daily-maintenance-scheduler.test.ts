@@ -102,7 +102,8 @@ describe('tâches planifiées', () => {
     const off = dailyTasks({ AI_LOG_ARCHIVE: 'off' } as unknown as NodeJS.ProcessEnv).map((x) => x.lock);
     expect(off).not.toContain('daily-ai-log-archive');
     const { findTask } = await import('../scheduled-tasks.catalog');
-    expect(findTask('ai-catalog-sync')?.schedule).toEqual({ kind: 'interval', everyMs: 6 * 3600_000 });
+    // Lot 85C (CAT-01) : synchronisation quotidienne (était toutes les 6 h).
+    expect(findTask('ai-catalog-sync')?.schedule).toEqual({ kind: 'daily', at: [7, 15], graceMs: 6 * 3600_000 });
   });
 
   it('fenêtres hors de la sauvegarde de nuit (1 h – 5 h)', () => {

@@ -40,6 +40,19 @@ export function parseAccountFilters(sp: URLSearchParams): AccountFilters {
   };
 }
 
+/**
+ * Lot 85E (ticket PO du 23/10) : recherche par IDENTIFIANT du compte —
+ * « 42 », « #42 », « ID 42 » ou « id:42 » (espaces tolérés). Rend l'entier,
+ * ou null si la saisie n'est pas un identifiant (la recherche texte s'applique
+ * alors seule). Pur.
+ */
+export function accountIdFromQuery(q: string | null | undefined): number | null {
+  const m = /^(?:#|id\s*[:#]?\s*)?(\d{1,9})$/i.exec((q ?? '').trim());
+  if (!m) return null;
+  const n = Number(m[1]);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
 export function filterAccounts<T extends AccountListRow>(rows: T[], f: AccountFilters): T[] {
   return rows.filter((r) => (!f.plan || r.planType === f.plan) && (!f.status || r.status === f.status));
 }

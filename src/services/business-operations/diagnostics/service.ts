@@ -791,6 +791,18 @@ export class OperationDiagnosticsService {
           WHERE r.account_id = $2 AND (r.operation_id = $1 OR r.target_operation_id = $1)
           ORDER BY r.created_at DESC, r.id DESC LIMIT ${L}`, [id, accountId])).map(identityReviewView) : [];
       const [prov] = await q(`SELECT to_jsonb(o) -> 'attribute_provenance' AS p FROM business_operations o WHERE o.id = $1`, [id]);
+      // Lot 85E (ticket PO P1) : acquisition réalisée sans date alors que la fiche d'un bien lié porte une date exploitable.
+      let knownDateMissing = false;
+      if (r.type_code === 'ACQUISITION' && r.status === 'REALIZED' && !r.realized_date) {
+        const { assetDataFacts, canonicalAcquisitionDate } = await import('../consolidation/asset-data');
+        const biens = await q(
+          `SELECT row_to_json(a.*) AS r FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id AND a.account_id = $2 AND a.deleted_at IS NULL
+            WHERE l.operation_id = $1 AND l.active`, [id, accountId]);
+        knownDateMissing = biens.some((b) => {
+          const row = (typeof b.r === 'string' ? JSON.parse(b.r) : b.r) as never;
+          return !!(assetDataFacts(row).ACQUISITION?.date ?? canonicalAcquisitionDate(row));
+        });
+      }
 
       const withReason = (rows: Row[], col: string) => rows.map((x) => ({ ...x, [`${col}_label`]: explainReason(str(x[col])) }));
       const detail: OperationDetail = {
@@ -823,7 +835,7 @@ export class OperationDiagnosticsService {
         })),
         reconciliation: reconciliationView({
           pending: int(etat?.pending), blocked: int(etat?.blocked), lastReconciledAt: base.lastReconciledAt,
-          active: r.invalidated_at == null && r.merged_into_operation_id == null,
+          active: r.invalidated_at == null && r.merged_into_operation_id == null, knownDateMissing,
         }),
         operationMatchBranch: await (await import('../consolidation/m3')).operationMatchPromptStatus(),
         lastT3Pass: job ? {

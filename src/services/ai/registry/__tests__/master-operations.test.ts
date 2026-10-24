@@ -46,7 +46,8 @@ describe('opérations T1 master (seules depuis le lot 16b-3)', () => {
     expect(listMasterTasks(T1_MASTER_PROMPT_CODE).sort()).toEqual([...T1_TASKS].sort());
     expect(listMasterPrompts()).toEqual([
       { masterPromptCode: T1_MASTER_PROMPT_CODE, useCaseCode: 'SOURCE_ANALYSIS', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] },
-      { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING'] },
+      // Lot 85F : KNOWLEDGE_QUERY (facultative, texte attendu de l'équipe IA).
+      { masterPromptCode: 't3_master_v1', useCaseCode: 'DATA_RECONCILIATION', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY'] },
       // Lot 15 : T2, discriminant MODE (§24).
       { masterPromptCode: 't2_master_v1', useCaseCode: 'INTELLIGENT_ASSISTANT', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'] },
       // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5).
@@ -118,7 +119,8 @@ describe('opérations T3 master (CDC 15 §25, lot 13 ; seules depuis le lot 16b-
     }
     const actives = listOperationsByUseCase('DATA_RECONCILIATION').filter((o) => o.active && o.provider !== 'none');
     // Lot 61 : harmonisation du nommage documentaire (branche facultative).
-    expect(actives.map((o) => o.operationCode)).toEqual(['t3_value_conflict', 't3_link_ambiguity', 't3_operation_match', 't3_document_naming']);
+    // Lot 85F : compréhension de la connaissance T1 persistée (branche facultative, texte attendu de l'équipe IA).
+    expect(actives.map((o) => o.operationCode)).toEqual(['t3_value_conflict', 't3_link_ambiguity', 't3_operation_match', 't3_document_naming', 't3_knowledge_query']);
     for (const op of actives) expect(isMasterOperation(op), op.operationCode).toBe(true);
   });
 });

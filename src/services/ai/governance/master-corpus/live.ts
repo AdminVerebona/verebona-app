@@ -110,6 +110,16 @@ const BUILDERS: Record<string, Builder> = {
       details: new Map(), maxLength: 120,
     });
   },
+  async t3_knowledge_query(c) {
+    // Lot 85F : variables construites par le constructeur de production (`knowledgeQueryVariables`), première page.
+    const x = ctx<{ knowledgeQuery?: { question?: unknown; documents?: unknown[]; elements?: unknown[]; today?: string } }>(c).knowledgeQuery;
+    if (!x?.question || !x.elements?.length) return null;
+    const { knowledgeQueryVariables } = await import('../../reconciliation/knowledge-query/contract');
+    return knowledgeQueryVariables({
+      question: x.question as never, documents: (x.documents ?? []) as never,
+      page: { index: 1, count: 1, elements: x.elements as never }, today: x.today ?? '2026-10-24',
+    });
+  },
   async t3_link_ambiguity(c) {
     // Lot 31B — relation DOCUMENT_ASSET : même constructeur que la production.
     const da = ctx<{ documentAsset?: { subject: unknown; candidates: unknown[] } }>(c).documentAsset;

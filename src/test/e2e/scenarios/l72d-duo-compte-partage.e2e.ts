@@ -138,6 +138,8 @@ scenario('L72D', 'Premium Duo en compte partagé', ({ sql, make }) => {
     const [evt] = await sql<{ id: number }[]>`
       INSERT INTO events (account_id, user_id, asset_id, categorie, titre, date_evenement)
       VALUES (${acc.id}, ${owner.id}, ${bien.id}, 'entretien', ${`${m}-entretien`}, now()) RETURNING id`;
+    // Lot 85D : les routes « events » sont retirées ; les échéances partagées se lisent dans l'Agenda.
+    await sql`INSERT INTO agenda_items (account_id, title, start_date) VALUES (${acc.id}, ${`${m}-entretien`}, '2026-10-23')`;
     const tok = await jeton(owner, acc.id);
     return { owner, acc, duoId, bien, doc, evt: evt.id, tok };
   }
@@ -239,8 +241,8 @@ scenario('L72D', 'Premium Duo en compte partagé', ({ sql, make }) => {
     const biens = await listeBiens(inv.j.access);
     expect(biens.status).toBe(200);
     expect(biens.text).toContain(`PARTAGE-maison-${d.acc.id}`);
-    const { GET: evenements } = await import('@/app/api/events/route');
-    expect(await (await evenements(req('/api/events', { cookie: ck(inv.j.access) }))).text()).toContain('PARTAGE-entretien');
+    const { GET: agenda } = await import('@/app/api/agenda/route');
+    expect(await (await agenda(req('/api/agenda', { cookie: ck(inv.j.access) }))).text()).toContain('PARTAGE-entretien');
   });
 
   // ── Aides supplémentaires ────────────────────────────────────────────
@@ -313,9 +315,9 @@ scenario('L72D', 'Premium Duo en compte partagé', ({ sql, make }) => {
     const { PUT: majDoc } = await import('@/app/api/documents/[id]/route');
     const r2 = await majDoc(req(`/api/documents/${d.doc.id}`, { method: 'PUT', body: { fileName: 'ECRIT-facture.pdf', documentType: 'FACTURE', retainedTitle: 'Facture modifiée par le membre' }, cookie: ck(m) }), params({ id: d.doc.id }));
     expect(r2.status, await r2.clone().text()).toBe(200);
-    // Il crée un événement sur le bien du titulaire (lot 84A : DELETE /api/events, sans appelant, est retiré — O-10, E25).
-    const { POST: creerEvt } = await import('@/app/api/events/route');
-    const r3 = await creerEvt(req('/api/events', { method: 'POST', body: { title: 'ECRIT-evenement-du-membre', categorie: 'entretien', assetId: d.bien.id }, cookie: ck(m) }));
+    // Il ajoute un document (lien web) au bien du titulaire (lot 85D : POST /api/events, retiré, servait de témoin d'écriture).
+    const { POST: lienWeb } = await import('@/app/api/web-links/route');
+    const r3 = await lienWeb(req('/api/web-links', { body: { url: 'https://exemple.fr/notice', title: 'ECRIT-lien-du-membre', assetId: d.bien.id }, cookie: ck(m) }));
     expect(r3.status, await r3.clone().text()).toBeLessThan(300);
     // Il crée un bien ; le titulaire le modifie.
     const cree = await POST(req('/api/assets', { body: { name: 'ECRIT-velo-du-membre', category: 'VEHICULE' }, cookie: ck(m) }));

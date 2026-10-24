@@ -1,0 +1,115 @@
+{
+  "case": "P-T3-KQ-06",
+  "description": "KNOWLEDGE_QUERY — aucune information pertinente : NOT_FOUND.",
+  "context": {
+    "knowledgeQuery": {
+      "question": {
+        "key": "contractEndDate",
+        "label": "Date de fin de contrat",
+        "valueType": "date",
+        "businessQuestion": "Quelle est la date de fin de ce contrat ?",
+        "ruleCode": "DATA-CONTRACT-END",
+        "constituents": [
+          {
+            "role": "start",
+            "key": "contractStartDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "duration",
+            "key": "contractDurationMonths",
+            "label": null,
+            "valueType": "duration"
+          },
+          {
+            "role": "firstInstalment",
+            "key": "firstInstalmentDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "lastInstalment",
+            "key": "lastInstalmentDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "count",
+            "key": "instalmentCount",
+            "label": null,
+            "valueType": "count"
+          },
+          {
+            "role": "periodicity",
+            "key": "instalmentPeriodicity",
+            "label": null,
+            "valueType": "periodicity"
+          },
+          {
+            "role": "disbursement",
+            "key": "disbursementDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "repayment",
+            "key": "repaymentSchedule",
+            "label": null,
+            "valueType": "indicator"
+          }
+        ]
+      },
+      "documents": [
+        {
+          "ref": "D0",
+          "fileId": 1,
+          "role": "TARGET",
+          "relation": null,
+          "title": "Offre de crédit immobilier",
+          "documentType": "FINANCING_CONTRACT"
+        }
+      ],
+      "elements": [
+        {
+          "ref": "U-1",
+          "document": "D0",
+          "fileId": 1,
+          "layer": "SOURCE_UNIT",
+          "kind": "TEXT_BLOCK",
+          "label": null,
+          "value": null,
+          "text": "Montant financé : 120 000 €",
+          "confidence": "certain",
+          "page": 1
+        },
+        {
+          "ref": "U-2",
+          "document": "D0",
+          "fileId": 1,
+          "layer": "SOURCE_UNIT",
+          "kind": "TEXT_BLOCK",
+          "label": null,
+          "value": null,
+          "text": "Agence de Lyon, 12 rue de la République",
+          "confidence": "certain",
+          "page": 1
+        }
+      ],
+      "today": "2026-10-24"
+    }
+  },
+  "recording": {
+    "operationCode": "t3_knowledge_query",
+    "task": "KNOWLEDGE_QUERY",
+    "output": {
+      "task": "KNOWLEDGE_QUERY",
+      "outcome": "NOT_FOUND",
+      "findings": [],
+      "reason": "aucune durée ni date de fin"
+    }
+  },
+  "expected": {
+    "outcome": "NOT_FOUND"
+  }
+}

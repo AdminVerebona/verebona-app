@@ -27,6 +27,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { REFERENTIAL_VERSION, getDocumentType, getRubric } from '@/lib/referential/v2';
 import {
   applyClassificationChange,
@@ -51,6 +52,9 @@ export async function PATCH(
   if (!accountId) {
     return NextResponse.json({ error: 'NO_ACCOUNT_SELECTED' }, { status: 400 });
   }
+  // Lot 85D : reclasser un document est une écriture — refusée en lecture seule.
+  const refus = await refuserSiLectureSeule(accountId);
+  if (refus) return refus;
 
   const { publicId } = await context.params;
 

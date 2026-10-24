@@ -46,7 +46,7 @@
  *                                   qu'il reste des documents     document (idempotent) — 0295
  *   t1-completeness-retry           toutes les 15 min             tentatives comptées par document,
  *                                                                 `next_retry_at` (0295)
- *   ai-catalog-sync                 toutes les 6 h                bail `ai-catalog-sync` (même
+ *   ai-catalog-sync                 chaque jour à 7 h 15 (85C)    bail `ai-catalog-sync` (même
  *                                                                 fonction que « Actualiser le
  *                                                                 catalogue »), upserts idempotents
  *   stripe-catalog-sync             toutes les 5 min              bail `stripe-catalog-sync:<contexte>`
@@ -75,10 +75,11 @@
  *   cross-account-relations-check   chaque jour à 7 h 05          lecture seule (READ ONLY) ; alerte de
  *                                                                 Supervision par type (lot 49, SEC-P0) ;
  *                                                                 jamais de correction
- *   to-process-relevance-reevaluation toutes les heures            rétention / reprise des traces de décision,
- *                                                                 faux arbitrages 81A (bornés) ; la campagne
- *                                                                 de pertinence est RETIRÉE (lot 83E :
- *                                                                 contrôle de cohérence COH-TODO-RELEVANCE-*)
+ *   to-process-relevance-reevaluation toutes les heures            rétention / reprise des traces de décision ;
+ *                                                                 la campagne de pertinence est RETIRÉE (lot
+ *                                                                 83E : COH-TODO-RELEVANCE-*), la campagne
+ *                                                                 81A des faux arbitrages aussi (lot 85B :
+ *                                                                 COH-TODO-T3-FIELD-CARDS)
  *   document-validation-reprise     au démarrage, puis toutes      transition d'état conditionnelle ;
  *                                   les heures (rien à faire :     une ligne de trace par document
  *                                   une seule requête)             (0495, unique) ; cartes « À traiter »
@@ -520,10 +521,12 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     // tarifs de la page officielle, alertes sur modèle actif disparu — la
     // MÊME fonction métier que le bouton « Actualiser le catalogue » du BO.
     code: 'ai-catalog-sync',
-    label: 'IA : synchronisation du catalogue (modèles, qualification, tarifs)',
-    schedule: { kind: 'interval', everyMs: 6 * HOUR },
+    label: 'IA : synchronisation du catalogue (modèles, capacités, qualification, tarifs)',
+    // Lot 85C (CDC Pilotage IA V2 CAT-01) : synchronisation QUOTIDIENNE (plus
+    // toutes les 6 h) ; « Actualiser le catalogue » reste disponible au BO.
+    // Aucune requalification par ancienneté : seulement sur événement.
+    schedule: { kind: 'daily', at: [7, 15], graceMs: 6 * HOUR },
     timeoutMs: 15 * MIN,
-    startupDelayMs: 10 * MIN,
     run: async ({ trigger }) => {
       const { syncAiCatalog, summaryOf } = await import('@/services/ai/provider/ai-catalog-sync.service');
       const r = await syncAiCatalog({ trigger: trigger === 'manual' ? 'manual' : trigger === 'startup' ? 'startup' : 'schedule' });
@@ -739,10 +742,13 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     // (COH-TODO-RELEVANCE-CARDS, COH-TODO-STALE-DECISIONS, tâche
     // `coherence-control`). La tâche garde son code (état et historique au BO)
     // et ses fonctions de maintenance LÉGITIMES : rétention des traces de
-    // décision remplacées (lot 72), reprise des traces non écrites (lot 76),
-    // rattrapage borné des faux arbitrages (lot 81A).
+    // décision remplacées (lot 72), reprise des traces non écrites (lot 76).
+    // LOT 85B (C-Q9) : le rattrapage automatique des faux arbitrages (campagne
+    // `l81-faux-arbitrages-1`) est RETIRÉ — le même réexamen (`reexamineCard`)
+    // est fait par le contrôle COH-TODO-T3-FIELD-CARDS de `coherence-control` ;
+    // le rattrapage BO « to-process-false-arbitrations » garde le même code.
     code: 'to-process-relevance-reevaluation',
-    label: '« À traiter » : maintenance des traces de décision et rattrapage des faux arbitrages',
+    label: '« À traiter » : maintenance des traces de décision',
     schedule: { kind: 'interval', everyMs: HOUR },
     startupDelayMs: 9 * MIN,
     timeoutMs: 10 * MIN,
@@ -758,20 +764,7 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const traces = await replayPendingTraces({ limit: 200, deadline: Math.min(deadline, Date.now() + MIN) });
       const traceNote = traces.examined > 0
         ? `traces reprises : ${traces.replayed} écrite(s), ${traces.superseded} remplacée(s), ${traces.failed} en échec, ${traces.abandoned} abandonnée(s)` : null;
-      // Lot 81A : rattrapage BORNÉ des faux arbitrages (propositions équivalentes à la
-      // valeur actuelle) — réexamen en lecture seule, carte corrigée ou close (0626).
-      let fauxNote: string | null = null;
-      try {
-        const { runArbitrationRepriseCampaign } = await import('@/services/to-process/arbitration-equivalence-reprise');
-        const fa = await runArbitrationRepriseCampaign({ deadline: Math.min(deadline, Date.now() + 90_000), limit: 100 });
-        if (!fa.disabled && (fa.counters.scanned > 0 || fa.counters.suspects > 0)) {
-          fauxNote = `faux arbitrages (${fa.campaign}) : ${fa.counters.scanned} carte(s) parcourue(s), ${fa.counters.suspects} suspecte(s), `
-            + `${fa.counters.CORRECTED} corrigée(s), ${fa.counters.OBSOLETE} close(s) sans objet, ${fa.counters.ERROR} en erreur${fa.done ? ' — terminé' : ''}`;
-        }
-      } catch (e) {
-        fauxNote = `faux arbitrages : passage en échec (${String((e as Error).message).slice(0, 200)})`;
-      }
-      const note = [purgeNote, traceNote, fauxNote].filter(Boolean).join(' — ');
+      const note = [purgeNote, traceNote].filter(Boolean).join(' — ');
       if (!note) return;
       return {
         note: note.slice(0, 1500),

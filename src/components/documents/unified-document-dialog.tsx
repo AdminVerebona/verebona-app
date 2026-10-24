@@ -37,6 +37,7 @@ import { parseWriteBlocked, notifyWriteBlocked, WriteBlockedError, isWriteBlocke
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { fetchDepot, messageSelonStatut } from '@/lib/upload-http';
 import { signalerEnvoiReussi } from '@/lib/upload-notification-client';
+import { agendaItemIdOrNull, linkUploadedDocumentsToAgendaItem } from '@/lib/agenda/document-agenda-link-client';
 
 const jsonPost = (body: unknown): RequestInit => ({
   method: 'POST',
@@ -72,14 +73,17 @@ interface UnifiedDocumentDialogProps {
   preselectedAssetId?: number;
   preselectedSubstructureId?: number | null;
   preselectedEquipmentId?: number | null;
-  preselectedEventIds?: number[];
+  /**
+   * Ouverture depuis un élément d'agenda (lot 85D) : les documents déposés lui
+   * sont reliés — et rejoignent son ensemble — par le lien Document ↔ Agenda
+   * du tiroir (`/api/documents/:id/agenda-liens`, AC01). Remplace l'ancienne
+   * présélection d'« événements » (modèle historique retiré).
+   */
+  preselectedAgendaItemId?: number | null;
   availableAssets?: Array<{ id: number; name: string }>;
-  availableEvents?: Array<{ id: number; title: string; date: string; eventType: string }>;
   initialFiles?: File[];
   initialSource?: 'photo' | 'gallery' | 'file' | 'weblink';
   allowAssetSelection?: boolean;
-  allowEventCreation?: boolean;
-  allowEventAssociation?: boolean;
 }
 
 interface FileWithPreview {
@@ -97,17 +101,6 @@ interface DocumentType {
 
 const FALLBACK_DOCUMENT_TYPES = PICKER_DOCUMENT_TYPES.map((t, i) => ({ id: i + 1, code: t.code, label: t.label, isActive: true }));
 
-const EVENT_CATEGORIES = [
-  { value: 'achat', label: 'Achat' },
-  { value: 'vente', label: 'Vente' },
-  { value: 'entretien', label: 'Entretien' },
-  { value: 'reparation', label: 'Réparation' },
-  { value: 'sinistre', label: 'Sinistre' },
-  { value: 'controle', label: 'Contrôle' },
-  { value: 'garantie', label: 'Garantie' },
-  { value: 'autre', label: 'Autre' },
-];
-
 // ─── Component ─────────────────────────────────────────────────────────────────
 
 /**
@@ -120,11 +113,8 @@ const EVENT_CATEGORIES = [
 interface ContexteDepot {
   isWl: boolean;
   isPremium: boolean;
-  selectedEventIds: number[];
-  createEvent: boolean;
-  assetId: string;
-  eventType: string;
-  eventTitle: string;
+  /** Élément d'agenda auquel relier les documents déposés (lot 85D), sinon null. */
+  agendaItemId: number | null;
   substructureId: number | null;
   equipmentId: number | null;
   documentType: string;
@@ -136,43 +126,19 @@ interface ContexteDepot {
   webLinkTitle: string;
   webLinkUrl: string;
   premierFichier: { name: string; size: number; mimeType: string } | null;
-  /** Événement créé au premier bilan : les reprises tardives s'y rattachent. */
-  evenementCreeId?: number | null;
 }
 
-/** Associations et création d'événement, puis signaux de rafraîchissement. */
+/** Lien à l'élément d'agenda d'origine, puis signaux de rafraîchissement. */
 async function associerEtSignaler(ctx: ContexteDepot, fileIds: number[]): Promise<void> {
   if (fileIds.length === 0) return;
-  // Couche HTTP du dépôt (`fetchDepot`, lot 24 #12) : budget de la politique
-  // `write`, renouvellement de session sur 401, aucune nouvelle tentative.
-  // Échecs d'association toujours silencieux (le document est enregistré).
-  for (const eventId of ctx.selectedEventIds) {
-    await fetchDepot(`/api/events/${eventId}/documents`, jsonPost({ fileIds })).catch(() => {});
-  }
-  if (ctx.createEvent && ctx.assetId && ctx.assetId !== '0') {
-    if (ctx.evenementCreeId === undefined) {
-      ctx.evenementCreeId = null;
-      // L'auteur est celui de la session (lu par le serveur) : plus de
-      // dépendance à une copie `localStorage.user`, qui pouvait manquer et
-      // empêcher silencieusement la création de l'événement.
-      const eventResponse = await fetchDepot('/api/events', jsonPost({
-        assetId: parseInt(ctx.assetId),
-        substructureId: ctx.substructureId,
-        equipmentId: ctx.equipmentId,
-        categorie: ctx.eventType, title: ctx.eventTitle,
-        date: ctx.documentDate,
-        provider: ctx.supplier || null,
-        costCents: ctx.amountCents,
-        notes: ctx.title || (ctx.isWl ? ctx.webLinkTitle : ctx.premierFichier?.name),
-      })).catch(() => null);
-      if (eventResponse?.ok) {
-        const { event } = await eventResponse.json();
-        ctx.evenementCreeId = event.id;
-      }
-    }
-    if (ctx.evenementCreeId) {
-      await fetchDepot(`/api/events/${ctx.evenementCreeId}/documents`, jsonPost({ fileIds })).catch(() => {});
-    }
+  // Lot 85D : le lien passe par la route du tiroir (`/api/documents/:id/
+  // agenda-liens` → `linkDocumentToAgendaItem`, AC01) — plus par l'ancien
+  // modèle « events ». Couche HTTP du dépôt (`fetchDepot`, lot 24 #12) :
+  // budget `write`, renouvellement de session sur 401, aucune nouvelle
+  // tentative. Échecs de lien silencieux (le document est enregistré).
+  if (ctx.agendaItemId !== null) {
+    const { linked } = await linkUploadedDocumentsToAgendaItem(ctx.agendaItemId, fileIds, (url, body) => fetchDepot(url, jsonPost(body)));
+    if (linked.length > 0) window.dispatchEvent(new CustomEvent('agenda-mutated'));
   }
 
   if (ctx.isPremium) {
@@ -214,14 +180,11 @@ export function UnifiedDocumentDialog({
   preselectedAssetId,
   preselectedSubstructureId,
   preselectedEquipmentId,
-  preselectedEventIds = [],
+  preselectedAgendaItemId = null,
   availableAssets: providedAssets,
-  availableEvents: providedEvents,
   initialFiles,
   initialSource,
   allowAssetSelection = true,
-  allowEventCreation = true,
-  allowEventAssociation = true,
 }: UnifiedDocumentDialogProps) {
   const isMobile = useIsMobile();
   const { isPremium } = useFeatureFlags();
@@ -266,11 +229,6 @@ export function UnifiedDocumentDialog({
   const [webLinkTitle, setWebLinkTitle] = useState('');
   const [showExtraFields, setShowExtraFields] = useState(false);
 
-  // ── Events ──────────────────────────────────────────────────────────────────
-  const [selectedEventIds, setSelectedEventIds] = useState<number[]>(preselectedEventIds);
-  const [createEvent, setCreateEvent] = useState(false);
-  const [eventType, setEventType] = useState('');
-
   // ── Substructures & Equipments ──────────────────────────────────────────────
   const [substructures, setSubstructures] = useState<Substructure[]>([]);
   const [equipments, setEquipments] = useState<Equipment[]>([]);
@@ -282,7 +240,6 @@ export function UnifiedDocumentDialog({
   const [documentTypes, setDocumentTypes] = useState<DocumentType[]>(FALLBACK_DOCUMENT_TYPES);
   const [loadingTypes, setLoadingTypes] = useState(true);
   const [internalAssets, setInternalAssets] = useState<Array<{ id: number; name: string }>>([]);
-  const [internalEvents, setInternalEvents] = useState<Array<{ id: number; title: string; date: string; eventType: string }>>([]);
   const [loadingData, setLoadingData] = useState(false);
 
   // ── Pending AI room/equipment references (matched after substructures/equipments load) ─
@@ -301,7 +258,7 @@ export function UnifiedDocumentDialog({
 
   // ── Computed ────────────────────────────────────────────────────────────────
   const assets = useMemo(() => providedAssets || internalAssets, [providedAssets, internalAssets]);
-  const events = useMemo(() => providedEvents || internalEvents, [providedEvents, internalEvents]);
+  const agendaItemId = agendaItemIdOrNull(preselectedAgendaItemId);
 
   const selectedAssetSupportsStructural = useMemo(() => {
     if (!assetId || assetId === '0') return false;
@@ -381,23 +338,22 @@ export function UnifiedDocumentDialog({
     const aid = parseInt(assetId);
     setLoadingRelations(true);
     Promise.all([
-      providedEvents ? Promise.resolve({ data: providedEvents }) : apiClient.get<any>(`/api/events?assetId=${aid}&limit=10`),
       apiClient.get<Substructure[]>(`/api/assets/${aid}/substructures`),
       apiClient.get<Equipment[]>(`/api/assets/${aid}/equipments`),
-    ]).then(([eventsData, subs, eqs]) => {
-      if (!providedEvents) setInternalEvents((eventsData as any).data || []);
+    ]).then(([subs, eqs]) => {
       setSubstructures(subs || []);
       setEquipments(eqs || []);
     }).catch(console.error).finally(() => setLoadingRelations(false));
-  }, [open, assetId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, assetId]);
 
-  // Sync event date
+  // Ouverture depuis un élément d'agenda : la date du document reprend la
+  // sienne (comportement de l'ancien « événement » présélectionné).
   useEffect(() => {
-    if (selectedEventIds.length > 0 && events.length > 0) {
-      const ev = events.find(e => e.id === selectedEventIds[0]);
-      if (ev) setDocumentDate(ev.date);
-    }
-  }, [selectedEventIds, events]);
+    if (!open || agendaItemId === null) return;
+    apiClient.get<{ item?: { startDate?: string | null } }>(`/api/agenda/${agendaItemId}`)
+      .then((r) => { if (r?.item?.startDate) setDocumentDate(r.item.startDate); })
+      .catch(() => {});
+  }, [open, agendaItemId]);
 
   // Apply pending AI room/equipment references once substructures/equipments are loaded
   useEffect(() => {
@@ -499,9 +455,6 @@ export function UnifiedDocumentDialog({
     setSupplier('');
     setAmount('');
     setAmountError(false);
-    setSelectedEventIds([]);
-    setCreateEvent(false);
-    setEventType('');
     setMode('file');
     setWebLinkUrl('');
     setWebLinkTitle('');
@@ -529,16 +482,11 @@ export function UnifiedDocumentDialog({
   /** Contexte figé du dépôt : la fin du lot peut survenir panneau fermé. */
   const contexteDepot = (): ContexteDepot => {
     const targetAssetId = assetId && assetId !== '0' ? parseInt(assetId) : null;
-    const categoryLabel = EVENT_CATEGORIES.find(c => c.value === eventType)?.label;
     const premier = files[0]?.file;
     return {
       isWl: mode === 'weblink',
       isPremium: !!isPremium,
-      selectedEventIds: [...selectedEventIds],
-      createEvent,
-      assetId,
-      eventType,
-      eventTitle: categoryLabel || documentTypes.find(dt => dt.code === documentType)?.label || 'Document ajouté',
+      agendaItemId,
       substructureId: selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
       equipmentId: selectedEquipmentId === 'none' ? null : parseInt(selectedEquipmentId),
       documentType,
@@ -613,14 +561,6 @@ export function UnifiedDocumentDialog({
     }
     if (mode === 'weblink' && !webLinkTitle) {
       toast.error('Veuillez saisir un nom pour le document');
-      return;
-    }
-    if (createEvent && (!assetId || assetId === '0')) {
-      toast.error('Veuillez sélectionner un bien pour créer un événement');
-      return;
-    }
-    if (createEvent && !eventType) {
-      toast.error('Veuillez sélectionner un type d\'événement');
       return;
     }
     // Lot 58A : montant invalide ou ambigu → aucun envoi (jamais de montant partiel).

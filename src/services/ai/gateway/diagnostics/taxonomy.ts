@@ -65,6 +65,14 @@ export const INVALID_OUTPUT_SUBTYPES = [
    * `provider.rejectedParameter`.
    */
   'PARAMETER_REJECTED',
+  /**
+   * Lot 85C (CDC Pilotage IA V2 P4, CFG-03) : combinaison modèle +
+   * paramètres CONNUE comme incompatible d'après la fiche de capacités,
+   * refusée AVANT tout appel (étape `request_build`, aucun coût). Famille
+   * `INPUT_ERROR`, jamais une indisponibilité ; paramètre dans
+   * `provider.rejectedParameter`.
+   */
+  'PARAMETER_INCOMPATIBLE',
   'UNKNOWN',
 ] as const;
 export type InvalidOutputSubtype = (typeof INVALID_OUTPUT_SUBTYPES)[number];
@@ -273,6 +281,7 @@ export const SUBTYPE_LABELS: Record<InvalidOutputSubtype, string> = {
   BUSINESS_VALIDATION_FAILED: 'règle métier non respectée',
   RUNTIME_CONTRACT_MISMATCH: 'contrat runtime incohérent (moteur)',
   PARAMETER_REJECTED: 'paramètre refusé par le modèle',
+  PARAMETER_INCOMPATIBLE: 'combinaison modèle / paramètres incompatible (refusée avant appel)',
   UNKNOWN: 'non classé',
 };
 
@@ -342,19 +351,22 @@ export function isStructuredOutputRetry(a: Pick<ProviderAttemptTrace, 'kind'>): 
  * Lot 52B — nature d'un échec AVANT sortie, pour le BO : un HTTP 400
  * INVALID_ARGUMENT n'est jamais une indisponibilité du fournisseur.
  */
-export type ProviderFailureCategory = 'PROVIDER_UNAVAILABLE' | 'REQUEST_REJECTED' | 'STRUCTURED_OUTPUT_REJECTED' | 'PARAMETER_REJECTED';
+export type ProviderFailureCategory = 'PROVIDER_UNAVAILABLE' | 'REQUEST_REJECTED' | 'STRUCTURED_OUTPUT_REJECTED' | 'PARAMETER_REJECTED' | 'PARAMETER_INCOMPATIBLE';
 
 export const PROVIDER_FAILURE_CATEGORY_LABELS: Record<ProviderFailureCategory, string> = {
   PROVIDER_UNAVAILABLE: 'Fournisseur indisponible',
   REQUEST_REJECTED: 'Requête refusée par le fournisseur',
   STRUCTURED_OUTPUT_REJECTED: 'Structured output refusé',
   PARAMETER_REJECTED: 'Paramètre refusé par le modèle',
+  PARAMETER_INCOMPATIBLE: 'Combinaison incompatible refusée avant appel',
 };
 
 export function providerFailureCategory(family: string | null | undefined, subtype: string | null | undefined): ProviderFailureCategory | null {
   if (subtype === 'STRUCTURED_OUTPUT_REJECTED') return 'STRUCTURED_OUTPUT_REJECTED';
   // Lot 82C (LOG-04, R02) : incompatibilité de paramètre, jamais une indisponibilité.
   if (subtype === 'PARAMETER_REJECTED') return 'PARAMETER_REJECTED';
+  // Lot 85C : refus AVANT appel d'après les capacités du modèle.
+  if (subtype === 'PARAMETER_INCOMPATIBLE') return 'PARAMETER_INCOMPATIBLE';
   switch (family) {
     case 'INPUT_ERROR': case 'CONTEXT_TOO_LARGE': case 'AUTH_ERROR': return 'REQUEST_REJECTED';
     case 'PROVIDER_ERROR': case 'NETWORK_ERROR': case 'TIMEOUT': case 'RATE_LIMIT': return 'PROVIDER_UNAVAILABLE';
@@ -379,5 +391,5 @@ export function displayCause(family: AiFailureFamily | null, subtype: InvalidOut
   if (!family) return null;
   if (family === 'INVALID_OUTPUT') return `INVALID_OUTPUT / ${subtype ?? 'UNKNOWN'}`;
   // Lot 82C : le refus d'un paramètre se distingue d'un refus générique.
-  return subtype === 'PARAMETER_REJECTED' ? `${family} / PARAMETER_REJECTED` : family;
+  return subtype === 'PARAMETER_REJECTED' || subtype === 'PARAMETER_INCOMPATIBLE' ? `${family} / ${subtype}` : family;
 }

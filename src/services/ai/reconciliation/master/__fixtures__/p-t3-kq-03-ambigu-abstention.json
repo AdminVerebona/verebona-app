@@ -1,0 +1,116 @@
+{
+  "case": "P-T3-KQ-03",
+  "description": "KNOWLEDGE_QUERY — texte ambigu : abstention, aucune valeur retenue même si des candidats sont cités.",
+  "context": {
+    "knowledgeQuery": {
+      "question": {
+        "key": "contractEndDate",
+        "label": "Date de fin de contrat",
+        "valueType": "date",
+        "businessQuestion": "Quelle est la date de fin de ce contrat ?",
+        "ruleCode": "DATA-CONTRACT-END",
+        "constituents": [
+          {
+            "role": "start",
+            "key": "contractStartDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "duration",
+            "key": "contractDurationMonths",
+            "label": null,
+            "valueType": "duration"
+          },
+          {
+            "role": "firstInstalment",
+            "key": "firstInstalmentDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "lastInstalment",
+            "key": "lastInstalmentDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "count",
+            "key": "instalmentCount",
+            "label": null,
+            "valueType": "count"
+          },
+          {
+            "role": "periodicity",
+            "key": "instalmentPeriodicity",
+            "label": null,
+            "valueType": "periodicity"
+          },
+          {
+            "role": "disbursement",
+            "key": "disbursementDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "repayment",
+            "key": "repaymentSchedule",
+            "label": null,
+            "valueType": "indicator"
+          }
+        ]
+      },
+      "documents": [
+        {
+          "ref": "D0",
+          "fileId": 1,
+          "role": "TARGET",
+          "relation": null,
+          "title": "Offre de crédit immobilier",
+          "documentType": "FINANCING_CONTRACT"
+        }
+      ],
+      "elements": [
+        {
+          "ref": "U-1",
+          "document": "D0",
+          "fileId": 1,
+          "layer": "SOURCE_UNIT",
+          "kind": "TEXT_BLOCK",
+          "label": null,
+          "value": null,
+          "text": "Durée : 15 ou 20 ans selon l'option retenue",
+          "confidence": "certain",
+          "page": 1
+        }
+      ],
+      "today": "2026-10-24"
+    }
+  },
+  "recording": {
+    "operationCode": "t3_knowledge_query",
+    "task": "KNOWLEDGE_QUERY",
+    "output": {
+      "task": "KNOWLEDGE_QUERY",
+      "outcome": "AMBIGUOUS",
+      "findings": [
+        {
+          "target": "duration",
+          "rawValue": "15 ou 20 ans",
+          "value": null,
+          "evidenceRefs": [
+            "U-1"
+          ],
+          "excerpt": "15 ou 20 ans",
+          "confidence": "conflictual",
+          "meaning": "deux durées possibles"
+        }
+      ],
+      "reason": "deux durées possibles"
+    }
+  },
+  "expected": {
+    "outcome": "AMBIGUOUS",
+    "findings": {}
+  }
+}

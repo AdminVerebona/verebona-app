@@ -11,6 +11,7 @@ import { db } from '@/db';
 import { assets, energyMaterials } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 
 export async function GET(
   request: NextRequest,
@@ -107,6 +108,10 @@ export async function DELETE(
       .where(and(eq(assets.id, assetId), eq(assets.accountId, session.currentAccountId ?? -1))) // lot 49 : compte actif ; lot 72D : tout membre du compte, plus seulement le créateur
       .limit(1);
     if (!asset) return NextResponse.json({ error: 'ASSET_NOT_FOUND' }, { status: 404 });
+    // Lot 85D : supprimer reste une écriture — refusée en lecture seule (le
+    // dépassement de quota, lui, n'interdit pas de supprimer).
+    const refus = await refuserSiLectureSeule(asset.accountId ?? session.currentAccountId!);
+    if (refus) return refus;
 
     const { searchParams } = new URL(request.url);
     const materialId = parseInt(searchParams.get('materialId') ?? '');

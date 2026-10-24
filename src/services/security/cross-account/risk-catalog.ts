@@ -181,7 +181,7 @@ export const CATEGORY_RISKS: readonly CategoryRisk[] = [
     code: 'EVENT_DOCUMENT', level: 'élevé', duo: false,
     summary: 'Événement (historique) lié au document d’un autre compte.',
     channels: [
-      { channel: 'lecture', risk: 'Document étranger dans les pièces de l’événement.', guard: 'api/events/[eventId]/documents : documents du compte (lot 49).' },
+      { channel: 'lecture', risk: 'Document étranger dans les pièces de l’événement.', guard: 'Aucune route ne lit plus ces liens (routes « events » retirées au lot 85D) ; table inerte.' },
       { channel: 'miniatures', risk: 'Ouverture du fichier étranger.', guard: '/api/files/[id]/* : 404 hors compte.' },
     ],
     treatment: 'Lien event_documents supprimé (journalisé, restaurable).',

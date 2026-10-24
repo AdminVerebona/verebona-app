@@ -92,6 +92,10 @@ import {
 import { upsertAction } from './to-process-action.service';
 import { unnamedLabel } from './card-labels';
 import { ASSET_LINK_QUESTION_ALLOWED_SQL, assetLinkQuestionAllowed } from '@/services/ai/reconciliation/document-asset/question-gate';
+import {
+  interpretT1Knowledge, interpretationPending, semanticallyAbsent, type KnowledgeQueryDeps, type SemanticResolution,
+} from '@/services/ai/reconciliation/knowledge-query/service';
+import { semanticConstituents, semanticEvidenceFacts, semanticFieldProposals } from './document-semantic-knowledge';
 
 // ══════════════════════════════════════════════════════════════════════════
 // PLANIFICATION — fonction pure, testée sans base (TEST-ATP-01 à 11)
@@ -736,6 +740,8 @@ export interface FieldRuleDeps {
   decide?: Parameters<typeof assessDeadlinePertinence>[0]['decide'];
   today?: string;
   config?: T4AssessmentConfig;
+  /** Lot 85F : interprétation sémantique T3 de la connaissance T1 (fournisseur simulé, mémoire…). */
+  knowledge?: KnowledgeQueryDeps;
 }
 
 interface FieldRuleInput {
@@ -779,6 +785,8 @@ export interface FieldRuleOutcome {
   derivation: DerivationResult | null;
   /** Lot 61 : cartes d'intervention créées / fermées. */
   interventionIds: number[];
+  /** Lot 85F : interprétation sémantique T3 de la connaissance T1 (niveau 2), si elle a été examinée. */
+  semantic: SemanticResolution | null;
 }
 
 /** Propositions fusionnées par valeur (la meilleure confiance l'emporte), ordre stable. */
@@ -824,7 +832,8 @@ const classicOutcome = (plan: RulePlan, hadActive: boolean): RuleOutcome =>
 /** Type d'erreur tracé selon l'étape (écart 5). */
 const errorKindOf = (e: unknown, step: string): string => e instanceof KnowledgeReadError ? 'READ_FAILED'
   : step === 'PERTINENCE' ? 'AI_OR_MEMORY_FAILED' : step === 'DERIVATION' ? 'DERIVATION_FAILED'
-    : step === 'WRITE' || step === 'VERIFY' ? 'PERSISTENCE_FAILED' : step === 'KNOWLEDGE' ? 'READ_FAILED' : 'EVALUATION_FAILED';
+    : step === 'WRITE' || step === 'VERIFY' ? 'PERSISTENCE_FAILED' : step === 'KNOWLEDGE' ? 'READ_FAILED'
+      : step === 'SEMANTIC' ? 'KNOWLEDGE_QUERY_FAILED' : 'EVALUATION_FAILED';
 
 /**
  * Une donnée documentaire (champ) d'une règle du pont, pour UN document —
@@ -872,6 +881,9 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
   // Lot 76 (C6) : problème métier de la décision courante (nature, situation, clé de preuve).
   let probleme: ProblemDescriptor | null = null;
   let liesIntegres = false;
+  // Lot 85F : niveau 2 (compréhension sémantique de la connaissance T1) et report d'une question en attente d'interprétation.
+  let semantic: SemanticResolution | null = null;
+  let reevaluateOverride: string | null = null;
   /** Textes du document où une preuve citée par T4 doit se retrouver (clauses, extraits, titre). */
   // Lot 76 (C6) : CONTENUS lus (sans libellé ni clé) — un libellé renommé ne crée pas un « nouveau problème ».
   const textesPreuve = () => {
@@ -956,6 +968,57 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
         reasonOverride = 'CALCULATED_VALUE_WITHDRAWN';
       }
 
+      // ── Lot 85F : niveau 2 — compréhension SÉMANTIQUE de la connaissance T1 ──
+      // Aucune valeur lue par le niveau 1 : la connaissance persistée non
+      // structurée (unités, faits non intégrés, faits génériques, documents de
+      // la même réalité métier) est soumise à T3 (KNOWLEDGE_QUERY), validée par
+      // le serveur, puis exploitée par le moteur EXISTANT : valeur → proposition
+      // (jamais écrite seule), constituants → calcul déterministe (au plus
+      // probable). Une décision de l'utilisateur ou de l'administrateur n'est
+      // jamais soumise (ticket §8).
+      const decisionProtegee = state.origin === 'USER' || state.origin === 'ADMIN';
+      if (plan.kind !== 'WRITE' && plan.kind !== 'RESOLVE' && proposals.length === 0 && !decisionProtegee) {
+        failedStep = 'SEMANTIC';
+        semantic = await interpretT1Knowledge({
+          accountId, fileId, rule, key, trigger: i.trigger, allowAi: i.trigger !== 'USER', runRef: i.runRef ?? null,
+          today: i.deps?.today ?? todayParis(), deps: i.deps?.knowledge,
+        });
+        evidence.sources.T3_SEMANTIC_ELEMENTS = semantic.summary?.unstructured ?? 0;
+        // Trace STABLE d'un passage à l'autre (les appels réels sont comptés dans la mémoire 0720) :
+        // une réévaluation identique ne crée pas de nouvelle ligne de diagnostic.
+        if (semantic.status === 'ANSWERED') evidence.sources.T3_SEMANTIC_FINDINGS = semantic.findings.length;
+        if (semantic.queryId) evidence.sources.T3_SEMANTIC_QUERY = semantic.queryId;
+        for (const f of semantic.findings.slice(0, 10)) {
+          evidence.observations.push({ source: 'T3_SEMANTIC', key: f.target, raw: f.rawValue.slice(0, 120), normalized: f.normalized, status: f.dateStatus ?? 'TEXT' });
+        }
+        // Interprétation en attente : source ABSENTE avec son motif (l'issue d'une interprétation est dans la mémoire 0720).
+        if (semantic.status === 'PENDING') evidence.missing.push(`T3_SEMANTIC_INTERPRETATION:${semantic.pendingReason ?? 'UNKNOWN'}`);
+        const lues = semanticFieldProposals(semantic, slot.normalize);
+        if (lues.length) {
+          proposals = mergeProposals(proposals, lues);
+          evidence.facts.push(...semanticEvidenceFacts(semantic, slot.normalize));
+          failedStep = 'PLAN';
+          plan = planDocumentRule({ rule, state: planState, proposals, mode: 'analysis', relevant, active, mayCreate: i.mayCreate });
+          outcome = plan.kind === 'WRITE' ? 'AUTO_RESOLVED' : classicOutcome(plan, !!active);
+        }
+        // Niveau 3 : constituants compris → calcul DÉTERMINISTE existant (jamais une date inventée).
+        const constituants = semanticConstituents(semantic);
+        if (constituants && plan.kind !== 'WRITE' && derivationFor(key)) {
+          failedStep = 'DERIVATION';
+          derivation = (await gatherDerivation(accountId, fileId, key, { relatedFiles: lies.relatedFiles ?? [], extra: constituants }))?.result ?? null;
+          if (derivation?.schedule) {
+            derivation = { ...derivation, endDateNeed: endDateNeed({ repaymentSchedule: derivation.schedule.evidenced, textes: (evidence.lifecycleTexts ?? []).map((t) => t.text) }) };
+          }
+          if (derivation?.status === 'CALCULATED_RELIABLE' && derivation.value) {
+            // Inatteignable avec des constituants sémantiques seuls (jamais « fiables ») ; conservé par prudence.
+            outcome = 'AUTO_RESOLVED';
+            plan = { kind: 'WRITE', value: derivation.value, confidence: 1, evidenceIds: [],
+              reason: derivation.method === 'START_PLUS_DURATION' ? 'CALCULATED_FROM_START_AND_DURATION' : 'CALCULATED_FROM_SCHEDULE' };
+            extra = { valueKind: 'CALCULATED', derivation };
+          }
+        }
+      }
+
       // ── Étapes B / C : pertinence d'une question sur une échéance ──────────
       const question = plan.kind === 'UPSERT' || (plan.kind === 'NONE' && plan.reason !== 'CALCULATED_UNCHANGED' && (!!active || !!i.activeIntervention));
       if (outcome !== 'AUTO_RESOLVED' && isDeadlineRule(rule) && question) {
@@ -968,7 +1031,8 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
           accountId, fileId, rule, documentType: i.ctx.documentTypeCode, candidates: cands,
           today: i.deps?.today ?? todayParis(), decide: i.deps?.decide, documentTitle: evidence.documentTitle ?? null,
           contextDates: evidence.contextDates, evidenceFingerprint: evidence.fingerprint ?? null, config: cfg,
-          contradictory: new Set(proposals.filter((x) => x.confidence >= AI_CONFIDENCE_THRESHOLD).map((x) => String(x.value))).size >= 2,
+          contradictory: new Set(proposals.filter((x) => x.confidence >= AI_CONFIDENCE_THRESHOLD).map((x) => String(x.value))).size >= 2
+            || (semantic?.contradictions.includes('FIELD') ?? false),
           remembered: await rememberedPertinence(accountId, fileId, rule.code),
           // Lot 72 (C2) : cycle de vie lu (reconduction, fin effective, obligation résiduelle) — jamais l'âge seul.
           lifecycle: evidence.lifecycle ?? null,
@@ -1036,6 +1100,22 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
             break;
         }
         Object.assign(extra, { motive });
+      }
+      // Lot 85F : connaissance non structurée NON (entièrement) interprétée —
+      // jamais « information absente » : aucune NOUVELLE question n'est créée,
+      // une question existante est conservée (variante prudente, signalée par le
+      // contrôle COH-T1-KNOWLEDGE-CONSUMPTION) ; réexamen programmé.
+      if (interpretationPending(semantic) && plan.kind === 'UPSERT' && plan.actionKind === 'COMPLETE') {
+        const motif = semantic!.status === 'PENDING' ? 'INTERPRETATION_PENDING' : 'INTERPRETATION_INCOMPLETE';
+        if (active) {
+          plan = { kind: 'NONE', reason: `KEPT_${motif}` };
+          outcome = 'KEEP';
+        } else {
+          plan = { kind: 'NONE', reason: motif };
+          outcome = 'DEFER';
+          const demain = new Date(Date.parse(`${i.deps?.today ?? todayParis()}T00:00:00Z`) + 86_400_000);
+          reevaluateOverride = demain.toISOString();
+        }
       }
       // Réévaluation sans élément nouveau : la même question reste en l'état.
       if (i.trigger !== 'ANALYSIS' && plan.kind === 'UPSERT' && plan.actionKind === 'COMPLETE' && active?.actionKind === 'COMPLETE') {
@@ -1126,7 +1206,7 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
       actionId: exec.actionId ?? interventionIds[0] ?? null,
       decision: obligation && interventionIds.length && decisionBase !== 'WRITE' && decisionBase !== 'ERROR'
         ? (ivKept.includes(interventionIds[0]) ? 'UPDATE' : 'CREATE') : decisionBase,
-      outcome, derivation, interventionIds,
+      outcome, derivation, interventionIds, semantic,
     };
     await tracer(report, {
       accountId, fileId, ruleCode: rule.code, fieldKey: key, trigger: i.trigger, runRef: i.runRef ?? null,
@@ -1136,7 +1216,7 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
       reasonCode: refusEcriture ? 'PERSISTENCE_FAILED' : plan.kind === 'WRITE' && !verified ? 'WRITE_REFUSED_PROTECTED_VALUE'
         : reasonOverride && (plan.kind === 'NONE' || reasonOverride === 'USER_DECISION_RESPECTED') ? reasonOverride : plan.reason,
       actionId: result.actionId, writeVerified: verified, failedStep: refusEcriture ? 'VERIFY' : null,
-      outcome, reevaluateAt: pertinence?.reevaluateAt ?? null, evidenceFingerprint: evidence?.fingerprint ?? null, knowledgeRev, configRef,
+      outcome, reevaluateAt: reevaluateOverride ?? pertinence?.reevaluateAt ?? null, evidenceFingerprint: evidence?.fingerprint ?? null, knowledgeRev, configRef,
       derivation, writeResult: exec.write, errorKind: refusEcriture ? 'PERSISTENCE_FAILED' : pertinence?.technicalFailure ? 'AI_OR_MEMORY_FAILED' : null,
       actionIds: { created: [...exec.created, ...interventionIds.filter((x) => !ivKept.includes(x))], kept: [...exec.kept, ...ivKept, ...(plan.kind === 'NONE' && active ? [active.id] : [])],
         closed: [...exec.closed, ...ivClosed], intervention: interventionIds },
@@ -1666,11 +1746,18 @@ export interface KnowledgeFieldResolution {
    * objet — échéance historique, interpellation différée, remplacée par
    * l'action réelle, décision de l'utilisateur respectée (motif dans
    * `reasonCode`) · ARBITRATE : valeur(s) incertaine(s), carte maintenue
-   * avec propositions · NO_EVIDENCE : aucune valeur dans T1 · USER_PROTECTED :
-   * choix de l'utilisateur protégé · TARGET_GONE · NOT_A_FIELD (relation,
-   * règle inconnue) · NO_T1_KNOWLEDGE.
+   * avec propositions · NO_EVIDENCE : aucune valeur dans T1 (motif
+   * `FIELD_NOT_IN_T1` — lot 85F : seulement si TOUTE la connaissance
+   * persistée a été examinée ET, si elle contient du non structuré,
+   * interprétée sans résultat ; `INSUFFICIENT_EVIDENCE` : interprétation
+   * abstenue ou constituants insuffisants) · USER_PROTECTED : choix de
+   * l'utilisateur protégé · TARGET_GONE · NOT_A_FIELD (relation, règle
+   * inconnue) · NO_T1_KNOWLEDGE · INTERPRETATION_PENDING (lot 85F :
+   * connaissance non structurée pas encore interprétée — capacité IA non
+   * livrée, budget, panne, contexte trop grand ; jamais une absence).
    */
-  status: 'WRITTEN' | 'RESOLVED' | 'NO_ACTION_NEEDED' | 'ARBITRATE' | 'NO_EVIDENCE' | 'USER_PROTECTED' | 'TARGET_GONE' | 'NOT_A_FIELD' | 'NO_T1_KNOWLEDGE';
+  status: 'WRITTEN' | 'RESOLVED' | 'NO_ACTION_NEEDED' | 'ARBITRATE' | 'NO_EVIDENCE' | 'USER_PROTECTED' | 'TARGET_GONE' | 'NOT_A_FIELD' | 'NO_T1_KNOWLEDGE'
+    | 'INTERPRETATION_PENDING';
   reasonCode: string;
   /** Propositions issues de T1 (après regroupement par valeur). */
   proposals: number;
@@ -1689,6 +1776,11 @@ export interface KnowledgeFieldResolution {
   aiStatus?: string | null;
   /** Lot 61 : issue centrale. */
   outcome?: string | null;
+  /** Lot 85F : interprétation sémantique T3 (KNOWLEDGE_QUERY) de la connaissance T1. */
+  knowledgeQuery?: {
+    status: string; outcome: string | null; pendingReason: string | null; aiCalled: boolean; cached: boolean; calls: number;
+    traceIds: string[]; findings: number; queryId: number | null;
+  } | null;
 }
 
 /**
@@ -1718,7 +1810,7 @@ const SANS_OBJET = ['NO_ACTION_NEEDED', 'DEFERRED', 'REPLACED_BY_INTERVENTION', 
  * Ne lève que pour une erreur technique (journalisée RESOLVER_FAILED par l'appelant).
  */
 export async function resolveDocumentRuleFromKnowledge(
-  accountId: number, fileId: number, ruleCode: string, deps: FieldRuleDeps & { runRef?: string | null } = {},
+  accountId: number, fileId: number, ruleCode: string, deps: FieldRuleDeps & { runRef?: string | null; trigger?: RuleTrigger } = {},
 ): Promise<KnowledgeFieldResolution> {
   const { getRule } = await import('./rules-catalog');
   const res = (p: Partial<KnowledgeFieldResolution> & Pick<KnowledgeFieldResolution, 'status' | 'reasonCode'>): KnowledgeFieldResolution => ({
@@ -1765,13 +1857,18 @@ export async function resolveDocumentRuleFromKnowledge(
   // 3. Connaissance T1 persistée, calcul, pertinence, trace (0418, 0444).
   const o = await evaluateFieldRule({
     accountId, fileId, rule, slot, ctx, state, active, activeIntervention: actives.get(interventionKey(key)) ?? null, relevant,
-    trigger: 'T3', mayCreate: ctx.open, closeReason: 'OBSOLETE', runRef: deps.runRef ?? null, deps, report,
+    trigger: deps.trigger ?? 'T3', mayCreate: ctx.open, closeReason: 'OBSOLETE', runRef: deps.runRef ?? null, deps, report,
   });
   const ev = o.evidence;
+  const sem = o.semantic;
   const base = {
     proposals: o.proposals.length, sources: ev?.sources ?? {}, missingSources: ev?.missing ?? [], confidence: o.proposals[0]?.confidence ?? null,
     pertinence: o.pertinence?.pertinence ?? null, aiCalled: o.pertinence?.aiCalled ?? false, aiTraceId: o.pertinence?.aiTraceId ?? null,
     aiStatus: o.pertinence?.aiStatus ?? null, outcome: o.outcome,
+    knowledgeQuery: sem ? {
+      status: sem.status, outcome: sem.outcome ?? null, pendingReason: sem.pendingReason ?? null, aiCalled: sem.aiCalled, cached: sem.cached,
+      calls: sem.calls, traceIds: sem.traceIds.slice(0, 5), findings: sem.findings.length, queryId: sem.queryId,
+    } : null,
   };
   if (SANS_OBJET.includes(o.plan.reason)) {
     return res({ ...base, status: 'NO_ACTION_NEEDED', reasonCode: o.plan.reason, verified: !(await activeActions(accountId, fileId)).has(key) });
@@ -1781,7 +1878,13 @@ export async function resolveDocumentRuleFromKnowledge(
     return res({ ...base, status: 'WRITTEN', reasonCode: o.verified ? 'RESOLVED' : 'PERSISTENCE_FAILED', writeAttempted: true, verified: o.verified === true, confidence: o.plan.confidence });
   }
   if (o.plan.kind === 'RESOLVE') return res({ ...base, status: 'RESOLVED', reasonCode: o.plan.reason, verified: !(await activeActions(accountId, fileId)).has(key) });
-  if (o.proposals.length === 0) return res({ ...base, status: 'NO_EVIDENCE', reasonCode: 'FIELD_NOT_IN_T1' });
+  if (o.proposals.length === 0) {
+    // Lot 85F (ticket §3) : FIELD_NOT_IN_T1 seulement si toute la connaissance a été examinée et, si elle
+    // contient du non structuré, soumise à l'interprétation sans résultat.
+    if (interpretationPending(sem)) return res({ ...base, status: 'INTERPRETATION_PENDING', reasonCode: 'INTERPRETATION_PENDING' });
+    if (!semanticallyAbsent(sem)) return res({ ...base, status: 'NO_EVIDENCE', reasonCode: 'INSUFFICIENT_EVIDENCE' });
+    return res({ ...base, status: 'NO_EVIDENCE', reasonCode: 'FIELD_NOT_IN_T1' });
+  }
   return res({ ...base, status: 'ARBITRATE', reasonCode: o.proposals.length > 1 ? 'AMBIGUOUS' : 'INSUFFICIENT_EVIDENCE' });
 }
 

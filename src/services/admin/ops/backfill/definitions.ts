@@ -35,6 +35,10 @@
  *  13. « À traiter » : faux arbitrages entre valeurs équivalentes (lot 81A,
  *      ticket P1) — aussi lancé automatiquement (campagne bornée de la tâche
  *      `to-process-relevance-reevaluation`), jamais d'écriture sur la fiche.
+ *  14. Opérations v5 : purge et reconstruction (lot 85A, CDC v5 O-2 —
+ *      préproduction ; jamais automatique ; refusé sans point de
+ *      restauration de moins de 24 h ; restaurable par exécution), suivie
+ *      d'une campagne de cohérence sur les comptes reconstruits ;
  *   0. Point de restauration de la base (lot 82E, décisions PO C-Q8 / D13) :
  *      « Appliquer » crée un point (même mécanisme que la sauvegarde
  *      nocturne) ; « Restaurer » ramène la base à un point (contrôle de
@@ -46,7 +50,7 @@
  * services.
  */
 
-export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations';
+export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -335,6 +339,31 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'heures (campagne « l81-faux-arbitrages-1 », bornée et reprise après redémarrage) ; rejoué, il ne change rien.',
     actions: ['simulate', 'apply'],
     accountFilter: true,
+  },
+  {
+    // Lot 85A (CDC v5 lot O-2, §20, AC41–AC43 ; arbitrages V-Q2, V-Q3, C-Q5, C-Q8, C-Q10).
+    script: 'operations-v5-rebuild',
+    order: 14,
+    label: 'Opérations v5 : purge et reconstruction (préproduction)',
+    command: 'BO uniquement (aucune commande) — jamais lancé automatiquement',
+    description: 'Reconstruit les regroupements de documents (interventions, contrats, sinistres…) et leur représentation dans l’agenda '
+      + 'avec les règles actuelles, à partir des sources conservées : documents et leurs analyses DÉJÀ faites (aucune nouvelle analyse '
+      + 'des documents), données des fiches, éléments d’agenda saisis, Pièces et équipements, décisions de l’utilisateur. Purgé : ce qui '
+      + 'est seulement DÉDUIT (regroupements automatiques, leurs liens et montants calculés, événements d’agenda générés automatiquement '
+      + 'et jamais touchés, questions « À traiter » devenues sans objet). Jamais touché : tout ce que l’utilisateur a saisi, modifié, '
+      + 'relié, confirmé, refusé ou supprimé (événements saisis ou modifiés, dates choisies, liens manuels, décisions de regroupement, '
+      + 'biens retirés, événements supprimés, décisions TCO — un regroupement que l’utilisateur a touché est conservé et seulement '
+      + 'recalculé). Puis : consolidation complète, séries de factures récurrentes, liens aux équipements, agenda et événements de '
+      + 'référence, cartes « À traiter », TCO relu et comparé ; rapport par compte. Comptes non actifs ou en lecture seule : exclus. '
+      + 'Simuler : inventaire exact par compte, rien n’est écrit. Appliquer : REFUSÉ sans point de restauration de moins de 24 h (bloc 0) ; '
+      + 'les traitements automatiques du compte attendent pendant sa reconstruction ; puis contrôle de cohérence des comptes reconstruits. '
+      + 'Rejoué sur un compte inchangé : rien n’est écrit. Restaurer : par l’identifiant d’exécution, chaque compte revient exactement à '
+      + 'son état d’avant (refusé pour un compte modifié depuis — le point de restauration de la base reste le recours).',
+    actions: ['simulate', 'apply', 'restore'],
+    accountFilter: true,
+    warning: 'Préproduction uniquement. Créez d’abord un point de restauration (bloc 0), faites un export complet de recette, Simulez sur '
+      + 'un compte, lisez le rapport, puis Appliquez (un compte, puis tous). L’analyse IA de rapprochement (M3) peut être sollicitée, '
+      + 'dans ses plafonds habituels (5 appels par passage, 30 par jour et par compte, plafond de coût mensuel).',
   },
 ];
 

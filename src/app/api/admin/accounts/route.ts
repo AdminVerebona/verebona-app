@@ -6,6 +6,7 @@ import { requireAdmin, isSessionError, sessionErrorResponse } from '@/lib/auth-g
 import { parseListParams } from '@/services/admin/list-params';
 import {
   ACCOUNT_SORTS,
+  accountIdFromQuery,
   pageAccounts,
   parseAccountFilters,
   summarizeAccounts,
@@ -21,6 +22,9 @@ import {
  * ACC-L02 / REC-ACC-01 — recherche SERVEUR `q` : nom du compte, OU prénom /
  * nom / e-mail de N'IMPORTE QUEL utilisateur rattaché (et non plus du seul
  * titulaire, filtré côté navigateur). Insensible à la casse.
+ * Lot 85E : OU identifiant du compte (« 42 », « #42 », « ID 42 ») — égalité
+ * stricte sur `accounts.id`, déjà renvoyé dans chaque ligne (aucune donnée
+ * nouvelle exposée).
  *
  * SUB-012 : aucun identifiant Stripe renvoyé.
  *
@@ -38,7 +42,9 @@ function containsPattern(q: string): string {
 
 function searchCondition(q: string): SQL {
   const pattern = containsPattern(q);
+  const id = accountIdFromQuery(q);
   return or(
+    ...(id !== null ? [eq(accounts.id, id)] : []),
     sql`${accounts.name} ILIKE ${pattern}`,
     sql`EXISTS (
       SELECT 1

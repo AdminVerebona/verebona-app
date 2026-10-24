@@ -22,6 +22,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { db } from '@/db';
 import { aiFieldUpdates, assets } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
@@ -34,6 +35,9 @@ export async function POST(
     const session = await getSession(request);
     const accountId = session.currentAccountId;
     if (!accountId) return NextResponse.json({ error: 'NO_ACCOUNT' }, { status: 400 });
+    // Lot 85D : annuler une mise à jour IA réécrit la fiche — refusé en lecture seule.
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
 
     const { id: rawId } = await params;
     const updateId = parseInt(rawId);

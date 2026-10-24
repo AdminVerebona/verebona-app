@@ -14,6 +14,7 @@ import {
 import {
   T3DocumentNamingOutput, T3LinkAmbiguityOutput, T3MasterOutput, T3OperationMatchOutput, T3ValueConflictOutput,
 } from '../reconciliation/master/t3-contract';
+import { T3KnowledgeQueryOutput } from '../reconciliation/knowledge-query/contract';
 import {
   T4ClassifyEventOutput, T4ClassifyEventV2Output, T4ClassifyEventV3Output, T4MasterOutput, T4TemporalAmbiguityOutput, T4VerifyCompletionOutput,
 } from '../agenda/master/t4-contract';
@@ -31,6 +32,8 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T3OperationMatchOutput,
   // Lot 61 : harmonisation du nommage documentaire (branche facultative).
   T3DocumentNamingOutput,
+  // Lot 85F : compréhension de la connaissance T1 persistée (branche facultative, texte attendu de l'équipe IA).
+  T3KnowledgeQueryOutput,
   T3MasterOutput,
   T4ClassifyEventOutput,
   // Lot 54 : contrat de sortie `t4_output_v2` de CLASSIFY_EVENT (décision Agenda + récurrence).

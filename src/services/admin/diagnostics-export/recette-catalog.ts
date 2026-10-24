@@ -121,6 +121,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_analysis_proposals: { domain: 'extraits-ia', description: 'Propositions issues des analyses.' },
   document_field_values: { domain: 'extraits-ia', description: 'Valeurs de champs documentaires.' },
   document_rule_evaluations: { domain: 'extraits-ia', description: 'Évaluations de règles documentaires.' },
+  // Lot 85F (0720) : mémoire des interprétations sémantiques T3 de la connaissance T1 (KNOWLEDGE_QUERY).
+  t3_knowledge_queries: { domain: 'extraits-ia', description: 'Interprétations T3 de la connaissance T1 persistée (question, empreinte du contexte, issue validée, constats et preuves citées, refus, appels IA) — lot 85F.' },
   document_operation_candidates: { domain: 'extraits-ia', description: 'Candidats d’Opération T1 et décision T3.' },
   t1_quality_signals: { domain: 'extraits-ia', description: 'Signaux de qualité T1.' },
   ai_execution_reports: { domain: 'extraits-ia', description: 'Rapports d’exécution T1 / T3 (synthèse).' },
@@ -192,6 +194,10 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   business_operation_documents: { domain: 'operations', description: 'Documents d’une Opération avec leur rôle (lot 82D).' },
   // Lot 84E (CDC v5 O-6, §27.6) : journal des reconsolidations ciblées.
   business_operation_targeted_runs: { domain: 'operations', description: 'Reconsolidations ciblées (équipement, bien, Pièce, série de documents récurrents, liens directs Document ↔ Équipement) : déclencheur, cible, compteurs, appels IA, issue (lot 84E).' },
+  // Lot 85A (CDC v5 O-2, §20) : journal du rattrapage « Opérations v5 : purge et reconstruction ».
+  operations_rebuild_runs: { domain: 'operations', description: 'Opérations v5 : exécutions de la purge et reconstruction en préproduction (simulation, application, restauration, refus sans point de restauration ; lot 85A).' },
+  operations_rebuild_accounts: { domain: 'operations', description: 'Opérations v5 : rapport par compte de la reconstruction (statut, empreintes avant / après, inventaire purgé / conservé et motifs, TCO relu, coût IA ; lot 85A).' },
+  operations_rebuild_snapshots: { domain: 'operations', description: 'Opérations v5 : image avant des lignes d’un compte (tables du périmètre de la reconstruction), restauration exacte par exécution (lot 85A).' },
   // ── TCO ────────────────────────────────────────────────────────────────
   asset_cost_line_decisions: { domain: 'tco', description: 'Décisions utilisateur sur les lignes TCO.' },
   asset_cost_line_decision_events: { domain: 'tco', description: 'Historique des décisions sur les lignes TCO.' },
@@ -284,6 +290,8 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_master_prompt_versions: 'configuration IA (prompts)', ai_model_catalog: 'catalogue des modèles', ai_model_catalog_refresh: 'catalogue des modèles',
   ai_model_operational_status: 'catalogue des modèles', ai_model_price_changes: 'tarifs des modèles', ai_model_price_status: 'tarifs des modèles',
   ai_model_pricing: 'tarifs des modèles', ai_model_pricing_refresh_log: 'tarifs des modèles', ai_model_qualification: 'qualification IA',
+  // Lot 85C (Pilotage IA V2 P4) : journal des changements de capacités des modèles.
+  ai_model_capability_changes: 'configuration IA (journal des capacités des modèles)',
   ai_prompt_change_requests: 'configuration IA (prompts)', ai_prompt_test_runs: 'qualification IA', ai_prompt_versions: 'configuration IA (prompts)',
   ai_provider_credential: 'secret fournisseur IA', ai_queue_worker_heartbeats: 'technique (battements des workers)',
   ai_retired_treatment_archive: 'archives IA retirées', ai_t2_content_access_log: 'journal d’accès sensible (T2)', ai_treatment_state: 'configuration IA',

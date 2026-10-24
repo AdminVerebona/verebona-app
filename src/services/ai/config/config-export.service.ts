@@ -73,6 +73,12 @@ export interface ExportedTreatment {
   cascade: TreatmentConfig['cascade'];
   /** Valeurs du code appliquées quand un champ n'est pas renseigné. */
   codeDefaults: Array<{ operationCode: string; primaryModel: string; fallbackModels: string[]; defaultMaxOutputTokens: number | null }>;
+  /**
+   * Lot 85C (P4) : profils par opération et par rang de la version (présents
+   * seulement s'il y en a — champ additif, format 1.0.0 inchangé sinon ; le
+   * format global 2.0.0 relève de P6).
+   */
+  operationProfiles?: NonNullable<TreatmentConfig['operationProfiles']>;
 }
 
 export interface EnvironmentParameter {
@@ -216,6 +222,7 @@ export function buildExportDocument(inputs: ExportInputs, meta: {
       triggers: e?.triggers ?? [],
       cascade: e?.cascade ?? null,
       codeDefaults: inputs.codeDefaults(t),
+      ...(e?.operationProfiles && Object.keys(e.operationProfiles).length ? { operationProfiles: e.operationProfiles } : {}),
     };
   });
   const settingsOutsideVersion: ConfigExportDocument['settingsOutsideVersion'] = {

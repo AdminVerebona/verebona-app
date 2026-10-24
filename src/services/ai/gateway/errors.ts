@@ -80,7 +80,16 @@ export type AiErrorCode =
   | 'T4_TASK_NOT_ALLOWED'
   | 'T4_OUTPUT_CONTRACT_MISSING'
   | 'T4_CONTRACT_VERSION_NOT_FOUND'
-  | 'T4_EXECUTION_CONTEXT_BUILD_FAILED';
+  | 'T4_EXECUTION_CONTEXT_BUILD_FAILED'
+  /**
+   * Lot 85C (CDC Pilotage IA V2 P4, CFG-03, R02) : combinaison modèle +
+   * paramètres CONNUE comme incompatible d'après la fiche de capacités du
+   * modèle (niveau ou budget de raisonnement non accepté, limite de sortie
+   * inférieure au plancher de l'opération, entrée image refusée…). Refusée
+   * AVANT tout appel fournisseur, jamais une indisponibilité de Gemini ;
+   * RÉCUPÉRABLE pour la chaîne : un autre modèle (profil propre) peut convenir.
+   */
+  | 'MODEL_PARAMETERS_INCOMPATIBLE';
 
 /**
  * Codes TECHNIQUES internes (lot 34D) : défaut du moteur ou de sa
@@ -91,6 +100,7 @@ export const INTERNAL_AI_ERROR_CODES: ReadonlySet<AiErrorCode> = new Set<AiError
   'RUNTIME_CONTRACT_MISMATCH', 'REQUEST_BUILD_FAILED',
   'T4_INPUT_CONTRACT_MISSING_FIELD', 'T4_INPUT_CONTRACT_INVALID_TYPE', 'T4_TASK_NOT_ALLOWED',
   'T4_OUTPUT_CONTRACT_MISSING', 'T4_CONTRACT_VERSION_NOT_FOUND', 'T4_EXECUTION_CONTEXT_BUILD_FAILED',
+  'MODEL_PARAMETERS_INCOMPATIBLE',
 ]);
 
 /** Code interne au moteur (jamais exposé à l'utilisateur final) ? */

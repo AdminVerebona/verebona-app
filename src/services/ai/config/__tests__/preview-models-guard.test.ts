@@ -1,9 +1,12 @@
 /**
  * Lot 35B — ticket « Catalogue IA dynamique Google » : la garde « modèle
- * preview en production » (lot 21, D-J1) est SUPPRIMÉE. Un modèle preview est
- * activable dans les mêmes conditions techniques qu'un stable ; le réglage
+ * preview en production » (lot 21, D-J1) est SUPPRIMÉE ; le réglage
  * « preview_models_allowed », le flag VEREBONA_ASSISTANT_ALLOW_PREVIEW_MODELS
  * et le refus PREVIEW_NOT_ALLOWED / PREVIEW_MODEL_NOT_APPROVED n'existent plus.
+ * Lot 85C (décision PO 02) : un Preview est désormais exclu par l'éligibilité
+ * unique (`usable-models.ts`, motif PREVIEW) et par les contrôles techniques
+ * d'activation — pas par un réglage ni un flag ; le contrôle de cohérence du
+ * registre (exceptions Verebona) ci-dessous reste sans règle Preview.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 

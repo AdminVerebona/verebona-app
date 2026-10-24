@@ -4,8 +4,10 @@
  * critères d'acceptation CAT-01 à CAT-16 :
  *   · Google expose de nouveaux modèles À LA CLÉ ACTIVE, sans commit ni
  *     déploiement : la synchronisation les découvre, les qualifie, les
- *     propose (preview compris, tarif UNKNOWN compris), le bandeau les signale,
- *     son acquittement est persistant ;
+ *     propose (tarif UNKNOWN compris), le bandeau les signale, son
+ *     acquittement est persistant ; lot 85C (décision PO 02) : un Preview
+ *     reste VISIBLE au catalogue mais n'est plus qualifié, proposé ni
+ *     annoncé comme utilisable ;
  *   · expérimental jamais proposé, modèle retiré plus proposé, modèle actif
  *     jamais remplacé (alerte d'exploitation + anomalie visible) ;
  *   · tarifs historisés, coûts passés jamais revalorisés, ambiguïté → UNKNOWN,
@@ -153,24 +155,27 @@ scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, 
     expect(par['gemini-3.5-flash']).toMatchObject({ available: false });
     expect(par['gemini-3.5-flash'].disappeared_at).not.toBeNull();
 
-    // CAT-03 — qualification automatique (avec l'empreinte de la clé active), jamais sur l'expérimental.
+    // CAT-03 — qualification automatique (avec l'empreinte de la clé active), jamais sur l'expérimental
+    // ni (lot 85C, décision 02) sur un Preview.
     const q = await sql<{ model: string; generate_ok: boolean; structured_ok: boolean; multimodal_ok: boolean }[]>`SELECT model, generate_ok, structured_ok, multimodal_ok FROM ai_model_qualification ORDER BY model`;
     expect(q.find((x) => x.model === 'gemini-9-flash')).toMatchObject({ generate_ok: true, structured_ok: true, multimodal_ok: true });
     expect(q.some((x) => x.model === 'gemini-9-flash-exp')).toBe(false);
+    expect(q.some((x) => x.model === 'gemini-9-pro-preview')).toBe(false);
 
-    // CAT-04/05/06 — proposés aux traitements compatibles, preview compris, sans tarif compris.
+    // CAT-04/06 — proposés aux traitements compatibles, sans tarif compris ; lot 85C : Preview exclu.
     const cat = await catalogues();
     // Lot 49 : T5 retiré — plus de liste pour lui.
     expect(cat.body.modelsByTreatment.T5).toBeUndefined();
     for (const t of ['T1', 'T2', 'T3', 'T4'] as const) {
       const liste = (cat.body.modelsByTreatment[t] as Array<{ model: string }>).map((m) => m.model);
-      expect(liste, t).toEqual(expect.arrayContaining(['gemini-9-flash', 'gemini-9-pro-preview']));
+      expect(liste, t).toContain('gemini-9-flash');
+      expect(liste, t).not.toContain('gemini-9-pro-preview');
       // CAT-12 / CAT-13.
       expect(liste, t).not.toContain('gemini-9-flash-exp');
       expect(liste, t).not.toContain('gemini-3.5-flash');
     }
     const t2 = cat.body.modelsByTreatment.T2 as Array<{ model: string; status: string; priced: boolean }>;
-    expect(t2.find((m) => m.model === 'gemini-9-pro-preview')).toMatchObject({ status: 'preview', priced: false });
+    expect(t2.find((m) => m.model === 'gemini-9-pro-preview')).toBeUndefined();
     expect(t2.find((m) => m.model === 'gemini-9-flash')).toMatchObject({ priced: false });
 
     // CAT-07 — tarif UNKNOWN, jamais inventé (catalogue tarifaire et registre du BO).
@@ -209,10 +214,11 @@ scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, 
   it('CAT-08 à CAT-10 — bandeau des nouveaux modèles : une action acquitte tout, persistant après reconnexion', async () => {
     const s = await statut();
     expect(s.status).toBe(200);
-    expect((s.body.newModels as Array<{ model: string }>).map((m) => m.model).sort()).toEqual(['gemini-9-flash', 'gemini-9-pro-preview']);
-    expect(s.body.banner.title).toBe('2 nouveaux modèles Gemini sont disponibles');
-    const ack = await acquitter(['gemini-9-flash', 'gemini-9-pro-preview']);
-    expect(ack.body.acknowledged.sort()).toEqual(['gemini-9-flash', 'gemini-9-pro-preview']);
+    // Lot 85C (décision 02) : un Preview n'est plus annoncé comme modèle utilisable.
+    expect((s.body.newModels as Array<{ model: string }>).map((m) => m.model).sort()).toEqual(['gemini-9-flash']);
+    expect(s.body.banner.title).toBe('Nouveau modèle Gemini disponible');
+    const ack = await acquitter(['gemini-9-flash']);
+    expect(ack.body.acknowledged.sort()).toEqual(['gemini-9-flash']);
     // « Reconnexion » : autre administrateur, modules rechargés — l'état vient de la base.
     const autre = await make.user({ role: 'ADMIN' });
     session.adminId = autre.id;

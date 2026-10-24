@@ -20,8 +20,14 @@
  *       autres. Une dépense comptée d'abord par son justificatif puis reprise
  *       par T3 (composante citant ce justificatif) garde donc la même clé : la
  *       décision survit à la consolidation et aux reconsolidations ;
+ *   s:<source>:<nature>:<montant>:<devise> — lot 85A (O-9) : composante SANS
+ *     justificatif portée par une source reproductible (donnée structurée du
+ *     bien / de l'équipement, élément d'agenda — `tcoSourceIdentity`) : la
+ *     clé survit à la reconstruction des Opérations (O-2) ; `o:` en clé
+ *     secondaire (décisions antérieures) ;
  *   o:<Opération>:<nature>:<montant>:<devise> — composante SANS justificatif
- *     (fiche, saisie, sinistre) : l'Opération est l'identité la plus stable ;
+ *     ni source reproductible (sinistre saisi…) : l'Opération est l'identité
+ *     la plus stable (la reconstruction O-2 CONSERVE ces Opérations) ;
  *   asset:<bien>:acquisitionPrice / equipment:<équipement>:acquisitionPrice —
  *     prix d'achat de la fiche (identifiants stables).
  * Le montant fait partie de la clé : un montant corrigé est un autre fait (la
@@ -30,6 +36,9 @@
  * APPLICATION (priorité sur les règles automatiques, pour CETTE ligne)
  *   · décision appliquée aux lignes dont c'est la clé PRINCIPALE, sinon (aucune)
  *     à celles dont c'est une clé secondaire (transition justificatif → T3) ;
+ *     lot 85A (O-9) : aussi à celles-ci quand aucune ligne de la clé principale
+ *     n'est retenue et qu'une ligne secondaire l'est (le fait a changé de ligne :
+ *     justificatif ou prix de la fiche repris par une Opération) ;
  *   · plusieurs décisions sur une même ligne : la plus récente l'emporte ;
  *   · RETIRER : toute ligne retenue visée sort du total (motif USER_EXCLUDED) ;
  *   · AJOUTER : si le fait est déjà retenu par une ligne visée, rien ne change ;
@@ -74,7 +83,24 @@ export interface TcoLineUserDecision {
 
 const RETENUE = (s: EconomicLineStatus) => s === 'RETAINED_DIRECT' || s === 'RETAINED_CONSOLIDATED';
 
-type KeyLine = Pick<TcoEconomicLine, 'id' | 'source' | 'kind' | 'amountMinor' | 'currency' | 'fileId' | 'sourceFileIds' | 'operationId'>;
+type KeyLine = Pick<TcoEconomicLine, 'id' | 'source' | 'kind' | 'amountMinor' | 'currency' | 'fileId' | 'sourceFileIds' | 'operationId' | 'sourceIdentities'>;
+
+/**
+ * Lot 85A (O-9) — natures de sources non documentaires dont l'identité
+ * survit à la reconstruction des Opérations (O-2) : la donnée structurée du
+ * bien ou de l'équipement (par nature d'Opération) et l'élément d'agenda
+ * (saisie de l'utilisateur) sont des SOURCES conservées (CDC v5 §20.2), l'une
+ * comme l'autre reconsolidées en Opération par T3. Les autres natures
+ * (ancien formulaire Sinistre, arbitrage utilisateur, reprise) appartiennent à
+ * des Opérations que la reconstruction CONSERVE : leur clé `o:` reste valable.
+ */
+export const TCO_STABLE_SOURCE_KINDS: ReadonlySet<string> = new Set(['ASSET_DATA', 'EQUIPMENT_DATA', 'AGENDA']);
+
+/** Identité stable d'une source (pure) : `<nature>:<entité>[:<nature d'Opération>]`, null si non reproductible. */
+export function tcoSourceIdentity(kind: string, entityKey: string, nature: string | null | undefined): string | null {
+  if (!TCO_STABLE_SOURCE_KINDS.has(kind) || !entityKey) return null;
+  return `${kind}:${entityKey}${nature ? `:${nature}` : ''}`;
+}
 
 /** Clés stables d'une ligne : principale et secondaires (pure). */
 export function tcoLineKeys(l: KeyLine): { primary: string; secondary: string[] } {
@@ -84,7 +110,19 @@ export function tcoLineKeys(l: KeyLine): { primary: string; secondary: string[] 
   if (l.source === 'OPERATION') {
     // Provenance lue : SES justificatifs seulement (jamais le justificatif principal d'une autre transaction).
     fichiers = l.sourceFileIds ? [...new Set(l.sourceFileIds)] : l.fileId != null ? [l.fileId] : [];
-    if (!fichiers.length) return { primary: `o:${l.operationId ?? 0}:${fait}`, secondary: [] };
+    if (!fichiers.length) {
+      // Lot 85A (O-9) : composante sans justificatif portée par une source REPRODUCTIBLE (fiche, équipement,
+      // agenda) — clé sur cette source, qui survit à la reconstruction des Opérations ; l'ancienne clé `o:`
+      // reste SECONDAIRE (décisions prises avant ce lot toujours appliquées, jamais perdues).
+      const ids = [...new Set(l.sourceIdentities ?? [])].sort();
+      const legacy = `o:${l.operationId ?? 0}:${fait}`;
+      if (!ids.length) return { primary: legacy, secondary: [] };
+      // Prix d'achat de la fiche repris par T3 (Opération d'acquisition issue de la donnée structurée) : la
+      // décision prise sur la ligne de la fiche (`asset:<bien>:acquisitionPrice`) suit le même fait.
+      const fiche = l.kind === 'REALIZED_COST'
+        ? ids.map((x) => /^ASSET_DATA:(\d+):ACQUISITION$/.exec(x)).filter((m): m is RegExpExecArray => !!m).map((m) => `asset:${m[1]}:acquisitionPrice`) : [];
+      return { primary: `s:${ids[0]}:${fait}`, secondary: [...ids.slice(1).map((x) => `s:${x}:${fait}`), legacy, ...fiche] };
+    }
   } else fichiers = l.fileId != null ? [l.fileId] : [];
   if (!fichiers.length) return { primary: l.id, secondary: [] };
   const principal = l.fileId != null && fichiers.includes(l.fileId) ? l.fileId : [...fichiers].sort((a, b) => a - b)[0];
@@ -180,7 +218,12 @@ export function applyTcoUserDecisions(x: {
   };
   for (const d of ordre) {
     let cibles = (parPrincipale.get(d.key) ?? []).filter((l) => !l.userDecision);
-    if (!cibles.length && !parPrincipale.has(d.key)) cibles = (parSecondaire.get(d.key) ?? []).filter((l) => !l.userDecision);
+    const secondaires = (parSecondaire.get(d.key) ?? []).filter((l) => !l.userDecision);
+    if (!cibles.length && !parPrincipale.has(d.key)) cibles = secondaires;
+    // Lot 85A (O-9) : la ligne de la clé principale existe encore mais ne porte plus le fait (justificatif ou prix de la
+    // fiche repris par une Opération, après consolidation ou reconstruction) — la décision suit le fait, porté par la
+    // ligne retenue qui le cite en clé secondaire (jamais une décision silencieusement inopérante).
+    else if (secondaires.length && !cibles.some((l) => RETENUE(l.status)) && secondaires.some((l) => RETENUE(l.status))) cibles = [...cibles, ...secondaires];
     if (!cibles.length) { if (!parPrincipale.has(d.key) && !parSecondaire.has(d.key)) orphans.push(d); continue; }
     if (d.decision === 'EXCLUDE') {
       for (const l of cibles) {

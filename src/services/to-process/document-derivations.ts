@@ -1014,9 +1014,25 @@ export interface DerivationEvidence {
  * donnée absente). Lot 76 (I) : + échéancier du document et des documents du
  * MÊME contrat (`relatedFiles`, référence exacte), combiné (`combineDerivations`).
  */
-export async function gatherDerivation(accountId: number, fileId: number, target: string, opts: { relatedFiles?: readonly number[] } = {}): Promise<DerivationEvidence | null> {
+/**
+ * Lot 85F — constituants SUPPLÉMENTAIRES du calcul, compris par le traitement
+ * sémantique T3 dans la connaissance T1 persistée (preuves validées par le
+ * serveur). Jamais « fiables » (source distincte de `FACTS`) : ils donnent au
+ * plus un calcul PROBABLE (candidat de pertinence, jamais écrit) et
+ * signalent un échéancier ; le calcul lui-même reste celui-ci.
+ */
+export interface ExtraDerivationFacts {
+  start?: EvidenceFact[];
+  duration?: EvidenceFact[];
+  schedule?: Partial<ScheduleFacts>;
+}
+
+export async function gatherDerivation(
+  accountId: number, fileId: number, target: string, opts: { relatedFiles?: readonly number[]; extra?: ExtraDerivationFacts | null } = {},
+): Promise<DerivationEvidence | null> {
   const spec = derivationFor(target);
   if (!spec) return null;
+  const extra = opts.extra ?? null;
   const [startEvidence, durationEvidence] = await Promise.all([
     gatherFieldEvidence(accountId, fileId, spec.start.key, {
       designation: { keys: spec.start.keys, labelMatch: (l) => labelIsEffectiveStart(l, spec) }, withTitleHint: false,
@@ -1031,7 +1047,7 @@ export async function gatherDerivation(accountId: number, fileId: number, target
   const hint = (f: EvidenceFact) => f.key ?? null;
   // Lot 72 (C1) : dates d'édition / signature / document lues ailleurs — jamais un début effectif.
   const nonStartDates = (startEvidence.contextDates ?? []).filter((c) => NON_START_KEY.test(c.key)).map((c) => c.iso);
-  const classic = computeDerivation(spec, startEvidence.facts, durationEvidence.facts, hint, { nonStartDates });
+  const classic = computeDerivation(spec, [...startEvidence.facts, ...(extra?.start ?? [])], [...durationEvidence.facts, ...(extra?.duration ?? [])], hint, { nonStartDates });
   const echeancier = scheduleDerivationFor(target);
   if (!echeancier) return { result: classic, startEvidence, durationEvidence };
   let lu: Awaited<ReturnType<typeof gatherScheduleFacts>>;
@@ -1040,6 +1056,7 @@ export async function gatherDerivation(accountId: number, fileId: number, target
   } catch (e) {
     throw new Error(`lecture de l'échéancier impossible : ${String((e as Error)?.message ?? e)}`.slice(0, 300));
   }
+  for (const role of ROLES) if (extra?.schedule?.[role]?.length) lu.facts[role].push(...extra.schedule[role]!);
   // Durée FIABLE lue (contrôle de cohérence, déduction de la période) : une seule valeur exacte.
   const analyses = durationEvidence.facts.filter(fiable).map((f) => analyzeDuration(f.value, hint(f))).filter((a) => a.reliable && a.months !== null);
   const mois = [...new Set(analyses.map((a) => a.months!))];

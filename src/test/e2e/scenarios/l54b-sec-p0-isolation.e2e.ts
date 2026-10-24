@@ -27,6 +27,7 @@
 import { beforeAll, expect, it } from 'vitest';
 import { NextRequest } from 'next/server';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { scenario } from '../scenario';
 import { runMigrationSql, type SqlRunner } from '@/db/migration-index';
@@ -35,7 +36,6 @@ import type { Factories } from '../factories';
 type Sql = Parameters<Parameters<typeof scenario>[2]>[0]['sql'];
 
 const ORIGIN = 'http://localhost:3000';
-const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function jeton(user: { id: number; email: string }, accountId: number | null, planType = 'PREMIUM') {
   const { generateAccessToken } = await import('@/lib/jwt');
@@ -84,6 +84,8 @@ async function compte(sql: Sql, make: Factories, m: string) {
   const [evt] = await sql<{ id: number }[]>`
     INSERT INTO events (account_id, user_id, asset_id, categorie, titre, date_evenement)
     VALUES (${acc.id}, ${acc.ownerUserId}, ${bien.id}, 'entretien', ${`${m}-entretien`}, now()) RETURNING id`;
+  // Lot 85D : les routes « events » sont retirées ; l'isolation des sessions se vérifie sur l'Agenda (`GET /api/agenda`).
+  await sql`INSERT INTO agenda_items (account_id, title, start_date) VALUES (${acc.id}, ${`${m}-entretien`}, '2026-10-23')`;
   return { acc, user: { id: acc.ownerUserId, email: owner.email }, bien, equip: equip.id, piece: piece.id, fichier: f.id, photo: photo.id, photoFile: photoFile.id, evt: evt.id };
 }
 
@@ -148,39 +150,27 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
   });
 
   // ── SEC-03 ──────────────────────────────────────────────────────────────
-  it('SEC-03-01 — écriture et changement de propriétaire concurrents : l’écriture attend, puis est refusée sans écriture', async () => {
-    const nu = await make.asset(A.acc, { category: 'IMMOBILIER', name: 'ALPHA-concurrent' });
-    const { POST } = await import('@/app/api/events/route');
-    const tok = await jeton(A.user, A.acc.id);
-    let liberer!: () => void;
-    const portail = new Promise<void>((r) => { liberer = r; });
-    const transfert = sql.begin(async (tx) => {
-      await tx`UPDATE assets SET account_id = ${B.acc.id} WHERE id = ${nu.id}`;
-      await portail;
-    });
-    await pause(150);
-    const ecriture = POST(req(tok, '/api/events', { method: 'POST', body: { title: 'ALPHA-course', categorie: 'entretien', assetId: nu.id } }));
-    await pause(400);
-    liberer();
-    await transfert;
-    const r = await ecriture;
-    expect(r.status).toBe(404);
+  it('SEC-03-01 — plus aucune route d’écriture « events » (lot 85D) ; la garde en base refuse un événement sur le bien d’un autre compte', async () => {
+    // Lot 85D : POST /api/events (seule surface d'écriture concurrente de ce domaine) est retiré.
+    expect(existsSync(join(process.cwd(), 'src/app/api/events'))).toBe(false);
+    await expect(sql`
+      INSERT INTO events (account_id, user_id, asset_id, categorie, titre, date_evenement)
+      VALUES (${A.acc.id}, ${A.user.id}, ${B.bien.id}, 'entretien', 'ALPHA-course', now())`).rejects.toThrow(/CROSS_ACCOUNT/);
     expect(await sql`SELECT id FROM events WHERE titre = 'ALPHA-course'`).toHaveLength(0);
   });
 
   it('SEC-03-02 — ordre inverse : événement validé d’abord, puis changement de propriétaire sans ses données → refusé', async () => {
     const nu = await make.asset(A.acc, { category: 'IMMOBILIER', name: 'ALPHA-concurrent-2' });
-    const { POST } = await import('@/app/api/events/route');
-    const r = await POST(req(await jeton(A.user, A.acc.id), '/api/events', { method: 'POST', body: { title: 'ALPHA-avant', categorie: 'entretien', assetId: nu.id } }));
-    expect(r.status).toBe(201);
+    // Lot 85D : données historiques écrites directement (la route est retirée) — la garde en base reste éprouvée.
+    await sql`INSERT INTO events (account_id, user_id, asset_id, categorie, titre, date_evenement)
+              VALUES (${A.acc.id}, ${A.user.id}, ${nu.id}, 'entretien', 'ALPHA-avant', now())`;
     await expect(sql`UPDATE assets SET account_id = ${B.acc.id} WHERE id = ${nu.id}`).rejects.toThrow(/CROSS_ACCOUNT_LINK/);
     expect((await sql<{ account_id: number }[]>`SELECT account_id FROM assets WHERE id = ${nu.id}`)[0].account_id).toBe(A.acc.id);
   });
 
   it('SEC-03-03 — modification : équipement d’un autre compte refusé, rien écrit (route PUT retirée au lot 84A)', async () => {
-    // Lot 84A (CDC v5 O-10, E25) : PUT /api/events n'avait plus d'appelant — retiré (plus de surface d'écriture).
-    const route = await import('@/app/api/events/route') as Record<string, unknown>;
-    expect(route.PUT).toBeUndefined();
+    // Lot 84A puis 85D (CDC v5 O-10, E25) : PUT puis toute la route /api/events retirés (plus de surface d'écriture).
+    expect(existsSync(join(process.cwd(), 'src/app/api/events/route.ts'))).toBe(false);
     // La garde en base (0373) reste : un rattachement à l'équipement d'un autre compte est refusé, rien n'est écrit.
     await expect(sql`UPDATE events SET equipment_id = ${B.equip} WHERE id = ${A.evt}`).rejects.toThrow(/CROSS_ACCOUNT/);
     expect((await sql<{ titre: string; equipment_id: number | null }[]>`SELECT titre, equipment_id FROM events WHERE id = ${A.evt}`)[0])
@@ -195,9 +185,9 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
     const inv = await AccountService.inviteMember(A.acc.id, membre.user.email, A.user.id);
     expect(inv.success, inv.error).toBe(true);
     expect((await AccountService.acceptInvite(inv.inviteToken!, membre.user.id)).success).toBe(true);
-    const { GET } = await import('@/app/api/events/route');
+    const { GET } = await import('@/app/api/agenda/route');
     const ancien = await jeton(membre.user, A.acc.id);
-    const avant = await GET(req(ancien, '/api/events'));
+    const avant = await GET(req(ancien, '/api/agenda'));
     expect(avant.status).toBe(200);
     expect(await avant.text()).toContain('ALPHA-entretien');
     // Retrait par le titulaire (route réelle).
@@ -207,11 +197,11 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
       { params: Promise.resolve({ accountId: String(A.acc.id), membershipId: String(m.id) }) });
     expect(del.status).toBe(200);
     // Même jeton, encore valide : refusé tout de suite.
-    const apres = await GET(req(ancien, '/api/events'));
+    const apres = await GET(req(ancien, '/api/agenda'));
     expect(apres.status).toBe(401);
     expect(await apres.text()).not.toContain('ALPHA-entretien');
     // Son propre espace reste accessible.
-    const sien = await GET(req(await jeton(membre.user, membre.acc.id), '/api/events'));
+    const sien = await GET(req(await jeton(membre.user, membre.acc.id), '/api/agenda'));
     expect(sien.status).toBe(200);
     expect(await sien.text()).toContain('MEMBRE-entretien');
     // Le renouvellement choisit un compte encore actif (le sien).
@@ -227,19 +217,19 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
     const inv = await AccountService.inviteMember(A.acc.id, membre.user.email, A.user.id);
     expect(inv.success, inv.error).toBe(true);
     await AccountService.acceptInvite(inv.inviteToken!, membre.user.id);
-    const { GET } = await import('@/app/api/events/route');
+    const { GET } = await import('@/app/api/agenda/route');
     // Deux accès : chaque jeton ne voit que SON compte actif.
-    const surA = await (await GET(req(await jeton(membre.user, A.acc.id), '/api/events'))).text();
-    const surSien = await (await GET(req(await jeton(membre.user, membre.acc.id), '/api/events'))).text();
+    const surA = await (await GET(req(await jeton(membre.user, A.acc.id), '/api/agenda'))).text();
+    const surSien = await (await GET(req(await jeton(membre.user, membre.acc.id), '/api/agenda'))).text();
     expect(surA).toContain('ALPHA-entretien');
     expect(surA).not.toContain('PARTANT-entretien');
     expect(surSien).toContain('PARTANT-entretien');
     expect(surSien).not.toContain('ALPHA-entretien');
     const ancien = await jeton(membre.user, A.acc.id);
     expect((await AccountService.leaveAccount(A.acc.id, membre.user.id)).success).toBe(true);
-    expect((await GET(req(ancien, '/api/events'))).status).toBe(401);
+    expect((await GET(req(ancien, '/api/agenda'))).status).toBe(401);
     // Compte étranger jamais rejoint : jeton refusé (jamais d'accès par le seul identifiant).
-    expect((await GET(req(await jeton(membre.user, B.acc.id), '/api/events'))).status).toBe(401);
+    expect((await GET(req(await jeton(membre.user, B.acc.id), '/api/agenda'))).status).toBe(401);
   });
 
   it('SEC-01-03 — Premium Duo (invitation, adhésion, retrait, départ par les routes réelles) : compte PARTAGÉ, révocation effective (lot 72D)', async () => {
@@ -258,14 +248,14 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
     const [{ duo_account_id: duoId }] = await sql<{ duo_account_id: number }[]>`SELECT duo_account_id FROM accounts WHERE id = ${titulaire.acc.id}`;
     const tokT = await jeton(titulaire.user, titulaire.acc.id, 'PREMIUM_DUO');
     const tokM = await jeton(second.user, second.acc.id);
-    const { GET } = await import('@/app/api/events/route');
+    const { GET } = await import('@/app/api/agenda/route');
 
     const cycle = async () => {
       const { POST: inviter } = await import('@/app/api/duo/invitation/route');
       expect((await inviter(req(tokT, '/api/duo/invitation', { method: 'POST', body: { email: second.user.email } }))).status).toBe(200);
       const [d] = await sql<{ t: string }[]>`SELECT pending_invite_token AS t FROM duo_accounts WHERE id = ${duoId}`;
       // Invitation en attente : aucun accès au compte du titulaire.
-      expect((await GET(req(await jeton(second.user, titulaire.acc.id), '/api/events'))).status).toBe(401);
+      expect((await GET(req(await jeton(second.user, titulaire.acc.id), '/api/agenda'))).status).toBe(401);
       const { POST: rejoindre } = await import('@/app/api/duo/join/route');
       const j = await rejoindre(req(tokM, '/api/duo/join', { method: 'POST', body: { token: d.t } }));
       expect(j.status, await j.clone().text()).toBe(200);
@@ -273,26 +263,26 @@ scenario('L54B-SEC', 'SEC-P0-CORR — isolation stricte des comptes', ({ sql, ma
     };
     const surDuo = await cycle();
     // Même compte : le membre voit les données du titulaire ; les siennes restent dans SON espace.
-    const vu = await (await GET(req(surDuo, '/api/events'))).text();
+    const vu = await (await GET(req(surDuo, '/api/agenda'))).text();
     expect(vu).toContain('DUOT-entretien');
     expect(vu).not.toContain('DUOM-entretien');
-    const sien = await (await GET(req(tokM, '/api/events'))).text();
+    const sien = await (await GET(req(tokM, '/api/agenda'))).text();
     expect(sien).toContain('DUOM-entretien');
     expect(sien).not.toContain('DUOT-entretien');
     // Compte étranger (jamais rejoint) : refusé.
-    expect((await GET(req(await jeton(second.user, B.acc.id), '/api/events'))).status).toBe(401);
+    expect((await GET(req(await jeton(second.user, B.acc.id), '/api/agenda'))).status).toBe(401);
     // Retrait par le titulaire : ancien jeton refusé tout de suite.
     const { DELETE } = await import('@/app/api/duo/member/route');
     expect((await DELETE(req(tokT, '/api/duo/member', { method: 'DELETE' }))).status).toBeLessThan(300);
-    expect((await GET(req(surDuo, '/api/events'))).status).toBe(401);
+    expect((await GET(req(surDuo, '/api/agenda'))).status).toBe(401);
     // Nouvelle adhésion puis départ volontaire.
     const surDuo2 = await cycle();
-    expect((await GET(req(surDuo2, '/api/events'))).status).toBe(200);
+    expect((await GET(req(surDuo2, '/api/agenda'))).status).toBe(200);
     const { POST: partir } = await import('@/app/api/duo/leave/route');
     expect((await partir(req(surDuo2, '/api/duo/leave', { method: 'POST', body: {} }))).status).toBeLessThan(300);
-    expect((await GET(req(surDuo2, '/api/events'))).status).toBe(401);
+    expect((await GET(req(surDuo2, '/api/agenda'))).status).toBe(401);
     // Données du compte partagé intactes.
-    expect(await (await GET(req(tokT, '/api/events'))).text()).toContain('DUOT-entretien');
+    expect(await (await GET(req(tokT, '/api/agenda'))).text()).toContain('DUOT-entretien');
   });
 
   // ── SEC-04 ──────────────────────────────────────────────────────────────

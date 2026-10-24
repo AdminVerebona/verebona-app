@@ -115,9 +115,12 @@ export async function proposeAgendaCreation(p: {
  * même clé fonctionnelle vient d'être écrit (réanalyse qui tranche la date,
  * création par un autre chemin). Fermées `OBSOLETE`, pour éviter un doublon
  * si l'utilisateur acceptait ensuite la carte. Rend le nombre de cartes fermées.
+ * Lot 85B : chaque fermeture est TRACÉE (événement OBSOLETE, motif
+ * `AGENDA_ITEM_EXISTS`) — service partagé par l'écriture d'agenda et le
+ * contrôle de cohérence COH-TODO-AGENDA-PROPOSAL-CARDS.
  */
 export async function closeObsoleteAgendaProposals(
-  client: Pick<typeof db, 'update'>, accountId: number, functionalKey: string,
+  client: Pick<typeof db, 'update' | 'insert'>, accountId: number, functionalKey: string,
 ): Promise<number> {
   const now = new Date();
   const rows = await client.update(toProcessActions)
@@ -126,7 +129,13 @@ export async function closeObsoleteAgendaProposals(
       eq(toProcessActions.accountId, accountId), eq(toProcessActions.ruleCode, AGENDA_PROPOSAL_RULE),
       eq(toProcessActions.relationKey, `agenda:${functionalKey}`), isNull(toProcessActions.resolvedAt),
     ))
-    .returning({ id: toProcessActions.id });
+    .returning({ id: toProcessActions.id, targetType: toProcessActions.targetType, targetId: toProcessActions.targetId, relationKey: toProcessActions.relationKey });
+  if (rows.length) {
+    await client.insert(toProcessActionEvents).values(rows.map((a) => ({
+      actionId: a.id, accountId, event: 'OBSOLETE', actorUserId: null, targetType: a.targetType, targetId: a.targetId,
+      fieldKey: a.relationKey, details: { ruleCode: AGENDA_PROPOSAL_RULE, reason: 'AGENDA_ITEM_EXISTS', functionalKey }, createdAt: now,
+    })));
+  }
   return rows.length;
 }
 

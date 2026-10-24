@@ -89,6 +89,11 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     const id = parseInt(rawId, 10);
     if (isNaN(id)) return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
 
+    // Lot 85D : la suppression est une écriture — refusée en lecture seule
+    // (essai échu, impayé, résilié, rétractation), comme `PUT` ci-dessus.
+    const refus = await refuserSiLectureSeule(accountId);
+    if (refus) return refus;
+
     // Lot 46 (O7) : l'auteur est mémorisé avec la suppression d'un événement projeté (F-146).
     await deleteAgendaItem(id, accountId, session.userId ?? null);
     // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).

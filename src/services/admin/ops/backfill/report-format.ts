@@ -16,6 +16,8 @@ import type { AssetAccountBackfillReport } from '@/services/assets/asset-account
 import type { StructuredMigrationReport } from '@/services/business-operations/consolidation/asset-data-consolidator';
 import type { CleanupResult, CleanupRestoreReport } from '@/services/business-operations/claims/legacy-cleanup';
 import type { FinalizeResult } from '@/services/business-operations/claims/legacy-finalize';
+import type { RebuildResult, RebuildRestoreReport } from '@/services/business-operations/rebuild/service';
+import { ACCOUNT_STATUS_LABELS, KEEP_REASON_LABELS, type KeepReason } from '@/services/business-operations/rebuild/model';
 import type { RemediationReport, RemediationRestoreReport } from '@/services/security/cross-account/remediation';
 import type { DataSeparationReport } from '@/services/equipment/data-separation-backfill';
 import type { ValidationRepriseReport } from '@/services/documents/validation-reprise';
@@ -641,6 +643,83 @@ function falseArbitrations(out: RawBackfillOutput): BackfillSummary {
   };
 }
 
+/** Lot 85A (CDC v5 O-2) — purge et reconstruction des Opérations (préproduction). */
+function operationsV5Rebuild(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as RebuildRestoreReport;
+    return {
+      headline: `Restauration de ${r.runId} : ${r.restored.length} compte(s) remis exactement à leur état d’avant, ${r.refused.length} refusé(s).`,
+      scriptRunId: r.restoreRunId,
+      restorable: false,
+      counters: [
+        { label: 'Comptes restaurés', value: r.restored.length },
+        { label: 'Lignes rétablies', value: r.restored.reduce((n, x) => n + x.writes, 0) },
+        { label: 'Comptes refusés (modifiés depuis)', value: r.refused.length },
+      ],
+      ambiguous: { count: 0, samples: [] },
+      conflicts: { count: r.refused.length, samples: echantillon(r.conflicts, (c) => c) },
+      warnings: [],
+    };
+  }
+  const r = out.result as RebuildResult;
+  const sim = r.mode === 'SIMULATE';
+  const n = (k: string) => r.counters[k] ?? 0;
+  const traites = r.accounts.filter((a) => a.plan);
+  const motifs: Partial<Record<KeepReason, number>> = {};
+  for (const a of traites) for (const [k, v] of Object.entries(a.plan!.keptByReason)) motifs[k as KeepReason] = (motifs[k as KeepReason] ?? 0) + (v ?? 0);
+  const ligne = (a: RebuildResult['accounts'][number]) => {
+    const p = a.plan;
+    const base = `Compte ${a.accountId} — ${ACCOUNT_STATUS_LABELS[a.status]}`;
+    if (!p) return base;
+    return `${base} : ${p.operations.active} Opération(s) active(s) avant${a.operations?.after != null ? `, ${a.operations.after} après` : ''} ; `
+      + `${p.purged.length} ${sim ? 'à purger' : 'purgée(s)'}, ${p.kept.length} conservée(s), ${p.projectionsRemoved.length} événement(s) automatique(s) ${sim ? 'à retirer' : 'retiré(s)'}, `
+      + `${p.candidatesRequeued} candidat(s) T1 remis en consolidation${a.steps ? `, M3 ${a.steps.m3.calls} appel(s)` : ''}`
+      + `${a.tco?.differences.length ? ` ; TCO : ${a.tco.differences.join(' ; ')}` : a.tco?.after ? ' ; TCO identique' : ''}`
+      + `${a.signature?.identical === true ? ' ; résultat métier inchangé' : ''}`;
+  };
+  return {
+    headline: `${sim ? 'Simulation' : 'Application'} : ${r.accounts.length} compte(s) examiné(s), ${r.excluded.length} exclu(s) (non actifs) — `
+      + `${n('operationsPurged')} Opération(s) ${sim ? 'à purger' : 'purgée(s)'}, ${n('operationsKept')} conservée(s) (gestes de l’utilisateur)`
+      + `${sim ? '' : ` ; ${n('status_REBUILT')} compte(s) reconstruit(s), ${n('status_PARTIAL')} avec points à reprendre, ${n('status_FAILED')} en échec, `
+        + `${n('status_UP_TO_DATE')} déjà à jour — restaurable par ${r.runId}`}.`,
+    scriptRunId: r.runId,
+    restorable: !sim && (n('status_REBUILT') + n('status_PARTIAL')) > 0,
+    counters: [
+      { label: 'Comptes examinés', value: r.accounts.length },
+      { label: 'Comptes exclus (non actifs ou en lecture seule)', value: r.excluded.length },
+      { label: sim ? 'Comptes à reconstruire' : 'Comptes reconstruits', value: sim ? n('status_PLANNED') : n('status_REBUILT') },
+      ...(sim ? [] : [
+        { label: 'Comptes reconstruits avec points à reprendre', value: n('status_PARTIAL') },
+        { label: 'Comptes en échec (remis à l’état d’avant)', value: n('status_FAILED') },
+      ]),
+      { label: 'Comptes déjà reconstruits et inchangés (rien à faire)', value: n('status_UP_TO_DATE') },
+      { label: 'Comptes reportés (traitement en cours)', value: n('status_BUSY') },
+      { label: sim ? 'Opérations à purger' : 'Opérations purgées', value: n('operationsPurged') },
+      { label: 'Opérations conservées (touchées par l’utilisateur)', value: n('operationsKept') },
+      ...Object.entries(motifs).map(([k, v]) => ({ label: `  dont : ${KEEP_REASON_LABELS[k as KeepReason]}`, value: v ?? 0 })),
+      { label: sim ? 'Événements automatiques à retirer' : 'Événements automatiques retirés', value: n('projectionsRemoved') },
+      { label: 'Candidats T1 remis en consolidation (sans nouvelle analyse)', value: n('candidatesRequeued') },
+      { label: 'Décisions TCO re-clées (aucune perdue)', value: n('tcoDecisionsRekeyed') },
+      ...(sim ? [] : [
+        { label: 'Appels IA de rapprochement (M3)', value: n('m3Calls') },
+        { label: 'Analyses T1 relancées', value: n('t1Calls') },
+        { label: 'Point de restauration', value: r.restorePoint?.backupId ?? '—' },
+        { label: 'Contrôle de cohérence (campagne)', value: r.coherence.campaignId ?? 'non demandé' },
+      ]),
+    ],
+    ambiguous: { count: 0, samples: [] },
+    conflicts: {
+      count: r.accounts.filter((a) => a.status === 'FAILED' || a.status === 'PARTIAL').length,
+      samples: echantillon(r.accounts.filter((a) => a.status === 'FAILED' || a.status === 'PARTIAL'), (a) => `${ligne(a)}${a.warnings.length ? ` — ${a.warnings.slice(0, 3).join(' ; ')}` : ''}`),
+    },
+    warnings: [
+      ...echantillon(r.accounts, ligne),
+      ...r.excluded.slice(0, SAMPLE_LIMIT).map((e) => `Compte ${e.accountId} exclu : ${e.reason}`),
+      'Jamais modifiés : éléments d’agenda saisis ou modifiés, dates choisies, liens manuels, décisions de l’utilisateur, biens retirés, événements supprimés, décisions TCO.',
+    ],
+  };
+}
+
 /** Synthèse lisible d'une exécution terminée (pure). */
 /** Lot 82E — point de restauration (sauvegarde format 2) et restauration de la base. */
 function databaseRestorePoint(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
@@ -709,6 +788,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'duo-shared-account': return duoSharedAccount(action, out);
     case 'agenda-intervention-duplicates': return agendaInterventionDuplicates(action, out);
     case 'to-process-false-arbitrations': return falseArbitrations(out);
+    case 'operations-v5-rebuild': return operationsV5Rebuild(action, out);
   }
 }
 

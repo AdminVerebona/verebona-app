@@ -207,26 +207,20 @@ describe('L84A-U07 — motif « nettoyage incomplet »', () => {
   });
 });
 
-describe('L84A-U08 — routes « events » historiques (E25)', () => {
-  it('routes et composant sans appelant retirés ; ce que « Ajouter un document » appelle existe', async () => {
+describe('L84A-U08 — routes « events » historiques (E25), achevé au lot 85D', () => {
+  it('routes et composant sans appelant retirés ; lot 85D : les dernières routes aussi, « Ajouter un document » passe par l’Agenda', async () => {
     for (const f of ['src/app/api/events/[eventId]/route.ts', 'src/app/api/events/[eventId]/suggestions/route.ts', 'src/app/api/events/agenda/route.ts',
-      'src/app/api/events/prochaines-echeances/route.ts', 'src/components/documents/linked-events-section.tsx']) expect(existsSync(join(ROOT, f)), f).toBe(false);
+      'src/app/api/events/prochaines-echeances/route.ts', 'src/components/documents/linked-events-section.tsx',
+      // Lot 85D : GET / POST /api/events, POST /api/events/[eventId]/documents, /api/documents/[id]/events.
+      'src/app/api/events/route.ts', 'src/app/api/events/[eventId]/documents/route.ts', 'src/app/api/documents/[id]/events/route.ts']) expect(existsSync(join(ROOT, f)), f).toBe(false);
     const PROD = sources();
     expect(PROD.filter((f) => /linked-events-section|LinkedEventsSection/.test(lire(f)))).toEqual([]);
     const dialogue = lire('src/components/documents/unified-document-dialog.tsx');
-    expect(dialogue).toMatch(/fetchDepot\('\/api\/events', jsonPost/);
-    expect(dialogue).toMatch(/apiClient\.get<any>\(`\/api\/events\?assetId=/);
-    expect(dialogue).toMatch(/fetchDepot\(`\/api\/events\/\$\{eventId\}\/documents`, jsonPost/);
-    const liste = sansCommentaires(lire('src/app/api/events/route.ts'));
-    expect(liste).toMatch(/export async function GET/);
-    expect(liste).toMatch(/export async function POST/);
-    expect(liste).not.toMatch(/export async function (PUT|DELETE)/);
-    const docs = sansCommentaires(lire('src/app/api/events/[eventId]/documents/route.ts'));
-    expect(docs).toMatch(/export async function POST/);
-    expect(docs).not.toMatch(/export async function (GET|DELETE)/);
-    // Aucun appel restant vers une méthode / route retirée.
+    expect(dialogue).not.toMatch(/\/api\/events/);
+    expect(dialogue).toMatch(/linkUploadedDocumentsToAgendaItem\(/);
+    // Aucun appel restant vers une route « events » (composants, pages).
     for (const f of PROD.filter((x) => x.startsWith('src/components/') || x.startsWith('src/app/') && !x.startsWith('src/app/api/'))) {
-      expect(lire(f), f).not.toMatch(/\/api\/events\/(prochaines-echeances|agenda)|\/suggestions`|method: '(PUT|DELETE)'[^\n]*\/api\/events/);
+      expect(lire(f), f).not.toMatch(/\/api\/events\b|\/api\/documents\/[^'"`\s]*\/events\b/);
     }
   });
 });

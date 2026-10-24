@@ -37,6 +37,7 @@ import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { isValidEquipmentStatus } from '@/types/domain';
 import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { parseEquipmentFiche } from '@/lib/asset-detail-rules';
 import { parseEquipmentCategory, parseEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
 import { parseEquipmentCents } from '@/lib/equipment-amounts';
@@ -293,6 +294,10 @@ export async function DELETE(
     if (asset.length === 0) {
       return apiError(404, 'NOT_FOUND', 'Asset not found');
     }
+
+    // Lot 85D : retirer un équipement est une écriture — refusée en lecture seule.
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
 
     // Logical archival via raw SQL to avoid ORM type issues
     const now = new Date().toISOString();

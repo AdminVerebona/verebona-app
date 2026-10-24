@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { FileLogger } from '@/lib/file-logger';
 import { ApiErrors } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { accessErrorResponse, sessionErrorToResponse } from '@/lib/auth/session-errors';
 
@@ -111,6 +112,11 @@ export async function DELETE(
 
     if (!accountId) {
       return ApiErrors.unauthorized();
+    }
+    // Lot 85D : supprimer un document est une écriture — refusée en lecture seule.
+    if (!isAdmin) {
+      const refus = await refuserSiLectureSeule(accountId);
+      if (refus) return refus;
     }
 
     // Validate file ID

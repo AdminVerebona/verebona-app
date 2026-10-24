@@ -54,6 +54,9 @@ const req = (url: string, init?: { method?: string; body?: unknown }) => new Nex
 });
 const ctx = <K extends string>(k: K, v: number) => ({ params: Promise.resolve({ [k]: String(v) } as Record<K, string>) });
 const as = (acc: AccountRow, userId = acc.ownerUserId) => { session.userId = userId; session.currentAccountId = acc.id; };
+/** Lot 85D : routes « events » historiques retirées (« Ajouter un document » passe par l'Agenda, 84B). */
+const ROUTES_EVENTS_RETIREES = ['src/app/api/events', 'src/app/api/documents/[id]/events'];
+const liensAgenda = () => import('@/app/api/documents/[id]/agenda-liens/route');
 
 /** Un compte complet : biens, pièce, équipements, documents, fournisseur, événement. */
 async function compte(sql: Sql, make: Factories, nom: string, owner?: Awaited<ReturnType<Factories['user']>>) {
@@ -101,28 +104,22 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
 
   // ── Lectures (AC01) ────────────────────────────────────────────────────────
 
-  it('AC01 — A tente de consulter un événement B : accès refusé (toutes les routes events)', async () => {
-    // Lot 84A (CDC v5 O-10, E25) : routes sans appelant RETIRÉES (plus de surface à protéger).
-    for (const f of ['[eventId]/route.ts', '[eventId]/suggestions/route.ts', 'prochaines-echeances/route.ts', 'agenda/route.ts']) {
-      expect(existsSync(join(process.cwd(), 'src/app/api/events', f)), f).toBe(false);
-    }
+  it('AC01 — A tente de consulter un événement B : accès refusé (routes events retirées, Agenda borné au compte)', async () => {
+    // Lot 84A puis 85D (CDC v5 O-10, E25) : TOUTES les routes « events » sont retirées (plus de surface à protéger).
+    for (const f of ROUTES_EVENTS_RETIREES) expect(existsSync(join(process.cwd(), f)), f).toBe(false);
+    const itemB = await make.agendaItem(B.acc, { title: 'SECRETB-visite', startDate: '2026-03-21' });
     as(A.acc);
-    const list = await import('@/app/api/events/route');
-    expect((await list.GET(req(`/api/events?id=${B.evt}`))).status).toBe(404);
-    const liste = await (await list.GET(req(`/api/events?assetId=${B.bien.id}`))).json();
-    expect(JSON.stringify(liste)).not.toContain('SECRETB');
-    // B voit son événement.
+    const ag = await import('@/app/api/agenda/[id]/route');
+    expect((await ag.GET(req(`/api/agenda/${itemB.id}`), ctx('id', itemB.id))).status).toBe(404);
+    // B voit son élément.
     as(B.acc);
-    expect((await list.GET(req(`/api/events?id=${B.evt}`))).status).toBe(200);
+    expect((await ag.GET(req(`/api/agenda/${itemB.id}`), ctx('id', itemB.id))).status).toBe(200);
   });
 
-  it('AC01 — A tente de consulter les documents d’un événement B : accès refusé', async () => {
+  it('AC01 — A tente de consulter les liens Agenda d’un document B : accès refusé', async () => {
     as(A.acc);
-    const r = await import('@/app/api/events/[eventId]/documents/route');
-    // Lot 84A (O-10, E25) : lecture retirée (aucun appelant) — seul le rattachement (POST) reste.
-    expect((r as Record<string, unknown>).GET).toBeUndefined();
-    const d = await import('@/app/api/documents/[id]/events/route');
-    expect((await d.GET(req(`/api/documents/${B.fichier}/events`), ctx('id', B.fichier))).status).toBe(404);
+    const d = await liensAgenda();
+    expect((await d.GET(req(`/api/documents/${B.fichier}/agenda-liens`), ctx('id', B.fichier))).status).toBe(404);
   });
 
   it('AC01 — A tente de consulter les fournisseurs d’un équipement B : aucune donnée B', async () => {
@@ -141,26 +138,23 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
 
   // ── Écritures et relations (AC02, AC03) ───────────────────────────────────
 
-  it('AC02/AC03 — A tente d’associer un document A à un événement B (et l’inverse) : association refusée, rien d’écrit', async () => {
+  it('AC02/AC03 — A tente d’associer un document A à un élément d’agenda B (et l’inverse) : association refusée, rien d’écrit', async () => {
+    // Lot 85D : le lien Document ↔ Agenda (route du tiroir, 84B) remplace l'association aux « events ».
+    const itemA = await make.agendaItem(A.acc, { title: 'A-visite', startDate: '2026-03-21' });
+    const itemB = await make.agendaItem(B.acc, { title: 'SECRETB-visite2', startDate: '2026-03-21' });
     as(A.acc);
-    const r = await import('@/app/api/events/[eventId]/documents/route');
-    expect((await r.POST(req(`/api/events/${B.evt}/documents`, { method: 'POST', body: { fileIds: [A.fichier] } }), ctx('eventId', B.evt))).status).toBe(404);
-    // Liste mêlant un document A et un document B : refus ENTIER.
-    expect((await r.POST(req(`/api/events/${A.evt}/documents`, { method: 'POST', body: { fileIds: [A.fichier, B.fichier] } }), ctx('eventId', A.evt))).status).toBe(404);
-    const d = await import('@/app/api/documents/[id]/events/route');
-    expect((await d.POST(req(`/api/documents/${A.fichier}/events`, { method: 'POST', body: { eventIds: [B.evt] } }), ctx('id', A.fichier))).status).toBe(404);
-    const lignes = await sql`SELECT 1 FROM event_documents WHERE (event_id = ${B.evt} AND file_id = ${A.fichier}) OR event_id = ${A.evt}`;
+    const d = await liensAgenda();
+    expect((await d.POST(req(`/api/documents/${A.fichier}/agenda-liens`, { method: 'POST', body: { itemId: itemB.id } }), ctx('id', A.fichier))).status).toBe(404);
+    expect((await d.POST(req(`/api/documents/${B.fichier}/agenda-liens`, { method: 'POST', body: { itemId: itemA.id } }), ctx('id', B.fichier))).status).toBe(404);
+    const lignes = await sql`SELECT 1 FROM agenda_file_links WHERE agenda_item_id IN (${itemA.id}, ${itemB.id})`;
     expect(lignes).toHaveLength(0);
+    expect(await sql`SELECT 1 FROM agenda_items WHERE id IN (${itemA.id}, ${itemB.id}) AND business_operation_id IS NOT NULL`).toHaveLength(0);
   });
 
-  it('AC02 — A tente de supprimer une relation appartenant à B : suppression refusée, relation intacte', async () => {
+  it('AC02 — A tente de supprimer une relation appartenant à B : aucune route ne le permet, relation intacte', async () => {
     as(A.acc);
-    const r = await import('@/app/api/events/[eventId]/documents/route');
-    // Lot 84A (O-10, E25) : suppressions par les routes events retirées (aucun appelant).
-    expect((r as Record<string, unknown>).DELETE).toBeUndefined();
-    expect(((await import('@/app/api/events/route')) as Record<string, unknown>).DELETE).toBeUndefined();
-    const d = await import('@/app/api/documents/[id]/events/route');
-    expect((await d.DELETE(req(`/api/documents/${B.fichier}/events?eventId=${B.evt}`, { method: 'DELETE' }), ctx('id', B.fichier))).status).toBe(404);
+    // Lot 84A puis 85D (O-10, E25) : plus aucune route « events » (lecture, rattachement, suppression).
+    for (const f of ROUTES_EVENTS_RETIREES) expect(existsSync(join(process.cwd(), f)), f).toBe(false);
     expect(await sql`SELECT 1 FROM event_documents WHERE event_id = ${B.evt} AND file_id = ${B.fichier}`).toHaveLength(1);
     expect(await sql`SELECT 1 FROM events WHERE id = ${B.evt}`).toHaveLength(1);
   });
@@ -208,10 +202,8 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
       { accountId: A.acc.id, channel: 'T4', validate: false },
     )).rejects.toBeInstanceOf(AgendaOwnershipError);
     expect(await sql`SELECT 1 FROM agenda_items WHERE title = ${titre}`).toHaveLength(0);
-    // Routes historiques : même exigence.
-    const list = await import('@/app/api/events/route');
-    expect((await list.POST(req('/api/events', { method: 'POST', body: { titre, categorie: 'entretien', equipmentId: B.equip } }))).status).toBe(404);
-    expect((await list.POST(req('/api/events', { method: 'POST', body: { titre, categorie: 'entretien', assetId: A.bien.id, equipmentId: A.equip2 } }))).status).toBe(400);
+    // Routes historiques : retirées au lot 85D (plus aucune création d'« events »).
+    expect(existsSync(join(process.cwd(), 'src/app/api/events/route.ts'))).toBe(false);
     expect(await sql`SELECT 1 FROM events WHERE titre = ${titre}`).toHaveLength(0);
   });
 
@@ -267,10 +259,13 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
     const r2 = await es.GET(req(`/api/equipments/${A.equip}/suppliers`), ctx('id', A.equip));
     expect(r2.status).toBe(200);
     expect(await r2.text()).not.toContain('SECRETB');
+    // Lot 85D : `/api/documents/[id]/events` retirée — lecture équivalente par le lien Agenda du document.
     as(B.acc);
-    const de = await import('@/app/api/documents/[id]/events/route');
-    const r3 = await (await de.GET(req(`/api/documents/${B.fichier}/events`), ctx('id', B.fichier))).json();
-    expect(r3.events.map((e: { id: number }) => e.id)).not.toContain(evtA2.id);
+    const de = await liensAgenda();
+    const r3 = await de.GET(req(`/api/documents/${B.fichier}/agenda-liens`), ctx('id', B.fichier));
+    expect(r3.status).toBe(200);
+    // Le lien incorrect (élément A ↔ document B) n'expose jamais l'élément de A à B.
+    expect(((await r3.json()).links as Array<{ itemId: number }>).map((l) => l.itemId)).not.toContain(g.id);
     as(A.acc);
 
     // Agenda (lecture), T2 (assistant), T6 (mascotte).
@@ -438,16 +433,19 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
     const u = await make.user();
     const X = await compte(sql, make, 'X', u);
     const Y = await compte(sql, make, 'SECRETY', u);
-    const one = await import('@/app/api/events/route');
+    // Lot 85D : lecture d'un élément d'agenda et lien Document ↔ Agenda (les routes « events » sont retirées).
+    const one = await import('@/app/api/agenda/[id]/route');
+    const itemX = await make.agendaItem(X.acc, { title: 'X-visite', startDate: '2026-03-21' });
+    const itemY = await make.agendaItem(Y.acc, { title: 'SECRETY-visite', startDate: '2026-03-21' });
     const es = await import('@/app/api/equipments/[id]/suppliers/route');
     await sql`INSERT INTO equipment_suppliers (equipment_id, supplier_id) VALUES (${Y.equip}, ${Y.fourn})`;
     as(X.acc, u.id);
-    expect((await one.GET(req(`/api/events?id=${Y.evt}`))).status).toBe(404);
+    expect((await one.GET(req(`/api/agenda/${itemY.id}`), ctx('id', itemY.id))).status).toBe(404);
     expect((await es.GET(req(`/api/equipments/${Y.equip}/suppliers`), ctx('id', Y.equip))).status).toBe(404);
-    const r = await import('@/app/api/events/[eventId]/documents/route');
-    expect((await r.POST(req(`/api/events/${X.evt}/documents`, { method: 'POST', body: { fileIds: [Y.fichier] } }), ctx('eventId', X.evt))).status).toBe(404);
+    const r = await liensAgenda();
+    expect((await r.POST(req(`/api/documents/${Y.fichier}/agenda-liens`, { method: 'POST', body: { itemId: itemX.id } }), ctx('id', Y.fichier))).status).toBe(404);
     as(Y.acc, u.id);
-    expect((await one.GET(req(`/api/events?id=${Y.evt}`))).status).toBe(200);
+    expect((await one.GET(req(`/api/agenda/${itemY.id}`), ctx('id', itemY.id))).status).toBe(200);
     const sup = await (await es.GET(req(`/api/equipments/${Y.equip}/suppliers`), ctx('id', Y.equip))).json();
     expect(sup.suppliers.map((s: { supplierId: number }) => s.supplierId)).toEqual([Y.fourn]);
   });
@@ -458,12 +456,11 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
     const D = await compte(sql, make, 'DUO', titulaire);
     await sql`INSERT INTO account_memberships (account_id, user_id, role, status) VALUES (${D.acc.id}, ${membre.id}, 'member', 'active')`;
     as(D.acc, membre.id);
-    const evd = await import('@/app/api/events/[eventId]/documents/route');
-    expect((await evd.POST(req(`/api/events/${D.evt}/documents`, { method: 'POST', body: { fileIds: [D.fichier] } }), ctx('eventId', D.evt))).status).toBe(201);
-    const de = await import('@/app/api/documents/[id]/events/route');
-    expect((await (await de.GET(req(`/api/documents/${D.fichier}/events`), ctx('id', D.fichier))).json()).total).toBe(1);
-    expect((await de.DELETE(req(`/api/documents/${D.fichier}/events?eventId=${D.evt}`, { method: 'DELETE' }), ctx('id', D.fichier))).status).toBe(200);
-    expect((await de.POST(req(`/api/documents/${D.fichier}/events`, { method: 'POST', body: { eventIds: [D.evt] } }), ctx('id', D.fichier))).status).toBe(201);
+    // Lot 85D : lien Document ↔ Agenda (route du tiroir) à la place des routes « events » retirées.
+    const itemD = await make.agendaItem(D.acc, { title: 'DUO-visite', startDate: '2026-03-21' });
+    const de = await liensAgenda();
+    expect((await de.POST(req(`/api/documents/${D.fichier}/agenda-liens`, { method: 'POST', body: { itemId: itemD.id } }), ctx('id', D.fichier))).status).toBe(200);
+    expect(await sql`SELECT 1 FROM agenda_file_links WHERE agenda_item_id = ${itemD.id} AND asset_file_id = ${D.fichier}`).toHaveLength(1);
     const es = await import('@/app/api/equipments/[id]/suppliers/route');
     expect((await es.POST(req(`/api/equipments/${D.equip}/suppliers`, { method: 'POST', body: { supplierId: D.fourn } }), ctx('id', D.equip))).status).toBe(201);
     expect((await (await es.GET(req(`/api/equipments/${D.equip}/suppliers`), ctx('id', D.equip))).json()).suppliers).toHaveLength(1);
@@ -473,8 +470,6 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
     const put = await doc.PUT(req(`/api/documents/${D.fichier}`, { method: 'PUT', body: { fileName: 'DUO-facture.pdf', documentType: 'FACTURE', assetId: D.bien.id, substructureId: D.piece, equipmentId: D.equip } }), ctx('id', D.fichier));
     expect(put.status).toBe(200);
     expect((await sql`SELECT substructure_id, equipment_id FROM asset_files WHERE id = ${D.fichier}`)[0]).toEqual({ substructure_id: D.piece, equipment_id: D.equip });
-    const list = await import('@/app/api/events/route');
-    expect((await list.POST(req('/api/events', { method: 'POST', body: { titre: 'DUO-controle', categorie: 'controle', assetId: D.bien.id, equipmentId: D.equip } }))).status).toBe(201);
     const { writeAgendaItem } = await import('@/services/agenda/write-agenda-item');
     const w = await writeAgendaItem(
       { values: { title: 'DUO-echeance', startDate: '2030-02-01' } as never, links: { assetIds: [D.bien.id], equipmentIds: [D.equip], substructureIds: [D.piece], fileIds: [D.fichier] } },
@@ -486,23 +481,24 @@ scenario('L49-SEC', 'SEC-P0 — isolation intercomptes (matrice A/B)', ({ sql, m
 
   it('AC03/AC09 — opérations concurrentes et jobs rejoués : aucune relation intercomptes créée', async () => {
     as(A.acc);
-    const [evt] = await sql<{ id: number }[]>`
-      INSERT INTO events (account_id, user_id, asset_id, categorie, titre, date_evenement)
-      VALUES (${A.acc.id}, ${A.acc.ownerUserId}, ${A.bien.id}, 'entretien', 'A-concurrent', now()) RETURNING id`;
-    const evd = await import('@/app/api/events/[eventId]/documents/route');
+    // Lot 85D : lien Document ↔ Agenda (route du tiroir) à la place des routes « events » retirées.
+    const item = await make.agendaItem(A.acc, { title: 'A-concurrent', startDate: '2026-03-21' });
+    const evd = await liensAgenda();
     const es = await import('@/app/api/equipments/[id]/suppliers/route');
     const res = await Promise.all([
-      ...Array.from({ length: 6 }, () => evd.POST(req(`/api/events/${evt.id}/documents`, { method: 'POST', body: { fileIds: [B.fichier] } }), ctx('eventId', evt.id))),
-      ...Array.from({ length: 3 }, () => evd.POST(req(`/api/events/${evt.id}/documents`, { method: 'POST', body: { fileIds: [A.fichier] } }), ctx('eventId', evt.id))),
+      ...Array.from({ length: 6 }, () => evd.POST(req(`/api/documents/${B.fichier}/agenda-liens`, { method: 'POST', body: { itemId: item.id } }), ctx('id', B.fichier))),
+      ...Array.from({ length: 3 }, () => evd.POST(req(`/api/documents/${A.fichier}/agenda-liens`, { method: 'POST', body: { itemId: item.id } }), ctx('id', A.fichier))),
       ...Array.from({ length: 4 }, () => es.POST(req(`/api/equipments/${A.equip}/suppliers`, { method: 'POST', body: { supplierId: B.fourn } }), ctx('id', A.equip))),
     ]);
     expect(res.slice(0, 6).every((r) => r.status === 404)).toBe(true);
-    expect(res.slice(6, 9).every((r) => r.status === 201)).toBe(true);
+    expect(res.slice(6, 9).every((r) => r.status === 200)).toBe(true);
     expect(res.slice(9).every((r) => r.status === 404)).toBe(true);
     const croisees = await sql`
-      SELECT 1 FROM event_documents ed JOIN events e ON e.id = ed.event_id JOIN asset_files f ON f.id = ed.file_id
-       WHERE ed.event_id = ${evt.id} AND f.account_id <> e.account_id`;
+      SELECT 1 FROM agenda_file_links l JOIN agenda_items i ON i.id = l.agenda_item_id JOIN asset_files f ON f.id = l.asset_file_id
+       WHERE l.agenda_item_id = ${item.id} AND f.account_id <> i.account_id`;
     expect(croisees).toHaveLength(0);
-    expect(await sql`SELECT 1 FROM event_documents WHERE event_id = ${evt.id}`).toHaveLength(1);
+    expect(await sql`SELECT 1 FROM agenda_file_links WHERE agenda_item_id = ${item.id}`).toHaveLength(1);
+    // Un seul regroupement, même sous concurrence (verrou de compte du service de regroupement).
+    expect(await sql`SELECT DISTINCT operation_id FROM business_operation_documents WHERE account_id = ${A.acc.id} AND file_id = ${A.fichier} AND active`).toHaveLength(1);
   });
 });

@@ -17,6 +17,7 @@ import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { setDefaultResponder } from '../replay-gateway';
 import { useTargetState } from '../chain';
+import { useKnowledgeQueryDelivered } from '../knowledge-query';
 
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
@@ -66,6 +67,8 @@ function t4Simule(input: { prompt: string }): unknown {
 
 scenario('L76C-ATP', 'À traiter : défauts résiduels du lot 72C, réévaluation sécurisée (RES-01 à RES-23)', ({ sql, make, useRecordings: rejouer }) => {
   useTargetState({}, { masters: ['T1', 'T4'], t4Responder: null });
+  // Lot 85F : donnée inconnue de TOUTE la connaissance T1 — capacité T3 KNOWLEDGE_QUERY livrée, interprétation sans résultat.
+  useKnowledgeQueryDelivered();
   beforeAll(() => { setDefaultResponder('t4_classify_event', 'CLASSIFY_EVENT', t4Simule); });
   afterAll(() => { setDefaultResponder('t4_classify_event', 'CLASSIFY_EVENT', null); });
   afterEach(async () => {

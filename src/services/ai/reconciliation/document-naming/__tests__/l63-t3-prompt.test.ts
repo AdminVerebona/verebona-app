@@ -44,10 +44,11 @@ describe('L63-T3P — branche DOCUMENT_NAMING du prompt maître T3', () => {
     expect(t).toMatch(/TASK = \{\{TASK\}\}\n\nValeurs autorisées : VALUE_CONFLICT \| LINK_AMBIGUITY \| OPERATION_MATCH \| DOCUMENT_NAMING\n/);
     expect(inspectMasterTemplate(t).branches).toEqual(['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING']);
     expect(t.split(MARQUEUR)).toHaveLength(2);
-    expect(MASTER_TASKS_TEXT_PENDING).toEqual({});
+    // Lot 85F : seule la branche KNOWLEDGE_QUERY (texte attendu de l'équipe IA) reste en attente.
+    expect(MASTER_TASKS_TEXT_PENDING).toEqual({ t3_master_v1: ['KNOWLEDGE_QUERY'] });
     expect(isMasterTaskTextPending('t3_master_v1', 'DOCUMENT_NAMING')).toBe(false);
     // Compatibilité des versions BO antérieures (sans la section) : jamais bloquant.
-    expect(OPTIONAL_MASTER_TASKS.t3_master_v1).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING']);
+    expect(OPTIONAL_MASTER_TASKS.t3_master_v1).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY']);
     expect(listMasterTasks('t3_master_v1')).toContain('DOCUMENT_NAMING');
   });
 
@@ -146,8 +147,11 @@ describe('L63-T3P — branche DOCUMENT_NAMING du prompt maître T3', () => {
   it('L63-T3P-08 — prompts:check sans avertissement ni erreur ; contrôle BO du texte livré sans signalement', () => {
     const r = checkPromptFiles({ operations: Object.values(AI_OPERATIONS), root: join(process.cwd(), 'src/services/ai/prompts') });
     expect(r.errors).toEqual([]);
-    expect(r.warnings).toEqual([]);
-    expect(checkMasterPromptContent('T3', texte())).toMatchObject({ ok: true, blocking: [], warnings: [] });
+    // Lot 85F : seul avertissement attendu — branche KNOWLEDGE_QUERY dont le texte est demandé à l'équipe IA.
+    expect(r.warnings).toEqual([expect.stringMatching(/KNOWLEDGE_QUERY absente du fichier — texte attendu d’un ticket séparé/)]);
+    const bo = checkMasterPromptContent('T3', texte());
+    expect(bo).toMatchObject({ ok: true, blocking: [] });
+    expect(bo.warnings.map((w) => w.message).join(' ')).not.toMatch(/DOCUMENT_NAMING/);
   });
 });
 

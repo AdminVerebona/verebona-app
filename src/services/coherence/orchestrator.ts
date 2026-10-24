@@ -107,6 +107,32 @@ export interface CampaignRow {
   campaignDate: string | null; scope: number[] | null; trigger: string; startedAt: Date; deadlineAt: Date | null;
   cursorAccountId: number; cursorCheckIndex: number; cursorObjectId: number;
   accounts: CampaignAccounts; counters: Record<string, CheckCounters>; metrics: CampaignMetrics;
+  /** Lot 85B (§6.4) : version du registre EN VIGUEUR pour la campagne (mise à jour si le code déployé change). */
+  registryVersion: string;
+  /** Contrôles (identifiant, version) de cette version du registre. */
+  checks: CheckVersion[];
+  /** Lot 85B : contrôle courant du curseur, par identifiant (0704 ; null : fin des contrôles du compte, ou colonne absente). */
+  cursorCheckId: string | null;
+  /** Lot 85B : changements de version de règles constatés en cours de campagne. */
+  rulesChanges: RulesChange[];
+}
+
+export interface CheckVersion { id: string; version: number }
+
+/**
+ * Lot 85B (CDC §6.4, CA-11) — changement de version de règles constaté EN
+ * COURS de campagne (déploiement d'un contrôle nouveau, modifié ou retiré).
+ */
+export interface RulesChange {
+  at: string;
+  phase: 'TRAVERSE' | 'VERIFY' | 'DONE';
+  from: string;
+  to: string;
+  changed: Array<{ id: string; from: number; to: number }>;
+  added: string[];
+  removed: string[];
+  /** Phase de vérification relancée depuis le début (changement constaté pendant la vérification). */
+  verifyRestarted: boolean;
 }
 
 export interface CampaignAccounts {
@@ -135,13 +161,50 @@ export interface CheckCounters {
 
 export interface CampaignMetrics {
   runs: number;
+  /** Temps de calcul cumulé des passages (ms). */
   durationMs: number;
   cpuUserMs: number;
   cpuSystemMs: number;
   rssPeakMb: number;
   aiCalls: number;
   repairsAttempted: number;
+  /** Contrôles d'objets exécutés (un objet repris en vérification compte deux fois). */
   objectsControlled: number;
+  /** Lot 85B (C-Q1) — à la clôture : durée réelle début → fin (ms), objets attendus (vérification), objets restés sans contrôle réussi. */
+  wallClockMs?: number;
+  expectedObjects?: number;
+  remainingObjects?: number;
+}
+
+/**
+ * Lot 85B — diff de deux versions du registre (pure) : contrôles dont la
+ * version a changé, ajoutés, retirés.
+ */
+export function diffRegistryChecks(prev: readonly CheckVersion[], cur: readonly CheckVersion[]): Pick<RulesChange, 'changed' | 'added' | 'removed'> {
+  const avant = new Map(prev.map((c) => [c.id, c.version]));
+  const apres = new Map(cur.map((c) => [c.id, c.version]));
+  return {
+    changed: cur.filter((c) => avant.has(c.id) && avant.get(c.id) !== c.version).map((c) => ({ id: c.id, from: avant.get(c.id)!, to: c.version })),
+    added: cur.filter((c) => !avant.has(c.id)).map((c) => c.id),
+    removed: prev.filter((c) => !apres.has(c.id)).map((c) => c.id),
+  };
+}
+
+/** Lot 85B : curseur positionné APRÈS le dernier contrôle du compte. */
+export const CURSOR_END_OF_CHECKS = '__END__';
+
+/**
+ * Lot 85B — position du curseur dans le registre DÉPLOYÉ (pure). Le contrôle
+ * courant est retrouvé par son identifiant ; `CURSOR_END_OF_CHECKS` → après le
+ * dernier ; identifiant absent (campagne antérieure à 0704) ou contrôle retiré
+ * du registre → même position, bornée (un contrôle sauté en parcours est
+ * rattrapé par la vérification, qui reparcourt tous les contrôles de tous les
+ * comptes).
+ */
+export function realignCheckIndex(checks: readonly { id: string }[], cursorCheckId: string | null | undefined, fallbackIndex: number): number {
+  if (cursorCheckId === CURSOR_END_OF_CHECKS) return checks.length;
+  const i = cursorCheckId ? checks.findIndex((c) => c.id === cursorCheckId) : -1;
+  return i >= 0 ? i : Math.max(0, Math.min(fallbackIndex, checks.length));
 }
 
 /**
@@ -184,7 +247,54 @@ function toCampaign(r: Row): CampaignRow {
     accounts: { visited: 0, skipped: {}, ...json<Partial<CampaignAccounts>>(r.accounts, {}) },
     counters: json<Record<string, CheckCounters>>(r.counters, {}),
     metrics: { ...zeroMetrics(), ...json<Partial<CampaignMetrics>>(r.metrics, {}) },
+    registryVersion: String(r.registry_version ?? ''),
+    checks: json<CheckVersion[]>(r.checks, []),
+    cursorCheckId: (r.cursor_check_id as string | null | undefined) ?? null,
+    rulesChanges: json<RulesChange[]>(r.rules_changes, []),
   };
+}
+
+let colonnes0704: { at: number; ok: boolean } | null = null;
+/** Colonnes du lot 85B (0704) présentes ? (relu au plus toutes les 5 minutes) */
+async function versionColumnsReady(sql: Sql): Promise<boolean> {
+  if (colonnes0704 && Date.now() - colonnes0704.at < 300_000) return colonnes0704.ok;
+  try {
+    const [r] = await rows(sql, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                                          AND table_name = 'coherence_campaigns' AND column_name = 'rules_changes') AS ok`);
+    colonnes0704 = { at: Date.now(), ok: r?.ok === true };
+  } catch { colonnes0704 = { at: Date.now(), ok: false }; }
+  return colonnes0704.ok;
+}
+
+/**
+ * Lot 85B (CDC §6.4, CA-11, CA-12) — une NOUVELLE VERSION de règles déployée
+ * en cours de campagne. Constatée à la reprise (version du registre du code ≠
+ * version de la campagne) :
+ *   · le curseur est repositionné sur le même contrôle, par son identifiant ;
+ *   · le changement est journalisé dans la campagne (`rules_changes`) et la
+ *     campagne adopte la version déployée (`registry_version`, `checks`) ;
+ *   · en parcours : rien d'autre — la vérification n'accepte comme « réussi »
+ *     qu'un contrôle selon la version EN VIGUEUR, donc tout objet contrôlé
+ *     avant le déploiement par une version périmée est recontrôlé ;
+ *   · en vérification : la vérification REPART du début (ses compteurs
+ *     aussi), pour qu'aucun compte déjà vérifié sous l'ancienne version ne
+ *     soit déclaré exhaustif.
+ * Rend vrai si un changement a été constaté.
+ */
+export function adoptDeployedRegistry(c: CampaignRow, checks: readonly CoherenceCheck[], version: string, now: Date): boolean {
+  if (!c.registryVersion || c.registryVersion === version) return false;
+  const cur = checks.map((x) => ({ id: x.id, version: x.version }));
+  const diff = diffRegistryChecks(c.checks, cur);
+  const verifyRestarted = c.phase === 'VERIFY';
+  c.rulesChanges = [...c.rulesChanges, { at: now.toISOString(), phase: c.phase, from: c.registryVersion, to: version, ...diff, verifyRestarted }].slice(-20);
+  c.cursorCheckIndex = realignCheckIndex(checks, c.cursorCheckId, c.cursorCheckIndex);
+  if (verifyRestarted) {
+    c.cursorAccountId = 0; c.cursorCheckIndex = 0; c.cursorObjectId = 0;
+    for (const k of Object.values(c.counters)) { delete k.expected; delete k.missingAtVerify; delete k.remaining; }
+  }
+  c.registryVersion = version;
+  c.checks = cur;
+  return true;
 }
 
 export async function getCampaign(id: number, sql: Sql = pgClient): Promise<CampaignRow | null> {
@@ -279,14 +389,20 @@ async function nextAccount(sql: Sql, c: CampaignRow, after: number): Promise<num
 }
 
 async function saveProgress(sql: Sql, c: CampaignRow, extra: { errorSample?: string | null } = {}): Promise<void> {
-  await exec(sql, 
+  // Lot 85B : contrôle courant aussi par identifiant (repositionnement si le registre déployé change).
+  c.cursorCheckId = activeChecks()[c.cursorCheckIndex]?.id ?? CURSOR_END_OF_CHECKS;
+  await exec(sql,
     `UPDATE coherence_campaigns SET phase = $2, cursor_account_id = $3, cursor_check_index = $4, cursor_object_id = $5,
             accounts = $6::text::jsonb, counters = $7::text::jsonb, metrics = $8::text::jsonb, last_run_at = now(),
-            error_sample = COALESCE($9, error_sample)
+            error_sample = COALESCE($9, error_sample), registry_version = $10, checks = $11::text::jsonb
       WHERE id = $1`,
     [c.id, c.phase, c.cursorAccountId, c.cursorCheckIndex, c.cursorObjectId, JSON.stringify(c.accounts), JSON.stringify(c.counters),
-      JSON.stringify(c.metrics), extra.errorSample ?? null],
+      JSON.stringify(c.metrics), extra.errorSample ?? null, c.registryVersion || registryVersion(), JSON.stringify(c.checks)],
   );
+  if (await versionColumnsReady(sql)) {
+    await exec(sql, `UPDATE coherence_campaigns SET cursor_check_id = $2, rules_changes = $3::text::jsonb WHERE id = $1`,
+      [c.id, c.cursorCheckId, JSON.stringify(c.rulesChanges)]);
+  }
 }
 
 function compter(c: CampaignRow, check: CoherenceCheck, s: BatchSummary, verify: boolean): void {
@@ -347,6 +463,8 @@ export async function runCampaignStep(campaignId: number, o: RunOptions): Promis
   const t0 = Date.now();
   const cpu0 = process.cpuUsage();
   const checks = activeChecks();
+  // Lot 85B (§6.4) : nouvelle version de règles déployée depuis le passage précédent → curseur repositionné, journalisé.
+  if (adoptDeployedRegistry(c, checks, registryVersion(), now)) await saveProgress(sql, c);
   let controlled = 0;
   let errorSample: string | null = null;
   let eligibleAccount: number | null = null;
@@ -400,9 +518,12 @@ export async function runCampaignStep(campaignId: number, o: RunOptions): Promis
       if (c.phase === 'VERIFY') {
         const k = (c.counters[check.id] ??= { controlled: 0, results: {}, durationMs: 0 });
         k.expected = (k.expected ?? 0) + page.length;
+        // Réussi PENDANT la campagne ET selon la version de règles EN VIGUEUR (lot 85B, §6.4 : un contrôle fait
+        // avant le déploiement d'une nouvelle version, même dans cette campagne, ne vaut pas preuve).
         const ok = new Set((await rows(sql, `
-          SELECT object_id FROM coherence_object_proofs WHERE account_id = $1 AND check_id = $2 AND object_id = ANY($3::bigint[]) AND last_success_at >= $4`,
-        [accountId, check.id, page, c.startedAt])).map((x) => Number(x.object_id)));
+          SELECT object_id FROM coherence_object_proofs WHERE account_id = $1 AND check_id = $2 AND object_id = ANY($3::bigint[]) AND last_success_at >= $4
+             AND rules_version = $5`,
+        [accountId, check.id, page, c.startedAt, check.version])).map((x) => Number(x.object_id)));
         cible = page.filter((id) => !ok.has(id));
       }
       if (cible.length) {
@@ -497,12 +618,17 @@ async function finalize(sql: Sql, c: CampaignRow, now: Date, why: 'END' | 'DEADL
   const status: CampaignStatus = why === 'DEADLINE' || restants > 0 ? 'PARTIAL' : 'COMPLETE';
   const remaining = status === 'PARTIAL'
     ? { reason: why === 'DEADLINE' ? 'DEADLINE_REACHED' : 'OBJECTS_STILL_FAILING', phase: c.phase, cursorAccountId: c.cursorAccountId,
-        cursorCheckIndex: c.cursorCheckIndex, cursorObjectId: c.cursorObjectId, failingObjects: restants }
+        cursorCheckIndex: c.cursorCheckIndex, cursorCheckId: activeChecks()[c.cursorCheckIndex]?.id ?? null, cursorObjectId: c.cursorObjectId, failingObjects: restants }
     : null;
-  await exec(sql, 
+  // Lot 85B (C-Q1) : mesures de clôture — durée réelle, objets attendus et restés sans contrôle réussi.
+  c.metrics.wallClockMs = Math.max(0, now.getTime() - c.startedAt.getTime());
+  c.metrics.expectedObjects = why === 'END' ? Object.values(c.counters).reduce((n, k) => n + (k.expected ?? 0), 0) : undefined;
+  c.metrics.remainingObjects = why === 'END' ? restants : undefined;
+  await exec(sql,
     `UPDATE coherence_campaigns SET status = $2, phase = 'DONE', finished_at = $3, coverage = $4::text::jsonb, remaining = $5::text::jsonb,
-            accounts = $6::text::jsonb, counters = $7::text::jsonb, last_run_at = now() WHERE id = $1 AND status = 'RUNNING'`,
-    [c.id, status, now, JSON.stringify(coverage), remaining ? JSON.stringify(remaining) : null, JSON.stringify(c.accounts), JSON.stringify(c.counters)],
+            accounts = $6::text::jsonb, counters = $7::text::jsonb, metrics = $8::text::jsonb, last_run_at = now() WHERE id = $1 AND status = 'RUNNING'`,
+    [c.id, status, now, JSON.stringify(coverage), remaining ? JSON.stringify(remaining) : null, JSON.stringify(c.accounts), JSON.stringify(c.counters),
+      JSON.stringify(c.metrics)],
   );
   c.status = status;
   c.phase = 'DONE';

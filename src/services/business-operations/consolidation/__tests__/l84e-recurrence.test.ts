@@ -177,7 +177,9 @@ describe('L84E-U-LINKS — liens directs (M04 étendu au contrat T1 actuel, anti
 describe('L84E-U-REG — registre de cohérence (C-Q11)', () => {
   it('L84E-U19 — COH-OPS-RECURRING-SERIES actif, en fin de registre ; COH-DOC-LINKS v3 réparé par O-6 ; couverture « operations » mise à jour', async () => {
     const { COHERENCE_REGISTRY, getCheck, activeChecks } = await import('@/services/coherence/registry');
-    expect(COHERENCE_REGISTRY.at(-1)!.id).toBe('COH-OPS-RECURRING-SERIES');
+    // Lot 85B : d'autres contrôles sont ajoutés APRÈS (fin de liste) — la position laissée par 84E est conservée.
+    const ids = COHERENCE_REGISTRY.map((x) => x.id);
+    expect(ids[ids.indexOf('COH-DUO-RELATIONS') + 1]).toBe('COH-OPS-RECURRING-SERIES');
     expect(activeChecks().map((c) => c.id)).toContain('COH-OPS-RECURRING-SERIES');
     const c = getCheck('COH-OPS-RECURRING-SERIES')!;
     expect(c.services).toEqual(expect.arrayContaining(['business-operations/consolidation/targeted#reconsolidateRecurringDocuments']));

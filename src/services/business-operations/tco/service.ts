@@ -27,7 +27,7 @@ import { db } from '@/db';
 import { BusinessOperationReadService, type AssistantOperationRead } from '../read-service';
 import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipmentPrice, type TcoOperation, type TcoResult, type UsageBudget } from './model';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
-import type { TcoUserDecision } from './user-decisions';
+import { TCO_STABLE_SOURCE_KINDS, type TcoUserDecision } from './user-decisions';
 import { civilDateParis, type LedgerComponent } from '../finance/engine';
 import { operationCoverage, type EconomicDocumentInput, type EconomicHint } from '../finance/economic-lines';
 import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asset-state/canonical-asset-view';
@@ -312,6 +312,11 @@ export async function readComponentProvenance(r: Runner, accountId: number, oper
              ARRAY(SELECT DISTINCT s.source_kind FROM business_operation_financial_component_sources cs
                      JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = c.account_id
                     WHERE cs.component_id = c.id AND s.active AND s.source_kind <> 'DOCUMENT') AS other_kinds,
+             -- Lot 85A (O-9) : identités stables des sources non documentaires (même forme que \`tcoSourceIdentity\`).
+             ARRAY(SELECT DISTINCT s.source_kind || ':' || s.source_entity_key || COALESCE(':' || NULLIF(s.locator->>'nature', ''), '')
+                     FROM business_operation_financial_component_sources cs
+                     JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = c.account_id
+                    WHERE cs.component_id = c.id AND s.active AND s.source_kind = ANY(${`{${[...TCO_STABLE_SOURCE_KINDS].join(',')}}`}::text[])) AS other_keys,
              ARRAY(SELECT DISTINCT br.normalized_value FROM business_operation_financial_component_sources cs
                      JOIN business_operation_sources s ON s.id = cs.operation_source_id AND s.account_id = c.account_id AND s.active
                      JOIN business_operation_references br ON br.operation_id = c.operation_id AND br.source_id = s.id AND br.account_id = c.account_id
@@ -341,6 +346,7 @@ export async function readComponentProvenance(r: Runner, accountId: number, oper
         documentFileIds: docs, withdrawnFileIds: liste(c.withdrawn).map(Number).filter((x) => Number.isSafeInteger(x) && !docs.includes(x)),
         otherSourceKinds: liste(c.other_kinds), invoiceRefs: liste(c.invoice_refs), explained: docs.length ? Boolean(c.explained) : null,
         otherAssetAcquisition: Boolean(c.other_asset_price),
+        ...(liste(c.other_keys).length ? { otherSourceKeys: liste(c.other_keys).sort() } : {}),
       });
     }
   }

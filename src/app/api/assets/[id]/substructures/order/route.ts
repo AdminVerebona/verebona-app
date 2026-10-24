@@ -5,6 +5,7 @@ import { assets, substructures } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
 import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 
 export async function PATCH(
   request: NextRequest,
@@ -30,6 +31,10 @@ export async function PATCH(
       .limit(1);
 
     if (!assetRow) return apiError(404, 'NOT_FOUND', 'Asset not found');
+
+    // Lot 85D : écriture refusée en lecture seule (essai échu, impayé, résilié, rétractation).
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
 
     const body = await request.json();
     const order: number[] = body.order;

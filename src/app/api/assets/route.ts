@@ -9,6 +9,7 @@ import { apiError } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { getFeatureFlags, canCreateAsset } from '@/lib/feature-flags';
 import { canCreateAsset as canCreateAssetEntitlement, canModifyAssets } from '@/services/entitlements.service';
+import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { deleteAssetCompletely } from '@/services/assets/asset-deletion.service';
 import { effectiveThumbnailUrl, loadDefaultAssetPhotos } from '@/services/assets/default-asset-photo';
@@ -604,6 +605,10 @@ export async function DELETE(request: NextRequest) {
     if (existingAsset[0].accountId !== session.currentAccountId) {
       return apiError(403, 'FORBIDDEN', 'Access denied');
     }
+    // Lot 85D : supprimer un bien est une écriture — refusée en lecture seule
+    // (le dépassement de quota, lui, laisse supprimer : `canModifyAssets`).
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
 
     const { blobsScheduled, fileIds } = await deleteAssetCompletely(existingAsset[0]);
     // CDC 15 T3-03 : preuves des documents emportés retirées sur les AUTRES
@@ -655,6 +660,9 @@ export async function PATCH(request: NextRequest) {
       .limit(1);
 
     if (!existing) return apiError(404, 'NOT_FOUND', 'Asset not found');
+    // Lot 85D : statut ou nom modifié — refusé en lecture seule.
+    const refus = await refuserSiLectureSeule(session.currentAccountId);
+    if (refus) return refus;
 
     let body: Record<string, unknown>;
     try {

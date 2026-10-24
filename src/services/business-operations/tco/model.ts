@@ -272,6 +272,13 @@ export interface TcoEconomicLine {
   amountUnknown?: boolean;
   /** Lot 78B (§3A) : justificatifs (fichiers) qui portent CETTE composante — jamais ceux d'une autre transaction. */
   sourceFileIds?: number[];
+  /**
+   * Lot 85A (O-9) : identités STABLES des sources non documentaires de la
+   * composante (`s:` — donnée structurée du bien / de l'équipement, élément
+   * d'agenda) : clé de décision d'une composante SANS justificatif, qui
+   * survit à la reconstruction des Opérations (O-2).
+   */
+  sourceIdentities?: string[];
   /** Lot 78B (§3B) : ligne comptée à la place de celle-ci (même somme, autre justificatif, sans preuve de transaction distincte). */
   duplicateOf?: string;
   /** Lot 80A : clé STABLE de la ligne (décision « Ajouter / Retirer du TCO »), voir `tcoLineKeys`. */
@@ -838,6 +845,8 @@ export function computeTco(input: TcoInput): TcoResult {
         relatedFileId: null,
         ...(achatsIncertains.has(op.id) && e.included ? { uncertain: true } : {}),
         ...(p ? { sourceFileIds: [...p.documentFileIds] } : {}),
+        // Lot 85A (O-9) : identités stables des sources non documentaires (clé de décision sans justificatif).
+        ...(p?.otherSourceKeys?.length ? { sourceIdentities: [...p.otherSourceKeys] } : {}),
         ...nonRealisee(e, op),
       };
       if (autresBiens.has(e.componentId)) {

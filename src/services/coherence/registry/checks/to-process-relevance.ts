@@ -51,6 +51,9 @@
  *     ou par le déclencheur de colonne) — reposé par le service des liens
  *     documentaires (`linkDocumentToAsset`, origine USER, même appel que la
  *     résolution). Un retrait ultérieur par l'utilisateur est respecté.
+ *     Lot 85B (version 2) : résolutions « même réalité » (OPERATION-MATCH,
+ *     consolidation du document) et déplacement d'un document vers un autre
+ *     bien (LINK-ASSET-CONFLICT, liens documentaires) ajoutées.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { CheckContext, CoherenceCheck, Inspection, RepairResult } from '../types';
@@ -390,8 +393,32 @@ export const toProcessOrphanCardsCheck: CoherenceCheck = {
 };
 
 // ══ COH-TODO-RESOLUTION-PROPAGATION ═════════════════════════════════════════
+//
+// Lot 85B (version 2) : résolutions dont l'effet est appliqué APRÈS la
+// transaction de la carte (`afterCommit`), donc perdu si ce second temps
+// échoue — en plus du rattachement document → équipement (LINK-ELT, 83E) :
+//   · OPERATION-MATCH  « même réalité » / « autre réalité » : la décision
+//     durable est écrite avec la carte, puis la consolidation du document
+//     l'applique (`afterDecision` → `consolidateDocument`). Non propagée : le
+//     candidat n'est pas rattaché à la réalité choisie (ou l'est encore à une
+//     réalité écartée) alors que la décision est toujours active → même appel
+//     (`consolidateDocument`), sans M3 ni T1 ;
+//   · LINK-ASSET-CONFLICT « déplacer vers B » : la fiche (colonne) est écrite
+//     avec la carte, puis les liens documentaires (`afterMove` : lien PRIMARY
+//     vers B, retrait du lien vers A). Non propagée → mêmes appels du service
+//     des liens, origine USER ; un lien retiré ou reposé par l'utilisateur
+//     depuis la résolution est respecté.
+// Les autres résolutions écrivent leur effet DANS la transaction de la carte
+// (valeur et carte ensemble) ou ne déclenchent après coup que des chaînes déjà
+// contrôlées ailleurs (projection Agenda des Opérations : COH-AGENDA-
+// OPERATION-PROJECTION ; consolidation après un statut d'agenda : invariants
+// O-1) — voir `coverage.ts`.
 
 const LINK_ELT_RULE = 'LINK-ELT';
+const OPERATION_MATCH_RULE = 'OPERATION-MATCH';
+const ASSET_CONFLICT_RULE = 'LINK-ASSET-CONFLICT';
+/** Règles dont la résolution est propagée après la transaction de la carte. */
+export const PROPAGATED_RESOLUTION_RULES = [LINK_ELT_RULE, OPERATION_MATCH_RULE, ASSET_CONFLICT_RULE] as const;
 
 /** Résolutions LINK-ELT (lecture) : équipement choisi, état de la fiche et du lien documentaire. */
 async function resolutionsLinkElt(ctx: CheckContext, accountId: number, ids: readonly number[]): Promise<Map<number, Row>> {
@@ -402,7 +429,7 @@ async function resolutionsLinkElt(ctx: CheckContext, accountId: number, ids: rea
            f.equipment_id AS current_equipment, (f.id IS NOT NULL AND f.deleted_at IS NULL) AS file_alive
       FROM to_process_actions a
       LEFT JOIN asset_files f ON f.id = a.target_id AND f.account_id = a.account_id
-     WHERE a.account_id = $1 AND a.id = ANY($2::int[])`, [accountId, intArray(ids)]);
+     WHERE a.account_id = $1 AND a.id = ANY($2::int[]) AND a.rule_code = $3`, [accountId, intArray(ids), LINK_ELT_RULE]);
   const out = new Map<number, Row>();
   for (const x of r) {
     const chosen = /^\d+$/.test(String(x.chosen ?? '')) ? Number(x.chosen) : null;
@@ -418,78 +445,214 @@ async function resolutionsLinkElt(ctx: CheckContext, accountId: number, ids: rea
   return out;
 }
 
+/** Inspection LINK-ELT (83E, inchangée). */
+function inspectLinkElt(x: Row | undefined): Inspection {
+  if (!x || x.resolution_reason !== 'USER_ARBITRATED' || x.file_alive !== true) return { verdict: 'GONE' };
+  const detail = { rule: LINK_ELT_RULE, fileId: Number(x.file_id), chosenEquipmentId: x.chosen };
+  // Choix illisible, ou changé / retiré depuis par l'utilisateur : son geste fait foi.
+  if (x.chosen === null || Number(x.current_equipment) !== x.chosen || x.removedAfter === true || x.activeLink === true) {
+    return { verdict: 'CONSISTENT', detail };
+  }
+  return {
+    verdict: 'REPAIRABLE', anomaly: 'RESOLUTION_NOT_PROPAGATED', faultyLink: 'LINK',
+    expected: `lien documentaire actif vers l’équipement ${x.chosen}`, observed: 'lien absent', detail,
+    inputHash: hashOf({ id: Number(x.id), chosen: x.chosen, file: x.file_id }),
+  };
+}
+
+/**
+ * Lot 85B — état d'une résolution OPERATION-MATCH (pure) : la décision durable
+ * est-elle appliquée ? `SAME` : le candidat doit être une source active de la
+ * réalité choisie (canonique) ; `DISTINCT` (ou réalités écartées) : il ne doit
+ * plus être source active d'aucune réalité écartée.
+ */
+export function operationMatchPropagation(s: {
+  fileAlive: boolean; candidateActive: boolean; candidatePending: boolean; decisionsActive: boolean;
+  choice: 'SAME' | 'DISTINCT' | null; chosenCanonical: number | null; attachedTo: readonly number[]; rejectedCanonical: readonly number[];
+}): 'GONE' | 'CONSISTENT' | 'NOT_ATTACHED' | 'STILL_ATTACHED_TO_REJECTED' {
+  if (!s.fileAlive || !s.candidateActive || !s.choice) return 'GONE';
+  // Décision annulée depuis, ou consolidation déjà demandée : rien à propager.
+  if (!s.decisionsActive || s.candidatePending) return 'CONSISTENT';
+  if (s.choice === 'SAME' && s.chosenCanonical !== null && !s.attachedTo.includes(s.chosenCanonical)) return 'NOT_ATTACHED';
+  if (s.attachedTo.some((id) => s.rejectedCanonical.includes(id) && id !== s.chosenCanonical)) return 'STILL_ATTACHED_TO_REJECTED';
+  return 'CONSISTENT';
+}
+
+/** Réalité canonique (fusions suivies) — lecture. */
+const CANONICAL_SQL = (col: string) => `(WITH RECURSIVE ch(id, m, d) AS (
+    SELECT o.id, o.merged_into_operation_id, 0 FROM business_operations o WHERE o.id = ${col}
+    UNION ALL SELECT o.id, o.merged_into_operation_id, ch.d + 1 FROM business_operations o JOIN ch ON o.id = ch.m WHERE ch.d < 10)
+  SELECT id FROM ch WHERE m IS NULL LIMIT 1)`;
+
+async function inspectOperationMatch(ctx: CheckContext, accountId: number, id: number): Promise<Inspection> {
+  const [x] = await rows(ctx.sql, `
+    SELECT a.id, a.target_id AS file_id, a.resolution_reason, a.trigger_context->>'candidateKey' AS candidate_key,
+           ev.new_value AS choice, ev.previous_value AS previous,
+           EXISTS (SELECT 1 FROM asset_files f WHERE f.id = a.target_id AND f.account_id = a.account_id AND f.deleted_at IS NULL) AS file_alive
+      FROM to_process_actions a
+      LEFT JOIN LATERAL (SELECT e.new_value, e.previous_value FROM to_process_action_events e
+                          WHERE e.action_id = a.id AND e.event = 'RESOLVED_ARBITRATION' ORDER BY e.id DESC LIMIT 1) ev ON true
+     WHERE a.account_id = $1 AND a.id = $2 AND a.rule_code = $3`, [accountId, id, OPERATION_MATCH_RULE]);
+  if (!x || x.resolution_reason !== 'USER_ARBITRATED') return { verdict: 'GONE' };
+  const choice = (typeof x.choice === 'string' ? JSON.parse(x.choice) : x.choice) as { kind?: string; operationId?: number } | null;
+  const previous = (typeof x.previous === 'string' ? JSON.parse(x.previous) : x.previous) as { decisionIds?: number[] } | null;
+  const fileId = Number(x.file_id);
+  const key = String(x.candidate_key ?? '');
+  const [cand] = await rows(ctx.sql, `
+    SELECT bool_or(status = 'ACTIVE') AS active, bool_or(status = 'ACTIVE' AND t3_pending) AS pending FROM document_operation_candidates
+     WHERE account_id = $1 AND file_id = $2 AND candidate_key = $3`, [accountId, fileId, key]);
+  const decisions = await rows(ctx.sql, `
+    SELECT d.decision, d.active, ${CANONICAL_SQL('d.candidate_operation_id')} AS canonical
+      FROM business_operation_match_decisions d WHERE d.account_id = $1 AND d.id = ANY($2::bigint[])`,
+  [accountId, intArray((previous?.decisionIds ?? []).map(Number))]);
+  const attached = idsOf(await rows(ctx.sql, `
+    SELECT DISTINCT s.operation_id AS id FROM business_operation_sources s JOIN business_operations o ON o.id = s.operation_id
+     WHERE s.account_id = $1 AND s.active AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = $2::text AND s.locator->>'candidateKey' = $3
+       AND o.merged_into_operation_id IS NULL AND o.invalidated_at IS NULL ORDER BY 1`, [accountId, fileId, key]));
+  const kind = choice?.kind === 'SAME' || choice?.kind === 'DISTINCT' ? choice.kind : null;
+  const chosenCanonical = decisions.find((d) => d.decision === 'CONFIRMED' && d.active === true)?.canonical;
+  const etat = operationMatchPropagation({
+    fileAlive: x.file_alive === true, candidateActive: cand?.active === true, candidatePending: cand?.pending === true,
+    decisionsActive: decisions.some((d) => d.active === true), choice: kind,
+    chosenCanonical: chosenCanonical == null ? null : Number(chosenCanonical), attachedTo: attached,
+    rejectedCanonical: decisions.filter((d) => d.decision === 'REJECTED' && d.active === true && d.canonical != null).map((d) => Number(d.canonical)),
+  });
+  const detail = { rule: OPERATION_MATCH_RULE, fileId, candidateKey: key, choice: kind, chosenOperationId: chosenCanonical == null ? null : Number(chosenCanonical), attachedTo: attached };
+  if (etat === 'GONE') return { verdict: 'GONE' };
+  if (etat === 'CONSISTENT') return { verdict: 'CONSISTENT', detail };
+  return {
+    verdict: 'REPAIRABLE', anomaly: 'RESOLUTION_NOT_PROPAGATED', faultyLink: 'T3',
+    expected: kind === 'SAME' ? `document rattaché à la réalité choisie (${detail.chosenOperationId})` : 'document détaché des réalités écartées',
+    observed: { attachedTo: attached, state: etat }, detail,
+    inputHash: hashOf({ id, etat, attached, chosen: detail.chosenOperationId }),
+  };
+}
+
+async function inspectAssetConflictMove(ctx: CheckContext, accountId: number, id: number): Promise<Inspection> {
+  const [x] = await rows(ctx.sql, `
+    SELECT a.id, a.target_id AS file_id, a.resolution_reason, a.resolved_at, (a.trigger_context->>'currentAssetId')::int AS from_asset,
+           ev.new_value->>'choice' AS choice, (ev.new_value->>'assetId')::int AS to_asset,
+           f.asset_id AS current_asset, (f.id IS NOT NULL AND f.deleted_at IS NULL) AS file_alive,
+           EXISTS (SELECT 1 FROM assets b WHERE b.id = (ev.new_value->>'assetId')::int AND b.account_id = a.account_id AND b.deleted_at IS NULL) AS to_alive
+      FROM to_process_actions a
+      LEFT JOIN asset_files f ON f.id = a.target_id AND f.account_id = a.account_id
+      LEFT JOIN LATERAL (SELECT e.new_value FROM to_process_action_events e
+                          WHERE e.action_id = a.id AND e.event = 'RESOLVED_ARBITRATION' ORDER BY e.id DESC LIMIT 1) ev ON true
+     WHERE a.account_id = $1 AND a.id = $2 AND a.rule_code = $3`, [accountId, id, ASSET_CONFLICT_RULE]);
+  if (!x || x.resolution_reason !== 'USER_ARBITRATED' || x.choice !== 'MOVE' || x.file_alive !== true || x.to_asset == null) return { verdict: 'GONE' };
+  const fileId = Number(x.file_id);
+  const to = Number(x.to_asset);
+  const from = x.from_asset == null ? null : Number(x.from_asset);
+  const detail = { rule: ASSET_CONFLICT_RULE, fileId, fromAssetId: from, toAssetId: to };
+  // Le déplacement n'est plus en vigueur sur la fiche (geste ultérieur de l'utilisateur), ou B supprimé : rien à propager.
+  if (Number(x.current_asset) !== to || x.to_alive !== true) return { verdict: 'CONSISTENT', detail };
+  const [l] = await rows(ctx.sql, `
+    SELECT bool_or(asset_id = $2 AND status = 'ACTIVE') AS to_active,
+           bool_or(asset_id = $2 AND status = 'REMOVED' AND removed_at >= $4::timestamptz) AS to_removed_after,
+           bool_or(asset_id = $3 AND status = 'ACTIVE' AND origin IN ('USER', 'AI', 'MIGRATION') AND created_at < $4::timestamptz) AS from_stale,
+           bool_or(asset_id = $3 AND status = 'ACTIVE' AND created_at >= $4::timestamptz) AS from_relinked
+      FROM document_asset_links WHERE file_id = $1 AND equipment_id IS NULL AND substructure_id IS NULL`, [fileId, to, from ?? 0, x.resolved_at]);
+  const linkMissing = l?.to_active !== true && l?.to_removed_after !== true;
+  const staleFromLink = from !== null && l?.from_stale === true && l?.from_relinked !== true;
+  if (!linkMissing && !staleFromLink) return { verdict: 'CONSISTENT', detail };
+  return {
+    verdict: 'REPAIRABLE', anomaly: 'RESOLUTION_NOT_PROPAGATED', faultyLink: 'LINK',
+    expected: `lien PRIMARY vers le bien ${to}${from !== null ? `, plus de lien vers le bien ${from}` : ''}`,
+    observed: { linkToMissing: linkMissing, linkFromStillActive: staleFromLink }, detail: { ...detail, linkMissing, staleFromLink },
+    inputHash: hashOf({ id, to, from, linkMissing, staleFromLink }),
+  };
+}
+
 export const toProcessResolutionPropagationCheck: CoherenceCheck = {
   id: 'COH-TODO-RESOLUTION-PROPAGATION',
-  version: 1,
+  // Lot 85B : version 2 — résolutions « même réalité » et déplacement de document ajoutées (stock réexaminé, §6.4).
+  version: 2,
   status: 'ACTIVE',
-  title: '« À traiter » : résolution appliquée mais non propagée (rattachement document → équipement)',
+  title: '« À traiter » : résolution appliquée mais non propagée (équipement choisi, même réalité, déplacement de document)',
   domain: 'a-traiter',
   level: 'N1',
   objectType: 'to_process_action',
-  scope: 'cartes LINK-ELT résolues par l’utilisateur (choix d’un équipement)',
-  sources: ['to_process_actions', 'to_process_action_events', 'asset_files', 'document_asset_links'],
-  applicability: 'compte éligible ; document vivant ; choix de l’utilisateur toujours en vigueur sur la fiche',
-  invariant: 'le rattachement choisi sur la carte est présent sur la fiche ET dans les liens documentaires (lien actif vers l’équipement choisi)',
+  scope: 'cartes résolues par l’utilisateur dont l’effet est appliqué après la transaction de la carte : LINK-ELT, OPERATION-MATCH, LINK-ASSET-CONFLICT (déplacement)',
+  sources: ['to_process_actions', 'to_process_action_events', 'asset_files', 'document_asset_links', 'document_operation_candidates', 'business_operation_match_decisions', 'business_operation_sources'],
+  applicability: 'compte éligible ; document vivant ; choix de l’utilisateur toujours en vigueur (fiche, décision durable active)',
+  invariant: 'l’effet choisi sur la carte est présent partout où la résolution le propage : lien documentaire vers l’équipement choisi ; rattachement du document à la réalité choisie (aucun à une réalité écartée) ; lien PRIMARY vers le bien de destination, plus de lien vers l’ancien bien',
   anomalies: ['RESOLUTION_NOT_PROPAGATED'],
-  autoRepairWhen: 'choix de l’utilisateur toujours en vigueur sur la fiche, lien absent et jamais retiré depuis par l’utilisateur',
-  forbiddenRepairs: ['reposer un lien retiré par l’utilisateur', 'modifier la fiche', 'rouvrir la carte'],
-  services: ['documents/document-asset-links#linkDocumentToAsset'],
-  chain: ['TO_PROCESS', 'LINK'],
+  autoRepairWhen: 'choix de l’utilisateur toujours en vigueur, effet absent et jamais défait depuis par l’utilisateur : même appel que la résolution',
+  forbiddenRepairs: ['reposer un lien retiré par l’utilisateur', 'modifier la fiche', 'rouvrir la carte', 'écrire une décision de rapprochement', 'appeler l’IA (M3)'],
+  services: [
+    'documents/document-asset-links#linkDocumentToAsset', 'documents/document-asset-links#unlinkDocument',
+    'business-operations/consolidation/consolidator#consolidateDocument',
+  ],
+  chain: ['TO_PROCESS', 'T3', 'LINK'],
   triggers: ['DOCUMENT_UPDATED', 'TO_PROCESS_ITEM_UPDATED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé',
   criticality: 'MEDIUM',
-  tests: ['L83E-E2E-05'],
+  tests: ['L83E-E2E-05', 'L85B-E2E-03', 'L85B-U-FAMILIES'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `
       SELECT a.id FROM to_process_actions a
-       WHERE a.account_id = $1 AND a.rule_code = $2 AND a.resolution_reason = 'USER_ARBITRATED' AND a.id > $3
-       ORDER BY a.id LIMIT $4`, [accountId, LINK_ELT_RULE, afterId, limit]));
+       WHERE a.account_id = $1 AND a.rule_code = ANY($2::text[]) AND a.resolution_reason = 'USER_ARBITRATED' AND a.id > $3
+       ORDER BY a.id LIMIT $4`, [accountId, [...PROPAGATED_RESOLUTION_RULES], afterId, limit]));
   },
 
   async objectsForEvent(ctx, accountId, e) {
     if (e.type === 'TO_PROCESS_ITEM_UPDATED') {
-      // Résolution d'une carte (identifiant public non numérique) : résolutions LINK-ELT des dernières 24 h.
+      // Résolution d'une carte (identifiant public non numérique) : résolutions propagées des dernières 24 h.
       return idsOf(await rows(ctx.sql, `
         SELECT a.id FROM to_process_actions a
-         WHERE a.account_id = $1 AND a.rule_code = $2 AND a.resolution_reason = 'USER_ARBITRATED' AND a.resolved_at >= $3::timestamptz
-         ORDER BY a.id`, [accountId, LINK_ELT_RULE, new Date(ctx.now.getTime() - 86_400_000)]));
+         WHERE a.account_id = $1 AND a.rule_code = ANY($2::text[]) AND a.resolution_reason = 'USER_ARBITRATED' AND a.resolved_at >= $3::timestamptz
+         ORDER BY a.id`, [accountId, [...PROPAGATED_RESOLUTION_RULES], new Date(ctx.now.getTime() - 86_400_000)]));
     }
     if (e.entityId == null) return [];
     return idsOf(await rows(ctx.sql, `
       SELECT a.id FROM to_process_actions a
-       WHERE a.account_id = $1 AND a.rule_code = $2 AND a.resolution_reason = 'USER_ARBITRATED' AND a.target_type = 'DOCUMENT' AND a.target_id = $3
-       ORDER BY a.id`, [accountId, LINK_ELT_RULE, e.entityId]));
+       WHERE a.account_id = $1 AND a.rule_code = ANY($2::text[]) AND a.resolution_reason = 'USER_ARBITRATED' AND a.target_type = 'DOCUMENT' AND a.target_id = $3
+       ORDER BY a.id`, [accountId, [...PROPAGATED_RESOLUTION_RULES], e.entityId]));
   },
 
   async inspect(ctx, accountId, ids) {
     const out = new Map<number, Inspection>();
-    const parId = await resolutionsLinkElt(ctx, accountId, ids);
+    const regles = new Map((await rows(ctx.sql, `SELECT id, rule_code FROM to_process_actions WHERE account_id = $1 AND id = ANY($2::int[])`,
+      [accountId, intArray(ids)])).map((x) => [Number(x.id), String(x.rule_code)]));
+    const linkElt = await resolutionsLinkElt(ctx, accountId, ids.filter((id) => regles.get(id) === LINK_ELT_RULE));
     for (const id of ids) {
-      const x = parId.get(id);
-      if (!x || x.resolution_reason !== 'USER_ARBITRATED' || x.file_alive !== true) { out.set(id, { verdict: 'GONE' }); continue; }
-      const detail = { fileId: Number(x.file_id), chosenEquipmentId: x.chosen };
-      // Choix illisible, ou changé / retiré depuis par l'utilisateur : son geste fait foi.
-      if (x.chosen === null || Number(x.current_equipment) !== x.chosen || x.removedAfter === true || x.activeLink === true) {
-        out.set(id, { verdict: 'CONSISTENT', detail });
-        continue;
-      }
-      out.set(id, {
-        verdict: 'REPAIRABLE', anomaly: 'RESOLUTION_NOT_PROPAGATED', faultyLink: 'LINK',
-        expected: `lien documentaire actif vers l’équipement ${x.chosen}`, observed: 'lien absent', detail,
-        inputHash: hashOf({ id, chosen: x.chosen, file: x.file_id }),
-      });
+      const regle = regles.get(id);
+      if (regle === LINK_ELT_RULE) out.set(id, inspectLinkElt(linkElt.get(id)));
+      else if (regle === OPERATION_MATCH_RULE) out.set(id, await inspectOperationMatch(ctx, accountId, id));
+      else if (regle === ASSET_CONFLICT_RULE) out.set(id, await inspectAssetConflictMove(ctx, accountId, id));
+      else out.set(id, { verdict: 'GONE' });
     }
     return out;
   },
 
-  async repair(_ctx, accountId, items) {
+  async repair(ctx, accountId, items) {
     const out = new Map<number, RepairResult>();
-    const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links/document-asset-links.service');
+    const liens = await import('@/services/documents/document-asset-links/document-asset-links.service');
     for (const { id, inspection } of items) {
-      const d = inspection.detail as { fileId: number; chosenEquipmentId: number };
-      // Même appel que la propagation de la résolution (`DOCUMENT_ELEMENT_WRITER.afterCommit`).
-      const r = await linkDocumentToAsset({ accountId, fileId: d.fileId, target: { equipmentId: d.chosenEquipmentId }, role: 'SECONDARY', origin: 'USER' });
+      const d = inspection.detail as { rule?: string; fileId: number; chosenEquipmentId?: number; fromAssetId?: number | null; toAssetId?: number; linkMissing?: boolean; staleFromLink?: boolean };
+      if (d.rule === OPERATION_MATCH_RULE) {
+        // Même appel que la propagation de la résolution (`afterDecision`).
+        const { consolidateDocument } = await import('@/services/business-operations/consolidation/consolidator');
+        const r = await consolidateDocument(accountId, d.fileId, { today: ctx.today, correlationId: ctx.correlationId });
+        if (r.error) throw new Error(`consolidation du document ${d.fileId} en erreur : ${r.error}`);
+        out.set(id, { called: true, service: 'consolidateDocument', aiCalls: 0, result: { outcomes: r.outcomes, changes: r.changes, operations: r.operations.slice(0, 20) },
+          rollbackRef: `business_operation_history:correlation=${ctx.correlationId}` });
+        continue;
+      }
+      if (d.rule === ASSET_CONFLICT_RULE) {
+        // Mêmes appels que `afterMove` (service des liens, origine USER).
+        let removed = 0;
+        if (d.staleFromLink && d.fromAssetId) {
+          removed = await liens.unlinkDocument({ accountId, fileId: d.fileId, target: { assetId: d.fromAssetId }, origins: ['USER', 'AI', 'MIGRATION'] });
+        }
+        const r = d.linkMissing ? await liens.linkDocumentToAsset({ accountId, fileId: d.fileId, target: { assetId: d.toAssetId! }, role: 'PRIMARY', origin: 'USER' }) : null;
+        out.set(id, { called: true, service: 'linkDocumentToAsset', aiCalls: 0, result: { removed, outcome: r?.outcome ?? null, linkId: r?.link?.id ?? null },
+          rollbackRef: r?.link?.id ? `document_asset_links:id=${r.link.id}` : `document_asset_links:file_id=${d.fileId}` });
+        continue;
+      }
+      // LINK-ELT : même appel que la propagation de la résolution (`DOCUMENT_ELEMENT_WRITER.afterCommit`).
+      const r = await liens.linkDocumentToAsset({ accountId, fileId: d.fileId, target: { equipmentId: d.chosenEquipmentId! }, role: 'SECONDARY', origin: 'USER' });
       out.set(id, { called: true, service: 'linkDocumentToAsset', aiCalls: 0, result: { outcome: r.outcome, linkId: r.link?.id ?? null }, rollbackRef: r.link?.id ? `document_asset_links:id=${r.link.id}` : null });
     }
     return out;

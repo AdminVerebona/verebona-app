@@ -7,7 +7,10 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('@/db', () => ({ pgClient: { unsafe: vi.fn(async () => []) } }));
 
 const Q = await import('../model-qualification.service');
+const { effectiveCapabilities } = await import('../model-capabilities');
 type Input = Parameters<Parameters<typeof Q.qualifyModel>[1]>[0];
+/** Lot 85C : fiche « niveaux » injectée (les épreuves la lisent, jamais le nom du modèle). */
+const AVEC_NIVEAUX = (model: string) => ({ ...effectiveCapabilities(model, null), thinking: { mode: 'level' as const, levels: ['low', 'high'], map: { minimal: 'low', 'étendu': 'high' } } });
 
 /** Fournisseur simulé : chaque épreuve reconnue par sa forme d'appel. */
 function fournisseur(over: Partial<Record<'generate' | 'structured' | 'multimodal' | 'thinking', (i: Input) => string | Error>> = {}) {
@@ -25,7 +28,7 @@ function fournisseur(over: Partial<Record<'generate' | 'structured' | 'multimoda
 describe('CAT-03 — épreuves de qualification', () => {
   it('modèle compatible : génération, schéma JSON, multimodal et raisonnement qualifiés', async () => {
     const f = fournisseur();
-    const r = await Q.qualifyModel('gemini-9-flash', f.call, { supportsThinking: true, thinkingConfigured: () => true });
+    const r = await Q.qualifyModel('gemini-9-flash', f.call, { supportsThinking: true, capabilities: AVEC_NIVEAUX('gemini-9-flash') });
     // Lot 49 : l'issue classée de la génération accompagne le résultat (état opérationnel).
     expect(r).toEqual({ generate: true, structured: true, multimodal: true, thinking: true, errors: {}, generateOutcome: { status: 'ok' } });
     // Schéma JSON imposé (structured output) et image synthétique en entrée.
@@ -42,7 +45,7 @@ describe('CAT-03 — épreuves de qualification', () => {
   });
 
   it('entrée image refusée (400) : multimodal = false, le reste qualifié', async () => {
-    const r = await Q.qualifyModel('m', fournisseur({ multimodal: () => new Error('400 INVALID_ARGUMENT image input not supported') }).call, { thinkingConfigured: () => true });
+    const r = await Q.qualifyModel('m', fournisseur({ multimodal: () => new Error('400 INVALID_ARGUMENT image input not supported') }).call, { capabilities: AVEC_NIVEAUX('m') });
     expect(r).toMatchObject({ generate: true, structured: true, multimodal: false, thinking: true });
     expect(r.errors.multimodal).toMatch(/400/);
   });
@@ -64,12 +67,14 @@ describe('CAT-03 — épreuves de qualification', () => {
     expect(r).toMatchObject({ generate: true, structured: null });
   });
 
-  it('raisonnement : refusé par le catalogue Google → false sans appel ; famille sans réglage connu → déclaration Google', async () => {
+  it('raisonnement : refusé par le catalogue Google → false sans appel ; réglage non documenté → non concluant (lot 85C : rien d’inventé)', async () => {
     const f = fournisseur();
     expect((await Q.qualifyModel('m', f.call, { supportsThinking: false })).thinking).toBe(false);
     expect(f.appels.some((a) => a.reasoning === 'étendu')).toBe(false);
-    expect((await Q.qualifyModel('m', fournisseur().call, { supportsThinking: true, thinkingConfigured: () => false })).thinking).toBe(true);
-    expect((await Q.qualifyModel('m', fournisseur().call, { supportsThinking: null, thinkingConfigured: () => false })).thinking).toBeNull();
+    const g = fournisseur();
+    expect((await Q.qualifyModel('m', g.call, { supportsThinking: true })).thinking).toBeNull();
+    expect(g.appels.some((a) => a.reasoning === 'étendu')).toBe(false);
+    expect((await Q.qualifyModel('m', fournisseur().call, { supportsThinking: null })).thinking).toBeNull();
   });
 
   it('la clé n’apparaît jamais dans les erreurs conservées', async () => {
@@ -77,7 +82,7 @@ describe('CAT-03 — épreuves de qualification', () => {
     expect(r.errors.multimodal).not.toContain('cle-secrete-123');
   });
 
-  it('requalification : jamais qualifié, version changée, échec > 7 j, succès > 30 j', () => {
+  it('requalification (lot 85C, QUAL-06) : jamais qualifié, version changée ou événement — jamais par ancienneté', () => {
     const now = new Date('2026-10-10T00:00:00Z');
     const q = (over: Partial<import('../model-qualification.service').StoredQualification>) => ({
       generate: true, structured: true, multimodal: true, thinking: null, errors: {}, qualifiedAt: '2026-10-05T00:00:00Z', version: Q.QUALIFICATION_VERSION, ...over,
@@ -85,7 +90,10 @@ describe('CAT-03 — épreuves de qualification', () => {
     expect(Q.needsQualification(undefined, now)).toBe(true);
     expect(Q.needsQualification(q({}), now)).toBe(false);
     expect(Q.needsQualification(q({ version: 'qualif-v0' }), now)).toBe(true);
-    expect(Q.needsQualification(q({ structured: false, qualifiedAt: '2026-10-01T00:00:00Z' }), now)).toBe(true);
-    expect(Q.needsQualification(q({ qualifiedAt: '2026-09-01T00:00:00Z' }), now)).toBe(true);
+    // Ancienneté seule : plus de requalification (anciens critères 7 / 30 jours retirés).
+    expect(Q.needsQualification(q({ structured: false, qualifiedAt: '2026-10-01T00:00:00Z' }), now)).toBe(false);
+    expect(Q.needsQualification(q({ qualifiedAt: '2025-09-01T00:00:00Z' }), now)).toBe(false);
+    // Événement : capacités modifiées.
+    expect(Q.needsQualification(q({ requalificationRequiredAt: '2026-10-09T00:00:00Z' }), now)).toBe(true);
   });
 });

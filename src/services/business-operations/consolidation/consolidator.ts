@@ -65,7 +65,7 @@ import { applyCurrencyChoices, type AmountChoice, type CurrencyChoice, type Side
 import { OPERATION_MATCH_MAX_CANDIDATES, m3Resolution, type OperationMatchVerdict } from '@/services/ai/reconciliation/master/operation-match';
 import { emptyCardNeeds, type OperationCardNeeds } from './card-needs';
 import { operationMatchContext, type StoredM3 } from './m3-context';
-import { applyStructuredAuthority, assetDataContribution, type AssetDataRow } from './asset-data';
+import { applyStructuredAuthority, assetDataContribution, isEnrichmentOnly, type AssetDataRow } from './asset-data';
 import { agendaContribution, applyAgendaAuthority } from './agenda-source';
 import { loadAgendaSourceItem } from './agenda-source-read';
 import { applyAssetExclusions, exclusionsTableReady, loadActiveExclusions } from './asset-exclusions';
@@ -645,12 +645,21 @@ export async function reconsolidateOperation(
     operationId, operationType: op.typeCode, today,
     otherSupport: sources.some((x) => x.kind !== 'AGENDA' && x.decision === null),
   };
-  const contributions: SourceContribution[] = [];
+  let contributions: SourceContribution[] = [];
   for (const s of sources.filter((x) => x.managed)) {
     const c = await contributionOf(tx, accountId, s, agendaCtx);
     if (c && 'identity' in c) contributions.push(c);
     else changes.track(await repo.deactivateSource(s.id, withdrawReason(s.kind, c && 'withdrawn' in c ? c.withdrawn : undefined)));
   }
+  // Lot 85E (ticket PO P1) : une date d'acquisition AUTOMATIQUE de la fiche
+  // enrichit une Opération que d'autres sources prouvent — seule, elle ne la
+  // maintient jamais (une valeur automatique ne crée ni ne prouve rien, C2).
+  if (contributions.length && contributions.every(isEnrichmentOnly)) {
+    for (const c of contributions) changes.track(await repo.deactivateSource(c.sourceId, 'ASSET_DATA_ENRICHMENT_ONLY'));
+    contributions = [];
+  }
+  // Preuves de l'état consolidé (existence, statut, dates, montants, cibles) : hors enrichissement seul.
+  const probantes = contributions.filter((c) => !isEnrichmentOnly(c));
   // Une décision utilisateur n'est ni une preuve gérée ni un soutien d'existence.
   const unmanaged = sources.filter((s) => !s.managed && s.decision === null).length;
   const activeIds = new Set(contributions.map((c) => c.sourceId));
@@ -694,7 +703,7 @@ export async function reconsolidateOperation(
   // en CONTRACT (lot 83D : plus de hiérarchie parent / enfant pour l'empêcher).
   const requalifiable = op.typeCode === null || op.typeCode === 'OTHER' || op.typeCode === 'INTERVENTION';
   const state = applyAgendaAuthority(
-    applyStructuredAuthority(consolidateOperationState(op.typeCode, contributions, today, amountChoices, { recurringRequalification: requalifiable }), contributions), contributions,
+    applyStructuredAuthority(consolidateOperationState(op.typeCode, probantes, today, amountChoices, { recurringRequalification: requalifiable }), contributions, today), probantes,
     agendaCtx.otherSupport);
   state.components = applyCurrencyChoices(state.components, currencyChoices);
   const fullyManaged = unmanaged === 0;

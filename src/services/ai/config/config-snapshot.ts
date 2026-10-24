@@ -23,6 +23,7 @@ import {
   REASONING_LEVELS, masterPromptOf, type TreatmentConfig, type ReasoningLevel,
 } from './config-types';
 import type { MasterExecutionConfig } from '../master-prompts/structured-context';
+import { normalizeOperationProfiles } from './operation-profiles';
 
 export const SNAPSHOT_FORMAT = 'ai-config-snapshot-v1' as const;
 
@@ -77,7 +78,15 @@ export function snapshotEntry(raw: Partial<TreatmentConfig> & { treatment: Treat
     // Lot 16b : `master` pour tous les traitements.
     promptArchitecture: 'master',
     masterPrompt: masterPromptOf(raw),
+    // Lot 85C : profils par opération — présents seulement s'ils existent,
+    // pour que l'empreinte des révisions antérieures reste inchangée.
+    ...profilesOf(raw.operationProfiles),
   };
+}
+
+function profilesOf(raw: unknown): Pick<TreatmentConfig, 'operationProfiles'> {
+  const p = normalizeOperationProfiles(raw);
+  return Object.keys(p).length ? { operationProfiles: p } : {};
 }
 
 function normalizeRef(raw: unknown): MasterPromptRef | null {

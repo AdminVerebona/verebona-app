@@ -3,7 +3,8 @@
  * « [P1] T3 / À traiter — Corriger les faux arbitrages entre valeurs
  * identiques »), sur PostgreSQL 16 réel : chemin complet T3 → « À traiter »,
  * cycle de vie des cartes, contrôle de création, rattrapage des cartes
- * existantes (campagne automatique et BO), traçabilité.
+ * existantes (contrôle de cohérence COH-TODO-T3-FIELD-CARDS — lot 85B : il
+ * remplace la campagne automatique 81A — et rattrapage BO), traçabilité.
  *
  * Aucun appel modèle (moteur appelé sans revue IA). Assertions limitées aux
  * comptes créés ici.
@@ -11,6 +12,7 @@
 import { beforeAll, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import type { AccountRow } from '../factories';
+import { proofOf, runCoherenceFor } from '../coherence-run';
 
 vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
   ...(await o<object>()), emitBusinessEvent: async () => {}, emitBusinessEvents: async () => {},
@@ -167,8 +169,9 @@ scenario('L81A', 'À traiter — faux arbitrages entre valeurs identiques', ({ s
     expect(it.initial?.registryReason).toBe('NO_AUTHORITY_RULE');
     expect((await cartes(m))[0].resolved_at).toBeNull();
 
-    // Campagne automatique (tâche planifiée) : bornée, reprise par curseur.
-    await reprise.runArbitrationRepriseCampaign({ deadline: Date.now() + 60_000, limit: 1_000, code: `l81a-e2e-05-${c.id}` });
+    // Lot 85B : rattrapage automatique = contrôle de cohérence COH-TODO-T3-FIELD-CARDS (même réexamen 81A), campagne corrective.
+    await runCoherenceFor(sql, [c.id]);
+    expect(await proofOf(sql, c.id, 'COH-TODO-T3-FIELD-CARDS', id)).toMatchObject({ last_result: 'REPAIRED' });
     const [carte] = await cartes(m);
     expect(carte.id).toBe(id);
     expect(carte.resolution_reason).toBe('OBSOLETE');
@@ -217,23 +220,21 @@ scenario('L81A', 'À traiter — faux arbitrages entre valeurs identiques', ({ s
     expect(encore.counters.suspects).toBe(0);
   });
 
-  it('L81A-E2E-07 — campagne : état visible (0626), terminée puis inerte ; vraie carte jamais touchée', async () => {
+  it('L81A-E2E-07 — contrôle de cohérence (lot 85B, remplace la campagne 81A) : vraie carte jamais touchée ; second passage sans effet', async () => {
     const c = await make.account({ plan: 'premium' });
     const m = await maison(c, KC_MAISON, '2021-05-06');
     await preuve(c, m, await fichier(c, m, 'FACTURE'), 'acquisitionDate', '2005-02-17', { documentType: 'ACTE_AUTHENTIQUE' });
     await t3(c, m);
     const [vraie] = (await cartes(m)).filter((x) => x.resolved_at === null);
     expect(vraie.proposals_json.filter((p) => !p.isCurrentValue).map((p) => p.value)).toEqual(['2005-02-17']);
-    const code = `l81a-e2e-07-${c.id}`;
-    const r1 = await reprise.runArbitrationRepriseCampaign({ deadline: Date.now() + 60_000, limit: 10_000, code });
-    expect(r1.done).toBe(true);
-    const etat = await reprise.readArbitrationRepriseState(code);
-    expect(etat).toMatchObject({ status: 'DONE' });
-    expect(Number(etat!.runs)).toBe(1);
-    const r2 = await reprise.runArbitrationRepriseCampaign({ deadline: Date.now() + 60_000, code });
-    expect(r2.counters.scanned).toBe(0);
+    const r1 = await runCoherenceFor(sql, [c.id]);
+    expect(r1.status).toBe('COMPLETE');
+    expect(await proofOf(sql, c.id, 'COH-TODO-T3-FIELD-CARDS', vraie.id)).toMatchObject({ last_result: 'CONSISTENT' });
+    const r2 = await runCoherenceFor(sql, [c.id]);
+    expect(r2.results['COH-TODO-T3-FIELD-CARDS']).toEqual({ CONSISTENT: 1 });
     const [apres] = await cartes(m);
     expect(apres).toMatchObject({ id: vraie.id, resolved_at: null });
     expect(apres.proposals_json).toEqual(vraie.proposals_json);
+    expect(await sql`SELECT 1 FROM coherence_repairs WHERE account_id = ${c.id}`).toEqual([]);
   });
 });

@@ -25,7 +25,11 @@
  *        déclarée à la main ;
  *     C. exclusion explicite Verebona (registre d'exceptions `models.ts` :
  *        interdit, exception documentée, déprécié / date de retrait) ;
- *     D. statut fournisseur EXPERIMENTAL → exclu (V1) ; PREVIEW → informatif ;
+ *     D. statut fournisseur EXPERIMENTAL → exclu (V1) ; lot 85C (décision
+ *        PO 02, CAT-02, R69) : PREVIEW → exclu de toute qualification,
+ *        sélection et exécution nouvelle, VISIBLE au catalogue pour
+ *        information (une valeur déjà enregistrée reste affichée, signalée
+ *        « à régulariser », sans bascule silencieuse) ;
  *     E. pas explicitement non opérationnel avec la clé active.
  *   TARIFICATION : informative seulement (`priced`). Un modèle sans tarif
  *   connu (UNKNOWN) reste utilisable — NOT_PRICED n'existe plus.
@@ -55,6 +59,7 @@ export type UnusableReason =
   | 'NO_GENERATE_CONTENT'
   | 'NOT_VERIFIED'
   | 'EXPERIMENTAL'
+  | 'PREVIEW'
   | 'FORBIDDEN'
   | 'EXCLUDED'
   | 'NOT_QUALIFIED'
@@ -71,6 +76,7 @@ export const UNUSABLE_REASON_LABELS: Readonly<Record<UnusableReason, string>> = 
   NO_GENERATE_CONTENT: 'génération non prise en charge',
   NOT_VERIFIED: 'disponibilité jamais vérifiée (actualisez le catalogue fournisseur)',
   EXPERIMENTAL: 'modèle expérimental (non sélectionnable)',
+  PREVIEW: 'modèle Preview (information seulement, exclu en V1 — configuration à régulariser)',
   FORBIDDEN: 'interdit par Verebona',
   EXCLUDED: 'exclu pour ce traitement (exception documentée)',
   NOT_QUALIFIED: 'qualification technique en échec',
@@ -249,8 +255,10 @@ export function evaluateModelForTreatment(treatment: Treatment, model: string, c
   const dispo = providerAvailability(model, ctx);
   reasons.push(...dispo.reasons);
 
-  // D — expérimental exclu en V1 (statut fournisseur) ; preview : informatif.
+  // D — expérimental exclu en V1 (statut fournisseur) ; lot 85C (décision
+  // PO 02) : Preview exclu aussi (information au catalogue seulement).
   if (status === 'experimental') reasons.push('EXPERIMENTAL');
+  if (status === 'preview') reasons.push('PREVIEW');
   // C — exceptions Verebona.
   if (declared?.forbidden) reasons.push('FORBIDDEN');
   if (declared?.excludedPrompts && req.masterPromptCode && declared.excludedPrompts.prompts.includes(req.masterPromptCode)) reasons.push('EXCLUDED');
