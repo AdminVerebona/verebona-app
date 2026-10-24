@@ -57,6 +57,13 @@ export interface AgendaGroupingView {
   } | null;
   /** Indication du contexte global (tiroir léger) : nombres, jamais le détail. */
   counts: GroupingCounts | null;
+  /**
+   * Lot 86D : documents reliés à CET élément (lien précis ou propagé), quel que
+   * soit son rôle — consulter, ouvrir, détacher individuellement (ticket
+   * « Documents / Agenda » §2). Pour l'événement de référence, la catégorie
+   * « Documents » de l'ensemble les présente déjà (avec leur nature de lien).
+   */
+  linkedDocuments: GroupingDocumentRef[];
 }
 
 export type GroupingCandidateKind = 'elements' | 'documents' | 'biens' | 'pieces' | 'equipements';
@@ -67,7 +74,7 @@ export interface GroupingCandidate { id: number; title: string; meta: string | n
 /** Gestes du tiroir (route `POST /api/agenda/[id]/liens`). */
 export const GROUPING_ACTIONS = [
   'relier-element', 'retirer-element', 'quitter-ensemble',
-  'relier-document', 'retirer-document',
+  'relier-document', 'retirer-document', 'detacher-document',
   'relier-bien', 'retirer-bien',
   'relier-piece', 'retirer-piece',
   'relier-equipement', 'retirer-equipement',
@@ -117,6 +124,13 @@ export const GROUPING_LABELS = {
   remove: 'Retirer',
   directLink: 'Lien direct',
   documentAgendaTitle: 'Relier à un élément de l’agenda',
+  // Lot 86D : détachement individuel (le document et l'élément restent, rien n'est supprimé).
+  linkedDocuments: 'Documents de cet élément',
+  detach: 'Détacher',
+  detachFromItem: (title: string) => `Détacher « ${title} » de cet élément`,
+  detachItemFromDocument: (title: string) => `Détacher « ${title} » de ce document`,
+  removeFromEnsemble: (title: string) => `Retirer « ${title} » de l’ensemble`,
+  detachedToast: 'Document détaché. Il reste disponible dans vos documents.',
 } as const;
 
 /** Action « retirer » de chaque catégorie. */

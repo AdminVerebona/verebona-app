@@ -191,6 +191,15 @@ export interface ConfigVersion {
   currentRevisionNumber: number | null;
   /** Statut d'origine avant le lot 54 (information). */
   legacyStatus: string | null;
+  /**
+   * Lot 86A (0726, VER-01, MIG-02) : `manual` (choix d'un administrateur,
+   * jamais réputé qualifié) ou `auto` (candidate de l'optimisation de
+   * préproduction). Colonne absente : `manual`.
+   */
+  origin?: 'manual' | 'auto';
+  /** Lot 86A : cycle d'une candidate automatique (`null` : version manuelle). */
+  candidateState?: string | null;
+  candidateReason?: string | null;
 }
 
 export interface ConfigVersionWithEntries extends ConfigVersion {

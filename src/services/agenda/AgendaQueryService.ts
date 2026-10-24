@@ -4,13 +4,13 @@
 import { db } from '@/db';
 import {
   agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
-  agendaDataConflicts, assets, assetFiles, substructures, equipments, agendaItemSources,
+  agendaDataConflicts, assets, assetFiles, substructures, equipments,
 } from '@/db/schema';
-import { eq, and, or, isNull, isNotNull, inArray, sql } from 'drizzle-orm';
+import { eq, and, or, isNull, inArray, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { computeEffectiveStatus, computeAttentionFlags, type EffectiveStatus, type AttentionFlag } from './AgendaDomainService';
 import { agendaFunctionalColumnsReady } from './agenda-columns';
-import { listAgendaItemIdsForSource, SOURCE_LINK_EFFECTS } from './agenda-source-links';
+import { listAgendaItemIdsForSource } from './agenda-source-links';
 import {
   countItemsByEquipment, filterItemsByEquipment, listEquipmentsOfAssets,
 } from '@/services/equipments/equipment-filter-scope';
@@ -111,7 +111,7 @@ async function loadLinks(itemIds: number[]) {
   if (itemIds.length === 0) return { assetLinks: [], fileLinks: [], roomLinks: [], equipLinks: [] };
   const bienPorteur = alias(assets, 'bien_porteur');
 
-  const [assetLinksRows, fileLinksRows, aiFileLinksRows, roomLinksRows, equipLinksRows] = await Promise.all([
+  const [assetLinksRows, fileLinksRows, roomLinksRows, equipLinksRows] = await Promise.all([
     db.select({
       id: agendaAssetLinks.id,
       agendaItemId: agendaAssetLinks.agendaItemId,
@@ -136,26 +136,6 @@ async function loadLinks(itemIds: number[]) {
     .innerJoin(agendaItems, eq(agendaItems.id, agendaFileLinks.agendaItemId))
     .innerJoin(assetFiles, and(eq(agendaFileLinks.assetFileId, assetFiles.id), eq(assetFiles.accountId, agendaItems.accountId)))
     .where(inArray(agendaFileLinks.agendaItemId, itemIds)),
-
-    // AI-sourced links from document analysis (created or resolved_existing)
-    db.select({
-      id: agendaItemSources.id,
-      agendaItemId: agendaItemSources.agendaItemId,
-      assetFileId: agendaItemSources.assetFileId,
-      filename: assetFiles.filename,
-      retainedTitle: assetFiles.retainedTitle,
-      originalFilename: assetFiles.originalFilename,
-      resolvedAssetId: assetFiles.assetId,
-    })
-    .from(agendaItemSources)
-    .innerJoin(agendaItems, eq(agendaItems.id, agendaItemSources.agendaItemId))
-    .innerJoin(assetFiles, and(eq(agendaItemSources.assetFileId, assetFiles.id), eq(assetFiles.accountId, agendaItems.accountId)))
-    .where(and(
-      isNotNull(agendaItemSources.agendaItemId),
-      inArray(agendaItemSources.agendaItemId, itemIds),
-      // 'linked' : liens du service unique (0223), seulement écrits en enabled.
-      inArray(agendaItemSources.effectType, [...SOURCE_LINK_EFFECTS]),
-    )),
 
     db.select({
       id: agendaRoomLinks.id,
@@ -184,7 +164,12 @@ async function loadLinks(itemIds: number[]) {
     .where(inArray(agendaEquipmentLinks.agendaItemId, itemIds)),
   ]);
 
-  // Merge manual + AI file links, deduplicating by (agendaItemId, assetFileId)
+  // Lot 86D (ticket « Documents / Agenda ») : les documents d'un élément sont ses liens
+  // `agenda_file_links` — SEUL modèle des associations depuis 82D (provenances : un lien
+  // n'existe que tant qu'une justification le porte). Les traces `agenda_item_sources`
+  // (historique de production du lien) ne sont plus fusionnées à l'affichage : un lien
+  // détaché par l'utilisateur ou retiré par le contrôle de cohérence restait visible
+  // par sa trace, sans aucun moyen de le retirer (cause racine).
   type FileLink = { id: number; agendaItemId: number; assetFileId: number; filename: string | null; retainedTitle: string | null; originalFilename: string | null; resolvedAssetId: number | null };
   const mergedFileLinks: FileLink[] = fileLinksRows.map(f => ({
     id: f.id,
@@ -195,23 +180,6 @@ async function loadLinks(itemIds: number[]) {
     originalFilename: f.originalFilename ?? null,
     resolvedAssetId: f.resolvedAssetId ?? null,
   }));
-  const existingFileLinkKeys = new Set(mergedFileLinks.map(f => `${f.agendaItemId}:${f.assetFileId}`));
-  for (const ai of aiFileLinksRows) {
-    if (ai.agendaItemId === null) continue;
-    const key = `${ai.agendaItemId}:${ai.assetFileId}`;
-    if (!existingFileLinkKeys.has(key)) {
-      existingFileLinkKeys.add(key);
-      mergedFileLinks.push({
-        id: ai.id,
-        agendaItemId: ai.agendaItemId,
-        assetFileId: ai.assetFileId,
-        filename: ai.filename ?? null,
-        retainedTitle: ai.retainedTitle ?? null,
-        originalFilename: ai.originalFilename ?? null,
-        resolvedAssetId: ai.resolvedAssetId ?? null,
-      });
-    }
-  }
 
   return {
     assetLinks: assetLinksRows,
@@ -476,9 +444,8 @@ async function getAgendaItemsInScope(params: AgendaQueryParams, extraIds: readon
 
   if (fileId) {
     // Éléments liés au document : service unique de liaison source ↔ agenda
-    // (CDC 15 T4-07, X-04) — liens `agenda_file_links`, traces
-    // `agenda_item_sources` et éléments automatiques issus de ce document
-    // (`origin_ref`).
+    // (CDC 15 T4-07, X-04) — liens `agenda_file_links` seulement (lot 86D :
+    // les traces et `origin_ref` ne valent plus association, voir `loadLinks`).
     const ids = await listAgendaItemIdsForSource(accountId, fileId);
     if (ids.length === 0) return [];
     rows = await db.select().from(agendaItems).where(

@@ -231,14 +231,19 @@ async function loadMemberships(r: GroupingRunner, accountId: number, scope?: { o
 }
 
 async function loadPrincipalSnapshots(r: GroupingRunner, accountId: number, scope?: { operationIds?: readonly number[] }): Promise<OperationPrincipalSnapshot[]> {
-  const ops = await r.q<{ id: string; principal: number | null; items: number[] | null; files: number[] | null; rejected: string[] | null }>(
+  const ops = await r.q<{ id: string; principal: number | null; items: number[] | null; files: number[] | null; rejected: string[] | null; link_rejected: string[] | null }>(
     `SELECT o.id,
             (SELECT min(i.id) FROM agenda_items i WHERE i.business_operation_id = o.id AND i.account_id = o.account_id AND i.operation_role = 'PRINCIPAL') AS principal,
             (SELECT array_agg(i.id ORDER BY i.id) FROM agenda_items i WHERE i.business_operation_id = o.id AND i.account_id = o.account_id) AS items,
             (SELECT array_agg(d.file_id ORDER BY d.file_id) FROM business_operation_documents d JOIN asset_files f ON f.id = d.file_id AND f.deleted_at IS NULL
               WHERE d.operation_id = o.id AND d.active) AS files,
             (SELECT array_agg(m.source_entity_key) FROM business_operation_match_decisions m
-              WHERE m.candidate_operation_id = o.id AND m.active AND m.source_kind = 'PRINCIPAL_LINK' AND m.decision = 'REJECTED') AS rejected
+              WHERE m.candidate_operation_id = o.id AND m.active AND m.source_kind = 'PRINCIPAL_LINK' AND m.decision = 'REJECTED') AS rejected,
+            -- Lot 86D : liens détachés par l'utilisateur de l'élément principal (décision portée par le lien).
+            (SELECT array_agg(split_part(m.source_entity_key, ':', 2)) FROM business_operation_match_decisions m
+              JOIN agenda_items pi ON pi.business_operation_id = o.id AND pi.account_id = o.account_id AND pi.operation_role = 'PRINCIPAL'
+              WHERE m.account_id = o.account_id AND m.candidate_operation_id IS NULL AND m.active AND m.source_kind = 'AGENDA_FILE_LINK'
+                AND m.decision = 'REJECTED' AND split_part(m.source_entity_key, ':', 1) = pi.id::text) AS link_rejected
        FROM business_operations o
       WHERE o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
         AND ($2::bigint[] IS NULL OR o.id = ANY($2::bigint[]))
@@ -252,7 +257,7 @@ async function loadPrincipalSnapshots(r: GroupingRunner, accountId: number, scop
     const items = new Set((o.items ?? []).map(Number));
     return {
       operationId: Number(o.id), principalItemId: o.principal === null ? null : Number(o.principal), memberItemIds: [...items],
-      memberFileIds: (o.files ?? []).map(Number), rejectedFileIds: (o.rejected ?? []).map(Number),
+      memberFileIds: (o.files ?? []).map(Number), rejectedFileIds: [...new Set([...(o.rejected ?? []), ...(o.link_rejected ?? [])].map(Number))],
       links: links.filter((l) => items.has(Number(l.item_id))).map((l) => ({ itemId: Number(l.item_id), fileId: Number(l.file_id), provenances: l.provenances ?? [] })),
     };
   });

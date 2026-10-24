@@ -1005,9 +1005,10 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                   </div>
                 )}
 
-            {/* Documents (view only) — lot 84B : pour l'événement de référence, la liste de l'ensemble
-                (ci-dessous) les présente déjà, avec la nature de chaque lien. */}
-            {item.fileLinks.length > 0 && groupingRole !== "MAIN" && (
+            {/* Documents — lot 86D : en consultation, le regroupement (ci-dessous) présente les documents
+                de l'élément quel que soit son rôle (ouvrir, relier, détacher) ; cette liste reste un
+                rappel en modification, où le regroupement n'est pas affiché. */}
+            {item.fileLinks.length > 0 && mode === "edit" && groupingRole !== "MAIN" && (
               <div className="flex items-start gap-3">
                 <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
                   <FileText className="h-4 w-4 text-[color:var(--text-muted)]" />

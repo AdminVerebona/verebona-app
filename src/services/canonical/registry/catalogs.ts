@@ -242,7 +242,8 @@ export const DOCUMENT_CATALOG: readonly DocumentCatalogEntry[] = [
     code: 'DEVIS', label: 'Devis', authority: 'WEAK',
     mayCreateAgenda: false, businessTypes: ['maintenance', 'repair'],
     completionProofs: [SANS_PREUVE('DEVIS', 'Un devis propose une prestation, il ne la réalise pas.')], families: ALL,
-    aliases: ['MAINTENANCE_QUOTE', 'REPAIR_QUOTE', 'WORKS_QUOTE'],
+    // Lot 86E : ACQUISITION_QUOTE (devis d'achat, réutilisé en « Équipements et mobilier »).
+    aliases: ['MAINTENANCE_QUOTE', 'REPAIR_QUOTE', 'WORKS_QUOTE', 'ACQUISITION_QUOTE'],
   },
   {
     code: 'CONSTAT_SINISTRE', label: 'Constat / rapport de sinistre', authority: 'SUPPORTING',

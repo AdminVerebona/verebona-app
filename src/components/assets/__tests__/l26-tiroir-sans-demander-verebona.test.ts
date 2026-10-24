@@ -20,6 +20,7 @@ describe('tiroir document', () => {
   });
 
   it('L26-9-AC2 : le badge de type reste sous le titre', () => {
-    expect(src).toMatch(/<\/SheetTitle>\s*<Badge variant="outline" className="mt-1\.5 text-xs">\{typeLabel\}<\/Badge>/);
+    // Lot 86E : affiché dès que le Type enregistré est connu (jamais « Autre » par défaut).
+    expect(src).toMatch(/<\/SheetTitle>\s*\{typeLabel && <Badge variant="outline" className="mt-1\.5 text-xs">\{typeLabel\}<\/Badge>\}/);
   });
 });

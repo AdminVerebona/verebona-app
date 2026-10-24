@@ -48,7 +48,8 @@ import {
   type PromptArchitecture, type ReasoningLevel, type TreatmentConfig,
 } from './config-types';
 import { currentJobContext } from '../queue/job-context';
-import { normalizeOperationProfiles, profileForChain, type OperationProfile } from './operation-profiles';
+import { normalizeOperationProfiles, profileForChain, profileForSlotOrder, type OperationProfile } from './operation-profiles';
+import { applyRoutingOverlay, type RoutingOverlay } from './routing-overlay';
 import { hasTestCounterStore, readConfigVersionCounter } from './config-cache-version';
 import {
   activeMasterPromptsTestOverride, loadActiveMasterPrompts, type ActiveMasterPrompt,
@@ -111,6 +112,12 @@ export interface ResolvedOperationConfig {
    * pour tous les rangs (héritage explicite, `rankProfile`).
    */
   operationProfile?: OperationProfile | null;
+  /**
+   * Lot 86B (P6, ACT-03, OPT-03) : surcouche de routage appliquée à la chaîne
+   * configurée de la version ACTIVE — modèles retirés par une exclusion
+   * manuelle, modèle promu en tête. Absent : chaîne configurée telle quelle.
+   */
+  routing?: { excludedModels: string[]; exclusionIgnored: boolean; promotedModel: string | null; promotionId: number | null };
 }
 
 const CACHE_TTL_MS = 30_000;
@@ -135,6 +142,12 @@ let cache: {
    * Chargés avec elle, sous la même clé de version partagée (CFG-01).
    */
   masterPrompts?: Map<string, ActiveMasterPrompt>;
+  /**
+   * Lot 86B : surcouche de routage (exclusions, promotions) de l'environnement,
+   * chargée avec la configuration sous la même clé partagée (chaque geste
+   * l'incrémente). Absente : aucune.
+   */
+  overlay?: RoutingOverlay;
 } | null = null;
 
 /**
@@ -165,7 +178,7 @@ export function invalidateConfigCache(): void {
  * sans base. `null` remet l'état initial.
  */
 export function __setConfigForTests(
-  effective: { versionId: number; entries: TreatmentConfig[] } | null,
+  effective: { versionId: number; entries: TreatmentConfig[]; overlay?: RoutingOverlay } | null,
   pinnable: Array<{ versionId: number; entries: TreatmentConfig[] }> = [],
 ): void {
   pinned.clear();
@@ -176,6 +189,7 @@ export function __setConfigForTests(
       versionId: effective.versionId,
       visibleNumber: null,
       byTreatment: new Map(effective.entries.map((e) => [e.treatment as string, e])),
+      ...(effective.overlay ? { overlay: effective.overlay } : {}),
     }
     : null;
   for (const p of pinnable) {
@@ -268,6 +282,8 @@ async function entriesForCurrentExecution(): Promise<{
   byTreatment: Map<string, TreatmentConfig>;
   /** Prompts maîtres figés de la révision épinglée (sinon : les actifs). */
   pinnedMasterPrompts?: Map<string, ActiveMasterPrompt>;
+  /** Lot 86B : surcouche de routage (configuration active seulement). */
+  overlay?: RoutingOverlay;
 }> {
   const effective = await loadEffective();
   const ctx = currentJobContext();
@@ -328,6 +344,7 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
     return cache;
   }
   const precedents = cache?.masterPrompts;
+  const surcouchePrecedente = cache?.overlay;
 
   const counter = await readConfigVersionCounter();
   if (cache && cache.expiresAt > Date.now() && (counter === null || cache.counter === counter)) {
@@ -342,11 +359,15 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
     byTreatment: new Map<string, TreatmentConfig>(),
   };
 
+  // Lot 86B : l'objet est COMPLÉTÉ (prompts maîtres, surcouche) avant d'être
+  // publié dans le cache — un chargement concurrent (contrôle de l'assistant
+  // après un changement) ne peut plus rendre un objet incomplet.
+  let next: NonNullable<typeof cache>;
   try {
     // Lot 54 : version active ET sa révision courante, lues en une requête.
     const { getRuntimeConfiguration } = await import('./config-version.repository');
     const version = await withTimeout(getRuntimeConfiguration(), LOOKUP_TIMEOUT_MS, null);
-    cache = version
+    next = version
       ? {
         expiresAt: Date.now() + CACHE_TTL_MS,
         counter,
@@ -360,10 +381,27 @@ async function loadEffective(): Promise<NonNullable<typeof cache>> {
   } catch {
     // Tables absentes, base indisponible, environnement illisible : on retombe
     // sur le code. Le produit continue de fonctionner comme avant le BO.
-    cache = vide;
+    next = vide;
   }
-  cache.masterPrompts = await loadMasterPromptsFor(precedents);
-  return cache;
+  next.masterPrompts = await loadMasterPromptsFor(precedents);
+  if (next.versionId !== null) next.overlay = await loadOverlayFor(surcouchePrecedente);
+  cache = next;
+  return next;
+}
+
+/**
+ * Lot 86B — surcouche de routage (exclusions, promotions). Lecture en échec :
+ * la DERNIÈRE lecture est conservée (jamais une exclusion levée en silence
+ * par une base lente) ; tables absentes : aucune.
+ */
+async function loadOverlayFor(precedente: RoutingOverlay | undefined): Promise<RoutingOverlay | undefined> {
+  try {
+    const { loadRoutingOverlay } = await import('./routing-state.service');
+    const lu = await withTimeout(loadRoutingOverlay(), LOOKUP_TIMEOUT_MS, null);
+    return lu ?? precedente;
+  } catch {
+    return precedente;
+  }
 }
 
 /**
@@ -477,6 +515,29 @@ export async function resolveOperationConfig(
   const entry = effective.byTreatment.get(treatment);
   if (!entry) return avecPrompt(duCode);
 
+  // Lot 86B : surcouche de routage (configuration ACTIVE seulement — une
+  // exécution épinglée sur une autre révision garde sa chaîne figée).
+  const routed = entry.primaryModel && effective.overlay ? routedChain(entry, operationCode, treatment, effective.overlay) : null;
+  if (routed) {
+    return avecPrompt({
+      primaryModel: routed.chain[0].model,
+      fallbackModels: routed.chain.slice(1).map((c) => c.model),
+      maxOutputTokens: entry.maxOutputTokens ?? duCode.maxOutputTokens,
+      reasoningPrimary: routed.chain[0].extra ?? null,
+      reasoningByRank: routed.chain.map((c) => c.extra ?? null),
+      ...promptOf(entry),
+      ...(() => {
+        const prof = profileForSlotOrder(normalizeOperationProfiles(entry.operationProfiles)[operationCode], routed.chain.map((c) => c.slot));
+        return prof ? { operationProfile: prof } : {};
+      })(),
+      configVersionId: effective.versionId,
+      visibleNumber: effective.visibleNumber,
+      configRevisionId: effective.revisionId ?? null,
+      configRevisionNumber: effective.revisionNumber ?? null,
+      routing: { excludedModels: routed.excluded, exclusionIgnored: routed.exclusionIgnored, promotedModel: routed.promotedModel, promotionId: routed.promotionId },
+    });
+  }
+
   const fallbacks = [entry.fallback1, entry.fallback2].filter(
     (m): m is string => Boolean(m),
   );
@@ -513,6 +574,20 @@ export async function resolveOperationConfig(
     configRevisionId: effective.revisionId ?? null,
     configRevisionNumber: effective.revisionNumber ?? null,
   });
+}
+
+/**
+ * Lot 86B — chaîne de la ligne après surcouche (exclusions, promotion), ou
+ * `null` si la surcouche ne change rien (chemin historique inchangé).
+ */
+function routedChain(entry: TreatmentConfig, operationCode: string, treatment: Treatment, overlay: RoutingOverlay) {
+  const chaine = ([[entry.primaryModel, entry.reasoningPrimary], [entry.fallback1, entry.reasoningFallback1], [entry.fallback2, entry.reasoningFallback2]] as const)
+    .map(([model, reasoning], slot) => ({ model: model ?? '', slot, extra: (reasoning ?? null) as ReasoningLevel | null }))
+    .filter((c) => c.model !== '');
+  const r = applyRoutingOverlay(chaine, treatment, operationCode, overlay);
+  const inchangee = r.chain.length === chaine.length && r.chain.every((c, i) => c.slot === chaine[i].slot);
+  if (inchangee && !r.exclusionIgnored) return null;
+  return r;
 }
 
 function operationProfileOf(entry: TreatmentConfig, operationCode: string): Pick<ResolvedOperationConfig, 'operationProfile'> {

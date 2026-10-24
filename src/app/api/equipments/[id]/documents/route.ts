@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { assetFiles, assets, documentTypes } from '@/db/schema';
+import { assetFiles, assets } from '@/db/schema';
+import { documentTypeDisplayLabel } from '@/lib/referential/v2';
 import { eq, and, isNull, or, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
@@ -30,11 +31,6 @@ export async function GET(
     if (isNaN(equipmentId)) return apiError(400, 'INVALID_INPUT', 'Invalid equipment id');
     if (!(await equipmentInAccount(accountId, equipmentId))) return apiError(404, 'NOT_FOUND', 'Equipment not found');
 
-    // Load document type labels
-    const allDocTypes = await db.select({ code: documentTypes.code, label: documentTypes.label }).from(documentTypes);
-    const typeLabels: Record<string, string> = {};
-    for (const dt of allDocTypes) typeLabels[dt.code] = dt.label;
-
     const rows = await db
       .select({
         id: assetFiles.id,
@@ -44,6 +40,7 @@ export async function GET(
         retainedTitle: assetFiles.retainedTitle,
         documentType: assetFiles.documentType,
         retainedFunctionCode: assetFiles.retainedFunctionCode,
+        documentTypeCode: assetFiles.documentTypeCode,
         documentDate: assetFiles.documentDate,
         mimeType: assetFiles.mimeType,
         assetId: assetFiles.assetId,
@@ -72,11 +69,10 @@ export async function GET(
       publicId: doc.publicId,
       title: displayDocumentTitle(doc, 'Document'),
       documentType: doc.retainedFunctionCode ?? doc.documentType,
-      documentTypeLabel: doc.retainedFunctionCode
-        ? (typeLabels[doc.retainedFunctionCode] ?? doc.retainedFunctionCode)
-        : doc.documentType
-          ? (typeLabels[doc.documentType] ?? doc.documentType)
-          : null,
+      // Lot 86E (ticket §5) : libellé du Type V2 ENREGISTRÉ, comme « Mes
+      // documents » — plus le code V1 (« BON_COMMANDE » brut, « Autre »).
+      documentTypeCode: doc.documentTypeCode,
+      documentTypeLabel: documentTypeDisplayLabel(doc.documentTypeCode),
       documentDate: doc.documentDate,
       mimeType: doc.mimeType,
       assetId: doc.assetId,

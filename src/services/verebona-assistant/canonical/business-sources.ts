@@ -34,7 +34,7 @@ import {
   type AssistantOperationRead,
 } from './operations';
 import { readCanonicalField, assetFieldSource } from './field-reader';
-import { listUpcomingAgenda } from './agenda';
+import { agendaDateProvenance, listUpcomingAgenda } from './agenda';
 import { isPaymentProofType } from './expense-classes';
 
 const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
@@ -60,11 +60,13 @@ export { eventDateMeaning, type DateMeaning } from '../core/semantic-scope';
 
 /** Source d'un élément d'agenda à venir (pure, testée) — fin exposée seulement si la donnée la justifie. */
 export function agendaBusinessSource(
-  r: { id: number; title: string; date: string | null; forecast?: boolean; nature?: string | null; businessType?: string | null; originFieldKey?: string | null },
+  r: { id: number; title: string; date: string | null; forecast?: boolean; nature?: string | null; businessType?: string | null; originFieldKey?: string | null; provenance?: string | null },
   assetId: number | null,
 ): BusinessSource {
   const sens = eventDateMeaning(r);
-  const qualif = sens === 'next_due' ? 'prochaine échéance' : sens === 'contract_end' ? 'fin' : null;
+  // Lot 86C : « fin » non justifiée par sa provenance — dite comme telle, jamais comme une fin certaine.
+  const finNonEtablie = sens === 'unknown' && r.provenance === 'UNPROVEN' && eventDateMeaning({ ...r, provenance: null }) === 'contract_end';
+  const qualif = sens === 'next_due' ? 'prochaine échéance' : sens === 'contract_end' ? 'fin' : finNonEtablie ? 'date à confirmer (aucune pièce contractuelle ne fixe cette fin)' : null;
   return {
     ref: `agenda:${r.id}`, domain: 'agenda', label: r.title,
     detail: [frDate(r.date), qualif, r.forecast ? 'date prévisionnelle' : null].filter(Boolean).join(' · ') || null,
@@ -99,7 +101,9 @@ export function operationBusinessSource(op: AssistantOperationRead, assetId: num
   const label = capitalize(operationLabel(op));
   const dernier = lastRealizedAmount(op);
   const prevu = op.components.filter((c) => c.kind === 'FORECAST_COST').map((c) => componentEurCents(c)).filter((x): x is number => x != null);
-  const fin = op.effectiveTo ?? op.endDate ?? null;
+  // Lot 86C : contrat — fin seulement si elle est contractuelle (`effectiveTo`, alimentée par les
+  // seules sources contractuelles) ; jamais la fin d'une période facturée (`endDate` historique).
+  const fin = op.typeCode === 'CONTRACT' ? op.effectiveTo ?? null : op.effectiveTo ?? op.endDate ?? null;
   const date = op.realizedDate ?? op.startDate ?? op.effectiveFrom ?? op.plannedDate ?? null;
   const detail = [
     op.provider,
@@ -278,13 +282,15 @@ const agendaProvider: BusinessSourceProvider = {
     const col = await (await import('@/services/agenda/agenda-columns')).agendaFunctionalColumnsReady().catch(() => false);
     const rows = (await pgClient.unsafe(
       `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, (i.occurrence_nature = 'FORECAST') AS forecast,
-              i.origin_field_key AS "originFieldKey", ${col ? 'i.event_nature' : 'NULL::text'} AS nature, ${col ? 'i.business_type' : 'NULL::text'} AS "businessType"
+              i.origin_field_key AS "originFieldKey", ${col ? 'i.event_nature' : 'NULL::text'} AS nature, ${col ? 'i.business_type' : 'NULL::text'} AS "businessType",
+              i.is_automatic AS "isAutomatic", i.projection_origin AS "projectionOrigin"
          FROM agenda_items i WHERE i.id = $1 AND i.account_id = $2
           AND ($3::int[] IS NULL OR EXISTS (SELECT 1 FROM agenda_asset_links x WHERE x.agenda_item_id = i.id AND x.asset_id = ANY($3::int[])))`,
       [id, accountId, assetIds.length ? assetIds : null] as never[],
-    )) as unknown as Array<{ id: number; title: string; date: string | null; forecast: boolean; originFieldKey: string | null; nature: string | null; businessType: string | null }>;
+    )) as unknown as Array<{ id: number; title: string; date: string | null; forecast: boolean; originFieldKey: string | null; nature: string | null; businessType: string | null; isAutomatic: boolean | null; projectionOrigin: string | null }>;
     const r = rows[0];
-    return r ? agendaBusinessSource({ ...r, id }, assetIds[0] ?? null) : null;
+    // Lot 86C : provenance de la date (une fin d'élément automatique sans pièce contractuelle n'est jamais certaine).
+    return r ? agendaBusinessSource({ ...r, id, provenance: agendaDateProvenance(r) }, assetIds[0] ?? null) : null;
   },
 };
 

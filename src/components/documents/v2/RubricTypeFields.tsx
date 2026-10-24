@@ -10,7 +10,8 @@
  * Règles conservées à l'identique :
  *   - le choix d'une Rubrique filtre immédiatement les Types disponibles, et
  *     un Type devenu incompatible est vidé (§5.1) ;
- *   - choisir un Type suffit : sa Rubrique est déduite (§2.2) ;
+ *   - choisir un Type suffit : sa Rubrique est déduite (§2.2) — lot 86E : la
+ *     Rubrique courante est gardée si le Type y est aussi proposé ;
  *   - « Autre » est proposé à l'utilisateur, jamais à l'IA (§5.2) ;
  *   - une Rubrique sans Type reste un classement valide.
  */
@@ -27,9 +28,11 @@ import {
 import {
   RUBRICS,
   getRubric,
-  getDocumentType,
   getTypesForRubric,
+  isTypeCompatibleWithRubric,
+  rubricForType,
   rubricOfType,
+  documentTypeDisplayLabel,
   type RubricCode,
 } from '@/lib/referential/v2';
 import { MICROCOPY } from '@/lib/referential/v2/microcopy';
@@ -47,13 +50,34 @@ export function effectiveRubric(value: RubricTypeValue): string | null {
   return value.rubricCode ?? (value.documentTypeCode ? rubricOfType(value.documentTypeCode) : null);
 }
 
-/** Libellés lisibles pour l'affichage en lecture. */
-export function rubricTypeLabels(value: RubricTypeValue): { rubric: string | null; type: string | null } {
+/**
+ * Libellés lisibles pour l'affichage en lecture. Lot 86E : le Type affiché
+ * suit la correspondance unique du référentiel (`documentTypeDisplayLabel`) —
+ * libellé du Type enregistré, sinon « Type à compléter », jamais « Autre ».
+ */
+export function rubricTypeLabels(value: RubricTypeValue): { rubric: string | null; type: string } {
   const rubric = effectiveRubric(value);
-  const type = value.documentTypeCode
-    ? getDocumentType(value.documentTypeCode as never)?.label ?? null
-    : null;
-  return { rubric: rubric ? getRubric(rubric)?.label ?? null : null, type };
+  return { rubric: rubric ? getRubric(rubric)?.label ?? null : null, type: documentTypeDisplayLabel(value.documentTypeCode) };
+}
+
+/**
+ * Rubrique choisie (§5.1) : le Type est conservé s'il est proposé dans la
+ * nouvelle Rubrique — y compris un Type réutilisable (lot 86E) —, vidé sinon.
+ */
+export function onRubricChange(value: RubricTypeValue, next: string): RubricTypeValue {
+  const typeCode = value.documentTypeCode;
+  const typeCompatible = typeCode && isTypeCompatibleWithRubric(typeCode, next);
+  return { rubricCode: next, documentTypeCode: typeCompatible ? typeCode : null };
+}
+
+/**
+ * Type choisi (§2.2) : la Rubrique courante est gardée si le Type y est
+ * proposé, sinon déduite de la Rubrique d'attache du Type (lot 86E).
+ */
+export function onTypeChange(value: RubricTypeValue, next: string | null): RubricTypeValue {
+  const rubricCode = effectiveRubric(value);
+  if (next === null) return { rubricCode, documentTypeCode: null };
+  return { rubricCode: rubricForType(next, rubricCode) ?? rubricCode, documentTypeCode: next };
 }
 
 export function RubricTypeFields({
@@ -75,18 +99,9 @@ export function RubricTypeFields({
     [rubricCode],
   );
 
-  const changeRubric = (next: string) => {
-    const typeCompatible = typeCode && rubricOfType(typeCode) === next;
-    onChange({ rubricCode: next, documentTypeCode: typeCompatible ? typeCode : null });
-  };
+  const changeRubric = (next: string) => onChange(onRubricChange(value, next));
 
-  const changeType = (next: string) => {
-    if (next === NO_TYPE) {
-      onChange({ rubricCode, documentTypeCode: null });
-      return;
-    }
-    onChange({ rubricCode: rubricOfType(next) ?? rubricCode, documentTypeCode: next });
-  };
+  const changeType = (next: string) => onChange(onTypeChange(value, next === NO_TYPE ? null : next));
 
   return (
     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

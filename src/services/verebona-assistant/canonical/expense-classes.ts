@@ -63,7 +63,7 @@ const THEME_BY_V2_CODE: Readonly<Record<string, ExpenseTheme>> = {
 export const EXPENSE_THEME_V2_CODES: readonly string[] = Object.keys(THEME_BY_V2_CODE);
 
 /** Types jamais sommés comme dépense. */
-const EXCLUDED_V2 = new Set(['MAINTENANCE_QUOTE', 'REPAIR_QUOTE', 'WORKS_QUOTE', 'RENT_RECEIPT', 'SECURITY_DEPOSIT_RECEIPT']);
+const EXCLUDED_V2 = new Set(['MAINTENANCE_QUOTE', 'REPAIR_QUOTE', 'WORKS_QUOTE', 'ACQUISITION_QUOTE', 'RENT_RECEIPT', 'SECURITY_DEPOSIT_RECEIPT']);
 const EXCLUDED_CATALOG = new Set(['BON_COMMANDE', 'COMPROMIS_VENTE']);
 
 const THEME_BY_BUSINESS: Partial<Record<EventBusinessType, ExpenseTheme>> = {

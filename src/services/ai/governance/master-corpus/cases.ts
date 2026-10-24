@@ -57,6 +57,18 @@ export interface MasterCorpusCase {
    */
   outputContract?: string | null;
   expected: Record<string, unknown> | null;
+  /**
+   * Lot 86A (QUAL-09) : rôle du cas pour la qualification d'un couple sur
+   * appel RÉEL, déclaré par l'équipe IA dans la fixture
+   * (`"qualification": { "role": "answer" | "guard" }`) :
+   *   · `answer` — l'attendu décrit la BONNE RÉPONSE du modèle (vérité de
+   *     référence) ;
+   *   · `guard` — l'attendu décrit la réaction du serveur à la sortie
+   *     enregistrée, délibérément fautive (test de garde) : sans objet pour
+   *     une réponse réelle.
+   * Absent : non déclaré — la qualification ne s'en sert pas comme vérité.
+   */
+  qualificationRole?: 'answer' | 'guard' | null;
 }
 
 /**
@@ -84,6 +96,7 @@ export function loadMasterCorpusCases(read: MasterFileReader, dirs: readonly str
       const raw = JSON.parse(readFileSync(path, 'utf8')) as {
         case?: string; description?: string; context?: Record<string, unknown>;
         recording?: { operationCode?: string; task?: string; output?: unknown; outputContract?: string }; expected?: Record<string, unknown>;
+        qualification?: { role?: unknown };
       };
       const op = raw.recording?.operationCode ? AI_OPERATIONS[raw.recording.operationCode] : undefined;
       if (!op || !op.active || !isMasterOperation(op)) continue;
@@ -100,6 +113,7 @@ export function loadMasterCorpusCases(read: MasterFileReader, dirs: readonly str
         output: expand(raw.recording?.output, read),
         outputContract: typeof raw.recording?.outputContract === 'string' ? raw.recording.outputContract : null,
         expected: raw.expected ?? null,
+        qualificationRole: raw.qualification?.role === 'answer' || raw.qualification?.role === 'guard' ? raw.qualification.role : null,
       });
     }
   }

@@ -146,6 +146,22 @@ export function profileForChain(p: OperationProfile | undefined, presentSlots: r
   };
 }
 
+/**
+ * Lot 86B — profil d'une opération ramené à un ORDRE d'emplacements
+ * quelconque (surcouche de routage : exclusion, promotion) : le réglage de
+ * chaque rang suit le modèle de son emplacement d'origine. Avec l'ordre
+ * naturel des emplacements renseignés, identique à `profileForChain`.
+ */
+export function profileForSlotOrder(p: OperationProfile | undefined, slotOrder: readonly number[]): OperationProfile | undefined {
+  if (!p) return undefined;
+  const pick = <T>(arr: Array<T | null> | undefined) => (arr ? slotOrder.map((s) => arr[s] ?? null) : undefined);
+  return {
+    ...(p.reasoningByRank ? { reasoningByRank: pick(p.reasoningByRank) } : {}),
+    ...(p.maxOutputTokensByRank ? { maxOutputTokensByRank: pick(p.maxOutputTokensByRank) } : {}),
+    ...(p.timeoutMs ? { timeoutMs: p.timeoutMs } : {}),
+  };
+}
+
 /** Réglage RÉSOLU d'un rang (avant adaptation aux capacités du modèle). */
 export interface RankProfile {
   reasoning: ReasoningLevel | null;

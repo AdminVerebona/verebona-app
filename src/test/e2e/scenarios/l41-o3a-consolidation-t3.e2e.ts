@@ -305,10 +305,12 @@ scenario('L41-O3a', 'Consolidation T3 déterministe : candidats T1 → Opératio
     await passer(compte);
     const ops = await operations(compte);
     expect(ops).toHaveLength(1);
-    expect(ops[0]).toMatchObject({ status: 'REALIZED', end_date: '2027-12-31' });
+    // Lot 86C (assertion corrigée) : l'avis d'échéance (facture) porte une période FACTURÉE — il ne prolonge pas
+    // la fin du contrat fixée par la police (2026-12-31) ; la cotisation 2027 reste une composante datée.
+    expect(ops[0]).toMatchObject({ status: 'REALIZED', end_date: '2026-12-31' });
     expect((await composantes(op.id)).map((c) => [c.kind, c.amount_minor, c.period_start])).toEqual([['FORECAST_COST', 48000, '2026-01-01'], ['REALIZED_COST', 51000, '2027-01-01']]);
     expect(await sql`SELECT contract_reference, effective_from::text AS f, effective_to::text AS t FROM business_operation_contract_details WHERE operation_id = ${op.id}`)
-      .toEqual([{ contract_reference: 'HAB-559201', f: '2026-01-01', t: '2027-12-31' }]);
+      .toEqual([{ contract_reference: 'HAB-559201', f: '2026-01-01', t: '2026-12-31' }]);
   });
 
   it('Q13 / C11.1 — contrat signé à effet futur : ENVISAGED ; arrivé à sa date d\'effet, le passage le rend REALIZED', async () => {

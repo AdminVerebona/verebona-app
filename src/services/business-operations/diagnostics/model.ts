@@ -205,6 +205,9 @@ const REASONS: Readonly<Record<string, string>> = {
   RETRO_MERGE: 'réexamen rétroactif : même réalité établie, Opérations fusionnées',
   T3_RETRO_MERGE: 'réexamen rétroactif : même réalité établie (fusion)',
   T3_TYPE_RECURRING_CONTRACT: 'échéances d’un même contrat : requalifiée en contrat',
+  // Lot 86C : dates contractuelles ≠ périodes facturées ; doublons entre Opérations.
+  T3_CONTRACT_DATES_UNPROVEN: 'date de début / fin de contrat retirée : aucune pièce contractuelle ne la justifie (période facturée, source retirée)',
+  T3_DETAILS_CONSOLIDATED: 'détails du contrat recalculés depuis les pièces contractuelles',
   USER_CLAIM_FORM: 'formulaire Sinistre saisi par l’utilisateur',
   LEGACY_CLAIM_FORM_RESYNC: 'reprise de l’ancien formulaire Sinistre',
   T3_CREATE_NEW: 'création par la consolidation T3',

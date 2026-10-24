@@ -241,3 +241,17 @@ describe('L78A §2C / §6 — consolidation : provenance, contradictions d\'attr
     });
   });
 });
+
+describe('L78A (lot 86C) — identité économique et désignations équivalentes', () => {
+  it('L78A-U-86C-01 — même tiers sous deux désignations (clé canonique) : indice POSITIF, jamais une contradiction « tiers différents »', async () => {
+    const base = (providerKey: string): CandidateIdentity => ({
+      candidateId: 1, candidateKey: 'op1', fileId: 1, established: true, confidence: 'certain', type: 'CONTRACT', status: 'REALIZED', role: 'INVOICE',
+      summary: 'Abonnement', provider: providerKey, providerKey, assetIds: [1], targetAuthority: 'DOCUMENT', equipmentIds: [], refs: [],
+      dates: { plannedDate: null, startDate: null, realizedDate: null, endDate: null },
+      hints: [{ role: 'REALIZED_COST', amountMinor: 4050, currency: 'EUR', amountScope: 'INSTALLMENT', economicDate: '2026-07-05', periodStart: '2026-07-05', periodEnd: '2026-08-04' }],
+    });
+    const a = assessEconomicIdentity(footprintOfIdentity(base('canon')), footprintOfIdentity({ ...base('canon'), providerKeyRaw: 'autre' }), 'SERIES');
+    expect(a.positives).toContain('PROVIDER_SAME');
+    expect(a.weak).not.toContain('PROVIDER_DIFFERENT');
+  });
+});

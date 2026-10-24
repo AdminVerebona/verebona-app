@@ -58,7 +58,8 @@ import {
   applyM3Verdict, canonicalOf, decideCandidate, operationsMergeable, rankPlausible, sameDocumentReality,
   type CandidateDecision, type ExistingOperation, type MatchContext, type T3Outcome,
 } from './matching';
-import { requestRetroReconciliation, retroActive, type RetroTrace } from './retro';
+import { RETRO_ELIGIBLE_SQL, requestRetroReconciliation, retroActive, type RetroTrace } from './retro';
+import { buildProviderEquivalence, canonicalProviderKey, type ProviderEquivalence } from './provider-equivalence';
 import { isSeriesWhy } from './recurrence';
 import { advanceM3Progress, m3ProgressFor, m3SubjectFingerprint, selectM3Batch, type M3Progress } from './m3-progress';
 import { applyCurrencyChoices, type AmountChoice, type CurrencyChoice, type SideAmount } from './model';
@@ -75,7 +76,7 @@ import {
   IDENTITY_REVIEW_PENDING_SQL, IDENTITY_REVIEW_VERSION, listOpenSuspectFiles, loadAdminRestoredSourceIds, recordIdentityReviews, requestIdentityReview,
   splitArbitratedConflicts, type IdentityReviewEntry,
 } from './identity-review';
-import { computeProvenance, type AttributeProvenance, type ComponentEvidence } from './model';
+import { computeProvenance, isDurableRelationType, type AttributeProvenance, type ComponentEvidence } from './model';
 // Lot 82D (CDC v5 O-1) : Pièces et décisions utilisateur par le service unique de regroupement.
 import { rejectedSubjects } from '../grouping/decisions';
 import { runnerContext, syncOperationRoomsFromT3 } from '../grouping/service';
@@ -225,7 +226,7 @@ export async function prepareOperationMatch(accountId: number, candidateId: numb
     if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) return null;
     const ids = targetIdsOf([c], file.assetId);
     const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms });
+    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers });
     // Lot 53 (D7) : le LOT courant de l'examen progressif (au plus 5 Opérations),
     // à défaut (trace antérieure au lot 53) les Opérations plausibles.
     const lot = (c.t3Detail?.m3Batch ?? c.t3Detail?.plausible) as unknown[] | undefined;
@@ -264,10 +265,54 @@ async function loadDocumentSources(tx: DbTx, accountId: number, fileId: number):
   }));
 }
 
-interface AssetContext { live: Set<number>; status: Map<number, string>; equipments: Map<number, number>; rooms: Map<number, number> }
+interface AssetContext {
+  live: Set<number>; status: Map<number, string>; equipments: Map<number, number>; rooms: Map<number, number>;
+  /** Lot 86C : désignations équivalentes d'un prestataire (preuves du compte) → clé canonique. */
+  providers: ReadonlyMap<string, string>;
+}
+
+/** Lot 86C : la clé d'un prestataire a-t-elle été remplacée par une clé canonique équivalente ? */
+const providerKeyChanged = (k: string | null, eq: ProviderEquivalence): boolean => k !== null && canonicalProviderKey(k, eq) !== k;
+
+/** Lot 86C : équivalences de désignations, lues une fois par transaction (cache par transaction). */
+const equivalencesParTransaction = new WeakMap<object, Map<number, ProviderEquivalence>>();
+
+/** Preuves lues au plus par compte (borne de lecture ; au-delà, les plus récentes). */
+export const PROVIDER_EQUIVALENCE_EVIDENCE_LIMIT = 5_000;
+
+/**
+ * Lot 86C : équivalences de désignations d'un prestataire ÉTABLIES PAR LES
+ * PREUVES du compte (`provider-equivalence.ts`) — documents émis par le
+ * prestataire, reliés à leur fiche fournisseur (lien confirmé ou lu avec
+ * certitude). Lecture seule, bornée au compte, mise en cache pour la
+ * transaction (toutes les identités d'un passage voient la même équivalence).
+ */
+export async function loadProviderEquivalence(tx: DbTx, accountId: number): Promise<ProviderEquivalence> {
+  const cache = equivalencesParTransaction.get(tx as object) ?? new Map<number, ProviderEquivalence>();
+  const deja = cache.get(accountId);
+  if (deja) return deja;
+  const r = await rows<Row>(tx, sql`
+    SELECT ds.document_id AS file_id, ds.supplier_id, s.name AS supplier_name,
+           (ds.is_confirmed OR COALESCE(ds.confidence_score, 0) >= 1) AS reliable,
+           c.payload->>'provider' AS provider, c.payload->>'sourceRoleHint' AS role
+      FROM document_suppliers ds
+      JOIN suppliers s ON s.id = ds.supplier_id AND s.account_id = ${accountId} AND s.status = 'active'
+      JOIN asset_files f ON f.id = ds.document_id AND f.account_id = ${accountId} AND f.deleted_at IS NULL
+      JOIN document_operation_candidates c ON c.file_id = ds.document_id AND c.account_id = ${accountId}
+       AND c.status = 'ACTIVE' AND c.established AND NULLIF(btrim(c.payload->>'provider'), '') IS NOT NULL
+     ORDER BY ds.document_id DESC
+     LIMIT ${PROVIDER_EQUIVALENCE_EVIDENCE_LIMIT}`);
+  const eq = buildProviderEquivalence(r.map((x) => ({
+    fileId: Number(x.file_id), supplierId: Number(x.supplier_id), supplierName: (x.supplier_name as string | null) ?? null,
+    provider: (x.provider as string | null) ?? null, role: (x.role as string | null) ?? null, reliable: x.reliable === true,
+  })));
+  cache.set(accountId, eq);
+  equivalencesParTransaction.set(tx as object, cache);
+  return eq;
+}
 
 export async function loadAssetContext(tx: DbTx, accountId: number, assetIds: number[], equipmentIds: number[], roomIds: number[] = []): Promise<AssetContext> {
-  const ctx: AssetContext = { live: new Set(), status: new Map(), equipments: new Map(), rooms: new Map() };
+  const ctx: AssetContext = { live: new Set(), status: new Map(), equipments: new Map(), rooms: new Map(), providers: (await loadProviderEquivalence(tx, accountId)).canonical };
   // Lot 82D : Pièces (substructures) des biens du compte — cibles ROOM de T1.
   if (roomIds.length) {
     const p = await rows<{ id: number; asset_id: number }>(tx, sql`
@@ -386,11 +431,14 @@ export async function loadMatchableOperations(
       exclus.set(Number(e.operation_id), [...(exclus.get(Number(e.operation_id)) ?? []), Number(e.asset_id)]);
     }
   }
+  // Lot 86C : désignations équivalentes du prestataire (preuves du compte) → même clé que le candidat.
+  const equivalence = await loadProviderEquivalence(tx, accountId);
   return r.map((x) => ({
     id: Number(x.id),
     typeCode: (x.type_code as BusinessOperationTypeCode | null) ?? null,
     status: x.status as BusinessOperationStatus,
-    providerKey: normalizeProvider(x.provider as string | null),
+    providerKey: canonicalProviderKey(normalizeProvider(x.provider as string | null), equivalence),
+    ...(providerKeyChanged(normalizeProvider(x.provider as string | null), equivalence) ? { providerKeyRaw: normalizeProvider(x.provider as string | null)! } : {}),
     assetIds: [...new Set([...((x.assets as number[] | null) ?? []).map(Number), ...(exclus.get(Number(x.id)) ?? [])])].sort((a, b) => a - b),
     refs: ((x.refs as Array<{ kind: ReferenceKind; normalized: string }> | null) ?? []),
     plannedDate: (x.planned_date as string | null) ?? null,
@@ -605,7 +653,7 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
   const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
   return {
     sourceId: s.id,
-    identity: buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms }),
+    identity: buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers }),
   };
 }
 
@@ -709,7 +757,7 @@ export async function reconsolidateOperation(
   const fullyManaged = unmanaged === 0;
   // Lot 78A (§2C, §6) : provenance des valeurs conservées, APRÈS les autorités
   // de la fiche et de l'agenda (une saisie de l'utilisateur prime et se trace).
-  state.provenance = computeProvenance(state, contributions);
+  state.provenance = computeProvenance(state, contributions, { durable: isDurableRelationType(state.type) });
   const provAvant = await loadAttributeProvenance(tx, accountId, operationId);
 
   // Type nul qualifié (F-054) ; lot 48 (C7.7, F-055) : OTHER requalifié vers un type connu, même identifiant.
@@ -1079,6 +1127,22 @@ async function syncSideAmounts(tx: DbTx, accountId: number, opId: number, desire
   }
 }
 
+/**
+ * Lot 86C : motif historisé d'une écriture de détails contractuels — une date
+ * d'effet / de fin RETIRÉE faute de source contractuelle porte son propre
+ * motif (BO, journal, réversibilité), sinon le motif de consolidation habituel.
+ */
+export function contractDatesReason(
+  before: Row | undefined, after: { effectiveFrom: string | null; effectiveTo: string | null },
+): string {
+  const retiree = (col: string, v: string | null) => !!before && before[col] != null && v === null;
+  return retiree('effective_from', after.effectiveFrom) || retiree('effective_to', after.effectiveTo)
+    ? CONTRACT_DATES_UNPROVEN_REASON : 'T3_DETAILS_CONSOLIDATED';
+}
+
+/** Lot 86C : date contractuelle retirée (aucune source contractuelle ne la justifie : période facturée, source retirée). */
+export const CONTRACT_DATES_UNPROVEN_REASON = 'T3_CONTRACT_DATES_UNPROVEN';
+
 async function syncDetails(
   repo: BusinessOperationRepository, tx: DbTx, opId: number, state: ReturnType<typeof consolidateOperationState>, changes: Changes,
   /** Lot 44 : sinistre saisi (CLAIM_FORM / MIGRATION) — la saisie prime, un document ne fait que compléter. */
@@ -1089,13 +1153,21 @@ async function syncDetails(
     const [d] = await rows<Row>(tx, sql`
       SELECT contract_reference, periodicity, effective_from::text AS effective_from, effective_to::text AS effective_to
         FROM business_operation_contract_details WHERE operation_id = ${opId}`);
+    // Lot 86C : les dates d'effet / de fin sont celles que les sources CONTRACTUELLES
+    // établissent (`contractualDateSource`), recalculées à chaque consolidation —
+    // plus jamais conservées faute de mieux : seule T3 écrit ces détails (aucune
+    // saisie utilisateur), une date qu'aucune source ne justifie plus (période
+    // facturée prise pour une fin, source retirée) est retirée, avec son motif
+    // dans l'historique (avant / après : réversible).
     const v = {
       contractReference: state.contract.contractReference ?? (d?.contract_reference as string | null) ?? null,
       periodicity: (d?.periodicity as never) ?? null,
-      effectiveFrom: state.contract.effectiveFrom ?? (d?.effective_from as string | null) ?? null,
-      effectiveTo: state.contract.effectiveTo ?? (d?.effective_to as string | null) ?? null,
+      effectiveFrom: state.contract.effectiveFrom,
+      effectiveTo: state.contract.effectiveTo,
     };
-    if (d || v.contractReference || v.effectiveFrom || v.effectiveTo) changes.track(await repo.upsertContractDetails(opId, v, 'T3_DETAILS_CONSOLIDATED'));
+    if (d || v.contractReference || v.effectiveFrom || v.effectiveTo) {
+      changes.track(await repo.upsertContractDetails(opId, v, contractDatesReason(d, v)));
+    }
   }
   if (op.typeCode === 'FINANCING' && state.financing) {
     const [d] = await rows<Row>(tx, sql`
@@ -1109,10 +1181,11 @@ async function syncDetails(
       principalCurrency: state.financing.principalAmountMinor != null
         ? state.financing.principalCurrency ?? null
         : (d?.principal_currency as string | null)?.trim() ?? null,
-      effectiveFrom: state.financing.effectiveFrom ?? (d?.effective_from as string | null) ?? null,
-      effectiveTo: state.financing.effectiveTo ?? (d?.effective_to as string | null) ?? null,
+      // Lot 86C : mêmes règles que le contrat (dates contractuelles seulement, recalculées).
+      effectiveFrom: state.financing.effectiveFrom,
+      effectiveTo: state.financing.effectiveTo,
     };
-    if (d || v.financingReference || v.lender || v.effectiveFrom || v.principalAmountMinor != null) changes.track(await repo.upsertFinancingDetails(opId, v, 'T3_DETAILS_CONSOLIDATED'));
+    if (d || v.financingReference || v.lender || v.effectiveFrom || v.principalAmountMinor != null) changes.track(await repo.upsertFinancingDetails(opId, v, contractDatesReason(d, v)));
   }
   if (op.typeCode === 'CLAIM' && state.claim) {
     const [d] = await rows<Row>(tx, sql`
@@ -1223,43 +1296,65 @@ interface RetroOutcome {
 }
 
 /**
- * Le document (seule source de sa propre Opération X) appartient-il à une
- * AUTRE Opération du compte (voir `retro.ts`) ? Décision T3 recalculée sans
- * X — M0 / M1 / M3 certain seulement ; les Opérations plausibles sont
- * soumises au modèle UNE à la fois (deux doublons ne se rendent pas
- * mutuellement « ambigus »). Identité établie → fusion X ⇄ cible (la plus
- * ancienne reste, l'échéance qualifiée « intervention » devient CONTRACT si
- * l'autre est le contrat) ; doute → attente tracée, la source ne bouge pas.
+ * Lot 86C : décision RÉTROACTIVE d'un document déjà consolidé (partagée par
+ * l'examen rétroactif et sa simulation au contrôle de cohérence) — décision
+ * T3 recalculée sans la propre Opération X du document, verdict M3 enregistré
+ * appliqué (lots de 1, aucun appel IA ici). `null` : examen sans objet (X
+ * absente, invalidée, d'un type non récurrent, ou qui n'est pas un fragment
+ * de relation récurrente).
+ */
+async function retroDecision(
+  tx: DbTx, accountId: number, identity: CandidateIdentity, d: CandidateDecision,
+  ctx: MatchContext & { operations: ExistingOperation[] }, propres: number[], t3Detail: Record<string, unknown> | null,
+): Promise<{ xOp: ExistingOperation; d2: CandidateDecision; m3?: ProgressiveM3Trace } | { notApplicable: number }> {
+  const X = propres.length === 1 ? propres[0] : null;
+  const xOp = X === null ? undefined : ctx.operations.find((o) => o.id === X);
+  if (!xOp || xOp.invalidated || !(xOp.typeCode === null || xOp.typeCode === 'CONTRACT' || xOp.typeCode === 'INTERVENTION' || xOp.typeCode === 'OTHER')
+    || !(identity.type === 'CONTRACT' || hasRecurringPeriod(identity))) return { notApplicable: X ?? 0 };
+  // Lot 86C : la propre Opération du document est réexaminée si elle n'est qu'un FRAGMENT de
+  // relation récurrente — seule source (55B), ou toutes ses sources actives sont des échéances /
+  // documents de contrat (doublon historique d'un même contrat, lot 84E §9.3) ; jamais une
+  // Opération qui porte une intervention ponctuelle, une saisie ou une autre preuve.
+  const [fragment] = await rows<{ autres: number }>(tx, sql`
+    SELECT count(*) FILTER (WHERE NOT x.echeance)::int AS autres FROM (
+      SELECT EXISTS (SELECT 1 FROM document_operation_candidates c
+                      WHERE c.account_id = s.account_id AND s.source_kind = 'DOCUMENT' AND c.file_id::text = s.source_entity_key
+                        AND c.candidate_key = s.locator->>'candidateKey' AND c.status = 'ACTIVE' AND ${sql.raw(RETRO_ELIGIBLE_SQL)}) AS echeance
+        FROM business_operation_sources s WHERE s.operation_id = ${xOp.id} AND s.account_id = ${accountId} AND s.active) x`);
+  if (Number(fragment?.autres ?? 1) !== 0) return { notApplicable: xOp.id };
+  if (d.outcome === 'MATCH_AND_ENRICH' && d.operationId !== null && d.operationId !== xOp.id && !d.mergeIds?.length) {
+    return { xOp, d2: d }; // décision utilisateur (M0) ou référence exacte (M1) vers une autre Opération
+  }
+  if (d.outcome === 'MATCH_AND_ENRICH' && d.operationId === xOp.id && d.matchMethod === 'M2') {
+    const ctx2 = { ...ctx, operations: ctx.operations.filter((o) => o.id !== xOp.id) };
+    const d2 = decideCandidate(identity, ctx2);
+    if (d2.reason !== 'M3_REQUIRED') return { xOp, d2 };
+    const r = await resolveProgressiveM3(tx, accountId, identity, d2, ctx2, t3Detail, 1);
+    return { xOp, d2: r.decision, m3: r.trace };
+  }
+  return { notApplicable: xOp.id };
+}
+
+/**
+ * Le document (seule source de sa propre Opération X — lot 86C : ou fragment
+ * d'une relation récurrente dont toutes les sources sont des échéances)
+ * appartient-il à une AUTRE Opération du compte (voir `retro.ts`) ? Décision
+ * T3 recalculée sans X — M0 / M1 / M3 certain seulement ; les Opérations
+ * plausibles sont soumises au modèle UNE à la fois (deux doublons ne se
+ * rendent pas mutuellement « ambigus »). Identité établie → fusion X ⇄ cible
+ * (la plus ancienne reste, l'échéance qualifiée « intervention » devient
+ * CONTRACT si l'autre est le contrat) ; doute → attente tracée, la source ne
+ * bouge pas.
  */
 async function examineRetro(
   repo: BusinessOperationRepository, tx: DbTx, accountId: number, c: CandidateRow, identity: CandidateIdentity,
   d: CandidateDecision, ctx: MatchContext & { operations: ExistingOperation[] }, propres: number[],
   opts: ConsolidationOptions, changes: Changes,
 ): Promise<RetroOutcome> {
-  const X = propres.length === 1 ? propres[0] : null;
-  const fin = (result: string): RetroOutcome => ({ trace: { status: 'DONE', operationId: X ?? 0, result } });
-  const xOp = X === null ? undefined : ctx.operations.find((o) => o.id === X);
-  if (!xOp || xOp.invalidated || !(xOp.typeCode === null || xOp.typeCode === 'CONTRACT' || xOp.typeCode === 'INTERVENTION' || xOp.typeCode === 'OTHER')
-    || !(identity.type === 'CONTRACT' || hasRecurringPeriod(identity))) return fin('NOT_APPLICABLE');
-  const [seule] = await rows<{ n: number }>(tx, sql`
-    SELECT count(*)::int AS n FROM business_operation_sources WHERE operation_id = ${xOp.id} AND account_id = ${accountId} AND active`);
-  if (Number(seule?.n) !== 1) return fin('NOT_APPLICABLE');
-
-  let d2: CandidateDecision;
-  let m3: ProgressiveM3Trace | undefined;
-  if (d.outcome === 'MATCH_AND_ENRICH' && d.operationId !== null && d.operationId !== xOp.id && !d.mergeIds?.length) {
-    d2 = d; // décision utilisateur (M0) ou référence exacte (M1) vers une autre Opération
-  } else if (d.outcome === 'MATCH_AND_ENRICH' && d.operationId === xOp.id && d.matchMethod === 'M2') {
-    const ctx2 = { ...ctx, operations: ctx.operations.filter((o) => o.id !== xOp.id) };
-    d2 = decideCandidate(identity, ctx2);
-    if (d2.reason === 'M3_REQUIRED') {
-      const r = await resolveProgressiveM3(tx, accountId, identity, d2, ctx2, c.t3Detail, 1);
-      d2 = r.decision;
-      m3 = r.trace;
-    }
-  } else {
-    return fin('NOT_APPLICABLE');
-  }
+  const rd = await retroDecision(tx, accountId, identity, d, ctx, propres, c.t3Detail);
+  if ('notApplicable' in rd) return { trace: { status: 'DONE', operationId: rd.notApplicable, result: 'NOT_APPLICABLE' } };
+  const { xOp, d2, m3 } = rd;
+  const fin = (result: string): RetroOutcome => ({ trace: { status: 'DONE', operationId: xOp.id, result } });
 
   if (d2.outcome === 'MATCH_AND_ENRICH' && d2.operationId !== null && d2.operationId !== xOp.id && !d2.mergeIds?.length) {
     const yOp = ctx.operations.find((o) => o.id === d2.operationId);
@@ -1346,7 +1441,7 @@ export async function previewSeriesGrouping(accountId: number, fileIds: readonly
       const tids = targetIdsOf(actifs, file.assetId);
       const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
       for (const c of actifs) {
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms });
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
         const dec = await loadDecisions(tx, accountId, fileId, c.candidateKey);
@@ -1375,6 +1470,210 @@ export async function previewSeriesGrouping(accountId: number, fileIds: readonly
         });
         break;
       }
+    }
+    throw ANNULEE;
+  }).catch((e) => { if (e !== ANNULEE) throw e; });
+  return out;
+}
+
+// ── Lot 86C : doublons ENTRE Opérations, en SIMULATION (contrôle de cohérence) ──
+
+/** Doublon d'une relation contractuelle que le réexamen rétroactif T3 réunirait ou soumettrait. */
+export interface OperationDuplicatePreview {
+  operationId: number;
+  fileId: number;
+  candidateKey: string;
+  /**
+   * CERTAIN      la décision T3 (sans IA : décision utilisateur, référence,
+   *              série établie, verdict M3 déjà rendu) réunit l'Opération à
+   *              `targetOperationId` (fusion existante) ;
+   * M3_REQUIRED  une autre Opération reste plausible (prestataire désigné
+   *              autrement, série sans clé) : le rapprochement sémantique M3
+   *              doit être sollicité par le réexamen ;
+   * ARBITRATION  doute déjà soumis à l'utilisateur (carte existante).
+   */
+  level: 'CERTAIN' | 'M3_REQUIRED' | 'ARBITRATION';
+  targetOperationId: number | null;
+  plausibleOperationIds: number[];
+  /** Réexamen déjà en cours (marque ou attente M3 / utilisateur) : rien à relancer. */
+  retroPending: boolean;
+  why: string;
+  designations: NonNullable<CandidateDecision['detail']['designations']>;
+}
+
+/** Documents examinés par Opération (borne de lecture, les plus anciens d'abord). */
+export const DUPLICATE_PREVIEW_DOCUMENTS = 5;
+
+/**
+ * Lot 86C — MÊME décision que l'examen rétroactif T3 (`retroDecision` : sans
+ * la propre Opération, verdict M3 enregistré appliqué), calculée en LECTURE
+ * dans une transaction toujours annulée (attente de verrou bornée), sans
+ * aucun appel IA : Opérations qui sont le doublon d'une autre relation
+ * contractuelle du compte. Une décision de l'utilisateur, deux contrats
+ * distincts (références, équipements), une intervention ponctuelle ne sont
+ * jamais des doublons (règles de `decideCandidate` / `operationsMergeable`).
+ */
+export async function previewOperationDuplicates(accountId: number, operationIds: readonly number[]): Promise<Map<number, OperationDuplicatePreview>> {
+  const out = new Map<number, OperationDuplicatePreview>();
+  const ids = [...new Set(operationIds)].filter((x) => Number.isSafeInteger(x) && x > 0).sort((a, b) => a - b);
+  if (!ids.length) return out;
+  const { db } = await import('@/db');
+  const ANNULEE = Symbol('simulation annulée');
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
+    for (const opId of ids) {
+      const srcs = await rows<{ file_id: string; key: string }>(tx, sql`
+        SELECT s.source_entity_key AS file_id, s.locator->>'candidateKey' AS key FROM business_operation_sources s
+          JOIN business_operations o ON o.id = s.operation_id AND o.account_id = s.account_id
+         WHERE s.account_id = ${accountId} AND s.operation_id = ${opId} AND s.active AND s.source_kind = 'DOCUMENT'
+           AND s.locator ? 'candidateKey' AND s.source_entity_key ~ '^[0-9]{1,9}$'
+           AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+         ORDER BY s.id LIMIT ${DUPLICATE_PREVIEW_DOCUMENTS}`);
+      for (const src of srcs) {
+        const fileId = Number(src.file_id);
+        const file = await loadFile(tx, accountId, fileId);
+        if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) continue;
+        const [c] = (await loadCandidates(tx, accountId, fileId)).filter((x) => x.status === 'ACTIVE' && x.established && x.candidateKey === src.key);
+        if (!c || c.confidence === 'conflictual') continue;
+        const docSources = await loadDocumentSources(tx, accountId, fileId);
+        const tids = targetIdsOf([c], file.assetId);
+        const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers });
+        const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
+        if (!memeSource.length) continue;
+        const dec = await loadDecisions(tx, accountId, fileId, c.candidateKey);
+        let ops: ExistingOperation[] = (await loadMatchableOperations(tx, accountId, identity, [...new Set([...memeSource.map((s) => s.operationId), ...dec.confirmed])]))
+          .map((o) => ({ ...o, sameSource: memeSource.some((s) => s.operationId === o.id) }));
+        const aExaminer = ops.filter((o) => needsEconomicMembers(identity, o)).map((o) => o.id);
+        if (aExaminer.length) {
+          const infos = await loadOperationMembers(tx, accountId, aExaminer, { fileId, candidateKey: c.candidateKey });
+          ops = ops.map((o) => {
+            const i = infos.get(o.id);
+            return i ? { ...o, members: i.members, ...(o.sameSource ? { sameSourceMethod: i.ownMethod, sameSourceSolo: i.ownSolo } : {}) } : o;
+          });
+        }
+        const ctx = {
+          operations: ops, confirmed: dec.confirmed, rejected: dec.rejected, assetStatus: actx.status,
+          userDistinct: dec.userDistinct, nonMergeable: await loadNonMergeable(tx, accountId, ops.map((o) => o.id)),
+        };
+        const d = decideCandidate(identity, ctx);
+        const propres = [...new Set(memeSource.map((s) => s.operationId))];
+        // Décision NORMALE qui réunit déjà le document à une autre Opération (série établie, référence,
+        // décision utilisateur : fusion de fragments) — la consolidation T3 du document suffit.
+        if (d.outcome === 'MATCH_AND_ENRICH' && d.operationId !== null && (!propres.includes(d.operationId) || (d.mergeIds?.length ?? 0) > 0)) {
+          const cible = propres.includes(d.operationId) ? d.mergeIds![0] : d.operationId;
+          out.set(opId, {
+            operationId: opId, fileId, candidateKey: c.candidateKey, retroPending: retroActive(c.t3Detail), designations: d.detail.designations ?? [],
+            level: 'CERTAIN', targetOperationId: cible, plausibleOperationIds: [], why: `${d.matchMethod ?? ''} ${d.reason}`.trim(),
+          });
+          break;
+        }
+        const rd = await retroDecision(tx, accountId, identity, d, ctx, propres, c.t3Detail);
+        if ('notApplicable' in rd) continue;
+        const { xOp, d2 } = rd;
+        const base = {
+          operationId: opId, fileId, candidateKey: c.candidateKey, retroPending: retroActive(c.t3Detail),
+          designations: d2.detail.designations ?? [],
+        };
+        if (d2.outcome === 'MATCH_AND_ENRICH' && d2.operationId !== null && d2.operationId !== xOp.id && !d2.mergeIds?.length) {
+          const yOp = ops.find((o) => o.id === d2.operationId);
+          if (!yOp || yOp.invalidated || !operationsMergeable(xOp, yOp, ctx.nonMergeable, { semantic: true })) continue;
+          out.set(opId, { ...base, level: 'CERTAIN', targetOperationId: yOp.id, plausibleOperationIds: [], why: `${d2.matchMethod ?? ''} ${d2.reason}`.trim() });
+          break;
+        }
+        if (d2.outcome === 'HOLD_UNRESOLVED' && d2.reason === 'M3_REQUIRED') {
+          out.set(opId, { ...base, level: 'M3_REQUIRED', targetOperationId: null, plausibleOperationIds: [...d2.detail.plausible].sort((a, b) => a - b), why: 'M3_REQUIRED' });
+          break;
+        }
+        if (d2.outcome === 'ARBITRATION_REQUIRED') {
+          out.set(opId, { ...base, level: 'ARBITRATION', targetOperationId: null, plausibleOperationIds: [...(d2.arbitration?.operationIds ?? [])].sort((a, b) => a - b), why: d2.reason });
+          break;
+        }
+      }
+    }
+    throw ANNULEE;
+  }).catch((e) => { if (e !== ANNULEE) throw e; });
+  return out;
+}
+
+// ── Lot 86C : dates contractuelles non justifiées, en SIMULATION (contrôle de cohérence) ──
+
+/** Écart entre les dates contractuelles enregistrées et celles que les sources établissent. */
+export interface ContractDatesPreview {
+  operationId: number;
+  typeCode: 'CONTRACT' | 'FINANCING';
+  stored: { startDate: string | null; endDate: string | null; effectiveFrom: string | null; effectiveTo: string | null };
+  expected: { startDate: string | null; endDate: string | null; effectiveFrom: string | null; effectiveTo: string | null };
+  /** Champs divergents (`startDate`, `endDate`, `effectiveFrom`, `effectiveTo`). */
+  fields: string[];
+  /** Une date enregistrée n'est plus justifiée par aucune source contractuelle (période facturée, source retirée). */
+  unproven: boolean;
+}
+
+/**
+ * Lot 86C — dates d'une relation durable (contrat, financement) RECALCULÉES
+ * par le modèle de consolidation T3 (`consolidateOperationState` : seules les
+ * sources CONTRACTUELLES datent un contrat), en LECTURE dans une transaction
+ * toujours annulée, sans IA : Opérations dont la date d'effet / de fin
+ * enregistrée ne correspond plus à ses preuves (fin de période facturée prise
+ * pour une fin de contrat, source retirée). Dates de l'Opération comparées
+ * seulement quand toutes ses sources sont gérées par T3 (même règle que la
+ * reconsolidation : une saisie n'est jamais recalculée).
+ */
+export async function previewContractDates(accountId: number, operationIds: readonly number[], today: string = todayUtc()): Promise<Map<number, ContractDatesPreview>> {
+  const out = new Map<number, ContractDatesPreview>();
+  const ids = [...new Set(operationIds)].filter((x) => Number.isSafeInteger(x) && x > 0).sort((a, b) => a - b);
+  if (!ids.length) return out;
+  const { db } = await import('@/db');
+  const ANNULEE = Symbol('simulation annulée');
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`SET LOCAL lock_timeout = '2s'`);
+    const ops = await rows<Row>(tx, sql`
+      SELECT o.id, o.type_code, o.start_date::text AS start_date, o.end_date::text AS end_date,
+             COALESCE(cd.effective_from, fd.effective_from)::text AS effective_from, COALESCE(cd.effective_to, fd.effective_to)::text AS effective_to
+        FROM business_operations o
+        LEFT JOIN business_operation_contract_details cd ON cd.operation_id = o.id AND o.type_code = 'CONTRACT'
+        LEFT JOIN business_operation_financing_details fd ON fd.operation_id = o.id AND o.type_code = 'FINANCING'
+       WHERE o.account_id = ${accountId} AND o.id = ANY(${intArray(ids)}::bigint[]) AND o.type_code IN ('CONTRACT', 'FINANCING')
+         AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`);
+    for (const o of ops) {
+      const opId = Number(o.id);
+      const typeCode = String(o.type_code) as 'CONTRACT' | 'FINANCING';
+      const srcRows = await rows<Row>(tx, sql`
+        SELECT id, source_kind, source_entity_key, locator->>'candidateKey' AS key,
+               CASE WHEN source_kind = 'ASSET_DATA' THEN locator->>'nature' END AS nature,
+               CASE WHEN source_kind = 'AGENDA' THEN locator->>'agenda' END AS agenda,
+               CASE WHEN source_kind = ${DECISION_SOURCE_KIND} AND locator ? 'decision' THEN locator END AS decision
+          FROM business_operation_sources WHERE operation_id = ${opId} AND account_id = ${accountId} AND active ORDER BY id`);
+      const sources: OpSource[] = srcRows.map((x) => ({
+        id: Number(x.id), kind: String(x.source_kind), entityKey: String(x.source_entity_key), key: (x.key as string | null) ?? null,
+        nature: (x.nature as string | null) ?? null,
+        managed: (x.source_kind === 'DOCUMENT' && x.key !== null) || (x.source_kind === 'ASSET_DATA' && x.nature !== null)
+          || (x.source_kind === 'AGENDA' && x.agenda !== null),
+        decision: (x.decision as Record<string, unknown> | null) ?? null,
+      }));
+      const agendaCtx: AgendaContext = { operationId: opId, operationType: typeCode, today, otherSupport: sources.some((x) => x.kind !== 'AGENDA' && x.decision === null) };
+      const contributions: SourceContribution[] = [];
+      for (const src of sources.filter((x) => x.managed)) {
+        const c = await contributionOf(tx, accountId, src, agendaCtx);
+        if (c && 'identity' in c) contributions.push(c);
+      }
+      const probantes = contributions.filter((c) => !isEnrichmentOnly(c));
+      if (!probantes.length) continue;
+      const state = applyAgendaAuthority(applyStructuredAuthority(consolidateOperationState(typeCode, probantes, today), contributions, today), probantes, agendaCtx.otherSupport);
+      const fullyManaged = sources.filter((x) => !x.managed && x.decision === null).length === 0;
+      const details = typeCode === 'CONTRACT' ? state.contract : state.financing;
+      const stored = {
+        startDate: (o.start_date as string | null) ?? null, endDate: (o.end_date as string | null) ?? null,
+        effectiveFrom: (o.effective_from as string | null) ?? null, effectiveTo: (o.effective_to as string | null) ?? null,
+      };
+      const expected = {
+        startDate: fullyManaged ? state.startDate : stored.startDate, endDate: fullyManaged ? state.endDate : stored.endDate,
+        effectiveFrom: details?.effectiveFrom ?? null, effectiveTo: details?.effectiveTo ?? null,
+      };
+      const fields = (['startDate', 'endDate', 'effectiveFrom', 'effectiveTo'] as const).filter((k) => stored[k] !== expected[k]);
+      if (!fields.length) continue;
+      out.set(opId, { operationId: opId, typeCode, stored, expected, fields, unproven: fields.some((k) => stored[k] !== null && expected[k] === null) });
     }
     throw ANNULEE;
   }).catch((e) => { if (e !== ANNULEE) throw e; });
@@ -1423,7 +1722,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       cards.reviewedFiles.push(fileId);
       // Lot 78A (§2A) : identités de tous les candidats actifs du document, et
       // Opérations où chacun a déjà sa source (doublons d'un même document à la réanalyse).
-      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms })]));
+      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers })]));
       const opsDuDocument = new Map<number, CandidateIdentity[]>();
       for (const s of docSources.filter((x) => x.active && !x.opMerged && !x.opInvalidated)) {
         const autre = actifs.find((x) => x.candidateKey === s.key);

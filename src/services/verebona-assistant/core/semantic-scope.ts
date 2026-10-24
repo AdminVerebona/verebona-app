@@ -205,8 +205,19 @@ function consumedByStem(w: string, consommes: ReadonlySet<string>): boolean {
 // ══════════════════════════════════════════════════════════════════════════
 export type DateMeaning = 'contract_end' | 'next_due' | 'event_date' | 'document_date' | 'effective_date' | 'unknown';
 
-/** Signification d'une date d'événement (pure, testée) — registre et catalogue, jamais le titre. */
-export function eventDateMeaning(e: { nature?: string | null; businessType?: string | null; originFieldKey?: string | null }): DateMeaning {
+/**
+ * Signification d'une date d'événement (pure, testée) — registre et catalogue, jamais le titre.
+ * Lot 86C : une échéance TERMINALE (« fin ») n'est une fin certaine que si sa
+ * PROVENANCE la justifie (champ métier qualifié, fin de contrat établie
+ * projetée, saisie de l'utilisateur) ; un élément automatique sans provenance
+ * contractuelle (`provenance: 'UNPROVEN'`) n'est jamais présenté comme une fin.
+ */
+export function eventDateMeaning(e: { nature?: string | null; businessType?: string | null; originFieldKey?: string | null; provenance?: string | null }): DateMeaning {
+  const sens = eventDateMeaningRaw(e);
+  return sens === 'contract_end' && e.provenance === 'UNPROVEN' ? 'unknown' : sens;
+}
+
+function eventDateMeaningRaw(e: { nature?: string | null; businessType?: string | null; originFieldKey?: string | null }): DateMeaning {
   const effet = e.originFieldKey ? getField(e.originFieldKey)?.agendaEffect : undefined;
   const nature = e.nature ?? effet?.nature ?? null;
   const type = e.businessType ?? effet?.businessType ?? null;

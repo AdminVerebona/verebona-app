@@ -269,8 +269,9 @@ describe('couleurs des rubriques', () => {
   });
 
   it('les libellés du référentiel sont ceux de la maquette', () => {
+    // Lot 86E : « Équipements et mobilier » après « Propriété et gestion ».
     expect(RUBRICS.map((r) => r.label)).toEqual([
-      'Propriété et gestion', 'Contrats, garanties et notices', 'Entretien et travaux', 'Assurances et sinistres',
+      'Propriété et gestion', 'Équipements et mobilier', 'Contrats, garanties et notices', 'Entretien et travaux', 'Assurances et sinistres',
       'Contrôles et conformité', 'Photos et vidéos', 'Gestion locative', 'Autres documents',
     ]);
   });

@@ -25,7 +25,7 @@ import {
 import {
   FileText, Download, Trash2, ExternalLink, Loader2,
   Calendar, Euro, User, FileQuestion, Pencil, Building2, LayoutGrid, Wrench, Wand2, Check, CalendarPlus, X,
-  Sparkles, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Lock, RefreshCw, ChevronLeft, ChevronRight,
+  Sparkles, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Lock, RefreshCw, ChevronLeft, ChevronRight, Unlink,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
 
@@ -43,8 +43,7 @@ import { analyzeErrorFeedback, type AnalyzeFeedback } from './document-analysis-
 import { apiClient } from '@/lib/api-client';
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
-import { DOCUMENT_TYPE_LABELS as FALLBACK_TYPE_LABELS } from '@/lib/document-type-constants';
-import { resolveDocumentTypeCode } from '@/lib/referential/document-codes';
+import { documentTypeDisplayLabel } from '@/lib/referential/v2';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { openDrawer, restoreFocusOnClose } from '@/lib/drawers';
 import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
@@ -68,7 +67,14 @@ export interface DocumentDrawerItem {
   id: number;
   originalFilename: string;
   mimeType: string;
+  /** Code V1 historique (colonne `document_type`) : jamais affiché (lot 86E). */
   documentType: string;
+  /**
+   * Lot 86E : Type V2 enregistré, s'il est connu de l'écran appelant — l'en-tête
+   * l'affiche avant le chargement complet du document. Absent : pas de pastille
+   * tant que le document n'est pas chargé (jamais « Autre » par défaut).
+   */
+  documentTypeCode?: string | null;
   documentDate?: string | null;
   uploadedAt?: string | null;
   size?: number;
@@ -84,7 +90,8 @@ interface FullFileData {
   documentTypeCode: string | null;
   originalFilename: string;
   mimeType: string;
-  documentType: string;
+  /** Code V1 historique, tel qu'enregistré (jamais réécrit ni affiché par le tiroir, lot 86E). */
+  documentType: string | null;
   retainedTitle: string | null;
   retainedFunctionCode: string | null;
   documentDate: string | null;
@@ -293,7 +300,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [editFilename, setEditFilename] = useState('');
-  const [editDocType, setEditDocType] = useState('');
   // Rubrique / Type V2 — auparavant dans un tiroir séparé ouvert par le bas.
   const [editClassement, setEditClassement] = useState<RubricTypeValue>({ rubricCode: null, documentTypeCode: null });
   const [editDocDate, setEditDocDate] = useState('');
@@ -309,7 +315,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [assetsList, setAssetsList] = useState<{ id: number; name: string; category: string }[]>([]);
   const [substructuresList, setSubstructuresList] = useState<{ id: number; name: string }[]>([]);
   const [equipmentsList, setEquipmentsList] = useState<{ id: number; name: string }[]>([]);
-  const [docTypes, setDocTypes] = useState<{ code: string; label: string }[]>([]);
   const [supplierDrawerOpen, setSupplierDrawerOpen] = useState(false);
   const [supplierDrawerId, setSupplierDrawerId] = useState<number | null>(null);
 
@@ -374,17 +379,49 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     const r = await apiClient.get<{ candidates: Array<{ id: number; title: string; meta: string | null }> }>(`/api/documents/${doc.id}/agenda-liens?candidats=1&q=${encodeURIComponent(q)}`);
     return r?.candidates ?? [];
   }, [doc?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Lot 86D : liste des éléments liés relue après un geste, ici ou dans un autre tiroir
+  // (`agenda-mutated` : tiroir d'un élément d'agenda ouvert en même temps) — synchronisation immédiate.
+  const rechargerElementsAgenda = useCallback(async () => {
+    if (!doc) return;
+    try {
+      const r = await fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' });
+      const data = r.ok ? await r.json() : null;
+      if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null, effectiveStatus: i.effectiveStatus })));
+    } catch { /* liste inchangée */ }
+  }, [doc?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!open || !doc) return;
+    const h = () => { void rechargerElementsAgenda(); };
+    window.addEventListener('agenda-mutated', h);
+    return () => window.removeEventListener('agenda-mutated', h);
+  }, [open, doc?.id, rechargerElementsAgenda]); // eslint-disable-line react-hooks/exhaustive-deps
   const relierAgenda = async (itemId: number) => {
     if (!doc) return;
     try {
       await apiClient.post(`/api/documents/${doc.id}/agenda-liens`, { itemId });
       toast.success('Document relié');
       window.dispatchEvent(new CustomEvent('agenda-mutated'));
-      const r = await fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' });
-      const data = r.ok ? await r.json() : null;
-      if (data?.items) setLinkedAgendaItems(data.items.map((i: any) => ({ id: i.id, title: i.title, startDate: i.startDate ?? null, effectiveStatus: i.effectiveStatus })));
+      await rechargerElementsAgenda();
     } catch (err: any) {
       if (err?.status !== 403) toast.error(err?.serverMessage || err?.message || 'Le lien n’a pas pu être créé');
+    }
+  };
+  // Lot 86D (ticket « Documents / Agenda » §2) : détacher ce document d'UN élément d'agenda —
+  // le document, l'élément et leurs autres liens restent ; décision mémorisée côté serveur.
+  const [detachingAgendaId, setDetachingAgendaId] = useState<number | null>(null);
+  const detacherAgenda = async (itemId: number) => {
+    if (!doc) return;
+    setDetachingAgendaId(itemId);
+    try {
+      await apiClient.delete(`/api/documents/${doc.id}/agenda-liens?itemId=${itemId}`);
+      setLinkedAgendaItems((l) => l.filter((x) => x.id !== itemId));
+      toast.success(GROUPING_LABELS.detachedToast);
+      window.dispatchEvent(new CustomEvent('agenda-mutated'));
+      await rechargerElementsAgenda();
+    } catch (err: any) {
+      if (err?.status !== 403) toast.error(err?.serverMessage || err?.message || 'Le lien n’a pas pu être retiré');
+    } finally {
+      setDetachingAgendaId(null);
     }
   };
 
@@ -507,11 +544,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     const load = async () => {
       setIsLoadingPreview(true);
       try {
-        const [fileData, viewData, assetsData, typesData, proposalsRes, agendaRes] = await Promise.allSettled([
+        const [fileData, viewData, assetsData, proposalsRes, agendaRes] = await Promise.allSettled([
           apiClient.get<any>(`/api/files/${doc.id}`),
           apiClient.get<{ viewUrl: string }>(`/api/files/${doc.id}/view`),
           apiClient.get<any>('/api/assets?limit=100', { useCache: true }),
-          apiClient.get<any>('/api/document-types', { useCache: true }),
           fetch(`/api/documents/${doc.id}/analysis-proposals`, { credentials: 'include' }),
           fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' }),
         ]);
@@ -525,7 +561,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
             documentTypeCode: f.documentTypeCode ?? f.document_type_code ?? null,
             originalFilename: f.originalFilename ?? f.original_filename,
             mimeType: f.mimeType ?? f.mime_type,
-            documentType: f.documentType ?? f.document_type ?? 'AUTRE',
+            documentType: f.documentType ?? f.document_type ?? null,
             retainedTitle: f.retainedTitle ?? f.retained_title ?? null,
             retainedFunctionCode: f.retainedFunctionCode ?? f.retained_function_code ?? null,
             documentDate: f.documentDate ?? f.document_date ?? null,
@@ -557,11 +593,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           const raw = assetsData.value;
           const list = Array.isArray(raw) ? raw : (raw?.data ?? []);
           setAssetsList(list.map((a: any) => ({ id: a.id, name: a.name, category: a.category })));
-        }
-        if (typesData.status === 'fulfilled') {
-          const raw = typesData.value;
-          const list: any[] = raw?.documentTypes ?? raw?.data ?? (Array.isArray(raw) ? raw : []);
-          setDocTypes(list.filter((t: any) => t.isActive && !t.hideFromPicker).map((t: any) => ({ code: t.code, label: t.label })));
         }
 
         // Load linked agenda items — keep parsed data to filter suggestions below
@@ -695,7 +726,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     // Lot 33C : le champ part du titre AFFICHÉ (titre métier), plus du nom
     // de fichier — réenregistrer écrasait le titre par « <uuid>.pdf ».
     setEditFilename(displayDocumentTitle(fullData, ''));
-    setEditDocType(fullData.documentType ?? 'AUTRE');
     setEditClassement({ rubricCode: fullData.rubricCode, documentTypeCode: fullData.documentTypeCode });
     setEditDocDate(fullData.documentDate ?? '');
     setEditSupplier(fullData.supplier ?? '');
@@ -762,12 +792,15 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     setIsSaving(true);
     try {
       const amountCents = montant.cents;
-      const validDocType = resolveDocumentTypeCode(editDocType);
+      // Lot 86E : le tiroir ne modifie plus le code V1 historique. Le
+      // « normaliser » ici transformait une nature reconnue sans équivalent V1
+      // (« BON_COMMANDE ») en « AUTRE » à chaque enregistrement — et la marquait
+      // comme un choix de l'utilisateur. Le Type se modifie par le classement
+      // (Rubrique / Type), seule valeur affichée.
       // Compute userEditedFields: mark fields that differ from what AI detected
     const userEdited: Record<string, boolean> = { ...(fullData.userEditedFields ?? {}) };
     if (fullData.lastAnalysisAt) {
       if (editFilename.trim() !== displayDocumentTitle(fullData, '')) userEdited.retainedTitle = true;
-      if (validDocType !== fullData.documentType) userEdited.retainedFunctionCode = true;
       if ((editDocDate || null) !== fullData.documentDate) userEdited.documentDate = true;
       if ((editSupplier.trim() || null) !== fullData.supplier) userEdited.supplier = true;
       const newAmt = amountCents;
@@ -781,7 +814,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         body: JSON.stringify({
           fileName: editFilename.trim(),
           retainedTitle: editFilename.trim(),
-          documentType: validDocType,
           documentDate: editDocDate || null,
           assetId: editAssetId,
           substructureId: editSubstructureId,
@@ -822,7 +854,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       setFullData(prev => prev ? {
         ...prev,
         retainedTitle: editFilename.trim(),
-        documentType: editDocType || 'AUTRE',
         documentDate: editDocDate || null,
         supplier: editSupplier.trim() || null,
         amountCents: isNaN(amountCents as number) ? null : amountCents,
@@ -842,7 +873,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     } finally {
       setIsSaving(false);
     }
-  }, [doc, fullData, editFilename, editDocType, editClassement, editDocDate, editSupplier, editAmount, editDescription, editNotes, editAssetId, editSubstructureId, editEquipmentId, onRefresh]);
+  }, [doc, fullData, editFilename, editClassement, editDocDate, editSupplier, editAmount, editDescription, editNotes, editAssetId, editSubstructureId, editEquipmentId, onRefresh]);
 
   const handleAnalyze = useCallback(async () => {
     if (!doc) return;
@@ -948,7 +979,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           documentTypeCode: rf.documentTypeCode ?? rf.document_type_code ?? null,
           originalFilename: rf.originalFilename ?? rf.original_filename,
           mimeType: rf.mimeType ?? rf.mime_type,
-          documentType: rf.documentType ?? rf.document_type ?? 'AUTRE',
+          documentType: rf.documentType ?? rf.document_type ?? null,
           retainedTitle: rf.retainedTitle ?? rf.retained_title ?? null,
           retainedFunctionCode: rf.retainedFunctionCode ?? rf.retained_function_code ?? null,
           documentDate: rf.documentDate ?? rf.document_date ?? null,
@@ -1090,9 +1121,12 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
   if (!doc) return null;
 
-  const getTypeLabel = (code: string) =>
-    docTypes.find(t => t.code === code)?.label ?? FALLBACK_TYPE_LABELS[code] ?? code;
-  const typeLabel = getTypeLabel(fullData?.documentType ?? doc.documentType);
+  // Lot 86E (ticket §5) : un seul libellé de Type, celui du Type ENREGISTRÉ
+  // (référentiel V2), le même que la liste et la section « Informations » —
+  // plus le code V1 historique (« BON_COMMANDE » brut, ou « Autre » par défaut).
+  const typeLabel = fullData
+    ? documentTypeDisplayLabel(fullData.documentTypeCode)
+    : doc.documentTypeCode !== undefined ? documentTypeDisplayLabel(doc.documentTypeCode) : null;
   // Lot 33C (AC8) : titre métier → nom original exploitable → nom technique.
   const filename = displayDocumentTitle(fullData ?? { originalFilename: doc.originalFilename }, doc.originalFilename);
 
@@ -1116,7 +1150,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 <SheetTitle className="leading-tight line-clamp-2 text-left">
                   {isEditing ? editFilename || filename : filename}
                 </SheetTitle>
-                <Badge variant="outline" className="mt-1.5 text-xs">{typeLabel}</Badge>
+                {typeLabel && <Badge variant="outline" className="mt-1.5 text-xs">{typeLabel}</Badge>}
               </div>
             </div>
 
@@ -1592,23 +1626,11 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         <span className="font-medium text-xs">{rubricTypeLabels(fullData).rubric}</span>
                       </div>
                     )}
-                    {/* Type : V2 si le document est classé, sinon libellé V1 historique */}
-                    {fullData && rubricTypeLabels(fullData).rubric ? (
+                    {/* Type : toujours le Type V2 enregistré (lot 86E), « Type à compléter » sinon */}
+                    {fullData && (
                       <div className="flex items-center justify-between">
                         <span className="text-muted-foreground">Type</span>
-                        <span className="font-medium text-xs">{rubricTypeLabels(fullData).type ?? 'Type à compléter'}</span>
-                      </div>
-                    ) : (fullData?.retainedFunctionCode || fullData?.documentType) && (
-                      <div className="flex items-center justify-between">
-                        <span className="text-muted-foreground">Type</span>
-                        <div className="flex items-center gap-1">
-                          <span className="font-medium text-xs">
-                            {getTypeLabel(fullData?.retainedFunctionCode ?? fullData?.documentType ?? '')}
-                          </span>
-                          {fullData?.lastAnalysisAt && !fullData?.userEditedFields?.retainedFunctionCode && (
-                            <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
-                          )}
-                        </div>
+                        <span className="font-medium text-xs">{rubricTypeLabels(fullData).type}</span>
                       </div>
                     )}
                     {/* Date du document */}
@@ -1743,6 +1765,16 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                             meta={item.startDate ? fmt(item.startDate) : undefined}
                             // Tiroir local : sa modification relit la liste ci-dessus.
                             onOpen={() => { void openLinkedAgendaItem(item.id); }}
+                            // Lot 86D : détachement individuel (desktop et mobile : cible 44 px sur mobile).
+                            actions={(
+                              <button type="button" disabled={detachingAgendaId === item.id}
+                                onClick={() => garder(() => { void detacherAgenda(item.id); })}
+                                aria-label={GROUPING_LABELS.detachItemFromDocument(item.title)} title={GROUPING_LABELS.detach}
+                                data-testid={`document-detacher-agenda-${item.id}`}
+                                className="inline-flex size-11 sm:size-8 items-center justify-center rounded-[10px] text-[color:var(--text-muted)] hover:bg-[color:var(--danger-soft)] hover:text-[color:var(--danger)] disabled:opacity-40">
+                                {detachingAgendaId === item.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" aria-hidden /> : <Unlink className="w-3.5 h-3.5" aria-hidden />}
+                              </button>
+                            )}
                             badges={loadingAgendaItem === item.id ? (
                               <Loader2 className="w-3 h-3 animate-spin shrink-0 text-muted-foreground" />
                             ) : (<>

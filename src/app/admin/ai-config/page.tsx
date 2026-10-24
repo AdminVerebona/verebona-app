@@ -18,7 +18,12 @@
  *   · « Exporter la configuration » : la configuration ACTIVE enregistrée,
  *     fichier validé par le serveur ; avertit si des modifications ne sont
  *     pas enregistrées ; indique si elle a changé depuis le dernier export.
- *   · Aucune publication ni activation vers la production.
+ *   · Lot 86B (Pilotage IA V2 P6) : « Importer une configuration » (fichier
+ *     global 2.0.0 : prévisualisation des écarts et des modifications locales
+ *     écrasées, confirmation, tout ou rien, historique, retour à la
+ *     configuration antérieure) ; exclusions / gels manuels et état de
+ *     routage par opération (`ConfigImport`, `ProductionRouting`). Rien
+ *     n'est jamais envoyé automatiquement d'un environnement à l'autre.
  *
  * Desktop et mobile : mêmes composants, actions en `flex-wrap`, listes en
  * colonne sous `sm`.
@@ -42,11 +47,14 @@ import { TreatmentStateControl, type TreatmentRuntimeState } from './_components
 import { AssistantSettings } from './_components/AssistantSettings';
 import { ModelRegistry } from './_components/ModelRegistry';
 import { ModelCapabilities } from './_components/ModelCapabilities';
+import { CoupleQualification } from './_components/CoupleQualification';
 import { OperationProfilesEditor, type OperationProfile, type ProfiledOperation, type PlanView } from './_components/OperationProfilesEditor';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { CatalogBanners } from './_components/CatalogBanners';
 import { ConfigExecutionWarning } from './_components/ConfigExecutionWarning';
+import { ConfigImport } from './_components/ConfigImport';
+import { ProductionRouting } from './_components/ProductionRouting';
 import { useUnsavedNavigationGuard } from './_components/useUnsavedNavigationGuard';
 import { TriggersEditor } from './_components/TriggersEditor';
 import { createEditTracker } from './_components/edit-tracker';
@@ -148,6 +156,9 @@ interface Version {
   updatedByEmail?: string | null;
   deletedAt: string | null;
   currentRevisionNumber: number | null;
+  /** Lot 86A : `auto` = candidate automatique (jamais active pendant ses tests). */
+  origin?: 'manual' | 'auto';
+  candidateState?: string | null;
 }
 
 interface MasterPromptRef { versionId: number; versionNumber: number; masterPromptCode: string; contentSha256: string }
@@ -215,6 +226,11 @@ function versionName(v: Pick<Version, 'visibleNumber' | 'label' | 'id'>): string
 }
 
 const dateHeure = (d: string | null | undefined) => (d ? new Date(d).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '—');
+
+/** Lot 86A : cycle d'une candidate automatique (VER-01). */
+const CANDIDATE_STATE_LABELS: Record<string, string> = {
+  CREATED: 'créée', QUALIFYING: 'en test', QUALIFIED: 'qualifiée', REFUSED: 'refusée', INCONCLUSIVE: 'non concluante', ACTIVATED: 'activée', NOT_CHOSEN: 'non retenue',
+};
 
 function StateBadge({ v, environment }: { v: Pick<Version, 'active' | 'stateLabel'>; environment: string }) {
   const label = v.stateLabel ?? (v.active ? (environment === 'production' ? 'Active en production' : 'Active en préproduction') : 'Non active');
@@ -575,6 +591,7 @@ export default function AiConfigPage() {
   const [revisionView, setRevisionView] = useState<null | { revision: Revision; text: string; identical: boolean; masterPromptChanges: Array<{ treatment: string; current: string | null; revision: string | null }>; isCurrent: boolean }>(null);
   const [exportState, setExportState] = useState<ExportState | null>(null);
   const [promptsKey, setPromptsKey] = useState(0);
+  const [routingKey, setRoutingKey] = useState(0);
 
   const promptsDirty = Object.keys(promptChoices).length > 0;
   const hasUnsaved = dirty.size > 0 || promptsDirty || metaDirty;
@@ -1012,8 +1029,9 @@ export default function AiConfigPage() {
           </p>
         )}
         <p className="text-xs text-[color:var(--text-muted)]">
-          Fichier JSON complet et autonome (prompts maîtres, modèles et replis, paramètres, déclencheurs, garde-fous) destiné au
-          paramétrage de la production — sans clé API ni secret ; les paramètres sensibles à renseigner séparément y sont listés.
+          Fichier JSON complet et autonome (format 2.0.0 : prompts maîtres, modèles et replis, profils par opération, couples autorisés,
+          preuves de qualification, politiques, seuils en lecture, compatibilité applicative, signature d’intégrité) destiné à l’import
+          complet dans un autre environnement — sans clé API ni secret ; les paramètres propres à l’environnement y sont listés.
           Aucune opération n’est faite en production.
         </p>
         {(exportState?.exports.length ?? 0) > 0 && (
@@ -1034,6 +1052,15 @@ export default function AiConfigPage() {
         )}
       </section>
 
+      {/* Lot 86B (P6) : import complet et atomique, historique et retour arrière. */}
+      <ConfigImport environment={environment} hasUnsaved={hasUnsaved} onChanged={() => {
+        void reloadList(); void loadExportState(); setRoutingKey((k) => k + 1); setPromptsKey((k) => k + 1);
+        if (current && !hasUnsaved) void openVersion(current.id);
+      }} />
+
+      {/* Lot 86B (P6) : exclusions / gels manuels et routage subordonné par opération. */}
+      <ProductionRouting refreshKey={routingKey} />
+
       {/* BO-IA-PROMPTS-01 : prompts maîtres — une activation crée une révision de la configuration active. */}
       <MasterPrompts refreshKey={promptsKey} onChanged={() => { void reloadList(); if (current?.active && !hasUnsaved) void openVersion(current.id); }} />
 
@@ -1045,6 +1072,9 @@ export default function AiConfigPage() {
 
       {/* Lot 85C (Pilotage IA V2 P4) : capacités des modèles, lecture seule. */}
       <ModelCapabilities />
+
+      {/* Lot 86A (Pilotage IA V2 P5) : qualification par couple, seuils (lecture), candidates, test manuel. */}
+      <CoupleQualification key={current?.id ?? 'active'} versionId={current?.id ?? null} />
 
       {/* Liste des versions */}
       <section className="space-y-2">
@@ -1059,6 +1089,11 @@ export default function AiConfigPage() {
             <div key={v.id} className={`px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2 ${current?.id === v.id ? 'bg-[color:var(--accent-soft)]' : ''}`}>
               <div className="flex-1 min-w-0 flex flex-wrap items-center gap-2">
                 <StateBadge v={v} environment={environment} />
+                {v.origin === 'auto' && (
+                  <span data-testid="candidate-badge" className="shrink-0 text-xs px-2 py-0.5 rounded-full border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)]">
+                    Candidate automatique{v.candidateState ? ` · ${CANDIDATE_STATE_LABELS[v.candidateState] ?? v.candidateState}` : ''}
+                  </span>
+                )}
                 <span className="text-sm text-[color:var(--text-primary)] break-words">{versionName(v)}</span>
                 <span className="text-xs text-[color:var(--text-muted)]">
                   r{v.currentRevisionNumber ?? 1} · modifiée {dateHeure(v.updatedAt ?? v.createdAt)}{v.updatedByEmail ? ` par ${v.updatedByEmail}` : ''}

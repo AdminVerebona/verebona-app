@@ -544,5 +544,7 @@ scenario('L85B', 'Cohérence C7 : familles « À traiter », réévaluation hist
     const alertes = await sql<Json[]>`SELECT fingerprint, status, title FROM admin_anomalies WHERE fingerprint LIKE 'other:coherence:%' AND status = 'open' ORDER BY fingerprint`;
     expect(alertes.map((a) => a.fingerprint)).toEqual(expect.arrayContaining(['other:coherence:campaign:daily', 'other:coherence:coh-tco-extracted-expenses:persistent']));
     expect(alertes.find((a) => a.fingerprint === 'other:coherence:campaign:daily')!.title).toMatch(/partielle \(non exhaustive\)/);
-  });
+  // Lot 86E : jeu volumineux × un contrôle de plus (COH-DOC-CLASSIFICATION, ~150 objets) — délai du test
+  // porté à 180 s (machine partagée) ; les mesures par objet restent vérifiées ci-dessus.
+  }, 180_000);
 });

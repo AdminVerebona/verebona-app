@@ -6,6 +6,9 @@
  *   GET  /api/documents/:id/agenda-liens?candidats&q=  éléments d'agenda à relier
  *   POST /api/documents/:id/agenda-liens { itemId } lien manuel Document ↔ Agenda : le document rejoint
  *                                                  l'ensemble de l'élément (créé au besoin) — AC01
+ *   DELETE /api/documents/:id/agenda-liens?itemId=  lot 86D : détache ce document de CET élément (lien
+ *                                                  individuel, toutes provenances ; décision mémorisée) —
+ *                                                  le document, l'élément et leurs autres liens restent
  *
  * Compte ACTIF seulement ; écriture refusée en lecture seule (403).
  */
@@ -77,6 +80,36 @@ export async function POST(req: NextRequest, context: RouteContext) {
     return NextResponse.json({ links: await getDocumentAgendaLinks(c.accountId, c.id) });
   } catch (err) {
     console.error('[api/documents/:id/agenda-liens] POST', err);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+  }
+}
+
+/** Lot 86D (ticket « Documents / Agenda » §2) : détachement individuel depuis le tiroir du document. */
+export async function DELETE(req: NextRequest, context: RouteContext) {
+  try {
+    const c = await compte(req, context);
+    if (c instanceof NextResponse) return c;
+    const refus = await refuserSiLectureSeule(c.accountId);
+    if (refus) return refus;
+    const itemId = Number(new URL(req.url).searchParams.get('itemId'));
+    if (!Number.isSafeInteger(itemId) || itemId <= 0) return NextResponse.json({ error: 'Élément invalide.' }, { status: 400 });
+    const { applyAgendaDrawerAction } = await import('@/services/business-operations/grouping/drawer-actions');
+    const { GroupingError } = await import('@/services/business-operations/grouping/service');
+    let changed = false;
+    try {
+      changed = (await applyAgendaDrawerAction({ accountId: c.accountId, actorUserId: c.userId, itemId, action: 'detacher-document', targetId: c.id })).changed;
+    } catch (e) {
+      if (e instanceof GroupingError) {
+        const introuvable = e.code === 'ITEM_NOT_FOUND' || e.code === 'CROSS_ACCOUNT' || e.code === 'DOCUMENT_NOT_FOUND';
+        return NextResponse.json({ error: introuvable ? 'Élément ou document introuvable.' : 'Ce lien n’a pas pu être retiré.', code: e.code }, { status: introuvable ? 404 : 409 });
+      }
+      throw e;
+    }
+    await emitBusinessEvent({ type: 'AGENDA_ITEM_UPDATED', accountId: c.accountId, entityId: itemId });
+    const { getDocumentAgendaLinks } = await import('@/services/business-operations/grouping/read');
+    return NextResponse.json({ changed, links: await getDocumentAgendaLinks(c.accountId, c.id) });
+  } catch (err) {
+    console.error('[api/documents/:id/agenda-liens] DELETE', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

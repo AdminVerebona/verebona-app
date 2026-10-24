@@ -51,6 +51,9 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'ai_evaluator_runs', 'ai_master_corpus_runs', 'ai_master_prompt_test_runs', 'ai_prompt_test_runs', 'ai_model_qualification',
   // Lot 85C : journal des changements de capacités des modèles (trace, comme la qualification).
   'ai_model_capability_changes',
+  // Lot 86A (décision 13) : campagnes, verrous, preuves et cas de qualification — rapports de tests
+  // consultables après une restauration (une campagne restaurée ne perd jamais sa preuve).
+  'ai_qualification_campaigns', 'ai_qualification_campaign_accounts', 'ai_qualification_evidence', 'ai_qualification_cases',
   'email_logs', 'email_provider_events', 'stripe_webhook_logs', 'legal_audit_log',
 ];
 

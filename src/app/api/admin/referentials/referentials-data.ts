@@ -112,7 +112,8 @@ export function buildCodeReferentials(
         label: t.label,
         active: null,
         usage: typeUsage.get(t.code) ?? 0,
-        details: `${getRubric(t.rubric)?.label ?? t.rubric}${t.userOnly ? ' — choix utilisateur uniquement' : ''}`
+        // Lot 86E : Rubrique d'attache, puis Rubriques où le Type est aussi proposé.
+        details: `${[t.rubric, ...(t.alsoIn ?? [])].map((r) => getRubric(r)?.label ?? r).join(' · ')}${t.userOnly ? ' — choix utilisateur uniquement' : ''}`
           + ` — règle métier : ${regle ?? 'aucune (non autoritaire)'}`,
       };
     }),

@@ -49,6 +49,9 @@
  *   ai-catalog-sync                 chaque jour à 7 h 15 (85C)    bail `ai-catalog-sync` (même
  *                                                                 fonction que « Actualiser le
  *                                                                 catalogue »), upserts idempotents
+ *   ai-qualification-campaign       chaque jour à 7 h 45 (86A)    une campagne AUTO ouverte au plus ;
+ *                                                                 verrou par compte (index unique) ;
+ *                                                                 préproduction seulement
  *   stripe-catalog-sync             toutes les 5 min              bail `stripe-catalog-sync:<contexte>`
  *                                                                 (lot 35C, catalogue lookup_key)
  *   stripe-catalog-publish          toutes les 5 min              bail `stripe-catalog-publication:<ctx>`
@@ -536,6 +539,24 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       if (!r.catalog.ok && /Aucune clé fournisseur/i.test(r.catalog.error ?? '')) return { note };
       if (!r.catalog.ok) return { note, error: `catalogue fournisseur : ${r.catalog.error ?? 'échec'}` };
       return { note };
+    },
+  },
+  {
+    // Lot 86A (CDC Pilotage IA V2 P5, décisions PO 06, 13, 14) : qualification
+    // par couple en PRÉPRODUCTION, après la synchronisation du catalogue —
+    // requalification ciblée des couples actifs jamais testés ou devenus
+    // obsolètes (prompt, contrat, corpus, capacités…), au plus une candidate
+    // NON ACTIVE par traitement, activée seulement si qualifiée avec un gain
+    // établi. Point de restauration 82E avant tout appel. Rien à faire : rien
+    // n'est lancé (R46). Production : aucune campagne (note motivée).
+    code: 'ai-qualification-campaign',
+    label: 'IA : qualification par couple et candidates automatiques (préproduction)',
+    schedule: { kind: 'daily', at: [7, 45], graceMs: 6 * HOUR },
+    timeoutMs: 90 * MIN,
+    run: async ({ trigger }) => {
+      const { requestAutomaticCampaign } = await import('@/services/ai/qualification/campaign');
+      const r = await requestAutomaticCampaign({ trigger: `scheduler:${trigger}` });
+      return { note: r.note.slice(0, 1500) };
     },
   },
   {

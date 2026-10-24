@@ -122,7 +122,8 @@ describe('L84B-U04 — mémoire unifiée des décisions : objet PRINCIPAL', () =
     }
     expect(m).toMatch(/IF NOT EXISTS \(SELECT 1 FROM pg_constraint/);
     expect(m).toMatch(/NOT LIKE '%''PRINCIPAL''::text%'/);
-    expect(code('src/db/schema.ts')).toContain("'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL')");
+    // Lot 86D (0736) : sur-ensemble — AGENDA_FILE_LINK ajouté après PRINCIPAL.
+    expect(code('src/db/schema.ts')).toContain("'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL'");
   });
 });
 

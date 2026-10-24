@@ -89,6 +89,10 @@ function toVersion(r: Row): ConfigVersion {
     currentRevisionId: numOrNull(r.current_revision_id),
     currentRevisionNumber: numOrNull(r.current_revision_number),
     legacyStatus: r.legacy_status == null ? null : String(r.legacy_status),
+    // Lot 86A (0726) : origine et cycle de candidate ; colonnes absentes → manuel.
+    origin: r.origin === 'auto' ? 'auto' : 'manual',
+    candidateState: r.candidate_state == null ? null : String(r.candidate_state),
+    candidateReason: r.candidate_reason == null ? null : String(r.candidate_reason),
   };
 }
 
@@ -118,7 +122,9 @@ function toEntry(r: Row): TreatmentConfig {
 
 const COLS = `v.id, v.uid, v.environment, v.status, v.visible_number, v.label, v.description, v.base_version_id,
               v.created_by, v.created_at, v.updated_at, v.updated_by, v.validated_at, v.activated_at,
-              v.archived_at, v.deleted_at, v.current_revision_id, v.current_revision_number, v.legacy_status`;
+              v.archived_at, v.deleted_at, v.current_revision_id, v.current_revision_number, v.legacy_status,
+              to_jsonb(v)->>'origin' AS origin, to_jsonb(v)->>'candidate_state' AS candidate_state,
+              to_jsonb(v)->>'candidate_reason' AS candidate_reason`;
 
 // ── Révisions ───────────────────────────────────────────────────────────────
 
@@ -406,7 +412,7 @@ export async function applyMasterPromptRefs(
   sql: SqlLike,
   environment: string,
   refs: ConfigSnapshot['masterPrompts'],
-  actor: { userId: number; email: string | null; summary: string },
+  actor: { userId: number | null; email: string | null; summary: string },
 ): Promise<Array<{ treatment: Treatment; versionNumber: number; masterPromptCode: string }>> {
   const voulus = Object.entries(refs).filter((e): e is [Treatment, MasterPromptRef] => Boolean(e[1]) && isTreatment(e[0]));
   if (voulus.length === 0 || !(await masterPromptTablesExist(sql))) return [];
@@ -511,7 +517,7 @@ async function userEmail(sql: SqlLike, userId: number | null): Promise<string | 
   return r[0]?.email == null ? null : String(r[0].email);
 }
 
-async function lockedVersion(sql: SqlLike, versionId: number): Promise<Row> {
+export async function lockedVersion(sql: SqlLike, versionId: number): Promise<Row> {
   const r = (await q(sql,
     `SELECT ${COLS} FROM ai_config_versions v WHERE v.id = $1 FOR UPDATE`, [versionId]))[0];
   if (!r) throw new ConfigVersionRefused('VERSION_NOT_FOUND', `Version ${versionId} introuvable.`);
@@ -539,7 +545,7 @@ async function materializeEntries(sql: SqlLike, versionId: number, entries: Trea
  * Révision courante d'une version, créée (n° suivant, « reprise ») d'après
  * ses lignes si elle n'en a pas encore (version insérée hors application).
  */
-async function ensureCurrentRevision(sql: SqlLike, r: Row): Promise<{ id: number; number: number; snapshot: ConfigSnapshot }> {
+export async function ensureCurrentRevision(sql: SqlLike, r: Row): Promise<{ id: number; number: number; snapshot: ConfigSnapshot }> {
   const id = numOrNull(r.current_revision_id);
   if (id) {
     const rev = await getRevision(id, sql);
@@ -601,11 +607,18 @@ export interface WriteOutcome {
  * l'environnement, révision 1.
  */
 export async function createVersion(p: {
-  userId: number;
+  /** `null` : action du système (candidate automatique, lot 86A). */
+  userId: number | null;
   label?: string | null;
   description?: string | null;
   environment?: AiEnvironment;
   source?: { versionId: number } | { revisionId: number } | { active: true } | null;
+  /**
+   * Lot 86A (VER-01) : candidate AUTOMATIQUE — créée non active, instantané
+   * de la source modifié par `transform` dans la même transaction (aucune
+   * version partielle visible), origine `auto`, état `CREATED`.
+   */
+  candidate?: { key: string; reason: string; campaignId: number | null; transform: (s: ConfigSnapshot) => ConfigSnapshot } | null;
 }): Promise<ConfigVersionWithEntries> {
   const environment = p.environment ?? getAiEnvironment();
   const id = await pgClient.begin(async (tx) => {
@@ -633,6 +646,7 @@ export async function createVersion(p: {
         snapshot = cur.snapshot; kind = 'duplicate'; sourceVersionId = Number(a.id); restoredFrom = cur.id;
       }
     }
+    if (p.candidate) snapshot = normalizeSnapshot(p.candidate.transform(snapshot));
     const n = Number((await q(sql,
       `SELECT COALESCE(MAX(visible_number), 0) + 1 AS n FROM ai_config_versions WHERE environment = $1`, [environment]))[0].n);
     const v = (await q(sql,
@@ -640,10 +654,17 @@ export async function createVersion(p: {
        VALUES ($1, 'INACTIVE', $2, $3, $4, $5, $6, $6) RETURNING id`,
       [environment, n, p.label ?? null, p.description ?? null, sourceVersionId, p.userId]))[0];
     const versionId = Number(v.id);
+    if (p.candidate) {
+      await sql.unsafe(
+        `UPDATE ai_config_versions SET origin = 'auto', candidate_state = 'CREATED', candidate_key = $2, candidate_reason = $3,
+                candidate_campaign_id = $4, candidate_base_revision_id = $5 WHERE id = $1`,
+        [versionId, p.candidate.key, p.candidate.reason, p.candidate.campaignId, restoredFrom] as never[]);
+    }
     const email = await userEmail(sql, p.userId);
     const revId = await insertRevision(sql, {
       versionId, number: 1, snapshot, kind, userId: p.userId, email, sourceVersionId, restoredFrom,
-      comment: kind === 'create' ? 'Création de la version' : `Copie de la version ${sourceVersionId}`,
+      comment: p.candidate ? `Candidate automatique : ${p.candidate.reason}`.slice(0, 500)
+        : kind === 'create' ? 'Création de la version' : `Copie de la version ${sourceVersionId}`,
     });
     await materializeEntries(sql, versionId, snapshot.entries, p.userId);
     await sql.unsafe(`UPDATE ai_config_versions SET current_revision_id = $2, current_revision_number = 1 WHERE id = $1`,
@@ -778,7 +799,11 @@ export async function recordMasterPromptRevisionInTx(sql: SqlLike, environment: 
  * appliqués, clé de cache. Les exécutions déjà démarrées gardent leur
  * révision (épinglée au démarrage).
  */
-export async function activateVersion(versionId: number, userId: number, check?: (r: { snapshot: ConfigSnapshot; previouslyActivated: boolean }) => void): Promise<{
+export async function activateVersion(
+  versionId: number, userId: number | null, check?: (r: { snapshot: ConfigSnapshot; previouslyActivated: boolean }) => void,
+  /** Lot 86A (VER-01) : activation AUTOMATIQUE d'une candidate qualifiée — vérifiée sous verrou, état ACTIVATED dans la transaction. */
+  opts: { candidate?: boolean } = {},
+): Promise<{
   previousId: number | null; alreadyActive: boolean; revisionNumber: number;
   masterPromptSwitches: WriteOutcome['masterPromptSwitches'];
 }> {
@@ -786,32 +811,165 @@ export async function activateVersion(versionId: number, userId: number, check?:
   return pgClient.begin(async (tx) => {
     const sql = tx as unknown as SqlLike;
     await lockEnvironment(sql, environment);
-    const r = await lockedVersion(sql, versionId);
-    if (r.deleted_at != null) {
-      throw new ConfigVersionRefused('VERSION_DELETED', 'Cette version a été supprimée : restaurez-la dans la liste avant de l’activer.');
-    }
-    const cur = await ensureCurrentRevision(sql, r);
-    if (String(r.status) === 'ACTIVE') {
-      return { previousId: null, alreadyActive: true, revisionNumber: cur.number, masterPromptSwitches: [] };
-    }
-    check?.({ snapshot: cur.snapshot, previouslyActivated: r.activated_at != null });
-    const anciennes = await q(sql,
-      `UPDATE ai_config_versions SET status = 'INACTIVE', updated_at = now()
-        WHERE environment = $1 AND status = 'ACTIVE' AND id <> $2 RETURNING id`, [environment, versionId]);
-    await sql.unsafe(
-      `UPDATE ai_config_versions SET status = 'ACTIVE', activated_by = $2, activated_at = now(), updated_at = now() WHERE id = $1`,
-      [versionId, userId] as never[],
-    );
-    const email = await userEmail(sql, userId);
-    const switches = await applyMasterPromptRefs(sql, environment, cur.snapshot.masterPrompts, {
-      userId, email, summary: `Activation de la configuration IA v${r.visible_number ?? versionId} r${cur.number}`,
-    });
-    await bumpCacheInTx(sql, `cfg:activate:${versionId}:r${cur.number}`);
-    return {
-      previousId: anciennes[0] ? Number(anciennes[0].id) : null, alreadyActive: false,
-      revisionNumber: cur.number, masterPromptSwitches: switches,
-    };
+    return activateVersionInTx(sql, environment, versionId, userId, { check, candidate: opts.candidate });
   }) as never;
+}
+
+/**
+ * Activation DANS une transaction déjà ouverte, verrou de l'environnement
+ * déjà pris (lot 86B : import global et retour arrière atomiques — la
+ * création de la version importée, son activation, la remise à zéro des
+ * interventions et le journal tiennent dans la même transaction).
+ */
+export async function activateVersionInTx(sql: SqlLike, environment: string, versionId: number, userId: number | null, opts: {
+  check?: (r: { snapshot: ConfigSnapshot; previouslyActivated: boolean }) => void;
+  summary?: string;
+  /** Lot 86A (VER-01) : activation AUTOMATIQUE d'une candidate qualifiée — vérifiée sous verrou, état ACTIVATED dans la transaction. */
+  candidate?: boolean;
+} = {}): Promise<{
+  previousId: number | null; alreadyActive: boolean; revisionId: number; revisionNumber: number;
+  masterPromptSwitches: WriteOutcome['masterPromptSwitches'];
+}> {
+  const r = await lockedVersion(sql, versionId);
+  if (String(r.environment) !== environment) throw new ConfigVersionRefused('VERSION_NOT_FOUND', `Version ${versionId} introuvable.`);
+  if (r.deleted_at != null) {
+    throw new ConfigVersionRefused('VERSION_DELETED', 'Cette version a été supprimée : restaurez-la dans la liste avant de l’activer.');
+  }
+  const cur = await ensureCurrentRevision(sql, r);
+  if (String(r.status) === 'ACTIVE') {
+    return { previousId: null, alreadyActive: true, revisionId: cur.id, revisionNumber: cur.number, masterPromptSwitches: [] };
+  }
+  if (opts.candidate && (r.origin !== 'auto' || r.candidate_state !== 'QUALIFIED')) {
+    throw new ConfigVersionRefused('CANDIDATE_NOT_QUALIFIED',
+      `Version ${versionId} : seule une candidate automatique QUALIFIÉE peut être activée automatiquement (origine ${String(r.origin ?? 'manual')}, état ${String(r.candidate_state ?? 'aucun')}).`);
+  }
+  opts.check?.({ snapshot: cur.snapshot, previouslyActivated: r.activated_at != null });
+  if (opts.candidate) await sql.unsafe(`UPDATE ai_config_versions SET candidate_state = 'ACTIVATED' WHERE id = $1`, [versionId] as never[]);
+  const anciennes = await q(sql,
+    `UPDATE ai_config_versions SET status = 'INACTIVE', updated_at = now()
+      WHERE environment = $1 AND status = 'ACTIVE' AND id <> $2 RETURNING id`, [environment, versionId]);
+  await sql.unsafe(
+    `UPDATE ai_config_versions SET status = 'ACTIVE', activated_by = $2, activated_at = now(), updated_at = now() WHERE id = $1`,
+    [versionId, userId] as never[],
+  );
+  const email = await userEmail(sql, userId);
+  const switches = await applyMasterPromptRefs(sql, environment, cur.snapshot.masterPrompts, {
+    userId, email, summary: opts.summary ?? `Activation de la configuration IA v${r.visible_number ?? versionId} r${cur.number}`,
+  });
+  await bumpCacheInTx(sql, `cfg:activate:${versionId}:r${cur.number}`);
+  return {
+    previousId: anciennes[0] ? Number(anciennes[0].id) : null, alreadyActive: false,
+    revisionId: cur.id, revisionNumber: cur.number, masterPromptSwitches: switches,
+  };
+}
+
+/** Lot 86A : état d'une candidate automatique (jamais sur une version manuelle). */
+export async function setCandidateState(versionId: number, state: 'QUALIFYING' | 'QUALIFIED' | 'REFUSED' | 'INCONCLUSIVE' | 'NOT_CHOSEN', reason?: string | null): Promise<void> {
+  await pgClient.unsafe(
+    `UPDATE ai_config_versions SET candidate_state = $2, candidate_reason = COALESCE($3, candidate_reason), updated_at = now()
+      WHERE id = $1 AND origin = 'auto' AND candidate_state IS DISTINCT FROM 'ACTIVATED'`,
+    [versionId, state, reason ?? null] as never[]);
+}
+
+/** Lot 86A : dernière candidate automatique portant cette clé de proposition. */
+export async function findCandidateByKey(environment: string, key: string): Promise<{ id: number; state: string | null; createdAt: Date } | null> {
+  try {
+    const r = (await q(pgClient as unknown as SqlLike,
+      `SELECT id, candidate_state, created_at FROM ai_config_versions WHERE environment = $1 AND candidate_key = $2 ORDER BY id DESC LIMIT 1`, [environment, key]))[0];
+    return r ? { id: Number(r.id), state: r.candidate_state == null ? null : String(r.candidate_state), createdAt: new Date(String(r.created_at)) } : null;
+  } catch (e) {
+    if ((e as { code?: string })?.code === '42703') return null;
+    throw e;
+  }
+}
+
+/**
+ * Lot 86B — crée, DANS la transaction (verrou pris), une version NON active
+ * portant un instantané complet (version importée) : numéro suivant de
+ * l'environnement, révision 1 (`create`, commentaire explicite), copie de
+ * travail. Rend la version et sa révision.
+ */
+export async function insertVersionWithSnapshotInTx(sql: SqlLike, p: {
+  environment: string; label: string | null; description: string | null; snapshot: ConfigSnapshot; userId: number; comment: string;
+}): Promise<{ versionId: number; revisionId: number; visibleNumber: number }> {
+  const n = Number((await q(sql,
+    `SELECT COALESCE(MAX(visible_number), 0) + 1 AS n FROM ai_config_versions WHERE environment = $1`, [p.environment]))[0].n);
+  const v = (await q(sql,
+    `INSERT INTO ai_config_versions (environment, status, visible_number, label, description, created_by, updated_by)
+     VALUES ($1, 'INACTIVE', $2, $3, $4, $5, $5) RETURNING id`,
+    [p.environment, n, p.label, p.description, p.userId]))[0];
+  const versionId = Number(v.id);
+  const snapshot = normalizeSnapshot(p.snapshot);
+  const revisionId = await insertRevision(sql, {
+    versionId, number: 1, snapshot, kind: 'create', userId: p.userId, email: await userEmail(sql, p.userId), comment: p.comment,
+  });
+  await materializeEntries(sql, versionId, snapshot.entries, p.userId);
+  await sql.unsafe(`UPDATE ai_config_versions SET current_revision_id = $2, current_revision_number = 1 WHERE id = $1`,
+    [versionId, revisionId] as never[]);
+  return { versionId, revisionId, visibleNumber: n };
+}
+
+/**
+ * Lot 86B — ramène, DANS la transaction, une version à l'instantané d'une de
+ * ses révisions (retour arrière d'un import : la configuration antérieure
+ * exacte). Révision courante déjà identique : rien. Sinon révision n+1
+ * `restore` (l'historique n'est jamais réécrit). Rend la révision courante.
+ */
+export async function restoreRevisionInTx(sql: SqlLike, versionId: number, revisionId: number, userId: number, comment: string): Promise<{ revisionId: number; revisionNumber: number; restored: boolean }> {
+  const r = await lockedVersion(sql, versionId);
+  const cur = await ensureCurrentRevision(sql, r);
+  if (cur.id === revisionId) return { revisionId: cur.id, revisionNumber: cur.number, restored: false };
+  const rev = await getRevision(revisionId, sql);
+  if (!rev || rev.versionId !== versionId) throw new ConfigVersionRefused('REVISION_NOT_FOUND', `Révision ${revisionId} introuvable pour cette version.`);
+  if (snapshotsEqual(rev.snapshot, cur.snapshot)) return { revisionId: cur.id, revisionNumber: cur.number, restored: false };
+  const number = cur.number + 1;
+  const id = await insertRevision(sql, {
+    versionId, number, snapshot: rev.snapshot, kind: 'restore', comment, restoredFrom: rev.id, userId, email: await userEmail(sql, userId),
+  });
+  await materializeEntries(sql, versionId, rev.snapshot.entries, userId);
+  await sql.unsafe(
+    `UPDATE ai_config_versions SET current_revision_id = $2, current_revision_number = $3, updated_at = now(), updated_by = $4 WHERE id = $1`,
+    [versionId, id, number, userId] as never[],
+  );
+  return { revisionId: id, revisionNumber: number, restored: true };
+}
+
+/**
+ * Lot 86B — version de prompt maître de l'environnement portant EXACTEMENT
+ * ce texte (empreinte) et cette configuration d'exécution, sinon créée
+ * (statut « ancienne », origine `admin`, numéro suivant) DANS la transaction.
+ * L'activation de la configuration la rend active (`applyMasterPromptRefs`).
+ */
+export async function findOrCreateMasterPromptVersionInTx(sql: SqlLike, environment: string, treatment: Treatment, ref: {
+  masterPromptCode: string; content: string; contentSha256: string; execution: MasterExecutionConfig | null;
+}, userId: number): Promise<MasterPromptRef> {
+  if (!(await masterPromptTablesExist(sql))) {
+    throw new ConfigVersionRefused('MASTER_PROMPT_TABLES_MISSING', 'Les tables des prompts maîtres sont absentes : import impossible.');
+  }
+  await sql.unsafe(`SELECT pg_advisory_xact_lock(hashtext('ai_master_prompt:' || $1 || ':' || $2))`, [environment, treatment] as never[]);
+  const execCol = (await q(sql,
+    `SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+        AND table_name = 'ai_master_prompt_versions' AND column_name = 'execution_mode'`)).length > 0;
+  const candidats = await q(sql,
+    `SELECT * FROM ai_master_prompt_versions
+      WHERE environment = $1 AND treatment = $2 AND content_sha256 = $3 AND status <> 'DRAFT'
+      ORDER BY (status = 'ACTIVE') DESC, version_number DESC`, [environment, treatment, ref.contentSha256]);
+  const signature = (e: MasterExecutionConfig | null) => JSON.stringify(e ? { m: e.mode, i: e.inputContractVersion, o: e.outputContractVersion, t: e.allowedTasks } : null);
+  const voulu = ref.execution && ref.execution.mode === 'STRUCTURED_CONTEXT' ? ref.execution : null;
+  const trouve = candidats.find((c) => String(c.master_prompt_code) === ref.masterPromptCode
+    && (!execCol || signature(executionOfRow(c)?.mode === 'STRUCTURED_CONTEXT' ? executionOfRow(c) : null) === signature(voulu)));
+  if (trouve) return masterPromptRefOf(trouve);
+  const exec = execCol && voulu ? voulu : null;
+  const cree = (await q(sql,
+    `INSERT INTO ai_master_prompt_versions
+       (environment, treatment, master_prompt_code, version_number, status, content, content_sha256, origin,
+        created_by, updated_by${exec ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''})
+     VALUES ($1, $2, $3, (SELECT COALESCE(MAX(version_number), 0) + 1 FROM ai_master_prompt_versions WHERE environment = $1 AND treatment = $2),
+             'PREVIOUS', $4, $5, 'admin', $6, $6${exec ? ', $7, $8, $9, $10::jsonb' : ''})
+     RETURNING *`,
+    [environment, treatment, ref.masterPromptCode, ref.content, ref.contentSha256, userId,
+     ...(exec ? [exec.mode, exec.inputContractVersion, exec.outputContractVersion, exec.allowedTasks ? JSON.stringify(exec.allowedTasks) : null] : [])]))[0];
+  return masterPromptRefOf(cree);
 }
 
 /** Suppression LOGIQUE d'une version non active (révisions conservées). */

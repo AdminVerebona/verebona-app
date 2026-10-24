@@ -10,6 +10,13 @@
  * « principal » à l'écran. Desktop ET mobile : même composant, cibles 44 px
  * sur mobile ; le tiroir de choix (`GroupingPicker`) est un tiroir EMPILÉ du
  * composant de base 81F (zones sûres, bouton « Fermer », retour Android).
+ *
+ * Lot 86D (ticket « Documents / Agenda » §2) : quel que soit son rôle, un
+ * élément montre SES documents (« Documents de cet élément ») — ouvrir,
+ * relier, DÉTACHER individuellement (le document et l'élément restent, rien
+ * n'est supprimé ; décision mémorisée côté serveur). Pour l'événement de
+ * référence, la catégorie « Documents » de l'ensemble porte les deux gestes :
+ * détacher de cet événement (lien) et retirer de l'ensemble.
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Building2, CalendarDays, FileText, Grid2X2, Link2, Loader2, Plus, Search, Star, Unlink, Wrench, X } from "lucide-react";
@@ -40,7 +47,7 @@ const BTN = "min-h-11 sm:min-h-8 h-auto py-2 sm:py-1 whitespace-normal text-left
 /** Les cinq catégories, dans l'ordre du CDC §14.2. */
 export const MAIN_CATEGORIES: readonly GroupingCandidateKind[] = ["elements", "documents", "biens", "pieces", "equipements"];
 
-interface Row { id: number; title: string; meta?: string | null; badge?: string | null }
+interface Row { id: number; title: string; meta?: string | null; badge?: string | null; /** Lot 86D : document relié à CET élément (détachable). */ linked?: boolean }
 
 /** Lignes d'une catégorie de l'ensemble (pure). */
 export function categoryRows(view: AgendaGroupingView, kind: GroupingCandidateKind): Row[] {
@@ -48,7 +55,7 @@ export function categoryRows(view: AgendaGroupingView, kind: GroupingCandidateKi
   if (!e) return [];
   switch (kind) {
     case "elements": return e.items.map((i) => ({ id: i.id, title: i.title, meta: fmtDate(i.startDate), badge: i.isMain ? L.mainBadge : null }));
-    case "documents": return e.documents.map((d) => ({ id: d.id, title: d.title, meta: d.documentDate ? fmtDate(d.documentDate) : null, badge: d.link === "DIRECT" ? L.directLink : null }));
+    case "documents": return e.documents.map((d) => ({ id: d.id, title: d.title, meta: d.documentDate ? fmtDate(d.documentDate) : null, badge: d.link === "DIRECT" ? L.directLink : null, linked: d.link !== null }));
     case "biens": return e.assets.map((a) => ({ id: a.id, title: a.name }));
     case "pieces": return e.rooms.map((r) => ({ id: r.id, title: r.name }));
     case "equipements": return e.equipments.map((q) => ({ id: q.id, title: q.name }));
@@ -68,6 +75,30 @@ export interface AgendaGroupingPanelProps {
 
 /** Affichage (sans état) — rendu côté serveur dans les tests. */
 export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCreateStep, onRelease, onOpenMain, onOpenDocument }: AgendaGroupingPanelProps) {
+  // Lot 86D : documents de CET élément — ouvrir, détacher (lien seul), relier.
+  const detachButton = (id: number, title: string) => (
+    <button type="button" disabled={busy} onClick={() => onAction("detacher-document", id)}
+      aria-label={L.detachFromItem(title)} title={L.detach} data-testid={`regroupement-detacher-document-${id}`}
+      className="inline-flex size-11 sm:size-8 items-center justify-center rounded-[10px] text-[color:var(--text-muted)] hover:bg-[color:var(--danger-soft)] hover:text-[color:var(--danger)] disabled:opacity-40">
+      <Unlink className="w-3.5 h-3.5" aria-hidden />
+    </button>
+  );
+  const itemDocuments = () => (
+    <div className="space-y-2" data-testid="regroupement-documents-element">
+      <h4 className="vb-app-label">{L.linkedDocuments}{view.linkedDocuments.length ? ` (${view.linkedDocuments.length})` : ""}</h4>
+      {view.linkedDocuments.length ? (
+        <EntityCardList>
+          {view.linkedDocuments.map((d) => (
+            <EntityCard key={`doc-${d.id}`} kind="document" id={d.id} title={d.title} icon={<FileText className="w-3.5 h-3.5" />}
+              meta={d.documentDate ? fmtDate(d.documentDate) : undefined}
+              onOpen={onOpenDocument ? () => onOpenDocument(d.id) : undefined}
+              actions={detachButton(d.id, d.title)} data-testid={`regroupement-document-element-${d.id}`} />
+          ))}
+        </EntityCardList>
+      ) : <p className="text-xs text-[color:var(--text-muted)]">{L.empty.documents}</p>}
+    </div>
+  );
+
   const pickButton = (kind: GroupingCandidateKind) => (
     <Button key={`relier-${kind}`} type="button" variant="secondary" size="sm" className={BTN} disabled={busy}
       onClick={() => onPick(kind)} data-testid={`regroupement-relier-${kind}`}>
@@ -78,6 +109,7 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
   if (view.role === "NONE") {
     return (
       <section aria-labelledby={`regroupement-${view.itemId}`} data-testid="agenda-regroupement" data-role="seul" className="space-y-3">
+        {itemDocuments()}
         <h3 id={`regroupement-${view.itemId}`} className="vb-app-label">{L.sectionAlone}</h3>
         <div className="flex flex-wrap gap-2">{pickButton("elements")}{pickButton("documents")}</div>
       </section>
@@ -89,6 +121,8 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
     const resume = groupingCountsSummary(view.counts);
     return (
       <section aria-labelledby={`regroupement-${view.itemId}`} data-testid="agenda-regroupement" data-role="rattache" className="space-y-3">
+        {itemDocuments()}
+        <div className="flex flex-wrap gap-2">{pickButton("documents")}</div>
         <h3 id={`regroupement-${view.itemId}`} className="vb-app-label">{L.partOf}</h3>
         <EntityCardList>
           <EntityCard kind="echeance" id={main.id} title={main.title} icon={<Star className="w-3.5 h-3.5" />}
@@ -112,7 +146,7 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
 
   const removeButton = (kind: GroupingCandidateKind, row: Row) => (
     <button type="button" disabled={busy} onClick={() => onAction(REMOVE_ACTION[kind], row.id)}
-      aria-label={`${L.remove} « ${row.title} »`}
+      aria-label={kind === "documents" ? L.removeFromEnsemble(row.title) : `${L.remove} « ${row.title} »`}
       className="inline-flex size-11 sm:size-8 items-center justify-center rounded-[10px] text-[color:var(--text-muted)] hover:bg-[color:var(--danger-soft)] hover:text-[color:var(--danger)] disabled:opacity-40">
       <X className="w-3.5 h-3.5" aria-hidden />
     </button>
@@ -125,7 +159,9 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
       <EntityCard key={`${kind}-${row.id}`} kind={KIND_CARD[kind]} id={row.id} title={row.title} icon={<Icon className="w-3.5 h-3.5" />}
         meta={row.meta ?? undefined} onOpen={ouvrir}
         badges={row.badge ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)]">{row.badge}</span> : undefined}
-        actions={removeButton(kind, row)} data-testid={`regroupement-${kind}-${row.id}`} />
+        actions={kind === "documents" && row.linked
+          ? <span className="inline-flex items-center gap-1">{detachButton(row.id, row.title)}{removeButton(kind, row)}</span>
+          : removeButton(kind, row)} data-testid={`regroupement-${kind}-${row.id}`} />
     );
   };
 
@@ -134,6 +170,7 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
     const rows = categoryRows(view, "elements");
     return (
       <section aria-labelledby={`regroupement-${view.itemId}`} data-testid="agenda-regroupement" data-role="ensemble-sans-reference" className="space-y-3">
+        {itemDocuments()}
         <h3 id={`regroupement-${view.itemId}`} className="vb-app-label">{L.sectionLinked}</h3>
         {view.mainWithdrawn && <p className="vb-meta text-xs text-[color:var(--text-muted)]">{L.withdrawnNote}</p>}
         {rows.length ? <EntityCardList>{rows.map((r) => card("elements", r))}</EntityCardList>

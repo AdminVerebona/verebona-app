@@ -355,14 +355,23 @@ scenario('L84E', 'Opérations v5 O-6 : récurrence et reconsolidation ciblée', 
     expect(actives.map((o) => o.id)).toEqual([ops[0]]);
     expect(await sourcesDe(ops[0])).toEqual(files);
     expect((await k.composantes(ops[0])).map((x) => x.amount_minor)).toEqual([3990, 3990, 3990]);
-    const rep = await reparations(c.id, 'COH-OPS-RECURRING-SERIES');
+    // Lot 86C (assertion adaptée) : la même réparation O-6 peut être déclenchée en premier par COH-OPS-IDENTITY v2
+    // (doublons ENTRE Opérations, placé avant dans le registre) — une seule chaîne de réparation, le même service.
+    const rep = [...await reparations(c.id, 'COH-OPS-IDENTITY'), ...await reparations(c.id, 'COH-OPS-RECURRING-SERIES')];
     expect(rep[0]).toMatchObject({ service: 'reconsolidateRecurringDocuments', outcome: 'REPAIRED', ai_calls: 0 });
     // Second passage : plus aucun écart O-6, aucune nouvelle réparation, aucune écriture O-6 (l'Opération devenue
     // contrat voit sa projection Agenda reconvergée par ses propres contrôles — C-Q11, hors périmètre O-6).
     const [{ m: h1 }] = await sql<{ m: number }[]>`SELECT COALESCE(max(id), 0)::int AS m FROM business_operation_history WHERE account_id = ${c.id}`;
     await campagne([c.id], 'CORRECTIVE');
-    for (const f of files) expect(['REPAIRED', 'CONSISTENT', 'GONE']).toContain((await preuve(c.id, 'COH-OPS-RECURRING-SERIES', f))?.last_result ?? 'GONE');
-    expect((await reparations(c.id, 'COH-OPS-RECURRING-SERIES')).length).toBe(rep.length);
+    // Lot 86C (assertion adaptée) : la série a été réunie par COH-OPS-IDENTITY v2 (même service O-6) ; ses documents
+    // ne sont plus des objets de COH-OPS-RECURRING-SERIES (plus aucune voisine) — aucun écart restant.
+    const { getCheck } = await import('@/services/coherence/registry');
+    const { pgClient } = await import('@/db');
+    const objets = await getCheck('COH-OPS-RECURRING-SERIES')!.listObjects!({ sql: pgClient, now: new Date(), today: RECETTE_TODAY, mode: 'DRY_RUN', correlationId: 'e2e' }, c.id, 0, 100);
+    for (const f of files) {
+      if (objets.includes(f)) expect(['REPAIRED', 'CONSISTENT', 'GONE']).toContain((await preuve(c.id, 'COH-OPS-RECURRING-SERIES', f))?.last_result ?? 'GONE');
+    }
+    expect((await reparations(c.id, 'COH-OPS-IDENTITY')).length + (await reparations(c.id, 'COH-OPS-RECURRING-SERIES')).length).toBe(rep.length);
     expect(await sql`SELECT 1 FROM business_operation_history WHERE account_id = ${c.id} AND id > ${h1} AND correlation_id LIKE '%COH-OPS-RECURRING-SERIES'`).toHaveLength(0);
 
     // Document d'équipement : lien direct retiré (perte), l'Opération est liée à l'équipement que la facture désigne.

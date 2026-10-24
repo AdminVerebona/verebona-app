@@ -796,6 +796,32 @@ export class BusinessOperationRepository {
     return Number(c.operation_id);
   }
 
+  /**
+   * Lot 86F — consigne la date économique RETENUE d'une composante active
+   * (trace de la résolution `finance/economic-date` : fondement, date, preuves)
+   * et journalise le changement (FINANCIAL_CHANGED, avant / après). La date
+   * propre `economic_date` (fait consolidé par T3) n'est jamais réécrite ; ni
+   * version ni événement : aucun fait de l'Opération ne change (le TCO et T2
+   * résolvent la date à la lecture). Rend faux si la trace est déjà celle-ci.
+   */
+  async recordComponentEconomicDate(componentId: number, input: {
+    basis: string; date: string | null; trace: Record<string, unknown>; signature: string; before: Record<string, unknown> | null;
+  }, reasonCode = 'ECONOMIC_DATE_RESOLVED'): Promise<boolean> {
+    const opId = await this.componentOperation(componentId);
+    const date = input.date === null ? null : optionalDate(input.date, 'resolvedEconomicDate');
+    const r = await rows(this.tx, sql`
+      UPDATE business_operation_financial_components
+         SET economic_date_basis = ${input.basis}, resolved_economic_date = ${date}::date,
+             economic_date_trace = ${JSON.stringify({ ...input.trace, signature: input.signature })}::jsonb, economic_date_resolved_at = now()
+       WHERE id = ${componentId} AND account_id = ${this.accountId} AND active
+         AND (economic_date_trace IS NULL OR economic_date_trace->>'signature' IS DISTINCT FROM ${input.signature})
+       RETURNING id`);
+    if (!r.length) return false;
+    await this.history(opId, 'FINANCIAL_CHANGED', reasonCode, input.before,
+      { component_id: componentId, economic_date_basis: input.basis, resolved_economic_date: date, signature: input.signature });
+    return true;
+  }
+
   async supersedeFinancialComponent(componentId: number, reasonCode: string): Promise<boolean> {
     const [c] = await rows<{ operation_id: string; account_id: number; active: boolean; kind: string; amount_minor: string; currency: string }>(this.tx, sql`
       SELECT operation_id, account_id, active, kind, amount_minor, currency FROM business_operation_financial_components WHERE id = ${componentId}`);

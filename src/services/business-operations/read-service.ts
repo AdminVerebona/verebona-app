@@ -15,6 +15,8 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import type { BusinessOperationStatus, BusinessOperationTypeCode, FinancialComponentKind, SourceKind, SourceRole } from './model';
+import { resolveOperationEconomicDates, type EconomicDateResolution } from './finance/economic-date';
+import { readEconomicDateEvidence } from './finance/economic-date-evidence';
 
 type Row = Record<string, unknown>;
 type Runner = Pick<typeof db, 'execute'>;
@@ -101,7 +103,19 @@ export interface AssistantOperationComponent {
   currency: string;
   /** Contre-valeur EUR explicitement connue (C12.3), sinon null. */
   amountEurCents: number | null;
+  /**
+   * Lot 86F : date ÉCONOMIQUE résolue (`finance/economic-date` : paiement
+   * prouvé, date propre, justificatif, réalisation d'une Opération ponctuelle
+   * à fait unique) — null si non établie ; JAMAIS la date de l'Opération par
+   * défaut. TCO, T2 et exports lisent la même date.
+   */
   economicDate: string | null;
+  /** Lot 86F : date propre persistée de la composante (indice de sa source), avant résolution. */
+  ownEconomicDate?: string | null;
+  /** Lot 86F : résolution (fondement, provenance, justification, dates disponibles). */
+  economicDateResolution?: EconomicDateResolution;
+  periodStart?: string | null;
+  periodEnd?: string | null;
   targetAssetId: number | null;
   label: string | null;
 }
@@ -276,11 +290,23 @@ export class BusinessOperationReadService {
     const kinds = await rows(this.runner, sql`
       SELECT operation_id, array_agg(DISTINCT source_kind ORDER BY source_kind) AS kinds FROM business_operation_sources
        WHERE operation_id = ANY(${liste}::bigint[]) AND account_id = ${accountId} AND active GROUP BY operation_id`);
+    // Lot 86F : preuves de date économique (justificatifs, règlements, périodes) — chaque composante résolue indépendamment.
+    const preuves = await readEconomicDateEvidence(this.runner, accountId, ops.map((o) => Number(o.id)));
     return ops.map((o): AssistantOperationRead => {
       const id = Number(o.id);
       const mine = (r: Row) => Number(r.operation_id) === id;
+      const vue = toView(o);
+      const miennes = comps.filter(mine);
+      const dates = resolveOperationEconomicDates({
+        typeCode: vue.typeCode, status: vue.status, realizedDate: vue.realizedDate, startDate: vue.startDate, plannedDate: vue.plannedDate,
+        components: miennes.map((c) => ({
+          id: Number(c.id), kind: String(c.kind), amountMinor: Number(c.amount_minor), currency: String(c.currency).trim().toUpperCase(),
+          economicDate: (c.economic_date as string | null) ?? null,
+          periodStart: preuves.periods.get(Number(c.id))?.periodStart ?? null, periodEnd: preuves.periods.get(Number(c.id))?.periodEnd ?? null,
+        })),
+      }, preuves.byOperation.get(id) ?? {});
       return {
-        ...toView(o),
+        ...vue,
         contractReference: (o.contract_reference as string | null) ?? null,
         effectiveFrom: (o.effective_from as string | null) ?? null,
         effectiveTo: (o.effective_to as string | null) ?? null,
@@ -289,16 +315,23 @@ export class BusinessOperationReadService {
         insurerClaimRef: (o.insurer_claim_ref as string | null) ?? null,
         declaredOn: (o.declared_on as string | null) ?? null,
         assetIds: links.filter(mine).map((l) => Number(l.asset_id)),
-        components: comps.filter(mine).map((c) => ({
-          id: Number(c.id),
-          kind: String(c.kind) as FinancialComponentKind,
-          amountMinor: Number(c.amount_minor),
-          currency: String(c.currency).trim().toUpperCase(),
-          amountEurCents: num(c.amount_eur_cents),
-          economicDate: (c.economic_date as string | null) ?? null,
-          targetAssetId: num(c.target_asset_id),
-          label: (c.label as string | null) ?? null,
-        })),
+        components: miennes.map((c) => {
+          const r = dates.get(Number(c.id));
+          return {
+            id: Number(c.id),
+            kind: String(c.kind) as FinancialComponentKind,
+            amountMinor: Number(c.amount_minor),
+            currency: String(c.currency).trim().toUpperCase(),
+            amountEurCents: num(c.amount_eur_cents),
+            economicDate: r ? r.date : null,
+            ownEconomicDate: (c.economic_date as string | null) ?? null,
+            ...(r ? { economicDateResolution: r } : {}),
+            periodStart: preuves.periods.get(Number(c.id))?.periodStart ?? null,
+            periodEnd: preuves.periods.get(Number(c.id))?.periodEnd ?? null,
+            targetAssetId: num(c.target_asset_id),
+            label: (c.label as string | null) ?? null,
+          };
+        }),
         documents: docs.filter(mine).map((d) => ({
           fileId: Number(d.file_id),
           role: (d.source_role as SourceRole | null) ?? null,

@@ -162,7 +162,8 @@ describe('L84A-U05 — export de recette : ancien modèle toléré absent', () =
   it('classement complet avant ET après la finalisation', async () => {
     const { classifyTables, RECETTE_RETIRABLE_TABLES, RECETTE_TABLES } = await import('@/services/admin/diagnostics-export/recette-catalog');
     const { LEGACY_CLAIM_TABLES } = await import('../legacy-schema');
-    expect([...RECETTE_RETIRABLE_TABLES].sort()).toEqual([...LEGACY_CLAIM_TABLES].sort());
+    // Lot 86A : + `ai_corpus_baseline`, table de l'ancien harnais de mesure (créée à la volée, jamais par migration).
+    expect([...RECETTE_RETIRABLE_TABLES].sort()).toEqual([...LEGACY_CLAIM_TABLES, 'ai_corpus_baseline'].sort());
     for (const t of LEGACY_CLAIM_TABLES) expect(RECETTE_TABLES[t]?.description, t).toMatch(/SUPPRIMÉE par sa finalisation/);
     const autres = ['assets', 'business_operations'];
     expect(classifyTables([...autres, ...LEGACY_CLAIM_TABLES]).included.map((x) => x.table)).toEqual(expect.arrayContaining([...LEGACY_CLAIM_TABLES]));

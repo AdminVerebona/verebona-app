@@ -292,6 +292,17 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_model_pricing: 'tarifs des modèles', ai_model_pricing_refresh_log: 'tarifs des modèles', ai_model_qualification: 'qualification IA',
   // Lot 85C (Pilotage IA V2 P4) : journal des changements de capacités des modèles.
   ai_model_capability_changes: 'configuration IA (journal des capacités des modèles)',
+  // Lot 86A (Pilotage IA V2 P5) : qualification par couple — journaux techniques (empreintes, jamais de contenu).
+  ai_qualification_campaigns: 'qualification IA (campagnes par couple, point de restauration)',
+  ai_qualification_campaign_accounts: 'qualification IA (verrous de compte des campagnes)',
+  ai_qualification_evidence: 'qualification IA (preuves historisées par couple)',
+  ai_qualification_cases: 'qualification IA (résultats par cas, empreintes)',
+  // Ancien harnais de mesure (cron `corpus-run`, retiré au lot 86A : absorbé par la qualification par couple) — table inerte, créée à la volée en préproduction.
+  ai_corpus_baseline: 'qualification IA (ancien harnais de mesure retiré au lot 86A, table inerte)',
+  // Lot 86B (Pilotage IA V2 P6) : imports de la configuration globale, interventions manuelles, routage subordonné.
+  ai_config_imports: 'configuration IA (journal des imports et retours arrière)',
+  ai_config_interventions: 'configuration IA (exclusions et gels manuels)',
+  ai_routing_promotions: 'configuration IA (état de routage subordonné)',
   ai_prompt_change_requests: 'configuration IA (prompts)', ai_prompt_test_runs: 'qualification IA', ai_prompt_versions: 'configuration IA (prompts)',
   ai_provider_credential: 'secret fournisseur IA', ai_queue_worker_heartbeats: 'technique (battements des workers)',
   ai_retired_treatment_archive: 'archives IA retirées', ai_t2_content_access_log: 'journal d’accès sensible (T2)', ai_treatment_state: 'configuration IA',
@@ -349,7 +360,11 @@ const DOMAIN_ORDER = Object.keys(RECETTE_DOMAINS) as RecetteDomain[];
  * ancien modèle Sinistres supprimé par la finalisation du nettoyage BO.
  * Exportées tant qu'elles existent ; leur absence n'est pas un écart.
  */
-export const RECETTE_RETIRABLE_TABLES: ReadonlySet<string> = new Set(LEGACY_CLAIM_TABLES);
+export const RECETTE_RETIRABLE_TABLES: ReadonlySet<string> = new Set([
+  ...LEGACY_CLAIM_TABLES,
+  // Lot 86A : table de l'ancien harnais de mesure, créée à la volée par la route retirée (jamais par une migration).
+  'ai_corpus_baseline',
+]);
 
 /** Classement des tables présentes en base. */
 export function classifyTables(dbTables: readonly string[]): TableClassification {

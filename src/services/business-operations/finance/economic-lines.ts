@@ -61,6 +61,7 @@ import {
   classifyExpenseDocument, dedupePossibleMerges, isCreditNoteTitle, type ExpenseTheme,
 } from '@/services/verebona-assistant/canonical/expense-classes';
 import type { ExclusionReason } from './engine';
+import { resolveEconomicDate, type EconomicDateResolution } from './economic-date';
 
 // ── Entrées (lues par le service, persistées) ──────────────────────────────
 
@@ -286,6 +287,12 @@ export interface DocumentLineDraft {
    * arbitraire).
    */
   uncertain?: { relatedFileId: number | null; note: string } | null;
+  /**
+   * Lot 86F : résolution de la date économique de la ligne (même règle que
+   * les composantes : paiement prouvé du document, date propre du montant,
+   * date du justificatif sauf facturation anticipée d'une autre année).
+   */
+  dateResolution?: EconomicDateResolution;
 }
 
 // ── Règles ─────────────────────────────────────────────────────────────────
@@ -302,7 +309,8 @@ export const NON_EXPENSE_DOCUMENT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 const KINDS = new Set<string>(['REALIZED_COST', 'FORECAST_COST', 'REDUCTION', 'REFUND', 'INDEMNITY', 'PROCEED']);
-const QUOTE_REASONS = new Set(['MAINTENANCE_QUOTE', 'REPAIR_QUOTE', 'WORKS_QUOTE', 'BON_COMMANDE', 'ACQUISITION_ORDER', 'WORKS_PURCHASE_ORDER', 'DEVIS']);
+// Lot 86E : ACQUISITION_QUOTE (devis d'achat) — une proposition, jamais un coût réalisé.
+const QUOTE_REASONS = new Set(['MAINTENANCE_QUOTE', 'REPAIR_QUOTE', 'WORKS_QUOTE', 'ACQUISITION_QUOTE', 'BON_COMMANDE', 'ACQUISITION_ORDER', 'WORKS_PURCHASE_ORDER', 'DEVIS']);
 const ACOMPTE = /\b(acompte|arrhes)\b/i;
 const SOLDE = /\bsolde\b/i;
 const INVOICE_LIKE = /(INVOICE|FACTURE|TICKET)/i;
@@ -424,11 +432,21 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
         const totalRetenu = totaux.length ? totaux.reduce((m, h) => (h.amountMinor > m.amountMinor ? h : m), totaux[0]) : null;
         c.hints.forEach((h, i) => {
           const role = String(h.role);
+          // Lot 86F : date économique du montant (jamais la date du document par défaut pour une période d'une autre année).
+          const dateEco = resolveEconomicDate({
+            kind: role, amountMinor: h.amountMinor, currency: String(h.currency || 'EUR'), ownDate: h.economicDate, ownDateOrigin: 'DOCUMENT_HINT',
+            periodStart: h.periodStart, periodEnd: h.periodEnd, documents: [{ fileId: d.fileId, role: c.sourceRole, date: d.date }],
+            payments: c.hints.filter((x) => x.role === 'PAYMENT').map((x) => ({
+              fileId: d.fileId, amountMinor: x.amountMinor, currency: String(x.currency || 'EUR'), date: x.economicDate, periodStart: x.periodStart, periodEnd: x.periodEnd, origin: 'DOCUMENT_HINT',
+            })),
+            sameAmountSiblings: c.hints.filter((x) => x.role === h.role && x.amountMinor === h.amountMinor).length,
+          });
           const ligne = base({
             ...lien, ...cible, lineId: `doc:${d.fileId}:${c.id}:${i}`, candidateId: c.id, role,
             kind: KINDS.has(role) ? (role as FinancialComponentKind) : null,
             amountMinor: h.amountMinor, currency: String(h.currency || 'EUR').trim().toUpperCase(),
-            amountEurCents: h.amountEurMinor ?? null, date: h.economicDate ?? d.date, periodStart: h.periodStart, periodEnd: h.periodEnd,
+            amountEurCents: h.amountEurMinor ?? null, date: role === 'PAYMENT' ? h.economicDate ?? d.date : dateEco.date, dateResolution: dateEco,
+            periodStart: h.periodStart, periodEnd: h.periodEnd,
             typeHint: c.typeHint, scope: h.amountScope, provenance: 'T1',
             supplierKey: normalizeSupplier(c.provider) ?? supplierKey,
           });
@@ -462,8 +480,13 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
     }
     if (!facture) { out.push(base({ ...lien, status: 'NOT_QUALIFIED', reason: 'THEME_UNKNOWN' })); continue; }
     const avoir = isCreditNoteTitle(d.title);
+    // Lot 86F : montant du document daté par le document (fondement tracé).
+    const dateDoc = resolveEconomicDate({
+      kind: avoir ? 'REDUCTION' : 'REALIZED_COST', amountMinor: Math.abs(d.amountCents), currency: String(d.currency || 'EUR'), ownDate: null,
+      documents: [{ fileId: d.fileId, role: null, date: d.date }],
+    });
     out.push(base({
-      ...lien, kind: avoir ? 'REDUCTION' : 'REALIZED_COST', role: avoir ? 'REDUCTION' : 'REALIZED_COST',
+      ...lien, kind: avoir ? 'REDUCTION' : 'REALIZED_COST', role: avoir ? 'REDUCTION' : 'REALIZED_COST', date: dateDoc.date, dateResolution: dateDoc,
       amountMinor: Math.abs(d.amountCents), currency: d.userEditedAmount ? 'EUR' : String(d.currency || 'EUR').toUpperCase(),
       scope: avoir ? null : ACOMPTE.test(d.title) ? 'DEPOSIT' : SOLDE.test(d.title) ? 'BALANCE' : null,
     }));

@@ -57,6 +57,20 @@ async function ensembleDocuments(r: GroupingRunner, accountId: number, op: numbe
   });
 }
 
+/** Lot 86D : documents reliés à CET élément (agenda_file_links, documents du compte non supprimés), avec la nature du lien. */
+async function itemDocuments(r: GroupingRunner, accountId: number, itemId: number): Promise<GroupingDocumentRef[]> {
+  const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; prov: string[] | null }>(
+    `SELECT f.id, f.retained_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d, l.provenances AS prov
+       FROM agenda_file_links l JOIN asset_files f ON f.id = l.asset_file_id AND f.account_id = $1 AND f.deleted_at IS NULL
+      WHERE l.agenda_item_id = $2
+      ORDER BY f.document_date DESC NULLS LAST, f.id`, [accountId, itemId]);
+  return x.map((y) => {
+    const prov = y.prov ?? [];
+    const direct = prov.length === 0 || prov.some((p) => p === 'MANUAL_DIRECT' || p === 'AI_DIRECT');
+    return { id: Number(y.id), title: titreDoc(y), documentDate: y.d, link: direct ? 'DIRECT' as const : 'GROUP' as const };
+  });
+}
+
 async function ensembleTargets(r: GroupingRunner, accountId: number, op: number): Promise<{ assets: GroupingNamedRef[]; rooms: GroupingNamedRef[]; equipments: GroupingNamedRef[] }> {
   const assets = await r.q<{ id: number; name: string }>(
     `SELECT a.id, a.name FROM business_operation_asset_links l JOIN assets a ON a.id = l.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
@@ -89,7 +103,8 @@ async function withdrawn(r: GroupingRunner, accountId: number, op: number): Prom
 export async function getAgendaGroupingView(accountId: number, itemId: number, r: GroupingRunner = drizzleRunner(db)): Promise<AgendaGroupingView | null> {
   const it = await itemContext(r, accountId, itemId);
   if (!it) return null;
-  if (it.op === null) return { itemId, role: 'NONE', main: null, mainWithdrawn: false, ensemble: null, counts: null };
+  const linkedDocuments = await itemDocuments(r, accountId, itemId);
+  if (it.op === null) return { itemId, role: 'NONE', main: null, mainWithdrawn: false, ensemble: null, counts: null, linkedDocuments };
   const op = it.op;
   const items = await ensembleItems(r, accountId, op, itemId);
   const retire = await withdrawn(r, accountId, op);
@@ -97,13 +112,13 @@ export async function getAgendaGroupingView(accountId: number, itemId: number, r
     return {
       itemId, role: 'MAIN', main: null, mainWithdrawn: false,
       ensemble: { items, documents: await ensembleDocuments(r, accountId, op, itemId), ...(await ensembleTargets(r, accountId, op)) },
-      counts: null,
+      counts: null, linkedDocuments,
     };
   }
   const principal = items.find((i) => i.isMain) ?? null;
   if (!principal) {
     // Ensemble sans événement de référence : les autres éléments sont le seul accès à l'ensemble.
-    return { itemId, role: 'MEMBER', main: null, mainWithdrawn: retire, ensemble: { items, documents: [], assets: [], rooms: [], equipments: [] }, counts: null };
+    return { itemId, role: 'MEMBER', main: null, mainWithdrawn: retire, ensemble: { items, documents: [], assets: [], rooms: [], equipments: [] }, counts: null, linkedDocuments };
   }
   const [c] = await r.q<{ docs: number; assets: number; rooms: number; equips: number }>(
     `SELECT (SELECT count(*)::int FROM business_operation_documents d JOIN asset_files f ON f.id = d.file_id AND f.deleted_at IS NULL
@@ -115,7 +130,7 @@ export async function getAgendaGroupingView(accountId: number, itemId: number, r
     // Événements de l'ensemble hors événement de référence (§13.7), cet élément compris.
     items: items.filter((i) => !i.isMain).length + 1, documents: Number(c?.docs ?? 0), assets: Number(c?.assets ?? 0), rooms: Number(c?.rooms ?? 0), equipments: Number(c?.equips ?? 0),
   };
-  return { itemId, role: 'MEMBER', main: { id: principal.id, title: principal.title, startDate: principal.startDate }, mainWithdrawn: false, ensemble: null, counts };
+  return { itemId, role: 'MEMBER', main: { id: principal.id, title: principal.title, startDate: principal.startDate }, mainWithdrawn: false, ensemble: null, counts, linkedDocuments };
 }
 
 /**

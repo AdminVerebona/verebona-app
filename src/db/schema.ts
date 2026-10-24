@@ -4142,7 +4142,8 @@ export const businessOperationMatchDecisions = pgTable('business_operation_match
   sourceKind: text('source_kind').notNull(),
   sourceEntityKey: text('source_entity_key').notNull(),
   sourceVersion: text('source_version'),
-  candidateOperationId: bigint('candidate_operation_id', { mode: 'number' }).notNull(),
+  // Lot 86D (0736) : facultatif — NUL pour l'objet AGENDA_FILE_LINK (décision sur un lien Document ↔ Agenda) et seulement pour lui.
+  candidateOperationId: bigint('candidate_operation_id', { mode: 'number' }),
   decision: text('decision').notNull(),
   origin: text('origin').notNull(),
   reasonCode: text('reason_code').notNull(),
@@ -4153,13 +4154,18 @@ export const businessOperationMatchDecisions = pgTable('business_operation_match
   operationFk: foreignKey({ name: 'business_operation_match_decisions_operation_fk', columns: [t.candidateOperationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
   // Lot 82D (0656) : objets du regroupement v5 (Pièce, équipement, lien propagé vers le principal).
   // Lot 84B (0684) : PRINCIPAL — rôle principal retiré / désigné par l'utilisateur (mémorisé).
-  kindChk: check('business_operation_match_decisions_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL}, 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL')`),
+  // Lot 86D (0736) : AGENDA_FILE_LINK — lien Document ↔ Agenda détaché (REJECTED) ou relié (CONFIRMED) par l'utilisateur, sans Opération.
+  kindChk: check('business_operation_match_decisions_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL}, 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL', 'AGENDA_FILE_LINK')`),
+  scopeChk: check('business_operation_match_decisions_scope_chk', sql`(${t.sourceKind} = 'AGENDA_FILE_LINK') = (${t.candidateOperationId} IS NULL)`),
   decisionChk: check('business_operation_match_decisions_decision_chk', sql`${t.decision} IN ('CONFIRMED', 'REJECTED')`),
   originChk: check('business_operation_match_decisions_origin_chk', sql`${t.origin} IN ('USER_ARBITRATION', 'SYSTEM_EXPLICIT_REFERENCE', 'ADMIN_REVIEW')`),
   activeUidx: uniqueIndex('business_operation_match_decisions_active_uidx')
     .on(t.candidateOperationId, t.sourceKind, t.sourceEntityKey, sql`COALESCE(${t.sourceVersion}, '')`)
     .where(sql`active`),
   sourceIdx: index('business_operation_match_decisions_source_idx').on(t.accountId, t.sourceKind, t.sourceEntityKey).where(sql`active`),
+  // Lot 86D — 0736_idx_1 : une décision active par lien Document ↔ Agenda (lignes sans Opération).
+  linkActiveUidx: uniqueIndex('business_operation_match_decisions_link_active_uidx')
+    .on(t.accountId, t.sourceKind, t.sourceEntityKey).where(sql`active AND candidate_operation_id IS NULL`),
 }));
 
 /** C13 — CONTRACT. Effet futur : l'Opération reste ENVISAGED jusqu'à `effective_from` (Q13). */

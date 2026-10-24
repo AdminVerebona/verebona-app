@@ -46,9 +46,12 @@ export type MembershipOrigin = (typeof MEMBERSHIP_ORIGINS)[number];
  * garde sa mémoire d'exclusion (0349). Lot 84B (0684) : PRINCIPAL — rôle
  * principal RETIRÉ (REJECTED) ou désigné (CONFIRMED) par l'utilisateur sur un
  * élément d'agenda ; un retrait actif interdit toute désignation par inférence
- * dans l'Opération (`principalWithdrawnByUser`).
+ * dans l'Opération (`principalWithdrawnByUser`). Lot 86D (0736) :
+ * AGENDA_FILE_LINK — lien Document ↔ Agenda DÉTACHÉ (REJECTED) ou relié
+ * (CONFIRMED) par l'utilisateur ; décision portée par le LIEN (sans Opération,
+ * clé `<élément>:<document>`) : aucune provenance automatique ne le recrée.
  */
-export const DECISION_SUBJECTS = ['DOCUMENT', 'AGENDA', 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL'] as const;
+export const DECISION_SUBJECTS = ['DOCUMENT', 'AGENDA', 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL', 'AGENDA_FILE_LINK'] as const;
 export type DecisionSubject = (typeof DECISION_SUBJECTS)[number];
 
 export const isLinkProvenance = (v: unknown): v is LinkProvenance => typeof v === 'string' && (LINK_PROVENANCES as readonly string[]).includes(v);

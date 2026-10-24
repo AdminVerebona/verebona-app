@@ -18,14 +18,12 @@
  *     Colonnes 0223 absentes : seuls les `agenda_file_links` sont écrits.
  *
  * LECTURE — `listAgendaItemsForDocument` / `listAgendaItemIdsForSource` :
- * liens `agenda_file_links`, traces `agenda_item_sources` (historiques
- * 'created' / 'resolved_existing' et 'linked') et éléments automatiques dont
- * la source d'origine est le document (`origin_ref`), pour ceux créés avant
- * le lot 14.
+ * liens `agenda_file_links` (lot 86D : seul modèle des associations ; les
+ * traces `agenda_item_sources` et `origin_ref` restent l'historique).
  */
 import { db } from '@/db';
-import { agendaFileLinks, agendaItems, agendaItemSources } from '@/db/schema';
-import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { agendaFileLinks, agendaItems } from '@/db/schema';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { agendaSourcesColumnsReady } from './agenda-columns';
 
 export type AgendaSourceRole = 'SOURCE' | 'ATTACHMENT' | 'PROOF';
@@ -92,33 +90,26 @@ export async function linkAgendaItemToSources(client: any, agendaItemId: number,
   await recordAgendaItemSources(client, agendaItemId, fileIds.map((fileId) => ({ fileId, role: 'SOURCE' as const })));
 }
 
-/** Identifiants des éléments d'agenda liés à un document (voir l'en-tête). */
+/**
+ * Identifiants des éléments d'agenda liés à un document, du compte.
+ *
+ * Lot 86D (ticket « Documents / Agenda ») : seuls les liens
+ * `agenda_file_links` valent association — modèle unique depuis 82D (un lien
+ * n'existe que tant qu'une provenance le justifie). Les traces
+ * `agenda_item_sources` et l'origine `origin_ref` d'un élément automatique
+ * restent l'HISTORIQUE de production du lien : les lire ici rendait visible,
+ * sans moyen de le retirer, un lien détaché par l'utilisateur ou retiré par le
+ * contrôle de cohérence (cause racine des associations « qui restent »).
+ */
 export async function listAgendaItemIdsForSource(
   accountId: number,
   fileId: number,
 ): Promise<number[]> {
-  const [fileLinks, traces, origines] = await Promise.all([
-    db.selectDistinct({ id: agendaFileLinks.agendaItemId })
-      .from(agendaFileLinks)
-      .where(eq(agendaFileLinks.assetFileId, fileId)),
-    db.selectDistinct({ id: agendaItemSources.agendaItemId })
-      .from(agendaItemSources)
-      .where(and(
-        isNotNull(agendaItemSources.agendaItemId),
-        eq(agendaItemSources.assetFileId, fileId),
-        inArray(agendaItemSources.effectType, [...SOURCE_LINK_EFFECTS]),
-      )),
-    db.select({ id: agendaItems.id }).from(agendaItems).where(and(
-      eq(agendaItems.accountId, accountId),
-      eq(agendaItems.originRefType, 'asset_file'),
-      eq(agendaItems.originRefId, fileId),
-    )),
-  ]);
-  const ids = new Set<number>();
-  fileLinks.forEach((r) => ids.add(r.id));
-  traces.forEach((r) => { if (r.id !== null) ids.add(r.id); });
-  origines.forEach((r) => ids.add(r.id));
-  return [...ids];
+  const rows = await db.selectDistinct({ id: agendaFileLinks.agendaItemId })
+    .from(agendaFileLinks)
+    .innerJoin(agendaItems, and(eq(agendaItems.id, agendaFileLinks.agendaItemId), eq(agendaItems.accountId, accountId)))
+    .where(eq(agendaFileLinks.assetFileId, fileId));
+  return rows.map((r) => r.id);
 }
 
 /** Élément d'agenda lié à un document (lecture « depuis le document »). */

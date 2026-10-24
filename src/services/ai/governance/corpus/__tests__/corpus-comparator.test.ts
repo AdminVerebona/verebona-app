@@ -17,10 +17,7 @@ import {
   normalizeText,
   compareField,
   compareCase,
-  summarize,
-  detectRegressions,
   type ObservedResult,
-  type CaseComparison,
 } from '@/services/ai/governance/corpus/corpus-comparator';
 import type { CorpusCase } from '@/services/ai/governance/corpus/corpus-registry';
 
@@ -195,66 +192,5 @@ describe('comparaison d’un cas', () => {
     // Les champs restent comparés : savoir CE QUI a été extrait malgré un
     // schéma invalide aide à diagnostiquer.
     expect(r.fields).toHaveLength(2);
-  });
-});
-
-describe('synthèse', () => {
-  const results: CaseComparison[] = [
-    compareCase(CASE, OK),
-    compareCase(CASE, { ...OK, documentType: 'FACTURE' }),
-    compareCase(CASE, { ...OK, assetRefs: ['maison-fleury', 'autre'] }),
-  ];
-
-  it('compte les cas conformes', () => {
-    const s = summarize(results);
-    expect(s.total).toBe(3);
-    expect(s.passed).toBe(1);
-    expect(s.typeErrors).toBe(1);
-    expect(s.leaks).toBe(1);
-  });
-
-  it('agrège par famille', () => {
-    const s = summarize(results);
-    expect(s.byCategory).toEqual([{ category: 'acte_immobilier', total: 3, passed: 1 }]);
-  });
-
-  it('cumule les coûts', () => {
-    expect(summarize(results).totalCostMicros).toBe(3600);
-  });
-});
-
-describe('détection de régression', () => {
-  const conforme = compareCase(CASE, OK);
-  const casse = compareCase(CASE, { ...OK, fields: { surfaceHabitable: 82, prixAchat: 245000 } });
-  const fuite = compareCase(CASE, { ...OK, assetRefs: ['maison-fleury', 'autre'] });
-
-  it('signale un cas devenu non conforme', () => {
-    const r = detectRegressions([conforme], [casse]);
-    expect(r).toHaveLength(1);
-    expect(r[0].kind).toBe('lost');
-    expect(r[0].detail).toContain('surfaceHabitable');
-  });
-
-  it('signale une amélioration', () => {
-    expect(detectRegressions([casse], [conforme])[0].kind).toBe('gained');
-  });
-
-  it('signale une fuite apparue', () => {
-    const kinds = detectRegressions([conforme], [fuite]).map((r) => r.kind);
-    expect(kinds).toContain('new_leak');
-  });
-
-  it('signale une fuite corrigée', () => {
-    const kinds = detectRegressions([fuite], [conforme]).map((r) => r.kind);
-    expect(kinds).toContain('leak_fixed');
-  });
-
-  it('ne signale rien quand rien ne bouge', () => {
-    expect(detectRegressions([conforme], [conforme])).toEqual([]);
-  });
-
-  it('ignore un cas absent de la référence', () => {
-    // Un cas ajouté depuis la mesure précédente n'est pas une régression.
-    expect(detectRegressions([], [conforme])).toEqual([]);
   });
 });

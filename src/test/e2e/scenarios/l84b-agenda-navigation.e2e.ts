@@ -294,7 +294,10 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
       itemId: visite.id, role: 'MEMBER', mainWithdrawn: false, ensemble: null,
       main: { id: degat.id, title: 'Dégât des eaux', startDate: '2026-03-12' },
       counts: { items: 1, documents: 2, assets: 2, rooms: 1, equipments: 1 },
+      // Lot 86D : documents de CET élément (consulter, ouvrir, détacher) — ses liens, rien de plus.
+      linkedDocuments: expect.any(Array),
     });
+    expect(s.linkedDocuments.map((x: Json) => x.id)).toEqual((await liensDe(visite.id)).map((l) => l.file));
     // §14.4 : le document retrouve le principal (lien propagé) et conserve son lien précis.
     const d = (await liensDocument(rapport.id)).body.links;
     expect(d).toEqual([

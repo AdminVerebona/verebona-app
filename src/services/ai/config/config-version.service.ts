@@ -63,7 +63,7 @@ function asRefusal(e: unknown): never {
  * Assemble les catalogues à partir du code et de la grille tarifaire (lot
  * 32B/35B : un seul contexte, celui de `usableModelsForTreatment`).
  */
-async function buildCatalogs(): Promise<ConfigCatalogs> {
+export async function buildCatalogs(): Promise<ConfigCatalogs> {
   // Lot 85C : fiches de capacités à jour pour les contrôles techniques.
   await (await import('../provider/model-capabilities.repository')).ensureModelCapabilitiesLoaded();
   const { loadUsableModelsContext, evaluateModelForTreatment } = await import('../registry/usable-models');
@@ -184,7 +184,7 @@ async function load(versionId: number): Promise<ConfigVersionWithEntries> {
  * incrémentée DANS la transaction : les autres instances suivent dès le
  * commit). Prompts maîtres basculés : cache du chargeur de prompts aussi.
  */
-async function afterCommit(reason: string, switches: WriteOutcome['masterPromptSwitches'] = []): Promise<void> {
+export async function afterCommit(reason: string, switches: WriteOutcome['masterPromptSwitches'] = []): Promise<void> {
   const [{ invalidateConfigCache }, { invalidateConfigVersionCache }, { forgetConfigVersionCounter, bumpConfigVersionCounter, hasTestCounterStore }, { invalidatePromptCache }] = await Promise.all([
     import('./config-resolver'),
     import('../telemetry/execution-context'),
@@ -552,4 +552,48 @@ export async function restoreDeletedVersion(versionId: number, userId: number): 
   await load(versionId);
   await repo.undeleteVersion(versionId, userId).catch(asRefusal);
   await recordConfigAudit('ai_config_version_undelete', userId, { versionId, deleted: true }, { versionId, deleted: false });
+}
+
+// ── Lot 86A : candidates automatiques (VER-01, ACT-01, décision PO 06) ──────
+
+/**
+ * Prépare une candidate AUTOMATIQUE : copie de la configuration active dont
+ * le modèle principal d'un traitement est remplacé, créée NON active (l'active
+ * n'est jamais modifiée pendant les tests), origine `auto`, état `CREATED`.
+ * Action du système : aucun auteur humain (`created_by` nul), raison tracée.
+ */
+export async function createAutomaticCandidate(p: {
+  treatment: Treatment; primaryModel: string; key: string; reason: string; campaignId: number | null;
+}): Promise<ConfigVersionWithEntries> {
+  const v = await repo.createVersion({
+    userId: null, label: `Candidate automatique ${p.treatment} · ${p.primaryModel}`.slice(0, 200), description: p.reason.slice(0, 1000),
+    source: { active: true },
+    candidate: {
+      key: p.key, reason: p.reason, campaignId: p.campaignId,
+      transform: (s) => ({ ...s, entries: s.entries.map((e) => (e.treatment === p.treatment ? { ...e, primaryModel: p.primaryModel } : e)) }),
+    },
+  }).catch(asRefusal);
+  return v;
+}
+
+/**
+ * Active AUTOMATIQUEMENT une candidate QUALIFIÉE — en PRÉPRODUCTION
+ * seulement (décision 06, VER-01, OBJ-04 : la production n'expérimente pas de
+ * nouveau couple). Contrôles techniques de toute activation conservés
+ * (capacités, Preview, modèle servi par la clé). L'état `QUALIFIED` est
+ * revérifié sous verrou ; toute autre version est refusée.
+ */
+export async function activateQualifiedCandidate(versionId: number): Promise<SwitchResult> {
+  if (getAiEnvironment() === 'production') {
+    throw new ConfigOperationRefused('CANDIDATE_ACTIVATION_PREPROD_ONLY',
+      'Activation automatique d’une candidate refusée : elle n’a lieu qu’en préproduction (la production importe le fichier global, décision 06).');
+  }
+  const version = await load(versionId);
+  if (version.origin !== 'auto') {
+    throw new ConfigOperationRefused('CANDIDATE_NOT_QUALIFIED', 'Seule une candidate automatique peut être activée par l’optimisation (une version manuelle s’active à la main).');
+  }
+  await assertVersionTechnicallyCompatible(version);
+  const r = await repo.activateVersion(versionId, null, undefined, { candidate: true }).catch(asRefusal);
+  if (!r.alreadyActive) await afterCommit(`activate-candidate:${versionId}:r${r.revisionNumber}`, r.masterPromptSwitches);
+  return { previousId: r.previousId, interrupts: false, requeuedJobs: 0, revisionNumber: r.revisionNumber, alreadyActive: r.alreadyActive };
 }

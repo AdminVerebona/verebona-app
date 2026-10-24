@@ -24,7 +24,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAiEnvironment } from '@/services/ai/config/environment';
 import { listVersions, getActiveVersion, getEffectiveVersion } from '@/services/ai/config/config-version.repository';
-import { listPackages } from '@/services/ai/config/config-package.service';
+import { listImports } from '@/services/ai/config/config-import.service';
 import { getQueueSummary, getTreatmentStates, getEmergencyStop } from '@/services/ai/queue/job-queue.repository';
 import { projectBusinessExecutions, summarize } from '@/services/ai/business-execution/repository';
 import type { TreatmentSummary } from '@/services/ai/business-execution/types';
@@ -83,7 +83,8 @@ export async function GET(req: NextRequest) {
       listVersions(environment, 20),
       getActiveVersion(environment),
       getEffectiveVersion(environment),
-      listPackages(10),
+      // Lot 86B : imports de la configuration globale (l'ancien package v1 est retiré).
+      listImports(environment, 5),
       getQueueSummary(),
       getTreatmentStates(),
       getEmergencyStop(),
@@ -110,7 +111,7 @@ export async function GET(req: NextRequest) {
     ]);
 
     const NOMS = [
-      'versions', 'version active', 'version effective', 'packages',
+      'versions', 'version active', 'version effective', 'imports',
       'file d’attente', 'états des traitements', 'arrêt d’urgence',
       'exécutions métier', 'coûts', 'alertes modèles', 'alertes système',
       'activité par traitement', 'brouillons',
@@ -133,7 +134,11 @@ export async function GET(req: NextRequest) {
     const versions = valeur(0, [] as Awaited<ReturnType<typeof listVersions>>);
     const active = valeur(1, null as Awaited<ReturnType<typeof getActiveVersion>>);
     const effective = valeur(2, null as Awaited<ReturnType<typeof getEffectiveVersion>>);
-    const packages = valeur(3, [] as Awaited<ReturnType<typeof listPackages>>);
+    const imports = valeur(3, [] as Awaited<ReturnType<typeof listImports>>).map((i) => ({
+      id: i.id, action: i.action, status: i.status, createdAt: i.createdAt, createdByEmail: i.createdByEmail,
+      sourceEnvironment: i.sourceEnvironment, sourceVersionNumber: i.sourceVersionNumber, sourceRevisionNumber: i.sourceRevisionNumber,
+      rolledBackAt: i.rolledBackAt,
+    }));
     const queue = valeur(4, [] as Awaited<ReturnType<typeof getQueueSummary>>);
     const states = valeur(5, [] as Awaited<ReturnType<typeof getTreatmentStates>>);
     const stop = valeur(6, { active: false, reason: null, engagedAt: null });
@@ -359,7 +364,7 @@ export async function GET(req: NextRequest) {
       drafts,
       health,
       versions,
-      packages,
+      imports,
       alerts,
       modelAlerts,
       systemAlerts,

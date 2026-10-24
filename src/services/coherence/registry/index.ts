@@ -32,6 +32,14 @@ import { toProcessFamilyChecks } from './checks/to-process-families';
 import { operationsAcquisitionDateCheck } from './checks/operations-acquisition-date';
 // Lot 85F — connaissance T1 persistée exploitée par T3 avant toute conclusion « information absente ».
 import { t1KnowledgeConsumptionCheck } from './checks/t1-knowledge-consumption';
+// Lot 86C — dates de contrat issues de périodes facturées (réparation : consolidation T3 puis projection Agenda).
+import { operationsContractDatesCheck } from './checks/operations-contract-dates';
+// Lot 86D — associations Document ↔ Agenda confrontées à leurs preuves (réparation : service de regroupement).
+import { documentAgendaLinksCheck } from './checks/document-agenda-links';
+// Lot 86E — classement documentaire : nomenclature courante (Équipements et mobilier), type identifié = type enregistré.
+import { documentClassificationCheck } from './checks/document-classification';
+// Lot 86F — dates économiques injustifiées des composantes (réparation : trace de la date retenue, recalcul à la lecture).
+import { tcoEconomicDatesCheck } from './checks/tco-economic-dates';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -66,6 +74,14 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   operationsAcquisitionDateCheck,
   // Lot 85F (ajouté en fin de liste, sans réordonner l'existant).
   t1KnowledgeConsumptionCheck,
+  // Lot 86C (ajouté en fin de liste, sans réordonner l'existant).
+  operationsContractDatesCheck,
+  // Lot 86D (ajouté en fin de liste, sans réordonner l'existant).
+  documentAgendaLinksCheck,
+  // Lot 86E (ajouté en fin de liste, sans réordonner l'existant).
+  documentClassificationCheck,
+  // Lot 86F (ajouté en fin de liste, sans réordonner l'existant).
+  tcoEconomicDatesCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

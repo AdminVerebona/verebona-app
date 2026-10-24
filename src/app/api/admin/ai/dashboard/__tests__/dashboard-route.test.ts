@@ -23,7 +23,7 @@ vi.mock('@/services/ai/config/config-version.repository', () => ({
   getActiveVersion: async () => active,
   getEffectiveVersion: async () => active,
 }));
-vi.mock('@/services/ai/config/config-package.service', () => ({ listPackages: async () => [] }));
+vi.mock('@/services/ai/config/config-import.service', () => ({ listImports: async () => [] }));
 let stopActive = false;
 vi.mock('@/services/ai/queue/job-queue.repository', () => ({
   getQueueSummary: async () => [],

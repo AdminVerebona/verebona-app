@@ -2,7 +2,12 @@
  * Référentiel initial complet des Types — CDC V2.0 Annexe A.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * UN TYPE DÉCLARE SA RUBRIQUE, ET UNE SEULE
+ * UN TYPE DÉCLARE SA RUBRIQUE D'ATTACHE, ET UNE SEULE
+ *
+ * (Lot 86E : un Type générique peut en outre être déclaré réutilisable dans
+ * d'autres Rubriques par `alsoIn` — voir `types.ts`. La règle ci-dessous vaut
+ * toujours pour les natures réellement différentes : une facture de travaux
+ * n'est pas une facture d'achat.)
  *
  * Le §2.2 interdit les Types multi-rubriques, et le §15.1 en tire la
  * conséquence : les anciens Types génériques (`FACTURE`, `DEVIS`, `CONTRAT`)
@@ -26,33 +31,49 @@ import type { DocumentTypeDefinition } from './types';
 
 export const DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
   // ── Propriété et gestion ────────────────────────────────────────────────
+  // Lot 86E : Types d'ACHAT génériques — la nature du document, quel que soit
+  // l'objet acheté. Réutilisés tels quels dans « Équipements et mobilier »
+  // (`alsoIn`) ; la Rubrique, elle, porte le domaine (le bien lui-même ici,
+  // un meuble ou un appareil là-bas).
   {
     code: 'ACQUISITION_INVOICE',
-    label: "Facture / justificatif d'acquisition",
+    label: "Facture d'achat",
     rubric: 'PROPERTY_MANAGEMENT',
+    alsoIn: ['EQUIPMENT_FURNITURE'],
     applicability: 'ALL',
-    purpose: "Achat initial ou acquisition du bien.",
+    purpose: "Facture ou justificatif d'achat : le bien lui-même, ou un meuble, un appareil, un équipement.",
+  },
+  {
+    code: 'ACQUISITION_QUOTE',
+    label: "Devis d'achat",
+    rubric: 'PROPERTY_MANAGEMENT',
+    alsoIn: ['EQUIPMENT_FURNITURE'],
+    applicability: 'ALL',
+    purpose: "Proposition commerciale préalable à un achat (sans travaux ni prestation d'entretien).",
   },
   {
     code: 'ACQUISITION_ORDER',
-    label: "Bon de commande d'acquisition",
+    label: 'Bon de commande',
     rubric: 'PROPERTY_MANAGEMENT',
+    alsoIn: ['EQUIPMENT_FURNITURE'],
     applicability: 'ALL',
-    purpose: "Commande portant sur l'acquisition du bien.",
+    purpose: 'Commande passée auprès d’un vendeur ou fournisseur pour un achat.',
   },
   {
     code: 'ACQUISITION_DELIVERY',
-    label: 'Bon de livraison / remise du bien',
+    label: 'Bon de livraison',
     rubric: 'PROPERTY_MANAGEMENT',
+    alsoIn: ['EQUIPMENT_FURNITURE'],
     applicability: 'ALL',
-    purpose: 'Remise ou livraison du bien acquis.',
+    purpose: "Justificatif de livraison, de réception ou de remise de ce qui a été acheté.",
   },
   {
     code: 'ACQUISITION_PAYMENT',
-    label: "Preuve de paiement d'acquisition",
+    label: 'Justificatif de paiement',
     rubric: 'PROPERTY_MANAGEMENT',
+    alsoIn: ['EQUIPMENT_FURNITURE'],
     applicability: 'ALL',
-    purpose: "Paiement directement lié à l'acquisition.",
+    purpose: "Preuve de règlement d'un achat.",
   },
   {
     code: 'PROPERTY_TITLE',
@@ -217,6 +238,20 @@ export const DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
     userOnly: true,
   },
 
+  // ── Équipements et mobilier (lot 86E) ───────────────────────────────────
+  // Ses Types métier sont les Types génériques déclarés `alsoIn` ci-dessus et
+  // ci-dessous (achat, garantie, notice, fiche technique). Seul son « Autre »
+  // lui est propre : le §2.2 l'exige pour chaque Rubrique, et un « Autre »
+  // partagé ne dirait plus dans quelle Rubrique l'utilisateur l'a choisi.
+  {
+    code: 'OTHER_EQUIPMENT_FURNITURE',
+    label: 'Autre',
+    rubric: 'EQUIPMENT_FURNITURE',
+    applicability: 'ALL',
+    purpose: 'Choix utilisateur uniquement.',
+    userOnly: true,
+  },
+
   // ── Contrats, garanties et notices ──────────────────────────────────────
   {
     code: 'SERVICE_CONTRACT',
@@ -243,13 +278,15 @@ export const DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
     code: 'WARRANTY_CERTIFICATE',
     label: 'Garantie',
     rubric: 'CONTRACTS_WARRANTIES_DOCS',
+    alsoIn: ['EQUIPMENT_FURNITURE'],
     applicability: 'ALL',
-    purpose: 'Garantie constructeur, vendeur ou prestataire.',
+    purpose: 'Certificat ou conditions de garantie constructeur, vendeur ou prestataire.',
   },
   {
     code: 'EXTENDED_WARRANTY',
     label: 'Extension de garantie',
     rubric: 'CONTRACTS_WARRANTIES_DOCS',
+    alsoIn: ['EQUIPMENT_FURNITURE'],
     applicability: 'ALL',
     purpose: 'Extension ou prolongation de garantie.',
   },
@@ -266,15 +303,17 @@ export const DOCUMENT_TYPES: readonly DocumentTypeDefinition[] = [
     code: 'USER_MANUAL',
     label: 'Notice / manuel',
     rubric: 'CONTRACTS_WARRANTIES_DOCS',
+    alsoIn: ['EQUIPMENT_FURNITURE'],
     applicability: 'ALL',
-    purpose: "Notice d'utilisation.",
+    purpose: "Instructions d'utilisation, d'installation ou de montage.",
   },
   {
     code: 'TECHNICAL_SHEET',
     label: 'Fiche technique',
     rubric: 'CONTRACTS_WARRANTIES_DOCS',
+    alsoIn: ['EQUIPMENT_FURNITURE'],
     applicability: 'ALL',
-    purpose: 'Documentation technique du bien ou équipement.',
+    purpose: 'Caractéristiques techniques du bien, d’un appareil ou d’un équipement.',
   },
   {
     code: 'SOFTWARE_LICENSE',

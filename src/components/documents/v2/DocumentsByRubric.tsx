@@ -565,7 +565,10 @@ export function DocumentsByRubric({
       id: doc.id,
       originalFilename: doc.originalFilename ?? doc.title,
       mimeType: doc.mimeType ?? '',
-      documentType: doc.documentTypeCode ?? 'AUTRE',
+      // Lot 86E : le Type V2 enregistré (affiché par l'en-tête du tiroir) ; le
+      // champ V1 n'est plus renseigné par défaut à « AUTRE ».
+      documentType: '',
+      documentTypeCode: doc.documentTypeCode ?? null,
       documentDate: doc.documentDate,
       assetId: doc.assetId ?? 0,
     });

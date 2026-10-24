@@ -39,9 +39,16 @@
  *     n'est réalisée que par un paiement daté (jamais la date planifiée) et
  *     justifié (`NOT_REALIZED` sinon) ; les contradictions statut / date /
  *     nature sont tracées (`contradiction`), jamais corrigées en silence.
+ *   · lot 86F : la date d'une composante est SA date économique
+ *     (`economicDate`, résolue par `./economic-date` : paiement prouvé, date
+ *     propre, justificatif, réalisation d'une Opération ponctuelle à fait
+ *     unique) — le repli générique vers la date de l'Opération est SUPPRIMÉ
+ *     (plus de `fallbackDate`) ; sans date établie, la composante compte sans
+ *     année (jamais une date supposée).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { FinancialComponentKind } from '../model';
+import type { EconomicDateResolution } from './economic-date';
 
 /** Devise non établie sur le document (lot 53D, D2). */
 export const UNKNOWN_CURRENCY = 'XXX';
@@ -78,6 +85,12 @@ export interface LedgerComponent {
    * Absent : composante d'Opération, identifiée par `id`.
    */
   lineId?: string;
+  /**
+   * Lot 86F : résolution de la date économique (`./economic-date`) dont
+   * `economicDate` est le résultat — provenance, justification, dates
+   * disponibles. Absente : `economicDate` est la date propre de la composante.
+   */
+  economicDateResolution?: EconomicDateResolution;
 }
 
 /** Clé d'unicité d'une ligne : `lineId` (dépense documentaire, fiche) ou la composante (lot 61). */
@@ -256,8 +269,13 @@ export interface EvaluateContext {
   isDisposalOperation?: boolean;
   /** Un remboursement réel existe sur l'Opération : il remplace l'ajustement théorique (C17). */
   hasRefund?: boolean;
-  /** Date de repli (date EFFECTIVE de l'Opération : réalisation, début — jamais la date planifiée). */
-  fallbackDate?: string | null;
+  /**
+   * Lot 86F : date EFFECTIVE de l'Opération (réalisation, sinon début) —
+   * JAMAIS une date économique : seulement un signal de NON-réalisation pour
+   * une composante sans date établie (Opération datée après la date de
+   * référence → `FUTURE_DATED`, la composante reste sans date).
+   */
+  operationEffectiveDate?: string | null;
   /**
    * Lot 81D : date de référence (date civile, `civilDateParis`). Une dépense
    * datée APRÈS n'est pas réalisée : exclue (`FUTURE_DATED`). Absente : aucun
@@ -282,11 +300,11 @@ export function evaluateComponent(c: LedgerComponent, ctx: EvaluateContext): Led
   const attribution = attributeComponent(c, ctx.operationAssetIds, ctx.scope, ctx.equipmentAssets);
   // Lot 81D : dates STRICTES (jamais normalisées) ; Opération prévue : seule la date propre de la dépense
   // (paiement) la date — ni la date planifiée, ni la date de l'Opération.
+  // Lot 86F : aucun repli vers la date de l'Opération — la date est la date économique résolue de la composante.
   const prevue = PREVUE.has(String(ctx.operationStatus ?? ''));
   const propre = isoDayOrNull(c.economicDate);
-  const repli = prevue ? null : isoDayOrNull(ctx.fallbackDate);
-  const date = propre ?? repli;
-  const rejetee = c.economicDate && !propre ? c.economicDate : !c.economicDate && !prevue && ctx.fallbackDate && !repli ? ctx.fallbackDate : null;
+  const date = propre;
+  const rejetee = c.economicDate && !propre ? c.economicDate : c.economicDateResolution?.rejectedOwnDate ?? null;
   const base: LedgerEntry = {
     componentId: c.id, operationId: c.operationId, kind: c.kind, effect, amountMinor: c.amountMinor, currency: String(c.currency).trim().toUpperCase(),
     eurMinor: eur, includedEurMinor: 0, included: false, exclusion: null, attribution, date,
@@ -301,11 +319,17 @@ export function evaluateComponent(c: LedgerComponent, ctx: EvaluateContext): Led
   // paiement DATÉ (jamais la date planifiée), non futur, et JUSTIFIÉ ; sinon non réalisé (contradiction signalée).
   let contradiction: LedgerContradiction | undefined;
   if (prevue) {
-    if (!propre || (ctx.asOf && propre > ctx.asOf) || !ctx.realizationEvidence) return exclu('NOT_REALIZED', 'PLANNED_WITHOUT_PROOF');
+    // Lot 86F : seul un paiement (ou la date propre du montant) établit la réalisation — jamais la date d'un justificatif.
+    const fondement = c.economicDateResolution?.basis ?? null;
+    const paiementDate = fondement === null || fondement === 'PAYMENT' || fondement === 'AMOUNT_DATE';
+    if (!propre || !paiementDate || (ctx.asOf && propre > ctx.asOf) || !ctx.realizationEvidence) return exclu('NOT_REALIZED', 'PLANNED_WITHOUT_PROOF');
     contradiction = 'PLANNED_WITH_PAYMENT';
   }
   // Lot 81D : datée après la date de référence → non encore réalisée (exclue des trois indicateurs du TCO).
   if (ctx.asOf && date && date > ctx.asOf) return exclu('FUTURE_DATED', ctx.operationStatus === 'REALIZED' ? 'REALIZED_FUTURE_DATE' : undefined);
+  // Lot 86F : sans date établie, une Opération dont la date effective est postérieure n'est pas encore réalisée (jamais datée par elle).
+  const effective = isoDayOrNull(ctx.operationEffectiveDate);
+  if (ctx.asOf && !date && effective && effective > ctx.asOf) return exclu('FUTURE_DATED', ctx.operationStatus === 'REALIZED' ? 'REALIZED_FUTURE_DATE' : undefined);
   if (attribution === 'UNALLOCATED') return exclu('UNALLOCATED_MULTI_ASSET');
   if (eur == null) return { ...exclu('UNCONVERTED_CURRENCY'), ...(contradiction ? { contradiction } : {}) };
   let retenu = eur;

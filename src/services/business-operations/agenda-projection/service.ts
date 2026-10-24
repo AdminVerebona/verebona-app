@@ -808,7 +808,7 @@ export async function recordAgendaProjectionSuppression(
   const parsed = i.projection_origin === PROJECTION_ORIGIN ? parseProjectionFunctionalKey(txt(i.functional_key)) : null;
   const key = parsed && parsed.operationId === operationId
     ? parsed.key
-    : projectionKeyOf({ typeCode: txt(i.type_code) as BusinessOperationTypeCode | null, contractEffectiveTo: txt(i.effective_to), endDate: txt(i.end_date) });
+    : projectionKeyOf({ typeCode: txt(i.type_code) as BusinessOperationTypeCode | null, contractEffectiveTo: txt(i.effective_to) });
   if (!key) return null;
   await tx.execute(sql`
     INSERT INTO business_operation_projection_suppressions (account_id, operation_id, projection_kind, projection_key, user_id)

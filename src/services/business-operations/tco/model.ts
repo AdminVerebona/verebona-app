@@ -67,6 +67,17 @@
  * effective ; date d'acquisition future, impossible ou postérieure à la
  * cession : jamais utilisée (moyenne non calculée, prix compté sans date).
  *
+ * Lot 86F (ticket P1 « dates économiques injustifiées ») — la date d'une
+ * composante est SA date économique (`finance/economic-date`), résolue
+ * composante par composante (chaque échéance indépendamment) : paiement
+ * prouvé, date propre du montant, date du justificatif, réalisation d'une
+ * Opération ponctuelle à fait unique. Jamais la date de l'Opération par
+ * défaut, jamais le début de la période couverte : sans date établie, la
+ * dépense compte dans le total sans année (`ECONOMIC_DATE_UNDETERMINED`,
+ * années « potentiellement incomplètes »). Chaque ligne porte la résolution
+ * (`economicDate` : fondement, provenance, justification, dates disponibles)
+ * — diagnostic BO (`tracabilite/montants.json`) et tiroir (`dateLabel`).
+ *
  *   Coût cumulé documenté = Σ coûts réalisés − Σ réductions − Σ remboursements
  *                           − Σ indemnités attribuables
  *   En possession         : coût net estimé = cumulé − valeur actuelle FIABLE
@@ -93,6 +104,9 @@ import {
   presumedDuplicateComponents, purchaseIsOwnershipCost, unjustifiedComponent, type ComponentProvenance, type PresumedDuplicate,
 } from './fact-identity';
 import { applyTcoUserDecisions, type TcoLineUserDecision, type TcoUserDecision } from './user-decisions';
+import {
+  economicDateLabel, resolveOperationEconomicDates, type EconomicDateDocument, type EconomicDateEvidence, type EconomicDateResolution, type OwnDateOrigin,
+} from '../finance/economic-date';
 
 // ── Entrées ────────────────────────────────────────────────────────────────
 
@@ -107,7 +121,8 @@ export interface TcoOperation {
   assetIds: number[];
   label: string;
   components: LedgerComponent[];
-  documents: Array<{ fileId: number; title: string; role: string | null }>;
+  /** Lot 86F : `date` — date du justificatif (preuve de la date économique de ses composantes). */
+  documents: Array<{ fileId: number; title: string; role: string | null; date?: string | null }>;
   /** Lot 61 : natures des sources actives (ASSET_DATA : achat consolidé depuis la fiche). */
   sourceKinds?: readonly string[];
   /** Lot 78B (§3C) : l'utilisateur a lui-même rattaché l'Opération à ce bien (lien d'autorité USER). */
@@ -238,7 +253,9 @@ export type TcoWarning =
   | 'USER_DECISIONS' | 'USER_INCLUDED_DUPLICATES'
   // Lot 81D : dépenses non réalisées exclues ; contradictions statut / date / nature ; dates impossibles ignorées ;
   // date d'acquisition future, impossible ou postérieure à la cession.
-  | 'NOT_REALIZED_EXPENSES' | 'STATUS_CONTRADICTIONS' | 'INVALID_DATES' | 'ACQUISITION_DATE_INCOHERENT';
+  | 'NOT_REALIZED_EXPENSES' | 'STATUS_CONTRADICTIONS' | 'INVALID_DATES' | 'ACQUISITION_DATE_INCOHERENT'
+  // Lot 86F : dépenses retenues dont la date économique n'est pas établie (comptées, rattachées à aucune année).
+  | 'ECONOMIC_DATE_UNDETERMINED';
 
 /** Lot 75D (H) : état du coût d'acquisition (distingue absence de dépense et information manquante). */
 export type TcoAcquisitionStatus = 'DOCUMENTED' | 'MISSING' | 'NOT_APPLICABLE';
@@ -291,6 +308,13 @@ export interface TcoEconomicLine {
   notRealized?: true;
   /** Lot 81D : contradiction statut / date / nature constatée sur la ligne. */
   contradiction?: string;
+  /**
+   * Lot 86F : résolution de la date économique de la ligne (fondement,
+   * provenance, justification, dates disponibles retenues ou rejetées).
+   */
+  economicDate?: EconomicDateResolution;
+  /** Lot 86F : libellé court du fondement de la date (« Date de paiement », « Date non établie »…) — tiroir. */
+  dateLabel?: string | null;
 }
 
 export interface TcoResult {
@@ -475,8 +499,47 @@ function nonRealisee(e: LedgerEntry, op?: Pick<TcoOperation, 'plannedDate'>): Pa
   else if (e.contradiction === 'PLANNED_WITH_PAYMENT') out.note = 'Dépense marquée « prévue » mais paiement daté et justifié : comptée à sa date de paiement, statut à vérifier.';
   else if (e.contradiction === 'REALIZED_FUTURE_DATE') out.note = 'Dépense marquée « réalisée » mais datée après aujourd’hui : non comptée, date à vérifier.';
   else if (e.exclusion === 'FUTURE_DATED') out.note = 'Datée après aujourd’hui : non encore réalisée, elle sera comptée à sa date.';
-  else if (e.dateRejected) out.note = `Date impossible (« ${e.dateRejected.slice(0, 10)} ») ignorée : dépense rattachée à aucune année.`;
+  else if (e.dateRejected && !e.date) out.note = `Date impossible (« ${e.dateRejected.slice(0, 10)} ») ignorée : dépense rattachée à aucune année.`;
+  else if (e.dateRejected) out.note = `Date impossible (« ${e.dateRejected.slice(0, 10)} ») ignorée : dépense datée par une autre preuve.`;
   return out;
+}
+
+/** Lot 86F : origine de la date propre d'une composante, d'après les natures de ses sources. */
+function ownDateOrigin(p: Pick<ComponentProvenance, 'documentFileIds' | 'otherSourceKinds'> | undefined): OwnDateOrigin {
+  if (!p) return 'UNKNOWN';
+  if (p.documentFileIds.length) return 'DOCUMENT_HINT';
+  if (p.otherSourceKinds.some((k) => k === 'ASSET_DATA' || k === 'EQUIPMENT_DATA')) return 'STRUCTURED';
+  if (p.otherSourceKinds.includes('AGENDA')) return 'AGENDA';
+  return p.otherSourceKinds.length ? 'USER' : 'UNKNOWN';
+}
+
+/**
+ * Lot 86F : preuves de date connues du TCO pour les composantes d'une
+ * Opération (justificatifs de chaque composante et leur date). Le lecteur des
+ * Opérations résout déjà avec toutes les preuves (règlements compris) : ce
+ * repli ne sert qu'aux composantes reçues sans résolution.
+ */
+function tcoDateEvidence(op: TcoOperation, prov: ReadonlyMap<number, ComponentProvenance>): EconomicDateEvidence {
+  const documents = new Map<number, EconomicDateDocument[]>();
+  const origins = new Map<number, OwnDateOrigin>();
+  for (const c of op.components) {
+    const p = prov.get(c.id);
+    origins.set(c.id, ownDateOrigin(p));
+    documents.set(c.id, (p?.documentFileIds ?? []).map((f) => {
+      const d = op.documents.find((x) => x.fileId === f);
+      return { fileId: f, role: d?.role ?? null, date: d?.date ?? null };
+    }));
+  }
+  return { documents, origins };
+}
+
+/** Lot 86F : résolution de la date portée par une ligne (et note d'une date non établie, sans écraser une autre note). */
+function dateEco(r: EconomicDateResolution | undefined, e: LedgerEntry): Partial<TcoEconomicLine> {
+  if (!r) return {};
+  return {
+    economicDate: r, dateLabel: economicDateLabel(r),
+    ...(r.status === 'UNDETERMINED' && e.included && !e.date ? { note: r.justification } : {}),
+  };
 }
 
 /** Statut d'une ligne évaluée par le moteur (pure). */
@@ -528,15 +591,22 @@ export function computeTco(input: TcoInput): TcoResult {
   const nonJustifiees = new Map<number, 'AMOUNT_NOT_ON_SOURCES' | 'SOURCES_WITHDRAWN'>();
   const autresBiens = new Set<number>();
 
+  const datesEco = new Map<number, EconomicDateResolution>();
   for (const op of ops) {
     const category = tcoCategoryOf(op);
     const hasRefund = op.components.some((c) => c.kind === 'REFUND');
-    for (const c of op.components) {
+    // Lot 86F : date économique de CHAQUE composante (jamais celle de l'Opération par défaut).
+    const resolutions = resolveOperationEconomicDates(op, tcoDateEvidence(op, prov));
+    for (const c0 of op.components) {
+      const res = resolutions.get(c0.id)!;
+      datesEco.set(c0.id, res);
+      const c: LedgerComponent = { ...c0, economicDate: res.date, economicDateResolution: res };
       const e = evaluateComponent(c, {
         scope, operationAssetIds: op.assetIds, operationStatus: op.status, equipmentAssets: input.equipmentAssets,
         disposalDate: dateCession, isDisposalOperation: op.typeCode === 'DISPOSAL', hasRefund,
-        // Lot 81D : date EFFECTIVE seulement (jamais la date planifiée) ; date de référence ; preuve de réalisation.
-        fallbackDate: op.realizedDate ?? op.startDate, asOf: input.today,
+        // Lot 81D : date de référence ; preuve de réalisation. Lot 86F : aucun repli vers la date de l'Opération (sa date
+        // effective ne sert qu'à constater une non-réalisation).
+        asOf: input.today, operationEffectiveDate: op.realizedDate ?? op.startDate,
         realizationEvidence: (prov.get(c.id)?.documentFileIds.length ?? 0) > 0,
       });
       // §3A : montant justifié par la preuve du prix d'achat d'un AUTRE bien (et non de celui-ci) — jamais un coût de
@@ -669,7 +739,7 @@ export function computeTco(input: TcoInput): TcoResult {
       const e = evaluateComponent({
         id: 0, lineId: assetLineId, operationId: 0, kind: 'REALIZED_COST', amountMinor: prix.amountMinor, currency: prix.currency, amountEurCents: null,
         economicDate: startCoherent, targetAssetId: input.assetId,
-      }, { scope, operationAssetIds: [input.assetId], disposalDate: dateCession, fallbackDate: startCoherent, asOf: input.today });
+      }, { scope, operationAssetIds: [input.assetId], disposalDate: dateCession, asOf: input.today });
       assetEntry = { ...e, category: e.effect === 'COST' ? 'ACQUISITION' : null };
       entries.push(assetEntry);
       lines.push({ ...base, includedCents: e.includedEurMinor, operationId: null, operationLabel: null, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion });
@@ -759,9 +829,10 @@ export function computeTco(input: TcoInput): TcoResult {
     const e = evaluateComponent({
       id: 0, lineId: d.lineId, operationId: 0, kind: d.kind, amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents,
       economicDate: d.date, periodStart: d.periodStart, periodEnd: d.periodEnd, targetAssetId: d.targetAssetId, targetEquipmentId: d.targetEquipmentId,
+      ...(d.dateResolution ? { economicDateResolution: d.dateResolution } : {}),
     }, {
       scope, operationAssetIds: d.assetIds, equipmentAssets: input.equipmentAssets, disposalDate: dateCession,
-      isDisposalOperation: category === 'DISPOSAL', fallbackDate: d.date, asOf: input.today,
+      isDisposalOperation: category === 'DISPOSAL', asOf: input.today,
     });
     if (e.prorata) warnings.add('PRORATA_APPLIED');
     if (e.included && d.uncertain) warnings.add('UNCERTAIN_MATCHES');
@@ -770,7 +841,10 @@ export function computeTco(input: TcoInput): TcoResult {
     docEntries.push({ draft: d, entry: x });
     const incertaine = e.included && d.uncertain
       ? { uncertain: true, note: d.uncertain.note, relatedFileId: d.relatedFileId ?? d.uncertain.relatedFileId } : {};
-    lines.push({ ...ligne, date: e.date, eurCents: e.eurMinor, includedCents: e.includedEurMinor, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion, ...incertaine, ...nonRealisee(e) });
+    lines.push({
+      ...ligne, date: e.date, eurCents: e.eurMinor, includedCents: e.includedEurMinor, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion, ...incertaine,
+      ...dateEco(d.dateResolution, e), ...nonRealisee(e),
+    });
   }
   // ── Prix d'achat des équipements (lot 71A ; lot 75D F) : dépense du bien, sans doublon ─
   // Jamais additionné à SA facture d'achat ni à l'achat consolidé de l'équipement — identité établie seulement
@@ -814,7 +888,7 @@ export function computeTco(input: TcoInput): TcoResult {
     const e = evaluateComponent({
       id: 0, lineId, operationId: 0, kind: 'REALIZED_COST', amountMinor: ep.amountMinor, currency: ep.currency, amountEurCents: null,
       economicDate: base.date ?? startCoherent, targetAssetId: input.assetId,
-    }, { scope, operationAssetIds: [input.assetId], disposalDate: dateCession, fallbackDate: base.date ?? startCoherent, asOf: input.today });
+    }, { scope, operationAssetIds: [input.assetId], disposalDate: dateCession, asOf: input.today });
     const x = { ...e, category: e.effect === 'COST' ? ('ACCESSORIES' as const) : null };
     entries.push(x);
     lines.push({ ...base, includedCents: e.includedEurMinor, fileId: null, operationId: null, operationLabel: null, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion });
@@ -847,6 +921,7 @@ export function computeTco(input: TcoInput): TcoResult {
         ...(p ? { sourceFileIds: [...p.documentFileIds] } : {}),
         // Lot 85A (O-9) : identités stables des sources non documentaires (clé de décision sans justificatif).
         ...(p?.otherSourceKeys?.length ? { sourceIdentities: [...p.otherSourceKeys] } : {}),
+        ...dateEco(datesEco.get(e.componentId), e),
         ...nonRealisee(e, op),
       };
       if (autresBiens.has(e.componentId)) {
@@ -898,6 +973,10 @@ export function computeTco(input: TcoInput): TcoResult {
   if (toutesLignes.some((l) => l.reason === 'NOT_REALIZED' || l.reason === 'FUTURE_DATED')) warnings.add('NOT_REALIZED_EXPENSES');
   if (toutesLignes.some((l) => l.contradiction)) warnings.add('STATUS_CONTRADICTIONS');
   if (entries.some((e) => e.dateRejected)) warnings.add('INVALID_DATES');
+  // Lot 86F : dépense retenue sans date économique établie — comptée, rattachée à aucune année (signalée).
+  if (toutesLignes.some((l) => l.economicDate?.status === 'UNDETERMINED' && !l.date && (l.status === 'RETAINED_CONSOLIDATED' || l.status === 'RETAINED_DIRECT'))) {
+    warnings.add('ECONOMIC_DATE_UNDETERMINED');
+  }
 
   // ── Lot 80A : décisions de l'utilisateur (Ajouter / Retirer du TCO) — AVANT les totaux, priment sur les règles ──
   const decisionsUtilisateur = applyTcoUserDecisions({
@@ -1047,15 +1126,21 @@ export function computeTco(input: TcoInput): TcoResult {
  * périmètre de biens (pure, testée L81D-T2-*).
  */
 export function nonRealizedComponentIds(
-  ops: ReadonlyArray<{ status: string; realizedDate: string | null; startDate: string | null; components: readonly LedgerComponent[] }>,
+  ops: ReadonlyArray<{
+    typeCode?: string | null; status: string; realizedDate: string | null; startDate: string | null; plannedDate?: string | null; components: readonly LedgerComponent[];
+  }>,
   provenance: ReadonlyMap<number, Pick<ComponentProvenance, 'documentFileIds'>>,
   today: string,
 ): Set<number> {
   const out = new Set<number>();
   for (const o of ops) {
-    for (const c of o.components) {
+    // Lot 86F : même date économique que le TCO (résolution du lecteur, sinon même règle) — jamais la date de l'Opération par défaut.
+    const dates = resolveOperationEconomicDates({ typeCode: o.typeCode ?? null, status: o.status, realizedDate: o.realizedDate, startDate: o.startDate, plannedDate: o.plannedDate ?? null, components: o.components });
+    for (const c0 of o.components) {
+      const res = dates.get(c0.id)!;
+      const c: LedgerComponent = { ...c0, economicDate: res.date, economicDateResolution: res };
       const e = evaluateComponent(c, {
-        scope: null, operationAssetIds: [], operationStatus: o.status, fallbackDate: o.realizedDate ?? o.startDate, asOf: today,
+        scope: null, operationAssetIds: [], operationStatus: o.status, asOf: today, operationEffectiveDate: o.realizedDate ?? o.startDate,
         realizationEvidence: (provenance.get(c.id)?.documentFileIds.length ?? 0) > 0,
       });
       if (e.exclusion === 'NOT_REALIZED' || e.exclusion === 'FUTURE_DATED') out.add(c.id);

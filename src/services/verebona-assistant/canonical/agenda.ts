@@ -160,6 +160,23 @@ export interface UpcomingAgendaRow {
   /** Lot 75J (#419 R02) : nature (HISTORICAL / DEADLINE) et champ d'origine — signification de la date. */
   nature?: string | null;
   originFieldKey?: string | null;
+  /**
+   * Lot 86C : provenance de l'échéance — champ métier qualifié (`FIELD`),
+   * projection d'une fin de contrat ÉTABLIE (`OPERATION`), saisie de
+   * l'utilisateur (`USER`), ou élément automatique sans provenance
+   * contractuelle (`UNPROVEN`) : jamais présenté comme une fin certaine.
+   */
+  provenance?: AgendaDateProvenance;
+}
+
+export type AgendaDateProvenance = 'FIELD' | 'OPERATION' | 'USER' | 'UNPROVEN';
+
+/** Lot 86C : provenance d'une date d'agenda (pure, testée). */
+export function agendaDateProvenance(r: { originFieldKey?: string | null; projectionOrigin?: string | null; isAutomatic?: boolean | null }): AgendaDateProvenance {
+  if (r.originFieldKey) return 'FIELD';
+  if (r.projectionOrigin === 'OPERATION') return 'OPERATION';
+  if (r.isAutomatic === false) return 'USER';
+  return 'UNPROVEN';
 }
 
 /**
@@ -184,6 +201,7 @@ export async function listUpcomingAgenda(accountId: number, opts: {
   const rows = (await pgClient.unsafe(
     `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, (i.occurrence_nature = 'FORECAST') AS forecast,
             i.origin_field_key AS "originFieldKey", ${col ? 'i.business_type' : 'NULL::text'} AS "businessType",
+            i.is_automatic AS "isAutomatic", i.projection_origin AS "projectionOrigin",
             ${col ? 'i.event_nature' : 'NULL::text'} AS "eventNature",
             coalesce(array_remove(array_agg(DISTINCT a.name), NULL), '{}') AS "assetNames"
        FROM agenda_items i
@@ -200,13 +218,14 @@ export async function listUpcomingAgenda(accountId: number, opts: {
       ORDER BY i.start_date ASC, i.id ASC
       LIMIT $5`,
     [accountId, from, jours, ids, Math.min(Math.max(opts.limit ?? 10, 1), 50), [...HISTORICAL_FIELD_KEYS], ...terms.map((t) => `%${t}%`)] as never[],
-  )) as unknown as Array<UpcomingAgendaRow & { originFieldKey: string | null; eventNature: string | null }>;
-  return rows.map(({ id, title, date, forecast, assetNames, businessType, originFieldKey, eventNature }) => {
+  )) as unknown as Array<UpcomingAgendaRow & { originFieldKey: string | null; eventNature: string | null; isAutomatic: boolean | null; projectionOrigin: string | null }>;
+  return rows.map(({ id, title, date, forecast, assetNames, businessType, originFieldKey, eventNature, isAutomatic, projectionOrigin }) => {
     const sem = resolveEventSemantics({ originFieldKey, businessType: businessType ?? null, nature: (eventNature as never) ?? null });
     return {
       id: Number(id), title, date, forecast: !!forecast, assetNames,
       businessType: businessType ?? sem.businessType,
       nature: eventNature ?? sem.nature ?? null, originFieldKey: originFieldKey ?? null,
+      provenance: agendaDateProvenance({ originFieldKey, projectionOrigin, isAutomatic }),
     };
   });
 }

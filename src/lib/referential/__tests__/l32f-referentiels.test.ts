@@ -48,7 +48,9 @@ describe('PO-Q13 — sélecteur de types de documents = liste du code', () => {
   });
 
   it('les sélecteurs (tiroir, dialogues) n’affichent pas les codes LEGACY_SUPPORTED', () => {
-    expect(read('src/components/assets/DocumentDrawer.tsx')).toContain('t.isActive && !t.hideFromPicker');
+    // Lot 86E : le tiroir n'a plus de sélecteur ni de libellé V1 — le Type affiché
+    // et modifié est le Type V2 (référentiel) ; il ne charge plus les types V1.
+    expect(read('src/components/assets/DocumentDrawer.tsx')).not.toContain("'/api/document-types'");
     expect(read('src/components/documents/unified-document-dialog.tsx')).toContain('dt.isActive && !dt.hideFromPicker');
     // Lot 64A : `document-edit-dialog.tsx` (jamais importé) est supprimé.
     expect(existsSync(join(process.cwd(), 'src/components/document-edit-dialog.tsx'))).toBe(false);

@@ -21,6 +21,10 @@
  * multi-rubriques, et tout cet appareil s'évapore : la Rubrique se DÉDUIT du
  * Type, elle ne se négocie plus avec lui.
  *
+ * Lot 86E : un Type générique peut être réutilisable dans plusieurs Rubriques
+ * (`alsoIn`). La règle reste simple : la Rubrique courante est conservée si
+ * le Type y est proposé, sinon elle est déduite de la Rubrique d'attache.
+ *
  * Il ne reste qu'une règle de cohérence, §5.1 : « Si la Rubrique change et
  * que le Type actuel n'est pas compatible, le Type est vidé. »
  * ══════════════════════════════════════════════════════════════════════════
@@ -29,7 +33,8 @@ import {
   getDocumentType,
   getRubric,
   isApplicableToFamily,
-  rubricOfType,
+  isTypeCompatibleWithRubric,
+  rubricForType,
   REFERENTIAL_VERSION,
   type AssetFamily,
   type RubricCode,
@@ -158,8 +163,11 @@ export function applyClassificationChange(
   //
   // La déduction ne s'applique donc qu'au Type explicitement fourni, ou à
   // défaut de toute Rubrique.
+  // Lot 86E : un Type réutilisable garde la Rubrique courante quand il y est
+  // proposé (« Bon de commande » en « Équipements et mobilier ») ; sinon sa
+  // Rubrique d'attache est déduite (`rubricForType`).
   if (documentTypeCode && (typeTouched || !rubricCode)) {
-    const deduced = rubricOfType(documentTypeCode);
+    const deduced = rubricForType(documentTypeCode, rubricCode);
     if (deduced && rubricCode !== deduced) {
       // Une Rubrique validée par l'utilisateur ne cède pas à une déduction
       // automatique : c'est le Type qui est alors refusé.
@@ -183,7 +191,7 @@ export function applyClassificationChange(
   //
   // « Si la Rubrique change et que le Type actuel n'est pas compatible, le
   //   Type est vidé. »
-  if (rubricCode && documentTypeCode && rubricOfType(documentTypeCode) !== rubricCode) {
+  if (rubricCode && documentTypeCode && !isTypeCompatibleWithRubric(documentTypeCode, rubricCode)) {
     changes.push(`Type ${documentTypeCode} vidé : il n’appartient pas à ${rubricCode}.`);
     documentTypeCode = null;
     typeOrigin = null;

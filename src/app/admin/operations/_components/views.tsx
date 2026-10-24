@@ -575,7 +575,7 @@ export function OperationDetailView({ d, onNavigate, identityAction }: {
 
       <Section title="Agenda (projection et suppressions)" count={d.agendaItems.length + d.projectionSuppressions.length}>
         <Table cols={['Événement', 'Date', 'Origine', 'Corrélation']} empty="Aucun événement d’agenda lié."
-          rows={d.agendaItems.map((a: Row) => [onNavigate ? navButton('agenda', n(a.id), `#${s(a.id)} ${s(a.title)}`) : `#${s(a.id)} ${s(a.title)}`, formatDate(a.start_date as string), a.projection_origin === 'OPERATION' ? 'projeté (T4)' : 'rapproché', s(a.projection_correlation_id)])} />
+          rows={d.agendaItems.map((a: Row) => [onNavigate ? navButton('agenda', n(a.id), `#${s(a.id)} ${s(a.title)}`) : `#${s(a.id)} ${s(a.title)}`, formatDate(a.start_date as string), agendaOrigin(a), s(a.projection_correlation_id)])} />
         {d.projectionSuppressions.length > 0 && (
           <div className="mt-3">
             <Table cols={['Suppression durable', 'Clé', 'Utilisateur', 'Date']} empty=""
@@ -612,4 +612,19 @@ export function OperationDetailView({ d, onNavigate, identityAction }: {
       </Section>
     </div>
   );
+}
+
+/**
+ * Lot 86C : provenance lisible d'un élément d'agenda lié (diagnostic d'une échéance « Fin de contrat ») —
+ * projection d'une fin de contrat établie, décision T4 depuis un document, champ métier, saisie ; modifié ou non.
+ */
+function agendaOrigin(a: Row): string {
+  const base = a.projection_origin === 'OPERATION'
+    ? `projeté (T4)${a.functional_key ? ` — clé ${String(a.functional_key)}` : ''}`
+    : a.is_automatic === false ? 'saisi par l’utilisateur'
+      : a.origin_type === 'qualified_document' || a.origin_ref_type === 'asset_file' ? `décision T4 depuis le document #${String(a.origin_ref_id ?? '?')}`
+        : a.origin_type ? `rapproché (${String(a.origin_type)})` : 'rapproché';
+  const champ = a.origin_field_key ? ` · champ ${String(a.origin_field_key)}` : '';
+  const touche = a.is_automatic_modified === true ? ' · modifié par l’utilisateur' : '';
+  return `${base}${champ}${touche}`;
 }

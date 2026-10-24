@@ -33,6 +33,7 @@
  * jamais de retrait sans trace (signalé une fois).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { linkRejectedSql } from '@/services/business-operations/grouping/decisions';
 import type postgres from 'postgres';
 import { pgClient } from '@/db';
 import { removeAgendaItemsTraced } from '@/services/agenda/agenda-removal-trace';
@@ -186,7 +187,10 @@ export async function consolidateAgendaRepresentations(p: ConsolidationInput, sq
         files: (await tx.unsafe<Row[]>(`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id, provenances)
             SELECT $1, asset_file_id, CASE WHEN cardinality(array_remove(provenances, 'OPERATION_PRINCIPAL')) > 0
                                            THEN array_remove(provenances, 'OPERATION_PRINCIPAL') ELSE ARRAY['AI_DIRECT']::text[] END
-              FROM agenda_file_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING asset_file_id`, [p.principalId, id] as never[])).map((r) => Number(r.asset_file_id)),
+              FROM agenda_file_links WHERE agenda_item_id = $2
+               -- Lot 86D : un lien détaché par l'utilisateur de l'élément retenu n'y est jamais recopié.
+               AND NOT ${linkRejectedSql('$1::int', 'asset_file_id')}
+             ON CONFLICT DO NOTHING RETURNING asset_file_id`, [p.principalId, id] as never[])).map((r) => Number(r.asset_file_id)),
         rooms: (await tx.unsafe<Row[]>(`INSERT INTO agenda_room_links (agenda_item_id, substructure_id)
             SELECT $1, substructure_id FROM agenda_room_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING substructure_id`, [p.principalId, id] as never[])).map((r) => Number(r.substructure_id)),
         equipments: (await tx.unsafe<Row[]>(`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id)

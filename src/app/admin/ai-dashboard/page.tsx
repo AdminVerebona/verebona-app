@@ -90,9 +90,10 @@ interface Version {
   label: string | null; isStale: boolean; createdAt: string;
 }
 
-interface Package {
-  id: number; uid: string; visibleNumber: number; label: string | null;
-  sourceEnvironment: string; importedAt: string | null;
+/** Lot 86B : import de la configuration globale (journal). */
+interface ConfigImport {
+  id: number; action: 'import' | 'rollback'; status: 'applied' | 'refused'; createdAt: string; createdByEmail: string | null;
+  sourceEnvironment: string | null; sourceVersionNumber: number | null; sourceRevisionNumber: number | null; rolledBackAt: string | null;
 }
 
 interface Degraded { source: string; message: string }
@@ -123,7 +124,7 @@ interface Dashboard {
   drafts?: Draft[];
   health: Health[];
   versions: Version[];
-  packages: Package[];
+  imports?: ConfigImport[];
   alerts: Alert[];
   /** Sources qui n'ont pas répondu : l'écran s'affiche sans elles, en le disant. */
   degraded?: Degraded[];
@@ -491,21 +492,22 @@ export default function AiDashboardPage() {
         )}
       </div>
 
-      {/* Lot 54 : plus de mise en production depuis le BO — export du fichier
-          de configuration (Configuration IA), packages antérieurs en historique. */}
+      {/* Lot 86B : transfert de la configuration = export complet (préproduction) puis
+          import manuel complet et atomique (Configuration IA). Derniers imports. */}
       <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-2">
         <h2 className="vb-app-section">
-          Export de la configuration
+          Transfert de la configuration
         </h2>
         <p className="text-sm text-[color:var(--text-muted)]">
-          Le paramétrage de la production se fait séparément, à partir du fichier « Exporter la configuration »
+          Export du fichier complet, puis import manuel avec prévisualisation, confirmation et retour arrière possible
           (<Link href="/admin/ai-config" className="text-[color:var(--accent)] hover:underline">Configuration IA</Link>).
-          Aucune publication en production n’est faite depuis le back-office.
         </p>
-        {data.packages.length > 0 && data.packages.map((p) => (
-          <p key={p.id} className="text-xs text-[color:var(--text-muted)]">
-            Ancien package v{p.visibleNumber}{p.label ? ` — ${p.label}` : ''} · depuis {p.sourceEnvironment}
-            {p.importedAt ? ` · importé le ${formatDateTime(p.importedAt)}` : ''}
+        {(data.imports ?? []).map((i) => (
+          <p key={i.id} className="text-xs text-[color:var(--text-muted)] break-words">
+            {i.action === 'rollback' ? 'Retour arrière' : i.status === 'refused' ? 'Import refusé' : 'Import'} du {formatDateTime(i.createdAt)}
+            {i.action === 'import' && i.sourceEnvironment ? ` · depuis ${i.sourceEnvironment} v${i.sourceVersionNumber ?? '?'} r${i.sourceRevisionNumber ?? '?'}` : ''}
+            {i.createdByEmail ? ` · ${i.createdByEmail}` : ''}
+            {i.rolledBackAt ? ' · annulé' : ''}
           </p>
         ))}
       </div>

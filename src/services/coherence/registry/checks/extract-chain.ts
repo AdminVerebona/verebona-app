@@ -72,6 +72,19 @@ const RELANCES_IA = ['repairDocumentSourceUnits', 'requeueDocumentForReread'];
 export const DEFAULT_T1_RELAUNCH_DAILY_MAX = 200;
 
 /**
+ * Relances IA T1 restantes sur 24 h glissantes, pour TOUT le contrôle de
+ * cohérence (L83-Q3 : un plafond unique). Lot 86E : compté sur tous les
+ * contrôles qui relancent T1 par les services existants (ce contrôle et
+ * COH-DOC-CLASSIFICATION), plus seulement sur celui-ci.
+ */
+export async function t1RelaunchBudgetLeft(ctx: Pick<CheckContext, 'sql' | 'now'>): Promise<number> {
+  const [{ n: relancees }] = await rows(ctx.sql, `
+    SELECT count(*)::int AS n FROM coherence_repairs WHERE service = ANY($1::text[]) AND created_at >= $2`,
+  [RELANCES_IA, new Date(ctx.now.getTime() - 86_400_000)]);
+  return t1RelaunchDailyMax() - Number(relancees);
+}
+
+/**
  * Budget de relances IA du contrôle sur 24 h glissantes, tous comptes
  * (`COHERENCE_T1_RELAUNCH_DAILY_MAX`, 200 par défaut, 0 = aucune relance) —
  * C-Q1 : coût mesuré, jamais de relance massive au premier passage correctif ;
@@ -447,10 +460,7 @@ export const extractChainCheck: CoherenceCheck = {
     ]);
     const maxRetries = maxCompletenessRetries();
     const cap = repairAttemptCap();
-    const [{ n: relancees }] = await rows(ctx.sql, `
-      SELECT count(*)::int AS n FROM coherence_repairs WHERE check_id = $1 AND service = ANY($2::text[]) AND created_at >= $3`,
-    [EXTRACT_CHAIN_CHECK_ID, RELANCES_IA, new Date(ctx.now.getTime() - 86_400_000)]);
-    let budget = t1RelaunchDailyMax() - Number(relancees);
+    let budget = await t1RelaunchBudgetLeft(ctx);
     for (const fileId of ids) {
       const f = d.files.get(fileId);
       if (!f) { out.set(fileId, { verdict: 'GONE' }); continue; }

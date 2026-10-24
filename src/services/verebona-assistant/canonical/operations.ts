@@ -225,7 +225,9 @@ export function operationCostLines(
       const a = attributeComponent(c, op.assetIds, global ? null : scope);
       const attrib = a === 'IN' ? 'in' : a === 'OUT' ? 'out' : 'unallocated';
       if (attrib === 'out') continue;
-      const date = c.economicDate ?? line.date;
+      // Lot 86F : date ÉCONOMIQUE résolue de la composante (lecteur des Opérations) — jamais la date de l'Opération
+      // par défaut : sans date établie, la composante est « non datée » pour une année demandée (comme le TCO).
+      const date = c.economicDate;
       if (ctx.year != null && date && Number(date.slice(0, 4)) !== ctx.year) continue;
       line.noAmount = false;
       const eur = componentEurCents(c);
@@ -691,7 +693,9 @@ export async function readContracts(accountId: number, assetIds: readonly number
     ].filter(Boolean).join(' · ');
     return {
       operationId: o.id, label: operationLabel(o), provider: o.provider, reference: o.contractReference,
-      from: o.effectiveFrom ?? o.startDate, to: o.effectiveTo ?? o.endDate, status: o.status,
+      // Lot 86C : la fin d'un contrat est sa fin d'effet ÉTABLIE (sources contractuelles), jamais la fin
+      // d'une période facturée (`endDate` historique) — sinon aucune fin n'est annoncée.
+      from: o.effectiveFrom ?? o.startDate, to: o.effectiveTo, status: o.status,
       realizedCents: realise, forecastCents: prevu.length ? prevu[prevu.length - 1] : null, assetIds: o.assetIds,
       // Le document du contrat d'abord (« retourner aussi le document »).
       source: operationSource(o, { content, assetName: opts.assetName ?? null }),

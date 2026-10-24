@@ -58,6 +58,8 @@ const SUITES: Readonly<Record<string, readonly string[]>> = {
   // Lot 76D : neutralisation (retour arrière), phase du retour arrière, échéance non revérifiée (0585).
   transactional_email_jobs: ['0459_duo_membership_ended_email.sql', '0524_l72f_rappel_annuel_fiabilisation.sql', '0585_l76d_rappel_j7_rollback.sql'],
   email_provider_events: ['0524_l72f_rappel_annuel_fiabilisation.sql'],
+  // Lot 86D : Opération facultative pour l'objet AGENDA_FILE_LINK, contrainte de portée, unicité active par lien (0736).
+  business_operation_match_decisions: ['0736_l86d_decision_lien_document_agenda.sql'],
   annual_renewal_reminder_state: ['0524_l72f_rappel_annuel_fiabilisation.sql', '0585_l76d_rappel_j7_rollback.sql'],
   annual_renewal_reminder_checks: ['0524_l72f_rappel_annuel_fiabilisation.sql', '0585_l76d_rappel_j7_rollback.sql'],
   // (0462 et 0477 ne font que remplacer la contrainte de type, même nom.)

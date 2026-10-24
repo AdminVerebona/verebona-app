@@ -20,7 +20,7 @@
  *
  * Il ne mesure PAS la qualité rédactionnelle d'un modèle réel ni le top-5 du
  * retrieval en base : ces mesures demandent le corpus de préproduction et
- * relèvent du lancement `cron/ai/corpus-run`.
+ * relèvent de la qualification par couple de préproduction (lot 86A).
  *
  * COUVERTURE DU §35.1 : au moins 200 cas, répartis sur les 17 catégories
  * listées par le CDC (recherche simple, dates, biens homonymes, documents

@@ -129,7 +129,7 @@ if (process.argv[1]?.includes('seed-corpus-account')) {
       console.log(`[corpus] Compte      : ${r.accountId}\n`);
       console.log('  Reportez cette ligne dans .env.local :\n');
       console.log(`      CORPUS_ACCOUNT_ID=${r.accountId}\n`);
-      console.log('  Puis : npm run corpus:run\n');
+      console.log('  Puis : BO › Configuration IA › Qualification par couple (« Tester ce couple »).\n');
       process.exit(0);
     })
     .catch((e) => {

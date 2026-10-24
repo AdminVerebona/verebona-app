@@ -190,3 +190,14 @@ describe('L84E-U-REG — registre de cohérence (C-Q11)', () => {
     expect(COVERAGE_INVENTORY.find((e) => e.domain === 'operations')!.checks).toContain('COH-OPS-RECURRING-SERIES');
   });
 });
+
+describe('L84E-U-SERIES (lot 86C) — désignations équivalentes d’un même prestataire', () => {
+  it('L84E-U-86C-01 — clé canonique commune (équivalence prouvée) + compte client commun : série ÉTABLIE ; désignations brutes différentes : NONE', async () => {
+    const { buildProviderEquivalence, canonicalProviderKey } = await import('../provider-equivalence');
+    const eq = buildProviderEquivalence([{ supplierId: 3, supplierName: 'EPS-like SAS', provider: 'Homiris', role: 'INVOICE', reliable: true, fileId: 1 }]);
+    const k = canonicalProviderKey('homiris', eq);
+    expect(k).toBe(canonicalProviderKey('epslike', eq));
+    expect(assessSeries(facture(2, { providerKey: canonicalProviderKey('epslike', eq), providerKeyRaw: 'epslike' }), serie({ providerKey: k })).level).toBe('ESTABLISHED');
+    expect(assessSeries(facture(2, { providerKey: 'epslike' }), serie()).reasons).toEqual(['PROVIDER_DIFFERENT']);
+  });
+});

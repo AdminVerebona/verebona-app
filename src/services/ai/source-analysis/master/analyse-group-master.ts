@@ -166,7 +166,8 @@ async function rubricOf(
   const applicable = getVisibleRubrics({ families, hasRentedAsset: true, hasRentalDocuments: true }).map((r) => r.code);
   const proposal = c.rubricCode
     ? validateProposal(
-        { rubricCode: c.rubricCode, documentTypeCode: c.documentTypeCode ?? null, confidence: c.confidence, excerpt: c.evidence?.excerpt ?? '' },
+        // Lot 86E : la nature identifiée (`canonicalType`) complète le Type enregistré.
+        { rubricCode: c.rubricCode, documentTypeCode: c.documentTypeCode ?? null, canonicalType: c.canonicalType ?? null, confidence: c.confidence, excerpt: c.evidence?.excerpt ?? '' },
         applicable,
         families,
       )

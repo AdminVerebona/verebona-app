@@ -78,6 +78,7 @@ import type { CardKind, ExecutionCards, JournalView } from '@/services/ai/busine
 import { ExecutionDiagnosisPanel, type DiagnosisView } from './_components/ExecutionDiagnosisPanel';
 import { RuntimeContractPanel, type ContractCallView } from './_components/RuntimeContractPanel';
 import { T1CompletenessPanel } from './_components/T1CompletenessPanel';
+import { QualificationCampaignsPanel } from './_components/QualificationCampaignsPanel';
 import { ExecutionReportsTab, LinkedExecutionReports } from './_components/ExecutionReportPanel';
 import { JobAttemptsPanel, type JobExecutionViewDto, type UserViewDto } from './_components/JobAttemptsPanel';
 import { BusinessExecutionLine } from './_components/BusinessExecutionsPanel';
@@ -234,10 +235,12 @@ export default function AiExecutionsPage() {
   );
 }
 
-type TechTab = 'tech' | 'calls' | 't2' | 'reports' | 'completeness' | 'archives';
+type TechTab = 'tech' | 'calls' | 't2' | 'reports' | 'completeness' | 'archives' | 'qualification';
 const TECH_TABS: ReadonlyArray<readonly [TechTab, string]> = [
   ['calls', 'Appels modèles'], ['tech', 'Exécutions techniques'], ['t2', 'Requêtes T2 (routage)'],
   ['reports', 'Rapports T1/T3/T6'], ['completeness', 'Complétude T1'], ['archives', 'Archives (> 90 j)'],
+  // Lot 86A (Pilotage IA V2 P5) : campagnes de qualification par couple (techniques, jamais des exécutions métier).
+  ['qualification', 'Qualification'],
 ];
 
 interface JournalResponse {
@@ -322,7 +325,7 @@ function AiExecutionsScreen() {
       params.set('limit', '50');
       if (tab === 'tech') {
         setJournal(await apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams(jf, 'TECHNICAL', { offset: String(jOffset), limit: '50' })}`));
-      } else if (tab === 'reports' || tab === 'completeness') {
+      } else if (tab === 'reports' || tab === 'completeness' || tab === 'qualification') {
         // Lots 58C et 34F : l'onglet charge lui-même ses données.
       } else if (tab === 'archives') {
         setArchives(await apiClient.get<Archives>('/api/admin/ai/log-archives?limit=100'));
@@ -374,7 +377,7 @@ function AiExecutionsScreen() {
   };
 
   const total = vue === 'metier' || tab === 'tech' ? journal?.total ?? 0
-    : tab === 'reports' || tab === 'completeness' ? 0 : tab === 't2' ? t2?.total ?? 0 : tab === 'archives' ? archives?.totals.archives ?? 0 : page?.total ?? 0;
+    : tab === 'reports' || tab === 'completeness' || tab === 'qualification' ? 0 : tab === 't2' ? t2?.total ?? 0 : tab === 'archives' ? archives?.totals.archives ?? 0 : page?.total ?? 0;
   const journalList = vue === 'metier' || tab === 'tech';
 
   return (
@@ -464,7 +467,7 @@ function AiExecutionsScreen() {
         )}
 
         {/* Filtres des appels — lus depuis l'URL, réécrits à chaque changement */}
-        {vue === 'technique' && !journalList && tab !== 'completeness' && (
+        {vue === 'technique' && !journalList && tab !== 'completeness' && tab !== 'qualification' && (
       <div className="flex flex-wrap gap-2 items-center">
         {tab === 'calls' && (
           <>
@@ -552,6 +555,8 @@ function AiExecutionsScreen() {
         </div>
       ) : tab === 'completeness' ? (
         <T1CompletenessPanel />
+      ) : tab === 'qualification' ? (
+        <QualificationCampaignsPanel />
       ) : tab === 'reports' ? (
         <ExecutionReportsTab accountId={filters.accountId} />
       ) : tab === 'archives' ? (

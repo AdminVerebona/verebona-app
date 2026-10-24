@@ -216,9 +216,10 @@ scenario('L55B', 'T3 — toutes les factures d’un même contrat rattachées (f
     await stabiliser(compte);
     const ops = await actives(compte);
     expect(ops).toHaveLength(1);
-    expect(ops[0]).toMatchObject({ type_code: 'CONTRACT', start_date: '2026-01-01', end_date: '2026-03-31' });
-    const [d] = await sql`SELECT contract_reference, effective_from::text AS effective_from FROM business_operation_contract_details WHERE operation_id = ${ops[0].id}`;
-    expect(d).toMatchObject({ contract_reference: 'ALR-2026-55', effective_from: '2026-01-01' });
+    // Lot 86C (assertion corrigée) : les périodes facturées (01/01 → 31/03) ne sont PAS les dates du contrat.
+    expect(ops[0]).toMatchObject({ type_code: 'CONTRACT', start_date: null, end_date: null });
+    const [d] = await sql`SELECT contract_reference, effective_from::text AS effective_from, effective_to::text AS effective_to FROM business_operation_contract_details WHERE operation_id = ${ops[0].id}`;
+    expect(d).toMatchObject({ contract_reference: 'ALR-2026-55', effective_from: null, effective_to: null });
     const [h] = await sql`SELECT reason_code FROM business_operation_history WHERE operation_id = ${ops[0].id} AND event_type = 'TYPE_CHANGED'`;
     expect(h?.reason_code).toBe('T3_TYPE_RECURRING_CONTRACT');
   });
@@ -273,7 +274,12 @@ scenario('L55B', 'T3 — toutes les factures d’un même contrat rattachées (f
     expect((await sources(ops[0].id)).map((s) => s.file)).toEqual(fichiers);
     expect((await couts(ops[0].id)).map((c) => c.amount_minor)).toEqual([3990, 3990, 3990]);
     // Historique conservé : opérations absorbées redirigées (MERGED), jamais supprimées.
-    const fusions = await sql`SELECT 1 FROM business_operations WHERE account_id = ${compte.id} AND merged_into_operation_id = ${ops[0].id}`;
+    // Lot 86C (assertion adaptée) : un fragment de série (et non plus seulement une Opération à une source) est
+    // réexaminé — la fusion peut passer par un fragment intermédiaire (chaîne de redirection suivie jusqu'à la canonique).
+    const fusions = await sql`
+      WITH RECURSIVE m AS (SELECT id, merged_into_operation_id AS cible FROM business_operations WHERE account_id = ${compte.id} AND merged_into_operation_id IS NOT NULL
+                           UNION ALL SELECT m.id, o.merged_into_operation_id FROM m JOIN business_operations o ON o.id = m.cible WHERE o.merged_into_operation_id IS NOT NULL)
+      SELECT DISTINCT m.id FROM m JOIN business_operations o ON o.id = m.cible AND o.merged_into_operation_id IS NULL WHERE m.cible = ${ops[0].id}`;
     expect(fusions).toHaveLength(2);
     for (const f of fichiers) expect((await candidat(f)).t3_operation_id).toBe(ops[0].id);
     // Reprise terminée : plus de marque de réexamen, un nouveau passage ne fait rien.
@@ -379,6 +385,28 @@ scenario('L55B', 'T3 — toutes les factures d’un même contrat rattachées (f
     expect(d2!.candidates.every((c: Record<string, unknown>) => typeof c.ai_label === 'string')).toBe(true);
     // Branche IA nécessaire présente dans la configuration active (prompt livré).
     expect(d2!.operationMatchBranch).toMatchObject({ available: true });
+  });
+
+  it('L55B-13 / L86C — dernière période facturée ≠ fin de contrat : aucune date d’effet ni de fin, aucune « Fin de contrat » ; le contrat signé fixe seul la fin', async () => {
+    const compte = await make.account();
+    const maison = await maisonDe(compte);
+    for (const m of [7, 8, 9]) await document(compte, maison.id, [mensualite(maison.id, m, { typeHint: 'CONTRACT', contrat: 'ALR-86' })]);
+    await stabiliser(compte);
+    const [op] = await actives(compte);
+    expect(op).toMatchObject({ type_code: 'CONTRACT', start_date: null, end_date: null });
+    const { projectAccountOperations } = await import('@/services/business-operations/agenda-projection/service');
+    await projectAccountOperations(compte.id, { all: true, today: AUJOURDHUI });
+    expect(await sql`SELECT 1 FROM agenda_items WHERE account_id = ${compte.id} AND business_type = 'contract'`).toHaveLength(0);
+    // Le contrat signé (document contractuel) établit la fin : échéance unique, datée.
+    await document(compte, maison.id, [cand({
+      typeHint: 'CONTRACT', sourceRoleHint: 'CONTRACT_DOCUMENT', summary: 'Contrat de télésurveillance', targetHints: [cible(maison.id)],
+      businessReferences: [{ kind: 'CONTRACT', value: 'ALR-86' }], temporalHints: { startDate: '2026-07-01', endDate: '2027-06-30' },
+    })], 'Contrat alarme');
+    await stabiliser(compte);
+    expect((await actives(compte)).map((o) => [o.id, o.start_date, o.end_date])).toEqual([[op.id, '2026-07-01', '2027-06-30']]);
+    await projectAccountOperations(compte.id, { all: true, today: AUJOURDHUI });
+    expect(await sql`SELECT start_date::text AS d FROM agenda_items WHERE account_id = ${compte.id} AND business_type = 'contract'`).toEqual([{ d: '2027-06-30' }]);
+    expect((await couts(op.id)).map((c) => c.period_start)).toEqual(['2026-07-01', '2026-08-01', '2026-09-01']);
   });
 
   it('L55B-12 — deux comptes différents : aucun rapprochement, aucune fusion ni marque de reprise inter-comptes', async () => {

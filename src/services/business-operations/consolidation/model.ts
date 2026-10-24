@@ -107,6 +107,12 @@ export interface IdentityContext {
    * des biens du compte encore présents). Absent : aucune Pièce consolidée.
    */
   roomAssets?: ReadonlyMap<number, number>;
+  /**
+   * Lot 86C : désignations ÉQUIVALENTES d'un prestataire établies par les
+   * preuves du compte (`provider-equivalence.ts`) — clé normalisée → clé
+   * canonique. Absent : comparaison historique (égalité des clés).
+   */
+  providerCanonical?: ReadonlyMap<string, string>;
 }
 
 // ── Identité candidate ─────────────────────────────────────────────────────
@@ -137,6 +143,8 @@ export interface CandidateIdentity {
   summary: string;
   provider: string | null;
   providerKey: string | null;
+  /** Lot 86C : clé normalisée d'origine quand l'équivalence de désignations l'a remplacée par la clé canonique. */
+  providerKeyRaw?: string;
   /** Biens cibles résolus (cible certaine, sinon bien du document). */
   assetIds: number[];
   /** USER : bien de la donnée structurée elle-même (source ASSET_DATA, lot 43). */
@@ -232,6 +240,9 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   // Lot 78A : le rang d'origine de chaque indice est conservé (trace composante → indice → fait).
   const hints = (p.financialHints ?? []).map((h, index) => (h ? { ...h, index } : h))
     .filter((h) => h && isMinorAmount(h.amountMinor) && isIsoCurrency(h.currency));
+  // Lot 86C : désignation équivalente (preuves du compte) → clé canonique ; l'origine reste tracée.
+  const brute = normalizeProvider(p.provider);
+  const canon = brute !== null ? ctx.providerCanonical?.get(brute) ?? brute : null;
   return {
     candidateId: c.id,
     candidateKey: c.candidateKey,
@@ -243,7 +254,8 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
     role,
     summary: c.summary,
     provider: p.provider?.trim() || null,
-    providerKey: normalizeProvider(p.provider),
+    providerKey: canon,
+    ...(brute !== null && canon !== brute ? { providerKeyRaw: brute } : {}),
     assetIds,
     targetAuthority,
     equipmentIds,
@@ -303,6 +315,43 @@ export function recurringContractEvidence(sources: readonly SourceContribution[]
   const periodes = new Set(docs.map((s) => billingPeriodKey(s.identity)).filter((k): k is string => k !== null));
   return periodes.size >= 2;
 }
+
+// ── Lot 86C : dates CONTRACTUELLES ≠ périodes facturées ────────────────────
+
+/**
+ * Rôles d'une pièce de FACTURATION ou de RÈGLEMENT : ses dates sont celles
+ * d'une période facturée, d'une émission ou d'un paiement — jamais une date
+ * d'effet, de fin, de résiliation ou de renouvellement d'un contrat.
+ */
+export const BILLING_SOURCE_ROLES: ReadonlySet<SourceRole> = new Set<SourceRole>([
+  'INVOICE', 'DEPOSIT_INVOICE', 'CREDIT_NOTE', 'PAYMENT_PROOF', 'REFUND_PROOF', 'QUOTE', 'ORDER',
+]);
+
+/**
+ * Lot 86C (ticket P1 « fausses dates de fin ») — une source établit-elle des
+ * dates CONTRACTUELLES (début / fin d'une relation durable : contrat,
+ * financement) ? Lecture DÉTERMINISTE du rôle de la source tel que T1 l'a
+ * qualifié (aucune interprétation du libellé, aucun fournisseur) :
+ *   · document contractuel (contrat, police, avenant, offre de prêt) : oui —
+ *     ses dates ont, par nature, une signification contractuelle ;
+ *   · pièce de facturation ou de règlement (facture, avoir, preuve de
+ *     paiement, devis, commande) : NON — sa période est une période facturée ;
+ *   · autre pièce (courrier de résiliation, rapport, rôle non qualifié) : oui,
+ *     sauf si elle porte elle-même une période facturée ou une échéance
+ *     (`hasRecurringPeriod`) — ses dates en sont alors le reflet ;
+ *   · donnée structurée de la fiche : oui (saisie) ; élément d'agenda : non.
+ * Pure.
+ */
+export function contractualDateSource(id: Pick<CandidateIdentity, 'role' | 'hints' | 'agenda' | 'structured'>): boolean {
+  if (id.structured) return true;
+  if (id.agenda) return false;
+  if (id.role === 'CONTRACT_DOCUMENT') return true;
+  if (id.role !== null && BILLING_SOURCE_ROLES.has(id.role)) return false;
+  return !hasRecurringPeriod(id);
+}
+
+/** Types dont `start_date` / `end_date` sont des dates contractuelles (date d'effet, fin). */
+export const isDurableRelationType = (t: BusinessOperationTypeCode | null): boolean => t === 'CONTRACT' || t === 'FINANCING';
 
 /**
  * Lot 78A — fenêtre de cohérence temporelle d'UNE transaction selon sa nature
@@ -747,14 +796,17 @@ function attributeConflict(
  */
 export function computeProvenance(
   v: Pick<ConsolidatedState, 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider'>, sources: readonly SourceContribution[],
+  /** Lot 86C : relation durable — début / fin justifiés par une source CONTRACTUELLE seulement. */
+  opts: { durable?: boolean } = {},
 ): AttributeProvenance {
   const srcs = [...sources].sort((a, b) => a.sourceId - b.sourceId);
   const out: AttributeProvenance = {};
   for (const k of ['plannedDate', 'startDate', 'realizedDate', 'endDate'] as const) {
     const val = v[k];
     if (!val) continue;
+    const pool = opts.durable && (k === 'startDate' || k === 'endDate') ? srcs.filter((x) => contractualDateSource(x.identity)) : srcs;
     const s = (k === 'realizedDate' ? srcs.find((x) => x.identity.agenda?.realizedDate === val) : undefined)
-      ?? srcs.find((x) => x.identity.dates[k] === val)
+      ?? pool.find((x) => x.identity.dates[k] === val)
       ?? (k === 'realizedDate' ? srcs.find((x) => x.identity.hints.some((h) => h.economicDate === val) || x.identity.dates.endDate === val) : undefined);
     if (s) { out[k] = { sourceId: s.sourceId, value: val }; continue; }
     // Lot 85E : date posée par la date canonique automatique du bien — source ASSET_DATA et origine de la valeur.
@@ -816,10 +868,17 @@ export function consolidateOperationState(
   let status: BusinessOperationStatus = realisation.length ? 'REALIZED' : annulation.length ? 'CANCELLED' : 'ENVISAGED';
 
   const all = (k: keyof CandidateDates, list: SourceContribution[] = srcs) => list.map((s) => s.identity.dates[k]);
+  // Lot 86C : relation durable (contrat, financement) — début et fin sont des
+  // dates CONTRACTUELLES : seules les sources qui en établissent la
+  // signification les portent (`contractualDateSource`). Une période facturée
+  // reste dans les composantes (`period_start` / `period_end`), jamais une date
+  // d'effet, de fin, de résiliation ou de renouvellement.
+  const durable = isDurableRelationType(type);
+  const datees = durable ? srcs.filter((s) => contractualDateSource(s.identity)) : srcs;
   let plannedDate = minDate(all('plannedDate'));
-  let startDate = minDate(all('startDate'));
+  let startDate = minDate(all('startDate', datees));
   let realizedDate: string | null = null;
-  let endDate = maxDate(all('endDate'));
+  let endDate = maxDate(all('endDate', datees));
   switch (type) {
     case 'CONTRACT':
     case 'FINANCING':
@@ -929,7 +988,7 @@ export function consolidateOperationState(
   const premiereRef = (kinds: ReferenceKind[]) => references.find((r) => kinds.includes(r.kind))?.value ?? null;
 
   // Lot 78A (§2C, §6) : source qui justifie chaque valeur conservée.
-  const provenance = computeProvenance({ plannedDate, startDate, realizedDate, endDate, provider }, srcs);
+  const provenance = computeProvenance({ plannedDate, startDate, realizedDate, endDate, provider }, srcs, { durable });
   const valeurs: Record<ProvenancedField, string | null> = { plannedDate, startDate, realizedDate, endDate, provider };
   for (const c of attributeConflicts) c.retained = valeurs[c.field];
 

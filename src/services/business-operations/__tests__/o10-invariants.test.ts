@@ -52,6 +52,9 @@ const ECRIVAINS: Record<string, string> = {
   // DÉRIVÉES (point de restauration exigé, image avant journalisée 0700, restauration exacte) ; la reconstruction passe par T3.
   'src/services/business-operations/rebuild/purge.ts': 'rattrapage BO O-2 : purge des données dérivées d’un compte (image avant, restaurable) — reconstruction déléguée à T3',
   'src/services/business-operations/rebuild/snapshot.ts': 'rattrapage BO O-2 : restauration exacte de l’image avant d’un compte (journal 0700)',
+  // Lot 86F : trace de la date économique retenue des composantes — par le dépôt seulement (`recordComponentEconomicDate`),
+  // jamais un fait T3 (montant, date propre) ; appelé par le contrôle COH-TCO-ECONOMIC-DATES.
+  'src/services/business-operations/finance/economic-date.service.ts': 'trace de la date économique retenue (0744) par le dépôt, sous le verrou du compte (lot 86F)',
 };
 
 describe('INV-FINAL-009 / INV-006 / INV-FINAL-013 / INV-031 — T3 seul moteur ; TCO et autres modules consommateurs seulement', () => {

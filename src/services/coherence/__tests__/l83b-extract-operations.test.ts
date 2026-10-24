@@ -188,7 +188,10 @@ describe('L83B-U-OPS — Opérations : invariants O-1 BRANCHÉS (liste entière)
     for (const f of ['operations.ts', 'equipment-separation.ts', 'extract-chain.ts']) {
       expect(code(`src/services/coherence/registry/checks/${f}`), f).not.toMatch(/\b(UPDATE|DELETE FROM|INSERT INTO)\b/);
     }
-    expect(getCheck('COH-OPS-IDENTITY')!.repair).toBeUndefined();
+    // Lot 86C (test corrigé, ticket P1 « doublons de contrats ») : COH-OPS-IDENTITY v2 RÉPARE les doublons
+    // ENTRE Opérations par le réexamen T3 ciblé (service métier) ; l'identité 78A interne reste un constat.
+    expect(getCheck('COH-OPS-IDENTITY')).toMatchObject({ version: 2 });
+    expect(code('src/services/coherence/registry/checks/operations.ts')).toMatch(/reconsolidateRecurringDocuments/);
   });
 });
 

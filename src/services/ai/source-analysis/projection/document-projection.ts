@@ -461,6 +461,7 @@ export function projectDocumentFacts(
   const purpose = classifyPurpose({
     entry: documentEntryOf(analysis.document.classification),
     documentTypeCode: analysis.document.classification?.documentTypeCode ?? null,
+    rubricCode: analysis.document.classification?.rubricCode ?? null,
     purchaseTargets: facts.filter((f) => f.semanticEvent?.type === 'purchase' && !ACQUISITION.has(f.canonicalKey ?? ''))
       .map((f) => f.target.targetType),
     acquisitionClaims: facts.filter((f) => ACQUISITION.has(f.canonicalKey ?? '')).map((f) => f.target.targetType),

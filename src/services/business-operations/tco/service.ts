@@ -144,11 +144,13 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
         const d = detailComposante.get(c.id);
         return {
           id: c.id, operationId: o.id, kind: c.kind, amountMinor: c.amountMinor, currency: c.currency, amountEurCents: c.amountEurCents,
+          // Lot 86F : date économique RÉSOLUE par le lecteur des Opérations (jamais la date de l'Opération par défaut).
           economicDate: c.economicDate, periodStart: txt(d?.period_start), periodEnd: txt(d?.period_end),
           targetAssetId: c.targetAssetId, targetEquipmentId: d?.target_equipment_id == null ? null : Number(d.target_equipment_id), label: c.label,
+          ...(c.economicDateResolution ? { economicDateResolution: c.economicDateResolution } : {}),
         };
       }),
-      documents: o.documents.map((d) => ({ fileId: d.fileId, title: d.title, role: d.role })),
+      documents: o.documents.map((d) => ({ fileId: d.fileId, title: d.title, role: d.role, date: d.date })),
       sourceKinds: o.sourceKinds ?? [],
       userLinked: liensUtilisateur.has(o.id),
       equipmentLinked: equip.some((e) => Number(e.operation_id) === o.id && Number(e.asset_id) === assetId),
@@ -232,7 +234,7 @@ export interface T2UserAddedExpense {
  */
 export async function t2CostExclusions(
   accountId: number,
-  ops: ReadonlyArray<Pick<AssistantOperationRead, 'id' | 'typeCode' | 'components' | 'status' | 'realizedDate' | 'startDate'>>,
+  ops: ReadonlyArray<Pick<AssistantOperationRead, 'id' | 'typeCode' | 'components' | 'status' | 'realizedDate' | 'startDate'> & { plannedDate?: string | null }>,
   assetIds: readonly number[] | null,
   r: Runner = db,
   opts: { today?: string } = {},
@@ -275,12 +277,15 @@ export async function t2CostExclusions(
         id: c.id, operationId: o.id, kind: c.kind, amountMinor: c.amountMinor, currency: c.currency, amountEurCents: c.amountEurCents,
         economicDate: c.economicDate, periodStart: txt(d?.period_start), periodEnd: txt(d?.period_end), targetAssetId: c.targetAssetId,
         targetEquipmentId: d?.target_equipment_id == null ? null : Number(d.target_equipment_id),
+        ...(c.economicDateResolution ? { economicDateResolution: c.economicDateResolution } : {}),
       };
     });
     for (const id of presumedDuplicateComponents({ typeCode: o.typeCode, components: comps }, prov, force).keys()) components.add(id);
     for (const c of comps) if (unjustifiedComponent(prov.get(c.id)) === 'SOURCES_WITHDRAWN') components.add(c.id);
     // Lot 81D : non-réalisation (règle du moteur partagé, indépendante de tout bien).
-    for (const id of nonRealizedComponentIds([{ status: o.status, realizedDate: o.realizedDate, startDate: o.startDate, components: comps }], prov, today)) components.add(id);
+    for (const id of nonRealizedComponentIds([{
+      typeCode: o.typeCode, status: o.status, realizedDate: o.realizedDate, startDate: o.startDate, plannedDate: o.plannedDate ?? null, components: comps,
+    }], prov, today)) components.add(id);
   }
   return { components, files, userAdded };
 }

@@ -176,10 +176,12 @@ scenario('L49E-12', 'Retrait de T5 : migration 0336, versions historiques, rollb
     const nouvelle = await repo.createDraft(adminId, 'e2e-l49e-12 nouvelle', env as never);
     const stockees = await sql<{ treatment: string }[]>`SELECT treatment FROM ai_config_entries WHERE version_id = ${nouvelle.id} ORDER BY treatment`;
     expect(stockees.map((r) => r.treatment)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
-    // Package de la version restaurée : sans T5.
-    const { buildPayload } = await import('@/services/ai/config/config-package.service');
-    const pkg = buildPayload(env as never, 1, null, active!.entries);
-    expect(pkg.entries.map((e) => e.treatment)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+    // Lot 86B : l'ancien package est retiré ; le fichier global de la version restaurée est sans T5.
+    const exp = await import('@/services/ai/config/config-export.service');
+    const inputs = (await exp.gatherExportInputs(env as never))!;
+    const doc = exp.buildExportDocument(inputs, { exportId: '00000000-0000-4000-8000-000000000000', exportedAt: new Date('2026-10-20T10:00:00Z'), userId: adminId, email: null });
+    expect(doc.configuration.treatments.map((t) => t.code)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
+    expect(doc.allowedPairs.some((p) => (p.treatment as string) === 'T5')).toBe(false);
   });
 
   it('T12-AC04 / T12-AC10 — anciens prompts maîtres T5 conservés en base, jamais proposés en édition', async () => {

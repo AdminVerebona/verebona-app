@@ -101,9 +101,16 @@ describe('L84A — Sinistres v5 O-10 : finalisation (suppression définitive de 
     const boot = await bootstrapE2eDatabase({ adminUrl: ADMIN!, database: BASE });
     // `@/db` lit DATABASE_URL à son premier import : il vise désormais la base de CE scénario.
     process.env.DATABASE_URL = boot.url;
+    // Lot 86 : en suite complète (un seul processus), un module `@/db` déjà chargé viserait la base
+    // partagée — la finalisation y supprimerait les tables héritées pour tous les fichiers suivants.
+    // Registre de modules remis à zéro : `@/db` et les services sont rechargés sur la base de CE scénario.
+    vi.resetModules();
     const { pgClient } = await import('@/db');
     sql = pgClient;
     make = factories(pgClient);
+    // Garde : la finalisation SUPPRIME des tables — elle ne doit jamais viser la base partagée de l'exécution.
+    const [{ db }] = await sql<{ db: string }[]>`SELECT current_database() AS db`;
+    if (db !== BASE) throw new Error(`[l84a] base inattendue : ${db} (attendue ${BASE}) — @/db importé avant le changement de DATABASE_URL`);
   }, 300_000);
 
   afterAll(async () => {

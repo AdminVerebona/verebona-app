@@ -21,6 +21,7 @@
  */
 import { RUBRICS } from './rubrics';
 import { DOCUMENT_TYPES } from './document-types';
+import { MICROCOPY } from './microcopy';
 import type {
   Applicability,
   AssetFamily,
@@ -37,10 +38,22 @@ export { DOCUMENT_TYPES } from './document-types';
  * Version du référentiel. À incrémenter à CHAQUE modification de la
  * taxonomie ou des règles d'applicabilité (§11.6, §13.2).
  */
-export const REFERENTIAL_VERSION = '2.1.0';
+export const REFERENTIAL_VERSION = '2.2.0';
 
 /**
  * ── HISTORIQUE ────────────────────────────────────────────────────────────
+ *
+ * 2.2.0 — Lot 86E : Rubrique « Équipements et mobilier » (EQUIPMENT_FURNITURE).
+ *   Relevé en préproduction : « Bon de commande Tikamoon — Chaises de jardin en
+ *   teck » rangé en « Autres documents », faute de domaine pour un meuble ou un
+ *   appareil acheté. La Rubrique porte le DOMAINE ; ses Types sont les Types
+ *   génériques existants déclarés réutilisables (`alsoIn`) — facture, bon de
+ *   commande, bon de livraison, justificatif de paiement, garantie, extension de
+ *   garantie, notice / manuel, fiche technique — plus un Type générique « Devis
+ *   d'achat » (ACQUISITION_QUOTE, aucun devis d'achat n'existait), et le
+ *   « Autre » propre à la Rubrique (§2.2). Libellés des Types d'achat rendus
+ *   neutres (« Bon de commande », « Facture d'achat »…), finalités élargies.
+ *   Version de règles du contrôle COH-DOC-CLASSIFICATION : `NOMENCLATURE_SINCE`.
  *
  * 2.1.0 — Ajout de `SUBSCRIPTION_INVOICE` dans « Contrats, garanties et
  *   notices ». Relevé en préproduction : deux factures d'énergie recevaient le
@@ -53,6 +66,28 @@ export const REFERENTIAL_VERSION = '2.1.0';
  *
  * 2.0.0 — Référentiel initial du CDC V2.
  */
+
+/** Compare deux versions « a.b.c » du référentiel (une version absente précède tout). */
+export function compareReferentialVersions(a: string | null | undefined, b: string | null | undefined): number {
+  const parts = (v: string | null | undefined) => (v ?? '').split('.').map((x) => Number.parseInt(x, 10) || 0);
+  if (!a && !b) return 0;
+  if (!a) return -1;
+  if (!b) return 1;
+  const [pa, pb] = [parts(a), parts(b)];
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * Lot 86E : Rubriques introduites APRÈS la version donnée (`since`), donc
+ * inconnues d'un classement produit sous cette version.
+ */
+export function rubricsIntroducedAfter(version: string | null | undefined): RubricDefinition[] {
+  return RUBRICS.filter((r) => !!r.since && compareReferentialVersions(r.since, version) > 0);
+}
 
 /** Seuil de confiance unique, non configurable dans l'application (§11.2). */
 export const AI_CONFIDENCE_THRESHOLD = 0.9;
@@ -68,11 +103,18 @@ const RUBRIC_BY_CODE = new Map<string, RubricDefinition>(
 const TYPE_BY_CODE = new Map<string, DocumentTypeDefinition>(
   DOCUMENT_TYPES.map((t) => [t.code, t]),
 );
+/** Rubriques où un Type est proposé : sa Rubrique d'attache, puis `alsoIn` (lot 86E). */
+function rubricsOf(type: DocumentTypeDefinition): RubricCode[] {
+  return [type.rubric, ...(type.alsoIn ?? []).filter((r) => r !== type.rubric)];
+}
+
 const TYPES_BY_RUBRIC = new Map<RubricCode, DocumentTypeDefinition[]>();
 for (const type of DOCUMENT_TYPES) {
-  const bucket = TYPES_BY_RUBRIC.get(type.rubric) ?? [];
-  bucket.push(type);
-  TYPES_BY_RUBRIC.set(type.rubric, bucket);
+  for (const rubric of new Set(rubricsOf(type))) {
+    const bucket = TYPES_BY_RUBRIC.get(rubric) ?? [];
+    bucket.push(type);
+    TYPES_BY_RUBRIC.set(rubric, bucket);
+  }
 }
 
 // ── Intégrité (§13.2) ───────────────────────────────────────────────────────
@@ -143,12 +185,65 @@ export function checkReferentialIntegrity(): ReferentialViolation[] {
           `de la Rubrique ${rubric.code}. Il ne serait proposé nulle part.`,
       });
     }
+
+    // Lot 86E — réutilisation dans d'autres Rubriques (`alsoIn`).
+    const others = type.alsoIn ?? [];
+    if (others.length > 0 && type.userOnly) {
+      violations.push({
+        code: 'SHARED_OTHER_TYPE',
+        message:
+          `Type « Autre » ${type.code} déclaré dans plusieurs Rubriques. Chaque ` +
+          'Rubrique garde son propre « Autre » (§2.2).',
+      });
+    }
+    if (new Set(others).size !== others.length || others.includes(type.rubric)) {
+      violations.push({
+        code: 'DUPLICATE_RUBRIC_OF_TYPE',
+        message: `Type ${type.code} : Rubrique répétée dans alsoIn (ou égale à sa Rubrique d'attache).`,
+      });
+    }
+    for (const code of others) {
+      const extra = RUBRIC_BY_CODE.get(code);
+      if (!extra) {
+        violations.push({
+          code: 'UNKNOWN_RUBRIC',
+          message: `Type ${type.code} déclaré réutilisable dans une Rubrique inconnue : ${code}.`,
+        });
+        continue;
+      }
+      const extraFamilies = resolveApplicability(extra.applicability);
+      const hors = families.filter((f) => !extraFamilies.includes(f));
+      if (hors.length > 0) {
+        violations.push({
+          code: 'APPLICABILITY_MISMATCH',
+          message: `Type ${type.code} applicable à ${hors.join(', ')}, hors du périmètre de la Rubrique ${code}.`,
+        });
+      }
+    }
+  }
+
+  // Lot 86E — aucun doublon : dans une Rubrique, deux Types proposés ne
+  // portent jamais le même libellé (un doublon de nature se verrait d'abord
+  // là, dans la liste de choix de l'utilisateur).
+  for (const rubric of RUBRICS) {
+    const seen = new Map<string, string>();
+    for (const type of TYPES_BY_RUBRIC.get(rubric.code) ?? []) {
+      const key = type.label.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+      const previous = seen.get(key);
+      if (previous) {
+        violations.push({
+          code: 'DUPLICATE_TYPE_LABEL',
+          message: `Rubrique ${rubric.code} : « ${type.label} » proposé deux fois (${previous}, ${type.code}).`,
+        });
+      }
+      seen.set(key, type.code);
+    }
   }
 
   // Chaque Rubrique doit offrir son propre « Autre » (§2.2).
   for (const rubric of RUBRICS) {
     const types = TYPES_BY_RUBRIC.get(rubric.code) ?? [];
-    if (!types.some((t) => t.userOnly)) {
+    if (!types.some((t) => t.userOnly && t.rubric === rubric.code)) {
       violations.push({
         code: 'MISSING_OTHER_TYPE',
         message:
@@ -203,17 +298,59 @@ export function getTypesForRubric(rubric: RubricCode): DocumentTypeDefinition[] 
 }
 
 /**
- * Rubrique d'un Type. Le §2.2 la rend déductible : « Un document ne peut pas
- * avoir un Type sans Rubrique : lorsqu'un Type est déterminé, sa Rubrique est
- * déduite. »
+ * Rubrique d'ATTACHE d'un Type. Le §2.2 la rend déductible : « Un document ne
+ * peut pas avoir un Type sans Rubrique : lorsqu'un Type est déterminé, sa
+ * Rubrique est déduite. »
+ *
+ * Lot 86E : un Type réutilisable (`alsoIn`) est valide dans plusieurs
+ * Rubriques ; la déduction ne vaut alors QUE faute de Rubrique connue —
+ * utiliser `rubricForType(type, rubriqueCourante)`, jamais une comparaison
+ * `rubricOfType(t) === r`, qui refuserait un « Bon de commande » rangé en
+ * « Équipements et mobilier ».
  */
 export function rubricOfType(typeCode: string | null | undefined): RubricCode | null {
   return getDocumentType(typeCode)?.rubric ?? null;
 }
 
-export function isTypeCompatibleWithRubric(typeCode: string, rubricCode: string): boolean {
-  return getDocumentType(typeCode)?.rubric === rubricCode;
+/** Rubriques où le Type est proposé (attache d'abord) ; vide pour un code inconnu. */
+export function rubricsOfType(typeCode: string | null | undefined): RubricCode[] {
+  const type = getDocumentType(typeCode);
+  return type ? rubricsOf(type) : [];
 }
+
+export function isTypeCompatibleWithRubric(typeCode: string, rubricCode: string): boolean {
+  return rubricsOfType(typeCode).includes(rubricCode as RubricCode);
+}
+
+/**
+ * Rubrique d'un document qui reçoit ce Type : la Rubrique courante si le Type
+ * y est proposé, sinon la Rubrique d'attache du Type (§2.2). `null` pour un
+ * code inconnu.
+ */
+export function rubricForType(
+  typeCode: string | null | undefined,
+  currentRubric: string | null | undefined,
+): RubricCode | null {
+  if (!getDocumentType(typeCode)) return null;
+  if (currentRubric && isTypeCompatibleWithRubric(typeCode as string, currentRubric)) {
+    return currentRubric as RubricCode;
+  }
+  return rubricOfType(typeCode);
+}
+
+/**
+ * Libellé AFFICHÉ du Type d'un document (lot 86E, ticket §5) — une seule
+ * correspondance code persisté → libellé, pour tous les écrans : le libellé
+ * du Type V2 enregistré, sinon « Type à compléter ». Jamais « Autre » pour un
+ * Type absent (« Autre » est un CHOIX de l'utilisateur, §15.1), jamais un code
+ * technique brut (« BON_COMMANDE »).
+ */
+export function documentTypeDisplayLabel(typeCode: string | null | undefined): string {
+  return getDocumentType(typeCode)?.label ?? MISSING_TYPE_LABEL;
+}
+
+/** Microcopie du Type manquant (§17.4), la même que les listes documentaires. */
+export const MISSING_TYPE_LABEL: string = MICROCOPY.missingType;
 
 /**
  * Le Type peut-il être choisi ou proposé par l'IA ?

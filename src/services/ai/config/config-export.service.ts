@@ -1,6 +1,29 @@
 /**
  * Export de la configuration IA active — lot 54 (54C), ticket « BO-IA —
- * Refonte de la gestion des versions, restauration et export », §4.
+ * Refonte de la gestion des versions, restauration et export », §4 ;
+ * fichier GLOBAL 2.0.0 — lot 86B (CDC Pilotage IA V2, phase P6 : VER-02,
+ * VER-03, §16.6).
+ *
+ * Lot 86B : le format `verebona-ia-config-export` passe en 2.0.0 (INV-15 :
+ * le format existant est ÉTENDU, aucune famille parallèle) et devient le
+ * SEUL fichier de transfert (export préproduction → import manuel complet et
+ * atomique en production, `config-import.service.ts`). Sections ajoutées :
+ *   · `allowedPairs`   — couples autorisés : chaque opération modèle × rang
+ *                        de la chaîne × profil effectif (constructeur de
+ *                        requête unique, lot 85C) ;
+ *   · `qualification`  — preuves de qualification par couple
+ *                        (`qualification-evidence.adapter.ts`, adaptateur
+ *                        unique, rebranché sur 86A à l'intégration) ;
+ *   · `policies`       — politiques de routage / d'optimisation (code) ;
+ *   · `thresholds`     — seuils de qualification, en LECTURE (décision 14) ;
+ *   · `compatibility`  — version applicative, opérations du registre,
+ *                        contrats de sortie (référence + version : un
+ *                        contrat du code n'est pas transporté comme code) ;
+ *   · `integrity.signature` — signature d'intégrité SHA-256 du document
+ *                        entier (JSON canonique, hors signature) : toute
+ *                        altération du fichier est refusée à l'import.
+ * L'ancien format 1.0.0 et l'ancien package `ai-config-package-v1` sont
+ * refusés à l'import avec un message explicite (décision PO 07, option A).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * CE QUE FAIT « EXPORTER LA CONFIGURATION »
@@ -30,10 +53,20 @@ import { TRIGGER_CATALOG, guardrailCodes } from './catalogs';
 import { normalizeSnapshot, canonicalJson, sha256, type ConfigSnapshot, type MasterPromptRef } from './config-snapshot';
 import { masterPromptOf, type TreatmentConfig } from './config-types';
 import { ConfigOperationRefused } from './config-version.service';
-import { executionConfigFor, structuredSpecFor, type MasterExecutionConfig } from '../master-prompts/structured-context';
+import { executionConfigFor, structuredSpecFor, executionSignature, type MasterExecutionConfig } from '../master-prompts/structured-context';
+import type { ModelCapabilities } from '../provider/model-capabilities';
+import { activeContractVersion } from '../gateway/output-resolution/runtime-contract';
+import { profiledOperationsOf } from './operation-profiles';
+import { operationRequestPlan } from './profile-check';
+import {
+  EVIDENCE_SOURCE, qualificationThresholds, thresholdsSha256,
+  type PairEvidence, type PairRef, type QualificationThresholds, type EvidenceSource,
+} from './qualification-evidence.adapter';
 
 export const EXPORT_FORMAT = 'verebona-ia-config-export' as const;
-export const EXPORT_FORMAT_VERSION = '1.0.0' as const;
+export const EXPORT_FORMAT_VERSION = '2.0.0' as const;
+/** Versions de format connues mais RETIRÉES (refus explicite à l'import). */
+export const RETIRED_EXPORT_FORMAT_VERSIONS = ['1.0.0'] as const;
 
 type Row = Record<string, unknown>;
 
@@ -91,6 +124,41 @@ export interface EnvironmentParameter {
   note: string;
 }
 
+/** Lot 86B — couple autorisé : opération × rang × modèle × profil effectif. */
+export interface AllowedPair {
+  operationCode: string;
+  treatment: Treatment;
+  rank: number;
+  slot: 'primaryModel' | 'fallback1' | 'fallback2';
+  model: string;
+  /** Profil effectif du rang AVANT adaptation aux capacités (ce que la configuration demande). */
+  profile: { reasoning: string | null; maxOutputTokens: number | null; timeoutMs: number };
+  profileSha256: string;
+  /** Le constructeur de requête accepte-t-il la combinaison (environnement d'origine) ? */
+  requestOk: boolean;
+  /** Empreinte du prompt maître du traitement (fichier), `null` si aucun. */
+  promptSha256: string | null;
+  /** Contrat de sortie appliqué (`Nom@vN`), `null` si inconnu. */
+  contractRef: string | null;
+}
+
+/** Lot 86B — opération du registre telle que le code d'origine la connaît. */
+export interface CompatibilityOperation {
+  operationCode: string;
+  treatment: Treatment;
+  outputSchema: string;
+  /** Version ACTIVE du contrat de sortie dans le code d'origine. */
+  contractVersion: number | null;
+  masterPromptCode: string | null;
+}
+
+export interface OperationPolicy {
+  operationCode: string;
+  treatment: Treatment;
+  /** Usage interactif (latence d'abord) ou de fond (coût par résultat valide), OPT-02. */
+  priority: 'latency' | 'cost';
+}
+
 export interface ConfigExportDocument {
   format: typeof EXPORT_FORMAT;
   formatVersion: typeof EXPORT_FORMAT_VERSION;
@@ -117,7 +185,36 @@ export interface ConfigExportDocument {
     triggerCodes: string[];
   };
   environmentParameters: EnvironmentParameter[];
-  integrity: { configurationSha256: string; algorithm: 'sha256' };
+  /** Lot 86B — couples autorisés (opération × rang × modèle × profil). */
+  allowedPairs: AllowedPair[];
+  /** Lot 86B — preuves de qualification par couple (même ordre que `allowedPairs`). */
+  qualification: { source: EvidenceSource; note: string; evidence: PairEvidence[] };
+  /** Lot 86B — politiques de routage et d'optimisation (définies par le code). */
+  policies: {
+    productionAutonomy: 'imported_qualified_pairs_only';
+    automaticPromotionRequires: string[];
+    manualInterventions: 'priority_until_lifted_or_full_import';
+    routingState: 'subordinate_to_import_reset_on_import';
+    perOperation: OperationPolicy[];
+  };
+  /** Lot 86B — seuils de qualification (décision 14), en lecture. */
+  thresholds: QualificationThresholds & { readOnly: true; sha256: string };
+  /** Lot 86B — compatibilité applicative (code, registre, contrats). */
+  compatibility: {
+    snapshotFormat: ConfigSnapshot['format'];
+    appVersion: string | null;
+    operations: CompatibilityOperation[];
+    /** Empreinte de la liste des opérations ci-dessus. */
+    registrySha256: string;
+    /** Configuration d'exécution des prompts maîtres (signature, lot 34D). */
+    masterExecution: Array<{ treatment: Treatment; masterPromptCode: string; signature: string }>;
+  };
+  integrity: {
+    configurationSha256: string;
+    algorithm: 'sha256';
+    /** Lot 86B — signature d'intégrité : SHA-256 du document canonique hors ce champ. */
+    signature: string;
+  };
 }
 
 /** Entrées de construction (lues en base par `gatherExportInputs`). */
@@ -135,6 +232,28 @@ export interface ExportInputs {
   codeDefaults: (t: Treatment) => ExportedTreatment['codeDefaults'];
   assistant: ConfigExportDocument['settingsOutsideVersion']['assistant'];
   costBudgets: ConfigExportDocument['settingsOutsideVersion']['costBudgets'];
+  /**
+   * Lot 86B — preuves des couples (adaptateur unique). Absent : aucune preuve
+   * lue (`never_tested`), jamais une preuve inventée.
+   */
+  evidence?: ReadonlyMap<string, PairEvidence>;
+  /** Lot 86B — capacités des modèles (constructeur de requête) ; défaut : fiches en mémoire. */
+  capabilities?: (model: string) => ModelCapabilities;
+}
+
+/** Clé d'un couple (opération, modèle, profil). */
+export function pairKey(p: Pick<PairRef, 'operationCode' | 'model' | 'profileSha256'>): string {
+  return `${p.operationCode}|${p.model}|${p.profileSha256}`;
+}
+
+/** Empreinte d'un profil de rang (pure). */
+export function profileSha256(model: string, profile: AllowedPair['profile']): string {
+  return sha256(canonicalJson({ model, reasoning: profile.reasoning, maxOutputTokens: profile.maxOutputTokens, timeoutMs: profile.timeoutMs }));
+}
+
+/** Contrat de sortie actif d'une opération (`Nom@vN`) dans CE code. */
+export function contractRefOf(outputSchema: string, version: number | null): string | null {
+  return version == null ? null : `${outputSchema}@v${version}`;
 }
 
 /** Empreinte d'un texte de prompt (fins de ligne normalisées, comme 0254). */
@@ -199,6 +318,70 @@ export function environmentParameters(
   return out;
 }
 
+// ── Lot 86B : sections du fichier global (pures) ────────────────────────────
+
+/** Opérations modèle des traitements, telles que CE code les connaît (registre, OP-01). */
+export function compatibilityOperations(): CompatibilityOperation[] {
+  return TREATMENTS.flatMap((t) => profiledOperationsOf(t).map((op) => ({
+    operationCode: op.operationCode, treatment: t, outputSchema: op.outputSchema,
+    contractVersion: activeContractVersion(op.outputSchema), masterPromptCode: op.masterPromptCode ?? null,
+  })));
+}
+
+/**
+ * Priorité d'optimisation par opération (OPT-02, §16.2 étape 6) : latence
+ * pour les usages interactifs (T2, T6 FORMULATE), coût par résultat valide
+ * pour le fond (T1, T3, T4, T6 EVALUATE). Dérivée du registre et des
+ * traitements — aucun champ administrable.
+ */
+export function operationPolicies(): OperationPolicy[] {
+  return TREATMENTS.flatMap((t) => profiledOperationsOf(t).map((op) => ({
+    operationCode: op.operationCode, treatment: t,
+    priority: (!TREATMENT_DEFINITIONS[t].batch && op.operationCode !== 't6_evaluate') ? 'latency' as const : 'cost' as const,
+  })));
+}
+
+/**
+ * Couples autorisés d'une configuration (pur) : pour chaque opération modèle
+ * de chaque traitement, chaque rang de la chaîne avec son profil effectif —
+ * même plan que la validation et l'exécution (`operationRequestPlan`).
+ */
+export function allowedPairsOf(
+  entries: TreatmentConfig[],
+  promptShaOf: (t: Treatment) => string | null,
+  capabilities?: (model: string) => ModelCapabilities,
+): AllowedPair[] {
+  const out: AllowedPair[] = [];
+  for (const t of TREATMENTS) {
+    const e = entries.find((x) => x.treatment === t);
+    if (!e) continue;
+    for (const op of profiledOperationsOf(t)) {
+      const contractRef = contractRefOf(op.outputSchema, activeContractVersion(op.outputSchema));
+      for (const plan of operationRequestPlan(e, op, capabilities ? { capabilities } : {})) {
+        const profile = { reasoning: plan.profile.reasoning, maxOutputTokens: plan.profile.maxOutputTokens, timeoutMs: plan.profile.timeoutMs };
+        out.push({
+          operationCode: op.operationCode, treatment: t, rank: plan.rank, slot: plan.slot, model: plan.model,
+          profile, profileSha256: profileSha256(plan.model, profile), requestOk: plan.result.ok,
+          promptSha256: promptShaOf(t), contractRef,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Signature d'intégrité (pure) : SHA-256 du document en JSON canonique, le
+ * champ `integrity.signature` exclu. Toute modification d'un octet
+ * significatif du contenu (valeur, clé, ordre d'une liste) la change.
+ */
+export function documentSignature(doc: ConfigExportDocument | Record<string, unknown>): string {
+  const d = doc as Record<string, unknown>;
+  const integrity = { ...((d.integrity as Record<string, unknown> | undefined) ?? {}) };
+  delete integrity.signature;
+  return sha256(canonicalJson({ ...d, integrity }));
+}
+
 /** Construit le document d'export (pur). */
 export function buildExportDocument(inputs: ExportInputs, meta: {
   exportId: string; exportedAt: Date; userId: number; email: string | null;
@@ -233,7 +416,17 @@ export function buildExportDocument(inputs: ExportInputs, meta: {
   };
   const configuration = { snapshotFormat: snapshot.format, treatments };
   const models = [...new Set(treatments.flatMap((t) => [t.models.primary, ...t.models.fallbacks]).filter((m): m is string => Boolean(m)))].sort();
-  return {
+  // Lot 86B : couples autorisés, preuves (adaptateur unique), politiques, seuils, compatibilité.
+  const promptSha = (t: Treatment) => treatments.find((x) => x.code === t)?.masterPrompt?.sha256 ?? null;
+  const allowedPairs = allowedPairsOf(snapshot.entries, promptSha, inputs.capabilities);
+  const evidence = allowedPairs.map((p): PairEvidence => inputs.evidence?.get(pairKey(p)) ?? {
+    operationCode: p.operationCode, model: p.model, profileSha256: p.profileSha256, status: 'never_tested',
+    source: EVIDENCE_SOURCE, environment: inputs.environment, testedAt: null,
+    promptSha256: null, contractRef: null, thresholdsSha256: null, summary: 'Aucune preuve lue.',
+  });
+  const seuils = qualificationThresholds();
+  const operations = compatibilityOperations();
+  const doc: ConfigExportDocument = {
     format: EXPORT_FORMAT,
     formatVersion: EXPORT_FORMAT_VERSION,
     exportId: meta.exportId,
@@ -260,8 +453,34 @@ export function buildExportDocument(inputs: ExportInputs, meta: {
       triggerCodes: [...new Set(treatments.flatMap((t) => t.triggers.map((g) => g.code)))].sort(),
     },
     environmentParameters: environmentParameters(inputs.environment, inputs.assistant),
-    integrity: { configurationSha256: configurationSha256({ configuration, settingsOutsideVersion }), algorithm: 'sha256' },
+    allowedPairs,
+    qualification: {
+      source: evidence[0]?.source ?? EVIDENCE_SOURCE,
+      note: 'Preuves par couple dans l’environnement d’origine. Seule une preuve « admissible » obtenue sous les mêmes empreintes '
+        + '(profil, prompt, contrat, seuils) autorise une promotion automatique en production ; toute autre est informative.',
+      evidence,
+    },
+    policies: {
+      productionAutonomy: 'imported_qualified_pairs_only',
+      automaticPromotionRequires: ['couple du fichier importé', 'preuve admissible aux mêmes empreintes', 'modèle non exclu', 'aucun gel', 'données comparables'],
+      manualInterventions: 'priority_until_lifted_or_full_import',
+      routingState: 'subordinate_to_import_reset_on_import',
+      perOperation: operationPolicies(),
+    },
+    thresholds: { ...seuils, readOnly: true, sha256: thresholdsSha256(seuils) },
+    compatibility: {
+      snapshotFormat: snapshot.format,
+      appVersion: inputs.appVersion,
+      operations,
+      registrySha256: sha256(canonicalJson(operations)),
+      masterExecution: treatments.filter((t) => t.masterPrompt?.execution).map((t) => ({
+        treatment: t.code, masterPromptCode: t.masterPrompt!.code, signature: executionSignature(t.masterPrompt!.execution!),
+      })),
+    },
+    integrity: { configurationSha256: configurationSha256({ configuration, settingsOutsideVersion }), algorithm: 'sha256', signature: '' },
   };
+  doc.integrity.signature = documentSignature(doc);
+  return doc;
 }
 
 /**
@@ -336,6 +555,21 @@ export function validateExportDocument(doc: ConfigExportDocument): ExportIssue[]
   }
   const attendue = configurationSha256(doc);
   if (doc.integrity?.configurationSha256 !== attendue) err('integrity.configurationSha256', 'Empreinte de la configuration incohérente.');
+  // Lot 86B : signature d'intégrité du document entier, sections 2.0.0 présentes et cohérentes.
+  if (typeof doc.integrity?.signature !== 'string' || doc.integrity.signature !== documentSignature(doc)) {
+    err('integrity.signature', 'Signature d’intégrité absente ou incohérente : le fichier a été modifié après l’export.');
+  }
+  if (!Array.isArray(doc.allowedPairs)) err('allowedPairs', 'Couples autorisés absents.');
+  if (!Array.isArray(doc.qualification?.evidence)) err('qualification.evidence', 'Section des preuves de qualification absente.');
+  else if (Array.isArray(doc.allowedPairs) && doc.qualification.evidence.length !== doc.allowedPairs.length) {
+    err('qualification.evidence', 'Preuves de qualification incohérentes avec les couples autorisés.');
+  }
+  if (!Array.isArray(doc.compatibility?.operations)) err('compatibility.operations', 'Compatibilité applicative absente.');
+  else if (doc.compatibility.registrySha256 !== sha256(canonicalJson(doc.compatibility.operations))) {
+    err('compatibility.registrySha256', 'Empreinte du registre des opérations incohérente.');
+  }
+  if (!doc.thresholds || doc.thresholds.readOnly !== true) err('thresholds', 'Seuils de qualification absents.');
+  if (!Array.isArray(doc.policies?.perOperation)) err('policies', 'Politiques de routage absentes.');
 
   // Aucun secret : ni valeur reconnaissable, ni clé sensible renseignée.
   const texte = JSON.stringify(doc);
@@ -399,7 +633,9 @@ export async function gatherExportInputs(environment: AiEnvironment = getAiEnvir
     const c = await getCostSettings();
     costBudgets = { anomaliesEnabled: c.anomaliesEnabled, budgets: c.budgets.map((b) => ({ scope: b.scope, monthlyBudgetMicros: b.monthlyBudgetMicros })) };
   } catch { /* tables absentes : budgets non disponibles (signalé par `null`) */ }
-  return {
+  // Lot 86B : fiches de capacités à jour pour le plan des couples (constructeur unique).
+  await (await import('../provider/model-capabilities.repository')).ensureModelCapabilitiesLoaded().catch(() => undefined);
+  const inputs: ExportInputs = {
     environment,
     appVersion: getBuildIdentity().commit,
     version: {
@@ -425,6 +661,14 @@ export async function gatherExportInputs(environment: AiEnvironment = getAiEnvir
     assistant,
     costBudgets,
   };
+  // Lot 86B : preuves des couples autorisés, lues par l'adaptateur UNIQUE.
+  const paires = buildExportDocument(inputs, { exportId: '00000000-0000-0000-0000-000000000000', exportedAt: new Date(0), userId: 0, email: null }).allowedPairs;
+  const { readPairEvidence } = await import('./qualification-evidence.adapter');
+  const preuves = await readPairEvidence(paires.map((p) => ({
+    operationCode: p.operationCode, model: p.model, profileSha256: p.profileSha256, promptSha256: p.promptSha256, contractRef: p.contractRef,
+  })), { environment });
+  inputs.evidence = new Map(preuves.map((e) => [pairKey(e), e]));
+  return inputs;
 }
 
 // ── Export ──────────────────────────────────────────────────────────────────

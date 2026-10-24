@@ -37,19 +37,23 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   },
   {
     domain: 'operations', label: 'Opérations (identité économique, montants, regroupements)',
-    checks: [...O1, 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', 'COH-OPS-ACQUISITION-DATE'],
+    checks: [...O1, 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', 'COH-OPS-ACQUISITION-DATE', 'COH-OPS-CONTRACT-DATES'],
+    // Lot 86C : doublons ENTRE Opérations d'une même relation contractuelle (COH-OPS-IDENTITY v2, réexamen T3)
+    // et dates de contrat issues de périodes facturées (COH-OPS-CONTRACT-DATES) — contrôlés et réparés.
     // Lot 85E : acquisition réalisée sans date alors que la date du bien est connue — contrôlée et réparée (T3 du bien puis T4).
     // Lot 84E : les factures d'un même service non regroupées sont contrôlées et réparées (reconsolidation ciblée O-6).
     gap: { what: 'montants et dates des Opérations comparés aux preuves sur le stock ; regroupements manqués HORS séries récurrentes établies ; identité 78A en détection seule (correction par le réexamen T3)', existingMechanism: 'operations-quality-check (12 anomalies dures, lecture seule) ; consolidation T3 (78A par version, 55B)', planned: 'lots suivants (O-2 et suivants du CDC v5)' },
   },
   {
     domain: 'rapprochements', label: 'Rapprochements (pièces ↔ Opérations, documents ↔ biens)',
-    checks: ['COH-DOC-LINKS', 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', ...O1.filter((id) => /DOCUMENT/.test(id))],
+    // Lot 86D : associations Document ↔ Agenda confrontées à leurs preuves (COH-DOC-AGENDA-LINKS).
+    checks: ['COH-DOC-LINKS', 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', ...O1.filter((id) => /DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS'],
     gap: { what: 'rattachement document → bien principal ; relation document ↔ équipement que le document ne désigne pas lui-même (constat seul, contrat IA 82D-t3-document-equipement — lot 84E : réparée par O-6 quand le document la désigne)', existingMechanism: 'T3 DOCUMENT_ASSET (balayage continu des documents sans bien) ; consolidation M1–M3 ; reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' },
   },
-  { domain: 'tco', label: 'TCO et dépenses', checks: ['COH-TCO-EXTRACTED-EXPENSES'] },
+  // Lot 86F : date économique de chaque dépense justifiée (jamais la date de l'Opération par défaut), stock réparé.
+  { domain: 'tco', label: 'TCO et dépenses', checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-TCO-ECONOMIC-DATES'] },
   { domain: 'agenda', label: 'Agenda (occurrences, échéances calculables des Opérations, événements obsolètes, échéances de fiche, appartenance aux Opérations)',
-    checks: ['COH-AGENDA-OCCURRENCES', 'COH-AGENDA-ORPHANS', 'COH-AGENDA-OPERATION-PROJECTION', 'COH-AGENDA-PROJECTION-ORPHANS', ...O1.filter((id) => /AGENDA|PRINCIPAL|LINK-PROVENANCE/.test(id))],
+    checks: ['COH-AGENDA-OCCURRENCES', 'COH-AGENDA-ORPHANS', 'COH-AGENDA-OPERATION-PROJECTION', 'COH-AGENDA-PROJECTION-ORPHANS', 'COH-OPS-CONTRACT-DATES', ...O1.filter((id) => /AGENDA|PRINCIPAL|LINK-PROVENANCE/.test(id)), 'COH-DOC-AGENDA-LINKS'],
     // Lot 83E : les échéances calculables issues des Opérations sont contrôlées (projection rejouée sans IA) ; 83B : invariants O-1.
     gap: {
       what: 'échéances DOCUMENTAIRES décidées par T4 (IA) : décisions non conservées avec leur candidat, rejeu impossible sans IA ; groupes T4 « même document, même date » sans Opération',
@@ -75,7 +79,10 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   },
   { domain: 'equipements', label: 'Équipements (documents rattachés, séparation bien / équipement)', checks: ['COH-DOC-LINKS', 'COH-ASSET-EQUIPMENT-SEPARATION'],
     gap: { what: 'situations de séparation SUSPECTES (constat seul) ; document d’équipement rattaché au seul bien sans preuve propre au document (constat seul — réparé par la reconsolidation ciblée O-6 dès que le document désigne l’équipement, lot 84E) ; liens d’un équipement déplacé vers un autre bien', existingMechanism: 'rattrapage BO « equipment-separation » (même code) ; file EQUIPMENT_DOCUMENT au déplacement et reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' } },
-  { domain: 'documents-liens', label: 'Liens documentaires', checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id))] },
+  { domain: 'documents-liens', label: 'Liens documentaires (documents ↔ biens / équipements, documents ↔ agenda)',
+    checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS'],
+    // Lot 86D : un lien Document ↔ Agenda automatique sans preuve propre reste un constat (jugement de pertinence : contrat IA demandé).
+    gap: { what: 'pertinence SÉMANTIQUE d’un lien Document ↔ Agenda automatique sans preuve propre au couple (constat AUTOMATIC_LINK_UNPROVEN, aucune écriture)', existingMechanism: 'détachement par l’utilisateur depuis les tiroirs de l’élément et du document (décision mémorisée)', planned: 'contrat IA 86D-t4-pertinence-lien-document-agenda' } },
   { domain: 'a-traiter', label: 'Cartes « À traiter »',
     checks: [
       'COH-TODO-DOCUMENT-FIELDS', 'COH-TODO-STALE-DECISIONS', 'COH-TODO-RELEVANCE-CARDS', 'COH-TODO-ORPHAN-CARDS', 'COH-TODO-RESOLUTION-PROPAGATION',
@@ -91,6 +98,16 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       existingMechanism: 'producteurs T4 / T3 à l’analyse (file durable) ; conflits de rattachement clos par le balayage horaire (closeObsoleteAssetConflicts) ; projection des faits après rattachement contrôlée par COH-DOC-EXTRACT-CHAIN (aval) ; date d’achat : T3 « Informations » 76J',
       planned: 'persistance durable des décisions T4 (même point d’extension que COH-AGENDA-T4-DOCUMENT-DEADLINES)',
     } },
+  {
+    // Lot 86E : classement documentaire (Rubrique / Type) — nomenclature courante, type identifié = type enregistré.
+    domain: 'documents-classement', label: 'Classement documentaire (Rubrique, Type)',
+    checks: ['COH-DOC-CLASSIFICATION'],
+    gap: {
+      what: 'pertinence sémantique d’un classement établi sous la nomenclature courante (seul T1 en décide) ; Type ambigu (plusieurs Types de la nature identifiée dans la Rubrique) : carte DOC-TYP',
+      existingMechanism: 'classement T1 à l’analyse (nomenclature transmise en données) ; cartes DOC-RUB / DOC-TYP ; mise à niveau du référentiel (/api/cron/documents/referential-upgrade)',
+      planned: 'demande IA 86E-t1-classement-equipements-mobilier (recette corpus ; réévaluation du seul classement sans réanalyse complète)',
+    },
+  },
   {
     domain: 'documents-t1', label: 'Chaîne document → extract → T1 → aval (C-Q7)',
     checks: ['COH-DOC-EXTRACT-CHAIN'],

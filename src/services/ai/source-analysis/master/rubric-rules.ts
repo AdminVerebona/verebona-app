@@ -22,11 +22,15 @@ import {
   getDocumentType,
   isAiSelectable,
   isApplicableToFamily,
-  rubricOfType,
+  isTypeCompatibleWithRubric,
   type AssetFamily,
   type RubricCode,
 } from '@/lib/referential/v2';
 import { resolveLegacyType } from '@/lib/referential/v2/legacy-mapping';
+import { v2TypeForRubric } from '@/lib/referential/document-codes';
+
+/** Lot 86E : confiance d'une Rubrique d'attache déduite d'un Type réutilisable (sous le seuil de 0,9). */
+export const DOMAIN_NOT_PROVEN_CONFIDENCE = 0.5;
 
 export interface RubricProposal {
   rubricCode: RubricCode;
@@ -80,9 +84,12 @@ export function deduceFromType(
     return {
       rubricCode: direct.rubric,
       documentTypeCode: direct.code,
-      // Une déduction du référentiel n'est pas une estimation : c'est la seule
-      // Rubrique possible. Elle passe donc le seuil du §11.2 de plein droit.
-      confidence: 1,
+      // Une déduction du référentiel n'est pas une estimation quand le Type
+      // n'a qu'une Rubrique : elle passe le seuil du §11.2 de plein droit.
+      // Lot 86E : un Type réutilisable (`alsoIn`) ne désigne PAS le domaine —
+      // sa Rubrique d'attache n'est qu'une proposition, soumise à
+      // l'utilisateur (sous le seuil), jamais un rangement automatique.
+      confidence: direct.alsoIn?.length ? DOMAIN_NOT_PROVEN_CONFIDENCE : 1,
       excerpt: typeCode,
     };
   }
@@ -114,7 +121,17 @@ export function deduceFromType(
  * Type manquant relève de sa propre règle, en « Peut attendre » (DOC-TYP-03).
  */
 export function validateProposal(
-  data: { rubricCode: string; documentTypeCode?: string | null; confidence: number; excerpt: string },
+  data: {
+    rubricCode: string; documentTypeCode?: string | null; confidence: number; excerpt: string;
+    /**
+     * Lot 86E : nature identifiée par l'analyse (code du DOCUMENT_CATALOG,
+     * « BON_COMMANDE »). Elle donne le Type enregistré quand le Type V2 manque
+     * et qu'un seul Type de cette nature est proposé dans la Rubrique
+     * (`v2TypeForRubric`) — jamais plus « Type à compléter » pour un bon de
+     * commande reconnu.
+     */
+    canonicalType?: string | null;
+  },
   applicable: readonly string[],
   families: AssetFamily[],
 ): RubricProposal | null {
@@ -127,23 +144,33 @@ export function validateProposal(
   }
 
   const rubricCode = data.rubricCode as RubricCode;
-  let typeCode: string | null = data.documentTypeCode ?? null;
+  const proposed: string | null = data.documentTypeCode ?? null;
 
-  if (typeCode) {
-    const type = getDocumentType(typeCode);
+  if (proposed) {
+    const type = getDocumentType(proposed);
     if (!type) {
-      console.warn(`[t1-rubrique] Type inconnu ignoré : ${typeCode}`);
-      typeCode = null;
-    } else if (!isAiSelectable(typeCode)) {
+      console.warn(`[t1-rubrique] Type inconnu ignoré : ${proposed}`);
+    } else if (!isAiSelectable(proposed)) {
       // DOC-08 : second rideau, la projection ne les transmet déjà pas.
-      console.warn(`[t1-rubrique] Type « Autre » proposé par le modèle, ignoré : ${typeCode}`);
-      typeCode = null;
-    } else if (rubricOfType(typeCode) !== rubricCode) {
+      console.warn(`[t1-rubrique] Type « Autre » proposé par le modèle, ignoré : ${proposed}`);
+    } else if (!isTypeCompatibleWithRubric(proposed, rubricCode)) {
       console.warn(
-        `[t1-rubrique] Type ${typeCode} incohérent avec ${rubricCode}, ignoré.`,
+        `[t1-rubrique] Type ${proposed} incohérent avec ${rubricCode}, ignoré.`,
       );
-      typeCode = null;
-    } else if (!type.applicability || !families.some((f) => isApplicableToFamily(type.applicability, f))) {
+    }
+  }
+
+  // Lot 86E : une seule correspondance « type identifié → type enregistré »
+  // (Type V2 proposé et compatible, sinon le seul Type de la nature identifiée
+  // proposé dans la Rubrique). Un Type « Autre » ou incohérent n'est jamais
+  // retenu ; un Type inconnu laisse la nature identifiée trancher.
+  let typeCode = v2TypeForRubric(
+    { documentTypeCode: proposed, canonicalType: data.canonicalType ?? null },
+    rubricCode,
+  );
+  if (typeCode) {
+    const type = getDocumentType(typeCode)!;
+    if (!families.some((f) => isApplicableToFamily(type.applicability, f))) {
       console.warn(`[t1-rubrique] Type ${typeCode} inapplicable aux biens rattachés, ignoré.`);
       typeCode = null;
     }

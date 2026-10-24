@@ -45,7 +45,7 @@ import { recordAgendaItemSources, type AgendaSourceRef } from './agenda-source-l
 import { resolveEventSemantics, type AgendaEventNature } from './agenda-functional-key';
 import { findRejectedRefs, logCrossAccountRefusal, type SqlExecutor } from '@/services/security/account-ownership';
 import { addFileLinkProvenance, replaceDirectFileLinks } from '@/services/business-operations/grouping/provenance';
-import { recordGroupingDecision } from '@/services/business-operations/grouping/decisions';
+import { liftLinkRejections, recordGroupingDecision, recordLinkDecision } from '@/services/business-operations/grouping/decisions';
 import { drizzleRunner } from '@/services/business-operations/grouping/runner';
 
 type ItemInsert = typeof agendaItems.$inferInsert;
@@ -255,7 +255,16 @@ export async function writeAgendaLinks(
     const runner = drizzleRunner(tx);
     if (mode === 'replace') {
       const user = fileProvenance === 'MANUAL_DIRECT';
-      const { removedPrincipalFileIds } = await replaceDirectFileLinks(runner, agendaItemId, fileIds, fileProvenance, accountId, { userRemovesAll: user });
+      const { removedPrincipalFileIds, removedFileIds } = await replaceDirectFileLinks(runner, agendaItemId, fileIds, fileProvenance, accountId, { userRemovesAll: user });
+      // Lot 86D (ticket « Documents / Agenda » §5) : décisions de l'utilisateur mémorisées sur le LIEN —
+      // document retiré : détachement (aucune provenance automatique ne le recrée) ; document présent : rattachement
+      // explicite (lève un détachement antérieur).
+      if (user) {
+        for (const fileId of removedFileIds) {
+          await recordLinkDecision(runner, { accountId, itemId: agendaItemId, fileId, decision: 'REJECTED', reasonCode: 'USER_AGENDA_LINK_REMOVED' });
+        }
+        await liftLinkRejections(runner, accountId, agendaItemId, fileIds);
+      }
       // Lien propagé retiré par l'utilisateur : la propagation ne le recrée pas (§10).
       if (user && removedPrincipalFileIds.length) {
         const [it] = (await tx.execute(sql`SELECT business_operation_id AS op FROM agenda_items WHERE id = ${agendaItemId} AND account_id = ${accountId}`)) as Array<{ op: number | null }>;

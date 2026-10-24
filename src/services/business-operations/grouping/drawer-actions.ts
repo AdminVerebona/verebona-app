@@ -12,7 +12,7 @@
  */
 import type { GroupingAction } from '@/lib/agenda/grouping-view';
 import {
-  GroupingError, attachAsset, attachEquipment, attachRoom, designatePrincipal, detachAgendaItem, detachAsset, detachDocumentFromAgendaGroup,
+  GroupingError, attachAsset, attachEquipment, attachRoom, designatePrincipal, detachAgendaItem, detachAsset, detachDocumentFromAgendaGroup, detachDocumentFromAgendaItem,
   detachEquipment, detachRoom, linkAgendaItems, linkDocumentToAgendaItem, releasePrincipal, withGroupingWrite, type GroupingContext,
 } from './service';
 
@@ -66,6 +66,11 @@ export async function applyAgendaDrawerAction(
       case 'relier-document': {
         const r = await linkDocumentToAgendaItem(ctx, { itemId, fileId: target(), reasonCode });
         return { action, changed: true, operationId: r.operationId, detail: r.case };
+      }
+      case 'detacher-document': {
+        // Lot 86D : détachement INDIVIDUEL du lien (élément ↔ document) ; le document reste dans l'ensemble.
+        const r = await detachDocumentFromAgendaItem(ctx, { itemId, fileId: target(), reasonCode });
+        return { action, changed: r.removed, operationId: r.operationId };
       }
       case 'retirer-document': {
         const r = await detachDocumentFromAgendaGroup(ctx, { itemId, fileId: target(), reasonCode });

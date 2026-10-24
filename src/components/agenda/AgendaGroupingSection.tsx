@@ -25,6 +25,10 @@
  * d'écriture partagée s'applique (compte en lecture seule : fenêtre
  * habituelle, et le serveur refuse de toute façon).
  *
+ * Lot 86D : « Détacher » un document de l'élément (lien seul, décision
+ * mémorisée) ; après chaque geste, `agenda-mutated` relit les autres tiroirs
+ * ouverts (tiroir du document compris) — synchronisation immédiate.
+ *
  * Accessibilité : chaque geste est un vrai bouton nommé (« Retirer « Devis » »),
  * cibles ≥ 44 px sur mobile ; le choix d'un objet s'ouvre dans un tiroir
  * EMPILÉ (composant de base 81F : zones sûres, bouton « Fermer », retour
@@ -98,7 +102,7 @@ export function AgendaGroupingSection({ itemId, onOpenDocument, onChanged, onRol
     try {
       const r = await apiClient.post<{ view: AgendaGroupingView | null }>(`/api/agenda/${itemId}/liens`, { action, targetId: targetId ?? null });
       if (r.view) setView(r.view);
-      toast.success("C’est enregistré");
+      toast.success(action === "detacher-document" ? L.detachedToast : "C’est enregistré");
       window.dispatchEvent(new CustomEvent("agenda-mutated"));
       onChanged?.();
     } catch (err: any) {

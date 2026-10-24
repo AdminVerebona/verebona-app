@@ -153,7 +153,11 @@ export async function backfillAgendaSourceLinks(sql: Sql, opts: {
     const rows = await sql<{ id: number; accountId: number; refId: number; fileAccount: number | null; deletedAt: Date | null; linked: boolean }[]>`
       SELECT i.id, i.account_id AS "accountId", i.origin_ref_id AS "refId",
              f.account_id AS "fileAccount", f.deleted_at AS "deletedAt",
-             EXISTS (SELECT 1 FROM agenda_file_links x WHERE x.agenda_item_id = i.id AND x.asset_file_id = i.origin_ref_id) AS linked
+             EXISTS (SELECT 1 FROM agenda_file_links x WHERE x.agenda_item_id = i.id AND x.asset_file_id = i.origin_ref_id)
+               -- Lot 86D : lien détaché par l'utilisateur — jamais recréé par la reprise.
+               OR EXISTS (SELECT 1 FROM business_operation_match_decisions dl
+                           WHERE dl.account_id = i.account_id AND dl.source_kind = 'AGENDA_FILE_LINK' AND dl.candidate_operation_id IS NULL
+                             AND dl.active AND dl.decision = 'REJECTED' AND dl.source_entity_key = i.id::text || ':' || i.origin_ref_id::text) AS linked
         FROM agenda_items i LEFT JOIN asset_files f ON f.id = i.origin_ref_id
        WHERE i.is_automatic AND i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL AND i.id > ${report.lastItemId}
        ORDER BY i.id LIMIT ${taille}`;

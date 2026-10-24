@@ -38,6 +38,7 @@ export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
   NOT_REALIZED_EXPENSES: 'Des dépenses prévues ou datées après aujourd’hui ne sont pas encore réalisées : elles ne sont comptées dans aucun indicateur (elles le seront à leur date de paiement).',
   STATUS_CONTRADICTIONS: 'Des dépenses ont un statut et une date contradictoires (prévue mais payée, réalisée mais datée après aujourd’hui) : vérifiez-les.',
   INVALID_DATES: 'Des dates impossibles ou incohérentes ont été ignorées : les dépenses concernées ne sont rattachées à aucune année.',
+  ECONOMIC_DATE_UNDETERMINED: 'Des dépenses n’ont pas de date de paiement ou de facture établie : elles sont comptées dans le TCO total mais rattachées à aucune année (les montants par année peuvent être incomplets). Elles seront datées dès qu’un justificatif le permettra.',
   ACQUISITION_DATE_INCOHERENT: 'Date d’acquisition incohérente (impossible, future ou postérieure à la cession) : la moyenne annuelle n’est pas calculée.',
 };
 
@@ -108,7 +109,9 @@ const RETENUE = (s: EconomicLineStatus) => s === 'RETAINED_DIRECT' || s === 'RET
 export function tcoUserView(lines: readonly TcoEconomicLine[]): { lines: TcoUserLine[]; hidden: Record<string, TcoHiddenReason> } {
   const hidden: Record<string, TcoHiddenReason> = {};
   for (const l of lines) if (l.status === 'OUT_OF_SCOPE') hidden[l.id] = 'OTHER_ASSET';
-  const out: TcoUserLine[] = lines.filter((l) => !hidden[l.id]).map((l) => ({ ...l }));
+  // Lot 86F : la résolution complète de la date (dates disponibles, motifs) reste au diagnostic BO ; la fiche reçoit
+  // son libellé (`dateLabel`) et, pour une date non établie, la note explicative.
+  const out: TcoUserLine[] = lines.filter((l) => !hidden[l.id]).map(({ economicDate: _date, ...l }) => ({ ...l }));
   const porteuses = new Map<number, TcoUserLine>();
   for (const l of out) {
     if (l.source !== 'OPERATION' || l.operationId == null) continue;

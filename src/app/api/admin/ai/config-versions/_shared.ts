@@ -34,18 +34,6 @@ export async function requireAdminContext(
   }
 }
 
-/**
- * Lot 54 : gestes du workflow supprimé (promotion « À tester », validation,
- * retour en brouillon) et de publication en production (package, import) —
- * 410, avec le geste qui les remplace.
- */
-export function removedWorkflow(geste: string, remplacement: string): NextResponse {
-  return NextResponse.json(
-    { error: 'WORKFLOW_REMOVED', message: `« ${geste} » n’existe plus : ${remplacement}` },
-    { status: 410 },
-  );
-}
-
 /** Identifiant de version, strictement entier positif. */
 export function parseVersionId(raw: string): number | null {
   if (!/^\d+$/.test(raw)) return null;
@@ -68,11 +56,17 @@ export function invalidId(raw: string): NextResponse {
  * technique. 409 parce que l'opération entre en conflit avec l'état courant —
  * ni la requête ni le serveur ne sont en cause.
  */
+const NOT_FOUND_CODES = new Set(['VERSION_NOT_FOUND', 'REVISION_NOT_FOUND', 'EXPORT_NOT_FOUND', 'IMPORT_NOT_FOUND', 'INTERVENTION_NOT_FOUND', 'PROMOTION_NOT_FOUND']);
+const UNPROCESSABLE_CODES = new Set([
+  'EXPORT_INVALID', 'IMPORT_REFUSED', 'IMPORT_UNREADABLE', 'LEGACY_PACKAGE_FORMAT', 'LEGACY_EXPORT_FORMAT', 'UNKNOWN_FORMAT_VERSION', 'UNKNOWN_FORMAT',
+]);
+
 export function toErrorResponse(e: unknown, route: string): NextResponse {
   if (e instanceof ConfigOperationRefused || e instanceof ConfigVersionRefused) {
-    const status = e.code === 'VERSION_NOT_FOUND' || e.code === 'REVISION_NOT_FOUND' || e.code === 'EXPORT_NOT_FOUND' ? 404
+    const status = NOT_FOUND_CODES.has(e.code) ? 404
       // Lot 54 : un fichier qui ne passe pas ses contrôles n'est jamais rendu.
-      : e.code === 'EXPORT_INVALID' ? 422
+      // Lot 86B : fichier importé refusé (format retiré, illisible, contrôles).
+      : UNPROCESSABLE_CODES.has(e.code) ? 422
         : 409;
     return NextResponse.json({ error: e.code, message: e.message, details: e.details ?? null }, { status });
   }

@@ -81,7 +81,7 @@ describe('MASC50-AC04 — visibilité du traitement, générique', () => {
     'src/services/document-ai/analysis-recovery.service.ts': 'TECHNICAL',
     'src/services/ai/source-analysis/invalid-output-replay.job.ts': 'TECHNICAL',
     'src/services/ai/source-analysis/source-units/jobs.ts': 'TECHNICAL',
-    'src/services/ai/governance/corpus/pipeline-runner.ts': 'TECHNICAL',
+    // Lot 86A : `governance/corpus/pipeline-runner.ts` retiré (harnais historique absorbé par la qualification par couple, qui n'appelle pas le pipeline).
   };
 
   /** Appels réels (commentaires retirés) de l'analyse dans un fichier, texte complet de chaque appel. */

@@ -10,6 +10,7 @@
  * indicateurs OBS-T1 et les traces citent.
  */
 import { resolveDocumentType, type DocumentCatalogEntry } from '@/services/canonical/registry';
+import { rubricOfType } from '@/lib/referential/v2';
 
 /** Codes des règles déterministes (ne jamais renommer : tracés en base). */
 export const PROJECTION_RULES = {
@@ -231,11 +232,19 @@ export interface PurposeSignals {
   acquisitionClaims?: string[];
   /** Nombre de faits portant un événement repair/maintenance réalisé. */
   serviceEvents: number;
+  /**
+   * Lot 86E : Rubrique proposée par l'analyse (DOMAINE du document). Un type
+   * d'achat réutilisé hors de sa Rubrique d'attache (« Facture d'achat » en
+   * « Équipements et mobilier ») n'est pas l'acquisition du BIEN.
+   */
+  rubricCode?: string | null;
 }
 
 /**
  * Finalité du document :
  *   1. un type V2 de prestation (ou un rapport d'intervention) → SERVICE ;
+ *   1 bis. un type d'achat rangé hors de la Rubrique d'acquisition du bien
+ *      (lot 86E : « Équipements et mobilier ») → PART_PURCHASE ;
  *   2. des achats énoncés, aucun sur le BIEN → PART_PURCHASE ;
  *   3. type prouvant un achat ET (type V2 d'acquisition OU ligne d'achat du
  *      bien énoncée OU acquisition énoncée par un acte) → ASSET_PURCHASE ;
@@ -249,6 +258,11 @@ export function classifyPurpose(s: PurposeSignals): DocumentPurpose {
   const assetPurchase = s.purchaseTargets.includes('ASSET')
     || (s.entry?.authority === 'AUTHORITATIVE' && (s.acquisitionClaims ?? []).includes('ASSET'));
   if (V2_PRESTATION.test(v2) || (s.entry && CANONIQUES_PRESTATION.has(s.entry.code))) return 'SERVICE';
+  // Lot 86E : la Rubrique porte le domaine. Un achat rangé hors de la Rubrique
+  // d'acquisition du bien (meuble, appareil, équipement) n'en est jamais
+  // l'acquisition : prix et date d'acquisition du bien retirés, achat d'un
+  // équipement identifié conservé (même règle qu'un achat de pièce).
+  if (V2_ACHAT_DU_BIEN.has(v2) && s.rubricCode && rubricOfType(v2) !== s.rubricCode) return 'PART_PURCHASE';
   if (s.purchaseTargets.length > 0 && !assetPurchase) return 'PART_PURCHASE';
   if (provesPurchase(s.entry) && (V2_ACHAT_DU_BIEN.has(v2) || assetPurchase)) return 'ASSET_PURCHASE';
   if (s.serviceEvents > 0 && !assetPurchase) return 'SERVICE';

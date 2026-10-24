@@ -51,26 +51,13 @@ export async function PUT(
     const body = await request.json();
     const { fileName, documentType, assetId, substructureId, equipmentId, webLinkUrl, documentDate, retainedTitle, retainedFunctionCode, supplier, description, notes, amountCents, userEditedFields } = body;
 
-    if (!fileName || !documentType) {
+    // Lot 86E : le code V1 historique (`document_type`) est FACULTATIF. Le
+    // tiroir ne l'envoie plus : il le « normalisait » en « AUTRE » quand la
+    // nature reconnue n'avait pas d'équivalent V1 (« BON_COMMANDE »). Absent ou
+    // inchangé, il est conservé tel quel ; seule une MODIFICATION est validée.
+    if (!fileName) {
       return NextResponse.json(
-        { error: 'MISSING_FIELD', message: 'Le nom et le type de document sont requis' },
-        { status: 400 }
-      );
-    }
-
-    // Lot 30 : le référentiel V1 (résolveur documentaire unique) valide ; la
-    // table `document_types` reste consultée pour un type ajouté en back-office.
-    const validDocType = isKnownStorageDocumentCode(documentType)
-      ? [{ id: 0 }]
-      : await db
-        .select({ id: documentTypes.id })
-        .from(documentTypes)
-        .where(eq(documentTypes.code, documentType))
-        .limit(1);
-
-    if (validDocType.length === 0) {
-      return NextResponse.json(
-        { error: 'INVALID_INPUT', message: 'Type de document invalide ou inactif' },
+        { error: 'MISSING_FIELD', message: 'Le nom du document est requis' },
         { status: 400 }
       );
     }
@@ -96,6 +83,25 @@ export async function PUT(
     }
 
     const oldDoc = existingDoc[0];
+
+    const typeModifie = documentType !== undefined && documentType !== null && documentType !== oldDoc.documentType;
+    if (typeModifie) {
+      // Lot 30 : le référentiel V1 (résolveur documentaire unique) valide ; la
+      // table `document_types` reste consultée pour un type ajouté en back-office.
+      const validDocType = isKnownStorageDocumentCode(documentType)
+        ? [{ id: 0 }]
+        : await db
+          .select({ id: documentTypes.id })
+          .from(documentTypes)
+          .where(eq(documentTypes.code, documentType))
+          .limit(1);
+      if (validDocType.length === 0) {
+        return NextResponse.json(
+          { error: 'INVALID_INPUT', message: 'Type de document invalide ou inactif' },
+          { status: 400 }
+        );
+      }
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // LOT 49 (SEC-05) — CIBLES DU COMPTE, AVANT TOUTE ÉCRITURE
@@ -133,7 +139,7 @@ export async function PUT(
 
     const now = new Date();
     const updateData: any = {
-      documentType,
+      ...(typeModifie ? { documentType } : {}),
       documentDate: documentDate || null,
       updatedAt: now,
     };
@@ -274,7 +280,7 @@ export async function PUT(
     if (titreUtilisateur) {
       changes.push(`Titre: "${oldDoc.retainedTitle ?? ''}" → "${updateData.retainedTitle ?? ''}"`);
     }
-    if (oldDoc.documentType !== documentType) {
+    if (typeModifie) {
       changes.push(`Type: "${oldDoc.documentType}" → "${documentType}"`);
     }
     if (oldDoc.documentDate !== (documentDate || null)) {

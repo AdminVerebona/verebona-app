@@ -14,6 +14,12 @@
  * une propriété du type TypeScript. Un Type déclare SA rubrique ; il n'existe
  * aucune façon d'en déclarer deux. Le §13.2 exige en plus un refus au
  * build/test — assuré par `assertReferentialIntegrity()` dans `index.ts`.
+ *
+ * Lot 86E (ticket « Équipements et mobilier », qui prime sur le §2.2 sur ce
+ * point) : la Rubrique décrit le domaine, le Type la nature. Un Type garde UNE
+ * Rubrique d'attache (`rubric`, déduite quand aucune Rubrique n'est connue) et
+ * peut être déclaré réutilisable dans d'autres Rubriques (`alsoIn`), au lieu
+ * d'être dupliqué. Les Types « Autre » restent strictement mono-rubrique.
  * ══════════════════════════════════════════════════════════════════════════
  */
 
@@ -38,9 +44,13 @@ export const ASSET_FAMILIES: readonly AssetFamily[] = [
  */
 export type Applicability = 'ALL' | readonly AssetFamily[];
 
-/** Codes des huit Rubriques du §3.2. */
+/**
+ * Codes des Rubriques : les huit du §3.2, plus « Équipements et mobilier »
+ * (lot 86E, référentiel 2.2.0).
+ */
 export type RubricCode =
   | 'PROPERTY_MANAGEMENT'
+  | 'EQUIPMENT_FURNITURE'
   | 'CONTRACTS_WARRANTIES_DOCS'
   | 'MAINTENANCE_WORKS'
   | 'INSURANCE_CLAIMS'
@@ -67,6 +77,13 @@ export interface RubricDefinition {
   contextual?: boolean;
   /** Rubrique de dernier recours, toujours affichée en dernier (§3.3). */
   fallback?: boolean;
+  /**
+   * Lot 86E : version du référentiel qui a introduit la Rubrique (absente :
+   * référentiel initial). Un document classé AUTOMATIQUEMENT sous une version
+   * antérieure n'a pas pu y être rangé : le contrôle COH-DOC-CLASSIFICATION
+   * le fait réévaluer quand sa nature relève de cette Rubrique.
+   */
+  since?: string;
 }
 
 export interface DocumentTypeDefinition {
@@ -74,8 +91,22 @@ export interface DocumentTypeDefinition {
   code: string;
   /** Libellé visible. Plusieurs Types peuvent partager le libellé « Autre ». */
   label: string;
-  /** Rubrique propriétaire. Unique par construction (§2.2). */
+  /**
+   * Rubrique d'attache du Type : celle que l'on déduit quand aucune Rubrique
+   * n'est connue (§2.2). Unique par construction.
+   */
   rubric: RubricCode;
+  /**
+   * Lot 86E — autres Rubriques dans lesquelles ce Type est aussi proposé.
+   *
+   * La Rubrique décrit le DOMAINE métier, le Type la NATURE du document : un
+   * « Bon de commande » est le même Type qu'il porte sur l'achat d'une maison
+   * (Propriété et gestion) ou de chaises de jardin (Équipements et mobilier).
+   * Plutôt que de dupliquer le Type par Rubrique, on le déclare réutilisable
+   * ici. Jamais pour un Type « Autre » (`userOnly`) : chaque Rubrique garde
+   * son propre « Autre » (§2.2) — contrôlé par `checkReferentialIntegrity`.
+   */
+  alsoIn?: readonly RubricCode[];
   applicability: Applicability;
   /** Finalité du document, utilisée par le prompt (§3.4, §11.4). */
   purpose: string;

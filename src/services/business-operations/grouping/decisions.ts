@@ -118,3 +118,74 @@ export async function liftPrincipalWithdrawals(r: GroupingRunner, accountId: num
     [accountId, operationId],
   )).length;
 }
+
+// ── Lot 86D : décision de l'utilisateur sur UN lien Document ↔ Agenda ──────
+
+/** Clé de l'objet AGENDA_FILE_LINK (`<agenda_items.id>:<asset_files.id>`). */
+export const agendaFileLinkKey = (itemId: number, fileId: number): string => `${itemId}:${fileId}`;
+
+/**
+ * Fragment SQL : le lien (élément `itemExpr`, document `fileExpr`) a-t-il été
+ * DÉTACHÉ par l'utilisateur (décision active) ? Réutilisé par les écrivains
+ * SQL de liens (consolidation 76H, reprise) et par les contrôles.
+ */
+export const linkRejectedSql = (itemExpr: string, fileExpr: string): string =>
+  `EXISTS (SELECT 1 FROM business_operation_match_decisions dl
+            WHERE dl.source_kind = 'AGENDA_FILE_LINK' AND dl.candidate_operation_id IS NULL AND dl.active AND dl.decision = 'REJECTED'
+              AND dl.account_id = (SELECT ai.account_id FROM agenda_items ai WHERE ai.id = ${itemExpr})
+              AND dl.source_entity_key = (${itemExpr})::text || ':' || (${fileExpr})::text)`;
+
+/**
+ * Enregistre la décision de l'utilisateur sur un lien (idempotent : une
+ * décision active identique n'est pas réécrite ; une décision contraire
+ * désactive la précédente — jamais effacée). Mémoire unifiée 82D, sans
+ * Opération (0736). Appelée sous le verrou 39101 du compte.
+ */
+export async function recordLinkDecision(
+  r: GroupingRunner, d: { accountId: number; itemId: number; fileId: number; decision: 'CONFIRMED' | 'REJECTED'; reasonCode: string },
+): Promise<boolean> {
+  const key = agendaFileLinkKey(d.itemId, d.fileId);
+  const [cur] = await r.q<{ id: string; decision: string }>(
+    `SELECT id, decision FROM business_operation_match_decisions
+      WHERE account_id = $1 AND source_kind = 'AGENDA_FILE_LINK' AND source_entity_key = $2 AND candidate_operation_id IS NULL AND active FOR UPDATE`,
+    [d.accountId, key],
+  );
+  if (cur && cur.decision === d.decision) return false;
+  if (cur) await r.q(`UPDATE business_operation_match_decisions SET active = false, updated_at = now() WHERE id = $1`, [Number(cur.id)]);
+  await r.q(
+    `INSERT INTO business_operation_match_decisions
+       (account_id, source_kind, source_entity_key, source_version, candidate_operation_id, decision, origin, reason_code)
+     VALUES ($1, 'AGENDA_FILE_LINK', $2, NULL, NULL, $3, 'USER_ARBITRATION', $4)`,
+    [d.accountId, key, d.decision, d.reasonCode],
+  );
+  return true;
+}
+
+/**
+ * Lève les détachements actifs de ces liens (rattachement explicite de
+ * l'utilisateur par le formulaire de l'élément) — désactivés, jamais effacés.
+ */
+export async function liftLinkRejections(r: GroupingRunner, accountId: number, itemId: number, fileIds: readonly number[]): Promise<number> {
+  const keys = [...new Set(fileIds)].filter((f) => Number.isSafeInteger(f) && f > 0).map((f) => agendaFileLinkKey(itemId, f));
+  if (!keys.length) return 0;
+  return (await r.q(
+    `UPDATE business_operation_match_decisions SET active = false, updated_at = now()
+      WHERE account_id = $1 AND source_kind = 'AGENDA_FILE_LINK' AND candidate_operation_id IS NULL AND active AND decision = 'REJECTED'
+        AND source_entity_key = ANY($2::text[])
+     RETURNING id`,
+    // Littéral de tableau PostgreSQL (clés `<entier>:<entier>`, sûres) : un tableau JS serait déplié par Drizzle.
+    [accountId, `{${keys.map((k) => `"${k}"`).join(',')}}`],
+  )).length;
+}
+
+/** Documents dont le lien avec l'élément `itemId` a été détaché par l'utilisateur (décisions actives), parmi `fileIds` (tous si null). */
+export async function rejectedLinkFileIds(r: GroupingRunner, itemId: number, fileIds: readonly number[] | null = null): Promise<number[]> {
+  const x = await r.q<{ k: string }>(
+    `SELECT d.source_entity_key AS k FROM business_operation_match_decisions d JOIN agenda_items i ON i.id = $1 AND i.account_id = d.account_id
+      WHERE d.source_kind = 'AGENDA_FILE_LINK' AND d.candidate_operation_id IS NULL AND d.active AND d.decision = 'REJECTED'
+        AND d.source_entity_key LIKE $2`,
+    [itemId, `${itemId}:%`],
+  );
+  const set = fileIds === null ? null : new Set(fileIds);
+  return x.map((y) => Number(y.k.split(':')[1])).filter((n) => Number.isSafeInteger(n) && (set === null || set.has(n))).sort((a, b) => a - b);
+}

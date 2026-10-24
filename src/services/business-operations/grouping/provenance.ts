@@ -9,7 +9,14 @@
  * fin de preuve d'un document (`document-evidence-lifecycle.ts`), la
  * consolidation 76H et le service de regroupement (propagation vers le
  * principal).
+ *
+ * Lot 86D : un lien que l'utilisateur a DÉTACHÉ (décision AGENDA_FILE_LINK
+ * REJECTED, mémoire unifiée 82D) ne reçoit plus aucune provenance
+ * AUTOMATIQUE (AI_DIRECT, OPERATION_PRINCIPAL) — garde unique ici, pour tous
+ * les écrivains (T4, propagation, consolidation, reprise) ; seule une
+ * provenance MANUAL_DIRECT (geste de l'utilisateur) peut le recréer.
  */
+import { rejectedLinkFileIds } from './decisions';
 import { intArray, type GroupingRunner } from './runner';
 import type { LinkProvenance } from './model';
 
@@ -22,8 +29,13 @@ import type { LinkProvenance } from './model';
 export async function addFileLinkProvenance(
   r: GroupingRunner, itemId: number, fileIds: readonly number[], provenance: LinkProvenance, opts: { onlyNew?: boolean } = {},
 ): Promise<number> {
-  const ids = [...new Set(fileIds)].filter((x) => Number.isSafeInteger(x) && x > 0);
+  let ids = [...new Set(fileIds)].filter((x) => Number.isSafeInteger(x) && x > 0);
   if (!ids.length) return 0;
+  if (provenance !== 'MANUAL_DIRECT') {
+    const refuses = new Set(await rejectedLinkFileIds(r, itemId, ids));
+    ids = ids.filter((f) => !refuses.has(f));
+    if (!ids.length) return 0;
+  }
   if (opts.onlyNew) {
     return (await r.q(
       `INSERT INTO agenda_file_links (agenda_item_id, asset_file_id, provenances)
@@ -91,7 +103,7 @@ export async function removeFileLinkProvenance(
 export async function replaceDirectFileLinks(
   r: GroupingRunner, itemId: number, fileIds: readonly number[], provenance: LinkProvenance, accountId: number,
   opts: { userRemovesAll?: boolean } = {},
-): Promise<{ removedPrincipalFileIds: number[] }> {
+): Promise<{ removedPrincipalFileIds: number[]; removedFileIds: number[] }> {
   const garder = intArray(fileIds);
   const retires = await r.q<{ asset_file_id: number; provenances: string[] }>(
     `SELECT l.asset_file_id, l.provenances FROM agenda_file_links l JOIN asset_files f ON f.id = l.asset_file_id AND f.account_id = $3
@@ -102,6 +114,7 @@ export async function replaceDirectFileLinks(
   if (cibles.length) await removeFileLinkProvenance(r, [itemId], cibles, opts.userRemovesAll ? 'ALL' : provenance);
   await addFileLinkProvenance(r, itemId, fileIds, provenance, { onlyNew: opts.userRemovesAll });
   return {
+    removedFileIds: [...cibles].sort((a, b) => a - b),
     removedPrincipalFileIds: opts.userRemovesAll
       ? retires.filter((x) => (x.provenances ?? []).includes('OPERATION_PRINCIPAL')).map((x) => Number(x.asset_file_id)).sort((a, b) => a - b)
       : [],

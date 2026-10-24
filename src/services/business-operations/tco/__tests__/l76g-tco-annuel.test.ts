@@ -394,7 +394,8 @@ describe('L81D — dépenses non réalisées exclues des trois indicateurs', () 
     const c = (o: Partial<LedgerComponent>) => ({ ...comp('REALIZED_COST', 100), ...o });
     expect(evaluateComponent(c({ economicDate: '2026-10-22' }), { ...ctx, operationStatus: 'REALIZED' })).toMatchObject({ included: false, exclusion: 'FUTURE_DATED', contradiction: 'REALIZED_FUTURE_DATE' });
     expect(evaluateComponent(c({ economicDate: '2026-10-21' }), { ...ctx, operationStatus: 'REALIZED' })).toMatchObject({ included: true });
-    expect(evaluateComponent(c({}), { ...ctx, operationStatus: 'ENVISAGED', fallbackDate: '2026-01-01', realizationEvidence: true })).toMatchObject({ included: false, exclusion: 'NOT_REALIZED', date: null });
+    // Lot 86F : plus de date de repli (`fallbackDate` supprimé) ; la date effective de l'Opération n'est qu'un signal de non-réalisation.
+    expect(evaluateComponent(c({}), { ...ctx, operationStatus: 'ENVISAGED', operationEffectiveDate: '2026-01-01', realizationEvidence: true })).toMatchObject({ included: false, exclusion: 'NOT_REALIZED', date: null });
     expect(evaluateComponent(c({ economicDate: '2026-01-01' }), { ...ctx, operationStatus: 'ENVISAGED', realizationEvidence: true })).toMatchObject({ included: true, contradiction: 'PLANNED_WITH_PAYMENT' });
     expect(evaluateComponent(c({ economicDate: '2026-01-01' }), { ...ctx, operationStatus: 'CANCELLED' })).toMatchObject({ included: false, exclusion: 'OPERATION_CANCELLED' });
     // Date impossible : jamais normalisée (2025-02-29 ≠ 01/03/2025), dépense comptée sans date, signalée.

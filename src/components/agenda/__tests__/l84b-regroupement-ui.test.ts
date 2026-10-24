@@ -26,7 +26,7 @@ const rendre = (view: AgendaGroupingView) => renderToStaticMarkup(h(AgendaGroupi
 }));
 
 const principal: AgendaGroupingView = {
-  itemId: 1, role: 'MAIN', main: null, mainWithdrawn: false, counts: null,
+  itemId: 1, role: 'MAIN', linkedDocuments: [], main: null, mainWithdrawn: false, counts: null,
   ensemble: {
     items: [{ id: 2, title: 'Visite expert', startDate: '2026-03-21', isMain: false }, { id: 3, title: 'Réparation plafond', startDate: null, isMain: false }],
     documents: [{ id: 10, title: 'Rapport d’expertise', documentDate: '2026-03-22', link: 'DIRECT' }, { id: 11, title: 'Devis', documentDate: null, link: 'GROUP' }],
@@ -50,7 +50,9 @@ describe('L84B-UI01 — tiroir de l’événement de référence (AC27)', () => 
   it('relier pour chaque catégorie, créer une étape, retirer chaque objet, retirer le rôle', () => {
     for (const k of MAIN_CATEGORIES) expect(html).toContain(`data-testid="regroupement-relier-${k}"`);
     expect(html).toContain('data-testid="regroupement-creer-etape"');
-    for (const t of ['Visite expert', 'Rapport d’expertise', 'Maison', 'Cuisine']) expect(html).toContain(`aria-label="Retirer « ${t} »"`);
+    for (const t of ['Visite expert', 'Maison', 'Cuisine']) expect(html).toContain(`aria-label="Retirer « ${t} »"`);
+    // Lot 86D : pour un document, « retirer de l’ensemble » est distingué de « détacher de cet événement ».
+    expect(html).toContain('aria-label="Retirer « Rapport d’expertise » de l’ensemble"');
     expect(html).toContain('Ne plus en faire l’événement de référence');
   });
   it('lien précis signalé (§7.3), lien seulement par l’ensemble sans pastille', () => {
@@ -63,7 +65,7 @@ describe('L84B-UI01 — tiroir de l’événement de référence (AC27)', () => 
 
 describe('L84B-UI02 — tiroir d’un élément rattaché : léger (AC28)', () => {
   const html = rendre({
-    itemId: 2, role: 'MEMBER', mainWithdrawn: false, ensemble: null,
+    itemId: 2, role: 'MEMBER', linkedDocuments: [], mainWithdrawn: false, ensemble: null,
     main: { id: 1, title: 'Dégât des eaux', startDate: '2026-03-12' },
     counts: { items: 2, documents: 5, assets: 1, rooms: 1, equipments: 0 },
   });
@@ -84,14 +86,14 @@ describe('L84B-UI02 — tiroir d’un élément rattaché : léger (AC28)', () =
 
 describe('L84B-UI03 / UI04 — élément seul ; ensemble sans événement de référence', () => {
   it('élément seul : relier un élément de l’agenda (AC02) ou un document (AC01)', () => {
-    const html = rendre({ itemId: 9, role: 'NONE', main: null, mainWithdrawn: false, ensemble: null, counts: null });
+    const html = rendre({ itemId: 9, role: 'NONE', linkedDocuments: [], main: null, mainWithdrawn: false, ensemble: null, counts: null });
     expect(html).toContain('Relier un élément de l’agenda');
     expect(html).toContain('Relier un document');
     expect(html).toContain('data-role="seul"');
   });
   it('retrait mémorisé : mention, autres éléments, désignation possible par l’utilisateur', () => {
     const html = rendre({
-      itemId: 1, role: 'MEMBER', main: null, mainWithdrawn: true, counts: null,
+      itemId: 1, role: 'MEMBER', linkedDocuments: [], main: null, mainWithdrawn: true, counts: null,
       ensemble: { items: [{ id: 2, title: 'Visite expert', startDate: '2026-03-21', isMain: false }], documents: [], assets: [], rooms: [], equipments: [] },
     });
     expect(html).toContain('Aucun événement de référence : vous l’avez retiré.');
@@ -131,7 +133,8 @@ describe('L84B-UI06 — câblage des tiroirs', () => {
     expect(d).toContain('<AgendaGroupingSection');
     expect(d).toContain('onChanged={refreshItem}');
     expect(d).toContain('className="w-full sm:max-w-[520px]');
-    expect(d).toContain('item.fileLinks.length > 0 && groupingRole !== "MAIN"');
+    // Lot 86D : en consultation, le regroupement présente les documents de l'élément quel que soit son rôle.
+    expect(d).toContain('item.fileLinks.length > 0 && mode === "edit" && groupingRole !== "MAIN"');
   });
   it('DocumentDrawer : événement de référence et lien précis distingués ; lien manuel vers un élément (AC01)', () => {
     const d = lire('components/assets/DocumentDrawer.tsx');

@@ -111,6 +111,8 @@ export interface ExistingOperation {
   agendaOnly?: boolean;
   /** Lot 53 (D5) : libellé technique (nature des travaux), pour le faisceau de plausibilité. */
   label?: string | null;
+  /** Lot 86C : clé normalisée d'origine du prestataire quand une équivalence de désignations l'a remplacée. */
+  providerKeyRaw?: string;
   /** Lot 53 (D5) : montants actifs de l'Opération (cohérence des montants). */
   amounts?: ReadonlyArray<{ kind: string; amountMinor: number; currency: string }>;
   /**
@@ -198,6 +200,13 @@ export interface CandidateDecision {
     fragile?: number[];
     /** Lot 78A : contrôles d'identité économique effectués (trace, BO, diagnostic). */
     identity?: IdentityCheck[];
+    /**
+     * Lot 86C : prestataire désigné autrement — équivalence ÉTABLIE par les
+     * preuves du compte (`EQUIVALENT`, clé canonique commune) ou simple lien
+     * documentaire (`LINKED` : désignation citée, référence de service
+     * commune — plausibilité seulement, M3 tranche).
+     */
+    designations?: Array<{ operationId: number; basis: 'EQUIVALENT' | 'LINKED'; reasons: string[] }>;
   };
   /** Fusion V1 (B8) : Opérations absorbées par `operationId` (canonique) dans la même transaction. */
   mergeIds?: number[];
@@ -374,6 +383,81 @@ export function sameOwnershipCycle(
   });
 }
 
+// ── Lot 86C : désignations différentes d'un même prestataire ───────────────
+
+const motsDesignation = (text: string): string[] =>
+  text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().split(/[^a-z0-9]+/).filter((m) => m.length > 0);
+
+/**
+ * La désignation normalisée `key` (`normalizeProvider` : sans espaces ni
+ * forme juridique) est-elle CITÉE dans `text`, comme une suite de mots
+ * entiers (« Abonnement mensuel Homiris » cite `homiris`) ? Pure. Une
+ * désignation de moins de 3 caractères n'est jamais recherchée.
+ */
+export function designationMentioned(key: string | null | undefined, text: string | null | undefined): boolean {
+  if (!key || key.length < 3 || !text) return false;
+  const mots = motsDesignation(text);
+  for (let i = 0; i < mots.length; i++) {
+    let suite = '';
+    for (let j = i; j < mots.length && suite.length < key.length; j++) {
+      suite += mots[j];
+      if (suite === key) return true;
+    }
+  }
+  return false;
+}
+
+/** Familles de références qui identifient un SERVICE (contrat / police, compte client). */
+const FAMILLES_SERVICE: ReferenceKind[][] = [['CONTRACT', 'POLICY'], ['CUSTOMER']];
+
+/**
+ * Indices documentaires qu'une AUTRE désignation du prestataire est en jeu
+ * (pure) : la désignation de l'un est citée dans l'objet de l'autre, ou une
+ * référence de service (contrat, police, compte client) est commune. Ce sont
+ * des INDICES (plausibilité → M3), jamais une preuve de rattachement.
+ */
+export function designationLinkReasons(
+  a: { providerKey: string | null; providerKeyRaw?: string; text: string | null; refs: ReadonlyArray<{ kind: ReferenceKind; normalized: string }> },
+  b: { providerKey: string | null; providerKeyRaw?: string; text: string | null; refs: ReadonlyArray<{ kind: ReferenceKind; normalized: string }> },
+): string[] {
+  const out: string[] = [];
+  if (designationMentioned(b.providerKeyRaw ?? b.providerKey, a.text) || designationMentioned(a.providerKeyRaw ?? a.providerKey, b.text)) {
+    out.push('DESIGNATION_CITED');
+  }
+  if (FAMILLES_SERVICE.some((fam) => {
+    const x = refSet(a.refs, fam);
+    return b.refs.some((r) => fam.includes(r.kind) && x.has(r.normalized));
+  })) out.push('SERVICE_REFERENCE_COMMON');
+  return out;
+}
+
+const TYPES_RELATION_RECURRENTE = new Set<BusinessOperationTypeCode | null>(['CONTRACT', 'INTERVENTION', 'OTHER', null]);
+
+/**
+ * Lot 86C (ticket P1 « doublons de contrats ») — échéance d'un service face à
+ * une Opération d'échéances d'un prestataire DÉSIGNÉ AUTREMENT (pure) : les
+ * règles déterministes (même tiers) ne concluent pas, mais un indice
+ * documentaire relie les deux désignations (`designationLinkReasons`), un
+ * bien est commun, et rien ne prouve deux services distincts (références de
+ * contrat divergentes, équipements disjoints). Rend les motifs (vide : non) —
+ * l'Opération devient PLAUSIBLE : le rapprochement sémantique M3 existant
+ * tranche (plafonds inchangés), jamais une fusion d'office.
+ */
+export function recurringDesignationLink(c: CandidateIdentity, o: ExistingOperation): string[] {
+  if (c.agenda || c.structured || o.agendaOnly || o.invalidated) return [];
+  if (!TYPES_RELATION_RECURRENTE.has(c.type) || !TYPES_RELATION_RECURRENTE.has(o.typeCode)) return [];
+  if (!(c.type === 'CONTRACT' || hasRecurringPeriod(c)) || !(o.periodic === true || o.typeCode === 'CONTRACT')) return [];
+  if (c.providerKey === null || o.providerKey === null || c.providerKey === o.providerKey) return [];
+  if (!c.assetIds.some((a) => o.assetIds.includes(a))) return [];
+  if (disjoints(refSet(c.refs, ['CONTRACT', 'POLICY']), refSet(o.refs, ['CONTRACT', 'POLICY']))) return [];
+  const eqOp = o.equipmentIds ?? [];
+  if (c.equipmentIds.length && eqOp.length && !c.equipmentIds.some((e) => eqOp.includes(e))) return [];
+  return designationLinkReasons(
+    { providerKey: c.providerKey, providerKeyRaw: c.providerKeyRaw, text: c.summary, refs: c.refs },
+    { providerKey: o.providerKey, providerKeyRaw: o.providerKeyRaw, text: o.label ?? null, refs: o.refs },
+  );
+}
+
 // ── Plausibilité (faisceau C7 sans clé exacte : M3 requis) ─────────────────
 
 const JOUR = 86_400_000;
@@ -511,6 +595,8 @@ export function isPlausible(c: CandidateIdentity, o: ExistingOperation): boolean
   // Sources agenda / données structurées (lots 43, 47B) : règle d'origine
   // (même tiers, fenêtre) — leur rapprochement propre est ailleurs.
   const documentaire = !c.agenda && !c.structured;
+  // Lot 86C : même service, prestataire désigné autrement (indice documentaire) → M3 tranche.
+  if (documentaire && recurringDesignationLink(c, o).length) return true;
   // Lot 55B : facture d'échéance ↔ contrat qualifiés différemment par T1 —
   // même règle qu'entre deux contrats (même tiers, ou même référence de
   // contrat sans tiers contradictoire), cibles compatibles.
@@ -699,6 +785,19 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
       continue;
     }
     if (isPlausible(c, op)) detail.plausible.push(op.id);
+  }
+
+  // Lot 86C : trace des désignations différentes d'un même prestataire (BO, journal T3).
+  for (const op of ctx.operations) {
+    const retenue = detail.certain.some((x) => x.operationId === op.id) || detail.plausible.includes(op.id);
+    if (!retenue || op.sameSource) continue;
+    if ((c.providerKeyRaw || op.providerKeyRaw) && c.providerKey !== null && c.providerKey === op.providerKey
+      && (c.providerKeyRaw ?? c.providerKey) !== (op.providerKeyRaw ?? op.providerKey)) {
+      (detail.designations ??= []).push({ operationId: op.id, basis: 'EQUIVALENT', reasons: ['SUPPLIER_EVIDENCE'] });
+    } else {
+      const liens = recurringDesignationLink(c, op);
+      if (liens.length) (detail.designations ??= []).push({ operationId: op.id, basis: 'LINKED', reasons: liens });
+    }
   }
 
   // Une Opération invalidée n'est réactivée que si aucune Opération ACTIVE ne
@@ -912,7 +1011,14 @@ export function operationsMergeable(
   const croise = opts.semantic === true && recurringPair(a, b);
   if (a.typeCode !== null && b.typeCode !== null && a.typeCode !== b.typeCode && !croise) return false;
   if (a.assetIds.length && b.assetIds.length && !a.assetIds.some((x) => b.assetIds.includes(x))) return false;
-  if (a.providerKey !== null && b.providerKey !== null && a.providerKey !== b.providerKey) return false;
+  // Lot 86C : prestataire désigné autrement — fusion permise seulement quand l'identité est
+  // établie SÉMANTIQUEMENT (verdict M3 certain, décision utilisateur) ET qu'un indice documentaire
+  // relie les deux désignations sur un bien commun ; jamais sur deux tiers sans lien.
+  if (a.providerKey !== null && b.providerKey !== null && a.providerKey !== b.providerKey
+    && !(opts.semantic === true && a.assetIds.some((x) => b.assetIds.includes(x)) && designationLinkReasons(
+      { providerKey: a.providerKey, providerKeyRaw: a.providerKeyRaw, text: a.label ?? null, refs: a.refs },
+      { providerKey: b.providerKey, providerKeyRaw: b.providerKeyRaw, text: b.label ?? null, refs: b.refs },
+    ).length > 0)) return false;
   const type = croise ? 'CONTRACT' : a.typeCode ?? b.typeCode;
   for (const fam of negativeFamilies(type)) {
     if (disjoints(refSet(a.refs, fam), refSet(b.refs, fam))) return false;

@@ -191,7 +191,7 @@ scenario('L54C-BOIA', 'Versions, révisions restaurables et export de la configu
     const active = (await repo.getActiveVersion(env as never))!;
     const r = await exp.exportActiveConfiguration(adminId);
     const doc = JSON.parse(r.content) as import('@/services/ai/config/config-export.service').ConfigExportDocument;
-    expect(doc).toMatchObject({ format: 'verebona-ia-config-export', formatVersion: '1.0.0' });
+    expect(doc).toMatchObject({ format: 'verebona-ia-config-export', formatVersion: '2.0.0' });
     expect(doc.version).toMatchObject({ id: active.id, number: active.visibleNumber });
     expect(doc.revision.number).toBe(active.currentRevisionNumber);
     expect(doc.configuration.treatments.map((t) => t.code)).toEqual(['T1', 'T2', 'T3', 'T4', 'T6']);
@@ -383,16 +383,15 @@ scenario('L54C-BOIA', 'Versions, révisions restaurables et export de la configu
   });
 
   it('BOIA-15 — aucune publication ni activation automatique en production', async () => {
-    const { NextRequest } = await import('next/server');
-    for (const [chemin, route] of [
-      ['package', () => import('@/app/api/admin/ai/config-versions/[id]/package/route')],
-      ['promote', () => import('@/app/api/admin/ai/config-versions/[id]/promote/route')],
-      ['import', () => import('@/app/api/admin/ai/config-packages/import/route')],
-    ] as const) {
-      const { POST } = await route();
-      const res = await (POST as (r: InstanceType<typeof NextRequest>) => Promise<Response>)(new NextRequest(`http://app.test/${chemin}`, { method: 'POST', body: '{}' }));
-      expect(res.status).toBe(410);
+    // Lot 86B (C-Q9) : les routes 410 du workflow retiré et l'ancien package
+    // sont SUPPRIMÉES ; le seul transfert est l'import manuel complet du
+    // fichier global, qui refuse l'ancien package avec un message explicite.
+    const { existsSync } = await import('node:fs');
+    for (const f of ['config-versions/[id]/package', 'config-versions/[id]/promote', 'config-versions/[id]/demote', 'config-versions/[id]/validate', 'config-packages/import', 'config-packages']) {
+      expect(existsSync(`src/app/api/admin/ai/${f}/route.ts`), f).toBe(false);
     }
+    const imp = await import('@/services/ai/config/config-import.service');
+    expect(imp.detectImportFormat(JSON.stringify({ schemaVersion: 'ai-config-package-v1', entries: [] }))).toMatchObject({ ok: false, code: 'LEGACY_PACKAGE_FORMAT' });
     // Export : aucune écriture hors de ses propres tables (versions inchangées).
     const avant = await sql`SELECT id, status, current_revision_id FROM ai_config_versions ORDER BY id`;
     await (await import('@/services/ai/config/config-export.service')).exportActiveConfiguration(adminId);

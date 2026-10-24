@@ -9,13 +9,15 @@
  *   · au plus un principal (un excédent, impossible sous l'index 0652, est
  *     rétrogradé par rang d'autorité puis ancienneté) ;
  *   · tout document membre de l'Opération est lié au principal
- *     (OPERATION_PRINCIPAL), sauf refus mémorisé de l'utilisateur ;
+ *     (OPERATION_PRINCIPAL), sauf refus mémorisé de l'utilisateur (lien
+ *     propagé refusé — PRINCIPAL_LINK —, ou, lot 86D, lien détaché de
+ *     l'élément principal — AGENDA_FILE_LINK) ;
  *   · la provenance OPERATION_PRINCIPAL quitte un élément qui n'est plus
  *     principal (transfert vers le nouveau principal, liens précis conservés) ;
  *   · Opération inactive ou fusionnée : plus aucune propagation.
  * Idempotent : un état conforme ne produit aucune écriture.
  */
-import { rejectedSubjects } from './decisions';
+import { rejectedLinkFileIds, rejectedSubjects } from './decisions';
 import { ROLE_ORIGIN_RANK, planPrincipalLinks, type RoleOrigin } from './model';
 import { addFileLinkProvenance, removeFileLinkProvenance } from './provenance';
 import { intArray, type GroupingRunner } from './runner';
@@ -83,7 +85,11 @@ export async function recomputePrincipal(r: GroupingRunner, accountId: number, o
     principalItemId: res.principalItemId,
     memberItemIds: itemIds,
     memberFileIds: membres.map((m) => Number(m.file_id)),
-    rejectedFileIds: await rejectedSubjects(r, accountId, operationId, 'PRINCIPAL_LINK'),
+    // Lot 86D : lien détaché par l'utilisateur sur l'élément principal (décision portée par le lien) — jamais repropagé.
+    rejectedFileIds: [...new Set([
+      ...await rejectedSubjects(r, accountId, operationId, 'PRINCIPAL_LINK'),
+      ...(res.principalItemId !== null ? await rejectedLinkFileIds(r, res.principalItemId) : []),
+    ])],
     links: links.map((l) => ({ itemId: Number(l.item_id), fileId: Number(l.file_id), provenances: l.provenances ?? [] })),
   });
   for (const x of plan.remove) res.removed += await removeFileLinkProvenance(r, [x.itemId], [x.fileId], 'OPERATION_PRINCIPAL');

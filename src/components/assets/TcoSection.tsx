@@ -173,6 +173,8 @@ function LigneDepense({ l, t, canEdit = false, onDecide }: { l: Line; t: TcoDto;
           <p className="text-[color:var(--text-primary)] break-words">{l.label}</p>
           <p className="text-xs text-muted-foreground">
             {dateFr(l.date)}
+            {/* Lot 86F : fondement de la date (paiement, facture…) ou « Date non établie » — calculé par le serveur. */}
+            {l.dateLabel && retenue ? <span data-tco-line-date-basis> ({l.dateLabel.charAt(0).toLowerCase()}{l.dateLabel.slice(1)})</span> : null}
             {l.category ? ` · ${t.categoryLabels[l.category]}` : ''}
             {l.operationLabel && l.source !== 'OPERATION' ? ` · ${l.operationLabel}` : ''}
           </p>

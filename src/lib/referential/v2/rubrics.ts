@@ -1,5 +1,6 @@
 /**
- * Les huit Rubriques du CDC V2.0 §3.2.
+ * Les huit Rubriques du CDC V2.0 §3.2, plus « Équipements et mobilier »
+ * (lot 86E, référentiel 2.2.0).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * LES EXCLUSIONS COMPTENT AUTANT QUE LES FINALITÉS
@@ -28,9 +29,32 @@ export const RUBRICS: readonly RubricDefinition[] = [
     exclusions:
       "Ne couvre pas les dépenses d'entretien, de réparation ou de travaux, ni les " +
       "documents d'assurance, ni les diagnostics réglementaires, ni les documents " +
-      'liés à la mise en location du bien.',
+      "liés à la mise en location du bien, ni l'achat, la livraison, l'utilisation ou " +
+      "la garantie d'un meuble, d'un appareil ou d'un équipement du bien " +
+      '(Équipements et mobilier).',
     applicability: 'ALL',
     displayOrder: 10,
+  },
+  // Lot 86E (référentiel 2.2.0) — ticket P1 « Équipements et mobilier ».
+  // Le domaine : meubles, appareils et équipements d'un bien. Les Types
+  // (facture, bon de commande, devis…) sont les Types génériques existants,
+  // déclarés réutilisables ici (`alsoIn`), jamais dupliqués.
+  {
+    code: 'EQUIPMENT_FURNITURE',
+    label: 'Équipements et mobilier',
+    purpose:
+      "Acquisition, livraison, utilisation et garantie des meubles, appareils et " +
+      "équipements d'un bien : mobilier intérieur ou de jardin, électroménager, " +
+      'équipements domestiques ou extérieurs. Le document peut concerner un bien ou ' +
+      "une pièce sans désigner d'équipement individualisé.",
+    exclusions:
+      "Ne couvre pas l'acquisition du bien lui-même (Propriété et gestion), ni les " +
+      'travaux, installations, réparations ou entretiens réalisés par un prestataire ' +
+      "(Entretien et travaux), ni l'assurance ou les sinistres (Assurances et " +
+      'sinistres), ni les contrats de service ou abonnements (Contrats, garanties et notices).',
+    applicability: 'ALL',
+    displayOrder: 15,
+    since: '2.2.0',
   },
   {
     code: 'CONTRACTS_WARRANTIES_DOCS',
@@ -41,7 +65,9 @@ export const RUBRICS: readonly RubricDefinition[] = [
     exclusions:
       "Ne couvre pas les contrats d'assurance (Assurances et sinistres), ni les " +
       'contrats de financement ou de leasing (Propriété et gestion), ni le bail ' +
-      'de location (Gestion locative).',
+      'de location (Gestion locative), ni les garanties, notices et fiches ' +
+      "techniques d'un meuble, d'un appareil ou d'un équipement acheté " +
+      '(Équipements et mobilier).',
     applicability: 'ALL',
     displayOrder: 20,
   },
@@ -53,7 +79,9 @@ export const RUBRICS: readonly RubricDefinition[] = [
       'aménagements et modifications.',
     exclusions:
       "Ne couvre pas l'acquisition initiale du bien, ni les contrôles réglementaires " +
-      '(Contrôles et conformité), ni la gestion d’un sinistre assuré.',
+      '(Contrôles et conformité), ni la gestion d’un sinistre assuré, ni l’achat ' +
+      "d'un meuble, d'un appareil ou d'un équipement sans travaux ni installation " +
+      '(Équipements et mobilier).',
     applicability: 'ALL',
     displayOrder: 30,
   },
@@ -138,10 +166,12 @@ export const RUBRIC_COLORS: Readonly<Record<RubricCode, { dot: string; accent: s
   // Lot 66B1 — charte « Sérénité » 2026 : plus de palette brute. Couleurs
   // tirées des jetons de MARQUE (indépendants du thème : le trait est posé
   // sur la mini-page BLANCHE du document, identique en clair et en sombre),
-  // nuancées par color-mix vers le blanc. Huit valeurs distinctes, chacune
+  // nuancées par color-mix vers le blanc. Valeurs distinctes (neuf), chacune
   // ≥ 3:1 sur le papier blanc (contraste non textuel) ; la Rubrique reste
   // toujours écrite. Ni rouge (retard) ni cuivre (réservé à « À classer »).
   PROPERTY_MANAGEMENT: { dot: 'var(--vb-petrole)', accent: 'var(--vb-petrole)' },
+  // Lot 86E : neuvième valeur distincte, encre nuancée (≥ 3:1 sur le papier blanc).
+  EQUIPMENT_FURNITURE: { dot: 'color-mix(in srgb, var(--vb-encre) 75%, var(--vb-blanc))', accent: 'color-mix(in srgb, var(--vb-encre) 75%, var(--vb-blanc))' },
   CONTRACTS_WARRANTIES_DOCS: { dot: 'var(--vb-mascotte-ombre)', accent: 'var(--vb-mascotte-ombre)' },
   MAINTENANCE_WORKS: { dot: 'var(--vb-gris)', accent: 'var(--vb-gris)' },
   INSURANCE_CLAIMS: { dot: 'color-mix(in srgb, var(--vb-petrole) 60%, var(--vb-blanc))', accent: 'color-mix(in srgb, var(--vb-petrole) 60%, var(--vb-blanc))' },

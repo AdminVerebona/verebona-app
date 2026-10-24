@@ -36,10 +36,11 @@ describe('le clic sur un document ouvre le document', () => {
 
   it('les règles du référentiel sont conservées (§5.1, §2.2)', () => {
     const champs = read('src/components/documents/v2/RubricTypeFields.tsx');
-    // Rubrique changée : Type incompatible vidé.
+    // Rubrique changée : Type incompatible vidé (lot 86E : compatibilité multi-rubrique).
     expect(champs).toMatch(/typeCompatible \? typeCode : null/);
-    // Type choisi : Rubrique déduite.
-    expect(champs).toMatch(/rubricOfType\(next\) \?\? rubricCode/);
+    expect(champs).toMatch(/isTypeCompatibleWithRubric\(typeCode, next\)/);
+    // Type choisi : Rubrique courante gardée si le Type y est proposé, sinon déduite.
+    expect(champs).toMatch(/rubricForType\(next, rubricCode\) \?\? rubricCode/);
   });
 
   it('transmet ce que l’en-tête du tiroir attend', () => {

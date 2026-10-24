@@ -43,7 +43,7 @@ import {
   toOptimizationOutput,
   type OptimizationOutput,
 } from '@/services/to-process/optimization-contract';
-import { getRubric, getDocumentType } from '@/lib/referential/v2';
+import { getRubric, getDocumentType, isTypeCompatibleWithRubric } from '@/lib/referential/v2';
 
 export interface RubricProposalInput {
   /**
@@ -169,9 +169,11 @@ export async function applyV2Classification(
   // « Sans rubrique » créerait une action que sa résolution ne suffirait pas à
   // ranger — l'utilisateur répondrait sans rien débloquer.
   if (next.rubricCode) {
+    // Lot 86E : un Type réutilisable (`alsoIn`) est compatible avec chacune
+    // de ses Rubriques — un « Bon de commande » en « Équipements et mobilier ».
     const typeCandidate =
       proposal?.documentTypeCode &&
-      getDocumentType(proposal.documentTypeCode)?.rubric === next.rubricCode
+      isTypeCompatibleWithRubric(proposal.documentTypeCode, next.rubricCode)
         ? proposal.documentTypeCode
         : null;
 

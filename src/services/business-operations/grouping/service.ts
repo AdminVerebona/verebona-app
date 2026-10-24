@@ -42,6 +42,15 @@
  * tiroir) — appelés par la route `/api/agenda/[id]/liens`. Aucun lien intercomptes (§28) : chaque objet est relu dans
  * le compte, sous le verrou 39101 du compte.
  *
+ * Lot 86D (ticket P1 « Documents / Agenda ») : `detachDocumentFromAgendaItem`
+ * — détachement INDIVIDUEL d'un lien Document ↔ Agenda depuis le tiroir de
+ * l'élément OU du document (le document, l'élément, l'appartenance du
+ * document à l'ensemble et ses autres liens restent) ; décision mémorisée sur
+ * le LIEN (AGENDA_FILE_LINK, 0736), jamais recréée par une inférence ;
+ * `withdrawAutomaticLinkProvenances` — retrait par le contrôle de cohérence
+ * des seules provenances AUTOMATIQUES démontrées injustifiées (jamais
+ * MANUAL_DIRECT), propagation recalculée.
+ *
  * Contexte : `groupingContext(session)` dans une écriture Opération
  * (`withGroupingWrite`) — requis pour créer, fusionner, invalider ; ou
  * `runnerContext(runner)` pour les seules écritures d'agenda (projection T4,
@@ -50,14 +59,16 @@
  */
 import { withBusinessOperationWrite, type WriteOptions, type WriteSession } from '../write';
 import type { BusinessOperationRepository } from '../repository';
-import { isRejected, liftPrincipalWithdrawals, principalWithdrawnByUser, recordAssetDecision, recordGroupingDecision } from './decisions';
+import { isRejected, liftPrincipalWithdrawals, principalWithdrawnByUser, recordAssetDecision, recordGroupingDecision, recordLinkDecision } from './decisions';
 import { canReplacePrincipal, mayDesignatePrincipal, planLinkAgendaItems, type OperationRole, type RoleOrigin } from './model';
 import { currentPrincipal, recomputePrincipal as recompute, stripPrincipalLinks, type PrincipalRecompute } from './principal';
 import { drizzleRunner, intArray, lockGroupingAccount, type GroupingRunner } from './runner';
 
 export type GroupingErrorCode =
   | 'ITEM_NOT_FOUND' | 'OPERATION_NOT_FOUND' | 'OPERATION_INACTIVE' | 'CROSS_ACCOUNT' | 'LINKED_ELSEWHERE'
-  | 'SESSION_REQUIRED' | 'SAME_ITEM' | 'MERGE_REFUSED' | 'DOCUMENT_NOT_FOUND' | 'NOT_GROUPED';
+  | 'SESSION_REQUIRED' | 'SAME_ITEM' | 'MERGE_REFUSED' | 'DOCUMENT_NOT_FOUND' | 'NOT_GROUPED'
+  /** Lot 86D : retrait automatique d'une provenance MANUAL_DIRECT demandé (refusé). */
+  | 'MANUAL_LINK_PROTECTED';
 
 /** Erreur TECHNIQUE du regroupement (jamais une carte « À traiter ») ; annule la transaction. */
 export class GroupingError extends Error {
@@ -431,6 +442,8 @@ export async function linkDocumentToAgendaItem(ctx: GroupingContext, p: { itemId
     }
   }
   await attachDocument(ctx, { operationId: res.operationId, fileId: p.fileId, reasonCode: reason });
+  // Lot 86D : rattachement explicite — mémorisé sur le lien ; lève un détachement antérieur (§5).
+  await recordLinkDecision(ctx.runner, { accountId: ctx.accountId, itemId: p.itemId, fileId: p.fileId, decision: 'CONFIRMED', reasonCode: reason });
   if (linked) notify(ctx, res.operationId, reason);
   return res;
 }
@@ -449,7 +462,103 @@ export async function detachDocumentFromAgendaGroup(ctx: GroupingContext, p: { i
   await detachDocument(ctx, { operationId: item.op, fileId: p.fileId, reasonCode: reason });
   const { removeFileLinkProvenance } = await import('./provenance');
   await removeFileLinkProvenance(ctx.runner, [p.itemId], [p.fileId], 'ALL');
+  // Lot 86D : le lien de CET élément est retiré par l'utilisateur — mémorisé sur le lien.
+  await recordLinkDecision(ctx.runner, { accountId: ctx.accountId, itemId: p.itemId, fileId: p.fileId, decision: 'REJECTED', reasonCode: reason });
   return { operationId: item.op };
+}
+
+// ── Lot 86D : détachement individuel d'un lien Document ↔ Agenda ──────────
+
+export interface DetachLinkResult {
+  /** Le lien existait et a été retiré (toutes provenances). */
+  removed: boolean;
+  /** Provenances que portait le lien retiré. */
+  provenances: string[];
+  /** Ensemble ACTIF de l'élément (le document y reste membre), sinon null. */
+  operationId: number | null;
+}
+
+/**
+ * Détache UN document d'UN élément d'agenda (geste de l'utilisateur, depuis le
+ * tiroir de l'élément ou celui du document — ticket 86D §2, §5) :
+ *   · le lien est retiré quelles que soient ses provenances (MANUAL_DIRECT,
+ *     AI_DIRECT, OPERATION_PRINCIPAL) — l'utilisateur retire le lien, pas une
+ *     justification ;
+ *   · décision mémorisée sur le LIEN (AGENDA_FILE_LINK REJECTED, 0736) :
+ *     aucun traitement automatique (T4, propagation, consolidation 76H,
+ *     reprise) ne le recrée (`addFileLinkProvenance`) ; un rattachement
+ *     manuel ultérieur la lève ;
+ *   · lien propagé vers l'événement de référence : refus de propagation
+ *     mémorisé aussi (PRINCIPAL_LINK, règle 82D existante) ;
+ *   · rien d'autre ne change : document, élément, appartenance du document à
+ *     l'ensemble (`business_operation_documents`), liens du document avec les
+ *     autres éléments, liens de l'élément avec les autres documents.
+ * Idempotent : un lien absent n'écrit que la décision (déjà présente : rien).
+ */
+export async function detachDocumentFromAgendaItem(
+  ctx: GroupingContext, p: { itemId: number; fileId: number; reasonCode?: string },
+): Promise<DetachLinkResult> {
+  const reason = p.reasonCode ?? 'USER_DOCUMENT_AGENDA_UNLINK';
+  await lockGroupingAccount(ctx.runner, ctx.accountId);
+  const item = await loadItem(ctx, p.itemId);
+  const [doc] = await ctx.runner.q(`SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2`, [p.fileId, ctx.accountId]);
+  if (!doc) throw new GroupingError('DOCUMENT_NOT_FOUND', `Document ${p.fileId} introuvable dans le compte.`);
+  const [lien] = await ctx.runner.q<{ provenances: string[] | null }>(
+    `SELECT provenances FROM agenda_file_links WHERE agenda_item_id = $1 AND asset_file_id = $2 FOR UPDATE`, [p.itemId, p.fileId]);
+  const provenances = [...(lien?.provenances ?? [])].sort();
+  const op = item.op !== null && item.op_active && Number(item.op_account) === ctx.accountId ? item.op : null;
+  await recordLinkDecision(ctx.runner, { accountId: ctx.accountId, itemId: p.itemId, fileId: p.fileId, decision: 'REJECTED', reasonCode: reason });
+  if (!lien) return { removed: false, provenances, operationId: op };
+  if (op !== null && (provenances.includes('OPERATION_PRINCIPAL') || item.role === 'PRINCIPAL')) {
+    await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: op, subject: 'PRINCIPAL_LINK', entityId: p.fileId, decision: 'REJECTED', reasonCode: reason });
+  }
+  const { removeFileLinkProvenance } = await import('./provenance');
+  await removeFileLinkProvenance(ctx.runner, [p.itemId], [p.fileId], 'ALL');
+  if (op !== null) {
+    await history(ctx, op, reason, { agenda_item_id: p.itemId, file_id: p.fileId, provenances }, { agenda_item_id: p.itemId, file_id: p.fileId, linked: false });
+    notify(ctx, op, reason);
+  }
+  return { removed: true, provenances, operationId: op };
+}
+
+/** Provenances qu'un traitement automatique peut retirer (jamais MANUAL_DIRECT, décision de l'utilisateur). */
+export type AutomaticProvenance = 'AI_DIRECT' | 'OPERATION_PRINCIPAL';
+
+/**
+ * Retrait, par le contrôle de cohérence, de provenances AUTOMATIQUES
+ * démontrées injustifiées d'un lien (ticket 86D §4) — service unique : le
+ * lien n'est supprimé que s'il ne reste aucune provenance (82D) ; MANUAL_DIRECT
+ * n'est jamais retirée (refus explicite) ; l'ensemble de l'élément est
+ * recalculé (propagation vers l'événement de référence) ; correction tracée
+ * dans l'historique de l'ensemble avec sa justification et ses preuves (le
+ * journal du contrôle de cohérence la trace dans tous les cas). Aucun
+ * document, aucun élément, aucune appartenance n'est touché. Idempotent.
+ */
+export async function withdrawAutomaticLinkProvenances(
+  ctx: GroupingContext,
+  p: { itemId: number; fileId: number; provenances: readonly AutomaticProvenance[]; reasonCode: string; evidence?: Record<string, unknown> },
+): Promise<{ removed: string[]; linkDeleted: boolean; operationId: number | null }> {
+  if (p.provenances.some((x) => (x as string) === 'MANUAL_DIRECT')) throw new GroupingError('MANUAL_LINK_PROTECTED', 'Un lien posé par l’utilisateur n’est jamais retiré automatiquement.');
+  await lockGroupingAccount(ctx.runner, ctx.accountId);
+  const item = await loadItem(ctx, p.itemId);
+  const [lien] = await ctx.runner.q<{ provenances: string[] | null }>(
+    `SELECT l.provenances FROM agenda_file_links l JOIN asset_files f ON f.id = l.asset_file_id AND f.account_id = $3
+      WHERE l.agenda_item_id = $1 AND l.asset_file_id = $2 FOR UPDATE OF l`, [p.itemId, p.fileId, ctx.accountId]);
+  const op = item.op !== null && item.op_active && Number(item.op_account) === ctx.accountId ? item.op : null;
+  if (!lien) return { removed: [], linkDeleted: false, operationId: op };
+  const avant = lien.provenances ?? [];
+  const cibles = [...new Set(p.provenances)].filter((x) => avant.includes(x)).sort();
+  if (!cibles.length) return { removed: [], linkDeleted: false, operationId: op };
+  const { removeFileLinkProvenance } = await import('./provenance');
+  for (const prov of cibles) await removeFileLinkProvenance(ctx.runner, [p.itemId], [p.fileId], prov);
+  const [reste] = await ctx.runner.q(`SELECT 1 FROM agenda_file_links WHERE agenda_item_id = $1 AND asset_file_id = $2`, [p.itemId, p.fileId]);
+  if (op !== null) {
+    await history(ctx, op, p.reasonCode, { agenda_item_id: p.itemId, file_id: p.fileId, provenances: avant },
+      { agenda_item_id: p.itemId, file_id: p.fileId, removed: cibles, evidence: p.evidence ?? null });
+    notify(ctx, op, p.reasonCode);
+    await recompute(ctx.runner, ctx.accountId, op);
+  }
+  return { removed: cibles, linkDeleted: !reste, operationId: op };
 }
 
 // ── Pièces (V-Q6 : la Pièce existante, jamais un second modèle) ────────────

@@ -162,6 +162,18 @@ function caseSchemaName(c: MasterCorpusCase): string {
   return spec.outputContracts[c.outputContract]?.byTask[c.task]?.schemaName ?? c.outputSchema;
 }
 
+/**
+ * Lot 86A (P5) : contrôle d'une sortie de cas — validation discriminée puis
+ * contrôle serveur de la branche — réutilisé tel quel par la qualification
+ * par couple (`qualification/cases.ts`) : une seule définition du jugement.
+ */
+export async function evaluateCorpusOutput(
+  c: MasterCorpusCase, output: unknown, text: string, readMasterFile: MasterFileReader, schemaName: string = c.outputSchema,
+): Promise<CorpusCaseOutcome> {
+  const base = { id: c.id, task: c.task, file: c.file, level: c.operationCode in MASTER_CORPUS_EVALUATORS ? 'full' as const : 'schema' as const };
+  return finish(c, output, base, text, readMasterFile, schemaName);
+}
+
 async function finish(
   c: MasterCorpusCase, output: unknown, base: Omit<CorpusCaseOutcome, 'passed' | 'errors'>, text: string, readMasterFile: MasterFileReader,
   schemaName: string = c.outputSchema,

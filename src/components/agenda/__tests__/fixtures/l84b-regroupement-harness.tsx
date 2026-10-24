@@ -15,6 +15,7 @@ import { GROUPING_LABELS, type AgendaGroupingView, type GroupingCandidateKind } 
 
 const VUE: AgendaGroupingView = {
   itemId: 1, role: 'MAIN', main: null, mainWithdrawn: false, counts: null,
+  linkedDocuments: [{ id: 10, title: 'Rapport d’expertise dégât des eaux cuisine et salle de bain — version définitive signée', documentDate: '2026-03-22', link: 'DIRECT' }],
   ensemble: {
     items: [{ id: 2, title: 'Visite expert de la compagnie d’assurance habitation — cabinet régional', startDate: '2026-03-21', isMain: false }],
     documents: [
@@ -25,12 +26,23 @@ const VUE: AgendaGroupingView = {
   },
 };
 
+/** Lot 86D : élément RATTACHÉ (tiroir léger) avec ses propres documents — détachement individuel. */
+const VUE_MEMBRE: AgendaGroupingView = {
+  itemId: 2, role: 'MEMBER', mainWithdrawn: false, ensemble: null,
+  main: { id: 1, title: 'Dégât des eaux', startDate: '2026-03-12' },
+  counts: { items: 2, documents: 3, assets: 1, rooms: 1, equipments: 0 },
+  linkedDocuments: [
+    { id: 10, title: 'Rapport d’expertise dégât des eaux cuisine et salle de bain — version définitive signée', documentDate: '2026-03-22', link: 'DIRECT' },
+    { id: 12, title: 'Facture plombier', documentDate: null, link: 'DIRECT' },
+  ],
+};
+
 function BarreEtat({ hauteur }: { hauteur: number }) {
   if (!hauteur) return null;
   return <div data-testid="barre-etat" style={{ position: 'fixed', top: 0, left: 0, right: 0, height: hauteur, zIndex: 2147483647 }} />;
 }
 
-function Tiroir() {
+function Tiroir({ vue }: { vue: AgendaGroupingView }) {
   const [open, setOpen] = React.useState(true);
   const [choix, setChoix] = React.useState<GroupingCandidateKind | null>(null);
   return (
@@ -41,7 +53,7 @@ function Tiroir() {
         </div>
         <div className="flex-1 px-7 py-6 space-y-6">
           <AgendaGroupingPanel
-            view={VUE}
+            view={vue}
             onAction={(a, t) => { window.__l84bGestes.push(`${a}:${t ?? ''}`); }}
             onPick={(k) => setChoix(k)}
             onCreateStep={() => undefined}
@@ -67,7 +79,7 @@ function Tiroir() {
 let root: Root | null = null;
 declare global {
   interface Window {
-    __l84bMonter: (opts?: { statusBar?: number }) => void;
+    __l84bMonter: (opts?: { statusBar?: number; vue?: 'reference' | 'membre' }) => void;
     __l84bFermetures: { tiroir: number; choix: number };
     __l84bGestes: string[];
   }
@@ -83,7 +95,7 @@ window.__l84bMonter = (opts = {}) => {
     root!.render(
       <>
         <main style={{ padding: 16 }}><h1>Agenda</h1></main>
-        <Tiroir />
+        <Tiroir vue={opts.vue === 'membre' ? VUE_MEMBRE : VUE} />
         <BarreEtat hauteur={opts.statusBar ?? 0} />
       </>,
     );

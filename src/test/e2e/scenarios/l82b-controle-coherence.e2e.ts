@@ -107,9 +107,9 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     const camp = await campagne([c.id], 'CORRECTIVE', 'DAILY');
     expect(camp).toMatchObject({ kind: 'DAILY', status: 'COMPLETE', phase: 'DONE' });
     expect(camp.campaignDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-    // Chaque objet attendu a sa preuve : document (liens), bien (TCO).
+    // Chaque objet attendu a sa preuve : document (classement — lot 86E —, liens), bien (TCO).
     const p = await preuves(c.id);
-    expect(p.map((x) => [x.check_id, x.object_id])).toEqual([['COH-DOC-LINKS', f], ['COH-TCO-EXTRACTED-EXPENSES', m.id]]);
+    expect(p.map((x) => [x.check_id, x.object_id])).toEqual([['COH-DOC-CLASSIFICATION', f], ['COH-DOC-LINKS', f], ['COH-TCO-EXTRACTED-EXPENSES', m.id]]);
     for (const x of p) {
       expect(x).toMatchObject({ campaign: camp.id, last_trigger: 'DAILY', last_mode: 'CORRECTIVE', last_result: 'CONSISTENT', finding: null, registry_version: registryVersion() });
       expect(x.rules_version).toBe(getCheck(x.check_id)!.version);
@@ -123,13 +123,14 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     expect(row.coverage['COH-TCO-EXTRACTED-EXPENSES']).toMatchObject({ expected: 1, remaining: 0 });
     expect(row.remaining).toBeNull();
     expect(row.accounts).toMatchObject({ visited: 1, skipped: {} });
-    expect(row.metrics).toMatchObject({ objectsControlled: 2, aiCalls: 0, repairsAttempted: 0 });
+    // Lot 86E : + le document au contrôle de classement.
+    expect(row.metrics).toMatchObject({ objectsControlled: 3, aiCalls: 0, repairsAttempted: 0 });
     expect(row.metrics.runs).toBeGreaterThanOrEqual(1);
     expect(row.metrics.durationMs).toBeGreaterThanOrEqual(0);
     // Le lendemain (nouvelle campagne exhaustive) : les MÊMES objets, inchangés, sont recontrôlés — sans doublon de preuve.
     const camp2 = await campagne([c.id], 'CORRECTIVE');
     const p2 = await preuves(c.id);
-    expect(p2).toHaveLength(2);
+    expect(p2).toHaveLength(3); // lot 86E : + COH-DOC-CLASSIFICATION
     for (const x of p2) expect(x).toMatchObject({ campaign: camp2.id, last_result: 'CONSISTENT' });
   });
 
@@ -360,7 +361,8 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     expect(r0).toMatchObject({ status: 'RUNNING', done: false, controlled: 0 });
     for (let i = 0; i < 30 && !(await o.runCampaignStep(id, { deadline: Date.now() + 60_000 })).done; i++) { /* reprise */ }
     expect(await o.getCampaign(id)).toMatchObject({ status: 'COMPLETE' });
-    expect((await preuves(c.id)).filter((x) => x.campaign === id)).toHaveLength(6);
+    // 3 documents × (liens, classement — lot 86E) + 3 biens (TCO).
+    expect((await preuves(c.id)).filter((x) => x.campaign === id)).toHaveLength(9);
     // 2. Échéance dépassée avant la fin : PARTIAL (reste consigné), jamais COMPLETE.
     const passe = await o.startCampaign({ kind: 'MANUAL', trigger: 'e2e', mode: 'CORRECTIVE', scopeAccountIds: [c.id], deadlineAt: new Date(Date.now() - 1000) });
     const r1 = await o.runCampaignStep(passe, { deadline: Date.now() + 60_000 });

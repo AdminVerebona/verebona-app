@@ -223,3 +223,50 @@ export const DOCUMENT_TYPE_QUERY_WORDS: readonly string[] = [
   'facture', 'devis', 'contrat', 'garantie', 'dpe', 'notice', 'manuel', 'certificat', 'attestation',
   'assurance', 'acte', 'bail', 'quittance', 'releve', 'diagnostic', 'rapport', 'ticket', 'constat', 'avenant',
 ];
+
+/* ── Type identifié → Type enregistré (lot 86E, ticket §5) ─────────────── */
+
+/**
+ * Type V2 à ENREGISTRER pour un document rangé dans `rubric`, à partir du type
+ * IDENTIFIÉ par l'analyse — une seule correspondance valeur technique → valeur
+ * persistée, partagée par le classement T1 (`rubric-rules`) et par le contrôle
+ * de cohérence (stock). Pure, déterministe, sans règle lexicale :
+ *
+ *   1. `documentTypeCode` (type V2 proposé) : retenu s'il est proposé dans la
+ *      Rubrique et sélectionnable par l'IA. Un type V2 CONNU mais d'une autre
+ *      Rubrique est une contradiction de l'analyse : rien n'est deviné (`null`).
+ *   2. Sinon, la NATURE identifiée (`canonicalType` : code du DOCUMENT_CATALOG,
+ *      « BON_COMMANDE ») : les Types V2 de cette nature sont les alias V2 de
+ *      l'entrée du catalogue (relation documentée, REF-AC14). Si EXACTEMENT un
+ *      d'entre eux est proposé dans la Rubrique, c'est lui ; plusieurs (une
+ *      « Facture » en Entretien et travaux : entretien, réparation, travaux)
+ *      ou aucun : `null` — le Type reste « à compléter ».
+ *
+ * Jamais un Type « Autre » (DOC-08).
+ */
+export function v2TypeForRubric(
+  identified: { documentTypeCode?: string | null; canonicalType?: string | null },
+  rubric: string | null | undefined,
+): string | null {
+  if (!rubric || !idx().rubrics.has(rubric)) return null;
+  const { v2 } = idx();
+  const proposable = (code: string): boolean => {
+    const t = v2.get(code);
+    if (!t || t.userOnly) return false;
+    return t.rubric === rubric || (t.alsoIn ?? []).includes(rubric as RubricCode);
+  };
+
+  const typeCode = normalizeDocumentCode(identified.documentTypeCode);
+  if (typeCode && v2.has(typeCode)) return proposable(typeCode) ? typeCode : null;
+
+  const candidats = new Set<string>();
+  for (const raw of [identified.canonicalType, identified.documentTypeCode]) {
+    const code = normalizeDocumentCode(raw);
+    if (!code || v2.has(code)) continue;
+    const entry = resolveDocumentType(code);
+    for (const alias of entry ? [entry.code, ...(entry.aliases ?? [])] : []) {
+      if (proposable(alias)) candidats.add(alias);
+    }
+  }
+  return candidats.size === 1 ? [...candidats][0] : null;
+}

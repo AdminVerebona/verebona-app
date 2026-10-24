@@ -256,8 +256,13 @@ export function presentableLabel(raw: string | null | undefined): string | null 
   return s;
 }
 
-/** Clé de projection d'une Opération (null : type jamais projeté). */
-export function projectionKeyOf(op: Pick<OperationSnapshot, 'typeCode' | 'contractEffectiveTo' | 'endDate'>): string | null {
+/**
+ * Clé de projection d'une Opération (null : type jamais projeté).
+ * Lot 86C : la fin d'un contrat est UNIQUEMENT sa fin d'effet établie
+ * (`contract_details.effective_to`, alimentée par les seules sources
+ * contractuelles) — jamais la fin d'une période facturée (`end_date`).
+ */
+export function projectionKeyOf(op: Pick<OperationSnapshot, 'typeCode' | 'contractEffectiveTo'>): string | null {
   switch (op.typeCode) {
     case 'INTERVENTION':
     case 'CLAIM':
@@ -265,7 +270,7 @@ export function projectionKeyOf(op: Pick<OperationSnapshot, 'typeCode' | 'contra
     case 'DISPOSAL':
       return op.typeCode;
     case 'CONTRACT': {
-      const d = op.contractEffectiveTo ?? op.endDate;
+      const d = op.contractEffectiveTo;
       return d ? `CONTRACT:END:${d}` : 'CONTRACT:END';
     }
     default:
@@ -324,7 +329,10 @@ export function decideProjection(op: OperationSnapshot, today: string): Projecti
     }
     case 'CONTRACT': {
       if (op.status === 'CANCELLED') return { kind: 'NONE', reason: 'CANCELLED', keepLinks: true };
-      const date = op.contractEffectiveTo ?? op.endDate;
+      // Lot 86C : aucune échéance « Fin de contrat » sans fin d'effet ÉTABLIE (plus de
+      // repli sur la fin de la dernière période facturée) ; une projection intacte
+      // devenue injustifiée est retirée (trace restaurable), un élément touché reste.
+      const date = op.contractEffectiveTo;
       if (!date) return { kind: 'NONE', reason: 'NO_DATE', keepLinks: true };
       // F-144 : seule une échéance ACTIONNABLE (à venir) est créée ; une
       // échéance passée déjà projetée reste telle quelle.

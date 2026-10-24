@@ -196,7 +196,7 @@ export async function liveVariablesFor(c: MasterCorpusCase): Promise<Vars | null
 }
 
 /** Lot 54 — schémas de sortie possibles de la branche (contrats de sortie déclarés), hors schéma de l'opération. */
-function branchSchemas(c: MasterCorpusCase) {
+export function branchSchemas(c: Pick<MasterCorpusCase, 'masterPromptCode' | 'task' | 'outputSchema'>) {
   const spec = structuredSpecFor(c.masterPromptCode);
   if (!spec) return [];
   const noms = new Set(Object.values(spec.outputContracts).map((o) => o.byTask[c.task]?.schemaName).filter((n): n is string => Boolean(n) && n !== c.outputSchema));

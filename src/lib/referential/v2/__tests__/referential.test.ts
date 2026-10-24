@@ -32,11 +32,13 @@ describe('intégrité du référentiel (§13.2)', () => {
     expect(() => assertReferentialIntegrity()).not.toThrow();
   });
 
-  it('DOC-06 — un Type n’appartient qu’à une seule Rubrique', () => {
+  it('DOC-06 — un code de Type unique, une seule Rubrique d’attache (lot 86E : réutilisation explicite par alsoIn)', () => {
     const byCode = new Map<string, string>();
     for (const type of DOCUMENT_TYPES) {
       expect(byCode.has(type.code)).toBe(false);
       byCode.set(type.code, type.rubric);
+      // Un Type « Autre » ne se partage jamais (§2.2).
+      if (type.userOnly) expect(type.alsoIn ?? []).toEqual([]);
     }
     // L'invariant est structurel : un Type n'a qu'un champ `rubric`.
     expect(byCode.size).toBe(DOCUMENT_TYPES.length);
@@ -152,9 +154,11 @@ describe('déduction de la Rubrique (§2.2)', () => {
     expect(rubricOfType(null)).toBeNull();
   });
 
-  it('la compatibilité est exacte, jamais multiple', () => {
+  it('la compatibilité est exacte : Rubrique d’attache ou réutilisation déclarée (lot 86E)', () => {
     expect(isTypeCompatibleWithRubric('DPE', 'COMPLIANCE_CONTROLS')).toBe(true);
     expect(isTypeCompatibleWithRubric('DPE', 'PROPERTY_MANAGEMENT')).toBe(false);
+    expect(isTypeCompatibleWithRubric('ACQUISITION_ORDER', 'EQUIPMENT_FURNITURE')).toBe(true);
+    expect(isTypeCompatibleWithRubric('ACQUISITION_ORDER', 'MAINTENANCE_WORKS')).toBe(false);
   });
 });
 

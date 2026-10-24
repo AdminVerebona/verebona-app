@@ -14,6 +14,11 @@ process.env.NEXT_PUBLIC_APP_ENV = process.env.NEXT_PUBLIC_APP_ENV ?? 'local';
 // lot 16b-3 (AI_UNIFIED_SOURCE_ANALYSIS, AI_RECONCILIATION_ENGINE retirés).
 // Idempotence en base désactivée : chaque scénario rejoue ses propres sorties.
 process.env.AI_IDEMPOTENCY_DISABLED = 'true';
+// Lot 86 : le budget de relances T1 du contrôle de cohérence est commun à la plateforme
+// (200 / 24 h, décision PO L83-Q3). Dans une exécution complète, les relances de tous les
+// fichiers précédents s'y cumulent : un scénario pouvait se voir refuser sa relance selon l'ordre.
+// Les scénarios qui testent le budget le fixent eux-mêmes (L83B-E2E-11).
+process.env.COHERENCE_T1_RELAUNCH_DAILY_MAX = process.env.COHERENCE_T1_RELAUNCH_DAILY_MAX ?? '100000';
 
 // Aucun appel réseau sortant : seul le serveur PostgreSQL local est joignable
 // (le pilote `postgres` n'utilise pas `fetch`).

@@ -64,11 +64,15 @@ describe('L55B (A) — échéance reconnue comme preuve d’un contrat', () => {
     expect(consolidateOperationState('INTERVENTION', [...deux, installation], '2026-10-14').type).toBe('INTERVENTION');
   });
 
-  it('L55B-A3 — requalification : dates d’effet du contrat = première et dernière période', () => {
+  // Lot 86C (test corrigé, ticket P1 « fausses dates de fin ») : l'ancienne assertion prenait la première et la
+  // DERNIÈRE PÉRIODE FACTURÉE pour les dates d'effet du contrat. Une période facturée ne date jamais un contrat :
+  // aucune date d'effet / de fin sans pièce contractuelle ; les périodes restent portées par les composantes.
+  it('L55B-A3 / L86C-U-DATES-02 — requalification : les périodes facturées ne deviennent PAS les dates du contrat', () => {
     const s = consolidateOperationState(null, [src(1, { hints: [echeance(1)], dates: { plannedDate: null, startDate: '2026-01-01', realizedDate: null, endDate: '2026-01-31' } }),
       src(2, { hints: [echeance(3)], dates: { plannedDate: null, startDate: '2026-03-01', realizedDate: null, endDate: '2026-03-31' } })], '2026-10-14');
-    expect(s).toMatchObject({ type: 'CONTRACT', startDate: '2026-01-01', endDate: '2026-03-31', realizedDate: null });
-    expect(s.contract).toMatchObject({ effectiveFrom: '2026-01-01', effectiveTo: '2026-03-31' });
+    expect(s).toMatchObject({ type: 'CONTRACT', startDate: null, endDate: null, realizedDate: null });
+    expect(s.contract).toMatchObject({ effectiveFrom: null, effectiveTo: null });
+    expect(s.components.map((c) => [c.periodStart, c.periodEnd])).toEqual([[echeance(1).periodStart, echeance(1).periodEnd], [echeance(3).periodStart, echeance(3).periodEnd]]);
   });
 });
 

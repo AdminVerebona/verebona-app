@@ -96,8 +96,8 @@ describe('O7-01 — tableau C16 : projection par type (decideProjection)', () =>
     expect(presentableLabel('x'.repeat(81))).toBeNull();
   });
   it('O7-03 — clés : une Opération = un emplacement ; échéance de contrat dans la clé', () => {
-    expect(projectionKeyOf({ typeCode: 'INTERVENTION', contractEffectiveTo: null, endDate: null })).toBe('INTERVENTION');
-    expect(projectionKeyOf({ typeCode: 'FINANCING', contractEffectiveTo: null, endDate: null })).toBeNull();
+    expect(projectionKeyOf({ typeCode: 'INTERVENTION', contractEffectiveTo: null })).toBe('INTERVENTION');
+    expect(projectionKeyOf({ typeCode: 'FINANCING', contractEffectiveTo: null })).toBeNull();
     const fk = projectionFunctionalKey(42, 'CONTRACT:END:2027-03-01');
     expect(parseProjectionFunctionalKey(fk)).toEqual({ operationId: 42, key: 'CONTRACT:END:2027-03-01' });
     expect(parseProjectionFunctionalKey('ab12cd')).toBeNull();
