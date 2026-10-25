@@ -179,6 +179,7 @@ describe('L84A-U06 — code mort retiré', () => {
   it('plus aucune lecture de l’ancien modèle hors rattrapage, finalisation, sonde et garde transitoire', () => {
     expect(contenant(/business_operation_claim_actions|business_operation_claim_exchanges/).sort()).toEqual([
       // Classement de l'export de recette : exportées tant qu'elles existent (absence tolérée après « Finaliser »).
+      'src/services/admin/diagnostics-export/coverage.ts',
       'src/services/admin/diagnostics-export/recette-catalog.ts',
       'src/services/business-operations/claims/legacy-cleanup.ts',
       'src/services/business-operations/claims/legacy-schema.ts',

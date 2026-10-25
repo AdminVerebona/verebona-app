@@ -141,6 +141,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   home_mascot_cache: { domain: 'extraits-ia', description: 'Cache de l’accueil (T6).' },
   home_mascot_pregen_requests: { domain: 'extraits-ia', description: 'Demandes de pré-génération de l’accueil.' },
   // ── Champs structurés, preuves, décisions ─────────────────────────────
+  property_recovery_runs: { domain: 'champs-preuves', description: 'Analyses T3 des propriétés manquantes (contexte : empreinte, résumé borné, troncature ; issue, appels IA) — lot 88B.' },
+  property_recovery_decisions: { domain: 'champs-preuves', description: 'Décisions par propriété manquante (écrite / abstention et cause, avant / après, preuves, provenance, traitement) — lot 88B.' },
   field_evidence: { domain: 'champs-preuves', description: 'Preuves des champs (source, cible, statut de cycle de vie).' },
   canonical_field_writes: { domain: 'champs-preuves', description: 'Écritures canoniques des champs (origine, avant / après).' },
   object_versions: { domain: 'champs-preuves', description: 'Versions des objets (empreinte de contenu, dernière vérification).' },

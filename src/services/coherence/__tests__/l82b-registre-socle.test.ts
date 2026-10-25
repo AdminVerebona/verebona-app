@@ -196,7 +196,8 @@ describe('Lot 38 O0 (C18) — aucune propagation générique vers l’acquisitio
     };
     walk(join(ROOT, 'src'));
     // schema.ts déclare la table ; le catalogue d'export (82E) la classe : ni l'un ni l'autre ne lit les règles.
-    return out.filter((f) => f !== 'src/db/schema.ts' && f !== 'src/services/admin/diagnostics-export/recette-catalog.ts');
+    // Catalogues d'export (82E) et registre de couverture du diagnostic global (88A) : noms de tables seuls, aucune lecture de règle.
+    return out.filter((f) => f !== 'src/db/schema.ts' && f !== 'src/services/admin/diagnostics-export/recette-catalog.ts' && f !== 'src/services/admin/diagnostics-export/coverage.ts');
   };
 
   it('F-163 / F-164 — date ou montant documentaire générique : plus aucun lecteur des règles `field_dependencies`, aucune propagation vers acquisitionDate / acquisitionPrice / estimatedValue', () => {

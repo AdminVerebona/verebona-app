@@ -63,7 +63,8 @@ describe('VALID-01 — fiche document : plus de système de validation (desktop 
 describe('VALID-01b — fiche du bien (et de ses sections, desktop et mobile : même composant) : plus de « Appliquer la valeur suggérée » ni « Conserver »', () => {
   const section = sansCommentaires(lire('src/components/assets/AssetDetailSection.tsx'));
   const onglet = sansCommentaires(lire('src/components/assets/AssetDetailsTab.tsx'));
-  const details = sansCommentaires(lire('src/app/api/assets/[id]/details/route.ts'));
+  // Lot 88A : route + sections extraites (`services/assets/details-sections.ts`).
+  const details = sansCommentaires(lire('src/app/api/assets/[id]/details/route.ts') + lire('src/services/assets/details-sections.ts'));
 
   it('aucun bouton « Appliquer » / « Conserver » ni badge « Incohérence » à valider sur la fiche', () => {
     for (const src of [section, onglet]) {

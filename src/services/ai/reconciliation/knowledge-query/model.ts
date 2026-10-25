@@ -19,6 +19,26 @@ export interface KnowledgeCapability {
   version: string | null;
   /** Motif d'indisponibilité (diagnostic). */
   reason: 'AVAILABLE' | 'DISABLED' | 'BRANCH_MISSING' | 'UNREADABLE';
+  /**
+   * Lot 88B : versions du contrat d'ENTRÉE portées par le texte effectif
+   * (`t3-knowledge-query-vN`). Une version absente du prompt actif n'est
+   * jamais utilisée (abstention prudente, demande IA). Absent : aucune lue.
+   */
+  contracts?: string[];
+}
+
+/** Préfixe des versions du contrat d'entrée KNOWLEDGE_QUERY (`t3-knowledge-query-v1`, `-v2`…). */
+const CONTRACT_PREFIX = 't3-knowledge-query-v';
+
+/** Lot 88B : versions du contrat d'entrée citées par un texte de prompt (pure, simple recherche de marqueur). */
+export function knowledgeContractsIn(text: string): string[] {
+  const out = new Set<string>();
+  for (let i = text.indexOf(CONTRACT_PREFIX); i >= 0; i = text.indexOf(CONTRACT_PREFIX, i + 1)) {
+    let j = i + CONTRACT_PREFIX.length;
+    while (j < text.length && text.charCodeAt(j) >= 48 && text.charCodeAt(j) <= 57) j += 1;
+    if (j > i + CONTRACT_PREFIX.length) out.add(text.slice(i, j));
+  }
+  return [...out].sort();
 }
 
 /** Coupure d'urgence : `T3_KNOWLEDGE_QUERY_ENABLED=0`. Pure. */
@@ -54,7 +74,7 @@ export async function knowledgeQueryCapability(): Promise<KnowledgeCapability> {
       promptVersionId: configured ? cfg.masterPromptVersionId ?? null : null,
     });
     const available = op.active && loader.inspectMasterTemplate(text).branches.includes(KNOWLEDGE_QUERY_TASK);
-    value = { available, version, reason: available ? 'AVAILABLE' : 'BRANCH_MISSING' };
+    value = { available, version, reason: available ? 'AVAILABLE' : 'BRANCH_MISSING', contracts: knowledgeContractsIn(text) };
   } catch (e) {
     console.error('[t3-knowledge] version du prompt T3 illisible :', (e as Error).message);
     value = { available: false, version: null, reason: 'UNREADABLE' };

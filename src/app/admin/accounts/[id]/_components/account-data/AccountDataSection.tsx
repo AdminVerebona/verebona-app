@@ -15,7 +15,8 @@
  * Desktop : tableau ; mobile : cartes empilées.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { Database, Loader2, RefreshCw, Search } from 'lucide-react';
+import Link from 'next/link';
+import { Database, Loader2, RefreshCw, Search, Stethoscope } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -123,9 +124,15 @@ export function AccountDataSection({ accountId }: { accountId: number }) {
               Lecture seule : valeurs réellement enregistrées, relations, preuves et historique. Aucune modification, aucun traitement IA déclenché.
             </p>
           </div>
-          <Button variant="outline" size="sm" className="gap-1.5 self-start" onClick={() => void load(category, query)} disabled={loading === category}>
-            <RefreshCw className={`h-3.5 w-3.5 ${loading === category ? 'animate-spin' : ''}`} /> Actualiser
-          </Button>
+          <div className="flex flex-col sm:flex-row gap-2 self-stretch sm:self-start">
+            {/* Lot 88A : diagnostic global du compte (BO › Supervision › Diagnostics techniques, périmètre « Un compte »). */}
+            <Button asChild variant="outline" size="sm" className="gap-1.5 w-full sm:w-auto">
+              <Link href={`/admin/diagnostics?scope=account&id=${accountId}&period=all`}><Stethoscope className="h-3.5 w-3.5" /> Diagnostic global</Link>
+            </Button>
+            <Button variant="outline" size="sm" className="gap-1.5 w-full sm:w-auto" onClick={() => void load(category, query)} disabled={loading === category}>
+              <RefreshCw className={`h-3.5 w-3.5 ${loading === category ? 'animate-spin' : ''}`} /> Actualiser
+            </Button>
+          </div>
         </div>
         <Tabs value={category} onValueChange={(v) => setCategory(v as Category)}>
           <TabsList className="flex-wrap h-auto w-full sm:w-fit">

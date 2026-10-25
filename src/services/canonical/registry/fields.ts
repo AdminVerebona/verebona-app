@@ -22,7 +22,7 @@
  *
  * Construit à partir de l'existant (lot 10) :
  *   - `components/assets/AssetDetailsTab.tsx` (sections et libellés) ;
- *   - `app/api/assets/[id]/details/route.ts` (clés lues, colonnes de repli) ;
+ *   - `app/api/assets/[id]/details/route.ts` et `services/assets/details-sections.ts` (clés lues, colonnes de repli) ;
  *   - `verebona-assistant/commands/asset-fields.ts` (champs modifiables T2) ;
  *   - `source-analysis/steps/build-agenda-candidates.step.ts` (DEADLINE_FIELDS) ;
  *   - `lib/asset-detail-rules.ts` (champs datés) ;

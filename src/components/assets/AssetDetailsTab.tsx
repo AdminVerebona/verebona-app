@@ -273,7 +273,7 @@ export function sectionFieldDefs(section: string): FieldDef[] {
   return SECTION_FIELDS[section] ?? [];
 }
 
-const SECTION_LABELS: Record<string, string> = {
+export const SECTION_LABELS: Record<string, string> = {
   common: 'Informations générales',
   location_identification: 'Localisation et identification',
   physical_characteristics: 'Caractéristiques physiques',
@@ -425,7 +425,7 @@ function CilChecklist({ assetId, naRubrics = new Set<string>() }: { assetId: num
   );
 }
 
-const FAMILY_SECTIONS: Record<string, string[]> = {
+export const FAMILY_SECTIONS: Record<string, string[]> = {
   IMMOBILIER: ['common', 'location_identification', 'physical_characteristics', 'occupancy_usage', 'performance_technical', 'valuation', 'insurance'],
   VEHICULE:   ['common', 'vehicle_identification', 'vehicle_technical', 'vehicle_usage', 'vehicle_insurance', 'valuation'],
   OBJET:      ['common', 'object_identification', 'object_condition', 'object_provenance', 'object_usage', 'valuation', 'insurance'],

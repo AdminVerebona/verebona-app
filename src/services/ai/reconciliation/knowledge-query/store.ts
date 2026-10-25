@@ -76,10 +76,16 @@ export async function findKnowledgeQuery(k: KnowledgeEntryKey): Promise<StoredKn
   };
 }
 
-/** Appels d'interprétation du compte sur 24 h glissantes. Lève sur une lecture en échec. */
+/**
+ * Appels d'interprétation du compte sur 24 h glissantes. Lot 88B : budget
+ * PARTAGÉ avec l'analyse des propriétés manquantes (`property_recovery_runs`,
+ * même branche KNOWLEDGE_QUERY). Lève sur une lecture en échec.
+ */
 export async function knowledgeCallsLastDay(accountId: number, now: Date = new Date()): Promise<number> {
   const [r] = await q<{ n: number | string | null }>(
-    `SELECT COALESCE(sum(calls), 0)::int AS n FROM t3_knowledge_queries WHERE account_id = $1 AND updated_at > $2::timestamptz - interval '24 hours'`,
+    `SELECT (COALESCE((SELECT sum(calls) FROM t3_knowledge_queries WHERE account_id = $1 AND updated_at > $2::timestamptz - interval '24 hours'), 0)
+           + CASE WHEN to_regclass('property_recovery_runs') IS NULL THEN 0 ELSE
+               COALESCE((SELECT sum(calls) FROM property_recovery_runs WHERE account_id = $1 AND updated_at > $2::timestamptz - interval '24 hours'), 0) END)::int AS n`,
     [accountId, now.toISOString()],
   );
   return Number(r?.n ?? 0);

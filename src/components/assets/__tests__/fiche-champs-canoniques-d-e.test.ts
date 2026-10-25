@@ -24,7 +24,8 @@ const ROOT = resolve(__dirname, '../../../..');
 const src = (...p: string[]) => readFileSync(resolve(ROOT, 'src', ...p), 'utf8').replace(/\r\n?/g, '\n');
 
 const TAB = src('components', 'assets', 'AssetDetailsTab.tsx').split('const SECTION_LABELS')[0];
-const ROUTE = src('app', 'api', 'assets', '[id]', 'details', 'route.ts');
+// Lot 88A : sections de la route extraites dans `services/assets/details-sections.ts` (même fonction pour le diagnostic).
+const ROUTE = src('app', 'api', 'assets', '[id]', 'details', 'route.ts') + src('services', 'assets', 'details-sections.ts');
 
 /** Section de l'onglet → famille du registre. */
 const FAMILLE: Record<string, AssetFamily> = {

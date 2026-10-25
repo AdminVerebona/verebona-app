@@ -20,6 +20,12 @@
  * Préremplissage par l'URL (`?scope=asset&id=12`) : lien profond depuis
  * d'autres écrans du BO.
  *
+ * Lot 88A : périmètre « Un compte — diagnostic global » (toutes les tables
+ * du compte, fermeture transitive, auto-contrôle, traçabilité par propriété
+ * et projection API → écran, guide d'analyse dans l'archive) ; statut PAR
+ * SECTION (COMPLETE / PARTIAL / NOT_APPLICABLE / ERROR) affiché sous le
+ * statut global — desktop : tableau ; mobile : statut et motif empilés.
+ *
  * Lot 81C : aucune borne de période (option « Tout l'historique
  * disponible ») ; statut COMPLETE / PARTIAL / FAILED de la génération et de
  * chaque fichier (attendu / exporté) ; suivi des générations d'export
@@ -28,7 +34,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { AlertTriangle, ArrowLeft, Check, Copy, Download, FileArchive, History, Loader2, RefreshCw, Stethoscope } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, Copy, Download, FileArchive, History, ListChecks, Loader2, RefreshCw, Stethoscope } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -41,6 +47,7 @@ import type { GenerationRow } from '@/services/admin/export-generations';
 
 const SCOPES: ReadonlyArray<{ key: DiagScope; label: string; idLabel: string | null }> = [
   { key: 'global', label: 'Ensemble de l’application', idLabel: null },
+  { key: 'account', label: 'Un compte — diagnostic global', idLabel: 'Identifiant du compte' },
   { key: 'user', label: 'Un utilisateur', idLabel: 'Identifiant de l’utilisateur' },
   { key: 'asset', label: 'Un bien et ses équipements', idLabel: 'Identifiant du bien' },
   { key: 'document', label: 'Un document', idLabel: 'Identifiant du document' },
@@ -130,7 +137,7 @@ function Diagnostics() {
           Diagnostics techniques
         </h1>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Rapport et archive ZIP (TXT + JSON) pour analyser une anomalie : traitements, IA, données métier et traçabilité de chaque montant TCO jusqu’à sa source. Lecture seule ; chaque demande est journalisée.
+          Rapport et archive ZIP (TXT + JSON) pour analyser une anomalie : traitements, IA, données métier et traçabilité de chaque montant TCO jusqu’à sa source. Le périmètre « Un compte » produit le diagnostic global : toutes les données du compte, la chaîne de chaque propriété jusqu’à l’écran et un guide d’analyse. Lecture seule ; chaque demande est journalisée.
         </p>
       </div>
 
@@ -226,6 +233,38 @@ function Diagnostics() {
             Généré le {new Date(m.generatedAt).toLocaleString('fr-FR')} · {m.target.label} · {m.request.from ? `période du ${m.request.from} au ${m.request.to}` : `tout l’historique jusqu’au ${m.request.to}`} · génération {m.generationId.slice(0, 8)}
             {m.snapshot ? ` · instantané ${m.snapshot.at}` : ''}
           </p>
+          {m.sections && m.sections.length > 0 && (
+            <div className="rounded-xl border bg-card overflow-x-auto" data-diag-sections>
+              <div className="flex items-center gap-1.5 border-b px-4 py-2 text-sm font-medium"><ListChecks className="h-4 w-4" />Sections du diagnostic</div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-muted-foreground border-b">
+                    <th className="px-3 py-2 font-medium">Section</th>
+                    <th className="px-3 py-2 font-medium">Statut</th>
+                    <th className="px-3 py-2 font-medium hidden sm:table-cell text-right">Lignes (exportées / attendues)</th>
+                    <th className="px-3 py-2 font-medium hidden md:table-cell">Motif</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {m.sections.map((x) => (
+                    <tr key={x.code} className="border-b last:border-b-0 align-top">
+                      <td className="px-3 py-2 text-xs">
+                        {x.label}
+                        <span className="block text-[11px] text-muted-foreground">{x.files.length} fichier(s)</span>
+                        {x.motif && <span className="block md:hidden text-[11px] text-muted-foreground break-words">{x.motif}</span>}
+                      </td>
+                      <td className="px-3 py-2 text-xs whitespace-nowrap">
+                        <span className={x.status === 'PARTIAL' || x.status === 'ERROR' ? 'text-destructive font-medium' : x.status === 'NOT_APPLICABLE' ? 'text-muted-foreground' : ''}>{x.status}</span>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-right tabular-nums hidden sm:table-cell">{x.files.length ? `${x.exported} / ${x.expected}` : '—'}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground hidden md:table-cell break-words">{x.motif ?? ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {m.autoControle && <p className="px-4 py-2 text-xs text-muted-foreground border-t">Auto-contrôle : {m.autoControle.conclusion}</p>}
+            </div>
+          )}
           {m.unavailable.length > 0 && (
             <div className="rounded-xl border bg-card p-4 space-y-1">
               <p className="text-sm font-medium flex items-center gap-1.5"><AlertTriangle className="h-4 w-4" />Limites du diagnostic</p>

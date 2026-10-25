@@ -127,6 +127,8 @@ describe('L83D-U04 — E16 / AC39 : plus d’intervention enfant d’un sinistre
       'src/services/assets/asset-account-transfer.service.ts',
       // Classement de recette (82E) : exportées tant qu'elles existent, absence tolérée après « Finaliser ».
       'src/services/admin/diagnostics-export/recette-catalog.ts',
+      // Registre de couverture du diagnostic global (88A) : texte seul (filtre de compte), absence tolérée après « Finaliser ».
+      'src/services/admin/diagnostics-export/coverage.ts',
     ])).toEqual([]);
   });
 

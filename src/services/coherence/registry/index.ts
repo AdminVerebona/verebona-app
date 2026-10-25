@@ -44,6 +44,8 @@ import { tcoEconomicDatesCheck } from './checks/tco-economic-dates';
 import { t6SuggestionsCheck } from './checks/t6-suggestions';
 // Lot 87D — titres des documents : convention unique, données de nommage propagées, même libellé partout (réparation : service de nommage).
 import { documentTitlesCheck } from './checks/document-titles';
+// Lot 88B — propriétés métier manquantes reprises à partir de l'ensemble des preuves (réparation : arbitrage T3 puis writer canonique).
+import { missingPropertiesCheck, missingPropertiesEquipmentCheck } from './checks/missing-properties';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -90,6 +92,9 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   t6SuggestionsCheck,
   // Lot 87D (ajouté en fin de liste, sans réordonner l'existant).
   documentTitlesCheck,
+  // Lot 88B (ajoutés APRÈS COH-DOC-TITLES, sans réordonner l'existant) : biens d'abord, puis équipements.
+  missingPropertiesCheck,
+  missingPropertiesEquipmentCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

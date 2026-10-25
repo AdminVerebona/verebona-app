@@ -68,8 +68,9 @@ describe('O4-UI-01 fiche du bien : vente réalisée selon le statut (desktop et 
     for (const famille of ['IMMOBILIER', 'VEHICULE', 'OBJECT']) {
       expect(visibleFields(getCommonFields(famille), { status: 'VENDU' }).map((f) => f.key), famille).toEqual(expect.arrayContaining(['saleDate', 'salePrice']));
     }
-    // La route de la fiche renvoie les deux clés dans la section commune.
-    expect(lire('app/api/assets/[id]/details/route.ts')).toMatch(/saleDate: kc\.saleDate \?\? null,\s*salePrice: kc\.salePrice \?\? null/);
+    // La route de la fiche renvoie les deux clés dans la section commune (sections construites par
+    // `services/assets/details-sections.ts` depuis le lot 88A : même fonction pour la route et le diagnostic).
+    expect(lire('services/assets/details-sections.ts')).toMatch(/saleDate: kc\.saleDate \?\? null,\s*salePrice: kc\.salePrice \?\? null/);
   });
 });
 

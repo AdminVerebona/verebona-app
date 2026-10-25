@@ -38,7 +38,8 @@ const { canonicalWritesOf } = await import('@/services/asset-details-write.servi
 
 const lire = (p: string) => readFileSync(resolve(__dirname, '..', '..', '..', p), 'utf8').replace(/\r\n?/g, '\n');
 const TAB = lire('components/assets/AssetDetailsTab.tsx');
-const ROUTE = lire('app/api/assets/[id]/details/route.ts');
+// Lot 88A : sections de la route extraites dans `services/assets/details-sections.ts` (même fonction pour le diagnostic).
+const ROUTE = lire('services/assets/details-sections.ts');
 
 /** Champs réels d'une section de l'onglet. */
 const sectionFields = (section: 'vehicle_usage' | 'occupancy_usage' | 'object_usage') => tab.sectionFieldDefs(section);

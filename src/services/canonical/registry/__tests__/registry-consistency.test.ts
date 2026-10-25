@@ -176,7 +176,8 @@ describe('registre — clés employées aujourd’hui', () => {
   it('fiche bien : clés des sections (AssetDetailsTab) et de la route details', () => {
     // Jusqu'aux libellés de sections : la checklist CIL qui suit porte des codes de rubriques.
     const tab = src('components/assets/AssetDetailsTab.tsx').split('const SECTION_LABELS')[0];
-    const route = src('app/api/assets/[id]/details/route.ts');
+    // Lot 88A : sections de la route extraites dans `services/assets/details-sections.ts`.
+    const route = src('app/api/assets/[id]/details/route.ts') + src('services/assets/details-sections.ts');
     const cles = [
       ...[...tab.matchAll(/\{\s*key:\s*'([A-Za-z0-9]+)'/g)].map((m) => m[1]),
       ...[...route.matchAll(/\bkc\.([A-Za-z0-9]+)/g)].map((m) => m[1]),

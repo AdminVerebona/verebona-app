@@ -33,7 +33,7 @@ export const DIAG_SCHEMA = 'verebona.bo.diagnostic-technique/1';
 
 // ── Périmètres, traitements, bornes ─────────────────────────────────────────
 
-export const DIAG_SCOPES = ['global', 'user', 'asset', 'document', 'operation'] as const;
+export const DIAG_SCOPES = ['global', 'user', 'asset', 'document', 'operation', 'account'] as const;
 export type DiagScope = (typeof DIAG_SCOPES)[number];
 
 export const DIAG_SCOPE_LABELS: Readonly<Record<DiagScope, string>> = {
@@ -42,6 +42,8 @@ export const DIAG_SCOPE_LABELS: Readonly<Record<DiagScope, string>> = {
   asset: 'Bien et ses équipements',
   document: 'Document',
   operation: 'Opération',
+  // Lot 88A : diagnostic global exhaustif et auto-suffisant d'un compte.
+  account: 'Compte (diagnostic global)',
 };
 
 /**
@@ -223,6 +225,8 @@ const VALUE_COLUMNS = new Set([
   'previous_value', 'proposed_value_json', 'final_value_json', 'excerpt', 'original_payload', 'proposals_json', 'trigger_context',
   // Lot 81C : registre des incohérences.
   'current_value', 'proposed_value',
+  // Lot 88A : valeur d'une ligne de rapport d'exécution (champ sensible du registre).
+  'value',
 ]);
 
 /**
@@ -409,6 +413,18 @@ export interface DiagManifest {
   unavailable: DiagUnavailable[];
   masking: string[];
   readOnly: string;
+  /**
+   * Lot 88A — statut par section (COMPLETE / PARTIAL / NOT_APPLICABLE /
+   * ERROR) : fichiers, attendus vs exportés, filtres, limitations,
+   * troncatures, erreurs, empreintes.
+   */
+  sections?: import('./account-model').DiagSectionManifest[];
+  /** Lot 88A — troncatures et sélections DÉCLARÉES (jamais silencieuses). */
+  truncations?: string[];
+  /** Lot 88A — périmètre « Compte » : couverture des tables, exclusions volontaires, auto-contrôle. */
+  couverture?: import('./account').AccountManifestPart['couverture'];
+  exclusionsVolontaires?: import('./account').AccountManifestPart['exclusionsVolontaires'];
+  autoControle?: import('./account').AccountManifestPart['autoControle'];
 }
 
 export const MASKING_NOTES: readonly string[] = [
@@ -480,6 +496,16 @@ export function buildReportTextFromLines(m: DiagManifest, summary: Array<[string
   L.push('', READ_ONLY_NOTE);
   L.push('', '-- Synthèse --');
   for (const [k, v] of summary) L.push(`${k} : ${v}`);
+
+  if (m.sections?.length) {
+    L.push('', '-- Sections (COMPLETE / PARTIAL / NOT_APPLICABLE / ERROR) --');
+    for (const x of m.sections) L.push(`${x.status.padEnd(14)} ${x.label}${x.files.length ? ` — ${x.files.length} fichier(s), ${x.exported} / ${x.expected} ligne(s)` : ''}${x.motif ? ` — ${x.motif}` : ''}`);
+  }
+  if (m.autoControle) L.push('', '-- Auto-contrôle --', m.autoControle.conclusion);
+  if (m.truncations?.length) {
+    L.push('', '-- Troncatures et sélections déclarées --');
+    for (const t of m.truncations) L.push(`- ${t}`);
+  }
 
   if (traceLines.length) {
     L.push('', '-- Traçabilité des montants (Document → Extraction IA → Décision → Enregistrement → Rapprochement → Calcul → Affichage) --');

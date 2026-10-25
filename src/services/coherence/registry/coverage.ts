@@ -32,8 +32,14 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   {
     domain: 'champs-structures', label: 'Champs structurés (fiches bien / équipement, données documentaires)',
     // Lot 85F : connaissance T1 NON structurée exploitée par T3 (COH-T1-KNOWLEDGE-CONSUMPTION).
-    checks: ['COH-TODO-DOCUMENT-FIELDS', 'COH-DOC-EXTRACT-CHAIN', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-T1-KNOWLEDGE-CONSUMPTION'],
-    gap: { what: 'valeurs canoniques des fiches comparées aux preuves sur le stock', existingMechanism: 'T3 « Informations » 76J par version (t3_information_checks)', planned: 'contrôle du registre au lot suivant (réutilise 76J)' },
+    checks: ['COH-TODO-DOCUMENT-FIELDS', 'COH-DOC-EXTRACT-CHAIN', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-T1-KNOWLEDGE-CONSUMPTION',
+      // Lot 88B : propriétés canoniques VIDES des biens et équipements reprises à partir de toutes les preuves (arbitrage T3).
+      'COH-MISSING-PROPERTIES', 'COH-MISSING-PROPERTIES-EQUIPMENT'],
+    gap: {
+      what: 'valeurs canoniques RENSEIGNÉES des fiches comparées aux preuves sur le stock ; propriétés vides : arbitrage T3 en attente du contrat d’entrée t3-knowledge-query-v2 (constat MISSING_PROPERTY_ARBITRATION_PENDING) ; propriétés des pièces',
+      existingMechanism: 'T3 « Informations » 76J par version (t3_information_checks) ; COH-MISSING-PROPERTIES (lot 88B)',
+      planned: 'demande IA 88B-t3-proprietes-manquantes ; valeurs renseignées : contrôle du registre au lot suivant (réutilise 76J)',
+    },
   },
   {
     domain: 'operations', label: 'Opérations (identité économique, montants, regroupements)',
@@ -73,11 +79,14 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   },
   {
     domain: 'biens', label: 'Biens',
-    checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-OPS-ACQUISITION-DATE'],
+    checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-OPS-ACQUISITION-DATE', 'COH-MISSING-PROPERTIES'],
     // Lot 85E : la date d'acquisition du bien est reportée sur l'achat réalisé resté sans date (et son événement de référence).
-    gap: { what: 'prix d’acquisition comparé aux Opérations sur le stock ; date d’acquisition contradictoire avec un achat déjà daté (tracée par T3, arbitrage 83A)', existingMechanism: 'T3 « Informations » 76J (par version)', planned: 'lot suivant' },
+    // Lot 88B : toute propriété canonique VIDE du bien (prix d'acquisition compris) est reprise à partir des documents, Opérations,
+    // montants, Agenda et preuves connus — arbitrage T3, écriture canonique ou abstention tracée (COH-MISSING-PROPERTIES).
+    gap: { what: 'prix d’acquisition RENSEIGNÉ comparé aux Opérations sur le stock ; date d’acquisition contradictoire avec un achat déjà daté (tracée par T3, arbitrage 83A)', existingMechanism: 'T3 « Informations » 76J (par version)', planned: 'lot suivant' },
   },
-  { domain: 'equipements', label: 'Équipements (documents rattachés, séparation bien / équipement)', checks: ['COH-DOC-LINKS', 'COH-ASSET-EQUIPMENT-SEPARATION'],
+  // Lot 88B : propriétés canoniques vides des équipements (COH-MISSING-PROPERTIES-EQUIPMENT).
+  { domain: 'equipements', label: 'Équipements (documents rattachés, séparation bien / équipement, propriétés manquantes)', checks: ['COH-DOC-LINKS', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-MISSING-PROPERTIES-EQUIPMENT'],
     gap: { what: 'situations de séparation SUSPECTES (constat seul) ; document d’équipement rattaché au seul bien sans preuve propre au document (constat seul — réparé par la reconsolidation ciblée O-6 dès que le document désigne l’équipement, lot 84E) ; liens d’un équipement déplacé vers un autre bien', existingMechanism: 'rattrapage BO « equipment-separation » (même code) ; file EQUIPMENT_DOCUMENT au déplacement et reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' } },
   { domain: 'documents-liens', label: 'Liens documentaires (documents ↔ biens / équipements, documents ↔ agenda)',
     checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS'],

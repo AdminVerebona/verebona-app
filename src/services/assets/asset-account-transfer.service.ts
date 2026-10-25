@@ -138,6 +138,9 @@ export const ASSET_SCOPED_TABLES: readonly string[] = [
   // Lot 80A : décisions « Ajouter / Retirer du TCO » du bien et leur journal — suivent le bien (clés portées par
   // ses justificatifs, qui partent avec lui).
   'asset_cost_line_decisions', 'asset_cost_line_decision_events',
+  // Lot 88B : analyses et décisions des propriétés manquantes du bien et de ses équipements (`asset_id` = bien porteur) —
+  // suivent le bien (le nouveau compte ne resoumet pas un contexte déjà arbitré ; preuves et valeurs écrites partent avec lui).
+  'property_recovery_runs', 'property_recovery_decisions',
 ];
 
 /**
