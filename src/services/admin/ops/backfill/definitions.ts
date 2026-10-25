@@ -39,6 +39,10 @@
  *      préproduction ; jamais automatique ; refusé sans point de
  *      restauration de moins de 24 h ; restaurable par exécution), suivie
  *      d'une campagne de cohérence sur les comptes reconstruits ;
+ *  15. IA : reclassement de l'historique et configurations existantes (lot
+ *      89A, Pilotage IA V2 P8, MIG-02 / MIG-03) — aussi lancé automatiquement
+ *      par la tâche `ai-history-reclassification` quand AI_PILOTAGE_V2=on ;
+ *      non destructif, idempotent, restaurable d'un geste ;
  *   0. Point de restauration de la base (lot 82E, décisions PO C-Q8 / D13) :
  *      « Appliquer » crée un point (même mécanisme que la sauvegarde
  *      nocturne) ; « Restaurer » ramène la base à un point (contrôle de
@@ -50,7 +54,7 @@
  * services.
  */
 
-export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild';
+export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -364,6 +368,23 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
     warning: 'Préproduction uniquement. Créez d’abord un point de restauration (bloc 0), faites un export complet de recette, Simulez sur '
       + 'un compte, lisez le rapport, puis Appliquez (un compte, puis tous). L’analyse IA de rapprochement (M3) peut être sollicitée, '
       + 'dans ses plafonds habituels (5 appels par passage, 30 par jour et par compte, plafond de coût mensuel).',
+  },
+  {
+    // Lot 89A (CDC Pilotage IA V2 P8, MIG-02, MIG-03, LIV-02).
+    script: 'ai-history-reclassification',
+    order: 15,
+    label: 'IA : reclassement de l’historique et configurations existantes (Pilotage IA V2)',
+    command: 'BO uniquement (aucune commande) — aussi lancé automatiquement quand AI_PILOTAGE_V2=on',
+    description: 'Classe les appels IA ANTÉRIEURS au suivi par exécution (lot 83) selon une règle versionnée (p8-historique-v1) : nature '
+      + 'métier, technique (sonde, qualification, test, balayage planifié) ou non déterminable ; traitement ; exécution métier seulement si '
+      + 'un lien enregistré la prouve (travail de la file, rapport d’analyse, génération ou évaluation de la mascotte) et son issue '
+      + '(Réussie, Incomplète, Échouée…). Sans preuve : « non déterminable », avec le motif — jamais de rapprochement à l’heure, aucun '
+      + 'appel IA. Chaque appel garde sa trace d’origine ; le classement et sa preuve sont écrits à côté. Les appels suivis par le nouveau '
+      + 'chemin ne sont jamais touchés. Marque aussi les versions de configuration existantes « manuel, non qualifié » (affichage '
+      + 'seulement : leur fonctionnement ne change pas). Simuler : comptes par nature, traitement et issue, rien n’est écrit. Appliquer : '
+      + 'relancé, rien n’est réécrit. Restaurer (avec l’identifiant donné dans le rapport) : tout le classement et les marques sont retirés.',
+    actions: ['simulate', 'apply', 'restore'],
+    accountFilter: false,
   },
 ];
 

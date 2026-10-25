@@ -149,8 +149,9 @@ describe('L86D-U-04 — contrat d’affichage (geste, libellés)', async () => {
   });
   it('libellés : détacher n’est pas supprimer ; jamais « Opération » ni « principal »', () => {
     const L = v.GROUPING_LABELS;
-    expect(L.detachFromItem('Devis')).toBe('Détacher « Devis » de cet élément');
-    expect(L.detachItemFromDocument('Visite')).toBe('Détacher « Visite » de ce document');
+    // Lot 89B : « Retirer l’association » (libellé PO du 25/10).
+    expect(L.detachFromItem('Devis')).toBe('Retirer l’association avec « Devis »');
+    expect(L.detachItemFromDocument('Visite')).toBe('Retirer l’association avec « Visite »');
     expect(L.removeFromEnsemble('Devis')).toBe('Retirer « Devis » de l’ensemble');
     expect(L.detachedToast).toContain('reste disponible');
     const textes = [L.linkedDocuments, L.detach, L.detachedToast, L.detachFromItem('x'), L.detachItemFromDocument('x'), L.removeFromEnsemble('x')].join(' ');

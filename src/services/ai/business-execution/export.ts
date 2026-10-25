@@ -31,6 +31,7 @@ import { openReadSession, type ReadSession } from '@/services/admin/account-data
 import { maskForExport, maskText } from '@/services/admin/diagnostics-export/model';
 import { recetteLine } from '@/services/admin/diagnostics-export/recette';
 import { USAGE_COLS } from '@/services/admin/diagnostics-export/trace';
+import { historyExecutionColumnReady } from '../history-reclassification/columns';
 import { toExecutionDto, type ExecutionCallsDto } from './dto';
 import { matchesJournalFilter, journalFilterFingerprint, journalFilterToParams, type JournalFilter } from './journal';
 import { projectBusinessExecutions } from './repository';
@@ -121,8 +122,11 @@ export async function readCallsOf(
     const lot = xs.slice(k, k + EXPORT_CALL_BATCH);
     const traces = new Map<string, string>();
     for (const x of lot) for (const t of x.traceIds) traces.set(t, x.id);
-    const rows = await q(`SELECT ${USAGE_COLS}, business_execution_id FROM ai_usage_event
+    // Lot 89A (P8, MIG-03) : appels historiques rattachés par le reclassement prouvé (0776).
+    const hist = await historyExecutionColumnReady(q);
+    const rows = await q(`SELECT ${USAGE_COLS}, business_execution_id${hist ? ', history_execution_id' : ''} FROM ai_usage_event
        WHERE business_execution_id = ANY($1::text[]) OR (business_execution_id IS NULL AND (metadata->>'traceId') = ANY($2::text[]))
+       ${hist ? 'OR (business_execution_id IS NULL AND history_execution_id = ANY($1::text[]))' : ''}
        ORDER BY id`, [lot.map((x) => x.id), [...traces.keys()]]);
     const caps = new Map<number, Row>();
     if (rows.length) {
@@ -135,7 +139,8 @@ export async function readCallsOf(
       }
     }
     for (const r of rows) {
-      const id = r.business_execution_id ? String(r.business_execution_id) : traces.get(String(r.trace_id)) ?? null;
+      const id = r.business_execution_id ? String(r.business_execution_id)
+        : r.history_execution_id ? String(r.history_execution_id) : traces.get(String(r.trace_id)) ?? null;
       const l = id ? out.get(id) : undefined;
       if (l) l.push({ row: r, capture: caps.get(Number(r.id)) ?? null });
     }

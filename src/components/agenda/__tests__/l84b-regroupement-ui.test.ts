@@ -88,7 +88,8 @@ describe('L84B-UI03 / UI04 — élément seul ; ensemble sans événement de ré
   it('élément seul : relier un élément de l’agenda (AC02) ou un document (AC01)', () => {
     const html = rendre({ itemId: 9, role: 'NONE', linkedDocuments: [], main: null, mainWithdrawn: false, ensemble: null, counts: null });
     expect(html).toContain('Relier un élément de l’agenda');
-    expect(html).toContain('Relier un document');
+    // Lot 89B : « Associer un document » (libellé PO du 25/10).
+    expect(html).toContain('Associer un document');
     expect(html).toContain('data-role="seul"');
   });
   it('retrait mémorisé : mention, autres éléments, désignation possible par l’utilisateur', () => {

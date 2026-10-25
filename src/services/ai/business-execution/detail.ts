@@ -9,6 +9,7 @@
  * `AI_MODEL_OUTPUT_ADMIN_IDS`, journalisée).
  */
 import { pgClient } from '@/db';
+import { historyExecutionColumnReady } from '../history-reclassification/columns';
 import { toExecutionDto } from './dto';
 import { callsOfExecutions, getBusinessExecution, type Query } from './repository';
 import {
@@ -25,11 +26,14 @@ const s = (v: unknown): string | null => (v === null || v === undefined ? null :
 
 /** Appels de l'exécution (colonne de corrélation, sinon trace native), avec l'état de capture. */
 export async function readExecutionCalls(x: Pick<BusinessExecution, 'id' | 'traceIds'>, q: Query = defaultQuery, max = DETAIL_CALLS_MAX): Promise<{ calls: ExecutionCallView[]; truncated: boolean }> {
+  // Lot 89A (P8, MIG-03) : appels historiques rattachés par le reclassement prouvé (0776).
+  const hist = await historyExecutionColumnReady(q);
   const rows = await q(`
     SELECT e.id, e.created_at, e.operation_code, e.model, e.model_rank, e.status, e.error_code, e.metadata->>'callKind' AS call_kind,
            e.duration_ms, e.cost_micros, e.metadata->>'traceId' AS trace_id
       FROM ai_usage_event e
      WHERE e.business_execution_id = $1 OR (e.business_execution_id IS NULL AND (e.metadata->>'traceId') = ANY($2::text[]))
+        ${hist ? 'OR (e.business_execution_id IS NULL AND e.history_execution_id = $1)' : ''}
      ORDER BY e.id LIMIT ${max + 1}`, [x.id, x.traceIds]);
   const ids = rows.slice(0, max).map((r) => Number(r.id));
   const caps = new Map<number, Row>();

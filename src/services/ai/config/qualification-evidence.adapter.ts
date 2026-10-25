@@ -4,57 +4,32 @@
  * décision PO 14).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * POURQUOI UN ADAPTATEUR
+ * SOURCE UNIQUE (lot 89A, P8)
  *
  * Le fichier global `verebona-ia-config-export` 2.0.0 transporte une section
- * « preuves de qualification » par COUPLE (opération × modèle × profil
- * effectif) et les seuils de qualification (en lecture). La table des preuves
- * par couple et sa fonction de lecture sont livrées EN PARALLÈLE par le
- * chantier 86A (phase P5). En attendant, la section est alimentée depuis
- * l'état de qualification EXISTANT (`ai_model_qualification`, qualification
- * TECHNIQUE par modèle, lot 35B / 49 / 85C).
+ * « preuves de qualification » par COUPLE et les seuils (en lecture). Export,
+ * import et routage ne lisent les preuves et les seuils QUE par ce fichier :
+ *   · `readPairEvidence(pairs)`      — preuves par couple de la qualification
+ *     (`ai_qualification_evidence`, lot 86A, état courant calculé contre la
+ *     configuration active) ; un couple sans preuve est `never_tested` ;
+ *   · `qualificationThresholds()`    — constante versionnée de 86A ;
+ *   · `EVIDENCE_SOURCE`              — `pair_evidence`.
+ * Une preuve n'est `admissible` qu'à signature identique, sinon `obsolete`.
  *
- * TOUT le reste du lot (export, import, routage) ne lit les preuves et les
- * seuils QUE par ce fichier :
- *   · `readPairEvidence(pairs)`      — preuves des couples demandés ;
- *   · `qualificationThresholds()`    — seuils versionnés (lecture seule) ;
- *   · `EVIDENCE_SOURCE`              — libellé de la source (fichier, BO).
- *
- * ══════════════════════════════════════════════════════════════════════════
- * À REBRANCHER À L'INTÉGRATION DE 86A (aucune autre modification requise)
- *
- *   1. `readPairEvidence` : remplacer le corps de `defaultReader` par l'appel
- *      à la fonction de lecture par couple de 86A, en convertissant son
- *      résultat en `PairEvidence` (statuts du CDC §16.1 : jamais testée / en
- *      test / admissible / refusée / non concluante / obsolète). Garder la
- *      règle : une preuve n'est `admissible` que pour l'EMPREINTE exacte
- *      (modèle + profil + opération + prompt + contrat), sinon `obsolete`.
- *   2. `qualificationThresholds` : renvoyer la constante versionnée des seuils
- *      de 86A (décision PO 14 : définis dans le code, jamais abaissés).
- *   3. `EVIDENCE_SOURCE` : `'pair_evidence'`.
- *   Les tests `l86b-transfert-format.test.ts` (« L86B-U07 ») figent ce contrat.
- *
- * ══════════════════════════════════════════════════════════════════════════
- * RÈGLE TRANSITOIRE (MIG-02 « pas de qualification fictive »)
- *
- * La qualification technique par modèle n'est PAS une preuve métier par
- * couple : elle donne au mieux `technical_only` (génération réussie avec la
- * clé testée), `refused` (épreuve de génération en échec), `obsolete`
- * (requalification nécessaire, version d'épreuves périmée) ou `never_tested`.
- * Elle ne produit JAMAIS `admissible` : aucune promotion automatique de
- * production ne peut donc s'appuyer sur elle (ACT-01, R51).
- *
- * ══════════════════════════════════════════════════════════════════════════
- * INTÉGRATION LOT 86 (FAIT) : `readPairEvidence` lit d'abord les preuves par
- * couple de 86A (`listQualificationEvidence`, état courant calculé contre la
- * configuration active), puis retombe sur la règle transitoire ci-dessus
- * pour un couple jamais qualifié ; `qualificationThresholds` lit la
- * constante versionnée `QUALIFICATION_THRESHOLDS` de 86A.
+ * RETIRÉ au lot 89A : la règle transitoire du lot 86B qui, pour un couple
+ * jamais qualifié, lisait la qualification TECHNIQUE par modèle
+ * (`ai_model_qualification`) et rendait `technical_only` / `refused` /
+ * `obsolete`. Elle ne produisait jamais `admissible` (aucun effet sur les
+ * décisions automatiques), mais montrait pour le même couple un autre état
+ * que la qualification par couple du BO (MIG-04 : pas deux règles pour une
+ * même preuve). Le statut `technical_only` reste LISIBLE (fichiers 2.0.0
+ * exportés avant le lot 89A) ; il n'est plus produit. La qualification
+ * technique par modèle reste utilisée par le catalogue (capacités, 85C).
  */
 import { canonicalJson, sha256 } from './config-snapshot';
 import { QUALIFICATION_THRESHOLDS } from '../qualification/thresholds';
 
-/** États d'une preuve (CDC §16.1) + `technical_only` (transition, MIG-02). */
+/** États d'une preuve (CDC §16.1) + `technical_only` (historique : lu dans les anciens fichiers, plus produit depuis le lot 89A). */
 export const EVIDENCE_STATUSES = ['never_tested', 'in_test', 'admissible', 'refused', 'inconclusive', 'obsolete', 'technical_only'] as const;
 export type EvidenceStatus = (typeof EVIDENCE_STATUSES)[number];
 
@@ -69,10 +44,9 @@ export const EVIDENCE_STATUS_LABELS: Readonly<Record<EvidenceStatus, string>> = 
 };
 
 /**
- * Source des preuves : depuis l'intégration du lot 86 (86A × 86B), les preuves
- * PAR COUPLE de la qualification (`ai_qualification_evidence`). Un couple
- * jamais qualifié retombe sur la qualification technique par modèle
- * (`model_qualification`, jamais `admissible`).
+ * Source des preuves : les preuves PAR COUPLE de la qualification
+ * (`ai_qualification_evidence`). `model_qualification` : source historique,
+ * lisible dans un fichier exporté avant le lot 89A, plus produite.
  */
 export const EVIDENCE_SOURCE = 'pair_evidence' as const;
 export type EvidenceSource = typeof EVIDENCE_SOURCE | 'model_qualification';
@@ -106,47 +80,23 @@ export interface PairEvidence {
   summary: string;
 }
 
-/** Qualification technique stockée (sous-ensemble de `StoredQualification`). */
-export interface TechnicalQualification {
-  generate: boolean;
-  structured: boolean | null;
-  multimodal: boolean | null;
-  thinking: boolean | null;
-  qualifiedAt: string;
-  version: string;
-  requalificationRequiredAt?: string | null;
-}
-
 /**
- * Conversion PURE d'une qualification technique par modèle en preuve de
- * couple (règle transitoire, jamais `admissible`).
+ * Statut d'un couple jamais qualifié par couple (lot 89A, P8) : `never_tested`
+ * — la règle transitoire du lot 86B (« qualification technique seulement »,
+ * lue sur la qualification TECHNIQUE par modèle) est RETIRÉE : elle donnait
+ * pour le même couple un autre état que la qualification par couple du BO
+ * (« jamais testé »), deux règles pour une même preuve (MIG-04). Pur.
  */
-export function evidenceFromTechnicalQualification(
-  pair: PairRef,
-  q: TechnicalQualification | undefined,
-  ctx: { environment: string; currentVersion: string },
-): PairEvidence {
-  const base = {
-    operationCode: pair.operationCode, model: pair.model, profileSha256: pair.profileSha256,
-    source: 'model_qualification' as EvidenceSource, environment: ctx.environment,
-    promptSha256: null, contractRef: null, thresholdsSha256: null,
-  };
-  if (!q) return { ...base, status: 'never_tested', testedAt: null, summary: 'Aucune qualification connue pour ce modèle avec la clé active.' };
-  if (q.version !== ctx.currentVersion || q.requalificationRequiredAt) {
-    return { ...base, status: 'obsolete', testedAt: q.qualifiedAt, summary: q.requalificationRequiredAt ? 'Requalification nécessaire (capacités du modèle modifiées).' : `Épreuves techniques périmées (${q.version}).` };
-  }
-  if (!q.generate) return { ...base, status: 'refused', testedAt: q.qualifiedAt, summary: 'Qualification technique en échec (génération).' };
-  const caps = [q.structured ? 'sortie structurée' : null, q.multimodal ? 'image' : null, q.thinking ? 'raisonnement' : null].filter(Boolean);
+export function evidenceNeverTested(pair: PairRef, ctx: { environment: string }): PairEvidence {
   return {
-    ...base, status: 'technical_only', testedAt: q.qualifiedAt,
-    summary: `Qualification technique du modèle réussie (génération${caps.length ? `, ${caps.join(', ')}` : ''}) — aucune preuve métier par couple.`,
+    operationCode: pair.operationCode, model: pair.model, profileSha256: pair.profileSha256, status: 'never_tested', source: 'pair_evidence',
+    environment: ctx.environment, testedAt: null, promptSha256: null, contractRef: null, thresholdsSha256: null,
+    summary: 'Aucune preuve de qualification par couple : jamais testé (un choix manuel reste possible, sans qualification).',
   };
 }
 
 export interface EvidenceReaderDeps {
   environment?: string;
-  /** Qualifications techniques avec la clé active (injectables en test). */
-  loadTechnical?: () => Promise<ReadonlyMap<string, TechnicalQualification>>;
   /** Preuves par couple (86A), injectables en test. */
   loadPairEvidence?: (environment: string) => Promise<PairQualificationRecord[]>;
 }
@@ -187,10 +137,7 @@ export function evidenceFromPairRecord(pair: PairRef, r: PairQualificationRecord
 }
 
 async function defaultReader(pairs: PairRef[], deps: EvidenceReaderDeps): Promise<PairEvidence[]> {
-  const [{ loadQualifications, QUALIFICATION_VERSION }, { getAiEnvironment }] = await Promise.all([
-    import('../provider/model-qualification.service'), import('./environment'),
-  ]);
-  const environment = deps.environment ?? getAiEnvironment();
+  const environment = deps.environment ?? (await import('./environment')).getAiEnvironment();
   // Preuves par couple (86A) : dernière preuve de chaque couple, état courant calculé.
   const parCouple = new Map<string, PairQualificationRecord>();
   try {
@@ -202,26 +149,24 @@ async function defaultReader(pairs: PairRef[], deps: EvidenceReaderDeps): Promis
       const prev = parCouple.get(k);
       if (!prev || r.createdAt > prev.createdAt) parCouple.set(k, r);
     }
-  } catch { /* table absente (migration non jouée) : qualification technique seule */ }
-  const technical = deps.loadTechnical ? await deps.loadTechnical() : await loadQualifications();
+  } catch { /* table absente (migration non jouée) : aucune preuve, jamais testé */ }
   const th = thresholdsSha256(qualificationThresholds());
   return pairs.map((p) => {
     const r = parCouple.get(`${p.operationCode}|${p.model}`);
-    return r ? evidenceFromPairRecord(p, r, { thresholdsSha256: th })
-      : evidenceFromTechnicalQualification(p, technical.get(p.model), { environment, currentVersion: QUALIFICATION_VERSION });
+    return r ? evidenceFromPairRecord(p, r, { thresholdsSha256: th }) : evidenceNeverTested(p, { environment });
   });
 }
 
 /**
  * Preuves des couples demandés, dans l'ordre demandé. Ne lève jamais : une
  * source illisible rend `never_tested` (jamais une preuve inventée).
- * ▶ POINT DE REBRANCHEMENT 86A (voir l'en-tête).
+ * Source unique : preuves par couple (lot 86A), voir l'en-tête.
  */
 export async function readPairEvidence(pairs: PairRef[], deps: EvidenceReaderDeps = {}): Promise<PairEvidence[]> {
   try {
     return await defaultReader(pairs, deps);
   } catch {
-    return pairs.map((p) => evidenceFromTechnicalQualification(p, undefined, { environment: deps.environment ?? 'inconnu', currentVersion: '' }));
+    return pairs.map((p) => evidenceNeverTested(p, { environment: deps.environment ?? 'inconnu' }));
   }
 }
 
@@ -241,7 +186,7 @@ export interface QualificationThresholds {
 /**
  * Seuils de qualification, en LECTURE (le BO et le fichier les montrent ;
  * aucun champ ne les modifie). Valeurs de la décision PO 14.
- * ▶ POINT DE REBRANCHEMENT 86A : renvoyer la constante versionnée de 86A.
+ * Constante versionnée de la qualification par couple (lot 86A).
  */
 export function qualificationThresholds(): QualificationThresholds {
   const q = QUALIFICATION_THRESHOLDS;

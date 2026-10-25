@@ -52,6 +52,9 @@
  *   ai-qualification-campaign       chaque jour à 7 h 45 (86A)    une campagne AUTO ouverte au plus ;
  *                                                                 verrou par compte (index unique) ;
  *                                                                 préproduction seulement
+ *   ai-history-reclassification     au démarrage, puis /h tant    garde dans l'UPDATE (appel sans
+ *                                   qu'il reste des appels ;      exécution du nouveau chemin, règle
+ *                                   seulement AI_PILOTAGE_V2=on   différente) — idempotent (89A, P8)
  *   stripe-catalog-sync             toutes les 5 min              bail `stripe-catalog-sync:<contexte>`
  *                                                                 (lot 35C, catalogue lookup_key)
  *   stripe-catalog-publish          toutes les 5 min              bail `stripe-catalog-publication:<ctx>`
@@ -557,6 +560,30 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const { requestAutomaticCampaign } = await import('@/services/ai/qualification/campaign');
       const r = await requestAutomaticCampaign({ trigger: `scheduler:${trigger}` });
       return { note: r.note.slice(0, 1500) };
+    },
+  },
+  {
+    // Lot 89A (CDC Pilotage IA V2 P8, MIG-02 / MIG-03) : reclassement PROUVABLE
+    // de l'historique des appels IA (règle versionnée tracée par ligne, « non
+    // déterminable » sans preuve, jamais d'écrasement du nouveau chemin) et
+    // marquage « manuel, non qualifié » des configurations existantes. Lancé
+    // automatiquement seulement quand AI_PILOTAGE_V2=on (jour J) ; même service
+    // que le rattrapage du BO (Exploitation › Rattrapages). Idempotent : une
+    // fois tout classé, une seule requête et plus de relance.
+    code: 'ai-history-reclassification',
+    label: 'IA : reclassement de l’historique (Pilotage IA V2, jour J)',
+    schedule: { kind: 'startup', delayMs: 12 * MIN, retryMs: HOUR },
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { automaticHistoryReclassificationEnabled, pilotageV2State, PILOTAGE_V2_STATE_LABELS } = await import('@/services/ai/pilotage-v2/activation');
+      if (!automaticHistoryReclassificationEnabled()) return { note: `AI_PILOTAGE_V2 ${PILOTAGE_V2_STATE_LABELS[pilotageV2State()]}` };
+      const { runHistoryReclassification } = await import('@/services/ai/history-reclassification/service');
+      const r = await runHistoryReclassification({ apply: true, deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.disabled) return { note: r.disabled };
+      const note = `${r.rule} : ${r.calls.classified} appel(s) classé(s) (${JSON.stringify(r.calls.byNature)}), `
+        + `${r.calls.alreadyClassified} déjà classé(s) ; ${r.configurations.marked} configuration(s) marquée(s) « manuel, non qualifié »`
+        + `${r.calls.more ? ' ; reste à classer' : ''}`;
+      return { note: note.slice(0, 1500), again: r.calls.more };
     },
   },
   {

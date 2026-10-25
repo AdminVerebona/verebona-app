@@ -34,6 +34,7 @@
 import { pgClient } from '@/db';
 import type { Treatment } from '../config/treatments';
 import { TREATMENT_DEFINITIONS } from '../config/treatments';
+import { readHistoryClass, type HistoryClass } from '../history-reclassification/rule';
 import type { RuntimeContractTrace, OutputTransformationsTrace, StructuredContextTrace } from './ai-trace.service';
 import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
 
@@ -150,6 +151,13 @@ export interface ExecutionRow {
   jobAttempt: number | null;
   /** Lot 34C : trace (cascade) de l'appel. */
   traceId: string | null;
+  /**
+   * Lot 89A (P8, MIG-03, migration 0776) : classement de l'appel HISTORIQUE
+   * (antérieur au suivi par exécution) — règle, nature, traitement, exécution
+   * prouvée et son issue, preuves, motif du « non déterminable ». `null` :
+   * appel du nouveau chemin ou non encore reclassé.
+   */
+  history?: HistoryClass | null;
 }
 
 /** Traitement correspondant à un code d'usage, sans requête. */
@@ -215,6 +223,7 @@ function toRow(r: Row): ExecutionRow {
       ? (metadata.providerAttempts as unknown[]).filter((a): a is ProviderAttemptTrace => Boolean(a) && typeof a === 'object') : [],
     jobAttempt: typeof metadata.jobAttempt === 'number' ? metadata.jobAttempt : null,
     traceId: typeof metadata.traceId === 'string' ? metadata.traceId : null,
+    history: readHistoryClass(r.history_class),
   };
 }
 
@@ -234,7 +243,8 @@ function objet<T>(v: unknown): T | null {
  * (`telemetry/trace-schema.ts`), au lieu de faire tomber l'écran Exécutions.
  */
 const MASTER_COLS = `to_jsonb(e)->>'task' AS task, to_jsonb(e)->>'master_prompt_code' AS master_prompt_code,
-            to_jsonb(e)->>'master_prompt_version' AS master_prompt_version`;
+            to_jsonb(e)->>'master_prompt_version' AS master_prompt_version,
+            to_jsonb(e)->'history_class' AS history_class`;
 
 const OBJECT_TYPE = `COALESCE(j.target_type, CASE WHEN e.asset_file_id IS NOT NULL THEN 'asset_file' END)`;
 const OBJECT_ID = `COALESCE(j.target_id, e.asset_file_id::text)`;

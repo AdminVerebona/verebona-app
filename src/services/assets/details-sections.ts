@@ -18,6 +18,24 @@ export type AddressOverride = { address1: unknown; postalCode: unknown; city: un
 const tenureEndFields = (family: string, kc: Record<string, unknown>, context: Record<string, unknown>) =>
   tenureEndSectionFields(family, kc, context, readOrigin);
 
+/**
+ * Section « Valorisation », identique pour les trois familles (lot 89B) :
+ * porte la valeur estimée (lue par l'écran dans CETTE section — elle était
+ * renvoyée dans « common » et s'affichait vide) et la date de valorisation
+ * (lue par l'écran pour toutes les familles, renvoyée jusqu'ici pour
+ * l'immobilier seulement).
+ */
+function valuationSection(kc: Record<string, unknown>) {
+  return {
+    estimatedValue: kc.estimatedValue ?? null,
+    valuationLow: kc.valuationLow ?? null,
+    valuationHigh: kc.valuationHigh ?? null,
+    valuationSource: kc.valuationSource ?? null,
+    listingPrice: kc.listingPrice ?? null,
+    valuationDate: kc.valuationDate ?? null,
+  };
+}
+
 export function buildSections(family: string, kc: Record<string, unknown>, assetRow: Record<string, unknown>, adresse: AddressOverride | null = null) {
   const sections: Record<string, unknown> = {};
 
@@ -31,7 +49,9 @@ export function buildSections(family: string, kc: Record<string, unknown>, asset
     acquisitionPrice: acquisitionPrice,
     acquisitionCurrency: kc.acquisitionCurrency ?? 'EUR',
     acquisitionLocation: kc.acquisitionLocation ?? (assetRow as any).purchaseLocation ?? null,
-    estimatedValue: kc.estimatedValue ?? null,
+    // Lot 89B : `estimatedValue` n'est plus renvoyé ici — section porteuse unique « valuation »
+    // (registre canonique : section `valuation` ; champ « Valeur estimée (€) » de l'écran).
+    // Devise, date et mode restent en « common » (registre), sans affichage.
     estimatedValueCurrency: kc.estimatedValueCurrency ?? 'EUR',
     estimatedValueDate: kc.estimatedValueDate ?? null,
     estimatedValueMode: kc.estimatedValueMode ?? null,
@@ -88,13 +108,7 @@ export function buildSections(family: string, kc: Record<string, unknown>, asset
       maintenanceDueDate: kc.maintenanceDueDate ?? null,
       networks: kc.networks ?? [],
     };
-    sections.valuation = {
-      valuationLow: kc.valuationLow ?? null,
-      valuationHigh: kc.valuationHigh ?? null,
-      valuationSource: kc.valuationSource ?? null,
-      listingPrice: kc.listingPrice ?? null,
-      valuationDate: kc.valuationDate ?? null,
-    };
+    sections.valuation = valuationSection(kc);
     sections.insurance = {
       isInsured: kc.isInsured ?? null,
       insurer: kc.insurer ?? null,
@@ -147,12 +161,7 @@ export function buildSections(family: string, kc: Record<string, unknown>, asset
       lastInspectionDate: kc.lastInspectionDate ?? null,
       nextInspection: kc.nextInspection ?? null,
     };
-    sections.valuation = {
-      valuationLow: kc.valuationLow ?? null,
-      valuationHigh: kc.valuationHigh ?? null,
-      valuationSource: kc.valuationSource ?? null,
-      listingPrice: kc.listingPrice ?? null,
-    };
+    sections.valuation = valuationSection(kc);
   } else {
     // OBJET or other
     sections.object_identification = {
@@ -184,12 +193,7 @@ export function buildSections(family: string, kc: Record<string, unknown>, asset
       acquisitionMode: kc.acquisitionMode ?? null,
       ...tenureEndFields('OBJET', kc, { acquisitionMode: kc.acquisitionMode }),
     };
-    sections.valuation = {
-      valuationLow: kc.valuationLow ?? null,
-      valuationHigh: kc.valuationHigh ?? null,
-      valuationSource: kc.valuationSource ?? null,
-      listingPrice: kc.listingPrice ?? null,
-    };
+    sections.valuation = valuationSection(kc);
     sections.insurance = {
       isInsured: kc.isInsured ?? null,
       insurer: kc.insurer ?? null,

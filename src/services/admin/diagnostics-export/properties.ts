@@ -56,6 +56,25 @@ export function propertyVerdict(p: { persisted: unknown; apiStatus: number; apiS
   return 'COHERENT';
 }
 
+/**
+ * Lot 89B : correspondance API → écran d'UNE propriété (pur) — section qui la
+ * renvoie, champs d'écran qui la lisent, et s'ils la lisent dans une section
+ * qui la REÇOIT. Même calcul pour le diagnostic et le test générique de toutes
+ * les familles (`l89b-details-sections.test.ts`).
+ */
+export function apiUiMatch(sections: Record<string, Record<string, unknown>>, uiFamily: DetailsUiFamily, champ: string) {
+  const sec = Object.entries(sections).find(([, d]) => champ in d);
+  const consumers = Object.keys(sections).map((section) => detailsUiFieldFor(uiFamily, section, champ)).filter(Boolean) as Array<NonNullable<ReturnType<typeof detailsUiFieldFor>>>;
+  return {
+    section: sec?.[0] ?? null,
+    apiSent: !!sec,
+    apiValue: sec ? sec[1][champ] : null,
+    consumers,
+    uiExpects: consumers.length > 0,
+    uiConsumed: consumers.some((c) => champ in (sections[c.section] ?? {})),
+  };
+}
+
 /** Ligne `assets` (JSON) → objet de ligne Drizzle (mêmes conversions que la route). */
 async function drizzleAssetRow(json: Row): Promise<Record<string, unknown>> {
   const { getTableColumns } = await import('drizzle-orm');
@@ -280,18 +299,19 @@ async function propertyEntries(kit: DiagPlanKit, assetId: number, load: (id: num
     let uiConsumed = false;
     let uiExpects = false;
     if (isSelf && api) {
-      const sec = Object.entries(api.sections).find(([, d]) => champ in d);
-      apiSent = !!sec;
-      apiValue = sec ? sec[1][champ] : null;
-      apiPart = { route: DETAILS_UI_ROUTE, http: api.status, motif: api.motif, section: sec?.[0] ?? null, renvoye: apiSent, valeur: maskValue(champ, apiValue) };
-      const consumers = Object.keys(api.sections).map((section) => detailsUiFieldFor(api.uiFamily, section, champ)).filter(Boolean) as Array<NonNullable<ReturnType<typeof detailsUiFieldFor>>>;
-      uiExpects = consumers.length > 0;
-      uiConsumed = consumers.some((c) => champ in (api.sections[c.section] ?? {}));
+      const m = apiUiMatch(api.sections, api.uiFamily, champ);
+      const sec = m.section;
+      const consumers = m.consumers;
+      apiSent = m.apiSent;
+      apiValue = m.apiValue;
+      apiPart = { route: DETAILS_UI_ROUTE, http: api.status, motif: api.motif, section: sec, renvoye: apiSent, valeur: maskValue(champ, apiValue) };
+      uiExpects = m.uiExpects;
+      uiConsumed = m.uiConsumed;
       uiPart = consumers.length
         ? {
           composant: DETAILS_UI_COMPONENT,
           champs: consumers.map((c) => ({ section: c.section, sectionLibelle: c.sectionLabel, libelle: c.label, condition: c.condition ?? null, valeurLue: maskValue(champ, api.sections[c.section]?.[champ] ?? null), recuDeLApi: champ in (api.sections[c.section] ?? {}) })),
-          ...(apiSent && !uiConsumed ? { motif: `renvoyé dans la section « ${sec?.[0]} » mais lu par l’écran dans une autre section (${consumers.map((c) => c.section).join(', ')}) : affiché vide` } : {}),
+          ...(apiSent && !uiConsumed ? { motif: `renvoyé dans la section « ${sec} » mais lu par l’écran dans une autre section (${consumers.map((c) => c.section).join(', ')}) : affiché vide` } : {}),
         }
         : { composant: null, motif: apiSent ? 'renvoyé par l’API mais lu par aucun champ de l’écran' : 'non affiché par la fiche' };
     }

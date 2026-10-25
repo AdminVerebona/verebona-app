@@ -106,7 +106,8 @@ export const GROUPING_LABELS = {
   } satisfies Record<GroupingCandidateKind, string>,
   add: {
     elements: 'Relier un élément de l’agenda',
-    documents: 'Relier un document',
+    // Lot 89B (demande PO 25/10) : libellé d'association agenda → document.
+    documents: 'Associer un document',
     biens: 'Relier un bien',
     pieces: 'Relier une pièce',
     equipements: 'Relier un équipement',
@@ -123,14 +124,20 @@ export const GROUPING_LABELS = {
   noCandidate: 'Aucun résultat.',
   remove: 'Retirer',
   directLink: 'Lien direct',
-  documentAgendaTitle: 'Relier à un élément de l’agenda',
+  // Lot 89B (demande PO 25/10) : association document → agenda — ouvre la SÉLECTION des éléments
+  // existants, ne crée jamais d'élément ; la création reste une action distincte et explicite.
+  documentAgendaTitle: 'Associer à l’agenda',
+  documentAgendaPickerHint: 'Choisissez un élément d’agenda existant.',
+  createAgendaItem: 'Créer un élément d’agenda',
+  associatedToast: 'Document associé',
   // Lot 86D : détachement individuel (le document et l'élément restent, rien n'est supprimé).
   linkedDocuments: 'Documents de cet élément',
-  detach: 'Détacher',
-  detachFromItem: (title: string) => `Détacher « ${title} » de cet élément`,
-  detachItemFromDocument: (title: string) => `Détacher « ${title} » de ce document`,
+  // Lot 89B : « Retirer l’association » (lien seul ; document et élément restent).
+  detach: 'Retirer l’association',
+  detachFromItem: (title: string) => `Retirer l’association avec « ${title} »`,
+  detachItemFromDocument: (title: string) => `Retirer l’association avec « ${title} »`,
   removeFromEnsemble: (title: string) => `Retirer « ${title} » de l’ensemble`,
-  detachedToast: 'Document détaché. Il reste disponible dans vos documents.',
+  detachedToast: 'Association retirée. Le document reste disponible dans vos documents.',
 } as const;
 
 /** Action « retirer » de chaque catégorie. */

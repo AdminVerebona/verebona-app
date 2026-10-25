@@ -38,7 +38,7 @@ import { DIAG_SECURITY_NOTES, excludedColumnMotif, isRestrictedContentColumn } f
 import { buildAnalysisGuide, computeSectionManifests, globalWithSections, maskDiagRow, sectionOfPath } from '../account-model';
 import { parseDiagRequest, type DiagFileInfo } from '../model';
 import { runtimeFlags, tableSql } from '../account';
-import { propertyVerdict } from '../properties';
+import { apiUiMatch, propertyVerdict } from '../properties';
 import {
   DETAILS_UI_COMMON_FIELDS, DETAILS_UI_FAMILY_SECTIONS, DETAILS_UI_SECTION_FIELDS, DETAILS_UI_SECTION_LABELS, detailsUiFieldFor,
 } from '@/lib/assets/details-ui-map';
@@ -274,12 +274,18 @@ describe('L88A-U07 API → écran : correspondance maintenue et synchronisée', 
     expect((buildSections('IMMOBILIER', {}, row) as Record<string, Record<string, unknown>>).common.acquisitionPrice).toBe(35000);
   });
   it('un champ lu par l’écran dans une section qui ne le reçoit pas est détecté', () => {
+    // Lot 89B : l'écart réel (`estimatedValue` renvoyé dans « common », lu dans « Valorisation ») est corrigé
+    // à la source (`buildSections`) ; la détection reste vérifiée sur une réponse simulée présentant l'écart.
     const sections = buildSections('IMMOBILIER', { estimatedValue: 400000 }, { name: 'Maison' }) as Record<string, Record<string, unknown>>;
-    expect('estimatedValue' in sections.common).toBe(true);
+    expect(sections.valuation.estimatedValue).toBe(400000);
+    expect('estimatedValue' in sections.common).toBe(false);
     expect(detailsUiFieldFor('IMMOBILIER', 'common', 'estimatedValue')).toBeNull();
     expect(detailsUiFieldFor('IMMOBILIER', 'valuation', 'estimatedValue')).toMatchObject({ sectionLabel: 'Valorisation' });
-    expect('estimatedValue' in sections.valuation).toBe(false);
-    expect(propertyVerdict({ persisted: 400000, apiStatus: 200, apiSent: true, apiValue: 400000, uiExpects: true, uiConsumed: false })).toBe('RENVOYE_NON_AFFICHE');
+    const { valuation: { estimatedValue, ...valuation }, ...autres } = sections;
+    const simule = { ...autres, common: { ...sections.common, estimatedValue }, valuation };
+    const m = apiUiMatch(simule, 'IMMOBILIER', 'estimatedValue');
+    expect(m).toMatchObject({ section: 'common', apiSent: true, uiExpects: true, uiConsumed: false });
+    expect(propertyVerdict({ persisted: 400000, apiStatus: 200, apiSent: m.apiSent, apiValue: m.apiValue, uiExpects: m.uiExpects, uiConsumed: m.uiConsumed })).toBe('RENVOYE_NON_AFFICHE');
   });
   it('verdicts : donnée, backend, affichage', () => {
     const v = (o: Partial<Parameters<typeof propertyVerdict>[0]>) => propertyVerdict({ persisted: null, apiStatus: 200, apiSent: true, apiValue: null, uiExpects: true, uiConsumed: true, ...o });

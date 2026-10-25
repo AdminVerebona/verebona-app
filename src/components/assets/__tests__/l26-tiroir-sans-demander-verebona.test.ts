@@ -19,9 +19,9 @@ describe('tiroir document', () => {
     expect(src).not.toMatch(/VerebonaMascot/);
   });
 
-  it('L26-9-AC2 : le badge de type reste sous le titre', () => {
-    // Lot 86E : affiché dès que le Type enregistré est connu (jamais « Autre » par défaut).
-    // Lot 87D : pastille DocumentTypeBadge (même Badge « outline mt-1.5 text-xs »), jamais un code technique.
-    expect(src).toMatch(/<\/SheetTitle>\s*<DocumentTypeBadge typeCode=\{typeCode\} \/>/);
+  it('L26-9-AC2 → L89B : plus de pastille de type sous le titre ; le Type reste dans « Informations »', () => {
+    // Lot 89B (demande PO 25/10) : pastille retirée de l'en-tête (doublon de la ligne « Type »).
+    expect(src).not.toMatch(/<DocumentTypeBadge/);
+    expect(src).toMatch(/\{rubricTypeLabels\(fullData\)\.type\}/);
   });
 });

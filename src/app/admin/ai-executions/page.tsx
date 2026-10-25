@@ -76,6 +76,7 @@ import { BusinessExecutionDetailSheet } from './_components/BusinessExecutionDet
 import { ExecutionExportsPanel } from './_components/ExecutionExportsPanel';
 import type { CardKind, ExecutionCards, JournalView } from '@/services/ai/business-execution/journal';
 import { ExecutionDiagnosisPanel, type DiagnosisView } from './_components/ExecutionDiagnosisPanel';
+import { historyClassSummary, type HistoryClass } from '@/services/ai/history-reclassification/rule';
 import { RuntimeContractPanel, type ContractCallView } from './_components/RuntimeContractPanel';
 import { T1CompletenessPanel } from './_components/T1CompletenessPanel';
 import { QualificationCampaignsPanel } from './_components/QualificationCampaignsPanel';
@@ -137,6 +138,8 @@ interface Execution {
   t4Decision?: ContractCallView['t4Decision'];
   /** Lot 52B : tentatives internes (structurée → même modèle sans schéma). */
   providerAttempts?: Array<{ kind: string; outcome: string; httpStatus: number | null; providerErrorCode: string | null }>;
+  /** Lot 89A (P8, MIG-03) : classement d'un appel historique (règle, nature, exécution prouvée, motif). */
+  history?: HistoryClass | null;
 }
 
 /** `INVALID_OUTPUT / SCHEMA_VALIDATION_FAILED · étape schema_validation`, sinon le code enregistré. */
@@ -736,6 +739,12 @@ function ExecutionDetailPanel({ detail, onClose }: { detail: Detail; onClose: ()
                   : 'Appel technique (sonde, qualification, test) : aucune exécution métier.'}
               </p>
             )}
+          {detail.call.history && (
+            <p className="text-xs text-[color:var(--text-secondary)] break-words" data-testid="execution-history-class">
+              {historyClassSummary(detail.call.history)}
+              {detail.call.history.evidence.length > 0 && ` · preuves : ${detail.call.history.evidence.map((e) => `${e.source} ${e.ref}`).join(' ; ')}`}
+            </p>
+          )}
         </section>
 
         {/* CDC 15 CFG-02, CFG-05, DP-05, OBS-CFG : ce qui a réellement été appliqué. */}

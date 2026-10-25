@@ -93,6 +93,8 @@ function toVersion(r: Row): ConfigVersion {
     origin: r.origin === 'auto' ? 'auto' : 'manual',
     candidateState: r.candidate_state == null ? null : String(r.candidate_state),
     candidateReason: r.candidate_reason == null ? null : String(r.candidate_reason),
+    // Lot 89A (0777) : marque « manuel, non qualifié » des versions existantes (affichage seulement).
+    provenanceMark: provenanceMarkOf(r.provenance_mark),
   };
 }
 
@@ -124,7 +126,16 @@ const COLS = `v.id, v.uid, v.environment, v.status, v.visible_number, v.label, v
               v.created_by, v.created_at, v.updated_at, v.updated_by, v.validated_at, v.activated_at,
               v.archived_at, v.deleted_at, v.current_revision_id, v.current_revision_number, v.legacy_status,
               to_jsonb(v)->>'origin' AS origin, to_jsonb(v)->>'candidate_state' AS candidate_state,
-              to_jsonb(v)->>'candidate_reason' AS candidate_reason`;
+              to_jsonb(v)->>'candidate_reason' AS candidate_reason, to_jsonb(v)->'provenance_mark' AS provenance_mark`;
+
+/** Marque de provenance (0777) lue de façon tolérante : colonne absente ou illisible → null. */
+function provenanceMarkOf(raw: unknown): ConfigVersion['provenanceMark'] {
+  const v = typeof raw === 'string' ? (() => { try { return JSON.parse(raw) as unknown; } catch { return null; } })() : raw;
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  if (o.provenance !== 'manual' || o.proof !== 'not_qualified') return null;
+  return { label: String(o.label ?? 'manuel, non qualifié'), rule: String(o.rule ?? ''), markedAt: String(o.markedAt ?? '') };
+}
 
 // ── Révisions ───────────────────────────────────────────────────────────────
 

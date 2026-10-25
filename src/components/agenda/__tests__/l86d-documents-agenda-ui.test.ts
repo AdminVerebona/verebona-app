@@ -44,7 +44,7 @@ describe('L86D-UI01 — « Documents de cet élément », quel que soit son rôl
       expect(html).toContain('Documents de cet élément (2)');
       for (const d of docs) {
         expect(html).toContain(`data-testid="regroupement-document-element-${d.id}"`);
-        expect(html).toContain(`aria-label="Détacher « ${d.title} » de cet élément"`);
+        expect(html).toContain(`aria-label="Retirer l’association avec « ${d.title} »"`);
         expect(html).toContain(`data-testid="regroupement-detacher-document-${d.id}"`);
       }
       expect(html).toContain('data-testid="regroupement-relier-documents"');
@@ -52,11 +52,11 @@ describe('L86D-UI01 — « Documents de cet élément », quel que soit son rôl
       expect(html).not.toContain('de l’ensemble"');
     });
   }
-  it('aucun document : message vide, toujours « Relier un document »', () => {
+  it('aucun document : message vide, toujours « Associer un document »', () => {
     const html = rendre({ itemId: 9, role: 'NONE', main: null, mainWithdrawn: false, ensemble: null, counts: null, linkedDocuments: [] });
     expect(html).toContain('Documents de cet élément');
     expect(html).toContain('Aucun document.');
-    expect(html).toContain('Relier un document');
+    expect(html).toContain('Associer un document');
   });
 });
 
@@ -67,10 +67,10 @@ describe('L86D-UI02 — événement de référence : détacher (lien) et retirer
   });
   it('document relié à l’événement : deux gestes ; document seulement membre de l’ensemble : retirer seulement', () => {
     for (const t of ['Rapport d’expertise', 'Devis']) {
-      expect(html).toContain(`aria-label="Détacher « ${t} » de cet élément"`);
+      expect(html).toContain(`aria-label="Retirer l’association avec « ${t} »"`);
       expect(html).toContain(`aria-label="Retirer « ${t} » de l’ensemble"`);
     }
-    expect(html).not.toContain('aria-label="Détacher « Facture » de cet élément"');
+    expect(html).not.toContain('aria-label="Retirer l’association avec « Facture »"');
     expect(html).toContain('aria-label="Retirer « Facture » de l’ensemble"');
     // Pas de second bloc « Documents de cet élément » : la catégorie de l'ensemble les présente.
     expect(html).not.toContain('data-testid="regroupement-documents-element"');
@@ -82,7 +82,7 @@ describe('L86D-UI03 — accessibilité, mobile, vocabulaire', () => {
   it('bouton « Détacher » : vrai bouton nommé, 44 px sur mobile, 32 px desktop', () => {
     const b = html.match(/<button[^>]*data-testid="regroupement-detacher-document-10"[^>]*>/)?.[0] ?? '';
     expect(b).toContain('type="button"');
-    expect(b).toContain('aria-label="Détacher « Rapport d’expertise » de cet élément"');
+    expect(b).toContain('aria-label="Retirer l’association avec « Rapport d’expertise »"');
     expect(b).toContain('size-11 sm:size-8');
   });
   it('aucun « Opération » ni « principal » visible', () => {

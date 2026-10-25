@@ -103,7 +103,7 @@ describe.skipIf(!EXE)('L86D — documents d’un élément d’agenda : détache
       [...el.querySelectorAll('button')].map((b) => ({ n: b.getAttribute('aria-label') ?? b.textContent, h: b.getBoundingClientRect().height, w: b.getBoundingClientRect().width }))
         .filter((b) => b.h < 44 || b.w < 44));
     expect(petits).toEqual([]);
-    const bouton = page.getByRole('button', { name: 'Détacher « Facture plombier » de cet élément' });
+    const bouton = page.getByRole('button', { name: 'Retirer l’association avec « Facture plombier »' });
     const b = (await bouton.boundingBox())!;
     expect(b.x + b.width).toBeLessThanOrEqual(390);
     await bouton.tap();
@@ -114,7 +114,7 @@ describe.skipIf(!EXE)('L86D — documents d’un élément d’agenda : détache
 
   it('L86D-NAV02 — desktop : détacher au clavier ; événement de référence : « Détacher » et « Retirer de l’ensemble » distincts', async () => {
     await ouvrir(false, 'membre');
-    const bouton = page.getByRole('button', { name: /^Détacher « Rapport d’expertise/ });
+    const bouton = page.getByRole('button', { name: /^Retirer l’association avec « Rapport d’expertise/ });
     await bouton.focus();
     await page.keyboard.press('Enter');
     await page.waitForTimeout(200);
@@ -122,10 +122,10 @@ describe.skipIf(!EXE)('L86D — documents d’un élément d’agenda : détache
     const t = (await bouton.boundingBox())!;
     expect(Math.round(t.height)).toBe(32);
     await ouvrir(false, 'reference');
-    await page.getByRole('button', { name: /^Détacher « Rapport d’expertise/ }).click();
+    await page.getByRole('button', { name: /^Retirer l’association avec « Rapport d’expertise/ }).click();
     await page.getByRole('button', { name: /^Retirer « Devis réparation plafond » de l’ensemble/ }).click();
     await page.waitForTimeout(200);
     expect(await page.evaluate(() => window.__l84bGestes)).toEqual(['detacher-document:10', 'retirer-document:11']);
-    await expect(page.getByRole('button', { name: /^Détacher « Devis réparation plafond/ }).count()).resolves.toBe(1);
+    await expect(page.getByRole('button', { name: /^Retirer l’association avec « Devis réparation plafond/ }).count()).resolves.toBe(1);
   });
 });

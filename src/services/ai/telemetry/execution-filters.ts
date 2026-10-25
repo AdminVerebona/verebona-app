@@ -11,6 +11,8 @@
  * Tolérantes : un paramètre illisible est ignoré, jamais bloquant (un lien
  * ancien montre moins de filtres, il ne casse pas l'écran).
  */
+import { historyScopeLabel, type HistoryClass } from '../history-reclassification/rule';
+
 // Lot 49 : T5 retiré du filtre courant (un ancien lien `?treatment=T5` est
 // ignoré). Les anciens appels T5 restent consultables par opération
 // (`t5_analyze`, `t5_modify`) ou usage (AI_GOVERNANCE), en lecture seule.
@@ -125,10 +127,13 @@ export function periodBounds(period: CostPeriod, now: Date = new Date(), custom?
  *     retour PO D24 : libellé « retiré » confirmé dans le BO),
  *     consultables en lecture seule, jamais confondus avec les sondes.
  */
-export function executionScopeLabel(row: { treatment: string | null; useCaseCode?: string | null; operationCode?: string | null }): string {
+export function executionScopeLabel(row: { treatment: string | null; useCaseCode?: string | null; operationCode?: string | null; history?: HistoryClass | null }): string {
   if (row.treatment) return row.treatment;
   if (row.operationCode && /^t5_(analyze|modify)$/.test(row.operationCode)) return 'T5 (retiré)';
   if (row.useCaseCode === 'AI_GOVERNANCE') return 'Technique';
+  // Lot 89A (P8, MIG-03) : appel historique reclassé par la règle versionnée (preuve dans le détail).
+  const reclasse = historyScopeLabel(row.history ?? null);
+  if (reclasse) return reclasse;
   // Lot 84D (R23, R59, BO-11) : rattachement RÉELLEMENT absent (historique sans preuve) —
   // signalé comme tel, jamais inventé ; une sonde reste « Technique » ci-dessus.
   return 'Non rattaché (historique)';

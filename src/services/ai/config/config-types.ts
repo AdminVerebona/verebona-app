@@ -200,6 +200,12 @@ export interface ConfigVersion {
   /** Lot 86A : cycle d'une candidate automatique (`null` : version manuelle). */
   candidateState?: string | null;
   candidateReason?: string | null;
+  /**
+   * Lot 89A (0777, Pilotage IA V2 P8, MIG-02) : version existante reprise
+   * « manuel, non qualifié » (provenance et état de preuve, date). Affichage
+   * seulement : aucun chemin d'exécution ne la lit. `null` : non marquée.
+   */
+  provenanceMark?: { label: string; rule: string; markedAt: string } | null;
 }
 
 export interface ConfigVersionWithEntries extends ConfigVersion {

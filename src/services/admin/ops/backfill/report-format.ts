@@ -25,6 +25,7 @@ import type { BackfillAction, BackfillScript } from './definitions';
 import type { DuoSharedAccountReport, RestoreReport as DuoRestoreReport } from '@/services/account/duo-shared-account-backfill';
 import type { BackupManifestV2 } from '@/services/backup/database-backup.service';
 import type { RestoreReport as DatabaseRestoreReport } from '@/services/backup/database-restore.service';
+import type { ReclassificationReport, ReclassificationRestoreReport } from '@/services/ai/history-reclassification/service';
 
 export interface BackfillSummary {
   headline: string;
@@ -786,6 +787,57 @@ function databaseRestorePoint(action: BackfillAction, out: RawBackfillOutput): B
   };
 }
 
+/** Lot 89A (Pilotage IA V2 P8) : reclassement de l'historique et marquage des configurations existantes. */
+const NATURE_FR: Record<string, string> = { BUSINESS: 'métier', TECHNICAL: 'technique', UNDETERMINED: 'non déterminable' };
+const ISSUE_FR: Record<string, string> = { SUCCEEDED: 'Réussie', INCOMPLETE: 'Incomplète', FAILED: 'Échouée', NOT_FINAL: 'Non finale', VOID: 'Sans objet', UNDETERMINED: 'Non déterminable' };
+function aiHistoryReclassification(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  if (action === 'restore') {
+    const r = out.result as ReclassificationRestoreReport;
+    return {
+      headline: `Reclassement annulé : ${r.callsRestored} appel(s) remis dans leur état antérieur, ${r.configurationsRestored} marque(s) de configuration retirée(s).`,
+      scriptRunId: r.runId, restorable: false,
+      counters: [{ label: 'Appels remis dans leur état antérieur', value: r.callsRestored }, { label: 'Marques « manuel, non qualifié » retirées', value: r.configurationsRestored }],
+      ambiguous: { count: 0, samples: [] }, conflicts: { count: 0, samples: [] },
+      warnings: ['Les traces d’origine n’ont jamais été modifiées : seul le classement ajouté est retiré.'],
+    };
+  }
+  const r = out.result as ReclassificationReport;
+  const sim = action === 'simulate';
+  const c = r.calls;
+  const parNature = Object.entries(c.byNature).map(([k, v]) => ({ label: `Appels ${NATURE_FR[k] ?? k}`, value: v }));
+  const parIssue = Object.entries(c.byOutcome).map(([k, v]) => ({ label: `Issue de l’exécution : ${ISSUE_FR[k] ?? k}`, value: v }));
+  const parTraitement = Object.entries(c.byTreatment).map(([k, v]) => ({ label: `Traitement ${k}`, value: v }));
+  const nd = Object.entries(c.undeterminedReasons).sort((a, b) => b[1] - a[1]);
+  return {
+    headline: r.disabled
+      ? `Rien à reclasser : ${r.disabled}.`
+      : `${sim ? 'Simulation' : 'Reclassement'} (${r.rule}) : ${c.examined} appel(s) historique(s) examiné(s)${sim ? '' : `, ${c.classified} classé(s)`}, `
+        + `${c.alreadyClassified} déjà classé(s) ; ${sim ? r.configurations.versionIds.length : r.configurations.marked} version(s) de configuration `
+        + `${sim ? 'à marquer' : 'marquée(s)'} « manuel, non qualifié »${c.more ? ' — reste à examiner' : ''}.`,
+    scriptRunId: r.runId,
+    restorable: !sim && (c.classified > 0 || r.configurations.marked > 0 || c.alreadyClassified > 0),
+    counters: [
+      { label: 'Règle', value: r.rule },
+      { label: 'AI_PILOTAGE_V2', value: r.pilotageV2 },
+      { label: 'Suivi par exécution depuis', value: r.correlationStartedAt ?? '—' },
+      { label: 'Appels examinés', value: c.examined },
+      ...(sim ? [] : [{ label: 'Appels classés', value: c.classified }, { label: 'Appels écartés (rattachés entre-temps par le nouveau chemin)', value: c.skippedConcurrent }]),
+      { label: 'Appels déjà classés par cette règle', value: c.alreadyClassified },
+      ...parNature, ...parTraitement, ...parIssue,
+      { label: 'Versions de configuration examinées', value: r.configurations.examined },
+      { label: sim ? 'Versions à marquer « manuel, non qualifié »' : 'Versions marquées « manuel, non qualifié »', value: sim ? r.configurations.versionIds.length : r.configurations.marked },
+      { label: 'Versions déjà marquées', value: r.configurations.alreadyMarked },
+      { label: 'Candidates automatiques (jamais marquées)', value: r.configurations.automaticSkipped },
+    ],
+    ambiguous: { count: nd.reduce((n, [, v]) => n + v, 0), samples: nd.slice(0, SAMPLE_LIMIT).map(([k, v]) => `${v} × ${k}`) },
+    conflicts: { count: c.skippedConcurrent, samples: [] },
+    warnings: [
+      ...(c.more ? ['Historique non entièrement examiné dans le temps imparti : relancer (rien n’est réécrit).'] : []),
+      'Aucun appel IA, aucune reconstitution : sans preuve enregistrée, l’appel reste « non déterminable » avec son motif.',
+    ],
+  };
+}
+
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
     case 'database-restore-point': return databaseRestorePoint(action, out);
@@ -803,6 +855,7 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'agenda-intervention-duplicates': return agendaInterventionDuplicates(action, out);
     case 'to-process-false-arbitrations': return falseArbitrations(out);
     case 'operations-v5-rebuild': return operationsV5Rebuild(action, out);
+    case 'ai-history-reclassification': return aiHistoryReclassification(action, out);
   }
 }
 

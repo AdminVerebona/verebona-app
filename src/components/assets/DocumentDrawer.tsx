@@ -42,7 +42,6 @@ import { analyzeErrorFeedback, type AnalyzeFeedback } from './document-analysis-
 import { apiClient } from '@/lib/api-client';
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
-import { DocumentTypeBadge } from '@/components/documents/DocumentTypeBadge';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { openDrawer, restoreFocusOnClose } from '@/lib/drawers';
 import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
@@ -50,8 +49,9 @@ import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
 // Lot 84B (CDC v5 O-3, §8.1, §14.4) : événement de référence + liens précis ; lien manuel vers un élément d'agenda.
-import { GroupingPicker } from '@/components/agenda/AgendaGroupingPanel';
+import { ASSOCIATION_BTN, GroupingPicker } from '@/components/agenda/AgendaGroupingPanel';
 import { GROUPING_LABELS } from '@/lib/agenda/grouping-view';
+import { documentStatusLabel } from '@/lib/documents/document-status-label';
 import {
   displayAnalysisState, isProcessingStatus, userMessageText, ANALYSIS_FAILED_FINAL_MESSAGE, type ProcessingStatus,
 } from '@/lib/ai/processing-status';
@@ -400,7 +400,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     if (!doc) return;
     try {
       await apiClient.post(`/api/documents/${doc.id}/agenda-liens`, { itemId });
-      toast.success('Document relié');
+      toast.success(GROUPING_LABELS.associatedToast);
       window.dispatchEvent(new CustomEvent('agenda-mutated'));
       await rechargerElementsAgenda();
     } catch (err: any) {
@@ -1124,11 +1124,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
   if (!doc) return null;
 
-  // Lot 86E (ticket §5) : un seul libellé de Type, celui du Type ENREGISTRÉ
-  // (référentiel V2), le même que la liste et la section « Informations ».
-  // Lot 87D : jamais un code (« BUILDING_PERMIT ») — pastille MASQUÉE sans
-  // Type V2 connu (`DocumentTypeBadge`).
-  const typeCode = fullData ? fullData.documentTypeCode : doc.documentTypeCode;
+  // Lot 89B (demande PO 25/10) : plus de pastille de Type sous le titre — le Type
+  // ENREGISTRÉ (référentiel V2) n'est affiché qu'une fois, ligne « Type » de la
+  // section « Informations » (`rubricTypeLabels(fullData).type`).
   // Lot 33C (AC8) : titre métier → nom original exploitable → nom technique.
   // Lot 87D : titre calculé par le serveur (règle unique de toutes les vues).
   const filename = fullData?.displayTitle || displayDocumentTitle(fullData ?? { originalFilename: doc.originalFilename }, doc.originalFilename);
@@ -1144,7 +1142,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           onCloseAutoFocus={(e) => { restoreFocusOnClose(e, returnFocusTo); }}
         >
           <SheetHeader className="px-5 pt-5 pb-3">
-            {/* Title row — icon + name + badge (close ✕ is absolute top-right from shadcn) */}
+            {/* Title row — icon + name (close ✕ is absolute top-right from shadcn) */}
             <div className="flex items-start gap-3 pr-8">
               <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center flex-shrink-0 mt-0.5">
                 <FileText className="w-4 h-4 text-primary" />
@@ -1153,7 +1151,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 <SheetTitle className="leading-tight line-clamp-2 text-left">
                   {isEditing ? editFilename || filename : filename}
                 </SheetTitle>
-                <DocumentTypeBadge typeCode={typeCode} />
               </div>
             </div>
 
@@ -1266,41 +1263,35 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 ? liveProposals
                 : [];
 
-              const stateConfig: Record<string, { label: string; icon: React.ReactNode; color: string; bg: string }> = {
+              const stateConfig: Record<string, { icon: React.ReactNode; color: string; bg: string }> = {
                 // Dépôt multiple : le document attend son tour dans la file
                 // d'analyse du serveur.
                 UPLOADED: {
-                  label: 'En file d\u2019attente',
                   icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
                   color: 'text-[color:var(--accent)]',
                   bg: 'bg-[color:var(--accent-soft)] border-[color:var(--border-info)]',
                 },
                 ANALYZING: {
-                  label: 'Analyse en cours…',
                   icon: <Loader2 className="w-3.5 h-3.5 animate-spin" />,
                   color: 'text-[color:var(--accent)]',
                   bg: 'bg-[color:var(--accent-soft)] border-[color:var(--border-info)]',
                 },
                 ANALYZED: {
-                  label: 'Analysé',
                   icon: <CheckCircle2 className="w-3.5 h-3.5" />,
                   color: 'text-[color:var(--text-success)]',
                   bg: 'bg-[color:var(--bg-success)] border-[color:var(--border-success)]',
                 },
                 CONFLICT_DETECTED: {
-                  label: 'Conflit détecté',
                   icon: <AlertCircle className="w-3.5 h-3.5" />,
                   color: 'text-[color:var(--danger)]',
                   bg: 'bg-[color:var(--danger-soft)] border-[color:var(--danger-edge)]',
                 },
                 FUSION_SUGGESTED: {
-                  label: 'Doublon possible',
                   icon: <AlertCircle className="w-3.5 h-3.5" />,
                   color: 'text-[color:var(--attention-on-soft)]',
                   bg: 'bg-[color:var(--attention-soft)] border-[color:var(--attention-edge)]',
                 },
                 ANALYSIS_FAILED: {
-                  label: fullData?.processingStatus === 'NEEDS_USER_ACTION' ? 'Action requise' : 'Analyse non finalisée',
                   icon: <AlertCircle className="w-3.5 h-3.5" />,
                   color: 'text-muted-foreground',
                   bg: 'bg-muted/30 border-border',
@@ -1312,21 +1303,36 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
               // cours) est rattaché à la file d'attente.
               if (analysisState === 'UPLOADING') stateConfig.UPLOADING = stateConfig.UPLOADED;
               const cfg = stateConfig[analysisState] ?? stateConfig['ANALYZED'];
+              // Lot 89B (demande PO 25/10) : libellé sobre « Statut : analysé » ; le détail
+              // ne se déplie que s'il apporte quelque chose (étapes d'analyse, informations
+              // détectées, suggestions d'agenda) — sinon simple ligne de statut.
+              const statusLabel = documentStatusLabel(analysisState, fullData?.processingStatus);
+              const hasDetail = analysisState === 'ANALYZING'
+                || proposals.some((p: any) => (p.proposalType === 'field' || p.proposalType === 'agenda_suggestion') && p.status !== 'rejected');
 
               return (
                 <div className="px-5 py-3 border-t border-border/40">
                   <div className="space-y-1.5">
                     {/* Header compact */}
                     <div className="flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        className={`flex items-center gap-1.5 ${cfg.color} opacity-70 hover:opacity-100 transition-opacity`}
-                        onClick={() => setShowDetectedInfo(v => !v)}
-                      >
-                        {cfg.icon}
-                        <span className="text-[12px] font-semibold">Automatique — {cfg.label}</span>
-                        {showDetectedInfo ? <ChevronUp className="w-3 h-3 ml-0.5" /> : <ChevronDown className="w-3 h-3 ml-0.5" />}
-                      </button>
+                      {hasDetail ? (
+                        <button
+                          type="button"
+                          className={`flex items-center gap-1.5 min-h-11 sm:min-h-0 ${cfg.color} opacity-80 hover:opacity-100 transition-opacity`}
+                          onClick={() => setShowDetectedInfo(v => !v)}
+                          aria-expanded={showDetectedInfo}
+                          data-testid="document-statut"
+                        >
+                          {cfg.icon}
+                          <span className="text-[12px] font-medium">{statusLabel}</span>
+                          {showDetectedInfo ? <ChevronUp className="w-3 h-3 ml-0.5" aria-hidden /> : <ChevronDown className="w-3 h-3 ml-0.5" aria-hidden />}
+                        </button>
+                      ) : (
+                        <p className={`flex items-center gap-1.5 ${cfg.color} opacity-80`} data-testid="document-statut">
+                          {cfg.icon}
+                          <span className="text-[12px] font-medium">{statusLabel}</span>
+                        </p>
+                      )}
                       {/* Bouton relancer sur échec uniquement */}
                       {(analysisState === 'ANALYSIS_FAILED' && retryCount < 2) ? (
                         <Button size="sm" variant="outline"
@@ -1455,9 +1461,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       </div>
                     )}
 
-                    {showDetectedInfo && proposals.length === 0 && analysisState === 'ANALYZED' && (
-                      <p className="text-[10px] text-muted-foreground/60 pl-1">Informations déjà complètes.</p>
-                    )}
                   </div>
                 </div>
               );
@@ -1803,9 +1806,12 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                     </div>
                   )}
 
-                  {/* Lot 84B (§8.1, AC01) : lien manuel vers un élément d'agenda — le document rejoint son ensemble. */}
+                  {/* Lot 84B (§8.1, AC01) : lien manuel vers un élément d'agenda — le document rejoint son ensemble.
+                      Lot 89B : « Associer à l'agenda », style neutre ; ouvre la SÉLECTION des éléments existants,
+                      ne crée jamais d'élément (la création est l'action distincte du pied du choix). */}
                   <div className={linkedAgendaItems.length > 0 ? 'pt-1' : 'pt-2 border-t'}>
-                    <Button type="button" variant="secondary" size="sm" className="min-h-11 sm:min-h-8"
+                    <Button type="button" variant="secondary" size="sm" className={`min-h-11 sm:min-h-8 ${ASSOCIATION_BTN}`}
+                      data-focus-ring="off"
                       onClick={() => garder(() => setAgendaPickerOpen(true))} data-testid="document-relier-agenda">
                       <Calendar className="w-3.5 h-3.5" aria-hidden />{GROUPING_LABELS.documentAgendaTitle}
                     </Button>
@@ -1973,6 +1979,17 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         load={loadAgendaCandidates}
         onClose={() => setAgendaPickerOpen(false)}
         onPick={(c) => { setAgendaPickerOpen(false); void relierAgenda(c.id); }}
+        // Lot 89B : création EXPLICITE et distincte (jamais implicite au choix d'un élément).
+        createAction={{
+          label: GROUPING_LABELS.createAgendaItem,
+          testId: 'document-creer-element-agenda',
+          onCreate: () => {
+            setAgendaPickerOpen(false);
+            setAgendaPrefill({ title: '', startDate: '' });
+            setPendingAgendaProposalId(null);
+            setAgendaDrawerOpen(true);
+          },
+        }}
       />
 
       {/* Agenda item sub-drawer */}

@@ -28,6 +28,9 @@
  *   operations-v5-rebuild runOperationsRebuild / restoreOperationsRebuild (lot 85A, CDC v5 O-2 ;
  *                         simulation = inventaire en lecture seule ; application refusée sans
  *                         point de restauration < 24 h ; journal 0700, restauration exacte)
+ *   ai-history-reclassification runHistoryReclassification / restoreHistoryReclassification (lot 89A,
+ *                         Pilotage IA V2 P8 ; simulation = lecture seule ; colonnes 0776 / 0777 ;
+ *                         même service que la tâche `ai-history-reclassification`)
  *   database-restore-point runDatabaseBackup('admin') / restoreDatabaseBackup (lot 82E ; point de
  *                         restauration = sauvegarde format 2 ; restauration tout ou rien)
  *
@@ -247,6 +250,20 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
       });
       if (r.status === 'refused') throw Object.assign(new Error(r.refusal ?? 'Point de restauration requis.'), { code: 'RESTORE_POINT_REQUIRED' });
       return { result: r };
+    }
+    case 'ai-history-reclassification': {
+      // Lot 89A (P8) : non destructif ; idempotent ; restauration par l'identifiant de la règle.
+      const m = await import('@/services/ai/history-reclassification/service');
+      if (req.action === 'restore') {
+        const r = await m.restoreHistoryReclassification(req.runId!, { log: hooks.log });
+        return { result: { ...r, action: 'restore' } };
+      }
+      // Application : tout l'historique en une exécution (lots bornés, progression suivie) ; simulation : bornée.
+      const r = await m.runHistoryReclassification({
+        apply: req.action === 'apply', deadline: Date.now() + 60 * 60_000,
+        log: (msg) => { hooks.log(msg); hooks.progress({ message: msg }); },
+      });
+      return { result: { ...r, action: req.action } };
     }
     case 'to-process-false-arbitrations': {
       // Lot 81A : même service que la campagne automatique (réexamen T3 en lecture seule).

@@ -29,7 +29,7 @@ interface OperationView { operationCode: string; treatment: string; configured: 
 const TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T6'] as const;
 const selectClass = 'h-9 rounded-md border border-[color:var(--border-default)] bg-[color:var(--bg-input)] px-2 text-sm text-[color:var(--text-primary)]';
 const EVIDENCE: Record<string, string> = {
-  admissible: 'qualifié', technical_only: 'technique seulement', never_tested: 'sans preuve', refused: 'refusé',
+  admissible: 'qualifié', technical_only: 'technique seulement (ancien fichier)', never_tested: 'sans preuve', refused: 'refusé',
   inconclusive: 'non concluant', obsolete: 'preuve obsolète', in_test: 'en test',
 };
 const dateHeure = (d: string | null | undefined) => (d ? new Date(d).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : '—');

@@ -25,7 +25,7 @@ import {
 import { applyRoutingOverlay, type RoutingOverlay } from '../routing-overlay';
 import { chainsEmptiedBy } from '../config-interventions.service';
 import {
-  evidenceFromTechnicalQualification, evidenceSupportsAutomaticPromotion, qualificationThresholds, thresholdsSha256, EVIDENCE_STATUSES,
+  evidenceNeverTested, evidenceSupportsAutomaticPromotion, qualificationThresholds, thresholdsSha256, EVIDENCE_STATUSES,
   evidenceFromPairRecord, readPairEvidence,
 } from '../qualification-evidence.adapter';
 import { QUALIFICATION_THRESHOLDS } from '../../qualification/thresholds';
@@ -250,12 +250,9 @@ describe('L86B-U06 — résolveur : surcouche appliquée à la configuration act
 
 describe('L86B-U07 — adaptateur des preuves (contrat de rebranchement 86A)', () => {
   const pair = { operationCode: 't1_analyze_document', model: 'm', profileSha256: 'p', promptSha256: 's', contractRef: 'C@v1' };
-  const ctxQ = { environment: 'preprod', currentVersion: 'qualif-v2' };
-  it('qualification technique → jamais admissible (MIG-02)', () => {
-    expect(evidenceFromTechnicalQualification(pair, undefined, ctxQ).status).toBe('never_tested');
-    expect(evidenceFromTechnicalQualification(pair, { generate: true, structured: true, multimodal: true, thinking: true, qualifiedAt: '2026-10-20T00:00:00Z', version: 'qualif-v2' }, ctxQ).status).toBe('technical_only');
-    expect(evidenceFromTechnicalQualification(pair, { generate: false, structured: null, multimodal: null, thinking: null, qualifiedAt: '2026-10-20T00:00:00Z', version: 'qualif-v2' }, ctxQ).status).toBe('refused');
-    expect(evidenceFromTechnicalQualification(pair, { generate: true, structured: true, multimodal: null, thinking: null, qualifiedAt: '2026-10-20T00:00:00Z', version: 'qualif-v1' }, ctxQ).status).toBe('obsolete');
+  it('couple sans preuve par couple → jamais testé, jamais admissible (MIG-02 ; règle technique transitoire retirée au lot 89A)', () => {
+    expect(evidenceNeverTested(pair, { environment: 'preprod' })).toMatchObject({ status: 'never_tested', source: 'pair_evidence', testedAt: null });
+    // `technical_only` reste LISIBLE (anciens fichiers 2.0.0), plus produit.
     expect(EVIDENCE_STATUSES).toEqual(['never_tested', 'in_test', 'admissible', 'refused', 'inconclusive', 'obsolete', 'technical_only']);
   });
   it('promotion automatique : preuve admissible aux MÊMES empreintes seulement', () => {
@@ -296,17 +293,17 @@ describe('L86-INT-01 — intégration 86A × 86B : preuves par couple et seuils 
     expect(e).toMatchObject({ status: 'admissible', source: 'pair_evidence' });
     expect(evidenceSupportsAutomaticPromotion(e, { profileSha256: 'p', promptSha256: 's', contractRef: 'C@v1', thresholdsSha256: t })).toBe(true);
   });
-  it('preuve obsolète ou refusée → jamais de promotion ; couple sans preuve → qualification technique', async () => {
+  it('preuve obsolète ou refusée → jamais de promotion ; couple sans preuve → jamais testé (source unique : preuves par couple)', async () => {
     const t = thresholdsSha256(qualificationThresholds());
     const o = evidenceFromPairRecord(pair, rec('OBSOLETE'), { thresholdsSha256: t });
     expect(o.status).toBe('obsolete');
     expect(evidenceSupportsAutomaticPromotion(o, { profileSha256: 'p', promptSha256: 's', contractRef: 'C@v1', thresholdsSha256: t })).toBe(false);
     expect(evidenceFromPairRecord(pair, rec('REFUSED'), { thresholdsSha256: t }).status).toBe('refused');
     const [x, y] = await readPairEvidence([pair, { ...pair, model: 'autre' }], {
-      environment: 'preprod', loadPairEvidence: async () => [rec('ADMISSIBLE')], loadTechnical: async () => new Map(),
+      environment: 'preprod', loadPairEvidence: async () => [rec('ADMISSIBLE')],
     });
     expect(x.source).toBe('pair_evidence');
-    expect(y).toMatchObject({ source: 'model_qualification', status: 'never_tested' });
+    expect(y).toMatchObject({ source: 'pair_evidence', status: 'never_tested' });
   });
   it('seuils = constante versionnée de la qualification (décision 14)', () => {
     const t = qualificationThresholds();

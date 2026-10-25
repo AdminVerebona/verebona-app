@@ -124,9 +124,10 @@ describe('L87D-U-CODES — audit statique des vues utilisateur : aucun repli sur
     }
   });
 
-  it('tiroir document (desktop ET mobile : même composant) : la pastille passe par DocumentTypeBadge, plus aucun libellé de type local', () => {
+  it('tiroir document (desktop ET mobile : même composant) : plus de pastille de type (lot 89B), plus aucun libellé de type local', () => {
     const src = readFileSync(join(ROOT, 'components/assets/DocumentDrawer.tsx'), 'utf8');
-    expect(src).toMatch(/<DocumentTypeBadge typeCode=\{typeCode\} \/>/);
+    // Lot 89B (demande PO 25/10) : pastille retirée de l'en-tête ; le Type reste dans « Informations ».
+    expect(src).not.toMatch(/<DocumentTypeBadge/);
     expect(src).not.toMatch(/getTypeLabel\(|DOCUMENT_TYPE_LABELS/);
   });
 });

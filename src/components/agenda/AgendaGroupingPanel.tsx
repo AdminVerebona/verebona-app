@@ -43,6 +43,14 @@ const KIND_ICON: Record<GroupingCandidateKind, typeof FileText> = {
  * à la ligne au lieu de déborder de l'écran (390 px).
  */
 const BTN = "min-h-11 sm:min-h-8 h-auto py-2 sm:py-1 whitespace-normal text-left";
+/**
+ * Lot 89B (demande PO 25/10) : boutons d'ASSOCIATION (document ↔ agenda) au style neutre —
+ * contour gris, texte courant, aucun accent pétrole au survol ni anneau cuivre au focus
+ * (sur mobile, le focus rendu au bouton après la sélection affichait un contour rouge-brun).
+ * Le focus clavier reste visible : anneau neutre 2 px (`data-focus-ring="off"` sur le bouton).
+ */
+export const ASSOCIATION_BTN =
+  "border-[color:var(--border)] bg-[color:var(--bg-card)] text-[color:var(--text-primary)] hover:border-[color:var(--border)] hover:bg-[color:var(--bg-subtle)] hover:text-[color:var(--text-primary)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--text-muted)]";
 
 /** Les cinq catégories, dans l'ordre du CDC §14.2. */
 export const MAIN_CATEGORIES: readonly GroupingCandidateKind[] = ["elements", "documents", "biens", "pieces", "equipements"];
@@ -100,8 +108,8 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
   );
 
   const pickButton = (kind: GroupingCandidateKind) => (
-    <Button key={`relier-${kind}`} type="button" variant="secondary" size="sm" className={BTN} disabled={busy}
-      onClick={() => onPick(kind)} data-testid={`regroupement-relier-${kind}`}>
+    <Button key={`relier-${kind}`} type="button" variant="secondary" size="sm" className={`${BTN} ${ASSOCIATION_BTN}`} disabled={busy}
+      onClick={() => onPick(kind)} data-testid={`regroupement-relier-${kind}`} data-focus-ring="off">
       <Link2 className="w-3.5 h-3.5" aria-hidden />{L.add[kind]}
     </Button>
   );
@@ -228,10 +236,15 @@ export interface GroupingPickerProps {
   load: (q: string) => Promise<GroupingCandidate[]>;
   onPick: (c: GroupingCandidate) => void;
   onClose: () => void;
+  /**
+   * Lot 89B : action DISTINCTE et explicite de création (« Créer un élément d’agenda »),
+   * en pied du choix. Choisir un élément n'en crée jamais ; seule cette action le fait.
+   */
+  createAction?: { label: string; onCreate: () => void; testId?: string };
 }
 
 /** Tiroir de choix : recherche + liste ; même composant desktop et mobile (plein écran). */
-export function GroupingPicker({ open, title, load, onPick, onClose }: GroupingPickerProps) {
+export function GroupingPicker({ open, title, load, onPick, onClose, createAction }: GroupingPickerProps) {
   const [q, setQ] = useState("");
   const [items, setItems] = useState<GroupingCandidate[] | null>(null);
   const seq = useRef(0);
@@ -255,7 +268,7 @@ export function GroupingPicker({ open, title, load, onPick, onClose }: GroupingP
         onCloseAutoFocus={(e) => { restoreFocusOnClose(e, retour.current); }}>
         <div className="px-6 pt-6 pb-3 border-b border-[color:var(--border-subtle)]">
           <SheetTitle>{title}</SheetTitle>
-          <SheetDescription className="sr-only">Choisissez l’élément à relier.</SheetDescription>
+          <SheetDescription className="sr-only">Choisissez l’élément à associer.</SheetDescription>
           <div className="relative mt-3">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[color:var(--text-muted)]" aria-hidden />
             <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={L.search} aria-label={L.search} className="pl-9 h-11 sm:h-9" />
@@ -280,6 +293,14 @@ export function GroupingPicker({ open, title, load, onPick, onClose }: GroupingP
             </ul>
           )}
         </div>
+        {createAction && (
+          <div className="px-4 py-3 border-t border-[color:var(--border-subtle)]">
+            <Button type="button" variant="secondary" size="sm" className={`${BTN} ${ASSOCIATION_BTN} w-full sm:w-auto justify-center`}
+              data-focus-ring="off" onClick={createAction.onCreate} data-testid={createAction.testId ?? "regroupement-choix-creer"}>
+              <Plus className="w-3.5 h-3.5" aria-hidden />{createAction.label}
+            </Button>
+          </div>
+        )}
       </SheetContent>
     </Sheet>
   );

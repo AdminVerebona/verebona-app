@@ -12,6 +12,7 @@
  * tu. Les exports volumineux relèvent de la phase P3 (collecteur 77C).
  */
 import { pgClient } from '@/db';
+import { historyExecutionColumnReady } from '../history-reclassification/columns';
 import { getAssistantConfig } from '@/services/verebona-assistant/config/assistant-config';
 import {
   executionIdOfJob, parseExecutionId, t1LegacyJobExecutionId, t1LegacyReportExecutionId,
@@ -587,14 +588,18 @@ export async function callsOfExecutions(xs: readonly Pick<BusinessExecution, 'id
   const ids = xs.map((x) => x.id);
   const traces = new Map<string, string>();
   for (const x of xs) for (const tr of x.traceIds) traces.set(tr, x.id);
+  // Lot 89A (P8, MIG-03) : appels historiques rattachés par le reclassement prouvé (0776).
+  const hist = await historyExecutionColumnReady(q);
   const rows = await q(`
     SELECT e.id, e.business_execution_id, e.metadata->>'traceId' AS trace_id, e.status, e.cost_micros, e.model, e.metadata->>'callKind' AS call_kind
+           ${hist ? ', e.history_execution_id' : ''}
       FROM ai_usage_event e
      WHERE e.business_execution_id = ANY($1::text[])
         OR (e.business_execution_id IS NULL AND (e.metadata->>'traceId') = ANY($2::text[]))
+        ${hist ? 'OR (e.business_execution_id IS NULL AND e.history_execution_id = ANY($1::text[]))' : ''}
      ORDER BY e.id LIMIT 5000`, [ids, [...traces.keys()]]);
   for (const r of rows) {
-    const id = str(r.business_execution_id) ?? traces.get(String(r.trace_id)) ?? null;
+    const id = str(r.business_execution_id) ?? str(r.history_execution_id) ?? traces.get(String(r.trace_id)) ?? null;
     const c = id ? out.get(id) : undefined;
     if (!c) continue;
     c.calls += 1;
@@ -610,10 +615,13 @@ export async function callsOfExecutions(xs: readonly Pick<BusinessExecution, 'id
 /** Exécution métier d'un appel (détail BO) : colonne, sinon métadonnée (appel partagé). */
 export async function businessExecutionIdsOfCall(usageEventId: number, q: Query = defaultQuery): Promise<string[]> {
   try {
-    const rows = await q(`SELECT business_execution_id, metadata->'businessExecutionIds' AS ids FROM ai_usage_event WHERE id = $1`, [usageEventId]);
+    const rows = await q(`SELECT business_execution_id, metadata->'businessExecutionIds' AS ids,
+                                 to_jsonb(ai_usage_event)->>'history_execution_id' AS history_execution_id FROM ai_usage_event WHERE id = $1`, [usageEventId]);
     const r = rows[0];
     if (!r) return [];
     if (r.business_execution_id) return [String(r.business_execution_id)];
+    // Lot 89A (P8) : appel historique dont l'exécution est PROUVÉE par le reclassement (preuve dans history_class).
+    if (r.history_execution_id) return [String(r.history_execution_id)];
     const l = json<unknown[]>(r.ids);
     return Array.isArray(l) ? l.map(String) : [];
   } catch {

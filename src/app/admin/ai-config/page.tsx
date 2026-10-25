@@ -159,6 +159,8 @@ interface Version {
   /** Lot 86A : `auto` = candidate automatique (jamais active pendant ses tests). */
   origin?: 'manual' | 'auto';
   candidateState?: string | null;
+  /** Lot 89A (P8, MIG-02) : version existante reprise « manuel, non qualifié » (affichage seulement). */
+  provenanceMark?: { label: string; rule: string; markedAt: string } | null;
 }
 
 interface MasterPromptRef { versionId: number; versionNumber: number; masterPromptCode: string; contentSha256: string }
@@ -1092,6 +1094,15 @@ export default function AiConfigPage() {
                 {v.origin === 'auto' && (
                   <span data-testid="candidate-badge" className="shrink-0 text-xs px-2 py-0.5 rounded-full border border-[color:var(--border-subtle)] text-[color:var(--text-secondary)]">
                     Candidate automatique{v.candidateState ? ` · ${CANDIDATE_STATE_LABELS[v.candidateState] ?? v.candidateState}` : ''}
+                  </span>
+                )}
+                {v.origin !== 'auto' && v.provenanceMark && (
+                  <span
+                    data-testid="provenance-badge"
+                    title={`Configuration existante reprise au Pilotage IA V2 (${v.provenanceMark.rule}${v.provenanceMark.markedAt ? `, ${dateHeure(v.provenanceMark.markedAt)}` : ''}) : choisie par un administrateur, aucune preuve de qualification. Son fonctionnement n'est pas modifié.`}
+                    className="shrink-0 text-xs px-2 py-0.5 rounded-full border border-[color:var(--border-subtle)] text-[color:var(--text-muted)]"
+                  >
+                    Manuel, non qualifié
                   </span>
                 )}
                 <span className="text-sm text-[color:var(--text-primary)] break-words">{versionName(v)}</span>

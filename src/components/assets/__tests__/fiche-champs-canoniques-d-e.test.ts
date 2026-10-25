@@ -66,6 +66,12 @@ function blocOnglet(section: string): string {
 }
 
 function blocRoute(section: string): string {
+  // Lot 89B : « Valorisation » construite par `valuationSection` (identique pour les trois familles).
+  if (section === 'valuation') {
+    const v = /function valuationSection\([^)]*\) \{\n\s+return \{([\s\S]*?)\n\s+\};/.exec(ROUTE);
+    expect(v, section).not.toBeNull();
+    return v![1];
+  }
   const m = new RegExp(`sections\\.${section} = \\{([\\s\\S]*?)\\n\\s+\\};`).exec(ROUTE);
   expect(m, section).not.toBeNull();
   return m![1];
