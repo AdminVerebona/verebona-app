@@ -1,6 +1,7 @@
 /**
  * AgendaQueryService — read-only DB queries
  */
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import { db } from '@/db';
 import {
   agendaItems, agendaAssetLinks, agendaFileLinks, agendaRoomLinks, agendaEquipmentLinks,
@@ -130,6 +131,10 @@ async function loadLinks(itemIds: number[]) {
       filename: assetFiles.filename,
       retainedTitle: assetFiles.retainedTitle,
       originalFilename: assetFiles.originalFilename,
+      // Lot 87D : sources du titre affiché (règle unique des vues).
+      webLinkTitle: assetFiles.webLinkTitle,
+      s3Key: assetFiles.s3Key,
+      publicId: assetFiles.publicId,
       resolvedAssetId: assetFiles.assetId,
     })
     .from(agendaFileLinks)
@@ -170,7 +175,7 @@ async function loadLinks(itemIds: number[]) {
   // (historique de production du lien) ne sont plus fusionnées à l'affichage : un lien
   // détaché par l'utilisateur ou retiré par le contrôle de cohérence restait visible
   // par sa trace, sans aucun moyen de le retirer (cause racine).
-  type FileLink = { id: number; agendaItemId: number; assetFileId: number; filename: string | null; retainedTitle: string | null; originalFilename: string | null; resolvedAssetId: number | null };
+  type FileLink = { id: number; agendaItemId: number; assetFileId: number; filename: string | null; retainedTitle: string | null; originalFilename: string | null; title: string; resolvedAssetId: number | null };
   const mergedFileLinks: FileLink[] = fileLinksRows.map(f => ({
     id: f.id,
     agendaItemId: f.agendaItemId,
@@ -178,6 +183,11 @@ async function loadLinks(itemIds: number[]) {
     filename: f.filename ?? null,
     retainedTitle: f.retainedTitle ?? null,
     originalFilename: f.originalFilename ?? null,
+    // Lot 87D : titre affiché par la règle unique (le même que la liste, la fiche et la recherche).
+    title: documentTitleFromRecord({
+      retainedTitle: f.retainedTitle, webLinkTitle: f.webLinkTitle, originalFilename: f.originalFilename, filename: f.filename,
+      s3Key: f.s3Key, publicId: f.publicId == null ? null : String(f.publicId),
+    }, `Document n° ${f.assetFileId}`),
     resolvedAssetId: f.resolvedAssetId ?? null,
   }));
 
@@ -286,7 +296,7 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       assetLinks: itemAssets.map(a => ({ id: a.id, assetId: a.assetId, assetName: a.assetName ?? '' })),
-      fileLinks: itemFiles.map(f => ({ id: f.id, assetFileId: f.assetFileId, filename: f.filename ?? null, retainedTitle: f.retainedTitle ?? null, originalFilename: f.originalFilename ?? null, resolvedAssetId: f.resolvedAssetId ?? null })),
+      fileLinks: itemFiles.map(f => ({ id: f.id, assetFileId: f.assetFileId, filename: f.filename ?? null, retainedTitle: f.retainedTitle ?? null, originalFilename: f.originalFilename ?? null, title: f.title, resolvedAssetId: f.resolvedAssetId ?? null })),
       roomLinks: itemRooms.map(r => ({ id: r.id, substructureId: r.substructureId, name: r.name ?? '', resolvedAssetId: r.resolvedAssetId ?? null })),
       equipmentLinks: itemEquips.map(e => ({ id: e.id, equipmentId: e.equipmentId, name: e.name ?? '', resolvedAssetId: e.resolvedAssetId ?? null })),
       attentionFlags,

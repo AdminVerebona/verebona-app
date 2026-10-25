@@ -21,7 +21,7 @@
 import { pgClient } from '@/db';
 import { isTreatment, type Treatment } from '../config/treatments';
 import {
-  dedupeKey, decideQueueing, afterFailure, afterDeferral, MAX_ATTEMPTS,
+  dedupeKey, decideQueueing, afterFailure, afterDeferral, afterAiSuspension, MAX_ATTEMPTS,
   type JobOrigin, type JobScope, type JobStatus, type QueueDecision, type JobBusinessResult,
 } from './queue-policy';
 import { abortLocalExecutions } from './execution-control';
@@ -703,6 +703,67 @@ export async function deferJob(
   );
   if ((upd as unknown as Row[]).length === 0) return { permanent: false, stale: true };
   return { permanent: outcome.status === 'FAILED', retryInSeconds: outcome.retryInSeconds, deferrals: outcome.deferrals };
+}
+
+/**
+ * Lot 87A (CDC Pilotage IA V2 P7, RUN-02, RUN-03, RUN-04) — SUSPENSION d'une
+ * exécution faute de secours admissible (`AI_SUSPENDED` de la passerelle).
+ *
+ * Aucune écriture métier n'a eu lieu (l'exécutant a laissé remonter la
+ * suspension) ; la tentative est rendue (MOD-005) ; le travail revient en
+ * file avec un délai borné (`afterAiSuspension`), ou FAILED au-delà du
+ * plafond. La cause EXPLICITE (cause établie, modèle, décisions de secours,
+ * révision à la suspension) est portée par `payload.aiSuspension` — lue par
+ * l'exécution métier (P2, « suspendue ») et le journal (P3) — et par
+ * `last_error`. Aucune migration. Conditionné au jeton, comme `failJob`.
+ */
+export async function suspendJobForAi(
+  jobId: number,
+  p: { cause: string; message: string; revisionId: number | null; decisions?: ReadonlyArray<Record<string, unknown>> },
+  executionId: string | null = null,
+): Promise<{ permanent: boolean; stale?: boolean; until?: Date; count?: number }> {
+  const rows0 = await pgClient.unsafe(
+    `SELECT COALESCE((payload->'aiSuspension'->>'count')::int, 0) AS n FROM ai_job_queue WHERE id = $1 LIMIT 1`,
+    [jobId] as never[],
+  );
+  const outcome = afterAiSuspension(Number((rows0 as unknown as Row[])[0]?.n ?? 0));
+  const until = new Date(Date.now() + outcome.retryInSeconds * 1000);
+  const message = outcome.status === 'FAILED'
+    ? `${p.message} — suspendu ${outcome.count - 1} fois, abandonné`
+    : `${p.message} — suspendu (${outcome.count}), reprise automatique depuis un point sûr`;
+  const suspension = {
+    cause: p.cause, message: p.message.slice(0, 1000), at: new Date().toISOString(), count: outcome.count,
+    until: outcome.status === 'PENDING' ? until.toISOString() : null, revisionId: p.revisionId, resumedAt: null,
+    decisions: (p.decisions ?? []).slice(0, 6),
+  };
+  const upd = await pgClient.unsafe(
+    `UPDATE ai_job_queue
+        SET status = $2, last_error = $3,
+            attempts = GREATEST(attempts - 1, 0),
+            available_at = NOW() + ($4 || ' seconds')::interval,
+            finished_at = CASE WHEN $2 = 'FAILED' THEN NOW() ELSE NULL END,
+            started_at = NULL,
+            execution_id = CASE WHEN $2 = 'FAILED' THEN execution_id ELSE NULL END,
+            worker_id = NULL, lease_expires_at = NULL,
+            payload = jsonb_set(COALESCE(payload, '{}'::jsonb), '{aiSuspension}', $6::jsonb)
+      WHERE id = $1 AND status = 'RUNNING'
+        AND ($5::uuid IS NULL OR execution_id = $5::uuid)
+      RETURNING id`,
+    [jobId, outcome.status, message.slice(0, 2000), String(outcome.retryInSeconds), executionId, JSON.stringify(suspension)] as never[],
+  );
+  if ((upd as unknown as Row[]).length === 0) return { permanent: false, stale: true };
+  return { permanent: outcome.status === 'FAILED', count: outcome.count, ...(outcome.status === 'PENDING' ? { until } : {}) };
+}
+
+/** Reprise d'un travail suspendu (lot 87A) : marque la suspension comme reprise par cette tentative. */
+export async function markAiSuspensionResumed(jobId: number, executionId: string | null): Promise<void> {
+  await pgClient.unsafe(
+    `UPDATE ai_job_queue
+        SET payload = jsonb_set(payload, '{aiSuspension,resumedAt}', to_jsonb(NOW()::text))
+      WHERE id = $1 AND status = 'RUNNING' AND payload ? 'aiSuspension'
+        AND ($2::uuid IS NULL OR execution_id = $2::uuid)`,
+    [jobId, executionId] as never[],
+  );
 }
 
 /**

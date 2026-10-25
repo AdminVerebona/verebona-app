@@ -36,6 +36,8 @@ interface SupplierDoc {
   role: string | null;
   isConfirmed: boolean;
   filename: string | null;
+  /** Lot 87D : titre affiché (règle unique des vues). */
+  title?: string | null;
   documentType: string | null;
   documentDate: string | null;
   assetId: number | null;
@@ -309,7 +311,8 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
 
                 {/* Conflits à résoudre */}
                 {reviewItems.filter(r => r.itemType === 'contact_conflict').map(item => {
-                  const fieldLabel = CONFLICT_FIELD_LABELS[item.conflictingField ?? ''] ?? item.conflictingField ?? 'Champ';
+                  // Lot 87D : jamais la clé technique du champ.
+                  const fieldLabel = CONFLICT_FIELD_LABELS[item.conflictingField ?? ''] ?? 'Champ';
                   const isIban = item.conflictingField === 'iban';
                   return (
                     <div key={item.id} className="rounded-xl border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] overflow-hidden">
@@ -517,7 +520,7 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                             key={doc.documentId}
                             kind="document"
                             id={doc.documentId}
-                            title={doc.filename ?? `Document #${doc.documentId}`}
+                            title={doc.title ?? doc.filename ?? `Document #${doc.documentId}`}
                             icon={<FileText className="w-3.5 h-3.5 text-[color:var(--accent)]" />}
                             meta={doc.documentDate ? new Date(doc.documentDate).toLocaleDateString('fr-FR') : undefined}
                             onOpen={() => {

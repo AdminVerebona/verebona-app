@@ -241,12 +241,17 @@ scenario('L53C-D10-D14', 'Sinistres (brouillon, dissociation, exclusion) et agen
     expect(await projeter(compte2, [y.op])).toMatchObject({ created: 0, suppressed: 1 });
     expect(await ouvertes(compte2, 'AGENDA-PROJECTION-MATCH')).toEqual([]);
 
-    // Le doute disparaît sans réponse (un des événements est supprimé) : carte fermée (OBSOLETE).
+    // Le doute disparaît sans réponse (plus aucun candidat) : carte fermée (OBSOLETE).
+    // Lot 87B : un candidat restant n'est plus rattaché sur de simples signaux (même bien, type, date) —
+    // la carte reste posée tant qu'il reste un candidat ; elle se ferme quand il n'y en a plus.
     const compte3 = await make.account({ plan: 'premium' });
     const z = await interventionEtDeuxEvenements(compte3);
     await projeter(compte3, [z.op]);
     expect(await ouvertes(compte3, 'AGENDA-PROJECTION-MATCH')).toHaveLength(1);
     await sql`UPDATE agenda_items SET manual_status = 'annule' WHERE id = ${z.b}`;
+    await projeter(compte3, [z.op]);
+    expect(await ouvertes(compte3, 'AGENDA-PROJECTION-MATCH')).toHaveLength(1);
+    await sql`UPDATE agenda_items SET manual_status = 'annule' WHERE id = ${z.a}`;
     await projeter(compte3, [z.op]);
     expect(await ouvertes(compte3, 'AGENDA-PROJECTION-MATCH')).toEqual([]);
     expect((await cartes(compte3, 'AGENDA-PROJECTION-MATCH'))[0]).toMatchObject({ resolution_reason: 'OBSOLETE' });

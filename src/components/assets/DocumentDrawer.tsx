@@ -7,7 +7,6 @@ import {
   Sheet, SheetContent, SheetHeader, SheetTitle,
 } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -43,7 +42,7 @@ import { analyzeErrorFeedback, type AnalyzeFeedback } from './document-analysis-
 import { apiClient } from '@/lib/api-client';
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
-import { documentTypeDisplayLabel } from '@/lib/referential/v2';
+import { DocumentTypeBadge } from '@/components/documents/DocumentTypeBadge';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { openDrawer, restoreFocusOnClose } from '@/lib/drawers';
 import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
@@ -114,6 +113,8 @@ interface FullFileData {
   userMessageCode: string | null;
   processingResumeAt: string | null;
   userEditedFields: Record<string, boolean> | null;
+  /** Lot 87D : titre affiché calculé par le serveur (règle unique, même libellé que la liste et la recherche). */
+  displayTitle?: string | null;
 }
 
 interface Props {
@@ -580,6 +581,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
             userMessageCode: typeof f.userMessageCode === 'string' ? f.userMessageCode : null,
             processingResumeAt: typeof f.processingResumeAt === 'string' ? f.processingResumeAt : null,
             userEditedFields: f.userEditedFields ?? f.user_edited_fields ?? null,
+            displayTitle: typeof f.displayTitle === 'string' ? f.displayTitle : null,
           };
           setFullData(fd);
           // Lot 34C : l'affichage suit le statut fonctionnel (job réel), pas
@@ -998,6 +1000,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           userMessageCode: typeof rf.userMessageCode === 'string' ? rf.userMessageCode : null,
           processingResumeAt: typeof rf.processingResumeAt === 'string' ? rf.processingResumeAt : null,
           userEditedFields: rf.userEditedFields ?? rf.user_edited_fields ?? null,
+          displayTitle: typeof rf.displayTitle === 'string' ? rf.displayTitle : null,
         };
         setFullData(fd);
         setAnalysisState(displayAnalysisState(fd.analysisState, fd.processingStatus));
@@ -1122,13 +1125,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   if (!doc) return null;
 
   // Lot 86E (ticket §5) : un seul libellé de Type, celui du Type ENREGISTRÉ
-  // (référentiel V2), le même que la liste et la section « Informations » —
-  // plus le code V1 historique (« BON_COMMANDE » brut, ou « Autre » par défaut).
-  const typeLabel = fullData
-    ? documentTypeDisplayLabel(fullData.documentTypeCode)
-    : doc.documentTypeCode !== undefined ? documentTypeDisplayLabel(doc.documentTypeCode) : null;
+  // (référentiel V2), le même que la liste et la section « Informations ».
+  // Lot 87D : jamais un code (« BUILDING_PERMIT ») — pastille MASQUÉE sans
+  // Type V2 connu (`DocumentTypeBadge`).
+  const typeCode = fullData ? fullData.documentTypeCode : doc.documentTypeCode;
   // Lot 33C (AC8) : titre métier → nom original exploitable → nom technique.
-  const filename = displayDocumentTitle(fullData ?? { originalFilename: doc.originalFilename }, doc.originalFilename);
+  // Lot 87D : titre calculé par le serveur (règle unique de toutes les vues).
+  const filename = fullData?.displayTitle || displayDocumentTitle(fullData ?? { originalFilename: doc.originalFilename }, doc.originalFilename);
 
   return (
     <>
@@ -1150,7 +1153,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 <SheetTitle className="leading-tight line-clamp-2 text-left">
                   {isEditing ? editFilename || filename : filename}
                 </SheetTitle>
-                {typeLabel && <Badge variant="outline" className="mt-1.5 text-xs">{typeLabel}</Badge>}
+                <DocumentTypeBadge typeCode={typeCode} />
               </div>
             </div>
 

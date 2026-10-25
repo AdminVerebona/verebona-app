@@ -5,6 +5,7 @@
  * les documents et biens supprimés sont exclus. Rien n'est sérialisé en masse
  * (§26.2) : chaque requête rend un agrégat ou quelques lignes.
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { SQL_IS_RENTED } from '@/lib/assets/occupancy';
 import type { AccountDataPort, AssetRow, DocumentHit, ExportRow, FactHit } from './data-answer.service';
@@ -120,8 +121,8 @@ const baseAccountDataRepository: BaseAccountDataPort = {
 
   // Statut d'un document désigné (§12.2) : borné au compte, non supprimé.
   async findDocument(accountId, fileId) {
-    const r = rows<DocumentHit>(await pgClient.unsafe(
-      `SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
+    const r = rows<DocumentHit>(await withDocumentTitles(pgClient.unsafe(
+      `SELECT f.id AS "fileId", ${documentTitleJsonSql('f')} AS title,
               to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", 1 AS "matchedTerms",
               ${effectiveAnalysisStateSql('f')} AS "analysisState"
          FROM asset_files f
@@ -129,7 +130,7 @@ const baseAccountDataRepository: BaseAccountDataPort = {
         WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL
         LIMIT 1`,
       [fileId, accountId] as never[],
-    ));
+    )));
     return r[0] ?? null;
   },
 
@@ -158,9 +159,9 @@ const baseAccountDataRepository: BaseAccountDataPort = {
     const hay = `unaccent(lower(coalesce(f.retained_title,'') || ' ' || coalesce(f.original_filename,'') || ' ' || coalesce(f.supplier,'') || ' ' || coalesce(f.description,'')))`;
     // Lot 33 : début de mot, jamais une sous-chaîne d'un autre mot.
     const score = clean.map((_, i) => `(CASE WHEN ${hay} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
-    const meta = rows<DocumentHit & { matchedTerms: number }>(await pgClient.unsafe(
+    const meta = rows<DocumentHit & { matchedTerms: number }>(await withDocumentTitles(pgClient.unsafe(
       `SELECT * FROM (
-         SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
+         SELECT f.id AS "fileId", ${documentTitleJsonSql('f')} AS title,
                 to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", (${score}) AS "matchedTerms",
                 ${effectiveAnalysisStateSql('f')} AS "analysisState"
            FROM asset_files f
@@ -169,7 +170,7 @@ const baseAccountDataRepository: BaseAccountDataPort = {
             AND ($2::int IS NULL OR f.asset_id = $2 OR f.linked_asset_id = $2)
        ) s WHERE s."matchedTerms" > 0 ORDER BY s."matchedTerms" DESC LIMIT 10`,
       [accountId, assetId ?? null, ...clean.map(wordStartPattern)] as never[],
-    ));
+    )));
     const text = await searchDocumentText(accountId, clean, { assetId: assetId ?? null, limit: 10 }).catch(() => []);
 
     // Fusion par document : on retient le meilleur des deux scores.

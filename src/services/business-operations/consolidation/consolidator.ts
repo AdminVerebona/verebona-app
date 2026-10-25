@@ -58,7 +58,7 @@ import {
   applyM3Verdict, canonicalOf, decideCandidate, operationsMergeable, rankPlausible, sameDocumentReality,
   type CandidateDecision, type ExistingOperation, type MatchContext, type T3Outcome,
 } from './matching';
-import { RETRO_ELIGIBLE_SQL, requestRetroReconciliation, retroActive, type RetroTrace } from './retro';
+import { RETRO_ELIGIBLE_SQL, requestRetroReconciliation, retroActive, semanticReevaluationAt, type RetroTrace } from './retro';
 import { buildProviderEquivalence, canonicalProviderKey, type ProviderEquivalence } from './provider-equivalence';
 import { isSeriesWhy } from './recurrence';
 import { advanceM3Progress, m3ProgressFor, m3SubjectFingerprint, selectM3Batch, type M3Progress } from './m3-progress';
@@ -1240,7 +1240,11 @@ export async function resolveProgressiveM3(
   const plausibles = ctx.operations.filter((o) => d.detail.plausible.includes(o.id));
   const ranked = rankPlausible(identity, plausibles);
   let progress = m3ProgressFor(t3Detail?.m3Progress, m3SubjectFingerprint(identity));
-  const stored = (t3Detail?.m3 ?? null) as StoredM3 | null;
+  // Lot 87B (CODE-06) : réévaluation sémantique T3 demandée — le verdict M3 obtenu AVANT la demande
+  // est écarté (décision historique suspecte) : un nouvel appel est attendu (phase M3, plafonds existants).
+  const brut = (t3Detail?.m3 ?? null) as StoredM3 | null;
+  const demande = semanticReevaluationAt(t3Detail);
+  const stored = brut && demande && (!brut.at || brut.at < demande) ? null : brut;
   for (let tour = 0; tour < 3; tour++) {
     const sel = selectM3Batch(ranked, progress, batchSize);
     const selection = { examined: sel.examined, remaining: sel.remaining, total: sel.total };
@@ -1309,13 +1313,21 @@ async function retroDecision(
 ): Promise<{ xOp: ExistingOperation; d2: CandidateDecision; m3?: ProgressiveM3Trace } | { notApplicable: number }> {
   const X = propres.length === 1 ? propres[0] : null;
   const xOp = X === null ? undefined : ctx.operations.find((o) => o.id === X);
+  // Lot 87B (CODE-05, CODE-06) : réévaluation SÉMANTIQUE T3 demandée (contrôle de cohérence, T4) — l'examen
+  // vaut pour toute Opération dont ce document est le SEUL document (pas seulement une relation récurrente).
+  const semantique = semanticReevaluationAt(t3Detail) !== null;
   if (!xOp || xOp.invalidated || !(xOp.typeCode === null || xOp.typeCode === 'CONTRACT' || xOp.typeCode === 'INTERVENTION' || xOp.typeCode === 'OTHER')
-    || !(identity.type === 'CONTRACT' || hasRecurringPeriod(identity))) return { notApplicable: X ?? 0 };
+    || !(semantique || identity.type === 'CONTRACT' || hasRecurringPeriod(identity))) return { notApplicable: X ?? 0 };
   // Lot 86C : la propre Opération du document est réexaminée si elle n'est qu'un FRAGMENT de
   // relation récurrente — seule source (55B), ou toutes ses sources actives sont des échéances /
   // documents de contrat (doublon historique d'un même contrat, lot 84E §9.3) ; jamais une
   // Opération qui porte une intervention ponctuelle, une saisie ou une autre preuve.
-  const [fragment] = await rows<{ autres: number }>(tx, sql`
+  // Lot 87B : réévaluation sémantique — toutes les sources actives de X viennent de CE document.
+  const [fragment] = semantique
+    ? await rows<{ autres: number }>(tx, sql`
+        SELECT count(*) FILTER (WHERE NOT (s.source_kind = 'DOCUMENT' AND s.source_entity_key = ${String(identity.fileId)}))::int AS autres
+          FROM business_operation_sources s WHERE s.operation_id = ${xOp.id} AND s.account_id = ${accountId} AND s.active`)
+    : await rows<{ autres: number }>(tx, sql`
     SELECT count(*) FILTER (WHERE NOT x.echeance)::int AS autres FROM (
       SELECT EXISTS (SELECT 1 FROM document_operation_candidates c
                       WHERE c.account_id = s.account_id AND s.source_kind = 'DOCUMENT' AND c.file_id::text = s.source_entity_key
@@ -1490,9 +1502,14 @@ export interface OperationDuplicatePreview {
    * M3_REQUIRED  une autre Opération reste plausible (prestataire désigné
    *              autrement, série sans clé) : le rapprochement sémantique M3
    *              doit être sollicité par le réexamen ;
-   * ARBITRATION  doute déjà soumis à l'utilisateur (carte existante).
+   * ARBITRATION  doute déjà soumis à l'utilisateur (carte existante) ;
+   * DISTINCT_VERDICT (lot 87B, simulation « sémantique ») : un verdict M3 a
+   *              jugé les Opérations distinctes (`m3PromptVersion` : version
+   *              du prompt qui l'a rendu — une autre version que l'active rend
+   *              la décision historique SUSPECTE, CODE-06).
    */
-  level: 'CERTAIN' | 'M3_REQUIRED' | 'ARBITRATION';
+  level: 'CERTAIN' | 'M3_REQUIRED' | 'ARBITRATION' | 'DISTINCT_VERDICT';
+  m3PromptVersion?: string | null;
   targetOperationId: number | null;
   plausibleOperationIds: number[];
   /** Réexamen déjà en cours (marque ou attente M3 / utilisateur) : rien à relancer. */
@@ -1513,7 +1530,14 @@ export const DUPLICATE_PREVIEW_DOCUMENTS = 5;
  * distincts (références, équipements), une intervention ponctuelle ne sont
  * jamais des doublons (règles de `decideCandidate` / `operationsMergeable`).
  */
-export async function previewOperationDuplicates(accountId: number, operationIds: readonly number[]): Promise<Map<number, OperationDuplicatePreview>> {
+/**
+ * Lot 87B : simulation « sémantique » — l'examen vaut pour toute Opération à
+ * document unique (pas seulement une relation récurrente), comme une demande
+ * de réévaluation T3 ; les verdicts M3 enregistrés restent appliqués.
+ */
+export const SEMANTIC_PREVIEW_MARK = { semanticReevaluation: { at: '1970-01-01T00:00:00.000Z', requestId: 'preview' } } as const;
+
+export async function previewOperationDuplicates(accountId: number, operationIds: readonly number[], opts: { semantic?: boolean } = {}): Promise<Map<number, OperationDuplicatePreview>> {
   const out = new Map<number, OperationDuplicatePreview>();
   const ids = [...new Set(operationIds)].filter((x) => Number.isSafeInteger(x) && x > 0).sort((a, b) => a - b);
   if (!ids.length) return out;
@@ -1568,7 +1592,8 @@ export async function previewOperationDuplicates(accountId: number, operationIds
           });
           break;
         }
-        const rd = await retroDecision(tx, accountId, identity, d, ctx, propres, c.t3Detail);
+        const detailSimule = opts.semantic ? { ...(c.t3Detail ?? {}), ...SEMANTIC_PREVIEW_MARK } : c.t3Detail;
+        const rd = await retroDecision(tx, accountId, identity, d, ctx, propres, detailSimule);
         if ('notApplicable' in rd) continue;
         const { xOp, d2 } = rd;
         const base = {
@@ -1587,6 +1612,14 @@ export async function previewOperationDuplicates(accountId: number, operationIds
         }
         if (d2.outcome === 'ARBITRATION_REQUIRED') {
           out.set(opId, { ...base, level: 'ARBITRATION', targetOperationId: null, plausibleOperationIds: [...(d2.arbitration?.operationIds ?? [])].sort((a, b) => a - b), why: d2.reason });
+          break;
+        }
+        if (opts.semantic && d2.reason === 'M3_DISTINCT') {
+          const stored = (c.t3Detail?.m3 ?? null) as StoredM3 | null;
+          out.set(opId, {
+            ...base, level: 'DISTINCT_VERDICT', targetOperationId: null, plausibleOperationIds: [...d2.detail.plausible].sort((a, b) => a - b),
+            why: 'M3_DISTINCT', m3PromptVersion: stored?.promptVersion ?? null,
+          });
           break;
         }
       }
@@ -1912,11 +1945,17 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
         const sansDate = (x: RetroTrace | null) => (x ? JSON.stringify({ ...x, at: undefined }) : null);
         const retro = r ? (sansDate(ancienRetro) === sansDate(r) ? ancienRetro : { ...r, at: new Date().toISOString() }) : ancienRetro;
         const memeRetro = JSON.stringify(retro) === JSON.stringify(ancien.retro ?? null) && !ancien.retroRequested;
+        // Lot 87B : demande de réévaluation sémantique T3 — close (horodatée) quand l'examen rétroactif est terminé.
+        const demandeSem = (ancien.semanticReevaluation ?? null) as Record<string, unknown> | null;
+        const semantic = demandeSem && !demandeSem.doneAt && retro?.status === 'DONE' && r
+          ? { ...demandeSem, doneAt: new Date().toISOString(), result: retro.result ?? null }
+          : demandeSem;
+        const memeSemantic = semantic === demandeSem;
         // Lot 78A : trace du contrôle d'identité et version de la réévaluation historique.
         const memeIdentite = JSON.stringify(ancien.identity ?? null) === JSON.stringify(d.detail.identity ?? null)
           && ancien.identityReview === IDENTITY_REVIEW_VERSION;
         if (!c.t3Pending && c.t3Outcome === d.outcome && c.t3Reason === d.reason && c.t3OperationId === d.operationId
-          && (ancien.m3Fingerprint ?? null) === fp && memeArbitrage && memeProgression && memeRetro && memeIdentite) continue;
+          && (ancien.m3Fingerprint ?? null) === fp && memeArbitrage && memeProgression && memeRetro && memeIdentite && memeSemantic) continue;
         // La trace M3 (verdict, report…) survit aux passages suivants : elle n'est
         // remplacée que par la phase M3 elle-même.
         const detail = {
@@ -1928,6 +1967,7 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
           ...(m3Progress ? { m3Progress } : {}),
           ...(ancien.m3 ? { m3: ancien.m3 } : {}),
           ...(retro ? { retro } : {}),
+          ...(semantic ? { semanticReevaluation: semantic } : {}),
           identityReview: IDENTITY_REVIEW_VERSION,
         };
         await tx.execute(sql`
@@ -2279,6 +2319,9 @@ export async function consolidateAccountOperations(
     res.changes += n;
     res.contractsActivated = n > 0 ? dus.length : 0;
   }
+  // Lot 87B (CODE-09) : réévaluations sémantiques T3 terminées par ce passage — clôturées au journal (0752).
+  const { settleIdentityRequests } = await import('../semantic/orchestrator');
+  await settleIdentityRequests(accountId);
   return res;
 }
 

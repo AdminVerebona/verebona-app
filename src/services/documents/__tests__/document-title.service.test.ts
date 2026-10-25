@@ -38,7 +38,7 @@ describe('buildTitle — moteur de titre commun (v2, lot 34E)', () => {
   });
   it('titre du modèle technique : reconstruit (type / sujet / fournisseur / mois), jamais l’UUID', () => {
     expect(buildTitle({ modelTitle: '5be5a3ca-38cf-47fc-942c-3386ea8e846b.pdf', ctx: { typeCode: 'invoice', supplier: 'EDF' } })).toBe('Facture EDF');
-    expect(buildTitle({ modelTitle: '5be5a3ca-38cf-47fc-942c-3386ea8e846b.pdf', ctx: { documentDate: '2024-04-18' } })).toBe('Document _ Avril 2024');
+    expect(buildTitle({ modelTitle: '5be5a3ca-38cf-47fc-942c-3386ea8e846b.pdf', ctx: { documentDate: '2024-04-18' } })).toBe('Document — 18 avril 2024');
   });
   it('INSUFFICIENT_DATA : rien d’exploitable → null (jamais un titre technique)', () => {
     expect(buildTitle({ modelTitle: '5be5a3ca-38cf-47fc-942c-3386ea8e846b.pdf', ctx: {} })).toBeNull();
@@ -78,29 +78,13 @@ describe('TITLE-AC7 — sélection indépendante des autres traitements', () => 
 
 describe('page du rattrapage T3 (contrat 31C)', () => {
   const job = { id: 9, triggerCode: 'schedule_hourly' } as never;
-  const page = (n: number) => Array.from({ length: n }, (_, i) => ({ id: 100 + i, account_id: 1 }));
 
-  it('page pleine : chaque document passe par le service (origine T3, mode repair), puis UNE continuation unique', async () => {
-    vi.stubEnv('T3_TITLE_SWEEP_PAGE_SIZE', '2');
-    m.unsafe.mockResolvedValueOnce(page(2));
-    m.ensure.mockResolvedValueOnce({ outcome: 'UPDATED' }).mockResolvedValueOnce({ outcome: 'INSUFFICIENT_DATA' });
-    const r = await runDocumentTitleSweepPage(job, { kind: DOCUMENT_TITLE_SWEEP_KIND, cycleId: 'c', page: 0, afterFileId: 0, requestedAt: null }, guard, { enqueue: m.enqueue });
-    expect(m.ensure).toHaveBeenCalledWith(expect.objectContaining({ fileId: 100, accountId: 1, origin: 'T3', mode: 'repair' }));
-    expect(r).toMatchObject({ result: 'APPLIED', detail: expect.objectContaining({ examined: 2, UPDATED: 1, INSUFFICIENT_DATA: 1, last: false }) });
-    expect(m.enqueue).toHaveBeenCalledWith(expect.objectContaining({
-      treatment: 'T3', onlyIfNeverQueued: true,
-      scope: { targetType: 'document_title_sweep', targetId: 'c:1' },
-      payload: expect.objectContaining({ kind: DOCUMENT_TITLE_SWEEP_KIND, page: 1, afterFileId: 101, payloadVersion: 1 }),
-    }));
-    vi.unstubAllEnvs();
-  });
-
-  it('dernière page : aucune continuation ; TITLE-AC6 — rien à corriger → NO_CHANGE', async () => {
-    m.unsafe.mockResolvedValueOnce(page(1));
-    m.ensure.mockResolvedValueOnce({ outcome: 'NO_CHANGE' });
-    const r = await runDocumentTitleSweepPage(job, { kind: DOCUMENT_TITLE_SWEEP_KIND, cycleId: 'c', page: 3, afterFileId: 50, requestedAt: null }, guard, { enqueue: m.enqueue });
-    expect(r.result).toBe('NO_CHANGE');
+  it('L87D-U-SWEEP — balayage horaire RETIRÉ (C-Q9) : une page encore en file est close sans contrôle ni continuation', async () => {
+    const r = await runDocumentTitleSweepPage(job, { kind: DOCUMENT_TITLE_SWEEP_KIND, cycleId: 'c', page: 0, afterFileId: 0, requestedAt: null }, guard);
+    expect(r).toMatchObject({ result: 'NO_CHANGE', detail: expect.objectContaining({ retired: 'RETIRED', replacedBy: 'COH-DOC-TITLES' }) });
+    expect(m.ensure).not.toHaveBeenCalled();
     expect(m.enqueue).not.toHaveBeenCalled();
+    expect(m.unsafe).not.toHaveBeenCalled();
   });
 
   it('repairTitles compte chaque issue', async () => {

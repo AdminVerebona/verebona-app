@@ -379,6 +379,11 @@ export const OPERATION_DETAIL_LISTS = {
            FROM agenda_items WHERE business_operation_id = $1 AND account_id = $2 ORDER BY id` },
   projectionSuppressions: { table: 'business_operation_projection_suppressions', sql: `SELECT id, projection_kind, projection_key, user_id, created_at
            FROM business_operation_projection_suppressions WHERE operation_id = $1 AND $2::int IS NOT NULL ORDER BY id` },
+  // Lot 87B (CODE-09) : réévaluations sémantiques T3 / T4 — déclencheur, décision IA reçue, validation, rôles, mutations, avant / après.
+  semanticReevaluations: { table: 'operation_semantic_reevaluations', sql: `SELECT id, scope, trigger_kind, trigger_ref, correlation_id, status, reason,
+                contract_version, decider_version, context_fingerprint, resulting_fingerprint, context_summary, ai_output, validation, decided_items,
+                mutations_applied, mutations_refused, before_state, after_state, ai_calls, ai_trace_id, error, created_at, decided_at
+           FROM operation_semantic_reevaluations WHERE account_id = $2 AND $1::bigint = ANY(operation_ids) ORDER BY id DESC` },
   candidates: { table: 'document_operation_candidates', sql: `SELECT c.id, c.file_id, c.candidate_key, c.established, c.confidence, c.type_hint, c.status_hint, c.summary,
                 c.status, c.trigger_code, c.t3_pending, c.t3_outcome, c.t3_reason, c.t3_operation_id, c.t3_processed_at,
                 c.t3_detail, c.created_at, c.superseded_at

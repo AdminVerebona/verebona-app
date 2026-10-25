@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { suppliers, documentSuppliers, assetFiles, assets, supplierReviewItems } from '@/db/schema';
@@ -44,6 +45,12 @@ export async function GET(
         role: documentSuppliers.role,
         isConfirmed: documentSuppliers.isConfirmed,
         filename: assetFiles.originalFilename,
+        // Lot 87D : sources du titre affiché (règle unique de toutes les vues).
+        retainedTitle: assetFiles.retainedTitle,
+        webLinkTitle: assetFiles.webLinkTitle,
+        storageName: assetFiles.filename,
+        s3Key: assetFiles.s3Key,
+        publicId: assetFiles.publicId,
         documentType: assetFiles.documentType,
         documentDate: assetFiles.documentDate,
         assetId: assetFiles.assetId,
@@ -77,7 +84,12 @@ export async function GET(
       .limit(20);
 
     // Full supplier data including iban (drawer only)
-    return NextResponse.json({ supplier, documents: linkedDocs, reviewItems });
+    // Lot 87D : chaque document porte son titre AFFICHÉ (le même que la liste, la fiche et la recherche).
+    const documents = linkedDocs.map(({ retainedTitle, webLinkTitle, storageName, s3Key, publicId, ...d }) => ({
+      ...d,
+      title: documentTitleFromRecord({ retainedTitle, webLinkTitle, originalFilename: d.filename, filename: storageName, s3Key, publicId: publicId == null ? null : String(publicId) }),
+    }));
+    return NextResponse.json({ supplier, documents, reviewItems });
   } catch (err) {
     return SessionService.handleSessionError(err);
   }

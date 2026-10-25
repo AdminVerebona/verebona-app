@@ -157,9 +157,13 @@ export function technicalTitleSqlPredicate(col: string): string {
  * (`asset_files.title_rule_version`, migration 0293).
  *   · 1 (implicite, NULL en base) — lot 33C ;
  *   · 2 — lot 34E : nature + sujet + discriminants utiles, période métier,
- *     cible (bien / équipement / pièce), titres similaires du compte.
+ *     cible (bien / équipement / pièce), titres similaires du compte ;
+ *   · 3 — lot 87D : convention unique (`document-title-convention.ts`) —
+ *     factures périodiques « Facture Homiris — Février 2026 » (mois principal
+ *     IA, sinon période exacte), séparateur « — », dates au jour, données de
+ *     nommage persistées (`asset_files.title_basis`).
  */
-export const DOCUMENT_TITLE_RULE_VERSION = 2;
+export const DOCUMENT_TITLE_RULE_VERSION = 3;
 
 export const TITLE_QUALITY_REASONS = [
   'TECHNICAL_TITLE', 'GENERIC_TITLE', 'MISSING_SUBJECT', 'MISSING_SUPPLIER', 'MISSING_TARGET', 'MISSING_PERIOD',
@@ -170,7 +174,9 @@ export type TitleQualityReason = (typeof TITLE_QUALITY_REASONS)[number];
 /** Motifs d'un renommage (ou d'une absence de renommage), journalisés. */
 export type TitleChangeReason =
   | 'NON_COMPLIANT_TITLE' | 'GENERIC_TITLE' | 'SUPPLIER_ADDED' | 'PERIOD_ADDED' | 'TARGET_ADDED' | 'EQUIPMENT_ADDED'
-  | 'DUPLICATE_DISAMBIGUATED' | 'FIRST_TITLE' | 'NO_BETTER_TITLE' | 'USER_TITLE_PROTECTED';
+  | 'DUPLICATE_DISAMBIGUATED' | 'FIRST_TITLE' | 'NO_BETTER_TITLE' | 'USER_TITLE_PROTECTED'
+  // Lot 87D : convention périodique appliquée ; ancienne typographie (« _ ») normalisée.
+  | 'CONVENTION_APPLIED' | 'TYPOGRAPHY_NORMALIZED';
 
 /** Ce que le MEILLEUR titre constructible porte (attentes d'un titre suffisant). */
 export interface TitleExpectations {

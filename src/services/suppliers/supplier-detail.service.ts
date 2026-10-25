@@ -26,6 +26,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
+import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
+import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 
 export type SqlRunner = (sql: string, params: unknown[]) => Promise<unknown[]>;
 
@@ -57,7 +59,10 @@ export interface SupplierDetail {
   };
   assets: Array<{ id: number; name: string; category: string | null; city: string | null; available: boolean }>;
   documents: Array<{
-    id: number; title: string; documentType: string | null; documentDate: string | null;
+    id: number; title: string; documentType: string | null;
+    /** Lot 87D : libellé français du Type V2 enregistré (null : masqué) — jamais un code. */
+    documentTypeLabel: string | null;
+    documentDate: string | null;
     role: string | null; isConfirmed: boolean; assetId: number | null; assetName: string | null; available: boolean;
   }>;
   equipments: Array<{
@@ -102,8 +107,8 @@ export async function getSupplierDetail(
   const L = SUPPLIER_DETAIL_LIMIT;
   const [documents, assets, equipments, agenda, review] = await Promise.all([
     run(
-      `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title,
-              f.document_type AS "documentType", f.document_date AS "documentDate",
+      `SELECT f.id, ${documentTitleColumnsSql('f')},
+              f.document_type AS "documentType", f.document_type_code AS "documentTypeCode", f.document_date AS "documentDate",
               ds.role, ds.is_confirmed AS "isConfirmed", a.id AS "assetId", a.name AS "assetName",
               (a.id IS NULL OR ${BIEN_DISPONIBLE('a')}) AS available
          FROM document_suppliers ds
@@ -166,8 +171,12 @@ export async function getSupplierDetail(
 
   return {
     supplier: { ...s, hasIban: Boolean(s.hasIban) },
-    documents: (documents as SupplierDetail['documents']).map((d) => ({
-      ...d, documentDate: jour(d.documentDate), isConfirmed: Boolean(d.isConfirmed), available: Boolean(d.available),
+    // Lot 87D : titre par la règle unique des vues ; Type V2 en libellé français.
+    documents: (documents as Array<Record<string, unknown>>).map((d) => ({
+      id: Number(d.id), title: documentTitleOf(d), documentType: (d.documentType as string | null) ?? null,
+      documentTypeLabel: documentTypeLabelOrNull(d.documentTypeCode as string | null),
+      documentDate: jour(d.documentDate as string | null), role: (d.role as string | null) ?? null, isConfirmed: Boolean(d.isConfirmed),
+      assetId: d.assetId == null ? null : Number(d.assetId), assetName: (d.assetName as string | null) ?? null, available: Boolean(d.available),
     })),
     assets: (assets as SupplierDetail['assets']).map((a) => ({ ...a, available: Boolean(a.available) })),
     equipments: (equipments as SupplierDetail['equipments']).map((e) => ({

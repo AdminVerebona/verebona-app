@@ -73,7 +73,7 @@ import {
   type KeysetNode,
 } from './document-cursor';
 import { ASSET_LIST_LINK_ROLES_SQL, OTHER_ASSET_IDS_SQL, documentInAssetsCondition, documentWithoutAssetCondition } from './asset-document-scope';
-import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import {
   documentEquipmentFilterCondition,
   documentOfEquipmentsCondition,
@@ -126,7 +126,7 @@ const RUBRIC_RANK_SQL = sql.raw(
 );
 
 /** Le titre trié est celui affiché (repli compris), sans tenir compte de la casse. */
-const TITLE_SQL = sql`lower(COALESCE(${assetFiles.retainedTitle}, ${assetFiles.originalFilename}, ${assetFiles.filename}, 'Document'))`;
+const TITLE_SQL = sql`lower(COALESCE(${assetFiles.retainedTitle}, ${assetFiles.webLinkTitle}, ${assetFiles.originalFilename}, ${assetFiles.filename}, 'Document'))`;
 
 const KEY_SQL: Record<FeedKey, { expr: SQL; cast: string }> = {
   rubricRank: { expr: RUBRIC_RANK_SQL, cast: 'int' },
@@ -386,6 +386,9 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
         title: assetFiles.retainedTitle,
         filename: assetFiles.originalFilename,
         fallback: assetFiles.filename,
+        // Lot 87D : mêmes sources du titre affiché que toutes les vues.
+        webLinkTitle: assetFiles.webLinkTitle,
+        s3Key: assetFiles.s3Key,
         documentTypeCode: assetFiles.documentTypeCode,
         documentDate: assetFiles.documentDate,
         uploadedAt: assetFiles.uploadedAt,
@@ -421,7 +424,7 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
       // §4.3 : jamais le nom de fichier comme titre principal, mais un repli
       // vaut mieux qu'une carte anonyme.
       // Lot 33C : titre métier → nom original exploitable → nom technique.
-      title: displayDocumentTitle({ retainedTitle: row.title, originalFilename: row.filename, filename: row.fallback, publicId: row.publicId }, 'Document'),
+      title: documentTitleFromRecord({ retainedTitle: row.title, webLinkTitle: row.webLinkTitle, originalFilename: row.filename, filename: row.fallback, s3Key: row.s3Key, publicId: row.publicId }, 'Document'),
       originalFilename: row.filename ?? row.fallback ?? null,
       assetId: row.assetId ?? null,
       rubricCode: row.rubricCode ?? null,

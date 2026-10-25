@@ -19,6 +19,7 @@
  * le compte borne toutes les lectures, l'utilisateur n'ajoute aucun filtre
  * (aucune donnée « À traiter » ou agenda n'est propre à un membre).
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { isAgendaActionItemT4 } from '@/services/home/mascot/collector';
@@ -42,7 +43,7 @@ export interface ActionableReadOptions {
 
 type Row = Record<string, unknown>;
 const lignes = async (sql: string, params: unknown[]): Promise<Row[]> =>
-  (await pgClient.unsafe(sql, params as never[])) as unknown as Row[];
+  (await withDocumentTitles(pgClient.unsafe(sql, params as never[]))) as unknown as Row[];
 const isoDate = (v: unknown): string => (v instanceof Date ? v.toISOString() : String(v ?? ''));
 
 /** « À traiter » ouverts du compte (ordre « Par priorité » de la file). */
@@ -54,7 +55,7 @@ export async function listOpenTodos(accountId: number, opts: { assetIds?: number
             t.target_type AS "targetType", t.target_id AS "targetId", t.field_key AS "fieldKey",
             to_char(t.due_date AT TIME ZONE 'Europe/Paris', 'YYYY-MM-DD') AS "dueDate", t.active_since AS "activeSince",
             a.id AS "assetId", a.name AS "assetName",
-            f.id AS "documentId", coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS "documentTitle"
+            f.id AS "documentId", ${documentTitleJsonSql('f')} AS "documentTitle"
        FROM to_process_actions t
        LEFT JOIN asset_files f ON t.target_type = 'DOCUMENT' AND f.id = t.target_id AND f.account_id = t.account_id
        LEFT JOIN equipments e ON t.target_type = 'EQUIPMENT' AND e.id = t.target_id
@@ -148,7 +149,7 @@ async function documentsOf(accountId: number, itemIds: number[]): Promise<Map<nu
   const out = new Map<number, Array<{ id: number; title: string }>>();
   if (itemIds.length === 0) return out;
   const r = await lignes(
-    `SELECT DISTINCT s.item AS "itemId", f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title
+    `SELECT DISTINCT s.item AS "itemId", f.id, ${documentTitleJsonSql('f')} AS title
        FROM (
          SELECT agenda_item_id AS item, asset_file_id AS fid FROM agenda_file_links WHERE agenda_item_id = ANY($2::int[])
          UNION ALL

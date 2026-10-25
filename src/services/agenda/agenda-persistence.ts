@@ -642,28 +642,28 @@ async function createItem(
   requiresQualification: boolean,
   functionalKey: string | null,
 ): Promise<void> {
-  // Lot 46 (O7, C16.1, B16) : un événement lié à une Opération représente
-  // déjà ce fait (projection passée avant T4, ou événement rapproché) —
-  // même bien, date voisine, même document source ou même type métier :
-  // aucun second élément (une clé fonctionnelle ne dédoublonne pas entre
-  // sources, la projection non plus si elle est passée la première).
-  if (decision.date) {
-    const sem = resolveEventSemantics({ originFieldKey: decision.originFieldKey ?? null, ...semanticsOf(decision) });
-    const { findOperationAgendaEquivalent } = await import('@/services/business-operations/agenda-projection/service');
-    const equivalent = await findOperationAgendaEquivalent({
-      accountId, assetId, date: decision.date, businessType: sem.businessType, sourceFileId: sourceOf(decision),
-    });
-    if (equivalent !== null) {
-      console.info(JSON.stringify({ event: 't4.skip_operation_equivalent', accountId, assetId, itemId: equivalent, title: decision.title, date: decision.date }));
-      return;
-    }
+  // Lot 87B (CODE-04) : plus de garde « événement déjà représenté par une
+  // Opération » (même bien, date à ±3 jours, même document ou même type
+  // métier) — c'était une fusion décidée par le code. L'événement que T4 a
+  // décidé pour ce document est créé ; la convergence avec la représentation
+  // de l'Opération est faite par la projection (rattachement par provenance,
+  // projection technique qui cède sa place) ou décidée par T4 quand
+  // plusieurs représentations sont possibles (réévaluation sémantique).
+  //
+  // Seule garde conservée, par IDENTIFIANT EXACT (jamais par ressemblance) :
+  // l'occurrence de CE document (même clé fonctionnelle) a été absorbée par
+  // une consolidation non restaurée (journal 0591 : décision T4, ou ancienne
+  // consolidation 76H tant que T4 ne l'a pas défaite) — la réanalyse ne la
+  // recrée pas ; ses preuves sont déjà portées par l'élément conservé.
+  const input = t4UpsertInput(decision, accountId, assetId, requiresQualification, functionalKey);
+  const conserve = await absorbedOccurrenceKeeper(accountId, functionalKey ?? functionalKeyFor(input));
+  if (conserve !== null) {
+    console.info(JSON.stringify({ event: 't4.skip_absorbed_occurrence', accountId, assetId, keptItemId: conserve, title: decision.title, date: decision.date }));
+    return;
   }
   // Primitive commune (CDC 15 T4-09) : mêmes validations, liens (bien,
   // source), nature, clé et effets (D-13, D-14, D-15) que l'agenda manuel.
-  const res = await upsertAgendaItem(
-    t4UpsertInput(decision, accountId, assetId, requiresQualification, functionalKey),
-    { notify: true, purchaseSync: {} },
-  );
+  const res = await upsertAgendaItem(input, { notify: true, purchaseSync: {} });
   if (res.protected || !res.created) return;
   const itemId = res.id;
   // Lot 76H (§3.3) : élément créé depuis un document qui prouve une
@@ -682,6 +682,27 @@ async function createItem(
       referenceDate: decision.occurrence.recurrence?.referenceDate, sourceFileId: decision.sourceFileId ?? null,
       seriesKey: decision.occurrence.seriesKey,
     });
+  }
+}
+
+/**
+ * Lot 87B : élément CONSERVÉ d'une consolidation non restaurée qui a absorbé
+ * l'occurrence de clé fonctionnelle `key` (journal 0591), ou null. Identité
+ * par clé exacte (même document, même occurrence) ; ne lève jamais.
+ */
+async function absorbedOccurrenceKeeper(accountId: number, key: string | null): Promise<number | null> {
+  if (!key) return null;
+  try {
+    const r = (await pgClient.unsafe(
+      `SELECT k.principal_item_id AS id FROM agenda_intervention_consolidations k
+         JOIN agenda_items p ON p.id = k.principal_item_id AND p.account_id = k.account_id
+        WHERE k.account_id = $1 AND k.kind = 'ABSORB' AND k.restored_at IS NULL AND k.detail -> 'item' ->> 'functional_key' = $2
+        ORDER BY k.id DESC LIMIT 1`,
+      [accountId, key] as never[],
+    )) as unknown as Array<{ id: number }>;
+    return r[0] ? Number(r[0].id) : null;
+  } catch {
+    return null; // journal 0591 absent : comportement antérieur (création)
   }
 }
 

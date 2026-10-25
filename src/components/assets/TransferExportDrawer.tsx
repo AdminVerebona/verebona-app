@@ -23,8 +23,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { CalendarDays, ChevronDown, ChevronRight, Download, FileText, Image, Loader2, Package, Send, Wrench, X } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-import { DOCUMENT_TYPE_LABELS } from '@/lib/document-type-constants';
-import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
+import { documentTypeLabelOrNull, userFacingLabel } from '@/lib/referential/user-facing-labels';
 
 export type TransferUsage = 'EXPORT_BRUT' | 'TRANSMISSION';
 
@@ -113,14 +113,18 @@ export function TransferExportDrawer({ assetId, usage, planType, assetCategory, 
         for (const k of keys) { const v = (r as Record<string, unknown> | null)?.[k]; if (Array.isArray(v)) return v as T[]; }
         return [];
       };
-      type F = { id: number; mimeType?: string | null; isWebLink?: boolean; retainedTitle?: string | null; originalFilename?: string | null; documentType?: string | null; documentDate?: string | null };
+      type F = {
+        id: number; mimeType?: string | null; isWebLink?: boolean; retainedTitle?: string | null; webLinkTitle?: string | null; originalFilename?: string | null;
+        filename?: string | null; s3Key?: string | null; publicId?: string | null; documentTypeCode?: string | null; documentDate?: string | null;
+      };
       const all = list<F>(files, 'data');
+      // Lot 87D : titre par la règle unique ; libellé français du Type V2 enregistré, masqué sinon — jamais un code.
       const d = all.filter((f) => !f.mimeType?.startsWith('image/')).map((f) => ({
-        id: f.id, name: displayDocumentTitle(f, `Document ${f.id}`),
-        meta: [DOCUMENT_TYPE_LABELS[f.documentType ?? ''] ?? f.documentType, fmtDate(f.documentDate)].filter(Boolean).join(' · ') || null,
+        id: f.id, name: documentTitleFromRecord(f, `Document ${f.id}`),
+        meta: [documentTypeLabelOrNull(f.documentTypeCode), fmtDate(f.documentDate)].filter(Boolean).join(' · ') || null,
       }));
-      const p = all.filter((f) => f.mimeType?.startsWith('image/') && !f.isWebLink).map((f) => ({ id: f.id, name: displayDocumentTitle(f, `Photo ${f.id}`) }));
-      const e = list<{ id: number; name: string; category?: string }>(eqs, 'data', 'items').map((x) => ({ id: x.id, name: x.name, meta: x.category ?? null }));
+      const p = all.filter((f) => f.mimeType?.startsWith('image/') && !f.isWebLink).map((f) => ({ id: f.id, name: documentTitleFromRecord(f, `Photo ${f.id}`) }));
+      const e = list<{ id: number; name: string; category?: string }>(eqs, 'data', 'items').map((x) => ({ id: x.id, name: x.name, meta: userFacingLabel(x.category) }));
       const a = list<{ id: number; title: string; startDate?: string | null }>(ag, 'items', 'data').map((x) => ({ id: x.id, name: x.title, meta: fmtDate(x.startDate) }));
       setDocs(d); setPhotos(p); setEquips(e); setAgenda(a);
       setSelDocs(new Set(d.map((x) => x.id))); setSelPhotos(new Set(p.map((x) => x.id)));

@@ -40,6 +40,10 @@ import { documentAgendaLinksCheck } from './checks/document-agenda-links';
 import { documentClassificationCheck } from './checks/document-classification';
 // Lot 86F — dates économiques injustifiées des composantes (réparation : trace de la date retenue, recalcul à la lecture).
 import { tcoEconomicDatesCheck } from './checks/tco-economic-dates';
+// Lot 87C — questions suggérées T6 fondées sur des sources actuelles (réparation : invalidation du cache T6).
+import { t6SuggestionsCheck } from './checks/t6-suggestions';
+// Lot 87D — titres des documents : convention unique, données de nommage propagées, même libellé partout (réparation : service de nommage).
+import { documentTitlesCheck } from './checks/document-titles';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -82,6 +86,10 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   documentClassificationCheck,
   // Lot 86F (ajouté en fin de liste, sans réordonner l'existant).
   tcoEconomicDatesCheck,
+  // Lot 87C (ajouté en fin de liste, sans réordonner l'existant).
+  t6SuggestionsCheck,
+  // Lot 87D (ajouté en fin de liste, sans réordonner l'existant).
+  documentTitlesCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

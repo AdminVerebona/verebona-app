@@ -172,7 +172,8 @@ describe('câblage gateway → disjoncteur', () => {
   });
 
   it('tous en échec : échec complet de la chaîne', async () => {
-    fake.onAny(() => { throw new Error('503'); });
+    // Lot 87A : indisponibilité 503 explicite (panne propre au modèle → chaîne entière).
+    fake.onAny(() => { throw Object.assign(new Error('503'), { status: 503 }); });
     await expect(AiGateway.execute(req())).rejects.toMatchObject({ code: 'ALL_MODELS_FAILED' });
     expect(outcomes[0].chainSucceeded).toBe(false);
     expect(outcomes[0].attempts).toHaveLength(1 + op.fallbackModels.length);

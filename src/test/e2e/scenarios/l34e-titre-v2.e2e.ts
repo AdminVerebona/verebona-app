@@ -61,15 +61,16 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
                 title_context_fingerprint = NULL, title_checked_at = now() - interval '1 day' WHERE id = ${fileId}`;
   };
   const appelsT1 = (replay: { calls: Array<{ operationCode?: string }> }) => replay.calls.filter((c) => c.operationCode === 't1_analyze_document').length;
-  const ATTENDU = 'Facture fibre Orange _ Septembre 2026';
+  // Lot 87D (règles v3) : séparateur unique « — » ; sans période facturée, date du document AU JOUR.
+  const ATTENDU = 'Facture fibre Orange — 5 septembre 2026';
 
-  it('TITLE2-AC1 — nouveau document (facture, fibre, Orange, septembre 2026) : « Facture fibre Orange _ Septembre 2026 », pas « Facture fibre internet »', async () => {
+  it('TITLE2-AC1 — nouveau document (facture, fibre, Orange, septembre 2026) : « Facture fibre Orange — 5 septembre 2026 » (v3, lot 87D), pas « Facture fibre internet »', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const doc = await make.assetFile(compte, { assetId: maison.id });
     await analyser(compte, doc.id, facture({ title: 'Facture fibre internet', supplier: 'Orange', date: '2026-09-05', subject: 'fibre', assets: [{ id: maison.id, label: 'Maison' }] }));
-    expect(await fichier(doc.id)).toMatchObject({ retained_title: ATTENDU, title_source: 'SYSTEM', title_rule_version: 2 });
-    expect((await evenements(doc.id)).at(-1)).toMatchObject({ origin: 'T1', outcome: 'UPDATED', new_title: ATTENDU, rule_version: 2 });
+    expect(await fichier(doc.id)).toMatchObject({ retained_title: ATTENDU, title_source: 'SYSTEM', title_rule_version: 3 });
+    expect((await evenements(doc.id)).at(-1)).toMatchObject({ origin: 'T1', outcome: 'UPDATED', new_title: ATTENDU, rule_version: 3 });
   });
 
   it('TITLE2-AC2 / TITLE2-AC8 — stock : titre valide mais médiocre « Facture fibre internet » → rattrapage T3 sans T1 ; titre suffisant et titre utilisateur intacts', async () => {
@@ -89,16 +90,16 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     const c = await balayer(compte);
     expect(appelsT1(replay)).toBe(0);
     expect(c.UPDATED).toBe(1);
-    expect(await fichier(mediocre.id)).toMatchObject({ retained_title: ATTENDU, title_rule_version: 2 });
+    expect(await fichier(mediocre.id)).toMatchObject({ retained_title: ATTENDU, title_rule_version: 3 });
     expect((await evenements(mediocre.id)).at(-1)).toMatchObject({
-      origin: 'T3', outcome: 'UPDATED', reason: 'SUPPLIER_ADDED', trigger_reason: 'RULE_VERSION_UPGRADE', old_title: 'Facture fibre internet', new_title: ATTENDU, rule_version: 2,
+      origin: 'T3', outcome: 'UPDATED', reason: 'SUPPLIER_ADDED', trigger_reason: 'RULE_VERSION_UPGRADE', old_title: 'Facture fibre internet', new_title: ATTENDU, rule_version: 3,
     });
     // AC8 : le titre déjà suffisant est CONTRÔLÉ (version posée) sans être renommé ; le titre USER n'est jamais touché.
-    expect(await fichier(bon.id)).toMatchObject({ retained_title: ATTENDU, title_rule_version: 2 });
+    expect(await fichier(bon.id)).toMatchObject({ retained_title: ATTENDU, title_rule_version: 3 });
     expect(await fichier(user.id)).toMatchObject({ retained_title: 'Ma facture', title_source: 'USER', title_rule_version: null });
   });
 
-  it('TITLE2-AC3 — nouvelle connaissance T3 : la Polo est identifiée (rattachement DOCUMENT_ASSET) → « Facture entretien Polo _ Octobre 2026 », sans T1', async () => {
+  it('TITLE2-AC3 — nouvelle connaissance T3 : la Polo est identifiée (rattachement DOCUMENT_ASSET) → « Facture entretien Polo — 3 octobre 2026 », sans T1', async () => {
     const compte = await make.account();
     const polo = await make.asset(compte, { category: 'VEHICULE', name: 'Polo' });
     await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
@@ -106,7 +107,7 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     await analyser(compte, doc.id, facture({
       title: 'Facture entretien', date: '2026-10-03', facts: [{ canonicalKey: 'registrationNumber', value: 'AB-123-CD', valueType: 'string', excerpt: 'Immatriculation AB-123-CD', assetId: null }],
     }));
-    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien _ Octobre 2026');
+    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien — 3 octobre 2026');
     // T3 identifie la Polo (immatriculation saisie après l'analyse).
     await sql`UPDATE assets SET registration_number = 'AB-123-CD' WHERE id = ${polo.id}`;
     const replay = await rejouer([]);
@@ -114,7 +115,7 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     expect(await sweepDocumentsWithoutPrimary({ accountId: compte.id })).toBe(1);
     await drainQueues();
     expect(appelsT1(replay)).toBe(0);
-    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien Polo _ Octobre 2026');
+    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien Polo — 3 octobre 2026');
     expect((await evenements(doc.id)).at(-1)).toMatchObject({ origin: 'T3', outcome: 'UPDATED', reason: 'TARGET_ADDED', trigger_reason: 'CONTEXT_CHANGED' });
   });
 
@@ -124,16 +125,16 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     await make.asset(compte, { category: 'VEHICULE', name: 'Clio' });
     const doc = await make.assetFile(compte, { assetId: null });
     await analyser(compte, doc.id, facture({ title: 'Facture entretien', date: '2026-10-03' }));
-    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien _ Octobre 2026');
+    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien — 3 octobre 2026');
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
     await linkDocumentToAsset({ accountId: compte.id, fileId: doc.id, target: { assetId: polo.id }, role: 'PRIMARY', origin: 'USER' });
     const { reconcileAccount } = await import('@/services/ai/reconciliation/account-reconciliation.service');
     const run = await reconcileAccount(compte.id, { type: 'event', event: 'document_linked', objectType: 'document', objectId: doc.id });
     expect(run.openKnowledge?.titles.updated).toBe(1);
-    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien Polo _ Octobre 2026');
+    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien Polo — 3 octobre 2026');
   });
 
-  it('TITLE2-AC4 — équipement identifié plus tard : « Facture entretien chaudière Saunier Duval _ Octobre 2026 », sans relancer T1', async () => {
+  it('TITLE2-AC4 — équipement identifié plus tard : « Facture entretien chaudière Saunier Duval — 3 octobre 2026 », sans relancer T1', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
     const doc = await make.assetFile(compte, { assetId: maison.id });
@@ -141,14 +142,14 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
       title: 'Facture entretien chaudière', date: '2026-10-03', assets: [{ id: maison.id, label: 'Maison' }],
       facts: [{ canonicalKey: 'serialNumber', value: 'SD-998877', valueType: 'string', excerpt: 'N° série SD-998877', assetId: null }],
     }));
-    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien chaudière _ Octobre 2026');
+    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien chaudière — 3 octobre 2026');
     const [{ id: eq }] = await sql<{ id: number }[]>`INSERT INTO equipments (asset_id, name) VALUES (${maison.id}, 'Chaudière Saunier Duval') RETURNING id`;
     await sql`INSERT INTO equipment_cil_specs (equipment_id, serial_number) VALUES (${eq}, 'SD998877')`;
     const replay = await rejouer([]);
     const { reconcileOpenKnowledge } = await import('@/services/ai/reconciliation/continuous/open-knowledge.service');
     expect((await reconcileOpenKnowledge(compte.id)).facts).toMatchObject({ retargeted: 1, linkedEquipments: 1 });
     expect(appelsT1(replay)).toBe(0);
-    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien chaudière Saunier Duval _ Octobre 2026');
+    expect((await fichier(doc.id)).retained_title).toBe('Facture entretien chaudière Saunier Duval — 3 octobre 2026');
     expect((await evenements(doc.id)).at(-1)).toMatchObject({ origin: 'T3', outcome: 'UPDATED', reason: 'EQUIPMENT_ADDED' });
   });
 
@@ -175,7 +176,7 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     await stock(doc.id, ATTENDU); // titre déjà bon, règles antérieures
     await balayer(compte);
     const f1 = await fichier(doc.id);
-    expect(f1).toMatchObject({ retained_title: ATTENDU, title_rule_version: 2 });
+    expect(f1).toMatchObject({ retained_title: ATTENDU, title_rule_version: 3 });
     const ev1 = (await evenements(doc.id)).length;
     const c2 = await balayer(compte);
     expect(c2).toEqual({ UPDATED: 0, NO_CHANGE: 0, SKIP_USER_TITLE: 0, INSUFFICIENT_DATA: 0, FAILED: 0 });
@@ -203,7 +204,7 @@ scenario('L34E-TITRE', 'Moteur de titre v2 : meilleur titre métier, repasse T3 
     expect((await sweepDocumentTitles({ accountId: compte.id, limit: 1 })).UPDATED).toBe(0);
     const titres = await Promise.all(docs.map(async (d) => (await fichier(d.id)).retained_title));
     // Discriminant métier (période), jamais « (2) ».
-    expect(titres).toEqual(['Facture fibre Orange _ Juillet 2026', 'Facture fibre Orange _ Août 2026', 'Facture fibre Orange _ Septembre 2026']);
-    for (const d of docs) expect((await fichier(d.id)).title_rule_version).toBe(2);
+    expect(titres).toEqual(['Facture fibre Orange — 4 juillet 2026', 'Facture fibre Orange — 4 août 2026', 'Facture fibre Orange — 4 septembre 2026']);
+    for (const d of docs) expect((await fichier(d.id)).title_rule_version).toBe(3);
   });
 });

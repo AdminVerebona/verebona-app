@@ -182,7 +182,44 @@ export interface AgendaItemSnapshot {
    */
   operationRole?: OperationRole | null;
   operationRoleOrigin?: string | null;
+  /**
+   * Lot 87B : l'utilisateur a pris une décision sur un lien Document ↔ cet
+   * élément (détachement mémorisé, AGENDA_FILE_LINK) — une projection
+   * technique qui la porte ne cède jamais sa place automatiquement.
+   */
+  userLinkDecision?: boolean;
+  /**
+   * Lot 87B : Opérations dont T3 a fait de CET élément une source AGENDA
+   * active (lot 47B : événement saisi qui établit l'intervention) — preuve
+   * de provenance EXACTE (identifiant), comme le document source. Aussi :
+   * Opération d'acquisition dont la date de la fiche a été RECOPIÉE de cet
+   * élément (D-13, journal `canonical_field_writes`) — le fait fondateur de
+   * l'Opération est cet élément.
+   */
+  agendaSourceOperationIds?: number[];
+  /**
+   * Lot 87B : l'unique Opération ACTIVE dont le document d'origine de
+   * l'élément est une source (null : aucune, ou plusieurs) — provenance
+   * exacte qui permet à la projection technique de lui céder sa place.
+   */
+  originSoleOperationId?: number | null;
+  /**
+   * Lot 87B (CODE-08) : l'utilisateur a détaché de cet élément son document
+   * d'ORIGINE (décision AGENDA_FILE_LINK) — l'origine n'est plus une preuve
+   * de provenance pour rattacher l'élément à une Opération.
+   */
+  originLinkRejected?: boolean;
 }
+
+/**
+ * Lot 87B (CODE-03, CODE-11) : rôle qu'une décision T4 VALIDÉE et appliquée
+ * (réévaluation sémantique, journal 0752) a donné à un élément pour cette
+ * Opération. `STEP` / `INDEPENDENT` / `DUPLICATE` (doublon d'une occurrence
+ * conservée, resté par protection) : l'élément n'est plus un candidat à la
+ * représentation de l'événement global (aucune nouvelle demande, aucune
+ * carte) ; `PRINCIPAL` est porté par le rôle lui-même.
+ */
+export type T4RepresentationRole = 'PRINCIPAL' | 'STEP' | 'INDEPENDENT' | 'DUPLICATE';
 
 // ── Projection attendue ────────────────────────────────────────────────────
 
@@ -370,8 +407,27 @@ export function dayGap(a: string, b: string): number {
   return Math.abs(Math.round((x - y) / DAY));
 }
 
-/** Lot 53 (D14) : événements candidats d'un rapprochement incertain, par ordre de préférence. */
-export interface ProbableCandidate { item: AgendaItemSnapshot; reason: string }
+/**
+ * Lot 53 (D14) : événements candidats d'un rapprochement incertain, par ordre de préférence.
+ * Lot 87B (CODE-04) : `strong` — signaux FORTS sans provenance (même bien, type compatible ou
+ * même intitulé, date dans la tolérance) : ce que l'ancienne règle rattachait d'office ; ce n'est
+ * plus qu'un candidat soumis à T4 et, à défaut, à l'utilisateur (carte D14).
+ */
+export interface ProbableCandidate { item: AgendaItemSnapshot; reason: string; strong?: boolean }
+
+/**
+ * Lot 87B (CODE-04) — PROVENANCE exacte d'un élément pour une Opération
+ * (pure) : relié à un de ses documents, produit depuis un de ses documents
+ * (origine non détachée par l'utilisateur), ou source AGENDA de l'Opération
+ * établie par T3 (47B). Seule preuve qui permet au code de rattacher sans
+ * décision T4 ; le bien, le type, l'intitulé et la date ne sont que des signaux.
+ */
+export function hasOperationProvenance(op: Pick<OperationSnapshot, 'id' | 'documentFileIds'>, c: AgendaItemSnapshot): boolean {
+  const docs = new Set(op.documentFileIds);
+  return c.fileIds.some((f) => docs.has(f))
+    || (c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId) && c.originLinkRejected !== true)
+    || (c.agendaSourceOperationIds ?? []).includes(op.id);
+}
 /** Candidats présentés au plus dans une carte (2 propositions affichées + « nouvel événement »). */
 export const PROBABLE_CANDIDATES_MAX = 3;
 
@@ -389,7 +445,6 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
   if (!desired.date || !op.typeCode) return { kind: 'none' };
   const compatibles = COMPATIBLE_BUSINESS_TYPES[op.typeCode] ?? [];
   const motsCles = TITLE_KEYWORDS[op.typeCode];
-  const docs = new Set(op.documentFileIds);
   const biens = new Set(op.assetIds);
 
   type Scored = { item: AgendaItemSnapshot; score: number; reason: string };
@@ -400,7 +455,8 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
     if (!c.date || c.manualStatus === 'annule') continue;
     if (c.businessOperationId !== null && c.businessOperationId !== op.id && c.linkedOperationActive) continue;
     if (c.projected) continue; // projection d'une autre Opération (ou orpheline) : jamais adoptée
-    const memeDoc = c.fileIds.some((f) => docs.has(f)) || (c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId));
+    // Lot 87B : « même document » = provenance exacte (document lié, origine non détachée, source AGENDA T3).
+    const memeDoc = hasOperationProvenance(op, c);
     const memeBien = c.assetIds.some((a) => biens.has(a));
     if (!memeDoc && !memeBien) continue;
     const conflitType = c.businessType !== null && !compatibles.includes(c.businessType);
@@ -413,12 +469,19 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
     const doublon = findDuplicate({ title: desired.title, date: desired.date }, [{
       id: c.id, title: c.title, date: c.date, category: null, status: c.manualStatus, manual: true, originFieldKey: null,
     }]);
-    if (ecart <= tolerance && (typeOk || memeDoc || doublon.kind === 'exact')) {
+    if (ecart <= tolerance && memeDoc) {
       certains.push({
         item: c,
-        score: (memeDoc ? 4 : 0) + (typeOk ? 2 : 0) + (ecart === 0 ? 1 : 0),
-        reason: [memeDoc ? 'même document' : 'même bien', typeOk ? 'type compatible' : doublon.kind === 'exact' ? 'même intitulé' : null, `écart ${ecart} j`].filter(Boolean).join(', '),
+        score: 4 + (typeOk ? 2 : 0) + (ecart === 0 ? 1 : 0),
+        reason: ['même document', typeOk ? 'type compatible' : doublon.kind === 'exact' ? 'même intitulé' : null, `écart ${ecart} j`].filter(Boolean).join(', '),
       });
+      continue;
+    }
+    // Lot 87B (CODE-04) : même bien + type compatible (ou même intitulé) + date proche ne sont que des
+    // SIGNAUX — jamais un rattachement décidé par le code : candidat soumis à T4 (représentation) et,
+    // à défaut, à l'utilisateur (carte « À traiter » existante, lot 53 D14).
+    if (ecart <= tolerance && (typeOk || doublon.kind === 'exact')) {
+      probables.push({ item: c, ecart, strong: true, reason: `signaux : même bien, ${typeOk ? 'type compatible' : 'même intitulé'}, écart ${ecart} j` });
       continue;
     }
     if (doublon.kind === 'probable' || (memeDoc && ecart <= SAME_DOCUMENT_PROBABLE_DAYS) || (typeOk && memeBien && ecart <= tolerance * 2)) {
@@ -432,15 +495,16 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
     // Deux événements aussi plausibles : aucun choix arbitraire (lot 53, D14 : l'utilisateur choisit).
     if (second && second.score === best.score) {
       const ex = certains.filter((x) => x.score === best.score).slice(0, PROBABLE_CANDIDATES_MAX)
-        .map((x) => ({ item: x.item, reason: `plusieurs événements équivalents (${x.reason})` }));
+        .map((x) => ({ item: x.item, strong: true, reason: `plusieurs événements équivalents (${x.reason})` }));
       return { kind: 'probable', item: best.item, reason: 'plusieurs événements équivalents', candidates: ex };
     }
     return { kind: 'certain', item: best.item, reason: best.reason };
   }
   if (!probables.length) return { kind: 'none' };
   // Ordre stable : écart de date croissant, puis le plus ancien élément.
-  probables.sort((a, b) => a.ecart - b.ecart || a.item.id - b.item.id);
-  const retenus = probables.slice(0, PROBABLE_CANDIDATES_MAX).map(({ item, reason }) => ({ item, reason }));
+  // Lot 87B : signaux forts d'abord (ce sont eux que T4 / l'utilisateur doivent voir).
+  probables.sort((a, b) => Number(b.strong === true) - Number(a.strong === true) || a.ecart - b.ecart || a.item.id - b.item.id);
+  const retenus = probables.slice(0, PROBABLE_CANDIDATES_MAX).map(({ item, reason, strong }) => ({ item, reason, ...(strong ? { strong } : {}) }));
   return { kind: 'probable', item: retenus[0].item, reason: retenus[0].reason, candidates: retenus };
 }
 
@@ -465,7 +529,12 @@ export const CONSOLIDABLE_INTERVENTION_TYPES: readonly string[] = ['maintenance'
  * d'identité de T3 sur le document, la liste est vide.
  */
 export function coveredEquivalents(op: OperationSnapshot, desired: DesiredProjection, pool: readonly AgendaItemSnapshot[]): AgendaItemSnapshot[] {
-  if (op.typeCode !== 'INTERVENTION' || !desired.date || !op.active) return [];
+  if (!desired.date || !op.active) return [];
+  // Lot 87B : sinistre, achat, cession — représentations T4 produites depuis un document SOURCE de
+  // l'Opération (provenance T3), type métier compatible : mêmes gardes. Sélection de CANDIDATS : le
+  // code ne fusionne plus jamais ces représentations (T4 décide, `REPRESENTATION_REQUIRED`).
+  if (op.typeCode === 'CLAIM' || op.typeCode === 'ACQUISITION' || op.typeCode === 'DISPOSAL') return provenanceEquivalents(op, desired, pool);
+  if (op.typeCode !== 'INTERVENTION') return [];
   const docs = new Set(op.exclusiveFileIds ?? []);
   if (!docs.size) return [];
   const biens = new Set(op.assetIds);
@@ -478,7 +547,7 @@ export function coveredEquivalents(op: OperationSnapshot, desired: DesiredProjec
       // que l'utilisateur a rattaché comme élément distinct (étape).
       && c.operationRole !== 'PRINCIPAL' && c.operationRoleOrigin !== 'USER'
       && (c.businessOperationId === null || c.businessOperationId === op.id || !c.linkedOperationActive)
-      && c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId)
+      && c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId) && c.originLinkRejected !== true
       && c.businessType !== null && CONSOLIDABLE_INTERVENTION_TYPES.includes(c.businessType)
       && (c.nature === null || c.nature === desired.nature)
       && c.assetIds.some((a) => biens.has(a))
@@ -486,11 +555,34 @@ export function coveredEquivalents(op: OperationSnapshot, desired: DesiredProjec
   });
 }
 
+/** Lot 87B : représentations T4 d'un sinistre / achat / cession produites depuis ses documents sources (pure). */
+function provenanceEquivalents(op: OperationSnapshot, desired: DesiredProjection, pool: readonly AgendaItemSnapshot[]): AgendaItemSnapshot[] {
+  const docs = new Set(op.documentFileIds);
+  if (!docs.size || !op.typeCode) return [];
+  const compatibles = COMPATIBLE_BUSINESS_TYPES[op.typeCode] ?? [];
+  const biens = new Set(op.assetIds);
+  const vus = new Set<number>();
+  return pool.filter((c) => {
+    if (vus.has(c.id)) return false;
+    vus.add(c.id);
+    return !!c.date && !c.projected && c.isAutomatic && !isTouched(c) && c.pendingStatus !== true
+      && c.operationRole !== 'PRINCIPAL' && c.operationRoleOrigin !== 'USER'
+      && (c.businessOperationId === null || c.businessOperationId === op.id || !c.linkedOperationActive)
+      && c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId) && c.originLinkRejected !== true
+      && (c.businessType === null || compatibles.includes(c.businessType))
+      && (c.nature === null || c.nature === desired.nature)
+      && c.assetIds.some((a) => biens.has(a))
+      && dayGap(c.date, desired.date!) <= MATCH_DATE_TOLERANCE_DAYS;
+  });
+}
+
 /**
- * Élément principal d'une consolidation (pure, déterministe) : déjà lié à
+ * ORDRE de présentation des candidats (pure, déterministe) : déjà lié à
  * l'Opération, puis date égale à celle de l'intervention, puis date lue dans
- * un champ explicite (jamais la seule date du document), puis le plus de
- * sources documentaires, puis le plus ancien.
+ * un champ explicite, puis le plus de sources documentaires, puis le plus
+ * ancien. Lot 87B (CODE-04) : ne décide plus rien — il ordonne les
+ * propositions d'une carte « À traiter » (D14) ; le principal d'une
+ * consolidation est désigné par T4 (`semantic/`).
  */
 export function choosePrincipal(items: readonly AgendaItemSnapshot[], operationId: number, date: string | null): AgendaItemSnapshot {
   const rang = (i: AgendaItemSnapshot): number[] => [
@@ -549,13 +641,15 @@ export type ProjectionAction =
   | { kind: 'CREATE'; desired: DesiredProjection; functionalKey: string }
   | { kind: 'SYNC'; itemId: number; changes: ItemSync }
   | { kind: 'LINK'; itemId: number; reason: string }
+  // Lot 87B : l'action CONSOLIDATE (absorption décidée par la projection, lot 76H) est RETIRÉE — une
+  // consolidation n'est plus appliquée que sur décision T4 validée (`semantic/apply.ts`).
   /**
-   * Lot 76H : représentations T4 équivalentes de l'Opération (établies par
-   * T3) absorbées par l'élément principal — preuves, liens et historique
-   * conservés, retrait tracé et restaurable ; `linkPrincipal` : le principal
-   * est lié dans la même transaction.
+   * Lot 87B (CODE-03, CODE-04) : plusieurs représentations possibles d'une
+   * même Opération (doublons ? étapes distinctes ?) — AUCUNE écriture de la
+   * projection : la décision est demandée à T4 (réévaluation sémantique,
+   * `semantic/orchestrator.ts`) ; sans capacité T4, constat (aucune fusion).
    */
-  | { kind: 'CONSOLIDATE'; principalId: number; absorbedIds: number[]; linkPrincipal: boolean; reason: string }
+  | { kind: 'REPRESENTATION_REQUIRED'; itemIds: number[]; reason: string }
   /** Lot 76H : intitulé générique T4 d'un élément intact remplacé par la description précise de l'Opération. */
   | { kind: 'RETITLE'; itemId: number; title: string; from: string }
   | { kind: 'REMOVE'; itemId: number; reason: string }
@@ -608,9 +702,22 @@ export interface PlanInput {
    * principal n'y est reconnu, promu ni créé ; ses éléments restent.
    */
   principalWithdrawn?: boolean;
+  /**
+   * Lot 87B (CODE-03, CODE-11) : rôles donnés par la DERNIÈRE décision T4
+   * appliquée pour cette Opération (élément → rôle). Une étape ou un
+   * événement indépendant décidé par T4 n'est plus jamais candidat : la
+   * projection ne redemande rien et ne pose aucune carte sur lui.
+   */
+  t4Roles?: ReadonlyMap<number, T4RepresentationRole>;
 }
 
-const sameSet = (a: readonly number[], b: readonly number[]): boolean => {
+/** Lot 87B : T4 a décidé que cet élément n'est PAS l'événement global de l'Opération (étape, indépendant). */
+const decideParT4 = (p: Pick<PlanInput, 't4Roles'>, i: AgendaItemSnapshot): boolean => {
+  const r = p.t4Roles?.get(i.id);
+  return r === 'STEP' || r === 'INDEPENDENT' || r === 'DUPLICATE';
+};
+
+const sameSet =(a: readonly number[], b: readonly number[]): boolean => {
   const x = [...new Set(a)].sort((m, n) => m - n);
   const y = [...new Set(b)].sort((m, n) => m - n);
   return x.length === y.length && x.every((v, i) => v === y[i]);
@@ -717,8 +824,18 @@ function statusActions(op: OperationSnapshot, item: AgendaItemSnapshot, desired:
  *     membre n'est jamais choisi parce qu'il est lié — sinon CRÉÉ, daté ou
  *     non (§11.3, §11.4) ;
  *   · échéance (clé RELATED) : règle de représentation inchangée ;
- *   · les autres membres ne sont ni promus, ni absorbés (hors vrai doublon
- *     76H), ni détachés ; relation durable : aucun principal déduit (AC52).
+ *   · les autres membres ne sont ni promus, ni absorbés, ni détachés ;
+ *     relation durable : aucun principal déduit (AC52).
+ *
+ * Lot 87B (ticket « orchestration T3/T4 », CODE-03, CODE-04) — le plan ne
+ * DÉCIDE plus aucune identité d'occurrence : il rattache seulement sur
+ * PROVENANCE exacte (document de l'Opération, source AGENDA établie par T3,
+ * unique représentation T4 d'un document dont T3 a consolidé toute la
+ * preuve) ; dès que plusieurs représentations sont possibles, ou qu'un
+ * élément n'est que SIGNALÉ (même bien, type, intitulé, date proche), il
+ * rend `REPRESENTATION_REQUIRED` (décision T4, `semantic/`) — avec, quand
+ * rien ne représente encore l'événement, la carte D14 existante (choix de
+ * l'utilisateur si T4 ne peut pas décider). Aucune absorption.
  */
 export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   const { op, decision } = p;
@@ -739,20 +856,26 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
   const evenementGlobal = projectionRoleOf(d.key) === 'PRINCIPAL';
   const item = evenementGlobal ? principalSlot(p.linked, d.key) : deadlineSlot(p.linked);
 
+  // Lot 87B (CODE-03, CODE-11) : une étape ou un événement indépendant décidé par T4 n'est plus un candidat.
+  const libre = (c: AgendaItemSnapshot) => !decideParT4(p, c);
+  let demandeMembres: ProjectionAction | null = null;
   if (item && evenementGlobal && item.projected && !isTouched(item) && item.operationRoleOrigin !== 'USER' && d.date && !p.principalWithdrawn) {
     // Lot 83A (C16.1, V-Q4) : la propre projection INTACTE fait double emploi avec un membre qui représente
-    // CERTAINEMENT la même occurrence (élément saisi ou T4 rattaché par T3 à cette réalité, même bien,
-    // même date) — vrai doublon : la projection est retirée, le membre devient le principal (AC15).
-    // Un membre seulement lié (étape, autre date) ne l'évince jamais (AC34).
-    const membres = p.linked.filter((i) => i.id !== item.id && !i.projected && i.operationRole !== 'PRINCIPAL');
+    // la même occurrence — vrai doublon : la projection est retirée, le membre devient le principal (AC15).
+    // Lot 87B (CODE-04) : seulement sur PROVENANCE exacte (document de l'Opération, source AGENDA T3) ; même
+    // bien + type + date ne sont que des signaux → décision T4 demandée, la projection reste. Une projection
+    // qui porte une décision de l'utilisateur (lien détaché) ne cède jamais sa place automatiquement.
+    const membres = p.linked.filter((i) => i.id !== item.id && !i.projected && i.operationRole !== 'PRINCIPAL' && libre(i));
     const reconnu = membres.length ? matchExistingItem(op, d, membres) : { kind: 'none' as const };
-    if (reconnu.kind === 'certain') {
+    if (reconnu.kind === 'certain' && item.userLinkDecision !== true) {
       return [
         { kind: 'REMOVE', itemId: item.id, reason: 'DUPLICATE_PROJECTION' },
         { kind: 'LINK', itemId: reconnu.item.id, reason: `élément du regroupement : ${reconnu.reason}` },
         ...statusActions(op, reconnu.item, d, cards),
       ];
     }
+    const forts = reconnu.kind === 'certain' ? [reconnu.item] : reconnu.kind === 'probable' ? reconnu.candidates.filter((c) => c.strong).map((c) => c.item) : [];
+    if (forts.length) demandeMembres = { kind: 'REPRESENTATION_REQUIRED', itemIds: [item.id, ...forts.map((x) => x.id)], reason: 'MEMBER_MAY_REPRESENT_EVENT' };
   }
   if (item) {
     // Doublons (fusion, lien posé à côté d'une projection) : propres projections INTACTES de la même
@@ -766,6 +889,7 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
       if (meme) actions.push({ kind: 'REMOVE', itemId: autre.id, reason: 'DUPLICATE_PROJECTION' });
     }
     actions.push(...occupiedSlotActions(p, d, fk, item, cards));
+    if (demandeMembres && !actions.some((a) => a.kind === 'REPRESENTATION_REQUIRED')) actions.push(demandeMembres);
     if (!evenementGlobal) actions.push(...durableRelationDemotions(op, p.linked));
     return uniqueRoles(actions);
   }
@@ -783,53 +907,72 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
     if (!d.creatable) return [{ kind: 'ABSTAIN', reason: 'NOT_CREATABLE' }];
     return [{ kind: 'CREATE', desired: d, functionalKey: fk }];
   }
-  const pool = p.taken?.size ? p.candidates.filter((c) => !p.taken!.has(c.id)) : p.candidates;
+  const pool = (p.taken?.size ? p.candidates.filter((c) => !p.taken!.has(c.id)) : p.candidates).filter(libre);
   // Lot 83A : membres de l'Opération non projetés (étapes, saisies, éléments T3) — candidats à la
-  // reconnaissance du principal (AC15) sur un rapprochement CERTAIN seulement ; jamais l'objet d'une
-  // abstention (« même Opération ≠ doublon », §6.5).
-  const membres = evenementGlobal ? p.linked.filter((i) => !i.projected && i.operationRole !== 'PRINCIPAL' && !pool.includes(i)) : [];
-  const promotion = (x: AgendaItemSnapshot): ProjectionAction[] =>
-    (x.businessOperationId === op.id && x.operationRole !== undefined && x.operationRole !== 'PRINCIPAL' ? [{ kind: 'ROLE' as const, itemId: x.id, role: 'PRINCIPAL' as const }] : []);
-  // Lot 76H : T3 a établi que la preuve d'intervention de ces documents est
-  // CETTE Opération — leurs événements T4 la représentent. Convergence
-  // seulement si aucun AUTRE événement (saisi, autre document) ne pourrait
-  // aussi la représenter ; sinon abstention et arbitrage existant.
+  // reconnaissance du principal (AC15) ; « même Opération ≠ doublon » (§6.5) : un membre seulement
+  // vaguement ressemblant n'est jamais l'objet d'une abstention.
+  const membres = evenementGlobal ? p.linked.filter((i) => !i.projected && i.operationRole !== 'PRINCIPAL' && !pool.includes(i) && libre(i)) : [];
+  // Lot 76H : T3 a établi que la preuve d'intervention de ces documents est CETTE Opération.
   const couverts = coveredEquivalents(op, d, [...pool, ...membres]);
   if (couverts.length) {
-    const principalT4 = choosePrincipal(couverts, op.id, d.date);
     // Les représentations d'une AUTRE intervention établie par T3 ne sont pas des candidates.
     const autres = matchExistingItem(op, d, pool.filter((c) => !couverts.includes(c)
       && !(c.coveredByOperationId != null && c.coveredByOperationId !== op.id)));
-    if (autres.kind === 'none') {
-      const absorbes = couverts.filter((c) => c.id !== principalT4.id).map((c) => c.id);
-      actions.push(absorbes.length
-        ? { kind: 'CONSOLIDATE', principalId: principalT4.id, absorbedIds: absorbes, linkPrincipal: true, reason: 'EQUIVALENT_BY_OPERATION' }
-        : { kind: 'LINK', itemId: principalT4.id, reason: 'représentation établie par l’Opération (T3)' });
-      if (absorbes.length) actions.push(...promotion(principalT4));
-      actions.push(...retitleActions(op, principalT4));
-      actions.push(...statusActions(op, principalT4, d, cards));
+    if (couverts.length === 1 && autres.kind === 'none') {
+      // Lot 76H / 87B : UNE seule représentation T4, produite depuis un document dont T3 a fait la preuve de
+      // CETTE Opération — rattachement par provenance (aucune fusion, réversible) : elle la représente.
+      const seul = couverts[0];
+      actions.push({ kind: 'LINK', itemId: seul.id, reason: 'représentation établie par l’Opération (T3)' });
+      actions.push(...retitleActions(op, seul));
+      actions.push(...statusActions(op, seul, d, cards));
       return actions;
     }
+    // Lot 87B (CODE-03, CODE-04, V-Q4) : PLUSIEURS représentations possibles (doublons ? étapes
+    // distinctes ? « visite puis réparation » ?) — le code ne fusionne pas, ne choisit pas : T4 décide ;
+    // à défaut (contrat non livré), l'utilisateur choisit (carte D14 « plusieurs événements équivalents »).
+    const concurrents = autres.kind === 'none' ? [] : (autres.kind === 'certain' ? [{ item: autres.item, reason: autres.reason }] : autres.candidates);
+    const premier = choosePrincipal(couverts, op.id, d.date);
     const cands = [
-      { itemId: principalT4.id, title: principalT4.title, date: principalT4.date, reason: 'événement du document de l’intervention' },
-      ...(autres.kind === 'certain' ? [{ item: autres.item, reason: autres.reason }] : autres.candidates)
-        .map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
+      { itemId: premier.id, title: premier.title, date: premier.date, reason: 'événement du document de l’intervention' },
+      ...couverts.filter((c) => c.id !== premier.id).map((c) => ({ itemId: c.id, title: c.title, date: c.date, reason: 'autre événement du document de l’intervention' })),
+      ...concurrents.map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
     ].slice(0, PROBABLE_CANDIDATES_MAX);
-    return [{ kind: 'ABSTAIN', reason: 'PROBABLE_EQUIVALENT: plusieurs représentations possibles', itemId: principalT4.id, key: d.key, candidates: cands }];
+    return [
+      { kind: 'ABSTAIN', reason: 'PROBABLE_EQUIVALENT: plusieurs représentations possibles', itemId: premier.id, key: d.key, candidates: cands },
+      {
+        kind: 'REPRESENTATION_REQUIRED', reason: concurrents.length ? 'COVERED_AND_OTHER_CANDIDATES' : 'SEVERAL_COVERED_REPRESENTATIONS',
+        itemIds: [...new Set([...couverts.map((c) => c.id), ...concurrents.map((c) => c.item.id)])],
+      },
+    ];
   }
-  // AC15 : un membre qui représente CERTAINEMENT l'événement global devient le principal.
+  // AC15 : un membre qui représente l'événement global avec PROVENANCE exacte devient le principal.
   const reconnu = membres.length ? matchExistingItem(op, d, membres) : { kind: 'none' as const };
   if (reconnu.kind === 'certain') {
     actions.push({ kind: 'LINK', itemId: reconnu.item.id, reason: `élément du regroupement : ${reconnu.reason}` });
     actions.push(...statusActions(op, reconnu.item, d, cards));
     return actions;
   }
+  // Lot 87B (CODE-04) : membre seulement SIGNALÉ (même bien, type compatible ou même intitulé, date proche)
+  // — l'ancienne règle le promouvait principal d'office. Ni promotion, ni projection à côté : décision T4
+  // demandée et, à défaut, carte D14 (« Oui, … » / « Non, ajouter un nouvel événement »).
+  const membresForts = reconnu.kind === 'probable' ? reconnu.candidates.filter((c) => c.strong) : [];
+  if (membresForts.length) {
+    return [
+      {
+        kind: 'ABSTAIN', reason: `PROBABLE_EQUIVALENT: ${membresForts[0].reason}`, itemId: membresForts[0].item.id, key: d.key,
+        candidates: membresForts.map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
+      },
+      { kind: 'REPRESENTATION_REQUIRED', itemIds: membresForts.map((c) => c.item.id), reason: 'MEMBER_MAY_REPRESENT_EVENT' },
+    ];
+  }
   const m = matchExistingItem(op, d, pool);
   if (m.kind === 'probable') {
+    // Lot 53 (D14) : carte « À traiter » existante ; lot 87B : la décision de représentation est aussi
+    // demandée à T4 (rattachement ou événement indépendant), sans qu'aucune règle du code ne tranche.
     return [{
       kind: 'ABSTAIN', reason: `PROBABLE_EQUIVALENT: ${m.reason}`, itemId: m.item.id, key: d.key,
       candidates: m.candidates.map((c) => ({ itemId: c.item.id, title: c.item.title, date: c.item.date, reason: c.reason })),
-    }];
+    }, { kind: 'REPRESENTATION_REQUIRED', itemIds: m.candidates.map((c) => c.item.id), reason: 'UNCERTAIN_EXISTING_EVENT' }];
   }
   if (m.kind === 'certain') {
     actions.push({ kind: 'LINK', itemId: m.item.id, reason: m.reason });
@@ -844,18 +987,41 @@ export function planOperationProjection(p: PlanInput): ProjectionAction[] {
 function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, item: AgendaItemSnapshot, cards: ReadonlySet<number>): ProjectionAction[] {
   const { op } = p;
   const actions: ProjectionAction[] = [];
-  // Lot 76H : autres représentations T4 de la même intervention (liées à
-  // cette Opération, ou créées avant / pendant la consolidation T3) —
-  // absorbées par l'élément principal, qui représente déjà l'Opération.
-  // Lot 82D / 83A (V-Q4) : ni un principal, ni un élément rattaché par
-  // l'utilisateur (`coveredEquivalents`).
+  // Lot 76H / 87B : autres représentations de l'Opération à côté de son emplacement (liées à elle, ou
+  // créées avant / pendant la consolidation T3). Lot 82D / 83A (V-Q4) : ni un principal, ni un élément
+  // rattaché par l'utilisateur (`coveredEquivalents`). Lot 87B : jamais absorbées par le code.
   if (d.date && item.date && dayGap(item.date, d.date) <= (item.nature !== d.nature ? PLANNED_TO_REALIZED_TOLERANCE_DAYS : MATCH_DATE_TOLERANCE_DAYS)) {
     const pool = [
       ...p.linked.filter((i) => i.id !== item.id),
       ...p.candidates.filter((c) => c.id !== item.id && c.businessOperationId !== op.id && !p.taken?.has(c.id)),
-    ];
-    const absorbes = coveredEquivalents(op, d, pool).map((c) => c.id);
-    if (absorbes.length) actions.push({ kind: 'CONSOLIDATE', principalId: item.id, absorbedIds: absorbes, linkPrincipal: false, reason: 'EQUIVALENT_BY_OPERATION' });
+    ].filter((c) => !decideParT4(p, c));
+    const couverts = coveredEquivalents(op, d, pool);
+    const projectionTechnique = item.projected && !isTouched(item) && item.operationRoleOrigin !== 'USER' && item.userLinkDecision !== true && !p.principalWithdrawn;
+    // Candidats NON liés à l'Opération (autre document, saisie, provenance sans exclusivité T3) : signaux.
+    const autres = matchExistingItem(op, d, pool.filter((c) => c.businessOperationId !== op.id && !couverts.includes(c)
+      && !(c.coveredByOperationId != null && c.coveredByOperationId !== op.id)));
+    const autresForts = autres.kind === 'certain' ? [autres.item] : autres.kind === 'probable' ? autres.candidates.filter((c) => c.strong).map((c) => c.item) : [];
+    // Représentation T4 à provenance EXACTE : couverte (T3 a consolidé toute la preuve du document dans cette
+    // Opération), ou produite depuis un document dont CETTE Opération est la seule Opération active.
+    const uniques = couverts.length ? couverts
+      : autres.kind === 'certain' && soleProvenance(op, autres.item) ? [autres.item] : [];
+    const concurrents = autresForts.filter((c) => !uniques.includes(c));
+    if (uniques.length === 1 && !concurrents.length && projectionTechnique && uniques[0].businessOperationId !== op.id) {
+      // Lot 87B : la projection TECHNIQUE (artefact du code, intacte, sans décision de l'utilisateur) CÈDE la
+      // place à l'unique représentation T4 produite depuis un document dont T3 a fait la preuve de CETTE
+      // Opération — retrait tracé et restaurable, rattachement par provenance ; aucune fusion de preuves.
+      const seul = uniques[0];
+      return [
+        { kind: 'REMOVE', itemId: item.id, reason: 'PROJECTION_YIELDS_TO_T4_REPRESENTATION' },
+        { kind: 'LINK', itemId: seul.id, reason: 'représentation établie par l’Opération (T3)' },
+        ...retitleActions(op, seul),
+        ...statusActions(op, seul, d, cards),
+      ];
+    }
+    // Lot 87B (CODE-03, V-Q4) : autres représentations possibles à côté de l'emplacement — la projection
+    // ne les absorbe plus (l'ancienne règle 76H fusionnait sur provenance + type + date) : T4 décide.
+    const ids = [...new Set([...couverts.map((c) => c.id), ...autresForts.map((c) => c.id)])];
+    if (ids.length) actions.push({ kind: 'REPRESENTATION_REQUIRED', itemIds: [item.id, ...ids], reason: couverts.length ? 'EQUIVALENTS_BESIDE_SLOT' : 'CANDIDATES_BESIDE_SLOT' });
   }
 
   if (item.projected && !isTouched(item)) {
@@ -897,6 +1063,17 @@ function occupiedSlotActions(p: PlanInput, d: DesiredProjection, fk: string, ite
   actions.push(...statusActions(op, item, d, cards));
   actions.push(...roleActions(item, d.key, p.principalWithdrawn));
   return actions;
+}
+
+/**
+ * Lot 87B : événement T4 intact produit depuis un document dont l'Opération
+ * est la SEULE Opération active (provenance exacte, aucune décision
+ * sémantique) — jamais un élément saisi, touché, à statut ouvert ou dont
+ * l'utilisateur a détaché l'origine.
+ */
+function soleProvenance(op: OperationSnapshot, c: AgendaItemSnapshot): boolean {
+  return c.isAutomatic && !c.projected && !isTouched(c) && c.pendingStatus !== true && c.operationRoleOrigin !== 'USER'
+    && c.originLinkRejected !== true && c.originRefType === 'asset_file' && c.originSoleOperationId === op.id;
 }
 
 /** Lot 76H (§3.5) : intitulé T4 générique d'un élément automatique INTACT → description précise de l'Opération. */

@@ -48,6 +48,7 @@ import { pgClient } from '@/db';
 import { AiGateway } from '@/services/ai/gateway/ai-gateway';
 import { isCostCapReached } from '@/services/ai/gateway/errors';
 import { resolveOperationConfig } from '@/services/ai/config/config-resolver';
+import { runWithConfigSnapshot } from '@/services/ai/config/execution-snapshot';
 import { canStart } from '@/services/ai/queue/job-queue.repository';
 import {
   T6_OUTPUT_SCHEMA_VERSION, validateT6Output, mechanicalWording, T6_INFORMATIVE_REMINDER_CODE,
@@ -55,8 +56,8 @@ import {
   type T6Input, type T6Message, type T6SubjectKind,
 } from './t6-contract';
 import {
-  promptSupportsSuggestionRefs, promptSupportsSuggestions, validateT6Suggestions,
-  type T6Suggestion, type T6SuggestionBundle,
+  promptSupportsSuggestionGrounds, storedSuggestionOf, t6SuggestionReportOf, validateT6SuggestionsDetailed, T6_SUGGESTION_CONTRACT,
+  type T6Suggestion, type T6SuggestionBundle, type T6SuggestionReport, type T6SuggestionValidation,
 } from './t6-suggestions';
 import {
   T6_ASSESSMENT_REVISION_REMINDER, T6_EVALUATION_SIGNATURE_V2, type T6EvaluationConfig, type T6InterpellationBundle, type T6PersistResult,
@@ -129,6 +130,14 @@ export interface T6Outcome {
    * `messages`. `null`/absent : indisponibles (aucune question affichée).
    */
   suggestions?: T6Suggestion[] | null;
+  /**
+   * Lot 87C : issue de la validation des questions (produites, acceptées,
+   * rejetées avec motifs) — génération ou relecture du cache. Trace BO :
+   * un statut `generated` ne masque jamais les questions rejetées.
+   */
+  suggestionValidation?: T6SuggestionValidation | null;
+  /** Lot 87C : questions retirées à la relecture du cache (fondements devenus invalides). */
+  suggestionsInvalidated?: number;
 }
 
 // ── Empreintes ───────────────────────────────────────────────────────────────
@@ -156,6 +165,14 @@ export function t6CacheKey(p: {
    * clé historique inchangée.
    */
   interpellationContext?: unknown;
+  /**
+   * Lot 87C : version du contrat des questions et empreinte de TOUS leurs
+   * fondements (clés stables des sources et versions du contenu transmis) —
+   * un fondement modifié invalide l'entrée même à compteurs identiques ; une
+   * entrée d'un autre contrat n'est jamais relue. Absents : clé historique.
+   */
+  suggestionContract?: string;
+  suggestionGrounds?: string;
 }): string {
   return sha256(canonicalJson({
     accountId: p.accountId,
@@ -166,6 +183,8 @@ export function t6CacheKey(p: {
     outputSchema: p.outputSchema ?? T6_OUTPUT_SCHEMA_VERSION,
     ...(p.suggestionContext != null ? { suggestionContext: p.suggestionContext } : {}),
     ...(p.interpellationContext != null ? { interpellationContext: p.interpellationContext } : {}),
+    ...(p.suggestionContract != null ? { suggestionContract: p.suggestionContract } : {}),
+    ...(p.suggestionGrounds != null ? { suggestionGrounds: p.suggestionGrounds } : {}),
   }));
 }
 
@@ -310,32 +329,22 @@ async function t6EvaluationBaseline(legacy: string, current: string): Promise<st
 }
 
 /**
- * Lot 55A — le prompt maître T6 EFFECTIF (version BO active, sinon fichier du
- * dépôt) porte-t-il `{{SUGGESTION_CONTEXT}}` (R12) ? Non : une version BO
- * antérieure est en service — aucune question suggérée (comportement
- * prudent) tant qu'une nouvelle version n'est pas activée. Ne lève jamais.
+ * Lot 87C (AC10) — le prompt maître T6 EFFECTIF (version BO active en
+ * architecture master, sinon fichier du dépôt — examiné lui aussi, sans
+ * présomption) porte-t-il le contrat des questions FONDÉES
+ * (`t6-suggestions-v3`) ? Non : aucun contexte de questions transmis, aucune
+ * question publiée — jamais de question non vérifiable. La bulle reste
+ * formulée normalement. Ne lève jamais (échec : `false`).
  */
-export async function t6SuggestionsAvailable(): Promise<boolean> {
+export async function t6SuggestionGroundsAvailable(): Promise<boolean> {
   try {
     const config = await resolveOperationConfig(T6_MASTER_OPERATION);
     // Même résolution que la passerelle (`configuredMasterText`) : texte
     // administré en architecture master, sinon fichier du dépôt.
-    return promptSupportsSuggestions(config.promptArchitecture === 'master' ? config.masterPromptText : null);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Lot 72A (AC06) — le prompt maître EFFECTIF porte-t-il R12 v2 (références
- * d'échéance `deadlineRef` / `purpose`) ? Non : contexte des questions v1,
- * inchangé (aucune activation silencieuse) — l'exclusion des échéances
- * écartées reste appliquée par le serveur. Ne lève jamais.
- */
-export async function t6SuggestionRefsAvailable(): Promise<boolean> {
-  try {
-    const config = await resolveOperationConfig(T6_MASTER_OPERATION);
-    return promptSupportsSuggestionRefs(config.promptArchitecture === 'master' ? config.masterPromptText : null);
+    const bo = config.promptArchitecture === 'master' && config.masterPromptText?.trim() ? config.masterPromptText : null;
+    if (bo != null) return promptSupportsSuggestionGrounds(bo);
+    const { loadMasterTemplate } = await import('@/services/ai/prompts/prompt-loader');
+    return promptSupportsSuggestionGrounds(await loadMasterTemplate(T6_MASTER_PROMPT_CODE).catch(() => null));
   } catch {
     return false;
   }
@@ -420,17 +429,27 @@ export async function readT6Cache(accountId: number, cacheKey: string, input: T6
 /**
  * Entrée du cache : textes et — lot 55A — questions suggérées de la même
  * génération (`suggestions` : null si la génération n'en portait pas).
+ *
+ * Lot 87C : avec un contexte de questions, l'entrée doit porter le contrat
+ * courant (`suggestion_contract`) — sinon elle n'est pas servie (nouvelle
+ * génération conforme). Chaque question est revalidée par les MÊMES règles
+ * qu'à la génération, fondements conservés compris (comparés à ceux du
+ * contexte courant) ; une question devenue injustifiée est retirée et
+ * l'entrée INVALIDÉE (supprimée, invalidation tracée) — l'affichage courant
+ * garde les seules questions valides, la génération suivante repart du
+ * contexte courant.
  */
 export async function readT6CacheEntry(
   accountId: number, cacheKey: string, input: T6Input, bundle?: T6SuggestionBundle | null,
-): Promise<{ messages: T6Message[]; suggestions: T6Suggestion[] | null } | null> {
+): Promise<{ messages: T6Message[]; suggestions: T6Suggestion[] | null; validation?: T6SuggestionValidation | null; invalidated?: number } | null> {
   try {
     const r = (await pgClient.unsafe(
       bundle
-        ? `SELECT messages, suggestions FROM home_mascot_cache WHERE account_id = $1 AND cache_key = $2 LIMIT 1`
+        ? `SELECT c.messages, c.suggestions, to_jsonb(c) ->> 'suggestion_contract' AS suggestion_contract, to_jsonb(c) ->> 'trace_id' AS trace_id
+             FROM home_mascot_cache c WHERE c.account_id = $1 AND c.cache_key = $2 LIMIT 1`
         : `SELECT messages FROM home_mascot_cache WHERE account_id = $1 AND cache_key = $2 LIMIT 1`,
       [accountId, cacheKey] as never[],
-    )) as unknown as Array<{ messages: unknown; suggestions?: unknown }>;
+    )) as unknown as Array<{ messages: unknown; suggestions?: unknown; suggestion_contract?: string | null; trace_id?: string | null }>;
     if (!r[0]) return null;
     // Lot 68 : formulation antérieure portant une formule mécanique
     // (« À prévoir : », introduction de comptage) — ignorée, donc renouvelée.
@@ -447,10 +466,21 @@ export async function readT6CacheEntry(
     // Cache illisible ou désaccordé : ignoré, jamais servi (§20).
     const v = validateT6Output(input, { messages: r[0].messages });
     if (!v.ok) return null;
-    // Questions revalidées contre le contexte COURANT (références de biens ;
-    // lot 72A : références d'échéance, échéances écartées).
-    const suggestions = bundle && Array.isArray(r[0].suggestions) ? validateT6Suggestions(r[0].suggestions, bundle.assetIds, bundle) : null;
-    return { messages: v.messages, suggestions };
+    if (!bundle) return { messages: v.messages, suggestions: null };
+    // Lot 87C (AC09) : entrée d'un contrat antérieur — jamais servie avec un contexte de questions.
+    if (r[0].suggestion_contract !== T6_SUGGESTION_CONTRACT) return null;
+    if (!Array.isArray(r[0].suggestions)) return { messages: v.messages, suggestions: null };
+    const validation = validateT6SuggestionsDetailed(r[0].suggestions, bundle.assetIds, bundle, { stored: true });
+    let invalidated = 0;
+    if (validation.rejected.length > 0) {
+      const reasons: Record<string, number> = {};
+      for (const x of validation.rejected) reasons[x.reason] = (reasons[x.reason] ?? 0) + 1;
+      const { invalidateT6SuggestionCache } = await import('./t6-suggestion-grounds');
+      await invalidateT6SuggestionCache(accountId, [{ cacheKey, traceId: r[0].trace_id ?? null, reasons, removed: validation.rejected.length }], 'CACHE_READ')
+        .catch((e: Error) => console.error('[mascotte] invalidation du cache T6 non écrite :', e.message));
+      invalidated = validation.rejected.length;
+    }
+    return { messages: v.messages, suggestions: validation.accepted, validation, invalidated };
   } catch {
     return null;
   }
@@ -461,17 +491,21 @@ async function writeT6Cache(p: {
   messages: T6Message[]; model: string | null; schemaVersion?: string;
   /** Lot 55A : questions de la même génération (migration 0395). */
   suggestions?: T6Suggestion[] | null;
+  /** Lot 87C : trace de la génération (invalidations postérieures). */
+  traceId?: string | null;
 }): Promise<void> {
   try {
     if (p.suggestions) {
+      // Lot 87C (0756) : contrat et trace conservés avec les questions, chacune
+      // avec ses fondements (références, clés stables, versions) — revalidées
+      // à la relecture contre le contexte courant.
       await pgClient.unsafe(
-        `INSERT INTO home_mascot_cache (account_id, cache_key, context_hash, prompt_version, schema_version, messages, model, suggestions)
-         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb)
+        `INSERT INTO home_mascot_cache (account_id, cache_key, context_hash, prompt_version, schema_version, messages, model, suggestions, suggestion_contract, trace_id)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8::jsonb, $9, $10)
          ON CONFLICT (account_id, cache_key) DO NOTHING`,
         [p.accountId, p.cacheKey, p.contextHash, p.promptVersion, p.schemaVersion ?? T6_OUTPUT_SCHEMA_VERSION,
           JSON.stringify(p.messages), p.model,
-          // Les références de biens (lot 72A : et d'échéance) d'origine, revalidées à la relecture.
-          JSON.stringify(p.suggestions.map((x) => ({ question: x.question, assetRef: x.assetRef ?? null, deadlineRef: x.deadlineRef ?? null, purpose: x.purpose ?? null })))] as never[],
+          JSON.stringify(p.suggestions.map(storedSuggestionOf)), T6_SUGGESTION_CONTRACT, p.traceId ?? null] as never[],
       );
     } else {
       await pgClient.unsafe(
@@ -491,12 +525,37 @@ async function writeT6Cache(p: {
   }
 }
 
+/** Lot 87C : colonne `suggestion_report` (0756) présente ? Lue une fois par processus (fenêtre de déploiement). */
+let reportColumn: Promise<boolean> | null = null;
+function hasSuggestionReportColumn(): Promise<boolean> {
+  reportColumn ??= (pgClient.unsafe(
+    `SELECT 1 FROM information_schema.columns WHERE table_name = 'home_mascot_generations' AND column_name = 'suggestion_report' LIMIT 1`, [] as never[],
+  ) as unknown as Promise<unknown[]>).then((r) => Array.isArray(r) && r.length > 0).catch(() => { reportColumn = null; return false; });
+  return reportColumn;
+}
+/** Réservé aux tests. */
+export function resetT6SuggestionReportProbe(): void { reportColumn = null; }
+
+/**
+ * Lot 87C — trace des questions d'une issue T6 (pure) : génération (produites,
+ * acceptées, rejetées, motifs, fondements) ; `null` quand aucune question
+ * n'était demandée et que le prompt les supporte (rien à tracer).
+ */
+export function t6SuggestionTraceOf(o: T6Outcome, p: { requested: boolean; promptSupported: boolean }): T6SuggestionReport | null {
+  if (!p.promptSupported) return t6SuggestionReportOf(null, false);
+  if (!p.requested) return null;
+  if (o.status !== 'generated') return null;
+  return t6SuggestionReportOf(o.suggestionValidation ?? { produced: 0, accepted: [], rejected: [] }, true);
+}
+
 export async function logT6(p: {
   accountId: number; contextHash: string; mode: T6Mode; outcome: T6Outcome; input: T6Input | null;
   /** Lot 55A : contexte des questions, transmis à T6 (LOG-005 : ni plus, ni moins). */
   suggestionContext?: unknown;
   /** Lot 60 (R13) — lot 61 : jamais transmis par FORMULATE ; conservé pour compatibilité. */
   interpellationContext?: unknown;
+  /** Lot 87C : trace des questions (contrat, produites / acceptées / rejetées, motifs, fondements). */
+  suggestionReport?: T6SuggestionReport | null;
 }): Promise<void> {
   const o = p.outcome;
   // LOG-005 : une lecture du cache n'est pas un appel T6 — ni l'entrée ni la
@@ -504,11 +563,13 @@ export async function logT6(p: {
   // sont dupliquées ; la ligne ne sert qu'aux agrégats BO-009.
   const leger = o.status === 'cache_hit';
   try {
+    // Lot 87C (0756) : trace des questions, si la colonne est déployée.
+    const avecRapport = p.suggestionReport != null && await hasSuggestionReportColumn();
     await pgClient.unsafe(
       `INSERT INTO home_mascot_generations
          (account_id, context_hash, mode, status, prompt_version, model, used_fallback_model,
-          latency_ms, cost_micros, trace_id, input_json, output_json, error)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13)`,
+          latency_ms, cost_micros, trace_id, input_json, output_json, error${avecRapport ? ', suggestion_report' : ''})
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13${avecRapport ? ', $14::jsonb' : ''})`,
       [p.accountId, p.contextHash, p.mode, o.status, o.promptVersion, o.model ?? null,
         Boolean(o.usedFallbackModel), o.latencyMs ?? null, o.costMicros ?? null, o.traceId ?? null,
         // LOG-005 : rien de plus que ce qui a été transmis à T6.
@@ -519,7 +580,7 @@ export async function logT6(p: {
         }) : null,
         leger ? null
           : o.output !== undefined ? JSON.stringify(o.output) : (o.messages ? JSON.stringify({ messages: o.messages }) : null),
-        o.error ?? null] as never[],
+        o.error ?? null, ...(avecRapport ? [JSON.stringify(p.suggestionReport)] : [])] as never[],
     );
   } catch (e) {
     console.error('[mascotte] journal T6 non écrit :', (e as Error).message);
@@ -637,16 +698,18 @@ async function generateMaster(p: {
     breakerRecord(true);
     const messages = v.messages;
     const adjustments = v.adjustments;
-    // Lot 55A : questions de la MÊME sortie, validées à part (structure).
-    const suggestions = p.suggestions
-      ? validateT6Suggestions((res.data as { suggestions?: unknown } | null)?.suggestions, p.suggestions.assetIds, p.suggestions)
+    // Lot 55A : questions de la MÊME sortie, validées à part. Lot 87C : contrat
+    // `t6-suggestions-v3` — rejet individuel motivé, aucun remplacement.
+    const suggestionValidation = p.suggestions
+      ? validateT6SuggestionsDetailed((res.data as { suggestions?: unknown } | null)?.suggestions, p.suggestions.assetIds, p.suggestions)
       : null;
+    const suggestions = suggestionValidation ? suggestionValidation.accepted : null;
     await writeT6Cache({
       accountId: p.accountId, cacheKey: p.cacheKey, contextHash: p.contextHash,
       promptVersion: p.promptVersion, messages, model: res.model, schemaVersion: T6_OUTPUT_SCHEMA_VERSION_V2,
-      suggestions,
+      suggestions, traceId: res.traceId ?? null,
     });
-    return { ...base, status: 'generated', messages, adjustments, suggestions };
+    return { ...base, status: 'generated', messages, adjustments, suggestions, suggestionValidation };
   } catch (e) {
     // Lot 22 : plafond IA du mois du compte atteint — texte de secours
     // déterministe, sans compter d'échec au disjoncteur T6 (partagé par tous
@@ -692,6 +755,15 @@ const defaultDeps: T6Dependencies = {
  * Ne lève jamais.
  */
 export async function formulateWithT6(
+  p: Parameters<typeof formulateWithT6Inner>[0],
+  deps: T6Dependencies = defaultDeps,
+): Promise<T6Outcome> {
+  // Lot 87A (P7, RUN-04) : version de prompt lue, cache et génération sous
+  // la MÊME configuration, figée au démarrage de l'exécution T6.
+  return runWithConfigSnapshot('T6', () => formulateWithT6Inner(p, deps));
+}
+
+async function formulateWithT6Inner(
   p: {
     accountId: number; input: T6Input; contextHash: string; mode: T6Mode; kinds?: Array<T6SubjectKind | undefined>;
     /**
@@ -719,6 +791,8 @@ export async function formulateWithT6(
   const cacheKey = t6CacheKey({
     accountId: p.accountId, input: p.input, promptVersion, outputSchema: T6_OUTPUT_SCHEMA_VERSION_V2,
     suggestionContext: bundle?.context,
+    // Lot 87C : contrat et fondements dans la clé (invalidation à compteurs identiques).
+    ...(bundle ? { suggestionContract: bundle.contract ?? T6_SUGGESTION_CONTRACT, suggestionGrounds: bundle.groundsDigest ?? '' } : {}),
   });
   // Cache du compte et bulles précédentes (R8) lus ensemble : un aller-retour
   // en base de moins sur le chemin de l'affichage.
@@ -731,7 +805,7 @@ export async function formulateWithT6(
   if (cached) {
     return {
       status: 'cache_hit', messages: cached.messages, promptVersion, architecture: 'master',
-      ...(bundle ? { suggestions: cached.suggestions } : {}),
+      ...(bundle ? { suggestions: cached.suggestions, suggestionValidation: cached.validation ?? null, suggestionsInvalidated: cached.invalidated ?? 0 } : {}),
     };
   }
 
@@ -767,7 +841,14 @@ export async function formulateWithT6(
     // La génération qui s'achève après le délai d'affichage est journalisée
     // en pré-génération : elle n'a pas été vue (RUN-011).
     if (p.mode === 'display') {
-      void run.then((o) => { if (tardive.has(run!)) void logT6({ accountId: p.accountId, contextHash: p.contextHash, mode: 'pregen', outcome: o, input: p.input, suggestionContext: bundle?.context }); });
+      void run.then((o) => {
+        if (tardive.has(run!)) {
+          void logT6({
+            accountId: p.accountId, contextHash: p.contextHash, mode: 'pregen', outcome: o, input: p.input, suggestionContext: bundle?.context,
+            suggestionReport: t6SuggestionTraceOf(o, { requested: !!bundle, promptSupported: true }),
+          });
+        }
+      });
     }
   }
 
@@ -1009,6 +1090,14 @@ export function evaluationRepairViolation(repairs: ReadonlyArray<{ stage?: strin
 export async function evaluateWithT6(
   p: { accountId: number; bundle: T6InterpellationBundle; mode: T6Mode },
   deps: T6EvaluationDependencies = t6EvaluationDefaultDeps,
+): Promise<T6EvaluationOutcome> {
+  // Lot 87A (P7, RUN-04) : configuration figée au démarrage de l'évaluation.
+  return runWithConfigSnapshot('T6', () => evaluateWithT6Inner(p, deps));
+}
+
+async function evaluateWithT6Inner(
+  p: { accountId: number; bundle: T6InterpellationBundle; mode: T6Mode },
+  deps: T6EvaluationDependencies,
 ): Promise<T6EvaluationOutcome> {
   // Lot 72A (AC08) : mode d'appel tracé (affichage / pré-génération).
   const callerMode = gatewayCallerMode(p.mode);

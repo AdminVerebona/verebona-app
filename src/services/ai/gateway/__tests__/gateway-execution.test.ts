@@ -63,8 +63,9 @@ describe('rang du modèle réellement utilisé', () => {
 
   it('trace primary, fallback_1 puis fallback_2 — jamais NULL pour un repli', async () => {
     __setConfigForTests({ versionId: 1, entries: [t1('m-a', 'm-b', 'm-c', [])] });
-    fake.on('m-a', () => { throw new Error('503'); });
-    fake.on('m-b', () => { throw new Error('503'); });
+    // Lot 87A : indisponibilité 503 explicite (panne propre au modèle → secours).
+    fake.on('m-a', () => { throw Object.assign(new Error('503'), { status: 503 }); });
+    fake.on('m-b', () => { throw Object.assign(new Error('503'), { status: 503 }); });
     fake.on('m-c', () => ({ rawText: OK, inputTokens: 1, outputTokens: 1 }));
     const r = await AiGateway.execute(req());
     expect(r.model).toBe('m-c');

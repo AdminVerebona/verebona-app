@@ -486,6 +486,10 @@ scenario('L72C-ATP', 'À traiter : écarts résiduels de pertinence, de calcul e
     expect((await diag(sansCarte)).at(-1)).toMatchObject({ outcome: 'DEFER', engine_version: 'l76-2', trigger_code: 'BACKFILL' });
     // Aucune suppression physique ; rejouée : aucune réparation ni doublon.
     expect(await cartes(info, 'date', 'AGENDA_ITEM')).toHaveLength(1);
+    // Intégration lot 87 : le contrôle des titres (87D, fin de registre) normalise les titres automatiques
+    // au premier passage ; les décisions qui lisent le titre se réalignent au passage suivant. Idempotence
+    // vérifiée une fois la campagne convergée.
+    await runCoherenceFor(sql, [compte.id]);
     const avant = (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM coherence_repairs WHERE account_id = ${compte.id}`)[0].n;
     const run2 = await runCoherenceFor(sql, [compte.id]);
     expect(run2.status).toBe('COMPLETE');

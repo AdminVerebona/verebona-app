@@ -7,6 +7,7 @@
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { useTargetState } from '../chain';
+import { activerContratQuestions } from '../t6-suggestions-v3';
 
 /** IA simulée : FORMULATE rend le texte de secours, précédé (ou non) d'une introduction de comptage. */
 const modele = vi.hoisted(() => ({ prefixe: '' as string, formulate: 0 }));
@@ -62,7 +63,7 @@ scenario('L71F-MASC', 'Lot 71F — mascotte sans introduction de comptage (PG16)
     r.resetT6EvaluationState();
     (await import('@/services/home/mascot/mascot.service')).cancelPendingPregenerations();
   });
-  afterEach(async () => { (await import('@/services/home/mascot/mascot.service')).cancelPendingPregenerations(); });
+  afterEach(async () => { (await import('@/services/home/mascot/mascot.service')).cancelPendingPregenerations(); await activerContratQuestions(false); });
 
   const svc = () => import('@/services/home/mascot/mascot.service');
   const B = () => import('@/services/home/mascot/bubble');
@@ -111,6 +112,9 @@ scenario('L71F-MASC', 'Lot 71F — mascotte sans introduction de comptage (PG16)
   });
 
   it('L71F-E2E-03 — entrée de cache historique porteuse d’une introduction : non servie, SUPPRIMÉE, renouvelée proprement', async () => {
+    // Lot 87C : prompt porteur des questions (version simulée du contrat t6-suggestions-v3) — sans lui,
+    // aucune question n'est demandée et la bulle inchangée reprend ses textes figés (R8) sans appel.
+    await activerContratQuestions(true);
     const a = await make.account({ plan: 'premium' });
     await make.asset(a, { name: 'garage' });
     // 1) génération saine, mise en cache.

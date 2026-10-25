@@ -46,6 +46,7 @@
  * L'action proposée (relancer depuis la fiche du document) existe réellement.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import { emit } from '@/lib/notifications';
 import {
   LOT_DOCUMENTS_MAX, lotFailurePayload, lotNotificationPayload,
@@ -143,17 +144,18 @@ export function resolveLotOutcome(items: LotItemState[]): LotOutcome {
  */
 export async function loadLotDocuments(lotId: number): Promise<LotDocument[]> {
   try {
-    const { db } = await import('@/db');
-    const rows = await db.$client<{ assetFileId: number; title: string | null }[]>`
-      SELECT li.asset_file_id AS "assetFileId",
-             COALESCE(NULLIF(af.retained_title, ''), NULLIF(af.original_filename, ''), af.filename) AS title
-      FROM document_lot_items li
-      JOIN asset_files af ON af.id = li.asset_file_id
-      WHERE li.lot_id = ${lotId} AND li.analysis_status = 'completed' AND af.deleted_at IS NULL
-      ORDER BY li.position ASC
-      LIMIT ${LOT_DOCUMENTS_MAX + 1}
-    `;
-    return rows.filter((r) => r.title).map((r) => ({ assetFileId: r.assetFileId, title: r.title as string }));
+    const { pgClient } = await import('@/db');
+    // Lot 87D : titre par la règle unique des vues (le même que la liste, la fiche et la recherche).
+    const rows = await pgClient.unsafe<Array<{ assetFileId: number } & DocumentTitleColumns>>(
+      `SELECT li.asset_file_id AS "assetFileId", ${documentTitleColumnsSql('af')}
+         FROM document_lot_items li
+         JOIN asset_files af ON af.id = li.asset_file_id
+        WHERE li.lot_id = $1 AND li.analysis_status = 'completed' AND af.deleted_at IS NULL
+        ORDER BY li.position ASC
+        LIMIT $2`,
+      [lotId, LOT_DOCUMENTS_MAX + 1] as never[],
+    );
+    return rows.map((r) => ({ assetFileId: Number(r.assetFileId), title: documentTitleOf(r, '') })).filter((r) => r.title);
   } catch (e) {
     console.warn(`[source-analysis] titres du lot ${lotId} non lus :`, (e as Error).message);
     return [];
@@ -187,11 +189,10 @@ export async function evaluateLotNotification(lotId: number, opts: { retryExpect
     if (!lot || lot.notification_state !== 'awaiting') return 'skipped';
 
     const items = await pgClient.unsafe<Array<{
-      asset_file_id: number; title: string | null; analysis_state: string | null; analysis_fail_reason: string | null;
+      asset_file_id: number; analysis_state: string | null; analysis_fail_reason: string | null;
       deleted: boolean; grouped_into: number | null; earlier_lot: number | null;
-    }>>(
-      `SELECT li.asset_file_id,
-              COALESCE(NULLIF(af.retained_title, ''), NULLIF(af.original_filename, ''), af.filename) AS title,
+    } & DocumentTitleColumns>>(
+      `SELECT li.asset_file_id, ${documentTitleColumnsSql('af')},
               af.analysis_state, af.analysis_fail_reason,
               (af.deleted_at IS NOT NULL) AS deleted, af.grouped_into_file_id AS grouped_into,
               (SELECT min(l2.id) FROM document_lot_items i2 JOIN document_lots l2 ON l2.id = i2.lot_id
@@ -219,7 +220,7 @@ export async function evaluateLotNotification(lotId: number, opts: { retryExpect
 
     const vivants = await liveFiles(propres.filter((i) => i.analysis_state === 'ANALYSIS_FAILED').map((i) => i.asset_file_id));
     const outcome = resolveLotOutcome(propres.map((i) => ({
-      assetFileId: i.asset_file_id, title: i.title, analysisState: i.analysis_state, analysisFailReason: i.analysis_fail_reason,
+      assetFileId: i.asset_file_id, title: documentTitleOf(i, '') || null, analysisState: i.analysis_state, analysisFailReason: i.analysis_fail_reason,
       deleted: i.deleted, groupedInto: i.grouped_into,
       liveJob: vivants.has(i.asset_file_id), retryExpected: opts.retryExpected?.has(i.asset_file_id) ?? false,
     })));

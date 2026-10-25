@@ -72,12 +72,20 @@ export function resetNamingTablesReady(): void { pret = null; }
  * visibles (ni supprimés, ni regroupés, ni brouillons, ni ignorés, ni liens
  * web), avec un nom. AUCUNE condition sur les Opérations, le classement ou
  * le rattachement.
+ *
+ * Lot 87D : un document dont le titre relève d'une CONVENTION du service de
+ * nommage centralisé (`title_convention`, ex. facture périodique « Facture
+ * Homiris — Février 2026 ») n'est plus harmonisé par T3 — une seule logique
+ * nomme chaque document (sinon les deux mécanismes se renommeraient l'un
+ * l'autre). Il sort de l'index au cycle de lecture suivant (purge des
+ * documents devenus inéligibles).
  */
 const ELIGIBLE = `f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL
         AND COALESCE(f.is_draft, false) = false AND COALESCE(f.is_ignored, false) = false
         AND COALESCE(f.is_web_link, false) = false
         AND f.analysis_state IN ('${T1_SETTLED_STATES.join("', '")}')
-        AND NULLIF(btrim(f.retained_title), '') IS NOT NULL`;
+        AND NULLIF(btrim(f.retained_title), '') IS NOT NULL
+        AND f.title_convention IS NULL`;
 
 /**
  * Lecture d'un document pour le nommage (lot 72B, E3) : outre les données du
@@ -834,6 +842,8 @@ export async function applyRename(e: RenameEvent & { appliedName: string }, deci
         WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL
           AND title_source = 'SYSTEM'
           AND NOT COALESCE((user_edited_fields ->> 'retainedTitle') = 'true', false)
+          -- Lot 87D : titre sous convention du service de nommage : jamais renommé par T3.
+          AND title_convention IS NULL
           AND retained_title IS NOT DISTINCT FROM $4::text
         RETURNING id`,
       [e.fileId, e.accountId, e.appliedName, e.oldName] as never[],

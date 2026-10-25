@@ -20,6 +20,7 @@
  * Les intentions d'action sont désormais dérivées des sources réellement
  * récupérées, dans leur ordre de pertinence.
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import type { OrchestratorPorts } from './assistant-orchestrator.service';
 import type { IntentRoute, AssistantRequestInput } from '../types/contracts';
 import type { RetrievedSource } from '../types/sources';
@@ -488,12 +489,13 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
         ? `SELECT a.name AS label, NULL::text AS date FROM assets a
             WHERE a.id = $1 AND a.account_id = $2 AND ${assistantAssetAvailability.sql('a')}`
         : e.type === 'document'
-          ? `SELECT coalesce(retained_title, original_filename, 'Document') AS label,
-                    to_char(document_date, 'YYYY-MM-DD') AS date
-               FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`
+          ? `SELECT ${documentTitleJsonSql('f')} AS label,
+                    to_char(f.document_date, 'YYYY-MM-DD') AS date
+               FROM asset_files f WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL`
           : `SELECT title AS label, to_char(start_date, 'YYYY-MM-DD') AS date
                FROM agenda_items WHERE id = $1 AND account_id = $2`;
-      const rows = (await pgClient.unsafe(sql, [e.id, accountId] as never[])) as unknown as Array<{ label: string; date: string | null }>;
+      // Lot 87D : titre d'un document par la règle unique des vues.
+      const rows = (await withDocumentTitles(pgClient.unsafe(sql, [e.id, accountId] as never[]))) as unknown as Array<{ label: string; date: string | null }>;
       return rows[0] ?? null;
     },
 

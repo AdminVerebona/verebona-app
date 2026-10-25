@@ -477,11 +477,13 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
       await designatePrincipal(ctx, { operationId: autreOp, itemId: principalAilleurs, origin: 'T4', reasonCode: 'E2E' });
     });
     await sql`UPDATE business_operations SET invalidated_at = now(), invalidation_reason = 'E2E' WHERE id = ${autreOp}`;
-    const { consolidateAgendaRepresentations } = await import('@/services/business-operations/agenda-projection/consolidation');
-    const r = await consolidateAgendaRepresentations({
+    // Lot 87B : le moteur d'absorption (gardes inchangées) n'est plus appelé par la projection, seulement dans la
+    // transaction d'application d'une décision T4 (`semantic/apply.ts`) — même moteur, testé ici directement.
+    const { consolidateInTx } = await import('@/services/business-operations/agenda-projection/consolidation');
+    const r = await sql.begin((tx) => consolidateInTx(tx, {
       accountId: c.compte.id, operationId: op, principalId: principal, absorbedIds: [doublon, etape, principalAilleurs], linkPrincipal: false,
-      reason: 'EQUIVALENT_BY_OPERATION', origin: 'PROJECTION',
-    });
+      reason: 'T4_SEMANTIC_SAME_OCCURRENCE', origin: 'PROJECTION',
+    }));
     expect(r.absorbed).toEqual([doublon]);
     expect(r.protectedIds.sort((a, b) => a - b)).toEqual([etape, principalAilleurs].sort((a, b) => a - b));
     expect((await sql`SELECT id FROM agenda_items WHERE id IN (${etape}, ${principalAilleurs}) ORDER BY id`).length).toBe(2);

@@ -25,6 +25,7 @@ import type { DocumentFieldFact } from '../canonical/field-document';
 import type { AssistantRequestInput, IntentRoute, RouteUnderstanding } from '../types/contracts';
 import type { TargetLookup } from './target-lookup.repository';
 import { dedupeFacts } from '../canonical/field-vocabulary';
+import { documentCodeLabel } from '@/lib/referential/document-codes';
 import { readFactsOnTarget, type FactResult, type FactTarget } from './fact-reading';
 import { diagnosticMessage, type T2Diagnostic } from './t2-diagnostics';
 
@@ -98,12 +99,20 @@ export function asksOnlyAboutTarget(message: string): boolean {
     && (MOTS_DE_SUIVI.has(t.stem) || MOTS_DE_SUIVI.has(t.raw) || DOCUMENT_TYPE_STEMS.has(t.stem)));
 }
 
+/**
+ * Lot 87D : type d'un document dans une réponse — libellé du Type V2
+ * enregistré, sinon libellé français de la nature identifiée ; jamais un code
+ * (« FACTURE », « BUILDING_PERMIT »).
+ */
+const documentTypeText = (d: Pick<CanonicalDocumentState, 'documentTypeLabel' | 'catalogCode'>): string | null =>
+  d.documentTypeLabel ?? (documentCodeLabel(d.catalogCode) || null);
+
 const docSource = (d: CanonicalDocumentState): RetrievedSource => ({
   id: `doc_${d.fileId}`,
   type: 'document',
   title: d.title,
   content: [
-    d.documentTypeLabel ?? d.catalogCode, d.documentDate, d.supplier ? `fournisseur ${d.supplier}` : null,
+    documentTypeText(d), d.documentDate, d.supplier ? `fournisseur ${d.supplier}` : null,
     d.amountCents != null ? `montant ${formatAmountCents(d.amountCents)}` : null,
     d.assets.length ? `bien${d.assets.length > 1 ? 's' : ''} : ${d.assets.map((a) => a.name).join(', ')}` : null,
   ].filter(Boolean).join(' · ').slice(0, 1500),
@@ -143,7 +152,7 @@ export function documentTargetAnswer(d: CanonicalDocumentState, attr: DocumentAt
       text = d.documentDate ? `${t} est daté du ${formatDateFr(d.documentDate)}.` : `Aucune date n’est enregistrée pour ${t}.${enAnalyse}`;
       break;
     case 'type': {
-      const lib = d.documentTypeLabel ?? d.catalogCode;
+      const lib = documentTypeText(d);
       text = lib ? `${t} est classé comme : ${lib}${d.rubricLabel ? ` (rubrique ${d.rubricLabel})` : ''}.` : `Le type de ${t} n’est pas encore renseigné.`;
       break;
     }

@@ -190,7 +190,9 @@ describe('L83B-U-OPS — Opérations : invariants O-1 BRANCHÉS (liste entière)
     }
     // Lot 86C (test corrigé, ticket P1 « doublons de contrats ») : COH-OPS-IDENTITY v2 RÉPARE les doublons
     // ENTRE Opérations par le réexamen T3 ciblé (service métier) ; l'identité 78A interne reste un constat.
-    expect(getCheck('COH-OPS-IDENTITY')).toMatchObject({ version: 2 });
+    // Lot 87B (test corrigé) : v3 — décision d'identité historique suspecte → nouvelle décision T3 (service métier).
+    expect(getCheck('COH-OPS-IDENTITY')).toMatchObject({ version: 3, semanticReevaluation: ['T3'] });
+    expect(code('src/services/coherence/registry/checks/operations.ts')).toMatch(/requestIdentityReevaluation/);
     expect(code('src/services/coherence/registry/checks/operations.ts')).toMatch(/reconsolidateRecurringDocuments/);
   });
 });

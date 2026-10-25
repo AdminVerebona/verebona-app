@@ -76,6 +76,11 @@ export interface JobState {
   availableAt: Date | string | null;
   /** Report pour plafond de coût du compte (payload). */
   costCapDeferredUntil?: string | null;
+  /**
+   * Lot 87A (P7, RUN-02) : suspension faute de secours admissible
+   * (`payload.aiSuspension`) — cause établie, message, reprise prévue.
+   */
+  aiSuspension?: { cause: string; message: string | null; until: string | null; count: number; resumedAt: string | null } | null;
 }
 
 const jobActivity = (j: JobState): Date => latest(j.finishedAt, j.startedAt, j.createdAt) ?? new Date(0);
@@ -86,6 +91,13 @@ function jobNotFinal(j: JobState, now: Date): { progress: BusinessProgress; caus
   if (j.status !== 'PENDING') return null;
   const reprise = t(j.availableAt);
   if (j.costCapDeferredUntil) return { progress: 'SUSPENDED', cause: `plafond IA du compte : reprise prévue le ${j.costCapDeferredUntil.slice(0, 10)}` };
+  // Lot 87A : suspendue faute de secours admissible (cause explicite, aucune écriture).
+  if (j.aiSuspension && !j.aiSuspension.resumedAt) {
+    return {
+      progress: 'SUSPENDED',
+      cause: `AI_SUSPENDED (${j.aiSuspension.cause}) : aucun secours admissible, aucune écriture — reprise automatique depuis un point sûr${reprise !== null && reprise > now.getTime() ? ` à ${asDate(reprise).toISOString()}` : ''}${j.aiSuspension.message ? ` (${j.aiSuspension.message.slice(0, 200)})` : ''}`,
+    };
+  }
   if (j.attempts > 0) {
     return { progress: 'SUSPENDED', cause: `reprise automatique prévue${reprise !== null && reprise > now.getTime() ? ` à ${asDate(reprise).toISOString()}` : ''}${j.lastError ? ` (${j.lastError.slice(0, 200)})` : ''}` };
   }
@@ -362,11 +374,44 @@ export interface T6FormulateState {
   mode: string;
   error: string | null;
   createdAt: Date | string;
+  /**
+   * Lot 87C : trace des questions suggérées de la génération
+   * (`suggestion_report`, 0756) — contrat, produites / acceptées / rejetées,
+   * motifs, invalidations postérieures. Absente : génération antérieure.
+   */
+  suggestionReport?: Record<string, unknown> | null;
+}
+
+/** Lot 87C — résumé BO des questions d'une génération (pur) : nombres et motifs, jamais de texte. */
+export function t6SuggestionSummary(r: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  if (!r || typeof r !== 'object') return null;
+  const inv = Array.isArray(r.invalidations) ? r.invalidations as Array<{ removed?: unknown; source?: unknown; at?: unknown; reasons?: unknown }> : [];
+  return {
+    contract: r.contract ?? null, promptSupported: r.promptSupported ?? null,
+    produced: r.produced ?? 0, accepted: r.accepted ?? 0, rejected: r.rejected ?? 0, reasons: r.reasons ?? {},
+    invalidated: inv.reduce((n, x) => n + (typeof x.removed === 'number' ? x.removed : 0), 0),
+    invalidations: inv.slice(-10).map((x) => ({ at: x.at ?? null, source: x.source ?? null, reasons: x.reasons ?? {}, removed: x.removed ?? 0 })),
+  };
+}
+
+/** Lot 87C — résultat natif lisible au BO (« questions : 1 acceptée, 2 rejetées [motifs] ») — pur. */
+export function t6SuggestionResultText(s: Record<string, unknown>): string {
+  if (s.promptSupported === false) return 'questions : prompt sans contrat des questions fondées (aucune publiée)';
+  const motifs = Object.keys((s.reasons as Record<string, number> | null) ?? {}).sort().join(', ');
+  const retirees = Number(s.invalidated ?? 0);
+  return `questions : ${Number(s.accepted ?? 0)} acceptée(s), ${Number(s.rejected ?? 0)} rejetée(s)${motifs ? ` [${motifs}]` : ''}${retirees ? `, ${retirees} retirée(s) ensuite` : ''}`;
 }
 
 export function qualifyT6Formulate(g: T6FormulateState): Qualification {
   const at = new Date(t(g.createdAt) ?? 0);
-  const native: NativeResult = { source: 'home_mascot_generations', status: g.status, detail: { mode: g.mode } };
+  // Lot 87C : une génération réussie ne masque pas ses questions rejetées ou retirées
+  // (résultat natif) ; aucune question n'est pas un échec — l'issue reste celle de la bulle.
+  const questions = t6SuggestionSummary(g.suggestionReport);
+  const native: NativeResult = {
+    source: 'home_mascot_generations', status: g.status,
+    ...(questions ? { result: t6SuggestionResultText(questions) } : {}),
+    detail: { mode: g.mode, ...(questions ? { suggestions: questions } : {}) },
+  };
   switch (g.status) {
     case 'generated': return q('SUCCEEDED', native, null, at);
     // R42 : le texte déterministe assure la continuité, l'échec de génération reste un échec.

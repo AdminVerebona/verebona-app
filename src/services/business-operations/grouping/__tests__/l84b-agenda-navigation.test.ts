@@ -66,7 +66,8 @@ describe('L84B-U02 — projection T4 face à un retrait mémorisé (V-Q5 : T4 d�
     expect(plan(op(), { linked: [visite], withdrawn: true })).toEqual([{ kind: 'SUPPRESSED', key: 'CLAIM' }]);
   });
   it('avec retrait : un membre qui représenterait CERTAINEMENT l’événement n’est pas reconnu comme principal (aucun LINK ni ROLE)', () => {
-    const degat = item({ id: 2, title: 'Dégâts des eaux cuisine', date: '2026-03-12' });
+    // Lot 87B (test corrigé) : reconnu d'office seulement sur provenance exacte (source établie par T3).
+    const degat = item({ id: 2, title: 'Dégâts des eaux cuisine', date: '2026-03-12', agendaSourceOperationIds: [10] });
     expect(plan(op(), { linked: [degat] })).toEqual([expect.objectContaining({ kind: 'LINK', itemId: 2 })]);
     const p = plan(op(), { linked: [degat], withdrawn: true });
     expect(p.some((a) => a.kind === 'LINK' || a.kind === 'ROLE' || a.kind === 'CREATE')).toBe(false);

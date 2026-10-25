@@ -78,6 +78,19 @@ function jobOrigin(origin: string | null, trigger: string | null): BusinessOrigi
 const JOB_COLS = `j.id, j.treatment, j.account_id, j.target_type, j.target_id, j.status, j.origin, j.trigger_code, j.attempts,
   j.last_error, j.business_result, j.business_result_detail, j.created_at, j.started_at, j.finished_at, j.available_at, j.payload`;
 
+/** Lot 87A : suspension faute de secours admissible portée par le travail (payload). */
+function aiSuspensionOf(payload: Record<string, unknown> | null): JobState['aiSuspension'] {
+  const x = payload?.aiSuspension as Record<string, unknown> | undefined;
+  if (!x || typeof x !== 'object') return null;
+  return {
+    cause: typeof x.cause === 'string' ? x.cause : 'UNKNOWN',
+    message: typeof x.message === 'string' ? x.message : null,
+    until: typeof x.until === 'string' ? x.until : null,
+    count: typeof x.count === 'number' ? x.count : 1,
+    resumedAt: typeof x.resumedAt === 'string' ? x.resumedAt : null,
+  };
+}
+
 function toJobState(r: Row): JobState & { treatment: string; accountId: number | null; targetType: string | null; targetId: string | null; origin: string | null; triggerCode: string | null; payload: Record<string, unknown> | null } {
   const payload = json<Record<string, unknown>>(r.payload);
   return {
@@ -86,6 +99,7 @@ function toJobState(r: Row): JobState & { treatment: string; accountId: number |
     businessResultDetail: json<Record<string, unknown>>(r.business_result_detail), createdAt: date(r.created_at) ?? new Date(0),
     startedAt: date(r.started_at), finishedAt: date(r.finished_at), availableAt: date(r.available_at),
     costCapDeferredUntil: typeof payload?.costCapDeferredUntil === 'string' ? payload.costCapDeferredUntil : null,
+    aiSuspension: aiSuspensionOf(payload),
     origin: str(r.origin), triggerCode: str(r.trigger_code), payload,
   };
 }
@@ -330,7 +344,10 @@ function qualifyT2Rows(rows: Row[], now: Date): BusinessExecution[] {
 
 function qualifyT6FRows(rows: Row[]): BusinessExecution[] {
   return rows.map((r) => {
-    const qual = qualifyT6Formulate({ traceId: String(r.trace_id), status: String(r.status), mode: String(r.mode), error: str(r.error), createdAt: date(r.created_at) ?? new Date(0) });
+    const qual = qualifyT6Formulate({
+      traceId: String(r.trace_id), status: String(r.status), mode: String(r.mode), error: str(r.error), createdAt: date(r.created_at) ?? new Date(0),
+      suggestionReport: r.suggestion_report && typeof r.suggestion_report === 'object' ? r.suggestion_report as Record<string, unknown> : null,
+    });
     return build('T6', t6FormulateExecutionId(String(r.trace_id)), qual, {
       mode: 'FORMULATE', nature: 'BUSINESS', origin: r.mode === 'display' ? 'USER' : 'AUTOMATIC', accountId: numOrNull(r.account_id),
       objectType: 'home', objectId: r.account_id == null ? null : String(r.account_id),
@@ -415,7 +432,8 @@ export async function projectBusinessExecutions(f: ProjectionFilter, now: Date =
         if (rows.length > PROJECTION_ROW_CAP) truncated.push('T2');
         out.push(...qualifyT2Rows(rows.slice(0, PROJECTION_ROW_CAP), now));
       } else if (t === 'T6') {
-        const gen = await q(`SELECT DISTINCT ON (g.trace_id) g.trace_id, g.account_id, g.status, g.mode, g.error, g.created_at
+        const gen = await q(`SELECT DISTINCT ON (g.trace_id) g.trace_id, g.account_id, g.status, g.mode, g.error, g.created_at,
+                  to_jsonb(g) -> 'suggestion_report' AS suggestion_report
              FROM home_mascot_generations g
             WHERE g.trace_id IS NOT NULL AND g.status IN ('generated', 'validation_failed', 'error')
               AND g.created_at >= $1::timestamptz AND g.created_at < $2::timestamptz ${accountId === null ? '' : 'AND g.account_id = $3'}
@@ -477,8 +495,9 @@ export async function getBusinessExecution(id: string, now: Date = new Date(), q
   } else if (p.treatment === 'T2') {
     x = qualifyT2Rows(await q(`SELECT ${T2_COLS} FROM verebona_request_runs r WHERE r.request_id = $1 ORDER BY r.id DESC LIMIT 1`, [p.requestId]), now)[0] ?? null;
   } else if ('traceId' in p) {
-    x = qualifyT6FRows(await q(`SELECT trace_id, account_id, status, mode, error, created_at FROM home_mascot_generations
-       WHERE trace_id = $1 AND status IN ('generated', 'validation_failed', 'error') ORDER BY created_at DESC LIMIT 1`, [p.traceId]))[0] ?? null;
+    x = qualifyT6FRows(await q(`SELECT g.trace_id, g.account_id, g.status, g.mode, g.error, g.created_at, to_jsonb(g) -> 'suggestion_report' AS suggestion_report
+       FROM home_mascot_generations g
+       WHERE g.trace_id = $1 AND status IN ('generated', 'validation_failed', 'error') ORDER BY created_at DESC LIMIT 1`, [p.traceId]))[0] ?? null;
   } else if ('agendaItemId' in p) {
     const rows = await q(`SELECT * FROM t6_evaluation_runs WHERE agenda_item_id = $1`, [p.agendaItemId]);
     const e = qualifyT6ERows(rows, now)[0] ?? null;

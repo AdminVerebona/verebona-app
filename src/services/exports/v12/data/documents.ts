@@ -12,7 +12,7 @@
 
 import { DOCUMENT_TYPE_LABELS } from '@/lib/document-type-constants';
 import { resolveDocumentCode } from '@/lib/referential/document-codes';
-import { isValidBusinessTitle } from '@/lib/documents/document-title-rules';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 
 /** Formats intégrables dans le PDF (SEL-GEN-003). */
 export const INTEGRABLE = new Set(['PDF', 'JPG', 'JPEG', 'PNG', 'WEBP']);
@@ -182,14 +182,19 @@ export function documentTone(kind: DocKind): string | undefined {
 /**
  * Titre affiché d'une pièce (lot 33C) : titre métier, sinon nom original
  * exploitable sans extension, sinon nom technique en dernier recours.
+ * Lot 87D : règle UNIQUE de toutes les vues (`documentTitleFromRecord` :
+ * titre métier → titre du lien web → nom original exploitable → nom
+ * technique) — même titre que la liste, la fiche et la recherche ; seul le
+ * repli sur un NOM DE FICHIER perd son extension (présentation d'une pièce
+ * dans un dossier exporté, décision 33C).
  */
-export function documentTitle(d: { retainedTitle?: string | null; originalFilename?: string | null; id: number }): string {
-  const t = d.retainedTitle?.trim();
+export function documentTitle(d: {
+  retainedTitle?: string | null; originalFilename?: string | null; id: number;
+  webLinkTitle?: string | null; s3Key?: string | null;
+}): string {
+  const titre = documentTitleFromRecord({
+    retainedTitle: d.retainedTitle ?? null, webLinkTitle: d.webLinkTitle ?? null, originalFilename: d.originalFilename ?? null, s3Key: d.s3Key ?? null,
+  }, `Document ${d.id}`);
   const f = d.originalFilename?.trim();
-  const sansExtension = (x: string) => x.replace(/\.[a-z0-9]{2,5}$/i, '');
-  if (t && isValidBusinessTitle(t)) return t;
-  if (f && isValidBusinessTitle(f)) return sansExtension(f);
-  if (t) return t;
-  if (f) return sansExtension(f);
-  return `Document ${d.id}`;
+  return f && titre === f ? f.replace(/\.[a-z0-9]{2,5}$/i, '') : titre;
 }

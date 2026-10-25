@@ -50,6 +50,9 @@ import {
 import { currentJobContext } from '../queue/job-context';
 import { normalizeOperationProfiles, profileForChain, profileForSlotOrder, type OperationProfile } from './operation-profiles';
 import { applyRoutingOverlay, type RoutingOverlay } from './routing-overlay';
+import {
+  currentSyncConfigSnapshot, registerExecutionSnapshotCapture, type EffectiveConfigState, type ExecutionConfigSnapshot,
+} from './execution-snapshot';
 import { hasTestCounterStore, readConfigVersionCounter } from './config-cache-version';
 import {
   activeMasterPromptsTestOverride, loadActiveMasterPrompts, type ActiveMasterPrompt,
@@ -210,6 +213,32 @@ export async function resolveEffectivePin(): Promise<{ versionId: number | null;
   return { versionId: e.versionId, revisionId: e.revisionId ?? null };
 }
 
+/**
+ * Lot 87A (P7, RUN-04) — instantané de la configuration EFFECTIVE à cet
+ * instant (version, révision, lignes, prompts maîtres, surcouche de routage).
+ * Ne lève jamais.
+ */
+export async function captureExecutionSnapshot(scope: 'job' | 'sync', treatment: Treatment | null = null): Promise<ExecutionConfigSnapshot> {
+  const effective = await loadEffective().catch(() => ({ versionId: null, visibleNumber: null, byTreatment: new Map<string, TreatmentConfig>() } as EffectiveConfigState));
+  return { scope, treatment, takenAt: new Date().toISOString(), effective };
+}
+
+// Lot 87A : relevé utilisé par `runWithConfigSnapshot` (exécutions synchrones).
+registerExecutionSnapshotCapture(captureExecutionSnapshot);
+
+/**
+ * Lot 87A — surcouche de routage EN VIGUEUR (exclusions, promotions), ou
+ * `null`. Lue par la politique de secours : une exclusion prise pendant une
+ * exécution retire le modèle des secours encore à essayer. Ne lève jamais.
+ */
+export async function currentRoutingOverlay(): Promise<RoutingOverlay | null> {
+  try {
+    return (await loadEffective()).overlay ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Compatibilité : identifiant de la version effective seul. */
 export async function resolveEffectiveVersionId(): Promise<number | null> {
   return (await loadEffective()).versionId;
@@ -285,8 +314,13 @@ async function entriesForCurrentExecution(): Promise<{
   /** Lot 86B : surcouche de routage (configuration active seulement). */
   overlay?: RoutingOverlay;
 }> {
-  const effective = await loadEffective();
   const ctx = currentJobContext();
+  // Lot 87A (P7, RUN-04) : instantané relevé au DÉMARRAGE de l'exécution —
+  // lignes, prompts maîtres ET surcouche de routage figés (une promotion ou
+  // une activation prise en cours ne touche que les exécutions suivantes).
+  const figee = ctx ? frozenFor(ctx) : currentSyncConfigSnapshot()?.effective ?? null;
+  if (figee) return { ...figee, pinnedMasterPrompts: figee.masterPrompts };
+  const effective = await loadEffective();
   if (!ctx) return effective;
   // Lot 54 : la révision figée au démarrage fait foi (la version active
   // reste modifiable pendant l'exécution).
@@ -305,6 +339,19 @@ async function entriesForCurrentExecution(): Promise<{
   const p = await loadPinnedVersion(ctx.configVersionId);
   if (!p) return effective;
   return p;
+}
+
+/**
+ * Instantané du travail de file applicable (pur) : seulement s'il porte la
+ * révision (ou, sans révision, la version) épinglée par ce contexte — un
+ * contexte épinglé sur une AUTRE révision (qualification d'une candidate)
+ * garde sa révision, sans surcouche.
+ */
+function frozenFor(ctx: NonNullable<ReturnType<typeof currentJobContext>>): EffectiveConfigState | null {
+  const s = ctx.configSnapshot?.effective;
+  if (!s) return null;
+  if (ctx.configRevisionId != null) return (s.revisionId ?? null) === ctx.configRevisionId ? s : null;
+  return s.versionId === ctx.configVersionId ? s : null;
 }
 
 /**

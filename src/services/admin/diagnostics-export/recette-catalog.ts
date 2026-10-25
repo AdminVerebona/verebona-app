@@ -194,6 +194,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   business_operation_documents: { domain: 'operations', description: 'Documents d’une Opération avec leur rôle (lot 82D).' },
   // Lot 84E (CDC v5 O-6, §27.6) : journal des reconsolidations ciblées.
   business_operation_targeted_runs: { domain: 'operations', description: 'Reconsolidations ciblées (équipement, bien, Pièce, série de documents récurrents, liens directs Document ↔ Équipement) : déclencheur, cible, compteurs, appels IA, issue (lot 84E).' },
+  // Lot 87B (ticket « orchestration T3/T4 ») : journal des réévaluations sémantiques T3 / T4.
+  operation_semantic_reevaluations: { domain: 'operations', description: 'Réévaluations sémantiques T3 (identité d’Opération) / T4 (représentation Agenda) : déclencheur (contrôle, projection après T3, reprise, geste), contexte (résumé, empreinte), décision IA reçue, validation, rôles décidés, mutations appliquées / refusées, état avant / après, appels IA (lot 87B).' },
   // Lot 85A (CDC v5 O-2, §20) : journal du rattrapage « Opérations v5 : purge et reconstruction ».
   operations_rebuild_runs: { domain: 'operations', description: 'Opérations v5 : exécutions de la purge et reconstruction en préproduction (simulation, application, restauration, refus sans point de restauration ; lot 85A).' },
   operations_rebuild_accounts: { domain: 'operations', description: 'Opérations v5 : rapport par compte de la reconstruction (statut, empreintes avant / après, inventaire purgé / conservé et motifs, TCO relu, coût IA ; lot 85A).' },

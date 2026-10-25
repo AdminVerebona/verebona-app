@@ -9,7 +9,8 @@
  * INVALID_ARGUMENT « Request contains an invalid argument. », 0 jeton.
  *
  *   · E2E-L52B-01 (AC3) : le retry diagnostique échoue aussi → aucune
- *     mémorisation, cascade normale (3 modèles × 2 appels, jamais 3),
+ *     mémorisation, cascade bornée par la politique P7 (lot 87A : cause
+ *     indéterminée → au plus UN essai alternatif, soit 2 modèles × 2 appels),
  *     BO : « requête refusée », jamais « fournisseur indisponible » ;
  *   · E2E-L52B-02 (AC1, AC2, AC9) : retry diagnostique réussi → génération
  *     reçue, validation runtime v4, persistance normale, aucun fallback,
@@ -62,15 +63,20 @@ scenario('L52B', 'Structured output : 400 INVALID_ARGUMENT générique rattrapé
     await sql`UPDATE ai_job_queue SET available_at = now() + interval '30 days'
                WHERE treatment = 'T1' AND target_type = 'asset_file' AND target_id = ${String(f.id)} AND status = 'PENDING'`;
 
-    // 3 modèles × (avec schéma, puis sans) — jamais un troisième appel au même modèle.
+    // Lot 87A (P7, R10/R57) : 400 générique = cause indéterminée → principal + un seul essai alternatif,
+    // chacun (avec schéma, puis sans) — jamais un troisième appel au même modèle.
     const analyses = replay.calls.filter((c) => (c.callKind ?? 'analysis') === 'analysis' && c.operationCode === 't1_analyze_document');
     const parModele = new Map<string, boolean[]>();
     for (const c of analyses) parModele.set(c.model, [...(parModele.get(c.model) ?? []), c.responseSchema !== undefined]);
-    expect(parModele.size).toBe(3);
+    expect(parModele.size).toBe(2);
     for (const v of parModele.values()) expect(v).toEqual([true, false]);
 
-    const rows = await appelsT1(compte.id);
-    expect(rows.map((r) => r.model_rank)).toEqual(['primary', 'fallback_1', 'fallback_2']);
+    const toutes = await appelsT1(compte.id);
+    // Lot 87A : le second secours est tracé mais NON appelé (cause indéterminée : un seul essai alternatif).
+    expect(toutes.map((r) => [r.model_rank, r.error_code])).toEqual([
+      ['primary', 'PROVIDER_REQUEST_REJECTED'], ['fallback_1', 'PROVIDER_REQUEST_REJECTED'], ['fallback_2', 'FALLBACK_NOT_ADMISSIBLE'],
+    ]);
+    const rows = toutes.slice(0, 2);
     for (const r of rows) {
       expect(r).toMatchObject({ status: 'error', error_code: 'PROVIDER_REQUEST_REJECTED', input_tokens: 0 });
       expect(r.metadata.failure).toMatchObject({ family: 'INPUT_ERROR', subtype: null, stage: 'provider_request' });
@@ -83,13 +89,14 @@ scenario('L52B', 'Structured output : 400 INVALID_ARGUMENT générique rattrapé
 
     // BO › Exécutions IA : nature « requête refusée », compteurs distincts.
     const { getExecutionDetail, getErrorBreakdown } = await import('@/services/ai/telemetry/execution-log.repository');
-    const detail = await getExecutionDetail(Number(rows[2].id));
+    const detail = await getExecutionDetail(Number(toutes[2].id));
     expect(detail?.diagnosis.calls.map((c) => [c.label, c.status, c.cause, c.failureCategory, c.errorCode])).toEqual([
       ['principal', 'FAILED', 'INPUT_ERROR', 'REQUEST_REJECTED', 'PROVIDER_REQUEST_REJECTED'],
       ['fallback 1', 'FAILED', 'INPUT_ERROR', 'REQUEST_REJECTED', 'PROVIDER_REQUEST_REJECTED'],
-      ['fallback 2', 'FAILED', 'INPUT_ERROR', 'REQUEST_REJECTED', 'PROVIDER_REQUEST_REJECTED'],
+      ['fallback 2', 'FAILED', 'non appelé (politique de secours)', null, 'FALLBACK_NOT_ADMISSIBLE'],
     ]);
-    expect(detail?.diagnosis.counters).toEqual({ jobAttempts: null, modelCalls: 3, modelFallbacks: 2, structuredOutputRetries: 3, repairCalls: 0 });
+    // Un rang sauté n'est ni un appel ni un repli effectué.
+    expect(detail?.diagnosis.counters).toEqual({ jobAttempts: null, modelCalls: 2, modelFallbacks: 1, structuredOutputRetries: 2, repairCalls: 0 });
     expect(detail?.diagnosis.finalDiagnosis.join(' ')).toMatch(/essai diagnostique sans responseSchema également en échec \(HTTP 400\) — le schéma n’est pas mis en cause/);
     const breakdown = await getErrorBreakdown(1);
     expect(breakdown.some((b) => b.treatment === 'T1' && b.errorCode === 'PROVIDER_REQUEST_REJECTED' && b.failureSubtype === 'INPUT_ERROR')).toBe(true);

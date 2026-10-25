@@ -89,7 +89,7 @@ export function classifyDuplicateCause(p: { items: DiagItem[]; operations: DiagO
       label: 'Une seule Opération : défaut de convergence Opération → Agenda',
       findings,
       remedy: o.exclusive
-        ? 'Projection lot 76H : un événement principal conservé et relié, les autres absorbés (journal 0591, restaurable) — automatique (rattrapage ponctuel puis projection).'
+        ? 'Lot 87B : décision T4 demandée (plusieurs événements examinés ensemble : doublons consolidés, étapes distinctes conservées, preuves conservées, journal 0752 / 0591 restaurable) — aucune absorption par une règle du code ; sans contrat T4 multi-événements : carte « À traiter » (choix de l’utilisateur).'
         : 'Abstention conservée : carte « À traiter » (rapprochement agenda) jusqu’à la résolution T3 ou le choix de l’utilisateur.',
     };
   }

@@ -4,14 +4,14 @@
  * d'interventions », §3.2 à §3.4, §4).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * T3 DIT QUI EST QUI ; ICI ON NE FAIT QU'APPLIQUER, SOUS TRACE ET RÉVERSIBLE
+ * T4 DIT QUELLES REPRÉSENTATIONS SONT LA MÊME OCCURRENCE ; ICI ON APPLIQUE
  *
- * La décision (quels événements représentent l'Opération) est PURE et vient
- * de `model.ts` (`coveredEquivalents`, `choosePrincipal`) à partir de
- * l'identité établie par T3 (`exclusiveFileIds`) — aucun second moteur de
- * consolidation. Ce module applique une décision certaine :
+ * Lot 87B (ticket « orchestration T3/T4 », CODE-04, V-Q4) : la décision de
+ * fusion n'est plus déduite par la projection (provenance T3 + type + date
+ * proche) ; elle vient d'une décision T4 VALIDÉE (`semantic/`), et ce module
+ * l'applique, sous trace et réversible :
  *
- *   consolidateAgendaRepresentations   UNE transaction, verrou consultatif du
+ *   consolidateInTx                    dans la transaction de l'appelant, verrou consultatif du
  *     compte (espace 39102) : principal relu et (si demandé) relié ; chaque
  *     élément absorbé relu SOUS VERROU avec les gardes complètes (automatique,
  *     intact, ni « à qualifier » ni « à confirmer », non projeté, non lié à
@@ -117,12 +117,17 @@ export interface ConsolidationResult {
   skipped?: 'JOURNAL_MISSING' | 'OPERATION_INACTIVE' | 'PRINCIPAL_GONE' | 'PRINCIPAL_NOT_LINKED' | 'PRINCIPAL_LINKED_ELSEWHERE';
 }
 
-/** Applique une consolidation certaine (voir l'en-tête). Lève sur une erreur technique (transaction annulée, rejouable). */
-export async function consolidateAgendaRepresentations(p: ConsolidationInput, sql: Sql = pgClient): Promise<ConsolidationResult> {
+/**
+ * Applique une consolidation DÉCIDÉE PAR T4 (lot 87B, CODE-09), DANS la
+ * transaction de l'appelant (application atomique d'une décision de
+ * représentation : consolidations, rattachements et restaurations, tout ou
+ * rien). Le journal 0591 doit être présent (vérifié par l'appelant). Lève sur
+ * une erreur technique : la transaction de l'appelant est annulée.
+ */
+export async function consolidateInTx(tx: Tx, p: ConsolidationInput): Promise<ConsolidationResult> {
   const vide: ConsolidationResult = { linked: false, absorbed: [], protectedIds: [] };
-  if (!(await consolidationJournalReady(sql))) return { ...vide, skipped: 'JOURNAL_MISSING' };
   const absorbes = [...new Set(p.absorbedIds.filter((x) => Number.isSafeInteger(x) && x > 0 && x !== p.principalId))];
-  return sql.begin(async (tx) => {
+  {
     await tx`SELECT pg_advisory_xact_lock(${AGENDA_CONSOLIDATION_LOCK_SPACE}::int, ${p.accountId}::int)`;
     const [op] = await tx<Row[]>`
       SELECT id FROM business_operations WHERE id = ${p.operationId} AND account_id = ${p.accountId}
@@ -239,7 +244,7 @@ export async function consolidateAgendaRepresentations(p: ConsolidationInput, sq
       linked, absorbed, protected: absorbes.filter((x) => !ok.includes(x)), origin: p.origin, runId: p.runId ?? null,
     }));
     return { linked, absorbed, protectedIds: absorbes.filter((x) => !absorbed.includes(x)) };
-  }) as Promise<ConsolidationResult>;
+  }
 }
 
 async function journal(tx: Tx, p: ConsolidationInput, kind: 'ABSORB' | 'LINK' | 'RETITLE', absorbed: number | null, detail: Record<string, unknown>): Promise<void> {
@@ -303,12 +308,31 @@ export async function restoreAgendaConsolidations(sql: Sql, p: { runId?: string;
     [p.runId ?? null, p.journalIds ? intArray(p.journalIds) : null, p.accountId ?? null] as never[],
   );
   for (const l of lignes) {
-    const journalId = Number(l.id);
-    const accountId = Number(l.account_id);
-    const d = (l.detail ?? {}) as Row;
-    const principal = Number(l.principal_item_id);
-    const conflit = (itemId: number, reason: string) => res.conflicts.push({ journalId, itemId, reason });
-    const ok = await sql.begin(async (tx) => {
+    const conflit = (c: { journalId: number; itemId: number; reason: string }) => res.conflicts.push(c);
+    const ok = await sql.begin((tx) => restoreConsolidationLineInTx(tx, l, p.restoreRunId, conflit));
+    if (ok) res.restored++;
+  }
+  return res;
+}
+
+/** Ligne du journal 0591 telle que la restauration la lit. */
+export type ConsolidationJournalLine = Row;
+
+/**
+ * Lot 87B (CODE-07, CODE-09) : restauration d'UNE ligne du journal 0591 dans
+ * la transaction de l'appelant (décision T4 « étapes fusionnées à tort »).
+ * Rend vrai si la ligne est restaurée ; un conflit est rapporté, jamais forcé.
+ */
+export async function restoreConsolidationLineInTx(
+  tx: Tx, l: ConsolidationJournalLine, restoreRunId: string, conflict: (c: { journalId: number; itemId: number; reason: string }) => void,
+): Promise<boolean> {
+  const journalId = Number(l.id);
+  const accountId = Number(l.account_id);
+  const d = (l.detail ?? {}) as Row;
+  const principal = Number(l.principal_item_id);
+  const conflit = (itemId: number, reason: string) => conflict({ journalId, itemId, reason });
+  const p = { restoreRunId };
+  {
       await tx`SELECT pg_advisory_xact_lock(${AGENDA_CONSOLIDATION_LOCK_SPACE}::int, ${accountId}::int)`;
       if (l.kind === 'RETITLE') {
         await tx.unsafe(
@@ -364,8 +388,5 @@ export async function restoreAgendaConsolidations(sql: Sql, p: { runId?: string;
       }
       await tx.unsafe(`UPDATE agenda_intervention_consolidations SET restored_at = now(), restore_run_id = $2::uuid WHERE id = $1`, [journalId, p.restoreRunId] as never[]);
       return true;
-    });
-    if (ok) res.restored++;
   }
-  return res;
 }

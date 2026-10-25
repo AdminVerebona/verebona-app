@@ -14,6 +14,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+// Lot 87D : titres « déjà contrôlés » avec la version COURANTE des règles (isolement du nommage T3).
+import { DOCUMENT_TITLE_RULE_VERSION } from '@/lib/documents/document-title-rules';
 import { scenario } from '../scenario';
 
 interface DocIA {
@@ -96,7 +98,7 @@ scenario('L61F-T3-NOM', 'Lot 61 — T3 : harmonisation intelligente du nommage d
                                title_rule_version, title_context_fingerprint, title_checked_at, amount_cents)
       VALUES (${c.ownerUserId}, ${c.id}, ${o.bien ?? null}, ${`e2e/${c.id}/${Math.random().toString(36).slice(2)}.pdf`}, 'application/pdf',
               ${o.nom}, ${o.original ?? null}, ${o.fournisseur === undefined ? 'Orange' : o.fournisseur}, ${o.type === undefined ? 'INVOICE' : o.type},
-              ${o.date ?? null}, 'ANALYZED', now() - interval '1 hour', ${o.source ?? 'SYSTEM'}, 2, 'e2e', now(), ${o.montant ?? null})
+              ${o.date ?? null}, 'ANALYZED', now() - interval '1 hour', ${o.source ?? 'SYSTEM'}, ${DOCUMENT_TITLE_RULE_VERSION}, 'e2e', now(), ${o.montant ?? null})
       RETURNING id, public_id::text, s3_key`;
     await sql`INSERT INTO document_extractions (account_id, file_id, title, supplier_name, document_date, document_type_code, full_text, extracted_at)
               VALUES (${c.id}, ${f.id}, ${o.nom}, ${o.fournisseur === undefined ? 'Orange' : o.fournisseur}, ${o.date ?? null},

@@ -70,7 +70,8 @@ describe('L83E-U-COVERAGE — couverture explicite (CA-19)', () => {
     expect(par.get('agenda')!.checks).toEqual(expect.arrayContaining(['COH-AGENDA-OPERATION-PROJECTION', 'COH-AGENDA-PROJECTION-ORPHANS']));
     expect(par.get('agenda')!.gap!.planned).toMatch(/COH-AGENDA-T4-DOCUMENT-DEADLINES/);
     expect(par.get('a-traiter')!.checks).toEqual(expect.arrayContaining(['COH-TODO-STALE-DECISIONS', 'COH-TODO-RELEVANCE-CARDS', 'COH-TODO-ORPHAN-CARDS', 'COH-TODO-RESOLUTION-PROPAGATION']));
-    expect(par.get('t6')!.checks).toEqual(['COH-T6-EVALUATIONS']);
+    // Lot 87C : questions suggérées confrontées à leurs fondements (COH-T6-SUGGESTIONS).
+    expect(par.get('t6')!.checks).toEqual(['COH-T6-EVALUATIONS', 'COH-T6-SUGGESTIONS']);
     expect(par.get('comptes')!.checks).toEqual(['COH-DUO-RELATIONS']);
     expect(par.get('abonnements')!.checks).toEqual(['COH-BILLING-STRIPE', 'COH-ENTITLEMENTS']);
     expect(par.get('notifications')!.checks).toEqual(['COH-NOTIF-OUTBOX', 'COH-SUBSCRIPTION-COMMUNICATIONS']);

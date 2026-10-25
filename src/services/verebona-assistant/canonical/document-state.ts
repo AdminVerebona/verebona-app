@@ -8,6 +8,7 @@
  * historiques `asset_id` / `linked_asset_id` si aucun lien N-N n'existe — et
  * faits T1 actifs. Borné au compte, document supprimé exclu.
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { getDocumentType, getRubric } from '@/lib/referential/v2';
 import { resolveDocumentType } from '@/services/canonical/registry';
@@ -100,15 +101,15 @@ export async function getCanonicalDocumentState(
   fileId: number,
   opts: { factsLimit?: number } = {},
 ): Promise<CanonicalDocumentState | null> {
-  const [r] = (await pgClient.unsafe(
-    `SELECT f.id, coalesce(f.retained_title, f.original_filename, 'Document') AS title,
+  const [r] = (await withDocumentTitles(pgClient.unsafe(
+    `SELECT f.id, ${documentTitleJsonSql('f')} AS title,
             to_char(f.document_date, 'YYYY-MM-DD') AS "documentDate", f.document_type_code AS "documentTypeCode",
             f.document_type AS "legacyType", f.rubric_code AS "rubricCode", f.amount_cents AS "amountCents",
             f.supplier, f.analysis_state AS "analysisState", f.asset_id AS "assetId", f.linked_asset_id AS "linkedAssetId"
        FROM asset_files f
       WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL`,
     [fileId, accountId] as never[],
-  )) as unknown as Row[];
+  ))) as unknown as Row[];
   if (!r) return null;
   const { documentFactsCanonicalReady } = await import('@/services/ai/evidence/canonical-columns');
   const canon = await documentFactsCanonicalReady().catch(() => false);

@@ -9,7 +9,13 @@ import { describe, expect, it } from 'vitest';
 import {
   DOCUMENT_TITLE_RULE_VERSION, evaluateBusinessTitle, shouldReplaceSystemTitle,
 } from '@/lib/documents/document-title-rules';
-import { formatBusinessPeriod, planBusinessTitle, refineDocumentTitle, titleContextFingerprint } from '@/services/ai/source-analysis/document-title';
+import { planBusinessTitle, titleContextFingerprint } from '@/services/ai/source-analysis/document-title';
+import { presentBilledPeriod } from '@/lib/documents/document-title-convention';
+
+// Lot 87D : `formatBusinessPeriod` / `refineDocumentTitle` retirés — période
+// présentée EXACTEMENT (`presentBilledPeriod`), titre par le moteur seul.
+const formatBusinessPeriod = (a: string, b: string) => presentBilledPeriod(a, b)?.label ?? null;
+const refineDocumentTitle = (t: string, ctx: Parameters<typeof planBusinessTitle>[1]) => planBusinessTitle(t, ctx).title ?? t;
 import { withPersistedGaps } from '../document-title.service';
 import { TITLE_SWEEP_SQL } from '@/services/ai/reconciliation/document-title-sweep';
 
@@ -17,28 +23,30 @@ const src = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 const fibre = { typeCode: 'FACTURE', subjects: ['fibre'], supplier: 'Orange', documentDate: '2026-09-05' };
 
 describe('TITLE2-AC1 — nouveau document : nature + sujet + discriminants utiles', () => {
-  it('Facture + fibre + Orange + septembre 2026 → « Facture fibre Orange _ Septembre 2026 », jamais « Facture fibre internet »', () => {
-    expect(planBusinessTitle('Facture fibre internet', fibre).title).toBe('Facture fibre Orange _ Septembre 2026');
-    expect(refineDocumentTitle('Facture fibre internet', fibre)).toBe('Facture fibre Orange _ Septembre 2026');
+  // Lot 87D (règles v3) : séparateur unique « — » ; sans période facturée, la date du document est donnée AU JOUR
+  // (jamais un mois déduit de la date d'émission — il peut différer du mois facturé).
+  it('Facture + fibre + Orange + 5 septembre 2026 → « Facture fibre Orange — 5 septembre 2026 », jamais « Facture fibre internet »', () => {
+    expect(planBusinessTitle('Facture fibre internet', fibre).title).toBe('Facture fibre Orange — 5 septembre 2026');
+    expect(refineDocumentTitle('Facture fibre internet', fibre)).toBe('Facture fibre Orange — 5 septembre 2026');
   });
   it('période MÉTIER des faits avant la date documentaire', () => {
     expect(planBusinessTitle('Facture électricité', { typeCode: 'FACTURE', supplier: 'EDF', documentDate: '2026-09-02', period: { start: '2026-08-01', end: '2026-08-31' } }).title)
-      .toBe('Facture électricité EDF _ Août 2026');
+      .toBe('Facture électricité EDF — Août 2026');
     expect(formatBusinessPeriod('2026-07-01', '2026-09-30')).toBe('Juillet à septembre 2026');
     expect(formatBusinessPeriod('2025-12-01', '2026-02-28')).toBe('Décembre 2025 à février 2026');
   });
   it('événement ponctuel : date du jour', () => {
     expect(planBusinessTitle('Contrôle technique', { typeCode: 'CONTROLE_TECHNIQUE', documentDate: '2026-09-18', asset: { id: 1, name: 'Polo' }, accountAssetCount: 2 }).title)
-      .toBe('Contrôle technique Polo _ 18 septembre 2026');
+      .toBe('Contrôle technique Polo — 18 septembre 2026');
   });
   it('pas de nomenclature rigide : jamais tous les discriminants', () => {
     const t = planBusinessTitle('Facture fibre', { ...fibre, asset: { id: 1, name: 'Maison' }, accountAssetCount: 3, reference: 'FAC-456' }).title!;
-    expect(t).toBe('Facture fibre Orange _ Septembre 2026');
+    expect(t).toBe('Facture fibre Orange — 5 septembre 2026');
     expect(t).not.toMatch(/FAC-456|Maison|05\/09/);
   });
   it('T1 ne fait pas confiance aveuglément au titre du modèle : données durables complétées (type, sujets…)', () => {
     const r = withPersistedGaps({ modelTitle: 'Facture fibre internet', ctx: { supplier: null } }, { modelTitle: null, ctx: fibre });
-    expect(planBusinessTitle(r.modelTitle, r.ctx).title).toBe('Facture fibre Orange _ Septembre 2026');
+    expect(planBusinessTitle(r.modelTitle, r.ctx).title).toBe('Facture fibre Orange — 5 septembre 2026');
     expect(src('src/services/ai/source-analysis/pipeline.ts')).toMatch(/ensureBusinessTitle\(\{[\s\S]{0,200}origin: 'T1'/);
   });
 });
@@ -58,18 +66,18 @@ describe('TITLE2-AC2 — titre valide mais médiocre : évalué améliorable, re
 });
 
 describe('TITLE2-AC3 / AC4 — nouvelle connaissance T3 (bien, équipement)', () => {
-  it('Polo identifiée : « Facture entretien Polo _ Octobre 2026 » (le compte a plusieurs biens)', () => {
+  it('Polo identifiée : « Facture entretien Polo — 3 octobre 2026 » (le compte a plusieurs biens)', () => {
     const p = planBusinessTitle('Facture entretien', { typeCode: 'FACTURE', documentDate: '2026-10-03', asset: { id: 1, name: 'Polo' }, accountAssetCount: 2 });
-    expect(p.title).toBe('Facture entretien Polo _ Octobre 2026');
+    expect(p.title).toBe('Facture entretien Polo — 3 octobre 2026');
     expect(shouldReplaceSystemTitle('Facture entretien _ Octobre 2026', p.title, p.expectations)).toEqual({ replace: true, reason: 'TARGET_ADDED' });
   });
   it('un seul bien dans le compte : le nom du bien n’améliore pas l’identification', () => {
     expect(planBusinessTitle('Facture entretien', { typeCode: 'FACTURE', documentDate: '2026-10-03', asset: { id: 1, name: 'Polo' }, accountAssetCount: 1 }).title)
-      .toBe('Facture entretien _ Octobre 2026');
+      .toBe('Facture entretien — 3 octobre 2026');
   });
   it('équipement identifié : mots déjà présents non répétés', () => {
     const p = planBusinessTitle('Facture entretien chaudière', { typeCode: 'FACTURE', documentDate: '2026-10-03', equipment: { id: 7, name: 'Chaudière Saunier Duval' } });
-    expect(p.title).toBe('Facture entretien chaudière Saunier Duval _ Octobre 2026');
+    expect(p.title).toBe('Facture entretien chaudière Saunier Duval — 3 octobre 2026');
     expect(shouldReplaceSystemTitle('Facture entretien chaudière _ Octobre 2026', p.title, p.expectations)).toEqual({ replace: true, reason: 'EQUIPMENT_ADDED' });
   });
 });
@@ -77,7 +85,8 @@ describe('TITLE2-AC3 / AC4 — nouvelle connaissance T3 (bien, équipement)', ()
 describe('TITLE2-AC5 — titre utilisateur : jamais touché (compare-and-set conservé)', () => {
   it('le service lit la source au départ ET la revérifie dans l’écriture', () => {
     const s = src('src/services/documents/document-title.service.ts');
-    expect(s).toContain("if (row.title_source === 'USER') return fin('SKIP_USER_TITLE', 'USER_TITLE_PROTECTED'");
+    // Lot 87D : seules les données de nommage d'un titre USER sont tenues à jour ; le titre, jamais.
+    expect(s).toMatch(/if \(row\.title_source === 'USER'\) \{[\s\S]{0,700}persistNamingMetadata[\s\S]{0,300}return fin\('SKIP_USER_TITLE', 'USER_TITLE_PROTECTED'/);
     expect(s).toMatch(/AND title_source = 'SYSTEM'\s+AND retained_title IS NOT DISTINCT FROM \$4::text/);
   });
 });
@@ -103,15 +112,15 @@ describe('titres similaires du compte : discriminant métier, jamais « (2) »',
     const seul = planBusinessTitle('Contrat d’assurance Polo', ctx);
     expect(seul.title).toBe('Contrat d’assurance Polo');
     const p = planBusinessTitle('Contrat d’assurance Polo', { ...ctx, similarTitles: ['Contrat d’assurance Polo'] });
-    expect(p.title).toBe('Contrat d’assurance Polo _ 10 mars 2026');
+    expect(p.title).toBe('Contrat d’assurance Polo — 10 mars 2026');
     expect(p.duplicateResolved).toBe(true);
     expect(p.title).not.toMatch(/\(2\)/);
   });
 });
 
 describe('TITLE2-AC8 — reprise du stock : version des règles', () => {
-  it('DOCUMENT_TITLE_RULE_VERSION = 2 ; le balayage reprend tout titre SYSTEM d’une version antérieure, plus seulement les titres techniques', () => {
-    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(2);
+  it('DOCUMENT_TITLE_RULE_VERSION = 3 (lot 87D) ; le contrôle ciblé reprend tout titre SYSTEM d’une version antérieure, plus seulement les titres techniques', () => {
+    expect(DOCUMENT_TITLE_RULE_VERSION).toBe(3);
     const sql = TITLE_SWEEP_SQL.replace(/\s+/g, ' ');
     expect(sql).toContain('f.title_rule_version IS DISTINCT FROM $4::int');
     expect(sql).toContain("f.title_source = 'SYSTEM'");

@@ -22,6 +22,7 @@
  * fichier. Migrations absentes : rien n'est écrit, signalé une fois.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { missingFromPresenceFlags, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
 import { wordStartPattern } from '@/lib/search/match-engine';
 import { needsSourceRetryDue, verificationAutoRetryDue } from './verification-followup';
@@ -406,9 +407,9 @@ export async function searchDocumentSourceUnits(
   const { pgClient } = await import('@/db');
   const hay = `unaccent(lower(coalesce(u.content_text, '') || ' ' || coalesce(u.label, '') || ' ' || coalesce(u.value_text, '')))`;
   const score = clean.map((_, i) => `(CASE WHEN ${hay} ~ $${i + 4} THEN 1 ELSE 0 END)`).join(' + ');
-  const rows = await pgClient.unsafe(
+  const rows = await withDocumentTitles(pgClient.unsafe(
     `SELECT * FROM (
-       SELECT ${UNIT_COLUMNS}, coalesce(af.retained_title, af.original_filename) AS "documentTitle",
+       SELECT ${UNIT_COLUMNS}, ${documentTitleJsonSql('af')} AS "documentTitle",
               coalesce(af.asset_id, af.linked_asset_id) AS "assetId", (${score}) AS "matchedTerms"
          FROM document_source_units u
          JOIN asset_files af ON af.id = u.file_id AND af.deleted_at IS NULL
@@ -418,7 +419,7 @@ export async function searchDocumentSourceUnits(
      ORDER BY s."matchedTerms" DESC, s."fileId" DESC, s.ordinal
      LIMIT ${Math.min(Math.max(opts.limit ?? 50, 1), 500)}`,
     [accountId, opts.statuses ?? null, Math.max(1, Math.min(opts.minMatched ?? clean.length, clean.length)), ...clean.map(wordStartPattern)] as never[],
-  );
+  ));
   return (rows as unknown as SourceUnitHit[]).map((r) => ({ ...r, matchedTerms: Number(r.matchedTerms) }));
 }
 

@@ -109,12 +109,23 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
     },
   },
   {
+    // Lot 87D : titres des documents (convention unique, données de nommage, recherche = fiche).
+    domain: 'documents-titres', label: 'Titres des documents (nommage, recherche)',
+    checks: ['COH-DOC-TITLES'],
+    gap: {
+      what: 'mois de rattachement principal d’une facture périodique : décision IA non fournie par le contrat T1 actuel — titre avec la période exacte (règle de présentation), jamais un mois inventé ; harmonisation des titres hors convention (familles libres) : décision T3',
+      existingMechanism: 'service de nommage centralisé (fin d’analyse T1, connaissance T3) ; harmonisation T3 DOCUMENT_NAMING hors convention',
+      planned: 'demande IA 87D-mois-principal-factures',
+    },
+  },
+  {
     domain: 'documents-t1', label: 'Chaîne document → extract → T1 → aval (C-Q7)',
     checks: ['COH-DOC-EXTRACT-CHAIN'],
     gap: { what: 'valeur de l’extract absente de T1 sur une unité COUVERTE : constat seul (volontaire ou accidentelle : disposition T1 non livrée) ; documents analysés sans couche A', existingMechanism: 'constat tracé et Supervision ; t1-source-units-backfill (couche A historique)', planned: 'contrat IA 82B-t1-omissions-extract (unitDispositions, FOCUS_VALUES)' },
   },
   {
-    domain: 't6', label: 'T6 / mascotte', checks: ['COH-T6-EVALUATIONS'],
+    // Lot 87C : questions suggérées conservées confrontées à leurs fondements (COH-T6-SUGGESTIONS).
+    domain: 't6', label: 'T6 / mascotte', checks: ['COH-T6-EVALUATIONS', 'COH-T6-SUGGESTIONS'],
     gap: {
       what: 'texte affiché par la mascotte comparé aux échéances (rendu) ; persistance des résultats de pré-génération',
       existingMechanism: 'mascot-pregeneration, mascot-t6-reevaluations, mascot-t6-supervision (81B)', planned: 'lot suivant',

@@ -21,6 +21,7 @@
  * (`asset-fields.ts`, vue de `assistantWritable`), même lecture de la valeur
  * courante (`readCanonicalField`) — T2-40.
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { buildCanonicalAssetState, type AssetRowJson } from '@/services/canonical/asset-state';
 import type { AccountDataPort, AgendaRow, AssetRow, DocumentHit, FactHit } from '../core/data-answer.service';
@@ -158,8 +159,8 @@ export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort
 
     async listDocuments(accountId, { assetIds, limit = 10 }) {
       if (assetIds.length === 0) return [];
-      const r = await pgClient.unsafe(
-        `SELECT f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title,
+      const r = await withDocumentTitles(pgClient.unsafe(
+        `SELECT f.id AS "fileId", ${documentTitleJsonSql('f')} AS title,
                 to_char(f.document_date, 'YYYY-MM-DD') AS date,
                 (SELECT a.name FROM assets a WHERE a.id = ANY($2::int[]) AND a.account_id = $1 ORDER BY a.id LIMIT 1) AS "assetName",
                 1 AS "matchedTerms", f.analysis_state AS "analysisState"
@@ -168,7 +169,7 @@ export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort
           ORDER BY f.document_date DESC NULLS LAST, f.id DESC
           LIMIT $3`,
         [accountId, assetIds, Math.min(limit, 50)] as never[],
-      );
+      ));
       return r as unknown as DocumentHit[];
     },
 
@@ -195,8 +196,8 @@ export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort
     // Lot 34 : documents en cours d'analyse ou en échec (« Où en est l'analyse
     // de mes documents ? »), les plus récents d'abord.
     async listDocumentsInAnalysis(accountId, { limit = 10 } = {}) {
-      const r = await pgClient.unsafe(
-        `SELECT f.id AS "fileId", coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title,
+      const r = await withDocumentTitles(pgClient.unsafe(
+        `SELECT f.id AS "fileId", ${documentTitleJsonSql('f')} AS title,
                 to_char(f.document_date, 'YYYY-MM-DD') AS date, a.name AS "assetName", 1 AS "matchedTerms",
                 f.analysis_state AS "analysisState"
            FROM asset_files f
@@ -206,7 +207,7 @@ export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort
           ORDER BY CASE WHEN f.analysis_state = 'ANALYSIS_FAILED' THEN 1 ELSE 0 END, f.created_at DESC NULLS LAST, f.id DESC
           LIMIT $2`,
         [accountId, Math.min(Math.max(limit, 1), 50)] as never[],
-      );
+      ));
       return r as unknown as DocumentHit[];
     },
   };

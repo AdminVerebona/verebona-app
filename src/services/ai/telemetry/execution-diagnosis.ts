@@ -21,6 +21,8 @@ import {
 } from '../gateway/diagnostics/taxonomy';
 
 export interface CallReport {
+  /** Lot 87 (P7) : rang tracé mais jamais appelé (secours refusé, modèle connu indisponible). */
+  notCalled?: boolean;
   callId: number;
   /** `principal`, `fallback 1`, `fallback 2`, `réparation`. */
   label: string;
@@ -111,6 +113,9 @@ function legacyDiagnostic(c: ExecutionRow): CallDiagnostic | null {
   };
 }
 
+/** Lot 87 (P7, 87A) : codes d'un rang SAUTÉ par la politique de secours (tracé, jamais appelé). */
+const NOT_CALLED_CODES: ReadonlySet<string> = new Set(['FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE']);
+
 export function buildExecutionDiagnosis(p: {
   treatment: string | null;
   calls: ExecutionRow[];
@@ -124,14 +129,16 @@ export function buildExecutionDiagnosis(p: {
     const diag = stored?.diagnostic ?? legacyDiagnostic(c);
     const kind = stored?.diagnostic.callKind ?? c.callKind ?? 'analysis';
     const status: CallDiagnostic['outcome'] = diag?.outcome ?? (c.status === 'error' ? 'FAILED' : 'SUCCEEDED');
+    const notCalled = NOT_CALLED_CODES.has(c.errorCode ?? '');
     return {
+      notCalled,
       callId: c.id,
       label: kind === 'repair' ? `réparation (${RANK_LABELS[c.modelRank ?? ''] ?? 'rang inconnu'})` : RANK_LABELS[c.modelRank ?? ''] ?? (c.usedFallback ? 'fallback' : 'rang inconnu'),
       rank: c.modelRank,
       model: c.model,
       callKind: kind,
       status,
-      cause: diag ? displayCause(diag.family, diag.subtype) : null,
+      cause: notCalled ? 'non appelé (politique de secours)' : diag ? displayCause(diag.family, diag.subtype) : null,
       stage: diag?.stage ?? null,
       inputTokens: c.inputTokens,
       outputTokens: c.outputTokens,
@@ -142,13 +149,15 @@ export function buildExecutionDiagnosis(p: {
       hasModelOutput: stored?.hasModelOutput ?? false,
       errorCode: displayErrorCode(c.errorCode, diag?.family ?? c.failure?.family, diag?.subtype ?? c.failure?.subtype),
       errorMessage: c.errorMessage,
-      failureCategory: diag && !diag.outputReceived ? providerFailureCategory(diag.family, diag.subtype) : null,
+      failureCategory: !notCalled && diag && !diag.outputReceived ? providerFailureCategory(diag.family, diag.subtype) : null,
       providerRequest: c.providerRequest ?? null,
       providerAttempts: c.providerAttempts ?? [],
     };
   });
 
-  const analyses = reports.filter((r) => r.callKind === 'analysis');
+  // Un rang sauté par la politique de secours n'est ni un appel ni un échec de modèle.
+  const appels = reports.filter((r) => !r.notCalled);
+  const analyses = appels.filter((r) => r.callKind === 'analysis');
   const asDiag = (r: CallReport): CallDiagnostic => r.diagnostic ?? {
     outcome: r.status, callKind: r.callKind, family: null, subtype: null, stage: null, outputReceived: (r.outputTokens ?? 0) > 0,
     error: null, issues: [], issueCount: 0, controls: emptyControlChain(), provider: { provider: '', model: r.model ?? '' },
@@ -161,7 +170,7 @@ export function buildExecutionDiagnosis(p: {
     modelCalls: analyses.length,
     modelFallbacks: analyses.filter((r) => r.rank === 'fallback_1' || r.rank === 'fallback_2').length,
     structuredOutputRetries: analyses.reduce((n, r) => n + (r.providerAttempts ?? []).filter(isStructuredOutputRetry).length, 0),
-    repairCalls: reports.length - analyses.length,
+    repairCalls: appels.length - analyses.length,
   };
   const lastFailed = [...analyses].reverse().find((r) => r.status === 'FAILED');
   const business = p.job?.businessResult ?? (reports.length === 0 ? null : succeeded ? 'SUCCEEDED' : 'FAILED');
@@ -181,7 +190,7 @@ export function buildExecutionDiagnosis(p: {
       ...finalDiagnosis({
         treatment: p.treatment,
         succeeded: business !== 'FAILED' && succeeded,
-        calls: reports.map(asDiag),
+        calls: appels.map(asDiag),
         businessResult: p.job?.businessResult ?? null,
       }),
       ...structuredRetryLines(analyses),

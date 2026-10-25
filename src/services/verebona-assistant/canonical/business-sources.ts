@@ -24,6 +24,7 @@
  * (`selectInterpretations`), enrichi des sujets compris par T2.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { listFields, getField } from '@/services/canonical/registry';
 import type { RetrievedSource } from '../types/sources';
@@ -300,8 +301,8 @@ const documentProvider: BusinessSourceProvider = {
     if (!need.terms.length) return null;
     // Lot 75J (#419 R04) : sans bien nommé, les pièces du COMPTE sans aucun rattachement sont
     // aussi examinées (jamais une pièce rattachée seulement à un bien hors périmètre).
-    const docs = (await pgClient.unsafe(
-      `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.supplier,
+    const docs = (await withDocumentTitles(pgClient.unsafe(
+      `SELECT f.id, ${documentTitleJsonSql('f')} AS title, f.supplier,
               to_char(f.document_date, 'YYYY-MM-DD') AS date, f.amount_cents AS "amountCents", f.document_type_code AS type,
               (f.asset_id IS NULL AND f.linked_asset_id IS NULL
                AND NOT EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE')) AS untargeted
@@ -315,7 +316,7 @@ const documentProvider: BusinessSourceProvider = {
                    AND NOT EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = f.account_id AND l.file_id = f.id AND l.status = 'ACTIVE')))
         ORDER BY f.document_date DESC NULLS LAST, f.id DESC LIMIT ${MAX_DOCUMENTS}`,
       [accountId, ids.length ? ids : null, Boolean(includeUntargeted)] as never[],
-    )) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null; type: string | null; untargeted?: boolean }>;
+    ))) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null; type: string | null; untargeted?: boolean }>;
     return docs.map((d): BusinessSource => {
       const id = Number(d.id);
       return {
@@ -332,8 +333,8 @@ const documentProvider: BusinessSourceProvider = {
   },
   async read(accountId, ref, { assetIds }) {
     const id = Number(ref.split(':')[1]);
-    const rows = (await pgClient.unsafe(
-      `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.supplier,
+    const rows = (await withDocumentTitles(pgClient.unsafe(
+      `SELECT f.id, ${documentTitleJsonSql('f')} AS title, f.supplier,
               to_char(f.document_date, 'YYYY-MM-DD') AS date, f.amount_cents AS "amountCents", f.document_type_code AS type
          FROM asset_files f WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL
           AND ($3::int[] IS NULL
@@ -341,7 +342,7 @@ const documentProvider: BusinessSourceProvider = {
                            AND l.status = 'ACTIVE' AND l.asset_id = ANY($3::int[]))
                OR f.asset_id = ANY($3::int[]) OR f.linked_asset_id = ANY($3::int[]))`,
       [id, accountId, assetIds.length ? assetIds : null] as never[],
-    )) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null; type: string | null }>;
+    ))) as unknown as Array<{ id: number; title: string; supplier: string | null; date: string | null; amountCents: number | null; type: string | null }>;
     const d = rows[0];
     return d ? {
       ref, domain: 'document', label: d.title, detail: [d.supplier, frDate(d.date)].filter(Boolean).join(' · ') || null, text: d.title,

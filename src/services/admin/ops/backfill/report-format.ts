@@ -580,31 +580,45 @@ function agendaInterventionDuplicates(action: BackfillAction, out: RawBackfillOu
   const sim = r.mode === 'SIMULATE';
   const arb = r.report.filter((e) => e.category === 'ARBITRATION');
   const sans = r.report.filter((e) => e.category === 'NO_OPERATION');
+  const t4 = r.report.filter((e) => e.category === 'T4_DECISION');
   return {
     headline: sim
-      ? `Simulation : ${c.operations} intervention(s) examinée(s) sur ${c.accounts} compte(s) — ${c.certain} consolidation(s) certaine(s), `
-        + `${c.arbitration} identité(s) incertaine(s) (carte « À traiter »), ${c.noOperationGroups} groupe(s) sans Opération (signalés).`
-      : `Application : ${c.consolidated} événement(s) absorbé(s), ${c.linked} lien(s) posé(s), ${c.retitled} intitulé(s) précisé(s), `
-        + `${c.arbitration} arbitrage(s) proposé(s), ${c.protectedItems} événement(s) protégé(s).`,
+      ? `Simulation : ${c.operations} Opération(s) examinée(s) sur ${c.accounts} compte(s) — ${c.t4Required} représentation(s) à décider par T4 `
+        + `(${c.t4Unavailable} en attente du contrat T4 multi-événements, ${c.t4Settled} déjà décidée(s)), ${c.arbitration} carte(s) « À traiter », `
+        + `${c.noOperationGroups} groupe(s) sans Opération (signalés). Aucune fusion par le code.`
+      : `Application : ${c.linked} lien(s) posé(s) (provenance), ${c.retitled} intitulé(s) précisé(s), ${c.arbitration} carte(s) « À traiter » ; `
+        + `décisions T4 : ${c.t4Applied} appliquée(s), ${c.t4NoChange} sans changement, ${c.t4Rejected} refusée(s), ${c.t4Unavailable} indisponible(s), `
+        + `${c.t4Deferred} reportée(s) (plafond), ${c.aiCalls} appel(s) IA.`,
     scriptRunId: sim ? null : r.runId,
     restorable: !sim,
     counters: [
       { label: 'Comptes examinés', value: c.accounts },
-      { label: 'Interventions examinées', value: c.operations },
-      { label: 'Consolidations certaines', value: c.certain },
-      { label: 'Identités incertaines (arbitrage)', value: c.arbitration },
+      { label: 'Opérations examinées', value: c.operations },
+      { label: 'Représentations à décider par T4', value: c.t4Required },
+      { label: 'Identités incertaines (carte « À traiter »)', value: c.arbitration },
       { label: 'Résidus de fusion d’Opérations', value: c.residualsAfterMerge },
       { label: 'Doublons sans Opération (signalés, non traités)', value: c.noOperationGroups },
+      { label: 'Décisions T4 indisponibles (contrat non livré)', value: c.t4Unavailable },
+      { label: 'Décisions T4 déjà prises sur ce contexte', value: c.t4Settled },
       ...(sim ? [] : [
-        { label: 'Événements absorbés', value: c.consolidated },
-        { label: 'Liens posés', value: c.linked },
+        { label: 'Liens posés (provenance)', value: c.linked },
         { label: 'Intitulés précisés', value: c.retitled },
-        { label: 'Événements protégés (modifiés, confirmés, à qualifier)', value: c.protectedItems },
         { label: 'Projections créées', value: c.projectionsCreated },
+        { label: 'Décisions T4 appliquées', value: c.t4Applied },
+        { label: 'Décisions T4 sans changement', value: c.t4NoChange },
+        { label: 'Décisions T4 refusées (invalides, objet protégé)', value: c.t4Rejected },
+        { label: 'Décisions T4 reportées (plafond)', value: c.t4Deferred },
+        { label: 'Appels IA', value: c.aiCalls },
       ]),
       { label: 'Comptes en erreur', value: c.errors },
     ],
-    ambiguous: { count: arb.length, samples: echantillon(arb, (e) => `compte ${e.accountId} · intervention ${e.operationId} : ${String(e.detail.reason ?? '')}`) },
+    ambiguous: {
+      count: arb.length + t4.filter((e) => e.detail.status !== 'APPLIED' && e.detail.status !== 'NO_CHANGE' && e.detail.status !== 'SETTLED').length,
+      samples: [
+        ...echantillon(arb, (e) => `compte ${e.accountId} · Opération ${e.operationId} : ${String(e.detail.reason ?? '')}`),
+        ...echantillon(t4, (e) => `compte ${e.accountId} · Opération ${e.operationId} : décision T4 ${String(e.detail.status)}${e.detail.reason ? ` (${String(e.detail.reason)})` : ''}`),
+      ].slice(0, SAMPLE_LIMIT),
+    },
     conflicts: { count: 0, samples: [] },
     warnings: sans.slice(0, SAMPLE_LIMIT).map((e) => `Compte ${e.accountId} · document ${String(e.detail.fileId)} du ${String(e.detail.date)} : événements ${JSON.stringify(e.detail.itemIds)} sans Opération d’intervention (T3 n’a rien établi) — conservés.`),
   };

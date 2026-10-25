@@ -259,3 +259,45 @@ export function afterDeferral(
   if (deferrals > max) return { status: 'FAILED', deferrals, retryInSeconds: 0 };
   return { status: 'PENDING', deferrals, retryInSeconds: deferralDelaySeconds(deferrals) };
 }
+
+// ── Suspension IA : aucun secours admissible (lot 87A, P7) ─────────────────
+
+/**
+ * Lot 87A (CDC Pilotage IA V2 P7, RUN-02, RUN-03, R11) — le travail n'a PAS
+ * pu être exécuté faute de secours ADMISSIBLE (modèle connu indisponible,
+ * quota, délai… sans autre couple autorisé). Ni échec ni succès : aucune
+ * écriture métier n'a eu lieu (les exécutants laissent remonter la
+ * suspension comme une interruption), la tentative est rendue (MOD-005), et
+ * le travail est REPRIS automatiquement depuis un point sûr — le début de
+ * son unité, idempotente — avec la configuration du moment (RUN-04).
+ *
+ * Reprise bornée : 5 min, 15 min, puis toutes les heures ; au-delà de
+ * `AI_QUEUE_MAX_AI_SUSPENSIONS` suspensions (24 par défaut, ≈ une journée),
+ * échec définitif avec la cause — jamais une boucle sans fin.
+ */
+const AI_SUSPENSION_DELAYS_SECONDS = [300, 900, 3_600];
+
+/**
+ * Motif AFFICHABLE d'un travail suspendu (fichier T1 « en file » : aucun code
+ * interne, aucun nom de modèle ; la cause technique est au BO).
+ */
+export const AI_SUSPENSION_USER_REASON = 'Analyse momentanément suspendue : le service d’analyse est indisponible. Reprise automatique.';
+
+/** Délai de la première reprise d'une suspension (hors file : remise en file différée d'autant). */
+export const AI_SUSPENSION_FIRST_DELAY_SECONDS = AI_SUSPENSION_DELAYS_SECONDS[0];
+
+export function maxAiSuspensions(): number {
+  const n = Number(process.env.AI_QUEUE_MAX_AI_SUSPENSIONS);
+  return Number.isInteger(n) && n >= 1 ? n : 24;
+}
+
+/** Issue d'une suspension IA (pure) : nouvelle attente, ou échec définitif au-delà du plafond. */
+export function afterAiSuspension(
+  previous: number,
+  max: number = maxAiSuspensions(),
+): { status: Extract<JobStatus, 'PENDING' | 'FAILED'>; count: number; retryInSeconds: number } {
+  const count = Math.max(0, Math.floor(previous)) + 1;
+  if (count > max) return { status: 'FAILED', count, retryInSeconds: 0 };
+  const i = Math.min(count, AI_SUSPENSION_DELAYS_SECONDS.length) - 1;
+  return { status: 'PENDING', count, retryInSeconds: AI_SUSPENSION_DELAYS_SECONDS[i] };
+}

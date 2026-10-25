@@ -30,6 +30,7 @@
  * doit s'appuyer dessus.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { getField } from '@/services/canonical/registry';
 import { documentCodeLabel } from '@/lib/referential/document-codes';
 import { pgClient } from '@/db';
 import { isCriticalField } from './decision/critical-fields';
@@ -101,7 +102,8 @@ const FIELD_LABELS: Record<string, string> = {
 };
 
 export function fieldLabel(fieldKey: string): string {
-  return FIELD_LABELS[fieldKey] ?? fieldKey;
+  // Lot 87D : libellé du registre canonique à défaut — jamais la clé technique (« documentTypeCode »).
+  return FIELD_LABELS[fieldKey] ?? getField(fieldKey)?.label ?? 'Information';
 }
 
 interface ConflictRow {
@@ -137,7 +139,8 @@ const SOURCE_LABELS: Record<string, string> = { SAISIE_MANUELLE: 'Saisie manuell
 /** Libellé de la source : résolveur documentaire unique (lot 30), plus de liste locale. */
 export function documentTypeLabel(type: string | null): string {
   if (!type) return 'Source inconnue';
-  return SOURCE_LABELS[type] ?? documentCodeLabel(type);
+  // Lot 87D : code inconnu du référentiel → « Document », jamais le code brut.
+  return SOURCE_LABELS[type] ?? (documentCodeLabel(type) || 'Document');
 }
 
 /**

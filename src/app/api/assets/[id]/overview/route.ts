@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
+import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 import { db } from '@/db';
 import { assets } from '@/db/schema';
 import { eq, and, isNull } from 'drizzle-orm';
@@ -71,8 +73,10 @@ export async function GET(
       // Lot 84C : Timeline calculée à la lecture (agenda_items / agenda_asset_links,
       // « annule » exclu), regroupée avant pagination — `services/agenda/timeline`.
       readAssetTimelinePage(timelineInput),
-      sql<{ id: number; original_filename: string; retained_title: string | null; document_type: string; document_date: string | null }[]>`
-        SELECT id, original_filename, retained_title, document_type, document_date
+      sql<{ id: number; original_filename: string; retained_title: string | null; document_type: string; document_type_code: string | null; document_date: string | null;
+        web_link_title: string | null; filename: string | null; s3_key: string | null; public_id: string | null }[]>`
+        SELECT id, original_filename, retained_title, document_type, document_type_code, document_date,
+               web_link_title, filename, s3_key, public_id::text AS public_id
         FROM asset_files
         -- Lot 32C (PO 9) : documents du bien = colonnes OU liens PRIMARY / SECONDARY.
         WHERE (asset_id = ${assetId} OR linked_asset_id = ${assetId}
@@ -135,7 +139,11 @@ export async function GET(
         id: d.id,
         originalFilename: d.original_filename,
         retainedTitle: d.retained_title ?? null,
+        // Lot 87D : titre affiché par la règle unique ; libellé français du Type V2 enregistré, jamais un code.
+        title: documentTitleFromRecord({ retainedTitle: d.retained_title, webLinkTitle: d.web_link_title, originalFilename: d.original_filename, filename: d.filename, s3Key: d.s3_key, publicId: d.public_id }),
         documentType: d.document_type,
+        documentTypeCode: d.document_type_code ?? null,
+        documentTypeLabel: documentTypeLabelOrNull(d.document_type_code),
         documentDate: d.document_date,
       })),
       counters: {

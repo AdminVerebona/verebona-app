@@ -56,6 +56,7 @@ import {
 } from '@/services/ai/reconciliation/master/operation-match';
 import type { T3OperationMatchOutput } from '@/services/ai/reconciliation/master/t3-contract';
 import type { StoredM3 } from './m3-context';
+import { semanticReevaluationAt } from './retro';
 
 export const OPERATION_MATCH_OPERATION = 't3_operation_match';
 export const OPERATION_MATCH_TASK = 'OPERATION_MATCH';
@@ -105,7 +106,11 @@ export function M3_PENDING_SQL(promptVersionParam: string): string {
              AND COALESCE((c.t3_detail->'m3'->>'retryAfter')::timestamptz, now()) <= now())
          OR c.t3_detail->'m3'->>'status' = 'TOO_MANY_CANDIDATES'
          OR (c.t3_detail->'m3'->>'status' = 'PROMPT_UNAVAILABLE' AND ${promptVersionParam}::text IS NOT NULL
-             AND c.t3_detail->'m3'->>'promptVersion' IS DISTINCT FROM ${promptVersionParam}::text))`;
+             AND c.t3_detail->'m3'->>'promptVersion' IS DISTINCT FROM ${promptVersionParam}::text)
+         -- Lot 87B (CODE-06) : réévaluation sémantique T3 ouverte — verdict antérieur à la demande écarté, nouvel appel.
+         OR (c.t3_detail->'semanticReevaluation' IS NOT NULL AND NOT (c.t3_detail->'semanticReevaluation' ? 'doneAt')
+             AND COALESCE(c.t3_detail->'m3'->>'at', '') < COALESCE(c.t3_detail->'semanticReevaluation'->>'at', '')
+             AND COALESCE(c.t3_detail->'m3'->>'status', '') NOT IN ('DEFERRED', 'ERROR')))`;
 }
 
 export interface OperationMatchPromptStatus {
@@ -199,6 +204,9 @@ export function m3Due(
   const m3 = (detail?.m3 ?? null) as StoredM3 | null;
   if (!m3) return true;
   if (m3.fingerprint !== fp) return true;
+  // Lot 87B (CODE-06) : réévaluation sémantique T3 ouverte — un verdict antérieur à la demande ne compte plus.
+  const demande = semanticReevaluationAt(detail);
+  if (demande && m3.status !== 'DEFERRED' && m3.status !== 'ERROR' && (!m3.at || m3.at < demande)) return true;
   // Lot 56A : question ouverte évaluée par une autre version du prompt — réexamen (une fois par version).
   if (openQuestion && m3.status === 'DONE') return promptVersion !== null && m3.promptVersion !== promptVersion;
   if (m3.status === 'DEFERRED' || m3.status === 'ERROR') return !m3.retryAfter || Date.parse(m3.retryAfter) <= now.getTime();

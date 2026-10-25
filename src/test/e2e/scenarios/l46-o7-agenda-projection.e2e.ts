@@ -247,7 +247,7 @@ scenario('L46-O7', 'T4 / Agenda : projection des Opérations (C16), rapprochemen
     expect(JSON.stringify(full)).not.toMatch(/highlight=claims/);
   });
 
-  it('O7-E08 / C16.1 — garde T4 : un document analysé APRÈS la projection ne crée pas de second événement', async () => {
+  it('O7-E08 / C16.1 — document analysé APRÈS la projection : un seul événement — lot 87B : l’événement T4 du document (seule Opération du document) remplace la projection technique', async () => {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER' });
     const facture = await make.assetFile(compte, { assetId: maison.id });
@@ -258,9 +258,15 @@ scenario('L46-O7', 'T4 / Agenda : projection des Opérations (C16), rapprochemen
       action: 'create', title: 'Intervention plombier', date: '2026-02-14', category: 'information', confidence: 'certain', reasonCode: 'NEW_EVENT',
       deterministic: true, sourceFileId: facture.id, businessType: 'repair', nature: 'HISTORICAL',
     } as never], compte.id, maison.id, { sourceFileId: facture.id, analysisComplete: true });
+    // Lot 87B (test corrigé) : la garde T4 « événement déjà représenté » (même bien, ±3 jours, même document OU même
+    // type métier) était une fusion décidée par le code — retirée. T4 crée l'événement de son document ; la projection
+    // (file de convergence) lui cède sa place parce que ce document n'appartient qu'à cette Opération (provenance exacte).
+    await projeter(compte, [op]);
     const tous = await items(compte);
     expect(tous).toHaveLength(1);
-    expect(tous[0]).toMatchObject({ op, projection_origin: 'OPERATION' });
+    expect(tous[0]).toMatchObject({ op, projection_origin: null, title: 'Intervention plombier' });
+    expect(await sql`SELECT reason FROM agenda_item_removals WHERE account_id = ${compte.id}`).toEqual([{ reason: 'OPERATION_PROJECTION' }]);
+    expect((await projeter(compte, [op])).changes).toBe(0);
   });
 
   // ══ Suppression utilisateur mémorisée (F-146) ═════════════════════════════

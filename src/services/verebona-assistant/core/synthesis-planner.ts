@@ -28,6 +28,7 @@
  * Tout est borné au compte et budgété ; une lecture en échec retire sa part
  * du contexte, jamais la réponse.
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { leadingAssetDesignation } from '@/lib/asset-taxonomy';
 import { assistantAssetAvailability } from './asset-availability';
@@ -504,14 +505,14 @@ export const defaultDeps: SynthesisDeps = {
           GROUP BY i.id ORDER BY i.start_date DESC LIMIT $3`,
         [accountId, assetIds, limit] as never[],
       ) as unknown as Promise<Array<{ id: number; title: string; date: string; manualStatus: string | null; originFieldKey: string | null; assetName: string | null; operationId: number | null }>>,
-      pgClient.unsafe(
-        `SELECT f.id, coalesce(f.retained_title, f.original_filename, 'Document') AS title, to_char(f.document_date, 'YYYY-MM-DD') AS date,
+      withDocumentTitles(pgClient.unsafe(
+        `SELECT f.id, ${documentTitleJsonSql('f')} AS title, to_char(f.document_date, 'YYYY-MM-DD') AS date,
                 (SELECT a.name FROM assets a WHERE a.id = coalesce(f.asset_id, f.linked_asset_id)) AS "assetName"
            FROM asset_files f
           WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.document_date IS NOT NULL AND ${DOCS_DES_BIENS}
           ORDER BY f.document_date DESC LIMIT $3`,
         [accountId, assetIds, limit] as never[],
-      ) as unknown as Promise<Array<{ id: number; title: string; date: string; assetName: string | null }>>,
+      )) as unknown as Promise<Array<{ id: number; title: string; date: string; assetName: string | null }>>,
       (async () => {
         const { getCanonicalAssetState } = await import('@/services/canonical/asset-state');
         const noms = (await pgClient.unsafe(

@@ -198,6 +198,24 @@ export async function reviewOperationMembers(
 
 /** Lot 86C : anomalies « doublon entre Opérations » (réparées par le réexamen T3). */
 export const DUPLICATE_ANOMALIES: ReadonlySet<string> = new Set(['DUPLICATE_OPERATIONS', 'DUPLICATE_OPERATIONS_SUSPECTED']);
+/** Lot 87B : anomalies qui demandent une NOUVELLE décision d'identité à T3 (réparation `SEMANTIC_REEVALUATION_T3`). */
+export const SEMANTIC_T3_ANOMALIES: ReadonlySet<string> = new Set(['IDENTITY_DECISION_OUTDATED']);
+
+/**
+ * Lot 87B (CODE-05, CODE-06) : Opérations à document UNIQUE dont le candidat
+ * porte un verdict M3 « distinct » rendu par une AUTRE version du prompt T3
+ * que la version active — décision historique suspecte, à soumettre de
+ * nouveau à T3 (préfiltre de lecture ; la décision reste la simulation T3).
+ */
+const VERDICT_DISTINCT_SQL = (versionParam: string) => `
+  (SELECT count(DISTINCT s.source_entity_key) FROM business_operation_sources s
+    WHERE s.operation_id = o.id AND s.account_id = o.account_id AND s.active) = 1
+  AND EXISTS (SELECT 1 FROM business_operation_sources s
+               JOIN document_operation_candidates c ON c.account_id = s.account_id AND c.file_id::text = s.source_entity_key
+                    AND c.candidate_key = s.locator->>'candidateKey' AND c.status = 'ACTIVE'
+              WHERE s.operation_id = o.id AND s.account_id = o.account_id AND s.active AND s.source_kind = 'DOCUMENT'
+                AND c.t3_detail->'m3'->>'status' = 'DONE' AND ${versionParam}::text IS NOT NULL
+                AND c.t3_detail->'m3'->>'promptVersion' IS DISTINCT FROM ${versionParam}::text)`;
 
 /**
  * Lot 86C : Opérations de relation récurrente (contrat, ou coûts à période
@@ -216,7 +234,9 @@ const DOUBLON_POSSIBLE_SQL = `(o.type_code IS NULL OR o.type_code IN ('CONTRACT'
 export const operationsIdentityCheck: CoherenceCheck = {
   id: 'COH-OPS-IDENTITY',
   // Lot 86C : v2 — doublons ENTRE Opérations (réexamen du stock entier, y compris inchangé).
-  version: 2,
+  // Lot 87B : v3 — décision d'identité historique SUSPECTE (verdict M3 « distinct » d'une autre version du
+  // prompt T3) → nouvelle décision demandée à T3 (SEMANTIC_REEVALUATION_T3), jamais rejouée telle quelle.
+  version: 3,
   status: 'ACTIVE',
   title: 'Opérations : identité économique des sources regroupées (78A) et doublons entre Opérations (même relation contractuelle)',
   domain: 'operations',
@@ -227,18 +247,21 @@ export const operationsIdentityCheck: CoherenceCheck = {
     'business_operation_asset_links', 'business_operation_financial_components', 'business_operation_match_decisions', 'document_suppliers', 'suppliers'],
   applicability: 'compte éligible ; Opération active ayant au moins deux sources gérées, ou relation récurrente ayant une voisine compatible',
   invariant: 'chaque source regroupée partage l’identité économique de la source fondatrice ; une relation contractuelle établie n’est portée que par UNE Opération (deux périodes facturées ne font pas deux contrats ; deux contrats réellement distincts restent deux Opérations)',
-  anomalies: ['IDENTITY_CONTRADICTED', 'IDENTITY_SUSPECT', 'DUPLICATE_OPERATIONS', 'DUPLICATE_OPERATIONS_SUSPECTED'],
-  autoRepairWhen: 'doublon entre Opérations dont la décision T3 recalculée (sans IA) réunit les deux, ou qu’un rapprochement plausible non encore soumis rend examinable par M3 : réexamen T3 ciblé (fusion existante seulement sur identité établie). Identité 78A interne : aucune (détection, réexamen 78A par la consolidation T3)',
+  anomalies: ['IDENTITY_CONTRADICTED', 'IDENTITY_SUSPECT', 'DUPLICATE_OPERATIONS', 'DUPLICATE_OPERATIONS_SUSPECTED',
+    'IDENTITY_DECISION_OUTDATED', 'IDENTITY_REEVALUATION_PENDING', 'IDENTITY_REEVALUATION_UNAVAILABLE'],
+  semanticReevaluation: ['T3'],
+  autoRepairWhen: 'doublon entre Opérations dont la décision T3 recalculée (sans IA) réunit les deux, ou qu’un rapprochement plausible non encore soumis rend examinable par M3 : réexamen T3 ciblé (fusion existante seulement sur identité établie). Lot 87B : verdict M3 « distinct » rendu par une autre version du prompt T3 — nouvelle décision T3 demandée (verdict historique écarté, plafonds M3 existants). Identité 78A interne : aucune (détection, réexamen 78A par la consolidation T3)',
   forbiddenRepairs: ['séparer ou fusionner hors de la consolidation T3', 'défaire un rattachement décidé par l’utilisateur ou l’IA', 'écrire depuis le contrôle',
     'fusionner deux contrats distincts (références, équipements) ou contre une décision de l’utilisateur', 'fusionner sur le seul prestataire', 'appeler l’IA depuis le contrôle',
     'supprimer une facture, une composante ou un historique'],
   services: ['business-operations/consolidation/consolidator#loadOperationMembers', 'business-operations/consolidation/economic-identity#reviewExistingAttachment',
-    'business-operations/consolidation/consolidator#previewOperationDuplicates', 'business-operations/consolidation/targeted#reconsolidateRecurringDocuments'],
+    'business-operations/consolidation/consolidator#previewOperationDuplicates', 'business-operations/consolidation/targeted#reconsolidateRecurringDocuments',
+    'business-operations/semantic/orchestrator#requestIdentityReevaluation'],
   chain: ['T1', 'T3'],
   triggers: [OPERATION_CHANGED, 'SOURCE_ANALYZED'],
   frequency: 'campagne exhaustive quotidienne (toutes les Opérations, y compris inchangées) + contrôle ciblé à chaque écriture d’Opération',
   criticality: 'HIGH',
-  tests: ['L83B-U-OPS', 'L83B-E2E-07', 'L83B-E2E-10', 'L86C-E2E-04', 'L86C-E2E-05', 'L86C-E2E-11'],
+  tests: ['L83B-U-OPS', 'L83B-E2E-07', 'L83B-E2E-10', 'L86C-E2E-04', 'L86C-E2E-05', 'L86C-E2E-11', 'L87B-E2E-06'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `SELECT o.id FROM business_operations o WHERE ${OPERATIONS_ACTIVES_SQL} AND o.id > $2 ORDER BY o.id LIMIT $3`, [accountId, afterId, limit]));
@@ -289,6 +312,8 @@ export const operationsIdentityCheck: CoherenceCheck = {
     [accountId, intArray(actives)])) : [];
     const { previewOperationDuplicates } = await import('@/services/business-operations/consolidation/consolidator');
     const doublons = possibles.length ? await previewOperationDuplicates(accountId, possibles) : new Map();
+    // Lot 87B (CODE-05, CODE-06) : décisions d'identité historiques suspectes (simulation « sémantique » du réexamen T3).
+    const semantique = await semanticT3Signals(ctx, accountId, actives.filter((id) => !doublons.has(id)));
     for (const id of ids) {
       if (!vivantes.has(id)) { out.set(id, { verdict: 'GONE' }); continue; }
       const ms = membres.get(id) ?? [];
@@ -313,6 +338,8 @@ export const operationsIdentityCheck: CoherenceCheck = {
         });
         continue;
       }
+      const sem = semantique.get(id);
+      if (sem) { out.set(id, sem); continue; }
       if (ms.length < 2) { out.set(id, { verdict: 'CONSISTENT', detail: { managedSources: ms.length } }); continue; }
       if (!revues.length) { out.set(id, { verdict: 'CONSISTENT', detail: { managedSources: ms.length } }); continue; }
       const contredite = revues.some((r) => r.outcome === 'SEPARATE');
@@ -336,6 +363,21 @@ export const operationsIdentityCheck: CoherenceCheck = {
     const out = new Map<number, RepairResult>();
     const { reconsolidateRecurringDocuments } = await import('@/services/business-operations/consolidation/targeted');
     for (const { id, inspection } of items) {
+      if (SEMANTIC_T3_ANOMALIES.has(inspection.anomaly ?? '')) {
+        // Lot 87B : NOUVELLE décision d'identité demandée à T3 (verdict historique écarté), consolidation par la
+        // file durable existante ; une fusion décidée par T3 rejoue la projection, puis T4 si l'Agenda en dépend.
+        const { requestIdentityReevaluation } = await import('@/services/business-operations/semantic/orchestrator');
+        const r = await requestIdentityReevaluation({
+          accountId, operationIds: [id], trigger: 'COHERENCE', triggerRef: inspection.anomaly ?? null, correlationId: ctx.correlationId,
+          reason: `contrôle de cohérence : ${inspection.anomaly}`,
+        });
+        out.set(id, {
+          called: true, service: 'requestIdentityReevaluation', aiCalls: 0, reevaluation: 'SEMANTIC_REEVALUATION_T3', pending: true,
+          result: { requested: r.requested, alreadyPending: r.alreadyPending, unsupported: r.unsupported, journalIds: r.journalIds },
+          rollbackRef: r.journalIds.length ? `operation_semantic_reevaluations:id=${r.journalIds.join(',')}` : null,
+        });
+        continue;
+      }
       if (!DUPLICATE_ANOMALIES.has(inspection.anomaly ?? '')) continue;
       const cible = (inspection.observed as { targetOperationId?: number | null } | undefined)?.targetOperationId ?? null;
       const r = await reconsolidateRecurringDocuments(accountId, { operationIds: cible ? [id, cible] : [id] }, {
@@ -343,7 +385,9 @@ export const operationsIdentityCheck: CoherenceCheck = {
       });
       if (r.errors.length) throw new Error(r.errors.join(' ; ').slice(0, 400));
       out.set(id, {
+        // Doublon certain : décisions T3 établies rejouées ; plausible : NOUVELLE décision demandée à T3 (M3).
         called: true, service: 'reconsolidateRecurringDocuments', aiCalls: r.aiCalls,
+        reevaluation: inspection.anomaly === 'DUPLICATE_OPERATIONS_SUSPECTED' ? 'SEMANTIC_REEVALUATION_T3' : 'TECHNICAL_REBUILD',
         result: { anomaly: inspection.anomaly, marked: r.marked.length, consolidated: r.consolidated, changes: r.changes, operations: r.operations, skipped: r.skipped ?? null },
         rollbackRef: `business_operation_history:correlation_id=${ctx.correlationId}`,
         // Doublon seulement plausible : le verdict M3 arrive au passage T3 suivant (file existante).
@@ -353,3 +397,58 @@ export const operationsIdentityCheck: CoherenceCheck = {
     return out;
   },
 };
+
+/**
+ * Lot 87B (CODE-05, CODE-06) — signaux de réévaluation SÉMANTIQUE T3 d'un
+ * lot d'Opérations (lecture seule, sans IA) :
+ *   · réévaluation T3 déjà demandée et ouverte → AMBIGUOUS (en cours) ;
+ *   · réévaluation T3 impossible avec le contrat actuel (Opération à
+ *     plusieurs sources mise en cause par T4) → FINDING (demande IA
+ *     `87B-t3-identite-multi-operations`) ;
+ *   · verdict M3 « distinct » rendu par une autre version du prompt T3 que
+ *     l'active, que le réexamen T3 simulé rendrait de nouveau (Opérations
+ *     encore plausibles) → REPAIRABLE `IDENTITY_DECISION_OUTDATED`.
+ */
+async function semanticT3Signals(ctx: CheckContext, accountId: number, ids: readonly number[]): Promise<Map<number, Inspection>> {
+  const out = new Map<number, Inspection>();
+  if (!ids.length) return out;
+  const { semanticJournalReady } = await import('@/services/business-operations/semantic/store');
+  if (!(await semanticJournalReady(ctx.sql))) return out;
+  const journal = await rows(ctx.sql, `
+    SELECT DISTINCT ON (operation_id) operation_id, id, status, reason FROM operation_semantic_reevaluations
+     WHERE account_id = $1 AND scope = 'T3' AND operation_id = ANY($2::bigint[]) ORDER BY operation_id, id DESC`, [accountId, intArray(ids)]);
+  const { T3_IDENTITY_AI_CONTRACT } = await import('@/services/business-operations/semantic/contract');
+  for (const j of journal) {
+    const id = Number(j.operation_id);
+    if (j.status === 'PENDING') {
+      out.set(id, { verdict: 'AMBIGUOUS', anomaly: 'IDENTITY_REEVALUATION_PENDING', faultyLink: 'T3', detail: { journalId: Number(j.id), reason: j.reason }, inputHash: hashOf({ id, j: j.id }) });
+    } else if (j.status === 'UNAVAILABLE') {
+      out.set(id, {
+        verdict: 'FINDING', anomaly: 'IDENTITY_REEVALUATION_UNAVAILABLE', faultyLink: 'T3', expected: 'nouvelle décision d’identité T3', observed: j.reason,
+        detail: { journalId: Number(j.id), aiContract: T3_IDENTITY_AI_CONTRACT, repairChain: 'aucune séparation ni fusion par le code tant que T3 ne peut pas décider' },
+        inputHash: hashOf({ id, j: j.id, r: j.reason }),
+      });
+    }
+  }
+  const { operationMatchPromptStatus } = await import('@/services/business-operations/consolidation/m3');
+  const prompt = await operationMatchPromptStatus();
+  if (!prompt.available || !prompt.version) return out;
+  const suspects = idsOf(await rows(ctx.sql, `
+    SELECT o.id FROM business_operations o WHERE ${OPERATIONS_ACTIVES_SQL} AND o.id = ANY($2::bigint[]) AND ${VERDICT_DISTINCT_SQL('$3')} ORDER BY o.id`,
+  [accountId, intArray(ids.filter((x) => !out.has(x))), prompt.version]));
+  if (!suspects.length) return out;
+  const { previewOperationDuplicates } = await import('@/services/business-operations/consolidation/consolidator');
+  const sim = await previewOperationDuplicates(accountId, suspects, { semantic: true });
+  for (const id of suspects) {
+    const p = sim.get(id);
+    if (!p || p.level !== 'DISTINCT_VERDICT' || !p.plausibleOperationIds.length || p.m3PromptVersion === prompt.version) continue;
+    out.set(id, {
+      verdict: 'REPAIRABLE', anomaly: 'IDENTITY_DECISION_OUTDATED', faultyLink: 'T3',
+      expected: 'décision d’identité rendue par la version active du rapprochement sémantique T3',
+      observed: { operationId: id, plausible: p.plausibleOperationIds, verdictVersion: p.m3PromptVersion, activeVersion: prompt.version },
+      detail: { fileId: p.fileId, nature: 'SEMANTIC_REEVALUATION_T3', repairChain: 'nouvelle décision T3 (verdict historique écarté, plafonds M3), puis projection et T4 si l’Agenda en dépend' },
+      inputHash: hashOf({ id, v: p.m3PromptVersion, a: prompt.version, pl: p.plausibleOperationIds }),
+    });
+  }
+  return out;
+}

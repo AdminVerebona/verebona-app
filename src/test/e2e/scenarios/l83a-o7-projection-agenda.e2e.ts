@@ -97,10 +97,27 @@ scenario('L83A', 'Opérations v5 — O-7 : projection Agenda multi-éléments, p
     const visite = await make.agendaItem(c.compte, { title: 'Visite expert', startDate: '2026-03-21', assetIds: [c.maison.id] });
     const { attachAgendaItem } = await grouping();
     await g(c.compte, (ctx) => attachAgendaItem(ctx, { operationId: op, itemId: visite.id, origin: 'USER', reasonCode: 'E2E' }), c.compte.owner.id);
-    // Événement global saisi par l'utilisateur (même bien, même date) : il DEVIENT le principal (AC15).
+    // Événement global saisi par l'utilisateur (même bien, même date). Lot 87B (test corrigé, CODE-04) : « même bien +
+    // même date + intitulé » ne sont que des signaux — la projection ne le promeut plus d'office et ne crée pas de
+    // doublon : elle demande la décision à T4 (carte D14 en attendant). T4 (simulé) le désigne principal (AC15).
     const degat = await make.agendaItem(c.compte, { title: 'Dégât des eaux cuisine', startDate: '2026-03-12', assetIds: [c.maison.id] });
     const r = await projeter(c.compte, [op]);
-    expect(r).toMatchObject({ created: 0, linked: 1 });
+    expect(r).toMatchObject({ created: 0, linked: 0, representationRequired: [expect.objectContaining({ operationId: op, itemIds: [degat.id] })] });
+    const { reevaluateRepresentation } = await import('@/services/business-operations/semantic/orchestrator');
+    const out = await reevaluateRepresentation({
+      accountId: c.compte.id, operationId: op, trigger: 'MANUAL', extraItemIds: [degat.id], today: '2026-10-24',
+      deps: { decider: {
+        capability: async () => ({ available: true, version: 'simule-83a', reason: 'AVAILABLE' as const }),
+        decide: async ({ input }) => {
+          const ref = (t: string) => input.agendaItems.find((i) => i.title === t)!.ref;
+          return { traceId: null, output: { task: 'AGENDA_REPRESENTATION', outcome: 'DECIDED', reason: 'simulé', restorations: [], occurrences: [
+            { items: [ref('Dégât des eaux cuisine')], keep: ref('Dégât des eaux cuisine'), role: 'PRINCIPAL', confidence: 'certain', evidence: [], reason: 'événement global' },
+            { items: [ref('Visite expert')], keep: ref('Visite expert'), role: 'STEP', confidence: 'certain', evidence: [], reason: 'étape' },
+          ] } };
+        },
+      } },
+    });
+    expect(out).toMatchObject({ status: 'APPLIED' });
     expect(await element(degat.id)).toMatchObject({ op, role: 'PRINCIPAL', origin: 'T4', proj: null, date: '2026-03-12' });
     // AC34 : la visite n'est ni promue principal ni absorbée (même Opération ≠ doublon).
     expect(await element(visite.id)).toMatchObject({ op, role: 'RELATED', origin: 'USER', date: '2026-03-21' });
@@ -247,7 +264,7 @@ scenario('L83A', 'Opérations v5 — O-7 : projection Agenda multi-éléments, p
 
   // ══ 76H restreint ═════════════════════════════════════════════════════════
 
-  it('L83A-E07 — 76H (V-Q4) : deux représentations T4 de la MÊME intervention (identité T3) → une seule, principale ; une étape distincte rattachée reste', async () => {
+  it('L83A-E07 — 76H (V-Q4) : deux représentations T4 de la même intervention (identité T3) → lot 87B : décision T4 (jamais la projection) → une seule, principale ; une étape distincte rattachée reste', async () => {
     const c = await contexte();
     const facture = await make.assetFile(c.compte, { assetId: c.maison.id });
     const op = await operation(c.compte, { assetId: c.maison.id, fileId: facture.id, type: 'INTERVENTION', realized: '2026-03-12', label: 'Remplacement du ballon d’eau chaude' });
@@ -261,8 +278,27 @@ scenario('L83A', 'Opérations v5 — O-7 : projection Agenda multi-éléments, p
     const controle = await make.agendaItem(c.compte, { title: 'Contrôle après travaux', startDate: '2026-03-12', assetIds: [c.maison.id] });
     const { attachAgendaItem } = await grouping();
     await g(c.compte, (ctx) => attachAgendaItem(ctx, { operationId: op, itemId: controle.id, origin: 'USER', reasonCode: 'E2E' }), c.compte.owner.id);
+    // Lot 87B (test corrigé) : la projection n'absorbe plus (décision sémantique codée) — elle demande la décision à T4.
     const r = await projeter(c.compte, [op]);
-    expect(r.consolidated).toBe(1);
+    expect(r.representationRequired).toEqual([expect.objectContaining({ operationId: op, itemIds: expect.arrayContaining([reparation, entretien]) })]);
+    expect(r.representationRequired![0].itemIds).not.toContain(controle.id);
+    expect(await elements(c.compte)).toHaveLength(3);
+    // T4 (fournisseur simulé) : réparation et entretien = même occurrence ; le contrôle est une étape distincte.
+    const { reevaluateRepresentation } = await import('@/services/business-operations/semantic/orchestrator');
+    const out = await reevaluateRepresentation({
+      accountId: c.compte.id, operationId: op, trigger: 'MANUAL', extraItemIds: r.representationRequired![0].itemIds, today: '2026-10-24',
+      deps: { decider: {
+        capability: async () => ({ available: true, version: 'simule-83a', reason: 'AVAILABLE' as const }),
+        decide: async ({ input }) => {
+          const ref = (t: string) => input.agendaItems.find((i) => i.title === t)!.ref;
+          return { traceId: null, output: { task: 'AGENDA_REPRESENTATION', outcome: 'DECIDED', reason: 'simulé', restorations: [], occurrences: [
+            { items: [ref('Réparation — Maison'), ref('Entretien réalisé — Prestation')], keep: ref('Réparation — Maison'), role: 'PRINCIPAL', confidence: 'certain', evidence: [], reason: 'même intervention' },
+            { items: [ref('Contrôle après travaux')], keep: ref('Contrôle après travaux'), role: 'STEP', confidence: 'certain', evidence: [], reason: 'étape distincte' },
+          ] } };
+        },
+      } },
+    });
+    expect(out).toMatchObject({ status: 'APPLIED', aiCalls: 1 });
     const restants = await elements(c.compte);
     expect(restants.map((i) => i.id).sort((x, y) => x - y)).toEqual([reparation, controle.id].sort((x, y) => x - y));
     expect(await element(reparation)).toMatchObject({ op, role: 'PRINCIPAL' });

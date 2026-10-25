@@ -17,6 +17,7 @@
  *   not_proven     ouvert, date PASSÉE, aucune preuve de réalisation ni carte
  *                  en attente — une date passée ne prouve rien (U2).
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { resolveEventSemantics } from '@/services/agenda/agenda-functional-key';
 import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
@@ -135,8 +136,8 @@ export async function getCanonicalAgendaItem(accountId: number, itemId: number):
 
 /** Documents d'un élément : liens affichés et traces du service de liaison. */
 async function agendaSourcesOf(accountId: number, itemId: number): Promise<CanonicalAgendaItem['sources']> {
-  const rows = (await pgClient.unsafe(
-    `SELECT DISTINCT ON (f.id) f.id AS "fileId", coalesce(f.retained_title, f.original_filename, 'Document') AS title, s.role
+  const rows = (await withDocumentTitles(pgClient.unsafe(
+    `SELECT DISTINCT ON (f.id) f.id AS "fileId", ${documentTitleJsonSql('f')} AS title, s.role
        FROM (
          SELECT asset_file_id AS fid, NULL::text AS role FROM agenda_file_links WHERE agenda_item_id = $1
          UNION ALL
@@ -146,7 +147,7 @@ async function agendaSourcesOf(accountId: number, itemId: number): Promise<Canon
        JOIN asset_files f ON f.id = s.fid AND f.account_id = $2 AND f.deleted_at IS NULL
       ORDER BY f.id, s.role NULLS LAST`,
     [itemId, accountId] as never[],
-  ).catch(() => [])) as unknown as Array<{ fileId: number; title: string; role: string | null }>;
+  )).catch(() => [])) as unknown as Array<{ fileId: number; title: string; role: string | null }>;
   return rows;
 }
 

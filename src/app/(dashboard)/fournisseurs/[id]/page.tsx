@@ -25,7 +25,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { openDrawer } from '@/lib/drawers';
-import { DOCUMENT_TYPE_LABELS } from '@/lib/document-type-constants';
+import { userFacingLabel } from '@/lib/referential/user-facing-labels';
 import { SUPPLIERS_ROUTE } from '@/lib/supplier-routes';
 import type { SupplierDetail } from '@/services/suppliers/supplier-detail.service';
 
@@ -219,7 +219,7 @@ export default function SupplierPage() {
             <Row
               key={d.id}
               title={d.title}
-              subtitle={[d.documentType ? DOCUMENT_TYPE_LABELS[d.documentType] ?? d.documentType : null, d.documentDate ? formatDate(d.documentDate) : null, d.assetName].filter(Boolean).join(' · ')}
+              subtitle={[userFacingLabel(d.documentTypeLabel), d.documentDate ? formatDate(d.documentDate) : null, d.assetName].filter(Boolean).join(' · ')}
               onOpen={() => openDrawer({ kind: 'document', id: d.id })}
               unavailable={!d.available}
             />

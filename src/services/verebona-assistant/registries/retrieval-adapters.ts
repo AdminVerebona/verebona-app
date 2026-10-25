@@ -31,7 +31,9 @@
 import { db } from '@/db';
 import { assets, assetFiles, agendaItems, equipments, substructures, toProcessActions } from '@/db/schema';
 import { and, desc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
-import { documentCodesMatchingWord } from '@/lib/referential/document-codes';
+import { documentCodeLabel, documentCodesMatchingWord } from '@/lib/referential/document-codes';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
+import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 import type { DocumentAnalysisFilter } from '../core/query-terms';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { likePatterns, likePatternsTolerants, nearMatchRatio, normalizeWord, termMatchRatio, type QueryTerm } from '../core/query-terms';
@@ -668,6 +670,8 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
     .select({
       id: assetFiles.id, accountId: assetFiles.accountId,
       title: assetFiles.retainedTitle, filename: assetFiles.originalFilename,
+      // Lot 87D : sources du titre affiché (règle unique des vues : liste, fiche, recherche).
+      webLinkTitle: assetFiles.webLinkTitle, storageName: assetFiles.filename, s3Key: assetFiles.s3Key, publicId: assetFiles.publicId,
       documentType: assetFiles.documentType, documentTypeCode: assetFiles.documentTypeCode, documentDate: assetFiles.documentDate,
       supplier: assetFiles.supplier, description: assetFiles.description,
       assetId: assetFiles.assetId, linkedAssetId: assetFiles.linkedAssetId, assetName: assets.name,
@@ -686,7 +690,11 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
   const cible = typeof q.entityFilters.documentId === 'number' ? q.entityFilters.documentId : null;
   const titresIndices = (q.hints?.documentTitles ?? []).map(plainT).filter((t) => t.length >= 3);
   return lignes.flatMap((l) => {
-    const titre = l.title ?? l.filename ?? `Document ${l.id}`;
+    // Lot 87D : même titre que la liste, la fiche et la recherche globale.
+    const titre = documentTitleFromRecord({
+      retainedTitle: l.title, webLinkTitle: l.webLinkTitle, originalFilename: l.filename, filename: l.storageName,
+      s3Key: l.s3Key, publicId: l.publicId == null ? null : String(l.publicId),
+    }, `Document ${l.id}`);
     const bonus = (assetId !== null ? 0.05 : 0) + (cible === l.id ? 0.1 : 0)
       + (titresIndices.some((h) => plainT(`${titre} ${l.filename ?? ''}`).includes(h)) ? 0.05 : 0)
       + bonusRecence(l.documentDate) + bonusPeriode(q, l.documentDate);
@@ -704,7 +712,8 @@ async function searchDocumentsCanonical(q: RetrievalQuery): Promise<RetrievedSou
       id: `doc_${l.id}`,
       type: 'document' as const,
       title: titre,
-      content: extrait([l.documentTypeCode ?? l.documentType, l.supplier, l.documentDate, l.description]),
+      // Lot 87D : type en libellé français (Type V2 enregistré, sinon nature V1) — jamais un code.
+      content: extrait([documentTypeLabelOrNull(l.documentTypeCode) ?? (documentCodeLabel(l.documentType) || null), l.supplier, l.documentDate, l.description]),
       meta: {
         documentId: l.id, assetId: l.assetId ?? l.linkedAssetId ?? null, assetName: l.assetName ?? null,
         date: l.documentDate ?? null, analysisStatus: statut,

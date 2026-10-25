@@ -73,7 +73,10 @@ export async function GET(
     // statut fonctionnel calculé sur l'état réel (job de file, document).
     const { toUserFiles } = await import('@/services/ai/processing-status/processing-status.service');
     const [projete] = await toUserFiles([file]);
-    return NextResponse.json(projete, { status: 200 });
+    // Lot 87D : titre affiché calculé par la règle UNIQUE (même libellé que la
+    // liste, la recherche et les autres vues) — le tiroir l'affiche tel quel.
+    const { documentTitleFromRecord } = await import('@/lib/documents/document-title-source');
+    return NextResponse.json({ ...projete, displayTitle: documentTitleFromRecord(file, file.originalFilename ?? 'Document') }, { status: 200 });
   } catch (error) {
     // Refus de session (absente, invalide, révoquée…) ou vérification
     // impossible : 401/403/503 du contrat commun (APP-PERF-20), non

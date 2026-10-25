@@ -14,6 +14,7 @@
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
 import { useTargetState } from '../chain';
+import { activerContratQuestions } from '../t6-suggestions-v3';
 
 const modele = vi.hoisted(() => ({ texte: (fallback: string) => fallback, formulate: 0 }));
 
@@ -69,7 +70,7 @@ scenario('L75E-MASC', 'Lot 75E — mascotte : classificateur unique, aucun bloc 
     r.resetT6EvaluationState();
     (await import('@/services/home/mascot/mascot.service')).cancelPendingPregenerations();
   });
-  afterEach(async () => { (await import('@/services/home/mascot/mascot.service')).cancelPendingPregenerations(); });
+  afterEach(async () => { (await import('@/services/home/mascot/mascot.service')).cancelPendingPregenerations(); await activerContratQuestions(false); });
 
   const svc = () => import('@/services/home/mascot/mascot.service');
   const B = () => import('@/services/home/mascot/bubble');
@@ -104,6 +105,9 @@ scenario('L75E-MASC', 'Lot 75E — mascotte : classificateur unique, aucun bloc 
   });
 
   it('L75E-MASC-E2E-03 — cache historique porteur d’une variante (« Il y a deux sujets pour vous aujourd’hui, … ») : supprimé, renouvelé', async () => {
+    // Lot 87C : prompt porteur des questions (version simulée du contrat t6-suggestions-v3) — sans lui,
+    // aucune question n'est demandée et la bulle inchangée reprend ses textes figés (R8) sans appel.
+    await activerContratQuestions(true);
     const a = await garage();
     await pregen(a.id);
     await sql`UPDATE home_mascot_cache SET messages = (

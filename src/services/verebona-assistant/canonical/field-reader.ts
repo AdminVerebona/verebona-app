@@ -10,6 +10,7 @@
  * Tout est borné au compte : un bien d'un autre compte rend `null`.
  * Lecture seule — aucune écriture, aucun appel modèle.
  */
+import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { getCanonicalAssetState, type CanonicalAssetState, type CanonicalOrigin } from '@/services/canonical/asset-state';
 import { fieldTargetTypes, getField, resolveAlias, type CanonicalFieldDef } from '@/services/canonical/registry';
@@ -129,11 +130,12 @@ async function activeEvidence(accountId: number, assetId: number, def: Canonical
     if (!e) continue;
     let documentTitle: string | null = null;
     if (e.sourceType === 'document' && e.sourceId) {
+      // Lot 87D : titre par la règle unique des vues.
       const [d] = (await pgClient.unsafe(
-        `SELECT coalesce(retained_title, original_filename) AS t FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`,
+        `SELECT ${documentTitleColumnsSql('f')} FROM asset_files f WHERE f.id = $1 AND f.account_id = $2 AND f.deleted_at IS NULL`,
         [e.sourceId, accountId] as never[],
-      )) as unknown as Array<{ t: string | null }>;
-      documentTitle = d?.t ?? null;
+      )) as unknown as DocumentTitleColumns[];
+      documentTitle = d ? documentTitleOf(d) : null;
     }
     return {
       evidenceId: e.id,

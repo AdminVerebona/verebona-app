@@ -23,6 +23,7 @@
  *  ATP-FIX-17  échéance portée ou réglée par « À traiter » : aucune relance T6
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { decisionAction, fonde, masterV3 } from './fixtures/t6-suggestions-v3';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -421,38 +422,41 @@ describe('AC06 — suggestions T2 fondées sur des références structurées', (
   const ct = ligne(1, '2026-11-02', { title: 'Contrôle technique', assetId: 1 });
   const ramonage = ligne(2, '2027-03-01', { title: 'Ramonage', assetId: 1 });
   const assurance = ligne(3, '2026-11-05', { title: 'Assurance habitation', assetId: 1 });
-  const bundle = (structuredRefs = true) => Q.buildT6SuggestionContext({
+  // Lot 87C : D1 signalée avec une démarche identifiée par T6 et établie.
+  const bundle = () => Q.buildT6SuggestionContext({
     speech: 'Le contrôle technique est à prévoir pour le 2 novembre 2026.', attentionToday: true,
     state: { documentsTotal: 2, deadlinesUpcoming: 3, deadlinesSoon: 2 }, operations: 0,
     assets: [{ id: 1, name: 'Maison', documents: 2, deadlines: 2 }],
-    agenda: [ct, ramonage], excluded: [assurance], signaledIds: new Set([1]), today: TODAY, structuredRefs,
+    agenda: [ct, ramonage], excluded: [assurance], signaledIds: new Set([1]), today: TODAY,
     labelOf: (x) => x.title, formatDate: (d) => d,
+    grounds: new Map([[1, { decision: decisionAction('Prendre rendez-vous au centre agréé', true) }]]),
   });
 
   it('AC06 — sorties contradictoires : échéance écartée, rattachement inconnu ou incitation sur un sujet non signalé : écartées', () => {
     const b = bundle();
-    expect(b.context.schemaVersion).toBe('t6-suggestions-v2');
-    expect(b.context.nextDeadlines).toEqual([
+    expect(b.context.schemaVersion).toBe('t6-suggestions-v3');
+    expect(b.context.nextDeadlines).toMatchObject([
       { ref: 'D1', label: 'Contrôle technique', assetRef: 'A1', dateLabel: '2026-11-02', dateNature: 'confirmée', signaled: true },
       { ref: 'D2', label: 'Ramonage', assetRef: 'A1', dateLabel: '2027-03-01', dateNature: 'confirmée', signaled: false },
     ]);
     // Jamais l'échéance écartée ni un identifiant de base dans le contexte transmis.
-    expect(JSON.stringify(b.context)).not.toMatch(/Assurance|"id"|agendaItemId/);
+    expect(JSON.stringify(b.context)).not.toMatch(/Assurance|"id"|agendaItemId|fileId|factKey/);
     const v = Q.validateT6Suggestions([
-      { question: 'Comment préparer le renouvellement de l’assurance habitation ?', assetRef: null, deadlineRef: null, purpose: null },
-      { question: 'Que dois-je préparer pour le contrôle technique ?', assetRef: 'A1', deadlineRef: 'D1', purpose: 'PREPARE' },
-      { question: 'Que dois-je préparer pour le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'PREPARE' },
-      { question: 'Quand est prévu le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' },
-      { question: 'Quand est prévue la vidange ?', assetRef: null, deadlineRef: 'D9', purpose: 'CONSULT' },
-      { question: 'Le ramonage est-il bientôt dû ?', assetRef: null, deadlineRef: null, purpose: null },
-      { question: 'Quelles sont mes prochaines échéances ?', assetRef: null, deadlineRef: null, purpose: null },
+      fonde(b, 'Comment préparer le renouvellement de l’assurance habitation ?', ['ACC.DEADLINES']),
+      fonde(b, 'Que dois-je préparer pour le contrôle technique ?', ['D1', 'D1.ACTION'], { purpose: 'PREPARE', assetRef: 'A1' }),
+      fonde(b, 'Que dois-je préparer pour le ramonage ?', ['D2'], { purpose: 'PREPARE' }),
     ], b.assetIds, b);
-    expect(v.map((x) => x.question)).toEqual([
-      'Que dois-je préparer pour le contrôle technique ?', 'Quand est prévu le ramonage ?', 'Quelles sont mes prochaines échéances ?',
-    ]);
+    expect(v.map((x) => x.question)).toEqual(['Que dois-je préparer pour le contrôle technique ?']);
     expect(v[0]).toMatchObject({ deadlineRef: 'D1', purpose: 'PREPARE', assetId: 1 });
+    const w = Q.validateT6Suggestions([
+      fonde(b, 'Quand est prévu le ramonage ?', ['D2']),
+      fonde(b, 'Quand est prévue la vidange ?', ['D2'], { deadlineRef: 'D9' }),
+      fonde(b, 'Le ramonage est-il bientôt dû ?', ['ACC.DEADLINES']),
+    ], b.assetIds, b);
+    expect(w.map((x) => x.question)).toEqual(['Quand est prévu le ramonage ?']);
+    expect(Q.validateT6Suggestions([fonde(b, 'Quelles sont mes prochaines échéances ?', ['ACC.DEADLINES'])], b.assetIds, b)).toHaveLength(1);
     // Référence sans finalité : cohérence non établie.
-    expect(Q.validateT6Suggestions([{ question: 'Quand est prévu le ramonage ?', deadlineRef: 'D2' }], b.assetIds, b)).toEqual([]);
+    expect(Q.validateT6Suggestions([fonde(b, 'Quand est prévu le ramonage ?', ['D2'], { purpose: null })], b.assetIds, b)).toEqual([]);
   });
 
   it('AC06 — agrégats du compte : jamais fondés sur des échéances écartées', () => {
@@ -466,20 +470,19 @@ describe('AC06 — suggestions T2 fondées sur des références structurées', (
     // Consultation libre : l'existence d'échéances reste connue.
     expect(seuleEcartee.context.account.hasUpcomingDeadlines).toBe(true);
     expect(bundle().context.account.hasDeadlinesNext30Days).toBe(true);
+    // Lot 87C : seul un indicateur VRAI devient un fondement citable.
+    expect(seuleEcartee.context.accountRefs.map((x) => x.ref)).toEqual(['ACC.DOCUMENTS', 'ACC.DEADLINES']);
   });
 
-  it('AC06 — version du prompt sans références (R12 v1) : contexte inchangé, exclusion par libellé toujours appliquée', () => {
-    const b = bundle(false);
-    expect(b.context.schemaVersion).toBe('t6-suggestions-v1');
-    expect(b.context.nextDeadlines[0]).toEqual({ label: 'Contrôle technique', assetRef: 'A1', dateLabel: '2026-11-02', dateNature: 'confirmée' });
-    const v = Q.validateT6Suggestions([
-      { question: 'Comment préparer le renouvellement de l’assurance habitation ?', assetRef: null },
-      { question: 'Quand est prévu le ramonage ?', assetRef: null },
-    ], b.assetIds, b);
-    expect(v.map((x) => x.question)).toEqual(['Quand est prévu le ramonage ?']);
-    expect(Q.promptSupportsSuggestionRefs(null)).toBe(true);
-    expect(Q.promptSupportsSuggestionRefs(MASTER)).toBe(true);
-    expect(Q.promptSupportsSuggestionRefs('… {{SUGGESTION_CONTEXT}} … "assetRef":null …')).toBe(false);
+  it('AC06 — lot 87C : version du prompt sans le contrat des questions fondées (R12 v1 / v2) : aucune question publiée', async () => {
+    expect(Q.promptSupportsSuggestionGrounds(MASTER)).toBe(false);
+    expect(Q.promptSupportsSuggestionGrounds('… {{SUGGESTION_CONTEXT}} … "deadlineRef":null …')).toBe(false);
+    expect(Q.promptSupportsSuggestionGrounds(masterV3(MASTER))).toBe(true);
+    configText = 'MODE = {{MODE}} {{INPUT_JSON}} {{SUGGESTION_CONTEXT}} "deadlineRef"';
+    expect(await R.t6SuggestionGroundsAvailable()).toBe(false);
+    configText = masterV3(MASTER);
+    expect(await R.t6SuggestionGroundsAvailable()).toBe(true);
+    configText = null;
   });
 
   it('AC06 — sélection : écartées, reportées, refusées exclues ; signalées = retenues ; discours et blocs sans sujet écarté', async () => {
@@ -504,12 +507,44 @@ describe('AC06 — suggestions T2 fondées sur des références structurées', (
 
   it('AC06 — runner : questions revalidées avec les références COURANTES (génération et relecture du cache)', async () => {
     const run = lire('src/services/home/mascot/t6-runner.ts');
-    expect(run).toMatch(/validateT6Suggestions\(r\[0\]\.suggestions, bundle\.assetIds, bundle\)/);
+    expect(run).toMatch(/validateT6SuggestionsDetailed\(r\[0\]\.suggestions, bundle\.assetIds, bundle, \{ stored: true \}\)/);
     expect(run).toMatch(/p\.suggestions\.assetIds, p\.suggestions\)/);
-    expect(run).toMatch(/deadlineRef: x\.deadlineRef \?\? null, purpose: x\.purpose \?\? null/);
-    // R12 v2 livrée dans le texte du dépôt (activation BO requise), compatible v1.
+    expect(run).toMatch(/storedSuggestionOf/);
+    // R12 v2 livrée dans le texte du dépôt (références d'échéance) ; le contrat v3 attend l'équipe IA.
     expect(MASTER).toMatch(/"deadlineRef":null,"purpose":null/);
     expect(MASTER).toMatch(/"PREPARE"[^\n]*`signaled`/);
+  });
+});
+
+describe('L87C — fondements des questions réutilisant la décision T6 du passage (aucune collecte parallèle)', () => {
+  const fait = { id: 70, fileId: 9, extractionId: 3, key: 'notice_period', canonicalKey: 'notice_period', label: 'Préavis', value: '2 mois', confidence: 'certain', provenance: 'T1_EXTRACTION', excerpt: 'préavis de deux mois' };
+  const preuve = (): Evidence => ({ description: null, endDate: null, originFieldKey: 'notice_period', documents: [{ fileId: 9, title: 'Contrat Homiris', origin: true }], facts: [fait] });
+
+  it('L87C-U-GROUNDS — preuves et décision DÉJÀ lues : faits, documents, démarche établie seulement si une preuve concrète citée est disponible', async () => {
+    const r1 = ligne(1, '2026-11-02', { title: 'Fin de contrat Homiris' });
+    const e = preuve();
+    const G = await import('../t6-suggestion-grounds');
+    const lecturesPreuves = vi.fn(async () => new Map([[1, e]]));
+    const avecInstantane = evaluation(1, S.t6ContextFingerprint(r1, e), {
+      evidenceRefs: ['C1.fact1'], evidenceSnapshot: { version: 1, fingerprint: 'x', refs: [{ ref: 'C1.fact1', kind: 'DOCUMENT_FACT', fileId: 9, factId: 70, factKey: 'notice_period', status: 'PROVEN' }] },
+    });
+    const p = await preparer([r1], { assessments: async () => new Map([[1, avecInstantane]]), evidence: lecturesPreuves });
+    expect(lecturesPreuves).toHaveBeenCalledTimes(1);
+    expect(p.evidence?.get(1)).toBe(e);
+    const g = G.suggestionGroundsOf(p).get(1)!;
+    expect(g).toMatchObject({
+      facts: [{ fileId: 9, factKey: 'notice_period', label: 'Préavis', value: '2 mois', status: 'PROVEN' }],
+      documents: [{ fileId: 9, title: 'Contrat Homiris' }],
+      decision: { decision: 'SHOW_NOW', action: 'Prendre rendez-vous', actionEstablished: true },
+    });
+    // Décision fondée sur la seule date : démarche transmise, NON établie.
+    const surDate = await preparer([r1], { assessments: async () => new Map([[1, evaluation(1, S.t6ContextFingerprint(r1, e))]]), evidence: async () => new Map([[1, e]]) });
+    expect(G.suggestionGroundsOf(surDate).get(1)!.decision).toMatchObject({ actionEstablished: false });
+    // Décision caduque (contexte changé) : jamais transmise comme décision actuelle.
+    const caduque = await preparer([r1], { assessments: async () => new Map([[1, evaluation(1, 'v4:autre')]]), evidence: async () => new Map([[1, e]]) });
+    expect(G.suggestionGroundsOf(caduque).get(1)!.decision).toBeNull();
+    // Rappel informatif : aucune démarche.
+    expect(G.decisionInputOf({ ...avecInstantane, category: 'INFORMATION', actionNeeded: false, action: null }, true, e)).toMatchObject({ action: null, actionEstablished: false });
   });
 });
 

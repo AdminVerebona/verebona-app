@@ -2,7 +2,10 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { isReferenceOnlyTitle, refineDocumentTitle } from '../document-title';
+import { isReferenceOnlyTitle, planBusinessTitle, type TitleContext } from '../document-title';
+
+/** Lot 87D : l'ancien `refineDocumentTitle` (compatibilité 33C, sans appelant) est retiré — même règle via le moteur. */
+const refineDocumentTitle = (t: string | null, ctx: TitleContext) => planBusinessTitle(t, ctx).title ?? (t?.trim() || null);
 
 describe('titre réduit à une référence', () => {
   it.each(['Facture N° 2024-1187', 'Facture n°FA000123', 'FACTURE 12345', 'Facture', 'IMG_2031.jpg', 'scan.pdf', 'Devis #D-778', ''])(
@@ -13,8 +16,9 @@ describe('titre réduit à une référence', () => {
   );
 });
 
-// Lot 34E (moteur de titre v2) : le fournisseur et le mois sont des
-// discriminants utiles ajoutés au sujet ; la période suit « _ ».
+// Lot 34E (moteur de titre v2) : le fournisseur et la date sont des
+// discriminants utiles ajoutés au sujet. Lot 87D (règles v3) : séparateur
+// unique « — », date du document donnée AU JOUR (jamais un mois déduit).
 describe('reconstruction', () => {
   it('garde un titre déjà différenciant', () => {
     expect(refineDocumentTitle('Facture Béquille draisienne', { subjects: ['Autre'] })).toBe('Facture Béquille draisienne');
@@ -23,9 +27,9 @@ describe('reconstruction', () => {
     expect(refineDocumentTitle('Facture N° 2024-1187', { subjects: ['Béquille draisienne'], supplier: 'Décathlon' }))
       .toBe('Facture Béquille draisienne Décathlon');
   });
-  it('à défaut d’objet, le fournisseur ; à défaut, le mois', () => {
+  it('à défaut d’objet, le fournisseur ; à défaut, la date du document au jour', () => {
     expect(refineDocumentTitle('Facture N° 88', { subjects: [], supplier: 'Vélo Jean' })).toBe('Facture Vélo Jean');
-    expect(refineDocumentTitle('FA-2026-03', { typeCode: 'invoice', documentDate: '2026-03-14' })).toBe('Facture _ Mars 2026');
+    expect(refineDocumentTitle('FA-2026-03', { typeCode: 'invoice', documentDate: '2026-03-14' })).toBe('Facture — 14 mars 2026');
   });
   it('n’invente rien sans élément : le titre du modèle est conservé', () => {
     expect(refineDocumentTitle('Facture N° 88', {})).toBe('Facture N° 88');

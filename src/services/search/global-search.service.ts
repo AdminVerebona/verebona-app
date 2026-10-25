@@ -19,7 +19,8 @@
  * eligibilityReason, rank). Les rejets sont tracés (`debug`, et en journal
  * quand `SEARCH_TRACE=1`).
  */
-import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
+import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 import { pgClient } from '@/db';
 import { drawerHref } from '@/lib/drawers';
 import { getField } from '@/services/canonical/registry';
@@ -191,17 +192,42 @@ async function assetCandidates(accountId: number, q: ParsedQuery, mode: Awaited<
   })];
 }
 
+/**
+ * Lot 87D — libellé d'un document dans la recherche ET ses suggestions : la
+ * règle UNIQUE du titre affiché (`documentTitleOf`), la même que la liste et la
+ * fiche (aucun index ni libellé propre à la recherche : le titre enregistré
+ * est lu en direct).
+ */
+export function documentSearchLabel(row: DocumentTitleColumns): string {
+  return documentTitleOf(row, 'Document');
+}
+
+/**
+ * Lot 87D (ticket « type technique ») — sous-titre d'un document : bien
+ * associé, sinon libellé français du Type V2 enregistré ; jamais un code.
+ */
+export function documentSearchSublabel(row: { assetName?: unknown; documentTypeCode?: unknown }): string | undefined {
+  return str(row.assetName) ?? documentTypeLabelOrNull(str(row.documentTypeCode)) ?? undefined;
+}
+
+/** Références de facture indexées (données de nommage persistées, lot 87D). */
+function invoiceReferencesOf(basis: unknown): string[] {
+  const b = (typeof basis === 'string' ? (() => { try { return JSON.parse(basis); } catch { return null; } })() : basis) as { invoiceReferences?: unknown } | null;
+  return Array.isArray(b?.invoiceReferences) ? (b!.invoiceReferences as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+}
+
 async function documentCandidates(accountId: number, q: ParsedQuery, mode: Awaited<ReturnType<typeof searchExprMode>>): Promise<SearchCandidate[]> {
   const p = new Params();
   const acc = p.add(accountId);
+  // Lot 87D : numéro de facture recherchable (données de nommage persistées), même absent du titre.
   const cols = ['af.retained_title', 'af.web_link_title', 'af.original_filename', 'af.supplier', 'af.description', 'af.notes',
-    'af.document_type', 'af.document_type_code', 'af.extracted_text', 'a.name'];
+    'af.document_type', 'af.document_type_code', 'af.extracted_text', 'a.name', "(af.title_basis ->> 'invoiceReferences')"];
   const cond = anyTokenLike(mode, p, q, cols, ['af.retained_title', 'af.web_link_title', 'af.original_filename']);
   const snippets = contentSnippets(mode, p, q, 'af.extracted_text');
   const rows = (await pgClient.unsafe(
-    `SELECT af.id, af.retained_title AS "retainedTitle", af.web_link_title AS "webLinkTitle", af.original_filename AS "originalFilename",
-            af.filename, af.mime_type AS "mimeType", af.document_type AS "documentType", af.document_type_code AS "documentTypeCode",
-            af.supplier, af.description, af.notes, af.asset_id AS "assetId", a.name AS "assetName"${snippets ? `, ${snippets}` : ''}
+    `SELECT af.id, ${documentTitleColumnsSql('af')},
+            af.mime_type AS "mimeType", af.document_type AS "documentType", af.document_type_code AS "documentTypeCode",
+            af.supplier, af.description, af.notes, af.asset_id AS "assetId", a.name AS "assetName", af.title_basis AS "titleBasis"${snippets ? `, ${snippets}` : ''}
        FROM asset_files af
        LEFT JOIN assets a ON a.id = af.asset_id AND a.account_id = af.account_id
       WHERE af.account_id = ${acc}
@@ -214,16 +240,17 @@ async function documentCandidates(accountId: number, q: ParsedQuery, mode: Await
     p.values as never[],
   )) as unknown as Row[];
   return rows.map((r) => {
-    const label = displayDocumentTitle({ retainedTitle: str(r.retainedTitle), webLinkTitle: str(r.webLinkTitle), originalFilename: str(r.originalFilename), filename: str(r.filename) }, 'Document');
+    const label = documentSearchLabel(r);
     return {
       entityType: 'document' as const,
       entityId: Number(r.id),
       displayName: label,
       fields: {
-        title: [str(r.retainedTitle), str(r.webLinkTitle)],
-        originalFilename: str(r.originalFilename),
+        title: [str(r.titleRetained), str(r.titleWebLink)],
+        originalFilename: str(r.titleOriginal),
         documentType: [str(r.documentTypeCode), str(r.documentType)],
         supplier: str(r.supplier),
+        reference: invoiceReferencesOf(r.titleBasis),
         description: str(r.description),
         notes: str(r.notes),
         content: q.tokens.map((_, i) => str(r[`snip${i}`])),
@@ -231,7 +258,7 @@ async function documentCandidates(accountId: number, q: ParsedQuery, mode: Await
       },
       retrievalStrategy: 'sql.token_like',
       _label: label,
-      _sub: str(r.assetName) ?? str(r.documentType) ?? undefined,
+      _sub: documentSearchSublabel(r),
       _mime: str(r.mimeType) ?? undefined,
     } as SearchCandidate & { _label: string; _sub?: string; _mime?: string };
   });

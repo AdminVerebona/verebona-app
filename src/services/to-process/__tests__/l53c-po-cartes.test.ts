@@ -47,11 +47,13 @@ describe('PO-D14 — agenda : doute sur l\'événement à relier → carte « À
 
   it('PO-D14-01 deux événements aussi plausibles : aucune projection, aucun lien, l\'abstention porte les DEUX candidats et leur motif', () => {
     const r = plan([item({ id: 7, title: 'Entretien' }), item({ id: 8, title: 'Réparation' })]);
-    expect(r).toHaveLength(1);
+    // Lot 87B (test corrigé) : l'abstention est accompagnée de la demande de décision T4 (aucune écriture).
+    expect(r).toHaveLength(2);
     expect(r[0]).toMatchObject({ kind: 'ABSTAIN', key: 'INTERVENTION' });
+    expect(r[1]).toMatchObject({ kind: 'REPRESENTATION_REQUIRED', itemIds: [7, 8] });
     const c = (r[0] as { candidates: Array<{ itemId: number; reason: string }> }).candidates;
     expect(c.map((x) => x.itemId)).toEqual([7, 8]);
-    expect(c[0].reason).toContain('plusieurs événements équivalents');
+    expect(c[0].reason).toMatch(/plusieurs événements équivalents|signaux/);
     expect(r.some((a) => a.kind === 'LINK' || a.kind === 'CREATE' || a.kind === 'MARK_DONE')).toBe(false);
   });
 
@@ -62,7 +64,10 @@ describe('PO-D14 — agenda : doute sur l\'événement à relier → carte « À
     ] as never);
     expect(m.kind).toBe('probable');
     expect((m as { candidates: Array<{ item: { id: number } }> }).candidates.map((x) => x.item.id)).toEqual([2, 1]);
-    expect(plan([item({ id: 3, title: 'Entretien chaudière', businessType: 'maintenance' })])[0]).toMatchObject({ kind: 'LINK', itemId: 3 });
+    // Lot 87B (test corrigé) : « un certain unique reste relié » seulement sur PROVENANCE (document de l'intervention) ;
+    // même bien + type compatible + date proche → abstention, carte et décision T4 (jamais un lien d'office).
+    expect(plan([item({ id: 3, title: 'Entretien chaudière', businessType: 'maintenance', fileIds: [77] })])[0]).toMatchObject({ kind: 'LINK', itemId: 3 });
+    expect(plan([item({ id: 3, title: 'Entretien chaudière', businessType: 'maintenance' })])[0]).toMatchObject({ kind: 'ABSTAIN', itemId: 3 });
   });
 
   it('PO-D14-03 choix « nouvel événement » : création sans nouveau rapprochement ; une suppression de l\'utilisateur reste respectée', () => {

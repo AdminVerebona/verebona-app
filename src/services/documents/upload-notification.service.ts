@@ -26,7 +26,7 @@ import { and, eq, inArray, isNull, or, ne } from 'drizzle-orm';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { emit } from '@/lib/notifications';
-import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 
 /** Taille maximale d'un lot annoncé (au-delà, les identifiants sont ignorés). */
 export const MAX_UPLOAD_NOTIFICATION_IDS = 500;
@@ -67,6 +67,11 @@ export async function notifyUploadCompleted(input: UploadNotificationInput): Pro
       id: assetFiles.id,
       retainedTitle: assetFiles.retainedTitle,
       originalFilename: assetFiles.originalFilename,
+      // Lot 87D : mêmes sources du titre affiché que toutes les vues.
+      webLinkTitle: assetFiles.webLinkTitle,
+      filename: assetFiles.filename,
+      s3Key: assetFiles.s3Key,
+      publicId: assetFiles.publicId,
       isWebLink: assetFiles.isWebLink,
     })
     .from(assetFiles)
@@ -79,7 +84,7 @@ export async function notifyUploadCompleted(input: UploadNotificationInput): Pro
   if (rows.length === 0) return { emitted: false, count: 0 };
 
   const seul = rows.length === 1 ? rows[0] : null;
-  const titre = seul ? (displayDocumentTitle(seul, '') || undefined) : undefined;
+  const titre = seul ? (documentTitleFromRecord({ ...seul, publicId: seul.publicId == null ? null : String(seul.publicId) }, '') || undefined) : undefined;
 
   await emit({
     type: 'DOCUMENT_UPLOAD_COMPLETED',

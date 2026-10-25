@@ -43,7 +43,7 @@ import {
   toOptimizationOutput,
   type OptimizationOutput,
 } from '@/services/to-process/optimization-contract';
-import { getRubric, getDocumentType, isTypeCompatibleWithRubric } from '@/lib/referential/v2';
+import { getRubric, getDocumentType, isTypeCompatibleWithRubric, MISSING_TYPE_LABEL } from '@/lib/referential/v2';
 
 export interface RubricProposalInput {
   /**
@@ -118,7 +118,8 @@ export async function applyV2Classification(
     ? [
         {
           value: proposal.rubricCode,
-          label: getRubric(proposal.rubricCode)?.label ?? proposal.rubricCode,
+          // Lot 87D : libellé affiché sur la carte — jamais le code de la Rubrique.
+          label: getRubric(proposal.rubricCode)?.label ?? 'Rubrique à compléter',
           confidence: proposal.confidence,
           evidenceIds: input.evidenceIds,
           sourceContext: proposal.excerpt
@@ -181,7 +182,7 @@ export async function applyV2Classification(
       ? [
           {
             value: typeCandidate,
-            label: getDocumentType(typeCandidate)?.label ?? typeCandidate,
+            label: getDocumentType(typeCandidate)?.label ?? MISSING_TYPE_LABEL,
             confidence: proposal!.confidence,
             evidenceIds: input.evidenceIds,
           },

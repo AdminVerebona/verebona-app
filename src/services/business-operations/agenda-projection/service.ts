@@ -41,8 +41,8 @@ import { db, pgClient } from '@/db';
 import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { writeAgendaItem, type AgendaItemValues } from '@/services/agenda/write-agenda-item';
 import {
-  COMPATIBLE_BUSINESS_TYPES, PROJECTION_KIND_AGENDA, PROJECTION_ORIGIN, PROJECTION_ORIGIN_REF_TYPE, PROJECTION_ORIGIN_TYPE,
-  MATCH_DATE_TOLERANCE_DAYS, decideProjection, isTouched, parseProjectionFunctionalKey, planOperationProjection, projectionKeyOf,
+  PROJECTION_KIND_AGENDA, PROJECTION_ORIGIN, PROJECTION_ORIGIN_REF_TYPE, PROJECTION_ORIGIN_TYPE,
+  decideProjection, isTouched, parseProjectionFunctionalKey, planOperationProjection, projectionKeyOf,
   type AgendaItemSnapshot, type ItemSync, type OperationSnapshot, type ProjectionAction,
 } from './model';
 import type { AgendaEventNature } from '@/services/agenda/agenda-functional-key';
@@ -155,10 +155,14 @@ export interface ProjectionRunResult {
   suppressed: number;
   /** Lot 53 (D14) : cartes « À traiter » de rapprochement incertain posées / mises à jour. */
   matchCards?: number;
-  /** Lot 76H : représentations T4 équivalentes absorbées (journal 0591), éléments écartés par les gardes, intitulés précisés. */
-  consolidated?: number;
-  consolidationProtected?: number;
+  /** Lot 76H : intitulés précisés. (Lot 87B : la projection n'absorbe plus aucune représentation.) */
   retitled?: number;
+  /**
+   * Lot 87B (CODE-02, CODE-03) : Opérations dont la représentation Agenda
+   * demande une décision T4 (plusieurs représentations possibles) — aucune
+   * écriture ici ; l'exécutant de la file durable sollicite l'orchestration.
+   */
+  representationRequired?: Array<{ operationId: number; itemIds: number[]; reason: string }>;
   /** Lot 76H : plans calculés d'une simulation (`dryRun`), Opérations avec au moins une action. */
   plans?: PlannedOperation[];
   /** Lot 82D : rôles d'éléments posés ; liens propagés vers le principal (ajoutés + retirés). */
@@ -272,7 +276,30 @@ const itemColumnsSql = (journal: boolean) => sql.raw(`
                  WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
                    AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))` : ''}) AS pending_status,
   i.origin_field_key, i.operation_role, i.operation_role_origin,
-  (SELECT count(*)::int FROM agenda_item_sources s WHERE s.agenda_item_id = i.id) AS source_count`);
+  (SELECT count(*)::int FROM agenda_item_sources s WHERE s.agenda_item_id = i.id) AS source_count,
+  -- Lot 87B : décision de l'utilisateur sur un lien Document ↔ cet élément (une projection qui la porte ne cède pas sa place).
+  EXISTS (SELECT 1 FROM business_operation_match_decisions md WHERE md.account_id = i.account_id AND md.source_kind = 'AGENDA_FILE_LINK'
+           AND md.active AND split_part(md.source_entity_key, ':', 1) = i.id::text) AS user_link_decision,
+  -- Lot 87B : document d'origine détaché par l'utilisateur (l'origine n'est plus une provenance).
+  (i.origin_ref_type = 'asset_file' AND EXISTS (SELECT 1 FROM business_operation_match_decisions md
+           WHERE md.account_id = i.account_id AND md.source_kind = 'AGENDA_FILE_LINK' AND md.decision = 'REJECTED' AND md.active
+             AND md.source_entity_key = i.id::text || ':' || i.origin_ref_id::text)) AS origin_link_rejected,
+  -- Lot 87B : Opérations dont cet élément est la SOURCE exacte — source AGENDA établie par T3 (47B), ou date
+  -- d'acquisition de la fiche recopiée de cet élément (D-13, journal canonical_field_writes) puis consolidée par T3.
+  COALESCE((SELECT array_agg(DISTINCT x.op) FROM (
+             SELECT s.operation_id AS op FROM business_operation_sources s
+              WHERE s.account_id = i.account_id AND s.active AND s.source_kind = 'AGENDA' AND s.source_entity_key = i.id::text
+             UNION
+             SELECT s.operation_id FROM business_operation_sources s
+              WHERE s.account_id = i.account_id AND s.active AND s.source_kind = 'ASSET_DATA' AND s.locator->>'nature' = 'ACQUISITION'
+                AND (SELECT w.source_type = 'agenda_item' AND w.source_id = i.id::text FROM canonical_field_writes w
+                      WHERE w.account_id = i.account_id AND w.asset_id::text = s.source_entity_key AND w.canonical_key = 'acquisitionDate'
+                        AND w.outcome = 'written' AND NOT w.dry_run ORDER BY w.id DESC LIMIT 1)) x), '{}') AS agenda_source_ops,
+  -- Lot 87B : unique Opération active dont le document d'origine de l'élément est une source (provenance exacte).
+  (SELECT CASE WHEN count(DISTINCT s.operation_id) = 1 THEN min(s.operation_id) END FROM business_operation_sources s
+     JOIN business_operations so ON so.id = s.operation_id AND so.invalidated_at IS NULL AND so.merged_into_operation_id IS NULL
+    WHERE i.origin_ref_type = 'asset_file' AND s.account_id = i.account_id AND s.active AND s.source_kind = 'DOCUMENT'
+      AND s.source_entity_key = i.origin_ref_id::text) AS origin_sole_op`);
 
 /**
  * Colonnes d'un élément lu par la projection. Lot 76H : un élément dont la
@@ -309,6 +336,10 @@ function toItem(x: Row): AgendaItemSnapshot {
     sourceCount: Number(x.source_count ?? 0),
     operationRole: (txt(x.operation_role) as 'PRINCIPAL' | 'RELATED' | null),
     operationRoleOrigin: txt(x.operation_role_origin),
+    userLinkDecision: x.user_link_decision === true,
+    originLinkRejected: x.origin_link_rejected === true,
+    agendaSourceOperationIds: nums(x.agenda_source_ops),
+    originSoleOperationId: x.origin_sole_op === null || x.origin_sole_op === undefined ? null : Number(x.origin_sole_op),
   };
 }
 
@@ -528,18 +559,10 @@ async function applyAction(
       if (await attachProjected(op, a.itemId, a.role, opts.correlationId, 'T4_PROJECTION_ROLE')) { res.roles = (res.roles ?? 0) + 1; res.changes++; }
       return null;
     }
-    case 'CONSOLIDATE': {
-      await garde('consolidation des représentations');
-      const { consolidateAgendaRepresentations } = await import('./consolidation');
-      const r = await consolidateAgendaRepresentations({
-        accountId, operationId: op.id, principalId: a.principalId, absorbedIds: a.absorbedIds, linkPrincipal: a.linkPrincipal,
-        reason: a.reason, origin: opts.runId ? 'REPRISE' : 'PROJECTION', runId: opts.runId ?? null, correlationId: opts.correlationId,
-      });
-      if (r.linked) { res.linked++; res.changes++; }
-      if (r.absorbed.length) { res.consolidated = (res.consolidated ?? 0) + r.absorbed.length; res.changes += r.absorbed.length; }
-      if (r.protectedIds.length) res.consolidationProtected = (res.consolidationProtected ?? 0) + r.protectedIds.length;
+    case 'REPRESENTATION_REQUIRED':
+      // Lot 87B : aucune écriture — la demande de décision T4 est rendue à l'appelant (file durable : `queue.ts`).
+      (res.representationRequired ??= []).push({ operationId: op.id, itemIds: a.itemIds, reason: a.reason });
       return null;
-    }
     case 'RETITLE': {
       await garde('intitulé précis');
       const { retitleAgendaItem } = await import('./consolidation');
@@ -695,6 +718,9 @@ async function projectIds(
   const linked = await loadLinkedItems(accountId, ops.map((o) => o.id));
   const suppressions = await loadSuppressions(ops.map((o) => o.id));
   const retraits = await loadPrincipalWithdrawals(accountId, ops.map((o) => o.id));
+  // Lot 87B (CODE-03, CODE-11) : rôles donnés par la dernière décision T4 appliquée (mémoire de convergence).
+  const { loadT4Roles } = await import('../semantic/store');
+  const rolesT4 = await loadT4Roles(pgClient, accountId, ops.map((o) => o.id));
   const actifs = ops.filter((o) => o.active);
   const candidates = await loadCandidates(accountId, actifs.flatMap((o) => o.assetIds), actifs.flatMap((o) => o.documentFileIds));
   await markCoveringOperations(accountId, [...linked, ...candidates]);
@@ -722,10 +748,12 @@ async function projectIds(
       statusCardItems: cards,
       forceCreate: forcer.has(op.id),
       principalWithdrawn: retraits.has(op.id),
+      t4Roles: rolesT4.get(op.id),
     });
     for (const action of plan) {
       if (action.kind === 'LINK') taken.add(action.itemId);
-      if (action.kind === 'CONSOLIDATE') for (const id of [action.principalId, ...action.absorbedIds]) taken.add(id);
+      // Lot 87B : une demande de décision T4 ne RÉSERVE aucun élément (rien n'est rattaché) : une autre Opération du
+      // même document les voit encore comme candidats (et s'abstient de même) — jamais une projection en doublon.
       if (action.kind === 'ABSTAIN' && action.candidates?.length && action.key && decision.kind === 'PROJECT' && op.assetIds.length) {
         besoins.push({
           operationId: op.id, key: action.key, assetId: op.assetIds[0],
@@ -733,7 +761,10 @@ async function projectIds(
           candidates: action.candidates, fileIds: op.documentFileIds,
         });
       }
-      if (opts.dryRun) continue;
+      if (opts.dryRun) {
+        if (action.kind === 'REPRESENTATION_REQUIRED') (res.representationRequired ??= []).push({ operationId: op.id, itemIds: action.itemIds, reason: action.reason });
+        continue;
+      }
       const role = decision.kind === 'PROJECT' ? projectionRoleOf(decision.desired.key) : 'RELATED';
       const created = await applyAction(op, action, res, { beforeWrite, correlationId, runId: opts.runId ?? null, role, dateCards });
       if (created !== null) taken.add(created);
@@ -741,7 +772,7 @@ async function projectIds(
     // Lot 82D (CDC v5 §7.1, P4) : documents de l'Opération propagés vers son principal (idempotent) —
     // seulement pour une Opération qui a (ou vient de recevoir) des éléments d'agenda.
     const representee = linked.some((i) => i.businessOperationId === op.id)
-      || plan.some((a) => a.kind === 'CREATE' || a.kind === 'LINK' || a.kind === 'CONSOLIDATE' || a.kind === 'ROLE');
+      || plan.some((a) => a.kind === 'CREATE' || a.kind === 'LINK' || a.kind === 'ROLE');
     if (!opts.dryRun && representee) {
       const { recomputePrincipal } = await import('../grouping/service');
       const r = await grouping(accountId, correlationId, (ctx) => recomputePrincipal(ctx, op.id));
@@ -817,52 +848,20 @@ export async function recordAgendaProjectionSuppression(
   return { operationId, key };
 }
 
-// ── Garde T4 : événement déjà représenté par une Opération ─────────────────
-
-/**
- * Un événement d'agenda lié à une Opération représente-t-il déjà ce que T4
- * s'apprête à créer depuis un document (même bien, date à ±3 jours, même
- * document source de l'Opération ou même type métier compatible) ? Évite le
- * doublon quand la projection est passée AVANT T4 (C16.1, B16 « T4 vérifie
- * toujours l'existence d'un événement lié ou équivalent avant création »).
- * Rend l'élément équivalent, ou null. Ne lève jamais.
- */
-export async function findOperationAgendaEquivalent(p: {
-  accountId: number; assetId: number; date: string; businessType: string | null; sourceFileId: number | null;
-}): Promise<number | null> {
-  try {
-    if (!p.date || !/^\d{4}-\d{2}-\d{2}$/.test(p.date)) return null;
-    if (!p.sourceFileId && !p.businessType) return null;
-    const types = p.businessType
-      ? Object.entries(COMPATIBLE_BUSINESS_TYPES).filter(([, bts]) => bts?.includes(p.businessType!)).map(([t]) => t)
-      : Object.keys(COMPATIBLE_BUSINESS_TYPES);
-    if (!types.length) return null;
-    if (!(await agendaFunctionalColumnsReady())) return null;
-    const [r] = await rows<{ id: number }>(db, sql`
-      SELECT i.id FROM agenda_items i
-        JOIN agenda_asset_links l ON l.agenda_item_id = i.id AND l.asset_id = ${p.assetId}
-        JOIN business_operations o ON o.id = i.business_operation_id AND o.account_id = i.account_id
-             AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
-       WHERE i.account_id = ${p.accountId}
-         AND i.start_date BETWEEN (${p.date}::date - ${MATCH_DATE_TOLERANCE_DAYS}::int) AND (${p.date}::date + ${MATCH_DATE_TOLERANCE_DAYS}::int)
-         AND o.type_code = ANY(${`{${types.join(',')}}`}::text[])
-         AND (${p.sourceFileId ? sql`(o.type_code <> 'INTERVENTION' AND EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = o.id AND s.active
-                    AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = ${String(p.sourceFileId)}))
-              -- Lot 76H : une intervention n'est « la même » que si T3 a consolidé
-              -- TOUTE la preuve d'intervention du document dans cette Opération.
-              OR (o.type_code = 'INTERVENTION' AND ${p.sourceFileId}::int = ANY(${EXCLUSIVE_FILES_SQL}))` : sql`FALSE`}
-              OR (${p.businessType}::text IS NOT NULL AND i.business_type = ${p.businessType}::text))
-       ORDER BY (i.business_operation_id IS NOT NULL AND i.projection_origin IS NULL) DESC, i.id LIMIT 1`);
-    return r ? Number(r.id) : null;
-  } catch (e) {
-    console.error('[t4-projection] contrôle d\'équivalence :', (e as Error).message);
-    return null;
-  }
-}
+// ── Lot 87B : garde T4 « événement déjà représenté par une Opération » RETIRÉE ─
+//
+// `findOperationAgendaEquivalent` empêchait T4 de créer l'événement d'un document
+// quand un élément lié à une Opération existait sur le même bien à ±3 jours (même
+// document source ou même type métier) — une FUSION décidée par le code (CODE-04 :
+// même bien + catégorie + date proche). Désormais T4 crée l'événement de son
+// document ; la projection rattache l'unique représentation par provenance, cède sa
+// propre projection technique, ou demande la décision T4 multi-événements
+// (`REPRESENTATION_REQUIRED`) quand plusieurs représentations sont possibles.
 
 /**
  * Lot 76H (§3.3) — un élément automatique vient d'être créé depuis le document
- * `sourceFileId` : si ce document prouve une intervention ACTIVE, la
+ * `sourceFileId` : si ce document prouve une intervention ACTIVE (lot 87B : ou un
+ * sinistre, un achat, une cession), la
  * projection de cette Opération est demandée (file durable existante,
  * dédoublonnée par compte) pour faire converger les représentations créées
  * avant, pendant ou après la consolidation T3 — quel que soit l'ordre
@@ -875,7 +874,7 @@ export async function requestProjectionForDocument(accountId: number, sourceFile
       SELECT DISTINCT o.id FROM business_operation_sources s
         JOIN business_operations o ON o.id = s.operation_id AND o.account_id = s.account_id
        WHERE s.account_id = ${accountId} AND s.active AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = ${String(sourceFileId)}
-         AND o.type_code = 'INTERVENTION' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`);
+         AND o.type_code IN ('INTERVENTION', 'CLAIM', 'ACQUISITION', 'DISPOSAL') AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`);
     const ids = r.map((x) => Number(x.id));
     if (!ids.length) return [];
     const { requestAgendaProjection } = await import('./queue');

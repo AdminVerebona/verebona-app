@@ -343,6 +343,9 @@ export async function listDocumentsGrouped(
         webLinkTitle: assetFiles.webLinkTitle,
         originalFilename: assetFiles.originalFilename,
         fileName: assetFiles.filename,
+        // Lot 87D : mêmes sources du titre affiché que toutes les vues.
+        s3Key: assetFiles.s3Key,
+        publicId: assetFiles.publicId,
         documentType: assetFiles.documentType,
         retainedFunctionCode: assetFiles.retainedFunctionCode,
         typeLabel: documentTypes.label,

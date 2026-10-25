@@ -5,7 +5,7 @@ import { documentTypeDisplayLabel } from '@/lib/referential/v2';
 import { eq, and, isNull, or, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
-import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import { equipmentInAccount } from '@/services/security/account-ownership';
 
 // GET /api/equipments/[id]/documents — documents linked to an equipment
@@ -38,6 +38,9 @@ export async function GET(
         fileName: assetFiles.filename,
         originalFilename: assetFiles.originalFilename,
         retainedTitle: assetFiles.retainedTitle,
+        // Lot 87D : mêmes sources du titre affiché que toutes les vues.
+        webLinkTitle: assetFiles.webLinkTitle,
+        s3Key: assetFiles.s3Key,
         documentType: assetFiles.documentType,
         retainedFunctionCode: assetFiles.retainedFunctionCode,
         documentTypeCode: assetFiles.documentTypeCode,
@@ -67,7 +70,7 @@ export async function GET(
     const documents = rows.map(doc => ({
       id: doc.id,
       publicId: doc.publicId,
-      title: displayDocumentTitle(doc, 'Document'),
+      title: documentTitleFromRecord({ ...doc, filename: doc.fileName, publicId: doc.publicId == null ? null : String(doc.publicId) }, 'Document'),
       documentType: doc.retainedFunctionCode ?? doc.documentType,
       // Lot 86E (ticket §5) : libellé du Type V2 ENREGISTRÉ, comme « Mes
       // documents » — plus le code V1 (« BON_COMMANDE » brut, « Autre »).

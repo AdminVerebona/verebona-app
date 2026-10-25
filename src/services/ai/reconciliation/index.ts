@@ -26,7 +26,7 @@ import { enqueueT3ForAnalyzedAsset, registerT3SweepStarter, t3JobHandler } from 
 import {
   registerDocumentAssetT3, requestDocumentAssetResolution, startDocumentSweep, t1CandidatesOf,
 } from './document-asset/queue';
-import { registerDocumentTitleT3, startDocumentTitleSweep } from './document-title-sweep';
+import { registerDocumentTitleT3 } from './document-title-sweep';
 import {
   onDocumentAnalyzedForOperations, registerBusinessOperationsT3, startOperationsSweep,
 } from '@/services/business-operations/consolidation/queue';
@@ -59,11 +59,12 @@ export function registerReconciliationHandlers(): void {
   // sources documentaires de T3 DOCUMENT_ASSET (base seulement, jamais le fichier).
   registerSourceUnitProviders();
   registerT3SweepStarter('document_asset', ({ cycleId, triggerCode, guard }) => startDocumentSweep({ cycleId, triggerCode, guard }));
-  // Lot 33C — rattrapage des titres non conformes (« <uuid>.pdf ») des
-  // documents analysés : contrôle indépendant des autres traitements, pages
-  // bornées ouvertes par la même racine planifiée, sans relancer T1.
+  // Lot 33C — rattrapage des titres non conformes. Lot 87D (C-Q9) : le
+  // balayage horaire paginé des titres est RETIRÉ — la reprise du stock passe
+  // par le contrôle de cohérence COH-DOC-TITLES (campagne quotidienne et
+  // contrôles ciblés), par le même service de nommage. La sorte de travail
+  // reste enregistrée pour clore sans effet une page déjà en file.
   registerDocumentTitleT3();
-  registerT3SweepStarter('document_title', ({ cycleId, triggerCode, guard }) => startDocumentTitleSweep({ cycleId, triggerCode, guard }));
   // Lot 41 (CDC Opérations V1 C4, O3a) — consolidation T3 DÉTERMINISTE des
   // candidats T1 en Opérations : sorte `business_operations` (un travail par
   // compte, sérialisé par le verrou du compte) et balayage horaire des seuls

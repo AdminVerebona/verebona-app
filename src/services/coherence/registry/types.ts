@@ -78,6 +78,13 @@ export interface RepairResult {
    * tentative (REPAIRED si cohérent, INEFFECTIVE sinon) — C-Q7.
    */
   pending?: boolean;
+  /**
+   * Lot 87B (CODE-05, CODE-06) : NATURE de la réparation — reconstruction
+   * technique (mêmes décisions rejouées par le service métier) ou NOUVELLE
+   * décision sémantique demandée à T3 (identité d'Opération) / T4
+   * (représentation Agenda). Journalisée (`coherence_repairs.reevaluation_kind`).
+   */
+  reevaluation?: 'TECHNICAL_REBUILD' | 'SEMANTIC_REEVALUATION_T3' | 'SEMANTIC_REEVALUATION_T4';
 }
 
 /**
@@ -176,6 +183,13 @@ export interface CoherenceCheck {
    * « persistants » (les échecs de réparation et erreurs restent signalés).
    */
   externalSupervision?: string;
+  /**
+   * Lot 87B (CODE-05) : réévaluations SÉMANTIQUES que ce contrôle peut
+   * demander quand une décision historique est suspecte — `T3` (identité
+   * d'une Opération), `T4` (représentation Agenda). Absent : le contrôle ne
+   * fait que des reconstructions techniques (ou des constats).
+   */
+  semanticReevaluation?: ReadonlyArray<'T3' | 'T4'>;
   /** Objets du compte, ordonnés par identifiant croissant, après `afterId`. */
   listObjects?(ctx: CheckContext, accountId: number, afterId: number, limit: number): Promise<number[]>;
   /** Objets du compte touchés par un événement (contrôle ciblé). */

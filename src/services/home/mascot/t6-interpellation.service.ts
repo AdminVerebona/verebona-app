@@ -18,6 +18,7 @@
  * n'efface jamais les préférences, et des préférences illisibles ne sont
  * jamais prises pour une absence de refus (aucun sujet réintroduit).
  */
+import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import type { MascotAgendaRow, MascotDecidedAgenda, MascotRawData } from './signals';
 import { EXT_ACTION_LOOKBACK_DAYS, extActionOccurrenceKey, formatDateFr, roleOf } from './signals';
@@ -117,7 +118,7 @@ export async function loadT6Evidence(accountId: number, ids: readonly number[]):
   }
   const docs = await rows(
     `SELECT d.agenda_item_id, f.id AS file_id, bool_or(d.origin) AS origin,
-            COALESCE(NULLIF(f.retained_title, ''), NULLIF(f.original_filename, ''), f.filename) AS title
+            ${documentTitleColumnsSql('f')}
        FROM (SELECT l.agenda_item_id, l.asset_file_id AS file_id, FALSE AS origin
                FROM agenda_file_links l JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $1
               WHERE l.agenda_item_id = ANY($2::int[])
@@ -125,14 +126,14 @@ export async function loadT6Evidence(accountId: number, ids: readonly number[]):
              SELECT i.id, i.origin_ref_id, TRUE FROM agenda_items i
               WHERE i.account_id = $1 AND i.id = ANY($2::int[]) AND i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL) d
        JOIN asset_files f ON f.id = d.file_id AND f.account_id = $1 AND f.deleted_at IS NULL
-      GROUP BY d.agenda_item_id, f.id, title`,
+      GROUP BY d.agenda_item_id, f.id`,
     [accountId, ids],
   );
   const fichiers = new Set<number>();
   for (const x of docs) {
     const e = out.get(Number(x.agenda_item_id));
     if (!e) continue;
-    e.documents.push({ fileId: Number(x.file_id), title: String(x.title ?? 'Document').slice(0, 120), origin: x.origin === true });
+    e.documents.push({ fileId: Number(x.file_id), title: documentTitleOf(x).slice(0, 120), origin: x.origin === true });
     fichiers.add(Number(x.file_id));
   }
   if (fichiers.size === 0) return out;
@@ -836,6 +837,13 @@ export interface T6Preparation {
   runStates?: Map<number, T6EffectiveRunState> | null;
   /** Lot 78C : avancement des évaluations éligibles (pré-génération, rafraîchissement, reporting). */
   evaluationProgress?: T6EvaluationProgress | null;
+  /**
+   * Lot 87C : preuves canoniques lues par ce passage (`loadT6Evidence` :
+   * description, documents liés, faits pertinents) — réutilisées, sans
+   * relecture, par les fondements des questions suggérées. `null` : lecture
+   * en échec (aucun fondement documentaire transmis).
+   */
+  evidence?: ReadonlyMap<number, T6ItemEvidence> | null;
 }
 
 /** Lot 78C — avancement des évaluations éligibles après ce passage. */
@@ -1336,6 +1344,8 @@ export async function prepareT6Interpellation(
     thresholdDays, aiCapable, shown, decisions, notInterpellated, userSilenced, discarded, bundle, degraded, evaluation,
     failedSources: echecs, pendingAssessments, examined, selectionBacklog: p.raw.t6AgendaBacklog === true,
     evaluationSignature: evaluationConfig?.signature ?? null, rebased, runStates, evaluationProgress,
+    // Lot 87C : preuves DÉJÀ lues pour la décision, réutilisées par les fondements des questions suggérées.
+    evidence: preuvesR.ok ? preuvesR.v : null,
   };
 }
 
@@ -1462,10 +1472,21 @@ export interface T6FormulateTrace {
   fallbackSubjects?: number;
   /** État de présentation retenu (`MascotPresentationState.kind`). */
   presentation: string | null;
+  /**
+   * Lot 87C : questions suggérées du passage — prompt compatible ou non avec
+   * le contrat des questions fondées, origine (génération, cache), nombres
+   * produits / acceptés / rejetés / retirés et motifs structurés. Aucune
+   * question ni donnée personnelle. Absent ou null : aucune question demandée.
+   */
+  suggestions?: {
+    supported: boolean; contract: string | null; source: 'generated' | 'cache' | 'none';
+    produced: number; accepted: number; rejected: number; invalidated: number; reasons: Record<string, number>;
+  } | null;
 }
 
 /** Lignes FORMULATE du rapport (pure) : sujets transmis et affichés, secours. */
 export function t6FormulateEntries(f: T6FormulateTrace): ReportEntry[] {
+  const q = f.suggestions ?? null;
   return [{
     section: 'FORMULATE',
     fieldKey: 'formulate', label: 'Formulation (MODE=FORMULATE)',
@@ -1480,7 +1501,18 @@ export function t6FormulateEntries(f: T6FormulateTrace): ReportEntry[] {
     reason: f.source === 'deterministic' ? 'Aucun sujet à formuler : message déterministe de l’état de présentation.'
       : f.source === 'fallback' ? 'Texte de secours affiché (formulation indisponible, en cours ou rejetée).'
         : 'Formulation T6 validée affichée.',
-  }];
+  }, ...(q ? [{
+    // Lot 87C : une génération « validée » ne masque jamais les questions rejetées.
+    section: 'FORMULATE',
+    fieldKey: 'suggestions', label: 'Questions suggérées (contrat des questions fondées)',
+    value: { ...q },
+    recordStatus: !q.supported ? 'PROMPT_UNSUPPORTED' : q.rejected > 0 || q.invalidated > 0 ? 'PARTIAL' : q.accepted > 0 ? 'ACCEPTED' : 'NONE',
+    writeResult: 'NOT_WRITTEN' as const,
+    reasonCode: !q.supported ? 'PROMPT_UNSUPPORTED' : Object.keys(q.reasons).sort().join(',') || null,
+    reason: !q.supported
+      ? 'Prompt maître effectif sans le contrat des questions fondées : aucune question publiée.'
+      : `${q.accepted} question(s) affichée(s), ${q.rejected} rejetée(s), ${q.invalidated} retirée(s) — aucune question n’est une anomalie.`,
+  }] : [])];
 }
 
 export async function writeT6InterpellationReport(p: {
@@ -1519,6 +1551,11 @@ export async function writeT6InterpellationReport(p: {
         // Lot 61 : écarts IA / serveur, sujets transmis à FORMULATE et affichés.
         divergences: p.prep.decisions.filter((d) => d.aiDecision != null && d.aiDecision !== d.decision).length,
         formulateTransmitted: p.formulate?.transmitted.length ?? 0, displayed: p.formulate?.displayed.length ?? 0,
+        // Lot 87C : questions suggérées produites, acceptées, rejetées, retirées (fondements devenus invalides).
+        ...(p.formulate?.suggestions ? {
+          suggestionsProduced: p.formulate.suggestions.produced, suggestionsAccepted: p.formulate.suggestions.accepted,
+          suggestionsRejected: p.formulate.suggestions.rejected, suggestionsInvalidated: p.formulate.suggestions.invalidated,
+        } : {}),
         // Lot 71G : décisions provisoires (non évaluées, indisponibles) séparées des décisions définitives.
         provisional: p.prep.decisions.filter((d) => T6_PROVISIONAL_CODES.has(d.code)).length,
         finalDecisions: p.prep.decisions.filter((d) => !T6_PROVISIONAL_CODES.has(d.code)).length,
@@ -1556,6 +1593,8 @@ export async function writeT6InterpellationReport(p: {
         { step: 'assessment_request', status: p.prep.bundle ? 'OK' : 'SKIPPED', detail: { mode: 'EVALUATE', candidates: p.prep.bundle?.refs.size ?? 0 } },
         { step: 'formulate', status: p.formulate ? 'OK' : 'SKIPPED', detail: p.formulate ? {
           mode: 'FORMULATE', promptVersion: p.formulate.promptVersion, contract: p.formulate.contract, source: p.formulate.source, status: p.formulate.status,
+          // Lot 87C : contrat des questions et issue (aucune question n'est pas un échec).
+          suggestions: p.formulate.suggestions ?? null,
         } : null },
       ],
       sources: { thresholdDays: p.prep.thresholdDays, aiCapable: p.prep.aiCapable, userPreferences: p.userId != null, evaluation: p.prep.evaluation },

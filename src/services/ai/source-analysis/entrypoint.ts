@@ -46,6 +46,9 @@ import { REQUEUE_ORIGIN_SUFFIX } from './failure-policy';
 import { isCostCapReached } from '../gateway/errors';
 import { markAnalysisVisibility, normalizeProcessingVisibility, type ProcessingVisibility } from '../processing-status/processing-visibility';
 import { currentBusinessExecutionId, runInBusinessExecution } from '../business-execution/context';
+import { runWithConfigSnapshot } from '../config/execution-snapshot';
+// Lot 87A : résolveur chargé (il enregistre le relevé de l'instantané d'exécution).
+import '../config/config-resolver';
 import { newT1ExecutionId } from '../business-execution/identity';
 
 export interface AnalyzeFileSourcesOptions {
@@ -118,7 +121,10 @@ export async function analyzeFileSources(
   // REPREND (même identifiant). Un appel multi-fichiers (aucun appelant) :
   // chaque document est rattaché par son rapport.
   if (!options.guard && fileIds.length === 1 && !currentBusinessExecutionId()?.startsWith('T1:')) {
-    return runInBusinessExecution(newT1ExecutionId(), () => analyzeFileSourcesIn(fileIds, accountId, options), { origin: options.origin ?? null });
+    // Lot 87A (P7, RUN-04) : analyse hors file = exécution synchrone à
+    // plusieurs appels — configuration figée à son démarrage (sous la file,
+    // le travail l'a déjà figée au prélèvement).
+    return runInBusinessExecution(newT1ExecutionId(), () => runWithConfigSnapshot('T1', () => analyzeFileSourcesIn(fileIds, accountId, options)), { origin: options.origin ?? null });
   }
   return analyzeFileSourcesIn(fileIds, accountId, options);
 }
@@ -159,7 +165,52 @@ async function analyzeFileSourcesIn(
     // d'analyse (groupe en cours et suivants) : même chemin.
     await deferToNextPeriod(outcome.costCapSourceIds!, accountId, options, outcome.costCap.resumeAt);
   }
+
+  // Lot 87A (CDC Pilotage IA V2 P7, RUN-02) — hors file, exécution SUSPENDUE
+  // par la passerelle (aucun secours admissible) : rien d'écrit, sources
+  // « en file » avec le motif. Confiées à la file durable, différées du
+  // premier délai de reprise : la file les reprendra depuis un point sûr
+  // (même exécution métier), avec la configuration du moment.
+  if (
+    (outcome?.aiSuspendedSourceIds?.length ?? 0) > 0
+    && !options.guard && options.retryOnFailure !== false
+    && (options.sourceType === undefined || options.sourceType === 'file')
+  ) {
+    await requeueAiSuspendedSources(outcome!.aiSuspendedSourceIds!, accountId, options, outcome!.aiSuspension ?? null);
+  }
   return outcome;
+}
+
+/** Lot 87A : remise en file durable des sources suspendues (aucun secours admissible) d'une analyse hors file. */
+async function requeueAiSuspendedSources(
+  ids: number[],
+  accountId: number,
+  options: AnalyzeFileSourcesOptions,
+  suspension: { cause: string; message: string } | null,
+): Promise<void> {
+  try {
+    const [{ enqueueFileAnalyses }, { AI_SUSPENSION_FIRST_DELAY_SECONDS }] = await Promise.all([
+      import('./queue/t1-handler'),
+      import('../queue/queue-policy'),
+    ]);
+    const until = new Date(Date.now() + AI_SUSPENSION_FIRST_DELAY_SECONDS * 1000);
+    const acceptes = await enqueueFileAnalyses(ids, accountId, {
+      userId: options.userId,
+      origin: `${options.origin ?? 'inconnue'}${REQUEUE_ORIGIN_SUFFIX}`,
+      processingVisibility: normalizeProcessingVisibility(options.processingVisibility),
+      ...(options.billable === false ? { billable: false } : {}),
+      delaySeconds: AI_SUSPENSION_FIRST_DELAY_SECONDS,
+      aiSuspension: {
+        cause: suspension?.cause ?? 'UNKNOWN', message: suspension?.message || 'analyse hors file suspendue : aucun secours admissible', at: new Date().toISOString(),
+        count: 1, until: until.toISOString(), revisionId: null, resumedAt: null, decisions: [],
+      },
+      resume: currentBusinessExecutionId()?.startsWith('T1:') && ids.length === 1 ? currentBusinessExecutionId()! : true,
+    });
+    console.info(`[source-analysis] ${acceptes.length}/${ids.length} source(s) suspendue(s) (aucun secours admissible) confiée(s) à la file durable.`);
+  } catch (e) {
+    // La reprise serveur (`analysis-recovery`) retrouvera ces sources « en file ».
+    console.error('[source-analysis] remise en file des sources suspendues impossible :', (e as Error).message);
+  }
 }
 
 /** Remise en file durable, différée au début de la période suivante (plafond de coût). */

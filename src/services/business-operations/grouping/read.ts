@@ -29,8 +29,9 @@ async function itemContext(r: GroupingRunner, accountId: number, itemId: number)
   return { id: Number(i.id), op, role: op === null ? null : i.role };
 }
 
-const titreDoc = (d: { retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; id: number }) =>
-  displayDocumentTitle({ retainedTitle: d.retained_title, originalFilename: d.original_filename, filename: d.filename, s3Key: d.s3_key, publicId: d.public_id }, `Document n° ${d.id}`);
+// Lot 87D : mêmes sources que toutes les vues (titre du lien web compris).
+const titreDoc = (d: { retained_title: string | null; web_link_title?: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; id: number }) =>
+  displayDocumentTitle({ retainedTitle: d.retained_title, webLinkTitle: d.web_link_title ?? null, originalFilename: d.original_filename, filename: d.filename, s3Key: d.s3_key, publicId: d.public_id }, `Document n° ${d.id}`);
 
 async function ensembleItems(r: GroupingRunner, accountId: number, op: number, exceptId: number): Promise<GroupingItemRef[]> {
   const x = await r.q<{ id: number; title: string; d: string | null; role: string | null }>(
@@ -43,7 +44,7 @@ async function ensembleItems(r: GroupingRunner, accountId: number, op: number, e
 /** Documents de l'ensemble (appartenance active) + liens directs de l'élément, avec la nature du lien de l'élément. */
 async function ensembleDocuments(r: GroupingRunner, accountId: number, op: number, itemId: number): Promise<GroupingDocumentRef[]> {
   const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; prov: string[] | null }>(
-    `SELECT f.id, f.retained_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d,
+    `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d,
             (SELECT l.provenances FROM agenda_file_links l WHERE l.agenda_item_id = $3 AND l.asset_file_id = f.id) AS prov
        FROM asset_files f
       WHERE f.account_id = $1 AND f.deleted_at IS NULL
@@ -60,7 +61,7 @@ async function ensembleDocuments(r: GroupingRunner, accountId: number, op: numbe
 /** Lot 86D : documents reliés à CET élément (agenda_file_links, documents du compte non supprimés), avec la nature du lien. */
 async function itemDocuments(r: GroupingRunner, accountId: number, itemId: number): Promise<GroupingDocumentRef[]> {
   const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; prov: string[] | null }>(
-    `SELECT f.id, f.retained_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d, l.provenances AS prov
+    `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d, l.provenances AS prov
        FROM agenda_file_links l JOIN asset_files f ON f.id = l.asset_file_id AND f.account_id = $1 AND f.deleted_at IS NULL
       WHERE l.agenda_item_id = $2
       ORDER BY f.document_date DESC NULLS LAST, f.id`, [accountId, itemId]);
@@ -161,7 +162,7 @@ export async function listGroupingCandidates(
     }
     case 'documents': {
       const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null }>(
-        `SELECT f.id, f.retained_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d
+        `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d
            FROM asset_files f
           WHERE f.account_id = $1 AND f.deleted_at IS NULL
             AND NOT EXISTS (SELECT 1 FROM agenda_file_links l WHERE l.agenda_item_id = $2 AND l.asset_file_id = f.id)

@@ -15,7 +15,7 @@ import {
 import { apiClient } from '@/lib/api-client';
 import dynamic from 'next/dynamic';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
-import { DOCUMENT_TYPE_LABELS as DOC_TYPE_LABELS } from '@/lib/document-type-constants';
+import { userFacingLabel } from '@/lib/referential/user-facing-labels';
 import { exportCodeLabel } from '@/services/exports/catalog';
 
 const AgendaItemDrawer = dynamic(
@@ -65,7 +65,11 @@ interface OverviewData {
     id: number;
     originalFilename: string;
     retainedTitle?: string | null;
+    /** Lot 87D : titre affiché (règle unique) et libellé du Type V2 enregistré (jamais un code). */
+    title?: string;
     documentType: string;
+    documentTypeCode?: string | null;
+    documentTypeLabel?: string | null;
     documentDate: string | null;
   }>;
   counters: {
@@ -478,15 +482,16 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                       key={doc.id}
                       className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/50 rounded px-1 -mx-1 py-0.5 transition-colors"
                       onClick={() => {
-                        setDocDrawerDoc({ id: doc.id, originalFilename: doc.originalFilename, mimeType: '', documentType: doc.documentType, documentDate: doc.documentDate, assetId: assetId });
+                        setDocDrawerDoc({ id: doc.id, originalFilename: doc.originalFilename, mimeType: '', documentType: doc.documentType, documentTypeCode: doc.documentTypeCode ?? null, documentDate: doc.documentDate, assetId: assetId });
                         setDocDrawerOpen(true);
                       }}
                     >
                       <FileText className="w-4 h-4 text-muted-foreground flex-shrink-0" />
-                      <span className="flex-1 truncate">{displayDocumentTitle(doc, '')}</span>
-                      {doc.documentType && (
+                      <span className="flex-1 truncate">{doc.title ?? displayDocumentTitle(doc, '')}</span>
+                      {/* Lot 87D : libellé français du Type V2 enregistré, masqué sans libellé — jamais un code. */}
+                      {userFacingLabel(doc.documentTypeLabel) && (
                         <Badge variant="outline" className="text-xs">
-                          {DOC_TYPE_LABELS[doc.documentType] ?? doc.documentType}
+                          {userFacingLabel(doc.documentTypeLabel)}
                         </Badge>
                       )}
                       {doc.documentDate && (

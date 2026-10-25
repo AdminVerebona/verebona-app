@@ -278,43 +278,37 @@ scenario('L33C', 'Titre métier des documents : renommage T1, rattrapage T3, tit
 
   // ══ Balayage planifié : page réelle de la file T3 ═══════════════════════
 
-  it('TITLE-AC7 — page bornée du rattrapage planifié (contrat 31C) : titre corrigé, continuation unique, démarreur sans cycle concurrent', async () => {
+  it('TITLE-AC7 (lot 87D, C-Q9) — balayage horaire RETIRÉ : une page encore en file est close sans effet ; le stock est repris par le contrôle de cohérence COH-DOC-TITLES', async () => {
     const compte = await make.account();
     const doc = await deposer(compte);
     await analyser(compte, doc.id, sortie());
     await historique(doc.id);
-    const avant = process.env.T3_TITLE_SWEEP_PAGE_SIZE;
-    process.env.T3_TITLE_SWEEP_PAGE_SIZE = '1';
-    try {
-      const { buildT3Payload } = await import('@/services/ai/reconciliation/t3-job-contract');
-      const { enqueue } = await import('@/services/ai/queue/job-queue.repository');
-      const { startDocumentTitleSweep } = await import('@/services/ai/reconciliation/document-title-sweep');
-      const cycle = `e2e-titre-${doc.id}`;
-      await enqueue({
-        treatment: 'T3', scope: { targetType: 'document_title_sweep', targetId: `${cycle}:0` }, triggerCode: 'schedule_hourly',
-        payload: buildT3Payload('document_title_sweep', { cycleId: cycle, page: 0, afterFileId: doc.id - 1 }), onlyIfNeverQueued: true,
-      });
-      // Une page vit : la racine suivante n'ouvre pas de second cycle.
-      await startDocumentTitleSweep({ cycleId: `${cycle}-bis`, triggerCode: 'schedule_hourly', guard: { assertActive: async () => {} } as never });
-      expect(await sql`SELECT 1 FROM ai_job_queue WHERE target_type = 'document_title_sweep' AND target_id = ${`${cycle}-bis:0`}`).toHaveLength(0);
+    const { buildT3Payload } = await import('@/services/ai/reconciliation/t3-job-contract');
+    const { enqueue } = await import('@/services/ai/queue/job-queue.repository');
+    const cycle = `e2e-titre-${doc.id}`;
+    await enqueue({
+      treatment: 'T3', scope: { targetType: 'document_title_sweep', targetId: `${cycle}:0` }, triggerCode: 'schedule_hourly',
+      payload: buildT3Payload('document_title_sweep', { cycleId: cycle, page: 0, afterFileId: doc.id - 1 }), onlyIfNeverQueued: true,
+    });
+    const { runOne } = await import('@/services/ai/queue/queue-worker');
+    const etat = async () => (await sql<{ status: string; business_result: unknown }[]>`
+      SELECT status, business_result FROM ai_job_queue WHERE target_type = 'document_title_sweep' AND target_id = ${`${cycle}:0`}`)[0];
+    for (let i = 0; i < 5 && (await etat())?.status !== 'DONE'; i += 1) await runOne('T3');
+    expect((await etat()).status).toBe('DONE');
+    expect((await etat()).business_result).toBe('NO_CHANGE'); // page close sans contrôle (détail : RETIRED)
+    expect(await sql`SELECT 1 FROM ai_job_queue WHERE target_type = 'document_title_sweep' AND target_id = ${`${cycle}:1`}`).toHaveLength(0);
+    expect((await fichier(doc.id)).retained_title).toBe(UUID_PDF);
 
-      const { runOne } = await import('@/services/ai/queue/queue-worker');
-      const etat = async () => (await sql<{ status: string }[]>`
-        SELECT status FROM ai_job_queue WHERE target_type = 'document_title_sweep' AND target_id = ${`${cycle}:0`}`)[0]?.status;
-      for (let i = 0; i < 5 && (await etat()) !== 'DONE'; i += 1) await runOne('T3');
-      const [page0] = await sql<{ status: string; business_result: unknown }[]>`
-        SELECT status, business_result FROM ai_job_queue WHERE target_type = 'document_title_sweep' AND target_id = ${`${cycle}:0`}`;
-      expect(page0.status).toBe('DONE');
-      expect(JSON.stringify(page0.business_result)).toContain('APPLIED');
-      expect((await fichier(doc.id)).retained_title).toBe(TITRE_T1);
-      const suite = await sql<{ payload: { afterFileId: number; page: number } }[]>`
-        SELECT payload FROM ai_job_queue WHERE target_type = 'document_title_sweep' AND target_id = ${`${cycle}:1`}`;
-      expect(suite).toHaveLength(1);
-      expect(suite[0].payload).toMatchObject({ afterFileId: doc.id, page: 1, payloadVersion: 1 });
-      await sql`UPDATE ai_job_queue SET status = 'CANCELLED' WHERE target_type = 'document_title_sweep'`;
-    } finally {
-      if (avant === undefined) delete process.env.T3_TITLE_SWEEP_PAGE_SIZE; else process.env.T3_TITLE_SWEEP_PAGE_SIZE = avant;
+    // Filet de convergence unique : le contrôle COH-DOC-TITLES (mode correctif), par le même service de nommage.
+    const o = await import('@/services/coherence/orchestrator');
+    const maintenant = new Date('2026-10-24T09:30:00Z');
+    const id = await o.startCampaign({ kind: 'MANUAL', trigger: 'e2e', mode: 'CORRECTIVE', scopeAccountIds: [compte.id], now: maintenant });
+    for (let i = 0; i < 30; i++) {
+      const r = await o.runCampaignStep(id, { deadline: Date.now() + 120_000, now: maintenant, today: '2026-10-24' });
+      if (r.done) break;
     }
+    expect((await fichier(doc.id)).retained_title).toBe(TITRE_T1);
+    expect((await evenements(doc.id)).at(-1)).toMatchObject({ origin: 'COHERENCE', outcome: 'UPDATED', new_title: TITRE_T1 });
   });
 
   // ══ Tiroir (PUT /api/documents/:id) : source du titre ═══════════════════

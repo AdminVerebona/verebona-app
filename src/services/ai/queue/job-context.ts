@@ -55,6 +55,21 @@ export interface AiJobContext {
    */
   configRevisionId?: number | null;
   /**
+   * Lot 87A (P7, RUN-04) : configuration EFFECTIVE relevée au prélèvement
+   * (lignes, prompts maîtres, surcouche de routage 86B). Lue par le
+   * résolveur tant que la révision épinglée est la sienne : une promotion,
+   * une exclusion ou une activation prise pendant l'exécution ne change plus
+   * sa chaîne. Absente : comportement antérieur (révision seule).
+   */
+  configSnapshot?: import('../config/execution-snapshot').ExecutionConfigSnapshot | null;
+  /**
+   * Lot 87A (P7, RUN-04, DEC-04) : cette tentative REPREND un travail
+   * suspendu faute de secours admissible — depuis un point sûr (début de
+   * l'unité, idempotente), avec la configuration du moment. Tracé avec
+   * chaque appel modèle.
+   */
+  resumedFromSuspension?: { cause: string; suspendedAt: string | null; previousRevisionId: number | null; count: number } | null;
+  /**
    * Déclencheur du job (`ai_job_queue.trigger_code`), tracé avec chaque appel
    * modèle de l'exécution (CDC 15 OBS-CFG). Absent : inconnu.
    */

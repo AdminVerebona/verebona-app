@@ -5,6 +5,7 @@
  * écrire (GEN-002). Chaque source est lue isolément : une source en panne
  * vaut `null`, jamais « rien à signaler » (§20, ERR-01).
  */
+import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { getToProcessPage } from '@/services/to-process/to-process-query.service';
 import { getEntitlements } from '@/services/entitlements.service';
@@ -92,20 +93,20 @@ async function readProcessing(accountId: number): Promise<MascotRawData['process
   const visible = userVisibleAnalysisSql('f', await analysisVisibilityColumnReady());
   const [uploads, analyses, exports] = await Promise.all([
     rows(
-      `SELECT id, COALESCE(NULLIF(retained_title, ''), NULLIF(original_filename, ''), filename) AS title,
-              COALESCE(updated_at, created_at) AS at
-         FROM asset_files
-        WHERE account_id = $1 AND deleted_at IS NULL AND is_web_link = FALSE
-          AND upload_status IN ('UPLOADING', 'PENDING')
-          AND COALESCE(updated_at, created_at) > NOW() - $2::interval
+      `SELECT f.id, ${documentTitleColumnsSql('f')},
+              COALESCE(f.updated_at, f.created_at) AS at
+         FROM asset_files f
+        WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.is_web_link = FALSE
+          AND f.upload_status IN ('UPLOADING', 'PENDING')
+          AND COALESCE(f.updated_at, f.created_at) > NOW() - $2::interval
         ORDER BY at DESC LIMIT 20`,
       [accountId, fenetre],
     ),
     rows(
-      `SELECT id, COALESCE(NULLIF(retained_title, ''), NULLIF(original_filename, ''), filename) AS title,
-              COALESCE(updated_at, created_at) AS at
+      `SELECT f.id, ${documentTitleColumnsSql('f')},
+              COALESCE(f.updated_at, f.created_at) AS at
          FROM asset_files f
-        WHERE account_id = $1 AND deleted_at IS NULL
+        WHERE f.account_id = $1 AND f.deleted_at IS NULL
           AND ${effectiveAnalysisStateSql('f')} IN ('UPLOADED', 'ANALYZING')
           AND ${visible}
           AND COALESCE(upload_status, 'COMPLETED') = 'COMPLETED'
@@ -124,7 +125,8 @@ async function readProcessing(accountId: number): Promise<MascotRawData['process
       [accountId, fenetre],
     ),
   ]);
-  const doc = (r: Row): MascotDocRow => ({ id: Number(r.id), title: String(r.title ?? 'Document'), at: iso(r.at) });
+  // Lot 87D : titre par la règle unique des vues (liste, fiche, recherche).
+  const doc = (r: Row): MascotDocRow => ({ id: Number(r.id), title: documentTitleOf(r), at: iso(r.at) });
   return {
     uploads: uploads.map(doc),
     analyses: analyses.map(doc),

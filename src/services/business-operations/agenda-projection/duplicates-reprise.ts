@@ -1,35 +1,42 @@
 /**
- * Lot 76H — rattrapage PONCTUEL du stock de doublons d'interventions dans
- * l'Agenda (ticket « [P1] Opérations → Agenda — Corriger les doublons
- * d'interventions », §4).
+ * Lot 76H — rattrapage du stock de doublons d'interventions dans l'Agenda ;
+ * lot 87B (ticket « orchestration T3/T4 », CODE-07) — REPRISE DU STOCK de la
+ * représentation Agenda des Opérations : ciblable (un compte ou tous),
+ * relançable (curseur, reprise d'une exécution interrompue), idempotente
+ * (mémoire des décisions T4, projection idempotente).
  *
  * ══════════════════════════════════════════════════════════════════════════
- * AUCUN MOTEUR PARALLÈLE : LA PROJECTION EST REJOUÉE SUR LES OPÉRATIONS VISÉES
+ * AUCUN MOTEUR PARALLÈLE : PROJECTION, PUIS DÉCISION T4 — LA MÊME CHAÎNE QUE
+ * LE CONTRÔLE COH-AGENDA-OCCURRENCES
  *
- *   DÉTECTION (lecture seule, bornée par comptes, curseur stable)
- *     · Opération d'intervention active dont un événement automatique T4
- *       (entretien / réparation, ±3 jours) d'un de ses documents sources
- *       n'est pas lié à elle (T4 non rattaché, doublon T4 ↔ projection) ;
+ *   DÉTECTION (lecture seule, bornée par comptes, curseur stable) — sélection
+ *     de CANDIDATS (signaux, jamais décision) :
+ *     · Opération (intervention, sinistre, achat, cession) dont un événement
+ *       automatique d'un de ses documents (±3 jours) n'est pas lié à elle ;
  *     · Opération liée à plusieurs événements ;
- *     · événements restés liés à une Opération fusionnée (résidus de fusion) ;
+ *     · Opération portant une ancienne consolidation (journal 0591) décidée
+ *       par l'ancienne règle du code et jamais validée par T4 (étapes
+ *       peut-être fusionnées à tort) ;
+ *     · événements restés liés à une Opération fusionnée (résidus) ;
  *     · groupes T4 « même document, même date » SANS Opération active
- *       d'intervention : SIGNALÉS seulement (aucune Opération artificielle,
- *       aucune fusion — T3 n'a rien établi).
- *   PLAN puis APPLICATION, par compte : la projection (`projectAccountOperations`)
- *     calcule d'abord le plan en SIMULATION (rapport des actions envisagées),
- *     puis — mode APPLY — l'applique : consolidation certaine (journal 0591,
- *     restaurable), abstention + carte « À traiter » si l'identité est
- *     incertaine, interventions distinctes conservées, éléments touchés par
- *     l'utilisateur protégés (gardes SQL).
- *   RESTAURATION : par identifiant d'exécution (journal 0591, ordre inverse).
+ *       d'intervention : SIGNALÉS seulement (aucune Opération artificielle).
+ *   SIMULER : plan de la projection (rattachements par provenance, intitulés,
+ *     cartes D14) + état de la décision T4 de chaque Opération à réévaluer
+ *     (`WOULD_REQUEST`, `UNAVAILABLE` — contrat T4 multi-événements non livré —,
+ *     `SETTLED` — déjà décidée sur ce contexte). Aucune écriture hors journal.
+ *   APPLIQUER : la projection (reconstruction TECHNIQUE), puis la
+ *     réévaluation SÉMANTIQUE T4 (`semantic/orchestrator.ts`, déclencheur
+ *     REPRISE) des Opérations à plusieurs représentations possibles ou à
+ *     consolidation historique : décision validée, protections de
+ *     l'utilisateur, application atomique, journal 0752 ; sans capacité T4,
+ *     constat (aucune fusion, aucune séparation par le code).
+ *   RESTAURER : par identifiant d'exécution — consolidations décidées par T4
+ *     pendant l'exécution (journal 0591, ordre inverse).
  *
- * Rejoué, il ne fait rien de plus (la projection est idempotente ; une
+ * Rejoué, il ne fait rien de plus (projection idempotente ; une décision T4
+ * n'est jamais redemandée sur le contexte qu'elle a produit ; une
  * consolidation restaurée n'est jamais rejouée). Exécutions tracées
  * (`agenda_intervention_reprise_runs`) : compteurs, curseur, rapport borné.
- *
- * Lot 82B : la détection (`detectOperations`) et la projection sont aussi
- * celles du contrôle de cohérence COH-AGENDA-OCCURRENCES (quotidien, ciblé) ;
- * l'ancienne exécution AUTO au démarrage est retirée (une seule chaîne).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { processingEligibleSql } from '@/services/account/processing-eligibility';
@@ -65,22 +72,30 @@ export interface RepriseOptions {
 export interface RepriseCounters {
   accounts: number;
   operations: number;
-  certain: number;
-  consolidated: number;
   linked: number;
   retitled: number;
   arbitration: number;
-  protectedItems: number;
   projectionsCreated: number;
   residualsAfterMerge: number;
   noOperationGroups: number;
+  /** Lot 87B : Opérations dont la représentation demande une décision T4 (plusieurs représentations, consolidation historique). */
+  t4Required: number;
+  /** Décisions T4 appliquées / sans changement / refusées (invalides, protégées) / indisponibles (contrat non livré) / reportées. */
+  t4Applied: number;
+  t4NoChange: number;
+  t4Rejected: number;
+  t4Unavailable: number;
+  t4Deferred: number;
+  /** Déjà décidées sur ce contexte (mémoire : aucun nouvel appel). */
+  t4Settled: number;
+  aiCalls: number;
   errors: number;
 }
 
 export interface RepriseReportEntry {
   accountId: number;
   operationId?: number;
-  category: 'CERTAIN_CONSOLIDATION' | 'LINK' | 'RETITLE' | 'ARBITRATION' | 'DISTINCT_OR_UNCHANGED' | 'NO_OPERATION' | 'PROTECTED' | 'ERROR';
+  category: 'LINK' | 'RETITLE' | 'ARBITRATION' | 'T4_DECISION' | 'DISTINCT_OR_UNCHANGED' | 'NO_OPERATION' | 'ERROR';
   detail: Record<string, unknown>;
 }
 
@@ -96,8 +111,8 @@ export interface RepriseResult {
 }
 
 const zero = (): RepriseCounters => ({
-  accounts: 0, operations: 0, certain: 0, consolidated: 0, linked: 0, retitled: 0, arbitration: 0, protectedItems: 0,
-  projectionsCreated: 0, residualsAfterMerge: 0, noOperationGroups: 0, errors: 0,
+  accounts: 0, operations: 0, linked: 0, retitled: 0, arbitration: 0, projectionsCreated: 0, residualsAfterMerge: 0, noOperationGroups: 0,
+  t4Required: 0, t4Applied: 0, t4NoChange: 0, t4Rejected: 0, t4Unavailable: 0, t4Deferred: 0, t4Settled: 0, aiCalls: 0, errors: 0,
 });
 
 // ── Détection (lecture seule) ───────────────────────────────────────────────
@@ -107,7 +122,7 @@ export async function detectAccounts(sql: Sql, cursor: number, limit: number, ac
   const r = await sql.unsafe<Row[]>(`
     SELECT DISTINCT account_id FROM (
       SELECT o.account_id FROM business_operations o
-       WHERE o.type_code = 'INTERVENTION' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+       WHERE o.type_code IN ('INTERVENTION', 'CLAIM', 'ACQUISITION', 'DISPOSAL') AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
          AND o.account_id > $1 AND ($3::int IS NULL OR o.account_id = $3::int)
          AND EXISTS (SELECT 1 FROM agenda_items i WHERE i.account_id = o.account_id AND i.business_operation_id = o.id)
       UNION
@@ -115,7 +130,7 @@ export async function detectAccounts(sql: Sql, cursor: number, limit: number, ac
         JOIN business_operation_sources s ON s.account_id = i.account_id AND s.active AND s.source_kind = 'DOCUMENT'
              AND s.source_entity_key = i.origin_ref_id::text
        WHERE i.origin_ref_type = 'asset_file' AND i.is_automatic AND i.projection_origin IS NULL
-         AND i.business_type IN ('maintenance', 'repair') AND i.account_id > $1 AND ($3::int IS NULL OR i.account_id = $3::int)
+         AND i.business_operation_id IS NULL AND i.account_id > $1 AND ($3::int IS NULL OR i.account_id = $3::int)
       UNION
       SELECT i.account_id FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id
        WHERE (o.merged_into_operation_id IS NOT NULL OR o.invalidated_at IS NOT NULL)
@@ -127,28 +142,44 @@ export async function detectAccounts(sql: Sql, cursor: number, limit: number, ac
   return r.map((x) => Number(x.account_id));
 }
 
-/** Opérations d'un compte concernées (voir l'en-tête). */
-export async function detectOperations(sql: Sql, accountId: number): Promise<{ ids: number[]; residual: number }> {
+/**
+ * Opérations d'un compte concernées (voir l'en-tête) — SÉLECTION de candidats
+ * (lot 87B, CODE-04 : signaux, jamais décision) : événement global
+ * (intervention, sinistre, achat, cession) dont un événement automatique d'un
+ * document source, à ±3 jours, n'est pas lié à elle ; Opération liée à
+ * plusieurs événements ; Opération dont une ancienne consolidation (journal
+ * 0591) n'a pas été validée par T4 ; événements restés liés à une Opération
+ * fusionnée / invalidée (résidus).
+ */
+export async function detectOperations(sql: Sql, accountId: number): Promise<{ ids: number[]; residual: number; historical: number[] }> {
+  const journal = await consolidationJournalReady(sql);
+  const { historicalConsolidationSql, semanticJournalReady } = await import('../semantic/store');
+  const historique = journal ? historicalConsolidationSql('o', await semanticJournalReady(sql)) : 'false';
   const r = await sql.unsafe<Row[]>(`
     WITH ops AS (
-      SELECT o.id, COALESCE(o.realized_date, o.planned_date) AS d FROM business_operations o
-       WHERE o.account_id = $1 AND o.type_code = 'INTERVENTION' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
+      SELECT o.id, COALESCE(o.realized_date, o.planned_date) AS d, ${historique} AS historical FROM business_operations o
+       WHERE o.account_id = $1 AND o.type_code IN ('INTERVENTION', 'CLAIM', 'ACQUISITION', 'DISPOSAL')
+         AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
     )
-    SELECT ops.id, false AS residual FROM ops
+    SELECT ops.id, false AS residual, ops.historical FROM ops
      WHERE (ops.d IS NOT NULL AND EXISTS (
               SELECT 1 FROM agenda_items i
                 JOIN business_operation_sources s ON s.operation_id = ops.id AND s.active AND s.source_kind = 'DOCUMENT'
                      AND s.source_entity_key = i.origin_ref_id::text
                WHERE i.account_id = $1 AND i.origin_ref_type = 'asset_file' AND i.is_automatic AND i.projection_origin IS NULL
-                 AND i.business_type IN ('maintenance', 'repair')
+                 AND (i.manual_status IS NULL OR i.manual_status <> 'annule')
                  AND i.start_date BETWEEN ops.d - 3 AND ops.d + 3
                  AND i.business_operation_id IS DISTINCT FROM ops.id))
         OR (SELECT count(*) FROM agenda_items i WHERE i.account_id = $1 AND i.business_operation_id = ops.id) >= 2
+        OR ops.historical
     UNION
-    SELECT o.id, true FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id
+    SELECT o.id, true, false FROM agenda_items i JOIN business_operations o ON o.id = i.business_operation_id
      WHERE i.account_id = $1 AND (o.merged_into_operation_id IS NOT NULL OR o.invalidated_at IS NOT NULL)
     ORDER BY 1`, [accountId] as never[]);
-  return { ids: r.map((x) => Number(x.id)), residual: r.filter((x) => x.residual === true).length };
+  return {
+    ids: [...new Set(r.map((x) => Number(x.id)))], residual: r.filter((x) => x.residual === true).length,
+    historical: r.filter((x) => x.historical === true).map((x) => Number(x.id)),
+  };
 }
 
 /** Groupes T4 « même document, même date » d'entretien / réparation sans Opération active d'intervention (signalés). */
@@ -172,11 +203,7 @@ function classify(accountId: number, p: PlannedOperation, counters: RepriseCount
   const push = (e: RepriseReportEntry) => { if (report.length < REPORT_MAX) report.push(e); };
   let utile = false;
   for (const a of p.actions) {
-    if (a.kind === 'CONSOLIDATE') {
-      counters.certain++;
-      utile = true;
-      push({ accountId, operationId: p.operationId, category: 'CERTAIN_CONSOLIDATION', detail: { principalId: a.principalId, absorbedIds: a.absorbedIds, linkPrincipal: a.linkPrincipal } });
-    } else if (a.kind === 'LINK') {
+    if (a.kind === 'LINK') {
       utile = true;
       push({ accountId, operationId: p.operationId, category: 'LINK', detail: { itemId: a.itemId, reason: a.reason } });
     } else if (a.kind === 'RETITLE') {
@@ -186,9 +213,22 @@ function classify(accountId: number, p: PlannedOperation, counters: RepriseCount
       counters.arbitration++;
       utile = true;
       push({ accountId, operationId: p.operationId, category: 'ARBITRATION', detail: { reason: a.reason, candidates: a.candidates.map((c) => c.itemId) } });
+    } else if (a.kind === 'REPRESENTATION_REQUIRED') {
+      utile = true;
     }
   }
   if (!utile) push({ accountId, operationId: p.operationId, category: 'DISTINCT_OR_UNCHANGED', detail: { actions: p.actions.map((a) => a.kind) } });
+}
+
+/** Lot 87B : compteurs et rapport d'une issue de réévaluation T4. */
+function countT4(accountId: number, operationId: number, status: string, detail: Record<string, unknown>, counters: RepriseCounters, report: RepriseReportEntry[]): void {
+  if (status === 'APPLIED' || status === 'PARTIAL') counters.t4Applied++;
+  else if (status === 'NO_CHANGE' || status === 'ABSTAINED') counters.t4NoChange++;
+  else if (status === 'REJECTED' || status === 'FAILED' || status === 'AI_FAILED') counters.t4Rejected++;
+  else if (status === 'UNAVAILABLE') counters.t4Unavailable++;
+  else if (status === 'DEFERRED') counters.t4Deferred++;
+  else if (status === 'SETTLED') counters.t4Settled++;
+  if (report.length < REPORT_MAX) report.push({ accountId, operationId, category: 'T4_DECISION', detail: { status, ...detail } });
 }
 
 async function writeRun(sql: Sql, runId: string, patch: { status?: string; cursor?: number; counters?: RepriseCounters; report?: RepriseReportEntry[]; error?: string | null; finished?: boolean }): Promise<void> {
@@ -220,7 +260,7 @@ export async function runAgendaDuplicatesReprise(opts: RepriseOptions): Promise<
     const [r] = await sql.unsafe<Row[]>(`SELECT cursor_account_id, counters, report FROM agenda_intervention_reprise_runs WHERE id = $1::uuid`, [runId] as never[]);
     if (!r) throw new Error(`Exécution ${runId} introuvable.`);
     cursor = Number(r.cursor_account_id ?? 0);
-    counters = { ...zero(), ...((r.counters ?? {}) as Partial<RepriseCounters>) };
+    counters = { ...zero(), ...(Object.fromEntries(Object.entries((r.counters ?? {}) as Record<string, unknown>).filter(([k]) => k in zero())) as Partial<RepriseCounters>) };
     report = (((r.report ?? {}) as { entries?: RepriseReportEntry[] }).entries ?? []).slice(0, REPORT_MAX);
     await sql.unsafe(`UPDATE agenda_intervention_reprise_runs SET status = 'running', heartbeat_at = now(), finished_at = NULL, error = NULL WHERE id = $1::uuid`, [runId] as never[]);
   } else {
@@ -231,6 +271,8 @@ export async function runAgendaDuplicatesReprise(opts: RepriseOptions): Promise<
     );
   }
   const { projectAccountOperations } = await import('./service');
+  // Lot 87B : plafond d'appels T4 par appel de la reprise (plafonds existants du rapprochement sémantique).
+  const appelsPassage = { n: 0 };
   const comptes = await detectAccounts(sql, cursor, opts.maxAccounts ?? REPRISE_ACCOUNTS_PER_CALL, opts.accountId ?? null);
   let more = comptes.length >= (opts.maxAccounts ?? REPRISE_ACCOUNTS_PER_CALL);
   try {
@@ -238,21 +280,43 @@ export async function runAgendaDuplicatesReprise(opts: RepriseOptions): Promise<
       if (opts.deadline && Date.now() > opts.deadline) { more = true; break; }
       counters.accounts++;
       try {
-        const { ids, residual } = await detectOperations(sql, accountId);
+        const { ids, residual, historical } = await detectOperations(sql, accountId);
         counters.residualsAfterMerge += residual;
         if (ids.length) {
           counters.operations += ids.length;
-          // 1. Plan (simulation) : actions envisagées, rapportées.
-          const plan = await projectAccountOperations(accountId, { operationIds: ids, dryRun: true, correlationId: `reprise-76h:${runId}` });
+          const correlationId = `reprise-76h:${runId}`;
+          // 1. Plan (simulation) : actions envisagées et demandes de décision T4, rapportées.
+          const plan = await projectAccountOperations(accountId, { operationIds: ids, dryRun: true, correlationId });
           for (const p of plan.plans ?? []) classify(accountId, p, counters, report);
-          // 2. Application (mode APPLY) : même moteur, journal 0591 rattaché à l'exécution.
+          const { reevaluateRepresentation } = await import('../semantic/orchestrator');
+          const demandes = [
+            ...(plan.representationRequired ?? []),
+            ...historical.filter((id) => !(plan.representationRequired ?? []).some((r) => r.operationId === id))
+              .map((operationId) => ({ operationId, itemIds: [] as number[], reason: 'HISTORICAL_CONSOLIDATION' })),
+          ];
+          counters.t4Required += new Set(demandes.map((d) => d.operationId)).size;
           if (opts.mode === 'APPLY') {
-            const r: ProjectionRunResult = await projectAccountOperations(accountId, { operationIds: ids, runId, correlationId: `reprise-76h:${runId}` });
-            counters.consolidated += r.consolidated ?? 0;
+            // 2. Reconstruction TECHNIQUE (projection), puis décision SÉMANTIQUE T4 (même chaîne que le contrôle).
+            const r: ProjectionRunResult = await projectAccountOperations(accountId, { operationIds: ids, runId, correlationId });
             counters.linked += r.linked;
             counters.retitled += r.retitled ?? 0;
-            counters.protectedItems += r.consolidationProtected ?? 0;
             counters.projectionsCreated += r.created;
+            const toutes = [...(r.representationRequired ?? []), ...demandes.filter((d) => !(r.representationRequired ?? []).some((x) => x.operationId === d.operationId))];
+            for (const d of toutes) {
+              const out = await reevaluateRepresentation({
+                accountId, operationId: d.operationId, trigger: 'REPRISE', triggerRef: `reprise:${runId}`, correlationId,
+                extraItemIds: d.itemIds, origin: 'REPRISE', runId, passCalls: appelsPassage,
+              }).catch((e: Error) => ({ status: 'FAILED' as const, journalId: null, reason: e.message.slice(0, 200), aiCalls: 0, applied: 0 }));
+              counters.aiCalls += out.aiCalls;
+              countT4(accountId, d.operationId, out.status, { reason: out.reason ?? null, journalId: out.journalId, applied: out.applied, request: d.reason }, counters, report);
+            }
+          } else {
+            for (const d of demandes) {
+              const out = await reevaluateRepresentation({
+                accountId, operationId: d.operationId, trigger: 'REPRISE', correlationId, extraItemIds: d.itemIds, mode: 'DRY_RUN',
+              });
+              countT4(accountId, d.operationId, out.status, { reason: out.reason ?? null, request: d.reason }, counters, report);
+            }
           }
         }
         for (const g of await detectNoOperationGroups(sql, accountId)) {
@@ -266,7 +330,7 @@ export async function runAgendaDuplicatesReprise(opts: RepriseOptions): Promise<
       }
       cursor = accountId;
       await writeRun(sql, runId, { cursor, counters, report });
-      log(`compte ${accountId} : ${JSON.stringify({ certain: counters.certain, consolidated: counters.consolidated, arbitration: counters.arbitration })}`);
+      log(`compte ${accountId} : ${JSON.stringify({ linked: counters.linked, t4Required: counters.t4Required, t4Applied: counters.t4Applied, t4Unavailable: counters.t4Unavailable, arbitration: counters.arbitration })}`);
     }
   } catch (e) {
     await writeRun(sql, runId, { status: 'failed', counters, report, error: (e as Error).message.slice(0, 500), finished: true });

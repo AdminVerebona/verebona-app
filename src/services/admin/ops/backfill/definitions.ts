@@ -310,17 +310,17 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
   {
     script: 'agenda-intervention-duplicates',
     order: 12,
-    label: 'Agenda : doublons d’interventions',
+    label: 'Agenda : représentation des Opérations (doublons, étapes, rattachements)',
     command: 'tâche planifiée « coherence-control » (contrôle COH-AGENDA-OCCURRENCES, quotidien et ciblé)',
-    description: 'Lot 76H : une intervention établie par les Opérations n’a plus qu’UN événement d’agenda. Pour chaque intervention '
-      + 'dont un document a produit plusieurs événements automatiques équivalents (ex. « Réparation — Maison » et « Entretien réalisé — '
-      + 'Prestation » du même jour), la projection Opérations → Agenda est rejouée : si T3 a établi que toute la preuve d’intervention '
-      + 'du document est cette Opération, un événement principal est conservé (déjà lié, puis date explicite, puis le plus de preuves), '
-      + 'les autres sont absorbés (preuves, liens, historique conservés ; retrait tracé et restaurable) et l’intitulé générique cède à la '
-      + 'description précise de l’intervention. Identité incertaine : carte « À traiter » (aucune fusion). Interventions distinctes, '
-      + 'événements modifiés, confirmés ou « à qualifier » : jamais touchés. Doublons sans Opération : signalés seulement. La simulation '
-      + 'n’écrit rien (rapport des actions envisagées) ; l’application est journalisée et se restaure par son identifiant. La convergence '
-      + 'courante est assurée chaque jour par le contrôle de cohérence (même détection, même projection) ; rejoué, il ne change rien.',
+    description: 'Lot 76H / 87B : reprise du STOCK de la représentation Agenda des Opérations (interventions, sinistres, achats, cessions). '
+      + 'Sélection (signaux seulement) : événements automatiques d’un document de l’Opération non reliés, Opérations reliées à plusieurs '
+      + 'événements, anciennes consolidations décidées par l’ancienne règle (jamais validées), résidus de fusion. La projection est rejouée '
+      + '(rattachement seulement par provenance exacte : document de l’Opération, source établie par T3) ; quand plusieurs représentations '
+      + 'sont possibles (doublons ? étapes distinctes ?) la décision est demandée à T4 (plusieurs événements examinés ensemble, preuves '
+      + 'conservées, corrections de l’utilisateur respectées, application tout ou rien, journal des réévaluations). Tant que le contrat T4 '
+      + 'multi-événements n’est pas livré : constat, aucune fusion ni séparation par le code (carte « À traiter » quand rien ne représente '
+      + 'encore l’événement). La simulation n’écrit rien ; l’application se restaure par son identifiant (consolidations décidées par T4). '
+      + 'Rejouée, elle ne redemande rien (mémoire des décisions T4). Doublons sans Opération : signalés seulement.',
     actions: ['simulate', 'apply', 'restore'],
     accountFilter: true,
   },

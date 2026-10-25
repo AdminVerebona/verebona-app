@@ -168,10 +168,11 @@ export function resolveDocumentTypeCode(code: string | null | undefined): string
   return resolveDocumentCode(code).storageCode ?? 'AUTRE';
 }
 
-/** Libellé affichable d'un code documentaire, repli sur le code brut (jamais vide si un code est fourni). */
+/** Libellé affichable d'un code documentaire ; vide si le référentiel n'en connaît aucun (lot 87D : jamais le code brut). */
 export function documentCodeLabel(code: string | null | undefined): string {
-  const r = resolveDocumentCode(code);
-  return r.label ?? (code ? String(code) : '');
+  // Lot 87D : jamais le code brut (« BUILDING_PERMIT ») — '' quand le
+  // référentiel ne connaît aucun libellé (l'appelant masque ou remplace).
+  return resolveDocumentCode(code).label ?? '';
 }
 
 /** Code V1 EXACT acceptable pour la colonne `document_type` (écritures API ; aucune normalisation). */

@@ -9,6 +9,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import { db } from '@/db';
 import { aiFieldUpdates, assets, assetFiles } from '@/db/schema';
 import { eq, desc, count, and, gte, lte } from 'drizzle-orm';
@@ -117,6 +118,13 @@ export async function GET(request: NextRequest) {
         assetName:   assets.name,
         assetFileId: aiFieldUpdates.assetFileId,
         docTitle:    assetFiles.retainedTitle,
+        // Lot 87D : sources du titre affiché (règle unique des vues : liste, fiche, recherche).
+        docFileId:   assetFiles.id,
+        docWebLinkTitle: assetFiles.webLinkTitle,
+        docOriginalFilename: assetFiles.originalFilename,
+        docFilename: assetFiles.filename,
+        docS3Key:    assetFiles.s3Key,
+        docPublicId: assetFiles.publicId,
         targetType:  cibleCols.targetType,
         targetId:    cibleCols.targetId,
         entityName:  cibleCols.entityName,
@@ -143,7 +151,10 @@ export async function GET(request: NextRequest) {
       createdAt:   r.createdAt,
       assetId:     r.assetId,
       assetName:   r.assetName ?? 'Bien inconnu',
-      docTitle:    r.docTitle ?? null,
+      docTitle:    r.docFileId == null ? null : documentTitleFromRecord({
+        retainedTitle: r.docTitle, webLinkTitle: r.docWebLinkTitle, originalFilename: r.docOriginalFilename, filename: r.docFilename,
+        s3Key: r.docS3Key, publicId: r.docPublicId == null ? null : String(r.docPublicId),
+      }),
       // Cible (lot 22) : null pour un champ du bien.
       entityType:  r.targetType ?? null,
       entityId:    r.targetId ?? null,

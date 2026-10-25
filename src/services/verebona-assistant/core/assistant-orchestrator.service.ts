@@ -12,6 +12,9 @@
  */
 import { currentBusinessExecutionIds, runInBusinessExecution } from '@/services/ai/business-execution/context';
 import { t2ExecutionId } from '@/services/ai/business-execution/identity';
+import { runWithConfigSnapshot } from '@/services/ai/config/execution-snapshot';
+// Lot 87A : résolveur chargé (il enregistre le relevé de l'instantané d'exécution).
+import '@/services/ai/config/config-resolver';
 import { randomUUID } from 'crypto';
 import type {
   AssistantRequestInput, AssistantRunResult, IntentRoute, ResponseMode, VerebonaErrorCode,
@@ -304,7 +307,11 @@ export async function runAssistant(
   // (`T2:<request_id>`), portée par tous ses appels (UNDERSTAND, ANSWER,
   // REVALIDATE, replis, réparations). Les relances internes gardent la même.
   if (!currentBusinessExecutionIds().some((x) => x.startsWith('T2:'))) {
-    return runInBusinessExecution(t2ExecutionId(requestId), () => runAssistant({ ...input, requestId }, ports));
+    // Lot 87A (P7, RUN-04, R53) : configuration IA figée au démarrage de la
+    // demande — tous ses appels (compréhension, réponse, revalidation)
+    // utilisent la même ; un import ou une activation pendant la demande ne
+    // vaut que pour les demandes suivantes.
+    return runInBusinessExecution(t2ExecutionId(requestId), () => runWithConfigSnapshot('T2', () => runAssistant({ ...input, requestId }, ports)));
   }
   // Rapport des appels modèle (sécurité, réparation, escalade), partagé par
   // référence comme le budget et versé dans la trace à la fin.

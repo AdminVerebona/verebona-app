@@ -148,6 +148,8 @@ export const SEARCH_FIELDS: Readonly<Record<SearchEntityType, readonly SearchFie
     F('originalFilename', 'Nom du fichier', 'name', 0.9),
     F('documentType', 'Type de document', 'category', 0.6, 'document'),
     F('supplier', 'Émetteur', 'text', 0.8),
+    // Lot 87D : numéro de facture (données de nommage), recherchable même absent du titre.
+    F('reference', 'Numéro de facture', 'identifier', 0.95),
     F('description', 'Description', 'text', 0.7),
     F('notes', 'Notes', 'text', 0.6),
     F('content', 'Contenu indexé', 'content', 0.55),

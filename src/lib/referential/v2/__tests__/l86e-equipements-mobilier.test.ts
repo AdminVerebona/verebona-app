@@ -220,7 +220,10 @@ describe('L86E-U-06 — type affiché = type enregistré (une seule correspondan
 
   it('tiroir document (desktop et mobile) : en-tête et informations lisent le type enregistré', () => {
     const tiroir = read('src/components/assets/DocumentDrawer.tsx');
-    expect(tiroir).toMatch(/documentTypeDisplayLabel\(fullData\.documentTypeCode\)/);
+    // Lot 87D : l'en-tête passe par DocumentTypeBadge (documentTypeDisplayLabel du Type enregistré, jamais un code).
+    expect(tiroir).toMatch(/const typeCode = fullData \? fullData\.documentTypeCode : doc\.documentTypeCode;/);
+    expect(tiroir).toMatch(/<DocumentTypeBadge typeCode=\{typeCode\} \/>/);
+    expect(read('src/components/documents/DocumentTypeBadge.tsx')).toMatch(/documentTypeDisplayLabel\(typeCode\)/);
     expect(tiroir).toMatch(/\{rubricTypeLabels\(fullData\)\.type\}/);
     // Plus de « normalisation » V1 → AUTRE à l'enregistrement, ni de libellé V1.
     expect(tiroir).not.toMatch(/resolveDocumentTypeCode/);

@@ -1019,7 +1019,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                   </p>
                   <div className="flex flex-wrap gap-2">
                     {item.fileLinks.map((l) => {
-                      const displayName = displayDocumentTitle(l, `Doc #${l.assetFileId}`);
+                      // Lot 87D : titre calculé par le serveur (règle unique des vues).
+                      const displayName = (l as { title?: string | null }).title || displayDocumentTitle(l, `Doc #${l.assetFileId}`);
                       return (
                         <button
                           key={l.assetFileId}

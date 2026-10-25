@@ -215,7 +215,8 @@ scenario('L86C', 'Contrats : doublons, fausses dates de fin et autoréparation',
     const h0 = (await k.historique(c));
     // À blanc : constat, AUCUNE écriture métier.
     await campagne([c.id], 'DRY_RUN');
-    expect(await preuve(c.id, 'COH-OPS-IDENTITY', b.op)).toMatchObject({ last_result: 'WOULD_REPAIR', rules_version: 2 });
+    // Lot 87B (test corrigé) : COH-OPS-IDENTITY v3 (réévaluation sémantique T3).
+    expect(await preuve(c.id, 'COH-OPS-IDENTITY', b.op)).toMatchObject({ last_result: 'WOULD_REPAIR', rules_version: 3 });
     expect(await k.actives(c)).toHaveLength(2);
     expect((await k.historique(c))).toBe(h0);
     // Correctif : réexamen T3 ciblé → fusion existante (la plus ancienne reste), sans IA.

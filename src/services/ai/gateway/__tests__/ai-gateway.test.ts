@@ -88,13 +88,19 @@ describe('repli et résilience (§11.4)', () => {
     expect(res.model).toBe('gemini-3.5-flash');
   });
 
-  it('remonte une erreur exploitable lorsque tous les modèles échouent', async () => {
-    fake.onAny(() => { throw new Error('panne fournisseur'); });
+  it('remonte une erreur exploitable lorsque tous les modèles échouent (indisponibilité 503 : chaîne entière)', async () => {
+    fake.onAny(() => { throw Object.assign(new Error('503 Service Unavailable'), { status: 503 }); });
     await expect(AiGateway.execute(request())).rejects.toMatchObject({
       code: 'ALL_MODELS_FAILED', recoverable: true,
     });
-    // Le nominal et les deux replis ont bien été tentés.
+    // Panne propre au modèle (CDC P7 §8) : le nominal et les deux replis ont été tentés.
     expect(fake.calls).toHaveLength(3);
+  });
+
+  it('lot 87A (R10, R57) — cause indéterminée : nominal + UN SEUL essai alternatif, jamais toute la chaîne', async () => {
+    fake.onAny(() => { throw new Error('panne fournisseur'); });
+    await expect(AiGateway.execute(request())).rejects.toMatchObject({ code: 'ALL_MODELS_FAILED', recoverable: true });
+    expect(fake.calls).toHaveLength(2);
   });
 });
 

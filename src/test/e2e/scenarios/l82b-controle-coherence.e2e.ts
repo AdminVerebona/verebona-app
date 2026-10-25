@@ -65,6 +65,10 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
       await sql`INSERT INTO document_facts (account_id, file_id, extraction_id, fact_key, canonical_key, label, value_text, normalized_value, confidence, excerpt)
                 VALUES (${c.id}, ${f.id}, ${ext.id}, ${x.key}, ${x.key}, ${x.label ?? null}, ${x.value}, ${x.value}, 'certain', ${`${x.label ?? x.key} : ${x.value}`})`;
     }
+    // Lot 87D : comme en fin d'analyse T1 réelle, le titre est contrôlé par le service de nommage
+    // (sinon le contrôle COH-DOC-TITLES reprendrait ce document « jamais contrôlé »).
+    const { ensureBusinessTitle } = await import('@/services/documents/document-title.service');
+    await ensureBusinessTitle({ fileId: f.id, accountId: c.id, origin: 'T1', mode: 'refresh' });
     return f.id;
   };
   /** Carte « À traiter » ouverte sur la date de fin d'un contrat. */
@@ -83,9 +87,11 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
            last_started_at, last_completed_at, last_success_at, last_result, finding, finding_streak, requested_at
       FROM coherence_object_proofs WHERE account_id = ${accountId} ORDER BY check_id, object_id`;
   const preuve = async (accountId: number, check: string, objectId: number) => (await preuves(accountId)).find((p) => p.check_id === check && p.object_id === objectId);
+  // Lot 87D : les recontrôles de titre (COH-DOC-TITLES, service de nommage) sont couverts par
+  // l87d-titres-documents.e2e.ts ; ce scénario porte sur les autres contrôles.
   const reparations = (accountId: number) => sql<Json[]>`
     SELECT check_id, object_id::int AS object_id, service, outcome, recheck_verdict, anomaly, rollback_ref, ai_calls, campaign_id::int AS campaign
-      FROM coherence_repairs WHERE account_id = ${accountId} ORDER BY id`;
+      FROM coherence_repairs WHERE account_id = ${accountId} AND check_id <> 'COH-DOC-TITLES' ORDER BY id`;
   async function campagne(scope: number[], mode: 'DRY_RUN' | 'CORRECTIVE', kind: 'MANUAL' | 'DAILY' = 'MANUAL', now = new Date()) {
     const o = await orchestrateur();
     const id = await o.startCampaign({ kind, trigger: 'e2e', mode, scopeAccountIds: scope, now });
@@ -109,7 +115,8 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     expect(camp.campaignDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     // Chaque objet attendu a sa preuve : document (classement — lot 86E —, liens), bien (TCO).
     const p = await preuves(c.id);
-    expect(p.map((x) => [x.check_id, x.object_id])).toEqual([['COH-DOC-CLASSIFICATION', f], ['COH-DOC-LINKS', f], ['COH-TCO-EXTRACTED-EXPENSES', m.id]]);
+    // Lot 87D : + titres (COH-DOC-TITLES), titre déjà contrôlé en fin d'analyse → CONSISTENT.
+    expect(p.map((x) => [x.check_id, x.object_id])).toEqual([['COH-DOC-CLASSIFICATION', f], ['COH-DOC-LINKS', f], ['COH-DOC-TITLES', f], ['COH-TCO-EXTRACTED-EXPENSES', m.id]]);
     for (const x of p) {
       expect(x).toMatchObject({ campaign: camp.id, last_trigger: 'DAILY', last_mode: 'CORRECTIVE', last_result: 'CONSISTENT', finding: null, registry_version: registryVersion() });
       expect(x.rules_version).toBe(getCheck(x.check_id)!.version);
@@ -124,13 +131,13 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     expect(row.remaining).toBeNull();
     expect(row.accounts).toMatchObject({ visited: 1, skipped: {} });
     // Lot 86E : + le document au contrôle de classement.
-    expect(row.metrics).toMatchObject({ objectsControlled: 3, aiCalls: 0, repairsAttempted: 0 });
+    expect(row.metrics).toMatchObject({ objectsControlled: 4, aiCalls: 0, repairsAttempted: 0 }); // lot 87D : + COH-DOC-TITLES
     expect(row.metrics.runs).toBeGreaterThanOrEqual(1);
     expect(row.metrics.durationMs).toBeGreaterThanOrEqual(0);
     // Le lendemain (nouvelle campagne exhaustive) : les MÊMES objets, inchangés, sont recontrôlés — sans doublon de preuve.
     const camp2 = await campagne([c.id], 'CORRECTIVE');
     const p2 = await preuves(c.id);
-    expect(p2).toHaveLength(3); // lot 86E : + COH-DOC-CLASSIFICATION
+    expect(p2).toHaveLength(4); // lot 86E : + COH-DOC-CLASSIFICATION ; lot 87D : + COH-DOC-TITLES
     for (const x of p2) expect(x).toMatchObject({ campaign: camp2.id, last_result: 'CONSISTENT' });
   });
 
@@ -252,7 +259,7 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
 
   // ══ L82B-E2E-06 ═══════════════════════════════════════════════════════════
 
-  it('L82B-E2E-06 — Agenda 76H : deux représentations de la MÊME occurrence fusionnées par la projection (journal 0591) ; l’intervention distincte reste distincte', async () => {
+  it('L82B-E2E-06 — Agenda 76H : deux représentations de la MÊME occurrence — lot 87B : fusionnées sur décision T4 (journal 0591), jamais par la projection ; sans T4 : constat ; l’intervention distincte reste distincte', async () => {
     const c = await compte();
     const bien = await maison(c);
     const JOUR = '2021-07-07';
@@ -278,22 +285,40 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     await persistAgendaDecisions([decisions(g, '2021-11-03')[0]] as never[], c.id, bien.id, { sourceFileId: g, analysisComplete: true });
     const evenements = () => sql<Json[]>`SELECT id, title, start_date::text AS d, business_operation_id::int AS op FROM agenda_items WHERE account_id = ${c.id} ORDER BY id`;
     expect((await evenements()).filter((e) => e.d === JOUR)).toHaveLength(2);
-    // Constat à blanc d'abord, puis correction.
-    await campagne([c.id], 'DRY_RUN');
+    // Lot 87B (test corrigé) : la fusion n'est plus décidée par la projection (provenance + type + date) — décision T4.
+    // a) Contrat T4 multi-événements non livré (production) : constat qualifié, AUCUNE fusion, même en correctif.
     const [op] = (await k.actives(c)).filter((x) => x.realized_date === JOUR);
-    expect(await preuve(c.id, 'COH-AGENDA-OCCURRENCES', op.id)).toMatchObject({ last_result: 'WOULD_REPAIR', finding: expect.objectContaining({ anomaly: 'DUPLICATE_OCCURRENCE' }) });
     await campagne([c.id], 'CORRECTIVE');
-    const ev = await evenements();
-    expect(ev.filter((e) => e.d === JOUR)).toEqual([expect.objectContaining({ op: op.id })]);
-    expect(ev.filter((e) => e.d === '2021-11-03')).toHaveLength(1);
-    expect(await preuve(c.id, 'COH-AGENDA-OCCURRENCES', op.id)).toMatchObject({ last_result: 'REPAIRED' });
-    const journal = await sql<Json[]>`SELECT kind, correlation_id FROM agenda_intervention_consolidations WHERE account_id = ${c.id} ORDER BY id`;
-    expect(journal.map((x) => x.kind)).toContain('ABSORB');
-    expect(journal.every((x) => String(x.correlation_id).startsWith('coherence:manual-'))).toBe(true);
-    // Rejoué : rien de plus (idempotent), aucune nouvelle consolidation.
-    await campagne([c.id], 'CORRECTIVE');
-    expect(await sql`SELECT count(*)::int AS n FROM agenda_intervention_consolidations WHERE account_id = ${c.id}`).toEqual([{ n: journal.length }]);
-    expect(await preuve(c.id, 'COH-AGENDA-OCCURRENCES', op.id)).toMatchObject({ last_result: 'CONSISTENT' });
+    expect(await preuve(c.id, 'COH-AGENDA-OCCURRENCES', op.id)).toMatchObject({ finding: expect.objectContaining({ anomaly: 'REPRESENTATION_DECISION_UNAVAILABLE' }) });
+    expect((await evenements()).filter((e) => e.d === JOUR)).toHaveLength(2);
+    // b) T4 disponible (fournisseur simulé : même occurrence) : constat à blanc d'abord, puis correction.
+    const decideur = await import('@/services/business-operations/semantic/decider');
+    decideur.__setRepresentationDeciderForTests({
+      capability: async () => ({ available: true, version: 'simule-82b', reason: 'AVAILABLE' }),
+      decide: async ({ input }) => {
+        const items = input.agendaItems.filter((i) => i.inScope);
+        return { traceId: null, output: { task: 'AGENDA_REPRESENTATION', outcome: 'DECIDED', reason: 'simulé', restorations: [],
+          occurrences: [{ items: items.map((i) => i.ref), keep: items[0].ref, role: 'PRINCIPAL', confidence: 'certain', evidence: [], reason: 'même occurrence' }] } };
+      },
+    });
+    try {
+      await campagne([c.id], 'DRY_RUN');
+      expect(await preuve(c.id, 'COH-AGENDA-OCCURRENCES', op.id)).toMatchObject({ last_result: 'WOULD_REPAIR', finding: expect.objectContaining({ anomaly: 'REPRESENTATION_DECISION_REQUIRED' }) });
+      await campagne([c.id], 'CORRECTIVE');
+      const ev = await evenements();
+      expect(ev.filter((e) => e.d === JOUR)).toEqual([expect.objectContaining({ op: op.id })]);
+      expect(ev.filter((e) => e.d === '2021-11-03')).toHaveLength(1);
+      expect(await preuve(c.id, 'COH-AGENDA-OCCURRENCES', op.id)).toMatchObject({ last_result: 'REPAIRED' });
+      const journal = await sql<Json[]>`SELECT kind, correlation_id FROM agenda_intervention_consolidations WHERE account_id = ${c.id} ORDER BY id`;
+      expect(journal.map((x) => x.kind)).toContain('ABSORB');
+      expect(journal.every((x) => String(x.correlation_id).startsWith('coherence:manual-'))).toBe(true);
+      // Rejoué : rien de plus (idempotent), aucune nouvelle consolidation.
+      await campagne([c.id], 'CORRECTIVE');
+      expect(await sql`SELECT count(*)::int AS n FROM agenda_intervention_consolidations WHERE account_id = ${c.id}`).toEqual([{ n: journal.length }]);
+      expect(await preuve(c.id, 'COH-AGENDA-OCCURRENCES', op.id)).toMatchObject({ last_result: 'CONSISTENT' });
+    } finally {
+      decideur.__setRepresentationDeciderForTests(null);
+    }
   });
 
   // ══ L82B-E2E-07 ═══════════════════════════════════════════════════════════
@@ -361,8 +386,8 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     expect(r0).toMatchObject({ status: 'RUNNING', done: false, controlled: 0 });
     for (let i = 0; i < 30 && !(await o.runCampaignStep(id, { deadline: Date.now() + 60_000 })).done; i++) { /* reprise */ }
     expect(await o.getCampaign(id)).toMatchObject({ status: 'COMPLETE' });
-    // 3 documents × (liens, classement — lot 86E) + 3 biens (TCO).
-    expect((await preuves(c.id)).filter((x) => x.campaign === id)).toHaveLength(9);
+    // 3 documents × (liens, classement — lot 86E —, titres — lot 87D) + 3 biens (TCO).
+    expect((await preuves(c.id)).filter((x) => x.campaign === id)).toHaveLength(12);
     // 2. Échéance dépassée avant la fin : PARTIAL (reste consigné), jamais COMPLETE.
     const passe = await o.startCampaign({ kind: 'MANUAL', trigger: 'e2e', mode: 'CORRECTIVE', scopeAccountIds: [c.id], deadlineAt: new Date(Date.now() - 1000) });
     const r1 = await o.runCampaignStep(passe, { deadline: Date.now() + 60_000 });
@@ -378,16 +403,16 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
       return original(ctx, accountId, ids);
     });
     try {
-      const camp = await campagne([c.id], 'CORRECTIVE');
-      expect(camp.status).toBe('PARTIAL');
-      const [x2] = await sql<Json[]>`SELECT coverage, remaining FROM coherence_campaigns WHERE id = ${camp.id}`;
-      expect(x2.remaining).toMatchObject({ reason: 'OBJECTS_STILL_FAILING', failingObjects: 1 });
-      expect(x2.coverage['COH-TCO-EXTRACTED-EXPENSES']).toMatchObject({ expected: 3, remaining: 1 });
-      const p = await preuve(c.id, 'COH-TCO-EXTRACTED-EXPENSES', biens[1].id);
-      expect(p).toMatchObject({ last_result: 'ERROR', campaign: camp.id });
-      // Lancé, achevé, mais PAS réussi pendant cette campagne.
-      expect(new Date(p!.last_success_at).getTime()).toBeLessThan(camp.startedAt.getTime());
-      expect(await preuve(c.id, 'COH-TCO-EXTRACTED-EXPENSES', biens[0].id)).toMatchObject({ last_result: 'CONSISTENT' });
+        const camp = await campagne([c.id], 'CORRECTIVE');
+        expect(camp.status).toBe('PARTIAL');
+        const [x2] = await sql<Json[]>`SELECT coverage, remaining FROM coherence_campaigns WHERE id = ${camp.id}`;
+        expect(x2.remaining).toMatchObject({ reason: 'OBJECTS_STILL_FAILING', failingObjects: 1 });
+        expect(x2.coverage['COH-TCO-EXTRACTED-EXPENSES']).toMatchObject({ expected: 3, remaining: 1 });
+        const p = await preuve(c.id, 'COH-TCO-EXTRACTED-EXPENSES', biens[1].id);
+        expect(p).toMatchObject({ last_result: 'ERROR', campaign: camp.id });
+        // Lancé, achevé, mais PAS réussi pendant cette campagne.
+        expect(new Date(p!.last_success_at).getTime()).toBeLessThan(camp.startedAt.getTime());
+        expect(await preuve(c.id, 'COH-TCO-EXTRACTED-EXPENSES', biens[0].id)).toMatchObject({ last_result: 'CONSISTENT' });
     } finally {
       espion.mockRestore();
     }
@@ -453,12 +478,12 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     const bus = await import('@/services/verebona-assistant/events/business-events');
     await registerCoherenceTriggers();
     try {
-      await bus.emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId: c.id, entityId: f });
-      let p: Json | undefined;
-      for (let i = 0; i < 50 && !(p = await preuve(c.id, 'COH-DOC-LINKS', f))?.requested_at; i++) await new Promise((r) => setTimeout(r, 50));
-      expect(p).toMatchObject({ object_type: 'document' });
-      expect(p!.requested_at).not.toBeNull();
-      expect((await preuve(c.id, 'COH-TCO-EXTRACTED-EXPENSES', m.id))?.requested_at).not.toBeNull();
+        await bus.emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId: c.id, entityId: f });
+        let p: Json | undefined;
+        for (let i = 0; i < 50 && !(p = await preuve(c.id, 'COH-DOC-LINKS', f))?.requested_at; i++) await new Promise((r) => setTimeout(r, 50));
+        expect(p).toMatchObject({ object_type: 'document' });
+        expect(p!.requested_at).not.toBeNull();
+        expect((await preuve(c.id, 'COH-TCO-EXTRACTED-EXPENSES', m.id))?.requested_at).not.toBeNull();
     } finally {
       bus.resetBusinessEventsForTests();
       (await import('@/services/ai/source-analysis/events')).clearSourceAnalyzedHandlers();

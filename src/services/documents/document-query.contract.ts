@@ -21,7 +21,7 @@
  * est structurelle, pas une discipline à tenir à chaque route.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 
 /** Tri unique, appliqué à toutes les catégories (§8.3). */
 export type DocumentSort = 'createdAt' | 'documentDate' | 'title';
@@ -152,10 +152,13 @@ export function resolveTitle(doc: {
   webLinkTitle: string | null;
   originalFilename: string | null;
   fileName: string | null;
+  s3Key?: string | null;
+  publicId?: string | null;
 }): string {
   // Lot 33C (AC8) : titre métier → nom original exploitable → nom technique
-  // en dernier recours (`displayDocumentTitle`, règle partagée).
-  return displayDocumentTitle(doc, 'Document sans titre');
+  // en dernier recours. Lot 87D : règle UNIQUE de toutes les vues
+  // (`documentTitleFromRecord`), identifiants techniques compris.
+  return documentTitleFromRecord({ ...doc, filename: doc.fileName, publicId: doc.publicId == null ? null : String(doc.publicId) }, 'Document sans titre');
 }
 
 /** Bornes de pagination, avec des valeurs sûres. */

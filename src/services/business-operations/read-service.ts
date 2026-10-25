@@ -14,6 +14,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
+import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
 import type { BusinessOperationStatus, BusinessOperationTypeCode, FinancialComponentKind, SourceKind, SourceRole } from './model';
 import { resolveOperationEconomicDates, type EconomicDateResolution } from './finance/economic-date';
 import { readEconomicDateEvidence } from './finance/economic-date-evidence';
@@ -282,7 +283,7 @@ export class BusinessOperationReadService {
     const docs = await rows(this.runner, sql`
       SELECT s.operation_id, s.source_role, f.id AS file_id, f.amount_cents, f.document_type_code,
              f.document_date::text AS document_date,
-             coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title
+             ${sql.raw(documentTitleColumnsSql('f'))}
         FROM business_operation_sources s
         JOIN asset_files f ON f.account_id = s.account_id AND f.id::text = s.source_entity_key AND f.deleted_at IS NULL
        WHERE s.operation_id = ANY(${liste}::bigint[]) AND s.account_id = ${accountId} AND s.active AND s.source_kind = 'DOCUMENT'
@@ -335,7 +336,8 @@ export class BusinessOperationReadService {
         documents: docs.filter(mine).map((d) => ({
           fileId: Number(d.file_id),
           role: (d.source_role as SourceRole | null) ?? null,
-          title: String(d.title),
+          // Lot 87D : titre par la règle unique des vues (liste, fiche, recherche).
+          title: documentTitleOf(d),
           date: (d.document_date as string | null) ?? null,
           amountCents: num(d.amount_cents),
           documentTypeCode: (d.document_type_code as string | null) ?? null,
@@ -384,10 +386,10 @@ export class BusinessOperationReadService {
     if (!t?.ok) return [];
     const r = await rows(this.runner, sql`
       SELECT a.operation_id, a.nature, a.kind, a.amount_minor, a.currency, a.amount_eur_cents, f.id AS file_id,
-             coalesce(nullif(f.retained_title, ''), f.original_filename) AS title
+             ${sql.raw(documentTitleColumnsSql('f'))}
         FROM business_operation_side_amounts a
         LEFT JOIN LATERAL (
-          SELECT f.id, f.retained_title, f.original_filename FROM business_operation_sources s
+          SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id FROM business_operation_sources s
             JOIN asset_files f ON f.account_id = s.account_id AND f.id::text = s.source_entity_key AND f.deleted_at IS NULL
            WHERE s.id = ANY(a.source_ids) AND s.account_id = a.account_id AND s.active AND s.source_kind = 'DOCUMENT'
            ORDER BY s.id LIMIT 1) f ON TRUE
@@ -395,7 +397,7 @@ export class BusinessOperationReadService {
        ORDER BY a.operation_id, a.nature, a.id`);
     return r.map((x) => ({
       operationId: Number(x.operation_id), nature: String(x.nature), kind: String(x.kind), amountMinor: Number(x.amount_minor),
-      currency: String(x.currency).trim(), amountEurCents: num(x.amount_eur_cents), fileId: num(x.file_id), title: (x.title as string | null) ?? null,
+      currency: String(x.currency).trim(), amountEurCents: num(x.amount_eur_cents), fileId: num(x.file_id), title: x.file_id == null ? null : documentTitleOf(x),
     }));
   }
 

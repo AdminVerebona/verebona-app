@@ -243,7 +243,8 @@ export async function syncAiCatalog(
         import('../registry/usable-models'), import('./active-model-anomalies'), import('./model-operational.service'),
       ]);
       const ctx = await loadUsableModelsContext();
-      result.anomalies = A.detectActiveModelAnomalies(await A.loadActiveChains(), ctx);
+      // Lot 87A (INV-10) : chaque anomalie reliée au secours admissible.
+      result.anomalies = A.detectActiveModelAnomalies(await A.loadActiveChains(), ctx, await A.loadSecoursContext());
       const diagnostics = result.anomalies.length ? await loadOperationalDiagnostics(secret ?? null) : new Map();
       await A.raiseActiveModelAlerts(result.anomalies, now, deps.raiseAlert, diagnostics);
     } catch (e) {

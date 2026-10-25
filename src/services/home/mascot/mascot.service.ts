@@ -29,13 +29,14 @@ import { buildPresentation, contextHashOf } from './presentation';
 import { buildT6Input } from './t6-contract';
 import {
   evaluateWithT6, formulateWithT6, logT6, t6EvaluationConfig, t6EvaluationDefaultDeps, t6EvaluationRecentlyFailed,
-  t6SuggestionRefsAvailable, t6SuggestionsAvailable, type T6Mode,
+  t6SuggestionGroundsAvailable, t6SuggestionTraceOf, type T6Mode,
 } from './t6-runner';
 import type { MascotPresentation } from './types';
 import { composeSpeech, documentsInAnalysis, parisDay, tileFor } from './bubble';
 import { MAX_TODO_ITEMS, buildTodoBlock } from './todo-items';
 import { readDuoInvite } from './duo-invite';
 import { loadT6SuggestionContext, suggestionAgendaOf, suggestionSecondaries, type T6SuggestionBundle } from './t6-suggestions';
+import { suggestionGroundsOf } from './t6-suggestion-grounds';
 import {
   T6_RUN_LOADERS, prepareT6Interpellation, t6EvaluationTraceOf, t6ThresholdDays, writeT6EvaluationReport, writeT6InterpellationReport,
   type T6EvaluationProgress, type T6Preparation,
@@ -82,9 +83,9 @@ export async function getMascotPresentation(
     return null;
   });
   // Lot 55A : le prompt T6 en service sait-il rédiger les questions (R12) ?
-  const questionsP = t6SuggestionsAvailable();
-  // Lot 72A (AC06) : … avec des références d'échéance (R12 v2, activée dans le BO) ?
-  const refsP = t6SuggestionRefsAvailable();
+  // Lot 87C (AC10) : … selon le contrat des questions FONDÉES (`t6-suggestions-v3`) ?
+  // Non (version BO ou fichier du dépôt antérieurs) : aucune question publiée.
+  const questionsP = t6SuggestionGroundsAvailable();
   try {
     raw = await collectMascotData(accountId);
   } catch (e) {
@@ -201,13 +202,16 @@ export async function getMascotPresentation(
   };
   // Bulle telle qu'affichée sans reformulation (texte déterministe).
   const secours = buildPresentation({ subjects, secondaries: baseSecondaries, messages: null, ...commun });
-  const rapport = (p: import('./types').MascotPresentation, status: string | null, promptVersion: string | null) =>
+  const rapport = (
+    p: import('./types').MascotPresentation, status: string | null, promptVersion: string | null,
+    suggestions: import('./t6-interpellation.service').T6FormulateTrace['suggestions'] = null,
+  ) =>
     void writeT6InterpellationReport({
       accountId, userId, mode, prep: interpellation,
       formulate: {
         promptVersion, contract: 't6-output-v2', transmitted: subjects.map((x) => x.subjectId),
         displayed: p.paragraphs.filter((x) => x.sourceCode !== 'CLEAR').map((x) => x.subjectId),
-        source: p.source, status, presentation: p.state?.kind ?? null,
+        source: p.source, status, presentation: p.state?.kind ?? null, suggestions,
       },
     });
 
@@ -217,7 +221,8 @@ export async function getMascotPresentation(
   let questions: T6SuggestionBundle | null = null;
   // Lot 81B (A) : formulation plafonnée — ni questions ni FORMULATE.
   const formuler = opts.formulate !== false && t6Permis;
-  if (formuler && !candidates.degraded && await questionsP) {
+  const questionsPermises = await questionsP;
+  if (formuler && !candidates.degraded && questionsPermises) {
     const speech = composeSpeech({ presentation: secours, empty: false }).text;
     const attentionToday = (secours.state?.actions ?? 0) > 0;
     // Lot 60 / 61 : questions construites sur la SÉLECTION RETENUE — une
@@ -232,15 +237,22 @@ export async function getMascotPresentation(
     const ecarteesT6 = suggestionAgendaOf(raw.t6Agenda ?? [], interpellation).excluded;
     questions = await loadT6SuggestionContext(accountId, {
       speech, attentionToday, agenda: raw.agenda ? sel.agenda : null, today: raw.today ?? parisDay(),
-      excluded: [...sel.excluded, ...ecarteesT6], signaledIds: sel.signaledIds, structuredRefs: await refsP,
+      excluded: [...sel.excluded, ...ecarteesT6], signaledIds: sel.signaledIds,
+      // Lot 87C : fondements canoniques DÉJÀ lus par la décision T6 du passage
+      // (preuves, décision conservée et fraîche, démarche établie ou non).
+      grounds: suggestionGroundsOf(interpellation),
     });
   }
 
   // RUN-013 : rien à formuler ni à suggérer — pas de FORMULATE. Lot 71G :
   // évaluation en cours de reprise (pré-génération) — la situation n'est pas
   // stable, la formulation attend le passage qui l'achève (aucun appel inutile).
+  // Lot 87C : prompt sans le contrat des questions fondées — tracé comme tel.
+  const sansContrat = formuler && !candidates.degraded && !questionsPermises
+    ? { supported: false, contract: null, source: 'none' as const, produced: 0, accepted: 0, rejected: 0, invalidated: 0, reasons: {} }
+    : null;
   if ((subjects.length === 0 && !questions) || reprise || !formuler) {
-    rapport(secours, null, null);
+    rapport(secours, null, null, sansContrat);
     return withRefreshHint(secours, interpellation);
   }
 
@@ -248,11 +260,24 @@ export async function getMascotPresentation(
   // Nature de la tuile de chaque sujet (pose graduée) : nuances R9 du master T6.
   const kinds = subjects.map((s) => tileFor(s, raw.today ?? parisDay(), tiles).kind);
   const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds, suggestions: questions });
-  void logT6({ accountId, contextHash, mode, outcome, input, suggestionContext: questions?.context });
+  void logT6({
+    accountId, contextHash, mode, outcome, input, suggestionContext: questions?.context,
+    // Lot 87C : trace des questions (contrat, produites / acceptées / rejetées, motifs, fondements).
+    suggestionReport: t6SuggestionTraceOf(outcome, { requested: !!questions, promptSupported: questionsPermises }),
+  });
   // Questions de la MÊME sortie que les textes : indisponibles → aucune.
+  // Zéro question est un résultat normal (jamais de complément ni de catalogue).
   const secondaries = withSuggestedQuestions(baseSecondaries, subjects, suggestionSecondaries(outcome.suggestions ?? []));
   const finale = buildPresentation({ subjects, secondaries, messages: outcome.messages, ...commun });
-  rapport(finale, outcome.status, outcome.promptVersion);
+  const v = outcome.suggestionValidation ?? null;
+  const reasons: Record<string, number> = {};
+  for (const x of v?.rejected ?? []) reasons[x.reason] = (reasons[x.reason] ?? 0) + 1;
+  rapport(finale, outcome.status, outcome.promptVersion, sansContrat ?? (questions ? {
+    supported: true, contract: questions.contract ?? null,
+    source: outcome.status === 'generated' ? 'generated' : outcome.status === 'cache_hit' ? 'cache' : 'none',
+    produced: v?.produced ?? 0, accepted: outcome.suggestions?.length ?? 0, rejected: v?.rejected.length ?? 0,
+    invalidated: outcome.suggestionsInvalidated ?? 0, reasons,
+  } : null));
   return withRefreshHint(finale, interpellation);
 }
 

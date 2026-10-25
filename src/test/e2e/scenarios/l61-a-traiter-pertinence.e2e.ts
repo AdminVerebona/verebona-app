@@ -509,6 +509,10 @@ scenario('L61-ATR', 'À traiter : écarts 58B et pertinence des cartes (ATR-R-01
     // Aucune suppression physique : les cartes retirées restent (audit).
     expect(await cartes(titre)).toHaveLength(1);
     // Rejouée : aucune nouvelle réparation, aucun doublon.
+    // Intégration lot 87 : le contrôle des titres (87D, fin de registre) normalise les titres automatiques
+    // au premier passage ; les décisions qui lisent le titre se réalignent au passage suivant. Idempotence
+    // vérifiée une fois la campagne convergée.
+    await runCoherenceFor(sql, [compte.id]);
     const n = (await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM coherence_repairs WHERE account_id = ${compte.id}`)[0].n;
     await runCoherenceFor(sql, [compte.id]);
     expect((await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM coherence_repairs WHERE account_id = ${compte.id}`)[0].n).toBe(n);

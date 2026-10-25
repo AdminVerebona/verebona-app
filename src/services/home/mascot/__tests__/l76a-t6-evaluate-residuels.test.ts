@@ -16,6 +16,7 @@
  *        dégradés et JSON EVALUATE strict préservés
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { decisionAction, fonde, masterV3 } from './fixtures/t6-suggestions-v3';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -330,93 +331,92 @@ describe('L76A-T6 P1 — signature de configuration EVALUATE complète', () => {
 });
 
 // ── P2 — suggestions T2 ─────────────────────────────────────────────────────
+// Lot 87C : questions au contrat `t6-suggestions-v3` (sujet, finalité, décision,
+// fondements) — les contrôles du TEXTE des lots 72A / 76A restent appliqués.
 
 describe('L76A-T6 P2 — contrôle des suggestions avec deadlineRef', () => {
   const ct = ligne(1, { title: 'Contrôle technique', date: '2026-11-02', assetId: 2, assetName: 'Clio' });
   const ramonage = ligne(2, { title: 'Ramonage', date: '2027-03-01', assetId: 1 });
   const assurance = ligne(3, { title: 'Assurance habitation', date: '2026-11-05', assetId: 1 });
-  const bundle = (structuredRefs = true, o: Partial<Parameters<typeof Q.buildT6SuggestionContext>[0]> = {}) => Q.buildT6SuggestionContext({
+  // D1 signalée, démarche identifiée par T6 et ÉTABLIE (preuve concrète disponible).
+  const fondements = new Map([[1, { decision: decisionAction('Prendre rendez-vous au centre de contrôle', true) }], [4, { decision: decisionAction('Préparer le paiement', true) }]]);
+  const bundle = (o: Partial<Parameters<typeof Q.buildT6SuggestionContext>[0]> = {}) => Q.buildT6SuggestionContext({
     speech: 'Le contrôle technique de la Clio est à prévoir pour le 2 novembre 2026.', attentionToday: true,
     state: { documentsTotal: 2, deadlinesUpcoming: 3, deadlinesSoon: 2 }, operations: 0,
     assets: [{ id: 1, name: 'Maison', documents: 2, deadlines: 2 }, { id: 2, name: 'Clio', documents: 1, deadlines: 1 }],
-    agenda: [ct, ramonage], excluded: [assurance], signaledIds: new Set([1]), today: TODAY, structuredRefs,
-    labelOf: (x) => x.title, formatDate: (d) => d, ...o,
+    agenda: [ct, ramonage], excluded: [assurance], signaledIds: new Set([1]), today: TODAY,
+    labelOf: (x) => x.title, formatDate: (d) => d, grounds: fondements, ...o,
   });
-  const valider = (items: unknown[], b = bundle()) => Q.validateT6Suggestions(items, b.assetIds, b).map((x) => x.question);
+  type Item = [question: string, refs: string[], over?: Parameters<typeof fonde>[3]];
+  const valider = (items: Item[], b = bundle()) => Q.validateT6Suggestions(items.map(([q, r, o]) => fonde(b, q, r, o)), b.assetIds, b).map((x) => x.question);
+  const preparer = { purpose: 'PREPARE' } as const;
 
   it('AC06 — cas du ticket : question sur l’assurance habitation (exclue) avec deadlineRef D1 autorisé → rejetée', () => {
-    expect(valider([{ question: 'Comment préparer le renouvellement de l’assurance habitation ?', assetRef: null, deadlineRef: 'D1', purpose: 'PREPARE' }])).toEqual([]);
-    expect(valider([{ question: 'Quand est prévue l’assurance habitation ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' }])).toEqual([]);
+    expect(valider([['Comment préparer le renouvellement de l’assurance habitation ?', ['D1', 'D1.ACTION'], preparer]])).toEqual([]);
+    expect(valider([['Quand est prévue l’assurance habitation ?', ['D2']]])).toEqual([]);
     // La question légitime sur D1 reste proposée.
-    expect(valider([{ question: 'Que dois-je préparer pour le contrôle technique ?', assetRef: 'A2', deadlineRef: 'D1', purpose: 'PREPARE' }]))
+    expect(valider([['Que dois-je préparer pour le contrôle technique ?', ['D1', 'D1.ACTION'], { ...preparer, assetRef: 'A2' }]]))
       .toEqual(['Que dois-je préparer pour le contrôle technique ?']);
   });
 
   it('AC07 — assetRef incompatible avec l’échéance référencée, ou bien cité d’un autre bien : rejetée', () => {
     const b = bundle();
     expect(b.context.nextDeadlines[0]).toMatchObject({ ref: 'D1', assetRef: 'A2' });
-    expect(valider([{ question: 'Que dois-je préparer pour le contrôle technique ?', assetRef: 'A1', deadlineRef: 'D1', purpose: 'PREPARE' }])).toEqual([]);
-    expect(valider([{ question: 'Que dois-je préparer pour le contrôle technique de la Maison ?', assetRef: null, deadlineRef: 'D1', purpose: 'PREPARE' }])).toEqual([]);
+    expect(valider([['Que dois-je préparer pour le contrôle technique ?', ['D1', 'D1.ACTION'], { ...preparer, assetRef: 'A1' }]])).toEqual([]);
+    expect(valider([['Que dois-je préparer pour le contrôle technique de la Maison ?', ['D1', 'D1.ACTION'], preparer]])).toEqual([]);
     // Échéance sans bien : aucune référence de bien n'est cohérente.
-    const sansBien = bundle(true, { agenda: [ligne(4, { title: 'Taxe foncière', date: '2026-11-10', assetId: null, assetName: null })], signaledIds: new Set([4]) });
-    expect(valider([{ question: 'Comment préparer la taxe foncière ?', assetRef: 'A1', deadlineRef: 'D1', purpose: 'PREPARE' }], sansBien)).toEqual([]);
-    expect(valider([{ question: 'Comment préparer la taxe foncière ?', assetRef: null, deadlineRef: 'D1', purpose: 'PREPARE' }], sansBien)).toEqual(['Comment préparer la taxe foncière ?']);
+    const sansBien = bundle({ agenda: [ligne(4, { title: 'Taxe foncière', date: '2026-11-10', assetId: null, assetName: null })], signaledIds: new Set([4]) });
+    expect(valider([['Comment préparer la taxe foncière ?', ['D1', 'D1.ACTION'], { ...preparer, assetRef: 'A1' }]], sansBien)).toEqual([]);
+    expect(valider([['Comment préparer la taxe foncière ?', ['D1', 'D1.ACTION'], preparer]], sansBien)).toEqual(['Comment préparer la taxe foncière ?']);
     // Cohérent : bien de l'échéance, par référence ou par son nom.
-    expect(valider([{ question: 'Quand passer le contrôle technique de la Clio ?', assetRef: 'A2', deadlineRef: 'D1', purpose: 'CONSULT' }])).toHaveLength(1);
+    expect(valider([['Quand passer le contrôle technique de la Clio ?', ['D1'], { assetRef: 'A2' }]])).toHaveLength(1);
   });
 
   it('AC08 — incitation à agir déclarée à tort CONSULT sur une échéance non signalée : rejetée', () => {
-    expect(valider([{ question: 'Comment préparer le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' }])).toEqual([]);
-    expect(valider([{ question: 'Dois-je anticiper le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' }])).toEqual([]);
-    expect(valider([{ question: 'Faut-il organiser le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' }])).toEqual([]);
+    expect(valider([['Comment préparer le ramonage ?', ['D2']]])).toEqual([]);
+    expect(valider([['Dois-je anticiper le ramonage ?', ['D2']]])).toEqual([]);
+    expect(valider([['Faut-il organiser le ramonage ?', ['D2']]])).toEqual([]);
     // Consultation libre conservée.
-    expect(valider([{ question: 'Quand est prévu le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' }])).toEqual(['Quand est prévu le ramonage ?']);
+    expect(valider([['Quand est prévu le ramonage ?', ['D2']]])).toEqual(['Quand est prévu le ramonage ?']);
   });
 
   it('AC08 — paraphrase sans rattachement vérifiable (libellé de l’échéance référencée absent) : rejetée', () => {
-    expect(valider([{ question: 'Quand dois-je passer le CT de ma voiture ?', assetRef: 'A2', deadlineRef: 'D1', purpose: 'PREPARE' }])).toEqual([]);
-    expect(valider([{ question: 'Quand est prévue la révision ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' }])).toEqual([]);
+    expect(valider([['Quand dois-je passer le CT de ma voiture ?', ['D1', 'D1.ACTION'], { ...preparer, assetRef: 'A2' }]])).toEqual([]);
+    expect(valider([['Quand est prévue la révision ?', ['D2']]])).toEqual([]);
     // Texte d'une AUTRE échéance transmise sous la référence D1 : contradiction.
-    expect(valider([{ question: 'Que préparer pour le contrôle technique et le ramonage ?', assetRef: null, deadlineRef: 'D1', purpose: 'PREPARE' }])).toEqual([]);
+    expect(valider([['Que préparer pour le contrôle technique et le ramonage ?', ['D1', 'D1.ACTION'], preparer]])).toEqual([]);
     // Finalité absente, inconnue, référence inconnue : jamais acceptée.
     expect(valider([
-      { question: 'Quand est prévu le ramonage ?', deadlineRef: 'D2' },
-      { question: 'Quand est prévu le ramonage ?', deadlineRef: 'D2', purpose: 'INFORM' },
-      { question: 'Quand est prévu le ramonage ?', deadlineRef: 'D7', purpose: 'CONSULT' },
+      ['Quand est prévu le ramonage ?', ['D2'], { purpose: null }],
+      ['Quand est prévu le ramonage ?', ['D2'], { purpose: 'INFORM' }],
+      ['Quand est prévu le ramonage ?', ['D2'], { deadlineRef: 'D7' }],
     ])).toEqual([]);
   });
 
   it('AC08 — questions générales pertinentes conservées', () => {
     expect(valider([
-      { question: 'Quelles sont mes prochaines échéances ?', assetRef: null, deadlineRef: null, purpose: null },
-      { question: 'Quels documents sont rattachés à la Clio ?', assetRef: 'A2', deadlineRef: null, purpose: null },
+      ['Quelles sont mes prochaines échéances ?', ['ACC.DEADLINES']],
+      ['Quels documents sont rattachés à la Clio ?', ['A2', 'A2.DOCS'], { assetRef: 'A2' }],
     ])).toEqual(['Quelles sont mes prochaines échéances ?', 'Quels documents sont rattachés à la Clio ?']);
   });
 
   it('AC09 — revalidation après changement d’éligibilité (relecture du cache) : questions de l’échéance devenue exclue écartées', () => {
     const avant = bundle();
-    const q = { question: 'Quand est prévu le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' };
-    expect(valider([q], avant)).toHaveLength(1);
+    expect(valider([['Quand est prévu le ramonage ?', ['D2']]], avant)).toHaveLength(1);
     // Le ramonage est désormais écarté (décision T6, report, refus) : contexte courant.
-    const apresEcart = bundle(true, { agenda: [ct], excluded: [assurance, ramonage] });
-    expect(valider([q], apresEcart)).toEqual([]);
+    const apresEcart = bundle({ agenda: [ct], excluded: [assurance, ramonage] });
+    expect(valider([['Quand est prévu le ramonage ?', ['D2']]], apresEcart)).toEqual([]);
     // Même relecture avec la référence D1 recopiée par erreur : rattachement non établi.
-    expect(valider([{ ...q, deadlineRef: 'D1' }], apresEcart)).toEqual([]);
+    expect(valider([['Quand est prévu le ramonage ?', ['D1']]], apresEcart)).toEqual([]);
   });
 
-  it('AC09 — ancienne version du prompt (R12 v1, sans références) : omission prudente des questions invérifiables', () => {
-    const v1 = bundle(false);
-    expect(v1.context.schemaVersion).toBe('t6-suggestions-v1');
-    expect(valider([
-      { question: 'Comment préparer le renouvellement de l’assurance habitation ?', assetRef: null },
-      // Incitation sur une échéance transmise mais NON signalée : invérifiable en v1, omise.
-      { question: 'Comment préparer le ramonage ?', assetRef: null },
-      { question: 'Quand est prévu le ramonage ?', assetRef: null },
-      // Échéance signalée : préparer reste proposé.
-      { question: 'Que dois-je préparer pour le contrôle technique ?', assetRef: null },
-      // Une référence d'échéance n'existe pas en v1 : invérifiable.
-      { question: 'Quand est prévu le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' },
-    ], v1)).toEqual(['Quand est prévu le ramonage ?', 'Que dois-je préparer pour le contrôle technique ?']);
+  it('AC09 — lot 87C : un prompt sans le contrat des questions fondées ne publie aucune question (plus de mode R12 v1)', () => {
+    expect(Q.promptSupportsSuggestionGrounds(MASTER)).toBe(false);
+    expect(Q.promptSupportsSuggestionGrounds(masterV3(MASTER))).toBe(true);
+    // Contexte sans fondements (portée historique) : rien n'est vérifiable, rien n'est publié.
+    const b = bundle();
+    const v = Q.validateT6SuggestionsDetailed([fonde(b, 'Quand est prévu le ramonage ?', ['D2'])], b.assetIds, { ...b, grounds: undefined });
+    expect(v).toMatchObject({ produced: 1, accepted: [], rejected: [{ reason: 'contract_unsupported' }] });
   });
 
   it('AC09 — R12 renforcée dans le prompt livré (branche FORMULATE seule, signature EVALUATE inchangée)', async () => {

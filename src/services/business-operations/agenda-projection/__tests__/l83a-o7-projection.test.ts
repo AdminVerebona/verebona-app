@@ -41,9 +41,15 @@ describe('L83A-U01 — clé de projection = principal (E01, E04, AC15, AC34)', (
     const actions = plan(op(), { linked: [visite] });
     expect(actions).toEqual([expect.objectContaining({ kind: 'CREATE', functionalKey: 'bo:v1:10:CLAIM' })]);
   });
-  it('AC15 : membre qui représente CERTAINEMENT l’événement global (même bien, même date, intitulé explicite) → reconnu comme principal', () => {
+  it('AC15 : membre qui représente l’événement global avec PROVENANCE exacte (source établie par T3) → reconnu comme principal ; sur de simples signaux → décision T4 (lot 87B)', () => {
+    // Lot 87B — test corrigé (CODE-04) : « même bien, même date, intitulé explicite » ne sont que des signaux —
+    // la promotion d'office était une décision sémantique du code. Décision T4 demandée, carte D14 à défaut.
     const degat = item({ id: 2, title: 'Dégâts des eaux cuisine', date: '2026-03-12' });
-    expect(plan(op(), { linked: [degat] })).toEqual([{ kind: 'LINK', itemId: 2, reason: expect.stringContaining('élément du regroupement') }]);
+    expect(plan(op(), { linked: [degat] })).toEqual([
+      expect.objectContaining({ kind: 'ABSTAIN', itemId: 2 }), { kind: 'REPRESENTATION_REQUIRED', itemIds: [2], reason: 'MEMBER_MAY_REPRESENT_EVENT' },
+    ]);
+    expect(plan(op(), { linked: [{ ...degat, agendaSourceOperationIds: [10] }] }))
+      .toEqual([{ kind: 'LINK', itemId: 2, reason: expect.stringContaining('élément du regroupement') }]);
   });
   it('un membre seulement PROBABLE (même document, autre date) ne bloque pas : aucune abstention sur une étape (§6.5)', () => {
     const etape = item({ id: 3, title: 'Rapport', date: '2026-03-25', fileIds: [77], assetIds: [] });
@@ -65,11 +71,18 @@ describe('L83A-U01 — clé de projection = principal (E01, E04, AC15, AC34)', (
   it('C16.1 / V-Q4 : propre projection INTACTE + membre qui représente CERTAINEMENT la même occurrence → la projection (vrai doublon) part, le membre devient principal ; une étape ne l’évince jamais', () => {
     const projection = item({ id: 20, title: 'Dégât des eaux', projected: true, isAutomatic: true, nature: 'HISTORICAL', businessType: 'claim',
       homeCategory: 'information', functionalKey: 'bo:v1:10:CLAIM', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
-    const saisi = item({ id: 21, title: 'Dégâts des eaux salle de bain', date: '2026-03-13', operationRoleOrigin: 'T3' });
+    // Lot 87B — test corrigé : le vrai doublon n'est établi d'office que par PROVENANCE (source AGENDA établie par T3) ;
+    // sur de simples signaux, la projection reste et T4 décide.
+    const saisi = item({ id: 21, title: 'Dégâts des eaux salle de bain', date: '2026-03-13', operationRoleOrigin: 'T3', agendaSourceOperationIds: [10] });
     expect(plan(op(), { linked: [projection, saisi] })).toEqual([
       { kind: 'REMOVE', itemId: 20, reason: 'DUPLICATE_PROJECTION' },
       { kind: 'LINK', itemId: 21, reason: expect.stringContaining('élément du regroupement') },
     ]);
+    expect(plan(op(), { linked: [projection, { ...saisi, agendaSourceOperationIds: [] }] }))
+      .toEqual([{ kind: 'REPRESENTATION_REQUIRED', itemIds: [20, 21], reason: 'MEMBER_MAY_REPRESENT_EVENT' }]);
+    // Projection qui porte une décision de l'utilisateur (lien détaché) : jamais retirée d'office.
+    expect(plan(op(), { linked: [{ ...projection, userLinkDecision: true }, saisi] }))
+      .toEqual([{ kind: 'REPRESENTATION_REQUIRED', itemIds: [20, 21], reason: 'MEMBER_MAY_REPRESENT_EVENT' }]);
     const etape = { ...saisi, title: 'Visite expert', date: '2026-03-21' };
     expect(plan(op(), { linked: [projection, etape] })).toEqual([]);
     // Projection modifiée par l'utilisateur, ou principal choisi par l'utilisateur : jamais évincé.

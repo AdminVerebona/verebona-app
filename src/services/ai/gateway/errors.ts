@@ -89,7 +89,18 @@ export type AiErrorCode =
    * AVANT tout appel fournisseur, jamais une indisponibilité de Gemini ;
    * RÉCUPÉRABLE pour la chaîne : un autre modèle (profil propre) peut convenir.
    */
-  | 'MODEL_PARAMETERS_INCOMPATIBLE';
+  | 'MODEL_PARAMETERS_INCOMPATIBLE'
+  /**
+   * Lot 87A (CDC Pilotage IA V2 P7, RUN-02, R11) : aucun secours ADMISSIBLE
+   * après une panne de disponibilité (quota, indisponibilité, délai, modèle
+   * connu indisponible, paramètre refusé, accès global) — l'exécution est
+   * SUSPENDUE sans nouvelle écriture métier. Jamais récupérable dans
+   * l'exécution (aucun modèle improvisé) : dans la file, le travail est remis
+   * en attente et repris automatiquement depuis un point sûr ; hors file,
+   * l'appelant prend son repli sans IA. Cause et décisions de secours portées
+   * par `AiSuspendedError`.
+   */
+  | 'AI_SUSPENDED';
 
 /**
  * Codes TECHNIQUES internes (lot 34D) : défaut du moteur ou de sa
@@ -100,7 +111,7 @@ export const INTERNAL_AI_ERROR_CODES: ReadonlySet<AiErrorCode> = new Set<AiError
   'RUNTIME_CONTRACT_MISMATCH', 'REQUEST_BUILD_FAILED',
   'T4_INPUT_CONTRACT_MISSING_FIELD', 'T4_INPUT_CONTRACT_INVALID_TYPE', 'T4_TASK_NOT_ALLOWED',
   'T4_OUTPUT_CONTRACT_MISSING', 'T4_CONTRACT_VERSION_NOT_FOUND', 'T4_EXECUTION_CONTEXT_BUILD_FAILED',
-  'MODEL_PARAMETERS_INCOMPATIBLE',
+  'MODEL_PARAMETERS_INCOMPATIBLE', 'AI_SUSPENDED',
 ]);
 
 /** Code interne au moteur (jamais exposé à l'utilisateur final) ? */
@@ -185,6 +196,36 @@ export class AiCostCapReachedError extends AiGatewayError {
       `Plafond IA du mois atteint pour le compte ${accountId} (${spentMicros} / ${capMicros} micro-unités) — reprise le ${resumeAt.toISOString()}.`);
     this.name = 'AiCostCapReachedError';
   }
+}
+
+/**
+ * Lot 87A (P7, RUN-02) — exécution SUSPENDUE : aucun secours admissible.
+ * `failureCause` : cause établie de la dernière panne (`fallback-policy`) ;
+ * `decisions` : chaque choix ou refus de la chaîne (rang, modèle, motif).
+ */
+export class AiSuspendedError extends AiGatewayError {
+  constructor(
+    operationCode: string,
+    message: string,
+    readonly failureCause: string,
+    readonly decisions: ReadonlyArray<Record<string, unknown>>,
+    lastFailureCode?: AiErrorCode,
+    /**
+     * Traitement de l'opération suspendue (`null` : usage technique). Une
+     * suspension n'interrompt un travail de file que pour SON traitement : un
+     * appel secondaire d'un autre traitement (T3 dans une analyse T1) garde
+     * son repli local (`execution-control#isExecutionCancelled`).
+     */
+    readonly treatment: string | null = null,
+  ) {
+    super('AI_SUSPENDED', operationCode, message, { recoverable: false, lastFailureCode });
+    this.name = 'AiSuspendedError';
+  }
+}
+
+/** Suspension IA (aucun secours admissible) ? Reconnue par son code. */
+export function isAiSuspended(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && (e as { code?: unknown }).code === 'AI_SUSPENDED';
 }
 
 /**

@@ -54,6 +54,7 @@
  *   rendrait pas l'état d'avant. La traçabilité est complète à la place.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import crypto from 'crypto';
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
@@ -206,14 +207,13 @@ class Annulation extends Error {
   constructor(readonly result: MoveResult) { super('rollback'); }
 }
 
-const docTitle = sql`coalesce(nullif(retained_title, ''), nullif(web_link_title, ''), nullif(original_filename, ''), nullif(filename, ''), 'Document')`;
-
+/** Lot 87D : titre par la règle unique des vues (liste, fiche, recherche). */
 async function titles(tx: DbTx, ids: number[]): Promise<MoveDocument[]> {
   if (!ids.length) return [];
-  const r = await rows<{ id: number; title: string }>(tx, sql`
-    SELECT id, ${docTitle} AS title FROM asset_files
-     WHERE id = ANY(${ints(ids)}) AND deleted_at IS NULL ORDER BY id`);
-  return r.map((x) => ({ id: Number(x.id), title: String(x.title) }));
+  const r = await rows<{ id: number } & DocumentTitleColumns>(tx, sql`
+    SELECT f.id, ${sql.raw(documentTitleColumnsSql('f'))} FROM asset_files f
+     WHERE f.id = ANY(${ints(ids)}) AND f.deleted_at IS NULL ORDER BY f.id`);
+  return r.map((x) => ({ id: Number(x.id), title: documentTitleOf(x) }));
 }
 
 function empreinte(p: {

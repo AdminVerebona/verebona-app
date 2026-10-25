@@ -134,8 +134,18 @@ export async function runAgendaProjectionJob(job: QueuedJob, p: AgendaProjection
     correlationId,
     beforeWrite: (what) => guard.assertActive(what),
   });
-  const detail = { accountId: p.accountId, ...res };
-  return { result: res.changes > 0 ? 'APPLIED' : 'NO_CHANGE', detail };
+  // Lot 87B (CODE-02) : une décision T3 (création, fusion, séparation, modification) a rejoué la projection ;
+  // là où plusieurs représentations restent possibles, la décision est demandée à T4 — même travail durable,
+  // plafonds existants, aucune fusion par le code.
+  let semantique: Awaited<ReturnType<typeof import('../semantic/orchestrator').reevaluateRequestedRepresentations>> | null = null;
+  if (res.representationRequired?.length) {
+    const { reevaluateRequestedRepresentations } = await import('../semantic/orchestrator');
+    semantique = await reevaluateRequestedRepresentations(p.accountId, res.representationRequired, {
+      trigger: 'T3_DECISION', correlationId, triggerRef: `t4-projection:${job.id}`, beforeWrite: (what) => guard.assertActive(what),
+    });
+  }
+  const detail = { accountId: p.accountId, ...res, ...(semantique ? { semantic: semantique } : {}) };
+  return { result: res.changes > 0 || (semantique?.applied ?? 0) > 0 ? 'APPLIED' : 'NO_CHANGE', detail };
 }
 
 /**

@@ -248,14 +248,30 @@ async function journalRepair(sql: Sql, p: {
 }): Promise<void> {
   await exec(sql, 
     `INSERT INTO coherence_repairs (campaign_id, account_id, check_id, check_version, object_type, object_id, trigger_code, anomaly, faulty_link,
-                                    service, input_hash, before_state, result, outcome, recheck_verdict, rollback_ref, error, ai_calls, duration_ms)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::jsonb, $13::text::jsonb, $14, $15, $16, $17, $18, $19)`,
+                                    service, input_hash, before_state, result, outcome, recheck_verdict, rollback_ref, error, ai_calls, duration_ms
+                                    ${(await reevaluationColumnReady(sql)) ? ', reevaluation_kind' : ''})
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::jsonb, $13::text::jsonb, $14, $15, $16, $17, $18, $19
+             ${(await reevaluationColumnReady(sql)) ? ', $20' : ''})`,
     [p.campaignId, p.accountId, p.check.id, p.check.version, p.check.objectType, p.id, p.trigger, p.inspection.anomaly ?? 'UNSPECIFIED',
       p.inspection.faultyLink ?? null, p.repair?.service ?? p.check.services[0] ?? 'unknown', p.inspection.inputHash ?? null,
       JSON.stringify(borne({ expected: p.inspection.expected, observed: p.inspection.observed, detail: p.inspection.detail })),
       p.repair ? JSON.stringify(borne(p.repair.result ?? {})) : null, p.outcome, p.recheck, p.repair?.rollbackRef ?? null,
-      p.error?.slice(0, 500) ?? null, p.aiCalls ?? p.repair?.aiCalls ?? 0, p.durationMs],
+      p.error?.slice(0, 500) ?? null, p.aiCalls ?? p.repair?.aiCalls ?? 0, p.durationMs,
+      // NULL : nature non déclarée par le contrôle (jamais présumée « technique »).
+      ...((await reevaluationColumnReady(sql)) ? [p.repair?.reevaluation ?? null] : [])],
   );
+}
+
+let colonneNature: boolean | null = null;
+/** Lot 87B : colonne `coherence_repairs.reevaluation_kind` (migration 0753) présente ? (lue une fois). */
+async function reevaluationColumnReady(sql: Sql): Promise<boolean> {
+  if (colonneNature !== null) return colonneNature;
+  try {
+    const r = await sql.unsafe(`SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                                  AND table_name = 'coherence_repairs' AND column_name = 'reevaluation_kind'`) as unknown as unknown[];
+    colonneNature = r.length > 0;
+  } catch { colonneNature = false; }
+  return colonneNature;
 }
 
 /**

@@ -29,6 +29,7 @@ import type { Treatment } from '../config/treatments';
 import { evaluateModelForTreatment, type UnusableReason, type UsableModelsContext } from '../registry/usable-models';
 import type { OperationalDiagnostic } from './model-operational.service';
 import { PROBE_ERROR_KIND_LABELS } from './probe-classification';
+import type { CoupleQualification } from '../gateway/fallback-policy';
 
 export type ChainRank = 'primaryModel' | 'fallback1' | 'fallback2';
 
@@ -43,8 +44,42 @@ export interface ActiveChainEntry {
 export interface ActiveModelAnomaly extends ActiveChainEntry {
   reasons: UnusableReason[];
   reasonText: string;
-  /** Un repli utilisable existe-t-il plus bas dans la chaîne ? */
+  /** Un repli utilisable existe-t-il plus bas dans la chaîne ? (Lot 87A : ET admissible comme secours, si l'état de qualification est connu.) */
   fallbackAvailable: boolean;
+  /**
+   * Lot 87A (P7, INV-10) — secours que la passerelle choisira pour cet usage
+   * (même règle que `fallback-policy`) : qualifié, non testé (choix de
+   * l'administrateur), ou aucun (exécutions suspendues sans écriture).
+   * Absent : état de qualification non lu.
+   */
+  secours?: AnomalySecours;
+}
+
+/** Lot 87A — secours relié à une anomalie de modèle actif (INV-10). */
+export interface AnomalySecours {
+  model: string | null;
+  decision: 'QUALIFIED' | 'MANUAL_UNTESTED' | 'NONE';
+  label: string;
+}
+
+/** Lot 87A — état de qualification des couples de la configuration active, par usage. */
+export interface SecoursContext {
+  qualificationOf(treatment: Treatment, model: string): CoupleQualification;
+  origin: 'manual' | 'auto' | null;
+}
+
+const SECOURS_LABELS: Readonly<Record<AnomalySecours['decision'], string>> = {
+  QUALIFIED: 'secours qualifié',
+  MANUAL_UNTESTED: 'secours non testé (choix de l’administrateur)',
+  NONE: 'aucun secours admissible : exécutions suspendues sans écriture, reprise automatique au rétablissement',
+};
+
+/** Le modèle de rang inférieur serait-il admis comme secours (même règle que la passerelle) ? Pur. */
+function secoursDecision(treatment: Treatment, model: string, secours: SecoursContext): 'QUALIFIED' | 'MANUAL_UNTESTED' | null {
+  const q = secours.qualificationOf(treatment, model);
+  if (q === 'ADMISSIBLE') return 'QUALIFIED';
+  if (q === 'REFUSED' || secours.origin === 'auto') return null;
+  return 'MANUAL_UNTESTED';
 }
 
 /**
@@ -63,8 +98,8 @@ export const RANK_LABELS: Readonly<Record<ChainRank, string>> = {
   primaryModel: 'principal', fallback1: 'repli 1', fallback2: 'repli 2',
 };
 
-/** Anomalies des chaînes actives (pure). */
-export function detectActiveModelAnomalies(chains: readonly ActiveChainEntry[], ctx: UsableModelsContext): ActiveModelAnomaly[] {
+/** Anomalies des chaînes actives (pure). Lot 87A : `secours` relie chaque anomalie au secours admissible (INV-10). */
+export function detectActiveModelAnomalies(chains: readonly ActiveChainEntry[], ctx: UsableModelsContext, secours?: SecoursContext): ActiveModelAnomaly[] {
   const out: ActiveModelAnomaly[] = [];
   const ordre: ChainRank[] = ['primaryModel', 'fallback1', 'fallback2'];
   for (const c of chains) {
@@ -72,11 +107,16 @@ export function detectActiveModelAnomalies(chains: readonly ActiveChainEntry[], 
     const pertes = e.reasons.filter((r) => PERTE.has(r));
     if (pertes.length === 0) continue;
     const suivants = chains.filter((x) => x.treatment === c.treatment && ordre.indexOf(x.rank) > ordre.indexOf(c.rank));
+    const utilisables = suivants.filter((x) => evaluateModelForTreatment(x.treatment, x.model, ctx).usable);
+    if (!secours) {
+      out.push({ ...c, reasons: e.reasons, reasonText: e.reasonText, fallbackAvailable: utilisables.length > 0 });
+      continue;
+    }
+    const choisi = utilisables.map((x) => ({ x, d: secoursDecision(x.treatment, x.model, secours) })).find((y) => y.d !== null) ?? null;
+    const decision = choisi?.d ?? 'NONE';
     out.push({
-      ...c,
-      reasons: e.reasons,
-      reasonText: e.reasonText,
-      fallbackAvailable: suivants.some((x) => evaluateModelForTreatment(x.treatment, x.model, ctx).usable),
+      ...c, reasons: e.reasons, reasonText: e.reasonText, fallbackAvailable: choisi !== null,
+      secours: { model: choisi?.x.model ?? null, decision, label: SECOURS_LABELS[decision] },
     });
   }
   return out;
@@ -113,9 +153,17 @@ export async function loadActiveChains(): Promise<ActiveChainEntry[]> {
 export function anomalyMessage(a: ActiveModelAnomaly): string {
   return `${a.treatment} : le modèle ${RANK_LABELS[a.rank]} « ${a.model} » n’est plus utilisable (${a.reasonText}). `
     + (a.rank === 'primaryModel'
-      ? (a.fallbackAvailable ? 'La chaîne de repli prend le relais. ' : 'Aucun repli utilisable : le traitement risque d’échouer. ')
+      ? (a.secours ? `${secoursText(a.secours)} `
+        : a.fallbackAvailable ? 'La chaîne de repli prend le relais. ' : 'Aucun repli utilisable : le traitement risque d’échouer. ')
       : '')
     + 'Aucun remplacement automatique : choisissez un autre modèle dans une nouvelle version de configuration.';
+}
+
+/** Lot 87A — phrase d'exploitation du secours relié (INV-10). */
+export function secoursText(s: AnomalySecours): string {
+  if (s.decision === 'QUALIFIED') return `Le secours qualifié « ${s.model} » prend le relais.`;
+  if (s.decision === 'MANUAL_UNTESTED') return `Le secours « ${s.model} » prend le relais (non testé, choix de l’administrateur).`;
+  return 'Aucun secours admissible : les exécutions sont suspendues sans écriture et reprises automatiquement au rétablissement.';
 }
 
 // ── Regroupement par modèle (lot 49, ticket 11) ─────────────────────────────
@@ -127,6 +175,8 @@ export interface ModelUsage {
   rankLabel: string;
   source: 'version' | 'code';
   fallbackAvailable: boolean;
+  /** Lot 87A : secours relié (INV-10), si l'état de qualification est connu. */
+  secours?: AnomalySecours;
 }
 
 /** Diagnostic du dernier contrôle du modèle, tel qu'affiché au BO (sans secret). */
@@ -189,6 +239,7 @@ export function groupAnomaliesByModel(
       model,
       usages: liste.map((a) => ({
         treatment: a.treatment, rank: a.rank, rankLabel: RANK_LABELS[a.rank], source: a.source, fallbackAvailable: a.fallbackAvailable,
+        ...(a.secours ? { secours: a.secours } : {}),
       })),
       reasons,
       reasonText: [...new Set(liste.map((a) => a.reasonText))].join(' ; '),
@@ -215,11 +266,15 @@ export function usageLabel(u: Pick<ModelUsage, 'treatment' | 'rank'>): string {
 /** Message d'exploitation d'un modèle (alerte), tous usages compris. */
 export function groupMessage(g: UnavailableModelGroup): string {
   const sansRepli = g.usages.filter((u) => u.rank === 'primaryModel' && !u.fallbackAvailable).map((u) => u.treatment);
+  const relies = g.usages.filter((u) => u.rank === 'primaryModel' && u.secours);
   return `Le modèle « ${g.model} » n’est plus utilisable (${g.reasonText}) — `
     + `${pluriel(g.usages.length, 'usage impacté', 'usages impactés')} : ${g.usages.map(usageLabel).join(', ')}. `
-    + (sansRepli.length
-      ? `Aucun repli utilisable pour ${sansRepli.join(', ')} : le traitement risque d’échouer. `
-      : 'Les chaînes de repli prennent le relais. ')
+    + (relies.length
+      // Lot 87A (INV-10) : secours réellement choisis par la passerelle.
+      ? `${relies.map((u) => `${u.treatment} — ${secoursText(u.secours!)}`).join(' ')} `
+      : sansRepli.length
+        ? `Aucun repli utilisable pour ${sansRepli.join(', ')} : le traitement risque d’échouer. `
+        : 'Les chaînes de repli prennent le relais. ')
     + 'Aucun remplacement automatique : choisissez un autre modèle dans une nouvelle version de configuration.';
 }
 
@@ -249,7 +304,7 @@ export async function raiseActiveModelAlerts(
       details: {
         model: g.model,
         reasons: g.reasons,
-        usages: g.usages.map((u) => ({ treatment: u.treatment, rank: u.rank, source: u.source, fallbackAvailable: u.fallbackAvailable })),
+        usages: g.usages.map((u) => ({ treatment: u.treatment, rank: u.rank, source: u.source, fallbackAvailable: u.fallbackAvailable, ...(u.secours ? { secours: u.secours } : {}) })),
         diagnostic: { status: g.diagnostic.status, error: g.diagnostic.error, checkedAt: g.diagnostic.checkedAt, source: g.diagnostic.source },
       },
       drilldownHref: '/admin/ai-config',
@@ -258,4 +313,37 @@ export async function raiseActiveModelAlerts(
     if (ok) n++;
   }
   return n;
+}
+
+/**
+ * Lot 87A (P7, INV-10) — état de qualification des couples de la
+ * configuration ACTIVE, par usage (traitement × modèle) : refusé si un couple
+ * de l'usage est refusé, qualifié si tous sont admissibles, sinon l'état du
+ * premier. `undefined` : lecture impossible (aucune base en test unitaire,
+ * table absente) — l'anomalie garde alors le libellé historique.
+ */
+export async function loadSecoursContext(): Promise<SecoursContext | undefined> {
+  if (process.env.NODE_ENV === 'test') return undefined;
+  try {
+    const [{ getActiveVersion }, { couplesWithState, defaultMasterReader }] = await Promise.all([
+      import('../config/config-version.repository'), import('../qualification/context'),
+    ]);
+    const active = await getActiveVersion();
+    if (!active) return undefined;
+    const couples = await couplesWithState(active, { readMasterFile: await defaultMasterReader() });
+    const par = new Map<string, CoupleQualification[]>();
+    for (const c of couples) par.set(`${c.treatment}|${c.model}`, [...(par.get(`${c.treatment}|${c.model}`) ?? []), c.state.state]);
+    return {
+      origin: active.origin ?? 'manual',
+      qualificationOf: (treatment, model) => {
+        const etats = par.get(`${treatment}|${model}`) ?? [];
+        if (etats.length === 0) return 'UNKNOWN';
+        if (etats.includes('REFUSED')) return 'REFUSED';
+        if (etats.every((x) => x === 'ADMISSIBLE')) return 'ADMISSIBLE';
+        return etats.find((x) => x !== 'ADMISSIBLE') ?? 'UNKNOWN';
+      },
+    };
+  } catch {
+    return undefined;
+  }
 }

@@ -70,7 +70,20 @@ export function isExecutionCancelled(e: unknown): boolean {
   // ou en lecture seule — passerelle IA) est, dans une exécution de file, une
   // interruption : les exécutants la laissent remonter SANS repli déterministe
   // ni écriture, et la file neutralise le travail (`queue-worker`).
-  return (code === 'AI_BLOCKED' || code === 'ACCOUNT_INELIGIBLE') && currentJobContext() !== null;
+  // Lot 87A (P7, RUN-02) : `AI_SUSPENDED` (aucun secours admissible) aussi —
+  // suspension SANS écriture métier : aucun repli déterministe, la file
+  // reprend le travail depuis un point sûr (`suspendJobForAi`). Seulement pour
+  // une opération du traitement du travail : un appel secondaire d'un AUTRE
+  // traitement (T3 sollicité par une analyse T1) garde son repli local, comme
+  // avant (sinon une suspension annexe suspendrait — et rejouerait — tout le
+  // travail principal après ses écritures).
+  const ctx = currentJobContext();
+  if (code === 'AI_SUSPENDED') {
+    if (ctx === null) return false;
+    const t = (e as { treatment?: unknown }).treatment;
+    return typeof t !== 'string' || t === ctx.treatment;
+  }
+  return (code === 'AI_BLOCKED' || code === 'ACCOUNT_INELIGIBLE') && ctx !== null;
 }
 
 /** Garde transmise à l'exécutant : signal + contrôle avant écriture. */

@@ -41,6 +41,16 @@
  * plus sélectionné tant que rien ne change. Le préfiltre technique
  * (`technicalTitleSqlPredicate`) reste une optimisation de tri, plus un
  * critère d'éligibilité.
+ *
+ * LOT 87D (C-Q9, ticket P1 « titres des factures périodiques ») : le CYCLE
+ * HORAIRE paginé est RETIRÉ (plus de démarreur sur la racine du balayage T3,
+ * plus de continuation) — la reprise du stock et la convergence passent par
+ * le contrôle de cohérence COH-DOC-TITLES (`coherence/registry/checks/
+ * document-titles.ts`), qui délègue au même service de nommage : une seule
+ * chaîne de réparation. Une page `document_title_sweep` déjà en file au
+ * déploiement est close sans effet (`RETIRED`). Restent : `repairTitles` /
+ * `sweepDocumentTitles`, contrôle CIBLÉ d'un compte après une connaissance T3
+ * nouvelle (connaissance ouverte), propagation et non réparation de stock.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { processingEligibleSql } from '@/services/account/processing-eligibility';
@@ -49,26 +59,16 @@ import type { ExecutionGuard } from '../queue/execution-control';
 import { PermanentJobError, type JobBusinessResult } from '../queue/queue-policy';
 import { envNumber } from '@/lib/env-number';
 import { DOCUMENT_TITLE_RULE_VERSION } from '@/lib/documents/document-title-rules';
-import { buildT3Payload, registerT3JobKind } from './t3-job-contract';
+import { registerT3JobKind } from './t3-job-contract';
 import { T1_SETTLED_STATES } from './document-asset/question-gate';
 import type { TitleOutcome } from '@/services/documents/document-title.service';
 
 export const T3_TARGET_DOCUMENT_TITLE_SWEEP = 'document_title_sweep';
 export const DOCUMENT_TITLE_SWEEP_KIND = 'document_title_sweep';
 
-/** Documents examinés par page (`T3_TITLE_SWEEP_PAGE_SIZE`, 100 par défaut, 1 à 500). */
+/** Documents examinés par contrôle ciblé (`T3_TITLE_SWEEP_PAGE_SIZE`, 100 par défaut, 1 à 500). */
 export function titleSweepPageSize(): number {
   return Math.min(500, Math.floor(envNumber('T3_TITLE_SWEEP_PAGE_SIZE', 100, { min: 1 })));
-}
-/** Délai avant la page suivante (`T3_TITLE_SWEEP_PAGE_DELAY_SECONDS`, 10 s par défaut). */
-const pageDelaySeconds = () => Math.floor(envNumber('T3_TITLE_SWEEP_PAGE_DELAY_SECONDS', 10, { min: 0 }));
-
-export interface DocumentTitleSweepDeps {
-  enqueue: typeof import('../queue/job-queue.repository').enqueue;
-}
-async function defaultDeps(): Promise<DocumentTitleSweepDeps> {
-  const { enqueue } = await import('../queue/job-queue.repository');
-  return { enqueue };
 }
 
 export interface DocumentTitleSweepPayload {
@@ -147,35 +147,15 @@ async function markTitleChecked(fileId: number, accountId: number): Promise<void
   await pgClient.unsafe(`UPDATE asset_files SET title_checked_at = now() WHERE id = $1 AND account_id = $2`, [fileId, accountId] as never[]);
 }
 
-/** Page du rattrapage planifié des titres. */
+/**
+ * Page du rattrapage planifié des titres — RETIRÉ au lot 87D : une page encore
+ * en file (déploiement) est close SANS contrôle ni continuation. La reprise
+ * du stock appartient au contrôle de cohérence COH-DOC-TITLES.
+ */
 export async function runDocumentTitleSweepPage(
-  job: QueuedJob, p: DocumentTitleSweepPayload, guard: ExecutionGuard, deps?: DocumentTitleSweepDeps,
+  _job: QueuedJob, p: DocumentTitleSweepPayload, _guard: ExecutionGuard,
 ): Promise<JobBusinessResult> {
-  const d = deps ?? await defaultDeps();
-  const size = titleSweepPageSize();
-  const triggerCode = job.triggerCode ?? 'schedule_hourly';
-  const rows = await listDocumentsWithNonCompliantTitle({ afterFileId: p.afterFileId, limit: size });
-  const c = await repairTitles(rows, guard);
-  const fin = rows.length < size;
-  const suivant = rows.length > 0 ? rows[rows.length - 1].fileId : p.afterFileId;
-  if (!fin) {
-    await guard.assertActive('T3 titre des documents — continuation du rattrapage');
-    await d.enqueue({
-      treatment: 'T3',
-      scope: { targetType: T3_TARGET_DOCUMENT_TITLE_SWEEP, targetId: `${p.cycleId}:${p.page + 1}` },
-      triggerCode,
-      delaySeconds: pageDelaySeconds(),
-      payload: buildT3Payload(DOCUMENT_TITLE_SWEEP_KIND, { cycleId: p.cycleId, page: p.page + 1, afterFileId: suivant }),
-      onlyIfNeverQueued: true,
-    });
-  }
-  if (c.UPDATED > 0 || c.FAILED > 0) {
-    console.info(`[t3-document-title] rattrapage ${p.cycleId}:${p.page} : ${c.UPDATED} titre(s) corrigé(s), ${c.FAILED} échec(s).`);
-  }
-  return {
-    result: c.UPDATED > 0 ? 'APPLIED' : 'NO_CHANGE',
-    detail: { cycleId: p.cycleId, page: p.page, afterFileId: p.afterFileId, examined: rows.length, ...c, last: fin },
-  };
+  return { result: 'NO_CHANGE', detail: { cycleId: p.cycleId, page: p.page, retired: 'RETIRED', replacedBy: 'COH-DOC-TITLES' } };
 }
 
 const entier = (job: Pick<QueuedJob, 'id'>, raw: Record<string, unknown>, key: string): number => {
@@ -215,33 +195,9 @@ export function registerDocumentTitleT3(): void {
 }
 
 /**
- * Démarreur branché sur la racine du balayage planifié T3 : page 0 du cycle
- * (clé unique). Si une page d'un cycle précédent vit encore, aucun nouveau
- * cycle n'est ouvert (elle poursuit, curseur stable).
- */
-export async function startDocumentTitleSweep(
-  ctx: { cycleId: string; triggerCode: string; guard: ExecutionGuard }, deps?: DocumentTitleSweepDeps,
-): Promise<void> {
-  const d = deps ?? await defaultDeps();
-  const { pgClient } = await import('@/db');
-  const [{ n }] = (await pgClient.unsafe(
-    `SELECT count(*)::int AS n FROM ai_job_queue WHERE treatment = 'T3' AND target_type = $1 AND status IN ('PENDING', 'RUNNING')`,
-    [T3_TARGET_DOCUMENT_TITLE_SWEEP] as never[],
-  )) as unknown as Array<{ n: number }>;
-  if (Number(n ?? 0) > 0) return;
-  await ctx.guard.assertActive('T3 titre des documents — ouverture du rattrapage');
-  await d.enqueue({
-    treatment: 'T3',
-    scope: { targetType: T3_TARGET_DOCUMENT_TITLE_SWEEP, targetId: `${ctx.cycleId}:0` },
-    triggerCode: ctx.triggerCode,
-    payload: buildT3Payload(DOCUMENT_TITLE_SWEEP_KIND, { cycleId: ctx.cycleId, page: 0, afterFileId: 0 }),
-    onlyIfNeverQueued: true,
-  });
-}
-
-/**
- * Rattrapage direct (BO, tests) : contrôle au plus `limit` documents
- * (d'un compte, ou de tous). Le passage planifié passe par les pages.
+ * Contrôle CIBLÉ (connaissance T3 nouvelle d'un compte, tests) : au plus
+ * `limit` documents d'un compte dont le contexte du titre a pu changer. La
+ * reprise du stock passe par le contrôle de cohérence COH-DOC-TITLES.
  */
 export async function sweepDocumentTitles(opts: { accountId?: number | null; limit?: number; guard?: ExecutionGuard } = {}): Promise<Compteurs> {
   const rows = await listDocumentsWithNonCompliantTitle({ limit: opts.limit ?? titleSweepPageSize(), accountId: opts.accountId ?? null });

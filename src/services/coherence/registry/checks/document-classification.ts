@@ -250,7 +250,10 @@ export const documentClassificationCheck: CoherenceCheck = {
             // Confiance du classement T1 enregistré : la correspondance est
             // certaine, la nature identifiée l'est autant que l'analyse.
             confidence: s.rubricConfidence ?? 1,
-            excerpt: `${DOCUMENT_CLASSIFICATION_CHECK_ID}:${d.anomaly}`,
+            // Lot 87D : aucun extrait — l'extrait est AFFICHÉ sur la carte
+            // (contexte de la proposition) ; la provenance est tracée par
+            // `pipelineVersion` et le journal de réparation, jamais un code
+            // technique visible (« COH-DOC-CLASSIFICATION:… »).
           },
           origin: 'SYSTEM_RULE',
           promptVersion: null,

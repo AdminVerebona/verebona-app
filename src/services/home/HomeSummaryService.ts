@@ -7,9 +7,10 @@
  * (grille « Mes biens »), « Ce que j'ai fait » et « Documents récents ». La
  * prise de parole vient de `services/home/mascot` (GET /api/home/mascot).
  */
+import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 import { db } from '@/db';
 import {
-  agendaItems, agendaAssetLinks, assets, assetFiles, assetFileThumbnails, documentTypes, accounts, aiFieldUpdates,
+  agendaItems, agendaAssetLinks, assets, assetFiles, assetFileThumbnails, accounts, aiFieldUpdates,
 } from '@/db/schema';
 import { THUMBNAIL_VARIANT } from '@/services/documents/thumbnails/thumbnail-spec';
 import {
@@ -157,7 +158,6 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     assetRows,
     totalAssetsRow,
     totalDocumentsRow,
-    docTypesRows,
     latestDocs,
     workFieldRows,
     workDeadlineRows,
@@ -227,9 +227,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
         or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
       )),
 
-    db.select({ code: documentTypes.code, label: documentTypes.label })
-      .from(documentTypes)
-      .where(eq(documentTypes.isActive, true)),
+    // Lot 87D : plus de libellés V1 (« code » en repli) — libellé du Type V2 enregistré, jamais un code.
 
     // ── Direction D v2 ─────────────────────────────────────────────────────
     // Documents récents (§3.5) : les 4 derniers déposés, sans borne de date,
@@ -239,7 +237,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       originalFilename: assetFiles.originalFilename,
       retainedTitle: assetFiles.retainedTitle,
       webLinkTitle: assetFiles.webLinkTitle,
-      documentType: assetFiles.documentType,
+      documentTypeCode: assetFiles.documentTypeCode,
       rubricCode: assetFiles.rubricCode,
       documentDate: assetFiles.documentDate,
       uploadedAt: assetFiles.uploadedAt,
@@ -345,8 +343,6 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     ]);
 
   const planType = accountRows[0]?.planType ?? 'STANDARD';
-  const docTypeMap: Record<string, string> = {};
-  docTypesRows.forEach(dt => { docTypeMap[dt.code] = dt.label; });
 
   // ── Liens agenda→asset ────────────────────────────────────────────────────
   const agendaIds = agendaRows.map(a => a.id);
@@ -379,7 +375,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
         // Lot 32C (PO 9) : un document compte pour CHACUN de ses biens
         // (colonnes, liens PRIMARY / SECONDARY), une seule fois par bien.
         otherAssetIds: OTHER_ASSET_IDS_SQL,
-        documentType: assetFiles.documentType,
+        documentTypeCode: assetFiles.documentTypeCode,
       })
         .from(assetFiles)
         .where(and(
@@ -396,7 +392,8 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
       return [...new Set([f.assetId, ...autres.map(Number)].filter((n): n is number => typeof n === 'number' && Number.isInteger(n) && n > 0))];
     };
     assetDocsRows.forEach(f => {
-      const label = f.documentType ? (docTypeMap[f.documentType] || f.documentType) : null;
+      // Lot 87D : libellé français du Type V2 enregistré, masqué sans libellé — jamais un code.
+      const label = documentTypeLabelOrNull(f.documentTypeCode);
       for (const id of idsDuDocument(f)) {
         if (!assetIds.includes(id)) continue;
         if (!assetDocStats[id]) assetDocStats[id] = { count: 0, labels: [] };
@@ -518,7 +515,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
 
   const previews = await recentDocumentPreviews(latestDocs);
   const recentDocuments: HomeRecentDocument[] = latestDocs.map((d) => {
-    const typeLabel = d.documentType ? (docTypeMap[d.documentType] || null) : null;
+    const typeLabel = documentTypeLabelOrNull(d.documentTypeCode);
     const rubrique = getRubric(d.rubricCode)?.label ?? null;
     const dateUtile = d.documentDate ?? (d.uploadedAt ? new Date(d.uploadedAt).toISOString().slice(0, 10) : null);
     return {

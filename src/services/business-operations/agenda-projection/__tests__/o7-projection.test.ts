@@ -105,13 +105,24 @@ describe('O7-01 — tableau C16 : projection par type (decideProjection)', () =>
 });
 
 describe('O7-10 — rapprochement avant projection (C16.1, F-147)', () => {
-  it('F-147 / C16-10 — événement saisi à la main avant l\'Opération : LIÉ, aucun doublon', () => {
+  it('F-147 / C16-10 — événement saisi à la main avant l\'Opération : aucun doublon créé ; lot 87B : jamais rattaché d\'office sur de simples signaux', () => {
+    // Lot 87B — test corrigé (ticket « orchestration T3/T4 », CODE-04) : l'ancienne attente (LIEN sur « même bien +
+    // intitulé / type + date proche ») encodait une décision sémantique du code. Aucun doublon n'est créé : la
+    // projection s'abstient, demande la décision à T4 et pose la carte D14 (choix de l'utilisateur à défaut).
     const manuel = item({ id: 3, title: 'Achat de la voiture', date: '2021-03-01' });
     const acq = op({ typeCode: 'ACQUISITION', realizedDate: '2021-03-01', documentFileIds: [] });
-    expect(plan(acq, { candidates: [manuel] })).toEqual([{ kind: 'LINK', itemId: 3, reason: expect.stringContaining('même bien') }]);
-    // Intervention : l'événement saisi est lié, sa réalisation proposée (jamais écrite).
+    expect(plan(acq, { candidates: [manuel] })).toEqual([
+      expect.objectContaining({ kind: 'ABSTAIN', itemId: 3, candidates: [expect.objectContaining({ itemId: 3, reason: expect.stringContaining('même bien') })] }),
+      { kind: 'REPRESENTATION_REQUIRED', itemIds: [3], reason: 'UNCERTAIN_EXISTING_EVENT' },
+    ]);
     const rdv = item({ id: 4, title: 'Remplacement de la chaudière', date: '2026-03-11' });
-    expect(plan(op(), { candidates: [rdv] })).toEqual([{ kind: 'LINK', itemId: 4, reason: expect.any(String) }, { kind: 'PROPOSE_DONE', itemId: 4 }]);
+    expect(plan(op(), { candidates: [rdv] })).toEqual([
+      expect.objectContaining({ kind: 'ABSTAIN', itemId: 4 }), { kind: 'REPRESENTATION_REQUIRED', itemIds: [4], reason: 'UNCERTAIN_EXISTING_EVENT' },
+    ]);
+    // Provenance exacte (événement saisi dont T3 a fait la source de l'Opération, lot 47B) : lié, réalisation proposée.
+    expect(plan(op(), { candidates: [{ ...rdv, agendaSourceOperationIds: [10] }] })).toEqual([
+      { kind: 'LINK', itemId: 4, reason: expect.stringContaining('même document') }, { kind: 'PROPOSE_DONE', itemId: 4 },
+    ]);
   });
   it('C16-11 — événement T4 du même document (constat de sinistre) : lié', () => {
     const t4 = item({ id: 4, title: 'Sinistre', isAutomatic: true, businessType: 'claim', nature: 'HISTORICAL', originRefType: 'asset_file', originRefId: 77 });
@@ -126,11 +137,15 @@ describe('O7-10 — rapprochement avant projection (C16.1, F-147)', () => {
   it('C16-13 — rapprochement seulement probable : la projection s\'abstient (ni lien, ni doublon)', () => {
     // Même document, mais à 10 jours : rapprochement probable seulement.
     const memeDoc = item({ id: 6, title: 'Note', date: '2026-03-20', fileIds: [77], assetIds: [] });
-    // Lot 53 (PO-D14) : l'abstention porte désormais ses candidats (carte « À traiter »).
-    expect(plan(op(), { candidates: [memeDoc] })).toEqual([expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT'), itemId: 6 })]);
+    // Lot 53 (PO-D14) : l'abstention porte désormais ses candidats (carte « À traiter ») ; lot 87B : + décision T4.
+    expect(plan(op(), { candidates: [memeDoc] })).toEqual([
+      expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT'), itemId: 6 }),
+      { kind: 'REPRESENTATION_REQUIRED', itemIds: [6], reason: 'UNCERTAIN_EXISTING_EVENT' },
+    ]);
     // Deux événements aussi plausibles : aucun choix arbitraire.
     const deux = plan(op(), { candidates: [item({ id: 7, title: 'Entretien', date: '2026-03-10' }), item({ id: 8, title: 'Réparation', date: '2026-03-10' })] });
-    expect(deux).toEqual([expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT') })]);
+    expect(deux[0]).toEqual(expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT') }));
+    expect(deux[1]).toEqual(expect.objectContaining({ kind: 'REPRESENTATION_REQUIRED' }));
     // Lot 76H (ticket « doublons d'interventions ») : mêmes événements, mais
     // automatiques T4 du document de l'Opération — identité INCERTAINE tant
     // que T3 n'a pas consolidé toute la preuve du document : abstention…
@@ -138,22 +153,29 @@ describe('O7-10 — rapprochement avant projection (C16.1, F-147)', () => {
       id, title, isAutomatic: true, businessType, nature: 'HISTORICAL', originRefType: 'asset_file', originRefId: 77, fileIds: [77],
     });
     const evts = [t4(7, 'maintenance', 'Entretien réalisé — Prestation'), t4(8, 'repair', 'Réparation — Maison')];
-    expect(plan(op(), { candidates: evts })).toEqual([expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT') })]);
-    // … CONVERGENCE quand l'Opération établit l'équivalence (T3 : toute la preuve du document est cette Opération).
-    expect(plan(op({ exclusiveFileIds: [77] }), { candidates: evts })[0])
-      .toEqual({ kind: 'CONSOLIDATE', principalId: 7, absorbedIds: [8], linkPrincipal: true, reason: 'EQUIVALENT_BY_OPERATION' });
+    expect(plan(op(), { candidates: evts })[0]).toEqual(expect.objectContaining({ kind: 'ABSTAIN', reason: expect.stringContaining('PROBABLE_EQUIVALENT') }));
+    // Lot 87B — test corrigé : même quand T3 a consolidé toute la preuve du document, DEUX représentations
+    // ne sont plus absorbées par le code (CONSOLIDATE) : doublons ou étapes, T4 décide.
+    expect(plan(op({ exclusiveFileIds: [77] }), { candidates: evts })[1])
+      .toEqual({ kind: 'REPRESENTATION_REQUIRED', itemIds: [7, 8], reason: 'SEVERAL_COVERED_REPRESENTATIONS' });
   });
   it('C16-14 — élément lié à une AUTRE Opération active, ou projection d\'une autre : jamais pris', () => {
     const autre = item({ id: 9, title: 'Entretien', businessOperationId: 99, linkedOperationActive: true });
     const proj = item({ id: 10, title: 'Entretien', projected: true, isAutomatic: true });
     expect(plan(op(), { candidates: [autre, proj] })).toEqual([{ kind: 'CREATE', desired: desired(op()), functionalKey: 'bo:v1:10:INTERVENTION' }]);
   });
-  it('C16-15 — planifié puis réalisé à quelques jours : l\'événement planifié de l\'utilisateur est lié et sa réalisation proposée', () => {
+  it('C16-15 — planifié puis réalisé à quelques jours : lot 87B — rattachement décidé par T4 (ou l\'utilisateur), jamais d\'office ; aucun doublon', () => {
+    // Lot 87B — test corrigé : l'ancien LIEN sur « type compatible + date proche » était une décision sémantique codée.
     const planifie = item({ id: 11, title: 'RDV chaudière', date: '2026-03-05', businessType: 'maintenance', nature: 'DEADLINE' });
     expect(plan(op(), { candidates: [planifie] })).toEqual([
-      { kind: 'LINK', itemId: 11, reason: expect.any(String) },
-      { kind: 'PROPOSE_DONE', itemId: 11 },
+      expect.objectContaining({ kind: 'ABSTAIN', itemId: 11 }), { kind: 'REPRESENTATION_REQUIRED', itemIds: [11], reason: 'UNCERTAIN_EXISTING_EVENT' },
     ]);
+    // T4 a décidé que ce rendez-vous est un événement indépendant : la projection crée l'événement, sans carte.
+    const independant = planOperationProjection({
+      op: op(), decision: decideProjection(op(), AUJ), linked: [], suppressedKeys: new Set(), candidates: [planifie], statusCardItems: new Set(),
+      t4Roles: new Map([[11, 'INDEPENDENT']]),
+    });
+    expect(independant).toEqual([{ kind: 'CREATE', desired: desired(op()), functionalKey: 'bo:v1:10:INTERVENTION' }]);
   });
 });
 
@@ -176,8 +198,12 @@ describe('O7-20 — plan : création, mise à jour, statut, idempotence', () => 
     // Lot 83A : l'élément qui représente l'Opération est son PRINCIPAL (rôle porté par l'instantané).
     const t4 = item({ id: 22, isAutomatic: true, businessOperationId: 10, nature: 'DEADLINE', title: 'Entretien chaudière', operationRole: 'PRINCIPAL', operationRoleOrigin: 'T4' });
     expect(plan(op(), { linked: [t4] })).toEqual([{ kind: 'MARK_DONE', itemId: 22 }]);
-    // Lot 83A : membre lié sans être principal — reconnu comme l'événement (rapprochement certain, AC15) puis complété.
+    // Lot 83A : membre lié sans être principal ; lot 87B — test corrigé : sans provenance (même bien, intitulé, date),
+    // il n'est plus promu principal d'office : décision T4 demandée et carte D14 ; avec provenance, reconnu (AC15).
     expect(plan(op(), { linked: [{ ...t4, operationRole: 'RELATED' }] })).toEqual([
+      expect.objectContaining({ kind: 'ABSTAIN', itemId: 22 }), { kind: 'REPRESENTATION_REQUIRED', itemIds: [22], reason: 'MEMBER_MAY_REPRESENT_EVENT' },
+    ]);
+    expect(plan(op(), { linked: [{ ...t4, operationRole: 'RELATED', fileIds: [77] }] })).toEqual([
       { kind: 'LINK', itemId: 22, reason: expect.stringContaining('élément du regroupement') }, { kind: 'MARK_DONE', itemId: 22 },
     ]);
     const manuel = item({ id: 23, businessOperationId: 10, title: 'Mon RDV', operationRole: 'PRINCIPAL', operationRoleOrigin: 'USER' });
@@ -205,7 +231,7 @@ describe('O7-20 — plan : création, mise à jour, statut, idempotence', () => 
     const etape = { ...user, title: 'Visite expert', operationRole: 'RELATED' as const };
     const principal = { ...proj, operationRole: 'PRINCIPAL' as const };
     const p2 = plan(op({ typeCode: 'CLAIM' }), { linked: [principal, etape] });
-    expect(p2.some((a) => a.kind === 'REMOVE' || a.kind === 'CONSOLIDATE' || (a.kind === 'ROLE' && a.itemId === 26))).toBe(false);
+    expect(p2.some((a) => a.kind === 'REMOVE' || (a.kind === 'ROLE' && a.itemId === 26))).toBe(false);
   });
   it('C22 — Opération invalidée : projection intacte retirée, touchée ou saisie détachée', () => {
     const proj = item({ id: 30, projected: true, isAutomatic: true, businessOperationId: 10 });

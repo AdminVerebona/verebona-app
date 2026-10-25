@@ -10,6 +10,14 @@
  * `projectAccountOperations`, rattrapage par son service, diagnostic par le
  * dossier BO « Données du compte ». Aucun appel IA (M3 coupé). Assertions
  * limitées aux comptes créés ici.
+ *
+ * Lot 87B (ticket « orchestration T3/T4 ») — tests CORRIGÉS : ils attendaient
+ * une absorption décidée par la projection (provenance T3 + type + date). La
+ * décision « même occurrence » appartient désormais à T4 (réévaluation
+ * sémantique multi-événements) : sans contrat T4 livré, la projection
+ * s'abstient (deux éléments, carte D14, constat) ; avec le décideur T4
+ * SIMULÉ, la consolidation est appliquée par le même moteur 76H (preuves,
+ * liens, journal 0591 restaurable).
  */
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { scenario } from '../scenario';
@@ -28,6 +36,20 @@ const projection = () => import('@/services/business-operations/agenda-projectio
 const persistence = () => import('@/services/agenda/agenda-persistence');
 const reprise = () => import('@/services/business-operations/agenda-projection/duplicates-reprise');
 
+/** Lot 87B : décideur T4 multi-événements SIMULÉ — les représentations à décider sont la même occurrence ; le principal est conservé. */
+const t4Simule = {
+  calls: 0,
+  async capability() { return { available: true, version: 'simule-76h', reason: 'AVAILABLE' as const }; },
+  async decide(call: { input: import('@/services/business-operations/semantic/contract').RepresentationInput }) {
+    t4Simule.calls++;
+    const items = call.input.agendaItems.filter((i) => i.inScope);
+    const keep = (items.find((i) => i.role === 'PRINCIPAL') ?? items.find((i) => i.origin !== 'PROJECTION') ?? items[0]).ref;
+    return { output: { task: 'AGENDA_REPRESENTATION', outcome: 'DECIDED', reason: 'même occurrence',
+      occurrences: [{ items: items.map((i) => i.ref), keep, role: 'PRINCIPAL', confidence: 'certain', evidence: [], reason: 'même intervention' }], restorations: [] }, traceId: null };
+  },
+};
+const decideur = () => import('@/services/business-operations/semantic/decider');
+
 scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul événement d’agenda (T1 → T3 → T4 → Agenda, rattrapage, diagnostic BO)', ({ sql, make }) => {
   let k: OperationsKit;
   beforeAll(async () => {
@@ -36,7 +58,16 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
   });
   afterEach(async () => {
     (await bus()).resetBusinessOperationEventBusForTests();
+    (await decideur()).__setRepresentationDeciderForTests(null);
   });
+  const avecT4 = async () => { t4Simule.calls = 0; (await decideur()).__setRepresentationDeciderForTests(t4Simule); };
+  /** Exécutant réel de la file de projection (projection, puis décisions T4 demandées). */
+  async function travail(compte: AccountRow) {
+    const { runAgendaProjectionJob } = await import('@/services/business-operations/agenda-projection/queue');
+    return runAgendaProjectionJob({ id: 8_000_000 + compte.id } as never, {
+      kind: 'business_operations_agenda' as never, accountId: compte.id, events: [{ all: true, correlationId: 'l76h-job' }], requestedAt: null,
+    }, { assertActive: async () => undefined } as never);
+  }
 
   async function contexte(): Promise<{ compte: AccountRow & { owner: { id: number } }; maison: AssetRow }> {
     const compte = await make.account({ plan: 'premium' });
@@ -81,7 +112,7 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
 
   // ══ Chaîne T1 → T3 → T4 → Agenda ══════════════════════════════════════════
 
-  it('L76H-E01 — chaîne réelle T1 → T3 → T4 → Agenda : une intervention, UN événement (lié, intitulé précis, preuves et liens conservés) ; réanalyse : aucun doublon recréé', async () => {
+  it('L76H-E01 — chaîne réelle T1 → T3 → T4 → Agenda : sans T4 multi-événements, aucune absorption (carte) ; avec T4, UN événement (lié, intitulé précis, preuves et liens conservés) ; réanalyse : aucun doublon recréé', async () => {
     const c = await contexte();
     const f = await facture(c);
     await k.passer(c.compte);
@@ -91,8 +122,14 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
     // Avant convergence : les deux représentations T4 du constat (07/07/2021).
     expect((await evenements(c.compte)).map((e) => e.title).sort()).toEqual(['Entretien réalisé — Prestation', 'Réparation — Maison']);
     const sourcesAvant = (await evenements(c.compte)).reduce((n, e) => n + e.sources, 0);
+    // Lot 87B : la projection n'absorbe plus rien — décision T4 demandée, carte D14 en attendant.
     const r = await projeter(c.compte);
-    expect(r).toMatchObject({ consolidated: 1, created: 0 });
+    expect(r).toMatchObject({ created: 0, representationRequired: [expect.objectContaining({ operationId: op.id })] });
+    expect(await evenements(c.compte)).toHaveLength(2);
+    expect((await cartes(c.compte)).filter((x) => x.resolved_at === null)).toHaveLength(1);
+    await avecT4();
+    await travail(c.compte);
+    expect(t4Simule.calls).toBe(1);
     const [evt, ...autres] = await evenements(c.compte);
     expect(autres).toEqual([]);
     expect(evt).toMatchObject({ title: 'Remplacement du ballon d’eau chaude', date: JOUR, op: op.id, projection_origin: null, files: [f], assets: [c.maison.id] });
@@ -100,10 +137,13 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
     // même rôle déjà cités par le principal) gardées et rattachables à la restauration.
     expect(evt.sources).toBeGreaterThanOrEqual(1);
     expect((await sql<Json[]>`SELECT count(*)::int AS n FROM agenda_item_sources WHERE asset_file_id = ${f}`)[0].n).toBe(sourcesAvant);
-    expect((await journal(c.compte)).map((j) => j.kind).sort()).toEqual(['ABSORB', 'LINK', 'RETITLE']);
+    expect((await journal(c.compte)).map((j) => j.kind).sort()).toEqual(['ABSORB', 'RETITLE']);
     expect(await sql`SELECT reason FROM agenda_item_removals WHERE account_id = ${c.compte.id}`).toEqual([{ reason: 'OPERATION_CONSOLIDATION' }]);
-    // Idempotence et réanalyse : aucune écriture, aucun doublon recréé, intitulé précis conservé.
+    expect((await cartes(c.compte)).filter((x) => x.resolved_at === null)).toEqual([]);
+    // Idempotence et réanalyse : aucune écriture, aucun doublon recréé, intitulé précis conservé, aucun nouvel appel T4.
     expect((await projeter(c.compte)).changes).toBe(0);
+    await travail(c.compte);
+    expect(t4Simule.calls).toBe(1);
     // Réanalyse complète : nouveaux candidats T1 (en attente T3), T4 AVANT T3, puis T3 et projection.
     await k.t1(c.compte, f, [cand({
       summary: 'Remplacement du ballon d’eau chaude', provider: 'Plomberie Durand', targetHints: [cible(c.maison.id)],
@@ -112,11 +152,12 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
     await t4(c, f);
     expect(await evenements(c.compte)).toHaveLength(1);
     await k.passer(c.compte);
-    await projeter(c.compte);
+    await travail(c.compte);
     expect(await evenements(c.compte)).toEqual([expect.objectContaining({ id: evt.id, title: 'Remplacement du ballon d’eau chaude', op: op.id })]);
   });
 
-  it('L76H-E02 — ordre T4 → T3 / T3 → T4 / T3 → projection → T4 : même état final (un événement de l’intervention)', async () => {
+  it('L76H-E02 — ordre T4 → T3 / T3 → T4 / T3 → projection → T4 : même état final (un événement de l’intervention, décidé par T4)', async () => {
+    await avecT4();
     const finals: unknown[] = [];
     // a) T4 avant T3.
     {
@@ -125,7 +166,7 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
       await t4(c, f);
       await k.t1(c.compte, f, [cand({ summary: 'Remplacement du ballon d’eau chaude', provider: 'Plomberie Durand', targetHints: [cible(c.maison.id)], businessReferences: [ref('INVOICE', 'F-2021-77')], temporalHints: { realizedDate: JOUR } })], true);
       await k.passer(c.compte);
-      await projeter(c.compte);
+      await travail(c.compte);
       finals.push(await etat(c.compte));
     }
     // b) T3 puis T4, projection ensuite.
@@ -134,7 +175,7 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
       const f = await facture(c);
       await k.passer(c.compte);
       await t4(c, f);
-      await projeter(c.compte);
+      await travail(c.compte);
       finals.push(await etat(c.compte));
     }
     // c) T3, projection (événement projeté), puis T4 : T4 réutilise la représentation existante.
@@ -144,7 +185,7 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
       await k.passer(c.compte);
       await projeter(c.compte);
       await t4(c, f);
-      await projeter(c.compte);
+      await travail(c.compte);
       finals.push(await etat(c.compte));
     }
     expect(finals[0]).toEqual([{ title: 'Remplacement du ballon d’eau chaude', date: JOUR, op: true, files: 1, assets: 1 }]);
@@ -160,8 +201,10 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
     expect(await k.actives(c.compte)).toHaveLength(1);
     expect((await k.candidat(f)).map((x) => x.t3_outcome)).toEqual(['CREATE_NEW', 'MATCH_AND_ENRICH']);
     await t4(c, f);
-    await projeter(c.compte);
+    await avecT4();
+    await travail(c.compte);
     expect(await evenements(c.compte)).toHaveLength(1);
+    (await decideur()).__setRepresentationDeciderForTests(null);
 
     // F-027 : deux travaux indépendants sur un même document (aucune référence propre commune).
     const d = await contexte();
@@ -172,9 +215,9 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
     await k.passer(d.compte);
     expect(await k.actives(d.compte)).toHaveLength(2);
     await t4(d, g);
-    const r = await projeter(d.compte);
-    expect(r.consolidated ?? 0).toBe(0);
+    await projeter(d.compte);
     expect(await evenements(d.compte)).toHaveLength(2);
+    expect((await journal(d.compte)).filter((j) => j.kind === 'ABSORB')).toEqual([]);
     // Identité incertaine : arbitrage existant (carte « À traiter »), aucune fusion.
     expect((await cartes(d.compte)).length).toBeGreaterThan(0);
   });
@@ -201,6 +244,7 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
     const f = await facture(c);
     await k.passer(c.compte);
     await t4(c, f);
+    await avecT4();
     const { runAgendaDuplicatesReprise } = await reprise();
     const r = await Promise.allSettled([
       projeter(c.compte), projeter(c.compte), projeter(c.compte),
@@ -223,15 +267,16 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
     const avantA = await evenements(a.compte);
     const avantB = await evenements(b.compte);
     const { runAgendaDuplicatesReprise, restoreAgendaDuplicatesReprise } = await reprise();
+    await avecT4();
 
     const sim = await runAgendaDuplicatesReprise({ mode: 'SIMULATE', origin: 'BO', accountId: a.compte.id });
-    expect(sim).toMatchObject({ status: 'succeeded', more: false, counters: expect.objectContaining({ certain: 1, consolidated: 0 }) });
-    expect(sim.report).toContainEqual(expect.objectContaining({ accountId: a.compte.id, category: 'CERTAIN_CONSOLIDATION' }));
+    expect(sim).toMatchObject({ status: 'succeeded', more: false, counters: expect.objectContaining({ t4Required: 1, t4Applied: 0, aiCalls: 0 }) });
+    expect(sim.report).toContainEqual(expect.objectContaining({ accountId: a.compte.id, category: 'T4_DECISION', detail: expect.objectContaining({ status: 'WOULD_REQUEST' }) }));
     expect(await evenements(a.compte)).toEqual(avantA);
     expect(await journal(a.compte)).toEqual([]);
 
     const app = await runAgendaDuplicatesReprise({ mode: 'APPLY', origin: 'BO', accountId: a.compte.id, reason: 'e2e' });
-    expect(app.counters).toMatchObject({ consolidated: 1, retitled: 1 });
+    expect(app.counters).toMatchObject({ t4Applied: 1, aiCalls: 1 });
     expect(await evenements(a.compte)).toHaveLength(1);
     // Isolation : le compte B (filtre) n'est pas touché.
     expect(await evenements(b.compte)).toEqual(avantB);
@@ -240,7 +285,7 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
     const etatApres = await evenements(a.compte);
     const journalApres = await journal(a.compte);
     const bis = await runAgendaDuplicatesReprise({ mode: 'APPLY', origin: 'BO', accountId: a.compte.id, reason: 'e2e bis' });
-    expect(bis.counters).toMatchObject({ consolidated: 0, linked: 0, retitled: 0 });
+    expect(bis.counters).toMatchObject({ t4Applied: 0, aiCalls: 0, linked: 0, retitled: 0 });
     expect(await evenements(a.compte)).toEqual(etatApres);
     expect(await journal(a.compte)).toEqual(journalApres);
 
@@ -266,12 +311,13 @@ scenario('L76H', 'Opérations → Agenda : une intervention établie = un seul �
     expect(o2).toBeDefined();
     await t4(c, f1);
     await t4(c, f2);
-    await projeter(c.compte);
+    await avecT4();
+    await travail(c.compte);
     // Une représentation par Opération avant la fusion.
     expect((await evenements(c.compte)).map((e) => e.op).sort()).toEqual([o1.id, o2.id].sort());
     const { withBusinessOperationWrite } = await import('@/services/business-operations/write');
     await withBusinessOperationWrite(c.compte.id, (repo) => repo.mergeOperations(o2.id, o1.id, 'E2E_MERGE'));
-    await projeter(c.compte);
+    await travail(c.compte);
     const apres = await evenements(c.compte);
     expect(apres).toEqual([expect.objectContaining({ op: o1.id, date: JOUR })]);
     expect((await journal(c.compte)).filter((j) => j.kind === 'ABSORB')).toHaveLength(3);

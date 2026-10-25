@@ -31,6 +31,17 @@
  *     du compte (jamais « (2) ») ;
  *   · référence utile en dernier recours pour un doublon.
  * Rien n'est inventé : sans aucun élément exploitable, pas de titre.
+ *
+ * LOT 87D — RÈGLES v3 (ticket P1 « titres des factures périodiques ») :
+ *   · facture PÉRIODIQUE (nature récurrente + fournisseur + mois principal
+ *     décidé par l'IA ou période facturée) : convention unique
+ *     « Facture Homiris — Février 2026 » (`document-title-convention.ts`) —
+ *     ni sujet, ni cible, ni référence (le numéro de facture reste dans les
+ *     métadonnées et la recherche ; il ne sert qu'à départager deux factures
+ *     du même groupe) ;
+ *   · séparateur unique « — » pour tous les titres automatiques ;
+ *   · période présentée EXACTEMENT (`presentBilledPeriod`) ; plus aucun mois
+ *     déduit de la date du document : une date utile est donnée au jour.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'node:crypto';
@@ -38,6 +49,11 @@ import { resolveDocumentType } from '@/services/canonical/registry/catalogs';
 import {
   DOCUMENT_TITLE_RULE_VERSION, normalizeTitle, titleHasPeriod, type TitleExpectations,
 } from '@/lib/documents/document-title-rules';
+import {
+  canonicalTitleKey, composePeriodicTitle, disambiguatorFor, formatTitleDate, formatTitleMonth, PERIODIC_NATURES,
+  presentBilledPeriod, presentSupplier, TITLE_CONVENTION_PERIODIC, TITLE_SEPARATOR,
+  type DisambiguationMember, type PrincipalMonth, type TitleConvention,
+} from '@/lib/documents/document-title-convention';
 import type { SourceAnalysisResult } from './types';
 
 const TYPE_WORDS = [
@@ -102,33 +118,27 @@ export function isReferenceOnlyTitle(title: string | null | undefined): boolean 
   return /^[a-z0-9\-/_.]+$/.test(rest) && /\d/.test(rest);
 }
 
-const cap = (s: string) => (s ? s.charAt(0).toLocaleUpperCase('fr-FR') + s.slice(1) : s);
 
-/** « septembre 2026 » d'une date ISO (null si illisible). */
-function monthYear(iso: string | null | undefined): string | null {
-  if (!iso || !/^\d{4}-\d{2}/.test(iso)) return null;
-  const d = new Date(`${iso.slice(0, 7)}-01T12:00:00Z`);
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('fr-FR', { month: 'long', year: 'numeric', timeZone: 'UTC' });
-}
-function dayMonthYear(iso: string | null | undefined): string | null {
-  if (!iso || !/^\d{4}-\d{2}-\d{2}/.test(iso)) return null;
-  const d = new Date(`${iso.slice(0, 10)}T12:00:00Z`);
-  return Number.isNaN(d.getTime()) ? null : d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
-}
+/** Date du jour lisible (« 18 septembre 2026 », « 1er mars 2026 »). */
+const dayMonthYear = (iso: string | null | undefined): string | null => formatTitleDate(iso);
+
+/** Période métier PRÉSENTÉE EXACTEMENT (règle unique, `presentBilledPeriod`). */
+const presentPeriod = (p: { start: string | null; end: string | null } | null | undefined): string | null =>
+  (p ? presentBilledPeriod(p.start, p.end)?.label ?? null : null);
 
 /**
- * Période MÉTIER lisible (pure) : « Septembre 2026 », « Juillet à septembre
- * 2026 », « Décembre 2025 à février 2026 ».
+ * Données de facturation PERSISTÉES d'un document (lot 87D) — ce que le titre
+ * exploite et ce que la recherche indexe, avec la provenance de chaque champ.
  */
-export function formatBusinessPeriod(start: string | null | undefined, end: string | null | undefined): string | null {
-  const a = monthYear(start);
-  const b = monthYear(end);
-  if (!a && !b) return null;
-  if (!a || !b || a === b) return cap((a ?? b)!);
-  const [ma, ya] = [a.split(' ').slice(0, -1).join(' '), a.split(' ').at(-1)];
-  const yb = b.split(' ').at(-1);
-  if (start! > end!) return cap(b);
-  return ya === yb ? `${cap(ma)} à ${b}` : `${cap(a)} à ${b}`;
+export interface BillingBasis {
+  /** Période réellement facturée (montant d'échéance T1, sinon période des faits). */
+  billedPeriod: { start: string; end: string; source: 'T1_INSTALLMENT' | 'T1_COST_PERIOD' | 'T1_FACT' } | null;
+  /** Mois de rattachement principal décidé par l'IA (null tant que le contrat T1 ne le fournit pas). */
+  principalMonth: PrincipalMonth | null;
+  /** Références de facture lues (T1 `businessReferences[kind = INVOICE]`). */
+  invoiceReferences: string[];
+  /** Date d'émission (date du document). */
+  issueDate: string | null;
 }
 
 export interface TitleContext {
@@ -153,6 +163,13 @@ export interface TitleContext {
   reference?: string | null;
   /** Titres SYSTEM similaires du compte (même nature), bornés. */
   similarTitles?: string[];
+  // ── Lot 87D : convention périodique ──
+  /** Données de facturation persistées (période facturée, mois principal IA, références, émission). */
+  billing?: BillingBasis | null;
+  /** Identifiant du document (désambiguïsation dans son groupe canonique). */
+  selfId?: number | null;
+  /** Autres documents du compte de MÊME clé canonique (bornés). */
+  periodicSiblings?: DisambiguationMember[];
 }
 
 /** Éléments du meilleur titre et attentes (ce qu'un titre suffisant devrait porter). */
@@ -167,6 +184,10 @@ export interface TitlePlan {
   /** Le titre de base était identique à un titre du compte : discriminant ajouté. */
   duplicateResolved: boolean;
   expectations: TitleExpectations;
+  /** Lot 87D : convention appliquée (`PERIODIC`), sinon null (composition générale). */
+  convention: TitleConvention | null;
+  /** Lot 87D : clé du groupe canonique (même nature, fournisseur, période), convention périodique seulement. */
+  canonicalKey: string | null;
 }
 
 /** Nature du document : tête du titre du modèle, sinon type, sinon « Document ». */
@@ -211,7 +232,7 @@ function stripDates(s: string): string {
   return s
     .replace(/\b(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}-\d{2}(-\d{2})?)\b/g, ' ')
     .replace(/\b(janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre)\b(\s+\d{4})?/gi, ' ')
-    .replace(/\s_\s.*$/, ' ')
+    .replace(/\s[_—–]\s.*$/, ' ')
     .replace(/\s+/g, ' ')
     .replace(/[\s\-–—:_,]+$/, '')
     .trim();
@@ -239,6 +260,10 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
   const { nature, natureText, rest, prefixed } = natureOf(modelTitle, ctx.typeCode);
   const supplier = ctx.supplier?.trim() || null;
 
+  // Lot 87D — convention PÉRIODIQUE : « {Nature} {Fournisseur} — {Période} ».
+  const periodique = periodicPlan(nature, supplier, ctx);
+  if (periodique) return periodique;
+
   // Sujet : celui du titre du modèle quand il en a un ; le sujet STRUCTURÉ
   // des faits le remplace quand il y figure (« fibre internet » → « fibre »)
   // ou quand le titre n'en porte aucun (« Facture N° 2024-1187 »).
@@ -264,16 +289,17 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
   if (supplier && normalizeTitle(`${base} ${supplier}`).length <= MAX_BASE * 1.2) base = appendDistinct(base, supplier);
   if (base.length > MAX_BASE) base = base.slice(0, MAX_BASE).replace(/\s+\S*$/, '');
 
-  // Période / date.
-  const periodeMetier = ctx.period ? formatBusinessPeriod(ctx.period.start, ctx.period.end) : null;
+  // Période / date (lot 87D : période présentée exactement ; une date utile
+  // est donnée AU JOUR — jamais un mois déduit de la date du document).
+  const periodeMetier = presentPeriod(ctx.period);
   let period = periodeMetier
-    ?? (EVENT_NATURES.has(nature) ? dayMonthYear(ctx.documentDate) : RECURRING_NATURES.has(nature) ? (monthYear(ctx.documentDate) ? cap(monthYear(ctx.documentDate)!) : null) : null);
-  // Rien d'autre que la nature : le mois de la date documentaire distingue.
-  if (!period && !subject && !supplier && !target && !ownWording) period = monthYear(ctx.documentDate) ? cap(monthYear(ctx.documentDate)!) : null;
+    ?? (EVENT_NATURES.has(nature) || RECURRING_NATURES.has(nature) ? dayMonthYear(ctx.documentDate) : null);
+  // Rien d'autre que la nature : la date du document distingue.
+  if (!period && !subject && !supplier && !target && !ownWording) period = dayMonthYear(ctx.documentDate);
   if (period && titleHasPeriod(base)) period = null;
 
   const hasData = !!(subject || supplier || target || period || ctx.documentDate);
-  const compose = (p: string | null, ref: string | null) => [base, p, ref].filter(Boolean).join(' _ ').slice(0, MAX_TITLE).trim();
+  const compose = (p: string | null, ref: string | null) => [base, p, ref].filter(Boolean).join(TITLE_SEPARATOR).slice(0, MAX_TITLE).trim();
 
   // Doublons du compte : discriminant métier plutôt que « (2) ».
   const similaires = new Set((ctx.similarTitles ?? []).map(normalizeTitle));
@@ -282,7 +308,7 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
   let title = hasData ? compose(period, null) : null;
   if (title && similaires.has(normalizeTitle(title))) {
     const options: Array<[string | null, string | null]> = [];
-    if (!period) options.push([RECURRING_NATURES.has(nature) && monthYear(ctx.documentDate) ? cap(monthYear(ctx.documentDate)!) : dayMonthYear(ctx.documentDate), null]);
+    if (!period) options.push([dayMonthYear(ctx.documentDate), null]);
     options.push([period ?? dayMonthYear(ctx.documentDate), null]);
     if (ctx.reference) options.push([period, ctx.reference]);
     for (const [p, r] of options) {
@@ -300,6 +326,34 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
       target: target ? { kind: target.kind, name: target.name } : null,
       period, duplicates: [...(ctx.similarTitles ?? [])],
     },
+    convention: null,
+    canonicalKey: null,
+  };
+}
+
+/**
+ * Lot 87D — plan de la convention PÉRIODIQUE (pure), ou null si le document
+ * n'en relève pas : nature récurrente, fournisseur connu, ET mois principal
+ * décidé par l'IA (certain) ou période facturée présentable. La période n'est
+ * jamais interprétée ici : mois principal IA, sinon période exacte.
+ */
+export function periodicPlan(nature: string, supplier: string | null, ctx: TitleContext): TitlePlan | null {
+  if (!PERIODIC_NATURES.has(nature) || !supplier) return null;
+  const b = ctx.billing;
+  if (!b) return null;
+  const period = (b.principalMonth ? formatTitleMonth(b.principalMonth.value) : null)
+    ?? (b.billedPeriod ? presentBilledPeriod(b.billedPeriod.start, b.billedPeriod.end)?.label ?? null : null);
+  if (!period) return null;
+  const fournisseur = presentSupplier(supplier);
+  const canonicalKey = canonicalTitleKey(nature, fournisseur, period);
+  const self: DisambiguationMember = { id: ctx.selfId ?? 0, invoiceReferences: b.invoiceReferences, issueDate: b.issueDate };
+  const reference = disambiguatorFor(self, ctx.periodicSiblings ?? []);
+  const title = composePeriodicTitle({ nature, supplier: fournisseur, period, disambiguator: reference }).slice(0, MAX_TITLE).trim();
+  return {
+    title, nature, subject: null, supplier: fournisseur, target: null, period, reference, duplicateResolved: reference !== null,
+    expectations: { nature, subject: null, supplier: fournisseur, target: null, period, duplicates: [] },
+    convention: TITLE_CONVENTION_PERIODIC,
+    canonicalKey,
   };
 }
 
@@ -310,16 +364,8 @@ export function titleContextFingerprint(plan: TitlePlan): string {
     n: plan.nature, s: plan.subject, f: plan.supplier,
     t: plan.target ? [plan.target.kind, plan.target.id, plan.target.name] : null,
     p: plan.period, r: plan.reference, d: plan.duplicateResolved,
+    c: plan.convention, k: plan.canonicalKey,
   })).digest('hex');
-}
-
-/**
- * Titre à retenir pour des données d'analyse (compatibilité lot 33C) : le
- * MEILLEUR titre constructible, ou le titre du modèle s'il n'y a rien de
- * mieux. Ne conserve plus automatiquement un titre « non technique ».
- */
-export function refineDocumentTitle(title: string | null | undefined, ctx: TitleContext): string | null {
-  return planBusinessTitle(title, ctx).title ?? (title?.trim() || null);
 }
 
 /** Entrées du titre lues d'un résultat d'analyse : titre du modèle et contexte. */

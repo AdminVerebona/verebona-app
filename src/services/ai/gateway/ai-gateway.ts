@@ -12,7 +12,13 @@
  */
 import { randomUUID } from 'crypto';
 import type { AiGatewayRequest, AiGatewayResponse } from './types';
-import { AiGatewayError, isAiGatewayError, isDeterministicLocalError, type AiErrorCode } from './errors';
+import { AiGatewayError, AiSuspendedError, isAiGatewayError, isDeterministicLocalError, type AiErrorCode } from './errors';
+import {
+  admitCandidate, causeOfFailure, chainOutcome, decisionOf, CAUSE_POLICY, ADMISSION_LABELS,
+  type CoupleQualification, type FailureCause, type FallbackDecision,
+} from './fallback-policy';
+import { fallbackContext, noteKnownUnavailableSkipped, type CoupleQualificationView, type OperationalHint } from './fallback-context';
+import { isModelExcluded } from '../config/routing-overlay';
 import { getOperation, isMasterOperation } from '../registry/operations';
 import { calcCostMicros } from './cost-catalog';
 import { errorOf } from './output-validator';
@@ -33,7 +39,7 @@ import {
   providerJsonSchema, structuredOutputEnabled, noteSchemaRejected, schemaRejectedRecently,
 } from './output-resolution/provider-schema';
 import { buildRepairPrompt, mergeRepair, repairPassEnabled, REPAIR_MAX_INPUT_CHARS } from './output-resolution/repair-pass';
-import { classifyCallError, failureSignature, isGenericInvalidArgument, type ClassifiedFailure } from './diagnostics/classify';
+import { classifyCallError, failureSignature, isGenericInvalidArgument, isTruncated, type ClassifiedFailure } from './diagnostics/classify';
 import {
   emptyControlChain, providerFailureCategory,
   type CallDiagnostic, type ProviderCallMetadata, type ProviderAttemptTrace, type ProviderRequestTrace,
@@ -602,6 +608,72 @@ export class AiGateway {
       throw new AiGatewayError(refus.code, operationCode, refus.message, { recoverable: false, contractDetail: refus.detail });
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 87A — SECOURS PAR CAUSE (CDC Pilotage IA V2 P7 : RUN-01 à RUN-03,
+    // R09, R10, R11, R57 ; décision PO 08). Même boucle qu'avant (aucun
+    // second moteur) : avant chaque rang, la politique (`fallback-policy`)
+    // décide si le modèle peut être sollicité — modèle connu indisponible
+    // sauté sans appel, secours limité aux couples qualifiés (règle prudente
+    // sans preuve admissible), exclusions respectées, au plus un essai
+    // alternatif pour une cause indéterminée, aucune cascade après un défaut
+    // commun. Chaque choix ou refus est tracé (`metadata.fallback`, capture,
+    // erreur finale). Sans secours admissible après une panne de
+    // disponibilité : `AI_SUSPENDED` (aucune écriture, reprise depuis un
+    // point sûr). Les sondes de qualification (rang forcé) ne sautent jamais
+    // leur modèle : elles doivent l'atteindre.
+    // ══════════════════════════════════════════════════════════════════════
+    const fbCtx = fallbackContext();
+    const rangForce = traceConfig.triggerCode === 'qualification';
+    const knownDown: ReadonlyMap<string, OperationalHint> = rangForce
+      ? new Map() : await fbCtx.knownUnavailable().catch(() => new Map<string, OperationalHint>());
+    // Exclusions manuelles EN VIGUEUR (86B), lues au moment de l'appel : la
+    // chaîne figée au démarrage (RUN-04) perd ainsi un modèle exclu depuis.
+    // Même règle que la surcouche : jamais de chaîne vidée (exclusions alors
+    // ignorées) ; jamais pour une épreuve de qualification.
+    const exclusVifs = new Set<string>();
+    if (!rangForce) {
+      const vives = await fbCtx.currentExclusions(treatment).catch(() => []);
+      for (const m of models) if (isModelExcluded(m, treatment, vives)) exclusVifs.add(m);
+      if (exclusVifs.size >= models.length) exclusVifs.clear();
+    }
+    let qualifView: CoupleQualificationView | null = null;
+    const qualificationOf = async (model: string): Promise<CoupleQualification> => {
+      if (!qualifView) {
+        qualifView = await fbCtx.coupleQualifications({
+          operationCode, configVersionId: configuration.configVersionId, configRevisionId: configuration.configRevisionId ?? null,
+        }).catch(() => ({ origin: null, byModel: new Map() }));
+      }
+      return qualifView.byModel.get(model) ?? 'UNKNOWN';
+    };
+    const decisions: FallbackDecision[] = [];
+    /** Échec (ou saut) qui conduit au rang suivant ; `null` : premier modèle à considérer. */
+    let previous: { cause: FailureCause; model: string; truncatedAt: number | null } | null = null;
+    let lastCause: FailureCause | null = null;
+    let unknownAlternativesUsed = 0;
+    let attempted = 0;
+    /** Rang sans appel (modèle sauté ou secours refusé) : trace d'usage + capture « aucun envoi ». */
+    const traceNoCall = async (p: { model: string; rankIndex: number; decision: FallbackDecision; reasoning: ProviderCallInput['reasoning'] | null; timeoutMs: number; request?: RequestTrace | null }) => {
+      const code = p.decision.decision === 'KNOWN_UNAVAILABLE' ? 'MODEL_KNOWN_UNAVAILABLE' : 'FALLBACK_NOT_ADMISSIBLE';
+      const message = `${p.model} non sollicité : ${p.decision.decisionLabel}${p.decision.afterCause ? ` (après « ${p.decision.afterCauseLabel} » sur ${p.decision.afterModel ?? '?'})` : ''}.`;
+      const elapsedMs = Date.now() - startedAt;
+      await recordCallTrace({
+        traceId, useCaseCode: op.useCaseCode, operationCode, accountId: req.accountId, userId: req.userId,
+        parentOperationId: req.parentOperationId, provider: provider.name, model: p.model, promptVersion, usedFallback: p.rankIndex > 0,
+        shadow: Boolean(req.shadow), modelRank: rankAt(p.rankIndex), jobId, configVersionId: configuration.configVersionId,
+        callerMode: req.callerMode, ...traceConfig, reasoning: p.reasoning, maxOutputTokens: null,
+        inputTokens: 0, outputTokens: 0, costMicros: 0, durationMs: 0, executionElapsedMs: elapsedMs, status: 'error',
+        errorCode: code, errorMessage: message, billable: false, callKind: 'analysis', fallback: p.decision,
+        ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
+        capture: captureOf({
+          callKind: 'pre_call_refusal', sent: [], attachments: req.attachments ?? [], callIndex,
+          params: { ...paramsOf({ model: p.model, rankIndex: p.rankIndex, reasoning: p.reasoning, timeoutMs: p.timeoutMs, soStatus: null, requests: [], request: p.request ?? null }), fallback: p.decision },
+          responseRaw: null, diagnostic: { fallback: p.decision, message }, attemptDurationMs: 0, executionElapsedMs: elapsedMs,
+        }),
+        captureTransportOf: attachmentTransport,
+      }).catch(() => null);
+      callIndex++;
+    };
+
     try {
       for (let i = 0; i < models.length; i++) {
         const model = models[i];
@@ -624,6 +696,49 @@ export class AiGateway {
           needsImageInput: needsImageInput(req.attachments),
         });
         const maxOutputTokens = built.ok ? built.params.maxOutputTokens ?? undefined : undefined;
+
+        // ── Lot 87A (P7) : ce rang peut-il être sollicité ? ─────────────────
+        const down = knownDown.get(model) ?? null;
+        let excluded = false;
+        let qualification: CoupleQualification = 'UNKNOWN';
+        // Exclusions EN VIGUEUR (une exclusion prise pendant l'exécution ne
+        // fait que retirer) ; qualification pour les secours.
+        if (!down) excluded = exclusVifs.has(model);
+        if (previous !== null && !down && !excluded) qualification = await qualificationOf(model);
+        const admission = admitCandidate({
+          model, rankIndex: i + premierRang, knownUnavailable: down !== null, excluded, qualification,
+          maxOutputTokens: built.ok ? built.params.maxOutputTokens ?? null : null,
+        }, previous ? { cause: previous.cause, truncatedAtMaxOutputTokens: previous.truncatedAt, unknownAlternativesUsed } : null,
+        { configOrigin: (qualifView as CoupleQualificationView | null)?.origin ?? null });
+        const decision = decisionOf({
+          rank: modelRank, model, admission, afterCause: previous?.cause ?? null, afterModel: previous?.model ?? null, qualification,
+          operational: down,
+        });
+        decisions.push(decision);
+        if (!admission.admitted) {
+          failures.push(`${model} : ${ADMISSION_LABELS[admission.reason]}`);
+          await traceNoCall({ model, rankIndex: i + premierRang, decision, reasoning, timeoutMs, request: built.trace });
+          if (admission.reason === 'KNOWN_UNAVAILABLE') {
+            // RUN-03 : vérification bornée de rétablissement (sonde existante).
+            noteKnownUnavailableSkipped(model, down!);
+            if (!previous) previous = { cause: 'KNOWN_UNAVAILABLE', model, truncatedAt: null };
+            if (!lastCause) lastCause = 'KNOWN_UNAVAILABLE';
+            continue;
+          }
+          // Cause qui arrête la chaîne (défaut commun, cause indéterminée déjà
+          // retentée) : les rangs suivants sont refusés pour le même motif.
+          if (admission.reason === 'CAUSE_STOPS_CHAIN' || admission.reason === 'UNKNOWN_CAUSE_LIMIT') {
+            for (let k = i + 1; k < models.length; k++) {
+              const d = decisionOf({ rank: rankAt(k + premierRang), model: models[k], admission, afterCause: previous?.cause ?? null, afterModel: previous?.model ?? null, qualification: 'UNKNOWN' });
+              decisions.push(d);
+              failures.push(`${models[k]} : ${ADMISSION_LABELS[admission.reason]}`);
+              await traceNoCall({ model: models[k], rankIndex: k + premierRang, decision: d, reasoning: rankSettings(op, configuration, k + premierRang).reasoning, timeoutMs });
+            }
+            break;
+          }
+          continue;
+        }
+        if (previous?.cause && CAUSE_POLICY[previous.cause].fallback === 'ONE_ALTERNATIVE') unknownAlternativesUsed++;
         // §21 : un repli après une sortie invalide connaît l'erreur précédente.
         const informed = previousFailure?.family === 'INVALID_OUTPUT' && previousFailure.subtype !== 'OUTPUT_TRUNCATED'
           && previousFailure.subtype !== 'EMPTY_RESPONSE';
@@ -658,6 +773,8 @@ export class AiGateway {
           parentOperationId: req.parentOperationId, provider: provider.name, model, promptVersion, usedFallback,
           shadow: Boolean(req.shadow), modelRank, jobId, configVersionId: configuration.configVersionId,
           callerMode: req.callerMode, ...traceConfig, reasoning, maxOutputTokens: maxOutputTokens ?? null,
+          // Lot 87A : choix de ce rang (cause, rang, modèle, motif).
+          fallback: decision,
         };
 
         // ── Lot 85C (CFG-03, R02) : combinaison CONNUE comme incompatible →
@@ -683,7 +800,7 @@ export class AiGateway {
             ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
             capture: captureOf({
               callKind: 'pre_call_refusal', sent: [], attachments: req.attachments ?? [], callIndex,
-              params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus: null, requests: [], request: built.trace }), refusal: refus },
+              params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus: null, requests: [], request: built.trace }), refusal: refus, fallback: decision },
               responseRaw: null, diagnostic: { ...diag, parameterRefusal: refus }, attemptDurationMs: 0, executionElapsedMs: elapsedMs,
             }),
             captureTransportOf: attachmentTransport,
@@ -693,9 +810,12 @@ export class AiGateway {
             operationCode, task: traceConfig.task, model, modelRank, sourceIds, diagnostic: diag, output: null,
           });
           previousFailure = diag;
+          previous = { cause: 'PARAMETER_INCOMPATIBLE', model, truncatedAt: null };
+          lastCause = 'PARAMETER_INCOMPATIBLE';
           continue;
         }
 
+        attempted++;
         try {
           out = await callWithSchemaFallback(capturing, {
             model, prompt: attemptPrompt, attachments: req.attachments ?? [], timeoutMs, maxOutputTokens, reasoning, operationCode,
@@ -729,7 +849,15 @@ export class AiGateway {
           };
           failures.push(`${model} : ${message}`);
           lastFailureCode = gatewayCodeOf(e, c);
-          attempts.push({ model, succeeded: false });
+          // Lot 87A : cause établie de la panne (tableau §8). Un paramètre
+          // refusé est une incompatibilité de requête : jamais « modèle
+          // indisponible », le disjoncteur n'avance pas.
+          const cause = causeOfFailure({
+            family: c.family, subtype: c.subtype, code: lastFailureCode, httpStatus: c.httpStatus, providerErrorCode: c.providerErrorCode, message,
+          });
+          previous = { cause, model, truncatedAt: null };
+          lastCause = cause;
+          if (CAUSE_POLICY[cause].countsForBreaker) attempts.push({ model, succeeded: false });
           const diag = buildDiagnostic({
             outcome: 'FAILED', callKind: 'analysis', family: c.family, subtype: c.subtype, stage: c.stage,
             outputReceived: false, error: c.error, issues: [], issueCount: 0,
@@ -756,7 +884,7 @@ export class AiGateway {
             ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
             capture: captureOf({
               callKind: 'analysis', sent: requests, attachments: req.attachments ?? [], callIndex,
-              params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests, request: built.trace }), informedOfPreviousError: informed },
+              params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests, request: built.trace }), informedOfPreviousError: informed, fallback: decision },
               responseRaw: null, diagnostic: diag, attemptDurationMs: attemptMs, executionElapsedMs: elapsedMs,
             }),
             captureTransportOf: attachmentTransport,
@@ -788,7 +916,13 @@ export class AiGateway {
           jsonRequested: jsonResponse || soStatus === 'requested_schema',
           provider: meta,
         } as const;
-        const first = resolveOutput({ ...resolveBase, raw: out.rawText, allowPruning: !repairAllowed && pruningAllowed });
+        // Lot 87A (décision PO 08) : une génération arrêtée sur le plafond de
+        // sortie n'est jamais exhaustive — principal ou secours, elle ne
+        // devient JAMAIS une réussite (ni par réparation JSON, ni par retrait
+        // de champs).
+        const truncated = isTruncated(meta);
+        const resolved = resolveOutput({ ...resolveBase, raw: out.rawText, allowPruning: !repairAllowed && pruningAllowed });
+        const first = resolved.ok && truncated ? truncatedFailure(resolved) : resolved;
         let final: Resolution = first;
         let repairRun: RepairRun | null = null;
         if (!first.ok && repairAllowed && first.repairable && !first.taskMismatch) {
@@ -802,7 +936,11 @@ export class AiGateway {
         if (!final.ok && !(!first.ok && first.taskMismatch) && repairAllowed) {
           // Validation champ par champ sur la sortie d'origine (réparation absente ou insuffisante).
           const pruned = resolveOutput({ ...resolveBase, raw: out.rawText, allowPruning: true });
-          if (pruned.ok) final = pruned;
+          if (pruned.ok && !truncated) final = pruned;
+        }
+        // Réparation dont la propre sortie est tronquée : même règle.
+        if (final.ok && repairRun?.resolution?.ok && final === repairRun.resolution && isTruncated(repairRun.diagnostic.provider)) {
+          final = truncatedFailure(final);
         }
 
         const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider);
@@ -868,7 +1006,7 @@ export class AiGateway {
           ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
           capture: captureOf({
             callKind: 'analysis', sent: analysisRequests, attachments: req.attachments ?? [], callIndex,
-            params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests: analysisRequests, request: built.trace }), informedOfPreviousError: informed },
+            params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs, soStatus, requests: analysisRequests, request: built.trace }), informedOfPreviousError: informed, fallback: decision },
             responseRaw: out.rawText,
             // LOG-03 : sortie d'origine (`response_raw`), parsing du premier passage, sortie acceptée après normalisation / réparation.
             parsed: { firstPass: first.parsed ?? null, accepted: final.ok ? final.data : null },
@@ -907,7 +1045,7 @@ export class AiGateway {
             ...(structuredTrace ? { structuredContext: structuredTrace } : {}),
             capture: captureOf({
               callKind: 'repair', sent: sent.slice(repairFrom).map((r) => ({ ...r, kind: 'repair' })), attachments: [], callIndex,
-              params: paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs: Math.min(timeoutMs, 60_000), soStatus: repairRun.diagnostic.provider.structuredOutputStatus ?? null, requests: sent.slice(repairFrom), request: built.trace }),
+              params: { ...paramsOf({ model, rankIndex: i + premierRang, reasoning, timeoutMs: Math.min(timeoutMs, 60_000), soStatus: repairRun.diagnostic.provider.structuredOutputStatus ?? null, requests: sent.slice(repairFrom), request: built.trace }), fallback: decision },
               responseRaw: repairRun.rawText,
               parsed: { firstPass: null, accepted: repairRun.resolution?.ok ? repairRun.resolution.data : null },
               diagnostic: repairRun.diagnostic, attemptDurationMs: repairRun.durationMs, executionElapsedMs: Date.now() - startedAt,
@@ -951,18 +1089,36 @@ export class AiGateway {
         lastFailureCode = 'INVALID_OUTPUT';
         attempts.push({ model, succeeded: false });
         previousFailure = diag;
+        {
+          const sub = first.ok ? (final.ok ? null : final.subtype) : first.subtype;
+          const cause: FailureCause = sub === 'OUTPUT_TRUNCATED' || truncated ? 'OUTPUT_TRUNCATED' : 'INVALID_OUTPUT';
+          previous = { cause, model, truncatedAt: cause === 'OUTPUT_TRUNCATED' ? maxOutputTokens ?? null : null };
+          lastCause = cause;
+        }
       }
 
       noteGatewayOutcome({
         // Lot 85C : une chaîne entièrement refusée AVANT appel (configuration
         // incompatible) n'est pas une panne de modèle : le disjoncteur n'avance pas.
+        // Lot 87A : idem pour une chaîne dont tous les modèles sont connus
+        // indisponibles (sautés) ou dont les seuls échecs sont des paramètres
+        // refusés (incompatibilité de requête, jamais une indisponibilité).
         attempts, chainSucceeded: chaineComplete && attempts.length > 0 ? false : null,
         // Revue L16b-3 : un même document ne fait progresser le disjoncteur
         // qu'une fois par fenêtre (`recordChainOutcome`).
         target: req.sourceIds && req.sourceIds.length > 0 ? `sources:${[...req.sourceIds].sort((x, y) => x - y).join(',')}` : null,
       });
-      throw new AiGatewayError('ALL_MODELS_FAILED', operationCode,
+      if (chainOutcome({ lastCause, decisions, attempted }) === 'SUSPEND') {
+        const cause = lastCause ?? 'UNKNOWN';
+        throw new AiSuspendedError(operationCode,
+          `Exécution suspendue sans écriture : aucun secours admissible après « ${CAUSE_POLICY[cause].label} ». ${failures.join(' — ')}`,
+          cause, decisions as unknown as Array<Record<string, unknown>>, lastFailureCode, treatment);
+      }
+      const err = new AiGatewayError('ALL_MODELS_FAILED', operationCode,
         `Tous les modèles ont échoué. ${failures.join(' — ')}`, { recoverable: true, lastFailureCode });
+      // Lot 87A : décisions de secours portées par l'erreur (diagnostic des appelants).
+      Object.defineProperty(err, 'fallbackDecisions', { value: decisions, enumerable: false, configurable: true });
+      throw err;
     } finally {
       // Nettoyage systématique des fichiers temporaires (CDC §5.2, §4.1.7).
       await attachmentSession?.release().catch(() => { /* non bloquant : expiration à 48 h */ });
@@ -1208,6 +1364,21 @@ async function callWithSchemaFallback(
     setStatus('schema_rejected_retried_without');
     return out;
   }
+}
+
+/**
+ * Lot 87A (décision PO 08) — sortie TRONQUÉE rendue conforme par une
+ * réparation ou un retrait de champs : échec `OUTPUT_TRUNCATED` (jamais une
+ * réussite). Pur.
+ */
+export function truncatedFailure(r: Resolution): Extract<Resolution, { ok: false }> {
+  return {
+    ok: false, subtype: 'OUTPUT_TRUNCATED', stage: 'response_reception',
+    issues: [], issueCount: 0,
+    message: 'Sortie tronquée (plafond de sortie atteint) : jamais acceptée comme réussite, même rendue conforme (décision PO 08).',
+    controls: r.controls, repairs: r.repairs, parsed: r.parsed, extracted: r.extracted ?? null,
+    best: undefined, prepared: undefined, repairable: false, allPaths: [], optionalPaths: [],
+  };
 }
 
 /**

@@ -15,6 +15,7 @@
  * par `asset_id` ; l'appartenance de l'entité au compte est contrôlée par
  * l'appelant via son bien parent ACTUEL (`canonical/entity-state`).
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { fieldEvidenceCanonicalReady } from './canonical-columns';
 import type { FieldEvidence } from './evidence.types';
@@ -164,9 +165,9 @@ export async function listActiveEvidenceForTargets(
   const eq = targets.filter((t) => t.type === 'EQUIPMENT').map((t) => t.id);
   const ro = targets.filter((t) => t.type === 'ROOM').map((t) => t.id);
   if ((eq.length === 0 && ro.length === 0) || !(await fieldEvidenceCanonicalReady())) return [];
-  const rows = (await pgClient.unsafe(
+  const rows = (await withDocumentTitles(pgClient.unsafe(
     `SELECT ${colonnes('e.')},
-            (SELECT coalesce(f.retained_title, f.original_filename) FROM asset_files f
+            (SELECT ${documentTitleJsonSql('f')} FROM asset_files f
               WHERE e.source_type = 'document' AND f.id = e.source_id AND f.account_id = e.account_id AND f.deleted_at IS NULL) AS "documentTitle"
        FROM field_evidence e
       WHERE e.account_id = $1 AND e.status = 'active' AND (e.lifecycle_status IS NULL OR e.lifecycle_status = 'ACTIVE')
@@ -174,7 +175,7 @@ export async function listActiveEvidenceForTargets(
           OR (e.target_type = 'ROOM' AND e.target_entity_id = ANY(string_to_array($3, ',')::int[])))
       ORDER BY e.authority_score DESC, e.document_date DESC NULLS FIRST, e.id`,
     [accountId, eq.join(','), ro.join(',')] as never[],
-  )) as unknown as Ligne[];
+  ))) as unknown as Ligne[];
   return rows.map((r) => ({
     target: { type: r.targetType as EntityEvidenceType, id: Number(r.targetEntityId) },
     evidence: versPreuve(r),

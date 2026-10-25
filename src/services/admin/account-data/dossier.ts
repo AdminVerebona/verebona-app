@@ -822,6 +822,8 @@ const OP_SECTIONS: Array<[string, Tab, string, keyof typeof OPERATION_DETAIL_LIS
   ['history', 'preuves', 'Historique', 'history'],
   ['agenda', 'preuves', 'Agenda (projection)', 'agendaItems'],
   ['suppressions', 'preuves', 'Suppressions durables de projection', 'projectionSuppressions'],
+  // Lot 87B : décisions T3 / T4 demandées par l'orchestration (contrôle, projection, reprise), reçues, appliquées ou refusées.
+  ['semantic-reevaluations', 'preuves', 'Réévaluations sémantiques T3 / T4 (décision IA reçue, validation, mutations appliquées / refusées)', 'semanticReevaluations'],
 ];
 
 async function operationDossier(ctx: Ctx, id: number, withDetail: boolean): Promise<{ entity: EntityDossier['entity']; detail: OperationDetail | null }> {

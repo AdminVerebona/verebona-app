@@ -13,7 +13,10 @@
  *  AC05       FORMULATE seule : aucune réévaluation
  *  AC06–AC09  suggestions : échéance exclue sous une référence autorisée,
  *             incitation déclarée CONSULT, bien incohérent — jamais proposées,
- *             à la génération comme à la relecture du cache
+ *             à la génération comme à la relecture du cache — lot 87C :
+ *             contrat des questions fondées (version du prompt SIMULÉE),
+ *             « préparer » étayée par une description, 3 premières questions
+ *             seulement, rejets tracés sur la génération
  *  AC10       transition : empreintes v3 et signatures e1 enregistrées relues
  *             sans réévaluation de masse, rebasées ; référence 0575 concurrente
  *             sans doublon ; migration rejouable
@@ -23,13 +26,15 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scenario } from '../scenario';
 import { useTargetState } from '../chain';
+import { activerContratQuestions, fondee } from '../t6-suggestions-v3';
 
 interface Fait { ref: string; excerpt: string | null; value: string | null }
 interface Candidat { subjectId: string; title: string; assetName: string | null; facts?: Fait[]; evidence: Array<{ ref: string; kind: string }> }
 
 const modele = vi.hoisted(() => ({
   juger: (_c: Candidat): Record<string, unknown> | null => null,
-  questions: [] as unknown[],
+  /** Questions rendues par FORMULATE — lot 87C : liste, ou fonction du contexte transmis. */
+  questions: [] as unknown[] | ((ctx: Record<string, unknown>) => unknown[]),
   candidats: [] as Candidat[][],
   formulations: 0,
   /** Profil réellement reçu par le fournisseur (modèle, raisonnement, limite). */
@@ -56,10 +61,11 @@ function provider() {
       if (mode !== 'FORMULATE') throw new Error('appel inattendu');
       modele.formulations += 1;
       const entree = JSON.parse(/Entrée structurée : (.*)\n/.exec(input.prompt)![1]) as { subjects: Array<{ subjectId: string; fallbackText: string }> };
+      const q = /Contexte des questions suggérées : (.*)\n/.exec(input.prompt)?.[1];
       return {
         rawText: JSON.stringify({
           schemaVersion: 't6-output-v2', messages: entree.subjects.map((s) => ({ subjectId: s.subjectId, text: s.fallbackText, highlight: null })),
-          suggestions: modele.questions,
+          suggestions: typeof modele.questions === 'function' ? (q && q !== 'null' ? modele.questions(JSON.parse(q)) : []) : modele.questions,
         }),
         inputTokens: 200, outputTokens: 60,
       };
@@ -327,15 +333,22 @@ scenario('L76A-T6', 'Lot 76A — invalidation EVALUATE complète et suggestions 
     await echeance(c, 'Assurance habitation', await plus(14));
     const ramonage = await echeance(c, 'Ramonage', await plus(200)); // hors horizon : jamais évalué, consultable, non signalé
     modele.juger = (x) => (x.title === 'Contrôle technique' ? AGIR : AUCUNE);
-    modele.questions = [
-      // Cas du ticket : texte sur l'échéance exclue, référence autorisée vers une autre.
-      { question: 'Comment préparer le renouvellement de l’assurance habitation ?', assetRef: null, deadlineRef: 'D1', purpose: 'PREPARE' },
-      // Incitation déclarée CONSULT sur une échéance non signalée.
-      { question: 'Comment préparer le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' },
-      // Paraphrase invérifiable.
-      { question: 'Quand passer le CT ?', assetRef: null, deadlineRef: 'D1', purpose: 'CONSULT' },
-      { question: 'Que dois-je préparer pour le contrôle technique ?', assetRef: 'A1', deadlineRef: 'D1', purpose: 'PREPARE' },
-      { question: 'Quand est prévu le ramonage ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' },
+    // Lot 87C : la démarche du contrôle technique est étayée par une description concrète (fondement D1.DESC).
+    await sql`UPDATE agenda_items SET description = 'Contre-visite exigée : rendez-vous à prendre au centre agréé.' WHERE id = ${ct}`;
+    await activerContratQuestions(true);
+    const D = (ctx: Record<string, unknown>, label: string) => (ctx.nextDeadlines as Array<{ ref: string; label: string; identifiedAction: { ref: string } | null; description: { ref: string } | null }>)
+      .find((x) => x.label === label)!;
+    const preparerCT = (ctx: Record<string, unknown>, question: string, o: { assetRef?: string | null } = {}) => {
+      const d = D(ctx, 'Contrôle technique');
+      return fondee(ctx, question, [d.ref, ...(d.identifiedAction ? [d.identifiedAction.ref] : []), ...(d.description ? [d.description.ref] : [])],
+        { purpose: 'PREPARE', deadlineRef: d.ref, ...o });
+    };
+    modele.questions = (ctx) => [
+      // Cas du ticket 76A : texte sur l'échéance exclue, référence autorisée vers une autre.
+      preparerCT(ctx, 'Comment préparer le renouvellement de l’assurance habitation ?'),
+      // Préparation étayée (démarche identifiée + description) : légitime, conservée.
+      preparerCT(ctx, 'Que dois-je préparer pour le contrôle technique ?', { assetRef: 'A1' }),
+      fondee(ctx, 'Quand est prévu le ramonage ?', [D(ctx, 'Ramonage').ref]),
     ];
     await passer(c.id);
     const p = await passer(c.id);
@@ -347,13 +360,25 @@ scenario('L76A-T6', 'Lot 76A — invalidation EVALUATE complète et suggestions 
     const relue = await (await svc()).getMascotPresentation(c.id, 'display', c.ownerUserId);
     expect(modele.formulations).toBe(n);
     expect(questions(relue)).toEqual(attendues);
-    // Bien incohérent (autre bien du compte) : rejetée.
+    // Bien incohérent (autre bien du compte), incitation CONSULT, paraphrase : rejetées.
     const clio = await make.asset(c as never, { category: 'VEHICULE', name: 'Clio' });
     await sql`UPDATE assets SET status = 'EN_SERVICE' WHERE id = ${clio.id}`;
-    modele.questions = [{ question: 'Que dois-je préparer pour le contrôle technique de la Clio ?', assetRef: null, deadlineRef: 'D1', purpose: 'PREPARE' }];
+    modele.questions = (ctx) => [
+      preparerCT(ctx, 'Que dois-je préparer pour le contrôle technique de la Clio ?', { assetRef: null }),
+      fondee(ctx, 'Comment préparer le ramonage ?', [D(ctx, 'Ramonage').ref]),
+      fondee(ctx, 'Quand passer le CT ?', [D(ctx, 'Contrôle technique').ref]),
+    ];
     // (le nouveau bien change le contexte des questions : nouvelle formulation, mêmes contrôles)
     const q = await passer(c.id);
     expect(questions(q)).toEqual([]);
+    // Lot 87C (AC14) : rejets distinctement tracés sur la génération, sans texte.
+    // (journal T6 écrit en arrière-plan : attente bornée de la ligne de cette génération)
+    const derniere = async () => (await sql<Array<{ r: { accepted: number; rejected: number; reasons: Record<string, number> } }>>`
+      SELECT suggestion_report AS r FROM home_mascot_generations WHERE account_id = ${c.id} AND status = 'generated' AND suggestion_report IS NOT NULL ORDER BY id DESC LIMIT 1`)[0];
+    for (let i = 0; i < 100 && (await derniere())?.r.accepted !== 0; i += 1) await new Promise((r) => setTimeout(r, 50));
+    const g = await derniere();
+    expect(g.r).toMatchObject({ accepted: 0, rejected: 3, reasons: { other_asset_cited: 1, consult_incites_unsignaled: 1, label_not_cited: 1 } });
+    expect(JSON.stringify(g.r)).not.toMatch(/Clio|ramonage|Quand passer/);
     expect(ramonage).toBeGreaterThan(0);
   });
 });

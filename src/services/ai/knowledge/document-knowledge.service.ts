@@ -31,6 +31,7 @@
  * APRÈS son analyse sans relire le fichier.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { wordStartPattern } from '@/lib/search/match-engine';
 import { pgClient } from '@/db';
 import type { DocumentKnowledge, DocumentFactRecord } from './document-knowledge';
@@ -378,7 +379,7 @@ export async function searchTableCells(
   const hay = `unaccent(lower(coalesce(c.row_header,'') || ' ' || coalesce(c.column_header,'') || ' ' || coalesce(c.value_text,'') || ' ' || coalesce(t.title,'')))`;
   // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
   const cond = clean.map((_, i) => `${hay} ~ $${i + 3}`).join(' OR ');
-  const rows = await pgClient.unsafe(
+  const rows = await withDocumentTitles(pgClient.unsafe(
     `WITH lignes AS (
        SELECT DISTINCT c.table_id, c.row_index
          FROM document_table_cells c
@@ -390,7 +391,7 @@ export async function searchTableCells(
         LIMIT ${Math.min(Math.max(opts.limit ?? 200, 1), 500)}
      )
      SELECT c.table_id::float8 AS "tableId", t.file_id AS "fileId",
-            coalesce(af.retained_title, af.original_filename) AS "documentTitle",
+            ${documentTitleJsonSql('af')} AS "documentTitle",
             t.title AS "tableTitle", t.uncertain AS "tableUncertain",
             c.row_index AS row, c.column_index AS column, c.row_header AS "rowHeader",
             c.column_header AS "columnHeader", c.column_path AS "columnPath",
@@ -401,7 +402,7 @@ export async function searchTableCells(
        JOIN asset_files af ON af.id = t.file_id AND af.account_id = $1
       ORDER BY c.table_id, c.row_index, c.column_index`,
     [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)] as never[],
-  );
+  ));
   return rows as unknown as TableCellRow[];
 }
 
@@ -552,10 +553,10 @@ export async function searchDocumentFacts(
   // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
   const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
   const params: unknown[] = [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)];
-  const rows = await pgClient.unsafe(
+  const rows = await withDocumentTitles(pgClient.unsafe(
     `SELECT * FROM (
        SELECT ${factColumns('f')},
-              coalesce(af.retained_title, af.original_filename) AS "documentTitle",
+              ${documentTitleJsonSql('af')} AS "documentTitle",
               coalesce(af.asset_id, af.linked_asset_id) AS "assetId",
               (${scoreSql}) AS "matchedTerms"
          FROM document_facts f
@@ -567,7 +568,7 @@ export async function searchDocumentFacts(
      ORDER BY s."matchedTerms" DESC, s.id DESC
      LIMIT ${Math.min(Math.max(opts.limit ?? 20, 1), 100)}`,
     params as never[],
-  );
+  ));
   return rows as unknown as KnowledgeFactHit[];
 }
 

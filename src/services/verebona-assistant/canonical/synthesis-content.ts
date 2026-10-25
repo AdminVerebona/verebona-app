@@ -23,6 +23,7 @@
  *     (`documentTypeLabel`) pour que cette exclusion le voie.
  */
 import { pgClient } from '@/db';
+import { documentCodeLabel } from '@/lib/referential/document-codes';
 import { getField, resolveAlias } from '@/services/canonical/registry';
 import type { RetrievedSource } from '../types/sources';
 import { maskSensitiveText, sensitiveNecessityFor, type SensitiveNecessity } from '../core/sensitive-data.policy';
@@ -77,7 +78,7 @@ export function maskedExcerpt(excerpt: string | null, necessity: SensitiveNecess
 /** Contenu d'une source de synthèse (pure, testée). */
 export function synthesisSourceContent(d: CanonicalDocumentState, transcription: string | null, maxFacts: number): string {
   const lignes = [
-    [d.documentTypeLabel ?? d.catalogCode, d.documentDate, d.supplier ? `fournisseur ${d.supplier}` : null,
+    [d.documentTypeLabel ?? (documentCodeLabel(d.catalogCode) || null), d.documentDate, d.supplier ? `fournisseur ${d.supplier}` : null,
       d.amountCents != null ? `montant ${(d.amountCents / 100).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €` : null,
       d.assets.length ? `bien${d.assets.length > 1 ? 's' : ''} : ${d.assets.map((a) => a.name).join(', ')}` : null,
     ].filter(Boolean).join(' · '),

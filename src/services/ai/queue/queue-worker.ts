@@ -56,10 +56,11 @@ import type { Treatment } from '../config/treatments';
 import { listBatchTreatments } from '../config/treatments';
 import {
   claimNext, completeJob, failJob, deferJob, deferJobUntil, renewLease, recoverAbandonedJobs, isExecutionActive, LEASE_SECONDS,
-  releaseInterruptedJob, recordJobAttempt, neutralizeIneligibleJob, type QueuedJob,
+  releaseInterruptedJob, recordJobAttempt, neutralizeIneligibleJob, suspendJobForAi, type QueuedJob,
 } from './job-queue.repository';
-import { isCostCapReached, costCapResumeAt } from '../gateway/errors';
-import { isJobDeferred, isPermanentJobError, isBusinessResult, type JobBusinessResult } from './queue-policy';
+import { isCostCapReached, costCapResumeAt, isAiSuspended, type AiSuspendedError } from '../gateway/errors';
+import type { ExecutionConfigSnapshot } from '../config/execution-snapshot';
+import { isJobDeferred, isPermanentJobError, isBusinessResult, AI_SUSPENSION_USER_REASON, type JobBusinessResult } from './queue-policy';
 import {
   createExecutionGuard, registerLocalExecution, unregisterLocalExecution,
   isExecutionCancelled, ExecutionCancelledError, waitForSettlement, type ExecutionGuard,
@@ -178,9 +179,19 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
   // VER-016 : la version effective est lue AU DÉMARRAGE et figée sur le job ;
   // VER-015 : l'exécution la garde jusqu'au bout (contexte ci-dessous).
   // Lot 54 : version ET révision (la version active reste modifiable).
-  const { versionId: configVersionId, revisionId: configRevisionId } = await pinnableConfig();
+  const { versionId: configVersionId, revisionId: configRevisionId, snapshot: configSnapshot } = await pinnableConfig();
   const job = await claimNext(treatment, WORKER_ID, LEASE_SECONDS, configVersionId);
   if (!job) return false;
+  // Lot 87A (P7, RUN-04, DEC-04) : reprise d'un travail SUSPENDU faute de
+  // secours admissible — depuis un point sûr (début de l'unité), avec la
+  // configuration du moment ; tracée avec chaque appel et marquée reprise.
+  const resumedFromSuspension = resumeOfSuspension(job);
+  if (resumedFromSuspension) {
+    try {
+      const { markAiSuspensionResumed } = await import('./job-queue.repository');
+      await markAiSuspensionResumed(job.id, job.executionId);
+    } catch { /* traçabilité : jamais bloquant */ }
+  }
   // Lot 52A : dernière activité de ce processus (battement, supervision BO).
   noteWorkerClaim(treatment);
   // Pool : un job pris signale qu'il y a du travail — une autre place peut
@@ -249,6 +260,11 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
         jobId: job.id, treatment, configVersionId: job.configVersionId ?? configVersionId,
         // Révision figée au prélèvement (même lecture que la version écrite sur le job).
         configRevisionId: (job.configVersionId ?? configVersionId) === configVersionId ? configRevisionId : null,
+        // Lot 87A (RUN-04) : configuration effective complète relevée au prélèvement
+        // (surcouche de routage comprise) — une promotion prise pendant
+        // l'exécution ne change plus sa chaîne.
+        configSnapshot: (job.configVersionId ?? configVersionId) === configVersionId ? configSnapshot ?? null : null,
+        resumedFromSuspension,
         // Lot 34C : tentative en cours, tracée avec chaque appel modèle.
         jobAttempt: job.attempts ?? null,
         // CDC 15 OBS-CFG : déclencheur effectif, tracé avec chaque appel.
@@ -338,6 +354,24 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
       const r = await deferJobUntil(job.id, reason, until, job.executionId);
       if (!r.stale) outcome = { kind: 'deferred', permanent: false, reason, until: until.toISOString() };
       console.warn(`[queue] ${treatment} job ${job.id} reporté au ${until.toISOString()} — plafond IA du compte ${job.accountId ?? '?'} atteint.`);
+    } else if (isAiSuspended(e) && !controller.signal.aborted) {
+      // Lot 87A (CDC Pilotage IA V2 P7, RUN-02, R11) : aucun secours
+      // ADMISSIBLE — suspension SANS écriture métier (l'exécutant a laissé
+      // remonter la suspension comme une interruption). Tentative rendue,
+      // reprise automatique bornée depuis un point sûr ; cause explicite
+      // portée par le travail (exécution métier P2, journal P3).
+      const s = e as AiSuspendedError;
+      const message = (s.message ?? 'aucun secours admissible').slice(0, 1500);
+      const r = await suspendJobForAi(job.id, {
+        cause: s.failureCause ?? 'UNKNOWN', message, revisionId: configRevisionId,
+        decisions: Array.isArray(s.decisions) ? s.decisions : [],
+      }, job.executionId);
+      if (!r.stale) {
+        outcome = r.permanent
+          ? { kind: 'failed', permanent: true, timedOut: false, error: message }
+          : { kind: 'deferred', permanent: false, reason: AI_SUSPENSION_USER_REASON, until: r.until?.toISOString() };
+      }
+      console.warn(`[queue] ${treatment} job ${job.id} suspendu (aucun secours admissible) — ${message}${r.permanent ? ' (plafond de suspensions atteint : échec définitif)' : ''}.`);
     } else if (isJobDeferred(e) && !controller.signal.aborted) {
       // Report (quota épuisé…) : ni échec, ni succès — voir `JobDeferredError`.
       const r = await deferJob(job.id, (e as Error).message, job.executionId);
@@ -407,10 +441,33 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
   return true;
 }
 
-/** Version et révision effectives à figer ; jamais bloquant (repli : configuration du code). */
-async function pinnableConfig(): Promise<{ versionId: number | null; revisionId: number | null }> {
+/** Suspension IA non encore reprise portée par le travail (pur), ou `null`. */
+export function resumeOfSuspension(job: Pick<QueuedJob, 'payload'>): { cause: string; suspendedAt: string | null; previousRevisionId: number | null; count: number } | null {
+  const s = (job.payload as { aiSuspension?: Record<string, unknown> } | null)?.aiSuspension;
+  if (!s || typeof s !== 'object' || s.resumedAt) return null;
+  return {
+    cause: typeof s.cause === 'string' ? s.cause : 'UNKNOWN',
+    suspendedAt: typeof s.at === 'string' ? s.at : null,
+    previousRevisionId: typeof s.revisionId === 'number' ? s.revisionId : null,
+    count: typeof s.count === 'number' ? s.count : 1,
+  };
+}
+
+/**
+ * Version et révision effectives à figer ; jamais bloquant (repli : configuration du code).
+ * Lot 87A (RUN-04) : relevées dans UN instantané complet de la configuration
+ * effective (lignes, prompts maîtres, surcouche de routage), porté ensuite
+ * par le contexte d'exécution.
+ */
+async function pinnableConfig(): Promise<{ versionId: number | null; revisionId: number | null; snapshot?: ExecutionConfigSnapshot | null }> {
   try {
     const resolver = await import('../config/config-resolver');
+    let capture: typeof resolver.captureExecutionSnapshot | undefined;
+    try { capture = resolver.captureExecutionSnapshot; } catch { capture = undefined; }
+    if (typeof capture === 'function') {
+      const snapshot = await capture('job');
+      return { versionId: snapshot.effective.versionId, revisionId: snapshot.effective.revisionId ?? null, snapshot };
+    }
     // Résolveur réduit (doubles de test antérieurs au lot 54) : version seule.
     let pin: typeof resolver.resolveEffectivePin | undefined;
     try { pin = resolver.resolveEffectivePin; } catch { pin = undefined; }

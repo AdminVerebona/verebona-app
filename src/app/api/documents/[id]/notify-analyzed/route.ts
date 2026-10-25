@@ -10,7 +10,7 @@ import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { assetFiles, notifications } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
-import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 
 export async function POST(
   request: NextRequest,
@@ -31,7 +31,11 @@ export async function POST(
     }
 
     // Verify file belongs to account
-    const [file] = await db.select({ id: assetFiles.id, retainedTitle: assetFiles.retainedTitle, originalFilename: assetFiles.originalFilename }).from(assetFiles).where(
+    // Lot 87D : mêmes sources du titre affiché que toutes les vues.
+    const [file] = await db.select({
+      id: assetFiles.id, retainedTitle: assetFiles.retainedTitle, originalFilename: assetFiles.originalFilename,
+      webLinkTitle: assetFiles.webLinkTitle, filename: assetFiles.filename, s3Key: assetFiles.s3Key, publicId: assetFiles.publicId,
+    }).from(assetFiles).where(
       and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId))
     ).limit(1);
 
@@ -39,7 +43,7 @@ export async function POST(
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    const documentTitle = displayDocumentTitle(file, '') || undefined;
+    const documentTitle = documentTitleFromRecord({ ...file, publicId: file.publicId == null ? null : String(file.publicId) }, '') || undefined;
 
     await db.insert(notifications).values({
       userId: session.userId,

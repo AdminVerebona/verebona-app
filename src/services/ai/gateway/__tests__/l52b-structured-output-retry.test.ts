@@ -156,12 +156,15 @@ describe('AC3 — retry également en échec (même 400)', () => {
     expect(err).toMatchObject({ code: 'ALL_MODELS_FAILED', lastFailureCode: 'PROVIDER_REQUEST_REJECTED' });
     const parModele = new Map<string, Array<boolean>>();
     for (const c of analyses()) parModele.set(c.model, [...(parModele.get(c.model) ?? []), c.responseSchema !== undefined]);
-    expect(parModele.size).toBe(3); // la cascade continue
+    // Lot 87A (R10, R57) : 400 générique = cause indéterminée → la cascade continue
+    // pour UN essai alternatif seulement ; le troisième modèle est refusé (tracé, sans appel).
+    expect(parModele.size).toBe(2);
     for (const [model, appels] of parModele) {
       expect(appels).toEqual([true, false]); // exactement 2 appels : avec, puis sans schéma
       expect(schemaRejectedRecently(model, contrat().schemaHash)).toBe(false);
     }
-    for (const t of traces()) {
+    expect(traces().filter((t) => t.errorCode === 'FALLBACK_NOT_ADMISSIBLE')).toHaveLength(1);
+    for (const t of traces().filter((x) => x.errorCode !== 'FALLBACK_NOT_ADMISSIBLE')) {
       expect(t).toMatchObject({ status: 'error', errorCode: 'PROVIDER_REQUEST_REJECTED', failure: { family: 'INPUT_ERROR', subtype: null, stage: 'provider_request' } });
       expect(t.providerMeta?.structuredOutput).toBe('requested_schema');
       expect(t.runtimeContract).toMatchObject({ structuredOutput: true, providerSchemaHash: psHash() });
@@ -218,10 +221,14 @@ describe('AC5 — erreur d’authentification (400 INVALID_ARGUMENT « API key n
     const auth = () => Object.assign(new Error('{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}'), { status: 400 });
     expect(classifyCallError(auth())).toMatchObject({ family: 'AUTH_ERROR' });
     fake.onAny(() => { throw auth(); });
-    await expect(AiGateway.execute(requete())).rejects.toMatchObject({ code: 'ALL_MODELS_FAILED' });
+    // Lot 87A (CDC P7 §8, R10) : clé refusée = accès GLOBAL — aucune cascade inutile,
+    // suspension (reprise possible après correction de la clé).
+    await expect(AiGateway.execute(requete())).rejects.toMatchObject({ code: 'AI_SUSPENDED', failureCause: 'GLOBAL_ACCESS' });
     expect(analyses().every((c) => c.responseSchema !== undefined)).toBe(true);
-    expect(analyses()).toHaveLength(3); // un appel par modèle
-    expect(traces().every((t) => t.failure?.family === 'AUTH_ERROR' && t.providerAttempts!.length === 1)).toBe(true);
+    expect(analyses()).toHaveLength(1);
+    const appels = traces().filter((t) => t.providerAttempts);
+    expect(appels.every((t) => t.failure?.family === 'AUTH_ERROR' && t.providerAttempts!.length === 1)).toBe(true);
+    expect(traces().filter((t) => t.errorCode === 'FALLBACK_NOT_ADMISSIBLE')).toHaveLength(2);
   });
 });
 
@@ -252,9 +259,10 @@ describe('AC7 — AI_STRUCTURED_OUTPUT=off : aucune modification de comportement
     process.env.AI_STRUCTURED_OUTPUT = 'off';
     fake.onAny(() => { throw invalidArgument(); });
     await expect(AiGateway.execute(requete())).rejects.toMatchObject({ code: 'ALL_MODELS_FAILED' });
-    expect(analyses()).toHaveLength(3);
+    // Lot 87A (R57) : 400 générique = cause indéterminée → un seul essai alternatif.
+    expect(analyses()).toHaveLength(2);
     expect(analyses().every((c) => c.responseSchema === undefined)).toBe(true);
-    expect(new Set(analyses().map((c) => c.model)).size).toBe(3);
+    expect(new Set(analyses().map((c) => c.model)).size).toBe(2);
     expect(traces()[0].providerRequest).toMatchObject({ responseSchemaSent: false, schemaOmittedReason: 'structured_output_off', providerSchemaHash: null });
     // Le schéma dérivé reste joint au prompt (comportement lot 34D).
     expect(analyses()[0].prompt).toContain(rc.contractJsonSchemaText(contrat()));
@@ -265,10 +273,11 @@ describe('AC8 — aucun schéma prévu pour l’opération', () => {
   it('opération sans structured output : aucun retry supplémentaire', async () => {
     fake.onAny(() => { throw invalidArgument(); });
     await expect(AiGateway.execute(requete({ jsonResponse: false }))).rejects.toMatchObject({ code: 'ALL_MODELS_FAILED' });
-    expect(analyses()).toHaveLength(3);
+    // Lot 87A (R57) : 400 générique = cause indéterminée → un seul essai alternatif.
+    expect(analyses()).toHaveLength(2);
     expect(analyses().every((c) => c.responseSchema === undefined)).toBe(true);
     expect(traces()[0].providerRequest).toMatchObject({ responseSchemaSent: false, schemaOmittedReason: 'not_requested', responseMimeType: null });
-    expect(traces().every((t) => t.providerAttempts!.length === 1)).toBe(true);
+    expect(traces().filter((t) => t.providerAttempts).every((t) => t.providerAttempts!.length === 1)).toBe(true);
   });
 });
 

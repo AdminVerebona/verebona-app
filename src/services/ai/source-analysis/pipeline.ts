@@ -65,7 +65,8 @@ import type {
   SourceInput, SourceType, SourceAnalysisResult, AnalysisContext,
 } from './types';
 import { isExecutionCancelled, type ExecutionGuard } from '../queue/execution-control';
-import { isCostCapReached, costCapResumeAt } from '../gateway/errors';
+import { isCostCapReached, costCapResumeAt, isAiSuspended } from '../gateway/errors';
+import { AI_SUSPENSION_USER_REASON } from '../queue/queue-policy';
 import { markSourcesGrouped } from '@/services/documents/grouped-sources';
 // Prompt maître T1 — seul moteur depuis le lot 16b-3 (CDC 15 §23, §29).
 import { analyseGroupWithMaster, type MasterGroupAnalysis } from './master/analyse-group-master';
@@ -117,6 +118,17 @@ export interface RunSourceAnalysisOutput {
    * hors file les confie à la file durable au 1er.
    */
   costCapSourceIds?: number[];
+  /**
+   * Lot 87A (CDC Pilotage IA V2 P7, RUN-02) — HORS FILE seulement : sources
+   * NON analysées parce que la passerelle a SUSPENDU l'exécution (aucun
+   * secours admissible). Jamais en échec, aucune écriture métier : remises
+   * « en file » avec le motif ; l'appelant les confie à la file durable, qui
+   * les reprend depuis un point sûr. Sous la file, la suspension remonte au
+   * boucleur (`queue-worker`, `suspendJobForAi`).
+   */
+  aiSuspendedSourceIds?: number[];
+  /** Lot 87A : cause établie et message de la suspension (`AiSuspendedError`). */
+  aiSuspension?: { cause: string; message: string };
   /**
    * Sources dont l'analyse a ÉCHOUÉ pendant cette exécution (master T1 en
    * échec sur toute sa chaîne de modèles, sortie inexploitable, persistance
@@ -248,6 +260,9 @@ export async function runSourceAnalysis(
   // Lot 22 : plafond franchi en cours d'analyse (hors file) — groupe en cours
   // et suivants non analysés, remis « en file » avec le motif.
   let plafond: { resumeAt: Date; capMicros: number; spentMicros: number; sourceIds: number[] } | null = null;
+  // Lot 87A : suspension IA hors file (aucun secours admissible) — groupe en
+  // cours et suivants non analysés, remis « en file » avec le motif.
+  let suspendues: { ids: number[]; cause: string; message: string } | null = null;
 
   for (const [gi, groupIndices] of groups.entries()) {
     const leadSourceId = input.sourceIds[groupIndices[0]];
@@ -296,7 +311,8 @@ export async function runSourceAnalysis(
           master = await analyseGroupWithMaster(input, groupIndices, ctx, groupTrace);
         } catch (e) {
           // Lot 22 : un refus pour plafond n'est jamais un échec du master.
-          if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
+          // Lot 87A : une suspension (aucun secours admissible) non plus.
+          if (isExecutionCancelled(e) || isCostCapReached(e) || isAiSuspended(e)) throw e;
           // Lot 75C (H) : traces de CHAQUE tentative (trace, modèle, code, étape) rattachées au rapport.
           const essais = await collectAttemptTraces({ accountId: input.accountId, fileIds: groupSourceIds, since: rec.startedAt, error: e });
           rec.traceIds = [...new Set([...(groupTrace?.traceIds ?? []), ...essais.traceIds])];
@@ -761,6 +777,21 @@ export async function runSourceAnalysis(
         };
         break;
       }
+      // Lot 87A (P7, RUN-02) — suspension du master hors file : aucun secours
+      // admissible, RIEN d'écrit (le master n'a pas abouti). Jamais
+      // `failSources` : ce groupe et les suivants repassent « en file » avec
+      // le motif ; l'appelant les confie à la file, qui les reprend depuis un
+      // point sûr. Sous la file, la suspension a déjà remonté (interruption).
+      if (isAiSuspended(e) && !rec.steps.some((x) => x.step === 'MASTER' && x.status === 'OK')) {
+        if (guard) throw e;
+        const restants = groups.slice(gi).flatMap((g) => g.map((i) => input.sourceIds[i]));
+        await markAiSuspended(restants);
+        suspendues = {
+          ids: restants, cause: String((e as { failureCause?: unknown }).failureCause ?? 'UNKNOWN'),
+          message: String((e as Error).message ?? '').slice(0, 1000),
+        };
+        break;
+      }
       console.warn(`[source-analysis] analyse T1 en échec pour la source ${leadSourceId} :`, (e as Error).message);
       const definitif = e instanceof T1MasterAnalysisError && e.definitive;
       await failSources(groupSourceIds, failReason(e), lotId, { definitive: definitif });
@@ -833,7 +864,17 @@ export async function runSourceAnalysis(
       costCap: { resumeAt: plafond.resumeAt.toISOString(), capMicros: plafond.capMicros, spentMicros: plafond.spentMicros },
       costCapSourceIds: plafond.sourceIds,
     } : {}),
+    ...(suspendues ? { aiSuspendedSourceIds: suspendues.ids, aiSuspension: { cause: suspendues.cause, message: suspendues.message } } : {}),
   };
+}
+
+/** Lot 87A : sources non analysées pour suspension IA (hors file) — « en file » avec le motif. */
+async function markAiSuspended(ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  await db.update(assetFiles)
+    .set({ analysisState: 'UPLOADED', analysisFailReason: AI_SUSPENSION_USER_REASON, updatedAt: new Date() })
+    .where(inArray(assetFiles.id, ids));
+  for (const id of ids) broadcast(id, { type: 'state_update', analysisState: 'UPLOADED' });
 }
 
 /** Lot 22 : sources non analysées pour plafond — « en file » avec le motif daté. */
@@ -1028,7 +1069,8 @@ async function setState(ids: number[], state: string): Promise<void> {
   const patch: Record<string, unknown> = { analysisState: state, updatedAt: new Date() };
   // Lot 22 : le motif « plafond IA du mois atteint » n'est plus d'actualité
   // dès que l'analyse reprend (les autres motifs sont conservés).
-  patch.analysisFailReason = sql`CASE WHEN ${assetFiles.analysisFailReason} LIKE ${COST_CAP_REASON_PREFIX + '%'} THEN NULL ELSE ${assetFiles.analysisFailReason} END`;
+  // Lot 87A : idem pour le motif de suspension IA (aucun secours admissible).
+  patch.analysisFailReason = sql`CASE WHEN ${assetFiles.analysisFailReason} LIKE ${COST_CAP_REASON_PREFIX + '%'} OR ${assetFiles.analysisFailReason} = ${AI_SUSPENSION_USER_REASON} THEN NULL ELSE ${assetFiles.analysisFailReason} END`;
   // Seul un aboutissement efface l'ardoise. Un début d'analyse ne prouve rien.
   if (ETATS_ABOUTIS.includes(state)) patch.analysisRetryCount = 0;
 

@@ -16,6 +16,7 @@ import { aiPipelineStep, aiUsageEvent } from '@/db/schema';
 import type { AiUseCaseCode } from '../registry/use-cases';
 import { getExecutionContext, type ModelRank } from './execution-context';
 import { currentJobContext } from '../queue/job-context';
+import { currentSyncConfigSnapshot, snapshotTrace } from '../config/execution-snapshot';
 import { getCachedPrice } from '../gateway/pricing/pricing.repository';
 import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
 import type { CallCaptureInput } from './call-capture';
@@ -138,6 +139,12 @@ export interface CallTrace {
   capture?: CallCaptureInput;
   /** Lot 82C : transport des pièces jointes selon l'adaptateur (référence de capture). */
   captureTransportOf?: (a: AiAttachment) => string;
+  /**
+   * Lot 87A (CDC Pilotage IA V2 P7) — décision de secours de CE rang : cause
+   * de l'échec précédent, rang, modèle, motif du choix ou du refus, état de
+   * qualification du couple, état opérationnel connu. Figée en métadonnée.
+   */
+  fallback?: object;
 }
 
 /** Contrat runtime tracé avec un appel (lot 34D). */
@@ -191,6 +198,20 @@ export function configMetadata(t: CallTrace): Record<string, unknown> {
     ...(t.configRevisionId != null
       ? { configRevision: { id: t.configRevisionId, number: t.configRevisionNumber ?? null } }
       : {}),
+  };
+}
+
+/**
+ * Lot 87A (P7, RUN-04, DEC-04) — instantané de configuration appliqué à
+ * l'exécution (synchrone ou travail de file) et reprise d'un travail
+ * suspendu, lus dans le contexte d'exécution. Vide hors exécution.
+ */
+export function executionSnapshotMetadata(): Record<string, unknown> {
+  const ctx = currentJobContext();
+  const snap = snapshotTrace(ctx?.configSnapshot ?? (ctx ? null : currentSyncConfigSnapshot()));
+  return {
+    ...(snap ? { configSnapshot: snap } : {}),
+    ...(ctx?.resumedFromSuspension ? { resumedFromSuspension: ctx.resumedFromSuspension } : {}),
   };
 }
 
@@ -289,6 +310,9 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
         // lieu — BO › Exécutions IA regroupe la cascade de modèles par
         // tentative (fallback modèle ≠ retry du job).
         ...jobAttemptMetadata(t),
+        // Lot 87A : décision de secours du rang, instantané et reprise.
+        ...(t.fallback ? { fallback: t.fallback } : {}),
+        ...executionSnapshotMetadata(),
         // Lot 82C (LOG-05) : `duration_ms` = durée propre de l'appel ; temps
         // total de l'exécution à part. Marqueur : les traces antérieures
         // portaient le cumul depuis le début de l'exécution.

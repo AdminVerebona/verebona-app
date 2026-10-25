@@ -113,6 +113,8 @@ export async function enqueueFileAnalyses(
     delaySeconds?: number;
     /** Lot 22 : report pour plafond de coût du compte, jusqu'à cette date (ISO). */
     costCapDeferredUntil?: string;
+    /** Lot 87A : suspension IA hors file (voir `enqueueDurableFileAnalyses`). */
+    aiSuspension?: Record<string, unknown>;
     /** Lot 83C : reprise d'une exécution métier (voir `enqueueDurableFileAnalyses`). */
     resume?: true | string;
   },
@@ -149,6 +151,13 @@ export async function enqueueDurableFileAnalyses(
      */
     costCapDeferredUntil?: string;
     /**
+     * Lot 87A (P7, RUN-02) : analyse hors file SUSPENDUE faute de secours
+     * admissible — suspension portée par le travail (`payload.aiSuspension`,
+     * même forme que `suspendJobForAi`) : exécution métier « suspendue » avec
+     * sa cause (P2/P3), reprise marquée au prélèvement.
+     */
+    aiSuspension?: Record<string, unknown>;
+    /**
      * Lot 83C (R22) : ce travail REPREND une exécution métier — identifiant
      * donné, ou `true` : la dernière exécution du document. Absent : le
      * travail démarre sa propre exécution (`T1:job:<id>`). Une reprise ne crée
@@ -178,6 +187,7 @@ export async function enqueueDurableFileAnalyses(
           processingVisibility: visibilite,
           ...(options.billable === false ? { billable: false } : {}),
           ...(options.costCapDeferredUntil ? { costCapDeferredUntil: options.costCapDeferredUntil } : {}),
+          ...(options.aiSuspension ? { aiSuspension: options.aiSuspension } : {}),
           ...(reprise ? { businessExecution: { id: reprise, role: 'resume' } } : {}),
         },
         ...(options.delaySeconds ? { delaySeconds: options.delaySeconds } : {}),

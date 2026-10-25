@@ -13,6 +13,7 @@
  * se cite pas), confiance certaine ou probable, et une seule valeur — deux
  * documents en désaccord ne donnent pas de réponse.
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import { getField, normalizeValue } from '@/services/canonical/registry';
 import { canonicalKeyOf, formatCanonicalValue } from './field-reader';
@@ -56,10 +57,10 @@ export async function readDocumentFactForField(accountId: number, assetId: numbe
   const key = canonicalKeyOf(keyOrAlias);
   const def = key ? getField(key) : undefined;
   if (!key || !def || !def.assistantReadable) return null;
-  const lignes = (await pgClient.unsafe(
+  const lignes = (await withDocumentTitles(pgClient.unsafe(
     `SELECT f.id::float8 AS id, f.file_id AS "fileId", f.fact_key AS "factKey", f.value_text AS "valueText",
             f.value_number::float8 AS "valueNumber", f.value_unit AS "valueUnit", f.confidence, f.excerpt,
-            coalesce(af.retained_title, af.original_filename) AS title
+            ${documentTitleJsonSql('af')} AS title
        FROM document_facts f
        JOIN asset_files af ON af.id = f.file_id AND af.account_id = $1 AND af.deleted_at IS NULL
       WHERE f.account_id = $1 AND f.status = 'active' AND f.fact_key IS NOT NULL
@@ -71,7 +72,7 @@ export async function readDocumentFactForField(accountId: number, assetId: numbe
       ORDER BY (f.confidence = 'certain') DESC, af.document_date DESC NULLS LAST, f.id DESC
       LIMIT 300`,
     [accountId, assetId] as never[],
-  )) as unknown as Ligne[];
+  ))) as unknown as Ligne[];
   const retenus = lignes.filter((l) => l.factKey && canonicalKeyOf(l.factKey) === key)
     .map((l) => ({ l, v: displayOfFact(key, l) }))
     .filter((x): x is { l: Ligne; v: { value: unknown; display: string } } => x.v !== null);

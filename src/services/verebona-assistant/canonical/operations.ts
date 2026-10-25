@@ -25,6 +25,7 @@
  *     sinistre, achat, vente, financement.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
 import { db, pgClient } from '@/db';
 import { BusinessOperationReadService, type AssistantOperationRead } from '@/services/business-operations/read-service';
 import { loadClaimRecords } from '@/services/business-operations/claims/read';
@@ -470,8 +471,8 @@ export async function readAssetHistory(accountId: number, assetId: number, opts:
   if (!ops.length) return null;
   const lines = new Map(operationCostLines(ops, { assetIds: [assetId] }).map((l) => [l.operationId, l]));
   const represented = new Set(ops.flatMap((o) => o.documents.map((d) => d.fileId)));
-  const docs = (await pgClient.unsafe(
-    `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.document_date::text AS date,
+  const docs = (await withDocumentTitles(pgClient.unsafe(
+    `SELECT f.id, ${documentTitleJsonSql('f')} AS title, f.document_date::text AS date,
             f.amount_cents AS "amountCents", f.document_type_code AS v2, f.document_type AS legacy, f.supplier
        FROM asset_files f
       WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.document_date IS NOT NULL AND f.amount_cents IS NOT NULL
@@ -480,7 +481,7 @@ export async function readAssetHistory(accountId: number, assetId: number, opts:
              OR f.asset_id = $2 OR f.linked_asset_id = $2)
       ORDER BY f.document_date DESC, f.id DESC LIMIT 100`,
     [accountId, assetId] as never[],
-  )) as unknown as Array<{ id: number; title: string; date: string; amountCents: number; v2: string | null; legacy: string | null; supplier: string | null }>;
+  ))) as unknown as Array<{ id: number; title: string; date: string; amountCents: number; v2: string | null; legacy: string | null; supplier: string | null }>;
   const nonRepresentes = docs.map((d) => ({ ...d, id: Number(d.id) }))
     .filter((d) => !represented.has(d.id))
     .filter((d) => { const c = classifyExpenseDocument(d.v2, d.legacy); return c.kind === 'theme' && c.theme !== 'insurance' && c.theme !== 'subscription' && c.theme !== 'charges'; });
@@ -589,8 +590,8 @@ export async function readPayments(accountId: number, opts: { assetIds: readonly
     }
   }
   const ids = opts.assetIds.length ? [...opts.assetIds] : null;
-  const docs = (await pgClient.unsafe(
-    `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.document_date::text AS date,
+  const docs = (await withDocumentTitles(pgClient.unsafe(
+    `SELECT f.id, ${documentTitleJsonSql('f')} AS title, f.document_date::text AS date,
             f.amount_cents AS "amountCents", f.document_type_code AS v2
        FROM asset_files f
       WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.document_type_code IS NOT NULL
@@ -601,7 +602,7 @@ export async function readPayments(accountId: number, opts: { assetIds: readonly
              OR f.asset_id = ANY($2::int[]) OR f.linked_asset_id = ANY($2::int[]))
       ORDER BY f.document_date DESC NULLS LAST, f.id DESC LIMIT 100`,
     [accountId, ids] as never[],
-  )) as unknown as Array<{ id: number; title: string; date: string | null; amountCents: number | null; v2: string | null }>;
+  ))) as unknown as Array<{ id: number; title: string; date: string | null; amountCents: number | null; v2: string | null }>;
   for (const d of docs) {
     const id = Number(d.id);
     if (!proofs.has(id) && isPaymentProofType(d.v2)) proofs.set(id, { fileId: id, title: d.title, date: d.date, amountCents: d.amountCents == null ? null : Number(d.amountCents), operationId: null });
@@ -717,12 +718,12 @@ export async function findOperationDocuments(accountId: number, terms: readonly 
   if (!hits.length) return [];
   const best = new Map<number, (typeof hits)[number]>();
   for (const h of hits) if (!best.has(h.fileId) || best.get(h.fileId)!.matched < h.matched) best.set(h.fileId, h);
-  const rows = (await pgClient.unsafe(
-    `SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, to_char(f.document_date, 'YYYY-MM-DD') AS date,
+  const rows = (await withDocumentTitles(pgClient.unsafe(
+    `SELECT f.id, ${documentTitleJsonSql('f')} AS title, to_char(f.document_date, 'YYYY-MM-DD') AS date,
             f.analysis_state AS "analysisState", (SELECT a.name FROM assets a WHERE a.id = coalesce(f.asset_id, f.linked_asset_id)) AS "assetName"
        FROM asset_files f WHERE f.account_id = $1 AND f.deleted_at IS NULL AND f.id = ANY($2::int[])`,
     [accountId, [...best.keys()]] as never[],
-  )) as unknown as Array<{ id: number; title: string; date: string | null; analysisState: string | null; assetName: string | null }>;
+  ))) as unknown as Array<{ id: number; title: string; date: string | null; analysisState: string | null; assetName: string | null }>;
   return rows.map((r) => {
     const h = best.get(Number(r.id))!;
     const lib = operationLabel({ typeCode: h.typeCode, technicalLabel: h.technicalLabel, documents: [], claimType: null, provider: null });

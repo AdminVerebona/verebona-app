@@ -82,6 +82,19 @@ export function retroActive(detail: Record<string, unknown> | null | undefined):
 }
 
 /**
+ * Lot 87B (CODE-05, CODE-06) : instant (ISO) d'une demande de RÉÉVALUATION
+ * SÉMANTIQUE T3 encore ouverte sur le candidat (`t3_detail.semanticReevaluation`,
+ * posée par l'orchestration des réévaluations), sinon null. Tant qu'elle est
+ * ouverte : l'examen rétroactif vaut pour toute Opération dont ce document est
+ * le seul document, et un verdict M3 antérieur à la demande est écarté. Pure.
+ */
+export function semanticReevaluationAt(detail: Record<string, unknown> | null | undefined): string | null {
+  const d = detail?.semanticReevaluation as { at?: unknown; doneAt?: unknown } | undefined;
+  if (!d || d.doneAt || typeof d.at !== 'string' || !d.at) return null;
+  return d.at;
+}
+
+/**
  * Marque pour réexamen les documents déjà traités susceptibles d'appartenir
  * aux Opérations `operationIds` (créées / enrichies / requalifiées) — même
  * compte, Opérations « solo » liées par le prestataire ou un bien. Rend les

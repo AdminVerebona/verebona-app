@@ -24,6 +24,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
+import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import { BusinessOperationReadService, type AssistantOperationRead } from '../read-service';
 import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipmentPrice, type TcoOperation, type TcoResult, type UsageBudget } from './model';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
@@ -365,8 +366,8 @@ export async function readComponentProvenance(r: Runner, accountId: number, oper
  * bien ; listés au diagnostic BO pour expliquer leur absence. Plafonné.
  */
 export async function readCitedOnlyDocuments(r: Runner, accountId: number, assetId: number): Promise<Array<{ fileId: number; title: string }>> {
-  const x = await rows<{ id: number; title: string }>(r, sql`
-    SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title
+  const x = await rows<{ id: number } & DocumentTitleColumns>(r, sql`
+    SELECT f.id, ${sql.raw(documentTitleColumnsSql('f'))}
       FROM asset_files f
      WHERE f.account_id = ${accountId} AND f.deleted_at IS NULL
        AND f.asset_id IS DISTINCT FROM ${assetId} AND f.linked_asset_id IS DISTINCT FROM ${assetId}
@@ -377,7 +378,7 @@ export async function readCitedOnlyDocuments(r: Runner, accountId: number, asset
        AND (f.amount_cents IS NOT NULL
             OR EXISTS (SELECT 1 FROM document_operation_candidates c WHERE c.file_id = f.id AND c.account_id = f.account_id AND c.status = 'ACTIVE' AND c.established))
      ORDER BY f.id LIMIT ${CITED_MAX}`);
-  return x.map((d) => ({ fileId: Number(d.id), title: String(d.title ?? 'Document') }));
+  return x.map((d) => ({ fileId: Number(d.id), title: documentTitleOf(d) }));
 }
 
 // ── Lot 61 : dépenses documentaires du bien (données persistées) ───────────
@@ -435,7 +436,7 @@ async function readEconomicDocuments(r: Runner, accountId: number, scope: { asse
   let complete = true;
   for (;;) {
     const lot = await rows(r, sql`
-      SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title,
+      SELECT f.id, ${sql.raw(documentTitleColumnsSql('f'))},
              f.document_type_code AS v2, f.document_type AS legacy, f.document_date::text AS date, f.supplier,
              f.amount_cents, f.sha256_hash AS hash, f.analysis_state AS state, f.fusion_ignored_with AS ignored,
              COALESCE(f.user_edited_fields->>'amountCents', 'false') = 'true' AS user_amount,
@@ -456,6 +457,8 @@ async function readEconomicDocuments(r: Runner, accountId: number, scope: { asse
        WHERE f.account_id = ${accountId} AND f.deleted_at IS NULL AND f.id > ${curseur}
          AND ${filtre}
        ORDER BY f.id LIMIT ${DOCS_PAGE}`);
+    // Lot 87D : titre par la règle unique des vues (liste, fiche, recherche).
+    for (const x of lot) x.title = documentTitleOf(x);
     lus.push(...lot);
     if (lot.length < DOCS_PAGE) break;
     if (lus.length >= DOCS_MAX) { complete = false; break; }
@@ -650,11 +653,11 @@ export async function documentsNotCoveredByOperations(accountId: number, fileIds
   for (let i = 0; i < ids.length; i += 1000) {
     const page = ids.slice(i, i + 1000);
     for (const d of await rows(r, sql`
-      SELECT f.id, coalesce(nullif(f.retained_title, ''), f.original_filename, 'Document') AS title, f.amount_cents,
+      SELECT f.id, ${sql.raw(documentTitleColumnsSql('f'))}, f.amount_cents,
              f.document_type_code AS v2, f.document_type AS legacy,
              COALESCE(f.user_edited_fields->>'amountCents', 'false') = 'true' AS user_amount
         FROM asset_files f WHERE f.account_id = ${accountId} AND f.id = ANY(${intArray(page)}::int[])`)) {
-      docs.set(Number(d.id), { title: String(d.title ?? 'Document'), amountCents: n(d.amount_cents), userEditedAmount: Boolean(d.user_amount), typeCode: txt(d.v2), legacyType: txt(d.legacy) });
+      docs.set(Number(d.id), { title: documentTitleOf(d), amountCents: n(d.amount_cents), userEditedAmount: Boolean(d.user_amount), typeCode: txt(d.v2), legacyType: txt(d.legacy) });
     }
   }
   const [candidats, operations, preuves] = [

@@ -21,7 +21,7 @@ import { z } from 'zod';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 import { acknowledgeAnnouncedModels, bannerText, listAnnouncedModels } from '@/services/ai/provider/new-models.service';
 import {
-  anomalyMessage, detectActiveModelAnomalies, groupAnomaliesByModel, loadActiveChains, unavailableBannerTitle,
+  anomalyMessage, detectActiveModelAnomalies, groupAnomaliesByModel, loadActiveChains, loadSecoursContext, unavailableBannerTitle,
 } from '@/services/ai/provider/active-model-anomalies';
 import { loadOperationalDiagnostics } from '@/services/ai/provider/model-operational.service';
 import { loadUsableModelsContext } from '@/services/ai/registry/usable-models';
@@ -39,7 +39,8 @@ export async function GET(req: NextRequest) {
       loadActiveChains().catch(() => []),
       getCatalogState().catch(() => null),
     ]);
-    const brutes = detectActiveModelAnomalies(chains, ctx);
+    // Lot 87A (INV-10) : secours réellement admissible pour chaque usage.
+    const brutes = detectActiveModelAnomalies(chains, ctx, chains.length ? await loadSecoursContext() : undefined);
     const anomalies = brutes.map((a) => ({ ...a, message: anomalyMessage(a) }));
     const diagnostics = brutes.length ? await loadOperationalDiagnostics().catch(() => new Map()) : new Map();
     const unavailableModels = groupAnomaliesByModel(brutes, diagnostics);

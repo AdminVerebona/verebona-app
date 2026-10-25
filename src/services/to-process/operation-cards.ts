@@ -45,6 +45,7 @@
  * (DO_FIRST seulement, deux au plus) n'est pas concernée.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { documentTitleColumnsSql, documentTitleJsonSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
 import { toProcessActionEvents, toProcessActions } from '@/db/schema';
@@ -198,7 +199,7 @@ async function operationLabels(accountId: number, ids: readonly number[], exclud
   if (!ids.length) return new Map();
   const r = (await pgClient.unsafe(
     `SELECT o.id, o.type_code, o.provider, COALESCE(o.realized_date, o.planned_date, o.start_date)::text AS d,
-            (SELECT COALESCE(f.retained_title, f.original_filename, f.filename)
+            (SELECT ${documentTitleJsonSql('f')}
                FROM business_operation_sources s
                JOIN asset_files f ON f.id = (CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END)
                 AND f.account_id = s.account_id AND f.deleted_at IS NULL
@@ -206,11 +207,12 @@ async function operationLabels(accountId: number, ids: readonly number[], exclud
               ORDER BY s.id DESC LIMIT 1) AS titre
        FROM business_operations o WHERE o.account_id = $1 AND o.id = ANY($2::bigint[])`,
     [accountId, intArray(ids), excludeFileId] as never[],
-  )) as unknown as Array<{ id: number; type_code: string | null; provider: string | null; d: string | null; titre: string | null }>;
+  )) as unknown as Array<{ id: number; type_code: string | null; provider: string | null; d: string | null; titre: DocumentTitleColumns | null }>;
   const out = new Map<number, { label: string; type: string | null }>();
   for (const x of r) {
     const date = frDate(x.d);
-    const base = x.titre ?? x.provider ?? (x.type_code === 'CLAIM' ? 'Sinistre' : 'Document');
+    // Lot 87D : titre du document par la règle unique des vues.
+    const base = (x.titre ? documentTitleOf(x.titre, '') || null : null) ?? x.provider ?? (x.type_code === 'CLAIM' ? 'Sinistre' : 'Document');
     out.set(Number(x.id), { label: date ? `${borne(base, 36)} du ${date}` : base, type: x.type_code });
   }
   return out;
@@ -219,10 +221,10 @@ async function operationLabels(accountId: number, ids: readonly number[], exclud
 async function fileTitles(accountId: number, ids: readonly number[]): Promise<Map<number, string>> {
   if (!ids.length) return new Map();
   const r = (await pgClient.unsafe(
-    `SELECT id, COALESCE(retained_title, original_filename, filename, 'Document') AS t FROM asset_files WHERE account_id = $1 AND id = ANY($2::int[])`,
+    `SELECT f.id, ${documentTitleColumnsSql('f')} FROM asset_files f WHERE f.account_id = $1 AND f.id = ANY($2::int[])`,
     [accountId, intArray(ids)] as never[],
-  )) as unknown as Array<{ id: number; t: string }>;
-  return new Map(r.map((x) => [Number(x.id), x.t]));
+  )) as unknown as Array<{ id: number } & DocumentTitleColumns>;
+  return new Map(r.map((x) => [Number(x.id), documentTitleOf(x)]));
 }
 
 async function closeCards(ids: number[], reason: string, extra: ReadonlyMap<number, Record<string, unknown>> = new Map()): Promise<number> {

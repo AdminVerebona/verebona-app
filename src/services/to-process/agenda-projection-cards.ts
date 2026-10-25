@@ -27,6 +27,7 @@
  * chaque candidat (`triggerContext`).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
 import { toProcessActionEvents, toProcessActions } from '@/db/schema';
@@ -110,11 +111,12 @@ export async function syncAgendaProjectionCards(
     const fichiers = [...new Set(needs.flatMap((n) => n.fileIds))];
     if (fichiers.length) {
       const r = (await pgClient.unsafe(
-        `SELECT id, COALESCE(retained_title, original_filename, filename, 'Document') AS t FROM asset_files
-          WHERE account_id = $1 AND id = ANY($2::int[]) AND deleted_at IS NULL`,
+        `SELECT f.id, ${documentTitleColumnsSql('f')} FROM asset_files f
+          WHERE f.account_id = $1 AND f.id = ANY($2::int[]) AND f.deleted_at IS NULL`,
         [accountId, intArray(fichiers)] as never[],
-      )) as unknown as Array<{ id: number; t: string }>;
-      for (const x of r) titres.set(Number(x.id), x.t);
+      )) as unknown as Array<{ id: number } & DocumentTitleColumns>;
+      // Lot 87D : titre par la règle unique des vues.
+      for (const x of r) titres.set(Number(x.id), documentTitleOf(x));
     }
     for (const n of needs) {
       if (!n.candidates.length) continue;

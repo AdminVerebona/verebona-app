@@ -236,7 +236,8 @@ describe('lot 30 — types documentaires (§C à §G, §L)', () => {
       expect(AUTHORIZED_CREATION_TYPES.has(code), code).toBe(false);
     }
     expect(resolveDocumentCode('TAXE_FONCIERE')).toMatchObject({ storageCode: 'ACTE_TRANSACTION', catalogCode: null, v2Type: 'PROPERTY_TAX_NOTICE' });
-    expect(documentCodeLabel('XYZ_INCONNU')).toBe('XYZ_INCONNU');
+    // Lot 87D (ticket « type technique ») : un code inconnu n'est jamais rendu tel quel.
+    expect(documentCodeLabel('XYZ_INCONNU')).toBe('');
   });
 
   it('REF-AC11 : les routes API ne possèdent plus de listes métier concurrentes', () => {
