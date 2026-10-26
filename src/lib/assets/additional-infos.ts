@@ -147,7 +147,7 @@ export type ListCellValue = string | number | number[];
 /** Ligne d'une liste : `id` stable (réordonnancement, clés React). */
 export type ListItem = { id: string } & { [key: string]: ListCellValue };
 
-export const LEASE_TYPE_OPTIONS: readonly AdditionalInfoOption[] = [
+const LEASE_TYPE_OPTIONS: readonly AdditionalInfoOption[] = [
   { value: 'NON_MEUBLE', label: 'Location vide (non meublée)' },
   { value: 'MEUBLE', label: 'Location meublée' },
   { value: 'MOBILITE', label: 'Bail mobilité' },
@@ -156,7 +156,7 @@ export const LEASE_TYPE_OPTIONS: readonly AdditionalInfoOption[] = [
   { value: 'AUTRE', label: 'Autre' },
 ];
 
-export const CHARGES_MODE_OPTIONS: readonly AdditionalInfoOption[] = [
+const CHARGES_MODE_OPTIONS: readonly AdditionalInfoOption[] = [
   { value: 'PROVISION', label: 'Provision sur charges (régularisation annuelle)' },
   { value: 'FORFAIT', label: 'Forfait de charges' },
 ];
@@ -336,17 +336,17 @@ export function findField(section: AdditionalInfoSectionKey, key: string): Addit
 
 // ── Validation (IC-GEN-006..008) ────────────────────────────────────────────
 
-export const TEXT_MAX = 200;
-export const TEXTAREA_MAX = 4000;
+const TEXT_MAX = 200;
+const TEXTAREA_MAX = 4000;
 /** 1 milliard d'euros, en centimes : au-delà, saisie manifestement erronée. */
-export const MONEY_MAX_CENTS = 100_000_000_000;
+const MONEY_MAX_CENTS = 100_000_000_000;
 /** Texte d'une cellule de liste, sans `max` explicite. */
-export const LIST_TEXT_MAX = 200;
-export const LIST_TEXTAREA_MAX = 1000;
+const LIST_TEXT_MAX = 200;
+const LIST_TEXTAREA_MAX = 1000;
 /** Références (photos, pièces) par cellule, sans `max` explicite. */
 export const LIST_REFS_MAX = 12;
 
-export function isValidIsoDate(s: string): boolean {
+function isValidIsoDate(s: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
   const [y, m, d] = s.split('-').map(Number);
   if (y < 1900 || y > 2100) return false;
@@ -370,7 +370,7 @@ const enumSchema = (options: readonly AdditionalInfoOption[] | undefined) => {
 };
 
 /** Schéma zod d'une valeur NON vide pour un champ simple (les listes : `validateListValue`). */
-export function valueSchema(def: AdditionalInfoFieldDef): z.ZodType<string | number> {
+function valueSchema(def: AdditionalInfoFieldDef): z.ZodType<string | number> {
   switch (def.type) {
     case 'money':
       return moneySchema();
@@ -412,7 +412,6 @@ export interface AdditionalInfosData {
  * est modifiée (contrôle optimiste, 409 si elle a changé).
  */
 export type AdditionalInfosPatch = Partial<Record<AdditionalInfoSectionKey, Record<string, AdditionalInfoValue | null>>>;
-export type AdditionalInfosPatchBody = AdditionalInfosPatch & { version?: number };
 
 export interface NormalizedPatch {
   /** Valeurs à écrire, par sous-rubrique. */
@@ -423,7 +422,7 @@ export interface NormalizedPatch {
 
 export interface PatchValidationIssue { path: string; message: string }
 
-export type PatchValidationResult =
+type PatchValidationResult =
   | {
     ok: true;
     patch: NormalizedPatch;
@@ -454,7 +453,7 @@ export type PatchValidationResult =
 // signale (`rebaseAfterConflict`). Les champs simples restent fusionnés champ
 // par champ (dernier écrit gagne, §4.3).
 
-export const LIST_ITEM_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+const LIST_ITEM_ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
 
 /** Identifiant de ligne court, généré côté client (clé React, réordonnancement). */
 export function newListItemId(): string {
@@ -469,7 +468,7 @@ type CellResult = { value?: ListCellValue; error?: string };
 const isPositiveId = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n > 0;
 
 /** Normalise une cellule : vide → `{}` ; invalide → `{ error }`. */
-export function normalizeListCell(col: ListColumnDef, raw: unknown): CellResult {
+function normalizeListCell(col: ListColumnDef, raw: unknown): CellResult {
   if (raw === null || raw === undefined) return {};
   switch (col.type) {
     case 'text':
@@ -524,7 +523,7 @@ function crossCellIssues(fieldKey: string, item: Record<string, ListCellValue>):
   return out;
 }
 
-export type ListValidation = { ok: true; items: ListItem[] } | { ok: false; issues: PatchValidationIssue[] };
+type ListValidation = { ok: true; items: ListItem[] } | { ok: false; issues: PatchValidationIssue[] };
 
 /**
  * Valide une liste complète (corps d'un PATCH, ou relecture). Les lignes
@@ -572,7 +571,7 @@ export function validateListValue(def: AdditionalInfoFieldDef, raw: unknown, pat
 }
 
 /** Relecture défensive d'une liste stockée : lignes valides seulement, plafond respecté. */
-export function sanitizeList(def: AdditionalInfoFieldDef, stored: unknown): ListItem[] {
+function sanitizeList(def: AdditionalInfoFieldDef, stored: unknown): ListItem[] {
   if (!def.list || !Array.isArray(stored)) return [];
   const out: ListItem[] = [];
   const ids = new Set<string>();
@@ -775,21 +774,21 @@ export function formatCentsForInput(cents: number | null | undefined): string {
 }
 
 /** « 12,5 » → 12.5 ; vide → null ; illisible → NaN. */
-export function parseDecimalInput(input: string): number | null {
+function parseDecimalInput(input: string): number | null {
   const s = input.replace(/[\s  ]/g, '').replace(',', '.');
   if (s === '') return null;
   if (!/^\d+(\.\d+)?$/.test(s)) return Number.NaN;
   return Number(s);
 }
 
-export function formatDecimalForInput(n: number | null | undefined): string {
+function formatDecimalForInput(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return '';
   return String(n).replace('.', ',');
 }
 
 // ── Saisie formulaire ↔ valeur stockée ──────────────────────────────────────
 
-export type FieldInputResult =
+type FieldInputResult =
   | { kind: 'set'; value: AdditionalInfoValue }
   | { kind: 'clear' }
   | { kind: 'invalid'; message: string };
@@ -852,7 +851,7 @@ export function stripDraftRows(def: AdditionalInfoFieldDef, items: readonly List
   return items.filter((it) => cols.some((c) => !isEmptyCell(it[c.key])));
 }
 
-export interface ListFormState {
+interface ListFormState {
   /** Liste à envoyer (brouillons retirés), ou `null` si elle ne peut pas partir (erreur). */
   payload: ListItem[] | null;
   /** Erreurs par ligne (`id`) puis par colonne. */

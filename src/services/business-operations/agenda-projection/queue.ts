@@ -36,13 +36,13 @@ import { agendaChangeTriggersT3 } from './model';
 
 export const AGENDA_PROJECTION_KIND = 'business_operations_agenda';
 export const T3_TARGET_AGENDA_PROJECTION = 'business_operations_agenda';
-export const AGENDA_PROJECTION_SUBSCRIBER = 't4-agenda-projection';
+const AGENDA_PROJECTION_SUBSCRIBER = 't4-agenda-projection';
 /** Regroupement d'une rafale d'événements d'un compte (secondes). */
-export const AGENDA_PROJECTION_DELAY_SECONDS = 30;
+const AGENDA_PROJECTION_DELAY_SECONDS = 30;
 /** Au-delà, la liste fusionnée a pu être tronquée (`MAX_MERGED_EVENTS`) : passage complet. */
 const FULL_PASS_EVENTS = 40;
 
-export interface AgendaProjectionEvent {
+interface AgendaProjectionEvent {
   operationIds?: number[];
   /** Passage complet du compte (balayage, transfert, liste tronquée). */
   all?: boolean;
@@ -50,14 +50,14 @@ export interface AgendaProjectionEvent {
   at?: string;
 }
 
-export interface AgendaProjectionPayload {
+interface AgendaProjectionPayload {
   kind: typeof AGENDA_PROJECTION_KIND;
   accountId: number;
   events: AgendaProjectionEvent[];
   requestedAt: string | null;
 }
 
-export interface AgendaProjectionQueueDeps {
+interface AgendaProjectionQueueDeps {
   enqueue: typeof import('@/services/ai/queue/job-queue.repository').enqueue;
 }
 

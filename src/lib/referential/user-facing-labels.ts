@@ -23,7 +23,7 @@ import { getDocumentType, getRubric } from './v2';
  * « PERMIS_CONSTRUIRE », « DATA_CONTRACT_END »), ou mot en capitales suivi
  * de chiffres / tirets internes (« DOC-INTERVENTION »).
  */
-export const TECHNICAL_CODE_RE = /\b[A-Z][A-Z0-9]*(?:[_-][A-Z0-9]+)+\b/;
+const TECHNICAL_CODE_RE = /\b[A-Z][A-Z0-9]*(?:[_-][A-Z0-9]+)+\b/;
 
 /** Le texte est-il (ou contient-il) un code technique ? Les sigles simples (« DPE », « EDF ») n'en sont pas. */
 export function containsTechnicalCode(text: string | null | undefined): boolean {

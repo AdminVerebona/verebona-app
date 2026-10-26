@@ -21,10 +21,10 @@ export function actionKind(type: VerebonaActionType | WriteCommandType): ActionK
   return 'display';
 }
 
-export const WRITE_COMMANDS = ['CREATE_AGENDA_ITEM', 'MARK_AGENDA_DONE', 'CANCEL_AGENDA_ITEM', 'UPDATE_ASSET_FIELD'] as const;
+const WRITE_COMMANDS = ['CREATE_AGENDA_ITEM', 'MARK_AGENDA_DONE', 'CANCEL_AGENDA_ITEM', 'UPDATE_ASSET_FIELD'] as const;
 export type WriteCommandType = (typeof WRITE_COMMANDS)[number];
 
-export interface WriteCommandDefinition {
+interface WriteCommandDefinition {
   type: WriteCommandType;
   label: string;
   /** Service métier appelé à l'exécution (documentation / trace). */
@@ -79,7 +79,7 @@ export interface PlannedAction {
   effects: string[];
 }
 
-export type ActionOutcome = 'SUCCESS' | 'FAILED' | 'SKIPPED_DEPENDENCY' | 'REFUSED';
+type ActionOutcome = 'SUCCESS' | 'FAILED' | 'SKIPPED_DEPENDENCY' | 'REFUSED';
 
 export interface ActionResult {
   actionId: string;

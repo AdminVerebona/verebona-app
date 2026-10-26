@@ -64,7 +64,7 @@ type Row = Record<string, unknown>;
 
 export interface RecetteStorage { client: Pick<S3Client, 'send'>; bucket: string }
 
-export interface RecetteFile {
+interface RecetteFile {
   path: string;
   nature: 'donnees' | 'calcul' | 'documentation';
   table: string | null;
@@ -82,7 +82,7 @@ export interface RecetteFile {
   error: string | null;
 }
 
-export interface RecetteTableStat {
+interface RecetteTableStat {
   table: string;
   domain: RecetteDomain;
   expected: number | null;
@@ -116,7 +116,7 @@ export interface RecetteManifest {
   masking: string[];
 }
 
-export interface RecetteOptions {
+interface RecetteOptions {
   generationId: string;
   adminUserId: number | null;
   includeSensitiveContent?: boolean;
@@ -131,14 +131,14 @@ export interface RecetteOptions {
   onProgress?: (p: { rowsExported: number; files: number; bytes: number; table: string | null }) => void;
 }
 
-export const RECETTE_BATCH_ROWS = 500;
+const RECETTE_BATCH_ROWS = 500;
 const RECETTE_STATEMENT_TIMEOUT_MS = 10 * 60_000;
 const NDJSON = 'application/x-ndjson';
 const ident = (t: string) => `"${t.replace(/"/g, '""')}"`;
 const describe = (e: unknown): string => `${(e as { code?: string })?.code ? `${(e as { code?: string }).code} — ` : ''}${(e as Error)?.message ?? String(e)}`.slice(0, 500);
 const sha256 = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 
-export const RECETTE_MASKING_NOTES: readonly string[] = [
+const RECETTE_MASKING_NOTES: readonly string[] = [
   'Identifiants et colonnes de liaison : jamais masqués (comparaison externe par table + clé primaire).',
   'Secrets, jetons, mots de passe, coordonnées bancaires : remplacés par un marqueur {"$etat":"masque","motif":…}.',
   'E-mails : {"$etat":"masque","motif":"e-mail","pseudonyme":…} — pseudonyme STABLE (même adresse → même pseudonyme d’un export à l’autre).',
@@ -513,7 +513,7 @@ export async function runRecetteExport(opts: RecetteOptions): Promise<RecetteMan
 
 // ── Documentation (pure) ────────────────────────────────────────────────────
 
-export interface RecetteDictionary {
+interface RecetteDictionary {
   schema: typeof RECETTE_SCHEMA;
   format: string[];
   domains: Array<{ domain: RecetteDomain; label: string; description: string; tables: string[] }>;
@@ -643,7 +643,7 @@ export async function waitForRecetteExport(id: string): Promise<void> {
   await enCours().get(id);
 }
 
-export const RECETTE_HEARTBEAT_MS = 30_000;
+const RECETTE_HEARTBEAT_MS = 30_000;
 
 /**
  * Lance un export complet en tâche de fond (un seul à la fois) ; rend
@@ -701,7 +701,7 @@ export async function startRecetteExport(
 }
 
 /** Exports de recette de plus de `RECETTE_RETENTION_DAYS` jours : supprimés du stockage. */
-export async function purgeOldRecetteExports(storage?: RecetteStorage, now: Date = new Date()): Promise<number> {
+async function purgeOldRecetteExports(storage?: RecetteStorage, now: Date = new Date()): Promise<number> {
   const st = storage ?? await defaultStorage();
   const { ListObjectsV2Command, DeleteObjectsCommand } = await import('@aws-sdk/client-s3');
   const limite = now.getTime() - RECETTE_RETENTION_DAYS * 24 * 60 * 60_000;

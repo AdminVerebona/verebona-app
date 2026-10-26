@@ -53,7 +53,7 @@ type Row = Record<string, unknown>;
 export const CHAIN_FAILURE_SUSPEND_THRESHOLD = 5;
 
 /** Prompt de sonde : aucune donnée utilisateur (MOD-013), réponse minuscule. */
-export const PROBE_PROMPT = 'Réponds exactement : OK';
+const PROBE_PROMPT = 'Réponds exactement : OK';
 const PROBE_TIMEOUT_MS = 20_000;
 
 export interface ModelAttempt {
@@ -165,7 +165,7 @@ export function __resetSameTargetMemoryForTests(): void { ciblesComptees.clear()
  * AUCUNE remise en file (MOD-011, OPS-023) : les exécutions déjà en cours
  * terminent. La prochaine sonde est planifiée selon `nextProbeDelay(0)`.
  */
-export async function suspendTreatment(treatment: Treatment, reason: string): Promise<boolean> {
+async function suspendTreatment(treatment: Treatment, reason: string): Promise<boolean> {
   // Anti-oscillation (migration 0178, `reopenPlan`) : une réouverture peu
   // après une réactivation par sonde allonge le délai de la première sonde.
   // Lecture tolérante : avant la migration 0178, plan « ouverture fraîche ».
@@ -254,7 +254,7 @@ export function noteGatewayOutcome(o: GatewayOutcome): void {
 
 // ── Sondes (WF-09 étapes 54 à 57) ───────────────────────────────────────────
 
-export type ProbeFn = (model: string, treatment?: Treatment, rank?: number) => Promise<boolean>;
+type ProbeFn = (model: string, treatment?: Treatment, rank?: number) => Promise<boolean>;
 
 const PROBE_RANKS = ['primary', 'fallback_1', 'fallback_2'] as const;
 
@@ -265,7 +265,7 @@ const PROBE_RANKS = ['primary', 'fallback_1', 'fallback_2'] as const;
  * traitement sondé, jamais dans la dépense métier ni dans les budgets
  * (`cost-evaluator` ne somme que `is_billable`), et les garde-fous l'ignorent.
  */
-export async function recordProbeTrace(p: {
+async function recordProbeTrace(p: {
   treatment: Treatment; model: string; rank: number; ok: boolean;
   inputTokens: number; outputTokens: number; durationMs: number; error?: string;
   /** Lot 82C (LOG-01) : capture complète de la sonde (prompt, paramètres, réponse). */
@@ -353,7 +353,7 @@ async function modelsForTreatment(treatment: Treatment): Promise<string[]> {
   return probeOrder(c.primaryModel, c.fallbackModels[0] ?? null, c.fallbackModels[1] ?? null);
 }
 
-export interface ProbeReport {
+interface ProbeReport {
   treatment: Treatment;
   reactivated: boolean;
   recoveredWith: string | null;
@@ -430,7 +430,7 @@ export async function runDueProbes(probe: ProbeFn = defaultProbe): Promise<Probe
 
 // ── Supervision (MOD-008, OPS-019) ──────────────────────────────────────────
 
-export interface ModelAlert {
+interface ModelAlert {
   treatment: Treatment;
   model: string;
   consecutiveFailures: number;

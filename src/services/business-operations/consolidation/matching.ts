@@ -79,14 +79,6 @@ import { assessSeries, isSeriesWhy, seriesWhy } from './recurrence';
 
 export type T3Outcome = 'NO_OPERATION' | 'MATCH_AND_ENRICH' | 'CREATE_NEW' | 'HOLD_UNRESOLVED' | 'ARBITRATION_REQUIRED';
 
-export type HoldReason =
-  | 'CONFLICTUAL'
-  | 'ARBITRATION_REQUIRED'
-  | 'CONTRADICTORY_REFERENCE'
-  | 'M3_REQUIRED'
-  | 'PROBABLE_WITHOUT_MATCH'
-  | 'TARGET_OUT_OF_PORTFOLIO';
-
 /** Opération existante telle que le rapprochement la voit (lue sous verrou, bornée par compte). */
 export interface ExistingOperation {
   id: number;
@@ -226,7 +218,7 @@ export interface CandidateDecision {
  *   · numéro client : jamais (partagé par toutes les Opérations d'un tiers) ;
  *   · autre : seulement entre deux Opérations du même type qualifié.
  */
-export function referenceIdentifies(kind: ReferenceKind, type: BusinessOperationTypeCode | null, sameQualifiedType: boolean): boolean {
+function referenceIdentifies(kind: ReferenceKind, type: BusinessOperationTypeCode | null, sameQualifiedType: boolean): boolean {
   switch (kind) {
     case 'INVOICE': case 'QUOTE': case 'ORDER': case 'WORK_ORDER': case 'DELIVERY':
       return true;
@@ -294,7 +286,7 @@ function sharedContractReference(c: CandidateIdentity, op: ExistingOperation): b
 }
 
 /** Références communes qui identifient l'Opération (M1). */
-export function sharedIdentifyingReferences(c: CandidateIdentity, op: ExistingOperation): string[] {
+function sharedIdentifyingReferences(c: CandidateIdentity, op: ExistingOperation): string[] {
   const type = c.type ?? op.typeCode;
   const sameQualified = c.type !== null && c.type === op.typeCode;
   const out: string[] = [];
@@ -416,7 +408,7 @@ const FAMILLES_SERVICE: ReferenceKind[][] = [['CONTRACT', 'POLICY'], ['CUSTOMER'
  * référence de service (contrat, police, compte client) est commune. Ce sont
  * des INDICES (plausibilité → M3), jamais une preuve de rattachement.
  */
-export function designationLinkReasons(
+function designationLinkReasons(
   a: { providerKey: string | null; providerKeyRaw?: string; text: string | null; refs: ReadonlyArray<{ kind: ReferenceKind; normalized: string }> },
   b: { providerKey: string | null; providerKeyRaw?: string; text: string | null; refs: ReadonlyArray<{ kind: ReferenceKind; normalized: string }> },
 ): string[] {
@@ -479,15 +471,15 @@ const ciblesCompatibles = (c: CandidateIdentity, o: ExistingOperation) =>
   !c.assetIds.length || !o.assetIds.length || c.assetIds.some((a) => o.assetIds.includes(a));
 
 /** Fenêtre de cohérence temporelle d'une même intervention (jours) — INDICE (lot 53, D5), jamais une preuve. */
-export const INTERVENTION_PERIOD_DAYS = 120;
+const INTERVENTION_PERIOD_DAYS = 120;
 /** Fenêtre d'un même sinistre déclaré sans référence (jours) — INDICE (lot 53, D5). */
-export const CLAIM_PERIOD_DAYS = 30;
+const CLAIM_PERIOD_DAYS = 30;
 /** Lot 47B : document ↔ intervention établie par l'agenda seul, même bien (jours). */
-export const AGENDA_OPERATION_PERIOD_DAYS = 60;
+const AGENDA_OPERATION_PERIOD_DAYS = 60;
 /** Au-delà de ce multiple de la fenêtre, l'écart de dates devient un indice contraire. */
 export const FAR_WINDOW_FACTOR = 3;
 /** Score minimal du faisceau pour qu'une Opération soit plausible (lot 53, D5). */
-export const PLAUSIBILITY_THRESHOLD = 3;
+const PLAUSIBILITY_THRESHOLD = 3;
 
 /**
  * Poids du faisceau de plausibilité (lot 53, D5 ; documentés dans
@@ -495,7 +487,7 @@ export const PLAUSIBILITY_THRESHOLD = 3;
  * ET un ancrage : même prestataire, ou même bien avec la même nature de
  * travaux ou des montants concordants (`hasAnchor`).
  */
-export const PLAUSIBILITY_WEIGHTS = {
+const PLAUSIBILITY_WEIGHTS = {
   PROVIDER_SAME: 3,
   PROVIDER_DIFFERENT: -4,
   ASSET_SAME: 2,
@@ -506,7 +498,7 @@ export const PLAUSIBILITY_WEIGHTS = {
   AMOUNT_COHERENT: 1,
   INVOICE_NUMBERS_DIFFERENT: -2,
 } as const;
-export type PlausibilitySignal = keyof typeof PLAUSIBILITY_WEIGHTS;
+type PlausibilitySignal = keyof typeof PLAUSIBILITY_WEIGHTS;
 
 /** Mots sans valeur discriminante pour la « nature des travaux » (normalisés, sans accents). */
 const MOTS_VIDES = new Set([
@@ -528,14 +520,14 @@ export function natureTokens(text: string | null | undefined): Set<string> {
 }
 
 /** Montants concordants (même devise, écart ≤ 1 %) entre le candidat et l'Opération (pure). */
-export function amountsCoherent(c: CandidateIdentity, o: ExistingOperation): boolean {
+function amountsCoherent(c: CandidateIdentity, o: ExistingOperation): boolean {
   const ops = o.amounts ?? [];
   if (!ops.length || !c.hints.length) return false;
   return c.hints.some((h) => ops.some((x) => x.currency === h.currency && x.amountMinor > 0
     && Math.abs(x.amountMinor - h.amountMinor) <= Math.max(1, Math.round(x.amountMinor / 100))));
 }
 
-export interface PlausibilityEvidence {
+interface PlausibilityEvidence {
   score: number;
   /** Ancrage minimal (même prestataire, ou même bien + nature / montant). */
   anchored: boolean;
@@ -646,7 +638,7 @@ const OUT_OF_PORTFOLIO = new Set(['VENDU', 'TRANSMIS', 'ARCHIVED']);
  * TRANSMIS n'accueille qu'une CESSION nouvelle ; un bien ARCHIVÉ aucune.
  * L'enrichissement des Opérations existantes de ces biens reste permis.
  */
-export function creationOutOfPerimeter(c: CandidateIdentity, assetStatus: ReadonlyMap<number, string>): boolean {
+function creationOutOfPerimeter(c: CandidateIdentity, assetStatus: ReadonlyMap<number, string>): boolean {
   return c.assetIds.some((a) => {
     const s = assetStatus.get(a) ?? 'EN_SERVICE';
     if (!OUT_OF_PORTFOLIO.has(s)) return false;
@@ -903,7 +895,7 @@ export function decideCandidate(c: CandidateIdentity, ctx: MatchContext): Candid
  * Identité économique du candidat face à une Opération (pure) : source par
  * source quand elles sont fournies (`members`), sinon face à l'agrégat.
  */
-export function economicCheck(c: CandidateIdentity, op: ExistingOperation, basis: IdentityBasis): IdentityAssessment & { against: number[] } {
+function economicCheck(c: CandidateIdentity, op: ExistingOperation, basis: IdentityBasis): IdentityAssessment & { against: number[] } {
   const members: readonly OperationMember[] = op.members?.length
     ? op.members
     : [{ sourceId: 0, footprint: footprintOfOperation(op), anchor: true }];

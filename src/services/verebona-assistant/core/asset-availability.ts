@@ -60,7 +60,7 @@ export interface AvailabilityOptions {
 const LISTE_SQL = ASSISTANT_EXCLUDED_ASSET_STATUSES.map((s) => `'${s}'`).join(', ');
 
 /** Condition SQL sur le STATUT seul (`coalesce(a.status, 'EN_SERVICE') NOT IN (…)`). */
-export function assistantAssetStatusSql(alias = 'a', opts: AvailabilityOptions = {}): string {
+function assistantAssetStatusSql(alias = 'a', opts: AvailabilityOptions = {}): string {
   if (opts.includeArchived) return 'TRUE';
   const col = alias ? `${alias}.status` : 'status';
   return `coalesce(${col}, '${DEFAULT_ASSET_STATUS}') NOT IN (${LISTE_SQL})`;

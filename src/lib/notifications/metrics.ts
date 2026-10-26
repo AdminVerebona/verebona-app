@@ -12,7 +12,7 @@ import { sql } from 'drizzle-orm';
 
 const n = (v: unknown) => Number(v ?? 0);
 
-export interface NotificationHealth {
+interface NotificationHealth {
   windowDays: number;
   eventsByType: { eventType: string; count: number }[];
   deliveriesByChannel: { channel: string; status: string; count: number }[];

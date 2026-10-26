@@ -18,7 +18,7 @@ import { getAccountProcessingEligibility, type IneligibilityReason } from '@/ser
 export { getAccountProcessingEligibility };
 export type { IneligibilityReason, ProcessingEligibility } from '@/services/account/processing-eligibility';
 
-export interface AccountEligibility {
+interface AccountEligibility {
   eligible: boolean;
   /** Motif consigné dans la campagne (`ELIGIBLE` ou motif 82A). */
   reason: 'ELIGIBLE' | IneligibilityReason | 'ELIGIBILITY_UNREADABLE';

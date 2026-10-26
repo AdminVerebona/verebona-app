@@ -40,7 +40,7 @@ const COLUMN_FALLBACKS: Readonly<Record<string, string>> = {
   name: 'name', subCategory: 'subtype',
 };
 
-export type PropertyVerdict = 'VIDE_EN_BASE' | 'PERSISTE_NON_RENVOYE' | 'RENVOYE_NON_AFFICHE' | 'ATTENDU_PAR_ECRAN_NON_RENVOYE' | 'NON_EXPOSE_PAR_LA_FICHE' | 'API_INDISPONIBLE' | 'COHERENT';
+type PropertyVerdict = 'VIDE_EN_BASE' | 'PERSISTE_NON_RENVOYE' | 'RENVOYE_NON_AFFICHE' | 'ATTENDU_PAR_ECRAN_NON_RENVOYE' | 'NON_EXPOSE_PAR_LA_FICHE' | 'API_INDISPONIBLE' | 'COHERENT';
 
 /**
  * Verdict d'une propriété (pur). `uiExpects` : un champ de l'écran lit cette

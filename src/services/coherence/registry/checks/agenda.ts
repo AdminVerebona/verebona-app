@@ -51,7 +51,7 @@ const OPERATIONS_SQL = `
        OR EXISTS (SELECT 1 FROM agenda_items i WHERE i.account_id = o.account_id AND i.business_operation_id = o.id))`;
 
 /** Lot 87B : anomalies qui demandent une décision SÉMANTIQUE T4 (réparation `SEMANTIC_REEVALUATION_T4`). */
-export const SEMANTIC_T4_ANOMALIES: ReadonlySet<string> = new Set(['REPRESENTATION_DECISION_REQUIRED', 'HISTORICAL_CONSOLIDATION_UNVALIDATED']);
+const SEMANTIC_T4_ANOMALIES: ReadonlySet<string> = new Set(['REPRESENTATION_DECISION_REQUIRED', 'HISTORICAL_CONSOLIDATION_UNVALIDATED']);
 
 export const agendaOccurrencesCheck: CoherenceCheck = {
   id: 'COH-AGENDA-OCCURRENCES',

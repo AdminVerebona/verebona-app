@@ -35,7 +35,7 @@ const defaultRunner: SqlRunner = async (sql, params) =>
   (await pgClient.unsafe(sql, params as never[])) as unknown as unknown[];
 
 /** Plafond par section : la fiche n'est pas une liste exhaustive. */
-export const SUPPLIER_DETAIL_LIMIT = 50;
+const SUPPLIER_DETAIL_LIMIT = 50;
 
 export interface SupplierDetail {
   supplier: {

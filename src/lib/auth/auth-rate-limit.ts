@@ -107,7 +107,7 @@ export const AUTH_LIMITS = {
 } as const satisfies Record<string, AuthLimitPolicy>;
 
 /** Lignes sans verrou actif et sans activité depuis cette durée : purgées. */
-export const AUTH_LIMIT_RETENTION_MS = 48 * HOUR;
+const AUTH_LIMIT_RETENTION_MS = 48 * HOUR;
 
 export interface LimitRecord {
   attempts: number;
@@ -133,7 +133,7 @@ export interface LimitDecision {
 // ── Règles pures ────────────────────────────────────────────────────────────
 
 /** Verrou actif ? Rend la durée restante (ms), 0 sinon. */
-export function remainingLockMs(rec: LimitRecord | null | undefined, now: number): number {
+function remainingLockMs(rec: LimitRecord | null | undefined, now: number): number {
   if (!rec?.lockedUntil) return 0;
   return Math.max(0, rec.lockedUntil - now);
 }

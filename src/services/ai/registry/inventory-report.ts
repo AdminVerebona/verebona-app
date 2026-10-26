@@ -56,7 +56,7 @@ export interface DeclaredSection {
   totalLlmOperations: number;
 }
 
-export interface ObservedRow {
+interface ObservedRow {
   operationType: string;
   useCaseCode: string | null;
   events: number;
@@ -126,7 +126,7 @@ export function buildDeclaredSection(): DeclaredSection {
  * La fenêtre est passée en paramètre de requête, jamais interpolée : ce code
  * s'exécute en recette, sur des bases réelles.
  */
-export async function buildObservedSection(windowDays: number): Promise<ObservedSection> {
+async function buildObservedSection(windowDays: number): Promise<ObservedSection> {
   const { pgClient } = await import('@/db');
 
   const rows = await pgClient.unsafe(

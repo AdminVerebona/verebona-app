@@ -60,7 +60,7 @@ export interface PaymentRecord {
   ownRefunds?: Array<{ id: string; amount: number; status: string }>;
 }
 
-export interface RefundInstruction {
+interface RefundInstruction {
   paymentId: string;
   /** Paramètre Stripe du remboursement (`payment_intent` ou `charge`). */
   refundTarget: 'payment_intent' | 'charge';
@@ -183,7 +183,7 @@ export function buildRefundPlan(
  * mais confondre « en attente » et « échoué » ferait soit relancer un
  * remboursement déjà en cours, soit abandonner un consommateur sans argent.
  */
-export type RefundOutcome = 'settled' | 'in_flight' | 'needs_attention';
+type RefundOutcome = 'settled' | 'in_flight' | 'needs_attention';
 
 export function classifyRefundStatus(status: string): RefundOutcome {
   switch (status) {
@@ -203,27 +203,3 @@ export function classifyRefundStatus(status: string): RefundOutcome {
   }
 }
 
-/**
- * Statut global d'une demande à partir de ses remboursements.
- *
- * Une demande n'est `completed` que si TOUT est réglé : l'annulation et la
- * totalité des remboursements. Un seul remboursement en attente la maintient
- * en `processing` — le consommateur n'a pas encore été intégralement remboursé.
- */
-export function aggregateStatus(
-  cancellationStatus: string,
-  refundStatuses: string[],
-  expectedRefundCount: number,
-): 'processing' | 'completed' | 'failed' {
-  if (cancellationStatus === 'failed') return 'failed';
-
-  const outcomes = refundStatuses.map(classifyRefundStatus);
-  if (outcomes.some((o) => o === 'needs_attention')) return 'failed';
-
-  const settled = outcomes.filter((o) => o === 'settled').length;
-  const cancellationDone =
-    cancellationStatus === 'cancelled' || cancellationStatus === 'not_applicable';
-
-  if (cancellationDone && settled === expectedRefundCount) return 'completed';
-  return 'processing';
-}

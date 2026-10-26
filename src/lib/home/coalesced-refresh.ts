@@ -43,7 +43,7 @@ export interface CoalescedRefreshStats {
   staleDiscarded: number;
 }
 
-export interface CoalescedRefreshOptions<T> {
+interface CoalescedRefreshOptions<T> {
   load: (ctx: { signal: AbortSignal; generation: number }) => Promise<T>;
   apply: (value: T, generation: number) => void;
   onError?: (error: unknown, generation: number) => void;

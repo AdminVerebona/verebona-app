@@ -52,7 +52,7 @@ const SCHEMA_CODES: Record<string, { hint: string; explanation: string }> = {
   },
 };
 
-export interface DatabaseDiagnostic {
+interface DatabaseDiagnostic {
   /** Code court, exploitable côté client. */
   schemaHint?: string;
   /** Explication destinée aux journaux, jamais à l'utilisateur final. */
@@ -106,7 +106,7 @@ export function extractUndefinedObject(message: string | null | undefined): Data
  * Drizzle enveloppe les erreurs du pilote : le code se trouve dans `cause`,
  * pas sur l'erreur elle-même. C'est ce qui rendait « Failed query » si opaque.
  */
-export function extractPgCode(error: unknown): string | undefined {
+function extractPgCode(error: unknown): string | undefined {
   const direct = (error as { code?: string })?.code;
   if (typeof direct === 'string' && /^\d{2}[A-Z0-9]{3}$/.test(direct)) return direct;
 
@@ -115,7 +115,7 @@ export function extractPgCode(error: unknown): string | undefined {
 }
 
 /** Message sous-jacent, en traversant l'enveloppe Drizzle. */
-export function extractPgMessage(error: unknown): string {
+function extractPgMessage(error: unknown): string {
   const cause = (error as { cause?: { message?: string } })?.cause?.message;
   return cause ?? (error as Error)?.message ?? String(error);
 }

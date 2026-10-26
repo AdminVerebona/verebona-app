@@ -82,7 +82,7 @@ export type FilterDim = 'biens' | 'rubrics' | 'types';
 export const EMPTY_FILTERS: ViewFilters = { biens: [], rubrics: [], types: [] };
 
 /** Options de tri, dans l'ordre de la maquette. */
-export const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
+const SORT_OPTIONS: ReadonlyArray<{ value: SortKey; label: string }> = [
   { value: 'added', label: "Date d'ajout" },
   { value: 'docDate', label: 'Date du document' },
   { value: 'title', label: 'Nom' },
@@ -118,10 +118,10 @@ export function defaultDirection(sort: SortKey): SortDir {
   return sort === 'added' || sort === 'docDate' ? 'desc' : 'asc';
 }
 
-export const rubricKey = (d: DocumentItem): string => d.rubricCode ?? UNFILED;
-export const bienKey = (d: DocumentItem): string => (d.assetId ? String(d.assetId) : NO_ASSET);
-export const typeKey = (d: DocumentItem): string => d.documentTypeCode ?? NO_TYPE;
-export const typeLabel = (d: DocumentItem): string => d.documentTypeLabel ?? MICROCOPY.missingType;
+const rubricKey = (d: DocumentItem): string => d.rubricCode ?? UNFILED;
+const bienKey = (d: DocumentItem): string => (d.assetId ? String(d.assetId) : NO_ASSET);
+const typeKey = (d: DocumentItem): string => d.documentTypeCode ?? NO_TYPE;
+const typeLabel = (d: DocumentItem): string => d.documentTypeLabel ?? MICROCOPY.missingType;
 export const bienLabel = (d: DocumentItem): string | null => d.assetNames[0] ?? null;
 export const isToClassify = (d: DocumentItem): boolean => !d.rubricCode;
 
@@ -179,14 +179,14 @@ export interface FilterOption {
 }
 
 /** Compteur d'une valeur de filtre sur le périmètre (calculé en base, DOC-PERF). */
-export interface FacetCount {
+interface FacetCount {
   value: string;
   /** `null` : libellé par défaut (« Type à compléter », Rubrique du référentiel). */
   label: string | null;
   count: number;
 }
 
-export interface FilterFacets {
+interface FilterFacets {
   biens: FacetCount[];
   rubrics: FacetCount[];
   types: FacetCount[];
@@ -197,7 +197,7 @@ export interface FilterFacets {
  * chargement progressif, l'écran reçoit ces compteurs du serveur : les
  * calculer sur les seuls documents chargés les plafonnerait au lot.
  */
-export function facetsFromDocuments(scope: readonly DocumentItem[]): FilterFacets {
+function facetsFromDocuments(scope: readonly DocumentItem[]): FilterFacets {
   const compter = (key: (d: DocumentItem) => string, label: (d: DocumentItem) => string | null) => {
     const m = new Map<string, FacetCount>();
     for (const d of scope) {
@@ -339,7 +339,7 @@ export function sortDocuments(
 
 // ── Regrouper ────────────────────────────────────────────────────────────
 
-export interface DocumentGroup {
+interface DocumentGroup {
   /** Code de Rubrique, `UNFILED`, ou `'ALL'` sans regroupement. */
   code: string;
   label: string;

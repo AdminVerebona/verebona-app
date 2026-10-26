@@ -9,7 +9,5 @@ export {
   listDocumentAssets,
   listAssetDocuments,
   DocumentLinkOwnershipError,
-  type LinkDocumentInput,
-  type LinkOutcome,
   type UnlinkInput,
 } from './document-asset-links.service';

@@ -156,16 +156,6 @@ export class SessionService {
   }
 
   /**
-   * Vérifie que l'utilisateur est authentifié.
-   * @returns userId
-   * @throws Error si non authentifié
-   */
-  static async requireAuth(request: NextRequest): Promise<number> {
-    const session = await this.getSession(request);
-    return session.userId;
-  }
-
-  /**
    * Vérifie que l'utilisateur est ADMIN ou SUPER_ADMIN.
    * @returns userId
    * @throws Error si pas admin
@@ -190,16 +180,6 @@ export class SessionService {
     }
 
     return session.userId;
-  }
-
-  /**
-   * Vérifie la propriété d'une ressource.
-   * @throws Error si l'utilisateur n'est pas propriétaire
-   */
-  static assertOwnership(userId: number, resourceUserId: number): void {
-    if (userId !== resourceUserId) {
-      throw new Error('FORBIDDEN');
-    }
   }
 
   /**

@@ -10,7 +10,7 @@
 import { listLlmOperations } from '../../registry/operations';
 import { syncPricingCatalog, type PricingSyncDeps } from './pricing-sync.service';
 
-export interface RefreshResult {
+interface RefreshResult {
   status: 'completed' | 'partial' | 'failed';
   modelsFound: number;
   modelsUpdated: number;
@@ -19,7 +19,7 @@ export interface RefreshResult {
 }
 
 /** Modèles du référentiel des opérations (principal et replis), par fournisseur. */
-export function listModelsToPrice(): Map<string, Set<string>> {
+function listModelsToPrice(): Map<string, Set<string>> {
   const byProvider = new Map<string, Set<string>>();
   for (const op of listLlmOperations()) {
     const set = byProvider.get(op.provider) ?? new Set<string>();

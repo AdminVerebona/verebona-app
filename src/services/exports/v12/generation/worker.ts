@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 import { claimNextGeneration, renewGenerationLease, LEASE_SECONDS } from './repository';
 import { runGeneration, failTimedOutGeneration, jobTimeoutMs } from './job';
 
-export const EXPORT_WORKER_ID = `${(() => { try { return hostname(); } catch { return 'local'; } })()}:${process.pid}:${randomUUID().slice(0, 8)}`;
+const EXPORT_WORKER_ID = `${(() => { try { return hostname(); } catch { return 'local'; } })()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
 interface WorkerState { started: boolean; running: boolean; again: boolean; timer: ReturnType<typeof setInterval> | null }
 const KEY = Symbol.for('verebona.exports.v12.worker');

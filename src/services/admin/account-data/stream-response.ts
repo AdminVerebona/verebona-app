@@ -7,7 +7,7 @@
 import { PassThrough, Readable } from 'node:stream';
 import { SinkError, type TextSink } from './export';
 
-export interface ResponseStream {
+interface ResponseStream {
   /** Corps de réponse (web). */
   body: ReadableStream<Uint8Array>;
   /** Flux Node (archive, tests). */

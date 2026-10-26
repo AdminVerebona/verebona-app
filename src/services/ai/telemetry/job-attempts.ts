@@ -37,9 +37,9 @@ export interface AttemptHistoryEntry {
 }
 
 /** Résultat d'une tentative du job. */
-export type AttemptStatus = 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'INTERRUPTED' | 'DEFERRED' | 'ABANDONED';
+type AttemptStatus = 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'INTERRUPTED' | 'DEFERRED' | 'ABANDONED';
 
-export interface JobAttemptView {
+interface JobAttemptView {
   attempt: number;
   status: AttemptStatus;
   startedAt: string | null;
@@ -62,9 +62,9 @@ export interface JobAttemptView {
   nextAttemptAt: string | null;
 }
 
-export type RetryState = 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED';
+type RetryState = 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED';
 
-export interface JobRetryView {
+interface JobRetryView {
   /** Tentative courante du job (en cours, à venir, ou dernière). */
   currentAttempt: number;
   /** Plafond d'exécutions de la file (MOD-005), `null` si sans objet. */

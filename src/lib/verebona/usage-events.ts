@@ -6,7 +6,7 @@
  * page, `fetch keepalive` sinon. Aucun contenu : des codes seulement. Une
  * mesure ne gêne jamais l'utilisateur : toute erreur est ignorée.
  */
-export type AssistantUsageEvent =
+type AssistantUsageEvent =
   | { type: 'ASSISTANT_OPEN' }
   | { type: 'ACTION_CLICK'; actionType: string; value: 'primary' | 'secondary'; intent?: string | null }
   | { type: 'SOURCE_OPEN'; sourceType: string; intent?: string | null }
@@ -18,7 +18,7 @@ const DELAI_MS = 2_000;
 let file: AssistantUsageEvent[] = [];
 let minuteur: ReturnType<typeof setTimeout> | null = null;
 
-export function flushAssistantUsage(): void {
+function flushAssistantUsage(): void {
   if (minuteur) { clearTimeout(minuteur); minuteur = null; }
   if (file.length === 0 || typeof window === 'undefined') return;
   const corps = JSON.stringify({ events: file.splice(0, 20) });

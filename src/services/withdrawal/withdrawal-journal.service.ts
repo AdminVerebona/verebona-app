@@ -18,9 +18,9 @@
  */
 import { db } from '@/db';
 import { withdrawalEvents, withdrawalRequests } from '@/db/schema';
-import { asc, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 
-export type WithdrawalEventType =
+type WithdrawalEventType =
   | 'JOURNEY_VIEWED'
   | 'DECLARATION_RECEIVED'
   | 'RECEIPT_SENT'
@@ -40,7 +40,7 @@ export type WithdrawalEventType =
   | 'ADMIN_STATUS_CHANGED'
   | 'ADMIN_REJECTED';
 
-export interface RecordEventInput {
+interface RecordEventInput {
   publicReference: string;
   eventType: WithdrawalEventType;
   summary: string;
@@ -149,33 +149,3 @@ export async function recordWithdrawalEvent(input: RecordEventInput): Promise<vo
   }
 }
 
-export interface WithdrawalEvent {
-  id: number;
-  occurredAt: Date;
-  eventType: string;
-  actor: string;
-  result: string;
-  summary: string;
-  payload: Record<string, unknown> | null;
-}
-
-/** Histoire complète d'une demande, du plus ancien au plus récent. */
-export async function listWithdrawalEvents(
-  publicReference: string,
-): Promise<WithdrawalEvent[]> {
-  const rows = await db
-    .select()
-    .from(withdrawalEvents)
-    .where(eq(withdrawalEvents.publicReference, publicReference))
-    .orderBy(asc(withdrawalEvents.occurredAt), asc(withdrawalEvents.id));
-
-  return rows.map((r) => ({
-    id: r.id,
-    occurredAt: r.occurredAt,
-    eventType: r.eventType,
-    actor: r.actor,
-    result: r.result,
-    summary: r.summary,
-    payload: r.payloadJson ? (JSON.parse(r.payloadJson) as Record<string, unknown>) : null,
-  }));
-}

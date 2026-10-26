@@ -63,7 +63,7 @@ export function forgetLegacyPresentation(storage: Pick<Storage, 'removeItem'> | 
 }
 
 /** Paramètre d'URL d'une carte ciblée par la mascotte (OPEN_TODO_CARD, lot 32). */
-export const TODO_FOCUS_PARAM = 'todo';
+const TODO_FOCUS_PARAM = 'todo';
 
 interface PageResponse {
   actions: ActionView[];

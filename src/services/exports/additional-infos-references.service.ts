@@ -35,7 +35,7 @@ import { todayParis } from '@/lib/asset-detail-rules';
 import { loadExportSource } from './v12/data/source';
 import { highlightSuggestions } from './v12/data/mappers/vente';
 
-export type AdditionalInfoReferences = AdditionalInfoReferencesDto;
+type AdditionalInfoReferences = AdditionalInfoReferencesDto;
 
 export async function loadAdditionalInfoReferences(params: { assetId: number; accountId: number; userId: number }): Promise<AdditionalInfoReferences> {
   const source = await loadExportSource({ ...params, exportType: 'DOSSIER_COMPLET' });

@@ -45,7 +45,7 @@ export type CilEnergyUsage = 'chauffage' | 'refroidissement' | 'ecs' | 'ventilat
 /** Code « Aucun usage énergétique » de `equipments.energy_usage` (exclusion explicite). */
 export const ENERGY_USAGE_NONE = 'aucun' as const;
 /** Valeur persistée de `equipments.energy_usage` ; `null` = « Non renseigné ». */
-export type EquipmentEnergyUsage = CilEnergyUsage | typeof ENERGY_USAGE_NONE;
+type EquipmentEnergyUsage = CilEnergyUsage | typeof ENERGY_USAGE_NONE;
 
 /**
  * Choix FERMÉS du champ « Usage énergétique » du tiroir équipement (lot 70B),
@@ -109,7 +109,7 @@ export interface CilEnergyEquipmentInput {
   heatNetworkDeliveryStation?: string | null;
 }
 
-export interface CilEnergyClassification {
+interface CilEnergyClassification {
   /** Usage du référentiel CIL ; `null` : caractérisé énergétique sans usage précis (énergie saisie seule). */
   usage: CilEnergyUsage | null;
   /** Donnée structurée qui fonde la décision. */

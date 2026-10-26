@@ -15,7 +15,7 @@
 import { openDrawer } from '@/lib/drawers';
 import { supplierHref } from '@/lib/supplier-routes';
 
-export interface ToProcessTargetRef {
+interface ToProcessTargetRef {
   targetType: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'AGENDA_ITEM' | 'SUPPLIER';
   targetId: number;
   targetPublicId?: string | null;

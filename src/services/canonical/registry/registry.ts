@@ -112,7 +112,7 @@ export function isExcludedKey(rawKey: string): ExcludedKey | undefined {
 }
 
 /** Contexte documentaire d'une résolution (décisions PO D-C / D-D, lot 20). */
-export interface AliasContext {
+interface AliasContext {
   /** Type documentaire : code DOCUMENT_CATALOG, alias, code V2 ou libre. */
   documentType?: string | null;
   /**

@@ -35,17 +35,6 @@ export function TimePicker({
     setInputValue(value || "")
   }, [value])
 
-  const handleTimeChange = (time: string) => {
-    const validTime = /^\d{1,2}:\d{2}$/.test(time) || /^\d{1,2}$/.test(time)
-    if (validTime || time === "") {
-      setInputValue(time)
-      if (/^\d{1,2}:\d{2}$/.test(time)) {
-        onChange?.(time)
-        setOpen(false)
-      }
-    }
-  }
-
   const handleHourMinuteChange = (hours: string, minutes: string) => {
     const h = hours.padStart(2, "0")
     const m = minutes.padStart(2, "0")

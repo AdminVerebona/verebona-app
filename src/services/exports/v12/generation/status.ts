@@ -15,7 +15,7 @@
 import { normalizeExportCode } from '@/services/exports/catalog';
 import { EXPORT_ERROR_MESSAGES, safeExportErrorMessage } from '@/services/exports/export-errors';
 
-export const GENERATION_STATUSES = ['queued', 'generating', 'ready', 'partial', 'failed', 'expired', 'deleted'] as const;
+const GENERATION_STATUSES = ['queued', 'generating', 'ready', 'partial', 'failed', 'expired', 'deleted'] as const;
 export type GenerationStatus = (typeof GENERATION_STATUSES)[number];
 
 export const PARTIAL_MESSAGE = 'Le dossier a été généré, mais certains fichiers n’ont pas pu être intégrés.'; // MSG-PREP-007
@@ -37,7 +37,7 @@ export function legacyStatus(s: GenerationStatus): string {
   }
 }
 
-export const isDownloadable = (s: GenerationStatus): boolean => s === 'ready' || s === 'partial';
+const isDownloadable = (s: GenerationStatus): boolean => s === 'ready' || s === 'partial';
 
 /** Clés de stockage d'une génération (`output_payload`, format historique compris). */
 export function outputKeys(outputPayload: string | null | undefined): { pdf: string | null; zip: string | null; pdfSize: number | null; zipSize: number | null } {
@@ -51,7 +51,7 @@ export function outputKeys(outputPayload: string | null | undefined): { pdf: str
   }
 }
 
-export interface GenerationRowLike {
+interface GenerationRowLike {
   id: number;
   publicId: string;
   exportType: string;
@@ -73,7 +73,7 @@ export interface GenerationRowLike {
 }
 
 /** URL de téléchargement (endpoint qui revérifie les droits, DRH-010). */
-export const downloadPath = (publicId: string, file: 'pdf' | 'zip') => `/api/export-generations/${publicId}/download?file=${file}`;
+const downloadPath = (publicId: string, file: 'pdf' | 'zip') => `/api/export-generations/${publicId}/download?file=${file}`;
 
 export function toGenerationDto(row: GenerationRowLike, opts: { authorName?: string | null; now?: Date } = {}) {
   const generationStatus = normalizeGenerationStatus(row.status, row.expiresAt, opts.now);
@@ -115,4 +115,3 @@ export function toGenerationDto(row: GenerationRowLike, opts: { authorName?: str
   };
 }
 
-export type GenerationDto = ReturnType<typeof toGenerationDto>;

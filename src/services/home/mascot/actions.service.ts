@@ -19,12 +19,12 @@ export const UNDO_WINDOW_MS = 60_000;
 // ── « C'est fait » ───────────────────────────────────────────────────────────
 
 /** `MASC-EXT-ACTION:agenda:<id>` → id, ou null. Seule règle acquittable en V1. */
-export function parseExtActionKey(occurrenceKey: string): number | null {
+function parseExtActionKey(occurrenceKey: string): number | null {
   const m = /^MASC-EXT-ACTION:agenda:(\d{1,10})$/.exec(occurrenceKey);
   return m ? Number(m[1]) : null;
 }
 
-export type DoneResult =
+type DoneResult =
   | { ok: true; acknowledgedAt: string }
   | { ok: false; code: 'NOT_FOUND' | 'NOT_ACKNOWLEDGEABLE' | 'UNDO_EXPIRED'; message: string };
 
@@ -83,7 +83,7 @@ export async function undoAcknowledgment(p: {
 
 // ── Revalidation au clic (REF-004, §20) ──────────────────────────────────────
 
-export type TargetCheck = 'ok' | 'gone' | 'resolved';
+type TargetCheck = 'ok' | 'gone' | 'resolved';
 
 /**
  * La cible existe-t-elle encore, dans ce compte ? Aucun identifiant n'est
@@ -151,7 +151,7 @@ export async function checkTarget(accountId: number, target: MascotActionTarget)
 
 // ── Télémétrie (§17) ─────────────────────────────────────────────────────────
 
-export interface MascotEventInput {
+interface MascotEventInput {
   visitId: string;
   occurrenceKey: string;
   sourceCode: string;

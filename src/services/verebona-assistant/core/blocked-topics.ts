@@ -25,7 +25,7 @@
  * recommandation ou d'appréciation, pas la présence d'un mot-clé thématique.
  */
 
-export type BlockReason = 'legal' | 'tax' | 'medical' | 'insurance_advice' | null;
+type BlockReason = 'legal' | 'tax' | 'medical' | 'insurance_advice' | null;
 
 /** Formulations exprimant une demande de conseil, de décision ou d'appréciation. */
 const ADVICE_PATTERNS: RegExp[] = [
@@ -62,7 +62,7 @@ const DOMAIN_PATTERNS: Array<{ reason: NonNullable<BlockReason>; pattern: RegExp
   { reason: 'insurance_advice', pattern: /(assurance|assureur|garantie|couvert|franchise|mutuelle|sinistre)/i },
 ];
 
-export interface TopicCheck {
+interface TopicCheck {
   blocked: boolean;
   reason: BlockReason;
   /** Message affiché à l'utilisateur — factuel, sans reproche. */
@@ -111,15 +111,15 @@ const MESSAGES: Record<NonNullable<BlockReason>, string> = {
 // un thème sensible reste autorisé.
 // ══════════════════════════════════════════════════════════════════════════
 
-export type ScopeKind = 'FULLY_ALLOWED' | 'PARTIALLY_ALLOWED' | 'FULLY_BLOCKED' | 'AMBIGUOUS';
+type ScopeKind = 'FULLY_ALLOWED' | 'PARTIALLY_ALLOWED' | 'FULLY_BLOCKED' | 'AMBIGUOUS';
 
-export interface SubRequest {
+interface SubRequest {
   text: string;
   allowed: boolean;
   reason: BlockReason;
 }
 
-export interface ScopeAnalysis {
+interface ScopeAnalysis {
   kind: ScopeKind;
   parts: SubRequest[];
   /** Texte des seules sous-demandes autorisées — c'est lui qui suit le flux T2. */
@@ -152,7 +152,7 @@ const CLARIFY: Record<NonNullable<BlockReason>, string> = {
   medical: "Je ne peux pas apprécier une question de santé, mais je peux retrouver les informations de vos documents. Voulez-vous que je les recherche ?",
 };
 
-export function splitSubRequests(message: string): string[] {
+function splitSubRequests(message: string): string[] {
   return message.split(SPLIT).map((x) => x?.trim()).filter((x): x is string => !!x && x.length >= 3);
 }
 

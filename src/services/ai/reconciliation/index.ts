@@ -3,22 +3,8 @@
  * Point d'entrée unique : `reconcileAsset`.
  */
 export { reconcileAsset } from './reconciliation-engine';
-export type { ReconcileInput } from './reconciliation-engine';
 
-export { decide } from './decision/decision-matrix';
-export { resolveAuthority, getAuthorityMatrix, AUTHORITY_MATRIX_VERSION } from './decision/authority-matrix';
-export { isCriticalField, checkCriticalGate, CRITICAL_FIELDS } from './decision/critical-fields';
-export { normalize, areEquivalent } from './decision/normalizers';
-export { REASON_CODES, reasonLabel } from './decision/reason-codes';
-export { readOrigin, writeOrigin, isHumanOrigin } from './field-origin';
-export { writeConflict, resolveObsoleteConflict } from './conflict-writer';
-export { listOpenReconciliationConflicts, fieldLabel } from './to-process-conflicts';
-export { reconcileLinks, retainAbove, LINK_SCORE_THRESHOLDS } from './link-reconciler';
-
-export type {
-  ReconciliationAction, ReconciliationDecision, ReconciliationRun,
-  DecisionInput, EvidenceCandidate, CurrentValue,
-} from './types';
+export { normalize } from './decision/normalizers';
 
 import { onSourceAnalyzed, type SourceAnalyzedEvent } from '../source-analysis/events';
 import { registerJobHandler } from '../queue/queue-worker';
@@ -35,7 +21,7 @@ import { registerSourceUnitProviders } from './document-asset/source-unit-provid
 import { registerEquipmentDocumentsT3 } from '@/services/equipment/equipment-document-queue';
 
 export { resolveDocumentAsset } from './document-asset/resolve-document-asset.service';
-export { requestDocumentAssetResolution, T3_TARGET_DOCUMENT } from './document-asset/queue';
+export { requestDocumentAssetResolution } from './document-asset/queue';
 
 /**
  * Abonnement à l'analyse — étape 13 du §4.1.4 — et exécutant T3 de la file.
@@ -112,7 +98,7 @@ export function registerReconciliationHandlers(): void {
  * Carte LINK-ASSET-CONFLICT depuis le résultat d'une analyse T1 (avertissement
  * `ASSET_TARGET_CONTRADICTION`, bien choisi = `e.assetId`). Ne lève jamais.
  */
-export async function syncAssetConflictFromAnalysis(e: Pick<SourceAnalyzedEvent, 'accountId' | 'assetId' | 'leadSourceId' | 'result'>): Promise<void> {
+async function syncAssetConflictFromAnalysis(e: Pick<SourceAnalyzedEvent, 'accountId' | 'assetId' | 'leadSourceId' | 'result'>): Promise<void> {
   try {
     const { clearDocumentAssetConflict, proposeDocumentAssetConflict } = await import('@/services/to-process/document-asset-conflict');
     const w = e.result.warnings.find((x) => x.code === 'ASSET_TARGET_CONTRADICTION' && x.assetConflict);

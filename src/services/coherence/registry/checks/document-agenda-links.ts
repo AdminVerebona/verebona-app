@@ -59,7 +59,7 @@ async function liens(ctx: CheckContext, accountId: number, extra: string, params
 }
 
 /** Instantanés de preuves des liens demandés (lecture seule ; liens absents du compte : non rendus). */
-export async function loadLinkEvidence(r: GroupingRunner, accountId: number, linkIds: readonly number[]): Promise<LinkEvidenceSnapshot[]> {
+async function loadLinkEvidence(r: GroupingRunner, accountId: number, linkIds: readonly number[]): Promise<LinkEvidenceSnapshot[]> {
   if (!linkIds.length) return [];
   const x = await r.q<Row>(`
     SELECT l.id, l.agenda_item_id AS item_id, l.asset_file_id AS file_id, l.provenances,

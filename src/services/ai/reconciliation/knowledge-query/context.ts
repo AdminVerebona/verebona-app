@@ -60,10 +60,10 @@ export function boundElement(e: KnowledgeElement, charsPerElement: number): { el
 }
 
 /** Un élément porte-t-il une connaissance NON STRUCTURÉE (unité, fait non intégré, fait sans clé du registre) ? */
-export const isUnstructured = (e: KnowledgeElement & { structured?: boolean }): boolean =>
+const isUnstructured = (e: KnowledgeElement & { structured?: boolean }): boolean =>
   e.layer !== 'FACT' || e.structured !== true;
 
-export interface PlannedContext {
+interface PlannedContext {
   pages: KnowledgePage[];
   /** Tous les éléments utiles ont été placés dans une page (aucun écarté par les bornes). */
   complete: boolean;

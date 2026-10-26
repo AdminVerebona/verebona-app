@@ -26,11 +26,11 @@ import { VerebonaCommandPlan } from '../VerebonaCommandPlan';
 import { VerebonaExplanation } from '../VerebonaExplanation';
 import { useVerebonaSpace, type VerebonaSpaceApi } from './VerebonaSpaceProvider';
 
-export type SpaceVariant = 'desktop' | 'mobile';
+type SpaceVariant = 'desktop' | 'mobile';
 
 // ── Styles partagés ─────────────────────────────────────────────────────────
 
-export const TONES: Record<SpaceObject['tone'], { bg: string; fg: string }> = {
+const TONES: Record<SpaceObject['tone'], { bg: string; fg: string }> = {
   blue: { bg: 'var(--wash-blue)', fg: 'var(--on-blue)' },
   green: { bg: 'var(--wash-green)', fg: 'var(--on-green)' },
   amber: { bg: 'var(--wash-amber)', fg: 'var(--on-amber)' },
@@ -39,7 +39,7 @@ export const TONES: Record<SpaceObject['tone'], { bg: string; fg: string }> = {
   slate: { bg: 'var(--wash-slate)', fg: 'var(--text-muted)' },
 };
 
-export const OBJECT_ICONS: Record<SpaceObject['icon'], typeof Package> = {
+const OBJECT_ICONS: Record<SpaceObject['icon'], typeof Package> = {
   package: Package, 'file-text': FileText, 'calendar-days': CalendarDays, info: Info,
   'circle-alert': CircleAlert, building: Building2, clock: Clock,
 };
@@ -50,7 +50,7 @@ const RAIL: Record<ReturnType<typeof railTone>, string> = {
   error: 'var(--vb-red-500)',
 };
 
-export function pillClass(primary: boolean, variant: SpaceVariant): string {
+function pillClass(primary: boolean, variant: SpaceVariant): string {
   const size = variant === 'mobile' ? 'h-10 px-4 text-[13px]' : 'h-8 px-3.5 text-[12.5px]';
   const look = primary
     ? 'bg-[color:var(--accent)] text-[color:var(--on-accent)] font-semibold hover:bg-[color:var(--accent-hover)]'
@@ -236,7 +236,7 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
  * Traitement en cours (§6.4) : trois points, et un statut court qui suit le
  * temps écoulé (§7.7 du CDC assistant), annoncé aux lecteurs d'écran.
  */
-export function ProcessingDots() {
+function ProcessingDots() {
   const [debut] = useState(() => Date.now());
   const [maintenant, setMaintenant] = useState(debut);
   useEffect(() => {

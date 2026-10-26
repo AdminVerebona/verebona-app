@@ -481,7 +481,7 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
  * de `dateFinContrat` et `numeroContrat` restent des alias déclarés : la
  * résolution SANS contexte est inchangée.
  */
-export interface ContextualAliasRule {
+interface ContextualAliasRule {
   lease?: string;
   insurance?: string;
   dpe?: string;

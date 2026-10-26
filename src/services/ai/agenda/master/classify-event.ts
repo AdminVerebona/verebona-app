@@ -34,7 +34,7 @@ import { EVENT_CATALOG, resolveDocumentType } from '@/services/canonical/registr
 import type { AgendaClassification, AgendaClassificationInput } from '../types';
 import type { RecurrenceSpec } from '../rules/recurrence';
 import {
-  T4ClassifyEventOutput, T4ClassifyEventV2Output, T4ClassifyEventV3Output, closedWorldBusinessType, closedWorldBusinessTypeV2,
+  T4ClassifyEventOutput, T4ClassifyEventV2Output, T4ClassifyEventV3Output, closedWorldBusinessType,
   type T4ClassifyEventOutput as Out, type T4ClassifyEventV2Output as OutV2, type T4ClassifyEventV3Output as OutV3,
   type T4AgendaDecisionValue, type T4InterventionAssessment, type T4RecurrenceDecisionValue,
 } from './t4-contract';
@@ -100,7 +100,7 @@ export interface ToProcessAssessmentRequest {
 }
 
 /** Catalogue fermé transmis au modèle (U6). */
-export function eventCatalogForPrompt(): Array<{ businessType: string; label: string; natures: string[] }> {
+function eventCatalogForPrompt(): Array<{ businessType: string; label: string; natures: string[] }> {
   return EVENT_CATALOG.map((e) => ({ businessType: e.businessType, label: e.label, natures: [...e.natures] }));
 }
 
@@ -149,7 +149,7 @@ export function classifyEventVariables(input: AgendaClassificationInput, ctx: Cl
 export function translateClassifyEvent(out: Out | OutV2 | OutV3): { classification: AgendaClassification; warning: string | null } {
   const allowed = new Set(EVENT_CATALOG.map((e) => e.businessType as string));
   if ('agendaDecision' in out) {
-    const { output, warning } = closedWorldBusinessTypeV2(out, allowed);
+    const { output, warning } = closedWorldBusinessType(out, allowed);
     return {
       classification: {
         category: output.agendaDecision === 'accept' ? output.homeCategory : 'unknown',

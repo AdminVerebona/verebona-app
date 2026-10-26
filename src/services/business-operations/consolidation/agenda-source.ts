@@ -117,7 +117,7 @@ const FAMILLES: ReadonlyArray<[RegExp, string]> = [
 ];
 
 /** Types métier de l'agenda qui décrivent une intervention (catalogue). */
-export const INTERVENTION_BUSINESS_TYPES: readonly string[] = ['maintenance', 'repair', 'inspection', 'dpe'];
+const INTERVENTION_BUSINESS_TYPES: readonly string[] = ['maintenance', 'repair', 'inspection', 'dpe'];
 
 /** Rappel / démarche préalable : pas un acte décidé (3.2, F-020). */
 const RAPPEL = /\b(penser|pense|rappel|rappeler|oublier|oublie|verifier|verif|regarder|voir si|demander|demande|devis|appeler|telephoner|relancer|contacter|prendre rdv|prendre rendez vous|reserver|reflechir|comparer|chercher|trouver|eventuellement|peut etre|envisager|a prevoir|a planifier|a faire|todo)\b/;
@@ -135,14 +135,14 @@ const MOTS_VIDES = new Set([
 const motsDe = (texte: string): string[] => normalizeText(texte).split(' ').filter((m) => m.length >= 2);
 
 /** Familles d'intervention citées par un texte. */
-export function interventionFamilies(texte: string | null | undefined): Set<string> {
+function interventionFamilies(texte: string | null | undefined): Set<string> {
   const out = new Set<string>();
   for (const m of motsDe(texte ?? '')) for (const [re, f] of FAMILLES) if (re.test(m)) out.add(f);
   return out;
 }
 
 /** Mots « objet » significatifs (chaudière, toiture…) hors familles, mots vides, chiffres, mots d'état. */
-export function objectWords(texte: string | null | undefined): Set<string> {
+function objectWords(texte: string | null | undefined): Set<string> {
   const out = new Set<string>();
   for (const m of motsDe(texte ?? '')) {
     if (m.length < 4 || /^\d+$/.test(m) || MOTS_VIDES.has(m) || FAIT.test(m)) continue;
@@ -152,12 +152,12 @@ export function objectWords(texte: string | null | undefined): Set<string> {
   return out;
 }
 
-export type AgendaIntent =
+type AgendaIntent =
   | { kind: 'INTERVENTION'; status: Extract<BusinessOperationStatus, 'ENVISAGED' | 'REALIZED'> }
   | { kind: 'NONE'; reason: 'NOT_USER_ENTERED' | 'NO_DATE' | 'NO_ASSET' | 'CANCELLED' | 'REMINDER' | 'DEADLINE' | 'NOT_AN_INTERVENTION' };
 
 /** L'intitulé (ou le type métier) décrit-il une intervention, hors rappel et échéance ? Pure. */
-export function describesIntervention(i: Pick<AgendaSourceItem, 'title' | 'businessType'>): AgendaIntent {
+function describesIntervention(i: Pick<AgendaSourceItem, 'title' | 'businessType'>): AgendaIntent {
   const t = normalizeText(i.title);
   if (RAPPEL.test(t) || i.title.includes('?')) return { kind: 'NONE', reason: 'REMINDER' };
   if (ECHEANCE.test(t)) return { kind: 'NONE', reason: 'DEADLINE' };
@@ -258,7 +258,7 @@ export function agendaIdentity(i: AgendaSourceItem, status: BusinessOperationSta
   };
 }
 
-export type AgendaContributionDecision =
+type AgendaContributionDecision =
   | { kind: 'CONTRIBUTES'; status: BusinessOperationStatus; identity: CandidateIdentity }
   | { kind: 'WITHDRAWN'; reason: 'ITEM_GONE' | 'NOT_USER_AUTHORED' | 'UNLINKED' | 'CANCELLED_OTHER_PROOF' | 'TYPE_NOT_SUPPORTED' };
 
@@ -349,11 +349,11 @@ export interface AgendaMatchOperation {
 }
 
 /** Tolérance d'un rapprochement certain (même nature d'état). */
-export const AGENDA_MATCH_DAYS = 3;
+const AGENDA_MATCH_DAYS = 3;
 /** Élément prévu ↔ Opération réalisée (ou l'inverse). */
-export const AGENDA_MATCH_CROSS_DAYS = 7;
+const AGENDA_MATCH_CROSS_DAYS = 7;
 /** Même document lié, date différente : rapprochement certain jusqu'ici. */
-export const AGENDA_SAME_DOCUMENT_DAYS = 30;
+const AGENDA_SAME_DOCUMENT_DAYS = 30;
 
 const JOUR = 86_400_000;
 const ecart = (a: string, b: string) => Math.abs(Math.round((Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / JOUR));
@@ -371,7 +371,7 @@ export function sameIntervention(a: string | null, b: string | null): 'same' | '
   return 'unknown';
 }
 
-export type AgendaMatch =
+type AgendaMatch =
   | { kind: 'MATCH'; operationId: number; reason: string }
   | { kind: 'HOLD'; reason: string; operationIds: number[] }
   | { kind: 'NONE' };

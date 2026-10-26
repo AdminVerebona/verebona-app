@@ -87,7 +87,7 @@ const DELAI_INITIAL_MS = 3 * 60 * 1000;
 const BAIL_MS = 20 * 60 * 60 * 1000;
 
 /** Mode du balayage d'impayés — `BILLING_UNPAID_SWEEP`. */
-export type UnpaidSweepMode = 'live' | 'dry' | 'off';
+type UnpaidSweepMode = 'live' | 'dry' | 'off';
 
 /**
  * `live` (défaut) : rappels et suppressions à échéance.

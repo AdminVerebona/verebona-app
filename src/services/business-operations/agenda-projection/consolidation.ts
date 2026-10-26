@@ -45,7 +45,7 @@ type Row = Record<string, unknown>;
 
 /** Espace du verrou consultatif des consolidations d'agenda (distinct de 39101, Opérations). */
 export const AGENDA_CONSOLIDATION_LOCK_SPACE = 39102;
-export type ConsolidationOrigin = 'PROJECTION' | 'REPRISE';
+type ConsolidationOrigin = 'PROJECTION' | 'REPRISE';
 
 const intArray = (v: readonly number[]): string => `{${[...new Set(v)].filter((x) => Number.isSafeInteger(x)).join(',')}}`;
 
@@ -70,12 +70,6 @@ export async function consolidationJournalReady(sql: Sql = pgClient): Promise<bo
   return ready;
 }
 
-/** Réservé aux tests. */
-export function __resetConsolidationJournalForTests(ready: boolean | null = null): void {
-  pret = ready === null ? null : { ready, at: Date.now() };
-  signale = false;
-}
-
 /** Gardes SQL d'un élément absorbable (alias `i`). Mêmes notions que `isTouched` + statuts ouverts + restauration. */
 export const ABSORBABLE_SQL = `
   i.is_automatic AND NOT COALESCE(i.is_automatic_modified, false)
@@ -97,7 +91,7 @@ export const ABSORBABLE_ROLE_SQL = `
   AND i.operation_role IS DISTINCT FROM 'PRINCIPAL'
   AND i.operation_role_origin IS DISTINCT FROM 'USER'`;
 
-export interface ConsolidationInput {
+interface ConsolidationInput {
   accountId: number;
   operationId: number;
   principalId: number;
@@ -316,7 +310,7 @@ export async function restoreAgendaConsolidations(sql: Sql, p: { runId?: string;
 }
 
 /** Ligne du journal 0591 telle que la restauration la lit. */
-export type ConsolidationJournalLine = Row;
+type ConsolidationJournalLine = Row;
 
 /**
  * Lot 87B (CODE-07, CODE-09) : restauration d'UNE ligne du journal 0591 dans

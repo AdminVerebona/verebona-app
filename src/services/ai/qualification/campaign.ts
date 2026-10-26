@@ -52,7 +52,7 @@ import { sha256 } from './signature';
 import { optimizationPriority, QUALIFICATION_THRESHOLDS, type QualificationThresholds } from './thresholds';
 import { chooseCandidate, decideCoupleVerdict, establishedGain, percentile, type CandidateAssessment, type Verdict } from './verdict';
 
-export interface CampaignDeps {
+interface CampaignDeps {
   now?: () => Date;
   call?: GatewayCall;
   /** Point de restauration 82E (défaut : sauvegarde de la base, `runDatabaseBackup`). */
@@ -71,7 +71,7 @@ export interface CampaignDeps {
   log?: (m: string) => void;
 }
 
-export interface ManualCoupleRequest { versionId?: number | null; treatment: Treatment; operationCode: string; rank: number }
+interface ManualCoupleRequest { versionId?: number | null; treatment: Treatment; operationCode: string; rank: number }
 
 export class QualificationRefused extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'QualificationRefused'; }
@@ -164,7 +164,7 @@ interface PlannedCouple {
   candidateVersionId: number | null;
 }
 
-export interface CampaignResult {
+interface CampaignResult {
   campaignId: number;
   status: repo.CampaignStatus;
   refusal: string | null;
@@ -175,7 +175,7 @@ export interface CampaignResult {
 
 const keyOf = (c: CoupleDescriptor) => `${repo.coupleKey(c.operationCode, c.model, c.rank)}|${c.signature}`;
 
-export async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise<CampaignResult> {
+async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise<CampaignResult> {
   const th = deps.thresholds ?? QUALIFICATION_THRESHOLDS;
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => undefined);

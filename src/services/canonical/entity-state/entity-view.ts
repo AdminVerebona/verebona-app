@@ -201,24 +201,6 @@ export async function getCanonicalEntityState(
   return row ? buildCanonicalEntityState(row) : null;
 }
 
-/** Entités (actives) d'un bien du compte : équipements non archivés et pièces (sous-structures). */
-export async function listAssetEntities(
-  accountId: number,
-  assetId: number,
-  run: SqlRunner = pgClient as unknown as SqlRunner,
-): Promise<CanonicalEntityTarget[]> {
-  const rows = (await run.unsafe(
-    `SELECT 'EQUIPMENT' AS type, e.id FROM equipments e JOIN assets a ON a.id = e.asset_id
-      WHERE a.id = $1 AND a.account_id = $2 AND a.deleted_at IS NULL AND e.archived_at IS NULL
-     UNION ALL
-     SELECT 'ROOM', r.id FROM substructures r JOIN assets a ON a.id = r.asset_id
-      WHERE a.id = $1 AND a.account_id = $2 AND a.deleted_at IS NULL
-     ORDER BY 1, 2`,
-    [assetId, accountId] as never[],
-  )) as Array<{ type: CanonicalEntityType; id: number }>;
-  return rows.map((r) => ({ type: r.type, id: Number(r.id) }));
-}
-
 /**
  * Fiches de TOUTES les entités actives d'un bien du compte (équipements non
  * archivés et pièces) en UNE requête — lectures groupées de l'assistant et

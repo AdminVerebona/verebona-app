@@ -32,7 +32,7 @@ export interface MetricTable {
   rows: Array<Record<string, string | number | null>>;
 }
 
-export function formatMetric(m: Metric): string {
+function formatMetric(m: Metric): string {
   if (m.value === null) return '—';
   if (m.unit === 'percent') return `${m.value} %`;
   if (m.unit === 'usd_micros') {

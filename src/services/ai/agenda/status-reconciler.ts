@@ -30,9 +30,9 @@ import type { EvidenceConfidence } from '../evidence/evidence.types';
 import type { ExistingAgendaItem } from './types';
 import { resolveDocumentType, type DocumentCatalogEntry } from '@/services/canonical/registry';
 
-export type StatusDecision = 'mark_done' | 'keep' | 'propose_done';
+type StatusDecision = 'mark_done' | 'keep' | 'propose_done';
 
-export interface StatusEvidence {
+interface StatusEvidence {
   /** Extrait littéral attestant la réalisation. */
   excerpt: string;
   confidence: EvidenceConfidence;
@@ -59,7 +59,6 @@ export interface StatusEvidence {
 // « Non prouvé » n'est jamais « non réalisé » : aucun des deux derniers
 // états n'écrit quoi que ce soit.
 // ══════════════════════════════════════════════════════════════════════════
-
 
 export type CompletionStatus = 'completed' | 'not_completed' | 'not_proven' | 'unknown';
 export type OccurrenceMatch = 'exact' | 'probable' | 'ambiguous' | 'none';
@@ -130,7 +129,7 @@ export function matchOccurrence(
 }
 
 /** Formes de preuve du type documentaire applicables au type métier de l'échéance. */
-export function applicableProofs(
+function applicableProofs(
   entry: DocumentCatalogEntry, businessType: string | null | undefined,
 ): DocumentCatalogEntry['completionProofs'] {
   if (!businessType) return entry.completionProofs;

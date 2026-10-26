@@ -140,7 +140,7 @@ interface Summary {
 // ─── Fragments ────────────────────────────────────────────────────────────────
 
 /** « 05/10/2026 à 21:42 » */
-export function dateHeure(iso: string | null): string {
+function dateHeure(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return `${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;

@@ -49,14 +49,14 @@
  */
 import type { RetrievedSource } from '../types/sources';
 
-export type SensitiveCategory = 'identity' | 'bank' | 'medical' | 'thirdParty' | 'secret';
+type SensitiveCategory = 'identity' | 'bank' | 'medical' | 'thirdParty' | 'secret';
 
-export const SENSITIVE_CATEGORIES: readonly SensitiveCategory[] = ['identity', 'bank', 'medical', 'thirdParty', 'secret'];
+const SENSITIVE_CATEGORIES: readonly SensitiveCategory[] = ['identity', 'bank', 'medical', 'thirdParty', 'secret'];
 
 /** Catégories dont la présence est nécessaire à la réponse (non masquées). */
 export type SensitiveNecessity = Partial<Record<SensitiveCategory, boolean>>;
 
-export interface MaskReport {
+interface MaskReport {
   /** Nombre de masquages par catégorie. */
   counts: Record<SensitiveCategory, number>;
 }
@@ -228,7 +228,7 @@ export function sensitiveDocumentCategory(s: Pick<RetrievedSource, 'type' | 'tit
   return null;
 }
 
-export interface SourcesPolicyResult {
+interface SourcesPolicyResult {
   sources: RetrievedSource[];
   /** Événements de trace, sans contenu (§17.11, §29.6). */
   events: string[];

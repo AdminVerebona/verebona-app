@@ -85,7 +85,7 @@ async function operationIdsOfAsset(r: Runner, accountId: number, assetId: number
  * détail du bien. Jamais la date d'ajout dans Verebona (`created_at`). Valeur
  * brute rendue telle quelle : la validation stricte est celle du moteur.
  */
-export function assetTcoDatesOf(row: AssetRowJson): { acquisitionDate: string | null; saleDate: string | null } {
+function assetTcoDatesOf(row: AssetRowJson): { acquisitionDate: string | null; saleDate: string | null } {
   const v = (k: string): string | null => {
     const x = readCanonicalValue(row, k)?.value;
     return typeof x === 'string' && x.trim() ? x.trim() : null;
@@ -205,7 +205,7 @@ const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOC
 const MOTIFS_78B_DOCUMENT: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'USER_EXCLUDED', 'FUTURE_DATED']);
 
 /** Lot 80A : dépense ajoutée au TCO du bien par l'utilisateur (T2 la compte si ses propres règles ne la comptent pas). */
-export interface T2UserAddedExpense {
+interface T2UserAddedExpense {
   source: 'OPERATION' | 'DOCUMENT' | 'ASSET_DATA' | 'EQUIPMENT_DATA';
   lineId: string;
   operationId: number | null;
@@ -365,7 +365,7 @@ export async function readComponentProvenance(r: Runner, accountId: number, oper
  * portant un montant ou un candidat T1 établi : jamais une source du TCO du
  * bien ; listés au diagnostic BO pour expliquer leur absence. Plafonné.
  */
-export async function readCitedOnlyDocuments(r: Runner, accountId: number, assetId: number): Promise<Array<{ fileId: number; title: string }>> {
+async function readCitedOnlyDocuments(r: Runner, accountId: number, assetId: number): Promise<Array<{ fileId: number; title: string }>> {
   const x = await rows<{ id: number } & DocumentTitleColumns>(r, sql`
     SELECT f.id, ${sql.raw(documentTitleColumnsSql('f'))}
       FROM asset_files f
@@ -709,41 +709,12 @@ export async function acquisitionEvidenceFiles(r: Runner, accountId: number, fil
 }
 
 /**
- * Lot 61 (cohérence T2 / TCO) : parmi `fileIds`, justificatifs rattachés
- * à un ACHAT actif de leur bien sans en porter le prix (aucune composante
- * active ne les cite) ni en être la preuve — dépenses distinctes
- * (`isDistinctFromAcquisition`), lues par T2 comme par le TCO.
- */
-export async function documentsDistinctFromAcquisition(accountId: number, fileIds: readonly number[], r: Runner = db): Promise<Set<number>> {
-  const ids = [...new Set(fileIds.filter((x) => Number.isSafeInteger(x) && x > 0))];
-  const out = new Set<number>();
-  if (!ids.length) return out;
-  const candidats = new Set<number>();
-  for (let i = 0; i < ids.length; i += 1000) {
-    const page = ids.slice(i, i + 1000);
-    for (const x of await rows<{ f: string }>(r, sql`
-      SELECT s.source_entity_key AS f FROM business_operation_sources s
-        JOIN business_operations o ON o.id = s.operation_id AND o.account_id = s.account_id
-       WHERE s.account_id = ${accountId} AND s.source_kind = 'DOCUMENT' AND s.active AND o.type_code = 'ACQUISITION' AND o.status <> 'CANCELLED'
-         AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
-         AND s.source_entity_key = ANY(${`{${page.join(',')}}`}::text[])
-         AND NOT EXISTS (SELECT 1 FROM business_operation_financial_component_sources cs
-                           JOIN business_operation_financial_components c ON c.id = cs.component_id AND c.active
-                           JOIN business_operation_sources s2 ON s2.id = cs.operation_source_id
-                          WHERE s2.operation_id = o.id AND s2.source_kind = 'DOCUMENT' AND s2.source_entity_key = s.source_entity_key)`)) candidats.add(Number(x.f));
-  }
-  const preuves = await acquisitionEvidenceFiles(r, accountId, [...candidats]);
-  for (const f of candidats) if (!preuves.has(f)) out.add(f);
-  return out;
-}
-
-/**
  * Lot 75D (H) — un achat du bien est-il attendu ? Non : véhicule en LLD /
  * LOA / prêt (même règle que l'achat structuré, lot 43 C13), logement occupé
  * en location ou à titre gratuit, objet reçu (don, cadeau, héritage,
  * succession), prêté ou loué. Pure, sur la vue canonique de la fiche.
  */
-export function acquisitionExpectedOf(row: AssetRowJson): boolean {
+function acquisitionExpectedOf(row: AssetRowJson): boolean {
   const v = (k: string) => { const x = readCanonicalValue(row, k)?.value; return typeof x === 'string' ? x.trim() : null; };
   if (row.category === 'VEHICULE' && ['LLD', 'LOA', 'PRET_GRATUIT'].includes(v('vehicleOwnershipStatus') ?? '')) return false;
   if (row.category === 'IMMOBILIER' && ['LOCATAIRE', 'OCCUPANT_GRATUIT'].includes(v('occupancyStatus') ?? '')) return false;
@@ -842,7 +813,7 @@ export async function readEquipmentPrices(r: Runner, accountId: number, assetId:
 
 // ── Forfaits d'usage (§3.5) ────────────────────────────────────────────────
 
-export async function readUsageBudgets(accountId: number, assetId: number, r: Runner = db): Promise<UsageBudget[]> {
+async function readUsageBudgets(accountId: number, assetId: number, r: Runner = db): Promise<UsageBudget[]> {
   const [t] = await rows<{ ok: boolean }>(r, sql`SELECT to_regclass('asset_usage_budgets') IS NOT NULL AS ok`);
   if (!t?.ok) return [];
   const x = await rows(r, sql`
@@ -857,7 +828,7 @@ export async function readUsageBudgets(accountId: number, assetId: number, r: Ru
   }));
 }
 
-export interface UsageBudgetInput {
+interface UsageBudgetInput {
   category: UsageBudget['category']; label: string | null; amountMinor: number; currency: string;
   periodicity: UsageBudget['periodicity']; validFrom: string | null; validTo: string | null;
 }
@@ -896,7 +867,7 @@ async function tableDecisionsPresente(r: Runner): Promise<boolean> {
 }
 
 /** Décisions actives de l'utilisateur sur les lignes du TCO d'un bien du compte (lecture seule). */
-export async function readTcoLineDecisions(r: Runner, accountId: number, assetId: number): Promise<TcoUserDecision[]> {
+async function readTcoLineDecisions(r: Runner, accountId: number, assetId: number): Promise<TcoUserDecision[]> {
   if (!(await tableDecisionsPresente(r))) return [];
   const x = await rows(r, sql`
     SELECT d.line_key, d.decision, to_char(d.decided_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS decided_at, d.decided_by

@@ -37,7 +37,7 @@ interface Ligne {
 }
 
 /** Valeur affichable d'un fait pour un champ du registre (pure). */
-export function displayOfFact(key: string, f: Pick<Ligne, 'valueText' | 'valueNumber' | 'valueUnit'>): { value: unknown; display: string } | null {
+function displayOfFact(key: string, f: Pick<Ligne, 'valueText' | 'valueNumber' | 'valueUnit'>): { value: unknown; display: string } | null {
   const def = getField(key);
   if (!def) return null;
   const brut = f.valueNumber !== null && f.valueNumber !== undefined && def.valueType !== 'string' && def.valueType !== 'date'

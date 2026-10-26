@@ -10,9 +10,9 @@ import { db } from '@/db';
 import { newsConsents } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 
-export const NEWS_CONSENT_VERSION = '2026-07';
+const NEWS_CONSENT_VERSION = '2026-07';
 
-export interface NewsConsentState {
+interface NewsConsentState {
   consented: boolean;
   consentedAt: string | null;
   source: string | null;

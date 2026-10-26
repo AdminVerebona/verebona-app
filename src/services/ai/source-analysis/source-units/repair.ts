@@ -39,10 +39,10 @@ import { SourceUnitLinker } from './coverage';
 import { maxCompletenessRetries } from './repository';
 import type { CoveredSourceUnit, SourceUnit } from './types';
 
-export const REPAIR_MAX_UNITS = 120;
-export const REPAIR_MAX_CHARS = 24_000;
-export const DEFAULT_MAX_REPAIR_PASSES = 1;
-export const DEFAULT_REPAIR_MAX_CALLS = 3;
+const REPAIR_MAX_UNITS = 120;
+const REPAIR_MAX_CHARS = 24_000;
+const DEFAULT_MAX_REPAIR_PASSES = 1;
+const DEFAULT_REPAIR_MAX_CALLS = 3;
 
 export function repairSettings(env: Record<string, string | undefined> = process.env) {
   const n = (v: string | undefined, def: number, min: number, max: number) => {
@@ -63,7 +63,7 @@ export function repairAttemptCap(env: Record<string, string | undefined> = proce
 }
 
 /** Lots d'unités pour la réparation (ordre de lecture). Le surplus au-delà de `maxCalls` lots est rendu à part. */
-export function batchRepairUnits<U extends Pick<SourceUnit, 'text'>>(units: readonly U[], maxCalls: number): { batches: U[][]; left: U[] } {
+function batchRepairUnits<U extends Pick<SourceUnit, 'text'>>(units: readonly U[], maxCalls: number): { batches: U[][]; left: U[] } {
   const batches: U[][] = [];
   let cur: U[] = [];
   let chars = 0;
@@ -82,7 +82,7 @@ export function batchRepairUnits<U extends Pick<SourceUnit, 'text'>>(units: read
 }
 
 /** Texte transmis : chaque unité précédée de son identifiant, séparée par une ligne vide. */
-export function repairContent(units: readonly Pick<SourceUnit, 'sourceUnitId' | 'text'>[]): string {
+function repairContent(units: readonly Pick<SourceUnit, 'sourceUnitId' | 'text'>[]): string {
   return units.map((u) => `[${u.sourceUnitId}]\n${u.text ?? ''}`).join('\n\n');
 }
 
@@ -95,7 +95,7 @@ export type RepairCall = (p: {
   attachments: never[]; sources: string; triggerCode: string;
 }) => Promise<{ output: { facts: T1Fact[] } & Parameters<typeof enforceT1Capabilities>[0] }>;
 
-export interface RepairPassResult {
+interface RepairPassResult {
   /** Faits prouvés par une unité ciblée (page renseignée). */
   facts: T1Fact[];
   /** Unités soumises (tentative comptée). */

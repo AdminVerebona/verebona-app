@@ -62,14 +62,14 @@ import {
   amountToCents, compactIdentifier, significantValues, type SignificantKind, type SignificantValue,
 } from '@/services/ai/source-analysis/source-units/text';
 
-export const EXTRACT_CHAIN_CHECK_ID = 'COH-DOC-EXTRACT-CHAIN';
+const EXTRACT_CHAIN_CHECK_ID = 'COH-DOC-EXTRACT-CHAIN';
 /** Demande de contrat IA dont dépend la disposition des omissions sur unité couverte. */
 export const T1_OMISSIONS_CONTRACT = '82B-t1-omissions-extract';
 /** Bornes du détail consigné (aucun contenu de document : unités, natures, valeurs normalisées ou empreintes). */
 const DETAIL_MAX = 20;
 /** Services de relance IA (passe T1 ciblée, nouvelle extraction) — comptés dans le budget. */
 const RELANCES_IA = ['repairDocumentSourceUnits', 'requeueDocumentForReread'];
-export const DEFAULT_T1_RELAUNCH_DAILY_MAX = 200;
+const DEFAULT_T1_RELAUNCH_DAILY_MAX = 200;
 
 /**
  * Relances IA T1 restantes sur 24 h glissantes, pour TOUT le contrôle de
@@ -116,7 +116,7 @@ export interface ExtractUnit {
 }
 
 /** Ce que T1 a produit pour le document (formes normalisées). */
-export interface T1Knowledge {
+interface T1Knowledge {
   amounts: Set<number>;
   dates: Set<string>;
   identifiers: Set<string>;
@@ -140,7 +140,7 @@ export interface ExtractChainInput {
   triedHashes: ReadonlySet<string>;
 }
 
-export type ExtractRepair = 'REEXTRACT' | 'T1_REPAIR' | 'PROJECT';
+type ExtractRepair = 'REEXTRACT' | 'T1_REPAIR' | 'PROJECT';
 
 interface Diagnostic {
   link: ChainLink;
@@ -154,7 +154,7 @@ interface Diagnostic {
 }
 
 /** Une valeur figure-t-elle dans la connaissance T1 ? (pure) */
-export function knownByT1(v: SignificantValue, k: T1Knowledge): boolean {
+function knownByT1(v: SignificantValue, k: T1Knowledge): boolean {
   if (v.kind === 'AMOUNT') return k.amounts.has(Number(v.normalized));
   if (v.kind === 'DATE') return k.dates.has(v.normalized);
   return k.identifiers.has(v.normalized);
@@ -163,7 +163,7 @@ export function knownByT1(v: SignificantValue, k: T1Knowledge): boolean {
 const UNITES_LUES = new Set(['TEXT_BLOCK', 'LABEL_VALUE', 'FORM_FIELD', 'TABLE_ROW']);
 const COUVERTES = new Set(['COVERED', 'NON_INFORMATIONAL']);
 /** Contrôles aval qui exploitent chaque nature de valeur déjà présente dans T1 (aucun second moteur). */
-export const DOWNSTREAM_OWNERS: Readonly<Record<SignificantKind, readonly string[]>> = {
+const DOWNSTREAM_OWNERS: Readonly<Record<SignificantKind, readonly string[]>> = {
   AMOUNT: ['COH-TCO-EXTRACTED-EXPENSES'],
   DATE: ['COH-TODO-DOCUMENT-FIELDS', 'COH-AGENDA-ORPHANS'],
   IDENTIFIER: ['COH-DOC-LINKS'],

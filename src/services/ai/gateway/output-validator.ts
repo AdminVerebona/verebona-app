@@ -36,7 +36,7 @@ export function extractJson(raw: string): unknown {
  *     garde le rôle de filtre : une réponse qu'il refuse est un échec
  *     récupérable, qui passe au modèle suivant.
  */
-export type OutputFormat = 'json' | 'text';
+type OutputFormat = 'json' | 'text';
 
 /**
  * Options de validation.
@@ -46,7 +46,7 @@ export type OutputFormat = 'json' | 'text';
  * une sortie d'une AUTRE branche est refusée (`AiOutputTaskMismatchError`) ;
  * un discriminant ABSENT est rétabli (lot 33D, règle `discriminant_imposed`).
  */
-export interface ValidateOutputOptions {
+interface ValidateOutputOptions {
   expectedTask?: string;
   /**
    * Champ discriminant de la sortie : `task` (défaut), `mode` (T2 §24) ou `none` (T6 §28 : la sortie ne porte pas de discriminant — le
@@ -63,7 +63,7 @@ export interface ValidateOutputOptions {
 }
 
 /** Diagnostic d'une résolution en échec. */
-export function failureDetailOf(r: Extract<Resolution, { ok: false }>): OutputFailureDetail {
+function failureDetailOf(r: Extract<Resolution, { ok: false }>): OutputFailureDetail {
   return {
     subtype: r.subtype, stage: r.stage, issues: r.issues, issueCount: r.issueCount, controls: r.controls,
     repairs: r.repairs, extracted: r.extracted, parsed: r.parsed, originalMessage: r.issues[0]?.message ?? r.message,

@@ -25,7 +25,7 @@ import type { CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, rows } from '../util';
 
 /** Entrées de cache contrôlées par compte, au plus (les plus récentes). */
-export const T6_SUGGESTION_ENTRIES_MAX = 50;
+const T6_SUGGESTION_ENTRIES_MAX = 50;
 
 /** Diagnostic d'une entrée (pur, testé) : motifs par question invalide, ou null. */
 export function t6SuggestionEntryDiagnosis(

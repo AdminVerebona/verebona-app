@@ -38,13 +38,13 @@ export type AutosaveState = 'idle' | 'pending' | 'saving' | 'saved' | 'error';
  * Échec d'enregistrement dont seule une partie du lot doit revenir en file
  * (après résolution d'un conflit, seul le correctif rejoué est à renvoyer).
  */
-export interface PartialSaveError { requeue: AdditionalInfosPatch }
+interface PartialSaveError { requeue: AdditionalInfosPatch }
 
 export function withRequeue<E>(err: E, requeue: AdditionalInfosPatch): E & PartialSaveError {
   return Object.assign((err ?? new Error('Échec de l’enregistrement')) as object, { requeue }) as E & PartialSaveError;
 }
 
-export interface AutosaveOptions {
+interface AutosaveOptions {
   save: (patch: AdditionalInfosPatch) => Promise<void>;
   onStateChange?: (state: AutosaveState, error?: unknown) => void;
   debounceMs?: number;
@@ -184,7 +184,7 @@ export function patchListPaths(patch: AdditionalInfosPatch): string[] {
   return out;
 }
 
-export interface RebaseResult {
+interface RebaseResult {
   /** Correctif à rejouer sur la version courante (vide : rien à rejouer). */
   retry: AdditionalInfosPatch;
   /** Listes modifiées ailleurs : la version serveur l'emporte, la saisie locale est abandonnée. */

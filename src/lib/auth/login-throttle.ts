@@ -122,7 +122,7 @@ export function loginThrottleEntries(ctx: LoginAttemptContext): RuleEntry[] {
 }
 
 /** Clés remises à zéro par une connexion RÉUSSIE (voir l'en-tête). */
-export function loginSuccessResetKeys(ctx: LoginAttemptContext): string[] {
+function loginSuccessResetKeys(ctx: LoginAttemptContext): string[] {
   return loginThrottleEntries(ctx)
     .filter((e) => e.rule === 'trusted_device' || e.rule === 'origin_identifier')
     .map((e) => e.key);

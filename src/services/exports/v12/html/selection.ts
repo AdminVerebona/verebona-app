@@ -20,7 +20,7 @@ import type { DocItem, PhotoItem, PageMap, Nullable } from '../types';
 import type { PlannedDoc, GalleryPhoto } from './components';
 import { makeUniqueNamer, realExtension, withExtension } from '@/lib/download-filename';
 
-export const INTEGRABLE_FORMATS = new Set(['PDF', 'JPG', 'JPEG', 'PNG', 'WEBP']);
+const INTEGRABLE_FORMATS = new Set(['PDF', 'JPG', 'JPEG', 'PNG', 'WEBP']);
 
 interface SelectableLike { selected?: boolean; corrupted?: boolean; occupantData?: boolean }
 
@@ -52,7 +52,7 @@ export function makeZipNamer(): (doc: { id: string | number; fileName?: Nullable
   };
 }
 
-export interface AttachmentPlan {
+interface AttachmentPlan {
   annexes: PlannedDoc[];
   zip: PlannedDoc[];
   /** Documents retenus d'une section, décorés, dans l'ordre des données. */

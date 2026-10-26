@@ -18,7 +18,7 @@
 import { T4AgendaRepresentationOutput, type ValidationIssue } from './contract';
 import type { RepresentationScope } from './context';
 
-export interface ValidationProblem { issue: ValidationIssue; detail: string }
+interface ValidationProblem { issue: ValidationIssue; detail: string }
 
 export type ValidationResult =
   | { ok: true; decision: T4AgendaRepresentationOutput }

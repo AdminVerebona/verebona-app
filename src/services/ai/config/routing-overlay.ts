@@ -15,7 +15,7 @@ export function isModelExcluded(model: string, treatment: Treatment | null, excl
 }
 
 /** Rang de la chaîne configurée : modèle et emplacement administré d'origine (0, 1, 2). */
-export interface ChainSlot<T = unknown> { model: string; slot: number; extra?: T }
+interface ChainSlot<T = unknown> { model: string; slot: number; extra?: T }
 
 export interface RoutingOverlay {
   exclusions: ReadonlyArray<OverlayIntervention>;
@@ -23,9 +23,7 @@ export interface RoutingOverlay {
   promotions: ReadonlyMap<string, { model: string; promotionId: number }>;
 }
 
-export const EMPTY_OVERLAY: RoutingOverlay = { exclusions: [], promotions: new Map() };
-
-export interface OverlayResult<T> {
+interface OverlayResult<T> {
   chain: Array<ChainSlot<T>>;
   /** Modèles retirés par une exclusion active. */
   excluded: string[];

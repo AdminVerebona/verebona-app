@@ -60,7 +60,7 @@ import { emptyCounts, type ReportEntry, type ReviewCardRequest, type StepContext
 const STEP = 'MIG-01' as const;
 const PROVENANCE_SUFFIXES = ['__updatedAt', '__source', '__authority', '__sourceDate'] as const;
 
-export interface KcAliasPlan extends AssetPlan<ReportEntry> {
+interface KcAliasPlan extends AssetPlan<ReportEntry> {
   cards: ReviewCardRequest[];
 }
 

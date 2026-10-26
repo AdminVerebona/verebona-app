@@ -14,7 +14,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import { emit } from '@/lib/notifications';
 import { todayParisDateStr, addDaysToDateStr } from '../time-paris';
 
-export interface DeadlineRunResult { targetDate: string; accounts: number; emitted: number }
+interface DeadlineRunResult { targetDate: string; accounts: number; emitted: number }
 
 export async function runDeadlineReminders(now: Date = new Date()): Promise<DeadlineRunResult> {
   const targetDate = addDaysToDateStr(todayParisDateStr(now), 7);

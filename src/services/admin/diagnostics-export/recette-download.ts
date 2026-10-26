@@ -18,7 +18,7 @@ import { ZIP_MAX_BYTES } from './zip';
 import { isSafeRecettePath } from './recette-catalog';
 import { recettePrefix, type RecetteManifest, type RecetteStorage } from './recette';
 
-export const RECETTE_DOC_FILES = ['manifeste.json', 'LISEZMOI.txt', 'dictionnaire.json', 'dictionnaire.csv'] as const;
+const RECETTE_DOC_FILES = ['manifeste.json', 'LISEZMOI.txt', 'dictionnaire.json', 'dictionnaire.csv'] as const;
 
 /** Fichiers téléchargeables d'une génération (manifeste en dernier). */
 export function recetteDownloadables(m: RecetteManifest | null): string[] {
@@ -73,7 +73,7 @@ function lazyObject(storage: RecetteStorage, key: string): Readable {
   return r;
 }
 
-export type RecetteZipOutcome = { ok: true; bytes: number } | { ok: false; bytes: number; error: unknown; clientGone: boolean };
+type RecetteZipOutcome = { ok: true; bytes: number } | { ok: false; bytes: number; error: unknown; clientGone: boolean };
 
 /** Archive complète d'une génération, écrite en flux dans `out`. */
 export async function streamRecetteZip(m: RecetteManifest, storage: RecetteStorage, out: PassThrough): Promise<RecetteZipOutcome> {

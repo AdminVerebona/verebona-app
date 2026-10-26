@@ -20,11 +20,11 @@
 import {
   catalogForT2Read, fieldAssistantVocabulary, getField, type CanonicalFieldDef,
 } from '@/services/canonical/registry';
+import { plain } from '../core/routing-text';
 
 /** Nombre maximal de champs lus pour une demande (contrat T2 : `requestedFacts.max(20)`). */
-export const MAX_REQUESTED_FACTS = 20;
+const MAX_REQUESTED_FACTS = 20;
 
-const plain = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'");
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
@@ -40,7 +40,7 @@ export function fieldPhrasesOf(d: Pick<CanonicalFieldDef, 'assistantPhrases' | '
   return [...new Set([...base, ...pluriels])];
 }
 
-export interface FieldMention { def: CanonicalFieldDef; phrase: string; index: number }
+interface FieldMention { def: CanonicalFieldDef; phrase: string; index: number }
 
 /** Champs LISIBLES : projection officielle `catalogForT2Read()` (ordre du registre). */
 function champsLisibles(): CanonicalFieldDef[] {

@@ -35,7 +35,7 @@ import { identifierRecordOf } from './asset-identifiers.repository';
 import { normalizeCode, normalizePostalCode, normalizeText, type AssetIdentifierRecord } from './identifiers';
 
 /** Pagination technique de la lecture des biens (transparente). */
-export const INDEX_PAGE_SIZE = 500;
+const INDEX_PAGE_SIZE = 500;
 /** Références lues au plus (documents rattachés du compte). */
 const MAX_REFERENCES = 5000;
 
@@ -43,7 +43,7 @@ const MAX_REFERENCES = 5000;
 export const REFERENCE_KEYS = ['insuranceContractNumber', 'contractNumber', 'dpeAdemeNumber'] as const;
 
 /** Clés de fiche lues comme ALIAS d'un bien (tolérant : texte ou liste). */
-export const ASSET_ALIAS_KEYS = ['aliases', 'alias', 'nickname', 'usualName', 'surnom', 'nomUsuel'] as const;
+const ASSET_ALIAS_KEYS = ['aliases', 'alias', 'nickname', 'usualName', 'surnom', 'nomUsuel'] as const;
 
 export interface IndexedAsset {
   assetId: number;
@@ -102,7 +102,7 @@ const valueOf = (row: AssetRowJson, key: string): string | null => {
 };
 
 /** Alias lus dans la fiche (texte, liste, ou valeur canonique `{ value }`). */
-export function aliasesOf(kc: Record<string, unknown>): string[] {
+function aliasesOf(kc: Record<string, unknown>): string[] {
   const out: string[] = [];
   for (const k of ASSET_ALIAS_KEYS) {
     const raw = kc[k];

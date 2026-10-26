@@ -36,21 +36,21 @@ import { isAssistantFlagOn } from '../config/assistant-flags.server';
 import { configuredAliases, MODEL_REGISTRY_VERSION, resolveAliases, type ResolvedAliases } from '../registries/model-registry';
 import { checkModelUses } from '@/services/ai/registry/models';
 
-export interface RegistrySnapshot {
+interface RegistrySnapshot {
   checkedAt: string;
   version: typeof MODEL_REGISTRY_VERSION;
   aliases: Record<string, string>;
   operations: ResolvedAliases[];
 }
 
-export interface RegistryCheck {
+interface RegistryCheck {
   ok: boolean;
   errors: string[];
   warnings: string[];
   snapshot: RegistrySnapshot;
 }
 
-export interface RegistryCheckDeps {
+interface RegistryCheckDeps {
   operations?: Record<string, AiOperationDefinition | undefined>;
   resolve?: (op: string) => Promise<{ primaryModel: string; fallbackModels: string[] }>;
   hasPrice?: (provider: string, model: string) => boolean;
@@ -124,7 +124,7 @@ export async function checkModelRegistry(deps: RegistryCheckDeps = {}): Promise<
 
 // ── Verdict du processus et dernier registre valide ──────────────────────
 
-export type StartupVerdict = { ok: true } | { ok: false; error: string };
+type StartupVerdict = { ok: true } | { ok: false; error: string };
 
 let verdict: StartupVerdict | null = null;
 let dernierValide: RegistrySnapshot | null = null;

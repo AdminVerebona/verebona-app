@@ -21,12 +21,9 @@
  */
 import { z } from 'zod';
 
-export const T3_MASTER_PROMPT_CODE = 't3_master_v1';
 export const T3_TASKS = ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING'] as const;
-export type T3Task = (typeof T3_TASKS)[number];
 
 const confidence = z.enum(['certain', 'probable', 'conflictual']);
-export type T3Confidence = z.infer<typeof confidence>;
 
 // ── Branche VALUE_CONFLICT ──────────────────────────────────────────────────
 /**
@@ -119,7 +116,7 @@ export type T3OperationMatchOutput = z.infer<typeof T3OperationMatchOutput>;
  * comparé au nom envoyé, garde-fous déterministes, puis écriture en
  * compare-and-swap (`document-naming/`).
  */
-export const t3DocumentRename = z.object({
+const t3DocumentRename = z.object({
   document_id: z.number().int().positive(),
   /** Nom actuel tel que le modèle l'a lu : sert au compare-and-swap (nom attendu). */
   expected_current_name: z.string().min(1).max(500),
@@ -129,10 +126,9 @@ export const t3DocumentRename = z.object({
   reason: z.string().min(1).max(400),
   confidence,
 });
-export type T3DocumentRename = z.infer<typeof t3DocumentRename>;
 
 /** Famille identifiée par le modèle dans le lot de comparaison (facultatif : reporting, mémoire de convention). */
-export const t3NamingFamily = z.object({
+const t3NamingFamily = z.object({
   label: z.string().min(1).max(200),
   document_ids: z.array(z.number().int().positive()).max(200),
   /** Convention retenue, décrite librement par le modèle (jamais un gabarit appliqué par le code). */
@@ -140,7 +136,6 @@ export const t3NamingFamily = z.object({
   /** Le modèle a-t-il constaté des intitulés incohérents dans cette famille ? */
   inconsistent: z.boolean().optional(),
 });
-export type T3NamingFamily = z.infer<typeof t3NamingFamily>;
 
 /**
  * Sortie de la branche DOCUMENT_NAMING. `document_renames` reste FACULTATIVE

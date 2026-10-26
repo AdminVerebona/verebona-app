@@ -40,7 +40,7 @@ export interface BackfillOptions {
   onProgress?: (p: { phase: 'columns' | 'proposals'; cursor: number; done: number }) => void;
 }
 
-export type AmbiguityReason =
+type AmbiguityReason =
   | 'TARGET_NOT_FOUND'
   | 'TARGET_OTHER_ACCOUNT'
   | 'PROPOSAL_MODIFIED'

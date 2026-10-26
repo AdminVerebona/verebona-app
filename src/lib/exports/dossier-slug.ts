@@ -4,7 +4,7 @@
  */
 import { DOSSIER_CODES, type DossierCode } from '@/services/exports/catalog';
 
-export const dossierSlug = (code: DossierCode): string => code.toLowerCase().replace(/_/g, '-');
+const dossierSlug = (code: DossierCode): string => code.toLowerCase().replace(/_/g, '-');
 
 export function dossierFromSlug(slug: string | null | undefined): DossierCode | null {
   const s = String(slug ?? '').trim().toLowerCase();

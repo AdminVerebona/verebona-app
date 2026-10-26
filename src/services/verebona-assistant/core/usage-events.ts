@@ -18,17 +18,17 @@ import { VEREBONA_ACTION_TYPES } from '../types/actions';
 import { SOURCE_TYPES } from '../types/sources';
 import { VEREBONA_INTENTS } from '../types/intents';
 
-export const USAGE_EVENT_TYPES = ['ASSISTANT_OPEN', 'ACTION_CLICK', 'SOURCE_OPEN', 'ANSWER_COPY', 'FEEDBACK'] as const;
-export type UsageEventType = (typeof USAGE_EVENT_TYPES)[number];
+const USAGE_EVENT_TYPES = ['ASSISTANT_OPEN', 'ACTION_CLICK', 'SOURCE_OPEN', 'ANSWER_COPY', 'FEEDBACK'] as const;
+type UsageEventType = (typeof USAGE_EVENT_TYPES)[number];
 
-export const USAGE_PLANS = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'] as const;
+const USAGE_PLANS = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'] as const;
 const VALEURS: Readonly<Partial<Record<UsageEventType, readonly string[]>>> = {
   ACTION_CLICK: ['primary', 'secondary'],
   FEEDBACK: ['helpful', 'not_helpful'],
 };
-export const USAGE_BATCH_MAX = 20;
+const USAGE_BATCH_MAX = 20;
 
-export interface UsageEvent {
+interface UsageEvent {
   type: UsageEventType;
   actionType: string | null;
   sourceType: string | null;

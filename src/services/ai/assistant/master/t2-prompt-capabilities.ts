@@ -21,7 +21,7 @@
 import { T2_MASTER_VARIABLES, listMasterTasks } from '../../registry/operations';
 import { inspectMasterTemplate, isOptionalMasterTask, isOptionalMasterVariable } from '../../prompts/prompt-loader';
 
-export interface T2PromptCheck {
+interface T2PromptCheck {
   code: 'BUSINESS_CANDIDATES' | 'RULE_A7' | 'RULE_A8' | 'RULE_A9' | 'INTERACTION_MODE' | 'SUPPLIED_FACTS' | 'SEMANTIC_DECISION' | 'SELECTED_CANDIDATE_REF';
   label: string;
   present: boolean;
@@ -36,7 +36,7 @@ export interface T2PromptCheck {
  * sans IA ; aucun arbitrage n'est tenté. Présence d'un texte ≠ preuve de
  * fonctionnement : la recette réelle reste obligatoire (procédure BO).
  */
-export interface T2PromptCompatibility {
+interface T2PromptCompatibility {
   compatible: boolean;
   /** Variables injectées par le serveur sans emplacement dans le texte (rendu refusé). */
   missingVariables: string[];

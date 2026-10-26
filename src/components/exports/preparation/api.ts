@@ -37,7 +37,7 @@ export interface PreparationApi {
   addEnergyMaterial(body: Record<string, unknown>): Promise<void>;
 }
 
-export interface ApiFailure { status: number; code: string; message: string; details?: Record<string, unknown> }
+interface ApiFailure { status: number; code: string; message: string; details?: Record<string, unknown> }
 
 /** Erreur réseau → code et message affichables (jamais de détail technique). */
 export function toFailure(err: unknown): ApiFailure {

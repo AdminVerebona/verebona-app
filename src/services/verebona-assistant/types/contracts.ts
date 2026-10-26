@@ -2,7 +2,7 @@
  * Contrats internes et de sortie — CDC §9.5, §18, §27.
  */
 import type { VerebonaIntent } from './intents';
-import type { VerebonaActionType, VerebonaAction, ActionIntent } from './actions';
+import type { VerebonaActionType, VerebonaAction } from './actions';
 import type { Claim, SupportLevel, ResolvedSource } from './sources';
 import type { ClarificationState, MachineState } from './machine';
 
@@ -105,24 +105,6 @@ export interface AssistantTimelineEvent {
   href: string | null;
 }
 
-/**
- * Sortie STRUCTURÉE attendue de Gemini (validée par Zod puis serveur) — CDC §18.2.
- * Le serveur ne consomme jamais de texte libre comme réponse finale (§18.1).
- */
-export interface AssistantModelOutput {
-  schemaVersion: typeof RESPONSE_SCHEMA_VERSION;
-  intent: VerebonaIntent;
-  answer: string;
-  supportLevel: SupportLevel;
-  claims: Claim[];
-  actionIntents: ActionIntent[];
-  clarification: {
-    question: string;
-    candidateType: 'asset' | 'document' | 'agenda' | 'supplier';
-    candidateIds: string[];
-  } | null;
-}
-
 /** Réponse finale renvoyée par l'API — CDC §27.1 / §27.2. */
 export interface AssistantApiResponse {
   requestId: string;
@@ -183,12 +165,6 @@ export const VEREBONA_ERROR_CODES = [
 ] as const;
 
 export type VerebonaErrorCode = (typeof VEREBONA_ERROR_CODES)[number];
-
-export interface AssistantApiError {
-  requestId: string;
-  status: 'error';
-  error: { code: VerebonaErrorCode; message: string; recoverable: boolean };
-}
 
 /** Contexte de page transmis par le front — CDC §27.1. */
 export interface PageContext {
@@ -495,7 +471,7 @@ export interface AssistantRunResult {
 }
 
 /** Code informatif du §27.11 joint à une réponse rendue. */
-export interface AssistantNotice {
+interface AssistantNotice {
   code: VerebonaErrorCode;
   message: string;
 }

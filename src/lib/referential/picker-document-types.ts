@@ -5,7 +5,7 @@
 import { DOCUMENT_TYPE_LIST } from '@/lib/document-type-constants';
 import { resolveDocumentCode } from './document-codes';
 
-export interface PickerDocumentTypeDto {
+interface PickerDocumentTypeDto {
   id: number;
   code: string;
   label: string;

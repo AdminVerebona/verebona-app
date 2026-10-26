@@ -18,7 +18,7 @@ export const AI_USE_CASE_CODES = [
 
 export type AiUseCaseCode = (typeof AI_USE_CASE_CODES)[number];
 
-export interface AiUseCaseDefinition {
+interface AiUseCaseDefinition {
   code: AiUseCaseCode;
   /** Libellé affiché en administration et dans l'outil de conformité. */
   label: string;

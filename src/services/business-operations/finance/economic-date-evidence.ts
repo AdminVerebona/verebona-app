@@ -26,7 +26,7 @@ const txt = (v: unknown): string | null => (v === null || v === undefined || v =
 const intArray = (v: readonly number[]): string => `{${[...new Set(v)].filter((x) => Number.isSafeInteger(x)).join(',')}}`;
 const PAGE = 500;
 
-export interface EconomicDateEvidenceRead {
+interface EconomicDateEvidenceRead {
   /** Preuves par Opération (justificatifs par composante, origines, règlements). */
   byOperation: Map<number, EconomicDateEvidence>;
   /** Période couverte de chaque composante active. */

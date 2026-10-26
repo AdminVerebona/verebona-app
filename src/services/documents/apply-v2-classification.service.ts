@@ -45,7 +45,7 @@ import {
 } from '@/services/to-process/optimization-contract';
 import { getRubric, getDocumentType, isTypeCompatibleWithRubric, MISSING_TYPE_LABEL } from '@/lib/referential/v2';
 
-export interface RubricProposalInput {
+interface RubricProposalInput {
   /**
    * Code brut. Volontairement typé `string` et non `RubricCode` : cette
    * proposition vient d'un modèle, et un code hors référentiel doit être
@@ -58,7 +58,7 @@ export interface RubricProposalInput {
   excerpt?: string;
 }
 
-export interface ApplyV2ClassificationInput {
+interface ApplyV2ClassificationInput {
   fileId: number;
   accountId: number;
   /** Proposition issue de l'analyse. Absente = aucune proposition crédible. */
@@ -276,7 +276,7 @@ export async function applyV2Classification(
  * mouvements sont indissociables : ne faire que le premier laisse des cartes
  * orphelines, ne faire que le second empêche la file de se vider.
  */
-export async function syncActionsForOutputs(
+async function syncActionsForOutputs(
   accountId: number,
   targetId: number,
   outputs: OptimizationOutput[],

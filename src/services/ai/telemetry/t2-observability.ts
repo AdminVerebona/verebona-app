@@ -26,7 +26,7 @@ export const T2_TRUTH_SOURCES: readonly T2TruthSource[] = [
   'regle_offre', 'centre_aide', 'modele', 'clarification', 'aucune', 'autre',
 ];
 
-export interface T2ObservabilityTrace {
+interface T2ObservabilityTrace {
   truthSource: T2TruthSource;
   /**
    * Lot 47A (O9, CDC Opérations V1 C26.2) : nature d'une réponse ÉCONOMIQUE
@@ -143,8 +143,7 @@ export function countSourceTypes(sources: ReadonlyArray<{ type?: unknown }>): Re
  *   · `fallback_only`  : documents, fiche du bien ou preuves seuls.
  * Mesure d'adoption, jamais une contrainte (aucune exclusivité imposée).
  */
-export type T2EconomicMode = 'operation_only' | 'mixed' | 'fallback_only';
-export const T2_ECONOMIC_MODES: readonly T2EconomicMode[] = ['operation_only', 'mixed', 'fallback_only'];
+type T2EconomicMode = 'operation_only' | 'mixed' | 'fallback_only';
 
 /** Stratégies dont la réponse est économique (montants). */
 const ECONOMIC_STRATEGIES = new Set([

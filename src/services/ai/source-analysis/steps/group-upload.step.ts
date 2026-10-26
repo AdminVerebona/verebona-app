@@ -13,9 +13,9 @@ import { buildGroupUploadVariables } from '../master/prompt-context';
 import { emptyTrace, mergeTrace } from '../trace';
 import type { SourceInput, AiOperationTrace } from '../types';
 
-export const T1_GROUP_UPLOAD_OPERATION = 't1_group_upload';
+const T1_GROUP_UPLOAD_OPERATION = 't1_group_upload';
 
-export interface GroupSourcesResult {
+interface GroupSourcesResult {
   /** Groupes d'INDICES dans `input.sourceIds` ; chaque index exactement une fois. */
   groups: number[][];
   trace: AiOperationTrace;
@@ -25,7 +25,7 @@ export interface GroupSourcesResult {
  * Corrige une sortie modèle imparfaite : indices hors bornes, doublons,
  * fichiers oubliés. Aucun fichier ne doit disparaître du traitement (§11.4).
  */
-export function sanitizeGroups(groups: number[][], count: number): number[][] {
+function sanitizeGroups(groups: number[][], count: number): number[][] {
   const seen = new Set<number>();
   const cleaned: number[][] = [];
 

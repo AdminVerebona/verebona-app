@@ -162,9 +162,6 @@ export async function recordOutcome(p: {
   );
 }
 
-/** Statuts après lesquels l'utilisateur peut être sollicité (« À traiter »). */
-export const USER_QUESTION_STATUSES: readonly ResolutionStatus[] = ['ABSTAINED', 'NO_CANDIDATE'];
-
 /**
  * Relance sur des entrées identiques (même empreinte, même version) : la
  * ligne reprend sa dernière issue, l'évaluation est datée — un vrai cas

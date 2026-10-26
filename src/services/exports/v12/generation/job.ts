@@ -51,7 +51,7 @@ export interface GenerationRequestSnapshot {
   claimOperationId?: number | null;
 }
 
-export interface JobDeps {
+interface JobDeps {
   fetchToFile?: FetchToFile;
   upload: UploadFn;
   loadSource: typeof loadExportSource;
@@ -61,7 +61,7 @@ export interface JobDeps {
   now: () => Date;
 }
 
-export const defaultJobDeps = (): JobDeps => ({
+const defaultJobDeps = (): JobDeps => ({
   upload: s3UploadFile,
   loadSource: loadExportSource,
   notifySupport: notifySupportOfExportFailure,
@@ -347,6 +347,6 @@ export async function failTimedOutGeneration(row: GenerationRow, workerId: strin
   }).catch(() => false);
 }
 
-export class LeaseLostError extends Error {
+class LeaseLostError extends Error {
   constructor() { super('bail de génération perdu'); }
 }

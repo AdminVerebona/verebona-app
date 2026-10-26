@@ -20,7 +20,7 @@ import { pgClient } from '@/db';
 import { normalizeName } from '@/services/suppliers/supplier-service';
 import type { RetrievedSource } from '../types/sources';
 
-export interface SupplierEntry {
+interface SupplierEntry {
   /** Clé de dédoublonnage : `id:<supplierId>` ou `name:<nom normalisé>`. */
   key: string;
   supplierId: number | null;
@@ -40,7 +40,7 @@ const INTERVENTION_TYPES = new Set([
   'INSTALLATION_REPORT', 'RAPPORT_ENTRETIEN',
 ]);
 
-export interface SupplierRawData {
+interface SupplierRawData {
   structured: Array<{ id: number; name: string; normalizedName: string | null; city: string | null; equipmentCount: number }>;
   documents: Array<{ fileId: number; supplierText: string | null; supplierId: number | null; typeCode: string | null; date: string | null }>;
 }

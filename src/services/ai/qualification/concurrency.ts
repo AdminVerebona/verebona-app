@@ -20,7 +20,7 @@ export interface PoolTask<T> {
   run: () => Promise<T>;
 }
 
-export interface PoolOptions {
+interface PoolOptions {
   /** Borne globale (par instance de worker). */
   limit: number;
   /** Borne par groupe (traitement). */
@@ -29,7 +29,7 @@ export interface PoolOptions {
   keyOf?: (result: unknown) => string | null;
 }
 
-export interface PoolOutcome<T> {
+interface PoolOutcome<T> {
   results: Map<string, { ok: true; value: T } | { ok: false; error: unknown }>;
   maxObserved: number;
   maxObservedByGroup: Record<string, number>;

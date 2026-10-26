@@ -24,7 +24,7 @@
  */
 
 /** Envoi JSON (POST) ; rend au moins le statut HTTP. */
-export type PostJson = (url: string, body: unknown) => Promise<{ ok: boolean; status: number }>;
+type PostJson = (url: string, body: unknown) => Promise<{ ok: boolean; status: number }>;
 
 export const agendaLinkUrl = (fileId: number): string => `/api/documents/${fileId}/agenda-liens`;
 

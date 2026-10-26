@@ -81,9 +81,9 @@ export const FAILURE_CAUSES = [
 export type FailureCause = (typeof FAILURE_CAUSES)[number];
 
 /** Ligne du tableau §8 du CDC. */
-export type CdcRow = 'MODEL_SPECIFIC' | 'REQUEST_INCOMPATIBILITY' | 'COMMON_DEFECT' | 'INVALID_RESULT' | 'UNDETERMINED';
+type CdcRow = 'MODEL_SPECIFIC' | 'REQUEST_INCOMPATIBILITY' | 'COMMON_DEFECT' | 'INVALID_RESULT' | 'UNDETERMINED';
 
-export interface CausePolicy {
+interface CausePolicy {
   row: CdcRow;
   /** Un secours peut-il être essayé après cette cause ? */
   fallback: 'ALLOWED' | 'STOP' | 'ONE_ALTERNATIVE' | 'IF_PROFILE_HELPS';
@@ -177,7 +177,7 @@ export const ADMISSION_LABELS: Readonly<Record<AdmissionReason, string>> = {
   NOT_QUALIFIED_AUTOMATIC: 'configuration automatique sans preuve admissible courante',
 };
 
-export interface Candidate {
+interface Candidate {
   model: string;
   /** Rang dans la chaîne complète (0 = principal). */
   rankIndex: number;
@@ -188,7 +188,7 @@ export interface Candidate {
   maxOutputTokens: number | null;
 }
 
-export type Admission =
+type Admission =
   | { admitted: true; reason: 'FIRST' | 'QUALIFIED' | 'MANUAL_UNTESTED' }
   | { admitted: false; reason: Exclude<AdmissionReason, 'FIRST' | 'QUALIFIED' | 'MANUAL_UNTESTED'> };
 

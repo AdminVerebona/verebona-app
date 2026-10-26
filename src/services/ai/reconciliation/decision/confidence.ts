@@ -1,29 +1,8 @@
 /**
- * Seuils de confiance — CDC §14.4, arbitrage rendu.
- *
- * Le CDC ne fixe pas de valeurs numériques : il définit trois niveaux
- * qualitatifs. La conversion score → niveau est donc un réglage, pas une règle,
- * et reste isolée dans ce seul fichier pour être recalibrée sur le corpus sans
- * toucher au moteur. Toute modification change `CONFIDENCE_VERSION`, sans quoi
- * deux décisions prises sous des seuils différents deviendraient
- * indiscernables dans les preuves.
+ * Niveaux de confiance — CDC §14.4 : trois niveaux qualitatifs (certain,
+ * probable, conflictuel), ordonnés pour le tri et la combinaison des preuves.
  */
 import type { EvidenceConfidence } from '../../evidence/evidence.types';
-
-export const CONFIDENCE_THRESHOLDS = {
-  /** Au-delà : la valeur est tenue pour certaine. */
-  certain: 0.90,
-  /** Au-delà : la valeur est probable. En deçà : conflictuelle. */
-  probable: 0.65,
-} as const;
-
-export const CONFIDENCE_VERSION = 'v1-2026-07';
-
-export function scoreToConfidence(score: number): EvidenceConfidence {
-  if (score >= CONFIDENCE_THRESHOLDS.certain) return 'certain';
-  if (score >= CONFIDENCE_THRESHOLDS.probable) return 'probable';
-  return 'conflictual';
-}
 
 const RANK: Record<EvidenceConfidence, number> = {
   certain: 3, probable: 2, conflictual: 1,

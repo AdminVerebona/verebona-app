@@ -24,7 +24,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export const ROOM_FILTER_ALL = 'all';
+const ROOM_FILTER_ALL = 'all';
 /** Pièces proposées au plus (bornage de la requête). */
 export const ROOM_FILTER_MAX_OPTIONS = 300;
 

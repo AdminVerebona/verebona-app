@@ -3,8 +3,8 @@
  * Point d'entrée : `runCdc15Backfill` ; script : `scripts/cdc15-backfill.ts`.
  */
 export {
-  runCdc15Backfill, restoreCdc15Run, orderSteps, MissingRequirementsError, ConcurrentRunError, acquireBackfillLock,
-  type BackfillOptions, type BackfillRunResult,
+  runCdc15Backfill, restoreCdc15Run, MissingRequirementsError, ConcurrentRunError, acquireBackfillLock,
+  type BackfillRunResult,
 } from './runner';
-export { summarizeRun, formatRunSummary, loadRun } from './report';
-export { MIG_STEPS, ALL_ORDER, type MigStep, type Decision, type ReportEntry } from './types';
+export { summarizeRun, formatRunSummary } from './report';
+export type { MigStep, Decision } from './types';

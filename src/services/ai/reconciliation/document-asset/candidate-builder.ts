@@ -75,9 +75,6 @@ export const CANDIDATE_SOURCES = [
 ] as const;
 export type CandidateSource = (typeof CANDIDATE_SOURCES)[number];
 
-/** Sources qui ne sont que du CONTEXTE (jamais une preuve suffisante). */
-export const CONTEXT_ONLY_SOURCES: readonly CandidateSource[] = ['CATEGORY_SUBTYPE', 'CONTEXTUAL_MATCH'];
-
 export interface BuiltCandidate {
   assetId: number;
   sources: CandidateSource[];
@@ -119,7 +116,7 @@ export interface CandidateBuildResult {
  * signaux. Lot 49B (AC8) : une information au-delà du 200 000e caractère de la
  * transcription, persistée en unité source, reste rapprochable.
  */
-export const IDENTIFIER_TEXT_MAX = 700_000;
+const IDENTIFIER_TEXT_MAX = 700_000;
 
 const STOPWORDS = new Set([
   'de', 'du', 'des', 'la', 'le', 'les', 'l', 'd', 'a', 'au', 'aux', 'en', 'et', 'mon', 'ma', 'mes', 'notre', 'nos', 'un', 'une', 'the', 'of',

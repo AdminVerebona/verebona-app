@@ -38,18 +38,11 @@ import type { ClarificationCandidate, ClarificationState, ClarificationStatus } 
 import type { AssistantRequestInput } from '../types/contracts';
 import { interpretTypedAnswer, isExpired, MAX_FAILED_ATTEMPTS } from './clarification-builder';
 
-export type EchecClarification =
+type EchecClarification =
   | 'INTROUVABLE'
   | 'EXPIREE'
   | 'CHOIX_INVALIDE'
   | 'TROP_DE_TENTATIVES';
-
-export interface ClarificationResolue {
-  etat: ClarificationState;
-  /** Candidat retenu, tel qu'il figurait dans la proposition. */
-  choix: { id: string; label: string };
-  conversationId: number;
-}
 
 /** Deux tentatives au plus (§20.3). */
 const TENTATIVES_MAX = MAX_FAILED_ATTEMPTS;
@@ -156,7 +149,7 @@ export async function chargerClarification(
  * `hasPendingClarification` la signalerait indéfiniment et l'assistant
  * refuserait toute nouvelle question.
  */
-export async function consommerClarification(conversationId: number): Promise<void> {
+async function consommerClarification(conversationId: number): Promise<void> {
   await pgClient`
     UPDATE verebona_conversations
        SET clarification_state_json = NULL, updated_at = now()
@@ -164,21 +157,8 @@ export async function consommerClarification(conversationId: number): Promise<vo
   `;
 }
 
-/** Incrémente le compteur sans consommer — cas d'un choix invalide. */
-export async function incrementerTentative(
-  conversationId: number,
-  etat: ClarificationState,
-): Promise<void> {
-  const suivant = { ...etat, attemptCount: etat.attemptCount + 1 };
-  await pgClient`
-    UPDATE verebona_conversations
-       SET clarification_state_json = ${JSON.stringify(suivant)}::jsonb, updated_at = now()
-     WHERE id = ${conversationId}
-  `;
-}
-
 /** Message destiné à l'utilisateur. Factuel, sans reproche. */
-export function messageEchec(motif: EchecClarification): string {
+function messageEchec(motif: EchecClarification): string {
   switch (motif) {
     case 'EXPIREE':
       return 'Cette question a expiré. Reformulez votre demande.';
@@ -199,7 +179,7 @@ export function messageEchec(motif: EchecClarification): string {
 // PARCOURS COMPLET — création, choix sécurisé, reprise structurée, repli
 // ══════════════════════════════════════════════════════════════════════════
 
-export type ClarificationEvent =
+type ClarificationEvent =
   | 'CREATED' | 'CHOICE_ACCEPTED' | 'INVALID_CHOICE' | 'UNRECOGNIZED_ANSWER' | 'EXPIRED'
   | 'CANDIDATE_UNAVAILABLE' | 'RESUME_SUCCEEDED' | 'RESUME_FAILED' | 'FALLBACK' | 'ABANDONED'
   | 'CHAIN_EXHAUSTED';

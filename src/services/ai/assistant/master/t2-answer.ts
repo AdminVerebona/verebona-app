@@ -19,7 +19,7 @@ import type { RetrievedSource } from '@/services/verebona-assistant/types/source
 import { T2_MASTER_VARIABLES } from '@/services/ai/registry/operations';
 import type { T2AnswerOutput, T2ClaimSupport, T2Mode } from './t2-contract';
 
-export type T2Variable = (typeof T2_MASTER_VARIABLES)[number];
+type T2Variable = (typeof T2_MASTER_VARIABLES)[number];
 
 /** Variables complètes d'une branche : celles fournies, `null` pour les autres. */
 export function t2MasterVariables(_mode: T2Mode, values: Partial<Record<T2Variable, unknown>>): Record<string, unknown> {
@@ -71,7 +71,7 @@ export function formatResolvedTargets(
 }
 
 /** Ligne sourcée issue de la sortie ANSWER, contrôlée ensuite par le serveur. */
-export interface T2AnswerLine {
+interface T2AnswerLine {
   text: string;
   sourceIds: string[];
   factual?: boolean;
@@ -81,7 +81,7 @@ export interface T2AnswerLine {
   event?: { date: string | null; text: string };
 }
 
-export interface T2AnswerLines {
+interface T2AnswerLines {
   lines: T2AnswerLine[];
   /** `\n` pour une liste (chronologie, comparaison), espace sinon. */
   separator: '\n' | ' ';

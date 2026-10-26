@@ -7,9 +7,9 @@
  * écrivaient ensuite un état obsolète. Chaque planification rend désormais sa
  * fonction d'annulation, à appeler dans le nettoyage de l'effet.
  */
-export type CancelIdle = () => void;
+type CancelIdle = () => void;
 
-export interface IdleOptions {
+interface IdleOptions {
   /** Délai maximal avant exécution forcée (ms). */
   timeout?: number;
   /** Repli sans `requestIdleCallback` (Safari) : attente fixe (ms). */

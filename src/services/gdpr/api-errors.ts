@@ -4,7 +4,7 @@
  */
 import { RULE_ERROR_MESSAGES, type GdprRuleError } from './rules';
 
-export type GdprApiError = GdprRuleError | 'NOT_FOUND' | 'SUBJECT_NOT_FOUND';
+type GdprApiError = GdprRuleError | 'NOT_FOUND' | 'SUBJECT_NOT_FOUND';
 
 const STATUS: Record<GdprApiError, number> = {
   NOT_FOUND: 404,

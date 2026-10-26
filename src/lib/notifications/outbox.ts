@@ -79,7 +79,7 @@ export async function claimByIds(ids: string[]): Promise<OutboxRow[]> {
  *               (`outcome_reason` porte la cause). Jamais « envoyé », jamais
  *               une anomalie technique.
  */
-export type OutboxFinalStatus = 'sent' | 'partial' | 'failed' | 'skipped';
+type OutboxFinalStatus = 'sent' | 'partial' | 'failed' | 'skipped';
 
 export async function markProcessed(id: string, status: OutboxFinalStatus, opts: { reason?: string | null } = {}): Promise<void> {
   await db.update(notificationOutbox)
@@ -136,12 +136,4 @@ export async function releaseOrFail(id: string, currentAttempt: number, error: s
     .where(eq(notificationOutbox.id, id));
   // Retries épuisés : échec définitif, anomalie de supervision (SUP-009).
   if (failed) await reportNotificationFailure(id);
-}
-
-/** Utilisé par la purge (Lot 6) et les tests. */
-export async function cancelByIds(ids: string[]): Promise<void> {
-  if (ids.length === 0) return;
-  await db.update(notificationOutbox)
-    .set({ status: 'cancelled', processedAt: new Date() })
-    .where(inArray(notificationOutbox.id, ids));
 }

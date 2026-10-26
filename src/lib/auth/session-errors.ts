@@ -45,7 +45,7 @@ interface SessionErrorSpec {
 }
 
 /** Erreurs levées par les gardes (`throw new Error(CODE)`) → réponse HTTP. */
-export const SESSION_ERRORS: Readonly<Record<string, SessionErrorSpec>> = {
+const SESSION_ERRORS: Readonly<Record<string, SessionErrorSpec>> = {
   AUTH_REQUIRED: { status: 401, code: 'AUTH_REQUIRED', error: 'Authentication required', message: 'Authentification requise. Merci de vous connecter.' },
   INVALID_TOKEN: { status: 401, code: 'INVALID_TOKEN', error: 'Invalid or malformed token', message: 'Votre session a expiré. Merci de vous reconnecter.' },
   ACCOUNT_SUSPENDED: { status: 403, code: 'ACCOUNT_SUSPENDED', error: 'Your account has been suspended', message: 'Votre compte est suspendu.' },

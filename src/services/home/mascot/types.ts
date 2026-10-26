@@ -15,14 +15,14 @@ export type MascotPriority = 'DO_FIRST' | 'DO_NEXT' | 'CAN_WAIT';
 export type MascotIntent = 'inform' | 'act' | 'onboard' | 'deadline';
 
 /** Codes de signaux V1 (§7) — liste fermée. */
-export type MascotSourceCode =
+type MascotSourceCode =
   | 'PROC-DOC-UPLOAD' | 'PROC-DOC-ANALYSIS' | 'PROC-EXPORT'
   | 'ONB-ASSET' | 'ONB-DOC'
   | `ATP-${string}`
   | 'DATE-NEXT' | 'DATE-NEXT-2'
   | 'MASC-EXT-ACTION' | 'MASC-BLOCKED';
 
-export type MascotDrawerKind = 'document' | 'echeance' | 'equipement' | 'piece';
+type MascotDrawerKind = 'document' | 'echeance' | 'equipement' | 'piece';
 
 /**
  * Cible d'une action : toujours un parcours existant (ActionResolver, §5).
@@ -131,7 +131,7 @@ export interface MascotReminderRef {
   hasSeries: boolean;
 }
 
-export type MascotSecondaryKind = 'onboarding' | 'recommendation' | 'question';
+type MascotSecondaryKind = 'onboarding' | 'recommendation' | 'question';
 
 export interface MascotSecondary {
   id: string;
@@ -190,7 +190,7 @@ export interface MascotTile {
  * `clear` (lot 61) : AUCUNE INTERPELLATION PERTINENTE établie — jamais une
  * preuve que tous les événements ou documents sont résolus.
  */
-export type MascotStatus = 'ok' | 'clear' | 'degraded';
+type MascotStatus = 'ok' | 'clear' | 'degraded';
 
 /**
  * Lot 61 — ÉTAT DE PRÉSENTATION EXPLICITE, calculé côté serveur à partir des
@@ -228,16 +228,16 @@ export type MascotDegradedSource = 'business' | 'deadlines';
 // ── « À traiter » de la mascotte (lot 32, MASC2) ─────────────────────────────
 
 /** OPEN_CHOICES : composant de choix de la file ; OPEN_TODO_CARD : la carte, ciblée par son ID. */
-export type MascotTodoActionType = 'OPEN_CHOICES' | 'OPEN_TODO_CARD';
+type MascotTodoActionType = 'OPEN_CHOICES' | 'OPEN_TODO_CARD';
 
-export interface MascotTodoChoice {
+interface MascotTodoChoice {
   value: string | number | boolean | null;
   label: string;
   isCurrentValue?: boolean;
 }
 
 /** Vue d'une action telle que la file « À traiter » l'affiche (`ToProcessActionView`). */
-export interface MascotTodoCard {
+interface MascotTodoCard {
   publicId: string;
   targetType: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'AGENDA_ITEM' | 'SUPPLIER';
   targetId: number;

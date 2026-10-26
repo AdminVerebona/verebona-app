@@ -96,7 +96,7 @@ export const EXCLUSIVE_FILES_RAW = `
                              WHERE zs.operation_id = o.id AND zs.active AND zs.source_kind = 'DOCUMENT'
                                AND zs.source_entity_key = xs.source_entity_key AND zs.locator->>'candidateKey' = dc.candidate_key))))), '{}')
   ELSE '{}' END`;
-export const EXCLUSIVE_FILES_SQL = sql.raw(EXCLUSIVE_FILES_RAW);
+const EXCLUSIVE_FILES_SQL = sql.raw(EXCLUSIVE_FILES_RAW);
 
 /** Pool de rapprochement borné par passage (charge). */
 const CANDIDATE_LIMIT = 2000;
@@ -105,9 +105,9 @@ const CANDIDATE_LIMIT = 2000;
  * l'identifiant) — le passage va jusqu'à épuisement du périmètre, plus de
  * plafond à 1 000 Opérations.
  */
-export const PROJECTION_PAGE_SIZE = 500;
+const PROJECTION_PAGE_SIZE = 500;
 
-export interface ProjectionRunOptions {
+interface ProjectionRunOptions {
   /** Opérations à projeter (identifiants, fusionnées comprises : la canonique est traitée). */
   operationIds?: readonly number[];
   /** Toutes les Opérations du compte, plus le nettoyage des projections orphelines. */
@@ -211,7 +211,7 @@ async function projectableIdsPage(accountId: number, afterId: number, size: numb
   return r.map((x) => Number(x.id));
 }
 
-export async function loadOperationSnapshots(accountId: number, ids: readonly number[]): Promise<OperationSnapshot[]> {
+async function loadOperationSnapshots(accountId: number, ids: readonly number[]): Promise<OperationSnapshot[]> {
   if (!ids.length) return [];
   const r = await rows(db, sql`
     SELECT o.id, o.account_id, o.type_code, o.status, o.technical_label, o.provider,

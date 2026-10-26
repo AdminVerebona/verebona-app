@@ -131,21 +131,3 @@ export async function saveKnowledgeQuery(r: KnowledgeQueryRecord): Promise<numbe
   return Number(row.id);
 }
 
-/** Dernière interprétation d'une donnée d'un document (contrôle de cohérence). Ne lève pas : null. */
-export async function latestKnowledgeQuery(accountId: number, fileId: number, fieldKey: string): Promise<(StoredKnowledgeQuery & { contextFp: string; promptVersion: string; updatedAt: string }) | null> {
-  try {
-    const [r] = await q<Row>(
-      `SELECT id, status, outcome, findings, rejected, calls, attempts, ai_trace_ids, retry_at, pages_total, pages_examined, context_fp, prompt_version, updated_at
-         FROM t3_knowledge_queries WHERE account_id = $1 AND file_id = $2 AND field_key = $3 ORDER BY updated_at DESC, id DESC LIMIT 1`,
-      [accountId, fileId, fieldKey],
-    );
-    if (!r) return null;
-    return {
-      id: Number(r.id), status: r.status as StoredKnowledgeQuery['status'], outcome: (r.outcome as StoredKnowledgeQuery['outcome']) ?? null,
-      findings: json<ValidatedFinding[]>(r.findings, []), rejected: json<Rejection[]>(r.rejected, []),
-      calls: Number(r.calls ?? 0), attempts: Number(r.attempts ?? 0), traceIds: (r.ai_trace_ids as string[] | null) ?? [],
-      retryAt: r.retry_at ? new Date(r.retry_at as string).toISOString() : null, pagesTotal: Number(r.pages_total ?? 0), pagesExamined: Number(r.pages_examined ?? 0),
-      contextFp: String(r.context_fp), promptVersion: String(r.prompt_version), updatedAt: new Date(r.updated_at as string).toISOString(),
-    };
-  } catch { return null; }
-}

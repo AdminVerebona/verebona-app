@@ -84,7 +84,7 @@ export interface SessionError {
   requestId?: string;
 }
 
-export interface SessionSnapshot {
+interface SessionSnapshot {
   status: SessionStatus;
   /** Identité servie par le serveur dans ce contexte (conservée si indisponible). */
   user: User | null;
@@ -125,7 +125,7 @@ export function classifySessionError(err: unknown): SessionError {
   };
 }
 
-export interface SessionStoreDeps {
+interface SessionStoreDeps {
   /** Lecture de l'identité ; doit honorer `signal`. */
   fetchMe: (signal: AbortSignal) => Promise<User>;
   /** Copie d'affichage (localStorage) ; absente côté serveur et en test. */

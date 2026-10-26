@@ -16,7 +16,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export const RENTED_USAGE = 'LOCATIF';
+const RENTED_USAGE = 'LOCATIF';
 
 export const OCCUPANCY_USAGE_LABELS: Record<string, string> = {
   RESIDENCE_PRINCIPALE: 'Résidence principale',

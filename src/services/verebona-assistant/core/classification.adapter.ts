@@ -52,7 +52,7 @@ import { allowedActionsFor } from '../registries/action-registry';
 import type { IntentRoute, AssistantRequestInput, Confidence } from '../types/contracts';
 
 /** Plan proposé par le modèle : une intention du catalogue et des INDICES (jamais d'identifiant). */
-export interface ToolPlan {
+interface ToolPlan {
   intent: string;
   confidence: 'exact' | 'probable' | 'ambiguous';
   entityHints: Array<{ type: IntentRoute['entityHints'][number]['type']; value: string }>;

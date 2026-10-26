@@ -65,7 +65,7 @@ export interface OperationRow {
   version: number;
 }
 
-export interface WriteContext {
+interface WriteContext {
   correlationId: string;
   actorUserId: number | null;
 }
@@ -85,20 +85,20 @@ export interface SourceInput {
   matchReason?: string | null;
 }
 
-export interface AssetLinkInput {
+interface AssetLinkInput {
   assetId: number;
   role?: AssetLinkRole;
   authority: Authority;
   sourceId?: number | null;
 }
 
-export interface EquipmentLinkInput {
+interface EquipmentLinkInput {
   equipmentId: number;
   authority: Authority;
   sourceId?: number | null;
 }
 
-export interface OperationDatesInput {
+interface OperationDatesInput {
   plannedDate?: string | null;
   startDate?: string | null;
   realizedDate?: string | null;
@@ -107,7 +107,7 @@ export interface OperationDatesInput {
   technicalLabel?: string | null;
 }
 
-export interface CreateOperationInput extends OperationDatesInput {
+interface CreateOperationInput extends OperationDatesInput {
   type: OperationTypeInput;
   status: BusinessOperationStatus;
   /** Première source, obligatoire : une Opération n'existe jamais sans source (INV-FINAL-006). */
@@ -117,7 +117,7 @@ export interface CreateOperationInput extends OperationDatesInput {
   reasonCode: string;
 }
 
-export interface FinancialComponentInput {
+interface FinancialComponentInput {
   kind: FinancialComponentKind;
   amountMinor: number;
   currency: string;
@@ -133,14 +133,14 @@ export interface FinancialComponentInput {
   sources: Array<{ sourceId: number; evidenceRole?: EvidenceRole; isPrimary?: boolean }>;
 }
 
-export interface ContractDetailsInput {
+interface ContractDetailsInput {
   contractReference?: string | null;
   periodicity?: ContractPeriodicity | null;
   effectiveFrom?: string | null;
   effectiveTo?: string | null;
 }
 
-export interface FinancingDetailsInput {
+interface FinancingDetailsInput {
   financingReference?: string | null;
   lender?: string | null;
   principalAmountMinor?: number | null;
@@ -149,7 +149,7 @@ export interface FinancingDetailsInput {
   effectiveTo?: string | null;
 }
 
-export interface ClaimDetailsInput {
+interface ClaimDetailsInput {
   claimType?: string | null;
   declaredOn?: string | null;
   insurerClaimRef?: string | null;
@@ -227,7 +227,7 @@ export class BusinessOperationRepository {
   constructor(
     private readonly tx: DbTx,
     readonly accountId: number,
-    private readonly lockedAccounts: ReadonlySet<number>,
+    lockedAccounts: ReadonlySet<number>,
     private readonly events: BusinessOperationEventBuffer,
     private readonly ctx: WriteContext,
   ) {
@@ -373,15 +373,6 @@ export class BusinessOperationRepository {
     return true;
   }
 
-  async reopen(id: number, reasonCode: string): Promise<boolean> {
-    const op = await this.load(id);
-    if (op.closedAt === null) return false;
-    await this.tx.execute(sql`UPDATE business_operations SET closed_at = NULL, version = version + 1, updated_at = now() WHERE id = ${id}`);
-    await this.history(id, 'UPDATED', reasonCode, { closed_at: op.closedAt }, { closed_at: null });
-    this.emit('BUSINESS_OPERATION_UPDATED', id, reasonCode);
-    return true;
-  }
-
   /** Invalidation logique (≠ CANCELLED, C8) : l'Opération n'est plus consommée. */
   async invalidate(id: number, reasonCode: string): Promise<boolean> {
     const op = await this.load(id, { allowInactive: true });
@@ -445,11 +436,6 @@ export class BusinessOperationRepository {
     await this.history(opId, 'SOURCE_REMOVED', reasonCode, { source_kind: s.source_kind, source_entity_key: s.source_entity_key }, null, sourceId);
     this.emit('BUSINESS_OPERATION_UPDATED', opId, reasonCode);
     return true;
-  }
-
-  private async hasActiveSource(id: number): Promise<boolean> {
-    const [r] = await rows(this.tx, sql`SELECT 1 FROM business_operation_sources WHERE operation_id = ${id} AND account_id = ${this.accountId} AND active LIMIT 1`);
-    return !!r;
   }
 
   /**
@@ -967,16 +953,6 @@ export class BusinessOperationRepository {
     if (!e) throw new BusinessOperationIntegrityError('INVALID_DETAILS', `Événement ${eventId} introuvable.`);
     if (Number(e.account_id) !== this.accountId) throw new BusinessOperationIntegrityError('CROSS_ACCOUNT', `Événement ${eventId} d'un autre compte.`);
     return eventId;
-  }
-
-  async removeDetails(id: number, kind: 'contract' | 'financing' | 'claim', reasonCode: string): Promise<boolean> {
-    await this.load(id, { allowInactive: true });
-    const table = `business_operation_${kind}_details`;
-    const r = await rows(this.tx, sql`DELETE FROM ${sql.identifier(table)} WHERE operation_id = ${id} RETURNING operation_id`);
-    if (!r.length) return false;
-    await this.history(id, 'UPDATED', reasonCode, { details: kind }, null);
-    this.emit('BUSINESS_OPERATION_UPDATED', id, reasonCode);
-    return true;
   }
 
   private async requireType(id: number, type: BusinessOperationTypeCode): Promise<OperationRow> {

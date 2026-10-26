@@ -92,7 +92,7 @@ export async function startUnpaidCycle(
 
 // ─── Balayage quotidien ──────────────────────────────────────────────────────
 
-export interface UnpaidSweepResult {
+interface UnpaidSweepResult {
   scanned: number;
   reminders: number;
   regularized: number;
@@ -126,7 +126,7 @@ async function loadCandidates(): Promise<Candidate[]> {
 }
 
 /** Dépendances injectables (tests). */
-export interface UnpaidSweepDeps {
+interface UnpaidSweepDeps {
   stripe: () => Pick<Stripe, 'subscriptions'>;
 }
 
@@ -232,7 +232,7 @@ export async function runUnpaidCycleSweep(
 }
 
 /** Referme le cycle (régularisation constatée). */
-export async function closeUnpaidCycle(accountId: number, now: Date = new Date()): Promise<void> {
+async function closeUnpaidCycle(accountId: number, now: Date = new Date()): Promise<void> {
   await db
     .update(accounts)
     .set({ unpaidStartedAt: null, unpaidRecoveryEndsAt: null, updatedAt: now })

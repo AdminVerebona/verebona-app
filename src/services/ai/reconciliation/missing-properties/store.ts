@@ -27,10 +27,7 @@ export async function propertyRecoveryReady(): Promise<boolean> {
   return ok;
 }
 
-/** Réservé aux tests. */
-export function __resetPropertyRecoveryReadyForTests(): void { etat = null; }
-
-export interface ObjectKey { accountId: number; objectType: SubjectType; objectId: number }
+interface ObjectKey { accountId: number; objectType: SubjectType; objectId: number }
 
 export interface StoredDecision {
   id: number;
@@ -88,7 +85,7 @@ export async function sharedKnowledgeCallsLastDay(accountId: number, now: Date):
   return Number(r?.n ?? 0);
 }
 
-export interface RunRecord extends ObjectKey {
+interface RunRecord extends ObjectKey {
   assetId: number;
   contextFp: string;
   promptVersion: string;
@@ -129,7 +126,7 @@ export async function saveRun(r: RunRecord): Promise<number> {
   return Number(row.id);
 }
 
-export interface DecisionRecord extends ObjectKey {
+interface DecisionRecord extends ObjectKey {
   runId: number;
   assetId: number;
   fieldKey: string;

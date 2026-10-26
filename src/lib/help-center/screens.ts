@@ -26,7 +26,7 @@ const ROUTE_SCREENS: ReadonlyArray<{ pattern: RegExp; screens: string[]; objectT
   { pattern: /^\/notifications(\/|$)/, screens: ['Notifications', 'Cloche'], objectType: 'notification' },
 ];
 
-export interface HelpScreenContext {
+interface HelpScreenContext {
   screens: string[];
   objectType: string | null;
 }

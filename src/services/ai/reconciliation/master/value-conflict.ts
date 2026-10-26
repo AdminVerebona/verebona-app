@@ -25,7 +25,7 @@ import {
   T3ValueConflictOutput, closedWorldValueConflict, type T3ValueConflictOutput as Out,
 } from './t3-contract';
 
-export interface ValueConflictMasterInput {
+interface ValueConflictMasterInput {
   accountId: number;
   assetId: number;
   decision: ReconciliationDecision;

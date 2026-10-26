@@ -38,9 +38,9 @@ const A4_WIDTH_PX = 793.7007874;
 const FRAME_INSET_PX = 6;
 
 /** Dimensions utiles (CropBox, points) et rotation d'une page source. */
-export interface PageBox { width: number; height: number; rotation: number }
+interface PageBox { width: number; height: number; rotation: number }
 
-export type PdfInspection =
+type PdfInspection =
   | { status: 'ok'; pages: number; boxes: PageBox[] }
   | { status: 'protected' | 'corrupted'; pages: null; reason: string };
 
@@ -51,23 +51,23 @@ const envInt = (name: string, def: number, min: number): number => {
   return Number.isFinite(n) && n >= min ? Math.floor(n) : def;
 };
 /** Tas maximal du worker (Mo, défaut 512). */
-export const annexWorkerMemoryMb = (): number => envInt('EXPORTS_ANNEX_WORKER_MEMORY_MB', 512, 64);
+const annexWorkerMemoryMb = (): number => envInt('EXPORTS_ANNEX_WORKER_MEMORY_MB', 512, 64);
 /** Volume décompressé maximal par document dans le worker (Mo, défaut 256 ; 64 Mo max par flux). */
-export const annexMaxDecodedMb = (): number => envInt('EXPORTS_ANNEX_MAX_DECODED_MB', 256, 1);
+const annexMaxDecodedMb = (): number => envInt('EXPORTS_ANNEX_MAX_DECODED_MB', 256, 1);
 /** Durée maximale d'une opération du worker (ms, défaut 60 s). */
-export const annexWorkerTimeoutMs = (): number => envInt('EXPORTS_ANNEX_WORKER_TIMEOUT_MS', 60_000, 1_000);
+const annexWorkerTimeoutMs = (): number => envInt('EXPORTS_ANNEX_WORKER_TIMEOUT_MS', 60_000, 1_000);
 
 /**
  * Chemin du worker : résolu depuis la racine du projet comme le répertoire
  * statique (le bundle Next.js ne relocalise pas ce fichier) ;
  * `EXPORTS_V12_ANNEX_WORKER` permet de le déplacer.
  */
-export function annexWorkerFile(): string {
+function annexWorkerFile(): string {
   const override = process.env.EXPORTS_V12_ANNEX_WORKER?.trim();
   return override ? path.resolve(override) : path.join(process.cwd(), 'src', 'services', 'exports', 'v12', 'render', 'annex-worker.cjs');
 }
 
-export class AnnexWorkerError extends Error {}
+class AnnexWorkerError extends Error {}
 
 /** Exécute une opération dans un worker neuf, tué au délai ou au dépassement mémoire. */
 function runAnnexWorker<T>(data: Record<string, unknown>, transferList: ArrayBuffer[] = [], timeoutMs = annexWorkerTimeoutMs()): Promise<T> {
@@ -117,7 +117,7 @@ export async function inspectPdfFile(file: string, opts: { strict: boolean }): P
 
 // ─── Apposition ─────────────────────────────────────────────────────────────
 
-export interface OverlayAnnex {
+interface OverlayAnnex {
   annexRef: string;
   pageCount: number;
   /** PDF source à apposer ; absent pour une image (déjà dans le HTML). */

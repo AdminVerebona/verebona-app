@@ -96,7 +96,7 @@ const HEARTBEAT_MS = Math.max(1_000, Math.floor((LEASE_SECONDS * 1000) / 3));
  *  · interruption (`ExecutionCancelledError`, `AI_BLOCKED`) : PENDING en
  *    tête, tentative rendue.
  */
-export type JobHandler = (job: QueuedJob, guard: ExecutionGuard) => Promise<void | JobBusinessResult>;
+type JobHandler = (job: QueuedJob, guard: ExecutionGuard) => Promise<void | JobBusinessResult>;
 
 /**
  * Issue d'une exécution, telle qu'ÉCRITE en base par le boucleur.
@@ -126,7 +126,7 @@ export type JobOutcome =
  * jamais « Analyse en cours » après un échec). Appelées APRÈS l'écriture de
  * l'issue ; une erreur y est journalisée, jamais propagée.
  */
-export interface JobHandlerHooks {
+interface JobHandlerHooks {
   onSettled?: (job: QueuedJob, outcome: JobOutcome) => Promise<void>;
 }
 

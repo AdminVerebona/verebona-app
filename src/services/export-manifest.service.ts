@@ -13,9 +13,9 @@ export type ExportType =
   | 'ASSURANCE_INDEMNISATION'
   | 'EXPORT_BRUT';
 
-export type ExportOutput = 'PDF' | 'ZIP';
+type ExportOutput = 'PDF' | 'ZIP';
 
-export interface ManifestSection {
+interface ManifestSection {
   key: string;
   label: string;
   include: boolean;
@@ -175,7 +175,7 @@ function selectDocuments(
 
 // ─── API principale ───────────────────────────────────────────────────────────
 
-export interface BuildManifestOptions {
+interface BuildManifestOptions {
   requestedOutputs?: ExportOutput[];
   variant?: string;
   customSections?: string[];
@@ -225,14 +225,3 @@ export function buildExportManifest(
     unqualifiedDocCount: unqualifiedCount,
   };
 }
-
-// ─── Labels ──────────────────────────────────────────────────────────────────
-
-export const EXPORT_TYPE_LABELS: Record<ExportType, string> = {
-  CIL_REGLEMENTAIRE: 'CIL',
-  DOSSIER_VENTE: 'Dossier de vente',
-  DOSSIER_COMPLET: 'Dossier complet du bien',
-  ASSURANCE_ESTIMATION: 'Assurance — Estimation',
-  ASSURANCE_INDEMNISATION: 'Assurance — Indemnisation',
-  EXPORT_BRUT: 'Export données brutes',
-};

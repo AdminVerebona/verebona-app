@@ -12,7 +12,7 @@
  * (`ai_prompt_versions`, routes `prompt-changes`). Cette gouvernance
  * parallèle est retirée (lot IA 2) : voir `loadActiveVersion`.
  */
-import { readFile, readdir } from 'fs/promises';
+import { readFile } from 'fs/promises';
 import { createHash } from 'crypto';
 import { join } from 'path';
 import type { AiUseCaseCode } from '../registry/use-cases';
@@ -133,22 +133,6 @@ async function loadFromFile(
   );
 }
 
-/** Répertoires de prompts existants — utilisé par le seed du lot 6. */
-export async function listPromptFiles(): Promise<Array<{ promptCode: string; path: string }>> {
-  const root = promptsRoot();
-  const found: Array<{ promptCode: string; path: string }> = [];
-  for (const dir of Object.values(USE_CASE_DIRECTORY)) {
-    try {
-      for (const file of await readdir(join(root, dir))) {
-        if (file.endsWith('.txt')) {
-          found.push({ promptCode: file.replace(/\.txt$/, ''), path: join(root, dir, file) });
-        }
-      }
-    } catch { /* répertoire absent */ }
-  }
-  return found;
-}
-
 /** Substitution `{{VARIABLE}}`, sans évaluation ni interpolation dynamique. */
 function substitute(template: string, variables: Record<string, unknown>): string {
   return template.replace(/\{\{([A-Z0-9_]+)\}\}/g, (match, key: string) => {
@@ -168,7 +152,6 @@ export function invalidatePromptCache(promptCode?: string): void {
   if (!promptCode) { cache.clear(); return; }
   for (const key of cache.keys()) if (key.endsWith(`::${promptCode}`)) cache.delete(key);
 }
-
 
 // ══════════════════════════════════════════════════════════════════════════
 // PROMPTS MAÎTRES — CDC 15 §22, §22.2, §22.3, §29.1 ; D-03 ; ARCH-03, DP-05
@@ -191,8 +174,8 @@ export const MASTER_TASK_PLACEHOLDER = 'TASK';
  * « MODE = {{MODE}} », « BRANCHE MODE = ANSWER »). Un master n'en porte qu'un ;
  * c'est lui que le serveur fixe.
  */
-export const MASTER_DISCRIMINANTS = ['TASK', 'MODE'] as const;
-export type MasterDiscriminant = (typeof MASTER_DISCRIMINANTS)[number];
+const MASTER_DISCRIMINANTS = ['TASK', 'MODE'] as const;
+type MasterDiscriminant = (typeof MASTER_DISCRIMINANTS)[number];
 
 /** Marqueur de section d'une branche dans un master (`BRANCHE TASK = X`). */
 export function masterBranchMarker(task: string, discriminant: MasterDiscriminant = 'TASK'): string {
@@ -202,7 +185,7 @@ export function masterBranchMarker(task: string, discriminant: MasterDiscriminan
 const PLACEHOLDER_RE = /\{\{([A-Z0-9_]+)\}\}/g;
 const BRANCH_RE = /BRANCHE\s+(?:TASK|MODE)\s*=\s*([A-Z0-9_]+)/g;
 
-export type MasterPromptErrorCode =
+type MasterPromptErrorCode =
   | 'MASTER_NOT_FOUND'
   | 'TASK_NOT_ALLOWED'
   | 'TASK_PLACEHOLDER_MISSING'
@@ -224,7 +207,7 @@ export class MasterPromptError extends Error {
 }
 
 /** Anatomie d'un master : emplacements `{{X}}` et branches déclarées. */
-export interface MasterTemplateInfo {
+interface MasterTemplateInfo {
   placeholders: string[];
   branches: string[];
   hasTaskPlaceholder: boolean;
@@ -404,7 +387,7 @@ export function renderMasterPrompt(
   });
 }
 
-export interface ResolveMasterPromptInput {
+interface ResolveMasterPromptInput {
   masterPromptCode: string;
   /** Branche imposée par le serveur. */
   task: string;
@@ -427,7 +410,7 @@ export interface ResolveMasterPromptInput {
   allowedTasks?: readonly string[];
 }
 
-export interface ResolvedMasterPrompt {
+interface ResolvedMasterPrompt {
   text: string;
   /**
    * `t1_master_v1@file`, `t1_master_v1@cfg<id>:<empreinte>` (texte de la

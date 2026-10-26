@@ -56,7 +56,7 @@ export interface InventoryLine {
   freeText: boolean;
 }
 
-export interface IdentityLine { key: string; value: unknown }
+interface IdentityLine { key: string; value: unknown }
 
 export interface InformationInventory {
   lines: InventoryLine[];

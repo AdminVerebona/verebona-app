@@ -32,7 +32,7 @@ interface ItemProps {
 const MODES = ['PDF', 'ZIP'] as const;
 
 /** Choix PDF / ZIP d'une pièce retenue (PREP-ITE-008 / 009). */
-export function ModeToggle({ item, mode, disabled, onMode, compact = false }: { item: PrepItem; mode: ItemMode | null; disabled: boolean; onMode: (m: ItemMode) => void; compact?: boolean }) {
+function ModeToggle({ item, mode, disabled, onMode, compact = false }: { item: PrepItem; mode: ItemMode | null; disabled: boolean; onMode: (m: ItemMode) => void; compact?: boolean }) {
   if (item.allowedModes.length === 1 && item.allowedModes[0] === 'ZIP') {
     return (
       <Pill tone="info" title="Ce format ne peut pas être intégré au PDF : la pièce est jointe au ZIP.">
@@ -89,7 +89,7 @@ export function ModeToggle({ item, mode, disabled, onMode, compact = false }: { 
 }
 
 /** Aperçu miniature chargé à l'approche de l'écran (PREP-ITE-014). */
-export function FileThumb({ fileId, alt, viewUrl, className }: { fileId: number | null; alt: string; viewUrl: (id: number) => Promise<string | null>; className?: string }) {
+function FileThumb({ fileId, alt, viewUrl, className }: { fileId: number | null; alt: string; viewUrl: (id: number) => Promise<string | null>; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [src, setSrc] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);

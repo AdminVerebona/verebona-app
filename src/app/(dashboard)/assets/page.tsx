@@ -30,7 +30,7 @@ import { restrictedWriteInfo, type WriteBlockedInfo } from '@/lib/write-blocked'
 import { isUnpaid } from '@/lib/trial-status';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
-import { getAssetIcon, CATEGORY_LABELS } from '@/lib/asset-icons';
+import { getAssetIcon } from '@/lib/asset-icons';
 import { ASSET_FAMILIES, assetCategoryLabel, assetFamilyLabel } from '@/lib/asset-taxonomy';
 import {
   ASSET_STATUS_LABELS, OUT_OF_PORTFOLIO_ASSET_STATUSES, assetStatusBadgeVariant, assetStatusLabel,
@@ -89,8 +89,7 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
 
   const handleMouseEnter = () => {
     // Pre-warm cache on hover so data is ready before click
-    const hasToken = typeof window !== 'undefined' && true;
-    if (hasToken && !isBlocked) {
+    if (!isBlocked) {
       apiClient.get(`/api/assets?id=${asset.id}`, { useCache: true }).catch(() => {});
       apiClient.get(`/api/assets/${asset.id}/overview`, { useCache: true }).catch(() => {});
     }
@@ -225,7 +224,6 @@ function AssetsPageContent() {
   // droits effectifs (`useEntitlements`), pas du plan porté par la session.
   const {
     canCreateAsset: checkCanCreateAsset,
-    isExpired,
     isLoading: isFeaturesLoading,
   } = useFeatureFlags();
 
@@ -240,13 +238,9 @@ function AssetsPageContent() {
 
   // Pre-warm assets list cache immediately (token available before session resolves)
   useEffect(() => {
-    const hasToken = typeof window !== 'undefined' && true;
-    if (hasToken) {
-      apiClient.get(`/api/assets?limit=100&includeArchived=true`, { useCache: true }).catch(() => {});
-    }
+    apiClient.get(`/api/assets?limit=100&includeArchived=true`, { useCache: true }).catch(() => {});
   }, []);
   const [errorCode, setErrorCode] = useState<string | null>(null);
-  const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [showArchived, setShowArchived] = useState(false);
   // Bien dont la suppression est demandée (id + nom pour le dialogue).
@@ -307,28 +301,12 @@ function AssetsPageContent() {
       filtered = filtered.filter(a => !ARCHIVED_STATUSES.includes(a.status));
     }
 
-    if (searchTerm.trim()) {
-      const terms = searchTerm.trim().toLowerCase().split(/\s+/).filter(Boolean);
-      const STATUS_LABELS_SEARCH: Record<string, string> = {
-        EN_SERVICE: 'en service actif', VENDU: 'vendu', ARCHIVED: 'archivé', TRANSMIS: 'transmis',
-      };
-      filtered = filtered.filter(asset => {
-        const haystack = [
-          asset.name,
-          CATEGORY_LABELS[asset.category] ?? asset.category,
-          assetCategoryLabel(asset) ?? '',
-          STATUS_LABELS_SEARCH[asset.status] ?? assetStatusLabel(asset.status).toLowerCase(),
-        ].join(' ').toLowerCase();
-        return terms.every(t => haystack.includes(t));
-      });
-    }
-
     if (categoryFilter !== 'all') {
       filtered = filtered.filter(asset => asset.category === categoryFilter);
     }
 
     return filtered;
-  }, [assets, searchTerm, categoryFilter, showArchived]);
+  }, [assets, categoryFilter, showArchived]);
 
   // Familles présentes parmi les biens affichables, dans l'ordre du classement.
   const familyCounts = useMemo(

@@ -121,7 +121,7 @@ export function price(p: P & { amount?: number; interval?: 'month' | 'year'; pro
   } as unknown as Stripe.Price;
 }
 
-export interface FakeStripe {
+interface FakeStripe {
   prices: Map<string, Stripe.Price>;
   products: Map<string, Stripe.Product>;
   portal: Map<string, Stripe.BillingPortal.Configuration>;

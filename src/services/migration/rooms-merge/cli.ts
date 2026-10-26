@@ -2,7 +2,7 @@
  * Arguments de `scripts/merge-rooms-into-substructures.ts` (pur, testé).
  * Formes acceptées : `--account 12`, `--account=12`.
  */
-export type RoomsMergeArgs =
+type RoomsMergeArgs =
   | { kind: 'run'; apply: boolean; accountId: number | null; limit: number | null; batch: number; dbReport: boolean; json: string | null }
   | { kind: 'report'; runId: string; samples: number }
   | { kind: 'restore'; runId: string }
@@ -12,7 +12,7 @@ export type RoomsMergeArgs =
 const USAGE = 'Usage : merge-rooms-into-substructures.ts [--dry-run | --apply] [--account <id>] [--limit n] [--batch n] '
   + '[--no-db-report] [--json <fichier>]  |  --report <runId> [--samples n]  |  --restore <runId>  |  --help';
 
-export const ROOMS_MERGE_HELP = [
+const ROOMS_MERGE_HELP = [
   USAGE,
   '',
   'Reprise des pièces `rooms` dans `substructures` (décision PO D-G, lot 20 ; migration 0229).',

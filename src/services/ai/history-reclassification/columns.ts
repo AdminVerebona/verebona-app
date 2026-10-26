@@ -25,8 +25,3 @@ export async function historyExecutionColumnReady(q: Query): Promise<boolean> {
   return present;
 }
 
-/** Tests : oublie le cache. */
-export function __resetHistoryColumnCache(): void {
-  present = false;
-  checkedAt = 0;
-}

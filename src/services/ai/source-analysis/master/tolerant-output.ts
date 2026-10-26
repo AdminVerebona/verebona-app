@@ -41,12 +41,12 @@ import {
 } from './t1-contract';
 
 /** Bornes PAR LOT du contrat (lot 34F : jamais des bornes du document). */
-export const T1_MAX_FACTS = 300;
-export const T1_MAX_TABLES = 30;
-export const T1_MAX_TABLE_ROWS = 1000;
-export const T1_MAX_OBSERVATIONS = 50;
-export const T1_MAX_TRANSCRIPTION = 200_000;
-export const T1_MAX_ENTITIES = { assets: 20, rooms: 20, equipments: 20, suppliers: 10 } as const;
+const T1_MAX_FACTS = 300;
+const T1_MAX_TABLES = 30;
+const T1_MAX_TABLE_ROWS = 1000;
+const T1_MAX_OBSERVATIONS = 50;
+const T1_MAX_TRANSCRIPTION = 200_000;
+const T1_MAX_ENTITIES = { assets: 20, rooms: 20, equipments: 20, suppliers: 10 } as const;
 const MAX_CODE = 60;
 const MAX_VALUE = 2000;
 const MAX_OBSERVATION_DESCRIPTION = 500;

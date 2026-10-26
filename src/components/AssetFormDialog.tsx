@@ -50,7 +50,6 @@ export function AssetFormDialog({
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [priceError, setPriceError] = useState(false);
-  const [detailsOpen, setDetailsOpen] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     category: '',
@@ -79,14 +78,9 @@ export function AssetFormDialog({
         objectDetails: {},
         purchaseLocation: '',
       });
-      setDetailsOpen(false);
       setPriceError(false);
     }
   }, [open]);
-
-  const updateObjectDetails = (key: string, value: any) => {
-    setFormData({ ...formData, objectDetails: { ...formData.objectDetails, [key]: value } });
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -181,11 +175,6 @@ export function AssetFormDialog({
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  // Detailed object fields - removed to simplify form
-  const renderObjectFields = () => {
-    return null;
   };
 
   return (

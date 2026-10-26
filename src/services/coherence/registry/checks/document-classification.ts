@@ -45,13 +45,13 @@ import {
 } from '@/lib/referential/v2';
 import { v2TypeForRubric } from '@/lib/referential/document-codes';
 
-export const DOCUMENT_CLASSIFICATION_CHECK_ID = 'COH-DOC-CLASSIFICATION';
+const DOCUMENT_CLASSIFICATION_CHECK_ID = 'COH-DOC-CLASSIFICATION';
 
-export type ClassificationAnomaly = 'IDENTIFIED_TYPE_NOT_RECORDED' | 'TYPE_NOT_IN_RUBRIC' | 'CLASSIFIED_BEFORE_RUBRIC';
-export type ClassificationRepair = 'RECORD_TYPE' | 'REEVALUATE_T1';
+type ClassificationAnomaly = 'IDENTIFIED_TYPE_NOT_RECORDED' | 'TYPE_NOT_IN_RUBRIC' | 'CLASSIFIED_BEFORE_RUBRIC';
+type ClassificationRepair = 'RECORD_TYPE' | 'REEVALUATE_T1';
 
 /** Classement enregistré et connaissance T1 d'un document (lecture seule). */
-export interface ClassificationState {
+interface ClassificationState {
   fileId: number;
   rubricCode: string | null;
   documentTypeCode: string | null;
@@ -68,7 +68,7 @@ export interface ClassificationState {
   analysisInProgress: boolean;
 }
 
-export interface ClassificationDiagnosis {
+interface ClassificationDiagnosis {
   verdict: Inspection['verdict'];
   anomaly?: ClassificationAnomaly;
   repair?: ClassificationRepair;

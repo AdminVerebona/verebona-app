@@ -16,7 +16,7 @@
  */
 import type { T1CompletenessReport, T1QualityState } from './types';
 
-export const completenessFingerprint = (fileId: number) => `ai:t1-completeness:${fileId}`;
+const completenessFingerprint = (fileId: number) => `ai:t1-completeness:${fileId}`;
 
 /** Ligne de journal (exportée pour les tests) — compteurs seulement. */
 export function completenessLogLine(fileId: number, r: T1CompletenessReport): string {
@@ -59,7 +59,7 @@ export function completenessLogLine(fileId: number, r: T1CompletenessReport): st
   })}`;
 }
 
-export const normalisationLossFingerprint = (fileId: number) => `ai:t1-normalisation-loss:${fileId}`;
+const normalisationLossFingerprint = (fileId: number) => `ai:t1-normalisation-loss:${fileId}`;
 
 export async function recordT1Completeness(p: {
   accountId: number; fileId: number; report: T1CompletenessReport; persisted: boolean;
@@ -102,7 +102,7 @@ export async function recordT1Completeness(p: {
 
 // ── Lecture BO (Exécutions IA) ─────────────────────────────────────────────
 
-export interface CompletenessDocumentRow {
+interface CompletenessDocumentRow {
   fileId: number;
   accountId: number;
   title: string | null;
@@ -130,7 +130,7 @@ export interface CompletenessDocumentRow {
   nextRetryAt?: string | null;
 }
 
-export interface CompletenessOverview {
+interface CompletenessOverview {
   days: number;
   /** Documents analysés sur la période, par état de qualité. */
   byQuality: Record<T1QualityState, number>;
@@ -151,7 +151,7 @@ export interface CompletenessOverview {
 }
 
 /** Lot 54G (§6) — totaux des diagnostics de couverture réelle sur la période. */
-export interface T1DiagnosticsTotals {
+interface T1DiagnosticsTotals {
   documents: number;
   pagesExpected: number; pagesVerified: number; pagesMissing: number; pagesUnverified: number; pagesReread: number;
   pagesCitedUnverified: number;
@@ -171,7 +171,7 @@ const TOTAL_LISTS: ReadonlyArray<[keyof T1DiagnosticsTotals, string]> = [
 ];
 
 /** Requête des totaux (exportée pour les tests) : clés fixes, aucune donnée utilisateur interpolée. */
-export function diagnosticsTotalsSql(): string {
+function diagnosticsTotalsSql(): string {
   const n = (k: string) => `coalesce(SUM(CASE WHEN jsonb_typeof(verification -> '${k}') = 'number' THEN (verification ->> '${k}')::float8 END), 0)::float8 AS "${k}"`;
   const l = (k: string, col: string) => `coalesce(SUM(CASE WHEN jsonb_typeof(verification -> '${col}') = 'array' THEN jsonb_array_length(verification -> '${col}') END), 0)::float8 AS "${k}"`;
   // `to_jsonb(c)` : colonne 0329 lue sans erreur si absente (même tolérance que les lignes).

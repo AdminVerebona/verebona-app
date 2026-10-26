@@ -28,7 +28,7 @@ import { fileFormatOf, isIntegrable, type DocKind } from './documents';
 export type OutputFormat = 'PDF' | 'ZIP';
 export type ItemMode = 'PDF' | 'ZIP';
 export type ChoiceSourceType = 'document' | 'photo' | 'event' | 'agenda';
-export type ChoicesOrigin = 'user' | 'legacy_drawer' | 'default';
+type ChoicesOrigin = 'user' | 'legacy_drawer' | 'default';
 
 export interface ChoiceItem {
   sourceType: ChoiceSourceType;
@@ -74,7 +74,7 @@ export const PHOTO_CAPS: Readonly<Record<DossierCode, number>> = {
 };
 
 /** Natures de pièces pré-cochées par dossier (matrice §24 ; le reste est « proposé non coché »). */
-export const PRESELECTED_KINDS: Readonly<Record<DossierCode, ReadonlySet<DocKind>>> = {
+const PRESELECTED_KINDS: Readonly<Record<DossierCode, ReadonlySet<DocKind>>> = {
   CIL: new Set<DocKind>(['DPE', 'AUDIT_ENERGETIQUE', 'GAZ', 'ELECTRICITE', 'ERNMT', 'PLAN_CONSTRUCTION', 'RESEAU', 'ENERGIE_TECHNIQUE']),
   DOSSIER_COMPLET: new Set<DocKind>(['FACTURE', 'GARANTIE', 'CONTRAT']),
   VENTE: new Set<DocKind>(),
@@ -169,7 +169,7 @@ export function claimDate(source: ExportSource): string | null {
  * chronologie est TOUJOURS lié ; sinon, nature sinistre, ou daté du sinistre
  * ou après (règle historique, pour ce que l'Opération ne porte pas encore).
  */
-export function isLinkedToClaim(date: string | null, kind: DocKind | EventKind, source: ExportSource, ref?: { document?: number; eventKey?: string }): boolean {
+function isLinkedToClaim(date: string | null, kind: DocKind | EventKind, source: ExportSource, ref?: { document?: number; eventKey?: string }): boolean {
   const f = source.claimFile;
   if (f && ref?.document !== undefined && f.documentIds.includes(ref.document)) return true;
   if (f && ref?.eventKey !== undefined && (f.agendaKeys.includes(ref.eventKey) || f.historyEventKey === ref.eventKey)) return true;
@@ -293,7 +293,7 @@ export function choicesFromLegacyOptions(code: DossierCode, source: ExportSource
 
 // ─── Payload V12 (§17.2) ────────────────────────────────────────────────────
 
-export interface ChoicesPayloadIssue { path: string; message: string }
+interface ChoicesPayloadIssue { path: string; message: string }
 
 const SOURCE_TYPES = new Set<ChoiceSourceType>(['document', 'photo', 'event', 'agenda']);
 
@@ -353,7 +353,7 @@ export type ExclusionReason =
 
 export interface PlannedDocument { doc: SourceDocument; mode: ItemMode }
 export interface PlannedPhoto { photo: SourcePhoto; mode: ItemMode }
-export interface PlannedExclusion { sourceType: ChoiceSourceType; sourceId: number; label: string; reason: ExclusionReason }
+interface PlannedExclusion { sourceType: ChoiceSourceType; sourceId: number; label: string; reason: ExclusionReason }
 
 export interface SelectionPlan {
   documents: PlannedDocument[];

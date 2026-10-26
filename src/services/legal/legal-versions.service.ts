@@ -23,9 +23,9 @@ import {
 
 export const DOCUMENT_TYPE_CGVU = 'CGVU';
 
-export type VersionStatus = 'DRAFT' | 'PUBLISHED' | 'CURRENT' | 'ARCHIVED';
+type VersionStatus = 'DRAFT' | 'PUBLISHED' | 'CURRENT' | 'ARCHIVED';
 
-export interface LegalVersion {
+interface LegalVersion {
   id: string;
   documentType: string;
   versionCode: string;
@@ -61,12 +61,12 @@ export function isValidVersionCode(code: string): boolean {
 }
 
 /** Construit le permalien d'une version (§3.2). */
-export function buildPermalink(versionCode: string): string {
+function buildPermalink(versionCode: string): string {
   return `/cgvu/versions/${versionCode}`;
 }
 
 /** Empreinte du document publié (§16.2). */
-export function computeSha256(html: string): string {
+function computeSha256(html: string): string {
   return createHash('sha256').update(html, 'utf-8').digest('hex');
 }
 
@@ -136,7 +136,7 @@ export async function getVersionByCode(
   return row ? toVersion(row) : null;
 }
 
-export async function getVersionById(id: string): Promise<LegalVersion | null> {
+async function getVersionById(id: string): Promise<LegalVersion | null> {
   const [row] = await db
     .select()
     .from(legalDocumentVersions)
@@ -159,7 +159,7 @@ export async function listVersions(
 
 /* ── Brouillons (§5, §6.1) ─────────────────────────────────────────────── */
 
-export interface CreateDraftInput {
+interface CreateDraftInput {
   versionCode: string;
   title?: string;
   bodyHtml: string;
@@ -237,57 +237,6 @@ export async function createDraft(input: CreateDraftInput): Promise<LegalVersion
 
   await recordLegalAudit({
     action: 'DRAFT_CREATED',
-    actorUserId: input.actorUserId,
-    versionCode: row.versionCode,
-    versionId: row.id,
-  });
-
-  return toVersion(row);
-}
-
-export interface UpdateDraftInput {
-  title?: string;
-  bodyHtml?: string;
-  changeSummary?: string;
-  effectiveAt?: Date;
-  requiresReacceptance?: boolean;
-  actorUserId?: number | null;
-}
-
-/** Modifie un brouillon. Refusé dès que la version est publiée. */
-export async function updateDraft(
-  id: string,
-  input: UpdateDraftInput,
-): Promise<LegalVersion> {
-  const current = await getVersionById(id);
-  if (!current) throw new LegalVersionError('NOT_FOUND', `Version ${id} introuvable.`);
-
-  // Contrôle applicatif pour un message clair ; le déclencheur de base reste
-  // le garde-fou réel, y compris pour un accès direct au moteur.
-  if (current.status !== 'DRAFT') {
-    throw new LegalVersionError(
-      'ALREADY_PUBLISHED',
-      `Version ${current.versionCode} publiée : son contenu est figé (§3.3). Créez une nouvelle version.`,
-    );
-  }
-
-  const [row] = await db
-    .update(legalDocumentVersions)
-    .set({
-      ...(input.title !== undefined ? { title: input.title } : {}),
-      ...(input.bodyHtml !== undefined ? { htmlContent: input.bodyHtml } : {}),
-      ...(input.changeSummary !== undefined ? { changeSummary: input.changeSummary } : {}),
-      ...(input.effectiveAt !== undefined ? { effectiveAt: input.effectiveAt } : {}),
-      ...(input.requiresReacceptance !== undefined
-        ? { requiresReacceptance: input.requiresReacceptance }
-        : {}),
-      updatedAt: new Date(),
-    })
-    .where(eq(legalDocumentVersions.id, id))
-    .returning();
-
-  await recordLegalAudit({
-    action: 'DRAFT_UPDATED',
     actorUserId: input.actorUserId,
     versionCode: row.versionCode,
     versionId: row.id,
@@ -449,14 +398,14 @@ export async function setCurrentVersion(
 
 /* ── Intégrité (§16.2, R09) ────────────────────────────────────────────── */
 
-export interface IntegrityIssue {
+interface IntegrityIssue {
   versionCode: string;
   versionId: string;
   scope: 'database' | 'object_storage';
   detail: string;
 }
 
-export interface IntegrityReport {
+interface IntegrityReport {
   checked: number;
   issues: IntegrityIssue[];
 }

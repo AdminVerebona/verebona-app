@@ -60,9 +60,9 @@ const kcOf = (v: unknown): Record<string, unknown> => {
 };
 
 /** Taille d'une page de lecture (équipements, documents, faits) — lot 75G, écart E : jamais une limite. */
-export const LINK_PAGE_SIZE = 500;
+const LINK_PAGE_SIZE = 500;
 /** Documents soumis à T3 par appel (sens EQUIPMENT_DOCUMENT) : tous le sont, par lots. */
-export const EQUIPMENT_DOCUMENT_AI_BATCH = 20;
+const EQUIPMENT_DOCUMENT_AI_BATCH = 20;
 /**
  * Marge supplémentaire exigée par le réexamen LINK-ELT entre les deux
  * meilleurs candidats T3 (règle 54A conservée à l'identique, en plus de la
@@ -438,9 +438,9 @@ export const defaultDocumentArbitrate: DocumentArbitrate = async (p) => {
   return best ? { equipmentId: best.id, score: best.score, reason: best.reason, abstained: false } : { equipmentId: null, score: 0, reason: 'aucun candidat retenu', abstained: false };
 };
 
-export type DocumentEquipmentStatus = MatchResult['status'] | 'NOT_FOUND' | 'NO_ASSET' | 'NO_EQUIPMENT' | 'USER_PROTECTED';
+type DocumentEquipmentStatus = MatchResult['status'] | 'NOT_FOUND' | 'NO_ASSET' | 'NO_EQUIPMENT' | 'USER_PROTECTED';
 
-export interface DocumentEquipmentResult {
+interface DocumentEquipmentResult {
   fileId: number;
   status: DocumentEquipmentStatus;
   /** Équipements rattachés (liens actifs posés ou confirmés). */
@@ -459,7 +459,7 @@ export interface DocumentEquipmentResult {
   methods: string[];
 }
 
-export interface SyncDocumentOptions {
+interface SyncDocumentOptions {
   accountId: number;
   fileId: number;
   /** T3 pour une vraie ambiguïté (défaut : non). */
@@ -606,7 +606,7 @@ export async function syncDocumentEquipmentLinks(o: SyncDocumentOptions): Promis
 // ── EQUIPMENT_DOCUMENT ──────────────────────────────────────────────────────
 
 /** Arbitrage T3 « documents qui concernent cet équipement » (injectable en test). */
-export type EquipmentArbitrate = (p: {
+type EquipmentArbitrate = (p: {
   accountId: number; equipmentId: number; subjectContext: string; documentsList: string; candidateIds: number[];
 }) => Promise<Array<{ fileId: number; score: number; reason: string }>>;
 
@@ -642,7 +642,7 @@ export interface EquipmentDocumentResult {
 }
 
 /** Une page de documents (ids) rattachés à un bien du compte : colonnes historiques ou liens PRIMARY / SECONDARY actifs. */
-export async function documentsOfAsset(
+async function documentsOfAsset(
   accountId: number, assetId: number, sql: Sql = pgClient, limit = LINK_PAGE_SIZE, afterId = 0,
 ): Promise<number[]> {
   const rows = (await sql.unsafe(

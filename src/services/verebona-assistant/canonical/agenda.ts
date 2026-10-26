@@ -170,7 +170,7 @@ export interface UpcomingAgendaRow {
   provenance?: AgendaDateProvenance;
 }
 
-export type AgendaDateProvenance = 'FIELD' | 'OPERATION' | 'USER' | 'UNPROVEN';
+type AgendaDateProvenance = 'FIELD' | 'OPERATION' | 'USER' | 'UNPROVEN';
 
 /** Lot 86C : provenance d'une date d'agenda (pure, testée). */
 export function agendaDateProvenance(r: { originFieldKey?: string | null; projectionOrigin?: string | null; isAutomatic?: boolean | null }): AgendaDateProvenance {

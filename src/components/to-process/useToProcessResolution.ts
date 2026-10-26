@@ -49,7 +49,7 @@ function errorCode(e: unknown): string | null {
   return typeof code === 'string' ? code : null;
 }
 
-export interface ResolutionCallbacks {
+interface ResolutionCallbacks {
   /** Retrait optimiste de la carte (§16.3). */
   onRemove?: (action: ActionView) => void;
   /** Le serveur a refusé : la carte revient. */

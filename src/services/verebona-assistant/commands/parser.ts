@@ -8,6 +8,7 @@
  */
 import type { WriteCommandType } from './catalog';
 import { findAssetField, parseFieldValue } from './asset-fields';
+import { plain } from '../core/routing-text';
 
 export type CommandDraft =
   | {
@@ -45,13 +46,11 @@ export type CommandDraft =
     };
 
 /** Segment d'un message à plusieurs commandes. */
-export interface CommandSegment {
+interface CommandSegment {
   draft: CommandDraft;
   /** « … puis … » : ne s'exécute que si le segment précédent a réussi. */
   dependsOnPrevious: boolean;
 }
-
-const plain = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'");
 
 const MOIS: Record<string, number> = {
   janvier: 1, fevrier: 2, mars: 3, avril: 4, mai: 5, juin: 6, juillet: 7, aout: 8,

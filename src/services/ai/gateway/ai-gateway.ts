@@ -72,7 +72,7 @@ import type { AiOperationDefinition } from '../registry/operations';
  * la chaîne est construite dans l'ordre principal → fallback 1 → fallback 2,
  * et un budget d'appelant ne fait que la tronquer, jamais la réordonner.
  */
-export const RANKS: readonly ModelRank[] = ['primary', 'fallback_1', 'fallback_2'];
+const RANKS: readonly ModelRank[] = ['primary', 'fallback_1', 'fallback_2'];
 export function rankAt(index: number): ModelRank | null {
   return RANKS[index] ?? null;
 }
@@ -1230,7 +1230,7 @@ export function needsImageInput(attachments: ReadonlyArray<{ mimeType?: string |
  * Plafond de sortie de l'appelant : ne fait que réduire (jamais augmenter) la
  * valeur configurée ; sans valeur configurée, le plafond s'applique seul.
  */
-export function plafonnerSortie(configure: number | undefined, plafond: number | undefined): number | undefined {
+function plafonnerSortie(configure: number | undefined, plafond: number | undefined): number | undefined {
   if (!plafond || plafond <= 0) return configure;
   return configure && configure > 0 ? Math.min(configure, plafond) : plafond;
 }
@@ -1371,7 +1371,7 @@ async function callWithSchemaFallback(
  * réparation ou un retrait de champs : échec `OUTPUT_TRUNCATED` (jamais une
  * réussite). Pur.
  */
-export function truncatedFailure(r: Resolution): Extract<Resolution, { ok: false }> {
+function truncatedFailure(r: Resolution): Extract<Resolution, { ok: false }> {
   return {
     ok: false, subtype: 'OUTPUT_TRUNCATED', stage: 'response_reception',
     issues: [], issueCount: 0,
@@ -1387,7 +1387,7 @@ export function truncatedFailure(r: Resolution): Extract<Resolution, { ok: false
  * instructions. Seulement des chemins, attendus et types reçus — jamais de
  * valeur issue du document.
  */
-export function fallbackNotice(prev: Pick<CallDiagnostic, 'subtype' | 'issues'>): string {
+function fallbackNotice(prev: Pick<CallDiagnostic, 'subtype' | 'issues'>): string {
   const lignes = prev.issues.slice(0, 5).map((i) =>
     `- ${i.path} : ${i.subtype}${i.expected ? `, attendu ${i.expected}` : ''}${i.received ? `, reçu ${i.received}` : ''}`
     + `${i.allowedValues?.length ? ` (valeurs autorisées : ${i.allowedValues.slice(0, 12).join(' | ')})` : ''}`);
@@ -1483,7 +1483,7 @@ function failureSummary(d: CallDiagnostic): { family: string; subtype: string | 
 }
 
 /** Lot 82C — masques appliqués aux variables d'un appel (sans conserver les valeurs d'origine). Pur. */
-export function masksOfVariables(vars: Record<string, unknown>): Record<string, number> {
+function masksOfVariables(vars: Record<string, unknown>): Record<string, number> {
   const out: Record<string, number> = {};
   const walk = (v: unknown): void => {
     if (typeof v === 'string') {

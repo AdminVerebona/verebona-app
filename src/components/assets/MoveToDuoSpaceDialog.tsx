@@ -109,7 +109,7 @@ export function MoveToDuoSpaceButton({ assetId, assetName }: { assetId: number; 
   )
 }
 
-export function MoveToDuoSpaceDialog({ open, onOpenChange, assetId, assetName, targets }: {
+function MoveToDuoSpaceDialog({ open, onOpenChange, assetId, assetName, targets }: {
   open: boolean
   onOpenChange: (o: boolean) => void
   assetId: number

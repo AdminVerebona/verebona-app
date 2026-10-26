@@ -61,7 +61,7 @@ export interface T1ExtractionExtras {
   v2Families: V2AssetFamily[];
 }
 
-export interface SourceLayerDraft {
+interface SourceLayerDraft {
   units: SourceUnit[];
   linker: SourceUnitLinker;
   metadataUnitIds: Set<string>;
@@ -87,7 +87,7 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !
 const str = (v: unknown): string | null => (v === null || v === undefined ? null : typeof v === 'object' ? JSON.stringify(v) : String(v));
 
 /** Preuve d'un fait (contrat T1 ou fait projeté). */
-export function evidenceOf(f: Pick<T1Fact, 'provenance' | 'evidence' | 'visualEvidence' | 'rawValue' | 'normalizedValue' | 'rawKey' | 'label' | 'attribute'>): EvidenceRef {
+function evidenceOf(f: Pick<T1Fact, 'provenance' | 'evidence' | 'visualEvidence' | 'rawValue' | 'normalizedValue' | 'rawKey' | 'label' | 'attribute'>): EvidenceRef {
   return {
     provenance: f.provenance,
     excerpt: f.evidence?.excerpt ?? null,
@@ -263,13 +263,13 @@ function originalRecord(o: T1PreservedOriginal & { pass: SourceUnitOrigin }, lin
 }
 
 /** Retraits du rapport `field_pruning` (chemins génériques) sans original transmis (lot 54G). */
-export function prunedPathsWithoutOriginal(x: Pick<T1ExtractionExtras, 'prunedPaths' | 'prunedFields'>): string[] {
+function prunedPathsWithoutOriginal(x: Pick<T1ExtractionExtras, 'prunedPaths' | 'prunedFields'>): string[] {
   const avecOriginal = new Set((x.prunedFields ?? []).map((p) => p.genericPath));
   return x.prunedPaths.filter((path) => !avecOriginal.has(path));
 }
 
 /** Le retrait d'un champ a-t-il conservé sa valeur originale ? (lot 54G) */
-export function prunedOriginalPreserved(r: Pick<UnresolvedFactRecord, 'reason' | 'originalPayload'>): boolean {
+function prunedOriginalPreserved(r: Pick<UnresolvedFactRecord, 'reason' | 'originalPayload'>): boolean {
   return r.reason === 'FIELD_PRUNED' && isObj(r.originalPayload) && r.originalPayload.preserved === true;
 }
 
@@ -318,7 +318,6 @@ export function normalisationBalance(draft: Pick<SourceLayerDraft, 'unresolved' 
     prunedFields: pruned.length, prunedOriginalsPreserved: conserves,
   };
 }
-
 
 function coverageOf(draft: SourceLayerDraft, facts: readonly T1Fact[]) {
   return computeCoverage(draft.units, {

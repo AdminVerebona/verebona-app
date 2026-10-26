@@ -23,7 +23,7 @@ import type { RetrievedSource } from '../types/sources';
 import type { Claim } from '../types/sources';
 
 /** Équipement / pièce dont le nom EST la saisie (forme de `findNamedEntities`). */
-export interface NamedEntity {
+interface NamedEntity {
   kind: 'equipment' | 'room';
   id: number;
   name: string;
@@ -58,7 +58,7 @@ export function isNamedEntityQuery(message: string | null | undefined): boolean 
   return !q.tokens.every((t) => MOTS_GENERIQUES.has(t.norm) || MOTS_GENERIQUES.has(t.stem));
 }
 
-export type NamedEntityDecision =
+type NamedEntityDecision =
   | { kind: 'none'; reason: 'NO_LOOKUP' | 'NO_EXACT_MATCH' | 'ASSET_HOMONYM' }
   | { kind: 'single'; entity: NamedEntity }
   | { kind: 'choice'; entities: NamedEntity[] };
@@ -88,7 +88,7 @@ export function decideNamedEntity(
 const NATURE: Record<NamedEntity['kind'], string> = { equipment: 'Équipement', room: 'Pièce' };
 
 /** « Équipement · Maison Lyon » : nature puis bien parent. */
-export function namedEntityContext(e: NamedEntity): string {
+function namedEntityContext(e: NamedEntity): string {
   return [NATURE[e.kind], e.assetName].filter(Boolean).join(' · ');
 }
 

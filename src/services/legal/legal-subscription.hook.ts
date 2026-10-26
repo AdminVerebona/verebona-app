@@ -35,12 +35,12 @@ import { getCurrentVersion } from './legal-versions.service';
 import { recordAcceptance } from './legal-acceptances.service';
 import { sendLegalConfirmationEmail } from './legal-confirmation.service';
 
-export interface PaidSubscriptionAcceptanceInput {
+interface PaidSubscriptionAcceptanceInput {
   accountId: number;
   stripeSubscriptionId: string;
 }
 
-export interface HookResult {
+interface HookResult {
   status: 'recorded' | 'skipped';
   reason?: string;
   versionCode?: string;

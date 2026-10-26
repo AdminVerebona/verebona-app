@@ -17,7 +17,7 @@ import { readCanonicalValue, rowFamily, type AssetRowJson } from '@/services/can
 import { IDENTIFIER_KEYS, type AssetIdentifierRecord } from './identifiers';
 
 /** Même borne que le contexte T1 (`loadAnalysisContext`). */
-export const MAX_ASSETS_FOR_IDENTIFIERS = 200;
+const MAX_ASSETS_FOR_IDENTIFIERS = 200;
 
 /** Identifiants d'une ligne de bien (pure). */
 export function identifierRecordOf(row: AssetRowJson): AssetIdentifierRecord {

@@ -45,7 +45,7 @@ export const PERIOD_KIND_LABELS: Record<PeriodKind, string> = {
 const MONTHS: Record<PeriodKind, number> = { month: 1, quarter: 3, semester: 6, year: 12 };
 
 /** Nombre de périodes affichées dans les graphiques d'évolution. */
-export const SERIES_LENGTH: Record<PeriodKind, number> = { month: 12, quarter: 8, semester: 6, year: 5 };
+const SERIES_LENGTH: Record<PeriodKind, number> = { month: 12, quarter: 8, semester: 6, year: 5 };
 
 const TZ = 'Europe/Paris';
 
@@ -132,7 +132,7 @@ function labelOf(kind: PeriodKind, year: number, firstMonth: number): string {
 }
 
 /** Libellé court pour un axe de graphique (« sept. 26 », « T3 26 »…). */
-export function shortLabelOf(kind: PeriodKind, start: Date): string {
+function shortLabelOf(kind: PeriodKind, start: Date): string {
   const { year, month } = parisYearMonth(start);
   const yy = String(year).slice(2);
   switch (kind) {
@@ -213,7 +213,7 @@ export function resolvePeriod(
   };
 }
 
-export interface SeriesBucket {
+interface SeriesBucket {
   label: string;
   start: Date;
   /** Fin effective (bornée à `now` pour la période en cours). */

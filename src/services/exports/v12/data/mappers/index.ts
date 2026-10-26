@@ -26,4 +26,4 @@ export function mapDossierData<C extends DossierCode>(code: C, input: MapInput):
   return (MAPPERS[code] as (m: MapInput) => DossierDataMap[C])(input);
 }
 
-export type { MapInput, GenerationMeta } from './common';
+export type { GenerationMeta } from './common';

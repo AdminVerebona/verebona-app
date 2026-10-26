@@ -42,7 +42,7 @@ interface RenewalInvoice {
 }
 
 /** Fin de la période ouverte par ce renouvellement (prochaine échéance). */
-export function renewalNextDate(invoice: RenewalInvoice | null | undefined): Date | null {
+function renewalNextDate(invoice: RenewalInvoice | null | undefined): Date | null {
   const ends = (invoice?.lines?.data ?? [])
     .map((l) => l?.period?.end)
     .filter((v): v is number => typeof v === 'number' && v > 0);

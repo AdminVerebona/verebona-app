@@ -35,7 +35,7 @@ export const HELP_SHORTCUT_IDS = [
   'AID-BILL-001', // Offres et tarifs
 ] as const;
 
-export const HELP_CATALOG_PATH = '/aide/catalogue.json';
+const HELP_CATALOG_PATH = '/aide/catalogue.json';
 export const HELP_T2_CORPUS_PATH = '/aide/corpus-t2.json';
 
 export interface HelpCatalogEntry {

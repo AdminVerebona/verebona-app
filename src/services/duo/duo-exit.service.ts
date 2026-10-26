@@ -46,7 +46,7 @@ export type DuoExitError =
   | 'OWNER_CANNOT_LEAVE'
   | 'DUO_UNPAID';
 
-export type DuoExitResult =
+type DuoExitResult =
   | { ok: true; duoId: number; memberUserId: number; status: 'REMOVED' | 'LEFT'; cancelledRequests: number }
   | { ok: false; error: DuoExitError; message: string };
 
@@ -77,7 +77,7 @@ export function planTypeAfterDuoExit(own: { planCode: string; status: string } |
 }
 
 /** Offre affichée d'un utilisateur sorti d'un Duo (partagé avec plan-enforcement). */
-export async function ownPlanType(userId: number): Promise<'STANDARD' | 'PREMIUM'> {
+async function ownPlanType(userId: number): Promise<'STANDARD' | 'PREMIUM'> {
   const [own] = await db
     .select({ planCode: accountSubscriptions.planCode, status: accountSubscriptions.status })
     .from(accountMemberships)

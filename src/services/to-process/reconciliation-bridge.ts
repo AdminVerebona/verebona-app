@@ -52,7 +52,7 @@ import { realAlternatives } from '@/services/ai/reconciliation/decision/equivale
  * d'analyse — deux conversions différentes pour la même échelle feraient
  * diverger les décisions selon le chemin emprunté.
  */
-export function confidenceToScore(confidence: EvidenceConfidence): number {
+function confidenceToScore(confidence: EvidenceConfidence): number {
   if (confidence === 'certain') return 1;
   if (confidence === 'probable') return 0.6;
   return 0.3;
@@ -178,13 +178,13 @@ export function arbitrationProposals(decision: ReconciliationDecision): ActionPr
   return proposals;
 }
 
-export interface SyncReconciliationInput {
+interface SyncReconciliationInput {
   accountId: number;
   assetId: number;
   decisions: readonly ReconciliationDecision[];
 }
 
-export interface SyncReconciliationResult {
+interface SyncReconciliationResult {
   created: number;
   resolved: number;
   skipped: number;

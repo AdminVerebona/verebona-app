@@ -31,8 +31,6 @@ import { fileDepot, estActif, type BilanLot, type MetaConfirmation } from '@/lib
 import { useFileDepot } from '@/hooks/useFileDepot';
 import { UploadQueuePanel, UploadResumeSection, reprendreDepot } from './UploadQueuePanel';
 import { ouvrirRepriseDepots, ACTION_REPRISE } from '@/lib/upload-queue-feedback';
-import { FusionSuggestionModal } from './FusionSuggestionModal';
-import type { FusionCandidate } from '@/services/document-ai/fusion-detector';
 import { parseWriteBlocked, notifyWriteBlocked, WriteBlockedError, isWriteBlockedError } from '@/lib/write-blocked';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { fetchDepot, messageSelonStatut } from '@/lib/upload-http';
@@ -246,15 +244,8 @@ export function UnifiedDocumentDialog({
   const [pendingRoomRef, setPendingRoomRef] = useState<string | null>(null);
   const [pendingEquipmentRef, setPendingEquipmentRef] = useState<string | null>(null);
 
-  // ── Fusion suggestion state ───────────────────────────────────────────────────
-  const [fusionModalOpen, setFusionModalOpen] = useState(false);
-  const [fusionNewFileId, setFusionNewFileId] = useState<number | null>(null);
-  const [fusionNewFilename, setFusionNewFilename] = useState('');
-  const [fusionCandidate, setFusionCandidate] = useState<FusionCandidate | null>(null);
-
   // ── Agenda drawer ────────────────────────────────────────────────────────────
   const [agendaDrawerOpen, setAgendaDrawerOpen] = useState(false);
-  const [agendaPrefill, setAgendaPrefill] = useState<{ title: string; startDate: string }>({ title: '', startDate: '' });
 
   // ── Computed ────────────────────────────────────────────────────────────────
   const assets = useMemo(() => providedAssets || internalAssets, [providedAssets, internalAssets]);
@@ -379,8 +370,6 @@ export function UnifiedDocumentDialog({
     if (preselectedAssetId) setAssetId(preselectedAssetId.toString());
   }, [preselectedAssetId]);
 
-
-  const norm = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9 ]/g, ' ').trim();
 
   const addFiles = (newFiles: File[], existants: FileWithPreview[] = files) => {
     // ══════════════════════════════════════════════════════════════════════
@@ -953,26 +942,7 @@ export function UnifiedDocumentDialog({
         open={agendaDrawerOpen}
         onClose={() => setAgendaDrawerOpen(false)}
         onMutated={() => setAgendaDrawerOpen(false)}
-        prefilledTitle={agendaPrefill.title || undefined}
-        prefilledStartDate={agendaPrefill.startDate || undefined}
       />
-
-      {/* Fusion suggestion modal — affichée après détection de doublon */}
-      {fusionModalOpen && fusionCandidate && fusionNewFileId && (
-        <FusionSuggestionModal
-          open={fusionModalOpen}
-          onOpenChange={setFusionModalOpen}
-          newFileId={fusionNewFileId}
-          newFilename={fusionNewFilename}
-          candidate={fusionCandidate}
-          onAction={(action) => {
-            if (action === 'merge' || action === 'replace') {
-              window.dispatchEvent(new CustomEvent('document-added'));
-              onSuccess?.();
-            }
-          }}
-        />
-      )}
     </>
   );
 }

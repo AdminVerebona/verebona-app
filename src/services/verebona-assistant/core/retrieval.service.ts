@@ -69,7 +69,7 @@ export async function retrieve(route: IntentRoute, input: AssistantRequestInput)
  * (`src/help/referentials.ts` `ROLES`). `all` n'est jamais attribué : c'est
  * une valeur d'article (« pour tous »), pas une situation d'utilisateur.
  */
-export type HelpArticleRole =
+type HelpArticleRole =
   | 'owner' | 'duo_member' | 'authorized_user' | 'recipient'
   | 'concerned_user' | 'billing_owner' | 'referrer';
 

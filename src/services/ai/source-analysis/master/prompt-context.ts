@@ -39,7 +39,7 @@ export const T1_PROMPT_VARIABLES = [
   'EVENT_CATALOG', 'DOCUMENT_CATALOG', 'EXISTING_TITLES', 'EXTRACTED_CONTENT',
   'ACCOUNT_CAPABILITIES',
 ] as const;
-export type T1PromptVariables = Record<(typeof T1_PROMPT_VARIABLES)[number], string>;
+type T1PromptVariables = Record<(typeof T1_PROMPT_VARIABLES)[number], string>;
 
 /** Bornes du contexte (mêmes ordres de grandeur que les étapes historiques). */
 const MAX_ASSETS = 60;
@@ -56,7 +56,7 @@ export function knownTargetFamily(ctx: AnalysisContext): AssetFamily | undefined
 }
 
 /** Liste des fichiers du groupe, indexés dans l'ordre des pièces jointes. */
-export function describeSources(input: SourceInput, indices: number[]): string {
+function describeSources(input: SourceInput, indices: number[]): string {
   return JSON.stringify(indices.map((i, position) => ({
     index: position,
     name: input.displayNames[i] ?? `source ${position + 1}`,
@@ -119,7 +119,7 @@ export function contextFilterStats(ctx: AnalysisContext, caps: AccountCapabiliti
 }
 
 /** KNOWN_TARGET : le bien choisi explicitement au dépôt, ou `null`. */
-export function describeKnownTarget(ctx: AnalysisContext): string {
+function describeKnownTarget(ctx: AnalysisContext): string {
   if (!ctx.linkedAssetId) return 'null';
   const a = ctx.assets.find((x) => x.id === ctx.linkedAssetId);
   return JSON.stringify({
@@ -135,7 +135,7 @@ export function describeKnownTarget(ctx: AnalysisContext): string {
  * rubriques / types V2 applicables. Les Types « Autre » ne sont pas transmis
  * (`buildPromptReferential` les retire : V2 §11.4, DOC-08).
  */
-export function describeDocumentCatalog(
+function describeDocumentCatalog(
   documents: ReturnType<typeof catalogForPrompts>['documents'],
   v2Families: V2AssetFamily[],
 ): string {

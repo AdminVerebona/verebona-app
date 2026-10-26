@@ -26,11 +26,12 @@
 import { z } from 'zod';
 import type { MascotFacts, MascotIntent, MascotSubject } from './types';
 import { hasCountingIntro } from './counting-intro';
+import { plain } from '@/services/verebona-assistant/core/routing-text';
 
-export const T6_INPUT_SCHEMA_VERSION = 't6-input-v1';
+const T6_INPUT_SCHEMA_VERSION = 't6-input-v1';
 export const T6_OUTPUT_SCHEMA_VERSION = 't6-output-v1';
 
-export interface T6InputSubject {
+interface T6InputSubject {
   subjectId: string;
   sourceCode: string;
   intent: MascotIntent;
@@ -62,7 +63,7 @@ export function buildT6Input(subjects: MascotSubject[]): T6Input {
 }
 
 /** Schéma structurel de la sortie. Les champs en trop sont retirés. */
-export const T6OutputSchema = z.object({
+const T6OutputSchema = z.object({
   schemaVersion: z.string().optional(),
   messages: z.array(z.object({
     subjectId: z.string(),
@@ -70,16 +71,15 @@ export const T6OutputSchema = z.object({
     highlight: z.string().nullable().optional(),
   })),
 });
-export type T6Output = z.infer<typeof T6OutputSchema>;
 
 export interface T6Message { subjectId: string; text: string; highlight: string | null }
 
-export type T6Validation =
+type T6Validation =
   | { ok: true; messages: T6Message[] }
   | { ok: false; reason: string };
 
-export const T6_TEXT_MIN = 15;
-export const T6_TEXT_MAX = 420;
+const T6_TEXT_MIN = 15;
+const T6_TEXT_MAX = 420;
 
 /** Formulations relatives interdites en V1 (DAT-005). */
 const RELATIVE = /\b(aujourd['’]hui|demain|hier|apr[eè]s-demain|avant-hier|ce soir|ce matin|cette semaine|la semaine (prochaine|derni[eè]re)|ce week-end|le mois (prochain|dernier)|l['’]ann[ée]e (prochaine|derni[eè]re)|dans (\d+|un|une|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|quelques) (jours?|semaines?|mois|ans?)|il y a (\d+|un|une|deux|trois|quelques) (jours?|semaines?|mois|ans?))\b/i;
@@ -152,7 +152,7 @@ export function validateT6Output(input: T6Input, raw: unknown): T6Validation {
 // ══════════════════════════════════════════════════════════════════════════
 
 export const T6_MASTER_PROMPT_CODE = 't6_master_v1';
-export const T6_MASTER_MODE = 'FORMULATE';
+const T6_MASTER_MODE = 'FORMULATE';
 export const T6_OUTPUT_SCHEMA_VERSION_V2 = 't6-output-v2';
 
 /** Sortie du master (MODE=FORMULATE) : `schemaVersion` v2 obligatoire. */
@@ -178,8 +178,6 @@ export type T6FormulateOutput = z.infer<typeof T6FormulateOutput>;
 
 /** Nature de la tuile d'un sujet (pose graduée) : `tileFor(...).kind`. */
 export type T6SubjectKind = 'overdue' | 'verify' | 'action' | 'info';
-
-const plainT6 = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
 
 /** R7 : vocabulaire alarmiste, interdit quel que soit le sujet. */
 const ALARME = /\b(urgent|urgente|urgence|alerte|danger|dangereux|catastroph\w*|grave|imperativement|immediatement|au plus vite|sans tarder)\b|!/;
@@ -227,18 +225,18 @@ const MECANIQUE = /(^|[\s.;:])a prevoir\s*:/;
  * garde que le préfixe « À prévoir : ».
  */
 export function mechanicalWording(text: string): boolean {
-  return MECANIQUE.test(plainT6(text)) || hasCountingIntro(text);
+  return MECANIQUE.test(plain(text)) || hasCountingIntro(text);
 }
 
 /** Mots d'ouverture normalisés (R8). */
 function ouverture(text: string, n = 4): string {
-  return plainT6(text).replace(/[^a-z0-9' ]+/g, ' ').split(/\s+/).filter(Boolean).slice(0, n).join(' ');
+  return plain(text).replace(/[^a-z0-9' ]+/g, ' ').split(/\s+/).filter(Boolean).slice(0, n).join(' ');
 }
 function motsSignificatifs(text: string): Set<string> {
-  return new Set(plainT6(text).split(/[^a-z0-9]+/).filter((w) => w.length >= 4));
+  return new Set(plain(text).split(/[^a-z0-9]+/).filter((w) => w.length >= 4));
 }
 /** Similarité de Jaccard sur les mots significatifs (R8). */
-export function t6Similarity(a: string, b: string): number {
+function t6Similarity(a: string, b: string): number {
   const x = motsSignificatifs(a);
   const y = motsSignificatifs(b);
   if (x.size === 0 || y.size === 0) return 0;
@@ -262,9 +260,9 @@ export function mechanicalRepetition(messages: Array<{ text: string }>): number 
 
 /** R11 : le paragraphe garde-t-il la date absolue et l'objet du sujet ? (pure, testée) */
 export function keepsEssentialFacts(text: string, facts: MascotFacts): boolean {
-  const t = plainT6(text);
+  const t = plain(text);
   const dateLabel = typeof facts.dateLabel === 'string' ? facts.dateLabel : null;
-  if (dateLabel && !t.includes(plainT6(dateLabel))) {
+  if (dateLabel && !t.includes(plain(dateLabel))) {
     const chiffres = dateLabel.match(/\d+/g) ?? [];
     const presents = new Set((text.match(/\d+/g) ?? []).map((n) => String(Number(n))));
     if (chiffres.length === 0 || !chiffres.every((c) => presents.has(String(Number(c))))) return false;
@@ -291,9 +289,9 @@ function hasDateRole(s: T6InputSubject): boolean {
 
 /** R9 : nuances par intention et nature de tuile. Rend le motif d'écart, ou null (pure, testée). */
 export function nuanceViolation(text: string, s: T6InputSubject, kind: T6SubjectKind | undefined): string | null {
-  const t = plainT6(text);
+  const t = plain(text);
   // Un mot repris des faits (titre « Contrôle urgence gaz ») n'est pas un ajout.
-  const faits = plainT6(`${JSON.stringify(s.facts)} ${s.fallbackText}`);
+  const faits = plain(`${JSON.stringify(s.facts)} ${s.fallbackText}`);
   const horsFaits = (re: RegExp) => [...t.matchAll(new RegExp(re.source, 'g'))].some((m) => !faits.includes(m[0]));
   if (mechanicalWording(text)) return 'mechanical_wording';
   if (horsFaits(ALARME)) return 'alarmist';
@@ -306,13 +304,13 @@ export function nuanceViolation(text: string, s: T6InputSubject, kind: T6Subject
   if (hasDateRole(s)) {
     const { dateNature: _n, ...sansNature } = s.facts as Record<string, unknown>;
     void _n;
-    const faitsSansNature = plainT6(`${JSON.stringify(sansNature)} ${s.fallbackText}`);
+    const faitsSansNature = plain(`${JSON.stringify(sansNature)} ${s.fallbackText}`);
     if ([...t.matchAll(new RegExp(CONFIRMATION.source, 'g'))].some((m) => !faitsSansNature.includes(m[0]))) return 'unproven_confirmation';
   }
   return null;
 }
 
-export interface T6MasterValidationOptions {
+interface T6MasterValidationOptions {
   /** Nature de tuile par sujet (même ordre), pour R9. */
   kinds?: Array<T6SubjectKind | undefined>;
   /**
@@ -323,7 +321,7 @@ export interface T6MasterValidationOptions {
   pinned?: ReadonlyMap<number, T6Message>;
 }
 
-export type T6MasterValidation =
+type T6MasterValidation =
   | { ok: true; messages: T6Message[]; adjustments: string[]; fallbackSubjects: number[] }
   | { ok: false; reason: string };
 
@@ -483,16 +481,16 @@ export const T6_MASTER_OPERATION_SPEC = {
 // Jamais d'acceptation silencieuse : chaque rejet porte son motif.
 // ══════════════════════════════════════════════════════════════════════════
 
-export const T6_EVALUATE_MODE = 'EVALUATE';
+const T6_EVALUATE_MODE = 'EVALUATE';
 export const T6_EVALUATION_INPUT_SCHEMA_VERSION = 't6-evaluation-input-v1';
 export const T6_EVALUATION_OUTPUT_SCHEMA_VERSION = 't6-evaluation-v1';
 
-export const T6_EVAL_DECISIONS = ['SHOW_NOW', 'DEFER', 'SUPPRESS'] as const;
-export const T6_EVAL_CATEGORIES = ['ACTION_NOW', 'TO_ANTICIPATE', 'INFORMATION'] as const;
-export const T6_EVAL_PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const;
-export type T6EvalDecision = (typeof T6_EVAL_DECISIONS)[number];
-export type T6EvalCategory = (typeof T6_EVAL_CATEGORIES)[number];
-export type T6EvalPriority = (typeof T6_EVAL_PRIORITIES)[number];
+const T6_EVAL_DECISIONS = ['SHOW_NOW', 'DEFER', 'SUPPRESS'] as const;
+const T6_EVAL_CATEGORIES = ['ACTION_NOW', 'TO_ANTICIPATE', 'INFORMATION'] as const;
+const T6_EVAL_PRIORITIES = ['HIGH', 'MEDIUM', 'LOW'] as const;
+type T6EvalDecision = (typeof T6_EVAL_DECISIONS)[number];
+type T6EvalCategory = (typeof T6_EVAL_CATEGORIES)[number];
+type T6EvalPriority = (typeof T6_EVAL_PRIORITIES)[number];
 
 /**
  * Référentiel FERMÉ des motifs (`reasonCode`), recopié dans le prompt maître
@@ -520,7 +518,7 @@ export const T6_REASON_CODES = {
   INSUFFICIENT_CONTEXT: 'SUPPRESS',
   RECENTLY_SHOWN_NO_CHANGE: 'SUPPRESS',
 } as const satisfies Record<string, T6EvalDecision>;
-export type T6ReasonCode = keyof typeof T6_REASON_CODES;
+type T6ReasonCode = keyof typeof T6_REASON_CODES;
 export const T6_REASON_CODE_LIST = Object.keys(T6_REASON_CODES) as T6ReasonCode[];
 /** Lot 68 : motif dédié du rappel informatif (SHOW_NOW + INFORMATION, sans action). */
 export const T6_INFORMATIVE_REMINDER_CODE = 'INFORMATIVE_REMINDER' as const satisfies T6ReasonCode;
@@ -530,7 +528,7 @@ export const T6_INFORMATIVE_REMINDER_CODE = 'INFORMATIVE_REMINDER' as const sati
  * Lot 71G (T6-04) : `DOCUMENT_FACT` — fait réellement extrait d'un document
  * (T1/T3 : préavis, renouvellement, obligation, intervention…), `Cn.factN`.
  */
-export type T6EvidenceKind = 'TITLE' | 'DUE_DATE' | 'DESCRIPTION' | 'DOCUMENT' | 'DOCUMENT_FACT' | 'ASSET' | 'SERIES' | 'HISTORY';
+type T6EvidenceKind = 'TITLE' | 'DUE_DATE' | 'DESCRIPTION' | 'DOCUMENT' | 'DOCUMENT_FACT' | 'ASSET' | 'SERIES' | 'HISTORY';
 
 /**
  * Lot 71G (T6-04) — fait documentaire transmis à EVALUATE : extrait
@@ -640,14 +638,14 @@ export interface T6ValidatedDecision {
 
 export interface T6EvaluationRejection { subjectId: string; index: number; reason: string }
 
-export type T6EvaluationValidation =
+type T6EvaluationValidation =
   | { ok: true; accepted: T6ValidatedDecision[]; rejected: T6EvaluationRejection[] }
   | { ok: false; reason: string };
 
-export const T6_EVAL_REASON_MIN = 10;
-export const T6_EVAL_REASON_MAX = 400;
-export const T6_EVAL_ACTION_MAX = 160;
-export const T6_EVAL_REVIEW_MAX_DAYS = 366;
+const T6_EVAL_REASON_MIN = 10;
+const T6_EVAL_REASON_MAX = 400;
+const T6_EVAL_ACTION_MAX = 160;
+const T6_EVAL_REVIEW_MAX_DAYS = 366;
 const UNCERTAINTIES_MAX = 5;
 
 const clean = (v: string | null | undefined, max: number): string | null => {

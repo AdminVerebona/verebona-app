@@ -39,7 +39,6 @@ import type {
   ActionPriority,
   ActionProposal,
   TargetType,
-  ToProcessAction,
 } from './action-model';
 import { selectDisplayedProposals } from './action-model';
 import { getRule } from './rules-catalog';
@@ -47,7 +46,7 @@ import { sortActions, type OrderMode } from './priority';
 import { presentCardLabels, targetFallbackLabel } from './card-labels';
 
 /** Contexte objet affiché sur la carte (§8.4). */
-export interface ActionTargetContext {
+interface ActionTargetContext {
   label: string;
   /** Miniature si document, sinon icône côté client. */
   mimeType?: string | null;
@@ -93,7 +92,7 @@ export interface ToProcessActionView {
   target: ActionTargetContext;
 }
 
-export interface ToProcessFilters {
+interface ToProcessFilters {
   targetType?: TargetType;
   actionKind?: ActionKind;
   priority?: ActionPriority;
@@ -101,7 +100,7 @@ export interface ToProcessFilters {
   assetIds?: number[];
 }
 
-export interface ToProcessPage {
+interface ToProcessPage {
   actions: ToProcessActionView[];
   /** Actions actives du compte, filtres ignorés — sert la pastille (§8.8). */
   total: number;
@@ -506,38 +505,3 @@ export function resolveSupplierContexts(
   return { candidats, contexts };
 }
 
-/** Action unique, par son identifiant public. */
-export async function findActionByPublicId(
-  accountId: number,
-  publicId: string,
-): Promise<ToProcessAction | null> {
-  const [row] = await db
-    .select()
-    .from(toProcessActions)
-    .where(
-      and(eq(toProcessActions.accountId, accountId), eq(toProcessActions.publicId, publicId)),
-    )
-    .limit(1);
-
-  if (!row) return null;
-
-  return {
-    id: row.id,
-    publicId: row.publicId,
-    accountId: row.accountId,
-    targetType: row.targetType as TargetType,
-    targetId: row.targetId,
-    fieldKey: row.fieldKey,
-    relationKey: row.relationKey,
-    actionKind: row.actionKind as ActionKind,
-    ruleCode: row.ruleCode,
-    priority: row.priority as ActionPriority,
-    question: row.question,
-    proposals: (row.proposalsJson as ActionProposal[] | null) ?? [],
-    activeSince: row.activeSince,
-    lastSeenAt: row.lastSeenAt,
-    resolvedAt: row.resolvedAt,
-    cycleNumber: row.cycleNumber,
-    dueDate: row.dueDate,
-  };
-}

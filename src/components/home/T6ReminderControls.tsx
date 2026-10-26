@@ -39,8 +39,8 @@ import { T6_MAX_SNOOZE_DAYS, addDays, parisDayOf, snoozeDateError } from '@/serv
 
 const ROUTE = '/api/home/mascot/reminders';
 
-export interface T6ReminderPrefView { scope: 'OCCURRENCE' | 'SERIES'; decision: 'SNOOZED' | 'DISMISSED'; remindAt: string | null; updatedAt: string }
-export interface T6ReminderStateView {
+interface T6ReminderPrefView { scope: 'OCCURRENCE' | 'SERIES'; decision: 'SNOOZED' | 'DISMISSED'; remindAt: string | null; updatedAt: string }
+interface T6ReminderStateView {
   agendaItemId: number; hasSeries: boolean; suggestedDate: string;
   occurrence: T6ReminderPrefView | null; series: T6ReminderPrefView | null;
 }

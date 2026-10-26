@@ -71,7 +71,7 @@ const RECEIVED_RE = /received (\w+)/;
  * Détail d'une erreur de validation. `parsed` est la sortie parsée sur
  * laquelle la validation a porté (valeur reçue, type reçu).
  */
-export function issueDetail(issue: AnyIssue, parsed: unknown): ValidationIssueDetail {
+function issueDetail(issue: AnyIssue, parsed: unknown): ValidationIssueDetail {
   const path = jsonPath(issue.path);
   const value = valueAt(parsed, issue.path);
   const received = issue.code === 'invalid_type'

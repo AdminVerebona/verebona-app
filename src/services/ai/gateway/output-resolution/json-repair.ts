@@ -16,7 +16,7 @@
  */
 import type { OutputRepairStep } from '../diagnostics/taxonomy';
 
-export type ParseOutcome =
+type ParseOutcome =
   | {
     ok: true;
     value: unknown;
@@ -73,7 +73,7 @@ export function balancedSlice(text: string, start: number): string | null {
  * Réparations syntaxiques hors chaînes : virgules finales, commentaires,
  * littéraux Python. Rend le texte et les règles appliquées.
  */
-export function repairJsonSyntax(text: string): { text: string; rules: string[] } {
+function repairJsonSyntax(text: string): { text: string; rules: string[] } {
   const rules = new Set<string>();
   let out = '';
   let inString = false;

@@ -35,7 +35,7 @@ import { reportReferralAttributionFailure } from '@/services/admin/anomaly.servi
  * essai de 7 jours puis souscrit quelques semaines plus tard doit conserver
  * son parrain. À confirmer avec le responsable métier.
  */
-export const REFERRAL_ATTRIBUTION_DAYS = 90;
+const REFERRAL_ATTRIBUTION_DAYS = 90;
 
 /** Longueur maximale acceptée pour un code, alignée sur `/api/referral/validate`. */
 const MAX_CODE_LENGTH = 20;
@@ -54,7 +54,7 @@ export function normalizeReferralCode(raw: unknown): string | null {
   return cleaned;
 }
 
-export interface ResolvedReferral {
+interface ResolvedReferral {
   linkId: number;
   referrerAccountId: number;
 }
@@ -94,7 +94,7 @@ export async function resolveReferralCode(
   return canAttribute(link, referredAccountId);
 }
 
-export interface RecordSignupReferralInput {
+interface RecordSignupReferralInput {
   userId: number;
   accountId: number | null;
   /** Code brut tel que transmis par le formulaire, avant normalisation. */

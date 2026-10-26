@@ -15,7 +15,7 @@ import { stateOfCouple, type CoupleState } from './states';
 const corpusFp = new Map<string, Promise<string>>();
 
 /** Empreinte du corpus d'une opération (mémorisée par processus ; tests : `corpusCases` non mémorisé). */
-export function corpusFingerprintOf(operationCode: string, opts: { readMasterFile: MasterFileReader; corpusCases?: MasterCorpusCase[]; includeT1Reference?: boolean }): Promise<string> {
+function corpusFingerprintOf(operationCode: string, opts: { readMasterFile: MasterFileReader; corpusCases?: MasterCorpusCase[]; includeT1Reference?: boolean }): Promise<string> {
   const build = async () => (await (await import('./cases')).buildCaseSet(operationCode, {
     readMasterFile: opts.readMasterFile, corpusCases: opts.corpusCases, includeT1Reference: opts.includeT1Reference,
   })).corpusFingerprint;

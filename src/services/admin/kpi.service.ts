@@ -62,12 +62,12 @@ import { mapLegacyPlanTypeToCommercialCode } from '@/services/commercial-model.s
 // ─── Tendance (DASH-004 à DASH-007) ─────────────────────────────────────────
 
 /** Polarité : ce qu'une HAUSSE signifie pour le pilotage. */
-export type KpiPolarity = 'up_good' | 'up_bad' | 'neutral';
-export type KpiDirection = 'up' | 'down' | 'flat';
-export type KpiTone = 'favorable' | 'unfavorable' | 'neutral';
-export type KpiUnit = 'count' | 'cents' | 'bytes' | 'ratio';
+type KpiPolarity = 'up_good' | 'up_bad' | 'neutral';
+type KpiDirection = 'up' | 'down' | 'flat';
+type KpiTone = 'favorable' | 'unfavorable' | 'neutral';
+type KpiUnit = 'count' | 'cents' | 'bytes' | 'ratio';
 /** Stock (lu en fin de période) ou flux (sommé sur la période) — DASH-005. */
-export type KpiNature = 'stock' | 'flow';
+type KpiNature = 'stock' | 'flow';
 
 export interface KpiValue {
   value: number | null;
@@ -156,7 +156,7 @@ export interface PlanPrice {
   offered: boolean;
 }
 
-export interface ActiveSubscriptionGroup {
+interface ActiveSubscriptionGroup {
   planCode: string;
   billingPeriod: string | null;
   count: number;
@@ -200,7 +200,7 @@ export function computeMrrCents(groups: ActiveSubscriptionGroup[], plans: Map<st
 }
 
 /** Abonnements actifs dont le prix contractuel est inconnu (non valorisés, LK-77). */
-export function countUnknownContractPrices(groups: ActiveSubscriptionGroup[]): number {
+function countUnknownContractPrices(groups: ActiveSubscriptionGroup[]): number {
   return groups.filter((g) => g.unitAmountCents === null).reduce((s, g) => s + g.count, 0);
 }
 
@@ -224,12 +224,12 @@ export function classifyPlanChange(oldTier: string | null, newTier: string): 'up
   return b > a ? 'upgrade' : 'downgrade';
 }
 
-export interface StorageAccountRow {
+interface StorageAccountRow {
   usedBytes: number;
   limitBytes: number;
 }
 
-export interface StorageStats {
+interface StorageStats {
   totalBytes: number;
   meanBytes: number | null;
   medianBytes: number | null;
@@ -319,7 +319,7 @@ async function countIn(table: string, dateCol: string, where: string, windows: W
   return new Map(rows.map((r) => [Number(r.i), Number(r.n)]));
 }
 
-export async function loadPlans(): Promise<Map<string, PlanPrice>> {
+async function loadPlans(): Promise<Map<string, PlanPrice>> {
   const rows = await q<{ code: string; label: string; monthly: number | null; yearly: number | null; ord: number; offered: boolean }>(
     `SELECT code, label, monthly_price_cents AS monthly, yearly_price_cents AS yearly, display_order AS ord,
             (is_visible OR is_subscribable) AS offered
@@ -378,7 +378,7 @@ async function revenueIn(windows: Window[]): Promise<ByIndex<Record<string, numb
 }
 
 /** Devise principale des montants de pilotage (prix catalogue en euros). */
-export const MAIN_CURRENCY = 'eur';
+const MAIN_CURRENCY = 'eur';
 
 // ─── Fenêtres standard ──────────────────────────────────────────────────────
 
@@ -416,14 +416,14 @@ export interface PeriodInfo {
   inProgress: boolean;
 }
 
-export function periodInfo(p: ResolvedPeriod): PeriodInfo {
+function periodInfo(p: ResolvedPeriod): PeriodInfo {
   return {
     kind: p.kind, label: p.label, prevLabel: p.prevLabel, ref: p.ref, prevRef: p.prevRef,
     nextRef: p.nextRef, start: iso(p.start), end: iso(p.end), asOf: iso(p.asOf), inProgress: p.inProgress,
   };
 }
 
-export interface PlanBreakdownRow {
+interface PlanBreakdownRow {
   planCode: string;
   label: string;
   monthly: number;
@@ -751,7 +751,7 @@ export async function getActivity(p: ResolvedPeriod): Promise<ActivityData> {
 
 // ─── Performance commerciale (§4.4) ─────────────────────────────────────────
 
-export interface ConversionRow {
+interface ConversionRow {
   planCode: string;
   label: string;
   /** Essais arrivés à terme sur la période (dénominateur). */

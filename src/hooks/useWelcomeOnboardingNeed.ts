@@ -22,7 +22,7 @@ import { apiClient } from '@/lib/api-client';
 import { isWelcomeDismissed, markWelcomeDismissed } from '@/lib/onboarding/welcome-state';
 import { scheduleIdle } from '@/lib/shell/idle';
 
-export type WelcomeNeed = 'unknown' | 'show' | 'skip';
+type WelcomeNeed = 'unknown' | 'show' | 'skip';
 
 export function useWelcomeOnboardingNeed(userId: number | null | undefined): WelcomeNeed {
   const [need, setNeed] = useState<WelcomeNeed>('unknown');

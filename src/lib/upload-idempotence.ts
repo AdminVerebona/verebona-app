@@ -55,7 +55,7 @@ function canonique(v: unknown): unknown {
   );
 }
 
-export function empreinteCanonique(v: unknown): string {
+function empreinteCanonique(v: unknown): string {
   return createHash('sha256').update(JSON.stringify(canonique(v))).digest('hex');
 }
 
@@ -89,7 +89,7 @@ export function empreinteConfirm(body: Record<string, unknown>): string {
 }
 
 /** État d'une ligne au regard d'une opération rejouée. */
-export interface LigneOperation {
+interface LigneOperation {
   uploadStatus: string | null;
   deletedAt: Date | string | null;
   uploadOperationId: string | null;
@@ -97,7 +97,7 @@ export interface LigneOperation {
   confirmFingerprint?: string | null;
 }
 
-export type DecisionPresign =
+type DecisionPresign =
   | { kind: 'pending' }
   | { kind: 'completed' }
   | { kind: 'refus'; status: 409; code: 'IDEMPOTENCY_KEY_REUSED' | 'OPERATION_CLOSED'; message: string };
@@ -119,7 +119,7 @@ export function deciderPresignRejoue(ligne: LigneOperation, empreinte: string): 
   return ligne.uploadStatus === 'COMPLETED' ? { kind: 'completed' } : { kind: 'pending' };
 }
 
-export type DecisionConfirm =
+type DecisionConfirm =
   | { kind: 'nouvelle' }
   | { kind: 'deja_confirme' }
   | { kind: 'refus'; status: 400 | 409; code: string; message: string };

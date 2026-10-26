@@ -25,7 +25,7 @@ import type { ActionPriority, ToProcessAction } from './action-model';
 import { getRule } from './rules-catalog';
 
 /** §9.3 — plafond global au compte, toutes natures et tous objets confondus. */
-export const DO_FIRST_CAP = 10;
+const DO_FIRST_CAP = 10;
 
 const PRIORITY_ORDER: Record<ActionPriority, number> = {
   DO_FIRST: 0,
@@ -57,7 +57,7 @@ export interface PriorityCandidate {
  * persisté : le recalculer coûte moins cher que d'entretenir une colonne qui
  * finirait par diverger de la règle qui l'a produite.
  */
-export function tiebreakScore(candidate: PriorityCandidate, now: Date): number {
+function tiebreakScore(candidate: PriorityCandidate, now: Date): number {
   const rule = getRule(candidate.ruleCode);
   const impact = rule?.businessImpact ?? 50;
 
@@ -78,7 +78,7 @@ export function tiebreakScore(candidate: PriorityCandidate, now: Date): number {
   return impact * 1000 + dueBonus * 10 + ageBonus;
 }
 
-export interface AdmissionResult {
+interface AdmissionResult {
   /** L'action entrante prend-elle une place « À faire d'abord » ? */
   admitted: boolean;
   /**
@@ -174,7 +174,7 @@ export function comparePriorityMode(a: Orderable, b: Orderable): number {
 }
 
 /** « Par action » : nature → priorité → ancienneté (§8.2, §9.5). */
-export function compareActionMode(a: Orderable, b: Orderable): number {
+function compareActionMode(a: Orderable, b: Orderable): number {
   if (a.actionKind !== b.actionKind) return a.actionKind === 'ARBITRATE' ? -1 : 1;
   const byPriority = PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority];
   if (byPriority !== 0) return byPriority;

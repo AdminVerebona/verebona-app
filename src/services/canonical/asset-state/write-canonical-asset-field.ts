@@ -60,9 +60,9 @@ export function sameCanonicalValue(key: string, a: unknown, b: unknown): boolean
 /* ── Plan (fonction pure) ────────────────────────────────────────────────── */
 
 /** Origines admises pour un champ de saisie seule (`inputOnly`, D-D). */
-export const INPUT_ONLY_ORIGINS: readonly CanonicalOrigin[] = ['USER', 'ADMIN', 'IMPORT'];
+const INPUT_ONLY_ORIGINS: readonly CanonicalOrigin[] = ['USER', 'ADMIN', 'IMPORT'];
 
-export interface PlanContext {
+interface PlanContext {
   origin: CanonicalOrigin;
   /** Date ISO posée dans `<clé>__updatedAt`. */
   now: string;
@@ -86,7 +86,7 @@ export interface PlanContext {
   source?: CanonicalWriteSource;
 }
 
-export interface CanonicalWritePlan {
+interface CanonicalWritePlan {
   family: AssetFamily;
   /** keyCharacteristics après écriture. */
   kc: Record<string, unknown>;
@@ -395,7 +395,7 @@ async function traceAutomatic(
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
-export interface WriteHookContext {
+interface WriteHookContext {
   row: AssetRowJson;
   /** keyCharacteristics après les écritures canoniques — modifiable en place. */
   kc: Record<string, unknown>;
@@ -408,7 +408,7 @@ export interface WriteHookContext {
   tx: SqlRunner;
 }
 
-export interface WriteHooks {
+interface WriteHooks {
   /** Conserver la clé brute demandée quand c'est un alias (fiche). */
   keepRequestedKey?: boolean;
   /** Voir `PlanContext.confirmUnchanged` (faux : section entière de la fiche). */

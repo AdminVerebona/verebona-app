@@ -61,7 +61,7 @@ interface Props {
 }
 
 /** État de la file d'enregistrement du formulaire → statut de l'écran (MSG-PREP-006). */
-export function toAutosaveStatus(s: 'idle' | 'pending' | 'saving' | 'saved' | 'error'): AutosaveStatus {
+function toAutosaveStatus(s: 'idle' | 'pending' | 'saving' | 'saved' | 'error'): AutosaveStatus {
   return s === 'pending' || s === 'saving' ? 'saving' : s;
 }
 

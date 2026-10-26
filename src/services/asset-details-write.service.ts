@@ -62,7 +62,7 @@ const ATOMIC_FIELDS: Record<string, string> = {
 // relève du parcours d'archivage).
 const VALID_STATUSES: readonly string[] = ASSET_STATUSES.filter((s) => s !== 'ARCHIVED');
 
-export type AssetDetailsErrorCode =
+type AssetDetailsErrorCode =
   | 'NOT_FOUND' | 'ASSET_UNAVAILABLE' | 'SECTION_NOT_APPLICABLE' | 'VALIDATION_ERROR' | 'WRITE_BLOCKED'
   /** Mode enabled : la valeur en place n'est plus celle attendue (`expectedCurrent`). */
   | 'CONFLICT';
@@ -81,15 +81,6 @@ export class AssetDetailsError extends Error {
     super(message);
     this.name = 'AssetDetailsError';
   }
-}
-
-export interface AssetDetailsRow {
-  id: number;
-  name: string;
-  category: string;
-  status: string | null;
-  lockState: string | null;
-  keyCharacteristics: string | null;
 }
 
 export function parseKeyCharacteristics(raw: string | null | undefined): Record<string, unknown> {
@@ -122,9 +113,9 @@ export async function loadWritableAsset(assetId: number, accountId: number) {
 }
 
 /** Origine d'une écriture de la fiche : toujours humaine (T3-02). */
-export type AssetDetailsOrigin = 'USER' | 'ADMIN';
+type AssetDetailsOrigin = 'USER' | 'ADMIN';
 
-export interface UpdateAssetDetailsInput {
+interface UpdateAssetDetailsInput {
   assetId: number;
   accountId: number;
   section: string;
@@ -278,7 +269,7 @@ async function fermerCartesSaisies(accountId: number, assetId: number, writes: C
  * La section modifie-t-elle une donnée structurée qui établit une Opération
  * (lot 43 : achat, vente réalisée, assurance — alias résolus) ?
  */
-export function touchesOperationData(fields: Record<string, unknown>, family: AssetFamily): boolean {
+function touchesOperationData(fields: Record<string, unknown>, family: AssetFamily): boolean {
   return Object.keys(fields).some((k) => OPERATION_ASSET_DATA_KEYS.has(resolveDefForFamily(k, family)?.key ?? k));
 }
 

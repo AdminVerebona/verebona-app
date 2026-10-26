@@ -262,7 +262,7 @@ export interface CandidateGateContext {
   };
 }
 
-export interface CandidateGateResult {
+interface CandidateGateResult {
   candidates: AnchoredOperationCandidate[];
   /** Non établis sans motif, omis (T1-OP-002). */
   omitted: number;
@@ -354,7 +354,6 @@ export function gateOperationCandidates(
   return { candidates: out.slice(0, T1_MAX_OPERATION_CANDIDATES), omitted, truncated };
 }
 
-
 // ── Lot 53D : devise et nature des montants (retours PO D2, Q16) ───────────
 
 /** Libellé de capital emprunté (« capital emprunté », « montant du prêt », « montant financé »…). */
@@ -378,7 +377,7 @@ export function isLoanPrincipalText(t: string | null | undefined): boolean {
  *      que l'euro ET si ce montant EUR est écrit avec « € / EUR » sur le
  *      document (aucune conversion arbitraire).
  */
-export function establishHintCurrency(
+function establishHintCurrency(
   h: AnchoredFinancialHint, ev: NonNullable<CandidateGateContext['currencyEvidence']>,
 ): string[] {
   const adj: string[] = [];

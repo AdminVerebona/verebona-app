@@ -40,7 +40,7 @@ import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diag
 
 type Row = Record<string, unknown>;
 
-export interface ExecutionFilters {
+interface ExecutionFilters {
   treatment?: Treatment;
   status?: 'success' | 'error';
   accountId?: number;
@@ -287,7 +287,7 @@ export function t6ModeSql(alias: string): string {
 
 const MAX_LIMIT = 200;
 
-export interface ExecutionPage {
+interface ExecutionPage {
   rows: ExecutionRow[];
   total: number;
   limit: number;
@@ -763,7 +763,7 @@ export interface ExecutionStep {
  * une opération : c'est le premier qui correspond à ce que l'écran appelle une
  * exécution, et le seul que porte `ai_usage_event`.
  */
-export async function getExecutionSteps(traceId: string): Promise<ExecutionStep[]> {
+async function getExecutionSteps(traceId: string): Promise<ExecutionStep[]> {
   const rows = await pgClient.unsafe(
     `SELECT step_name, step_order, provider, model, duration_ms, status,
             cost_micros, is_fallback, fallback_reason, error_code, error_message,

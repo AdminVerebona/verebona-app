@@ -7,7 +7,7 @@
  */
 import { canTransition, type MachineState } from '../types/machine';
 
-export interface MachineGuards {
+interface MachineGuards {
   /** L'offre + le budget autorisent-ils un appel Gemini ? (garde GENERATING — §9.7) */
   aiAllowed: boolean;
   /** Nombre de clarifications déjà posées dans cette demande (≤ 2 — §20.3). */
@@ -45,9 +45,5 @@ export class ConversationMachine {
   /** Force un état d'erreur terminal ou récupérable (utilisé par l'orchestrateur). */
   fail(final: boolean): void {
     this._state = final ? 'ERROR_FINAL' : 'ERROR_RECOVERABLE';
-  }
-
-  isTerminal(): boolean {
-    return ['READY', 'CANCELLED', 'EXPIRED', 'ERROR_FINAL'].includes(this._state);
   }
 }

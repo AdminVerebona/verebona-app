@@ -98,7 +98,7 @@ export async function runMig06(ctx: StepContext): Promise<StepResult> {
 }
 
 /** Estimation en lecture seule des liens colonnes manquants (dry-run MIG-08). */
-export const MIG08_ESTIMATE_SQL = `
+const MIG08_ESTIMATE_SQL = `
   SELECT count(*)::int AS n FROM asset_files f
    WHERE f.deleted_at IS NULL AND f.account_id IS NOT NULL
      AND ((f.asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM document_asset_links l

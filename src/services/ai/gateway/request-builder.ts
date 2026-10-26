@@ -50,7 +50,7 @@ export interface ResolvedGenerationParams {
   thinking: { thinkingLevel: string } | { thinkingBudget: number } | null;
 }
 
-export type AdaptationReason =
+type AdaptationReason =
   | 'CAPABILITY_UNKNOWN'
   | 'MODEL_OUTPUT_LIMIT'
   | 'MODEL_DOES_NOT_THINK'
@@ -67,7 +67,7 @@ export interface Adaptation {
 /** Origine d'un plafond de sortie demandé (trace « hérité »). */
 export type OutputCapOrigin = 'operation_rank' | 'operation' | 'treatment' | 'code' | 'none' | 'probe';
 
-export interface ModelRequestInput {
+interface ModelRequestInput {
   model: string;
   /** Fiche injectée (tests, validation hors ligne) ; défaut : registre en mémoire. */
   capabilities?: ModelCapabilities;

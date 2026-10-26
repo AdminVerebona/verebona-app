@@ -30,7 +30,7 @@ import { assetFiles } from '@/db/schema';
 import { REFERENTIAL_VERSION } from '@/lib/referential/v2';
 import { withJobLock } from '@/lib/job-lock';
 
-export interface UpgradeCandidate {
+interface UpgradeCandidate {
   fileId: number;
   accountId: number;
   storedVersion: string | null;
@@ -38,7 +38,7 @@ export interface UpgradeCandidate {
   protectedValue: boolean;
 }
 
-export interface UpgradeReport {
+interface UpgradeReport {
   referentialVersion: string;
   /** Documents dont la version stockée diffère de la version courante. */
   outdatedCount: number;
@@ -57,7 +57,7 @@ export interface UpgradeReport {
  * version NULL, et `NULL <> '2.0.0'` ne rend pas `true` en SQL. La comparaison
  * naïve écarterait silencieusement les documents les plus concernés.
  */
-export async function findUpgradeCandidates(options: {
+async function findUpgradeCandidates(options: {
   accountId?: number;
   limit?: number;
 } = {}): Promise<UpgradeCandidate[]> {
@@ -87,23 +87,7 @@ export async function findUpgradeCandidates(options: {
   }));
 }
 
-/** Comptes concernés par une mise à niveau, pour un déclenchement par lot. */
-export async function findAccountsToUpgrade(limit = 500): Promise<number[]> {
-  const rows = await db
-    .selectDistinct({ accountId: assetFiles.accountId })
-    .from(assetFiles)
-    .where(
-      and(
-        isNull(assetFiles.deletedAt),
-        sql`${assetFiles.classificationReferentialVersion} IS DISTINCT FROM ${REFERENTIAL_VERSION}`,
-      ),
-    )
-    .limit(limit);
-
-  return rows.map((r) => r.accountId);
-}
-
-export type ReprocessHandler = (candidate: UpgradeCandidate) => Promise<void>;
+type ReprocessHandler = (candidate: UpgradeCandidate) => Promise<void>;
 
 /**
  * Soumet les documents dépassés au traitement d'optimisation.

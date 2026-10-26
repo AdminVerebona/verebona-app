@@ -54,9 +54,9 @@ export interface RenderedDossier {
 }
 
 /** Rendu interrompu par l'appelant (annulation, bail perdu). */
-export type StepHook = (step: GenerationStep, details?: Record<string, unknown>) => Promise<void> | void;
+type StepHook = (step: GenerationStep, details?: Record<string, unknown>) => Promise<void> | void;
 
-export const renderTimeoutMs = (): number => {
+const renderTimeoutMs = (): number => {
   const n = Number(process.env.EXPORTS_RENDER_TIMEOUT_MS);
   return Number.isFinite(n) && n >= 5_000 ? n : 180_000;
 };

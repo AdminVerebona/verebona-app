@@ -329,7 +329,7 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_prompt_versions: C('referentiels', { global: true, filter: 'TRUE' }),
 };
 
-export type DiagExclusionCategory = 'SECURITE' | 'CONTENU_PERSONNEL' | 'HORS_COMPTE' | 'COMMERCIAL' | 'TECHNIQUE';
+type DiagExclusionCategory = 'SECURITE' | 'CONTENU_PERSONNEL' | 'HORS_COMPTE' | 'COMMERCIAL' | 'TECHNIQUE';
 
 /** Tables EXCLUES : catégorie et motif (manifeste, guide). */
 export const DIAG_TABLE_EXCLUSIONS: Readonly<Record<string, { category: DiagExclusionCategory; motif: string }>> = {
@@ -449,7 +449,7 @@ export const DIAG_TABLE_EXCLUSIONS: Readonly<Record<string, { category: DiagExcl
   system_logos: { category: 'TECHNIQUE', motif: 'logos système' },
 };
 
-export interface DiagTableClassification {
+interface DiagTableClassification {
   covered: Array<{ table: string } & DiagTableCoverage>;
   excluded: Array<{ table: string; category: DiagExclusionCategory; motif: string }>;
   /** Présentes, non déclarées (à classer) : exportées par prudence si elles portent account_id. */
@@ -459,7 +459,7 @@ export interface DiagTableClassification {
 }
 
 /** Tables déclarées qui peuvent légitimement être absentes (ancien modèle supprimé par une finalisation BO). */
-export const DIAG_RETIRABLE_TABLES: ReadonlySet<string> = new Set([
+const DIAG_RETIRABLE_TABLES: ReadonlySet<string> = new Set([
   'business_operation_claim_actions', 'business_operation_claim_exchanges', 'business_operation_claim_migration_marks', 'ai_corpus_baseline',
 ]);
 
@@ -491,7 +491,7 @@ export function coverageFilter(c: DiagTableCoverage): string {
  * `t`) pour les références polymorphes. Les clés étrangères DÉCLARÉES en base
  * sont ajoutées automatiquement (catalogue `pg_constraint`).
  */
-export interface DiagLogicalReference {
+interface DiagLogicalReference {
   from: string;
   column: string;
   to: string;
@@ -557,7 +557,7 @@ export const DIAG_LOGICAL_REFERENCES: readonly DiagLogicalReference[] = [
  * (transfert de bien, remédiation d'isolation) : identifiant seul, jamais
  * exporté, jamais compté comme manquant. `table.*` : toutes les colonnes.
  */
-export const DIAG_EXTERNAL_REFERENCE_COLUMNS: Readonly<Record<string, string>> = {
+const DIAG_EXTERNAL_REFERENCE_COLUMNS: Readonly<Record<string, string>> = {
   'asset_move_requests.asset_id': 'bien transféré vers un autre compte',
   'asset_move_requests.copied_asset_id': 'copie du bien dans le compte cible',
   'asset_space_moves.asset_id': 'bien déplacé vers un autre espace',
@@ -577,7 +577,7 @@ export function isExternalReferenceColumn(table: string, column: string): string
  * instantané). SQL : colonnes `id`, `annonce`, `present` (alias libres sur
  * le compte `{{A}}`).
  */
-export interface DiagAnnouncedCount {
+interface DiagAnnouncedCount {
   code: string;
   label: string;
   section: DiagSectionCode;
@@ -628,7 +628,7 @@ export const DIAG_ANNOUNCED_COUNTS: readonly DiagAnnouncedCount[] = [
 
 // ── Traitements IA : où retrouver entrée, sortie et décisions ─────────────
 
-export interface DiagAiOperationCoverage {
+interface DiagAiOperationCoverage {
   treatment: 'T1' | 'T2' | 'T3' | 'T4' | 'T6' | 'GOUVERNANCE' | 'TRANSVERSE';
   /** Tables (couvertes) où l'entrée utile, la sortie structurée et les décisions se lisent. */
   tables: readonly string[];

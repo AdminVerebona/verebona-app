@@ -15,9 +15,9 @@
  */
 import type { VerebonaIntent } from '../types/intents';
 
-export type AnswerFormat = 'claims' | 'comparison' | 'timeline';
+type AnswerFormat = 'claims' | 'comparison' | 'timeline';
 
-export interface AnswerFormatRule {
+interface AnswerFormatRule {
   /** Format de sortie attendu du master T2 (branche ANSWER, T2-35). */
   format: AnswerFormat;
   /** Phrases au plus (étapes numérotées non comptées) ; `null` = liste, non bornée en phrases. */
@@ -28,8 +28,8 @@ export interface AnswerFormatRule {
   maxItems: number | null;
 }
 
-export const DEFAULT_MAX_SENTENCES = 4;
-export const DEFAULT_MAX_ANSWER_CHARS = 1200;
+const DEFAULT_MAX_SENTENCES = 4;
+const DEFAULT_MAX_ANSWER_CHARS = 1200;
 
 const DEFAULT_RULE: AnswerFormatRule = {
   format: 'claims', maxSentences: DEFAULT_MAX_SENTENCES, maxChars: DEFAULT_MAX_ANSWER_CHARS, maxItems: null,

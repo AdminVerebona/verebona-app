@@ -29,7 +29,7 @@
  */
 import type { AiOperationDefinition } from '../../registry/operations';
 
-export type Check = 'ok' | 'bloquant' | 'avertissement' | 'à vérifier';
+type Check = 'ok' | 'bloquant' | 'avertissement' | 'à vérifier';
 
 export interface GuardCheck { code: string; status: Check; detail: string }
 

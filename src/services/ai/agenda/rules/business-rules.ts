@@ -17,7 +17,7 @@
  */
 import type { HomeCategory } from '../types';
 
-export interface AgendaBusinessRule {
+interface AgendaBusinessRule {
   code: string;
   category: HomeCategory;
   description: string;
@@ -32,7 +32,7 @@ const TACIT_RENEWAL = /(reconduction tacite|tacite reconduction|tacitement recon
 
 const CUSTODY = /(gardiennage|stockage|dépôt.*pneu|depot.*pneu|pneu.*d[ée]p[ôo]t|restitution|r[ée]cup[ée]ration|reprise.*(pneu|v[ée]hicule|objet|d[ée]p[ôo]t)|pneu.*(hiver|[ée]t[ée]|saison))/i;
 
-export const AGENDA_BUSINESS_RULES: readonly AgendaBusinessRule[] = [
+const AGENDA_BUSINESS_RULES: readonly AgendaBusinessRule[] = [
   {
     code: 'CUSTODY_RETRIEVAL_ACTION',
     category: 'action',

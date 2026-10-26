@@ -69,7 +69,6 @@ import {
 } from './t3-job-contract';
 
 export {
-  T3_TARGET_ASSET, T3_TARGET_EQUIPMENT, T3_TARGET_ROOM, T3_TARGET_SWEEP_PAGE, T3_PAYLOAD_VERSION,
   registerT3JobKind, buildT3Payload,
 } from './t3-job-contract';
 
@@ -96,11 +95,11 @@ export const T3_EVENT_TRIGGERS: Readonly<Record<string, string>> = {
 export const T3_EVENT_DELAY_SECONDS = Math.round(envNumber('T3_EVENT_DEBOUNCE_MS', 10 * 60_000, { min: 0 }) / 1000);
 
 /** Balayage : comptes mis en file par page (`T3_SWEEP_PAGE_SIZE`, 50 par défaut, 1 à 1000). */
-export function sweepPageSize(): number {
+function sweepPageSize(): number {
   return Math.min(1000, Math.floor(envNumber('T3_SWEEP_PAGE_SIZE', 50, { min: 1 })));
 }
 /** Délai avant la page suivante (`T3_SWEEP_PAGE_DELAY_SECONDS`, 60 s par défaut). */
-export function sweepPageDelaySeconds(): number {
+function sweepPageDelaySeconds(): number {
   return Math.floor(envNumber('T3_SWEEP_PAGE_DELAY_SECONDS', 60, { min: 0 }));
 }
 /**
@@ -108,11 +107,11 @@ export function sweepPageDelaySeconds(): number {
  * (`T3_SWEEP_BACKLOG_DELAY_SECONDS`, 300 s par défaut) : la page ne met rien
  * en file et se reporte — la file n'est jamais remplie d'un coup.
  */
-export function sweepBacklogDelaySeconds(): number {
+function sweepBacklogDelaySeconds(): number {
   return Math.floor(envNumber('T3_SWEEP_BACKLOG_DELAY_SECONDS', 300, { min: 0 }));
 }
 
-export interface T3QueueDeps {
+interface T3QueueDeps {
   enqueue: typeof import('../queue/job-queue.repository').enqueue;
   isTriggerActive: (treatment: 'T3', code: string) => Promise<boolean>;
 }
@@ -125,7 +124,7 @@ async function defaultDeps(): Promise<T3QueueDeps> {
   return { enqueue, isTriggerActive };
 }
 
-export interface CoherenceEvent {
+interface CoherenceEvent {
   event: string;
   objectType?: T3Trigger['objectType'];
   objectId?: number;
@@ -187,7 +186,7 @@ export async function enqueueT3ForAnalyzedAsset(
 }
 
 /** Déclencheurs qu'un travail ciblé « cycle de vie » peut porter. */
-export type T3LifecycleTrigger = 'document_linked' | 'source_analyzed';
+type T3LifecycleTrigger = 'document_linked' | 'source_analyzed';
 
 /**
  * Réconciliation des biens touchés par une transition du cycle de vie d'un
@@ -564,7 +563,7 @@ export function summarizeT3Naming(dn: import('./document-naming/phase').Document
  * par cycle) ; sa pagination est la sienne. Un démarreur en échec n'empêche
  * ni les autres ni le balayage des comptes.
  */
-export type T3SweepStarter = (ctx: {
+type T3SweepStarter = (ctx: {
   job: QueuedJob; cycleId: string; cycleStartedAt: string; triggerCode: string; guard: ExecutionGuard;
 }) => Promise<void>;
 

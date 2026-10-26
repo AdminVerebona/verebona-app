@@ -49,13 +49,13 @@
 import { isIsoDate } from './engine';
 
 /** Version des règles de résolution : la changer fait réexaminer tout le stock (contrôle COH-TCO-ECONOMIC-DATES). */
-export const ECONOMIC_DATE_RULE_VERSION = 1;
+const ECONOMIC_DATE_RULE_VERSION = 1;
 
 /** Fondement de la date retenue. */
-export type EconomicDateBasis = 'PAYMENT' | 'AMOUNT_DATE' | 'DOCUMENT' | 'OPERATION_SINGLE_FACT';
+type EconomicDateBasis = 'PAYMENT' | 'AMOUNT_DATE' | 'DOCUMENT' | 'OPERATION_SINGLE_FACT';
 
 /** Nature d'une date disponible (distinguées, jamais confondues). */
-export type EconomicDateCandidateType =
+type EconomicDateCandidateType =
   | 'PAYMENT'            // règlement prouvé (indice de paiement, preuve de règlement)
   | 'AMOUNT_DATE'        // date portée par la source pour ce montant (échéance, date de dépense)
   | 'DOCUMENT'           // date du justificatif qui établit le montant (facture, avoir, remboursement)
@@ -65,7 +65,7 @@ export type EconomicDateCandidateType =
   | 'OPERATION_PLANNED'; // date planifiée (jamais une date effective)
 
 /** Motif d'une date non établie. */
-export type EconomicDateUndeterminedReason =
+type EconomicDateUndeterminedReason =
   | 'NO_EVIDENCE'                   // aucune date propre, aucun paiement, aucun justificatif daté
   | 'PERIOD_ONLY'                   // seule la période couverte est connue (jamais une année inventée)
   | 'ADVANCE_BILLING_UNPAID'        // facturée avant une période d'une année ultérieure, paiement non prouvé
@@ -74,11 +74,11 @@ export type EconomicDateUndeterminedReason =
   | 'OPERATION_DATE_NOT_RELEVANT';  // seule la date de l'Opération existe, sans être celle de ce fait
 
 /** Motif de rejet d'une date disponible (trace). */
-export type EconomicDateRejection =
+type EconomicDateRejection =
   | 'INVALID_DATE' | 'NOT_ATTRIBUTABLE' | 'CONTRADICTORY' | 'SUPERSEDED' | 'BEFORE_COVERED_PERIOD_OTHER_YEAR'
   | 'RECURRING_OPERATION' | 'MULTIPLE_FACTS' | 'NOT_REALIZED' | 'OUTSIDE_COVERED_PERIOD' | 'NEVER_ECONOMIC' | 'OWN_DATE_INVALID';
 
-export interface EconomicDateCandidate {
+interface EconomicDateCandidate {
   type: EconomicDateCandidateType;
   date: string;
   /** Fin de la période (PERIOD seulement). */
@@ -165,7 +165,7 @@ const an = (d: string) => Number(d.slice(0, 4));
 const fr = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`;
 const chevauche = (a0: string, a1: string, b0: string, b1: string) => a0 <= b1 && b0 <= a1;
 
-export const ECONOMIC_DATE_BASIS_LABELS: Readonly<Record<EconomicDateBasis, string>> = {
+const ECONOMIC_DATE_BASIS_LABELS: Readonly<Record<EconomicDateBasis, string>> = {
   PAYMENT: 'Date de paiement',
   AMOUNT_DATE: 'Date indiquée pour ce montant',
   DOCUMENT: 'Date du justificatif',
@@ -182,7 +182,7 @@ const POURQUOI: Readonly<Record<EconomicDateUndeterminedReason, string>> = {
 };
 
 /** Note utilisateur d'une date non établie (tiroir « Dépenses retenues »). */
-export function undeterminedNote(reason: EconomicDateUndeterminedReason): string {
+function undeterminedNote(reason: EconomicDateUndeterminedReason): string {
   return `Date de la dépense non établie (${POURQUOI[reason]}) : comptée dans le total, rattachée à aucune année.`;
 }
 
@@ -351,7 +351,7 @@ export function economicDateLabel(r: Pick<EconomicDateResolution, 'status' | 'ba
 }
 
 /** Composante d'une Opération à résoudre (forme commune lecteur Opérations / TCO / T2). */
-export interface EconomicDateComponent {
+interface EconomicDateComponent {
   id: number;
   kind: string;
   amountMinor: number;

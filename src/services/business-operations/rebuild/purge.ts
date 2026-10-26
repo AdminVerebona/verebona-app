@@ -44,7 +44,7 @@ async function tableExists(sql: Sql, t: string): Promise<boolean> {
 }
 
 /** Indicateurs de chaque Opération du compte (lecture seule). */
-export async function readOperationFlags(sql: Sql, accountId: number): Promise<OperationFlags[]> {
+async function readOperationFlags(sql: Sql, accountId: number): Promise<OperationFlags[]> {
   // Ancien modèle Sinistres (avant la finalisation 84A) : lu seulement s'il est présent (sonde et noms de `legacy-schema.ts`).
   const { readLegacyClaimSchema, LEGACY_CLAIM_COLUMNS } = await import('../claims/legacy-schema');
   const schema = await readLegacyClaimSchema(sql);

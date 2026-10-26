@@ -26,7 +26,7 @@ import type { HomeAsset } from '@/services/home/HomeSummaryService';
 import { DateChip, DATE_CHIP_LABEL_TONE, type DateChipTone } from '@/components/ui/date-chip';
 
 /** Biens montrés dans le carrousel de l'accueil (au-delà : « Tous les biens »). */
-export const HOME_ASSETS_MAX = 12;
+const HOME_ASSETS_MAX = 12;
 
 /** Focus : anneau global de la charte (3 px cuivre texte décalé, globals.css). */
 const FOCUS_RING = '';
@@ -34,7 +34,7 @@ const FOCUS_RING = '';
 // ── Carte de section ────────────────────────────────────────────────────────
 
 /** Lien d'en-tête : libellé long sur desktop, court sur mobile. */
-export interface SectionLink { href: string; label: string; short?: string }
+interface SectionLink { href: string; label: string; short?: string }
 
 /**
  * Carte bordée d'une section (maquette 2a) : fond carte, bordure, rayon
@@ -141,7 +141,7 @@ export function HomeCarousel({ label, children, className = '' }: { label: strin
  * en blanc et nombre de documents (desktop). Sans photo : tuile dégradée
  * avec l'icône de la catégorie. 204 × 140 desktop, 150 × 104 mobile.
  */
-export function HomeAssetCard({ asset, className = '', priority = false }: { asset: HomeAsset; className?: string; priority?: boolean }) {
+function HomeAssetCard({ asset, className = '', priority = false }: { asset: HomeAsset; className?: string; priority?: boolean }) {
   const Icon = getAssetIcon(asset.category, asset.subtype ?? undefined, asset.name);
   // Lot 59 (point 2) : vignette choisie, sinon la première photo du bien.
   const { signedUrl } = useThumbnailUrl(asset.signedThumbnailUrl ? null : asset.id, asset.signedThumbnailUrl ? null : displayThumbnailKey(asset));
@@ -237,7 +237,7 @@ export function HomeAssets({ assets, onAddAsset, className = '' }: { assets: Hom
  * retard strict en rouge accessible (décision PO), proche en cuivre
  * (attention), plus tard en brume / pétrole. Le délai reste écrit à droite.
  */
-export const UPCOMING_CHIP_TONE: Record<HomeUpcomingItem['tone'], DateChipTone> = {
+const UPCOMING_CHIP_TONE: Record<HomeUpcomingItem['tone'], DateChipTone> = {
   red: 'late',
   amber: 'attention',
   green: 'default',
@@ -385,7 +385,7 @@ function StatusBadge({ label }: { label: string }) {
  * dans le carrousel ; `loading="lazy"` : les cartes hors champ ne sont
  * chargées qu'à l'approche.
  */
-export function RecentDocPreview({ doc }: { doc: HomeRecentDocument }) {
+function RecentDocPreview({ doc }: { doc: HomeRecentDocument }) {
   const [step, setStep] = useState<0 | 1 | 2>(0);
   const tone = DOC_TONES[doc.tone];
   const src = !doc.previewUrl ? null : step === 0 ? doc.previewUrl : step === 1 ? `/api/files/${doc.id}/thumbnail` : null;

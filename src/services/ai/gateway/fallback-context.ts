@@ -30,7 +30,7 @@ export interface CoupleQualificationView {
   byModel: ReadonlyMap<string, CoupleQualification>;
 }
 
-export interface FallbackContextReader {
+interface FallbackContextReader {
   /** Modèles CONNUS indisponibles avec la clé active (`ok = false` confirmé). */
   knownUnavailable(): Promise<ReadonlyMap<string, OperationalHint>>;
   /** États de qualification des couples d'une opération, pour la configuration exécutée. */
@@ -42,7 +42,7 @@ export interface FallbackContextReader {
 const STATUS_TTL_MS = 30_000;
 const QUALIF_TTL_MS = 5 * 60_000;
 const LOOKUP_TIMEOUT_MS = 2_000;
-export const RECHECK_AFTER_MS = 30 * 60_000;
+const RECHECK_AFTER_MS = 30 * 60_000;
 
 const EMPTY_VIEW: CoupleQualificationView = { origin: null, byModel: new Map() };
 

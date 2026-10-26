@@ -61,7 +61,7 @@ import { versionRowFrom, isStripeTransient } from './price-history.service';
 
 // ─── Dépendances (injectables pour les tests) ────────────────────────────────
 
-export interface AnomalyPort {
+interface AnomalyPort {
   report(input: { fingerprint: string; title: string; detail?: Record<string, unknown> }): Promise<unknown>;
   resolve(fingerprint: string): Promise<unknown>;
 }
@@ -253,9 +253,9 @@ export function assertDisplayedRevision(resolved: ResolvedPrice, displayed: stri
 
 // ─── Catalogue public (LK-29, LK-30, LK-33) ─────────────────────────────────
 
-export interface PlanQuota { plan_code: PlanCode; max_assets: number | null; max_documents: number | null; max_users: number | null }
+interface PlanQuota { plan_code: PlanCode; max_assets: number | null; max_documents: number | null; max_users: number | null }
 
-export interface PublicBillingCatalog {
+interface PublicBillingCatalog {
   catalog_version: string | null;
   verified_at: string | null;
   /** `ok` | `stale` (photographie non reconfirmée) | `unavailable` | `updating`. */
@@ -292,7 +292,7 @@ async function planQuotas(): Promise<PlanQuota[]> {
 const IN_PROGRESS_STATES = new Set(['PREPARED', 'VALIDATING', 'PUBLISHING', 'READY', 'RECOVERING']);
 
 /** Raison (catalogue) d'une grille incomplète — pure (lot 36B). */
-export function publicCatalogReason(state: CatalogStateRow | null, offers: number, now: Date, stripeConfigured = true): PublicCatalogReason | null {
+function publicCatalogReason(state: CatalogStateRow | null, offers: number, now: Date, stripeConfigured = true): PublicCatalogReason | null {
   if (!stripeConfigured) return 'STRIPE_NOT_CONFIGURED';
   if (offers >= CATALOG_COUPLES.length && !isActivating(state, now)) return null;
   if (isActivating(state, now) || (state && IN_PROGRESS_STATES.has(state.publicationState))) return 'PUBLICATION_IN_PROGRESS';
@@ -342,7 +342,7 @@ export async function getPublicCatalog(d: CatalogDeps = catalogDeps()): Promise<
 
 // ─── Synchronisation (refreshCatalog) ────────────────────────────────────────
 
-export interface CatalogRefreshResult {
+interface CatalogRefreshResult {
   status: 'unchanged' | 'adopted' | 'skipped' | 'failed';
   reason?: string;
   version?: string | null;
@@ -562,12 +562,12 @@ async function listKeyHolders(stripe: Stripe, keys: string[]): Promise<Map<strin
   return out;
 }
 
-export function isStripePermissionError(error: unknown): boolean {
+function isStripePermissionError(error: unknown): boolean {
   const e = error as { type?: string; statusCode?: number; rawType?: string };
   return e?.type === 'StripePermissionError' || e?.statusCode === 403 || e?.rawType === 'permission_error';
 }
 
-export type KeyInitResult = { price: Stripe.Price } | { reason: string };
+type KeyInitResult = { price: Stripe.Price } | { reason: string };
 
 /**
  * Clé stable absente : l'initialiser sur le prix V2 configuré par

@@ -44,7 +44,7 @@ export const productionGatewayCall: GatewayCall = async (req, ctx) => {
 
 export type Observation = CaseObservation & { advisory: boolean };
 
-export interface CoupleRun {
+interface CoupleRun {
   observations: Observation[];
   concurrency: ConcurrencyReport;
   servedModels: string[];

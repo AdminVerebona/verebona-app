@@ -35,14 +35,14 @@ function structuredFileSpec(code: string): StructuredContextSpec | null {
   return spec && spec.defaults.mode === 'STRUCTURED_CONTEXT' ? spec : null;
 }
 
-export interface PromptFilesReport {
+interface PromptFilesReport {
   errors: string[];
   warnings: string[];
   infos: string[];
   checkedFiles: number;
 }
 
-export interface PromptFilesCheckInput {
+interface PromptFilesCheckInput {
   operations: readonly AiOperationDefinition[];
   /** Racine des prompts (`src/services/ai/prompts`). */
   root: string;

@@ -82,7 +82,7 @@ export function isMetaKey(k: string): boolean {
   return k.includes('__') || /_origin$/.test(k);
 }
 
-export interface KcAlias { rawKey: string; sourceUnit?: string }
+interface KcAlias { rawKey: string; sourceUnit?: string }
 
 /**
  * Clés de la fiche qui sont des ALIAS d'une clé canonique (résolution du

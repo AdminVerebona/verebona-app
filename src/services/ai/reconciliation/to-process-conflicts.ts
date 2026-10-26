@@ -40,7 +40,7 @@ import { isCriticalField } from './decision/critical-fields';
  * isolé). Le modèle cible est l'action V2 ARBITRATE / COMPLETE
  * (`services/to-process/action-model.ts`).
  */
-export interface LegacyConflictCard {
+interface LegacyConflictCard {
   id: string;
   objectType: 'asset';
   objectId: number;

@@ -50,8 +50,6 @@ vi.mock('@/lib/s3-config', () => ({
   S3ConfigError: class S3ConfigError extends Error {},
   signGetUrl: async () => 'https://s3.example.com/signe',
 }));
-const journal = vi.hoisted(() => ({ error: vi.fn(), blocked: vi.fn(), success: vi.fn() }));
-vi.mock('@/lib/file-logger', () => ({ FileLogger: journal }));
 vi.mock('@/services/verebona-assistant/events/business-events', () => ({ emitBusinessEvent: vi.fn() }));
 vi.mock('@/services/ai/evidence/document-evidence-lifecycle', () => ({ onDocumentsDeleted: vi.fn() }));
 
@@ -74,8 +72,7 @@ beforeEach(() => {
   etat.lignes = [];
   etat.dbErreur = null;
   etat.supprimes = 0;
-  journal.error.mockReset();
-  journal.blocked.mockReset();
+  vi.restoreAllMocks();
 });
 
 async function lireCorps(r: Response) {
@@ -96,12 +93,13 @@ describe.each([
     ['SESSION_UNAVAILABLE', 503],
   ] as const)('%s → %i, code stable et requestId, non journalisé comme panne', async (code, status) => {
     etat.session = new Error(code);
+    const journal = vi.spyOn(console, 'error').mockImplementation(() => {});
     const r = await lireCorps(await appel());
     expect(r.status).toBe(status);
     expect(r.corps.code).toBe(code);
     expect(typeof r.corps.requestId).toBe('string');
     expect(r.entete).toBe(r.corps.requestId);
-    expect(journal.error).not.toHaveBeenCalled();
+    expect(journal).not.toHaveBeenCalled();
   });
 
   it('erreur inattendue → 500 INTERNAL_ERROR avec requestId, sans détail technique', async () => {

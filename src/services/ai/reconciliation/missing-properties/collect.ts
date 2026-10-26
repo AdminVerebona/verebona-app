@@ -42,7 +42,7 @@ const q = async <T = Row>(sql: string, params: unknown[]): Promise<T[]> =>
   (await pgClient.unsafe(sql, params as never[])) as unknown as T[];
 
 /** Bornes DÉCLARÉES de la collecte (tailles, jamais un critère de contenu). */
-export const COLLECTION_BOUNDS = {
+const COLLECTION_BOUNDS = {
   documents: 30,
   fieldEvidence: 200,
   facts: 400,
@@ -176,7 +176,7 @@ export interface CollectedContext {
 }
 
 /** Valeurs canoniques écrites par ce contrôle (exclues du contexte tant qu'elles sont en place). */
-export async function ownWrittenValues(accountId: number, s: LoadedSubject): Promise<Map<string, unknown>> {
+async function ownWrittenValues(accountId: number, s: LoadedSubject): Promise<Map<string, unknown>> {
   const [{ ok }] = await q<{ ok: boolean }>(`SELECT to_regclass('property_recovery_decisions') IS NOT NULL AS ok`, []);
   if (!ok) return new Map();
   const r = await q<{ field_key: string; value_after: unknown }>(

@@ -79,7 +79,7 @@ export function orderSteps(steps: MigStep[] | 'all'): MigStep[] {
 }
 
 /** Verrou consultatif GLOBAL des rattrapages (une seule application à la fois). */
-export const BACKFILL_LOCK_KEY = 'cdc15_backfill';
+const BACKFILL_LOCK_KEY = 'cdc15_backfill';
 
 type Verrou = { liberer: () => Promise<void> };
 

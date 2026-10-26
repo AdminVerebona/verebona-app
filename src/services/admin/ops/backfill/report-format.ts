@@ -44,7 +44,7 @@ export interface BackfillSummary {
 /** Échantillons affichés (le rapport JSON complet est téléchargeable). */
 export const SAMPLE_LIMIT = 20;
 /** Éléments gardés par tableau dans le rapport JSON conservé. */
-export const STORED_ARRAY_LIMIT = 2_000;
+const STORED_ARRAY_LIMIT = 2_000;
 
 const echantillon = <T>(xs: readonly T[], f: (x: T) => string): string[] => xs.slice(0, SAMPLE_LIMIT).map(f);
 

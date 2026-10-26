@@ -35,7 +35,7 @@ import type { ExportSourceTrace } from './canonical-source';
  */
 export type InfoSection = Record<string, AdditionalInfoValue | null | undefined>;
 
-export interface AdditionalInfosSnapshot {
+interface AdditionalInfosSnapshot {
   commercial: InfoSection;
   rental: InfoSection;
   insurance: InfoSection;
@@ -146,7 +146,7 @@ export interface SourceEquipmentField {
   evidence: { evidenceId: number; fileId: number | null; documentDate: string | null } | null;
 }
 
-export interface SourceCil {
+interface SourceCil {
   readiness: CilReadiness;
   profile: { triggerType: string | null; triggerDate: string | null; authorizationType: string | null; voluntaryReason: string | null } | null;
   materials: Array<{ id: number; category: string; materialNature: string | null; brand: string | null; reference: string | null; thermalResistanceR: string | null; lambda: string | null; thicknessMm: number | null; documentId: number | null }>;
@@ -159,7 +159,7 @@ export interface SourceCil {
  * peut en avoir plusieurs (Q2). Lot 83D (V-Q2) : plus de lecture de
  * l'ancienne saisie (`claim_json`) — sans sinistre, `origin` = `none`.
  */
-export interface ExportClaimSelection {
+interface ExportClaimSelection {
   /** Sinistre retenu ; null : aucun. */
   selectedOperationId: number | null;
   origin: 'operation' | 'none';
@@ -257,7 +257,7 @@ export interface ExportSource {
  * Verebona (VENTE-RULE-001, LOCATION-RULE-001) et données d'occupation
  * (garde-fou « occupant »).
  */
-export const FORBIDDEN_CHARACTERISTICS = new Set([
+const FORBIDDEN_CHARACTERISTICS = new Set([
   'estimatedValue', 'estimatedValueDate', 'estimatedValueMode', 'valuationLow', 'valuationHigh', 'valuationSource', 'valuationDate',
   'occupancyStatus', 'occupancyNotes', 'monthlyRent', 'charges', 'tenantName', 'tenant', 'occupant', 'occupantName',
   'insuranceClientNumber', 'insurancePremium',
@@ -274,7 +274,7 @@ const asIso = (v: unknown): string | null => {
 };
 
 /** Pièces : exclut les photos de la galerie (traitées à part) et les liens web. */
-export function toSourceDocuments(docs: DocumentRef[], photoFileIds: Set<number>): SourceDocument[] {
+function toSourceDocuments(docs: DocumentRef[], photoFileIds: Set<number>): SourceDocument[] {
   return docs
     .filter((d) => !d.isWebLink && !photoFileIds.has(d.id))
     .map((d) => {
@@ -306,7 +306,7 @@ export function toSourceDocuments(docs: DocumentRef[], photoFileIds: Set<number>
     });
 }
 
-export function toSourcePhotos(photos: PhotoRef[]): SourcePhoto[] {
+function toSourcePhotos(photos: PhotoRef[]): SourcePhoto[] {
   return photos
     .filter((p) => !!p.s3Key)
     .sort((a, b) => (a.isPrimary === b.isPrimary ? a.displayOrder - b.displayOrder : a.isPrimary ? -1 : 1))
@@ -354,7 +354,7 @@ type LoadParams = {
  * Sinistre du dossier (lot 44) : celui demandé s'il concerne le bien, sinon le
  * plus récent ; aucun → `none` (lot 83D : plus de lecture de `claim_json`).
  */
-export async function loadClaimSelection(
+async function loadClaimSelection(
   params: Pick<LoadParams, 'assetId' | 'accountId' | 'claimOperationId'>,
 ): Promise<{ selection: ExportClaimSelection; file: ExportClaimFile | null }> {
   const { loadClaimRecords } = await import('@/services/business-operations/claims/read');
@@ -367,7 +367,7 @@ export async function loadClaimSelection(
 }
 
 /** Enregistrement de l'Opération CLAIM → contenu du dossier (pur). */
-export function toClaimFile(r: import('@/services/business-operations/claims/model').ClaimRecord): ExportClaimFile {
+function toClaimFile(r: import('@/services/business-operations/claims/model').ClaimRecord): ExportClaimFile {
   const d = r.details;
   const principal = r.agenda.find((a) => a.role === 'PRINCIPAL') ?? null;
   return {

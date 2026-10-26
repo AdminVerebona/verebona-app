@@ -42,7 +42,7 @@ function duree(name: string, def: number): number {
   return Number.isInteger(n) && n > 0 ? n : def;
 }
 
-export interface RetentionPolicy {
+interface RetentionPolicy {
   /** Historique conversationnel — 90 jours (décision produit GAP-16). */
   conversationDays: number;
   /** Agrégats de coût et performance — §29.7 : 13 mois. */
@@ -65,10 +65,7 @@ export function retentionPolicy(): RetentionPolicy {
   };
 }
 
-/** Instantané au chargement (compatibilité) ; la purge relit `retentionPolicy()`. */
-export const RETENTION: Readonly<RetentionPolicy> = retentionPolicy();
-
-export interface PurgeReport {
+interface PurgeReport {
   messagesDeleted: number;
   conversationsDeleted: number;
   feedbackDeleted: number;
@@ -83,7 +80,7 @@ export interface PurgeReport {
   durationMs: number;
 }
 
-export async function purgeAssistantData(now = new Date()): Promise<PurgeReport> {
+export async function purgeAssistantData(): Promise<PurgeReport> {
   const startedAt = Date.now();
   // D-J1 : durée d'historique administrée dans le BO, relue avant la purge.
   const { refreshAssistantSettings } = await import('@/services/verebona-assistant/config/assistant-settings');

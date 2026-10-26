@@ -35,18 +35,17 @@
  * l'examen des échéances est indisponible, jamais que tout va bien.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { plain } from '@/services/verebona-assistant/core/routing-text';
 
 // ── Contrat ─────────────────────────────────────────────────────────────────
 
-export type T6Decision = 'SHOW_NOW' | 'DEFER' | 'SUPPRESS';
+type T6Decision = 'SHOW_NOW' | 'DEFER' | 'SUPPRESS';
 /**
  * Conclusion de l'IA : à traiter maintenant, à anticiper, rappel informatif
  * (lot 68 : SHOW_NOW + INFORMATION, aucune action attendue), plus tard, aucune.
  */
-export type T6AiInterpellation = 'ACT_NOW' | 'ANTICIPATE' | 'INFORM' | 'LATER' | 'NONE';
-export type T6Priority = 'HIGH' | 'MEDIUM' | 'LOW';
-export const T6_AI_INTERPELLATIONS: readonly T6AiInterpellation[] = ['ACT_NOW', 'ANTICIPATE', 'INFORM', 'LATER', 'NONE'];
-export const T6_PRIORITIES: readonly T6Priority[] = ['HIGH', 'MEDIUM', 'LOW'];
+type T6AiInterpellation = 'ACT_NOW' | 'ANTICIPATE' | 'INFORM' | 'LATER' | 'NONE';
+type T6Priority = 'HIGH' | 'MEDIUM' | 'LOW';
 
 /** Codes de justification (liste fermée, affichée dans le reporting T6). */
 export type T6DecisionCode =
@@ -190,10 +189,10 @@ export interface T6EvaluationConfig {
 export const T6_EVALUATION_SIGNATURE_V2 = 'e2:';
 
 /** Version du master d'une décision conservée (`t6_master_v1@pv12:abc|cfg:3` → `t6_master_v1@pv12:abc`). */
-export const masterVersionOf = (promptVersion: string | null | undefined): string | null =>
+const masterVersionOf = (promptVersion: string | null | undefined): string | null =>
   promptVersion ? promptVersion.split('|')[0] || null : null;
 
-export type T6SubjectState = 'ACTIVE' | 'RESOLVED' | 'OBSOLETE';
+type T6SubjectState = 'ACTIVE' | 'RESOLVED' | 'OBSOLETE';
 
 /** Échéance candidate à une interpellation, identifiée de façon STABLE. */
 export interface T6Candidate {
@@ -262,7 +261,7 @@ export interface T6ReminderPreference {
   cycleKey?: string | null;
 }
 
-export interface T6DecisionInput {
+interface T6DecisionInput {
   candidate: T6Candidate;
   /** AAAA-MM-JJ (Europe/Paris). */
   today: string;
@@ -347,13 +346,13 @@ export const DEFAULT_T6_THRESHOLD_DAYS = 60;
 /** Une évaluation IA est revue au plus tard après ce délai. */
 export const T6_ASSESSMENT_MAX_AGE_DAYS = 14;
 /** Candidats évalués par l'IA au-delà du seuil (exception possible) jusqu'à cet horizon au moins. */
-export const T6_ASSESSMENT_MIN_HORIZON_DAYS = 180;
+const T6_ASSESSMENT_MIN_HORIZON_DAYS = 180;
 /** Candidats transmis à l'IA par appel, au plus. */
 export const T6_MAX_ASSESSMENTS_PER_CALL = 8;
 /** Anti-répétition : fenêtre, nombre de jours d'affichage, durée de pause. */
 export const T6_REPEAT_WINDOW_DAYS = 10;
 export const T6_REPEAT_MAX_DAYS = 5;
-export const T6_REPEAT_COOLDOWN_DAYS = 7;
+const T6_REPEAT_COOLDOWN_DAYS = 7;
 
 /*
  * Lot 75E (D) : l'écart de 183 jours du lot 71G (`T6_NEW_CYCLE_MIN_DAYS`) est
@@ -459,7 +458,7 @@ export function normalizeForFingerprint(v: string | null | undefined): string {
  * valeur, confiance). Lot 75E (C) : plus le CONTENU PROBANT de l'extrait et la
  * provenance (empreinte `v3:`) — jamais l'identifiant ni la version d'extraction.
  */
-export interface T6FingerprintFact {
+interface T6FingerprintFact {
   fileId: number; key: string; value: string | null; confidence: string | null;
   excerpt?: string | null; provenance?: string | null;
 }
@@ -485,7 +484,7 @@ export function probativeContent(excerpt: string | null | undefined): string {
 }
 
 /** Provenance normalisée (T1, revalidation T2, consolidation T3…) : change la fiabilité de la preuve. */
-export const provenanceClass = (p: string | null | undefined): string => (p ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_') || 'INCONNUE';
+const provenanceClass = (p: string | null | undefined): string => (p ?? '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_') || 'INCONNUE';
 
 /**
  * Lot 71G (T6-01) — parties de l'empreinte ENRICHIE (pure) : celles du lot
@@ -649,7 +648,7 @@ export function preferenceAppliesToCycle(p: Pick<T6ReminderPreference, 'scope' |
  * EVALUATE (prompt, modèle, seuil) : inutilisable, comme `CONTEXT_CHANGED`
  * (≠ `AGED`, seulement vieillissante, utilisable pendant son renouvellement).
  */
-export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRACT_CHANGED' | 'CONFIG_CHANGED' | 'NONE';
+type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRACT_CHANGED' | 'CONFIG_CHANGED' | 'NONE';
 
 /**
  * Lot 72A (AC02) — la décision a-t-elle été prise sous une AUTRE
@@ -657,7 +656,7 @@ export type T6AssessmentStatus = 'FRESH' | 'AGED' | 'CONTEXT_CHANGED' | 'CONTRAC
  * comparée telle quelle ; décision antérieure sans signature : version du
  * master comparée ; l'une ou l'autre inconnue : non (prudence de coût).
  */
-export function evaluationConfigChanged(a: Pick<T6StoredAssessment, 'evaluationSignature' | 'promptVersion'>, cfg: T6EvaluationConfig | null | undefined): boolean {
+function evaluationConfigChanged(a: Pick<T6StoredAssessment, 'evaluationSignature' | 'promptVersion'>, cfg: T6EvaluationConfig | null | undefined): boolean {
   if (!cfg) return false;
   const s = a.evaluationSignature;
   // Lot 76A (AC04, transition) : signature du lot 72A (`e1:`, sans replis,
@@ -725,7 +724,7 @@ export const T6_ASSESSMENT_REVISION_REMINDER = 2;
  * prompt effectif connaît la règle. Les autres (DEFER, suppressions motivées
  * autrement) restent valables. Pure.
  */
-export function assessmentNeedsReminderRenewal(a: Pick<T6StoredAssessment, 'contractRevision' | 'decision' | 'reasonCode'>): boolean {
+function assessmentNeedsReminderRenewal(a: Pick<T6StoredAssessment, 'contractRevision' | 'decision' | 'reasonCode'>): boolean {
   if ((a.contractRevision ?? 1) >= T6_ASSESSMENT_REVISION_REMINDER) return false;
   return a.decision === 'SHOW_NOW' || (a.decision === 'SUPPRESS' && a.reasonCode === 'NO_ACTION_REQUIRED');
 }
@@ -1035,7 +1034,7 @@ export interface T6EvidenceVersion {
  * n'établissent JAMAIS une obligation. Version inconnue d'un fait : non
  * concrète (rien n'est présumé établi).
  */
-export function isConcreteEvidence(ref: string, versions?: ReadonlyMap<string, T6EvidenceVersion>): boolean {
+function isConcreteEvidence(ref: string, versions?: ReadonlyMap<string, T6EvidenceVersion>): boolean {
   if (/\.description$/.test(ref)) return true;
   if (!/\.fact\d+$/.test(ref)) return false;
   if (!versions) return true; // appelants antérieurs (sans versions) : règle du lot 71G
@@ -1166,7 +1165,6 @@ const texte = (v: unknown, max = 400): string | null => {
   return t ? t.slice(0, max) : null;
 };
 
-const plainA = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'");
 /** Verbes de préparation GÉNÉRIQUES : seuls, ils n'apportent aucune information. */
 const VERBES_GENERIQUES = new Set(['preparer', 'prevoir', 'anticiper', 'penser', 'noter', 'retenir', 'suivre', 'organiser', 'planifier', 'surveiller', 'garder', 'tete', 'esprit', 'occuper', 'gerer', 'rappeler']);
 const MOTS_VIDES = new Set(['de', 'du', 'des', 'la', 'le', 'les', 'l', 'd', 'et', 'en', 'pour', 'au', 'aux', 'a', 'un', 'une', 'votre', 'vos', 'son', 'sa', 'ses', 'ce', 'cet', 'cette', 'se', 'sur', 'avant', 'date', 'echeance', 'prochain', 'prochaine', 'bien']);
@@ -1180,8 +1178,8 @@ const MOTS_VIDES = new Set(['de', 'du', 'des', 'la', 'le', 'les', 'l', 'd', 'et'
 export function actionIsDistinct(action: string | null, subject: { title?: string | null; assetName?: string | null; dateLabel?: string | null }): boolean {
   const t = texte(action, 160);
   if (!t) return false;
-  const dejaDits = new Set(plainA(`${subject.title ?? ''} ${subject.assetName ?? ''} ${subject.dateLabel ?? ''}`).split(/[^a-z0-9]+/).filter(Boolean));
-  const mots = plainA(t).split(/[^a-z0-9]+/).filter((w) => w && !MOTS_VIDES.has(w));
+  const dejaDits = new Set(plain(`${subject.title ?? ''} ${subject.assetName ?? ''} ${subject.dateLabel ?? ''}`).split(/[^a-z0-9]+/).filter(Boolean));
+  const mots = plain(t).split(/[^a-z0-9]+/).filter((w) => w && !MOTS_VIDES.has(w));
   return mots.some((w) => !VERBES_GENERIQUES.has(w) && !dejaDits.has(w) && !(w.length > 4 && [...dejaDits].some((d) => d.length > 4 && (d.startsWith(w.slice(0, 5)) || w.startsWith(d.slice(0, 5))))));
 }
 

@@ -60,12 +60,12 @@ export type DeletionReason = 'WITHDRAWAL' | 'VOLUNTARY' | 'TRIAL_ABANDONED' | 'A
  */
 export type DeletionOrigin = 'user' | 'system' | 'admin';
 
-export function defaultOriginFor(reason: DeletionReason): DeletionOrigin {
+function defaultOriginFor(reason: DeletionReason): DeletionOrigin {
   if (reason === 'ADMIN') return 'admin';
   if (reason === 'TRIAL_ABANDONED' || reason === 'UNPAID') return 'system';
   return 'user';
 }
-export type DeletionStatus = 'SCHEDULED' | 'CANCELLED' | 'EXECUTED' | 'FAILED';
+type DeletionStatus = 'SCHEDULED' | 'CANCELLED' | 'EXECUTED' | 'FAILED';
 
 /**
  * Portée d'une suppression (migration 0206).
@@ -78,9 +78,9 @@ export type DeletionStatus = 'SCHEDULED' | 'CANCELLED' | 'EXECUTED' | 'FAILED';
  *     titulaire sont supprimés ; un second utilisateur n'est jamais emporté
  *     par la décision d'un autre (voir `executeScheduledDeletion`).
  */
-export type DeletionScope = 'account' | 'user';
+type DeletionScope = 'account' | 'user';
 
-export function scopeFor(reason: DeletionReason): DeletionScope {
+function scopeFor(reason: DeletionReason): DeletionScope {
   return reason === 'VOLUNTARY' ? 'user' : 'account';
 }
 
@@ -115,7 +115,7 @@ function addDays(date: Date, days: number): Date {
 
 /* ── Planification ─────────────────────────────────────────────────────── */
 
-export interface ScheduleInput {
+interface ScheduleInput {
   accountId: number;
   userId: number;
   reason: DeletionReason;
@@ -330,9 +330,9 @@ export async function cancelUserDeletion(
 }
 
 /** Durée de validité d'une réservation d'exécution (processus interrompu au-delà). */
-export const EXECUTION_CLAIM_TTL_MS = 2 * 60 * 60 * 1000;
+const EXECUTION_CLAIM_TTL_MS = 2 * 60 * 60 * 1000;
 
-export function isClaimActive(processingStartedAt: Date | null | undefined, now: Date): boolean {
+function isClaimActive(processingStartedAt: Date | null | undefined, now: Date): boolean {
   return !!processingStartedAt && now.getTime() - processingStartedAt.getTime() < EXECUTION_CLAIM_TTL_MS;
 }
 
@@ -437,7 +437,7 @@ export async function getLatestUserSchedule(userId: number): Promise<ScheduledDe
  * et un compte à rebours créé à moins de sept jours de son échéance ne doit pas
  * déclencher un rappel « dans sept jours » manifestement faux.
  */
-export function selectDueReminder(
+function selectDueReminder(
   item: Pick<ScheduledDeletion, 'scheduledAt' | 'reminderJ7SentAt' | 'reminderJ1SentAt'>,
   now: Date,
 ): 'j7' | 'j1' | null {

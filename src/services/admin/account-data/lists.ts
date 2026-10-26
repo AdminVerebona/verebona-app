@@ -13,10 +13,10 @@ import { containsPattern } from '@/services/admin/list-params';
 import { OperationDiagnosticsService, readOnlyExecutor, type DiagExecutor, type DiagQuery } from '@/services/business-operations/diagnostics/service';
 import type { OperationState } from '@/services/business-operations/diagnostics/model';
 import { ASSET_STATUS_LABELS } from '@/lib/asset-status';
-import { CATEGORY_TYPES, type Category, type EntityType } from './model';
+import { type Category, type EntityType } from './model';
 
-export const LIST_PAGE_SIZE = 25;
-export const LIST_MAX_PAGE_SIZE = 100;
+const LIST_PAGE_SIZE = 25;
+const LIST_MAX_PAGE_SIZE = 100;
 
 export interface ListQuery {
   q: string;
@@ -276,4 +276,3 @@ export async function listAccountData(
   });
 }
 
-export const categoryTypes = (c: Category) => CATEGORY_TYPES[c];

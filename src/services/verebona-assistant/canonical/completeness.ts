@@ -13,7 +13,7 @@ import { buildCanonicalAssetState, isEmptyValue, type AssetRowJson } from '@/ser
 import { listFields, toAssetFamily, type AssetFamily, type CanonicalFieldDef } from '@/services/canonical/registry';
 import { canonicalKeyOf } from './field-reader';
 
-export interface MissingField {
+interface MissingField {
   key: string;
   label: string;
   /** Carte « À traiter » ouverte sur ce champ, s'il y en a une. */

@@ -35,13 +35,13 @@ import type { Sql } from './registry/types';
 import { rows } from './registry/util';
 import { getCheck } from './registry';
 
-export const COHERENCE_ANOMALY_PREFIX = 'other:coherence:';
-export const PERSISTENT_STREAK = 3;
-export const REPEATED_REPAIRS = 3;
+const COHERENCE_ANOMALY_PREFIX = 'other:coherence:';
+const PERSISTENT_STREAK = 3;
+const REPEATED_REPAIRS = 3;
 /** Fenêtre des preuves prises en compte (comptes encore contrôlés). */
 const RECENT_HOURS = 36;
 
-export interface CoherenceAlert {
+interface CoherenceAlert {
   fingerprint: string;
   title: string;
   count: number;

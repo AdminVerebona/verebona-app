@@ -26,10 +26,10 @@
 import type { ExecutionGuard } from '../../queue/execution-control';
 import type { AccountMatchingIndex, MatchingIndexCache } from '../document-asset/matching-index';
 
-export const TARGETING_RELATION = 'SOURCE_UNIT_TARGETING';
-export const TARGETING_MAX_OBJECTS = 10;
-export const TARGETING_MAX_SEARCHES = 12;
-export const TARGETING_MAX_DOCUMENTS = 100;
+const TARGETING_RELATION = 'SOURCE_UNIT_TARGETING';
+const TARGETING_MAX_OBJECTS = 10;
+const TARGETING_MAX_SEARCHES = 12;
+const TARGETING_MAX_DOCUMENTS = 100;
 
 export interface TargetingResult {
   objects: number;
@@ -40,7 +40,7 @@ export interface TargetingResult {
   delegated: number;
 }
 
-export interface TermGroup {
+interface TermGroup {
   /** Termes cherchés ensemble (tous requis). */
   terms: string[];
   kind: 'ADDRESS' | 'IDENTIFIER' | 'NAME';

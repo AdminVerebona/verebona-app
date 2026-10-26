@@ -43,9 +43,9 @@ const asJson = (v: unknown): Record<string, unknown> | null => {
   return v as Record<string, unknown>;
 };
 
-export type EconomicDateAnomaly = 'UNJUSTIFIED_ECONOMIC_DATE' | 'ECONOMIC_DATE_NOT_TRACED' | 'ECONOMIC_DATE_STALE';
+type EconomicDateAnomaly = 'UNJUSTIFIED_ECONOMIC_DATE' | 'ECONOMIC_DATE_NOT_TRACED' | 'ECONOMIC_DATE_STALE';
 
-export interface ComponentEconomicDateState {
+interface ComponentEconomicDateState {
   componentId: number;
   operationId: number;
   resolution: EconomicDateResolution;
@@ -122,7 +122,7 @@ export async function inspectOperationEconomicDates(accountId: number, operation
   return out;
 }
 
-export interface ApplyEconomicDatesResult {
+interface ApplyEconomicDatesResult {
   /** Traces consignées (composantes corrigées ou provenance ajoutée). */
   recorded: number;
   /** Dont affectations annuelles injustifiées corrigées ou retirées. */

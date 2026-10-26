@@ -54,9 +54,9 @@ export const ANOMALY_DOMAINS = [
   { key: 'other', label: 'Autres traitements techniques' },
 ] as const;
 
-export type AnomalyDomain = (typeof ANOMALY_DOMAINS)[number]['key'];
+type AnomalyDomain = (typeof ANOMALY_DOMAINS)[number]['key'];
 
-export function isAnomalyDomain(value: unknown): value is AnomalyDomain {
+function isAnomalyDomain(value: unknown): value is AnomalyDomain {
   return ANOMALY_DOMAINS.some((d) => d.key === value);
 }
 
@@ -79,7 +79,7 @@ export function buildFingerprint(domain: AnomalyDomain, ...parts: Array<string |
   return [domain, ...tail].join(':').slice(0, MAX_FINGERPRINT);
 }
 
-export type ReportDecision =
+type ReportDecision =
   | { action: 'consolidate'; anomalyId: number }
   | { action: 'create'; previousAnomalyId: number | null };
 
@@ -121,14 +121,14 @@ export function sanitizeDetail(detail: Record<string, unknown> | null | undefine
  * l'événement a au moins `STRIPE_WEBHOOK_ANOMALY_DELAY_MS` d'ancienneté,
  * donc plusieurs relances ont déjà échoué.
  */
-export const STRIPE_WEBHOOK_ANOMALY_DELAY_MS = 60 * 60 * 1000;
+const STRIPE_WEBHOOK_ANOMALY_DELAY_MS = 60 * 60 * 1000;
 
 export function isStripeRetryExhausted(eventCreatedUnix: number | null | undefined, now: Date = new Date()): boolean {
   if (!eventCreatedUnix) return true; // âge inconnu : on ne masque rien.
   return now.getTime() - eventCreatedUnix * 1000 >= STRIPE_WEBHOOK_ANOMALY_DELAY_MS;
 }
 
-export interface ManualResolutionInput {
+interface ManualResolutionInput {
   cause?: string | null;
   internalComment?: string | null;
   correctiveAction?: string | null;
@@ -154,9 +154,9 @@ export function validateManualResolution(input: ManualResolutionInput): 'CORRECT
 
 // ─── Tri des listes (SUP-005, SUP-H02) ──────────────────────────────────────
 
-export type AnomalyStatus = 'open' | 'resolved';
-export type AnomalySortKey = 'date' | 'detected' | 'domain' | 'account' | 'user';
-export const ANOMALY_SORT_KEYS: readonly AnomalySortKey[] = ['date', 'detected', 'domain', 'account', 'user'];
+type AnomalyStatus = 'open' | 'resolved';
+type AnomalySortKey = 'date' | 'detected' | 'domain' | 'account' | 'user';
+const ANOMALY_SORT_KEYS: readonly AnomalySortKey[] = ['date', 'detected', 'domain', 'account', 'user'];
 
 const DOMAIN_ORDER_SQL = `CASE an.domain ${ANOMALY_DOMAINS.map((d, i) => `WHEN '${d.key}' THEN ${i}`).join(' ')} ELSE 99 END`;
 
@@ -277,7 +277,7 @@ export async function reportAnomaly(input: ReportAnomalyInput): Promise<number |
   return null;
 }
 
-export interface AutoResolveOptions {
+interface AutoResolveOptions {
   /** Mécanisme ayant constaté le retour à la normale (ex. `stripe_webhook_retry`). */
   origin: string;
   /** Cause technique connue, si disponible. */
@@ -309,7 +309,7 @@ export async function autoResolveAnomaly(fingerprint: string, opts: AutoResolveO
 // ─── Points d'intégration : notifications (outbox) ──────────────────────────
 
 /** Empreinte d'un échec de notification : type d'événement × canal. */
-export function notificationFingerprint(eventType: string, channel: string): string {
+function notificationFingerprint(eventType: string, channel: string): string {
   return buildFingerprint('communications', 'notification', eventType, channel);
 }
 
@@ -468,7 +468,7 @@ function mapRow(r: AnomalyRow): AnomalyListItem {
   };
 }
 
-export const ANOMALY_PAGE_SIZE = 25;
+const ANOMALY_PAGE_SIZE = 25;
 
 /**
  * Liste paginée (GEN-004), triable (SUP-005, SUP-H02). Ni recherche ni filtre
@@ -571,7 +571,7 @@ export async function getAnomaly(id: number): Promise<AnomalyDetail | null> {
   };
 }
 
-export type AnomalyMutationError = 'NOT_FOUND' | 'ALREADY_RESOLVED' | 'CORRECTIVE_ACTION_REQUIRED';
+type AnomalyMutationError = 'NOT_FOUND' | 'ALREADY_RESOLVED' | 'CORRECTIVE_ACTION_REQUIRED';
 
 /**
  * Enregistre cause, commentaire interne et action corrective (SUP-007).
@@ -634,14 +634,14 @@ export async function resolveAnomalyManually(
 // ─── Points d'intégration : sauvegardes ─────────────────────────────────────
 
 /** Une seule anomalie « sauvegarde » : c'est l'état du dispositif qui compte. */
-export const BACKUP_FINGERPRINT = buildFingerprint('backups', 'database');
+const BACKUP_FINGERPRINT = buildFingerprint('backups', 'database');
 
 /**
  * Délai au-delà duquel l'absence de sauvegarde réussie est une anomalie,
  * même sans échec signalé (planificateur arrêté). Même seuil que l'ancien
  * indicateur du tableau de bord (erreur au-delà de 48 h).
  */
-export const BACKUP_STALE_HOURS = 48;
+const BACKUP_STALE_HOURS = 48;
 
 /**
  * Échec d'une sauvegarde planifiée. La sauvegarde est quotidienne : un échec
@@ -705,7 +705,7 @@ export async function checkBackupFreshness(lastBackupAt: Date | null | undefined
  * tant qu'elle n'est pas accordée. SUP-009 : l'échec ne devient une anomalie
  * qu'au-delà de ce nombre de jours d'échecs après l'éligibilité.
  */
-export const REFERRAL_REWARD_ANOMALY_AFTER_DAYS = 2;
+const REFERRAL_REWARD_ANOMALY_AFTER_DAYS = 2;
 
 export function referralRewardFingerprint(referralEventId: number): string {
   return buildFingerprint('referrals', 'reward', referralEventId);

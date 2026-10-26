@@ -35,7 +35,7 @@
  */
 import type { Treatment } from '../config/treatments';
 
-export type ManualTreatment = 'T1' | 'T3' | 'T4';
+type ManualTreatment = 'T1' | 'T3' | 'T4';
 
 /** Document portant des échéances candidates T1 (entrée d'un passage T4 manuel). */
 export interface T4Source {
@@ -48,7 +48,7 @@ export interface T4Source {
 }
 
 /** Lot 54A : issue d'une demande du lancement (une par objet), motivée. */
-export interface ManualLaunchRequestOutcome {
+interface ManualLaunchRequestOutcome {
   accountId: number;
   decision: 'create' | 'skip' | 'coalesce' | 'refused' | 'lost';
   /** Motif quand aucun job n'est annoncé pour cette demande. */
@@ -56,7 +56,7 @@ export interface ManualLaunchRequestOutcome {
   jobId: number | null;
 }
 
-export interface ManualLaunchDetails {
+interface ManualLaunchDetails {
   excludedAccountIds?: number[];
   refused?: number;
   /** Lot 54A : décompte des motifs de non-création (CROSS_ACCOUNT_SCOPE, PERSISTENCE_NOT_CONFIRMED…). */
@@ -101,7 +101,7 @@ export class ManualLaunchFailed extends Error {
 /** Plafond d'un lancement : au-delà, découper (la file et le fournisseur suivent). */
 export const MANUAL_LAUNCH_MAX_JOBS = 5_000;
 
-export interface ManualScope {
+interface ManualScope {
   /** Comptes ciblés ; ignoré si `all`. */
   accountIds?: number[];
   /** Tout le périmètre pertinent du traitement. */
@@ -133,7 +133,7 @@ export interface ManualLaunchDeps {
   trace?: (t: import('./t3-enqueue-trace').T3EnqueueTrace) => Promise<void>;
 }
 
-export interface ManualLaunchResult {
+interface ManualLaunchResult {
   treatment: ManualTreatment;
   dryRun: boolean;
   /** Estimation (dryRun) ou nombre de jobs créés. */
@@ -152,14 +152,14 @@ export interface ManualLaunchResult {
   waitsForReactivation: boolean;
 }
 
-export function assertLaunchable(treatment: string): asserts treatment is ManualTreatment {
+function assertLaunchable(treatment: string): asserts treatment is ManualTreatment {
   if (treatment !== 'T1' && treatment !== 'T3' && treatment !== 'T4') {
     throw new ManualLaunchRefused('NOT_LAUNCHABLE', `${treatment} n'est pas un traitement batch lançable.`);
   }
 }
 
 /** Normalise le périmètre : identifiants entiers positifs, dédoublonnés. */
-export function normalizeScope(scope: ManualScope): number[] | null {
+function normalizeScope(scope: ManualScope): number[] | null {
   if (scope.all) return null;
   const ids = [...new Set((scope.accountIds ?? []).filter((n) => Number.isInteger(n) && n > 0))];
   if (ids.length === 0) {

@@ -49,7 +49,7 @@ export interface AttachmentState {
   userEdited: boolean;
 }
 
-export const NO_DOCUMENT: AttachmentState = {
+const NO_DOCUMENT: AttachmentState = {
   exists: false, open: false, analysisState: null, userId: null, columnAssetId: null, columnIsAutomatic: false,
   primaryAssetIds: [], secondaryAssetIds: [], mentionedAssetIds: [], userLinkAssetIds: [], userEdited: false,
 };

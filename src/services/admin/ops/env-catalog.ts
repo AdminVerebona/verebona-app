@@ -31,7 +31,7 @@ import { S3_LEGACY_ENV } from '@/lib/s3-config';
 
 export type EnvLevel = 'obligatoire' | 'recommandee' | 'facultative';
 
-export interface EnvVariableDoc {
+interface EnvVariableDoc {
   name: string;
   level: EnvLevel;
   description: string;
@@ -39,7 +39,7 @@ export interface EnvVariableDoc {
   buildTime: boolean;
 }
 
-export interface EnvSectionDoc {
+interface EnvSectionDoc {
   title: string;
   variables: EnvVariableDoc[];
 }
@@ -151,7 +151,7 @@ export function parseEnvExample(texte: string): EnvSectionDoc[] {
   return sections.filter((s) => s.variables.length > 0);
 }
 
-export interface RetiredEnvDoc {
+interface RetiredEnvDoc {
   name: string;
   /** Lot ou chantier qui l'a retirée. */
   origin: string;
@@ -191,7 +191,7 @@ export interface ConfigReport {
   reminder: string;
 }
 
-export const SCALINGO_REMINDER = 'À poser dans Scalingo > Environnement (puis redémarrer ; une variable NEXT_PUBLIC_* impose un nouveau déploiement).';
+const SCALINGO_REMINDER = 'À poser dans Scalingo > Environnement (puis redémarrer ; une variable NEXT_PUBLIC_* impose un nouveau déploiement).';
 
 /** Rapport pur : documentation + environnement → présences (noms seuls). */
 export function buildConfigReport(

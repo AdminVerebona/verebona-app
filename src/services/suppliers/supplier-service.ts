@@ -73,7 +73,7 @@ function normalizeTextField(v: string): string {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export interface ExtractedSupplierData {
+interface ExtractedSupplierData {
   name: string;
   email?: string | null;
   phone?: string | null;
@@ -125,14 +125,14 @@ export interface Candidate {
   score: number;
 }
 
-export type MatchDecision = 'certain' | 'uncertain' | 'new';
+type MatchDecision = 'certain' | 'uncertain' | 'new';
 
 export interface ConsolidationResult {
   updated: boolean;
   conflicts: ConflictFieldInfo[];
 }
 
-export interface ConflictFieldInfo {
+interface ConflictFieldInfo {
   field: string;
   currentValue: string | null;
   detectedValue: string | null;
@@ -205,7 +205,7 @@ export async function findCandidates(
 
 // ─── Assess match ─────────────────────────────────────────────────────────────
 
-export function assessMatch(candidates: Candidate[], extractedData: ExtractedSupplierData): MatchDecision {
+export function assessMatch(candidates: Candidate[]): MatchDecision {
   if (candidates.length === 0) return 'new';
 
   const top = candidates[0];

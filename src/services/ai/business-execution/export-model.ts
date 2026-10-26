@@ -46,15 +46,15 @@ export const EXECUTIONS_EXPORT_PREFIX = 'admin-exports/ia-executions/';
 export const executionsExportPrefix = (generationId: string): string => `${EXECUTIONS_EXPORT_PREFIX}${generationId}/`;
 
 /** Exécutions par partie (cible : une partie est close à la fin de la tranche qui l'atteint). */
-export const EXPORT_PART_ROWS = 20_000;
+const EXPORT_PART_ROWS = 20_000;
 /** Largeur d'une tranche de lecture. */
-export const EXPORT_SLICE_MS = 24 * 3600_000;
+const EXPORT_SLICE_MS = 24 * 3600_000;
 /** Tranche minimale : en dessous, un dépassement du plafond de lecture rend l'export PARTIEL (signalé). */
 export const EXPORT_MIN_SLICE_MS = 60_000;
 /** Exécutions par lot de lecture des appels. */
 export const EXPORT_CALL_BATCH = 200;
 /** Taille compressée maximale d'un volume ZIP (sous la limite de 4 Gio du format sans ZIP64). */
-export const EXPORT_VOLUME_MAX_BYTES = 1024 ** 3;
+const EXPORT_VOLUME_MAX_BYTES = 1024 ** 3;
 /** Durée de conservation des fichiers stockés (même règle que l'export de recette). */
 export const EXPORT_RETENTION_DAYS = 30;
 
@@ -200,7 +200,7 @@ export function exportStatus(s: Pick<ExportResumeState, 'files' | 'totals' | 'pa
   return 'COMPLETE';
 }
 
-export const EXPORT_MASKING_NOTES: readonly string[] = [
+const EXPORT_MASKING_NOTES: readonly string[] = [
   'Identifiants (exécution, travail, rapport, trace, appel, compte, objet) : jamais masqués — corrélation et comparaison avant / après.',
   'Secrets et jetons : jamais exportés (liste blanche de colonnes du collecteur 77C, motifs de secret masqués dans les textes).',
   'E-mails : pseudonyme stable ; identité, téléphone, adresse, n° de contrat : marqueur de masquage.',

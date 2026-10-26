@@ -22,14 +22,11 @@ import type { RetrievedSource, SourceType } from '../types/sources';
 import { hrefSource, parseEntityRef, ROUTES } from './entity-ref';
 import { integratedHelpHref } from '@/lib/help-center/open';
 
-export type ResultGroupType = 'asset' | 'document' | 'agenda' | 'supplier' | 'to_process' | 'help';
+type ResultGroupType = 'asset' | 'document' | 'agenda' | 'supplier' | 'to_process' | 'help';
 
 export const GROUP_QUOTAS: Readonly<Record<ResultGroupType, number>> = {
   asset: 5, document: 8, agenda: 5, supplier: 5, help: 5, to_process: 5,
 };
-
-/** Nombre de cartes visibles avant « Voir tous les résultats » (§22.3). */
-export const MAX_VISIBLE_CARDS = 5;
 
 const GROUP_LABELS: Record<ResultGroupType, string> = {
   asset: 'Biens', document: 'Documents', agenda: 'Échéances', supplier: 'Fournisseurs',
@@ -42,7 +39,7 @@ const MORE_HREF: Record<ResultGroupType, string | null> = {
   to_process: ROUTES.A_TRAITER, help: ROUTES.AIDE, supplier: ROUTES.FOURNISSEURS,
 };
 
-export interface ResultCard {
+interface ResultCard {
   id: string;
   typeLabel: string;
   title: string;
@@ -91,7 +88,7 @@ function typeLabel(s: RetrievedSource): string {
 
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null);
 
-export function toResultCard(s: RetrievedSource): ResultCard {
+function toResultCard(s: RetrievedSource): ResultCard {
   const meta = s.meta ?? {};
   const href = s.type === 'help_entry' && typeof meta.path === 'string'
     ? integratedHelpHref(String(meta.path).split('#')[0])

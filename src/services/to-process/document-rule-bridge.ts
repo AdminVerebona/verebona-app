@@ -101,7 +101,7 @@ import { semanticConstituents, semanticEvidenceFacts, semanticFieldProposals } f
 // PLANIFICATION — fonction pure, testée sans base (TEST-ATP-01 à 11)
 // ══════════════════════════════════════════════════════════════════════════
 
-export type RulePlan =
+type RulePlan =
   | { kind: 'WRITE'; value: string | number | boolean | null; confidence: number; evidenceIds: string[]; reason: string }
   | { kind: 'RESOLVE'; reason: string }
   | { kind: 'UPSERT'; actionKind: ActionKind; proposals: ActionProposal[]; reason: string }
@@ -236,7 +236,7 @@ const SCORE: Record<string, number> = { certain: 1, probable: 0.6, conflictual: 
 const score = (c: string | null | undefined) => SCORE[c ?? ''] ?? 0.3;
 
 /** Fait lu par l'analyse, réduit à ce que le pont consomme. */
-export interface ObservedFact {
+interface ObservedFact {
   canonicalKey: string | null;
   /**
    * Lot 58B : clé LUE par T1 quand le fait n'a pas de clé canonique (fait
@@ -250,7 +250,7 @@ export interface ObservedFact {
   excerpt?: string | null;
 }
 
-export interface ObservedAssetCandidate {
+interface ObservedAssetCandidate {
   entityId: number | null;
   verified: boolean;
   score: number;
@@ -258,7 +258,7 @@ export interface ObservedAssetCandidate {
   label?: string | null;
 }
 
-export interface AnalysisObservations {
+interface AnalysisObservations {
   facts: ObservedFact[];
   /** Candidats « bien » vérifiés en base par l'analyse. */
   assetCandidates: ObservedAssetCandidate[];
@@ -344,7 +344,7 @@ function byConfidenceThenValue(a: ActionProposal, b: ActionProposal): number {
 // EXÉCUTION
 // ══════════════════════════════════════════════════════════════════════════
 
-export interface DocumentRulesReport {
+interface DocumentRulesReport {
   created: number;
   updated: number;
   closed: number;
@@ -467,7 +467,7 @@ async function activeActions(accountId: number, fileId: number): Promise<Map<str
  * premier passage pour une décision antérieure au lot 72). Null : la
  * dernière décision n'est pas « Non applicable ».
  */
-export interface UserNotApplicable {
+interface UserNotApplicable {
   actionId: number; values: string[]; knowledgeRev: string | null;
   /** Lot 76 (C6) : problème métier de la carte refusée (nature, situation, clé de preuve). */
   problem?: ProblemDescriptor | null;
@@ -479,7 +479,7 @@ export interface UserNotApplicable {
  * du document citées par la décision, `problemProofKey`). Jamais le modèle,
  * la formulation ni la confiance.
  */
-export interface ProblemDescriptor { problem: string | null; situation: string | null; proof: string | null }
+interface ProblemDescriptor { problem: string | null; situation: string | null; proof: string | null }
 
 const normProbleme = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
@@ -501,7 +501,7 @@ export function problemProofKey(p: { evidence: string | null | undefined; clause
   return createHash('sha1').update(JSON.stringify(sources)).digest('hex').slice(0, 16);
 }
 
-export async function userNotApplicableDecision(accountId: number, fileId: number, key: string): Promise<UserNotApplicable | null> {
+async function userNotApplicableDecision(accountId: number, fileId: number, key: string): Promise<UserNotApplicable | null> {
   const [last] = await db
     .select({ id: toProcessActions.id, reason: toProcessActions.resolutionReason, proposals: toProcessActions.proposalsJson, ctx: toProcessActions.triggerContext })
     .from(toProcessActions)
@@ -736,7 +736,7 @@ async function assetNamesOf(accountId: number, ids: number[]): Promise<Map<numbe
 // ══════════════════════════════════════════════════════════════════════════
 
 /** Dépendances injectables (tests) : décision T4, date du jour, configuration T4. */
-export interface FieldRuleDeps {
+interface FieldRuleDeps {
   decide?: Parameters<typeof assessDeadlinePertinence>[0]['decide'];
   today?: string;
   config?: T4AssessmentConfig;
@@ -767,7 +767,7 @@ interface FieldRuleInput {
   userNotApplicable?: UserNotApplicable | null;
 }
 
-export interface FieldRuleOutcome {
+interface FieldRuleOutcome {
   plan: RulePlan;
   /** KNOWLEDGE : connaissance persistée consultée ; CLASSIC : chemin antérieur (donnée présente, retirée, hors pertinence). */
   path: 'KNOWLEDGE' | 'CLASSIC';
@@ -1251,7 +1251,7 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
  * à l'autre (USER_VALUE, CALCULATED, KNOWN_VALUE) : la mémoire de décision
  * n'est pas invalidée par la seule écriture.
  */
-export function knownDeadline(p: {
+function knownDeadline(p: {
   rule: ProcessingRule; plan: RulePlan; verified: boolean | null; state: Pick<DocumentSlotState, 'value' | 'userValidated'>; present: boolean;
   userCleared: boolean; relevant: boolean; pertinenceEvaluated: boolean; extra?: WriteExtra; reasonOverride?: string | null;
   /** Arbitrage ouvert sur la date : valeur contestée, l'obligation attend la réponse. */
@@ -1698,7 +1698,7 @@ export async function documentsToReevaluate(accountId: number, limit = 200): Pro
 }
 
 /** Lot 75I (A) : documents à échéance connue réévalués au plus par compte et par passage (obligation). */
-export const OBLIGATION_SWEEP_BUDGET = 25;
+const OBLIGATION_SWEEP_BUDGET = 25;
 
 // ══════════════════════════════════════════════════════════════════════════
 // SAISIE DEPUIS UN ÉCRAN MÉTIER — valeur utilisateur d'une donnée du pont
@@ -1738,7 +1738,7 @@ export async function recordUserDocumentValue(
 // ══════════════════════════════════════════════════════════════════════════
 
 /** Issue de la reprise d'une donnée documentaire depuis la connaissance T1 persistée. */
-export interface KnowledgeFieldResolution {
+interface KnowledgeFieldResolution {
   /**
    * WRITTEN : valeur fiable écrite (lue, consolidée ou calculée), carte
    * fermée · RESOLVED : carte close sans écriture (donnée déjà présente, plus
@@ -1913,7 +1913,7 @@ export async function resolveDocumentRuleFromKnowledge(
  *     non nécessaire » comprise) ;
  *   · KNOWLEDGE_UNREADABLE : lecture en échec — jamais une absence de donnée.
  */
-export interface DocumentRuleCardDiagnosis {
+interface DocumentRuleCardDiagnosis {
   kind: 'TARGET_GONE' | 'NO_ACTIVE_CARD' | 'NOT_A_FIELD' | 'RESOLVABLE_FROM_STATE' | 'ALREADY_SATISFIED' | 'USER_PROTECTED'
     | 'DECISION_CURRENT' | 'ANSWER_AVAILABLE' | 'CONFLICTING_VALUES' | 'DECISION_STALE' | 'KNOWLEDGE_UNREADABLE';
   reason: string;

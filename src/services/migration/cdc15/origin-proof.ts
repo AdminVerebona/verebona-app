@@ -22,9 +22,9 @@ import type { FieldOrigin } from '@/services/ai/evidence/evidence.types';
 import { provenOrigin, type FieldWriteEvent } from './history';
 
 export const ORIGIN_BASIS = '__originBasis';
-export const PROVEN_BASES = new Set(['LEGACY_MANUAL', 'HUMAN_WRITE_PROVEN']);
+const PROVEN_BASES = new Set(['LEGACY_MANUAL', 'HUMAN_WRITE_PROVEN']);
 
-export type HumanProof = 'PROVEN' | 'PRESUMED' | 'AUTOMATIC';
+type HumanProof = 'PROVEN' | 'PRESUMED' | 'AUTOMATIC';
 
 /** Preuve d'origine de la valeur lue sous `readKey` (pure, testée). */
 export function humanOriginProof(

@@ -109,7 +109,7 @@ async function resolveTarget(accountId: number, t: LinkTarget): Promise<Required
   return out;
 }
 
-export interface LinkDocumentInput {
+interface LinkDocumentInput {
   accountId: number;
   fileId: number;
   target: LinkTarget;
@@ -120,7 +120,7 @@ export interface LinkDocumentInput {
   status?: Extract<LinkStatus, 'ACTIVE' | 'PROPOSED'>;
 }
 
-export type LinkOutcome = 'created' | 'updated' | 'unchanged';
+type LinkOutcome = 'created' | 'updated' | 'unchanged';
 
 /**
  * Pose (ou rafraîchit) le lien d'un document vers une cible. Un seul lien

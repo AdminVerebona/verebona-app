@@ -239,7 +239,7 @@ export async function getNotificationHealth(
 
 /* ── Recherche (§20.2) ─────────────────────────────────────────────────── */
 
-export interface RechercheCriteres {
+interface RechercheCriteres {
   /** UUID de l'événement (§20.2). */
   eventId?: string;
   userId?: number;
@@ -250,7 +250,7 @@ export interface RechercheCriteres {
   limite?: number;
 }
 
-export interface LigneRecherche {
+interface LigneRecherche {
   id: string;
   eventType: string;
   status: string;

@@ -27,7 +27,7 @@ import inventory from './link-inventory.json';
 
 export const LINK_INVENTORY_SCHEMA = 'verebona-public-links-v1';
 
-export interface PublicLinkInventory {
+interface PublicLinkInventory {
   schema: string;
   routes: { static: string[]; dynamic: string[] };
   homeAnchors: string[];
@@ -41,7 +41,7 @@ export interface PublicLinkInventory {
 
 export const PUBLIC_LINK_INVENTORY: PublicLinkInventory = inventory as PublicLinkInventory;
 
-export type PublicHrefVerdict =
+type PublicHrefVerdict =
   | { status: 'ok' }
   | { status: 'redirect'; target: string }
   | { status: 'retired' }

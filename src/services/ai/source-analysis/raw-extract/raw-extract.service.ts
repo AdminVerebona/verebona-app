@@ -46,7 +46,7 @@ type Row = Record<string, unknown>;
 
 let pret: Promise<boolean> | null = null;
 /** Table présente ? (mémorisé ; une absence est réévaluée au prochain processus). */
-export function rawExtractsReady(): Promise<boolean> {
+function rawExtractsReady(): Promise<boolean> {
   pret ??= (pgClient.unsafe(`SELECT to_regclass('public.document_raw_extracts') IS NOT NULL AS ok`) as unknown as Promise<Row[]>)
     .then((r) => r[0]?.ok === true)
     .catch(() => false);
@@ -54,20 +54,18 @@ export function rawExtractsReady(): Promise<boolean> {
 }
 let ocrPret: Promise<boolean> | null = null;
 /** Colonnes `ocr_*` présentes (migration 0545) ? Mémorisé comme la table. */
-export function rawExtractOcrReady(): Promise<boolean> {
+function rawExtractOcrReady(): Promise<boolean> {
   ocrPret ??= Promise.resolve().then(() => pgClient.unsafe(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'document_raw_extracts' AND column_name = 'ocr_pages') AS ok`) as unknown as Promise<Row[]>)
     .then((r) => r[0]?.ok === true)
     .catch(() => false);
   return ocrPret;
 }
-/** Tests : oublie l'état mémorisé de la table. */
-export function __resetRawExtractsReady(): void { pret = null; ocrPret = null; }
 
 const sha = (b: Uint8Array | string) => createHash('sha256').update(b).digest('hex');
 
 /** Référence stable d'un objet de stockage : URL sans signature (hôte + chemin). */
-export function sourceRefOf(url: string | null | undefined): string | null {
+function sourceRefOf(url: string | null | undefined): string | null {
   if (!url) return null;
   try {
     const u = new URL(url);
@@ -128,7 +126,7 @@ function summary(r: Row, reused: boolean, identity: RawExtractSummary['identity'
   };
 }
 
-export interface EnsureRawExtractInput {
+interface EnsureRawExtractInput {
   accountId: number;
   fileId: number;
   url: string | null | undefined;

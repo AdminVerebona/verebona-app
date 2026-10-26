@@ -3,7 +3,7 @@ import { extractAccessToken } from './auth/token-extractor';
 import { sessionStatusAllows, verifySessionAccessToken } from './auth/session-guard';
 import type { UserRole, UserStatus } from '@/types/domain';
 
-export interface CurrentUser {
+interface CurrentUser {
   id: number;
   email: string;
   firstName: string;
@@ -72,23 +72,6 @@ export async function getCurrentUser(request: NextRequest): Promise<CurrentUser 
     };
   } catch (error) {
     console.error('getCurrentUser error:', error);
-    return null;
-  }
-}
-
-/**
- * Client-side auth helper
- * Gets user from localStorage
- */
-export function getClientUser(): { id: number; email: string } | null {
-  if (typeof window === 'undefined') return null;
-  
-  const userStr = localStorage.getItem('user');
-  if (!userStr) return null;
-  
-  try {
-    return JSON.parse(userStr);
-  } catch {
     return null;
   }
 }

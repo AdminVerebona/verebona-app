@@ -11,7 +11,7 @@
  *
  * Pure : l'appelant lit la session et l'historique, la décision est testée.
  */
-export type WithdrawalBackTarget =
+type WithdrawalBackTarget =
   | { kind: 'link'; href: string; label: string }
   | { kind: 'history'; label: string };
 

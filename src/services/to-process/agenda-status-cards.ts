@@ -52,13 +52,13 @@ import type { DbClient, FieldWriter } from './resolve-action.service';
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
 import { ASSET_STATUSES, assetStatusLabel } from '@/lib/asset-status';
 
-export const AGENDA_DONE_RULE = 'AGENDA-DONE';
-export const AGENDA_NOT_DONE_RULE = 'AGENDA-NOT-DONE';
-export const AGENDA_STATUS_FIELD = 'manualStatus';
-export const ASSET_STATUS_RULE = 'ASSET-STATUS';
-export const ASSET_STATUS_FIELD = 'status';
+const AGENDA_DONE_RULE = 'AGENDA-DONE';
+const AGENDA_NOT_DONE_RULE = 'AGENDA-NOT-DONE';
+const AGENDA_STATUS_FIELD = 'manualStatus';
+const ASSET_STATUS_RULE = 'ASSET-STATUS';
+const ASSET_STATUS_FIELD = 'status';
 
-export type AgendaStatusProposalKind = 'propose_done' | 'propose_not_done';
+type AgendaStatusProposalKind = 'propose_done' | 'propose_not_done';
 const RULE_OF: Record<AgendaStatusProposalKind, string> = {
   propose_done: AGENDA_DONE_RULE,
   propose_not_done: AGENDA_NOT_DONE_RULE,
@@ -206,7 +206,7 @@ export async function proposeAgendaStatus(p: {
 }
 
 /** Carte ouverte « non réalisée ? » (lecture pour l'accueil / la mascotte). */
-export interface OpenNotDoneProposal {
+interface OpenNotDoneProposal {
   publicId: string;
   agendaItemId: number;
   title: string;
@@ -273,7 +273,7 @@ let admisCache: { values: Set<string>; at: number } | null = null;
  * Valeurs de `assets.status` admises par la contrainte EN BASE (cache 5 min).
  * Contrainte absente ou illisible : liste du modèle.
  */
-export async function allowedAssetStatuses(client: DbClient = db): Promise<Set<string>> {
+async function allowedAssetStatuses(client: DbClient = db): Promise<Set<string>> {
   if (admisCache && Date.now() - admisCache.at < 5 * 60_000) return admisCache.values;
   let values = new Set<string>([...USER_SETTABLE_ASSET_STATUSES, 'ARCHIVED']);
   try {
@@ -288,11 +288,6 @@ export async function allowedAssetStatuses(client: DbClient = db): Promise<Set<s
   } catch { /* liste du modèle */ }
   admisCache = { values, at: Date.now() };
   return values;
-}
-
-/** Réservé aux tests. */
-export function __resetAllowedAssetStatusesForTests(values: string[] | null = null): void {
-  admisCache = values ? { values: new Set(values), at: Date.now() } : null;
 }
 
 /** Bien modifiable du compte : existant, non supprimé, ni archivé ni verrouillé. */

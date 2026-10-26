@@ -197,7 +197,7 @@ export function documentedExclusion(model: string, promptCode: string | null | u
 
 // ── Cohérence (§15.14) ──────────────────────────────────────────────────────
 
-export interface ModelUse {
+interface ModelUse {
   /** Traitement ou opération (libellé des messages). */
   where: string;
   model: string;

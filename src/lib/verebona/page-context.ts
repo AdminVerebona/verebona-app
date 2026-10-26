@@ -9,7 +9,7 @@
  */
 
 /** Rubrique de l'application, pour les suggestions et le serveur. */
-export type PageArea =
+type PageArea =
   | 'home' | 'assets' | 'asset' | 'agenda' | 'documents' | 'document' | 'to_process'
   | 'suppliers' | 'supplier' | 'account' | 'help' | 'other';
 

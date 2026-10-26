@@ -89,7 +89,7 @@ export async function t3FieldCardRuleCodes(): Promise<string[]> {
 type ReconDecision = import('@/services/ai/reconciliation/types').ReconciliationDecision;
 
 /** Intention du producteur pour la carte (pure) : maintien, fermeture, changement de nature. */
-export type FieldCardVerdict = 'JUSTIFIED' | 'STALE' | 'KIND_CHANGED' | 'NO_DECISION';
+type FieldCardVerdict = 'JUSTIFIED' | 'STALE' | 'KIND_CHANGED' | 'NO_DECISION';
 
 /**
  * Lot 85B — verdict d'une carte de champ de BIEN (pure) à partir des
@@ -154,7 +154,7 @@ async function evaluateFieldCard(c: FieldCard): Promise<{ missing: boolean; verd
   return { missing: false, verdict: entityFieldCardVerdict(miennes.map((d) => ({ action: d.action, proposals: entityConflictProposals(d).length }))), decisions: miennes };
 }
 
-export const toProcessT3FieldCardsCheck: CoherenceCheck = {
+const toProcessT3FieldCardsCheck: CoherenceCheck = {
   id: 'COH-TODO-T3-FIELD-CARDS',
   version: 1,
   status: 'ACTIVE',
@@ -281,7 +281,7 @@ export const toProcessT3FieldCardsCheck: CoherenceCheck = {
 /** Marge d'horloge (application ↔ base) avant de conclure qu'un recalcul de l'Opération n'a pas reconduit la carte. */
 export const OPERATION_CARD_CLOCK_MARGIN_MS = 60_000;
 
-export interface OperationCardState {
+interface OperationCardState {
   rule: string;
   documentAlive: boolean;
   lastSeenAt: Date | null;
@@ -361,7 +361,7 @@ async function operationCardStates(ctx: CheckContext, accountId: number, ids: re
   return out;
 }
 
-export const toProcessOperationCardsCheck: CoherenceCheck = {
+const toProcessOperationCardsCheck: CoherenceCheck = {
   id: 'COH-TODO-OPERATION-CARDS',
   version: 1,
   status: 'ACTIVE',
@@ -463,7 +463,7 @@ export function sameFieldValue(a: unknown, b: unknown): boolean {
   return norm(a) === norm(b);
 }
 
-export const toProcessMigrationReviewCardsCheck: CoherenceCheck = {
+const toProcessMigrationReviewCardsCheck: CoherenceCheck = {
   id: 'COH-TODO-MIGRATION-REVIEW-CARDS',
   version: 1,
   status: 'ACTIVE',
@@ -547,7 +547,7 @@ export const toProcessMigrationReviewCardsCheck: CoherenceCheck = {
 
 // ══ COH-TODO-AGENDA-PROPOSAL-CARDS ══════════════════════════════════════════
 
-export const toProcessAgendaProposalCardsCheck: CoherenceCheck = {
+const toProcessAgendaProposalCardsCheck: CoherenceCheck = {
   id: 'COH-TODO-AGENDA-PROPOSAL-CARDS',
   version: 1,
   status: 'ACTIVE',

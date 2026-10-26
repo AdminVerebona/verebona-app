@@ -26,7 +26,7 @@ function ensureConfigured(): boolean {
   return true;
 }
 
-export interface PushTarget {
+interface PushTarget {
   endpoint: string;
   p256dh: string;
   auth: string;
@@ -36,7 +36,7 @@ export interface PushTarget {
 // écarté et les textes sont plafonnés : aucune donnée patrimoniale, aucun jeton.
 const ALLOWED_PUSH_KEYS = ['notificationId', 'title', 'body', 'href', 'tag', 'category'] as const;
 
-export function sanitizePushPayload(payload: Record<string, unknown>): Record<string, unknown> {
+function sanitizePushPayload(payload: Record<string, unknown>): Record<string, unknown> {
   const safe: Record<string, unknown> = {};
   for (const key of ALLOWED_PUSH_KEYS) {
     if (!(key in payload)) continue;
@@ -50,7 +50,7 @@ export function sanitizePushPayload(payload: Record<string, unknown>): Record<st
   return safe;
 }
 
-export type PushSendResult =
+type PushSendResult =
   | { ok: true }
   | { ok: false; gone: boolean; statusCode?: number; error: string };
 

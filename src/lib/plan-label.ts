@@ -28,9 +28,9 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export type TrialLabelStatus = 'none' | 'active' | 'expired' | 'converted';
+type TrialLabelStatus = 'none' | 'active' | 'expired' | 'converted';
 
-export interface PlanLabelInput {
+interface PlanLabelInput {
   plan?: string | null;
   duoRole?: 'BILLING_OWNER' | 'MEMBER' | null;
   /** Etat d'essai, servi par `/api/users/me`. */

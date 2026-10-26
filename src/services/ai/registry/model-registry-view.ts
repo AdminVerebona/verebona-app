@@ -27,7 +27,7 @@ import type { RegistryQualification } from '@/services/verebona-assistant/regist
 
 type Row = Record<string, unknown>;
 
-export interface RegistryViewModel {
+interface RegistryViewModel {
   provider: string;
   model: string;
   status: ModelLifecycleStatus | 'unknown';
@@ -56,7 +56,7 @@ export interface RegistryViewModel {
   usedBy: string[];
 }
 
-export interface ModelRegistryViewDeps {
+interface ModelRegistryViewDeps {
   query?: (sql: string, params?: unknown[]) => Promise<Row[]>;
   /** Lot 35B — injectables en test. */
   qualifications?: Map<string, { generate: boolean; structured: boolean | null; multimodal: boolean | null; thinking: boolean | null; qualifiedAt: string }>;
@@ -220,4 +220,3 @@ export async function buildModelRegistryView(deps: ModelRegistryViewDeps = {}) {
   };
 }
 
-export type ModelRegistryView = Awaited<ReturnType<typeof buildModelRegistryView>>;

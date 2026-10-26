@@ -38,7 +38,7 @@ export async function PATCH(req: NextRequest) {
     }).where(eq(accounts.id, accountId));
 
     return NextResponse.json({ active });
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

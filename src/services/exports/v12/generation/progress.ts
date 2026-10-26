@@ -16,7 +16,7 @@ import { and, desc, eq, inArray } from 'drizzle-orm';
 import type { GenerationStatus } from './status';
 
 /** Motifs d'exclusion « fichier » d'une génération partielle. */
-export const FILE_EXCLUSION_REASONS = ['missing', 'corrupted', 'protected', 'unreadable', 'too_large'] as const;
+const FILE_EXCLUSION_REASONS = ['missing', 'corrupted', 'protected', 'unreadable', 'too_large'] as const;
 
 export const EXCLUSION_LABELS: Record<(typeof FILE_EXCLUSION_REASONS)[number], string> = {
   missing: 'Fichier introuvable',
@@ -26,7 +26,7 @@ export const EXCLUSION_LABELS: Record<(typeof FILE_EXCLUSION_REASONS)[number], s
   too_large: 'Fichier trop volumineux',
 };
 
-export interface GenerationProgress {
+interface GenerationProgress {
   currentStep: string | null;
   excludedFiles: Array<{ label: string; reason: string; reasonLabel: string }>;
 }

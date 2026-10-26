@@ -23,7 +23,7 @@ export interface FusionCandidate {
   reason: 'exact_duplicate' | 'probable_duplicate';
 }
 
-export interface FusionDetectionResult {
+interface FusionDetectionResult {
   hasCandidates: boolean;
   candidates: FusionCandidate[];
 }

@@ -11,9 +11,9 @@ export type GenerationStep =
   | 'validate_request' | 'lock_snapshot' | 'resolve_files' | 'render_html' | 'render_pdf'
   | 'assemble_zip' | 'store_result' | 'finalize_history';
 
-export type ErrorCategory = 'business' | 'threshold' | 'file' | 'render' | 'storage' | 'internal';
+type ErrorCategory = 'business' | 'threshold' | 'file' | 'render' | 'storage' | 'internal';
 
-export type GenerationErrorCode =
+type GenerationErrorCode =
   | 'INVALID_EXPORT_TYPE' | 'ASSET_NOT_FOUND' | 'FORBIDDEN' | 'NOT_ELIGIBLE' | 'THRESHOLD_BLOCKED'
   | 'FILE_UNAVAILABLE' | 'RENDER_TIMEOUT' | 'STORAGE_ERROR' | 'TEMPLATE_ERROR' | 'RENDER_ERROR'
   | 'ZIP_ERROR' | 'DB_ERROR' | 'GENERATION_FAILED';

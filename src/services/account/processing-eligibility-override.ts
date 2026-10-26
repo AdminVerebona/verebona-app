@@ -4,12 +4,12 @@
  * unitaires ne remplacent `@/db` par leurs doubles. Voir
  * `processing-eligibility.ts`.
  */
-export interface EligibilityOverrideResult {
+interface EligibilityOverrideResult {
   eligible: boolean;
   reason: string | null;
 }
 
-export type EligibilityOverride = (accountId: number, now: Date) => Promise<EligibilityOverrideResult>;
+type EligibilityOverride = (accountId: number, now: Date) => Promise<EligibilityOverrideResult>;
 
 let surcharge: EligibilityOverride | null = null;
 const abonnes = new Set<() => void>();

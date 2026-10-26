@@ -275,7 +275,7 @@ function processingSubjects(raw: MascotRawData): MascotSubject[] {
 // ── 2. Onboarding (§8) ───────────────────────────────────────────────────────
 
 /** Étape d'onboarding active, ou null. Une seule à la fois (ONB-003). */
-export function onboardingStep(raw: MascotRawData): 'ONB-ASSET' | 'ONB-DOC' | null {
+function onboardingStep(raw: MascotRawData): 'ONB-ASSET' | 'ONB-DOC' | null {
   const o = raw.onboarding;
   if (!o) return null;
   if (o.activeAssetCount === 0) return 'ONB-ASSET';
@@ -343,7 +343,7 @@ const PRIORITY_RANK = { DO_FIRST: 0, DO_NEXT: 1, CAN_WAIT: 2 } as const;
 // ── 4. Prochaine date (§10) ──────────────────────────────────────────────────
 
 /** Échéances déjà portées par une action « À traiter » : jamais en double (ATP-004). */
-function agendaInToProcess(raw: MascotRawData): Set<number> {
+export function agendaInToProcess(raw: MascotRawData): Set<number> {
   const ids = new Set((raw.toProcess ?? []).filter((a) => a.targetType === 'AGENDA_ITEM').map((a) => a.targetId));
   (raw.toProcessAgendaIds ?? []).forEach((id) => ids.add(id));
   return ids;
@@ -596,7 +596,7 @@ export function decidedAgendaSubjects(raw: MascotRawData, shown: readonly Mascot
   return out;
 }
 
-export interface BuildCandidatesOptions {
+interface BuildCandidatesOptions {
   /**
    * Lot 60 : échéances décidées par T6. Présent : elles REMPLACENT les
    * familles Date et Recommandation (prochaine date, échéance arrivée à

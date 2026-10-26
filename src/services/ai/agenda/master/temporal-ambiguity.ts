@@ -11,7 +11,7 @@ import { AiGateway } from '../../gateway/ai-gateway';
 import { isExecutionCancelled } from '../../queue/execution-control';
 import { T4TemporalAmbiguityOutput as Schema, closedWorldTemporal, type T4TemporalAmbiguityOutput } from './t4-contract';
 
-export interface TemporalCandidate { candidateId: number; date: string; interpretation: string }
+interface TemporalCandidate { candidateId: number; date: string; interpretation: string }
 
 /** Variables du master (candidats triés par identifiant : ordre neutre). */
 export function temporalAmbiguityVariables(context: Record<string, unknown>, candidates: TemporalCandidate[]): Record<string, unknown> {

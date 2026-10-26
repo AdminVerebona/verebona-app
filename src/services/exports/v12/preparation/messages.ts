@@ -24,7 +24,7 @@ export const PREP_MESSAGES = {
   'MSG-PREP-008': 'La génération peut prendre plus de temps en raison du volume de documents.',
 } as const;
 
-export type PrepMessageCode = keyof typeof PREP_MESSAGES;
+type PrepMessageCode = keyof typeof PREP_MESSAGES;
 
 export interface PrepMessage {
   code: PrepMessageCode;

@@ -70,15 +70,6 @@ export function getInvoiceLinePriceId(line: Stripe.InvoiceLineItem | undefined |
   return idOf((line as unknown as { price?: string | { id: string } }).price);
 }
 
-/**
- * Price ID de la PREMIÈRE ligne d'une facture — conservé pour compatibilité
- * de lecture ; le registre des factures n'attribue plus une offre sur la
- * seule première ligne (CDC lookup_key LK-75, voir invoice-ledger.service).
- */
-export function getInvoicePriceId(invoice: Stripe.Invoice): string | null {
-  return getInvoiceLinePriceId(invoice.lines?.data?.[0]);
-}
-
 // ─── Correspondances d'état ───────────────────────────────────────────────────
 
 /** Statuts de compte écrits ici — voir `lib/billing/subscription-status.ts`. */
@@ -174,7 +165,7 @@ export function isAdminPlanChangeEcho(
   return target === planTier;
 }
 
-export interface SubscriptionSyncInput {
+interface SubscriptionSyncInput {
   subscription: Stripe.Subscription;
   /** Origine de l'appel, pour les logs (`webhook:…`, `checkout-return`, `admin`). */
   source: string;
@@ -191,7 +182,7 @@ export interface SubscriptionSyncInput {
   duoEnteredAt?: Date | null;
 }
 
-export interface SubscriptionSyncResult {
+interface SubscriptionSyncResult {
   accountId: number;
   ownerUserId: number;
   subscriptionId: string;

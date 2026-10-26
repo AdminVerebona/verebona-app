@@ -51,12 +51,6 @@ export async function timelineColumnReady(): Promise<boolean> {
   return ready;
 }
 
-/** Réservé aux tests. */
-export function __resetTimelineColumnForTests(ready: boolean | null = null): void {
-  etat = ready === null ? null : { ready, checkedAt: Date.now() };
-  signale = false;
-}
-
 /** Au plus autant d'entrées que la planification en produit (borne de sécurité). */
 const MAX_EVENTS = 50;
 
@@ -79,7 +73,7 @@ export function timelineForStorage(events: AssistantTimelineEvent[] | null | und
 }
 
 /** Entrée relue : `unavailable` quand l'objet a disparu ou est passé hors compte. */
-export type StoredTimelineEvent = AssistantTimelineEvent & { unavailable?: boolean };
+type StoredTimelineEvent = AssistantTimelineEvent & { unavailable?: boolean };
 
 /**
  * Revérifie les liens des chronologies d'un historique (§19.10). Une seule

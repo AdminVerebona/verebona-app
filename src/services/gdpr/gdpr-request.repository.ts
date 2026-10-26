@@ -26,7 +26,7 @@ import {
 
 type Sql = typeof pgClient;
 
-export interface GdprRequestRow {
+interface GdprRequestRow {
   id: number;
   origin: GdprOrigin;
   status: GdprStatus;

@@ -42,10 +42,6 @@ export const REPRESENTATION_TASK = 'AGENDA_REPRESENTATION';
 export const REPRESENTATION_AI_CONTRACT = '87B-t4-representation-agenda-multi-evenements';
 export const T3_IDENTITY_AI_CONTRACT = '87B-t3-identite-multi-operations';
 
-/** Nature d'une réparation de cohérence (registre, `coherence_repairs.reevaluation_kind`, CODE-05). */
-export const REEVALUATION_KINDS = ['TECHNICAL_REBUILD', 'SEMANTIC_REEVALUATION_T3', 'SEMANTIC_REEVALUATION_T4'] as const;
-export type ReevaluationKind = (typeof REEVALUATION_KINDS)[number];
-
 export type SemanticScope = 'T3' | 'T4';
 export type SemanticTrigger = 'COHERENCE' | 'PROJECTION' | 'T3_DECISION' | 'REPRISE' | 'MANUAL';
 export type SemanticStatus =
@@ -125,7 +121,7 @@ export interface ContextDocument {
   operations: string[];
 }
 
-export type UserDecisionKind =
+type UserDecisionKind =
   | 'ITEM_DETACHED' | 'ITEM_ATTACHED' | 'LINK_DETACHED' | 'PRINCIPAL_WITHDRAWN' | 'PRINCIPAL_CHOSEN' | 'PROJECTION_DELETED' | 'CONSOLIDATION_RESTORED';
 
 export interface ContextUserDecision { kind: UserDecisionKind; item?: string | null; document?: string | null; operation?: string | null }
@@ -156,7 +152,6 @@ export interface RepresentationInput {
 // ── Sortie attendue de T4 (contrat demandé, CODE-03) ────────────────────────
 
 const confidence = z.enum(['certain', 'probable', 'ambiguous']);
-export type RepresentationConfidence = z.infer<typeof confidence>;
 
 const evidence = z.array(z.object({
   document: z.string().min(1).max(12).nullable().optional(),
@@ -174,7 +169,7 @@ const evidence = z.array(z.object({
  *        INDEPENDENT  ne représente pas cette Opération (jamais rattaché ;
  *                     détaché s'il l'était par une inférence).
  */
-export const RepresentationOccurrence = z.object({
+const RepresentationOccurrence = z.object({
   items: z.array(z.string().min(1).max(12)).min(1).max(20),
   keep: z.string().min(1).max(12),
   role: z.enum(['PRINCIPAL', 'STEP', 'INDEPENDENT']),
@@ -182,17 +177,17 @@ export const RepresentationOccurrence = z.object({
   evidence: evidence.default([]),
   reason: z.string().min(1).max(300),
 });
-export type RepresentationOccurrence = z.infer<typeof RepresentationOccurrence>;
+type RepresentationOccurrence = z.infer<typeof RepresentationOccurrence>;
 
 /** Occurrence absorbée par une ancienne consolidation (lot 76H) qui doit redevenir distincte (CODE-07). */
-export const RepresentationRestoration = z.object({
+const RepresentationRestoration = z.object({
   restore: z.string().min(1).max(12),
   role: z.enum(['PRINCIPAL', 'STEP', 'INDEPENDENT']),
   confidence,
   evidence: evidence.default([]),
   reason: z.string().min(1).max(300),
 });
-export type RepresentationRestoration = z.infer<typeof RepresentationRestoration>;
+type RepresentationRestoration = z.infer<typeof RepresentationRestoration>;
 
 export const T4AgendaRepresentationOutput = z.object({
   task: z.literal(REPRESENTATION_TASK),

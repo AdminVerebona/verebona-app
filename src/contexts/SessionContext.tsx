@@ -22,7 +22,7 @@ import { beginSessionTransition, onSessionTransition } from '@/lib/session/sessi
 import { SessionStore, type User } from '@/lib/session/session-store';
 
 /** Pages où aucune session n'est attendue (même liste que les droits). */
-export const PAGES_SANS_SESSION = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email'];
+const PAGES_SANS_SESSION = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email'];
 
 export function isPageSansSession(pathname: string | null | undefined): boolean {
   return Boolean(pathname && PAGES_SANS_SESSION.some((p) => pathname.startsWith(p)));
@@ -41,7 +41,7 @@ function persistDisplayCopy(user: User | null): void {
 let defaultStore: SessionStore | null = null;
 
 /** Magasin du navigateur (un par onglet). */
-export function getSessionStore(): SessionStore {
+function getSessionStore(): SessionStore {
   if (defaultStore) return defaultStore;
   const store = new SessionStore({
     // Délai et nouvelles tentatives du client HTTP commun ; lecture partagée ;

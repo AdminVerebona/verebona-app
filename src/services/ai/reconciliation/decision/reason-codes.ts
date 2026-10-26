@@ -56,8 +56,6 @@ export const REASON_CODES = {
   SHADOW_WOULD_REPLACE_STALE: 'Observation : cette valeur automatique serait remplacée',
 } as const;
 
-export type ReasonCode = keyof typeof REASON_CODES;
-
 export function reasonLabel(code: string): string {
   return (REASON_CODES as Record<string, string>)[code] ?? code;
 }

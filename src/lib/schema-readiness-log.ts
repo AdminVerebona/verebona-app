@@ -39,7 +39,7 @@ export interface SchemaProbeOutcome {
 }
 
 /** État constaté par un contrôle de schéma (voir le tableau ci-dessus). */
-export type SchemaProbeState = 'conforme' | 'incomplet' | 'aucun_element' | 'verification_impossible' | 'indetermine';
+type SchemaProbeState = 'conforme' | 'incomplet' | 'aucun_element' | 'verification_impossible' | 'indetermine';
 
 const errText = (e: unknown) => String((e as { message?: unknown })?.message ?? e ?? 'erreur inconnue').slice(0, 200);
 const hasError = (p: Pick<SchemaProbeOutcome, 'error'>) => p.error !== undefined && p.error !== null;

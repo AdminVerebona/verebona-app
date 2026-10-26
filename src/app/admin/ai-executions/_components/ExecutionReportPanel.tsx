@@ -22,7 +22,7 @@ import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import { CopyBlockButton } from './CopyJson';
 
-export interface ReportSummaryDto {
+interface ReportSummaryDto {
   id: number; accountId: number; treatment: string; scope: string; jobId: number | null; traceIds: string[];
   fileId: number | null; assetId: number | null; targetType: string | null; targetId: number | null;
   analysisRunId: number | null; extractionId: number | null; reconciliationRunId: number | null; accountRunId: number | null;
@@ -43,7 +43,7 @@ interface DetailDto {
   entries: EntryDto[]; total: number; offset: number; limit: number;
 }
 
-export const WRITE_RESULT_LABEL: Record<string, string> = {
+const WRITE_RESULT_LABEL: Record<string, string> = {
   WRITTEN: 'Écrit (confirmé en base)',
   NOT_PERSISTED: 'Non enregistré',
   FAILED: 'Écriture en échec',
@@ -61,7 +61,7 @@ const RESULT_TONE: Record<string, string> = {
   NOT_EXAMINED: 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border-[color:var(--border-warning)]',
   OBSERVED: 'bg-[color:var(--bg-input)] text-[color:var(--text-muted)] border-[color:var(--border-subtle)]',
 };
-export const STATUS_LABEL: Record<string, string> = {
+const STATUS_LABEL: Record<string, string> = {
   SUCCESS: 'Réussi', PARTIAL: 'Partiel — anomalies', FAILED: 'Échec', NO_CHANGE: 'Sans modification',
 };
 const STATUS_TONE: Record<string, string> = {
@@ -124,7 +124,7 @@ export function T1PhasesLine({ phases }: { phases: unknown }) {
 
 const pill = (tone: string) => `text-xs px-2 py-0.5 rounded-full border ${tone}`;
 const fmt = (v: unknown) => (v === null || v === undefined ? '∅' : typeof v === 'string' ? v : JSON.stringify(v, null, 2));
-export const reportTitle = (r: Pick<ReportSummaryDto, 'id' | 'treatment' | 'scope' | 'fileId' | 'targetId' | 'assetId'>) =>
+const reportTitle = (r: Pick<ReportSummaryDto, 'id' | 'treatment' | 'scope' | 'fileId' | 'targetId' | 'assetId'>) =>
   `${r.treatment} #${r.id} · ${r.treatment === 'T1' ? `document ${r.fileId ?? '—'}`
     // Lot 60 : décision d'interpellation de l'accueil, pour un utilisateur (ou le compte en pré-génération).
     : r.treatment === 'T6' ? `accueil · ${r.targetId != null ? `utilisateur ${r.targetId}` : 'compte (pré-génération)'}`
@@ -133,7 +133,7 @@ export const reportTitle = (r: Pick<ReportSummaryDto, 'id' | 'treatment' | 'scop
     : `${r.scope === 'ASSET' ? 'bien' : r.scope === 'EQUIPMENT' ? 'équipement' : 'pièce'} ${r.targetId ?? r.assetId ?? '—'}`}`;
 
 /** En-tête compact d'un rapport (liste, corrélations). */
-export function ReportHeaderLine({ r, onOpen }: { r: ReportSummaryDto; onOpen?: (id: number) => void }) {
+function ReportHeaderLine({ r, onOpen }: { r: ReportSummaryDto; onOpen?: (id: number) => void }) {
   const c = r.counters ?? {};
   const resume = r.treatment === 'T1'
     ? `${c.factsPersisted ?? 0}/${c.factsDeclared ?? 0} fait(s) enregistré(s) · ${c.evidenceWritten ?? 0} preuve(s) · ${c.factsNotPersisted ?? 0} non enregistré(s)`

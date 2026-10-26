@@ -24,7 +24,7 @@ export const BUSINESS_OPERATION_TYPE_CODES = [
 ] as const;
 export type BusinessOperationTypeCode = (typeof BUSINESS_OPERATION_TYPE_CODES)[number];
 
-export interface BusinessOperationTypeDefinition {
+interface BusinessOperationTypeDefinition {
   code: BusinessOperationTypeCode;
   label: string;
   description: string;
@@ -43,7 +43,7 @@ export const BUSINESS_OPERATION_TYPES: readonly BusinessOperationTypeDefinition[
   { code: 'OTHER', label: 'Autre', description: 'Véritable opération métier qui ne relève d\'aucun autre type après qualification. Jamais une valeur de repli : l\'incertitude se note type nul.', applicableAssetFamilies: [] },
 ];
 
-export function isBusinessOperationTypeCode(v: unknown): v is BusinessOperationTypeCode {
+function isBusinessOperationTypeCode(v: unknown): v is BusinessOperationTypeCode {
   return typeof v === 'string' && (BUSINESS_OPERATION_TYPE_CODES as readonly string[]).includes(v);
 }
 
@@ -147,11 +147,6 @@ export const CLAIM_FILE_STATUSES = [
   'A_DECLARER', 'DECLARE', 'EXPERTISE_PREVUE', 'EXPERTISE_REALISEE', 'EN_ATTENTE_INDEMNISATION', 'INDEMNISE', 'REFUSE', 'CLOS',
 ] as const;
 export type ClaimFileStatus = (typeof CLAIM_FILE_STATUSES)[number];
-
-/** Table de détail admise par type (C13) ; les autres types n'en ont pas. */
-export const DETAILS_TYPE: Readonly<Record<'contract' | 'financing' | 'claim', BusinessOperationTypeCode>> = {
-  contract: 'CONTRACT', financing: 'FINANCING', claim: 'CLAIM',
-};
 
 // ── Garde « OTHER n'est jamais un repli » (P18, C7.7, INV-FINAL-008) ───────
 

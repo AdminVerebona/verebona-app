@@ -17,11 +17,11 @@
  */
 import { createHmac, timingSafeEqual } from 'crypto';
 
-export type SearchScope = 'documents' | 'agenda';
+type SearchScope = 'documents' | 'agenda';
 export const SEARCH_TOKEN_TTL_S = 30 * 60;
-export const SEARCH_TOKEN_MAX_IDS = 50;
+const SEARCH_TOKEN_MAX_IDS = 50;
 
-export interface SearchTokenPayload {
+interface SearchTokenPayload {
   v: 1;
   a: number;
   s: SearchScope;
@@ -54,7 +54,7 @@ export function createSearchToken(
   return `${body}.${sign(body, secret(env))}`;
 }
 
-export type SearchTokenCheck =
+type SearchTokenCheck =
   | { ok: true; payload: SearchTokenPayload }
   | { ok: false; reason: 'MALFORMED' | 'BAD_SIGNATURE' | 'EXPIRED' | 'OTHER_ACCOUNT' };
 

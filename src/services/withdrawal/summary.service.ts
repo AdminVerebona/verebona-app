@@ -63,7 +63,7 @@ function formatAmount(cents: number | null, currency = 'eur'): string {
  * pas se voir annoncer le nouveau tarif. Prix contractuel inconnu → aucune
  * estimation affichée (jamais une valeur devinée).
  */
-export function estimateRefund(contractUnitAmountCents: number | null | undefined): number | null {
+function estimateRefund(contractUnitAmountCents: number | null | undefined): number | null {
   return typeof contractUnitAmountCents === 'number' && contractUnitAmountCents > 0 ? contractUnitAmountCents : null;
 }
 

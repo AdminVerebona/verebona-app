@@ -2,7 +2,7 @@
 
 import type { LucideIcon } from 'lucide-react';
 
-export interface SegmentedAction {
+interface SegmentedAction {
   icon: LucideIcon;
   label: string;
   onClick?: () => void;

@@ -22,14 +22,14 @@ import {
 } from '../request-builder';
 
 /** Configuration de raisonnement transmise dans `generationConfig.thinkingConfig`. */
-export type GeminiThinkingConfig = { thinkingLevel: string } | { thinkingBudget: number };
+type GeminiThinkingConfig = { thinkingLevel: string } | { thinkingBudget: number };
 
 /** Libellé BO du raisonnement transmis : `aucun`, `low`, `high`, `budget N`. */
-export function thinkingConfigLabel(tc: GeminiThinkingConfig | undefined | null): string {
+function thinkingConfigLabel(tc: GeminiThinkingConfig | undefined | null): string {
   return thinkingParamLabel(tc ?? null);
 }
 
-export interface GenerationConfigInput {
+interface GenerationConfigInput {
   model: string;
   maxOutputTokens?: number;
   reasoning?: ReasoningLevel | null;
@@ -44,7 +44,7 @@ export interface GenerationConfigInput {
  * Paramètres résolus d'un appel : ceux fournis par la passerelle, sinon ceux
  * du constructeur unique appliqué au niveau et au plafond demandés.
  */
-export function resolveGenerationParams(input: GenerationConfigInput): ModelRequestResult {
+function resolveGenerationParams(input: GenerationConfigInput): ModelRequestResult {
   if (input.generation) {
     return {
       ok: true, params: input.generation,
@@ -83,7 +83,7 @@ export function describeGenerationConfig(input: GenerationConfigInput): {
 }
 
 /** `generationConfig` Gemini d'un jeu de paramètres résolus (pur). */
-export function generationConfigOf(p: ResolvedGenerationParams, input: Pick<GenerationConfigInput, 'jsonResponse' | 'responseSchema'>): Record<string, unknown> {
+function generationConfigOf(p: ResolvedGenerationParams, input: Pick<GenerationConfigInput, 'jsonResponse' | 'responseSchema'>): Record<string, unknown> {
   return {
     ...(p.temperature !== null ? { temperature: p.temperature } : {}),
     // Absent = défaut du fournisseur. Le §2.1 rend ce plafond administrable ;

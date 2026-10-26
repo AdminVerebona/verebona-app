@@ -32,7 +32,7 @@ import { v2TypeForRubric } from '@/lib/referential/document-codes';
 /** Lot 86E : confiance d'une Rubrique d'attache déduite d'un Type réutilisable (sous le seuil de 0,9). */
 export const DOMAIN_NOT_PROVEN_CONFIDENCE = 0.5;
 
-export interface RubricProposal {
+interface RubricProposal {
   rubricCode: RubricCode;
   documentTypeCode: string | null;
   /** 0 → 1. Comparé au seuil fixe de 90 % par le moteur de décision (§11.2). */

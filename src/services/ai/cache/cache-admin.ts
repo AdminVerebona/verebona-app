@@ -43,20 +43,20 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import {
-  SharedCacheInvalidator, sharedCacheScope, type SharedCacheVersionStore,
+  SharedCacheInvalidator, sharedCacheScope,
 } from './shared-cache-invalidation';
 
 export const ADMIN_CACHE_IDS = [
   'retrieval', 'ai-config', 'assistant-settings', 'help-corpus', 'pricing', 'prompts',
   'assistant-model-responses', 't4-temporal', 'gateway-idempotency',
 ] as const;
-export type AdminCacheId = (typeof ADMIN_CACHE_IDS)[number];
+type AdminCacheId = (typeof ADMIN_CACHE_IDS)[number];
 
-export function isAdminCacheId(v: unknown): v is AdminCacheId {
+function isAdminCacheId(v: unknown): v is AdminCacheId {
   return typeof v === 'string' && (ADMIN_CACHE_IDS as readonly string[]).includes(v);
 }
 
-export interface AdminCacheDescriptor {
+interface AdminCacheDescriptor {
   id: AdminCacheId;
   label: string;
   /** Portée · stockage · durée (§31.6). */
@@ -71,7 +71,7 @@ export interface AdminCacheDescriptor {
 const PREFIXE_REPONSES = 'assistant:';
 const PREFIXE_T4 = 't4-temporal:';
 
-export const ADMIN_CACHES: readonly AdminCacheDescriptor[] = [
+const ADMIN_CACHES: readonly AdminCacheDescriptor[] = [
   {
     id: 'retrieval', label: 'Résultats de retrieval de l’assistant', versionScope: 'global',
     nature: 'Compte + utilisateur + requête · mémoire de chaque instance · ≤ 60 s (§31.6), clé versionnée par compte et globalement.',
@@ -134,28 +134,16 @@ export function registerLocalCaches(inv: SharedCacheInvalidator): SharedCacheInv
 let instance: SharedCacheInvalidator | null = null;
 
 /** Invalidation partagée de ce processus. */
-export function sharedCacheInvalidator(): SharedCacheInvalidator {
+function sharedCacheInvalidator(): SharedCacheInvalidator {
   if (!instance) instance = registerLocalCaches(new SharedCacheInvalidator());
   return instance;
-}
-
-/** Réservé aux tests : remplace l'instance (`null` : défaut). */
-export function setSharedCacheInvalidatorForTests(inv: SharedCacheInvalidator | null): void {
-  instance?.stop();
-  instance = inv;
-}
-
-/** Démarrage (instrumentation) : relecture périodique des versions `cache:%`. */
-export function startSharedCacheInvalidation(): void {
-  if (process.env.NODE_ENV === 'test') return;
-  sharedCacheInvalidator().start();
 }
 
 // ── Accès base (injectable) ─────────────────────────────────────────────────
 
 type Row = Record<string, unknown>;
 
-export interface CacheAdminDb {
+interface CacheAdminDb {
   /** Lecture en transaction `read only`, `statement_timeout` court. */
   read(sql: string, params?: unknown[]): Promise<Row[]>;
   /**
@@ -169,7 +157,7 @@ const LECTURE_TIMEOUT_MS = 3_000;
 const SUPPRESSION_LOT = 5_000;
 const SUPPRESSION_MAX_MS = 60_000;
 
-export const dbCacheAdmin: CacheAdminDb = {
+const dbCacheAdmin: CacheAdminDb = {
   async read(sql, params = []) {
     const { pgClient } = await import('@/db');
     return (await pgClient.begin('read only', async (tx) => {
@@ -205,7 +193,7 @@ export function setCacheAdminDbForTests(d: CacheAdminDb | null): void {
 }
 
 /** Filtres SQL des familles de `ai_operation_idempotency` (constantes, sans paramètre). */
-export async function idempotencyFamilySql(id: 'assistant-model-responses' | 't4-temporal' | 'gateway-idempotency'): Promise<string> {
+async function idempotencyFamilySql(id: 'assistant-model-responses' | 't4-temporal' | 'gateway-idempotency'): Promise<string> {
   const { NOT_RESERVED_IDEMPOTENCY_KEY_SQL } = await import('@/services/ai/idempotency/idempotency.service');
   if (id === 'assistant-model-responses') return `key_hash LIKE '${PREFIXE_REPONSES}%'`;
   if (id === 't4-temporal') return `key_hash LIKE '${PREFIXE_T4}%'`;
@@ -214,7 +202,7 @@ export async function idempotencyFamilySql(id: 'assistant-model-responses' | 't4
 
 // ── État ────────────────────────────────────────────────────────────────────
 
-export interface AdminCacheState extends AdminCacheDescriptor {
+interface AdminCacheState extends AdminCacheDescriptor {
   version: number | null;
   versionUpdatedAt: string | null;
   versionReason: string | null;
@@ -241,7 +229,7 @@ async function lire(sql: string, params: unknown[], notes: string[], quoi: strin
   }
 }
 
-export interface CachesReport {
+interface CachesReport {
   instance: string;
   generatedAt: string;
   caches: AdminCacheState[];
@@ -379,16 +367,16 @@ export class CacheInvalidationRefused extends Error {
   }
 }
 
-export const REASON_MIN = 5;
-export const REASON_MAX = 500;
+const REASON_MIN = 5;
+const REASON_MAX = 500;
 
-export interface InvalidationResult {
+interface InvalidationResult {
   cache: AdminCacheId;
   /** Effet constaté (lignes supprimées, périmètre incrémenté). */
   effect: { scope: string; rowsDeleted?: number; partial?: boolean };
 }
 
-export interface InvalidationDeps {
+interface InvalidationDeps {
   /** Stockage des versions `cache:%` (défaut : l'instance du processus). */
   invalidator?: SharedCacheInvalidator;
   /** Journal admin (défaut : `logAdminAction`). */
@@ -475,4 +463,3 @@ export async function invalidateAdminCache(
   }
 }
 
-export type { SharedCacheVersionStore };

@@ -19,7 +19,7 @@ import { trackFunnelEvent } from './funnel-analytics.service';
 export const TRIAL_DURATION_DAYS = 7;
 
 /** Offre dont beneficie l'essai (fonctionnalites Premium). */
-export const TRIAL_PLAN_CODE = 'premium' as const;
+const TRIAL_PLAN_CODE = 'premium' as const;
 
 /** Quotas specifiques a l'essai (CDC §3.2) — plus stricts que Premium. */
 export const TRIAL_LIMITS = {
@@ -28,7 +28,7 @@ export const TRIAL_LIMITS = {
   maxUsers: 1,
 } as const;
 
-export type TrialState =
+type TrialState =
   | { status: 'none' }
   | { status: 'active'; startedAt: Date; endsAt: Date; daysRemaining: number }
   | { status: 'expired'; startedAt: Date; endsAt: Date }
@@ -44,7 +44,7 @@ export function normalizeEmail(email: string): string {
 }
 
 /** Calcule la date de fin d'essai (UTC) a partir d'une date de depart. */
-export function computeTrialEnd(startedAt: Date): Date {
+function computeTrialEnd(startedAt: Date): Date {
   return new Date(startedAt.getTime() + TRIAL_DURATION_DAYS * 24 * 60 * 60 * 1000);
 }
 

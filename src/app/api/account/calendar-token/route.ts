@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
       // Lot 72D : seul le titulaire génère ou coupe le lien (Q14).
       canManage: (await getSessionRole(session)) === 'owner',
     });
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
@@ -74,7 +74,7 @@ export async function POST(req: NextRequest) {
     }).where(eq(accounts.id, accountId));
 
     return NextResponse.json({ token, active: true, createdAt });
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

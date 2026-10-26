@@ -48,7 +48,7 @@ export function globalAiStatus(emergencyStopActive: boolean): {
 }
 
 /** Activité d'un traitement (sous-ensemble utile au choix de fenêtre). */
-export interface WindowedActivity {
+interface WindowedActivity {
   calls24h: number;
   calls7d: number;
   calls30d: number;

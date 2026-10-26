@@ -50,6 +50,7 @@
 import type { VerebonaIntent } from '../types/intents';
 import { demonstratifBien } from './reference-resolver';
 import { assetsNamedIn } from './assistant-targets';
+import { plain } from './routing-text';
 
 export type UnderstandingStatus = 'COMPLETE' | 'PARTIAL' | 'UNKNOWN_INTENT';
 
@@ -70,7 +71,7 @@ export type UnderstandingReason =
 /** Qui a établi la compréhension finale (trace). */
 export type UnderstandingResolver = 'deterministic' | 'thread' | 'understand' | 'clarification' | null;
 
-export interface UnderstandingAssessment {
+interface UnderstandingAssessment {
   status: UnderstandingStatus;
   reasons: UnderstandingReason[];
   /**
@@ -90,13 +91,11 @@ export interface UnderstandingAssessment {
  *   · `anaphoric` — renvoi relatif au fil : « l'autre », « celui-là ». Seul
  *                   le contexte (fil, puis UNDERSTAND) peut le lever.
  */
-export interface TargetRequirement {
+interface TargetRequirement {
   kind: 'deictic' | 'anaphoric';
   target: 'asset';
   detected: string;
 }
-
-const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
 
 /** « l'autre », « celui-là » : renvoi relatif, jamais résolu sans contexte. */
 const ANAPHORE = /(?<![\p{L}])(l'autre|l autre|celui-la|celle-la|ceux-la|celles-la)(?![\p{L}])/u;

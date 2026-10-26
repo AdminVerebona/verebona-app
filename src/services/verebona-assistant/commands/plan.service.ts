@@ -35,11 +35,12 @@ import type { SuppliedFact } from '../types/contracts';
 import { getField } from '@/services/canonical/registry';
 import { tenureEndKey, tenureSituationHint, TENURE_END_LABEL } from '@/lib/assets/tenure-end';
 import { validateDetailChanges } from '@/lib/asset-detail-rules';
+import { plain } from '../core/routing-text';
 
 /** Validité d'un plan non confirmé. */
-export const PLAN_TTL_MS = 15 * 60_000;
+const PLAN_TTL_MS = 15 * 60_000;
 
-export interface StoredPlan {
+interface StoredPlan {
   planId: string;
   accountId: number;
   userId: number;
@@ -49,7 +50,7 @@ export interface StoredPlan {
   expiresAt: string;
 }
 
-export type Preparation =
+type Preparation =
   | { kind: 'plan'; plan: StoredPlan; preview: CommandPlanPreview }
   /** Commande reconnue mais incomplète ou ambiguë : on demande, on n'écrit rien. */
   | { kind: 'need_info'; message: string };
@@ -334,7 +335,7 @@ async function resolveBulk(
 
 export const hashActions = (payload: string) => createHash('sha256').update(payload).digest('hex');
 
-export function toPreview(plan: StoredPlan): CommandPlanPreview {
+function toPreview(plan: StoredPlan): CommandPlanPreview {
   return {
     planId: plan.planId,
     summary: plan.summary,
@@ -357,7 +358,7 @@ export async function tracer(planId: string, accountId: number, userId: number |
   }
 }
 
-export async function savePlan(plan: StoredPlan, requestId: string | null): Promise<void> {
+async function savePlan(plan: StoredPlan, requestId: string | null): Promise<void> {
   const payload = JSON.stringify(plan.actions);
   await pgClient.unsafe(
     `INSERT INTO verebona_command_plans
@@ -427,7 +428,7 @@ export async function prepareCommand(
  *                        du bien, saisie dans la section usage de la fiche.
  * Extensible : une capacité future (champ d'opération…) s'ajoute ici.
  */
-export type UpdateCapability =
+type UpdateCapability =
   | { type: 'asset_field'; def: AssetFieldDefinition }
   | { type: 'asset_tenure_end'; def: AssetFieldDefinition };
 
@@ -448,8 +449,6 @@ export function updateCapabilityFor(fieldKey: string | null): UpdateCapability |
   return null;
 }
 
-const plainTxt = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'");
-
 /**
  * Valeur proposée, VALIDÉE par le serveur (pure, testée) : type du champ, et
  * présence dans le message de l'utilisateur — le modèle ne peut pas
@@ -468,20 +467,20 @@ export function validateSuppliedValue(def: AssetFieldDefinition, fact: Pick<Supp
   if (def.type === 'number') {
     const n = Number(brut.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.'));
     if (!Number.isFinite(n)) return null;
-    const nombres = (plainTxt(message).match(/\d{1,3}(?:[ \u00a0\u202f.]\d{3})+(?:,\d+)?|\d+(?:,\d+)?/g) ?? [])
+    const nombres = (plain(message).match(/\d{1,3}(?:[ \u00a0\u202f.]\d{3})+(?:,\d+)?|\d+(?:,\d+)?/g) ?? [])
       .map((x) => Number(x.replace(/[ \u00a0\u202f.]/g, '').replace(',', '.')));
-    const k = /k(?:€|m)?\b/.test(plainTxt(message)) ? nombres.map((x) => x * 1000) : [];
+    const k = /k(?:€|m)?\b/.test(plain(message)) ? nombres.map((x) => x * 1000) : [];
     return [...nombres, ...k].includes(n) ? n : null;
   }
-  return brut.length >= 2 && brut.length <= 80 && plainTxt(message).includes(plainTxt(brut)) ? brut : null;
+  return brut.length >= 2 && brut.length <= 80 && plain(message).includes(plain(brut)) ? brut : null;
 }
 
-export type ProposalPreparation =
+type ProposalPreparation =
   | { kind: 'plan'; plan: StoredPlan; preview: CommandPlanPreview; capability: UpdateCapability['type']; proposed?: number; refused?: ProposalRefusal[] }
   | { kind: 'need_info'; message: string; reason: string; capability: UpdateCapability['type'] | null; proposed?: number; refused?: ProposalRefusal[] };
 
 /** Information apportée NON proposée, et pourquoi (lot 59, #419 R08 — jamais abandonnée en silence). */
-export interface ProposalRefusal { fieldKey: string | null; reason: string; message: string }
+interface ProposalRefusal { fieldKey: string | null; reason: string; message: string }
 
 type ProposalRequest = { fact: SuppliedFact; assetId: number | null };
 
@@ -734,7 +733,7 @@ export async function defaultCanWrite(accountId: number): Promise<{ allowed: boo
 
 // ── Annulation d'une proposition ───────────────────────────────────────────
 
-export type Cancellation =
+type Cancellation =
   /**
    * Proposition close sans aucune écriture : annulée maintenant, déjà
    * annulée (appel rejoué — idempotence), ou expirée entre-temps.
@@ -829,7 +828,7 @@ export async function expirePendingPlans(scope: { accountId?: number; userId?: n
 }
 
 /** Plan tel que restitué dans l'historique d'un fil. */
-export interface ThreadCommandPlan extends CommandPlanPreview {
+interface ThreadCommandPlan extends CommandPlanPreview {
   messageId: number;
   status: PlanStatus;
   /**

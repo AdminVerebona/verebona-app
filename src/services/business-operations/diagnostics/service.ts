@@ -140,7 +140,7 @@ export interface HoldListResult {
   pendingT3: number;
 }
 
-export interface LastT3Pass {
+interface LastT3Pass {
   jobId: number;
   status: string;
   origin: string | null;
@@ -397,7 +397,7 @@ export const OPERATION_DETAIL_LISTS = {
                       OR COALESCE(c.t3_detail->'arbitration'->'operationIds', '[]'::jsonb) @> to_jsonb($1::bigint))))
           ORDER BY c.created_at DESC, c.id DESC` },
 } as const satisfies Record<string, { table: string; sql: string }>;
-export type OperationDetailList = keyof typeof OPERATION_DETAIL_LISTS;
+type OperationDetailList = keyof typeof OPERATION_DETAIL_LISTS;
 
 /** Lot 78A : anomalies d'identité dont la table / colonne (0609) peut manquer — sondées avant exécution. */
 const IDENTITY_ANOMALY_SQL: Readonly<Record<'IDENTITY_SUSPECT_ATTACHMENT' | 'IDENTITY_ATTRIBUTE_CONFLICT', { probe: string; sql: string }>> = {

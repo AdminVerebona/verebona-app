@@ -130,7 +130,7 @@ const str = (v: unknown): string | null => {
 };
 
 /** Fournisseur par défaut : représentation T1 persistée (extraction, transcription, faits actifs). */
-export const persistedKnowledgeProvider: DocumentSourceProvider = {
+const persistedKnowledgeProvider: DocumentSourceProvider = {
   name: 'EXTRACTION',
   async load({ accountId, fileId }) {
     const k = await getDocumentKnowledge(accountId, fileId);
@@ -166,7 +166,7 @@ export const persistedKnowledgeProvider: DocumentSourceProvider = {
 };
 
 /** Preuves lues par T1 pour ses candidats (signaux, raisons). */
-export const t1CandidatesProvider: DocumentSourceProvider = {
+const t1CandidatesProvider: DocumentSourceProvider = {
   name: 'T1_CANDIDATES',
   async load({ t1Candidates }) {
     const texts = t1Candidates

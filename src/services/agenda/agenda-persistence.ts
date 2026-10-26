@@ -74,7 +74,7 @@ const agendaTargetOf = (d: AgendaDecision): AgendaUpsertInput['target'] =>
   (d.target?.type === 'EQUIPMENT' || d.target?.type === 'ROOM') && d.target.id != null
     ? { type: d.target.type, id: d.target.id } : null;
 
-export interface PersistAgendaOptions {
+interface PersistAgendaOptions {
   /**
    * Document source des décisions (réanalyse). Fourni — ou commun à toutes
    * les décisions — il déclenche la synchronisation de la source (T4-08),
@@ -137,8 +137,8 @@ export interface PersistAgendaSummary {
   ambiguousMatches: number;
 }
 
-export type RemovalOutcome = 'REMOVED' | 'NOTHING_TO_REMOVE' | 'BLOCKED' | 'DRY_RUN' | 'FAILED';
-export type RemovalFailureCode = 'REMOVAL_FAILED' | 'TRACE_UNAVAILABLE' | 'PREREQUISITE_MISSING' | 'OTHER_SOURCES_CHECK_FAILED' | 'SYNC_PLAN_FAILED';
+type RemovalOutcome = 'REMOVED' | 'NOTHING_TO_REMOVE' | 'BLOCKED' | 'DRY_RUN' | 'FAILED';
+type RemovalFailureCode = 'REMOVAL_FAILED' | 'TRACE_UNAVAILABLE' | 'PREREQUISITE_MISSING' | 'OTHER_SOURCES_CHECK_FAILED' | 'SYNC_PLAN_FAILED';
 
 /** Issue T4 d'une décision non créatrice (lot 71E, §A). */
 export function t4OutcomeOf(d: Pick<AgendaDecision, 'action' | 'reasonCode'>): 'reject' | 'abstain' | 'technical_failure' | null {
@@ -425,7 +425,7 @@ export async function persistAgendaDecisions(
  * l'utilisateur, ni un élément projeté depuis une Opération (relecture de
  * sécurité + écriture gardée). Rend `true` si une correction a été écrite.
  */
-export async function correctClassification(decision: AgendaDecision, accountId: number, assetId: number | null): Promise<boolean> {
+async function correctClassification(decision: AgendaDecision, accountId: number, assetId: number | null): Promise<boolean> {
   const corr = decision.classificationCorrection;
   const id = decision.existingItemId;
   if (!corr || !id || id <= 0) return false;
@@ -735,7 +735,7 @@ export const CONSOLIDATED_EVENT = 'DUPLICATE_CONSOLIDATED';
  * `RECURRENCE_OCCURRENCE_USER_PROTECTED`) — ce n'est pas une consolidation,
  * c'est la série qui se retrouve elle-même.
  */
-export const CONSOLIDATION_REASON = 'EXACT_DUPLICATE';
+const CONSOLIDATION_REASON = 'EXACT_DUPLICATE';
 
 /**
  * T4-UI-06 : trace une consolidation — un doublon certain venu d'une AUTRE

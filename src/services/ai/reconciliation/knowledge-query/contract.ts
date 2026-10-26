@@ -60,15 +60,13 @@ export const CONSTITUENT_VALUE_TYPES = {
 } as const;
 export type ConstituentRole = keyof typeof CONSTITUENT_VALUE_TYPES;
 export type ConstituentValueType = (typeof CONSTITUENT_VALUE_TYPES)[ConstituentRole];
-export const CONSTITUENT_ROLES = Object.keys(CONSTITUENT_VALUE_TYPES) as ConstituentRole[];
 
 export type FieldValueType = 'date' | 'text' | 'number';
 
 const confidence = z.enum(['certain', 'probable', 'conflictual']);
 export type KnowledgeConfidence = z.infer<typeof confidence>;
 
-export const KNOWLEDGE_QUERY_OUTCOMES = ['FOUND', 'CONSTITUENTS', 'CONTRADICTION', 'AMBIGUOUS', 'NOT_FOUND'] as const;
-export type KnowledgeQueryOutcome = (typeof KNOWLEDGE_QUERY_OUTCOMES)[number];
+const KNOWLEDGE_QUERY_OUTCOMES = ['FOUND', 'CONSTITUENTS', 'CONTRADICTION', 'AMBIGUOUS', 'NOT_FOUND'] as const;
 
 export const t3KnowledgeFinding = z.object({
   target: z.string().min(1).max(40),

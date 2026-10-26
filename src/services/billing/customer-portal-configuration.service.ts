@@ -50,23 +50,23 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export const CUSTOMER_PORTAL_METADATA_KEY = 'verebona_flow';
-export const CUSTOMER_PORTAL_METADATA_VALUE = 'customer_portal_v1';
+const CUSTOMER_PORTAL_METADATA_KEY = 'verebona_flow';
+const CUSTOMER_PORTAL_METADATA_VALUE = 'customer_portal_v1';
 export const CUSTOMER_PORTAL_CONFIGURATION_NAME = 'Verebona — portail client (résiliation en fin de période)';
 /** Champ « includable » de l'API Stripe (voir portal-configuration.service.ts, lot 53I). */
 const PRODUCTS_EXPAND = 'features.subscription_update.products';
 /** Revérification (recopie + conformité) au plus une fois par heure et par instance. */
-export const CUSTOMER_PORTAL_REVERIFY_MS = 60 * 60_000;
+const CUSTOMER_PORTAL_REVERIFY_MS = 60 * 60_000;
 /** Empreinte de l'anomalie BO (une seule, consolidée). */
 export const CUSTOMER_PORTAL_ANOMALY_FINGERPRINT = 'stripe:customer-portal:configuration';
 
 /** Réglage de résiliation imposé par Verebona. */
-export const VEREBONA_SUBSCRIPTION_CANCEL = { enabled: true, mode: 'at_period_end', proration_behavior: 'none' } as const;
+const VEREBONA_SUBSCRIPTION_CANCEL = { enabled: true, mode: 'at_period_end', proration_behavior: 'none' } as const;
 
 // ── Types minimaux (objets Stripe relus ; injectables dans les tests) ───────
 
 type Product = { product: string; prices?: string[] | null; adjustable_quantity?: { enabled?: boolean; maximum?: number | null; minimum?: number | null } | null };
-export interface PortalConfigurationLike {
+interface PortalConfigurationLike {
   id: string;
   active?: boolean;
   is_default?: boolean;
@@ -102,21 +102,21 @@ export interface CustomerPortalConfigStripe {
   };
 }
 
-export type CustomerPortalConfigErrorCode =
+type CustomerPortalConfigErrorCode =
   | 'PORTAL_CONFIG_NOT_FOUND'
   | 'PORTAL_CONFIG_INACTIVE'
   | 'PORTAL_CONFIG_NOT_COMPLIANT'
   | 'PORTAL_CONFIG_MODE_MISMATCH'
   | 'PORTAL_CONFIG_STRIPE_ERROR';
 
-export class CustomerPortalConfigError extends Error {
+class CustomerPortalConfigError extends Error {
   constructor(public readonly code: CustomerPortalConfigErrorCode, message: string) {
     super(`${code}: ${message}`);
     this.name = 'CustomerPortalConfigError';
   }
 }
 
-export interface CustomerPortalConfigResult {
+interface CustomerPortalConfigResult {
   configurationId: string;
   source: 'env' | 'metadata' | 'created';
   /** Configuration écrite chez Stripe lors de cet appel (création ou alignement). */
@@ -214,7 +214,7 @@ export function mirroredCustomerPortalParams(defaultConf: PortalConfigurationLik
  * vue relue passe par la même normalisation que la recopie (même forme,
  * mêmes tris) ; la résiliation est comparée sur la valeur RÉELLEMENT relue.
  */
-export function customerPortalNeedsUpdate(current: PortalConfigurationLike, wanted: Record<string, unknown>): boolean {
+function customerPortalNeedsUpdate(current: PortalConfigurationLike, wanted: Record<string, unknown>): boolean {
   if (!customerPortalCancelCompliant(current)) return true;
   const cur = mirroredCustomerPortalParams(current).params;
   const view = (p: Record<string, unknown>) => JSON.stringify({ business_profile: p.business_profile ?? null, features: p.features });
@@ -283,7 +283,7 @@ let memo: { key: string; at: number; result: Omit<CustomerPortalConfigResult, 'c
 /** Tests / reprise : oublie la configuration mémorisée. */
 export function resetCustomerPortalConfigurationCache(): void { memo = null; }
 
-export interface EnsureCustomerPortalOptions {
+interface EnsureCustomerPortalOptions {
   stripe?: CustomerPortalConfigStripe;
   env?: NodeJS.ProcessEnv;
   now?: Date;

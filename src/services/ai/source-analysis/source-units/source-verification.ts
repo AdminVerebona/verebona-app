@@ -46,18 +46,18 @@ export const SOURCE_VERIFICATION_STATUSES = ['VERIFIED', 'PARTIAL', 'UNVERIFIABL
 export type SourceVerificationStatus = (typeof SOURCE_VERIFICATION_STATUSES)[number];
 
 /** Pages sondées au plus (au-delà : non vérifiées, jamais réputées lues). */
-export const PROBE_MAX_PAGES = 1_000;
+const PROBE_MAX_PAGES = 1_000;
 /** Caractères d'échantillon par page. */
 const SAMPLE_MAX = 6_000;
 /** Mots distinctifs comparés par page. */
 const WORDS_MAX = 40;
 /** Seuils de correspondance du texte d'une page avec la transcription. */
-export const MATCH_VERIFIED = 0.5;
-export const MATCH_MISSING = 0.3;
+const MATCH_VERIFIED = 0.5;
+const MATCH_MISSING = 0.3;
 /** Mots distinctifs minimaux pour conclure à une omission (jamais sur un échantillon pauvre). */
 const MIN_WORDS_FOR_MISSING = 8;
 
-export type PageKind = 'TEXT' | 'SCANNED' | 'EMPTY' | 'UNKNOWN';
+type PageKind = 'TEXT' | 'SCANNED' | 'EMPTY' | 'UNKNOWN';
 
 export interface PageProbe {
   page: number;
@@ -94,7 +94,7 @@ export const verificationUnverifiable = (reason: string, pagesExpected: number |
   status: 'UNVERIFIABLE', pagesExpected, verified: [], missing: [], unverified: pagesExpected ? range(1, pagesExpected) : [], scanned: [], reason,
 });
 
-export function range(a: number, b: number): number[] {
+function range(a: number, b: number): number[] {
   const out: number[] = [];
   for (let i = a; i <= b; i++) out.push(i);
   return out;
@@ -232,7 +232,7 @@ export async function probePdf(bytes: Uint8Array, maxPages = PROBE_MAX_PAGES): P
 
 // ── Pages citées par la sortie T1 ─────────────────────────────────────────
 
-export interface CitedPages {
+interface CitedPages {
   /** Pages désignées explicitement (marques, preuves, tableaux, observations). */
   pages: Set<number>;
   /** La transcription porte des marques de page (pagination fiable de la lecture). */
@@ -263,7 +263,7 @@ export function citedPages(out: Pick<T1AnalyzeDocumentOutput, 'facts' | 'tables'
 }
 
 /** Part des mots distinctifs d'une page retrouvés dans la transcription (pure). null : échantillon trop pauvre. */
-export function pageMatchRatio(sample: string, transcriptionWords: ReadonlySet<string>): { ratio: number; words: number } | null {
+function pageMatchRatio(sample: string, transcriptionWords: ReadonlySet<string>): { ratio: number; words: number } | null {
   const distinctifs = [...new Set(mots(sample).filter((w) => w.length >= 5 && !/^\d+$/.test(w)))].slice(0, WORDS_MAX);
   if (distinctifs.length === 0) return null;
   const trouves = distinctifs.filter((w) => transcriptionWords.has(w)).length;

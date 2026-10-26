@@ -5,7 +5,7 @@
  * via `Intl`, ce qui gère automatiquement les changements d'heure (CET/CEST).
  */
 
-export interface ParisParts {
+interface ParisParts {
   year: number; month: number; day: number;
   hour: number; minute: number;
   /** Date locale au format YYYY-MM-DD. */

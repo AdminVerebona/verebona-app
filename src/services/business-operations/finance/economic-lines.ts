@@ -198,7 +198,7 @@ export const ECONOMIC_LINE_STATUS_LABELS: Readonly<Record<EconomicLineStatus, st
 };
 
 /** Motifs documentaires (en plus des motifs du moteur `ExclusionReason`). */
-export type DocumentLineReason =
+type DocumentLineReason =
   | 'DUPLICATE_COPY' | 'DUPLICATE_REFERENCE' | 'INCLUDED_IN_TOTAL_SAME_DOCUMENT' | 'INCLUDED_IN_TOTAL_INVOICE'
   | 'COVERED_BY_OPERATION' | 'COUNTED_FOR_OTHER_ASSET' | 'UNCONFIRMED_ASSET' | 'PAYMENT_PROOF' | 'LOAN_PRINCIPAL'
   | 'FUTURE_INSTALLMENT' | 'QUOTE' | 'NOT_EXPENSE_DOCUMENT' | 'THEME_UNKNOWN' | 'AMOUNT_UNKNOWN'
@@ -315,7 +315,7 @@ const ACOMPTE = /\b(acompte|arrhes)\b/i;
 const SOLDE = /\bsolde\b/i;
 const INVOICE_LIKE = /(INVOICE|FACTURE|TICKET)/i;
 
-export const normalizeSupplier = (s: string | null | undefined): string | null => {
+const normalizeSupplier = (s: string | null | undefined): string | null => {
   const v = (s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\b(SARL|SAS|SA|EURL|SASU|SNC|ETS|STE)\b/g, '').replace(/[^A-Z0-9]/g, '');
   return v.length >= 2 ? v : null;
 };
@@ -497,7 +497,7 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
 }
 
 /** Lot 75D (E) : T1 a établi des parts par bien — au moins deux candidats chiffrés, chacun ciblant un bien distinct. */
-export function isFinanciallySplit(candidats: readonly EconomicDocumentCandidate[]): boolean {
+function isFinanciallySplit(candidats: readonly EconomicDocumentCandidate[]): boolean {
   const cibles = candidats.filter((c) => c.hints.length).map((c) => {
     const b = [...new Set(c.targets.filter((t) => t.type === 'ASSET' && t.entityId != null).map((t) => t.entityId!))];
     return b.length === 1 ? b[0] : null;
@@ -521,7 +521,7 @@ type CoverageDocument = Pick<EconomicDocumentInput, 'acquisitionEvidence' | 'use
  * type est une dépense ; un devis, une preuve de paiement, une notice n'en
  * portent aucun.
  */
-export function documentCostFacts(d: CoverageDocument): Array<{ kind: string; amountMinor: number | null }> {
+function documentCostFacts(d: CoverageDocument): Array<{ kind: string; amountMinor: number | null }> {
   if (!d.userEditedAmount && d.candidates.some((c) => c.hints.length)) {
     return d.candidates.flatMap((c) => c.hints).filter((h) => KINDS.has(String(h.role)) && h.role !== 'FORECAST_COST')
       .map((h) => ({ kind: String(h.role), amountMinor: h.amountMinor }));
@@ -555,7 +555,7 @@ function isPartsOnly(d: Pick<EconomicDocumentInput, 'userEditedAmount' | 'candid
  *   · NOT_COVERED : l'Opération consolide d'AUTRES faits — le justificatif
  *     est compté directement (jamais perdu).
  */
-export type OperationCoverage = 'COVERED' | 'INCLUDED_IN_TOTAL' | 'DISTINCT_FROM_ACQUISITION' | 'NO_AMOUNT' | 'NOT_COVERED';
+type OperationCoverage = 'COVERED' | 'INCLUDED_IN_TOTAL' | 'DISTINCT_FROM_ACQUISITION' | 'NO_AMOUNT' | 'NOT_COVERED';
 
 export function operationCoverage(o: EconomicDocumentOperation, d: CoverageDocument): OperationCoverage {
   const pourCeBien = !(o.inScope && o.citesForOtherAssetOnly);
@@ -583,7 +583,7 @@ export function operationCoverage(o: EconomicDocumentOperation, d: CoverageDocum
  * document qu'aucune composante de cet achat ne cite et qui n'est pas la
  * preuve T1 du prix d'achat est une dépense distincte, jamais perdue.
  */
-export function isDistinctFromAcquisition(o: Pick<EconomicDocumentOperation, 'typeCode' | 'citesDocument' | 'inScope'>, d: Pick<EconomicDocumentInput, 'acquisitionEvidence'>): boolean {
+function isDistinctFromAcquisition(o: Pick<EconomicDocumentOperation, 'typeCode' | 'citesDocument' | 'inScope'>, d: Pick<EconomicDocumentInput, 'acquisitionEvidence'>): boolean {
   return o.typeCode === 'ACQUISITION' && o.inScope && !o.citesDocument && !d.acquisitionEvidence;
 }
 

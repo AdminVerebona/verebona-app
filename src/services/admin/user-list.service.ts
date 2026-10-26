@@ -16,7 +16,7 @@ import { pgClient } from '@/db';
 import { containsPattern, type ListParams, type PageResult } from './list-params';
 
 export const USER_SORTS = ['name', 'email', 'account', 'plan', 'status'] as const;
-export type UserSort = (typeof USER_SORTS)[number];
+type UserSort = (typeof USER_SORTS)[number];
 
 /** Expressions SQL de tri (liste blanche : aucune entrée utilisateur interpolée). */
 const ORDER_SQL: Record<UserSort, string> = {
@@ -38,7 +38,7 @@ export function userDisplayStatus(status: string | null | undefined): 'active' |
   return status === 'ACTIVE' ? 'active' : 'disabled';
 }
 
-export interface UserListItem {
+interface UserListItem {
   id: number;
   firstName: string;
   lastName: string;
@@ -49,7 +49,7 @@ export interface UserListItem {
   status: 'active' | 'disabled';
 }
 
-export interface UserListSummary {
+interface UserListSummary {
   total: number;
   active: number;
   disabled: number;

@@ -11,7 +11,7 @@ import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
 import { ACCESS_TOKEN_TTL_S, REFRESH_TOKEN_TTL_S } from './token-lifetimes';
 
-export interface SessionUser {
+interface SessionUser {
   id: number;
   email: string;
   role: string;

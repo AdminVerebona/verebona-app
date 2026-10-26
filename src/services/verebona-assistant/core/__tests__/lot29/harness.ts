@@ -28,14 +28,14 @@ const { normalizePlate, normalizeVin } = await import('../../vehicle-identifiers
 const { toIntentRoute } = await import('../../classification.adapter');
 const { resolveAssistantTargets } = await import('../../assistant-targets');
 
-export interface FxAsset {
+interface FxAsset {
   id: number; accountId?: number; name: string; category?: string; subtype?: string | null; status?: string | null; deleted?: boolean;
   city?: string | null; registrationNumber?: string | null; fields?: Record<string, unknown>;
 }
-export interface FxEntity {
+interface FxEntity {
   kind: 'equipment' | 'room'; id: number; assetId: number; name: string; type?: string | null; archived?: boolean; fields?: Record<string, unknown>;
 }
-export interface FxDocFact { assetId: number; key: string; display: string; fileId: number; title: string }
+interface FxDocFact { assetId: number; key: string; display: string; fileId: number; title: string }
 
 export interface Account {
   id: number;
@@ -157,7 +157,7 @@ export function understood(intent: string, requestedFacts: string[], hints: Arra
   };
 }
 
-export interface Harness {
+interface Harness {
   acc: Account;
   lookup: ReturnType<typeof fakeLookup>;
   readers: ReturnType<typeof fakeReaders>;

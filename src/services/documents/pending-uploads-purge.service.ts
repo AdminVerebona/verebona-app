@@ -50,7 +50,7 @@ const DEFAULT_GRACE_HOURS = 24;
 /** Plafond par tour, pour ne pas tenir une transaction trop longtemps. */
 const DEFAULT_LIMIT = 500;
 
-export interface PendingUploadsPurgeResult {
+interface PendingUploadsPurgeResult {
   found: number;
   purged: number;
   blobsScheduled: number;
@@ -125,18 +125,3 @@ export async function purgePendingUploads(options?: {
   return result;
 }
 
-/** Nombre de lignes purgeables, sans rien modifier. Utile pour un contrôle. */
-export async function countPendingUploads(graceHours = DEFAULT_GRACE_HOURS): Promise<number> {
-  const seuil = new Date(Date.now() - graceHours * 60 * 60 * 1000);
-  const rows = await db
-    .select({ id: assetFiles.id })
-    .from(assetFiles)
-    .where(
-      and(
-        eq(assetFiles.uploadStatus, 'PENDING'),
-        isNull(assetFiles.deletedAt),
-        lt(assetFiles.createdAt, seuil),
-      ),
-    );
-  return rows.length;
-}

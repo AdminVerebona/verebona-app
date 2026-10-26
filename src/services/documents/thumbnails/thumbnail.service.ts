@@ -66,7 +66,7 @@ const MAX_QUEUE = 200;
 
 // ── Conversion d'image (pure, testée) ─────────────────────────────────────
 
-export interface EncodedThumbnail {
+interface EncodedThumbnail {
   body: Buffer;
   width: number;
   height: number;
@@ -94,7 +94,7 @@ export async function encodeThumbnail(input: Buffer): Promise<EncodedThumbnail> 
 
 // ── Dépendances (injectables pour les tests) ──────────────────────────────
 
-export interface ThumbnailDeps {
+interface ThumbnailDeps {
   /** Lit l'original, au plus `maxBytes` octets (lève `SourceTooLargeError` au-delà). */
   readObject(bucket: string, key: string, maxBytes: number): Promise<Buffer>;
   putObject(key: string, body: Buffer, contentType: string): Promise<void>;
@@ -147,7 +147,7 @@ const defaultDeps: ThumbnailDeps = {
 
 // ── Réservation / écriture en base ────────────────────────────────────────
 
-export interface ThumbnailSource {
+interface ThumbnailSource {
   id: number;
   accountId: number;
   s3Key: string;
@@ -220,7 +220,7 @@ async function finish(
 
 // ── Génération ────────────────────────────────────────────────────────────
 
-export type ThumbnailOutcome =
+type ThumbnailOutcome =
   | 'READY' | 'FAILED' | 'UNSUPPORTED'
   | 'SKIPPED_NOT_ELIGIBLE' | 'SKIPPED_NOT_CLAIMED' | 'SKIPPED_SUPERSEDED' | 'SKIPPED_DISABLED';
 
@@ -352,11 +352,6 @@ function drain(): void {
         if (queue.size > 0) setImmediate(drain);
       });
   }
-}
-
-/** État de la file (supervision, tests). */
-export function thumbnailQueueStats(): { queued: number; running: number } {
-  return { queued: queue.size, running };
 }
 
 // ── Lecture pour l'affichage ──────────────────────────────────────────────

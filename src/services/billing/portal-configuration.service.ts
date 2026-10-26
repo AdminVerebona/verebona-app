@@ -80,9 +80,9 @@ export const PORTAL_PRODUCTS_EXPAND = 'features.subscription_update.products';
 /** Revérification minimale d'une configuration alignée. */
 const REVERIFY_AFTER_MS = 60 * 60_000;
 
-export type PortalProducts = Array<{ product: string; prices: string[] }>;
+type PortalProducts = Array<{ product: string; prices: string[] }>;
 
-export type PortalErrorCode =
+type PortalErrorCode =
   | 'PORTAL_DUPLICATE_INTERVAL'
   | 'PORTAL_INCOMPLETE'
   | 'PORTAL_MISMATCH'
@@ -98,14 +98,14 @@ export type PortalErrorCode =
   | 'PORTAL_BLOCKED';
 
 /** Erreur typée du portail (fonctionnelle : jamais reprise en boucle). */
-export class PortalConfigError extends Error {
+class PortalConfigError extends Error {
   constructor(public readonly code: PortalErrorCode, message: string) {
     super(`${code}: ${message}`);
     this.name = 'PortalConfigError';
   }
 }
 
-export interface PortalPriceRef { planCode: string; productId: string; priceId: string; interval: string }
+interface PortalPriceRef { planCode: string; productId: string; priceId: string; interval: string }
 
 /** Prix d'une révision avec leur offre et leur périodicité (contrôles structurels). */
 export function portalPriceRefs(snapshot: CatalogSnapshot): PortalPriceRef[] {
@@ -125,7 +125,7 @@ export function portalProductsFor(snapshot: CatalogSnapshot): PortalProducts {
 }
 
 /** Forme canonique (produits triés, prix uniques triés) pour comparaison exacte. */
-export function normalizePortalProducts(products: Array<{ product: string; prices?: string[] | null }>): PortalProducts {
+function normalizePortalProducts(products: Array<{ product: string; prices?: string[] | null }>): PortalProducts {
   const byProduct = new Map<string, Set<string>>();
   for (const p of products) {
     const set = byProduct.get(p.product) ?? new Set<string>();
@@ -184,7 +184,7 @@ export function portalFingerprint(context: string, configurationId: string, prod
  *   - `present` : liste renvoyée par Stripe, éventuellement vide (`[]` ou
  *                 `null` explicites) — état DÉTERMINÉ.
  */
-export type PortalReading = { state: 'present'; products: PortalProducts } | { state: 'absent' };
+type PortalReading = { state: 'present'; products: PortalProducts } | { state: 'absent' };
 
 export function readPortalProducts(conf: Stripe.BillingPortal.Configuration | null | undefined): PortalReading {
   const su = conf?.features?.subscription_update as (Stripe.BillingPortal.Configuration.Features.SubscriptionUpdate | undefined);
@@ -211,14 +211,14 @@ export function acceptedPrices(conf: Stripe.BillingPortal.Configuration): string
 }
 
 /** Paramètres du parcours de montée en gamme attendus (LK-51). */
-export function upgradeSettingsOk(conf: Stripe.BillingPortal.Configuration): boolean {
+function upgradeSettingsOk(conf: Stripe.BillingPortal.Configuration): boolean {
   const su = conf.features?.subscription_update;
   return su?.enabled === true
     && su.proration_behavior === 'always_invoice'
     && (su.default_allowed_updates ?? []).includes('price');
 }
 
-export interface PortalCheck {
+interface PortalCheck {
   ok: boolean;
   /** `false` : prix autorisés non relus (propriété absente) — rien n'est prouvé. */
   determinate: boolean;
@@ -231,7 +231,7 @@ export interface PortalCheck {
 }
 
 /** Égalité EXACTE (produit par produit) entre attendu et accepté RELU. Pure. */
-export function portalMatches(conf: Stripe.BillingPortal.Configuration, expected: PortalProducts): PortalCheck {
+function portalMatches(conf: Stripe.BillingPortal.Configuration, expected: PortalProducts): PortalCheck {
   const accepted = acceptedProductsOf(conf);
   const settingsOk = upgradeSettingsOk(conf);
   const want = normalizePortalProducts(expected);
@@ -249,7 +249,7 @@ export function portalMatches(conf: Stripe.BillingPortal.Configuration, expected
 }
 
 /** Description lisible d'un contrôle en échec (journal, BO). Pure. */
-export function describePortalCheck(configurationId: string, check: PortalCheck, expected: PortalProducts): string {
+function describePortalCheck(configurationId: string, check: PortalCheck, expected: PortalProducts): string {
   const exp = expected.flatMap((p) => p.prices).sort().join(',');
   if (!check.determinate) return `portail ${configurationId} : prix autorisés NON relus (propriété features.subscription_update.products absente de la réponse Stripe, état indéterminé) ; attendus ${exp}`;
   const acc = (check.accepted ?? []).flatMap((p) => p.prices).sort().join(',') || '∅ (liste explicitement vide)';
@@ -282,7 +282,7 @@ async function findConfigurationId(stripe: Stripe, known: string | null, env: No
   return null;
 }
 
-export interface PortalRead {
+interface PortalRead {
   conf: Stripe.BillingPortal.Configuration;
   reading: PortalReading;
   /** Stripe a refusé l'expansion : lecture sans `products` (indéterminée). */
@@ -295,7 +295,7 @@ export interface PortalRead {
  * l'expansion, relecture simple : la propriété absente laisse l'état
  * INDÉTERMINÉ (jamais « vide »).
  */
-export async function rereadConfiguration(stripe: Stripe, id: string): Promise<PortalRead> {
+async function rereadConfiguration(stripe: Stripe, id: string): Promise<PortalRead> {
   try {
     const conf = await stripe.billingPortal.configurations.retrieve(id, { expand: [PORTAL_PRODUCTS_EXPAND] });
     return { conf, reading: readPortalProducts(conf), expandRejected: false };
@@ -339,7 +339,7 @@ function assertSameMode(conf: Stripe.BillingPortal.Configuration, mode: string |
   }
 }
 
-export interface PortalSyncResult {
+interface PortalSyncResult {
   configurationId: string;
   fingerprint: string;
   changed: boolean;
@@ -502,7 +502,7 @@ export async function restorePortalConfiguration(
 /** États pendant lesquels le portail peut différer de la révision active. */
 const TRANSITION_STATES = new Set(['PREPARED', 'VALIDATING', 'PUBLISHING', 'READY', 'RECOVERING', 'FAILED']);
 /** Au-delà, un état intermédiaire figé n'est plus « en cours » mais bloqué (lot 53I). */
-export const PORTAL_STUCK_AFTER_MS = 30 * 60_000;
+const PORTAL_STUCK_AFTER_MS = 30 * 60_000;
 
 /**
  * Identifiant de configuration aligné sur la révision active (appelé au clic).

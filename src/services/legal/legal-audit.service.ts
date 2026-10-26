@@ -7,9 +7,8 @@
  */
 import { db } from '@/db';
 import { legalAuditLog } from '@/db/schema';
-import { desc, eq } from 'drizzle-orm';
 
-export type LegalAuditAction =
+type LegalAuditAction =
   | 'DRAFT_CREATED'
   | 'DRAFT_UPDATED'
   | 'PUBLISHED'
@@ -20,7 +19,7 @@ export type LegalAuditAction =
   | 'USER_ACCEPTED'
   | 'CONFIRMATION_EMAIL_SENT';
 
-export interface LegalAuditEntry {
+interface LegalAuditEntry {
   action: LegalAuditAction;
   actorUserId?: number | null;
   /** Libellé lisible de l'acteur. `system` pour une action automatique. */
@@ -59,18 +58,3 @@ export async function recordLegalAudit(entry: LegalAuditEntry): Promise<void> {
   }
 }
 
-/** Historique complet, ou limité à une version. */
-export async function listLegalAudit(
-  options: { versionCode?: string; limit?: number } = {},
-) {
-  const limit = Math.min(options.limit ?? 100, 500);
-  const query = db
-    .select()
-    .from(legalAuditLog)
-    .orderBy(desc(legalAuditLog.occurredAt))
-    .limit(limit);
-
-  return options.versionCode
-    ? query.where(eq(legalAuditLog.versionCode, options.versionCode))
-    : query;
-}

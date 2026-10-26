@@ -36,7 +36,7 @@ import type { T6ModeFilter } from './execution-filters';
 
 type Row = Record<string, unknown>;
 
-export interface CostFilters {
+interface CostFilters {
   since?: Date;
   until?: Date;
   treatment?: Treatment;
@@ -50,7 +50,7 @@ export interface CostFilters {
   t6Mode?: T6ModeFilter;
 }
 
-export interface CostTotals {
+interface CostTotals {
   /** Dépense métier — ce qui sert les utilisateurs. */
   functionalMicros: number;
   /** Sondes, tests fournisseur, mode observation (MOD-013). */
@@ -63,7 +63,7 @@ export interface CostTotals {
   unpricedCalls: number;
 }
 
-export interface CostBreakdownRow {
+interface CostBreakdownRow {
   key: string;
   label: string;
   functionalMicros: number;
@@ -72,7 +72,7 @@ export interface CostBreakdownRow {
   unpricedCalls: number;
 }
 
-export interface CostReport {
+interface CostReport {
   since: Date;
   until: Date;
   totals: CostTotals;

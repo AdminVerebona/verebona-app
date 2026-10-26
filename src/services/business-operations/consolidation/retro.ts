@@ -42,7 +42,7 @@
  */
 
 /** Candidats marqués au plus par appel (le reste au passage suivant). */
-export const RETRO_MARK_LIMIT = 50;
+const RETRO_MARK_LIMIT = 50;
 
 /**
  * Prédicat SQL (alias `c`) : candidat porteur d'une échéance (période
@@ -55,7 +55,7 @@ export const RETRO_ELIGIBLE_SQL = `(c.type_hint = 'CONTRACT' OR EXISTS (
         OR (h->>'periodStart' ~ '^\\d{4}-\\d{2}-\\d{2}$' AND h->>'periodEnd' ~ '^\\d{4}-\\d{2}-\\d{2}$' AND h->>'periodStart' < h->>'periodEnd')))`;
 
 /** Prédicat SQL (alias `c`, `x` = Opération du candidat) : la seule source active de `x` est celle du candidat. */
-export const RETRO_SOLO_SQL = `(
+const RETRO_SOLO_SQL = `(
     (SELECT count(*) FROM business_operation_sources s WHERE s.operation_id = x.id AND s.account_id = x.account_id AND s.active) = 1
     AND EXISTS (SELECT 1 FROM business_operation_sources s WHERE s.operation_id = x.id AND s.account_id = x.account_id AND s.active
                    AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = c.file_id::text AND s.locator->>'candidateKey' = c.candidate_key))`;
@@ -140,7 +140,7 @@ export async function requestRetroReconciliation(accountId: number, operationIds
  * de type compatible, partage le prestataire ou un bien avec `x` — même
  * filtre que la migration 0398 (rattrapage initial).
  */
-export const RETRO_NEIGHBOUR_SQL = `EXISTS (
+const RETRO_NEIGHBOUR_SQL = `EXISTS (
     SELECT 1 FROM business_operations y
      WHERE y.account_id = x.account_id AND y.id <> x.id AND y.invalidated_at IS NULL AND y.merged_into_operation_id IS NULL
        AND ${RETRO_TYPES_SQL('y')}
@@ -207,7 +207,7 @@ export interface TargetedRetroSelector {
   assetIds?: readonly number[];
 }
 
-export const TARGETED_RETRO_LIMIT = 200;
+const TARGETED_RETRO_LIMIT = 200;
 
 /**
  * Opération ACTUELLE d'un candidat (alias `c`) : celle de sa source documentaire
@@ -224,7 +224,7 @@ const ints = (v: readonly number[] | undefined) => `{${[...new Set(v ?? [])].fil
 const texts = (v: readonly string[] | undefined) =>
   `{${[...new Set(v ?? [])].filter((x) => typeof x === 'string' && x.trim()).map((x) => `"${x.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(',')}}`;
 
-export function targetedSelectorEmpty(s: TargetedRetroSelector): boolean {
+function targetedSelectorEmpty(s: TargetedRetroSelector): boolean {
   return !s.fileIds?.length && !s.operationIds?.length && !s.providers?.length && !s.references?.length && !s.assetIds?.length;
 }
 

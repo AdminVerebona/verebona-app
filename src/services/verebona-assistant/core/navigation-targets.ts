@@ -23,7 +23,7 @@ import type { VerebonaIntent } from '../types/intents';
 import { normalizeForRouting, word } from './routing-text';
 import { assetVocabularyAlternatives } from '@/lib/asset-taxonomy';
 
-export interface NavigationTarget {
+interface NavigationTarget {
   key: 'to_process' | 'agenda' | 'documents' | 'suppliers' | 'account' | 'pricing' | 'help';
   action: VerebonaActionType;
   /** Gabarit de réponse court (§22.10 : bouton unique, aucune ouverture auto). */
@@ -36,7 +36,7 @@ export interface NavigationTarget {
  * traiter » visent la page À traiter), l'aide en dernier (« centre d'aide »
  * ne doit pas masquer un objet plus précis).
  */
-export const NAVIGATION_TARGETS: readonly NavigationTarget[] = [
+const NAVIGATION_TARGETS: readonly NavigationTarget[] = [
   { key: 'to_process', action: 'OPEN_TO_PROCESS', answer: 'Voici vos éléments « À traiter ».', pattern: word("a traiter|elements? a traiter|taches? a traiter") },
   { key: 'agenda', action: 'OPEN_AGENDA', answer: 'Voici votre agenda.', pattern: word('agenda|calendrier|planning|echeances?|rendez-vous|rappels') },
   { key: 'documents', action: 'OPEN_DOCUMENTS_PAGE', answer: 'Voici vos documents.', pattern: word('documents|mes documents|mes fichiers|fichiers|justificatifs') },

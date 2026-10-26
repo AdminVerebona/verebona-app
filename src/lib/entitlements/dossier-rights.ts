@@ -50,7 +50,7 @@ export function canCreateDossiers(
  *     partagée, le tiroir reste fermé (aucun champ, aucun clavier) ;
  *   · droits inconnus → `wait` : rien ne s'ouvre, décision à leur arrivée.
  */
-export type DossierDrawerClick = 'close' | 'open' | 'refuse' | 'wait';
+type DossierDrawerClick = 'close' | 'open' | 'refuse' | 'wait';
 
 export function decideDossierDrawerClick(open: boolean, droit: boolean | null): DossierDrawerClick {
   if (open) return 'close';

@@ -38,9 +38,9 @@
 
 import { S3Client, type S3ClientConfig } from '@aws-sdk/client-s3';
 
-export type S3Profile = 'interactive' | 'worker';
+type S3Profile = 'interactive' | 'worker';
 
-export interface S3Config {
+interface S3Config {
   endpoint: string;
   region: string;
   bucket: string;
@@ -52,16 +52,16 @@ export interface S3Config {
   timeouts: Record<S3Profile, { connectionTimeout: number; requestTimeout: number; maxAttempts: number }>;
 }
 
-export type S3ConfigIssueCode = 'MISSING' | 'INVALID' | 'LEGACY_ONLY' | 'CONFLICT';
+type S3ConfigIssueCode = 'MISSING' | 'INVALID' | 'LEGACY_ONLY' | 'CONFLICT';
 
-export interface S3ConfigIssue {
+interface S3ConfigIssue {
   code: S3ConfigIssueCode;
   variable: string;
   /** Message lisible, SANS valeur de secret. */
   message: string;
 }
 
-export interface S3ConfigResult {
+interface S3ConfigResult {
   config: S3Config | null;
   /** Bloquants : `config` est nul. */
   errors: S3ConfigIssue[];
@@ -368,7 +368,7 @@ export function logS3Error(where: string, error: unknown, extra: Record<string, 
 
 // ── URL signées de lecture ─────────────────────────────────────────────────
 
-export interface SignedGetOptions {
+interface SignedGetOptions {
   key: string;
   /** Bucket de l'objet (colonne `s3_bucket`) ; défaut : bucket canonique. */
   bucket?: string | null;

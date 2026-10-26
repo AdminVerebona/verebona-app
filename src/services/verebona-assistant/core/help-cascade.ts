@@ -80,7 +80,7 @@ export interface HelpSearchResult {
 /** Recherche dans le corpus de l'environnement, pour un lot de requêtes. */
 export type HelpSearcher = (queries: string[], stage: HelpStage) => Promise<HelpSearchResult>;
 
-export type HelpAiBlockReason = 'AI_NOT_ALLOWED' | 'AI_UNAVAILABLE' | 'AI_BUDGET_BLOCKED' | 'AI_TIMEOUT';
+type HelpAiBlockReason = 'AI_NOT_ALLOWED' | 'AI_UNAVAILABLE' | 'AI_BUDGET_BLOCKED' | 'AI_TIMEOUT';
 
 /** Compréhension par UNDERSTAND (appelée ou réutilisée). */
 export type HelpUnderstandOutcome =
@@ -111,7 +111,7 @@ export type HelpFallbackReason =
  * Résumé d'observabilité d'une question d'aide (lot 34G) — les champs
  * exigés par le ticket, à plat, persistés avec la trace de la demande.
  */
-export interface HelpObservability {
+interface HelpObservability {
   corpusAvailable: boolean;
   corpusSource: HelpCorpusLoadInfo['corpusSource'] | 'unknown';
   corpusVersion: string | null;
@@ -126,7 +126,7 @@ export interface HelpObservability {
   fallbackReason: HelpFallbackReason | null;
 }
 
-export interface HelpLevelTrace {
+interface HelpLevelTrace {
   level: 2 | 3 | 4 | 5;
   stage: HelpStage | 'understand';
   strategy: string;

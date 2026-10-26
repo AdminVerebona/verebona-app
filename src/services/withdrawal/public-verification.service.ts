@@ -20,16 +20,16 @@
 import { randomBytes } from 'crypto';
 import { db } from '@/db';
 import { accounts, users, withdrawalVerificationTokens } from '@/db/schema';
-import { and, eq, gt, isNull, lt } from 'drizzle-orm';
+import { and, eq, gt, isNull } from 'drizzle-orm';
 import { hashToken } from './withdrawal.service';
 
 /** Durée de validité du lien envoyé par courriel. */
-export const VERIFICATION_TOKEN_TTL_MINUTES = 30;
+const VERIFICATION_TOKEN_TTL_MINUTES = 30;
 
 /** Au-delà, le jeton est considéré comme attaqué et neutralisé. */
 const MAX_ATTEMPTS = 5;
 
-export interface StartVerificationInput {
+interface StartVerificationInput {
   email: string;
   firstName?: string;
   lastName?: string;
@@ -37,7 +37,7 @@ export interface StartVerificationInput {
   now?: Date;
 }
 
-export interface StartVerificationResult {
+interface StartVerificationResult {
   /** Jeton en clair, à insérer dans le lien. `null` si aucun compte. */
   token: string | null;
   /** Destinataire, pour l'envoi. `null` si aucun compte. */
@@ -105,7 +105,7 @@ export async function startPublicVerification(
   };
 }
 
-export interface VerifiedIdentity {
+interface VerifiedIdentity {
   userId: number;
   accountId: number;
   email: string;
@@ -114,7 +114,7 @@ export interface VerifiedIdentity {
   tokenId: number;
 }
 
-export type VerificationFailure =
+type VerificationFailure =
   | 'TOKEN_UNKNOWN'
   | 'TOKEN_EXPIRED'
   | 'TOKEN_CONSUMED'
@@ -196,11 +196,3 @@ export async function recordFailedAttempt(token: string): Promise<void> {
     .where(eq(withdrawalVerificationTokens.id, row.id));
 }
 
-/** Purge les jetons expirés. Appelée par le balayage quotidien. */
-export async function purgeExpiredTokens(now: Date = new Date()): Promise<number> {
-  const rows = await db
-    .delete(withdrawalVerificationTokens)
-    .where(lt(withdrawalVerificationTokens.expiresAt, new Date(now.getTime() - 24 * 3600 * 1000)))
-    .returning({ id: withdrawalVerificationTokens.id });
-  return rows.length;
-}

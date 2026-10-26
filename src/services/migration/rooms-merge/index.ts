@@ -3,9 +3,8 @@
  * Point d'entrée : `runRoomsMerge` ; script : `scripts/merge-rooms-into-substructures.ts`.
  */
 export {
-  runRoomsMerge, restoreRoomsMerge, summarizeRoomsMerge, formatRoomsMergeSummary, checkRequirements,
-  MissingRequirementsError, ConcurrentRunError, ROOMS_MERGE_LOCK_KEY,
-  type MergeOptions, type MergeResult, type MergeChange, type MergeDecision, type RestoreResult, type ReenqueueInput,
+  runRoomsMerge, restoreRoomsMerge, summarizeRoomsMerge, formatRoomsMergeSummary,
+  MissingRequirementsError, ConcurrentRunError,
+  type MergeResult, type RestoreResult,
 } from './runner';
-export { parseRoomsMergeArgs, ROOMS_MERGE_HELP, type RoomsMergeArgs } from './cli';
-export { normalizeRoomName, chooseSubstructure, fillFromRoom, restoreOrder } from './plan';
+export { parseRoomsMergeArgs } from './cli';

@@ -21,15 +21,13 @@
  * pas être modifiée pour forcer un changement d'icône.
  */
 
-export const PWA_ICONS_DIR = '/pwa';
-
 export const PWA_ICON_ANY_192 = '/pwa/icon-any-192-l79.png';
 export const PWA_ICON_ANY_512 = '/pwa/icon-any-512-l79.png';
 export const PWA_ICON_MASKABLE_192 = '/pwa/icon-maskable-192-l79.png';
 export const PWA_ICON_MASKABLE_512 = '/pwa/icon-maskable-512-l79.png';
 export const PWA_APPLE_TOUCH_ICON_180 = '/pwa/apple-touch-icon-180-l79.png';
 
-export interface ManifestIcon {
+interface ManifestIcon {
   src: string;
   sizes: string;
   type: 'image/png';

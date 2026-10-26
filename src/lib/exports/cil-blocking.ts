@@ -18,13 +18,13 @@ export function isCilBlockingRuleBlock(id: string): boolean {
 }
 
 /** Bloc réellement bloquant, tel que transmis à l'interface. */
-export interface CilBlockingBlockRef {
+interface CilBlockingBlockRef {
   id: string;
   label: string;
 }
 
 /** « A », « A et B », « A, B et C ». */
-export function joinFr(items: readonly string[]): string {
+function joinFr(items: readonly string[]): string {
   if (items.length <= 1) return items[0] ?? '';
   return `${items.slice(0, -1).join(', ')} et ${items[items.length - 1]}`;
 }

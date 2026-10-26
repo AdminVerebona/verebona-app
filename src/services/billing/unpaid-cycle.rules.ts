@@ -39,19 +39,16 @@
 /** Durée du cycle, en jours (AID-BILL-008). */
 export const UNPAID_CYCLE_DAYS = 90;
 
-/** Rappels avant suppression, en jours restants. */
-export const UNPAID_REMINDER_DAYS_BEFORE = [7, 1] as const;
-
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export type UnpaidReminderStage = 'J-7' | 'J-1';
+type UnpaidReminderStage = 'J-7' | 'J-1';
 
-export type UnpaidStep =
+type UnpaidStep =
   | { kind: 'none' }
   | { kind: 'reminder'; stage: UnpaidReminderStage }
   | { kind: 'expired' };
 
-export interface UnpaidCycleState {
+interface UnpaidCycleState {
   startedAt: Date;
   deadlineAt: Date;
   /** Jours restants avant l'échéance, arrondis au jour supérieur (0 si échue). */

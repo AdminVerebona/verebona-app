@@ -153,7 +153,7 @@ function entriesOf(category: NotificationCategory, mode: DeliveryMode): CatalogE
 
 const uniq = (xs: string[]) => [...new Set(xs)];
 
-export interface CategoryEmailScope {
+interface CategoryEmailScope {
   /** E-mails toujours envoyés (indispensables), quel que soit le switch. */
   essential: string[];
   /** E-mails que le switch active ou coupe. */
@@ -185,13 +185,13 @@ function isEmailLocked(category: NotificationCategory, mode: DeliveryMode = 'imm
   return scope.essential.length > 0 && scope.optional.length === 0;
 }
 
-export interface ChannelState {
+interface ChannelState {
   enabled: boolean;
   locked: boolean;
   /** Lot 79C : faux si le canal n'existe plus pour ce réglage (non proposé). */
   available: boolean;
 }
-export interface CategoryPreference {
+interface CategoryPreference {
   key: NotificationCategory;
   label: string;
   description: string;
@@ -200,7 +200,7 @@ export interface CategoryPreference {
   /** Lot 79C : ce que contrôle le switch e-mail, et ce qui part toujours. */
   emailScope: CategoryEmailScope;
 }
-export interface PreferenceMatrix {
+interface PreferenceMatrix {
   categories: CategoryPreference[];
   push: { supported: boolean; activeDeviceCount: number };
   newsConsent: { consented: boolean; consentedAt: string | null };
@@ -278,7 +278,7 @@ export interface PreferenceChange {
   deliveryMode?: string;
   enabled: boolean;
 }
-export interface ApplyResult { ok: boolean; error?: string }
+interface ApplyResult { ok: boolean; error?: string }
 
 /** Applique des modifications atomiques, avec contrôles (§13.1). */
 export async function applyPreferenceChanges(userId: number, changes: PreferenceChange[]): Promise<ApplyResult> {

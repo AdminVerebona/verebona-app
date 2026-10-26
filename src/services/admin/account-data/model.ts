@@ -41,7 +41,7 @@ export const ACCOUNT_DATA_SCHEMA = 'verebona.bo.donnees-compte/1';
 
 // ── Catégories et types d'entité ────────────────────────────────────────────
 
-export const ENTITY_TYPES = ['asset', 'equipment', 'room', 'document', 'agenda', 'deadline', 'operation'] as const;
+const ENTITY_TYPES = ['asset', 'equipment', 'room', 'document', 'agenda', 'deadline', 'operation'] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];
 
 export const CATEGORIES = ['biens', 'equipements', 'pieces', 'documents', 'echeances', 'operations'] as const;
@@ -62,7 +62,7 @@ export const ENTITY_LABELS: Readonly<Record<EntityType, string>> = {
 };
 
 /** Segment du nom de fichier (`verebona-compte-123-equipement-456-2026-10-20.json`). */
-export const ENTITY_SLUGS: Readonly<Record<EntityType, string>> = {
+const ENTITY_SLUGS: Readonly<Record<EntityType, string>> = {
   asset: 'bien', equipment: 'equipement', room: 'piece', document: 'document', agenda: 'echeance', deadline: 'echeance-historique', operation: 'operation',
 };
 
@@ -71,9 +71,6 @@ export const ENTITY_TABLES: Readonly<Record<EntityType, string>> = {
   asset: 'assets', equipment: 'equipments', room: 'substructures', document: 'asset_files', agenda: 'agenda_items',
   deadline: 'deadlines', operation: 'business_operations',
 };
-
-export const categoryOfType = (t: EntityType): Category =>
-  (CATEGORIES.find((c) => CATEGORY_TYPES[c].includes(t)) as Category);
 
 export function isEntityType(v: unknown): v is EntityType {
   return typeof v === 'string' && (ENTITY_TYPES as readonly string[]).includes(v);
@@ -106,13 +103,13 @@ export const TAB_LABELS: Readonly<Record<Tab, string>> = {
   synthese: 'Synthèse', bdd: 'Données BDD', relations: 'Relations', preuves: 'Preuves et historique',
 };
 
-export type CellState = 'value' | 'null' | 'absent' | 'not_loaded' | 'masked';
+type CellState = 'value' | 'null' | 'absent' | 'not_loaded' | 'masked';
 export const CELL_STATE_LABELS: Readonly<Record<CellState, string>> = {
   value: 'valeur', null: 'NULL en base', absent: 'absent', not_loaded: 'non chargé', masked: 'masqué',
 };
 
 /** Marqueur d'une cellule non rendue (jamais confondu avec NULL). */
-export interface CellMarker { $etat: 'masque' | 'absent' | 'non_charge'; motif?: string; longueur?: number }
+interface CellMarker { $etat: 'masque' | 'absent' | 'non_charge'; motif?: string; longueur?: number }
 
 export function isMarker(v: unknown): v is CellMarker {
   return !!v && typeof v === 'object' && !Array.isArray(v) && typeof (v as Record<string, unknown>).$etat === 'string'
@@ -166,7 +163,6 @@ export interface DossierTable {
 
 /** Lot 81C — statut d'extraction (section, fichier, génération). */
 export type ExtractionStatus = 'COMPLETE' | 'PARTIAL' | 'FAILED';
-export const EXTRACTION_STATUSES: readonly ExtractionStatus[] = ['COMPLETE', 'PARTIAL', 'FAILED'];
 
 /**
  * Lot 81C — fenêtre d'une section tabulaire ou de relations.
@@ -532,7 +528,7 @@ export function dossierToJson(d: EntityDossier): string {
   return JSON.stringify(d, null, 2);
 }
 
-export function fieldLine(f: DossierField): string {
+function fieldLine(f: DossierField): string {
   const where = `${f.table}.${f.column}${f.path ? ` › ${f.path}` : ''}`;
   const parts: string[] = [];
   if (f.state === 'value' || f.state === 'null') parts.push(`brut=${rawText(f.raw)}`);

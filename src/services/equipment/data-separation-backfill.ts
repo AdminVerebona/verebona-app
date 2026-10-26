@@ -61,13 +61,13 @@ type TxSql = { unsafe: Sql['unsafe'] };
 type Row = Record<string, unknown>;
 
 /** Règles de projection « justificatif d'achat du bien » (preuve déduite du document). */
-export const ASSET_PURCHASE_RULES = [
+const ASSET_PURCHASE_RULES = [
   'PURCHASE_RECEIPT_ACQUISITION_DATE', 'PURCHASE_RECEIPT_ACQUISITION_PRICE',
   'PURCHASE_DELIVERY_ACQUISITION_DATE', 'PURCHASE_LINE_ACQUISITION_PRICE',
 ] as const;
 const ACQ = ['acquisitionDate', 'acquisitionPrice'];
 
-export interface SeparationCase {
+interface SeparationCase {
   kind: 'ASSET_EVIDENCE_WITHDRAWN' | 'EQUIPMENT_EVIDENCE_WITHDRAWN' | 'AGENDA_PURCHASE_MOVED';
   accountId: number;
   assetId: number;
@@ -114,7 +114,7 @@ async function comptes(sql: Sql, accountId: number | null): Promise<number[]> {
  * Situation INSUFFISAMMENT démontrée (lot 75G, E) : signalée dans le
  * rapport, JAMAIS modifiée automatiquement.
  */
-export interface SuspectCase {
+interface SuspectCase {
   kind:
     | 'ACQUISITION_EVIDENCE_UNPROVEN'   // A : le document porte aussi une acquisition du bien, ou valeurs différentes
     | 'SAME_EVIDENCE_UNPROVEN'          // B : même preuve, plusieurs acquisitions possibles (date, justificatif non rattaché)
@@ -132,7 +132,7 @@ export interface SuspectCase {
 }
 
 /** Attributs propres à chaque entité, diagnostiqués (jamais corrigés automatiquement) — lot 75G, E. */
-export const OTHER_SEPARATED_KEYS = ['brand', 'modelName', 'serialNumber', 'warrantyStartDate', 'warrantyEndDate', 'estimatedValue'] as const;
+const OTHER_SEPARATED_KEYS = ['brand', 'modelName', 'serialNumber', 'warrantyStartDate', 'warrantyEndDate', 'estimatedValue'] as const;
 
 /**
  * Cas A et B — preuves dont la provenance DÉMONTRE une confusion bien /

@@ -78,14 +78,14 @@ export interface LinkEvidenceSnapshot {
   originRef: boolean;
 }
 
-export type ProvenanceBasis =
+type ProvenanceBasis =
   | 'PRINCIPAL_OF_ENSEMBLE_WITH_MEMBER_DOCUMENT' | 'PRODUCTION_TRACE' | 'ITEM_ORIGIN' | 'PROJECTION_OF_ENSEMBLE_MEMBER';
 
-export type UnjustifiedReason =
+type UnjustifiedReason =
   | 'USER_DETACHED' | 'NOT_REFERENCE_EVENT' | 'NO_ACTIVE_ENSEMBLE' | 'DOCUMENT_NOT_MEMBER' | 'DOCUMENT_IN_TRASH'
   | 'PROPAGATION_REFUSED' | 'PROJECTION_DOCUMENT_LEFT_ENSEMBLE';
 
-export interface LinkRelevance {
+interface LinkRelevance {
   verdict: 'CONSISTENT' | 'REPAIRABLE' | 'AMBIGUOUS' | 'FINDING';
   anomaly: 'AUTOMATIC_LINK_UNJUSTIFIED' | 'AUTOMATIC_LINK_UNPROVEN' | 'CROSS_ACCOUNT_LINK' | null;
   /** Provenances automatiques DÉMONTRÉES infondées (à retirer), avec leur motif. */

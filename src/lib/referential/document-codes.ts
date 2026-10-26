@@ -42,12 +42,12 @@ import type { DocumentCatalogEntry } from '@/services/canonical/registry/types';
 export { normalizeDocumentCode } from './legacy-document-codes';
 
 /** Statut d'un code (ticket §L) : proposé à la création, ancien mais lisible, inconnu. */
-export type DocumentCodeStatus = 'ACTIVE' | 'LEGACY_SUPPORTED' | 'UNKNOWN';
+type DocumentCodeStatus = 'ACTIVE' | 'LEGACY_SUPPORTED' | 'UNKNOWN';
 
 /** Source qui a reconnu le code (étape de l'ordre de résolution). */
-export type DocumentCodeOrigin = 'V2_TYPE' | 'V1_TYPE' | 'CATALOG' | 'LEGACY_CODE' | 'NONE';
+type DocumentCodeOrigin = 'V2_TYPE' | 'V1_TYPE' | 'CATALOG' | 'LEGACY_CODE' | 'NONE';
 
-export interface DocumentCodeResolution {
+interface DocumentCodeResolution {
   /** Code normalisé (`null` si vide). */
   code: string | null;
   status: DocumentCodeStatus;

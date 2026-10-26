@@ -24,6 +24,7 @@
  */
 import { toAssetFamilyCode } from '@/lib/asset-taxonomy';
 import { CANONICAL_FIELDS, type CanonicalFieldDef } from '@/services/canonical/registry';
+import { plain } from '../core/routing-text';
 
 export type AssetFamily = 'IMMOBILIER' | 'VEHICULE' | 'OBJET';
 
@@ -47,7 +48,7 @@ const SECTION_OVERRIDES: Readonly<Record<string, Partial<Record<AssetFamily, str
 const FAMILLE_ASSISTANT: Readonly<Record<string, AssetFamily>> = { IMMOBILIER: 'IMMOBILIER', VEHICULE: 'VEHICULE', OBJECT: 'OBJET' };
 
 /** Définition assistant d'un champ du registre (pure, testée). */
-export function assistantFieldOf(d: CanonicalFieldDef): AssetFieldDefinition {
+function assistantFieldOf(d: CanonicalFieldDef): AssetFieldDefinition {
   const sections: Partial<Record<AssetFamily, string>> = {};
   for (const f of d.families) {
     const fam = FAMILLE_ASSISTANT[f];
@@ -70,7 +71,7 @@ export function assistantFieldOf(d: CanonicalFieldDef): AssetFieldDefinition {
  * Un champ ajouté au registre sans figurer ici vient après, dans l'ordre du
  * registre.
  */
-export const ASSISTANT_FIELD_ORDER: readonly string[] = [
+const ASSISTANT_FIELD_ORDER: readonly string[] = [
   'acquisitionDate', 'acquisitionPrice', 'estimatedValue', 'nextInspection', 'insuranceExpiry',
   'insurer', 'mileage', 'registrationNumber', 'firstRegistrationDate',
 ];
@@ -92,8 +93,6 @@ export function familyOf(category: string): AssetFamily {
   return FAMILLE_ASSISTANT[toAssetFamilyCode(category) ?? 'OBJECT'];
 }
 
-const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
-
 /** Champ désigné par le message : l'alias le plus long gagne (« prochain contrôle technique » avant « valeur »). */
 export function findAssetField(message: string): { def: AssetFieldDefinition; alias: string; index: number } | null {
   const m = plain(message);
@@ -111,7 +110,7 @@ export function findAssetField(message: string): { def: AssetFieldDefinition; al
 }
 
 /** « 12 500,50 € », « 12500 km », « 45 000 » → nombre. */
-export function parseNumberFr(text: string): number | null {
+function parseNumberFr(text: string): number | null {
   const m = plain(text).match(/(\d{1,3}(?:[  .]\d{3})+|\d+)(?:,(\d+))?\s*(km|k€|k(?![a-z])|€|euros?|eur)?/);
   if (!m) return null;
   const entier = m[1].replace(/[  .]/g, '');

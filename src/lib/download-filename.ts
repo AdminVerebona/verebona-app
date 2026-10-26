@@ -101,7 +101,7 @@ function truncateUtf8(s: string, maxBytes: number): string {
  * protège les noms réservés. Accents (recomposés en NFC), apostrophes,
  * parenthèses et espaces sont conservés.
  */
-export function cleanFilenamePart(s: string): string {
+function cleanFilenamePart(s: string): string {
   let out = s
     .normalize('NFC')
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
@@ -115,7 +115,7 @@ export function cleanFilenamePart(s: string): string {
   return out;
 }
 
-export interface DownloadableFile extends DisplayTitleSource {
+interface DownloadableFile extends DisplayTitleSource {
   mimeType?: string | null;
 }
 

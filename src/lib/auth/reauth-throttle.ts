@@ -22,7 +22,7 @@ import { AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, rateLi
 import { getClientIp } from './client-ip';
 import { logUserActivity } from '@/lib/audit-logger';
 
-export type ReauthAction = 'change_password' | 'account_deletion';
+type ReauthAction = 'change_password' | 'account_deletion';
 
 function entries(userId: number, ip: string) {
   return [

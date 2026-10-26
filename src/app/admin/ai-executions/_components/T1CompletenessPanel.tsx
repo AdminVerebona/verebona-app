@@ -37,7 +37,7 @@ interface Diagnostics {
   prunedFields?: number; prunedOriginalsPreserved?: number; tablesUncertain?: number; tablesResolved?: number;
 }
 /** Lot 54G (§6) : totaux de la période (compteurs seulement). */
-export interface Totals {
+interface Totals {
   documents: number;
   pagesExpected: number; pagesVerified: number; pagesMissing: number; pagesUnverified: number; pagesReread: number; pagesCitedUnverified: number;
   needsSourceUnits: number; sourceRereads: number; sourceRereadsFailed: number; sourceRereadResolved: number; needsSourceExhausted: number;
@@ -53,7 +53,7 @@ interface Overview {
   totals?: Totals;
 }
 
-export const QUALITY_LABEL: Record<Quality, string> = {
+const QUALITY_LABEL: Record<Quality, string> = {
   COMPLETE: 'complète',
   COMPLETE_WITH_UNRESOLVED: 'complète, part non structurée conservée',
   // Lot 53 (D19) : couverture du document original non vérifiable — jamais « complète ».
@@ -62,7 +62,7 @@ export const QUALITY_LABEL: Record<Quality, string> = {
   INCOMPLETE_FINAL: 'incomplète — définitive',
 };
 
-export const ANOMALY_LABEL: Record<string, string> = {
+const ANOMALY_LABEL: Record<string, string> = {
   FACTS_TRUNCATED: 'Fin de document non lue',
   PARTIAL_EXTRACTION: 'Extraction partielle',
   FACT_INVALID_DROPPED: 'Faits écartés (conservés)',
@@ -79,7 +79,7 @@ export const ANOMALY_LABEL: Record<string, string> = {
 };
 
 /** Lot 53 (D19) : motif, pages, statut et prochaine action d'une vérification incomplète (pure). */
-export function followupOf(r: Pick<Row, 'qualityState' | 'sourceVerification' | 'verification' | 'retryAttempts' | 'nextRetryAt'>, maxRetries?: number) {
+function followupOf(r: Pick<Row, 'qualityState' | 'sourceVerification' | 'verification' | 'retryAttempts' | 'nextRetryAt'>, maxRetries?: number) {
   const d = r.verification ?? {};
   return verificationFollowup({
     qualityState: r.qualityState, sourceVerification: r.sourceVerification ?? null, verificationReason: d.verificationReason ?? null,
@@ -88,7 +88,7 @@ export function followupOf(r: Pick<Row, 'qualityState' | 'sourceVerification' | 
   });
 }
 
-export const VERIFICATION_LABEL: Record<string, string> = {
+const VERIFICATION_LABEL: Record<string, string> = {
   VERIFIED: 'source vérifiée',
   PARTIAL: 'source partiellement vérifiée',
   UNVERIFIABLE: 'source non vérifiable',

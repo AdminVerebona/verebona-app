@@ -51,7 +51,7 @@ export const ASSET_STATUS_LABELS: Readonly<Record<AssetStatus, string>> = {
 export const OUT_OF_PORTFOLIO_ASSET_STATUSES = ['VENDU', 'TRANSMIS', 'ARCHIVED'] as const;
 
 /** Statuts en consultation seule (fiche non modifiable). VENDU reste modifiable. */
-export const READ_ONLY_ASSET_STATUSES = ['TRANSMIS', 'ARCHIVED'] as const;
+const READ_ONLY_ASSET_STATUSES = ['TRANSMIS', 'ARCHIVED'] as const;
 
 /** Anciennes valeurs → statut officiel (migration 0278, lecture des données non migrées). */
 export const LEGACY_ASSET_STATUS_MAP: Readonly<Record<string, AssetStatus>> = {
@@ -63,7 +63,7 @@ export const LEGACY_ASSET_STATUS_MAP: Readonly<Record<string, AssetStatus>> = {
   DETRUIT: 'ARCHIVED',
 };
 
-export function isAssetStatus(value: unknown): value is AssetStatus {
+function isAssetStatus(value: unknown): value is AssetStatus {
   return typeof value === 'string' && (ASSET_STATUSES as readonly string[]).includes(value);
 }
 

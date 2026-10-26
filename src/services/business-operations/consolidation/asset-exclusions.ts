@@ -28,7 +28,7 @@ type Runner = Pick<DbTx, 'execute'>;
 const rows = async <T = Record<string, unknown>>(r: Runner, q: SQL): Promise<T[]> => (await r.execute(q)) as unknown as T[];
 const intArray = (v: readonly number[]): string => `{${v.filter((x) => Number.isSafeInteger(x)).join(',')}}`;
 
-export interface AssetExclusion {
+interface AssetExclusion {
   id: number;
   assetId: number;
   /** Documents déjà arbitrés par l'utilisateur (« il reste hors du sinistre »). */
@@ -36,9 +36,9 @@ export interface AssetExclusion {
 }
 
 /** Bien cité par une preuve documentaire de l'Opération. */
-export interface AssetCitation { assetId: number; fileId: number }
+interface AssetCitation { assetId: number; fileId: number }
 
-export interface ExclusionOutcome<T extends { assetId: number }> {
+interface ExclusionOutcome<T extends { assetId: number }> {
   /** Biens à relier (exclusions retirées). */
   assets: T[];
   /** Biens exclus cités par des documents non encore arbitrés → carte de décision. */

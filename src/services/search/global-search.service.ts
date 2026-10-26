@@ -36,12 +36,12 @@ import {
 } from '@/lib/search/match-engine';
 
 /** Barre de recherche : TOUS les mots de la requête doivent être retrouvés. */
-export const GLOBAL_SEARCH_POLICY: SearchPolicy = { requireAllTokens: true, allowSemantic: false };
+const GLOBAL_SEARCH_POLICY: SearchPolicy = { requireAllTokens: true, allowSemantic: false };
 
 const LIMITES = { asset: 5, document: 8, agenda_item: 5, equipment: 5, room: 5 } as const;
 const CANDIDATS_MAX = 100;
 
-export interface SearchMatchInfo {
+interface SearchMatchInfo {
   matchedField: string;
   matchedValue: string | null;
   matchType: string;
@@ -53,7 +53,7 @@ export interface SearchMatchInfo {
   rank: number;
 }
 
-export interface GlobalSearchRow {
+interface GlobalSearchRow {
   id: string;
   /** Lot 71 : « Équipement » et « Pièce » (sous-structure), bien parent en `sublabel`. */
   category: 'Bien' | 'Document' | 'Agenda' | 'Équipement' | 'Pièce';
@@ -74,7 +74,7 @@ export interface GlobalSearchRow {
   match: SearchMatchInfo;
 }
 
-export interface GlobalSearchOutput {
+interface GlobalSearchOutput {
   results: GlobalSearchRow[];
   /** Traces complètes (retenus puis rejetés) — seulement sur demande (`debug`). */
   trace?: SearchTraceEntry[];
@@ -467,7 +467,7 @@ export async function globalSearch(accountId: number, rawQuery: string, opts: { 
 // ── Résolution nominative de T2, AVANT toute IA (lot 71) ─────────────────
 
 /** Équipement / pièce dont le nom EST la saisie (normalisée), bien parent compris. */
-export interface NamedEntityMatch {
+interface NamedEntityMatch {
   kind: NestedKind;
   id: number;
   name: string;
@@ -475,7 +475,7 @@ export interface NamedEntityMatch {
   assetName: string | null;
 }
 
-export interface NamedEntityLookup {
+interface NamedEntityLookup {
   /** Correspondances EXACTES (≤ 6), équipements puis pièces, dans l'ordre du classement. */
   entities: NamedEntityMatch[];
   /** Un bien (non supprimé) du compte porte aussi exactement ce nom. */

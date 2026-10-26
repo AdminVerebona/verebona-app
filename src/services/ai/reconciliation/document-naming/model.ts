@@ -7,8 +7,8 @@
  */
 import type { T3DocumentNamingOutput } from '../master/t3-contract';
 
-export const DOCUMENT_NAMING_OPERATION = 't3_document_naming';
-export const DOCUMENT_NAMING_TASK = 'DOCUMENT_NAMING';
+const DOCUMENT_NAMING_OPERATION = 't3_document_naming';
+const DOCUMENT_NAMING_TASK = 'DOCUMENT_NAMING';
 
 export interface NamingPromptStatus { available: boolean; version: string | null }
 

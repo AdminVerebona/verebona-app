@@ -17,7 +17,7 @@
 
 import { Resend } from 'resend';
 
-export interface ExportFailureNotification {
+interface ExportFailureNotification {
   assetId: number;
   exportId: number;
   exportType: string;
@@ -31,7 +31,7 @@ const escapeHtml = (s: string) =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 /** Adresse du support, ou `null` si non configurée. */
-export function getSupportEmailAddress(): string | null {
+function getSupportEmailAddress(): string | null {
   const value = process.env.SUPPORT_EMAIL?.trim();
   return value ? value : null;
 }

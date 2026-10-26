@@ -27,7 +27,7 @@ export interface Account {
   isActive: boolean;
 }
 
-export interface AccountMembership {
+interface AccountMembership {
   id: number;
   accountId: number;
   userId: number;
@@ -40,7 +40,7 @@ export interface AccountMembership {
   inviteToken: string | null;
 }
 
-export interface AccountWithMemberships extends Account {
+interface AccountWithMemberships extends Account {
   memberships: (AccountMembership & { user: { email: string; firstName: string; lastName: string } })[];
   memberCount: number;
 }
@@ -48,65 +48,6 @@ export interface AccountWithMemberships extends Account {
 export class AccountService {
   private static generateInviteToken(): string {
     return crypto.randomBytes(32).toString('hex');
-  }
-
-  static async getUserAccounts(userId: number): Promise<AccountWithMemberships[]> {
-    const memberships = await db
-      .select({
-        membership: accountMemberships,
-        account: accounts,
-        user: {
-          id: users.id,
-          email: users.email,
-          firstName: users.firstName,
-          lastName: users.lastName,
-        }
-      })
-      .from(accountMemberships)
-      .innerJoin(accounts, eq(accountMemberships.accountId, accounts.id))
-      .leftJoin(users, eq(accountMemberships.userId, users.id))
-      .where(
-        and(
-          eq(accountMemberships.userId, userId),
-          or(
-            eq(accountMemberships.status, 'active'),
-            eq(accountMemberships.status, 'ACTIVE')
-          )
-        )
-      );
-
-    const accountsWithMemberships: AccountWithMemberships[] = [];
-
-    for (const { account, membership, user } of memberships) {
-      const allMemberships = await db
-        .select({
-          membership: accountMemberships,
-          user: {
-            id: users.id,
-            email: users.email,
-            firstName: users.firstName,
-            lastName: users.lastName,
-          }
-        })
-        .from(accountMemberships)
-        .innerJoin(users, eq(accountMemberships.userId, users.id))
-        .where(eq(accountMemberships.accountId, account.id));
-
-      accountsWithMemberships.push({
-          ...account,
-          planType: account.planType as PlanType,
-          subscriptionTier: account.subscriptionTier as SubscriptionTier,
-          subscriptionStatus: account.subscriptionStatus as SubscriptionStatus,
-          memberships: (allMemberships.map(m => ({
-            ...m.membership,
-            userId: m.membership.userId ?? 0,
-            user: m.user,
-          })) as unknown) as (AccountMembership & { user: { email: string; firstName: string; lastName: string } })[],
-          memberCount: allMemberships.filter(m => m.membership.status === 'active').length,
-        });
-    }
-
-    return accountsWithMemberships;
   }
 
   static async getAccountById(accountId: number): Promise<AccountWithMemberships | null> {
@@ -613,29 +554,6 @@ export class AccountService {
     if (status === 'REMOVED' && isDuoUnpaid(duo?.status)) return 'DUO_UNPAID';
     await endMembership({ duoId, membershipId: dm.id, memberUserId: userId, status, byUserId });
     return 'DONE';
-  }
-
-  static async hasAccountAccess(
-    userId: number,
-    accountId: number
-  ): Promise<{ hasAccess: boolean; role?: 'owner' | 'member' }> {
-    const [membership] = await db
-      .select()
-      .from(accountMemberships)
-      .where(
-        and(
-          eq(accountMemberships.userId, userId),
-          eq(accountMemberships.accountId, accountId),
-          eq(accountMemberships.status, 'active')
-        )
-      )
-      .limit(1);
-
-    if (!membership) {
-      return { hasAccess: false };
-    }
-
-    return { hasAccess: true, role: membership.role as 'owner' | 'member' };
   }
 
   /**

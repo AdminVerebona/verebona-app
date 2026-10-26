@@ -13,7 +13,7 @@ const RECONTROLE_MS = 5 * 60_000;
 let etat: { ready: boolean; checkedAt: number } | null = null;
 let signale = false;
 
-export const AGENDA_0223_COLUMNS = ['functional_key', 'event_nature', 'business_type'] as const;
+const AGENDA_0223_COLUMNS = ['functional_key', 'event_nature', 'business_type'] as const;
 
 export async function agendaFunctionalColumnsReady(): Promise<boolean> {
   if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
@@ -95,8 +95,3 @@ export async function agendaSourcesColumnsReady(): Promise<boolean> {
   return ready;
 }
 
-/** Réservé aux tests. */
-export function __resetAgendaSourcesColumnsForTests(ready: boolean | null = null): void {
-  etatSources = ready === null ? null : { ready, checkedAt: Date.now() };
-  signaleSources = false;
-}

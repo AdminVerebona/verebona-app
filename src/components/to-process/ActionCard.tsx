@@ -114,7 +114,7 @@ function TargetIcon({ action, className = 'h-4 w-4 text-muted-foreground shrink-
  * Lot 76E : la miniature est un BOUTON qui ouvre le tiroir du document
  * (`DocumentPreviewButton`) ; l'icône de repli reste décorative.
  */
-export function CardVisual({ action }: { action: ActionView }) {
+function CardVisual({ action }: { action: ActionView }) {
   const [step, setStep] = useState<0 | 1 | 2>(0);
   const url = action.targetType === 'DOCUMENT' ? action.target.thumbnailUrl ?? null : null;
   const src = !url ? null : step === 0 ? url : step === 1 ? `/api/files/${action.targetId}/thumbnail` : null;
@@ -164,7 +164,7 @@ export function DocumentPreviewButton({ action, src, onImageError }: { action: A
  * « Ouvrir » (le document) au lieu de « Autre ». Même composant sur mobile et
  * sur ordinateur.
  */
-export const isInterventionCard = (action: Pick<ActionView, 'ruleCode'>) => action.ruleCode === 'DOC-INTERVENTION';
+const isInterventionCard = (action: Pick<ActionView, 'ruleCode'>) => action.ruleCode === 'DOC-INTERVENTION';
 
 /**
  * Lot 76E — étiquettes nature / priorité (retour PO du 21/10/2026, variante 1).

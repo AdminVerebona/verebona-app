@@ -129,7 +129,6 @@ export default function OffresPage() {
   };
 
   const [billingInfo, setBillingInfo] = useState<BillingInfo | null>(null);
-  const [billingLoaded, setBillingLoaded] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
   // CDC §4.1 : l'utilisateur choisit son offre ET sa periodicite.
   const [billingPeriod, setBillingPeriod] = useState<'monthly' | 'yearly'>('yearly');
@@ -345,8 +344,7 @@ export default function OffresPage() {
         subscription_status: data.subscription_status || null,
         role: data.role || 'owner',
       });
-      setBillingLoaded(true);
-    }).catch(() => setBillingLoaded(true));
+    }).catch(() => {});
   }, []);
 
   // ══════════════════════════════════════════════════════════════════════════

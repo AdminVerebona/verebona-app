@@ -56,7 +56,7 @@ import {
   decideAdmissibility, recordFamilyDecision, type AdmissibilityDecision, type DecisionTrigger, type FamilyDecisionRecord,
 } from './admissibility';
 
-export interface ProducerReport {
+interface ProducerReport {
   created: number;
   updated: number;
   closed: number;
@@ -111,7 +111,7 @@ function traceFailure(report: ProducerReport, accountId: number, targetType: str
 }
 
 /** Options d'un passage de producteur (lot 72) : déclencheur et référence tracés. */
-export interface ProducerRunOptions { trigger?: DecisionTrigger; runRef?: string | null; only?: readonly number[] | null }
+interface ProducerRunOptions { trigger?: DecisionTrigger; runRef?: string | null; only?: readonly number[] | null }
 
 /** Faits d'un événement d'agenda sans date, pour l'admissibilité (lot 72, C4). */
 export interface AgendaDateFacts {
@@ -140,7 +140,7 @@ export interface AgendaDateFacts {
 export const OPERATION_PRINCIPAL_DATE_REASON = 'OPERATION_PRINCIPAL_DATE';
 
 /** Délai laissé à la qualification T4 d'un événement avant toute question (jours). */
-export const AGENDA_QUALIFICATION_GRACE_DAYS = 7;
+const AGENDA_QUALIFICATION_GRACE_DAYS = 7;
 
 /** Origines d'un événement SAISI par l'utilisateur (jamais produit par un traitement). */
 const ORIGINES_UTILISATEUR = ['manual', 'legacy_event_migration'];
@@ -422,7 +422,7 @@ export async function produceAgendaActions(accountId: number, opts: ProducerRunO
 }
 
 /** Faits d'un équipement rattaché à un bien supprimé (lot 72, C4). */
-export interface EquipmentLinkFacts {
+interface EquipmentLinkFacts {
   status: string | null;
   archivedAt: Date | string | null;
   /** Bien VIVANT déjà connu par la pièce de l'équipement (autre que le bien supprimé). */
@@ -543,7 +543,7 @@ const normFournisseur = (v: string | null | undefined) =>
   (v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 /** Faits d'une revue fournisseur ouverte (lot 72, C4). */
-export interface SupplierReviewFacts { detectedValue: string | null; currentValue: string | null }
+interface SupplierReviewFacts { detectedValue: string | null; currentValue: string | null }
 
 /**
  * Admissibilité d'une confirmation de fournisseur (pure) : facultative, elle
@@ -720,7 +720,7 @@ async function closeObsoleteTraced(
  * et cause ; elle remonte au bilan du balayage (trace `to_process_scan_runs`,
  * BO › Tâches planifiées) et au diagnostic par règle (0418).
  */
-export interface DocumentProducerReport extends ProducerReport {
+interface DocumentProducerReport extends ProducerReport {
   documents: number;
   /**
    * Règles en erreur (le document est repris au passage suivant ; aucune
@@ -750,7 +750,7 @@ export async function produceDocumentActions(accountId: number, limit = 200): Pr
   return report;
 }
 
-export interface AccountProductionReport extends ProducerReport {
+interface AccountProductionReport extends ProducerReport {
   /** Familles (ou règles documentaires, lot 61) en échec pour ce compte (le balayage continue). */
   errors: string[];
   /** Lot 61 : règles documentaires en erreur (détail), succès partiel du compte. */
@@ -765,7 +765,7 @@ export interface AccountProductionReport extends ProducerReport {
 }
 
 /** Libellé d'une erreur de règle documentaire (sans donnée personnelle). */
-export const documentRuleErrorLabel = (e: DocumentProducerReport['ruleErrors'][number]) =>
+const documentRuleErrorLabel = (e: DocumentProducerReport['ruleErrors'][number]) =>
   `documents : compte ${e.accountId} · document ${e.fileId} · règle ${e.ruleCode} · étape ${e.step}${e.kind ? ` (${e.kind})` : ''} — ${e.cause}`.slice(0, 300);
 
 /** Familles balayées par compte (agenda, équipements, fournisseurs, documents, incohérences). */

@@ -31,7 +31,7 @@ export interface AlertInput {
   configVersionId?: number | null;
 }
 
-export interface AiAlert {
+interface AiAlert {
   id: number;
   kind: AlertKind;
   code: string;

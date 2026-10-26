@@ -35,7 +35,7 @@ import { ENTITY_MIRRORS, buildCanonicalEntityState, loadEntityRow } from '@/serv
 import { fromEntityMirror, mirrorId } from '@/services/canonical/entity-state/entity-view';
 import { ASSET_STATUS_LABELS } from '@/lib/asset-status';
 import {
-  ACCOUNT_DATA_SCHEMA, DOSSIER_PAGE_MAX, DOSSIER_PAGE_SIZE, ENTITY_LABELS, ENTITY_TABLES, columnField, formatEur, formatMinor, isMarker, kcBaseKey,
+  ACCOUNT_DATA_SCHEMA, DOSSIER_PAGE_MAX, DOSSIER_PAGE_SIZE, ENTITY_LABELS, ENTITY_TABLES, columnField, formatEur, formatMinor, kcBaseKey,
   maskDeep, maskRow, originLabel, rowFields, type DossierField, type DossierRelation, type DossierSection, type DossierWindow, type EntityDossier,
   type EntityType, type MaskOptions, type Tab,
 } from './model';
@@ -69,7 +69,7 @@ const num = (v: unknown) => Number(v ?? 0);
 const str = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
 
 /** Session de lecture d'un dossier (instantané, curseur, points de reprise). */
-export type DossierExecutor = <T>(fn: (s: ReadSession) => Promise<T>) => Promise<T>;
+type DossierExecutor = <T>(fn: (s: ReadSession) => Promise<T>) => Promise<T>;
 
 /**
  * Session REPEATABLE READ READ ONLY avec délai côté base et POINTS DE
@@ -961,10 +961,10 @@ export async function planEntityDossier(
   return { dossier, sources: ctx.sources };
 }
 
-export interface PageRequest { offset?: number; size?: number; q?: string | null }
+interface PageRequest { offset?: number; size?: number; q?: string | null }
 
 /** Fenêtre normalisée (pagination technique : taille bornée à `DOSSIER_PAGE_MAX`). */
-export function normalizePage(p: PageRequest = {}): { offset: number; size: number; q: string | null } {
+function normalizePage(p: PageRequest = {}): { offset: number; size: number; q: string | null } {
   const size = Math.min(DOSSIER_PAGE_MAX, Math.max(1, Math.floor(Number(p.size) || DOSSIER_PAGE_SIZE)));
   const offset = Math.max(0, Math.floor(Number(p.offset) || 0));
   const q = typeof p.q === 'string' && p.q.trim() ? p.q.trim().slice(0, 200) : null;
@@ -1073,11 +1073,3 @@ export async function loadSectionPage(
   });
 }
 
-/** Vrai si un objet ne contient AUCUNE valeur interdite (contrôle de sortie, tests). */
-export function containsForbiddenKey(v: unknown): boolean {
-  if (Array.isArray(v)) return v.some(containsForbiddenKey);
-  if (v && typeof v === 'object' && !isMarker(v)) {
-    return Object.entries(v as Row).some(([k, x]) => (/^(s3_key|s3_bucket|filename|original_filename|web_link_url)$/.test(k) && x !== null && !isMarker(x)) || containsForbiddenKey(x));
-  }
-  return false;
-}

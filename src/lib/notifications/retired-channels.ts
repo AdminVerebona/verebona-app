@@ -20,9 +20,9 @@ import type { CatalogEntry } from './catalog';
 
 export const CHANNEL_RETIRED_ERROR_CODE = 'channel_retired';
 
-export type RetirableChannel = 'email' | 'push';
+type RetirableChannel = 'email' | 'push';
 
-export interface RetiredChannelsResult<T> {
+interface RetiredChannelsResult<T> {
   channels: T;
   /** Canaux qui auraient été servis et que la suppression a coupés. */
   retired: RetirableChannel[];

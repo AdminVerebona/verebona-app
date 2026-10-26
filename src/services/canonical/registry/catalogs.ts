@@ -316,9 +316,6 @@ export function resolveDocumentType(code: string | null | undefined): DocumentCa
   return v2.verdict === 'MAPPED' && v2.typeCode ? DOC_BY_CODE.get(v2.typeCode) : undefined;
 }
 
-/** Alias de `resolveDocumentType`, pour la symétrie avec `getEventEntry`. */
-export const getDocumentEntry = resolveDocumentType;
-
 /**
  * Ce type documentaire peut-il CRÉER automatiquement cet événement (T4-04) ?
  * `mayCreateAgenda`, restreint par `creationScope` quand il est déclaré

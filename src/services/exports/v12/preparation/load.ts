@@ -28,7 +28,7 @@ import { buildPreparation, estimateMessages } from './prepare';
 import { estimateSelection } from './estimate';
 import type { EstimateResponse, PreparationDto } from './types';
 
-export type PrepResult<T> = { ok: true; body: T } | { ok: false; status: number; code: string; message: string; extra?: Record<string, unknown> };
+type PrepResult<T> = { ok: true; body: T } | { ok: false; status: number; code: string; message: string; extra?: Record<string, unknown> };
 
 /** Type de dossier et droits (§17.3 : INVALID_EXPORT_TYPE 400, NOT_ELIGIBLE 422, offre 403). */
 async function checkDossier(asset: AccessibleAsset, rawType: unknown): Promise<PrepResult<DossierCode>> {

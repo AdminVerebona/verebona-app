@@ -54,7 +54,7 @@ export function pendingCheckoutBackoffMs(attempts: number): number {
   return BACKOFF_MS[i];
 }
 
-export interface PendingCheckoutRow {
+interface PendingCheckoutRow {
   checkoutSessionId: string | null;
   checkoutSessionCreatedAt: Date | null;
   checkoutNextCheckAt?: Date | null;
@@ -75,7 +75,7 @@ export function pendingCheckoutState(
   return { since, due: next === null || next <= now.getTime() };
 }
 
-export type PendingCheckoutOutcome =
+type PendingCheckoutOutcome =
   | 'NOT_DUE'      // rien à vérifier, ou vérification réservée par ailleurs
   | 'APPLIED'      // paiement appliqué (ou déjà appliqué)
   | 'PENDING'      // pas encore payé : nouvelle vérification programmée
@@ -84,7 +84,7 @@ export type PendingCheckoutOutcome =
   | 'CLEARED'      // session étrangère au compte : marqueur retiré
   | 'ERROR';       // Stripe injoignable : nouvelle vérification programmée
 
-export interface PendingCheckoutDeps {
+interface PendingCheckoutDeps {
   syncFromCheckoutSession: (p: { sessionId: string; accountId: number; userId?: number }) => Promise<CheckoutSyncOutcome>;
 }
 
@@ -188,7 +188,7 @@ export async function reconcilePendingCheckout(
   }
 }
 
-export interface PendingCheckoutSweepResult {
+interface PendingCheckoutSweepResult {
   scanned: number;
   outcomes: Partial<Record<PendingCheckoutOutcome, number>>;
 }

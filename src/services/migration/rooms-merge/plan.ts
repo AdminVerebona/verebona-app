@@ -21,7 +21,7 @@ export interface SubstructureCandidate {
   legacyRoomId: number | null;
 }
 
-export type SubstructureChoice =
+type SubstructureChoice =
   /** Sous-structure déjà reprise pour cette pièce (relance). */
   | { kind: 'existing'; substructureId: number }
   /** Une seule sous-structure libre du même bien porte le même nom. */
@@ -63,7 +63,7 @@ export function fillFromRoom(
 }
 
 /** Ordre de restauration : liens N-N d'abord (voir l'en-tête du runner), sous-structures en dernier. */
-export function restorePriority(table: string): number {
+function restorePriority(table: string): number {
   if (table === 'document_asset_links') return 0;
   if (table === 'substructures') return 2;
   return 1;

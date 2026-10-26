@@ -17,7 +17,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export interface RenderVersionInput {
+interface RenderVersionInput {
   /** Code de version, format `AAAA-MM-JJ-vN`. */
   versionCode: string;
   title: string;
@@ -30,7 +30,6 @@ export interface RenderVersionInput {
 
 /** Libellé affiché du document. Une seule occurrence pour tout le dépôt. */
 export const LEGAL_DOCUMENT_LABEL = 'Conditions générales de vente et d’utilisation';
-export const LEGAL_DOCUMENT_SHORT_LABEL = 'CGVU';
 
 /** Échappe le texte inséré dans les attributs et les nœuds de texte. */
 export function escapeHtml(value: string): string {
@@ -43,7 +42,7 @@ export function escapeHtml(value: string): string {
 }
 
 /** Date en français, sans dépendance à la locale du serveur. */
-export function formatFrenchDate(date: Date): string {
+function formatFrenchDate(date: Date): string {
   const months = [
     'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
     'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',

@@ -76,7 +76,7 @@ export interface BackfillDefinition {
   warning?: string;
 }
 
-export interface BackfillStep {
+interface BackfillStep {
   code: string;
   label: string;
   description: string;
@@ -388,7 +388,7 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
   },
 ];
 
-export const ACTION_LABELS: Record<BackfillAction, string> = {
+const ACTION_LABELS: Record<BackfillAction, string> = {
   simulate: 'Simuler',
   apply: 'Appliquer',
   restore: 'Restaurer',

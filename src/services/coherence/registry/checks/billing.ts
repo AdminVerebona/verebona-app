@@ -57,7 +57,7 @@ import { hashOf, rows, type Row } from '../util';
 
 // ── Lecture Stripe (injectable pour les tests ; jamais d'écriture) ──────────
 
-export type StripeSubscriptionReader = (subscriptionId: string) => Promise<unknown>;
+type StripeSubscriptionReader = (subscriptionId: string) => Promise<unknown>;
 let lecteurTest: StripeSubscriptionReader | null = null;
 
 /** Réservé aux tests : lecteur Stripe simulé (`null` : client réel). */
@@ -66,7 +66,7 @@ export function __setCoherenceStripeReaderForTests(fn: StripeSubscriptionReader 
 }
 
 /** Stripe est-il configuré (sinon : contrôle non applicable, aucun objet) ? */
-export function stripeReadable(env: NodeJS.ProcessEnv = process.env): boolean {
+function stripeReadable(env: NodeJS.ProcessEnv = process.env): boolean {
   return lecteurTest !== null || !!(env.STRIPE_SECRET_KEY ?? '').trim();
 }
 

@@ -30,7 +30,7 @@ import {
   type AgendaGroupingView, type GroupingAction, type GroupingCandidate, type GroupingCandidateKind,
 } from "@/lib/agenda/grouping-view";
 
-export const fmtDate = (d: string | null) => (d ? new Date(`${d}T12:00:00`).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" }) : "Sans date");
+const fmtDate = (d: string | null) => (d ? new Date(`${d}T12:00:00`).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" }) : "Sans date");
 
 const KIND_CARD: Record<GroupingCandidateKind, EntityCardKind> = {
   elements: "echeance", documents: "document", biens: "bien", pieces: "piece", equipements: "equipement",
@@ -70,7 +70,7 @@ export function categoryRows(view: AgendaGroupingView, kind: GroupingCandidateKi
   }
 }
 
-export interface AgendaGroupingPanelProps {
+interface AgendaGroupingPanelProps {
   view: AgendaGroupingView;
   busy?: boolean;
   onAction: (action: GroupingAction, targetId?: number) => void;
@@ -230,7 +230,7 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
 
 // ── Choix d'un objet à relier (tiroir empilé) ───────────────────────────────
 
-export interface GroupingPickerProps {
+interface GroupingPickerProps {
   open: boolean;
   title: string;
   load: (q: string) => Promise<GroupingCandidate[]>;

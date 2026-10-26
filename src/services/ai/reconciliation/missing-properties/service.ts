@@ -41,16 +41,16 @@ import type { StoredDecision, StoredRun } from './store';
  * Propriétés au plus par appel (déclaré ; `T3_MISSING_PROPERTIES_PER_CALL`,
  * 12 = nombre maximal de constats d'une réponse du contrat ; borné à 40).
  */
-export function propertiesPerCall(env: Record<string, string | undefined> = process.env): number {
+function propertiesPerCall(env: Record<string, string | undefined> = process.env): number {
   const n = Number(env.T3_MISSING_PROPERTIES_PER_CALL);
   return Number.isFinite(n) && n >= 1 ? Math.min(40, Math.trunc(n)) : 12;
 }
 /** Tentatives au plus après une panne IA, pour un même contexte (comme 85F). */
 export const RECOVERY_MAX_ATTEMPTS = 3;
-export const RECOVERY_RETRY_MINUTES = 60;
+const RECOVERY_RETRY_MINUTES = 60;
 
 /** Dépendances injectables (tests : fournisseur simulé, horloge). */
-export interface RecoveryDeps {
+interface RecoveryDeps {
   capability?: () => Promise<KnowledgeCapability>;
   call?: (c: KnowledgeCall) => Promise<KnowledgeCallResult>;
   now?: () => Date;
@@ -126,7 +126,7 @@ export async function missingPropertiesState(accountId: number, ref: SubjectRef,
 }
 
 /** Résumé BORNÉ du contexte (journal, diagnostic) — jamais de contenu. Pure. */
-export function contextSummary(s: Pick<ObjectRecoveryState, 'documents' | 'plan' | 'collected' | 'complete' | 'catalog'>): Record<string, unknown> {
+function contextSummary(s: Pick<ObjectRecoveryState, 'documents' | 'plan' | 'collected' | 'complete' | 'catalog'>): Record<string, unknown> {
   return {
     documents: s.documents.slice(0, 30).map((d) => ({ ref: d.ref, fileId: d.fileId, relation: d.relation, documentType: d.documentType })),
     elements: s.plan.elements, byLayer: s.plan.byLayer, pages: s.plan.pages.length, complete: s.complete,
@@ -135,11 +135,11 @@ export function contextSummary(s: Pick<ObjectRecoveryState, 'documents' | 'plan'
   };
 }
 
-export type RecoveryStatus =
+type RecoveryStatus =
   | 'NOTHING_PENDING' | 'GONE' | 'NO_EVIDENCE' | 'CONTRACT_PENDING' | 'MEMORY_UNAVAILABLE' | 'AI_FAILED' | 'RETRY_SCHEDULED'
   | 'BUDGET_EXHAUSTED' | 'ANSWERED';
 
-export interface RecoveryResult {
+interface RecoveryResult {
   status: RecoveryStatus;
   calls: number;
   written: Array<{ key: string; value: unknown; evidenceIds: number[] }>;
@@ -156,7 +156,7 @@ async function normaliseurs(): Promise<ValueNormalizers> {
 }
 
 /** Lots de propriétés (ordre du registre). Pure. */
-export function batchesOf<T>(xs: readonly T[], size: number): T[][] {
+function batchesOf<T>(xs: readonly T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < xs.length; i += size) out.push(xs.slice(i, i + size));
   return out;
@@ -168,7 +168,7 @@ const constats = (fs: readonly PropertyFinding[]) => fs.map((f) => ({
 }));
 
 /** Provenance des éléments cités par les constats (documents, Opérations, composantes, Agenda, valeurs). Pure. */
-export function citedProvenance(fs: readonly PropertyFinding[], elements: ReadonlyMap<string, PropertyContextElement>): Record<string, unknown> {
+function citedProvenance(fs: readonly PropertyFinding[], elements: ReadonlyMap<string, PropertyContextElement>): Record<string, unknown> {
   const refs = [...new Set(fs.flatMap((f) => f.evidenceRefs))];
   const els = refs.map((r) => elements.get(r)).filter((e): e is PropertyContextElement => !!e);
   const uniq = (xs: Array<number | null | undefined>) => [...new Set(xs.filter((x): x is number => Number.isSafeInteger(x)))].sort((a, b) => a - b);

@@ -163,7 +163,7 @@ export const operationsGroupingChecks: readonly CoherenceCheck[] = OPERATIONS_GR
 
 const OPERATIONS_ACTIVES_SQL = `o.account_id = $1 AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL`;
 
-export interface MemberReview {
+interface MemberReview {
   sourceId: number;
   outcome: 'SEPARATE' | 'SUSPECT';
   signals: string[];
@@ -197,9 +197,9 @@ export async function reviewOperationMembers(
 }
 
 /** Lot 86C : anomalies « doublon entre Opérations » (réparées par le réexamen T3). */
-export const DUPLICATE_ANOMALIES: ReadonlySet<string> = new Set(['DUPLICATE_OPERATIONS', 'DUPLICATE_OPERATIONS_SUSPECTED']);
+const DUPLICATE_ANOMALIES: ReadonlySet<string> = new Set(['DUPLICATE_OPERATIONS', 'DUPLICATE_OPERATIONS_SUSPECTED']);
 /** Lot 87B : anomalies qui demandent une NOUVELLE décision d'identité à T3 (réparation `SEMANTIC_REEVALUATION_T3`). */
-export const SEMANTIC_T3_ANOMALIES: ReadonlySet<string> = new Set(['IDENTITY_DECISION_OUTDATED']);
+const SEMANTIC_T3_ANOMALIES: ReadonlySet<string> = new Set(['IDENTITY_DECISION_OUTDATED']);
 
 /**
  * Lot 87B (CODE-05, CODE-06) : Opérations à document UNIQUE dont le candidat

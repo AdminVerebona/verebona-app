@@ -12,7 +12,7 @@
  */
 import { escapeHtml } from './legal-html.renderer';
 
-export interface LegalErrorPageInput {
+interface LegalErrorPageInput {
   title: string;
   message: string;
   /** Code demandé, affiché pour que l'utilisateur sache ce qui a échoué. */

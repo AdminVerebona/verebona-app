@@ -48,7 +48,7 @@ export interface ReconcileEntityInput {
   triggeredBy: 'document_analyzed' | 'document_linked' | 'manual';
 }
 
-export interface ReconcileEntityResult {
+interface ReconcileEntityResult {
   target: CanonicalEntityTarget;
   /** Entité introuvable ou archivée : rien n'a été fait. */
   skipped: boolean;

@@ -29,7 +29,7 @@
 import { randomUUID } from 'crypto';
 import { pgClient } from '@/db';
 
-export type Reservation =
+type Reservation =
   /** Demande réservée : le traitement peut commencer avec cet identifiant. */
   | { kind: 'reserved'; requestId: string }
   /** Le MÊME envoi (même clientRequestId) est déjà en cours : aucun second appel. */
@@ -39,7 +39,7 @@ export type Reservation =
   /** Une AUTRE demande est en cours dans ce fil (§6.6 : une seule à la fois). */
   | { kind: 'thread_busy'; requestId: string };
 
-export interface ReserveInput {
+interface ReserveInput {
   accountId: number;
   userId: number;
   conversationId: number;

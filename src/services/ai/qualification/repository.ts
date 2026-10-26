@@ -33,10 +33,10 @@ const absent = (e: unknown) => ['42P01', '42703'].includes(String((e as { code?:
 
 // ── Campagnes ───────────────────────────────────────────────────────────────
 
-export type CampaignKind = 'MANUAL' | 'AUTO';
+type CampaignKind = 'MANUAL' | 'AUTO';
 export type CampaignStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'REFUSED' | 'INTERRUPTED' | 'FAILED';
 
-export interface CampaignRow {
+interface CampaignRow {
   id: number; kind: CampaignKind; status: CampaignStatus; environment: string; trigger: string | null; reason: string | null;
   adminUserId: number | null; configVersionId: number | null; candidateVersionId: number | null;
   restorePointId: string | null; restorePointAt: string | null; thresholdsVersion: string;
@@ -163,7 +163,7 @@ export async function openLocks(campaignId: number): Promise<number[]> {
 
 // ── Preuves ─────────────────────────────────────────────────────────────────
 
-export interface EvidenceInput {
+interface EvidenceInput {
   campaignId: number | null;
   environment: string;
   treatment: string;
@@ -323,7 +323,7 @@ export async function readEvidence(f: EvidenceFilter = {}): Promise<Qualificatio
   }
 }
 
-export interface CaseRecord {
+interface CaseRecord {
   caseId: string; source: string; expectedSource: string; advisory: boolean; observation: number; accountId: number | null; captureId: number | null;
   mandatory: boolean; outcome: string; defects: Defect[]; inconclusiveReason: string | null; historicalSha256: string | null; observedSha256: string | null;
   matchesHistorical: boolean | null; durationMs: number | null; timeoutMs: number | null; costMicros: number | null; servedModel: string | null; traceId: string | null;

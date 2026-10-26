@@ -46,10 +46,10 @@
 import { sql } from 'drizzle-orm';
 import { db } from '@/db';
 
-export type SubscriptionOperationKind =
+type SubscriptionOperationKind =
   | 'ACTIVATION' | 'PLAN_CHANGE' | 'CANCELLATION_SCHEDULED' | 'CANCELLATION_EFFECTIVE' | 'ADMIN_PLAN_CHANGE';
 
-export interface SubscriptionTransition {
+interface SubscriptionTransition {
   kind: SubscriptionOperationKind;
   accountId: number;
   ownerUserId: number;
@@ -112,7 +112,7 @@ const STATUTS_AVEC_OFFRE = ['ACTIVE', 'PAST_DUE', 'CANCELED'];
 
 const unix = (v: number | null | undefined): Date | null => (typeof v === 'number' && v > 0 ? new Date(v * 1000) : null);
 
-export interface TransitionInputs {
+interface TransitionInputs {
   /** État AVANT, relu sous verrou de ligne dans la transaction. */
   before: { planType: string | null; status: string | null; subscriptionId: string | null; cancelAtPeriodEnd: boolean };
   after: { planType: string; status: string };
@@ -160,7 +160,7 @@ export function detectSubscriptionTransitions(i: TransitionInputs): Array<Pick<S
   return out;
 }
 
-export interface PlannedCommunications {
+interface PlannedCommunications {
   notification: { type: string; payload: Record<string, unknown> } | null;
   /** E-mail transactionnel DURABLE (kind de la file = code du gabarit). */
   email: { kind: 'PREMIUM_CONFIRMATION' | 'DOWNGRADE_NOTIFICATION'; context: Record<string, unknown> } | null;

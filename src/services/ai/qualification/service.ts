@@ -34,7 +34,7 @@ import { manualChoiceLabel, STATE_LABELS } from './states';
 import { describeThresholds, DEFECT_LABELS, QUALIFICATION_THRESHOLDS } from './thresholds';
 import { campaignAllowed } from './campaign';
 
-export type { EvidenceFilter, QualificationEvidenceRecord } from './repository';
+export type { QualificationEvidenceRecord } from './repository';
 
 /** Preuves historisées par couple, avec leur état courant (voir l'en-tête). */
 export async function listQualificationEvidence(filter: repo.EvidenceFilter = {}): Promise<repo.QualificationEvidenceRecord[]> {

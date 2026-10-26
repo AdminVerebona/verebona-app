@@ -27,7 +27,7 @@ const ALLOWED_PROTOCOLS = new Set(['http:', 'https:']);
  * d'éviter qu'un lien fourni par un utilisateur ne serve à sonder le réseau
  * interne depuis le serveur.
  */
-export function assertSafeUrl(raw: string): URL {
+function assertSafeUrl(raw: string): URL {
   let url: URL;
   try {
     url = new URL(raw);
@@ -56,7 +56,7 @@ export function assertSafeUrl(raw: string): URL {
 }
 
 /** Nettoyage HTML : retire scripts, styles et balisage, conserve le texte. */
-export function extractTextFromHtml(html: string): { text: string; title: string | null } {
+function extractTextFromHtml(html: string): { text: string; title: string | null } {
   const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
   const title = titleMatch ? decodeEntities(titleMatch[1]).trim() : null;
 

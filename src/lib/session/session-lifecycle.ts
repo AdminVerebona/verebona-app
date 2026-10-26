@@ -28,7 +28,7 @@ export type SessionTransitionReason =
   /** Le compte ou l'utilisateur servi par le serveur a changé. */
   | 'account-change';
 
-export interface SessionTransition {
+interface SessionTransition {
   reason: SessionTransitionReason;
   epoch: number;
 }

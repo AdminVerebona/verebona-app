@@ -52,9 +52,9 @@ type Row = Record<string, unknown>;
 /** Version des épreuves : la changer requalifie tous les modèles. */
 export const QUALIFICATION_VERSION = 'qualif-v2' as const;
 
-export type QualifiedCapability = 'generate' | 'structured' | 'multimodal' | 'thinking';
+type QualifiedCapability = 'generate' | 'structured' | 'multimodal' | 'thinking';
 
-export interface QualificationResult {
+interface QualificationResult {
   /** `null` : non concluant (transitoire) — rien n'est enregistré. */
   generate: boolean | null;
   structured: boolean | null;
@@ -114,12 +114,6 @@ export const QUALIFICATION_IMAGE_PNG = 'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQ
 const CAPACITE_NON_CONCLUANTE: ReadonlySet<ProbeErrorKind> = new Set<ProbeErrorKind>([
   'quota', 'server', 'timeout', 'network', 'auth_global', 'project_global',
 ]);
-
-/** Erreur transitoire ou globale (quota, délai, 5xx, réseau, clé, projet) : épreuve non concluante. */
-export function isTransientError(message: string): boolean {
-  const c = classifyProbeFailure(message);
-  return c.status === 'inconclusive' && CAPACITE_NON_CONCLUANTE.has(c.kind);
-}
 
 /** JSON conforme au schéma de l'épreuve (pur). */
 export function conformsToQualificationSchema(raw: string): boolean {

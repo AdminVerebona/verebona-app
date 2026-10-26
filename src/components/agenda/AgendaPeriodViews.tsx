@@ -113,7 +113,7 @@ function assetColor(assetId: number | undefined) {
   return ASSET_PALETTE[(assetId * 2654435761 >>> 0) % ASSET_PALETTE.length];
 }
 
-export function itemColor(item: AgendaItemFull) {
+function itemColor(item: AgendaItemFull) {
   return assetColor(item.assetLinks[0]?.assetId);
 }
 
@@ -123,7 +123,7 @@ function itemTooltip(item: AgendaItemFull): string {
   return [item.title, bien, STATUS_LABELS[item.effectiveStatus]].filter(Boolean).join(' · ');
 }
 
-export function CalendarView({ items, month, onItemClick, onNew }: { items: AgendaItemFull[]; month: string; onItemClick: (item: AgendaItemFull) => void; onNew: () => void }) {
+export function CalendarView({ items, month, onItemClick }: { items: AgendaItemFull[]; month: string; onItemClick: (item: AgendaItemFull) => void; onNew: () => void }) {
   const [year, m] = month.split('-').map(Number);
   const daysInMonth = new Date(year, m, 0).getDate();
   const firstDayOfWeek = new Date(year, m - 1, 1).getDay();

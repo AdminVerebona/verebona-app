@@ -18,8 +18,8 @@ export interface CatalogTrigger {
   code: string; label: string; kind: TriggerKind; treatments: string[] | null; retired: boolean;
 }
 
-export interface AvailableRow { def: ApplicableTrigger; setting: TriggerSetting | null }
-export interface IncompatibleRow { setting: TriggerSetting; label: string; reason: string }
+interface AvailableRow { def: ApplicableTrigger; setting: TriggerSetting | null }
+interface IncompatibleRow { setting: TriggerSetting; label: string; reason: string }
 
 export function splitTriggers(p: {
   treatment: string;

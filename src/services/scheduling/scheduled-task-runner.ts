@@ -61,12 +61,12 @@ const DEFAULT_STARTUP_DELAY_MS = 2 * 60_000;
 export const LEASE_MS = 90_000;
 const RENEW_EVERY_MS = 30_000;
 /** Bail restant laissé aux exécutions en cours quand le processus s'arrête. */
-export const SHUTDOWN_LEASE_MS = 10_000;
+const SHUTDOWN_LEASE_MS = 10_000;
 /** Instant de démarrage du moteur dans ce processus (chien de garde, M2). */
 const PROCESS_STARTED_AT = new Date();
 
 /** Identité de l'instance — journalisée et affichée, jamais utilisée pour décider. */
-export const INSTANCE_ID = `${(process.env.CONTAINER ?? '').trim() || hostname()}:${process.pid}`;
+const INSTANCE_ID = `${(process.env.CONTAINER ?? '').trim() || hostname()}:${process.pid}`;
 
 // ─── Alertes ────────────────────────────────────────────────────────────────
 
@@ -76,7 +76,7 @@ export interface TaskAlerts {
   isOpen(def: ScheduledTaskDef): Promise<boolean>;
 }
 
-export function taskAlertFingerprint(code: string): string {
+function taskAlertFingerprint(code: string): string {
   return `other:scheduled-task:${code}`;
 }
 
@@ -222,7 +222,7 @@ export async function releaseActiveLeases(leaseMs = SHUTDOWN_LEASE_MS): Promise<
  * Exécute une tâche dont la prise a réussi : délai borné, résultat consigné,
  * alertes. Ne lève jamais.
  */
-export async function executeClaimed(
+async function executeClaimed(
   def: ScheduledTaskDef,
   runId: string,
   trigger: TaskTrigger,
@@ -405,7 +405,7 @@ export async function checkStaleCriticalTasks(deps: RunnerDeps, rows?: TaskState
 
 // ─── Exécution manuelle (BO) ────────────────────────────────────────────────
 
-export type ManualRunResult =
+type ManualRunResult =
   | { status: 'not_found' }
   | { status: 'disabled' }
   /** Lot 65A : suspendue depuis le BO. */
@@ -443,7 +443,7 @@ export async function runTaskNow(code: string, opts: { waitMs?: number } = {}, d
 
 // ─── Suspension depuis le BO (lot 65A) ──────────────────────────────────────
 
-export type AdminToggleResult =
+type AdminToggleResult =
   | { status: 'not_found' }
   /** Tâche critique : jamais suspendue depuis le BO (variable d'arrêt seulement). */
   | { status: 'critical' }
@@ -471,7 +471,7 @@ export async function setTaskAdminDisabled(
 
 // ─── Lecture (BO) ───────────────────────────────────────────────────────────
 
-export interface ScheduledTaskView {
+interface ScheduledTaskView {
   code: string;
   label: string;
   frequency: string;

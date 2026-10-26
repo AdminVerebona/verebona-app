@@ -24,87 +24,64 @@
  * l'échec de migration exposé par `/api/health`.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
-const RECONTROLE_MS = 5 * 60_000;
+import { probeCount } from '@/lib/schema-readiness-log';
+import { cachedSchemaProbe } from '../telemetry/trace-schema';
 
 /** Colonnes attendues de la 0218 sur `document_facts`. */
-export const DOCUMENT_FACTS_CANONICAL_COLUMNS = [
+const DOCUMENT_FACTS_CANONICAL_COLUMNS = [
   'canonical_key', 'raw_key', 'raw_value', 'value_type', 'canonical_unit',
   'target_type', 'target_entity_id', 'target_entity_label', 'target_confidence',
   'semantic_event_type', 'semantic_event_nature', 'recurrence', 'projection_origin', 'projection_rule',
 ] as const;
 
 /** Colonne attendue de la 0218 sur `document_extractions` (indicateur multi-biens, T1-05). */
-export const DOCUMENT_EXTRACTIONS_CANONICAL_COLUMNS = ['multi_asset'] as const;
+const DOCUMENT_EXTRACTIONS_CANONICAL_COLUMNS = ['multi_asset'] as const;
 
 /** Colonnes attendues de la 0219 sur `field_evidence`. */
-export const FIELD_EVIDENCE_CANONICAL_COLUMNS = [
+const FIELD_EVIDENCE_CANONICAL_COLUMNS = [
   'canonical_key', 'canonical_unit', 'raw_value',
   'target_type', 'target_entity_id', 'target_entity_label', 'target_confidence',
   'semantic_event_type', 'semantic_event_nature', 'recurrence', 'projection_origin', 'projection_rule',
   'lifecycle_status', 'superseded_at', 'superseded_by_evidence_id', 'analysis_run_id',
 ] as const;
 
-type Etat = { ready: boolean; checkedAt: number };
-const etats = new Map<string, Etat>();
-const signales = new Set<string>();
-
-async function colonnesPresentes(
-  table: 'document_facts' | 'document_extractions' | 'field_evidence',
-  colonnes: readonly string[],
-  migration: string,
-): Promise<boolean> {
-  const etat = etats.get(table);
-  if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
-  let ready = false;
-  let trouvees: number | null = null;
-  let erreur: unknown;
-  try {
+const sonde = (table: 'document_facts' | 'document_extractions' | 'field_evidence', colonnes: readonly string[], migration: string) =>
+  cachedSchemaProbe(async () => {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(
       `SELECT COUNT(*)::int AS n FROM information_schema.columns
         WHERE table_schema = current_schema() AND table_name = $1 AND column_name = ANY($2::text[])`,
       [table, [...colonnes]] as never[],
     )) as unknown as Array<{ n: number }>;
-    trouvees = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
-    ready = trouvees === colonnes.length;
-  } catch (e) {
-    ready = false;
-    erreur = e;
-  }
-  etats.set(table, { ready, checkedAt: Date.now() });
-  if (!ready && !signales.has(table)) {
-    signales.add(table);
-    console.error(schemaNotReadyMessage({
-      scope: '[evidence]', migration, expected: colonnes.map((c) => `${table}.${c}`), found: trouvees, error: erreur,
-      consequence: `Écriture repliée sur les colonnes historiques ; faits ciblés équipement/pièce non projetés en preuves (CDC 15 T1-04) ; appliquer src/db/migrations/${migration}_*.sql.`,
-    }));
-  }
-  return ready;
-}
+    const found = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
+    return { ready: found === colonnes.length, found };
+  }, {
+    scope: '[evidence]', migration, expected: colonnes.map((c) => `${table}.${c}`),
+    consequence: `Écriture repliée sur les colonnes historiques ; faits ciblés équipement/pièce non projetés en preuves (CDC 15 T1-04) ; appliquer src/db/migrations/${migration}_*.sql.`,
+  });
+
+const sondes = {
+  faits: sonde('document_facts', DOCUMENT_FACTS_CANONICAL_COLUMNS, '0218'),
+  extractions: sonde('document_extractions', DOCUMENT_EXTRACTIONS_CANONICAL_COLUMNS, '0218'),
+  preuves: sonde('field_evidence', FIELD_EVIDENCE_CANONICAL_COLUMNS, '0219'),
+};
 
 /**
  * Colonnes 0218 présentes (`document_facts` ET `document_extractions.multi_asset`) ?
  * Ne lève jamais : illisible = absent.
  */
 export async function documentFactsCanonicalReady(): Promise<boolean> {
-  const faits = await colonnesPresentes('document_facts', DOCUMENT_FACTS_CANONICAL_COLUMNS, '0218');
-  const extractions = await colonnesPresentes('document_extractions', DOCUMENT_EXTRACTIONS_CANONICAL_COLUMNS, '0218');
+  const faits = await sondes.faits();
+  const extractions = await sondes.extractions();
   return faits && extractions;
 }
 
 /** Colonnes 0219 présentes sur `field_evidence` ? Ne lève jamais : illisible = absent. */
 export function fieldEvidenceCanonicalReady(): Promise<boolean> {
-  return colonnesPresentes('field_evidence', FIELD_EVIDENCE_CANONICAL_COLUMNS, '0219');
+  return sondes.preuves();
 }
 
-/** Réservé aux tests : `null` efface l'état, un booléen le fixe pour les deux tables. */
+/** Réservé aux tests : `null` efface l'état, un booléen le fixe pour les trois tables. */
 export function __resetCanonicalColumnsForTests(ready: boolean | null = null): void {
-  etats.clear();
-  signales.clear();
-  if (ready !== null) {
-    etats.set('document_facts', { ready, checkedAt: Date.now() });
-    etats.set('document_extractions', { ready, checkedAt: Date.now() });
-    etats.set('field_evidence', { ready, checkedAt: Date.now() });
-  }
+  for (const s of Object.values(sondes)) s.reset(ready);
 }

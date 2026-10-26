@@ -75,20 +75,11 @@ type Row = Record<string, unknown>;
 export const OBSERVABILITY_DOMAINS = ['T1', 'T2', 'T3', 'T4', 'CONFIG', 'EXPORTS'] as const;
 export type ObservabilityDomain = (typeof OBSERVABILITY_DOMAINS)[number];
 
-export const OBSERVABILITY_DOMAIN_LABELS: Readonly<Record<ObservabilityDomain, string>> = {
-  T1: 'T1 — Sources',
-  T2: 'T2 — Assistant',
-  T3: 'T3 — Rationalisation',
-  T4: 'T4 — Échéances',
-  CONFIG: 'Configuration IA',
-  EXPORTS: 'Exports',
-};
-
 export function isObservabilityDomain(v: unknown): v is ObservabilityDomain {
   return typeof v === 'string' && (OBSERVABILITY_DOMAINS as readonly string[]).includes(v);
 }
 
-export const MAX_WINDOW_DAYS = 90;
+const MAX_WINDOW_DAYS = 90;
 export const T1_SAMPLE = 500;
 /** PostgreSQL < 16 (pas de `IS JSON`) : lecture applicative, échantillon réduit. */
 export const T1_SAMPLE_APP = 200;
@@ -101,7 +92,7 @@ const CACHE_MAX = 100;
 /** Marge d'écriture après le dernier appel d'une version (période approchée). */
 const VERSION_TAIL_MS = 5 * 60_000;
 
-export interface ObservabilityQuery {
+interface ObservabilityQuery {
   domain: ObservabilityDomain;
   days: number;
   configVersionId?: number | null;
@@ -323,7 +314,7 @@ function nullMetrics(defs: Array<[string, string]>, reason: string): Metric[] {
 }
 
 /** Codes d'avertissement T1 comptés comme erreurs de cible / de fait. */
-export const T1_TARGET_ERROR_CODES = [
+const T1_TARGET_ERROR_CODES = [
   'UNVERIFIED_IDENTIFIER', 'FACT_REQUALIFIED_GENERIC', 'UNIT_MISMATCH',
   'FACT_REJECTED_BY_RULE', 'EXCERPT_NOT_FOUND', 'AMBIGUOUS_ASSET',
 ] as const;
@@ -342,7 +333,7 @@ const T1_ERROR_LABELS: Readonly<Record<string, string>> = {
  * du contrat. Un code inconnu (texte libre, ancienne version) est regroupé en
  * « AUTRE » — l'écran n'affiche jamais une valeur lue telle quelle.
  */
-export const T1_WARNING_CODES = [
+const T1_WARNING_CODES = [
   'NO_EXPLOITABLE_CONTENT', 'PARTIAL_EXTRACTION', 'UNVERIFIED_IDENTIFIER', 'AMBIGUOUS_ASSET', 'MULTI_ASSET_DOCUMENT',
   'LOW_CONFIDENCE_OVERALL', 'SOURCE_UNREACHABLE', 'FIELD_WITHOUT_EVIDENCE', 'TABLE_STRUCTURE_UNCERTAIN',
   'FACT_REQUALIFIED_GENERIC', 'FACT_REJECTED_BY_RULE', 'UNIT_MISMATCH', 'FACTS_TRUNCATED', 'FACT_INVALID_DROPPED',
@@ -356,7 +347,7 @@ export const T1_WARNING_CODES = [
 type CodeManquant = Exclude<AnalysisWarningCode, (typeof T1_WARNING_CODES)[number]>;
 const _exhaustif: [CodeManquant] extends [never] ? true : CodeManquant = true;
 void _exhaustif;
-export const OTHER_WARNING_CODE = 'AUTRE';
+const OTHER_WARNING_CODE = 'AUTRE';
 
 const knownWarning = (code: unknown): string =>
   typeof code === 'string' && (T1_WARNING_CODES as readonly string[]).includes(code) ? code : OTHER_WARNING_CODE;
@@ -515,7 +506,7 @@ async function domainT1(s: Scope, errors: string[]): Promise<DomainResult> {
 }
 
 /** Motifs de rétractation T3 (décisions de réconciliation). */
-export const T3_RETRACTION_CODES = ['NO_REMAINING_EVIDENCE', 'STALE_AUTO_VALUE_REPLACED'] as const;
+const T3_RETRACTION_CODES = ['NO_REMAINING_EVIDENCE', 'STALE_AUTO_VALUE_REPLACED'] as const;
 
 async function domainT3(s: Scope, errors: string[]): Promise<DomainResult> {
   const usage = await usageMetrics('DATA_RECONCILIATION', s, errors);
@@ -1060,8 +1051,8 @@ async function domainConfig(s: Scope, errors: string[]): Promise<DomainResult> {
 }
 
 /** Motifs d'exclusion d'une pièce jointe au dossier. */
-export const EXPORT_MISSING_REASONS = ['missing', 'corrupted', 'protected', 'unreadable', 'too_large'] as const;
-export const EXPORT_SCOPE_REASONS = ['occupant_data', 'sensitive_not_explicit'] as const;
+const EXPORT_MISSING_REASONS = ['missing', 'corrupted', 'protected', 'unreadable', 'too_large'] as const;
+const EXPORT_SCOPE_REASONS = ['occupant_data', 'sensitive_not_explicit'] as const;
 
 async function domainExports(s: Scope, errors: string[]): Promise<DomainResult> {
   const p: [string, string] = [s.from.toISOString(), s.to.toISOString()];

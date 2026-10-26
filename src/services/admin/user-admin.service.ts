@@ -68,7 +68,7 @@ export class UserAdminError extends Error {
   }
 }
 
-export const LAST_ADMIN_MESSAGE =
+const LAST_ADMIN_MESSAGE =
   "Impossible : c'est le dernier administrateur actif. Accordez d'abord le statut administrateur à un autre utilisateur.";
 
 export const PENDING_DELETION_ADMIN_MESSAGE =
@@ -173,7 +173,7 @@ export async function reactivateUser(userId: number): Promise<StatusChange> {
   });
 }
 
-export interface RoleChange {
+interface RoleChange {
   before: { role: string };
   after: { role: string };
   changed: boolean;

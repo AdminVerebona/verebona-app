@@ -6,7 +6,7 @@
  * La route renvoie désormais le code ET ce message ; la file et la mascotte
  * l'affichent tels quels (module sans dépendance, lisible côté client).
  */
-export const RESOLVE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+const RESOLVE_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   NOT_FOUND: 'Cette action n’existe plus : la liste a été actualisée.',
   ALREADY_RESOLVED: 'Cette action a déjà été traitée.',
   FIELD_NOT_RESOLVABLE: 'Cette information ne peut pas être modifiée depuis la carte : ouvrez l’élément pour la compléter.',

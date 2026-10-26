@@ -78,7 +78,7 @@ import { loadAssetIdentifiers } from '../reconciliation/document-asset/asset-ide
 import { automaticColumnAssetOf, userChosenAssetOf } from '../reconciliation/document-asset/attachment-state';
 import { closeAssetLinkQuestion, writeAutomaticPrimaryColumn } from '../reconciliation/document-asset/automatic-attachment';
 
-export interface RunSourceAnalysisInput {
+interface RunSourceAnalysisInput {
   sourceType: SourceType;
   sourceIds: number[];
   accountId: number;
@@ -912,7 +912,7 @@ export class T1MasterAnalysisError extends Error {
  * échec (base de connaissance) : le document n'est jamais déclaré analysé.
  * Échec TRANSITOIRE (la file durable reprend ; écritures idempotentes).
  */
-export class T1PersistenceIncompleteError extends Error {
+class T1PersistenceIncompleteError extends Error {
   readonly code = 'T1_PERSISTENCE_INCOMPLETE';
   constructor(detail: string) {
     super(`Persistance incomplète : ${detail}`.slice(0, 1_000));

@@ -207,7 +207,7 @@ export function entitlementsFromSubscription(row: SubscriptionRightsRow | null, 
  * Le présenter comme « abonnement nécessaire » (vocabulaire d'une offre
  * résiliée) le mène vers « Passer à Premium » au lieu du choix d'une offre.
  */
-export async function isTrialAlreadyUsedForAccount(accountId: number): Promise<boolean> {
+async function isTrialAlreadyUsedForAccount(accountId: number): Promise<boolean> {
   const [owner] = await db
     .select({ email: users.email })
     .from(accounts)
@@ -218,11 +218,11 @@ export async function isTrialAlreadyUsedForAccount(accountId: number): Promise<b
   return hasUsedTrial(owner.email).catch(() => false);
 }
 
-export const TRIAL_ALREADY_USED_MESSAGE =
+const TRIAL_ALREADY_USED_MESSAGE =
   "L'essai gratuit a déjà été utilisé avec cette adresse. Vos données sont conservées : " +
   "choisissez votre offre pour ajouter et modifier vos biens et documents.";
 
-export const WITHDRAWN_MESSAGE =
+const WITHDRAWN_MESSAGE =
   "Vous avez exercé votre droit de rétractation : vos biens et documents restent consultables et exportables, " +
   "mais ne peuvent plus être modifiés.";
 

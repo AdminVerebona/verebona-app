@@ -27,7 +27,7 @@ import { tcoAddDuplicateRisk, tcoLineAddable, tcoLineKeys, tcoLineRemovable, typ
 interface Runner { execute: (q: SQL) => Promise<unknown> }
 const rows = async <T = Record<string, unknown>>(r: Runner, q: SQL): Promise<T[]> => (await r.execute(q)) as unknown as T[];
 
-export type TcoDecisionErrorCode = 'LINE_NOT_FOUND' | 'NOT_ADDABLE' | 'NOT_REMOVABLE' | 'DUPLICATE_CONFIRMATION_REQUIRED' | 'UNAVAILABLE';
+type TcoDecisionErrorCode = 'LINE_NOT_FOUND' | 'NOT_ADDABLE' | 'NOT_REMOVABLE' | 'DUPLICATE_CONFIRMATION_REQUIRED' | 'UNAVAILABLE';
 
 export class TcoDecisionError extends Error {
   constructor(public readonly code: TcoDecisionErrorCode, message: string, public readonly status: number, public readonly details: Record<string, unknown> = {}) {
@@ -36,7 +36,7 @@ export class TcoDecisionError extends Error {
   }
 }
 
-export interface TcoDecisionInput {
+interface TcoDecisionInput {
   lineId: string;
   /** Clé stable connue de l'interface (repli si l'identifiant technique a changé entre l'affichage et le clic). */
   lineKey?: string | null;
@@ -45,7 +45,7 @@ export interface TcoDecisionInput {
   confirmDuplicate?: boolean;
 }
 
-export type TcoDecisionOutcome = 'SET' | 'REVERTED' | 'UNCHANGED';
+type TcoDecisionOutcome = 'SET' | 'REVERTED' | 'UNCHANGED';
 
 /** Corps de la requête → entrée validée (pure). */
 export function parseTcoDecisionBody(body: unknown): { ok: true; value: TcoDecisionInput } | { ok: false; message: string } {
@@ -126,13 +126,3 @@ export async function decideTcoLine(
   return { result, outcome: geste === 'REVERT' ? 'REVERTED' : 'SET', line: result.lines.find((l) => l.decisionKey === keys.primary) ?? null };
 }
 
-/** Journal des décisions d'un bien (BO, diagnostic) — plus récentes d'abord, plafonné. */
-export async function readTcoDecisionEvents(r: Runner, accountId: number, assetId: number, limit = 200): Promise<Array<Record<string, unknown>>> {
-  const [t] = await rows<{ ok: boolean }>(r, sql`SELECT to_regclass('asset_cost_line_decision_events') IS NOT NULL AS ok`);
-  if (!t?.ok) return [];
-  return rows(r, sql`
-    SELECT id, line_key, action, previous_decision, line_id, amount_minor, currency, label, file_id, automatic_status, automatic_reason,
-           duplicate_warning, user_id, created_at
-      FROM asset_cost_line_decision_events WHERE account_id = ${accountId} AND asset_id = ${assetId}
-     ORDER BY created_at DESC, id DESC LIMIT ${Math.min(Math.max(limit, 1), 1000)}`);
-}

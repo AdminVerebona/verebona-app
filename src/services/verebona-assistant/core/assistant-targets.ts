@@ -48,7 +48,7 @@ import { withoutFieldPhrases } from '../canonical/field-vocabulary';
 import { vehicleIdentifiersIn } from './vehicle-identifiers';
 import type { AssetCandidate, EntityCandidate, NestedEntityKind, TargetLookup } from './target-lookup.repository';
 
-export type TargetOrigin = 'clarification' | 'thread' | 'message' | 'page' | 'category' | 'hint';
+type TargetOrigin = 'clarification' | 'thread' | 'message' | 'page' | 'category' | 'hint';
 
 export type ResolvedTarget =
   | { type: 'asset'; id: number; origin: TargetOrigin; label?: string | null }
@@ -59,10 +59,10 @@ export type ResolvedTarget =
   | { type: 'equipment'; id: number; origin: TargetOrigin; label?: string | null; assetId: number | null; assetName?: string | null }
   | { type: 'room'; id: number; origin: TargetOrigin; label?: string | null; assetId: number | null; assetName?: string | null };
 
-export type NestedTarget = Extract<ResolvedTarget, { type: 'equipment' | 'room' }>;
+type NestedTarget = Extract<ResolvedTarget, { type: 'equipment' | 'room' }>;
 
 /** Indices textuels (jamais des identifiants) — T2-08. */
-export interface TargetHints {
+interface TargetHints {
   assetNames: string[];
   documentTitles: string[];
   supplierNames: string[];
@@ -283,7 +283,7 @@ const forme = (w: string) => w.replace(/(?<=..)[sx]$/, '');
  * meilleurs restent. Parmi eux, une entité dont TOUS les mots du nom sont
  * cités l'emporte (« chambre parentale » ≠ « chambre enfant »).
  */
-export function entitiesNamedBy(terms: string[], entities: EntityCandidate[]): EntityCandidate[] {
+function entitiesNamedBy(terms: string[], entities: EntityCandidate[]): EntityCandidate[] {
   const cherches = [...new Set(terms.map((t) => forme(normalizeWord(t))).filter((t) => t.length >= 3))];
   if (cherches.length === 0) return [];
   const scored = entities.map((e) => {

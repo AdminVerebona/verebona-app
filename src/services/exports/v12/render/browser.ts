@@ -38,11 +38,11 @@ const envInt = (name: string, def: number, min: number, max: number): number => 
   return Number.isFinite(n) && n >= min ? Math.min(n, max) : def;
 };
 
-export const browserIdleMs = () => envInt('EXPORTS_BROWSER_IDLE_MS', 60_000, 1_000, 3_600_000);
-export const browserMaxRenders = () => envInt('EXPORTS_BROWSER_MAX_RENDERS', 50, 1, 10_000);
-export const browserLaunchTimeoutMs = () => envInt('EXPORTS_BROWSER_LAUNCH_TIMEOUT_MS', 30_000, 1_000, 300_000);
+const browserIdleMs = () => envInt('EXPORTS_BROWSER_IDLE_MS', 60_000, 1_000, 3_600_000);
+const browserMaxRenders = () => envInt('EXPORTS_BROWSER_MAX_RENDERS', 50, 1, 10_000);
+const browserLaunchTimeoutMs = () => envInt('EXPORTS_BROWSER_LAUNCH_TIMEOUT_MS', 30_000, 1_000, 300_000);
 
-export const CHROMIUM_ARGS = [
+const CHROMIUM_ARGS = [
   '--no-sandbox',
   '--disable-setuid-sandbox',
   '--disable-dev-shm-usage',
@@ -121,7 +121,7 @@ function fontconfigEnv(): Record<string, string> {
 }
 
 /** Chemin explicite du binaire (`CHROMIUM_EXECUTABLE_PATH`), sinon résolution Playwright. */
-export function chromiumExecutablePath(): string | undefined {
+function chromiumExecutablePath(): string | undefined {
   const p = process.env.CHROMIUM_EXECUTABLE_PATH?.trim();
   return p ? p : undefined;
 }
@@ -183,7 +183,7 @@ function armIdleTimer(): void {
   st.idleTimer.unref?.();
 }
 
-export class RenderTimeoutError extends Error {
+class RenderTimeoutError extends Error {
   readonly exportErrorCode = 'RENDER_TIMEOUT';
   constructor(ms: number) { super(`Rendu Chromium interrompu après ${Math.round(ms / 1000)} s`); }
 }

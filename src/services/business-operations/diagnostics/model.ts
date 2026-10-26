@@ -23,11 +23,11 @@ import {
 
 // ── Pagination et filtres de la liste (C26.1) ───────────────────────────────
 
-export const DIAG_PAGE_SIZE = 25;
+const DIAG_PAGE_SIZE = 25;
 export const DIAG_MAX_PAGE_SIZE = 100;
 /** Période maximale d'un calcul d'indicateurs (requêtes bornées). */
 export const DIAG_MAX_PERIOD_DAYS = 366;
-export const DIAG_DEFAULT_PERIOD_DAYS = 30;
+const DIAG_DEFAULT_PERIOD_DAYS = 30;
 /** Échantillon d'identifiants rendu par anomalie dure (AFFICHAGE ; le décompte est exact). */
 export const DIAG_ANOMALY_SAMPLE = 20;
 /**
@@ -38,10 +38,9 @@ export const DIAG_ANOMALY_SAMPLE = 20;
  * mêmes requêtes intégralement (`OPERATION_DETAIL_LISTS`).
  */
 export const DETAIL_LIMIT = 200;
-export const DETAIL_DISPLAY_LIMIT = DETAIL_LIMIT;
 
 export type OperationState = 'all' | 'active' | 'invalidated' | 'merged';
-export const OPERATION_STATES: readonly OperationState[] = ['all', 'active', 'invalidated', 'merged'];
+const OPERATION_STATES: readonly OperationState[] = ['all', 'active', 'invalidated', 'merged'];
 
 export interface OperationListFilters {
   accountId: number | null;
@@ -168,14 +167,6 @@ export function typeLabel(code: string | null): string {
   if (!code) return 'Type non qualifié';
   return TYPE_LABELS[code as BusinessOperationTypeCode] ?? code;
 }
-
-export const T3_OUTCOME_LABELS: Readonly<Record<string, string>> = {
-  NO_OPERATION: 'Aucune Opération (existence non établie)',
-  MATCH_AND_ENRICH: 'Rattachée à une Opération existante',
-  CREATE_NEW: 'Nouvelle Opération créée',
-  HOLD_UNRESOLVED: 'En attente (HOLD)',
-  ARBITRATION_REQUIRED: 'Arbitrage utilisateur demandé (À traiter)',
-};
 
 /**
  * Motifs stables de T3 (`t3_reason`, `match_reason`, `reason_code` de

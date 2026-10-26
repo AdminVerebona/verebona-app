@@ -45,7 +45,7 @@ export const CAPABILITY_REFERENCES_VERSION = 'capabilities-ref-2026-10-23' as co
 const REF_VERIFIED_AT = '2026-10-21';
 const REF_SOURCE = 'Google AI for Developers — « Gemini thinking » [G2], consulté le 21/10/2026 ; valeurs en service depuis le lot 52B';
 
-export type CapabilitySource = 'api' | 'reference' | 'probe';
+type CapabilitySource = 'api' | 'reference' | 'probe';
 
 export interface FieldSource {
   source: CapabilitySource;
@@ -56,7 +56,7 @@ export interface FieldSource {
 }
 
 /** Niveaux administrés (BO) qui se projettent sur un réglage du modèle. */
-export type AdministeredReasoning = 'minimal' | 'étendu';
+type AdministeredReasoning = 'minimal' | 'étendu';
 
 /** Raisonnement d'un modèle. */
 export type ThinkingCapability =
@@ -98,7 +98,7 @@ export interface ModelCapabilities {
 export type CapabilityField = 'family' | 'thinking' | 'temperature' | 'outputTokenLimit' | 'inputTokenLimit' | 'imageInput' | 'structuredOutput' | 'rejected';
 
 /** Référence documentée d'un modèle (identifiant EXACT). */
-export interface ModelReference {
+interface ModelReference {
   model: string;
   family: string;
   thinking: ThinkingCapability;
@@ -122,7 +122,7 @@ const TEMP_0_2 = { min: 0, max: 2 } as const;
  * page [G2] en vigueur — tout changement ici est une évolution de code,
  * détectée au passage suivant du catalogue et marquant la requalification.
  */
-export const MODEL_REFERENCES: readonly ModelReference[] = [
+const MODEL_REFERENCES: readonly ModelReference[] = [
   { model: 'gemini-3.6-flash', family: 'gemini-3', thinking: LEVEL_LOW_HIGH, temperature: TEMP_0_2, source: REF_SOURCE, verifiedAt: REF_VERIFIED_AT },
   { model: 'gemini-3.5-flash', family: 'gemini-3', thinking: LEVEL_LOW_HIGH, temperature: TEMP_0_2, source: REF_SOURCE, verifiedAt: REF_VERIFIED_AT },
   { model: 'gemini-3.5-flash-lite', family: 'gemini-3', thinking: LEVEL_LOW_HIGH, temperature: TEMP_0_2, source: REF_SOURCE, verifiedAt: REF_VERIFIED_AT },
@@ -173,7 +173,7 @@ export interface StoredCapabilityInputs {
 }
 
 /** Référence documentée par identifiant EXACT, puis par `baseModelId` rendu par l'API (jamais par motif). */
-export function referenceFor(model: string, baseModelId?: string | null): ModelReference | null {
+function referenceFor(model: string, baseModelId?: string | null): ModelReference | null {
   return REF_BY_MODEL.get(model) ?? (baseModelId ? REF_BY_MODEL.get(baseModelId) ?? null : null);
 }
 
@@ -251,7 +251,7 @@ function canonical(v: unknown): string {
  * dates de vérification (une synchronisation qui relit la même chose ne
  * change rien — R46).
  */
-export function comparableCapabilities(c: ModelCapabilities): Record<string, unknown> {
+function comparableCapabilities(c: ModelCapabilities): Record<string, unknown> {
   const sources: Record<string, string> = {};
   for (const [k, s] of Object.entries(c.sources)) if (s) sources[k] = s.source;
   return {
@@ -265,7 +265,7 @@ export function capabilitiesSha256(c: ModelCapabilities): string {
   return createHash('sha256').update(canonical(comparableCapabilities(c)), 'utf8').digest('hex');
 }
 
-export interface CapabilityChange { field: string; before: unknown; after: unknown }
+interface CapabilityChange { field: string; before: unknown; after: unknown }
 
 /** Champs modifiés entre deux fiches (pure). */
 export function diffCapabilities(before: ModelCapabilities | Record<string, unknown> | null, after: ModelCapabilities): CapabilityChange[] {

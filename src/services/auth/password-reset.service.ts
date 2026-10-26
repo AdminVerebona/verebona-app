@@ -86,12 +86,12 @@ export function createPasswordResetToken(
   return Buffer.from(`${subject.id}.${now}.${sign(subject, now, secret)}`, 'utf8').toString('base64url');
 }
 
-export type ResetTokenCheck =
+type ResetTokenCheck =
   | { ok: true; userId: number }
   | { ok: false; code: 'INVALID_TOKEN' | 'TOKEN_EXPIRED' };
 
 /** Lecture du jeton sans base : identifiant et horodatage, ou refus. */
-export function parsePasswordResetToken(
+function parsePasswordResetToken(
   token: string,
 ): { userId: number; issuedAtMs: number; signature: string } | null {
   let decoded: string;
@@ -184,7 +184,7 @@ export async function consumePasswordResetToken(
   return updated.length === 1;
 }
 
-export type StartResetResult =
+type StartResetResult =
   | { status: 'sent'; userId: number }
   | { status: 'unknown_email' }
   | { status: 'send_failed'; userId: number; error?: string };

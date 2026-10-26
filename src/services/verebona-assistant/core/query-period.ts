@@ -16,6 +16,7 @@
  * Module PUR : la date du jour est passée par l'appelant (tests stables).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { plain } from './routing-text';
 
 export interface PeriodeResolue {
   kind: 'resolved';
@@ -28,19 +29,18 @@ export interface PeriodeResolue {
   expression: string;
 }
 
-export interface PeriodeAmbigue {
+interface PeriodeAmbigue {
   kind: 'ambiguous';
   expression: string;
   /** Choix proposés en clarification (libellés substituables à l'expression). */
   choices: Array<{ id: string; label: string; replacement: string }>;
 }
 
-export type Periode = PeriodeResolue | PeriodeAmbigue | null;
+type Periode = PeriodeResolue | PeriodeAmbigue | null;
 
 const MOIS = ['janvier', 'fevrier', 'mars', 'avril', 'mai', 'juin', 'juillet', 'aout', 'septembre', 'octobre', 'novembre', 'decembre'];
 const MOIS_AFFICHES = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'];
 
-const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
 const pad = (n: number) => String(n).padStart(2, '0');
 const finDeMois = (a: number, m: number) => new Date(Date.UTC(a, m, 0)).getUTCDate();
 const iso = (d: Date) => d.toISOString().slice(0, 10);
@@ -184,7 +184,7 @@ export interface PorteeTemporelle {
 }
 
 /** Horizon de « à venir » / « bientôt » : même défaut que les échéances (30 jours, T2-15). */
-export const UPCOMING_WINDOW_DAYS = 30;
+const UPCOMING_WINDOW_DAYS = 30;
 
 function decaler(today: string, jours: number): string {
   const [a, m, j] = today.slice(0, 10).split('-').map(Number);

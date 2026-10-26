@@ -59,7 +59,7 @@ export function nextTargetedRefreshMs(hint: number | null | undefined, done: num
 /** Une lecture lancée d'avance n'est reprise que si elle est récente. */
 export const MASCOT_PREFETCH_MAX_AGE_MS = 10_000;
 /** Une prise de parole gardée en mémoire au-delà n'est plus montrée d'emblée. */
-export const MASCOT_MEMORY_MAX_AGE_MS = 10 * 60_000;
+const MASCOT_MEMORY_MAX_AGE_MS = 10 * 60_000;
 
 let prefetched: { at: number; epoch: number; promise: Promise<MascotPresentation>; consumed: boolean } | null = null;
 let memory: { at: number; epoch: number; presentation: MascotPresentation } | null = null;
@@ -126,7 +126,7 @@ if (typeof window !== 'undefined') {
 }
 
 /** Événements du front qui peuvent changer un signal (matrice §15). */
-export const MASCOT_REFRESH_EVENTS = [
+const MASCOT_REFRESH_EVENTS = [
   'document-added', 'document-deleted', 'document-analysis-complete', 'document-analysis-start',
   'agenda-mutated', 'refresh-a-traiter', 'notifications-refresh', 'verebona:data-mutated',
   'asset-details-updated',
@@ -141,7 +141,7 @@ type EventType = 'displayed' | 'clicked' | 'disappeared';
  * précédent — la bulle le dit, jamais présentée comme actualisée), `failed`
  * (rien à montrer).
  */
-export type MascotRefreshState = 'loading' | 'fresh' | 'stale' | 'failed';
+type MascotRefreshState = 'loading' | 'fresh' | 'stale' | 'failed';
 export function mascotRefreshState(presentation: MascotPresentation | null, failed: boolean): MascotRefreshState {
   if (presentation) return failed ? 'stale' : 'fresh';
   return failed ? 'failed' : 'loading';

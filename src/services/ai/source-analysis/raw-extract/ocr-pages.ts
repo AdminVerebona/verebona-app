@@ -27,13 +27,13 @@
  */
 import { isNonInformational, pageMarker, plat } from '../source-units/text';
 
-export type OcrPageStatus = 'RECOGNIZED' | 'UNREADABLE' | 'EMPTY' | 'UNATTRIBUTED';
+type OcrPageStatus = 'RECOGNIZED' | 'UNREADABLE' | 'EMPTY' | 'UNATTRIBUTED';
 export type OcrStatus = 'NOT_REQUIRED' | 'COMPLETE' | 'PARTIAL' | 'NONE' | 'UNATTRIBUTED';
 
 /** Provenance du texte reconnu : lecture du modèle multimodal (≠ couche texte PDF). */
-export const OCR_PROVENANCE = 'MODEL_TRANSCRIPTION' as const;
+const OCR_PROVENANCE = 'MODEL_TRANSCRIPTION' as const;
 
-export interface OcrZone {
+interface OcrZone {
   sourceUnitId: string;
   /** Région de la page quand le modèle l'a localisée (boîte, libellé de zone…). */
   region: unknown;
@@ -63,7 +63,7 @@ export interface OcrResult {
 }
 
 /** Unité de la couche A (sous-ensemble lu ici). */
-export interface OcrUnitInput {
+interface OcrUnitInput {
   sourceUnitId: string;
   kind: string;
   page: number | null;
@@ -73,7 +73,7 @@ export interface OcrUnitInput {
   payload?: Record<string, unknown> | null;
 }
 
-export interface BuildOcrPagesInput {
+interface BuildOcrPagesInput {
   /** Pages sans couche texte de l'extract déterministe. */
   pagesWithoutText: readonly number[];
   /** Pages du document (null : inconnu). */

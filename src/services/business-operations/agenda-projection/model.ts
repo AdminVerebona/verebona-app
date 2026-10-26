@@ -84,14 +84,14 @@ export const PROJECTION_ORIGIN_REF_TYPE = 'business_operation';
 /** `origin_type` d'un événement projeté : déduit par règle d'une donnée consolidée. */
 export const PROJECTION_ORIGIN_TYPE = 'deduced_rule';
 /** Préfixe des clés fonctionnelles des projections (distinctes des clés par document, T4-08). */
-export const PROJECTION_KEY_PREFIX = 'bo:v1:';
+const PROJECTION_KEY_PREFIX = 'bo:v1:';
 
 /** Tolérance de date d'un rapprochement certain (même que le dédoublonnage T4). */
-export const MATCH_DATE_TOLERANCE_DAYS = 3;
+const MATCH_DATE_TOLERANCE_DAYS = 3;
 /** Intervention planifiée ↔ réalisée : fenêtre « exacte » de T4-14. */
-export const PLANNED_TO_REALIZED_TOLERANCE_DAYS = 7;
+const PLANNED_TO_REALIZED_TOLERANCE_DAYS = 7;
 /** Même document, autre date : au-delà de la tolérance mais jusqu'ici, rapprochement PROBABLE. */
-export const SAME_DOCUMENT_PROBABLE_DAYS = 30;
+const SAME_DOCUMENT_PROBABLE_DAYS = 30;
 
 // ── Entrées ─────────────────────────────────────────────────────────────────
 
@@ -223,7 +223,7 @@ export type T4RepresentationRole = 'PRINCIPAL' | 'STEP' | 'INDEPENDENT' | 'DUPLI
 
 // ── Projection attendue ────────────────────────────────────────────────────
 
-export type NoProjectionReason =
+type NoProjectionReason =
   | 'INACTIVE' | 'TYPE_NOT_PROJECTED' | 'NO_ASSET' | 'NO_DATE' | 'STATUS_NOT_PROJECTED' | 'CANCELLED' | 'EQUIVALENT_EXISTS';
 
 export interface DesiredProjection {
@@ -249,7 +249,7 @@ export interface DesiredProjection {
   creatable: boolean;
 }
 
-export type ProjectionDecision =
+type ProjectionDecision =
   | { kind: 'PROJECT'; desired: DesiredProjection }
   | {
     kind: 'NONE';
@@ -265,7 +265,7 @@ export type ProjectionDecision =
   };
 
 /** Types métier de l'Agenda (EVENT_CATALOG) compatibles avec chaque type d'Opération. */
-export const COMPATIBLE_BUSINESS_TYPES: Readonly<Partial<Record<BusinessOperationTypeCode, readonly string[]>>> = {
+const COMPATIBLE_BUSINESS_TYPES: Readonly<Partial<Record<BusinessOperationTypeCode, readonly string[]>>> = {
   INTERVENTION: ['maintenance', 'repair', 'inspection', 'dpe'],
   CLAIM: ['claim'],
   ACQUISITION: ['purchase'],
@@ -413,7 +413,7 @@ export function dayGap(a: string, b: string): number {
  * même intitulé, date dans la tolérance) : ce que l'ancienne règle rattachait d'office ; ce n'est
  * plus qu'un candidat soumis à T4 et, à défaut, à l'utilisateur (carte D14).
  */
-export interface ProbableCandidate { item: AgendaItemSnapshot; reason: string; strong?: boolean }
+interface ProbableCandidate { item: AgendaItemSnapshot; reason: string; strong?: boolean }
 
 /**
  * Lot 87B (CODE-04) — PROVENANCE exacte d'un élément pour une Opération
@@ -422,14 +422,14 @@ export interface ProbableCandidate { item: AgendaItemSnapshot; reason: string; s
  * établie par T3 (47B). Seule preuve qui permet au code de rattacher sans
  * décision T4 ; le bien, le type, l'intitulé et la date ne sont que des signaux.
  */
-export function hasOperationProvenance(op: Pick<OperationSnapshot, 'id' | 'documentFileIds'>, c: AgendaItemSnapshot): boolean {
+function hasOperationProvenance(op: Pick<OperationSnapshot, 'id' | 'documentFileIds'>, c: AgendaItemSnapshot): boolean {
   const docs = new Set(op.documentFileIds);
   return c.fileIds.some((f) => docs.has(f))
     || (c.originRefType === 'asset_file' && c.originRefId !== null && docs.has(c.originRefId) && c.originLinkRejected !== true)
     || (c.agendaSourceOperationIds ?? []).includes(op.id);
 }
 /** Candidats présentés au plus dans une carte (2 propositions affichées + « nouvel événement »). */
-export const PROBABLE_CANDIDATES_MAX = 3;
+const PROBABLE_CANDIDATES_MAX = 3;
 
 export type MatchResult =
   | { kind: 'certain'; item: AgendaItemSnapshot; reason: string }
@@ -516,7 +516,7 @@ export function matchExistingItem(op: OperationSnapshot, desired: DesiredProject
  * l'identité vient de T3 (`exclusiveFileIds`). Contrôle et DPE ne sont
  * jamais absorbés (événements réglementaires distincts).
  */
-export const CONSOLIDABLE_INTERVENTION_TYPES: readonly string[] = ['maintenance', 'repair'];
+const CONSOLIDABLE_INTERVENTION_TYPES: readonly string[] = ['maintenance', 'repair'];
 
 /**
  * Événements automatiques T4 qui REPRÉSENTENT l'Opération (pure) : produits

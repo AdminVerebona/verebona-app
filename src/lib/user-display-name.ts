@@ -8,7 +8,7 @@
  * suivi de l'initiale du nom.
  */
 
-export interface DisplayNameUser {
+interface DisplayNameUser {
   firstName?: string | null;
   lastName?: string | null;
   username?: string | null;

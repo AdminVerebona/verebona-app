@@ -35,7 +35,7 @@ import { computeDerivation, derivationFor } from './document-derivations';
 import { getRule } from './rules-catalog';
 import { DEFAULT_TO_PROCESS_THRESHOLDS } from './relevance-thresholds';
 
-export interface RecetteCase {
+interface RecetteCase {
   id: string;
   label: string;
   rule: 'DATA-CONTRACT-END' | 'DATA-WARRANTY-END';
@@ -233,9 +233,9 @@ const decale = (today: string, days: number) => new Date(Date.parse(`${today}T00
  * introuvable dans le contexte, échéance invalide, libellé interdit — contrôle
  * serveur), ERROR (panne, sortie hors contrat). Null : aucune IA (déterministe).
  */
-export type RecetteAiOutput = 'VALID' | 'AMBIGUOUS' | 'INCOHERENT' | 'ERROR';
+type RecetteAiOutput = 'VALID' | 'AMBIGUOUS' | 'INCOHERENT' | 'ERROR';
 
-export interface RecetteCaseResult {
+interface RecetteCaseResult {
   caseId: string;
   label: string;
   ok: boolean;
@@ -254,7 +254,7 @@ export interface RecetteCaseResult {
 }
 
 /** Classement d'une sortie IA (pure). */
-export function classifyAiOutput(r: Pick<PertinenceResult, 'aiCalled' | 'cached' | 'technicalFailure' | 'aiStatus' | 'intervention' | 'pertinence'>): RecetteAiOutput | null {
+function classifyAiOutput(r: Pick<PertinenceResult, 'aiCalled' | 'cached' | 'technicalFailure' | 'aiStatus' | 'intervention' | 'pertinence'>): RecetteAiOutput | null {
   if (!r.aiCalled) return null;
   if (r.technicalFailure || r.aiStatus === 'ERROR') return 'ERROR';
   if (r.intervention?.warnings.length) return 'INCOHERENT';
@@ -382,7 +382,7 @@ export async function startRelevanceRecette(p: { accountId: number; userId: numb
   return { runId, done };
 }
 
-export interface RecetteRunView {
+interface RecetteRunView {
   id: number; status: string; configRef: string | null; engineVersion: string; total: number; passed: number; failed: number; aiCalls: number;
   results: RecetteCaseResult[]; error: string | null; startedAt: string; finishedAt: string | null; requestedBy: number | null;
   /** Lot 75I (F) : sorties IA par nature (valides, ambiguës, incohérentes, en erreur). */
@@ -390,7 +390,7 @@ export interface RecetteRunView {
 }
 
 /** Sorties IA d'une recette par nature (pure). */
-export function aiOutputCounts(results: Array<Pick<RecetteCaseResult, 'aiOutput'>>): Record<RecetteAiOutput, number> {
+function aiOutputCounts(results: Array<Pick<RecetteCaseResult, 'aiOutput'>>): Record<RecetteAiOutput, number> {
   const out: Record<RecetteAiOutput, number> = { VALID: 0, AMBIGUOUS: 0, INCOHERENT: 0, ERROR: 0 };
   for (const r of results) if (r.aiOutput) out[r.aiOutput] += 1;
   return out;

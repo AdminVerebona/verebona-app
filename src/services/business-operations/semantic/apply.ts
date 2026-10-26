@@ -23,7 +23,7 @@ type Sql = postgres.Sql;
 type Tx = postgres.TransactionSql;
 type Row = Record<string, unknown>;
 
-export interface ApplyInput {
+interface ApplyInput {
   accountId: number;
   operationId: number;
   mutations: readonly RepresentationMutation[];

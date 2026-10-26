@@ -40,7 +40,7 @@ import type { ProjectedFact } from '../master/t1-contract';
 import { T1_MASTER_PROMPT_CODE } from '../master/t1-contract';
 import { getField, isContextualAlias, isInputOnlyKey, resolveAlias } from '@/services/canonical/registry';
 
-export interface PersistEvidenceInput {
+interface PersistEvidenceInput {
   input: SourceInput;
   leadSourceId: number;
   assetId: number;
@@ -162,7 +162,7 @@ export async function persistEvidence(p: PersistEvidenceInput): Promise<Map<stri
 // Branche maître T1 — faits projetés (CDC 15 T1-04, T1-05, §14.4, PM-T1-PRE)
 // ══════════════════════════════════════════════════════════════════════════
 
-export interface PersistProjectedFactsInput {
+interface PersistProjectedFactsInput {
   input: SourceInput;
   leadSourceId: number;
   facts: ProjectedFact[];

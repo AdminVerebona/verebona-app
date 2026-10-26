@@ -91,7 +91,7 @@ export function roomDocumentLinksSql(roomIds: readonly number[]): SQL {
 }
 
 /** Condition Drizzle (table `asset_files` non aliasée) : document de l'une de ces pièces (direct OU indirect). */
-export function documentOfRoomsCondition(roomIds: readonly number[]): SQL {
+function documentOfRoomsCondition(roomIds: readonly number[]): SQL {
   if (cleanRoomIds(roomIds).length === 0) return sql`FALSE`;
   return sql`${assetFiles.id} IN (SELECT rl.file_id FROM ${roomDocumentLinksSql(roomIds)} rl)`;
 }
@@ -304,13 +304,13 @@ export class RoomAssociationError extends Error {
   }
 }
 
-export interface ReassignConflict {
+interface ReassignConflict {
   id: number;
   title: string;
   currentRoom: { id: number; name: string };
 }
 
-export type AssociateOutcome =
+type AssociateOutcome =
   | { status: 'done'; associated: number[] }
   | { status: 'confirm'; conflicts: ReassignConflict[] };
 

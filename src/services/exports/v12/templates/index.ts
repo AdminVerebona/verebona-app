@@ -16,7 +16,7 @@ import * as location from './location';
 import * as souscription from './assurance-souscription';
 import * as sinistre from './assurance-sinistre';
 
-export interface TemplateEntry<C extends DossierCode> {
+interface TemplateEntry<C extends DossierCode> {
   code: C;
   version: string;
   label: string;

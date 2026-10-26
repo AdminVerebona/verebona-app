@@ -69,7 +69,7 @@ export interface RouteContext {
  * compréhension complète est évaluée ensuite, lot 32), ou `needs_classification`
  * (UNKNOWN_INTENT → UNDERSTAND).
  */
-export type RouteOutcome =
+type RouteOutcome =
   | { kind: 'route'; route: IntentRoute }
   | { kind: 'needs_classification'; normalized: string };
 
@@ -278,7 +278,7 @@ const SUMMARY = word('resume|resumer|synthese|fais le point|bilan|panorama|expli
 const TIMELINE = word('historique|chronologie|timeline|au fil du temps|evolution');
 
 /** Seuil de pertinence d'un article pour router en aide sans modèle (§9.4.7). */
-export const HELP_CORPUS_ROUTE_THRESHOLD = 0.4;
+const HELP_CORPUS_ROUTE_THRESHOLD = 0.4;
 
 function buildRoute(
   intent: VerebonaIntent,
@@ -329,7 +329,7 @@ export function entityHintsFor(message: string, page?: PageContext): IntentRoute
 }
 
 /** Motif d'une clarification exigée par le routage (§20.1). */
-export type RouteClarificationReason = 'PERIOD_UNIDENTIFIABLE' | 'ACTION_AMBIGUOUS';
+type RouteClarificationReason = 'PERIOD_UNIDENTIFIABLE' | 'ACTION_AMBIGUOUS';
 
 /**
  * La demande exige-t-elle une clarification avant tout traitement (§20.1) ?

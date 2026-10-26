@@ -103,14 +103,14 @@ export interface PhotoItem {
 }
 
 /** Élément sélectionnable générique (historique, échéances…). */
-export interface Selectable {
+interface Selectable {
   id?: string;
   selected?: boolean;
   occupantData?: boolean;
   corrupted?: boolean;
 }
 
-export interface AssetBase {
+interface AssetBase {
   id?: number;
   family: string;
   name: string;
@@ -212,7 +212,7 @@ export interface VenteData extends CaseBase {
 
 // ─── Location ───────────────────────────────────────────────────────────────
 
-export type LeaseType = 'NON_MEUBLE' | 'MEUBLE' | 'MOBILITE' | 'ETUDIANT' | 'SAISONNIER' | 'AUTRE';
+type LeaseType = 'NON_MEUBLE' | 'MEUBLE' | 'MOBILITE' | 'ETUDIANT' | 'SAISONNIER' | 'AUTRE';
 
 export interface LocationData extends CaseBase {
   asset: AssetBase & {

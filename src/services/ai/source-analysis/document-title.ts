@@ -118,7 +118,6 @@ export function isReferenceOnlyTitle(title: string | null | undefined): boolean 
   return /^[a-z0-9\-/_.]+$/.test(rest) && /\d/.test(rest);
 }
 
-
 /** Date du jour lisible (« 18 septembre 2026 », « 1er mars 2026 »). */
 const dayMonthYear = (iso: string | null | undefined): string | null => formatTitleDate(iso);
 
@@ -337,7 +336,7 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
  * décidé par l'IA (certain) ou période facturée présentable. La période n'est
  * jamais interprétée ici : mois principal IA, sinon période exacte.
  */
-export function periodicPlan(nature: string, supplier: string | null, ctx: TitleContext): TitlePlan | null {
+function periodicPlan(nature: string, supplier: string | null, ctx: TitleContext): TitlePlan | null {
   if (!PERIODIC_NATURES.has(nature) || !supplier) return null;
   const b = ctx.billing;
   if (!b) return null;

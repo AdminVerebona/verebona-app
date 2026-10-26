@@ -79,7 +79,7 @@ const DELAI_APRES_ECRITURE_MS = 2_000;
 let defaultStore: EntitlementsStore | null = null;
 
 /** Magasin du navigateur (un par onglet). */
-export function getEntitlementsStore(): EntitlementsStore {
+function getEntitlementsStore(): EntitlementsStore {
   if (defaultStore) return defaultStore;
   const store = new EntitlementsStore({
     // Lecture partagée ; `silent` : sur une page publique sans session, un

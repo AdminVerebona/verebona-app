@@ -139,13 +139,6 @@ const fmt = (d: string | null | undefined) => {
   catch { return d; }
 };
 
-const fmtSize = (b?: number | null) => {
-  if (!b) return null;
-  if (b < 1024) return `${b} o`;
-  if (b < 1048576) return `${(b / 1024).toFixed(1)} Ko`;
-  return `${(b / 1048576).toFixed(1)} Mo`;
-};
-
 const fmtAmount = (cents: number | null) => {
   if (!cents) return null;
   return (cents / 100).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' });
@@ -335,8 +328,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
   // Legacy analyze UI state (kept for compatibility)
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [analyzeError, setAnalyzeError] = useState('');
-  const [analyzeSuccess, setAnalyzeSuccess] = useState(false);
   const [analyzeElapsed, setAnalyzeElapsed] = useState(0);
   const [analyzeStage, setAnalyzeStage] = useState(0);
   const [retryCount, setRetryCount] = useState(0);
@@ -524,8 +515,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       setViewUrl(null);
       setIsEditing(false);
       setIsAnalyzing(false);
-      setAnalyzeError('');
-      setAnalyzeSuccess(false);
       setAnalyzeElapsed(0);
       setAnalyzeStage(0);
       setAgendaSuggestions([]);
@@ -743,7 +732,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
     // Load user plan + rooms/equipments for current asset (assets already loaded on open)
     try {
-      const meData = await apiClient.get<any>('/api/users/me', { useCache: true });
+      await apiClient.get('/api/users/me', { useCache: true });
       if (currentAssetId) {
         const selectedAsset = assetsList.find((a) => a.id === currentAssetId);
         if (selectedAsset?.category === 'IMMOBILIER') {
@@ -881,8 +870,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     if (!doc) return;
     if (analysisState === 'ANALYSIS_FAILED') setRetryCount(c => c + 1);
     setIsAnalyzing(true);
-    setAnalyzeError('');
-    setAnalyzeSuccess(false);
     setAgendaSuggestions([]);
     window.dispatchEvent(new CustomEvent('document-analysis-start', { detail: { fileId: doc.id } }));
 
@@ -907,7 +894,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       if (!startRes.ok || !startRes.body) {
         const err = await startRes.json().catch(() => ({}));
         const retour = analyzeErrorFeedback({ code: err.error, message: err.message });
-        setAnalyzeError(retour.message);
         toast.error(retour.message, { duration: 8000 });
         setIsAnalyzing(false);
         return;
@@ -943,7 +929,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       }
 
       if (analysisError) {
-        setAnalyzeError(analysisError);
         setIsAnalyzing(false);
         if (analysisFeedback?.level === 'info') toast.info(analysisError, { duration: 6000 });
         else toast.error(analysisError, { duration: 8000 });
@@ -1022,7 +1007,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
         setAgendaSuggestions(suggestions);
 
         setIsAnalyzing(false);
-        setAnalyzeSuccess(true);
         window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId: doc.id } }));
 
         const completionMsg = 'Analyse terminée — informations enregistrées';
@@ -1044,7 +1028,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       } else {
         // Propositions illisibles : l'analyse est terminée, rien à valider.
         setIsAnalyzing(false);
-        setAnalyzeSuccess(true);
         window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId: doc.id } }));
 
         const drawerWasClosed = bgToastIdRef.current !== null;
@@ -1064,7 +1047,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       // Refresh parent list (missing_analysis motif now resolved)
       onRefresh();
     } catch {
-      setAnalyzeError("Erreur lors de l'analyse. Veuillez réessayer.");
       setIsAnalyzing(false);
       if (bgToastIdRef.current !== null) {
         toast.error("Erreur lors de l'analyse", { id: bgToastIdRef.current, duration: 6000 });

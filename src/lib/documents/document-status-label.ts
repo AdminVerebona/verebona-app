@@ -5,7 +5,7 @@
  */
 
 /** États d'analyse affichés par le tiroir (`analysisState`). */
-export type DocumentAnalysisDisplayState =
+type DocumentAnalysisDisplayState =
   | 'UPLOADING' | 'UPLOADED' | 'ANALYZING' | 'ANALYZED'
   | 'CONFLICT_DETECTED' | 'FUSION_SUGGESTED' | 'ANALYSIS_FAILED';
 

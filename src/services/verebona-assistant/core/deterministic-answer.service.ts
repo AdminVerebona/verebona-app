@@ -10,7 +10,7 @@
 import type { VerebonaIntent } from '../types/intents';
 import type { ActionIntent } from '../types/actions';
 
-export interface DeterministicResult {
+interface DeterministicResult {
   handled: boolean;
   answer?: string;
   actionIntents?: ActionIntent[];
@@ -30,7 +30,7 @@ const TEMPLATES: Partial<Record<VerebonaIntent, string>> = {
 };
 
 /** Offre et limite du compte, pour les gabarits qui en dépendent (§9.2). */
-export interface DeterministicContext {
+interface DeterministicContext {
   planType?: string;
   planLimit?: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED' | null;
 }
@@ -40,7 +40,7 @@ export interface DeterministicContext {
  * compte, ce qui relève de Premium, et la limite en cours s'il y en a une.
  * Contenu fixe, validé, sans modèle ; l'action est « Voir les offres ».
  */
-export function planLimitTemplate(ctx: DeterministicContext = {}): string {
+function planLimitTemplate(ctx: DeterministicContext = {}): string {
   const premium = ['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'].includes(String(ctx.planType ?? ''));
   const base = premium
     ? 'Votre offre comprend la recherche dans vos biens, documents, échéances et fournisseurs, l’aide Verebona, '

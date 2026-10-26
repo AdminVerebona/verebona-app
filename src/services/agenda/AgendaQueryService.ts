@@ -19,7 +19,7 @@ import { isEquipmentFilterActive, type EquipmentFacet } from '@/lib/filters/equi
 import { selectedRoomId, type RoomFacet } from '@/lib/filters/room-filter';
 import { agendaItemIdsByRoom, listRoomsOfAssets, type AssetRoom } from '@/services/rooms/room-scope.service';
 
-export interface AgendaQueryParams {
+interface AgendaQueryParams {
   accountId: number;
   assetIds?: number[];
   fileId?: number;
@@ -94,7 +94,7 @@ export interface AgendaItemFull {
   eventNature?: 'HISTORICAL' | 'DEADLINE' | null;
 }
 
-export interface AgendaSearchResult {
+interface AgendaSearchResult {
   type: 'agenda';
   id: number;
   publicId: string;
@@ -690,7 +690,3 @@ export async function getHomepageAgendaItems(accountId: number): Promise<AgendaI
   return [...overdue, ...todayItems, ...upcoming, ...undated].slice(0, 5);
 }
 
-export async function getAgendaAttentionItems(accountId: number): Promise<AgendaItemFull[]> {
-  const all = await getAgendaItems({ accountId, includeCancelled: false, includeUndated: true });
-  return all.filter(item => item.attentionFlags.length > 0);
-}

@@ -58,10 +58,10 @@ const num = (v: unknown, def: number) => {
 };
 const ON = new Set(['on', 'true', '1', 'yes']);
 
-export const DEFAULT_BACKFILL_BATCH = 200;
-export const DEFAULT_RETRY_BATCH = 10;
+const DEFAULT_BACKFILL_BATCH = 200;
+const DEFAULT_RETRY_BATCH = 10;
 
-export function jobSettings(env: Record<string, string | undefined> = process.env) {
+function jobSettings(env: Record<string, string | undefined> = process.env) {
   return {
     backfillBatch: Math.min(1_000, Math.max(1, Math.trunc(num(env.T1_BACKFILL_BATCH, DEFAULT_BACKFILL_BATCH)))),
     backfillAiRepair: ON.has((env.T1_BACKFILL_AI_REPAIR ?? '').trim().toLowerCase()),
@@ -71,7 +71,7 @@ export function jobSettings(env: Record<string, string | undefined> = process.en
 }
 
 /** Délai avant la reprise n°`attempt` (1 h, 4 h, 16 h…). */
-export const retryDelayMs = (attempt: number) => 3_600_000 * 4 ** Math.max(0, attempt - 1);
+const retryDelayMs = (attempt: number) => 3_600_000 * 4 ** Math.max(0, attempt - 1);
 
 // ══ 1. Reprise des documents historiques (déterministe) ═════════════════════
 
@@ -158,7 +158,7 @@ export function backfillLayer(p: {
   };
 }
 
-export interface BackfillResult { processed: number; failed: number; more: boolean; disabled?: boolean }
+interface BackfillResult { processed: number; failed: number; more: boolean; disabled?: boolean }
 
 export async function runSourceUnitsBackfill(opts: { deadline?: number; env?: Record<string, string | undefined>; maxBatches?: number } = {}): Promise<BackfillResult> {
   const res: BackfillResult = { processed: 0, failed: 0, more: false };
@@ -235,12 +235,12 @@ const toCovered = (u: StoredSourceUnit): CoveredSourceUnit => ({
   repairState: (u.repairState ?? null) as CoveredSourceUnit['repairState'],
 });
 
-export interface RetryResult { examined: number; repaired: number; requeued: number; final: number; failed: number; more: boolean; disabled?: boolean }
+interface RetryResult { examined: number; repaired: number; requeued: number; final: number; failed: number; more: boolean; disabled?: boolean }
 
 /** Bail d'une reprise en cours (protection contre les exécutions concurrentes ; worker arrêté → reprise après le bail). */
-export const RETRY_LEASE_MINUTES = 30;
+const RETRY_LEASE_MINUTES = 30;
 /** Passages de CONTINUATION (unités jamais examinées faute de budget) au plus par document. */
-export function continuationMaxRuns(env: Record<string, string | undefined> = process.env): number {
+function continuationMaxRuns(env: Record<string, string | undefined> = process.env): number {
   return Math.min(200, Math.max(1, Math.trunc(num(env.T1_REPAIR_CONTINUATION_MAX_RUNS, 20))));
 }
 
@@ -377,7 +377,7 @@ export async function requeueDocumentForReread(p: {
 }
 
 /** Issue d'une reprise ciblée d'un document (lot 83B : détail rendu au contrôle de cohérence). */
-export interface DocumentRetryOutcome {
+interface DocumentRetryOutcome {
   outcome: 'repaired' | 'requeued' | 'final';
   /** Appels ANALYZE_DOCUMENT de la passe textuelle et de la relecture du fichier. */
   calls: number;
@@ -684,7 +684,7 @@ export async function repairDocumentSourceUnits(p: {
 }
 
 /** Lot 54G : relectures du FICHIER au plus par unité NEEDS_SOURCE (= reprises automatiques, 1 au moins). */
-export function sourceRereadCap(env: Record<string, string | undefined> = process.env): number {
+function sourceRereadCap(env: Record<string, string | undefined> = process.env): number {
   return Math.max(1, maxCompletenessRetries(env));
 }
 

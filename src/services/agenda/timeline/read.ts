@@ -115,7 +115,7 @@ SELECT g.op,
     JOIN equipments e ON e.id = u.id JOIN assets a ON a.id = e.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL)::int AS equipments
   FROM unnest($2::bigint[], $3::int[]) AS g(op, head)`;
 
-export interface ReadTimelineInput {
+interface ReadTimelineInput {
   accountId: number;
   assetId: number;
   mode?: TimelineMode;

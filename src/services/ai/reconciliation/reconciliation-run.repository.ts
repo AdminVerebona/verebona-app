@@ -8,7 +8,7 @@
 import { pgClient } from '@/db';
 import type { ReconciliationDecision, ReconciliationRun } from './types';
 
-export interface OpenRunInput {
+interface OpenRunInput {
   accountId: number;
   assetId: number;
   triggeredBy: string;
@@ -35,7 +35,7 @@ export async function recordDecisions(
 ): Promise<void> {
   if (decisions.length === 0) return;
 
-  const values = decisions.map((d, i) => {
+  const values = decisions.map((_d, i) => {
     const o = i * 10;
     return `($${o + 1},$${o + 2},$${o + 3},$${o + 4},$${o + 5},$${o + 6},$${o + 7},$${o + 8},$${o + 9}::jsonb,$${o + 10})`;
   }).join(',');

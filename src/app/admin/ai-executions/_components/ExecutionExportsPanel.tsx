@@ -22,7 +22,7 @@ import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 import type { ExecutionsManifest } from '@/services/ai/business-execution/export-model';
 
-export interface ExportGeneration {
+interface ExportGeneration {
   id: string;
   status: 'RUNNING' | 'COMPLETE' | 'PARTIAL' | 'FAILED';
   interrupted: boolean;
@@ -36,7 +36,7 @@ export interface ExportGeneration {
   perimeter: Record<string, unknown>;
 }
 
-export interface ExportDetail {
+interface ExportDetail {
   manifest: ExecutionsManifest | null;
   downloadables: string[];
   resumable: boolean;

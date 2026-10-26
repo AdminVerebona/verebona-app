@@ -90,7 +90,7 @@ export function isPermanentFailure(attempts: number): boolean {
  * exécutions 1 à 4 en échec → PENDING (backoff), exécution 5 en échec →
  * FAILED — exactement MAX_ATTEMPTS exécutions.
  */
-export interface FailureOutcome {
+interface FailureOutcome {
   status: Extract<JobStatus, 'PENDING' | 'FAILED'>;
   retryInSeconds: number | null;
   attempts: number;
@@ -185,22 +185,6 @@ export function decideQueueing(
   if (existing.status === 'PENDING') return 'skip';
   if (existing.status === 'RUNNING') return 'coalesce';
   return 'create';
-}
-
-/**
- * Ordre de service : tête de file d'abord, puis FIFO (SCR-08).
- *
- * `head_priority` n'est pas une priorité manuelle — le §1.4 les exclut de la
- * V1. C'est la remise en tête d'une exécution interrompue par une
- * désactivation, un Emergency Stop ou un rollback : elle reprend sa place, elle
- * n'en gagne pas une meilleure.
- */
-export function compareJobs(
-  a: { headPriority: boolean; createdAt: Date },
-  b: { headPriority: boolean; createdAt: Date },
-): number {
-  if (a.headPriority !== b.headPriority) return a.headPriority ? -1 : 1;
-  return a.createdAt.getTime() - b.createdAt.getTime();
 }
 
 // ── Report (ni succès, ni échec) ────────────────────────────────────────────

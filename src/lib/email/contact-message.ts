@@ -25,7 +25,7 @@ export interface ContactInput {
   message: string;
 }
 
-export interface ContactEmail {
+interface ContactEmail {
   subject: string;
   /** Corps pour l'enveloppe de la charte (`wrapInHTML`) : lignes déjà échappées. */
   htmlBody: string;
@@ -34,10 +34,10 @@ export interface ContactEmail {
   replyTo: string | null;
 }
 
-export const CONTACT_SUBJECT_PREFIX = '[Contact Verebona]';
+const CONTACT_SUBJECT_PREFIX = '[Contact Verebona]';
 
 /** Une adresse e-mail simple et correcte (RFC 5321 : 254 caractères au plus). */
-export function validReplyToAddress(raw: string): string | null {
+function validReplyToAddress(raw: string): string | null {
   const v = String(raw ?? '').trim();
   if (v.length > 254 || /[\s\u0000-\u001f\u007f]/.test(v)) return null;
   return /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.[A-Za-z]{2,24}$/.test(v)

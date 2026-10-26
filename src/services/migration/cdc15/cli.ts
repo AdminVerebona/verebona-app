@@ -4,7 +4,7 @@
  */
 import { MIG_STEPS } from './types';
 
-export type ParsedArgs =
+type ParsedArgs =
   | { kind: 'run'; steps: string[] | 'all'; accountId: number | null; apply: boolean; batch: number; pause: number;
       limit: number | null; resume: string | null; dbReport: boolean; json: string | null }
   | { kind: 'report'; runId: string; samples: number; decision: string | undefined }

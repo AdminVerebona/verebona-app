@@ -47,12 +47,12 @@
 import type { ChainLink, CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, idsOf, intArray, rows } from '../util';
 
-export const T1_KNOWLEDGE_CHECK_ID = 'COH-T1-KNOWLEDGE-CONSUMPTION';
+const T1_KNOWLEDGE_CHECK_ID = 'COH-T1-KNOWLEDGE-CONSUMPTION';
 /** Demandes de contrat IA dont dépendent les constats. */
 const CONTRAT_T3 = '85F-t3-comprehension-connaissance-t1';
 const CONTRAT_T1 = '82B-t1-omissions-extract';
 /** Motifs de décision « interprétation en attente » (document-rule-bridge, lot 85F). */
-export const INTERPRETATION_PENDING_REASONS = ['INTERPRETATION_PENDING', 'INTERPRETATION_INCOMPLETE', 'KEPT_INTERPRETATION_PENDING', 'KEPT_INTERPRETATION_INCOMPLETE'];
+const INTERPRETATION_PENDING_REASONS = ['INTERPRETATION_PENDING', 'INTERPRETATION_INCOMPLETE', 'KEPT_INTERPRETATION_PENDING', 'KEPT_INTERPRETATION_INCOMPLETE'];
 
 const REPARABLES = new Set(['CARD_ASKS_KNOWN_INFORMATION', 'KNOWLEDGE_NOT_EXPLOITED', 'FIELD_NOT_IN_T1_WITH_KNOWLEDGE', 'KNOWLEDGE_NOT_INTERPRETED']);
 const MAILLON: Record<string, ChainLink> = {
@@ -100,7 +100,7 @@ async function documentsConcernesSql(sql: Parameters<typeof rows>[0], filtre: st
      ORDER BY f.id ${limite}`;
 }
 
-export interface RuleAnomaly { rule: string; code: string; memoId?: number | null; contextFingerprint?: string | null; detail?: Record<string, unknown> }
+interface RuleAnomaly { rule: string; code: string; memoId?: number | null; contextFingerprint?: string | null; detail?: Record<string, unknown> }
 
 export const t1KnowledgeConsumptionCheck: CoherenceCheck = {
   id: T1_KNOWLEDGE_CHECK_ID,

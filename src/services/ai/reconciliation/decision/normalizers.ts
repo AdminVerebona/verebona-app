@@ -28,12 +28,12 @@
  */
 import { getField, eurToCents, centsToEur } from '@/services/canonical/registry';
 
-export type NormalizedValue = string | null;
+type NormalizedValue = string | null;
 
 const DATE_FR = /^(\d{1,2})[/\-. ](\d{1,2})[/\-. ](\d{4})$/;
 const DATE_ISO = /^(\d{4})-(\d{2})-(\d{2})/;
 
-export interface NormalizeOpts {
+interface NormalizeOpts {
   /** Unité DÉCLARÉE de la valeur brute (`EUR`, `cents`) si elle diffère de celle de la clé. */
   sourceUnit?: string;
 }
@@ -103,7 +103,7 @@ function isAddressField(k: string): boolean {
 }
 
 /** Toute date devient ISO `AAAA-MM-JJ`, ou null. */
-export function normalizeDate(s: string): NormalizedValue {
+function normalizeDate(s: string): NormalizedValue {
   const iso = s.match(DATE_ISO);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
 
@@ -135,7 +135,7 @@ export function normalizeMoney(s: string): NormalizedValue {
 }
 
 /** Nombre décimal normalisé, ou null. */
-export function normalizeNumber(s: string): NormalizedValue {
+function normalizeNumber(s: string): NormalizedValue {
   const cleaned = s.replace(/[^\d,.\-]/g, '').replace(',', '.');
   const n = Number(cleaned);
   if (!Number.isFinite(n)) return null;
@@ -144,7 +144,7 @@ export function normalizeNumber(s: string): NormalizedValue {
 }
 
 /** Plaque française : majuscules, tirets normalisés. */
-export function normalizePlate(s: string): NormalizedValue {
+function normalizePlate(s: string): NormalizedValue {
   const compact = s.toUpperCase().replace(/[\s-]/g, '');
   if (/^[A-Z]{2}\d{3}[A-Z]{2}$/.test(compact)) {
     return `${compact.slice(0, 2)}-${compact.slice(2, 5)}-${compact.slice(5)}`;
@@ -153,7 +153,7 @@ export function normalizePlate(s: string): NormalizedValue {
 }
 
 /** Texte comparable : minuscules, accents retirés, espaces réduits. */
-export function normalizeText(s: string): NormalizedValue {
+function normalizeText(s: string): NormalizedValue {
   const out = s
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')

@@ -27,9 +27,9 @@ import { isNativeAppShell, type LogoutExitWindow } from '@/lib/shell/logout-exit
 /** Délai au-delà duquel la page propose le repli (navigation non partie). */
 export const PORTAL_FALLBACK_MS = 2_500;
 
-export type PortalNavigation = 'replace' | 'external';
+type PortalNavigation = 'replace' | 'external';
 
-export interface PortalWindow {
+interface PortalWindow {
   location: { href: string; protocol?: string; replace(url: string): void };
   Capacitor?: LogoutExitWindow['Capacitor'];
 }

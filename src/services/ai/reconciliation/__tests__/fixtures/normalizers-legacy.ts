@@ -4,7 +4,7 @@
  * T1-03 : le nouveau normaliseur doit rendre les mêmes sorties, à la seule
  * exception du « ×100 » retiré. Ne pas modifier, ne pas importer ailleurs.
  */
-export type NormalizedValue = string | null;
+type NormalizedValue = string | null;
 
 const DATE_FR = /^(\d{1,2})[/\-. ](\d{1,2})[/\-. ](\d{4})$/;
 const DATE_ISO = /^(\d{4})-(\d{2})-(\d{2})/;

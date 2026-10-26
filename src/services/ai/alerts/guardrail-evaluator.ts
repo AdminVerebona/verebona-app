@@ -55,7 +55,7 @@ export interface GuardrailMetrics {
 /** Échantillon minimal pour qu'un taux soit interprétable. */
 export const MIN_RATE_SAMPLE = 20;
 
-export interface GuardrailVerdict {
+interface GuardrailVerdict {
   code: string;
   value: number | null;
   threshold: number;
@@ -102,7 +102,7 @@ export function guardrailDrilldown(treatment: Treatment, code: string): string {
 
 // ── Branchement base ────────────────────────────────────────────────────────
 
-export interface GuardrailDeps {
+interface GuardrailDeps {
   loadGuardrails(t: Treatment): Promise<GuardrailSetting[]>;
   measure(t: Treatment): Promise<GuardrailMetrics>;
   raiseAlert: typeof import('./alerts.repository').raiseAlert;
@@ -196,7 +196,7 @@ const defaultDeps: GuardrailDeps = {
   suspend: suspendFromDb,
 };
 
-export interface GuardrailReport {
+interface GuardrailReport {
   treatment: Treatment;
   verdict: GuardrailVerdict;
   reaction: GuardrailSetting['reaction'];

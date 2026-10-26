@@ -31,8 +31,7 @@
 import { pgClient } from '@/db';
 import { todayParis } from './collector';
 import { agendaFingerprint, currentT6Fingerprints } from './t6-interpellation.service';
-import {
-  T6_MAX_SNOOZE_DAYS, agendaSubjectKey, preferenceAppliesToCycle, seriesSubjectKey, snoozeDateError, suggestReminderDate, t6CycleKeySql,
+import { agendaSubjectKey, preferenceAppliesToCycle, seriesSubjectKey, snoozeDateError, suggestReminderDate, t6CycleKeySql,
   type T6PreferenceDecision, type T6PreferenceScope,
 } from './t6-interpellation';
 
@@ -40,8 +39,6 @@ type Row = Record<string, unknown>;
 const rows = async (sql: string, params: unknown[]): Promise<Row[]> =>
   (await pgClient.unsafe(sql, params as never[])) as unknown as Row[];
 
-/** Report au plus loin (jours). */
-export const MAX_SNOOZE_DAYS = T6_MAX_SNOOZE_DAYS;
 /*
  * Lot 75E (D) : `SERIES_ORPHAN_RETENTION_DAYS` (retrait automatique d'un refus
  * de série après 365 jours sans occurrence, lot 71G) est SUPPRIMÉ.
@@ -51,7 +48,7 @@ export { snoozeDateError };
 
 /** Lot 75E : colonnes `cycle_key` / `series_asset_id` (0551) présentes ? Lue une fois. */
 let colonnes0551: Promise<boolean> | null = null;
-export function hasPreferenceIdentityColumns(): Promise<boolean> {
+function hasPreferenceIdentityColumns(): Promise<boolean> {
   colonnes0551 ??= rows(
     `SELECT 1 FROM information_schema.columns WHERE table_name = 't6_reminder_preferences' AND column_name = 'series_asset_id' LIMIT 1`, [],
   ).then((r) => r.length > 0).catch(() => { colonnes0551 = null; return false; });
@@ -74,7 +71,7 @@ export interface T6ReminderPrefView {
   updatedAt: string;
 }
 
-export interface T6ReminderState {
+interface T6ReminderState {
   agendaItemId: number;
   hasSeries: boolean;
   /** Date de rappel proposée (AAAA-MM-JJ). */
@@ -83,7 +80,7 @@ export interface T6ReminderState {
   series: T6ReminderPrefView | null;
 }
 
-export type T6ReminderError = { ok: false; code: 'NOT_FOUND' | 'INVALID_DATE' | 'NO_SERIES' | 'INVALID_INPUT'; message: string };
+type T6ReminderError = { ok: false; code: 'NOT_FOUND' | 'INVALID_DATE' | 'NO_SERIES' | 'INVALID_INPUT'; message: string };
 
 interface AgendaTarget {
   id: number; title: string; date: string | null; forecast: boolean; requiresQualification: boolean; seriesKey: string | null;

@@ -26,7 +26,7 @@ import { randomUUID } from 'crypto';
 /** Identité du détenteur — journalisée, jamais utilisée pour décider. */
 const OWNER = `${hostname()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
-export interface JobLockHandle {
+interface JobLockHandle {
   name: string;
   owner: string;
 }

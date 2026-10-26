@@ -42,7 +42,7 @@ export class SinkError extends Error {
 }
 
 /** Regroupe les petites écritures (64 Kio) ; `flush` en fin de flux. */
-export function bufferedSink(target: TextSink, size = 64 * 1024): TextSink & { flush(): Promise<void> } {
+function bufferedSink(target: TextSink, size = 64 * 1024): TextSink & { flush(): Promise<void> } {
   let buf: string[] = [];
   let len = 0;
   const flush = async () => {
@@ -78,7 +78,7 @@ interface Streamed { expected: number | null; exported: number; batches: number;
  * (section FAILED / PARTIAL) ; une erreur d'écriture ou une écriture SQL
  * tentée est relancée (fatale).
  */
-export async function streamSource(s: ReadSession, src: SectionSource, onBatch: (rows: Row[]) => Promise<void>, batch = EXPORT_BATCH_ROWS): Promise<Streamed> {
+async function streamSource(s: ReadSession, src: SectionSource, onBatch: (rows: Row[]) => Promise<void>, batch = EXPORT_BATCH_ROWS): Promise<Streamed> {
   const out: Streamed = { expected: null, exported: 0, batches: 0, error: null };
   try {
     if (src.kind === 'static') {
@@ -118,7 +118,7 @@ function sectionHeadJson(sec: DossierSection, mask: (v: unknown) => unknown): st
   return indent(j.slice(0, -2), '    '); // sans « \n} » final
 }
 
-export interface ExportOptions {
+interface ExportOptions {
   generationId?: string;
   /** Export d'une seule section (reprise ciblée, CSV de section). */
   sectionId?: string | null;

@@ -49,7 +49,7 @@ import { emptyCounts, type ReportEntry, type ReviewCardRequest, type StepContext
 
 const STEP = 'MIG-02' as const;
 
-export interface AmountEvidence {
+interface AmountEvidence {
   id: number;
   key: string;
   /** Montant en euros (normalisé). */
@@ -69,7 +69,7 @@ export function beforeV5(promptVersion: string | null): boolean {
 
 const cents = (x: number) => Math.round(x * 100);
 
-export interface AmountDecision {
+interface AmountDecision {
   entry: ReportEntry;
   card?: ReviewCardRequest;
   correction?: { key: string; from: number; to: number; evidenceId: number; origin: string; promptVersion: string | null };

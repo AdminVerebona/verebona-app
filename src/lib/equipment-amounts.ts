@@ -10,7 +10,7 @@
  *     en mode `legacy` (modification, compatibilité lot 18) ;
  *   · négatif, non numérique, hors bornes : INVALID.
  */
-export const MAX_CENTS = 2_147_483_647;
+const MAX_CENTS = 2_147_483_647;
 
 export function parseEquipmentCents(
   field: string, v: unknown, mode: 'strict' | 'legacy',

@@ -34,14 +34,14 @@
  *     moyenne ET un plancher absolu (un passage de 2 à 5 centimes n'est pas
  *     un incident).
  */
-import { TREATMENTS, TREATMENT_DEFINITIONS, type Treatment } from '../config/treatments';
+import { TREATMENTS, TREATMENT_DEFINITIONS } from '../config/treatments';
 
 export const MIN_BASELINE_DAYS = 14;
-export const BASELINE_DAYS = 28;
+const BASELINE_DAYS = 28;
 const SIGMAS = 3;
 const MIN_RATIO = 1.5;
 
-export interface AnomalyVerdict {
+interface AnomalyVerdict {
   anomalous: boolean;
   /** `false` : baseline trop courte pour conclure. */
   enoughBaseline: boolean;
@@ -65,7 +65,7 @@ export function detectAnomaly(history: number[], value: number, floor = 0): Anom
   return { anomalous, enoughBaseline, mean, std, value };
 }
 
-export interface BudgetVerdict {
+interface BudgetVerdict {
   scope: string;
   budgetMicros: number;
   spentMicros: number;
@@ -106,7 +106,7 @@ async function raiseDefault(...args: Parameters<Raise>): ReturnType<Raise> {
   return (await import('./alerts.repository')).raiseAlert(...args);
 }
 
-export interface CostSettings {
+interface CostSettings {
   budgets: Array<{ scope: string; monthlyBudgetMicros: number | null }>;
   anomaliesEnabled: boolean;
 }
@@ -277,7 +277,3 @@ export async function evaluateAnomalyAlerts(now: Date = new Date(), raise: Raise
   return raised;
 }
 
-/** Traitement couvert par un budget (pour l'affichage). */
-export function budgetScopes(): Array<'global' | Treatment> {
-  return ['global', ...TREATMENTS];
-}

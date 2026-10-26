@@ -21,9 +21,9 @@ import { formatDateFr } from './mascot/signals';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-export type WorkTone = 'blue' | 'green' | 'violet' | 'amber';
+type WorkTone = 'blue' | 'green' | 'violet' | 'amber';
 
-export type WorkTarget =
+type WorkTarget =
   | { kind: 'asset'; assetId: number; fieldKey?: string | null; tab?: 'equipments' | 'rooms' }
   | { kind: 'agenda'; id: number }
   | { kind: 'document'; id: number };
@@ -40,7 +40,7 @@ export interface VerebonaWorkItem {
   target: WorkTarget;
 }
 
-export interface WorkFieldUpdateRow {
+interface WorkFieldUpdateRow {
   assetId: number;
   assetName: string;
   fieldKey: string;
@@ -64,7 +64,7 @@ function libelle(r: WorkFieldUpdateRow): string {
   return nom ? `${r.fieldLabel} (${nom})` : r.fieldLabel;
 }
 
-export interface WorkDeadlineRow {
+interface WorkDeadlineRow {
   id: number;
   title: string;
   /** AAAA-MM-JJ ou null. */
@@ -75,7 +75,7 @@ export interface WorkDeadlineRow {
   assetName: string | null;
 }
 
-export interface WorkDocumentRow {
+interface WorkDocumentRow {
   id: number;
   title: string;
   assetName: string | null;
@@ -181,7 +181,7 @@ function documentEvents(rows: WorkDocumentRow[]): VerebonaWorkItem[] {
   return out;
 }
 
-export const MAX_WORK_ITEMS = 4;
+const MAX_WORK_ITEMS = 4;
 
 /**
  * Frise « Ce que j'ai fait » : les trois sources, du plus récent au plus
@@ -216,7 +216,7 @@ export function relativeAgo(iso: string, now: Date = new Date()): string {
 
 // ── Documents récents (§3.5) ────────────────────────────────────────────────
 
-export type DocTone = 'slate' | 'green' | 'blue' | 'violet' | 'amber';
+type DocTone = 'slate' | 'green' | 'blue' | 'violet' | 'amber';
 
 export interface HomeRecentDocument {
   id: number;
@@ -264,7 +264,7 @@ export function docStatus(analysisState: string | null | undefined): string | nu
 
 // ── Prochaines échéances (prototype Direction D v2, décision produit) ───────
 
-export type UpcomingTone = 'red' | 'amber' | 'green';
+type UpcomingTone = 'red' | 'amber' | 'green';
 
 export interface UpcomingRow {
   id: number;
@@ -294,9 +294,9 @@ export interface HomeUpcomingItem {
 
 export const MAX_UPCOMING = 5;
 /** Au-delà, une action passée relève de l'agenda, plus de l'accueil (comme la mascotte). */
-export const UPCOMING_OVERDUE_DAYS = 60;
+const UPCOMING_OVERDUE_DAYS = 60;
 /** Une échéance à moins de 30 jours est « proche » (amber). */
-export const UPCOMING_SOON_DAYS = 30;
+const UPCOMING_SOON_DAYS = 30;
 
 const MOIS_COURTS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
 

@@ -23,7 +23,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { formatDate, formatDateTime } from '@/lib/admin/format';
 import {
-  CATEGORIES, CATEGORY_LABELS, ENTITY_LABELS, entityRef, parseEntityRef, type Category, type EntityType,
+  CATEGORIES, CATEGORY_LABELS, ENTITY_LABELS, entityRef, parseEntityRef, type Category,
 } from '@/services/admin/account-data/model';
 import type { ListItem, ListResult } from '@/services/admin/account-data/lists';
 import { AdminPagination, SortHeader, nextSort } from '../../../../subscriptions/_components/list-controls';
@@ -258,5 +258,3 @@ export function AccountDataSection({ accountId }: { accountId: number }) {
     </section>
   );
 }
-
-export type { EntityType };

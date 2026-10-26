@@ -112,10 +112,10 @@ export const estimateRetryDelayMs = (failures: number): number => 2000 * 2 ** Ma
 const GENERATED: ReadonlySet<PrepStatus> = new Set(['generated_pdf', 'generated_zip', 'generated_partial', 'expired', 'file_deleted']);
 
 export const isEditable = (s: PrepState): boolean => EDITABLE.has(s.status) && !!s.prep;
-export const isGenerated = (s: PrepState): boolean => GENERATED.has(s.status);
+const isGenerated = (s: PrepState): boolean => GENERATED.has(s.status);
 
 /** Tous les éléments de la préparation, par clé. */
-export function itemIndex(prep: PreparationDto | null): Map<string, { item: PrepItem; section: PrepSection }> {
+function itemIndex(prep: PreparationDto | null): Map<string, { item: PrepItem; section: PrepSection }> {
   const out = new Map<string, { item: PrepItem; section: PrepSection }>();
   for (const section of prep?.sections ?? []) for (const item of section.items) if (!out.has(item.key)) out.set(item.key, { item, section });
   return out;
@@ -430,7 +430,7 @@ export function buildEstimateBody(s: PrepState) {
   return { exportType: s.prep?.exportType, choices: buildChoices(s, 'ZIP') };
 }
 
-export type GenerateDecision = 'blocked' | 'confirm_pdf_only' | 'go';
+type GenerateDecision = 'blocked' | 'confirm_pdf_only' | 'go';
 
 /** Bouton « Générer le PDF » / « Générer PDF + ZIP » : ALT-002, ALT-003, MSG-PREP-006. */
 export function generateDecision(s: PrepState, format: OutputFormat): GenerateDecision {
@@ -445,7 +445,7 @@ export function generateDecision(s: PrepState, format: OutputFormat): GenerateDe
 }
 
 /** Étapes affichées de la progression (PREP-PROGRESS). */
-export const PROGRESS_STEPS = [
+const PROGRESS_STEPS = [
   { id: 'prepare', label: 'Préparation des pièces', steps: ['validate_request', 'lock_snapshot', 'resolve_files'] },
   { id: 'render', label: 'Rendu du PDF', steps: ['render_html', 'render_pdf'] },
   { id: 'zip', label: 'Assemblage du ZIP', steps: ['assemble_zip'] },

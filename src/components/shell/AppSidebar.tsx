@@ -22,7 +22,7 @@ import { Logo } from '@/components/Logo';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { badgeLabel, sidebarToggleLabel, sidebarWidth } from '@/lib/shell/sidebar-state';
 
-export interface NavEntry {
+interface NavEntry {
   name: string;
   href: string;
   icon: LucideIcon;

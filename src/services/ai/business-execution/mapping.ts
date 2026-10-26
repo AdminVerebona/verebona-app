@@ -293,7 +293,7 @@ export function qualifyT3(job: JobState, reports: T3ReportState[], now: Date): Q
 // ══════════════════════════════════════════════════════════════════════════
 
 /** Codes des échecs T4 « incomplets » (décisions valides appliquées, lacune reprise : lot 71E/75F). */
-export const T4_INCOMPLETE_CODES = ['T4_INCOMPLETE', 'T4_PERSIST_PARTIAL', 'T4_SYNC_FAILED'] as const;
+const T4_INCOMPLETE_CODES = ['T4_INCOMPLETE', 'T4_PERSIST_PARTIAL', 'T4_SYNC_FAILED'] as const;
 const t4Code = (e: string | null): string | null => T4_INCOMPLETE_CODES.find((c) => (e ?? '').includes(c)) ?? null;
 
 export function qualifyT4(job: JobState, now: Date): Qualification {
@@ -323,7 +323,7 @@ export function qualifyT4(job: JobState, now: Date): Qualification {
 // T2 — demande de l'assistant (R21)
 // ══════════════════════════════════════════════════════════════════════════
 
-export interface T2RunState {
+interface T2RunState {
   requestId: string;
   /** pending | ok | error | cancelled */
   status: string | null;
@@ -367,7 +367,7 @@ export function qualifyT2(r: T2RunState, now: Date, staleAfterMs: number): Quali
 // T6 — FORMULATE (génération) et EVALUATE (évaluation) : R42, R43
 // ══════════════════════════════════════════════════════════════════════════
 
-export interface T6FormulateState {
+interface T6FormulateState {
   traceId: string;
   /** generated | validation_failed | error (lignes portant une trace d'appel) */
   status: string;
@@ -383,7 +383,7 @@ export interface T6FormulateState {
 }
 
 /** Lot 87C — résumé BO des questions d'une génération (pur) : nombres et motifs, jamais de texte. */
-export function t6SuggestionSummary(r: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+function t6SuggestionSummary(r: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (!r || typeof r !== 'object') return null;
   const inv = Array.isArray(r.invalidations) ? r.invalidations as Array<{ removed?: unknown; source?: unknown; at?: unknown; reasons?: unknown }> : [];
   return {
@@ -395,7 +395,7 @@ export function t6SuggestionSummary(r: Record<string, unknown> | null | undefine
 }
 
 /** Lot 87C — résultat natif lisible au BO (« questions : 1 acceptée, 2 rejetées [motifs] ») — pur. */
-export function t6SuggestionResultText(s: Record<string, unknown>): string {
+function t6SuggestionResultText(s: Record<string, unknown>): string {
   if (s.promptSupported === false) return 'questions : prompt sans contrat des questions fondées (aucune publiée)';
   const motifs = Object.keys((s.reasons as Record<string, number> | null) ?? {}).sort().join(', ');
   const retirees = Number(s.invalidated ?? 0);
@@ -421,7 +421,7 @@ export function qualifyT6Formulate(g: T6FormulateState): Qualification {
   }
 }
 
-export interface T6EvaluateState {
+interface T6EvaluateState {
   agendaItemId: number;
   status: string;
   attempts: number;

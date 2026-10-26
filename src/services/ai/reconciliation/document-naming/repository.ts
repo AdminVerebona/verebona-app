@@ -65,7 +65,6 @@ export async function namingTablesReady(): Promise<boolean> {
   pret = !!r?.ok;
   return pret;
 }
-export function resetNamingTablesReady(): void { pret = null; }
 
 /**
  * Documents du compte éligibles au nommage : analysés par T1 (état abouti),
@@ -217,7 +216,7 @@ export async function loadNamingDocsByIds(accountId: number, ids: readonly numbe
 
 // ── Index persistant (lot 72B, E1 / E4) ────────────────────────────────────
 
-export interface MemberRow {
+interface MemberRow {
   id: number; keys: string[]; hash: string;
   /** Lot 76B (C6) : cache des indices textuels et version d'extraction correspondante. Absents : inchangés. */
   textKeys?: string[]; textVersion?: string;
@@ -659,7 +658,7 @@ export interface RenameEvent {
   retryOf?: number | null;
 }
 
-export function renameIdempotencyKey(e: Pick<RenameEvent, 'accountId' | 'fileId' | 'expectedName' | 'proposedName' | 'callKey' | 'outcome'>): string {
+function renameIdempotencyKey(e: Pick<RenameEvent, 'accountId' | 'fileId' | 'expectedName' | 'proposedName' | 'callKey' | 'outcome'>): string {
   return createHash('sha256').update(JSON.stringify([e.accountId, e.fileId, e.expectedName, e.proposedName, e.callKey, e.outcome === 'APPLIED'])).digest('hex');
 }
 
@@ -684,7 +683,7 @@ export async function recordRenameEvent(e: RenameEvent): Promise<number | null> 
 }
 
 /** Décision persistée non appliquée, ou dont l'écriture a échoué : à reprendre sans appel IA (E6, C1, C2). */
-export interface PendingWrite extends RenameEvent { eventId: number; retryAttempts: number; validatedName: string; pendingOutcome: 'FAILED' | 'DECIDED' }
+interface PendingWrite extends RenameEvent { eventId: number; retryAttempts: number; validatedName: string; pendingOutcome: 'FAILED' | 'DECIDED' }
 
 export async function loadPendingWrites(accountId: number, groupKey?: string): Promise<PendingWrite[]> {
   const rows = (await pgClient.unsafe(
@@ -704,15 +703,6 @@ export async function loadPendingWrites(accountId: number, groupKey?: string): P
     callKey: String(r.call_key), validatedName: String(r.validated_name), retryAttempts: Number(r.retry_attempts ?? 0),
     pendingOutcome: r.outcome === 'DECIDED' ? 'DECIDED' : 'FAILED',
   }));
-}
-
-/** Écritures en attente de reprise du compte (reporting exact, E6 / E8 ; décisions persistées non appliquées comprises, C1). */
-export async function countPendingWrites(accountId: number): Promise<number> {
-  const [r] = (await pgClient.unsafe(
-    `SELECT count(*)::int AS n FROM document_rename_events WHERE account_id = $1 AND ${PENDING}`,
-    [accountId] as never[],
-  )) as unknown as Array<{ n: number }>;
-  return Number(r?.n ?? 0);
 }
 
 /** Lot 76B (C1) : écritures restantes par lot, lues en base — tous passages confondus. */
@@ -781,7 +771,7 @@ export async function resolveDecisionConflict(accountId: number, eventId: number
 }
 
 /** Décision validée à persister avant son application (C2). */
-export interface ChunkDecision { event: RenameEvent & { validatedName: string } }
+interface ChunkDecision { event: RenameEvent & { validatedName: string } }
 
 /**
  * Lot 76B (C2) — persistance d'une partie d'examen, dans UNE transaction :
@@ -809,7 +799,7 @@ export async function persistChunk(accountId: number, state: SaveGroupState, dec
   return out;
 }
 
-export type ApplyResult =
+type ApplyResult =
   | { status: 'APPLIED'; eventId: number }
   | { status: 'CONFLICT'; reason: 'CONCURRENT_USER_RENAME' | 'CONCURRENT_NAME_CHANGE' | 'DOCUMENT_GONE'; currentName: string | null }
   | { status: 'ALREADY_APPLIED' };
@@ -898,12 +888,3 @@ export async function namingCallsWindow(accountId: number): Promise<{ count: num
   return { count: Number(r?.n ?? 0), oldestAt: iso(r?.oldest) };
 }
 
-/** Appels DOCUMENT_NAMING du compte sur 24 h glissantes (traces de la passerelle). */
-export async function namingCallsLastDay(accountId: number): Promise<number> {
-  const [r] = (await pgClient.unsafe(
-    `SELECT count(*)::int AS n FROM ai_usage_event
-      WHERE account_id = $1 AND operation_code = 't3_document_naming' AND created_at > now() - interval '24 hours'`,
-    [accountId] as never[],
-  ).catch(() => [{ n: 0 }])) as unknown as Array<{ n: number }>;
-  return Number(r?.n ?? 0);
-}

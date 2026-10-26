@@ -62,7 +62,7 @@ export interface DiagBundle {
   totalBytes: number;
 }
 
-export interface GenerateOptions {
+interface GenerateOptions {
   adminUserId: number;
   now?: () => Date;
   /** TCO : date du jour imposée (tests). */
@@ -185,7 +185,7 @@ const addTo = <K, T>(m: Map<K, T[]>, k: K, v: T) => { if (!m.has(k)) m.set(k, []
 // ── Production d'un fichier : statut, intégrité ─────────────────────────────
 
 /** Fichier planifié de l'archive : produit À LA DEMANDE, dans l'ordre. */
-export interface PlannedEntry {
+interface PlannedEntry {
   path: string;
   produce: (sink: TextSink) => Promise<void>;
 }
@@ -856,7 +856,7 @@ export async function withDiagnosticPlan<T>(req: DiagRequest, opts: GenerateOpti
 }
 
 /** Produit tous les fichiers dans l'ordre vers `open(path)` ; rend le manifeste et le rapport. */
-export async function producePlan(plan: DiagPlan, open: (path: string) => TextSink & { close?: () => Promise<void> | void }): Promise<{ manifest: DiagManifest; report: string }> {
+async function producePlan(plan: DiagPlan, open: (path: string) => TextSink & { close?: () => Promise<void> | void }): Promise<{ manifest: DiagManifest; report: string }> {
   for (const e of plan.entries) {
     const sink = open(e.path);
     await e.produce(sink);
@@ -892,7 +892,3 @@ export async function previewPlan(plan: DiagPlan): Promise<{ manifest: DiagManif
   return { manifest, report, files: sizes };
 }
 
-/** Aperçu (consultation BO) : génération complète SANS conserver le contenu — manifeste, rapport, tailles. */
-export async function previewDiagnostic(req: DiagRequest, opts: GenerateOptions): Promise<{ manifest: DiagManifest; report: string; files: Array<{ path: string; bytes: number }> }> {
-  return withDiagnosticPlan(req, opts, (plan) => previewPlan(plan));
-}

@@ -15,7 +15,7 @@ import type { OrchestratorPorts } from './assistant-orchestrator.service';
 import { inputDeReprise, traceClarification, type IssueClarification } from './clarification.service';
 import { routeForIntent } from './intent-router.service';
 
-export type SuiteClarification =
+type SuiteClarification =
   | { kind: 'result'; result: AssistantRunResult }
   | { kind: 'rejected'; code: 'CLARIFICATION_EXPIRED' | 'CLARIFICATION_REJECTED'; message: string }
   | { kind: 'abandoned' };

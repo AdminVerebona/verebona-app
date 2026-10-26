@@ -13,13 +13,12 @@ import {
 } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getAgendaItemById, type AgendaItemFull } from './AgendaQueryService';
-import {
-  writeAgendaLinks, validateAgendaWrite, syncPurchaseDate, AgendaValidationError, type AgendaItemValues,
+import { validateAgendaWrite, syncPurchaseDate, AgendaValidationError, type AgendaItemValues,
 } from './write-agenda-item';
 import { upsertAgendaItem, agendaItemValues, type AgendaUpsertInput } from './agenda-write-primitive';
 import { resolveNoDeadlineWrite } from '@/lib/agenda/no-deadline';
 
-export interface CreateAgendaItemInput {
+interface CreateAgendaItemInput {
   title: string;
   description?: string | null;
   startDate?: string | null;
@@ -49,23 +48,7 @@ export interface CreateAgendaItemInput {
   noDeadline?: boolean;
 }
 
-export type UpdateAgendaItemInput = Partial<CreateAgendaItemInput>;
-
-/**
- * Liaisons d'un élément (état complet). Conservé pour compatibilité ; la
- * primitive `writeAgendaItem` porte désormais l'écriture (CDC 15 T4-09).
- */
-export async function updateAgendaLinks(
-  tx: any,
-  agendaItemId: number,
-  assetIds: number[],
-  fileIds: number[],
-  substructureIds: number[],
-  equipmentIds: number[],
-  accountId: number,
-): Promise<void> {
-  await writeAgendaLinks(tx, agendaItemId, { assetIds, fileIds, substructureIds, equipmentIds }, 'replace', accountId);
-}
+type UpdateAgendaItemInput = Partial<CreateAgendaItemInput>;
 
 export async function createAgendaItem(
   input: CreateAgendaItemInput,
@@ -284,7 +267,7 @@ export async function updateAgendaItem(
  * élément (même producteur que le balayage, déclencheur USER). Ne fait
  * jamais échouer l'écriture : le balayage horaire reste le filet.
  */
-export async function refreshAgendaDateCard(accountId: number, id: number): Promise<void> {
+async function refreshAgendaDateCard(accountId: number, id: number): Promise<void> {
   try {
     const { produceAgendaActions } = await import('@/services/to-process/producers.service');
     await produceAgendaActions(accountId, { trigger: 'USER', only: [id] });

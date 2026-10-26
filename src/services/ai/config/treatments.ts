@@ -38,10 +38,7 @@ export type Treatment = (typeof TREATMENTS)[number];
 
 /** Traitements retirés : présents dans l'historique seulement, jamais recréés. */
 export const RETIRED_TREATMENTS = ['T5'] as const;
-export type RetiredTreatment = (typeof RETIRED_TREATMENTS)[number];
-
-/** Code de traitement lu en base : courant OU retiré (historique). */
-export type HistoricalTreatment = Treatment | RetiredTreatment;
+type RetiredTreatment = (typeof RETIRED_TREATMENTS)[number];
 
 export function isRetiredTreatment(value: unknown): value is RetiredTreatment {
   return typeof value === 'string' && (RETIRED_TREATMENTS as readonly string[]).includes(value);
@@ -58,7 +55,7 @@ export function isTechnicalUseCase(useCaseCode: string): boolean {
   return (TECHNICAL_USE_CASES as readonly string[]).includes(useCaseCode);
 }
 
-export interface TreatmentDefinition {
+interface TreatmentDefinition {
   code: Treatment;
   useCaseCode: AiUseCaseCode;
   label: string;

@@ -48,7 +48,7 @@ import { splitPipe } from './field-validation';
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-export interface CompatAdapter {
+interface CompatAdapter {
   id: string;
   from: number;
   to: number;
@@ -58,7 +58,7 @@ export interface CompatAdapter {
   apply(value: Obj): Obj;
 }
 
-export interface OutputContract {
+interface OutputContract {
   /** Nom du schéma au référentiel (`outputSchema` de l'opération). */
   name: string;
   /** Libellé de l'opération principale (`t1_analyze_document`). */
@@ -194,7 +194,7 @@ function candidateOf(c: Obj, i: number): Obj {
   };
 }
 
-export const T1_V3_TO_V4: CompatAdapter = {
+const T1_V3_TO_V4: CompatAdapter = {
   id: 't1_v3_to_v4',
   from: 3,
   to: 4,

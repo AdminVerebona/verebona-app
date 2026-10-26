@@ -21,7 +21,7 @@
 import { publicSiteUrl } from '@/lib/external-urls';
 
 /** Connexion, dans l'application (même origine). */
-export const LOGOUT_IN_APP_PATH = '/login';
+const LOGOUT_IN_APP_PATH = '/login';
 
 /**
  * Délai avant le repli : une navigation vers le site vitrine qui démarre
@@ -45,7 +45,7 @@ export function isNativeAppShell(w: Pick<LogoutExitWindow, 'location' | 'Capacit
 }
 
 /** Destination après déconnexion. */
-export function logoutExitTarget(w: Pick<LogoutExitWindow, 'location' | 'Capacitor'>): string {
+function logoutExitTarget(w: Pick<LogoutExitWindow, 'location' | 'Capacitor'>): string {
   return isNativeAppShell(w) ? LOGOUT_IN_APP_PATH : publicSiteUrl('/');
 }
 

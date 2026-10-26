@@ -29,9 +29,9 @@ import { emit } from '@/lib/notifications';
 import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 
 /** Taille maximale d'un lot annoncé (au-delà, les identifiants sont ignorés). */
-export const MAX_UPLOAD_NOTIFICATION_IDS = 500;
+const MAX_UPLOAD_NOTIFICATION_IDS = 500;
 
-export interface UploadNotificationInput {
+interface UploadNotificationInput {
   userId: number;
   accountId: number;
   fileIds: unknown;
@@ -39,7 +39,7 @@ export interface UploadNotificationInput {
   lotId?: unknown;
 }
 
-export interface UploadNotificationResult {
+interface UploadNotificationResult {
   emitted: boolean;
   count: number;
 }

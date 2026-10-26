@@ -22,7 +22,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type Stripe from 'stripe';
-import { getStripeServer, getStripeCatalogContext, getStripeKeyMode } from '@/lib/stripe-client';
+import { getStripeServer, getStripeCatalogContext } from '@/lib/stripe-client';
 import {
   lookupKeyFor,
   periodOfInterval,
@@ -72,7 +72,7 @@ export function isStripeTransient(error: unknown): boolean {
   return typeof e?.statusCode === 'number' && (e.statusCode >= 500 || e.statusCode === 429);
 }
 
-export function isStripeMissing(error: unknown): boolean {
+function isStripeMissing(error: unknown): boolean {
   const e = error as { code?: string; statusCode?: number };
   return e?.code === 'resource_missing' || e?.statusCode === 404;
 }
@@ -239,7 +239,3 @@ export class PriceRecognitionError extends Error {
   }
 }
 
-/** Mode du contexte courant (utilitaire de diagnostic). */
-export function currentMode(): 'test' | 'live' | null {
-  return getStripeKeyMode(process.env.STRIPE_SECRET_KEY);
-}

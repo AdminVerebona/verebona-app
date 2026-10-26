@@ -38,8 +38,7 @@
  */
 import { assetCategoryLabel, assetNameGrammar, type GrammaticalGender } from '@/lib/asset-taxonomy';
 import type { AgendaDateRole } from '@/services/agenda/agenda-date-role';
-
-const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
+import { plain } from '@/services/verebona-assistant/core/routing-text';
 const mots = (s: string) => plain(s).split(/[^a-z0-9]+/).filter(Boolean);
 
 /** Mots-outils : jamais un indice d'identité du bien. */
@@ -137,7 +136,7 @@ function minusculeInitiale(label: string): string {
   return label.charAt(0).toLocaleLowerCase('fr') + label.slice(1);
 }
 
-export interface DeadlineLabelInput {
+interface DeadlineLabelInput {
   title: string;
   assetName?: string | null;
   /** Autres données du bien permettant de reconnaître sa désignation (catégorie…). */
@@ -177,7 +176,7 @@ export function deadlineDisplayLabel({ title, assetName, assetTerms = [] }: Dead
 
 // ── 2. Phrases ───────────────────────────────────────────────────────────────
 
-export interface DeadlineWordingItem {
+interface DeadlineWordingItem {
   title: string;
   assetName: string | null;
   /** Famille (`assets.category`) et catégorie (`assets.subtype`) du bien, si connues. */
@@ -213,11 +212,6 @@ function parts(i: DeadlineWordingItem): Parts {
     bien: grammaire && artBien ? { de: `${de(artBien)}${grammaire.name}`, ref: `${artBien}${grammaire.name}` } : null,
     assetName: i.assetName?.trim() || null,
   };
-}
-
-/** Lot 55A : le libellé tel qu'il s'écrit en milieu de phrase (« assurance »), sans article. */
-export function deadlinePhraseLabel(i: DeadlineWordingItem): string {
-  return parts(i).label;
 }
 
 /** Le libellé, sans article, avec sa majuscule (boutons « Voir « Contrôle technique » »). */

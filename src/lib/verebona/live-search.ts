@@ -84,7 +84,7 @@ export function toLiveResults(q: string, rows: ApiSearchRow[] | null | undefined
 }
 
 /** Nature affichée de chaque suggestion. */
-export const LIVE_KIND_LABELS: Readonly<Record<LiveResult['kind'], string>> = {
+const LIVE_KIND_LABELS: Readonly<Record<LiveResult['kind'], string>> = {
   nav: 'Page', asset: 'Bien', document: 'Document', agenda: 'Échéance', equipment: 'Équipement', room: 'Pièce',
 };
 

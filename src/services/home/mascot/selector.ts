@@ -86,7 +86,7 @@ function familyOfCode(code: string): MascotSubject['sourceFamily'] | null {
  * question d'analyse. Les « À traiter » (niveau 2, MASC2) n'excluent rien :
  * « Ou demandez-moi » reste indépendant de la file.
  */
-export function eligibleQuestions(
+function eligibleQuestions(
   catalog: readonly CatalogQuestion[],
   shown: MascotSubject[],
   visibleSecondaries: MascotSecondary[] = [],
@@ -115,7 +115,7 @@ export function eligibleQuestions(
  * n'est ajouté pour « remplir » (UI-04).
  */
 /** Places des éléments secondaires (UX-007) : 3 au plus, 5 actions au total. */
-export function secondaryPlaces(subjects: MascotSubject[]): number {
+function secondaryPlaces(subjects: MascotSubject[]): number {
   const actionsSujets = subjects.reduce((n, s) => n + s.actions.length, 0);
   return Math.max(0, Math.min(MAX_SECONDARIES, MAX_ACTIONS_TOTAL - actionsSujets));
 }

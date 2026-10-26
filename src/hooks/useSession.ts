@@ -87,13 +87,3 @@ export function useSession(
     refetch,
   };
 }
-
-export function useIsAdmin(): boolean {
-  const { user } = useSession();
-  return user?.role === 'ADMIN';
-}
-
-export function useHasPlan(plan: 'STANDARD' | 'PREMIUM' | 'PREMIUM_DUO' | 'PREMIUM_PRO'): boolean {
-  const { user } = useSession();
-  return (user?.subscription.plan || '').toUpperCase() === plan;
-}

@@ -46,10 +46,10 @@ import type postgres from 'postgres';
 import { AI_JOB_REFS_SQL, CROSS_ACCOUNT_CHECKS, readOnlyDetectionExecutor, type CrossAccountCheck, type DetectionExecutor } from './detection';
 
 export type RemediationFamily = CrossAccountCheck['family'];
-export type RemediationMode = 'nullify' | 'status' | 'delete';
+type RemediationMode = 'nullify' | 'status' | 'delete';
 
 /** Une table corrigée pour une catégorie. */
-export interface RemediationPart {
+interface RemediationPart {
   table: string;
   /** Clé primaire (colonnes entières). */
   pk: readonly string[];
@@ -66,7 +66,7 @@ export interface RemediationPart {
   still?: string;
 }
 
-export interface RemediationSpec {
+interface RemediationSpec {
   code: string;
   family: RemediationFamily;
   parts: readonly RemediationPart[];
@@ -402,7 +402,7 @@ export const REMEDIATION_SPECS: readonly RemediationSpec[] = [
 
 export const REMEDIATION_FAMILIES: readonly RemediationFamily[] = ['documents', 'fournisseurs', 'evenements', 'agenda', 'preuves', 'a_traiter', 'jobs', 'operations'];
 
-export function remediationSpec(code: string): RemediationSpec | null {
+function remediationSpec(code: string): RemediationSpec | null {
   return REMEDIATION_SPECS.find((s) => s.code === code) ?? null;
 }
 
@@ -514,7 +514,7 @@ export async function readRemediationJournal(q: Q, limit = 20): Promise<Remediat
 
 // ── Correction (simulation / application) ───────────────────────────────────
 
-export interface RemediationCategoryResult {
+interface RemediationCategoryResult {
   code: string;
   candidates: number;
   /** Corrigées (application) ou à corriger (simulation). */
@@ -549,7 +549,7 @@ export interface RemediationReport {
   postCheck?: { at: string; remaining: Record<string, number>; incomplete: string[] };
 }
 
-export const REMEDIATION_BATCH = 2_000;
+const REMEDIATION_BATCH = 2_000;
 const SAMPLES = 20;
 
 class Simulation extends Error {}
@@ -562,7 +562,7 @@ const pkWhere = (part: Pick<RemediationPart, 'pk'>, param: string) =>
   part.pk.map((c) => `${ident(c)} = (${param}::jsonb ->> '${c}')::bigint`).join(' AND ');
 const refText = (table: string, rowPk: Record<string, unknown>) => `${table}(${Object.entries(rowPk).map(([k, v]) => `${k}=${v}`).join(', ')})`;
 
-export interface RemediationRunOptions {
+interface RemediationRunOptions {
   family: RemediationFamily;
   apply: boolean;
   accountId?: number | null;

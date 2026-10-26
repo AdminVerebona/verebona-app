@@ -64,7 +64,7 @@ import { canReplacePrincipal, mayDesignatePrincipal, planLinkAgendaItems, type O
 import { currentPrincipal, recomputePrincipal as recompute, stripPrincipalLinks, type PrincipalRecompute } from './principal';
 import { drizzleRunner, intArray, lockGroupingAccount, type GroupingRunner } from './runner';
 
-export type GroupingErrorCode =
+type GroupingErrorCode =
   | 'ITEM_NOT_FOUND' | 'OPERATION_NOT_FOUND' | 'OPERATION_INACTIVE' | 'CROSS_ACCOUNT' | 'LINKED_ELSEWHERE'
   | 'SESSION_REQUIRED' | 'SAME_ITEM' | 'MERGE_REFUSED' | 'DOCUMENT_NOT_FOUND' | 'NOT_GROUPED'
   /** Lot 86D : retrait automatique d'une provenance MANUAL_DIRECT demandé (refusé). */
@@ -87,7 +87,7 @@ export interface GroupingContext {
   session?: WriteSession;
 }
 
-export function groupingContext(session: WriteSession, accountId: number): GroupingContext {
+function groupingContext(session: WriteSession, accountId: number): GroupingContext {
   return { runner: drizzleRunner(session.tx), accountId, actorUserId: session.actorUserId, correlationId: session.correlationId, session };
 }
 
@@ -154,7 +154,7 @@ function requireSession(ctx: GroupingContext, what: string): { session: WriteSes
 
 // ── Éléments d'agenda (§6.1, §11) ──────────────────────────────────────────
 
-export interface AttachAgendaInput {
+interface AttachAgendaInput {
   operationId: number;
   itemId: number;
   /** Rôle voulu ; défaut : rôle actuel dans cette Opération, sinon RELATED. */
@@ -165,7 +165,7 @@ export interface AttachAgendaInput {
   move?: boolean;
 }
 
-export interface AttachAgendaResult {
+interface AttachAgendaResult {
   changed: boolean;
   role: OperationRole | null;
   skipped?: 'USER_REJECTED' | 'LINKED_ELSEWHERE' | 'PRINCIPAL_PROTECTED';
@@ -236,7 +236,7 @@ export async function attachAgendaItem(ctx: GroupingContext, p: AttachAgendaInpu
   return { changed, role, ...(skipped ? { skipped } : {}) };
 }
 
-export interface DetachAgendaInput {
+interface DetachAgendaInput {
   itemId: number;
   /** Détache seulement si l'élément est ENCORE lié à cette Opération (null : quelle qu'elle soit). */
   operationId?: number | null;
@@ -386,15 +386,9 @@ async function removeFileFromOperationItems(ctx: GroupingContext, operationId: n
   await removeFileLinkProvenance(ctx.runner, items.map((i) => Number(i.id)), [fileId], 'OPERATION_PRINCIPAL');
 }
 
-/** Lien propagé vers le principal retiré par l'utilisateur : refus mémorisé (la propagation ne le recrée plus). */
-export async function rejectPrincipalLink(ctx: GroupingContext, p: { operationId: number; fileId: number; reasonCode: string }): Promise<void> {
-  await lockGroupingAccount(ctx.runner, ctx.accountId);
-  await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: p.operationId, subject: 'PRINCIPAL_LINK', entityId: p.fileId, decision: 'REJECTED', reasonCode: p.reasonCode });
-}
-
 // ── Lien manuel Document ↔ Agenda (§8.1, AC01 — lot 84B) ────────────────
 
-export interface LinkDocumentResult {
+interface LinkDocumentResult {
   /** CREATE : Opération créée ; JOIN_ITEM : l'élément avait la sienne ; JOIN_DOCUMENT : celle du document est rejointe. */
   case: 'CREATE' | 'JOIN_ITEM' | 'JOIN_DOCUMENT';
   operationId: number;
@@ -469,7 +463,7 @@ export async function detachDocumentFromAgendaGroup(ctx: GroupingContext, p: { i
 
 // ── Lot 86D : détachement individuel d'un lien Document ↔ Agenda ──────────
 
-export interface DetachLinkResult {
+interface DetachLinkResult {
   /** Le lien existait et a été retiré (toutes provenances). */
   removed: boolean;
   /** Provenances que portait le lien retiré. */
@@ -563,7 +557,7 @@ export async function withdrawAutomaticLinkProvenances(
 
 // ── Pièces (V-Q6 : la Pièce existante, jamais un second modèle) ────────────
 
-export interface AttachRoomInput {
+interface AttachRoomInput {
   operationId: number;
   substructureId: number;
   origin: 'USER' | 'T3';
@@ -683,7 +677,7 @@ export async function detachAsset(ctx: GroupingContext, p: { operationId: number
 
 // ── Agenda ↔ Agenda (§8.2, §8.3) ───────────────────────────────────────────
 
-export interface LinkAgendaResult {
+interface LinkAgendaResult {
   case: 'CREATE' | 'ATTACH' | 'NOOP' | 'MERGE';
   operationId: number;
 }
@@ -756,7 +750,7 @@ export async function mergeOperations(ctx: GroupingContext, p: { absorbedId: num
  * justifiée (aucune source de soutien) → invalidée, objets sources conservés ;
  * sinon principal et propagation recalculés.
  */
-export async function recomputeOperation(ctx: GroupingContext, operationId: number, reasonCode: string): Promise<{ operationId: number; invalidated: boolean }> {
+async function recomputeOperation(ctx: GroupingContext, operationId: number, reasonCode: string): Promise<{ operationId: number; invalidated: boolean }> {
   const { repo } = requireSession(ctx, 'recomputeOperation');
   await lockGroupingAccount(ctx.runner, ctx.accountId);
   const op = await loadOperation(ctx, operationId, { allowInactive: true });

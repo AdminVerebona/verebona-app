@@ -27,14 +27,14 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export interface ColumnExclusionRule {
+interface ColumnExclusionRule {
   code: string;
   test: RegExp;
   motif: string;
 }
 
 /** Colonnes jamais sélectionnées, quelle que soit la table (ordre : première règle qui s'applique). */
-export const DIAG_EXCLUDED_COLUMN_RULES: readonly ColumnExclusionRule[] = [
+const DIAG_EXCLUDED_COLUMN_RULES: readonly ColumnExclusionRule[] = [
   { code: 'MOT_DE_PASSE', test: /pass(word|wd)|mot_de_passe/i, motif: 'mot de passe ou empreinte de mot de passe' },
   { code: 'JETON', test: /(^|_)(token|token_hash|tokens_hash)$|(access|refresh|invite|reset|session|share|verification|calendar_share|unsubscribe|magic|api)_?token/i, motif: 'jeton d’authentification ou de partage' },
   { code: 'SESSION', test: /^(session_id|session_key|checkout_session_id|sid)$/i, motif: 'identifiant de session' },
@@ -51,7 +51,7 @@ export const DIAG_EXCLUDED_COLUMN_RULES: readonly ColumnExclusionRule[] = [
  * (curseur, échantillon d'erreurs, liste de comptes) — ces colonnes ne sont
  * jamais sélectionnées.
  */
-export const DIAG_TABLE_OMITTED_COLUMNS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+const DIAG_TABLE_OMITTED_COLUMNS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   coherence_campaigns: {
     scope_account_ids: 'isolation : liste des comptes de la campagne',
     cursor_account_id: 'isolation : compte en cours de traitement',
@@ -75,7 +75,7 @@ export const DIAG_TABLE_OMITTED_COLUMNS: Readonly<Record<string, Readonly<Record
  * Colonnes à CONTENU RESTREINT : longueur + SHA-256, jamais le contenu (en
  * plus des règles de contenu brut du masquage existant `exportMaskingRule`).
  */
-export const DIAG_CONTENT_COLUMN_TEST = /^(prompt_text|response_raw|pages|ocr_pages|variables|attachments|request_params|provider_steps|actions_payload|snapshot_payload|output_payload|manifest_payload|messages|raw_output|extracted_output|parsed_output|full_text|extracted_text|raw_text|ocr_text|content_base64|raw_response(_json)?|response_body|file_content|row_data)$/i;
+const DIAG_CONTENT_COLUMN_TEST = /^(prompt_text|response_raw|pages|ocr_pages|variables|attachments|request_params|provider_steps|actions_payload|snapshot_payload|output_payload|manifest_payload|messages|raw_output|extracted_output|parsed_output|full_text|extracted_text|raw_text|ocr_text|content_base64|raw_response(_json)?|response_body|file_content|row_data)$/i;
 
 /** Motif d'exclusion d'une colonne (null : colonne exportée). */
 export function excludedColumnMotif(table: string, column: string): { code: string; motif: string } | null {

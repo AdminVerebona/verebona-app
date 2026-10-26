@@ -98,7 +98,7 @@ export type PublicCatalogReason =
   | 'PUBLICATION_FAILED'
   | 'PRICES_UNAVAILABLE';
 
-export const CATALOG_REASONS: Readonly<Record<PublicCatalogReason | 'EXPECTED_MODE_MISSING' | 'MODE_MISMATCH' | 'BACKFILL_PENDING' | 'WAITING_INSTANCES' | 'PREVIOUS_FAILURE', ReasonExplanation>> = {
+const CATALOG_REASONS: Readonly<Record<PublicCatalogReason | 'EXPECTED_MODE_MISSING' | 'MODE_MISMATCH' | 'BACKFILL_PENDING' | 'WAITING_INSTANCES' | 'PREVIOUS_FAILURE', ReasonExplanation>> = {
   STRIPE_NOT_CONFIGURED: {
     label: 'STRIPE_SECRET_KEY absente ou illisible',
     auto: 'Aucune (rien ne peut être lu chez Stripe).',

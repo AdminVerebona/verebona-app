@@ -342,7 +342,7 @@ export function documentTypeStems(terms: QueryTerm[]): string[] {
   return out;
 }
 
-export type DocumentLinkFilter = 'linked' | 'unlinked';
+type DocumentLinkFilter = 'linked' | 'unlinked';
 export type DocumentAnalysisFilter = 'IN_ANALYSIS' | 'ANALYSIS_FAILED' | 'TO_VALIDATE' | 'ANALYZED' | 'NOT_ANALYZED';
 
 /** Filtres structurés d'une recherche de documents (T2-14). */

@@ -45,7 +45,7 @@ async function getPublicKey(): Promise<string | null> {
   }
 }
 
-export interface SubscribeResult {
+interface SubscribeResult {
   ok: boolean;
   permission: PushPermission;
   reason?: 'unsupported' | 'denied' | 'no_public_key' | 'error';

@@ -84,7 +84,7 @@ import {
 import type { CustomerPortalConfigStripe } from './customer-portal-configuration.service';
 
 /** Sous-ensemble du client Stripe utilisé (injectable dans les tests). */
-export interface ReminderStripe {
+interface ReminderStripe {
   subscriptions: { retrieve(id: string, params?: { expand?: string[] }): Promise<unknown> };
   invoices: { createPreview(params: { customer?: string; subscription?: string; schedule?: string }): Promise<unknown> };
   /** Lot 70B : configurations du portail (recherche, création, relecture de la configuration Verebona). */
@@ -103,7 +103,7 @@ const CLOSED_USER_STATUSES = new Set(['SUSPENDED', 'PENDING_DELETION', 'DELETED'
 /** Annulations définitives : jamais relancées (décision BO, échéance passée, retour arrière). */
 export const FINAL_CANCEL_REASONS = ['CHANNEL_DISABLED', 'TOO_LATE', 'ROLLBACK_NEUTRALIZED', 'ADMIN_ABANDONED'] as const;
 /** Lot 72F : tâche de réconciliation planifiée avec Stripe. */
-export const ANNUAL_RENEWAL_RECONCILE_TASK_CODE = 'subscription-annual-renewal-reconcile' as const;
+const ANNUAL_RENEWAL_RECONCILE_TASK_CODE = 'subscription-annual-renewal-reconcile' as const;
 /** Lot 72F : nouvelle vérification après une erreur Stripe (passage horaire suivant). */
 const STRIPE_RETRY_MS = 55 * 60_000;
 /** Lot 72F : historique borné par vérification. */
@@ -118,7 +118,7 @@ async function readSubscription(stripe: ReminderStripe, id: string): Promise<{ s
 
 // ── Bascule Stripe → Verebona (lot 72F : déclarée, jamais déduite) ─────────
 
-export interface SwitchState {
+interface SwitchState {
   /** Premier J−7 couvert par Verebona (lendemain de la désactivation Stripe). */
   coverageFrom: string | null;
   stripeRemindersDisabledAt: Date | null;
@@ -137,7 +137,7 @@ export interface SwitchState {
 
 const dateOrNull = (v: unknown): Date | null => (v == null ? null : new Date(v as string));
 
-export async function readSwitchState(): Promise<SwitchState> {
+async function readSwitchState(): Promise<SwitchState> {
   const [r] = await pgClient.unsafe<Record<string, unknown>[]>(
     `SELECT coverage_from::text AS coverage_from, stripe_reminders_disabled_at, switch_declared_at, switch_declared_by, rollback_at,
             last_reconcile_at, last_reconcile_note,
@@ -175,7 +175,7 @@ export interface SchedulerState {
   nextRunAt: string | null;
 }
 
-export async function readSchedulerState(code: string): Promise<SchedulerState> {
+async function readSchedulerState(code: string): Promise<SchedulerState> {
   const { isTaskEnabled } = await import('@/services/scheduling/scheduled-tasks.catalog');
   const [r] = await pgClient.unsafe<Record<string, unknown>[]>(
     `SELECT COALESCE((to_jsonb(t) ->> 'admin_disabled')::boolean, false) AS suspended,
@@ -245,7 +245,7 @@ export async function declareStripeRemindersDisabled(p: { adminId: number; disab
   return { ok: true, coverageFrom };
 }
 
-export type RollbackPhase = 'in_progress' | 'completed';
+type RollbackPhase = 'in_progress' | 'completed';
 
 /**
  * Lot 76D — élément empêchant la fin du retour arrière :
@@ -580,7 +580,7 @@ export function resetPortalCheckCache(): void { portalCheck = null; }
 
 // ── Tâche planifiée ──────────────────────────────────────────────────────────
 
-export interface AnnualRenewalRunResult {
+interface AnnualRenewalRunResult {
   /** Passage ignoré (hors fenêtre 8 h 30 – 20 h, portail inadapté). */
   skipped?: string;
   candidates: number;
@@ -739,7 +739,7 @@ function historyAppendSql(at: string, step: string, outcome: string, reason: str
              ORDER BY n LIMIT ${HISTORY_MAX}) x)`;
 }
 
-export interface CheckRecord {
+interface CheckRecord {
   key: string; accountId: number | null; subscriptionId: string; renewalDate: string; today: string;
   outcome: string; reason: string | null; jobId: number | null;
   /** Étape : STRIPE_CHECK, ENQUEUE, RECONCILE, BO_DECISION, ROLLBACK. */
@@ -775,7 +775,7 @@ export async function recordCheck(r: CheckRecord): Promise<void> {
  * Enregistre la demande (ou relance une demande annulée devenue de nouveau
  * pertinente : renouvellement réactivé…). Jamais deux demandes par clé.
  */
-export async function enqueueReminder(p: { accountId: number; ownerUserId: number; subscriptionId: string; renewalAt: Date; catchUp: boolean; now: Date }): Promise<{ outcome: 'ENQUEUED' | 'REVIVED' | 'DUPLICATE' | 'NO_RECIPIENT'; jobId: number | null; reason?: string }> {
+async function enqueueReminder(p: { accountId: number; ownerUserId: number; subscriptionId: string; renewalAt: Date; catchUp: boolean; now: Date }): Promise<{ outcome: 'ENQUEUED' | 'REVIVED' | 'DUPLICATE' | 'NO_RECIPIENT'; jobId: number | null; reason?: string }> {
   const renewalDate = parisDateOf(p.renewalAt);
   const key = annualRenewalDedupeKey(p.subscriptionId, renewalDate);
   const context = { accountId: p.accountId, subscriptionId: p.subscriptionId, renewalDate, renewalAt: iso(p.renewalAt), catchUp: p.catchUp };
@@ -812,7 +812,7 @@ export async function enqueueReminder(p: { accountId: number; ownerUserId: numbe
 
 // ── Construction de l'e-mail (revalidation juste avant l'envoi) ──────────────
 
-export type ReminderBuild =
+type ReminderBuild =
   | { ok: true; to: string; recipientUserId: number; variables: Record<string, string> }
   | { ok: false; reason: string; temporary?: boolean };
 
@@ -926,7 +926,7 @@ export async function buildAnnualRenewalReminder(
 
 // ── Lot 72F : décisions BO sur une couverture incertaine (bascule) ───────────
 
-export type CoverageDecision = 'SEND_VEREBONA' | 'STRIPE_CONFIRMED';
+type CoverageDecision = 'SEND_VEREBONA' | 'STRIPE_CONFIRMED';
 
 /**
  * Échéance « couverture incertaine » : l'administrateur a vérifié le rappel
@@ -972,7 +972,7 @@ export async function resolveCoverageUncertain(p: { key: string; decision: Cover
  * jamais « livré » sans confirmation du prestataire, jamais « accepté » pour
  * un e-mail désactivé, bloqué ou incertain.
  */
-export type ReminderState =
+type ReminderState =
   | 'WAITING' | 'EXCLUDED' | 'NO_RECIPIENT' | 'STRIPE_ERROR' | 'COVERAGE_UNCERTAIN' | 'DESYNC_RESYNCED' | 'DESYNC_UNRESOLVED' | 'STRIPE_ONLY'
   | 'PREPARED' | 'HELD' | 'SENDING' | 'ACCEPTED' | 'DELIVERED' | 'DELIVERY_PROBLEM' | 'TEMPORARY_FAILURE' | 'FINAL_FAILURE' | 'UNCERTAIN' | 'CANCELLED'
   /** Lot 76D. */
@@ -1018,7 +1018,7 @@ export function reminderStateOf(r: { outcome: string; job_status: string | null;
   }
 }
 
-export interface AnnualRenewalRecentRow {
+interface AnnualRenewalRecentRow {
   key: string;
   accountId: number | null;
   /** Abonnement Stripe (identifiant seul, jamais de client ni de lien). */
@@ -1038,7 +1038,7 @@ export interface AnnualRenewalRecentRow {
   neutralized: boolean;
 }
 
-export interface AnnualRenewalAnomaly {
+interface AnnualRenewalAnomaly {
   state: 'STRIPE_ERROR' | 'COVERAGE_UNCERTAIN' | 'DESYNC_UNRESOLVED' | 'STRIPE_ONLY' | 'UNCERTAIN' | 'FINAL_FAILURE' | 'OVERDUE' | 'HELD' | 'RECONCILE_ERROR';
   key: string | null;
   jobId: number | null;
@@ -1054,7 +1054,7 @@ export interface AnnualRenewalAnomaly {
 }
 
 /** Lot 76D : retour aux rappels Stripe (phase, éléments bloquants, compteurs). */
-export interface AnnualRenewalRollbackView extends Omit<RollbackResult, 'neutralized' | 'notCoveredByStripe'> {
+interface AnnualRenewalRollbackView extends Omit<RollbackResult, 'neutralized' | 'notCoveredByStripe'> {
   status: RollbackPhase;
   startedAt: string | null;
   completedAt: string | null;
@@ -1063,7 +1063,7 @@ export interface AnnualRenewalRollbackView extends Omit<RollbackResult, 'neutral
   lastCheckAt: string | null;
 }
 
-export interface AnnualRenewalOverview {
+interface AnnualRenewalOverview {
   coverageFrom: string | null;
   /** Demandes par statut sur les 30 derniers jours. */
   jobs: Record<string, number>;
@@ -1208,7 +1208,3 @@ async function rollbackViewOf(sw: SwitchState, now: Date): Promise<AnnualRenewal
   };
 }
 
-/** Prochain J−7 (pour les tests et l'aide BO). */
-export function reminderDateFor(renewalAt: Date): string {
-  return addDaysToDateStr(parisDateOf(renewalAt), -7);
-}

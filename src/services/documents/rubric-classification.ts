@@ -50,7 +50,7 @@ export interface DocumentClassification {
   typeUserValidated: boolean;
 }
 
-export interface ClassificationChangeInput {
+interface ClassificationChangeInput {
   current: DocumentClassification;
   /** Rubrique voulue. `undefined` = inchangée, `null` = retirée. */
   nextRubric?: RubricCode | null;
@@ -62,7 +62,7 @@ export interface ClassificationChangeInput {
   assetFamilies?: readonly AssetFamily[];
 }
 
-export interface ClassificationChangeOutcome {
+interface ClassificationChangeOutcome {
   result: DocumentClassification;
   /** Version du référentiel à inscrire avec la décision (§11.6). */
   referentialVersion: string;
@@ -70,16 +70,6 @@ export interface ClassificationChangeOutcome {
   changes: string[];
   /** Ce qui a été refusé, et pourquoi. */
   rejected: string[];
-}
-
-/** Le document est-il rangé ? §13.1 : dérivé, jamais stocké. */
-export function isFiled(classification: Pick<DocumentClassification, 'rubricCode'>): boolean {
-  return classification.rubricCode !== null;
-}
-
-/** §4.4 — « Sans rubrique » n'est pas une Rubrique, c'est une absence. */
-export function isUnfiled(classification: Pick<DocumentClassification, 'rubricCode'>): boolean {
-  return !isFiled(classification);
 }
 
 /**
@@ -241,25 +231,3 @@ export function applyClassificationChange(
   };
 }
 
-/**
- * Le Type « Autre » d'une Rubrique est-il un choix valide et définitif ?
- *
- * DOC-TYP-04 : « Type "Autre" choisi par l'utilisateur → Type valide ; aucune
- * action. » Il ne génère donc plus de complétion, mais reste susceptible de
- * recevoir une proposition plus précise à arbitrer lors d'une évolution du
- * référentiel (§5.2, dernier alinéa).
- */
-export function isSettledOtherType(classification: DocumentClassification): boolean {
-  const type = getDocumentType(classification.documentTypeCode);
-  return !!type?.userOnly && classification.typeUserValidated;
-}
-
-/**
- * Le document doit-il être retraité après une évolution du référentiel ?
- *
- * §11.6 : « Tous les documents sont retraités, pas seulement ceux sans Type ou
- * avec Autre. » Le critère est donc la version, pas l'état de classement.
- */
-export function needsReprocessing(storedVersion: string | null | undefined): boolean {
-  return storedVersion !== REFERENTIAL_VERSION;
-}

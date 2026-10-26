@@ -22,7 +22,7 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 
 export const WRITE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'] as const;
-export type WriteMethod = (typeof WRITE_METHODS)[number];
+type WriteMethod = (typeof WRITE_METHODS)[number];
 
 /**
  * Gardes reconnues : export d'un module → condition d'appel. Chacune refuse
@@ -51,7 +51,7 @@ export const RECOGNIZED_GUARDS: ReadonlyArray<{ module: string; name: string; fi
   { module: '@/services/rooms/room-route', name: 'resolveRoomRoute', file: 'src/services/rooms/room-route.ts', requires: /resolveRoomRoute\([^;]*write:\s*true/ },
 ];
 
-export interface WriteHandler {
+interface WriteHandler {
   /** Chemin relatif à `src/app/api`, ex. `agenda/[id]/route.ts`. */
   route: string;
   method: WriteMethod;

@@ -20,7 +20,7 @@ import type { MasterCorpusResult } from './runner';
 
 export const FINGERPRINTS_PATH = join(__dirname, 'fingerprints.json');
 
-export interface FingerprintFile {
+interface FingerprintFile {
   /** Référence : master → empreinte SHA-256 du fichier du dépôt au dernier corpus vert. */
   masters: Record<string, string>;
 }

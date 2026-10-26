@@ -24,15 +24,15 @@
  */
 import type { RepresentationInput } from './contract';
 
-export interface RepresentationCapability {
+interface RepresentationCapability {
   available: boolean;
   /** Version du décideur (version de prompt) : entre dans la mémoire anti-rappel. */
   version: string | null;
   reason: 'AVAILABLE' | 'CONTRACT_PENDING' | 'DISABLED';
 }
 
-export interface RepresentationCall { accountId: number; operationId: number; sourceIds: number[]; input: RepresentationInput }
-export interface RepresentationAnswer { output: unknown; traceId: string | null }
+interface RepresentationCall { accountId: number; operationId: number; sourceIds: number[]; input: RepresentationInput }
+interface RepresentationAnswer { output: unknown; traceId: string | null }
 
 export interface RepresentationDecider {
   capability(): Promise<RepresentationCapability>;

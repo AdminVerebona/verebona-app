@@ -201,7 +201,7 @@ const V2_PRESTATION = /^(MAINTENANCE|REPAIR|WORKS)_/;
 const CANONIQUES_PRESTATION = new Set(['RAPPORT_ENTRETIEN']);
 
 /** Le type documentaire peut-il PROUVER un achat (preuve `completed` de type purchase) ? */
-export function provesPurchase(entry: DocumentCatalogEntry | undefined): boolean {
+function provesPurchase(entry: DocumentCatalogEntry | undefined): boolean {
   return Boolean(entry?.businessTypes.includes('purchase') && entry.completionProofs.some(
     (p) => p.establishes === 'completed' && (p.businessTypes ?? entry.businessTypes).includes('purchase'),
   ));
@@ -219,7 +219,7 @@ export function documentEntryOf(classification: {
   return resolveDocumentType(classification?.canonicalType) ?? resolveDocumentType(classification?.documentTypeCode);
 }
 
-export interface PurposeSignals {
+interface PurposeSignals {
   entry: DocumentCatalogEntry | undefined;
   documentTypeCode: string | null;
   /**
@@ -272,7 +272,7 @@ export function classifyPurpose(s: PurposeSignals): DocumentPurpose {
 /* ── Lot 38 — O0 : nature de la transaction, date d'acquisition explicite ── */
 
 /** Nature du justificatif pour les règles d'acquisition (CDC Opérations §11.1). */
-export type TransactionNature = 'PURCHASE' | 'PAYMENT_PROOF' | 'DEPOSIT_OR_CREDIT_NOTE';
+type TransactionNature = 'PURCHASE' | 'PAYMENT_PROOF' | 'DEPOSIT_OR_CREDIT_NOTE';
 
 /** Types V2 de preuve de paiement. */
 const V2_PAIEMENT = /(^ACQUISITION_PAYMENT$|_PAYMENT(_PROOF)?$)/;

@@ -16,7 +16,7 @@ import {
   detachEquipment, detachRoom, linkAgendaItems, linkDocumentToAgendaItem, releasePrincipal, withGroupingWrite, type GroupingContext,
 } from './service';
 
-export interface DrawerActionResult { action: GroupingAction; changed: boolean; operationId: number | null; detail?: string }
+interface DrawerActionResult { action: GroupingAction; changed: boolean; operationId: number | null; detail?: string }
 
 const R = (a: GroupingAction) => `USER_DRAWER_${a.toUpperCase().replace(/-/g, '_')}`;
 

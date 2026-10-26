@@ -50,7 +50,7 @@ import { MICROCOPY } from '@/lib/referential/v2/microcopy';
  */
 export const MAX_TODO_ITEMS = 2;
 /** Seule priorité affichée par la mascotte (MASC3). */
-export const MASCOT_TODO_PRIORITY = 'DO_FIRST' as const;
+const MASCOT_TODO_PRIORITY = 'DO_FIRST' as const;
 
 /**
  * Nom de la donnée visée, par règle (catalogue `PROCESSING_RULES`). Phrase

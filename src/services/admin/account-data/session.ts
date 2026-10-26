@@ -35,13 +35,13 @@ type Row = Record<string, unknown>;
 /** Taille d'un lot de lecture (pagination TECHNIQUE, jamais un plafond). */
 export const EXPORT_BATCH_ROWS = 500;
 /** Connexion libérée par PostgreSQL si le client cesse de lire pendant ce délai. */
-export const IDLE_IN_TRANSACTION_MS = 10 * 60_000;
-export const SNAPSHOT_ISOLATION = 'REPEATABLE READ, READ ONLY';
+const IDLE_IN_TRANSACTION_MS = 10 * 60_000;
+const SNAPSHOT_ISOLATION = 'REPEATABLE READ, READ ONLY';
 
 /** Parcours par lots d'une requête (curseur). */
-export type RowCursor = (sql: string, params: unknown[], batch?: number) => AsyncIterable<Row[]>;
+type RowCursor = (sql: string, params: unknown[], batch?: number) => AsyncIterable<Row[]>;
 
-export interface SnapshotInfo {
+interface SnapshotInfo {
   isolation: string;
   /** Instant de référence : début de la transaction (`now()`), ISO. */
   at: string;

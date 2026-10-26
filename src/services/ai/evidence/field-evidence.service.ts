@@ -21,7 +21,7 @@ import type { FieldEvidence, FieldEvidenceInput, EvidenceStatus, EvidenceTargetT
 import { fieldEvidenceCanonicalReady } from './canonical-columns';
 
 /** Vrai si l'entrée porte au moins une donnée du contrat enrichi (0219). */
-export function hasCanonicalExtension(i: FieldEvidenceInput): boolean {
+function hasCanonicalExtension(i: FieldEvidenceInput): boolean {
   return i.canonicalKey != null || i.canonicalUnit != null || i.rawValue != null || i.target != null
     || i.semanticEvent != null || i.recurrence != null || i.projectionOrigin != null
     || i.projectionRule != null || i.analysisRunId != null;
@@ -145,7 +145,7 @@ export async function recordEvidence(input: FieldEvidenceInput): Promise<number>
 }
 
 /** Cible demandée à `getActiveEvidence` ; absente = le bien lui-même. */
-export interface EvidenceTargetFilter {
+interface EvidenceTargetFilter {
   type: Exclude<EvidenceTargetType, 'ASSET'>;
   entityId: number;
 }
@@ -290,10 +290,10 @@ export type EvidenceWithdrawalReason =
  * un lien web (ligne `asset_files` `is_web_link`, analysée avec
  * `sourceIds: [asset_files.id]` — CDC 15 R4, DOD-06).
  */
-export const ASSET_FILE_SOURCE_TYPES = ['document', 'web_link'] as const;
-export const ASSET_FILE_SOURCE_TYPES_SQL = ASSET_FILE_SOURCE_TYPES.map((t) => `'${t}'`).join(', ');
+const ASSET_FILE_SOURCE_TYPES = ['document', 'web_link'] as const;
+const ASSET_FILE_SOURCE_TYPES_SQL = ASSET_FILE_SOURCE_TYPES.map((t) => `'${t}'`).join(', ');
 
-export interface WithdrawEvidenceInput {
+interface WithdrawEvidenceInput {
   accountId: number;
   /** Sources `asset_files.id` (preuves `document` ET `web_link`, R4) dont les preuves sont retirées. */
   sourceIds?: number[];
@@ -391,7 +391,7 @@ export async function linkReplacements(accountId: number, evidenceIds: number[])
 
 // ── Cycle de vie à la réanalyse (CDC 15 §14.4, T3-03) ──────────────────────
 
-export interface SupersedeBySourceInput {
+interface SupersedeBySourceInput {
   accountId: number;
   sourceType: FieldEvidenceInput['sourceType'];
   sourceId: number;
@@ -414,7 +414,7 @@ export interface SupersedeBySourceInput {
   complete: boolean;
 }
 
-export interface SupersedeBySourceResult {
+interface SupersedeBySourceResult {
   superseded: number;
   /** Dont reliées à une nouvelle preuve de même clé/cible. */
   linked: number;
@@ -423,7 +423,7 @@ export interface SupersedeBySourceResult {
 }
 
 /** Clé de verrou consultatif (compte, source) — deux entiers 32 bits. */
-export const supersedeLockKeys = (accountId: number, sourceId: number): [number, number] => [accountId | 0, sourceId | 0];
+const supersedeLockKeys = (accountId: number, sourceId: number): [number, number] => [accountId | 0, sourceId | 0];
 
 /**
  * Fait passer en SUPERSEDED les preuves ACTIVE antérieures d'une source

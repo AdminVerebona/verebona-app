@@ -91,7 +91,7 @@ export function upsertRefund(
 }
 
 /** Total effectivement remboursé : somme des remboursements réussis. */
-export function settledAmount(entries: RefundEntry[]): number {
+function settledAmount(entries: RefundEntry[]): number {
   return entries
     .filter((e) => classifyRefundStatus(e.status) === 'settled')
     .reduce((sum, e) => sum + (e.amount ?? 0), 0);

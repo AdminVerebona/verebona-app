@@ -27,7 +27,7 @@ import { getField } from '@/services/canonical/registry';
 import { parseDateFr } from '../commands/parser';
 import { eventDateMeaning, remainingCountUnit, remainingPeriods, type PeriodUnit } from './semantic-scope';
 
-export type InteractionHandling = 'proposal' | 'context_only' | 'context_calculation' | 'context_question' | null;
+type InteractionHandling = 'proposal' | 'context_only' | 'context_calculation' | 'context_question' | null;
 
 const aValeur = (f: SuppliedFact) => (f.normalizedValue ?? f.value ?? '').trim() !== '';
 
@@ -49,7 +49,7 @@ export function updateFactsOf(i: RouteInteraction | undefined | null): SuppliedF
 }
 
 /** Catégorie d'une information apportée (lot 75J, #419 R08) — trace et réponse. */
-export type SuppliedFactCategory = 'update_valid' | 'context' | 'incomplete_value' | 'incomplete_field' | 'ignored';
+type SuppliedFactCategory = 'update_valid' | 'context' | 'incomplete_value' | 'incomplete_field' | 'ignored';
 
 /**
  * Classement des informations apportées (pure, testée) — distingue

@@ -55,7 +55,7 @@ export const VEREBONA_INTENTS = [
 export type VerebonaIntent = (typeof VEREBONA_INTENTS)[number];
 
 /** Traitement attendu par intention (§9.2). */
-export type IntentTreatment =
+type IntentTreatment =
   | 'template'
   | 'help'
   | 'help+action'
@@ -90,6 +90,3 @@ export interface IntentDefinition {
   expectedSourceTypes: ReadonlyArray<string>;
 }
 
-export function isVerebonaIntent(value: string): value is VerebonaIntent {
-  return (VEREBONA_INTENTS as readonly string[]).includes(value);
-}

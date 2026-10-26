@@ -26,15 +26,12 @@ export async function semanticJournalReady(sql: Sql): Promise<boolean> {
   return ready;
 }
 
-/** Réservé aux tests. */
-export function __resetSemanticJournalForTests(): void { pret = null; }
-
 /** Statuts qui CLÔTURENT une demande pour un contexte donné (aucun nouvel appel sur ce contexte). */
-export const SETTLED_STATUSES: readonly SemanticStatus[] = ['APPLIED', 'PARTIAL', 'NO_CHANGE', 'REJECTED', 'ABSTAINED'];
+const SETTLED_STATUSES: readonly SemanticStatus[] = ['APPLIED', 'PARTIAL', 'NO_CHANGE', 'REJECTED', 'ABSTAINED'];
 /** Délai avant un nouvel essai après un échec IA ou technique. */
-export const SEMANTIC_RETRY_HOURS = 6;
+const SEMANTIC_RETRY_HOURS = 6;
 
-export interface StoredReevaluation {
+interface StoredReevaluation {
   id: number;
   status: SemanticStatus;
   contextFingerprint: string | null;
@@ -90,7 +87,7 @@ export async function semanticCallsLastDay(sql: Sql, accountId: number, scope: S
   return Number(r?.n ?? 0);
 }
 
-export interface ReevaluationRecord {
+interface ReevaluationRecord {
   accountId: number;
   scope: SemanticScope;
   operationId: number;
@@ -188,7 +185,7 @@ export async function loadT4Roles(sql: Sql, accountId: number, operationIds: rea
 }
 
 /** Motif des absorptions posées par une décision T4 (lot 87B) : déjà décidées, jamais « historiques ». */
-export const T4_CONSOLIDATION_REASON = 'T4_SEMANTIC_SAME_OCCURRENCE';
+const T4_CONSOLIDATION_REASON = 'T4_SEMANTIC_SAME_OCCURRENCE';
 
 /**
  * Lot 87B (CODE-06, CODE-07) : condition SQL « l'Opération `alias` porte une

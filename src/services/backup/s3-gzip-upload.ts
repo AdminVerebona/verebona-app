@@ -18,9 +18,9 @@ import { createHash } from 'node:crypto';
 import type { S3Client } from '@aws-sdk/client-s3';
 
 /** Taille d'une partie envoyée (S3 impose au moins 5 Mo, sauf la dernière). */
-export const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
+const UPLOAD_PART_BYTES = 8 * 1024 * 1024;
 
-export interface GzipUpload {
+interface GzipUpload {
   /** Ajoute du texte (UTF-8) ; attend la contre-pression. */
   write(text: string): Promise<void>;
   /** Termine l'envoi : octets compressés et non compressés, SHA-256 du contenu non compressé. */

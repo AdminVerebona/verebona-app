@@ -28,7 +28,7 @@ const CELLS: Array<[number, number]> = [
   [0, 22.86], [11.43, 22.86], [22.86, 22.86],
 ];
 
-export const LOGO_CUBE_COLOR = '#D66B53';
+const LOGO_CUBE_COLOR = '#D66B53';
 
 export function Logo({
   size = 40,

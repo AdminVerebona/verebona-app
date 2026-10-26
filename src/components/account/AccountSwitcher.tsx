@@ -21,7 +21,7 @@ import { useEffect, useState } from 'react';
 import { Check, Loader2, Repeat } from 'lucide-react';
 import { DropdownMenuItem, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
 
-export interface UserSpace {
+interface UserSpace {
   id: number;
   name: string;
   role: 'owner' | 'admin' | 'member';

@@ -5,7 +5,7 @@
 
 import { NextResponse } from 'next/server';
 
-export type ErrorCode =
+type ErrorCode =
   // Authentication errors
   | 'AUTH_REQUIRED'
   | 'INVALID_TOKEN'
@@ -76,7 +76,7 @@ export type ErrorCode =
     | 'TRIAL_EXPIRED'
     | 'SUBSCRIPTION_REQUIRED';
 
-export interface ApiErrorResponse {
+interface ApiErrorResponse {
   error: string;
   code: ErrorCode;
   message: string;

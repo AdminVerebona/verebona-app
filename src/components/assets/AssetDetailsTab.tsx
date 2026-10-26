@@ -26,8 +26,6 @@ import { TENURE_END_LABEL, TENURE_META_KEY, tenureEndKey, tenureSourceLabel, typ
 interface Props {
   asset: AssetDetail;
   onRefresh: () => void;
-  /** Lot 83D : plus lu (seul le bloc « Sinistres », retiré, l'utilisait) ; conservé pour les appelants. */
-  planType: 'freemium' | 'premium';
   readOnly?: boolean;
   highlightField?: string | null;
 }

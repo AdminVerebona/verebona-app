@@ -111,10 +111,3 @@ export async function latestCorpusRun(
   return rows[0] ? toRow(rows[0]) : null;
 }
 
-/** Exécutions récentes (BO), toutes versions confondues. */
-export async function listCorpusRuns(limit = 50): Promise<CorpusRunRow[]> {
-  const rows = (await pgClient.unsafe(
-    `SELECT * FROM ai_master_corpus_runs ORDER BY created_at DESC, id DESC LIMIT $1`, [limit] as never[],
-  )) as unknown as Row[];
-  return rows.map(toRow);
-}

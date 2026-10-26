@@ -23,7 +23,7 @@ export const LEGACY_CLAIM_TABLES = [
   'business_operation_claim_exchanges',
   'business_operation_claim_migration_marks',
 ] as const;
-export type LegacyClaimTable = (typeof LEGACY_CLAIM_TABLES)[number];
+type LegacyClaimTable = (typeof LEGACY_CLAIM_TABLES)[number];
 
 /** Colonnes de l'ancien modèle supprimées par la finalisation (avec leurs contraintes et index). */
 export const LEGACY_CLAIM_COLUMNS: Readonly<Record<string, readonly string[]>> = {

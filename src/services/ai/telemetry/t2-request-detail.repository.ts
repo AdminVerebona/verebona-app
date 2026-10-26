@@ -56,9 +56,9 @@ export async function getT2RequestSources(requestId: string): Promise<T2Source[]
   }));
 }
 
-export const T2_CONTENT_MIN_REASON = 15;
+const T2_CONTENT_MIN_REASON = 15;
 /** Au-delà, le contenu est réputé purgé même si une ligne subsiste (T2 : 3 mois). */
-export const T2_CONTENT_MAX_AGE_DAYS = 92;
+const T2_CONTENT_MAX_AGE_DAYS = 92;
 
 /** Pur : l'administrateur est-il autorisé par la liste restreinte (AI_T2_CONTENT_ADMIN_IDS) ? Liste absente ou vide = personne. */
 export function isContentAccessAllowed(adminUserId: number, raw: string | undefined = process.env.AI_T2_CONTENT_ADMIN_IDS): boolean {
@@ -69,7 +69,7 @@ export function isContentAccessAllowed(adminUserId: number, raw: string | undefi
   return ids.includes(String(adminUserId));
 }
 
-export type T2ContentResult =
+type T2ContentResult =
   | { ok: true; accountId: number | null; messages: Array<{ role: string; content: string | null; createdAt: string; expiresAt: string }> }
   | { ok: false; code: 'REASON_REQUIRED' | 'FORBIDDEN' | 'NOT_FOUND' | 'EXPIRED'; message: string };
 

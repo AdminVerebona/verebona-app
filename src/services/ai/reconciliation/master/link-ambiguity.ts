@@ -75,7 +75,7 @@ export const LINK_RELATIONS = {
 } as const;
 export type LinkSection = keyof typeof LINK_RELATIONS;
 
-export interface LinkCandidate {
+interface LinkCandidate {
   candidateId: number;
   description: string;
 }
@@ -87,7 +87,7 @@ export interface LinkCandidate {
  * formatés identifiants D'ABORD (`document-equipment-matching`), la borne ne
  * retire que la fin.
  */
-export const CANDIDATE_DESCRIPTION_MAX = 1000;
+const CANDIDATE_DESCRIPTION_MAX = 1000;
 
 /** Lit les candidats `[id:N] …` d'une liste historique ; triés par identifiant. */
 export function parseCandidates(list: unknown): LinkCandidate[] {
@@ -145,7 +145,7 @@ export function decideLinks(
   };
 }
 
-export interface MasterLinksResult {
+interface MasterLinksResult {
   documents: Array<{ id: number; score: number; reason: string }>;
   agendaItems: Array<{ id: number; score: number; reason: string }>;
   suppliers: Array<{ id: number; score: number; reason: string }>;
@@ -154,7 +154,7 @@ export interface MasterLinksResult {
   ambiguities: LinkAmbiguity[];
 }
 
-export interface LinkAmbiguityMasterInput {
+interface LinkAmbiguityMasterInput {
   accountId: number;
   userId?: number;
   variables: Record<string, unknown>;

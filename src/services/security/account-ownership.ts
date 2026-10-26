@@ -42,7 +42,7 @@ import { sql, type SQL } from 'drizzle-orm';
 export type OwnedKind =
   | 'asset' | 'file' | 'substructure' | 'equipment' | 'supplier' | 'event' | 'deadline' | 'agenda_item' | 'operation';
 
-export const OWNED_KINDS: readonly OwnedKind[] = [
+const OWNED_KINDS: readonly OwnedKind[] = [
   'asset', 'file', 'substructure', 'equipment', 'supplier', 'event', 'deadline', 'agenda_item', 'operation',
 ];
 
@@ -180,13 +180,7 @@ export async function knownAssetOfAccount(
 
 // ── Raccourcis par type (routes) ─────────────────────────────────────────────
 
-export const assetInAccountCheck = (accountId: number, id: number, exec?: SqlExecutor) => refsInAccount(accountId, { asset: id }, exec);
-export const fileInAccount = (accountId: number, id: number, exec?: SqlExecutor) => refsInAccount(accountId, { file: id }, exec);
-export const substructureInAccount = (accountId: number, id: number, exec?: SqlExecutor) => refsInAccount(accountId, { substructure: id }, exec);
 export const equipmentInAccount = (accountId: number, id: number, exec?: SqlExecutor) => refsInAccount(accountId, { equipment: id }, exec);
-export const supplierInAccountCheck = (accountId: number, id: number, exec?: SqlExecutor) => refsInAccount(accountId, { supplier: id }, exec);
-export const eventInAccount = (accountId: number, id: number, exec?: SqlExecutor) => refsInAccount(accountId, { event: id }, exec);
-export const deadlineInAccount = (accountId: number, id: number, exec?: SqlExecutor) => refsInAccount(accountId, { deadline: id }, exec);
 export const agendaItemInAccount = (accountId: number, id: number, exec?: SqlExecutor) => refsInAccount(accountId, { agenda_item: id }, exec);
 
 // ── Cohérence d'une cible fine (bien / pièce / équipement) ───────────────────

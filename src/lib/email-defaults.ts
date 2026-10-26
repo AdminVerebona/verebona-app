@@ -220,5 +220,3 @@ L’équipe Verebona`,
     placeholders: JSON.stringify(['firstName', 'logoUrl', 'trialEndsAt', 'loginUrl', 'year'])
   }
 } as const;
-
-export type TemplateType = keyof typeof DEFAULT_EMAIL_TEMPLATES;

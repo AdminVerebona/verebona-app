@@ -79,7 +79,7 @@ type SqlLike = {
 };
 
 /** Délai maximal accordé au compteur partagé (côté base) avant le repli en mémoire. */
-export const SHARED_TIMEOUT_MS = 300;
+const SHARED_TIMEOUT_MS = 300;
 
 /** Requête atomique unique : une CTE par clé, chaînée sur la précédente (pur, testé). */
 export function sharedRateLimitSql(n: number): string {
@@ -129,7 +129,7 @@ export function pgRateCounterStore(client?: SqlLike, timeoutMs = SHARED_TIMEOUT_
 
 export interface RateEntry { key: string; limit: number; scope: 'user' | 'account' | 'ip' }
 
-export interface RateLimiterHealth {
+interface RateLimiterHealth {
   mode: 'shared' | 'memory';
   /** Repli en mémoire en cours (base indisponible ou lente). */
   degraded: boolean;
@@ -240,10 +240,6 @@ function entries(prefix: string, userId: number, accountId: number, ip: string |
  * effacement, annulation, commandes. Quota propre à chaque famille.
  */
 export type MutationBucket = 'feedback' | 'conversation' | 'cancel' | 'command' | 'usage';
-
-export async function mutationRatePerMinute(): Promise<number> {
-  return (await plafonds()).mutation;
-}
 
 export async function readRatePerMinute(): Promise<number> {
   return (await plafonds()).read;

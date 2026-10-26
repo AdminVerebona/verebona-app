@@ -16,7 +16,7 @@ import { buildDefaultChoices } from './data/choices';
 import { renderDossier } from './render/render-dossier';
 import { parisDate, parisIso } from './generation/clock';
 
-export interface DossierPreview {
+interface DossierPreview {
   buffer: Buffer;
   contentType: 'application/pdf';
   renderer: 'v12-chromium';

@@ -6,7 +6,7 @@
 import { PlanType } from '@/types/domain';
 import { Zap, Crown, Users } from 'lucide-react';
 
-export interface PlanColors {
+interface PlanColors {
   /** Couleur de l'icône (ex: text-[color:var(--accent)]) */
   icon: string;
   /** Couleur de la bordure (ex: border-[color:var(--border-info)]) */
@@ -25,7 +25,7 @@ export interface PlanColors {
   textDark: string;
 }
 
-export interface PlanTheme {
+interface PlanTheme {
   colors: PlanColors;
   icon: React.ElementType;
   label: string;
@@ -109,25 +109,4 @@ export function getPlanTheme(plan: PlanType | string | null | undefined): PlanTh
   if (!plan) return PLAN_THEMES.STANDARD;
   const key = (plan as string).toUpperCase() as keyof typeof PLAN_THEMES;
   return PLAN_THEMES[key] || PLAN_THEMES.STANDARD;
-}
-
-/**
- * Récupère seulement les couleurs pour un plan
- */
-export function getPlanColors(plan: PlanType | string | null | undefined): PlanColors {
-  return getPlanTheme(plan).colors;
-}
-
-/**
- * Récupère le label d'affichage pour un plan
- */
-export function getPlanLabel(plan: PlanType | string | null | undefined): string {
-  return getPlanTheme(plan).label;
-}
-
-/**
- * Récupère l'icône Lucide pour un plan
- */
-export function getPlanIcon(plan: PlanType | string | null | undefined) {
-  return getPlanTheme(plan).icon;
 }

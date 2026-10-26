@@ -18,7 +18,7 @@
 import { emailService } from '@/lib/email/email-service';
 import { recordLegalAudit } from './legal-audit.service';
 
-export interface LegalConfirmationInput {
+interface LegalConfirmationInput {
   to: string;
   userId: number;
   firstName: string;
@@ -68,7 +68,7 @@ function renderWithdrawalBlock(input: LegalConfirmationInput): string {
 </p>`;
 }
 
-export interface SendResult {
+interface SendResult {
   sent: boolean;
   error?: string;
 }

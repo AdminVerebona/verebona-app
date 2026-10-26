@@ -62,7 +62,7 @@ function lazyEntry(produce: (sink: TextSink) => Promise<void>, state: { aborted:
   return r;
 }
 
-export type ZipOutcome = { ok: true; bytes: number } | { ok: false; bytes: number; error: unknown; clientGone: boolean };
+type ZipOutcome = { ok: true; bytes: number } | { ok: false; bytes: number; error: unknown; clientGone: boolean };
 
 /**
  * Écrit l'archive du plan dans `out` (flux de réponse), en flux. Rend

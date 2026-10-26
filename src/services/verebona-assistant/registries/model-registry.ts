@@ -32,12 +32,12 @@ import {
 } from '@/services/ai/registry/models';
 import { providerLifecycle } from '@/services/ai/registry/model-lifecycle';
 
-export type ModelAliasRole = 'default' | 'escalation';
+type ModelAliasRole = 'default' | 'escalation';
 
 /** Version du registre (tracée avec les contrôles de démarrage). */
 export const MODEL_REGISTRY_VERSION = 'model-registry-v2.0' as const;
 
-export interface ModelAliasEntry {
+interface ModelAliasEntry {
   role: ModelAliasRole;
   /** Nom fonctionnel configuré (§15.11). */
   alias: string;
@@ -61,7 +61,7 @@ export function configuredAliases(): Record<ModelAliasRole, string> {
 }
 
 /** Modèle attendu pour un rôle et une opération. */
-export function expectedModelFor(role: ModelAliasRole, operationCode = 't2_answer'): string | null {
+function expectedModelFor(role: ModelAliasRole, operationCode = 't2_answer'): string | null {
   const surcharge = env(role === 'default' ? 'VEREBONA_ASSISTANT_MODEL_ASSISTANT_DEFAULT' : 'VEREBONA_ASSISTANT_MODEL_ASSISTANT_ESCALATION');
   if (surcharge) return surcharge;
   const op = AI_OPERATIONS[operationCode];
@@ -88,11 +88,6 @@ export function aliasForRank(rank: number, operationCode = 't2_answer', chaine?:
     rank: rank > 0 ? 1 : 0,
     expectedModel: effectif ?? expectedModelFor(role, operationCode),
   };
-}
-
-/** Registre complet d'une opération (administration, contrôle de démarrage). */
-export function modelRegistry(operationCode = 't2_answer'): ModelAliasEntry[] {
-  return [aliasForRank(0, operationCode), aliasForRank(1, operationCode)];
 }
 
 /** Modèles résolus pour une opération à un instant donné (chaîne effective). */
@@ -147,7 +142,7 @@ export function configuredDeprecations(raw = process.env.VEREBONA_ASSISTANT_MODE
 
 // ── Vue du registre par alias (§15.12, BO en lecture seule) ─────────────────
 
-export interface ModelRegistryRow {
+interface ModelRegistryRow {
   role: ModelAliasRole;
   /** Alias fonctionnel (§15.11). */
   alias: string;
@@ -189,7 +184,7 @@ export interface RegistryQualification {
   qualifiedAt: string | null;
 }
 
-export interface RegistryViewDeps {
+interface RegistryViewDeps {
   /** Qualification connue (lot 35B) ; absent : qualification historique du registre. */
   qualification?: (model: string) => RegistryQualification | null;
   /** Statut fournisseur (lot 35B) pour un modèle hors registre. */

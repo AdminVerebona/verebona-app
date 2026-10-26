@@ -282,10 +282,10 @@ export async function getMascotPresentation(
 }
 
 /** Bornes de l'actualisation ciblée. */
-export const MASCOT_REFRESH_HINT_MIN_MS = 15_000;
-export const MASCOT_REFRESH_HINT_MAX_MS = 10 * 60_000;
+const MASCOT_REFRESH_HINT_MIN_MS = 15_000;
+const MASCOT_REFRESH_HINT_MAX_MS = 10 * 60_000;
 /** Documents en cours d'analyse : relecture ciblée (la fin d'analyse est aussi signalée par événement). */
-export const MASCOT_ANALYSIS_REFRESH_MS = 60_000;
+const MASCOT_ANALYSIS_REFRESH_MS = 60_000;
 
 /**
  * Lot 78C — actualisation ciblée suggérée (pure, testée) : examen réellement

@@ -21,7 +21,7 @@ import type { DbTx } from '../lock';
 import type { DecisionSubject } from './model';
 import type { GroupingRunner } from './runner';
 
-export interface GroupingDecisionInput {
+interface GroupingDecisionInput {
   accountId: number;
   operationId: number;
   subject: DecisionSubject;
@@ -122,7 +122,7 @@ export async function liftPrincipalWithdrawals(r: GroupingRunner, accountId: num
 // ── Lot 86D : décision de l'utilisateur sur UN lien Document ↔ Agenda ──────
 
 /** Clé de l'objet AGENDA_FILE_LINK (`<agenda_items.id>:<asset_files.id>`). */
-export const agendaFileLinkKey = (itemId: number, fileId: number): string => `${itemId}:${fileId}`;
+const agendaFileLinkKey = (itemId: number, fileId: number): string => `${itemId}:${fileId}`;
 
 /**
  * Fragment SQL : le lien (élément `itemExpr`, document `fileExpr`) a-t-il été

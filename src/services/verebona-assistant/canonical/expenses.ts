@@ -100,7 +100,7 @@ export interface QualifiedExpenses {
 }
 
 /** Repli documentaire (C15.1 §30) : ce qui en a été compté ou écarté. */
-export interface DocumentFallbackPart {
+interface DocumentFallbackPart {
   /** Documents comptés (hors Opérations) et leur somme. */
   count: number;
   sumCents: number;
@@ -408,7 +408,7 @@ async function finishQualifiedExpenses(accountId: number, x: {
 }
 
 /** Lot 80A : dépense ajoutée au TCO d'un bien par l'utilisateur (forme lue de `t2CostExclusions`). */
-export interface UserAddedExpense {
+interface UserAddedExpense {
   source: string; lineId: string; operationId: number | null; componentId: number | null; fileId: number | null;
   eurCents: number; date: string | null; label: string; automaticReason: string | null;
 }
@@ -459,7 +459,7 @@ export function expenseCoverageComplete(part: OperationExpensePart, docs: Docume
 export interface ExpenseEntry { fileId: number; amountCents: number; cls: ExpenseClass; undated?: boolean }
 
 /** Résultat de l'agrégat : thèmes avec la part consolidée (retirée par `sumQualifiedExpenses`). */
-export type AggregatedExpenses = Omit<QualifiedExpenses, 'byTheme'> & {
+type AggregatedExpenses = Omit<QualifiedExpenses, 'byTheme'> & {
   byTheme: Array<QualifiedExpenses['byTheme'][number] & { operationSumCents?: number }>;
 };
 
@@ -546,7 +546,7 @@ export function expenseItemsLabel(t: QualifiedExpenses['byTheme'][number], part?
 }
 
 /** Libellé des éléments du total, tous thèmes confondus (pure). */
-export function expenseTotalItemsLabel(q: QualifiedExpenses): string {
+function expenseTotalItemsLabel(q: QualifiedExpenses): string {
   const ops = q.byTheme.flatMap((t) => t.operationIds ?? []);
   if (!ops.length) return `${q.qualifiedCount} document${q.qualifiedCount > 1 ? 's' : ''}`;
   const docs = q.byTheme.reduce((n, t) => n + t.fileIds.length, 0);
@@ -626,7 +626,7 @@ function sumOps(t: QualifiedExpenses['byTheme'][number], part: OperationExpenseP
 }
 
 /** Documents des Opérations comptées (sources citées du total). */
-export function countedOperationFileIds(q: QualifiedExpenses): number[] {
+function countedOperationFileIds(q: QualifiedExpenses): number[] {
   const ops = new Set(q.byTheme.flatMap((t) => t.operationIds ?? []));
   return [...new Set((q.operations?.lines ?? []).filter((l) => ops.has(l.operationId)).flatMap((l) => l.fileIds))];
 }

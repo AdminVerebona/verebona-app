@@ -64,7 +64,7 @@ export const PRODUCTS_EXPAND_PATH = 'features.subscription_update.products';
 /** Message EXACT renvoyé par Stripe lors de l'incident préprod (lot 49A). */
 export const STRIPE_UNIQUE_INTERVALS_ERROR = 'For each product, its price must have unique billing intervals.';
 
-export interface RealisticStripe {
+interface RealisticStripe {
   prices: Map<string, Stripe.Price>;
   products: Map<string, Stripe.Product>;
   calls: string[];
@@ -91,7 +91,7 @@ export interface RealisticStripe {
 }
 
 /** Abonnement simulé : un item, période courante, ancre de facturation. */
-export interface SimSubscription {
+interface SimSubscription {
   id: string;
   customer: string;
   status: 'active' | 'past_due' | 'canceled';
@@ -106,7 +106,7 @@ const permission = () => Object.assign(new Error('The provided key does not have
 const invalid = (m: string) => Object.assign(new Error(m), { type: 'StripeInvalidRequestError', statusCode: 400 });
 const missing = (id: string) => Object.assign(new Error(`No such price: '${id}'`), { type: 'StripeInvalidRequestError', code: 'resource_missing', statusCode: 404 });
 
-export function mkProduct(id: string, metadata: Record<string, string> = {}, active = true): Stripe.Product {
+function mkProduct(id: string, metadata: Record<string, string> = {}, active = true): Stripe.Product {
   return { id, object: 'product', active, name: id, metadata } as unknown as Stripe.Product;
 }
 
@@ -370,7 +370,7 @@ export function realisticStripe(initialPrices: Stripe.Price[], initialProducts: 
 // ─── Comptes types ───────────────────────────────────────────────────────────
 
 /** Grille V2 du code avant le lot 35 (`lib/stripe-prices` à base1010). */
-export const V2_GRID: Record<PlanCode, Record<BillingPeriod, number>> = {
+const V2_GRID: Record<PlanCode, Record<BillingPeriod, number>> = {
   standard: { monthly: 290, yearly: 2900 },
   premium: { monthly: 590, yearly: 5900 },
   premium_duo: { monthly: 890, yearly: 8900 },

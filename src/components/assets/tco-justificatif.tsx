@@ -22,7 +22,7 @@ import { FileText } from 'lucide-react';
 import { drawerHref, openDrawer } from '@/lib/drawers';
 import { checkDocumentAccessible, DOCUMENT_GONE_MESSAGE, DOCUMENT_OPEN_FAILED_MESSAGE, type PreviewCheck } from '@/components/to-process/document-preview';
 
-export type TcoJustificatifOutcome = 'opened' | 'gone' | 'error' | 'busy' | 'follow';
+type TcoJustificatifOutcome = 'opened' | 'gone' | 'error' | 'busy' | 'follow';
 
 interface ClickLike {
   currentTarget: unknown;

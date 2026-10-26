@@ -51,7 +51,7 @@ export interface OptimizationOutput {
   explanation: string;
 }
 
-export interface OutputContext {
+interface OutputContext {
   objectType: TargetType;
   objectId: number;
   fieldKey?: string;
@@ -97,7 +97,7 @@ export function toOptimizationOutput(
 }
 
 /** Synthèse d'un passage du traitement, pour le journal technique. */
-export interface OptimizationRunSummary {
+interface OptimizationRunSummary {
   outputs: OptimizationOutput[];
   appliedCount: number;
   actionCount: number;

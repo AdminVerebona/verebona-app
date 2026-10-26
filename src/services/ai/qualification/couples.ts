@@ -63,7 +63,7 @@ export function effectivePrompt(entry: TreatmentConfig, masterPromptCode: string
 }
 
 /** Empreinte du code d'évaluation d'une opération (contrôle serveur, comparateur T1, moteur). */
-export async function evaluatorFingerprint(operationCode: string): Promise<string> {
+async function evaluatorFingerprint(operationCode: string): Promise<string> {
   const [{ MASTER_CORPUS_EVALUATORS }, cmp] = await Promise.all([import('../governance/master-corpus/evaluators'), import('../governance/corpus/corpus-comparator')]);
   const ev = (MASTER_CORPUS_EVALUATORS as Record<string, unknown>)[operationCode];
   const t1 = operationCode === 't1_analyze_document' ? `${cmp.compareField.toString()}${cmp.compareCase.toString()}` : '';
@@ -71,7 +71,7 @@ export async function evaluatorFingerprint(operationCode: string): Promise<strin
 }
 
 /** Empreinte du contrat de sortie de la branche pour la configuration d'exécution du prompt. */
-export async function contractFingerprint(operationCode: string, execution: MasterExecutionConfig | null): Promise<string | null> {
+async function contractFingerprint(operationCode: string, execution: MasterExecutionConfig | null): Promise<string | null> {
   const op = AI_OPERATIONS[operationCode];
   if (!op?.masterPromptCode) return op ? sha256(op.outputSchema) : null;
   const [{ schemaNameFor }, { activeContractVersion }, { executionConfigFor }] = await Promise.all([

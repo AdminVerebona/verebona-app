@@ -6,7 +6,7 @@ import { agendaDataConflicts } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { createAgendaItem } from './AgendaWriteService';
 
-export interface CreateConflictParams {
+interface CreateConflictParams {
   accountId: number;
   agendaItemId?: number | null;
   conflictType: 'date_mismatch' | 'distinct_data_unqualified';
@@ -19,7 +19,7 @@ export interface CreateConflictParams {
   valueDateB?: string | null;
 }
 
-export type ConflictDecision = 'kept_existing' | 'kept_new' | 'declared_distinct' | 'skipped';
+type ConflictDecision = 'kept_existing' | 'kept_new' | 'declared_distinct' | 'skipped';
 
 export async function createConflict(params: CreateConflictParams) {
   const [conflict] = await db.insert(agendaDataConflicts).values({
@@ -93,11 +93,3 @@ export async function resolveConflict(
   return updated;
 }
 
-export async function getPendingConflicts(accountId: number) {
-  return db.select().from(agendaDataConflicts).where(
-    and(
-      eq(agendaDataConflicts.accountId, accountId),
-      eq(agendaDataConflicts.currentDecision, 'pending')
-    )
-  );
-}

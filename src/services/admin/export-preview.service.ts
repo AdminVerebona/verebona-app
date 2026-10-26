@@ -17,16 +17,12 @@
 import { pgClient } from '@/db';
 import type { ExportManifest, ExportType } from '@/services/export-manifest.service';
 import type { AssetSnapshot } from '@/services/export-snapshot.service';
-import {
-  DOSSIER_CODES, EXPORT_BRUT_CODE, familyIneligibilityMessage, isDossierEligibleForFamily, normalizeExportCode,
+import { EXPORT_BRUT_CODE, familyIneligibilityMessage, isDossierEligibleForFamily, normalizeExportCode,
   type ExportCode,
 } from '@/services/exports/catalog';
 import { isCilEligible } from '@/lib/asset-capabilities';
 
-/** Codes prévisualisables : les six dossiers V12 et l'export brut (catalogue). */
-export const PREVIEW_EXPORT_TYPES: readonly ExportCode[] = [...DOSSIER_CODES, EXPORT_BRUT_CODE];
-
-export interface PreviewTemplateRef {
+interface PreviewTemplateRef {
   code: string;
   exportType: string | null;
   category: string | null;
@@ -135,7 +131,7 @@ export function previewFileName(templateCode: string, exportType: ExportCode, da
   return `apercu_${safe}_${day}.${exportType === 'EXPORT_BRUT' ? 'zip' : 'pdf'}`;
 }
 
-export interface AdminPreviewAsset {
+interface AdminPreviewAsset {
   id: number;
   name: string;
   category: string;
@@ -167,37 +163,7 @@ export async function listAdminOwnAssets(adminUserId: number, accountId?: number
   return rows.map((r) => ({ id: r.id, name: r.name, category: r.category, subtype: r.subtype ?? null, ownerUserId: r.user_id }));
 }
 
-/**
- * MIG-06 / DEC-001 : `pdfmonkey_template_id` n'est plus lu. La colonne reste
- * en base (historique), mais ni la prévisualisation ni le back-office ne s'en
- * servent : le rendu est celui du moteur de l'application.
- */
-export interface PreviewTemplateRow extends PreviewTemplateRef {
-  id: number;
-  label: string;
-  isActive: boolean;
-}
-
-export async function loadPreviewTemplate(templateId: number): Promise<PreviewTemplateRow | null> {
-  const [row] = await pgClient.unsafe<
-    { id: number; code: string; label: string; category: string; export_type: string | null; is_active: boolean }[]
-  >(
-    `SELECT id, code, label, category, export_type, is_active
-       FROM export_templates WHERE id = $1`,
-    [templateId],
-  );
-  if (!row) return null;
-  return {
-    id: row.id,
-    code: row.code,
-    label: row.label,
-    category: row.category,
-    exportType: row.export_type,
-    isActive: row.is_active,
-  };
-}
-
-export interface PreviewAnalysis {
+interface PreviewAnalysis {
   exportType: ExportCode;
   manifest: ExportManifest;
   snapshot: AssetSnapshot;

@@ -19,7 +19,7 @@ import { profileForChain, profiledOperationsOf, rankProfile, normalizeOperationP
 import { buildModelRequest, type ModelRequestResult } from '../gateway/request-builder';
 import type { ModelCapabilities } from '../provider/model-capabilities';
 
-export interface RankPlan {
+interface RankPlan {
   operationCode: string;
   rank: number;
   /** Emplacement administré (`primaryModel`, `fallback1`, `fallback2`). */

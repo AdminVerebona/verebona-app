@@ -19,5 +19,4 @@ export function setAiProvider(p: AiProvider): void {
 }
 
 export type { AiProvider, ProviderCallInput, ProviderCallOutput } from './provider.port';
-export { GeminiProvider } from './gemini.provider';
 export { FakeProvider } from './fake.provider';

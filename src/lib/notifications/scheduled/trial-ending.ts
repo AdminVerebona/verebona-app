@@ -11,7 +11,7 @@ import { accountSubscriptions } from '@/db/schema';
 import { and, eq, gte, lt } from 'drizzle-orm';
 import { emit } from '@/lib/notifications';
 
-export interface TrialEndingRunResult { emitted: number }
+interface TrialEndingRunResult { emitted: number }
 
 export async function runTrialEndingReminders(now: Date = new Date()): Promise<TrialEndingRunResult> {
   const from = new Date(now.getTime() + 1 * 24 * 60 * 60 * 1000); // J+1

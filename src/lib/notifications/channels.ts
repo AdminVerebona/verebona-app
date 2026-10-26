@@ -41,7 +41,7 @@ export interface DeliveryContext {
   accountId?: number | null;
 }
 
-export interface BellOutcome extends DeliveryOutcome {
+interface BellOutcome extends DeliveryOutcome {
   notificationId?: number;
 }
 
@@ -117,7 +117,7 @@ export async function deliverEmail(
 }
 
 // ── Web Push (envoi réel signé VAPID, multi-appareils) ─────────────────────
-export interface PushDeliveryResult {
+interface PushDeliveryResult {
   subscriptionId: string;
   outcome: DeliveryOutcome;
 }

@@ -35,7 +35,7 @@
 import { isHistoricalAgendaEvent } from '@/services/agenda/agenda-historical';
 
 export type TimelineMode = 'grouped' | 'detailed';
-export const TIMELINE_MODES: readonly TimelineMode[] = ['grouped', 'detailed'];
+const TIMELINE_MODES: readonly TimelineMode[] = ['grouped', 'detailed'];
 /** Mode par défaut (§13.2) : à CHAQUE ouverture — jamais mémorisé (AC24). */
 export const DEFAULT_TIMELINE_MODE: TimelineMode = 'grouped';
 

@@ -20,7 +20,7 @@
  */
 
 /** Types traités ici. Aucune de ces notifications n'est cliquable dans la cloche. */
-export const SUBSCRIPTION_NOTIFICATION_TYPES = [
+const SUBSCRIPTION_NOTIFICATION_TYPES = [
   'SUBSCRIPTION_ACTIVATED',
   'SUBSCRIPTION_CHANGED',
   'SUBSCRIPTION_CHANGE_SCHEDULED',

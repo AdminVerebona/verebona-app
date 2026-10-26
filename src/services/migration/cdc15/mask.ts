@@ -14,7 +14,7 @@ import { maskSensitiveText } from '@/services/verebona-assistant/core/sensitive-
 export const MASKED = '[masqué]';
 
 /** Clés canoniques masquées au rapport en plus des clés `sensitive` du registre. */
-export const REPORT_MASKED_KEYS: ReadonlySet<string> = new Set(['city', 'postalCode']);
+const REPORT_MASKED_KEYS: ReadonlySet<string> = new Set(['city', 'postalCode']);
 /** Colonnes historiques correspondantes (avant / après de MIG-07). */
 const MASKED_COLUMNS = new Set(['address', 'city', 'postal_code']);
 

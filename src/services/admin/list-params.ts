@@ -4,7 +4,7 @@
  * dans les tests.
  */
 
-export const ADMIN_PAGE_SIZE = 25;
+const ADMIN_PAGE_SIZE = 25;
 
 export interface ListParams<K extends string> {
   q: string;

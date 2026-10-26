@@ -15,7 +15,7 @@ export const GDPR_ORIGINS = ['system', 'manual'] as const;
 export type GdprOrigin = (typeof GDPR_ORIGINS)[number];
 
 /** GDP-012 : trois statuts, aucun « Rejetée / non recevable ». */
-export const GDPR_STATUSES = ['received', 'in_progress', 'done'] as const;
+const GDPR_STATUSES = ['received', 'in_progress', 'done'] as const;
 export type GdprStatus = (typeof GDPR_STATUSES)[number];
 
 export const GDPR_RIGHT_TYPES = [
@@ -55,19 +55,19 @@ export const ORIGIN_LABELS: Record<GdprOrigin, string> = {
   manual: 'Manuelle',
 };
 
-export function isStatus(v: unknown): v is GdprStatus {
+function isStatus(v: unknown): v is GdprStatus {
   return typeof v === 'string' && (GDPR_STATUSES as readonly string[]).includes(v);
 }
-export function isRightType(v: unknown): v is GdprRightType {
+function isRightType(v: unknown): v is GdprRightType {
   return typeof v === 'string' && (GDPR_RIGHT_TYPES as readonly string[]).includes(v);
 }
-export function isChannel(v: unknown): v is GdprChannel {
+function isChannel(v: unknown): v is GdprChannel {
   return typeof v === 'string' && (GDPR_CHANNELS as readonly string[]).includes(v);
 }
 
 /* ── Dates calendaires (Europe/Paris) ─────────────────────────────────── */
 
-export const GDPR_TIME_ZONE = 'Europe/Paris';
+const GDPR_TIME_ZONE = 'Europe/Paris';
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** Date calendaire « AAAA-MM-JJ » valide ? */
@@ -274,7 +274,7 @@ export function planManualCreate(
   };
 }
 
-export interface UpdatePlan {
+interface UpdatePlan {
   changes: Partial<Omit<GdprRequestState, 'origin'>>;
   /** L'échéance a été recalculée (GDP-014). */
   dueDateRecomputed: boolean;
@@ -360,7 +360,7 @@ export function planReopen(current: Pick<GdprRequestState, 'origin' | 'status'>)
 
 /* ── Listes (GDP-001, GDP-005, GDP-006, GDP-019) ───────────────────────── */
 
-export type GdprView = 'open' | 'history';
+type GdprView = 'open' | 'history';
 
 /** Tris proposés, par vue. Clé publique → expression SQL (liste fermée). */
 export const SORTS: Record<GdprView, Record<string, string>> = {

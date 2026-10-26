@@ -36,7 +36,7 @@ export async function GET(
       .where(eq(energyMaterials.assetId, assetId));
 
     return NextResponse.json({ materials });
-  } catch (err: any) {
+  } catch {
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
 }
@@ -123,7 +123,7 @@ export async function DELETE(
 
     if (asset.accountId != null) await emitBusinessEvent({ type: 'ASSET_UPDATED', accountId: asset.accountId, entityId: assetId });
     return NextResponse.json({ ok: true });
-  } catch (err: any) {
+  } catch {
     return NextResponse.json({ error: 'INTERNAL_ERROR' }, { status: 500 });
   }
 }

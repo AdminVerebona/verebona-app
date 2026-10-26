@@ -52,10 +52,10 @@ import {
 type Row = Record<string, unknown>;
 
 /** Source d'un contrôle (affichée au BO). */
-export type OperationalSource = 'provider_test' | 'catalog_refresh' | 'qualification';
+type OperationalSource = 'provider_test' | 'catalog_refresh' | 'qualification';
 
 /** État RETENU d'un modèle (lu par `usableModelsForTreatment`). */
-export interface OperationalStatus {
+interface OperationalStatus {
   ok: boolean;
   checkedAt: string;
   error: string | null;
@@ -234,7 +234,7 @@ export function probeCallInput(model: string) {
   };
 }
 
-export interface ProbeResult {
+interface ProbeResult {
   model: string;
   /** Le modèle a répondu. */
   ok: boolean;

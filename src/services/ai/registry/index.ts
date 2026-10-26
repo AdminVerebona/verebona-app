@@ -2,19 +2,14 @@
  * Point d'entrée du référentiel IA — CDC §5.1.
  */
 export {
-  AI_USE_CASE_CODES, AI_USE_CASES, isAiUseCaseCode, listActiveUseCases,
+  AI_USE_CASE_CODES, listActiveUseCases,
 } from './use-cases';
-export type { AiUseCaseCode, AiUseCaseDefinition } from './use-cases';
 
-export {
-  AI_OPERATIONS, getOperation, listLlmOperations, listOperationsByUseCase,
-  isMasterOperation, listMasterTasks, listMasterPrompts, isTargetArchitectureOperation, listNonTargetOperations,
+export { listLlmOperations, listOperationsByUseCase,
 } from './operations';
-export type { AiOperationCode, AiOperationDefinition } from './operations';
 
 export { syncAiRegistry } from './registry.repository';
 
-import { assertPricingReady } from '../gateway/cost-catalog';
 import { AI_OPERATIONS, isTargetArchitectureOperation, type AiOperationDefinition } from './operations';
 import { isAiUseCaseCode } from './use-cases';
 
@@ -74,10 +69,3 @@ export function assertMasterDeclaration(op: AiOperationDefinition): void {
   }
 }
 
-/**
- * Contrôle des tarifs — CDC Assistant §15.14. Asynchrone : les tarifs sont des
- * données d'exploitation lues en base, plus des constantes du code.
- */
-export async function assertAiPricingStartup(): Promise<void> {
-  await assertPricingReady();
-}

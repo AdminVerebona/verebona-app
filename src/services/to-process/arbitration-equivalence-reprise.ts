@@ -47,11 +47,11 @@ import { sanitizeArbitrationProposals, type ActionProposal } from './action-mode
 import { findRule, canonicalAssetKey } from './rules-catalog';
 
 /** Campagne du lot 81A (historique 0626 ; libellé du rattrapage BO). */
-export const ARBITRATION_REPRISE_CAMPAIGN = 'l81-faux-arbitrages-1';
+const ARBITRATION_REPRISE_CAMPAIGN = 'l81-faux-arbitrages-1';
 /** Cartes lues par page. */
 const PAGE = 200;
 
-export type RepriseOutcome =
+type RepriseOutcome =
   /** Contradiction réelle : carte mise à jour avec les bonnes valeurs. */
   | 'CORRECTED'
   /** Plus aucune contradiction : carte résolue OBSOLETE. */
@@ -62,7 +62,7 @@ export type RepriseOutcome =
   | 'TARGET_MISSING'
   | 'ERROR';
 
-export type SuspectReason = 'EQUIVALENT_TO_CURRENT' | 'DUPLICATE_PROPOSALS';
+type SuspectReason = 'EQUIVALENT_TO_CURRENT' | 'DUPLICATE_PROPOSALS';
 
 /**
  * Carte suspecte (pure) : au moins une proposition équivalente à la valeur
@@ -83,7 +83,7 @@ interface Card {
 }
 
 /** Diagnostic d'une carte réexaminée (BO, événement). Jamais montré à l'utilisateur final. */
-export interface RepriseItem {
+interface RepriseItem {
   actionId: number;
   accountId: number;
   targetType: string;

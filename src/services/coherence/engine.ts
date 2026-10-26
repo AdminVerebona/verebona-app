@@ -53,7 +53,7 @@ import { exec, intArray, rows, type Row } from './registry/util';
 /** Réparations reprises au plus après un échec technique sur les mêmes entrées. */
 export const MAX_REPAIR_RETRIES = 3;
 /** Délai de reprise d'un contrôle en erreur (minutes × rang de l'erreur). */
-export const ERROR_RETRY_MINUTES = 30;
+const ERROR_RETRY_MINUTES = 30;
 
 /** Le compte n'est plus éligible au moment de réparer (C-Q10) : le parcours du compte s'arrête. */
 export class AccountNoLongerEligibleError extends Error {
@@ -325,7 +325,7 @@ async function inspectIsolated(ctx: CheckContext, check: CoherenceCheck, account
   }
 }
 
-export interface ControlBatchInput {
+interface ControlBatchInput {
   ctx: CheckContext;
   check: CoherenceCheck;
   accountId: number;

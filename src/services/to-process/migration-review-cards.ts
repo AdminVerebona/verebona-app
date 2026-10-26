@@ -39,7 +39,7 @@ import { upsertAction } from './to-process-action.service';
 
 export const MIG_REVIEW_RULE = 'MIG-REVIEW';
 
-export interface MigrationReviewInput {
+interface MigrationReviewInput {
   step: string;
   accountId: number;
   assetId: number;

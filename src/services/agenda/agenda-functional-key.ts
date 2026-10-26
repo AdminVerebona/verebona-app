@@ -28,7 +28,7 @@ import { getField, getEventEntry } from '@/services/canonical/registry';
 
 export type AgendaEventNature = 'HISTORICAL' | 'DEADLINE';
 
-export interface FunctionalKeyInput {
+interface FunctionalKeyInput {
   sourceFileId: number;
   target: { type: string; id: number };
   businessType: string | null;
@@ -45,7 +45,7 @@ export function computeAgendaFunctionalKey(p: FunctionalKeyInput): string {
   return createHash('sha256').update(brut).digest('hex').slice(0, 40);
 }
 
-export interface EventSemantics {
+interface EventSemantics {
   businessType: string | null;
   nature: AgendaEventNature | null;
   /** D-14 : un élément HISTORICAL n'est jamais notifié. */
@@ -121,7 +121,7 @@ export interface SourceItem {
 }
 
 /** Actions qui CRÉENT un élément et portent donc une clé. */
-export const KEYED_ACTIONS = new Set(['create', 'propose', 'create_conflict']);
+const KEYED_ACTIONS = new Set(['create', 'propose', 'create_conflict']);
 
 export type SyncStep =
   | { kind: 'create'; index: number; key: string; semantics: EventSemantics }

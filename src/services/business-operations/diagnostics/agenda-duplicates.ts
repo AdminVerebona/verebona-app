@@ -20,9 +20,9 @@
  *                    dédoublonnage automatique, aucune Opération artificielle.
  */
 
-export type DuplicateCause = 'ONE_OPERATION' | 'TWO_OPERATIONS' | 'NO_OPERATION' | 'NO_DUPLICATE';
+type DuplicateCause = 'ONE_OPERATION' | 'TWO_OPERATIONS' | 'NO_OPERATION' | 'NO_DUPLICATE';
 
-export interface DiagCandidate {
+interface DiagCandidate {
   candidateKey: string;
   typeHint: string | null;
   established: boolean;
@@ -35,7 +35,7 @@ export interface DiagCandidate {
   refs: string[];
 }
 
-export interface DiagOperation {
+interface DiagOperation {
   id: number;
   typeCode: string | null;
   status: string;
@@ -45,7 +45,7 @@ export interface DiagOperation {
   exclusive: boolean;
 }
 
-export interface DiagItem {
+interface DiagItem {
   id: number;
   title: string;
   date: string | null;
@@ -55,7 +55,7 @@ export interface DiagItem {
   touched: boolean;
 }
 
-export interface DuplicateVerdict {
+interface DuplicateVerdict {
   cause: DuplicateCause;
   /** Libellé court (BO). */
   label: string;

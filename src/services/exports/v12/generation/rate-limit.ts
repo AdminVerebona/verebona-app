@@ -8,7 +8,7 @@
 import { NextResponse } from 'next/server';
 import { exportGenerationRateLimiter } from '@/lib/rate-limiter';
 
-export const RATE_LIMITED_MESSAGE = 'Trop de demandes de génération en peu de temps. Patientez une minute avant de réessayer.';
+const RATE_LIMITED_MESSAGE = 'Trop de demandes de génération en peu de temps. Patientez une minute avant de réessayer.';
 
 /** Réponse 429 si l'utilisateur a dépassé son quota, sinon `null`. */
 export function exportRateLimitResponse(userId: number): NextResponse | null {

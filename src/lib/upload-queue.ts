@@ -127,7 +127,7 @@ export interface InstantaneDepot {
 }
 
 /** Erreur d'un fichier, avec son point de reprise. */
-export class ErreurDepot extends Error {
+class ErreurDepot extends Error {
   constructor(message: string, readonly reprise: PointReprise | null, readonly ecritureBloquee = false) {
     super(message);
     this.name = 'ErreurDepot';
@@ -158,12 +158,12 @@ export function estActif(e: ElementDepot): boolean {
   return ETAPES_ACTIVES.includes(e.etape);
 }
 
-export function concurrenceTransfertsParDefaut(): number {
+function concurrenceTransfertsParDefaut(): number {
   const v = Number(process.env.NEXT_PUBLIC_UPLOAD_CONCURRENCY);
   return Number.isInteger(v) && v >= 1 ? Math.min(3, v) : 2;
 }
 
-export function nouvelIdentifiantOperation(): string {
+function nouvelIdentifiantOperation(): string {
   const c = globalThis.crypto as Crypto | undefined;
   if (c?.randomUUID) return c.randomUUID();
   const o = new Uint8Array(16);
@@ -211,7 +211,7 @@ interface Lot {
   ecritureBloquee: boolean;
 }
 
-export interface OptionsFile {
+interface OptionsFile {
   transport: TransportDepot;
   concurrenceTransferts?: number;
   concurrencePreparations?: number;
@@ -691,7 +691,7 @@ const INACTIVITE_TRANSFERT_MS = 60_000;
  * progression d'un envoi. Le corps est le `File` lui-même (lu en flux par
  * le navigateur, aucune copie en mémoire JavaScript).
  */
-export function envoyerXhr(
+function envoyerXhr(
   url: string, file: File, mimeType: string, signal: AbortSignal, onProgress: (f: number) => void,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -744,7 +744,7 @@ const json = (body: Record<string, unknown>, signal: AbortSignal): RequestInit =
   signal,
 });
 
-export const transportNavigateur: TransportDepot = {
+const transportNavigateur: TransportDepot = {
   hacher: (file, signal, onProgress) => computeFileSha256(file, { signal, onProgress }),
   presign: (body, signal) => fetchDepot('/api/files/presign', json(body, signal)),
   envoyer: envoyerXhr,

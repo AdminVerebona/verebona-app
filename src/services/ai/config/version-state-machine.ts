@@ -20,24 +20,8 @@ export type ConfigVersionState = 'ACTIVE' | 'INACTIVE';
 /** Statuts lisibles en base (anciens compris, migration 0376). */
 export type ConfigVersionStatus = ConfigVersionState | 'DRAFT' | 'TO_TEST' | 'VALIDATED' | 'ARCHIVED';
 
-export const LEGACY_STATUSES = ['DRAFT', 'TO_TEST', 'VALIDATED', 'ARCHIVED'] as const;
-
-export function isActiveStatus(status: string | null | undefined): boolean {
+function isActiveStatus(status: string | null | undefined): boolean {
   return status === 'ACTIVE';
-}
-
-/** État affiché : toute valeur autre qu'ACTIVE est « non active ». */
-export function stateOf(status: string | null | undefined): ConfigVersionState {
-  return isActiveStatus(status) ? 'ACTIVE' : 'INACTIVE';
-}
-
-/**
- * Une version est exécutée par les nouveaux démarrages si et seulement si elle
- * est active — quel que soit l'environnement (plus de version « À tester »
- * effective en préproduction).
- */
-export function isExecutable(status: string, _environment?: AiEnvironment): boolean {
-  return isActiveStatus(status);
 }
 
 /** Libellé d'état pour les écrans, selon l'environnement. */

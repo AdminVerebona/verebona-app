@@ -30,7 +30,7 @@ import type { WorkerSummary } from './worker-heartbeat';
  *   · FAILED              — en échec (technique, ou résultat métier FAILED) ;
  *   · CANCELLED           — annulé.
  */
-export type ExecutionPhase =
+type ExecutionPhase =
   | 'CREATED_NOT_STARTED' | 'WAITING_RETRY' | 'STARTED' | 'DONE_NO_CHANGE' | 'DONE_CHANGED' | 'DONE' | 'FAILED' | 'CANCELLED';
 
 export function executionPhase(job: Pick<QueuedJob, 'status' | 'attempts' | 'businessResult' | 'lastError'> & { attemptHistoryLength?: number }): ExecutionPhase {
@@ -51,7 +51,7 @@ export function executionPhase(job: Pick<QueuedJob, 'status' | 'attempts' | 'bus
 
 // ── Disponibilité de l'exécutant T3 ─────────────────────────────────────────
 
-export interface ExecutorAvailability {
+interface ExecutorAvailability {
   available: boolean;
   /** Motif de non-démarrage, ou `null`. */
   reason: string | null;
@@ -86,7 +86,7 @@ export function t3ExecutorAvailability(input: {
 
 // ── Lecture ─────────────────────────────────────────────────────────────────
 
-export interface T3JobSummary {
+interface T3JobSummary {
   id: number;
   accountId: number | null;
   origin: string;
@@ -146,7 +146,7 @@ export function summarizeT3Job(job: QueuedJob & { attemptHistoryLength?: number 
 // ── Phase A : diagnostic de CRÉATION des jobs T3 (lot 54A) ─────────────────
 
 /** Dernière évaluation de la planification T3 connue (toutes instances). */
-export interface T3ScheduleEvaluation {
+interface T3ScheduleEvaluation {
   at: string;
   workerId: string;
   due: boolean;
@@ -157,7 +157,7 @@ export interface T3ScheduleEvaluation {
   error: string | null;
 }
 
-export interface T3CreationFinding {
+interface T3CreationFinding {
   code:
     | 'OK' | 'EMERGENCY_STOP' | 'MIGRATION_0338_MISSING' | 'MIGRATION_0370_MISSING' | 'NO_LIVE_WORKER'
     | 'SCHEDULE_DISABLED' | 'SCHEDULER_STALLED' | 'SCHEDULE_ABSORBED' | 'SCHEDULE_OVERDUE' | 'LAST_MANUAL_REFUSED'
@@ -167,7 +167,7 @@ export interface T3CreationFinding {
 }
 
 /** Délai au-delà duquel l'absence d'évaluation de la planification est anormale (instances vivantes). */
-export const SCHEDULER_STALE_MS = 5 * 60_000;
+const SCHEDULER_STALE_MS = 5 * 60_000;
 
 /**
  * Diagnostic de la PHASE A (création des jobs T3), sans SQL (pur, testé) :
@@ -261,7 +261,7 @@ export function latestT3ScheduleEvaluation(
   return best;
 }
 
-export interface T3Supervision {
+interface T3Supervision {
   generatedAt: string;
   /** Lot 54A : code qui répond (commit) et versions des instances vivantes. */
   build: {

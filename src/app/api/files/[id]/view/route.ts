@@ -4,7 +4,6 @@ import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { getS3Config, logS3Error, S3ConfigError, signGetUrl } from '@/lib/s3-config';
-import { FileLogger } from '@/lib/file-logger';
 import { getSession, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { accessErrorResponse, sessionErrorToResponse } from '@/lib/auth/session-errors';
 import { viewableFileCondition } from '@/services/documents/grouped-sources';
@@ -25,15 +24,12 @@ export async function GET(
 ) {
   const params = await context.params;
   const requestId = randomUUID();
-  const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || null;
-  const userAgent = request.headers.get('user-agent') || null;
 
   try {
     // Garde de session commune (révocation comprise) ; refus typés du
     // contrat `lib/auth/session-errors` (APP-PERF-20, lot 24).
     const session = await getSession(request);
     const accountId = session.currentAccountId;
-    const userId = session.userId;
 
     if (!accountId) {
       return accessErrorResponse('no-account', requestId, { headers: NO_STORE });
@@ -63,14 +59,6 @@ export async function GET(
       .limit(1);
 
     if (fileRecords.length === 0) {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        action: 'VIEW',
-        error: 'FILE_NOT_FOUND',
-      });
       return accessErrorResponse('not-found', requestId, {
         code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.', headers: NO_STORE,
       });
@@ -81,24 +69,12 @@ export async function GET(
     // Fichier d'un autre compte : 404, comme le proxy et les miniatures
     // (`services/documents/file-access`) — son existence n'est pas confirmée.
     if (file.accountId !== accountId) {
-      FileLogger.blocked({ requestId, ip, userAgent, userId, fileId: fileIdInt, action: 'VIEW', error: 'FILE_NOT_FOUND' });
       return accessErrorResponse('not-found', requestId, {
         code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.', headers: NO_STORE,
       });
     }
 
     if (file.uploadStatus !== 'COMPLETED' && file.uploadStatus !== null) {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        assetId: file.assetId ?? undefined,
-        fileId: fileIdInt,
-        filename: file.filename ?? undefined,
-        action: 'VIEW',
-        error: 'FILE_NOT_READY',
-      });
       return NextResponse.json(
         { 
           error: 'File is not ready for viewing', 
@@ -121,17 +97,6 @@ export async function GET(
 
     if (!file.s3Bucket || !file.s3Key || file.s3Bucket === 'weblink') {
       console.error('GET view URL error: Missing S3 configuration for file', fileIdInt);
-      FileLogger.error({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        assetId: file.assetId ?? undefined,
-        fileId: fileIdInt,
-        filename: file.filename ?? undefined,
-        action: 'VIEW',
-        error: 'S3_CONFIG_MISSING',
-      });
       return NextResponse.json(
         { 
           error: 'File storage configuration is incomplete', 
@@ -154,20 +119,6 @@ export async function GET(
       expiresIn,
     });
 
-    FileLogger.success({
-      requestId,
-      ip,
-      userAgent,
-      userId,
-      assetId: file.assetId ?? undefined,
-      fileId: fileIdInt,
-      filename: file.filename ?? undefined,
-      action: 'VIEW',
-      details: {
-        size: file.size,
-        mimeType: file.mimeType,
-      },
-    });
 
     return NextResponse.json({
       viewUrl,
@@ -187,14 +138,6 @@ export async function GET(
         { status: 500, headers: { 'x-request-id': requestId } }
       );
     }
-    FileLogger.error({
-      requestId,
-      ip,
-      userAgent,
-      userId: 0,
-      action: 'VIEW',
-      error: (error as Error)?.message ?? String(error),
-    });
     // Erreur inattendue : 500 journalisé avec `requestId`, sans détail technique au client.
     return sessionErrorToResponse(error, requestId, 'files/view');
   }

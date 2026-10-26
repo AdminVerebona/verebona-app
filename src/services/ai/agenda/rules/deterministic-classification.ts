@@ -59,26 +59,12 @@ const INFO_PATTERNS: RegExp[] = [
 ];
 
 /** Origine d'une classification déterministe (traçabilité). */
-export type RuleSource = 'registry' | 'business_rule' | 'pattern';
+type RuleSource = 'registry' | 'business_rule' | 'pattern';
 
-export interface RuleClassification {
+interface RuleClassification {
   category: HomeCategory;
   source: RuleSource;
   ruleCode: string;
-}
-
-/**
- * Catégorie portée par le registre (CDC 15 T4-02) : `agendaEffect` du champ
- * d'origine (nature, businessType), sinon type métier et nature fournis ;
- * `EVENT_CATALOG.homeCategory[nature]`. `selon_evenement` ⇒ `null` : c'est
- * l'événement concret qui décide (règles, puis modèle).
- */
-export function categoryFromRegistry(input: {
-  originFieldKey?: string | null; businessType?: string | null; nature?: AgendaNature | null;
-}): RuleClassification | null {
-  const cat = registryHomeCategory(input);
-  if (!cat || cat.value === 'selon_evenement') return null;
-  return { category: cat.value, source: 'registry', ruleCode: `EVENT_CATALOG:${cat.businessType}:${cat.nature}` };
 }
 
 /** Catégorie brute du registre, `selon_evenement` compris, ou `null` (inconnu). */
@@ -139,7 +125,3 @@ export function classifyByRules(input: AgendaClassificationInput): HomeCategory 
   return classifyByRulesDetailed(input)?.category ?? null;
 }
 
-/** Expose les motifs pour les tests de non-régression. */
-export function getClassificationPatterns(): { action: RegExp[]; information: RegExp[] } {
-  return { action: ACTION_PATTERNS, information: INFO_PATTERNS };
-}

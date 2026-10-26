@@ -42,7 +42,7 @@ const ONCE_PER_ACCOUNT: FunnelEvent[] = [
   'first_export_generated',
 ];
 
-export interface TrackParams {
+interface TrackParams {
   event: FunnelEvent;
   accountId: number;
   userId?: number | null;
@@ -101,7 +101,7 @@ function ratio(numerator: number, denominator: number): number {
   return Math.round((numerator / denominator) * 1000) / 10;
 }
 
-export interface FunnelIndicators {
+interface FunnelIndicators {
   /** Comptes ayant demarre un essai. */
   trialsStarted: number;
   /** Part des essais ayant abouti a l'ajout d'un premier bien (%). */

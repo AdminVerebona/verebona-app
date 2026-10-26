@@ -47,7 +47,7 @@ interface Report {
   busy?: boolean;
 }
 
-export interface ObservabilityVersion {
+interface ObservabilityVersion {
   id: number; status: string; visibleNumber: number | null; label: string | null;
 }
 

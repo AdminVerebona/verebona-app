@@ -16,7 +16,7 @@ import { pgClient } from '@/db';
 import { TREATMENTS, type Treatment } from '../config/treatments';
 import { treatmentCaseSql } from '../alerts/cost-evaluator';
 
-export interface TreatmentActivity {
+interface TreatmentActivity {
   treatment: Treatment;
   calls24h: number;
   calls7d: number;

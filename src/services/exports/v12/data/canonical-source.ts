@@ -173,7 +173,7 @@ export function canonicalCharacteristics(row: AssetRowJson, state: CanonicalAsse
 // ── Documents du bien ───────────────────────────────────────────────────────
 
 /** Chemin par lequel un document est rattaché au bien (traçabilité). */
-export type DocumentPath =
+type DocumentPath =
   | 'link:PRIMARY' | 'link:SECONDARY' | 'link:MENTIONED'
   | 'column:asset_id' | 'column:linked_asset_id' | 'column:linked_room_id' | 'column:equipment_id'
   | 'column:substructure_id'
@@ -320,7 +320,7 @@ export async function loadCanonicalDocuments(
 
 // ── Agenda ──────────────────────────────────────────────────────────────────
 
-export interface CanonicalAgendaRow {
+interface CanonicalAgendaRow {
   id: number;
   title: string;
   description: string | null;

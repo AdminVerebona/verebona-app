@@ -13,7 +13,7 @@ import { buildSecondaries, selectSubjects } from '../selector';
 import { buildPresentation } from '../presentation';
 import type { MascotParagraph, MascotPresentation, MascotSubject } from '../types';
 import {
-  CLEAR_SPEECH, EMPTY_ACCOUNT_SPEECH, homePoseLabel, EMPTY_ACCOUNT_SUGGESTIONS, actionTiles, composeSpeech, displayedSecondaries, homePose,
+  NOTHING_TO_REPORT_SPEECH, EMPTY_ACCOUNT_SPEECH, homePoseLabel, EMPTY_ACCOUNT_SUGGESTIONS, actionTiles, composeSpeech, displayedSecondaries, homePose,
   homeSuggestions, lowerFirst, secondaryActions, splitHighlights, tileFor,
 } from '../bubble';
 
@@ -53,7 +53,7 @@ describe('phrase en langage naturel (§3.2)', () => {
 
   it('zéro sujet : « Tout est à jour. … »', () => {
     const clear = presentationOf({ status: 'clear', paragraphs: [{ subjectId: 'CLEAR', sourceCode: 'CLEAR', occurrenceKey: 'CLEAR', text: 'Tout est à jour pour le moment.', highlight: null, actions: [] }] });
-    expect(composeSpeech({ empty: false, presentation: clear }).text).toBe(CLEAR_SPEECH);
+    expect(composeSpeech({ empty: false, presentation: clear }).text).toBe(NOTHING_TO_REPORT_SPEECH);
   });
 
   it('un sujet seulement informatif est dit tel quel (lot 61 : plus de « Tout est à jour. » devant)', () => {

@@ -22,7 +22,7 @@ export const ASSET_FAMILY_CODES: readonly AssetFamily[] = ['IMMOBILIER', 'VEHICU
  * - `money_cents` : montant en centimes (entier), réservé aux clés `*Cents` ;
  * - `date` : chaîne ISO `AAAA-MM-JJ`.
  */
-export type CanonicalValueType =
+type CanonicalValueType =
   | 'string'
   | 'number'
   | 'money_eur'
@@ -33,7 +33,7 @@ export type CanonicalValueType =
   | 'json';
 
 /** Transformation appliquée pour recopier la valeur canonique dans une colonne miroir (D-10). */
-export type MirrorTransform = 'eur_to_cents' | 'identity' | 'date' | 'integer';
+type MirrorTransform = 'eur_to_cents' | 'identity' | 'date' | 'integer';
 
 export interface MirrorColumn {
   table: 'assets';
@@ -70,7 +70,7 @@ export interface AgendaEffect {
   recurrence?: string;
 }
 
-export interface CompletenessRule {
+interface CompletenessRule {
   /** Information attendue sur la fiche (« information manquante » sinon). */
   required: boolean;
   /** Familles pour lesquelles la règle s'applique (toutes celles du champ si absent). */
@@ -178,7 +178,7 @@ export interface AliasResolution {
 }
 
 /** Catégorie d'une clé volontairement absente du registre. */
-export type ExclusionKind =
+type ExclusionKind =
   /** Donnée technique ou d'affichage (alertes, historiques, origines). */
   | 'TECHNICAL'
   /** Colonne d'identité du bien, hors keyCharacteristics (nom, famille, statut). */
@@ -209,7 +209,7 @@ export interface NormalizeOptions {
 /* ── Catalogues (T4-01, T4-04, T4-13) ─────────────────────────────────────── */
 
 /** Catégorie d'affichage accueil proposée par défaut (T4-02 : selon nature, pas selon origine). */
-export type DefaultHomeCategory = 'action' | 'information';
+type DefaultHomeCategory = 'action' | 'information';
 
 export interface EventCatalogEntry {
   businessType: EventBusinessType;
@@ -232,10 +232,10 @@ export interface EventCatalogEntry {
 }
 
 /** Autorité d'un type documentaire pour créer un événement sans validation (T4-04). */
-export type DocumentAuthority = 'AUTHORITATIVE' | 'SUPPORTING' | 'WEAK';
+type DocumentAuthority = 'AUTHORITATIVE' | 'SUPPORTING' | 'WEAK';
 
 /** Forme de preuve d'exécution acceptée pour clore une échéance (T4-13). */
-export interface CompletionProofShape {
+interface CompletionProofShape {
   /** Code court de la forme de preuve. */
   code: string;
   /** Description de ce qui doit figurer dans le document. */
@@ -271,7 +271,7 @@ export interface DocumentCatalogEntry {
 
 /* ── DTO pour les prompts (R6) ────────────────────────────────────────────── */
 
-export interface PromptFieldDTO {
+interface PromptFieldDTO {
   key: string;
   label: string;
   valueType: CanonicalValueType;
@@ -286,14 +286,14 @@ export interface PromptFieldDTO {
   assistantWritable: boolean;
 }
 
-export interface PromptEventDTO {
+interface PromptEventDTO {
   businessType: EventBusinessType;
   label: string;
   natures: AgendaNature[];
   fieldKeys: string[];
 }
 
-export interface PromptDocumentDTO {
+interface PromptDocumentDTO {
   code: string;
   label: string;
   authority: DocumentAuthority;

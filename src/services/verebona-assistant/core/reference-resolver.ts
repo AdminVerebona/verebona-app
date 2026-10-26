@@ -14,6 +14,7 @@
 /** Lot 29 (ticket 13) : un équipement ou une pièce peut être la cible courante du fil. */
 import { leadingAssetTerm } from '@/lib/asset-taxonomy';
 import { findReadableFields } from '../canonical/field-vocabulary';
+import { plain } from './routing-text';
 
 /** Réponse du fil restituant une donnée sensible, telle que vue par le modèle. */
 export const SENSITIVE_ANSWER_PLACEHOLDER = '(réponse contenant une donnée protégée, non transmise)';
@@ -46,12 +47,10 @@ export interface ThreadContext {
   pendingClarification: string | null;
 }
 
-export type ReferenceResolution =
+type ReferenceResolution =
   | { kind: 'none' }
   | { kind: 'resolved'; entity: { type: ReferencedType; id: number; label?: string | null }; method: string; detected: string }
   | { kind: 'ambiguous'; candidates: PresentedEntity[]; detected: string };
-
-const plain = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'");
 
 /**
  * « son kilométrage », « sa date de fin de garantie », « son numéro de

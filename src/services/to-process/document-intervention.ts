@@ -39,7 +39,6 @@ import type { DbClient, ResolveOptions, ResolveResult } from './resolve-action.s
 export const INTERVENTION_RULE_CODE = 'DOC-INTERVENTION';
 /** Clé de la carte d'intervention d'une donnée documentaire. */
 export const interventionKey = (dataKey: string) => `intervention:${dataKey}`;
-export const isInterventionKey = (key: string | null | undefined) => !!key && key.startsWith('intervention:');
 
 /** Choix proposés sur la carte (valeurs stables, libellés grand public). */
 export const INTERVENTION_CHOICES = [
@@ -66,7 +65,7 @@ export function interventionQuestion(iv: Pick<InterventionDecision, 'action' | '
   return iv.actBy && !/\d{2}\/\d{2}\/\d{4}/.test(base) ? `${base} (avant le ${jjmmaaaa(iv.actBy)})` : base;
 }
 
-export interface InterventionUpsertResult {
+interface InterventionUpsertResult {
   status: 'CREATED' | 'UPDATED' | 'USER_DECIDED' | 'SKIPPED';
   actionId: number | null;
 }
@@ -74,7 +73,7 @@ export interface InterventionUpsertResult {
 const normPreuve = (t: string | null | undefined) => (t ? t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim() : '');
 
 /** Intervention comparée (lot 76, C6) : nature, échéance d'action, clé de preuve (clauses citées), preuve. */
-export interface InterventionIdentity { kind?: string | null; actBy?: string | null; proof?: string | null; evidence?: string | null }
+interface InterventionIdentity { kind?: string | null; actBy?: string | null; proof?: string | null; evidence?: string | null }
 
 /**
  * Même OBLIGATION (pure) — lot 76 (C6) : même nature, même échéance d'action

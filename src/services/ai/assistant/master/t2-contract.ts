@@ -16,7 +16,6 @@
 import { z } from 'zod';
 import { VEREBONA_INTENTS } from '@/services/verebona-assistant/types/intents';
 
-export const T2_MASTER_PROMPT_CODE = 't2_master_v1';
 export const T2_MODES = ['UNDERSTAND', 'ANSWER', 'REVALIDATE'] as const;
 export type T2Mode = (typeof T2_MODES)[number];
 
@@ -38,13 +37,12 @@ const nullableString = z.string().max(200).nullable().optional();
  * Le modèle n'écrit JAMAIS : une proposition devient, au mieux, un plan
  * PENDING_CONFIRMATION construit et validé par le serveur (CommandPlan).
  */
-export const T2_INTERACTION_MODES = ['QUERY', 'UPDATE_PROPOSAL', 'ACTION_REQUEST', 'CONTEXT_ONLY', 'MIXED', 'AMBIGUOUS'] as const;
-export type T2InteractionMode = (typeof T2_INTERACTION_MODES)[number];
+const T2_INTERACTION_MODES = ['QUERY', 'UPDATE_PROPOSAL', 'ACTION_REQUEST', 'CONTEXT_ONLY', 'MIXED', 'AMBIGUOUS'] as const;
 
 const looseValue = z.union([z.string().max(200), z.number()]).transform(String).nullable().optional();
 
 /** Information APPORTÉE par l'utilisateur (indices : aucun identifiant, aucune destination). */
-export const t2SuppliedFact = z.object({
+const t2SuppliedFact = z.object({
   /** Désignation littérale de la cible (« Cupra ») — résolue par le serveur. */
   targetHint: nullableString,
   /** Clé du FIELD_CATALOG si la donnée en relève — contrôlée par le serveur. */
@@ -58,7 +56,6 @@ export const t2SuppliedFact = z.object({
   role: z.enum(['update', 'context', 'unknown']).default('unknown'),
   confidence: z.enum(['exact', 'probable', 'ambiguous']).default('probable'),
 });
-export type T2SuppliedFact = z.infer<typeof t2SuppliedFact>;
 
 /**
  * Lot 54E (#419 écart 1) — ARBITRAGE sémantique entre candidats exposés par
@@ -121,24 +118,23 @@ export type T2ClaimSupport = z.infer<typeof t2ClaimSupport>;
 
 const sourceIds = z.array(z.union([z.string(), z.number()]).transform(String)).max(20).default([]);
 
-export const t2Claim = z.object({
+const t2Claim = z.object({
   text: z.string().min(1).max(1000),
   sourceIds,
   derivation: z.enum(['direct', 'calculated', 'synthesized']).optional(),
   factual: z.boolean().optional(),
   support: t2ClaimSupport.optional(),
 });
-export type T2Claim = z.infer<typeof t2Claim>;
 
 const answerStatus = z.enum(['answered', 'insufficient_data']);
 
-export const T2AnswerClaims = z.object({
+const T2AnswerClaims = z.object({
   mode: z.literal('ANSWER'),
   format: z.literal('claims'),
   status: answerStatus,
   claims: z.array(t2Claim).max(30).default([]),
 });
-export const T2AnswerComparison = z.object({
+const T2AnswerComparison = z.object({
   mode: z.literal('ANSWER'),
   format: z.literal('comparison'),
   status: answerStatus,
@@ -151,7 +147,7 @@ export const T2AnswerComparison = z.object({
     sourceIds,
   })).max(20),
 });
-export const T2AnswerTimeline = z.object({
+const T2AnswerTimeline = z.object({
   mode: z.literal('ANSWER'),
   format: z.literal('timeline'),
   status: answerStatus,

@@ -19,7 +19,7 @@ import { isS3Configured } from '@/lib/s3-config';
 const TOUR_MS = 30 * 60 * 1000;
 const DELAI_INITIAL_MS = 2 * 60 * 1000;
 const BAIL_MS = 20 * 60 * 60 * 1000;
-export const BACKUP_DAILY_LOCK = 'database-backup-daily';
+const BACKUP_DAILY_LOCK = 'database-backup-daily';
 
 let demarre = false;
 

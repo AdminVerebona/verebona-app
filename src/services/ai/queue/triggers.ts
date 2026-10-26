@@ -146,7 +146,7 @@ export interface ScheduleDeps {
  *     (`DUPLICATE_PENDING` / `DUPLICATE_RUNNING`, job vivant `jobId`) ;
  *   · `INSERT_FAILED` : la mise en file a levé (message dans `error`).
  */
-export interface ScheduleOutcome {
+interface ScheduleOutcome {
   treatment: Treatment;
   triggerCode: string | null;
   periodHours: number | null;

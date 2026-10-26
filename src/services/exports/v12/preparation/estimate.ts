@@ -32,7 +32,7 @@ export function unavailability(f: { s3Key: string | null; sizeBytes: number | nu
 export const docCompatibility = (d: SourceDocument): Compatibility =>
   unavailability(d) ?? (d.integrable ? 'integrable' : 'zip_only');
 
-export interface SelectionEstimate {
+interface SelectionEstimate {
   plan: SelectionPlan;
   outputFormat: OutputFormat;
   dto: EstimateDto;

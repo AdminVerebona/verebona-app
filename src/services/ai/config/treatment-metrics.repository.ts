@@ -46,7 +46,7 @@ export interface MetricTable {
   rows: Array<Record<string, string | number | null>>;
 }
 
-export interface TreatmentMetrics {
+interface TreatmentMetrics {
   treatment: Treatment;
   windowDays: number;
   metrics: Metric[];
@@ -330,7 +330,7 @@ const MOTIF_NON_RESOLU_SQL = `CASE
   END`;
 
 /** Libellés des motifs du §32.5 (formulations anonymisées). */
-export const MOTIFS_NON_RESOLUS: Record<string, string> = {
+const MOTIFS_NON_RESOLUS: Record<string, string> = {
   aucune_donnee: 'Aucune donnée',
   ambiguite: 'Ambiguïté',
   aide_absente: 'Absence d’article d’aide',

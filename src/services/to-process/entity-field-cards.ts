@@ -36,13 +36,12 @@ import { resolveActionsForData, upsertAction } from './to-process-action.service
 import { perimer, valueLabel } from './migration-review-cards';
 import { realAlternatives } from '@/services/ai/reconciliation/decision/equivalence';
 
-export const ENTITY_FIELD_RULE = 'ENTITY-FIELD';
-export const ENTITY_FIELD_ROOM_RULE = 'ENTITY-FIELD-ROOM';
+const ENTITY_FIELD_RULE = 'ENTITY-FIELD';
+const ENTITY_FIELD_ROOM_RULE = 'ENTITY-FIELD-ROOM';
 /** Règles des cartes de champ d'entité, par type de cible. */
-export const ENTITY_FIELD_RULES: Readonly<Record<'EQUIPMENT' | 'ROOM', string>> = {
+const ENTITY_FIELD_RULES: Readonly<Record<'EQUIPMENT' | 'ROOM', string>> = {
   EQUIPMENT: ENTITY_FIELD_RULE, ROOM: ENTITY_FIELD_ROOM_RULE,
 };
-export const isEntityFieldRule = (code: string | null | undefined) => code === ENTITY_FIELD_RULE || code === ENTITY_FIELD_ROOM_RULE;
 
 type Scalar = string | number | boolean | null;
 const scalar = (v: unknown): Scalar => (v === null || v === undefined ? null
@@ -74,7 +73,7 @@ export function entityConflictProposals(d: ReconciliationDecision): ActionPropos
   return proposals;
 }
 
-export interface EntityCardsResult { created: number; resolved: number; skipped: number }
+interface EntityCardsResult { created: number; resolved: number; skipped: number }
 
 /**
  * Traduit les décisions d'une réconciliation ciblée en mouvements de file.

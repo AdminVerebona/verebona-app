@@ -30,9 +30,9 @@ import { getField } from '@/services/canonical/registry';
 import { documentBridgeRules } from './rules-catalog';
 import { isDeadlineRule } from './document-field-evidence';
 
-export type SettledReason = 'USER_DONE' | 'USER_NOT_NEEDED' | 'USER_NOT_APPLICABLE' | 'NO_ACTION';
+type SettledReason = 'USER_DONE' | 'USER_NOT_NEEDED' | 'USER_NOT_APPLICABLE' | 'NO_ACTION';
 
-export interface SettledObligation {
+interface SettledObligation {
   agendaItemId: number;
   fileId: number;
   dataKey: string;
@@ -44,7 +44,7 @@ export interface SettledObligation {
 }
 
 /** Correspondance clé lue (alias) → clé d'échéance du pont (registre). Pure. */
-export function deadlineKeyAliases(): Array<{ alias: string; key: string }> {
+function deadlineKeyAliases(): Array<{ alias: string; key: string }> {
   const out: Array<{ alias: string; key: string }> = [];
   for (const r of documentBridgeRules().filter(isDeadlineRule)) {
     const key = r.fieldKey!;

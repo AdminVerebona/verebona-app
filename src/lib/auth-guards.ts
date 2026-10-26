@@ -10,14 +10,6 @@ import { isKnownSessionError, sessionErrorToResponse } from '@/lib/auth/session-
  */
 
 /**
- * Vérifie l'authentification et retourne userId
- * @throws Error si non authentifié
- */
-export async function requireAuth(request: NextRequest): Promise<number> {
-  return await SessionService.requireAuth(request);
-}
-
-/**
  * Vérifie le rôle ADMIN
  * @throws Error si pas admin
  */
@@ -26,22 +18,15 @@ export async function requireAdmin(request: NextRequest): Promise<number> {
 }
 
 /**
- * Vérifie la propriété d'une ressource
- * @throws Error si l'utilisateur n'est pas propriétaire
- */
-export function assertOwnership(userId: number, resourceUserId: number): void {
-  SessionService.assertOwnership(userId, resourceUserId);
-}
-
-/**
  * Récupère la session complète (avec tous les claims)
  */
 export async function getSession(request: NextRequest) {
   return await SessionService.getSession(request);
 }
+
 /**
- * Codes d'erreur levés par les gardes de session (`requireAuth`,
- * `requireAdmin`, `getSession`).
+ * Codes d'erreur levés par les gardes de session (`requireAdmin`,
+ * `getSession`).
  *
  * Les routes admin les interceptent pour répondre 401/403 (503 si la
  * vérification est impossible) au lieu d'un 500 : un refus d'accès n'est pas

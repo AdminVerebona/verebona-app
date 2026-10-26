@@ -17,9 +17,9 @@
  * Absence = `null`, jamais une valeur de remplacement.
  */
 
-export type CommitSource = 'APP_COMMIT' | 'SOURCE_VERSION' | 'APP_BUILD_COMMIT' | 'CONTAINER_VERSION';
+type CommitSource = 'APP_COMMIT' | 'SOURCE_VERSION' | 'APP_BUILD_COMMIT' | 'CONTAINER_VERSION';
 
-export interface BuildIdentity {
+interface BuildIdentity {
   /** Commit déployé (40 caractères au plus), ou null. */
   commit: string | null;
   commitSource: CommitSource | null;

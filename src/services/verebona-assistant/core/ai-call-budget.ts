@@ -59,7 +59,7 @@ export function createAiCallBudget(max: number): AiCallBudget {
 }
 
 /** Levée quand le budget du message est épuisé : aucun appel n'est émis. */
-export class AiBudgetExhaustedError extends AiGatewayError {
+class AiBudgetExhaustedError extends AiGatewayError {
   constructor(operationCode: string) {
     super('QUOTA_EXCEEDED', operationCode,
       'Budget d’appels modèle du message épuisé (§15.5) — repli déterministe.', { recoverable: true });
@@ -105,7 +105,7 @@ export class AiBudgetExhaustedError extends AiGatewayError {
  * - `maxOutputTokens` : plafond explicite de CET appel (réduit seulement la
  *   configuration effective, CDC 15 T2-43) ; `timeoutMs` : §30.1 (12 s).
  */
-export interface CallPolicy {
+interface CallPolicy {
   modelAttempts?: number;
   firstModelIndex?: number;
   maxOutputTokens?: number;

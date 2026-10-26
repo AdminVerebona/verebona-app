@@ -30,9 +30,6 @@ export async function executionReportsReady(): Promise<boolean> {
   return ready;
 }
 
-/** Réinitialise le cache (tests). */
-export function resetExecutionReportsReady(): void { ready = null; }
-
 /** Écriture SIMULÉE en échec (tests e2e REP-03 uniquement, jamais en production). */
 let failNextReportWrite = false;
 export function simulateReportWriteFailure(on: boolean): void { failNextReportWrite = on; }
@@ -177,7 +174,7 @@ function toSummary(r: Row): ReportSummary {
   };
 }
 
-export interface ReportListFilter {
+interface ReportListFilter {
   treatment?: string; accountId?: number; fileId?: number; assetId?: number; status?: string; offset?: number; limit?: number;
 }
 
@@ -223,7 +220,7 @@ export async function getExecutionReport(id: number): Promise<ReportSummary | nu
   return r[0] ? toSummary(r[0]) : null;
 }
 
-export interface ReportEntryView {
+interface ReportEntryView {
   seq: number; section: string; tableName: string | null; recordId: string | null; columnPath: string | null;
   fieldKey: string | null; label: string | null; entityType: string | null; entityId: number | null;
   oldValue: unknown; value: unknown; valueType: string | null; ref: { sha256: string; chars: number } | null;
@@ -288,7 +285,7 @@ const RESOLVABLE: Readonly<Record<string, readonly string[]>> = {
   t6_interpellation_assessments: ['reason'],
 };
 
-export type ResolvedContent =
+type ResolvedContent =
   | { state: 'TRACED'; content: unknown }
   | { state: 'NOT_TRACED'; reason: string };
 

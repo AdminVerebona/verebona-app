@@ -12,7 +12,6 @@ export * from './types';
 export * from './registries';
 export * from './config/assistant-config';
 export { runAssistant } from './core/assistant-orchestrator.service';
-export type { OrchestratorPorts } from './core/assistant-orchestrator.service';
 
 import { assertConfigAtStartup } from './config/assistant-config';
 import { AI_OPERATIONS } from '@/services/ai/registry/operations';
@@ -54,8 +53,6 @@ export function ensureAssistantStartupChecked(): { ok: true } | { ok: false; err
   }
   return startupVerdict;
 }
-
-export { runAssistantStartupCheck, lastValidRegistry } from './core/model-startup-check';
 
 /** Réservé aux tests. */
 export function resetStartupCheckForTests(): void {

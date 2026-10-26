@@ -49,7 +49,7 @@ import {
   IDENTIFIER_KIND_LABELS, matchSignals, resolveAssetByIdentifiers, type IdentifierResolution,
 } from '../../reconciliation/document-asset/identifiers';
 
-export const T1_ANALYZE_DOCUMENT_OPERATION = 't1_analyze_document';
+const T1_ANALYZE_DOCUMENT_OPERATION = 't1_analyze_document';
 
 export interface AnalyzeDocumentResult {
   /** Sortie validée : faits prouvés, identifiants d'entités vérifiés, cellules ramenées à la grille. */
@@ -541,7 +541,7 @@ export function mergeIdentifierCandidates(candidates: LinkCandidate[], identific
 type RawCandidate = T1AnalyzeDocumentOutput['entities']['assets'][number];
 
 /** Candidat du master → `LinkCandidate` (contrat historique). */
-export function toLinkCandidate(c: RawCandidate): LinkCandidate {
+function toLinkCandidate(c: RawCandidate): LinkCandidate {
   return {
     entityId: c.entityId,
     ...(c.rawLabel ? { rawLabel: c.rawLabel } : {}),

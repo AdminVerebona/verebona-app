@@ -16,11 +16,11 @@ import {
 import { eq, and, isNull } from 'drizzle-orm';
 import { documentInAssetsCondition } from '@/services/documents/asset-document-scope';
 import { classifyCilEnergyEquipment, type CilEnergyEquipmentInput } from '@/lib/cil/energy-equipment';
-import { CIL_ACTION_REQUIRED_GENERIC_MESSAGE, isCilBlockingRuleBlock } from '@/lib/exports/cil-blocking';
+import { isCilBlockingRuleBlock } from '@/lib/exports/cil-blocking';
 
-export type BlockStatus = 'complete' | 'not_applicable' | 'missing' | 'invalid' | 'unknown';
+type BlockStatus = 'complete' | 'not_applicable' | 'missing' | 'invalid' | 'unknown';
 
-export interface MissingItem {
+interface MissingItem {
   id: string;
   label: string;
   target: { type: string; filter?: string };
@@ -62,12 +62,6 @@ export interface CilReadiness {
 
 /** Code et message renvoyés quand la génération d'un CIL est refusée. */
 export const CIL_ACTION_REQUIRED_CODE = 'CIL_ACTION_REQUIRED';
-/**
- * Message générique (sans détail disponible). Les refus construisent leur
- * message depuis les blocs réellement bloquants (`cilActionRequiredMessage`) :
- * l'ancienne phrase citait toujours identification, plans ET DPE (lot 69).
- */
-export const CIL_ACTION_REQUIRED_MESSAGE = CIL_ACTION_REQUIRED_GENERIC_MESSAGE;
 
 type CilAsset = { id: number; address: string | null; postalCode: string | null; city: string | null };
 
@@ -82,7 +76,7 @@ export function cilB6NotApplicableRefusedMessage(n: number): string {
 }
 
 /** Information quand une ancienne déclaration « Non applicable » est neutralisée. */
-export function cilB6NeutralizedNotice(n: number): string {
+function cilB6NeutralizedNotice(n: number): string {
   return `Une déclaration « Non applicable » avait été enregistrée pour ce bloc, mais ${n > 1 ? `${n} équipements à incidence énergétique sont désormais identifiés` : 'un équipement à incidence énergétique est désormais identifié'} : `
     + 'le bloc est donc considéré comme renseigné. La déclaration reste conservée ; elle redeviendrait effective si plus aucun équipement énergétique n’était retenu.';
 }

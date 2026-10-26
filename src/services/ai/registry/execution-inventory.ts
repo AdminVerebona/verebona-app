@@ -31,14 +31,14 @@ import { AI_OPERATIONS } from './operations';
 export type InventoryVerdict = 'conforme' | 'non_conforme' | 'indetermine';
 
 /** Une ligne d'agrégat lue dans `ai_usage_event`. */
-export interface ObservedOperation {
+interface ObservedOperation {
   operationType: string;
   useCaseCode: string | null;
   events: number;
   lastSeen: string;
 }
 
-export interface InventoryConclusion {
+interface InventoryConclusion {
   verdict: InventoryVerdict;
   reason: string;
   totalEvents: number;

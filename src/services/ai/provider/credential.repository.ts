@@ -28,9 +28,9 @@ import { pgClient } from '@/db';
 
 type Row = Record<string, unknown>;
 
-export type CredentialStatus = 'CANDIDATE' | 'ACTIVE' | 'RETIRED';
+type CredentialStatus = 'CANDIDATE' | 'ACTIVE' | 'RETIRED';
 
-export interface Credential {
+interface Credential {
   id: number;
   provider: string;
   status: CredentialStatus;
@@ -203,11 +203,3 @@ export async function activateCandidate(
   };
 }
 
-export async function discardCandidate(id: number): Promise<boolean> {
-  const rows = await pgClient.unsafe(
-    `UPDATE ai_provider_credential SET status = 'RETIRED', retired_at = NOW()
-      WHERE id = $1 AND status = 'CANDIDATE' RETURNING id`,
-    [id] as never[],
-  );
-  return (rows as unknown as Row[]).length > 0;
-}

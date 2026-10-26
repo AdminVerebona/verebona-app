@@ -60,11 +60,6 @@ export function currentSyncConfigSnapshot(): ExecutionConfigSnapshot | null {
   return storage.getStore() ?? null;
 }
 
-/** Exécute `fn` sous l'instantané donné (tous les appels qu'elle déclenche en héritent). */
-export function runUnderConfigSnapshot<T>(snapshot: ExecutionConfigSnapshot, fn: () => Promise<T>): Promise<T> {
-  return storage.run(snapshot, fn);
-}
-
 /**
  * Relevé de la configuration effective, enregistré par le résolveur à son
  * chargement (`config-resolver#captureExecutionSnapshot`) : aucun import

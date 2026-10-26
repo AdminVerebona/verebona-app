@@ -34,7 +34,7 @@ export interface LoginNetworkLog {
   elapsedMs: number;
 }
 
-export const LOGIN_RETRY_DELAY_MS = 800;
+const LOGIN_RETRY_DELAY_MS = 800;
 
 /** Coupure réseau (fetch a levé sans réponse), hors annulation volontaire. */
 export function isNetworkError(e: unknown): boolean {

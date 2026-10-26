@@ -107,7 +107,7 @@ export type AiErrorCode =
  * configuration, jamais affiché tel quel à l'utilisateur final — l'écran
  * utilisateur montre un message générique, le BO (Exécutions IA) le détail.
  */
-export const INTERNAL_AI_ERROR_CODES: ReadonlySet<AiErrorCode> = new Set<AiErrorCode>([
+const INTERNAL_AI_ERROR_CODES: ReadonlySet<AiErrorCode> = new Set<AiErrorCode>([
   'RUNTIME_CONTRACT_MISMATCH', 'REQUEST_BUILD_FAILED',
   'T4_INPUT_CONTRACT_MISSING_FIELD', 'T4_INPUT_CONTRACT_INVALID_TYPE', 'T4_TASK_NOT_ALLOWED',
   'T4_OUTPUT_CONTRACT_MISSING', 'T4_CONTRACT_VERSION_NOT_FOUND', 'T4_EXECUTION_CONTEXT_BUILD_FAILED',

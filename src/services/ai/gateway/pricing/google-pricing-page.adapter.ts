@@ -54,7 +54,7 @@ export type ResolvedPrice =
   }
   | { status: 'UNKNOWN'; model: string; reason: string };
 
-export interface PricingSection {
+interface PricingSection {
   heading: string;
   modelIds: string[];
   /** Cellules « payantes » du palier Standard, ou raison de l'impossibilité. */
@@ -63,7 +63,7 @@ export interface PricingSection {
   problem: string | null;
 }
 
-export type ParsedPricingPage =
+type ParsedPricingPage =
   | { ok: true; sections: PricingSection[] }
   | { ok: false; reason: string };
 
@@ -189,7 +189,7 @@ function classify(q: string): Qualif | null {
   return null;
 }
 
-export type CellPrice =
+type CellPrice =
   | { ok: true; amount: number; tier: { thresholdTokens: number; amount: number } | null; dated: Array<{ from: string | null; to: string | null; amount: number }> }
   | { ok: false; reason: string };
 

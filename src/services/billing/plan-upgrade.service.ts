@@ -71,7 +71,7 @@ import { primaryItem } from './price-history.service';
 import { pendingMutation, recordPriceOperation } from './price-operations.service';
 import { supersedeRevaluation } from './price-revaluation.service';
 
-export type UpgradeResult =
+type UpgradeResult =
   | { ok: true; url: string; scheduledChangeReleased: boolean; offer: PublicOffer }
   | {
       ok: false;

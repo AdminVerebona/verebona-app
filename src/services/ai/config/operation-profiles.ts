@@ -32,7 +32,7 @@ import type { OutputCapOrigin } from '../gateway/request-builder';
 /** Délai minimal d'un profil (ms) : en deçà, aucun appel utile n'aboutit. */
 export const PROFILE_MIN_TIMEOUT_MS = 1_000;
 /** Nombre d'emplacements de la chaîne (principal + 2 replis). */
-export const PROFILE_SLOTS = 3;
+const PROFILE_SLOTS = 3;
 
 export interface OperationProfile {
   /** Niveau par emplacement ; `null` : niveau du traitement. */
@@ -92,7 +92,7 @@ export function normalizeOperationProfiles(raw: unknown): OperationProfiles {
   return out;
 }
 
-export interface ProfileIssue { operationCode: string; field: 'operation' | 'reasoningByRank' | 'maxOutputTokensByRank' | 'timeoutMs'; message: string }
+interface ProfileIssue { operationCode: string; field: 'operation' | 'reasoningByRank' | 'maxOutputTokensByRank' | 'timeoutMs'; message: string }
 
 /**
  * Contrôles STRUCTURELS d'un profil saisi (pur) : opération du traitement,
@@ -173,7 +173,7 @@ export interface RankProfile {
 }
 
 /** Sous-ensemble de la configuration résolue utile au profil d'un rang. */
-export interface RankConfigInput {
+interface RankConfigInput {
   reasoningByRank?: ReadonlyArray<string | null | undefined> | null;
   maxOutputTokens?: number | null;
   configVersionId?: number | null;

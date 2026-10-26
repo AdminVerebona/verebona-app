@@ -25,11 +25,7 @@
  */
 import type { Claim, SupportLevel } from '../types/sources';
 import { findForbiddenVocabulary } from './output-safety';
-import { answerFormatFor, DEFAULT_MAX_ANSWER_CHARS, DEFAULT_MAX_SENTENCES } from '../prompts/answer-format';
-
-// T2-36 : valeurs par défaut de la règle UNIQUE par intention (`answer-format.ts`).
-export const MAX_SENTENCES = DEFAULT_MAX_SENTENCES;
-export const MAX_ANSWER_CHARS = DEFAULT_MAX_ANSWER_CHARS;
+import { answerFormatFor } from '../prompts/answer-format';
 
 const FR = new Set('le la les un une des du de et est sont pour dans sur avec votre vos vous ce cette ces il elle qui que au aux pas par en ne plus a été sera date montant document bien'.split(' '));
 const EN = new Set('the and is are for with your you this that these of to in on it was be not by from have has will'.split(' '));
@@ -55,7 +51,7 @@ export function countSentences(text: string): number {
     .filter((p) => p.trim().length > 0).length;
 }
 
-export interface ValidatedAnswer {
+interface ValidatedAnswer {
   answer: string;
   claims: Claim[];
   supportLevel: SupportLevel;

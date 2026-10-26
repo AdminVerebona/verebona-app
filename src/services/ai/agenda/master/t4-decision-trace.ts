@@ -13,14 +13,6 @@
  */
 import type { T4DecisionTrace } from '../types';
 
-export const T4_VERDICT_LABEL: Record<T4DecisionTrace['verdict'], string> = {
-  ACCEPTED: 'T4 a accepté l’événement',
-  RECURRENCE_REJECTED: 'T4 a accepté l’événement mais pas la récurrence',
-  EVENT_REJECTED: 'T4 a rejeté l’événement',
-  ABSTAINED: 'T4 s’est abstenu',
-  TECHNICAL_FAILURE: 'Échec technique T4',
-};
-
 /**
  * Écrit la décision sur l'exécution de l'appel. Jamais bloquant pour
  * l'appelant (qui capture).

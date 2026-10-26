@@ -31,7 +31,8 @@
  *   · une erreur à n'importe quelle étape annule tout (aucune configuration
  *     partielle).
  */
-import { probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { probeCount } from '@/lib/schema-readiness-log';
+import { cachedSchemaProbe } from '../telemetry/trace-schema';
 import { pgClient } from '@/db';
 import { getAiEnvironment, type AiEnvironment } from './environment';
 import { TREATMENTS, isTreatment, isRetiredTreatment, type Treatment } from './treatments';
@@ -1045,45 +1046,29 @@ export async function saveEntry(
 export const CONFIG_MASTER_COLUMNS = ['prompt_architecture', 'master_prompt'] as const;
 
 const RECONTROLE_MS = 5 * 60_000;
-let architectureColumn: { ready: boolean; checkedAt: number } | null = null;
-let absenceSignalee = false;
+
+const architectureProbe = cachedSchemaProbe(async (sql: SqlLike) => {
+  const rows = (await sql.unsafe(
+    `SELECT COUNT(*)::int AS n FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'ai_config_entries' AND column_name = ANY($1::text[])`,
+    [[...CONFIG_MASTER_COLUMNS]] as never[],
+  )) as Array<{ n: number }>;
+  const found = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
+  return { ready: found === CONFIG_MASTER_COLUMNS.length, found };
+}, {
+  scope: '[config]', migration: '0220', expected: CONFIG_MASTER_COLUMNS.map((c) => `ai_config_entries.${c}`),
+  consequence: 'Toutes les lignes sont lues en « steps » sans texte master ; bascule et texte master refusés (CDC 15 D-03, D-04) ; appliquer src/db/migrations/0220_*.sql.',
+});
 
 /** Les colonnes 0220 existent-elles (toutes) ? Ne lève jamais : illisible = absentes. */
 export async function hasPromptArchitectureColumn(sql: SqlLike = pgClient as unknown as SqlLike): Promise<boolean> {
-  const e = architectureColumn;
-  if (e && (e.ready || Date.now() - e.checkedAt < RECONTROLE_MS)) return e.ready;
-  let ready = false;
-  let trouvees: number | null = null;
-  let erreur: unknown;
-  try {
-    const rows = (await sql.unsafe(
-      `SELECT COUNT(*)::int AS n FROM information_schema.columns
-        WHERE table_schema = current_schema()
-          AND table_name = 'ai_config_entries' AND column_name = ANY($1::text[])`,
-      [[...CONFIG_MASTER_COLUMNS]] as never[],
-    )) as Array<{ n: number }>;
-    trouvees = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
-    ready = trouvees === CONFIG_MASTER_COLUMNS.length;
-  } catch (e) {
-    ready = false;
-    erreur = e;
-  }
-  architectureColumn = { ready, checkedAt: Date.now() };
-  if (!ready && !absenceSignalee) {
-    absenceSignalee = true;
-    console.error(schemaNotReadyMessage({
-      scope: '[config]', migration: '0220', expected: CONFIG_MASTER_COLUMNS.map((c) => `ai_config_entries.${c}`),
-      found: trouvees, error: erreur,
-      consequence: 'Toutes les lignes sont lues en « steps » sans texte master ; bascule et texte master refusés (CDC 15 D-03, D-04) ; appliquer src/db/migrations/0220_*.sql.',
-    }));
-  }
-  return ready;
+  return architectureProbe(sql);
 }
 
 /** Réservé aux tests. */
 export function __resetPromptArchitectureColumnForTests(): void {
-  architectureColumn = null;
-  absenceSignalee = false;
+  architectureProbe.reset();
 }
 
 /**

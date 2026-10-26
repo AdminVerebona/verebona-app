@@ -22,11 +22,6 @@ export function isHumanOrigin(origin: FieldOrigin): boolean {
   return HUMAN_ORIGINS.has(origin);
 }
 
-/** Une valeur d'origine automatique peut être remplacée par une meilleure preuve. */
-export function isAutomaticOrigin(origin: FieldOrigin): boolean {
-  return !HUMAN_ORIGINS.has(origin);
-}
-
 /**
  * Lecture rétrocompatible de l'ancien format.
  *
@@ -56,12 +51,7 @@ export function readOrigin(
   return 'USER';
 }
 
-/** Origine lisible dans une valeur quelconque (journal, paramètre d'API). */
-export function isFieldOrigin(v: unknown): v is FieldOrigin {
-  return typeof v === 'string' && (FIELD_ORIGINS as string[]).includes(v);
-}
-
-export interface WriteOriginOptions {
+interface WriteOriginOptions {
   /**
    * Date de l'écriture (ISO) : posée dans `<champ>__updatedAt`. Absente, la
    * clé n'est pas touchée (comportement historique de `applyDecision`).
@@ -96,7 +86,7 @@ export function writeOrigin(
   return next;
 }
 
-export type OverwriteDecision =
+type OverwriteDecision =
   | { allowed: true }
   | { allowed: false; reason: 'HUMAN_VALUE_PROTECTED' };
 

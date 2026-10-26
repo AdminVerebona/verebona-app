@@ -26,7 +26,7 @@ export type ProcessingStatus =
   | 'conflict'
   | 'analysis_failed';
 
-export const PROCESSING_LABELS: Record<ProcessingStatus, string> = {
+const PROCESSING_LABELS: Record<ProcessingStatus, string> = {
   uploading: 'Dépôt en cours',
   upload_failed: 'Échec du dépôt',
   stored: 'Déposé',
@@ -68,7 +68,7 @@ const ORDER_SQL: Record<DocumentSort, string> = {
   status: `f.analysis_state`,
 };
 
-export interface AccountDocumentMeta {
+interface AccountDocumentMeta {
   id: number;
   type: string | null;
   extension: string | null;
@@ -136,7 +136,7 @@ export async function loadAccountDocuments(
   };
 }
 
-export interface AccountExportMeta {
+interface AccountExportMeta {
   kind: 'export' | 'transmission';
   at: string;
   assetName: string | null;

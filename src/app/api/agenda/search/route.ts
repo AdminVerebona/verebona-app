@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     const q = new URL(req.url).searchParams.get('q') ?? '';
     const results = await searchAgendaItems(q, accountId);
     return NextResponse.json({ results });
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

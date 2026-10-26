@@ -29,7 +29,7 @@ export function formatAmountCents(cents: number | null | undefined, currency = '
 }
 
 /** Nombre au format français (« 1 250,5 »). */
-export function formatNumber(n: number): string {
+function formatNumber(n: number): string {
   return new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 2 }).format(n).replace(/ /g, ' ');
 }
 
@@ -111,11 +111,6 @@ export function formatAttributeValue(p: {
   return libelle ? `${capitalize(libelle)} : ${p.value}.` : `Valeur trouvée : ${p.value}.`;
 }
 
-/** Relation entre objets : « Ce document est rattaché à Maison Caen. » */
-export function formatRelation(subject: string, relation: string, target: string): string {
-  return `${capitalize(subject)} ${relation} ${target}.`;
-}
-
 /** Calcul simple : « Total des montants : 4 890,00 € (3 documents). » */
 export function formatSum(label: string, cents: number, count: number): string {
   return `${capitalize(label)} : ${formatAmountCents(cents)} (${formatNumber(count)} document${count > 1 ? 's' : ''}).`;
@@ -136,11 +131,6 @@ export function formatConflict(what: string, values: Array<{ value: string; sour
   const nombre = n === 2 ? 'deux' : n === 3 ? 'trois' : String(n);
   const liste = joinFr(values.map((v) => `${v.value} (${v.source})`));
   return `J’ai trouvé ${nombre} valeurs différentes pour ${what} : ${liste}. Elles proviennent de sources différentes ; vérifiez laquelle est à jour.`;
-}
-
-/** Statut : « Statut : en service. » */
-export function formatStatus(label: string, status: string): string {
-  return `${capitalize(label)} : ${status}.`;
 }
 
 /** Noms masculins fréquents parmi les attributs extraits (article « le »). */

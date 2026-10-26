@@ -99,7 +99,7 @@ export interface VerebonaLocalAnswer {
   actions?: Array<{ id: string; label: string; primary?: boolean }>;
 }
 
-export interface UseVerebonaState {
+interface UseVerebonaState {
   messages: VerebonaMessage[];
   isLoading: boolean;
   error: string | null;
@@ -161,7 +161,7 @@ function newId(): string {
     : `req_${Date.now()}_${Math.random().toString(36).slice(2)}`;
 }
 
-export interface UseVerebonaOptions {
+interface UseVerebonaOptions {
   /** Appelé quand le serveur refuse la question pour une raison de droits. */
   onWriteBlocked?: (info: WriteBlockedInfo) => void;
 }

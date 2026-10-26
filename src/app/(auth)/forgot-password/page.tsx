@@ -38,7 +38,7 @@ export default function ForgotPasswordPage() {
       }
 
       setIsSubmitted(true);
-    } catch (err) {
+    } catch {
       setError('Une erreur est survenue. Veuillez réessayer.');
       setIsLoading(false);
     }

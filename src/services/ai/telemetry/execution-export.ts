@@ -46,7 +46,7 @@ import type { CallCaptureView } from './call-capture';
 export const EXECUTION_EXPORT_FORMAT = 'verebona.ai-execution/v1';
 
 /** Une sortie journalisée : empreinte (assistant) ou extrait masqué. */
-export type OutputKind = 'digest' | 'excerpt';
+type OutputKind = 'digest' | 'excerpt';
 
 export function outputKindOf(preview: string): OutputKind {
   return /^sha256:[0-9a-f]{6,64} len:\d+$/.test(preview.trim()) ? 'digest' : 'excerpt';
@@ -128,7 +128,7 @@ function etape(s: ExecutionStep) {
   };
 }
 
-export interface ExecutionExport {
+interface ExecutionExport {
   format: typeof EXECUTION_EXPORT_FORMAT;
   exportedAt: string;
   callId: number;

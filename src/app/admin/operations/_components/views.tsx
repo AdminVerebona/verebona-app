@@ -41,7 +41,7 @@ export const READ_ONLY_NOTICE =
 /** Lien vers la File IA filtrée sur les travaux T3 du compte (relance d'un échec existante). */
 export const t3QueueHref = (accountId: number) => `/admin/ai-queue?treatment=T3&accountId=${accountId}&status=`;
 /** Exécutions IA d'un document (seul « lien vers le document » du BO : aucun nom, aucun téléchargement). */
-export const documentHref = (accountId: number, fileId: number) =>
+const documentHref = (accountId: number, fileId: number) =>
   `/admin/ai-executions?accountId=${accountId}&objectType=asset_file&objectId=${fileId}`;
 
 export function ReadOnlyNotice() {
@@ -240,7 +240,7 @@ function IndicatorDetail({ ind }: { ind: IndicatorResult }) {
   return null;
 }
 
-export function IndicatorCards({ indicators }: { indicators: IndicatorResult[] }) {
+function IndicatorCards({ indicators }: { indicators: IndicatorResult[] }) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
       {indicators.map((ind) => {
@@ -263,7 +263,7 @@ export function IndicatorCards({ indicators }: { indicators: IndicatorResult[] }
   );
 }
 
-export function HardAnomalyAlerts({ anomalies, procedure, accountId }: { anomalies: HardAnomalyResult[]; procedure: string; accountId: number | null }) {
+function HardAnomalyAlerts({ anomalies, procedure, accountId }: { anomalies: HardAnomalyResult[]; procedure: string; accountId: number | null }) {
   const actives = anomalies.filter((a) => a.count > 0);
   if (actives.length === 0) {
     return (
@@ -372,7 +372,7 @@ const opLinkPage = (id: unknown) => (id === null || id === undefined ? '—' : <
 const amount = (minor: unknown, cur: unknown) => (minor === null || minor === undefined ? '—' : formatMoney(n(minor), String(cur ?? 'EUR')));
 
 /** Lot 75N : navigation DANS le tiroir « Données du compte » (au lieu d'un changement d'écran). */
-export type OperationDetailNavigate = (type: 'operation' | 'document' | 'asset' | 'equipment' | 'agenda', id: number) => void;
+type OperationDetailNavigate = (type: 'operation' | 'document' | 'asset' | 'equipment' | 'agenda', id: number) => void;
 
 /** Lot 78A : libellés du contrôle d'identité économique et de la provenance (BO, lecture seule). */
 const IDENTITY_KIND: Record<string, string> = {

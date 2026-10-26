@@ -14,7 +14,7 @@ import { operationsGroupingChecks } from './checks/operations';
 /** Lot 83B : contrôles des invariants O-1, dérivés de la liste entière de `grouping/invariants.ts`. */
 const O1 = operationsGroupingChecks.map((c) => c.id);
 
-export interface CoverageEntry {
+interface CoverageEntry {
   domain: string;
   label: string;
   /** Contrôles ACTIFS qui couvrent (au moins en partie) le domaine. */

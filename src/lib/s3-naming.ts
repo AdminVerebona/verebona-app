@@ -25,7 +25,7 @@
  * - Lisibilité pour le support/debug
  */
 
-export interface S3KeyComponents {
+interface S3KeyComponents {
   userId: number;
   assetId: number | null; // Allow null for unassigned files
   fileId: number;
@@ -72,35 +72,4 @@ export function parseS3Key(s3Key: string): S3KeyComponents | null {
     timestamp: parseInt(timestamp),
     sanitizedFilename,
   };
-}
-
-/**
- * Génère le préfixe S3 pour tous les fichiers d'un utilisateur
- * Utile pour les opérations de listing/cleanup
- */
-export function getUserS3Prefix(userId: number): string {
-  return `verebona/u_${userId}/`;
-}
-
-/**
- * Génère le préfixe S3 pour tous les fichiers d'un asset
- * Utile pour les opérations de listing/cleanup
- */
-export function getAssetS3Prefix(userId: number, assetId: number): string {
-  return `verebona/u_${userId}/a_${assetId}/`;
-}
-
-/**
- * Génère le préfixe S3 pour un fichier spécifique (sans timestamp)
- * Utile pour rechercher toutes les versions d'un même fichier
- */
-export function getFileS3Prefix(userId: number, assetId: number, fileId: number): string {
-  return `verebona/u_${userId}/a_${assetId}/f_${fileId}/`;
-}
-
-/**
- * Valide qu'une clé S3 suit bien le format normalisé
- */
-export function isValidS3Key(s3Key: string): boolean {
-  return parseS3Key(s3Key) !== null;
 }

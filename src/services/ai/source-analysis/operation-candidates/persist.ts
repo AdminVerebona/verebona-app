@@ -36,7 +36,8 @@
  * ni ne modifie aucun candidat.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { missingFromPresenceFlags, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { missingFromPresenceFlags } from '@/lib/schema-readiness-log';
+import { cachedSchemaProbe } from '../../telemetry/trace-schema';
 import type { AnchoredOperationCandidate } from './prepare';
 
 type Tx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
@@ -48,7 +49,7 @@ export interface PersistedFactAnchor {
 }
 
 /** Preuve stable d'un candidat persisté (payload). */
-export interface CandidateEvidenceAnchor {
+interface CandidateEvidenceAnchor {
   /** `document_facts.id` du fait persisté (null : fait non persisté). */
   factId: number | null;
   /** Empreinte `factFingerprint` du fait T1 d'origine. */
@@ -57,49 +58,27 @@ export interface CandidateEvidenceAnchor {
 }
 
 /** Version du payload (jsonb) — artefact d'extraction, pas une donnée métier. */
-export const OPERATION_CANDIDATE_PAYLOAD_VERSION = 1;
+const OPERATION_CANDIDATE_PAYLOAD_VERSION = 1;
 
 const OPERATION_CANDIDATES_EXPECTED = ['document_operation_candidates', 'document_operation_candidates.t3_pending'] as const;
-const RECONTROLE_MS = 5 * 60_000;
-let etat: { ready: boolean; checkedAt: number } | null = null;
-let signale = false;
+const operationCandidatesProbe = cachedSchemaProbe(async () => {
+  const { pgClient } = await import('@/db');
+  // Lot 75A : un drapeau par élément attendu (liste exacte des absents).
+  const r = (await pgClient.unsafe(
+    `SELECT to_regclass('document_operation_candidates') IS NOT NULL AS a,
+            EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                     AND table_name = 'document_operation_candidates' AND column_name = 't3_pending') AS b`,
+  )) as unknown as Array<{ a: boolean; b: boolean }>;
+  const absents = r[0] ? missingFromPresenceFlags(OPERATION_CANDIDATES_EXPECTED, [r[0].a, r[0].b]) : null;
+  return { ready: absents !== null && absents.length === 0, missing: absents };
+}, {
+  scope: '[t1-operation-candidates]', migration: '0317 / 0320', expected: OPERATION_CANDIDATES_EXPECTED,
+  consequence: 'Candidats Opération de T1 non écrits ; les faits restent écrits comme avant.',
+});
 
 /** Table 0317 et colonnes 0320 présentes ? Ne lève jamais (illisible = absent). */
 export async function operationCandidatesReady(): Promise<boolean> {
-  if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
-  let ready = false;
-  let absents: string[] | null = null;
-  let erreur: unknown;
-  try {
-    const { pgClient } = await import('@/db');
-    // Lot 75A : un drapeau par élément attendu (liste exacte des absents).
-    const r = (await pgClient.unsafe(
-      `SELECT to_regclass('document_operation_candidates') IS NOT NULL AS a,
-              EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
-                       AND table_name = 'document_operation_candidates' AND column_name = 't3_pending') AS b`,
-    )) as unknown as Array<{ a: boolean; b: boolean }>;
-    absents = r[0] ? missingFromPresenceFlags(OPERATION_CANDIDATES_EXPECTED, [r[0].a, r[0].b]) : null;
-    ready = absents !== null && absents.length === 0;
-  } catch (e) {
-    ready = false;
-    erreur = e;
-  }
-  etat = { ready, checkedAt: Date.now() };
-  if (!ready && !signale) {
-    signale = true;
-    console.error(schemaNotReadyMessage({
-      scope: '[t1-operation-candidates]', migration: '0317 / 0320', error: erreur, missing: absents,
-      expected: OPERATION_CANDIDATES_EXPECTED,
-      consequence: 'Candidats Opération de T1 non écrits ; les faits restent écrits comme avant.',
-    }));
-  }
-  return ready;
-}
-
-/** Tests seulement. */
-export function resetOperationCandidatesReadyForTests(): void {
-  etat = null;
-  signale = false;
+  return operationCandidatesProbe();
 }
 
 /** Ancre d'une empreinte (premier fait persisté qui la porte), sinon fait non persisté. */
@@ -129,7 +108,7 @@ export function candidatePayload(c: AnchoredOperationCandidate, facts: ReadonlyM
   };
 }
 
-export interface CandidatePersistResult {
+interface CandidatePersistResult {
   superseded: number;
   inserted: number;
   /** Lignes marquées pour T3 (nouveaux établis + retraits de candidats consolidés). */

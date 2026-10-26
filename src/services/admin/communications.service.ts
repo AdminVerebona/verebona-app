@@ -142,7 +142,7 @@ export const CHANNEL_LABELS: Record<CommunicationChannel, string> = {
 
 // ── Modèle ──────────────────────────────────────────────────────────────────
 
-export interface CommunicationChannelView {
+interface CommunicationChannelView {
   channel: CommunicationChannel;
   active: boolean;
   /** Canal obligatoire : non désactivable (motif affiché, UX-003). */
@@ -153,12 +153,12 @@ export interface CommunicationChannelView {
 }
 
 /** Lot 79C : canal supprimé — affiché pour information, jamais proposé. */
-export interface RetiredChannelView {
+interface RetiredChannelView {
   channel: CommunicationChannel;
   reason: string;
 }
 
-export interface CommunicationEventView {
+interface CommunicationEventView {
   /** Clé d'activation : type du catalogue, ou `email:<CODE>`. */
   code: string;
   label: string;
@@ -169,19 +169,19 @@ export interface CommunicationEventView {
   retiredChannels: RetiredChannelView[];
 }
 
-export interface CommunicationGroup {
+interface CommunicationGroup {
   key: string;
   label: string;
   events: CommunicationEventView[];
 }
 
-export interface ChannelDefinition {
+interface ChannelDefinition {
   channel: CommunicationChannel;
   locked: boolean;
   lockReason: string | null;
 }
 
-export interface EventDefinition {
+interface EventDefinition {
   code: string;
   label: string;
   kind: 'notification' | 'transactional';
@@ -217,7 +217,7 @@ function catalogLabel(type: string, entry: CatalogEntry): string {
 const MANDATORY_REASON = 'Notification obligatoire du catalogue : canal non désactivable.';
 
 /** Canaux disponibles d'un événement du catalogue (COM-001). */
-export function catalogChannels(entry: CatalogEntry): ChannelDefinition[] {
+function catalogChannels(entry: CatalogEntry): ChannelDefinition[] {
   const out: ChannelDefinition[] = [];
   // Lot 79C : un canal supprimé n'est plus proposé (ni switch, ni test).
   if (catalogEmailTemplate(entry) && !entry.retiredChannels?.email) {
@@ -240,7 +240,7 @@ export function catalogChannels(entry: CatalogEntry): ChannelDefinition[] {
 }
 
 /** Lot 79C : canaux supprimés d'un événement du catalogue (pure). */
-export function catalogRetiredChannels(entry: CatalogEntry): RetiredChannelView[] {
+function catalogRetiredChannels(entry: CatalogEntry): RetiredChannelView[] {
   const out: RetiredChannelView[] = [];
   if (entry.retiredChannels?.email) out.push({ channel: 'email', reason: entry.retiredChannels.email });
   if (entry.retiredChannels?.push) out.push({ channel: 'push', reason: entry.retiredChannels.push });
@@ -298,7 +298,7 @@ export function listEventDefinitions(
   return defs;
 }
 
-export interface ChannelStats {
+interface ChannelStats {
   sentCount: number;
   lastSentAt: Date | string | null;
 }
@@ -412,9 +412,9 @@ export async function getCommunicationsOverview(): Promise<CommunicationGroup[]>
 
 // ── Mutation ────────────────────────────────────────────────────────────────
 
-export type ChannelToggleError = 'UNKNOWN_CHANNEL' | 'CHANNEL_LOCKED' | 'CONFIRMATION_REQUIRED';
+type ChannelToggleError = 'UNKNOWN_CHANNEL' | 'CHANNEL_LOCKED' | 'CONFIRMATION_REQUIRED';
 
-export type ChannelToggleResult =
+type ChannelToggleResult =
   | { ok: true; changed: boolean; before: boolean; after: boolean; event: EventDefinition }
   | { ok: false; error: ChannelToggleError; message: string };
 
@@ -467,7 +467,7 @@ export async function setChannelActivation(input: {
 
 // ── Prévisualisation (COM-006 à COM-009) ────────────────────────────────────
 
-export interface AdminPreviewContext {
+interface AdminPreviewContext {
   firstName: string;
   lastName: string;
   email: string;
@@ -569,11 +569,7 @@ export function resolveTemplateVariables(
   return { variables, missingCount };
 }
 
-export function fillTemplate(text: string, variables: Record<string, string>): string {
-  return text.replace(PLACEHOLDER, (all, name: string) => variables[name] ?? all);
-}
-
-export interface EmailTemplateRow {
+interface EmailTemplateRow {
   id: number;
   type: string;
   subject: string;
@@ -620,7 +616,7 @@ export interface PreviewContextOptions {
   withdrawals: PreviewWithdrawalOption[];
 }
 
-export interface PreviewPaymentOption {
+interface PreviewPaymentOption {
   id: number;
   /** Montant en centimes. */
   amount: number;
@@ -632,7 +628,7 @@ export interface PreviewPaymentOption {
   billingPeriod: string | null;
 }
 
-export interface PreviewWithdrawalOption {
+interface PreviewWithdrawalOption {
   id: number;
   publicReference: string;
   status: string;
@@ -737,7 +733,7 @@ export async function loadPreviewContextOptions(adminUserId: number, sessionAcco
 export { relevantPreviewContexts } from '@/lib/admin/communication-contexts';
 
 /** Montant lisible (centimes → « 9,90 € »), vide si inconnu. Pur. */
-export function formatAmountLabel(cents: number | null | undefined, currency = 'eur'): string {
+function formatAmountLabel(cents: number | null | undefined, currency = 'eur'): string {
   if (cents == null || !Number.isFinite(cents)) return '';
   return formatMoney(cents, currency || 'eur');
 }
@@ -761,7 +757,7 @@ const WITHDRAWAL_STATUS_LABELS: Record<string, string> = {
 };
 
 export const paymentStatusLabel = (s: string): string => PAYMENT_STATUS_LABELS[s] ?? s;
-export const withdrawalStatusLabel = (s: string): string => WITHDRAWAL_STATUS_LABELS[s] ?? s;
+const withdrawalStatusLabel = (s: string): string => WITHDRAWAL_STATUS_LABELS[s] ?? s;
 
 const billingPeriodLabel = (p: string | null | undefined): string =>
   p === 'yearly' ? 'annuelle' : p === 'monthly' ? 'mensuelle' : '';

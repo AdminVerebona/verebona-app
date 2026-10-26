@@ -8,7 +8,7 @@
  * de déploiement : une variable de cette liste encore posée est ignorée par
  * le code, et signalée pour être supprimée chez l'hébergeur.
  */
-export interface RetiredVariable {
+interface RetiredVariable {
   name: string;
   /** Sous-lot qui l'a retirée. */
   lot: string;

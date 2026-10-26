@@ -62,7 +62,7 @@ export function downgradeNotificationVariables(firstName: string): Record<string
 }
 
 /** Variables d'offre, de montant et de périodicité (pures, LK-78). */
-export function confirmationDetails(details?: { planLabel?: string; unitAmountCents?: number | null; billingPeriod?: 'monthly' | 'yearly' | null }): Record<string, string> {
+function confirmationDetails(details?: { planLabel?: string; unitAmountCents?: number | null; billingPeriod?: 'monthly' | 'yearly' | null }): Record<string, string> {
   const eur = (c: number) => new Intl.NumberFormat('fr-FR', { style: 'currency', currency: 'EUR' }).format(c / 100);
   const per = details?.billingPeriod === 'monthly' ? 'mois' : details?.billingPeriod === 'yearly' ? 'an' : null;
   return {
@@ -77,7 +77,7 @@ export function confirmationDetails(details?: { planLabel?: string; unitAmountCe
 }
 
 /** « 7 avril 2027 », fuseau de Paris (une échéance à 00:30 UTC reste le bon jour). */
-export function formatBillingDate(date: Date): string {
+function formatBillingDate(date: Date): string {
   return date.toLocaleDateString('fr-FR', {
     year: 'numeric',
     month: 'long',

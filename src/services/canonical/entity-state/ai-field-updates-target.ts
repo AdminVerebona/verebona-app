@@ -14,7 +14,7 @@
 import { sql, type SQL } from 'drizzle-orm';
 import { getField } from '@/services/canonical/registry';
 
-export type FieldUpdateTargetType = 'EQUIPMENT' | 'ROOM';
+type FieldUpdateTargetType = 'EQUIPMENT' | 'ROOM';
 
 /** Colonnes de cible et libellé de l'entité (nom de l'équipement / de la pièce). */
 export function fieldUpdateTargetColumns(ready: boolean): {

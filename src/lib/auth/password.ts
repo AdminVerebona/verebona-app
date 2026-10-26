@@ -18,7 +18,7 @@ export function validatePassword(pwd: string): boolean {
   return result.isValid;
 }
 
-export interface PasswordValidationError {
+interface PasswordValidationError {
   error: string;
   /** Code stable lu par les formulaires (inscription, réinitialisation) — lot 53A. */
   code: 'WEAK_PASSWORD';

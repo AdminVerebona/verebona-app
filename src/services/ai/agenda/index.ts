@@ -2,19 +2,11 @@
  * Usage IA n°4 — Intelligence de l'agenda.
  */
 export {
-  processAgendaCandidates, classifyAgendaCategory, classifyAgendaEvent, creationAuthorization,
+  processAgendaCandidates,
 } from './agenda-intelligence.service';
-export type { AgendaIntelligenceInput } from './agenda-intelligence.service';
-
-export { classifyByRules, getClassificationPatterns } from './rules/deterministic-classification';
-export { interpretDate, isPastDue } from './rules/date-interpreter';
-export { findDuplicate, titleSimilarity } from './dedupe.service';
-export { decideCompletion, matchOccurrence } from './status-reconciler';
-export type { CompletionStatus, CompletionDecision, CompletionEvidence } from './status-reconciler';
-export { reconcileStatus } from './status-reconciliation.service';
 
 export type {
-  HomeCategory, AgendaDecision, AgendaDecisionAction, ExistingAgendaItem,
+  HomeCategory, AgendaDecision, ExistingAgendaItem,
 } from './types';
 
 import { onSourceAnalyzed } from '../source-analysis/events';
@@ -38,7 +30,7 @@ type Persist = (
 ) => Promise<void | Partial<import('@/services/agenda/agenda-persistence').PersistAgendaSummary>>;
 
 /** Type de cible T4 dans la file : le document source des candidats. */
-export const T4_TARGET = 'asset_file';
+const T4_TARGET = 'asset_file';
 
 /**
  * Contexte d'un travail T4.
@@ -52,7 +44,7 @@ export const T4_TARGET = 'asset_file';
  * secret. Le document relu à l'exécution reste la référence : un bien
  * supprimé entre-temps est ignoré.
  */
-export interface T4Payload {
+interface T4Payload {
   assetId: number;
   userId: number;
   leadSourceId: number;
@@ -74,7 +66,7 @@ export interface T4Payload {
   t4Resolved?: { forJob: number; decisions: Record<string, import('./agenda-intelligence.service').StoredT4Decision> };
 }
 
-export interface T4Deps {
+interface T4Deps {
   loadExisting: LoadExisting;
   persist: Persist;
   process: typeof processAgendaCandidates;
@@ -91,7 +83,7 @@ export interface T4Deps {
  * appliquées, aucun retrait n'a eu lieu, et la reprise ne redemande que ce
  * qui manque (`t4Resolved`).
  */
-export type T4IncompleteCode = 'T4_INCOMPLETE' | 'T4_PERSIST_PARTIAL' | 'T4_SYNC_FAILED';
+type T4IncompleteCode = 'T4_INCOMPLETE' | 'T4_PERSIST_PARTIAL' | 'T4_SYNC_FAILED';
 export class T4IncompleteJobError extends Error {
   readonly code: T4IncompleteCode;
   constructor(code: T4IncompleteCode, message: string) {

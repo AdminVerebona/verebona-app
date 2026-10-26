@@ -50,10 +50,10 @@ export const EMAIL_COLORS = {
 export const EMAIL_FONT_STACK = "'Figtree', Arial, Helvetica, sans-serif";
 
 /** Logos hébergés par l'application (PNG 480 × 120, opaques). `?v=2026` : contourne le cache des proxys d'images (Gmail). */
-export const EMAIL_LOGO_LIGHT_PATH = '/brand/verebona-logo-email.png?v=2026';
-export const EMAIL_LOGO_DARK_PATH = '/brand/verebona-logo-email-dark.png?v=2026';
+const EMAIL_LOGO_LIGHT_PATH = '/brand/verebona-logo-email.png?v=2026';
+const EMAIL_LOGO_DARK_PATH = '/brand/verebona-logo-email-dark.png?v=2026';
 /** Figtree variable (OFL, `public/brand/email/LICENSE.txt`) servie par l'application. */
-export const EMAIL_FONT_PATHS = {
+const EMAIL_FONT_PATHS = {
   latin: '/brand/email/figtree-latin-wght-5.3.0.woff2',
   latinExt: '/brand/email/figtree-latin-ext-wght-5.3.0.woff2',
 } as const;

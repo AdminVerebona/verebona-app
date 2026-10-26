@@ -26,14 +26,6 @@ import { decideWithdrawalStatus, legacyLists, parseEntries, upsertRefund, type R
 import { getStripeServer } from '@/lib/stripe';
 import { recordWithdrawalEvent } from './withdrawal-journal.service';
 
-/** Événements Stripe pertinents pour une rétractation (§9.6). */
-export const WITHDRAWAL_WEBHOOK_EVENTS = [
-  'refund.created',
-  'refund.updated',
-  'refund.failed',
-  'charge.refund.updated',
-] as const;
-
 export interface WebhookOutcome {
   handled: boolean;
   publicReference?: string;

@@ -53,7 +53,7 @@ const FACT_INSERT_COLUMNS = `account_id, file_id, extraction_id, fact_key, subje
 const FACT_INSERT_VALUES = `$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13::date,$14::date,$15,$16,$17::jsonb,$18,$19,$20,$21,'active',$22,$23::jsonb`;
 
 /** Le fait porte-t-il au moins une donnée du contrat enrichi (0218) ? */
-export function hasCanonicalFactData(f: DocumentFactRecord): boolean {
+function hasCanonicalFactData(f: DocumentFactRecord): boolean {
   return f.canonicalKey != null || f.rawKey != null || f.rawValue != null || f.valueType != null
     || f.canonicalUnit != null || f.targetType != null || f.semanticEventType != null
     || f.recurrence != null || f.projectionOrigin != null || f.projectionRule != null;
@@ -76,7 +76,7 @@ export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<nu
  *                      persistance réussie et programme la reprise, qui la
  *                      reconstruit (même transaction, remplacement idempotent).
  */
-export interface PersistedKnowledge {
+interface PersistedKnowledge {
   extractionId: number;
   sourceLayer: 'WRITTEN' | 'NOT_APPLICABLE' | 'FAILED';
   sourceLayerError: string | null;
@@ -320,7 +320,7 @@ export async function insertFactRows(
 
 // ── Lecture ────────────────────────────────────────────────────────────────
 
-export interface StoredTable {
+interface StoredTable {
   id: number;
   fileId: number;
   index: number;
@@ -357,11 +357,6 @@ async function loadTables(where: string, params: unknown[]): Promise<StoredTable
 /** Tableaux courants d'un document (structure complète). */
 export function getDocumentTables(accountId: number, fileId: number): Promise<StoredTable[]> {
   return loadTables('account_id = $1 AND file_id = $2', [accountId, fileId]);
-}
-
-/** Un tableau précis — revalidation ciblée (T2-07) : on relit CE tableau, pas le document. */
-export async function getDocumentTable(accountId: number, tableId: number): Promise<StoredTable | null> {
-  return (await loadTables('account_id = $1 AND id = $2', [accountId, tableId]))[0] ?? null;
 }
 
 /**
@@ -406,7 +401,7 @@ export async function searchTableCells(
   return rows as unknown as TableCellRow[];
 }
 
-export interface StoredExtraction {
+interface StoredExtraction {
   /** 0218 : null = inconnu (extraction antérieure, ou colonne absente). */
   multiAsset?: boolean | null;
   id: number;
@@ -436,7 +431,7 @@ export interface StoredExtraction {
   sourceType?: string | null;
 }
 
-export interface StoredFact extends DocumentFactRecord {
+interface StoredFact extends DocumentFactRecord {
   id: number;
   fileId: number;
   extractionId: number;
@@ -498,15 +493,6 @@ export async function getDocumentKnowledge(
   return { extraction, facts: facts as unknown as StoredFact[] };
 }
 
-/** Vrai si le document possède une représentation T1 exploitable. */
-export async function hasDocumentKnowledge(fileId: number): Promise<boolean> {
-  const rows = await pgClient.unsafe(
-    `SELECT 1 FROM document_extractions WHERE file_id = $1 LIMIT 1`,
-    [fileId] as never[],
-  );
-  return (rows as unknown as unknown[]).length > 0;
-}
-
 /**
  * Vrai si le document possède des faits T1 actifs, donc projetables sur un
  * bien. Une représentation issue du moteur historique (texte seul, sans
@@ -522,14 +508,14 @@ export async function hasProjectableKnowledge(fileId: number): Promise<boolean> 
 
 // ── Recherche (T2, niveau 2) ───────────────────────────────────────────────
 
-export interface KnowledgeFactHit extends StoredFact {
+interface KnowledgeFactHit extends StoredFact {
   documentTitle: string | null;
   assetId: number | null;
   /** Nombre de termes de la requête retrouvés dans le fait (0 à n). */
   matchedTerms: number;
 }
 
-export interface KnowledgeTextHit {
+interface KnowledgeTextHit {
   fileId: number;
   title: string | null;
   assetId: number | null;
@@ -613,7 +599,7 @@ export async function searchDocumentText(
 }
 
 /** Extrait d'environ 240 caractères autour du premier terme trouvé. */
-export function snippetAround(body: string, terms: string[]): string {
+function snippetAround(body: string, terms: string[]): string {
   if (!body) return '';
   const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const hay = plain(body);
@@ -736,7 +722,7 @@ export function candidateFieldsForLinkedAsset(
 
 /** Candidats T4 d'un document projeté sur un bien (rattachement tardif). */
 /** Ce que lit la reconstruction des candidats (représentation persistée ou en mémoire). */
-export interface KnowledgeForAgenda {
+interface KnowledgeForAgenda {
   extraction: {
     title: string | null; documentDate: string | null; documentTypeCode: string | null;
     multiAsset?: boolean | null; metadata?: Record<string, unknown> | null;
@@ -801,7 +787,7 @@ async function rebuildAgendaAfterLink(p: {
  * sont jamais recopiés sur B ni réécrits sur A (E2E-11) ; ils ne bloquent pas
  * non plus l'attribution des faits sans cible.
  */
-export function linkedAssetProjection(
+function linkedAssetProjection(
   knowledge: { extraction: StoredExtraction; facts: StoredFact[] },
   assetId: number,
 ): { fields: ExtractedField[]; allowReassign: boolean; previousAssetId: number | null } {

@@ -11,7 +11,7 @@
  */
 
 /** (a) Ce document concerne-t-il la même réalité que … ? */
-export interface MatchCardNeed {
+interface MatchCardNeed {
   fileId: number;
   candidateKey: string;
   /** CERTAIN : plusieurs rapprochements exacts incompatibles ; M3 : verdict sémantique ambigu. */
@@ -23,7 +23,7 @@ export interface MatchCardNeed {
 }
 
 /** (c) Deux documents indiquent des montants différents pour la même dépense. */
-export interface AmountCardNeed {
+interface AmountCardNeed {
   operationId: number;
   fileId: number;
   fingerprint: string;
@@ -36,7 +36,7 @@ export interface AmountCardNeed {
  * (e) Lot 53 (retour PO Q17) : bien retiré du sinistre par l'utilisateur,
  * cité par un nouveau document — « Faut-il le rattacher à nouveau ? ».
  */
-export interface ExclusionCardNeed {
+interface ExclusionCardNeed {
   operationId: number;
   assetId: number;
   /** Documents (non encore arbitrés) qui citent le bien ; le premier porte la carte. */
@@ -44,7 +44,7 @@ export interface ExclusionCardNeed {
 }
 
 /** (d) Lot 53D (D2) : la devise de ce montant n'est pas écrite clairement sur le document. */
-export interface CurrencyCardNeed {
+interface CurrencyCardNeed {
   operationId: number;
   fileId: number;
   fingerprint: string;

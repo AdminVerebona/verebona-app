@@ -34,7 +34,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export const PILOTAGE_V2_VARIABLE = 'AI_PILOTAGE_V2' as const;
+const PILOTAGE_V2_VARIABLE = 'AI_PILOTAGE_V2' as const;
 
 export type PilotageV2State = 'on' | 'off' | 'absent' | 'invalid';
 

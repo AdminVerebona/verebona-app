@@ -6,7 +6,7 @@
 import { pgClient } from '@/db';
 import { getAiEnvironment, type AiEnvironment } from './environment';
 
-export interface DraftSummary {
+interface DraftSummary {
   id: number;
   uid: string;
   /** Lot 54 : numéro de la version (attribué à la création). */
@@ -31,7 +31,7 @@ export function authorName(r: { first_name?: unknown; last_name?: unknown; email
   return typeof r.email === 'string' && r.email ? r.email : null;
 }
 
-export function toDraftSummary(r: Row): DraftSummary {
+function toDraftSummary(r: Row): DraftSummary {
   return {
     id: Number(r.id),
     uid: String(r.uid),

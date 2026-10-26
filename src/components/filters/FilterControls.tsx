@@ -49,7 +49,7 @@ function pillText(option: PillOption): string {
 }
 
 /** Pastille de filtre à bascule (choix multiples) — FilterPill du design system. */
-export function FilterPill({ option, onClick }: { option: PillOption; onClick: () => void }) {
+function FilterPill({ option, onClick }: { option: PillOption; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -303,7 +303,7 @@ export function FiltersToggleButton({
   );
 }
 
-export interface ActiveChip {
+interface ActiveChip {
   key: string;
   label: string;
 }

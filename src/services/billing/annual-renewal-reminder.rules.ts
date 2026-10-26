@@ -46,11 +46,11 @@ export const REMINDER_WINDOW = { from: [8, 30] as const, to: [20, 0] as const };
 
 // ── Objets Stripe minimaux (sous-ensemble lu ; testable sans le SDK) ─────────
 
-export interface ReminderPrice {
+interface ReminderPrice {
   id?: string;
   recurring?: { interval?: string | null; interval_count?: number | null } | null;
 }
-export interface ReminderSubscriptionItem {
+interface ReminderSubscriptionItem {
   price?: ReminderPrice | null;
   current_period_start?: number | null;
   current_period_end?: number | null;
@@ -65,7 +65,7 @@ export interface ReminderSubscription {
   schedule?: string | ReminderSchedule | null;
   items: { data: ReminderSubscriptionItem[] };
 }
-export interface ReminderSchedulePhase {
+interface ReminderSchedulePhase {
   start_date: number;
   end_date?: number | null;
   items: Array<{ price?: string | ReminderPrice | null }>;
@@ -77,7 +77,7 @@ export interface ReminderSchedule {
   phases: ReminderSchedulePhase[];
 }
 
-export type IneligibleReason =
+type IneligibleReason =
   | 'TRIALING'
   | 'NOT_ACTIVE'
   | 'CANCEL_AT_PERIOD_END'
@@ -92,45 +92,6 @@ export type IneligibleReason =
 export type Eligibility =
   | { ok: true; renewalAt: Date; renewalTs: number; scheduleId: string | null }
   | { ok: false; reason: IneligibleReason };
-
-/** Libellés BO / journal des motifs d'exclusion. */
-export const REMINDER_REASON_LABELS: Readonly<Record<string, string>> = {
-  TRIALING: 'Période d’essai en cours (premier paiement après essai exclu)',
-  NOT_ACTIVE: 'Abonnement non actif chez Stripe',
-  CANCEL_AT_PERIOD_END: 'Renouvellement automatique désactivé (résiliation programmée)',
-  CANCEL_AT_SET: 'Résiliation programmée à une date',
-  NOT_ANNUAL: 'Facturation non annuelle',
-  NO_PERIOD_END: 'Échéance inconnue chez Stripe',
-  FIRST_PAYMENT_AFTER_TRIAL: 'Premier paiement après essai',
-  MONTHLY_SCHEDULED: 'Passage programmé à la facturation mensuelle',
-  SCHEDULE_ENDS: 'Échéancier Stripe sans reconduction',
-  SCHEDULE_UNREADABLE: 'Échéancier Stripe illisible (envoi suspendu par prudence)',
-  TOO_EARLY: 'Échéance à plus de 7 jours',
-  TOO_LATE: 'Échéance atteinte ou dépassée : plus de rappel',
-  BEFORE_COVERAGE: 'J−7 antérieur à l’activation du traitement (ancien motif, lot 68C)',
-  COVERAGE_UNCERTAIN: 'J−7 au plus tard le jour de la désactivation des rappels Stripe : envoi Stripe non prouvé — décision BO',
-  STRIPE_REMINDER_CONFIRMED: 'Rappel Stripe constaté par un administrateur',
-  BO_DECISION: 'Rappel Verebona demandé par un administrateur',
-  ROLLBACK_NEUTRALIZED: 'Retour aux rappels Stripe : demande neutralisée avant l’envoi',
-  ADMIN_ABANDONED: 'Abandonnée par un administrateur',
-  TASK_SUSPENDED: 'Tâche du rappel annuel suspendue : envoi retenu',
-  SWITCH_NOT_DECLARED: 'Bascule Stripe → Verebona non déclarée : envoi retenu',
-  SEND_STATE_UNREADABLE: 'État du rappel annuel illisible : envoi retenu par prudence',
-  PLAN_UNAVAILABLE: 'Offre du prochain renouvellement non identifiable chez Stripe (nouvelle tentative)',
-  BILLING_MISMATCH: 'Compte, abonnement et client Stripe incohérents',
-  UNCERTAIN_ACCEPTANCE: 'Acceptation par Resend incertaine : réémission bloquée, décision BO',
-  STRIPE_ERROR: 'Vérification Stripe impossible (nouvelle tentative)',
-  DESYNC_RESYNCED: 'Données locales désynchronisées, resynchronisées depuis Stripe',
-  DESYNC_UNRESOLVED: 'Données locales désynchronisées, resynchronisation impossible',
-  STRIPE_ONLY: 'Abonnement annuel Stripe sans compte Verebona correspondant',
-  RENEWAL_DATE_CHANGED: 'Date d’échéance modifiée depuis la préparation',
-  SUBSCRIPTION_REPLACED: 'Abonnement remplacé sur le compte',
-  ACCOUNT_CLOSED: 'Compte du titulaire fermé ou en suppression',
-  RECIPIENT_MISMATCH: 'Titulaire payeur introuvable ou incohérent',
-  AMOUNT_UNAVAILABLE: 'Montant prévisionnel indisponible chez Stripe (nouvelle tentative)',
-  PORTAL_CANCEL_DISABLED: 'Le portail Stripe ne permet pas de désactiver le renouvellement',
-  CHANNEL_DISABLED: 'E-mail désactivé dans le BO › Communications',
-};
 
 const idOf = (v: string | { id: string } | null | undefined): string | null =>
   !v ? null : typeof v === 'string' ? v : v.id ?? null;
@@ -203,7 +164,7 @@ export function daysBetween(fromDateStr: string, toDateStr: string): number {
   return Math.round((Date.UTC(y2, m2 - 1, d2) - Date.UTC(y1, m1 - 1, d1)) / 86_400_000);
 }
 
-export type ReminderTiming =
+type ReminderTiming =
   | { send: true; days: number; catchUp: boolean }
   | { send: false; days: number; reason: 'TOO_EARLY' | 'TOO_LATE' | 'COVERAGE_UNCERTAIN' };
 
@@ -280,7 +241,7 @@ export function annualRenewalDedupeKey(subscriptionId: string, renewalDate: stri
 
 // ── Montant prévisionnel (aperçu de la prochaine facture Stripe) ─────────────
 
-export interface ReminderInvoiceLine {
+interface ReminderInvoiceLine {
   period?: { start?: number | null; end?: number | null } | null;
   /** API basil : prix de la ligne. */
   pricing?: { type?: string | null; price_details?: { price?: string | { id: string } | null } | null } | null;

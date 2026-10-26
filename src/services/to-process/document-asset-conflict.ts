@@ -34,12 +34,12 @@ import { upsertAction, type UpsertActionResult } from './to-process-action.servi
 import { unnamedLabel } from './card-labels';
 
 export const ASSET_CONFLICT_RULE = 'LINK-ASSET-CONFLICT';
-export const ASSET_CONFLICT_RELATION = 'assetConflict';
+const ASSET_CONFLICT_RELATION = 'assetConflict';
 
-export type AssetConflictBasis = 'IDENTIFIER' | 'ANALYSIS';
+type AssetConflictBasis = 'IDENTIFIER' | 'ANALYSIS';
 
 /** Contexte conservé sur la carte (stable : entre dans l'empreinte §7.4, sans libellé). */
-export interface AssetConflictContext {
+interface AssetConflictContext {
   kind: 'asset_conflict';
   /** Bien choisi par l'utilisateur (A). */
   currentAssetId: number;
@@ -244,7 +244,7 @@ export async function closeObsoleteAssetConflicts(accountId: number): Promise<nu
 
 type Action = typeof toProcessActions.$inferSelect;
 
-export type AssetConflictChoice = { kind: 'KEEP' } | { kind: 'IGNORE' } | { kind: 'MOVE'; assetId: number };
+type AssetConflictChoice = { kind: 'KEEP' } | { kind: 'IGNORE' } | { kind: 'MOVE'; assetId: number };
 
 /** Choix reçu de la carte (pure) ; `null` : invalide. */
 export function parseAssetConflictChoice(value: unknown, ctx: Pick<AssetConflictContext, 'suggestedAssetId'>): AssetConflictChoice | null {

@@ -111,7 +111,7 @@ const T1_MASTER = 't1_master_v1';
  * tout emplacement non substitué. Contrôlé contre le fichier par
  * `prompts:check`.
  */
-export const T1_MASTER_VARIABLES = [
+const T1_MASTER_VARIABLES = [
   'SOURCES', 'EXISTING_TITLES', 'EXTRACTED_CONTENT', 'KNOWN_TARGET',
   'FIELD_CATALOG', 'DOCUMENT_CATALOG', 'EVENT_CATALOG', 'ENTITY_CONTEXT',
   // Capacités effectives du compte (pièces, équipements) — jamais l'offre.
@@ -120,7 +120,7 @@ export const T1_MASTER_VARIABLES = [
   'ACCOUNT_CAPABILITIES',
 ] as const;
 
-/** Prompt maître T3 (CDC 15 §25, §29.1) — même valeur que `T3_MASTER_PROMPT_CODE`. */
+/** Prompt maître T3 (CDC 15 §25, §29.1). */
 const T3_MASTER = 't3_master_v1';
 /**
  * Emplacements du master T3 (hors TASK). Un seul texte pour les trois
@@ -140,12 +140,12 @@ const T4_MASTER = 't4_master_v1';
  * branches : chaque appel les fournit TOUS (`null` pour ceux des autres
  * branches). Contrôlé contre le fichier par `prompts:check`.
  */
-export const T4_MASTER_VARIABLES = [
+const T4_MASTER_VARIABLES = [
   'EVENT_CONTEXT', 'EVENT_CATALOG', 'EVIDENCE', 'AGENDA_ITEM', 'DOCUMENT_TYPE',
   'TEMPORAL_CONTEXT', 'TEMPORAL_CANDIDATES',
 ] as const;
 
-/** Prompt maître T2 (CDC 15 §24, §29.1) — même valeur que `T2_MASTER_PROMPT_CODE`. */
+/** Prompt maître T2 (CDC 15 §24, §29.1). */
 const T2_MASTER = 't2_master_v1';
 /**
  * Emplacements du master T2 (hors MODE, fixé par le serveur). Un seul texte
@@ -507,8 +507,6 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
   // (`legacy_asset_suggest`, `legacy_apply_suggestions`,
   // `legacy_enrich_coherence`) au lot 16b-3b, avec la décision PO D-H1.
 };
-
-export type AiOperationCode = keyof typeof AI_OPERATIONS;
 
 export function getOperation(code: string): AiOperationDefinition {
   const op = AI_OPERATIONS[code];

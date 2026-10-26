@@ -13,14 +13,14 @@
  */
 import { pgClient } from '@/db';
 
-export interface TransactionalEmailSearch {
+interface TransactionalEmailSearch {
   type?: string | null;
   recipient?: string | null;
   problemsOnly?: boolean;
   limit?: number;
 }
 
-export interface TransactionalEmailLogRow {
+interface TransactionalEmailLogRow {
   id: number;
   at: string | null;
   templateCode: string;
@@ -37,7 +37,7 @@ export interface TransactionalEmailLogRow {
   job: { id: number; status: string; attempts: number; maxAttempts: number; nextAttemptAt: string | null } | null;
 }
 
-export interface PendingEmailRequestRow {
+interface PendingEmailRequestRow {
   jobId: number;
   kind: string;
   recipientEmail: string;
@@ -67,7 +67,7 @@ export function normalizeEmailSearch(q: TransactionalEmailSearch): { type: strin
  * changée, e-mail désactivé…) n'a parfois aucune ligne d'envoi ; son motif
  * doit rester consultable depuis le BO, jamais présenté comme envoyé.
  */
-export interface ClosedEmailRequestRow {
+interface ClosedEmailRequestRow {
   jobId: number;
   kind: string;
   recipientEmail: string;
@@ -157,7 +157,7 @@ export async function searchTransactionalEmails(q: TransactionalEmailSearch): Pr
 
 // ── Configuration d'envoi effective (lecture seule) ─────────────────────────
 
-export interface TransactionalEmailConfig {
+interface TransactionalEmailConfig {
   /** `base` : ligne `email_settings` ; `defaut` : valeurs de repli du code (aucune ligne). */
   source: 'base' | 'defaut';
   emailsEnabled: boolean;
@@ -222,7 +222,7 @@ export async function getTransactionalEmailConfig(env: Record<string, string | u
  * de webhook restent des variables d'environnement).
  * ══════════════════════════════════════════════════════════════════════════
  */
-export interface EmailSettingsPatch {
+interface EmailSettingsPatch {
   senderName?: string;
   senderEmail?: string;
   replyToEmail?: string;

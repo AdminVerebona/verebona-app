@@ -62,7 +62,7 @@ const HELP_LEVELS: Readonly<Record<string, string>> = {
 };
 
 /** Fil de conversation tel que la liste le présente. */
-export interface ConversationThread {
+interface ConversationThread {
   id: number;
   title: string | null;
   createdAt: string;
@@ -227,7 +227,7 @@ export async function findByClientRequestId(
 }
 
 /** Réponse déjà rendue pour une demande rejouée (même clientRequestId). */
-export interface ReplayedAnswer {
+interface ReplayedAnswer {
   conversationId: number;
   messageId: number;
   requestId: string;
@@ -301,9 +301,9 @@ export async function findReplayedAnswer(
  * déjà affiché (`nextCursor`) : stable même si deux messages partagent la
  * même date.
  */
-export const HISTORY_PAGE_MAX = 50;
+const HISTORY_PAGE_MAX = 50;
 
-export interface HistoryPageOptions {
+interface HistoryPageOptions {
   limit?: number;
   /** Identifiant de message : seuls les messages plus anciens sont rendus. */
   before?: number | null;
@@ -730,7 +730,7 @@ export function actionTarget(action: Pick<VerebonaAction, 'targetRef' | 'payload
 }
 
 /** Identifiants réellement enregistrés (le messageId rendu au client est celui de la base). */
-export interface PersistedIds {
+interface PersistedIds {
   conversationId: number;
   messageId: number;
 }
@@ -740,7 +740,7 @@ export interface SqlRunner {
   unsafe(query: string, params?: never[]): PromiseLike<unknown>;
 }
 
-export interface ConversationPurge {
+interface ConversationPurge {
   conversations: number;
   messages: number;
   cachedModelResponses: number;

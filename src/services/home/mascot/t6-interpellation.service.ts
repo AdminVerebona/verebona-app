@@ -21,8 +21,8 @@
 import { documentTitleColumnsSql, documentTitleOf } from '@/lib/documents/document-title-source';
 import { pgClient } from '@/db';
 import type { MascotAgendaRow, MascotDecidedAgenda, MascotRawData } from './signals';
-import { EXT_ACTION_LOOKBACK_DAYS, extActionOccurrenceKey, formatDateFr, roleOf } from './signals';
-import { canonicalJson, sha256 } from './hash';
+import { EXT_ACTION_LOOKBACK_DAYS, agendaInToProcess, extActionOccurrenceKey, formatDateFr, roleOf } from './signals';
+import { sha256 } from './hash';
 import { entriesFingerprint, serializeForHash, sha256 as reportSha256, type ReportEntry } from '@/services/ai/execution-report/model';
 import {
   DEFAULT_T6_THRESHOLD_DAYS, T6_ASSESSMENT_CONTRACT, T6_ASSESSMENT_MAX_AGE_DAYS, T6_ASSESSMENT_REVISION_REMINDER, T6_FINGERPRINT_V2, T6_FINGERPRINT_V3,
@@ -59,7 +59,7 @@ export function agendaFingerprint(p: { title: string; date: string | null; forec
 }
 
 /** Lot 71G (T6-01) : empreinte ENRICHIE (`v2:`) — conservée pour relire les décisions et reports antérieurs. */
-export function t6FingerprintV2(p: Parameters<typeof t6FingerprintParts>[0]): string {
+function t6FingerprintV2(p: Parameters<typeof t6FingerprintParts>[0]): string {
   return `${T6_FINGERPRINT_V2}${sha256(t6FingerprintParts(p)).slice(0, 32)}`;
 }
 
@@ -213,9 +213,9 @@ export async function currentT6Fingerprints(accountId: number, ids: readonly num
 const STATUT_FAIT: Record<string, T6EvaluationFact['status']> = { certain: 'PROVEN', probable: 'DEDUCED', conflictual: 'UNCERTAIN' };
 const RANG_CONFIANCE: Record<string, number> = { certain: 0, probable: 1, conflictual: 2 };
 /** Faits transmis à EVALUATE par candidat, au plus. */
-export const T6_MAX_FACTS_PER_CANDIDATE = 8;
+const T6_MAX_FACTS_PER_CANDIDATE = 8;
 /** Documents (intitulés) transmis à EVALUATE par candidat, au plus. */
-export const T6_MAX_DOCUMENTS_PER_CANDIDATE = 5;
+const T6_MAX_DOCUMENTS_PER_CANDIDATE = 5;
 
 /**
  * Lot 71G (T6-04) — preuves transmises à EVALUATE pour UN candidat (pure,
@@ -271,7 +271,7 @@ export function evaluationEvidenceOf(subjectId: string, e: T6ItemEvidence | unde
 }
 
 /** Données d'une échéance utiles au contexte EVALUATE (ligne de l'agenda de la mascotte). */
-export type T6SubjectRow = Pick<MascotAgendaRow, 'title' | 'date' | 'forecast' | 'requiresQualification' | 'assetName' | 'dateRole'>
+type T6SubjectRow = Pick<MascotAgendaRow, 'title' | 'date' | 'forecast' | 'requiresQualification' | 'assetName' | 'dateRole'>
   & Partial<Pick<MascotAgendaRow, 'assetCategory' | 'seriesKey'>>;
 
 /**
@@ -318,7 +318,7 @@ export function t6ContextFingerprint(row: T6SubjectRow, e: T6ItemEvidence | unde
  * modifiée seulement si elle porte encore l'ancienne empreinte (aucune
  * décision plus récente écrasée), bornée au compte. Rend le nombre rebasé.
  */
-export async function rebaseT6AssessmentFingerprints(accountId: number, list: ReadonlyArray<{ agendaItemId: number; from: string; to: string }>): Promise<number> {
+async function rebaseT6AssessmentFingerprints(accountId: number, list: ReadonlyArray<{ agendaItemId: number; from: string; to: string }>): Promise<number> {
   if (list.length === 0) return 0;
   const r = await rows(
     `UPDATE t6_interpellation_assessments a SET context_fingerprint = m.to_fp
@@ -409,7 +409,7 @@ export async function loadUserPreferences(
  * occurrence T4 et nombre de réalisations tracées. Lève en cas d'échec
  * (l'appelant applique alors les préférences : prudence).
  */
-export async function loadCycleKeys(accountId: number, ids: readonly number[]): Promise<Map<number, string>> {
+async function loadCycleKeys(accountId: number, ids: readonly number[]): Promise<Map<number, string>> {
   if (ids.length === 0) return new Map();
   const r = await rows(
     `SELECT i.id, ${t6CycleKeySql('i')} AS cycle_key FROM agenda_items i WHERE i.account_id = $1 AND i.id = ANY($2::int[])`,
@@ -419,7 +419,7 @@ export async function loadCycleKeys(accountId: number, ids: readonly number[]): 
 }
 
 /** Lot 75E (B) : examen achevé d'une échéance de la lecture complémentaire (curseur persistant). */
-export interface T6ExaminationMark { agendaItemId: number; selectionSignature: string; fingerprint: string | null; recheckOn: string | null }
+interface T6ExaminationMark { agendaItemId: number; selectionSignature: string; fingerprint: string | null; recheckOn: string | null }
 
 /**
  * Lot 75E (B) — enregistre les examens ACHEVÉS (pré-génération du compte) :
@@ -428,7 +428,7 @@ export interface T6ExaminationMark { agendaItemId: number; selectionSignature: s
  * la dernière l'emporte), borné au compte. Table absente (0551 non
  * appliquée) : sans effet. Rend le nombre d'examens enregistrés.
  */
-export async function recordT6Examinations(accountId: number, marks: readonly T6ExaminationMark[]): Promise<number> {
+async function recordT6Examinations(accountId: number, marks: readonly T6ExaminationMark[]): Promise<number> {
   if (marks.length === 0) return 0;
   const { t6ExaminationsReady } = await import('./collector');
   if (!(await t6ExaminationsReady())) return 0;
@@ -519,7 +519,7 @@ const telemetryKeys = (id: number) => [`DATE-NEXT:${id}`, extActionOccurrenceKey
  * (télémétrie « affiché »), dans la fenêtre d'anti-répétition et depuis la
  * dernière évaluation (même contexte). Par échéance.
  */
-export async function loadDisplayHistory(
+async function loadDisplayHistory(
   accountId: number, userId: number, since: ReadonlyMap<number, string>, today: string,
 ): Promise<Map<number, number>> {
   const out = new Map<number, number>();
@@ -554,7 +554,7 @@ export async function loadDisplayHistory(
  * pré-génération du compte réévalue ces sujets AVANT toute réapparition,
  * sans attendre une visite (aucune préférence n'est lue pour l'affichage).
  */
-export async function loadDueReminders(accountId: number, today: string): Promise<Map<number, string>> {
+async function loadDueReminders(accountId: number, today: string): Promise<Map<number, string>> {
   const r = await rows(
     `SELECT p.agenda_item_id, to_char(max(p.remind_at), 'YYYY-MM-DD') AS remind_at
        FROM t6_reminder_preferences p JOIN agenda_items i ON i.id = p.agenda_item_id AND i.account_id = p.account_id
@@ -680,7 +680,7 @@ export async function persistT6Assessments(
  * l'enregistrement se fait sans elle — jamais de décision perdue.
  */
 let revisionColumn: Promise<boolean> | null = null;
-export function hasContractRevision(): Promise<boolean> {
+function hasContractRevision(): Promise<boolean> {
   revisionColumn ??= rows(
     `SELECT 1 FROM information_schema.columns WHERE table_name = 't6_interpellation_assessments' AND column_name = 'contract_revision' LIMIT 1`, [],
   ).then((r) => r.length > 0).catch(() => { revisionColumn = null; return false; });
@@ -691,7 +691,7 @@ export function resetContractRevisionProbe(): void { revisionColumn = null; snap
 
 /** Lot 71G : colonnes `evidence_snapshot` / `reevaluation_reason` (0507) présentes ? Même principe. */
 let snapshotColumn: Promise<boolean> | null = null;
-export function hasEvidenceSnapshot(): Promise<boolean> {
+function hasEvidenceSnapshot(): Promise<boolean> {
   snapshotColumn ??= rows(
     `SELECT 1 FROM information_schema.columns WHERE table_name = 't6_interpellation_assessments' AND column_name = 'reevaluation_reason' LIMIT 1`, [],
   ).then((r) => r.length > 0).catch(() => { snapshotColumn = null; return false; });
@@ -700,7 +700,7 @@ export function hasEvidenceSnapshot(): Promise<boolean> {
 
 /** Lot 72A : colonne `evaluation_signature` (0510) présente ? Même principe. */
 let signatureColumn: Promise<boolean> | null = null;
-export function hasEvaluationSignature(): Promise<boolean> {
+function hasEvaluationSignature(): Promise<boolean> {
   signatureColumn ??= rows(
     `SELECT 1 FROM information_schema.columns WHERE table_name = 't6_interpellation_assessments' AND column_name = 'evaluation_signature' LIMIT 1`, [],
   ).then((r) => r.length > 0).catch(() => { signatureColumn = null; return false; });
@@ -709,14 +709,7 @@ export function hasEvaluationSignature(): Promise<boolean> {
 
 // ── Candidats ────────────────────────────────────────────────────────────────
 
-/** Échéances déjà portées par une action « À traiter » (ATP-004). */
-function agendaInToProcess(raw: MascotRawData): Set<number> {
-  const ids = new Set((raw.toProcess ?? []).filter((a) => a.targetType === 'AGENDA_ITEM').map((a) => a.targetId));
-  (raw.toProcessAgendaIds ?? []).forEach((id) => ids.add(id));
-  return ids;
-}
-
-export interface T6CandidateRow { candidate: T6Candidate; row: MascotAgendaRow }
+interface T6CandidateRow { candidate: T6Candidate; row: MascotAgendaRow }
 
 /**
  * Échéances candidates (pur) : à venir (hors « à préciser ») et arrivées à
@@ -868,12 +861,12 @@ export interface T6EvaluationProgress {
   t6Unavailable?: boolean;
 }
 
-export type T6EvaluationState = 'OK' | 'PENDING' | 'UNAVAILABLE';
+type T6EvaluationState = 'OK' | 'PENDING' | 'UNAVAILABLE';
 
 /** Codes d'une échéance proche en attente d'évaluation. */
 const EN_ATTENTE = new Set(['AI_ASSESSMENT_PENDING', 'AWAITING_REEVALUATION_AFTER_SNOOZE']);
 /** Lot 71G : codes d'une décision PROVISOIRE (non évaluée, indisponible) — jamais une décision métier définitive. */
-export const T6_PROVISIONAL_CODES: ReadonlySet<string> = new Set([...EN_ATTENTE, 'EVALUATION_UNAVAILABLE', 'PREFERENCES_UNAVAILABLE', 'TO_PROCESS_UNAVAILABLE']);
+const T6_PROVISIONAL_CODES: ReadonlySet<string> = new Set([...EN_ATTENTE, 'EVALUATION_UNAVAILABLE', 'PREFERENCES_UNAVAILABLE', 'TO_PROCESS_UNAVAILABLE']);
 
 /** État de l'évaluation des échéances proches (pure, testée T6-EV). */
 export function evaluationStateOf(decisions: readonly T6DecisionResult[], opts: { degraded?: boolean; recentFailure?: boolean } = {}): T6EvaluationState {
@@ -1363,7 +1356,7 @@ export async function prepareT6Interpellation(
  * informatif, action, report ou refus de l'utilisateur, différé, écarté
  * (pure). Un rappel informatif n'est JAMAIS compté comme une action.
  */
-export type T6DecisionOutcome = 'INFORMATIVE_REMINDER' | 'ACTION' | 'USER_SNOOZED' | 'USER_DISMISSED' | 'DEFERRED' | 'SUPPRESSED';
+type T6DecisionOutcome = 'INFORMATIVE_REMINDER' | 'ACTION' | 'USER_SNOOZED' | 'USER_DISMISSED' | 'DEFERRED' | 'SUPPRESSED';
 export function t6OutcomeOf(d: Pick<T6DecisionResult, 'decision' | 'mode' | 'code'>): T6DecisionOutcome {
   if (d.decision === 'SHOW_NOW') return d.mode === 'INFORM' ? 'INFORMATIVE_REMINDER' : 'ACTION';
   if (d.code === 'USER_SNOOZED') return 'USER_SNOOZED';
@@ -1605,13 +1598,10 @@ export async function writeT6InterpellationReport(p: {
   }
 }
 
-/** Empreinte (tests) d'un ensemble de décisions — indépendante du jour. */
-export const decisionsFingerprint = (d: readonly T6DecisionTrace[]) => sha256(canonicalJson(d.map((x) => [x.subjectKey, x.decision, x.code])));
-
 // ── Reporting EVALUATE (lot 61) ──────────────────────────────────────────────
 
 /** Issue d'une exécution EVALUATE, telle que tracée (aucune donnée personnelle). */
-export interface T6EvaluationTrace {
+interface T6EvaluationTrace {
   status: string;
   promptVersion: string | null;
   inputContract: string;
@@ -1744,7 +1734,7 @@ export function t6EvaluationEntries(t: T6EvaluationTrace, refs: T6Interpellation
 
 /** Rapport d'une exécution EVALUATE (BO › Exécutions IA › Rapports). Ne lève jamais. */
 /** Lot 78C : état de la pré-génération du compte (reporting). Ne lève jamais. */
-export async function readPregenState(accountId: number): Promise<Record<string, unknown> | null> {
+async function readPregenState(accountId: number): Promise<Record<string, unknown> | null> {
   try {
     const [r] = await rows(
       `SELECT last_status, reason, attempts, requested_at, processed_at, claimed_until,

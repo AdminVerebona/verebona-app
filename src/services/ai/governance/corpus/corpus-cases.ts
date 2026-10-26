@@ -42,7 +42,7 @@ import { registerCorpusCase, type CorpusCase } from './corpus-registry';
  * vérifier qu'aucune information n'a été rattachée à un bien absent de cette
  * liste pour le cas considéré.
  */
-export const CORPUS_ASSETS = {
+const CORPUS_ASSETS = {
   MAISON_FLEURY: 'maison-fleury-sur-orne',
   APPART_BORDEAUX: 'appartement-bordeaux-sauvageau',
   TERRAIN_BOUCHEMAINE: 'terrain-bouchemaine',
@@ -438,7 +438,7 @@ const CASES: CorpusCase[] = [
 ];
 
 /** Enregistre les vingt-huit cas. Appelé au chargement du module. */
-export function registerAllCorpusCases(): void {
+function registerAllCorpusCases(): void {
   for (const c of CASES) registerCorpusCase(c);
 }
 

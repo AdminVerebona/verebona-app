@@ -165,14 +165,14 @@ export function technicalTitleSqlPredicate(col: string): string {
  */
 export const DOCUMENT_TITLE_RULE_VERSION = 3;
 
-export const TITLE_QUALITY_REASONS = [
+const TITLE_QUALITY_REASONS = [
   'TECHNICAL_TITLE', 'GENERIC_TITLE', 'MISSING_SUBJECT', 'MISSING_SUPPLIER', 'MISSING_TARGET', 'MISSING_PERIOD',
   'DUPLICATE_OR_TOO_SIMILAR', 'SUFFICIENT',
 ] as const;
 export type TitleQualityReason = (typeof TITLE_QUALITY_REASONS)[number];
 
 /** Motifs d'un renommage (ou d'une absence de renommage), journalisés. */
-export type TitleChangeReason =
+type TitleChangeReason =
   | 'NON_COMPLIANT_TITLE' | 'GENERIC_TITLE' | 'SUPPLIER_ADDED' | 'PERIOD_ADDED' | 'TARGET_ADDED' | 'EQUIPMENT_ADDED'
   | 'DUPLICATE_DISAMBIGUATED' | 'FIRST_TITLE' | 'NO_BETTER_TITLE' | 'USER_TITLE_PROTECTED'
   // Lot 87D : convention périodique appliquée ; ancienne typographie (« _ ») normalisée.

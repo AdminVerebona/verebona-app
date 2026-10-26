@@ -108,7 +108,7 @@ export async function GET(request: NextRequest) {
     //
     // Le calcul rendait `validatedCount * 10` — l'ancienne récompense. La
     // règle actuelle diffère la prochaine échéance d'un mois, ce que
-    // `postponeNextBillingByOneMonth` applique dans le cron.
+    // l’ancien report d’un mois appliquait dans le cron.
     //
     // Le rapport reste explicite plutôt que sous-entendu : si la règle passe
     // un jour à deux mois, c'est ici que ça se change, pas dans l'affichage.

@@ -13,7 +13,7 @@
  */
 import type { T1Fact } from './t1-contract';
 
-export type FactEvidenceCheck =
+type FactEvidenceCheck =
   | { ok: true; fact: T1Fact }
   | { ok: false; reason: 'NO_VALUE' | 'TEXT_WITHOUT_EXCERPT' | 'VISUAL_WITHOUT_EVIDENCE' };
 

@@ -65,7 +65,7 @@ const BILLING_SUBSCRIPTION_STATUSES: ReadonlySet<string> = new Set([
   'unpaid',
 ]);
 
-export type AdminDeletionOutcome =
+type AdminDeletionOutcome =
   | { ok: true; scheduleId: number; execution: ExecutionResult; supersededScheduleId: number | null }
   | { ok: false; code: 'ACCOUNT_NOT_FOUND' }
   | { ok: false; code: 'STRIPE_SUBSCRIPTION_ACTIVE'; stripeSubscriptionId: string }
@@ -105,7 +105,7 @@ export interface SubscriptionCandidate {
  * (`account_subscriptions`), historique (`accounts`), Duo (`duo_accounts`
  * rattaché au compte ou dont le titulaire est le propriétaire du compte).
  */
-export async function listAccountSubscriptionCandidates(accountId: number): Promise<SubscriptionCandidate[]> {
+async function listAccountSubscriptionCandidates(accountId: number): Promise<SubscriptionCandidate[]> {
   const [account] = await db
     .select({
       ownerUserId: accounts.ownerUserId,

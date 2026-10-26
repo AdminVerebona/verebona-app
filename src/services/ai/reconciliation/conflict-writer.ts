@@ -16,7 +16,7 @@ import type { ReconciliationDecision } from './types';
 import { reasonLabel } from './decision/reason-codes';
 import { getAuthorityMatrix } from './decision/authority-matrix';
 
-export interface ConflictContext {
+interface ConflictContext {
   accountId: number;
   assetId: number;
   currentEvidenceIds: number[];

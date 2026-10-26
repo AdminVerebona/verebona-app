@@ -14,7 +14,7 @@
  */
 
 export const RECENT_ASSETS_KEY = 'verebona:recent-assets';
-export const RECENT_ASSETS_MAX = 12;
+const RECENT_ASSETS_MAX = 12;
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
 

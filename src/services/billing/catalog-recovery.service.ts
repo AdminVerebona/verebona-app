@@ -85,7 +85,7 @@ import { publicationStopped, publishWithHeldLock, sellableCount, verifyPublished
 import { getExpectedStripeMode, getStripeKeyMode } from '@/lib/stripe-client';
 
 /** Définition d'un rattrapage ciblé (jamais généralisé). */
-export interface RecoveryDefinition {
+interface RecoveryDefinition {
   key: string;
   catalogContext: string;
   stripeAccountId: string;
@@ -151,7 +151,7 @@ export const EXPECTED_V4_GRID: Record<PlanCode, Record<'monthly' | 'yearly', num
 };
 
 export const RECOVERY_MAX_ATTEMPTS = 5;
-export const RECOVERY_BASE_DELAY_MS = 10 * 60_000;
+const RECOVERY_BASE_DELAY_MS = 10 * 60_000;
 const LOCK_TTL_MS = 15 * 60_000;
 /** Une exécution non terminée depuis moins longtemps est réputée en cours. */
 const CONCURRENT_WINDOW_MS = 20 * 60_000;
@@ -162,9 +162,9 @@ export function recoveryDelayMs(attempts: number): number {
 }
 
 /** Empreinte des abonnements existants (prix contractuel, échéance, échéancier). */
-export type SubscriptionsProbe = () => Promise<string>;
+type SubscriptionsProbe = () => Promise<string>;
 
-export const pgSubscriptionsProbe: SubscriptionsProbe = async () => {
+const pgSubscriptionsProbe: SubscriptionsProbe = async () => {
   const { pgClient } = await import('@/db');
   const rows = await pgClient.unsafe(
     `SELECT id, stripe_price_id, contract_unit_amount_cents, current_period_end_at, scheduled_stripe_price_id, scheduled_schedule_id, plan_code, billing_period
@@ -173,14 +173,14 @@ export const pgSubscriptionsProbe: SubscriptionsProbe = async () => {
   return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
 };
 
-export type RecoveryOutcome =
+type RecoveryOutcome =
   | { status: 'skipped'; reason: string }
   | { status: 'waiting'; reason: string }
   | { status: 'retry_wait'; reason: string; nextAttemptAt: string | null }
   | { status: 'done'; runId: number; version: string; checks: PublishedCatalogChecks }
   | { status: 'failed'; reason: string };
 
-export interface RecoveryOptions {
+interface RecoveryOptions {
   subscriptionsProbe?: SubscriptionsProbe;
   actor?: string;
 }

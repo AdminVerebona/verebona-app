@@ -77,7 +77,7 @@ export function hasEvidence(c: DocumentAssetCandidate): boolean {
 }
 
 /** Score a priori d'un candidat (ordre des propositions sans avis du modèle). */
-export function priorScore(c: DocumentAssetCandidate): number {
+function priorScore(c: DocumentAssetCandidate): number {
   const src = c.sources;
   if (src) {
     if (src.includes('STRONG_IDENTIFIER')) return 0.85;
@@ -182,7 +182,7 @@ const borne = (v: unknown, n: number): string | null => {
 };
 
 /** Ligne de candidat transmise au modèle (identifiants non sensibles, signaux sans valeur). */
-export function describeCandidate(c: DocumentAssetCandidate): string {
+function describeCandidate(c: DocumentAssetCandidate): string {
   const parts = [`"${c.name}" (${[c.family, c.subtype].filter(Boolean).join(', ') || 'bien'})`];
   const ids = Object.entries(c.identifiers).filter(([k]) => isPromptSafeKey(k)).map(([k, v]) => `${k}=${v}`);
   if (ids.length) parts.push(`identifiants: ${ids.join(', ')}`);

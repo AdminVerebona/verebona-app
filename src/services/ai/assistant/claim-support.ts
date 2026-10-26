@@ -31,7 +31,7 @@ const MOIS: Record<string, string> = {
 const sansAccents = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '');
 const pad = (n: string) => n.padStart(2, '0');
 
-export interface DataTokens {
+interface DataTokens {
   /** Dates canoniques `AAAA-MM-JJ` (et `MM-JJ` sans année). */
   dates: Set<string>;
   /** Nombres canoniques (séparateurs retirés, virgule → point, zéros inutiles ôtés). */
@@ -102,16 +102,16 @@ function union(a: DataTokens, b: DataTokens): DataTokens {
  *   · montants en centimes (`totalCents`, `amountCents`) : convertis en
  *     euros avant comparaison, jamais comparés bruts.
  */
-export const PROOF_META_KEYS: readonly string[] = [
+const PROOF_META_KEYS: readonly string[] = [
   'value', 'display', 'unit', 'label', 'date', 'from', 'to', 'startDate', 'endDate', 'dueDate', 'year',
   'status', 'statusLabel', 'nature', 'theme', 'supplier', 'documentType', 'assetName',
   'count', 'events', 'documentCount', 'interventionCount', 'unqualifiedCount', 'excludedCount',
   'total', 'totalEur', 'amount', 'amountEur',
 ];
-export const PROOF_CENTS_KEYS: readonly string[] = ['totalCents', 'amountCents'];
+const PROOF_CENTS_KEYS: readonly string[] = ['totalCents', 'amountCents'];
 
 /** Valeurs de métadonnées admises comme preuve (centimes convertis en euros). */
-export function proofMetaValues(s: Pick<RetrievedSource, 'meta'>): string[] {
+function proofMetaValues(s: Pick<RetrievedSource, 'meta'>): string[] {
   const meta = s.meta ?? {};
   const out: string[] = [];
   for (const k of PROOF_META_KEYS) {
@@ -131,7 +131,7 @@ export function proofMetaValues(s: Pick<RetrievedSource, 'meta'>): string[] {
  * Valeurs séparées par « ; » : « 2 » puis « 450 » ne doivent pas se lire
  * « 2 450 » (séparateur de milliers).
  */
-export function sourceTokens(s: RetrievedSource): DataTokens {
+function sourceTokens(s: RetrievedSource): DataTokens {
   return extractDataTokens(`${s.title ?? ''} ${s.content ?? ''} ${proofMetaValues(s).join(' ; ')}`);
 }
 
@@ -154,11 +154,11 @@ function valuePresent(value: string, s: RetrievedSource): boolean {
     && [...v.codes].every((x) => st.codes.has(x));
 }
 
-export type ClaimSupportReason =
+type ClaimSupportReason =
   | 'SUPPORTED_BY_DECLARED_SUPPORT' | 'SUPPORTED_BY_DATA' | 'SUPPORTED_QUALITATIVE'
   | 'NO_SOURCE' | 'SUPPORT_SOURCE_NOT_CITED' | 'SUPPORT_NOT_IN_SOURCE' | 'DATA_NOT_IN_SOURCES';
 
-export interface ClaimSupportResult {
+interface ClaimSupportResult {
   supported: boolean;
   reason: ClaimSupportReason;
   /** Données de la phrase absentes des sources citées (trace, sans contenu sensible). */

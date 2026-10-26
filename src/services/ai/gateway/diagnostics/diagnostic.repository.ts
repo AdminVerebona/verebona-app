@@ -26,11 +26,11 @@ import { redact } from '../redaction';
 import type { CallDiagnostic } from './taxonomy';
 
 /** Taille maximale conservée d'une sortie (caractères). */
-export const RAW_OUTPUT_MAX_CHARS = 200_000;
+const RAW_OUTPUT_MAX_CHARS = 200_000;
 
 type Row = Record<string, unknown>;
 
-export interface CallDiagnosticRecord {
+interface CallDiagnosticRecord {
   traceId: string;
   usageEventId: number | null;
   callIndex: number;

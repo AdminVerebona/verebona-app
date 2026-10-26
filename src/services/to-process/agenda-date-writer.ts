@@ -22,7 +22,7 @@ import { db } from '@/db';
 import { agendaItems, agendaOccurrenceEvents } from '@/db/schema';
 import type { FieldWriter } from './resolve-action.service';
 
-export const AGENDA_DATE_FIELD = 'date';
+const AGENDA_DATE_FIELD = 'date';
 /** Trace d'occurrence (`agenda_occurrence_events`, même type que l'édition dans l'agenda) — pas une notification. */
 const OCCURRENCE_USER_MODIFIED = 'USER_MODIFIED';
 

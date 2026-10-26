@@ -37,7 +37,7 @@ import type { PricingSource } from './pricing-source.port';
 
 type Row = Record<string, unknown>;
 
-export interface PriceStatusRow {
+interface PriceStatusRow {
   model: string;
   status: 'KNOWN' | 'UNKNOWN';
   inputPerMillion: number | null;
@@ -108,7 +108,7 @@ export async function loadPriceStatuses(): Promise<Map<string, PriceStatusRow>> 
 }
 
 /** Le tarif résolu diffère-t-il de l'état enregistré ? (pur) */
-export function priceChanged(prev: PriceStatusRow | undefined, next: ResolvedPrice): boolean {
+function priceChanged(prev: PriceStatusRow | undefined, next: ResolvedPrice): boolean {
   if (!prev) return true;
   if (prev.status !== next.status) return true;
   if (next.status === 'UNKNOWN') return false;

@@ -20,10 +20,3 @@ export function getSourceAdapter(sourceType: SourceType): SourceAdapter {
   return adapter;
 }
 
-export function registerSourceAdapter(adapter: SourceAdapter): void {
-  adapters.set(adapter.sourceType, adapter);
-}
-
-export type { SourceAdapter, AdapterPrepareInput } from './source-adapter.port';
-export { FileSourceAdapter } from './file-source.adapter';
-export { WebLinkSourceAdapter, assertSafeUrl, extractTextFromHtml } from './web-link-source.adapter';

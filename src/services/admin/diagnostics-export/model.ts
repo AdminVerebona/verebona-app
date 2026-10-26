@@ -33,7 +33,7 @@ export const DIAG_SCHEMA = 'verebona.bo.diagnostic-technique/1';
 
 // ── Périmètres, traitements, bornes ─────────────────────────────────────────
 
-export const DIAG_SCOPES = ['global', 'user', 'asset', 'document', 'operation', 'account'] as const;
+const DIAG_SCOPES = ['global', 'user', 'asset', 'document', 'operation', 'account'] as const;
 export type DiagScope = (typeof DIAG_SCOPES)[number];
 
 export const DIAG_SCOPE_LABELS: Readonly<Record<DiagScope, string>> = {
@@ -51,7 +51,7 @@ export const DIAG_SCOPE_LABELS: Readonly<Record<DiagScope, string>> = {
  * lot 84D, CDC Pilotage IA V2 P3 : T2 — demandes de l'assistant — et T6 —
  * générations FORMULATE et évaluations EVALUATE — ajoutés au collecteur).
  */
-export const DIAG_TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T6'] as const;
+const DIAG_TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T6'] as const;
 export type DiagTreatment = (typeof DIAG_TREATMENTS)[number];
 
 /**
@@ -106,7 +106,7 @@ export interface DiagRequest {
   reinforced: boolean;
 }
 
-export type ParseResult<T> = { ok: true; value: T } | { ok: false; code: string; message: string };
+type ParseResult<T> = { ok: true; value: T } | { ok: false; code: string; message: string };
 
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 const DAY_MS = 86_400_000;
@@ -280,9 +280,9 @@ export function leaksSecretOrEmail(serialized: string): boolean {
 
 // ── Traçabilité (Document → … → Affichage) ──────────────────────────────────
 
-export const TRACE_STEPS = ['DOCUMENT', 'EXTRACTION_IA', 'DECISION', 'ENREGISTREMENT', 'RAPPROCHEMENT', 'CALCUL', 'AFFICHAGE'] as const;
-export type TraceStepCode = (typeof TRACE_STEPS)[number];
-export const TRACE_STEP_LABELS: Readonly<Record<TraceStepCode, string>> = {
+const TRACE_STEPS = ['DOCUMENT', 'EXTRACTION_IA', 'DECISION', 'ENREGISTREMENT', 'RAPPROCHEMENT', 'CALCUL', 'AFFICHAGE'] as const;
+type TraceStepCode = (typeof TRACE_STEPS)[number];
+const TRACE_STEP_LABELS: Readonly<Record<TraceStepCode, string>> = {
   DOCUMENT: 'Document source',
   EXTRACTION_IA: 'Extraction IA (T1)',
   DECISION: 'Décision (T3 / arbitrage)',
@@ -292,7 +292,7 @@ export const TRACE_STEP_LABELS: Readonly<Record<TraceStepCode, string>> = {
   AFFICHAGE: 'Affichage',
 };
 
-export type TraceStatus = 'disponible' | 'partiel' | 'non_disponible' | 'sans_objet';
+type TraceStatus = 'disponible' | 'partiel' | 'non_disponible' | 'sans_objet';
 
 export interface TraceRef { table: string; id: string | number }
 

@@ -34,13 +34,13 @@ import type {
   ActionProposal,
   ResolutionReason,
   TargetType,
-  ToProcessAction,
 } from './action-model';
 import { isDisplayableArbitration, sanitizeArbitrationProposals, selectDisplayedProposals } from './action-model';
 import { getRule, priorityForRule } from './rules-catalog';
-import { admitToDoFirst, resolvePriority, type PriorityCandidate } from './priority';
+import { admitToDoFirst, resolvePriority } from './priority';
+import { loadDoFirst } from './priority-scheduler.service';
 
-export interface UpsertActionInput {
+interface UpsertActionInput {
   accountId: number;
   targetType: TargetType;
   targetId: number;
@@ -308,7 +308,7 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
   if (wantedPriority === 'DO_FIRST') {
     // L'action remplacée libère sa place : elle ne compte pas dans le plafond.
     const replacedIds = new Set(otherKind.map((a) => a.id));
-    const currentDoFirst = (await loadDoFirstCandidates(input.accountId)).filter((c) => !replacedIds.has(c.id ?? -1));
+    const currentDoFirst = (await loadDoFirst(input.accountId)).filter((c) => !replacedIds.has(c.id ?? -1));
     const admission = admitToDoFirst(
       { ruleCode: input.ruleCode, priority: 'DO_FIRST', activeSince: now, dueDate: input.dueDate },
       currentDoFirst,
@@ -402,33 +402,6 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
   };
 }
 
-async function loadDoFirstCandidates(accountId: number): Promise<PriorityCandidate[]> {
-  const rows = await db
-    .select({
-      id: toProcessActions.id,
-      ruleCode: toProcessActions.ruleCode,
-      priority: toProcessActions.priority,
-      activeSince: toProcessActions.activeSince,
-      dueDate: toProcessActions.dueDate,
-    })
-    .from(toProcessActions)
-    .where(
-      and(
-        eq(toProcessActions.accountId, accountId),
-        eq(toProcessActions.priority, 'DO_FIRST'),
-        isNull(toProcessActions.resolvedAt),
-      ),
-    );
-
-  return rows.map((r) => ({
-    id: r.id,
-    ruleCode: r.ruleCode,
-    priority: 'DO_FIRST' as const,
-    activeSince: r.activeSince,
-    dueDate: r.dueDate,
-  }));
-}
-
 /**
  * Ferme une action.
  *
@@ -518,52 +491,6 @@ export async function reopenAction(actionId: number): Promise<boolean> {
     .returning({ id: toProcessActions.id });
 
   return updated.length > 0;
-}
-
-export interface ListActionsFilters {
-  targetType?: TargetType;
-  actionKind?: ActionKind;
-  priority?: ActionPriority;
-}
-
-/** Actions actives d'un compte. L'ordre est appliqué par `sortActions`. */
-export async function listActiveActions(
-  accountId: number,
-  filters: ListActionsFilters = {},
-): Promise<ToProcessAction[]> {
-  const conditions = [
-    eq(toProcessActions.accountId, accountId),
-    isNull(toProcessActions.resolvedAt),
-  ];
-  if (filters.targetType) conditions.push(eq(toProcessActions.targetType, filters.targetType));
-  if (filters.actionKind) conditions.push(eq(toProcessActions.actionKind, filters.actionKind));
-  if (filters.priority) conditions.push(eq(toProcessActions.priority, filters.priority));
-
-  const rows = await db
-    .select()
-    .from(toProcessActions)
-    .where(and(...conditions));
-
-  return rows.map((row) => ({
-    id: row.id,
-    publicId: row.publicId,
-    accountId: row.accountId,
-    targetType: row.targetType as TargetType,
-    targetId: row.targetId,
-    fieldKey: row.fieldKey,
-    relationKey: row.relationKey,
-    actionKind: row.actionKind as ActionKind,
-    ruleCode: row.ruleCode,
-    priority: row.priority as ActionPriority,
-    question: row.question,
-    proposals: (row.proposalsJson as ActionProposal[] | null) ?? [],
-    activeSince: row.activeSince,
-    lastSeenAt: row.lastSeenAt,
-    resolvedAt: row.resolvedAt,
-    resolutionReason: row.resolutionReason as ResolutionReason | null,
-    cycleNumber: row.cycleNumber,
-    dueDate: row.dueDate,
-  }));
 }
 
 /** Compteur de la pastille de navigation, reflétant les mêmes actions (§8.1). */

@@ -15,7 +15,7 @@
  */
 import { pgClient } from '@/db';
 
-export interface T3DiagnosticFilters {
+interface T3DiagnosticFilters {
   accountId?: number | null;
   jobId?: number | null;
   runId?: number | null;
@@ -29,7 +29,7 @@ export interface T3DiagnosticFilters {
   limit?: number;
 }
 
-export interface T3RunDiagnostic {
+interface T3RunDiagnostic {
   runId: number;
   accountId: number;
   jobId: number | null;
@@ -53,7 +53,7 @@ export interface T3RunDiagnostic {
   byReasonCode: Record<string, number>;
 }
 
-export interface T3CardEvaluation {
+interface T3CardEvaluation {
   id: number;
   createdAt: string;
   accountId: number;
@@ -98,7 +98,7 @@ export interface T3CardEvaluation {
  * document, quel que soit le déclencheur (analyse T1, balayage, passage T3,
  * correction utilisateur) — table `document_rule_evaluations` (0418).
  */
-export interface DocumentRuleEvaluation {
+interface DocumentRuleEvaluation {
   id: number;
   createdAt: string;
   lastSeenAt: string;
@@ -154,9 +154,9 @@ export interface DocumentRuleEvaluation {
 }
 
 /** Lot 72 (C4, C7) : décision d'une famille « état » (agenda, équipements, fournisseurs), y compris sans carte. */
-export type FamilyDecisionView = Awaited<ReturnType<typeof import('@/services/to-process/admissibility').listFamilyDecisions>>[number];
+type FamilyDecisionView = Awaited<ReturnType<typeof import('@/services/to-process/admissibility').listFamilyDecisions>>[number];
 
-export interface T3OpenActionsDiagnostic {
+interface T3OpenActionsDiagnostic {
   generatedAt: string;
   migrations: { journal0371: boolean; diagnostic0410: boolean; documentRules0418?: boolean };
   runs: T3RunDiagnostic[];
@@ -190,7 +190,7 @@ async function migrations(): Promise<T3OpenActionsDiagnostic['migrations']> {
 }
 
 /** Nettoie les filtres (entiers positifs, codes bornés). Pure. */
-export function cleanFilters(f: T3DiagnosticFilters): Required<Omit<T3DiagnosticFilters, 'limit'>> & { limit: number } {
+function cleanFilters(f: T3DiagnosticFilters): Required<Omit<T3DiagnosticFilters, 'limit'>> & { limit: number } {
   const id = (v: unknown) => { const n = num(v); return n !== null && Number.isInteger(n) && n > 0 ? n : null; };
   const code = (v: unknown) => (typeof v === 'string' && /^[A-Za-z0-9_:-]{1,60}$/.test(v.trim()) ? v.trim() : null);
   return {

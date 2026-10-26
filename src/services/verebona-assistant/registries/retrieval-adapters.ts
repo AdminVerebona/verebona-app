@@ -171,9 +171,9 @@ export { documentAnalysisStatus, ANALYSIS_STATUS_LABELS, type DocumentAnalysisSt
  * retrouvé sur un champ AUTORISÉ de l'élément — jamais sa seule catégorie,
  * jamais le bien auquel il est relié, jamais à l'intérieur d'un autre mot.
  */
-export const ASSISTANT_SEARCH_POLICY: SearchPolicy = { requireAllTokens: false, allowSemantic: false };
+const ASSISTANT_SEARCH_POLICY: SearchPolicy = { requireAllTokens: false, allowSemantic: false };
 
-export interface EligibiliteAssistant {
+interface EligibiliteAssistant {
   /** Champs d'observabilité posés sur la source (`meta`). */
   meta: Record<string, string | number | null>;
   rawScore: number;
@@ -185,7 +185,7 @@ export interface EligibiliteAssistant {
  * tout score. Sans terme (liste structurée : type, rattachement, bien ciblé),
  * l'élément est éligible par son filtre structuré.
  */
-export function eligibiliteAssistant(
+function eligibiliteAssistant(
   q: Pick<RetrievalQuery, 'terms' | 'normalizedQuery'>,
   adaptateur: string,
   candidat: Omit<SearchCandidate, 'retrievalStrategy'>,
@@ -220,7 +220,7 @@ function classer(q: RetrievalQuery, texte: string, bonus: number, e: Eligibilite
 
 /* ── Biens ─────────────────────────────────────────────────────────────── */
 
-export const assetsAdapter: RetrievalAdapter = {
+const assetsAdapter: RetrievalAdapter = {
   code: 'structured',
   enabled: true,
   name: 'assets',
@@ -270,7 +270,7 @@ export const assetsAdapter: RetrievalAdapter = {
 
 /* ── Documents ─────────────────────────────────────────────────────────── */
 
-export const documentsAdapter: RetrievalAdapter = {
+const documentsAdapter: RetrievalAdapter = {
   code: 'full_text',
   enabled: true,
   name: 'documents',
@@ -283,7 +283,7 @@ export const documentsAdapter: RetrievalAdapter = {
 
 /* ── Échéances ─────────────────────────────────────────────────────────── */
 
-export const agendaAdapter: RetrievalAdapter = {
+const agendaAdapter: RetrievalAdapter = {
   code: 'structured',
   enabled: true,
   name: 'agenda',
@@ -339,7 +339,7 @@ export const agendaAdapter: RetrievalAdapter = {
 
 /* ── Équipements et pièces ─────────────────────────────────────────────── */
 
-export const equipmentsAdapter: RetrievalAdapter = {
+const equipmentsAdapter: RetrievalAdapter = {
   code: 'structured',
   enabled: true,
   name: 'equipments',
@@ -392,7 +392,7 @@ export const equipmentsAdapter: RetrievalAdapter = {
 // Pièce = SOUS-STRUCTURE (décision PO D-G, lot 20) : `roomId` = `substructures.id`,
 // celui qu'ouvre le tiroir de la pièce (`/api/substructures/[id]`).
 
-export const roomsAdapter: RetrievalAdapter = {
+const roomsAdapter: RetrievalAdapter = {
   code: 'structured',
   enabled: true,
   name: 'rooms',
@@ -435,7 +435,7 @@ export const roomsAdapter: RetrievalAdapter = {
 
 /* ── Fournisseurs (§11.1, §12.1) ──────────────────────────────────────── */
 
-export const suppliersAdapter: RetrievalAdapter = {
+const suppliersAdapter: RetrievalAdapter = {
   code: 'structured',
   enabled: true,
   name: 'suppliers',
@@ -450,7 +450,7 @@ export const suppliersAdapter: RetrievalAdapter = {
 
 const PRIORITES: Record<string, string> = { DO_FIRST: 'À faire en premier', DO_NEXT: 'À faire ensuite', CAN_WAIT: 'Peut attendre' };
 
-export const toProcessAdapter: RetrievalAdapter = {
+const toProcessAdapter: RetrievalAdapter = {
   code: 'structured',
   enabled: true,
   name: 'to_process',
@@ -527,7 +527,7 @@ function toProcessDuBien(assetId: number): SQL {
  * `ProductRuleProvider`). Interrogé seulement quand l'intention attend des
  * règles d'offre (T2-07) : jamais sur une recherche.
  */
-export const productRulesAdapter: RetrievalAdapter = {
+const productRulesAdapter: RetrievalAdapter = {
   code: 'structured',
   enabled: true,
   name: 'product_rules',

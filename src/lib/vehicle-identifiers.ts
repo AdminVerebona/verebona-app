@@ -30,7 +30,7 @@ const FNI = /(?<![A-Za-z0-9])(\d{1,4})[\s-]?([A-Z]{2,3})[\s-]?(\d{2}|2A|2B)(?![A
 /** VIN : 17 caractères, sans I, O, Q (ISO 3779). */
 const VIN = /(?<![A-Za-z0-9])([A-HJ-NPR-Za-hj-npr-z0-9]{17})(?![A-Za-z0-9])/g;
 
-export interface VehicleIdentifiers {
+interface VehicleIdentifiers {
   plates: string[];
   vins: string[];
 }
@@ -47,10 +47,4 @@ export function vehicleIdentifiersIn(text: string): VehicleIdentifiers {
     ...[...sansVin.matchAll(FNI)].map((m) => normalizePlate(`${m[1]}${m[2]}${m[3]}`)),
   ];
   return { plates: [...new Set(plates)], vins: [...new Set(vins)] };
-}
-
-/** Le texte cite-t-il au moins un identifiant de véhicule ? */
-export function hasVehicleIdentifier(text: string): boolean {
-  const ids = vehicleIdentifiersIn(text);
-  return ids.plates.length + ids.vins.length > 0;
 }

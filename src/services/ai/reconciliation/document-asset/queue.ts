@@ -60,14 +60,14 @@ import { T1_SETTLED_STATES } from './question-gate';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 
 /** Type de cible des travaux T3 DOCUMENT_ASSET dans `ai_job_queue`. */
-export const T3_TARGET_DOCUMENT = 'document';
+const T3_TARGET_DOCUMENT = 'document';
 /** Type de cible des pages du rattrapage planifié. */
-export const T3_TARGET_DOCUMENT_SWEEP = 'document_sweep';
-export const DOCUMENT_ASSET_KIND = 'document_asset';
-export const DOCUMENT_ASSET_SWEEP_KIND = 'document_asset_sweep';
+const T3_TARGET_DOCUMENT_SWEEP = 'document_sweep';
+const DOCUMENT_ASSET_KIND = 'document_asset';
+const DOCUMENT_ASSET_SWEEP_KIND = 'document_asset_sweep';
 
 /** Documents remis en file par page (`T3_DOCUMENT_SWEEP_PAGE_SIZE`, 50 par défaut, 1 à 500). */
-export function documentSweepPageSize(): number {
+function documentSweepPageSize(): number {
   return Math.min(500, Math.floor(envNumber('T3_DOCUMENT_SWEEP_PAGE_SIZE', 50, { min: 1 })));
 }
 /** Délai avant la page suivante (`T3_SWEEP_PAGE_DELAY_SECONDS`, comme le balayage des comptes). */
@@ -76,10 +76,9 @@ const pageDelaySeconds = () => Math.floor(envNumber('T3_SWEEP_PAGE_DELAY_SECONDS
 const backlogDelaySeconds = () => Math.floor(envNumber('T3_SWEEP_BACKLOG_DELAY_SECONDS', 300, { min: 0 }));
 
 /** Délai au-delà duquel une demande PENDING sans travail vivant est considérée perdue. */
-export const LOST_REQUEST_MINUTES = 60;
+const LOST_REQUEST_MINUTES = 60;
 
-
-export interface DocumentAssetQueueDeps {
+interface DocumentAssetQueueDeps {
   enqueue: typeof import('../../queue/job-queue.repository').enqueue;
   isTriggerActive: (treatment: 'T3', code: string) => Promise<boolean>;
   /** Lot 49B : carte « À traiter » LINK-ASSET ouverte du document (défaut : base). */
@@ -143,7 +142,7 @@ export async function requestDocumentAssetResolution(
 
 // ── Sortes de travail ──────────────────────────────────────────────────────
 
-export interface DocumentAssetPayload {
+interface DocumentAssetPayload {
   kind: typeof DOCUMENT_ASSET_KIND;
   fileId: number;
   userId: number | null;
@@ -152,7 +151,7 @@ export interface DocumentAssetPayload {
   reprocessReason: string | null;
 }
 
-export interface DocumentSweepPayload {
+interface DocumentSweepPayload {
   kind: typeof DOCUMENT_ASSET_SWEEP_KIND;
   cycleId: string;
   page: number;
@@ -174,7 +173,7 @@ const dateOpt = (job: Pick<QueuedJob, 'id'>, raw: Record<string, unknown>): stri
 };
 
 /** Exécution d'un travail `document_asset` : résultat métier du service. */
-export async function runDocumentAssetJob(job: QueuedJob, p: DocumentAssetPayload, guard: ExecutionGuard): Promise<JobBusinessResult> {
+async function runDocumentAssetJob(job: QueuedJob, p: DocumentAssetPayload, guard: ExecutionGuard): Promise<JobBusinessResult> {
   await guard.assertActive('T3 DOCUMENT_ASSET');
   const r = await resolveDocumentAsset({
     accountId: job.accountId as number,
@@ -202,7 +201,7 @@ export async function runDocumentAssetJob(job: QueuedJob, p: DocumentAssetPayloa
 }
 
 /** Page du rattrapage planifié. */
-export async function runDocumentSweepPage(
+async function runDocumentSweepPage(
   job: QueuedJob, p: DocumentSweepPayload, guard: ExecutionGuard, deps?: DocumentAssetQueueDeps,
 ): Promise<JobBusinessResult> {
   const d = deps ?? await defaultDeps();
@@ -378,7 +377,7 @@ export const SWEEP_SQL = `
    ORDER BY f.id
    LIMIT $2`;
 
-export interface SweepCandidate {
+interface SweepCandidate {
   fileId: number;
   accountId: number;
   userId: number | null;
@@ -391,7 +390,7 @@ export interface SweepCandidate {
   reprocessReason: 'FIRST_EVALUATION' | 'ENGINE_VERSION' | 'NEW_ANALYSIS' | 'KNOWLEDGE_CHANGED' | 'LOST_REQUEST';
 }
 
-export async function listDocumentsWithoutPrimary(q: {
+async function listDocumentsWithoutPrimary(q: {
   afterFileId?: number; limit: number; accountId?: number | null;
   /** Lot 49B : restriction à des documents désignés (recherche ciblée dans la couche exhaustive T1). */
   fileIds?: readonly number[] | null;

@@ -148,7 +148,7 @@ export function journalFilterFingerprint(f: Omit<JournalFilter, 'periodParams'>)
 // BO-11 — une source d'alerte par nature d'incident
 // ══════════════════════════════════════════════════════════════════════════
 
-export type AlertNature =
+type AlertNature =
   | 'BUSINESS_FAILED' | 'BUSINESS_INCOMPLETE' | 'MODEL_INCIDENT' | 'CONFIGURATION_UNSERVABLE'
   | 'QUALIFICATION_INCONCLUSIVE' | 'CALL_INCIDENT' | 'GENERAL_INCIDENT';
 

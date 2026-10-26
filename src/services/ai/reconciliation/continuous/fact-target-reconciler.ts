@@ -33,11 +33,11 @@ import { normalizePlate, normalizeVin } from '@/lib/vehicle-identifiers';
 import type { AccountMatchingIndex } from '../document-asset/matching-index';
 import { getReconciliationState, recordReconciliationState } from './reconciliation-state.repository';
 
-export const FACT_TARGET_RELATION = 'FACT_TARGET';
+const FACT_TARGET_RELATION = 'FACT_TARGET';
 /** Version du moteur de rapprochement des faits (entre dans l'état). */
-export const FACT_TARGET_ENGINE_VERSION = 1;
+const FACT_TARGET_ENGINE_VERSION = 1;
 /** Faits ouverts lus au plus par passage (borné ; le suivant reprend). */
-export const FACT_TARGET_MAX_FACTS = 2000;
+const FACT_TARGET_MAX_FACTS = 2000;
 
 /** Clés d'identifiant exploitées, et leur normalisation. */
 const KEYS: Readonly<Record<string, (v: unknown) => string>> = {
@@ -56,7 +56,7 @@ export interface OpenFact {
   targetEntityId: number | null;
 }
 
-export type FactTargetMatch =
+type FactTargetMatch =
   | { factId: number; fileId: number; kind: 'EQUIPMENT'; equipmentId: number; assetId: number; label: string; previous: { type: string | null; id: number | null } }
   | { factId: number; fileId: number; kind: 'ASSET'; assetId: number; label: string; previous: { type: string | null; id: number | null } };
 

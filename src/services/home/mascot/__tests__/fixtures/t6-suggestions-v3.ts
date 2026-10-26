@@ -7,7 +7,7 @@
  */
 import type { T6SuggestionBundle, T6SuggestionNature, T6SuggestionSubject } from '../../t6-suggestions';
 
-export const CONTRACT_MARKERS = '\nR12 (contrat t6-suggestions-v3) — simulé pour les tests : {"question":"…","subject":"…","purpose":"…","decision":{},"groundRefs":[],"informationNature":[]}\n';
+const CONTRACT_MARKERS = '\nR12 (contrat t6-suggestions-v3) — simulé pour les tests : {"question":"…","subject":"…","purpose":"…","decision":{},"groundRefs":[],"informationNature":[]}\n';
 
 /** Version BO simulée du prompt maître portant le contrat des questions fondées. */
 export const masterV3 = (master: string) => `${master}${CONTRACT_MARKERS}`;

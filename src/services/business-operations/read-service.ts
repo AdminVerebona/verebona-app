@@ -25,9 +25,9 @@ const rows = async <T = Row>(r: Runner, q: SQL): Promise<T[]> => (await r.execut
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 
 /** Longueur maximale d'une chaîne de redirection suivie (protection contre une donnée corrompue). */
-export const MAX_MERGE_REDIRECTS = 10;
+const MAX_MERGE_REDIRECTS = 10;
 
-export interface BusinessOperationView {
+interface BusinessOperationView {
   id: number;
   accountId: number;
   typeCode: BusinessOperationTypeCode | null;
@@ -80,7 +80,7 @@ function toView(r: Row): BusinessOperationView {
   };
 }
 
-export interface ResolvedOperation {
+interface ResolvedOperation {
   operation: BusinessOperationView;
   /** Identifiant demandé, quand il a été redirigé vers la canonique. */
   redirectedFrom: number | null;
@@ -96,7 +96,7 @@ export interface OperationDetail extends BusinessOperationView {
 }
 
 /** Composante financière active, telle que consolidée par T3 (C12). */
-export interface AssistantOperationComponent {
+interface AssistantOperationComponent {
   id: number;
   kind: FinancialComponentKind;
   /** Unités mineures de `currency`, toujours positif (le signe est porté par `kind`). */
@@ -122,7 +122,7 @@ export interface AssistantOperationComponent {
 }
 
 /** Document source actif d'une Opération (document non supprimé). */
-export interface AssistantOperationDocument {
+interface AssistantOperationDocument {
   fileId: number;
   role: SourceRole | null;
   title: string;
@@ -477,12 +477,5 @@ export class BusinessOperationReadService {
          WHERE o.account_id = ${accountId} AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL ${bien}
       ) x WHERE x.matched > 0 ORDER BY x.matched DESC, x.id DESC LIMIT 20`);
     return r.map((x) => ({ id: Number(x.id), matched: Number(x.matched) }));
-  }
-
-  /** Nombre d'Opérations par type, tous comptes (référentiel BO, C27). */
-  async countByType(): Promise<Map<string, number>> {
-    const r = await rows<{ code: string; n: number }>(this.runner, sql`
-      SELECT type_code AS code, count(*)::int AS n FROM business_operations WHERE type_code IS NOT NULL GROUP BY type_code`);
-    return new Map(r.map((x) => [x.code, Number(x.n)]));
   }
 }

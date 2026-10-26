@@ -13,7 +13,7 @@ const CARD = /\b(?:\d[ -]?){13,19}\b/g;
 const EMAIL = /\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g;
 const PHONE_FR = /\b(?:0|\+33)\s?[1-9](?:[ .-]?\d{2}){4}\b/g;
 
-export interface RedactionOptions {
+interface RedactionOptions {
   keepEmails?: boolean;
   keepPhones?: boolean;
 }

@@ -42,10 +42,10 @@ export const WITHDRAWAL_PERIOD_DAYS = 14;
  * Le défaut est `metropole` — les onze jours fériés nationaux. À confirmer
  * avec le conseil juridique ; le changement tient en un paramètre.
  */
-export type HolidayScope = 'metropole' | 'alsace-moselle';
+type HolidayScope = 'metropole' | 'alsace-moselle';
 
 /** Date civile, indépendante de tout fuseau. */
-export interface CivilDate {
+interface CivilDate {
   year: number;
   /** 1 à 12. */
   month: number;
@@ -61,7 +61,7 @@ export interface CivilDate {
  * Quatre des onze jours fériés en dépendent : lundi de Pâques, Ascension,
  * lundi de Pentecôte — et le Vendredi saint en Alsace-Moselle.
  */
-export function easterSunday(year: number): CivilDate {
+function easterSunday(year: number): CivilDate {
   const a = year % 19;
   const b = Math.floor(year / 100);
   const c = year % 100;
@@ -102,24 +102,24 @@ export function addDays(date: CivilDate, days: number): CivilDate {
 }
 
 /** Jour de la semaine : 0 = dimanche, 6 = samedi. */
-export function dayOfWeek(date: CivilDate): number {
+function dayOfWeek(date: CivilDate): number {
   return toUtcNoon(date).getUTCDay();
 }
 
 /** `AAAA-MM-JJ`, pour comparaison et journalisation. */
-export function formatCivilDate(date: CivilDate): string {
+function formatCivilDate(date: CivilDate): string {
   const mm = String(date.month).padStart(2, '0');
   const dd = String(date.day).padStart(2, '0');
   return `${date.year}-${mm}-${dd}`;
 }
 
-export function civilDatesEqual(a: CivilDate, b: CivilDate): boolean {
+function civilDatesEqual(a: CivilDate, b: CivilDate): boolean {
   return a.year === b.year && a.month === b.month && a.day === b.day;
 }
 
 /* ── Calendrier ────────────────────────────────────────────────────────── */
 
-export interface PublicHoliday {
+interface PublicHoliday {
   date: CivilDate;
   label: string;
 }
@@ -131,7 +131,7 @@ export interface PublicHoliday {
  * juste dès l'année suivante, et personne ne s'en apercevrait avant qu'une
  * échéance ne tombe au mauvais jour.
  */
-export function listPublicHolidays(
+function listPublicHolidays(
   year: number,
   scope: HolidayScope = 'metropole',
 ): PublicHoliday[] {
@@ -162,7 +162,7 @@ export function listPublicHolidays(
 }
 
 /** Ce jour est-il férié ? */
-export function isPublicHoliday(date: CivilDate, scope: HolidayScope = 'metropole'): boolean {
+function isPublicHoliday(date: CivilDate, scope: HolidayScope = 'metropole'): boolean {
   return listPublicHolidays(date.year, scope).some((h) => civilDatesEqual(h.date, date));
 }
 
@@ -174,7 +174,7 @@ export function isPublicHoliday(date: CivilDate, scope: HolidayScope = 'metropol
  * du travail — d'où le nom, volontairement rattaché à cet article et non à
  * une notion générale.
  */
-export function isBusinessDay(date: CivilDate, scope: HolidayScope = 'metropole'): boolean {
+function isBusinessDay(date: CivilDate, scope: HolidayScope = 'metropole'): boolean {
   const weekday = dayOfWeek(date);
   if (weekday === 0 || weekday === 6) return false;
   return !isPublicHoliday(date, scope);
@@ -186,7 +186,7 @@ export function isBusinessDay(date: CivilDate, scope: HolidayScope = 'metropole'
  * Boucle bornée : une succession de vingt jours non ouvrables n'existe pas,
  * mais une boucle non bornée sur une donnée corrompue bloquerait un serveur.
  */
-export function nextBusinessDay(date: CivilDate, scope: HolidayScope = 'metropole'): CivilDate {
+function nextBusinessDay(date: CivilDate, scope: HolidayScope = 'metropole'): CivilDate {
   let candidate = date;
   for (let i = 0; i < 20; i += 1) {
     if (isBusinessDay(candidate, scope)) return candidate;
@@ -202,7 +202,7 @@ export function nextBusinessDay(date: CivilDate, scope: HolidayScope = 'metropol
 const PARIS_TZ = 'Europe/Paris';
 
 /** Date civile française correspondant à un instant. */
-export function toParisCivilDate(instant: Date): CivilDate {
+function toParisCivilDate(instant: Date): CivilDate {
   // `en-CA` produit `AAAA-MM-JJ`, format le plus simple à découper.
   const formatted = new Intl.DateTimeFormat('en-CA', {
     timeZone: PARIS_TZ,
@@ -238,7 +238,7 @@ function parisOffsetMinutes(instant: Date): number {
  * l'instant, et l'instant dépend du décalage. Deux passes suffisent, y compris
  * les jours de changement d'heure.
  */
-export function parisEndOfDay(date: CivilDate): Date {
+function parisEndOfDay(date: CivilDate): Date {
   const naive = Date.UTC(date.year, date.month - 1, date.day, 23, 59, 59);
   let instant = new Date(naive);
   for (let i = 0; i < 2; i += 1) {
@@ -250,7 +250,7 @@ export function parisEndOfDay(date: CivilDate): Date {
 
 /* ── Délai de rétractation ─────────────────────────────────────────────── */
 
-export interface WithdrawalDeadline {
+interface WithdrawalDeadline {
   /** Dernier jour, après prorogation éventuelle. */
   deadlineDate: CivilDate;
   /** Instant limite : 23 h 59 min 59 s, heure de Paris. */
@@ -303,11 +303,3 @@ export function computeWithdrawalDeadline(
   };
 }
 
-/** Le droit de rétractation est-il encore ouvert à cet instant ? */
-export function isWithinWithdrawalPeriod(
-  concludedAt: Date,
-  now: Date = new Date(),
-  scope: HolidayScope = 'metropole',
-): boolean {
-  return now.getTime() <= computeWithdrawalDeadline(concludedAt, scope).deadlineAt.getTime();
-}

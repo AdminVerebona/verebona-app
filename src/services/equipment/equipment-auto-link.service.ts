@@ -34,7 +34,7 @@ import { ownedSql } from '@/services/security/account-ownership';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export interface AutoLinkResult {
+interface AutoLinkResult {
   documents: { id: number; score: number; reason: string }[];
   agendaItems: { id: number; score: number; reason: string }[];
   suppliers: { id: number; score: number; reason: string }[];
@@ -498,13 +498,11 @@ export async function runEquipmentAutoLink(
  * ambiguë), T3 avec un contexte enrichi pour les seules vraies ambiguïtés,
  * carte LINK-ELT sinon. Plus de correspondance partielle « le nom contient »
  * ni de premier candidat retenu par défaut (choix arbitraire entre deux
- * équipements similaires). `equipmentCandidates` (ancien contrat) : ignoré,
- * les faits T1 persistés en tiennent lieu. Ne lève pas.
+ * équipements similaires). Ne lève pas.
  */
 export async function linkDocumentToEquipments(
   assetFileId: number,
   accountId: number,
-  _equipmentCandidates?: Array<{ name: string; type: string | null; category: string | null; confidence: number; reason: string }>,
 ): Promise<void> {
   try {
     const { syncDocumentEquipmentLinks } = await import('./document-equipment-link.service');

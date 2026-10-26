@@ -103,23 +103,23 @@ const textArray = (v: readonly string[]): string => `{${v.map((x) => `"${x.repla
  * reclassé, réanalysé) rend la source « à reconsolider » pour le balayage.
  * MÊME expression pour l'écriture et la détection (aucune divergence TS/SQL).
  */
-export const SOURCE_VERSION_SQL = `('c' || c.id || '|a' || COALESCE(f.asset_id, f.linked_asset_id, 0) || '|t' || COALESCE(f.document_type_code, ''))`;
+const SOURCE_VERSION_SQL = `('c' || c.id || '|a' || COALESCE(f.asset_id, f.linked_asset_id, 0) || '|t' || COALESCE(f.document_type_code, ''))`;
 
 /** Prédicat SQL des sources DOCUMENT gérées par T3 devenues obsolètes (alias s, f, c). */
-export const STALE_DOCUMENT_SOURCE_SQL = `
+const STALE_DOCUMENT_SOURCE_SQL = `
   s.active AND s.source_kind = 'DOCUMENT' AND s.locator ? 'candidateKey'
   AND (f.id IS NULL OR f.deleted_at IS NOT NULL OR f.account_id <> s.account_id OR c.id IS NULL
        OR s.source_version IS DISTINCT FROM ${SOURCE_VERSION_SQL})`;
 
 /** Jointures associées (fichier, candidat ACTIF de la même clé). */
-export const STALE_DOCUMENT_SOURCE_JOINS = `
+const STALE_DOCUMENT_SOURCE_JOINS = `
   LEFT JOIN asset_files f ON f.id = (CASE WHEN s.source_entity_key ~ '^[0-9]{1,9}$' THEN s.source_entity_key::int END)
   LEFT JOIN document_operation_candidates c
          ON c.file_id = f.id AND c.status = 'ACTIVE' AND c.candidate_key = s.locator->>'candidateKey'`;
 
 // ── Résultats ───────────────────────────────────────────────────────────────
 
-export interface FileConsolidationResult {
+interface FileConsolidationResult {
   fileId: number;
   outcomes: Partial<Record<T3Outcome, number>>;
   /** Écritures métier (historisées) effectuées. */
@@ -147,7 +147,7 @@ export interface ConsolidationOptions {
 // ── Lot 54D (E01, E05) : reprise automatique bornée ─────────────────────────
 
 /** Tentatives T3 en erreur technique avant abandon (exposé au BO, reprise par « Reconsolider »). */
-export const T3_TECHNICAL_RETRY_MAX = 6;
+const T3_TECHNICAL_RETRY_MAX = 6;
 /** Backoff : 5 min × 2^(n−1), plafonné à 6 h. */
 export function t3RetryDelayMinutes(attempt: number): number | null {
   if (!Number.isInteger(attempt) || attempt < 1 || attempt > T3_TECHNICAL_RETRY_MAX) return null;
@@ -278,7 +278,7 @@ const providerKeyChanged = (k: string | null, eq: ProviderEquivalence): boolean 
 const equivalencesParTransaction = new WeakMap<object, Map<number, ProviderEquivalence>>();
 
 /** Preuves lues au plus par compte (borne de lecture ; au-delà, les plus récentes). */
-export const PROVIDER_EQUIVALENCE_EVIDENCE_LIMIT = 5_000;
+const PROVIDER_EQUIVALENCE_EVIDENCE_LIMIT = 5_000;
 
 /**
  * Lot 86C : équivalences de désignations d'un prestataire ÉTABLIES PAR LES
@@ -287,7 +287,7 @@ export const PROVIDER_EQUIVALENCE_EVIDENCE_LIMIT = 5_000;
  * certitude). Lecture seule, bornée au compte, mise en cache pour la
  * transaction (toutes les identités d'un passage voient la même équivalence).
  */
-export async function loadProviderEquivalence(tx: DbTx, accountId: number): Promise<ProviderEquivalence> {
+async function loadProviderEquivalence(tx: DbTx, accountId: number): Promise<ProviderEquivalence> {
   const cache = equivalencesParTransaction.get(tx as object) ?? new Map<number, ProviderEquivalence>();
   const deja = cache.get(accountId);
   if (deja) return deja;
@@ -360,7 +360,7 @@ function targetIdsOf(cands: CandidateRecord[], fileAssetId: number | null): { as
 }
 
 /** Borne des Opérations examinées par candidat (NFR-OP-010 : jamais de scan global). */
-export const MATCHING_OPERATION_LIMIT = 300;
+const MATCHING_OPERATION_LIMIT = 300;
 
 /**
  * Opérations du compte qui POURRAIENT représenter la réalité du candidat :
@@ -461,9 +461,9 @@ export async function loadMatchableOperations(
 /** Opérations examinées source par source pour un candidat (borne NFR-OP-010). */
 export const IDENTITY_MEMBERS_OPERATION_LIMIT = 20;
 /** Sources examinées par Opération (les plus anciennes, dont la fondatrice). */
-export const IDENTITY_MEMBERS_SOURCE_LIMIT = 30;
+const IDENTITY_MEMBERS_SOURCE_LIMIT = 30;
 
-export interface OperationMembersInfo {
+interface OperationMembersInfo {
   members: OperationMember[];
   /** Méthode qui a rattaché la source du candidat (continuité), sinon null. */
   ownMethod: MatchMethodCode | null;
@@ -617,7 +617,7 @@ export async function loadAssetDataRow(tx: DbTx, accountId: number, assetId: num
  * CDC v5 §18.4, AC39) ne sont plus lues. Elle
  * éclaire la consolidation mais ne prouve pas l'existence (C5).
  */
-export const DECISION_SOURCE_KIND = 'USER_ARBITRATION';
+const DECISION_SOURCE_KIND = 'USER_ARBITRATION';
 
 export const typeInput = (t: BusinessOperationTypeCode | null): OperationTypeInput =>
   t === null ? null : t === 'OTHER'
@@ -887,7 +887,7 @@ export async function reconsolidateOperation(
 // ── Lot 78A : provenance des attributs ─────────────────────────────────────
 
 /** Provenance stockée (0609) : champs → { source, valeur } ; contradictions d'attributs. */
-export interface StoredAttributeProvenance {
+interface StoredAttributeProvenance {
   version: 1;
   fields: AttributeProvenance & { label?: { sourceId: number; value: string } };
   conflicts: ReturnType<typeof consolidateOperationState>['attributeConflicts'];
@@ -949,7 +949,7 @@ async function writeAttributeProvenance(
 }
 
 /** JSON à clés triées (comparaison d'un jsonb relu). */
-export function stableJson(v: unknown): string {
+function stableJson(v: unknown): string {
   if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`;
   if (v && typeof v === 'object') {
     return `{${Object.keys(v as Record<string, unknown>).filter((k) => (v as Record<string, unknown>)[k] !== undefined).sort()
@@ -1217,7 +1217,7 @@ async function syncDetails(
 // ── Niveau M3 progressif (lot 53, retour PO D7) ────────────────────────────
 
 /** Trace de l'examen M3 progressif d'un candidat (persistée dans `t3_detail`). */
-export interface ProgressiveM3Trace {
+interface ProgressiveM3Trace {
   /** Empreinte du contexte du lot courant (null : plus rien à soumettre). */
   fingerprint: string | null;
   batch: number[];
@@ -1416,7 +1416,7 @@ async function alignSeriesTypes(
 // ── Lot 84E (O-6) : regroupement de série en SIMULATION (contrôle de cohérence) ──
 
 /** Fragment de série qu'une reconsolidation réunirait (décision T3 recalculée, sans écriture). */
-export interface SeriesGroupingPreview {
+interface SeriesGroupingPreview {
   fileId: number;
   candidateKey: string;
   /** Opération(s) où le document est aujourd'hui. */
@@ -1491,7 +1491,7 @@ export async function previewSeriesGrouping(accountId: number, fileIds: readonly
 // ── Lot 86C : doublons ENTRE Opérations, en SIMULATION (contrôle de cohérence) ──
 
 /** Doublon d'une relation contractuelle que le réexamen rétroactif T3 réunirait ou soumettrait. */
-export interface OperationDuplicatePreview {
+interface OperationDuplicatePreview {
   operationId: number;
   fileId: number;
   candidateKey: string;
@@ -1519,7 +1519,7 @@ export interface OperationDuplicatePreview {
 }
 
 /** Documents examinés par Opération (borne de lecture, les plus anciens d'abord). */
-export const DUPLICATE_PREVIEW_DOCUMENTS = 5;
+const DUPLICATE_PREVIEW_DOCUMENTS = 5;
 
 /**
  * Lot 86C — MÊME décision que l'examen rétroactif T3 (`retroDecision` : sans
@@ -1535,7 +1535,7 @@ export const DUPLICATE_PREVIEW_DOCUMENTS = 5;
  * document unique (pas seulement une relation récurrente), comme une demande
  * de réévaluation T3 ; les verdicts M3 enregistrés restent appliqués.
  */
-export const SEMANTIC_PREVIEW_MARK = { semanticReevaluation: { at: '1970-01-01T00:00:00.000Z', requestId: 'preview' } } as const;
+const SEMANTIC_PREVIEW_MARK = { semanticReevaluation: { at: '1970-01-01T00:00:00.000Z', requestId: 'preview' } } as const;
 
 export async function previewOperationDuplicates(accountId: number, operationIds: readonly number[], opts: { semantic?: boolean } = {}): Promise<Map<number, OperationDuplicatePreview>> {
   const out = new Map<number, OperationDuplicatePreview>();
@@ -1632,7 +1632,7 @@ export async function previewOperationDuplicates(accountId: number, operationIds
 // ── Lot 86C : dates contractuelles non justifiées, en SIMULATION (contrôle de cohérence) ──
 
 /** Écart entre les dates contractuelles enregistrées et celles que les sources établissent. */
-export interface ContractDatesPreview {
+interface ContractDatesPreview {
   operationId: number;
   typeCode: 'CONTRACT' | 'FINANCING';
   stored: { startDate: string | null; endDate: string | null; effectiveFrom: string | null; effectiveTo: string | null };
@@ -2075,9 +2075,9 @@ export async function reconsolidateOperations(accountId: number, operationIds: n
 /** Documents traités par passage ; au-delà, un passage consolidé suivant est demandé. */
 export const DOCUMENTS_PER_RUN = 200;
 /** Documents en attente de résolution (HOLD) réexaminés par passage. */
-export const HOLD_REEVALUATION_LIMIT = 100;
+const HOLD_REEVALUATION_LIMIT = 100;
 
-export interface AccountConsolidationResult {
+interface AccountConsolidationResult {
   documents: number;
   outcomes: Partial<Record<T3Outcome, number>>;
   changes: number;
@@ -2134,7 +2134,7 @@ export async function listDirtyDocuments(accountId: number, limit: number): Prom
 }
 
 /** Prédicat SQL des contrats ENVISAGED arrivés à leur date d'effet avec une preuve certaine (Q13). */
-export const DUE_CONTRACT_SQL = `
+const DUE_CONTRACT_SQL = `
   o.type_code = 'CONTRACT' AND o.status = 'ENVISAGED' AND o.invalidated_at IS NULL AND o.merged_into_operation_id IS NULL
   AND o.start_date IS NOT NULL AND o.start_date <= current_date
   AND EXISTS (

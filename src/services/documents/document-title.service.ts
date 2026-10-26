@@ -88,14 +88,13 @@ import {
 import { isExecutionCancelled, type ExecutionGuard } from '@/services/ai/queue/execution-control';
 
 /** Lot 87D : `COHERENCE` = réparation du stock par le contrôle COH-DOC-TITLES. */
-export type TitleOrigin = 'T1' | 'T3' | 'COHERENCE';
-export type TitleMode = 'refresh' | 'repair';
+type TitleOrigin = 'T1' | 'T3' | 'COHERENCE';
+type TitleMode = 'refresh' | 'repair';
 export type TitleOutcome = 'UPDATED' | 'NO_CHANGE' | 'SKIP_USER_TITLE' | 'INSUFFICIENT_DATA' | 'FAILED';
-export type TitleSource = 'SYSTEM' | 'USER';
 /** Pourquoi le titre est (re)contrôlé (journal). */
-export type TitleTrigger = 'RULE_VERSION_UPGRADE' | 'CONTEXT_CHANGED' | 'NEW_ANALYSIS';
+type TitleTrigger = 'RULE_VERSION_UPGRADE' | 'CONTEXT_CHANGED' | 'NEW_ANALYSIS';
 
-export interface EnsureTitleResult {
+interface EnsureTitleResult {
   fileId: number;
   origin: TitleOrigin;
   outcome: TitleOutcome;
@@ -262,7 +261,7 @@ const REFERENCE_FACT_KEYS = ['contractNumber', 'insuranceContractNumber', 'dpeAd
  * seulement s'il est UNIQUE), période métier des faits, référence, nombre de
  * biens du compte.
  */
-export async function loadTitleAccountContext(fileId: number, accountId: number): Promise<Partial<TitleContext>> {
+async function loadTitleAccountContext(fileId: number, accountId: number): Promise<Partial<TitleContext>> {
   const sql = await sqlClient();
   const [base, equipements, pieces, periode, reference] = await Promise.all([
     sql.unsafe(
@@ -409,7 +408,7 @@ export function billingBasisFrom(p: {
 }
 
 /** Données de facturation PERSISTÉES d'un document (lecture seule, bornée). */
-export async function loadBillingBasis(fileId: number, accountId: number, issueDate: string | null): Promise<BillingBasis> {
+async function loadBillingBasis(fileId: number, accountId: number, issueDate: string | null): Promise<BillingBasis> {
   const sql = await sqlClient();
   const [cands, faits, run] = await Promise.all([
     sql.unsafe(

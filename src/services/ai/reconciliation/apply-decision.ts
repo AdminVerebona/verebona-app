@@ -31,7 +31,7 @@ import type { ReconciliationDecision, EvidenceCandidate } from './types';
 import { isRegistryKey } from './canonical-key';
 export { isRegistryKey };
 
-export interface ApplyContext {
+interface ApplyContext {
   accountId: number;
   assetId: number;
   sourceFileId: number | null;
@@ -44,7 +44,7 @@ export interface ApplyContext {
 }
 
 /** Résultat d'une application (tests, rapport). */
-export type ApplyOutcome = 'written' | 'skipped' | 'protected' | 'conflict' | 'invalid' | 'unchanged';
+type ApplyOutcome = 'written' | 'skipped' | 'protected' | 'conflict' | 'invalid' | 'unchanged';
 
 export async function applyDecision(
   decision: ReconciliationDecision,
@@ -181,9 +181,9 @@ function isSameAsDecided(actual: unknown, decided: unknown): boolean {
 
 // ── Réconciliation négative (CDC 15 T3-04) ──────────────────────────────────
 
-export const RETRACTION_REASON = 'NO_REMAINING_EVIDENCE';
+const RETRACTION_REASON = 'NO_REMAINING_EVIDENCE';
 
-export interface RetractInput {
+interface RetractInput {
   accountId: number;
   assetId: number;
   fieldKey: string;

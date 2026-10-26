@@ -95,7 +95,7 @@ import {
 import { getAccountKnowledgeRevision, knowledgeChangedSince } from '../continuous/knowledge-revision';
 
 /** Issue métier d'une exécution (vocabulaire de la file T3). */
-export type DocumentAssetOutcome = 'APPLIED' | 'NO_CHANGE' | 'ABSTAIN' | 'SUPERSEDED' | 'TARGET_GONE';
+type DocumentAssetOutcome = 'APPLIED' | 'NO_CHANGE' | 'ABSTAIN' | 'SUPERSEDED' | 'TARGET_GONE';
 
 /**
  * Résultat lisible d'une évaluation (monitoring, ticket « réconciliation
@@ -172,7 +172,7 @@ export function previousAiAt(r: Pick<DocumentAssetResolution, 'lastEvaluation'> 
   return e.aiCalled === true && typeof e.at === 'string' ? e.at : null;
 }
 
-export interface ResolveDocumentAssetInput {
+interface ResolveDocumentAssetInput {
   accountId: number;
   fileId: number;
   /** Utilisateur à l'origine (projection des faits) ; à défaut, propriétaire du document. */
@@ -201,7 +201,7 @@ export interface ResolveDocumentAssetInput {
   openActionId?: number | null;
 }
 
-export interface ResolveDocumentAssetResult {
+interface ResolveDocumentAssetResult {
   outcome: DocumentAssetOutcome;
   status: ResolutionStatus | null;
   decision?: DocumentAssetDecision;
@@ -213,7 +213,7 @@ export interface ResolveDocumentAssetResult {
 }
 
 /** Points d'injection (tests unitaires). */
-export interface ResolveDocumentAssetDeps {
+interface ResolveDocumentAssetDeps {
   callModel?: (p: { accountId: number; userId: number | null; fileId: number; variables: Record<string, unknown>; onTrace?: (traceId: string) => void }) => Promise<T3LinkAmbiguityOutput>;
   /** Lot 57B : historique fournisseur (défaut : base). */
   supplierHistory?: (accountId: number, fileId: number, supplier: string | null) => Promise<Map<number, number>>;

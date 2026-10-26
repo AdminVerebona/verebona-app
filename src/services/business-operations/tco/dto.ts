@@ -48,7 +48,7 @@ export const ECONOMIC_LINE_REASON_LABELS: Readonly<Record<EconomicLineReason, st
 /** Lignes transmises par page à l'interface (les plus utiles d'abord) — la trace complète reste côté serveur et BO. */
 export const TCO_DTO_MAX_LINES = 400;
 /** Lot 75D (J) : taille maximale d'une page demandée (chargement complémentaire). */
-export const TCO_DTO_MAX_PAGE = 1000;
+const TCO_DTO_MAX_PAGE = 1000;
 
 /**
  * Lot 68 (68A) — motif pour lequel une ligne examinée n'est PAS montrée sur
@@ -58,7 +58,7 @@ export const TCO_DTO_MAX_PAGE = 1000;
  *   · CONSOLIDATED_SHOWN : justificatif repris par une dépense consolidée déjà
  *     affichée — le justificatif est ouvrable depuis cette ligne.
  */
-export type TcoHiddenReason = 'OTHER_ASSET' | 'CONSOLIDATED_SHOWN';
+type TcoHiddenReason = 'OTHER_ASSET' | 'CONSOLIDATED_SHOWN';
 
 export const TCO_HIDDEN_REASON_LABELS: Readonly<Record<TcoHiddenReason, string>> = {
   OTHER_ASSET: 'Masquée sur la fiche : attribuée à un autre bien',
@@ -71,7 +71,7 @@ export const TCO_HIDDEN_REASON_LABELS: Readonly<Record<TcoHiddenReason, string>>
  * `./user-decisions`), jamais par l'interface. `duplicateWarning` : texte de la
  * confirmation quand l'ajout crée un doublon présumé.
  */
-export interface TcoLineActions {
+interface TcoLineActions {
   removable: boolean;
   addable: boolean;
   addBlockedReason: string | null;
@@ -79,10 +79,10 @@ export interface TcoLineActions {
 }
 
 /** Ligne montrée sur la fiche : justificatifs repris par la dépense consolidée (en plus de `fileId`). */
-export type TcoUserLine = TcoEconomicLine & { supportingDocuments?: Array<{ fileId: number; title: string }>; actions?: TcoLineActions };
+type TcoUserLine = TcoEconomicLine & { supportingDocuments?: Array<{ fileId: number; title: string }>; actions?: TcoLineActions };
 
 /** Lot 80A : gestes possibles sur une ligne montrée (pure). */
-export function tcoLineActions(l: TcoEconomicLine, lines: readonly TcoEconomicLine[]): TcoLineActions {
+function tcoLineActions(l: TcoEconomicLine, lines: readonly TcoEconomicLine[]): TcoLineActions {
   const retenue = RETENUE(l.status);
   const a = retenue ? null : tcoLineAddable(l);
   // Revenir sur un retrait (décision utilisateur) ne crée aucun doublon : la ligne retrouve son statut automatique.

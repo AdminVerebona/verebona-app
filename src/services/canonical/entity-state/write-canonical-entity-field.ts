@@ -52,7 +52,7 @@ import type {
 
 /* ── Plan (fonction pure) ────────────────────────────────────────────────── */
 
-export interface EntityWritePlan {
+interface EntityWritePlan {
   kc: Record<string, unknown>;
   /** Colonnes miroirs à écrire, indexées `table.colonne`. */
   columns: Record<string, unknown>;

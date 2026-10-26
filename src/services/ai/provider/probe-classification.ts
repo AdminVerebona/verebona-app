@@ -130,7 +130,7 @@ function googleErrorOf(msg: string): { code: number | null; status: string | nul
 }
 
 /** Code HTTP d'une erreur (propriété `status`/`code` numérique, sinon lu dans le message). */
-export function httpStatusOf(err: unknown, message: string): number | null {
+function httpStatusOf(err: unknown, message: string): number | null {
   const e = err as { status?: unknown; code?: unknown } | null;
   for (const v of [e?.status, e?.code]) {
     if (typeof v === 'number' && v >= 100 && v < 600) return v;

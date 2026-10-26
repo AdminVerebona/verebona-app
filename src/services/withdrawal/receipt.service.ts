@@ -17,7 +17,7 @@ import { emailService } from '@/lib/email/email-service';
 import { markReceiptSent } from './withdrawal.service';
 import type { WithdrawalSummary } from './summary.service';
 
-export interface ReceiptInput {
+interface ReceiptInput {
   publicReference: string;
   to: string;
   /** `null` : utilisateur déjà supprimé (renvoi par le traitement). */

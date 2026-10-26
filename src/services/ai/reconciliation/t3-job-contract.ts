@@ -48,7 +48,7 @@ import { PermanentJobError, type JobBusinessResult } from '../queue/queue-policy
 /** Version courante du contexte des travaux T3. */
 export const T3_PAYLOAD_VERSION = 1 as const;
 /** Version attribuée à un contexte historique, sans `payloadVersion`. */
-export const T3_LEGACY_PAYLOAD_VERSION = 0;
+const T3_LEGACY_PAYLOAD_VERSION = 0;
 
 /** Types de cible T3 dans la file. */
 export const T3_TARGET_ASSET = 'asset';
@@ -59,16 +59,16 @@ export const T3_TARGET_ROOM = 'room';
 export const T3_TARGET_SWEEP_PAGE = 't3_sweep';
 
 /** Forme d'un job, telle que la file la porte (colonnes, hors contexte). */
-export type T3JobShape = Pick<QueuedJob, 'id' | 'accountId' | 'targetType' | 'targetId'>;
+type T3JobShape = Pick<QueuedJob, 'id' | 'accountId' | 'targetType' | 'targetId'>;
 
 /** Contexte d'exécution transmis à l'exécutant d'une sorte de travail. */
-export interface T3RunContext<P> {
+interface T3RunContext<P> {
   job: QueuedJob;
   payload: P;
   guard: ExecutionGuard;
 }
 
-export interface T3JobKindSpec<P = unknown> {
+interface T3JobKindSpec<P = unknown> {
   /** Valeur de `payload.kind`. */
   kind: string;
   /** Types de cible acceptés ; `null` = job sans cible. */
@@ -315,7 +315,7 @@ registerT3JobKind<T3SweepPayload>({
 
 // ── Résolution d'un job ─────────────────────────────────────────────────────
 
-export interface ResolvedT3Job<P = unknown> {
+interface ResolvedT3Job<P = unknown> {
   spec: T3JobKindSpec<P>;
   kind: string;
   /** 0 = contexte historique sans version. */

@@ -30,7 +30,7 @@ export interface CreateFlowRequest {
 export const OPEN_CREATE_FLOW = 'open-create-flow';
 
 /** Quota vérifié par la garde d'écriture avant l'ouverture. */
-export const CREATE_FLOW_QUOTA: Readonly<Record<CreateFlowKind, 'documents' | 'assets' | undefined>> = {
+const CREATE_FLOW_QUOTA: Readonly<Record<CreateFlowKind, 'documents' | 'assets' | undefined>> = {
   document: 'documents',
   asset: 'assets',
   agenda_item: undefined,
@@ -46,9 +46,9 @@ export function parseCreateFlowRequest(v: unknown): CreateFlowRequest | null {
 }
 
 /** Formulaire ouvert par chaque parcours (le même que « + Ajouter »). */
-export type CreateFlowComponent = 'UnifiedDocumentDialog' | 'AssetFormDialog' | 'CreateAgendaItemDrawer';
+type CreateFlowComponent = 'UnifiedDocumentDialog' | 'AssetFormDialog' | 'CreateAgendaItemDrawer';
 
-export interface CreateFlowView {
+interface CreateFlowView {
   component: CreateFlowComponent;
   /** Bien présélectionné (`preselectedAssetId` / `prefilledAssetId`), jamais pour un bien. */
   preselectedAssetId: number | null;

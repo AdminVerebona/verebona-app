@@ -57,9 +57,9 @@ import { randomUUID } from 'node:crypto';
 import { pgClient } from '@/db';
 
 /** Ancien état « à valider » — plus jamais écrit depuis le lot 71B. */
-export const LEGACY_VALIDATION_STATE = 'VALIDATION_REQUIRED';
+const LEGACY_VALIDATION_STATE = 'VALIDATION_REQUIRED';
 
-export type RepriseOrigin = 'SCHEDULED' | 'BO';
+type RepriseOrigin = 'SCHEDULED' | 'BO';
 
 export interface ValidationRepriseReport {
   mode: 'simulate' | 'apply';
@@ -85,7 +85,7 @@ export interface ValidationRepriseReport {
   more: boolean;
 }
 
-export interface ValidationRepriseOptions {
+interface ValidationRepriseOptions {
   apply: boolean;
   origin: RepriseOrigin;
   accountId?: number | null;

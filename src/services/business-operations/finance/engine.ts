@@ -54,7 +54,7 @@ import type { EconomicDateResolution } from './economic-date';
 export const UNKNOWN_CURRENCY = 'XXX';
 
 /** Effet économique d'une nature de composante (table §4.2). */
-export type ComponentEffect = 'COST' | 'REDUCTION' | 'REFUND' | 'INDEMNITY' | 'PROCEED' | 'FORECAST';
+type ComponentEffect = 'COST' | 'REDUCTION' | 'REFUND' | 'INDEMNITY' | 'PROCEED' | 'FORECAST';
 
 export const COMPONENT_EFFECT: Readonly<Record<FinancialComponentKind, ComponentEffect>> = {
   REALIZED_COST: 'COST', REDUCTION: 'REDUCTION', REFUND: 'REFUND', INDEMNITY: 'INDEMNITY', PROCEED: 'PROCEED', FORECAST_COST: 'FORECAST',
@@ -163,10 +163,10 @@ export const isIsoDate = (d: string | null | undefined): d is string => {
 };
 
 /** Lot 81D — jour civil d'une date valide (`YYYY-MM-DD`), ou null (absente ou impossible) — jamais normalisée. */
-export const isoDayOrNull = (d: string | null | undefined): string | null => (isIsoDate(d) ? d.slice(0, 10) : null);
+const isoDayOrNull = (d: string | null | undefined): string | null => (isIsoDate(d) ? d.slice(0, 10) : null);
 
 /** Fuseau des dates civiles de Verebona (convention métier). */
-export const VEREBONA_TIME_ZONE = 'Europe/Paris';
+const VEREBONA_TIME_ZONE = 'Europe/Paris';
 
 /**
  * Lot 81D — date civile à Paris de l'instant `now` (`YYYY-MM-DD`) : date de
@@ -229,7 +229,7 @@ export const EXCLUSION_LABELS: Readonly<Record<ExclusionReason, string>> = {
 };
 
 /** Lot 81D : contradiction entre statut, date et nature d'une composante (signalée, jamais corrigée en silence). */
-export type LedgerContradiction =
+type LedgerContradiction =
   | 'PLANNED_WITHOUT_PROOF'   // Opération prévue portant un « coût réalisé » sans paiement daté et justifié
   | 'PLANNED_WITH_PAYMENT'    // Opération prévue, paiement daté et justifié : compté, statut à vérifier
   | 'REALIZED_FUTURE_DATE';   // Opération réalisée, dépense datée après la date de référence
@@ -348,7 +348,7 @@ export function evaluateComponent(c: LedgerComponent, ctx: EvaluateContext): Led
 
 // ── Synthèse et complétude (§4.4) ──────────────────────────────────────────
 
-export interface LedgerTotals {
+interface LedgerTotals {
   /** Σ REALIZED_COST retenus. */
   costsEurMinor: number;
   reductionsEurMinor: number;
@@ -413,7 +413,7 @@ export function summarizeLedger(entries: readonly LedgerEntry[]): LedgerTotals {
 
 // ── Contrôles automatiques (§4.5) ──────────────────────────────────────────
 
-export type LedgerAnomalyCode =
+type LedgerAnomalyCode =
   | 'SUM_MISMATCH'            // somme des postes ≠ total
   | 'DUPLICATE_COMPONENT'     // composante comptée deux fois
   | 'INDEMNITY_DUPLICATED'    // même indemnité portée deux fois sur un sinistre

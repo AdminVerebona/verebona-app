@@ -54,7 +54,7 @@ const JWT_REFRESH_EXPIRY_S = REFRESH_TOKEN_TTL_S;  // 30 j (rotation à chaque r
 
 export type TokenUse = 'access' | 'refresh';
 
-export const JWT_ISSUER = 'verebona';
+const JWT_ISSUER = 'verebona';
 export const JWT_AUDIENCE: Readonly<Record<TokenUse, string>> = { access: 'verebona:access', refresh: 'verebona:refresh' };
 export const JWT_KID: Readonly<Record<TokenUse, string>> = { access: 'v2-access', refresh: 'v2-refresh' };
 
@@ -77,7 +77,7 @@ export const INSECURE_DEFAULT_JWT_SECRET = 'your-secret-key-change-in-production
 /** Longueur minimale en production (caractères). `openssl rand -base64 48` en donne 64. */
 export const JWT_SECRET_MIN_LENGTH = 32;
 /** Valeurs connues (dépôt, exemples, tests) refusées en production. */
-export const KNOWN_WEAK_JWT_SECRETS: ReadonlySet<string> = new Set([
+const KNOWN_WEAK_JWT_SECRETS: ReadonlySet<string> = new Set([
   INSECURE_DEFAULT_JWT_SECRET,
   'your-secret-key',
   'your-jwt-secret',
@@ -94,7 +94,7 @@ export const KNOWN_WEAK_JWT_SECRETS: ReadonlySet<string> = new Set([
   'verebona-secret',
 ]);
 
-export type JwtSecretProblem = 'missing' | 'too_short' | 'known_default';
+type JwtSecretProblem = 'missing' | 'too_short' | 'known_default';
 
 type Env = Record<string, string | undefined>;
 
@@ -113,7 +113,7 @@ const PROBLEM_TEXT: Record<JwtSecretProblem, string> = {
   known_default: 'JWT_SECRET vaut une valeur publique connue (valeur de repli ou d’exemple)',
 };
 
-export function jwtSecretProblemMessage(problem: JwtSecretProblem): string {
+function jwtSecretProblemMessage(problem: JwtSecretProblem): string {
   return `[jwt] ${PROBLEM_TEXT[problem]}. En production (NODE_ENV=production), le serveur refuse de démarrer : `
     + 'définissez JWT_SECRET avec une valeur aléatoire longue (ex. `openssl rand -base64 48`) dans les variables '
     + 'd’environnement de l’application. Changer ce secret déconnecte toutes les sessions.';
@@ -244,7 +244,7 @@ async function createToken(use: TokenUse, claims: Record<string, unknown>, expir
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-export interface TokenSubject {
+interface TokenSubject {
   id: number; email: string; role: UserRole; planType: PlanType; status: UserStatus;
   currentAccountId?: number; hasActiveAccount?: boolean;
 }
@@ -297,7 +297,7 @@ function readHeader(segment: string): { kid?: unknown; alg?: unknown } | null {
  * revendications d'usage, d'audience, d'émetteur et d'expiration.
  * `null` pour tout jeton d'un autre usage, mal formé, expiré ou hors borne.
  */
-export async function verifyTypedToken(token: string, expected: TokenUse): Promise<JWTPayload | null> {
+async function verifyTypedToken(token: string, expected: TokenUse): Promise<JWTPayload | null> {
   try {
     if (typeof token !== 'string') return null;
     const parts = token.split('.');

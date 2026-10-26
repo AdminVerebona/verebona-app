@@ -41,7 +41,7 @@ import { validateRepresentation } from './validate';
 
 type Sql = postgres.Sql;
 
-export interface RepresentationRequest {
+interface RepresentationRequest {
   accountId: number;
   operationId: number;
   trigger: SemanticTrigger;
@@ -60,9 +60,9 @@ export interface RepresentationRequest {
   deps?: { decider?: RepresentationDecider; now?: () => Date; bounds?: RepresentationBounds; sql?: Sql; dailyMax?: number; passMax?: number; reproject?: boolean };
 }
 
-export type RepresentationOutcomeStatus = SemanticStatus | 'SETTLED' | 'NOT_NEEDED' | 'WOULD_REQUEST';
+type RepresentationOutcomeStatus = SemanticStatus | 'SETTLED' | 'NOT_NEEDED' | 'WOULD_REQUEST';
 
-export interface RepresentationOutcome {
+interface RepresentationOutcome {
   status: RepresentationOutcomeStatus;
   journalId: number | null;
   fingerprint: string | null;
@@ -95,7 +95,7 @@ export function representationNeeded(b: BuiltRepresentation, requested: readonly
 }
 
 /** Résumé d'état (avant / après) borné : éléments, rattachements, rôles, restaurables. */
-export function stateSummary(b: BuiltRepresentation): Record<string, unknown> {
+function stateSummary(b: BuiltRepresentation): Record<string, unknown> {
   return {
     items: b.scope.items.filter((i) => i.inScope).map((i) => ({ id: i.id, op: i.operationId, role: i.role, roleOrigin: i.roleOrigin, projected: i.projected })),
     restorable: b.scope.restorables.map((r) => ({ journalId: r.journalId, absorbedItemId: r.absorbedItemId })),
@@ -297,7 +297,7 @@ async function signalIdentity(req: RepresentationRequest, concern: string | null
 
 // ── T3 : identité ──────────────────────────────────────────────────────────
 
-export interface IdentityRequest {
+interface IdentityRequest {
   accountId: number;
   operationIds: readonly number[];
   trigger: SemanticTrigger;
@@ -315,7 +315,7 @@ export interface IdentityRequest {
   deps?: { sql?: Sql; now?: () => Date };
 }
 
-export interface IdentityOutcome {
+interface IdentityOutcome {
   /** Opérations dont le document est remis en examen T3 (verdict historique écarté). */
   requested: number[];
   /** Opérations déjà en réexamen T3 (aucune seconde demande). */
@@ -435,9 +435,9 @@ export async function settleIdentityRequests(accountId: number, sql?: Sql): Prom
 
 export { REPRESENTATION_AI_CONTRACT, T3_IDENTITY_AI_CONTRACT };
 
-export interface RequestedRepresentation { operationId: number; itemIds: number[]; reason: string }
+interface RequestedRepresentation { operationId: number; itemIds: number[]; reason: string }
 
-export interface RequestedRun {
+interface RequestedRun {
   requested: number;
   outcomes: Partial<Record<RepresentationOutcomeStatus, number>>;
   aiCalls: number;

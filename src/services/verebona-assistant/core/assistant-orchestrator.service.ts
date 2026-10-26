@@ -749,7 +749,7 @@ export async function runAssistant(
     // UNDERSTAND n'est pas sollicité d'emblée pour une intention inconnue :
     // c'est un appel modèle, et la cascade tente d'abord les niveaux gratuits
     // (sauf cible exigée non résolue — évaluation de la compréhension, lot 32).
-    let route: IntentRoute = outcome.kind === 'route' ? outcome.route : fallbackUnknownRoute(input.planType);
+    let route: IntentRoute = outcome.kind === 'route' ? outcome.route : fallbackUnknownRoute();
     route = affinerRoute(route, input);
     const needsClassification = outcome.kind === 'needs_classification';
     base.route = route;
@@ -1689,7 +1689,7 @@ export async function runAssistant(
       // Lot 29 (8b §K) : compréhension impossible (modèle en échec) — motif
       // distinct, jamais confondu avec « rien trouvé ».
       if (!classified) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
-      route = affinerRoute(classified ?? fallbackUnknownRoute(input.planType), input);
+      route = affinerRoute(classified ?? fallbackUnknownRoute(), input);
       base.route = route;
       trace.intent = route.intent;
       // UNDERSTAND a fourni une intention du catalogue : compréhension
@@ -2582,10 +2582,10 @@ const CARD_STRATEGIES = new Set<string>([
 ]);
 
 /** Lot 32 : cible exigée, aucun bien disponible à proposer. */
-export const NO_AVAILABLE_ASSET_MESSAGE =
+const NO_AVAILABLE_ASSET_MESSAGE =
   'Je n’ai identifié aucun bien actif dans votre compte pour cette demande. Ajoutez le bien ou précisez son nom tel qu’il apparaît dans Verebona.';
 /** Lot 32 : cible exigée, catalogue des biens momentanément illisible. */
-export const TARGET_QUESTION_MESSAGE = 'De quel bien parlez-vous ? Précisez son nom tel qu’il apparaît dans Verebona.';
+const TARGET_QUESTION_MESSAGE = 'De quel bien parlez-vous ? Précisez son nom tel qu’il apparaît dans Verebona.';
 
 /**
  * « Aucun document… » d'une recherche RÉELLEMENT exécutée sur UN bien résolu
@@ -2644,7 +2644,7 @@ function pricingAction(): VerebonaAction {
   };
 }
 
-function fallbackUnknownRoute(planType: string): IntentRoute {
+function fallbackUnknownRoute(): IntentRoute {
   return {
     intent: 'UNKNOWN', confidence: 'ambiguous', accountScope: 'server-enforced',
     entityHints: [], requiresRetrieval: false, aiEligible: false,

@@ -66,7 +66,7 @@ type Row = Record<string, unknown>;
  * du compte) ne sont pas archivées (`sanitizeForArchive`).
  */
 export const ARCHIVED_TABLES = ['ai_usage_event', 'ai_pipeline_step', 'home_mascot_generations'] as const;
-export type ArchivedTable = (typeof ARCHIVED_TABLES)[number];
+type ArchivedTable = (typeof ARCHIVED_TABLES)[number];
 
 const T2_USE_CASE = 'INTELLIGENT_ASSISTANT';
 
@@ -77,15 +77,8 @@ export function archiveAfterDays(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 /** Dépôt d'archive — S3 en production, injectable en test. */
-export interface ArchiveStore {
+interface ArchiveStore {
   put(key: string, body: Buffer): Promise<void>;
-}
-
-let injectedStore: ArchiveStore | null = null;
-
-/** Remplace le dépôt S3 — réservé aux tests. */
-export function setArchiveStore(store: ArchiveStore | null): void {
-  injectedStore = store;
 }
 
 async function s3Store(): Promise<ArchiveStore> {
@@ -143,12 +136,12 @@ export function archiveKey(environment: string, table: ArchivedTable, day: strin
   return `ai-logs/${environment}/${table}/${day.slice(0, 4)}/${day.slice(5, 7)}/${day}-part-${String(part).padStart(3, '0')}.ndjson.gz`;
 }
 
-export function toNdjsonGzip(rows: Row[]): Buffer {
+function toNdjsonGzip(rows: Row[]): Buffer {
   const text = rows.map((r) => JSON.stringify(r, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))).join('\n');
   return gzipSync(Buffer.from(text + (rows.length ? '\n' : ''), 'utf8'));
 }
 
-export interface ArchiveReport {
+interface ArchiveReport {
   archives: number;
   rowsArchived: Record<ArchivedTable, number>;
   days: string[];
@@ -166,7 +159,7 @@ export async function archiveAiLogs(opts: { maxDays?: number; chunk?: number; st
   const started = Date.now();
   const maxDays = opts.maxDays ?? 14;
   const chunk = opts.chunk ?? 5_000;
-  const store = opts.store ?? injectedStore ?? await s3Store();
+  const store = opts.store ?? await s3Store();
   const { getAiEnvironment } = await import('../config/environment');
   const environment = getAiEnvironment();
   const after = archiveAfterDays();
@@ -247,7 +240,7 @@ export async function archiveAiLogs(opts: { maxDays?: number; chunk?: number; st
   return report;
 }
 
-export interface ArchiveListItem {
+interface ArchiveListItem {
   id: number;
   sourceTable: string;
   periodDay: string;

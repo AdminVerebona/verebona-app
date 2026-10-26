@@ -35,12 +35,9 @@
 import type { ModelPrice } from './pricing-source.port';
 
 /** Date du relevé. À mettre à jour avec les montants. */
-export const CATALOG_SNAPSHOT_DATE = '2026-07-30';
+const CATALOG_SNAPSHOT_DATE = '2026-07-30';
 
-/** Page de référence, également interrogée pour la détection d'écart. */
-export const CATALOG_SOURCE_URL = 'https://ai.google.dev/gemini-api/docs/pricing';
-
-export interface CatalogEntry {
+interface CatalogEntry {
   model: string;
   /** Dollars par million de tokens d'entrée, palier Standard payant. */
   inputPerMillion: number;

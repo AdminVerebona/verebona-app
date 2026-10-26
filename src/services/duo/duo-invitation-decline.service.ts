@@ -65,9 +65,9 @@ export function duoInvitationDeclinedKey(duoId: number, tokenHash: string): stri
   return `duo-invitation-declined:${duoId}:${tokenHash}`;
 }
 
-export type DeclineVia = 'link' | 'no_space_screen';
+type DeclineVia = 'link' | 'no_space_screen';
 
-export interface DeclineOutcome {
+interface DeclineOutcome {
   /** Vrai seulement si CETTE requête a refusé une invitation en attente (jamais exposé au client). */
   declined: boolean;
   duoId?: number;
@@ -185,13 +185,3 @@ export async function declineDuoInvitationsForEmail(
   return { declined };
 }
 
-/** Jeton déjà refusé (empreinte) : « invitation refusée » plutôt que « lien inconnu ». */
-export async function isDeclinedInviteToken(token: string, runner: Pick<typeof db, 'select'> = db): Promise<boolean> {
-  if (!isWellFormedInviteToken(token)) return false;
-  const [row] = await runner
-    .select({ id: duoAccounts.id })
-    .from(duoAccounts)
-    .where(eq(duoAccounts.lastDeclinedInviteTokenHash, inviteTokenHash(token.trim())))
-    .limit(1);
-  return !!row;
-}

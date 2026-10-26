@@ -20,7 +20,7 @@ import type { RefusedMutation, RepresentationMutation, T4AgendaRepresentationOut
 import type { DecidedRole } from './store';
 import type { RepresentationScope, ScopeItem } from './context';
 
-export interface RepresentationPlan {
+interface RepresentationPlan {
   mutations: RepresentationMutation[];
   refused: RefusedMutation[];
 }
@@ -133,11 +133,6 @@ export function planRepresentation(decision: T4AgendaRepresentationOutput, scope
   // (le service de regroupement le fait lors de la désignation) ; rien d'autre n'est déduit ici.
   mutations.sort((a, b) => ordre[a.kind] - ordre[b.kind]);
   return { mutations, refused };
-}
-
-/** Résumé borné d'une mutation (journal, diagnostics). */
-export function describeMutation(m: RepresentationMutation | { kind: string; ref?: string }): Record<string, unknown> {
-  return { ...m };
 }
 
 /**

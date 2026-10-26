@@ -71,7 +71,7 @@ export interface ObjectResult {
   reason?: string;
 }
 
-export interface AccountRunResult {
+interface AccountRunResult {
   runId: number;
   accountId: number;
   triggerType: T3TriggerType;
@@ -107,7 +107,7 @@ export interface AccountRunResult {
  * biens en erreur ; `NOT_CONFIGURED` : phase absente de cet orchestrateur
  * (tests), jamais obligatoire.
  */
-export type PhaseStatus = 'DONE' | 'PARTIAL' | 'FAILED' | 'NOT_RUN' | 'NOT_CONFIGURED' | 'DEFERRED';
+type PhaseStatus = 'DONE' | 'PARTIAL' | 'FAILED' | 'NOT_RUN' | 'NOT_CONFIGURED' | 'DEFERRED';
 /**
  * Lot 72B (E8) : `DEFERRED` — phase FACULTATIVE dont le travail reste dû
  * (plafond, délai de reprise, prompt inutilisable) sans échec : jamais DONE,
@@ -131,7 +131,7 @@ export type RunPhases = Record<RunPhaseName, PhaseReport> & {
    */
   INFORMATION_BACKFILL?: PhaseReport;
 };
-export type RunOutcome = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BUSINESS_ABSTENTION' | 'TECHNICAL_FAILURE';
+type RunOutcome = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BUSINESS_ABSTENTION' | 'TECHNICAL_FAILURE';
 
 /**
  * Issue d'un passage (pure, testée). Une phase obligatoire en échec ou non
@@ -196,7 +196,7 @@ export function documentNamingPhaseReport(dn: import('./document-naming/phase').
 }
 
 /** Au-delà, un run « en cours » est réputé abandonné (processus arrêté). */
-export const STALE_RUN_MINUTES = 30;
+const STALE_RUN_MINUTES = 30;
 
 /** Correspondance déclencheur T3 → origine tracée du run local. */
 const LOCAL_TRIGGER: Record<T3TriggerType, ReconcileInput['triggeredBy']> = {
@@ -205,7 +205,7 @@ const LOCAL_TRIGGER: Record<T3TriggerType, ReconcileInput['triggeredBy']> = {
   event: 'field_changed',
 };
 
-export interface AccountReconciliationDeps {
+interface AccountReconciliationDeps {
   reconcile(input: ReconcileInput): Promise<ReconciliationRun>;
   /** Connaissance ouverte (lot 34E). Absente : phase omise (tests de l'orchestrateur). */
   reconcileOpenKnowledge?: typeof import('./continuous/open-knowledge.service').reconcileOpenKnowledge;
@@ -725,16 +725,3 @@ export async function processDueAccountReconciliations(
   return [];
 }
 
-/**
- * Ancienne planification par variable d'environnement — RETIRÉE (T3-006,
- * T3-UI-05). La planification T3 est désormais portée par les déclencheurs
- * `schedule_*` de la version effective, mis en file par le boucleur
- * (`queue/triggers.ts`) ; sans version renseignée, le défaut du code est
- * horaire (`schedule_hourly`, lot 31C), en balayage paginé (`t3-queue`).
- *
- * Rend une liste vide : la route cron qui l'appelle reste compatible, et deux
- * planificateurs ne tournent jamais ensemble.
- */
-export async function runScheduledAccountReconciliations(): Promise<AccountRunResult[]> {
-  return [];
-}

@@ -138,7 +138,7 @@ export function getCachedPrice(provider: string, model: string): CachedPrice | n
   return cache.get(key(provider, model)) ?? null;
 }
 
-export interface PricingCacheState {
+interface PricingCacheState {
   size: number;
   loadedAt: Date | null;
   /** Le dernier chargement a échoué : les coûts ne sont pas mesurables. */

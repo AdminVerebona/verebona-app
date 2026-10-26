@@ -27,7 +27,7 @@ type Sql = postgres.Sql;
  * ORPHAN_ASSET_FIELD (lot 82B) : échéance de fiche sans plus aucun rattachement vivant, retirée par le contrôle de
  * cohérence COH-AGENDA-ORPHANS (remplace l'ancien statut utilisateur « annulé » posé sans trace par la maintenance horaire).
  */
-export type AgendaRemovalReason = 'SOURCE_SYNC' | 'DEDUPE_14_6' | 'OPERATION_PROJECTION' | 'OPERATION_CONSOLIDATION' | 'ORPHAN_ASSET_FIELD'
+type AgendaRemovalReason = 'SOURCE_SYNC' | 'DEDUPE_14_6' | 'OPERATION_PROJECTION' | 'OPERATION_CONSOLIDATION' | 'ORPHAN_ASSET_FIELD'
   /** Lot 83E : événement documentaire automatique, source retirée, sans plus aucun rattachement (contrôle COH-AGENDA-ORPHANS). */
   | 'ORPHAN_SOURCE_DELETED';
 

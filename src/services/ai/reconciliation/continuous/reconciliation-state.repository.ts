@@ -11,7 +11,7 @@
  */
 import { pgClient } from '@/db';
 
-export interface ReconciliationState {
+interface ReconciliationState {
   relation: string;
   subjectType: string;
   subjectId: number;

@@ -42,7 +42,7 @@ import { attachAgendaItem, detachAgendaItem, releasePrincipal, type GroupingCont
 /** Lot 83A : + O7-NO-INFERRED-PRINCIPAL (v2) ; lot 84B : + O3-PRINCIPAL-WITHDRAWN (v3). */
 export const GROUPING_INVARIANTS_VERSION = 'l84b-v3';
 
-export type GroupingInvariantId =
+type GroupingInvariantId =
   | 'O1-PRINCIPAL-UNIQUE' | 'O1-AGENDA-ONE-OPERATION' | 'O1-LINK-PROVENANCE'
   | 'O1-PRINCIPAL-DOCUMENTS' | 'O1-DOCUMENT-MEMBERSHIP' | 'O1-ANTI-CARTESIAN' | 'O7-NO-INFERRED-PRINCIPAL'
   | 'O3-PRINCIPAL-WITHDRAWN';
@@ -63,7 +63,7 @@ export interface GroupingFinding {
  * écriture) ; `changed` — la réparation a écrit. Le registre recontrôle
  * ensuite par `detect` (C-Q2 : un nouveau contrôle valide la cohérence).
  */
-export interface GroupingRepairOutcome { repaired: boolean; changed: boolean; detail?: Record<string, unknown> }
+interface GroupingRepairOutcome { repaired: boolean; changed: boolean; detail?: Record<string, unknown> }
 
 export interface GroupingInvariant {
   id: GroupingInvariantId;
@@ -80,7 +80,7 @@ export interface GroupingInvariant {
 
 // ── Évaluateurs purs ───────────────────────────────────────────────────────
 
-export interface AgendaMembershipRow {
+interface AgendaMembershipRow {
   itemId: number;
   accountId: number;
   operationId: number | null;
@@ -120,7 +120,7 @@ export function evaluateAgendaMembership(accountId: number, rows: readonly Agend
   return out;
 }
 
-export interface FileLinkRow { itemId: number; fileId: number; provenances: readonly string[]; projected: boolean; isAutomatic: boolean; role: OperationRole | null }
+interface FileLinkRow { itemId: number; fileId: number; provenances: readonly string[]; projected: boolean; isAutomatic: boolean; role: OperationRole | null }
 
 export function evaluateLinkProvenance(accountId: number, rows: readonly FileLinkRow[]): GroupingFinding[] {
   return rows.filter((r) => !r.provenances.length).map((r) => ({
@@ -130,7 +130,7 @@ export function evaluateLinkProvenance(accountId: number, rows: readonly FileLin
   }));
 }
 
-export interface OperationPrincipalSnapshot {
+interface OperationPrincipalSnapshot {
   operationId: number;
   principalItemId: number | null;
   memberItemIds: readonly number[];
@@ -155,7 +155,7 @@ export function evaluatePrincipalDocuments(accountId: number, ops: readonly Oper
 }
 
 /** Propagation résiduelle sur un élément qui n'est principal d'AUCUNE Opération active. */
-export function evaluateStrayPrincipalProvenance(accountId: number, rows: ReadonlyArray<{ itemId: number; fileIds: readonly number[] }>): GroupingFinding[] {
+function evaluateStrayPrincipalProvenance(accountId: number, rows: ReadonlyArray<{ itemId: number; fileIds: readonly number[] }>): GroupingFinding[] {
   return rows.map((r) => ({
     invariantId: 'O1-PRINCIPAL-DOCUMENTS' as const, accountId, objectKey: `agenda_item:${r.itemId}`, nature: 'STRAY_PRINCIPAL_LINK',
     detail: { itemId: r.itemId, fileIds: [...r.fileIds].sort((a, b) => a - b) }, repairable: true,
@@ -185,7 +185,7 @@ export function evaluateAntiCartesian(
   });
 }
 
-export interface DurablePrincipalRow { operationId: number; typeCode: string | null; itemId: number; origin: RoleOrigin | null }
+interface DurablePrincipalRow { operationId: number; typeCode: string | null; itemId: number; origin: RoleOrigin | null }
 
 /** Principal déduit (auteur autre que l'utilisateur) d'une relation durable (pur). */
 export function evaluateInferredPrincipal(accountId: number, rows: readonly DurablePrincipalRow[]): GroupingFinding[] {
@@ -195,7 +195,7 @@ export function evaluateInferredPrincipal(accountId: number, rows: readonly Dura
   }));
 }
 
-export interface WithdrawnPrincipalRow { operationId: number; itemId: number; origin: RoleOrigin | null; withdrawnItemIds: readonly number[] }
+interface WithdrawnPrincipalRow { operationId: number; itemId: number; origin: RoleOrigin | null; withdrawnItemIds: readonly number[] }
 
 /**
  * Lot 84B (CDC v5 §10, §11.9 ; point ouvert 83A) — un principal DÉDUIT (T4,

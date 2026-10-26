@@ -28,12 +28,12 @@ import { and, eq, isNotNull, or } from 'drizzle-orm';
 import { invalidateUserReadCache, serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 
-export type AccountStatusOutcome =
+type AccountStatusOutcome =
   | { ok: true; wasActive: boolean; isActive: boolean; revokedUserIds: number[] }
   | { ok: false; code: 'ACCOUNT_NOT_FOUND' };
 
 /** Utilisateurs dont la session donne accès au compte : titulaire + membres actifs. */
-export async function listAccountUserIds(accountId: number, ownerUserId: number): Promise<number[]> {
+async function listAccountUserIds(accountId: number, ownerUserId: number): Promise<number[]> {
   const rows = await db
     .select({ userId: accountMemberships.userId })
     .from(accountMemberships)

@@ -23,7 +23,7 @@ import { isAiExcludedField } from '../../reconciliation/decision/ai-exclusion';
 const like = (q: string) => `%${q.replace(/[%_]/g, '')}%`;
 
 // ── 1. searchAssets ─────────────────────────────────────────────────────────
-export const searchAssets: AssistantTool<{ query?: string; category?: string }> = {
+const searchAssets: AssistantTool<{ query?: string; category?: string }> = {
   name: 'searchAssets',
   description: 'Recherche les biens du compte par nom, catégorie ou sous-type.',
   parameters: { query: 'texte libre, optionnel', category: 'immobilier | vehicule | objet, optionnel' },
@@ -58,7 +58,7 @@ export const searchAssets: AssistantTool<{ query?: string; category?: string }> 
 };
 
 // ── 2. getAssetDetails ──────────────────────────────────────────────────────
-export const getAssetDetails: AssistantTool<{ assetId: number }> = {
+const getAssetDetails: AssistantTool<{ assetId: number }> = {
   name: 'getAssetDetails',
   description: "Détail d'un bien : caractéristiques, pièces et équipements.",
   parameters: { assetId: 'identifiant du bien' },
@@ -101,7 +101,7 @@ export const getAssetDetails: AssistantTool<{ assetId: number }> = {
 };
 
 // ── 3. searchDocuments ──────────────────────────────────────────────────────
-export const searchDocuments: AssistantTool<{ query?: string; assetId?: number; documentType?: string }> = {
+const searchDocuments: AssistantTool<{ query?: string; assetId?: number; documentType?: string }> = {
   name: 'searchDocuments',
   description: 'Recherche les documents du compte par titre, type ou bien rattaché.',
   parameters: { query: 'texte libre', assetId: 'bien concerné', documentType: 'type canonique' },
@@ -144,7 +144,7 @@ export const searchDocuments: AssistantTool<{ query?: string; assetId?: number; 
 };
 
 // ── 4. getDocumentEvidence ──────────────────────────────────────────────────
-export const getDocumentEvidence: AssistantTool<{ documentId: number; fieldKey?: string }> = {
+const getDocumentEvidence: AssistantTool<{ documentId: number; fieldKey?: string }> = {
   name: 'getDocumentEvidence',
   description: "Extraits justificatifs tirés d'un document, avec leur localisation.",
   parameters: { documentId: 'identifiant du document', fieldKey: 'champ concerné, optionnel' },
@@ -196,7 +196,7 @@ export const getDocumentEvidence: AssistantTool<{ documentId: number; fieldKey?:
 // `status` et `assetId` sur `agenda_items`. Ces trois colonnes N'EXISTENT PAS.
 // Le schéma réel porte `start_date`, `manual_status`, et le rattachement au
 // bien passe par la table de liaison `agenda_asset_links`.
-export const searchAgenda: AssistantTool<{ from?: string; to?: string; assetId?: number }> = {
+const searchAgenda: AssistantTool<{ from?: string; to?: string; assetId?: number }> = {
   name: 'searchAgenda',
   description: "Recherche les échéances et informations de l'agenda du compte.",
   parameters: {
@@ -250,7 +250,7 @@ export const searchAgenda: AssistantTool<{ from?: string; to?: string; assetId?:
 };
 
 // ── 6. searchSuppliers ──────────────────────────────────────────────────────
-export const searchSuppliers: AssistantTool<{ query?: string }> = {
+const searchSuppliers: AssistantTool<{ query?: string }> = {
   name: 'searchSuppliers',
   description: 'Recherche les fournisseurs du compte.',
   parameters: { query: 'nom ou raison sociale' },
@@ -276,7 +276,7 @@ export const searchSuppliers: AssistantTool<{ query?: string }> = {
 };
 
 // ── 7. searchEquipments ─────────────────────────────────────────────────────
-export const searchEquipments: AssistantTool<{ query?: string; assetId?: number }> = {
+const searchEquipments: AssistantTool<{ query?: string; assetId?: number }> = {
   name: 'searchEquipments',
   description: 'Recherche les équipements rattachés aux biens du compte.',
   parameters: { query: 'nom ou type', assetId: 'bien concerné' },
@@ -356,7 +356,7 @@ export const getFieldHistory: AssistantTool<{ assetId: number; fieldKey: string 
 };
 
 // ── 9. getOpenInconsistencies ───────────────────────────────────────────────
-export const getOpenInconsistencies: AssistantTool<{ assetId?: number }> = {
+const getOpenInconsistencies: AssistantTool<{ assetId?: number }> = {
   name: 'getOpenInconsistencies',
   description: "Contradictions en attente d'arbitrage sur les fiches du compte.",
   parameters: { assetId: 'bien concerné, optionnel' },

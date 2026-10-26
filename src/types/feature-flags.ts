@@ -49,24 +49,3 @@ export const DEFAULT_FEATURE_FLAGS: Record<PlanType, FeatureFlags> = {
   },
 };
 
-/**
- * Interface pour les informations utilisateur avec feature flags
- */
-export interface UserWithFeatures {
-  id: number;
-  email: string;
-  firstName: string;
-  lastName: string;
-  planType: PlanType;
-  subscriptionStatus: SubscriptionStatus;
-  subscriptionStartedAt?: string | null;
-  planRenewalDate?: string | null;
-  featureFlags?: string | null; // JSON string
-}
-
-/**
- * Interface pour la réponse complète avec feature flags parsés
- */
-export interface UserFeatures extends UserWithFeatures {
-  features: FeatureFlags;
-}

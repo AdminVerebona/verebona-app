@@ -34,7 +34,7 @@ import {
 } from './common';
 
 /** Nature d'une pièce du dossier sinistre (tableau « Devis, factures et rapports »). */
-export function claimDocKind(d: SourceDocument): string {
+function claimDocKind(d: SourceDocument): string {
   if (d.kind === 'DEVIS') return 'quote';
   if (d.kind === 'FACTURE') return 'invoice';
   if (d.kind === 'ECHANGE_ASSUREUR') return 'exchanges';
@@ -42,12 +42,6 @@ export function claimDocKind(d: SourceDocument): string {
   if (/fuite/i.test(d.title)) return 'leak-report';
   if (d.kind === 'SINISTRE') return 'statement';
   return 'report';
-}
-
-/** « 08/08 → 22/08/2026 » (même année) ou dates complètes. */
-export function dateRangeLabel(from: string, to: string): string {
-  if (from === to) return fmt.date(from);
-  return from.slice(0, 4) === to.slice(0, 4) ? `${fmt.date(from).slice(0, 5)} → ${fmt.date(to)}` : `${fmt.date(from)} → ${fmt.date(to)}`;
 }
 
 /** Libellé « Salle de bain, Cuisine » ; null si vide. */

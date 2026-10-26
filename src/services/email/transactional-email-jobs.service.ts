@@ -83,7 +83,7 @@ import { pgClient } from '@/db';
 import { emailService } from '@/lib/email/email-service';
 import { buildEmailVerificationUrl, EMAIL_VERIFICATION_TTL_MS } from '@/services/auth/email-verification.service';
 
-export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT' | 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' | 'DUO_INVITATION_DECLINED'
+type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBERSHIP_ENDED' | 'DUO_MEMBERSHIP_LEFT' | 'SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER' | 'DUO_INVITATION_DECLINED'
   | 'PREMIUM_CONFIRMATION' | 'DOWNGRADE_NOTIFICATION';
 
 /**
@@ -93,24 +93,24 @@ export type EmailJobKind = 'EMAIL_VERIFICATION' | 'DUO_INVITATION' | 'DUO_MEMBER
  * non résolue ouvre une anomalie de Supervision (domaine communications) ;
  * une acceptation la résout.
  */
-export const CONTRACTUAL_EMAIL_KINDS: ReadonlySet<EmailJobKind> = new Set(['PREMIUM_CONFIRMATION', 'DOWNGRADE_NOTIFICATION']);
-export type EmailJobStatus = 'pending' | 'sending' | 'accepted' | 'failed' | 'cancelled' | 'uncertain';
+const CONTRACTUAL_EMAIL_KINDS: ReadonlySet<EmailJobKind> = new Set(['PREMIUM_CONFIRMATION', 'DOWNGRADE_NOTIFICATION']);
+type EmailJobStatus = 'pending' | 'sending' | 'accepted' | 'failed' | 'cancelled' | 'uncertain';
 
 const MIN = 60_000;
 export const EMAIL_JOB_MAX_ATTEMPTS = 6;
 /** Délai avant la tentative suivante, après la n-ième tentative échouée. */
-export const EMAIL_JOB_BACKOFF_MS: readonly number[] = [MIN, 5 * MIN, 15 * MIN, 60 * MIN, 180 * MIN];
+const EMAIL_JOB_BACKOFF_MS: readonly number[] = [MIN, 5 * MIN, 15 * MIN, 60 * MIN, 180 * MIN];
 /** Verrou d'une tentative : au-delà, elle est réputée interrompue (processus arrêté). */
-export const EMAIL_JOB_LOCK_MS = 2 * MIN;
+const EMAIL_JOB_LOCK_MS = 2 * MIN;
 /** Durée de validité de l'invitation Duo (même valeur que la route et le BO). */
 export const DUO_INVITE_TTL_DAYS = 7;
 /** Lot 72F : fenêtre d'idempotence Resend (24 h) — réémission avec la même clé jusqu'à 23 h (marge). */
 export const PROVIDER_IDEMPOTENCY_WINDOW_MS = 24 * 60 * MIN;
 export const PROVIDER_REPLAY_WINDOW_MS = 23 * 60 * MIN;
 /** Lot 72F : délai minimal avant de conclure à l'absence d'un e-mail dans la liste Resend. */
-export const PROVIDER_LISTING_GRACE_MS = 10 * MIN;
+const PROVIDER_LISTING_GRACE_MS = 10 * MIN;
 /** Lot 72F : consultation bornée de la liste Resend (pages de 100). */
-export const PROVIDER_LIST_MAX_PAGES = 10;
+const PROVIDER_LIST_MAX_PAGES = 10;
 /**
  * Lot 76D : bornes de la consultation Resend. Au-delà (candidats trop nombreux,
  * pages, durée), la recherche est INCOMPLÈTE : jamais « absent » (unknown, motif
@@ -119,10 +119,10 @@ export const PROVIDER_LIST_MAX_PAGES = 10;
 export const PROVIDER_LOOKUP_MAX_CANDIDATES = 50;
 export const PROVIDER_LOOKUP_MAX_MS = 25_000;
 /** Lot 76D : nouvelle consultation d'une demande neutralisée restée incertaine (retour arrière en cours). */
-export const NEUTRALIZED_RECHECK_MS = 15 * MIN;
+const NEUTRALIZED_RECHECK_MS = 15 * MIN;
 /** Lot 72F : étiquettes Resend de la demande d'origine. */
 export const EMAIL_JOB_TAG = 'vb_email_job';
-export const EMAIL_JOB_GENERATION_TAG = 'vb_send_gen';
+const EMAIL_JOB_GENERATION_TAG = 'vb_send_gen';
 
 /** Lot 72F : identité d'envoi STABLE (une génération = une clé, toutes tentatives confondues). */
 export function emailJobIdempotencyKey(jobId: number, generation: number): string {
@@ -609,7 +609,7 @@ async function annualBlock(): Promise<string | null> {
   }
 }
 
-export type ProviderReconciliation =
+type ProviderReconciliation =
   | { kind: 'accepted'; messageId: string; via: 'journal' | 'webhook' | 'provider' }
   | { kind: 'absent' }
   | { kind: 'unknown'; detail: string };
@@ -964,7 +964,7 @@ export async function runTransactionalEmailRetry(opts: { deadline?: number; now?
 
 // ── Lot 76D : demandes neutralisées par le retour aux rappels Stripe ─────────
 
-export type NeutralizedOutcome = 'busy' | 'accepted' | 'neutralized' | 'uncertain';
+type NeutralizedOutcome = 'busy' | 'accepted' | 'neutralized' | 'uncertain';
 
 /**
  * Lot 76D — qualification d'une demande NEUTRALISÉE (retour arrière en cours),
@@ -1020,7 +1020,7 @@ export async function reconcileNeutralizedEmailJob(jobId: number, now: Date = ne
 
 // ── Lot 72F : acceptations incertaines non résolues (BO) ────────────────────
 
-export type EmailJobDecision = 'RECHECK' | 'CONFIRM_SENT' | 'REISSUE' | 'ABANDON';
+type EmailJobDecision = 'RECHECK' | 'CONFIRM_SENT' | 'REISSUE' | 'ABANDON';
 export const EMAIL_JOB_DECISIONS: readonly EmailJobDecision[] = ['RECHECK', 'CONFIRM_SENT', 'REISSUE', 'ABANDON'];
 
 /**
@@ -1058,41 +1058,9 @@ export async function decideUncertainEmailJob(jobId: number, decision: EmailJobD
   return done.length ? { ok: true, status: d.status } : { ok: false, code: 'NOT_UNCERTAIN' };
 }
 
-export interface UncertainEmailJobRow {
-  jobId: number;
-  kind: string;
-  recipientEmail: string;
-  status: string;
-  attempts: number;
-  /** Cause technique (code du prestataire), jamais de secret. */
-  detail: string | null;
-  uncertainSince: string | null;
-  providerCallStartedAt: string | null;
-  lastError: string | null;
-}
-
-/** Demandes dont l'acceptation est incertaine (bloquées, ou en cours de réconciliation). */
-export async function listUncertainEmailJobs(limit = 100): Promise<UncertainEmailJobRow[]> {
-  const rows = await pgClient.unsafe<Record<string, unknown>[]>(
-    `SELECT id, kind, recipient_email, status, attempts, provider_detail, uncertain_since, provider_call_started_at, last_error
-       FROM transactional_email_jobs
-      WHERE status = 'uncertain'
-         OR (provider_outcome = 'uncertain' AND status IN ('pending', 'sending', 'failed', 'cancelled') AND updated_at > now() - interval '30 days')
-      ORDER BY (status = 'uncertain') DESC, uncertain_since NULLS LAST, id
-      LIMIT $1`,
-    [limit as never],
-  );
-  const isoOrNull = (v: unknown) => (v ? new Date(v as string).toISOString() : null);
-  return rows.map((r) => ({
-    jobId: Number(r.id), kind: String(r.kind), recipientEmail: String(r.recipient_email), status: String(r.status),
-    attempts: Number(r.attempts), detail: (r.provider_detail as string | null) ?? null,
-    uncertainSince: isoOrNull(r.uncertain_since), providerCallStartedAt: isoOrNull(r.provider_call_started_at), lastError: (r.last_error as string | null) ?? null,
-  }));
-}
-
 // ── Lecture (titulaire Duo, BO) ──────────────────────────────────────────────
 
-export interface DuoInvitationEmailState {
+interface DuoInvitationEmailState {
   /** queued : demande enregistrée, pas encore acceptée ; accepted : acceptée par Resend ; delivered : remise au serveur destinataire ; failed : échec. */
   state: 'queued' | 'accepted' | 'delivered' | 'delayed' | 'failed';
   acceptedAt: string | null;

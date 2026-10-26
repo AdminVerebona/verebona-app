@@ -21,19 +21,19 @@ import { withJobLockOrSkip } from '@/lib/job-lock';
 import { innerLockTtlMs, T3_LEGACY_TRANSFER_TIMEOUT_MS } from '@/services/scheduling/task-timeouts';
 import { processDueAccountReconciliations } from './account-reconciliation.service';
 
-export const T3_LEGACY_TRANSFER_LOCK = 't3-legacy-transfer';
+const T3_LEGACY_TRANSFER_LOCK = 't3-legacy-transfer';
 /** Couvre la durée maximale d'une exécution planifiée (2 × délai + marge). */
-export const T3_LEGACY_TRANSFER_LOCK_TTL_MS = innerLockTtlMs(T3_LEGACY_TRANSFER_TIMEOUT_MS);
+const T3_LEGACY_TRANSFER_LOCK_TTL_MS = innerLockTtlMs(T3_LEGACY_TRANSFER_TIMEOUT_MS);
 
 /** Demandes encore au statut `queued` dans l'ancienne file (index partiel). */
-export async function countLegacyQueuedT3(): Promise<number> {
+async function countLegacyQueuedT3(): Promise<number> {
   const rows = (await pgClient.unsafe(
     `SELECT count(*)::int AS n FROM account_reconciliation_runs WHERE status = 'queued'`,
   )) as unknown as Array<{ n: number }>;
   return Number(rows[0]?.n ?? 0);
 }
 
-export interface LegacyTransferResult {
+interface LegacyTransferResult {
   /** Demandes trouvées avant le transfert. */
   before: number;
   /** Demandes restantes après (échecs de transfert, ou plus de 200). */

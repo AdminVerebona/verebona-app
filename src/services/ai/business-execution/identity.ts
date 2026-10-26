@@ -20,7 +20,6 @@
  *                                 (`requested_at`, inchangé par les nouveaux essais).
  */
 import { randomUUID } from 'node:crypto';
-import type { BusinessTreatment } from './types';
 
 /** Nouvel identifiant d'exécution T1 (début d'une analyse). */
 export function newT1ExecutionId(): string {
@@ -37,7 +36,7 @@ export function t6EvaluateExecutionId(agendaItemId: number, requestedAt: Date | 
   return `T6E:${agendaItemId}:${Number.isFinite(ms) ? ms : 0}`;
 }
 
-export type ParsedExecutionId =
+type ParsedExecutionId =
   | { treatment: 'T1'; kind: 'uuid'; value: string }
   | { treatment: 'T1'; kind: 'job'; jobId: number }
   | { treatment: 'T1'; kind: 'report'; reportId: number }
@@ -76,13 +75,8 @@ export function parseExecutionId(raw: string | null | undefined): ParsedExecutio
   }
 }
 
-/** Traitement d'un identifiant (null s'il est illisible). Pur. */
-export function treatmentOfExecutionId(id: string | null | undefined): BusinessTreatment | null {
-  return parseExecutionId(id)?.treatment ?? null;
-}
-
 /** Référence d'exécution portée par un travail de file T1 (`payload.businessExecution`). */
-export interface JobBusinessExecutionRef {
+interface JobBusinessExecutionRef {
   id: string;
   /** `start` : début d'une analyse ; `resume` : reprise d'une exécution existante. */
   role: 'start' | 'resume';

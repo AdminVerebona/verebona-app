@@ -24,10 +24,10 @@ import { innerLockTtlMs, WITHDRAWAL_SWEEP_TIMEOUT_MS } from '@/services/scheduli
 import { processWithdrawal } from './withdrawal-processor.service';
 
 /** Au-delà, une demande non traitée est une anomalie (§21). */
-export const WITHDRAWAL_STALE_HOURS = 24;
-export const WITHDRAWAL_SWEEP_LOCK = 'withdrawal-sweep';
+const WITHDRAWAL_STALE_HOURS = 24;
+const WITHDRAWAL_SWEEP_LOCK = 'withdrawal-sweep';
 /** Couvre la durée maximale d'une exécution planifiée (2 × délai + marge). */
-export const WITHDRAWAL_SWEEP_LOCK_TTL_MS = innerLockTtlMs(WITHDRAWAL_SWEEP_TIMEOUT_MS);
+const WITHDRAWAL_SWEEP_LOCK_TTL_MS = innerLockTtlMs(WITHDRAWAL_SWEEP_TIMEOUT_MS);
 
 /**
  * `null` : un autre balayage détient le bail. Une erreur d'acquisition (base
@@ -78,4 +78,3 @@ export async function runWithdrawalSweep(now: Date = new Date()) {
   });
 }
 
-export type WithdrawalSweepResult = NonNullable<Awaited<ReturnType<typeof runWithdrawalSweep>>>;

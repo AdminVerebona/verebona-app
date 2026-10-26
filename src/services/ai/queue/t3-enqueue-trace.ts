@@ -41,13 +41,13 @@ export const T3_ENQUEUE_REASONS = [
   // Lot 82A (C-Q10) : compte non actif, suspendu ou en lecture seule.
   'ACCOUNT_INELIGIBLE',
 ] as const;
-export type T3EnqueueReason = (typeof T3_ENQUEUE_REASONS)[number];
+type T3EnqueueReason = (typeof T3_ENQUEUE_REASONS)[number];
 
 /** Décision tracée : celle de la file, ou un refus / une erreur avant elle. */
-export type T3EnqueueDecision = 'create' | 'skip' | 'coalesce' | 'refused' | 'error';
+type T3EnqueueDecision = 'create' | 'skip' | 'coalesce' | 'refused' | 'error';
 
 /** Libellés lisibles des motifs (BO, messages d'erreur). */
-export const T3_ENQUEUE_REASON_LABEL: Readonly<Record<T3EnqueueReason, string>> = {
+const T3_ENQUEUE_REASON_LABEL: Readonly<Record<T3EnqueueReason, string>> = {
   CROSS_ACCOUNT_SCOPE: 'refusée par le contrôle de périmètre (référence d’un autre compte)',
   DUPLICATE_PENDING: 'absorbée par un job automatique équivalent déjà en attente',
   DUPLICATE_RUNNING: 'fusionnée avec un job automatique équivalent en cours (passage supplémentaire demandé)',

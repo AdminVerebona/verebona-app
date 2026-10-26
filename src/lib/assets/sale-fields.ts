@@ -21,7 +21,7 @@
 import { MONEY_INPUT, parseNumberInput } from '@/lib/number-input';
 
 /** Statuts d'un bien sorti par une cession (vente ou transmission). */
-export const DISPOSAL_ASSET_STATUSES = ['VENDU', 'TRANSMIS'] as const;
+const DISPOSAL_ASSET_STATUSES = ['VENDU', 'TRANSMIS'] as const;
 
 export function isDisposalStatus(status: unknown): boolean {
   return typeof status === 'string' && (DISPOSAL_ASSET_STATUSES as readonly string[]).includes(status);

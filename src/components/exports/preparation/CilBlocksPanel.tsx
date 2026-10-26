@@ -34,7 +34,7 @@ const STATUS: Record<CilBlockDto['status'], { label: string; tone: Tone }> = {
 };
 
 /** Lien d'action d'un élément manquant (onglet de la fiche du bien). */
-export function cilActionHref(assetId: number, target: { type: string; filter?: string }): string | null {
+function cilActionHref(assetId: number, target: { type: string; filter?: string }): string | null {
   switch (target.type) {
     case 'details': return `/assets/${assetId}?tab=details&highlight=${encodeURIComponent(target.filter ?? 'address')}`;
     case 'documents': return `/assets/${assetId}?tab=documents`;

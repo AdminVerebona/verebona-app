@@ -20,13 +20,13 @@ import type { Treatment } from '../../config/treatments';
 import { masterTextFingerprint } from '../../prompts/prompt-loader';
 import type { CorpusRunMode, CorpusRunRow, CorpusRunSource } from './repository';
 
-export type MasterGateStatus =
+type MasterGateStatus =
   | 'GREEN' | 'NO_RUN' | 'RUN_FAILED' | 'BRANCHES_MISSING' | 'LIVE_RUN_MISSING' | 'LIVE_RUN_FAILED'
   | 'CORPUS_TABLE_MISSING' | 'MASTER_FILE_MISSING';
 
 type RunSummary = Pick<CorpusRunRow, 'id' | 'status' | 'branchesPassed' | 'casesTotal' | 'casesPassed' | 'source' | 'runMode' | 'createdAt'>;
 
-export interface MasterGateEntry {
+interface MasterGateEntry {
   treatment: Treatment;
   masterPromptCode: string;
   textSha256: string | null;
@@ -38,20 +38,20 @@ export interface MasterGateEntry {
   lastLiveRun: RunSummary | null;
 }
 
-export interface MasterGateResult {
+interface MasterGateResult {
   allowed: boolean;
   entries: MasterGateEntry[];
 }
 
-export interface MasterGateDeps {
+interface MasterGateDeps {
   readMasterFile(masterPromptCode: string): string;
   latestRun(masterPromptCode: string, textSha256: string, opts: { mode: CorpusRunMode; sources: CorpusRunSource[] }): Promise<CorpusRunRow | null>;
   tableReady(): Promise<boolean>;
 }
 
 /** Sources admises par la garde (jamais `local`). */
-export const GATE_REPLAY_SOURCES: CorpusRunSource[] = ['ci', 'preprod', 'prod'];
-export const GATE_LIVE_SOURCES: CorpusRunSource[] = ['preprod'];
+const GATE_REPLAY_SOURCES: CorpusRunSource[] = ['ci', 'preprod', 'prod'];
+const GATE_LIVE_SOURCES: CorpusRunSource[] = ['preprod'];
 
 async function defaultDeps(): Promise<MasterGateDeps> {
   const [{ readMasterFileFromRepo }, repo] = await Promise.all([import('./cases'), import('./repository')]);

@@ -29,7 +29,7 @@ import { pgClient } from '@/db';
 import { getRule } from './rules-catalog';
 
 /** Lot 76 (C7) : traitements au plus d'un élément en erreur (historique : seuil des reprises). */
-export const CAMPAIGN_MAX_ATTEMPTS = 3;
+const CAMPAIGN_MAX_ATTEMPTS = 3;
 
 type Raw = Record<string, unknown>;
 const q = async (sql: string, params: unknown[] = []): Promise<Raw[]> => (await pgClient.unsafe(sql, params as never[])) as unknown as Raw[];
@@ -62,7 +62,7 @@ export async function campaignMultiFamilyReady(): Promise<boolean> {
   } catch { return false; }
 }
 
-export interface CampaignView {
+interface CampaignView {
   id: number; code: string; status: string; trigger: string; engineVersion: string; startedAt: string; finishedAt: string | null;
   lastRunAt: string | null; runs: number; before: Record<string, number>; after: Record<string, number> | null;
   outcomes: Record<string, number>; errorSample: string | null;

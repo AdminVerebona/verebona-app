@@ -20,7 +20,7 @@
  * (`cross-account-remediation.test.ts`, PO-D23-01).
  */
 
-export type AccessChannel =
+type AccessChannel =
   | 'lecture' | 'ecriture' | 'assistant' | 'exports' | 'mascotte' | 'miniatures'
   | 'agenda' | 'a_traiter' | 'recherche' | 'ia' | 'suppression';
 
@@ -38,7 +38,7 @@ export const CHANNEL_LABELS: Record<AccessChannel, string> = {
   suppression: 'Suppression (cascade)',
 };
 
-export interface ChannelRisk {
+interface ChannelRisk {
   channel: AccessChannel;
   /** Ce que la relation permettrait sans garde. */
   risk: string;
@@ -46,9 +46,9 @@ export interface ChannelRisk {
   guard: string;
 }
 
-export type RiskLevel = 'élevé' | 'moyen' | 'faible';
+type RiskLevel = 'élevé' | 'moyen' | 'faible';
 
-export interface CategoryRisk {
+interface CategoryRisk {
   code: string;
   level: RiskLevel;
   /** Résumé pour le BO. */

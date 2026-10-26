@@ -25,7 +25,7 @@ import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/docume
 import { pgClient } from '@/db';
 import { buildCanonicalAssetState, type AssetRowJson } from '@/services/canonical/asset-state';
 import type { AccountDataPort, AgendaRow, AssetRow, DocumentHit, FactHit } from '../core/data-answer.service';
-import { EntityReadCache, canonicalKeyOf, readCanonicalField, openFieldConflicts, ORIGIN_LABELS, formatCanonicalValue } from './field-reader';
+import { EntityReadCache, canonicalKeyOf, readCanonicalField, ORIGIN_LABELS, formatCanonicalValue } from './field-reader';
 import { getField } from '@/services/canonical/registry';
 import { listUpcomingAgenda, countUpcomingAgenda } from './agenda';
 import { sumQualifiedExpenses } from './expenses';
@@ -41,7 +41,7 @@ export type BaseAccountDataPort = Pick<AccountDataPort, 'today' | 'findAssets' |
   & Required<Pick<AccountDataPort, 'findDocument' | 'listExports' | 'searchTableCells'>>;
 
 /** Dates d'achat CANONIQUES (`acquisitionDate`) d'une liste de biens du compte. */
-export async function canonicalAcquisitionDates(accountId: number, assetIds: number[]): Promise<Map<number, string | null>> {
+async function canonicalAcquisitionDates(accountId: number, assetIds: number[]): Promise<Map<number, string | null>> {
   const out = new Map<number, string | null>();
   if (assetIds.length === 0) return out;
   const rows = (await pgClient.unsafe(
@@ -211,18 +211,6 @@ export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort
       return r as unknown as DocumentHit[];
     },
   };
-}
-
-/** Valeurs canoniques d'un bien pour une liste de clés (conflits compris), en une passe. */
-export async function readCanonicalFields(accountId: number, assetId: number, keys: string[]) {
-  const conflicts = await openFieldConflicts(accountId, assetId);
-  const entityCache = new EntityReadCache();
-  const out = [];
-  for (const k of keys) {
-    const r = await readCanonicalField(accountId, assetId, k, { entityCache });
-    if (r) out.push({ ...r, openConflict: conflicts.get(r.key) ?? r.openConflict });
-  }
-  return out;
 }
 
 export { ORIGIN_LABELS, formatCanonicalValue, getField };

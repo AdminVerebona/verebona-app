@@ -19,6 +19,9 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
+/** Minuscules, sans diacritiques, apostrophe typographique unifiée (comparaison de libellés). */
+export const plain = (s: string): string => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'");
+
 /** Minuscules, sans diacritiques, apostrophes unifiées, espaces réduits. */
 export function normalizeForRouting(s: string): string {
   return s

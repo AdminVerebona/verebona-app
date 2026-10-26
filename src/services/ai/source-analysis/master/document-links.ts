@@ -27,7 +27,7 @@ import {
   type LinkRole,
 } from '@/services/documents/document-asset-links';
 
-export interface MasterDocumentLink {
+interface MasterDocumentLink {
   assetId: number;
   role: LinkRole;
   confidence: number;

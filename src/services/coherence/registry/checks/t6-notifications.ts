@@ -109,7 +109,7 @@ export const t6EvaluationsCheck: CoherenceCheck = {
 // ══ COH-NOTIF-OUTBOX ════════════════════════════════════════════════════════
 
 /** Délai au-delà duquel un événement dû non pris, ou « en cours d'envoi », est anormal. */
-export const OUTBOX_STALE_MINUTES = 30;
+const OUTBOX_STALE_MINUTES = 30;
 
 export const notificationOutboxCheck: CoherenceCheck = {
   id: 'COH-NOTIF-OUTBOX',

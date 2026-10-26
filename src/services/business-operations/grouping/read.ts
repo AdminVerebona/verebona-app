@@ -199,7 +199,7 @@ export async function listGroupingCandidates(
   }
 }
 
-export interface DocumentAgendaLinkView {
+interface DocumentAgendaLinkView {
   itemId: number;
   /** Lien précis (saisi ou IA) — §7.3. */
   direct: boolean;

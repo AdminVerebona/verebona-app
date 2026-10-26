@@ -28,13 +28,13 @@
  */
 
 /** Périmètre de la configuration IA dans `verebona_cache_versions`. */
-export const AI_CONFIG_CACHE_SCOPE = 'ai-config';
+const AI_CONFIG_CACHE_SCOPE = 'ai-config';
 
 /**
  * Délai maximal de lecture du compteur. Court : la lecture est faite à
  * chaque résolution, sur le chemin d'appel. Au-delà, repli sur le TTL.
  */
-export const VERSION_READ_TIMEOUT_MS = 300;
+const VERSION_READ_TIMEOUT_MS = 300;
 
 /** Stockage du compteur — la base par défaut, injectable pour les tests. */
 export interface ConfigVersionCounterStore {

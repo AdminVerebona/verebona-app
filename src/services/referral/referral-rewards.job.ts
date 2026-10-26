@@ -21,7 +21,7 @@ import { checkReferralEligibility } from '@/services/referral/referral-eligibili
 import { getStripeServer } from '@/lib/stripe';
 import { autoResolveAnomaly, referralRewardFingerprint, reportReferralRewardFailure } from '@/services/admin/anomaly.service';
 
-export interface ReferralRewardsResult {
+interface ReferralRewardsResult {
   examined: number;
   granted: number;
   skipped: number;

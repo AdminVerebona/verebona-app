@@ -16,7 +16,7 @@ import { cn } from '@/lib/utils';
  * Ici : icône + texte sur une ligne, bouton dessous en pleine largeur sur
  * mobile ; tout sur une seule ligne, bouton à droite, à partir de `sm`.
  */
-export interface EmptyStateCardProps {
+interface EmptyStateCardProps {
   icon: ReactNode;
   /** Fond de la pastille d'icône (ex. `bg-[color:var(--accent-soft)]`). */
   iconClassName?: string;

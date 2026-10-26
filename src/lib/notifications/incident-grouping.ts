@@ -63,7 +63,7 @@ const BATCH_FAILURES_SQL = `('DOCUMENT_BATCH_PARTIALLY_FAILED', 'DOCUMENT_BATCH_
 /** Porteurs possibles : en file, en cours, ou envoyés par au moins un canal. */
 const CARRIER_STATUSES_SQL = `('pending', 'processing', 'sent', 'partial')`;
 
-export interface GroupingInput {
+interface GroupingInput {
   id: string;
   event_type: string;
   recipient_user_id: number;
@@ -72,7 +72,7 @@ export interface GroupingInput {
   created_at?: string | Date | null;
 }
 
-export interface GroupingDecision {
+interface GroupingDecision {
   /** Ligne d'outbox qui porte déjà l'incident : celle-ci n'est pas envoyée. */
   absorbedBy: string | null;
   /** Complément de contenu (message unique de l'incident). */

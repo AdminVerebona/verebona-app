@@ -45,7 +45,6 @@ export const TENURE_END_LABEL = 'Fin de contrat prévue';
 
 export type TenureEndKey = 'leaseEndDate' | 'contractEndDate';
 export type TenureEndSource = 'user' | 'document' | 'computed';
-export type TenureFamily = 'IMMOBILIER' | 'VEHICULE' | 'OBJET';
 
 /** Métadonnée jointe aux données de la section (jamais renvoyée à l'écriture). */
 export const TENURE_META_KEY = '__tenureEnd';
@@ -96,10 +95,6 @@ export function tenureSituationHint(family: string, data: Record<string, unknown
   return vide
     ? `${champ.label} à compléter sur la fiche`
     : `d’après le ${champ.label} renseigné sur la fiche`;
-}
-
-export function isLimitedTenure(family: string, data: Record<string, unknown>): boolean {
-  return tenureEndKey(family, data) !== null;
 }
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})/;

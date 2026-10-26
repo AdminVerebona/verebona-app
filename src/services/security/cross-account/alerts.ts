@@ -14,14 +14,14 @@
  */
 import { isolationStatus, type CrossAccountCheckResult, type CrossAccountReport, type IsolationStatus } from './detection';
 
-export const CROSS_ACCOUNT_ANOMALY_PREFIX = 'other:cross-account:';
-export const CROSS_ACCOUNT_ANOMALY_ORIGIN = 'cross_account_check_cleared';
+const CROSS_ACCOUNT_ANOMALY_PREFIX = 'other:cross-account:';
+const CROSS_ACCOUNT_ANOMALY_ORIGIN = 'cross_account_check_cleared';
 
 /** Lien BO du rapport complet. */
 export const CROSS_ACCOUNT_BO_LINK = '/admin/exploitation?tab=intercomptes';
 
 /** Procédure de remise en conformité (jamais automatique). */
-export const CROSS_ACCOUNT_PROCEDURE =
+const CROSS_ACCOUNT_PROCEDURE =
   'Aucune correction automatique. Accès déjà neutralisés (lectures et écritures bornées au compte, garde en base). Correction contrôlée '
   + 'dans le BO : Exploitation › Rattrapages › « Isolation des comptes » (simuler, appliquer avec motif, restaurer) — '
   + 'docs/exploitation/relations-intercomptes.md.';
@@ -33,7 +33,7 @@ export function crossAccountFingerprint(code: string): string {
 /** Lot 54 (SEC-07) : anomalie « contrôle incomplet » (au moins un contrôle non exécuté). */
 export const CROSS_ACCOUNT_INCOMPLETE_FINGERPRINT = `${CROSS_ACCOUNT_ANOMALY_PREFIX}incomplete`;
 
-export type IsolationCheckTrigger = 'scheduled' | 'manual' | 'bo';
+type IsolationCheckTrigger = 'scheduled' | 'manual' | 'bo';
 
 /** Une exécution du contrôle, telle qu'historisée (`account_isolation_checks`, 0374). */
 export interface IsolationCheckRecord {
@@ -50,7 +50,7 @@ export interface IsolationCheckRecord {
   resolved: number;
 }
 
-export interface CrossAccountAlertDeps {
+interface CrossAccountAlertDeps {
   detect: () => Promise<CrossAccountReport>;
   openFingerprints: () => Promise<string[]>;
   report: (input: import('@/services/admin/anomaly.service').ReportAnomalyInput) => Promise<number | null>;
@@ -59,7 +59,7 @@ export interface CrossAccountAlertDeps {
   record?: (r: IsolationCheckRecord) => Promise<void>;
 }
 
-export interface CrossAccountAlertResult {
+interface CrossAccountAlertResult {
   /** Lot 54 (SEC-07) : Conforme / Anomalies détectées / Contrôle incomplet. */
   status: IsolationStatus;
   total: number;

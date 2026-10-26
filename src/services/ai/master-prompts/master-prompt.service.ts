@@ -87,13 +87,13 @@ export function assertAdministrable(raw: string): Treatment {
 }
 
 /** Une exécution « en cours » plus ancienne est présentée comme interrompue. */
-export const TEST_RUN_STALE_MS = 10 * 60_000;
+const TEST_RUN_STALE_MS = 10 * 60_000;
 /** Durée maximale d'un test (rejeu, aucun appel modèle : quelques secondes au pire). */
-export const TEST_RUN_TIMEOUT_MS = 120_000;
+const TEST_RUN_TIMEOUT_MS = 120_000;
 
 // ── Vues rendues au BO ──────────────────────────────────────────────────────
 
-export interface TestRunView {
+interface TestRunView {
   id: number;
   status: 'RUNNING' | 'DONE' | 'ERROR';
   startedAt: string;
@@ -109,13 +109,13 @@ export interface TestRunView {
 }
 
 /** État des tests d'une version — information, jamais une condition. */
-export type TestState =
+type TestState =
   | { state: 'never'; label: 'Non testé'; message: string; previous: TestRunView | null }
   | { state: 'running'; label: 'Test en cours'; message: string; run: TestRunView }
   | { state: 'done'; label: string; message: string; run: TestRunView }
   | { state: 'error'; label: 'Test interrompu'; message: string; run: TestRunView };
 
-export interface VersionView {
+interface VersionView {
   id: number;
   versionNumber: number;
   status: repo.MasterPromptStatus;
@@ -140,7 +140,7 @@ export interface VersionView {
 }
 
 /** Lot 34D — informations « contexte structuré » d'un prompt qui déclare un contrat d'exécution (T4). */
-export interface StructuredInfo {
+interface StructuredInfo {
   modes: Array<{ value: (typeof MASTER_EXECUTION_MODES)[number]; label: string }>;
   knownTasks: string[];
   inputContracts: string[];
@@ -155,7 +155,7 @@ export interface StructuredInfo {
   defaults: MasterExecutionConfig;
 }
 
-export interface ActivationView {
+interface ActivationView {
   id: number;
   action: 'activate' | 'rollback';
   actionLabel: string;
@@ -166,7 +166,7 @@ export interface ActivationView {
   testSummary: string | null;
 }
 
-export interface PromptSummary {
+interface PromptSummary {
   treatment: Treatment;
   label: string;
   masterPromptCode: string;
@@ -174,7 +174,7 @@ export interface PromptSummary {
   draft: { versionNumber: number; updatedAt: string; test: TestState } | null;
 }
 
-export interface PromptDetail {
+interface PromptDetail {
   treatment: Treatment;
   label: string;
   masterPromptCode: string;
@@ -262,7 +262,7 @@ export function testStateOf(runs: TestRunView[]): TestState {
 }
 
 /** Résumé texte des tests au moment d'une activation (journal). */
-export function testSummaryText(t: TestState): string {
+function testSummaryText(t: TestState): string {
   if (t.state === 'done') return t.run.failed === 0 ? `Testée : ${t.run.passed}/${t.run.total}` : `Testée : ${t.run.failed} échec(s) sur ${t.run.total}`;
   if (t.state === 'never') return 'Non testée';
   return t.label;
@@ -303,7 +303,7 @@ function versionView(
  * celui de la version de configuration effective (D-03), sinon le fichier du
  * dépôt. Devient la v1 au premier geste (brouillon, test, activation).
  */
-export async function runtimeBaseline(treatment: Treatment, environment: AiEnvironment = getAiEnvironment()): Promise<{ content: string; source: 'config' | 'file' }> {
+async function runtimeBaseline(treatment: Treatment, environment: AiEnvironment = getAiEnvironment()): Promise<{ content: string; source: 'config' | 'file' }> {
   const master = masterPromptForTreatment(treatment)!;
   try {
     const [{ getEffectiveVersion }, { masterPromptOf, promptArchitectureOf }] = await Promise.all([
@@ -410,7 +410,7 @@ async function runsByVersion(versions: MasterPromptVersionRow[]): Promise<{ byVe
  * lot 49, jamais proposées en édition ni appliquées (déclencheur 0336). Le BO
  * les affiche sous le libellé « retiré » ; aucune action n'y est possible.
  */
-export interface RetiredPromptHistory {
+interface RetiredPromptHistory {
   treatment: string;
   label: string;
   statusLabel: 'retiré';
@@ -673,7 +673,7 @@ export async function discardDraft(treatment: Treatment, versionId: number): Pro
 
 // ── Activation et réactivation (AC03 à AC11, AC15) ──────────────────────────
 
-export interface SwitchOutcome {
+interface SwitchOutcome {
   treatment: Treatment;
   previousVersionNumber: number | null;
   activeVersionNumber: number;
@@ -772,7 +772,7 @@ async function switchTo(treatment: Treatment, versionId: number, userId: number,
  * AC15 — la nouvelle version est utilisée dès l'appel suivant : clé de
  * version partagée (tous les conteneurs, ≤ 1 s), puis caches de CE conteneur.
  */
-export async function invalidateAfterSwitch(treatment: Treatment, versionNumber: number, masterPromptCode: string): Promise<void> {
+async function invalidateAfterSwitch(treatment: Treatment, versionNumber: number, masterPromptCode: string): Promise<void> {
   const [{ bumpConfigVersionCounter }, { invalidateConfigCache }, { invalidateConfigVersionCache }, { invalidatePromptCache }] = await Promise.all([
     import('../config/config-cache-version'), import('../config/config-resolver'),
     import('../telemetry/execution-context'), import('../prompts/prompt-loader'),
@@ -852,7 +852,7 @@ export async function getPromptTestRun(treatment: Treatment, runId: number): Pro
 
 // ── Lot 34D : aperçu / test d'une version en contexte structuré (T4) ────────
 
-export interface StructuredPreview {
+interface StructuredPreview {
   treatment: Treatment;
   versionNumber: number | null;
   mode: MasterExecutionConfig['mode'];
@@ -872,7 +872,7 @@ export interface StructuredPreview {
 }
 
 /** Scénarios du corpus utilisables pour l'aperçu (id, TASK, description). */
-export async function previewScenarios(treatment: Treatment): Promise<Array<{ id: string; task: string; description: string }>> {
+async function previewScenarios(treatment: Treatment): Promise<Array<{ id: string; task: string; description: string }>> {
   const master = masterPromptForTreatment(treatment);
   if (!master) return [];
   const { loadMasterCorpusCases, readMasterFileFromRepo } = await import('../governance/master-corpus/cases');

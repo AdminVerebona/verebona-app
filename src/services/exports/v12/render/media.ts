@@ -35,10 +35,10 @@ export const maxFileBytes = (): number => {
 /** Téléchargement d'un objet vers un fichier ; `false` si absent. Lève `TooLargeError` au-delà du plafond. */
 export type FetchToFile = (key: string, bucket: string | null, dest: string, maxBytes: number) => Promise<boolean>;
 
-export class TooLargeError extends Error {}
+class TooLargeError extends Error {}
 
 /** Téléchargement S3 par défaut (flux → disque, plafonné). */
-export const s3FetchToFile: FetchToFile = async (key, bucket, dest, maxBytes) => {
+const s3FetchToFile: FetchToFile = async (key, bucket, dest, maxBytes) => {
   // Client dédié avec délais (voir `storage.ts`) : un stockage muet ne bloque pas le worker.
   const [{ client: s3Client, bucket: S3_BUCKET }, { GetObjectCommand }] = await Promise.all([import('../storage').then((m) => m.exportS3()), import('@aws-sdk/client-s3')]);
   let res;

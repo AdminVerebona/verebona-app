@@ -17,7 +17,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { pgClient } from '@/db';
 
-export type SearchExprMode = 'wrapper' | 'unaccent' | 'lower';
+type SearchExprMode = 'wrapper' | 'unaccent' | 'lower';
 
 const RETRY_MS = 60_000;
 let cache: { mode: SearchExprMode; at: number } | null = null;

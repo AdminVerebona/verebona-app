@@ -29,7 +29,7 @@ export const MACHINE_STATES = [
 export type MachineState = (typeof MACHINE_STATES)[number];
 
 /** Transitions autorisées (§9.6). Toute transition hors table est refusée. */
-export const ALLOWED_TRANSITIONS: Record<MachineState, ReadonlyArray<MachineState>> = {
+const ALLOWED_TRANSITIONS: Record<MachineState, ReadonlyArray<MachineState>> = {
   IDLE: ['SUBMITTING', 'CANCELLED'],
   SUBMITTING: ['ROUTING', 'ERROR_RECOVERABLE', 'CANCELLED'],
   ROUTING: ['CLARIFYING', 'RETRIEVING', 'VALIDATING', 'CANCELLED', 'ERROR_RECOVERABLE'],
@@ -131,9 +131,3 @@ export interface ClarificationState {
   status?: ClarificationStatus;
 }
 
-/** Références conversationnelles internes — CDC §16.4. */
-export interface ConversationRefs {
-  lastPresentedEntities: Array<{ position: number; type: string; id: string | number }>;
-  currentAssetId?: number | null;
-  pendingClarification?: string | null;
-}

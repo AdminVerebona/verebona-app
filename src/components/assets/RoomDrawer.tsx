@@ -40,7 +40,7 @@ interface RoomDetails {
 }
 
 /** Surface au format de la fiche : « 18,5 m² » (texte libre conservé tel quel). */
-export function roomAreaLabel(area: string | null | undefined): string | null {
+function roomAreaLabel(area: string | null | undefined): string | null {
   const s = (area ?? '').trim();
   if (!s) return null;
   const n = Number(s.replace(',', '.'));

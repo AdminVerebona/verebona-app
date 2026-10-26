@@ -100,14 +100,6 @@ export const DOCUMENT_TYPE_LABELS: Record<string, string> = Object.fromEntries(
   DOCUMENT_TYPE_LIST.map(t => [t.code, t.label]),
 );
 
-/** Codes valides (pour validation) */
-export const VALID_DOCUMENT_TYPE_CODES = new Set(DOCUMENT_TYPE_LIST.map(t => t.code));
-
-/** Codes des rubriques officielles du CIL Réglementaire */
-export const CIL_RUBRIC_CODES = new Set(
-  DOCUMENT_TYPE_LIST.filter(t => t.isCilRubric).map(t => t.code),
-);
-
 /**
  * La normalisation d'un code IA ou ancien vers un code V1 valide
  * (`resolveDocumentTypeCode`) est dans le résolveur unique

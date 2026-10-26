@@ -279,8 +279,6 @@ export function AssetDetailSection({
             {editing ? (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
                 {visibleFields(fields, form).filter(f => !f.readonly).map(field => {
-                  const isNa = field.notApplicableWhen?.(form) ?? false;
-
                   return (
                     <div key={field.key} className="space-y-1">
                       {/* Label row */}

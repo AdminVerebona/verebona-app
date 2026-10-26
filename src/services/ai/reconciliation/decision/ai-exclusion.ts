@@ -28,7 +28,7 @@
  */
 
 /** Champs dont la valeur ne doit jamais être renvoyée à un modèle. */
-export const AI_EXCLUDED_FIELDS = new Set<string>([
+const AI_EXCLUDED_FIELDS = new Set<string>([
   'iban', 'bic', 'accountNumber', 'bankAccount', 'cardNumber',
   'socialSecurityNumber', 'nir', 'idDocumentNumber',
 ]);

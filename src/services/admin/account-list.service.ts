@@ -4,13 +4,13 @@
  */
 import { paginateRows, sortRows, type PageResult } from './list-params';
 
-export type AccountListStatus = 'active' | 'suspended' | 'deletion_pending';
+type AccountListStatus = 'active' | 'suspended' | 'deletion_pending';
 
 export const ACCOUNT_SORTS = ['name', 'plan', 'status', 'storage', 'documents', 'assets', 'members', 'created', 'lastLogin'] as const;
-export type AccountSort = (typeof ACCOUNT_SORTS)[number];
+type AccountSort = (typeof ACCOUNT_SORTS)[number];
 
-export const ACCOUNT_STATUSES: readonly AccountListStatus[] = ['active', 'suspended', 'deletion_pending'];
-export const ACCOUNT_PLANS = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO'] as const;
+const ACCOUNT_STATUSES: readonly AccountListStatus[] = ['active', 'suspended', 'deletion_pending'];
+const ACCOUNT_PLANS = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO'] as const;
 
 export interface AccountListRow {
   id: number;
@@ -25,7 +25,7 @@ export interface AccountListRow {
   lastLoginAt: Date | string | null;
 }
 
-export interface AccountFilters {
+interface AccountFilters {
   plan: string | null;
   status: AccountListStatus | null;
 }

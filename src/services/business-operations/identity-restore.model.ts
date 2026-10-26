@@ -54,7 +54,7 @@ export const RESTORE_BLOCK_MESSAGES: Readonly<Record<RestoreBlockCode, string>> 
 export const restoreBlockStatus = (code: RestoreBlockCode): 404 | 409 => (code === 'NOT_FOUND' ? 404 : 409);
 
 /** Montant concerné (indice financier T1 du document séparé). */
-export interface RestoreAmount { role: string; amountMinor: number; currency: string }
+interface RestoreAmount { role: string; amountMinor: number; currency: string }
 
 /**
  * Résumé d'une séparation rétablissable, calculé par le détail BO (lecture

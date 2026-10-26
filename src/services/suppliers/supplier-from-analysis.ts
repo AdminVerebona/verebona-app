@@ -57,14 +57,14 @@ import {
 } from './supplier-service';
 
 /** Fournisseur lu par T1 (projection `result.document.supplier`). */
-export interface AnalyzedSupplier {
+interface AnalyzedSupplier {
   name: string;
   siret?: string | null;
   /** Confiance T1 : `certain` | `probable` | `conflictual`. */
   confidence?: string | null;
 }
 
-export type SupplierFeedResult =
+type SupplierFeedResult =
   | { status: 'skipped'; reason: 'NO_SUPPLIER' | 'LOW_CONFIDENCE' | 'DOCUMENT_NOT_FOUND' | 'USER_EDITED_DOCUMENT' | 'ALREADY_LINKED' }
   | { status: 'linked' | 'created' | 'created_uncertain'; supplierId: number; conflicts: number };
 
@@ -118,7 +118,7 @@ export async function feedSupplierFromAnalysis(p: {
     scope = doc.scope ?? null;
 
     const candidates = await findCandidates(p.accountId, normalizedName, siren, siret, null, q);
-    const decision = assessMatch(candidates, observation);
+    const decision = assessMatch(candidates);
 
     let supplierId: number;
     let conflicts: Array<{ field: string; currentValue: string | null; detectedValue: string | null }> = [];
@@ -255,7 +255,3 @@ export async function registerSupplierReferentialHandler(): Promise<void> {
   });
 }
 
-/** Réservé aux tests. */
-export function __resetSupplierHandlerForTests(): void {
-  enregistre = false;
-}

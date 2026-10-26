@@ -35,7 +35,7 @@ const CAPTURE: Record<string, string> = {
   CAPTURED: 'capturé', PARTIAL: 'capture partielle', NOT_CAPTURED: 'non capturé', MASKED: 'capturé, masqué', NOT_SENT: 'aucun envoi', NO_RESPONSE: 'aucune réponse',
 };
 
-export interface RelaunchState { [kind: string]: 'running' | 'done' | 'error' | undefined }
+interface RelaunchState { [kind: string]: 'running' | 'done' | 'error' | undefined }
 
 /** Rendu pur du détail (les actions sont injectées). */
 export function ExecutionDetailView({ d, onRelaunch, relaunch = {}, onOpenCall }: {

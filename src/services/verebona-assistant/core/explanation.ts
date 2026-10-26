@@ -23,7 +23,7 @@ export interface ExplanationTrace {
   escalationReasons?: string[] | null;
 }
 
-export interface ExplanationDetails {
+interface ExplanationDetails {
   /** Règle ou calcul appliqué, en une phrase ; `null` si inconnu. */
   rule: string | null;
   /** Limites et contradictions, dédoublonnées. */

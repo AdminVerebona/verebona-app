@@ -7,8 +7,8 @@
  */
 
 export const SIDEBAR_STORAGE_KEY = 'sidebar-collapsed';
-export const SIDEBAR_WIDTH_OPEN = 240;
-export const SIDEBAR_WIDTH_COLLAPSED = 64;
+const SIDEBAR_WIDTH_OPEN = 240;
+const SIDEBAR_WIDTH_COLLAPSED = 64;
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem'>;
 

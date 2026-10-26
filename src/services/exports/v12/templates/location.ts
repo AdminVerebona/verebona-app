@@ -15,7 +15,7 @@ import type { LocationData, RenderContext, RenderedHtml } from '../types';
 export const TEMPLATE_VERSION = 'location-v1.0.0';
 export const TEMPLATE_LABEL = 'location · v1.0';
 
-export const LEASE_LABELS: Record<string, string> = { NON_MEUBLE: 'Non meublé', MEUBLE: 'Meublé', MOBILITE: 'Bail mobilité', ETUDIANT: 'Bail étudiant', SAISONNIER: 'Saisonnier', AUTRE: 'Autre' };
+const LEASE_LABELS: Record<string, string> = { NON_MEUBLE: 'Non meublé', MEUBLE: 'Meublé', MOBILITE: 'Bail mobilité', ETUDIANT: 'Bail étudiant', SAISONNIER: 'Saisonnier', AUTRE: 'Autre' };
 
 export function render(c: LocationData, ctx: RenderContext): RenderedHtml {
   const { export: ex, asset, rental = {} } = c;

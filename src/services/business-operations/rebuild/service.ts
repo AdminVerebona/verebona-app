@@ -62,7 +62,7 @@ import { readAccountTco, readSignatureOperations, rebuildAccount, tcoDifferences
 type Sql = postgres.Sql;
 type Row = Record<string, unknown>;
 
-export interface RebuildOptions {
+interface RebuildOptions {
   sql: Sql;
   mode: 'SIMULATE' | 'APPLY';
   accountId?: number | null;
@@ -82,7 +82,7 @@ export interface RebuildOptions {
   force?: boolean;
 }
 
-export interface AccountRebuildReport {
+interface AccountRebuildReport {
   accountId: number;
   status: RebuildAccountStatus;
   reason?: string | null;

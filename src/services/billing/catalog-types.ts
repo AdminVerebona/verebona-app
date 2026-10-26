@@ -139,7 +139,7 @@ export function catalogVersionOf(entries: CatalogSnapshot['entries']): string {
 }
 
 /** Le montant est-il TTC sans taxe ajoutée (LK-15, LK-16) ? */
-export function isTaxIncluded(taxBehavior: TaxBehavior): boolean {
+function isTaxIncluded(taxBehavior: TaxBehavior): boolean {
   // `inclusive` : TTC. `unspecified` (prix historiques créés sans réglage) :
   // aucun calcul de taxe n'est activé dans les parcours Verebona (pas de
   // `automatic_tax`) — le montant facturé est exactement `unit_amount`.
@@ -163,7 +163,7 @@ export function toPublicOffer(p: ResolvedPrice, available = true): PublicOffer {
 
 // ─── Validation d'un Price Stripe (LK-11, LK-12, TC-04 à TC-08) ──────────────
 
-export type PriceValidationCode =
+type PriceValidationCode =
   | 'PRICE_INACTIVE'
   | 'LOOKUP_KEY_MISMATCH'
   | 'WRONG_MODE'
@@ -180,7 +180,7 @@ export type PriceValidationCode =
   | 'PRODUCT_INACTIVE'
   | 'METADATA_CONFLICT';
 
-export type PriceValidation =
+type PriceValidation =
   | { ok: true; resolved: ResolvedPrice }
   | { ok: false; code: PriceValidationCode; detail: string };
 

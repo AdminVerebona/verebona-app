@@ -176,7 +176,7 @@ export class ContractResolutionError extends Error {
   }
 }
 
-export interface ResolveContractInput {
+interface ResolveContractInput {
   /** Nom du schéma déclaré par l'opération (`outputSchema`), `null` sinon. */
   schemaName: string | null;
   operationCode: string;
@@ -278,7 +278,7 @@ export function providerSchemaHash(schema: Record<string, unknown> | null): stri
  * DÉRIVÉ du contrat est joint : le prompt ne recopie jamais le schéma à la
  * main.
  */
-export const RUNTIME_CONTRACT_PRIORITY_RULE = [
+const RUNTIME_CONTRACT_PRIORITY_RULE = [
   'Le contrat structuré fourni avec cet appel est la source de vérité technique.',
   'En cas de contradiction entre le texte du prompt, un exemple, une ancienne convention ou une version antérieure, et le contrat runtime :',
   'LE CONTRAT RUNTIME EST PRIORITAIRE.',

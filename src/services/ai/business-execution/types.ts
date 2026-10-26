@@ -59,7 +59,7 @@ export const OUTCOME_LABELS: Record<BusinessOutcome, string> = {
   UNDETERMINED: 'Non déterminable',
 };
 
-export const PROGRESS_LABELS: Record<BusinessProgress, string> = {
+const PROGRESS_LABELS: Record<BusinessProgress, string> = {
   PENDING: 'en attente',
   RUNNING: 'en cours',
   SUSPENDED: 'suspendue (reprise prévue)',
@@ -72,8 +72,6 @@ export function outcomeLabel(outcome: BusinessOutcome, progress: BusinessProgres
 
 /** Issues finales (une date de fin existe). */
 export const FINAL_OUTCOMES: ReadonlySet<BusinessOutcome> = new Set(['SUCCEEDED', 'INCOMPLETE', 'FAILED', 'VOID', 'UNDETERMINED']);
-/** Issues comptées dans les indicateurs (cartes P3, tableau de bord). */
-export const COUNTED_OUTCOMES: ReadonlySet<BusinessOutcome> = new Set(['SUCCEEDED', 'INCOMPLETE', 'FAILED']);
 
 /** SEM-06 : nature de l'exécution. Une exécution technique ne compte jamais dans les indicateurs métier. */
 export type BusinessNature = 'BUSINESS' | 'TECHNICAL';

@@ -36,7 +36,7 @@ import {
 import type { ConfigVersionStatus } from './version-state-machine';
 
 /** Prompt maître d'un traitement et ses branches, tels que déclarés au registre. */
-export interface TreatmentMaster {
+interface TreatmentMaster {
   masterPromptCode: string;
   tasks: string[];
 }
@@ -58,7 +58,7 @@ export function masterCapableTreatments(): Treatment[] {
     .filter((t): t is Treatment => t !== null);
 }
 
-export type PromptArchitectureDecision =
+type PromptArchitectureDecision =
   | { allowed: true }
   | { allowed: false; code: 'VERSION_NOT_EDITABLE' | 'NO_MASTER_FOR_TREATMENT' | 'MASTER_ONLY_TREATMENT'; message: string };
 
@@ -173,7 +173,7 @@ export function missingOptionalMasterTasks(treatment: Treatment, text: string): 
  * master proposé : le rendu les ignore, la règle reste appliquée par le
  * serveur — avertissement non bloquant au BO.
  */
-export function missingOptionalMasterVariables(treatment: Treatment, text: string): string[] {
+function missingOptionalMasterVariables(treatment: Treatment, text: string): string[] {
   const master = masterPromptForTreatment(treatment);
   if (!master) return [];
   const info = inspectMasterTemplate(text);
@@ -270,7 +270,7 @@ export function masterConfigIssues(
 
 // ── Variables retirées encore posées (CDC 15 T2-43 ; lot 16b) ──────────────
 
-export interface PromptArchitectureWarning {
+interface PromptArchitectureWarning {
   treatment: Treatment | null;
   /** `RETIRED_ENV_VARIABLE` : variable retirée encore posée, ignorée par le code. */
   code: 'RETIRED_ENV_VARIABLE';

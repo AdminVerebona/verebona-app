@@ -58,7 +58,7 @@ const toDate = (unix: number | null | undefined): Date | null => (typeof unix ==
 const idOf = (v: string | { id: string } | null | undefined): string | null => (!v ? null : typeof v === 'string' ? v : v.id);
 
 /** Préavis minimal entre l'information et la date d'effet (jours). */
-export function noticeDays(env: NodeJS.ProcessEnv = process.env): number {
+function noticeDays(env: NodeJS.ProcessEnv = process.env): number {
   return envNumber('BILLING_REVALUATION_NOTICE_DAYS', 30, { min: 1 }, env);
 }
 /** Marge de sécurité avant une échéance (EX-019) : en deçà, échéance suivante. */
@@ -145,7 +145,7 @@ export function buildRevaluationPhases(
 
 // ─── Campagne ───────────────────────────────────────────────────────────────
 
-export interface CampaignCounts { inventoried: number; planned: number; deferred: number; excluded: number; skippedSamePrice: number }
+interface CampaignCounts { inventoried: number; planned: number; deferred: number; excluded: number; skippedSamePrice: number }
 
 /** Couples dont le MONTANT change entre deux révisions (seuls concernés). */
 export function changedCouples(previous: CatalogSnapshot | null, next: CatalogSnapshot): Map<string, ResolvedPrice> {
@@ -266,7 +266,7 @@ export async function listCampaign(revisionId?: string | null, limit = 500): Pro
 
 // ─── Information préalable (EX-029) ─────────────────────────────────────────
 
-export interface NotificationInput {
+interface NotificationInput {
   revisionId: string;
   /** `email` : envoi du gabarit PRICE_CHANGE_NOTICE ; `external` : preuve d'une information faite hors application. */
   channel: 'email' | 'external';
@@ -341,7 +341,7 @@ async function sendNotice(r: Row, effectiveFrom: Date): Promise<{ success: boole
 
 // ─── Application (tâche planifiée) ──────────────────────────────────────────
 
-export interface TickResult { scheduled: number; completed: number; deferred: number; failed: number; waiting: number; canceled: number }
+interface TickResult { scheduled: number; completed: number; deferred: number; failed: number; waiting: number; canceled: number }
 
 /**
  * Passage idempotent : planifie les lignes prêtes, constate les bascules.

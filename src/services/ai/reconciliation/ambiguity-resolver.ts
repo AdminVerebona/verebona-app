@@ -17,7 +17,7 @@
 import type { ReconciliationDecision, EvidenceCandidate } from './types';
 import { resolveValueConflictMaster } from './master/value-conflict';
 
-export interface ResolveAmbiguityInput {
+interface ResolveAmbiguityInput {
   accountId: number;
   assetId: number;
   decision: ReconciliationDecision;

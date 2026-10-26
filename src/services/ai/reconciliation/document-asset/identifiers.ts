@@ -66,7 +66,7 @@ export interface AssetIdentifierRecord {
 }
 
 /** Nature d'une correspondance forte. */
-export type IdentifierKind = 'ADDRESS' | 'REGISTRATION' | 'VIN' | 'SERIAL' | 'CADASTRAL';
+type IdentifierKind = 'ADDRESS' | 'REGISTRATION' | 'VIN' | 'SERIAL' | 'CADASTRAL';
 
 export const IDENTIFIER_KIND_LABELS: Readonly<Record<IdentifierKind, string>> = {
   ADDRESS: 'adresse',
@@ -137,7 +137,7 @@ export function normalizePostalCode(value: unknown): string {
  * Une adresse est-elle assez précise pour identifier un bien ? Au moins deux
  * mots dont un de 3 lettres et plus (« Lyon », « 12 » seuls : non).
  */
-export function isUsableAddress(normalized: string): boolean {
+function isUsableAddress(normalized: string): boolean {
   const tokens = normalized.split(' ').filter(Boolean);
   return tokens.length >= 2 && normalized.length >= 6 && tokens.some((t) => /^[a-z]{3,}$/.test(t));
 }
@@ -145,7 +145,7 @@ export function isUsableAddress(normalized: string): boolean {
 // ── Correspondance ──────────────────────────────────────────────────────────
 
 /** Ce que le serveur connaît du document (jamais le fichier : T1 l'a lu). */
-export interface DocumentIdentifierEvidence {
+interface DocumentIdentifierEvidence {
   /** Faits T1 (clé canonique + valeur). */
   facts: Array<{ canonicalKey: string | null | undefined; value: unknown }>;
   /** Transcription, texte préextrait, signaux de T1. */

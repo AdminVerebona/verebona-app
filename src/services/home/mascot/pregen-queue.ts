@@ -70,7 +70,7 @@ const CLAIM_MS = 5 * 60_000;
  * évaluations prenables qui n'avancent pas). Distinctes des tentatives des
  * évaluations T6 (`t6_evaluation_runs.attempts`, `MASCOT_T6_EVAL_MAX_ATTEMPTS`).
  */
-export const PREGEN_MAX_ATTEMPTS = 3;
+const PREGEN_MAX_ATTEMPTS = 3;
 const MAX_ATTEMPTS = PREGEN_MAX_ATTEMPTS;
 /** Lot 81B (C) : reprise automatique d'une demande épuisée après ce délai… */
 export const PREGEN_EXHAUSTED_REARM_MS = 2 * 3600_000;
@@ -237,7 +237,7 @@ async function pregenGeneratedToday(accountId: number): Promise<number> {
  * supervision, reprise explicite au BO). « Rien à afficher » n'est jamais
  * pris pour « toutes les échéances évaluées ».
  */
-export type PregenOutcome = 'formulated' | 'nothing_to_say' | 'fallback' | 'capped' | 'error' | 'resumed' | 'evaluation_waiting' | 'evaluation_failed'
+type PregenOutcome = 'formulated' | 'nothing_to_say' | 'fallback' | 'capped' | 'error' | 'resumed' | 'evaluation_waiting' | 'evaluation_failed'
   /** Lot 81B (C) : tentatives de la demande épuisées (balayage de la tâche). */
   | 'attempts_exhausted';
 
@@ -355,7 +355,7 @@ export async function processMascotPregenerationFor(accountId: number): Promise<
   return c ? processClaim(c) : null;
 }
 
-export interface PregenRunResult {
+interface PregenRunResult {
   claimed: number;
   formulated: number;
   /** Lot 71G : passages d'évaluation partielle (reprise demandée). */
@@ -372,7 +372,7 @@ export interface PregenRunResult {
   exhaustedFinal?: number;
 }
 
-export interface PregenExhaustion { accountId: number; exhaustedCount: number; final: boolean; retryAt: string | null; runsMarked: number }
+interface PregenExhaustion { accountId: number; exhaustedCount: number; final: boolean; retryAt: string | null; runsMarked: number }
 
 /**
  * Lot 81B (C) — demandes en attente dont les `PREGEN_MAX_ATTEMPTS` prises
@@ -495,7 +495,7 @@ const T6_DUE_REQUEST_MIN_INTERVAL = '50 minutes';
 /** Lot 71G : un report échu depuis plus longtemps est retiré par le nettoyage (90 jours). */
 const T6_DUE_LOOKBACK_DAYS = 90;
 
-export interface T6DueReevaluationResult {
+interface T6DueReevaluationResult {
   /** Comptes dont un report de l'utilisateur est arrivé à sa date, sans réévaluation depuis. */
   snoozeDue: number;
   /** Comptes dont une date de réévaluation système (IA) est atteinte. */

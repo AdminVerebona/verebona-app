@@ -25,7 +25,7 @@
 import { addDaysToDateStr, parisNow } from '@/lib/notifications/time-paris';
 
 /** Heure murale de Paris, `[heure, minute]`. */
-export type WallTime = readonly [number, number];
+type WallTime = readonly [number, number];
 
 export type TaskSchedule =
   /** Toutes les `everyMs`, éventuellement limité à une fenêtre de Paris [from, to[. */
@@ -68,7 +68,7 @@ export function parisWallTimeToDate(dateStr: string, at: WallTime): Date {
 }
 
 /** Minutes écoulées depuis minuit, heure de Paris. */
-export function parisMinutesOfDay(now: Date): number {
+function parisMinutesOfDay(now: Date): number {
   const p = parisNow(now);
   return p.hour * 60 + p.minute;
 }

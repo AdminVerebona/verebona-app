@@ -75,9 +75,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     setRetryingSession(true);
     void sessionResult.refetch().finally(() => setRetryingSession(false));
   }, [sessionResult]);
-  const { theme, toggleTheme, mounted: themeMounted } = useThemeToggle();
-
-  const [mounted, setMounted] = useState(true);
+  const { theme, toggleTheme } = useThemeToggle();
 
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   // Menu déplié par défaut, état conservé (Direction D v2 §3.1).
@@ -460,7 +458,6 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       open={isMobileMenuOpen}
       onClose={() => setIsMobileMenuOpen(false)}
       pathname={pathname}
-      greetingName={user.username?.trim() || user.firstName || ''}
       personName={userDisplayName}
       email={user.email}
       initials={getUserInitials}

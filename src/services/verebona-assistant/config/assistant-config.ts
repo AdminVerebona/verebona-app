@@ -57,7 +57,7 @@ export const WRITE_COMMANDS_DISABLED_MESSAGE =
   'Les modifications depuis l’assistant sont désactivées. Rien n’a été modifié : '
   + 'vous pouvez faire ce changement directement depuis l’écran concerné.';
 
-export interface AssistantConfig {
+interface AssistantConfig {
   enabled: boolean;
   aiEnabled: boolean;
   /** false : une seule tentative modèle par appel, sans escalade (§15.6, §43). */
@@ -185,7 +185,7 @@ export function resetAssistantConfigForTests(): void {
 export const ASSISTANT_OPERATIONS = ['t2_understand', 't2_revalidate', 't2_answer'] as const;
 
 /** Modèles d'une opération, tels que la contrôle le démarrage. */
-export interface OperationModels { primaryModel: string; fallbackModels: string[] }
+interface OperationModels { primaryModel: string; fallbackModels: string[] }
 
 /**
  * Contrôle au démarrage — CDC §15.14, §15.13, §15.7, §31.2.
@@ -198,7 +198,7 @@ export interface OperationModels { primaryModel: string; fallbackModels: string[
  * Budget V1 de sortie de l'assistant (CDC Assistant §31.2) — la constante du
  * référentiel des opérations, jamais une seconde valeur (T2-43).
  */
-export const ASSISTANT_OUTPUT_TOKENS_BUDGET = ASSISTANT_MAX_OUTPUT_TOKENS;
+const ASSISTANT_OUTPUT_TOKENS_BUDGET = ASSISTANT_MAX_OUTPUT_TOKENS;
 
 let varRetireeSignalee = false;
 

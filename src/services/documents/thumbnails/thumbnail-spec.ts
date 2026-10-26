@@ -46,7 +46,7 @@ const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', '
 
 export type ThumbnailSourceKind = 'image' | 'pdf';
 
-export interface ThumbnailSourceFields {
+interface ThumbnailSourceFields {
   mimeType?: string | null;
   fileExtension?: string | null;
   originalFilename?: string | null;
@@ -79,7 +79,7 @@ export function isThumbnailCandidate(f: ThumbnailSourceFields): boolean {
 }
 
 /** Courte empreinte (FNV-1a 32 bits ×2, hex) — pure, sans crypto. */
-export function shortHash(input: string): string {
+function shortHash(input: string): string {
   let h1 = 0x811c9dc5;
   let h2 = 0x01000193 ^ input.length;
   for (let i = 0; i < input.length; i++) {
@@ -99,9 +99,7 @@ export function documentThumbnailKey(accountId: number, fileId: number, sourceKe
   return `derivatives/thumbnails/a_${accountId}/f_${fileId}/${variant}-${shortHash(sourceKey)}.webp`;
 }
 
-export type ThumbnailRowStatus = 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED' | 'UNSUPPORTED';
-
-export interface ThumbnailRowLike {
+interface ThumbnailRowLike {
   status: string;
   sourceKey: string;
   s3Key: string | null;
@@ -110,7 +108,7 @@ export interface ThumbnailRowLike {
   updatedAt: Date;
 }
 
-export type ThumbnailDecision =
+type ThumbnailDecision =
   | { action: 'serve'; s3Key: string }
   | { action: 'generate' }
   | { action: 'wait' }

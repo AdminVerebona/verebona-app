@@ -90,11 +90,8 @@ import {
   type AssetRoom,
 } from '@/services/rooms/room-scope.service';
 
-/** Identifiant de la zone « Sans rubrique ». Jamais un code de Rubrique (§2.1). */
-export const UNFILED_GROUP = FEED_UNFILED;
-
 /** Document d'un lot (contrat partagé avec l'écran). */
-export type RubricDocumentView = FeedDocument;
+type RubricDocumentView = FeedDocument;
 
 /** Curseur illisible ou d'un autre tri : la route répond 400, sans deviner. */
 export class InvalidCursorError extends Error {
@@ -104,7 +101,7 @@ export class InvalidCursorError extends Error {
   }
 }
 
-export interface DocumentFeedQuery extends Omit<FeedParams, 'cursor'> {
+interface DocumentFeedQuery extends Omit<FeedParams, 'cursor'> {
   accountId: number;
   cursor?: string | null;
   /** Compteurs et options de filtre : par défaut avec le premier lot seulement. */
@@ -226,7 +223,7 @@ export function matchesFilters(
 
 // ── Compteurs ────────────────────────────────────────────────────────────
 
-export interface ScopeCountRow {
+interface ScopeCountRow {
   assetId: number | null;
   assetName: string | null;
   /**

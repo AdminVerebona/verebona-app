@@ -26,7 +26,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export type SufficiencyStatus =
+type SufficiencyStatus =
   | 'SUFFICIENT_STRUCTURED'
   | 'SUFFICIENT_RETRIEVAL'
   | 'INSUFFICIENT'
@@ -67,7 +67,7 @@ export interface CascadeThresholdsLike {
 /** Seuils appliqués quand la gouvernance n'en fournit pas (ou est injoignable). */
 export const DEFAULT_THRESHOLDS: CascadeThresholdsLike = { database: 0.5, text: 0.6 };
 
-export const CONFIDENCE_SCORE: Record<string, number> = {
+const CONFIDENCE_SCORE: Record<string, number> = {
   certain: 0.9,
   probable: 0.65,
   conflictual: 0.3,
@@ -101,7 +101,7 @@ export function decideStructured(
   return { status: 'SUFFICIENT_STRUCTURED', level: 1, score, threshold, detail: kind };
 }
 
-export interface FactCandidate {
+interface FactCandidate {
   /** Valeur comparable (nombre + unité normalisés, ou texte normalisé). */
   comparable: string;
   confidence: string;

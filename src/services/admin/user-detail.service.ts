@@ -13,7 +13,7 @@ import { pgClient } from '@/db';
 
 /** USR-D01 / REC-USR-05 : fenêtre de l'historique de connexion. */
 export const LOGIN_HISTORY_DAYS = 90;
-export const COMMUNICATION_HISTORY_LIMIT = 100;
+const COMMUNICATION_HISTORY_LIMIT = 100;
 /** Même durée de validité que l'invitation Duo émise par l'utilisateur. */
 export const DUO_INVITE_TTL_DAYS = 7;
 
@@ -60,7 +60,7 @@ export function describeUserAgent(ua: string | null | undefined): string | null 
   return [browser, os].filter(Boolean).join(' · ');
 }
 
-export type MemberRole = 'holder' | 'second' | 'member';
+type MemberRole = 'holder' | 'second' | 'member';
 
 /** Rôle dans le compte : titulaire, second utilisateur (Duo) ou membre. */
 export function memberRole(input: { isAccountOwner: boolean; membershipRole: string | null; isDuoSecond: boolean }): MemberRole {
@@ -69,7 +69,7 @@ export function memberRole(input: { isAccountOwner: boolean; membershipRole: str
   return 'member';
 }
 
-export type CommunicationStatus = 'sent' | 'failed' | 'pending' | 'skipped';
+type CommunicationStatus = 'sent' | 'failed' | 'pending' | 'skipped';
 
 /** Statut normalisé d'un envoi (e-mail ou notification). */
 export function normalizeCommunicationStatus(raw: string | null | undefined): CommunicationStatus {
@@ -80,7 +80,7 @@ export function normalizeCommunicationStatus(raw: string | null | undefined): Co
   return 'pending';
 }
 
-export interface DuoInvitationState {
+interface DuoInvitationState {
   pendingInviteEmail: string | null;
   pendingInviteToken: string | null;
   hasActiveSecond: boolean;
@@ -104,7 +104,7 @@ export function duoInvitationBlockReason(state: DuoInvitationState): string | nu
 
 // ── Chargement ──────────────────────────────────────────────────────────────
 
-export interface UserMembershipInfo {
+interface UserMembershipInfo {
   accountId: number;
   accountName: string;
   role: MemberRole;
@@ -117,7 +117,7 @@ export interface StatusChange {
   adminEmail: string | null;
 }
 
-export interface UserInvitation {
+interface UserInvitation {
   kind: 'duo' | 'account';
   direction: 'sent' | 'received';
   email: string;
@@ -130,7 +130,7 @@ export interface UserInvitation {
   duoId: number | null;
 }
 
-export interface CommunicationEntry {
+interface CommunicationEntry {
   at: string;
   channel: 'email' | 'push' | 'in_app';
   type: string;
@@ -151,7 +151,7 @@ export interface LoginEntry {
 }
 
 /** Lot 79C : `session_revoked` — sessions révoquées par précaution (jeton de renouvellement réutilisé). */
-export type LoginResult = 'success' | 'failure' | 'throttled' | 'session_revoked';
+type LoginResult = 'success' | 'failure' | 'throttled' | 'session_revoked';
 
 const FAILURE_LABELS: Record<string, string> = {
   invalid_password: 'Mot de passe incorrect',
@@ -238,7 +238,7 @@ export async function loadUserMemberships(userId: number): Promise<UserMembershi
 }
 
 /** Lot 74B : adhésion à un Premium Duo, lue dans `account_memberships`. */
-export interface UserDuoMembership {
+interface UserDuoMembership {
   accountId: number;
   accountName: string;
   role: 'owner' | 'member';
@@ -443,7 +443,7 @@ export interface RawCommunicationRow {
 }
 
 /** Écart maximal entre la ligne `email_logs` et la livraison e-mail du même envoi. */
-export const EMAIL_DEDUP_WINDOW_MS = 10 * 60 * 1000;
+const EMAIL_DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
 /**
  * Un e-mail envoyé par le moteur de notifications laisse DEUX traces : une
@@ -536,7 +536,7 @@ export async function loadLoginHistory(userId: number, now = new Date()): Promis
 
 // ── USR-A01 : renvoi d'invitation ───────────────────────────────────────────
 
-export type ResendResult =
+type ResendResult =
   | { ok: true; email: string; renewed: boolean; duoId: number; emailStatus: 'accepted' | 'queued' | 'failed'; emailError: string | null }
   | { ok: false; code: 'NO_INVITATION' | 'NOT_REISSUABLE'; message: string };
 

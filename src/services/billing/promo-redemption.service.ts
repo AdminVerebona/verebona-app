@@ -73,7 +73,7 @@ export function extractPromotionCodeIds(discounts: ReadonlyArray<DiscountLike> |
   return { ids: [...ids], needsExpand };
 }
 
-export interface PromoRedemptionInput {
+interface PromoRedemptionInput {
   accountId: number;
   stripePromotionCodeId: string;
   /** Code lisible, s'il est déjà connu (objet développé). */
@@ -132,7 +132,7 @@ async function ensurePromoCode(
  * Enregistre l'usage d'un code promotionnel par un compte. Idempotent.
  * @returns `true` si l'usage est nouveau (compteur incrémenté).
  */
-export async function recordPromoRedemption(
+async function recordPromoRedemption(
   input: PromoRedemptionInput,
   stripe: StripePromo = getStripeServer(),
 ): Promise<boolean> {

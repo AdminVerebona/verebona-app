@@ -16,7 +16,7 @@ import { Check, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { copyText } from '@/app/admin/ai-executions/_components/CopyJson';
 
-export const ACCOUNT_ID_LABEL = 'ID';
+const ACCOUNT_ID_LABEL = 'ID';
 
 /** Texte affiché et copié : l'identifiant seul (collable tel quel dans la recherche). */
 export const accountIdText = (id: number): string => String(id);

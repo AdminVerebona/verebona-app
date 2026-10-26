@@ -36,9 +36,9 @@ import type { QualificationCall } from './model-qualification.service';
 import type { PricingSyncDeps, PricingSyncResult } from '../gateway/pricing/pricing-sync.service';
 import type { ActiveModelAnomaly } from './active-model-anomalies';
 
-export type SyncTrigger = 'schedule' | 'manual' | 'startup';
+type SyncTrigger = 'schedule' | 'manual' | 'startup';
 
-export interface AiCatalogSyncResult {
+interface AiCatalogSyncResult {
   ok: boolean;
   skipped?: boolean;
   trigger: SyncTrigger;
@@ -52,7 +52,7 @@ export interface AiCatalogSyncResult {
   anomalies: ActiveModelAnomaly[];
 }
 
-export interface AiCatalogSyncDeps {
+interface AiCatalogSyncDeps {
   fetcher?: typeof fetch;
   qualificationCall?: QualificationCall;
   probeCall?: (model: string) => Promise<{ rawText: string; inputTokens?: number; outputTokens?: number }>;

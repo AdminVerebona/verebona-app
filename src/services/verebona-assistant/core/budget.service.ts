@@ -24,7 +24,7 @@ import { pgClient } from '@/db';
 import { getAssistantConfig } from '../config/assistant-config';
 import type { AlertInput } from '@/services/ai/alerts/alerts.repository';
 
-export interface MonthlyBudgetStatus {
+interface MonthlyBudgetStatus {
   allowed: boolean;
   usedMicros: number;
   limitMicros: number;
@@ -47,7 +47,7 @@ export function evaluateBudget(usedMicros: number, limitMicros: number, alertRat
   };
 }
 
-export async function monthlyCostMicros(accountId: number, now = new Date()): Promise<number> {
+async function monthlyCostMicros(accountId: number, now = new Date()): Promise<number> {
   const debut = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
   const rows = (await pgClient.unsafe(
     `SELECT COALESCE(SUM(estimated_cost_micros), 0)::bigint AS total

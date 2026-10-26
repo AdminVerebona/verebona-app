@@ -25,7 +25,7 @@ import {
 
 type Out = T1AnalyzeDocumentOutput;
 
-export interface ChunkCallResult {
+interface ChunkCallResult {
   output: Out;
   report: T1NormalisationReport | null;
   batches: number;
@@ -34,9 +34,9 @@ export interface ChunkCallResult {
   pruned?: PrunedFieldValue[];
 }
 
-export type ChunkCall = (p: { attachments: AiAttachment[]; sources: string; triggerCode: string }) => Promise<ChunkCallResult>;
+type ChunkCall = (p: { attachments: AiAttachment[]; sources: string; triggerCode: string }) => Promise<ChunkCallResult>;
 
-export interface ContinuationResult {
+interface ContinuationResult {
   output: Out;
   segments: TextSegment[];
   gaps: PageGap[];
@@ -56,7 +56,7 @@ export interface ContinuationResult {
 }
 
 /** Dernière page désignée par une marque de page dans le texte. */
-export function lastPageInText(text: string | undefined): number {
+function lastPageInText(text: string | undefined): number {
   if (!text) return 0;
   let max = 0;
   for (const l of text.split('\n')) {

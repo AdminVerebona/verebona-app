@@ -79,39 +79,39 @@ import { canonicalJson, sha256 } from './hash';
 /** Lot 87C : contrat des questions fondées (contexte ET sortie). */
 export const T6_SUGGESTION_CONTRACT = 't6-suggestions-v3';
 /** Version du schéma du contexte transmis (`{{SUGGESTION_CONTEXT}}`). */
-export const T6_SUGGESTION_CONTEXT_SCHEMA = T6_SUGGESTION_CONTRACT;
+const T6_SUGGESTION_CONTEXT_SCHEMA = T6_SUGGESTION_CONTRACT;
 /** Horizon de l'agrégat « échéance dans les 30 jours ». */
 const PROCHES_JOURS = 30;
 /** Questions examinées et affichées au plus (« Ou demandez-moi », 3 pastilles). */
-export const MAX_T6_SUGGESTIONS = 3;
+const MAX_T6_SUGGESTIONS = 3;
 /** Biens transmis au plus (références A1…A8). */
-export const MAX_SUGGESTION_ASSETS = 8;
+const MAX_SUGGESTION_ASSETS = 8;
 /** Prochaines échéances transmises au plus. */
-export const MAX_SUGGESTION_DEADLINES = 3;
+const MAX_SUGGESTION_DEADLINES = 3;
 /** Lot 87C : faits documentaires transmis par échéance, au plus (pas de copie documentaire). */
-export const MAX_SUGGESTION_FACTS = 5;
+const MAX_SUGGESTION_FACTS = 5;
 /** Lot 87C : intitulés de documents transmis par échéance, au plus. */
-export const MAX_SUGGESTION_DOCUMENTS = 3;
+const MAX_SUGGESTION_DOCUMENTS = 3;
 /** Lot 87C : incertitudes recopiées de la décision T6, au plus. */
 const MAX_UNCERTAINTIES = 3;
-export const T6_SUGGESTION_MIN = 8;
-export const T6_SUGGESTION_MAX = 100;
+const T6_SUGGESTION_MIN = 8;
+const T6_SUGGESTION_MAX = 100;
 /**
  * Intention transmise au clic (contexte de page, indicatif) : la question est
  * libre, T2 la comprend lui-même (routage sémantique, lot 54E).
  */
-export const T6_SUGGESTION_INTENT = 'HOME_T6_SUGGESTION';
+const T6_SUGGESTION_INTENT = 'HOME_T6_SUGGESTION';
 
 /** Sujet déclaré d'une question (référentiel FERMÉ du contrat). */
-export const T6_SUGGESTION_SUBJECTS = ['DEADLINE', 'ASSET', 'DEADLINES', 'DOCUMENTS', 'TO_PROCESS', 'OPERATIONS', 'EXPORTS'] as const;
+const T6_SUGGESTION_SUBJECTS = ['DEADLINE', 'ASSET', 'DEADLINES', 'DOCUMENTS', 'TO_PROCESS', 'OPERATIONS', 'EXPORTS'] as const;
 export type T6SuggestionSubject = (typeof T6_SUGGESTION_SUBJECTS)[number];
 /** Nature d'une information disponible pour répondre (référentiel FERMÉ). */
-export const T6_SUGGESTION_NATURES = [
+const T6_SUGGESTION_NATURES = [
   'ACCOUNT_DATA', 'ASSET_DATA', 'DEADLINE_DATA', 'DOCUMENT_TITLE', 'DESCRIPTION', 'DOCUMENT_FACT', 'UNCERTAIN_FACT', 'IDENTIFIED_ACTION',
 ] as const;
 export type T6SuggestionNature = (typeof T6_SUGGESTION_NATURES)[number];
 /** Finalité d'une question (CONSULT : retrouver, consulter ; PREPARE : préparer, agir). */
-export type T6SuggestionPurpose = 'CONSULT' | 'PREPARE';
+type T6SuggestionPurpose = 'CONSULT' | 'PREPARE';
 
 /**
  * Motifs STRUCTURÉS d'un rejet (traçabilité BO, aucune donnée personnelle).
@@ -131,11 +131,11 @@ export const T6_SUGGESTION_REJECTIONS = [
   // Relecture du cache et contrôle de cohérence (fondements devenus invalides).
   'ground_unavailable', 'ground_changed', 'contract_outdated',
 ] as const;
-export type T6SuggestionRejectReason = (typeof T6_SUGGESTION_REJECTIONS)[number];
+type T6SuggestionRejectReason = (typeof T6_SUGGESTION_REJECTIONS)[number];
 
 // ── Contexte transmis ────────────────────────────────────────────────────────
 
-export interface T6SuggestionAssetRef {
+interface T6SuggestionAssetRef {
   ref: string;
   name: string;
   hasDocuments: boolean;
@@ -145,9 +145,9 @@ export interface T6SuggestionAssetRef {
 }
 
 /** Lot 87C : fondement transmis (référence, nature) — aucun identifiant de base. */
-export interface T6SuggestionContextGround { ref: string; nature: T6SuggestionNature }
+interface T6SuggestionContextGround { ref: string; nature: T6SuggestionNature }
 
-export interface T6SuggestionDeadline {
+interface T6SuggestionDeadline {
   /** Référence opaque (`D1`…), recopiée dans `deadlineRef`. */
   ref: string;
   /** Libellé naturel (« Contrôle technique »), jamais le titre technique brut. */
@@ -171,7 +171,7 @@ export interface T6SuggestionDeadline {
 }
 
 /** Contexte transmis à T6 ({{SUGGESTION_CONTEXT}}). Présences, jamais de compteurs exacts. */
-export interface T6SuggestionContext {
+interface T6SuggestionContext {
   schemaVersion: typeof T6_SUGGESTION_CONTEXT_SCHEMA;
   bubble: {
     /** Message affiché tel quel si T6 ne reformule rien (les sujets sont dans `messages`). */
@@ -198,7 +198,7 @@ export interface T6SuggestionContext {
 // ── Fondements (serveur seulement) ──────────────────────────────────────────
 
 /** Nature technique d'un fondement (serveur). */
-export type T6GroundKind = 'ACCOUNT' | 'ASSET' | 'ASSET_DOCUMENTS' | 'DEADLINE' | 'DESCRIPTION' | 'DOCUMENT' | 'DOCUMENT_FACT' | 'IDENTIFIED_ACTION';
+type T6GroundKind = 'ACCOUNT' | 'ASSET' | 'ASSET_DOCUMENTS' | 'DEADLINE' | 'DESCRIPTION' | 'DOCUMENT' | 'DOCUMENT_FACT' | 'IDENTIFIED_ACTION';
 
 /**
  * Fondement vérifiable d'une question (serveur seulement, jamais transmis) :
@@ -206,7 +206,7 @@ export type T6GroundKind = 'ACCOUNT' | 'ASSET' | 'ASSET_DOCUMENTS' | 'DEADLINE' 
  * `fact:34:notice_period`, `t6:agenda:12`…), version (empreinte du contenu
  * transmis), portée (échéance ou bien), sujets qu'il fonde, preuve concrète.
  */
-export interface T6SuggestionGround {
+interface T6SuggestionGround {
   ref: string;
   kind: T6GroundKind;
   nature: T6SuggestionNature;
@@ -243,14 +243,14 @@ export interface T6Suggestion {
 }
 
 /** Échéance transmise (serveur seulement) : identifiant et statut dans la bulle. */
-export interface T6SuggestionDeadlineRef {
+interface T6SuggestionDeadlineRef {
   agendaItemId: number; signaled: boolean; label: string;
   /** Bien de l'échéance (`null` : aucun) — cohérence avec `assetRef`. */
   assetId?: number | null;
 }
 
 /** Échéance transmise ou écartée, telle que le serveur la contrôle (jamais transmise à T6). */
-export interface T6SuggestionDeadlineCheck { label: string; assetId: number | null; signaled: boolean }
+interface T6SuggestionDeadlineCheck { label: string; assetId: number | null; signaled: boolean }
 
 /** Contexte complet : la correspondance référence → source reste côté serveur. */
 export interface T6SuggestionBundle {
@@ -276,7 +276,7 @@ export interface T6SuggestionBundle {
 }
 
 /** Portée de validation des questions (sous-ensemble du `T6SuggestionBundle`). */
-export type T6SuggestionScope = Pick<T6SuggestionBundle,
+type T6SuggestionScope = Pick<T6SuggestionBundle,
   'deadlineRefs' | 'excludedLabels' | 'deadlines' | 'excludedDeadlines' | 'assetNames' | 'grounds' | 'contract'>;
 
 /**
@@ -335,7 +335,7 @@ const empreinte = (v: unknown) => sha256(canonicalJson(v)).slice(0, 16);
  * transmis (une réextraction à l'identique ne change rien) ; la clé est
  * l'identité STABLE de la source (fait : document et clé du fait).
  */
-export const T6_GROUNDS = {
+const T6_GROUNDS = {
   deadline: (row: Pick<MascotAgendaRow, 'id' | 'title' | 'date' | 'forecast' | 'requiresQualification' | 'assetId'>) => ({
     key: `agenda:${row.id}`,
     version: empreinte({ t: row.title, d: row.date, f: !!row.forecast, q: !!row.requiresQualification, a: row.assetId ?? null }),
@@ -365,7 +365,6 @@ const ACCOUNT_REFS: ReadonlyArray<{ flag: keyof T6SuggestionContext['account']; 
   { flag: 'hasDeadlinesNext30Days', ref: 'ACC.DEADLINES_30_DAYS', subject: 'DEADLINES' },
   { flag: 'hasExportsReady', ref: 'ACC.EXPORTS', subject: 'EXPORTS' },
 ];
-export const T6_ACCOUNT_GROUND_FLAGS: readonly string[] = ACCOUNT_REFS.map((x) => x.flag);
 
 /** Contexte des questions suggérées et fondements (pur, testé). */
 export function buildT6SuggestionContext(d: SuggestionSourceData): T6SuggestionBundle {
@@ -508,7 +507,7 @@ const INVERSION_TU = /-(tu|toi)(?=[\s?,.!]|$)/i;
 
 const forme = (t: string) => t.normalize('NFC').toLocaleLowerCase('fr').replace(/[’']/g, "'").replace(/\s+/g, ' ').trim();
 
-export interface T6SuggestionRejection {
+interface T6SuggestionRejection {
   /** Rang de la question dans la sortie (0…) ; -1 : liste entière. */
   index: number;
   reason: T6SuggestionRejectReason;

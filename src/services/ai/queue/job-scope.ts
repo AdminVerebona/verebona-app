@@ -70,18 +70,18 @@ export const JOB_TARGET_KINDS: Readonly<Record<string, OwnedKind>> = {
 };
 
 /** Cibles « compte » : `target_id` est le compte du travail (Opérations, lots 39-48). */
-export const ACCOUNT_JOB_TARGET_TYPES: ReadonlySet<string> = new Set(['business_operations', 'business_operations_agenda']);
+const ACCOUNT_JOB_TARGET_TYPES: ReadonlySet<string> = new Set(['business_operations', 'business_operations_agenda']);
 
 /**
  * Balayages GLOBAUX (travaux techniques sans compte, pagination
  * `cycle:page`) : encadrés — aucune référence métier admise.
  */
-export const GLOBAL_JOB_TARGET_TYPES: ReadonlySet<string> = new Set([
+const GLOBAL_JOB_TARGET_TYPES: ReadonlySet<string> = new Set([
   't3_sweep', 'document_sweep', 'document_title_sweep', 'business_operations_sweep',
 ]);
 
 /** Clés du contexte (payload, à toute profondeur) → type d'objet contrôlé. */
-export const JOB_PAYLOAD_KINDS: Readonly<Record<string, OwnedKind>> = {
+const JOB_PAYLOAD_KINDS: Readonly<Record<string, OwnedKind>> = {
   assetId: 'asset',
   assetIds: 'asset',
   linkedAssetId: 'asset',
@@ -115,7 +115,7 @@ export const JOB_PAYLOAD_KINDS: Readonly<Record<string, OwnedKind>> = {
 
 /** Bornes du parcours du contexte (au-delà : refus, jamais un contrôle partiel). */
 export const PAYLOAD_MAX_DEPTH = 8;
-export const PAYLOAD_MAX_NODES = 5_000;
+const PAYLOAD_MAX_NODES = 5_000;
 
 const entier = (v: unknown): number | null => {
   const n = typeof v === 'string' && /^\d{1,10}$/.test(v) ? Number(v) : v;
@@ -123,7 +123,7 @@ const entier = (v: unknown): number | null => {
 };
 
 /** Contexte illisible : refus (fail closed). */
-export class JobScopeError extends PermanentJobError {
+class JobScopeError extends PermanentJobError {
   constructor(message: string) {
     super(message);
     this.name = 'JobScopeError';

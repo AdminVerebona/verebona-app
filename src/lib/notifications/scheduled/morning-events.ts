@@ -19,7 +19,7 @@ import { isAtOrAfterParisTime } from '../time-paris';
 /** Créneau du matin, heure de Paris. */
 export const MORNING_SLOT: readonly [number, number] = [8, 30];
 
-export type MorningEventsResult =
+type MorningEventsResult =
   | { skipped: 'before_0830_paris' }
   | {
       skipped?: undefined;

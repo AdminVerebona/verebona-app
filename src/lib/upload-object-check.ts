@@ -16,7 +16,7 @@
  * de code.
  */
 
-export type VerificationObjet =
+type VerificationObjet =
   | { kind: 'ok' }
   | { kind: 'absent' }
   | { kind: 'taille'; attendue: number; reelle: number }

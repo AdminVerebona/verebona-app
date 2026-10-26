@@ -60,7 +60,7 @@ import { isRevaluationSchedule, supersedeRevaluation } from './price-revaluation
 
 /** Offres qu'un admin peut attribuer : les offres commercialisées. */
 export const ADMIN_ASSIGNABLE_PLANS = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO'] as const;
-export type AdminAssignablePlan = (typeof ADMIN_ASSIGNABLE_PLANS)[number];
+type AdminAssignablePlan = (typeof ADMIN_ASSIGNABLE_PLANS)[number];
 
 export function isAdminAssignablePlan(value: unknown): value is AdminAssignablePlan {
   return typeof value === 'string' && (ADMIN_ASSIGNABLE_PLANS as readonly string[]).includes(value);
@@ -75,7 +75,7 @@ const PLAN_CODE_OF: Record<AdminAssignablePlan, PlanCode> = {
 /** Statuts Stripe d'un abonnement qui ne facturera plus rien. */
 const ENDED_STRIPE_STATUSES: ReadonlySet<string> = new Set(['canceled', 'incomplete_expired']);
 
-export type AdminPlanChangeErrorCode =
+type AdminPlanChangeErrorCode =
   | 'ACCOUNT_NOT_FOUND'
   | 'SAME_PLAN'
   | 'SCHEDULED_CHANGE_PENDING'
@@ -86,7 +86,7 @@ export type AdminPlanChangeErrorCode =
   | 'PRICE_CHANGED'
   | 'PRICE_UNAVAILABLE';
 
-export type AdminPlanChangeResult =
+type AdminPlanChangeResult =
   | {
       ok: true;
       oldPlan: string;

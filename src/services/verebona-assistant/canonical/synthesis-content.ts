@@ -29,7 +29,7 @@ import type { RetrievedSource } from '../types/sources';
 import { maskSensitiveText, sensitiveNecessityFor, type SensitiveNecessity } from '../core/sensitive-data.policy';
 import { getCanonicalDocumentState, type CanonicalDocumentState } from './document-state';
 
-export interface SynthesisContentOptions {
+interface SynthesisContentOptions {
   /** Documents visés ; à défaut, ceux des biens (`assetIds`, relation N-N). */
   fileIds?: number[];
   assetIds?: number[];

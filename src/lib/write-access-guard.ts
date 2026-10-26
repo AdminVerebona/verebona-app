@@ -30,7 +30,7 @@ import { NextResponse } from 'next/server';
 import { getEntitlements, restrictedRefusal } from '@/services/entitlements.service';
 
 /** Format déjà compris par le client, via `parseWriteBlocked`. */
-export interface RefusEcriture {
+interface RefusEcriture {
   code: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED';
   message: string;
 }

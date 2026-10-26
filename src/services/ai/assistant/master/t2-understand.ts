@@ -49,7 +49,7 @@ const HINT_TYPES: Record<string, RouteHintType> = {
   equipment: 'equipment', room: 'room',
 };
 
-export interface T2Understanding {
+interface T2Understanding {
   /** Forme attendue par `toIntentRoute` (classification.adapter, Y). */
   plan: {
     intent: VerebonaIntent;
@@ -79,7 +79,7 @@ export function describeIntentCatalog(): string {
  * valeurs, familles et cibles quand elles restreignent, puis les
  * formulations reconnues — toutes issues de la projection officielle.
  */
-export function describeFieldLine(f: T2ReadFieldDTO): string {
+function describeFieldLine(f: T2ReadFieldDTO): string {
   const type = [
     f.valueType,
     f.unit ? `unité ${f.unit}` : null,
@@ -157,7 +157,7 @@ export function toT2Understanding(out: UnderstandOut, events: string[] = []): T2
  * par le serveur — jamais un identifiant, une table, ni une source non
  * autorisée. `carriesRequestedValue` : la source porte la valeur demandée.
  */
-export interface T2ArbitrationCandidate {
+interface T2ArbitrationCandidate {
   ref: string;
   kind: string;
   label: string;

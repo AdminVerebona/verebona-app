@@ -13,7 +13,7 @@ import { ensureMigrations } from '@/db';
 import { ConfigOperationRefused } from '@/services/ai/config/config-version.service';
 import { ConfigVersionRefused } from '@/services/ai/config/config-version.repository';
 
-export interface AdminContext {
+interface AdminContext {
   adminUserId: number;
 }
 

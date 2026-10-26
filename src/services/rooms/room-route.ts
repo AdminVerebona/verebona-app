@@ -10,7 +10,7 @@ import { refuserSiModificationBiensSuspendue } from '@/lib/asset-quota-guard';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { getRoomInAccount, RoomAssociationError, type RoomRef } from './room-scope.service';
 
-export type RoomRouteContext = { accountId: number; room: RoomRef };
+type RoomRouteContext = { accountId: number; room: RoomRef };
 
 /** Pièce du compte courant, ou la réponse d'erreur à renvoyer. */
 export async function resolveRoomRoute(

@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BillingCatalogResponse } from '@/lib/billing/catalog-client';
 
-export interface UseBillingCatalog {
+interface UseBillingCatalog {
   catalog: BillingCatalogResponse | null;
   loading: boolean;
   /** Vrai si le catalogue n'a pas pu être lu ou ne permet aucune souscription. */

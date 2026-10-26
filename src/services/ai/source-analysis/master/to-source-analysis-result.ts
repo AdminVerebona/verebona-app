@@ -38,7 +38,7 @@ function toEvidence<T>(m: Meta<T>): EvidenceValue<T> | undefined {
 }
 
 /** Confiance numérique de classification → niveau qualitatif (§8.2). */
-export function qualitative(confidence: number): T1Confidence {
+function qualitative(confidence: number): T1Confidence {
   return confidence >= 0.9 ? 'certain' : 'probable';
 }
 
@@ -127,7 +127,7 @@ export function toAnalysisWarnings(ws: ProjectionWarning[]): AnalysisWarning[] {
   });
 }
 
-export interface MasterResultInput {
+interface MasterResultInput {
   input: SourceInput;
   groupIndices: number[];
   analysis: T1AnalyzeDocumentOutput;

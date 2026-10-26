@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import type { AdditionalInfoFieldDef } from '@/lib/assets/additional-infos';
 import type { AutosaveState } from '@/lib/assets/additional-infos-autosave';
 
-export const NONE_VALUE = '__none__';
+const NONE_VALUE = '__none__';
 
 interface Props {
   def: AdditionalInfoFieldDef;

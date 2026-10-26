@@ -45,7 +45,7 @@ const DELETION_REASON_LABELS: Record<DeletionReason, string> = {
   UNPAID: 'impayé non régularisé',
 };
 
-export interface SystemRequestInput {
+interface SystemRequestInput {
   sourceRef: string;
   rightType: GdprRightType;
   userId: number | null;
@@ -86,7 +86,7 @@ export async function upsertSystemRequest(input: SystemRequestInput): Promise<nu
   return existing ? Number(existing.id) : null;
 }
 
-export interface SystemProgress {
+interface SystemProgress {
   status?: GdprStatus;
   result?: string | null;
   lastError?: string | null;

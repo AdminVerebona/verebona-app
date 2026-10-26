@@ -7,7 +7,7 @@
  * ne doit ni effacer l'état « non enregistré », ni remplacer le brouillon à
  * l'écran par la ligne relue — sa nouvelle saisie serait perdue.
  */
-export interface EditTracker {
+interface EditTracker {
   /** À appeler à chaque modification saisie par l'administrateur. */
   bump(key: string): void;
   /** Repère à prendre au début de l'enregistrement. */

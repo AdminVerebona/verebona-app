@@ -64,7 +64,7 @@ export interface PhotoRef {
 }
 
 // Sections structurées extraites de keyCharacteristics — lisibles par le renderer
-export interface AssetDetailSections {
+interface AssetDetailSections {
   family: 'IMMOBILIER' | 'VEHICULE' | 'OBJET';
   common?: {
     name?: string | null;

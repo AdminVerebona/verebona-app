@@ -139,7 +139,7 @@ function detectVehicleType(name: string, subtype?: string | null): LucideIcon | 
 /**
  * Retourne l'icône appropriée pour un bien de type OBJECT
  */
-export function getObjectIcon(objectCategory?: string | null, objectDetails?: any): LucideIcon {
+function getObjectIcon(objectCategory?: string | null, objectDetails?: any): LucideIcon {
   if (!objectCategory) return Package;
   
   const details = typeof objectDetails === 'string' ? JSON.parse(objectDetails || '{}') : (objectDetails || {});
@@ -224,15 +224,3 @@ export const CATEGORY_LABELS: Record<string, string> = Object.fromEntries(
   // Lot 30 : dérivé du référentiel des biens (familles proposées et anciennes stockées).
   ACCEPTED_ASSET_CATEGORY_CODES.map((code) => [code, assetFamilyLabel(code)]),
 );
-
-/**
- * Retourne la classe CSS supplémentaire pour personnaliser certaines icônes
- * (par exemple pour différencier visuellement la moto du vélo)
- */
-export function getAssetIconClass(category: string, subtype?: string | null): string {
-  if (category === 'VEHICULE' && subtype === 'Moto') {
-    // On peut ajouter une classe pour styliser différemment l'icône de moto
-    return 'font-bold';
-  }
-  return '';
-}

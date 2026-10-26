@@ -52,9 +52,9 @@ import { DOCUMENT_TITLE_RULE_VERSION, isValidBusinessTitle } from '@/lib/documen
 import { formatTitleMonth, hasLegacyTitleTypography } from '@/lib/documents/document-title-convention';
 import { documentTitleColumnsSql, documentTitleFromRecord } from '@/lib/documents/document-title-source';
 
-export const DOCUMENT_TITLES_CHECK_ID = 'COH-DOC-TITLES';
+const DOCUMENT_TITLES_CHECK_ID = 'COH-DOC-TITLES';
 
-export type DocumentTitleAnomaly =
+type DocumentTitleAnomaly =
   | 'SEARCH_LABEL_DIVERGENT' | 'AUTO_TITLE_TECHNICAL' | 'AUTO_TITLE_NOT_CANONICAL' | 'TITLE_MONTH_MISMATCH' | 'TITLE_RULES_OUTDATED'
   | 'TITLE_CONTEXT_CHANGED' | 'SEARCH_REFERENCE_NOT_INDEXED' | 'TITLE_METADATA_NOT_PROPAGATED';
 
@@ -86,7 +86,7 @@ export interface DocumentTitleState {
   sheetLabel: string;
 }
 
-export interface DocumentTitleDiagnosis {
+interface DocumentTitleDiagnosis {
   verdict: Inspection['verdict'];
   anomaly?: DocumentTitleAnomaly;
 }

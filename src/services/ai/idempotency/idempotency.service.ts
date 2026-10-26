@@ -29,7 +29,7 @@ import { pgClient } from '@/db';
  * peuvent pas les atteindre (préfixes `assistant:c…` / `assistant:<id>:` —
  * `events/handlers.ts`, `conversation.service.ts`).
  */
-export const RESERVED_IDEMPOTENCY_KEY_PREFIXES = ['help-corpus:last-valid:'] as const;
+const RESERVED_IDEMPOTENCY_KEY_PREFIXES = ['help-corpus:last-valid:'] as const;
 
 /** Prédicat SQL à ajouter à toute purge de `ai_operation_idempotency`. */
 export const NOT_RESERVED_IDEMPOTENCY_KEY_SQL =
@@ -40,8 +40,8 @@ export function isReservedIdempotencyKey(key: string): boolean {
 }
 
 /** Taille d'un lot de suppression et borne de temps totale de la purge. */
-export const PURGE_BATCH_SIZE = 5000;
-export const PURGE_MAX_DURATION_MS = 60_000;
+const PURGE_BATCH_SIZE = 5000;
+const PURGE_MAX_DURATION_MS = 60_000;
 
 /**
  * Purge des résultats expirés — SANS JAMAIS toucher aux clés réservées
@@ -75,7 +75,7 @@ export async function purgeExpiredIdempotency(
 
 const DEFAULT_TTL_SECONDS = 3600;
 
-export interface IdempotencyKeyParts {
+interface IdempotencyKeyParts {
   accountId: number;
   operationCode: string;
   sourceIds: number[];

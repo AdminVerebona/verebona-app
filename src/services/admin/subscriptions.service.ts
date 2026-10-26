@@ -24,7 +24,7 @@ import { planAtDate } from '@/lib/admin/plan-at-date';
 
 // ── Statuts ─────────────────────────────────────────────────────────────────
 
-export type SubscriptionDisplayStatus =
+type SubscriptionDisplayStatus =
   | 'trialing'
   | 'trial_expired'
   | 'active'
@@ -32,7 +32,7 @@ export type SubscriptionDisplayStatus =
   | 'readonly'
   | 'canceled';
 
-export const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionDisplayStatus, string> = {
+const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionDisplayStatus, string> = {
   trialing: 'Essai en cours',
   trial_expired: 'Essai terminé',
   active: 'Actif',
@@ -41,7 +41,7 @@ export const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionDisplayStatus, strin
   canceled: 'Terminé',
 };
 
-export type PaymentStatus = 'failed' | 'up_to_date' | 'none';
+type PaymentStatus = 'failed' | 'up_to_date' | 'none';
 
 export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
   failed: 'Paiement échoué',
@@ -50,7 +50,7 @@ export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
 };
 
 /** Statuts du compte (webhooks) qui signalent un paiement en échec (0250 : PAST_DUE seul). */
-export const FAILED_ACCOUNT_STATUSES = ['PAST_DUE'] as const;
+const FAILED_ACCOUNT_STATUSES = ['PAST_DUE'] as const;
 /** Statuts de facture (Stripe) qui signalent un paiement en échec. */
 export const FAILED_INVOICE_STATUSES = ['uncollectible', 'payment_failed', 'failed'] as const;
 
@@ -150,7 +150,7 @@ export function buildSubscriptionSummary(rows: SubscriptionSourceRow[], now: Dat
 
 // ── Liste (SUB-003, SUB-007, SUB-008) ───────────────────────────────────────
 
-export interface SubscriptionListItem {
+interface SubscriptionListItem {
   accountId: number;
   accountName: string;
   ownerEmail: string | null;
@@ -167,8 +167,8 @@ export interface SubscriptionListItem {
   stripeUrl: string | null;
 }
 
-export const SUBSCRIPTION_SORTS = ['plan', 'status', 'period', 'payment', 'renewal', 'end'] as const;
-export type SubscriptionSort = typeof SUBSCRIPTION_SORTS[number];
+const SUBSCRIPTION_SORTS = ['plan', 'status', 'period', 'payment', 'renewal', 'end'] as const;
+type SubscriptionSort = typeof SUBSCRIPTION_SORTS[number];
 export type SortDirection = 'asc' | 'desc';
 
 export function parseSubscriptionSort(value: string | null): SubscriptionSort {
@@ -258,7 +258,7 @@ export function paginate<T>(items: T[], page: number, pageSize: number): Page<T>
 
 // ── Lectures ────────────────────────────────────────────────────────────────
 
-export async function loadSubscriptionRows(): Promise<SubscriptionSourceRow[]> {
+async function loadSubscriptionRows(): Promise<SubscriptionSourceRow[]> {
   const rows = await pgClient.unsafe<Array<Record<string, unknown>>>(
     `SELECT s.account_id, a.name AS account_name, u.email AS owner_email,
             s.plan_code, p.label AS plan_label, s.status, s.billing_period,
@@ -307,9 +307,9 @@ export async function getSubscriptionsOverview(params: {
 
 // ── Historique des paiements (SUB-009 à SUB-013) ────────────────────────────
 
-export type PaymentDisplayStatus = 'paid' | 'failed' | 'pending' | 'void';
+type PaymentDisplayStatus = 'paid' | 'failed' | 'pending' | 'void';
 
-export const PAYMENT_DISPLAY_LABELS: Record<PaymentDisplayStatus, string> = {
+const PAYMENT_DISPLAY_LABELS: Record<PaymentDisplayStatus, string> = {
   paid: 'Payé',
   failed: 'Échec',
   pending: 'En attente',
@@ -325,7 +325,7 @@ export function derivePaymentDisplayStatus(invoiceStatus: string): PaymentDispla
   return 'pending';
 }
 
-export interface PaymentListItem {
+interface PaymentListItem {
   id: number;
   date: string;
   amountCents: number;

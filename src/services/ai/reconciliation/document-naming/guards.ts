@@ -29,7 +29,7 @@ import { isValidBusinessTitle, normalizeTitle, type TitleIdentifiers } from '@/l
 
 /** Longueur maximale d'un nom harmonisé (caractères). */
 export const NAMING_MAX_LENGTH = 120;
-export const NAMING_MIN_LENGTH = 3;
+const NAMING_MIN_LENGTH = 3;
 
 /** Origine du nom EN PLACE (dérivée, jamais stockée : voir migration 0450). */
 export type NameOrigin = 'USER' | 'T1' | 'T3' | 'T3_HARMONIZATION' | 'UPLOAD' | 'UNKNOWN';
@@ -72,8 +72,8 @@ export const RENAME_REFUSAL_LABEL: Record<RenameRefusal, string> = {
 
 // ── Informations discriminantes ─────────────────────────────────────────────
 
-export interface DateToken { y: number; m: number | null; d: number | null; q: number | null }
-export interface Discriminants {
+interface DateToken { y: number; m: number | null; d: number | null; q: number | null }
+interface Discriminants {
   dates: DateToken[];
   amounts: number[];
   references: string[];
@@ -301,7 +301,7 @@ export interface NamingProposal {
   confidence: 'certain' | 'probable' | 'conflictual';
 }
 
-export type ProposalVerdict =
+type ProposalVerdict =
   | { accept: true; name: string }
   | { accept: false; code: RenameRefusal; detail?: string };
 

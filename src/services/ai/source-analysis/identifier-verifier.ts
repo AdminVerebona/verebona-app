@@ -19,7 +19,7 @@ import type { LinkCandidate, AnalysisWarning } from './types';
 
 export type VerifiableEntity = 'asset' | 'room' | 'equipment' | 'supplier';
 
-export interface VerificationOutcome {
+interface VerificationOutcome {
   candidates: LinkCandidate[];
   warnings: AnalysisWarning[];
 }

@@ -141,10 +141,10 @@ export interface TcoAssetPrice {
   evidenceFileIds: readonly number[];
 }
 
-export const USAGE_BUDGET_CATEGORIES = ['FUEL', 'CHARGING', 'TOLLS', 'OTHER'] as const;
-export type UsageBudgetCategory = (typeof USAGE_BUDGET_CATEGORIES)[number];
-export const USAGE_BUDGET_PERIODICITIES = ['MONTHLY', 'QUARTERLY', 'YEARLY'] as const;
-export type UsageBudgetPeriodicity = (typeof USAGE_BUDGET_PERIODICITIES)[number];
+const USAGE_BUDGET_CATEGORIES = ['FUEL', 'CHARGING', 'TOLLS', 'OTHER'] as const;
+type UsageBudgetCategory = (typeof USAGE_BUDGET_CATEGORIES)[number];
+const USAGE_BUDGET_PERIODICITIES = ['MONTHLY', 'QUARTERLY', 'YEARLY'] as const;
+type UsageBudgetPeriodicity = (typeof USAGE_BUDGET_PERIODICITIES)[number];
 
 export const USAGE_BUDGET_CATEGORY_LABELS: Readonly<Record<UsageBudgetCategory, string>> = {
   FUEL: 'Carburant', CHARGING: 'Recharge électrique', TOLLS: 'Péages', OTHER: 'Autre dépense d’usage',
@@ -258,7 +258,7 @@ export type TcoWarning =
   | 'ECONOMIC_DATE_UNDETERMINED';
 
 /** Lot 75D (H) : état du coût d'acquisition (distingue absence de dépense et information manquante). */
-export type TcoAcquisitionStatus = 'DOCUMENTED' | 'MISSING' | 'NOT_APPLICABLE';
+type TcoAcquisitionStatus = 'DOCUMENTED' | 'MISSING' | 'NOT_APPLICABLE';
 
 /** Lot 61 (§4.1, §6) : ligne économique examinée — modèle commun composante / document / fiche. */
 export interface TcoEconomicLine {

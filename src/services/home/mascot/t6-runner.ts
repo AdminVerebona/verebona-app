@@ -75,7 +75,7 @@ import {
 /** Branche FORMULATE du prompt maître T6 (CDC 15 §28). */
 export const T6_MASTER_OPERATION = 't6_formulate';
 /** Lot 61 : branche EVALUATE du prompt maître T6 (pertinence des interpellations). */
-export const T6_EVALUATE_OPERATION = 't6_evaluate';
+const T6_EVALUATE_OPERATION = 't6_evaluate';
 /**
  * Plafond de l'attente à l'affichage (RUN-001, RUN-002) — borne de
  * `MASCOT_T6_DISPLAY_WAIT_MS`.
@@ -104,13 +104,13 @@ export function t6DisplayWaitMs(env: NodeJS.ProcessEnv = process.env): number {
 /** Issue d'un affichage qui n'attend pas la génération lancée en arrière-plan. */
 export const T6_BACKGROUND_NOTE = 'formulation en arrière-plan';
 /** Une pré-génération n'est attendue par personne. */
-export const T6_PREGEN_BUDGET_MS = 30_000;
+const T6_PREGEN_BUDGET_MS = 30_000;
 
 export type T6Mode = 'display' | 'pregen';
 
-export type T6Status = 'generated' | 'cache_hit' | 'fallback' | 'validation_failed' | 'error' | 'disabled';
+type T6Status = 'generated' | 'cache_hit' | 'fallback' | 'validation_failed' | 'error' | 'disabled';
 
-export interface T6Outcome {
+interface T6Outcome {
   status: T6Status;
   messages: T6Message[] | null;
   promptVersion: string | null;
@@ -194,7 +194,7 @@ export function t6CacheKey(p: {
  * version de configuration. La charte de voix fait partie du master (T6-009) :
  * aucun préambule n'y est ajouté.
  */
-export async function getT6MasterPromptVersion(): Promise<string> {
+async function getT6MasterPromptVersion(): Promise<string> {
   const [config, { masterPromptVersionOf }] = await Promise.all([
     resolveOperationConfig(T6_MASTER_OPERATION),
     import('@/services/ai/prompts/prompt-loader'),
@@ -212,7 +212,7 @@ export async function getT6MasterPromptVersion(): Promise<string> {
  * `t6_evaluate`) : conservée avec les décisions et dans la clé de
  * dédoublonnage des évaluations.
  */
-export async function getT6EvaluatePromptVersion(): Promise<string> {
+async function getT6EvaluatePromptVersion(): Promise<string> {
   const [config, { masterPromptVersionOf }] = await Promise.all([
     resolveOperationConfig(T6_EVALUATE_OPERATION),
     import('@/services/ai/prompts/prompt-loader'),
@@ -286,7 +286,7 @@ export async function t6EvaluationConfig(thresholdDays: number): Promise<T6Evalu
  * Délai, fournisseur et mode JSON sont fixés par le code de l'opération
  * (contrats versionnés) : leur changement passe par une livraison.
  */
-export function t6EvaluationGenerationProfile(
+function t6EvaluationGenerationProfile(
   op: import('@/services/ai/gateway/generation-profile').GenerationOperationInput,
   config: import('@/services/ai/gateway/generation-profile').GenerationConfigInput,
 ): import('@/services/ai/gateway/generation-profile').GenerationProfile {
@@ -884,7 +884,7 @@ const tardive = new WeakSet<Promise<T6Outcome>>();
  * `partially_persisted` — une partie seulement. Jamais `generated` sans
  * écriture complète du lot accepté.
  */
-export type T6EvaluationStatus = 'generated' | 'partially_persisted' | 'persist_failed' | 'validation_failed' | 'error' | 'disabled' | 'skipped';
+type T6EvaluationStatus = 'generated' | 'partially_persisted' | 'persist_failed' | 'validation_failed' | 'error' | 'disabled' | 'skipped';
 
 export interface T6EvaluationOutcome {
   status: T6EvaluationStatus;
@@ -1008,7 +1008,7 @@ export function t6RunResultsOf(o: T6EvaluationOutcome, refs: T6InterpellationBun
 /** Disjoncteur PROPRE à EVALUATE : ses échecs ne coupent jamais la formulation. */
 const evalBreaker = { failures: 0, openUntil: 0 };
 /** Échecs récents par compte et par entrée : pas de nouvel appel avant ce délai. */
-export const T6_EVALUATION_RETRY_MS = 10 * 60_000;
+const T6_EVALUATION_RETRY_MS = 10 * 60_000;
 const evalFailures = new Map<string, number>();
 const evalFailuresByAccount = new Map<number, number>();
 const evalInflight = new Map<string, Promise<T6EvaluationOutcome>>();
@@ -1037,7 +1037,7 @@ function evalRecord(ok: boolean, key: string, accountId: number, now = Date.now(
   if (evalBreaker.failures >= BREAKER_THRESHOLD) { evalBreaker.openUntil = now + BREAKER_OPEN_MS; evalBreaker.failures = 0; }
 }
 
-export interface T6EvaluationDependencies {
+interface T6EvaluationDependencies {
   /** T6 disponible et prompt effectif porteur de la branche EVALUATE. */
   available: () => Promise<boolean>;
   /** Lot 68 : prompt effectif porteur du rappel informatif (révision conservée avec les décisions). */
@@ -1067,7 +1067,7 @@ export const t6EvaluationDefaultDeps: T6EvaluationDependencies = {
  * rejetée EN ENTIER, jamais acceptée amputée. Une normalisation sans perte
  * (casse d'une énumération…) reste admise.
  */
-export function evaluationRepairViolation(repairs: ReadonlyArray<{ stage?: string; rule?: string; path?: string }> | null | undefined): string | null {
+function evaluationRepairViolation(repairs: ReadonlyArray<{ stage?: string; rule?: string; path?: string }> | null | undefined): string | null {
   const r = (repairs ?? []).find((x) => x.stage === 'field_pruning' || x.stage === 'ai_repair' || (x.rule ?? '').startsWith('unknown_field'));
   return r ? `schema:${r.rule ?? r.stage}:${r.path ?? '$'}` : null;
 }
@@ -1317,5 +1317,3 @@ async function evaluateWithT6Inner(
   return run;
 }
 
-/** Contrats de l'opération EVALUATE (trace). */
-export const T6_EVALUATION_CONTRACTS = { input: T6_EVALUATION_INPUT_SCHEMA_VERSION, output: T6_EVALUATION_OUTPUT_SCHEMA_VERSION } as const;

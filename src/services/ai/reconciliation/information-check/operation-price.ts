@@ -44,7 +44,7 @@ export interface OperationCandidateRow {
 
 export type PriceTarget = { type: 'ASSET'; id: number } | { type: 'EQUIPMENT'; id: number };
 
-export type PriceSelection =
+type PriceSelection =
   | { ok: true; target: PriceTarget; amountMinor: number; factId: number }
   | { ok: false; reason: string };
 

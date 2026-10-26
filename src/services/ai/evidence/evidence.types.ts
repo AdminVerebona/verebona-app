@@ -17,7 +17,6 @@ export type EvidenceStatus = 'active' | 'superseded' | 'rejected' | 'conflict';
  *  - WITHDRAWN  : retirée (source détachée ou supprimée — lot 13).
  */
 export type EvidenceLifecycleStatus = 'ACTIVE' | 'SUPERSEDED' | 'WITHDRAWN';
-export const EVIDENCE_LIFECYCLE_STATUSES: readonly EvidenceLifecycleStatus[] = ['ACTIVE', 'SUPERSEDED', 'WITHDRAWN'];
 
 /** Types de cible d'une preuve (CDC 15 T1-04) — mêmes codes que le contrat T1. */
 export type EvidenceTargetType = 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'DOCUMENT' | 'SUPPLIER' | 'GENERIC';

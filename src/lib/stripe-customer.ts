@@ -20,7 +20,7 @@ import { accounts, accountSubscriptions, duoAccounts } from '@/db/schema';
 // inaccessible).
 // ══════════════════════════════════════════════════════════════════════════
 
-export interface EnsureStripeCustomerInput {
+interface EnsureStripeCustomerInput {
   stripe: Stripe;
   accountId: number;
   userId: number;
@@ -29,7 +29,7 @@ export interface EnsureStripeCustomerInput {
   storedCustomerId: string | null;
 }
 
-export interface EnsureStripeCustomerResult {
+interface EnsureStripeCustomerResult {
   customerId: string;
   /** Un client a été créé (premier paiement ou remplacement d'un orphelin). */
   created: boolean;

@@ -24,7 +24,7 @@ import { BusinessOutcomeBadge } from './BusinessExecutionsPanel';
 const SELECT = 'min-w-0 rounded-lg border border-[color:var(--input)] bg-[color:var(--bg-input)] px-3 py-2 text-sm text-[color:var(--text-primary)]';
 
 /** Périodes proposées (la règle temporelle est celle de P2 : fin si finale, sinon dernière activité). */
-export const JOURNAL_PERIODS: ReadonlyArray<{ days: string; label: string }> = [
+const JOURNAL_PERIODS: ReadonlyArray<{ days: string; label: string }> = [
   { days: '1', label: '24 h' }, { days: '7', label: '7 jours' }, { days: '30', label: '30 jours' }, { days: '90', label: '90 jours' },
 ];
 

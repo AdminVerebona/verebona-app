@@ -93,7 +93,7 @@ const EVENT_TYPES: ReadonlySet<string> = new Set(EVENT_CATALOG.map((e) => e.busi
 /**
  * Lot 71E (§B) — type métier APPLIQUÉ d'un candidat accepté.
  *
- *   · T4 a désigné un type du catalogue fermé (`closedWorldBusinessTypeV2`
+ *   · T4 a désigné un type du catalogue fermé (`closedWorldBusinessType`
  *     l'a déjà vérifié) : c'est la référence (persistance, occurrences, clé
  *     fonctionnelle, trace) ;
  *   · T4 n'en désigne aucun (null explicite, ou valeur hors catalogue
@@ -133,7 +133,7 @@ export function appliedBusinessType(
  * son autorité (DOCUMENT_CATALOG), nature et type métier de l'événement.
  * Champs lus défensivement : absents, le candidat est traité comme avant.
  */
-export type T4AgendaCandidate = AgendaCandidate & {
+type T4AgendaCandidate = AgendaCandidate & {
   documentType?: string | null;
   authority?: string | null;
   mayCreateAgenda?: boolean | null;
@@ -157,7 +157,7 @@ const AUTHORIZED_CREATION_TYPES: ReadonlySet<string> = new Set(
  * Sémantique T4 d'un candidat enrichi, recopiée dans ses décisions. Champs
  * absents du candidat : non recopiés.
  */
-export function t4Semantics(c: T4AgendaCandidate, fallbackSourceFileId?: number): Partial<AgendaDecision> {
+function t4Semantics(c: T4AgendaCandidate, fallbackSourceFileId?: number): Partial<AgendaDecision> {
   const x = c as T4AgendaCandidate & {
     target?: AgendaDecision['target']; occurrence?: string; dateSource?: AgendaDecision['dateSource'];
     sourceFileId?: number; sources?: AgendaDecision['sources'];
@@ -314,7 +314,7 @@ async function reviserPreuveDate(brut: AgendaCandidate, chosenDate: string, inpu
 }
 
 /** Candidat de récurrence préparé par le serveur (ticket §5) : spécification, historique, série. */
-export interface RecurrencePlan {
+interface RecurrencePlan {
   spec: RecurrenceSpec;
   history?: string[];
   seriesKey: string;
@@ -329,7 +329,7 @@ export interface RecurrencePlan {
  *   · sinon aucune.
  * T4 décide ensuite (`recurrenceDecision`).
  */
-export function prepareRecurrenceCandidate(
+function prepareRecurrenceCandidate(
   candidate: AgendaCandidate, assetId: number | null, planned: ExistingAgendaItem[],
 ): RecurrencePlan | null {
   const seriesKey = seriesKeyFor(assetId, candidate);
@@ -352,7 +352,7 @@ export function prepareRecurrenceCandidate(
  * contexte reçoivent la même empreinte. Aucun contenu documentaire n'est
  * conservé (hachage).
  */
-export function t4ContextFingerprint(ci: AgendaClassificationInput, ctx: ClassifyEventContext): string {
+function t4ContextFingerprint(ci: AgendaClassificationInput, ctx: ClassifyEventContext): string {
   const { accountId: _a, userId: _u, ...reste } = ctx;
   return createHash('sha256').update(JSON.stringify({ ci, ctx: reste })).digest('hex').slice(0, 32);
 }
@@ -380,7 +380,7 @@ async function decideCandidate(
 }
 
 /** Trace BO de la décision T4 (ticket §12) — sans contenu documentaire brut. */
-export function t4Trace(
+function t4Trace(
   t4: T4EventDecision, recurrence: RecurrencePlan | null,
   extra: { businessType?: ReturnType<typeof appliedBusinessType>; fingerprint?: string; reused?: boolean } = {},
 ): T4DecisionTrace {
@@ -441,7 +441,7 @@ function asPlanned(d: AgendaDecision, i: number): ExistingAgendaItem {
 const normTitle = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 /** Série : même objet (bien) + même nature d'échéance (champ d'origine, sinon intitulé). */
-export function seriesKeyFor(assetId: number | null, c: { title: string; originFieldKey?: string | null }): string {
+function seriesKeyFor(assetId: number | null, c: { title: string; originFieldKey?: string | null }): string {
   const nature = c.originFieldKey ? `field:${c.originFieldKey}` : `title:${normTitle(c.title)}`;
   return `s_${createHash('sha256').update(`${assetId ?? 'none'}|${nature}`).digest('hex').slice(0, 20)}`;
 }

@@ -43,10 +43,10 @@ import {
 } from './write-agenda-item';
 
 export type { AgendaSourceRef, AgendaSourceRole } from './agenda-source-links';
-export type AgendaOrigin = 'MANUAL' | 'AUTOMATIC';
+type AgendaOrigin = 'MANUAL' | 'AUTOMATIC';
 
 /** Colonnes propres à un chemin (agenda manuel, T4), hors description de l'événement. */
-export interface AgendaItemDetails {
+interface AgendaItemDetails {
   createdByUserId?: number | null;
   description?: string | null;
   startTime?: string | null;
@@ -111,7 +111,7 @@ export interface AgendaUpsertInput {
   links?: AgendaItemLinks;
 }
 
-export interface AgendaUpsertOptions {
+interface AgendaUpsertOptions {
   actorUserId?: number | null;
   /** Contrôles de dates et de cohérence des liens (agenda manuel). */
   validate?: boolean;
@@ -127,7 +127,7 @@ export interface AgendaUpsertOptions {
   onlyIfUntouched?: boolean;
 }
 
-export type AgendaUpsertResult = WriteAgendaItemResult & {
+type AgendaUpsertResult = WriteAgendaItemResult & {
   /** Élément de même clé modifié par l'utilisateur : rien n'a été écrit. */
   protected?: boolean;
 };
@@ -334,7 +334,7 @@ export async function upsertAgendaItem(input: AgendaUpsertInput, opts: AgendaUps
   }
 }
 
-export interface RemoveFromSourceResult {
+interface RemoveFromSourceResult {
   /** Éléments retirés, ou qui le seraient (analyse incomplète). */
   removed: number[];
   dryRun: boolean;

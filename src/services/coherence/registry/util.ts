@@ -21,7 +21,7 @@ export type Row = Record<string, unknown>;
  * dates du client `pgClient` sont rendus transparents par Drizzle (voir
  * `src/db/index.ts`), une instance `Date` n'y est pas sérialisable.
  */
-export const sqlParams = (params: readonly unknown[]): never[] =>
+const sqlParams = (params: readonly unknown[]): never[] =>
   params.map((v) => (v instanceof Date ? v.toISOString() : v)) as never[];
 
 /** Requête paramétrée (SQL brut, comme les campagnes « À traiter »). */

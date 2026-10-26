@@ -27,7 +27,7 @@
  */
 import type { CreateFlowKind } from '@/lib/create-flows';
 
-export type AssistantActionKind = 'NAVIGATION' | 'OPEN_ENTITY' | 'CREATE' | 'ASSISTANT_UI';
+type AssistantActionKind = 'NAVIGATION' | 'OPEN_ENTITY' | 'CREATE' | 'ASSISTANT_UI';
 
 /** Actions de création et parcours ouvert par chacune. */
 export const CREATE_ACTION_FLOWS: Readonly<Record<string, CreateFlowKind>> = {
@@ -70,7 +70,7 @@ export function createCommandFor(type: string, targetRef?: string | null): Assis
 }
 
 /** Forme minimale d'une action reçue par le client. */
-export interface AssistantActionLike {
+interface AssistantActionLike {
   type: string;
   href: string | null;
   command?: AssistantCreateCommand | null;

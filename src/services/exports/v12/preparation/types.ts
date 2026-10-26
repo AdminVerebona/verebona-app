@@ -94,7 +94,7 @@ export interface PrepSection {
   hasSensitive: boolean;
 }
 
-export interface EstimateAlert {
+interface EstimateAlert {
   code: string;
   type: 'warning' | 'blocking';
   message: string;

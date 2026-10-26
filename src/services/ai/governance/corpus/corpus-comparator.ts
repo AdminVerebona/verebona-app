@@ -91,7 +91,7 @@ export function normalizeText(value: unknown): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-export type FieldVerdict = 'match' | 'mismatch' | 'missing' | 'unexpected';
+type FieldVerdict = 'match' | 'mismatch' | 'missing' | 'unexpected';
 
 export interface FieldComparison {
   field: string;

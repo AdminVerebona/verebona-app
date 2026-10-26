@@ -39,9 +39,9 @@
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
-export const DEVICE_TRUST_COOKIE = 'vb_device';
+const DEVICE_TRUST_COOKIE = 'vb_device';
 export const DEVICE_TRUST_COOKIE_PATH = '/api/auth';
-export const DEVICE_TRUST_TTL_S = 180 * 24 * 60 * 60;
+const DEVICE_TRUST_TTL_S = 180 * 24 * 60 * 60;
 export const DEVICE_TRUST_MAX_ACCOUNTS = 5;
 
 const VERSION = 'd1';
@@ -55,7 +55,7 @@ function hmac(data: string, len: number): string {
 }
 
 /** Étiquette du compte (adresse normalisée) — jamais l'adresse en clair. */
-export function accountTag(normalizedEmail: string): string {
+function accountTag(normalizedEmail: string): string {
   return hmac(`acct:${normalizedEmail}`, 16);
 }
 
@@ -70,7 +70,7 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 interface TrustEntry { tag: string; expS: number; sig: string }
-export interface ParsedDeviceCookie { deviceId: string; entries: TrustEntry[] }
+interface ParsedDeviceCookie { deviceId: string; entries: TrustEntry[] }
 
 const DEVICE_ID_RE = /^[A-Za-z0-9_-]{22}$/;
 const TAG_RE = /^[A-Za-z0-9_-]{16}$/;

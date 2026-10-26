@@ -210,7 +210,7 @@ async function loadSourceProofs(accountId: number, assetId: number, sourceFileId
   });
 }
 
-export interface StatusSyncEntry {
+interface StatusSyncEntry {
   itemId: number;
   decision: string;
   reasonCode: string;
@@ -218,7 +218,7 @@ export interface StatusSyncEntry {
   applied: 'marked_done' | 'card' | 'none';
 }
 
-export interface StatusSyncReport {
+interface StatusSyncReport {
   skipped?: 'NO_PROOF';
   entries: StatusSyncEntry[];
 }

@@ -19,7 +19,6 @@ import { z } from 'zod';
 
 export const T4_MASTER_PROMPT_CODE = 't4_master_v1';
 export const T4_TASKS = ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] as const;
-export type T4Task = (typeof T4_TASKS)[number];
 
 const confidence = z.enum(['certain', 'probable', 'ambiguous']);
 
@@ -89,14 +88,11 @@ export type T4ClassifyEventV2Output = z.infer<typeof T4ClassifyEventV2Output>;
 // par défaut. Le code CONTRÔLE ensuite la sortie (`checkInterventionCoherence`)
 // sans se fier au texte libre. v1 et v2 sont inchangés (versions actives
 // antérieures toujours lues : intervention absente).
-export const T4_INTERVENTION_NEEDS = ['yes', 'no', 'uncertain'] as const;
-export const T4_INTERVENTION_KINDS = [
+const T4_INTERVENTION_NEEDS = ['yes', 'no', 'uncertain'] as const;
+const T4_INTERVENTION_KINDS = [
   'TERMINATE', 'RENEW_OR_DECIDE', 'PAY', 'PERFORM_OBLIGATION', 'RETURN_OR_RESTITUTE', 'PROVIDE_INFORMATION', 'VERIFY', 'OTHER',
 ] as const;
-export const T4_INTERVENTION_TIMINGS = ['NOW', 'LATER', 'NONE'] as const;
-export type T4InterventionNeed = (typeof T4_INTERVENTION_NEEDS)[number];
-export type T4InterventionKind = (typeof T4_INTERVENTION_KINDS)[number];
-export type T4InterventionTiming = (typeof T4_INTERVENTION_TIMINGS)[number];
+const T4_INTERVENTION_TIMINGS = ['NOW', 'LATER', 'NONE'] as const;
 
 export const T4InterventionAssessment = z.object({
   /** Une intervention de l'utilisateur est-elle réellement nécessaire ? */
@@ -159,8 +155,8 @@ export const T4ClassifyEventV3Output = z.object({
 export type T4ClassifyEventV3Output = z.infer<typeof T4ClassifyEventV3Output>;
 
 // ── VERIFY_COMPLETION ───────────────────────────────────────────────────────
-export const T4_EVIDENCE_STATUSES = ['proves_completed', 'proves_not_completed', 'insufficient', 'conflictual'] as const;
-export const T4_OCCURRENCE_MATCHES = ['exact', 'probable', 'ambiguous', 'none'] as const;
+const T4_EVIDENCE_STATUSES = ['proves_completed', 'proves_not_completed', 'insufficient', 'conflictual'] as const;
+const T4_OCCURRENCE_MATCHES = ['exact', 'probable', 'ambiguous', 'none'] as const;
 
 export const T4VerifyCompletionOutput = z.object({
   task: z.literal('VERIFY_COMPLETION'),
@@ -200,17 +196,8 @@ export type T4MasterOutput = z.infer<typeof T4MasterOutput>;
 
 // ── Monde fermé ─────────────────────────────────────────────────────────────
 
-/** U6 : type métier hors catalogue fourni ⇒ ignoré (null), avec avertissement. */
-export function closedWorldBusinessType(
-  out: T4ClassifyEventOutput, allowed: ReadonlySet<string>,
-): { output: T4ClassifyEventOutput; warning: string | null } {
-  const bt = out.businessType ?? null;
-  if (bt === null || allowed.has(bt)) return { output: out, warning: null };
-  return { output: { ...out, businessType: null }, warning: `UNKNOWN_BUSINESS_TYPE:${bt}` };
-}
-
-/** U6 (v2, v3) : type métier hors catalogue fourni ⇒ ignoré (null), avec avertissement. */
-export function closedWorldBusinessTypeV2<O extends T4ClassifyEventV2Output | T4ClassifyEventV3Output>(
+/** U6 (v1, v2, v3) : type métier hors catalogue fourni ⇒ ignoré (null), avec avertissement. */
+export function closedWorldBusinessType<O extends T4ClassifyEventOutput | T4ClassifyEventV2Output | T4ClassifyEventV3Output>(
   out: O, allowed: ReadonlySet<string>,
 ): { output: O; warning: string | null } {
   const bt = out.businessType ?? null;

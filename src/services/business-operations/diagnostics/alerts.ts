@@ -24,14 +24,14 @@ export function operationsAnomalyFingerprint(code: HardAnomalyCode): string {
   return `${OPERATIONS_ANOMALY_PREFIX}${code.toLowerCase()}`;
 }
 
-export interface QualityCheckDeps {
+interface QualityCheckDeps {
   detect: () => Promise<HardAnomalyResult[]>;
   openFingerprints: () => Promise<string[]>;
   report: (input: import('@/services/admin/anomaly.service').ReportAnomalyInput) => Promise<number | null>;
   resolve: (fingerprint: string) => Promise<boolean>;
 }
 
-export interface QualityCheckResult {
+interface QualityCheckResult {
   counts: Record<HardAnomalyCode, number>;
   reported: number;
   resolved: number;

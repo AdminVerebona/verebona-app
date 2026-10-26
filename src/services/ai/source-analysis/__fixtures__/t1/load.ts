@@ -32,7 +32,7 @@ export interface T1Fixture {
   recording: { operationCode: string; task: string; output: Record<string, unknown> };
 }
 
-export const T1_FIXTURES_DIR = __dirname;
+const T1_FIXTURES_DIR = __dirname;
 
 export function loadT1Fixture(file: string): T1Fixture {
   return JSON.parse(readFileSync(join(T1_FIXTURES_DIR, file), 'utf8')) as T1Fixture;

@@ -54,7 +54,7 @@ import { executeScheduledDeletion, scheduleDeletion } from '@/services/account/s
 import { listInvoicePaidCharges, PaymentLookupError } from '@/services/billing/stripe-payments';
 import { recordWithdrawalEvent } from './withdrawal-journal.service';
 
-export interface ProcessResult {
+interface ProcessResult {
   status: 'completed' | 'processing' | 'failed' | 'skipped';
   cancellationStatus?: string;
   refundedAmount?: number;
@@ -65,7 +65,7 @@ export interface ProcessResult {
 }
 
 /** Délai au-delà duquel le balayage renvoie un accusé non remis (le parcours l'envoie d'abord). */
-export const RECEIPT_RETRY_AFTER_MS = 2 * 60 * 1000;
+const RECEIPT_RETRY_AFTER_MS = 2 * 60 * 1000;
 
 /**
  * Traite une demande enregistrée.
@@ -98,7 +98,7 @@ export async function processWithdrawal(
   } catch (e) {
     // Jamais d'exception jusqu'à l'appelant (voir l'en-tête) ; la
     // suppression du compte a lieu quand même.
-    stripeResult = await recordFailure(publicReference, 'PROCESSING_ERROR', (e as Error).message, now);
+    stripeResult = await recordFailure(publicReference, 'PROCESSING_ERROR', (e as Error).message);
   }
 
   // 4. Suppression immédiate du compte (lot 32), quel que soit Stripe.
@@ -106,7 +106,7 @@ export async function processWithdrawal(
   if (deletion === 'failed' && stripeResult.status !== 'failed') {
     // Stripe a abouti mais le compte est toujours là : la demande reste
     // `failed` pour que le balayage reprenne la suppression.
-    await recordFailure(publicReference, 'ACCOUNT_DELETION_FAILED', 'Suppression du compte à reprendre.', now);
+    await recordFailure(publicReference, 'ACCOUNT_DELETION_FAILED', 'Suppression du compte à reprendre.');
     stripeResult = { ...stripeResult, status: 'failed', failureCode: 'ACCOUNT_DELETION_FAILED' };
   }
 
@@ -151,7 +151,7 @@ async function processStripe(
   try {
     stripe = injectedStripe ?? getStripeServer();
   } catch (e) {
-    return await recordFailure(publicReference, 'STRIPE_UNAVAILABLE', (e as Error).message, now);
+    return await recordFailure(publicReference, 'STRIPE_UNAVAILABLE', (e as Error).message);
   }
 
   // ── 3. Annulation immédiate chez Stripe (§9.2) ──────────────────────────
@@ -194,7 +194,7 @@ async function processStripe(
           summary: `Annulation refusée par Stripe : ${err.message ?? 'motif inconnu'}.`,
           payload: { code: err.code ?? null },
         });
-        await recordFailure(publicReference, 'CANCEL_FAILED', err.message ?? String(e), now);
+        await recordFailure(publicReference, 'CANCEL_FAILED', err.message ?? String(e));
         return { status: 'failed', failureCode: 'CANCEL_FAILED', detail: err.message };
       }
     }
@@ -222,7 +222,7 @@ async function processStripe(
       publicReference,
     );
   } catch (e) {
-    await recordFailure(publicReference, 'PAYMENTS_UNREADABLE', (e as Error).message, now);
+    await recordFailure(publicReference, 'PAYMENTS_UNREADABLE', (e as Error).message);
     return { status: 'failed', failureCode: 'PAYMENTS_UNREADABLE' };
   }
 
@@ -307,7 +307,6 @@ async function processStripe(
         publicReference,
         `REFUND_FAILED_${err.code ?? 'UNKNOWN'}`,
         `paiement ${instruction.paymentId} : ${err.message ?? String(e)}`,
-        now,
       );
       return { status: 'failed', failureCode: 'REFUND_FAILED', detail: err.message };
     }
@@ -591,7 +590,6 @@ async function recordFailure(
   publicReference: string,
   code: string,
   detail: string,
-  now: Date,
 ): Promise<ProcessResult> {
   await db
     .update(withdrawalRequests)

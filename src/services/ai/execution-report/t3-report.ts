@@ -266,7 +266,7 @@ const CROSS_REASON: Record<CrossRecord['verdict'], string> = {
 };
 
 /** Lot 76J — lignes de l'inventaire exhaustif et des confrontations (pure, exportée pour les tests). */
-export function informationEntries(rec: T3ExecutionRecorder, p: { assetId: number; target?: { type: 'EQUIPMENT' | 'ROOM'; id: number } | null }): ReportEntry[] {
+function informationEntries(rec: T3ExecutionRecorder, p: { assetId: number; target?: { type: 'EQUIPMENT' | 'ROOM'; id: number } | null }): ReportEntry[] {
   const out: ReportEntry[] = [];
   const entityType = p.target?.type ?? 'ASSET';
   const entityId = p.target?.id ?? p.assetId;

@@ -51,7 +51,7 @@ import { annualRenewalDedupeKey, parisDateOf, redactSecrets } from './annual-ren
 import { recordCheck, stripeErrorReason } from './annual-renewal-reminder.service';
 
 /** Sous-ensemble du client Stripe (injectable dans les tests). */
-export interface ReconcileStripe {
+interface ReconcileStripe {
   subscriptions: {
     list(p: { status?: string; limit?: number; starting_after?: string }): Promise<{ data: unknown[]; has_more: boolean }>;
     retrieve(id: string): Promise<unknown>;
@@ -59,11 +59,11 @@ export interface ReconcileStripe {
 }
 
 /** Horizon : un peu plus que le rappel (J−7) et son pré-filtre (8 jours). */
-export const RECONCILE_HORIZON_DAYS = 9;
+const RECONCILE_HORIZON_DAYS = 9;
 const DAY_MS = 86_400_000;
 const PAGE = 100;
 
-export interface ReconcileResult {
+interface ReconcileResult {
   /** Abonnements actifs lus chez Stripe. */
   scanned: number;
   /** Annuels dont l'échéance tombe dans l'horizon. */
@@ -82,7 +82,7 @@ export interface ReconcileResult {
 }
 
 /** Lot 76D : clé du journal d'une relecture en échec du parcours inverse (hors présélection du rappel). */
-export const reconcileErrorKey = (subscriptionId: string, localRenewalDate: string) => `annual-renewal-reconcile:${subscriptionId}:${localRenewalDate}`;
+const reconcileErrorKey = (subscriptionId: string, localRenewalDate: string) => `annual-renewal-reconcile:${subscriptionId}:${localRenewalDate}`;
 /** Heure de la tâche planifiée (catalogue), pour la prochaine tentative affichée. */
 async function reconcileTaskAt(): Promise<[number, number]> {
   const { SCHEDULED_TASKS } = await import('@/services/scheduling/scheduled-tasks.catalog');
@@ -90,7 +90,7 @@ async function reconcileTaskAt(): Promise<[number, number]> {
   return sch?.kind === 'daily' && sch.at ? [sch.at[0], sch.at[1]] : [7, 40];
 }
 
-export interface StripeView {
+interface StripeView {
   id: string;
   customer: string | null;
   status: string;
@@ -119,7 +119,7 @@ export function viewOf(raw: unknown): StripeView {
   };
 }
 
-export interface LocalRow {
+interface LocalRow {
   account_id: number;
   status: string | null;
   billing_period: string | null;

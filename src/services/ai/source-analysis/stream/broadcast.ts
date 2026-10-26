@@ -3,7 +3,7 @@
  * `unified-analysis-pipeline.ts` pour que le pipeline ne porte que la logique
  * d'orchestration.
  */
-export type SSEWriter = (data: Record<string, unknown>) => void;
+type SSEWriter = (data: Record<string, unknown>) => void;
 
 const streamWriters = new Map<number, Set<SSEWriter>>();
 

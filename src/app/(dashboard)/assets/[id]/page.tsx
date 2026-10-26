@@ -240,12 +240,9 @@ export default function AssetDetailPage() {
   useEffect(() => {
     const assetId = parseInt(params.id as string);
     if (!params.id || isNaN(assetId)) return;
-    const hasToken = typeof window !== 'undefined' && true;
-    if (hasToken) {
-      apiClient.get<AssetDetail>(`/api/assets?id=${assetId}`, { useCache: true }).catch(() => {});
-      apiClient.get(`/api/assets/${assetId}/overview`, { useCache: true }).catch(() => {});
-      apiClient.get(`/api/assets/${assetId}/exports?limit=3`, { useCache: true }).catch(() => {});
-    }
+    apiClient.get<AssetDetail>(`/api/assets?id=${assetId}`, { useCache: true }).catch(() => {});
+    apiClient.get(`/api/assets/${assetId}/overview`, { useCache: true }).catch(() => {});
+    apiClient.get(`/api/assets/${assetId}/exports?limit=3`, { useCache: true }).catch(() => {});
   }, [params.id]);
 
   useEffect(() => {
@@ -411,7 +408,7 @@ export default function AssetDetailPage() {
           </TabsContent>
 
           <TabsContent value="details" className="mt-4">
-            <AssetDetailsTab asset={asset} onRefresh={handleRefresh} planType={planType} readOnly={isReadOnly} highlightField={searchParams.get('highlight')} />
+            <AssetDetailsTab asset={asset} onRefresh={handleRefresh} readOnly={isReadOnly} highlightField={searchParams.get('highlight')} />
           </TabsContent>
 
           <TabsContent value="documents" className="mt-4">

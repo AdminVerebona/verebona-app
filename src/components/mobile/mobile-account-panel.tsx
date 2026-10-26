@@ -42,15 +42,10 @@ import { ConfirmLogoutDialog } from '@/components/ConfirmLogoutDialog';
 import { accountMenuEntries } from '@/lib/shell/account-menu';
 import { AccountSwitcher } from '@/components/account/AccountSwitcher';
 
-export interface MobileAccountPanelProps {
+interface MobileAccountPanelProps {
   open: boolean;
   onClose: () => void;
   pathname: string;
-  /**
-   * @deprecated Lot 26 : l'en-tête « Bonjour, … » est retiré ; la valeur est
-   * ignorée (conservée pour ne pas modifier l'appelant, DashboardLayout).
-   */
-  greetingName?: string;
   /**
    * Nom d'affichage de la personne, jamais celui du compte : la valeur de
    * `formatUserDisplayName` (src/lib/user-display-name.ts), la même que le

@@ -43,7 +43,7 @@ import { endMembership } from './duo-exit.service';
 /** Statuts Duo « dans l'offre » : ceux que la rétractation ferme. */
 const IN_OFFER = ['ACTIVE', 'TRIALING', 'UNPAID_RECOVERY'];
 
-export interface DuoWithdrawalOutcome {
+interface DuoWithdrawalOutcome {
   /** Duo dont le compte rétracté est le payeur, sinon null. */
   duoId: number | null;
   /** Le Duo vient d'être fermé par cet appel (false : déjà fermé / absent). */

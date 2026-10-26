@@ -40,7 +40,7 @@ export interface DedupeRow {
   manualStatus: string | null;
 }
 
-export interface DedupeGroup {
+interface DedupeGroup {
   accountId: number;
   assetId: number;
   sourceFileId: number | null;

@@ -17,8 +17,8 @@ export type PlanCode = 'standard' | 'premium' | 'premium_duo';
 export type BillingPeriod = 'monthly' | 'yearly';
 export type StripeInterval = 'month' | 'year';
 
-export const PLAN_CODES: readonly PlanCode[] = ['standard', 'premium', 'premium_duo'];
-export const BILLING_PERIODS: readonly BillingPeriod[] = ['monthly', 'yearly'];
+const PLAN_CODES: readonly PlanCode[] = ['standard', 'premium', 'premium_duo'];
+const BILLING_PERIODS: readonly BillingPeriod[] = ['monthly', 'yearly'];
 
 export const PERIOD_INTERVAL: Readonly<Record<BillingPeriod, StripeInterval>> = {
   monthly: 'month',
@@ -48,12 +48,6 @@ export const CATALOG_COUPLES: readonly CatalogCouple[] = PLAN_CODES.flatMap((pla
 );
 
 export const ALL_LOOKUP_KEYS: readonly string[] = CATALOG_COUPLES.map((c) => c.lookupKey);
-
-/** Couple d'une clé stable, ou `null` si la clé n'appartient pas au catalogue. */
-export function coupleFromLookupKey(key: string | null | undefined): CatalogCouple | null {
-  if (!key) return null;
-  return CATALOG_COUPLES.find((c) => c.lookupKey === key) ?? null;
-}
 
 /** Clé de dictionnaire interne `offre:périodicité`. */
 export function coupleKey(plan: PlanCode, period: BillingPeriod): `${PlanCode}:${BillingPeriod}` {
@@ -91,7 +85,7 @@ export function isUpgrade(from: string | null | undefined, to: string): boolean 
 
 // ─── Validation stricte des entrées (LK-37, LK-08, EC-13, TC-09) ─────────────
 
-export type PlanInputResult =
+type PlanInputResult =
   | { ok: true; plan: PlanCode }
   | { ok: false; code: 'INVALID_PLAN' };
 
@@ -107,7 +101,7 @@ export function parsePlanInput(value: unknown): PlanInputResult {
   return isPlanCode(plan) ? { ok: true, plan } : { ok: false, code: 'INVALID_PLAN' };
 }
 
-export type PeriodInputResult =
+type PeriodInputResult =
   | { ok: true; period: BillingPeriod }
   | { ok: false; code: 'INVALID_BILLING_PERIOD' };
 

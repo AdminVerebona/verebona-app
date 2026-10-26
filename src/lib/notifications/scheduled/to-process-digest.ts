@@ -62,7 +62,7 @@ import { getPreference } from '../preferences';
 import { resolveActiveAccountMembers } from '../recipient-resolver';
 import { todayParisDateStr } from '../time-paris';
 
-export interface DigestRunResult {
+interface DigestRunResult {
   accountsProcessed: number;
   emitted: number;
   /** Lot 81E : parcours non terminé (délai atteint) — repris au passage suivant. */
@@ -75,7 +75,7 @@ export interface DigestRunResult {
   completed?: boolean;
 }
 
-export interface DigestRunOptions {
+interface DigestRunOptions {
   /** Comptes par page (pagination stable). */
   pageSize?: number;
   /** Échéance du passage (horodatage ms) : au-delà, le curseur est conservé. */
@@ -83,14 +83,14 @@ export interface DigestRunOptions {
 }
 
 /** Tentatives d'envoi d'un même contenu par jour après un échec (aucun canal accepté). */
-export const DIGEST_MAX_ATTEMPTS_PER_DAY = 3;
+const DIGEST_MAX_ATTEMPTS_PER_DAY = 3;
 
 /** Clé de contenu d'une action : identifiant public × cycle (une réapparition est nouvelle). */
 export function digestItemKey(publicId: string, cycleNumber: number | null | undefined): string {
   return `${publicId}:c${cycleNumber ?? 1}`;
 }
 
-export interface DigestItem {
+interface DigestItem {
   publicId: string;
   cycleNumber: number | null;
   actionKind: string;
@@ -113,7 +113,7 @@ export function digestHasNews(current: readonly string[], previous: readonly str
   return current.some((k) => !before.has(k));
 }
 
-export type DigestChangeReason = 'NEW_ACTION' | 'NEW_CYCLE' | 'PRIORITY_CHANGED' | 'CONTENT_CHANGED';
+type DigestChangeReason = 'NEW_ACTION' | 'NEW_CYCLE' | 'PRIORITY_CHANGED' | 'CONTENT_CHANGED';
 
 /**
  * Évolutions significatives depuis le dernier contenu COMMUNIQUÉ (pure).

@@ -36,11 +36,11 @@ interface PendingRow {
 }
 
 /** Statut d'envoi (`email_logs.status`, sens inchangé). */
-export const SEND_STATUS_LABELS: Record<string, string> = {
+const SEND_STATUS_LABELS: Record<string, string> = {
   sent: 'Accepté par Resend', failed: 'Échec d’envoi', skipped: 'Non envoyé (canal désactivé)', pending: 'En cours',
 };
 /** Livraison (webhooks Resend). */
-export const DELIVERY_STATUS_LABELS: Record<string, string> = {
+const DELIVERY_STATUS_LABELS: Record<string, string> = {
   accepted: 'Livraison non confirmée', delivery_delayed: 'Livraison retardée', delivered: 'Remis au serveur destinataire',
   complained: 'Signalé comme indésirable', bounced: 'Rejeté par le serveur destinataire', failed: 'Échec de livraison',
   suppressed: 'Bloqué par Resend (liste de suppression)',

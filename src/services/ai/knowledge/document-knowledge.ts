@@ -24,7 +24,7 @@ import { VISUAL_SUMMARY_UNIT_ID, visualUnitId } from '../source-analysis/source-
 import type { SourceLayer } from '../source-analysis/source-units/types';
 import type { AnchoredOperationCandidate } from '../source-analysis/operation-candidates/prepare';
 
-export type KnowledgeEngine = 'source_analysis' | 'legacy';
+type KnowledgeEngine = 'source_analysis' | 'legacy';
 
 export interface DocumentExtractionRecord {
   accountId: number;
@@ -291,7 +291,7 @@ function canonicalFactColumns(field: ExtractedField): Partial<DocumentFactRecord
  * marquée VISUAL_ANALYSIS : T2 la présente comme une observation, jamais
  * comme une citation.
  */
-export function observationToFact(o: VisualObservation, index: number, key = `visual.observation.${index + 1}`): DocumentFactRecord {
+function observationToFact(o: VisualObservation, index: number, key = `visual.observation.${index + 1}`): DocumentFactRecord {
   const location: Record<string, unknown> = {};
   if (o.page) location.page = o.page;
   return {

@@ -12,7 +12,7 @@
 import { getStripeKeyMode, type StripeMode } from '@/lib/stripe';
 
 /** Objets Stripe pour lesquels le BO propose un lien. */
-export type StripeObjectKind =
+type StripeObjectKind =
   | 'customers'
   | 'subscriptions'
   | 'invoices'

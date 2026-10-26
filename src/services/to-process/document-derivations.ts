@@ -113,7 +113,7 @@ export function labelIsEffectiveStart(label: string, spec: DerivationSpec): bool
  * première échéance…) ? Une clé canonique « date de début » ne suffit pas :
  * T1 peut l'avoir posée sur une date d'édition. Pure.
  */
-export function startFactIsNotEffective(f: Pick<EvidenceFact, 'label' | 'excerpt'>, spec: DerivationSpec): boolean {
+function startFactIsNotEffective(f: Pick<EvidenceFact, 'label' | 'excerpt'>, spec: DerivationSpec): boolean {
   for (const t of [f.label, f.excerpt]) {
     if (!t) continue;
     const l = ` ${norm(t)} `;
@@ -141,11 +141,11 @@ export function startFactIsNotEffective(f: Pick<EvidenceFact, 'label' | 'excerpt
 //     AMBIGUË : aucun calcul automatique.
 // ══════════════════════════════════════════════════════════════════════════
 
-export type DurationRole = 'TOTAL' | 'PRIMARY' | 'INCLUDED' | 'RENEWAL' | 'EXTENSION' | 'DEFERRAL' | 'NOTICE' | 'ALTERNATIVE' | 'RESTATED';
-export type DurationStatus = 'SIMPLE' | 'TOTAL_WITH_INCLUDED' | 'INITIAL_TERM_RENEWABLE' | 'INITIAL_TERM_EXTENSIBLE' | 'AMBIGUOUS' | 'REFUSED';
-export type EndConvention = 'END_INCLUSIVE' | 'ANNIVERSARY' | 'END_OF_MONTH';
+type DurationRole = 'TOTAL' | 'PRIMARY' | 'INCLUDED' | 'RENEWAL' | 'EXTENSION' | 'DEFERRAL' | 'NOTICE' | 'ALTERNATIVE' | 'RESTATED';
+type DurationStatus = 'SIMPLE' | 'TOTAL_WITH_INCLUDED' | 'INITIAL_TERM_RENEWABLE' | 'INITIAL_TERM_EXTENSIBLE' | 'AMBIGUOUS' | 'REFUSED';
+type EndConvention = 'END_INCLUSIVE' | 'ANNIVERSARY' | 'END_OF_MONTH';
 
-export interface DurationAnalysis {
+interface DurationAnalysis {
   /** Durée applicable en mois (durée totale, ou durée initiale), sinon null. */
   months: number | null;
   /** Calcul automatique FIABLE autorisé (durée totale identifiée sans ambiguïté). */
@@ -179,7 +179,7 @@ const UNITES_TOUTES = 'ans|an|annees|annee|mois|jours?|semaines?|trimestres?|sem
 const RE_NON_INTERPRETE = new RegExp(`\\b(?:${NW}|demi|quart|quelques|plusieurs)\\s+(?:et\\s+)?(?:d\\s+)?(?:${UNITES_TOUTES})\\b|\\bet\\s+(?:demi|demie|quart)\\b`);
 
 /** Valeur d'une suite de mots-nombres (« vingt quatre » → 24, « quatre vingt dix » → 90), sinon null. Pure. */
-export function frenchNumberValue(texte: string): number | null {
+function frenchNumberValue(texte: string): number | null {
   const mots = texte.trim().split(/\s+/).filter((m) => m && m !== 'et');
   if (mots.length === 0 || mots.some((m) => MOTS_NOMBRES[m] === undefined)) return null;
   let total = 0;
@@ -400,7 +400,7 @@ export function endFromStart(startIso: string, months: number, convention: EndCo
   return Number.isNaN(fin.getTime()) ? null : fin.toISOString().slice(0, 10);
 }
 
-export interface DerivationSource { key: string | null; value: string; source: string; confidence: string }
+interface DerivationSource { key: string | null; value: string; source: string; confidence: string }
 
 /**
  * Méthode du calcul. Lot 76 (I) : `SCHEDULE_LAST_INSTALMENT` (dernière
@@ -408,7 +408,7 @@ export interface DerivationSource { key: string | null; value: string; source: s
  * échéance + (nombre − 1) périodes), `DISBURSEMENT_PLUS_COUNT` (déblocage :
  * jamais fiable, candidat seulement).
  */
-export type DerivationMethod = 'START_PLUS_DURATION' | 'SCHEDULE_LAST_INSTALMENT' | 'FIRST_INSTALMENT_PLUS_COUNT' | 'DISBURSEMENT_PLUS_COUNT';
+type DerivationMethod = 'START_PLUS_DURATION' | 'SCHEDULE_LAST_INSTALMENT' | 'FIRST_INSTALMENT_PLUS_COUNT' | 'DISBURSEMENT_PLUS_COUNT';
 
 export interface DerivationResult {
   /** CALCULATED_RELIABLE : écrite ; CALCULATED_PROBABLE : candidat seulement ; NOT_DERIVABLE / AMBIGUOUS. */
@@ -444,7 +444,7 @@ const REFUS_SIGNIFICATIFS = ['inexact_decimal_duration', 'uninterpreted_componen
  * qu'une partie significative n'est pas interprétée. `valeur` : analyse de la
  * valeur du même fait (une clause qui redit la valeur ne bloque pas). Pure.
  */
-export function durationBlocks(a: DurationAnalysis, valeur: DurationAnalysis | null): boolean {
+function durationBlocks(a: DurationAnalysis, valeur: DurationAnalysis | null): boolean {
   if (a.status === 'AMBIGUOUS' || a.status === 'INITIAL_TERM_RENEWABLE' || a.status === 'INITIAL_TERM_EXTENSIBLE') return true;
   if (a.status === 'REFUSED' && REFUS_SIGNIFICATIFS.includes(a.reason)) return !valeur || valeur.reason !== a.reason || valeur.months !== null;
   return false;
@@ -453,7 +453,7 @@ export function durationBlocks(a: DurationAnalysis, valeur: DurationAnalysis | n
 const fiable = (f: EvidenceFact) => f.confidence === 'certain' && f.source === 'FACTS';
 
 /** Options du calcul (lot 72) : dates du document qui ne sont PAS un début effectif. */
-export interface DerivationOptions {
+interface DerivationOptions {
   /** Dates (ISO) d'édition, de signature, du document lues ailleurs dans le document. */
   nonStartDates?: readonly string[];
 }
@@ -581,7 +581,7 @@ export function computeDerivation(
 // cycle de vie (lot 76, C2), évaluée séparément.
 // ══════════════════════════════════════════════════════════════════════════
 
-export interface ScheduleDesignation { key: string; keys: readonly string[]; labels: readonly string[] }
+interface ScheduleDesignation { key: string; keys: readonly string[]; labels: readonly string[] }
 
 export interface ScheduleSpec {
   target: string;
@@ -594,7 +594,7 @@ export interface ScheduleSpec {
   repayment: ScheduleDesignation;
 }
 
-export const SCHEDULE_DERIVATIONS: readonly ScheduleSpec[] = [
+const SCHEDULE_DERIVATIONS: readonly ScheduleSpec[] = [
   {
     target: 'contractEndDate',
     firstInstalment: {
@@ -643,7 +643,7 @@ export function scheduleDerivationFor(target: string): ScheduleSpec | null {
   return SCHEDULE_DERIVATIONS.find((d) => d.target === target) ?? null;
 }
 
-export type ScheduleRole = 'firstInstalment' | 'lastInstalment' | 'count' | 'periodicity' | 'disbursement' | 'repayment';
+type ScheduleRole = 'firstInstalment' | 'lastInstalment' | 'count' | 'periodicity' | 'disbursement' | 'repayment';
 const ROLES: readonly ScheduleRole[] = ['firstInstalment', 'lastInstalment', 'count', 'periodicity', 'disbursement', 'repayment'];
 
 /**
@@ -790,7 +790,7 @@ export interface ScheduleFacts {
 
 type ScheduleSource = DerivationSource & { label?: string | null };
 
-export interface ScheduleDerivation {
+interface ScheduleDerivation {
   status: DerivationResult['status'];
   value: string | null;
   method: Exclude<DerivationMethod, 'START_PLUS_DURATION'> | null;
@@ -1002,7 +1002,7 @@ async function gatherScheduleFacts(accountId: number, fileId: number, spec: Sche
   return { facts, texts };
 }
 
-export interface DerivationEvidence {
+interface DerivationEvidence {
   result: DerivationResult;
   startEvidence: FieldEvidence;
   durationEvidence: FieldEvidence;
@@ -1087,7 +1087,7 @@ export async function gatherDerivation(
 const RE_DEMARCHE_DE_FIN = /\b(reconduc\w*|reconduit\w*|reconductible\w*|tacite\w*|renouvel\w*|prorog\w*|denonc\w*|preavis|restitu\w*|etat des lieux|remise des cles|option d achat|levee d option|lever l option|valeur residuelle|rachat du vehicule)\b/;
 const RE_NEGATION_DEMARCHE = /\b(sans|non|pas de|aucune?|ni)\s+(\w+\s){0,2}(reconduc\w*|reconduit\w*|renouvel\w*|preavis|restitu\w*)/;
 
-export interface EndDateNeed {
+interface EndDateNeed {
   /** Remboursement par échéances lu (échéancier, nombre d'échéances, durée de remboursement…). */
   repaymentSchedule: boolean;
   /** Clauses qui attachent une démarche à la fin (extraits bornés). */

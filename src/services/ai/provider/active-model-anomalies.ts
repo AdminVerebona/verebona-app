@@ -63,7 +63,7 @@ export interface AnomalySecours {
 }
 
 /** Lot 87A — état de qualification des couples de la configuration active, par usage. */
-export interface SecoursContext {
+interface SecoursContext {
   qualificationOf(treatment: Treatment, model: string): CoupleQualification;
   origin: 'manual' | 'auto' | null;
 }
@@ -94,7 +94,7 @@ const PERTE: ReadonlySet<UnusableReason> = new Set<UnusableReason>([
   'CAPABILITY_MISSING', 'RETIRED', 'FORBIDDEN', 'EXPERIMENTAL',
 ]);
 
-export const RANK_LABELS: Readonly<Record<ChainRank, string>> = {
+const RANK_LABELS: Readonly<Record<ChainRank, string>> = {
   primaryModel: 'principal', fallback1: 'repli 1', fallback2: 'repli 2',
 };
 
@@ -160,7 +160,7 @@ export function anomalyMessage(a: ActiveModelAnomaly): string {
 }
 
 /** Lot 87A — phrase d'exploitation du secours relié (INV-10). */
-export function secoursText(s: AnomalySecours): string {
+function secoursText(s: AnomalySecours): string {
   if (s.decision === 'QUALIFIED') return `Le secours qualifié « ${s.model} » prend le relais.`;
   if (s.decision === 'MANUAL_UNTESTED') return `Le secours « ${s.model} » prend le relais (non testé, choix de l’administrateur).`;
   return 'Aucun secours admissible : les exécutions sont suspendues sans écriture et reprises automatiquement au rétablissement.';
@@ -169,7 +169,7 @@ export function secoursText(s: AnomalySecours): string {
 // ── Regroupement par modèle (lot 49, ticket 11) ─────────────────────────────
 
 /** Un usage (traitement × rang) d'un modèle indisponible. */
-export interface ModelUsage {
+interface ModelUsage {
   treatment: Treatment;
   rank: ChainRank;
   rankLabel: string;
@@ -180,7 +180,7 @@ export interface ModelUsage {
 }
 
 /** Diagnostic du dernier contrôle du modèle, tel qu'affiché au BO (sans secret). */
-export interface ModelDiagnosticView {
+interface ModelDiagnosticView {
   /** ok | inconclusive | suspect | failed_confirmed ; `unknown` : jamais contrôlé avec la clé active. */
   status: OperationalDiagnostic['checkStatus'] | 'unknown';
   /** État retenu : `true` sain, `false` indisponible confirmé, `null` inconnu. */
@@ -194,7 +194,7 @@ export interface ModelDiagnosticView {
 }
 
 /** Un modèle actif indisponible, avec TOUS ses usages (BO, alerte). */
-export interface UnavailableModelGroup {
+interface UnavailableModelGroup {
   model: string;
   usages: ModelUsage[];
   reasons: UnusableReason[];
@@ -211,7 +211,7 @@ const SOURCE_LABELS: Readonly<Record<string, string>> = {
 };
 
 /** Vue BO d'un diagnostic (pure). */
-export function diagnosticView(d: OperationalDiagnostic | undefined | null): ModelDiagnosticView {
+function diagnosticView(d: OperationalDiagnostic | undefined | null): ModelDiagnosticView {
   if (!d) {
     return { status: 'unknown', operational: null, error: null, errorKind: null, errorKindLabel: null, checkedAt: null, source: null, sourceLabel: null };
   }

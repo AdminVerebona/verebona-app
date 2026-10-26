@@ -88,7 +88,7 @@ function forwardedOrigins(request: NextRequest): string[] {
 export const CSRF_REJECTED_MESSAGE =
   'Requête refusée : origine non reconnue. Rechargez la page puis réessayez.';
 
-export interface CsrfVerdict {
+interface CsrfVerdict {
   allowed: boolean;
   /** Motif du refus, journalisable sans exposer de secret. */
   reason?: 'MISSING_ORIGIN' | 'FOREIGN_ORIGIN';

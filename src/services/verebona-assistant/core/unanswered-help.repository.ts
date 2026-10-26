@@ -22,7 +22,7 @@ import { HELP_INTENTS } from './help-corpus.service';
 import { redact } from './redaction.service';
 import { truthSourceOf } from '@/services/ai/telemetry/t2-observability';
 
-export interface UnansweredHelpQuestion {
+interface UnansweredHelpQuestion {
   intent: string;
   /** Formulation expurgée et normalisée (≤ 160 caractères). */
   question: string;
@@ -139,12 +139,12 @@ export async function listUnansweredHelpQuestions(opts: { days?: number; limit?:
 // Lecture seule, connexion réservée, `statement_timeout` côté base (cadre
 // de l'observabilité, lot 17), sur l'index de date 0226.
 
-export const UNANSWERED_MOTIVES = [
+const UNANSWERED_MOTIVES = [
   'aucune_donnee', 'ambiguite', 'absence_article_aide', 'action_non_supportee', 'incident_technique', 'hors_perimetre',
 ] as const;
-export type UnansweredMotive = (typeof UNANSWERED_MOTIVES)[number];
+type UnansweredMotive = (typeof UNANSWERED_MOTIVES)[number];
 
-export const UNANSWERED_MOTIVE_LABELS: Readonly<Record<UnansweredMotive, string>> = {
+const UNANSWERED_MOTIVE_LABELS: Readonly<Record<UnansweredMotive, string>> = {
   aucune_donnee: 'Aucune donnée',
   ambiguite: 'Ambiguïté',
   absence_article_aide: 'Absence d’article d’aide',
@@ -154,7 +154,7 @@ export const UNANSWERED_MOTIVE_LABELS: Readonly<Record<UnansweredMotive, string>
 };
 
 /** Ligne agrégée de `verebona_request_runs` (sans contenu). */
-export interface UnansweredRunGroup {
+interface UnansweredRunGroup {
   intent: string | null;
   status: string | null;
   error_code: string | null;
@@ -193,7 +193,7 @@ export function classifyUnanswered(g: Omit<UnansweredRunGroup, 'n'>): Unanswered
   return null;
 }
 
-export interface UnansweredByMotive {
+interface UnansweredByMotive {
   days: number;
   total: number;
   byMotive: Array<{ motive: UnansweredMotive; label: string; count: number }>;

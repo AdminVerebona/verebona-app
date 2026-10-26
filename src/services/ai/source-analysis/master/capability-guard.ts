@@ -23,7 +23,7 @@ import type { AccountCapabilities } from '@/services/account-capabilities.servic
 import { isTargetForbidden } from '@/services/account-capabilities.service';
 import type { T1AnalyzeDocumentOutput, T1Fact } from './t1-contract';
 
-export interface T1CapabilityCounters {
+interface T1CapabilityCounters {
   /** Faits renvoyés par le modèle sur une cible interdite. */
   forbiddenTargetsReturned: number;
   /** Faits requalifiés en connaissance générique (= renvoyés : aucun n'est perdu). */
@@ -33,7 +33,7 @@ export interface T1CapabilityCounters {
 }
 
 /** Requalifie un fait ciblé sur une entité interdite (pure). */
-export function requalifyAsGeneric(fact: T1Fact): T1Fact {
+function requalifyAsGeneric(fact: T1Fact): T1Fact {
   const label = fact.target.rawLabel?.trim() || null;
   return {
     ...fact,

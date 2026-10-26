@@ -1,5 +1,4 @@
 import { assetSupportsRooms } from '@/lib/asset-capabilities';
-import { ASSET_STATUSES, type AssetStatus } from '@/lib/asset-status';
 /**
  * Domain types and enums for Verebona
  * Centralizes all business domain types used across the application.
@@ -75,33 +74,6 @@ export type MembershipStatus = typeof MEMBERSHIP_STATUSES[number];
 export const MEMBERSHIP_ROLES = ['owner', 'admin', 'member'] as const;
 export type MembershipRole = typeof MEMBERSHIP_ROLES[number];
 
-// ── Agenda ────────────────────────────────────────────────────────────────────
-
-/** agendaItems.manualStatus — null = calculé automatiquement */
-export const AGENDA_MANUAL_STATUSES = ['realise', 'annule'] as const;
-export type AgendaManualStatus = typeof AGENDA_MANUAL_STATUSES[number];
-
-/** agendaItems.originType — source de création de l'élément agenda */
-export const AGENDA_ORIGIN_TYPES = [
-  'manual',
-  'asset_field',
-  'qualified_document',
-  'deduced_rule',
-  'legacy_event_migration',
-  'legacy_deadline_migration',
-] as const;
-export type AgendaOriginType = typeof AGENDA_ORIGIN_TYPES[number];
-
-// Asset types
-export const ASSET_CATEGORIES = [
-  'IMMOBILIER',
-  'VEHICULE',
-  'MATERIEL_PRO',
-  'OBJECT',
-  'AUTRE'
-] as const;
-export type AssetCategory = typeof ASSET_CATEGORIES[number];
-
 // Object categories (for OBJECT type assets)
 export const OBJECT_CATEGORIES = [
   'OBJECT_CATEGORY_TECH',
@@ -117,7 +89,7 @@ export const OBJECT_CATEGORY_LABELS: Record<ObjectCategory, string> = {
 };
 
 // Device types for OBJECT_CATEGORY_TECH
-export const DEVICE_TYPES = [
+const DEVICE_TYPES = [
   'SMARTPHONE',
   'LAPTOP',
   'TABLET',
@@ -127,7 +99,7 @@ export const DEVICE_TYPES = [
   'HEADPHONES',
   'OTHER'
 ] as const;
-export type DeviceType = typeof DEVICE_TYPES[number];
+type DeviceType = typeof DEVICE_TYPES[number];
 
 export const DEVICE_TYPE_LABELS: Record<DeviceType, string> = {
   SMARTPHONE: 'Smartphone',
@@ -141,7 +113,7 @@ export const DEVICE_TYPE_LABELS: Record<DeviceType, string> = {
 };
 
 // Sport types for OBJECT_CATEGORY_SPORT
-export const SPORT_TYPES = [
+const SPORT_TYPES = [
   'DRONE',
   'SURF',
   'SKI',
@@ -150,7 +122,7 @@ export const SPORT_TYPES = [
   'CAMPING',
   'OTHER'
 ] as const;
-export type SportType = typeof SPORT_TYPES[number];
+type SportType = typeof SPORT_TYPES[number];
 
 export const SPORT_TYPE_LABELS: Record<SportType, string> = {
   DRONE: 'Drone',
@@ -163,7 +135,7 @@ export const SPORT_TYPE_LABELS: Record<SportType, string> = {
 };
 
 // Home item types for OBJECT_CATEGORY_HOME
-export const HOME_ITEM_TYPES = [
+const HOME_ITEM_TYPES = [
   'KITCHEN_ROBOT',
   'VACUUM',
   'CLEANER',
@@ -171,7 +143,7 @@ export const HOME_ITEM_TYPES = [
   'SMALL_APPLIANCE',
   'OTHER'
 ] as const;
-export type HomeItemType = typeof HOME_ITEM_TYPES[number];
+type HomeItemType = typeof HOME_ITEM_TYPES[number];
 
 export const HOME_ITEM_TYPE_LABELS: Record<HomeItemType, string> = {
   KITCHEN_ROBOT: 'Robot cuisine',
@@ -182,38 +154,6 @@ export const HOME_ITEM_TYPE_LABELS: Record<HomeItemType, string> = {
   OTHER: 'Autre',
 };
 
-// Object details interfaces
-export interface ObjectTechDetails {
-  brand?: string | null;
-  model?: string | null;
-  serialNumber?: string | null;
-  deviceType?: DeviceType | null;
-  warrantyEndDate?: string | null;
-}
-
-export interface ObjectSportDetails {
-  brand?: string | null;
-  model?: string | null;
-  sportType?: SportType | null;
-  serialNumber?: string | null;
-  sizeOrDimensions?: string | null;
-}
-
-export interface ObjectHomeDetails {
-  homeItemType?: HomeItemType | null;
-  brand?: string | null;
-  model?: string | null;
-  serialNumber?: string | null;
-  warrantyEndDate?: string | null;
-}
-
-export type ObjectDetails = ObjectTechDetails | ObjectSportDetails | ObjectHomeDetails;
-
-// Liste officielle des statuts d'un bien (décision PO Q11, lot 32) : source
-// unique `@/lib/asset-status`.
-export { ASSET_STATUSES } from '@/lib/asset-status';
-export type { AssetStatus } from '@/lib/asset-status';
-
 // Substructure and Equipment types
 export interface Substructure {
   id: number;
@@ -223,7 +163,7 @@ export interface Substructure {
   updatedAt?: string;
 }
 
-export const EQUIPMENT_STATUSES = [
+const EQUIPMENT_STATUSES = [
   'EN_SERVICE',
   'EN_PANNE',
   'EN_REPARATION',
@@ -250,34 +190,8 @@ export interface Equipment {
 // `lib/referential/v2` ; codes V1 : `lib/document-type-constants` ;
 // traduction de tout code : `lib/referential/document-codes`.
 
-// Event types
-export const EVENT_TYPES = [
-  'ACHAT',
-  'REPARATION',
-  'ENTRETIEN',
-  'MODIFICATION',
-  'INCIDENT',
-  'AUTRE'
-] as const;
-export type EventType = typeof EVENT_TYPES[number];
-
-// Deadline types
-export const DEADLINE_TYPES = [
-  'ENTRETIEN',
-  'CONTROLE_TECHNIQUE',
-  'ASSURANCE',
-  'GARANTIE',
-  'ADMINISTRATIF',
-  'AUTRE'
-] as const;
-export type DeadlineType = typeof DEADLINE_TYPES[number];
-
-// File upload statuses
-export const UPLOAD_STATUSES = ['PENDING', 'COMPLETED', 'FAILED'] as const;
-export type UploadStatus = typeof UPLOAD_STATUSES[number];
-
 // Document AI analysis states (null = Standard / non applicable)
-export const DOCUMENT_ANALYSIS_STATES = [
+const DOCUMENT_ANALYSIS_STATES = [
   'UPLOADING',
   'UPLOADED',
   'ANALYZING',
@@ -289,9 +203,9 @@ export const DOCUMENT_ANALYSIS_STATES = [
   'CONFLICT_DETECTED',
   'ANALYSIS_FAILED',
 ] as const;
-export type DocumentAnalysisState = typeof DOCUMENT_ANALYSIS_STATES[number];
+type DocumentAnalysisState = typeof DOCUMENT_ANALYSIS_STATES[number];
 
-export const TERMINAL_ANALYSIS_STATES: DocumentAnalysisState[] = [
+const TERMINAL_ANALYSIS_STATES: DocumentAnalysisState[] = [
   'ANALYZED',
   'VALIDATION_REQUIRED',
   'CONFLICT_DETECTED',
@@ -303,66 +217,7 @@ export function isTerminalAnalysisState(state: string | null): boolean {
   return TERMINAL_ANALYSIS_STATES.includes(state as DocumentAnalysisState);
 }
 
-export function isValidAnalysisState(value: string): value is DocumentAnalysisState {
-  return DOCUMENT_ANALYSIS_STATES.includes(value as DocumentAnalysisState);
-}
-
-// Admin audit action types
-export const AUDIT_ACTION_TYPES = [
-  'USER_CREATE',
-  'USER_UPDATE',
-  'USER_SUSPEND',
-  'USER_REACTIVATE',
-  'USER_DELETE',
-  'ASSET_VIEW',
-  'ASSET_UPDATE',
-  'ASSET_DELETE',
-  'FILE_VIEW',
-  'FILE_DELETE',
-  'EMAIL_TEMPLATE_UPDATE',
-  'ASSET_TYPE_CREATE',
-  'ASSET_TYPE_UPDATE',
-  'ASSET_TYPE_DELETE'
-] as const;
-export type AuditActionType = typeof AUDIT_ACTION_TYPES[number];
-
 // ── Validation helpers ────────────────────────────────────────────────────────
-
-export function isValidPlanType(value: string): value is PlanType {
-  return PLAN_TYPES.includes(value as PlanType);
-}
-
-export function isValidUserStatus(value: string): value is UserStatus {
-  return USER_STATUSES.includes(value as UserStatus);
-}
-
-export function isValidUserRole(value: string): value is UserRole {
-  return USER_ROLES.includes(value as UserRole);
-}
-
-export function isValidSubscriptionTier(value: string): value is SubscriptionTier {
-  return SUBSCRIPTION_TIERS.includes(value as SubscriptionTier);
-}
-
-export function isValidSubscriptionStatus(value: string): value is SubscriptionStatus {
-  return SUBSCRIPTION_STATUSES.includes(value as SubscriptionStatus);
-}
-
-export function isValidMembershipStatus(value: string): value is MembershipStatus {
-  return MEMBERSHIP_STATUSES.includes(value as MembershipStatus);
-}
-
-export function isValidMembershipRole(value: string): value is MembershipRole {
-  return MEMBERSHIP_ROLES.includes(value as MembershipRole);
-}
-
-export function isValidAgendaManualStatus(value: string): value is AgendaManualStatus {
-  return AGENDA_MANUAL_STATUSES.includes(value as AgendaManualStatus);
-}
-
-export function isValidAgendaOriginType(value: string): value is AgendaOriginType {
-  return AGENDA_ORIGIN_TYPES.includes(value as AgendaOriginType);
-}
 
 /**
  * isPremiumPlan — retourne true pour tous les plans payants.
@@ -372,40 +227,8 @@ export function isPremiumPlan(planType: string): boolean {
   return p === 'STANDARD' || p === 'PREMIUM' || p === 'PREMIUM_DUO' || p === 'PREMIUM_PRO';
 }
 
-export function isValidAssetCategory(value: string): value is AssetCategory {
-  return ASSET_CATEGORIES.includes(value as AssetCategory);
-}
-
-export function isValidAssetStatus(value: string): value is AssetStatus {
-  return ASSET_STATUSES.includes(value as AssetStatus);
-}
-
 export function isValidObjectCategory(value: string): value is ObjectCategory {
   return OBJECT_CATEGORIES.includes(value as ObjectCategory);
-}
-
-export function isValidDeviceType(value: string): value is DeviceType {
-  return DEVICE_TYPES.includes(value as DeviceType);
-}
-
-export function isValidSportType(value: string): value is SportType {
-  return SPORT_TYPES.includes(value as SportType);
-}
-
-export function isValidHomeItemType(value: string): value is HomeItemType {
-  return HOME_ITEM_TYPES.includes(value as HomeItemType);
-}
-
-export function isValidEventType(value: string): value is EventType {
-  return EVENT_TYPES.includes(value as EventType);
-}
-
-export function isValidDeadlineType(value: string): value is DeadlineType {
-  return DEADLINE_TYPES.includes(value as DeadlineType);
-}
-
-export function isValidUploadStatus(value: string): value is UploadStatus {
-  return UPLOAD_STATUSES.includes(value as UploadStatus);
 }
 
 export function isValidEquipmentStatus(value: string): value is EquipmentStatus {

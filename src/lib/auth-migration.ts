@@ -65,7 +65,7 @@ export function clearLegacyAuthStorage(): number {
  * Une session historique subsiste-t-elle dans le navigateur ?
  * Utilise au demarrage pour declencher la reconnexion.
  */
-export function hasLegacyAuthStorage(): boolean {
+function hasLegacyAuthStorage(): boolean {
   if (typeof window === 'undefined') return false;
   try {
     return LEGACY_AUTH_KEYS.some(

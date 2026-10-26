@@ -74,7 +74,7 @@ const ORDRE_CONFIANCE = { certain: 2, probable: 1, conflictual: 0 } as const;
 const AMBIGUITES_DATE: ReadonlySet<DateParseStatus> = new Set(['ORDER_AMBIGUOUS', 'REFUSED_AMBIGUOUS']);
 
 /** Clé visée par un constat (ancien format : `FIELD` pour une question unique), null si non demandée. Pure. */
-export function findingKey(target: string, properties: readonly PropertyQuestion[]): string | null {
+function findingKey(target: string, properties: readonly PropertyQuestion[]): string | null {
   if (properties.some((p) => p.key === target)) return target;
   if (target === FIELD_TARGET && properties.length === 1) return properties[0].key;
   return null;

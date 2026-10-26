@@ -18,7 +18,7 @@ import { masterPromptForTreatment } from '../config/prompt-architecture';
 import type { TestFailure } from './master-prompt.repository';
 import type { MasterExecutionConfig } from './structured-context';
 
-export interface CorpusTestOutcome {
+interface CorpusTestOutcome {
   total: number;
   passed: number;
   failed: number;
@@ -30,7 +30,7 @@ export interface CorpusTestOutcome {
 const court = (s: string, max = 600) => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
 
 /** Résultat attendu d'un scénario, lisible. */
-export function describeExpected(expected: Record<string, unknown> | null): string {
+function describeExpected(expected: Record<string, unknown> | null): string {
   if (!expected || Object.keys(expected).length === 0) {
     return 'Branche préparée sans erreur et réponse conforme au format attendu.';
   }

@@ -11,20 +11,20 @@
 
 export type ChainRank = 'primaryModel' | 'fallback1' | 'fallback2';
 
-export interface ChainSelection {
+interface ChainSelection {
   primaryModel: string | null;
   fallback1: string | null;
   fallback2: string | null;
 }
 
-export interface ChainOption {
+interface ChainOption {
   model: string;
   /** Valeur enregistrée qui n'est plus utilisable : affichée, jamais proposée. */
   unusable?: boolean;
   label: string;
 }
 
-export const CHAIN_RANKS: readonly ChainRank[] = ['primaryModel', 'fallback1', 'fallback2'];
+const CHAIN_RANKS: readonly ChainRank[] = ['primaryModel', 'fallback1', 'fallback2'];
 
 /**
  * Options d'un rang : modèles utilisables, moins ceux choisis aux AUTRES

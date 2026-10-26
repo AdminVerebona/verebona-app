@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { buildCandidates, openOverdueCount, type MascotAgendaRow, type MascotRawData } from '../signals';
 import { selectSubjects } from '../selector';
 import { buildPresentation } from '../presentation';
-import { CLEAR_SPEECH, NOTHING_PRIORITY, composeSpeech, homePose } from '../bubble';
+import { NOTHING_TO_REPORT_SPEECH, NOTHING_PRIORITY, composeSpeech, homePose } from '../bubble';
 import { buildT6Input, nuanceViolation } from '../t6-contract';
 import { deadlineExtActionText, deadlineNextText } from '../deadline-label';
 import { agendaDateRole } from '@/services/agenda/agenda-date-role';
@@ -41,7 +41,7 @@ describe('PO-D25 — « Aucun sujet à traiter en priorité » : jamais au prix 
   it('PO-D25-01 — aucun sujet, file vide : lot 61, « Rien de particulier à vous signaler » (jamais « Tout est à jour »)', () => {
     const p = presenter(raw());
     expect(p.status).toBe('clear');
-    expect(parler(p)).toBe(CLEAR_SPEECH);
+    expect(parler(p)).toBe(NOTHING_TO_REPORT_SPEECH);
     expect(parler(p)).toBe('Rien de particulier à vous signaler pour le moment.');
     expect(homePose(p, false)).toBe('success-check');
   });

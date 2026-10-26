@@ -17,7 +17,7 @@
  */
 
 /** Champs de valorisation du registre. */
-export const VALUATION_KEYS: ReadonlySet<string> = new Set([
+const VALUATION_KEYS: ReadonlySet<string> = new Set([
   'estimatedValue', 'estimatedValueDate', 'estimatedValueMode', 'estimatedValueCurrency',
   'valuationLow', 'valuationHigh', 'valuationDate', 'valuationSource',
 ]);
@@ -40,7 +40,7 @@ export function isTransactionDocumentType(code: string | null | undefined): bool
   return TRANSACTION_CANONIQUES.has(c) || TRANSACTION_V2.test(c);
 }
 
-export function isValuationKey(fieldKey: string): boolean {
+function isValuationKey(fieldKey: string): boolean {
   return VALUATION_KEYS.has(fieldKey);
 }
 

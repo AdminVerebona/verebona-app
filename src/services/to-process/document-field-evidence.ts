@@ -86,7 +86,7 @@ export const DOCUMENT_RULE_ENGINE_VERSION = 'l76-2';
 // ══════════════════════════════════════════════════════════════════════════
 
 export type DateParseStatus = 'ISO' | 'NORMALIZED' | 'ORDER_AMBIGUOUS' | 'REFUSED_AMBIGUOUS' | 'INVALID' | 'NOT_A_DATE';
-export interface DateParse { iso: string | null; status: DateParseStatus }
+interface DateParse { iso: string | null; status: DateParseStatus }
 
 const MOIS: Record<string, number> = {
   janvier: 1, fevrier: 2, mars: 3, avril: 4, mai: 5, juin: 6, juillet: 7, aout: 8, septembre: 9, octobre: 10, novembre: 11, decembre: 12,
@@ -188,7 +188,7 @@ export function t1LabelDesignates(label: string | null | undefined, key: string,
 }
 
 /** La donnée est-elle une DATE du registre ? */
-export const isDateKey = (key: string) => getField(key)?.valueType === 'date';
+const isDateKey = (key: string) => getField(key)?.valueType === 'date';
 
 /** Règle d'ÉCHÉANCE (date dont l'approche est suivie) : sa pertinence dépend du temps. */
 export const isDeadlineRule = (rule: ProcessingRule) => rule.dueSoonDays != null && !!rule.fieldKey && isDateKey(rule.fieldKey);
@@ -223,7 +223,7 @@ export interface EvidenceFact {
  * Vocabulaire générique du français contractuel, aucune règle propre à un
  * fournisseur ou à un contrat.
  */
-export interface LifecycleSignals {
+interface LifecycleSignals {
   renewal: boolean;
   /**
    * Lot 76 (C2) : fin effective du contrat PROUVÉE — constat (« a été
@@ -263,10 +263,10 @@ export interface LifecycleSignals {
  * fiable. `body` : CONTENU lu seul (valeur, extrait — sans libellé ni clé),
  * base de la clé de preuve (C6) : un libellé renommé n'est pas un nouveau problème.
  */
-export interface LifecycleText { text: string | null | undefined; confidence?: string | null; source?: string | null; body?: string | null }
+interface LifecycleText { text: string | null | undefined; confidence?: string | null; source?: string | null; body?: string | null }
 
 /** Clauses transmises à T4 au plus (lot 75I). */
-export const MAX_OBLIGATION_CLAUSES = 5;
+const MAX_OBLIGATION_CLAUSES = 5;
 
 const RE_SANS_RECONDUCTION = /\b(sans|non|pas|pas de|aucune?|ni|jamais)\s+(\w+\s){0,2}(reconduction|reconduit\w*|reconductible|renouvel\w*)/;
 const RE_RECONDUCTION = /\b(reconduction|reconduit\w*|reconductible\w*|renouvel\w*|tacite\w*|prorogation|proroge\w*)\b/;
@@ -299,7 +299,7 @@ const RE_OBLIGATION_POSSIBLE = /\b(restitu\w*|rendre|retourn\w*|rembours\w*|regl
 const normCycle = (t: string) => ` ${sansAccents(t).toLowerCase().replace(/[^a-z0-9]+/g, ' ')} `;
 
 /** Un texte mentionne-t-il une obligation possible ? (pure) */
-export const mentionsObligation = (texte: string | null | undefined): boolean =>
+const mentionsObligation = (texte: string | null | undefined): boolean =>
   !!texte && RE_OBLIGATION_POSSIBLE.test(normCycle(String(texte)));
 
 /**
@@ -308,7 +308,7 @@ export const mentionsObligation = (texte: string | null | undefined): boolean =>
  * SCHEDULED (fin prévue, avec ses dates), NEGATED, CONDITIONAL, OTHER_CONTRACT
  * ou null (aucune fin évoquée).
  */
-export function terminationKindOf(phrase: string, today: string): { kind: 'EFFECTIVE' | 'SCHEDULED' | 'NEGATED' | 'CONDITIONAL' | 'OTHER_CONTRACT' | null; dates: string[] } {
+function terminationKindOf(phrase: string, today: string): { kind: 'EFFECTIVE' | 'SCHEDULED' | 'NEGATED' | 'CONDITIONAL' | 'OTHER_CONTRACT' | null; dates: string[] } {
   const t = normCycle(phrase);
   const dates = datesMentionedIn(phrase).map((d) => d.iso);
   if (!RE_FIN.test(t)) return { kind: null, dates };
@@ -379,7 +379,7 @@ export function lifecycleSignalsOf(textes: Array<string | LifecycleText | null |
 }
 
 /** Valeur lue, pour le diagnostic (jamais un texte intégral). */
-export interface EvidenceObservation {
+interface EvidenceObservation {
   source: string;
   key: string | null;
   raw: string | null;
@@ -432,7 +432,7 @@ export function readValue(key: string, raw: unknown, confidence: string, valueTy
 }
 
 /** Options de lecture (lot 61) : désignation élargie (calculs), type de valeur, indice du titre. */
-export interface GatherOptions {
+interface GatherOptions {
   /** Clés lues (insensibles à la casse) et libellés qui désignent AUSSI la donnée. */
   designation?: { keys: readonly string[]; labelMatch: (label: string) => boolean };
   /** Indice du titre (défaut : pour une date). */
@@ -603,7 +603,7 @@ export async function gatherFieldEvidence(accountId: number, fileId: number, key
 const CONTRACT_REFERENCE_KEYS = ['contractNumber', 'insuranceContractNumber'];
 
 /** Référence normalisée (majuscules, alphanumérique), ≥ 5 caractères, sinon null. Pure. */
-export function normalizeContractReference(v: unknown): string | null {
+function normalizeContractReference(v: unknown): string | null {
   if (typeof v !== 'string' && typeof v !== 'number') return null;
   const s = String(v).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
   return s.length >= 5 && /\d/.test(s) ? s : null;
@@ -618,7 +618,7 @@ export function normalizeContractReference(v: unknown): string | null {
  *   · sinon (valeur lue ou calculée) → proposition « probable » ;
  *   · plusieurs valeurs distinctes → propositions (arbitrage).
  */
-export interface RelatedDocumentEvidence {
+interface RelatedDocumentEvidence {
   facts: EvidenceFact[];
   related: Array<{ fileId: number; value: string; userValidated: boolean; kind: string | null }>;
   /**
@@ -776,15 +776,15 @@ export type Pertinence =
 
 export type RelevanceOutcome = 'AUTO_RESOLVED' | 'NO_ACTION' | 'DEFER' | 'CREATE_ACTION';
 /** Lot 75I (A) : `KNOWN_DEADLINE` — date CONNUE (lue, saisie, écrite ou calculée) : seule l'obligation est évaluée. */
-export type RelevanceSituation = 'NOT_DEADLINE' | 'PAST_DEADLINE' | 'FUTURE_DEADLINE' | 'UNDATED' | 'TITLE_ONLY' | 'KNOWN_DEADLINE';
+type RelevanceSituation = 'NOT_DEADLINE' | 'PAST_DEADLINE' | 'FUTURE_DEADLINE' | 'UNDATED' | 'TITLE_ONLY' | 'KNOWN_DEADLINE';
 
 export type { InterventionDecision } from './intervention-check';
 
 /** Version du contrat de décision interne (§5 du ticket « pertinence »). */
-export const DECISION_CONTRACT_VERSION = 'atr-decision-v1';
+const DECISION_CONTRACT_VERSION = 'atr-decision-v1';
 
 /** Contrat de décision interne — structuré, jamais exposé tel quel à l'utilisateur. */
-export interface DecisionContract {
+interface DecisionContract {
   version: string;
   ruleCode: string;
   dataKey: string;
@@ -839,10 +839,10 @@ export interface PertinenceResult {
 }
 
 /** Lot 76 (C3) — état de l'interprétation T4 d'une décision. */
-export type T4State = 'OK' | 'INCOMPATIBLE' | 'UNAVAILABLE' | 'INVALID_OUTPUT';
+type T4State = 'OK' | 'INCOMPATIBLE' | 'UNAVAILABLE' | 'INVALID_OUTPUT';
 
 /** Modalité de reprise affichée au diagnostic (lot 76, C3). */
-export const T4_RESUME: Record<Exclude<T4State, 'OK'>, string> = {
+const T4_RESUME: Record<Exclude<T4State, 'OK'>, string> = {
   INCOMPATIBLE: 'réévaluée automatiquement dès l’activation d’une version T4 au contrat t4_output_v3 (BO › Prompts maîtres › T4)',
   UNAVAILABLE: 'nouvelle tentative automatique au balayage suivant (configuration ou fournisseur T4 indisponible)',
   INVALID_OUTPUT: 'nouvelle tentative automatique le lendemain (sortie T4 hors contrat)',
@@ -868,7 +868,7 @@ export const DEFER_UNCERTAIN_DAYS = DEFAULT_TO_PROCESS_THRESHOLDS.deferUncertain
 export const DEFER_UNDATED_DAYS = DEFAULT_TO_PROCESS_THRESHOLDS.deferUndatedDays;
 export const DEFER_TITLE_ONLY_DAYS = DEFAULT_TO_PROCESS_THRESHOLDS.deferTitleOnlyDays;
 /** Reprise après un échec technique (minutes). */
-export const RETRY_AFTER_FAILURE_MIN = 60;
+const RETRY_AFTER_FAILURE_MIN = 60;
 
 const plusJours = (iso: string, n: number) => new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
 const joursEntre = (a: string, b: string) => Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
@@ -969,7 +969,7 @@ async function withContentBaseline(base: string, hash: string): Promise<{ ref: s
 }
 
 /** Seuils effectifs d'une configuration (pure). */
-export function thresholdsOf(config: Pick<T4AssessmentConfig, 'thresholds'> | null | undefined): ToProcessThresholds {
+function thresholdsOf(config: Pick<T4AssessmentConfig, 'thresholds'> | null | undefined): ToProcessThresholds {
   return config?.thresholds ?? { ...DEFAULT_TO_PROCESS_THRESHOLDS };
 }
 
@@ -986,7 +986,7 @@ export function pertinenceConfigKey(config: T4AssessmentConfig): string {
 }
 
 /** Éléments documentaires de la décision (preuves déjà lues). */
-export interface RelevanceInput {
+interface RelevanceInput {
   accountId: number;
   fileId: number;
   rule: ProcessingRule;
@@ -1255,7 +1255,7 @@ export async function assessDeadlinePertinence(p: RelevanceInput): Promise<Perti
 // ══════════════════════════════════════════════════════════════════════════
 
 /** Éléments d'une obligation sur une échéance DÉJÀ CONNUE (lot 75I, A). */
-export interface KnownObligationInput extends Omit<RelevanceInput, 'candidates' | 'contradictory'> {
+interface KnownObligationInput extends Omit<RelevanceInput, 'candidates' | 'contradictory'> {
   /** Date connue (lue, saisie, écrite ou calculée) et sa provenance. */
   known: { iso: string; source: string };
   /** Clauses lues pertinentes (restitution, résiliation, reconduction…), où qu'elles soient dans le document. */
@@ -1402,7 +1402,7 @@ export async function assessKnownDeadlineObligation(p: KnownObligationInput): Pr
 }
 
 /** Contrat de décision interne (§5) — pur. */
-export function decisionContractOf(p: Pick<RelevanceInput, 'rule' | 'fileId' | 'documentType' | 'today' | 'candidates'> & { config?: T4AssessmentConfig }, r: Omit<PertinenceResult, 'contract'>): DecisionContract {
+function decisionContractOf(p: Pick<RelevanceInput, 'rule' | 'fileId' | 'documentType' | 'today' | 'candidates'> & { config?: T4AssessmentConfig }, r: Omit<PertinenceResult, 'contract'>): DecisionContract {
   const iso = p.candidates.map((c) => c.iso).sort();
   const future = iso.filter((d) => d >= p.today)[0] ?? null;
   const sources = [...new Set(p.candidates.map((c) => c.source))];
@@ -1662,7 +1662,7 @@ export interface RuleEvaluationRecord {
  * pertinence, report, résolution automatique, refus de l'utilisateur, échec
  * technique, donnée déjà connue, document non éligible.
  */
-export type DecisionKind = 'CARD_CREATED' | 'CARD_KEPT' | 'CARD_CLOSED' | 'AUTO_RESOLVED' | 'NOT_RELEVANT' | 'MISSING_INFO_NOT_REQUIRED'
+type DecisionKind = 'CARD_CREATED' | 'CARD_KEPT' | 'CARD_CLOSED' | 'AUTO_RESOLVED' | 'NOT_RELEVANT' | 'MISSING_INFO_NOT_REQUIRED'
   | 'DEFERRED' | 'USER_REFUSED' | 'ALREADY_KNOWN' | 'NOT_ELIGIBLE' | 'TECHNICAL_FAILURE';
 
 const MOTIFS_UTILISATEUR = ['USER_DECISION_RESPECTED', 'NOT_APPLICABLE_UNCHANGED', 'USER_DECISION_PROTECTED', 'USER_NOT_APPLICABLE_UNCHANGED', 'USER_CLEARED_VALUE'];
@@ -1721,7 +1721,7 @@ export async function relevanceColumnsReady(): Promise<boolean> {
 }
 
 /** Décision mémorisée (dernière évaluation décisive d'une règle). */
-export interface RememberedDecision {
+interface RememberedDecision {
   signature: string | null;
   pertinence: string | null;
   outcome?: RelevanceOutcome | null;

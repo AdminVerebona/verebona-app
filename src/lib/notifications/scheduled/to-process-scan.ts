@@ -45,13 +45,13 @@ import { isChannelRetired } from '../retired-channels';
  * actions restent sur la page « À traiter » ; les lignes déjà en file sont
  * closes sans envoi par le dispatcher (canal supprimé journalisé).
  */
-export function itemCreatedHasChannel(): boolean {
+function itemCreatedHasChannel(): boolean {
   const entry = getCatalogEntry('TO_PROCESS_ITEM_CREATED');
   if (!entry) return false;
   return !entry.neverBell || !isChannelRetired(entry, 'push') || !isChannelRetired(entry, 'email');
 }
 
-export interface ScanRunResult {
+interface ScanRunResult {
   accountsProcessed: number;
   created: number;
   resolved: number;

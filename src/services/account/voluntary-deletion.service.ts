@@ -106,16 +106,16 @@ import {
 export const ACCOUNT_DELETION_CONFIRMATION = 'SUPPRIMER MON COMPTE';
 
 /** Délai de la suppression volontaire, en jours. */
-export const VOLUNTARY_DELETION_DELAY_DAYS = DELETION_DELAY_DAYS;
+const VOLUNTARY_DELETION_DELAY_DAYS = DELETION_DELAY_DAYS;
 
 /** Au-delà, la confirmation finale non envoyée est abandonnée et l'adresse effacée. */
-export const FINAL_EMAIL_RETRY_DAYS = 7;
+const FINAL_EMAIL_RETRY_DAYS = 7;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /* ── Erreurs ───────────────────────────────────────────────────────────── */
 
-export type ClosureErrorCode =
+type ClosureErrorCode =
   | 'INVALID_CONFIRMATION'
   | 'PASSWORD_REQUIRED'
   | 'INVALID_PASSWORD'
@@ -125,7 +125,7 @@ export type ClosureErrorCode =
   | 'NO_ACCOUNT'
   | 'BILLING_UNAVAILABLE';
 
-export const CLOSURE_ERROR_MESSAGES: Record<ClosureErrorCode, string> = {
+const CLOSURE_ERROR_MESSAGES: Record<ClosureErrorCode, string> = {
   INVALID_CONFIRMATION: `Pour confirmer, recopiez exactement « ${ACCOUNT_DELETION_CONFIRMATION} ».`,
   PASSWORD_REQUIRED: 'Saisissez votre mot de passe pour confirmer la suppression.',
   INVALID_PASSWORD: 'Le mot de passe est incorrect.',
@@ -168,7 +168,7 @@ export interface DeletionUser {
   role: string;
 }
 
-export type SharingRole = 'duo_owner' | 'duo_member' | null;
+type SharingRole = 'duo_owner' | 'duo_member' | null;
 
 export interface VoluntaryDeletionDeps {
   loadUser(userId: number): Promise<DeletionUser | null>;
@@ -221,7 +221,7 @@ export interface VoluntaryDeletionDeps {
 
 /* ── Règles pures ──────────────────────────────────────────────────────── */
 
-export function formatDeletionDate(d: Date | string): string {
+function formatDeletionDate(d: Date | string): string {
   const date = typeof d === 'string' ? new Date(d) : d;
   return new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', dateStyle: 'long' }).format(date);
 }
@@ -231,7 +231,7 @@ export function daysUntil(scheduledAt: Date, now: Date): number {
   return Math.max(0, Math.ceil((scheduledAt.getTime() - now.getTime()) / DAY_MS));
 }
 
-export interface DeletionStatusView {
+interface DeletionStatusView {
   /**
    * `scheduled` : suppression programmée ; `closed` : compte clôturé SANS
    * compte à rebours actif (exécution en échec, en cours ou état incohérent) —
@@ -256,7 +256,7 @@ export function toStatusView(schedule: ScheduledDeletion | null, now: Date): Del
 
 /* ── Clôture (J0) ──────────────────────────────────────────────────────── */
 
-export type ClosureResult =
+type ClosureResult =
   | { ok: true; schedule: ScheduledDeletion; alreadyClosed: boolean; stoppedSubscriptions: string[]; sharing: SharingRole }
   | { ok: false; code: ClosureErrorCode; message: string };
 
@@ -342,7 +342,7 @@ export async function closeAccountForDeletion(
 
 /* ── Annulation ────────────────────────────────────────────────────────── */
 
-export type CancelResult =
+type CancelResult =
   | { ok: true; cancelled: ScheduledDeletion | null }
   | { ok: false; code: 'NOT_PENDING' | 'USER_NOT_FOUND' | 'IN_PROGRESS' };
 
@@ -403,10 +403,10 @@ export { accountDeletionSweepMode, sweepOptionsFor, type SweepMode } from './acc
  * quotidien `daily-account-deletion`, conservé 20 h pour cadencer la tâche :
  * le réutiliser bloquerait la route toute la journée.
  */
-export const ACCOUNT_DELETION_SWEEP_LOCK = 'account-deletion-sweep';
+const ACCOUNT_DELETION_SWEEP_LOCK = 'account-deletion-sweep';
 const SWEEP_LOCK_TTL_MS = 60 * 60 * 1000;
 
-export interface SweepLock {
+interface SweepLock {
   acquire: (name: string, ttlMs: number) => Promise<unknown | null>;
   release: (handle: never) => Promise<void>;
 }
@@ -430,7 +430,7 @@ export async function runAccountDeletionSweepExclusive(
   }
 }
 
-export interface AccountDeletionSweepResult {
+interface AccountDeletionSweepResult {
   dryRun: boolean;
   reminders: { j7: number; j1: number; emails: number };
   deletions: { executed: number; skipped: number; failed: number; deferred: number; backlog: number };
@@ -447,7 +447,7 @@ export interface AccountDeletionSweepResult {
  * rétractation accumulées tant qu'aucun planificateur ne tournait) : elle
  * n'est exécutée que sur décision explicite (`ACCOUNT_DELETION_SWEEP=live`).
  */
-export const BACKLOG_DAYS = 7;
+const BACKLOG_DAYS = 7;
 
 export function isBacklog(item: Pick<ScheduledDeletion, 'scheduledAt' | 'attemptCount'>, now: Date): boolean {
   return item.attemptCount === 0 && item.scheduledAt.getTime() < now.getTime() - BACKLOG_DAYS * DAY_MS;

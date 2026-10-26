@@ -23,11 +23,11 @@ export async function getGeneration(id: string): Promise<GenerationRow | null> {
 }
 
 /** Lot 84D : `AI_EXECUTIONS_EXPORT` — export des exécutions IA (BO › Exécutions & logs), reprenable. */
-export type ExportKind = 'ACCOUNT_DATA' | 'TECH_DIAGNOSTIC' | 'RECETTE_EXPORT' | 'AI_EXECUTIONS_EXPORT';
+type ExportKind = 'ACCOUNT_DATA' | 'TECH_DIAGNOSTIC' | 'RECETTE_EXPORT' | 'AI_EXECUTIONS_EXPORT';
 export const EXPORT_KINDS: readonly ExportKind[] = ['ACCOUNT_DATA', 'TECH_DIAGNOSTIC', 'RECETTE_EXPORT', 'AI_EXECUTIONS_EXPORT'];
 
 /** Générations simultanées par instance (au-delà : 429, réessayer). Lot 82E : un seul export de recette ; lot 84D : un seul export d'exécutions IA. */
-export const MAX_CONCURRENT: Readonly<Record<ExportKind, number>> = { ACCOUNT_DATA: 3, TECH_DIAGNOSTIC: 2, RECETTE_EXPORT: 1, AI_EXECUTIONS_EXPORT: 1 };
+const MAX_CONCURRENT: Readonly<Record<ExportKind, number>> = { ACCOUNT_DATA: 3, TECH_DIAGNOSTIC: 2, RECETTE_EXPORT: 1, AI_EXECUTIONS_EXPORT: 1 };
 const running: Record<ExportKind, number> = { ACCOUNT_DATA: 0, TECH_DIAGNOSTIC: 0, RECETTE_EXPORT: 0, AI_EXECUTIONS_EXPORT: 0 };
 
 /** Réserve une place de génération ; `release` à appeler une fois (idempotent). */
@@ -39,13 +39,13 @@ export function tryAcquireExportSlot(kind: ExportKind): { release: () => void } 
 }
 
 /** Au-delà, une génération encore RUNNING est considérée interrompue (processus arrêté). */
-export const STALE_RUNNING_MS = 2 * 60 * 60_000;
+const STALE_RUNNING_MS = 2 * 60 * 60_000;
 /**
  * Lot 82E — génération en tâche de fond (export de recette) : interrompue si
  * son dernier signe de vie (`heartbeat_at`, écrit au moins toutes les 30 s)
  * date de plus de 10 minutes — quelle que soit sa durée totale.
  */
-export const STALE_HEARTBEAT_MS = 10 * 60_000;
+const STALE_HEARTBEAT_MS = 10 * 60_000;
 
 /** Interrompue (processus arrêté) ? Pure. */
 export function isInterrupted(r: { status: string; startedAt: string; heartbeatAt?: string | null }, now: number): boolean {
@@ -54,7 +54,7 @@ export function isInterrupted(r: { status: string; startedAt: string; heartbeatA
   return now - Date.parse(r.startedAt) > STALE_RUNNING_MS;
 }
 
-export interface GenerationStart {
+interface GenerationStart {
   id: string;
   kind: ExportKind;
   mode: string;
@@ -67,7 +67,7 @@ export interface GenerationStart {
   storagePrefix?: string | null;
 }
 
-export interface GenerationEnd {
+interface GenerationEnd {
   status: ExtractionStatus;
   snapshotAt?: string | null;
   pgSnapshot?: string | null;

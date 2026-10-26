@@ -29,7 +29,6 @@ export const T1_MASTER_PROMPT_CODE = 't1_master_v1';
  */
 export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 5;
 export const T1_TASKS = ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] as const;
-export type T1Task = (typeof T1_TASKS)[number];
 
 const confidence = z.enum(['certain', 'probable', 'conflictual']);
 export type T1Confidence = z.infer<typeof confidence>;
@@ -70,7 +69,7 @@ export const t1VisualEvidence = z.object({
 export const T1_TARGET_TYPES = ['ASSET', 'EQUIPMENT', 'ROOM', 'DOCUMENT', 'SUPPLIER', 'GENERIC'] as const;
 export type T1TargetType = (typeof T1_TARGET_TYPES)[number];
 
-export const t1Target = z.object({
+const t1Target = z.object({
   type: z.enum(T1_TARGET_TYPES),
   /** Identifiant présent dans ENTITY_CONTEXT, sinon null (U9) — revérifié en base. */
   entityId: z.number().int().positive().nullable().default(null),
@@ -78,7 +77,6 @@ export const t1Target = z.object({
   confidence: confidence.default('probable'),
   evidenceSignals: z.array(z.string().max(200)).max(10).default([]),
 });
-export type T1Target = z.infer<typeof t1Target>;
 
 /** Récurrence énoncée par la source (U12) — T1 ne calcule aucune occurrence. */
 export const t1Recurrence = z.object({
@@ -93,8 +91,7 @@ export const t1Recurrence = z.object({
 export type T1Recurrence = z.infer<typeof t1Recurrence>;
 
 /** Nature temporelle d'un fait (U13). */
-export const T1_EVENT_NATURES = ['HISTORICAL', 'DEADLINE', 'FACT_ONLY'] as const;
-export type T1EventNature = (typeof T1_EVENT_NATURES)[number];
+const T1_EVENT_NATURES = ['HISTORICAL', 'DEADLINE', 'FACT_ONLY'] as const;
 
 export const t1SemanticEvent = z.object({
   /** `businessType` de l'EVENT_CATALOG (purchase, repair, maintenance…). */
@@ -104,7 +101,7 @@ export const t1SemanticEvent = z.object({
 export type T1SemanticEvent = z.infer<typeof t1SemanticEvent>;
 
 /** Types de valeur annoncés par le modèle (alignés sur FIELD_CATALOG). */
-export const T1_VALUE_TYPES = [
+const T1_VALUE_TYPES = [
   'string', 'text', 'number', 'money_eur', 'money_cents', 'date', 'boolean', 'enum', 'json', 'quantity',
 ] as const;
 
@@ -349,13 +346,6 @@ export type T1AnalyzeDocumentOutput = z.infer<typeof T1AnalyzeDocumentOutput>;
 /** Union discriminée par `task` (CDC 15 §22.2). */
 export const T1MasterOutput = z.discriminatedUnion('task', [T1GroupUploadOutput, T1AnalyzeDocumentOutput]);
 export type T1MasterOutput = z.infer<typeof T1MasterOutput>;
-
-/** Schéma de sortie attendu pour une TASK donnée. */
-export function t1OutputSchemaFor(task: 'GROUP_UPLOAD'): typeof T1GroupUploadOutput;
-export function t1OutputSchemaFor(task: 'ANALYZE_DOCUMENT'): typeof T1AnalyzeDocumentOutput;
-export function t1OutputSchemaFor(task: T1Task) {
-  return task === 'GROUP_UPLOAD' ? T1GroupUploadOutput : T1AnalyzeDocumentOutput;
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // Contrat interne après projection (code → persistance). Jamais produit par

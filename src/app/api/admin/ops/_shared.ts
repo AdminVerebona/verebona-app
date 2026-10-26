@@ -11,7 +11,7 @@ import { isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 
 export const NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
-export type AdminGuard = { ok: true; adminId: number } | { ok: false; response: NextResponse };
+type AdminGuard = { ok: true; adminId: number } | { ok: false; response: NextResponse };
 
 /**
  * Exécute la garde admin (`requireAdmin(request)`, appelée dans chaque route :

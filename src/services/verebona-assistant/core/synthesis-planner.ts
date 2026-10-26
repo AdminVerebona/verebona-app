@@ -41,9 +41,9 @@ import { documentTypeStems, tokenizeQuery } from './query-terms';
 import { documentTypeCodesFor } from '../registries/retrieval-adapters';
 import { formatDateFr } from './deterministic-format';
 
-export type SynthesisKind = 'summary' | 'comparison' | 'timeline';
+type SynthesisKind = 'summary' | 'comparison' | 'timeline';
 
-export interface TimelineEvent {
+interface TimelineEvent {
   date: string;
   label: string;
   kind: 'acquisition' | 'agenda' | 'document' | 'operation';
@@ -120,7 +120,7 @@ const borne = (lignes: string[], max = 1500) => {
 };
 
 /** Source d'état canonique d'un bien, sur des dimensions données (pure). */
-export function assetStateSource(a: AssetSnapshot, dimensions?: string[]): RetrievedSource {
+function assetStateSource(a: AssetSnapshot, dimensions?: string[]): RetrievedSource {
   const cles = dimensions ?? Object.keys(a.fields);
   const lignes = cles.map((k) => {
     const f = a.fields[k];
@@ -138,7 +138,7 @@ export function assetStateSource(a: AssetSnapshot, dimensions?: string[]): Retri
  * Dimensions communes d'une comparaison (pure, testée) : les champs
  * renseignés sur AU MOINS un des biens, dans l'ordre du premier, bornés.
  */
-export function comparisonDimensions(snaps: AssetSnapshot[], max = 14): string[] {
+function comparisonDimensions(snaps: AssetSnapshot[], max = 14): string[] {
   const out: string[] = [];
   for (const s of snaps) for (const k of Object.keys(s.fields)) if (!out.includes(k)) out.push(k);
   return out.slice(0, max);
@@ -569,7 +569,7 @@ const plainEv = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowe
  * même date dont le libellé correspond le mieux au texte de l'événement.
  * Jamais un identifiant qui ne figure pas dans les sources fournies.
  */
-export function eventRef(ev: { date: string | null; text: string; sourceIds: string[] }, sources: RetrievedSource[]): string | null {
+function eventRef(ev: { date: string | null; text: string; sourceIds: string[] }, sources: RetrievedSource[]): string | null {
   const fournies = new Map(sources.map((s) => [s.id, s]));
   for (const id of ev.sourceIds) {
     if (!fournies.has(id)) continue;

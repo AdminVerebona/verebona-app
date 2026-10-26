@@ -53,7 +53,7 @@ export function isOwnerOnlyNotification(type: string | null | undefined): boolea
 }
 
 /** Titulaire(s) actif(s) d'un compte ; [] si le compte est archivé. */
-export async function resolveAccountOwners(accountId: number): Promise<number[]> {
+async function resolveAccountOwners(accountId: number): Promise<number[]> {
   const [account] = await db
     .select({ ownerUserId: accounts.ownerUserId, archivedAt: accounts.archivedAt })
     .from(accounts)

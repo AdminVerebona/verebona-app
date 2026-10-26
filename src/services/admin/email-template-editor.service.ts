@@ -162,11 +162,11 @@ export type EditorErrorCode =
   | 'NO_SHIPPED_TEXT'
   | 'SEND_FAILED';
 
-export type EditorResult<T> =
+type EditorResult<T> =
   | ({ ok: true } & T)
   | { ok: false; error: EditorErrorCode; message: string; issues?: ValidationIssue[] };
 
-export interface AdminActor {
+interface AdminActor {
   id: number;
   email?: string;
 }
@@ -183,17 +183,7 @@ const rows = async <T>(ex: Exec, q: ReturnType<typeof sql>): Promise<T[]> => (aw
 
 // ── Périmètre ───────────────────────────────────────────────────────────────
 
-/** Gabarits éditables : ceux du groupe « E-mails transactionnels » (hors notifications du catalogue). */
-export async function transactionalTemplateScope(): Promise<Map<string, string>> {
-  const defs = listEventDefinitions(await loadEmailTemplateCodes());
-  const out = new Map<string, string>();
-  for (const d of defs) {
-    if (d.kind === 'transactional' && d.emailTemplateCode) out.set(d.emailTemplateCode.toUpperCase(), d.label);
-  }
-  return out;
-}
-
-export interface ScopeEntry {
+interface ScopeEntry {
   label: string;
   kind: 'transactional' | 'notification';
 }
@@ -203,7 +193,7 @@ export interface ScopeEntry {
  * e-mails des notifications du catalogue (gabarits `notif_*` présents en base).
  * Push et in-app n'ont pas de gabarit : leur texte reste dans le code.
  */
-export async function editorTemplateScope(): Promise<Map<string, ScopeEntry>> {
+async function editorTemplateScope(): Promise<Map<string, ScopeEntry>> {
   const codes = await loadEmailTemplateCodes();
   const out = new Map<string, ScopeEntry>();
   for (const d of listEventDefinitions(codes)) {
@@ -219,7 +209,7 @@ export async function editorTemplateScope(): Promise<Map<string, ScopeEntry>> {
 const UNKNOWN_TEMPLATE = 'Modèle d’e-mail inconnu.';
 
 /** Événements du catalogue qui envoient un gabarit de notification. */
-export function notificationUsage(code: string): Array<{ code: string; label: string; mandatoryEmail: boolean }> {
+function notificationUsage(code: string): Array<{ code: string; label: string; mandatoryEmail: boolean }> {
   return (NOTIFICATION_EMAIL_TEMPLATES[code]?.events ?? [])
     .map((e) => ({ e, entry: getCatalogEntry(e) }))
     .filter((x) => !!x.entry)
@@ -254,7 +244,7 @@ async function loadRow(ex: Exec, code: string, forUpdate = false): Promise<Templ
 }
 
 /** Texte livré : conservé en base (0483 et déclencheurs) ou, à défaut, défaut du code. */
-export function resolveShipped(row: Pick<TemplateRow, 'type' | 'subject' | 'shipped_subject' | 'shipped_body'>):
+function resolveShipped(row: Pick<TemplateRow, 'type' | 'subject' | 'shipped_subject' | 'shipped_body'>):
   { subject: string; body: string; source: 'base' | 'code' } | null {
   if (row.shipped_body != null && row.shipped_subject != null) {
     return { subject: row.shipped_subject, body: row.shipped_body, source: 'base' };
@@ -372,7 +362,7 @@ export async function getVersion(rawCode: unknown, versionId: unknown): Promise<
 
 // ── Brouillon ───────────────────────────────────────────────────────────────
 
-export interface DraftInput {
+interface DraftInput {
   subject: unknown;
   /** Gabarit texte : contenu complet. */
   body?: unknown;
@@ -381,7 +371,7 @@ export interface DraftInput {
 }
 
 /** Construit et valide le brouillon contre le gabarit en base. Pur hors lecture. */
-export function buildDraft(row: TemplateRow, input: DraftInput):
+function buildDraft(row: TemplateRow, input: DraftInput):
   { ok: true; subject: string; body: string; format: TemplateFormat; changedZones: number[] } | { ok: false; issues: ValidationIssue[] } {
   const format = templateFormat(row.body);
   const spec = specOf(row, format);
@@ -621,7 +611,7 @@ export async function resetToShipped(input: { code: unknown; baseHash: unknown; 
  * (aucun jeton, aucune donnée), pour que le bouton de la charte s'affiche dans
  * l'aperçu et le test. L'aperçu reste signalé incomplet (COM-009).
  */
-export function withPreviewLinks(variables: Record<string, string>, base: string = appBaseUrl()): Record<string, string> {
+function withPreviewLinks(variables: Record<string, string>, base: string = appBaseUrl()): Record<string, string> {
   const out = { ...variables };
   for (const [k, v] of Object.entries(out)) {
     if (v === MISSING_DATA_MARK && /(url|link)$/i.test(k)) out[k] = `${base.replace(/\/+$/, '')}/?apercu-lien=${encodeURIComponent(k)}`;
@@ -637,7 +627,7 @@ export function withPreviewLinks(variables: Record<string, string>, base: string
  * dépend d'une donnée absente est laissé vide : signalé « [donnée indisponible] »
  * et l'aperçu est déclaré incomplet (COM-009).
  */
-export function notificationPreviewVariables(
+function notificationPreviewVariables(
   code: string, eventCode: unknown, selected: SelectedPreviewContext, accountId: number | null, base: string = appBaseUrl(),
 ): { variables: Record<string, string>; eventCode: string | null } {
   const events = notificationUsage(code).map((u) => u.code);
@@ -715,7 +705,7 @@ async function previewContextFor(code: string, kind: ScopeEntry['kind'] | undefi
   return { ctx, selected, eventCode: notif?.eventCode ?? null };
 }
 
-export interface DraftRender {
+interface DraftRender {
   subject: string;
   html: string;
   issues: ValidationIssue[];

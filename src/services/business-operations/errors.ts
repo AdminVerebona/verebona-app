@@ -5,7 +5,7 @@
  * jamais transformée en « À traiter » utilisateur. Elle annule la transaction
  * entière (aucune écriture partielle, aucun événement émis).
  */
-export type BusinessOperationErrorCode =
+type BusinessOperationErrorCode =
   | 'UNKNOWN_TYPE'
   | 'OTHER_AS_FALLBACK'
   | 'INVALID_STATUS'

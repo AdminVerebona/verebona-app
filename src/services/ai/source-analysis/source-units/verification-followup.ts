@@ -27,7 +27,7 @@
  */
 
 /** Motifs de vérification (`SourceVerification.reason`) → libellé BO. */
-export const VERIFICATION_REASON_LABEL: Readonly<Record<string, string>> = {
+const VERIFICATION_REASON_LABEL: Readonly<Record<string, string>> = {
   source_unreadable: 'fichier source momentanément illisible (téléchargement)',
   pdf_unreadable: 'PDF illisible ou corrompu : pages impossibles à compter',
   source_too_large: 'fichier trop volumineux pour être sondé',
@@ -40,9 +40,9 @@ export const VERIFICATION_REASON_LABEL: Readonly<Record<string, string>> = {
 };
 
 /** Motifs pour lesquels une relecture AUTOMATIQUE du fichier peut lever l'incertitude. */
-export const AUTO_RETRY_REASONS: ReadonlySet<string> = new Set(['source_unreadable']);
+const AUTO_RETRY_REASONS: ReadonlySet<string> = new Set(['source_unreadable']);
 
-export interface VerificationFollowupInput {
+interface VerificationFollowupInput {
   qualityState: string;
   sourceVerification?: string | null;
   verificationReason?: string | null;
@@ -54,7 +54,7 @@ export interface VerificationFollowupInput {
   retryScheduled?: boolean;
 }
 
-export interface VerificationFollowup {
+interface VerificationFollowup {
   /** Statut lisible. */
   status: string;
   /** Motif lisible. */

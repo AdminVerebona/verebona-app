@@ -20,5 +20,4 @@ const config = getS3Config();
 export const s3Client = getS3Client('interactive');
 
 export const S3_BUCKET = config.bucket;
-export const S3_ENDPOINT = config.endpoint;
 export const S3_REGION = config.region;

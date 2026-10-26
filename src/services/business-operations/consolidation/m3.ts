@@ -58,8 +58,8 @@ import type { T3OperationMatchOutput } from '@/services/ai/reconciliation/master
 import type { StoredM3 } from './m3-context';
 import { semanticReevaluationAt } from './retro';
 
-export const OPERATION_MATCH_OPERATION = 't3_operation_match';
-export const OPERATION_MATCH_TASK = 'OPERATION_MATCH';
+const OPERATION_MATCH_OPERATION = 't3_operation_match';
+const OPERATION_MATCH_TASK = 'OPERATION_MATCH';
 
 /**
  * Appels M3 par passage et par compte (`T3_OPERATION_MATCH_MAX_CALLS_PER_PASS`,
@@ -75,7 +75,7 @@ export function operationMatchCallsPerDay(): number {
 }
 
 /** Candidats examinés par passage (borne de lecture). */
-export const OPERATION_MATCH_SCAN_LIMIT = 50;
+const OPERATION_MATCH_SCAN_LIMIT = 50;
 const HEURE = 3_600_000;
 
 /**
@@ -85,7 +85,7 @@ const HEURE = 3_600_000;
  * Une question fondée sur des références exactes (CERTAIN) n'en fait pas
  * partie ; une question répondue par l'utilisateur non plus (décision M0).
  */
-export const M3_SUBJECT_SQL = `((c.t3_outcome = 'HOLD_UNRESOLVED' AND c.t3_reason = 'M3_REQUIRED')
+const M3_SUBJECT_SQL = `((c.t3_outcome = 'HOLD_UNRESOLVED' AND c.t3_reason = 'M3_REQUIRED')
     OR (c.t3_outcome = 'ARBITRATION_REQUIRED' AND c.t3_reason = 'M3_AMBIGUOUS'))`;
 
 /**
@@ -113,7 +113,7 @@ export function M3_PENDING_SQL(promptVersionParam: string): string {
              AND COALESCE(c.t3_detail->'m3'->>'status', '') NOT IN ('DEFERRED', 'ERROR')))`;
 }
 
-export interface OperationMatchPromptStatus {
+interface OperationMatchPromptStatus {
   available: boolean;
   version: string | null;
 }

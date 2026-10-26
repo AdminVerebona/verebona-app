@@ -77,7 +77,7 @@ export function todoCardHref(todoId: string): string {
 }
 
 /** Présentation sans les « À traiter » déjà résolus à l'écran (retrait immédiat). */
-export function withoutTodos(p: MascotPresentation | null, hidden: ReadonlySet<string>): MascotPresentation | null {
+function withoutTodos(p: MascotPresentation | null, hidden: ReadonlySet<string>): MascotPresentation | null {
   if (!p?.todo || hidden.size === 0) return p;
   const items = p.todo.items.filter((i) => !hidden.has(i.todoId));
   const retires = p.todo.items.length - items.length;
@@ -94,7 +94,7 @@ export function withoutSubjects(p: MascotPresentation | null, hidden: ReadonlySe
 }
 
 /** Tuile d'amorce d'un compte vide (§12ter). */
-export interface EmptyStartTile {
+interface EmptyStartTile {
   key: 'add-asset' | 'add-doc';
   label: string;
   sub: string;

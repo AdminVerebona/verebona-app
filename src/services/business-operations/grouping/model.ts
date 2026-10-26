@@ -33,12 +33,8 @@ export const ROLE_ORIGINS = ['T4', 'USER', 'T3', 'SYSTEM'] as const;
 export type RoleOrigin = (typeof ROLE_ORIGINS)[number];
 
 /** Justifications d'un lien Document ↔ Agenda (§7.4). */
-export const LINK_PROVENANCES = ['MANUAL_DIRECT', 'AI_DIRECT', 'OPERATION_PRINCIPAL'] as const;
+const LINK_PROVENANCES = ['MANUAL_DIRECT', 'AI_DIRECT', 'OPERATION_PRINCIPAL'] as const;
 export type LinkProvenance = (typeof LINK_PROVENANCES)[number];
-
-/** Origines de l'appartenance d'un document (§27.3). */
-export const MEMBERSHIP_ORIGINS = ['SOURCE', 'USER'] as const;
-export type MembershipOrigin = (typeof MEMBERSHIP_ORIGINS)[number];
 
 /**
  * Objets de la mémoire des décisions utilisateur (`business_operation_match_decisions.source_kind`) :
@@ -54,7 +50,7 @@ export type MembershipOrigin = (typeof MEMBERSHIP_ORIGINS)[number];
 export const DECISION_SUBJECTS = ['DOCUMENT', 'AGENDA', 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL', 'AGENDA_FILE_LINK'] as const;
 export type DecisionSubject = (typeof DECISION_SUBJECTS)[number];
 
-export const isLinkProvenance = (v: unknown): v is LinkProvenance => typeof v === 'string' && (LINK_PROVENANCES as readonly string[]).includes(v);
+const isLinkProvenance = (v: unknown): v is LinkProvenance => typeof v === 'string' && (LINK_PROVENANCES as readonly string[]).includes(v);
 
 // ── Autorité sur le rôle principal ──────────────────────────────────────────
 
@@ -130,7 +126,7 @@ export function inferredProvenance(item: { projected: boolean; isAutomatic: bool
 
 // ── Propagation des documents vers le principal (§7.1, §7.2, §11.9, P4) ────
 
-export interface PrincipalLinkSnapshot {
+interface PrincipalLinkSnapshot {
   /** Élément principal de l'Opération (null : Opération sans principal). */
   principalItemId: number | null;
   /** Éléments membres de l'Opération. */
@@ -143,7 +139,7 @@ export interface PrincipalLinkSnapshot {
   links: ReadonlyArray<{ itemId: number; fileId: number; provenances: readonly string[] }>;
 }
 
-export interface PrincipalLinkPlan {
+interface PrincipalLinkPlan {
   /** OPERATION_PRINCIPAL à ajouter (lien créé s'il n'existe pas). */
   add: Array<{ itemId: number; fileId: number }>;
   /** OPERATION_PRINCIPAL à retirer (lien supprimé s'il ne reste aucune provenance). */
@@ -186,7 +182,7 @@ export function planPrincipalLinks(s: PrincipalLinkSnapshot): PrincipalLinkPlan 
 
 // ── Lien Agenda ↔ Agenda (§8.2, §8.3) ─────────────────────────────────────
 
-export type LinkAgendaPlan =
+type LinkAgendaPlan =
   | { kind: 'CREATE' }
   | { kind: 'ATTACH'; operationId: number; itemId: number }
   | { kind: 'NOOP'; operationId: number }
@@ -236,7 +232,7 @@ export interface DocumentEquipmentEvidence {
   ref?: string | null;
 }
 
-export interface DocumentEquipmentProposal {
+interface DocumentEquipmentProposal {
   fileId: number;
   equipmentId: number;
   evidence: DocumentEquipmentEvidence | null;

@@ -517,7 +517,7 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
 }
 
 /** Seuil : en dessous, chaque résultat a déjà son bouton (« Ouvrir le document »). */
-export const SEARCH_RESULTS_MIN = 2;
+const SEARCH_RESULTS_MIN = 2;
 
 /**
  * Intention OPEN_SEARCH_RESULTS d'une recherche (documents, biens, agenda)

@@ -41,8 +41,8 @@ export const OPERATION_MATCH_MAX_CANDIDATES = 5;
  * documents déjà liés ; chaque attente / arbitrage M3 est réévalué une fois
  * (plafonds d'appels inchangés).
  */
-export const OPERATION_MATCH_CONTEXT_VERSION = 'm3v2';
-export const OPERATION_MATCH_RELATION = 'OPERATION_MATCH — la source décrit-elle la même réalité métier qu’une des Opérations candidates ?';
+const OPERATION_MATCH_CONTEXT_VERSION = 'm3v2';
+const OPERATION_MATCH_RELATION = 'OPERATION_MATCH — la source décrit-elle la même réalité métier qu’une des Opérations candidates ?';
 
 export interface OperationMatchSubject {
   document: {

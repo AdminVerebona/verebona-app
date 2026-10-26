@@ -60,7 +60,7 @@ export interface AgendaItemLinks {
   equipmentIds?: number[];
 }
 
-export interface AgendaItemWriteInput {
+interface AgendaItemWriteInput {
   /** Création, ou mise à jour de l'élément `itemId` (valeurs partielles). */
   itemId?: number;
   values: Partial<AgendaItemValues>;
@@ -149,7 +149,7 @@ export class AgendaOwnershipError extends AgendaValidationError {
  * Contrôle de SÉCURITÉ de l'élément : toutes les références (liens et
  * documents sources) appartiennent au compte. Indépendant de `validate`.
  */
-export async function assertAgendaRefsInAccount(
+async function assertAgendaRefsInAccount(
   accountId: number,
   links: AgendaItemLinks | undefined,
   sources: ReadonlyArray<{ fileId: number }> | undefined,
@@ -168,7 +168,7 @@ export async function assertAgendaRefsInAccount(
 }
 
 /** Liens indirects (document, pièce, équipement) → bien porteur, pour la cohérence. */
-export async function resolveIndirectLinks(
+async function resolveIndirectLinks(
   fileIds: number[],
   substructureIds: number[],
   equipmentIds: number[],
@@ -217,7 +217,7 @@ export async function validateAgendaWrite(
  * Lot 49 : références contrôlées (compte) dans la transaction AVANT toute
  * écriture ; `replace` ne retire que les liens vers des objets du compte.
  */
-export async function writeAgendaLinks(
+async function writeAgendaLinks(
   tx: any,
   agendaItemId: number,
   links: AgendaItemLinks,
@@ -475,7 +475,7 @@ export async function syncPurchaseDate(p: {
  * leur date d'achat, JAMAIS celle du bien porteur ; un bien lié sans aucun de
  * ses équipements reçoit la date (règle D-13 inchangée).
  */
-export function purchaseSyncTargets(
+function purchaseSyncTargets(
   assetIds: readonly number[],
   linkedEquipments: ReadonlyArray<{ id: number; assetId: number }>,
 ): { assetIds: number[]; equipmentIds: number[] } {

@@ -41,7 +41,7 @@ type FicheForm = Record<string, string>;
 const FICHE_VIDE: FicheForm = Object.fromEntries(EQUIPMENT_FICHE_FIELDS.map((f) => [f.key, '']));
 
 /** Valeur lue → affichage « 12,5 kW », « 4,2 », « R32 ». */
-export function ficheValueLabel(key: string, v: unknown): string | null {
+function ficheValueLabel(key: string, v: unknown): string | null {
   if (v === null || v === undefined || v === '') return null;
   const f = EQUIPMENT_FICHE_FIELDS.find((x) => x.key === key);
   if (f?.type !== 'number') return String(v);
@@ -69,7 +69,7 @@ export interface EquipmentDrawerSubstructure {
   name: string;
 }
 
-export interface EquipmentDrawerAsset {
+interface EquipmentDrawerAsset {
   id: number;
   name: string;
 }
@@ -498,23 +498,6 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       setShowArchiveConfirm(false);
     }
   }, [eq, assetId, onOpenChange, onRefresh]);
-
-  const reloadLinkedData = useCallback(() => {
-    if (!eq?.id) return;
-    setLoadingSuppliers(true);
-    apiClient.get<{ suppliers: { supplierId: number; name: string; email: string | null; isPrimary: boolean }[] }>(
-      `/api/equipments/${eq.id}/suppliers`
-    ).then(d => setEquipmentSuppliers(d.suppliers ?? [])).catch(() => setEquipmentSuppliers([])).finally(() => setLoadingSuppliers(false));
-
-    setLoadingDocuments(true);
-    apiClient.get<{ documents: EquipmentDocument[] }>(`/api/equipments/${eq.id}/documents`)
-      .then(d => setEquipmentDocuments(d.documents ?? [])).catch(() => setEquipmentDocuments([])).finally(() => setLoadingDocuments(false));
-
-    setLoadingAgenda(true);
-    apiClient.get<{ items: EquipmentAgendaItem[] }>(`/api/equipments/${eq.id}/agenda`)
-      .then(d => setEquipmentAgenda(d.items ?? [])).catch(() => setEquipmentAgenda([])).finally(() => setLoadingAgenda(false));
-  }, [eq]);
-
 
   const substructures = dynamicSubstructures;
   const statusColor = eq ? (STATUS_COLORS[eq.status] ?? STATUS_COLORS.INACTIF) : '';

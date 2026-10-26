@@ -22,7 +22,7 @@ import type { FieldEvidence } from './evidence.types';
 
 export type EntityEvidenceType = 'EQUIPMENT' | 'ROOM';
 
-export interface EntityEvidenceTarget {
+interface EntityEvidenceTarget {
   type: EntityEvidenceType;
   id: number;
   /** Bien porteur des preuves. */

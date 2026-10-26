@@ -28,9 +28,9 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export const PENDING_DUO_TOKEN_KEY = 'pending_duo_join_token';
+const PENDING_DUO_TOKEN_KEY = 'pending_duo_join_token';
 
-export type DuoJoinResult =
+type DuoJoinResult =
   | { ok: true }
   | { ok: false; error: string; message?: string };
 

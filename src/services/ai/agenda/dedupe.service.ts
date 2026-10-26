@@ -15,9 +15,9 @@ const DATE_TOLERANCE_DAYS = 3;
 /** Similarité de titre au-delà de laquelle deux libellés désignent la même chose. */
 const TITLE_SIMILARITY_THRESHOLD = 0.82;
 
-export type DuplicateKind = 'exact' | 'probable' | 'none';
+type DuplicateKind = 'exact' | 'probable' | 'none';
 
-export interface DuplicateMatch {
+interface DuplicateMatch {
   kind: DuplicateKind;
   item: ExistingAgendaItem | null;
   reason: string;

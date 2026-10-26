@@ -350,7 +350,7 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
  * et au rattrapage des faux arbitrages (lot 81A, un seul moteur) :
  * réconciliation négative (T3-04), date révisée par T4 (D-M).
  */
-export function decideCollectedField(field: CollectedField): ReconciliationDecision {
+function decideCollectedField(field: CollectedField): ReconciliationDecision {
   // D-M (lot 20) : date tranchée par T4 → la preuve révisée corrige la
   // valeur automatique qu'elle remplace (jamais une valeur USER/ADMIN).
   const revision = isT4DateRevision(field.unproven, field.input);
@@ -363,7 +363,7 @@ export function decideCollectedField(field: CollectedField): ReconciliationDecis
 }
 
 /** Réévaluation en LECTURE SEULE d'un champ de bien (lot 81A). */
-export interface AssetFieldEvaluation {
+interface AssetFieldEvaluation {
   /** Bien introuvable (supprimé, autre compte). */
   missing: boolean;
   /** Valeur en place, telle que la fiche l'affiche. */

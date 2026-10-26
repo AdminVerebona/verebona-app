@@ -95,12 +95,11 @@ export type IdentityBasis =
 export const IDENTITY_POSITIVE = ['SHARED_REFERENCE', 'PROVIDER_SAME', 'AMOUNT_COHERENT', 'DATE_SAME'] as const;
 export const IDENTITY_WEAK = ['PROVIDER_DIFFERENT', 'AMOUNT_DIFFERENT', 'DATE_APART', 'EQUIPMENT_SCOPE_DIFFERENT'] as const;
 export const IDENTITY_STRONG = ['AMOUNT_INCOMPATIBLE', 'EQUIPMENT_DISJOINT', 'OBJECT_INCOMPATIBLE'] as const;
-export type IdentityPositive = (typeof IDENTITY_POSITIVE)[number];
-export type IdentityWeak = (typeof IDENTITY_WEAK)[number];
-export type IdentityStrong = (typeof IDENTITY_STRONG)[number];
-export type IdentitySignal = IdentityPositive | IdentityWeak | IdentityStrong;
+type IdentityPositive = (typeof IDENTITY_POSITIVE)[number];
+type IdentityWeak = (typeof IDENTITY_WEAK)[number];
+type IdentityStrong = (typeof IDENTITY_STRONG)[number];
 
-export type IdentityVerdict = 'CONFIRMED' | 'UNPROVEN' | 'CONTRADICTED';
+type IdentityVerdict = 'CONFIRMED' | 'UNPROVEN' | 'CONTRADICTED';
 
 export interface IdentityAssessment {
   verdict: IdentityVerdict;
@@ -110,18 +109,18 @@ export interface IdentityAssessment {
 }
 
 /** Rapport de montants à partir duquel deux transactions sont d'ordres de grandeur différents. */
-export const AMOUNT_INCOMPATIBLE_RATIO = 10;
+const AMOUNT_INCOMPATIBLE_RATIO = 10;
 /** Tolérance de concordance des montants (1 %, au moins une unité mineure). */
-export const AMOUNT_COHERENT_TOLERANCE = 0.01;
+const AMOUNT_COHERENT_TOLERANCE = 0.01;
 /** Écart (jours) en deçà duquel une date de fiche et une date de document désignent le même jour économique. */
-export const SAME_DATE_DAYS = 7;
+const SAME_DATE_DAYS = 7;
 
 const PRINCIPAL_ROLES = new Set(['REALIZED_COST', 'FORECAST_COST', 'PROCEED']);
 const principalScope = (h: Pick<PersistedFinancialHint, 'amountScope'>) => h.amountScope === null || h.amountScope === undefined || h.amountScope === 'TOTAL';
 const etablie = (currency: string) => /^[A-Z]{3}$/.test(currency) && currency !== 'XXX';
 
 /** Montants principaux et réglés d'indices T1 (pure). */
-export function amountsOfHints(hints: readonly PersistedFinancialHint[]): Pick<EconomicFootprint, 'principal' | 'payments' | 'installments'> {
+function amountsOfHints(hints: readonly PersistedFinancialHint[]): Pick<EconomicFootprint, 'principal' | 'payments' | 'installments'> {
   const principal: Array<{ amountMinor: number; currency: string; direction: 'COST' | 'PROCEED' }> = [];
   const payments: Array<{ amountMinor: number; currency: string }> = [];
   const installments: Array<{ amountMinor: number; currency: string; direction: 'COST' | 'PROCEED' }> = [];
@@ -148,7 +147,7 @@ export function footprintOfIdentity(c: CandidateIdentity): EconomicFootprint {
 }
 
 /** Vue minimale d'une Opération (agrégat de ses sources), pour l'empreinte de repli. */
-export interface OperationFootprintInput {
+interface OperationFootprintInput {
   typeCode: BusinessOperationTypeCode | null;
   providerKey: string | null;
   assetIds: readonly number[];
@@ -189,7 +188,7 @@ const coherent = (a: number, b: number) => Math.abs(a - b) <= Math.max(1, Math.r
  * Comparaison des montants (pure) : concordants, différents, incompatibles, ou rien à comparer.
  * Lot 84E : `seriesScale` — échéances d'une série : seule l'INCOMPATIBILITÉ d'ordre de grandeur est relevée.
  */
-export function compareAmounts(a: EconomicFootprint, b: EconomicFootprint, opts: { seriesScale?: boolean } = {}): 'COHERENT' | 'DIFFERENT' | 'INCOMPATIBLE' | null {
+function compareAmounts(a: EconomicFootprint, b: EconomicFootprint, opts: { seriesScale?: boolean } = {}): 'COHERENT' | 'DIFFERENT' | 'INCOMPATIBLE' | null {
   const tousA = [...a.principal, ...a.payments];
   const tousB = [...b.principal, ...b.payments];
   if (tousA.some((x) => tousB.some((y) => x.currency === y.currency && coherent(x.amountMinor, y.amountMinor)))) return 'COHERENT';
@@ -214,7 +213,7 @@ export function compareAmounts(a: EconomicFootprint, b: EconomicFootprint, opts:
 }
 
 /** Écart relatif (fiche du bien) en deçà duquel un prix saisi et un prix documentaire décrivent le même achat. */
-export const STRUCTURED_AMOUNT_TOLERANCE = 0.1;
+const STRUCTURED_AMOUNT_TOLERANCE = 0.1;
 function closeAmounts(a: EconomicFootprint, b: EconomicFootprint): boolean {
   return a.principal.some((x) => b.principal.some((y) => x.currency === y.currency && (x.direction ?? 'COST') === (y.direction ?? 'COST')
     && Math.abs(x.amountMinor - y.amountMinor) <= STRUCTURED_AMOUNT_TOLERANCE * Math.max(x.amountMinor, y.amountMinor)));

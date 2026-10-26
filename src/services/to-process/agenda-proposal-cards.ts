@@ -33,7 +33,7 @@ export const AGENDA_PROPOSAL_RULE = 'AGENDA-PROPOSAL';
 export const AGENDA_PROPOSAL_REASONS = new Set(['SOURCE_TYPE_NOT_AUTHORIZED', 'SOURCE_TYPE_UNKNOWN', 'TEMPORAL_AMBIGUITY']);
 
 /** Échéance proposée, telle que la carte la conserve. */
-export interface AgendaProposalCandidate {
+interface AgendaProposalCandidate {
   title: string;
   date: string;
   category: 'action' | 'information' | null;

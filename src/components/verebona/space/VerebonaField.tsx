@@ -28,8 +28,8 @@ import { MascotPose } from './MascotPose';
 import { SpaceBody, LIVE_OPTION_ID } from './SpaceContent';
 import { useVerebonaSpace, type VerebonaSpaceApi } from './VerebonaSpaceProvider';
 
-export const PANEL_ID = 'verebona-espace';
-export const LIVE_LIST_ID = 'verebona-suggestions';
+const PANEL_ID = 'verebona-espace';
+const LIVE_LIST_ID = 'verebona-suggestions';
 
 /** Saisie partagée, envoi (Entrée), restauration si la demande n'aboutit pas. */
 function useFieldText(api: VerebonaSpaceApi | null) {

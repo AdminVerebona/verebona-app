@@ -37,7 +37,7 @@ import type postgres from 'postgres';
 type Sql = postgres.Sql | postgres.TransactionSql;
 
 /** Tables à `account_id` remplies sans action de l'utilisateur (compte « vide » malgré elles). */
-export const TECHNICAL_ACCOUNT_TABLES: readonly string[] = [
+const TECHNICAL_ACCOUNT_TABLES: readonly string[] = [
   'account_memberships', 'account_subscriptions', 'account_audit_log', 'trial_grants', 'signup_contexts',
   'funnel_events', 'notification_outbox', 'notification_events', 'home_mascot_cache', 'home_mascot_generations',
   'home_mascot_pregen_requests', 'home_mascot_events', 'account_analysis_counters', 'account_analysis_credits',
@@ -47,9 +47,9 @@ export const TECHNICAL_ACCOUNT_TABLES: readonly string[] = [
   'reconciliation_runs', 'impact_queue', 'duo_accounts',
 ];
 
-export type PersonalCategory = 'D1' | 'D2' | 'D3' | 'D4';
+type PersonalCategory = 'D1' | 'D2' | 'D3' | 'D4';
 
-export interface DuoRow {
+interface DuoRow {
   duoId: number;
   status: string;
   accountId: number | null;
@@ -61,7 +61,7 @@ export interface DuoRow {
   anomalies: string[];
 }
 
-export interface Inventory {
+interface Inventory {
   A: number; B: number; C: number; D1: number; D2: number; D3: number; D4: number;
   E: number; F: number; G: number; H: number; I: number;
 }

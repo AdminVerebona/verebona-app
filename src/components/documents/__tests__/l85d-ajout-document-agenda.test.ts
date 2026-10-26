@@ -39,7 +39,6 @@ vi.mock('@/contexts/WriteGuardContext', () => ({
 }));
 vi.mock('@/hooks/useFileDepot', () => ({ useFileDepot: () => ({ elements: [] }) }));
 vi.mock('@/components/upload-notice-banner', () => ({ UploadNoticeBanner: () => null }));
-vi.mock('@/components/documents/FusionSuggestionModal', () => ({ FusionSuggestionModal: () => null }));
 vi.mock('@/components/documents/UploadQueuePanel', () => ({ UploadQueuePanel: () => null, UploadResumeSection: () => null, reprendreDepot: () => {} }));
 vi.mock('@/lib/api-client', () => ({ apiClient: { get: etat.get, post: vi.fn(), patch: vi.fn(), put: vi.fn(), delete: vi.fn() } }));
 

@@ -198,7 +198,7 @@ export function cellContext(t: ExtractedTable, row: number, column: number): Rec
 }
 
 /** Libellé d'une ligne sans en-tête : sa première cellule non vide. */
-export function rowLabel(t: Pick<ExtractedTable, 'cells'>, row: number): string | null {
+function rowLabel(t: Pick<ExtractedTable, 'cells'>, row: number): string | null {
   const first = t.cells.filter((c) => c.row === row && c.value !== null).sort((a, b) => a.column - b.column)[0];
   return first?.value ?? null;
 }

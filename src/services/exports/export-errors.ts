@@ -42,7 +42,7 @@ export const EXPORT_ERROR_MESSAGES = {
   EXPORT_NOT_READY: 'Ce dossier n’est pas encore prêt.',
 } as const;
 
-export type ExportErrorCode = keyof typeof EXPORT_ERROR_MESSAGES;
+type ExportErrorCode = keyof typeof EXPORT_ERROR_MESSAGES;
 
 /** Message affichable pour un `error_payload` stocké (anciens payloads compris). */
 export function safeExportErrorMessage(errorPayload: string | null | undefined): string | null {

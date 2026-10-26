@@ -58,7 +58,7 @@ export function sectionOfPath(path: string): DiagSectionCode {
   return 'technique';
 }
 
-export interface SectionFileRef {
+interface SectionFileRef {
   path: string;
   status: ExtractionStatus | undefined;
   expected: number | null | undefined;
@@ -84,7 +84,7 @@ export interface DiagSectionManifest {
   errors: string[];
 }
 
-export interface SectionInputs {
+interface SectionInputs {
   files: DiagFileInfo[];
   /** Section de chaque fichier (sinon `sectionOfPath`). */
   fileSections: ReadonlyMap<string, DiagSectionCode>;
@@ -155,7 +155,7 @@ export function globalWithSections(base: ExtractionStatus, sections: readonly Di
 
 // ── Guide d'analyse (LISEZMOI-ANALYSE.md) ───────────────────────────────────
 
-export interface GuideInputs {
+interface GuideInputs {
   scope: string;
   scopeLabel: string;
   target: string;

@@ -9,7 +9,7 @@ import { Bot, ArrowRight, ExternalLink, Lock, Crown } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
-interface AiHistoryItem {
+export interface AiHistoryItem {
   id: number;
   fieldKey: string;
   fieldLabel: string;
@@ -22,7 +22,7 @@ interface AiHistoryItem {
   docTitle: string | null;
 }
 
-function formatValue(val: string | null): string {
+export function formatValue(val: string | null): string {
   if (!val || val === 'null') return '—';
   if (val === 'true') return 'Oui';
   if (val === 'false') return 'Non';

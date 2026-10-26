@@ -36,7 +36,7 @@ export const ASSISTANT_BUSINESS_EVENTS = [
   'ACCOUNT_PERMISSION_CHANGED',
 ] as const;
 
-export type AssistantCatalogEventType = (typeof ASSISTANT_BUSINESS_EVENTS)[number];
+type AssistantCatalogEventType = (typeof ASSISTANT_BUSINESS_EVENTS)[number];
 
 /**
  * Signaux d'invalidation HORS catalogue §25.7 — CDC §31.7.
@@ -46,15 +46,15 @@ export type AssistantCatalogEventType = (typeof ASSISTANT_BUSINESS_EVENTS)[numbe
  * changement de locale. Ils passent par le même bus (mêmes consommateurs de
  * cache, mêmes compteurs) sans élargir le catalogue du CDC.
  */
-export const ASSISTANT_INVALIDATION_SIGNALS = [
+const ASSISTANT_INVALIDATION_SIGNALS = [
   'SUPPLIER_CHANGED',
   'CONVERSATION_CLEARED',
   'LOCALE_CHANGED',
 ] as const;
 
-export type AssistantInvalidationSignal = (typeof ASSISTANT_INVALIDATION_SIGNALS)[number];
+type AssistantInvalidationSignal = (typeof ASSISTANT_INVALIDATION_SIGNALS)[number];
 
-export type AssistantBusinessEventType = AssistantCatalogEventType | AssistantInvalidationSignal;
+type AssistantBusinessEventType = AssistantCatalogEventType | AssistantInvalidationSignal;
 
 const TOUS_LES_TYPES: readonly string[] = [...ASSISTANT_BUSINESS_EVENTS, ...ASSISTANT_INVALIDATION_SIGNALS];
 
@@ -63,7 +63,7 @@ export const DELETION_EVENTS: ReadonlySet<AssistantBusinessEventType> = new Set(
   'ASSET_DELETED', 'DOCUMENT_DELETED', 'AGENDA_ITEM_DELETED', 'ACCOUNT_PERMISSION_CHANGED',
 ]);
 
-export interface AssistantBusinessEvent {
+interface AssistantBusinessEvent {
   type: AssistantBusinessEventType;
   /** Compte concerné ; `null` pour un événement global (article d'aide publié). */
   accountId: number | null;

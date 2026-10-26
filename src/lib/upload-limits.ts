@@ -30,9 +30,6 @@
  */
 import { ALLOWED_MIME_TYPES } from '@/lib/file-validation';
 
-/** Version du contrat — à incrémenter avec les messages si une valeur change. */
-export const CONTRAT_DEPOT_VERSION = 2;
-
 /**
  * Document analysé : contrainte du fournisseur d'analyse (Gemini plafonne
  * autour de 20 Mo pour un PDF). Au-delà, l'analyse échouerait après transfert.
@@ -48,7 +45,7 @@ export const TAILLE_MAX_LOT = 100_000_000;
 export const MAX_FICHIERS_COMPTE = 1000;
 export const MAX_FICHIERS_PAR_BIEN = 100;
 
-export function estVideo(mimeType: string | null | undefined): boolean {
+function estVideo(mimeType: string | null | undefined): boolean {
   return typeof mimeType === 'string' && mimeType.startsWith('video/');
 }
 
@@ -63,9 +60,9 @@ export function enMo(octets: number): string {
   return `${Number.isInteger(mo) ? mo : mo.toFixed(1).replace('.', ',')} Mo`;
 }
 
-export type CodeRefusFichier = 'INVALID_SIZE' | 'FILE_EMPTY' | 'FILE_TOO_LARGE' | 'INVALID_MIME_TYPE';
+type CodeRefusFichier = 'INVALID_SIZE' | 'FILE_EMPTY' | 'FILE_TOO_LARGE' | 'INVALID_MIME_TYPE';
 
-export interface RefusFichier {
+interface RefusFichier {
   code: CodeRefusFichier;
   message: string;
   /** Plafond applicable, en octets (FILE_TOO_LARGE). */
@@ -126,14 +123,14 @@ export function verifierLot(tailles: number[]): { code: 'TOO_MANY_FILES' | 'BATC
   return null;
 }
 
-export interface FichierCandidat {
+interface FichierCandidat {
   name: string;
   size: number;
   /** Type normalisé (voir `normalizeMimeType`). */
   mimeType: string;
 }
 
-export interface TriDepot<T> {
+interface TriDepot<T> {
   retenus: T[];
   /** Fichiers refusés un par un, avec leur motif. */
   refuses: Array<{ fichier: T; refus: RefusFichier }>;

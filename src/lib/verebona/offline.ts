@@ -31,7 +31,7 @@ export function composerState(online: boolean, isLoading: boolean, text: string)
   return { canSend: !isLoading && text.trim().length > 0, notice: null };
 }
 
-export interface QueuedQuestion {
+interface QueuedQuestion {
   /** Identifiant du message utilisateur affiché « en attente ». */
   messageId: string;
   text: string;

@@ -28,7 +28,7 @@ import { pgClient } from '@/db';
 
 type Row = Record<string, unknown>;
 
-export interface T1FileStatus {
+interface T1FileStatus {
   fileId: number;
   /** `queued` : en attente de son tour ; `analyzing` : en cours. */
   state: 'queued' | 'analyzing';
@@ -36,7 +36,7 @@ export interface T1FileStatus {
   nextAttemptAt: string | null;
 }
 
-export interface T1QueueStatus {
+interface T1QueueStatus {
   /** Toujours `durable` (lot 16b) ; conservé pour les clients qui le lisent. */
   mode: 'durable';
   files: T1FileStatus[];

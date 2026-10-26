@@ -164,7 +164,7 @@ export interface ScopeItem {
   fileIds: number[];
 }
 
-export interface ScopeRestorable { ref: string; journalId: number; absorbedItemId: number; principalItemId: number | null; restorable: boolean }
+interface ScopeRestorable { ref: string; journalId: number; absorbedItemId: number; principalItemId: number | null; restorable: boolean }
 
 export interface RepresentationScope {
   accountId: number;
@@ -193,7 +193,7 @@ export interface BuiltRepresentation {
 
 // ── Construction (pure) ─────────────────────────────────────────────────────
 
-export const isTouchedItem = (i: Pick<RawItem, 'isAutomatic' | 'isAutomaticModified' | 'manualStatus' | 'confirmedByUser'>): boolean =>
+const isTouchedItem = (i: Pick<RawItem, 'isAutomatic' | 'isAutomaticModified' | 'manualStatus' | 'confirmedByUser'>): boolean =>
   !i.isAutomatic || i.isAutomaticModified || (i.manualStatus !== null && i.manualStatus !== '') || i.confirmedByUser;
 
 /** Sérialisation stable (clés triées) : empreintes reproductibles. */

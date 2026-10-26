@@ -28,7 +28,7 @@ export const BUSINESS_OPERATION_EVENT_TYPES = [
   'BUSINESS_OPERATION_MERGED',
 ] as const;
 
-export type BusinessOperationEventType = (typeof BUSINESS_OPERATION_EVENT_TYPES)[number];
+type BusinessOperationEventType = (typeof BUSINESS_OPERATION_EVENT_TYPES)[number];
 
 export interface BusinessOperationEvent {
   type: BusinessOperationEventType;

@@ -58,7 +58,7 @@ export const ENTITY_CARD_KIND_LABELS: Record<EntityCardKind, string> = {
 
 const DRAWER_KINDS: ReadonlySet<EntityCardKind> = new Set<EntityCardKind>(['document', 'echeance', 'equipement', 'piece']);
 
-export function isDrawerKind(kind: EntityCardKind): kind is DrawerKind {
+function isDrawerKind(kind: EntityCardKind): kind is DrawerKind {
   return DRAWER_KINDS.has(kind);
 }
 
@@ -107,7 +107,7 @@ export function handleEntityCardClick(
   return false;
 }
 
-export interface EntityCardProps {
+interface EntityCardProps {
   kind: EntityCardKind;
   id: number;
   title: string;

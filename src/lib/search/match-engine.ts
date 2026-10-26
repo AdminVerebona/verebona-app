@@ -59,10 +59,10 @@ import { DOCUMENT_TYPE_QUERY_WORDS, documentCodeLabel } from '@/lib/referential/
 
 // ── Classification ────────────────────────────────────────────────────────
 
-export const MATCH_TYPES = ['EXACT', 'EXACT_TOKEN', 'PREFIX', 'NORMALIZED', 'ALIAS', 'FUZZY', 'SEMANTIC', 'RELATIONAL', 'CATEGORY'] as const;
+const MATCH_TYPES = ['EXACT', 'EXACT_TOKEN', 'PREFIX', 'NORMALIZED', 'ALIAS', 'FUZZY', 'SEMANTIC', 'RELATIONAL', 'CATEGORY'] as const;
 export type MatchType = (typeof MATCH_TYPES)[number];
 
-export const REJECTION_REASONS = [
+const REJECTION_REASONS = [
   'NO_MATCHING_FIELD', 'RELATION_ONLY', 'CATEGORY_ONLY', 'FUZZY_SCORE_TOO_LOW', 'SEMANTIC_SCORE_TOO_LOW',
   'CROSS_ENTITY_PROPAGATION',
   /** Barre de recherche : un mot de la requête n'est retrouvé nulle part sur l'élément. */
@@ -78,11 +78,11 @@ export type RejectionReason = (typeof REJECTION_REASONS)[number];
  *   RELATIONAL → jamais seul (complète une correspondance directe) ;
  *   CATEGORY → seul seulement pour une requête de catégorie explicite.
  */
-export const MATCH_TYPE_SCORES: Readonly<Record<MatchType, number>> = {
+const MATCH_TYPE_SCORES: Readonly<Record<MatchType, number>> = {
   EXACT: 1, EXACT_TOKEN: 0.95, NORMALIZED: 0.9, ALIAS: 0.85, PREFIX: 0.8, FUZZY: 0.7, SEMANTIC: 0.6, CATEGORY: 0.5, RELATIONAL: 0.4,
 };
-export const FUZZY_MIN_SCORE = 0.75;
-export const SEMANTIC_MIN_SCORE = 0.82;
+const FUZZY_MIN_SCORE = 0.75;
+const SEMANTIC_MIN_SCORE = 0.82;
 
 // ── Champs autorisés par type d'entité (ticket §5) ───────────────────────
 
@@ -100,9 +100,9 @@ export type SearchEntityType = 'asset' | 'document' | 'agenda_item' | 'equipment
  *   category   — catégorie / type : match CATEGORY (voir l'en-tête) ;
  *   relation   — entité VOISINE (bien lié) : match RELATIONAL (complément).
  */
-export type FieldKind = 'name' | 'identifier' | 'text' | 'content' | 'category' | 'relation';
+type FieldKind = 'name' | 'identifier' | 'text' | 'content' | 'category' | 'relation';
 
-export interface SearchFieldSpec {
+interface SearchFieldSpec {
   field: string;
   label: string;
   kind: FieldKind;
@@ -183,11 +183,6 @@ export const SEARCH_FIELDS: Readonly<Record<SearchEntityType, readonly SearchFie
   ],
 };
 
-/** Champs autorisés d'un type (copie). */
-export function searchFieldsOf(type: SearchEntityType): SearchFieldSpec[] {
-  return [...SEARCH_FIELDS[type]];
-}
-
 // ── Normalisation ─────────────────────────────────────────────────────────
 
 /** Minuscules, sans accent ni ligature, ponctuation → espace (même règle que `unaccent(lower())`). */
@@ -206,7 +201,7 @@ const compact = (s: unknown): string => normalizeSearchText(s).replace(/ /g, '')
 const motsBruts = (s: unknown): string[] => String(s ?? '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 
 /** Singulier simple (« factures » → « facture ») : s / x finaux, pas les irréguliers. */
-export function singularOf(w: string): string {
+function singularOf(w: string): string {
   if (w.length > 3 && /[a-z]s$/.test(w) && !/ss$/.test(w)) return w.slice(0, -1);
   if (w.length > 4 && /aux$/.test(w)) return w;
   if (w.length > 3 && /[a-z]x$/.test(w)) return w.slice(0, -1);
@@ -214,7 +209,7 @@ export function singularOf(w: string): string {
 }
 
 /** Distance d'édition bornée (Damerau restreinte : une inversion = une faute). */
-export function boundedEditDistance(a: string, b: string, max: number): number {
+function boundedEditDistance(a: string, b: string, max: number): number {
   if (Math.abs(a.length - b.length) > max) return max + 1;
   const d: number[][] = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array<number>(b.length).fill(0)]);
   for (let j = 0; j <= b.length; j++) d[0][j] = j;
@@ -232,7 +227,7 @@ export function boundedEditDistance(a: string, b: string, max: number): number {
 }
 
 /** Fautes tolérées selon la longueur (ticket §6) : aucune sous 5 lettres. */
-export function fuzzyTolerance(len: number): number {
+function fuzzyTolerance(len: number): number {
   return len >= 8 ? 2 : len >= 5 ? 1 : 0;
 }
 
@@ -283,7 +278,7 @@ export interface ParsedQuery {
 const MOTS_TYPE_DOC = new Set([...DOCUMENT_TYPE_QUERY_WORDS, 'devi', 'devis']);
 
 /** Le mot désigne-t-il une catégorie (bien ou type documentaire) ? */
-export function isCategoryWord(w: string): boolean {
+function isCategoryWord(w: string): boolean {
   const s = singularOf(w);
   return isAssetVocabularyWord(w) || isAssetVocabularyWord(s) || MOTS_TYPE_DOC.has(w) || MOTS_TYPE_DOC.has(s);
 }
@@ -367,7 +362,7 @@ export function queryFromTerms(terms: ReadonlyArray<{ raw: string; stem: string;
 
 // ── Correspondance d'un mot sur une valeur ────────────────────────────────
 
-export interface FieldMatch {
+interface FieldMatch {
   field: string;
   kind: FieldKind;
   matchType: MatchType;
@@ -474,11 +469,11 @@ export interface SearchPolicy {
   semanticMinScore?: number;
 }
 
-export type EligibilityReason =
+type EligibilityReason =
   | 'EXACT_VALUE' | 'DIRECT_MATCH' | 'DIRECT_MATCH_WITH_QUALIFIER' | 'AUTHORIZED_RELATION' | 'EXPLICIT_CATEGORY_QUERY'
   | 'SEMANTIC_ABOVE_THRESHOLD' | 'STRUCTURED_FILTER';
 
-export interface CandidateEvaluation {
+interface CandidateEvaluation {
   candidate: SearchCandidate;
   eligible: boolean;
   eligibilityDecision: 'ELIGIBLE' | 'REJECTED';
@@ -695,7 +690,7 @@ export function traceOf(query: ParsedQuery, e: CandidateEvaluation | RankedResul
   };
 }
 
-export interface SearchPipelineResult {
+interface SearchPipelineResult {
   results: RankedResult[];
   rejected: CandidateEvaluation[];
   trace: SearchTraceEntry[];

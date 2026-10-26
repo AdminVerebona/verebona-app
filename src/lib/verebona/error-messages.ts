@@ -44,7 +44,7 @@ const MESSAGES: Record<AssistantErrorCode, string> = {
 /** Codes pour lesquels « Réessayer » a un sens. */
 const NON_RECOVERABLE = new Set<AssistantErrorCode>(['PLAN_NOT_ELIGIBLE', 'UNSAFE_REQUEST', 'REQUEST_CANCELLED']);
 
-export function isAssistantErrorCode(code: unknown): code is AssistantErrorCode {
+function isAssistantErrorCode(code: unknown): code is AssistantErrorCode {
   return typeof code === 'string' && code in MESSAGES;
 }
 

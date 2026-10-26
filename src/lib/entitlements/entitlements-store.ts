@@ -64,7 +64,7 @@ export interface EntitlementsState {
 
 export type EntitlementsStatus = 'unknown' | 'known' | 'unavailable';
 
-export interface EntitlementsSnapshot {
+interface EntitlementsSnapshot {
   data: EntitlementsState | null;
   status: EntitlementsStatus;
   /** Vrai tant qu'aucune réponse n'a été obtenue dans ce contexte. */
@@ -80,7 +80,7 @@ export const INITIAL_ENTITLEMENTS_SNAPSHOT: EntitlementsSnapshot = Object.freeze
 /** Au-delà, les droits sont relus au prochain changement de page. */
 export const DUREE_VALIDITE_MS = 60_000;
 
-export interface EntitlementsStoreDeps {
+interface EntitlementsStoreDeps {
   /** Lecture des droits ; doit honorer `signal`. */
   fetchEntitlements: (signal: AbortSignal) => Promise<EntitlementsState>;
   now?: () => number;

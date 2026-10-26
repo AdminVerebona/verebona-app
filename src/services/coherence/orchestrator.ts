@@ -70,16 +70,16 @@ import { coherenceAccountEligibility } from './eligibility';
 import { exec, intArray, rows, type Row } from './registry/util';
 
 /** Objets contrôlés par lot. */
-export const COHERENCE_BATCH = 50;
+const COHERENCE_BATCH = 50;
 /** Temporisation d'une demande de contrôle ciblé (rafale d'événements regroupée). */
 export const TARGETED_DEBOUNCE_MS = 2 * 60_000;
 /** Demandes ciblées traitées au plus par passage. */
-export const TARGETED_MAX_PER_RUN = 2_000;
+const TARGETED_MAX_PER_RUN = 2_000;
 /** Rétention des preuves d'objets qui ne sont plus contrôlés (objet disparu, compte sorti du périmètre). */
-export const PROOF_RETENTION_DAYS = 35;
+const PROOF_RETENTION_DAYS = 35;
 /** Rétention du journal des réparations et des campagnes. */
-export const REPAIR_RETENTION_DAYS = 400;
-export const CAMPAIGN_RETENTION_DAYS = 120;
+const REPAIR_RETENTION_DAYS = 400;
+const CAMPAIGN_RETENTION_DAYS = 120;
 
 export type CampaignKind = 'DAILY' | 'CATCHUP' | 'MANUAL';
 export type CampaignStatus = 'PENDING' | 'RUNNING' | 'COMPLETE' | 'PARTIAL' | 'FAILED';
@@ -117,13 +117,13 @@ export interface CampaignRow {
   rulesChanges: RulesChange[];
 }
 
-export interface CheckVersion { id: string; version: number }
+interface CheckVersion { id: string; version: number }
 
 /**
  * Lot 85B (CDC §6.4, CA-11) — changement de version de règles constaté EN
  * COURS de campagne (déploiement d'un contrôle nouveau, modifié ou retiré).
  */
-export interface RulesChange {
+interface RulesChange {
   at: string;
   phase: 'TRAVERSE' | 'VERIFY' | 'DONE';
   from: string;
@@ -135,7 +135,7 @@ export interface RulesChange {
   verifyRestarted: boolean;
 }
 
-export interface CampaignAccounts {
+interface CampaignAccounts {
   visited: number;
   /** Comptes non éligibles, par motif (jamais contrôlés, C-Q10). */
   skipped: Record<string, number>;
@@ -149,7 +149,7 @@ export interface CampaignAccounts {
   subscriptionStateRead?: number;
 }
 
-export interface CheckCounters {
+interface CheckCounters {
   controlled: number;
   results: Partial<Record<ControlResult, number>>;
   durationMs: number;
@@ -159,7 +159,7 @@ export interface CheckCounters {
   remaining?: number;
 }
 
-export interface CampaignMetrics {
+interface CampaignMetrics {
   runs: number;
   /** Temps de calcul cumulé des passages (ms). */
   durationMs: number;
@@ -302,7 +302,7 @@ export async function getCampaign(id: number, sql: Sql = pgClient): Promise<Camp
   return r ? toCampaign(r) : null;
 }
 
-export interface StartCampaignInput {
+interface StartCampaignInput {
   kind: CampaignKind;
   trigger: string;
   mode?: CoherenceMode;
@@ -337,7 +337,7 @@ export async function startCampaign(p: StartCampaignInput): Promise<number> {
  * Campagne quotidienne du jour (Paris) : créée si absente. Une campagne
  * quotidienne antérieure encore en cours est close PARTIAL (échéance passée).
  */
-export async function ensureDailyCampaign(now: Date = new Date(), sql: Sql = pgClient): Promise<number> {
+async function ensureDailyCampaign(now: Date = new Date(), sql: Sql = pgClient): Promise<number> {
   const today = todayParisDateStr(now);
   const [r] = await rows(sql, `SELECT id FROM coherence_campaigns WHERE kind = 'DAILY' AND campaign_date = $1::date`, [today]);
   if (r) return Number(r.id);
@@ -424,7 +424,7 @@ function skip(c: CampaignRow, accountId: number, reason: string): void {
   c.accounts.skippedIds = [...(c.accounts.skippedIds ?? []), accountId].slice(-50);
 }
 
-export interface CampaignStepResult {
+interface CampaignStepResult {
   campaignId: number;
   status: CampaignStatus;
   phase: string;
@@ -636,7 +636,7 @@ async function finalize(sql: Sql, c: CampaignRow, now: Date, why: 'END' | 'DEADL
 
 // ══ Contrôles ciblés ════════════════════════════════════════════════════════
 
-export interface TargetedResult {
+interface TargetedResult {
   processed: number;
   results: Partial<Record<ControlResult, number>>;
   skippedAccounts: number;
@@ -732,7 +732,7 @@ export async function requestTargetedChecks(p: {
 // ══ Tâche planifiée ═════════════════════════════════════════════════════════
 
 /** Rétention bornée : preuves d'objets plus contrôlés, journal ancien, campagnes anciennes. */
-export async function purgeCoherenceHistory(now: Date = new Date(), sql: Sql = pgClient): Promise<{ proofs: number; repairs: number; campaigns: number }> {
+async function purgeCoherenceHistory(now: Date = new Date(), sql: Sql = pgClient): Promise<{ proofs: number; repairs: number; campaigns: number }> {
   const proofs = await rows(sql, `
     DELETE FROM coherence_object_proofs WHERE ctid IN (
       SELECT ctid FROM coherence_object_proofs
@@ -745,7 +745,7 @@ export async function purgeCoherenceHistory(now: Date = new Date(), sql: Sql = p
   return { proofs: proofs.length, repairs: repairs.length, campaigns: campaigns.length };
 }
 
-export interface CoherenceTaskResult {
+interface CoherenceTaskResult {
   disabled?: boolean;
   note: string;
   campaigns: CampaignStepResult[];

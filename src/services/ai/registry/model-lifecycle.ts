@@ -27,7 +27,7 @@
 
 export type ProviderLifecycle = 'stable' | 'preview' | 'experimental' | 'deprecated';
 
-export interface ProviderLifecycleInput {
+interface ProviderLifecycleInput {
   model: string;
   displayName?: string | null;
   description?: string | null;
@@ -35,7 +35,7 @@ export interface ProviderLifecycleInput {
   launchStage?: string | null;
 }
 
-export interface ProviderLifecycleResult {
+interface ProviderLifecycleResult {
   status: ProviderLifecycle;
   /** `structured` : champ du fournisseur ; `name_rule` : convention de nommage. */
   basis: 'structured' | 'name_rule';
@@ -84,9 +84,3 @@ export function providerLifecycle(input: ProviderLifecycleInput): ProviderLifecy
   return { status: 'stable', basis: 'name_rule' };
 }
 
-export const PROVIDER_LIFECYCLE_LABELS: Readonly<Record<ProviderLifecycle, string>> = {
-  stable: 'Stable',
-  preview: 'Preview',
-  experimental: 'Expérimental',
-  deprecated: 'Déprécié',
-};

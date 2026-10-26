@@ -75,7 +75,7 @@ export function referralSenderName(firstName?: string | null, lastName?: string 
   return full ? full.slice(0, 80) : 'Un proche';
 }
 
-export type InvitationFailureReason =
+type InvitationFailureReason =
   | 'CHANNEL_DISABLED'
   | 'EMAILS_DISABLED'
   | 'NOT_CONFIGURED'
@@ -109,7 +109,7 @@ type SendFn = (options: {
   variables: Record<string, string>;
 }) => Promise<{ success: boolean; error?: string }>;
 
-export interface InvitationResult {
+interface InvitationResult {
   sent: string[];
   failed: Array<{ email: string; reason: InvitationFailureReason }>;
 }

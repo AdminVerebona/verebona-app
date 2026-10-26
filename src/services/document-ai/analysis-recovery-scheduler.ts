@@ -34,7 +34,7 @@ export function startAnalysisRecoveryScheduler(): void {
 /** Code du déclencheur T1 qui gouverne cette reprise (CDC 15 CFG-04). */
 export const RECOVERY_TRIGGER = 'analysis_recovery';
 
-export interface RecoveryTickDeps {
+interface RecoveryTickDeps {
   isTriggerActive: (treatment: 'T1', code: string) => Promise<boolean>;
   runRecovery: () => Promise<{ found: number; retried: number; errors: number }>;
   purge: () => Promise<void>;

@@ -37,7 +37,7 @@ import { RENDER_ORIGIN, renderUrlToPath } from '../static-assets';
 import { ExportGenerationError } from '../generation/errors';
 import type { PageMap, RenderedHtml } from '../types';
 
-export interface AnnexLayout {
+interface AnnexLayout {
   annexRef: string;
   pageCount: number;
 }
@@ -50,7 +50,7 @@ export interface FrameRect {
   height: number;
 }
 
-export interface PrintResult {
+interface PrintResult {
   pdf: Buffer;
   pageCount: number;
   pageMap: PageMap;
@@ -147,7 +147,7 @@ async function pageSizesOf(pdf: Buffer): Promise<Array<{ width: number; height: 
 }
 
 /** Vérifie l'invariant de pagination ; lève RENDER_ERROR sinon. */
-export function assertLayout(params: { check: LayoutCheck; frames: FrameRect[] | null; annexes: AnnexLayout[]; total: number }): void {
+function assertLayout(params: { check: LayoutCheck; frames: FrameRect[] | null; annexes: AnnexLayout[]; total: number }): void {
   const expected = params.annexes.reduce((s, a) => s + Math.max(1, a.pageCount), 0);
   const problems: string[] = [];
   if (params.check.annexPages !== expected) problems.push(`pages d'annexe ${params.check.annexPages}/${expected}`);

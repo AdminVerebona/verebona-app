@@ -35,7 +35,7 @@ export interface AccountCapabilities {
 }
 
 const ALL: AccountCapabilities = Object.freeze({ rooms: true, equipments: true });
-export const NO_CAPABILITIES: AccountCapabilities = Object.freeze({ rooms: false, equipments: false });
+const NO_CAPABILITIES: AccountCapabilities = Object.freeze({ rooms: false, equipments: false });
 
 /** Matrice V1 — le SEUL endroit où elle est écrite. */
 const CAPABILITIES_BY_PLAN: Readonly<Record<EntitlementPlan, AccountCapabilities>> = Object.freeze({

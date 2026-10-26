@@ -48,13 +48,13 @@ import type { FinancialComponentKind } from '../model';
 /** Année moyenne (années bissextiles comprises). */
 export const TCO_DAYS_PER_YEAR = 365.25;
 /** Lot 81D : libellé d'une moyenne calculée sur moins d'un an de possession. */
-export const TCO_EXTRAPOLATED_LABEL = 'Valeur extrapolée sur une durée de possession inférieure à un an';
+const TCO_EXTRAPOLATED_LABEL = 'Valeur extrapolée sur une durée de possession inférieure à un an';
 
-export type TcoAnnualAverageStatus = 'COMPUTED' | 'ACQUISITION_DATE_MISSING' | 'ACQUISITION_DATE_INCOHERENT';
+type TcoAnnualAverageStatus = 'COMPUTED' | 'ACQUISITION_DATE_MISSING' | 'ACQUISITION_DATE_INCOHERENT';
 /** Lot 81D : motif d'une date d'acquisition incohérente. */
-export type TcoAcquisitionIncoherence = 'INVALID_DATE' | 'FUTURE' | 'AFTER_DISPOSAL';
+type TcoAcquisitionIncoherence = 'INVALID_DATE' | 'FUTURE' | 'AFTER_DISPOSAL';
 
-export interface TcoYearExpenses {
+interface TcoYearExpenses {
   year: number;
   /** Premier et dernier jour de la période de calcul (dernier = date de référence pour l'année en cours). */
   periodStart: string;
@@ -73,7 +73,7 @@ export interface TcoYearExpenses {
   possiblyIncomplete: boolean;
 }
 
-export interface TcoAnnualBucket { count: number; costsCents: number; creditsCents: number }
+interface TcoAnnualBucket { count: number; costsCents: number; creditsCents: number }
 
 export interface TcoAnnual {
   average: {
@@ -112,7 +112,7 @@ export interface TcoAnnual {
 }
 
 /** Ligne économique minimale lue (sous-ensemble de `TcoEconomicLine`). */
-export interface TcoAnnualLine {
+interface TcoAnnualLine {
   id: string;
   status: string;
   kind: FinancialComponentKind | null;

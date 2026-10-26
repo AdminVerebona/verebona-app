@@ -49,20 +49,20 @@ import type { AiAttachment } from '../gateway/types';
 import type { ProviderCallInput } from '../gateway/providers/provider.port';
 import { buildGenerationConfig } from '../gateway/providers/gemini-generation-config';
 
-export type PromptStatus = 'CAPTURED' | 'MASKED' | 'NOT_SENT' | 'NOT_CAPTURED';
-export type ResponseStatus = 'CAPTURED' | 'MASKED' | 'NO_RESPONSE' | 'NOT_CAPTURED';
+type PromptStatus = 'CAPTURED' | 'MASKED' | 'NOT_SENT' | 'NOT_CAPTURED';
+type ResponseStatus = 'CAPTURED' | 'MASKED' | 'NO_RESPONSE' | 'NOT_CAPTURED';
 export type CaptureOrigin = 'gateway' | 'circuit_breaker_probe' | 'model_operational_probe' | 'model_qualification_probe' | 'provider_test';
 export type CaptureCallKind = 'analysis' | 'repair' | 'pre_call_refusal' | 'probe' | 'test';
 
 /** Version du format de capture (colonne `capture_version`). */
-export const CAPTURE_VERSION = 1;
+const CAPTURE_VERSION = 1;
 /** Attente maximale de l'écriture par le traitement métier. */
-export const CAPTURE_MAX_WAIT_MS = 1_500;
+const CAPTURE_MAX_WAIT_MS = 1_500;
 /** Valeur de variable remplacée par une référence au prompt au-delà de cette longueur. */
-export const VARIABLE_REF_MIN_CHARS = 2_048;
+const VARIABLE_REF_MIN_CHARS = 2_048;
 /** File locale de reprise : bornes. */
 export const RETRY_MAX_ITEMS = 200;
-export const RETRY_MAX_BYTES = 64 * 1024 * 1024;
+const RETRY_MAX_BYTES = 64 * 1024 * 1024;
 export const RETRY_DELAYS_MS: readonly number[] = [5_000, 30_000, 120_000, 600_000, 1_800_000];
 
 /** Requête réellement transmise au fournisseur (un essai interne). */
@@ -102,7 +102,7 @@ export interface CallCaptureInput {
 }
 
 /** Corrélation, issue de la trace (`ai_usage_event`). */
-export interface CaptureContext {
+interface CaptureContext {
   usageEventId: number | null;
   traceId: string;
   accountId: number | null;
@@ -381,13 +381,13 @@ export function notCapturedRow(row: CaptureRow, reason: string, attempts: number
 }
 
 /** Taille approximative d'une ligne en mémoire (borne de la file de reprise). */
-export function rowBytes(row: CaptureRow): number {
+function rowBytes(row: CaptureRow): number {
   return (row.prompt_text?.length ?? 0) + (row.response_raw?.length ?? 0) + JSON.stringify(row.variables ?? null).length
     + JSON.stringify(row.parsed_output ?? null).length + JSON.stringify(row.provider_steps ?? null).length + 2_000;
 }
 
 /** Capture active ? `AI_CALL_CAPTURE=off` : coupure d'urgence (volume), défaut actif (décision PO 11). */
-export function captureEnabled(env: Record<string, string | undefined> = process.env): boolean {
+function captureEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return !['off', 'false', '0'].includes((env.AI_CALL_CAPTURE ?? '').trim().toLowerCase());
 }
 
@@ -404,7 +404,7 @@ const COLUMNS = [
 ] as const;
 const JSON_COLS = new Set(['variables', 'messages', 'attachments', 'request_params', 'provider_steps', 'parsed_output', 'diagnostic', 'masking']);
 
-export type CaptureWriter = (row: CaptureRow) => Promise<void>;
+type CaptureWriter = (row: CaptureRow) => Promise<void>;
 
 /** Écriture réelle d'une ligne (exportée pour les tests : simuler un échec puis la reprise). */
 export async function writeCaptureRow(row: CaptureRow): Promise<void> {
@@ -571,16 +571,6 @@ export async function recordCallCapture(ctx: CaptureContext, c: CallCaptureInput
 
 type Row = Record<string, unknown>;
 
-/** Mention d'un contenu absent ou masqué (LOG-08), en clair pour le BO. */
-export const CONTENT_STATUS_LABELS: Record<PromptStatus | ResponseStatus | 'NOT_RETAINED_HISTORICALLY', string> = {
-  CAPTURED: 'capturé',
-  MASKED: 'capturé, masqué (IBAN, cartes, clés, NIR)',
-  NOT_SENT: 'aucun envoi au modèle',
-  NO_RESPONSE: 'aucune réponse du modèle',
-  NOT_CAPTURED: 'non capturé',
-  NOT_RETAINED_HISTORICALLY: 'non conservé historiquement (appel antérieur à la capture)',
-};
-
 export interface CallCaptureView {
   captureId: number | null;
   usageEventId: number;
@@ -619,7 +609,7 @@ const n = (v: unknown): number | null => (v === null || v === undefined ? null :
 const s = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
 
 /** Instant de mise en service de la capture (`null` : migration 0649 absente). */
-export async function captureStartedAt(): Promise<Date | null> {
+async function captureStartedAt(): Promise<Date | null> {
   try {
     const { pgClient } = await import('@/db');
     const r = (await pgClient.unsafe(`SELECT started_at FROM ai_call_capture_state WHERE id = 1`)) as unknown as Row[];
@@ -630,7 +620,7 @@ export async function captureStartedAt(): Promise<Date | null> {
 }
 
 /** Délai au-delà duquel un appel sans capture n'est plus « en cours d'écriture ». */
-export const CAPTURE_PENDING_GRACE_MS = 15 * 60_000;
+const CAPTURE_PENDING_GRACE_MS = 15 * 60_000;
 
 /**
  * Captures des appels (`ai_usage_event`) d'une trace, AVEC leur contenu —
@@ -699,7 +689,7 @@ function toView(c: Row, usageEventId: number): CallCaptureView {
 }
 
 /** Référence d'objet d'une conversation de l'assistant (`subject_ref`). */
-export const t2ConversationRef = (conversationId: number): string => `t2-conversation:${conversationId}`;
+const t2ConversationRef = (conversationId: number): string => `t2-conversation:${conversationId}`;
 
 /** Conversation T2 d'une clé d'idempotence de l'assistant (`assistant:c{id}:…`). Pur. */
 export function subjectRefOfIdempotencyKey(key: string | undefined | null): string | null {

@@ -114,7 +114,7 @@ export function sanitizeSubjectHeader(subject: string): string {
 }
 
 /** Rendu complet d'un gabarit (lot 70A : partagé par l'envoi, la prévisualisation et le test). */
-export interface RenderedEmail {
+interface RenderedEmail {
   subject: string;
   html: string;
   text: string;
@@ -125,7 +125,7 @@ export interface RenderedEmail {
 }
 
 /** Résultat d'un envoi (lot 57A : identifiants utiles à la reprise et au suivi). */
-export interface EmailSendResult {
+interface EmailSendResult {
   success: boolean;
   error?: string;
   /** Ligne `email_logs` écrite pour cette tentative. */
@@ -146,7 +146,7 @@ export interface EmailSendResult {
 }
 
 /** Erreur renvoyée par le SDK Resend (sous-ensemble). */
-export interface ProviderErrorShape { name?: string | null; statusCode?: number | null; message?: string | null }
+interface ProviderErrorShape { name?: string | null; statusCode?: number | null; message?: string | null }
 
 /**
  * Lot 72F — une réponse d'erreur du prestataire prouve-t-elle que l'e-mail
@@ -175,7 +175,7 @@ const DEFINITIVE_PROVIDER_ERRORS: ReadonlySet<string> = new Set([
 ]);
 
 /** Lot 72F — e-mail consulté chez le prestataire (sans contenu). */
-export interface ProviderEmailInfo {
+interface ProviderEmailInfo {
   id: string;
   to: string[];
   createdAt: string | null;
@@ -183,11 +183,11 @@ export interface ProviderEmailInfo {
   tags: Array<{ name: string; value: string }>;
 }
 
-export type ProviderLookup<T> = { ok: true; value: T } | { ok: false; code: string; status: number | null };
+type ProviderLookup<T> = { ok: true; value: T } | { ok: false; code: string; status: number | null };
 
 const toList = (v: string[] | string | null | undefined): string[] => (Array.isArray(v) ? v : v ? [v] : []);
 /** Étiquettes Resend : tableau (API) ou objet (webhook). */
-export function tagList(v: Array<{ name: string; value: string }> | Record<string, string> | null | undefined): Array<{ name: string; value: string }> {
+function tagList(v: Array<{ name: string; value: string }> | Record<string, string> | null | undefined): Array<{ name: string; value: string }> {
   if (!v) return [];
   if (Array.isArray(v)) return v.filter((t) => t && typeof t.name === 'string').map((t) => ({ name: t.name, value: String(t.value) }));
   return Object.entries(v).map(([name, value]) => ({ name, value: String(value) }));
@@ -664,7 +664,7 @@ class EmailService {
       let logId: number | undefined;
       try {
         logId = await journaliser();
-      } catch (logError) {}
+      } catch {}
       
       // Lot 72F : exception pendant l'appel au prestataire = issue inconnue.
       return { success: false, error: errorMessage, logId, providerCalled, uncertain: providerCalled };

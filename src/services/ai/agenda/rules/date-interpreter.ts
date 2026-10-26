@@ -10,7 +10,7 @@
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-export type DateQualification =
+type DateQualification =
   /** Date exploitable pour une création automatique. */
   | 'explicit'
   /** Date valide mais trop lointaine ou trop ancienne pour être utile. */
@@ -18,7 +18,7 @@ export type DateQualification =
   /** Date invalide ou non normalisable. */
   | 'invalid';
 
-export interface InterpretedDate {
+interface InterpretedDate {
   qualification: DateQualification;
   iso: string | null;
   /** Nombre de jours par rapport à aujourd'hui. Négatif si passé. */
@@ -57,12 +57,6 @@ export function interpretDate(raw: string | null | undefined, now = new Date()):
   return { qualification: 'explicit', iso: raw, daysFromNow };
 }
 
-/** Une échéance est-elle dépassée ? Sert au réconciliateur de statut. */
-export function isPastDue(iso: string, now = new Date()): boolean {
-  const d = interpretDate(iso, now);
-  return d.qualification !== 'invalid' && (d.daysFromNow ?? 0) < 0;
-}
-
 // ── Ambiguïté temporelle (CDC 15 §26, R5) ───────────────────────────────────
 
 /**
@@ -77,7 +71,7 @@ export function isPastDue(iso: string, now = new Date()): boolean {
  *     (« avant fin mars », « dans six mois », « sous 30 jours »), sans date
  *     complète dans l'extrait — la date ISO est une déduction.
  */
-export interface TemporalAmbiguity {
+interface TemporalAmbiguity {
   kind: 'DAY_MONTH_ORDER' | 'RELATIVE_MENTION';
   /** Dates candidates (ISO, triées) ; une seule pour une mention relative. */
   dates: string[];

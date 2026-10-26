@@ -15,7 +15,7 @@ import { resolveDocumentCode } from '@/lib/referential/document-codes';
 import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 
 /** Formats intégrables dans le PDF (SEL-GEN-003). */
-export const INTEGRABLE = new Set(['PDF', 'JPG', 'JPEG', 'PNG', 'WEBP']);
+const INTEGRABLE = new Set(['PDF', 'JPG', 'JPEG', 'PNG', 'WEBP']);
 export const IMAGE_FORMATS = new Set(['JPG', 'JPEG', 'PNG', 'WEBP']);
 
 /** Nature d'une pièce (lignes de la matrice §24). */
@@ -28,14 +28,14 @@ export type DocKind =
   | 'PHOTO' | 'AUTRE';
 
 /** Natures sensibles : proposées, jamais pré-cochées (DEC-006, matrice §24). */
-export const SENSITIVE_KINDS: ReadonlySet<DocKind> = new Set(['ACTE_NOTARIE', 'DOCUMENT_BANCAIRE', 'DOCUMENT_IDENTITE', 'FISCAL']);
+const SENSITIVE_KINDS: ReadonlySet<DocKind> = new Set(['ACTE_NOTARIE', 'DOCUMENT_BANCAIRE', 'DOCUMENT_IDENTITE', 'FISCAL']);
 
 /**
  * Pièces locatives (bail, état des lieux, quittances…) : elles portent les
  * données d'un occupant ou d'un ancien locataire et ne sont JAMAIS rendues,
  * même cochées (garde-fou des maquettes, `selected()`).
  */
-export const OCCUPANT_KINDS: ReadonlySet<DocKind> = new Set(['LOCATIF']);
+const OCCUPANT_KINDS: ReadonlySet<DocKind> = new Set(['LOCATIF']);
 
 const V2_KIND: Record<string, DocKind> = {
   ACQUISITION_INVOICE: 'FACTURE', MAINTENANCE_INVOICE: 'FACTURE', REPAIR_INVOICE: 'FACTURE', WORKS_INVOICE: 'FACTURE', SUBSCRIPTION_INVOICE: 'FACTURE',
@@ -91,7 +91,7 @@ const SENSITIVE_WORDS = /\b(rib|iban|relev[ée]s? (de compte|bancaire)|pi[eè]ce
 /** Mots-clés « occupant » (durcissement uniquement). */
 const OCCUPANT_WORDS = /\b(bail|baux|[ée]tat des lieux|quittance|locataire|preneur)\b/i;
 
-export interface DocumentLike {
+interface DocumentLike {
   id: number;
   documentType?: string | null;
   documentTypeCode?: string | null;
@@ -146,7 +146,7 @@ export function documentKind(d: DocumentLike): DocKind {
   return 'AUTRE';
 }
 
-export interface DocumentClass {
+interface DocumentClass {
   kind: DocKind;
   sensitive: boolean;
   occupantData: boolean;

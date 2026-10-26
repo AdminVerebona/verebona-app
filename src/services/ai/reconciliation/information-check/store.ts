@@ -39,7 +39,7 @@ export const informationBackfillMaxAssets = (): number =>
 
 let tableEtat: { ready: boolean; at: number } | null = null;
 /** Table 0597 présente ? (revérifiée toutes les 5 min tant qu'absente). Ne lève jamais. */
-export async function informationChecksReady(): Promise<boolean> {
+async function informationChecksReady(): Promise<boolean> {
   if (tableEtat && (tableEtat.ready || Date.now() - tableEtat.at < 300_000)) return tableEtat.ready;
   let ready = false;
   try {

@@ -49,7 +49,7 @@ export function showEnergyUsageInView(p: { knownEnergyUsage: string | null | und
   return isEnergyUsageFieldRelevant({ ...(p.base ?? {}), type: p.type, energyUsage: p.knownEnergyUsage });
 }
 
-export interface EnergyUsageFormPresentation {
+interface EnergyUsageFormPresentation {
   /** `direct` : dans le formulaire standard ; `advanced` : dans « Options avancées ». */
   placement: 'direct' | 'advanced';
   /** Le champ est visible (direct, ou section avancée ouverte / porteuse d'une valeur). */

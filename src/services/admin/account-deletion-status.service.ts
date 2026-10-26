@@ -16,7 +16,7 @@ import { and, asc, eq, or } from 'drizzle-orm';
 import { db } from '@/db';
 import { scheduledAccountDeletions } from '@/db/schema';
 
-export interface AccountPendingDeletion {
+interface AccountPendingDeletion {
   /** Date prévue de la suppression effective. */
   scheduledAt: Date;
   /** WITHDRAWAL | VOLUNTARY | TRIAL_ABANDONED | ADMIN | UNPAID. */

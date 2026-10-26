@@ -41,7 +41,7 @@
  */
 export type AgendaDateRole = 'DEADLINE' | 'SCHEDULED_EVENT';
 
-export interface AgendaDateRoleSignals {
+interface AgendaDateRoleSignals {
   /** `occurrence_nature = 'FORECAST'`. */
   forecast: boolean;
   isAutomatic: boolean;

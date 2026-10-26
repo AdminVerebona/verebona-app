@@ -22,13 +22,13 @@ import { openDrawer } from '@/lib/drawers';
 import { notifyToProcessChanged } from './useToProcessResolution';
 import type { ActionView } from './ActionCard';
 
-export const PREVIEW_CHECK_URL = '/api/home/mascot/check';
+const PREVIEW_CHECK_URL = '/api/home/mascot/check';
 /** Messages EXISTANTS (mascotte, revalidation au clic) — pas de nouveau libellé. */
 export const DOCUMENT_GONE_MESSAGE = 'Cet élément n’est plus disponible.';
 export const DOCUMENT_OPEN_FAILED_MESSAGE = 'Cette action n’a pas pu être ouverte. Réessayez.';
 
 export type PreviewCheck = 'ok' | 'gone' | 'error';
-export type PreviewOutcome = 'opened' | 'gone' | 'error' | 'busy';
+type PreviewOutcome = 'opened' | 'gone' | 'error' | 'busy';
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 

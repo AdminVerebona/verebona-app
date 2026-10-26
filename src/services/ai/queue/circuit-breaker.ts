@@ -27,7 +27,7 @@
  * défaillant.
  */
 
-export const FAILURE_ALERT_THRESHOLD = 10;
+const FAILURE_ALERT_THRESHOLD = 10;
 
 /** Compteurs d'échecs consécutifs, par modèle. */
 export type ModelFailures = Record<string, number>;
@@ -39,7 +39,7 @@ export type ModelFailures = Record<string, number>;
  * à zéro les autres au premier succès masquerait une panne partielle : le
  * fallback fonctionne, on croirait le principal rétabli.
  */
-export function recordModelOutcome(
+function recordModelOutcome(
   failures: ModelFailures,
   model: string,
   succeeded: boolean,
@@ -56,18 +56,6 @@ export function alertingModels(failures: ModelFailures): string[] {
     .filter(([, n]) => n >= FAILURE_ALERT_THRESHOLD)
     .map(([model]) => model)
     .sort();
-}
-
-/**
- * Le disjoncteur doit-il s'ouvrir ?
- *
- * Seul l'échec COMPLET de la chaîne l'ouvre : le WF-09 précise qu'un « fallback
- * réussi sur une demande empêche de considérer cette demande comme échec
- * complet ». Ouvrir sur un échec du principal suspendrait un traitement qui
- * fonctionne, simplement moins bien.
- */
-export function shouldOpen(chainFailedCompletely: boolean): boolean {
-  return chainFailedCompletely;
 }
 
 /**
@@ -106,7 +94,7 @@ export const REOPEN_WINDOW_SECONDS = 3_600;
 /** Plafond du délai de première sonde après réouvertures répétées. */
 export const REOPEN_DELAY_CAP_SECONDS = 3_600;
 
-export interface ReopenPlan {
+interface ReopenPlan {
   /** Réouvertures récentes consécutives, à mémoriser (0 = ouverture « fraîche »). */
   reopens: number;
   /** Point de départ du planning progressif des sondes suivantes. */
@@ -147,7 +135,7 @@ export function probeOrder(
   return [primary, fallback1, fallback2].filter((m): m is string => Boolean(m));
 }
 
-export interface ProbeOutcome {
+interface ProbeOutcome {
   /** Modèle qui a répondu, `null` si aucun. */
   recoveredWith: string | null;
   failures: ModelFailures;
@@ -177,15 +165,3 @@ export function applyProbeResults(
   return { recoveredWith, failures: next, reactivate: recoveredWith !== null };
 }
 
-/**
- * Réactivation forcée par un administrateur (WF-09, exceptions).
- *
- * « Reset circuit breaker, mais les alertes modèles persistent jusqu'au succès
- * de chacun. » Les compteurs sont donc conservés tels quels : un administrateur
- * peut décider de rouvrir le service, il ne peut pas décider qu'un modèle va
- * bien. Effacer les compteurs ferait disparaître l'alerte sans que rien n'ait
- * été vérifié.
- */
-export function forceReactivation(failures: ModelFailures): ModelFailures {
-  return { ...failures };
-}

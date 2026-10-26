@@ -104,7 +104,7 @@ export function isWithdrawalWindowOpen(
   return closesAt !== null && now.getTime() <= closesAt.getTime();
 }
 
-export type WithdrawalVerdict = 'eligible' | 'ineligible' | 'undetermined';
+type WithdrawalVerdict = 'eligible' | 'ineligible' | 'undetermined';
 
 /**
  * Faut-il proposer la rétractation (carte de Mon compte, bouton) ?

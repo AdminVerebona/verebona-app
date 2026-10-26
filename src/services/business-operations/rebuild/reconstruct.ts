@@ -29,7 +29,7 @@ import { MAX_CONSOLIDATION_PASSES } from './model';
 
 type Sql = typeof import('@/db').pgClient;
 
-export interface RebuildStepsOptions {
+interface RebuildStepsOptions {
   correlationId: string;
   today?: string;
   /** Niveau M3 : dépendances injectables (tests) ; `false` le coupe. Défaut : passerelle réelle sous ses plafonds. */

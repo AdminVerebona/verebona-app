@@ -100,6 +100,3 @@ export interface VerebonaAction {
   command?: import('@/lib/verebona/assistant-actions').AssistantCreateCommand | null;
 }
 
-export function isVerebonaActionType(value: string): value is VerebonaActionType {
-  return (VEREBONA_ACTION_TYPES as readonly string[]).includes(value);
-}

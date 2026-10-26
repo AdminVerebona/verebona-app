@@ -83,14 +83,14 @@ async function hasAccountColumn(table: string, cache: Map<string, boolean>): Pro
 
 type Row = Record<string, unknown>;
 
-export interface CollectedData {
+interface CollectedData {
   tables: CollectedTable[];
   accountIds: number[];
   documents: DocumentCandidate[];
 }
 
 /** Comptes de l'utilisateur : ceux dont il est membre actif, et ceux qu'il possède. */
-export async function resolveUserAccountIds(userId: number): Promise<number[]> {
+async function resolveUserAccountIds(userId: number): Promise<number[]> {
   const rows = await pgClient<{ id: number }[]>`
     SELECT account_id AS id FROM account_memberships WHERE user_id = ${userId} AND lower(status) = 'active'
     UNION

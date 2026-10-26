@@ -35,56 +35,34 @@
  * traitement est considéré USER (comportement antérieur). Ne lève jamais.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { probeCount, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { probeCount } from '@/lib/schema-readiness-log';
+import { cachedSchemaProbe } from '../telemetry/trace-schema';
 export type ProcessingVisibility = 'USER' | 'TECHNICAL';
 
-export const PROCESSING_VISIBILITIES: readonly ProcessingVisibility[] = ['USER', 'TECHNICAL'];
-
 /** Valeur d'un travail ou d'une demande qui n'en déclare pas (antérieurs au lot 50). */
-export const DEFAULT_PROCESSING_VISIBILITY: ProcessingVisibility = 'USER';
+const DEFAULT_PROCESSING_VISIBILITY: ProcessingVisibility = 'USER';
 
 /** Lecture tolérante d'une valeur (payload de file, option). */
 export function normalizeProcessingVisibility(v: unknown): ProcessingVisibility {
   return v === 'TECHNICAL' ? 'TECHNICAL' : DEFAULT_PROCESSING_VISIBILITY;
 }
 
-const RECONTROLE_MS = 5 * 60_000;
-let etat: { ready: boolean; checkedAt: number } | null = null;
-let signale = false;
+const visibilityProbe = cachedSchemaProbe(async () => {
+  const { pgClient } = await import('@/db');
+  const rows = (await pgClient.unsafe(
+    `SELECT COUNT(*)::int AS n FROM information_schema.columns
+      WHERE table_schema = current_schema() AND table_name = 'asset_files' AND column_name = 'analysis_visibility'`,
+  )) as unknown as Array<{ n: number }>;
+  const found = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
+  return { ready: found === 1, found };
+}, {
+  scope: '[processing-visibility]', migration: '0337', expected: ['asset_files.analysis_visibility'],
+  consequence: 'Toute analyse en cours reste présentée par la mascotte (comportement antérieur).',
+});
 
 /** Colonne `asset_files.analysis_visibility` (0337) présente ? Ne lève jamais. */
 export async function analysisVisibilityColumnReady(): Promise<boolean> {
-  if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
-  let ready = false;
-  let trouvees: number | null = null;
-  let erreur: unknown;
-  try {
-    const { pgClient } = await import('@/db');
-    const rows = (await pgClient.unsafe(
-      `SELECT COUNT(*)::int AS n FROM information_schema.columns
-        WHERE table_schema = current_schema() AND table_name = 'asset_files' AND column_name = 'analysis_visibility'`,
-    )) as unknown as Array<{ n: number }>;
-    trouvees = probeCount(rows); // lot 75A : résultat inexploitable = inconnu, pas 0
-    ready = trouvees === 1;
-  } catch (e) {
-    ready = false;
-    erreur = e;
-  }
-  etat = { ready, checkedAt: Date.now() };
-  if (!ready && !signale) {
-    signale = true;
-    console.error(schemaNotReadyMessage({
-      scope: '[processing-visibility]', migration: '0337', expected: ['asset_files.analysis_visibility'], found: trouvees, error: erreur,
-      consequence: 'Toute analyse en cours reste présentée par la mascotte (comportement antérieur).',
-    }));
-  }
-  return ready;
-}
-
-/** Réservé aux tests. */
-export function __resetAnalysisVisibilityColumnForTests(ready: boolean | null = null): void {
-  etat = ready === null ? null : { ready, checkedAt: Date.now() };
-  signale = false;
+  return visibilityProbe();
 }
 
 /**

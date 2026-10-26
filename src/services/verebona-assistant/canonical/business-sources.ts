@@ -88,7 +88,7 @@ const MAX_DOCUMENTS = 150;
 const MAX_FIELDS = 6;
 
 /** Dernier coût réalisé (EUR) d'une opération : montant et date (pure). */
-export function lastRealizedAmount(op: Pick<AssistantOperationRead, 'components'>): { cents: number; date: string | null } | null {
+function lastRealizedAmount(op: Pick<AssistantOperationRead, 'components'>): { cents: number; date: string | null } | null {
   const reels = op.components
     .filter((c) => c.kind === 'REALIZED_COST')
     .map((c) => ({ cents: componentEurCents(c), date: c.economicDate }))
@@ -156,7 +156,7 @@ export function operationBusinessSource(op: AssistantOperationRead, assetId: num
 }
 
 /** Clés du registre à lire : faits demandés, puis libellés qui répondent au besoin (pure). */
-export function fieldKeysFor(need: SemanticNeed): string[] {
+function fieldKeysFor(need: SemanticNeed): string[] {
   const keys = new Set(need.facts);
   const type = need.need === 'amount' ? 'money_eur' : need.need ? 'date' : null;
   if (type && need.terms.length) {
@@ -177,7 +177,7 @@ export function fieldKeysFor(need: SemanticNeed): string[] {
 // l'orchestrateur.
 // ══════════════════════════════════════════════════════════════════════════
 
-export interface ProviderContext {
+interface ProviderContext {
   ids: number[];
   nom: (id: number | null) => string | null;
   need: SemanticNeed;
@@ -189,7 +189,7 @@ export interface ProviderContext {
   includeUntargeted?: boolean;
 }
 
-export interface BusinessSourceProvider {
+interface BusinessSourceProvider {
   domain: BusinessSourceDomain;
   /** Descripteur du domaine (autorité, structuration) ; défaut : celui déjà déclaré. */
   descriptor?: SourceDomainDescriptor;

@@ -147,7 +147,7 @@ export interface ProcessingRule {
 }
 
 /** Types de contrats dont la date de fin est attendue (DATA-CONTRACT-END). */
-export const CONTRACT_END_DOCUMENT_TYPES = [
+const CONTRACT_END_DOCUMENT_TYPES = [
   'SERVICE_CONTRACT',
   'SUBSCRIPTION_CONTRACT',
   'MAINTENANCE_CONTRACT',
@@ -156,7 +156,7 @@ export const CONTRACT_END_DOCUMENT_TYPES = [
 ] as const;
 
 /** Types de garanties dont la date de fin est attendue (DATA-WARRANTY-END). */
-export const WARRANTY_END_DOCUMENT_TYPES = ['WARRANTY_CERTIFICATE', 'EXTENDED_WARRANTY'] as const;
+const WARRANTY_END_DOCUMENT_TYPES = ['WARRANTY_CERTIFICATE', 'EXTENDED_WARRANTY'] as const;
 
 export const PROCESSING_RULES: readonly ProcessingRule[] = [
   // ── §10.2 Documents — Rubrique et Type ──────────────────────────────────

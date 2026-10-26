@@ -191,13 +191,13 @@ const DECLARED: Record<string, { variables: TemplateVariable[]; required: Requir
 // le code (COM-013 maintenu pour ces canaux). Un gabarit peut servir à plusieurs
 // événements (ex. `notif_subscription`) : l'éditeur les liste.
 
-export const NOTIFICATION_TEMPLATE_PREFIX = 'NOTIF_';
+const NOTIFICATION_TEMPLATE_PREFIX = 'NOTIF_';
 
 export function isNotificationTemplate(code: string): boolean {
   return (code ?? '').trim().toUpperCase().startsWith(NOTIFICATION_TEMPLATE_PREFIX);
 }
 
-export interface NotificationEmailTemplate {
+interface NotificationEmailTemplate {
   label: string;
   /** Événements du catalogue qui envoient ce gabarit (vide : gabarit non utilisé). */
   events: readonly string[];
@@ -307,7 +307,7 @@ export const CONTENT_LOCKED_TEMPLATES: Readonly<Record<string, string>> = {
 };
 
 /** Gabarits modifiables avec des mentions obligatoires (édition limitée). */
-export const LIMITED_TEMPLATES: Readonly<Record<string, string>> = {
+const LIMITED_TEMPLATES: Readonly<Record<string, string>> = {
   PREMIUM_CONFIRMATION:
     'Confirmation du contrat sur support durable (point de départ du délai de rétractation) : l’offre, le montant, la périodicité et la prochaine échéance doivent rester présents.',
   WITHDRAWAL_VERIFICATION:
@@ -325,11 +325,11 @@ export const LIMITED_TEMPLATES: Readonly<Record<string, string>> = {
  * Lot 73A — mentions de TEXTE obligatoires (au-delà des variables), contrôlées
  * sur l'objet et le texte visible du contenu.
  */
-export const REQUIRED_MENTIONS: Readonly<Record<string, ReadonlyArray<{ label: string; pattern: RegExp }>>> = {
+const REQUIRED_MENTIONS: Readonly<Record<string, ReadonlyArray<{ label: string; pattern: RegExp }>>> = {
   NOTIF_NEWS: [{ label: 'moyen de ne plus recevoir ces actualités (ex. « Pour ne plus recevoir ces actualités, gérez vos préférences… »)', pattern: /ne plus recevoir|d[ée]sabonn|d[ée]sinscri|pr[ée]f[ée]rences/i }],
 };
 
-export function requiredMentionIssues(code: string, subject: string, body: string): ValidationIssue[] {
+function requiredMentionIssues(code: string, subject: string, body: string): ValidationIssue[] {
   const mentions = REQUIRED_MENTIONS[(code ?? '').trim().toUpperCase()] ?? [];
   const visible = `${subject}\n${comparableText(body)}`;
   return mentions
@@ -454,7 +454,7 @@ export function extractHtmlZones(html: string, spec?: TemplateVariableSpec): Htm
   });
 }
 
-export type ZoneApplyResult = { ok: true; body: string; changed: number[] } | { ok: false; issues: ValidationIssue[] };
+type ZoneApplyResult = { ok: true; body: string; changed: number[] } | { ok: false; issues: ValidationIssue[] };
 
 /**
  * Applique les textes des zones (même nombre, même ordre) au gabarit HTML.

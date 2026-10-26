@@ -38,15 +38,15 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
 }
 /** Durée de conservation de l'archive générée. */
-export const RETENTION_HOURS = () => envInt('GDPR_EXPORT_RETENTION_HOURS', 72);
+const RETENTION_HOURS = () => envInt('GDPR_EXPORT_RETENTION_HOURS', 72);
 /** Durée de validité de l'URL S3 présignée délivrée au clic. */
-export const LINK_TTL_SECONDS = () => envInt('GDPR_EXPORT_LINK_TTL_SECONDS', 300);
+const LINK_TTL_SECONDS = () => envInt('GDPR_EXPORT_LINK_TTL_SECONDS', 300);
 /** Taille maximale cumulée des documents joints. */
-export const MAX_DOCUMENT_BYTES = () => envInt('GDPR_EXPORT_MAX_DOCUMENT_BYTES', 500 * 1024 * 1024);
+const MAX_DOCUMENT_BYTES = () => envInt('GDPR_EXPORT_MAX_DOCUMENT_BYTES', 500 * 1024 * 1024);
 /** Au-delà, une génération « en cours » est considérée comme interrompue. */
 const STALE_MINUTES = 20;
 
-export type GdprExportStatus = 'pending' | 'generating' | 'ready' | 'error' | 'expired';
+type GdprExportStatus = 'pending' | 'generating' | 'ready' | 'error' | 'expired';
 
 export interface GdprExportState {
   id: number;
@@ -340,14 +340,3 @@ export async function purgeAllExpiredExports(maxBatches = 20): Promise<{ purged:
   return { purged, batches };
 }
 
-/**
- * Supprime toutes les archives d'un utilisateur (suppression en libre-service :
- * l'utilisateur anonymisé ne pourra plus se connecter pour les récupérer).
- */
-export async function purgeUserExports(userId: number): Promise<void> {
-  const rows = await pgClient<Raw[]>`SELECT id, s3_key FROM gdpr_exports WHERE user_id = ${userId}`;
-  if (!rows.length) return;
-  const { deleteStoredFile } = await import('./gdpr-storage');
-  for (const r of rows) if (r.s3_key) await deleteStoredFile(r.s3_key as string);
-  await pgClient`DELETE FROM gdpr_exports WHERE user_id = ${userId}`;
-}

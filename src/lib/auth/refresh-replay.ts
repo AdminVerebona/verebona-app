@@ -23,7 +23,7 @@
 /** Fenêtre de grâce des renouvellements concurrents. */
 export const REFRESH_REUSE_GRACE_MS = 30_000;
 
-export type RefreshReplayVerdict = 'concurrent' | 'reuse' | 'ended';
+type RefreshReplayVerdict = 'concurrent' | 'reuse' | 'ended';
 
 export function classifyRefreshReplay(
   revoked: { revokedAt: Date; reason: 'rotated' | 'logout' | null },

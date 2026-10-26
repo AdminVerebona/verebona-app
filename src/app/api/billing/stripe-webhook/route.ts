@@ -218,7 +218,7 @@ export async function POST(request: NextRequest) {
           })
           .where(eq(stripeWebhookLogs.eventId, event.id));
       }
-    } catch (e) {
+    } catch {
       // If that fails (e.g. because log was never inserted), write a fresh error log
       await db.insert(stripeWebhookLogs).values({
         eventType: 'unknown',

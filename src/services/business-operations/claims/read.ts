@@ -148,10 +148,3 @@ export async function loadClaimRecords(x: SqlExecutor, accountId: number, by: { 
   });
 }
 
-/** Noms des biens du compte (libellés « concerne aussi … »). */
-export async function loadAssetNames(x: SqlExecutor, accountId: number, assetIds: readonly number[]): Promise<Map<number, string>> {
-  if (!assetIds.length) return new Map();
-  const r = await rows<{ id: number; name: string }>(x, sql`
-    SELECT id, name FROM assets WHERE account_id = ${accountId} AND id = ANY(${intArray([...new Set(assetIds)])}::int[]) AND deleted_at IS NULL`);
-  return new Map(r.map((a) => [Number(a.id), String(a.name)]));
-}

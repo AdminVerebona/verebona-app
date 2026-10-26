@@ -44,7 +44,7 @@ export interface RecurrenceSpec {
 }
 
 /** Plafond absolu d'un échéancier borné (sécurité contre une série infinie). */
-export const MAX_BOUNDED_OCCURRENCES = 120;
+const MAX_BOUNDED_OCCURRENCES = 120;
 
 const plain = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[’]/g, "'");
 

@@ -36,9 +36,6 @@ export interface AgendaSourceRef {
   evidenceId?: number | null;
 }
 
-/** Effets de trace lus comme « élément lié à ce document ». */
-export const SOURCE_LINK_EFFECTS = ['created', 'resolved_existing', 'linked'] as const;
-
 const valide = (s: AgendaSourceRef) => Number.isInteger(s.fileId) && s.fileId > 0;
 
 /**
@@ -85,11 +82,6 @@ export async function recordAgendaItemSources(
   }
 }
 
-/** Compatibilité : documents SOURCES d'un élément automatique. */
-export async function linkAgendaItemToSources(client: any, agendaItemId: number, fileIds: number[]): Promise<void> {
-  await recordAgendaItemSources(client, agendaItemId, fileIds.map((fileId) => ({ fileId, role: 'SOURCE' as const })));
-}
-
 /**
  * Identifiants des éléments d'agenda liés à un document, du compte.
  *
@@ -113,7 +105,7 @@ export async function listAgendaItemIdsForSource(
 }
 
 /** Élément d'agenda lié à un document (lecture « depuis le document »). */
-export interface DocumentAgendaItem {
+interface DocumentAgendaItem {
   id: number;
   title: string;
   startDate: string | null;

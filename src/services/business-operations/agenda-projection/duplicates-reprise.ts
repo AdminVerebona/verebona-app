@@ -49,11 +49,11 @@ import type { PlannedOperation, ProjectionRunResult } from './service';
 type Sql = postgres.Sql;
 type Row = Record<string, unknown>;
 
-export type RepriseMode = 'SIMULATE' | 'APPLY';
-export const REPRISE_ACCOUNTS_PER_CALL = 200;
+type RepriseMode = 'SIMULATE' | 'APPLY';
+const REPRISE_ACCOUNTS_PER_CALL = 200;
 const REPORT_MAX = 500;
 
-export interface RepriseOptions {
+interface RepriseOptions {
   mode: RepriseMode;
   origin: 'AUTO' | 'BO';
   accountId?: number | null;
@@ -92,7 +92,7 @@ export interface RepriseCounters {
   errors: number;
 }
 
-export interface RepriseReportEntry {
+interface RepriseReportEntry {
   accountId: number;
   operationId?: number;
   category: 'LINK' | 'RETITLE' | 'ARBITRATION' | 'T4_DECISION' | 'DISTINCT_OR_UNCHANGED' | 'NO_OPERATION' | 'ERROR';
@@ -118,7 +118,7 @@ const zero = (): RepriseCounters => ({
 // ── Détection (lecture seule) ───────────────────────────────────────────────
 
 /** Comptes à examiner après `cursor` (bornés), dans l'ordre. */
-export async function detectAccounts(sql: Sql, cursor: number, limit: number, accountId: number | null): Promise<number[]> {
+async function detectAccounts(sql: Sql, cursor: number, limit: number, accountId: number | null): Promise<number[]> {
   const r = await sql.unsafe<Row[]>(`
     SELECT DISTINCT account_id FROM (
       SELECT o.account_id FROM business_operations o
@@ -183,7 +183,7 @@ export async function detectOperations(sql: Sql, accountId: number): Promise<{ i
 }
 
 /** Groupes T4 « même document, même date » d'entretien / réparation sans Opération active d'intervention (signalés). */
-export async function detectNoOperationGroups(sql: Sql, accountId: number): Promise<Row[]> {
+async function detectNoOperationGroups(sql: Sql, accountId: number): Promise<Row[]> {
   return sql.unsafe<Row[]>(`
     SELECT i.origin_ref_id AS file_id, i.start_date::text AS date, array_agg(i.id ORDER BY i.id) AS item_ids,
            array_agg(i.title ORDER BY i.id) AS titles

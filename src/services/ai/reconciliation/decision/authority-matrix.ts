@@ -108,13 +108,13 @@ const EXPLICIT_RANK_STEP = 50;
 /** Socle des scores issus d'une règle explicite, hors d'atteinte de l'autorité de base. */
 const EXPLICIT_RULE_BASE = 1000;
 
-export interface AuthorityInput {
+interface AuthorityInput {
   fieldKey: string;
   documentType: string | null;
   isWebLink?: boolean;
 }
 
-export interface AuthorityRule {
+interface AuthorityRule {
   /** Score final, 0-1000. Un ordre explicite domine toujours l'autorité de base. */
   score: number;
   /** Identifiant de la règle appliquée, tracé dans l'historique et les conflits. */

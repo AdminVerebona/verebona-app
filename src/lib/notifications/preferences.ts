@@ -12,7 +12,7 @@ import { notificationPreferences } from '@/db/schema';
 import { and, eq } from 'drizzle-orm';
 import type { NotificationCategory, NotificationChannel, DeliveryMode } from './catalog';
 
-export type ConfigurableChannel = Extract<NotificationChannel, 'push' | 'email'>;
+type ConfigurableChannel = Extract<NotificationChannel, 'push' | 'email'>;
 
 /**
  * Retourne l'état d'une préférence configurable, ou `null` si l'utilisateur

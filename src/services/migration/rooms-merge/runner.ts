@@ -62,9 +62,9 @@ import type postgres from 'postgres';
 import { randomUUID } from 'node:crypto';
 import { chooseSubstructure, fillFromRoom, pick, restoreOrder, sameJson, type SubstructureCandidate } from './plan';
 
-export type MergeDecision = 'CREATED' | 'MAPPED' | 'REPOINTED' | 'REOPENED' | 'SUPERSEDED' | 'CONFLICT' | 'NO_CHANGE';
+type MergeDecision = 'CREATED' | 'MAPPED' | 'REPOINTED' | 'REOPENED' | 'SUPERSEDED' | 'CONFLICT' | 'NO_CHANGE';
 
-export interface MergeChange {
+interface MergeChange {
   roomId: number;
   accountId: number | null;
   assetId: number | null;
@@ -78,13 +78,13 @@ export interface MergeChange {
   reason?: string | null;
 }
 
-export interface ReenqueueInput {
+interface ReenqueueInput {
   accountId: number;
   userId: number;
   targets: Array<{ type: 'ROOM'; id: number }>;
 }
 
-export interface MergeOptions {
+interface MergeOptions {
   sql: postgres.Sql;
   apply: boolean;
   accountId?: number | null;
@@ -150,7 +150,7 @@ async function colonnes(sql: Tx): Promise<Set<string>> {
 }
 
 /** Prérequis (lève `MissingRequirementsError`) et tables facultatives présentes. */
-export async function checkRequirements(sql: postgres.Sql, needReport: boolean): Promise<Schema> {
+async function checkRequirements(sql: postgres.Sql, needReport: boolean): Promise<Schema> {
   const cols = await colonnes(sql);
   const manque: string[] = [];
   for (const [t, c, m] of COLONNES_REQUISES) if (!cols.has(`${t}.${c}`)) manque.push(`colonne ${t}.${c} (migration ${m})`);
@@ -193,7 +193,7 @@ export async function checkRequirements(sql: postgres.Sql, needReport: boolean):
  *     une pièce du compte est lu comme une sous-structure (nouveau code).
  * `$room` / `$compte` : expressions SQL de la pièce et de son compte.
  */
-export function cibleRoomSql(c: { type: string; id: string }, x: string, room: string, compte: string): string {
+function cibleRoomSql(c: { type: string; id: string }, x: string, room: string, compte: string): string {
   return `${x}.${ident(c.id)} = ${room} AND (${x}.${ident(c.type)} = 'LEGACY_ROOM'
     OR (${x}.${ident(c.type)} = 'ROOM' AND ${x}.account_id = ${compte}
         AND NOT EXISTS (SELECT 1 FROM substructures s0 JOIN assets a0 ON a0.id = s0.asset_id
@@ -223,7 +223,7 @@ function resteSql(s: Schema, r: string, compte: string, ms: string): string {
 
 /* ── Verrou ──────────────────────────────────────────────────────────────── */
 
-export const ROOMS_MERGE_LOCK_KEY = 'rooms_merge_d_g';
+const ROOMS_MERGE_LOCK_KEY = 'rooms_merge_d_g';
 
 async function verrou(sql: postgres.Sql): Promise<() => Promise<void>> {
   const cnx = await sql.reserve();
@@ -651,7 +651,7 @@ export async function restoreRoomsMerge(sql: postgres.Sql, runId: string, log: (
 
 /* ── Rapport ─────────────────────────────────────────────────────────────── */
 
-export interface MergeSummary {
+interface MergeSummary {
   run: Row;
   byDecision: Array<{ decision: string; table: string; n: number }>;
   samples: Row[];

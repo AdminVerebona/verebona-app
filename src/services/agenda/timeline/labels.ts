@@ -10,7 +10,7 @@ export const TIMELINE_MODE_LABELS: Record<TimelineMode, string> = {
   detailed: 'Détaillée',
 };
 
-export const COUNTER_ORDER: ReadonlyArray<keyof TimelineGroupCounters> = ['events', 'documents', 'assets', 'rooms', 'equipments'];
+const COUNTER_ORDER: ReadonlyArray<keyof TimelineGroupCounters> = ['events', 'documents', 'assets', 'rooms', 'equipments'];
 
 /** « 3 événements liés », « 1 document »… (pluriel français). */
 export function counterLabel(kind: keyof TimelineGroupCounters, n: number): string {

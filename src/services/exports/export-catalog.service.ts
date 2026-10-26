@@ -36,10 +36,10 @@ import {
 } from './catalog';
 import { getAssetAdditionalInfos, type AssetAdditionalInfos } from './additional-infos.service';
 
-export type ReadinessSeverity = 'info' | 'warning' | 'blocking';
-export type ReadinessStatus = 'ready' | 'incomplete' | 'blocked' | 'unavailable';
+type ReadinessSeverity = 'info' | 'warning' | 'blocking';
+type ReadinessStatus = 'ready' | 'incomplete' | 'blocked' | 'unavailable';
 
-export interface ReadinessHint {
+interface ReadinessHint {
   code: string;
   severity: ReadinessSeverity;
   message: string;
@@ -47,7 +47,7 @@ export interface ReadinessHint {
   target?: `additional-infos:${AdditionalInfoSectionKey}` | 'documents' | 'photos' | 'cil-preparation';
 }
 
-export interface CatalogLastGeneration {
+interface CatalogLastGeneration {
   id: number;
   publicId: string;
   exportType: DossierCode | 'EXPORT_BRUT';

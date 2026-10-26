@@ -28,7 +28,7 @@ import { getField, normalizeDateValue, normalizeValue, resolveAliasDetailed } fr
 import type { ActionProposal, TargetType } from './action-model';
 
 /** Motif interdit dans un libellé affiché à l'utilisateur. */
-export interface ForbiddenLabelPattern {
+interface ForbiddenLabelPattern {
   code: string;
   re: RegExp;
   /**
@@ -45,7 +45,7 @@ export interface ForbiddenLabelPattern {
  * Formulations techniques interdites sur une carte (ticket 77B). Le test
  * l77b parcourt les familles et échoue si un libellé produit en contient une.
  */
-export const FORBIDDEN_CARD_LABEL_PATTERNS: readonly ForbiddenLabelPattern[] = [
+const FORBIDDEN_CARD_LABEL_PATTERNS: readonly ForbiddenLabelPattern[] = [
   { code: 'IDENTIFIANT_TECHNIQUE', re: /#\d+/, safeOnUserContent: true },
   { code: 'SERVEUR', re: /\bserveurs?\b/i, safeOnUserContent: true },
   { code: 'FOURNI_PAR', re: /\bfourni(?:e|s|es)? par\b/i, safeOnUserContent: true },
@@ -70,7 +70,7 @@ export function technicalLabelIssues(text: string | null | undefined, opts: { us
 }
 
 /** Libellé générique d'une cible dont le nom est introuvable — jamais « #id ». */
-export const TARGET_FALLBACK_LABELS: Readonly<Record<TargetType, string>> = {
+const TARGET_FALLBACK_LABELS: Readonly<Record<TargetType, string>> = {
   DOCUMENT: 'Document',
   ASSET: 'Bien',
   EQUIPMENT: 'Équipement',
@@ -103,7 +103,7 @@ const deNom = (nom: string) => (/^[aeiouyàâäéèêëîïôöùûü]/i.test(no
  * « Déjà 3 documents de Cardif IARD sur Maison ». Bien inconnu : « sur ce
  * bien » ; fournisseur inconnu : « du même fournisseur ».
  */
-export function supplierHistoryLabel(p: { count: number; supplier?: string | null; assetName?: string | null }): string {
+function supplierHistoryLabel(p: { count: number; supplier?: string | null; assetName?: string | null }): string {
   const n = Math.max(1, Math.floor(p.count));
   const docs = n > 1 ? `${n} documents` : '1 document';
   const fournisseur = p.supplier?.trim() ? deNom(p.supplier.trim()) : 'du même fournisseur';
@@ -203,7 +203,7 @@ export function userProposalLabel(label: string | null | undefined, fieldKey: st
 }
 
 /** Vue minimale d'une carte, telle que la file la rend. */
-export interface CardLabelView {
+interface CardLabelView {
   targetType: string;
   fieldKey: string | null;
   relationKey: string | null;

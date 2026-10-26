@@ -34,7 +34,7 @@ export interface AiRunContext {
   promptVersion: string;
 }
 
-export interface AiRunRecord extends AiRunContext {
+interface AiRunRecord extends AiRunContext {
   accountId: number;
   messageId?: number | null;
   operationCode: string;
@@ -65,7 +65,7 @@ export function hashPromptVariables(vars: Record<string, unknown>): string {
  * Alias fonctionnel (§15.11), CONFIGURÉ (`registries/model-registry.ts`) :
  * rang 0 = alias par défaut, repli ou escalade = alias d'escalade.
  */
-export function modelAliasFor(fallbackUsed: boolean): string {
+function modelAliasFor(fallbackUsed: boolean): string {
   return aliasForRank(fallbackUsed ? 1 : 0).alias;
 }
 

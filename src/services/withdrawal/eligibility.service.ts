@@ -22,7 +22,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { computeWithdrawalDeadline } from '@/services/legal/french-calendar';
 import { isWithdrawalWindowOpen, withdrawalWindowStart } from './withdrawal-window';
 
-export type EligibilityVerdict = 'eligible' | 'ineligible' | 'undetermined';
+type EligibilityVerdict = 'eligible' | 'ineligible' | 'undetermined';
 
 /**
  * Motifs de non-éligibilité.

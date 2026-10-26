@@ -42,7 +42,7 @@ export function knowledgeContractsIn(text: string): string[] {
 }
 
 /** Coupure d'urgence : `T3_KNOWLEDGE_QUERY_ENABLED=0`. Pure. */
-export const knowledgeQueryEnabled = (env: Record<string, string | undefined> = process.env): boolean =>
+const knowledgeQueryEnabled = (env: Record<string, string | undefined> = process.env): boolean =>
   (env.T3_KNOWLEDGE_QUERY_ENABLED ?? '1').trim() !== '0';
 
 let cache: { at: number; value: KnowledgeCapability } | null = null;

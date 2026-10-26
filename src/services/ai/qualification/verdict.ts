@@ -90,7 +90,7 @@ export interface ConcurrencyReport {
 
 export interface Reason { step: VerdictStep; outcome: 'BLOCKING' | 'INCONCLUSIVE' | 'OK'; code: string; message: string }
 
-export interface CoupleVerdictInput {
+interface CoupleVerdictInput {
   observations: CaseObservation[];
   /** Préalables manquants (étape 1) : environnement, point de restauration, compte… */
   preconditions?: string[];
@@ -111,7 +111,7 @@ export interface CoupleMetrics {
   historical: { compared: number; identical: number; divergent: number };
 }
 
-export interface CoupleVerdict { verdict: Verdict; reasons: Reason[]; metrics: CoupleMetrics }
+interface CoupleVerdict { verdict: Verdict; reasons: Reason[]; metrics: CoupleMetrics }
 
 /** Percentile au rang le plus proche (pur) ; null sur une série vide. */
 export function percentile(values: readonly number[], p: number): number | null {
@@ -232,7 +232,7 @@ export function decideCoupleVerdict(input: CoupleVerdictInput): CoupleVerdict {
 // Gain établi (OPT-01, OPT-02, DEC-02, R07, R50)
 // ══════════════════════════════════════════════════════════════════════════
 
-export type Priority = 'LATENCY' | 'COST';
+type Priority = 'LATENCY' | 'COST';
 
 interface Measure { caseId: string; durationMs: number | null; costMicros: number | null; outcome: CaseOutcome }
 

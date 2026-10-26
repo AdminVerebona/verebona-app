@@ -32,7 +32,7 @@ export function repairPassEnabled(env: NodeJS.ProcessEnv = process.env): boolean
 }
 
 /** JSONPath (`$.document.facts[2].target`) → segments. */
-export function parsePath(path: string): Array<string | number> {
+function parsePath(path: string): Array<string | number> {
   const out: Array<string | number> = [];
   const re = /\.([A-Za-z_$][\w$]*)|\[(\d+)\]|\["((?:[^"\\]|\\.)*)"\]/g;
   let m: RegExpExecArray | null;

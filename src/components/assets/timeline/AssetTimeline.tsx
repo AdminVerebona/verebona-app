@@ -50,7 +50,7 @@ export interface AssetTimelineState {
   expanded: ReadonlySet<string>;
 }
 
-export interface AssetTimelineActions {
+interface AssetTimelineActions {
   setMode(mode: TimelineMode): void;
   loadMore(): void;
   toggle(groupId: string): void;
@@ -182,7 +182,7 @@ function TimelineRow({ item, variant, readOnly, busy, onOpen, small, children }:
   );
 }
 
-export interface AssetTimelineProps {
+interface AssetTimelineProps {
   state: AssetTimelineState;
   actions: AssetTimelineActions;
   variant: 'desktop' | 'mobile';

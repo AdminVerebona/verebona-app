@@ -20,7 +20,7 @@
  */
 import { pgClient } from '@/db';
 
-export type TrialReassignError = 'USER_NOT_FOUND' | 'NO_CONSUMED_TRIAL' | 'TRIAL_IN_PROGRESS';
+type TrialReassignError = 'USER_NOT_FOUND' | 'NO_CONSUMED_TRIAL' | 'TRIAL_IN_PROGRESS';
 
 export const TRIAL_REASSIGN_MESSAGES: Record<TrialReassignError, string> = {
   USER_NOT_FOUND: 'Utilisateur introuvable.',
@@ -28,7 +28,7 @@ export const TRIAL_REASSIGN_MESSAGES: Record<TrialReassignError, string> = {
   TRIAL_IN_PROGRESS: 'Un essai est en cours sur un espace actif de cet utilisateur : rien à réattribuer.',
 };
 
-export type TrialReassignResult =
+type TrialReassignResult =
   | { ok: true; grantId: number; before: string; after: string }
   | { ok: false; error: TrialReassignError };
 

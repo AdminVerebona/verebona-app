@@ -43,8 +43,8 @@ import {
   type EligibilityResult,
 } from './eligibility.service';
 
-export type WithdrawalChannel = 'authenticated' | 'public' | 'email' | 'postal' | 'support';
-export type WithdrawalStatus =
+type WithdrawalChannel = 'authenticated' | 'public' | 'email' | 'postal' | 'support';
+type WithdrawalStatus =
   | 'received' | 'manual_review' | 'processing' | 'completed' | 'failed' | 'rejected';
 
 /**
@@ -55,7 +55,7 @@ export type WithdrawalStatus =
  * révélerait le volume de rétractations, et permettrait de deviner celle d'un
  * autre consommateur.
  */
-export function generatePublicReference(now: Date = new Date()): string {
+function generatePublicReference(now: Date = new Date()): string {
   const date = now.toISOString().slice(0, 10).replace(/-/g, '');
   // Alphabet sans I, O, 0, 1 : la référence est lue au téléphone.
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -70,7 +70,7 @@ export function hashToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
 }
 
-export interface DeclarationInput {
+interface DeclarationInput {
   userId: number | null;
   accountId: number | null;
   channel: WithdrawalChannel;
@@ -88,7 +88,7 @@ export interface DeclarationInput {
   now?: Date;
 }
 
-export interface DeclarationResult {
+interface DeclarationResult {
   publicReference: string;
   status: WithdrawalStatus;
   requestedAt: Date;
@@ -291,16 +291,6 @@ export async function findByIdempotencyKey(idempotencyKey: string | null | undef
     .select()
     .from(withdrawalRequests)
     .where(eq(withdrawalRequests.idempotencyKey, idempotencyKey))
-    .limit(1);
-  return row ?? null;
-}
-
-/** Demande par référence publique (journal, BO). */
-export async function getByPublicReference(publicReference: string) {
-  const [row] = await db
-    .select()
-    .from(withdrawalRequests)
-    .where(eq(withdrawalRequests.publicReference, publicReference))
     .limit(1);
   return row ?? null;
 }

@@ -73,7 +73,7 @@ export function emailVerificationSecret(): string {
   return configured || INSECURE_DEFAULT_SECRET;
 }
 
-export interface VerificationSubject {
+interface VerificationSubject {
   id: number;
   email: string;
 }
@@ -130,7 +130,7 @@ export function isLegacyVerificationToken(token: string): { email: string } | nu
   return m ? { email: m[1].toLowerCase() } : null;
 }
 
-export type VerificationTokenCheck =
+type VerificationTokenCheck =
   | { ok: true; userId: number }
   | { ok: false; code: 'INVALID_TOKEN' | 'TOKEN_EXPIRED' };
 

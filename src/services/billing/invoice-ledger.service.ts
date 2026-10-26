@@ -58,7 +58,7 @@ import { resolveHistoricalPrices, type HistoricalPriceResult } from '@/services/
 
 // ─── Règles pures ────────────────────────────────────────────────────────────
 
-export type LocalInvoiceStatus = 'draft' | 'open' | 'payment_failed' | 'uncollectible' | 'paid' | 'void';
+type LocalInvoiceStatus = 'draft' | 'open' | 'payment_failed' | 'uncollectible' | 'paid' | 'void';
 
 /**
  * Rang de chaque statut : un statut ne peut être remplacé que par un statut
@@ -105,7 +105,7 @@ export function mergeInvoiceStatus(existing: string | null | undefined, incoming
   return STATUS_RANK[incoming] >= current ? incoming : existing;
 }
 
-export interface InvoiceRecord {
+interface InvoiceRecord {
   stripeInvoiceId: string;
   stripeCustomerId: string;
   stripeSubscriptionId: string | null;
@@ -126,7 +126,7 @@ export interface InvoiceRecord {
   planResolution: 'single' | 'charge_line' | 'multiple' | 'unknown';
 }
 
-export type InvoiceLineDetail = {
+type InvoiceLineDetail = {
   priceId: string | null;
   planCode: string | null;
   billingPeriod: string | null;
@@ -215,7 +215,7 @@ export function buildInvoiceRecord(
 }
 
 /** Toutes les lignes d'une facture, pagination comprise (LK-75). */
-export async function collectInvoiceLines(
+async function collectInvoiceLines(
   invoice: Stripe.Invoice,
   stripe?: Pick<Stripe, 'invoices'>,
 ): Promise<Stripe.InvoiceLineItem[]> {
@@ -233,7 +233,7 @@ export async function collectInvoiceLines(
  * Compte payeur d'une facture : par abonnement d'abord (le client Stripe peut
  * être partagé par un ancien et un nouvel abonnement), puis par client.
  */
-export async function resolveInvoiceAccount(
+async function resolveInvoiceAccount(
   customerId: string,
   subscriptionId: string | null,
 ): Promise<{ accountId: number; ownerUserId: number } | null> {
@@ -308,7 +308,7 @@ const rankSql = (column: string) => sql.raw(
   `WHEN 'uncollectible' THEN 3 WHEN 'paid' THEN 4 WHEN 'void' THEN 4 ELSE 0 END)`,
 );
 
-export type InvoiceLedgerOutcome =
+type InvoiceLedgerOutcome =
   | { recorded: true; accountId: number; status: LocalInvoiceStatus }
   | { recorded: false; reason: 'NOT_APPLICABLE' | 'ACCOUNT_NOT_FOUND' };
 

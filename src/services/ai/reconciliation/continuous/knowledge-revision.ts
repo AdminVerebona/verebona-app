@@ -30,7 +30,7 @@ import { pgClient } from '@/db';
 export const KNOWLEDGE_CHANGE_KINDS = [
   'ASSET', 'EQUIPMENT', 'ROOM', 'ANALYSIS', 'FACT', 'LINK', 'DOCUMENT_LINK', 'ARBITRATION',
 ] as const;
-export type KnowledgeChangeKind = (typeof KNOWLEDGE_CHANGE_KINDS)[number];
+type KnowledgeChangeKind = (typeof KNOWLEDGE_CHANGE_KINDS)[number];
 
 /** Révision de connaissance courante du compte (0 : aucune modification journalisée). */
 export async function getAccountKnowledgeRevision(accountId: number): Promise<number> {
@@ -39,19 +39,6 @@ export async function getAccountKnowledgeRevision(accountId: number): Promise<nu
     [accountId] as never[],
   )) as unknown as Array<{ rev: string | number }>;
   return Number(rows[0]?.rev ?? 0);
-}
-
-/** Révisions de plusieurs comptes (une requête). */
-export async function getAccountKnowledgeRevisions(accountIds: readonly number[]): Promise<Map<number, number>> {
-  const ids = [...new Set(accountIds)];
-  const out = new Map<number, number>(ids.map((id) => [id, 0]));
-  if (ids.length === 0) return out;
-  const rows = (await pgClient.unsafe(
-    `SELECT account_id, max(id)::bigint AS rev FROM account_knowledge_changes WHERE account_id = ANY($1::int[]) GROUP BY account_id`,
-    [ids] as never[],
-  )) as unknown as Array<{ account_id: number; rev: string | number }>;
-  for (const r of rows) out.set(Number(r.account_id), Number(r.rev));
-  return out;
 }
 
 /**

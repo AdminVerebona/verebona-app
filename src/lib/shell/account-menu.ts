@@ -17,9 +17,9 @@
 import type { LucideIcon } from 'lucide-react';
 import { HelpCircle, LogOut, Moon, Shield, Sun, User } from 'lucide-react';
 
-export type AccountMenuEntryId = 'account' | 'help' | 'admin' | 'theme' | 'logout';
+type AccountMenuEntryId = 'account' | 'help' | 'admin' | 'theme' | 'logout';
 
-export interface AccountMenuEntry {
+interface AccountMenuEntry {
   id: AccountMenuEntryId;
   label: string;
   icon: LucideIcon;
@@ -29,7 +29,7 @@ export interface AccountMenuEntry {
   group: number;
 }
 
-export interface AccountMenuOptions {
+interface AccountMenuOptions {
   isAdmin: boolean;
   /** Thème courant (`blue` = sombre : l'entrée propose le thème clair). */
   theme: string;
@@ -37,7 +37,7 @@ export interface AccountMenuOptions {
   withHelp?: boolean;
 }
 
-export function themeEntryLabel(theme: string): string {
+function themeEntryLabel(theme: string): string {
   return theme === 'blue' ? 'Thème clair' : 'Thème sombre';
 }
 

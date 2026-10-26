@@ -150,7 +150,7 @@ export interface FactLink {
   repair?: boolean;
 }
 
-export interface CoverageInput {
+interface CoverageInput {
   facts: FactLink[];
   /** Unités représentées par une métadonnée structurée (titre, date, émetteur…). */
   metadataUnitIds?: Iterable<string>;

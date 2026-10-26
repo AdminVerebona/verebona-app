@@ -41,7 +41,7 @@
 import { normalizeProvider } from './model';
 
 /** Rôles d'un document ÉMIS par le prestataire (son fournisseur est le prestataire du candidat). */
-export const ISSUER_SOURCE_ROLES: ReadonlySet<string> = new Set([
+const ISSUER_SOURCE_ROLES: ReadonlySet<string> = new Set([
   'INVOICE', 'DEPOSIT_INVOICE', 'CREDIT_NOTE', 'QUOTE', 'ORDER', 'CONTRACT_DOCUMENT', 'REPORT',
 ]);
 
@@ -64,8 +64,6 @@ export interface ProviderEquivalence {
   /** Clé canonique → désignations de la classe et preuves (BO, trace des décisions). */
   classes: ReadonlyMap<string, { keys: string[]; supplierIds: number[]; fileIds: number[] }>;
 }
-
-export const EMPTY_PROVIDER_EQUIVALENCE: ProviderEquivalence = { canonical: new Map(), classes: new Map() };
 
 /**
  * Classes d'équivalence des désignations (pure, déterministe, indépendante de

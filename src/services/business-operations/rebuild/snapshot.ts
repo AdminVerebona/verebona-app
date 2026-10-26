@@ -27,7 +27,6 @@ import type postgres from 'postgres';
 import { deletionOrder, type ScopeTable } from './model';
 
 type Sql = postgres.Sql | postgres.TransactionSql;
-type Row = Record<string, unknown>;
 
 export interface TableMeta extends ScopeTable {
   /** Colonnes réinjectables (hors colonnes générées). */
@@ -67,16 +66,8 @@ const rowJson = (m: TableMeta, alias: string) =>
 const pkOrder = (m: TableMeta, alias: string) => m.pk.map((p) => `${alias}.${ident(p)}`).join(', ');
 const pkMatch = (m: TableMeta, a: string, b: string) => m.pk.map((p) => `${a}.${ident(p)} IS NOT DISTINCT FROM ${b}.${ident(p)}`).join(' AND ');
 
-/** Lignes du compte d'une table (jsonb, sans colonnes générées), ordonnées par clé primaire. */
-export async function readTableRows(sql: Sql, m: TableMeta, accountId: number): Promise<Row[]> {
-  const [r] = await sql.unsafe<Array<{ rows: Row[] | null }>>(
-    `SELECT COALESCE(jsonb_agg(${rowJson(m, 't')} ORDER BY ${pkOrder(m, 't')}), '[]'::jsonb) AS rows FROM ${ident(m.table)} t WHERE ${m.filter}`,
-    [accountId] as never[]);
-  return (r?.rows ?? []) as Row[];
-}
-
 /** Empreinte par table des lignes du compte (lecture seule). */
-export async function tableHashes(sql: Sql, meta: readonly TableMeta[], accountId: number): Promise<Record<string, { rows: number; hash: string }>> {
+async function tableHashes(sql: Sql, meta: readonly TableMeta[], accountId: number): Promise<Record<string, { rows: number; hash: string }>> {
   const out: Record<string, { rows: number; hash: string }> = {};
   for (const m of meta) {
     const [r] = await sql.unsafe<Array<{ n: number; h: string | null }>>(
@@ -116,7 +107,7 @@ export async function captureSnapshot(tx: Sql, meta: readonly TableMeta[], runId
   return out;
 }
 
-export interface RestoreDiff { table: string; missing: number; extra: number; changed: number }
+interface RestoreDiff { table: string; missing: number; extra: number; changed: number }
 
 /** Écart entre l'image et l'état courant d'une table (lecture, dans la transaction). */
 async function diffTable(tx: Sql, m: TableMeta, accountId: number, image: string): Promise<RestoreDiff> {

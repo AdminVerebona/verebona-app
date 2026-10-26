@@ -47,8 +47,8 @@ export interface StoredM3 {
 const LIEN: Readonly<Record<string, string>> = { M0: 'USER', M1: 'REFERENCE', M2: 'SAME_DOCUMENT', M3: 'AI' };
 
 /** Lot 56A : bornes des extraits d'unités documentaires T1 transmis au modèle (par document). */
-export const M3_EXCERPTS_PER_DOCUMENT = 12;
-export const M3_EXCERPT_MAX_CHARS = 160;
+const M3_EXCERPTS_PER_DOCUMENT = 12;
+const M3_EXCERPT_MAX_CHARS = 160;
 
 /**
  * Lot 56A : extraits des unités documentaires T1 (`document_source_units`)

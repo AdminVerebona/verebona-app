@@ -30,8 +30,8 @@ async function q<T = Row>(text: string, params: unknown[] = [], exec: Exec = pgC
   return (await exec.unsafe(text, params as never[])) as T[];
 }
 
-export type OperationKind = 'checkout' | 'upgrade' | 'schedule' | 'admin';
-export type OperationStatus = 'reserved' | 'created' | 'completed' | 'expired' | 'superseded' | 'failed' | 'uncertain';
+type OperationKind = 'checkout' | 'upgrade' | 'schedule' | 'admin';
+type OperationStatus = 'reserved' | 'created' | 'completed' | 'expired' | 'superseded' | 'failed' | 'uncertain';
 
 export interface PriceOperation {
   id: number;
@@ -49,7 +49,7 @@ export interface PriceOperation {
 }
 
 /** Empreinte des paramètres d'une tentative (pure). */
-export function operationParamsHash(p: { accountId: number; price: Pick<ResolvedPrice, 'priceId' | 'priceRevision' | 'planCode' | 'billingPeriod'>; promoContext?: string | null; referralCode?: string | null; customerId?: string | null }): string {
+function operationParamsHash(p: { accountId: number; price: Pick<ResolvedPrice, 'priceId' | 'priceRevision' | 'planCode' | 'billingPeriod'>; promoContext?: string | null; referralCode?: string | null; customerId?: string | null }): string {
   return createHash('sha256')
     .update([p.accountId, p.price.planCode, p.price.billingPeriod, p.price.priceId, p.price.priceRevision, p.promoContext ?? '', p.referralCode ?? '', p.customerId ?? ''].join('|'))
     .digest('hex')
@@ -74,7 +74,7 @@ function map(r: Row): PriceOperation {
   };
 }
 
-export type CheckoutReservation =
+type CheckoutReservation =
   | { kind: 'new'; op: PriceOperation; superseded: PriceOperation | null }
   | { kind: 'same'; op: PriceOperation };
 

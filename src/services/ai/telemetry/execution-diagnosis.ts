@@ -202,7 +202,7 @@ export function buildExecutionDiagnosis(p: {
  * Lot 52B — constats sur les essais sans structured output, construits
  * uniquement à partir des tentatives tracées (aucune hypothèse).
  */
-export function structuredRetryLines(calls: Array<Pick<CallReport, 'model' | 'providerAttempts'>>): string[] {
+function structuredRetryLines(calls: Array<Pick<CallReport, 'model' | 'providerAttempts'>>): string[] {
   const lines: string[] = [];
   for (const c of calls) {
     const attempts = c.providerAttempts ?? [];

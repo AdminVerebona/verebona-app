@@ -33,21 +33,21 @@ import { ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { db, getSchemaReadiness, type SchemaReadiness } from '@/db';
 import { classifyS3Error, getS3Bucket, getS3Client, s3ConfigDiagnostics } from '@/lib/s3-config';
 
-export const HEALTH_BUDGET_MS = {
+const HEALTH_BUDGET_MS = {
   database: 1_500,
   schema: 1_500,
   s3: 3_000,
 } as const;
 
 /** Durée de conservation d'un résultat (ms) : bornes de fréquence réelle. */
-export const HEALTH_CACHE_MS = {
+const HEALTH_CACHE_MS = {
   database: 2_000,
   s3: 30_000,
 } as const;
 
-export type ProbeStatus = 'ok' | 'error' | 'timeout';
+type ProbeStatus = 'ok' | 'error' | 'timeout';
 
-export interface ProbeResult {
+interface ProbeResult {
   status: ProbeStatus;
   responseTime: number;
   /** Code public (TIMEOUT, UNAVAILABLE, ACCESS_DENIED…). */
@@ -113,7 +113,7 @@ export function probeDatabase(): Promise<ProbeResult> {
   });
 }
 
-export interface S3ProbeResult extends ProbeResult {
+interface S3ProbeResult extends ProbeResult {
   configured: boolean;
   /** Configuration partielle ou contradictoire. */
   misconfigured: boolean;

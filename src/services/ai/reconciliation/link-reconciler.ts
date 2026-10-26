@@ -22,13 +22,13 @@ export { LINK_MIN_MARGIN } from './master/link-ambiguity';
  */
 export { LINK_SCORE_THRESHOLDS } from './master/link-ambiguity';
 
-export interface LinkMatch {
+interface LinkMatch {
   id: number;
   score: number;
   reason: string;
 }
 
-export interface ReconcileLinksResult {
+interface ReconcileLinksResult {
   documents: LinkMatch[];
   agendaItems: LinkMatch[];
   suppliers: LinkMatch[];
@@ -40,7 +40,7 @@ export interface ReconcileLinksResult {
   ambiguities: LinkAmbiguity[];
 }
 
-export interface ReconcileLinksInput {
+interface ReconcileLinksInput {
   accountId: number;
   userId?: number;
   /** Candidats par section et contexte du sujet (`master/link-ambiguity`). */

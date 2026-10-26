@@ -13,12 +13,12 @@
  *     l'instant de lecture est rendu avec chaque réponse.
  */
 
-export const DEFAULT_PERIOD_DAYS = 7;
-export const MAX_PERIOD_DAYS = 90;
+const DEFAULT_PERIOD_DAYS = 7;
+const MAX_PERIOD_DAYS = 90;
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Décalage de Paris (minutes, UTC+x) à un instant donné. */
-export function parisOffsetMinutes(at: Date): number {
+function parisOffsetMinutes(at: Date): number {
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Europe/Paris', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -51,7 +51,7 @@ export interface BusinessPeriod {
   rule: string;
 }
 
-export const PERIOD_RULE = 'date de référence = fin de l’exécution (dernier résultat) si elle est finale, sinon dernière activité ; '
+const PERIOD_RULE = 'date de référence = fin de l’exécution (dernier résultat) si elle est finale, sinon dernière activité ; '
   + 'bornes [début inclus, fin exclue[ en UTC ; jours saisis = jours civils Europe/Paris ; issue actuelle, chaque exécution comptée une fois';
 
 /**

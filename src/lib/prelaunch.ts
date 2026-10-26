@@ -24,8 +24,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export const SIGNUP_MODES = ['full', 'prelaunch'] as const;
-export type SignupMode = (typeof SIGNUP_MODES)[number];
+const SIGNUP_MODES = ['full', 'prelaunch'] as const;
+type SignupMode = (typeof SIGNUP_MODES)[number];
 
 export const SIGNUP_CLOSED_CODE = 'SIGNUP_CLOSED';
 export const SIGNUP_CLOSED_MESSAGE =

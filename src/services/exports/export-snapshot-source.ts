@@ -67,7 +67,7 @@ export function canonicalAssetSnapshot(
   };
 }
 
-export type ExportSnapshotContext = 'EXPORT_BRUT' | 'TRANSMISSION' | 'ADMIN_PREVIEW';
+type ExportSnapshotContext = 'EXPORT_BRUT' | 'TRANSMISSION' | 'ADMIN_PREVIEW';
 
 /**
  * Snapshot d'un bien pour un export hors dossiers V12 (source canonique).

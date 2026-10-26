@@ -13,7 +13,7 @@
  */
 import type { MasterCorpusCase } from './cases';
 
-export type Evaluator = (c: MasterCorpusCase, output: unknown, ctx: { masterText: (code: string) => string }) => Promise<string[]>;
+type Evaluator = (c: MasterCorpusCase, output: unknown, ctx: { masterText: (code: string) => string }) => Promise<string[]>;
 
 const ecart = (cond: boolean, msg: string): string[] => (cond ? [] : [msg]);
 const exp = <T = unknown>(c: MasterCorpusCase, k: string): T | undefined => (c.expected ?? {})[k] as T | undefined;

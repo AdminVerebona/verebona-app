@@ -92,9 +92,6 @@ export function rubricsIntroducedAfter(version: string | null | undefined): Rubr
 /** Seuil de confiance unique, non configurable dans l'application (§11.2). */
 export const AI_CONFIDENCE_THRESHOLD = 0.9;
 
-/** Rubrique de dernier recours (§3.3). */
-export const FALLBACK_RUBRIC_CODE: RubricCode = 'OTHER_DOCUMENTS';
-
 // ── Index ───────────────────────────────────────────────────────────────────
 
 const RUBRIC_BY_CODE = new Map<string, RubricDefinition>(
@@ -119,7 +116,7 @@ for (const type of DOCUMENT_TYPES) {
 
 // ── Intégrité (§13.2) ───────────────────────────────────────────────────────
 
-export interface ReferentialViolation {
+interface ReferentialViolation {
   code: string;
   message: string;
 }
@@ -371,7 +368,7 @@ export function isApplicableToFamily(
   return applicability === 'ALL' || applicability.includes(family);
 }
 
-export interface RubricVisibilityContext {
+interface RubricVisibilityContext {
   /** Familles des biens du périmètre courant (compte ou bien affiché). */
   families: readonly AssetFamily[];
   /**

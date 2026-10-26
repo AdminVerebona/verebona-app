@@ -53,7 +53,7 @@ const OPERATION_CHANGED = 'BUSINESS_OPERATION_CHANGED';
 /** Abstentions qui laissent une ambiguïté (aucune écriture, aucune carte) : verdict AMBIGUOUS. */
 export const AMBIGUOUS_CAUSES: ReadonlySet<string> = new Set(['AMBIGUOUS', 'CONTRADICTION', 'INSUFFICIENT_CONFIDENCE', 'DATE_ORDER_AMBIGUOUS']);
 
-export type MissingPropertiesAnomaly =
+type MissingPropertiesAnomaly =
   | 'MISSING_PROPERTIES_UNEXAMINED' | 'MISSING_PROPERTY_ARBITRATION_PENDING' | 'MISSING_PROPERTY_ARBITRATION_FAILED'
   | 'MISSING_PROPERTY_MEMORY_UNAVAILABLE' | 'MISSING_PROPERTY_ABSTENTION';
 

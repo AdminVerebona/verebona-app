@@ -23,7 +23,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export type SecurityEventCode =
+type SecurityEventCode =
   | 'MODEL_URL_STRIPPED'
   | 'MODEL_MARKUP_STRIPPED'
   | 'MODEL_SCRIPT_REJECTED'
@@ -60,7 +60,7 @@ function has(re: RegExp, s: string): boolean {
   return r;
 }
 
-export interface SanitizedText {
+interface SanitizedText {
   text: string;
   /** Affirmation à rejeter en entier. */
   rejected: boolean;

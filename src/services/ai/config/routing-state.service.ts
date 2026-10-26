@@ -42,7 +42,7 @@ import { profiledOperationsOf } from './operation-profiles';
 import { bumpRoutingCache, freezeFor, listActiveInterventions } from './config-interventions.service';
 import { applyRoutingOverlay, configuredChain, isModelExcluded, type RoutingOverlay } from './routing-overlay';
 
-export { applyRoutingOverlay, configuredChain, EMPTY_OVERLAY, type RoutingOverlay, type ChainSlot, type OverlayResult } from './routing-overlay';
+export { applyRoutingOverlay, type RoutingOverlay,} from './routing-overlay';
 
 type Row = Record<string, unknown>;
 const q = async (sql: SqlLike, text: string, params: unknown[] = []): Promise<Row[]> => (await sql.unsafe(text, params as never[])) as Row[];
@@ -76,7 +76,7 @@ const COLS = `id, environment, operation_code, treatment, model, chain_before, c
 
 const strArr = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
 
-export function toPromotion(r: Row): RoutingPromotion {
+function toPromotion(r: Row): RoutingPromotion {
   return {
     id: Number(r.id), environment: String(r.environment), operationCode: String(r.operation_code), treatment: String(r.treatment) as Treatment,
     model: String(r.model), chainBefore: strArr(r.chain_before), chainAfter: strArr(r.chain_after),
@@ -127,7 +127,7 @@ export async function loadRoutingOverlay(environment: AiEnvironment | string = g
 
 // ── Promotion ───────────────────────────────────────────────────────────────
 
-export interface PromoteInput {
+interface PromoteInput {
   operationCode: string;
   model: string;
   justification: string;
@@ -276,7 +276,7 @@ export async function restoreForRollbackInTx(sql: SqlLike, environment: string, 
 
 // ── Vue du BO ───────────────────────────────────────────────────────────────
 
-export interface RoutingOperationView {
+interface RoutingOperationView {
   operationCode: string;
   treatment: Treatment;
   /** Chaîne configurée (version active). */

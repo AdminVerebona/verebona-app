@@ -23,13 +23,7 @@
  * }
  */
 
-
-export interface PaginationParams {
-  limit?: number;
-  cursor?: string | null;
-}
-
-export interface PaginationResult<T> {
+interface PaginationResult<T> {
   data: T[];
   pagination: {
     nextCursor: string | null;
@@ -41,20 +35,19 @@ export interface PaginationResult<T> {
 /**
  * Default pagination limit
  */
-export const DEFAULT_LIMIT = 20;
-
+const DEFAULT_LIMIT = 20;
 
 /**
  * Encode cursor from ID
  */
-export function encodeCursor(id: number): string {
+function encodeCursor(id: number): string {
   return Buffer.from(JSON.stringify({ id })).toString('base64');
 }
 
 /**
  * Decode cursor to ID
  */
-export function decodeCursor(cursor: string): number | null {
+function decodeCursor(cursor: string): number | null {
   try {
     const decoded = JSON.parse(Buffer.from(cursor, 'base64').toString('utf-8'));
     return typeof decoded.id === 'number' ? decoded.id : null;

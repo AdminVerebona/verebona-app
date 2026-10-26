@@ -12,7 +12,7 @@ import type { ExistingAgendaItem } from './types';
 import { decideCompletion, type CompletionDecision, type CompletionEvidence } from './status-reconciler';
 import { verifyCompletionMaster } from './master/verify-completion';
 
-export type StatusReconciliation = { engine: 'completion_v2' } & CompletionDecision;
+type StatusReconciliation = { engine: 'completion_v2' } & CompletionDecision;
 
 export async function reconcileStatus(
   item: ExistingAgendaItem,

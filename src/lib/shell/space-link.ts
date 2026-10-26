@@ -8,7 +8,7 @@
  * membre (le serveur en juge, `POST /api/auth/switch-account`), sinon ouvre
  * l'accueil. Aucun droit n'est accordé par ce paramètre.
  */
-export const SPACE_PARAM = 'space';
+const SPACE_PARAM = 'space';
 
 /** Ajoute `space=<accountId>` à un lien INTERNE (jamais à une URL externe). */
 export function withSpaceParam(href: string | null | undefined, accountId: number | null | undefined): string | null {

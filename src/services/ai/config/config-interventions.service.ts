@@ -55,7 +55,7 @@ export interface Intervention {
 
 const COLS = `id, environment, kind, model, treatment, reason, created_by, created_by_email, created_at, lifted_at, lifted_by, lift_reason, import_id`;
 
-export function toIntervention(r: Row): Intervention {
+function toIntervention(r: Row): Intervention {
   return {
     id: Number(r.id), environment: String(r.environment), kind: String(r.kind) as InterventionKind,
     model: r.model == null ? null : String(r.model),

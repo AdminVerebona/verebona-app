@@ -50,9 +50,9 @@ type Sql = typeof import('@/db').pgClient;
 type Row = Record<string, unknown>;
 
 /** Documents membres examinés par Opération (borne de lecture ; le reste au passage suivant). */
-export const DIRECT_LINKS_DOCUMENT_LIMIT = 500;
+const DIRECT_LINKS_DOCUMENT_LIMIT = 500;
 
-export interface DirectLinksOptions {
+interface DirectLinksOptions {
   /** Simulation : liens qui seraient posés, aucune écriture, aucune IA. */
   dryRun?: boolean;
   /** Arbitrage IA d'une ambiguïté résiduelle (défaut : non). */

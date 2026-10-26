@@ -17,7 +17,7 @@ import { assetFiles } from '@/db/schema';
 import { SessionService } from '@/lib/session-service';
 import { viewableFileCondition } from '@/services/documents/grouped-sources';
 
-export interface ReadableFile {
+interface ReadableFile {
   id: number;
   accountId: number;
   s3Bucket: string | null;
@@ -31,7 +31,7 @@ export interface ReadableFile {
   isWebLink: boolean;
 }
 
-export type FileAccessResult =
+type FileAccessResult =
   | { ok: true; file: ReadableFile; accountId: number; userId: number }
   | { ok: false; response: NextResponse };
 

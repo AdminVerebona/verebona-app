@@ -55,7 +55,7 @@ import { upsertAction } from './to-process-action.service';
 import type { OperationCardNeeds } from '@/services/business-operations/consolidation/card-needs';
 
 export const OPERATION_MATCH_RULE = 'OPERATION-MATCH';
-export const OPERATION_AMOUNT_RULE = 'OPERATION-AMOUNT';
+const OPERATION_AMOUNT_RULE = 'OPERATION-AMOUNT';
 /**
  * Lot 83D (CDC v5 §18.4, AC39) : règles RETIRÉES avec l'intervention enfant
  * d'un sinistre — plus jamais posées ni résolues. Seul le rattrapage BO
@@ -66,7 +66,7 @@ export const RETIRED_CLAIM_PARENT_RULES = ['OPERATION-CLAIM-PARENT', 'OPERATION-
 /** Lot 53 (retour PO Q17) : bien retiré du sinistre cité par un nouveau document — le rattacher à nouveau ? */
 export const OPERATION_ASSET_EXCLUSION_RULE = 'OPERATION-CLAIM-ASSET';
 /** Lot 53D (retour PO D2) : devise d'un montant non établie sur le document. */
-export const OPERATION_CURRENCY_RULE = 'OPERATION-CURRENCY';
+const OPERATION_CURRENCY_RULE = 'OPERATION-CURRENCY';
 export const OPERATION_CARD_RULES = [
   OPERATION_MATCH_RULE, OPERATION_AMOUNT_RULE, OPERATION_ASSET_EXCLUSION_RULE, OPERATION_CURRENCY_RULE,
 ] as const;
@@ -78,8 +78,8 @@ const CURRENCY_RELATION = 'operationCurrency';
 
 export const matchRelationKey = (candidateKey: string) => `${MATCH_RELATION}:${candidateKey}`;
 export const amountRelationKey = (operationId: number, fingerprint: string) => `${AMOUNT_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
-export const exclusionRelationKey = (operationId: number, assetId: number) => `${EXCLUSION_RELATION}:${operationId}:${assetId}`;
-export const currencyRelationKey = (operationId: number, fingerprint: string) => `${CURRENCY_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
+const exclusionRelationKey = (operationId: number, assetId: number) => `${EXCLUSION_RELATION}:${operationId}:${assetId}`;
+const currencyRelationKey = (operationId: number, fingerprint: string) => `${CURRENCY_RELATION}:${operationId}:${fingerprint.slice(0, 16)}`;
 
 // ── Libellés métier (purs) ──────────────────────────────────────────────────
 
@@ -93,7 +93,7 @@ const NOMS: Readonly<Record<string, { meme: string; autre: string }>> = {
   DISPOSAL: { meme: 'la même vente', autre: 'une autre vente' },
 };
 const NOM_DEFAUT = { meme: 'le même événement', autre: 'un autre événement' };
-export const businessNoun = (type: string | null | undefined) => (type && NOMS[type]) || NOM_DEFAUT;
+const businessNoun = (type: string | null | undefined) => (type && NOMS[type]) || NOM_DEFAUT;
 
 const borne = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const guillemets = (s: string) => `« ${borne(s, 50)} »`;
@@ -116,7 +116,7 @@ const DEPENSES: Readonly<Record<string, string>> = {
   REFUND: 'le même remboursement', INDEMNITY: 'la même indemnité', PROCEED: 'la même vente',
 };
 
-export interface OperationLabel { id: number; label: string }
+interface OperationLabel { id: number; label: string }
 
 /** Question (a) — pure. */
 export function matchQuestion(type: string | null, basis: 'CERTAIN' | 'M3', labels: readonly OperationLabel[]): string {
@@ -277,7 +277,7 @@ async function matchClosureTrace(
 
 // ── Producteur ──────────────────────────────────────────────────────────────
 
-export interface OperationCardsReport { created: number; updated: number; closed: number; skipped: number; /** Lot 54D (E05) : échec de synchronisation (repris au passage T3 suivant). */ error?: string }
+interface OperationCardsReport { created: number; updated: number; closed: number; skipped: number; /** Lot 54D (E05) : échec de synchronisation (repris au passage T3 suivant). */ error?: string }
 
 /**
  * Pose, met à jour ou ferme les cartes demandées par un passage T3 (après

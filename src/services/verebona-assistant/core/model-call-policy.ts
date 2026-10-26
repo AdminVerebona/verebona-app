@@ -28,7 +28,7 @@ import { executeWithinBudget, type AiCallBudget } from './ai-call-budget';
 import type { AiRunContext } from './usage-tracking.service';
 import { isAssistantFlagOn } from '../config/assistant-flags.server';
 
-export type ModelFailureKind =
+type ModelFailureKind =
   | 'EMPTY_OUTPUT'
   | 'INVALID_OUTPUT'
   | 'TIMEOUT'
@@ -42,10 +42,6 @@ export type EscalationReason =
   | 'COMPLEX_CONTRADICTION'
   | 'SYNTHESIS_FAILED'
   | 'QUALITY_RULE';
-
-export const ALLOWED_ESCALATION_REASONS: readonly EscalationReason[] = [
-  'EMPTY_OUTPUT', 'COMPLEX_CONTRADICTION', 'SYNTHESIS_FAILED', 'QUALITY_RULE',
-];
 
 /**
  * Nature d'un échec de la passerelle. Les erreurs de validation (issues zod,
@@ -87,7 +83,7 @@ export function repairInstruction(schemaDescription: string, errors: string[]): 
   ].join('\n');
 }
 
-export interface PolicyCallResult<T> {
+interface PolicyCallResult<T> {
   res: AiGatewayResponse<T>;
   path: 'first' | 'repair' | 'escalation';
   /** Motifs tracés (réparation, escalade), dans l'ordre. */
@@ -96,7 +92,7 @@ export interface PolicyCallResult<T> {
   repairErrors?: string[];
 }
 
-export interface PolicyCallOptions<T> {
+interface PolicyCallOptions<T> {
   budget: AiCallBudget | undefined;
   /** Construit la requête ; `repair` fourni pour la tentative de réparation. */
   build: (variant: { repair?: string[]; escalation?: boolean }) => AiGatewayRequest<T>;

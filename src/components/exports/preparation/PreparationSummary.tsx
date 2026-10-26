@@ -25,7 +25,7 @@ import type { OutputFormat } from '@/services/exports/v12/preparation/types';
 import { Callout, SectionLabel, Pill, formatDateTime } from './ui';
 
 /** Génération longue (MSG-PREP-008) au-delà de ce délai. */
-export const LONG_GENERATION_MS = 20_000;
+const LONG_GENERATION_MS = 20_000;
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (

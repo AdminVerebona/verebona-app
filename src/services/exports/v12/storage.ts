@@ -27,7 +27,7 @@ export function buildExportS3Key(accountId: number, assetId: number, generationI
 /** Durée de disponibilité d'un dossier généré (DRH-005). */
 export const EXPORT_RETENTION_DAYS = 30;
 
-export const downloadUrlTtlSeconds = (): number => {
+const downloadUrlTtlSeconds = (): number => {
   const n = Number(process.env.EXPORTS_DOWNLOAD_URL_TTL_S);
   return Number.isFinite(n) && n >= 10 && n <= 3600 ? Math.floor(n) : 60;
 };

@@ -30,11 +30,7 @@ export type CommunicationChannel = 'email' | 'push' | 'in_app';
 export const COMMUNICATION_CHANNELS: readonly CommunicationChannel[] = ['email', 'push', 'in_app'];
 
 /** Canal du moteur de notifications. */
-export type EngineChannel = 'bell' | 'push' | 'email';
-
-export function toCommunicationChannel(channel: EngineChannel): CommunicationChannel {
-  return channel === 'bell' ? 'in_app' : channel;
-}
+type EngineChannel = 'bell' | 'push' | 'email';
 
 /** Préfixe des e-mails transactionnels envoyés hors catalogue. */
 export const TRANSACTIONAL_EMAIL_PREFIX = 'email:';
@@ -125,13 +121,13 @@ export async function isTransactionalEmailActive(templateCode: string): Promise<
 
 // ── Décision (pure) ─────────────────────────────────────────────────────────
 
-export interface EngineChannels {
+interface EngineChannels {
   bell: boolean;
   push: boolean;
   email: boolean;
 }
 
-export interface ChannelActivationResult {
+interface ChannelActivationResult {
   /** Canaux à livrer. */
   channels: EngineChannels;
   /** Canaux prévus mais coupés par l'administrateur. */

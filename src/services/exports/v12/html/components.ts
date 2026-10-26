@@ -213,7 +213,7 @@ ${body}
 const brand = (sys: string, dark = true) =>
   `<div class="brand"><img src="${sys}assets/brand/${dark ? 'verebona-mark-on-dark.svg' : 'verebona-mark.svg'}" alt=""><span>Verebona</span></div>`;
 
-export interface MetaItem { label: string; value: Nullable<string | number> }
+interface MetaItem { label: string; value: Nullable<string | number> }
 
 const coverMeta = (items: Nullable<MetaItem[]>) => {
   const kept = (items ?? []).filter((i) => !isEmpty(i?.value));
@@ -225,7 +225,7 @@ const coverMeta = (items: Nullable<MetaItem[]>) => {
 const coverFoot = (pageLabel: Nullable<string>) =>
   `<div class="cover-foot"><span>Ce dossier a été préparé avec Verebona.</span><span>${esc(pageLabel ?? '')}</span></div>`;
 
-export interface CoverPhoto { src: string; focus?: Nullable<string> }
+interface CoverPhoto { src: string; focus?: Nullable<string> }
 
 /**
  * CoverDocumentary — CIL, dossier complet, assurances. Sans rupture, infos clés visibles.
@@ -367,7 +367,7 @@ export function SummaryCard({ rows, paragraphs: text, labelWidth = 110 }: {
 
 // ───────────────────────────── KeyValueGrid ─────────────────────────────
 
-export interface KvRow { label: string; value: Nullable<string | number> }
+interface KvRow { label: string; value: Nullable<string | number> }
 
 /**
  * KeyValueGrid — masque automatiquement les champs vides.
@@ -385,7 +385,7 @@ export function KeyValueGrid(rows: Nullable<Array<Nullable<KvRow>>>, { variant =
 
 // ───────────────────────────── Chiffres, étiquettes ─────────────────────────────
 
-export interface FigureItem { label: string; value: Nullable<string>; sub?: Nullable<string>; primary?: boolean }
+interface FigureItem { label: string; value: Nullable<string>; sub?: Nullable<string>; primary?: boolean }
 
 /** Cartes de chiffres clés. items : [{ label, value, sub, primary }] ; `tight` : variante 16 × 18 px. */
 export function FigureCards(items: Nullable<FigureItem[]>, { tight = false, large = false, className = '' }: { tight?: boolean; large?: boolean; className?: string } = {}): string {
@@ -498,7 +498,7 @@ const FORMAT_LABEL: Record<string, string> = { PDF: 'PDF', JPG: 'JPG', JPEG: 'JP
 export type PlannedDoc = DocItem & { annexRef?: string; pageCount?: number; startPage?: number | null; bannerType?: Nullable<string>; bannerExtra?: Nullable<string> };
 
 /** Ligne de méta d'un document : type · date · pages · précision. */
-export const docMeta = (d: DocItem): string => dot(d.typeLabel, fmt.date(d.date), fmt.pages(d.pages), d.detail);
+const docMeta = (d: DocItem): string => dot(d.typeLabel, fmt.date(d.date), fmt.pages(d.pages), d.detail);
 
 /** Pastille de destination : « Intégré · annexe A1 » (bleue) / « Joint au ZIP » (neutre). */
 export function destinationPill(d: PlannedDoc, { short = false }: { short?: boolean } = {}): string {
@@ -568,7 +568,7 @@ const PREVIEW_TEXT: Record<string, string> = {
  * Si `page.overlay`, le cadre est laissé vide : la page PDF source y est apposée
  * en vectoriel par `render/annexes.ts` après l'impression.
  */
-export function IntegratedPdfPage(a: PlannedDoc, pageIndex: number): string {
+function IntegratedPdfPage(a: PlannedDoc, pageIndex: number): string {
   const p = a.preview?.pages?.[pageIndex] ?? {};
   const kind = a.preview?.kind ?? 'pdf';
   const frame = p.src

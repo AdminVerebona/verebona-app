@@ -28,9 +28,9 @@
  */
 
 /** Préfixe des périmètres de ce mécanisme dans `verebona_cache_versions`. */
-export const SHARED_CACHE_SCOPE_PREFIX = 'cache:';
+const SHARED_CACHE_SCOPE_PREFIX = 'cache:';
 /** Période de relecture des versions (propagation ≤ cette durée). */
-export const POLL_MS = 5_000;
+const POLL_MS = 5_000;
 
 export const sharedCacheScope = (id: string) => `${SHARED_CACHE_SCOPE_PREFIX}${id}`;
 

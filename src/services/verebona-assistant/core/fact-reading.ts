@@ -27,7 +27,7 @@ import type { DocumentFieldFact } from '../canonical/field-document';
 import { dedupeFacts } from '../canonical/field-vocabulary';
 import { TargetReadError } from './t2-diagnostics';
 
-export type FactStatus = 'VALUE_FOUND' | 'MISSING_CANONICAL_VALUE' | 'FIELD_NOT_APPLICABLE' | 'FIELD_UNAVAILABLE';
+type FactStatus = 'VALUE_FOUND' | 'MISSING_CANONICAL_VALUE' | 'FIELD_NOT_APPLICABLE' | 'FIELD_UNAVAILABLE';
 
 export interface FactResult {
   /** Clé demandée (telle que reçue). */
@@ -53,7 +53,7 @@ export type FactTarget =
   | { type: 'asset'; id: number; name: string | null; category?: string | null }
   | { type: 'equipment' | 'room'; id: number; name: string | null; assetId: number | null; assetName?: string | null };
 
-export interface FactReaders {
+interface FactReaders {
   field(accountId: number, assetId: number, key: string): Promise<CanonicalFieldReading | null>;
   entityField?(accountId: number, target: { type: 'EQUIPMENT' | 'ROOM'; id: number }, key: string): Promise<CanonicalEntityFieldReading | null>;
   /** Cascade par champ : fait documentaire d'un champ absent de la fiche. */
@@ -66,7 +66,7 @@ export interface FactReaders {
   fieldAnswer(r: CanonicalFieldReading): string;
 }
 
-export interface FactReading {
+interface FactReading {
   target: FactTarget;
   facts: FactResult[];
   sources: RetrievedSource[];

@@ -26,7 +26,7 @@ import { formatSecurityIncidentDate } from '@/lib/auth/security-email';
 
 export const SIGNUP_EXISTING_ACCOUNT_TEMPLATE = 'SIGNUP_EXISTING_ACCOUNT';
 
-export type SignupExistingEmailOutcome = 'sent' | 'throttled' | 'no_recipient' | 'failed';
+type SignupExistingEmailOutcome = 'sent' | 'throttled' | 'no_recipient' | 'failed';
 
 function appUrl(): string {
   return process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
@@ -44,7 +44,7 @@ export function signupExistingEmailVariables(p: { firstName: string | null; at: 
 }
 
 /** Envoi (attendu) — exposé pour les tests ; la route passe par `scheduleSignupExistingEmail`. */
-export async function sendSignupExistingEmail(userId: number, at: Date = new Date()): Promise<SignupExistingEmailOutcome> {
+async function sendSignupExistingEmail(userId: number, at: Date = new Date()): Promise<SignupExistingEmailOutcome> {
   const [user] = await db
     .select({ email: users.email, firstName: users.firstName, status: users.status })
     .from(users)

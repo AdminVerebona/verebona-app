@@ -29,13 +29,13 @@
 import { pgClient } from '@/db';
 import type { CustomerPortalConfigStripe } from './customer-portal-configuration.service';
 
-export type PortalAccessCode = 'NO_ACCOUNT' | 'FORBIDDEN' | 'DUO_GUEST' | 'NO_STRIPE_CUSTOMER' | 'ACCOUNT_FORBIDDEN' | 'BILLING_MISMATCH' | 'INVALID_ACCOUNT_REF';
+type PortalAccessCode = 'NO_ACCOUNT' | 'FORBIDDEN' | 'DUO_GUEST' | 'NO_STRIPE_CUSTOMER' | 'ACCOUNT_FORBIDDEN' | 'BILLING_MISMATCH' | 'INVALID_ACCOUNT_REF';
 
-export type PortalAccess =
+type PortalAccess =
   | { ok: true; accountId: number; customerId: string }
   | { ok: false; code: PortalAccessCode; status: 400 | 403 | 404 | 409; message: string };
 
-export const PORTAL_ACCESS_MESSAGES: Readonly<Record<PortalAccessCode, string>> = {
+const PORTAL_ACCESS_MESSAGES: Readonly<Record<PortalAccessCode, string>> = {
   NO_ACCOUNT: 'Aucun compte Verebona n’est associé à votre connexion.',
   FORBIDDEN: 'Seul le propriétaire du compte peut accéder à la facturation.',
   DUO_GUEST: 'La facturation de cet espace Premium Duo est gérée par la personne titulaire de l’abonnement. Vous n’avez pas accès à sa gestion.',
@@ -58,7 +58,7 @@ export function parseAccountRef(raw: unknown): number | null | 'INVALID' {
 }
 
 /** Sous-ensemble Stripe pour le contrôle de cohérence abonnement / client. */
-export interface PortalSubscriptionReader {
+interface PortalSubscriptionReader {
   subscriptions: { retrieve(id: string): Promise<unknown> };
 }
 
@@ -175,7 +175,7 @@ export async function resolveBillingPortalAccess(userId: number, currentAccountI
 }
 
 /** Sous-ensemble du client Stripe (injectable dans les tests). */
-export interface PortalStripe {
+interface PortalStripe {
   billingPortal: {
     sessions: { create(p: { customer: string; return_url: string; locale?: string; configuration?: string }): Promise<{ url: string }> };
     configurations: CustomerPortalConfigStripe['billingPortal']['configurations'];

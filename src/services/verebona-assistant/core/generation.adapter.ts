@@ -43,7 +43,7 @@ import { answerFormatFor } from '../prompts/answer-format';
 type Derivation = 'direct' | 'calculated' | 'synthesized';
 
 /** Sortie attendue par `OrchestratorPorts.generateWithAI`. */
-export interface GeneratedAnswer {
+interface GeneratedAnswer {
   answer: string;
   claims: Claim[];
   actions: [];
@@ -73,7 +73,7 @@ export interface GeneratedAnswer {
 }
 
 /** Événement de chronologie validé (T2-35). */
-export interface AnswerTimelineEvent {
+interface AnswerTimelineEvent {
   /** AAAA-MM-JJ, ou `null` (date inconnue). */
   date: string | null;
   text: string;
@@ -81,7 +81,7 @@ export interface AnswerTimelineEvent {
 }
 
 /** Rejet d'une génération : motif tracé par l'orchestrateur. */
-export interface GenerationFailure {
+interface GenerationFailure {
   failed: true;
   reason: string;
   securityEvents: SecurityEvent[];
@@ -320,7 +320,7 @@ async function generateWithT2Master(p: {
  * et non dans une consigne que rien ne fait respecter.
  */
 /** Affirmation candidate : ligne du master T2 (avec son support vérifiable). */
-export interface AnswerClaimInput {
+interface AnswerClaimInput {
   claimKey?: string;
   text: string;
   sourceIds: string[];
@@ -330,7 +330,7 @@ export interface AnswerClaimInput {
   support?: T2ClaimSupport;
 }
 
-export interface ToGeneratedAnswerOptions {
+interface ToGeneratedAnswerOptions {
   /** T2-31 : contrôle du support vérifiable (toujours demandé par le master T2). */
   verifySupport?: boolean;
   /** Reçoit `CLAIM_UNSUPPORTED:<motif>` (trace sans contenu). */
@@ -450,7 +450,7 @@ export function computeSupportLevel(total: number, retained: number): SupportLev
  * refermer sa balise ni en ouvrir une autre. Seul `<` est échappé : les
  * chiffres et symboles (« R&D », « 480 € ») restent recopiables tels quels.
  */
-export function escapeUntrusted(text: string): string {
+function escapeUntrusted(text: string): string {
   return String(text ?? '').replace(/</g, '&lt;');
 }
 

@@ -51,10 +51,10 @@ export const HISTORY_RULE_RUN_ID = '8a9e0c1d-5b7f-4e2a-9c3d-890000000001' as con
 /** Migration à partir de laquelle le nouveau chemin écrit l'exécution à la source. */
 export const CORRELATION_MIGRATION = '0668_l83c_execution_metier.sql' as const;
 
-export const HISTORY_NATURES = ['BUSINESS', 'TECHNICAL', 'UNDETERMINED'] as const;
+const HISTORY_NATURES = ['BUSINESS', 'TECHNICAL', 'UNDETERMINED'] as const;
 export type HistoryNature = (typeof HISTORY_NATURES)[number];
 
-export const HISTORY_NATURE_LABELS: Readonly<Record<HistoryNature, string>> = {
+const HISTORY_NATURE_LABELS: Readonly<Record<HistoryNature, string>> = {
   BUSINESS: 'Métier',
   TECHNICAL: 'Technique',
   UNDETERMINED: 'Non déterminable',
@@ -63,7 +63,7 @@ export const HISTORY_NATURE_LABELS: Readonly<Record<HistoryNature, string>> = {
 /** Issues possibles (mêmes codes que la projection P2). */
 export type HistoryOutcome = 'SUCCEEDED' | 'INCOMPLETE' | 'FAILED' | 'NOT_FINAL' | 'VOID' | 'UNDETERMINED';
 
-export const HISTORY_OUTCOME_LABELS: Readonly<Record<HistoryOutcome, string>> = {
+const HISTORY_OUTCOME_LABELS: Readonly<Record<HistoryOutcome, string>> = {
   SUCCEEDED: 'Réussie', INCOMPLETE: 'Incomplète', FAILED: 'Échouée', NOT_FINAL: 'Non finale', VOID: 'Sans objet', UNDETERMINED: 'Non déterminable',
 };
 
@@ -131,7 +131,7 @@ const TECHNICAL_TRIGGERS = new Set(['qualification', 'probe', 'provider_test', '
 const TECHNICAL_OPERATIONS = new Set(['evaluate_prompt']);
 
 /** Traitement établi par le code d'usage, sinon par l'opération ; null sinon. Pur. */
-export function treatmentOfCall(c: Pick<HistoricalCall, 'useCaseCode' | 'operationCode'>): { treatment: string | null; evidence: HistoryEvidence | null } {
+function treatmentOfCall(c: Pick<HistoricalCall, 'useCaseCode' | 'operationCode'>): { treatment: string | null; evidence: HistoryEvidence | null } {
   if (c.useCaseCode && USE_CASE_TREATMENT[c.useCaseCode]) {
     return { treatment: USE_CASE_TREATMENT[c.useCaseCode], evidence: { source: 'ai_usage_event', ref: `use_case_code=${c.useCaseCode}`, proves: 'treatment' } };
   }

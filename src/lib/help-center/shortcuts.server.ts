@@ -20,7 +20,7 @@ import {
   HELP_CORPUS_OPEN_BUDGET_MS, loadHelpCorpus, resolveHelpCorpusConfig, type HelpCorpus,
 } from '@/services/verebona-assistant/core/help-corpus.service';
 
-export type HelpShortcutsSource = 'catalogue' | 'corpus' | 'none';
+type HelpShortcutsSource = 'catalogue' | 'corpus' | 'none';
 
 /** Site public de l'environnement, tel que le lit l'assistant (sans le chemin du corpus). */
 export function serverHelpSiteBase(): string | undefined {

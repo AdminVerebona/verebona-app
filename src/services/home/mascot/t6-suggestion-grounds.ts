@@ -31,7 +31,7 @@ import { evaluationEvidenceOf } from './t6-interpellation.service';
 import type { T6StoredAssessment } from './t6-interpellation';
 import { daysBetween, exceptionEvidenceGrounded, T6_ASSESSMENT_CONTRACT, T6_ASSESSMENT_MAX_AGE_DAYS } from './t6-interpellation';
 import {
-  buildT6SuggestionContext, futureSuggestionAgenda, storedGroundsOf, T6_SUGGESTION_CONTRACT,
+  buildT6SuggestionContext, futureSuggestionAgenda, storedGroundsOf,
   type T6DeadlineGroundsInput, type T6StoredGround, type T6SuggestionReport,
 } from './t6-suggestions';
 
@@ -64,7 +64,7 @@ export function decisionInputOf(
  * fonction (`evaluationEvidenceOf` : clé d'origine, confiance, document
  * d'origine ; statut PROVEN / DEDUCED / UNCERTAIN).
  */
-export function evidenceInputOf(e: T6ItemEvidence | null | undefined): Pick<T6DeadlineGroundsInput, 'description' | 'facts' | 'documents'> {
+function evidenceInputOf(e: T6ItemEvidence | null | undefined): Pick<T6DeadlineGroundsInput, 'description' | 'facts' | 'documents'> {
   if (!e) return { description: null, facts: [], documents: [] };
   const p = evaluationEvidenceOf('S', e);
   const docs = p.refs.filter((r) => r.kind === 'DOCUMENT');
@@ -184,7 +184,7 @@ export function storedGroundsOfEntry(suggestions: unknown): { perSuggestion: Arr
 
 // ── Invalidation et trace ────────────────────────────────────────────────────
 
-export interface T6SuggestionInvalidation {
+interface T6SuggestionInvalidation {
   cacheKey: string;
   traceId: string | null;
   /** Motifs structurés (`ground_changed`, `ground_unavailable`, `contract_outdated`…) → nombre de questions. */
@@ -221,5 +221,3 @@ export async function invalidateT6SuggestionCache(
   return r.length;
 }
 
-/** Contrat des questions conservées dans le cache (lecture, contrôle). */
-export const T6_SUGGESTION_CACHE_CONTRACT = T6_SUGGESTION_CONTRACT;

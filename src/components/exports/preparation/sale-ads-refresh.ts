@@ -8,7 +8,7 @@
  */
 export const SALE_ADS_REFRESH_DELAY_MS = 2500;
 
-export interface SaleAdsRefresher {
+interface SaleAdsRefresher {
   /** Sous-rubriques enregistrées (`AssetAdditionalInfosSection.onSectionsSaved`). */
   onSectionsSaved(sections: readonly string[]): void;
   cancel(): void;

@@ -42,7 +42,7 @@ export function todayParis(now: Date = new Date()): string {
 }
 
 /** Élément d'agenda tel que lu par l'accueil et la mascotte. */
-export interface HomeAgendaItemForClassification {
+interface HomeAgendaItemForClassification {
   homeCategory: string | null;
   originType: string;
   title: string;
@@ -275,7 +275,7 @@ export const T6_AGENDA_EXTRA_LIMIT = 120;
 /** Lot 75E (B) : échéances déjà décidées « à présenter » relues hors file d'examen (affichage). */
 export const T6_AGENDA_SHOWN_LIMIT = 40;
 /** Lot 71G (T6-02) : ancienneté maximale d'une échéance dépassée encore examinée. */
-export const T6_OVERDUE_MAX_LOOKBACK_DAYS = 730;
+const T6_OVERDUE_MAX_LOOKBACK_DAYS = 730;
 
 /** Lot 75E (B) : table du curseur d'examen (0551) présente ? Lue une fois par processus. */
 let examinations: Promise<boolean> | null = null;
@@ -286,8 +286,6 @@ export function t6ExaminationsReady(): Promise<boolean> {
     .catch(() => { examinations = null; return false; });
   return examinations;
 }
-/** Réservé aux tests. */
-export function resetT6ExaminationsProbe(): void { examinations = null; }
 
 /**
  * Lot 71G (T6-02, T6-03) — échéances que la lecture principale (200 lignes,
@@ -317,7 +315,7 @@ export function resetT6ExaminationsProbe(): void { examinations = null; }
  *   · à part, et bornées, les échéances non dues déjà décidées « à présenter »
  *     (l'affichage reste possible pendant la reprise).
  */
-export async function readT6Agenda(accountId: number, today: string, horizonDays = 180): Promise<{ rows: MascotAgendaRow[]; backlog: boolean }> {
+async function readT6Agenda(accountId: number, today: string, horizonDays = 180): Promise<{ rows: MascotAgendaRow[]; backlog: boolean }> {
   const [ok] = await rows(`SELECT to_regclass('t6_interpellation_assessments') IS NOT NULL AND to_regclass('t6_reminder_preferences') IS NOT NULL AS ok`, []);
   if (!ok?.ok) return { rows: [], backlog: false };
   const filtreT4 = await upcomingDeadlinesSqlFilter('i');

@@ -37,13 +37,12 @@
 import { withoutAssetDesignations, isAssetVocabularyWord } from '@/lib/asset-taxonomy';
 import { findReadableFields } from '../canonical/field-vocabulary';
 import { getField, getEventEntry } from '@/services/canonical/registry';
+import { plain } from './routing-text';
 
-export type DeterministicConfidence = 'STRONG' | 'WEAK';
+type DeterministicConfidence = 'STRONG' | 'WEAK';
 
 /** Besoin de VALEUR exprimé par la question (signal, jamais un périmètre). */
 export type ValueNeed = 'end_date' | 'date' | 'amount';
-
-const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
 
 /** Mots d'une question (sans accents, minuscules). */
 export function tokensOf(text: string): string[] {
@@ -320,7 +319,7 @@ export interface BusinessSource {
 }
 
 /** Nature d'un montant (lot 75J, #419 R01). */
-export type AmountNature = 'realized' | 'documented' | 'forecast' | 'payment';
+type AmountNature = 'realized' | 'documented' | 'forecast' | 'payment';
 
 /** Nature du montant d'une source (pure) : celle déclarée, sinon documenté. */
 export function amountNatureOf(s: Pick<BusinessSource, 'amountNature' | 'meta'>): AmountNature {
@@ -330,7 +329,7 @@ export function amountNatureOf(s: Pick<BusinessSource, 'amountNature' | 'meta'>)
 }
 
 /** Montant PRINCIPAL (coût réalisé ou facturé) — jamais un règlement ni une prévision (pure). */
-export function isPrimaryAmount(s: Pick<BusinessSource, 'amountNature' | 'meta'>): boolean {
+function isPrimaryAmount(s: Pick<BusinessSource, 'amountNature' | 'meta'>): boolean {
   const n = amountNatureOf(s);
   return n === 'realized' || n === 'documented';
 }
@@ -454,7 +453,7 @@ function rang(s: BusinessSource, need: ValueNeed | null): number {
   return (carriesRequestedValue(s, need) ? 100 : 0) + d.authority * 10 + (d.structured ? 1 : 0);
 }
 
-export interface SemanticSelection {
+interface SemanticSelection {
   /**
    * Interprétations retenues : 1 → réponse directe (preuve structurée
    * unique) ; ≥ 2 → arbitrage T2 ou clarification ; 0 → aucune.
@@ -703,7 +702,7 @@ export interface RawSemanticDecision {
 }
 
 /** Décision VALIDÉE par le serveur. */
-export type ValidatedSemanticDecision =
+type ValidatedSemanticDecision =
   | { kind: 'select'; source: BusinessSource; ref: string }
   | { kind: 'clarify'; failure: string | null }
   | { kind: 'none' };

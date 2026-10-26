@@ -39,9 +39,9 @@ import type { CheckContext, CoherenceCheck, Inspection } from '../types';
 import { hashOf, idsOf, intArray, rows } from '../util';
 
 /** Demande de contrat IA dont dépend la réparation automatique. */
-export const TCO_T3_DECISION_CONTRACT = '82B-t3-decision-tco';
+const TCO_T3_DECISION_CONTRACT = '82B-t3-decision-tco';
 /** Lot 85B : contrat IA de l'indice financier attendu d'un montant lu dans l'extract. */
-export const T1_FINANCIAL_HINT_CONTRACT = '82B-t1-omissions-extract';
+const T1_FINANCIAL_HINT_CONTRACT = '82B-t1-omissions-extract';
 
 /**
  * Lot 85B — documents du bien (mêmes rattachements que le TCO) SANS aucune

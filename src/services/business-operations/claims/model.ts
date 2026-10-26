@@ -33,7 +33,7 @@ import type { BusinessOperationStatus, ClaimFileStatus } from '../model';
 
 // ── Lecture : enregistrement d'un sinistre ─────────────────────────────────
 
-export interface ClaimDetailsRecord {
+interface ClaimDetailsRecord {
   claimType: string | null;
   declaredOn: string | null;
   insurerClaimRef: string | null;
@@ -51,7 +51,7 @@ export interface ClaimDetailsRecord {
 }
 
 /** Dommage détaillé (V-Q8) : photos (`asset_photos`) et justificatifs (`asset_files`) RELIÉS, jamais copiés. */
-export interface ClaimDamageRecord {
+interface ClaimDamageRecord {
   itemKey: string | null;
   zone: string;
   element: string | null;
@@ -62,14 +62,14 @@ export interface ClaimDamageRecord {
 }
 
 /** Élément d'Agenda de l'Opération (chronologie §16) : le principal d'abord, puis les étapes par date. */
-export interface ClaimAgendaRecord {
+interface ClaimAgendaRecord {
   id: number;
   title: string;
   date: string | null;
   role: 'PRINCIPAL' | 'RELATED';
 }
 
-export interface ClaimCosts {
+interface ClaimCosts {
   /** Coût réel (REALIZED_COST du sinistre), en centimes EUR — jamais diminué (Q4). */
   grossCents: number;
   /** Indemnités (INDEMNITY), en centimes EUR. */
@@ -138,7 +138,7 @@ export const claimRecordLabel = (r: Pick<ClaimRecord, 'details' | 'realizedDate'
 // ── Champs clés établis (lot 69) ───────────────────────────────────────────
 
 /** Champ clé d'une synthèse de sinistre complète. */
-export type ClaimKeyField = 'claimType' | 'occurredOn';
+type ClaimKeyField = 'claimType' | 'occurredOn';
 
 /**
  * Champs clés RÉELLEMENT absents (type, date de survenue), dans cet ordre.
@@ -172,7 +172,7 @@ export function claimMissingKeyFieldsMessage(missing: readonly ClaimKeyField[], 
  * si la contre-valeur EUR n'est pas établie (lot 54D, E09 : jamais 0) ;
  * devise et montant d'origine conservés pour le signalement.
  */
-export interface ComponentAmount { kind: string; amountCents: number | null; amountMinor?: number; currency?: string }
+interface ComponentAmount { kind: string; amountCents: number | null; amountMinor?: number; currency?: string }
 
 /**
  * Coût brut (REALIZED_COST), indemnité (INDEMNITY), net = brut − indemnité.

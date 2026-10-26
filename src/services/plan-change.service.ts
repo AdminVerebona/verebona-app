@@ -94,7 +94,7 @@ import { resolveHistoricalPrice } from '@/services/billing/price-history.service
 import { recordPriceOperation } from '@/services/billing/price-operations.service';
 import { isRevaluationSchedule, supersedeRevaluation } from '@/services/billing/price-revaluation.service';
 
-export interface ScheduledChange {
+interface ScheduledChange {
   planCode: string;
   billingPeriod: BillingPeriod;
   effectiveAt: Date | null;
@@ -105,7 +105,7 @@ export interface ScheduledChange {
   state: string | null;
 }
 
-export type ScheduleResult =
+type ScheduleResult =
   | { ok: true; effectiveAt: Date | null; unitAmountCents?: number }
   | {
       ok: false;
@@ -309,7 +309,20 @@ export async function scheduleChange(params: {
   return { ok: true, effectiveAt, unitAmountCents: target.unitAmountCents };
 }
 
-export type CancelScheduledResult = { ok: true; released: 'released' | 'absent' | 'none' } | { ok: false; reason: 'RELEASE_FAILED' };
+type CancelScheduledResult = { ok: true; released: 'released' | 'absent' | 'none' } | { ok: false; reason: 'RELEASE_FAILED' };
+
+/** Colonnes d'un changement programmé, remises à vide. */
+const NO_SCHEDULED_CHANGE = {
+  scheduledPlanCode: null,
+  scheduledBillingPeriod: null,
+  scheduledChangeAt: null,
+  scheduledStripePriceId: null,
+  scheduledPriceRevision: null,
+  scheduledUnitAmountCents: null,
+  scheduledCurrency: null,
+  scheduledScheduleId: null,
+  scheduledChangeState: null,
+} as const;
 
 /** Annule un changement programme avant sa prise d'effet (CDC §10.3, LK-59). */
 export async function cancelScheduledChange(accountId: number, now: Date = new Date()): Promise<CancelScheduledResult> {
@@ -335,18 +348,7 @@ export async function cancelScheduledChange(accountId: number, now: Date = new D
   }
   await db
     .update(accountSubscriptions)
-    .set({
-      scheduledPlanCode: null,
-      scheduledBillingPeriod: null,
-      scheduledChangeAt: null,
-      scheduledStripePriceId: null,
-      scheduledPriceRevision: null,
-      scheduledUnitAmountCents: null,
-      scheduledCurrency: null,
-      scheduledScheduleId: null,
-      scheduledChangeState: null,
-      updatedAt: now,
-    })
+    .set({ ...NO_SCHEDULED_CHANGE, updatedAt: now })
     .where(eq(accountSubscriptions.accountId, accountId));
   return { ok: true, released };
 }
@@ -378,7 +380,7 @@ export async function getScheduledChange(accountId: number): Promise<ScheduledCh
 }
 
 /** Contexte de l'appel : une facture (webhook de paiement) ou une mise a jour d'abonnement. */
-export interface ScheduledChangeTrigger {
+interface ScheduledChangeTrigger {
   /** `invoice.billing_reason` quand l'appel vient d'une facture payee. */
   invoiceBillingReason?: string | null;
 }
@@ -451,15 +453,7 @@ export async function applyScheduledChange(
     .set({
       planCode,
       billingPeriod: period,
-      scheduledPlanCode: null,
-      scheduledBillingPeriod: null,
-      scheduledChangeAt: null,
-      scheduledStripePriceId: null,
-      scheduledPriceRevision: null,
-      scheduledUnitAmountCents: null,
-      scheduledCurrency: null,
-      scheduledScheduleId: null,
-      scheduledChangeState: null,
+      ...NO_SCHEDULED_CHANGE,
       updatedAt: now,
     })
     .where(eq(accountSubscriptions.accountId, accountId));
@@ -473,7 +467,7 @@ export async function applyScheduledChange(
  * rapprochée par la reprise : offre et périodicité RECONNUES de l'item —
  * jamais l'égalité avec le prix public du jour (TC-50).
  */
-export async function isOnScheduledTarget(
+async function isOnScheduledTarget(
   subscription: Pick<Stripe.Subscription, 'items'>,
   target: { priceId: string | null; planCode: PlanCode; period: BillingPeriod },
 ): Promise<boolean> {

@@ -13,7 +13,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 
-export type PdfRenderErrorCode = 'PDF_PASSWORD' | 'PDF_INVALID' | 'PDF_TOO_LARGE' | 'PDF_TIMEOUT' | 'PDF_RENDER_FAILED';
+type PdfRenderErrorCode = 'PDF_PASSWORD' | 'PDF_INVALID' | 'PDF_TOO_LARGE' | 'PDF_TIMEOUT' | 'PDF_RENDER_FAILED';
 
 export class PdfRenderError extends Error {
   constructor(readonly code: PdfRenderErrorCode, message?: string) {
@@ -26,7 +26,7 @@ export class PdfRenderError extends Error {
   }
 }
 
-export interface PdfRenderOptions {
+interface PdfRenderOptions {
   width: number;
   timeoutMs?: number;
   maxOldSpaceMb?: number;
@@ -35,7 +35,7 @@ export interface PdfRenderOptions {
   scriptPath?: string;
 }
 
-export function pdfRenderScriptPath(): string {
+function pdfRenderScriptPath(): string {
   return path.join(process.cwd(), 'scripts', 'render-pdf-thumbnail.mjs');
 }
 

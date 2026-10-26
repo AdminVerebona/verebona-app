@@ -21,13 +21,6 @@
  */
 import { registerReadTools } from './tools/tool-registry';
 
-export { registerReadTools };
-export { checkBlockedTopic } from '@/services/verebona-assistant/core/blocked-topics';
-export { verifyClaims, composeVerifiedText } from './claim-verifier.service';
-export { purgeAssistantData, RETENTION } from './retention/purge-assistant-logs.job';
-export { ASSISTANT_LIMITS } from './tools/tool.port';
-export type { SourceRef, ToolContext, AssistantTool } from './tools/tool.port';
-
 /** À appeler une fois au démarrage, depuis `instrumentation.ts`. */
 export function initAssistant(): void {
   registerReadTools();

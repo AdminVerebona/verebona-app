@@ -70,7 +70,7 @@ export type UnusableReason =
   | 'NOT_OPERATIONAL';
 
 /** Libellés courts, en français (sélecteurs et messages du BO). */
-export const UNUSABLE_REASON_LABELS: Readonly<Record<UnusableReason, string>> = {
+const UNUSABLE_REASON_LABELS: Readonly<Record<UnusableReason, string>> = {
   NOT_LISTED: 'absent du catalogue du fournisseur',
   PROVIDER_UNAVAILABLE: 'non servi par la clé active (retiré)',
   NO_GENERATE_CONTENT: 'génération non prise en charge',
@@ -145,7 +145,7 @@ export interface ModelEligibility {
 }
 
 /** Entrée d'un sélecteur (`modelsByTreatment`). */
-export interface UsableModel {
+interface UsableModel {
   model: string;
   status: ModelLifecycleStatus;
   priced: boolean;
@@ -156,7 +156,7 @@ export interface UsableModel {
   qualification: 'auto' | 'historical' | 'none';
 }
 
-export interface TreatmentRequirements {
+interface TreatmentRequirements {
   masterPromptCode: string | null;
   capabilities: ModelCapability[];
 }
@@ -207,7 +207,7 @@ function providerAvailability(model: string, ctx: UsableModelsContext): { reason
 }
 
 /** Statut d'un modèle : exception déclarée, sinon statut fournisseur, sinon règle isolée. */
-export function modelStatus(model: string, ctx: Pick<UsableModelsContext, 'catalog' | 'declared'>): ModelLifecycleStatus {
+function modelStatus(model: string, ctx: Pick<UsableModelsContext, 'catalog' | 'declared'>): ModelLifecycleStatus {
   const declared = (ctx.declared ?? DECLARED_MODELS).find((m) => m.model === model);
   if (declared) return declared.status;
   const row = ctx.catalog.models.find((m) => m.model === model);
@@ -287,7 +287,7 @@ export function evaluateModelForTreatment(treatment: Treatment, model: string, c
 }
 
 /** Modèles candidats : registre, listés par le fournisseur, catalogue du code. */
-export function candidateModels(ctx: UsableModelsContext): string[] {
+function candidateModels(ctx: UsableModelsContext): string[] {
   const out: string[] = [];
   const add = (m: string) => { if (!out.includes(m)) out.push(m); };
   for (const m of ctx.declared ?? DECLARED_MODELS) add(m.model);

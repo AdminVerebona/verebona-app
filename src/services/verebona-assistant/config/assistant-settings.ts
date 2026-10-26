@@ -46,11 +46,11 @@ async function logAdminAction(e: AdminActionEntry): Promise<void> {
   await log(e);
 }
 
-export type SettingGroup = 'debits' | 'budget' | 'alertes' | 'interrupteurs' | 'historique' | 'modeles' | 'plafond_compte' | 'mascotte' | 'a_traiter';
-export type SettingType = 'int' | 'ratio' | 'usd' | 'usd_micros' | 'bool';
-export type SettingValue = number | boolean;
+type SettingGroup = 'debits' | 'budget' | 'alertes' | 'interrupteurs' | 'historique' | 'modeles' | 'plafond_compte' | 'mascotte' | 'a_traiter';
+type SettingType = 'int' | 'ratio' | 'usd' | 'usd_micros' | 'bool';
+type SettingValue = number | boolean;
 
-export interface AssistantSettingDef {
+interface AssistantSettingDef {
   key: string;
   /** Variable d'environnement : valeur initiale et repli (ordre de résolution). */
   env: string;
@@ -346,7 +346,7 @@ export function onAssistantSettingsChange(fn: () => void): void {
   auditeurs.add(fn);
 }
 
-export function resetAssistantSettingsCache(): void {
+function resetAssistantSettingsCache(): void {
   overrides = new Map();
   version = null;
   checkedAt = 0;
@@ -414,7 +414,7 @@ export function effectiveSetting(key: string, env: NodeJS.ProcessEnv = process.e
   return def.default;
 }
 
-export interface EffectiveSetting extends Omit<AssistantSettingDef, 'doubleValidation'> {
+interface EffectiveSetting extends Omit<AssistantSettingDef, 'doubleValidation'> {
   value: SettingValue;
   source: 'bo' | 'env' | 'defaut';
   updatedBy: number | null;
@@ -447,7 +447,7 @@ export class AssistantSettingRefused extends Error {
   }
 }
 
-export type UpdateResult =
+type UpdateResult =
   | { status: 'APPLIED'; key: string; before: SettingValue; after: SettingValue }
   | { status: 'PENDING_APPROVAL'; key: string; requestId: number };
 

@@ -68,7 +68,7 @@ export interface AccessChecker {
  * Une action absente de cette table n'attend pas de cible : lui en fournir une
  * est sans effet, ne pas lui en fournir n'est pas une erreur.
  */
-export const CIBLE_ATTENDUE: Readonly<Partial<Record<VerebonaActionType, EntityKind>>> = {
+const CIBLE_ATTENDUE: Readonly<Partial<Record<VerebonaActionType, EntityKind>>> = {
   OPEN_ASSET: 'asset',
   OPEN_DOCUMENT: 'document',
   OPEN_AGENDA_ITEM: 'agenda_item',
@@ -88,7 +88,7 @@ export const CIBLE_ATTENDUE: Readonly<Partial<Record<VerebonaActionType, EntityK
  * comme avant (famille, appartenance au compte) puis présélectionnée
  * (lot 34G : commande de création, plus de navigation).
  */
-export const CIBLE_FACULTATIVE: ReadonlySet<VerebonaActionType> = new Set<VerebonaActionType>([
+const CIBLE_FACULTATIVE: ReadonlySet<VerebonaActionType> = new Set<VerebonaActionType>([
   'START_ADD_DOCUMENT',
   'START_ADD_AGENDA_ITEM',
 ]);
@@ -201,7 +201,7 @@ const LABELS: Record<VerebonaActionType, string> = {
   RETRY_REQUEST: 'Réessayer',
 };
 
-export interface ResolveActionsInput {
+interface ResolveActionsInput {
   accountId: number;
   intent: VerebonaIntent;
   actionIntents: ActionIntent[];
@@ -228,17 +228,17 @@ export interface ResolveActionsInput {
 // ══════════════════════════════════════════════════════════════════════════
 
 /** Offres connues de la page des offres (paramètre `offer` d'OPEN_PRICING). */
-export const OFFRES_CONNUES: ReadonlySet<string> = new Set(['STANDARD', 'PREMIUM', 'PREMIUM_DUO']);
+const OFFRES_CONNUES: ReadonlySet<string> = new Set(['STANDARD', 'PREMIUM', 'PREMIUM_DUO']);
 
 /** Familles de biens créables (paramètre `assetType` de START_ADD_ASSET). */
-export const TYPES_BIEN_SUPPORTES: ReadonlySet<string> = new Set(['IMMOBILIER', 'VEHICULE', 'MATERIEL_PRO', 'OBJECT']);
+const TYPES_BIEN_SUPPORTES: ReadonlySet<string> = new Set(['IMMOBILIER', 'VEHICULE', 'MATERIEL_PRO', 'OBJECT']);
 
 /** Dossiers prêts à l'usage : Premium et Premium Duo seulement (EXPORT_BRUT exclu). */
 /** Codes V12 (`services/exports/catalog`) ; un ancien code est ramené au code V12 avant contrôle. */
-export const EXPORTS_PREMIUM: ReadonlySet<string> = new Set<string>(DOSSIER_CODES);
+const EXPORTS_PREMIUM: ReadonlySet<string> = new Set<string>(DOSSIER_CODES);
 
 /** Le code d'export (V12 ou ancien) désigne-t-il un dossier Premium ? */
-export function isPremiumExportCode(code: unknown): boolean {
+function isPremiumExportCode(code: unknown): boolean {
   const c = normalizeExportCode(code);
   return c !== null && EXPORTS_PREMIUM.has(c);
 }
@@ -366,7 +366,7 @@ export function libelleOuvrirBien(nom: string): string {
 }
 
 /** Lot 71 : bouton d'entité (tiroir) précisé par son bien parent. */
-export function libelleOuvrirEntite(base: string, nomBien: string): string {
+function libelleOuvrirEntite(base: string, nomBien: string): string {
   const n = nomBien.trim().replace(/\s+/g, ' ');
   return `${base} · ${n.length > NOM_BOUTON_MAX ? `${n.slice(0, NOM_BOUTON_MAX - 1).trimEnd()}…` : n}`;
 }

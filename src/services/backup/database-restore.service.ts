@@ -71,12 +71,12 @@ export class RestoreRefusedError extends Error {
 const BATCH_ROWS = 1_000;
 const BATCH_CHARS = 4 * 1024 * 1024;
 /** Attente maximale d'un verrou (application en cours d'écriture) : au-delà, échec sans écriture, à relancer. */
-export const RESTORE_LOCK_TIMEOUT = '60s';
+const RESTORE_LOCK_TIMEOUT = '60s';
 
 const ident = (t: string) => `"${t.replace(/"/g, '""')}"`;
 
 /** Envois en attente neutralisés après restauration (effets externes, D13). */
-export const OUTBOUND_NEUTRALIZERS: ReadonlyArray<{ table: string; columns: string[]; sql: (motif: string) => string; label: string }> = [
+const OUTBOUND_NEUTRALIZERS: ReadonlyArray<{ table: string; columns: string[]; sql: (motif: string) => string; label: string }> = [
   {
     table: 'notification_outbox', columns: ['status', 'outcome_reason', 'processed_at'], label: 'Notifications en attente annulées',
     sql: () => `UPDATE notification_outbox SET status = 'cancelled', outcome_reason = $1, processed_at = now() WHERE status IN ('pending', 'processing')`,
@@ -92,7 +92,7 @@ export const OUTBOUND_NEUTRALIZERS: ReadonlyArray<{ table: string; columns: stri
   },
 ];
 
-export interface RestoreHooks {
+interface RestoreHooks {
   log?: (m: string) => void;
   progress?: (p: Record<string, unknown>) => void;
 }
@@ -128,7 +128,7 @@ export function restoreAllowedInEnvironment(env: NodeJS.ProcessEnv = process.env
 }
 
 /** Point de restauration et sa compatibilité avec le schéma courant (lecture seule). */
-export async function inspectRestorePoint(q: Query, manifest: BackupManifestV2): Promise<CompatibilityResult> {
+async function inspectRestorePoint(q: Query, manifest: BackupManifestV2): Promise<CompatibilityResult> {
   return checkRestoreCompatibility(manifest, await readSchemaSignature(q));
 }
 

@@ -51,7 +51,7 @@ export interface RawExtract {
   durationMs: number;
 }
 
-export interface RawExtractLimits {
+interface RawExtractLimits {
   maxPages: number;
   maxChars: number;
   /** Durée maximale de lecture (ms) : au-delà, arrêt à une frontière de page, TRUNCATED. */
@@ -105,13 +105,13 @@ type PdfDoc = {
 };
 
 /** Moteur pdf.js (chargé à l'exécution, jamais empaqueté). Remplaçable en test. */
-export async function loadPdfJs(): Promise<PdfJs> {
+async function loadPdfJs(): Promise<PdfJs> {
   const mod = await import(/* webpackIgnore: true */ 'pdfjs-dist/legacy/build/pdf.mjs');
   return mod as unknown as PdfJs;
 }
 
 /** Couche texte d'un PDF, page par page. */
-export async function extractPdfTextLayer(bytes: Uint8Array, limits: RawExtractLimits = rawExtractLimits(), pdfjs?: PdfJs): Promise<RawExtract> {
+async function extractPdfTextLayer(bytes: Uint8Array, limits: RawExtractLimits = rawExtractLimits(), pdfjs?: PdfJs): Promise<RawExtract> {
   const t0 = Date.now();
   let lib: PdfJs;
   try {

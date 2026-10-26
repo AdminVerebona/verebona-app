@@ -43,7 +43,7 @@ import { copyText } from '@/app/admin/ai-executions/_components/CopyJson';
 
 export interface EntityRefValue { type: EntityType; id: number }
 
-export function entityUrl(accountId: number, ref: EntityRefValue, format?: ExportFormat, section?: string, page?: { offset: number; q: string | null }): string {
+function entityUrl(accountId: number, ref: EntityRefValue, format?: ExportFormat, section?: string, page?: { offset: number; q: string | null }): string {
   const qs = new URLSearchParams();
   if (format) qs.set('format', format);
   if (section) qs.set('section', section);
@@ -56,7 +56,7 @@ export function entityUrl(accountId: number, ref: EntityRefValue, format?: Expor
 }
 
 /** Lot 81C — éléments d'un dossier en base (total réel des sections paginées + champs) : seuil de la copie. */
-export function dossierRowCount(d: Pick<EntityDossier, 'sections'>): number {
+function dossierRowCount(d: Pick<EntityDossier, 'sections'>): number {
   return d.sections.reduce((n, s) => n + (s.window?.total ?? s.table?.rows.length ?? s.relations?.length ?? 0) + (s.fields?.length ?? 0), 0);
 }
 

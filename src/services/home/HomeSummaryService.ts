@@ -57,9 +57,9 @@ const ENRICH_VISIBLE_FIELDS = [
 
 // ── Types exportés ──────────────────────────────────────────────────────────
 
-export type SituationStatus = 'actions_required' | 'all_clear' | 'empty';
+type SituationStatus = 'actions_required' | 'all_clear' | 'empty';
 
-export interface HomeSituation {
+interface HomeSituation {
   status: SituationStatus;
   /** Actions « À traiter » ouvertes (même source que la pastille de navigation). */
   todoCount: number;
@@ -126,8 +126,8 @@ function dateMinus(days: number): string {
 // Décision et signature partagées avec la file « À traiter » (lot 34, point 11) :
 // `services/documents/thumbnails/document-previews.ts`.
 
-export type RecentDocPreviewRow = DocumentPreviewRow;
-export type RecentDocPreviewDeps = DocumentPreviewDeps;
+type RecentDocPreviewRow = DocumentPreviewRow;
+type RecentDocPreviewDeps = DocumentPreviewDeps;
 
 /** Aperçus des documents récents (voir `documentPreviews`). Ne lève jamais. */
 export function recentDocumentPreviews(

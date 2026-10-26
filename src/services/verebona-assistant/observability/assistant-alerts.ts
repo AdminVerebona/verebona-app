@@ -43,7 +43,7 @@ type Row = Record<string, unknown>;
 /** Offres du compte (contrainte `accounts_plan_type_check`). */
 export const PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'] as const;
 
-export interface AlertThresholds {
+interface AlertThresholds {
   escalationRate: number;
   tokenDrift: number;
   mismatchRate: number;
@@ -124,7 +124,7 @@ export interface AssistantAlertMetrics {
   costByPlan?: Array<{ planType: string; costMicros: number; activeUsers: number }>;
 }
 
-export interface AlertVerdict {
+interface AlertVerdict {
   code: 'escalation_rate' | 'token_drift' | 'model_mismatch' | 'model_deprecation'
     | 'daily_cost_per_answer' | 'cost_per_active_user';
   severity: 'warning' | 'critical';
@@ -229,7 +229,7 @@ export function evaluateAssistantAlertRules(
 
 // ── Mesures en base ─────────────────────────────────────────────────────────
 
-export interface AssistantAlertDeps {
+interface AssistantAlertDeps {
   query(sql: string, params?: unknown[]): Promise<Row[]>;
   raiseAlert(a: AlertInput): Promise<boolean>;
   resolveActiveModels(): Promise<Array<{ model: string; alias: string }>>;

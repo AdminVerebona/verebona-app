@@ -44,7 +44,7 @@ interface ModelDiagnostic {
   checkedAt: string | null;
   sourceLabel: string | null;
 }
-export interface UnavailableModelGroupView {
+interface UnavailableModelGroupView {
   model: string;
   usages: ModelUsage[];
   reasonText: string;

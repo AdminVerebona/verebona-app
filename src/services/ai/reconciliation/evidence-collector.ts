@@ -34,14 +34,6 @@ export interface CollectedField {
   unproven: boolean;
 }
 
-/** Rassemble, pour chaque champ disposant d'au moins une preuve, l'entrée du moteur. */
-export async function collectFields(
-  accountId: number,
-  assetId: number,
-): Promise<CollectedField[]> {
-  return (await collectAssetEvidenceState(accountId, assetId)).fields;
-}
-
 /** Bien lu par le collecteur (lot 76J : inventaire exhaustif de l'onglet « Informations »). */
 export interface CollectedAsset {
   category: string | null;
@@ -170,7 +162,7 @@ export function isUnprovenAutomaticValue(current: CurrentValue | null, candidate
  * Une valeur de colonne n'a pas d'origine tracée : elle est lue USER
  * (protégée, CDC 15 §14.3).
  */
-export function currentValueReader(kc: Record<string, unknown>, row: AssetRowJson): (key: string) => CurrentValue | null {
+function currentValueReader(kc: Record<string, unknown>, row: AssetRowJson): (key: string) => CurrentValue | null {
   const family = rowFamily(row.category);
   let alias: ReturnType<typeof indexKcAliases> | null = null;
   return (fieldKey: string) => {

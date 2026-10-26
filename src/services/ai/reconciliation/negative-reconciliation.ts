@@ -50,7 +50,7 @@ export function isT4DateRevision(unproven: boolean, input: DecisionInput): boole
 }
 
 /** Forme de comparaison d'une clé : clé canonique si le registre la connaît. */
-export function canonicalToken(key: string): string {
+function canonicalToken(key: string): string {
   return resolveAlias(key) ?? key;
 }
 
@@ -60,7 +60,7 @@ const estVide = (v: unknown) => v === null || v === undefined || (typeof v === '
 /** Clé technique de la fiche (origine, date, autorité, métadonnées). */
 const estMeta = (k: string) => k.includes('__') || /_origin$/.test(k);
 
-export interface RetractionCandidate {
+interface RetractionCandidate {
   fieldKey: string;
   currentValue: unknown;
   origin: FieldOrigin;

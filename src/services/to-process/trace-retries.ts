@@ -30,13 +30,13 @@
  */
 import { pgClient } from '@/db';
 
-export type TraceSource = 'DOCUMENT_RULE' | 'FAMILY';
+type TraceSource = 'DOCUMENT_RULE' | 'FAMILY';
 
 /** Échec de journalisation d'une décision appliquée : cause et reprise identifiable (null : reprise impossible). */
 export interface TraceFailure { cause: string; retryId: number | null }
 
 /** Reprises au plus par élément avant abandon (visible, relançable). */
-export const TRACE_RETRY_MAX_ATTEMPTS = 8;
+const TRACE_RETRY_MAX_ATTEMPTS = 8;
 /** Délai entre deux reprises (minutes × rang de la tentative). */
 const TRACE_RETRY_BACKOFF_MIN = 15;
 
@@ -51,9 +51,6 @@ export async function traceRetriesReady(): Promise<boolean> {
   } catch { pret = { at: Date.now(), ok: false }; }
   return pret.ok;
 }
-
-/** Réservé aux tests : oublie la sonde de présence. */
-export function __resetTraceRetryProbeForTests(): void { pret = null; }
 
 /**
  * Conserve une décision non tracée pour reprise. Ne lève jamais : rend le
@@ -80,7 +77,7 @@ export async function enqueueTraceRetry(p: {
   }
 }
 
-export interface TraceReplayReport { examined: number; replayed: number; superseded: number; failed: number; abandoned: number }
+interface TraceReplayReport { examined: number; replayed: number; superseded: number; failed: number; abandoned: number }
 
 /**
  * Rejoue les traces en attente (bornée, reprise après redémarrage : l'état est
@@ -160,7 +157,7 @@ export async function requeueAbandonedTraces(accountId?: number | null): Promise
   return r.length;
 }
 
-export interface TraceRetryView {
+interface TraceRetryView {
   id: number; accountId: number; source: TraceSource; ruleCode: string; targetType: string | null; targetId: number | null;
   status: string; attempts: number; error: string | null; originalAt: string; resolvedAt: string | null;
   /** Décision appliquée non tracée (issue, motif, cartes) — extrait. */

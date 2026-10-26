@@ -89,7 +89,7 @@ export interface AccountProcessingRow {
 }
 
 /** Compte technique des campagnes de mesure (même règle que `account-cost-cap`). */
-export function isTechnicalProcessingAccount(accountId: number, env: NodeJS.ProcessEnv = process.env): boolean {
+function isTechnicalProcessingAccount(accountId: number, env: NodeJS.ProcessEnv = process.env): boolean {
   const n = Number(env.CORPUS_ACCOUNT_ID);
   return Number.isInteger(n) && n > 0 && n === accountId;
 }

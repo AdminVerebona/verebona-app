@@ -32,7 +32,7 @@ import { createHash } from 'node:crypto';
 import type { CandidateIdentity } from './model';
 
 /** Tours mémorisés (historique borné, diagnostic BO). */
-export const M3_PROGRESS_HISTORY = 10;
+const M3_PROGRESS_HISTORY = 10;
 
 export interface M3Progress {
   /** Empreinte du sujet (candidat) : progression remise à zéro si elle change. */
@@ -45,7 +45,7 @@ export interface M3Progress {
   history: Array<{ at: string; operationIds: number[]; outcome: 'DISTINCT' }>;
 }
 
-export interface M3Selection {
+interface M3Selection {
   /** Lot soumis au modèle (≤ max). */
   batch: number[];
   /** Opérations plausibles déjà examinées (écartées). */

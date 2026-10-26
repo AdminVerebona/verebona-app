@@ -62,7 +62,7 @@ const num = (v: unknown): number | null => {
 };
 
 /** `{day, month, year}` (ou jour/mois/annee, d/m/y) → ISO, si la date existe. */
-export function dateObjectToIso(v: unknown): string | null {
+function dateObjectToIso(v: unknown): string | null {
   if (!isObj(v)) return null;
   const keys = Object.keys(v);
   if (keys.length < 3 || keys.length > 4) return null;
@@ -103,7 +103,7 @@ export function numericString(v: string): number | null {
 const VRAI = new Set(['true', 'oui', 'yes', 'vrai']);
 const FAUX = new Set(['false', 'non', 'no', 'faux']);
 
-export interface NormalizeOptions {
+interface NormalizeOptions {
   /** Discriminant imposé par le serveur (`task` / `mode`) et sa valeur. */
   discriminant?: { field: string; value: string };
   /**

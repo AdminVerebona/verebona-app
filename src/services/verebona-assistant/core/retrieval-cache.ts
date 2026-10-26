@@ -58,21 +58,21 @@ const normaliser = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toL
 // ── Versions d'invalidation (partagées entre instances) ─────────────────────
 
 /** Périmètre de version d'un compte ; `global` pour les événements globaux. */
-export const accountCacheScope = (accountId: number) => `account:${accountId}`;
-export const GLOBAL_CACHE_SCOPE = 'global';
+const accountCacheScope = (accountId: number) => `account:${accountId}`;
+const GLOBAL_CACHE_SCOPE = 'global';
 
 /**
  * Stockage des versions. Par défaut la base (`verebona_cache_versions`) ;
  * injectable pour les tests (plusieurs instances sur un même stockage).
  */
-export interface CacheVersionStore {
+interface CacheVersionStore {
   /** Versions courantes des périmètres demandés (absent = 0). */
   read(scopes: string[]): Promise<Record<string, number>>;
   /** Incrémente la version d'un périmètre. */
   bump(scope: string, reason: string): Promise<void>;
 }
 
-export const dbCacheVersionStore: CacheVersionStore = {
+const dbCacheVersionStore: CacheVersionStore = {
   async read(scopes) {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(

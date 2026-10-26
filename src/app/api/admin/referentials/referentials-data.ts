@@ -52,7 +52,7 @@ import {
 import { DOCUMENT_CATALOG } from '@/services/canonical/registry/catalogs';
 import { BUSINESS_OPERATION_TYPES } from '@/services/business-operations/model';
 
-export interface ReferentialRow {
+interface ReferentialRow {
   code: string;
   label: string;
   /** Statut actif/inactif lorsqu'il existe (REFD-002), sinon `null`. */
@@ -63,7 +63,7 @@ export interface ReferentialRow {
   details: string | null;
 }
 
-export interface ReferentialsSnapshot {
+interface ReferentialsSnapshot {
   version: string;
   assetFamilies: ReferentialRow[];
   assetSubcategories: ReferentialRow[];

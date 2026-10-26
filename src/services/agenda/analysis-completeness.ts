@@ -24,7 +24,7 @@ export const INCOMPLETE_ANALYSIS_WARNINGS: ReadonlySet<string> = new Set([
   'COVERAGE_INCOMPLETE',
 ]);
 
-export interface AnalysisCompleteness {
+interface AnalysisCompleteness {
   complete: boolean;
   /** Avertissements qui rendent l'analyse incomplète. */
   reasons: string[];

@@ -12,7 +12,7 @@ import { NOTIFICATION_TYPES } from '@/types/notifications';
 import { emit } from '@/lib/notifications';
 
 export type CommercialPlanCode = 'standard' | 'premium' | 'premium_duo' | 'premium_pro';
-export type AnalysisPeriodType = 'trial' | 'annual';
+type AnalysisPeriodType = 'trial' | 'annual';
 
 const DEFAULT_LIMITS: Record<CommercialPlanCode, { trial: number; annual: number }> = {
   standard: { trial: 10, annual: 50 },

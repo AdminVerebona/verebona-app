@@ -43,11 +43,11 @@ import { and, asc, eq, isNull, lt, lte, sql } from 'drizzle-orm';
 export const KEPT_STILL_REFERENCED = 'KEPT_STILL_REFERENCED';
 
 /** Référence encore vivante à la clé, hors la ligne d'origine de la demande ? */
-export type ReferenceCheckFn = (key: string, originFileId: number | null) => Promise<boolean>;
+type ReferenceCheckFn = (key: string, originFileId: number | null) => Promise<boolean>;
 
 const rowsOf = <T>(r: unknown): T[] => (Array.isArray(r) ? (r as T[]) : ((r as { rows?: T[] })?.rows ?? []));
 
-export const defaultReferenceCheck: ReferenceCheckFn = async (key, originFileId) => {
+const defaultReferenceCheck: ReferenceCheckFn = async (key, originFileId) => {
   const [r] = rowsOf<{ ref: boolean }>(await db.execute(sql`
     SELECT (
          EXISTS (SELECT 1 FROM asset_files WHERE s3_key = ${key} AND (${originFileId}::int IS NULL OR id <> ${originFileId}::int))

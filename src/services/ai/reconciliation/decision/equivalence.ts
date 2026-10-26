@@ -35,7 +35,7 @@ import { normalize } from './normalizers';
 const STRICT_TYPES = new Set(['date', 'money_eur', 'money_cents', 'number', 'boolean', 'enum']);
 
 /** Valeur « vide » au sens d'un arbitrage (aucune valeur à proposer). */
-export function isBlankValue(v: unknown): boolean {
+function isBlankValue(v: unknown): boolean {
   if (v === null || v === undefined) return true;
   if (typeof v === 'string') return v.trim() === '' || /^(null|undefined)$/i.test(v.trim());
   return false;

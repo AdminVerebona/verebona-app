@@ -154,29 +154,9 @@ export async function marquerDisponibilite(
 export const CARTE_INDISPONIBLE = 'N’est plus disponible';
 
 /**
- * Revérifie les cartes de résultats relues depuis l'historique
- * (`result_groups_json`) : une carte dont l'objet a été supprimé ou n'est
- * plus accessible perd son lien et l'indique (§19.10, §22.1).
- */
-export async function reverifierCartes(
-  groups: ResultGroup[] | null | undefined,
-  accountId: number,
-  requeteur: Requeteur = requeteurPg,
-): Promise<ResultGroup[] | null | undefined> {
-  if (!Array.isArray(groups) || groups.length === 0) return groups;
-  const ids = groups.flatMap((g) => (Array.isArray(g.items) ? g.items : []).filter((c) => c?.href).map((c) => c.id));
-  if (ids.length === 0) return groups;
-  const morts = await identifiantsIndisponibles(ids, accountId, requeteur).catch(() => new Set<string>());
-  if (morts.size === 0) return groups;
-  return groups.map((g) => ({
-    ...g,
-    items: g.items.map((c) => (morts.has(c.id) ? { ...c, href: null, status: CARTE_INDISPONIBLE } : c)),
-  }));
-}
-
-/**
- * Applique `reverifierCartes` aux messages d'un historique (colonne
- * `result_groups_json`). Ne lève jamais.
+ * Revérifie les cartes de résultats des messages d'un historique (colonne
+ * `result_groups_json`) : une carte dont l'objet a été supprimé ou n'est
+ * plus accessible perd son lien et l'indique (§19.10, §22.1). Ne lève jamais.
  */
 export async function reverifierCartesDesMessages<T extends { result_groups_json?: unknown }>(
   messages: T[],

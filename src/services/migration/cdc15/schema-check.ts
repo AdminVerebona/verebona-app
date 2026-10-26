@@ -9,7 +9,7 @@
 import type postgres from 'postgres';
 import type { MigStep } from './types';
 
-export interface Requirement {
+interface Requirement {
   kind: 'table' | 'column' | 'function';
   name: string;
   migration: string;

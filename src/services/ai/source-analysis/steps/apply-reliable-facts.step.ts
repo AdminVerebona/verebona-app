@@ -48,7 +48,7 @@ export interface AttributeProjection {
   reason: string;
 }
 
-export interface ApplyReliableFactsInput {
+interface ApplyReliableFactsInput {
   accountId: number;
   leadSourceId: number;
   facts: readonly ProjectedFact[];

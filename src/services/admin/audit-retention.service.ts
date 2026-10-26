@@ -11,7 +11,7 @@
  */
 import { pgClient } from '@/db';
 
-export const MIN_AUDIT_RETENTION_DAYS = 30;
+const MIN_AUDIT_RETENTION_DAYS = 30;
 
 /** `null` : purge désactivée (valeur absente, invalide ou sous le plancher). */
 export function parseAuditRetentionDays(raw: string | undefined): number | null {

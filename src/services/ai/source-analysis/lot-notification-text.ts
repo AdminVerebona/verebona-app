@@ -52,7 +52,6 @@ export function lotNotificationText(p: {
   return `${n} documents ont été analysés : ${titres.join(', ')}${autres > 0 ? ` et ${autres} autre${autres > 1 ? 's' : ''}` : ''}`;
 }
 
-
 // ══════════════════════════════════════════════════════════════════════════
 // LOT 81E — RÉSULTAT RÉEL DU LOT : RÉUSSITE, RÉUSSITE PARTIELLE, ÉCHEC
 //
@@ -69,7 +68,7 @@ export const ANALYSIS_RETRY_ACTION = 'Vous pouvez relancer l’analyse depuis la
 export type LotOutcomeType = 'DOCUMENT_BATCH_COMPLETED' | 'DOCUMENT_BATCH_PARTIALLY_FAILED' | 'DOCUMENT_BATCH_FAILED';
 
 /** Contenu d'une notification d'échec (total ou partiel) d'un lot. */
-export interface LotFailurePayload {
+interface LotFailurePayload {
   lotId: number;
   analysedCount: number;
   failedCount: number;

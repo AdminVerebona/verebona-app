@@ -54,7 +54,7 @@ export interface PrunedFieldValue {
   rule: 'field_pruned_invalid' | 'array_element_pruned';
 }
 
-export interface PruneResult {
+interface PruneResult {
   value: unknown;
   success: boolean;
   data?: unknown;

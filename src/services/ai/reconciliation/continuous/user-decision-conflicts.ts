@@ -20,13 +20,13 @@ import { resolveAssetByIdentifiers } from '../document-asset/identifiers';
 import type { AccountMatchingIndex } from '../document-asset/matching-index';
 import { getReconciliationState, recordReconciliationState } from './reconciliation-state.repository';
 
-export const USER_CONFLICT_RELATION = 'USER_LINK_CONFLICT';
-export const USER_CONFLICT_ENGINE_VERSION = 1;
+const USER_CONFLICT_RELATION = 'USER_LINK_CONFLICT';
+const USER_CONFLICT_ENGINE_VERSION = 1;
 /** Documents relus au plus par passage. */
-export const USER_CONFLICT_MAX_DOCUMENTS = 200;
+const USER_CONFLICT_MAX_DOCUMENTS = 200;
 const IDENTIFIER_FACT_KEYS = ['registrationNumber', 'vin', 'serialNumber', 'cadastralRef', 'address1', 'postalCode'];
 
-export interface UserConflictResult { skipped: boolean; examined: number; proposed: number }
+interface UserConflictResult { skipped: boolean; examined: number; proposed: number }
 
 export async function reconcileUserDecisionConflicts(p: {
   accountId: number; revision: number; index: AccountMatchingIndex; guard?: ExecutionGuard;

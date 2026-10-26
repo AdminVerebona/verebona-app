@@ -22,7 +22,7 @@ import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diag
 import type { CallCaptureInput } from './call-capture';
 import type { AiAttachment } from '../gateway/types';
 
-export interface CallTrace {
+interface CallTrace {
   traceId: string;
   useCaseCode: AiUseCaseCode;
   operationCode: string;
@@ -216,7 +216,7 @@ export function executionSnapshotMetadata(): Record<string, unknown> {
 }
 
 /** Tentative du job courant (lot 34C), si l'appel a lieu dans ce job. */
-export function jobAttemptMetadata(t: Pick<CallTrace, 'jobId'>): { jobAttempt?: number } {
+function jobAttemptMetadata(t: Pick<CallTrace, 'jobId'>): { jobAttempt?: number } {
   const ctx = currentJobContext();
   if (!ctx?.jobAttempt || (t.jobId != null && t.jobId !== ctx.jobId)) return {};
   return { jobAttempt: ctx.jobAttempt };

@@ -100,25 +100,25 @@ import {
 import type { GroupProgress, GroupState, NameTrace, RenameEvent, SaveGroupState } from './repository';
 import type { NamingCall, NamingCallResult, NamingPromptStatus } from './model';
 
-export const namingEnabled = () => envNumber('T3_DOCUMENT_NAMING_ENABLED', 1) !== 0;
-export const namingCallsPerPass = () => Math.min(20, Math.floor(envNumber('T3_NAMING_MAX_CALLS_PER_PASS', 3, { min: 0 })));
-export const namingCallsPerDay = () => Math.min(500, Math.floor(envNumber('T3_NAMING_MAX_CALLS_PER_DAY', 24, { min: 0 })));
-export const namingDocsPerCall = () => Math.max(6, Math.min(100, Math.floor(envNumber('T3_NAMING_MAX_DOCUMENTS_PER_CALL', 40, { min: 6 }))));
-export const namingCooldownDays = () => envNumber('T3_NAMING_COOLDOWN_DAYS', 30, { min: 0 });
+const namingEnabled = () => envNumber('T3_DOCUMENT_NAMING_ENABLED', 1) !== 0;
+const namingCallsPerPass = () => Math.min(20, Math.floor(envNumber('T3_NAMING_MAX_CALLS_PER_PASS', 3, { min: 0 })));
+const namingCallsPerDay = () => Math.min(500, Math.floor(envNumber('T3_NAMING_MAX_CALLS_PER_DAY', 24, { min: 0 })));
+const namingDocsPerCall = () => Math.max(6, Math.min(100, Math.floor(envNumber('T3_NAMING_MAX_DOCUMENTS_PER_CALL', 40, { min: 6 }))));
+const namingCooldownDays = () => envNumber('T3_NAMING_COOLDOWN_DAYS', 30, { min: 0 });
 /** Lot 72B (E1) : documents lus par page (curseur persistant). */
-export const namingScanPageSize = () => Math.max(2, Math.min(10_000, Math.floor(envNumber('T3_NAMING_SCAN_PAGE_SIZE', 2_000, { min: 2 }))));
+const namingScanPageSize = () => Math.max(2, Math.min(10_000, Math.floor(envNumber('T3_NAMING_SCAN_PAGE_SIZE', 2_000, { min: 2 }))));
 /** Lot 72B (E1) : pages lues par passage (au-delà, la lecture reprend au curseur au passage suivant). */
-export const namingScanPagesPerPass = () => Math.max(1, Math.min(1_000, Math.floor(envNumber('T3_NAMING_SCAN_PAGES_PER_PASS', 50, { min: 1 }))));
+const namingScanPagesPerPass = () => Math.max(1, Math.min(1_000, Math.floor(envNumber('T3_NAMING_SCAN_PAGES_PER_PASS', 50, { min: 1 }))));
 /** Ligne d'état réservée : état global du compte (curseur de lecture, stock, reprise). */
-export const ACCOUNT_MARKER = '*';
+const ACCOUNT_MARKER = '*';
 /** Lot 72B (E9) : réponses incomplètes successives tolérées sur une même version du prompt. */
-export const NAMING_INCOMPLETE_MAX = 3;
+const NAMING_INCOMPLETE_MAX = 3;
 /** Lot 72B (E6) : tentatives de reprise d'une écriture avant réexamen du lot par l'IA. */
-export const NAMING_WRITE_RETRY_MAX = 5;
+const NAMING_WRITE_RETRY_MAX = 5;
 /** Lot 76B (C5) : réexamens « contexte enrichi » commencés par passage et par compte (0 : programme suspendu). */
-export const namingUpgradeReviewsPerPass = () => Math.min(20, Math.floor(envNumber('T3_NAMING_UPGRADE_REVIEWS_PER_PASS', 1, { min: 0 })));
+const namingUpgradeReviewsPerPass = () => Math.min(20, Math.floor(envNumber('T3_NAMING_UPGRADE_REVIEWS_PER_PASS', 1, { min: 0 })));
 /** Lot 76B (C5) : réexamens « contexte enrichi » sur 24 h glissantes, tous comptes confondus. */
-export const namingUpgradeReviewsPerDay = () => Math.min(100_000, Math.floor(envNumber('T3_NAMING_UPGRADE_REVIEWS_PER_DAY', 200, { min: 0 })));
+const namingUpgradeReviewsPerDay = () => Math.min(100_000, Math.floor(envNumber('T3_NAMING_UPGRADE_REVIEWS_PER_DAY', 200, { min: 0 })));
 /** Lignes « non examiné » détaillées au rapport (les autres sont comptées). */
 const NOT_EXAMINED_DETAIL_MAX = 100;
 const MINUTE = 60_000;
@@ -216,11 +216,9 @@ export interface DocumentNamingPhaseResult {
   reportId: number | null;
 }
 
-export interface DocumentNamingDeps {
+interface DocumentNamingDeps {
   callModel?: (p: NamingCall) => Promise<NamingCallResult>;
   promptStatus?: () => Promise<NamingPromptStatus>;
-  /** @deprecated lot 72B — préférer `callsWindow`. */
-  callsLastDay?: (accountId: number) => Promise<number>;
   callsWindow?: (accountId: number) => Promise<{ count: number; oldestAt: string | null }>;
   maxCallsPerPass?: number;
   maxCallsPerDay?: number;
@@ -647,8 +645,7 @@ async function examineDueGroups(accountId: number, items: Item[], p: {
 
   const parPassage = opts.maxCallsPerPass ?? namingCallsPerPass();
   const parJour = opts.maxCallsPerDay ?? namingCallsPerDay();
-  const dejaJour = opts.callsWindow ? (await opts.callsWindow(accountId)).count
-    : opts.callsLastDay ? await opts.callsLastDay(accountId) : (await repo.namingCallsWindow(accountId)).count;
+  const dejaJour = (await (opts.callsWindow ?? repo.namingCallsWindow)(accountId)).count;
   const plafond = (): 'PASS_CAP' | 'DAILY_CAP' | null =>
     res.aiCalls >= parPassage ? 'PASS_CAP' : dejaJour + res.aiCalls >= parJour ? 'DAILY_CAP' : null;
   const c: ExamCtx = {
@@ -758,7 +755,7 @@ async function examineDueGroups(accountId: number, items: Item[], p: {
  * l'instantané, ou l'aurait avec le nom remplacé par sa dernière écriture
  * journalisée (ancien nom = nom de l'instantané). Composition identique exigée.
  */
-export function onlyOwnWrites(docs: readonly NamingDoc[], snapshot: Record<string, string> | null, traces: ReadonlyMap<number, NameTrace>): boolean {
+function onlyOwnWrites(docs: readonly NamingDoc[], snapshot: Record<string, string> | null, traces: ReadonlyMap<number, NameTrace>): boolean {
   if (!snapshot || Object.keys(snapshot).length !== docs.length) return false;
   for (const d of docs) {
     const attendu = snapshot[String(d.id)];
@@ -1329,7 +1326,7 @@ interface RenameLine {
  * le renommage) sont distinctes ; familles (`NAMING_FAMILY`) ; lots non
  * examinés et motif (`NAMING_GROUP`).
  */
-export class NamingRecorder {
+class NamingRecorder {
   readonly steps: ReportStep[] = [];
   readonly traceIds = new Set<string>();
   private readonly entries: Array<ReportEntry & { eventId?: number | null }> = [];

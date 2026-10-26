@@ -48,7 +48,7 @@ export function normalizeHelpText(s: string): string {
  * Équivalences de mots (formes normalisées, sans accents). La forme
  * `canonical` est celle qu'emploient les articles.
  */
-export const HELP_LEXICAL_SYNONYMS: ReadonlyArray<{ canonical: string; variants: readonly string[] }> = [
+const HELP_LEXICAL_SYNONYMS: ReadonlyArray<{ canonical: string; variants: readonly string[] }> = [
   {
     canonical: 'ajouter',
     variants: [
@@ -72,7 +72,7 @@ export const HELP_LEXICAL_SYNONYMS: ReadonlyArray<{ canonical: string; variants:
 ];
 
 /** Identifiants des concepts fonctionnels. */
-export type HelpConceptId = 'DOCUMENT_UPLOAD' | 'ASSET_CREATE' | 'AGENDA_ITEM_CREATE';
+type HelpConceptId = 'DOCUMENT_UPLOAD' | 'ASSET_CREATE' | 'AGENDA_ITEM_CREATE';
 
 export interface HelpConcept {
   id: HelpConceptId;

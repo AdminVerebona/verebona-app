@@ -164,8 +164,6 @@ export function parisDay(now: Date = new Date()): string {
  * document en attente » : l'absence de sujet retenu n'établit rien de tel.
  */
 export const NOTHING_TO_REPORT_SPEECH = 'Rien de particulier à vous signaler pour le moment.';
-/** @deprecated lot 61 — conservé pour compatibilité : même texte que `NOTHING_TO_REPORT_SPEECH`. */
-export const CLEAR_SPEECH = NOTHING_TO_REPORT_SPEECH;
 /** Lot 61 : échéances proches en cours d'évaluation (première visite, changement). */
 export const EVALUATION_PENDING_SPEECH = 'J’examine encore vos prochaines échéances : elles restent consultables dans l’agenda.';
 /** Lot 61 : évaluation des échéances indisponible (T6 coupé, panne) — jamais présenté comme un compte sans problème. */
@@ -222,13 +220,13 @@ export const NOTHING_PRIORITY = 'Aucun sujet à traiter en priorité pour le mom
  */
 export const PARTIAL_DATA_SPEECH = 'Certaines informations n’ont pas pu être actualisées.';
 
-export interface Speech {
+interface Speech {
   text: string;
   /** Segments à mettre en valeur (T6-010), présents dans `text`. */
   highlights: string[];
 }
 
-export interface SpeechInput {
+interface SpeechInput {
   presentation: MascotPresentation | null;
   /** Compte vide : aucun bien, aucun document (§12ter). */
   empty: boolean;
@@ -236,7 +234,7 @@ export interface SpeechInput {
 }
 
 /** Sujets réels (hors paragraphe « rien à signaler »). */
-export function realParagraphs(p: MascotPresentation | null): MascotParagraph[] {
+function realParagraphs(p: MascotPresentation | null): MascotParagraph[] {
   return (p?.paragraphs ?? []).filter((x) => x.sourceCode !== 'CLEAR');
 }
 
@@ -435,7 +433,7 @@ export function splitHighlights(text: string, highlights: string[]): Array<{ tex
 // ── Blocs de sujet (lot 68) ─────────────────────────────────────────────────
 
 /** Action d'un bloc : libellé court (« Voir »), action réelle du moteur. */
-export interface SubjectBlockAction { action: MascotAction; label: string; primary: boolean }
+interface SubjectBlockAction { action: MascotAction; label: string; primary: boolean }
 
 /**
  * Lot 68 — UN bloc par sujet retenu : sa formulation (objet, bien et date
@@ -463,7 +461,7 @@ export interface SubjectBlock {
 }
 
 /** Libellé court d'une action de bloc : « Voir l’échéance » → « Voir ». */
-export function blockActionLabel(a: MascotAction): string {
+function blockActionLabel(a: MascotAction): string {
   return /^Voir\b/.test(a.label) ? 'Voir' : a.label;
 }
 
@@ -495,9 +493,9 @@ export function subjectBlocks(p: MascotPresentation | null): SubjectBlock[] {
 
 // ── Tuiles (client) ─────────────────────────────────────────────────────────
 
-export const MAX_TILES = 2;
+const MAX_TILES = 2;
 
-export interface ActionTile {
+interface ActionTile {
   key: string;
   paragraph: MascotParagraph;
   label: string;
@@ -531,7 +529,7 @@ export function actionTiles(p: MascotPresentation | null): ActionTile[] {
 // ── Niveau 2 : éléments d'action homogènes (lot 32, MASC2) ──────────────────
 
 /** Éléments de niveau 2 affichés au plus. */
-export const MAX_HOME_ITEMS = 5;
+const MAX_HOME_ITEMS = 5;
 
 interface HomeItemBase {
   key: string;
@@ -608,7 +606,7 @@ export function homeItems(p: MascotPresentation | null, empty: boolean): HomeIte
 
 // ── Pose (§3.2) ─────────────────────────────────────────────────────────────
 
-export type HomePose =
+type HomePose =
   | 'welcome-wave' | 'alert-folder' | 'questioning' | 'reminder-bell' | 'success-check' | 'neutral'
   // Lot 78C : « au travail » — des documents sont en cours d'analyse (pose existante, la mascotte lit un PDF).
   | 'document-analysis-pdf';
@@ -704,7 +702,7 @@ export function homePoseLabel(pose: HomePose): string {
  */
 export const EMPTY_ACCOUNT_SUGGESTIONS: string[] = emptyAccountSuggestions().map((s) => s.label);
 
-export interface HomeSuggestion {
+interface HomeSuggestion {
   label: string;
   context?: { intent: string; assetId?: number };
   /** Élément secondaire du moteur (télémétrie « cliqué ») ; absent : catalogue. */

@@ -23,58 +23,38 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
-import { missingFromPresenceFlags, schemaNotReadyMessage } from '@/lib/schema-readiness-log';
+import { missingFromPresenceFlags } from '@/lib/schema-readiness-log';
+import { cachedSchemaProbe } from '../../telemetry/trace-schema';
 import { wordStartPattern } from '@/lib/search/match-engine';
 import { needsSourceRetryDue, verificationAutoRetryDue } from './verification-followup';
-import type { CoverageStatus, SourceLayer, SourceUnitKind, T1CompletenessReport, T1QualityState, UnresolvedFactRecord } from './types';
+import type { CoverageStatus, SourceLayer, SourceUnitKind, T1CompletenessReport, UnresolvedFactRecord } from './types';
 
 type Tx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
 const json = (v: unknown) => JSON.stringify(v ?? null);
 
 const SOURCE_LAYER_EXPECTED = ['document_source_units', 'document_extraction_coverage', 'document_unresolved_facts', 'document_facts.source_unit_ids'] as const;
 const RECONTROLE_MS = 5 * 60_000;
-let etat: { ready: boolean; checkedAt: number } | null = null;
-let signale = false;
+
+const sourceLayerProbe = cachedSchemaProbe(async () => {
+  const { pgClient } = await import('@/db');
+  // Lot 75A : un drapeau par élément attendu (liste exacte des absents).
+  const r = (await pgClient.unsafe(
+    `SELECT to_regclass('document_source_units') IS NOT NULL AS a,
+            to_regclass('document_extraction_coverage') IS NOT NULL AS b,
+            to_regclass('document_unresolved_facts') IS NOT NULL AS c,
+            EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+                     AND table_name = 'document_facts' AND column_name = 'source_unit_ids') AS d`,
+  )) as unknown as Array<{ a: boolean; b: boolean; c: boolean; d: boolean }>;
+  const absents = r[0] ? missingFromPresenceFlags(SOURCE_LAYER_EXPECTED, [r[0].a, r[0].b, r[0].c, r[0].d]) : null;
+  return { ready: absents !== null && absents.length === 0, missing: absents };
+}, {
+  scope: '[t1-source-units]', migration: '0295-0297', expected: SOURCE_LAYER_EXPECTED,
+  consequence: 'Couche A de T1 (unités de la source, couverture) non écrite ; les faits restent écrits comme avant.',
+});
 
 /** Tables 0295 / 0296 et colonne 0297 présentes ? Ne lève jamais (illisible = absent). */
 export async function sourceLayerReady(): Promise<boolean> {
-  if (etat && (etat.ready || Date.now() - etat.checkedAt < RECONTROLE_MS)) return etat.ready;
-  let ready = false;
-  let absents: string[] | null = null;
-  let erreur: unknown;
-  try {
-    const { pgClient } = await import('@/db');
-    // Lot 75A : un drapeau par élément attendu (liste exacte des absents).
-    const r = (await pgClient.unsafe(
-      `SELECT to_regclass('document_source_units') IS NOT NULL AS a,
-              to_regclass('document_extraction_coverage') IS NOT NULL AS b,
-              to_regclass('document_unresolved_facts') IS NOT NULL AS c,
-              EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
-                       AND table_name = 'document_facts' AND column_name = 'source_unit_ids') AS d`,
-    )) as unknown as Array<{ a: boolean; b: boolean; c: boolean; d: boolean }>;
-    absents = r[0] ? missingFromPresenceFlags(SOURCE_LAYER_EXPECTED, [r[0].a, r[0].b, r[0].c, r[0].d]) : null;
-    ready = absents !== null && absents.length === 0;
-  } catch (e) {
-    ready = false;
-    erreur = e;
-  }
-  etat = { ready, checkedAt: Date.now() };
-  if (!ready && !signale) {
-    signale = true;
-    console.error(schemaNotReadyMessage({
-      scope: '[t1-source-units]', migration: '0295-0297', error: erreur, missing: absents,
-      expected: SOURCE_LAYER_EXPECTED,
-      consequence: 'Couche A de T1 (unités de la source, couverture) non écrite ; les faits restent écrits comme avant.',
-    }));
-  }
-  return ready;
-}
-
-/** Réservé aux tests. */
-export function __resetSourceLayerReadyForTests(ready: boolean | null = null): void {
-  etat = ready === null ? null : { ready, checkedAt: Date.now() };
-  signale = false;
-  diag = null;
+  return sourceLayerProbe();
 }
 
 let diag: { ready: boolean; checkedAt: number } | null = null;
@@ -84,7 +64,7 @@ let diag: { ready: boolean; checkedAt: number } | null = null;
  * présentes ? Absentes : la couche A est écrite comme avant, sans
  * diagnostics (jamais d'échec d'écriture). Ne lève jamais.
  */
-export async function layerDiagnosticsReady(): Promise<boolean> {
+async function layerDiagnosticsReady(): Promise<boolean> {
   if (diag && (diag.ready || Date.now() - diag.checkedAt < RECONTROLE_MS)) return diag.ready;
   let ready = false;
   try {
@@ -272,7 +252,7 @@ const UNIT_COLUMNS = `
 /** Lot 49B : colonne 0329 lue si présente (`to_jsonb` : jamais d'erreur si absente). */
 const REPAIR_STATE_COLUMN = `, to_jsonb(u) ->> 'repair_state' AS "repairState"`;
 
-export interface LoadSourceUnitsOptions {
+interface LoadSourceUnitsOptions {
   /** Contrôle d'appartenance (recommandé hors traitement interne). */
   accountId?: number;
   statuses?: CoverageStatus[];
@@ -326,7 +306,7 @@ export async function loadDocumentSourceUnits(fileId: number, opts: LoadSourceUn
   return rows.map((u) => ({ ...u, facts: parUnite.get(u.sourceUnitId) ?? [] }));
 }
 
-export interface StoredCoverage extends T1CompletenessReport {
+interface StoredCoverage extends T1CompletenessReport {
   fileId: number;
   accountId: number;
   origin: string;
@@ -365,7 +345,7 @@ export async function loadDocumentCoverage(fileId: number, accountId?: number): 
   return rows[0] ?? null;
 }
 
-export interface StoredUnresolvedFact extends UnresolvedFactRecord {
+interface StoredUnresolvedFact extends UnresolvedFactRecord {
   id: number;
   fileId: number;
   createdAt: string;
@@ -386,7 +366,7 @@ export async function loadUnresolvedDocumentFacts(fileId: number, opts: { accoun
   )) as unknown as StoredUnresolvedFact[];
 }
 
-export interface SourceUnitHit extends StoredSourceUnit {
+interface SourceUnitHit extends StoredSourceUnit {
   documentTitle: string | null;
   assetId: number | null;
   matchedTerms: number;
@@ -423,14 +403,3 @@ export async function searchDocumentSourceUnits(
   return (rows as unknown as SourceUnitHit[]).map((r) => ({ ...r, matchedTerms: Number(r.matchedTerms) }));
 }
 
-/** Documents dont la couche A est à reprendre (états de qualité). */
-export async function countByQualityState(): Promise<Record<T1QualityState, number>> {
-  const out: Record<T1QualityState, number> = { COMPLETE: 0, COMPLETE_WITH_UNRESOLVED: 0, VERIFICATION_INCOMPLETE: 0, INCOMPLETE_RETRYABLE: 0, INCOMPLETE_FINAL: 0 };
-  if (!(await sourceLayerReady())) return out;
-  const { pgClient } = await import('@/db');
-  const rows = (await pgClient.unsafe(
-    `SELECT quality_state AS q, COUNT(*)::int AS n FROM document_extraction_coverage GROUP BY quality_state`,
-  )) as unknown as Array<{ q: T1QualityState; n: number }>;
-  for (const r of rows) out[r.q] = Number(r.n);
-  return out;
-}

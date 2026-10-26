@@ -56,7 +56,7 @@ import type { ActionResult, PlanStatus, WriteCommandType } from './catalog';
 /** Durée pendant laquelle une action exécutée peut être annulée. */
 export const UNDO_WINDOW_MS = 15 * 60_000;
 
-export type InverseOp = 'DELETE_AGENDA_ITEM' | 'RESTORE_AGENDA_STATUS' | 'RESTORE_ASSET_FIELDS';
+type InverseOp = 'DELETE_AGENDA_ITEM' | 'RESTORE_AGENDA_STATUS' | 'RESTORE_ASSET_FIELDS';
 
 /** Ce que l'exécuteur d'une étape rapporte pour permettre (ou non) son annulation. */
 export type UndoCapture =
@@ -83,7 +83,7 @@ export interface SqlRunner {
 
 // ── États et empreintes des cibles ─────────────────────────────────────────
 
-export interface AgendaSnapshot {
+interface AgendaSnapshot {
   id: number;
   title: string;
   startDate: string | null;
@@ -170,7 +170,7 @@ export const ACHAT_SYNC_REASON =
 
 // ── Ouverture de la fenêtre, à l'exécution ─────────────────────────────────
 
-export interface UndoArming {
+interface UndoArming {
   undoUntil: string | null;
   /** Pourquoi le plan n'est pas annulable (trace). */
   reasons: string[];
@@ -228,7 +228,7 @@ export async function armUndo(
 
 // ── Annulation ─────────────────────────────────────────────────────────────
 
-export type UndoOutcome =
+type UndoOutcome =
   | {
       ok: true;
       status: 'UNDONE';
@@ -244,13 +244,13 @@ export type UndoOutcome =
       status?: PlanStatus;
     };
 
-export const UNDONE_MESSAGE = 'J’ai annulé cette action.';
-export const UNDO_ALREADY_MESSAGE = 'Cette action a déjà été annulée.';
+const UNDONE_MESSAGE = 'J’ai annulé cette action.';
+const UNDO_ALREADY_MESSAGE = 'Cette action a déjà été annulée.';
 export const UNDO_EXPIRED_MESSAGE =
   'Le délai de 15 minutes pour annuler cette action est dépassé. Vous pouvez faire la correction directement depuis l’écran concerné.';
 export const UNDO_IRREVERSIBLE_MESSAGE =
   'Cette action ne peut pas être annulée depuis l’assistant : elle a eu des effets qui ne se défont pas automatiquement. Vous pouvez faire la correction directement depuis l’écran concerné.';
-export const UNDO_NOT_EXECUTED_MESSAGE = 'Seule une action exécutée peut être annulée.';
+const UNDO_NOT_EXECUTED_MESSAGE = 'Seule une action exécutée peut être annulée.';
 const NOT_FOUND_MESSAGE = 'Cette action n’existe pas ou ne vous appartient pas.';
 
 /** Conflit détecté pendant la transaction : tout est défait, rien n'est écrit. */
@@ -258,7 +258,7 @@ class UndoConflict extends Error {
   constructor(public label: string, public gone: boolean) { super('UNDO_CONFLICT'); }
 }
 
-export const conflictMessage = (label: string, gone: boolean) => gone
+const conflictMessage = (label: string, gone: boolean) => gone
   ? `Annulation impossible : ${label} n’existe plus. Rien n’a été modifié.`
   : `Annulation impossible : ${label} a changé depuis l’exécution de l’action. Rien n’a été modifié ; vous pouvez faire la correction directement depuis l’écran concerné.`;
 

@@ -28,7 +28,7 @@
 import dynamic from 'next/dynamic';
 import { Loader2 } from 'lucide-react';
 
-export type AddFormKind = 'file' | 'asset' | 'agenda';
+type AddFormKind = 'file' | 'asset' | 'agenda';
 
 /** Promesse d'import mémorisée ; oubliée en cas d'échec pour permettre une reprise. */
 function memoImport<T>(load: () => Promise<T>): () => Promise<T> {
@@ -45,8 +45,8 @@ function memoImport<T>(load: () => Promise<T>): () => Promise<T> {
 }
 
 export const loadDocumentDialog = memoImport(() => import('@/components/documents/unified-document-dialog'));
-export const loadAssetFormDialog = memoImport(() => import('@/components/AssetFormDialog'));
-export const loadAgendaDrawer = memoImport(() => import('@/components/agenda/CreateAgendaItemDrawer'));
+const loadAssetFormDialog = memoImport(() => import('@/components/AssetFormDialog'));
+const loadAgendaDrawer = memoImport(() => import('@/components/agenda/CreateAgendaItemDrawer'));
 
 const LOADERS: Record<AddFormKind, () => Promise<unknown>> = {
   file: loadDocumentDialog,

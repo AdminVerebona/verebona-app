@@ -60,13 +60,13 @@ type Row = Record<string, unknown>;
 const rows = async <T = Row>(tx: DbTx, q: SQL): Promise<T[]> => (await tx.execute(q)) as unknown as T[];
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 
-export type AgendaSourceOutcome =
+type AgendaSourceOutcome =
   | 'NONE'              // rien à faire (élément non éligible, non relié à une intervention)
   | 'LINKED'            // source AGENDA de l'Opération reliée (suivie, reconsolidée)
   | 'WITHDRAWN'         // sources AGENDA retirées (élément supprimé, délié, annulé…)
   | 'CREATE_NEW' | 'MATCH_AND_ENRICH' | 'HOLD_UNRESOLVED';
 
-export interface AgendaSourceResult {
+interface AgendaSourceResult {
   itemId: number;
   outcome: AgendaSourceOutcome;
   reason: string | null;
@@ -98,7 +98,7 @@ async function operationType(tx: DbTx, accountId: number, operationId: number): 
  * Réconciliation d'UN élément dans une session d'écriture Opération ouverte
  * (verrou du compte détenu). Voir l'en-tête.
  */
-export async function reconcileAgendaItemInSession(
+async function reconcileAgendaItemInSession(
   session: WriteSession, accountId: number, itemId: number,
   opts: { today?: string; cards?: OperationCardNeeds } = {},
 ): Promise<AgendaSourceResult> {

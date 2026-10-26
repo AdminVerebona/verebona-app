@@ -33,7 +33,7 @@ import { QUALIFICATION_THRESHOLDS } from '../qualification/thresholds';
 export const EVIDENCE_STATUSES = ['never_tested', 'in_test', 'admissible', 'refused', 'inconclusive', 'obsolete', 'technical_only'] as const;
 export type EvidenceStatus = (typeof EVIDENCE_STATUSES)[number];
 
-export const EVIDENCE_STATUS_LABELS: Readonly<Record<EvidenceStatus, string>> = {
+const EVIDENCE_STATUS_LABELS: Readonly<Record<EvidenceStatus, string>> = {
   never_tested: 'jamais testé',
   in_test: 'en test',
   admissible: 'qualifié (admissible)',
@@ -95,14 +95,14 @@ export function evidenceNeverTested(pair: PairRef, ctx: { environment: string })
   };
 }
 
-export interface EvidenceReaderDeps {
+interface EvidenceReaderDeps {
   environment?: string;
   /** Preuves par couple (86A), injectables en test. */
   loadPairEvidence?: (environment: string) => Promise<PairQualificationRecord[]>;
 }
 
 /** Preuve par couple de la qualification (sous-ensemble de `QualificationEvidenceRecord`, lot 86A). */
-export interface PairQualificationRecord {
+interface PairQualificationRecord {
   operationCode: string;
   model: string;
   environment: string;

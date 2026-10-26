@@ -17,7 +17,7 @@ import type postgres from 'postgres';
 import type { SqlRunner } from '@/services/canonical/asset-state';
 import type { MigStep } from './types';
 
-export type BackupTarget = 'asset_column' | 'asset_kc' | 'field_evidence' | 'document_fact';
+type BackupTarget = 'asset_column' | 'asset_kc' | 'field_evidence' | 'document_fact';
 
 export interface BackupRow {
   targetType: BackupTarget;
@@ -44,7 +44,7 @@ export function kcDiff(before: Record<string, unknown>, after: Record<string, un
 }
 
 /** Forme texte d'une valeur de colonne (comparée à `col::text` à la restauration). */
-export const columnText = (v: unknown): string | null => {
+const columnText = (v: unknown): string | null => {
   if (v === null || v === undefined) return null;
   if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}T00:00:00(\.000)?Z?$/.test(v)) return v.slice(0, 10);
   return String(v);

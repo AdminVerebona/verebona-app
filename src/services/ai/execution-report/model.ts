@@ -37,16 +37,6 @@ export type WriteResult =
   /** Valeur en place relue, sans pouvoir l'attribuer à ce passage (jamais présentée comme écrite). */
   | 'OBSERVED';
 
-export const WRITE_RESULT_LABEL: Record<WriteResult, string> = {
-  WRITTEN: 'Écrit (confirmé en base)',
-  NOT_PERSISTED: 'Non enregistré',
-  FAILED: 'Écriture en échec',
-  NOT_WRITTEN: 'Examiné, non modifié',
-  DECIDED_NOT_CONFIRMED: 'Décidé, écriture non confirmée',
-  NOT_EXAMINED: 'Non examiné',
-  OBSERVED: 'Valeur en place relue',
-};
-
 /** Statut métier d'un rapport (constaté en base). */
 export type ReportStatus = 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'NO_CHANGE';
 
@@ -107,7 +97,7 @@ export interface ReportHeader {
 /** Au-delà, une chaîne est référencée et non recopiée. */
 export const INLINE_TEXT_MAX = 2_000;
 /** Au-delà, un JSON est référencé et non recopié. */
-export const INLINE_JSON_MAX = 8_000;
+const INLINE_JSON_MAX = 8_000;
 
 export function sha256(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex');
@@ -155,7 +145,7 @@ export const T1_PROJECTION_REASON: Record<string, string> = {
 
 // ── T3 : motif NORMALISÉ d'un champ examiné non modifié ─────────────────────
 
-export type T3NotWrittenReason =
+type T3NotWrittenReason =
   | 'NO_EXPLOITABLE_INFO'
   | 'EXTRACTED_NOT_RETAINED'
   | 'SAME_VALUE'

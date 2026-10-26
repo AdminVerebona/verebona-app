@@ -12,8 +12,8 @@
 import { pgClient } from '@/db';
 
 /** Types de cible projetables en preuve de champ (un champ de bien, d'équipement ou de pièce). */
-export const EVIDENCE_TARGET_TYPES = ['ASSET', 'EQUIPMENT', 'ROOM'] as const;
-export type EvidenceEntityTargetType = (typeof EVIDENCE_TARGET_TYPES)[number];
+const EVIDENCE_TARGET_TYPES = ['ASSET', 'EQUIPMENT', 'ROOM'] as const;
+type EvidenceEntityTargetType = (typeof EVIDENCE_TARGET_TYPES)[number];
 
 export const isEvidenceTargetType = (t: string): t is EvidenceEntityTargetType =>
   (EVIDENCE_TARGET_TYPES as readonly string[]).includes(t);

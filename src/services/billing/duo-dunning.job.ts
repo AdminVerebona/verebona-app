@@ -17,7 +17,7 @@ import { and, eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { duoAccounts, dunningEvents } from '@/db/schema';
 
-export interface DuoDunningResult { d1: number; d7: number; d14: number }
+interface DuoDunningResult { d1: number; d7: number; d14: number }
 
 export async function runDuoDunning(now: Date = new Date()): Promise<DuoDunningResult> {
   const results: DuoDunningResult = { d1: 0, d7: 0, d14: 0 };

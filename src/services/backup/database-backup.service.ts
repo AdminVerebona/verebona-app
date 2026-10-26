@@ -61,7 +61,7 @@ const LOT_LIGNES = 500;
 const SAUVEGARDE_STATEMENT_TIMEOUT_MS = 10 * 60_000;
 
 /** Format historique (avant le lot 82) : lignes converties par le pilote, lues table par table hors instantané commun. */
-export interface BackupManifestV1 {
+interface BackupManifestV1 {
   version: 1;
   startedAt: string;
   finishedAt: string;
@@ -108,7 +108,7 @@ export interface BackupManifestV2 {
   environment: string;
 }
 
-export type BackupManifest = BackupManifestV1 | BackupManifestV2;
+type BackupManifest = BackupManifestV1 | BackupManifestV2;
 
 /** Session de lecture cohérente (81C) — injectable pour les tests. */
 export interface BackupSession {
@@ -248,7 +248,7 @@ export async function runDatabaseBackup(
   return manifest;
 }
 
-export interface BackupListItem {
+interface BackupListItem {
   key: string;
   date: string;
   sizeBytes: number | null;

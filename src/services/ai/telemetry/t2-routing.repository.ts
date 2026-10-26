@@ -14,7 +14,7 @@ import { pgClient } from '@/db';
 
 type Row = Record<string, unknown>;
 
-export interface T2RequestRow {
+interface T2RequestRow {
   id: number;
   requestId: string;
   createdAt: string;
@@ -37,7 +37,7 @@ export interface T2RequestRow {
   models: string[];
 }
 
-export interface T2RequestFilters {
+interface T2RequestFilters {
   accountId?: number;
   userId?: number;
   /** `true` : seulement les requêtes tranchées sans IA (0 appel). */

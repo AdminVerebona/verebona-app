@@ -29,7 +29,7 @@ export function isModelOutputAccessAllowed(adminUserId: number, raw: string | un
   return ids.length === 0 || ids.includes(String(adminUserId));
 }
 
-export type ModelOutputAccess =
+type ModelOutputAccess =
   | { ok: true; callId: number; traceId: string; outputs: ModelOutputView[]; captures?: CallCaptureView[] }
   | { ok: false; code: 'FORBIDDEN' | 'NOT_FOUND'; message: string };
 

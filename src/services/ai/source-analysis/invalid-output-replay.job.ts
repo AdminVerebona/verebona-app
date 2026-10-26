@@ -44,11 +44,11 @@ import { createHash } from 'crypto';
 // 34d.1 : contrat runtime source unique (consigne de priorité, schéma dérivé
 // en prompt sans structured output, mapping explicite document.date →
 // documentDate, champ non déclaré → réparation avec le contrat exact).
-export const OUTPUT_RESOLUTION_VERSION = '34d.1';
+const OUTPUT_RESOLUTION_VERSION = '34d.1';
 
-export const MAX_PER_RUN = 25;
+const MAX_PER_RUN = 25;
 /** Rejeux de nouveau en échec sur une même signature au-delà desquels elle n'est plus rejouée. */
-export const UNRESOLVED_SIGNATURE_THRESHOLD = 3;
+const UNRESOLVED_SIGNATURE_THRESHOLD = 3;
 
 type Row = Record<string, unknown>;
 
@@ -71,7 +71,7 @@ export function legacySignature(reason: string): string {
   return createHash('sha256').update(`legacy|${coeur}`).digest('hex').slice(0, 16);
 }
 
-export interface ReplayCandidate {
+interface ReplayCandidate {
   fileId: number;
   accountId: number;
   failReason: string | null;
@@ -80,7 +80,7 @@ export interface ReplayCandidate {
   signature: string | null;
 }
 
-export type ReplayDecision =
+type ReplayDecision =
   | { replay: true; signature: string; source: 'diagnostic' | 'fail_reason' }
   | { replay: false; reason: string; signature: string | null; source: 'diagnostic' | 'fail_reason' };
 
@@ -103,11 +103,11 @@ export function decideReplay(c: ReplayCandidate, unresolved: ReadonlySet<string>
   return { replay: true, signature: sig, source: 'fail_reason' };
 }
 
-export function replayEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+function replayEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return !/^(off|false|0|no|disabled)$/i.test((env.AI_INVALID_OUTPUT_REPLAY ?? '').trim());
 }
 
-export interface ReplayRunResult {
+interface ReplayRunResult {
   version: string;
   closed: { succeeded: number; failedAgain: number };
   examined: number;

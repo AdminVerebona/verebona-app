@@ -27,9 +27,9 @@
  * (`isEurAmount`). Aucune conversion n'est jamais faite ici.
  */
 
-export type CurrencyBasis = 'amount' | 'document' | 'presumed' | 'ambiguous';
+type CurrencyBasis = 'amount' | 'document' | 'presumed' | 'ambiguous';
 
-export interface CurrencyDetection {
+interface CurrencyDetection {
   /** Code ISO 4217, ou null si indéterminé (plusieurs devises). */
   code: string | null;
   basis: CurrencyBasis;

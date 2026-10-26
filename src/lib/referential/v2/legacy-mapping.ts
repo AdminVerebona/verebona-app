@@ -33,7 +33,7 @@ export type LegacyVerdict =
   /** La valeur V1 n'a pas d'équivalent documentaire et est abandonnée. */
   | 'DROPPED';
 
-export interface LegacyTypeResolution {
+interface LegacyTypeResolution {
   verdict: LegacyVerdict;
   /** Renseigné uniquement si `verdict === 'MAPPED'`. */
   typeCode?: string;
@@ -41,29 +41,6 @@ export interface LegacyTypeResolution {
   /** Explication destinée au rapport de migration. */
   reason: string;
 }
-
-/**
- * Catégories V1 → Rubriques V2 (Annexe B).
- *
- * La correspondance n'est retenue que lorsqu'elle est univoque. Les
- * catégories V1 dont le périmètre a été redécoupé sont absentes : leurs
- * documents passent par le retraitement.
- */
-export const LEGACY_CATEGORY_TO_RUBRIC: Readonly<Record<string, RubricCode>> = {
-  ACHAT_VALEUR: 'PROPERTY_MANAGEMENT',
-  PROPRIETE_ADMINISTRATIF: 'PROPERTY_MANAGEMENT',
-  FISCALITE_CHARGES: 'PROPERTY_MANAGEMENT',
-  GARANTIES_NOTICES: 'CONTRACTS_WARRANTIES_DOCS',
-  ENTRETIEN_REPARATIONS: 'MAINTENANCE_WORKS',
-  TRAVAUX_TRANSFORMATIONS: 'MAINTENANCE_WORKS',
-  CONFORMITE_CONTROLES: 'COMPLIANCE_CONTROLS',
-  PHOTOS_VIDEOS: 'MEDIA',
-  AUTRES_DOCUMENTS: 'OTHER_DOCUMENTS',
-  // CONTRATS_ASSURANCES est volontairement absente : elle couvrait à la fois
-  // les contrats de service (CONTRACTS_WARRANTIES_DOCS), l'assurance
-  // (INSURANCE_CLAIMS) et le bail (RENTAL_MANAGEMENT). Choisir pour elle
-  // reviendrait à classer au hasard deux documents sur trois.
-};
 
 /** Types V1 dont la cible V2 est certaine. */
 const DIRECT_TYPE_MAP: Readonly<Record<string, string>> = {
@@ -145,9 +122,9 @@ const DROPPED_TYPES = new Set([
 ]);
 
 /** Valeur technique par défaut de la V1 (§15.1, dernier alinéa). */
-export const LEGACY_GENERIC_TYPE = 'AUTRE';
+const LEGACY_GENERIC_TYPE = 'AUTRE';
 
-export interface LegacyTypeInput {
+interface LegacyTypeInput {
   typeCode: string | null;
   /**
    * Le Type V1 porte-t-il une preuve de sélection manuelle ?

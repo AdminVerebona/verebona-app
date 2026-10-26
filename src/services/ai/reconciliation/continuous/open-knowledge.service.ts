@@ -40,9 +40,9 @@ import type { FactTargetResult } from './fact-target-reconciler';
 import type { TargetingResult } from './source-unit-targeting';
 
 /** Documents ouverts examinés au plus par passage compte (le balayage reprend la suite). */
-export const OPEN_KNOWLEDGE_DOCUMENT_LIMIT = 200;
+const OPEN_KNOWLEDGE_DOCUMENT_LIMIT = 200;
 /** Titres contrôlés au plus par passage compte (le balayage des titres reprend la suite). */
-export const OPEN_KNOWLEDGE_TITLE_LIMIT = 100;
+const OPEN_KNOWLEDGE_TITLE_LIMIT = 100;
 
 export interface OpenKnowledgeResult {
   knowledgeRevision: number;

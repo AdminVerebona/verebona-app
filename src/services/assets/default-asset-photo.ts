@@ -27,7 +27,7 @@
  */
 import { thumbnailSourceKind } from '@/services/documents/thumbnails/thumbnail-spec';
 
-export interface AssetPhotoCandidate {
+interface AssetPhotoCandidate {
   id: number;
   assetId: number | null;
   linkedAssetId: number | null;
@@ -41,7 +41,7 @@ export interface AssetPhotoCandidate {
   uploadedAt: Date | string | null;
 }
 
-export interface DefaultAssetPhoto {
+interface DefaultAssetPhoto {
   fileId: number;
   s3Key: string;
 }

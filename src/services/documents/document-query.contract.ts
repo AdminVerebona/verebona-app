@@ -56,7 +56,7 @@ export interface DocumentQuery {
 /** Identifiant du groupe « À classer ». Jamais un code de catégorie (§2.2). */
 export const TO_CLASSIFY_GROUP = '__TO_CLASSIFY__';
 
-export interface DocumentAssociation {
+interface DocumentAssociation {
   id: number;
   name: string;
   /** `asset` ou `equipment`. */

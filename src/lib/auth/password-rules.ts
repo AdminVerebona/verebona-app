@@ -3,7 +3,7 @@ export const MIN_PASSWORD_LENGTH = 10;
 
 const SPECIAL_CHARS = "!@#$%^&*()-_=+[]{};:,.?";
 
-export type PasswordCheckResult = {
+type PasswordCheckResult = {
   hasMinLength: boolean;
   hasLetter: boolean;
   hasDigit: boolean;

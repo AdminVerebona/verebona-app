@@ -97,7 +97,7 @@ export interface DocumentCandidate {
   s3Bucket: string | null;
 }
 
-export interface DocumentPlan {
+interface DocumentPlan {
   include: Array<DocumentCandidate & { path: string }>;
   skipped: Array<{ id: number; name: string; reason: 'TOTAL_SIZE_LIMIT' | 'NO_STORED_FILE' }>;
   includedBytes: number;
@@ -142,7 +142,7 @@ export interface ExportManifest {
   documents: { included: number; includedBytes: number; skipped: DocumentPlan['skipped']; files: Array<{ id: number; path: string }> };
 }
 
-export interface ExportContent {
+interface ExportContent {
   manifest: ExportManifest;
   /** Fichiers texte de l'archive (chemin → contenu). */
   textFiles: Record<string, string>;

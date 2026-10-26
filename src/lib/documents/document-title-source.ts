@@ -66,7 +66,7 @@ export function documentTitleOf(row: DocumentTitleColumns, fallback = 'Document'
 }
 
 /** Document lu par l'ORM (noms de propriétés Drizzle). */
-export interface DocumentTitleRecord {
+interface DocumentTitleRecord {
   retainedTitle?: string | null;
   webLinkTitle?: string | null;
   originalFilename?: string | null;

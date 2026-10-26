@@ -55,7 +55,7 @@ export async function purgeAccountModelCache(accountId: number): Promise<number>
  */
 const purges = new Map<number, { promesse: Promise<void>; relancer: boolean }>();
 
-export function schedulePurgeAccountModelCache(accountId: number): Promise<void> {
+function schedulePurgeAccountModelCache(accountId: number): Promise<void> {
   const enCours = purges.get(accountId);
   if (enCours) {
     enCours.relancer = true;
@@ -97,9 +97,9 @@ let enregistre = false;
  * Aucune purge des réponses modèle : rien n'est supprimé (la clé de ces
  * réponses inclut déjà les sources, qui changent avec les données).
  */
-export const OPERATION_CACHE_SUBSCRIBER = 'verebona-assistant-cache';
+const OPERATION_CACHE_SUBSCRIBER = 'verebona-assistant-cache';
 
-export async function invalidateAssistantCacheForOperationEvent(e: BusinessOperationEvent): Promise<void> {
+async function invalidateAssistantCacheForOperationEvent(e: BusinessOperationEvent): Promise<void> {
   const comptes = [...new Set([e.accountId, e.previousAccountId].filter((x): x is number => Number.isSafeInteger(x)))];
   for (const accountId of comptes) {
     invalidateRetrievalCacheForAccount(accountId);
@@ -107,7 +107,7 @@ export async function invalidateAssistantCacheForOperationEvent(e: BusinessOpera
   }
 }
 
-export function registerAssistantOperationEventHandlers(): void {
+function registerAssistantOperationEventHandlers(): void {
   subscribeBusinessOperationEvents(OPERATION_CACHE_SUBSCRIBER, invalidateAssistantCacheForOperationEvent);
 }
 

@@ -51,7 +51,7 @@ const confianceFait = (c: unknown): KnowledgeConfidence => (c === 'certain' || c
 const confianceUnite = (cov: unknown): KnowledgeConfidence => (cov === 'COVERED' ? 'certain' : cov === 'UNRESOLVED' ? 'probable' : 'conflictual');
 
 /** Documents de la même réalité métier (Opération commune, référence de contrat exacte), dans le compte, bornés. */
-export async function linkedDocuments(accountId: number, fileId: number, fieldKey: string, max: number): Promise<{ docs: Array<{ fileId: number; relation: 'SAME_OPERATION' | 'SAME_CONTRACT_REFERENCE' }>; missing: string[] }> {
+async function linkedDocuments(accountId: number, fileId: number, fieldKey: string, max: number): Promise<{ docs: Array<{ fileId: number; relation: 'SAME_OPERATION' | 'SAME_CONTRACT_REFERENCE' }>; missing: string[] }> {
   const out = new Map<number, 'SAME_OPERATION' | 'SAME_CONTRACT_REFERENCE'>();
   const missing: string[] = [];
   if (max <= 0) return { docs: [], missing };

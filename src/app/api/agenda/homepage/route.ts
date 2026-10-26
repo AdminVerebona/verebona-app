@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
 
     const items = await getHomepageAgendaItems(accountId);
     return NextResponse.json({ items });
-  } catch (err) {
+  } catch {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

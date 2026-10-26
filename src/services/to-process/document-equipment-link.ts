@@ -32,10 +32,10 @@ import { unnamedLabel, userSourceLabel } from './card-labels';
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
 
 export const LINK_ELT_RULE = 'LINK-ELT';
-export const LINK_ELT_RELATION = 'elementId';
+const LINK_ELT_RELATION = 'elementId';
 
 /** Écrivain d'une RELATION depuis une carte (liste blanche, comme `FieldWriter`). */
-export interface RelationWriter {
+interface RelationWriter {
   targetType: 'DOCUMENT';
   relationKey: string;
   /** Forme de la valeur (avant tout accès base). */
@@ -133,7 +133,7 @@ export function findRelationWriter(targetType: string, relationKey: string | nul
 
 // ── Proposition (pour T3-07) ────────────────────────────────────────────────
 
-export interface EquipmentCandidate {
+interface EquipmentCandidate {
   equipmentId: number;
   /** 0 → 1, jamais affiché (§11.2). */
   score: number;
@@ -150,7 +150,7 @@ export function documentEquipmentTriggerContext(fileId: number, equipmentIds: nu
   return { fileId, candidates: [...new Set(equipmentIds)].sort((a, b) => a - b) };
 }
 
-export type ProposeResult = UpsertActionResult & {
+type ProposeResult = UpsertActionResult & {
   /** Candidats écartés : équipement introuvable, d'un autre bien ou d'un autre compte. */
   rejected: number[];
 };

@@ -28,9 +28,9 @@
  * dégrader.
  */
 
-export type GuardrailUnit = 'compte' | 'pourcentage' | 'euros' | 'secondes';
+type GuardrailUnit = 'compte' | 'pourcentage' | 'euros' | 'secondes';
 
-export interface GuardrailDefinition {
+interface GuardrailDefinition {
   code: string;
   label: string;
   description: string;
@@ -40,7 +40,7 @@ export interface GuardrailDefinition {
 }
 
 /** Garde-fous du catalogue fermé. */
-export const GUARDRAIL_CATALOG: readonly GuardrailDefinition[] = [
+const GUARDRAIL_CATALOG: readonly GuardrailDefinition[] = [
   {
     code: 'consecutive_failures',
     label: 'Échecs consécutifs',
@@ -96,7 +96,7 @@ export function guardrailCodes(): Set<string> {
 
 // ── Déclencheurs ────────────────────────────────────────────────────────────
 
-export interface TriggerDefinition {
+interface TriggerDefinition {
   code: string;
   label: string;
   kind: 'event' | 'schedule';

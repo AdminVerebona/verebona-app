@@ -73,7 +73,7 @@ export function accountSuspendedResponse() {
 }
 
 /** Rôles du back-office qui gardent l'accès au BO malgré une suspension. */
-export function isBackOfficeRole(role: string | null | undefined): boolean {
+function isBackOfficeRole(role: string | null | undefined): boolean {
   return role === 'ADMIN' || role === 'SUPER_ADMIN';
 }
 
@@ -135,7 +135,7 @@ export function withoutArchivedAccounts<A extends { id: number; isActive?: boole
   return visibles.length > 0 ? visibles : candidates;
 }
 
-export type SessionAccountResolution<A> =
+type SessionAccountResolution<A> =
   | { allowed: true; account: A | null; reason: 'ACTIVE_ACCOUNT' | 'NO_ACCOUNT' | 'BACK_OFFICE_ONLY' }
   | { allowed: false; reason: 'ALL_SUSPENDED' | 'SESSION_ACCOUNT_SUSPENDED'; suspendedAccountId: number };
 

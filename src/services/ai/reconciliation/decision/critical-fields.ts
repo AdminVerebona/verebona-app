@@ -35,7 +35,7 @@ export function isCriticalField(fieldKey: string): boolean {
   return CRITICAL_FIELDS.has(fieldKey);
 }
 
-export interface CriticalGateResult {
+interface CriticalGateResult {
   allowed: boolean;
   /** Conditions non satisfaites, pour affichage dans l'arbitrage. */
   failedConditions: string[];

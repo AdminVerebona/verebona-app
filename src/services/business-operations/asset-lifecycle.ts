@@ -59,7 +59,7 @@ type Row = Record<string, unknown>;
 const rows = async <T = Row>(tx: DbTx, q: SQL): Promise<T[]> => (await tx.execute(q)) as unknown as T[];
 const ids = (list: Array<{ id: unknown }>) => list.map((r) => Number(r.id));
 
-export interface AssetTransferResult {
+interface AssetTransferResult {
   /** Opérations déplacées vers le nouveau compte (absorbées comprises). */
   moved: number[];
   /** Opérations multi-biens restées sur l'ancien compte, lien retiré. */
@@ -165,7 +165,7 @@ export async function transferAssetOperationsInTx(
   return { ...result, events };
 }
 
-export interface AssetDeletionResult {
+interface AssetDeletionResult {
   detached: number[];
   sourcesDeactivated: number;
   invalidated: number[];

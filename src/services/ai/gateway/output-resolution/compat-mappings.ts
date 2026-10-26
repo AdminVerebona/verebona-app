@@ -36,7 +36,7 @@ import type { OutputRepairStep } from '../diagnostics/taxonomy';
 
 export const COMPAT_TABLE_VERSION = 2;
 
-export interface FieldCompatMapping {
+interface FieldCompatMapping {
   /** Identifiant stable, cité dans les traces (`t1_document_date_to_documentDate`). */
   id: string;
   /** Contrats concernés (nom de schéma du registre). */
@@ -80,7 +80,7 @@ type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
 
 /** Lignes applicables à un contrat. */
-export function fieldMappingsFor(schemaName: string | null | undefined): FieldCompatMapping[] {
+function fieldMappingsFor(schemaName: string | null | undefined): FieldCompatMapping[] {
   if (!schemaName) return [];
   return FIELD_COMPAT_MAPPINGS.filter((m) => m.contracts.includes(schemaName));
 }

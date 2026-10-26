@@ -48,7 +48,7 @@ import {
   boundReport, summarizeBackfill, type BackfillSummary, type RawBackfillOutput,
 } from './report-format';
 
-export const OPS_BACKFILL_LOCK_KEY = 'verebona:ops-backfill';
+const OPS_BACKFILL_LOCK_KEY = 'verebona:ops-backfill';
 const OWNER = `${(process.env.CONTAINER || hostname()).slice(0, 60)}:${process.pid}`;
 const FLUSH_MS = 3_000;
 const HEARTBEAT_MS = 30_000;
@@ -69,7 +69,7 @@ export class BackfillUnavailableError extends Error {
   constructor(message: string) { super(message); this.name = 'BackfillUnavailableError'; }
 }
 
-export interface BackfillProgress {
+interface BackfillProgress {
   lastMessage?: string;
   lastAt?: string;
   data?: Record<string, unknown>;
@@ -175,7 +175,7 @@ export async function waitForBackfill(id: string): Promise<void> {
 
 /* ── Lancement ───────────────────────────────────────────────────────────── */
 
-export interface Launcher { id: number; email?: string }
+interface Launcher { id: number; email?: string }
 
 /**
  * Lance un rattrapage en tâche de fond. Rend la ligne créée dès que le verrou

@@ -186,7 +186,7 @@ const estOuverture = (p: Prop) => OUVERTURES.has(mots(p.replie).join(' '));
  *     au milieu d'une phrase, précision inconnue) : `text` vide — l'appelant
  *     prend le texte de secours, jamais une découpe approximative.
  */
-export type CountingIntroKind = 'NONE' | 'INTRO' | 'INTRO_ONLY' | 'UNSAFE';
+type CountingIntroKind = 'NONE' | 'INTRO' | 'INTRO_ONLY' | 'UNSAFE';
 export function countingIntroOf(text: string | null | undefined): { kind: CountingIntroKind; text: string } {
   if (!text) return { kind: 'NONE', text: text ?? '' };
   const nfc = text.normalize('NFC');

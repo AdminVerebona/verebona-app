@@ -5,7 +5,7 @@
 
 // ─── Enums / Literals ────────────────────────────────────────────────────────
 
-export type AiOperationCategory =
+type AiOperationCategory =
   | 'document_analysis'
   | 'agenda_extraction'
   | 'enrichissement'
@@ -16,7 +16,7 @@ export type AiOperationCategory =
   | 'search'
   | 'retroactive';
 
-export type AiBusinessResult =
+type AiBusinessResult =
   | 'pending'
   | 'success'
   | 'success_with_warning'
@@ -27,7 +27,7 @@ export type AiBusinessResult =
   | 'incomplete'
   | 'cancelled';
 
-export type AiPipelineStepStatus =
+type AiPipelineStepStatus =
   | 'uploaded'
   | 'queued'
   | 'ocr_running'
@@ -43,220 +43,13 @@ export type AiPipelineStepStatus =
   | 'blocked_security'
   | 'error';
 
-export type AiSecurityLockType =
+type AiSecurityLockType =
   | 'reanalysis_loop'
   | 'abnormal_consumption'
   | 'aberrant_cost'
   | 'flood'
   | 'repeated_errors'
   | 'cost_drift';
-
-export type AiAdminActionType =
-  | 'modify_quota'
-  | 'reset_counter'
-  | 'unlock_security'
-  | 'change_pipeline'
-  | 'force_reanalysis';
-
-export type AiOperationOrigin =
-  | 'upload'
-  | 'reanalyse'
-  | 'daily_enrichment'
-  | 'retroactive'
-  | 'admin';
-
-export type AiEnvironment = 'production' | 'staging' | 'test';
-
-// ─── API Responses ────────────────────────────────────────────────────────────
-
-/** GET /api/account/ai-usage — affiché dans Mon compte > Abonnement */
-export interface AccountAiUsageResponse {
-  accountId: number;
-  periodYear: number;
-  /** Nombre de biens actifs (calculé au niveau compte) */
-  assetsCount: number;
-  assetsQuota: number;
-  /** Documents analysés annuels */
-  documentsAnalyzedCount: number;
-  documentsAnalyzedQuota: number;
-  /** Documents analysés pendant essai */
-  trialDocumentsCount: number;
-  trialDocumentsQuota: number;
-  /** true si >= 90% d'un des quotas */
-  shouldShowUpgradeCta: boolean;
-  /** true si une action est bloquée */
-  isAnyQuotaBlocked: boolean;
-  /** Pourcentage de chaque quota (0–100) */
-  assetsPercent: number;
-  documentsPercent: number;
-}
-
-/** Vue globale admin */
-export interface AdminAiOverview {
-  totalOperationsToday: number;
-  totalOperationsThisMonth: number;
-  totalCostMicrosThisMonth: number;
-  totalCostMicrosToday: number;
-  operationsByResult: Record<AiBusinessResult, number>;
-  operationsByProvider: Record<string, number>;
-  fallbackRate: number;
-  activeSecurityLocks: number;
-  topCostAccounts: Array<{
-    accountId: number;
-    accountName: string;
-    totalCostMicros: number;
-  }>;
-}
-
-/** Item liste comptes admin */
-export interface AdminAiAccountSummary {
-  accountId: number;
-  accountName: string;
-  planCode: string;
-  periodYear: number;
-  documentsAnalyzedCount: number;
-  documentsAnalyzedQuota: number;
-  trialDocumentsCount: number;
-  trialDocumentsQuota: number;
-  totalCostMicrosThisYear: number;
-  lastOperationAt: string | null;
-  hasActiveLock: boolean;
-}
-
-/** Détail compte admin */
-export interface AdminAiAccountDetail extends AdminAiAccountSummary {
-  recentOperations: AiOperationSummary[];
-  activeSecurityLocks: AiSecurityLockDetail[];
-  costByProvider: Record<string, number>;
-  costByMonth: Array<{ month: string; costMicros: number }>;
-  auditLogs: AiAdminAuditEntry[];
-}
-
-/** Résumé d'une opération IA */
-export interface AiOperationSummary {
-  id: number;
-  publicId: string;
-  accountId: number;
-  assetFileId: number | null;
-  fileName: string | null;
-  operationCategory: AiOperationCategory;
-  businessResult: AiBusinessResult;
-  origin: AiOperationOrigin;
-  providerPrimary: string | null;
-  usedFallback: boolean;
-  totalCostMicros: number;
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  durationMs: number | null;
-  isReanalysis: boolean;
-  environment: AiEnvironment;
-  startedAt: string;
-  completedAt: string | null;
-}
-
-/** Détail d'une opération IA avec étapes pipeline */
-export interface AiOperationDetail extends AiOperationSummary {
-  steps: AiPipelineStepDetail[];
-  analysisVersions: AiAnalysisVersionSummary[];
-  errorCode: string | null;
-  errorMessage: string | null;
-  warningMessage: string | null;
-}
-
-/** Étape de pipeline */
-export interface AiPipelineStepDetail {
-  id: number;
-  stepName: string;
-  stepOrder: number;
-  provider: string | null;
-  model: string | null;
-  status: AiPipelineStepStatus;
-  isFallback: boolean;
-  fallbackReason: string | null;
-  inputTokens: number | null;
-  outputTokens: number | null;
-  costMicros: number | null;
-  durationMs: number | null;
-  promptVersion: string | null;
-  errorCode: string | null;
-  errorMessage: string | null;
-  outputPreview: string | null;
-  startedAt: string;
-  completedAt: string | null;
-}
-
-/** Version d'analyse d'un document */
-export interface AiAnalysisVersionSummary {
-  id: number;
-  versionNumber: number;
-  analysisDate: string;
-  pipelineVersion: string | null;
-  businessResult: AiBusinessResult;
-  totalCostMicros: number;
-  providerUsed: string | null;
-  usedFallback: boolean;
-  isCurrent: boolean;
-}
-
-/** Détail d'un document admin (vue complète) */
-export interface AdminAiDocumentDetail {
-  assetFileId: number;
-  fileName: string;
-  accountId: number;
-  accountName: string;
-  currentAnalysisStatus: AiPipelineStepStatus | null;
-  lastAnalyzedAt: string | null;
-  analysisVersions: AiAnalysisVersionSummary[];
-  operations: AiOperationDetail[];
-  totalCostMicros: number;
-}
-
-/** Blocage sécurité */
-export interface AiSecurityLockDetail {
-  id: number;
-  accountId: number;
-  accountName: string;
-  assetFileId: number | null;
-  fileName: string | null;
-  lockType: AiSecurityLockType;
-  triggeredAt: string;
-  triggerDetails: string | null;
-  isResolved: boolean;
-  resolvedAt: string | null;
-  resolvedByEmail: string | null;
-  resolutionNotes: string | null;
-}
-
-/** Entrée audit admin */
-export interface AiAdminAuditEntry {
-  id: number;
-  adminEmail: string;
-  actionType: AiAdminActionType;
-  targetAccountId: number | null;
-  targetFileId: number | null;
-  targetLockId: number | null;
-  beforeValue: Record<string, unknown> | null;
-  afterValue: Record<string, unknown> | null;
-  reason: string | null;
-  createdAt: string;
-}
-
-// ─── Filtres admin ────────────────────────────────────────────────────────────
-
-export interface AdminAiFilters {
-  environment?: AiEnvironment;
-  planCode?: string;
-  provider?: string;
-  model?: string;
-  businessResult?: AiBusinessResult;
-  origin?: AiOperationOrigin;
-  operationCategory?: AiOperationCategory;
-  dateFrom?: string;
-  dateTo?: string;
-  search?: string;
-  page?: number;
-  limit?: number;
-}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -312,49 +105,13 @@ export const AI_PIPELINE_STEP_LABELS: Record<AiPipelineStepStatus, string> = {
 
 // ─── Recherche intelligente ────────────────────────────────────────────────────
 
-export type AiSearchResponseMode =
+type AiSearchResponseMode =
   | 'answer'
   | 'sources_only'
   | 'upgrade_hint'
   | 'blocked_offer'
   | 'blocked_ambiguous'
   | 'no_result';
-
-export interface AiSearchLogEntry {
-  id: number;
-  publicId: string;
-  accountId: number;
-  accountName?: string;
-  queryText: string;
-  responseMode: AiSearchResponseMode;
-  answerText: string | null;
-  sourcesCount: number;
-  offerCode: string;
-  contextType: string | null;
-  contextId: number | null;
-  costMicros: number;
-  inputTokens: number;
-  outputTokens: number;
-  durationMs: number | null;
-  provider: string | null;
-  model: string | null;
-  businessResult: string;
-  blockReason: string | null;
-  trackingId: string;
-  createdAt: string;
-}
-
-export interface AiSearchLogStats {
-  totalCount: number;
-  totalCostMicros: number;
-  avgDurationMs: number;
-  answerCount: number;
-  noResultCount: number;
-  upgradeHintCount: number;
-  errorCount: number;
-  totalInputTokens: number;
-  totalOutputTokens: number;
-}
 
 export const AI_SEARCH_RESPONSE_MODE_LABELS: Record<AiSearchResponseMode, string> = {
   answer: 'Réponse IA',

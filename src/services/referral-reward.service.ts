@@ -32,23 +32,23 @@ export const WITHDRAWAL_PERIOD_DAYS = 14;
 /** Duree de l'avantage accorde, en mois. */
 export const REFERRAL_REWARD_MONTHS = 1;
 
-export type RewardOutcome =
+type RewardOutcome =
   | { granted: true; newPeriodEnd: Date; alreadyApplied?: boolean }
   | { granted: false; reason: 'NO_SUBSCRIPTION' | 'NO_STRIPE_SUBSCRIPTION' | 'STRIPE_ERROR' | 'CLAIMED_ELSEWHERE' };
 
 /** Identifiant stable de LA récompense d'un événement (Stripe + base). */
-export const rewardKeyFor = (eventId: number) => `referral-reward-${eventId}`;
+const rewardKeyFor = (eventId: number) => `referral-reward-${eventId}`;
 /** Clé de métadonnée posée sur l'abonnement Stripe du parrain. */
 export const rewardMetadataKey = (eventId: number) => `vb_referral_reward_${eventId}`;
 
 /** Durée d'une prise : au-delà, une prise non finalisée est réputée abandonnée. */
-export const REWARD_CLAIM_TTL_MINUTES = 15;
+const REWARD_CLAIM_TTL_MINUTES = 15;
 
 /**
  * Ajoute des mois a une date en gerant les fins de mois.
  * Le 31 janvier + 1 mois donne le 28/29 fevrier, jamais le 3 mars.
  */
-export function addMonths(date: Date, months: number): Date {
+function addMonths(date: Date, months: number): Date {
   const result = new Date(date.getTime());
   const targetDay = result.getUTCDate();
   result.setUTCMonth(result.getUTCMonth() + months);
@@ -62,11 +62,6 @@ export function addMonths(date: Date, months: number): Date {
 /** Date a partir de laquelle l'avantage peut etre attribue (CDC §13). */
 export function withdrawalDeadline(firstBilledAt: Date): Date {
   return new Date(firstBilledAt.getTime() + WITHDRAWAL_PERIOD_DAYS * 24 * 60 * 60 * 1000);
-}
-
-/** Le delai de retractation est-il ecoule ? */
-export function isWithdrawalPeriodOver(firstBilledAt: Date, now: Date = new Date()): boolean {
-  return now.getTime() >= withdrawalDeadline(firstBilledAt).getTime();
 }
 
 /**
@@ -192,59 +187,3 @@ export async function applyReferralRewardOnce(
   return { granted: true, newPeriodEnd, alreadyApplied };
 }
 
-/**
- * @deprecated Sans idempotence : ne pas appeler pour un événement de
- * parrainage — utiliser `applyReferralRewardOnce`. Conservé pour les usages
- * d'administration ponctuels.
- */
-export async function postponeNextBillingByOneMonth(
-  accountId: number,
-  now: Date = new Date(),
-): Promise<RewardOutcome> {
-  const [sub] = await db
-    .select({
-      stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
-      currentPeriodEndAt: accountSubscriptions.currentPeriodEndAt,
-    })
-    .from(accountSubscriptions)
-    .where(eq(accountSubscriptions.accountId, accountId))
-    .limit(1);
-
-  if (!sub) return { granted: false, reason: 'NO_SUBSCRIPTION' };
-  if (!sub.stripeSubscriptionId) return { granted: false, reason: 'NO_STRIPE_SUBSCRIPTION' };
-
-  const base =
-    sub.currentPeriodEndAt && sub.currentPeriodEndAt.getTime() > now.getTime()
-      ? sub.currentPeriodEndAt
-      : now;
-  const newPeriodEnd = addMonths(base, REFERRAL_REWARD_MONTHS);
-
-  try {
-    await getStripeServer().subscriptions.update(sub.stripeSubscriptionId, {
-      trial_end: Math.floor(newPeriodEnd.getTime() / 1000),
-      proration_behavior: 'none',
-      metadata: { referral_reward_applied_at: now.toISOString() },
-    });
-  } catch (error) {
-    console.error('[referral] echec du report d\'echeance Stripe:', error);
-    return { granted: false, reason: 'STRIPE_ERROR' };
-  }
-
-  await db
-    .update(accountSubscriptions)
-    .set({ currentPeriodEndAt: newPeriodEnd, updatedAt: now })
-    .where(eq(accountSubscriptions.accountId, accountId));
-
-  return { granted: true, newPeriodEnd };
-}
-
-/**
- * Le filleul remplit-il les conditions ? (CDC §13)
- * Nouveau compte + abonnement ANNUEL.
- */
-export function isEligibleReferredSubscription(params: {
-  billingPeriod: string | null;
-  isNewAccount: boolean;
-}): boolean {
-  return params.isNewAccount && params.billingPeriod === 'yearly';
-}

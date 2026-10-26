@@ -82,7 +82,7 @@ if (typeof window !== 'undefined') {
  * l'accueil + événement `verebona:data-mutated`, écouté par la mascotte
  * (CDC 11 §15 : sujet PROC-EXPORT recalculé sans attendre le minuteur).
  */
-export function notifyDataMutated(): void {
+function notifyDataMutated(): void {
   markAccountDataMutated();
   if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('verebona:data-mutated'));
 }

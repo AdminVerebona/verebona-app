@@ -68,7 +68,7 @@ export const SOFT_DELETE_RETENTION_DAYS = 30;
 export const PURGE_BATCH_SIZE = 100;
 export const PURGE_MAX_BATCHES = 20;
 
-export interface CleanupResult {
+interface CleanupResult {
   success: boolean;
   /** Fichiers examinés (relus sous verrou). */
   filesProcessed: number;
@@ -93,7 +93,7 @@ export interface CleanupResult {
 }
 
 /** Suppression d'un objet S3 — injectable pour les tests (S3 simulé). */
-export type DeleteObjectFn = (bucket: string, key: string) => Promise<void>;
+type DeleteObjectFn = (bucket: string, key: string) => Promise<void>;
 
 const defaultDeleteObject: DeleteObjectFn = async (bucket, key) => {
   await getS3Client('worker').send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));

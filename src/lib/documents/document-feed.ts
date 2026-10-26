@@ -30,7 +30,7 @@ export const FEED_DEFAULT_LIMIT = 50;
 /** Plafond serveur, quoi que demande le client. */
 export const FEED_MAX_LIMIT = 100;
 /** Valeurs retenues au plus par filtre (biens, Rubriques, Types, résultats). */
-export const FEED_MAX_FILTER_VALUES = 100;
+const FEED_MAX_FILTER_VALUES = 100;
 
 /** Zone « Sans rubrique », document sans bien, document sans Type. */
 export const FEED_UNFILED = '__UNFILED__';

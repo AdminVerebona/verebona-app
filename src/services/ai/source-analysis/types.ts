@@ -18,8 +18,7 @@ import type {
  * (`source-analysis/types`). La source de vérité reste `master/t1-contract.ts`.
  */
 export type {
-  T1Task, T1Confidence, T1Evidence, T1TargetType, T1Target, T1Recurrence, T1EventNature,
-  T1SemanticEvent, T1Fact, T1GroupUploadOutput, T1AnalyzeDocumentOutput, T1MasterOutput,
+  T1SemanticEvent,
   PersistedFactTarget, ProjectionOrigin, ProjectedFact,
 } from './master/t1-contract';
 

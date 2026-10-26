@@ -25,7 +25,7 @@ import { aujourdhuiParis } from './query-period';
  * Fenêtre des « échéances qui arrivent bientôt » : celle que T2 applique à
  * cette question (`upcomingAgendaRequest`, 30 jours par défaut).
  */
-export const SUGGESTION_SOON_DAYS = 30;
+const SUGGESTION_SOON_DAYS = 30;
 /** Borne des listes lues pour un compteur (seule sa positivité compte). */
 const BORNE = 50;
 
@@ -36,7 +36,7 @@ const BORNE = 50;
  * sélection. 0 si le résolveur ne reconnaît pas la question : la suggestion
  * n'est alors jamais proposée.
  */
-export async function countActionsDueToday(accountId: number, today = aujourdhuiParis()): Promise<number> {
+async function countActionsDueToday(accountId: number, today = aujourdhuiParis()): Promise<number> {
   const label = SUGGESTIONS.find((s) => s.id === 'home_today')?.label ?? '';
   const req = analyserDemandeActionnable(label, today);
   if (!req) return 0;

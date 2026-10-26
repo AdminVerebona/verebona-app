@@ -14,7 +14,7 @@ import { getDocumentType, getRubric } from '@/lib/referential/v2';
 import { resolveDocumentType } from '@/services/canonical/registry';
 import { documentAnalysisStatus } from '../core/document-status';
 
-export interface CanonicalDocumentAsset {
+interface CanonicalDocumentAsset {
   assetId: number;
   name: string;
   /** PRIMARY | SECONDARY | MENTIONED ; LEGACY_COLUMN si lu sur les colonnes historiques. */
@@ -22,7 +22,7 @@ export interface CanonicalDocumentAsset {
   origin: string;
 }
 
-export interface CanonicalDocumentFact {
+interface CanonicalDocumentFact {
   id: number;
   key: string;
   /** Clé canonique du registre, si le fait en porte une. */
@@ -65,7 +65,7 @@ export function catalogCodeOf(documentTypeCode: string | null, legacyType: strin
 }
 
 /** Biens liés à des documents par la relation N-N (repli : colonnes historiques). */
-export async function documentAssetsOf(accountId: number, fileIds: number[]): Promise<Map<number, CanonicalDocumentAsset[]>> {
+async function documentAssetsOf(accountId: number, fileIds: number[]): Promise<Map<number, CanonicalDocumentAsset[]>> {
   const out = new Map<number, CanonicalDocumentAsset[]>();
   if (fileIds.length === 0) return out;
   const liens = (await pgClient.unsafe(

@@ -33,29 +33,29 @@ import type { ExecutionGuard } from '@/services/ai/queue/execution-control';
 import { PermanentJobError, type JobBusinessResult } from '@/services/ai/queue/queue-policy';
 import { buildT3Payload, parseTargetId, registerT3JobKind } from '@/services/ai/reconciliation/t3-job-contract';
 
-export const EQUIPMENT_DOCUMENTS_KIND = 'equipment_documents';
+const EQUIPMENT_DOCUMENTS_KIND = 'equipment_documents';
 export const T3_TARGET_EQUIPMENT_DOCUMENTS = 'equipment_documents';
 /** Regroupe une rafale de modifications d'un même équipement (secondes). */
-export const EQUIPMENT_DOCUMENTS_DELAY_SECONDS = 5;
+const EQUIPMENT_DOCUMENTS_DELAY_SECONDS = 5;
 
-export type EquipmentDocumentsReason = 'created' | 'renamed' | 'moved' | 'identifiers_changed';
+type EquipmentDocumentsReason = 'created' | 'renamed' | 'moved' | 'identifiers_changed';
 const REASONS: ReadonlySet<string> = new Set(['created', 'renamed', 'moved', 'identifiers_changed']);
 
-export interface EquipmentDocumentsEvent {
+interface EquipmentDocumentsEvent {
   reason: EquipmentDocumentsReason;
   /** Clés modifiées (marque, modèle, n° de série…), pour le diagnostic. */
   keys?: string[];
   at?: string;
 }
 
-export interface EquipmentDocumentsPayload {
+interface EquipmentDocumentsPayload {
   kind: typeof EQUIPMENT_DOCUMENTS_KIND;
   equipmentId: number;
   events: EquipmentDocumentsEvent[];
   requestedAt: string | null;
 }
 
-export interface EquipmentDocumentsQueueDeps {
+interface EquipmentDocumentsQueueDeps {
   enqueue: typeof import('@/services/ai/queue/job-queue.repository').enqueue;
 }
 
@@ -108,7 +108,7 @@ function parseEvents(job: Pick<QueuedJob, 'id'>, raw: unknown): EquipmentDocumen
 }
 
 /** Exécutant de la sorte `equipment_documents` (relit l'état courant ; rejouable). */
-export async function runEquipmentDocumentsJob(job: QueuedJob, p: EquipmentDocumentsPayload, guard: ExecutionGuard): Promise<JobBusinessResult> {
+async function runEquipmentDocumentsJob(job: QueuedJob, p: EquipmentDocumentsPayload, guard: ExecutionGuard): Promise<JobBusinessResult> {
   const accountId = Number(job.accountId);
   const { pgClient } = await import('@/db');
   const [eq] = (await pgClient.unsafe(

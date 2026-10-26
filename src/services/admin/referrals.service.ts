@@ -23,9 +23,9 @@ import { stripeDashboardUrl } from '@/lib/stripe-links';
 import { REFERRAL_REWARD_MONTHS, withdrawalDeadline } from '@/services/referral-reward.service';
 import type { Page } from './subscriptions.service';
 
-export type ListSortDirection = 'asc' | 'desc';
+type ListSortDirection = 'asc' | 'desc';
 export const CODE_SORTS = ['uses', 'conversions'] as const;
-export type CodeSort = typeof CODE_SORTS[number];
+type CodeSort = typeof CODE_SORTS[number];
 
 export function parseCodeSort(value: string | null): CodeSort {
   return value === 'conversions' ? 'conversions' : 'uses';
@@ -33,7 +33,7 @@ export function parseCodeSort(value: string | null): CodeSort {
 
 // ── Synthèse (§8.1) ─────────────────────────────────────────────────────────
 
-export interface ReferralPromotionSummary {
+interface ReferralPromotionSummary {
   referral: { activeCodes: number; totalUses: number; paidConversions: number };
   promotions: { totalUses: number; paidConversions: number };
 }
@@ -75,7 +75,7 @@ export async function getReferralPromotionSummary(): Promise<ReferralPromotionSu
 
 // ── Parrainage : codes / comptes parrains (REF-002, REF-004, REF-005) ──────
 
-export interface ReferrerItem {
+interface ReferrerItem {
   linkId: number;
   code: string;
   isActive: boolean;
@@ -131,15 +131,15 @@ export async function listReferrers(sort: CodeSort, dir: ListSortDirection, page
 
 // ── Parrainage : détail (REF-006 à REF-008) ─────────────────────────────────
 
-export type ReferralEventStatus = 'in_progress' | 'validated' | 'canceled';
+type ReferralEventStatus = 'in_progress' | 'validated' | 'canceled';
 
-export const REFERRAL_STATUS_LABELS: Record<ReferralEventStatus, string> = {
+const REFERRAL_STATUS_LABELS: Record<ReferralEventStatus, string> = {
   in_progress: 'En cours',
   validated: 'Validé — avantage accordé',
   canceled: 'Avantage annulé',
 };
 
-export interface ReferralEventSource {
+interface ReferralEventSource {
   id: number;
   referredAccountId: number;
   referredAccountName: string | null;
@@ -153,7 +153,7 @@ export interface ReferralEventSource {
   metadata: Record<string, unknown> | null;
 }
 
-export interface ReferralEventView {
+interface ReferralEventView {
   id: number;
   referredAccountId: number;
   referredAccountName: string | null;
@@ -255,7 +255,7 @@ export async function getReferrerDetail(linkId: number): Promise<ReferrerDetail 
 
 // ── Promotions Stripe (PRO-002, PRO-003) ────────────────────────────────────
 
-export interface PromotionItem {
+interface PromotionItem {
   id: number;
   code: string;
   uses: number;
@@ -291,7 +291,7 @@ export async function listPromotions(sort: CodeSort, dir: ListSortDirection, pag
   return { items, page: current, pageSize, total: Number(total), totalPages };
 }
 
-export interface PromotionAccount {
+interface PromotionAccount {
   accountId: number;
   accountName: string;
   usedAt: string;

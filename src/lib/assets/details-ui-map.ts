@@ -19,7 +19,7 @@ export const DETAILS_UI_COMPONENT = 'AssetDetailsTab › AssetDetailSection (fic
 
 export type DetailsUiFamily = 'IMMOBILIER' | 'VEHICULE' | 'OBJET';
 
-export interface DetailsUiField {
+interface DetailsUiField {
   key: string;
   label: string;
   /** Condition d'affichage (texte) lorsque le champ n'est pas toujours visible. */
@@ -221,11 +221,6 @@ export const DETAILS_UI_SECTION_FIELDS: Readonly<Record<string, readonly Details
 /** Champs affichés d'une section pour une famille (« common » : selon la famille). */
 export function detailsUiFields(family: DetailsUiFamily, section: string): readonly DetailsUiField[] {
   return section === 'common' ? DETAILS_UI_COMMON_FIELDS[family] : (DETAILS_UI_SECTION_FIELDS[section] ?? []);
-}
-
-/** Famille d'affichage (même règle que la route : `toExportFamily`, OBJET à défaut). */
-export function detailsUiFamily(exportFamily: string | null | undefined): DetailsUiFamily {
-  return exportFamily === 'IMMOBILIER' || exportFamily === 'VEHICULE' ? exportFamily : 'OBJET';
 }
 
 /**

@@ -216,7 +216,7 @@ export interface ExportRow {
 
 // ── Résultat ───────────────────────────────────────────────────────────────
 
-export type DataAnswerStrategy =
+type DataAnswerStrategy =
   | 'structured.count_documents'
   | 'structured.count_assets'
   | 'structured.count_agenda'
@@ -252,7 +252,7 @@ export type DataAnswerStrategy =
   | 'retrieval.document_status'
   | 'none';
 
-export interface CascadeAttempt {
+interface CascadeAttempt {
   level: 1 | 2;
   strategy: DataAnswerStrategy;
   status: SufficiencyDecision['status'];
@@ -484,7 +484,7 @@ const LIST_DOCS = /\b(montre|affiche|liste|lister|quels? sont|donne)\b|\bquel(le
  * statut de ce document ? », « où en est l'analyse de ma facture EDF ? »,
  * « ma facture est-elle analysée ? ».
  */
-export const DOCUMENT_STATUS_QUESTION = /\b(statut|etat)\s+(de|du|d'|des)\b|\bou en est\b|\best-(il|elle) (bien )?analyse|\ba-t-(il|elle) ete analyse|\bdeja ete analyse|\b(analyse|analysee) (est-elle|est elle) terminee/;
+const DOCUMENT_STATUS_QUESTION = /\b(statut|etat)\s+(de|du|d'|des)\b|\bou en est\b|\best-(il|elle) (bien )?analyse|\ba-t-(il|elle) ete analyse|\bdeja ete analyse|\b(analyse|analysee) (est-elle|est elle) terminee/;
 
 /** Lot 34 : état des analyses de TOUS ses documents (« où en est l'analyse de mes documents ? »). */
 const GENERIC_DOCS_ANALYSIS = /\b(analyses?)\b.*\b(mes|des|nos|les) (documents|fichiers)\b|\b(mes|nos|les) (documents|fichiers)\b.*\b(analyses?|analyses?es?)\b/;
@@ -1310,7 +1310,7 @@ export function admissibleSourceTypes(intent: string | undefined): string[] | nu
   return attendus.length ? [...attendus] : null;
 }
 
-export interface ContractFallback {
+interface ContractFallback {
   answer: string;
   /** Sources présentables (toutes admissibles au contrat). */
   sources: RetrievedSource[];
@@ -1342,7 +1342,7 @@ export function fallbackUnderContract(intent: string | undefined, sources: Retri
 }
 
 /** Réponse sans modèle quand l'IA est indisponible et que rien n'est suffisant. */
-export function fallbackFromSources(sources: RetrievedSource[]): string {
+function fallbackFromSources(sources: RetrievedSource[]): string {
   if (sources.length === 0) {
     return 'Je n’ai pas trouvé d’élément suffisant pour répondre précisément. Pouvez-vous préciser votre demande ?';
   }

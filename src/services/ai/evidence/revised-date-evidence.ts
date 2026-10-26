@@ -47,7 +47,7 @@ export interface ReviseDateInput {
   evidenceId?: number | null;
 }
 
-export interface ReviseDateResult {
+interface ReviseDateResult {
   /** Preuve d'origine trouvée (ACTIVE), sinon null. */
   originalId: number | null;
   /** Preuve révisée écrite, sinon null. */

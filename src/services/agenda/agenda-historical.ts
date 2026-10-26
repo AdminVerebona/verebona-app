@@ -47,7 +47,7 @@ export function isHistoricalAgendaEvent(i: AgendaNatureSignals): boolean {
 export const HISTORICAL_FIELD_KEYS: readonly string[] = CANONICAL_FIELDS
   .filter((d) => d.agendaEffect?.nature === 'HISTORICAL').map((d) => d.key);
 /** Champs du registre dont l'effet agenda est une échéance (priment sur le type métier). */
-export const DEADLINE_FIELD_KEYS: readonly string[] = CANONICAL_FIELDS
+const DEADLINE_FIELD_KEYS: readonly string[] = CANONICAL_FIELDS
   .filter((d) => d.agendaEffect?.nature === 'DEADLINE').map((d) => d.key);
 /** Types métier du catalogue qui n'admettent que la nature HISTORICAL. */
 export const HISTORICAL_ONLY_BUSINESS_TYPES: readonly string[] = EVENT_CATALOG

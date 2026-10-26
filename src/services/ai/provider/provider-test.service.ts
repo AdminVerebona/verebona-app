@@ -53,7 +53,7 @@ export function providerTestGenerationBody(model: string): Record<string, unknow
 
 const MODELS_ENDPOINT = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-export interface ProviderTestResult {
+interface ProviderTestResult {
   ok: boolean;
   detail: TestDetail;
 }

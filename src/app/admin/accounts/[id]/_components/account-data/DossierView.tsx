@@ -38,7 +38,7 @@ export interface SectionActions {
 }
 
 /** Vrai si la section affichée ne contient pas tous ses éléments (fenêtre ou recherche). */
-export function isPartialView(s: DossierSection): boolean {
+function isPartialView(s: DossierSection): boolean {
   const w = s.window;
   if (!w) return false;
   const shown = s.table?.rows.length ?? s.relations?.length ?? 0;
@@ -46,7 +46,7 @@ export function isPartialView(s: DossierSection): boolean {
 }
 
 /** Copie avec confirmation discrète ; le tiroir reste ouvert. */
-export async function copyWithFeedback(text: string, what: string): Promise<boolean> {
+async function copyWithFeedback(text: string, what: string): Promise<boolean> {
   const ok = await copyText(text);
   if (ok) toast.success(`Copié : ${what}.`, { duration: 1500 });
   else toast.error('Copie impossible dans ce navigateur : utilisez « Télécharger ».');
@@ -81,7 +81,7 @@ const STATE_CLS: Record<string, string> = {
   not_loaded: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)]',
 };
 
-export function StateBadge({ state, note }: { state: DossierField['state']; note?: string | null }) {
+function StateBadge({ state, note }: { state: DossierField['state']; note?: string | null }) {
   if (state === 'value') return null;
   return (
     <span className={`inline-block rounded px-1.5 py-0.5 text-[11px] font-medium ${STATE_CLS[state] ?? ''}`} title={note ?? undefined} data-cell-state={state}>
@@ -110,7 +110,7 @@ function ValueText({ f }: { f: DossierField }) {
   );
 }
 
-export function FieldsList({ fields }: { fields: DossierField[] }) {
+function FieldsList({ fields }: { fields: DossierField[] }) {
   if (!fields.length) return <p className="text-xs text-muted-foreground italic">Aucun champ.</p>;
   return (
     <dl className="divide-y">
@@ -137,7 +137,7 @@ export function FieldsList({ fields }: { fields: DossierField[] }) {
   );
 }
 
-export function RelationsList({ relations, onNavigate, window: w, onPage, busy = false }: {
+function RelationsList({ relations, onNavigate, window: w, onPage, busy = false }: {
   relations: DossierRelation[]; onNavigate: (type: EntityType, id: number) => void;
   window?: DossierWindow; onPage?: (offset: number, q: string | null) => void; busy?: boolean;
 }) {
@@ -169,7 +169,7 @@ export function RelationsList({ relations, onNavigate, window: w, onPage, busy =
  * précédente / suivante / dernière, recherche sur toutes les lignes.
  * Desktop : une ligne ; mobile : boutons d'au moins 32 px qui passent à la ligne.
  */
-export function Pager({ w, shown, onPage, busy, unit = 'ligne(s)' }: { w: DossierWindow; shown: number; onPage: (offset: number, q: string | null) => void; busy: boolean; unit?: string }) {
+function Pager({ w, shown, onPage, busy, unit = 'ligne(s)' }: { w: DossierWindow; shown: number; onPage: (offset: number, q: string | null) => void; busy: boolean; unit?: string }) {
   const [q, setQ] = useState(w.query ?? '');
   const size = w.size ?? DOSSIER_PAGE_SIZE;
   const count = w.query ? (w.matched ?? 0) : (w.total ?? 0);
@@ -212,7 +212,7 @@ function Cell({ v }: { v: unknown }) {
   return <span className="block max-w-[22rem] truncate" title={t.length > 2000 ? `${t.slice(0, 2000)}… (copier la ligne pour la valeur complète)` : t}>{t}</span>;
 }
 
-export function TableView({ table, window: w, onPage, busy = false }: {
+function TableView({ table, window: w, onPage, busy = false }: {
   table: DossierTable; window?: DossierWindow; onPage?: (offset: number, q: string | null) => void; busy?: boolean;
 }) {
   if (!table.rows.length && !w?.query) return <p className="text-xs text-muted-foreground italic">Aucune ligne en base ({table.table}).</p>;

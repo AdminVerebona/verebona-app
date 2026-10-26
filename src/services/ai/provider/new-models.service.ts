@@ -26,7 +26,7 @@ import type { UsableModelsContext } from '../registry/usable-models';
 
 type Row = Record<string, unknown>;
 
-export interface AnnouncedModel {
+interface AnnouncedModel {
   model: string;
   displayName: string | null;
   status: string;
@@ -34,7 +34,7 @@ export interface AnnouncedModel {
 }
 
 /** Libellé « Gemini XXX » : nom affiché par Google, sinon identifiant. */
-export function announcedLabel(m: Pick<AnnouncedModel, 'model' | 'displayName'>): string {
+function announcedLabel(m: Pick<AnnouncedModel, 'model' | 'displayName'>): string {
   return m.displayName?.trim() || m.model;
 }
 

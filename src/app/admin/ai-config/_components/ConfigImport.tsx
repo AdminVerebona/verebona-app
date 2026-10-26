@@ -38,7 +38,7 @@ interface PromptChange { treatment: string; before: string | null; after: string
 interface Intervention { id: number; kind: 'EXCLUSION' | 'FREEZE'; model: string | null; treatment: string | null; reason: string; createdByEmail: string | null; createdAt: string }
 interface Promotion { id: number; operationCode: string; model: string; origin: string; justification: string }
 
-export interface ImportPreview {
+interface ImportPreview {
   ok: boolean;
   file: { signature: string; formatVersion: string; sourceEnvironment: string; exportedAt: string; exportedBy: string | null; version: { number: number | null; name: string | null }; revision: number; appVersion: string | null };
   target: { environment: string; active: { versionId: number; versionNumber: number | null; name: string | null; revisionNumber: number | null } | null };

@@ -27,12 +27,12 @@ export function buildLegalStorageKey(documentType: string, versionCode: string):
 }
 
 /** Le stockage objet est-il configuré sur cet environnement ? */
-export function isObjectStorageConfigured(): boolean {
+function isObjectStorageConfigured(): boolean {
   // Contrat unique et validé (APP-PERF-26).
   return isS3Configured();
 }
 
-export type MirrorResult =
+type MirrorResult =
   | { status: 'written' }
   | { status: 'skipped'; reason: 'not_configured' }
   | { status: 'failed'; reason: string };

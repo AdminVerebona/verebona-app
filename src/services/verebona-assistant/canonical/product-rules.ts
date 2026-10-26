@@ -57,7 +57,7 @@ export function productRuleSources(d: ProductRuleData): RetrievedSource[] {
 }
 
 /** Données d'offre du compte (droits effectifs, essai, usage). */
-export async function loadProductRuleData(accountId: number, now: Date = new Date()): Promise<ProductRuleData> {
+async function loadProductRuleData(accountId: number, now: Date = new Date()): Promise<ProductRuleData> {
   const [{ getEntitlements }, { getTrialState }] = await Promise.all([
     import('@/services/entitlements.service'),
     import('@/services/trial.service'),

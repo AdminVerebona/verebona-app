@@ -33,7 +33,7 @@ export function withRequestId<T extends Response>(res: T, requestId: string): T 
 }
 
 /** Réponse `VALIDATION_FAILED` (§27.11), avec le motif historique éventuel. */
-export function validationFailed(requestId: string, reason?: string, status = 400): NextResponse {
+function validationFailed(requestId: string, reason?: string, status = 400): NextResponse {
   return withRequestId(NextResponse.json(
     {
       requestId,
@@ -49,7 +49,7 @@ export function validationFailed(requestId: string, reason?: string, status = 40
   ), requestId);
 }
 
-export type Parsed<T> = { ok: true; data: T } | { ok: false; response: NextResponse };
+type Parsed<T> = { ok: true; data: T } | { ok: false; response: NextResponse };
 
 /**
  * Valide une entrée avec un schéma zod. Le motif retenu est le `message` du
@@ -141,7 +141,7 @@ export async function readRateLimited(
  * `X-Forwarded-For` — à vérifier sur l'hébergement réel). 0 : aucun proxy,
  * l'en-tête n'est pas fiable et n'est pas lu.
  */
-export function trustedProxyHops(env: NodeJS.ProcessEnv = process.env): number {
+function trustedProxyHops(env: NodeJS.ProcessEnv = process.env): number {
   const n = Number(env.TRUSTED_PROXY_HOPS);
   return Number.isInteger(n) && n >= 0 && n <= 10 ? n : 1;
 }

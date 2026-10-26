@@ -30,7 +30,7 @@ import type { SourceAnalysisResult, SourceInput } from '../types';
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Exec = typeof db | Tx;
 
-export interface PersistResultInput {
+interface PersistResultInput {
   input: SourceInput;
   leadSourceId: number;
   groupSourceIds: number[];
@@ -49,7 +49,7 @@ export interface PersistResultInput {
   masterSnapshot?: unknown;
 }
 
-export interface PersistedRun {
+interface PersistedRun {
   runId: number;
   /** true si un run identique existait déjà : aucun doublon n'a été créé. */
   deduplicated: boolean;
@@ -70,15 +70,13 @@ export interface PersistedRun {
 
 let colonnes: Promise<boolean> | null = null;
 /** Colonnes `writes_status` / `master_snapshot` présentes (migration 0545) ? Mémorisé. */
-export function runWritesReady(): Promise<boolean> {
+function runWritesReady(): Promise<boolean> {
   colonnes ??= Promise.resolve().then(() => pgClient.unsafe(`SELECT EXISTS (SELECT 1 FROM information_schema.columns
       WHERE table_schema = 'public' AND table_name = 'document_analysis_runs' AND column_name = 'master_snapshot') AS ok`) as unknown as Promise<Array<{ ok: boolean }>>)
     .then((r) => r[0]?.ok === true)
     .catch(() => false);
   return colonnes;
 }
-/** Tests : oublie l'état mémorisé des colonnes. */
-export function __resetRunWritesReady(): void { colonnes = null; }
 
 /** Écritures du pipeline en cours sur ce run ; sortie structurée conservée pour la reprise. */
 async function markWritesPending(x: Exec, runId: number, snapshot: unknown): Promise<void> {

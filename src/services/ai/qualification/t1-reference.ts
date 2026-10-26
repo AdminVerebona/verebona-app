@@ -34,9 +34,6 @@ export function readT1ReferenceFixture(fixturePath: string): string {
   return readFileSync(join(dir, fixturePath), 'utf-8');
 }
 
-/** Opération mesurée par les cas de référence T1. */
-export const T1_REFERENCE_OPERATION = 't1_analyze_document' as const;
-
 /**
  * Aplatit la sortie ANALYZE_DOCUMENT vers la forme comparée : faits sous leur
  * clé canonique (à défaut la clé lue), métadonnées de tête ajoutées seulement

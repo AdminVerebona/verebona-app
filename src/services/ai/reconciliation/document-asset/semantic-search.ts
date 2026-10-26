@@ -47,8 +47,8 @@ import { normalizeText, promptIdentifiers } from './identifiers';
 import { significantTokens } from './candidate-builder';
 import { DOCUMENT_ASSET_RELATION, type DocumentAssetCandidate } from './decision';
 
-export const SEMANTIC_PAGE_SIZE = 20;
-export const SEMANTIC_MAX_ROUNDS = 3;
+const SEMANTIC_PAGE_SIZE = 20;
+const SEMANTIC_MAX_ROUNDS = 3;
 
 /** Relation transmise au modèle (variable, pas le prompt) : commence par « DOCUMENT_ASSET ». */
 export const SEMANTIC_RELATION = `${DOCUMENT_ASSET_RELATION} — RECHERCHE SÉMANTIQUE : aucun candidat structuré `
@@ -69,7 +69,7 @@ export interface SemanticHint {
 const MOTS_FAIBLES = new Set(['facture', 'avis', 'document', 'contrat', 'date', 'total', 'montant', 'ttc', 'ht', 'tva', 'euro', 'eur', 'numero', 'client', 'reference', 'page', 'pour', 'avec', 'sur', 'par']);
 
 /** Mots significatifs (≥ 4 lettres, hors mots trop génériques) d'un texte. Pure. */
-export function semanticTokens(text: string | null | undefined): Set<string> {
+function semanticTokens(text: string | null | undefined): Set<string> {
   const out = new Set<string>();
   if (!text) return out;
   for (const t of significantTokens(normalizeText(text))) {

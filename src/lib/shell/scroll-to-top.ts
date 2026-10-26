@@ -15,7 +15,7 @@ export const MAIN_SCROLL_CONTAINER_ID = 'main-scroll-container';
 /** Seuil d'apparition du bouton (px défilés). */
 export const SCROLL_TOP_THRESHOLD = 300;
 /** Conteneurs candidats (marqueur explicite, classes de défilement usuelles). */
-export const SCROLL_CANDIDATES_SELECTOR =
+const SCROLL_CANDIDATES_SELECTOR =
   '[data-scroll-container], main, .overflow-y-auto, .overflow-auto, .overflow-y-scroll, .overflow-scroll';
 
 export interface ScrollableLike {

@@ -48,7 +48,7 @@ export interface Rejection { target: string; rawValue: string; code: RejectionCo
 
 export type EffectiveOutcome = 'FOUND' | 'CONSTITUENTS' | 'CONTRADICTION' | 'AMBIGUOUS' | 'NOT_FOUND' | 'REJECTED';
 
-export interface PageValidation {
+interface PageValidation {
   outcome: EffectiveOutcome;
   declared: T3KnowledgeQueryOutput['outcome'];
   findings: ValidatedFinding[];
@@ -67,11 +67,11 @@ const plusFaible = (xs: KnowledgeConfidence[]): KnowledgeConfidence =>
   xs.reduce<KnowledgeConfidence>((a, b) => (ORDRE_CONFIANCE[b] < ORDRE_CONFIANCE[a] ? b : a), 'certain');
 
 /** Texte d'un élément tel que transmis (libellé, valeur, texte). Pure. */
-export const elementText = (e: Pick<KnowledgeElement, 'label' | 'value' | 'text'>): string =>
+const elementText = (e: Pick<KnowledgeElement, 'label' | 'value' | 'text'>): string =>
   [e.label, e.value, e.text].filter((x): x is string => !!x).join(' \n ');
 
 /** Type attendu d'une cible (donnée ou rôle offert), null si la cible n'a pas été demandée. Pure. */
-export function targetType(q: Pick<KnowledgeQuestion, 'valueType' | 'constituents'>, target: string): string | null {
+function targetType(q: Pick<KnowledgeQuestion, 'valueType' | 'constituents'>, target: string): string | null {
   if (target === FIELD_TARGET) return q.valueType;
   const c = q.constituents.find((x) => x.role === target);
   return c ? CONSTITUENT_VALUE_TYPES[c.role as ConstituentRole] : null;

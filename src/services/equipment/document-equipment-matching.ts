@@ -71,7 +71,7 @@ export interface EquipmentProfile {
  *   · SOURCE_UNIT `document_source_units` « libellé : valeur » couvert ou
  *                 non résolu.
  */
-export type DocumentInfoProvenance = 'FACT' | 'UNRESOLVED' | 'SOURCE_UNIT';
+type DocumentInfoProvenance = 'FACT' | 'UNRESOLVED' | 'SOURCE_UNIT';
 
 export interface DocumentFactProfile {
   key: string;
@@ -145,7 +145,7 @@ const isDesignationFact = (f: DocumentFactProfile) => !isSerialFact(f) && CLE_DE
 const isPrimary = (f: DocumentFactProfile) => (f.provenance ?? 'FACT') === 'FACT';
 
 /** Identifiants lus sur le document (valeurs brutes, dédoublonnées ; structurés d'abord). */
-export function documentIdentifiers(d: DocumentProfile): { serials: string[]; models: string[]; brands: string[]; designations: string[] } {
+function documentIdentifiers(d: DocumentProfile): { serials: string[]; models: string[]; brands: string[]; designations: string[] } {
   const ordre = [...d.facts.filter(isPrimary), ...d.facts.filter((f) => !isPrimary(f))];
   const uniq = (xs: string[]) => {
     const vus = new Set<string>();
@@ -357,7 +357,7 @@ function segmentsIdentifiants(libelle: string, valeurs: string[], max = 400): st
 }
 
 /** Description discriminante d'un équipement (sans aucune donnée d'achat du bien), identifiants d'abord. */
-export function equipmentDescriptor(e: EquipmentProfile): string[] {
+function equipmentDescriptor(e: EquipmentProfile): string[] {
   const id = (label: string, v: string | null) => { const x = entier(v); return x ? `${label}:${x}` : null; };
   return [
     `"${net(e.name, 120)}"`,
@@ -454,7 +454,7 @@ export function formatDocumentCandidate(d: DocumentProfile): string {
  * Pertinence d'un équipement « à ne pas confondre » avec `e` (pure) :
  * modèle, nom, marque, type, catégorie, pièce communs.
  */
-export function confusionScore(e: EquipmentProfile, o: EquipmentProfile): number {
+function confusionScore(e: EquipmentProfile, o: EquipmentProfile): number {
   let s = 0;
   if (compactCode(e.model).length >= 3 && compactCode(e.model) === compactCode(o.model)) s += 4;
   const ne = words(e.name), no = words(o.name);

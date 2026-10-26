@@ -55,12 +55,6 @@ export interface ExecutionScreenFilters {
   errorsOnly: boolean;
 }
 
-export const EMPTY_EXECUTION_FILTERS: ExecutionScreenFilters = {
-  treatment: '', accountId: '', userId: '', model: '', rank: '', configVersionId: '',
-  operationCode: '', jobId: '', from: '', to: '', minDurationMs: '',
-  status: '', objectType: '', objectId: '', trigger: '', t6Mode: '', errorsOnly: false,
-};
-
 type Params = { get(name: string): string | null };
 
 export function readExecutionFilters(p: Params): ExecutionScreenFilters {

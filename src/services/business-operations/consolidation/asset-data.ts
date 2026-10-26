@@ -85,7 +85,7 @@ const NON_OWNERSHIP_VEHICLE = new Set(['LLD', 'LOA', 'PRET_GRATUIT']);
 /** Ligne `assets` lue pour les Opérations (row_to_json : `status_changed_at` présent après 0322). */
 export type AssetDataRow = AssetRowJson & { status?: string | null; status_changed_at?: string | null; deleted_at?: string | null };
 
-export interface AssetDataFact {
+interface AssetDataFact {
   nature: AssetDataNature;
   /** Date de l'acquisition / de la cession (AAAA-MM-JJ), null si inconnue. */
   date: string | null;
@@ -109,7 +109,7 @@ export interface AssetDataFact {
   enrichmentOnly?: true;
 }
 
-export type AssetDataFacts = Record<AssetDataNature, AssetDataFact | null>;
+type AssetDataFacts = Record<AssetDataNature, AssetDataFact | null>;
 
 /** Jour de Paris d'un horodatage (la date de passage au statut est un instant). */
 export function parisDay(iso: string | null | undefined): string | null {

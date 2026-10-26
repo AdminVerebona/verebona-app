@@ -102,7 +102,7 @@ function expectedModeIssue(d: CatalogDeps): string | null {
 
 type Manifest = typeof PRICING_MANIFEST;
 
-export interface DiffEntry {
+interface DiffEntry {
   lookupKey: string;
   planCode: PlanCode;
   billingPeriod: 'monthly' | 'yearly';
@@ -137,7 +137,7 @@ export const AUTO_PUBLISH_DELAY_MS = 20 * 60_000;
 /** Amorçage en échec alors que rien n'est vendu : reprise automatique au plus toutes les 15 min. */
 export const BOOTSTRAP_RETRY_MS = 15 * 60_000;
 
-export interface AutoPublishDecision {
+interface AutoPublishDecision {
   publish: boolean;
   reason: string;
   /** Amorçage seulement : `resume` reprend une exécution en échec / interrompue. */
@@ -254,7 +254,7 @@ export interface PublishOptions {
   recovery?: boolean;
 }
 
-export type PublishResult =
+type PublishResult =
   | { status: 'noop'; reason: string; version: string | null }
   | { status: 'simulated'; plan: DiffEntry[]; manifestRevision: string }
   | { status: 'refused'; reason: string }

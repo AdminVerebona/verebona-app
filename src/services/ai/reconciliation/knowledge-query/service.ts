@@ -147,7 +147,7 @@ async function defaultDeps(): Promise<Required<Omit<KnowledgeQueryDeps, 'bounds'
   };
 }
 
-export interface InterpretInput {
+interface InterpretInput {
   accountId: number;
   fileId: number;
   rule: Pick<ProcessingRule, 'code' | 'question'>;
@@ -268,7 +268,7 @@ export const interpretationPending = (r: SemanticResolution | null | undefined):
 export const semanticallyAbsent = (r: SemanticResolution | null | undefined): boolean =>
   !r || r.status === 'NOT_NEEDED' || (r.status === 'ANSWERED' && r.outcome === 'NOT_FOUND');
 
-export interface KnowledgeQueryState {
+interface KnowledgeQueryState {
   hasExtraction: boolean;
   /** Connaissance non structurée présente (avant bornes). */
   unstructured: number;

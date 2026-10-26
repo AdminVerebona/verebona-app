@@ -18,9 +18,9 @@
  */
 import type { AiAttachment } from '../../gateway/types';
 
-export const DEFAULT_CHUNK_PAGES = 20;
-export const DEFAULT_MAX_CHUNKS = 50;
-export const DEFAULT_SATURATION_OUTPUT_TOKENS = 30_000;
+const DEFAULT_CHUNK_PAGES = 20;
+const DEFAULT_MAX_CHUNKS = 50;
+const DEFAULT_SATURATION_OUTPUT_TOKENS = 30_000;
 const FETCH_TIMEOUT_MS = 60_000;
 
 const entier = (v: string | undefined, def: number, min: number, max: number) => {

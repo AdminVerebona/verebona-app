@@ -26,9 +26,9 @@ import { balancedSlice } from '../gateway/output-resolution/json-repair';
 import { resolveOutput } from '../gateway/output-resolution/resolve-output';
 import { describe, resolveUnion, type FieldDesc } from '../gateway/output-resolution/schema-introspect';
 
-export type CoherenceSeverity = 'info' | 'warning';
+type CoherenceSeverity = 'info' | 'warning';
 
-export interface CoherenceFinding {
+interface CoherenceFinding {
   code:
     | 'SCHEMA_MISSING' | 'CONTRACT_UNVERSIONED' | 'PROVIDER_SCHEMA_OMITTED' | 'PROVIDER_SCHEMA_REDUCED'
     | 'PROMPT_EXAMPLE_INVALID' | 'PROMPT_EXAMPLE_NORMALIZED' | 'PROMPT_FIELD_NOT_IN_SCHEMA' | 'PROMPT_NO_EXAMPLE';
@@ -37,7 +37,7 @@ export interface CoherenceFinding {
   message: string;
 }
 
-export interface OperationCoherence {
+interface OperationCoherence {
   operationCode: string;
   task: string;
   schema: string | null;
@@ -77,7 +77,7 @@ export function jsonExamples(section: string): unknown[] {
  * valeurs permises, ce n'est pas une valeur. Remplacée par sa première
  * alternative avant contrôle.
  */
-export function expandTemplateValues(v: unknown): unknown {
+function expandTemplateValues(v: unknown): unknown {
   if (typeof v === 'string' && /^[\w-]+(\|[\w-]+)+$/.test(v)) return v.split('|')[0];
   if (Array.isArray(v)) return v.map(expandTemplateValues);
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, expandTemplateValues(x)]));
@@ -85,7 +85,7 @@ export function expandTemplateValues(v: unknown): unknown {
 }
 
 /** Clés d'un exemple absentes du schéma (elles seraient ignorées au mapping). */
-export function unknownKeys(value: unknown, desc: FieldDesc, path = '$', out: string[] = []): string[] {
+function unknownKeys(value: unknown, desc: FieldDesc, path = '$', out: string[] = []): string[] {
   const d = resolveUnion(desc, value);
   if (d.node.kind === 'object' && value && typeof value === 'object' && !Array.isArray(value)) {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {

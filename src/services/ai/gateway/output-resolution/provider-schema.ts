@@ -21,14 +21,14 @@
 import { z, type ZodType } from 'zod';
 import { splitPipe } from './field-validation';
 
-export const MAX_PROVIDER_SCHEMA_NODES = 900;
+const MAX_PROVIDER_SCHEMA_NODES = 900;
 
 type Json = Record<string, unknown>;
 
 const KEEP = new Set(['type', 'properties', 'required', 'items', 'enum', 'anyOf', 'description', 'minimum', 'maximum', 'minItems', 'maxItems', 'format', 'propertyOrdering']);
 const SAFE_BOUND = 9_007_199_254_740_991;
 
-export interface ProviderSchema {
+interface ProviderSchema {
   schema: Json | null;
   /** Mots-clés retirés (contraintes vérifiées par Verebona seulement). */
   dropped: string[];

@@ -54,7 +54,6 @@ function SupportHint() {
  * Le jeton n'est retiré qu'après confirmation ou refus définitif.
  */
 function DuoJoinAfterVerification() {
-  const router = useRouter();
   const [state, setState] = useState<'idle' | 'joining' | 'done' | 'error'>('idle');
   const [message, setMessage] = useState('');
   const started = useRef(false);
@@ -80,7 +79,6 @@ function DuoJoinAfterVerification() {
     if (started.current || !peekPendingDuoJoin()) return;
     started.current = true;
     void join();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- tentative unique à l'affichage
   }, []);
 
   return (

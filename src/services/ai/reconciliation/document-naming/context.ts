@@ -78,19 +78,19 @@ export const NAMING_CONTEXT_VERSION_V1 = 'naming-v1';
  */
 export const NAMING_TEXT_WINDOW = 400_000;
 /** Lot 76B (C6) : indices textuels retenus par document. */
-export const TEXT_HINT_MAX_PER_DOC = 20;
+const TEXT_HINT_MAX_PER_DOC = 20;
 /** Lot 76B (C6) : un indice textuel partagé par plus de documents est générique — ignoré. */
-export const TEXT_HINT_MAX_DOCS = 50;
+const TEXT_HINT_MAX_DOCS = 50;
 /** Lot 76B (C6) : un indice textuel reliant plus d'émetteurs distincts est générique — ignoré. */
-export const TEXT_HINT_MAX_ISSUERS = 2;
+const TEXT_HINT_MAX_ISSUERS = 2;
 /** Limites du contexte des versions antérieures (preuve du recalage, C5). */
-export const LEGACY_CONTEXT_LIMITS = {
+const LEGACY_CONTEXT_LIMITS = {
   'naming-v1': { facts: 10, factValue: 160, textChars: 300, operations: 0 },
   'naming-v2': { facts: Infinity, factValue: 240, textChars: 100_000, operations: Infinity },
 } as const;
-export const NAMING_RELATION = 'DOCUMENT_NAMING — harmoniser les intitulés des documents d’une même famille (sortie : document_renames)';
+const NAMING_RELATION = 'DOCUMENT_NAMING — harmoniser les intitulés des documents d’une même famille (sortie : document_renames)';
 /** Une clé de rapprochement reliant plus d'émetteurs distincts est ignorée (regroupement excessif). */
-export const LINK_MAX_ISSUERS = 3;
+const LINK_MAX_ISSUERS = 3;
 
 /** Document du compte, tel que lu pour le nommage. */
 export interface NamingDoc {
@@ -154,7 +154,7 @@ export function supplierKey(s: string | null | undefined): string | null {
 }
 
 /** SIREN (9 chiffres) d'un SIRET / SIREN, ou null. */
-export function sirenOf(s: string | null | undefined): string | null {
+function sirenOf(s: string | null | undefined): string | null {
   const d = String(s ?? '').replace(/\D/g, '');
   return d.length === 9 || d.length === 14 ? d.slice(0, 9) : null;
 }
@@ -254,7 +254,7 @@ export function v2GroupFingerprint(docs: readonly NamingDoc[]): string {
 }
 
 /** Empreinte v1 (lot 61) : sert seulement à recaler sans appel un lot inchangé depuis son dernier examen. */
-export function legacyDocumentFingerprint(d: NamingDoc): string {
+function legacyDocumentFingerprint(d: NamingDoc): string {
   return sha([d.typeCode, supplierKey(d.supplier), d.documentDate, d.assetId, d.extractionId, d.extractedAt, d.amountCents]);
 }
 
@@ -300,7 +300,7 @@ export function groupSnapshot(docs: readonly NamingDoc[]): Record<string, string
   return Object.fromEntries(docs.map((d) => [String(d.id), docSnapshotHash(d)]));
 }
 
-export interface NamingGroup { key: string; docs: NamingDoc[] }
+interface NamingGroup { key: string; docs: NamingDoc[] }
 export interface MemberGroup { key: string; ids: number[]; keys: string[] }
 
 /**
@@ -393,7 +393,7 @@ export function orderDocs(l: readonly NamingDoc[]): NamingDoc[] {
   });
 }
 
-export interface NamingChunk { index: number; count: number; targets: NamingDoc[]; references: NamingDoc[] }
+interface NamingChunk { index: number; count: number; targets: NamingDoc[]; references: NamingDoc[] }
 
 /**
  * Documents À EXAMINER d'un lot (pure). Premier examen : tout le lot.
@@ -444,7 +444,7 @@ export interface RawFact {
   canonical?: boolean;
 }
 
-export interface SelectedFact {
+interface SelectedFact {
   key: string; value: string; period?: string | null; source: string; factId: number;
   /** Lot 76B (C6) : valeur longue — longueur d'origine ; seuls le début et les éléments discriminants sont transmis. */
   truncated?: { length: number };
@@ -663,7 +663,7 @@ export function namingVariables(p: {
 
 // ── Recalage prouvé des versions antérieures (lot 76B, C5) ──────────────────
 
-export interface UpgradeEvidence {
+interface UpgradeEvidence {
   /** Absence d'information nouvellement exploitable DÉMONTRÉE : recalage technique sans appel IA. */
   safe: boolean;
   /** Motifs du réexamen attendu (vide si `safe`). */

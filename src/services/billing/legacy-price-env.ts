@@ -25,7 +25,7 @@
  */
 import type { BillingPeriod, PlanCode } from '@/lib/billing/plan-catalog';
 
-export interface LegacyPriceVar {
+interface LegacyPriceVar {
   name: string;
   planCode: PlanCode;
   /** `null` : prix annuel du modèle à périodicité unique (avant V2). */
@@ -45,7 +45,7 @@ export const LEGACY_PRICE_VARS: readonly LegacyPriceVar[] = [
   { name: 'STRIPE_PRICE_PREMIUM_DUO', planCode: 'premium_duo', billingPeriod: null, generation: 'legacy' },
 ];
 
-export interface LegacyPriceRef extends LegacyPriceVar { priceId: string }
+interface LegacyPriceRef extends LegacyPriceVar { priceId: string }
 
 /** Identifiants encore présents dans l'environnement (lecture seule). */
 export function legacyPriceRefs(env: NodeJS.ProcessEnv = process.env): LegacyPriceRef[] {

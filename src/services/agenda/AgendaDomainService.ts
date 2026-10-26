@@ -3,7 +3,7 @@
  */
 import { agendaDatePassed, isPastHistoricalUnconfirmed, type AgendaNatureSignals } from './agenda-historical';
 
-export type ManualStatus = 'realise' | 'annule' | null;
+type ManualStatus = 'realise' | 'annule' | null;
 /**
  * Statut effectif (lu, jamais écrit) — D17 (lot 53) : cinq états distincts
  *   a_venir      prévu / à venir
@@ -14,15 +14,8 @@ export type ManualStatus = 'realise' | 'annule' | null;
  */
 export type EffectiveStatus = 'a_venir' | 'en_retard' | 'a_confirmer' | 'realise' | 'annule';
 export type AttentionFlag = 'sans_bien' | 'en_retard' | 'date_incoherente' | 'donnee_distincte_a_qualifier';
-export type OriginType =
-  | 'manual'
-  | 'asset_field'
-  | 'qualified_document'
-  | 'deduced_rule'
-  | 'legacy_event_migration'
-  | 'legacy_deadline_migration';
 
-export interface AgendaItemRaw extends AgendaNatureSignals {
+interface AgendaItemRaw extends AgendaNatureSignals {
   startDate: string | null;
   startTime: string | null;
   endDate: string | null;
@@ -35,26 +28,26 @@ export interface ResolvedLink {
   resolvedAssetId: number | null;
 }
 
-export interface AgendaItemWithResolvedLinks {
+interface AgendaItemWithResolvedLinks {
   directAssetIds: number[];
   fileLinks: ResolvedLink[];
   roomLinks: ResolvedLink[];
   equipmentLinks: ResolvedLink[];
 }
 
-export interface DateTimeInput {
+interface DateTimeInput {
   startDate?: string | null;
   startTime?: string | null;
   endDate?: string | null;
   endTime?: string | null;
 }
 
-export interface ValidationError {
+interface ValidationError {
   field: string;
   message: string;
 }
 
-export interface AgendaDataConflictRef {
+interface AgendaDataConflictRef {
   id: number;
   requiresQualification: boolean;
   currentDecision: string;
@@ -84,7 +77,7 @@ export function computeEffectiveStatus(item: AgendaItemRaw, now: Date = new Date
  * Returns true if the item has at least one direct asset link
  * or at least one indirect asset link via file/room/equipment
  */
-export function hasDirectOrIndirectAssetContext(item: AgendaItemWithResolvedLinks): boolean {
+function hasDirectOrIndirectAssetContext(item: AgendaItemWithResolvedLinks): boolean {
   if (item.directAssetIds.length > 0) return true;
   for (const link of item.fileLinks) {
     if (link.resolvedAssetId !== null) return true;

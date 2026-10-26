@@ -4,7 +4,6 @@ import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
-import { FileLogger } from '@/lib/file-logger';
 import { ApiErrors } from '@/lib/api-errors';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
@@ -17,8 +16,6 @@ export async function GET(
 ) {
   const params = await context.params;
   const requestId = randomUUID();
-  const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || null;
-  const userAgent = request.headers.get('user-agent') || null;
 
   try {
     // Authentication avec JWT - get full session with accountId
@@ -32,14 +29,6 @@ export async function GET(
     // Validate file ID
     const fileId = parseInt(params.id);
     if (!fileId || isNaN(fileId)) {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId: session.userId,
-        action: 'QUOTA_CHECK',
-        error: 'INVALID_FILE_ID',
-      });
       return ApiErrors.invalidInput('Valid file ID is required');
     }
 
@@ -51,15 +40,6 @@ export async function GET(
       .limit(1);
 
     if (!file) {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId: session.userId,
-        fileId,
-        action: 'QUOTA_CHECK',
-        error: 'FILE_NOT_FOUND',
-      });
       return ApiErrors.notFound('File');
     }
 
@@ -84,14 +64,6 @@ export async function GET(
     // « Access denied » ne correspondaient à aucun code levé : un refus
     // normal devenait un 500.
     if (isSessionError(error)) return sessionErrorResponse(error, requestId);
-    FileLogger.error({
-      requestId,
-      ip,
-      userAgent,
-      userId: 0,
-      action: 'QUOTA_CHECK',
-      error: (error as Error)?.message ?? String(error),
-    });
     // Erreur inattendue : 500 journalisé avec `requestId`, sans détail technique au client.
     return sessionErrorToResponse(error, requestId, 'GET /api/files/[id]');
   }
@@ -103,8 +75,6 @@ export async function DELETE(
 ) {
   const params = await context.params;
   const requestId = randomUUID();
-  const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || null;
-  const userAgent = request.headers.get('user-agent') || null;
 
   try {
     // Authentication avec JWT - récupérer la session complète
@@ -125,14 +95,6 @@ export async function DELETE(
     // Validate file ID
     const fileId = parseInt(params.id);
     if (!fileId || isNaN(fileId)) {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        action: 'DELETE',
-        error: 'INVALID_FILE_ID',
-      });
       return ApiErrors.invalidInput('Valid file ID is required');
     }
 
@@ -144,15 +106,6 @@ export async function DELETE(
       .limit(1);
 
     if (!file) {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        fileId,
-        action: 'DELETE',
-        error: 'FILE_NOT_FOUND',
-      });
       return ApiErrors.notFound('File');
     }
 
@@ -164,17 +117,6 @@ export async function DELETE(
 
     // Check if already deleted
     if (file.deletedAt) {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        assetId: file.assetId ?? undefined,
-        fileId,
-        filename: file.filename ?? undefined,
-        action: 'DELETE',
-        error: 'FILE_ALREADY_DELETED',
-      });
       return ApiErrors.resourceDeleted('File');
     }
 
@@ -190,22 +132,6 @@ export async function DELETE(
       .returning();
 
     // Log success
-    FileLogger.success({
-      requestId,
-      ip,
-      userAgent,
-      userId,
-      assetId: file.assetId ?? undefined,
-      fileId,
-      filename: file.filename ?? undefined,
-      action: 'DELETE',
-      details: {
-        size: file.size,
-        s3Key: file.s3Key,
-        deletedByAdmin: isAdmin,
-        fileOwner: file.userId,
-      },
-    });
 
     // CDC Assistant §25.7 : événement métier (caches de l'assistant, §31.4).
     if (file.accountId) await emitBusinessEvent({ type: 'DOCUMENT_DELETED', accountId: file.accountId, entityId: fileId });
@@ -237,14 +163,6 @@ export async function DELETE(
     // « Access denied » ne correspondaient à aucun code levé : un refus
     // normal devenait un 500.
     if (isSessionError(error)) return sessionErrorResponse(error, requestId);
-    FileLogger.error({
-      requestId,
-      ip,
-      userAgent,
-      userId: 0,
-      action: 'DELETE',
-      error: (error as Error)?.message ?? String(error),
-    });
     // Erreur inattendue : 500 journalisé avec `requestId`, sans détail technique au client.
     return sessionErrorToResponse(error, requestId, 'DELETE /api/files/[id]');
   }

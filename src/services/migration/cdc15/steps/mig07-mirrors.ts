@@ -57,7 +57,7 @@ export function sameColumnValue(a: unknown, b: unknown): boolean {
   return sa === sb;
 }
 
-export interface MirrorPlan extends AssetPlan<ReportEntry> {
+interface MirrorPlan extends AssetPlan<ReportEntry> {
   cards: ReviewCardRequest[];
   /** Colonnes écrites : valeur avant / après (copie restaurable). */
   backups: Array<{ column: string; old: unknown; next: unknown }>;

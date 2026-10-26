@@ -21,8 +21,8 @@ export function nextPoseMotion(prev: PoseMotionState | null, pose: string): Pose
   return { pose, flip: !prev.flip };
 }
 
-export const POSE_EASING = 'cubic-bezier(.16,1,.3,1)';
-export const POSE_DURATION_S = 0.55;
+const POSE_EASING = 'cubic-bezier(.16,1,.3,1)';
+const POSE_DURATION_S = 0.55;
 
 /** Valeur CSS `animation` à appliquer (ou `none` en mouvement réduit). */
 export function poseAnimation(state: PoseMotionState, reducedMotion: boolean): string {
@@ -56,7 +56,7 @@ export function mascotSrc(pose: string): string {
  * attendant les fichiers recolorés à la source. Un filtre de l'appelant est
  * ajouté APRÈS, jamais à la place : aucune occurrence n'échappe à la teinte.
  */
-export const MASCOT_FILTER_VAR = 'var(--vb-mascotte-filtre)';
+const MASCOT_FILTER_VAR = 'var(--vb-mascotte-filtre)';
 
 export function mascotFilter(extra?: string | number | null): string {
   const e = extra == null ? '' : String(extra).trim();

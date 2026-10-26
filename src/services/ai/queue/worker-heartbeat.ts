@@ -55,12 +55,7 @@ export function noteScheduleEvaluation(outcomes: ReadonlyArray<unknown>, at: num
   activity().lastSchedule = { at, outcomes: [...outcomes] };
 }
 
-/** Lot 54A : dernière évaluation de ce processus (tests, diagnostic). */
-export function lastScheduleEvaluation(): { at: number; outcomes: unknown[] } | null {
-  return activity().lastSchedule ?? null;
-}
-
-export interface HeartbeatInput {
+interface HeartbeatInput {
   workerId: string;
   handlers: Treatment[];
   concurrency: number;

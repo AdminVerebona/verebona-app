@@ -112,4 +112,3 @@ export function registryVersion(registry: readonly CoherenceCheck[] = COHERENCE_
   return `r1-${createHash('sha256').update(sig).digest('hex').slice(0, 12)}`;
 }
 
-export type { CoherenceCheck } from './types';

@@ -72,7 +72,7 @@ export interface MasterPromptIssue {
   blocking: boolean;
 }
 
-export interface MasterPromptCheckResult {
+interface MasterPromptCheckResult {
   ok: boolean;
   blocking: MasterPromptIssue[];
   warnings: MasterPromptIssue[];

@@ -78,9 +78,9 @@ import type { ExecutionGuard } from '../../queue/execution-control';
 import { isExecutionCancelled } from '../../queue/execution-control';
 import type { MatchingIndexCache } from '../document-asset/matching-index';
 
-export const OPEN_ACTIONS_PAGE_SIZE = 200;
+const OPEN_ACTIONS_PAGE_SIZE = 200;
 /** Entrées détaillées conservées dans le rapport (les compteurs couvrent tout). */
-export const OPEN_ACTIONS_REPORT_MAX = 500;
+const OPEN_ACTIONS_REPORT_MAX = 500;
 
 export const OPEN_ACTION_EFFECTS = ['CLOSED', 'UPDATED', 'STILL_OPEN', 'SKIPPED_NOT_T3', 'SUPERSEDED', 'ERROR'] as const;
 export type OpenActionEffect = (typeof OPEN_ACTION_EFFECTS)[number];
@@ -142,7 +142,7 @@ export interface OpenActionEntry {
  * Lot 57B — motifs exploitables (BO, journal). Voir
  * `docs/exploitation/t3-a-traiter-diagnostic.md`.
  */
-export const REASON_CODES = [
+const REASON_CODES = [
   'RESOLVED', 'NO_CANDIDATE', 'NO_T1_KNOWLEDGE', 'FIELD_NOT_IN_T1', 'INSUFFICIENT_EVIDENCE', 'UNSUPPORTED_CHOICE', 'AMBIGUOUS',
   'AI_UNAVAILABLE', 'JOB_PENDING', 'DEPENDENCY_STALLED', 'RESOLVER_FAILED', 'PERSISTENCE_FAILED', 'USER_DECISION_PROTECTED',
   'NOT_T3', 'TARGET_GONE', 'ALREADY_LINKED', 'CLOSED_DURING_RUN', 'SUPERSEDED', 'ASSET_NOT_ELIGIBLE', 'AWAITING_USER',
@@ -159,7 +159,7 @@ export type ReasonCode = (typeof REASON_CODES)[number];
 export const STEPS = ['SELECT', 'DELEGATION', 'KNOWLEDGE', 'RESOLVER', 'DECISION', 'WRITE', 'VERIFY', 'CLOSE'] as const;
 
 /** Job vivant au-delà duquel une délégation est réputée BLOQUÉE (attente anormale d'un PENDING prêt). */
-export const DELEGATION_STALL_MINUTES = 30;
+const DELEGATION_STALL_MINUTES = 30;
 
 /**
  * Entrée du résumé du job (bornée à 500) : l'essentiel du parcours ; le détail
@@ -278,7 +278,7 @@ export function effectOfClosedDuringRun(resolver: string, reason: string | null)
   return 'SUPERSEDED';
 }
 
-export interface OpenActionsDeps {
+interface OpenActionsDeps {
   resolveDocumentAsset: typeof import('../document-asset/resolve-document-asset.service').resolveDocumentAsset;
   reconcileEntity: (p: { accountId: number; target: { type: 'EQUIPMENT' | 'ROOM'; id: number } }) => Promise<{ skipped: boolean }>;
   closeObsoleteAssetConflicts: (accountId: number) => Promise<number>;
@@ -290,10 +290,6 @@ export interface OpenActionsDeps {
   journal?: (accountId: number, ctx: { accountRunId?: number | null; queueJobId?: number | null }, lot: OpenActionEntry[]) => Promise<JournalResult>;
   /** Lot 54A : relance de la consolidation Opérations du compte (cartes T3_OPERATIONS). */
   consolidateOperations?: (accountId: number, p: { fileIds: number[]; operationIds: number[]; beforeWrite?: (what: string) => Promise<void> }) => Promise<{ changes: number; aiCalls: number }>;
-  /** Lot 49B, SUPPRIMÉS au lot 54A (plus aucun quota T3) : ignorés s'ils sont fournis. */
-  callsLastDay?: (accountId: number) => Promise<number>;
-  maxPerPass?: number;
-  maxPerDay?: number;
 }
 
 /** Consolidation Opérations du compte, depuis les données ACTUELLES (lot 54A, écart 3). */
@@ -351,7 +347,7 @@ export function classifyEvaluation(e: OpenActionEntry): { evaluationMode: Evalua
   return { evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false };
 }
 
-export interface JournalResult { n: number; status: 'OK' | 'PARTIAL' | 'FAILED'; error: string | null }
+interface JournalResult { n: number; status: 'OK' | 'PARTIAL' | 'FAILED'; error: string | null }
 
 const COLS_0371 = ['account_id', 'account_run_id', 'queue_job_id', 'action_id', 'rule_code', 'target_type', 'target_id', 'resolver',
   'previous_resolution', 'candidate_count', 'deterministic_attempted', 'ai_called', 'resolution_attempted', 'evaluation_mode',
@@ -447,7 +443,7 @@ async function closeAction(actionId: number, reason: 'OBSOLETE' | 'TARGET_DELETE
 }
 
 /** Job spécialisé délégué (vivant) d'une cible, et son état. */
-export interface DelegatedJob {
+interface DelegatedJob {
   id: number;
   status: string;
   lastActivityAt: string | null;
@@ -461,7 +457,7 @@ const STALLED_SQL = `((q.status = 'RUNNING' AND ((q.lease_expires_at IS NOT NULL
                    OR (q.status = 'PENDING' AND q.available_at < now() - interval '${DELEGATION_STALL_MINUTES} minutes'))`;
 
 /** Lot 57B (défaut C) : job T3 vivant d'une cible (document, opérations du compte), bloqué ou non. */
-export async function delegatedJob(targetType: 'document' | 'business_operations', targetId: number): Promise<DelegatedJob | null> {
+async function delegatedJob(targetType: 'document' | 'business_operations', targetId: number): Promise<DelegatedJob | null> {
   const rows = (await (await sql()).unsafe(
     `SELECT q.id, q.status, coalesce(q.heartbeat_at, q.started_at, q.available_at, q.created_at) AS last, ${STALLED_SQL} AS stalled
        FROM ai_job_queue q
@@ -488,7 +484,7 @@ export async function delegatedJob(targetType: 'document' | 'business_operations
  * que s'il est TOUJOURS bloqué ; le passage traite alors la carte lui-même.
  * Faux : le job a repris vie entre-temps — aucune double évaluation.
  */
-export async function takeOverStalledJob(jobId: number): Promise<boolean> {
+async function takeOverStalledJob(jobId: number): Promise<boolean> {
   const rows = (await (await sql()).unsafe(
     `UPDATE ai_job_queue q SET status = 'CANCELLED', finished_at = now(), execution_id = NULL, lease_expires_at = NULL,
             last_error = 'job bloqué repris par le passage T3 global du compte (lot 57B)'
@@ -686,7 +682,7 @@ async function linkVerified(actionId: number, fileId: number): Promise<boolean> 
 }
 
 /** Origine des candidats (source → nombre de biens) depuis le monitoring DOCUMENT_ASSET. Pure. */
-export function candidateOriginsOf(ev: { candidateSources?: Record<string, string[]>; semanticSearch?: { origins: Record<string, number>; presented: number } | null } | undefined): Record<string, number> | null {
+function candidateOriginsOf(ev: { candidateSources?: Record<string, string[]>; semanticSearch?: { origins: Record<string, number>; presented: number } | null } | undefined): Record<string, number> | null {
   if (!ev) return null;
   const out: Record<string, number> = {};
   for (const srcs of Object.values(ev.candidateSources ?? {})) for (const s of srcs) out[s] = (out[s] ?? 0) + 1;

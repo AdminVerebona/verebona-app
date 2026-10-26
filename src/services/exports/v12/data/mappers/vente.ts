@@ -62,7 +62,7 @@ export function highlightSuggestions(s: ExportSource, today: string): HighlightS
 }
 
 /** Points forts factuels déduits (repli sans choix de l'utilisateur, 4 au plus, maquette). */
-export function saleHighlights(m: MapInput): NonNullable<VenteData['highlights']> {
+function saleHighlights(m: MapInput): NonNullable<VenteData['highlights']> {
   return highlightSuggestions(m.source, m.today)
     .filter((h) => h.key !== 'parking' && h.key !== 'condition') // repli historique : faits datés seulement
     .slice(0, MAX_SALE_HIGHLIGHTS)
@@ -70,7 +70,7 @@ export function saleHighlights(m: MapInput): NonNullable<VenteData['highlights']
 }
 
 /** Points forts choisis par l'utilisateur (fiche bien), dans son ordre ; `null` si aucun. */
-export function chosenHighlights(m: MapInput): NonNullable<VenteData['highlights']> | null {
+function chosenHighlights(m: MapInput): NonNullable<VenteData['highlights']> | null {
   const rows = infoList(m.source.additionalInfo.commercial, 'highlights')
     .map((h, i) => ({ id: str(h.id) ?? `h${i + 1}`, title: str(h.title), text: str(h.text) }))
     .filter((h): h is { id: string; title: string; text: string | null } => !!h.title)
@@ -156,7 +156,7 @@ export interface SaleAds {
  * particulier : adresse, immatriculation, VIN, numéro de série, lieu de
  * conservation, provenance, date d'achat d'un véhicule, et tout identifiant.
  */
-export const AD_PUBLISHABLE_ROWS: Readonly<Record<'IMMOBILIER' | 'VEHICULE' | 'OBJET', ReadonlySet<string>>> = {
+const AD_PUBLISHABLE_ROWS: Readonly<Record<'IMMOBILIER' | 'VEHICULE' | 'OBJET', ReadonlySet<string>>> = {
   IMMOBILIER: new Set([
     'Type', 'Surface habitable', 'Pièces', 'Ville', 'Étage', 'Année de construction', 'État',
     'DPE / GES', 'Chauffage', 'Surface du terrain', 'Niveaux',

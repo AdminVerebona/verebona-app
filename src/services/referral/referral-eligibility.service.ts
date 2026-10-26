@@ -39,7 +39,7 @@ export type IneligibilityReason =
   | 'PAYMENT_NOT_FOUND'
   | 'STRIPE_UNAVAILABLE';
 
-export interface EligibilityDecision {
+interface EligibilityDecision {
   eligible: boolean;
   reason?: IneligibilityReason;
   /**
@@ -54,7 +54,7 @@ export interface EligibilityDecision {
 const WITHDRAWAL_BLOCKING = ['received', 'manual_review', 'processing', 'completed', 'failed'];
 const DISPUTE_OPEN = ['warning_needs_response', 'warning_under_review', 'needs_response', 'under_review'];
 
-export interface EligibilityFacts {
+interface EligibilityFacts {
   local: { billingPeriod: string | null; status: string | null; cancelAtPeriodEnd: boolean; stripeSubscriptionId: string | null } | null;
   withdrawalStatuses: string[];
   stripeSubscription: { status: string; interval: string | null; cancelAtPeriodEnd: boolean; canceledAt: number | null } | null;
@@ -63,7 +63,7 @@ export interface EligibilityFacts {
 }
 
 /** Contrôles sur la seule base locale ; `null` si rien ne s'oppose encore. */
-export function decideLocally(f: Pick<EligibilityFacts, 'local' | 'withdrawalStatuses'>): EligibilityDecision | null {
+function decideLocally(f: Pick<EligibilityFacts, 'local' | 'withdrawalStatuses'>): EligibilityDecision | null {
   if (f.withdrawalStatuses.some((s) => WITHDRAWAL_BLOCKING.includes(s))) {
     return { eligible: false, reason: 'WITHDRAWAL_EXERCISED', final: true };
   }
@@ -77,7 +77,7 @@ export function decideLocally(f: Pick<EligibilityFacts, 'local' | 'withdrawalSta
 }
 
 /** Décision pure, sur des faits déjà réunis. */
-export function decideEligibility(f: EligibilityFacts): EligibilityDecision {
+function decideEligibility(f: EligibilityFacts): EligibilityDecision {
   const locally = decideLocally(f);
   if (locally) return locally;
   const s = f.stripeSubscription;

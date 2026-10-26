@@ -19,7 +19,7 @@ import type { EntityEvidenceWithTitle } from '@/services/ai/evidence/entity-evid
 import type { RetrievedSource } from '../types/sources';
 
 /** Preuve active retenue pour un champ (la plus autoritaire). */
-export interface CanonicalFieldEvidence {
+interface CanonicalFieldEvidence {
   evidenceId: number;
   fileId: number | null;
   documentTitle: string | null;
@@ -30,7 +30,7 @@ export interface CanonicalFieldEvidence {
 }
 
 /** Conflit ouvert sur le champ (carte « À traiter » non résolue). */
-export interface CanonicalFieldConflict {
+interface CanonicalFieldConflict {
   publicId: string;
   ruleCode: string;
   question: string;
@@ -150,7 +150,7 @@ async function activeEvidence(accountId: number, assetId: number, def: Canonical
 }
 
 /** Conflits ouverts « À traiter » sur des champs d'un bien, par clé canonique. */
-export async function openFieldConflicts(accountId: number, assetId: number, keys?: string[]): Promise<Map<string, CanonicalFieldConflict>> {
+async function openFieldConflicts(accountId: number, assetId: number, keys?: string[]): Promise<Map<string, CanonicalFieldConflict>> {
   const rows = (await pgClient.unsafe(
     `SELECT public_id AS "publicId", rule_code AS "ruleCode", question, field_key AS "fieldKey", proposals_json AS proposals
        FROM to_process_actions
@@ -388,7 +388,7 @@ export function assetFieldSource(r: CanonicalFieldReading): RetrievedSource {
 }
 
 /** Valeurs renseignées des équipements / pièces d'une lecture (lot 18). */
-export function entityValues(r: CanonicalFieldReading): CanonicalEntityFieldReading[] {
+function entityValues(r: CanonicalFieldReading): CanonicalEntityFieldReading[] {
   return (r.entities ?? []).filter((e) => e.display !== null && e.display !== '');
 }
 

@@ -29,7 +29,7 @@ import { redactDeep } from './redact';
 
 const BUDGET_MS = 2_000;
 
-export interface AdminSchemaDetail {
+interface AdminSchemaDetail {
   /** État du passage des migrations de CE processus. */
   process: {
     phase: string; mode: string | null; startedAt: string | null; finishedAt: string | null; durationMs: number | null;

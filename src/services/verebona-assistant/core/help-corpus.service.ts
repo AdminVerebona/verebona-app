@@ -30,7 +30,7 @@ import type { PageContext } from '../types/contracts';
 import { getAssistantConfig } from '../config/assistant-config';
 import { mergeHelpSources, type HelpSearchResult, type HelpStage, type StagedHelpSource } from './help-cascade';
 
-export interface HelpCorpusSection { anchor: string; heading: string; text: string }
+interface HelpCorpusSection { anchor: string; heading: string; text: string }
 export interface HelpCorpusArticle {
   id: string;
   title: string;
@@ -219,7 +219,7 @@ const BUILD_PUBLIC_SITE_URL: string | undefined = process.env.NEXT_PUBLIC_PUBLIC
 const BUILD_APP_ENV: string | undefined = process.env.NEXT_PUBLIC_APP_ENV;
 
 /** Site public de PRODUCTION (repli historique de `PUBLIC_SITE_URL`). */
-export const PRODUCTION_HELP_SITE = 'https://www.verebona.fr';
+const PRODUCTION_HELP_SITE = 'https://www.verebona.fr';
 const HOTES_PRODUCTION = new Set(['www.verebona.fr', 'verebona.fr']);
 
 /**
@@ -234,9 +234,9 @@ export function helpApplicationEnvironment(): AiEnvironment | null {
   return nodeEnv === 'test' || nodeEnv === 'development' ? 'local' : null;
 }
 
-export type HelpCorpusUrlSource = 'HELP_CENTER_URL' | 'NEXT_PUBLIC_PUBLIC_SITE_URL' | 'default_production';
+type HelpCorpusUrlSource = 'HELP_CENTER_URL' | 'NEXT_PUBLIC_PUBLIC_SITE_URL' | 'default_production';
 
-export interface HelpCorpusConfig {
+interface HelpCorpusConfig {
   /** URL complète du corpus, `null` si elle ne peut pas être construite. */
   url: string | null;
   /** Variable qui a fourni l'URL. */
@@ -375,7 +375,7 @@ export function parseHelpCorpus(json: unknown, opts: { legacy?: boolean } = {}):
 }
 
 /** Ancienne règle (avant D-O) : statut absent ou `published`. Repli de transition seulement. */
-export function articlePublieAncienneRegle(a: Pick<HelpCorpusArticle, 'status'>): boolean {
+function articlePublieAncienneRegle(a: Pick<HelpCorpusArticle, 'status'>): boolean {
   return a.status == null || String(a.status).toLowerCase() === 'published';
 }
 
@@ -388,7 +388,7 @@ const citable = (corpus: Pick<HelpCorpus, 'legacyPublication'>, a: HelpCorpusArt
  * valide (AAAA-MM-JJ, pas dans le futur). Statut absent, brouillon, archivé
  * ou bloqué, ou date absente : jamais une source, jamais proposé en lien.
  */
-export function articlePublie(a: Pick<HelpCorpusArticle, 'status' | 'validatedAt'>, now: Date = new Date()): boolean {
+function articlePublie(a: Pick<HelpCorpusArticle, 'status' | 'validatedAt'>, now: Date = new Date()): boolean {
   if (String(a.status ?? '').toLowerCase() !== 'published') return false;
   const d = typeof a.validatedAt === 'string' ? a.validatedAt : '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
@@ -414,11 +414,7 @@ export type HelpCorpusAlertCode =
   | 'HELP_CORPUS_INVALID'
   | 'HELP_CORPUS_WRONG_ENVIRONMENT';
 
-export const HELP_CORPUS_ALERT_CODES: readonly HelpCorpusAlertCode[] = [
-  'HELP_CORPUS_UNAVAILABLE', 'HELP_CORPUS_TIMEOUT', 'HELP_CORPUS_HTTP_ERROR', 'HELP_CORPUS_INVALID', 'HELP_CORPUS_WRONG_ENVIRONMENT',
-];
-
-export type HelpCorpusSource = 'live' | 'last_valid_memory' | 'last_valid_db' | 'none';
+type HelpCorpusSource = 'live' | 'last_valid_memory' | 'last_valid_db' | 'none';
 
 export interface HelpCorpusHealth {
   /** `warning` : le corpus publié est refusé ou injoignable. */
@@ -803,7 +799,7 @@ function terms(s: string): string[] {
   return norm(s).split(' ').filter((t) => t.length > 1 && !STOP.has(t)).map(stem);
 }
 
-export interface HelpHit {
+interface HelpHit {
   article: HelpCorpusArticle;
   section: HelpCorpusSection;
   score: number;
@@ -824,7 +820,7 @@ export function searchHelpCorpus(corpus: HelpCorpus, question: string, limit = 4
  * Diagnostic d'une recherche (lot 33, observabilité) : distinguer « aucun
  * candidat » de « candidats écartés » (couverture insuffisante, plateforme).
  */
-export interface HelpSearchDiagnostics {
+interface HelpSearchDiagnostics {
   /** Sections retenues comme candidates (couverture ≥ 50 %), avant la limite. */
   candidateCount: number;
   rejected: { lowCoverage: number; contextExcluded: number };
@@ -840,7 +836,7 @@ function enTete(a: HelpCorpusArticle): string {
 }
 
 /** `searchHelpCorpus` avec son diagnostic (candidats, sections écartées). */
-export function searchHelpCorpusDetailed(
+function searchHelpCorpusDetailed(
   corpus: HelpCorpus, question: string, limit = 4, ctx?: HelpSearchContext,
 ): { hits: HelpHit[]; diagnostics: HelpSearchDiagnostics } {
   const diagnostics: HelpSearchDiagnostics = { candidateCount: 0, rejected: { lowCoverage: 0, contextExcluded: 0 } };
@@ -927,7 +923,7 @@ export const HELP_CORPUS_UNAVAILABLE_RESULT: HelpSearchResult = {
  * posée depuis une fiche bien ne privilégiait pas l'article de l'onglet
  * Documents du bien, et une procédure « mobile » pouvait répondre sur le web.
  */
-export interface HelpSearchContext {
+interface HelpSearchContext {
   /** Libellés d'écran du référentiel (`helpScreenForRoute`). */
   screens: string[];
   objectType: string | null;
@@ -1027,7 +1023,7 @@ export async function helpArticlePublished(id: string): Promise<boolean> {
 export const HELP_EXACT_THRESHOLD = 0.75;
 
 /** Premier passage utile d'une section, borné à ~240 caractères (§19.5). */
-export function helpExcerpt(text: string, max = 240): string {
+function helpExcerpt(text: string, max = 240): string {
   const propre = text.replace(/\s+/g, ' ').trim();
   if (propre.length <= max) return propre;
   const coupe = propre.slice(0, max);
@@ -1066,12 +1062,12 @@ export function fallbackFromHelpSources(sources: RetrievedSource[]): string {
 }
 
 /** Repli d'aide sans source fiable — lot 33 (ticket T2 PRODUCT_HELP_HOW_TO §11). */
-export const HELP_FALLBACK_MESSAGE = 'Je n’ai pas trouvé dans le Centre d’aide d’information suffisamment fiable pour répondre à cette question. '
+const HELP_FALLBACK_MESSAGE = 'Je n’ai pas trouvé dans le Centre d’aide d’information suffisamment fiable pour répondre à cette question. '
   // D-J4 : l'aide d'abord, le support ensuite (boutons dans le même ordre).
   + 'Vous pouvez consulter l’aide Verebona, ou contacter le support.';
 
 /** Étapes numérotées d'une section « Procédure » (« 1. … »), au plus `max`. */
-export function procedureSteps(text: string, max = 8): string[] {
+function procedureSteps(text: string, max = 8): string[] {
   return String(text ?? '').split('\n')
     .map((l) => l.trim())
     .filter((l) => /^\d+[.)]\s+\S/.test(l))
@@ -1135,10 +1131,10 @@ export function howToSynthesis(sources: RetrievedSource[], article?: HelpCorpusA
 }
 
 /** Étape de procédure : « 2. Sélectionnez le fichier — Choisissez un format… ». */
-export interface HelpProcedureStep { title: string; detail: string }
+interface HelpProcedureStep { title: string; detail: string }
 
 /** Étapes d'une section « Procédure », intitulé et précision séparés (pure). */
-export function parseProcedureSteps(text: string): HelpProcedureStep[] {
+function parseProcedureSteps(text: string): HelpProcedureStep[] {
   return procedureSteps(text, 20).map((l) => {
     const corps = l.replace(/^\d+[.)]\s+/, '');
     const m = /^(.+?)\s+[—–]\s+(.+)$/.exec(corps);
@@ -1214,7 +1210,7 @@ function quantites(text: string): Map<string, Set<string>> {
   return out;
 }
 
-export interface HelpContradiction {
+interface HelpContradiction {
   articles: [string, string];
   titles: [string, string];
   unit: string;

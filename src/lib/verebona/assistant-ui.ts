@@ -66,7 +66,7 @@ export function retryTarget(
 
 // ── « Pourquoi ? » (§19.8, §27.9) ──────────────────────────────────────────
 
-export interface ExplanationRow {
+interface ExplanationRow {
   claim_text: string;
   derivation?: string | null;
   sources?: Array<string | null> | null;
@@ -146,7 +146,7 @@ export function currentPlatform(): 'web' | 'mobile' {
 // ── Sources (§19.3, §19.5, §27.8) ─────────────────────────────────────────
 
 /** Ligne renvoyée par GET /api/verebona/messages/{id}/sources. */
-export interface SourceRow {
+interface SourceRow {
   source_type: string;
   source_id?: string | null;
   type_label?: string | null;
@@ -189,7 +189,7 @@ export interface UiResultGroup {
 }
 
 /** Cartes visibles avant « Voir tous les résultats » (§22.3). */
-export const MAX_VISIBLE_RESULT_CARDS = 5;
+const MAX_VISIBLE_RESULT_CARDS = 5;
 
 /**
  * Groupes à afficher : repliés, 5 cartes au total dans l'ordre des groupes ;

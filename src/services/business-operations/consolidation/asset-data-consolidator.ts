@@ -73,7 +73,7 @@ const rows = async <T = Row>(tx: DbTx, q: SQL): Promise<T[]> => (await tx.execut
 const todayUtc = () => new Date().toISOString().slice(0, 10);
 
 /** Issue par nature (diagnostic, repère, rapport BO). */
-export type AssetDataOutcome =
+type AssetDataOutcome =
   | 'NONE'              // la fiche n'établit pas cette réalité, aucune source
   | 'LINKED'            // source déjà liée : version suivie, Opération reconsolidée
   | 'WITHDRAWN'         // la fiche ne l'établit plus : source retirée
@@ -81,14 +81,14 @@ export type AssetDataOutcome =
   // ACQUISITION_ALREADY_DATED, ACQUISITION_DATE_AMBIGUOUS) — issue NONE avec motif.
   | Extract<T3Outcome, 'CREATE_NEW' | 'MATCH_AND_ENRICH' | 'HOLD_UNRESOLVED' | 'ARBITRATION_REQUIRED'>;
 
-export interface AssetDataNatureResult {
+interface AssetDataNatureResult {
   nature: AssetDataNature;
   outcome: AssetDataOutcome;
   reason: string | null;
   operationId: number | null;
 }
 
-export interface AssetDataResult {
+interface AssetDataResult {
   assetId: number;
   accountId: number;
   /** Écritures métier (historisées). */
@@ -109,14 +109,14 @@ function perimeterStatus(nature: AssetDataNature, status: string | null | undefi
 interface AssetDataSourceRow { id: number; operationId: number; active: boolean; nature: string; merged: boolean }
 
 /** Lot 85E : motif de la source d'enrichissement (date d'acquisition automatique de la fiche). */
-export const ASSET_DATA_DATE_ENRICHMENT_REASON = 'ASSET_DATA_DATE_ENRICHMENT';
+const ASSET_DATA_DATE_ENRICHMENT_REASON = 'ASSET_DATA_DATE_ENRICHMENT';
 
 /**
  * Lot 85E — Opération ACQUISITION que la date automatique du bien peut
  * DATER : l'unique ACQUISITION active (ni invalidée, ni fusionnée) liée au
  * bien. `target` seulement si elle est réalisée et sans date ; sinon le motif.
  */
-export async function loadEnrichableAcquisition(tx: DbTx, accountId: number, assetId: number): Promise<
+async function loadEnrichableAcquisition(tx: DbTx, accountId: number, assetId: number): Promise<
   { target: number; reason: null } | { target: null; reason: 'AUTOMATIC_VALUE_NO_CREATION' | 'ACQUISITION_ALREADY_DATED' | 'ACQUISITION_DATE_AMBIGUOUS' }
 > {
   const r = await rows<Row>(tx, sql`
@@ -146,7 +146,7 @@ async function loadAssetDataSources(tx: DbTx, accountId: number, assetId: number
  * (verrou du compte détenu). Utilisée par l'événement, la tâche et la
  * simulation BO (transaction annulée par l'appelant).
  */
-export async function reconcileAssetDataInSession(
+async function reconcileAssetDataInSession(
   session: WriteSession, accountId: number, assetId: number,
   opts: { today?: string; cards?: OperationCardNeeds; origin?: 'EVENT' | 'MIGRATION'; onMergeStep?: ConsolidationOptions['onMergeStep'] } = {},
 ): Promise<AssetDataResult> {
@@ -311,7 +311,7 @@ export async function consolidateAssetData(
 
 // ── Migration structurée de l'existant (C23.1) ─────────────────────────────
 
-export interface AssetToReconcile { assetId: number; accountId: number }
+interface AssetToReconcile { assetId: number; accountId: number }
 
 /**
  * Biens à examiner (curseur stable par identifiant) : jamais examinés dans

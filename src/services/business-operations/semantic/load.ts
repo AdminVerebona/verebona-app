@@ -22,7 +22,7 @@ const nums = (v: unknown): number[] => (Array.isArray(v) ? v.map(Number).filter(
 const txt = (v: unknown): string | null => (v === null || v === undefined || v === '' ? null : String(v));
 
 /** Fenêtre des voisines (jours) autour de la date de l'Opération. */
-export const NEIGHBOUR_WINDOW_DAYS = 180;
+const NEIGHBOUR_WINDOW_DAYS = 180;
 const NEIGHBOURS_READ = 8;
 const CONTEXT_ITEMS_READ = 40;
 const SCOPE_ITEMS_READ = 40;
@@ -92,7 +92,7 @@ function toItem(x: Row): RawItem {
  * liés ; produits depuis un de ses documents et libres (ou liés à une
  * Opération inactive) ; candidats explicites. Jamais un élément annulé.
  */
-export async function loadScopeItems(sql: Sql, accountId: number, op: RawOperation, extraItemIds: readonly number[] = []): Promise<RawItem[]> {
+async function loadScopeItems(sql: Sql, accountId: number, op: RawOperation, extraItemIds: readonly number[] = []): Promise<RawItem[]> {
   const journal = await journalPresent(sql, 'agenda_intervention_consolidations');
   const r = await sql.unsafe<Row[]>(`
     SELECT ${ITEM_COLUMNS(journal)} FROM agenda_items i LEFT JOIN business_operations lo ON lo.id = i.business_operation_id

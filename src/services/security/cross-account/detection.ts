@@ -35,7 +35,7 @@
  */
 
 /** Une ligne d'anomalie : compte de la relation, autre compte, identifiants. */
-export interface CrossAccountRow {
+interface CrossAccountRow {
   accountId: number | null;
   otherAccountId: number | null;
   ref: string;
@@ -377,7 +377,7 @@ export const CROSS_ACCOUNT_CHECKS: readonly CrossAccountCheck[] = [
 /** Échantillon d'identifiants rendu par type (le décompte, lui, est complet). */
 export const SAMPLE_LIMIT = 50;
 /** Comptes concernés rendus par type. */
-export const ACCOUNTS_LIMIT = 200;
+const ACCOUNTS_LIMIT = 200;
 
 /** Requête d'agrégation d'un contrôle : décompte, comptes, échantillon. */
 export function aggregateSql(check: CrossAccountCheck): string {
@@ -435,11 +435,11 @@ export interface CrossAccountReport {
 }
 
 type Row = Record<string, unknown>;
-export type DetectionQuery = (sql: string) => Promise<Row[]>;
+type DetectionQuery = (sql: string) => Promise<Row[]>;
 export type DetectionExecutor = <T>(fn: (q: DetectionQuery) => Promise<T>) => Promise<T>;
 
 /** Délai par requête, appliqué par PostgreSQL. */
-export const DETECTION_STATEMENT_TIMEOUT_MS = 60_000;
+const DETECTION_STATEMENT_TIMEOUT_MS = 60_000;
 
 /** Session par défaut : transaction READ ONLY + délai côté base. */
 export const readOnlyDetectionExecutor: DetectionExecutor = async <T>(fn: (q: DetectionQuery) => Promise<T>): Promise<T> => {

@@ -347,7 +347,7 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   t6_evaluation_signature_baselines: 'technique T6 (références de signature)',
 };
 
-export interface TableClassification {
+interface TableClassification {
   /** Exportées (catalogue), triées par domaine puis nom. */
   included: Array<{ table: string; domain: RecetteDomain; description: string }>;
   excluded: Array<{ table: string; motif: string }>;

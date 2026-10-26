@@ -46,15 +46,15 @@
  */
 import { COST_PLAN_MIN_ACCOUNTS } from './observability.repository';
 
-export const METRICS_EXPORT_COLUMNS = [
+const METRICS_EXPORT_COLUMNS = [
   'section', 'jour', 'intention', 'mode', 'statut', 'offre', 'traitement',
   'alias_modele', 'modele', 'version_prompt', 'tache', 'indicateur', 'valeur',
 ] as const;
 type Column = (typeof METRICS_EXPORT_COLUMNS)[number];
-export type MetricsExportRow = Partial<Record<Column, string | number | null>>;
+type MetricsExportRow = Partial<Record<Column, string | number | null>>;
 
 /** Période maximale d'un export (jours). */
-export const MAX_EXPORT_DAYS = 366;
+const MAX_EXPORT_DAYS = 366;
 /** Groupes SQL au plus par section ET PAR JOUR ; au-delà : ligne `tronque`. */
 export const MAX_GROUPS_PER_SECTION = 20_000;
 const QUERY_TIMEOUT_MS = 20_000;
@@ -80,9 +80,9 @@ export function csvCell(v: unknown): string {
   return s;
 }
 
-export const CSV_HEADER = `﻿${METRICS_EXPORT_COLUMNS.join(';')}\r\n`;
+const CSV_HEADER = `﻿${METRICS_EXPORT_COLUMNS.join(';')}\r\n`;
 
-export function csvLine(r: MetricsExportRow): string {
+function csvLine(r: MetricsExportRow): string {
   return `${METRICS_EXPORT_COLUMNS.map((c) => csvCell(r[c])).join(';')}\r\n`;
 }
 
@@ -92,7 +92,7 @@ export function toCsv(rows: readonly MetricsExportRow[]): string {
 
 // ── Paramètres ─────────────────────────────────────────────────────────────
 
-export interface MetricsExportQuery {
+interface MetricsExportQuery {
   /** AAAA-MM-JJ inclus (Europe/Paris). */
   from: string;
   /** AAAA-MM-JJ inclus (Europe/Paris). */
@@ -104,7 +104,7 @@ export interface MetricsExportQuery {
 }
 
 /** Sections auxquelles s'applique chaque filtre (écran et lignes `_meta`). */
-export const FILTER_SCOPES: Readonly<Record<'intent' | 'model' | 'promptVersion' | 'plan', readonly string[]>> = {
+const FILTER_SCOPES: Readonly<Record<'intent' | 'model' | 'promptVersion' | 'plan', readonly string[]>> = {
   intent: ['assistant_demandes', 'assistant_appels_modele'],
   model: ['assistant_demandes', 'assistant_appels_modele', 'ia_usage_par_offre'],
   promptVersion: ['ia_usage_par_offre'],
@@ -128,7 +128,7 @@ function dateValide(s: string): boolean {
 }
 
 /** Jour civil Europe/Paris d'un instant (AAAA-MM-JJ). */
-export function parisDay(d: Date): string {
+function parisDay(d: Date): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
 }
 
@@ -154,7 +154,7 @@ export function parseMetricsExportQuery(sp: URLSearchParams, today: Date = new D
 // ── Requêtes ───────────────────────────────────────────────────────────────
 
 type Row = Record<string, unknown>;
-export type MetricsQueryRunner = (sql: string, params: unknown[]) => Promise<Row[]>;
+type MetricsQueryRunner = (sql: string, params: unknown[]) => Promise<Row[]>;
 
 const defaultRunner: MetricsQueryRunner = async (sql, params) => {
   const { pgClient } = await import('@/db');
@@ -243,7 +243,7 @@ const SQL_USAGE = `
    WHERE ($3::text IS NULL OR g.comptes >= ${COST_PLAN_MIN_ACCOUNTS})
    GROUP BY 1, 2, 3 ORDER BY 1, 2, 3 LIMIT ${LIMITE}`;
 
-export interface MetricsExportSummary {
+interface MetricsExportSummary {
   /** Lignes de données (hors `_meta`). */
   rows: number;
   /** Au moins une section d'un jour a dépassé `MAX_GROUPS_PER_SECTION`. */
@@ -252,7 +252,7 @@ export interface MetricsExportSummary {
 }
 
 /** Lignes `_meta` d'en-tête : période, filtres et leur portée, seuil. */
-export function metaRows(q: MetricsExportQuery): MetricsExportRow[] {
+function metaRows(q: MetricsExportQuery): MetricsExportRow[] {
   const out: MetricsExportRow[] = [
     { section: '_meta', indicateur: 'periode_debut', valeur: q.from },
     { section: '_meta', indicateur: 'periode_fin', valeur: q.to },
@@ -269,7 +269,7 @@ export function metaRows(q: MetricsExportQuery): MetricsExportRow[] {
  * Lignes de l'export, JOUR PAR JOUR (générateur : mémoire bornée à un jour).
  * `summary` est complété au fil de l'eau ; la dernière ligne est `tronque`.
  */
-export async function* metricsExportRows(
+async function* metricsExportRows(
   q: MetricsExportQuery, run: MetricsQueryRunner = defaultRunner, summary: MetricsExportSummary = { rows: 0, truncated: false, truncatedDays: [] },
 ): AsyncGenerator<MetricsExportRow> {
   for (const r of metaRows(q)) yield r;

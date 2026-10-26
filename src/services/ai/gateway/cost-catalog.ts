@@ -70,7 +70,7 @@ export function calcCostMicros(
  * Lot 16b-3 : plus aucun drapeau de bascule — tous les usages du référentiel
  * s'exécutent ; le périmètre « actif » est le référentiel entier.
  */
-export const runningUseCases = (): string[] => [...AI_USE_CASE_CODES];
+const runningUseCases = (): string[] => [...AI_USE_CASE_CODES];
 
 /** Modèles du référentiel dépourvus de tarif dans le cache. */
 export function listModelsWithoutPricing(): string[] {
@@ -95,7 +95,7 @@ export function listUnverifiedPricing(): string[] {
   return [...unverified];
 }
 
-export interface PricingReadiness {
+interface PricingReadiness {
   /** Usages qui s'exécutent (tous depuis le lot 16b-3). */
   runningUseCases: string[];
   /** Tarifs manquants sur le périmètre réellement actif — seuls bloquants. */
@@ -264,4 +264,3 @@ async function seedFromPublicCatalog(state: PricingReadiness): Promise<PricingRe
 }
 
 export { loadPricingCache, getCachedPrice } from './pricing/pricing.repository';
-export type { ModelPrice } from './pricing/pricing-source.port';

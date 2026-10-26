@@ -67,12 +67,12 @@ type Sql = postgres.Sql;
 type Tx = postgres.TransactionSql;
 
 /** Attente maximale des verrous exclusifs (application en cours d'écriture) : au-delà, échec sans rien faire. */
-export const FINALIZE_LOCK_TIMEOUT = '5s';
+const FINALIZE_LOCK_TIMEOUT = '5s';
 const VERROU = 'verebona:claims-legacy-finalize';
 
-export type FinalizeRefusalCode = 'CLEANUP_INCOMPLETE' | 'RESTORE_POINT_REQUIRED' | 'LOCK_TIMEOUT';
+type FinalizeRefusalCode = 'CLEANUP_INCOMPLETE' | 'RESTORE_POINT_REQUIRED' | 'LOCK_TIMEOUT';
 
-export interface FinalizeObject {
+interface FinalizeObject {
   kind: 'TABLE' | 'COLUMN';
   /** `table` ou `table.colonne`. */
   name: string;
@@ -105,7 +105,7 @@ export interface FinalizeResult {
   dropped: string[];
 }
 
-export interface FinalizeOptions {
+interface FinalizeOptions {
   sql: Sql;
   mode: 'SIMULATE' | 'APPLY';
   reason?: string | null;
@@ -116,7 +116,7 @@ export interface FinalizeOptions {
   restorePoints?: () => Promise<RestorePointInfo[]>;
 }
 
-export class FinalizeRefusedError extends Error {
+class FinalizeRefusedError extends Error {
   constructor(readonly code: FinalizeRefusalCode, message: string) { super(message); this.name = 'FinalizeRefusedError'; }
 }
 

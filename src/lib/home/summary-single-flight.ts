@@ -22,7 +22,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export interface SingleFlightStats {
+interface SingleFlightStats {
   /** Calculs réellement exécutés. */
   computations: number;
   /** Demandes servies par un calcul déjà en cours ou déjà programmé. */
@@ -34,7 +34,7 @@ interface KeyState<T> {
   next: Promise<T> | null;
 }
 
-export interface KeyedSingleFlight<T> {
+interface KeyedSingleFlight<T> {
   run(key: string, opts?: { fresh?: boolean }): Promise<T>;
   stats(): Readonly<SingleFlightStats>;
   /** Réservé aux tests. */

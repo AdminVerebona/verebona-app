@@ -36,13 +36,13 @@ import {
 } from '@/services/admin/anomaly.service';
 
 /** Délai laissé à l'utilisateur pour relancer un export en erreur (SUP-009). */
-export const EXPORT_ERROR_GRACE_MINUTES = 15;
+const EXPORT_ERROR_GRACE_MINUTES = 15;
 /** Au-delà, une génération « en attente / en cours » est bloquée. */
-export const EXPORT_STUCK_MINUTES = 60;
+const EXPORT_STUCK_MINUTES = 60;
 /** Fenêtre d'observation des échecs. */
-export const SWEEP_LOOKBACK_DAYS = 7;
+const SWEEP_LOOKBACK_DAYS = 7;
 /** Intervalle minimal entre deux balayages déclenchés par l'écran. */
-export const SWEEP_MIN_INTERVAL_MS = 5 * 60 * 1000;
+const SWEEP_MIN_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface Condition {
   fingerprint: string;
@@ -52,8 +52,8 @@ export interface Condition {
 
 export const exportFailureFingerprint = (assetId: number, exportType: string) =>
   buildFingerprint('exports', 'generation', 'asset', assetId, exportType);
-export const exportStuckFingerprint = (exportId: number) => buildFingerprint('exports', 'stuck', exportId);
-export const aiSuspendedFingerprint = (treatment: string) => buildFingerprint('ai', 'treatment-suspended', treatment);
+const exportStuckFingerprint = (exportId: number) => buildFingerprint('exports', 'stuck', exportId);
+const aiSuspendedFingerprint = (treatment: string) => buildFingerprint('ai', 'treatment-suspended', treatment);
 /** Empreinte des anciennes anomalies « jobs en échec définitif » (retirées au lot 84D, résolues au balayage). */
 export const aiJobsFailedFingerprint = (treatment: string) => buildFingerprint('ai', 'jobs-failed', treatment);
 export const aiCaptureGapFingerprint = () => buildFingerprint('ai', 'capture-gap');
@@ -87,7 +87,7 @@ type Row = Record<string, unknown>;
 
 // ── Sources (lecture seule) ─────────────────────────────────────────────────
 
-export async function collectExportConditions(): Promise<Condition[]> {
+async function collectExportConditions(): Promise<Condition[]> {
   const failed = await pgClient.unsafe<Row[]>(
     `SELECT e.asset_id, e.account_id, e.user_id, e.export_type,
             max(e.created_at) AS last_error_at, count(*)::int AS n,
@@ -208,7 +208,7 @@ async function openAnomalies(prefix: string): Promise<Map<string, Date>> {
   return new Map(rows.map((r) => [r.fingerprint, new Date(r.last_seen_at)]));
 }
 
-export interface SweepDomainResult {
+interface SweepDomainResult {
   reported: number;
   resolved: number;
   error: string | null;

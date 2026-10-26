@@ -51,13 +51,13 @@
 import { registerDocumentSourceProvider, type DocumentSourceProvider, type DocumentSourceText } from './document-sources';
 
 /** Tranche de la transcription lue par T3 (marge sous les 200 000 caractères de `persistedKnowledgeProvider`). */
-export const TRANSCRIPTION_COVERED_PREFIX = 190_000;
+const TRANSCRIPTION_COVERED_PREFIX = 190_000;
 /** Unités lues au plus par document. */
-export const SOURCE_UNITS_MAX = 2_000;
+const SOURCE_UNITS_MAX = 2_000;
 /** Caractères retenus au plus (unités + faits non résolus) par document. */
-export const SOURCE_UNITS_MAX_CHARS = 400_000;
+const SOURCE_UNITS_MAX_CHARS = 400_000;
 /** Faits non résolus lus au plus par document. */
-export const UNRESOLVED_FACTS_MAX = 500;
+const UNRESOLVED_FACTS_MAX = 500;
 const UNIT_MAX_CHARS = 4_000;
 const FACT_MAX_CHARS = 2_000;
 
@@ -71,7 +71,7 @@ export const RELIABLE_UNRESOLVED_REASONS: readonly string[] = [
   'UNKNOWN_TARGET', 'UNKNOWN_CANONICAL_KEY', 'KEY_NOT_APPLICABLE', 'VALUE_TOO_LONG', 'VALUE_TRUNCATED',
 ];
 
-export interface ReconciliationSourceUnit {
+interface ReconciliationSourceUnit {
   sourceUnitId: string;
   kind: string;
   coverageStatus: string;
@@ -105,7 +105,7 @@ export function sourceUnitTexts(units: readonly ReconciliationSourceUnit[], maxC
   return out;
 }
 
-export interface ReconciliationUnresolvedFact {
+interface ReconciliationUnresolvedFact {
   id: number;
   reason: string;
   status: string;
@@ -152,7 +152,7 @@ export function unresolvedFactTexts(facts: readonly ReconciliationUnresolvedFact
 }
 
 /** Unités utiles au rapprochement (SQL borné, ordre de lecture). */
-export async function loadReconciliationSourceUnits(accountId: number, fileId: number): Promise<ReconciliationSourceUnit[]> {
+async function loadReconciliationSourceUnits(accountId: number, fileId: number): Promise<ReconciliationSourceUnit[]> {
   const { sourceLayerReady } = await import('@/services/ai/source-analysis/source-units/repository');
   if (!(await sourceLayerReady())) return [];
   const { pgClient } = await import('@/db');
@@ -181,7 +181,7 @@ export async function loadReconciliationSourceUnits(accountId: number, fileId: n
 }
 
 /** Faits non résolus utiles (UNRESOLVED, RETAINED), bornés. */
-export async function loadReconciliationUnresolvedFacts(accountId: number, fileId: number): Promise<ReconciliationUnresolvedFact[]> {
+async function loadReconciliationUnresolvedFacts(accountId: number, fileId: number): Promise<ReconciliationUnresolvedFact[]> {
   const { sourceLayerReady } = await import('@/services/ai/source-analysis/source-units/repository');
   if (!(await sourceLayerReady())) return [];
   const { pgClient } = await import('@/db');
@@ -196,7 +196,7 @@ export async function loadReconciliationUnresolvedFacts(accountId: number, fileI
   return rows.map((r) => ({ ...r, id: Number(r.id), sourceUnitIds: r.sourceUnitIds ?? [] }));
 }
 
-export const sourceUnitsProvider: DocumentSourceProvider = {
+const sourceUnitsProvider: DocumentSourceProvider = {
   name: 'SOURCE_UNITS',
   async load({ accountId, fileId }) {
     const texts = sourceUnitTexts(await loadReconciliationSourceUnits(accountId, fileId));
@@ -204,7 +204,7 @@ export const sourceUnitsProvider: DocumentSourceProvider = {
   },
 };
 
-export const unresolvedFactsProvider: DocumentSourceProvider = {
+const unresolvedFactsProvider: DocumentSourceProvider = {
   name: 'UNRESOLVED_FACTS',
   async load({ accountId, fileId }) {
     const texts = unresolvedFactTexts(await loadReconciliationUnresolvedFacts(accountId, fileId));

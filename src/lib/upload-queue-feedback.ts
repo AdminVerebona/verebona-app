@@ -33,7 +33,7 @@ export function ouvrirRepriseDepots(): void {
 }
 
 /** Échoué ou interrompu : à reprendre ou à abandonner par l'utilisateur. */
-export function estEnSouffrance(e: ElementDepot): boolean {
+function estEnSouffrance(e: ElementDepot): boolean {
   return e.etape === 'echec' || e.etape === 'interrompu';
 }
 
@@ -45,17 +45,17 @@ export function envoisAReprendre(elements: ElementDepot[], lotSuivi: string | nu
 const pluriel = (n: number, s: string, p: string) => (n > 1 ? p : s);
 
 /** Message des envois interrompus restaurés (fermeture, rechargement). */
-export function messageEnvoisInterrompus(n: number): string {
+function messageEnvoisInterrompus(n: number): string {
   return `${n} ${pluriel(n, 'envoi de document interrompu', 'envois de documents interrompus')}`;
 }
 
 /** Message d'échec d'une reprise automatique (retour au premier plan). */
-export function messageRepriseEchouee(n: number): string {
+function messageRepriseEchouee(n: number): string {
   return `${n} ${pluriel(n, 'document non ajouté', 'documents non ajoutés')} après reprise`;
 }
 
 /** Mémoire des signalements de la supervision (une par session d'onglet). */
-export interface MemoireSignalements {
+interface MemoireSignalements {
   /** Envois interrompus déjà signalés (un message par restauration). */
   interrompus: Set<string>;
   /** Reprises automatiques dont l'issue reste à surveiller. */

@@ -52,7 +52,7 @@ export const USER_MESSAGE_CODES = [
 export type UserMessageCode = (typeof USER_MESSAGE_CODES)[number];
 
 /** Codes qui appellent une action de l'utilisateur (fichier à remplacer). */
-export const USER_ACTION_CODES: ReadonlySet<UserMessageCode> = new Set<UserMessageCode>([
+const USER_ACTION_CODES: ReadonlySet<UserMessageCode> = new Set<UserMessageCode>([
   'FILE_UNREADABLE', 'FILE_PASSWORD_PROTECTED', 'FILE_CORRUPTED', 'FILE_UNSUPPORTED', 'FILE_EMPTY',
 ]);
 
@@ -69,7 +69,7 @@ export const USER_MESSAGES: Record<UserMessageCode, string> = {
   ANALYSIS_DEFERRED_COST_CAP: 'Plafond IA du mois atteint : l’analyse sera lancée automatiquement le 1er du mois.',
 };
 
-export function isUserMessageCode(v: unknown): v is UserMessageCode {
+function isUserMessageCode(v: unknown): v is UserMessageCode {
   return typeof v === 'string' && (USER_MESSAGE_CODES as readonly string[]).includes(v);
 }
 
@@ -124,7 +124,7 @@ export interface LiveJobSnapshot {
   costCapDeferredUntil?: string | null;
 }
 
-export interface ProcessingInput {
+interface ProcessingInput {
   /** `asset_files.analysis_state`. */
   analysisState: string | null | undefined;
   /** Job T1 vivant du document, `null` s'il n'y en a aucun. */

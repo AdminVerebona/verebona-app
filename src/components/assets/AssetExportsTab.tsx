@@ -21,7 +21,6 @@ import { createExportSettleWatcher } from '@/lib/data-freshness';
 import { toast } from 'sonner';
 import { TransferExportDrawer, type TransferUsage } from './TransferExportDrawer';
 import { preparationPath } from '@/lib/exports/dossier-slug';
-import { getPlanTheme } from '@/lib/plan-theme';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { isCilEligible } from '@/lib/asset-capabilities';
@@ -35,7 +34,7 @@ import type { CatalogDossier, ExportCatalog } from '@/services/exports/export-ca
  * Codes envoyés à `POST /api/assets/[id]/exports` : les six dossiers V12
  * (`services/exports/catalog`) et l'export de données brutes.
  */
-export type ExportType = DossierCode | 'EXPORT_BRUT';
+type ExportType = DossierCode | 'EXPORT_BRUT';
 
 interface ExportUsageDef {
   type: ExportType | 'TRANSMISSION';
@@ -85,7 +84,7 @@ const EXPORT_USAGES: ExportUsageDef[] = [
   },
 ];
 
-export interface ExportRecord {
+interface ExportRecord {
   id: number;
   publicId: string;
   exportType: string;
@@ -173,13 +172,13 @@ function StatusIcon({ status }: { status: string }) {
  * Libellés de l'historique : codes V12, anciens codes (lignes antérieures à la
  * migration 0213) et transmission. Lire via `typeLabel`.
  */
-export const TYPE_LABELS: Record<string, string> = {
+const TYPE_LABELS: Record<string, string> = {
   ...DOSSIER_LABELS,
   EXPORT_BRUT: EXPORT_BRUT_LABEL,
   TRANSMISSION: 'Transmission du bien',
 };
 
-export function typeLabel(code: string): string {
+function typeLabel(code: string): string {
   return TYPE_LABELS[code] ?? exportCodeLabel(code);
 }
 
@@ -187,7 +186,7 @@ function formatDateLong(iso: string): string {
   return new Intl.DateTimeFormat('fr-FR', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(iso));
 }
 
-export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType, thumbnailUrl, assetSubtype }: Props) {
+export function AssetExportsTab({ assetId, assetCategory, planType, thumbnailUrl, assetSubtype }: Props) {
   // CIL : maisons et appartements uniquement — même règle que l'API.
   const cilOffert = isCilEligible({ category: assetCategory, subtype: assetSubtype });
   const [exports, setExports] = useState<ExportRecord[]>([]);
@@ -434,7 +433,6 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
           {dossierUsages.map((usage) => {
             const locked = isLocked(usage);
             const Icon = usage.icon;
-            const premiumTheme = getPlanTheme('PREMIUM');
             const isCilRegl = usage.type === 'CIL';
             const showCilInfo = isCilRegl && cilOffert && !locked;
             const entry = catalogEntry(usage.type);
@@ -521,7 +519,6 @@ export function AssetExportsTab({ assetId, assetCategory, assetTypeId, planType,
           {transfertUsages.map((usage) => {
             const locked = isLocked(usage);
             const Icon = usage.icon;
-            const premiumTheme = getPlanTheme('PREMIUM');
             return (
               <button
                 key={usage.type}

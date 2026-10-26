@@ -9,7 +9,7 @@ import type { ProcessingView } from '@/lib/ai/processing-status';
 export const TECHNICAL_FILE_FIELDS = ['analysisFailReason', 'analysis_fail_reason'] as const;
 
 /** Champs fonctionnels ajoutés à un document rendu à l'application. */
-export interface UserProcessingFields {
+interface UserProcessingFields {
   processingStatus: ProcessingView['processingStatus'];
   userMessageCode: ProcessingView['userMessageCode'];
   retryScheduled: boolean;

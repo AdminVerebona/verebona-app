@@ -67,7 +67,7 @@ type Tx = postgres.TransactionSql;
 type Row = Record<string, unknown>;
 
 export const CLEANUP_CATEGORIES = ['ACTIONS', 'EXCHANGES', 'CHILDREN', 'LEGACY_FORM', 'MIGRATION_MARKS', 'CARDS'] as const;
-export type CleanupCategory = (typeof CLEANUP_CATEGORIES)[number];
+type CleanupCategory = (typeof CLEANUP_CATEGORIES)[number];
 
 export const CATEGORY_LABELS: Readonly<Record<CleanupCategory, string>> = {
   ACTIONS: 'Actions de sinistre (ancien modèle)',
@@ -79,7 +79,7 @@ export const CATEGORY_LABELS: Readonly<Record<CleanupCategory, string>> = {
 };
 
 /** Point de restauration exigé avant d'appliquer (C-Q8) : 24 heures. */
-export const RESTORE_POINT_MAX_AGE_MS = 24 * 3_600_000;
+const RESTORE_POINT_MAX_AGE_MS = 24 * 3_600_000;
 
 export interface RestorePointCheck {
   ok: boolean;
@@ -131,7 +131,7 @@ export function pickRecentRestorePoint(points: readonly RestorePointInfo[], now:
   return { ok: false, backupId: null, finishedAt: null, reason: 'Aucun point de restauration de moins de 24 h : créez-en un (bloc 0 « Point de restauration de la base », Appliquer) avant d’appliquer ce nettoyage.' };
 }
 
-export interface CleanupOptions {
+interface CleanupOptions {
   sql: Sql;
   mode: 'SIMULATE' | 'APPLY';
   accountId?: number | null;
@@ -420,7 +420,7 @@ export async function runClaimLegacyCleanup(opts: CleanupOptions): Promise<Clean
 export interface CleanupRestoreReport { runId: string; restoreRunId: string; restored: number; conflicts: string[] }
 
 /** Lot 84A : restauration d'un nettoyage refusée après la suppression définitive de l'ancien modèle. */
-export class LegacyModelFinalizedError extends Error {
+class LegacyModelFinalizedError extends Error {
   readonly code = 'LEGACY_MODEL_FINALIZED';
   constructor(readonly finalizedAt: string | null) {
     super(`Restauration refusée : l’ancien modèle Sinistres a été supprimé définitivement${finalizedAt ? ` le ${finalizedAt.slice(0, 16).replace('T', ' à ')} (UTC)` : ''} `

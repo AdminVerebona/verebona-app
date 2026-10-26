@@ -33,7 +33,7 @@ export function answeredFieldKeys(claims: readonly Pick<Claim, 'claimKey' | 'sou
  * Champs ACCEPTABLES pour une demande : les champs demandés et leurs
  * composants d'affichage (une adresse complète cite code postal et ville).
  */
-export function acceptableFieldKeys(requested: readonly string[]): Set<string> {
+function acceptableFieldKeys(requested: readonly string[]): Set<string> {
   const ok = new Set<string>();
   for (const k of requested) {
     ok.add(k);
@@ -56,7 +56,7 @@ export function substitutedFieldKeys(requested: readonly string[], claims: reado
 }
 
 /** Libellés des champs demandés (« date d'achat, kilométrage »), pour une absence explicite. */
-export function requestedFieldsLabel(requested: readonly string[]): string {
+function requestedFieldsLabel(requested: readonly string[]): string {
   const libs = requested.map((k) => getField(k)?.label ?? k).map((l) => (/^[A-ZÉÈ][a-zà-ÿ]/.test(l) ? l.charAt(0).toLowerCase() + l.slice(1) : l));
   return libs.length <= 1 ? (libs[0] ?? '') : `${libs.slice(0, -1).join(', ')} et ${libs[libs.length - 1]}`;
 }

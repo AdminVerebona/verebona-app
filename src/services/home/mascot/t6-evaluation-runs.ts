@@ -44,7 +44,7 @@ type Q = (sql: string, params: unknown[]) => Promise<Row[]>;
 const q: Q = async (sql, params) => (await pgClient.unsafe(sql, params as never[])) as unknown as Row[];
 
 export const T6_RUN_STATUSES = ['PENDING', 'RUNNING', 'RETRY_WAIT', 'FAILED', 'COMPLETED', 'UNAVAILABLE'] as const;
-export type T6RunStatus = (typeof T6_RUN_STATUSES)[number];
+type T6RunStatus = (typeof T6_RUN_STATUSES)[number];
 
 /**
  * Cause d'un échec, telle que distinguée par le diagnostic (§4) :
@@ -52,7 +52,7 @@ export type T6RunStatus = (typeof T6_RUN_STATUSES)[number];
  * d'écriture, traitement interrompu, plafond IA, tâche planifiée inactive
  * (constatée par la supervision seulement).
  */
-export type T6RunErrorKind =
+type T6RunErrorKind =
   | 'model_unavailable' | 'invalid_output' | 'rejected' | 'write_failed' | 'interrupted' | 'cost_cap' | 'scheduler_inactive'
   /** Lot 81B (B) : T6 désactivé, suspendu, arrêt d'urgence ou prompt sans EVALUATE — reprise au rétablissement. */
   | 't6_unavailable'
@@ -62,7 +62,7 @@ export type T6RunErrorKind =
   | 'ownership_lost';
 
 /** Espace des verrous consultatifs de prise en charge (par compte). */
-export const T6_RUN_LOCK_SPACE = 78016;
+const T6_RUN_LOCK_SPACE = 78016;
 /** Bail d'une exécution : au-delà, elle est réputée interrompue. */
 export const T6_RUN_LEASE_MS = 5 * 60_000;
 /**
@@ -72,12 +72,12 @@ export const T6_RUN_LEASE_MS = 5 * 60_000;
  * dans cette fenêtre, puis seulement après elle. Un changement de contexte
  * ou de configuration relance toujours aussitôt (empreinte, signature).
  */
-export const T6_RUN_COMPLETED_COOLDOWN_MS = 20 * 3600_000;
+const T6_RUN_COMPLETED_COOLDOWN_MS = 20 * 3600_000;
 export const T6_RUN_SAME_CONTEXT_MAX = 3;
 /** Délais avant le nouvel essai, selon le nombre de tentatives déjà faites. */
-export const T6_RUN_RETRY_DELAYS_S: readonly number[] = [10 * 60, 30 * 60, 2 * 3600, 6 * 3600];
+const T6_RUN_RETRY_DELAYS_S: readonly number[] = [10 * 60, 30 * 60, 2 * 3600, 6 * 3600];
 /** Plafond IA du compte atteint : nouvel essai planifié (le plafond est mensuel). */
-export const T6_RUN_COST_CAP_RETRY_S = 6 * 3600;
+const T6_RUN_COST_CAP_RETRY_S = 6 * 3600;
 /**
  * Lot 81B (B) : T6 indisponible — nouvelle vérification (sans appel IA) au
  * plus tôt dans ce délai ; au rétablissement, l'évaluation redevient
@@ -361,7 +361,7 @@ export async function markT6RunsUnavailable(accountId: number, subjects: readonl
  * échéances données redeviennent prenables tout de suite (PENDING, ou essai
  * dû si des tentatives avaient déjà eu lieu). Rend le nombre libéré.
  */
-export async function releaseT6UnavailableRuns(accountId: number, ids: readonly number[]): Promise<number> {
+async function releaseT6UnavailableRuns(accountId: number, ids: readonly number[]): Promise<number> {
   if (ids.length === 0) return 0;
   const r = await q(
     `UPDATE t6_evaluation_runs SET
@@ -529,7 +529,7 @@ export async function claimT6Runs(p: {
   });
 }
 
-export type T6RunOutcome = 'COMPLETED' | 'RETRY' | 'UNAVAILABLE';
+type T6RunOutcome = 'COMPLETED' | 'RETRY' | 'UNAVAILABLE';
 
 export interface T6RunResult {
   agendaItemId: number;
@@ -618,7 +618,7 @@ export interface T6SupervisionAccount {
   incomplete?: number;
 }
 
-export interface T6SupervisionResult {
+interface T6SupervisionResult {
   blockedAccounts: number;
   reported: number;
   resolved: number;
@@ -636,9 +636,9 @@ export interface T6SupervisionResult {
 }
 
 /** Lot 81B (E) : taille d'une page du balayage de supervision. */
-export const T6_SUPERVISION_PAGE_SIZE = 200;
+const T6_SUPERVISION_PAGE_SIZE = 200;
 /** Lot 81B (E) : pages au plus par passage (au-delà : balayage incomplet, rien n'est résolu par absence). */
-export const T6_SUPERVISION_MAX_PAGES = 500;
+const T6_SUPERVISION_MAX_PAGES = 500;
 
 /**
  * Comptes dont des évaluations sont BLOQUÉES ou EN ÉCHEC : tentatives
@@ -707,10 +707,10 @@ export async function blockedT6Accounts(
   }));
 }
 
-export const PREGEN_TASK_CODE = 'mascot-pregeneration';
+const PREGEN_TASK_CODE = 'mascot-pregeneration';
 
 /** Lot 81B (F) : état de la tâche de pré-génération, lu dans l'état du planificateur (`scheduled_task_state`). */
-export interface PregenSchedulerState {
+interface PregenSchedulerState {
   /** `unknown` : état illisible — jamais une accusation, jamais une résolution. */
   state: 'active' | 'inactive' | 'unknown';
   adminDisabled?: boolean;

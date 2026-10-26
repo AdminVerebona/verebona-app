@@ -51,7 +51,7 @@ function matches(list: readonly string[], subtype: string | null | undefined): b
   return list.some((v) => v.toLowerCase() === lower);
 }
 
-export interface AssetKind {
+interface AssetKind {
   category: string;
   subtype?: string | null;
 }

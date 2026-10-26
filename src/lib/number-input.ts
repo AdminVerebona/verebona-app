@@ -29,7 +29,7 @@ export interface NumberParseOptions {
   currency?: boolean;
 }
 
-export type NumberParseResult =
+type NumberParseResult =
   | { ok: true; value: number | null }
   | { ok: false; error: string };
 

@@ -3,12 +3,12 @@
  * Gère les limites et fonctionnalités par plan (Standard, Premium, Premium Duo, Pro)
  */
 
-import { PlanType, FeatureFlags, DEFAULT_FEATURE_FLAGS, UserWithFeatures, UserFeatures } from '@/types/feature-flags';
+import { PlanType, FeatureFlags, DEFAULT_FEATURE_FLAGS } from '@/types/feature-flags';
 
 /**
  * Parse les feature flags depuis JSON
  */
-export function parseFeatureFlags(featureFlagsJson?: string | null): FeatureFlags | null {
+function parseFeatureFlags(featureFlagsJson?: string | null): FeatureFlags | null {
   if (!featureFlagsJson) return null;
   
   try {
@@ -38,18 +38,6 @@ export function getFeatureFlags(
   
   // Sinon, retourner les flags par défaut du plan
   return DEFAULT_FEATURE_FLAGS[planType] || DEFAULT_FEATURE_FLAGS.STANDARD;
-}
-
-/**
- * Enrichit un utilisateur avec ses feature flags
- */
-export function getUserWithFeatures(user: UserWithFeatures): UserFeatures {
-  const features = getFeatureFlags(user.planType, user.featureFlags);
-  
-  return {
-    ...user,
-    features,
-  };
 }
 
 /**
@@ -86,24 +74,3 @@ export function isOverAssetLimit(currentAssetCount: number, features: FeatureFla
   return currentAssetCount > features.max_assets;
 }
 
-/**
- * Génère le JSON des feature flags pour stockage en base
- */
-export function serializeFeatureFlags(features: FeatureFlags): string {
-  return JSON.stringify(features);
-}
-
-/**
- * Crée les feature flags par défaut pour un nouveau compte
- * (toujours Standard par défaut)
- */
-export function getDefaultFeatureFlagsForNewUser(): string {
-  return serializeFeatureFlags(DEFAULT_FEATURE_FLAGS.STANDARD);
-}
-
-/**
- * Met à jour les feature flags lors d'un changement de plan
- */
-export function updateFeatureFlagsOnPlanChange(newPlanType: PlanType): string {
-  return serializeFeatureFlags(DEFAULT_FEATURE_FLAGS[newPlanType]);
-}

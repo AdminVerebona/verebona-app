@@ -40,10 +40,10 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-export type AccountAccessCheck = (userId: number, accountId: number) => Promise<boolean>;
+type AccountAccessCheck = (userId: number, accountId: number) => Promise<boolean>;
 
 /** Lecture en base : droit actif de `userId` sur `accountId`. */
-export const readAccountAccess: AccountAccessCheck = async (userId, accountId) => {
+const readAccountAccess: AccountAccessCheck = async (userId, accountId) => {
   const { pgClient } = await import('@/db');
   const rows = await pgClient<{ ok: number }[]>`
     SELECT 1 AS ok FROM account_memberships
@@ -66,7 +66,7 @@ export function __setAccountAccessCheckForTests(fn: AccountAccessCheck | null): 
 }
 
 /** Code levé par la garde : traduit en 401 (renouvellement puis connexion). */
-export const ACCOUNT_ACCESS_REVOKED = 'INVALID_TOKEN';
+const ACCOUNT_ACCESS_REVOKED = 'INVALID_TOKEN';
 
 /**
  * Vrai si l'utilisateur a toujours un droit actif sur le compte. Lève

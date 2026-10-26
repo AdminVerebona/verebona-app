@@ -63,15 +63,15 @@ import { registerT3JobKind } from './t3-job-contract';
 import { T1_SETTLED_STATES } from './document-asset/question-gate';
 import type { TitleOutcome } from '@/services/documents/document-title.service';
 
-export const T3_TARGET_DOCUMENT_TITLE_SWEEP = 'document_title_sweep';
+const T3_TARGET_DOCUMENT_TITLE_SWEEP = 'document_title_sweep';
 export const DOCUMENT_TITLE_SWEEP_KIND = 'document_title_sweep';
 
 /** Documents examinés par contrôle ciblé (`T3_TITLE_SWEEP_PAGE_SIZE`, 100 par défaut, 1 à 500). */
-export function titleSweepPageSize(): number {
+function titleSweepPageSize(): number {
   return Math.min(500, Math.floor(envNumber('T3_TITLE_SWEEP_PAGE_SIZE', 100, { min: 1 })));
 }
 
-export interface DocumentTitleSweepPayload {
+interface DocumentTitleSweepPayload {
   kind: typeof DOCUMENT_TITLE_SWEEP_KIND;
   cycleId: string;
   page: number;
@@ -116,7 +116,7 @@ export const TITLE_SWEEP_SQL = `
    ORDER BY f.id
    LIMIT $2`;
 
-export async function listDocumentsWithNonCompliantTitle(q: { afterFileId?: number; limit: number; accountId?: number | null }): Promise<Array<{ fileId: number; accountId: number }>> {
+async function listDocumentsWithNonCompliantTitle(q: { afterFileId?: number; limit: number; accountId?: number | null }): Promise<Array<{ fileId: number; accountId: number }>> {
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(TITLE_SWEEP_SQL, [q.afterFileId ?? 0, q.limit, q.accountId ?? null, DOCUMENT_TITLE_RULE_VERSION] as never[])) as unknown as Array<{ id: number; account_id: number }>;
   return rows.map((r) => ({ fileId: Number(r.id), accountId: Number(r.account_id) }));

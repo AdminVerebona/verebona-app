@@ -66,10 +66,10 @@ import { PermanentJobError, type JobBusinessResult } from '@/services/ai/queue/q
 import { buildT3Payload, parseTargetId, registerT3JobKind } from '@/services/ai/reconciliation/t3-job-contract';
 import { envNumber } from '@/lib/env-number';
 
-export const T3_TARGET_BUSINESS_OPERATIONS = 'business_operations';
-export const BUSINESS_OPERATIONS_KIND = 'business_operations';
-export const T3_TARGET_BUSINESS_OPERATIONS_SWEEP = 'business_operations_sweep';
-export const BUSINESS_OPERATIONS_SWEEP_KIND = 'business_operations_sweep';
+const T3_TARGET_BUSINESS_OPERATIONS = 'business_operations';
+const BUSINESS_OPERATIONS_KIND = 'business_operations';
+const T3_TARGET_BUSINESS_OPERATIONS_SWEEP = 'business_operations_sweep';
+const BUSINESS_OPERATIONS_SWEEP_KIND = 'business_operations_sweep';
 
 /** Codes C4 portés par les demandes (CDC Opérations V1 C4). */
 export const C4_TRIGGERS = [
@@ -77,7 +77,7 @@ export const C4_TRIGGERS = [
   'document_moved', 'document_reclassified', 'asset_updated', 'asset_disposed', 'arbitration_resolved', 'agenda_changed', 'schedule_hourly',
   'admin_reconsolidation',
 ] as const;
-export type C4Trigger = (typeof C4_TRIGGERS)[number];
+type C4Trigger = (typeof C4_TRIGGERS)[number];
 
 /** Code C4 → déclencheur du catalogue T3 (contrôlé par la version effective). */
 export const C4_CATALOG_TRIGGER: Readonly<Record<C4Trigger, string>> = {
@@ -104,7 +104,7 @@ export const C4_CATALOG_TRIGGER: Readonly<Record<C4Trigger, string>> = {
 /** Codes jamais soumis au catalogue de déclencheurs de la version effective. */
 const UNGATED_CODES: ReadonlySet<string> = new Set(['schedule_hourly', 'manual']);
 
-export interface OperationsEvent {
+interface OperationsEvent {
   trigger: C4Trigger;
   fileId?: number;
   assetId?: number;
@@ -116,14 +116,14 @@ export interface OperationsEvent {
   at?: string;
 }
 
-export interface OperationsPayload {
+interface OperationsPayload {
   kind: typeof BUSINESS_OPERATIONS_KIND;
   accountId: number;
   events: OperationsEvent[];
   requestedAt: string | null;
 }
 
-export interface OperationsSweepPayload {
+interface OperationsSweepPayload {
   kind: typeof BUSINESS_OPERATIONS_SWEEP_KIND;
   cycleId: string;
   page: number;
@@ -131,7 +131,7 @@ export interface OperationsSweepPayload {
   requestedAt: string | null;
 }
 
-export interface OperationsQueueDeps {
+interface OperationsQueueDeps {
   enqueue: typeof import('@/services/ai/queue/job-queue.repository').enqueue;
   isTriggerActive: (treatment: 'T3', code: string) => Promise<boolean>;
 }
@@ -315,7 +315,7 @@ export const ADMIN_RECONSOLIDATION_PAGE_OPERATIONS = 2_000;
 const ADMIN_RECONSOLIDATION_BATCH = 100;
 
 /** Lot 54D (E08) : statut d'une reconsolidation complète, avec compteurs. */
-export interface AdminReconsolidationReport {
+interface AdminReconsolidationReport {
   /** COMPLET : tout traité ; PARTIEL : passages suivants en file (documents restants) ; ERREUR : erreurs techniques. */
   status: 'COMPLET' | 'PARTIEL' | 'ERREUR';
   assets: number;
@@ -400,7 +400,7 @@ export async function reconsolidateAllActiveOperations(
 }
 
 /** Comptes mis en file par page de balayage (`T3_OPERATIONS_SWEEP_PAGE_SIZE`, 100 par défaut, 1 à 1000). */
-export function operationsSweepPageSize(): number {
+function operationsSweepPageSize(): number {
   return Math.min(1000, Math.floor(envNumber('T3_OPERATIONS_SWEEP_PAGE_SIZE', 100, { min: 1 })));
 }
 const pageDelaySeconds = () => Math.floor(envNumber('T3_OPERATIONS_SWEEP_PAGE_DELAY_SECONDS', 30, { min: 0 }));

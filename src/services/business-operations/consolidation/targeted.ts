@@ -52,12 +52,12 @@ import { requestTargetedRetroReconciliation, type TargetedRetroSelector } from '
 type Sql = typeof import('@/db').pgClient;
 type Row = Record<string, unknown>;
 
-export type TargetedKind = 'EQUIPMENT' | 'ASSET' | 'ROOM' | 'RECURRING_DOCUMENTS' | 'DIRECT_LINKS';
+type TargetedKind = 'EQUIPMENT' | 'ASSET' | 'ROOM' | 'RECURRING_DOCUMENTS' | 'DIRECT_LINKS';
 
 /** Opérations candidates examinées pour un équipement / un bien (borne de lecture). */
-export const TARGETED_OPERATION_LIMIT = 200;
+const TARGETED_OPERATION_LIMIT = 200;
 
-export interface TargetedOptions {
+interface TargetedOptions {
   /** Déclencheur (trace) : `equipment_created`, `asset_updated`, `coherence`, `document_arrival`… */
   trigger: string;
   correlationId?: string | null;
@@ -74,7 +74,7 @@ export interface TargetedOptions {
   sql?: Sql;
 }
 
-export interface TargetedReport {
+interface TargetedReport {
   kind: TargetedKind;
   accountId: number;
   targetId: number | null;

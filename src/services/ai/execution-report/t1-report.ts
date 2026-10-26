@@ -97,7 +97,7 @@ export class T1ExecutionRecorder {
 const n = (v: unknown) => (v == null ? null : Number(v));
 
 /** Lot 75C (H) : une tentative d'appel du modèle pour ce document. */
-export interface AttemptTrace {
+interface AttemptTrace {
   traceId: string;
   model: string | null;
   modelRank: string | null;
@@ -152,8 +152,8 @@ export async function collectAttemptTraces(p: { accountId: number; fileIds: numb
   return { traceIds: [...new Set([...deLErreur, ...attempts.map((a) => a.traceId)])], attempts };
 }
 
-export type T1PhaseState = 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'NOT_RUN';
-export interface T1Phase { state: T1PhaseState; detail: Record<string, unknown> }
+type T1PhaseState = 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'NOT_RUN';
+interface T1Phase { state: T1PhaseState; detail: Record<string, unknown> }
 
 /**
  * Lot 61 (ticket T1 §6, §7 D) — statut SÉPARÉ des trois phases (pur) :

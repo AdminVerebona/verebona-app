@@ -41,7 +41,7 @@ export const MISSING_PROPERTIES_EQUIPMENT_CHECK_ID = 'COH-MISSING-PROPERTIES-EQU
 /** Version du contrat d'ENTRÉE (dans `{{FIELD}}`), marqueur attendu dans le prompt actif. */
 export const MISSING_PROPERTIES_CONTRACT_VERSION = 't3-knowledge-query-v2';
 /** Mode transmis dans `{{FIELD}}` (donnée, jamais une consigne). */
-export const MISSING_PROPERTIES_MODE = 'MISSING_PROPERTIES';
+const MISSING_PROPERTIES_MODE = 'MISSING_PROPERTIES';
 /** Demande à l'équipe IA (constats tant que le prompt actif ne porte pas le contrat). */
 export const MISSING_PROPERTIES_PENDING_CONTRACT = '88B-t3-proprietes-manquantes';
 /** Règle de projection des preuves créées par une décision (exclues du contexte : jamais d'auto-alimentation). */

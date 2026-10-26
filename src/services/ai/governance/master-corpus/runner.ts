@@ -62,7 +62,7 @@ export interface MasterCorpusResult {
   skipped?: string[];
 }
 
-export interface RunMasterCorpusOptions {
+interface RunMasterCorpusOptions {
   /**
    * Texte à évaluer par master (sinon fichier du dépôt). `execution` (lot
    * 34D) : mode de la version évaluée ; absent : LEGACY_TEMPLATE pour un

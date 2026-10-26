@@ -39,7 +39,7 @@ import { transferAssetOperationsInTx } from '@/services/business-operations/asse
 import { publishBusinessOperationEvents } from '@/services/business-operations/events';
 import { afterAssetDataTransfer, transferAssetDataInTx, type AssetDataTransferResult } from './asset-account-transfer.service';
 
-export interface MisplacedAssetData {
+interface MisplacedAssetData {
   assetId: number;
   /** Compte actuel du bien. */
   toAccountId: number;
@@ -68,7 +68,7 @@ class Simulation extends Error {}
  * son compte actuel, dans un Duo relié à l'ancien compte — ou (lot 74B)
  * déplacement volontaire journalisé dans `asset_space_moves`. SQL partagé.
  */
-export const PROVEN_MOVE_SQL = (asset: string, to: string, from: string) => `(EXISTS (
+const PROVEN_MOVE_SQL = (asset: string, to: string, from: string) => `(EXISTS (
   SELECT 1 FROM asset_move_requests m
    WHERE m.asset_id = ${asset} AND m.status = 'ACCEPTED' AND m.target_account_id = ${to}
      AND (EXISTS (SELECT 1 FROM accounts fa WHERE fa.id = ${from} AND fa.duo_account_id = m.duo_id)

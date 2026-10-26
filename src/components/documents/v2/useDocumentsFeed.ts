@@ -37,7 +37,7 @@ import type { DocumentItem } from './documents-view';
 export type FeedQuery = Omit<FeedParams, 'cursor' | 'limit'>;
 
 /** Mesures du chargement (DOC-PERF, observabilité) — jamais de contenu. */
-export interface FeedMetrics {
+interface FeedMetrics {
   calls: number;
   errors: number;
   firstLoadMs: number | null;

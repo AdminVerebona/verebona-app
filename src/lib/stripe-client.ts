@@ -103,10 +103,6 @@ export const getStripeServer = (): Stripe => {
   return stripeClient;
 };
 
-
-/** Version d'API figée (LK-72) : toute montée de version est un chantier distinct. */
-export const STRIPE_API_VERSION = '2025-08-27.basil' as const;
-
 /**
  * Contexte de catalogue (LK-02, TC-80) : mode de la clé + environnement
  * applicatif. Les mêmes noms de clés stables existent en test et en live ;

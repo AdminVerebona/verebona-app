@@ -80,10 +80,10 @@ export const COST_CAP_SETTING_KEYS: Readonly<Record<CostCapPlan, string>> = {
 export const COST_CAP_MAX_MICROS = 1_000_000_000;
 
 /** Part du plafond à partir de laquelle l'alerte d'exploitation est émise. */
-export const COST_CAP_ALERT_RATIO = 0.8;
+const COST_CAP_ALERT_RATIO = 0.8;
 
 /** Durée de vie, par instance, de la définition du plafond d'un compte. */
-export const DEFINITION_TTL_MS = 10_000;
+const DEFINITION_TTL_MS = 10_000;
 
 const TZ = 'Europe/Paris';
 
@@ -107,7 +107,7 @@ function debutDeMoisParis(year: number, month: number): Date {
   return new Date(utc - parisOffsetMs(utc - parisOffsetMs(utc)));
 }
 
-export interface CostCapPeriod {
+interface CostCapPeriod {
   /** Début inclus (minuit du 1er, Europe/Paris). */
   start: Date;
   /** Fin exclue = début de la période suivante = date de reprise. */
@@ -142,7 +142,7 @@ export function costCapAnalysisReason(resumeAt: Date): string {
 
 // ── Résolution (pur) ────────────────────────────────────────────────────────
 
-export interface CostCapDefinition {
+interface CostCapDefinition {
   plan: CostCapPlan;
   /** Valeur de l'offre (micro-USD) ; 0 / null = sans plafond. */
   offerCapMicros: number | null;
@@ -161,7 +161,7 @@ export function effectiveCap(d: Pick<CostCapDefinition, 'offerCapMicros' | 'over
   return { capMicros: null, source: null };
 }
 
-export type CostCapLevel = 'none' | 'ok' | 'threshold' | 'reached';
+type CostCapLevel = 'none' | 'ok' | 'threshold' | 'reached';
 
 /** Niveau atteint (pur). */
 export function costCapLevel(spentMicros: number, capMicros: number | null, ratio = COST_CAP_ALERT_RATIO): CostCapLevel {
@@ -175,7 +175,7 @@ export function costCapLevel(spentMicros: number, capMicros: number | null, rati
  * Compte technique des campagnes de mesure et tests du BO
  * (`CORPUS_ACCOUNT_ID`) : jamais plafonné — opérations ou pipeline complet.
  */
-export function isTechnicalAccount(accountId: number, env: NodeJS.ProcessEnv = process.env): boolean {
+function isTechnicalAccount(accountId: number, env: NodeJS.ProcessEnv = process.env): boolean {
   const n = Number(env.CORPUS_ACCOUNT_ID);
   return Number.isInteger(n) && n > 0 && n === accountId;
 }
@@ -275,7 +275,7 @@ export function resetCostCapCache(accountId?: number): void {
   }
 }
 
-export async function costCapDefinition(accountId: number, now = Date.now()): Promise<CostCapDefinition> {
+async function costCapDefinition(accountId: number, now = Date.now()): Promise<CostCapDefinition> {
   const st = currentStore();
   if (!st) return { plan: 'standard', offerCapMicros: null, overrideMicros: null };
   const c = definitions.get(accountId);
@@ -287,7 +287,7 @@ export async function costCapDefinition(accountId: number, now = Date.now()): Pr
   return def;
 }
 
-export interface AccountCostCapStatus extends CostCapDefinition {
+interface AccountCostCapStatus extends CostCapDefinition {
   accountId: number;
   capMicros: number | null;
   source: 'override' | 'offer' | null;

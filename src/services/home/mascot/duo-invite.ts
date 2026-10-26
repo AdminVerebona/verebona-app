@@ -43,7 +43,7 @@
 import type { MascotDuoInvite } from './types';
 
 /** Ancre du panneau d'invitation existant (page « Mon compte »). */
-export const DUO_INVITE_ANCHOR = 'duo-invitation';
+const DUO_INVITE_ANCHOR = 'duo-invitation';
 export const DUO_INVITE_HREF = `/mon-compte#${DUO_INVITE_ANCHOR}`;
 
 /** Statuts d'abonnement Duo qui permettent d'inviter. */
@@ -52,7 +52,7 @@ const INVITABLE_STATUSES = new Set(['ACTIVE', 'TRIALING']);
 /** Fuseau des « mois calendaires » de Verebona. */
 const TZ = 'Europe/Paris';
 
-export interface DuoInviteRow {
+interface DuoInviteRow {
   subscriptionStatus: string;
   pendingInviteEmail: string | null;
   /** Adhésions d'un AUTRE utilisateur que le payeur, pour cette souscription. */

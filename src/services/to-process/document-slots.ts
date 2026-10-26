@@ -39,7 +39,7 @@ import { unnamedLabel } from './card-labels';
 import { parseDocumentDate } from './document-field-evidence';
 
 /** Client de base : transaction en cours ou `db` (même contrat que `resolve-action`). */
-export type SlotClient = Pick<typeof db, 'select' | 'update' | 'insert'>;
+type SlotClient = Pick<typeof db, 'select' | 'update' | 'insert'>;
 
 export interface DocumentSlotState {
   /** Valeur retenue (relation : premier bien rattaché), `null` = absente. */
@@ -51,7 +51,7 @@ export interface DocumentSlotState {
   origin: ValueOrigin | null;
 }
 
-export interface AutoWriteMeta {
+interface AutoWriteMeta {
   origin: ValueOrigin;
   confidence?: number | null;
   evidenceIds?: string[];
@@ -66,7 +66,7 @@ export interface AutoWriteMeta {
 let colonnesNature: { at: number; ok: boolean } | null = null;
 
 /** Colonnes `value_kind` / `derivation` (0444) présentes ? (relu toutes les 5 min). */
-export async function valueKindColumnsReady(): Promise<boolean> {
+async function valueKindColumnsReady(): Promise<boolean> {
   if (colonnesNature && (colonnesNature.ok || Date.now() - colonnesNature.at < 300_000)) return colonnesNature.ok;
   let ok = false;
   try {
@@ -139,7 +139,7 @@ export function formatIsoDate(v: string): string {
   return `${d}/${m}/${y}`;
 }
 
-export const asPositiveId = (v: unknown): number | null => {
+const asPositiveId = (v: unknown): number | null => {
   const n = typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : v;
   return typeof n === 'number' && Number.isInteger(n) && n > 0 ? n : null;
 };
@@ -162,7 +162,7 @@ export async function documentExists(client: SlotClient, accountId: number, file
 }
 
 /** Emplacement générique d'une donnée documentaire du catalogue. */
-export function valueStoreSlot(key: string): DocumentSlot {
+function valueStoreSlot(key: string): DocumentSlot {
   const isDate = getField(key)?.valueType === 'date';
   // Lot 58B : date lue sous une forme NON ambiguë (20:06:2026, 20/06/2026,
   // 20 juin 2026…) → ISO ; forme refusée (année sur deux chiffres,
@@ -226,7 +226,7 @@ export function valueStoreSlot(key: string): DocumentSlot {
 
 // ── supplier : colonne historique asset_files.supplier ──────────────────────
 
-export const SUPPLIER_SLOT: DocumentSlot = {
+const SUPPLIER_SLOT: DocumentSlot = {
   key: 'supplier',
   kind: 'field',
   inputType: 'text',

@@ -82,8 +82,6 @@ const signupSchema = z.object({
   path: ["confirmPassword"],
 });
 
-type SignupFormData = z.infer<typeof signupSchema>;
-
 export function SignupForm(props: { invitation?: SignupFormInvitation | null }) {
   const invitation = props.invitation ?? null;
   const router = useRouter();
@@ -298,7 +296,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
         // sans annonce d'essai (`joined=1`), l'identité rejoignant un compte.
         const duoParam = isDuoInvite ? '&duo=1' : invitation?.kind === 'account' ? '&joined=1' : '';
         router.push(`/verify-email?email=${encodeURIComponent(formData.email)}${refParam}${duoParam}`);
-    } catch (err) {
+    } catch {
       setError('Une erreur est survenue. Veuillez réessayer.');
       setIsLoading(false);
     }

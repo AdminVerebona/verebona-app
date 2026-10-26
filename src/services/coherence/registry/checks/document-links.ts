@@ -45,7 +45,7 @@ import { hashOf, idsOf, intArray, rows } from '../util';
 export const OPEN_DOCUMENT_SQL = `f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL AND COALESCE(f.upload_status, 'COMPLETED') = 'COMPLETED'`;
 
 /** Demande de contrat IA dont dépend la relation document ↔ équipement non démontrée par le document. */
-export const DOCUMENT_EQUIPMENT_CONTRACT = '82D-t3-document-equipement';
+const DOCUMENT_EQUIPMENT_CONTRACT = '82D-t3-document-equipement';
 
 /**
  * Documents rattachés au seul bien alors que leur Opération est liée à des

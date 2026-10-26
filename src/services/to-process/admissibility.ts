@@ -42,13 +42,13 @@ import type { TraceFailure } from './trace-retries';
 
 export const ADMISSIBILITY_VERSION = 'atp-admissibility-v1';
 
-export type AdmissibilityOutcome = RelevanceOutcome | 'ERROR';
+type AdmissibilityOutcome = RelevanceOutcome | 'ERROR';
 
 /**
  * Les six questions du ticket, posées AVANT toute nouvelle carte. `null` :
  * question sans objet pour la famille (ne bloque pas).
  */
-export interface AdmissibilityChecks {
+interface AdmissibilityChecks {
   /** Le problème métier est-il réel ? */
   realProblem: boolean | null;
   /** L'information est-elle nécessaire à une utilisation ou intervention identifiable ? */
@@ -63,7 +63,7 @@ export interface AdmissibilityChecks {
   userDecided: boolean | null;
 }
 
-export interface AdmissibilityInput {
+interface AdmissibilityInput {
   ruleCode: string;
   checks: AdmissibilityChecks;
   /** Motif par question (codes stables), pour le diagnostic. */
@@ -173,7 +173,7 @@ export function familyDecisionSignature(r: FamilyDecisionRecord): string {
 
 let pret: { at: number; ok: boolean } | null = null;
 
-export async function familyDecisionsReady(): Promise<boolean> {
+async function familyDecisionsReady(): Promise<boolean> {
   if (pret && Date.now() - pret.at < 300_000) return pret.ok;
   try {
     const [r] = (await pgClient.unsafe(`SELECT to_regclass('to_process_decisions') IS NOT NULL AS ok`)) as unknown as Array<{ ok: boolean }>;
@@ -193,9 +193,6 @@ export async function durablePassagesReady(): Promise<boolean> {
   } catch { passagesPrets = { at: Date.now(), ok: false }; }
   return passagesPrets.ok;
 }
-
-/** Réservé aux tests : oublie les sondes de présence des tables. */
-export function __resetTraceProbesForTests(): void { pret = null; passagesPrets = null; }
 
 /**
  * Lot 75I (E) — insertion du passage DURABLE dans la MÊME instruction SQL que
@@ -268,24 +265,6 @@ export async function recordFamilyDecision(r: FamilyDecisionRecord, opts: { repl
   }
 }
 
-/**
- * Lot 75I (E) — passages DURABLES d'une évaluation (diagnostic BO), du plus
- * récent au plus ancien, et leur nombre total.
- */
-export async function listDurablePassages(p: { source: 'DOCUMENT_RULE' | 'FAMILY'; evaluationId: number; limit?: number }): Promise<{ total: number; passages: Array<{ at: string; trigger: string; runRef: string | null; kind: string }> }> {
-  if (!(await durablePassagesReady())) return { total: 0, passages: [] };
-  const col = p.source === 'DOCUMENT_RULE' ? 'rule_evaluation_id' : 'family_decision_id';
-  const rows = (await pgClient.unsafe(
-    `SELECT seen_at, trigger_code, run_ref, kind, count(*) OVER () AS total FROM to_process_evaluation_passages
-      WHERE ${col} = $1 ORDER BY id DESC LIMIT $2`,
-    [p.evaluationId, Math.max(1, Math.min(500, p.limit ?? 100))] as never[],
-  )) as unknown as Array<{ seen_at: string; trigger_code: string; run_ref: string | null; kind: string; total: number }>;
-  return {
-    total: Number(rows[0]?.total ?? 0),
-    passages: rows.map((x) => ({ at: new Date(x.seen_at).toISOString(), trigger: x.trigger_code, runRef: x.run_ref, kind: x.kind })),
-  };
-}
-
 /** Décisions récentes d'une famille (diagnostic BO), filtrées. */
 export async function listFamilyDecisions(f: { accountId?: number | null; targetType?: string | null; targetId?: number | null; ruleCode?: string | null; result?: string | null; limit?: number }) {
   if (!(await familyDecisionsReady())) return [];
@@ -310,7 +289,7 @@ export async function listFamilyDecisions(f: { accountId?: number | null; target
 }
 
 /** Rétention (lot 72, C7) : jours de conservation des décisions REMPLACÉES (la dernière de chaque cible est toujours gardée). */
-export const DECISION_TRACE_RETENTION_DAYS = 400;
+const DECISION_TRACE_RETENTION_DAYS = 400;
 
 /**
  * Purge des traces REMPLACÉES plus anciennes que la rétention — jamais la

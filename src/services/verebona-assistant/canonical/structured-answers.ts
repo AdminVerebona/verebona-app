@@ -34,10 +34,11 @@ import {
 import { expenseThemeWords, type ExpenseTheme } from './expense-classes';
 import { findReadableFields, purchaseMention } from './field-vocabulary';
 import { semanticResidue, textMatchesTerms } from '../core/semantic-scope';
+import { plain } from '../core/routing-text';
 
-export interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null }
+interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null }
 
-export type CanonicalStrategy =
+type CanonicalStrategy =
   | 'structured.asset_field' | 'structured.upcoming_agenda' | 'structured.missing_information' | 'structured.sum_qualified'
   // Lot 45 (O6) : lecture « Opération d'abord » (CDC Opérations V1 C15).
   | 'structured.operation_history' | 'structured.claim_status' | 'structured.payments' | 'structured.acquisition_price'
@@ -45,7 +46,7 @@ export type CanonicalStrategy =
   // Lot 54D (§4.3) : coût de possession (service TCO).
   | 'structured.ownership_cost';
 
-export type CanonicalLevel1 =
+type CanonicalLevel1 =
   | { strategy: CanonicalStrategy; answer: string; sources: RetrievedSource[]; claims: Claim[]; kind: 'exact' | 'list' | 'calc' | 'no_result' | 'conflict' }
   | { ambiguous: AssetRow[]; reason: string }
   | ScopeUnresolved
@@ -62,9 +63,8 @@ export interface ScopeUnresolved {
 }
 
 /** Réponse structurée prête (sans ambiguïté). */
-export type CanonicalAnswer = Extract<NonNullable<CanonicalLevel1>, { strategy: CanonicalStrategy }>;
+type CanonicalAnswer = Extract<NonNullable<CanonicalLevel1>, { strategy: CanonicalStrategy }>;
 
-const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
 const claim = (key: string, text: string, sources: RetrievedSource[], derivation: Claim['derivation']): Claim =>
   ({ claimKey: key, text, sourceIds: sources.map((s) => s.id), derivation });
 const assetSrc = (a: AssetRow): RetrievedSource =>
@@ -118,7 +118,7 @@ function purchaseQuestion(message: string): { def: CanonicalFieldDef; phrase: st
  *                    jamais une raison d'abandonner le champ.
  * Mêmes motifs qu'avant le lot 53 : aucune formulation ajoutée.
  */
-export type FieldRequestForm = 'question' | 'command' | 'count' | 'undetermined';
+type FieldRequestForm = 'question' | 'command' | 'count' | 'undetermined';
 export function fieldRequestForm(message: string): FieldRequestForm {
   const m = plain(message);
   if (/\b(combien de|nombre de)\b/.test(m)) return 'count';

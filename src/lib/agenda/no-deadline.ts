@@ -20,7 +20,7 @@ export const NO_DEADLINE_HELP = 'Cette tâche n’a pas de date à respecter.';
 export const NO_DEADLINE_CONFIRM_TITLE = 'Retirer la date ?';
 export const NO_DEADLINE_CONFIRM_BODY = 'Une tâche « Sans échéance » n’a pas de date : la date saisie sera retirée.';
 /** Libellé d'un élément sans date qui n'a pas été déclaré « sans échéance ». */
-export const UNDATED_LABEL = 'Sans date';
+const UNDATED_LABEL = 'Sans date';
 
 /** Champs de date d'un formulaire d'événement. */
 export interface AgendaDateFormState {
@@ -32,7 +32,7 @@ export interface AgendaDateFormState {
 }
 
 /** Une date (début ou fin) est-elle saisie ? (les heures seules ne datent pas l'événement). */
-export function formHasDate(s: Pick<AgendaDateFormState, 'startDate' | 'endDate'>): boolean {
+function formHasDate(s: Pick<AgendaDateFormState, 'startDate' | 'endDate'>): boolean {
   return !!s.startDate || !!s.endDate;
 }
 
@@ -63,13 +63,13 @@ export function undatedLabel(item: { noDeadline?: boolean | null }): string {
 // VALIDATION SERVEUR (création, modification)
 // ══════════════════════════════════════════════════════════════════════════
 
-export interface NoDeadlineWriteInput {
+interface NoDeadlineWriteInput {
   noDeadline?: unknown;
   startDate?: string | null;
   endDate?: string | null;
 }
 
-export type NoDeadlineResolution =
+type NoDeadlineResolution =
   /** `noDeadline` : valeur à écrire (`undefined` = inchangée) ; `clearDates` : dates et heures à vider. */
   | { ok: true; noDeadline: boolean | undefined; clearDates: boolean }
   | { ok: false; error: string };

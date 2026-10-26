@@ -22,13 +22,13 @@ import { and, desc, eq } from 'drizzle-orm';
 import { recordLegalAudit } from './legal-audit.service';
 import { DOCUMENT_TYPE_CGVU, LegalVersionError, getCurrentVersion } from './legal-versions.service';
 
-export type AcceptanceContext =
+type AcceptanceContext =
   | 'ACCOUNT_CREATION'
   | 'TRIAL_START'
   | 'PAID_SUBSCRIPTION'
   | 'VERSION_UPDATE';
 
-export const ACCEPTANCE_CONTEXTS: readonly AcceptanceContext[] = [
+const ACCEPTANCE_CONTEXTS: readonly AcceptanceContext[] = [
   'ACCOUNT_CREATION',
   'TRIAL_START',
   'PAID_SUBSCRIPTION',
@@ -39,7 +39,7 @@ export function isAcceptanceContext(value: unknown): value is AcceptanceContext 
   return typeof value === 'string' && (ACCEPTANCE_CONTEXTS as readonly string[]).includes(value);
 }
 
-export interface RecordAcceptanceInput {
+interface RecordAcceptanceInput {
   userId: number;
   /** Code de la version RÉELLEMENT affichée à l'utilisateur (§18). */
   versionCode: string;
@@ -53,7 +53,7 @@ export interface RecordAcceptanceInput {
   documentType?: string;
 }
 
-export interface AcceptanceRecord {
+interface AcceptanceRecord {
   id: string;
   versionCode: string;
   versionId: string;
@@ -171,7 +171,7 @@ export async function recordAcceptance(
   };
 }
 
-export interface UserAcceptance {
+interface UserAcceptance {
   id: string;
   versionCode: string;
   versionId: string;
@@ -223,7 +223,7 @@ export async function listUserAcceptances(
   }));
 }
 
-export interface ApplicableVersion {
+interface ApplicableVersion {
   versionCode: string;
   versionId: string;
   title: string;

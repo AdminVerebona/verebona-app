@@ -36,18 +36,18 @@ import {
 } from './producers.service';
 import { promoteDueActions } from './priority-scheduler.service';
 
-export const TO_PROCESS_SCAN_LOCK = 'to-process-scan';
+const TO_PROCESS_SCAN_LOCK = 'to-process-scan';
 /** Couvre la durée maximale d'une exécution planifiée (2 × délai + marge). */
-export const TO_PROCESS_SCAN_LOCK_TTL_MS = innerLockTtlMs(TO_PROCESS_SCAN_TIMEOUT_MS);
+const TO_PROCESS_SCAN_LOCK_TTL_MS = innerLockTtlMs(TO_PROCESS_SCAN_TIMEOUT_MS);
 
 /** Comptes au plus par passage (le suivant reprend au curseur). */
-export const TO_PROCESS_SCAN_DEFAULT_LIMIT = 5000;
+const TO_PROCESS_SCAN_DEFAULT_LIMIT = 5000;
 /** Lignes de trace conservées. */
 const TRACE_RETENTION = 500;
 
-export type ScanTrigger = 'schedule' | 'manual' | 'startup' | 'route';
+type ScanTrigger = 'schedule' | 'manual' | 'startup' | 'route';
 
-export interface ToProcessScanResult {
+interface ToProcessScanResult {
   accounts: number;
   created: number;
   updated: number;
@@ -72,7 +72,7 @@ export interface ToProcessScanResult {
 }
 
 /** Bilan d'un passage (lot 75I, B). */
-export interface ScanSummary {
+interface ScanSummary {
   documents: number;
   outcomes: Record<string, number>;
   /** Refus NORMAUX : écriture automatique refusée car la valeur de l'utilisateur est protégée (jamais une erreur). */
@@ -82,7 +82,7 @@ export interface ScanSummary {
 }
 
 /** Erreurs détaillées conservées par passage. */
-export const SCAN_ERROR_DETAILS_MAX = 50;
+const SCAN_ERROR_DETAILS_MAX = 50;
 
 /**
  * Lot 75I (B) — statut d'un passage (pure) :
@@ -101,7 +101,7 @@ export function scanRunStatus(r: { accounts: number; failedAccounts: number; acc
 }
 
 /** Ligne de trace, telle que le BO la lit. */
-export interface ToProcessScanRun {
+interface ToProcessScanRun {
   id: number;
   trigger: ScanTrigger;
   status: 'running' | 'ok' | 'partial' | 'error';

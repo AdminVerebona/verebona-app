@@ -10,9 +10,9 @@ type Exec = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
 const exec = () => pgClient as unknown as Exec;
 
 /** Délai au-delà duquel une prise en charge non terminée est reprise (processus tué). */
-export const WEBHOOK_CLAIM_STALE_MINUTES = 10;
+const WEBHOOK_CLAIM_STALE_MINUTES = 10;
 
-export type WebhookClaim = 'CLAIMED' | 'ALREADY_PROCESSED' | 'IN_PROGRESS';
+type WebhookClaim = 'CLAIMED' | 'ALREADY_PROCESSED' | 'IN_PROGRESS';
 
 /**
  * Prend l'événement en UNE instruction (LK-70) : l'ancien schéma « lire,

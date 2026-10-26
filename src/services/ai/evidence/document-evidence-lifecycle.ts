@@ -107,7 +107,7 @@ export async function retirerAgendaDeLaSource(p: { accountId: number; sourceFile
  * `sourceFileId` leur est retiré. Rend leurs ids
  * (à conserver). Ne lève jamais : en cas d'échec, rien n'est conservé de plus.
  */
-export async function detacherSourcePartagee(p: { accountId: number; sourceFileId: number; assetId: number | null }): Promise<number[]> {
+async function detacherSourcePartagee(p: { accountId: number; sourceFileId: number; assetId: number | null }): Promise<number[]> {
   try {
     const { pgClient } = await import('@/db');
     const rows = (await pgClient.unsafe(
@@ -150,7 +150,7 @@ async function retirerAgenda(deps: LifecycleDeps, accountId: number, sourceFileI
   }
 }
 
-export interface LifecycleOutcome {
+interface LifecycleOutcome {
   withdrawn: number;
   assetIds: number[];
   dryRun: boolean;

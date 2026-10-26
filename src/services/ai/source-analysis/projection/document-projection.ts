@@ -242,7 +242,7 @@ function genericKey(fact: T1Fact): string | null {
  * déjà passé le contrôle de preuve (`checkFactEvidence`).
  */
 /** Analyse projetée : les tableaux servent à compter les lignes d'un ticket (T1-02). */
-export type ProjectableAnalysis = Pick<T1AnalyzeDocumentOutput, 'document' | 'entities' | 'facts'>
+type ProjectableAnalysis = Pick<T1AnalyzeDocumentOutput, 'document' | 'entities' | 'facts'>
   & Partial<Pick<T1AnalyzeDocumentOutput, 'tables' | 'transcription'>>;
 
 export function projectDocumentFacts(

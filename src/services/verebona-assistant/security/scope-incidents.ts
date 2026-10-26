@@ -15,8 +15,8 @@
  * période (`telemetry/observability.repository.ts`).
  */
 
-export const SCOPE_INCIDENT_KINDS = ['CLIENT_ACCOUNT_OVERRIDE'] as const;
-export type ScopeIncidentKind = (typeof SCOPE_INCIDENT_KINDS)[number];
+const SCOPE_INCIDENT_KINDS = ['CLIENT_ACCOUNT_OVERRIDE'] as const;
+type ScopeIncidentKind = (typeof SCOPE_INCIDENT_KINDS)[number];
 
 const compteurs = new Map<ScopeIncidentKind, number>();
 

@@ -24,7 +24,7 @@
 import { createHash } from 'node:crypto';
 import { CATALOG_COUPLES, type BillingPeriod, type PlanCode } from '@/lib/billing/plan-catalog';
 
-export interface ManifestEntry {
+interface ManifestEntry {
   /** Montant TTC en centimes (entier > 0). */
   unitAmountCents: number;
   currency: 'eur';

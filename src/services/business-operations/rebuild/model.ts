@@ -145,7 +145,7 @@ export function computeKeepSet(flags: readonly OperationFlags[], forced: Readonl
 
 // ── Décisions TCO (O-9) : clé `o:` d'une Opération purgée → clé stable `s:` ─
 
-export interface LegacyOperationKey { operationId: number; fact: string; kind: string; amountMinor: number; currency: string }
+interface LegacyOperationKey { operationId: number; fact: string; kind: string; amountMinor: number; currency: string }
 
 /** `o:<Opération>:<nature>:<montant>:<devise>` → éléments, ou null (pure). */
 export function parseLegacyOperationKey(key: string): LegacyOperationKey | null {
@@ -223,7 +223,7 @@ export interface UserDataCounts {
   tcoDecisions: number;
 }
 
-export const USER_DATA_LABELS: Readonly<Record<keyof UserDataCounts, string>> = {
+const USER_DATA_LABELS: Readonly<Record<keyof UserDataCounts, string>> = {
   agendaUserItems: 'Éléments d’agenda saisis',
   agendaModifiedItems: 'Éléments d’agenda modifiés, confirmés ou à statut',
   manualDocumentLinks: 'Liens manuels document ↔ agenda',

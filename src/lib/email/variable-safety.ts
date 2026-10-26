@@ -51,12 +51,12 @@ const DOMAIN = /(?<![\p{L}\p{N}-])(?:[\p{L}\p{N}](?:[\p{L}\p{N}-]{0,61}[\p{L}\p{
 /** U+2024 ONE DOT LEADER : ressemble à un point, n'en est pas un pour un analyseur de liens. */
 const DOT_LOOKALIKE = '\u2024';
 
-export function escapeHtml(v: string): string {
+function escapeHtml(v: string): string {
   return v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 /** Désarme les liens d'un texte (schémas, domaines). */
-export function defangLinks(v: string): string {
+function defangLinks(v: string): string {
   return v
     .replace(SCHEME, '$1[:]//')
     .replace(DANGEROUS_SCHEME, '$1[:]')
@@ -72,13 +72,13 @@ export function neutralizeUserText(value: unknown, opts: { defang?: boolean } = 
 }
 
 /** Bloc HTML produit par le code → texte (version texte de l'e-mail). */
-export function htmlBlockToText(value: string): string {
+function htmlBlockToText(value: string): string {
   return decodeEntities(value.replace(/<br\s*\/?>/gi, '\n').replace(TAG, ''))
     .split('\n').map((l) => l.trim()).filter(Boolean).join('\n');
 }
 
 /** Lien produit par l'application : aucun caractère ne peut sortir d'un attribut. */
-export function safeLink(url: string): string {
+function safeLink(url: string): string {
   return url.trim().replace(/["'<>`\s]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0')}`);
 }
 

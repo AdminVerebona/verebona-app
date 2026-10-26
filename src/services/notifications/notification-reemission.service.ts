@@ -49,7 +49,7 @@ export class ReemissionError extends Error {
   }
 }
 
-export interface ReemissionInput {
+interface ReemissionInput {
   /** Adresse de l'administrateur : le journal d'audit l'exige. */
   actorEmail: string;
   /** Identifiant de la file : un UUID, non un entier. */
@@ -61,7 +61,7 @@ export interface ReemissionInput {
   motif?: string;
 }
 
-export interface ReemissionResult {
+interface ReemissionResult {
   nouvelleId: string;
   eventType: string;
   destinataire: number | null;
@@ -69,7 +69,7 @@ export interface ReemissionResult {
   canaux: ReemissionChannel[] | null;
 }
 
-export interface DeliveryTrace {
+interface DeliveryTrace {
   channel: string;
   status: string;
   pushSubscriptionId: string | null;

@@ -49,7 +49,7 @@ export interface AnnualRenewal {
   rollback?: RollbackView | null;
 }
 
-export interface RollbackBlocker { kind: 'IN_FLIGHT' | 'TO_RECONCILE' | 'UNCERTAIN' | 'NOTIFIED'; jobId: number | null; key: string | null; accountId: number | null; renewalDate: string | null; detail: string | null; since: string | null }
+interface RollbackBlocker { kind: 'IN_FLIGHT' | 'TO_RECONCILE' | 'UNCERTAIN' | 'NOTIFIED'; jobId: number | null; key: string | null; accountId: number | null; renewalDate: string | null; detail: string | null; since: string | null }
 export interface RollbackView {
   status: 'in_progress' | 'completed'; startedAt: string | null; completedAt: string | null; completedBy: number | null; completionMode: 'auto' | 'admin_ack' | null;
   lastCheckAt: string | null; inFlight: number; toReconcile: number; uncertain: number; notified: number; neutralizedTotal: number; arbitratedUncertain: number;
@@ -57,7 +57,7 @@ export interface RollbackView {
 }
 
 /** Lot 76D : éléments empêchant la fin du retour arrière. */
-export const ROLLBACK_BLOCKER_LABELS: Record<RollbackBlocker['kind'], string> = {
+const ROLLBACK_BLOCKER_LABELS: Record<RollbackBlocker['kind'], string> = {
   IN_FLIGHT: 'Appel Resend en cours (attendre)',
   TO_RECONCILE: 'Appel engagé à vérifier (contrôle automatique)',
   UNCERTAIN: 'Acceptation incertaine (décision requise)',

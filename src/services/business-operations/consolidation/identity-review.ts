@@ -54,9 +54,9 @@ import {
 /** Version du contrôle d'identité économique (changer de version relance la réévaluation du stock). */
 export const IDENTITY_REVIEW_VERSION = 'l78a-v1';
 /** Candidats remis en consolidation au plus par passage (le reste aux passages suivants). */
-export const IDENTITY_REVIEW_MARK_LIMIT = 100;
+const IDENTITY_REVIEW_MARK_LIMIT = 100;
 /** Candidats examinés (estampillés ou remis) au plus par passage. */
-export const IDENTITY_REVIEW_SCAN_LIMIT = 2_000;
+const IDENTITY_REVIEW_SCAN_LIMIT = 2_000;
 
 type Row = Record<string, unknown>;
 const rows = async <T = Row>(tx: DbTx, q: SQL): Promise<T[]> => (await tx.execute(q)) as unknown as T[];
@@ -81,15 +81,12 @@ export interface IdentityReviewEntry {
 
 let journalPret: boolean | null = null;
 /** Journal 0609 présent ? (absent : contrôles appliqués, journal non écrit). */
-export async function identityJournalReady(tx: DbTx): Promise<boolean> {
+async function identityJournalReady(tx: DbTx): Promise<boolean> {
   if (journalPret) return true;
   const [r] = await rows<{ ok: boolean }>(tx, sql`SELECT to_regclass('business_operation_identity_reviews') IS NOT NULL AS ok`);
   journalPret = !!r?.ok;
   return journalPret;
 }
-
-/** Tests seulement. */
-export function resetIdentityReviewForTests(): void { journalPret = null; }
 
 /**
  * Journal des contrôles d'un document (dans la transaction de sa
@@ -242,7 +239,7 @@ export class IdentityRestoreRefusedError extends Error {
 }
 
 /** Contrôle introuvable (pour ce compte / cette Opération) ou non rétablissable — compatibilité lot 78A. */
-export class IdentityReviewNotFoundError extends IdentityRestoreRefusedError {
+class IdentityReviewNotFoundError extends IdentityRestoreRefusedError {
   constructor(reviewId: number) {
     super(reviewId, 'NOT_FOUND');
     this.message = `Contrôle d'identité ${reviewId} introuvable ou non rétablissable.`;
@@ -250,7 +247,7 @@ export class IdentityReviewNotFoundError extends IdentityRestoreRefusedError {
   }
 }
 
-export interface RevertOptions {
+interface RevertOptions {
   adminId: number;
   /** E-mail de l'administrateur (journal d'audit ; relu en base si absent). */
   adminEmail?: string;
@@ -262,7 +259,7 @@ export interface RevertOptions {
   reason?: string;
 }
 
-export interface RevertResult {
+interface RevertResult {
   accountId: number; operationId: number; fileId: number; jobId: number | null;
   before: Record<string, unknown>; after: Record<string, unknown>;
 }

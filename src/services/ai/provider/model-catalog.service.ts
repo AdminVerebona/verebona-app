@@ -236,7 +236,7 @@ export async function refreshModelCatalog(
   return { ok: true, modelsSeen: listed.length, disappeared, discovered: nouveaux, listed, probed };
 }
 
-export interface CatalogState {
+interface CatalogState {
   /** `null` : jamais rafraîchi — le catalogue du code fait foi. */
   refreshedAt: string | null;
   lastAttemptAt: string | null;

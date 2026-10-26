@@ -20,7 +20,7 @@ import {
 import { classifyUserFailure } from './failure-classifier';
 import { toUserFile, processingFields } from './user-file';
 
-export { toUserFile, processingFields, TECHNICAL_FILE_FIELDS, type UserProcessingFields } from './user-file';
+export { toUserFile, processingFields,} from './user-file';
 
 type Row = Record<string, unknown>;
 
@@ -29,7 +29,7 @@ type Row = Record<string, unknown>;
  * Illisible (base indisponible) : carte vide, le statut retombe sur l'état
  * du document, jamais sur « en file ».
  */
-export async function loadLiveT1Jobs(fileIds: number[]): Promise<Map<number, LiveJobSnapshot>> {
+async function loadLiveT1Jobs(fileIds: number[]): Promise<Map<number, LiveJobSnapshot>> {
   const ids = [...new Set(fileIds.filter((id) => Number.isInteger(id) && id > 0))];
   const out = new Map<number, LiveJobSnapshot>();
   if (ids.length === 0) return out;
@@ -60,7 +60,7 @@ export async function loadLiveT1Jobs(fileIds: number[]): Promise<Map<number, Liv
   return out;
 }
 
-export interface FileStateInput {
+interface FileStateInput {
   id: number;
   analysisState: string | null | undefined;
   /** Motif TECHNIQUE (serveur seulement) — classé, jamais rendu. */

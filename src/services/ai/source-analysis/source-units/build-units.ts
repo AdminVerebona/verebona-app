@@ -16,22 +16,22 @@ import {
 import type { PageGap, SourceUnit, SourceUnitOrigin, TextSegment } from './types';
 
 /** Bornes d'un bloc de texte : au-delà, le paragraphe est découpé (granularité de la couverture). */
-export const BLOCK_MAX_LINES = 8;
-export const BLOCK_MAX_CHARS = 600;
+const BLOCK_MAX_LINES = 8;
+const BLOCK_MAX_CHARS = 600;
 
-export const tableUnitId = (t: Pick<ExtractedTable, 'index' | 'pageStart'>) => `page:${t.pageStart ?? 1}:table:${t.index + 1}`;
-export const rowUnitId = (t: Pick<ExtractedTable, 'index' | 'pageStart'>, row: number) => `${tableUnitId(t)}:row:${row + 1}`;
+const tableUnitId = (t: Pick<ExtractedTable, 'index' | 'pageStart'>) => `page:${t.pageStart ?? 1}:table:${t.index + 1}`;
+const rowUnitId = (t: Pick<ExtractedTable, 'index' | 'pageStart'>, row: number) => `${tableUnitId(t)}:row:${row + 1}`;
 export const cellUnitId = (t: Pick<ExtractedTable, 'index' | 'pageStart'>, row: number, column: number) =>
   `${rowUnitId(t, row)}:cell:${column + 1}`;
 export const visualUnitId = (o: Pick<VisualObservation, 'page'>, index: number) => `page:${o.page ?? 1}:visual:${index + 1}`;
 export const VISUAL_SUMMARY_UNIT_ID = 'doc:visual:summary';
-export const metaUnitId = (field: string) => `doc:meta:${field}`;
-export const gapUnitId = (g: Pick<PageGap, 'pageStart' | 'pageEnd'>) => `page:${g.pageStart}:gap:${g.pageEnd}`;
+const metaUnitId = (field: string) => `doc:meta:${field}`;
+const gapUnitId = (g: Pick<PageGap, 'pageStart' | 'pageEnd'>) => `page:${g.pageStart}:gap:${g.pageEnd}`;
 
 /** Unité de ligne d'une adresse de cellule (`…:row:4:cell:3` → `…:row:4`). */
 export const unitOfCell = (id: string) => id.replace(/:cell:\d+$/, '');
 
-export interface BuildUnitsInput {
+interface BuildUnitsInput {
   /** Texte lu, par segment (passe principale, lots de pages). */
   segments: TextSegment[];
   tables?: ExtractedTable[];

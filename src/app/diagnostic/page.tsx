@@ -31,7 +31,7 @@ export default function DiagnosticPage() {
           results.localStorage.userId = userData.id;
           results.localStorage.userEmail = userData.email;
           results.localStorage.userName = `${userData.firstName} ${userData.lastName}`;
-        } catch (e) {
+        } catch {
           results.localStorage.userParseError = true;
         }
       }
@@ -106,7 +106,7 @@ export default function DiagnosticPage() {
             const sqlData = await sqlResponse.json();
             results.data.dbAssetsCount = sqlData.rows?.[0]?.count || 0;
           }
-        } catch (e) {
+        } catch {
           // Ignore errors
         }
 
@@ -124,7 +124,7 @@ export default function DiagnosticPage() {
             const sqlData = await sqlResponse.json();
             results.data.dbFilesCount = sqlData.rows?.[0]?.count || 0;
           }
-        } catch (e) {
+        } catch {
           // Ignore errors
         }
       }

@@ -49,7 +49,7 @@ async function q(text: string, params: unknown[] = []): Promise<Raw[]> {
 
 let tableReady: boolean | null = null;
 /** Table 0641 présente ? (mise en cache ; `null` = à relire). */
-export async function processingStatesReady(): Promise<boolean> {
+async function processingStatesReady(): Promise<boolean> {
   if (tableReady !== null) return tableReady;
   try {
     const [r] = await q(`SELECT to_regclass('account_processing_states') IS NOT NULL AS ok`);
@@ -65,7 +65,7 @@ export function __setProcessingStatesReadyForTests(v: boolean | null): void { ta
 
 // ── Neutralisation ──────────────────────────────────────────────────────────
 
-export interface NeutralizationResult {
+interface NeutralizationResult {
   aiJobsPending: number;
   aiJobsRunning: number;
 }
@@ -76,7 +76,7 @@ export interface NeutralizationResult {
  * jeton révoqué, exécutions locales interrompues), motif lisible au BO
  * (« Compte non éligible : … »), marqueur de réexamen. Idempotente.
  */
-export async function neutralizeAccountWork(accountId: number, reason: IneligibilityReason, now: Date = new Date()): Promise<NeutralizationResult> {
+async function neutralizeAccountWork(accountId: number, reason: IneligibilityReason, now: Date = new Date()): Promise<NeutralizationResult> {
   const rows = await q(
     `WITH cibles AS (
        SELECT id, status FROM ai_job_queue
@@ -109,7 +109,7 @@ export async function neutralizeAccountWork(accountId: number, reason: Ineligibi
 
 // ── Reprise ─────────────────────────────────────────────────────────────────
 
-export interface ReactivationContext {
+interface ReactivationContext {
   accountId: number;
   /** Origine de la réactivation (`admin_reactivate`, `subscription_sync`, `eligibility_sync`…). */
   source: string;
@@ -136,7 +136,7 @@ export function listAccountReactivationSteps(): string[] {
   return [...steps.keys()];
 }
 
-export interface ReactivationResult {
+interface ReactivationResult {
   accountId: number;
   source: string;
   steps: Record<string, { ok: boolean; detail?: Record<string, unknown>; error?: string }>;
@@ -196,7 +196,7 @@ export async function onAccountReactivated(
  * file ; un travail devenu sans objet (fichier supprimé…) est écarté par son
  * exécutant comme d'habitude.
  */
-export async function reexamineNeutralizedJobs(ctx: ReactivationContext): Promise<{ examined: number; requeued: number; absorbed: number; refused: number }> {
+async function reexamineNeutralizedJobs(ctx: ReactivationContext): Promise<{ examined: number; requeued: number; absorbed: number; refused: number }> {
   const jobs = await q(
     `SELECT DISTINCT ON (dedupe_key) id, dedupe_key, treatment, target_type, target_id, trigger_code, payload
        FROM ai_job_queue
@@ -235,7 +235,7 @@ export async function reexamineNeutralizedJobs(ctx: ReactivationContext): Promis
 }
 
 /** Déclencheur porté par les travaux du contrôle de rattrapage. */
-export const CATCHUP_TRIGGER = 'account_reactivated';
+const CATCHUP_TRIGGER = 'account_reactivated';
 
 /**
  * Étape 3 (par défaut) — contrôle de rattrapage : rationalisation T3
@@ -243,7 +243,7 @@ export const CATCHUP_TRIGGER = 'account_reactivated';
  * en attente absorbe la demande). Le chantier 82B la remplace par sa campagne
  * de cohérence ciblée sur le compte.
  */
-export async function requestCatchupControl(ctx: ReactivationContext): Promise<{ t3JobId: number | null; decision: string }> {
+async function requestCatchupControl(ctx: ReactivationContext): Promise<{ t3JobId: number | null; decision: string }> {
   const [{ enqueue }, { buildT3Payload }] = await Promise.all([
     import('@/services/ai/queue/job-queue.repository'),
     import('@/services/ai/reconciliation/t3-job-contract'),
@@ -281,9 +281,9 @@ registerAccountReactivationStep('catchup-control', coherenceCatchupControl);
 
 // ── Détection des transitions ───────────────────────────────────────────────
 
-export type TransitionKind = 'none' | 'first_seen' | 'became_ineligible' | 'reactivated';
+type TransitionKind = 'none' | 'first_seen' | 'became_ineligible' | 'reactivated';
 
-export interface SyncResult {
+interface SyncResult {
   accountId: number;
   eligibility: ProcessingEligibility;
   transition: TransitionKind;
@@ -350,7 +350,7 @@ export async function syncAccountEligibilitySafe(accountId: number, source: stri
   }
 }
 
-export interface EligibilitySweepResult {
+interface EligibilitySweepResult {
   examined: number;
   firstSeen: number;
   becameIneligible: number;

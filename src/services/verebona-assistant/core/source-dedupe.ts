@@ -26,7 +26,7 @@ const norm = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCa
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : typeof v === 'number' ? String(v) : null);
 
 /** Clés logiques d'une source : deux sources partageant UNE clé sont des doublons. */
-export function clesLogiques(s: RetrievedSource): string[] {
+function clesLogiques(s: RetrievedSource): string[] {
   const cles: string[] = [];
   const ref = parseEntityRef(s.id);
   cles.push(ref ? `ref:${ref.kind}:${ref.id}` : `id:${s.id}`);

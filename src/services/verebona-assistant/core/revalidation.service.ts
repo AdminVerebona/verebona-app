@@ -42,16 +42,16 @@ import { pgClient } from '@/db';
 import { splitValueAndUnit } from '@/services/ai/knowledge/document-knowledge';
 import type { AiCallBudget } from './ai-call-budget';
 
-export type RevalidationTrigger = 'LOW_CONFIDENCE' | 'CONFLICT' | 'WEAK_EVIDENCE';
-export type RevalidationMode = 'PERSISTED_CONTENT' | 'SOURCE_RECHECK' | 'VISUAL_RECHECK';
+type RevalidationTrigger = 'LOW_CONFIDENCE' | 'CONFLICT' | 'WEAK_EVIDENCE';
+type RevalidationMode = 'PERSISTED_CONTENT' | 'SOURCE_RECHECK' | 'VISUAL_RECHECK';
 /** Provenance attendue par la branche REVALIDATE du master (§24). */
-export type RevalidationProvenance = 'TEXT' | 'VISUAL';
+type RevalidationProvenance = 'TEXT' | 'VISUAL';
 /** Preuve visuelle d'une observation (0161 : `visual_evidence ? 'description'`). */
 export interface VisualEvidence { description: string; page?: number | null }
-export type RevalidationStatus = 'CONFIRMED' | 'CORRECTED' | 'NOT_FOUND' | 'AMBIGUOUS' | 'FAILED';
+type RevalidationStatus = 'CONFIRMED' | 'CORRECTED' | 'NOT_FOUND' | 'AMBIGUOUS' | 'FAILED';
 
 /** Sortie du master REVALIDATE, traduite (`fromT2Revalidate`). */
-export interface RevalidationModelOutput {
+interface RevalidationModelOutput {
   status: 'confirmed' | 'corrected' | 'not_found' | 'ambiguous';
   value?: string | null;
   unit?: string | null;
@@ -63,7 +63,7 @@ export interface RevalidationModelOutput {
 }
 
 /** Fait à vérifier, tel que la base le connaît. */
-export interface FactToCheck {
+interface FactToCheck {
   id: number;
   accountId: number;
   fileId: number;
@@ -91,7 +91,7 @@ export interface FactToCheck {
   assetId: number | null;
 }
 
-export interface RevalidationResult {
+interface RevalidationResult {
   status: RevalidationStatus;
   mode: RevalidationMode;
   value: string | null;
@@ -116,7 +116,7 @@ export interface RevalidationResult {
  * Impact d'une revalidation (T2-27) — tracé dans le signal de lacune. Aucune
  * écriture sur le bien n'a lieu hors de la projection (preuves → T3 → T4).
  */
-export interface RevalidationImpact {
+interface RevalidationImpact {
   assetId: number | null;
   /** La projection (preuves par champ + T3 + candidats T4) a abouti. */
   projected: boolean;
@@ -162,7 +162,7 @@ export const factValue = (f: Pick<FactToCheck, 'valueText' | 'valueNumber'>) =>
  * et porte-t-il la valeur ? Si oui, la valeur est établie par le document
  * lui-même — aucun appel, aucune relecture.
  */
-export function confirmFromPersistedText(f: FactToCheck): boolean {
+function confirmFromPersistedText(f: FactToCheck): boolean {
   const text = f.fullText ? norm(f.fullText) : '';
   const excerpt = norm(f.excerpt ?? '');
   const value = factValue(f);
@@ -174,7 +174,7 @@ export function confirmFromPersistedText(f: FactToCheck): boolean {
 }
 
 /** Fenêtre du texte persisté autour de l'information (jamais tout le document). */
-export function windowAround(f: FactToCheck, max = 6000): string {
+function windowAround(f: FactToCheck, max = 6000): string {
   const text = f.fullText ?? '';
   if (text.length <= max) return text;
   const hay = norm(text);
@@ -186,19 +186,19 @@ export function windowAround(f: FactToCheck, max = 6000): string {
   return text.slice(start, start + max);
 }
 
-export function describeFact(f: FactToCheck): string {
+function describeFact(f: FactToCheck): string {
   return [f.subject, f.attribute ?? f.label ?? f.factKey].filter(Boolean).join(' — ');
 }
 
 /** Un extrait rendu par le modèle en mode PERSISTED_CONTENT doit exister dans le texte. */
-export function excerptIsGrounded(excerpt: string | null | undefined, fullText: string | null): boolean {
+function excerptIsGrounded(excerpt: string | null | undefined, fullText: string | null): boolean {
   if (!excerpt || !fullText) return false;
   const e = norm(excerpt);
   return e.length >= 4 && norm(fullText).includes(e);
 }
 
 /** Problème T1 à signaler, selon le déclencheur et le résultat. */
-export function gapProblem(trigger: RevalidationTrigger, status: RevalidationStatus): string {
+function gapProblem(trigger: RevalidationTrigger, status: RevalidationStatus): string {
   if (status === 'CORRECTED') return 'POORLY_STRUCTURED';
   if (status === 'NOT_FOUND') return 'MISSING';
   if (trigger === 'CONFLICT') return 'CONFLICT';
@@ -291,7 +291,7 @@ export interface RevalidationDeps {
   replaceEvidence?(p: ReplaceEvidenceInput): Promise<ReplaceEvidenceResult>;
 }
 
-export interface ReplaceEvidenceInput {
+interface ReplaceEvidenceInput {
   accountId: number;
   fileId: number;
   assetId: number;
@@ -309,7 +309,7 @@ export interface ReplaceEvidenceInput {
   reconcile?: () => Promise<unknown>;
 }
 
-export interface ReplaceEvidenceResult {
+interface ReplaceEvidenceResult {
   superseded: number;
   /** false : la projection a échoué — rien n'a été retiré. */
   projected: boolean;

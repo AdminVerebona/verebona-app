@@ -30,8 +30,8 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { pgClient } from '@/db';
 
-export const RESEND_WEBHOOK_SECRET_ENV = 'RESEND_WEBHOOK_SECRET';
-export const WEBHOOK_TOLERANCE_S = 5 * 60;
+const RESEND_WEBHOOK_SECRET_ENV = 'RESEND_WEBHOOK_SECRET';
+const WEBHOOK_TOLERANCE_S = 5 * 60;
 
 const EVENT_STATUS: Record<string, { status: string; rank: number }> = {
   'email.sent': { status: 'accepted', rank: 1 },
@@ -47,7 +47,7 @@ const RANK_SQL = `CASE delivery_status
   WHEN 'accepted' THEN 1 WHEN 'delivery_delayed' THEN 2 WHEN 'delivered' THEN 3 WHEN 'complained' THEN 4
   WHEN 'bounced' THEN 5 WHEN 'failed' THEN 5 WHEN 'suppressed' THEN 5 ELSE 0 END`;
 
-export type SignatureCheck = { ok: true } | { ok: false; code: 'NOT_CONFIGURED' | 'MISSING_HEADERS' | 'STALE_TIMESTAMP' | 'BAD_SIGNATURE' };
+type SignatureCheck = { ok: true } | { ok: false; code: 'NOT_CONFIGURED' | 'MISSING_HEADERS' | 'STALE_TIMESTAMP' | 'BAD_SIGNATURE' };
 
 /** Vérification Svix (Resend). Pure : secret et horloge injectables. */
 export function verifySvixSignature(

@@ -19,7 +19,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { currentJobContext } from '../queue/job-context';
 import { t6FormulateExecutionId } from './identity';
 
-export interface BusinessExecutionContext {
+interface BusinessExecutionContext {
   /** Une ou plusieurs exécutions servies par les appels de ce contexte. */
   ids: readonly string[];
   /** Appelant à l'origine de l'exécution (SEM-06), repris dans le rapport T1. */

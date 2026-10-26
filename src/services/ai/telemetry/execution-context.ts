@@ -24,7 +24,7 @@
 import type { AiEnvironment } from '../config/environment';
 import { getBuildIdentity } from '@/lib/runtime-identity';
 
-export interface ExecutionContext {
+interface ExecutionContext {
   /** Version IA effective au moment de l'appel. */
   configVersionId: number | null;
   /** Commit applicatif déployé (GEN-008). */

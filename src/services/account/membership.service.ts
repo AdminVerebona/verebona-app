@@ -36,7 +36,7 @@ import { invalidateAccountReadCache, invalidateUserReadCache } from '@/lib/serve
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Runner = typeof db | Tx;
 
-export const ACTIVE_MEMBERSHIP_STATUSES = ['active', 'ACTIVE'] as const;
+const ACTIVE_MEMBERSHIP_STATUSES = ['active', 'ACTIVE'] as const;
 export type MembershipRole = 'owner' | 'admin' | 'member';
 
 /** Places d'une offre partagée, à défaut de `max_members` cohérent (comptes historiques). */
@@ -49,7 +49,7 @@ export function accountCapacity(account: { planType: string | null; maxMembers: 
 // ── Lecture ─────────────────────────────────────────────────────────────────
 
 /** Adhésion ACTIVE de `userId` sur `accountId` (rôle), ou null. */
-export async function getActiveMembership(
+async function getActiveMembership(
   userId: number,
   accountId: number,
   runner: Runner = db,
@@ -98,7 +98,7 @@ export async function getSessionRole(session: { userId: number; currentAccountId
   return legacy ? 'owner' : null;
 }
 
-export const NOT_ACCOUNT_OWNER_MESSAGE =
+const NOT_ACCOUNT_OWNER_MESSAGE =
   'Cette action est réservée au titulaire du compte (facturation, abonnement, membres, administration).';
 
 /**
@@ -150,7 +150,7 @@ export async function markAccountSelected(userId: number, accountId: number, run
 
 // ── Rattachement par invitation Duo ─────────────────────────────────────────
 
-export type DuoJoinError =
+type DuoJoinError =
   | 'MISSING_TOKEN'
   | 'INVALID_TOKEN'
   | 'USED_TOKEN'
@@ -363,7 +363,7 @@ export async function joinDuoByInvitation(p: { userId: number; email: string; to
 
 // ── Fin d'adhésion ──────────────────────────────────────────────────────────
 
-export type MembershipEndKind = 'left' | 'removed';
+type MembershipEndKind = 'left' | 'removed';
 
 /**
  * Fin d'adhésion d'un membre (non titulaire) dans une transaction existante :
@@ -409,7 +409,7 @@ export function afterMembershipEnded(accountId: number | null, userId: number): 
  * CDC Assistant §25.7 : droits modifiés (entrée ou sortie d'un membre).
  * Non bloquant.
  */
-export function signalPermissionsChanged(accountId: number | null): void {
+function signalPermissionsChanged(accountId: number | null): void {
   void import('@/services/verebona-assistant/events/business-events')
     .then(({ emitBusinessEvent }) => emitBusinessEvent({ type: 'ACCOUNT_PERMISSION_CHANGED', accountId }))
     .catch(() => { /* non bloquant */ });
@@ -484,7 +484,7 @@ export async function listUserSpaces(userId: number, currentAccountId: number | 
     }));
 }
 
-export type PersonalSpaceResult =
+type PersonalSpaceResult =
   | { ok: true; accountId: number; trialGranted: boolean }
   | { ok: false; error: 'ALREADY_HAS_OWN_SPACE' };
 

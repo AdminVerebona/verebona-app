@@ -51,7 +51,7 @@ import { runWithConfigSnapshot } from '../config/execution-snapshot';
 import '../config/config-resolver';
 import { newT1ExecutionId } from '../business-execution/identity';
 
-export interface AnalyzeFileSourcesOptions {
+interface AnalyzeFileSourcesOptions {
   /** Déduit du premier fichier si absent — l'ancienne signature ne le portait pas. */
   userId?: number;
   linkedAssetId?: number | null;

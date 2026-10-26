@@ -12,9 +12,9 @@
  */
 import { pgClient } from '@/db';
 import type { PlanCode } from '@/lib/billing/plan-catalog';
-import type { CatalogSnapshot, ResolvedPrice } from './catalog-types';
+import type { CatalogSnapshot } from './catalog-types';
 
-export type PublicationState = 'PREPARED' | 'VALIDATING' | 'PUBLISHING' | 'READY' | 'ACTIVE' | 'FAILED' | 'RECOVERING' | 'SUPERSEDED';
+type PublicationState = 'PREPARED' | 'VALIDATING' | 'PUBLISHING' | 'READY' | 'ACTIVE' | 'FAILED' | 'RECOVERING' | 'SUPERSEDED';
 
 export interface CatalogStateRow {
   catalogContext: string;
@@ -71,8 +71,8 @@ export interface PriceVersionRow {
   lastVerifiedAt?: Date | null;
 }
 
-export type RunKind = 'sync' | 'backfill' | 'publish' | 'rollback' | 'revaluation';
-export type RunState = PublicationState | 'DONE' | 'NOOP';
+type RunKind = 'sync' | 'backfill' | 'publish' | 'rollback' | 'revaluation';
+type RunState = PublicationState | 'DONE' | 'NOOP';
 
 export interface CatalogRunRow {
   id: number;
@@ -112,7 +112,7 @@ export interface CatalogRecoveryRow {
   updatedAt?: Date | null;
 }
 
-export interface ActivationInput {
+interface ActivationInput {
   context: string;
   stripeAccountId: string | null;
   livemode: boolean | null;
@@ -505,21 +505,3 @@ export function codeVersion(env: NodeJS.ProcessEnv = process.env): string {
   return (env.SOURCE_VERSION || env.CONTAINER_VERSION || env.APP_VERSION || 'dev').slice(0, 40);
 }
 
-/** Registre → prix résolu (pour une photographie amorcée depuis le registre). */
-export function versionToResolved(v: PriceVersionRow, verifiedAt: string): ResolvedPrice {
-  return {
-    planCode: v.planCode,
-    billingPeriod: v.billingPeriod,
-    lookupKey: v.logicalLookupKey,
-    priceId: v.stripePriceId,
-    productId: v.stripeProductId,
-    unitAmountCents: v.unitAmountCents,
-    currency: 'eur',
-    interval: v.interval,
-    intervalCount: 1,
-    taxBehavior: v.taxBehavior as ResolvedPrice['taxBehavior'],
-    livemode: Boolean(v.livemode),
-    priceRevision: v.priceRevision,
-    verifiedAt,
-  };
-}

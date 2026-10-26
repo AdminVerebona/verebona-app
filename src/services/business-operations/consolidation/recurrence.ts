@@ -60,7 +60,7 @@ import type { BusinessOperationTypeCode, ReferenceKind } from '../model';
 import { billingPeriodKey, hasRecurringPeriod, type CandidateIdentity } from './model';
 
 /** Opération telle que la règle de série la lit (sous-ensemble de `ExistingOperation`). */
-export interface SeriesOperationView {
+interface SeriesOperationView {
   id: number;
   typeCode: BusinessOperationTypeCode | null;
   providerKey: string | null;
@@ -78,9 +78,9 @@ export interface SeriesOperationView {
   agendaOnly?: boolean;
 }
 
-export type SeriesLevel = 'ESTABLISHED' | 'DISTINCT' | 'NONE';
+type SeriesLevel = 'ESTABLISHED' | 'DISTINCT' | 'NONE';
 
-export interface SeriesAssessment {
+interface SeriesAssessment {
   level: SeriesLevel;
   /** Clés de service communes (`CONTRACT:X`, `CUSTOMER:Y`, `EQUIPMENT:12`). */
   keys: string[];
@@ -92,7 +92,7 @@ export interface SeriesAssessment {
 const TYPES_SERIE = new Set<BusinessOperationTypeCode | null>(['CONTRACT', 'INTERVENTION', 'OTHER', null]);
 
 /** Familles de références qui IDENTIFIENT un service récurrent (jamais une facture). */
-export const SERIES_REFERENCE_FAMILIES: ReadonlyArray<readonly ReferenceKind[]> = [['CONTRACT', 'POLICY'], ['CUSTOMER']];
+const SERIES_REFERENCE_FAMILIES: ReadonlyArray<readonly ReferenceKind[]> = [['CONTRACT', 'POLICY'], ['CUSTOMER']];
 
 const refSet = (refs: ReadonlyArray<{ kind: ReferenceKind; normalized: string }>, kinds: readonly ReferenceKind[]) =>
   new Set(refs.filter((r) => kinds.includes(r.kind)).map((r) => r.normalized));
@@ -128,7 +128,7 @@ export function periodsOverlap(a: string, b: string): boolean {
 }
 
 /** Le candidat porte-t-il une relation récurrente (échéance, ou document de contrat) ? Pure. */
-export const isRecurringCandidate = (c: Pick<CandidateIdentity, 'hints' | 'type'>): boolean => c.type === 'CONTRACT' || hasRecurringPeriod(c);
+const isRecurringCandidate = (c: Pick<CandidateIdentity, 'hints' | 'type'>): boolean => c.type === 'CONTRACT' || hasRecurringPeriod(c);
 
 /**
  * Identité de série d'un candidat face à une Opération (pure, symétrique sur

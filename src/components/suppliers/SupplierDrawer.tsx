@@ -56,7 +56,7 @@ interface ReviewItem {
   status: string;
 }
 
-export interface SupplierData {
+interface SupplierData {
   id: number;
   publicId: string;
   name: string;
@@ -92,12 +92,6 @@ const CONTACT_STATUS_CONFIG: Record<string, { label: string; color: string; icon
   unverified: { label: 'Non vérifié', color: 'text-[color:var(--attention-on-soft)] bg-[color:var(--attention-soft)] border-[color:var(--attention-edge)]', icon: <HelpCircle className="w-3 h-3" /> },
   partially_verified: { label: 'Partiellement vérifié', color: 'text-[color:var(--accent)] bg-[color:var(--accent-soft)] border-[color:var(--border-info)]', icon: <CheckCircle2 className="w-3 h-3" /> },
   verified: { label: 'Vérifié', color: 'text-[color:var(--text-success)] bg-[color:var(--bg-success)] border-[color:var(--border-success)]', icon: <CheckCircle2 className="w-3 h-3" /> },
-};
-
-const SOURCE_CONFIG: Record<string, { label: string; color: string }> = {
-  manual: { label: 'Saisie manuelle', color: 'text-[color:var(--text-muted)] bg-[color:var(--bg-subtle)] border-[color:var(--border-subtle)]' },
-  document_extraction: { label: 'Extraction IA', color: 'text-[color:var(--accent)] bg-[color:var(--accent-soft)] border-[color:var(--border-info)]' },
-  imported: { label: 'Importé', color: 'text-[color:var(--accent)] bg-[color:var(--accent-soft)] border-[color:var(--border-info)]' },
 };
 
 const CONFLICT_FIELD_LABELS: Record<string, string> = {
@@ -257,7 +251,6 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
   };
 
   const statusCfg = supplier ? (CONTACT_STATUS_CONFIG[supplier.contactStatus] ?? CONTACT_STATUS_CONFIG.unverified) : null;
-  const sourceCfg = supplier ? (SOURCE_CONFIG[supplier.source] ?? SOURCE_CONFIG.manual) : null;
 
   return (
     <>

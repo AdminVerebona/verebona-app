@@ -19,7 +19,7 @@ import type { ScheduleFacts } from './document-derivations';
 import type { SemanticResolution } from '@/services/ai/reconciliation/knowledge-query/service';
 
 /** Source des faits issus du traitement sémantique (diagnostic, pertinence). */
-export const SEMANTIC_SOURCE = 'T3_SEMANTIC';
+const SEMANTIC_SOURCE = 'T3_SEMANTIC';
 /** Confiance d'une valeur comprise (modèle certain, preuve T1 fiable) : proposition, jamais écriture automatique. */
 export const SEMANTIC_PROPOSAL_CONFIDENCE = 0.6;
 /** Confiance d'une valeur comprise incertaine, ambiguë ou contradictoire. */

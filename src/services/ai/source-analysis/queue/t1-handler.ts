@@ -360,7 +360,7 @@ export async function t1FailedBusinessResult(fileId: number): Promise<JobBusines
  * fichier ANALYZING à « non analysé » pendant que l'autre analyse tourne.
  * Lecture illisible : on laisse le pipeline faire (comportement antérieur).
  */
-export async function analyseConcurrenteEnCours(
+async function analyseConcurrenteEnCours(
   fileId: number, job: Pick<QueuedJob, 'recoveredCount'>, now: number = Date.now(),
 ): Promise<boolean> {
   if ((job.recoveredCount ?? 0) > 0) return false;

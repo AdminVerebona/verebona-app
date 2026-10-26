@@ -179,66 +179,6 @@ export function sanitizeFilename(filename: string): string | null {
   return sanitized;
 }
 
-/**
- * Verify file type via magic bytes
- * Returns { valid: boolean, detectedMime?: string, error?: string }
- */
-export async function verifyFileMagicBytes(
-  buffer: Buffer,
-  expectedMime: string
-): Promise<{ valid: boolean; detectedMime?: string; error?: string }> {
-  // Text files have no magic bytes
-  if (expectedMime === 'text/plain' || expectedMime === 'text/csv') {
-    return { valid: true, detectedMime: expectedMime };
-  }
-
-  // MP4/MOV/QuickTime: detect by searching for 'ftyp' box anywhere in first 32 bytes
-  if (expectedMime === 'video/mp4' || expectedMime === 'video/quicktime') {
-    const header = buffer.slice(0, 32).toString('ascii', 4, 8);
-    if (header === 'ftyp' || header === 'wide' || header === 'mdat' || header === 'moov') {
-      return { valid: true, detectedMime: expectedMime };
-    }
-    // Also check at offset 0 for some variants
-    const altHeader = buffer.slice(0, 12).toString('ascii', 4, 8);
-    if (altHeader === 'ftyp') {
-      return { valid: true, detectedMime: expectedMime };
-    }
-    return { valid: false, error: 'File content does not match declared MIME type (magic bytes mismatch)' };
-  }
-
-  const magicInfo = MAGIC_BYTES[expectedMime];
-  if (!magicInfo) {
-    return { valid: false, error: 'MIME type not in allowed list' };
-  }
-
-  // Check if any magic byte signature matches
-  for (const signature of magicInfo.bytes) {
-    if (signature.length === 0) continue; // Skip empty signatures (text files)
-
-    const matches = signature.every((byte, index) => {
-      if (index >= buffer.length) return false;
-      return buffer[index] === byte;
-    });
-
-    if (matches) {
-      // Special case for WEBP: check for "WEBP" at offset 8
-      if (expectedMime === 'image/webp') {
-        const webpMarker = buffer.slice(8, 12).toString('ascii');
-        if (webpMarker === 'WEBP') {
-          return { valid: true, detectedMime: expectedMime };
-        }
-      } else {
-        return { valid: true, detectedMime: expectedMime };
-      }
-    }
-  }
-
-  return {
-    valid: false,
-    error: 'File content does not match declared MIME type (magic bytes mismatch)',
-  };
-}
-
 // Extension-to-MIME fallback map for browsers that report wrong MIME types
 const EXTENSION_MIME_MAP: Record<string, string> = {
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',

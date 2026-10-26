@@ -33,7 +33,7 @@ import { RENAMED_ASSET_CATEGORIES } from './asset-category-legacy';
 
 export type AssetFamilyCode = 'VEHICULE' | 'IMMOBILIER' | 'OBJECT';
 
-export interface AssetCategoryOption {
+interface AssetCategoryOption {
   /** Valeur enregistrée (subtype, ou code OBJECT_CATEGORY_* pour Objet). */
   value: string;
   label: string;
@@ -54,7 +54,7 @@ export interface AssetCategoryOption {
 /** Genre grammatical d'un nom (référentiel des biens, source unique). */
 export type GrammaticalGender = 'm' | 'f';
 
-export interface AssetFamilyDefinition {
+interface AssetFamilyDefinition {
   code: AssetFamilyCode;
   label: string;
   categories: AssetCategoryOption[];
@@ -125,7 +125,7 @@ export const ASSET_FAMILIES: AssetFamilyDefinition[] = [
 
 const FAMILY_BY_CODE = new Map(ASSET_FAMILIES.map((f) => [f.code, f]));
 
-export function getAssetFamily(code: string | null | undefined): AssetFamilyDefinition | undefined {
+function getAssetFamily(code: string | null | undefined): AssetFamilyDefinition | undefined {
   return code ? FAMILY_BY_CODE.get(code as AssetFamilyCode) : undefined;
 }
 
@@ -160,7 +160,7 @@ const LEGACY_FAMILY_LABELS: Record<string, string> = Object.fromEntries(
 );
 
 /** Statut d'un code de famille : proposé (ACTIVE), ancien mais lisible, inconnu. */
-export type ReferentialStatus = 'ACTIVE' | 'LEGACY_SUPPORTED' | 'UNKNOWN';
+type ReferentialStatus = 'ACTIVE' | 'LEGACY_SUPPORTED' | 'UNKNOWN';
 
 /**
  * RÉSOLVEUR UNIQUE des familles (ticket « Référentiels » §B) : code actuel,
@@ -373,7 +373,7 @@ export function categoryOptionsWithCurrent(
  * Mots GÉNÉRIQUES de bien : ils désignent les biens sans famille ni
  * catégorie (« mes biens », « mon patrimoine »).
  */
-export const ASSET_GENERIC_TERMS: readonly string[] = ['bien', 'propriété', 'patrimoine', 'possession', 'actif'];
+const ASSET_GENERIC_TERMS: readonly string[] = ['bien', 'propriété', 'patrimoine', 'possession', 'actif'];
 
 let generiques: Set<string> | null = null;
 function formesGeneriques(): Set<string> {
@@ -477,7 +477,7 @@ export function assetSearchSynonyms(word: string): string[] {
 const DETERMINANTS = new Set(['le', 'la', 'les', 'l', 'un', 'une', 'des', 'du', 'de', 'd', 'mon', 'ma', 'mes', 'ton', 'ta', 'tes',
   'son', 'sa', 'ses', 'notre', 'nos', 'votre', 'vos', 'leur', 'leurs', 'ce', 'cet', 'cette', 'ces', 'chez', 'au', 'aux']);
 
-export interface AssetNameGrammar {
+interface AssetNameGrammar {
   gender: GrammaticalGender;
   /** Nom à employer après l'article (libellé de catégorie mis en minuscules). */
   name: string;

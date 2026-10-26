@@ -48,7 +48,7 @@ function periodeDe(message: string): PeriodeResolue | null {
 const CONTEXTUAL_MIN = 2;
 const CONTEXTUAL_MAX = 6;
 /** Candidats présentés au plus à T2 pour l'arbitrage (lot 54E, #419 écart 1). */
-export const ARBITRATION_MAX = 12;
+const ARBITRATION_MAX = 12;
 
 /** Candidat présenté à T2 (référence OPAQUE, données déjà bornées par le serveur). */
 export interface ArbitrationCandidate {
@@ -63,7 +63,7 @@ export interface ArbitrationCandidate {
 }
 
 /** Ports utilisés par l'étape (sous-ensemble de `OrchestratorPorts`). */
-export interface SemanticPorts {
+interface SemanticPorts {
   resolveTargets?(input: AssistantRequestInput, route: IntentRoute): Promise<AssistantTargets>;
   listBusinessSources?(accountId: number, req: { assetIds: number[]; assetNames?: Record<number, string>; need: SemanticNeed; includeUntargeted?: boolean }): Promise<{ sources: BusinessSource[]; domains: string[] }>;
   readBusinessSource?(accountId: number, ref: string, ctx: { assetIds: number[]; assetNames?: Record<number, string> }): Promise<BusinessSource | null>;
@@ -81,7 +81,7 @@ export type SemanticOutcome =
   | { kind: 'continue' };
 
 /** Phrase « information insuffisante » (jamais « rien trouvé » d'un total plus large). */
-export function insufficientMessage(terms: readonly string[], assetName: string | null): string {
+function insufficientMessage(terms: readonly string[], assetName: string | null): string {
   const sujet = terms.length ? ` sur « ${terms.slice(0, 3).join(' ')} »` : '';
   return `Je n’ai trouvé aucune donnée${sujet}${assetName ? ` pour ${assetName}` : ''} qui réponde précisément à votre question. `
     + 'Je préfère ne pas vous donner un total plus large qui n’y répondrait pas : précisez le contrat, le service ou le document concerné.';
@@ -124,7 +124,7 @@ function repondre(
 // ══════════════════════════════════════════════════════════════════════════
 
 /** Source temporaire d'une information de contexte (pure, testée). */
-export function contextFactSource(f: ValidatedContextFact, assetId: number | null): BusinessSource {
+function contextFactSource(f: ValidatedContextFact, assetId: number | null): BusinessSource {
   const date = f.valueType === 'date' ? f.value : null;
   const montant = f.valueType === 'money_eur' && Number.isFinite(Number(f.value)) ? Math.round(Number(f.value) * 100) : null;
   const affiche = date ? frDateIso(date) : f.value;
@@ -151,13 +151,13 @@ function contextAnswer(s: BusinessSource, assetName: string | null): { text: str
 }
 
 /** Phrase « information de contexte non utilisée » (jamais un abandon silencieux). */
-export function unusedContextNote(facts: readonly ValidatedContextFact[]): string {
+function unusedContextNote(facts: readonly ValidatedContextFact[]): string {
   if (!facts.length) return '';
   const liste = facts.map((f) => `« ${f.label} » : ${f.valueType === 'date' ? frDateIso(f.value) : f.value}`).join(', ');
   return ` L’information indiquée dans votre message (${liste}) n’a pas servi à cette réponse ; elle n’a pas été enregistrée.`;
 }
 
-export interface SemanticStageParams {
+interface SemanticStageParams {
   input: AssistantRequestInput;
   route: IntentRoute;
   ports: SemanticPorts;

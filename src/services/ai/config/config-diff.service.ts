@@ -30,9 +30,9 @@ import {
   type GuardrailSetting, type TriggerSetting,
 } from './config-types';
 
-export type ChangeKind = 'added' | 'removed' | 'modified';
+type ChangeKind = 'added' | 'removed' | 'modified';
 
-export interface FieldChange {
+interface FieldChange {
   field: ConfigFieldKey;
   label: string;
   kind: ChangeKind;
@@ -131,7 +131,7 @@ function diffByCode<T extends { code: string }>(
   return out;
 }
 
-export function diffTreatment(base: TreatmentConfig, candidate: TreatmentConfig): TreatmentDiff {
+function diffTreatment(base: TreatmentConfig, candidate: TreatmentConfig): TreatmentDiff {
   return {
     treatment: candidate.treatment,
     changes: [

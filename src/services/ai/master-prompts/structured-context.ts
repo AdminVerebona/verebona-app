@@ -52,7 +52,7 @@ export const LEGACY_EXECUTION: MasterExecutionConfig = Object.freeze({
   mode: 'LEGACY_TEMPLATE', inputContractVersion: null, outputContractVersion: null, allowedTasks: null,
 }) as MasterExecutionConfig;
 
-export interface InputFieldSpec {
+interface InputFieldSpec {
   /** Variable historique (mode LEGACY_TEMPLATE) portant la même donnée. */
   legacyVariable: string;
   description: string;
@@ -86,7 +86,7 @@ export interface StructuredContextSpec {
 }
 
 /** Contrats d'exécution déclarés (T4 seulement au lot 34D). */
-export const STRUCTURED_CONTEXT_SPECS: Readonly<Record<string, StructuredContextSpec>> = {
+const STRUCTURED_CONTEXT_SPECS: Readonly<Record<string, StructuredContextSpec>> = {
   [T4_EXECUTION_SPEC.masterPromptCode]: T4_EXECUTION_SPEC,
 };
 
@@ -94,12 +94,8 @@ export function structuredSpecFor(masterPromptCode: string | null | undefined): 
   return masterPromptCode ? STRUCTURED_CONTEXT_SPECS[masterPromptCode] ?? null : null;
 }
 
-export function structuredSpecForTreatment(treatment: string): StructuredContextSpec | null {
-  return Object.values(STRUCTURED_CONTEXT_SPECS).find((s) => s.treatment === treatment) ?? null;
-}
-
 /** Libellé du bloc injecté (stable : identifiable dans le prompt et les traces). */
-export const EXECUTION_CONTEXT_LABEL = 'EXECUTION_CONTEXT';
+const EXECUTION_CONTEXT_LABEL = 'EXECUTION_CONTEXT';
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -145,7 +141,7 @@ export function executionSignature(c: MasterExecutionConfig): string {
   return `ctx:${c.inputContractVersion ?? '?'}/${c.outputContractVersion ?? '?'}/${(c.allowedTasks ?? ['*']).join('+')}`;
 }
 
-export interface ExecutionConfigIssue {
+interface ExecutionConfigIssue {
   code: string;
   message: string;
   field: 'mode' | 'inputContractVersion' | 'outputContractVersion' | 'allowedTasks';
@@ -206,7 +202,7 @@ export function checkExecutionConfig(
 // ── Construction du contexte ─────────────────────────────────────────────────
 
 /** Étape où la construction a échoué (rapport : TASK, champ, contrat, étape). */
-export type ContextStep = 'task' | 'input_contract' | 'output_contract' | 'required_fields' | 'types' | 'serialization';
+type ContextStep = 'task' | 'input_contract' | 'output_contract' | 'required_fields' | 'types' | 'serialization';
 
 export class StructuredContextError extends Error {
   constructor(
@@ -236,7 +232,7 @@ export interface BuiltExecutionContext {
 }
 
 /** JSON à clés triées (même entrée ⇒ même texte, quel que soit l'ordre de construction). */
-export function stableStringify(v: unknown): string {
+function stableStringify(v: unknown): string {
   return JSON.stringify(sortKeys(v));
 }
 

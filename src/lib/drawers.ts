@@ -55,7 +55,7 @@ export function parseDrawerParam(value: string | null | undefined): DrawerTarget
   return { kind, id };
 }
 
-export function drawerParam(t: Pick<DrawerTarget, 'kind' | 'id'>): string {
+function drawerParam(t: Pick<DrawerTarget, 'kind' | 'id'>): string {
   return `${t.kind}:${t.id}`;
 }
 
@@ -77,7 +77,7 @@ export function drawerHref(t: Pick<DrawerTarget, 'kind' | 'id'>, path = '/accuei
  * lui-même SOUS le tiroir d'origine (document → équipement → document), et
  * la nouvelle fiche y resterait cachée.
  */
-export interface OpenDrawerOptions {
+interface OpenDrawerOptions {
   stack?: boolean;
   /**
    * Lot 76E — élément qui reprend le focus à la fermeture du tiroir document

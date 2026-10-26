@@ -7,13 +7,12 @@
  */
 export * from './types';
 export {
-  ENTITY_MIRRORS, buildCanonicalEntityState, fieldTargetsEntity, getCanonicalEntityState, listAssetEntities,
-  listEntityFields, loadAssetEntityRows, loadEntityRow, readEntityFieldState, resolveEntityDef,
+  ENTITY_MIRRORS, buildCanonicalEntityState, fieldTargetsEntity, getCanonicalEntityState,
+  loadAssetEntityRows, loadEntityRow, resolveEntityDef,
 } from './entity-view';
 export {
   planEntityWrites, recordManualEntityEdit, writeCanonicalEntityField, writeCanonicalEntityFields,
-  type EntityWritePlan,
 } from './write-canonical-entity-field';
 export {
-  aiFieldUpdatesTargetReady, entityCanonicalColumnsReady, __resetAiFieldUpdatesTargetForTests, __resetEntityColumnsForTests,
+  entityCanonicalColumnsReady, __resetAiFieldUpdatesTargetForTests, __resetEntityColumnsForTests,
 } from './entity-schema';

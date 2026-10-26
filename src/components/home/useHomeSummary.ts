@@ -28,7 +28,7 @@ import { createCoalescedRefresh, type CoalescedRefresh } from '@/lib/home/coales
 import type { HomeSummaryPayload } from '@/services/home/HomeSummaryService';
 
 /** Événements qui invalident le résumé (une même action en émet plusieurs). */
-export const HOME_SUMMARY_EVENTS = [
+const HOME_SUMMARY_EVENTS = [
   'document-added',
   'document-deleted',
   'document-analysis-complete',
@@ -38,9 +38,9 @@ export const HOME_SUMMARY_EVENTS = [
 ] as const;
 
 /** Fenêtre de regroupement des événements d'une même action (ms). */
-export const HOME_REFRESH_WINDOW_MS = 300;
+const HOME_REFRESH_WINDOW_MS = 300;
 /** Retour sur l'onglet : relecture si la dernière date de plus de… (ms). */
-export const HOME_VISIBILITY_REFRESH_MS = 30_000;
+const HOME_VISIBILITY_REFRESH_MS = 30_000;
 
 /**
  * Début de la dernière lecture acceptée, conservé entre deux visites de
@@ -49,7 +49,7 @@ export const HOME_VISIBILITY_REFRESH_MS = 30_000;
  */
 let lastHomeSummaryLoadAt = 0;
 
-export type HomeSummaryStatus = 'loading' | 'ready' | 'error';
+type HomeSummaryStatus = 'loading' | 'ready' | 'error';
 
 function lireDrapeau(cle: string): boolean {
   try {

@@ -116,7 +116,7 @@ export interface CheckContext {
   accountScope?: AccountScope;
 }
 
-export interface CheckEvent {
+interface CheckEvent {
   /** Type d'événement métier (`DOCUMENT_UPDATED`, `SOURCE_ANALYZED`…). */
   type: string;
   entityId: number | null;

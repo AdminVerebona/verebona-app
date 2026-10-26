@@ -57,7 +57,7 @@ export class AttachmentRequestBuildError extends Error {
 }
 
 /** URI accessible nativement par Gemini (reprise de l'ancien `gemini-client`). */
-export function isProviderNativeUri(url: string): boolean {
+function isProviderNativeUri(url: string): boolean {
   return url.startsWith('gs://') || url.startsWith('https://generativelanguage.googleapis.com/');
 }
 
@@ -87,7 +87,7 @@ export function describeAttachments(atts: ReadonlyArray<Pick<AiAttachment, 'url'
   return { count: atts.length, items: atts.slice(0, 20).map((a) => ({ mimeType: a.mimeType, transport: attachmentTransport(a) })) };
 }
 
-export interface PreparedAttachments {
+interface PreparedAttachments {
   parts: Part[];
   /** URIs à supprimer après l'appel. */
   temporaryFileUris: string[];

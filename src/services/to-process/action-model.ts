@@ -107,29 +107,6 @@ export interface ToProcessAction {
 }
 
 /**
- * Clé d'unicité d'une action active (§7.3, §13.4).
- *
- * `fieldKey` et `relationKey` sont fondus en un seul segment : une donnée et
- * une relation ne portent jamais le même nom, et les distinguer dans la clé
- * ferait dépendre l'unicité d'un détail de nommage.
- */
-export function actionIdentityKey(
-  action: Pick<
-    ToProcessAction,
-    'accountId' | 'targetType' | 'targetId' | 'fieldKey' | 'relationKey' | 'actionKind'
-  >,
-): string {
-  const dataKey = action.fieldKey ?? action.relationKey ?? '';
-  return [
-    action.accountId,
-    action.targetType,
-    action.targetId,
-    dataKey,
-    action.actionKind,
-  ].join('|');
-}
-
-/**
  * Une action « À arbitrer » n'existe que si elle a de quoi être arbitrée.
  *
  * §8.5 et critère ATP-05 : « À arbitrer n'existe que si au moins une

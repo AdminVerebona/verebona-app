@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Bot, ExternalLink, ChevronDown, SlidersHorizontal, X } from 'lucide-react';
 import Link from 'next/link';
+import { formatValue, type AiHistoryItem } from '@/components/account/AiHistoryBlock';
 import {
   Select,
   SelectContent,
@@ -16,29 +17,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-interface AiHistoryItem {
-  id: number;
-  fieldKey: string;
-  fieldLabel: string;
-  oldValue: string | null;
-  newValue: string;
-  createdAt: string;
-  assetId: number;
-  assetName: string;
-  assetFileId: number | null;
-  docTitle: string | null;
-}
-
 interface AssetOption {
   id: number;
   name: string;
-}
-
-function formatValue(val: string | null): string {
-  if (!val || val === 'null') return '—';
-  if (val === 'true') return 'Oui';
-  if (val === 'false') return 'Non';
-  return val;
 }
 
 function formatDate(dateStr: string): string {

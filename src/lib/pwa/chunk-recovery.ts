@@ -44,7 +44,7 @@ export type RecoveryDecision =
   | { action: 'prompt'; cause: RecoveryCause; blockedBy: string[]; alreadyRetried: boolean }
   | { action: 'offline'; cause: 'network' };
 
-export interface RecoveryRecord {
+interface RecoveryRecord {
   /** Instant de la tentative automatique (ms epoch). */
   at: number;
   /** Adresse visée au moment de l'incident. */
@@ -55,7 +55,7 @@ export const RECOVERY_STORAGE_KEY = 'verebona:pwa-recovery';
 /** Fenêtre pendant laquelle une seconde erreur ne relance PAS automatiquement. */
 export const RECOVERY_WINDOW_MS = 10 * 60_000;
 /** Validité d'un signalement du service worker pour classer une erreur. */
-export const SW_HINT_TTL_MS = 15_000;
+const SW_HINT_TTL_MS = 15_000;
 
 const CHUNK_PATTERNS = ['Failed to load chunk', 'Loading chunk', 'Loading CSS chunk', 'dynamically imported module', 'Importing a module script failed'];
 
@@ -91,7 +91,7 @@ function sessionStore(): RecoveryStorage | null {
   }
 }
 
-export function readRecoveryRecord(storage: RecoveryStorage | null): RecoveryRecord | null {
+function readRecoveryRecord(storage: RecoveryStorage | null): RecoveryRecord | null {
   if (!storage) return null;
   try {
     const raw = storage.getItem(RECOVERY_STORAGE_KEY);
@@ -114,7 +114,7 @@ function writeRecoveryRecord(storage: RecoveryStorage, record: RecoveryRecord): 
 
 // ── Décision (pure) ────────────────────────────────────────────────────────
 
-export interface DecideInput {
+interface DecideInput {
   cause: RecoveryCause;
   online: boolean;
   now: number;
@@ -159,7 +159,7 @@ const TEXT_INPUT_TYPES = new Set(['', 'text', 'email', 'tel', 'url', 'number', '
  * focus. Prudent par construction : au pire, la reprise est proposée au lieu
  * d'être automatique.
  */
-export function hasPendingInput(doc: Document | undefined = globalThis.document): boolean {
+function hasPendingInput(doc: Document | undefined = globalThis.document): boolean {
   if (!doc) return false;
   const active = doc.activeElement as HTMLElement | null;
   if (active && !active.closest?.('[data-reload-safe]')) {
@@ -188,7 +188,7 @@ export function currentBlockers(): string[] {
 
 // ── Coordination (état partagé de l'onglet) ────────────────────────────────
 
-export interface RecoveryState {
+interface RecoveryState {
   decision: RecoveryDecision | null;
 }
 
@@ -223,7 +223,7 @@ function show(decision: RecoveryDecision) {
   if (rank(decision) >= rank(state.decision)) setState({ decision });
 }
 
-export interface RecoveryEnv {
+interface RecoveryEnv {
   now?: () => number;
   online?: () => boolean;
   storage?: () => RecoveryStorage | null;
@@ -261,7 +261,7 @@ export function reportServiceWorkerChunkProblem(cause: 'missing' | 'network'): v
 }
 
 /** Classe une erreur de chunk : signal récent du SW, sinon état du réseau. */
-export function classifyChunkError(): 'missing' | 'network' {
+function classifyChunkError(): 'missing' | 'network' {
   if (swHint && env.now() - swHint.at < SW_HINT_TTL_MS) return swHint.cause;
   return env.online() ? 'missing' : 'network';
 }

@@ -21,7 +21,7 @@ const A = (
  * `OPEN_SUPPLIERS` (liste `/fournisseurs`) : pages ouvertes, actions
  * proposées pour la recherche de fournisseurs et la navigation (§22.4).
  */
-export const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = {
+const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = {
   OPEN_ASSET: A('OPEN_ASSET', "Fiche d'un bien", ['assetId'], 'account_object'),
   OPEN_DOCUMENT: A('OPEN_DOCUMENT', 'Document', ['documentId'], 'account_object'),
   OPEN_DOCUMENTS_PAGE: A('OPEN_DOCUMENTS_PAGE', 'Liste documents', ['filters'], 'account_route'),
@@ -50,7 +50,7 @@ export const ACTION_DEFINITIONS: Record<VerebonaActionType, ActionDefinition> = 
 };
 
 /** Types d'actions autorisés par intention (§22.1). */
-export const INTENT_ALLOWED_ACTIONS: Partial<Record<VerebonaIntent, VerebonaActionType[]>> = {
+const INTENT_ALLOWED_ACTIONS: Partial<Record<VerebonaIntent, VerebonaActionType[]>> = {
   // Dictionnaire de navigation (core/navigation-targets.ts) : agenda, À
   // traiter, documents, compte, offres, aide — une seule action retenue.
   NAVIGATION_OPEN: ['OPEN_ASSET', 'OPEN_DOCUMENT', 'OPEN_AGENDA', 'OPEN_AGENDA_ITEM', 'OPEN_TO_PROCESS', 'OPEN_ACCOUNT', 'OPEN_DOCUMENTS_PAGE', 'OPEN_PRICING', 'OPEN_HELP', 'OPEN_SUPPLIERS', 'OPEN_SUPPLIER'],

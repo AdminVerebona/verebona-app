@@ -16,11 +16,11 @@
  * en attente, terminé) — jamais sur un échec définitif.
  */
 
-export type RecoveryRowStatus = 'WAITING' | 'RUNNING' | 'RETRY_WAIT' | 'DONE' | 'FAILED' | 'CHECK_FAILED';
-export type RecoveryPhase = 'in_progress' | 'pending' | 'failed' | 'done';
-export type RecoveryTone = 'ok' | 'warn' | 'error' | 'muted';
+type RecoveryRowStatus = 'WAITING' | 'RUNNING' | 'RETRY_WAIT' | 'DONE' | 'FAILED' | 'CHECK_FAILED';
+type RecoveryPhase = 'in_progress' | 'pending' | 'failed' | 'done';
+type RecoveryTone = 'ok' | 'warn' | 'error' | 'muted';
 
-export interface RecoveryDisplay {
+interface RecoveryDisplay {
   phase: RecoveryPhase;
   label: string;
   tone: RecoveryTone;

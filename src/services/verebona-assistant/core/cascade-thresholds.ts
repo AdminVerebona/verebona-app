@@ -33,7 +33,3 @@ export async function loadCascadeThresholds(): Promise<CascadeThresholdsLike & {
   return value;
 }
 
-/** Réservé aux tests. */
-export function resetCascadeThresholdsCache(): void {
-  cache = null;
-}

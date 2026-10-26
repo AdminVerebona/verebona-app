@@ -172,7 +172,7 @@ const rowId = (r: Row, i: number) => txt(r.id) ?? String(i + 1);
  * Lignes structurées (schéma v2 des informations complémentaires) qui
  * alimentent une section de l'écran — mêmes sources que les mappeurs.
  */
-export function sectionRows(code: DossierCode, id: string, source: ExportSource): PrepRow[] {
+function sectionRows(code: DossierCode, id: string, source: ExportSource): PrepRow[] {
   const ai = source.additionalInfo as unknown as Record<string, Record<string, unknown> | undefined>;
   const docs = (v: unknown) => ids(v).map((n) => `document:${n}`);
   const photos = (v: unknown) => ids(v).map((n) => `photo:${n}`);
@@ -213,7 +213,7 @@ export function sectionRows(code: DossierCode, id: string, source: ExportSource)
  * génération : dommages du sinistre, courriers de l'assureur RETENUS…),
  * la section étant supposée cochée. `null` : section sans contenu mappé.
  */
-export function mappedFilled(code: DossierCode, source: ExportSource, choices: ExportChoices, today: string): Record<string, boolean> {
+function mappedFilled(code: DossierCode, source: ExportSource, choices: ExportChoices, today: string): Record<string, boolean> {
   const allOn = Object.fromEntries(Object.keys(DEFAULT_SECTIONS[code]).map((k) => [k, true]));
   const plan = planSelection(code, source, { ...choices, outputFormat: 'ZIP', sections: { ...choices.sections, ...allOn } }, today);
   const meta = { reference: '', generatedAt: `${today}T00:00:00+00:00`, preparedBy: null, templateLabel: '', zipName: null, label: '' };
@@ -283,7 +283,7 @@ export function estimateMessages(e: EstimateDto): PrepMessage[] {
   return out;
 }
 
-export interface PrepareContext {
+interface PrepareContext {
   today: string;
   /** Choix déjà faits (`includeCurrentSelections`) ; sinon pré-sélection du CDC. */
   choices?: ExportChoices | null;

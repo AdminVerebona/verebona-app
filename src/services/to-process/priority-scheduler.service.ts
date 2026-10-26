@@ -24,14 +24,14 @@
  * les yeux de l'utilisateur sans qu'il ait rien fait.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { and, eq, isNull, isNotNull, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull, isNotNull, ne } from 'drizzle-orm';
 import { db } from '@/db';
 import { toProcessActions } from '@/db/schema';
 import type { ActionPriority } from './action-model';
 import { admitToDoFirst, type PriorityCandidate } from './priority';
-import { getRule, priorityForRule } from './rules-catalog';
+import { getRule } from './rules-catalog';
 
-export interface PromotionReport {
+interface PromotionReport {
   examined: number;
   promoted: number;
   /** Actions descendues pour faire place, plafond atteint (§9.3). */
@@ -128,7 +128,8 @@ export async function promoteDueActions(accountId: number, now: Date = new Date(
   return report;
 }
 
-async function loadDoFirst(accountId: number): Promise<PriorityCandidate[]> {
+/** Actions ouvertes en « À faire en premier » d'un compte. */
+export async function loadDoFirst(accountId: number): Promise<PriorityCandidate[]> {
   const rows = await db
     .select({
       id: toProcessActions.id,
@@ -154,63 +155,3 @@ async function loadDoFirst(accountId: number): Promise<PriorityCandidate[]> {
   }));
 }
 
-/**
- * Aligne la priorité d'une action sur sa règle après modification du
- * catalogue.
- *
- * Utile après une évolution de `rules-catalog` : les actions créées sous
- * l'ancienne priorité gardent la leur, ce qui fait cohabiter deux barèmes pour
- * le même problème. À lancer manuellement, jamais en routine — le §9.2 interdit
- * le recalcul global périodique.
- */
-export async function realignPriorities(accountId: number): Promise<number> {
-  const actions = await db
-    .select({
-      id: toProcessActions.id,
-      ruleCode: toProcessActions.ruleCode,
-      actionKind: toProcessActions.actionKind,
-      priority: toProcessActions.priority,
-    })
-    .from(toProcessActions)
-    .where(
-      and(eq(toProcessActions.accountId, accountId), isNull(toProcessActions.resolvedAt)),
-    );
-
-  let changed = 0;
-  for (const action of actions) {
-    const rule = getRule(action.ruleCode);
-    if (!rule) continue;
-    // Les promotions d'échéance ne sont pas défaites : elles reflètent le
-    // temps, pas le catalogue.
-    if (action.priority === 'DO_FIRST') continue;
-
-    const attendue = priorityForRule(
-      rule,
-      action.actionKind === 'ARBITRATE' ? 'ARBITRATE' : 'COMPLETE',
-    );
-    if (attendue === action.priority) continue;
-
-    await db
-      .update(toProcessActions)
-      .set({ priority: attendue, updatedAt: new Date() })
-      .where(eq(toProcessActions.id, action.id));
-    changed += 1;
-  }
-
-  return changed;
-}
-
-/** Nombre d'actions « À faire d'abord » d'un compte — contrôle du plafond. */
-export async function countDoFirst(accountId: number): Promise<number> {
-  const [row] = await db
-    .select({ total: sql<number>`COUNT(*)::int` })
-    .from(toProcessActions)
-    .where(
-      and(
-        eq(toProcessActions.accountId, accountId),
-        eq(toProcessActions.priority, 'DO_FIRST'),
-        isNull(toProcessActions.resolvedAt),
-      ),
-    );
-  return row?.total ?? 0;
-}

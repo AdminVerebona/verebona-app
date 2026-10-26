@@ -22,12 +22,12 @@
 import type { RetrievedSource } from '../types/sources';
 
 /** Enveloppe fixe : prompt maître t2_master_v1 (~8 Ko). */
-export const PROMPT_OVERHEAD_TOKENS = 3000;
+const PROMPT_OVERHEAD_TOKENS = 3000;
 const CHARS_PER_TOKEN = 3.5;
 const MIN_SOURCES = 2;
 const MIN_EXCERPT = 300;
 
-export function estimateTokens(text: string): number {
+function estimateTokens(text: string): number {
   return Math.ceil(String(text ?? '').length / CHARS_PER_TOKEN);
 }
 
@@ -36,7 +36,7 @@ function sourceTokens(s: RetrievedSource): number {
   return estimateTokens(s.title) + estimateTokens(s.content) + estimateTokens(s.id) * 2 + 20;
 }
 
-export interface FitInput {
+interface FitInput {
   sources: RetrievedSource[];
   conversation: string;
   /** Question + consigne de tâche : jamais réduites. */
@@ -45,7 +45,7 @@ export interface FitInput {
   maxExcerptChars: number;
 }
 
-export interface FitResult {
+interface FitResult {
   ok: boolean;
   sources: RetrievedSource[];
   conversation: string;

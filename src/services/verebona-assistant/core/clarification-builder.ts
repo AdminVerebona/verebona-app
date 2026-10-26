@@ -28,7 +28,7 @@ export const MAX_CLARIFICATION_CHAIN = 2;
 const plain = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
 /** Libellé secondaire qui distingue deux biens au nom proche. */
-export function assetSecondaryLabel(a: AssetRow): string | undefined {
+function assetSecondaryLabel(a: AssetRow): string | undefined {
   if (a.category === 'VEHICULE' && a.registrationNumber) return a.registrationNumber;
   const lieu = [a.city, a.address].filter((x) => x && String(x).trim()).join(', ');
   if (lieu) return lieu;
@@ -72,26 +72,13 @@ export function buildAssetClarification(p: {
   chainDepth: number;
   now?: Date;
 }): ClarificationState {
-  const now = p.now ?? new Date();
-  return {
-    clarificationId: randomUUID(),
-    conversationId: p.conversationId,
-    accountId: p.accountId,
-    userId: p.userId,
-    originalMessageId: p.originalMessageId,
-    originalMessage: p.originalMessage,
-    originalIntent: p.originalIntent,
+  return enveloppe(p, {
     resolvedContext: { pageAssetId: p.pageAssetId ?? null },
     ambiguity: { kind: 'asset', field: 'assetId', reason: p.reason },
     candidateType: 'asset',
     candidates: assetCandidates(p.assets).slice(0, 6),
     question: 'De quel bien parlez-vous ?',
-    createdAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + CLARIFICATION_TTL_MS).toISOString(),
-    attemptCount: 0,
-    chainDepth: p.chainDepth,
-    status: 'PENDING',
-  };
+  });
 }
 
 /**
@@ -128,7 +115,6 @@ export function buildTargetClarification(p: {
     });
     return { ...etat, question: p.question, resolvedContext: { ...etat.resolvedContext, requestedFacts: p.requestedFacts ?? [] } };
   }
-  const now = p.now ?? new Date();
   const base = a.candidates.map((c) => ({
     id: `${a.kind}_${c.id}`,
     entityId: c.id,
@@ -147,25 +133,13 @@ export function buildTargetClarification(p: {
     rang.set(cle(c), n);
     return { ...c, secondaryLabel: [c.secondaryLabel, `n°${n}`].filter(Boolean).join(' · ') };
   });
-  return {
-    clarificationId: randomUUID(),
-    conversationId: p.conversationId,
-    accountId: p.accountId,
-    userId: p.userId,
-    originalMessageId: p.originalMessageId,
-    originalMessage: p.originalMessage,
-    originalIntent: p.originalIntent,
+  return enveloppe(p, {
     resolvedContext: { pageAssetId: p.pageAssetId ?? null, requestedFacts: p.requestedFacts ?? [] },
     ambiguity: { kind: a.kind, field: 'entityId', reason: a.reason },
     candidateType: a.kind,
     candidates: candidates.slice(0, 6),
     question: p.question,
-    createdAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + CLARIFICATION_TTL_MS).toISOString(),
-    attemptCount: 0,
-    chainDepth: p.chainDepth,
-    status: 'PENDING',
-  };
+  });
 }
 
 /** Repli quand la clarification ne peut plus aboutir (§20.3). */
@@ -234,19 +208,10 @@ export function buildEntityClarification(p: {
   chainDepth: number;
   now?: Date;
 }): ClarificationState {
-  const now = p.now ?? new Date();
   const type = p.entities[0]?.type ?? 'document';
   const prefix = type === 'document' ? 'doc' : type === 'asset' ? 'asset' : type === 'equipment' || type === 'room' ? type : 'agenda';
   const candidateType = type === 'agenda_item' ? 'agenda' : type;
-  return {
-    clarificationId: randomUUID(),
-    conversationId: p.conversationId,
-    accountId: p.accountId,
-    userId: p.userId,
-    originalMessageId: p.originalMessageId,
-    originalMessage: p.originalMessage,
-    originalIntent: p.originalIntent,
-    resolvedContext: {},
+  return enveloppe(p, {
     ambiguity: { kind: 'asset', field: 'assetId', reason: 'AMBIGUOUS_REFERENCE' },
     candidateType,
     candidates: p.entities.slice(0, 6).map((e) => ({
@@ -257,12 +222,7 @@ export function buildEntityClarification(p: {
     })),
     question: type === 'document' ? 'De quel document parlez-vous ?' : type === 'asset' ? 'De quel bien parlez-vous ?'
       : type === 'equipment' ? 'De quel équipement parlez-vous ?' : type === 'room' ? 'De quelle pièce parlez-vous ?' : 'De quelle échéance parlez-vous ?',
-    createdAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + CLARIFICATION_TTL_MS).toISOString(),
-    attemptCount: 0,
-    chainDepth: p.chainDepth,
-    status: 'PENDING',
-  };
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -287,7 +247,10 @@ type BaseClarification = {
   now?: Date;
 };
 
-function enveloppe(p: BaseClarification, extra: Pick<ClarificationState, 'ambiguity' | 'candidateType' | 'candidates' | 'question'>): ClarificationState {
+function enveloppe(
+  p: BaseClarification,
+  extra: Pick<ClarificationState, 'ambiguity' | 'candidateType' | 'candidates' | 'question'> & Partial<Pick<ClarificationState, 'resolvedContext'>>,
+): ClarificationState {
   const now = p.now ?? new Date();
   return {
     clarificationId: randomUUID(),
@@ -359,7 +322,7 @@ const CHOIX_ACTION: Record<string, Array<{ id: string; label: string; message: s
 };
 
 /** Famille d'un verbe d'action seul, ou `null`. */
-export function familleAction(message: string): keyof typeof CHOIX_ACTION | null {
+function familleAction(message: string): keyof typeof CHOIX_ACTION | null {
   const t = plain(message);
   if (/^(ajoute|ajouter|cree|creer)\b/.test(t)) return 'ajouter';
   if (/^(ouvre|ouvrir)\b/.test(t)) return 'ouvrir';

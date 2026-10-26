@@ -66,7 +66,7 @@ export interface PersistedFinancialHint {
   index?: number;
 }
 
-export interface PersistedTargetHint {
+interface PersistedTargetHint {
   type: 'ASSET' | 'EQUIPMENT' | 'ROOM';
   entityId: number | null;
   rawLabel?: string | null;
@@ -95,7 +95,7 @@ export interface CandidateRecord {
 }
 
 /** Contexte vérifié en base au moment de la consolidation. */
-export interface IdentityContext {
+interface IdentityContext {
   /** Bien principal du document (`asset_files.asset_id`, à défaut `linked_asset_id`), s'il existe encore. */
   fileAssetId: number | null;
   /** Biens du compte encore présents (non supprimés). */
@@ -117,13 +117,13 @@ export interface IdentityContext {
 
 // ── Identité candidate ─────────────────────────────────────────────────────
 
-export interface NormalizedReference {
+interface NormalizedReference {
   kind: ReferenceKind;
   value: string;
   normalized: string;
 }
 
-export interface CandidateDates {
+interface CandidateDates {
   plannedDate: string | null;
   startDate: string | null;
   realizedDate: string | null;
@@ -323,7 +323,7 @@ export function recurringContractEvidence(sources: readonly SourceContribution[]
  * d'une période facturée, d'une émission ou d'un paiement — jamais une date
  * d'effet, de fin, de résiliation ou de renouvellement d'un contrat.
  */
-export const BILLING_SOURCE_ROLES: ReadonlySet<SourceRole> = new Set<SourceRole>([
+const BILLING_SOURCE_ROLES: ReadonlySet<SourceRole> = new Set<SourceRole>([
   'INVOICE', 'DEPOSIT_INVOICE', 'CREDIT_NOTE', 'PAYMENT_PROOF', 'REFUND_PROOF', 'QUOTE', 'ORDER',
 ]);
 
@@ -517,7 +517,7 @@ export function componentsFromIdentity(id: CandidateIdentity): DesiredComponent[
   return [...out.values()];
 }
 
-export interface ComponentContribution extends DesiredComponent {
+interface ComponentContribution extends DesiredComponent {
   sourceIds: number[];
   /** Lot 78A : justification exacte par source (candidat, indices T1, faits). */
   evidenceBySource?: Record<number, ComponentEvidence>;
@@ -557,7 +557,7 @@ export interface AmountChoice { amountMinor: number; currency: string; known?: A
  * empreinte (même facture, même devis…), montants ou devises différents
  * selon les sources.
  */
-export interface AmountConflict {
+interface AmountConflict {
   fingerprint: string;
   kind: FinancialComponentKind;
   /** Une option par valeur distincte, avec les sources qui la portent (ordre des sources). */
@@ -696,7 +696,7 @@ export function consolidateComponentsDetailed(
  * de dire s'il s'agit d'une copie ou d'un autre fait (ni référence, ni date,
  * ni période) — compté UNE fois, l'excédent tenu hors total.
  */
-export interface UncertainDuplicate {
+interface UncertainDuplicate {
   /** Composante retenue (comptée une fois). */
   fingerprint: string;
   /** Empreinte de la contribution non additionnée. */
@@ -749,13 +749,13 @@ export interface ConsolidatedState {
   attributeConflicts: AttributeConflict[];
 }
 
-export type ProvenancedField = 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
+type ProvenancedField = 'plannedDate' | 'startDate' | 'realizedDate' | 'endDate' | 'provider';
 export type AttributeProvenance = Partial<Record<ProvenancedField, {
   sourceId: number; value: string;
   /** Lot 85E : origine de la valeur canonique du bien qui a daté l'Opération (T1, T3, document…). */
   origin?: string;
 }>>;
-export interface AttributeConflict {
+interface AttributeConflict {
   field: ProvenancedField;
   /** Valeurs distinctes et sources qui les portent (ordre des sources). */
   values: Array<{ value: string; sourceIds: number[] }>;
@@ -1022,7 +1022,7 @@ export function consolidateOperationState(
 // ── Lot 53D : montants hors total (D9) et devise confirmée (D2) ───────────
 
 export const SIDE_AMOUNT_NATURES = ['ANCILLARY_FEE', 'DOCUMENT_AMOUNT_DIFFERS', 'UNCERTAIN_DUPLICATE'] as const;
-export type SideAmountNature = (typeof SIDE_AMOUNT_NATURES)[number];
+type SideAmountNature = (typeof SIDE_AMOUNT_NATURES)[number];
 
 /**
  * Montant connu, tracé à ses sources, mais HORS du total de l'Opération :

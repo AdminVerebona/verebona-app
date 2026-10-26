@@ -25,7 +25,7 @@ export const THEME_PAGE_COLOR: Record<AppTheme, string> = {
   blue: '#1B2529',
 };
 
-export function isAppTheme(v: unknown): v is AppTheme {
+function isAppTheme(v: unknown): v is AppTheme {
   return v === 'blue' || v === 'beige';
 }
 

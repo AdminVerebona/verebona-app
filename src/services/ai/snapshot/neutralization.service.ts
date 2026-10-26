@@ -46,7 +46,7 @@ export class NeutralizationRefused extends Error {
   }
 }
 
-export interface StepResult {
+interface StepResult {
   id: string;
   label: string;
   rowsAffected: number;
@@ -54,7 +54,7 @@ export interface StepResult {
   error?: string;
 }
 
-export interface CheckResult {
+interface CheckResult {
   id: string;
   label: string;
   /** Résidus trouvés ; 0 attendu. */
@@ -65,13 +65,13 @@ export interface CheckResult {
 }
 
 /** Contrôle anti-effets avant réouverture — SNP-010. */
-export interface NeutralizationVerification {
+interface NeutralizationVerification {
   /** true seulement si TOUS les contrôles sont à 0 et aucun n'a échoué. */
   complete: boolean;
   checks: CheckResult[];
 }
 
-export interface NeutralizationReport {
+interface NeutralizationReport {
   environment: string;
   startedAt: Date;
   finishedAt: Date;

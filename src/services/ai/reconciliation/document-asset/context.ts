@@ -48,7 +48,7 @@ import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
  * nom distinctif unique). Entre dans l'empreinte.
  *   · 1 — lot 34E.
  */
-export const DOCUMENT_ASSET_RULES_VERSION = 1;
+const DOCUMENT_ASSET_RULES_VERSION = 1;
 
 // Lot 49B : couche exhaustive T1 branchée dès le chargement du contexte T3.
 registerSourceUnitProviders();

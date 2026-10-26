@@ -13,7 +13,7 @@ import type { AssetFamily } from '@/services/canonical/registry';
 export type CanonicalOrigin = FieldOrigin;
 
 /** D'où vient la valeur lue (diagnostic de la transition D-10). */
-export type CanonicalValueFrom = 'key' | 'alias' | 'column';
+type CanonicalValueFrom = 'key' | 'alias' | 'column';
 
 export interface CanonicalFieldState {
   key: string;
@@ -53,7 +53,7 @@ export interface CanonicalWriteSource {
 }
 
 /** Trace IA facultative d'une écriture automatique (colonnes 0103 de `ai_field_updates`). */
-export interface AutomaticWriteTrace {
+interface AutomaticWriteTrace {
   evidenceId?: number | null;
   decisionType?: string | null;
   reasonCode?: string | null;
@@ -110,7 +110,7 @@ export interface WriteCanonicalAssetFieldsInput extends Omit<WriteCanonicalAsset
  *   invalid    clé inconnue, hors famille ou valeur non normalisable ;
  *   conflict   la valeur en place n'est plus celle attendue.
  */
-export type CanonicalWriteOutcome = 'written' | 'unchanged' | 'protected' | 'invalid' | 'conflict';
+type CanonicalWriteOutcome = 'written' | 'unchanged' | 'protected' | 'invalid' | 'conflict';
 
 export interface CanonicalFieldWriteResult {
   /** Clé canonique (ou clé demandée si elle est inconnue). */

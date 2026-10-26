@@ -23,7 +23,7 @@
 import type { Readable } from 'node:stream';
 import { classifyS3Error, type S3ErrorInfo } from '@/lib/s3-config';
 
-export type RangeRequest = { kind: 'none' } | { kind: 'range'; header: string; start: number | null; end: number | null };
+type RangeRequest = { kind: 'none' } | { kind: 'range'; header: string; start: number | null; end: number | null };
 
 /**
  * Analyse un en-tête `Range`. Une seule plage `bytes=a-b`, `bytes=a-` ou
@@ -63,7 +63,7 @@ export interface S3GetInput {
 
 export type S3GetFn = (input: S3GetInput, signal: AbortSignal) => Promise<S3GetOutput>;
 
-export interface StreamObjectOptions {
+interface StreamObjectOptions {
   bucket: string;
   key: string;
   request: { headers: Headers; signal?: AbortSignal };
@@ -82,7 +82,7 @@ export interface StreamObjectOptions {
 }
 
 /** Convertit un corps SDK (flux Node, flux web) en flux web « pull ». */
-export function toPullStream(body: unknown, onDone?: () => void): ReadableStream<Uint8Array> {
+function toPullStream(body: unknown, onDone?: () => void): ReadableStream<Uint8Array> {
   if (body && typeof (body as ReadableStream).getReader === 'function' && !(Symbol.asyncIterator in (body as object))) {
     return body as ReadableStream<Uint8Array>;
   }
@@ -126,7 +126,7 @@ function jsonError(status: number, code: string, extra: Record<string, string> =
 }
 
 /** Statut HTTP renvoyé pour une erreur S3 classée. */
-export function statusForS3Error(info: S3ErrorInfo): { status: number; code: string } {
+function statusForS3Error(info: S3ErrorInfo): { status: number; code: string } {
   switch (info.kind) {
     case 'NOT_FOUND': return { status: 404, code: 'FILE_NOT_FOUND' };
     case 'TIMEOUT': return { status: 504, code: 'STORAGE_TIMEOUT' };

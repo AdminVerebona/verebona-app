@@ -11,9 +11,9 @@
  */
 import { pgClient } from '@/db';
 
-export type HistoryOrigin = 'user' | 'admin' | 'system' | 'stripe';
+type HistoryOrigin = 'user' | 'admin' | 'system' | 'stripe';
 
-export interface HistoryEntry {
+interface HistoryEntry {
   at: string;
   event: string;
   origin: HistoryOrigin;
@@ -81,7 +81,7 @@ const DELETION_REASONS: Record<string, string> = {
 };
 
 /** Libellés d'une suppression selon sa portée (CDC 13, point 3). */
-export const DELETION_LABELS: Record<'account' | 'user', { engaged: string; cancelled: string; executed: string; scheduled: string }> = {
+const DELETION_LABELS: Record<'account' | 'user', { engaged: string; cancelled: string; executed: string; scheduled: string }> = {
   account: {
     engaged: 'Suppression du compte engagée',
     cancelled: 'Suppression annulée',

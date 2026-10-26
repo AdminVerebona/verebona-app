@@ -32,8 +32,8 @@ export interface TemporalChoice {
 }
 
 /** Préfixe des clés (constant : purge ciblée possible par `LIKE 't4-temporal:%'`). */
-export const TEMPORAL_CACHE_PREFIX = 't4-temporal:';
-export const TEMPORAL_CACHE_TTL_SECONDS = 24 * 3600;
+const TEMPORAL_CACHE_PREFIX = 't4-temporal:';
+const TEMPORAL_CACHE_TTL_SECONDS = 24 * 3600;
 
 /** Clé stockée : compte + empreinte (source, clé fonctionnelle, extrait). */
 export function temporalCacheKey(accountId: number, fingerprint: string): string {

@@ -103,7 +103,7 @@ const COLS = `id, treatment, account_id, target_type, target_id, status, origin,
 
 // ── Mise en file ────────────────────────────────────────────────────────────
 
-export interface EnqueueInput {
+interface EnqueueInput {
   treatment: Treatment;
   scope?: JobScope;
   origin?: JobOrigin;
@@ -162,7 +162,7 @@ export interface EnqueueResult {
 }
 
 /** Motifs de non-création rendus par `enqueue` (sous-ensemble des motifs T3 tracés). */
-export type EnqueueReasonCode = 'CROSS_ACCOUNT_SCOPE' | 'DUPLICATE_PENDING' | 'DUPLICATE_RUNNING' | 'ALREADY_QUEUED'
+type EnqueueReasonCode = 'CROSS_ACCOUNT_SCOPE' | 'DUPLICATE_PENDING' | 'DUPLICATE_RUNNING' | 'ALREADY_QUEUED'
   /** Lot 82A (C-Q10) : compte non actif, suspendu ou en lecture seule — rien n'est écrit, `jobId` nul. */
   | 'ACCOUNT_INELIGIBLE';
 
@@ -522,7 +522,7 @@ export async function recoverAbandonedJobs(): Promise<Array<{ id: number; status
  * seulement), borné. Best effort : l'historique ne fait jamais échouer la
  * file (migration 0288 absente, base indisponible).
  */
-export interface AttemptRecord {
+interface AttemptRecord {
   attempt: number;
   startedAt: Date | null;
   outcome: 'done' | 'failed' | 'interrupted' | 'deferred';
@@ -1018,7 +1018,7 @@ export async function retryFailedJob(jobId: number): Promise<boolean> {
 
 // ── Supervision ─────────────────────────────────────────────────────────────
 
-export interface QueueSummary {
+interface QueueSummary {
   treatment: Treatment;
   pending: number;
   running: number;
@@ -1044,7 +1044,7 @@ export async function getQueueSummary(): Promise<QueueSummary[]> {
   }));
 }
 
-export interface QueueFilters {
+interface QueueFilters {
   treatment?: Treatment;
   status?: JobStatus;
   accountId?: number;
@@ -1114,7 +1114,7 @@ export async function listJobs(filters: QueueFilters = {}): Promise<QueuedJob[]>
 
 // ── État opérationnel ───────────────────────────────────────────────────────
 
-export type TreatmentState = 'ENABLED' | 'DISABLED' | 'SUSPENDED';
+type TreatmentState = 'ENABLED' | 'DISABLED' | 'SUSPENDED';
 
 /**
  * Un traitement peut-il démarrer une nouvelle exécution ?

@@ -25,7 +25,7 @@
  */
 import { randomUUID } from 'node:crypto';
 
-export interface AccountReconsolidationResult {
+interface AccountReconsolidationResult {
   accountId: number;
   /** Travail T3 Opérations (créé ou absorbant). */
   operationsJobId: number | null;
@@ -36,7 +36,7 @@ export interface AccountReconsolidationResult {
   waitsForReactivation: boolean;
 }
 
-export interface AccountReconsolidationDeps {
+interface AccountReconsolidationDeps {
   accountExists(accountId: number): Promise<boolean>;
   requestOperations: typeof import('./consolidation/queue').requestOperationsConsolidation;
   requestAgenda: typeof import('./agenda-projection/queue').requestAgendaProjection;

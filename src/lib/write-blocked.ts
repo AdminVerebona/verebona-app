@@ -26,7 +26,7 @@ export const OFFERS_PATH = '/mon-compte/offres';
  * `entitlements.service` (champ `reason`) ou par le controle historique
  * de quota des biens.
  */
-export const WRITE_BLOCKED_CODES = [
+const WRITE_BLOCKED_CODES = [
   'TRIAL_EXPIRED',
   'SUBSCRIPTION_REQUIRED',
   'ASSET_QUOTA_REACHED',
@@ -42,7 +42,7 @@ export const WRITE_BLOCKED_CODES = [
 export const TRIAL_EXPIRED_MESSAGE =
   "Votre essai gratuit est terminé. Vos données sont conservées : choisissez une offre pour reprendre l'ajout et la modification.";
 
-export type WriteBlockedCode = (typeof WRITE_BLOCKED_CODES)[number];
+type WriteBlockedCode = (typeof WRITE_BLOCKED_CODES)[number];
 
 export interface WriteBlockedInfo {
   code: string;

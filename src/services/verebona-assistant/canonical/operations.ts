@@ -143,7 +143,7 @@ export function formatEur(cents: number): string {
 
 // ── Coûts consolidés d'un périmètre (C15.1, C17.1) ────────────────────────
 
-export interface OperationCostLine {
+interface OperationCostLine {
   operationId: number;
   typeCode: BusinessOperationTypeCode | null;
   status: string;
@@ -295,7 +295,7 @@ export function emptyOperationPart(): OperationExpensePart {
 }
 
 /** Entrée d'agrégat (même forme que les documents : `aggregateExpenses`). */
-export interface OperationExpenseEntry {
+interface OperationExpenseEntry {
   operationId: number;
   amountCents: number;
   theme: ExpenseTheme | null;
@@ -363,12 +363,7 @@ export async function readAllOperations(accountId: number, filters: Omit<NonNull
   return { operations: ops, complete: ops.length < 500 };
 }
 
-/** Opérations du périmètre d'une question de coût — exhaustives (lot 54D, E02). */
-export async function loadScopeOperations(accountId: number, assetIds: readonly number[]): Promise<AssistantOperationRead[]> {
-  return (await loadScopeOperationsRead(accountId, assetIds)).operations;
-}
-
-/** Comme `loadScopeOperations`, avec l'indicateur de lecture complète (E02). */
+/** Opérations du périmètre, avec l'indicateur de lecture complète (E02). */
 export async function loadScopeOperationsRead(accountId: number, assetIds: readonly number[]): Promise<{ operations: AssistantOperationRead[]; complete: boolean }> {
   return readAllOperations(accountId, { assetIds: assetIds.length ? assetIds : null, includeUntargeted: assetIds.length === 0 });
 }

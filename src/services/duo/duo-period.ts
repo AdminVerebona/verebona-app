@@ -31,7 +31,7 @@ import type { PgDatabase, PgQueryResultHKT } from 'drizzle-orm/pg-core';
 import { duoAccounts } from '@/db/schema';
 
 /** Statuts Duo « dans l'offre » (impayé compris : restreint, pas sorti). */
-export const DUO_OFFER_STATUSES: ReadonlySet<string> = new Set(['ACTIVE', 'TRIALING', 'UNPAID_RECOVERY']);
+const DUO_OFFER_STATUSES: ReadonlySet<string> = new Set(['ACTIVE', 'TRIALING', 'UNPAID_RECOVERY']);
 /** Statuts Duo qui ouvrent une souscription (droits Duo actifs). */
 export const DUO_ACTIVE_STATUSES: ReadonlySet<string> = new Set(['ACTIVE', 'TRIALING']);
 

@@ -29,7 +29,7 @@ export type MascotPoseName =
   | 'reminder-bell' | 'thumbs-up' | 'dialogue-bubble' | 'questioning' | 'success-check' | 'neutral';
 
 /** Liseré gauche de la réponse (§6.4). */
-export type RailTone = 'neutral' | 'success' | 'error';
+type RailTone = 'neutral' | 'success' | 'error';
 
 /** Un échange : la question et la ou les réponses qui la suivent. */
 export interface SpaceTurn {
@@ -167,7 +167,7 @@ export function buildTurns(messages: VerebonaMessage[], isLoading: boolean): Spa
 }
 
 /** Seuls les 2 derniers échanges restent affichés en entier (§7.2). */
-export const KEEP_RECENT = 2;
+const KEEP_RECENT = 2;
 
 /**
  * Un échange qui attend encore une décision ne se replie jamais : plan à
@@ -295,7 +295,7 @@ const TONE: Record<UiResultGroup['type'], SpaceObject['tone']> = {
 };
 
 /** « 2026-10-12 » → « 12/10/2026 ». */
-export function formatIsoDay(iso: string | null | undefined): string | null {
+function formatIsoDay(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
   return m ? `${m[3]}/${m[2]}/${m[1]}` : iso;

@@ -22,7 +22,7 @@ export async function journalReportAccess(p: {
   })).catch((e: Error) => console.error('[execution-report] journal admin non écrit :', String(e.message).slice(0, 200)));
 }
 
-export interface ReportDetail {
+interface ReportDetail {
   report: ReportSummary;
   breakdown: Array<{ section: string; writeResult: string; count: number }>;
   correlations: Awaited<ReturnType<typeof correlatedReports>>;

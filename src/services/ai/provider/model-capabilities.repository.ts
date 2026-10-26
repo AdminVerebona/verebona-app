@@ -61,7 +61,7 @@ const bool = (v: unknown): boolean | null => (v == null ? null : Boolean(v));
  * qualification (sondes). Tolère l'absence des colonnes 0708 (lecture
  * historique). Lève si la base est illisible (l'appelant décide).
  */
-export async function loadStoredCapabilityInputs(sql: typeof pgClient = pgClient): Promise<Map<string, StoredCapabilityInputs>> {
+async function loadStoredCapabilityInputs(sql: typeof pgClient = pgClient): Promise<Map<string, StoredCapabilityInputs>> {
   const out = new Map<string, StoredCapabilityInputs>();
   const cat = (await sql.unsafe(
     `SELECT model, input_token_limit, output_token_limit, supports_thinking, provider_details, last_checked_at, last_seen_at
@@ -128,7 +128,7 @@ export async function ensureModelCapabilitiesLoaded(): Promise<void> {
   return enCours;
 }
 
-export interface CapabilitySyncResult {
+interface CapabilitySyncResult {
   checked: number;
   /** Modèles dont la fiche a changé à ce passage. */
   changed: string[];
@@ -208,7 +208,7 @@ export async function recordCapabilitySnapshot(opts: {
   return res;
 }
 
-export interface CapabilityRow {
+interface CapabilityRow {
   model: string;
   listed: boolean;
   available: boolean | null;

@@ -78,5 +78,3 @@ if (!process.env.DATABASE_URL) {
 } else if (loaded.length > 0) {
   console.info(`[env] Configuration chargée depuis ${loaded.join(', ')}.`);
 }
-
-export const loadedEnvFiles = loaded;

@@ -48,14 +48,11 @@
  */
 import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import { emit } from '@/lib/notifications';
-import {
-  LOT_DOCUMENTS_MAX, lotFailurePayload, lotNotificationPayload,
+import { lotFailurePayload, lotNotificationPayload,
   type LotDocument, type LotOutcomeType,
 } from './lot-notification-text';
 
-export { lotNotificationPayload, lotNotificationText, type LotDocument } from './lot-notification-text';
-
-export interface LotNotificationInput {
+interface LotNotificationInput {
   accountId: number;
   userId?: number;
   lotId: number;
@@ -71,9 +68,9 @@ export interface LotNotificationInput {
 }
 
 /** Issue d'un document du lot, établie depuis son état persisté. */
-export type LotItemOutcome = 'ANALYSED' | 'DUPLICATE' | 'GROUPED' | 'FAILED' | 'IN_PROGRESS' | 'DEFERRED' | 'REMOVED';
+type LotItemOutcome = 'ANALYSED' | 'DUPLICATE' | 'GROUPED' | 'FAILED' | 'IN_PROGRESS' | 'DEFERRED' | 'REMOVED';
 
-export interface LotItemState {
+interface LotItemState {
   assetFileId: number;
   title: string | null;
   analysisState: string | null;
@@ -100,7 +97,7 @@ export function classifyLotItem(s: LotItemState): LotItemOutcome {
   return 'IN_PROGRESS';
 }
 
-export interface LotOutcome {
+interface LotOutcome {
   /** Tous les documents ont une issue définitive. */
   final: boolean;
   type: LotOutcomeType | null;
@@ -138,30 +135,6 @@ export function resolveLotOutcome(items: LotItemState[]): LotOutcome {
   return { final, type: final ? resolveLotNotificationType(analysed.length, failed.length) : null, analysed, duplicates, failed };
 }
 
-/**
- * Documents analysés d'un lot, avec leur titre retenu. Ne lève jamais :
- * sans titres, la notification reste émise, simplement moins précise.
- */
-export async function loadLotDocuments(lotId: number): Promise<LotDocument[]> {
-  try {
-    const { pgClient } = await import('@/db');
-    // Lot 87D : titre par la règle unique des vues (le même que la liste, la fiche et la recherche).
-    const rows = await pgClient.unsafe<Array<{ assetFileId: number } & DocumentTitleColumns>>(
-      `SELECT li.asset_file_id AS "assetFileId", ${documentTitleColumnsSql('af')}
-         FROM document_lot_items li
-         JOIN asset_files af ON af.id = li.asset_file_id
-        WHERE li.lot_id = $1 AND li.analysis_status = 'completed' AND af.deleted_at IS NULL
-        ORDER BY li.position ASC
-        LIMIT $2`,
-      [lotId, LOT_DOCUMENTS_MAX + 1] as never[],
-    );
-    return rows.map((r) => ({ assetFileId: Number(r.assetFileId), title: documentTitleOf(r, '') })).filter((r) => r.title);
-  } catch (e) {
-    console.warn(`[source-analysis] titres du lot ${lotId} non lus :`, (e as Error).message);
-    return [];
-  }
-}
-
 /** Fichiers ayant un travail T1 vivant (en file ou en cours). Illisible : tous réputés vivants. */
 async function liveFiles(ids: number[]): Promise<Set<number>> {
   if (ids.length === 0) return new Set();
@@ -181,7 +154,7 @@ interface LotRow { id: number; account_id: number; notification_state: string | 
  * l'unique notification de son résultat. Idempotent (transition conditionnelle
  * `awaiting` → `notified`, clé de déduplication du lot). Ne lève jamais.
  */
-export async function evaluateLotNotification(lotId: number, opts: { retryExpected?: ReadonlySet<number> } = {}): Promise<'notified' | 'awaiting' | 'absorbed' | 'silent' | 'skipped'> {
+async function evaluateLotNotification(lotId: number, opts: { retryExpected?: ReadonlySet<number> } = {}): Promise<'notified' | 'awaiting' | 'absorbed' | 'silent' | 'skipped'> {
   try {
     const { pgClient } = await import('@/db');
     const [lot] = await pgClient.unsafe<LotRow[]>(
@@ -289,7 +262,7 @@ export async function settleLotNotificationsForFiles(fileIds: number[]): Promise
 }
 
 /** Filet : au-delà, un lot en attente n'est plus réévalué (journalisé, état `expired`). */
-export const LOT_NOTIFICATION_MAX_AGE_DAYS = 30;
+const LOT_NOTIFICATION_MAX_AGE_DAYS = 30;
 
 /**
  * Tâche `document-lot-notifications` : réévalue les lots en attente depuis

@@ -21,7 +21,7 @@ import { questionValueType, type PropertyQuestion, type SubjectType } from './co
 export type ExclusionReason = 'NOT_APPLICABLE' | 'INPUT_ONLY' | 'FREE_TEXT' | 'SENSITIVE' | 'STRUCTURED_JSON';
 export type ProtectionReason = 'USER_CLEARED' | 'USER_DECISION' | 'OPEN_ARBITRATION';
 
-export interface CatalogSubject {
+interface CatalogSubject {
   type: SubjectType;
   category: string | null;
   subtype: string | null;
@@ -43,7 +43,7 @@ export function exclusionOf(def: CanonicalFieldDef, s: CatalogSubject): Exclusio
   return null;
 }
 
-export interface CatalogInput {
+interface CatalogInput {
   subject: CatalogSubject;
   /** Valeur canonique courante (lecteur canonique : fiche, alias, miroir), null si vide. */
   current: (key: string) => unknown;

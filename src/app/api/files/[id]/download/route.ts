@@ -4,7 +4,6 @@ import { assetFiles } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { isS3Configured, logS3Error, S3ConfigError, signGetUrl } from '@/lib/s3-config';
-import { FileLogger } from '@/lib/file-logger';
 import { getSession, isSessionError, sessionErrorResponse } from '@/lib/auth-guards';
 import { accessErrorResponse, sessionErrorToResponse } from '@/lib/auth/session-errors';
 import { contentDisposition, downloadFilename } from '@/lib/download-filename';
@@ -22,15 +21,12 @@ export async function GET(
 ) {
   const params = await context.params;
   const requestId = randomUUID();
-  const ip = request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip') || null;
-  const userAgent = request.headers.get('user-agent') || null;
 
   try {
     // Garde de session commune (révocation comprise) ; refus typés du
     // contrat `lib/auth/session-errors` (APP-PERF-20, lot 24).
     const session = await getSession(request);
     const accountId = session.currentAccountId;
-    const userId = session.userId;
 
     if (!accountId) {
       return accessErrorResponse('no-account', requestId, { headers: NO_STORE });
@@ -60,14 +56,6 @@ export async function GET(
       .limit(1);
 
     if (fileRecords.length === 0) {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        action: 'DOWNLOAD',
-        error: 'FILE_NOT_FOUND',
-      });
       return accessErrorResponse('not-found', requestId, {
         code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.', headers: NO_STORE,
       });
@@ -78,24 +66,12 @@ export async function GET(
     // Fichier d'un autre compte : 404, comme le proxy et les miniatures
     // (`services/documents/file-access`) — son existence n'est pas confirmée.
     if (file.accountId !== accountId) {
-      FileLogger.blocked({ requestId, ip, userAgent, userId, fileId: fileIdInt, action: 'DOWNLOAD', error: 'FILE_NOT_FOUND' });
       return accessErrorResponse('not-found', requestId, {
         code: 'FILE_NOT_FOUND', message: 'Document introuvable ou supprimé.', headers: NO_STORE,
       });
     }
 
     if (file.uploadStatus === 'PENDING') {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        assetId: file.assetId ?? undefined,
-        fileId: fileIdInt,
-        filename: file.filename ?? undefined,
-        action: 'DOWNLOAD',
-        error: 'FILE_PENDING',
-      });
       return NextResponse.json(
         { 
           error: 'File upload is still in progress', 
@@ -106,17 +82,6 @@ export async function GET(
     }
 
     if (file.uploadStatus === 'FAILED') {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        assetId: file.assetId ?? undefined,
-        fileId: fileIdInt,
-        filename: file.filename ?? undefined,
-        action: 'DOWNLOAD',
-        error: 'FILE_FAILED',
-      });
       return NextResponse.json(
         { 
           error: 'File upload failed and cannot be downloaded', 
@@ -127,17 +92,6 @@ export async function GET(
     }
 
     if (file.uploadStatus !== 'COMPLETED' && file.uploadStatus !== null) {
-      FileLogger.blocked({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        assetId: file.assetId ?? undefined,
-        fileId: fileIdInt,
-        filename: file.filename ?? undefined,
-        action: 'DOWNLOAD',
-        error: 'FILE_NOT_READY',
-      });
       return NextResponse.json(
         { 
           error: 'File is not ready for download', 
@@ -160,17 +114,6 @@ export async function GET(
 
     if (!file.s3Bucket || !file.s3Key || file.s3Bucket === 'weblink') {
       console.error('GET download URL error: Missing S3 configuration for file', fileIdInt);
-      FileLogger.error({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        assetId: file.assetId ?? undefined,
-        fileId: fileIdInt,
-        filename: file.filename ?? undefined,
-        action: 'DOWNLOAD',
-        error: 'S3_CONFIG_MISSING',
-      });
       return NextResponse.json(
         { 
           error: 'File storage configuration is incomplete', 
@@ -182,17 +125,6 @@ export async function GET(
 
     if (!isS3Configured()) {
       console.error('GET download URL error: S3 configuration invalid (voir /api/health)');
-      FileLogger.error({
-        requestId,
-        ip,
-        userAgent,
-        userId,
-        assetId: file.assetId ?? undefined,
-        fileId: fileIdInt,
-        filename: file.filename ?? undefined,
-        action: 'DOWNLOAD',
-        error: 'S3_CREDENTIALS_MISSING',
-      });
       return NextResponse.json(
         { 
           error: 'Server configuration error', 
@@ -215,20 +147,6 @@ export async function GET(
     });
 
     // Log success
-    FileLogger.success({
-      requestId,
-      ip,
-      userAgent,
-      userId,
-      assetId: file.assetId ?? undefined,
-      fileId: fileIdInt,
-      filename: file.filename ?? undefined,
-      action: 'DOWNLOAD',
-      details: {
-        size: file.size,
-        mimeType: file.mimeType,
-      },
-    });
 
     return NextResponse.json({
       downloadUrl,
@@ -247,14 +165,6 @@ export async function GET(
         { status: 500, headers: { 'x-request-id': requestId } }
       );
     }
-    FileLogger.error({
-      requestId,
-      ip,
-      userAgent,
-      userId: 0,
-      action: 'DOWNLOAD',
-      error: (error as Error)?.message ?? String(error),
-    });
     // Erreur inattendue : 500 journalisé avec `requestId`, sans détail technique au client.
     return sessionErrorToResponse(error, requestId, 'files/download');
   }

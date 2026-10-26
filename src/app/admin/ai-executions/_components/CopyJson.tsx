@@ -16,7 +16,7 @@ import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
 
 /** Texte JSON lisible (indentation 2) ; une chaîne est copiée telle quelle. */
-export function jsonText(value: unknown): string {
+function jsonText(value: unknown): string {
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }
 

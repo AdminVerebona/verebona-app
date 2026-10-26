@@ -28,6 +28,7 @@ import { dedupeFacts } from '../canonical/field-vocabulary';
 import { documentCodeLabel } from '@/lib/referential/document-codes';
 import { readFactsOnTarget, type FactResult, type FactTarget } from './fact-reading';
 import { diagnosticMessage, type T2Diagnostic } from './t2-diagnostics';
+import { plain } from './routing-text';
 
 export interface TargetAnswer {
   text: string;
@@ -47,10 +48,8 @@ export interface TargetAnswer {
   contextUpdate?: { type: 'asset' | 'equipment' | 'room'; id: number; label?: string | null };
 }
 
-export type DocumentAttribute = 'amount' | 'supplier' | 'date' | 'type' | 'assets';
-export type AgendaAttribute = 'status' | 'date';
-
-const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’]/g, "'");
+type DocumentAttribute = 'amount' | 'supplier' | 'date' | 'type' | 'assets';
+type AgendaAttribute = 'status' | 'date';
 
 const DOC_ATTRS: Array<[DocumentAttribute, RegExp]> = [
   ['amount', /\b(montant|prix|cout|coute|total|combien\b[\s\S]*\b(coute|paye|payee|facture|regle))\b/],
@@ -128,7 +127,7 @@ const factOf = (d: CanonicalDocumentState, re: RegExp) =>
   d.facts.find((f) => f.value && (re.test(plain(f.key)) || re.test(plain(f.label ?? '')) || re.test(plain(f.canonicalKey ?? ''))));
 
 /** Réponse sur un document ciblé (pure, testée). */
-export function documentTargetAnswer(d: CanonicalDocumentState, attr: DocumentAttribute): TargetAnswer {
+function documentTargetAnswer(d: CanonicalDocumentState, attr: DocumentAttribute): TargetAnswer {
   const t = `« ${d.title} »`;
   const enAnalyse = d.analysisStatus === 'IN_ANALYSIS' ? ` ${IN_ANALYSIS_MESSAGE}` : '';
   let text: string;
@@ -236,7 +235,7 @@ const lecteursCanoniques: TargetReaders = {
 };
 
 /** Question de clarification d'une ambiguïté de cible (pure). */
-export function ambiguityQuestion(a: TargetAmbiguity): string {
+function ambiguityQuestion(a: TargetAmbiguity): string {
   if (a.kind === 'asset') return 'De quel bien parlez-vous ?';
   const nom = a.candidates[0]?.name?.trim();
   const memeNom = !!nom && a.candidates.every((c) => c.name.trim().toLowerCase() === nom.toLowerCase());
@@ -352,7 +351,7 @@ export async function answerFromTarget(
 }
 
 /** Dépendances injectables de `readTargetForRequest` (tests). */
-export interface ReadTargetDeps {
+interface ReadTargetDeps {
   lookup?: TargetLookup;
   readers?: TargetReaders;
 }

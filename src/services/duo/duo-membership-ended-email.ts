@@ -76,7 +76,7 @@ interface Tx {
 
 const rowsOf = <T>(r: unknown): T[] => (Array.isArray(r) ? (r as T[]) : ((r as { rows?: T[] })?.rows ?? []));
 
-export interface DuoMembershipEndedEnqueue {
+interface DuoMembershipEndedEnqueue {
   jobId: number | null;
   /** Motif d'absence de demande (diagnostic, tests). */
   skipped?: 'SILENT' | 'NOT_ACTIVE' | 'OWNER' | 'NOT_FOUND' | 'DUPLICATE' | 'ERROR';

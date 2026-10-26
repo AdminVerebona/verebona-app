@@ -33,7 +33,7 @@ interface MobileActionsSheetProps {
 export const ADD_MENU_WIDTH = 288;
 const GUTTER = 16;
 
-export interface AddMenuPosition { left: number; top?: number; bottom?: number; origin: 'top' | 'bottom' | 'left' }
+interface AddMenuPosition { left: number; top?: number; bottom?: number; origin: 'top' | 'bottom' | 'left' }
 
 /**
  * Position du menu « Ajouter » : pure, testée. Bouton dans la moitié basse

@@ -12,7 +12,7 @@ import { FLAG_NAMES, isAssistantFlagOn, type AssistantFlag } from '../config/ass
 /** Codes de plan tels qu'utilisés par le repo (`PlanType`). */
 export type PlanCode = 'STANDARD' | 'PREMIUM' | 'PREMIUM_DUO' | 'PREMIUM_PRO';
 
-export interface AssistantCapability {
+interface AssistantCapability {
   code: string;
   enabled: boolean;
   plans: PlanCode[];
@@ -21,9 +21,9 @@ export interface AssistantCapability {
 }
 
 /** Offres éligibles aux réponses intelligentes (§6). Standard exclu (§6.1). */
-export const AI_ELIGIBLE_PLANS: PlanCode[] = ['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
+const AI_ELIGIBLE_PLANS: PlanCode[] = ['PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
 
-export const CAPABILITIES: AssistantCapability[] = [
+const CAPABILITIES: AssistantCapability[] = [
   {
     code: 'classic_search',
     enabled: true,
@@ -66,7 +66,7 @@ export function capabilityForIntent(intent: VerebonaIntent): AssistantCapability
 }
 
 /** Flag du §39 porté par une capacité (`featureFlag`) : actif ? Lu à chaque appel. */
-export function isCapabilityFlagOn(c: AssistantCapability, env: NodeJS.ProcessEnv = process.env): boolean {
+function isCapabilityFlagOn(c: AssistantCapability, env: NodeJS.ProcessEnv = process.env): boolean {
   if (!c.featureFlag) return true;
   const flag = (Object.keys(FLAG_NAMES) as AssistantFlag[]).find((f) => FLAG_NAMES[f] === c.featureFlag);
   // Flag inconnu du §39 : la capacité reste gouvernée par `enabled` seul.
@@ -96,18 +96,6 @@ export function capabilityAllows(intent: VerebonaIntent, plan: string, env: Node
 export function isAiEligibleFor(intent: VerebonaIntent, plan: string, geminiEligible: boolean): boolean {
   return geminiEligible && isPlanAiEligible(plan) && capabilityAllows(intent, plan);
 }
-
-/** Libellés des capacités, pour la couche « droits et offre » du prompt (§17.3). */
-export const CAPABILITY_LABELS: Record<string, string> = {
-  classic_search: 'recherche dans les biens, documents, échéances et fournisseurs du compte',
-  product_help: 'aide à l’utilisation de Verebona',
-  deterministic_facts: 'lecture des informations enregistrées dans le compte',
-  account_ai: 'synthèse, comparaison et chronologie rédigées à partir des documents',
-  semantic_retrieval: 'recherche sémantique',
-  voice_io: 'saisie vocale',
-  photo_search: 'recherche par photo',
-  proactive_notifications: 'notifications proactives',
-};
 
 /** Capacités ouvertes et fermées pour une offre, à cet instant (flags compris). */
 export function capabilitiesForPlan(plan: string): { open: AssistantCapability[]; closed: AssistantCapability[] } {
@@ -214,16 +202,16 @@ export interface SuggestionContext {
 }
 
 /** Compteur lu par une précondition ; `asset.*` : le bien désigné par l'entrée (`asset`). */
-export type SuggestionFact = keyof AccountSuggestionState | 'asset.documents' | 'asset.deadlines';
+type SuggestionFact = keyof AccountSuggestionState | 'asset.documents' | 'asset.deadlines';
 
 /**
  * Précondition explicite : `positive` (connu et > 0), `zero` (connu et nul),
  * `notPositive` (nul ou inconnu).
  */
-export interface SuggestionRequirement { fact: SuggestionFact; is: 'positive' | 'zero' | 'notPositive' }
+interface SuggestionRequirement { fact: SuggestionFact; is: 'positive' | 'zero' | 'notPositive' }
 
 /** Domaine de la réponse attendue (sources admissibles, vérifiées par le test contractuel). */
-export type SuggestionDomain = 'ACTIONS' | 'TO_PROCESS' | 'AGENDA' | 'DOCUMENTS' | 'DOCUMENT_STATUS' | 'EXPORTS' | 'HELP' | 'PLAN';
+type SuggestionDomain = 'ACTIONS' | 'TO_PROCESS' | 'AGENDA' | 'DOCUMENTS' | 'DOCUMENT_STATUS' | 'EXPORTS' | 'HELP' | 'PLAN';
 
 /** Types de sources T2 admissibles pour chaque domaine (aide : article ou règle produit). */
 export const SUGGESTION_DOMAIN_SOURCES: Readonly<Record<SuggestionDomain, readonly string[]>> = {
@@ -345,11 +333,11 @@ export const ALL_SUGGESTIONS: readonly SuggestionEntry[] = [...SUGGESTIONS, ...A
 export const MAX_SUGGESTIONS = 3;
 
 /** Longueur maximale d'un nom de bien cité dans un exemple. */
-export const SUGGESTION_ASSET_NAME_MAX = 40;
+const SUGGESTION_ASSET_NAME_MAX = 40;
 const NOM_ACCEPTE = /^[\p{L}\p{N}][\p{L}\p{N} '’.\-]*$/u;
 
 /** Forme de comparaison d'un nom (casse et accents ignorés). */
-export function normalizeAssetName(name: string): string {
+function normalizeAssetName(name: string): string {
   return name.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[’']/g, ' ').replace(/\s+/g, ' ').trim();
 }
 

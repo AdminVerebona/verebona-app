@@ -71,7 +71,7 @@ type Row = Record<string, unknown>;
 const rows = async <T = Row>(tx: DbTx | typeof db, q: SQL): Promise<T[]> => (await tx.execute(q)) as unknown as T[];
 const ints = (l: readonly number[]) => sql`${`{${l.filter((x) => Number.isInteger(x)).join(',')}}`}::int[]`;
 
-export type SpaceRole = 'owner' | 'member';
+type SpaceRole = 'owner' | 'member';
 
 export interface MoveTarget {
   accountId: number;
@@ -119,7 +119,7 @@ export interface MovePreview {
   fingerprint: string;
 }
 
-export type MoveError =
+type MoveError =
   | 'ASSET_NOT_FOUND'
   | 'MOVE_NOT_ALLOWED'
   | 'SAME_ACCOUNT'
@@ -148,7 +148,7 @@ export type MoveResult =
   | { ok: false; error: MoveError; message: string; preview?: MovePreview };
 
 /** Libellés de ce qui ne part jamais (affichés à la confirmation). */
-export const PERSONAL_DATA_NOT_MOVED: readonly string[] = [
+const PERSONAL_DATA_NOT_MOVED: readonly string[] = [
   'vos conversations avec l’assistant',
   'vos préférences de notification',
   'les exports déjà générés et la consommation d’analyses de l’espace de départ',
@@ -228,7 +228,7 @@ function empreinte(p: {
   return crypto.createHash('sha256').update(base).digest('hex').slice(0, 32);
 }
 
-export interface MoveRequest {
+interface MoveRequest {
   userId: number;
   userEmail: string;
   assetId: number;

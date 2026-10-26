@@ -96,7 +96,7 @@ export function isRequestAborted(error: unknown): boolean {
 
 // ── Politiques de budget ───────────────────────────────────────────────────
 
-export type HttpPolicyName = 'read' | 'write' | 'long';
+type HttpPolicyName = 'read' | 'write' | 'long';
 
 export interface HttpPolicy {
   /** Délai d'UNE tentative (en-têtes + corps). */
@@ -138,9 +138,9 @@ const MIN_ATTEMPT_MS = 1_000;
  * Taille maximale d'une réponse JSON annoncée (Content-Length). Le parsing est
  * synchrone et bloque le fil principal : un délai ne peut pas l'interrompre.
  */
-export const MAX_JSON_RESPONSE_BYTES = 25 * 1024 * 1024;
+const MAX_JSON_RESPONSE_BYTES = 25 * 1024 * 1024;
 
-export function httpPolicyFor(url: string, method: string, explicit?: HttpPolicyName): HttpPolicy {
+function httpPolicyFor(url: string, method: string, explicit?: HttpPolicyName): HttpPolicy {
   if (explicit) return HTTP_POLICIES[explicit];
   return method === 'GET' ? HTTP_POLICIES.read : HTTP_POLICIES.write;
 }
@@ -221,7 +221,7 @@ export const RESPONSE_CACHE_POLICIES: ReadonlyArray<{ prefix: string; ttlMs: num
 ];
 
 /** Routes servies depuis un cache serveur, à relire « fraîches » après une écriture. */
-export const SERVER_CACHED_READS: ReadonlyArray<string> = [
+const SERVER_CACHED_READS: ReadonlyArray<string> = [
   '/api/home/summary',
   '/api/to-process/suppliers',
   '/api/users/me',
@@ -300,9 +300,9 @@ function withFreshnessAfterMutation(url: string, options: ApiClientOptions): Api
 
 // ── Annulation combinée : appelant + délai ─────────────────────────────────
 
-export type AbortCause = 'caller' | 'timeout';
+type AbortCause = 'caller' | 'timeout';
 
-export interface AttemptSignal {
+interface AttemptSignal {
   signal: AbortSignal;
   cause: () => AbortCause | null;
   dispose: () => void;
@@ -456,9 +456,9 @@ export const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3_000;
  *   · `failed`          : réponse en erreur ou réseau — rien n'est garanti ;
  *   · `timeout`         : pas de réponse dans LOGOUT_TIMEOUT_MS — rien n'est garanti.
  */
-export type ServerSignOutOutcome = 'revoked' | 'cookies-cleared' | 'failed' | 'timeout';
+type ServerSignOutOutcome = 'revoked' | 'cookies-cleared' | 'failed' | 'timeout';
 
-export interface SignOutResult {
+interface SignOutResult {
   server: ServerSignOutOutcome;
   push: 'done' | 'skipped' | 'timeout' | 'failed';
 }
@@ -1009,15 +1009,5 @@ export function __inflightCountForTests(): number {
   return inflight.size;
 }
 
-export function getApiErrorMessage(error: unknown): string {
-  if (error instanceof ApiClientError) {
-    return error.code;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return 'Une erreur est survenue';
-}
-
 export { ApiClientError };
-export type { ApiClientOptions };
+;

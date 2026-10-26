@@ -48,7 +48,7 @@ export async function prepareInformationSources(
   }
 }
 
-export interface CrossStepResult extends AcquisitionCrossResult {
+interface CrossStepResult extends AcquisitionCrossResult {
   /** Décision du moteur remplacée par la décision croisée (pont « À traiter » : une décision par champ). */
   replaces: ReconciliationDecision | null;
 }
@@ -141,14 +141,14 @@ export function checkSummary(rec: T3ExecutionRecorder): Record<string, number> {
  * signature et rouvre un cycle. Avant : une valeur saisie conservée par
  * l'utilisateur revenait en carte à chaque passage.
  */
-export interface ConflictMemory {
+interface ConflictMemory {
   /** Décision rendue : conflit déjà tranché → conservation (ALREADY_DECIDED), sans carte. */
   filter(decision: ReconciliationDecision): Promise<ReconciliationDecision>;
   /** Signatures des conflits proposés pendant ce passage (état 0597). */
   readonly proposed: Record<string, string>;
 }
 
-export const conflictSignature = (d: ReconciliationDecision): string =>
+const conflictSignature = (d: ReconciliationDecision): string =>
   crossSignatureOf(canonicalKeyOf(d.fieldKey), d.currentValue, d.proposedValue, d.evidenceIds);
 
 const crossSignatureOf = (key: string, current: unknown, proposed: unknown, refs: number[]) =>

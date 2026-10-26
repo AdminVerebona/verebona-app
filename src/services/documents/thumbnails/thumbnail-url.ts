@@ -26,7 +26,7 @@ import { THUMBNAIL_FORMAT } from './thumbnail-spec';
 /** Fenêtre d'arrondi de la signature. */
 export const THUMBNAIL_SIGNING_WINDOW_MS = 60 * 60 * 1000;
 /** Validité de l'URL : fenêtre + 1 h de marge. */
-export const THUMBNAIL_SIGNED_TTL_S = 2 * 60 * 60;
+const THUMBNAIL_SIGNED_TTL_S = 2 * 60 * 60;
 /** Entrées gardées au plus (≈ 1 Ko chacune). */
 const MAX_ENTRIES = 5_000;
 
@@ -34,7 +34,7 @@ const memo = new Map<string, string>();
 let memoWindow = 0;
 const stats = { signed: 0, reused: 0 };
 
-export function thumbnailSigningDate(now: number = Date.now()): Date {
+function thumbnailSigningDate(now: number = Date.now()): Date {
   return new Date(Math.floor(now / THUMBNAIL_SIGNING_WINDOW_MS) * THUMBNAIL_SIGNING_WINDOW_MS);
 }
 

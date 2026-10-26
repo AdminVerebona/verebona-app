@@ -84,11 +84,3 @@ export function assertAiEnvironment(): AiEnvironment {
   return env;
 }
 
-/**
- * La promotion d'un Brouillon en « À tester » est réservée à la préproduction
- * (WF-02, préconditions). En production, une version arrive par import et
- * s'active explicitement (VER-012) — jamais par un cycle de test local.
- */
-export function allowsTestVersions(env: AiEnvironment): boolean {
-  return env !== 'production';
-}

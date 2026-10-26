@@ -39,10 +39,10 @@ import type { SourceType } from '../types/sources';
 // ── Familles et contrats ─────────────────────────────────────────────────
 
 /** Famille de demande d'actions (ce que l'intention existante demande). */
-export type ActionableFamily = 'ACTIONS' | 'OVERDUE' | 'URGENT' | 'TO_PROCESS' | 'DEADLINES';
+type ActionableFamily = 'ACTIONS' | 'OVERDUE' | 'URGENT' | 'TO_PROCESS' | 'DEADLINES';
 
 /** Types de sources ACTIONNABLES (trace : TODO, DEADLINE). */
-export type ActionableSourceType = 'TODO' | 'DEADLINE';
+type ActionableSourceType = 'TODO' | 'DEADLINE';
 
 /** Correspondance avec les types de sources de T2 (§19.2). */
 export const ACTIONABLE_SOURCE_TYPES: Readonly<Record<ActionableSourceType, SourceType>> = {
@@ -51,7 +51,7 @@ export const ACTIONABLE_SOURCE_TYPES: Readonly<Record<ActionableSourceType, Sour
 };
 
 /** Code de résolution tracé (`intentResolution`). */
-export const FAMILY_RESOLUTION: Readonly<Record<ActionableFamily, string>> = {
+const FAMILY_RESOLUTION: Readonly<Record<ActionableFamily, string>> = {
   ACTIONS: 'ACTIONS_TEMPORAL',
   OVERDUE: 'ACTIONS_OVERDUE',
   URGENT: 'ACTIONS_URGENT',
@@ -60,7 +60,7 @@ export const FAMILY_RESOLUTION: Readonly<Record<ActionableFamily, string>> = {
 };
 
 /** Intention EXISTANTE portée par chaque famille. */
-export const FAMILY_INTENT: Readonly<Record<ActionableFamily, 'ACCOUNT_TO_PROCESS' | 'ACCOUNT_SEARCH_AGENDA'>> = {
+const FAMILY_INTENT: Readonly<Record<ActionableFamily, 'ACCOUNT_TO_PROCESS' | 'ACCOUNT_SEARCH_AGENDA'>> = {
   ACTIONS: 'ACCOUNT_TO_PROCESS',
   OVERDUE: 'ACCOUNT_TO_PROCESS',
   URGENT: 'ACCOUNT_TO_PROCESS',
@@ -82,7 +82,7 @@ export const FAMILY_ALLOWED_SOURCES: Readonly<Record<ActionableFamily, readonly 
 };
 
 /** Raison d'inclusion d'un résultat (trace par résultat). */
-export type InclusionReason = 'OVERDUE' | 'DUE_TODAY' | 'DUE_IN_PERIOD' | 'OPEN_TODO' | 'PRIORITY_TODO';
+type InclusionReason = 'OVERDUE' | 'DUE_TODAY' | 'DUE_IN_PERIOD' | 'OPEN_TODO' | 'PRIORITY_TODO';
 
 export interface ActionableRequest {
   family: ActionableFamily;
@@ -434,7 +434,7 @@ export function selectionnerActionnables(
 
 // ── Compteurs (trace) ────────────────────────────────────────────────────
 
-export interface ActionableCounts {
+interface ActionableCounts {
   todoCount: number;
   deadlineCount: number;
   actionCount: number;
@@ -459,7 +459,7 @@ export function compterActionnables(results: ActionableResult[]): ActionableCoun
 // ── Réponse (rédigée par le serveur, sans modèle) ────────────────────────
 
 /** Nombre d'éléments listés dans le texte (la trace et les sources gardent tout, bornées). */
-export const MAX_LISTED_ACTIONABLES = 10;
+const MAX_LISTED_ACTIONABLES = 10;
 
 const pluriel = (n: number, s: string, p = `${s}s`) => (n > 1 ? p : s);
 
@@ -493,13 +493,13 @@ export const NO_PRIORITY_SUBJECT = 'Aucun sujet à traiter en priorité aujourd�
  *                   d'abord », ni datés de la période) ;
  *   truncated       lecture bornée atteinte : la liste peut être incomplète.
  */
-export interface ActionableReadContext {
+interface ActionableReadContext {
   otherOpenTodos?: number;
   truncated?: boolean;
 }
 
 /** Réponse « aucun résultat » : une résolution RÉUSSIE, dite comme telle (pure). */
-export function phraseAucunActionnable(req: ActionableRequest, ctx: ActionableReadContext = {}): string {
+function phraseAucunActionnable(req: ActionableRequest, ctx: ActionableReadContext = {}): string {
   const p = req.label;
   switch (req.family) {
     case 'OVERDUE':

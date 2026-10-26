@@ -31,7 +31,7 @@ import { normalizeTitle } from './document-title-rules';
 export const TITLE_SEPARATOR = ' — ';
 
 /** Ancien séparateur du moteur v2 (« Facture fibre Orange _ Septembre 2026 ») — reconnu pour la reprise du stock. */
-export const LEGACY_TITLE_SEPARATOR = ' _ ';
+const LEGACY_TITLE_SEPARATOR = ' _ ';
 
 /** Natures dont un document se répète par période (convention périodique). */
 export const PERIODIC_NATURES: ReadonlySet<string> = new Set(['Facture', 'Avis d’échéance', 'Quittance', 'Relevé', 'Échéancier']);
@@ -66,7 +66,7 @@ export function formatTitleDate(iso: string | null | undefined): string | null {
   return t ? `${t.d === 1 ? '1er' : t.d} ${MOIS[t.m - 1]} ${t.y}` : null;
 }
 
-export type BilledPeriodPresentation = 'MONTH' | 'MONTH_RANGE' | 'EXACT_RANGE';
+type BilledPeriodPresentation = 'MONTH' | 'MONTH_RANGE' | 'EXACT_RANGE';
 
 /**
  * Période facturée PRÉSENTÉE EXACTEMENT (pure) — règle de présentation, sans
