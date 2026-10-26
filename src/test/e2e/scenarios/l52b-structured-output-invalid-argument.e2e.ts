@@ -142,7 +142,7 @@ scenario('L52B', 'Structured output : 400 INVALID_ARGUMENT générique rattrapé
     const [row] = rows;
     expect(row).toMatchObject({ status: 'success', model_rank: 'primary', model: analyses[0].model });
     const m = row.metadata;
-    expect(m.runtimeContract).toMatchObject({ contractId: 'T1_ANALYZE_DOCUMENT', schemaVersion: 't1_analyze_document@v5' });
+    expect(m.runtimeContract).toMatchObject({ contractId: 'T1_ANALYZE_DOCUMENT', schemaVersion: 't1_analyze_document@v6' });
     const { T1AnalyzeDocumentTolerantOutput } = await import('@/services/ai/source-analysis/master/tolerant-output');
     const contrat = rc.resolveRuntimeContract({ schemaName: 'T1AnalyzeDocumentOutput', operationCode: 't1_analyze_document', callerSchema: T1AnalyzeDocumentTolerantOutput }).contract;
     expect(m.runtimeContract!.schemaHash).toBe(contrat.schemaHash);

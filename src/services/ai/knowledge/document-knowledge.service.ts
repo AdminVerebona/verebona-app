@@ -42,6 +42,7 @@ import { documentFactsCanonicalReady } from '../evidence/canonical-columns';
 import { sourceLayerReady, writeSourceLayer } from '../source-analysis/source-units/repository';
 import { buildAgendaCandidatesT4 } from '../source-analysis/steps/build-agenda-candidates.step';
 import { operationCandidatesReady, replaceOperationCandidates, type PersistedFactAnchor } from '../source-analysis/operation-candidates/persist';
+import { insertValueDecisions, supersedeFileDecisions, valueDecisionsTableReady } from '../source-analysis/value-decisions/store';
 
 const json = (v: unknown) => JSON.stringify(v ?? null);
 
@@ -102,6 +103,9 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
   // faits. Absente (connaissance construite hors T1, tests historiques) :
   // aucun contrôle de schéma, candidats inchangés.
   const candidats = k.operationCandidates !== undefined ? await operationCandidatesReady() : false;
+  // Lot 91D : décisions T1 sur les valeurs (0798) — contrôle HORS transaction. Toute nouvelle analyse T1 (couche A
+  // ou décisions présentes) supersède les décisions précédentes du document : elles visaient l'extraction d'avant.
+  const decisions = k.sourceLayer || k.valueDecisions ? await valueDecisionsTableReady() : false;
 
   await pgClient.begin(async (tx) => {
     const rows = await tx.unsafe(
@@ -223,6 +227,28 @@ export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Pr
         accountId: e.accountId, fileId: e.fileId, extractionId, analysisRunId: e.analysisRunId,
         reanalysis, candidates: k.operationCandidates, facts: ancres,
       });
+    }
+
+    // Lot 91D : décisions T1 sur les valeurs significatives — anciennes supersédées (jamais supprimées), nouvelles
+    // écrites avec les faits persistés à l'instant (empreinte → identifiants). Point de sauvegarde : une écriture
+    // impossible n'emporte jamais les faits (le contrôle continue alors de signaler les valeurs sans décision).
+    if (decisions) {
+      const parRef = new Map<string, number[]>();
+      k.facts.forEach((f, i) => {
+        if (!f.t1FactRef || factIds[i] === undefined) return;
+        parRef.set(f.t1FactRef, [...(parRef.get(f.t1FactRef) ?? []), factIds[i]]);
+      });
+      await (tx as unknown as { savepoint: (f: (sp: unknown) => Promise<void>) => Promise<void> })
+        .savepoint(async (sp) => {
+          await supersedeFileDecisions(sp as never, e.fileId, 'REANALYSIS');
+          if (k.valueDecisions?.length) {
+            await insertValueDecisions(sp as never, {
+              accountId: e.accountId, fileId: e.fileId, extractionId, analysisRunId: e.analysisRunId, promptVersion: e.promptVersion,
+              aiTraceId: e.operationTraceId, factIds: parRef,
+            }, k.valueDecisions);
+          }
+        })
+        .catch((err: Error) => console.error(`[t1-value-decisions] décisions du fichier ${e.fileId} non écrites :`, err.message));
     }
 
     // Lot 34F : couche A (unités, couverture, faits non résolus) — même

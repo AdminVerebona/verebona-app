@@ -34,6 +34,7 @@ import { continueByPages } from '../source-units/continuation';
 import { fullTextOf } from '../source-units/build-units';
 import type { T1ExtractionExtras } from '../source-units/complete-extraction';
 import { anchorOperationCandidates, mergeOperationCandidates, type AnchoredOperationCandidate, type CandidateOrigin } from '../operation-candidates/prepare';
+import { anchorValueDecisions, type AnchoredValueDecision } from '../value-decisions/validate';
 import { catalogForPrompts } from '@/services/canonical/registry';
 import { checkFactEvidence, factLabel } from '../master/fact-evidence';
 import { verifyCandidates, type VerifiableEntity } from '../identifier-verifier';
@@ -78,6 +79,13 @@ export interface AnalyzeDocumentResult {
    * réparation ciblée.
    */
   operationCandidates?: AnchoredOperationCandidate[];
+  /**
+   * Lot 91D — décisions de T1 sur les valeurs significatives (passe
+   * principale et lots de pages), ANCRÉES sur les empreintes de faits.
+   * `null` : aucune sortie ne portait le tableau (contrat non porté).
+   * Validées et filtrées par le marqueur du prompt dans `analyseGroupWithMaster`.
+   */
+  valueDecisions?: AnchoredValueDecision[] | null;
 }
 
 /**
@@ -124,11 +132,14 @@ export async function callAnalyzeDocument(p: {
   // Lot 40 : empreinte posée sur chaque fait, preuves des candidats ancrées
   // AVANT tout décalage d'index (lots, faits écartés) — voir operation-candidates.
   const operationCandidates = anchorOperationCandidates(output, p.candidateOrigin ?? (p.sources ? 'CHUNK' : 'PASS_1'));
+  // Lot 91D : décisions sur les valeurs ancrées APRÈS les empreintes de faits (mêmes index que les candidats).
+  const valueDecisions = anchorValueDecisions(output, p.candidateOrigin === 'CHUNK' || (!p.candidateOrigin && p.sources) ? 'CHUNK' : 'PASS_1',
+    report?.invalidValueDecisions ?? []);
   if (report?.droppedCandidates || report?.truncatedCandidates) {
     console.info(`[t1-operation-candidates] fichier(s) ${p.groupIndices.map((i) => p.input.sourceIds[i]).join(',')} : `
       + `${report.droppedCandidates ?? 0} candidat(s) mal formé(s) écarté(s), ${report.truncatedCandidates ?? 0} au-delà de 20.`);
   }
-  return { output, report, res, batches, operationCandidates };
+  return { output, report, res, batches, operationCandidates, valueDecisions };
 }
 
 /** Compteurs de plusieurs lectures tolérantes (passe principale et lots de pages). */
@@ -162,6 +173,8 @@ export async function analyzeDocument(
   const first = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, candidateOrigin: 'PASS_1' });
   const res = first.res;
   let operationCandidates = first.operationCandidates;
+  // Lot 91D : décisions de la passe principale puis des lots de pages (null : aucune sortie ne porte le contrat).
+  let valueDecisions: AnchoredValueDecision[] | null = first.valueDecisions;
 
   // ── Lot 34F : poursuite par lots de pages si la sortie est saturée ──────
   // (document normal : aucun effet, aucun appel). Puis fusion idempotente.
@@ -171,6 +184,7 @@ export async function analyzeDocument(
       const r = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, ...c, candidateOrigin: 'CHUNK' });
       // Lot 40 : candidats d'un lot de pages fusionnés (dédoublonnés, clés uniques).
       operationCandidates = mergeOperationCandidates(operationCandidates, r.operationCandidates);
+      if (r.valueDecisions) valueDecisions = [...(valueDecisions ?? []), ...r.valueDecisions];
       return { output: r.output, report: r.report, batches: r.batches, outputTokens: r.res.outputTokens ?? 0, pruned: r.res.prunedValues ?? [] };
     },
   });
@@ -454,6 +468,7 @@ export async function analyzeDocument(
       v2Families,
     },
     operationCandidates,
+    valueDecisions,
   };
 }
 

@@ -123,6 +123,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['document_rename_events', 'file_id'],
   // Lot 85F : interprétations T3 de la connaissance T1 du document (0720) — suivent le document.
   ['t3_knowledge_queries', 'file_id'],
+  // Lot 91D : décisions T1 sur les valeurs significatives du document (0798) — suivent le document.
+  ['document_value_decisions', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */

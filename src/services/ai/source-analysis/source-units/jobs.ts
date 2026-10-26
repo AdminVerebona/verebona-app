@@ -714,7 +714,7 @@ async function rereadSource(p: {
 }
 
 /** Projette et AJOUTE les faits d'une reprise (les faits existants ne sont pas réécrits). */
-async function appendRepairedFacts(p: {
+export async function appendRepairedFacts(p: {
   fileId: number; accountId: number; extractionId: number | null; assetId: number | null; facts: T1Fact[]; linker: SourceUnitLinker;
 }) {
   const [{ projectDocumentFacts }, { toFact }, { projectedFactToExtractedField }, step, { insertFactRows }, { documentFactsCanonicalReady }, registry] = await Promise.all([

@@ -130,7 +130,8 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   {
     domain: 'documents-t1', label: 'Chaîne document → extract → T1 → aval (C-Q7)',
     checks: ['COH-DOC-EXTRACT-CHAIN'],
-    gap: { what: 'valeur de l’extract absente de T1 sur une unité COUVERTE : constat seul (volontaire ou accidentelle : disposition T1 non livrée) ; documents analysés sans couche A', existingMechanism: 'constat tracé et Supervision ; t1-source-units-backfill (couche A historique)', planned: 'contrat IA 82B-t1-omissions-extract (unitDispositions, FOCUS_VALUES)' },
+    // Lot 91D : décisions T1 par valeur (document_value_decisions) exploitées dès que le prompt T1 porte le contrat.
+    gap: { what: 'tant que le prompt T1 actif ne porte pas le contrat t1-value-decisions-v1 : valeur de l’extract absente de T1 sur une unité COUVERTE = constat seul (volontaire ou accidentelle) ; documents analysés sans couche A', existingMechanism: 'décisions T1 par valeur validées et persistées (lot 91D), réexamen ciblé une fois par diagnostic, constats qualifiés en Supervision ; t1-source-units-backfill (couche A historique)', planned: 'activation par le PO du texte T1 du guide des prompts (demande 82B-t1-omissions-extract, contrat t1-value-decisions-v1)' },
   },
   {
     // Lot 87C : questions suggérées conservées confrontées à leurs fondements (COH-T6-SUGGESTIONS).

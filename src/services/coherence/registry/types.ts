@@ -114,6 +114,27 @@ export interface CheckContext {
   correlationId: string;
   /** Lot 83E : périmètre du compte (absent : ELIGIBLE). */
   accountScope?: AccountScope;
+  /** Lot 91B : déclencheur du contrôle en cours (posé par le moteur). */
+  trigger?: ControlTrigger;
+  /** Lot 91B : campagne en cours (null : contrôle ciblé). */
+  campaignId?: number | null;
+}
+
+/** Lot 91B — issue d'un objet SANS réparation tentée (constat, mode à blanc, anti-boucle…), transmise au contrôle. */
+export interface UnrepairedOutcome {
+  id: number;
+  result: ControlResult;
+  inspection?: Inspection;
+  /** Résultat précédent de la preuve (anti-boucle : ce qui a été tenté). */
+  previousResult?: string | null;
+}
+
+/** Lot 91B — objet à reprendre par un rattrapage (aucune issue persistée récente). */
+export interface CatchupCandidate {
+  accountId: number;
+  objectId: number;
+  /** Motif consigné dans la demande de contrôle (`NEVER_CONTROLLED`, `NO_RECENT_OUTCOME`…). */
+  reason: string;
 }
 
 interface CheckEvent {
@@ -198,6 +219,30 @@ export interface CoherenceCheck {
   inspect?(ctx: CheckContext, accountId: number, ids: readonly number[]): Promise<Map<number, Inspection>>;
   /** Réparation déléguée aux services métier (mode correctif seulement). */
   repair?(ctx: CheckContext, accountId: number, items: ReadonlyArray<{ id: number; inspection: Inspection }>): Promise<Map<number, RepairResult>>;
+  /**
+   * Lot 91B — le contrôle PERSISTE dans son propre journal l'issue des
+   * objets non réparés (constat, mode à blanc, anti-boucle, relance en
+   * attente) : aucune sortie silencieuse. Appelé par le moteur avant la
+   * preuve ; jamais une écriture métier ; une erreur n'interrompt rien.
+   */
+  recordOutcomes?(ctx: CheckContext, accountId: number, items: readonly UnrepairedOutcome[]): Promise<void>;
+  /**
+   * Lot 91B — anomalies signalées IMMÉDIATEMENT dans la Supervision (dès le
+   * premier constat, sans attendre la série « persistante ») : défaut de
+   * configuration exploitable (contrat IA absent, journal inutilisable…).
+   */
+  immediateSupervision?: readonly string[];
+  /**
+   * Lot 91B — RATTRAPAGE : objets à reprendre sans attendre un événement
+   * (jamais contrôlés, ou constat ouvert sans issue persistée récente).
+   * `apply` : le contrôle consigne dans son journal pourquoi l'objet n'avait
+   * pas été examiné ; l'orchestrateur demande ensuite un contrôle ciblé.
+   */
+  catchupCandidates?(ctx: {
+    sql: Sql; now: Date; limit: number; accountId?: number | null; apply: boolean;
+    /** Éligibilité du compte (règle 82A) : seuls les comptes éligibles sont repris. */
+    eligible?: (accountId: number) => Promise<boolean>;
+  }): Promise<CatchupCandidate[]>;
 }
 
 /** Résultat consigné dans la preuve de contrôle d'un objet. */

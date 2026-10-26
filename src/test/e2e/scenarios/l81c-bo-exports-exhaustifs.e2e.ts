@@ -171,21 +171,26 @@ scenario('L81C', 'BO exports exhaustifs : 17 938 décisions T3, pagination, ZIP 
     expect(d).toMatchObject({ complete: true, exportStatus: 'COMPLETE', export: { status: 'COMPLETE', snapshot: { isolation: 'REPEATABLE READ, READ ONLY' } } });
     expect(JSON.stringify(d)).not.toContain('9 impasse Secrète L81C');
 
-    // Diagnostic technique ZIP (périmètre bien) : même exhaustivité.
+    // Diagnostic ZIP (filtre bien, lot 91A : moteur unique) : même exhaustivité, fichier de table découpé si besoin.
     const z = await zip(`scope=asset&id=${ids.t3}`);
-    const dossier = JSON.parse(z.files[`metier/bien-${ids.t3}.json`]) as { sections: Section[] };
-    const zrows = sec(dossier, 'reco-decisions').table!.rows.map((r) => Number(r.id));
+    const decisions = Object.keys(z.files).filter((p) => /^donnees\/conflits-arbitrages\/reconciliation_decisions(\.part-\d{4})?\.json$/.test(p)).sort()
+      .flatMap((p) => JSON.parse(z.files[p]) as Json[]);
+    const zrows = decisions.filter((r) => r.asset_id === ids.t3).map((r) => Number(r.id));
     expect(new Set(zrows).size).toBe(N_T3);
     expect(zrows).toHaveLength(N_T3);
-    const m = JSON.parse(z.files['manifeste.json']) as Json & { files: Array<Json & { path: string }> };
-    expect(m).toMatchObject({ status: 'COMPLETE', snapshot: { isolation: 'REPEATABLE READ, READ ONLY' } });
-    expect(m.files.find((f) => f.path === `metier/bien-${ids.t3}.json`)).toMatchObject({ status: 'COMPLETE', complete: true });
-    expect(z.files['rapport.txt']).toContain('Statut           : COMPLETE');
-    // Consultation (aperçu) « tout l'historique disponible » : statut et décomptes de chaque fichier, sans borne de période.
-    const v = await (await diag(`scope=asset&id=${ids.t3}&period=all`)).json() as { manifest: Json & { files: Array<Json & { path: string }> }; report: string };
-    expect(v.manifest).toMatchObject({ status: 'COMPLETE', request: { from: null } });
-    expect(Number(v.manifest.files.find((f) => f.path === `metier/bien-${ids.t3}.json`)!.count)).toBeGreaterThanOrEqual(N_T3);
-    expect(v.report).toContain('tout l’historique disponible');
+    const m = JSON.parse(z.files['manifeste.json']) as Json & { files: Array<Json & { path: string }>; autoControle: { references: { absentes: number } } };
+    expect(m).toMatchObject({ snapshot: { isolation: 'REPEATABLE READ, READ ONLY' } });
+    // Les décisions du jeu citent des preuves inexistantes : référence absente DÉCLARÉE (PARTIAL), fichiers COMPLETE.
+    expect(m.status).toBe('PARTIAL');
+    expect(m.autoControle.references.absentes).toBeGreaterThan(0);
+    expect(m.files.find((f) => f.path === 'donnees/conflits-arbitrages/reconciliation_decisions.json')).toMatchObject({ status: 'COMPLETE', complete: true, count: decisions.length, expected: decisions.length });
+    expect(z.files['rapport.txt']).toContain('Statut           : PARTIAL');
+    expect(Object.values(z.files).join('\n')).not.toContain('9 impasse Secrète L81C');
+    // Consultation (aperçu) : statut et décomptes de chaque fichier, historique complet (lot 91A : plus de filtre de période).
+    const v = await (await diag(`scope=asset&id=${ids.t3}`)).json() as { manifest: Json & { files: Array<Json & { path: string }> }; report: string };
+    expect(v.manifest).toMatchObject({ request: { scope: 'asset', id: ids.t3 } });
+    expect(Number(v.manifest.files.find((f) => f.path === 'donnees/conflits-arbitrages/reconciliation_decisions.json')!.count)).toBeGreaterThanOrEqual(N_T3);
+    expect(v.report).toContain('tout l’historique conservé');
   });
 
   it('L81C-E02 test 2 — volumétrie 2 001 / 10 000 / 50 000 / 500 / 1 000 : complétude, lots, pagination, mémoire bornée', async () => {
@@ -234,10 +239,17 @@ scenario('L81C', 'BO exports exhaustifs : 17 938 décisions T3, pagination, ZIP 
     expect(per.equipmentIds).toHaveLength(2100);
     expect(per.fileIds).toHaveLength(2100);
     expect(per.operationIds).toHaveLength(2050);
-    // Plan du diagnostic : un dossier par équipement (2 100), aucun écarté (ancienne borne : 25).
-    const plan = await withDiagnosticPlan({ scope: 'asset', id: ids.rel, from: null, to: '2099-12-31', treatments: [], reinforced: false }, { adminUserId: session.userId },
-      async (p) => p.entries.map((e) => e.path));
-    expect(plan.filter((p) => p.startsWith('metier/equipements/'))).toHaveLength(2100);
+    // Diagnostic filtré sur le bien (lot 91A : moteur unique) : les 2 100 équipements, 2 100 documents et 2 050 liens d'Opération, aucun écarté.
+    const lignes = await withDiagnosticPlan({ scope: 'asset', id: ids.rel, reinforced: false }, { adminUserId: session.userId }, async (p) => {
+      const out: Record<string, number> = {};
+      for (const path of ['donnees/etat-metier/equipments.json', 'donnees/documents/asset_files.json', 'donnees/relations/business_operation_asset_links.json']) {
+        const parts: string[] = [];
+        await p.entries.find((e) => e.path === path)!.produce({ write: async (c) => { parts.push(c); } });
+        out[path] = (JSON.parse(parts.join('')) as unknown[]).length;
+      }
+      return out;
+    });
+    expect(lignes).toEqual({ 'donnees/etat-metier/equipments.json': 2100, 'donnees/documents/asset_files.json': 2100, 'donnees/relations/business_operation_asset_links.json': 2050 });
     // Relations du tiroir : totaux réels, et export intégral de chaque section de relations.
     const tiroir = await (await entity(A.id, 'asset', ids.rel)).json() as { sections: Section[] };
     expect(sec(tiroir, 'rel-equipements').window).toMatchObject({ total: 2100 });
@@ -270,8 +282,8 @@ scenario('L81C', 'BO exports exhaustifs : 17 938 décisions T3, pagination, ZIP 
     expect(sec(d, 'rel-operation').relations!.filter((r) => r.type === 'asset')).toHaveLength(1);
     expect(d.exportStatus).toBe('COMPLETE');
     // Diagnostic de l'Opération (tout l'historique) : historique 600 (ancienne borne 500), identité économique 260 sources.
-    const zo = await zip(`scope=operation&id=${ids.op}&period=all`);
-    expect(JSON.parse(zo.files['logs/historique-operations.json'])).toHaveLength(600);
+    const zo = await zip(`scope=operation&id=${ids.op}`);
+    expect(JSON.parse(zo.files['donnees/historique/business_operation_history.json'])).toHaveLength(600);
     expect((JSON.parse(zo.files['tracabilite/identite-economique.json']) as { sources: unknown[] }).sources).toHaveLength(260);
     // TCO du bien : chaque composante est une ligne, chaque ligne est tracée (ancienne borne : 400).
     const z = await zip(`scope=asset&id=${ids.tco}`);
@@ -313,23 +325,23 @@ scenario('L81C', 'BO exports exhaustifs : 17 938 décisions T3, pagination, ZIP 
     expect(txt.trimEnd().split('\n').at(-1)).toMatch(/^Statut de l’export : COMPLETE/);
     // ZIP du diagnostic
     const z = await zip(`scope=asset&id=${ids.v2001}`);
-    const zIds = sec(JSON.parse(z.files[`metier/bien-${ids.v2001}.json`]) as { sections: Section[] }, 'reco-decisions').table!.rows.map((r) => Number(r.id));
+    const zIds = (JSON.parse(z.files['donnees/conflits-arbitrages/reconciliation_decisions.json']) as Json[]).filter((r) => r.asset_id === ids.v2001).map((r) => Number(r.id));
     for (const [fmt, got] of [['json', jIds], ['csv', cIds], ['csv-section', wIds], ['txt', tIds], ['zip', zIds]] as const) {
       expect(got, fmt).toHaveLength(n);
       expect(sorted(got), fmt).toEqual(expectedIds);
     }
-    // Valeurs identiques entre JSON et ZIP (même masquage de base, mêmes lignes).
-    expect(sec(JSON.parse(z.files[`metier/bien-${ids.v2001}.json`]) as { sections: Section[] }, 'reco-decisions').table!.rows[0]).toEqual(sec(j, 'reco-decisions').table!.rows[0]);
-    // Manifeste : chaque fichier avec statut, attendu / exporté, SHA-256 vérifiable.
-    const m = JSON.parse(z.files['manifeste.json']) as { status: string; files: Array<{ path: string; sha256?: string; bytes?: number; status?: string; count?: number; expected?: number | null }> };
-    expect(m.status).toBe('COMPLETE');
+    // Manifeste : chaque fichier avec statut, attendu / exporté, SHA-256 vérifiable. Lot 91A : les décisions de ce jeu citent
+    // des preuves inexistantes — l'auto-contrôle le DÉCLARE (référence absente → PARTIAL), tous les fichiers restent COMPLETE.
+    const m = JSON.parse(z.files['manifeste.json']) as { status: string; autoControle: { references: { absentes: number } }; files: Array<{ path: string; sha256?: string; bytes?: number; status?: string; count?: number; expected?: number | null }> };
+    expect(m.status).toBe('PARTIAL');
+    expect(m.autoControle.references.absentes).toBeGreaterThan(0);
     for (const f of m.files) {
       if (f.path === 'manifeste.json') continue;
       expect(z.files[f.path], f.path).toBeDefined();
       expect(createHash('sha256').update(z.files[f.path]).digest('hex'), f.path).toBe(f.sha256);
       expect(Buffer.byteLength(z.files[f.path]), f.path).toBe(f.bytes);
       expect(f.status, f.path).toBe('COMPLETE');
-      if (f.expected !== undefined && f.expected !== null && f.path.endsWith('.json') && !f.path.startsWith('metier/')) expect(f.count, f.path).toBe(f.expected);
+      if (f.expected !== undefined && f.expected !== null && f.path.endsWith('.json')) expect(f.count, f.path).toBe(f.expected);
     }
     expect(Object.keys(z.files).sort()).toEqual([...m.files.map((f) => f.path)].sort());
     // Manifeste de l'export JSON : sections, totaux cohérents.
@@ -371,7 +383,7 @@ scenario('L81C', 'BO exports exhaustifs : 17 938 décisions T3, pagination, ZIP 
     // 3. Échec de génération d'archive (erreur fatale pendant la production) : flux interrompu, génération FAILED, journal FAILURE.
     const real = sessionMod.openReadSession;
     const spy = vi.spyOn(sessionMod, 'openReadSession').mockImplementation((w) => real({ ...w, cursor: (c) => (text, params, batch) => {
-      if (/FROM ai_operation/.test(text)) throw Object.assign(new Error('écriture refusée (simulée)'), { code: '25006' });
+      if (/FROM "assets" t WHERE/.test(text)) throw Object.assign(new Error('écriture refusée (simulée)'), { code: '25006' });
       return c(text, params, batch);
     } }));
     const res = await diag(`scope=asset&id=${ids.v2001}&format=zip`);
@@ -385,10 +397,11 @@ scenario('L81C', 'BO exports exhaustifs : 17 938 décisions T3, pagination, ZIP 
 
     // 4. Reprise après interruption : nouvelle génération complète, aucune ligne dupliquée.
     const z = await zip(`scope=asset&id=${ids.v2001}`);
-    const rows = sec(JSON.parse(z.files[`metier/bien-${ids.v2001}.json`]) as { sections: Section[] }, 'reco-decisions').table!.rows.map((r) => Number(r.id));
+    const rows = (JSON.parse(z.files['donnees/conflits-arbitrages/reconciliation_decisions.json']) as Json[]).filter((r) => r.asset_id === ids.v2001).map((r) => Number(r.id));
     expect(rows).toHaveLength(VOL.v2001);
     expect(new Set(rows).size).toBe(VOL.v2001);
-    expect((JSON.parse(z.files['manifeste.json']) as Json).status).toBe('COMPLETE');
+    const incomplets = (JSON.parse(z.files['manifeste.json']) as { files: Array<{ path: string; status?: string }> }).files.filter((f) => f.path !== 'manifeste.json' && f.status !== 'COMPLETE');
+    expect(incomplets).toEqual([]);
 
     // 5. Écritures concurrentes pendant l'export : instantané — ni doublon, ni omission, ni ligne apparue / disparue.
     const avantIds = (await sql<{ id: number }[]>`SELECT id FROM reconciliation_decisions WHERE asset_id = ${ids.v10000} ORDER BY id`).map((r) => r.id);
@@ -443,7 +456,7 @@ scenario('L81C', 'BO exports exhaustifs : 17 938 décisions T3, pagination, ZIP 
     expect((await entity(A.id, 'asset', ids.t3, 'section=reco-decisions&offset=50')).status).toBe(403);
     expect((await entity(A.id, 'asset', ids.t3, 'format=json')).status).toBe(403);
     expect((await gensGET(new NextRequest('http://app.test/api/admin/diagnostics/generations'))).status).toBe(403);
-    expect((await diag(`scope=asset&id=${ids.t3}&period=all&format=zip`)).status).toBe(403);
+    expect((await diag(`scope=asset&id=${ids.t3}&format=zip`)).status).toBe(403);
     const admin = await seConnecter('ADMIN');
     // Intercomptes : bien de B demandé par A → 404 (page de section et export), journalisé DENIED.
     expect((await entity(A.id, 'asset', ids.assetB, 'section=reco-decisions')).status).toBe(404);
@@ -485,11 +498,10 @@ scenario('L81C', 'BO exports exhaustifs : 17 938 décisions T3, pagination, ZIP 
     expect(sec(d, 'inconsistencies').extraction).toMatchObject({ status: 'COMPLETE', expected: 2101, exported: 2101 });
     expect(sec(d, 't3-information-checks').table!.rows).toHaveLength(1);
     const z = await zip(`scope=asset&id=${bien.id}`);
-    const zd = JSON.parse(z.files[`metier/bien-${bien.id}.json`]) as { sections: Section[] };
-    expect(sec(zd, 'inconsistencies').table!.rows).toHaveLength(2101);
-    expect(sec(zd, 't3-information-checks').table!.rows).toHaveLength(1);
+    expect((JSON.parse(z.files['donnees/conflits-arbitrages/inconsistency_registry.json']) as Json[]).filter((r) => r.asset_id === bien.id)).toHaveLength(2101);
+    expect((JSON.parse(z.files['donnees/conflits-arbitrages/t3_information_checks.json']) as Json[]).filter((r) => r.asset_id === bien.id)).toHaveLength(1);
     // Masquage : valeurs d'une clé sensible du registre (adresse) jamais rendues.
-    for (const out of [JSON.stringify(tiroir), JSON.stringify(d), z.files[`metier/bien-${bien.id}.json`]]) expect(out).not.toContain('rue Cachée L81C');
+    for (const out of [JSON.stringify(tiroir), JSON.stringify(d), Object.values(z.files).join('\n')]) expect(out).not.toContain('rue Cachée L81C');
     await sql`DELETE FROM inconsistency_registry WHERE asset_id = ${bien.id}`;
     await sql`DELETE FROM t3_information_checks WHERE asset_id = ${bien.id}`;
     await sql`DELETE FROM assets WHERE id = ${bien.id}`;

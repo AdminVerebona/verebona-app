@@ -1,8 +1,16 @@
 /**
- * Lot 88A — REGISTRE DE COUVERTURE du diagnostic global (ticket P1
- * « Rendre le diagnostic global exhaustif et auto-suffisant »). PUR (aucun
- * import serveur) : partagé par le moteur (`account.ts`), le guide
- * d'analyse, le manifeste et les tests de non-régression.
+ * Lots 88A, 91A — REGISTRE DE COUVERTURE du diagnostic (ticket P1
+ * « Unifier le diagnostic et rendre « Ensemble de l'application » réellement
+ * exhaustif »). PUR (aucun import serveur) : partagé par le moteur unique
+ * (`engine.ts`), le guide d'analyse, le manifeste et les tests de
+ * non-régression.
+ *
+ * UN MOTEUR, DES FILTRES (lot 91A) : le périmètre « Ensemble de
+ * l'application » exporte TOUTES les lignes de TOUTES les tables couvertes
+ * (tables de compte ET tables transversales). Les périmètres Compte /
+ * Utilisateur / Bien / Document / Opération appliquent un FILTRE à ces mêmes
+ * tables (`{{A}}` ci-dessous = les comptes retenus) : ils ne peuvent jamais
+ * contenir une information absente du global.
  *
  * ══════════════════════════════════════════════════════════════════════════
  * RÈGLE DE NON-RÉGRESSION (contrat d'observabilité)
@@ -64,6 +72,13 @@ export interface DiagTableCoverage {
   /** Table sans donnée de compte (référentiel, configuration) : cible de la fermeture transitive. */
   global?: boolean;
   /**
+   * Lot 91A — table TRANSVERSALE (journal multi-comptes, configuration,
+   * catalogue) : exportée intégralement au périmètre « Ensemble de
+   * l'application » ; hors des diagnostics filtrés (isolation des comptes),
+   * motif déclaré dans leur couverture. Jamais « non applicable » au global.
+   */
+  transversal?: string;
+  /**
    * Des références depuis le compte peuvent légitimement viser des lignes
    * hors compte (acteurs administrateurs, compte cible d'un transfert) :
    * identifiant seul, non exporté, jamais compté comme manquant.
@@ -80,6 +95,8 @@ const SUPPLIERS = `(SELECT s.id FROM suppliers s WHERE s.account_id = {{A}})`;
 const MEMBERS = `(SELECT m.user_id FROM account_memberships m WHERE m.account_id = {{A}})`;
 
 const C = (section: DiagSectionCode, extra: Omit<DiagTableCoverage, 'section'> = {}): DiagTableCoverage => ({ section, ...extra });
+/** Table transversale (lot 91A) : toutes les lignes au global, hors des diagnostics filtrés. */
+const T = (section: DiagSectionCode, motif: string): DiagTableCoverage => ({ section, filter: 'FALSE', transversal: motif });
 
 /** Tables COUVERTES : section et filtre d'appartenance au compte. */
 export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = {
@@ -181,6 +198,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   t1_quality_signals: C('extractions-ia'),
   ai_execution_reports: C('extractions-ia'),
   t3_knowledge_queries: C('extractions-ia'),
+  // Lot 91D : décisions de T1 sur les valeurs significatives des unités sources (historique SUPERSEDED compris).
+  document_value_decisions: C('extractions-ia'),
   t6_evaluation_runs: C('extractions-ia'),
   t6_interpellation_assessments: C('extractions-ia'),
   home_mascot_generations: C('extractions-ia'),
@@ -327,11 +346,113 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_config_entries: C('referentiels', { global: true, filter: 'TRUE' }),
   ai_master_prompt_versions: C('referentiels', { global: true, filter: 'TRUE' }),
   ai_prompt_versions: C('referentiels', { global: true, filter: 'TRUE' }),
+  // ── Lot 91A — tables TRANSVERSALES : exportées intégralement au global ───
+  // (anciennement exclues « hors compte » : un motif valable pour un compte,
+  // jamais pour « Ensemble de l'application »). Les colonnes sensibles restent
+  // couvertes par `security.ts` (secrets, stockage, codes utilisables, contenus).
+  admin_audit_log: T('historique', 'journal d’administration BO (multi-comptes)'),
+  ai_admin_audit_log: T('historique', 'journal d’administration IA (multi-comptes)'),
+  legal_audit_log: T('historique', 'journal juridique'),
+  withdrawal_events: T('historique', 'rétractation (journal sans compte)'),
+  ops_backfill_runs: T('rapprochements-agenda-controles', 'rattrapages BO multi-comptes'),
+  agenda_intervention_reprise_runs: T('rapprochements-agenda-controles', 'reprise multi-comptes des doublons d’agenda'),
+  to_process_arbitration_reprises: T('rapprochements-agenda-controles', 'reprise multi-comptes (curseurs)'),
+  to_process_digest_runs: T('rapprochements-agenda-controles', 'récapitulatifs multi-comptes (curseurs)'),
+  to_process_scan_runs: T('rapprochements-agenda-controles', 'balayages multi-comptes'),
+  annual_renewal_reminder_state: T('rapprochements-agenda-controles', 'état global du rappel annuel'),
+  ai_log_archives: T('technique', 'archives des journaux IA (multi-comptes)'),
+  ai_retired_treatment_archive: T('technique', 'archives de traitements retirés (multi-comptes)'),
+  migration_0250_unpaid_backup: T('technique', 'sauvegarde technique d’une migration'),
+  pending_blob_deletions: T('technique', 'file de suppression du stockage'),
+  job_locks: T('technique', 'baux des tâches'),
+  ai_call_capture_state: T('technique', 'configuration de la capture IA'),
+  ai_operation_idempotency: T('technique', 'idempotence IA (résultats rejouables : contenu restreint)'),
+  ai_evaluator_runs: T('technique', 'horodatage des évaluateurs IA'),
+  ai_qualification_campaigns: T('technique', 'qualification IA par couple (globale)'),
+  ai_qualification_campaign_accounts: T('technique', 'qualification IA : verrous de compte'),
+  ai_qualification_evidence: T('technique', 'qualification IA par couple (globale)'),
+  ai_qualification_cases: T('technique', 'qualification IA : résultats par cas'),
+  ai_master_corpus_runs: T('technique', 'qualification IA (corpus)'),
+  ai_master_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
+  ai_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
+  ai_corpus_baseline: T('technique', 'ancien harnais de mesure retiré (table inerte)'),
+  email_logs: T('technique', 'journal des e-mails (destinataires pseudonymisés)'),
+  email_provider_events: T('technique', 'journal du fournisseur d’e-mails'),
+  transactional_email_jobs: T('technique', 'file des e-mails transactionnels'),
+  user_activity_log: T('technique', 'journal d’activité des utilisateurs (adresses IP masquées)'),
+  export_generation_items: T('technique', 'dossiers V12 : éléments'),
+  export_generation_logs: T('technique', 'dossiers V12 : journaux'),
+  system_files: T('technique', 'fichiers système (emplacement de stockage jamais exporté)'),
+  verebona_usage_events: T('technique', 'assistant : journal sans compte'),
+  verebona_cache_versions: T('technique', 'assistant : versions de cache'),
+  dunning_events: T('technique', 'relances de paiement (Stripe, sans compte)'),
+  stripe_webhook_logs: T('technique', 'Stripe : journal des webhooks (charge brute : contenu restreint)'),
+  stripe_invoice_effects: T('technique', 'Stripe : effets de factures'),
+  stripe_catalog_runs: T('technique', 'Stripe : publications du catalogue'),
+  stripe_catalog_recoveries: T('technique', 'Stripe : reprises du catalogue'),
+  stripe_catalog_state: T('technique', 'Stripe : état du catalogue'),
+  funnel_events: T('technique', 'statistiques de conversion'),
+  signup_contexts: T('technique', 'contextes d’inscription'),
+  referral_email_sends: T('technique', 'parrainage : envois'),
+  referral_events: T('technique', 'parrainage : événements (deux comptes par ligne)'),
+  referral_links: T('technique', 'parrainage : liens (code omis)'),
+  news_consents: T('technique', 'consentements de communication'),
+  user_guide_progress: T('technique', 'progression du guide'),
+  help_article_feedback: T('technique', 'aide en ligne : avis'),
+  legal_acceptances: T('technique', 'acceptations juridiques (adresses IP masquées)'),
+  to_process_config_baselines: T('referentiels', 'empreintes de configuration « À traiter »'),
+  t6_evaluation_signature_baselines: T('referentiels', 'références de signature T6'),
+  ai_legacy_usage_mapping: T('referentiels', 'correspondance des anciens usages IA'),
+  ai_config_exports: T('referentiels', 'exports de configuration IA (contenu restreint : empreinte)'),
+  ai_config_packages: T('referentiels', 'paquets de configuration IA (contenu restreint : empreinte)'),
+  ai_config_imports: T('referentiels', 'imports de configuration IA (contenu restreint : empreinte)'),
+  ai_config_interventions: T('referentiels', 'interventions manuelles sur le routage IA'),
+  ai_routing_promotions: T('referentiels', 'routage IA subordonné'),
+  ai_cost_anomaly_settings: T('referentiels', 'réglages de coûts IA'),
+  ai_cost_settings: T('referentiels', 'réglages de coûts IA'),
+  ai_emergency_stop: T('referentiels', 'arrêt d’urgence IA'),
+  ai_instructions: T('referentiels', 'instructions de prompts (texte restreint : empreinte)'),
+  ai_master_prompt_activations: T('referentiels', 'journal d’activation des prompts maîtres'),
+  ai_prompt_change_requests: T('referentiels', 'demandes de changement de prompt (texte restreint : empreinte)'),
+  ai_model_catalog: T('referentiels', 'catalogue des modèles'),
+  ai_model_catalog_refresh: T('referentiels', 'catalogue des modèles'),
+  ai_model_operational_status: T('referentiels', 'état opérationnel des modèles'),
+  ai_model_price_changes: T('referentiels', 'tarifs des modèles'),
+  ai_model_price_status: T('referentiels', 'tarifs des modèles'),
+  ai_model_pricing: T('referentiels', 'tarifs des modèles'),
+  ai_model_pricing_refresh_log: T('referentiels', 'tarifs des modèles'),
+  ai_model_qualification: T('referentiels', 'qualification des modèles'),
+  ai_model_capability_changes: T('referentiels', 'capacités des modèles'),
+  analysis_packs: T('referentiels', 'catalogue commercial'),
+  plan_configs: T('referentiels', 'catalogue commercial'),
+  plan_limits: T('referentiels', 'catalogue commercial'),
+  promo_codes: T('referentiels', 'catalogue commercial (codes omis)'),
+  subscription_plans: T('referentiels', 'catalogue commercial'),
+  stripe_catalog_products: T('referentiels', 'Stripe : catalogue'),
+  stripe_price_versions: T('referentiels', 'Stripe : prix'),
+  email_settings: T('referentiels', 'configuration e-mail'),
+  email_template_versions: T('referentiels', 'modèles d’e-mails'),
+  email_templates: T('referentiels', 'modèles d’e-mails'),
+  communication_channel_settings: T('referentiels', 'configuration des canaux'),
+  legal_document_versions: T('referentiels', 'documents juridiques (HTML restreint : empreinte)'),
+  export_templates: T('referentiels', 'modèles d’export V12'),
+  export_dossier_availability: T('referentiels', 'disponibilité des dossiers V12'),
+  system_logos: T('referentiels', 'logos système (image restreinte : empreinte)'),
+  verebona_assistant_settings: T('referentiels', 'assistant : réglages globaux'),
+  verebona_assistant_setting_requests: T('referentiels', 'assistant : demandes de réglage globales'),
+  verebona_help_entries: T('referentiels', 'assistant : aide en ligne'),
 };
 
-type DiagExclusionCategory = 'SECURITE' | 'CONTENU_PERSONNEL' | 'HORS_COMPTE' | 'COMMERCIAL' | 'TECHNIQUE';
+type DiagExclusionCategory = 'SECURITE' | 'CONTENU_PERSONNEL';
 
-/** Tables EXCLUES : catégorie et motif (manifeste, guide). */
+/**
+ * Tables EXCLUES de TOUS les périmètres (y compris « Ensemble de
+ * l'application ») : catégorie et motif (manifeste, guide). Lot 91A : seuls
+ * la SÉCURITÉ (secrets, sessions, jetons) et le CONTENU PERSONNEL de
+ * l'assistant justifient une exclusion — « hors compte », « technique » ou
+ * « commercial » ne sont plus des motifs (tables transversales exportées au
+ * global, voir `transversal`).
+ */
 export const DIAG_TABLE_EXCLUSIONS: Readonly<Record<string, { category: DiagExclusionCategory; motif: string }>> = {
   // Sécurité : secrets, sessions, jetons.
   auth_rate_limits: { category: 'SECURITE', motif: 'limitation des connexions (sécurité)' },
@@ -342,6 +463,7 @@ export const DIAG_TABLE_EXCLUSIONS: Readonly<Record<string, { category: DiagExcl
   withdrawal_verification_tokens: { category: 'SECURITE', motif: 'jetons de vérification (rétractation)' },
   push_subscriptions: { category: 'SECURITE', motif: 'abonnements push (points d’accès et clés)' },
   account_isolation_checks: { category: 'SECURITE', motif: 'contrôle d’isolation multi-comptes (BO › Isolation des comptes)' },
+  verebona_rate_limit_counters: { category: 'SECURITE', motif: 'assistant : compteurs de limitation de débit (clés de seau)' },
   // Contenu conversationnel personnel (assistant T2) : métadonnées des demandes exportées (verebona_request_runs, verebona_ai_runs).
   verebona_conversations: { category: 'CONTENU_PERSONNEL', motif: 'conversations de l’assistant (contenu personnel) — demandes exportées sans contenu (verebona_request_runs)' },
   verebona_messages: { category: 'CONTENU_PERSONNEL', motif: 'messages de l’assistant (contenu personnel)' },
@@ -352,101 +474,6 @@ export const DIAG_TABLE_EXCLUSIONS: Readonly<Record<string, { category: DiagExcl
   verebona_clarification_events: { category: 'CONTENU_PERSONNEL', motif: 'assistant : demandes de précision' },
   verebona_feedback: { category: 'CONTENU_PERSONNEL', motif: 'assistant : avis de l’utilisateur' },
   verebona_claim_sources: { category: 'CONTENU_PERSONNEL', motif: 'assistant : sources d’affirmations' },
-  verebona_assistant_settings: { category: 'TECHNIQUE', motif: 'assistant : réglages globaux' },
-  verebona_assistant_setting_requests: { category: 'TECHNIQUE', motif: 'assistant : demandes de réglage globales' },
-  verebona_cache_versions: { category: 'TECHNIQUE', motif: 'assistant : versions de cache' },
-  verebona_help_entries: { category: 'TECHNIQUE', motif: 'assistant : aide en ligne' },
-  verebona_rate_limit_counters: { category: 'TECHNIQUE', motif: 'assistant : limitation de débit' },
-  verebona_usage_events: { category: 'TECHNIQUE', motif: 'assistant : journal sans compte (consommation exportée par verebona_ai_runs)' },
-  // Journaux multi-comptes ou sans rattachement fiable au compte.
-  admin_audit_log: { category: 'HORS_COMPTE', motif: 'journal d’administration BO (BO › Journal) : pas de rattachement fiable au compte' },
-  ai_admin_audit_log: { category: 'HORS_COMPTE', motif: 'journal d’administration IA' },
-  ops_backfill_runs: { category: 'HORS_COMPTE', motif: 'rattrapages BO multi-comptes' },
-  agenda_intervention_reprise_runs: { category: 'HORS_COMPTE', motif: 'reprise multi-comptes des doublons d’agenda' },
-  to_process_arbitration_reprises: { category: 'HORS_COMPTE', motif: 'reprise multi-comptes (curseurs)' },
-  to_process_digest_runs: { category: 'HORS_COMPTE', motif: 'récapitulatifs multi-comptes (curseurs)' },
-  to_process_scan_runs: { category: 'HORS_COMPTE', motif: 'balayages multi-comptes (comptes en échec)' },
-  to_process_config_baselines: { category: 'TECHNIQUE', motif: 'empreintes de configuration « À traiter »' },
-  annual_renewal_reminder_state: { category: 'HORS_COMPTE', motif: 'état global du rappel annuel' },
-  ai_log_archives: { category: 'HORS_COMPTE', motif: 'archives des journaux IA (fichiers multi-comptes)' },
-  ai_retired_treatment_archive: { category: 'HORS_COMPTE', motif: 'archives de traitements retirés (multi-comptes)' },
-  migration_0250_unpaid_backup: { category: 'HORS_COMPTE', motif: 'sauvegarde technique d’une migration' },
-  pending_blob_deletions: { category: 'HORS_COMPTE', motif: 'file de suppression du stockage (emplacements de stockage)' },
-  job_locks: { category: 'TECHNIQUE', motif: 'baux des tâches (instantanés sans historique)' },
-  ai_call_capture_state: { category: 'TECHNIQUE', motif: 'configuration de la capture IA' },
-  ai_operation_idempotency: { category: 'TECHNIQUE', motif: 'idempotence IA (résultats rejouables)' },
-  t6_evaluation_signature_baselines: { category: 'TECHNIQUE', motif: 'références de signature T6 (globales)' },
-  ai_evaluator_runs: { category: 'TECHNIQUE', motif: 'horodatage des évaluateurs IA' },
-  ai_legacy_usage_mapping: { category: 'TECHNIQUE', motif: 'correspondance des anciens usages IA' },
-  // Configuration et qualification IA hors traitement du compte (les versions utilisées sont exportées par empreinte).
-  ai_config_exports: { category: 'TECHNIQUE', motif: 'exports de configuration IA (contenu complet)' },
-  ai_config_packages: { category: 'TECHNIQUE', motif: 'paquets de configuration IA (contenu complet)' },
-  ai_config_imports: { category: 'TECHNIQUE', motif: 'imports de configuration IA (contenu complet)' },
-  ai_config_interventions: { category: 'TECHNIQUE', motif: 'interventions manuelles sur le routage IA (globales)' },
-  ai_routing_promotions: { category: 'TECHNIQUE', motif: 'routage IA subordonné (global)' },
-  ai_cost_anomaly_settings: { category: 'TECHNIQUE', motif: 'réglages de coûts IA' },
-  ai_cost_settings: { category: 'TECHNIQUE', motif: 'réglages de coûts IA' },
-  ai_emergency_stop: { category: 'TECHNIQUE', motif: 'arrêt d’urgence IA (global)' },
-  ai_instructions: { category: 'TECHNIQUE', motif: 'instructions de prompts (texte)' },
-  ai_master_corpus_runs: { category: 'TECHNIQUE', motif: 'qualification IA (corpus)' },
-  ai_master_prompt_activations: { category: 'TECHNIQUE', motif: 'journal d’activation des prompts maîtres (versions exportées par empreinte)' },
-  ai_master_prompt_test_runs: { category: 'TECHNIQUE', motif: 'qualification IA (tests de prompts)' },
-  ai_prompt_change_requests: { category: 'TECHNIQUE', motif: 'demandes de changement de prompt (texte)' },
-  ai_prompt_test_runs: { category: 'TECHNIQUE', motif: 'qualification IA (tests de prompts)' },
-  ai_model_catalog: { category: 'TECHNIQUE', motif: 'catalogue des modèles (les modèles utilisés figurent dans chaque appel)' },
-  ai_model_catalog_refresh: { category: 'TECHNIQUE', motif: 'catalogue des modèles' },
-  ai_model_operational_status: { category: 'TECHNIQUE', motif: 'catalogue des modèles' },
-  ai_model_price_changes: { category: 'TECHNIQUE', motif: 'tarifs des modèles' },
-  ai_model_price_status: { category: 'TECHNIQUE', motif: 'tarifs des modèles' },
-  ai_model_pricing: { category: 'TECHNIQUE', motif: 'tarifs des modèles' },
-  ai_model_pricing_refresh_log: { category: 'TECHNIQUE', motif: 'tarifs des modèles' },
-  ai_model_qualification: { category: 'TECHNIQUE', motif: 'qualification des modèles' },
-  ai_model_capability_changes: { category: 'TECHNIQUE', motif: 'capacités des modèles (globales)' },
-  ai_qualification_campaigns: { category: 'TECHNIQUE', motif: 'qualification IA par couple (globale)' },
-  ai_qualification_campaign_accounts: { category: 'TECHNIQUE', motif: 'qualification IA : verrous de compte (aucune donnée métier)' },
-  ai_qualification_evidence: { category: 'TECHNIQUE', motif: 'qualification IA par couple (globale)' },
-  ai_qualification_cases: { category: 'TECHNIQUE', motif: 'qualification IA : résultats par cas (empreintes)' },
-  ai_corpus_baseline: { category: 'TECHNIQUE', motif: 'ancien harnais de mesure retiré (table inerte)' },
-  // Commercial, communication, juridique : hors diagnostic fonctionnel du compte.
-  analysis_packs: { category: 'COMMERCIAL', motif: 'catalogue commercial' },
-  plan_configs: { category: 'COMMERCIAL', motif: 'catalogue commercial' },
-  plan_limits: { category: 'COMMERCIAL', motif: 'catalogue commercial' },
-  promo_codes: { category: 'COMMERCIAL', motif: 'catalogue commercial' },
-  subscription_plans: { category: 'COMMERCIAL', motif: 'catalogue commercial' },
-  dunning_events: { category: 'COMMERCIAL', motif: 'relances de paiement (Stripe, sans compte)' },
-  stripe_catalog_products: { category: 'COMMERCIAL', motif: 'Stripe (catalogue)' },
-  stripe_catalog_recoveries: { category: 'COMMERCIAL', motif: 'Stripe (catalogue)' },
-  stripe_catalog_runs: { category: 'COMMERCIAL', motif: 'Stripe (catalogue)' },
-  stripe_catalog_state: { category: 'COMMERCIAL', motif: 'Stripe (catalogue)' },
-  stripe_invoice_effects: { category: 'COMMERCIAL', motif: 'Stripe (effets de factures, sans compte)' },
-  stripe_price_versions: { category: 'COMMERCIAL', motif: 'Stripe (prix)' },
-  stripe_webhook_logs: { category: 'COMMERCIAL', motif: 'Stripe (journal des webhooks multi-comptes)' },
-  referral_email_sends: { category: 'COMMERCIAL', motif: 'parrainage' },
-  referral_events: { category: 'COMMERCIAL', motif: 'parrainage' },
-  referral_links: { category: 'COMMERCIAL', motif: 'parrainage' },
-  funnel_events: { category: 'COMMERCIAL', motif: 'statistiques de conversion' },
-  signup_contexts: { category: 'COMMERCIAL', motif: 'statistiques d’inscription' },
-  user_activity_log: { category: 'HORS_COMPTE', motif: 'journal d’activité des utilisateurs (adresses IP, navigateurs)' },
-  user_guide_progress: { category: 'COMMERCIAL', motif: 'progression du guide' },
-  news_consents: { category: 'COMMERCIAL', motif: 'consentements de communication' },
-  help_article_feedback: { category: 'COMMERCIAL', motif: 'aide en ligne' },
-  email_logs: { category: 'HORS_COMPTE', motif: 'journal des e-mails (BO › E-mails ; destinataires)' },
-  email_provider_events: { category: 'HORS_COMPTE', motif: 'journal du fournisseur d’e-mails' },
-  email_settings: { category: 'TECHNIQUE', motif: 'configuration e-mail' },
-  email_template_versions: { category: 'TECHNIQUE', motif: 'modèles d’e-mails' },
-  email_templates: { category: 'TECHNIQUE', motif: 'modèles d’e-mails' },
-  communication_channel_settings: { category: 'TECHNIQUE', motif: 'configuration des canaux' },
-  transactional_email_jobs: { category: 'HORS_COMPTE', motif: 'file des e-mails transactionnels (destinataires, sans compte)' },
-  legal_acceptances: { category: 'COMMERCIAL', motif: 'juridique' },
-  legal_audit_log: { category: 'COMMERCIAL', motif: 'juridique' },
-  legal_document_versions: { category: 'COMMERCIAL', motif: 'juridique' },
-  withdrawal_events: { category: 'COMMERCIAL', motif: 'rétractation (journal sans compte)' },
-  export_generation_items: { category: 'TECHNIQUE', motif: 'dossiers V12 : éléments (générations exportées dans export_generation)' },
-  export_generation_logs: { category: 'TECHNIQUE', motif: 'dossiers V12 : journaux' },
-  export_templates: { category: 'TECHNIQUE', motif: 'modèles d’export V12' },
-  export_dossier_availability: { category: 'TECHNIQUE', motif: 'disponibilité des dossiers V12' },
-  system_files: { category: 'TECHNIQUE', motif: 'fichiers système' },
-  system_logos: { category: 'TECHNIQUE', motif: 'logos système' },
 };
 
 interface DiagTableClassification {
@@ -477,10 +504,26 @@ export function classifyDiagTables(dbTables: readonly string[]): DiagTableClassi
   return out;
 }
 
-/** Filtre SQL effectif d'une table couverte (alias `t`). */
+/** Filtre SQL effectif d'une table couverte (alias `t`), écrit pour UN compte `{{A}}`. */
 export function coverageFilter(c: DiagTableCoverage): string {
   return c.filter ?? 't.account_id = {{A}}';
 }
+
+/**
+ * Lot 91A — filtre de comptes du moteur unique : chaque `<expr> = {{A}}` du
+ * registre devient « appartient aux comptes retenus » (`{{accounts}}`,
+ * tableau d'entiers) ; `accounts: null` (Ensemble de l'application) : vrai
+ * (aucune restriction de compte — utilisé pour les compteurs annoncés ; les
+ * tables y sont exportées sans filtre).
+ */
+export function accountPredicate(sql: string, accounts: 'all' | 'param'): string {
+  return sql.replace(/([\w."]+)\s*=\s*\{\{A\}\}/g, (_m, col: string) => (accounts === 'all' ? 'TRUE' : `${col} = ANY({{accounts}}::int[])`));
+}
+
+/** Tables d'objets ciblables par un filtre fin (Bien, Document, Opération) et leur jeu d'identifiants. */
+export const DIAG_ENTITY_TABLES: Readonly<Record<string, 'assets' | 'files' | 'operations' | 'equipments'>> = {
+  assets: 'assets', asset_files: 'files', business_operations: 'operations', equipments: 'equipments',
+};
 
 // ── Références logiques (au-delà des clés étrangères du catalogue) ─────────
 
@@ -515,6 +558,10 @@ export const DIAG_LOGICAL_REFERENCES: readonly DiagLogicalReference[] = [
   { from: 'document_facts', column: 'extraction_id', to: 'document_extractions', role: 'fait → extraction T1' },
   { from: 'document_facts', column: 'file_id', to: 'asset_files', role: 'fait → document' },
   { from: 'document_facts', column: 'source_unit_ids', to: 'document_source_units', toColumn: 'source_unit_id', kind: 'pg-array', role: 'fait → unités sources (entrée utile)' },
+  // Lot 91D : décision T1 sur une valeur → document, extraction, analyse, faits rattachés (clés étrangères déclarées : compte, document).
+  { from: 'document_value_decisions', column: 'extraction_id', to: 'document_extractions', role: 'décision T1 sur une valeur → extraction' },
+  { from: 'document_value_decisions', column: 'analysis_run_id', to: 'document_analysis_runs', role: 'décision T1 sur une valeur → analyse' },
+  { from: 'document_value_decisions', column: 'related_fact_ids', to: 'document_facts', kind: 'pg-array', role: 'décision T1 sur une valeur → faits rattachés' },
   { from: 'document_extractions', column: 'file_id', to: 'asset_files', role: 'extraction → document' },
   { from: 'document_extractions', column: 'analysis_run_id', to: 'document_analysis_runs', role: 'extraction → analyse' },
   { from: 'document_source_units', column: 'extraction_id', to: 'document_extractions', role: 'unité source → extraction' },
@@ -549,6 +596,13 @@ export const DIAG_LOGICAL_REFERENCES: readonly DiagLogicalReference[] = [
   { from: 'operation_semantic_reevaluations', column: 'operation_ids', to: 'business_operations', kind: 'pg-array', role: 'réévaluation → objets rapprochés examinés' },
   { from: 'coherence_repairs', column: 'campaign_id', to: 'coherence_campaigns', role: 'réparation → campagne de cohérence' },
   { from: 'coherence_object_proofs', column: 'last_campaign_id', to: 'coherence_campaigns', role: 'preuve de contrôle → campagne' },
+  // Lot 91A : objet contrôlé / réparé (référence polymorphe) — filtre Bien / Document / Opération et fermeture.
+  ...(['coherence_object_proofs', 'coherence_repairs'] as const).flatMap((from): DiagLogicalReference[] => [
+    { from, column: 'object_id', to: 'assets', when: `lower(t.object_type) = 'asset'`, role: 'contrôle de cohérence → bien contrôlé' },
+    { from, column: 'object_id', to: 'asset_files', when: `lower(t.object_type) = 'document'`, role: 'contrôle de cohérence → document contrôlé' },
+    { from, column: 'object_id', to: 'business_operations', when: `lower(t.object_type) IN ('business_operation', 'operation')`, role: 'contrôle de cohérence → objet rapproché contrôlé' },
+    { from, column: 'object_id', to: 'agenda_items', when: `lower(t.object_type) = 'agenda_item'`, role: 'contrôle de cohérence → échéance contrôlée' },
+  ]),
   { from: 't3_knowledge_queries', column: 'file_id', to: 'asset_files', role: 'interprétation T3 → document' },
 ];
 
@@ -581,6 +635,8 @@ interface DiagAnnouncedCount {
   code: string;
   label: string;
   section: DiagSectionCode;
+  /** Table des lignes contrôlées (colonne `id`) : le contrôle suit le filtre du diagnostic sur cette table. */
+  table: string;
   sql: string;
   /**
    * Strict : le compteur dénombre exactement ces lignes — un compteur
@@ -592,35 +648,35 @@ interface DiagAnnouncedCount {
 
 export const DIAG_ANNOUNCED_COUNTS: readonly DiagAnnouncedCount[] = [
   {
-    code: 'T1_FACTS_PERSISTED', strict: true, section: 'extractions-ia', label: 'Rapport T1 : faits persistés annoncés (counters.factsPersisted) vs lignes FACT du rapport',
+    code: 'T1_FACTS_PERSISTED', table: 'ai_execution_reports', strict: true, section: 'extractions-ia', label: 'Rapport T1 : faits persistés annoncés (counters.factsPersisted) vs lignes FACT du rapport',
     sql: `SELECT r.id, (r.counters->>'factsPersisted')::int AS annonce,
                  (SELECT count(*)::int FROM ai_execution_report_entries e WHERE e.account_id = r.account_id AND e.report_id = coalesce(r.entries_report_id, r.id) AND e.section = 'FACT') AS present
             FROM ai_execution_reports r WHERE r.account_id = {{A}} AND r.treatment = 'T1' AND r.counters ? 'factsPersisted' AND (r.counters->>'factsPersisted') ~ '^[0-9]+$'`,
   },
   {
-    code: 'REPORT_ENTRY_COUNT', strict: true, section: 'ecritures', label: 'Rapport d’exécution : lignes annoncées (entry_count) vs lignes présentes',
+    code: 'REPORT_ENTRY_COUNT', table: 'ai_execution_reports', strict: true, section: 'ecritures', label: 'Rapport d’exécution : lignes annoncées (entry_count) vs lignes présentes',
     sql: `SELECT r.id, r.entry_count AS annonce,
                  (SELECT count(*)::int FROM ai_execution_report_entries e WHERE e.account_id = r.account_id AND e.report_id = coalesce(r.entries_report_id, r.id)) AS present
             FROM ai_execution_reports r WHERE r.account_id = {{A}} AND r.entry_count IS NOT NULL`,
   },
   {
-    code: 'T3_REPORT_CONFLICTS', strict: false, section: 'conflits-arbitrages', label: 'Rapport T3 : conflits annoncés (counters.conflicts) vs décisions « create_conflict » du passage',
+    code: 'T3_REPORT_CONFLICTS', table: 'ai_execution_reports', strict: false, section: 'conflits-arbitrages', label: 'Rapport T3 : conflits annoncés (counters.conflicts) vs décisions « create_conflict » du passage',
     sql: `SELECT r.id, (r.counters->>'conflicts')::int AS annonce,
                  (SELECT count(*)::int FROM reconciliation_decisions d WHERE d.account_id = r.account_id AND d.run_id = r.reconciliation_run_id AND d.action = 'create_conflict') AS present
             FROM ai_execution_reports r WHERE r.account_id = {{A}} AND r.treatment = 'T3' AND r.reconciliation_run_id IS NOT NULL AND (r.counters->>'conflicts') ~ '^[0-9]+$'`,
   },
   {
-    code: 'T3_RUN_DECISIONS', strict: true, section: 'conflits-arbitrages', label: 'Passage T3 : décisions annoncées (decisions_count) vs décisions présentes',
+    code: 'T3_RUN_DECISIONS', table: 'reconciliation_runs', strict: true, section: 'conflits-arbitrages', label: 'Passage T3 : décisions annoncées (decisions_count) vs décisions présentes',
     sql: `SELECT r.id, r.decisions_count AS annonce, (SELECT count(*)::int FROM reconciliation_decisions d WHERE d.account_id = r.account_id AND d.run_id = r.id) AS present
             FROM reconciliation_runs r WHERE r.account_id = {{A}} AND r.decisions_count IS NOT NULL`,
   },
   {
-    code: 'T3_RUN_CONFLICTS', strict: false, section: 'conflits-arbitrages', label: 'Passage T3 : conflits annoncés (conflict_count) vs décisions « create_conflict »',
+    code: 'T3_RUN_CONFLICTS', table: 'reconciliation_runs', strict: false, section: 'conflits-arbitrages', label: 'Passage T3 : conflits annoncés (conflict_count) vs décisions « create_conflict »',
     sql: `SELECT r.id, r.conflict_count AS annonce, (SELECT count(*)::int FROM reconciliation_decisions d WHERE d.account_id = r.account_id AND d.run_id = r.id AND d.action = 'create_conflict') AS present
             FROM reconciliation_runs r WHERE r.account_id = {{A}} AND r.conflict_count IS NOT NULL`,
   },
   {
-    code: 'T1_EXTRACTION_FACTS', strict: false, section: 'extractions-ia', label: 'Extraction T1 : faits annoncés (fact_count) vs faits présents (tous statuts)',
+    code: 'T1_EXTRACTION_FACTS', table: 'document_extractions', strict: false, section: 'extractions-ia', label: 'Extraction T1 : faits annoncés (fact_count) vs faits présents (tous statuts)',
     sql: `SELECT x.id, x.fact_count AS annonce, (SELECT count(*)::int FROM document_facts f WHERE f.account_id = x.account_id AND f.extraction_id = x.id) AS present
             FROM document_extractions x WHERE x.account_id = {{A}} AND x.fact_count IS NOT NULL`,
   },
@@ -642,7 +698,7 @@ const CALL_TRACES = ['ai_usage_event', 'ai_call_diagnostics', 'ai_call_captures'
  */
 export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperationCoverage>> = {
   t1_group_upload: { treatment: 'T1', tables: [...CALL_TRACES, 'document_lots', 'document_lot_items', 'document_analysis_runs'] },
-  t1_analyze_document: { treatment: 'T1', tables: [...CALL_TRACES, 'document_raw_extracts', 'document_source_units', 'document_extractions', 'document_facts', 'document_tables', 'document_table_cells', 'document_unresolved_facts', 'document_extraction_coverage', 'document_operation_candidates', 'field_evidence', 'ai_execution_reports', 'ai_execution_report_entries'] },
+  t1_analyze_document: { treatment: 'T1', tables: [...CALL_TRACES, 'document_raw_extracts', 'document_source_units', 'document_extractions', 'document_facts', 'document_tables', 'document_table_cells', 'document_unresolved_facts', 'document_extraction_coverage', 'document_operation_candidates', 'document_value_decisions', 'field_evidence', 'ai_execution_reports', 'ai_execution_report_entries'] },
   collect_evidence: { treatment: 'T1', tables: [...CALL_TRACES, 'field_evidence'] },
   compare_values: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_runs', 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes'] },
   t3_value_conflict: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes', 'ai_execution_reports', 'ai_execution_report_entries'] },

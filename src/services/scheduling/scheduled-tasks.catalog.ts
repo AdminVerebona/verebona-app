@@ -91,6 +91,9 @@
  *                                   une seule requête)             (0495, unique) ; cartes « À traiter »
  *                                                                  uniques (lot 71B : plus de validation
  *                                                                  sur les fiches)
+ *   projection-property-evidence-   au démarrage, puis toutes      mise à jour conditionnelle du fait
+ *   reprise                         les 6 h (rien à faire : une    (règle de projection) ; preuve à
+ *                                   requête, index partiel 0794)   empreinte unique (lot 91C)
  *   coherence-control               toutes les 15 min (5 h – 24 h) bail de la tâche ; preuve par objet ×
  *                                                                 contrôle (clé unique) ; campagne du jour
  *                                                                 unique (index) ; réparations par les
@@ -840,6 +843,26 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       if (r.scanned === 0) return { note: 'aucun document « à valider »' };
       const note = formatValidationReprise(r).slice(0, 1500);
       return { note, again: r.more, ...(r.processed === 0 && r.failed.length > 0 ? { error: note } : {}) };
+    },
+  },
+  {
+    // Lot 91C : projection T1 — preuve d'une PROPRIÉTÉ ≠ preuve de RÉALISATION.
+    // Prix d'acquisition neutralisés par l'ancienne règle (document qui
+    // engage sans réaliser, ex. compromis) : requalifiés par la même règle
+    // pure que la projection, preuve écrite, T3 en file. Sans appel IA ;
+    // idempotent (les faits repris ne sont plus sélectionnés). Même service
+    // que le rattrapage BO (Exploitation › Rattrapages).
+    code: 'projection-property-evidence-reprise',
+    label: 'Projection T1 : prix d’acquisition mis de côté à tort (rattrapage)',
+    schedule: { kind: 'interval', everyMs: 6 * HOUR },
+    startupDelayMs: 9 * MIN,
+    timeoutMs: 10 * MIN,
+    run: async ({ deadline }) => {
+      const { runPropertyEvidenceReprise, formatPropertyEvidenceReprise } = await import('@/services/ai/source-analysis/projection/property-evidence-reprise');
+      const r = await runPropertyEvidenceReprise({ apply: true, origin: 'SCHEDULED', deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      if (r.admitted === 0 && r.failed === 0) return { note: r.scanned === 0 ? 'aucune information à reprendre' : `${r.scanned} information(s) examinée(s), aucune à reprendre` };
+      const note = formatPropertyEvidenceReprise(r).slice(0, 1500);
+      return { note, again: r.more && r.requalified > 0, ...(r.requalified === 0 && r.failed > 0 ? { error: note } : {}) };
     },
   },
   {

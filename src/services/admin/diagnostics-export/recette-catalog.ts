@@ -117,6 +117,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_tables: { domain: 'extraits-ia', description: 'Tableaux extraits.' },
   document_table_cells: { domain: 'extraits-ia', description: 'Cellules des tableaux extraits.' },
   document_unresolved_facts: { domain: 'extraits-ia', description: 'Faits T1 non résolus.' },
+  document_value_decisions: { domain: 'extraits-ia', description: 'Décisions T1 sur les valeurs significatives des unités sources (structurée, composante ou contexte, non retenue avec motif, indéterminée ; provenance, rattachements, validité, historique) — lot 91D.' },
   document_analysis_runs: { domain: 'extraits-ia', description: 'Analyses de documents (exécutions).' },
   document_analysis_proposals: { domain: 'extraits-ia', description: 'Propositions issues des analyses.' },
   document_field_values: { domain: 'extraits-ia', description: 'Valeurs de champs documentaires.' },

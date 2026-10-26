@@ -9,12 +9,15 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 900;
 
 /**
- * GET /api/admin/diagnostics — BO › Dashboard › Supervision › « Diagnostics
- * techniques » (lots 77C, 81C).
+ * GET /api/admin/diagnostics — BO › Dashboard › Supervision › « Diagnostics »
+ * (lots 77C, 81C, 88A, 91A).
  *
- *   `scope=global|user|asset|document|operation`, `id`, `from`, `to`
- *   (AAAA-MM-JJ, UTC) ou `period=all` (tout l'historique disponible),
- *   `treatments=T1,T3,T4`, `reinforced=1` ;
+ * Lot 91A : UN diagnostic, UN moteur. `scope=global` (défaut) = « Ensemble de
+ * l'application », niveau maximal (tous les comptes, tables transversales) ;
+ * `scope=account|user|asset|document|operation` + `id` = FILTRE du même
+ * moteur (volume réduit, jamais une information absente du global) ;
+ * `reinforced=1` ; les anciens paramètres `from`, `to`, `period`,
+ * `treatments` sont ignorés (historique complet, tous traitements) ;
  *   sans `format`  → JSON { manifest, report, files } (consultation, copie) :
  *                    génération complète SANS conservation du contenu
  *                    (statut et intégrité de chaque fichier) — journalisé
@@ -45,7 +48,7 @@ export async function GET(request: NextRequest) {
   const audit = (result: 'SUCCESS' | 'FAILURE' | 'DENIED', req: Partial<DiagRequest> | null, details: Record<string, unknown>) => logAdminAction({
     adminId: g.adminId, adminEmail, action: format ? 'TECH_DIAGNOSTIC_EXPORT' : 'TECH_DIAGNOSTIC_VIEW', targetType: 'TECH_DIAGNOSTIC',
     targetId: req?.id ?? null, result,
-    details: { scope: req?.scope ?? sp.get('scope'), id: req?.id ?? null, from: req?.from ?? null, to: req?.to ?? null, allHistory: req ? req.from === null : null, treatments: req?.treatments ?? null, reinforced: req?.reinforced ?? false, format: format ?? 'json', ...details },
+    details: { scope: req?.scope ?? sp.get('scope'), id: req?.id ?? null, reinforced: req?.reinforced ?? false, format: format ?? 'json', ...details },
   });
 
   const parsed = parseDiagRequest(sp);

@@ -422,8 +422,14 @@ export async function collectSubjectContext(
   // ── Connaissance T1 persistée des documents ───────────────────────────────
   if (documents.length) {
     const dids = documents.map((d) => d.fileId);
+    // Lot 91B : TOUS les faits actifs des documents, quelle que soit leur clé — un fait sans clé canonique (connaissance
+    // générique, requalifié par une règle de projection) ou portant une clé VOISINE est transmis comme les autres, avec sa clé
+    // brute ; la valeur est lue dans toutes ses colonnes (texte, nombre, valeur brute, valeur normalisée). Colonnes 0218 lues
+    // par `to_jsonb` (tolérant si absentes). Aucun filtrage d'après la clé ou les mots.
     const faits = await q<Row>(
-      `SELECT f.id, f.file_id, f.fact_key, to_jsonb(f) ->> 'canonical_key' AS canonical, f.label, f.value_text, f.excerpt, f.confidence,
+      `SELECT f.id, f.file_id, f.fact_key, to_jsonb(f) ->> 'canonical_key' AS canonical, to_jsonb(f) ->> 'raw_key' AS raw_key, f.label,
+              COALESCE(f.value_text, to_jsonb(f) ->> 'raw_value', f.value_number::text, f.normalized_value) AS valeur, f.value_unit,
+              f.excerpt, f.confidence, to_jsonb(f) ->> 'target_type' AS target_type, to_jsonb(f) ->> 'target_entity_id' AS target_id,
               count(*) OVER () AS total
          FROM document_facts f WHERE f.account_id = $1 AND f.file_id = ANY($2::int[]) AND f.status = 'active'
         ORDER BY f.file_id, f.id LIMIT ${B.facts}`,
@@ -431,12 +437,19 @@ export async function collectSubjectContext(
     );
     compter('FACT', faits[0]?.total, faits.length);
     for (const r of faits) {
-      const valeur = texte(r.value_text);
+      const valeur = texte(r.valeur);
       const extrait = texte(r.excerpt);
+      const cle = texte(r.canonical) ?? texte(r.raw_key) ?? texte(r.fact_key) ?? 'fact';
+      const precisions = joindre([
+        ['rawKey', r.canonical == null && r.raw_key != null && r.raw_key !== r.fact_key ? r.raw_key : null],
+        ['factKey', cle !== r.fact_key ? r.fact_key : null], ['unit', r.value_unit],
+        ['target', r.target_type && r.target_id ? `${String(r.target_type).toLowerCase()}:${r.target_id}` : null],
+      ]);
       elements.push({
         ref: `F-${r.id}`, document: refDoc.get(Number(r.file_id)) ?? 'S', fileId: Number(r.file_id), layer: 'FACT',
-        kind: String(r.canonical ?? r.fact_key ?? 'fact'), label: texte(r.label) ?? texte(r.fact_key), value: valeur,
-        text: extrait && extrait !== valeur ? extrait : null, confidence: confianceFait(r.confidence), page: null,
+        kind: cle, label: texte(r.label) ?? texte(r.fact_key), value: valeur,
+        text: texte([extrait && extrait !== valeur ? extrait : null, precisions].filter(Boolean).join(' ; ')),
+        confidence: confianceFait(r.confidence), page: null,
         provenance: { fileIds: [Number(r.file_id)], agendaItemIds: [] },
       });
     }

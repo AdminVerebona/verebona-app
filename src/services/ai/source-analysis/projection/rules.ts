@@ -9,8 +9,9 @@
  * (`ruleCode`) ou dans l'avertissement : c'est ce code que la recette, les
  * indicateurs OBS-T1 et les traces citent.
  */
-import { resolveDocumentType, type DocumentCatalogEntry } from '@/services/canonical/registry';
+import { getField, resolveDocumentType, type DocumentCatalogEntry } from '@/services/canonical/registry';
 import { rubricOfType } from '@/lib/referential/v2';
+import { isExplicitAuthoritySource } from '@/services/ai/reconciliation/decision/authority-matrix';
 
 /** Codes des règles déterministes (ne jamais renommer : tracés en base). */
 export const PROJECTION_RULES = {
@@ -101,6 +102,15 @@ export const PROJECTION_RULES = {
    * identifié ; le fait du bien devient connaissance générique.
    */
   ASSET_ACQUISITION_SAME_EVIDENCE_AS_EQUIPMENT: 'ASSET_ACQUISITION_SAME_EVIDENCE_AS_EQUIPMENT',
+  /**
+   * Lot 91C : le document ne prouve pas la RÉALISATION de l'acquisition
+   * (finalité non établie), mais il est une source ADMISSIBLE de la propriété
+   * (ordre d'autorité explicite du champ, document porteur de la transaction)
+   * et le modèle l'a extraite explicitement, sur le bien, avec une preuve
+   * littérale : la preuve de champ est conservée — sans événement réalisé,
+   * sans date d'acquisition, sans changer le statut de l'Opération.
+   */
+  PROPERTY_EVIDENCE_WITHOUT_REALIZATION: 'PROPERTY_EVIDENCE_WITHOUT_REALIZATION',
 } as const;
 export type ProjectionRuleCode = (typeof PROJECTION_RULES)[keyof typeof PROJECTION_RULES];
 
@@ -200,7 +210,13 @@ const V2_PRESTATION = /^(MAINTENANCE|REPAIR|WORKS)_/;
 /** Types canoniques de prestation. */
 const CANONIQUES_PRESTATION = new Set(['RAPPORT_ENTRETIEN']);
 
-/** Le type documentaire peut-il PROUVER un achat (preuve `completed` de type purchase) ? */
+/**
+ * Le type documentaire peut-il PROUVER la RÉALISATION d'un achat (preuve
+ * `completed` de type purchase) ? Lot 91C : ce critère décide de la FINALITÉ
+ * (ASSET_PURCHASE : achat réalisé, événement purchase HISTORICAL, date
+ * d'acquisition déductible) — jamais, à lui seul, de l'admissibilité d'une
+ * PROPRIÉTÉ comme le prix convenu (voir `admitsPropertyWithoutRealization`).
+ */
 function provesPurchase(entry: DocumentCatalogEntry | undefined): boolean {
   return Boolean(entry?.businessTypes.includes('purchase') && entry.completionProofs.some(
     (p) => p.establishes === 'completed' && (p.businessTypes ?? entry.businessTypes).includes('purchase'),
@@ -272,7 +288,7 @@ export function classifyPurpose(s: PurposeSignals): DocumentPurpose {
 /* ── Lot 38 — O0 : nature de la transaction, date d'acquisition explicite ── */
 
 /** Nature du justificatif pour les règles d'acquisition (CDC Opérations §11.1). */
-type TransactionNature = 'PURCHASE' | 'PAYMENT_PROOF' | 'DEPOSIT_OR_CREDIT_NOTE';
+export type TransactionNature = 'PURCHASE' | 'PAYMENT_PROOF' | 'DEPOSIT_OR_CREDIT_NOTE';
 
 /** Types V2 de preuve de paiement. */
 const V2_PAIEMENT = /(^ACQUISITION_PAYMENT$|_PAYMENT(_PROOF)?$)/;
@@ -307,4 +323,107 @@ const DATE_ACQUISITION_EXPLICITE = /(livr|deliver|remise du bien|remis le|mise e
 /** Le fait date-t-il explicitement la livraison, la remise ou l'achat du bien ? */
 export function labelsExplicitAcquisitionDate(...texts: Array<string | null | undefined>): boolean {
   return texts.some((t) => !!t && DATE_ACQUISITION_EXPLICITE.test(t));
+}
+
+/* ── Lot 91C : preuve d'une PROPRIÉTÉ ≠ preuve de RÉALISATION ─────────────── */
+
+/**
+ * La clé date-t-elle la RÉALISATION d'un événement ? Lu dans le registre :
+ * une clé dont l'effet agenda est HISTORICAL (acquisitionDate → achat
+ * réalisé) n'est établie que par un document qui prouve cette réalisation.
+ * Une clé sans événement (acquisitionPrice : le prix convenu) est une
+ * PROPRIÉTÉ, qu'un document peut établir sans que l'événement soit réalisé.
+ */
+export function fieldStatesRealization(fieldKey: string): boolean {
+  return getField(fieldKey)?.agendaEffect?.nature === 'HISTORICAL';
+}
+
+/**
+ * Source ADMISSIBLE pour une propriété, indépendamment de la réalisation :
+ *   · le document porte LUI-MÊME la transaction (autorité AUTHORITATIVE du
+ *     catalogue documentaire — même critère que l'acte dans
+ *     `classifyPurpose`) : une facture (SUPPORTING) dont la finalité n'est
+ *     pas établie peut être une facture de travaux, jamais admise ici ;
+ *   · ET il figure dans l'ORDRE D'AUTORITÉ EXPLICITE du champ (matrice T3
+ *     `authority-matrix.ts`, aucune liste parallèle).
+ */
+export function sourceAdmissibleForProperty(fieldKey: string, entry: DocumentCatalogEntry | undefined): boolean {
+  if (!entry || entry.authority !== 'AUTHORITATIVE') return false;
+  return isExplicitAuthoritySource(fieldKey, entry.code);
+}
+
+/**
+ * Paiement PARTIEL énoncé par le libellé ou l'extrait du fait lui-même :
+ * acompte, arrhes, avoir (mêmes motifs que `transactionNature`), dépôt de
+ * garantie, indemnité d'immobilisation, séquestre, somme versée, solde, reste
+ * à payer. Un tel montant n'est jamais le prix total (INV-014, §11.1).
+ */
+const PAIEMENT_PARTIEL = /(d[ée]p[oô]t de garantie|indemnit[ée] d.?immobilisation|s[ée]questre|\bvers[ée]e?s?(?![a-zà-ÿ])|\bversement|d[ée]j[àa] (r[ée]gl|pay|vers)|reste [àa] (payer|r[ée]gler)|\bsolde\b)/i;
+
+/** Estimation / valorisation énoncée par le libellé ou l'extrait : une valeur estimée n'est jamais un prix de transaction (C18). */
+const VALEUR_ESTIMEE = /(estim|valeur v[ée]nale|[ée]valuation|expertis|valoris|avis de valeur)/i;
+
+export function textsStatePartialPayment(...texts: Array<string | null | undefined>): boolean {
+  return texts.some((t) => !!t && (ACOMPTE_OU_AVOIR.test(t) || PAIEMENT_PARTIEL.test(t)));
+}
+
+/** Motif de refus d'une propriété sans preuve de réalisation (tracé dans les avertissements et le rattrapage). */
+export type PropertyRefusal =
+  | 'FIELD_STATES_REALIZATION'
+  | 'SOURCE_NOT_ADMISSIBLE'
+  | 'TRANSACTION_NOT_PURCHASE'
+  | 'NOT_EXPLICIT_EXTRACTION'
+  | 'TARGET_NOT_ESTABLISHED'
+  | 'MULTI_ASSET'
+  | 'NO_LITERAL_EVIDENCE'
+  | 'PARTIAL_PAYMENT'
+  | 'VALUATION_NOT_PRICE'
+  | 'CONFLICTUAL';
+
+export interface PropertyAdmissionInput {
+  fieldKey: string;
+  entry: DocumentCatalogEntry | undefined;
+  /** Nature du justificatif (titre + extrait du montant du document). */
+  nature: TransactionNature;
+  /** Origine du fait : seul un fait EXTRAIT par le modèle (`MODEL_CANONICAL`) est admis. */
+  origin: string | null | undefined;
+  provenance: string | null | undefined;
+  excerpt: string | null | undefined;
+  /** Libellés du fait (clé lue, libellé, attribut) — jamais sa valeur. */
+  labels: Array<string | null | undefined>;
+  targetType: string | null | undefined;
+  /** Identifiant de cible VÉRIFIÉ dans le compte (null : cible ambiguë). */
+  targetEntityId: number | null | undefined;
+  multiAsset: boolean;
+  confidence: string | null | undefined;
+}
+
+/**
+ * Lot 91C — un document qui ne prouve pas la réalisation de l'acquisition
+ * (finalité OTHER) conserve-t-il la preuve canonique d'une PROPRIÉTÉ ? Règle
+ * PURE, partagée par la projection T1 et le rattrapage des faits déjà
+ * neutralisés. Toutes les conditions sont cumulatives :
+ *   1. la clé ne date pas la réalisation d'un événement (registre) ;
+ *   2. la source est admissible pour ce champ (`sourceAdmissibleForProperty`) ;
+ *   3. le justificatif n'est ni une preuve de paiement ni un acompte / avoir ;
+ *   4. fait EXTRAIT par le modèle (jamais déduit du montant du document) ;
+ *   5. cible : LE bien, identifiant vérifié ; jamais en multi-biens ;
+ *   6. preuve littérale exploitable (extrait textuel) ;
+ *   7. libellé / extrait sans paiement partiel ni estimation de valeur ;
+ *   8. confiance non conflictuelle.
+ * Devise et confiance (euro présumé → `probable`) sont réglées en amont, fait
+ * par fait ; T3 arbitre ensuite la preuve avec la matrice d'autorité.
+ */
+export function admitsPropertyWithoutRealization(p: PropertyAdmissionInput): { ok: true } | { ok: false; reason: PropertyRefusal } {
+  if (fieldStatesRealization(p.fieldKey)) return { ok: false, reason: 'FIELD_STATES_REALIZATION' };
+  if (!sourceAdmissibleForProperty(p.fieldKey, p.entry)) return { ok: false, reason: 'SOURCE_NOT_ADMISSIBLE' };
+  if (p.nature !== 'PURCHASE') return { ok: false, reason: 'TRANSACTION_NOT_PURCHASE' };
+  if (p.origin !== 'MODEL_CANONICAL') return { ok: false, reason: 'NOT_EXPLICIT_EXTRACTION' };
+  if (p.multiAsset) return { ok: false, reason: 'MULTI_ASSET' };
+  if (p.targetType !== 'ASSET' || p.targetEntityId === null || p.targetEntityId === undefined) return { ok: false, reason: 'TARGET_NOT_ESTABLISHED' };
+  if ((p.provenance ?? 'TEXT_EXTRACTION') !== 'TEXT_EXTRACTION' || !p.excerpt?.trim()) return { ok: false, reason: 'NO_LITERAL_EVIDENCE' };
+  if (textsStatePartialPayment(p.excerpt, ...p.labels)) return { ok: false, reason: 'PARTIAL_PAYMENT' };
+  if ([p.excerpt, ...p.labels].some((t) => !!t && VALEUR_ESTIMEE.test(t))) return { ok: false, reason: 'VALUATION_NOT_PRICE' };
+  if (p.confidence === 'conflictual') return { ok: false, reason: 'CONFLICTUAL' };
+  return { ok: true };
 }

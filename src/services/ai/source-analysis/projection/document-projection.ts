@@ -37,6 +37,11 @@
  *      d'achat du bien → acquisitionDate / acquisitionPrice ; facture de
  *      prestation → jamais acquisitionPrice ; achat de pièce → pas
  *      d'acquisition du bien. Aucune règle en multi-biens.
+ *      Lot 91C : la finalité porte la RÉALISATION de l'achat, pas
+ *      l'admissibilité d'une PROPRIÉTÉ — un document qui engage sans
+ *      réaliser (compromis…) garde la preuve d'un prix extrait, ciblé et
+ *      prouvé quand la matrice d'autorité l'admet pour ce champ, sans
+ *      événement réalisé ni date d'acquisition.
  *
  *   Lot 38 (O0, CDC Opérations V1 C11.1, C12.3, C18) :
  *      · date d'acquisition : date de livraison / remise / achat explicite
@@ -74,6 +79,7 @@ import { factLabel } from '../master/fact-evidence';
 import { currenciesIn, detectDocumentCurrency, foreignCurrencyOf, isEurAmount } from '@/lib/document-currency';
 import { isValuationEvidenceAdmissible } from '@/services/canonical/valuation-semantics';
 import {
+  admitsPropertyWithoutRealization,
   classifyPurpose,
   countArticleLines,
   dateIntroducedAsPastEvent,
@@ -726,9 +732,37 @@ function applyPurposeRules(
     // À traiter) sans jamais atteindre la fiche (T3 ne lit que les preuves
     // canoniques). `ruleCode` marque ces faits : le rattrapage MIG-01 (lot 17)
     // ne doit pas les recanonicaliser par alias.
+    //
+    // Lot 91C — PROPRIÉTÉ ≠ RÉALISATION. La finalité OTHER dit seulement que
+    // l'ACHAT RÉALISÉ n'est pas prouvé (pas d'événement purchase HISTORICAL,
+    // pas de date d'acquisition). Elle ne détruit plus une propriété que le
+    // document établit réellement : un fait extrait par le modèle, sur le
+    // bien, avec preuve littérale, venant d'une source admissible pour ce
+    // champ selon la matrice d'autorité (ex. le prix convenu d'un compromis)
+    // garde sa clé canonique — SANS événement (l'Opération garde son statut
+    // propre : envisagée / coût prévu). Règle pure partagée avec le
+    // rattrapage : `admitsPropertyWithoutRealization`.
     // ══════════════════════════════════════════════════════════════════════
+    const entry = documentEntryOf(analysis.document.classification);
+    const nature = transactionNature({
+      documentTypeCode: analysis.document.classification?.documentTypeCode ?? null,
+      texts: [analysis.document.title?.value, analysis.document.amountCents?.evidence?.excerpt],
+    });
     return facts.map((f) => {
       if (!ACQUISITION.has(f.canonicalKey ?? '')) return f;
+      const admission = admitsPropertyWithoutRealization({
+        fieldKey: f.canonicalKey as string, entry, nature, origin: f.origin, provenance: f.provenance,
+        excerpt: f.evidence?.excerpt, labels: [f.rawKey, f.label, f.attribute],
+        targetType: f.target.targetType, targetEntityId: f.target.targetEntityId,
+        multiAsset: doc.multiAsset, confidence: f.confidence,
+      });
+      if (admission.ok) {
+        noteRule(PROJECTION_RULES.PROPERTY_EVIDENCE_WITHOUT_REALIZATION);
+        warnings.push({ code: 'RULE_APPLIED', target: f.canonicalKey ?? undefined,
+          ruleCode: PROJECTION_RULES.PROPERTY_EVIDENCE_WITHOUT_REALIZATION,
+          message: `« ${f.canonicalKey} » établi par une source admissible qui ne prouve pas la réalisation : preuve conservée, aucun événement réalisé (lot 91C).` });
+        return { ...f, semanticEvent: null, ruleCode: PROJECTION_RULES.PROPERTY_EVIDENCE_WITHOUT_REALIZATION };
+      }
       noteRule(PROJECTION_RULES.ACQUISITION_WITHOUT_PURCHASE_PROOF);
       warnings.push({ code: 'FACT_REQUALIFIED_BY_RULE', target: f.canonicalKey ?? undefined,
         ruleCode: PROJECTION_RULES.ACQUISITION_WITHOUT_PURCHASE_PROOF,

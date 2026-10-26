@@ -26,6 +26,7 @@ import type { DuoSharedAccountReport, RestoreReport as DuoRestoreReport } from '
 import type { BackupManifestV2 } from '@/services/backup/database-backup.service';
 import type { RestoreReport as DatabaseRestoreReport } from '@/services/backup/database-restore.service';
 import type { ReclassificationReport, ReclassificationRestoreReport } from '@/services/ai/history-reclassification/service';
+import type { PropertyRepriseReport } from '@/services/ai/source-analysis/projection/property-evidence-reprise';
 
 export interface BackfillSummary {
   headline: string;
@@ -838,6 +839,110 @@ function aiHistoryReclassification(action: BackfillAction, out: RawBackfillOutpu
   };
 }
 
+/** Lot 91B — rattrapage des propriétés manquantes (objets jamais examinés). */
+function missingPropertiesCatchup(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as import('@/services/coherence/orchestrator').CatchupRequestResult & {
+    controls: { processed: number; results: Record<string, number>; skippedAccounts: number; aiCalls: number } | null;
+  };
+  const sim = action === 'simulate';
+  const total = Object.values(r.requested).reduce((n, v) => n + v, 0);
+  const jamais = r.items.filter((i) => i.reason === 'NEVER_CONTROLLED').length;
+  return {
+    headline: `${sim ? 'Simulation' : 'Application'} : ${total} objet(s) ${sim ? 'à reprendre' : 'repris'} (${jamais} jamais contrôlé(s) dans l’échantillon)`
+      + `${r.controls ? ` — ${r.controls.processed} contrôle(s) exécuté(s), ${r.controls.aiCalls} appel(s) IA` : ''}.`,
+    scriptRunId: null,
+    restorable: false,
+    counters: [
+      ...Object.entries(r.requested).map(([k, v]) => ({ label: `${sim ? 'À reprendre' : 'Repris'} — ${k}`, value: v })),
+      ...(r.controls ? Object.entries(r.controls.results).map(([k, v]) => ({ label: `Résultat du contrôle : ${k}`, value: v })) : []),
+    ],
+    ambiguous: { count: 0, samples: [] },
+    conflicts: { count: 0, samples: [] },
+    warnings: [
+      ...echantillon(r.items, (i) => `${i.checkId} · compte ${i.accountId} · objet ${i.objectId} : ${i.reason === 'NEVER_CONTROLLED' ? 'jamais contrôlé' : 'aucune issue récente'}`),
+      'Chaque issue est lisible dans l’export de recette : property_recovery_runs (statut, cause) et property_recovery_decisions.',
+    ],
+  };
+}
+
+/** Lot 91D — réexamen ciblé des omissions documentaires T1. */
+function extractChainDecisionReview(action: BackfillAction, out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as import('@/services/coherence/orchestrator').CatchupRequestResult & {
+    controls: { processed: number; results: Record<string, number>; skippedAccounts: number; aiCalls: number } | null;
+    contract: string;
+  };
+  const sim = action === 'simulate';
+  const total = Object.values(r.requested).reduce((n, v) => n + v, 0);
+  const porte = r.contract === 'CARRIED';
+  return {
+    headline: !porte
+      ? `Contrat T1 « t1-value-decisions-v1 » non porté par le prompt T1 actif (${r.contract}) : rien à reprendre — collez d’abord l’étape T1 du guide des prompts.`
+      : `${sim ? 'Simulation' : 'Application'} : ${total} document(s) en constat d’omission ${sim ? 'à reprendre' : 'repris'}`
+        + `${r.controls ? ` — ${r.controls.processed} contrôle(s) exécuté(s), ${r.controls.aiCalls} appel(s) IA` : ''}.`,
+    scriptRunId: null,
+    restorable: false,
+    counters: [
+      ...Object.entries(r.requested).map(([k, v]) => ({ label: `${sim ? 'À reprendre' : 'Repris'} — ${k}`, value: v })),
+      ...(r.controls ? Object.entries(r.controls.results).map(([k, v]) => ({ label: `Résultat du contrôle : ${k}`, value: v })) : []),
+    ],
+    ambiguous: { count: 0, samples: [] },
+    conflicts: { count: 0, samples: [] },
+    warnings: [
+      ...echantillon(r.items, (i) => `${i.checkId} · compte ${i.accountId} · document ${i.objectId}`),
+      'Chaque décision est lisible dans l’export de recette : document_value_decisions (valeur, décision, motif, validité) ; le réexamen dans coherence_repairs.',
+    ],
+  };
+}
+
+/** Libellés des motifs de refus du rattrapage 91C (jamais de valeur dans le rapport). */
+const REFUS_91C: Record<string, string> = {
+  FIELD_STATES_REALIZATION: 'date d’achat (réalisation non prouvée)',
+  SOURCE_NOT_ADMISSIBLE: 'type de document non admis pour le prix d’achat',
+  TRANSACTION_NOT_PURCHASE: 'preuve de paiement, acompte ou avoir',
+  NOT_EXPLICIT_EXTRACTION: 'valeur non extraite explicitement',
+  TARGET_NOT_ESTABLISHED: 'bien non identifié ou supprimé',
+  MULTI_ASSET: 'document multi-biens',
+  MULTI_ASSET_UNKNOWN: 'analyse ancienne (multi-biens inconnu)',
+  NO_LITERAL_EVIDENCE: 'aucun extrait littéral',
+  PARTIAL_PAYMENT: 'acompte, dépôt de garantie, somme versée',
+  VALUATION_NOT_PRICE: 'valeur estimée',
+  CONFLICTUAL: 'lecture conflictuelle',
+  KEY_NOT_RECOVERABLE: 'clé d’origine non retrouvée',
+  DOCUMENT_NOT_LINKED_TO_TARGET: 'document plus rattaché au bien',
+};
+
+function projectionPropertyEvidence(out: RawBackfillOutput): BackfillSummary {
+  const r = out.result as PropertyRepriseReport;
+  const sim = r.mode === 'simulate';
+  const ligne = (i: PropertyRepriseReport['items'][number]) => `compte ${i.accountId} · document ${i.fileId} · bien ${i.assetId ?? '—'} · fait ${i.factId}`
+    + ` (${i.documentType ?? 'type inconnu'})${i.reason ? ` — ${REFUS_91C[i.reason] ?? i.reason}` : ''}${i.error ? ` — ${i.error}` : ''}`;
+  const refus = Object.entries(r.refused);
+  return {
+    headline: `${sim ? 'Simulation' : 'Application'} : ${r.scanned} information(s) mise(s) de côté examinée(s), ${r.admitted} prix d’acquisition `
+      + `${sim ? 'à reprendre' : `admis — ${r.requalified} repris, ${r.evidenceWritten} preuve(s) écrite(s), ${r.assetsReconciled} bien(s) réévalué(s) par T3`}. `
+      + 'Aucun appel IA, aucune valeur saisie par l’utilisateur remplacée.',
+    scriptRunId: null,
+    restorable: false,
+    counters: [
+      { label: 'Informations examinées', value: r.scanned },
+      { label: sim ? 'Prix à reprendre' : 'Prix admis', value: r.admitted },
+      ...(sim ? [] : [
+        { label: 'Prix repris', value: r.requalified },
+        { label: 'Preuves écrites', value: r.evidenceWritten },
+        { label: 'Biens mis en réévaluation T3', value: r.assetsReconciled },
+      ]),
+      ...refus.map(([k, v]) => ({ label: `Non repris : ${REFUS_91C[k] ?? k}`, value: v ?? 0 })),
+      { label: 'Échecs', value: r.failed },
+    ],
+    ambiguous: { count: r.admitted, samples: echantillon(r.items.filter((i) => i.outcome === 'TO_REQUALIFY' || i.outcome === 'REQUALIFIED'), ligne) },
+    conflicts: { count: r.failed, samples: echantillon(r.items.filter((i) => i.outcome === 'ERROR'), ligne) },
+    warnings: [
+      ...(r.more ? ['Périmètre non entièrement parcouru : relancer (rien n’est repris deux fois).'] : []),
+      ...r.items.filter((i) => i.outcome === 'REFUSED').slice(0, SAMPLE_LIMIT).map((i) => `Non repris : ${ligne(i)}`),
+    ],
+  };
+}
+
 export function summarizeBackfill(script: BackfillScript, action: BackfillAction, step: string | null, out: RawBackfillOutput): BackfillSummary {
   switch (script) {
     case 'database-restore-point': return databaseRestorePoint(action, out);
@@ -856,6 +961,9 @@ export function summarizeBackfill(script: BackfillScript, action: BackfillAction
     case 'to-process-false-arbitrations': return falseArbitrations(out);
     case 'operations-v5-rebuild': return operationsV5Rebuild(action, out);
     case 'ai-history-reclassification': return aiHistoryReclassification(action, out);
+    case 'missing-properties-catchup': return missingPropertiesCatchup(action, out);
+    case 'projection-property-evidence': return projectionPropertyEvidence(out);
+    case 'extract-chain-decision-review': return extractChainDecisionReview(action, out);
   }
 }
 

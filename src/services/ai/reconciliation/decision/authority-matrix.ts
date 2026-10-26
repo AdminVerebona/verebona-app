@@ -160,6 +160,20 @@ export function resolveAuthority(input: AuthorityInput): AuthorityRule {
   };
 }
 
+/**
+ * Lot 91C — le type de document figure-t-il dans l'ORDRE D'AUTORITÉ EXPLICITE
+ * du champ (`FIELD_AUTHORITY_ORDER`, alias de champ compris) ? C'est la même
+ * matrice que celle qui arbitre les preuves en T3 : la projection T1 s'en sert
+ * pour savoir si une source est ADMISSIBLE pour une propriété, sans liste
+ * parallèle. Un champ piloté par la récence n'a pas d'ordre : jamais admis ici.
+ */
+export function isExplicitAuthoritySource(fieldKey: string, documentType: string | null | undefined): boolean {
+  if (!documentType) return false;
+  const canonicalField = FIELD_ALIASES[fieldKey] ?? fieldKey;
+  if (RECENCY_DOMINANT_FIELDS.has(canonicalField)) return false;
+  return (FIELD_AUTHORITY_ORDER[canonicalField] ?? []).includes(documentType.toUpperCase());
+}
+
 /** Types de documents faisant autorité pour un champ critique (§4.2.6). */
 const ADDRESS_AUTHORITY = ['ACTE_AUTHENTIQUE', 'ACTE_NOTARIE', 'COMPROMIS_VENTE', 'CONTRAT_ASSURANCE'];
 

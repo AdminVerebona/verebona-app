@@ -374,11 +374,10 @@ scenario('L78A', 'Identité économique des Opérations : M1/M2 sécurisés, cor
     // Export de diagnostic (77C) : lien persisté, plus de « non persisté » ; fichier d'identité économique.
     const { generateDiagnostic } = await import('@/services/admin/diagnostics-export/collect');
     const admin = await make.user({ role: 'ADMIN' });
-    const jour = new Date().toISOString().slice(0, 10);
-    const b = await generateDiagnostic({ scope: 'operation', id: op.id, from: jour, to: jour, treatments: [], reinforced: false }, { adminUserId: admin.id });
+    const b = await generateDiagnostic({ scope: 'operation', id: op.id, reinforced: false }, { adminUserId: admin.id });
     const lire = <T>(path: string): T => JSON.parse(b.files.find((x) => x.path === path)!.content) as T;
-    const traces = lire<Array<{ chaine: Array<{ etape: string; donnees?: Record<string, any> }> }>>('tracabilite/montants.json');
-    const ext = traces[0].chaine.find((s) => s.etape === 'EXTRACTION_IA')!;
+    const traces = lire<Array<{ ligne: { id: string }; chaine: Array<{ etape: string; donnees?: Record<string, any> }> }>>('tracabilite/montants.json');
+    const ext = traces.find((t) => t.ligne.id.startsWith('c:'))!.chaine.find((s) => s.etape === 'EXTRACTION_IA')!;
     expect(ext.donnees!.lienPersiste).toEqual({ candidat: cid.id, indices: [0], faits: [Number(fait.id)] });
     expect(ext.donnees!.faits.map((y: { id: number }) => Number(y.id))).toEqual([Number(fait.id)]);
     expect(JSON.stringify(b.manifest)).not.toMatch(/Lien composante → indice T1/);

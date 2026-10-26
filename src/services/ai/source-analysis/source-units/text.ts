@@ -103,7 +103,8 @@ export function amountToCents(entier: string, decimales?: string | null): number
  * devise, dates (numériques ou « 1er janvier 2026 »), identifiants (jeton
  * lettres + chiffres, seulement si `identifiers` — la valeur d'un couple
  * libellé / valeur). Aucun jugement de PERTINENCE : c'est à T1 de dire si
- * une valeur est utile (demande IA 82B-t1-omissions-extract) ; le code ne
+ * une valeur est utile (lot 91D : décisions `valueDecisions`, contrat
+ * t1-value-decisions-v1 ; demande d'origine 82B-t1-omissions-extract) ; le code ne
  * fait que repérer et comparer.
  */
 export function significantValues(text: string | null | undefined, opts: { identifiers?: boolean } = {}): SignificantValue[] {

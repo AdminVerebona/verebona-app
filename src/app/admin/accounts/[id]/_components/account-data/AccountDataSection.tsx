@@ -125,9 +125,9 @@ export function AccountDataSection({ accountId }: { accountId: number }) {
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-2 self-stretch sm:self-start">
-            {/* Lot 88A : diagnostic global du compte (BO › Supervision › Diagnostics techniques, périmètre « Un compte »). */}
+            {/* Lot 91A : simple RACCOURCI vers BO › Supervision › Diagnostics, filtre compte prérempli (aucun diagnostic propre à cet écran). */}
             <Button asChild variant="outline" size="sm" className="gap-1.5 w-full sm:w-auto">
-              <Link href={`/admin/diagnostics?scope=account&id=${accountId}&period=all`}><Stethoscope className="h-3.5 w-3.5" /> Diagnostic global</Link>
+              <Link href={`/admin/diagnostics?scope=account&id=${accountId}`} title="Ouvre Supervision › Diagnostics avec le filtre de ce compte"><Stethoscope className="h-3.5 w-3.5" /> Diagnostics (filtre compte)</Link>
             </Button>
             <Button variant="outline" size="sm" className="gap-1.5 w-full sm:w-auto" onClick={() => void load(category, query)} disabled={loading === category}>
               <RefreshCw className={`h-3.5 w-3.5 ${loading === category ? 'animate-spin' : ''}`} /> Actualiser

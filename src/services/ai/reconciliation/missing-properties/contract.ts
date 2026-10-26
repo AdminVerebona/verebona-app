@@ -54,6 +54,19 @@ export const MISSING_PROPERTIES_RULES_VERSION = 'l88b-v1';
 
 export type SubjectType = 'ASSET' | 'EQUIPMENT';
 
+/**
+ * Lot 91B — état du contrat d'entrée dans le prompt T3 actif, en clair pour
+ * le journal et le diagnostic (pure) : porté, marqueur absent, branche
+ * KNOWLEDGE_QUERY absente, coupure d'urgence, prompt illisible.
+ */
+export function contractStateOf(c: { contractCarried: boolean; available: boolean; reason: string }): 'CARRIED' | 'MARKER_MISSING' | 'BRANCH_MISSING' | 'DISABLED' | 'UNREADABLE' {
+  if (c.contractCarried) return 'CARRIED';
+  if (c.reason === 'DISABLED') return 'DISABLED';
+  if (c.reason === 'UNREADABLE') return 'UNREADABLE';
+  if (!c.available) return 'BRANCH_MISSING';
+  return 'MARKER_MISSING';
+}
+
 /** Couches du contexte transversal (ordre de transmission neutre et déterministe). */
 export const SUBJECT_LAYERS = ['CANONICAL', 'OPERATION', 'OPERATION_COMPONENT', 'AGENDA', 'DECISION'] as const;
 export const DOCUMENT_LAYERS = ['DOCUMENT_METADATA', 'FIELD_EVIDENCE', 'FACT', 'UNRESOLVED_FACT', 'SOURCE_UNIT'] as const;

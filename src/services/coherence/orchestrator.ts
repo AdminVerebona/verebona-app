@@ -63,7 +63,7 @@ import { pgClient } from '@/db';
 import { addDaysToDateStr, todayParisDateStr } from '@/lib/notifications/time-paris';
 import { parisWallTimeToDate } from '@/services/scheduling/task-calendar';
 import { activeChecks, getCheck, registryVersion } from './registry';
-import type { AccountScope, CheckContext, CoherenceCheck, CoherenceMode, ControlResult, Sql } from './registry/types';
+import type { AccountScope, CatchupCandidate, CheckContext, CoherenceCheck, CoherenceMode, ControlResult, Sql } from './registry/types';
 import { RESOLVED_RESULTS } from './registry/types';
 import { controlObjects, AccountNoLongerEligibleError, type BatchSummary } from './engine';
 import { coherenceAccountEligibility } from './eligibility';
@@ -75,6 +75,8 @@ const COHERENCE_BATCH = 50;
 export const TARGETED_DEBOUNCE_MS = 2 * 60_000;
 /** Demandes ciblées traitées au plus par passage. */
 const TARGETED_MAX_PER_RUN = 2_000;
+/** Lot 91B : objets repris au plus par passage du rattrapage automatique (par contrôle). */
+const CATCHUP_PER_RUN = 200;
 /** Rétention des preuves d'objets qui ne sont plus contrôlés (objet disparu, compte sorti du périmètre). */
 const PROOF_RETENTION_DAYS = 35;
 /** Rétention du journal des réparations et des campagnes. */
@@ -729,6 +731,59 @@ export async function requestTargetedChecks(p: {
   return out;
 }
 
+// ══ Rattrapage (lot 91B) ════════════════════════════════════════════════════
+
+export interface CatchupRequestResult {
+  /** Objets demandés (ou qui le seraient, en simulation), par contrôle. */
+  requested: Record<string, number>;
+  /** Échantillon borné des objets retenus (contrôle, compte, objet, motif). */
+  items: Array<CatchupCandidate & { checkId: string }>;
+  applied: boolean;
+}
+
+/**
+ * Lot 91B — RATTRAPAGE AUTOMATIQUE des contrôles qui le déclarent
+ * (`catchupCandidates`) : objets jamais contrôlés, ou constat ouvert sans
+ * issue persistée récente — sans attendre un nouvel upload ni une
+ * modification de l'utilisateur. Seuls les comptes ÉLIGIBLES (82A) sont
+ * repris. `apply` : demande de contrôle ciblé immédiatement due (motif
+ * `CATCHUP:<motif>`) ; simulation : liste seule, rien n'est écrit.
+ * Idempotent : un objet déjà demandé, contrôlé ou tracé récemment n'est pas
+ * repris.
+ */
+export async function requestCatchupChecks(o: { apply: boolean; now?: Date; sql?: Sql; limit?: number; accountId?: number | null; checkIds?: readonly string[] }): Promise<CatchupRequestResult> {
+  const sql = o.sql ?? pgClient;
+  const now = o.now ?? new Date();
+  const out: CatchupRequestResult = { requested: {}, items: [], applied: o.apply };
+  if (!(await coherenceTablesReady(sql))) return out;
+  const eligibilite = new Map<number, boolean>();
+  const eligible = async (id: number) => {
+    if (!eligibilite.has(id)) eligibilite.set(id, (await coherenceAccountEligibility(id, now)).eligible);
+    return eligibilite.get(id)!;
+  };
+  for (const check of activeChecks().filter((c) => c.catchupCandidates && (!o.checkIds || o.checkIds.includes(c.id)))) {
+    const cands = await check.catchupCandidates!({ sql, now, limit: o.limit ?? CATCHUP_PER_RUN, accountId: o.accountId ?? null, apply: o.apply, eligible });
+    if (!cands.length) continue;
+    out.requested[check.id] = cands.length;
+    out.items.push(...cands.slice(0, 200 - out.items.length).map((c) => ({ ...c, checkId: check.id })));
+    if (!o.apply) continue;
+    const groupes = new Map<string, CatchupCandidate[]>();
+    for (const c of cands) groupes.set(`${c.accountId}|${c.reason}`, [...(groupes.get(`${c.accountId}|${c.reason}`) ?? []), c]);
+    for (const [motif, groupe] of groupes) {
+      const [accountId, reason] = motif.split('|');
+      await exec(sql,
+        `INSERT INTO coherence_object_proofs (account_id, check_id, object_id, object_type, rules_version, registry_version, requested_at, request_reason)
+         SELECT $1::int, $2::text, x, $3::text, $4::int, $5::text, $6::timestamptz, $7::text FROM unnest($8::bigint[]) AS x
+         ON CONFLICT (account_id, check_id, object_id) DO UPDATE
+            SET requested_at = COALESCE(coherence_object_proofs.requested_at, EXCLUDED.requested_at), request_reason = EXCLUDED.request_reason`,
+        // Due immédiatement (temporisation des rafales d'événements sans objet ici).
+        [Number(accountId), check.id, check.objectType, check.version, registryVersion(), new Date(now.getTime() - TARGETED_DEBOUNCE_MS),
+          `CATCHUP:${reason}`.slice(0, 120), intArray(groupe.map((c) => c.objectId))]);
+    }
+  }
+  return out;
+}
+
 // ══ Tâche planifiée ═════════════════════════════════════════════════════════
 
 /** Rétention bornée : preuves d'objets plus contrôlés, journal ancien, campagnes anciennes. */
@@ -769,6 +824,15 @@ export async function runCoherenceControl(o: RunOptions & { trigger: 'schedule' 
     if (reste() <= 0) break;
     steps.push(await runCampaignStep(Number(r.id), { ...o, sql, now, deadline: Math.min(o.deadline, Date.now() + Math.max(30_000, reste() / 3)) }));
   }
+  // 1 bis. Lot 91B : rattrapage automatique (objets jamais contrôlés, constats ouverts sans issue persistée récente).
+  let rattrapage: CatchupRequestResult | null = null;
+  if (reste() > 0) {
+    try {
+      rattrapage = await requestCatchupChecks({ apply: true, now, sql });
+    } catch (e) {
+      console.error('[coherence] rattrapage impossible :', (e as Error).message);
+    }
+  }
   // 2. Contrôles ciblés au fil des changements (temporisés).
   const targeted = reste() > 0 ? await runTargetedChecks({ ...o, sql, now, deadline: Math.min(o.deadline, Date.now() + Math.max(30_000, reste() / 3)) }) : null;
   // 3. Campagne exhaustive : manuelle en cours (ou demandée depuis le BO), sinon quotidienne du jour.
@@ -791,6 +855,7 @@ export async function runCoherenceControl(o: RunOptions & { trigger: 'schedule' 
   const purge = await purgeCoherenceHistory(now, sql);
   const note = [
     ...steps.map((s) => `campagne ${s.campaignId} ${s.status}/${s.phase} : ${s.controlled} objet(s)`),
+    rattrapage && Object.keys(rattrapage.requested).length ? `rattrapage : ${JSON.stringify(rattrapage.requested)}` : null,
     targeted ? `ciblés : ${targeted.processed} objet(s) ${JSON.stringify(targeted.results)}` : null,
     `supervision : ${sup.reported} signalement(s), ${sup.resolved} résolu(s)`,
     purge.proofs + purge.repairs + purge.campaigns > 0 ? `rétention : ${JSON.stringify(purge)}` : null,

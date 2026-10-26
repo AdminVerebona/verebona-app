@@ -35,8 +35,8 @@
 import { z } from 'zod';
 import { normalizeDateValue } from '@/services/canonical/registry';
 import {
-  T1AnalyzeDocumentOutput, t1Fact, t1OperationCandidate, t1Table, type T1Fact,
-  T1_MAX_OPERATION_CANDIDATES, T1_OPERATION_TYPES, T1_OPERATION_STATUSES, T1_SOURCE_ROLES, T1_REFERENCE_KINDS,
+  T1AnalyzeDocumentOutput, t1Fact, t1OperationCandidate, t1Table, t1ValueDecision, type T1Fact,
+  T1_MAX_OPERATION_CANDIDATES, T1_MAX_VALUE_DECISIONS, T1_VALUE_DECISIONS, T1_VALUE_KINDS, T1_OPERATION_TYPES, T1_OPERATION_STATUSES, T1_SOURCE_ROLES, T1_REFERENCE_KINDS,
   T1_EXCLUSION_REASONS, T1_FINANCIAL_ROLES, T1_AMOUNT_SCOPES,
 } from './t1-contract';
 
@@ -136,6 +136,14 @@ export interface T1NormalisationReport {
   truncatedCandidates?: number;
   /** Lot 40 — preuves (index de faits) ne désignant aucun fait conservé, retirées. */
   unresolvedCandidateEvidence?: number;
+  /**
+   * Lot 91D — décisions sur les valeurs significatives mal formées : écartées
+   * SEULES de la sortie (le document reste valide) mais CONSERVÉES ici pour
+   * être persistées comme décisions INVALIDES (jamais une justification).
+   */
+  invalidValueDecisions?: Array<{ path: string; payload: unknown }>;
+  /** Lot 91D — décisions au-delà de la borne du lot (200) : non conservées, les valeurs restent sans décision. */
+  truncatedValueDecisions?: number;
 }
 
 /** Tableau validé SANS borne de lignes (lot de débordement). */
@@ -427,6 +435,15 @@ function prepare(brut: unknown): unknown {
     if (r.unresolved) report.unresolvedCandidateEvidence = r.unresolved;
   }
 
+  // ── Lot 91D : décisions sur les valeurs significatives — une décision invalide est écartée seule ─
+  if ('valueDecisions' in out) {
+    const r = prepareValueDecisions(out.valueDecisions, indexFaits);
+    if (r.decisions === null) delete out.valueDecisions;
+    else out.valueDecisions = r.decisions;
+    if (r.invalid.length) report.invalidValueDecisions = r.invalid;
+    if (r.truncated) report.truncatedValueDecisions = r.truncated;
+  }
+
   if (overflow.facts.length || overflow.tables || overflow.observations.length || overflow.transcriptionTail
     || Object.keys(overflow.fullDescriptions).length || Object.values(overflow.entities).some((l) => l.length)) {
     report.overflow = overflow;
@@ -530,6 +547,54 @@ function prepareCandidates(brut: unknown, indexFaits: Map<number, number>): {
   return { candidates: valides.slice(0, T1_MAX_OPERATION_CANDIDATES), dropped, truncated, unresolved };
 }
 
+/**
+ * Lot 91D — décisions du modèle → forme du contrat, élément par élément :
+ * vocabulaire mis en majuscules (jamais deviné), confiance « uncertain » lue
+ * « probable », extrait vide ou page ≤ 0 retirés, index de faits recalés sur
+ * la liste conservée (fait écarté : référence retirée), unité citée sans ses
+ * crochets. Une valeur ou un motif trop long n'est jamais tronqué : la
+ * décision est INVALIDE (conservée à part). Rend `null` si ce n'est pas une
+ * liste (contrat non porté).
+ */
+function prepareValueDecisions(brut: unknown, indexFaits: Map<number, number>): {
+  decisions: unknown[] | null; invalid: Array<{ path: string; payload: unknown }>; truncated: number;
+} {
+  if (!Array.isArray(brut)) {
+    return { decisions: null, invalid: brut === undefined || brut === null ? [] : [{ path: 'valueDecisions', payload: brut }], truncated: 0 };
+  }
+  const invalid: Array<{ path: string; payload: unknown }> = [];
+  const valides: unknown[] = [];
+  brut.forEach((d, i) => {
+    const path = `valueDecisions[${i}]`;
+    if (!isObj(d)) { invalid.push({ path, payload: d }); return; }
+    const o = structuredClone(d);
+    if (typeof o.value === 'number') o.value = String(o.value);
+    if (typeof o.value === 'string') o.value = o.value.trim();
+    o.kind = dansListe(T1_VALUE_KINDS, majuscule(o.kind)) ?? o.kind;
+    o.decision = dansListe(T1_VALUE_DECISIONS, majuscule(o.decision)) ?? o.decision;
+    if (typeof o.confidence === 'string') {
+      const conf = o.confidence.trim().toLowerCase();
+      o.confidence = conf === 'uncertain' ? 'probable' : conf;
+    }
+    if (typeof o.reason === 'string') o.reason = o.reason.trim();
+    if (typeof o.sourceUnitId === 'string') o.sourceUnitId = o.sourceUnitId.trim().replace(/^\[|\]$/g, '') || null;
+    if (isObj(o.evidence)) {
+      if (typeof o.evidence.excerpt === 'string' && !o.evidence.excerpt.trim()) delete o.evidence.excerpt;
+      if (o.evidence.page !== undefined && !(typeof o.evidence.page === 'number' && Number.isInteger(o.evidence.page) && o.evidence.page > 0)) delete o.evidence.page;
+    } else if (o.evidence !== undefined) delete o.evidence;
+    o.relatedFactIndexes = [...new Set((Array.isArray(o.relatedFactIndexes) ? o.relatedFactIndexes : [])
+      .map((v) => (typeof v === 'number' && Number.isInteger(v) ? indexFaits.get(v) : undefined))
+      .filter((n): n is number => n !== undefined))].slice(0, 10);
+    o.relatedCandidateKeys = [...new Set((Array.isArray(o.relatedCandidateKeys) ? o.relatedCandidateKeys : [])
+      .filter((k): k is string => typeof k === 'string' && k.trim() !== '').map((k) => k.trim().slice(0, 50)))].slice(0, 5);
+    const r = t1ValueDecision.safeParse(o);
+    if (!r.success) { invalid.push({ path, payload: d }); return; }
+    valides.push(o);
+  });
+  const truncated = Math.max(0, valides.length - T1_MAX_VALUE_DECISIONS);
+  return { decisions: valides.slice(0, T1_MAX_VALUE_DECISIONS), invalid: invalid.slice(0, 50), truncated };
+}
+
 /** Schéma passé à la passerelle : normalisation tolérante, puis contrat strict. */
 export const T1AnalyzeDocumentTolerantOutput = z.preprocess(
   prepare,
@@ -546,6 +611,8 @@ export const T1AnalyzeDocumentTolerantOutput = z.preprocess(
       unresolvedCandidateEvidence: z.number().optional(),
       // Lot 49B (additif) : originaux des valeurs réduites ou retirées.
       originals: z.array(z.any()).optional(), removedValues: z.number().optional(),
+      // Lot 91D (additif) : décisions sur les valeurs significatives écartées (conservées) / au-delà de la borne.
+      invalidValueDecisions: z.array(z.any()).optional(), truncatedValueDecisions: z.number().optional(),
     }).optional(),
   }),
 );

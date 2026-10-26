@@ -428,7 +428,7 @@ export function OperationDetailView({ d, onNavigate, identityAction }: {
         <div className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] p-3 text-xs" data-display-limit>
           Affichage limité à {d.displayLimit ?? 200} lignes par liste ; totaux réels :{' '}
           {Object.entries(d.listTotals).map(([k, n], i) => <span key={k}>{i ? ', ' : ''}{k} {n}</span>)}.
-          {' '}Toutes les lignes : BO › Comptes › compte › Données du compte › Opération (consultation paginée, export intégral JSON / CSV / TXT) ou Diagnostics techniques.
+          {' '}Toutes les lignes : BO › Comptes › compte › Données du compte › Opération (consultation paginée, export intégral JSON / CSV / TXT) ou Supervision › Diagnostics.
         </div>
       )}
       {d.canonicalOperationId && d.canonicalOperationId !== o.id && (

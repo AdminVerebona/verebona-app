@@ -500,15 +500,13 @@ scenario('L84D', 'BO Exécutions & logs et exports des exécutions IA (Pilotage 
     await sql`INSERT INTO home_mascot_generations (account_id, context_hash, mode, status, model, trace_id, error, input_json, output_json)
               VALUES (${C.id}, 'h', 'display', 'validation_failed', 'm-t6', 'l84d-t6-trace', 'date relative', '{"secret":"ENTREE-T6"}'::jsonb, '{"texte":"SORTIE-T6"}'::jsonb)`;
     const { generateDiagnostic } = await import('@/services/admin/diagnostics-export/collect');
-    const b = await generateDiagnostic({ scope: 'user', id: C.ownerUserId, from: null, to: new Date().toISOString().slice(0, 10), treatments: ['T2', 'T6'], reinforced: false }, { adminUserId: adminOk.id });
-    const t2 = b.files.find((f) => f.path === 'ia/t2-demandes.json');
-    const t6 = b.files.find((f) => f.path === 'ia/t6-generations.json');
-    expect(JSON.parse(t2!.content)).toEqual(expect.arrayContaining([expect.objectContaining({ request_id: rid, business_execution_id: `T2:${rid}`, status: 'error', error_code: 'T2_TIMEOUT' })]));
-    expect(JSON.parse(t6!.content)).toEqual(expect.arrayContaining([expect.objectContaining({ trace_id: 'l84d-t6-trace', business_execution_id: 'T6F:l84d-t6-trace', status: 'validation_failed' })]));
+    // Lot 91A : moteur unique — les tables T2 / T6 sont exportées intégralement (filtre utilisateur), sans contenu.
+    const b = await generateDiagnostic({ scope: 'user', id: C.ownerUserId, reinforced: false }, { adminUserId: adminOk.id });
+    const t2 = b.files.find((f) => f.path === 'donnees/extractions-ia/verebona_request_runs.json');
+    const t6 = b.files.find((f) => f.path === 'donnees/extractions-ia/home_mascot_generations.json');
+    expect(JSON.parse(t2!.content)).toEqual(expect.arrayContaining([expect.objectContaining({ request_id: rid, status: 'error', error_code: 'T2_TIMEOUT' })]));
+    expect(JSON.parse(t6!.content)).toEqual(expect.arrayContaining([expect.objectContaining({ trace_id: 'l84d-t6-trace', status: 'validation_failed' })]));
     expect(t6!.content).not.toMatch(/ENTREE-T6|SORTIE-T6/);
-    expect(b.manifest.files.find((f: Json) => f.path === 'ia/t2-demandes.json')).toMatchObject({ status: 'COMPLETE' });
-    // Un filtre T1 seul ne les embarque pas (mêmes bornes que les autres traitements).
-    const t1 = await generateDiagnostic({ scope: 'user', id: C.ownerUserId, from: null, to: new Date().toISOString().slice(0, 10), treatments: ['T1'], reinforced: false }, { adminUserId: adminOk.id });
-    expect(t1.files.some((f) => f.path === 'ia/t2-demandes.json')).toBe(false);
+    expect(b.manifest.files.find((f: Json) => f.path === 'donnees/extractions-ia/verebona_request_runs.json')).toMatchObject({ status: 'COMPLETE' });
   });
 });

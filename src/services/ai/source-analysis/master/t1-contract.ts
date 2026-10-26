@@ -24,10 +24,13 @@ export const T1_MASTER_PROMPT_CODE = 't1_master_v1';
  * CDC Opérations V1 C3.1 — une sortie v3 reste une v4 valide : aucun
  * candidat), v5 lot 53D (retours PO D2, D9, Q16 : rôle `LOAN_PRINCIPAL`,
  * portée `FEE`, contre-valeur `amountEurMinor`, devise « XXX » non établie —
- * une sortie v4 reste une v5 valide : champs facultatifs, listes étendues).
- * Affichée « t1_analyze_document@v5 ».
+ * une sortie v4 reste une v5 valide : champs facultatifs, listes étendues),
+ * v6 lot 91D (`valueDecisions[]` facultatif : décision de T1 sur les valeurs
+ * significatives des unités sources — une sortie v5 reste une v6 valide :
+ * tableau ABSENT = contrat non porté, aucun adaptateur).
+ * Affichée « t1_analyze_document@v6 ».
  */
-export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 5;
+export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 6;
 export const T1_TASKS = ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] as const;
 
 const confidence = z.enum(['certain', 'probable', 'conflictual']);
@@ -282,6 +285,51 @@ export const t1OperationCandidate = z.object({
 });
 export type T1OperationCandidate = z.infer<typeof t1OperationCandidate>;
 
+// ── Décisions sur les valeurs significatives (lot 91D, contrat t1-value-decisions-v1) ──
+//
+// T1 QUALIFIE une valeur écrite dans la source (montant, date, identifiant)
+// qu'il ne reprend pas forcément comme fait autonome : structurée, exploitée
+// comme composante ou contexte d'un fait / candidat, non retenue (motif), ou
+// indéterminée. Le code VÉRIFIE (valeur présente dans l'unité citée,
+// rattachements existants, motif présent) et CONSERVE ; il ne juge jamais la
+// pertinence d'une valeur (`value-decisions/validate.ts`).
+
+/** Nature d'une valeur significative (même vocabulaire que `significantValues`). */
+export const T1_VALUE_KINDS = ['AMOUNT', 'DATE', 'IDENTIFIER'] as const;
+export type T1ValueKind = (typeof T1_VALUE_KINDS)[number];
+/**
+ * Décision sémantique de T1 :
+ *   STRUCTURED            reprise dans un fait (`relatedFactIndexes` obligatoire) ;
+ *   COMPONENT_OR_CONTEXT  comprise comme composante ou contexte d'un fait ou d'un candidat (ex. frais inclus dans un total) ;
+ *   NOT_RETAINED          volontairement non retenue, avec un motif propre à CETTE valeur ;
+ *   UNDETERMINED          identifiée, interprétation incertaine (toujours signalée par le contrôle).
+ */
+export const T1_VALUE_DECISIONS = ['STRUCTURED', 'COMPONENT_OR_CONTEXT', 'NOT_RETAINED', 'UNDETERMINED'] as const;
+export type T1ValueDecisionCode = (typeof T1_VALUE_DECISIONS)[number];
+/** Borne PAR LOT (une passe ou un lot de pages). */
+export const T1_MAX_VALUE_DECISIONS = 200;
+
+export const t1ValueDecision = z.object({
+  /** Valeur TELLE QU'ÉCRITE dans la source (« 34,00 € », « 15/03/2026 », « AB-123-CD »). */
+  value: z.string().min(1).max(200),
+  kind: z.enum(T1_VALUE_KINDS),
+  /** Forme normalisée annoncée : centimes (montant), AAAA-MM-JJ (date), jeton compact (identifiant) — recalculée par le serveur. */
+  normalizedValue: z.union([z.string().max(200), z.number(), z.null()]).optional(),
+  decision: z.enum(T1_VALUE_DECISIONS),
+  /** Motif propre à cette valeur (jamais une formule générique). */
+  reason: z.string().min(1).max(400),
+  /** Unité source citée telle que transmise (`page:2:block:14`) quand le contenu préextrait la porte ; sinon null. */
+  sourceUnitId: z.string().max(120).nullable().optional(),
+  /** Preuve (extrait recopié, page, cellule) : rattache la valeur à son unité source. */
+  evidence: t1Evidence.default({}),
+  /** Index (dans `facts`) des faits auxquels la valeur se rattache. */
+  relatedFactIndexes: z.array(z.number().int().nonnegative()).max(10).default([]),
+  /** Clés (`candidateKey`) des candidats Opération auxquels la valeur se rattache. */
+  relatedCandidateKeys: z.array(z.string().min(1).max(60)).max(5).default([]),
+  confidence,
+});
+export type T1ValueDecision = z.infer<typeof t1ValueDecision>;
+
 // ── Branche GROUP_UPLOAD ────────────────────────────────────────────────────
 export const T1GroupUploadOutput = z.object({
   task: z.literal('GROUP_UPLOAD'),
@@ -340,6 +388,12 @@ export const T1AnalyzeDocumentOutput = z.object({
    * SÉPARÉ des faits (T1-OP-001). Absent (sortie v3) = aucun candidat.
    */
   businessOperationCandidates: z.array(t1OperationCandidate).max(T1_MAX_OPERATION_CANDIDATES).default([]),
+  /**
+   * Lot 91D (contrat v6, demande 82B-t1-omissions-extract) : décisions de T1
+   * sur les valeurs significatives. ABSENT (prompt sans le contrat
+   * `t1-value-decisions-v1`) ≠ liste vide (contrat porté, rien à qualifier).
+   */
+  valueDecisions: z.array(t1ValueDecision).max(T1_MAX_VALUE_DECISIONS).optional(),
 });
 export type T1AnalyzeDocumentOutput = z.infer<typeof T1AnalyzeDocumentOutput>;
 

@@ -13,7 +13,7 @@
  *  - Aucune criticité, aucun bouton de création (SUP-012).
  *  - Lot 25 : accès à la page « Exploitation » (lien en tête d'onglet).
  *  - Lot 47A : accès au diagnostic « Opérations » (lien en tête d'onglet).
- *  - Lot 77C : accès aux « Diagnostics techniques » (export ZIP, lien en tête d'onglet).
+ *  - Lot 77C : accès aux « Diagnostics » (export ZIP, lien en tête d'onglet ; lot 91A : diagnostic unique).
  *
  * Le tri et la page vivent dans l'URL : ils sont conservés au retour de
  * l'écran de traitement (UX-004).
@@ -187,9 +187,9 @@ export function SupervisionTab({
       {/* Lot 77C : Diagnostics techniques (rapport + ZIP JSON, traçabilité des
           montants TCO) — lecture seule, journalisé, hors barre latérale. */}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card p-4">
-        <p className="text-sm text-muted-foreground">Diagnostics techniques : rapport et archive ZIP (global, utilisateur, bien, document, Opération) pour analyser une anomalie.</p>
+        <p className="text-sm text-muted-foreground">Diagnostics : un seul ZIP « Ensemble de l’application » (toutes les données de tous les comptes, techniques et transversales) ; filtres compte, bien, document ou Opération pour réduire le volume.</p>
         <Button asChild size="sm" variant="outline">
-          <Link href="/admin/diagnostics"><Stethoscope className="h-4 w-4 mr-1.5" />Diagnostics techniques</Link>
+          <Link href="/admin/diagnostics"><Stethoscope className="h-4 w-4 mr-1.5" />Diagnostics</Link>
         </Button>
       </div>
       <Counters />

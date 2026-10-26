@@ -1,8 +1,9 @@
 /**
  * Lot 77C — BO › Supervision › Diagnostics techniques : module pur.
  *
- *   · L77C-U01 lecture des paramètres (périmètres, identifiant, période par
- *     défaut, bornes de période, traitements, option renforcée) ;
+ *   · L77C-U01 lecture des paramètres (périmètres, identifiant, option
+ *     renforcée ; lot 91A : période et traitements ignorés — historique
+ *     complet, tous traitements) ;
  *   · L77C-U02 masquage : secrets (clés et motifs de texte), e-mails
  *     pseudonymisés, adresses, téléphones, n° de contrat, IBAN, contenus
  *     bruts (longueur seule), compteurs de jetons non confondus avec un
@@ -18,41 +19,29 @@ import { describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import {
   DIAG_LIMITS, MASKING_NOTES, READ_ONLY_NOTE, buildReportText, candidateIdFromSourceVersion, finalizeTrace, leaksSecretOrEmail, maskForExport,
-  maskText, parseDiagRequest, parseLineId, periodBounds, pseudonym, step, toJsonFile, zipFileName, type DiagManifest,
+  maskText, parseDiagRequest, parseLineId, pseudonym, step, toJsonFile, zipFileName, type DiagManifest,
 } from '../model';
 import { buildDiagnosticZip } from '../zip';
 
 const sp = (o: Record<string, string>) => new URLSearchParams(o);
-const NOW = new Date('2026-10-21T10:00:00Z');
 
 describe('L77C-U01 paramètres du diagnostic', () => {
-  it('global par défaut, période de 30 jours jusqu’à aujourd’hui, tous traitements', () => {
-    const r = parseDiagRequest(sp({}), NOW);
-    expect(r).toEqual({ ok: true, value: { scope: 'global', id: null, from: '2026-09-22', to: '2026-10-21', treatments: [], reinforced: false } });
+  it('« Ensemble de l’application » par défaut ; lot 91A : aucun filtre de période ni de traitement', () => {
+    expect(parseDiagRequest(sp({}))).toEqual({ ok: true, value: { scope: 'global', id: null, reinforced: false } });
+    // Anciens paramètres : ignorés (jamais une erreur, jamais un filtre des données).
+    expect(parseDiagRequest(sp({ from: '2026-02-30', to: '2020-01-01', period: 'all', treatments: 'T9' }))).toEqual({ ok: true, value: { scope: 'global', id: null, reinforced: false } });
   });
-  it('périmètre ciblé : identifiant obligatoire, entier positif', () => {
-    for (const scope of ['user', 'asset', 'document', 'operation']) {
-      expect(parseDiagRequest(sp({ scope }), NOW)).toMatchObject({ ok: false, code: 'INVALID_ID' });
-      expect(parseDiagRequest(sp({ scope, id: '0' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_ID' });
-      expect(parseDiagRequest(sp({ scope, id: '12; DROP' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_ID' });
-      expect(parseDiagRequest(sp({ scope, id: '12' }), NOW)).toMatchObject({ ok: true, value: { scope, id: 12 } });
+  it('filtre ciblé : identifiant obligatoire, entier positif', () => {
+    for (const scope of ['account', 'user', 'asset', 'document', 'operation']) {
+      expect(parseDiagRequest(sp({ scope }))).toMatchObject({ ok: false, code: 'INVALID_ID' });
+      expect(parseDiagRequest(sp({ scope, id: '0' }))).toMatchObject({ ok: false, code: 'INVALID_ID' });
+      expect(parseDiagRequest(sp({ scope, id: '12; DROP' }))).toMatchObject({ ok: false, code: 'INVALID_ID' });
+      expect(parseDiagRequest(sp({ scope, id: '12' }))).toMatchObject({ ok: true, value: { scope, id: 12 } });
     }
-    expect(parseDiagRequest(sp({ scope: 'accounts' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_SCOPE' });
+    expect(parseDiagRequest(sp({ scope: 'accounts' }))).toMatchObject({ ok: false, code: 'INVALID_SCOPE' });
   });
-  it('période : dates valides, ordre ; lot 81C : AUCUNE borne de durée, « tout l’historique disponible »', () => {
-    expect(parseDiagRequest(sp({ from: '2026-02-30' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_PERIOD' });
-    expect(parseDiagRequest(sp({ from: '2026-10-22', to: '2026-10-21' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_PERIOD' });
-    // L81C-U01 : plus de PERIOD_TOO_LONG (366 jours) — 10 ans acceptés ; `period=all` → from null.
-    expect(parseDiagRequest(sp({ from: '2016-10-20', to: '2026-10-21' }), NOW)).toMatchObject({ ok: true, value: { from: '2016-10-20', to: '2026-10-21' } });
-    expect(parseDiagRequest(sp({ from: '2025-10-21', to: '2026-10-21' }), NOW)).toMatchObject({ ok: true });
-    expect(parseDiagRequest(sp({ period: 'all' }), NOW)).toMatchObject({ ok: true, value: { from: null, to: '2026-10-21' } });
-    expect(periodBounds({ from: null, to: '2026-10-21' })).toEqual({ start: '-infinity', end: '2026-10-22T00:00:00.000Z' });
-    expect(periodBounds({ from: '2026-10-01', to: '2026-10-21' })).toEqual({ start: '2026-10-01T00:00:00.000Z', end: '2026-10-22T00:00:00.000Z' });
-  });
-  it('traitements en liste blanche, ordre canonique ; option renforcée', () => {
-    expect(parseDiagRequest(sp({ treatments: 't4,T1' }), NOW)).toMatchObject({ ok: true, value: { treatments: ['T1', 'T4'] } });
-    expect(parseDiagRequest(sp({ treatments: 'T9' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_TREATMENT' });
-    expect(parseDiagRequest(sp({ reinforced: '1' }), NOW)).toMatchObject({ ok: true, value: { reinforced: true } });
+  it('option renforcée', () => {
+    expect(parseDiagRequest(sp({ reinforced: '1' }))).toMatchObject({ ok: true, value: { reinforced: true } });
   });
 });
 
@@ -116,9 +105,9 @@ describe('L77C-U02 masquage', () => {
 
 describe('L77C-U03 validité JSON et ZIP', () => {
   const manifest = {
-    schema: 'verebona.bo.diagnostic-technique/1', generationId: '0123456789abcdef', generatedAt: '2026-10-21T10:00:00.000Z', environment: 'preprod',
+    schema: 'verebona.bo.diagnostic/2', generationId: '0123456789abcdef', generatedAt: '2026-10-21T10:00:00.000Z', environment: 'preprod',
     build: { version: '1.0.0', commit: 'abc1234', commitSource: 'SOURCE_VERSION', container: null },
-    request: { scope: 'operation', id: 42, from: '2026-09-22', to: '2026-10-21', treatments: ['T3'], reinforced: false, scopeLabel: 'Opération' },
+    request: { scope: 'operation', id: 42, reinforced: false, scopeLabel: 'Filtre : Opération' },
     target: { label: 'Opération #42', accountIds: [3] }, limits: DIAG_LIMITS, files: [], warnings: [], unavailable: [], masking: [...MASKING_NOTES], readOnly: READ_ONLY_NOTE,
   } as DiagManifest;
 
@@ -179,13 +168,13 @@ describe('L77C-U05 traçabilité et rapport', () => {
     expect(t.chaine.map((s) => s.etape)).toEqual(['DOCUMENT', 'EXTRACTION_IA', 'DECISION', 'AFFICHAGE']);
     expect(t.rupture).toBe('EXTRACTION_IA');
   });
-  it('rapport TXT : environnement, version, période, filtres, date, montants tracés et limites', () => {
+  it('rapport TXT : environnement, version, période (historique complet), filtre, date, montants tracés et limites ; jamais « sur ? »', () => {
     const m = {
-      schema: 'verebona.bo.diagnostic-technique/1', generationId: 'g-1', generatedAt: '2026-10-21T10:00:00.000Z', environment: 'preprod',
+      schema: 'verebona.bo.diagnostic/2', generationId: 'g-1', generatedAt: '2026-10-21T10:00:00.000Z', environment: 'preprod',
       build: { version: '1.0.0', commit: 'abc1234', commitSource: 'SOURCE_VERSION', container: 'web-1' },
-      request: { scope: 'operation', id: 42, from: '2026-09-22', to: '2026-10-21', treatments: ['T1', 'T3'], reinforced: false, scopeLabel: 'Opération' },
+      request: { scope: 'operation', id: 42, reinforced: false, scopeLabel: 'Filtre : Opération' },
       target: { label: 'Opération #42 (compte #3)', accountIds: [3] }, limits: DIAG_LIMITS,
-      files: [{ path: 'tracabilite/montants.json', description: 'Traçabilité', count: 1, complete: true }],
+      files: [{ path: 'tracabilite/montants.json', description: 'Traçabilité', count: 1, complete: true }, { path: 'donnees/x.json', description: 'x', count: 0, expected: null, status: 'FAILED', error: 'attendu non calculé : délai', complete: false }],
       warnings: ['borne atteinte'], unavailable: [{ element: 'Rapports T1', motif: 'rétention' }], masking: ['masque'], readOnly: READ_ONLY_NOTE,
     } as DiagManifest;
     const t = finalizeTrace({
@@ -194,9 +183,11 @@ describe('L77C-U05 traçabilité et rapport', () => {
       chaine: [step('DOCUMENT', 'disponible', [{ table: 'asset_files', id: 77 }]), step('EXTRACTION_IA', 'non_disponible', [], undefined, 'aucun rapport T1')],
     });
     const txt = buildReportText(m, [['Appels IA', 3]], [t]);
-    for (const attendu of ['Environnement    : preprod', 'commit abc1234', 'du 2026-09-22 au 2026-10-21', 'T1, T3', '2026-10-21T10:00:00.000Z',
-      'Opération #42', '490 000,00 €', 'asset_files#77', 'NON DISPONIBLE', 'Rupture de la trace : Extraction IA (T1)', 'Rapports T1 : rétention', 'borne atteinte', READ_ONLY_NOTE]) {
+    for (const attendu of ['Environnement    : preprod', 'commit abc1234', 'tout l’historique conservé', 'Filtre : Opération', '2026-10-21T10:00:00.000Z',
+      'Opération #42', '490 000,00 €', 'asset_files#77', 'NON DISPONIBLE', 'Rupture de la trace : Extraction IA (T1)', 'Rapports T1 : rétention', 'borne atteinte', READ_ONLY_NOTE,
+      'attendu non calculé : délai']) {
       expect(txt, attendu).toContain(attendu);
     }
+    expect(txt).not.toMatch(/sur \?|\/ \?/);
   });
 });

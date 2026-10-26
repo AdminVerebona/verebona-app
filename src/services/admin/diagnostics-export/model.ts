@@ -1,6 +1,12 @@
 /**
- * BO › Dashboard › Supervision › « Diagnostics techniques » (lot 77C) —
+ * BO › Dashboard › Supervision › « Diagnostics » (lots 77C, 91A) —
  * vocabulaire, bornes, masquage et sérialiseurs PURS.
+ *
+ * Lot 91A : UN diagnostic, UN moteur (`engine.ts`). « Ensemble de
+ * l'application » est le niveau maximal ; Compte / Utilisateur / Bien /
+ * Document / Opération sont des FILTRES du même moteur (volume réduit, jamais
+ * une information absente du global). Période et traitements ne filtrent plus
+ * les données (historique complet, tous traitements).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * UN EXPORT À LA DEMANDE, PAS UN SECOND MOTEUR
@@ -29,7 +35,7 @@
 import { kcBaseKey, maskRuleFor, masked, isMarker, type ExtractionStatus, type MaskOptions } from '@/services/admin/account-data/model';
 import { maskSensitiveString } from '@/services/business-operations/diagnostics/model';
 
-export const DIAG_SCHEMA = 'verebona.bo.diagnostic-technique/1';
+export const DIAG_SCHEMA = 'verebona.bo.diagnostic/2';
 
 // ── Périmètres, traitements, bornes ─────────────────────────────────────────
 
@@ -38,21 +44,13 @@ export type DiagScope = (typeof DIAG_SCOPES)[number];
 
 export const DIAG_SCOPE_LABELS: Readonly<Record<DiagScope, string>> = {
   global: 'Ensemble de l’application',
-  user: 'Utilisateur',
-  asset: 'Bien et ses équipements',
-  document: 'Document',
-  operation: 'Opération',
-  // Lot 88A : diagnostic global exhaustif et auto-suffisant d'un compte.
-  account: 'Compte (diagnostic global)',
+  // Lot 91A : filtres du même moteur (jamais un second diagnostic).
+  account: 'Filtre : compte',
+  user: 'Filtre : utilisateur',
+  asset: 'Filtre : bien et ses équipements',
+  document: 'Filtre : document',
+  operation: 'Filtre : Opération',
 };
-
-/**
- * Traitements filtrables (file `ai_job_queue` et rapports d'exécution ;
- * lot 84D, CDC Pilotage IA V2 P3 : T2 — demandes de l'assistant — et T6 —
- * générations FORMULATE et évaluations EVALUATE — ajoutés au collecteur).
- */
-const DIAG_TREATMENTS = ['T1', 'T2', 'T3', 'T4', 'T6'] as const;
-export type DiagTreatment = (typeof DIAG_TREATMENTS)[number];
 
 /**
  * Lot 81C — paramètres TECHNIQUES de génération, repris dans le manifeste.
@@ -63,8 +61,6 @@ export type DiagTreatment = (typeof DIAG_TREATMENTS)[number];
  * (inventaire : `DIAG_REMOVED_CAPS`).
  */
 export const DIAG_LIMITS = Object.freeze({
-  /** Période par défaut (jours, jusqu'à aujourd'hui) — « Tout l'historique disponible » possible. */
-  periodDefaultDays: 30,
   /** Lignes par lot de lecture (pagination technique par curseur). */
   batchRows: 500,
   /** Découpage technique d'un fichier de liste en parties (`…part-0001.json`), toutes dans l'archive. */
@@ -91,34 +87,26 @@ export const DIAG_REMOVED_CAPS: readonly string[] = [
   'Comptes d’un utilisateur : 10 → tous ; adhésions : 50 → toutes.',
   'Périmètre (équipements, documents, Opérations liés) : 2 000 identifiants → tous.',
   'Taille totale : 40 Mo (refus) → aucune ; archive générée en flux, fichiers découpés en parties.',
+  'Lot 91A — filtres de période et de traitements retirés : tout diagnostic porte sur l’historique complet et tous les traitements ; « Ensemble de l’application » exporte toutes les tables de tous les comptes et les tables transversales.',
 ];
 
 export interface DiagRequest {
   scope: DiagScope;
-  /** Identifiant de l'objet ciblé (null : global). */
+  /** Identifiant de l'objet du filtre (null : Ensemble de l'application). */
   id: number | null;
-  /** Période inclusive, jours UTC `YYYY-MM-DD` ; `from` null : tout l'historique disponible (lot 81C). */
-  from: string | null;
-  to: string;
-  /** Vide : tous les traitements. */
-  treatments: DiagTreatment[];
   /** Diagnostic renforcé : sorties modèle conservées (accès contrôlé, journalisé). */
   reinforced: boolean;
 }
 
 type ParseResult<T> = { ok: true; value: T } | { ok: false; code: string; message: string };
 
-const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
-const DAY_MS = 86_400_000;
-const dayOf = (d: Date) => d.toISOString().slice(0, 10);
-function validDay(s: string): boolean {
-  if (!ISO_DAY.test(s)) return false;
-  const d = new Date(`${s}T00:00:00Z`);
-  return !Number.isNaN(d.getTime()) && dayOf(d) === s;
-}
-
-/** Lecture stricte des paramètres (liste blanche ; aucune valeur libre ne parvient au SQL). */
-export function parseDiagRequest(sp: { get(k: string): string | null }, now: Date = new Date()): ParseResult<DiagRequest> {
+/**
+ * Lecture stricte des paramètres (liste blanche ; aucune valeur libre ne
+ * parvient au SQL). Lot 91A : `from`, `to`, `period`, `treatments` (anciens
+ * filtres) sont ignorés — le diagnostic porte toujours sur tout l'historique
+ * et tous les traitements.
+ */
+export function parseDiagRequest(sp: { get(k: string): string | null }): ParseResult<DiagRequest> {
   const scope = sp.get('scope') ?? 'global';
   if (!(DIAG_SCOPES as readonly string[]).includes(scope)) return { ok: false, code: 'INVALID_SCOPE', message: 'Périmètre inconnu.' };
   let id: number | null = null;
@@ -127,29 +115,12 @@ export function parseDiagRequest(sp: { get(k: string): string | null }, now: Dat
     if (!/^\d{1,9}$/.test(raw) || Number(raw) <= 0) return { ok: false, code: 'INVALID_ID', message: 'Identifiant obligatoire (nombre entier positif).' };
     id = Number(raw);
   }
-  const today = dayOf(now);
-  const to = (sp.get('to') ?? '').trim() || today;
-  // Lot 81C : « Tout l'historique disponible » (aucune borne de début) ; aucune limite de durée.
-  const all = sp.get('period') === 'all';
-  const from = all ? null : (sp.get('from') ?? '').trim() || dayOf(new Date(new Date(`${to}T00:00:00Z`).getTime() - (DIAG_LIMITS.periodDefaultDays - 1) * DAY_MS));
-  if ((from !== null && !validDay(from)) || !validDay(to)) return { ok: false, code: 'INVALID_PERIOD', message: 'Période invalide (dates AAAA-MM-JJ).' };
-  if (from !== null && from > to) return { ok: false, code: 'INVALID_PERIOD', message: 'La date de début est postérieure à la date de fin.' };
-  const rawT = (sp.get('treatments') ?? '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
-  if (rawT.some((t) => !(DIAG_TREATMENTS as readonly string[]).includes(t))) return { ok: false, code: 'INVALID_TREATMENT', message: 'Traitement inconnu (T1, T2, T3, T4, T6).' };
-  const treatments = DIAG_TREATMENTS.filter((t) => rawT.includes(t));
   const reinforced = sp.get('reinforced') === '1' || sp.get('reinforced') === 'true';
-  return { ok: true, value: { scope: scope as DiagScope, id, from, to, treatments, reinforced } };
+  return { ok: true, value: { scope: scope as DiagScope, id, reinforced } };
 }
 
-/** Bornes SQL de la période : [from 00:00 UTC ; to + 1 jour 00:00 UTC[ ; tout l'historique : début `-infinity`. */
-export function periodBounds(r: Pick<DiagRequest, 'from' | 'to'>): { start: string; end: string } {
-  return { start: r.from === null ? '-infinity' : `${r.from}T00:00:00.000Z`, end: new Date(Date.parse(`${r.to}T00:00:00Z`) + DAY_MS).toISOString() };
-}
-
-/** Libellé de la période (rapport, écran). */
-export function periodLabel(r: Pick<DiagRequest, 'from' | 'to'>): string {
-  return r.from === null ? `tout l’historique disponible jusqu’au ${r.to} inclus (UTC)` : `du ${r.from} au ${r.to} inclus (UTC)`;
-}
+/** Le diagnostic porte sur l'historique complet (lot 91A) : libellé du rapport. */
+export const DIAG_PERIOD_LABEL = 'tout l’historique conservé (aucun filtre de période ni de traitement)';
 
 // ── Masquage ────────────────────────────────────────────────────────────────
 
@@ -378,6 +349,8 @@ export interface DiagFileInfo {
   count?: number;
   /** Lot 81C : statut COMPLETE (exporté = attendu, aucune erreur). */
   complete: boolean;
+  /** Lot 91A : section du diagnostic (manifeste par fichier). */
+  section?: string;
   /** Lot 81C — attendu (`count(*)` dans l'instantané), lots, statut, erreur, intégrité (octets, SHA-256 du contenu non compressé). */
   expected?: number | null;
   batches?: number;
@@ -398,8 +371,8 @@ export interface DiagManifest {
   environment: string;
   build: { version: string; commit: string | null; commitSource: string | null; container: string | null };
   request: DiagRequest & { scopeLabel: string };
-  /** Objet ciblé résolu (compte(s), libellé). */
-  target: { label: string; accountIds: number[] };
+  /** Filtre résolu (compte(s), libellé) ; `accountIds` vide et `allAccounts` : Ensemble de l'application. */
+  target: { label: string; accountIds: number[]; allAccounts?: boolean };
   limits: typeof DIAG_LIMITS;
   /** Lot 81C — statut global : COMPLETE seulement si tous les fichiers le sont. */
   status?: ExtractionStatus;
@@ -421,10 +394,10 @@ export interface DiagManifest {
   sections?: import('./account-model').DiagSectionManifest[];
   /** Lot 88A — troncatures et sélections DÉCLARÉES (jamais silencieuses). */
   truncations?: string[];
-  /** Lot 88A — périmètre « Compte » : couverture des tables, exclusions volontaires, auto-contrôle. */
-  couverture?: import('./account').AccountManifestPart['couverture'];
-  exclusionsVolontaires?: import('./account').AccountManifestPart['exclusionsVolontaires'];
-  autoControle?: import('./account').AccountManifestPart['autoControle'];
+  /** Lots 88A, 91A — moteur unique : couverture des tables et des comptes, exclusions volontaires, auto-contrôle. */
+  couverture?: import('./engine').EngineManifestPart['couverture'];
+  exclusionsVolontaires?: import('./engine').EngineManifestPart['exclusionsVolontaires'];
+  autoControle?: import('./engine').EngineManifestPart['autoControle'];
 }
 
 export const MASKING_NOTES: readonly string[] = [
@@ -481,17 +454,16 @@ export function buildReportText(m: DiagManifest, summary: Array<[string, string 
 /** Lot 81C — rapport depuis des lignes de traçabilité déjà rendues (génération en flux). */
 export function buildReportTextFromLines(m: DiagManifest, summary: Array<[string, string | number]>, traceLines: string[]): string {
   const L: string[] = [];
-  L.push('VEREBONA — DIAGNOSTIC TECHNIQUE', '='.repeat(31));
+  L.push('VEREBONA — DIAGNOSTIC', '='.repeat(21));
   L.push(`Généré le        : ${m.generatedAt} (UTC)`);
   L.push(`Génération       : ${m.generationId}`);
   L.push(`Environnement    : ${m.environment}`);
   L.push(`Version          : ${m.build.version}${m.build.commit ? ` — commit ${m.build.commit} (${m.build.commitSource})` : ' — commit non disponible'}${m.build.container ? ` — conteneur ${m.build.container}` : ''}`);
   L.push(`Périmètre        : ${m.request.scopeLabel}${m.request.id ? ` #${m.request.id}` : ''} — ${m.target.label}`);
-  L.push(`Comptes          : ${m.target.accountIds.length ? m.target.accountIds.map((a) => `#${a}`).join(', ') : '— (global)'}`);
-  L.push(`Période          : ${periodLabel(m.request)} — journaux et traitements ; l’état métier est celui de l’instantané de lecture.`);
+  L.push(`Comptes          : ${m.target.allAccounts ? 'tous les comptes (Ensemble de l’application)' : m.target.accountIds.map((a) => `#${a}`).join(', ') || 'aucun'}`);
+  L.push(`Période          : ${DIAG_PERIOD_LABEL} ; l’état est celui de l’instantané de lecture.`);
   if (m.snapshot) L.push(`Instantané       : ${m.snapshot.isolation} — instant de référence ${m.snapshot.at}${m.snapshot.snapshot ? ` — pg_snapshot ${m.snapshot.snapshot}` : ''}`);
   if (m.status) L.push(`Statut           : ${m.status}${m.status === 'COMPLETE' ? ' — toutes les données du périmètre exportées' : ' — voir « Fichiers » et « Avertissements »'}`);
-  L.push(`Traitements      : ${m.request.treatments.length ? m.request.treatments.join(', ') : 'tous'} (filtre : file des traitements et rapports d’exécution)`);
   L.push(`Diagnostic renforcé : ${m.request.reinforced ? 'oui (sorties modèle jointes si conservées et autorisées)' : 'non'}`);
   L.push('', READ_ONLY_NOTE);
   L.push('', '-- Synthèse --');
@@ -499,7 +471,7 @@ export function buildReportTextFromLines(m: DiagManifest, summary: Array<[string
 
   if (m.sections?.length) {
     L.push('', '-- Sections (COMPLETE / PARTIAL / NOT_APPLICABLE / ERROR) --');
-    for (const x of m.sections) L.push(`${x.status.padEnd(14)} ${x.label}${x.files.length ? ` — ${x.files.length} fichier(s), ${x.exported} / ${x.expected} ligne(s)` : ''}${x.motif ? ` — ${x.motif}` : ''}`);
+    for (const x of m.sections) L.push(`${x.status.padEnd(14)} ${x.label}${x.files.length ? ` — ${x.files.length} fichier(s), ${x.exported} ligne(s) exportée(s) / ${x.expected} attendue(s)` : ''}${x.motif ? ` — ${x.motif}` : ''}`);
   }
   if (m.autoControle) L.push('', '-- Auto-contrôle --', m.autoControle.conclusion);
   if (m.truncations?.length) {
@@ -521,7 +493,8 @@ export function buildReportTextFromLines(m: DiagManifest, summary: Array<[string
   for (const n of m.masking) L.push(`- ${n}`);
   L.push('', '-- Contenu de l’archive --');
   for (const f of m.files) {
-    const n = f.count !== undefined ? ` (${f.count}${f.expected !== undefined && f.expected !== null ? ` / ${f.expected} attendu(s)` : ''})` : '';
+    // Jamais « n sur ? » : un attendu non calculé est une ERREUR du fichier (motif dans `error`).
+    const n = f.count !== undefined ? ` (${f.count}${f.expected !== undefined && f.expected !== null ? ` / ${f.expected} attendu(s)` : ' exporté(s)'})` : '';
     L.push(`- ${f.path}${n}${f.status ? ` — ${f.status}` : f.complete ? '' : ' — INCOMPLET'}${f.error ? ` — ${f.error}` : ''} : ${f.description}`);
   }
   if (m.removedCaps?.length) {

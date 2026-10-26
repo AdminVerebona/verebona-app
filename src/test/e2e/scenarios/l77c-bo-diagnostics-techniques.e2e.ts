@@ -1,5 +1,6 @@
 /**
- * Lot 77C — BO › Supervision › « Diagnostics techniques » sur PostgreSQL 16
+ * Lot 77C (adapté au lot 91A : diagnostic unique, filtres du même moteur,
+ * fichiers `donnees/…`) — BO › Supervision › « Diagnostics » sur PostgreSQL 16
  * réel, PAR LA VRAIE ROUTE (garde `requireAdmin` réelle : seule la lecture
  * du cookie de session est simulée).
  *
@@ -17,10 +18,11 @@
  *     T3 → composante → sources → ligne TCO → affichage, modèle et version de
  *     prompt, rapport T1 et appel IA ; Opération sans source : « non
  *     disponible » explicite, jamais reconstruit ;
- *   · L77C-E03 périmètre bien : dossiers bien + équipements, même montant
+ *   · L77C-E03 filtre bien : lignes du bien et des équipements, même montant
  *     tracé depuis le TCO du bien ;
- *   · L77C-E04 périmètre document ; L77C-E05 utilisateur ; L77C-E06 global
- *     et filtre par traitement ;
+ *   · L77C-E04 filtre document ; L77C-E05 utilisateur ; L77C-E06 global
+ *     (lot 91A : niveau maximal, tous les comptes ; anciens filtres de
+ *     période et de traitements ignorés) ;
  *   · L77C-E07 isolation : aucun objet d'un autre compte ; objet inconnu 404 ;
  *   · L77C-E08 journalisation de chaque demande (succès et échecs) ;
  *   · L77C-E09 masquage (secrets, e-mails, IBAN, adresse, fichier original) ;
@@ -66,6 +68,9 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
     return { files, raw: Object.values(files).join('\n'), headers: res.headers };
   }
   const parse = <T = Json>(files: Record<string, string>, p: string): T => JSON.parse(files[p]) as T;
+  /** Lignes d'une table du moteur unique (toutes parties, fermeture comprise). */
+  const rows = (files: Record<string, string>, table: string): Json[] => Object.keys(files)
+    .filter((p) => new RegExp(`^donnees/[a-z-]+/${table}(\\.part-\\d{4})?\\.json$`).test(p)).sort().flatMap((p) => JSON.parse(files[p]) as Json[]);
 
   const ids: Record<string, number> = {};
   let A: AccountRow & { owner: { id: number; email: string } };
@@ -179,20 +184,23 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
   it('L77C-E02 Opération Tikamoon : 490 000 € tracé jusqu’à sa source ; Opération sans source « non disponible »', async () => {
     await seConnecter('ADMIN');
     const v = await json(`scope=operation&id=${ids.op}`);
-    expect(v.report).toContain('VEREBONA — DIAGNOSTIC TECHNIQUE');
+    expect(v.report).toContain('VEREBONA — DIAGNOSTIC');
     expect(v.report).toMatch(/Environnement {4}: \S+/);
     expect(v.report).toContain('Version          :');
     expect(v.report).toContain(`Opération #${ids.op}`);
     expect(v.report).toContain('490 000,00 €');
     expect(v.report).toMatch(/Valeurs : source=.*490000.* \| proposée IA=.*49000000.* \| enregistrée=.*49000000/);
-    expect(v.manifest).toMatchObject({ schema: 'verebona.bo.diagnostic-technique/1', request: { scope: 'operation', id: ids.op }, target: { accountIds: [A.id] } });
+    expect(v.manifest).toMatchObject({ schema: 'verebona.bo.diagnostic/2', request: { scope: 'operation', id: ids.op }, target: { accountIds: [A.id] } });
 
     const z = await zip(`scope=operation&id=${ids.op}`);
     expect(z.headers.get('content-disposition')).toMatch(new RegExp(`attachment; filename="verebona-diagnostic-operation-${ids.op}-\\d{4}-\\d{2}-\\d{2}-[0-9a-f]{8}\\.zip"`));
-    for (const p of ['rapport.txt', 'manifeste.json', `metier/operation-${ids.op}.json`, `metier/documents/document-${ids.file}.json`, 'tracabilite/montants.json',
-      'tracabilite/tco.json', 'logs/traitements-file.json', 'logs/chronologie.json', 'ia/rapports-execution.json', 'ia/appels.json', 'ia/extractions.json', 'contexte-technique.json']) {
+    for (const p of ['rapport.txt', 'manifeste.json', 'donnees/etat-metier/business_operations.json', 'donnees/documents/asset_files.json', 'tracabilite/montants.json',
+      'tracabilite/tco.json', 'donnees/technique/ai_job_queue.json', 'technique/chronologie.json', 'donnees/extractions-ia/ai_execution_reports.json', 'donnees/technique/ai_usage_event.json',
+      'donnees/extractions-ia/document_extractions.json', 'technique/versions.json']) {
       expect(z.files[p], p).toBeDefined();
     }
+    expect(rows(z.files, 'business_operations').map((o) => o.id)).toContain(ids.op);
+    expect(rows(z.files, 'asset_files').map((f) => f.id)).toContain(ids.file);
     const traces = parse<Array<Json & { chaine: Array<Json & { etape: string; statut: string; references: Array<{ table: string; id: number }>; donnees?: Json }>; valeurs: Json; ligne: Json; rupture: string | null; assetId: number }>>(z.files, 'tracabilite/montants.json');
     const t = traces.find((x) => x.ligne.id === `c:${ids.component}` && x.assetId === ids.asset)!;
     expect(t, 'trace de la composante 490 000 €').toBeDefined();
@@ -230,7 +238,8 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
 
     // Opération sans source : rupture au document, motif explicite, rien de reconstruit.
     const z2 = await zip(`scope=operation&id=${ids.opSansSource}`);
-    const [t2] = parse<Array<Json & { chaine: Array<Json & { etape: string; statut: string; motif?: string }>; rupture: string | null; valeurs: Json }>>(z2.files, 'tracabilite/montants.json');
+    const t2 = parse<Array<Json & { ligne: Json; chaine: Array<Json & { etape: string; statut: string; motif?: string }>; rupture: string | null; valeurs: Json }>>(z2.files, 'tracabilite/montants.json')
+      .find((x) => x.ligne.id === `c:${ids.compSansSource}`)!;
     expect(t2.rupture).toBe('DOCUMENT');
     expect(t2.chaine[0]).toMatchObject({ etape: 'DOCUMENT', statut: 'non_disponible' });
     expect(t2.chaine[0].motif).toMatch(/aucune source enregistrée/);
@@ -240,11 +249,11 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
     expect(parse<{ unavailable: Json[] }>(z2.files, 'manifeste.json').unavailable).toEqual(expect.arrayContaining([expect.objectContaining({ element: expect.stringContaining('Traçabilité de 1 montant') })]));
   });
 
-  it('L77C-E03 bien et équipements : dossiers, TCO, même montant tracé depuis le bien', async () => {
+  it('L77C-E03 filtre bien et équipements : lignes, TCO, même montant tracé depuis le bien', async () => {
     await seConnecter('ADMIN');
     const z = await zip(`scope=asset&id=${ids.asset}`);
-    expect(z.files[`metier/bien-${ids.asset}.json`]).toBeDefined();
-    expect(z.files[`metier/equipements/equipement-${ids.equipment}.json`]).toBeDefined();
+    expect(rows(z.files, 'assets').map((a) => a.id)).toEqual([ids.asset]);
+    expect(rows(z.files, 'equipments').map((e) => e.id)).toContain(ids.equipment);
     const tco = parse<Json[]>(z.files, 'tracabilite/tco.json');
     expect(tco[0]).toMatchObject({ assetId: ids.asset, disponible: true });
     const traces = parse<Array<Json & { ligne: Json; rupture: string | null }>>(z.files, 'tracabilite/montants.json');
@@ -254,47 +263,46 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
     const doc = traces.find((x) => x.ligne.id === `doc:${ids.file}` || String(x.ligne.id).startsWith(`doc:${ids.file}:`)) as (Json & { chaine: Array<Json & { etape: string; donnees?: Json }> }) | undefined;
     expect(doc, JSON.stringify(traces.map((x) => [x.ligne.id, x.ligne.status, x.ligne.reason]))).toBeDefined();
     expect(doc!.chaine.find((s) => s.etape === 'AFFICHAGE')!.donnees).toMatchObject({ visible: false });
-    expect(parse<Json[]>(z.files, 'logs/traitements-file.json').map((j) => j.id)).toContain(ids.job);
-    expect(parse<Json[]>(z.files, 'logs/anomalies-supervision.json').map((a) => a.title)).toContain('T1 : montant incohérent (E2E)');
+    expect(rows(z.files, 'ai_job_queue').map((j) => j.id)).toContain(ids.job);
+    // Anomalie du compte (sans lien avec le bien) : hors du filtre « bien », présente au filtre compte et au global.
+    expect(rows((await zip(`scope=account&id=${A.id}`)).files, 'admin_anomalies').map((a) => a.title)).toContain('T1 : montant incohérent (E2E)');
   });
 
-  it('L77C-E04 document : dossier, montants liés au document, traces IA du document', async () => {
+  it('L77C-E04 filtre document : lignes du document, montants liés au document, traces IA du document', async () => {
     await seConnecter('ADMIN');
     const z = await zip(`scope=document&id=${ids.file}`);
-    expect(z.files[`metier/document-${ids.file}.json`]).toBeDefined();
+    expect(rows(z.files, 'asset_files').map((f) => f.id)).toEqual([ids.file]);
     const traces = parse<Array<Json & { ligne: Json }>>(z.files, 'tracabilite/montants.json');
     expect(traces.map((x) => x.ligne.id)).toContain(`c:${ids.component}`);
     expect(traces.map((x) => x.ligne.id)).not.toContain(`c:${ids.compSansSource}`);   // sans rapport avec le document
-    expect(parse<Json[]>(z.files, 'ia/appels.json').map((c) => c.id)).toContain(ids.usage);
-    expect(parse<Json[]>(z.files, 'ia/diagnostics-appels.json')[0]).toMatchObject({ trace_id: 'tr-l77c-tika', sortie_conservee: true, contract_version: 5 });
-    expect(parse<Json[]>(z.files, 'ia/rapports-execution-lignes.json')[0]).toMatchObject({ report_id: ids.report, section: 'FACT', record_id: String(ids.fact) });
+    expect(rows(z.files, 'ai_usage_event').map((c) => c.id)).toContain(ids.usage);
+    const dc = rows(z.files, 'ai_call_diagnostics').find((x) => x.trace_id === 'tr-l77c-tika')!;
+    expect(dc).toMatchObject({ contract_version: 5, raw_output: { $etat: 'masque' } });
+    expect(rows(z.files, 'ai_execution_report_entries')[0]).toMatchObject({ report_id: ids.report, section: 'FACT', record_id: String(ids.fact) });
   });
 
-  it('L77C-E05 utilisateur : comptes, biens, e-mail pseudonymisé', async () => {
+  it('L77C-E05 filtre utilisateur : comptes, biens, e-mail pseudonymisé', async () => {
     await seConnecter('ADMIN');
     const z = await zip(`scope=user&id=${A.owner.id}`);
-    const u = parse<{ utilisateur: Json; comptes: Json[]; biens: Json[] }>(z.files, 'metier/utilisateur.json');
-    expect(u.utilisateur).toMatchObject({ id: A.owner.id, email: { $etat: 'masque', motif: 'e-mail' } });
-    expect(u.comptes.map((c) => c.id)).toEqual([A.id]);
-    expect(u.biens.map((b) => b.id)).toContain(ids.asset);
+    expect(rows(z.files, 'users').find((u) => u.id === A.owner.id)).toMatchObject({ email: { $etat: 'masque', motif: 'e-mail' } });
+    expect(rows(z.files, 'accounts').map((c) => c.id)).toEqual([A.id]);
+    expect(rows(z.files, 'assets').map((b) => b.id)).toContain(ids.asset);
     expect(z.raw).not.toContain(A.owner.email);
   });
 
-  it('L77C-E06 global et filtre par traitement', async () => {
+  it('L77C-E06 « Ensemble de l’application » : niveau maximal (tous les comptes) ; anciens filtres ignorés', async () => {
     await seConnecter('ADMIN');
-    const z = await zip('scope=global&treatments=T1');
-    expect(parse<Json>(z.files, 'metier/volumetrie.json')).toHaveProperty('volumetrie');
-    const jobs = parse<Json[]>(z.files, 'logs/traitements-file.json');
-    expect(jobs.length).toBeGreaterThan(0);
-    expect(jobs.every((j) => j.treatment === 'T1')).toBe(true);
-    expect(z.files['ia/appels-agreges.json']).toBeDefined();
-    expect(z.files['rapport.txt']).toContain('Traitements      : T1');
-    // Filtres invalides : 400, jamais de requête libre.
-    expect((await appel('scope=global&treatments=T9')).status).toBe(400);
+    const z = await zip('scope=global&treatments=T1&from=2020-01-01&to=2026-01-01');
+    const m = parse<Json & { request: Json; target: Json }>(z.files, 'manifeste.json');
+    expect(m.request).toEqual({ scope: 'global', id: null, reinforced: false, scopeLabel: 'Ensemble de l’application' });
+    expect(m.target).toMatchObject({ allAccounts: true });
+    // Tous les comptes et tous les traitements (le filtre T1 de l'ancien écran n'existe plus).
+    expect(rows(z.files, 'assets').map((a) => a.id)).toEqual(expect.arrayContaining([ids.asset, ids.assetB]));
+    expect(rows(z.files, 'ai_job_queue').some((j) => j.treatment === 'T3' && j.account_id === B.id)).toBe(true);
+    expect(z.files['rapport.txt']).toContain('tout l’historique conservé');
+    // Paramètres invalides : 400, jamais de requête libre.
+    expect((await appel('scope=inconnu')).status).toBe(400);
     expect((await appel('scope=asset')).status).toBe(400);
-    // Lot 81C : plus de borne de 366 jours (période longue et « tout l'historique » acceptées) ; dates invalides : 400.
-    expect((await appel('scope=global&from=2020-01-01&to=2026-01-01')).status).toBe(200);
-    expect((await appel('scope=global&from=2026-01-02&to=2026-01-01')).status).toBe(400);
   });
 
   it('L77C-E07 isolation : aucun objet d’un autre compte ; objet inconnu 404', async () => {
@@ -306,8 +314,9 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
       expect(z.raw, qs).not.toContain(`l77c-b-${B.id}`);
       const m = parse<{ target: { accountIds: number[] } }>(z.files, 'manifeste.json');
       expect(m.target.accountIds).toEqual([A.id]);
-      for (const p of ['logs/traitements-file.json', 'ia/appels.json', 'ia/rapports-execution.json', 'logs/anomalies-supervision.json']) {
-        expect(parse<Json[]>(z.files, p).every((r) => r.account_id === undefined || r.account_id === A.id), `${qs} ${p}`).toBe(true);
+      for (const [p, c] of Object.entries(z.files)) {
+        if (!p.startsWith('donnees/')) continue;
+        expect((JSON.parse(c) as Json[]).every((r) => r.account_id === undefined || r.account_id === null || r.account_id === A.id), `${qs} ${p}`).toBe(true);
       }
     }
     expect((await appel('scope=operation&id=999999999')).status).toBe(404);
@@ -319,19 +328,19 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
     await json(`scope=document&id=${ids.file}`);
     await zip(`scope=document&id=${ids.file}`);
     await appel('scope=operation&id=999999997');
-    await appel('scope=global&treatments=T9');
-    const rows = await sql<{ action_type: string; target_type: string; target_id: number | null; result: string; details: string }[]>`
+    await appel('scope=inconnu');
+    const journal = await sql<{ action_type: string; target_type: string; target_id: number | null; result: string; details: string }[]>`
       SELECT action_type, target_type, target_id, result, details FROM admin_audit_log WHERE admin_user_id = ${admin.id} ORDER BY id`;
-    expect(rows.map((r) => [r.action_type, r.result])).toEqual([
+    expect(journal.map((r) => [r.action_type, r.result])).toEqual([
       ['TECH_DIAGNOSTIC_VIEW', 'SUCCESS'], ['TECH_DIAGNOSTIC_EXPORT', 'SUCCESS'], ['TECH_DIAGNOSTIC_VIEW', 'FAILURE'], ['TECH_DIAGNOSTIC_VIEW', 'FAILURE'],
     ]);
-    expect(rows.every((r) => r.target_type === 'TECH_DIAGNOSTIC')).toBe(true);
-    const d = JSON.parse(rows[1].details);
+    expect(journal.every((r) => r.target_type === 'TECH_DIAGNOSTIC')).toBe(true);
+    const d = JSON.parse(journal[1].details);
     expect(d).toMatchObject({ scope: 'document', id: ids.file, format: 'zip', accounts: [A.id] });
     expect(d.generationId).toMatch(/^[0-9a-f-]{36}$/);
     expect(d.fileName).toMatch(/\.zip$/);
-    expect(JSON.parse(rows[2].details)).toMatchObject({ code: 'TARGET_NOT_FOUND' });
-    expect(JSON.parse(rows[3].details)).toMatchObject({ code: 'INVALID_TREATMENT' });
+    expect(JSON.parse(journal[2].details)).toMatchObject({ code: 'TARGET_NOT_FOUND' });
+    expect(JSON.parse(journal[3].details)).toMatchObject({ code: 'INVALID_SCOPE' });
   });
 
   it('L77C-E09 masquage : secrets, e-mails, IBAN, adresse, fichier original, texte intégral', async () => {
@@ -339,9 +348,11 @@ scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité T
     for (const qs of [`scope=asset&id=${ids.asset}`, `scope=document&id=${ids.file}`, `scope=user&id=${A.owner.id}`, 'scope=global']) {
       const z = await zip(qs);
       for (const leak of ['jean.dupont@example.fr', A.owner.email, '0112 3456 7890', '12 rue des Lilas', 'acte-vente-dupont', 'Acte Dupont.pdf',
-        `e2e/${A.id}/`, 'TEXTE INTÉGRAL ACTE', 'AIzaSyFAKE', 'password_hash', 'e2e-non-connectable']) {
+        `e2e/${A.id}/`, 'TEXTE INTÉGRAL ACTE', 'AIzaSyFAKE', 'e2e-non-connectable']) {
         expect(z.raw, `${qs} : ${leak}`).not.toContain(leak);
       }
+      // Colonnes de secret jamais sélectionnées (leur NOM figure seulement dans la liste des exclusions déclarées).
+      for (const u of rows(z.files, 'users')) expect('password_hash' in u, qs).toBe(false);
     }
   });
 

@@ -31,6 +31,10 @@
  *   ai-history-reclassification runHistoryReclassification / restoreHistoryReclassification (lot 89A,
  *                         Pilotage IA V2 P8 ; simulation = lecture seule ; colonnes 0776 / 0777 ;
  *                         même service que la tâche `ai-history-reclassification`)
+ *   missing-properties-catchup requestCatchupChecks + runTargetedChecks (lot 91B ; simulation = liste ;
+ *                         même sélection que le rattrapage automatique de `coherence-control`)
+ *   projection-property-evidence runPropertyEvidenceReprise (lot 91C ; simulation = lecture seule ;
+ *                         même service que la tâche `projection-property-evidence-reprise`)
  *   database-restore-point runDatabaseBackup('admin') / restoreDatabaseBackup (lot 82E ; point de
  *                         restauration = sauvegarde format 2 ; restauration tout ou rien)
  *
@@ -264,6 +268,38 @@ export async function executeBackfill(sql: postgres.Sql, req: BackfillRequest, h
         log: (msg) => { hooks.log(msg); hooks.progress({ message: msg }); },
       });
       return { result: { ...r, action: req.action } };
+    }
+    case 'missing-properties-catchup': {
+      // Lot 91B : même sélection que le rattrapage automatique, puis contrôle ciblé immédiat (application seulement).
+      const orch = await import('@/services/coherence/orchestrator');
+      const r = await orch.requestCatchupChecks({
+        apply: req.action === 'apply', accountId: req.accountId, sql, limit: 2_000,
+        checkIds: ['COH-MISSING-PROPERTIES', 'COH-MISSING-PROPERTIES-EQUIPMENT'],
+      });
+      hooks.log(`${req.action === 'apply' ? 'demandés' : 'à reprendre'} : ${JSON.stringify(r.requested)}`);
+      const controls = req.action === 'apply' ? await orch.runTargetedChecks({ deadline: Date.now() + 15 * 60_000, sql }) : null;
+      return { result: { ...r, controls } };
+    }
+    case 'extract-chain-decision-review': {
+      // Lot 91D : même sélection que le rattrapage automatique, puis contrôle ciblé immédiat (application seulement).
+      const [orch, { valueDecisionsCapability }] = await Promise.all([
+        import('@/services/coherence/orchestrator'), import('@/services/ai/source-analysis/value-decisions/contract'),
+      ]);
+      const contrat = await valueDecisionsCapability();
+      const r = await orch.requestCatchupChecks({
+        apply: req.action === 'apply', accountId: req.accountId, sql, limit: 2_000, checkIds: ['COH-DOC-EXTRACT-CHAIN'],
+      });
+      hooks.log(`contrat T1 : ${contrat.reason} ; ${req.action === 'apply' ? 'demandés' : 'à reprendre'} : ${JSON.stringify(r.requested)}`);
+      const controls = req.action === 'apply' && Object.keys(r.requested).length ? await orch.runTargetedChecks({ deadline: Date.now() + 15 * 60_000, sql }) : null;
+      return { result: { ...r, controls, contract: contrat.reason } };
+    }
+    case 'projection-property-evidence': {
+      // Lot 91C : même service que la tâche planifiée (règle pure de la projection T1, sans appel IA).
+      const { runPropertyEvidenceReprise } = await import('@/services/ai/source-analysis/projection/property-evidence-reprise');
+      const r = await runPropertyEvidenceReprise({
+        apply: req.action === 'apply', origin: 'BO', accountId: req.accountId, reason: req.reason, maxFacts: 50_000, log: hooks.log,
+      });
+      return { result: r };
     }
     case 'to-process-false-arbitrations': {
       // Lot 81A : même service que la campagne automatique (réexamen T3 en lecture seule).

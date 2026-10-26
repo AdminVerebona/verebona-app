@@ -43,6 +43,20 @@
  *      89A, Pilotage IA V2 P8, MIG-02 / MIG-03) — aussi lancé automatiquement
  *      par la tâche `ai-history-reclassification` quand AI_PILOTAGE_V2=on ;
  *      non destructif, idempotent, restaurable d'un geste ;
+ *  16. Propriétés manquantes : rattrapage (lot 91B) — même sélection que le
+ *      rattrapage automatique de la tâche `coherence-control` : objets jamais
+ *      contrôlés ou constat ouvert sans issue persistée récente ; contrôle
+ *      ciblé immédiat (mode de campagne en vigueur) ;
+ *  17. Projection T1 : propriétés neutralisées (lot 91C) — prix d'acquisition
+ *      établi par un document qui engage sans prouver la réalisation (ex.
+ *      compromis), rangé à tort en connaissance générique : fait requalifié,
+ *      preuve de champ écrite, T3 en file — aussi lancé automatiquement par
+ *      `projection-property-evidence-reprise` ; idempotent, sans appel IA ;
+ *  18. Omissions documentaires T1 : réexamen ciblé (lot 91D) — documents
+ *      encore en constat d'omission (COH-DOC-EXTRACT-CHAIN) établi avant le
+ *      contrat T1 `t1-value-decisions-v1` : contrôle ciblé immédiat, qui
+ *      décide du réexamen (mode de campagne, budget IA, une fois par
+ *      diagnostic) — aussi lancé automatiquement par « coherence-control » ;
  *   0. Point de restauration de la base (lot 82E, décisions PO C-Q8 / D13) :
  *      « Appliquer » crée un point (même mécanisme que la sauvegarde
  *      nocturne) ; « Restaurer » ramène la base à un point (contrôle de
@@ -54,7 +68,7 @@
  * services.
  */
 
-export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification';
+export type BackfillScript = 'database-restore-point' | 'merge-rooms' | 'document-asset-links' | 'agenda' | 'cdc15' | 'asset-account' | 'operations-structured' | 'claims-legacy-cleanup' | 'cross-account' | 'equipment-separation' | 'document-validation' | 'duo-shared-account' | 'agenda-intervention-duplicates' | 'to-process-false-arbitrations' | 'operations-v5-rebuild' | 'ai-history-reclassification' | 'missing-properties-catchup' | 'projection-property-evidence' | 'extract-chain-decision-review';
 export type BackfillAction = 'simulate' | 'apply' | 'restore';
 export type BackfillStatus = 'running' | 'succeeded' | 'failed' | 'interrupted';
 
@@ -385,6 +399,59 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'relancé, rien n’est réécrit. Restaurer (avec l’identifiant donné dans le rapport) : tout le classement et les marques sont retirés.',
     actions: ['simulate', 'apply', 'restore'],
     accountFilter: false,
+  },
+  {
+    // Lot 91B (ticket P1 « Garantir l'exécution de la reprise des propriétés manquantes »).
+    script: 'missing-properties-catchup',
+    order: 16,
+    label: 'Propriétés manquantes : rattrapage des biens et équipements jamais examinés',
+    command: 'BO uniquement (aucune commande) — aussi lancé automatiquement par la tâche « coherence-control »',
+    description: 'Reprend les biens et équipements qui ont au moins une source (document rattaché, événement de référence, Agenda, preuve) '
+      + 'et dont les propriétés vides n’ont aucune issue enregistrée récente : objets jamais contrôlés par COH-MISSING-PROPERTIES / '
+      + 'COH-MISSING-PROPERTIES-EQUIPMENT (trace « non sélectionné »), ou constat ouvert sans trace depuis 20 h. Chaque objet est contrôlé '
+      + 'aussitôt par le contrôle de cohérence, dans le mode de campagne en vigueur (à blanc : aucune écriture ; correctif : arbitrage T3 '
+      + 'puis writer canonique). Chaque issue est enregistrée : valeur écrite, abstention motivée, ou cause technique (contrat T3 absent, '
+      + 'budget, panne IA, campagne à blanc…). Aucune règle métier ; corrections de l’utilisateur jamais écrasées. Comptes non actifs ou en '
+      + 'lecture seule : exclus. Simuler : liste des objets, rien n’est écrit. Rejoué : un objet déjà repris ou tracé n’est pas redemandé.',
+    actions: ['simulate', 'apply'],
+    accountFilter: true,
+    warning: 'En campagne corrective, l’arbitrage T3 peut écrire des valeurs dans les fiches (journal « Ce que j’ai fait ») : créez '
+      + 'd’abord un point de restauration (bloc 0) si vous voulez pouvoir revenir en arrière.',
+  },
+  {
+    // Lot 91C (projection T1 : preuve d'une propriété ≠ preuve de réalisation).
+    script: 'projection-property-evidence',
+    order: 17,
+    label: 'Documents analysés : prix d’acquisition mis de côté à tort (compromis…)',
+    command: 'BO uniquement (aucune commande) — aussi lancé automatiquement par la tâche « projection-property-evidence-reprise »',
+    description: 'Lot 91C : jusqu’ici, un document qui ENGAGE un achat sans prouver qu’il est réalisé (compromis de vente…) voyait le prix '
+      + 'qu’il indique explicitement rangé en simple information du document, au lieu d’être proposé pour la fiche. Ce rattrapage reprend '
+      + 'ces prix à partir des analyses DÉJÀ faites (aucun nouvel envoi, aucun appel IA), avec les mêmes règles que les nouvelles analyses : '
+      + 'source admise par la matrice d’autorité du prix d’achat, prix lu explicitement sur le document, bien identifié et encore rattaché au '
+      + 'document, jamais pour un document multi-biens, un acompte, un dépôt de garantie, une valeur estimée, une devise étrangère ni une '
+      + 'facture de travaux. La preuve rejoint ensuite le moteur habituel (arbitrage avec l’acte définitif, cartes « À traiter ») : une valeur '
+      + 'saisie ou corrigée par l’utilisateur n’est jamais remplacée, aucun événement de référence ne devient « réalisé », aucune date '
+      + 'd’achat n’est créée. Simuler : liste des prix qui seraient repris et motifs de refus, rien n’est écrit. Appliquer : rejoué, ne '
+      + 'reprend rien deux fois. Retour arrière : point de restauration de la base (bloc 0).',
+    actions: ['simulate', 'apply'],
+    accountFilter: true,
+  },
+  {
+    // Lot 91D (ticket P1 « Fiabiliser la traçabilité des décisions T1 et la qualification des omissions »).
+    script: 'extract-chain-decision-review',
+    order: 18,
+    label: 'Omissions documentaires T1 : réexamen ciblé des documents en constat',
+    command: 'BO uniquement (aucune commande) — aussi lancé automatiquement par la tâche « coherence-control »',
+    description: 'Reprend les documents encore en constat d’omission du contrôle COH-DOC-EXTRACT-CHAIN (valeur de l’extract absente des '
+      + 'données T1 sur une unité couverte, ou reprise épuisée), établi avant que le prompt T1 porte le contrat t1-value-decisions-v1. '
+      + 'Chaque document est contrôlé aussitôt, dans le mode de campagne en vigueur : à blanc, le réexamen est seulement annoncé ; en '
+      + 'correctif, T1 relit les SEULES unités en constat (texte déjà extrait, aucun fichier relu, jamais une réanalyse complète) et '
+      + 'qualifie chaque valeur (structurée, composante ou contexte, non retenue avec son motif, indéterminée). Une valeur justifiée '
+      + 'n’est plus signalée ; une omission réelle, une décision indéterminée ou invalide reste signalée et qualifiée. Une fois par '
+      + 'diagnostic, dans le budget des relances IA (COHERENCE_T1_RELAUNCH_DAILY_MAX). Contrat T1 absent : rien n’est repris. '
+      + 'Simuler : liste des documents, rien n’est écrit. Rejoué : un document déjà réexaminé n’est pas redemandé.',
+    actions: ['simulate', 'apply'],
+    accountFilter: true,
   },
 ];
 

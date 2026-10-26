@@ -115,8 +115,9 @@ const T6_ETAPE3 = appliquer(LIVRE.t6, bloc('t6-suggestions-v3'));
 const bloquants = (t: 'T3' | 'T6', texte: string) => checkMasterPromptContent(t, texte).blocking.map((i) => i.message);
 
 describe('L89C-U01 — blocs du guide', () => {
-  it('quatre blocs balisés, chacun applicable une seule fois au texte livré', () => {
-    expect(B.map((b) => b.id)).toEqual(['t3-valeurs', 't3-knowledge-query-v1', 't3-knowledge-query-v2', 't6-suggestions-v3']);
+  it('cinq blocs balisés, chacun applicable une seule fois au texte livré', () => {
+    // Lot 91D : bloc T1 `t1-value-decisions-v1` (rejoué par l91d-decisions-valeurs.test.ts).
+    expect(B.map((b) => b.id)).toEqual(['t3-valeurs', 't3-knowledge-query-v1', 't3-knowledge-query-v2', 't6-suggestions-v3', 't1-value-decisions-v1']);
     // Aucun bloc n'introduit un emplacement {{X}} (bloquant au BO : « emplacement inconnu »).
     for (const b of B) expect(inspectMasterTemplate(b.text).placeholders, b.id).toEqual([]);
   });

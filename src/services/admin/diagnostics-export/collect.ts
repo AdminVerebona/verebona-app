@@ -1,49 +1,45 @@
 /**
- * Lots 77C, 81C — génération d'un diagnostic technique (BO › Supervision ›
- * Diagnostics techniques). Serveur uniquement.
+ * Lots 77C, 81C, 88A, 91A — génération du diagnostic (BO › Supervision ›
+ * Diagnostics). Serveur uniquement.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * ASSEMBLAGE DE L'EXISTANT, LECTURE SEULE, EXHAUSTIF (lot 81C)
+ * UN DIAGNOSTIC, UN MOTEUR (lot 91A)
  *
- *   · périmètre résolu en base, SANS borne (tous les équipements, documents
- *     et Opérations liés, dépendances indirectes : documents sources des
- *     Opérations, Opérations ciblant le bien par leurs composantes) ;
- *   · journaux et traitements : `admin_anomalies`, `ai_job_queue`,
- *     `ai_execution_reports` (+ lignes), `ai_usage_event`, `ai_operation`,
- *     `ai_call_diagnostics` (métadonnées), `scheduled_task_state`,
- *     `ai_config_versions` — colonnes LISTÉES (liste blanche), filtrées par
- *     période (ou tout l'historique), compte(s), objets liés et traitement ;
- *   · données métier : dossiers d'entité « Données du compte » (même moteur,
- *     même masquage, sections intégrales) ;
- *   · TCO : `readAssetTco` (moteur existant) et traçabilité de CHAQUE ligne ;
+ *   · le périmètre est résolu en FILTRE (`DiagFilter`) : « Ensemble de
+ *     l'application » = aucun filtre (tous les comptes, tables transversales
+ *     comprises) ; Compte / Utilisateur / Bien / Document / Opération =
+ *     filtres du même moteur (`engine.ts`) — jamais un second chemin, jamais
+ *     une information absente du global (les anciens fichiers propres aux
+ *     périmètres ciblés — dossiers d'entité, journaux filtrés par période —
+ *     sont supprimés : leurs lignes sont dans les tables du moteur) ;
  *   · UNE session REPEATABLE READ READ ONLY (`openReadSession`) : un seul
- *     instantané pour tout le diagnostic ; points de reprise par fichier ;
- *   · PLAN puis PRODUCTION EN FLUX : le plan (périmètre, décomptes attendus,
+ *     instantané pour tout le diagnostic, TCO compris (lecture du moteur TCO
+ *     dans la session) ; points de reprise par fichier ;
+ *   · PLAN puis PRODUCTION EN FLUX : le plan (filtre, décomptes attendus,
  *     liste des fichiers et de leurs parties) est établi d'abord ; chaque
  *     fichier est ensuite produit à la demande, lot par lot, directement
  *     dans l'archive (`zip.ts`) — aucune construction intégrale en mémoire ;
- *   · par fichier : attendu, exporté, lots, statut COMPLETE / PARTIAL /
- *     FAILED, erreur, octets, SHA-256 ; manifeste et rapport en DERNIER ;
- *   · masquage complet (`maskForExport`) ligne par ligne, contrôle de sortie
- *     (aucun secret ni e-mail en clair).
+ *   · par fichier : section, attendu, exporté, lots, statut COMPLETE /
+ *     PARTIAL / FAILED, erreur, octets, SHA-256 ; manifeste et rapport en
+ *     DERNIER ; jamais « n sur ? » (un attendu non calculé est une erreur) ;
+ *   · masquage complet ligne par ligne, contrôle de sortie (aucun secret ni
+ *     e-mail en clair).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash, randomUUID } from 'node:crypto';
 import type { DiagQuery } from '@/services/business-operations/diagnostics/service';
 import { getBuildIdentity } from '@/lib/runtime-identity';
-import { RESTORE_AUDIT_ACTION, RESTORE_AUDIT_TARGET } from '@/services/business-operations/identity-restore.model';
 import { globalStatus, sectionStatus, type ExtractionStatus } from '@/services/admin/account-data/model';
-import { countRows, decodeJsonRow, jsonBatches, named, openReadSession, type ReadSession } from '@/services/admin/account-data/session';
+import { countRows, jsonBatches, named, openReadSession, type ReadSession } from '@/services/admin/account-data/session';
 import type { TextSink } from '@/services/admin/account-data/export';
 import {
   DIAG_LIMITS, DIAG_REMOVED_CAPS, DIAG_SCHEMA, DIAG_SCOPE_LABELS, MASKING_NOTES, READ_ONLY_NOTE, buildReportTextFromLines, leaksSecretOrEmail, maskForExport, maskText,
-  periodBounds, traceReportLines, type AmountTrace, type DiagFileInfo, type DiagManifest, type DiagRequest, type DiagUnavailable,
+  traceReportLines, type AmountTrace, type DiagFileInfo, type DiagManifest, type DiagRequest, type DiagUnavailable,
 } from './model';
-import { REPORT_COLS, USAGE_COLS, loadTcoContext, tcoSummary, traceComponent, traceTcoLine, type TcoContext } from './trace';
+import { loadTcoContext, tcoSummary, traceTcoLine, type TcoContext } from './trace';
 import type { DiagSectionCode } from './coverage';
-import { DIAG_SECURITY_NOTES } from './security';
-import { buildAnalysisGuide, computeSectionManifests, globalWithSections } from './account-model';
-import type { AccountManifestPart } from './account';
+import { buildAnalysisGuide, computeSectionManifests, globalWithSections, sectionOfPath } from './account-model';
+import type { DiagFilter, EngineManifestPart } from './engine';
 
 type Row = Record<string, unknown>;
 
@@ -154,6 +150,9 @@ export async function resolvePerimeter(q: DiagQuery, r: Pick<DiagRequest, 'scope
     p.fileIds = ids(await q(`SELECT id FROM asset_files WHERE account_id = $1 ORDER BY id`, [id]));
     p.operationIds = ids(await q(`SELECT id FROM business_operations WHERE account_id = $1 ORDER BY id`, [id]));
     p.label = `Compte #${id} — ${p.assetIds.length} bien(s), ${p.equipmentIds.length} équipement(s), ${p.fileIds.length} document(s), ${p.operationIds.length} rapprochement(s)`;
+  } else if (r.scope === 'global') {
+    const [c] = await q(`SELECT (SELECT count(*)::int FROM accounts) AS comptes, (SELECT count(*)::int FROM assets) AS biens, (SELECT count(*)::int FROM asset_files) AS documents`);
+    p.label = `Ensemble de l’application — ${N(c?.comptes)} compte(s), ${N(c?.biens)} bien(s), ${N(c?.documents)} document(s), tables transversales`;
   } else if (r.scope === 'operation') {
     const [o] = await q(`SELECT id, account_id FROM business_operations WHERE id = $1`, [id]);
     if (!o) throw new DiagTargetNotFoundError('Opération');
@@ -182,6 +181,28 @@ export async function resolvePerimeter(q: DiagQuery, r: Pick<DiagRequest, 'scope
 const num0 = (v: unknown): number => (v === null || v === undefined ? 0 : Number(v));
 const addTo = <K, T>(m: Map<K, T[]>, k: K, v: T) => { if (!m.has(k)) m.set(k, []); m.get(k)!.push(v); };
 
+/**
+ * Filtre du moteur unique correspondant au périmètre résolu (lot 91A).
+ * Objets FOCUS (les lignes qui les désignent sont retenues) : Bien → le bien,
+ * ses équipements, ses documents et ses Opérations ; Document → le document
+ * et les Opérations qu'il source ; Opération → l'Opération et ses documents
+ * sources. Biens de CONTEXTE (TCO, traçabilité des propriétés) : les biens
+ * concernés par l'objet.
+ */
+export function filterOfPerimeter(req: Pick<DiagRequest, 'scope'>, p: Perimeter): DiagFilter {
+  const entity = req.scope === 'asset'
+    ? { assets: p.assetIds, files: p.fileIds, operations: p.operationIds, equipments: p.equipmentIds }
+    : req.scope === 'document' ? { assets: [], files: p.fileIds, operations: p.operationIds, equipments: [] }
+      : req.scope === 'operation' ? { assets: [], files: p.fileIds, operations: p.operationIds, equipments: [] } : null;
+  return {
+    scope: req.scope as DiagFilter['scope'],
+    accounts: req.scope === 'global' ? null : p.accountIds,
+    entity: entity ? { ...entity, contextAssets: p.assetIds } : null,
+    userId: p.userId,
+    label: p.label,
+  };
+}
+
 // ── Production d'un fichier : statut, intégrité ─────────────────────────────
 
 /** Fichier planifié de l'archive : produit À LA DEMANDE, dans l'ordre. */
@@ -205,6 +226,8 @@ function safeJson(v: unknown): string {
 export interface DiagPlan {
   generationId: string;
   perimeter: Perimeter;
+  /** Lot 91A : filtre du moteur unique (accounts null : Ensemble de l'application). */
+  filter: DiagFilter;
   /** Fichiers, dans l'ordre de production (rapport et manifeste en dernier). */
   entries: PlannedEntry[];
   /** Après production : manifeste et rapport. */
@@ -214,34 +237,29 @@ export interface DiagPlan {
 }
 
 /**
- * Établit le plan d'un diagnostic DANS la session : périmètre, décomptes
+ * Établit le plan d'un diagnostic DANS la session : filtre, décomptes
  * attendus (même instantané), fichiers et parties. Aucun contenu n'est lu ici.
  */
 export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: GenerateOptions): Promise<DiagPlan> {
   const now = (opts.now ?? (() => new Date()))();
   const generationId = randomUUID();
-  const { start, end } = periodBounds(req);
   const partRows = Math.max(1, opts.partRows ?? DIAG_LIMITS.partRows);
   const batchRows = Math.max(1, opts.batchRows ?? DIAG_LIMITS.batchRows);
-  const { isSensitiveCanonicalKey, planEntityDossier, EntityNotFoundError } = await import('@/services/admin/account-data/dossier');
-  const { writeDossierExport } = await import('@/services/admin/account-data/export');
+  const { isSensitiveCanonicalKey } = await import('@/services/admin/account-data/dossier');
   const maskOpts = { isSensitiveKey: isSensitiveCanonicalKey };
   const M = (v: unknown) => maskForExport(v, maskOpts);
   const row = (v: unknown) => safeJson(M(v));
 
   const per = await s.savepoint(() => resolvePerimeter(s.q, req));
-  const accounts = per.accountIds.length ? per.accountIds : null;
-  const entityScope = req.scope === 'asset' || req.scope === 'document' || req.scope === 'operation';
-  const T = req.treatments.length ? req.treatments : null;
+  const filter = filterOfPerimeter(req, per);
+  const global = filter.accounts === null;
+  const txt = (xs: number[]) => xs.map(String);
+  const e = filter.entity;
   const V: Record<string, unknown> = {
-    accounts, accountIds: per.accountIds, start, end, treatments: T, userId: per.userId,
-    assetsT: per.assetIds.map(String), equipT: per.equipmentIds.map(String), filesT: per.fileIds.map(String),
-    assetIds: per.assetIds, fileIds: per.fileIds, equipmentIds: per.equipmentIds, operationIds: per.operationIds,
-    A: per.accountIds[0] ?? 0,
+    accounts: filter.accounts ?? [], userId: per.userId,
+    eAssetsT: txt(e?.assets ?? []), eFilesT: txt(e?.files ?? []), eOpsT: txt(e?.operations ?? []), eEquipT: txt(e?.equipments ?? []),
+    ctxAssets: e?.contextAssets ?? [],
   };
-  const accountScope = req.scope === 'account';
-  const ACC = (col = 'account_id') => `({{accounts}}::int[] IS NULL OR ${col} = ANY({{accounts}}::int[]))`;
-  const PERIOD = (col: string) => `${col} >= {{start}}::timestamptz AND ${col} < {{end}}::timestamptz`;
 
   const infos: DiagFileInfo[] = [];
   const warnings: string[] = [];
@@ -249,18 +267,17 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   const traceLines: string[] = [];
   const counts: Record<string, number> = {};
   let fatal: string | null = null;
-  // Lot 88A : section de chaque fichier, manques constatés, filtres / limitations / troncatures déclarés.
   const fileSections = new Map<string, DiagSectionCode>();
   const sectionIssues = new Map<DiagSectionCode, string[]>();
   const sectionFilters = new Map<DiagSectionCode, string[]>();
   const sectionLimitations = new Map<DiagSectionCode, string[]>();
   const sectionTruncations = new Map<DiagSectionCode, string[]>();
-  let accountPart: AccountManifestPart | null = null;
 
   /** Fichier : écrit dans `sink`, statut et intégrité consignés ; erreur non fatale → FAILED / PARTIAL, fichier refermé valide. */
   const entries: PlannedEntry[] = [];
   const entry = (path: string, description: string, body: (w: (c: string) => Promise<void>) => Promise<EntryResult>, part?: DiagFileInfo['part'], section?: DiagSectionCode) => {
-    if (section) fileSections.set(path, section);
+    const sec = section ?? sectionOfPath(path);
+    fileSections.set(path, sec);
     entries.push({
       path,
       produce: async (sink) => {
@@ -279,10 +296,14 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
         }
         const status = r.status ?? sectionStatus(r.expected, r.count ?? 0, r.error);
         infos.push({
-          path, description, ...(r.count !== undefined ? { count: r.count } : {}), complete: status === 'COMPLETE',
+          path, description, section: sec, ...(r.count !== undefined ? { count: r.count } : {}), complete: status === 'COMPLETE',
           expected: r.expected, batches: r.batches, status, error: r.error, bytes, sha256: hash.digest('hex'), ...(part ? { part } : {}),
         });
-        if (status !== 'COMPLETE') warnings.push(`${path} : ${status}${r.error ? ` — ${r.error}` : ` — ${r.count ?? 0} élément(s) exporté(s) sur ${r.expected ?? '?'} attendu(s)`}.`);
+        if (status !== 'COMPLETE') {
+          // Jamais « n sur ? » : sans attendu, l'erreur dit pourquoi.
+          const detail = r.error ? ` — ${r.error}` : r.expected !== null ? ` — ${r.count ?? 0} élément(s) exporté(s) sur ${r.expected} attendu(s)` : '';
+          warnings.push(`${path} : ${status}${detail}.`);
+        }
       },
     });
   };
@@ -311,25 +332,26 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
     return { expected, count: n, batches, error };
   };
 
-  /** Décompte attendu (même instantané) ; une erreur est rendue (fichier FAILED). */
+  /** Décompte attendu (même instantané) ; une erreur est rendue (fichier FAILED, motif exploitable). */
   const countOf = async (sql: string, params: unknown[]): Promise<{ n: number | null; error: string | null }> => {
     try { return { n: await s.savepoint(() => countRows(s.q, sql, params)), error: null }; } catch (e) {
       if (errCode(e) === '25006') throw e;
-      return { n: null, error: describe(e) };
+      return { n: null, error: `attendu non calculé : ${describe(e)}` };
     }
   };
 
   /** Fichier de liste (découpé en parties de `partRows` lignes si nécessaire, toutes dans l'archive). */
   const list = async (path: string, description: string, text: string, transform?: (r: Row) => Row,
-    opt: { onlyIfRows?: boolean; serialize?: (r: Row) => string; section?: DiagSectionCode; values?: Record<string, unknown> } = {}) => {
+    opt: { onlyIfRows?: boolean; serialize?: (r: Row) => string; section?: DiagSectionCode; values?: Record<string, unknown>; expected?: number } = {}) => {
     const { sql, params } = named(text, opt.values ? { ...V, ...opt.values } : V);
-    const exp = await countOf(sql, params);
+    const exp = opt.expected !== undefined ? { n: opt.expected, error: null } : await countOf(sql, params);
     if (opt.onlyIfRows && exp.n === 0) return 0;
     counts[path] = exp.n ?? 0;
     const parts = exp.n !== null && exp.n > partRows ? Math.ceil(exp.n / partRows) : 1;
     for (let k = 0; k < parts; k++) {
       const p = parts > 1 ? path.replace(/\.json$/, `.part-${String(k + 1).padStart(4, '0')}.json`) : path;
       const expected = exp.n === null ? null : parts > 1 ? Math.min(partRows, exp.n - k * partRows) : exp.n;
+      // Pagination TECHNIQUE (parties d'un même fichier logique, toutes dans l'archive) — jamais une troncature.
       const pSql = parts > 1 ? `SELECT * FROM (${sql}) x LIMIT ${partRows} OFFSET ${k * partRows}` : sql;
       entry(p, parts > 1 ? `${description} — partie ${k + 1}/${parts}` : description, async (w) => {
         if (exp.error) { await w('[]\n'); return { expected: null, count: 0, batches: 0, error: exp.error }; }
@@ -343,7 +365,7 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
 
   /** Objet JSON dont certaines clés sont des listes lues en flux. */
   type Part = { value: () => Promise<unknown> } | { list: string; transform?: (r: Row) => Row };
-  const object = async (path: string, description: string, parts: Record<string, Part>, countKey?: string) => {
+  const object = async (path: string, description: string, parts: Record<string, Part>, countKey?: string, section?: DiagSectionCode) => {
     const compiled: Record<string, { sql: string; params: unknown[]; n: number | null; error: string | null; transform?: (r: Row) => Row } | null> = {};
     for (const [k, p] of Object.entries(parts)) {
       if ('list' in p) {
@@ -384,321 +406,99 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       }
       await w('\n}\n');
       return { expected, count, batches, error: errors.length ? errors.join(' ; ') : null };
-    });
+    }, undefined, section);
   };
 
-  // ── Requêtes (paramètres nommés, aucune borne) ──────────────────────────
-  const jobTarget = entityScope ? `AND ((lower(target_type) = 'asset' AND target_id = ANY({{assetsT}}::text[]))
-       OR (lower(target_type) = 'equipment' AND target_id = ANY({{equipT}}::text[]))
-       OR (lower(target_type) IN ('asset_file', 'document') AND target_id = ANY({{filesT}}::text[]))
-       OR lower(target_type) LIKE 'business_operations%')` : '';
-  const JOBS = `SELECT id, treatment, account_id, target_type, target_id, status, origin, trigger_code, config_version_id, attempts, last_error,
-           business_result, execution_id, recovered_count, coalesce_requested, created_at, available_at, started_at, finished_at,
-           payload -> 'events' -> -1 ->> 'correlationId' AS correlation_id
-      FROM ai_job_queue
-     WHERE ${ACC()} AND ${PERIOD('created_at')} AND ({{treatments}}::text[] IS NULL OR treatment = ANY({{treatments}}::text[])) ${jobTarget}
-     ORDER BY id DESC`;
-  const REPORTS = `SELECT ${REPORT_COLS} FROM ai_execution_reports
-     WHERE ${ACC()} AND ${PERIOD('created_at')} AND ({{treatments}}::text[] IS NULL OR treatment = ANY({{treatments}}::text[]))
-       ${entityScope ? `AND (asset_id = ANY({{assetIds}}::int[]) OR file_id = ANY({{fileIds}}::int[]) OR (upper(target_type) = 'EQUIPMENT' AND target_id = ANY({{equipmentIds}}::int[])))` : ''}
-     ORDER BY id DESC`;
-  const EXTRACTIONS = `SELECT id, file_id, analysis_run_id, engine, provider, model, prompt_version, operation_trace_id, amount_cents, currency, document_date, supplier_name,
-           document_type_code, fact_count, full_text_chars, extracted_at
-      FROM document_extractions WHERE account_id = ANY({{accountIds}}::int[]) AND file_id = ANY({{fileIds}}::int[]) ORDER BY file_id, id`;
-  const TRACES = `(SELECT e.operation_trace_id FROM (${EXTRACTIONS}) e WHERE e.operation_trace_id IS NOT NULL
-                   UNION SELECT unnest(r.trace_ids) FROM (${REPORTS}) r)`;
-  const CALLS = `SELECT ${USAGE_COLS} FROM ai_usage_event
-     WHERE ${ACC()} AND ${PERIOD('created_at')}
-       ${entityScope ? `AND (asset_file_id = ANY({{fileIds}}::int[]) OR metadata->>'traceId' IN ${TRACES} OR job_id IN (SELECT j.id FROM (${JOBS}) j))` : ''}
-     ORDER BY id DESC`;
-  const AI_OPS = `SELECT id, public_id, account_id, user_id, asset_file_id, operation_category, pipeline_version, started_at, completed_at, duration_ms, business_result,
-           provider_primary, provider_fallback, used_fallback, is_reanalysis, reanalysis_reason, origin, environment, error_code, warning_message
-      FROM ai_operation WHERE ${ACC()} AND ${PERIOD('created_at')} ${entityScope ? 'AND asset_file_id = ANY({{fileIds}}::int[])' : ''}
-     ORDER BY id DESC`;
-  const ANOMALIES = `SELECT id, domain, fingerprint, title, status, account_id, user_id, technical_detail, occurrence_count, first_seen_at, last_seen_at,
-           resolved_at, resolution_source, auto_resolution_origin, auto_resolution_cause, previous_anomaly_id
-      FROM admin_anomalies
-     WHERE (${ACC()} ${per.userId ? 'OR user_id = {{userId}}::int' : ''}) AND last_seen_at >= {{start}}::timestamptz AND first_seen_at < {{end}}::timestamptz
-     ORDER BY last_seen_at DESC, id DESC`;
-  const HISTORY = `SELECT id, operation_id, event_type, reason_code, source_id, actor_user_id, before_json, after_json, correlation_id, created_at
-      FROM business_operation_history WHERE account_id = ANY({{accountIds}}::int[]) AND operation_id = ANY({{operationIds}}::bigint[]) AND ${PERIOD('created_at')}
-     ORDER BY created_at DESC, id DESC`;
+  // ── Moteur unique : tables, fermeture, contrôles, traçabilité des propriétés ─
+  const { planDiagnosticEngine } = await import('./engine');
+  const enginePart: EngineManifestPart = await planDiagnosticEngine({
+    s, V, isSensitiveKey: isSensitiveCanonicalKey, M, safeJson, entry, list, object,
+    issues: sectionIssues, filters: sectionFilters, limitations: sectionLimitations, warnings, unavailable, today: opts.today,
+  }, filter);
 
-  // ── Fichiers (ordre de l'archive) ───────────────────────────────────────
-  await object('contexte-technique.json', 'Base de données, tâches planifiées, file en attente, versions de configuration IA actives ou utilisées', {
-    baseDeDonnees: { value: async () => { const [db] = await s.q(`SELECT current_setting('server_version') AS version, now() AS maintenant`); return { version: db?.version ?? null, horloge: db?.maintenant ?? null }; } },
-    tachesPlanifiees: { list: `SELECT code, next_run_at, last_trigger, last_started_at, last_finished_at, last_duration_ms, last_status,
-                                      last_error, last_success_at, consecutive_failures FROM scheduled_task_state ORDER BY code` },
-    fileEnAttente: { list: `SELECT treatment, status, count(*)::int AS n, min(created_at) AS plus_ancien FROM ai_job_queue
-                             WHERE ${ACC()} AND status IN ('PENDING', 'RUNNING', 'FAILED') GROUP BY 1, 2 ORDER BY 1, 2` },
-    versionsConfigurationIA: { list: `SELECT id, uid, environment, status, visible_number, label, base_version_id, created_at FROM ai_config_versions
-                                       WHERE status = 'ACTIVE' OR id IN (SELECT DISTINCT config_version_id FROM ai_job_queue WHERE ${ACC()} AND ${PERIOD('created_at')})
-                                       ORDER BY id DESC` },
-  });
-  if (req.scope === 'user' && per.userId) {
-    await object('metier/utilisateur.json', 'Utilisateur (pseudonymisé), adhésions, comptes et biens', {
-      utilisateur: { value: async () => (await s.q(`SELECT row_to_json(t) AS r FROM (SELECT id, email, role, status, is_active, plan_type, locale, created_at, last_login_at FROM users WHERE id = $1) t`, [per.userId]).then((r) => r.map((x) => decodeJsonRow(x.r))))[0] ?? null },
-      adhesions: { list: `SELECT id, account_id, role, status, joined_at, removed_at FROM account_memberships WHERE user_id = {{userId}}::int ORDER BY id` },
-      comptes: { list: `SELECT a.id, a.owner_user_id, a.created_at,
-               (SELECT count(*)::int FROM assets x WHERE x.account_id = a.id) AS biens,
-               (SELECT count(*)::int FROM equipments e JOIN assets x ON x.id = e.asset_id WHERE x.account_id = a.id) AS equipements,
-               (SELECT count(*)::int FROM asset_files f WHERE f.account_id = a.id) AS documents,
-               (SELECT count(*)::int FROM business_operations o WHERE o.account_id = a.id) AS operations,
-               (SELECT count(*)::int FROM agenda_items i WHERE i.account_id = a.id) AS echeances
-          FROM accounts a WHERE a.id = ANY({{accountIds}}::int[]) ORDER BY a.id` },
-      biens: { list: `SELECT id, account_id, name, category, status, created_at, deleted_at FROM assets WHERE account_id = ANY({{accountIds}}::int[]) ORDER BY id` },
-    });
-  } else if (req.scope === 'global') {
-    await object('metier/volumetrie.json', 'Volumétrie globale et traitements de la période', {
-      volumetrie: { value: async () => (await s.q(`SELECT (SELECT count(*)::int FROM accounts) AS comptes, (SELECT count(*)::int FROM users) AS utilisateurs,
-                                     (SELECT count(*)::int FROM assets WHERE deleted_at IS NULL) AS biens, (SELECT count(*)::int FROM asset_files WHERE deleted_at IS NULL) AS documents,
-                                     (SELECT count(*)::int FROM business_operations WHERE invalidated_at IS NULL AND merged_into_operation_id IS NULL) AS operations_actives`))[0] ?? null },
-      traitementsSurLaPeriode: { list: `SELECT treatment, status, count(*)::int AS n FROM ai_job_queue WHERE ${PERIOD('created_at')} AND ({{treatments}}::text[] IS NULL OR treatment = ANY({{treatments}}::text[])) GROUP BY 1, 2 ORDER BY 1, 2` },
-      rapportsSurLaPeriode: { list: `SELECT treatment, status, count(*)::int AS n FROM ai_execution_reports WHERE ${PERIOD('created_at')} AND ({{treatments}}::text[] IS NULL OR treatment = ANY({{treatments}}::text[])) GROUP BY 1, 2 ORDER BY 1, 2` },
-      anomaliesOuvertesParDomaine: { list: `SELECT domain, count(*)::int AS n FROM admin_anomalies WHERE status = 'open' GROUP BY 1 ORDER BY 1` },
-    });
-  }
-  const nAnomalies = await list('logs/anomalies-supervision.json', 'Anomalies de supervision (Dashboard › Supervision) de la période', ANOMALIES);
-  const nJobs = await list('logs/traitements-file.json', 'File des traitements T1 / T3 / T4 (ai_job_queue) : statut, tentatives, erreur, corrélation', JOBS);
-  // Lot 84D (CDC Pilotage IA V2 P3, BO-09) : T2 et T6 FORMULATE ajoutés au collecteur — mêmes bornes,
-  // même masquage, colonnes LISTÉES (aucun contenu conversationnel ni texte généré) ; identifiant
-  // d'exécution métier (P2) porté pour la corrélation avec « Exécutions & logs » et ses exports.
-  const withTreatment = (t: string) => !T || T.includes(t as never);
-  if (!entityScope && withTreatment('T2')) {
-    await list('ia/t2-demandes.json', 'Demandes de l’assistant T2 (verebona_request_runs) : mode, statut, état final, erreur, latence, exécution métier — sans contenu', `
-      SELECT id, 'T2:' || request_id AS business_execution_id, request_id, account_id, user_id, status, machine_final_state, mode, error_code, latency_ms, created_at
-        FROM verebona_request_runs WHERE ${ACC()} AND ${PERIOD('created_at')}
-       ORDER BY id DESC`);
-  }
-  if (!entityScope && withTreatment('T6')) {
-    await list('ia/t6-generations.json', 'Générations T6 FORMULATE (home_mascot_generations) : mode, statut, modèle, repli, latence, coût, trace, exécution métier — sans texte généré', `
-      SELECT id, CASE WHEN trace_id IS NOT NULL THEN 'T6F:' || trace_id END AS business_execution_id, account_id, mode, status, model, used_fallback_model,
-             latency_ms, cost_micros, trace_id, error, created_at
-        FROM home_mascot_generations WHERE ${ACC()} AND ${PERIOD('created_at')} AND status <> 'cache_hit'
-       ORDER BY id DESC`);
-  }
-  await object('ia/t6-evaluations.json', 'Évaluations T6 EVALUATE : état réel par échéance (PENDING, RUNNING, RETRY_WAIT, FAILED, COMPLETED, UNAVAILABLE), tentatives, erreurs, prochain essai ; pré-génération de l’accueil', {
-    evaluations: { list: `SELECT agenda_item_id, account_id, status, context_fingerprint AS empreinte, evaluation_signature AS signature,
-             attempts, run_id, mode, requested_at, started_at, finished_at, lease_until, next_attempt_at, last_error_kind,
-             last_error, last_outcome, trace_id, interrupted_count, updated_at
-        FROM t6_evaluation_runs WHERE ${ACC()} AND (status <> 'COMPLETED' OR updated_at >= {{start}}::timestamptz)
-       ORDER BY account_id, agenda_item_id` },
-    preGeneration: { list: `SELECT account_id, reason, requested_at, processed_at, last_status, attempts, claimed_until,
-             (processed_at IS NULL OR requested_at > processed_at) AS en_attente
-        FROM home_mascot_pregen_requests WHERE ${ACC()} ORDER BY requested_at DESC, account_id` },
-  }, 'evaluations');
-  if (per.operationIds.length) await list('logs/historique-operations.json', 'Historique des Opérations (business_operation_history) de la période', HISTORY);
-  if (per.operationIds.length || per.fileIds.length) {
-    const [j] = await s.savepoint(() => s.q(`SELECT to_regclass('business_operation_identity_reviews') IS NOT NULL AS ok`));
-    const JOURNAL = `SELECT id, operation_id, target_operation_id, kind, status, file_id, candidate_key, source_id, basis, signals, against_source_ids,
-             review_version, correlation_id, resolved_by_admin_id, created_at, updated_at, resolved_at
-        FROM business_operation_identity_reviews
-       WHERE account_id = ANY({{accountIds}}::int[]) AND (operation_id = ANY({{operationIds}}::bigint[]) OR target_operation_id = ANY({{operationIds}}::bigint[]) OR file_id = ANY({{fileIds}}::int[]))
-       ORDER BY id DESC`;
-    const parts: Record<string, Part> = {};
-    if (j?.ok) parts.journal = { list: JOURNAL };
-    else parts.journal = { value: async () => [] };
-    parts.provenance = { list: `SELECT o.id AS operation_id, o.type_code, o.provider, o.technical_label, o.planned_date, o.start_date, o.realized_date, o.end_date,
-             to_jsonb(o) -> 'attribute_provenance' AS provenance
-        FROM business_operations o WHERE o.account_id = ANY({{accountIds}}::int[]) AND o.id = ANY({{operationIds}}::bigint[]) ORDER BY o.id` };
-    parts.sources = { list: `SELECT s.id, s.operation_id, s.source_kind, s.source_entity_key, s.locator->>'candidateKey' AS candidate_key, s.source_role, s.authority, s.confidence,
-             s.match_method, s.match_reason, s.active, s.superseded_at, s.created_at,
-             CASE WHEN s.match_method = 'M3' THEN 'IA' WHEN s.match_method = 'M0' THEN 'UTILISATEUR' WHEN s.match_method IN ('M1', 'M2') THEN 'DETERMINISTE'
-                  WHEN s.match_method IS NULL AND s.source_kind = 'DOCUMENT' THEN 'CREATION' ELSE 'AUTRE' END AS nature_decision,
-             (SELECT h.reason_code FROM business_operation_history h WHERE h.source_id = s.id AND h.event_type = 'SOURCE_REMOVED' ORDER BY h.id DESC LIMIT 1) AS motif_retrait
-        FROM business_operation_sources s WHERE s.account_id = ANY({{accountIds}}::int[]) AND s.operation_id = ANY({{operationIds}}::bigint[]) ORDER BY s.operation_id, s.id` };
-    parts.candidats = { list: `SELECT c.id, c.file_id, c.candidate_key, c.extraction_id, c.analysis_run_id, c.status, c.established, c.confidence, c.type_hint, c.status_hint,
-             c.payload->'origin' AS origine_t1, c.payload->'evidenceFactIds' AS faits_preuve, c.payload->'adjustments' AS corrections_barriere,
-             c.t3_outcome, c.t3_reason, c.t3_operation_id, c.t3_detail->'matchMethod' AS methode, c.t3_detail->'certain' AS certains,
-             c.t3_detail->'identity' AS controles_identite, c.t3_detail->'excluded' AS exclus, c.t3_detail->'plausible' AS plausibles,
-             c.t3_detail->'m3' AS verdict_ia, c.t3_detail->>'identityReview' AS version_controle, c.t3_processed_at, c.created_at, c.superseded_at
-        FROM document_operation_candidates c
-       WHERE c.account_id = ANY({{accountIds}}::int[]) AND (c.file_id = ANY({{fileIds}}::int[]) OR c.t3_operation_id = ANY({{operationIds}}::bigint[]))
-       ORDER BY c.file_id, c.id DESC` };
-    // Lot 79A : rétablissements BO des séparations (journal d'audit admin) — administrateur (identifiant), motif, avant / après.
-    parts.retablissements = j?.ok ? {
-      list: `SELECT id, "timestamp" AS horodatage, admin_user_id, target_id AS separation_id, result AS resultat, details, old_value AS avant, new_value AS apres
-        FROM admin_audit_log
-       WHERE action_type = '${RESTORE_AUDIT_ACTION}' AND target_type = '${RESTORE_AUDIT_TARGET}' AND target_id IN (SELECT jr.id FROM (${JOURNAL}) jr)
-       ORDER BY id DESC`,
-      transform: ({ details, ...x }) => {
-        let d: Record<string, unknown> = {};
-        try { d = typeof details === 'string' ? JSON.parse(details) as Record<string, unknown> : (details && typeof details === 'object' ? details as Record<string, unknown> : {}); } catch { d = {}; }
-        return { ...x, motif: d.reason ?? null, code: d.code ?? null, operation_affichee: d.viewedOperationId ?? d.operationId ?? null };
-      },
-    } : { value: async () => [] };
-    await object('tracabilite/identite-economique.json',
-      'Identité économique (lot 78A) : candidats T1 (origine, faits, décision T3, contrôles d’identité, nature déterministe / IA), sources rattachées et motifs de retrait, provenance des valeurs (dates, prestataire, libellé) et contradictions, journal des séparations / doutes / doublons et de leur traitement, rétablissements BO (lot 79A : administrateur, motif, avant / après)',
-      parts);
-  }
-  const nReports = await list('ia/rapports-execution.json', 'Rapports d’exécution T1 / T3 (ai_execution_reports) — synthèse', REPORTS);
-  if (entityScope) {
-    await list('ia/rapports-execution-lignes.json', 'Lignes des rapports d’exécution du périmètre (toutes)', `
-      SELECT r.id AS report_id, e.seq, e.section, e.table_name, e.record_id, e.column_path, e.field_key, e.label, e.entity_type, e.entity_id,
-             e.old_value, e.value, e.value_type, e.value_chars, e.record_status, e.write_result, e.reason_code, e.reason, e.links
-        FROM (${REPORTS}) r JOIN ai_execution_report_entries e ON e.report_id = coalesce(r.entries_report_id, r.id) AND e.account_id = ANY({{accountIds}}::int[])
-       ORDER BY r.id DESC, e.seq`);
-  }
-  if (per.fileIds.length) await list('ia/extractions.json', 'Extractions T1 : fournisseur, modèle, version de prompt, trace, montant documentaire', EXTRACTIONS, undefined, { onlyIfRows: true });
-  const nCalls = await list('ia/appels.json', 'Appels IA (ai_usage_event) : modèle, rang, prompt maître et version, trace, job, statut', CALLS);
-  if (!entityScope) {
-    await list('ia/appels-agreges.json', 'Appels IA agrégés par fournisseur, modèle, opération et statut', `
-      SELECT provider, model, operation_code, status, count(*)::int AS appels, sum(coalesce(cost_micros, 0))::bigint AS cout_micros, max(created_at) AS dernier
-        FROM ai_usage_event WHERE ${ACC()} AND ${PERIOD('created_at')}
-       GROUP BY 1, 2, 3, 4 ORDER BY appels DESC, 1, 2, 3, 4`);
-  }
-  await list('ia/operations-ia.json', 'Opérations IA (ai_operation) : pipeline, résultat métier, repli', AI_OPS);
-  await list('ia/diagnostics-appels.json', 'Diagnostics d’appels IA (ai_call_diagnostics) : contrat, schéma, échec — sans la sortie du modèle', `
-    SELECT id, created_at, trace_id, usage_event_id, call_index, call_kind, account_id, use_case_code, operation_code, task, model, model_rank, outcome,
-           failure_family, failure_subtype, failure_stage, signature, source_ids, schema_name, schema_version, schema_hash, contract_id, contract_version,
-           output_chars, (raw_output IS NOT NULL OR extracted_output IS NOT NULL OR parsed_output IS NOT NULL) AS sortie_conservee
-      FROM ai_call_diagnostics
-     WHERE ${ACC()} AND ${PERIOD('created_at')} ${entityScope ? `AND (trace_id IN ${TRACES} OR source_ids && {{fileIds}}::int[])` : ''}
-     ORDER BY id DESC`);
-  // Lot 82C (CDC Pilotage IA V2 P1) : état de la capture complète à la source de chaque tentative — SANS contenu
-  // (statuts, tailles, empreintes, durées). Le contenu (prompt, réponse) reste lisible au détail d'exécution, sous
-  // l'accès réservé et journalisé. Table absente (migration 0649) : liste en erreur, signalée par le manifeste.
-  await list('ia/captures-appels.json', 'Captures à la source des appels IA (ai_call_captures) : statut de capture, du prompt et de la réponse, tailles, empreintes, durées — sans contenu', `
-    SELECT id, captured_at, trace_id, usage_event_id, call_index, call_kind, origin, account_id, use_case_code, operation_code, task, model, model_rank,
-           capture_status, capture_reason, capture_attempts, prompt_status, prompt_chars, prompt_sha256, response_status, response_chars, response_sha256,
-           attempt_duration_ms, execution_elapsed_ms, source_ids
-      FROM ai_call_captures
-     WHERE ${ACC()} AND ${PERIOD('captured_at')} ${entityScope ? `AND (trace_id IN ${TRACES} OR source_ids && {{fileIds}}::int[])` : ''}
-     ORDER BY id DESC`, undefined, { onlyIfRows: true });
-  // Chronologie corrélée : mêmes lignes que les fichiers ci-dessus, ordonnées par horodatage (SQL, en flux).
-  const tl: string[] = [
-    `SELECT a.last_seen_at AS h, 1 AS k, a.id AS i, json_build_object('horodatage', a.last_seen_at, 'type', 'ANOMALIE', 'table', 'admin_anomalies', 'id', a.id, 'statut', a.status, 'compte', a.account_id, 'libelle', a.title) AS ev FROM (${ANOMALIES}) a`,
-    `SELECT j.created_at, 2, j.id, json_build_object('horodatage', j.created_at, 'type', 'JOB_' || j.treatment || '_CREE', 'table', 'ai_job_queue', 'id', j.id, 'statut', j.status, 'compte', j.account_id,
-            'correlation', json_build_object('job', j.id, 'execution', j.execution_id, 'correlationId', j.correlation_id, 'cible', j.target_type || ':' || j.target_id)) FROM (${JOBS}) j`,
-    `SELECT j.finished_at, 3, j.id, json_build_object('horodatage', j.finished_at, 'type', 'JOB_' || j.treatment || '_TERMINE', 'table', 'ai_job_queue', 'id', j.id, 'statut', j.status, 'resultat', j.business_result,
-            'erreur', j.last_error, 'correlation', json_build_object('job', j.id)) FROM (${JOBS}) j WHERE j.finished_at IS NOT NULL`,
-    `SELECT r.created_at, 4, r.id, json_build_object('horodatage', r.created_at, 'type', 'RAPPORT_' || r.treatment, 'table', 'ai_execution_reports', 'id', r.id, 'statut', r.status,
-            'correlation', json_build_object('job', r.job_id, 'traces', r.trace_ids, 'document', r.file_id, 'bien', r.asset_id, 'rapportT1Origine', r.origin_t1_report_id)) FROM (${REPORTS}) r`,
-    `SELECT u.created_at, 5, u.id, json_build_object('horodatage', u.created_at, 'type', 'APPEL_IA', 'table', 'ai_usage_event', 'id', u.id, 'statut', u.status, 'modele', u.model,
-            'correlation', json_build_object('job', u.job_id, 'trace', u.trace_id, 'document', u.asset_file_id)) FROM (${CALLS}) u`,
-    `SELECT o.started_at, 6, o.id, json_build_object('horodatage', o.started_at, 'type', 'OPERATION_IA', 'table', 'ai_operation', 'id', o.id, 'statut', o.business_result,
-            'correlation', json_build_object('document', o.asset_file_id)) FROM (${AI_OPS}) o`,
-  ];
-  if (per.operationIds.length) {
-    tl.push(`SELECT h.created_at, 7, h.id, json_build_object('horodatage', h.created_at, 'type', 'OPERATION_' || h.event_type, 'table', 'business_operation_history', 'id', h.id, 'motif', h.reason_code,
-            'correlation', json_build_object('operation', h.operation_id, 'source', h.source_id, 'correlationId', h.correlation_id)) FROM (${HISTORY}) h`);
-  }
-  await list('logs/chronologie.json', 'Chronologie corrélée (horodatage, table, identifiant, corrélations job / trace / document / Opération)',
-    `SELECT x.ev FROM (${tl.join('\n UNION ALL ')}) x(h, k, i, ev) WHERE x.h IS NOT NULL ORDER BY x.h, x.k, x.i`, (r) => (r.ev ?? r) as Row);
-
-  // Dossiers d'entité (« Données du compte » : même moteur, sections intégrales, même instantané).
-  const dossier = (path: string, type: 'asset' | 'equipment' | 'document' | 'operation', id: number) => {
-    entry(path, `Dossier ${type} #${id} (BO › Données du compte : synthèse, données BDD, relations, preuves — sections intégrales)`, async (w) => {
-      let plan;
-      try {
-        plan = await planEntityDossier(s, per.accountIds[0], type, id, { mode: 'export' });
-      } catch (e) {
-        if (e instanceof EntityNotFoundError) {
-          unavailable.push({ element: `${type} #${id}`, motif: 'introuvable dans le compte' });
-          await w('null\n');
-          return { expected: null, count: 0, batches: 0, error: null, status: 'COMPLETE' };
-        }
-        if (errCode(e) === '25006') throw e;
-        await w('null\n');
-        return { expected: null, count: 0, batches: 0, error: describe(e), status: 'FAILED' };
-      }
-      const m = await writeDossierExport(s, plan, 'json', { write: w }, { mask: M, stringifyRow: row, batchRows });
-      for (const x of m.sections) if (x.status !== 'COMPLETE') warnings.push(`${path} › ${x.title} : ${x.status}${x.error ? ` — ${x.error}` : ''}.`);
-      return { expected: m.totals.expected, count: m.totals.exported, batches: m.totals.batches, error: m.status === 'COMPLETE' ? null : m.error, status: m.status };
-    });
-  };
-  if (req.scope === 'asset' && req.id) {
-    dossier(`metier/bien-${req.id}.json`, 'asset', req.id);
-    for (const e of per.equipmentIds) dossier(`metier/equipements/equipement-${e}.json`, 'equipment', e);
-  } else if (req.scope === 'document' && req.id) {
-    dossier(`metier/document-${req.id}.json`, 'document', req.id);
-  } else if (req.scope === 'operation' && req.id) {
-    dossier(`metier/operation-${req.id}.json`, 'operation', req.id);
-    for (const f of per.fileIds) dossier(`metier/documents/document-${f}.json`, 'document', f);
-  }
-
-  // TCO et traçabilité de CHAQUE montant (moteur TCO existant, recalcul en lecture).
+  // ── TCO et traçabilité de CHAQUE montant (moteur TCO existant, DANS l'instantané) ─
   let nTraces = 0;
   let nRuptures = 0;
   let nSansLien = 0;
   const summaries: Row[] = [];
-  if ((entityScope || accountScope) && per.accountIds.length) {
-    const A = per.accountIds[0];
-    if (!per.assetIds.length) unavailable.push({ element: 'TCO', motif: 'aucun bien rattaché à l’objet : aucun montant TCO à tracer' });
-    const writeTrace = async (w: (c: string) => Promise<void>, t: AmountTrace, first: boolean) => {
-      const masked = M(t) as AmountTrace;
-      await w(`${first ? '' : ','}\n  ${safeJson(masked)}`);
-      traceLines.push(...(maskForExport(traceReportLines(masked).join('\n'), maskOpts) as string).split('\n'));
-      nTraces++;
-      if (t.rupture) nRuptures++;
-      if (String(t.ligne.id ?? '').startsWith('c:')) {
-        const ext = t.chaine.find((x) => x.etape === 'EXTRACTION_IA');
-        if (ext && ext.statut !== 'sans_objet' && !(ext.donnees as { lienPersiste?: unknown } | undefined)?.lienPersiste) nSansLien++;
-      }
+  const assetsSql = enginePart.assetsSql;
+  const { PgDialect } = await import('drizzle-orm/pg-core');
+  const dialect = new PgDialect();
+  const runner = { execute: async (q: import('drizzle-orm').SQL) => { const x = dialect.sqlToQuery(q); return s.q(x.sql, x.params); } };
+  const writeTrace = async (w: (c: string) => Promise<void>, t: AmountTrace, first: boolean) => {
+    const masked = M(t) as AmountTrace;
+    await w(`${first ? '' : ','}\n  ${safeJson(masked)}`);
+    traceLines.push(...(maskForExport(traceReportLines(masked).join('\n'), maskOpts) as string).split('\n'));
+    nTraces++;
+    if (t.rupture) nRuptures++;
+    if (String(t.ligne.id ?? '').startsWith('c:')) {
+      const ext = t.chaine.find((x) => x.etape === 'EXTRACTION_IA');
+      if (ext && ext.statut !== 'sans_objet' && !(ext.donnees as { lienPersiste?: unknown } | undefined)?.lienPersiste) nSansLien++;
+    }
+  };
+  entry('tracabilite/montants.json', 'Traçabilité de chaque montant TCO des biens du filtre : Document → Extraction IA → Décision → Enregistrement → Rapprochement → Calcul → Affichage ; valeurs source / proposée IA / enregistrée / calculée / affichée', async (w) => {
+    await w('[');
+    let n = 0;
+    let expected = 0;
+    const failed: string[] = [];
+    let assets: Array<{ id: number; A: number }> = [];
+    if (assetsSql) {
+      const c = named(assetsSql, V);
+      assets = (await s.savepoint(() => s.q(c.sql, c.params))).map((r) => ({ id: N(r.id), A: N(r.account_id) }));
+    }
+    if (!assets.length) unavailable.push({ element: 'TCO', motif: 'aucun bien dans le filtre : aucun montant TCO à tracer' });
+    // Filtre Document / Opération : lignes TCO liées à l'objet (mêmes traces que le global, moins de lignes).
+    const opIds = new Set(per.operationIds);
+    let comps = new Set<string>();
+    if (req.scope === 'operation' && per.operationIds.length) {
+      comps = new Set((await s.savepoint(() => s.q(`SELECT id FROM business_operation_financial_components WHERE operation_id = ANY($1::bigint[])`, [per.operationIds]))).map((r) => `c:${r.id}`));
+    }
+    const keep = (l: { id: string; fileId: number | null; relatedFileId: number | null; operationId: number | null }) => {
+      if (req.scope === 'document' && req.id) return l.fileId === req.id || l.relatedFileId === req.id || (l.operationId != null && opIds.has(l.operationId));
+      if (req.scope === 'operation') return (l.operationId != null && opIds.has(l.operationId)) || comps.has(l.id);
+      return true;
     };
-    entry('tracabilite/montants.json', 'Traçabilité de chaque montant : Document → Extraction IA → Décision → Enregistrement → Rapprochement → Calcul → Affichage ; valeurs source / proposée IA / enregistrée / calculée / affichée', async (w) => {
-      await w('[');
-      let n = 0;
-      let expected = 0;
-      const failed: string[] = [];
-      const safe = async (what: string, fn: () => Promise<AmountTrace[]>) => {
+    // Un bien à la fois : contexte TCO libéré après ses lignes (mémoire bornée).
+    for (const { id, A } of assets) {
+      let ctx: TcoContext;
+      try {
+        ctx = await s.savepoint(() => loadTcoContext(A, id, opts.today, runner));
+      } catch (e) {
+        if ((e as Error)?.name === 'SinkError' || errCode(e) === '25006') throw e;
+        failed.push(`TCO du bien #${id} : ${describe(e)}`);
+        continue;
+      }
+      summaries.push(tcoSummary(ctx));
+      if (ctx.unavailable) unavailable.push({ element: `TCO du bien #${ctx.assetId}`, motif: ctx.unavailable });
+      const lines = (ctx.result?.lines ?? []).filter(keep);
+      expected += lines.length;
+      for (const l of lines) {
         try {
-          for (const t of await s.savepoint(fn)) await writeTrace(w, t, n++ === 0);
+          const t = await s.savepoint(() => traceTcoLine(s.q, A, ctx, l));
+          await writeTrace(w, t, n++ === 0);
         } catch (e) {
           if ((e as Error)?.name === 'SinkError' || errCode(e) === '25006') throw e;
-          failed.push(`${what} : ${describe(e)}`);
-          console.error('[admin/diagnostics] trace :', (e as Error)?.message);
-        }
-      };
-      const loadCtx = async (a: number): Promise<TcoContext> => {
-        const c = await loadTcoContext(A, a, opts.today);
-        summaries.push(tcoSummary(c));
-        if (c.unavailable) unavailable.push({ element: `TCO du bien #${c.assetId}`, motif: c.unavailable });
-        return c;
-      };
-      if (req.scope === 'operation' && req.id) {
-        const ctxs: TcoContext[] = [];
-        for (const a of per.assetIds) ctxs.push(await loadCtx(a));
-        let comps: number[] = [];
-        try {
-          comps = ids(await s.savepoint(() => s.q(`SELECT id FROM business_operation_financial_components WHERE account_id = $1 AND operation_id = $2 ORDER BY active DESC, id`, [A, req.id])));
-        } catch (e) {
-          if (errCode(e) === '25006') throw e;
-          failed.push(`composantes : ${describe(e)}`);
-        }
-        if (!comps.length) unavailable.push({ element: `Composantes financières de l’Opération #${req.id}`, motif: 'aucune composante enregistrée : aucun montant de cette Opération ne peut entrer dans le TCO' });
-        expected = comps.length * Math.max(1, ctxs.length);
-        for (const c of comps) await safe(`composante #${c}`, () => traceComponent(s.q, A, c, ctxs));
-      } else {
-        // Un bien à la fois : contexte TCO libéré après ses lignes (mémoire bornée).
-        const opIds = new Set(per.operationIds);
-        for (const a of per.assetIds) {
-          const ctx = await loadCtx(a);
-          let lines = ctx.result?.lines ?? [];
-          if (req.scope === 'document' && req.id) lines = lines.filter((l) => l.fileId === req.id || l.relatedFileId === req.id || (l.operationId != null && opIds.has(l.operationId)));
-          expected += lines.length;
-          for (const l of lines) await safe(`ligne ${l.id}`, async () => [await traceTcoLine(s.q, A, ctx, l)]);
+          failed.push(`ligne ${l.id} : ${describe(e)}`);
         }
       }
-      await w(`${n ? '\n' : ''}]\n`);
-      return { expected, count: n, batches: 1, error: failed.length ? failed.join(' ; ') : null };
-    });
-    entry('tracabilite/tco.json', 'TCO recalculé (moteur existant) des biens concernés : synthèse, postes, fiabilité', async (w) => {
-      await w(`${JSON.stringify(summaries.map((x) => M(x)), null, 2)}\n`);
-      return { expected: per.assetIds.length, count: summaries.length, batches: 1, error: null };
-    });
-  }
+    }
+    await w(`${n ? '\n' : ''}]\n`);
+    return { expected, count: n, batches: 1, error: failed.length ? failed.join(' ; ') : null };
+  }, undefined, 'tracabilite');
+  entry('tracabilite/tco.json', 'TCO recalculé (moteur existant, dans l’instantané) des biens du filtre : synthèse, postes, fiabilité', async (w) => {
+    await w(`${JSON.stringify(summaries.map((x) => M(x)), null, 2)}\n`);
+    return { expected: summaries.length, count: summaries.length, batches: 1, error: null };
+  }, undefined, 'tracabilite');
 
-  // Diagnostic renforcé : sorties modèle conservées (accès existant, journalisé).
+  // Diagnostic renforcé : sorties modèle conservées (accès existant, journalisé) — annexe à accès restreint.
   if (req.reinforced) {
-    const traceSql = entityScope ? `SELECT t AS trace FROM ${TRACES} x(t) WHERE t IS NOT NULL ORDER BY 1`
-      : `SELECT DISTINCT unnest(r.trace_ids) AS trace FROM (${REPORTS}) r ORDER BY 1`;
-    const tq = named(traceSql, V);
-    entry('ia/sorties-modele.json', 'DIAGNOSTIC RENFORCÉ — sorties modèle conservées des traces du périmètre (accès AI_MODEL_OUTPUT_READ journalisé)', async (w) => {
+    entry('ia/sorties-modele.json', 'DIAGNOSTIC RENFORCÉ — sorties modèle conservées des traces du filtre (accès AI_MODEL_OUTPUT_READ journalisé)', async (w) => {
+      const rf = `(SELECT t.trace_ids FROM ai_execution_reports t WHERE (${enginePart.tableFilters.ai_execution_reports ?? 'FALSE'}))`;
+      const tq = named(`SELECT DISTINCT unnest(r.trace_ids) AS trace FROM ${rf} r(trace_ids) ORDER BY 1`, V);
       const all = (await s.savepoint(() => s.q(tq.sql, tq.params))).map((r) => String(r.trace)).filter(Boolean);
       const traceIds = all.slice(0, DIAG_LIMITS.modelOutputTraces);
       const cq = named(`SELECT DISTINCT ON (metadata->>'traceId') metadata->>'traceId' AS trace, id FROM ai_usage_event
-                         WHERE ${ACC()} AND metadata->>'traceId' = ANY({{traces}}::text[]) ORDER BY metadata->>'traceId', id DESC`, { ...V, traces: traceIds });
+                         WHERE ${global ? 'TRUE' : 'account_id = ANY({{accounts}}::int[])'} AND metadata->>'traceId' = ANY({{traces}}::text[]) ORDER BY metadata->>'traceId', id DESC`, { ...V, traces: traceIds });
       const callsByTrace = new Map((await s.savepoint(() => s.q(cq.sql, cq.params))).map((r) => [String(r.trace), N(r.id)]));
       const { readModelOutputsForAdmin } = await import('@/services/ai/telemetry/model-output-access');
       const sorties: Row[] = [];
@@ -717,48 +517,38 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
         for (const o of r.outputs) sorties.push({ trace: t, appel: callId, diagnostic: o.diagnosticId, modele: o.model, rang: o.callIndex, sortieBrute: cut(o.raw), sortieExtraite: cut(o.extracted), sortieStructuree: o.parsed });
       }
       if (refus) unavailable.push({ element: 'Diagnostic renforcé', motif: 'refusé : consultation des sorties modèle réservée (AI_MODEL_OUTPUT_ADMIN_IDS) — refus journalisé' });
-      else if (!all.length) unavailable.push({ element: 'Diagnostic renforcé', motif: 'aucune trace IA dans le périmètre et la période' });
+      else if (!all.length) unavailable.push({ element: 'Diagnostic renforcé', motif: 'aucune trace IA dans le filtre' });
       else if (!sorties.length) unavailable.push({ element: 'Diagnostic renforcé', motif: 'aucune sortie modèle conservée (diagnostics antérieurs au lot 82C purgés à 88 jours, ou appels sans sortie)' });
       const restreint = all.length > traceIds.length;
       if (restreint) unavailable.push({ element: `Sorties modèle de ${all.length - traceIds.length} trace(s)`, motif: `restriction d’accès aux sorties IA sensibles (inchangée) : ${DIAG_LIMITS.modelOutputTraces} traces jointes sur ${all.length}` });
-      // Lot 88A : troncature DÉCLARÉE dans la section (jamais silencieuse).
+      // Troncature DÉCLARÉE dans la section (jamais silencieuse).
       if (restreint) addTo(sectionTruncations, 'extractions-ia', `ia/sorties-modele.json : ${DIAG_LIMITS.modelOutputTraces} trace(s) jointe(s) sur ${all.length} (restriction d’accès aux sorties IA, inchangée).`);
       if (tronque) addTo(sectionTruncations, 'extractions-ia', `ia/sorties-modele.json : sortie(s) coupée(s) à ${DIAG_LIMITS.modelOutputChars} caractères (restriction d’accès aux sorties IA, inchangée).`);
       await w(`${JSON.stringify(sorties.map((x) => M(x)), null, 2)}\n`);
       // Restriction d'accès (requalifiée, signalée) : le fichier n'est pas présenté comme complet si des sorties ne sont pas jointes.
-      return { expected: null, count: sorties.length, batches: 1, error: null, status: restreint || tronque ? 'PARTIAL' : 'COMPLETE' };
-    });
+      return { expected: sorties.length, count: sorties.length, batches: 1, error: null, status: restreint || tronque ? 'PARTIAL' : 'COMPLETE' };
+    }, undefined, 'extractions-ia');
   }
 
-  // Lot 88A — diagnostic global d'un compte : toutes les tables du compte, fermeture transitive,
-  // auto-contrôle, traçabilité par propriété et projection API → écran (account.ts, properties.ts).
-  if (accountScope && per.accountIds.length) {
-    const { planAccountDiagnostic } = await import('./account');
-    accountPart = await planAccountDiagnostic({
-      s, A: per.accountIds[0], V, isSensitiveKey: isSensitiveCanonicalKey, M, safeJson, entry, list,
-      issues: sectionIssues, filters: sectionFilters, limitations: sectionLimitations, warnings, unavailable, today: opts.today,
-    });
-  }
   // Sélections déclarées (aucune troncature silencieuse) : ce qui n'est pas « tout » est dit ici.
   const selections: string[] = [
-    'tracabilite/identite-economique.json › sources[].motif_retrait : DERNIER motif de retrait de chaque source (sélection) — historique complet : logs/historique-operations.json'
-      + (accountScope ? ' et compte/historique/business_operation_history.json.' : '.'),
-    'tracabilite/montants.json › candidat retenu pour un montant (repli par clé de candidat) : candidat ACTIF le plus récent (sélection) — tous les candidats sont exportés (identite-economique.json, compte/candidats/document_operation_candidates.json).',
-    'Messages d’erreur de GÉNÉRATION du manifeste (champ error des fichiers) : 500 caractères. Les erreurs des DONNÉES (last_error, error_message…) sont exportées intégralement (lot 88A : coupures de texte SQL retirées).',
+    'tracabilite/identite-economique.json › sources[].motif_retrait : DERNIER motif de retrait de chaque source (sélection) — historique complet : donnees/historique/business_operation_history.json.',
+    'tracabilite/montants.json › candidat retenu pour un montant (repli par clé de candidat) : candidat ACTIF le plus récent (sélection) — tous les candidats sont exportés (donnees/candidats/document_operation_candidates.json).',
+    'Messages d’erreur de GÉNÉRATION du manifeste (champ error des fichiers) : 500 caractères. Les erreurs des DONNÉES (last_error, error_message…) sont exportées intégralement.',
   ];
   const sectionsOf = () => computeSectionManifests({
     files: infos.filter((f) => f.path !== 'LISEZMOI-ANALYSE.md'), fileSections, issues: sectionIssues,
-    filters: sectionFilters, limitations: sectionLimitations, truncations: sectionTruncations,
-    notApplicableMotif: () => (accountScope ? 'aucune donnée de ce type pour ce compte' : `non produite pour le périmètre « ${DIAG_SCOPE_LABELS[req.scope]} » : le périmètre « Compte (diagnostic global) » l’exporte intégralement`),
+    filters: sectionFilters, limitations: sectionLimitations, truncations: sectionTruncations, global,
+    notApplicableMotif: () => `hors filtre « ${filter.label} » : aucune table de cette section ne concerne l’objet filtré — données présentes dans « Ensemble de l’application »`,
   });
   entry('LISEZMOI-ANALYSE.md', 'Guide d’analyse : vérifier la complétude, où se trouve quoi, reconstruire une chaîne source → … → affichage (exemple du prix d’achat traité comme cas général)', async (w) => {
     const sections = sectionsOf();
     await w(buildAnalysisGuide({
-      scope: req.scope, scopeLabel: DIAG_SCOPE_LABELS[req.scope], target: per.label, generatedAt: now.toISOString(), accountScope,
+      scope: req.scope, scopeLabel: DIAG_SCOPE_LABELS[req.scope], target: per.label, generatedAt: now.toISOString(), global,
       sections: sections.map((x) => ({ code: x.code, label: x.label, status: x.status, motif: x.motif, files: x.files.length })),
     }));
     return { expected: null, batches: 1, error: null };
-  });
+  }, undefined, 'controle');
 
   // Manifeste et rapport : en DERNIER (statuts, intégrité de tous les fichiers).
   const env = (process.env.NEXT_PUBLIC_APP_ENV || process.env.NODE_ENV || 'inconnu').trim();
@@ -767,11 +557,8 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   let finalReport = '';
   const buildManifest = (): DiagManifest => {
     if (finalManifest) return finalManifest;
-    if (!infos.some((f) => f.path === 'ia/rapports-execution.json' && (f.count ?? 0) > 0) && !nReports) {
-      unavailable.push({ element: 'Rapports d’exécution T1 / T3', motif: 'aucun rapport conservé sur la période (rapports antérieurs au lot 82C purgés à 88 jours, ou traitements antérieurs au lot 58C)' });
-    }
-    if (entityScope && nRuptures) unavailable.push({ element: `Traçabilité de ${nRuptures} montant(s) sur ${nTraces}`, motif: 'au moins une étape non disponible (voir « rupture » de chaque ligne dans tracabilite/montants.json)' });
-    if (entityScope && nSansLien) unavailable.push({ element: `Lien composante → indice T1 (${nSansLien} montant(s))`, motif: 'non encore persisté (composante antérieure au lot 78A, pas encore reconsolidée) : indices du candidat exportés, correspondance de valeur signalée comme telle' });
+    if (nRuptures) unavailable.push({ element: `Traçabilité de ${nRuptures} montant(s) sur ${nTraces}`, motif: 'au moins une étape non disponible (voir « rupture » de chaque ligne dans tracabilite/montants.json)' });
+    if (nSansLien) unavailable.push({ element: `Lien composante → indice T1 (${nSansLien} montant(s))`, motif: 'non encore persisté (composante antérieure au lot 78A, pas encore reconsolidée) : indices du candidat exportés, correspondance de valeur signalée comme telle' });
     unavailable.push({ element: 'Documents originaux et texte intégral', motif: 'exclus par principe (sécurité) : seules les données structurées et extraits de preuve sont exportés' });
     const sections = sectionsOf();
     const status = fatal ? 'FAILED' : globalWithSections(globalStatus(infos.map((f) => ({ status: f.status ?? 'COMPLETE' }))), sections);
@@ -779,32 +566,32 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       schema: DIAG_SCHEMA, generationId, generatedAt: now.toISOString(), environment: env,
       build: { version: build.version, commit: build.commit, commitSource: build.commitSource, container: build.container },
       request: { ...req, scopeLabel: DIAG_SCOPE_LABELS[req.scope] },
-      target: { label: per.label, accountIds: per.accountIds },
+      target: { label: per.label, accountIds: per.accountIds, allAccounts: global },
       limits: DIAG_LIMITS, status,
       snapshot: {
         isolation: s.info.isolation, at: s.info.at, snapshot: s.info.snapshot,
-        verification: 'Toutes les lectures dans UNE transaction REPEATABLE READ READ ONLY ; attendu = count(*) dans le même instantané ; exporté = lignes écrites (curseur, lots ordonnés) ; COMPLETE seulement si exporté = attendu pour chaque fichier et aucune erreur ; SHA-256 de chaque fichier (contenu non compressé) ci-dessous.',
-        exceptions: ['TCO recalculé par le moteur existant (readAssetTco) à l’instant de la génération, hors instantané de la transaction.',
-          ...(fatal ? [`Génération interrompue : ${fatal}`] : [])],
+        verification: 'Toutes les lectures, TCO compris, dans UNE transaction REPEATABLE READ READ ONLY ; attendu = count(*) (par compte) dans le même instantané ; exporté = lignes écrites (curseur, lots ordonnés) ; COMPLETE seulement si exporté = attendu pour chaque fichier, aucune erreur, aucune section PARTIAL ; SHA-256 de chaque fichier (contenu non compressé) ci-dessous.',
+        exceptions: [...(fatal ? [`Génération interrompue : ${fatal}`] : [])],
       },
       removedCaps: DIAG_REMOVED_CAPS,
       files: [
-        { path: 'rapport.txt', description: 'Rapport synthétique lisible (copiable)', complete: true },
-        { path: 'manifeste.json', description: 'Contexte, filtres, instantané, fichiers (attendu, exporté, statut, SHA-256), limites et masquage', complete: true },
+        { path: 'rapport.txt', description: 'Rapport synthétique lisible (copiable)', complete: true, section: 'controle' },
+        { path: 'manifeste.json', description: 'Contexte, filtre, instantané, sections et fichiers (section, attendu, exporté, statut, erreurs, SHA-256), troncatures, exclusions, auto-contrôle', complete: true, section: 'controle' },
         ...infos,
       ],
       warnings, unavailable, masking: [...MASKING_NOTES], readOnly: READ_ONLY_NOTE,
       sections, truncations: [...[...sectionTruncations.values()].flat(), ...selections],
-      ...(accountPart ? { couverture: accountPart.couverture, exclusionsVolontaires: accountPart.exclusionsVolontaires, autoControle: accountPart.autoControle }
-        : { exclusionsVolontaires: { notes: DIAG_SECURITY_NOTES, tables: [], colonnes: [] } }),
+      couverture: enginePart.couverture, exclusionsVolontaires: enginePart.exclusionsVolontaires, autoControle: enginePart.autoControle,
     };
     const summary: Array<[string, string | number]> = [
-      ['Objet', per.label],
+      ['Filtre', per.label],
       ['Statut de la génération', status],
-      ['Anomalies de supervision', nAnomalies],
-      ['Traitements (file)', nJobs],
-      ['Rapports d’exécution', nReports],
-      ['Appels IA', nCalls],
+      ['Tables exportées', `${enginePart.couverture.exportees} (couvertes : ${enginePart.couverture.couvertes}, exclues avec motif : ${enginePart.couverture.exclues}, hors filtre : ${enginePart.couverture.horsFiltre.length})`],
+      ['Comptes couverts', `${enginePart.couverture.comptes.couverts} / ${enginePart.couverture.comptes.attendus}`],
+      ['Anomalies de supervision', counts['donnees/technique/admin_anomalies.json'] ?? 0],
+      ['Traitements (file)', counts['donnees/technique/ai_job_queue.json'] ?? 0],
+      ['Rapports d’exécution', counts['donnees/extractions-ia/ai_execution_reports.json'] ?? 0],
+      ['Appels IA', counts['donnees/technique/ai_usage_event.json'] ?? 0],
       ['Montants tracés', nTraces],
       ['Montants à trace interrompue', nRuptures],
       ['Avertissements', warnings.length],
@@ -831,7 +618,7 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   });
 
   return {
-    generationId, perimeter: per, entries,
+    generationId, perimeter: per, filter, entries,
     result: () => ({ manifest: buildManifest(), report: finalReport }),
     fail: (e) => { fatal = describe(e); },
   };

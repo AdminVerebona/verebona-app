@@ -102,7 +102,7 @@ scenario('L33D', 'Diagnostic des échecs IA, réparation des sorties et rejeu au
     expect(diags).toHaveLength(6);
     expect(new Set(diags.map((d) => d.signature)).size).toBe(1);
     expect(diags.every((d) => d.outcome === 'FAILED' && d.failure_family === 'INVALID_OUTPUT' && d.failure_subtype === 'INVALID_ENUM')).toBe(true);
-    expect(diags[0].schema_version).toBe('t1_analyze_document@v5');
+    expect(diags[0].schema_version).toBe('t1_analyze_document@v6');
     expect(diags[0].raw_output).toContain('[IBAN_MASQUE]');
     expect(diags.some((d) => d.raw_output.includes('3000 6000'))).toBe(false);
 

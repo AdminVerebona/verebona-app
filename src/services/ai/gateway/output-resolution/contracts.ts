@@ -34,6 +34,9 @@
  *     v5 — lot 53D (retours PO D2, D9, Q16) : `financialHints[].amountEurMinor`
  *          facultatif, rôle `LOAN_PRINCIPAL`, portée `FEE`, devise « XXX ».
  *          Une v4 est toujours une v5 valide (aucun adaptateur).
+ *     v6 — lot 91D : `valueDecisions[]` facultatif (décisions de T1 sur les
+ *          valeurs significatives, contrat `t1-value-decisions-v1`). Une v5
+ *          est toujours une v6 valide (tableau absent = contrat non porté).
  *   adaptateurs : t1_v1_to_v2 ; v2 → v3 : aucun ; v4 → v5 : aucun ; t1_v3_to_v4 pour les
  *   seules formes ANTÉRIEURES du bloc candidat (texte BO divergent qui
  *   suivrait le CDC §7.1 / B3 : `businessOperationCandidate` unique,
@@ -211,7 +214,8 @@ const T1_V3_TO_V4: CompatAdapter = {
 // ── Registre ────────────────────────────────────────────────────────────────
 
 const CONTRACTS: readonly OutputContract[] = [
-  { name: 'T1AnalyzeDocumentOutput', label: 't1_analyze_document', version: 5, adapters: [T1_V1_TO_V2, T1_V3_TO_V4] },
+  // Lot 91D : v6 = v5 + `valueDecisions[]` facultatif (une v5 reste une v6 valide, aucun adaptateur).
+  { name: 'T1AnalyzeDocumentOutput', label: 't1_analyze_document', version: 6, adapters: [T1_V1_TO_V2, T1_V3_TO_V4] },
   { name: 'T1GroupUploadOutput', label: 't1_group_upload', version: 1, adapters: [] },
   { name: 'T3ValueConflictOutput', label: 't3_value_conflict', version: 1, adapters: [] },
   { name: 'T3LinkAmbiguityOutput', label: 't3_link_ambiguity', version: 1, adapters: [] },

@@ -19,7 +19,12 @@
  *   repeated_repairs  même objet réparé au moins `REPEATED_REPAIRS` fois en
  *                     7 jours : la cause est ailleurs (chaîne qui recrée
  *                     l'écart) ;
- *   campaign          dernière campagne quotidienne PARTIELLE ou ÉCHOUÉE.
+ *   campaign          dernière campagne quotidienne PARTIELLE ou ÉCHOUÉE ;
+ *   <anomalie>        lot 91B : constat déclaré « immédiat » par son contrôle
+ *                     (`immediateSupervision` : contrat IA absent, journal
+ *                     inutilisable…) — signalé dès le PREMIER constat, avec
+ *                     les comptes et la demande IA, résolu quand plus aucun
+ *                     objet ne le porte.
  * Les constats AMBIGUOUS (arbitrage existant) et WOULD_REPAIR (mode à blanc)
  * ne sont pas signalés : ils relèvent de mécanismes existants ou de la
  * recette. Les preuves anciennes (compte sorti du périmètre) sont ignorées.
@@ -33,7 +38,7 @@
 import { pgClient } from '@/db';
 import type { Sql } from './registry/types';
 import { rows } from './registry/util';
-import { getCheck } from './registry';
+import { activeChecks, getCheck } from './registry';
 
 const COHERENCE_ANOMALY_PREFIX = 'other:coherence:';
 const PERSISTENT_STREAK = 3;
@@ -47,6 +52,15 @@ interface CoherenceAlert {
   count: number;
   detail: Record<string, unknown>;
 }
+
+/** Lot 91D — libellés des qualifications de constat (Supervision). */
+export const QUALIFICATION_LABELS: Readonly<Record<string, string>> = {
+  UNJUSTIFIED_OMISSION: 'omissions non justifiées',
+  UNDETERMINED_DECISION: 'décisions T1 indéterminées',
+  REPAIR_TECHNICAL: 'problèmes techniques de reprise',
+  EXTRACT_TECHNICAL: 'extraction incomplète',
+  DOWNSTREAM: 'exploitation aval',
+};
 
 export const fingerprintOf = (checkId: string, nature: string) => `${COHERENCE_ANOMALY_PREFIX}${checkId.toLowerCase()}:${nature}`;
 
@@ -65,6 +79,18 @@ export async function computeCoherenceAlerts(now: Date = new Date(), sql: Sql = 
       FROM coherence_object_proofs
      WHERE COALESCE(last_completed_at, last_started_at) >= $1
      GROUP BY check_id`, [depuis, PERSISTENT_STREAK]);
+  // Lot 91D : qualification des constats persistants (omission non justifiée, décision indéterminée, problème
+  // technique de reprise…) quand le contrôle la déclare (`detail.qualification`) — la Supervision les distingue.
+  const qualifs = new Map<string, string>();
+  for (const q of await rows(sql, `
+    SELECT check_id, finding->'detail'->>'qualification' AS q, count(*)::int AS n FROM coherence_object_proofs
+     WHERE COALESCE(last_completed_at, last_started_at) >= $1 AND finding_streak >= $2
+       AND last_result IN ('FINDING', 'REPAIR_INEFFECTIVE', 'REPAIR_SUPPRESSED', 'REPAIR_PENDING')
+       AND finding->'detail'->>'qualification' IS NOT NULL
+     GROUP BY 1, 2 ORDER BY 1, 3 DESC`, [depuis, PERSISTENT_STREAK])) {
+    const id = String(q.check_id);
+    qualifs.set(id, [qualifs.get(id), `${QUALIFICATION_LABELS[String(q.q)] ?? String(q.q)} : ${q.n}`].filter(Boolean).join(' · '));
+  }
   for (const a of agreg) {
     const id = String(a.check_id);
     const comptes = [...new Set(((a.accounts as number[] | null) ?? []).map(Number))];
@@ -72,9 +98,30 @@ export async function computeCoherenceAlerts(now: Date = new Date(), sql: Sql = 
     if (Number(a.repair_failed) > 0) alerts.push({ fingerprint: fingerprintOf(id, 'repair_failed'), title: `Cohérence ${id} : réparations en échec (${a.repair_failed})`, count: Number(a.repair_failed), detail: base });
     if (Number(a.persistent) > 0 && !getCheck(id)?.externalSupervision) {
       alerts.push({ fingerprint: fingerprintOf(id, 'persistent'), title: `Cohérence ${id} : constats persistants (${a.persistent})`, count: Number(a.persistent),
-        detail: { ...base, anomalies: ((a.anomalies as string[] | null) ?? []).filter(Boolean).join(', ') } });
+        detail: { ...base, anomalies: ((a.anomalies as string[] | null) ?? []).filter(Boolean).join(', '), ...(qualifs.has(id) ? { qualifications: qualifs.get(id) } : {}) } });
     }
     if (Number(a.errors) > 0) alerts.push({ fingerprint: fingerprintOf(id, 'errors'), title: `Cohérence ${id} : contrôles en erreur répétée (${a.errors})`, count: Number(a.errors), detail: base });
+  }
+  // Lot 91B : constats « immédiats » (défaut de configuration exploitable) — dès le premier constat.
+  const immediats = [...new Set(activeChecks().flatMap((c) => c.immediateSupervision ?? []))];
+  if (immediats.length) {
+    const constats = await rows(sql, `
+      SELECT check_id, finding->>'anomaly' AS anomaly, count(*)::int AS n, (array_agg(DISTINCT account_id))[1:20] AS accounts,
+             max(finding->'detail'->>'pendingContract') AS pending_contract
+        FROM coherence_object_proofs
+       WHERE COALESCE(last_completed_at, last_started_at) >= $1 AND last_result = 'FINDING' AND finding->>'anomaly' = ANY($2::text[])
+       GROUP BY check_id, finding->>'anomaly'`, [depuis, immediats]);
+    for (const c of constats) {
+      const id = String(c.check_id);
+      const anomalie = String(c.anomaly);
+      if (!(getCheck(id)?.immediateSupervision ?? []).includes(anomalie)) continue;
+      alerts.push({
+        fingerprint: fingerprintOf(id, anomalie.toLowerCase()), title: `Cohérence ${id} : ${anomalie} (${c.n} objet(s))${c.pending_contract ? ` — demande IA ${c.pending_contract}` : ''}`,
+        count: Number(c.n),
+        detail: { checkId: id, anomaly: anomalie, accountIds: ((c.accounts as number[] | null) ?? []).join(', '), pendingContract: c.pending_contract ?? null,
+          boLink: '/admin/exploitation', guide: 'docs/exploitation/prompts-a-appliquer-par-le-po.md' },
+      });
+    }
   }
   const repetes = await rows(sql, `
     SELECT check_id, count(*)::int AS n, (array_agg(DISTINCT account_id))[1:20] AS accounts FROM (

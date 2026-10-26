@@ -32,12 +32,13 @@ import * as schema from '@/db/schema';
 import { AI_OPERATIONS } from '@/services/ai/registry/operations';
 import {
   DIAG_AI_OPERATION_COVERAGE, DIAG_ANNOUNCED_COUNTS, DIAG_LOGICAL_REFERENCES, DIAG_SECTIONS, DIAG_TABLE_COVERAGE, DIAG_TABLE_EXCLUSIONS,
-  classifyDiagTables, coverageFilter, isExternalReferenceColumn,
+  accountPredicate, classifyDiagTables, coverageFilter, isExternalReferenceColumn,
 } from '../coverage';
 import { DIAG_SECURITY_NOTES, excludedColumnMotif, isRestrictedContentColumn } from '../security';
 import { buildAnalysisGuide, computeSectionManifests, globalWithSections, maskDiagRow, sectionOfPath } from '../account-model';
 import { parseDiagRequest, type DiagFileInfo } from '../model';
-import { runtimeFlags, tableSql } from '../account';
+import { refMatch, runtimeFlags, tableSql } from '../engine';
+import { canonical, filteredIncludedInGlobal } from '../inclusion';
 import { apiUiMatch, propertyVerdict } from '../properties';
 import {
   DETAILS_UI_COMMON_FIELDS, DETAILS_UI_FAMILY_SECTIONS, DETAILS_UI_SECTION_FIELDS, DETAILS_UI_SECTION_LABELS, detailsUiFieldFor,
@@ -76,7 +77,7 @@ describe('L88A-U01 couverture des tables (règle de non-régression)', () => {
     for (const [t, c] of Object.entries(DIAG_TABLE_COVERAGE)) {
       const cols = tables.get(t);
       if (!c.filter) { if (cols) expect(cols.has('account_id'), `${t} : account_id absent, filtre explicite requis`).toBe(true); continue; }
-      if (!c.global) expect(c.filter, t).toContain('{{A}}');
+      if (!c.global && !c.transversal) expect(c.filter, t).toContain('{{A}}');
     }
     expect(coverageFilter({ section: 'etat-metier' })).toBe('t.account_id = {{A}}');
   });
@@ -92,9 +93,18 @@ describe('L88A-U01 couverture des tables (règle de non-régression)', () => {
       expect(DIAG_TABLE_EXCLUSIONS[t]?.category, t).toBe('SECURITE');
     }
   });
-  it('requête d’export : colonnes listées, filtre, tri par clé primaire', () => {
+  it('requête d’export : colonnes listées, filtre, tri (compte puis clé primaire)', () => {
     expect(tableSql('field_evidence', { columns: ['id', 'value_json'], pk: ['id'], excluded: [] }, 't.account_id = {{A}}'))
       .toBe('SELECT t."id", t."value_json" FROM "field_evidence" t WHERE (t.account_id = {{A}}) ORDER BY t."id"');
+    expect(tableSql('field_evidence', { columns: ['id'], pk: ['id'], excluded: [] }, 'TRUE', ['t."account_id"']))
+      .toBe('SELECT t."id" FROM "field_evidence" t WHERE (TRUE) ORDER BY t."account_id", t."id"');
+  });
+  it('L91A : seules la SÉCURITÉ et le CONTENU PERSONNEL justifient une exclusion ; tables transversales exportées au global', () => {
+    expect(new Set(Object.values(DIAG_TABLE_EXCLUSIONS).map((x) => x.category))).toEqual(new Set(['SECURITE', 'CONTENU_PERSONNEL']));
+    for (const t of ['admin_audit_log', 'ai_model_catalog', 'ai_config_imports', 'email_logs', 'plan_limits', 'stripe_webhook_logs', 'ops_backfill_runs']) {
+      expect(DIAG_TABLE_COVERAGE[t]?.transversal, t).toBeTruthy();
+      expect(DIAG_TABLE_EXCLUSIONS[t], t).toBeUndefined();
+    }
   });
 });
 
@@ -163,9 +173,17 @@ describe('L88A-U04 sécurité : liste d’exclusion centralisée', () => {
       expect(excludedColumnMotif('x', c), c).toBeNull();
     }
   });
-  it('isolation : colonnes multi-comptes des tables globales omises ; textes de prompt remplacés par l’empreinte', () => {
+  it('isolation : colonnes multi-comptes omises dans les diagnostics FILTRÉS seulement ; textes de prompt remplacés par l’empreinte partout', () => {
     expect(excludedColumnMotif('coherence_campaigns', 'scope_account_ids')?.motif).toMatch(/isolation/);
     expect(excludedColumnMotif('coherence_campaigns', 'error_sample')?.motif).toMatch(/isolation/);
+    expect(excludedColumnMotif('coherence_campaigns', 'scope_account_ids', { global: true })).toBeNull();
+    expect(excludedColumnMotif('ai_master_prompt_versions', 'content', { global: true })?.motif).toMatch(/empreinte/);
+    expect(excludedColumnMotif('promo_codes', 'code', { global: true })?.motif).toMatch(/utilisable/);
+    expect(excludedColumnMotif('ai_model_qualification', 'key_fingerprint', { global: true })).not.toBeNull();
+    expect(excludedColumnMotif('legal_document_versions', 'html_storage_key', { global: true })).not.toBeNull();
+    expect(isRestrictedContentColumn('content', 'ai_config_exports')).toBe(true);
+    expect(isRestrictedContentColumn('payload', 'stripe_webhook_logs')).toBe(true);
+    expect(isRestrictedContentColumn('content')).toBe(false);
     expect(excludedColumnMotif('ai_master_prompt_versions', 'content')?.motif).toMatch(/empreinte/);
     expect(excludedColumnMotif('ai_master_prompt_versions', 'content_sha256')).toBeNull();
   });
@@ -184,6 +202,12 @@ describe('L88A-U04 sécurité : liste d’exclusion centralisée', () => {
     expect(r.amount_cents).toBe(49000000);
     expect(isRestrictedContentColumn('parsed_output')).toBe(true);
     expect(isRestrictedContentColumn('evidence_excerpt')).toBe(false);
+  });
+  it('L91A : JSON stocké en TEXTE (fiche du bien) masqué comme un objet, type conservé', () => {
+    const r = maskDiagRow({ id: 1, key_characteristics: '{"address1":"12 rue des Lilas","acquisitionDate":"2021-09-14","contact":"jean@example.fr"}' }, { isSensitiveKey: (k) => k === 'address1' });
+    expect(typeof r.key_characteristics).toBe('string');
+    expect(String(r.key_characteristics)).not.toMatch(/Lilas|jean@example\.fr/);
+    expect(JSON.parse(String(r.key_characteristics)).acquisitionDate).toBe('2021-09-14');
   });
   it('clé canonique sensible : valeurs de la ligne masquées', () => {
     const r = maskDiagRow({ id: 1, field_key: 'address1', value_json: '"12 rue des Lilas"', normalized_value: '12 rue des lilas' }, { isSensitiveKey: (k) => k === 'address1' });
@@ -208,20 +232,20 @@ describe('L88A-U05 manifeste par section', () => {
     ({ path, description: '', status, expected, count, complete: status === 'COMPLETE', error, bytes: 10, sha256: 'a'.repeat(64) });
   const base = { fileSections: new Map(), issues: new Map(), notApplicableMotif: () => 'hors périmètre' };
   it('tous les fichiers complets → COMPLETE ; aucune donnée → NOT_APPLICABLE avec motif', () => {
-    const s = computeSectionManifests({ ...base, files: [f('compte/preuves/field_evidence.json', 'COMPLETE')] });
+    const s = computeSectionManifests({ ...base, files: [f('donnees/preuves/field_evidence.json', 'COMPLETE')] });
     expect(s.find((x) => x.code === 'preuves')).toMatchObject({ status: 'COMPLETE', expected: 2, exported: 2 });
     expect(s.find((x) => x.code === 'candidats')).toMatchObject({ status: 'NOT_APPLICABLE', motif: 'hors périmètre' });
     expect(s.find((x) => x.code === 'non-classees')).toBeUndefined();
     expect(globalWithSections('COMPLETE', s)).toBe('COMPLETE');
   });
   it('fichier partiel → PARTIAL ; fichier en échec → ERROR ; statut global jamais COMPLETE', () => {
-    const s = computeSectionManifests({ ...base, files: [f('compte/preuves/field_evidence.json', 'PARTIAL', 3, 2), f('compte/candidats/document_operation_candidates.json', 'FAILED', null, 0, 'boom')] });
+    const s = computeSectionManifests({ ...base, files: [f('donnees/preuves/field_evidence.json', 'PARTIAL', 3, 2), f('donnees/candidats/document_operation_candidates.json', 'FAILED', null, 0, 'boom')] });
     expect(s.find((x) => x.code === 'preuves')?.status).toBe('PARTIAL');
-    expect(s.find((x) => x.code === 'candidats')).toMatchObject({ status: 'ERROR', errors: ['compte/candidats/document_operation_candidates.json : boom'] });
+    expect(s.find((x) => x.code === 'candidats')).toMatchObject({ status: 'ERROR', errors: ['donnees/candidats/document_operation_candidates.json : boom'] });
     expect(globalWithSections('COMPLETE', s)).toBe('PARTIAL');
   });
   it('manque constaté par l’auto-contrôle ou troncature déclarée → PARTIAL même si les fichiers sont complets', () => {
-    const files = [f('compte/conflits-arbitrages/reconciliation_decisions.json', 'COMPLETE'), f('ia/sorties-modele.json', 'COMPLETE')];
+    const files = [f('donnees/conflits-arbitrages/reconciliation_decisions.json', 'COMPLETE'), f('ia/sorties-modele.json', 'COMPLETE')];
     const s = computeSectionManifests({ ...base, files, issues: new Map([['conflits-arbitrages', ['2 référence(s) absente(s)']]]), truncations: new Map([['extractions-ia', ['10 traces sur 12']]]) });
     expect(s.find((x) => x.code === 'conflits-arbitrages')).toMatchObject({ status: 'PARTIAL', errors: ['2 référence(s) absente(s)'] });
     expect(s.find((x) => x.code === 'extractions-ia')).toMatchObject({ status: 'PARTIAL', truncations: ['10 traces sur 12'] });
@@ -231,14 +255,21 @@ describe('L88A-U05 manifeste par section', () => {
     expect(sectionOfPath('ia/extractions.json')).toBe('extractions-ia');
     expect(sectionOfPath('tracabilite/identite-economique.json')).toBe('conflits-arbitrages');
     expect(sectionOfPath('metier/bien-12.json')).toBe('etat-metier');
-    expect(sectionOfPath('compte/fermeture/coherence_campaigns.json')).toBe('controle');
-    expect(sectionOfPath('compte/ecritures/canonical_field_writes.json')).toBe('ecritures');
+    expect(sectionOfPath('donnees/fermeture/coherence_campaigns.json')).toBe('controle');
+    expect(sectionOfPath('donnees/ecritures/canonical_field_writes.json')).toBe('ecritures');
+  });
+  it('L91A : « Ensemble de l’application » — une section sans fichier est une ERREUR, jamais NOT_APPLICABLE', () => {
+    const s = computeSectionManifests({ ...base, global: true, files: [f('donnees/preuves/field_evidence.json', 'COMPLETE')] });
+    expect(s.find((x) => x.code === 'candidats')).toMatchObject({ status: 'ERROR' });
+    expect(s.find((x) => x.code === 'candidats')!.motif).toMatch(/Ensemble de l’application/);
+    expect(s.some((x) => x.status === 'NOT_APPLICABLE')).toBe(false);
+    expect(globalWithSections('COMPLETE', s)).toBe('PARTIAL');
   });
 });
 
 describe('L88A-U06 aucune troncature silencieuse', () => {
   it('requêtes du diagnostic : plus de coupure left() ; LIMIT réservé à la pagination en parties et à une sélection déclarée', () => {
-    for (const p of ['src/services/admin/diagnostics-export/collect.ts', 'src/services/admin/diagnostics-export/trace.ts', 'src/services/admin/diagnostics-export/account.ts', 'src/services/admin/diagnostics-export/properties.ts']) {
+    for (const p of ['src/services/admin/diagnostics-export/collect.ts', 'src/services/admin/diagnostics-export/trace.ts', 'src/services/admin/diagnostics-export/engine.ts', 'src/services/admin/diagnostics-export/properties.ts']) {
       const src = lire(p);
       expect(src, p).not.toMatch(/\bleft\(/);
       const limits = [...src.matchAll(/LIMIT [^`\n]*/g)].map((m) => m[0]);
@@ -249,6 +280,9 @@ describe('L88A-U06 aucune troncature silencieuse', () => {
     const collect = lire('src/services/admin/diagnostics-export/collect.ts');
     expect(collect).toMatch(/motif_retrait : DERNIER motif de retrait/);
     expect(collect).toMatch(/candidat retenu pour un montant/);
+  });
+  it('L91A : jamais « n sur ? » (un attendu non calculé est une erreur du fichier)', () => {
+    for (const p of ['collect.ts', 'engine.ts', 'model.ts']) expect(lire(`src/services/admin/diagnostics-export/${p}`), p).not.toMatch(/\?\? '\?'|sur \$\{[^}]*\?\? '\?'/);
   });
 });
 
@@ -299,26 +333,107 @@ describe('L88A-U07 API → écran : correspondance maintenue et synchronisée', 
   });
 });
 
-describe('L88A-U08 guide d’analyse et périmètre « account »', () => {
-  it('guide : complétude, chaîne complète, prix d’achat comme cas général, sécurité', () => {
-    const g = buildAnalysisGuide({ scope: 'account', scopeLabel: 'Compte (diagnostic global)', target: 'Compte #12', generatedAt: '2026-10-25T10:00:00.000Z', accountScope: true,
+describe('L88A-U08 guide d’analyse et filtres', () => {
+  it('guide : complétude, chaîne complète, prix d’achat comme cas général, sécurité ; global = niveau maximal', () => {
+    const g = buildAnalysisGuide({ scope: 'global', scopeLabel: 'Ensemble de l’application', target: 'Ensemble de l’application — 2 compte(s)', generatedAt: '2026-10-25T10:00:00.000Z', global: true,
       sections: [{ code: 'preuves', label: 'Preuves et provenance', status: 'COMPLETE', motif: null, files: 1 }] });
-    expect(g).toMatch(/source → extraction → fait → preuve → relation → candidat → décision → arbitrage → écriture → état métier → API → affichage/);
+    expect(g).toMatch(/document → extraction → unité source → fait → preuve → candidat → décision → écriture → propriété → API → affichage/);
     expect(g).toMatch(/acquisitionPrice/);
     expect(g).toMatch(/même démarche pour tout champ/);
     expect(g).toMatch(/exclusionsVolontaires/);
+    expect(g).toMatch(/niveau maximal/);
     expect(g).toMatch(/\| Preuves et provenance \(`preuves`\) \| COMPLETE \| 1 \|/);
-    expect(g).not.toMatch(/périmètre « Un compte »\) exporte/);
-    expect(buildAnalysisGuide({ scope: 'asset', scopeLabel: 'Bien', target: 'Bien #1', generatedAt: 'x', accountScope: false, sections: [] })).toMatch(/Le diagnostic \*\*Compte\*\*/);
+    const f = buildAnalysisGuide({ scope: 'asset', scopeLabel: 'Filtre : bien', target: 'Bien #1', generatedAt: 'x', global: false, sections: [] });
+    expect(f).toMatch(/Diagnostic \*\*filtré\*\*/);
+    expect(f).toMatch(/AUCUNE information absente/);
+    expect(f).not.toMatch(/diagnostic \*\*Compte\*\*/);
   });
-  it('périmètre « account » : identifiant obligatoire', () => {
-    const NOW = new Date('2026-10-21T10:00:00Z');
-    expect(parseDiagRequest(new URLSearchParams({ scope: 'account' }), NOW)).toMatchObject({ ok: false, code: 'INVALID_ID' });
-    expect(parseDiagRequest(new URLSearchParams({ scope: 'account', id: '12', period: 'all' }), NOW)).toMatchObject({ ok: true, value: { scope: 'account', id: 12, from: null } });
+  it('filtre « account » : identifiant obligatoire', () => {
+    expect(parseDiagRequest(new URLSearchParams({ scope: 'account' }))).toMatchObject({ ok: false, code: 'INVALID_ID' });
+    expect(parseDiagRequest(new URLSearchParams({ scope: 'account', id: '12', period: 'all' }))).toMatchObject({ ok: true, value: { scope: 'account', id: 12 } });
   });
   it('règle documentée dans l’exploitation', () => {
     const doc = lire('docs/exploitation/diagnostic-global.md');
     expect(doc).toMatch(/Règle de non-régression/);
     expect(doc).toMatch(/coverage\.ts/);
+    expect(doc).toMatch(/inclusion\.ts/);
+    expect(doc).toMatch(/test:e2e:diagnostic/);
+  });
+});
+
+describe('L91A-U01 moteur unique : filtres purs', () => {
+  it('filtre de comptes : `= {{A}}` → comptes retenus ; global → vrai', () => {
+    const f = coverageFilter(DIAG_TABLE_COVERAGE.duo_memberships);
+    expect(accountPredicate(f, 'param')).toBe('t.duo_id IN (SELECT d.id FROM duo_accounts d WHERE d.account_id = ANY({{accounts}}::int[]))');
+    expect(accountPredicate(f, 'all')).toBe('t.duo_id IN (SELECT d.id FROM duo_accounts d WHERE TRUE)');
+    expect(accountPredicate('t.account_id = {{A}}', 'param')).toBe('t.account_id = ANY({{accounts}}::int[])');
+    for (const [t, c] of Object.entries(DIAG_TABLE_COVERAGE)) expect(accountPredicate(coverageFilter(c), 'param'), t).not.toContain('{{A}}');
+    for (const c of DIAG_ANNOUNCED_COUNTS) {
+      expect(accountPredicate(c.sql, 'all'), c.code).not.toContain('{{A}}');
+      expect(DIAG_TABLE_COVERAGE[c.table], c.code).toBeDefined();
+    }
+  });
+  it('filtre fin générique : la ligne désigne un objet du filtre (valeur, tableau JSON, tableau PostgreSQL, condition polymorphe)', () => {
+    const mem = (v: string) => `${v} = ANY({{eFilesT}}::text[])`;
+    expect(refMatch({ column: 'file_id', kind: 'value' }, mem)).toBe('(t."file_id"::text = ANY({{eFilesT}}::text[]))');
+    expect(refMatch({ column: 'target_id', kind: 'value', when: "lower(t.target_type) = 'asset_file'" }, mem)).toBe("((lower(t.target_type) = 'asset_file') AND t.\"target_id\"::text = ANY({{eFilesT}}::text[]))");
+    expect(refMatch({ column: 'evidence_ids', kind: 'json-array' }, mem)).toMatch(/^\(EXISTS \(SELECT 1 FROM jsonb_array_elements_text\(.*\) x\(v\) WHERE x\.v = ANY/);
+    expect(refMatch({ column: 'source_unit_ids', kind: 'pg-array' }, mem)).toMatch(/unnest\(t\."source_unit_ids"\) x\(v\) WHERE x\.v::text = ANY/);
+  });
+});
+
+describe('L91A-U02 règle automatique « filtré ⊆ global » (inclusion.ts)', () => {
+  const cov = JSON.stringify({ couvertes: [{ table: 'assets', clePrimaire: ['id'] }, { table: 'notes_sans_cle', clePrimaire: [] }] });
+  const global = {
+    'manifeste.json': '{}', 'couverture/tables.json': cov,
+    'donnees/etat-metier/assets.part-0001.json': JSON.stringify([{ id: 1, name: 'A', account_id: 1, iso: 'x' }]),
+    'donnees/etat-metier/assets.part-0002.json': JSON.stringify([{ id: 2, name: 'B', account_id: 2, iso: 'y' }]),
+    'donnees/etat-metier/notes_sans_cle.json': JSON.stringify([{ a: 1 }]),
+    'tracabilite/proprietes.json': JSON.stringify([{ bien: 1, cible: 'ASSET#1', champ: 'x', verdict: 'COHERENT' }, { bien: 2, cible: 'ASSET#2', champ: 'x', verdict: 'VIDE_EN_BASE' }]),
+  };
+  it('inclusion respectée : lignes (colonne d’isolation omise), parties, fermeture, entrées de traçabilité', () => {
+    const filtered = {
+      'manifeste.json': '{}', 'couverture/tables.json': cov,
+      'donnees/etat-metier/assets.json': JSON.stringify([{ id: 1, name: 'A', account_id: 1 }]),
+      'donnees/fermeture/assets.json': JSON.stringify([{ id: 2, name: 'B', account_id: 2 }]),
+      'donnees/etat-metier/notes_sans_cle.json': JSON.stringify([{ a: 1 }]),
+      'tracabilite/proprietes.json': JSON.stringify([{ verdict: 'COHERENT', champ: 'x', cible: 'ASSET#1', bien: 1 }]),
+    };
+    expect(filteredIncludedInGlobal(filtered, global)).toEqual([]);
+  });
+  it('toute divergence est une violation : ligne absente ou différente, entrée différente, fichier inconnu', () => {
+    const v = filteredIncludedInGlobal({
+      'couverture/tables.json': cov, 'rapport.txt': 'x',
+      'donnees/etat-metier/assets.json': JSON.stringify([{ id: 1, name: 'AUTRE' }, { id: 9, name: 'Z' }]),
+      'donnees/etat-metier/notes_sans_cle.json': JSON.stringify([{ a: 2 }]),
+      'tracabilite/proprietes.json': JSON.stringify([{ bien: 1, cible: 'ASSET#1', champ: 'x', verdict: 'VIDE_EN_BASE' }]),
+      'metier/dossier-1.json': '{}',
+    }, global).join('\n');
+    expect(v).toMatch(/assets › id=1 : colonne name différente/);
+    expect(v).toMatch(/assets › id=9 : ligne absente du global/);
+    expect(v).toMatch(/notes_sans_cle › ligne : ligne \(sans clé primaire\) absente du global/);
+    expect(v).toMatch(/proprietes\.json › 1\|ASSET#1\|x : entrée différente du global/);
+    expect(v).toMatch(/rapport\.txt : absent du global/);
+    expect(v).toMatch(/metier\/dossier-1\.json : fichier d’une famille inconnue/);
+  });
+  it('comparaison profonde canonique (ordre des clés indifférent)', () => {
+    expect(canonical({ b: [1, { d: 2, c: 3 }], a: null })).toBe(canonical({ a: null, b: [1, { c: 3, d: 2 }] }));
+  });
+});
+
+describe('L91A-U03 BO : un seul diagnostic, raccourci depuis « Données du compte »', () => {
+  it('« Données du compte » : simple raccourci vers Supervision › Diagnostics avec le filtre compte prérempli', () => {
+    const src = lire('src/app/admin/accounts/[id]/_components/account-data/AccountDataSection.tsx');
+    expect(src).toMatch(/href=\{`\/admin\/diagnostics\?scope=account&id=\$\{accountId\}`\}/);
+    expect(src).not.toMatch(/Diagnostic global</);
+  });
+  it('page Diagnostics : « Ensemble de l’application » par défaut, filtres, plus de période ni de traitements', () => {
+    const page = lire('src/app/admin/diagnostics/page.tsx');
+    expect(page).toMatch(/key: 'global', label: 'Ensemble de l’application/);
+    expect(page).toMatch(/Filtre : un compte/);
+    expect(page).not.toMatch(/diag-from|diag-to|TREATMENTS|allHistory/);
+    // Desktop et mobile : grille responsive, boutons pleine largeur sur mobile.
+    expect(page).toMatch(/grid-cols-1 sm:grid-cols-2/);
+    expect(page).toMatch(/w-full sm:w-auto/);
   });
 });

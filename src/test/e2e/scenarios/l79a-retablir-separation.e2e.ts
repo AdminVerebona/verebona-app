@@ -313,8 +313,7 @@ scenario('L79A', 'BO « Rétablir » une séparation automatique d\'identité é
     expect((await post(op76, separations[0].id, { reason: MOTIF })).status).toBe(200);
     await k.passer(compte);
     const { generateDiagnostic } = await import('@/services/admin/diagnostics-export/collect');
-    const jour = new Date().toISOString().slice(0, 10);
-    const b = await generateDiagnostic({ scope: 'operation', id: op76, from: jour, to: jour, treatments: [], reinforced: false }, { adminUserId: a.id });
+    const b = await generateDiagnostic({ scope: 'operation', id: op76, reinforced: false }, { adminUserId: a.id });
     const identite = JSON.parse(b.files.find((x) => x.path === 'tracabilite/identite-economique.json')!.content) as {
       journal: Array<{ id: number; status: string; resolved_by_admin_id: number }>; retablissements: Array<Record<string, any>>;
     };

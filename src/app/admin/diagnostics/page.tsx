@@ -1,40 +1,31 @@
 "use client";
 
 /**
- * Diagnostics techniques — BO, lot 77C (ticket P2 « Export de diagnostics
- * techniques et traçabilité des traitements »).
+ * Diagnostics — BO › Dashboard › Supervision (lots 77C, 81C, 88A, 91A).
+ *
+ * Lot 91A (correction du P1 « diagnostic global exhaustif ») : UN diagnostic,
+ * UN moteur. « Ensemble de l’application » (défaut) est le niveau maximal :
+ * toutes les données fonctionnelles de TOUS les comptes et toutes les données
+ * techniques et transversales, dans un seul ZIP. Compte / Utilisateur / Bien
+ * / Document / Opération sont de simples FILTRES du même moteur (volume
+ * réduit) : ils ne fournissent jamais une information absente du global. Les
+ * anciens filtres de période et de traitements sont retirés (historique
+ * complet, tous traitements).
  *
  * NAVIGATION : la Supervision est un sous-onglet du Dashboard (CDC BO
  * DASH-002) et la barre latérale porte exactement les 15 entrées du CDC
- * (`admin-sidebar.test.ts`) : aucun menu n'est ajouté. Comme « Exploitation »
- * et « Opérations », la page est atteinte depuis Dashboard › Supervision
- * (lien « Diagnostics techniques »). Garde : layout `/admin` + `requireAdmin`
- * sur la route API.
+ * (`admin-sidebar.test.ts`) : aucun menu n'est ajouté. Page atteinte depuis
+ * Dashboard › Supervision (lien « Diagnostics ») ; « Données du compte » n'y
+ * ajoute qu'un RACCOURCI (filtre compte prérempli : `?scope=account&id=12`).
  *
- * Générer (périmètre, identifiant, période, traitements, option renforcée)
- * → rapport synthétique consulté et copiable → archive ZIP (rapport TXT,
- * manifeste et données JSON) générée côté serveur. Chaque génération et
- * chaque téléchargement sont journalisés. Desktop et mobile : formulaire en
- * grille responsive, rapport défilant, boutons pleine largeur sur mobile.
- *
- * Préremplissage par l'URL (`?scope=asset&id=12`) : lien profond depuis
- * d'autres écrans du BO.
- *
- * Lot 88A : périmètre « Un compte — diagnostic global » (toutes les tables
- * du compte, fermeture transitive, auto-contrôle, traçabilité par propriété
- * et projection API → écran, guide d'analyse dans l'archive) ; statut PAR
- * SECTION (COMPLETE / PARTIAL / NOT_APPLICABLE / ERROR) affiché sous le
- * statut global — desktop : tableau ; mobile : statut et motif empilés.
- *
- * Lot 81C : aucune borne de période (option « Tout l'historique
- * disponible ») ; statut COMPLETE / PARTIAL / FAILED de la génération et de
- * chaque fichier (attendu / exporté) ; suivi des générations d'export
- * (diagnostics et « Données du compte ») avec leurs échecs.
+ * Desktop et mobile (charte Sérénité) : formulaire en grille responsive,
+ * boutons pleine largeur sur mobile ; sections du diagnostic en tableau
+ * (desktop) ou statut et motif empilés (mobile) ; rapport défilant.
  */
 import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { AlertTriangle, ArrowLeft, Check, Copy, Download, FileArchive, History, ListChecks, Loader2, RefreshCw, Stethoscope } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Check, Copy, Download, FileArchive, Filter, Globe2, History, ListChecks, Loader2, RefreshCw, Stethoscope } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -42,23 +33,16 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { copyText } from '../ai-executions/_components/CopyJson';
-import type { DiagManifest, DiagScope, DiagTreatment } from '@/services/admin/diagnostics-export/model';
+import type { DiagManifest, DiagScope } from '@/services/admin/diagnostics-export/model';
 import type { GenerationRow } from '@/services/admin/export-generations';
 
 const SCOPES: ReadonlyArray<{ key: DiagScope; label: string; idLabel: string | null }> = [
-  { key: 'global', label: 'Ensemble de l’application', idLabel: null },
-  { key: 'account', label: 'Un compte — diagnostic global', idLabel: 'Identifiant du compte' },
-  { key: 'user', label: 'Un utilisateur', idLabel: 'Identifiant de l’utilisateur' },
-  { key: 'asset', label: 'Un bien et ses équipements', idLabel: 'Identifiant du bien' },
-  { key: 'document', label: 'Un document', idLabel: 'Identifiant du document' },
-  { key: 'operation', label: 'Une Opération', idLabel: 'Identifiant de l’Opération' },
-];
-const TREATMENTS: ReadonlyArray<{ key: DiagTreatment; label: string }> = [
-  { key: 'T1', label: 'T1 — analyse des documents' },
-  { key: 'T2', label: 'T2 — assistant' },
-  { key: 'T3', label: 'T3 — consolidation' },
-  { key: 'T4', label: 'T4 — agenda' },
-  { key: 'T6', label: 'T6 — mascotte' },
+  { key: 'global', label: 'Ensemble de l’application (complet)', idLabel: null },
+  { key: 'account', label: 'Filtre : un compte', idLabel: 'Identifiant du compte' },
+  { key: 'user', label: 'Filtre : un utilisateur', idLabel: 'Identifiant de l’utilisateur' },
+  { key: 'asset', label: 'Filtre : un bien et ses équipements', idLabel: 'Identifiant du bien' },
+  { key: 'document', label: 'Filtre : un document', idLabel: 'Identifiant du document' },
+  { key: 'operation', label: 'Filtre : un événement de référence (Opération)', idLabel: 'Identifiant de l’Opération' },
 ];
 
 interface Result {
@@ -67,7 +51,6 @@ interface Result {
   files: Array<{ path: string; bytes: number }>;
 }
 
-const day = (d: Date) => d.toISOString().slice(0, 10);
 const kib = (n: number) => (n < 1024 ? `${n} o` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} Kio` : `${(n / 1024 / 1024).toFixed(1)} Mio`);
 
 function Diagnostics() {
@@ -76,10 +59,6 @@ function Diagnostics() {
   const initialScope = (SCOPES.some((s) => s.key === sp.get('scope')) ? sp.get('scope') : 'global') as DiagScope;
   const [scope, setScope] = useState<DiagScope>(initialScope);
   const [id, setId] = useState(sp.get('id') ?? '');
-  const [to, setTo] = useState(() => day(new Date()));
-  const [from, setFrom] = useState(() => day(new Date(Date.now() - 29 * 86_400_000)));
-  const [allHistory, setAllHistory] = useState(sp.get('period') === 'all');
-  const [treatments, setTreatments] = useState<DiagTreatment[]>([]);
   const [reinforced, setReinforced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,12 +70,11 @@ function Diagnostics() {
   const def = SCOPES.find((s) => s.key === scope)!;
   const idValid = !def.idLabel || /^\d{1,9}$/.test(id.trim());
   const query = useMemo(() => {
-    const p = new URLSearchParams(allHistory ? { scope, period: 'all', to } : { scope, from, to });
+    const p = new URLSearchParams({ scope });
     if (def.idLabel) p.set('id', id.trim());
-    if (treatments.length) p.set('treatments', treatments.join(','));
     if (reinforced) p.set('reinforced', '1');
     return p.toString();
-  }, [scope, id, from, to, allHistory, treatments, reinforced, def.idLabel]);
+  }, [scope, id, reinforced, def.idLabel]);
   // L'archive correspond aux paramètres de la génération affichée.
   const [generatedQuery, setGeneratedQuery] = useState<string | null>(null);
 
@@ -134,16 +112,16 @@ function Diagnostics() {
         </Link>
         <h1 className="vb-app-title flex items-center gap-2 mt-1">
           <Stethoscope className="h-6 w-6" />
-          Diagnostics techniques
+          Diagnostics
         </h1>
         <p className="text-sm text-muted-foreground mt-0.5">
-          Rapport et archive ZIP (TXT + JSON) pour analyser une anomalie : traitements, IA, données métier et traçabilité de chaque montant TCO jusqu’à sa source. Le périmètre « Un compte » produit le diagnostic global : toutes les données du compte, la chaîne de chaque propriété jusqu’à l’écran et un guide d’analyse. Lecture seule ; chaque demande est journalisée.
+          Un seul diagnostic, un seul ZIP pour toute analyse fonctionnelle ou technique : « Ensemble de l’application » contient toutes les données de tous les comptes (biens, documents, extractions, preuves, décisions, écritures, agenda, TCO, chaîne jusqu’à l’écran) et toutes les données techniques et transversales (traitements, appels IA, configuration par empreinte, versions, migrations). Les filtres ne font que réduire le volume. Lecture seule ; chaque demande est journalisée.
         </p>
       </div>
 
       <section className="rounded-xl border bg-card p-4 space-y-4" aria-label="Paramètres du diagnostic">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="space-y-1.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="space-y-1.5 sm:col-span-1 lg:col-span-2">
             <Label htmlFor="diag-scope">Périmètre</Label>
             <Select value={scope} onValueChange={(v) => { setScope(v as DiagScope); setResult(null); }}>
               <SelectTrigger id="diag-scope"><SelectValue /></SelectTrigger>
@@ -158,34 +136,12 @@ function Diagnostics() {
               <Input id="diag-id" inputMode="numeric" value={id} onChange={(e) => setId(e.target.value)} placeholder="ex. 1234" aria-invalid={!idValid} />
             </div>
           )}
-          <div className="space-y-1.5">
-            <Label htmlFor="diag-from">Du</Label>
-            <Input id="diag-from" type="date" value={from} max={to} disabled={allHistory} onChange={(e) => setFrom(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="diag-to">Au</Label>
-            <Input id="diag-to" type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
-          </div>
         </div>
-        <label className="flex items-start gap-2 text-sm">
-          <Checkbox className="mt-0.5" checked={allHistory} onCheckedChange={(c) => setAllHistory(c === true)} />
-          <span>
-            Tout l’historique disponible
-            <span className="block text-xs text-muted-foreground">Aucune date de début : toutes les traces conservées jusqu’à la date de fin. Aucune limite de durée ni de volume (archive générée en flux).</span>
-          </span>
-        </label>
-        <fieldset className="space-y-2">
-          <legend className="text-sm font-medium">Traitements <span className="text-muted-foreground font-normal">(aucun coché : tous)</span></legend>
-          <div className="flex flex-wrap gap-x-6 gap-y-2">
-            {TREATMENTS.map((t) => (
-              <label key={t.key} className="inline-flex items-center gap-2 text-sm">
-                <Checkbox checked={treatments.includes(t.key)}
-                  onCheckedChange={(c) => setTreatments((cur) => (c ? [...cur, t.key] : cur.filter((x) => x !== t.key)))} />
-                {t.label}
-              </label>
-            ))}
-          </div>
-        </fieldset>
+        <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground flex items-start gap-2" data-diag-scope-note>
+          {scope === 'global'
+            ? <><Globe2 className="h-4 w-4 mt-0.5 shrink-0" /><span><span className="text-foreground font-medium">Niveau maximal.</span> Toutes les tables de tous les comptes et les tables transversales, tout l’historique, sans plafond (archive en flux, fichiers découpés en parties). Seuls les secrets et le contenu des conversations de l’assistant sont exclus (motifs dans le manifeste).</span></>
+            : <><Filter className="h-4 w-4 mt-0.5 shrink-0" /><span><span className="text-foreground font-medium">Filtre du même moteur.</span> Volume réduit aux lignes liées à l’objet (et à celles qu’elles citent) ; aucune information absente de « Ensemble de l’application ». Les tables transversales (multi-comptes) n’y figurent pas.</span></>}
+        </div>
         <label className="flex items-start gap-2 text-sm">
           <Checkbox className="mt-0.5" checked={reinforced} onCheckedChange={(c) => setReinforced(c === true)} />
           <span>
@@ -197,7 +153,7 @@ function Diagnostics() {
           </span>
         </label>
         <div className="flex flex-col sm:flex-row gap-2">
-          <Button onClick={generate} disabled={busy || !idValid || (!allHistory && !from) || !to} className="w-full sm:w-auto">
+          <Button onClick={generate} disabled={busy || !idValid} className="w-full sm:w-auto">
             {busy ? <Loader2 className="h-4 w-4 mr-1.5 animate-spin" /> : <Stethoscope className="h-4 w-4 mr-1.5" />}
             Générer le diagnostic
           </Button>
@@ -229,8 +185,16 @@ function Diagnostics() {
             <Stat label="Avertissements" value={String(m.warnings.length)} warn={m.warnings.length > 0} />
             <Stat label="Informations non disponibles" value={String(m.unavailable.length)} warn={m.unavailable.length > 0} />
           </div>
+          {m.couverture && (
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3" data-diag-couverture>
+              <Stat label="Tables exportées" value={String(m.couverture.exportees)} />
+              <Stat label="Tables exclues (sécurité)" value={String(m.couverture.exclues)} />
+              <Stat label="Comptes couverts" value={`${m.couverture.comptes.couverts} / ${m.couverture.comptes.attendus}`} warn={m.couverture.comptes.couverts !== m.couverture.comptes.attendus} />
+              <Stat label="Tables hors filtre" value={String(m.couverture.horsFiltre.length)} />
+            </div>
+          )}
           <p className="text-xs text-muted-foreground">
-            Généré le {new Date(m.generatedAt).toLocaleString('fr-FR')} · {m.target.label} · {m.request.from ? `période du ${m.request.from} au ${m.request.to}` : `tout l’historique jusqu’au ${m.request.to}`} · génération {m.generationId.slice(0, 8)}
+            Généré le {new Date(m.generatedAt).toLocaleString('fr-FR')} · {m.target.label} · tout l’historique · génération {m.generationId.slice(0, 8)}
             {m.snapshot ? ` · instantané ${m.snapshot.at}` : ''}
           </p>
           {m.sections && m.sections.length > 0 && (

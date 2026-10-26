@@ -42,6 +42,12 @@
  *   · COÛT IA MESURÉ (C-Q1) : appels modèle du compte pendant la réparation
  *     (`ai_usage_event`, écrit à chaque appel par la passerelle), en plus de
  *     ce que le service déclare.
+ *
+ * Lot 91B : un objet NON réparé (constat, mode à blanc, anti-boucle,
+ * relance en attente) est transmis au contrôle qui le déclare
+ * (`recordOutcomes`) pour que SON journal porte aussi cette issue — une
+ * campagne « réussie » ne masque plus l'absence d'exécution. Le contexte
+ * transmis aux contrôles porte le déclencheur et la campagne.
  */
 import type {
   CheckContext, CoherenceCheck, ControlResult, ControlTrigger, Inspection, RepairResult, Sql,
@@ -49,6 +55,9 @@ import type {
 import { RESOLVED_RESULTS } from './registry/types';
 import { registryVersion } from './registry';
 import { exec, intArray, rows, type Row } from './registry/util';
+
+/** Lot 91B : résultats sans réparation tentée dont l'issue est transmise au contrôle (`recordOutcomes`). */
+const UNREPAIRED_TRACED: ReadonlySet<ControlResult> = new Set(['FINDING', 'WOULD_REPAIR', 'REPAIR_SUPPRESSED', 'REPAIR_PENDING']);
 
 /** Réparations reprises au plus après un échec technique sur les mêmes entrées. */
 export const MAX_REPAIR_RETRIES = 3;
@@ -339,7 +348,9 @@ interface ControlBatchInput {
 /** Contrôle un lot d'objets d'UN compte et d'UN contrôle (voir l'en-tête). */
 export async function controlObjects(p: ControlBatchInput): Promise<BatchSummary> {
   const t0 = Date.now();
-  const { ctx, check, accountId } = p;
+  const { check, accountId } = p;
+  // Lot 91B : déclencheur et campagne visibles du contrôle (traçabilité de ses issues).
+  const ctx: CheckContext = { ...p.ctx, trigger: p.trigger, campaignId: p.campaignId };
   // Horloge du contrôle : référence du passage (`ctx.now`, injectable) + temps écoulé — monotone et cohérente avec
   // les dates de campagne (tests à date fixe compris).
   const clock = () => new Date(ctx.now.getTime() + (Date.now() - t0));
@@ -433,6 +444,14 @@ export async function controlObjects(p: ControlBatchInput): Promise<BatchSummary
       if (coherent) o = { ...o, result: 'REPAIRED' };
     }
     summary.aiCalls += o.aiCalls;
+    if (check.recordOutcomes && !o.repairAttempted && UNREPAIRED_TRACED.has(o.result)) {
+      try {
+        await check.recordOutcomes(ctx, accountId, [{ id, result: o.result, inspection: o.inspection, previousResult: avant?.last_result ?? null }]);
+      } catch (e) {
+        // Jamais bloquant : la preuve reste non résolue et porte le constat.
+        console.error(`[coherence] ${check.id} : issue de l'objet ${id} non consignée :`, message(e));
+      }
+    }
     await completeProof(ctx.sql, { accountId, check, outcome: o, prev: avant, startedAt, now: clock(), repairHash });
     summary.outcomes.push(o);
     summary.results[o.result] = (summary.results[o.result] ?? 0) + 1;

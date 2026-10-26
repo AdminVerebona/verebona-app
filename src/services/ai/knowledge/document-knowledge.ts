@@ -23,6 +23,7 @@ import { T1_MASTER_PROMPT_CODE } from '../source-analysis/master/t1-contract';
 import { VISUAL_SUMMARY_UNIT_ID, visualUnitId } from '../source-analysis/source-units/build-units';
 import type { SourceLayer } from '../source-analysis/source-units/types';
 import type { AnchoredOperationCandidate } from '../source-analysis/operation-candidates/prepare';
+import type { PreparedValueDecision } from '../source-analysis/value-decisions/validate';
 
 type KnowledgeEngine = 'source_analysis' | 'legacy';
 
@@ -135,6 +136,13 @@ export interface DocumentKnowledge {
    * du fichier inchangés.
    */
   operationCandidates?: AnchoredOperationCandidate[];
+  /**
+   * Lot 91D — décisions de T1 sur les valeurs significatives, validées
+   * (`document_value_decisions`), écrites dans la MÊME transaction que les
+   * faits. Absent : contrat non porté (les décisions précédentes du document
+   * sont quand même supersédées par la nouvelle analyse).
+   */
+  valueDecisions?: PreparedValueDecision[];
 }
 
 // ── Valeurs et unités ──────────────────────────────────────────────────────
@@ -379,6 +387,8 @@ export function buildKnowledgeFromSourceAnalysis(
     sourceLayer?: SourceLayer;
     /** Lot 40 — candidats Opération (`MasterGroupAnalysis.operationCandidates`). */
     operationCandidates?: AnchoredOperationCandidate[];
+    /** Lot 91D — décisions validées (`MasterGroupAnalysis.valueDecisions`). */
+    valueDecisions?: PreparedValueDecision[];
   },
 ): DocumentKnowledge {
   // Lot 34F : une observation enregistrée comme fait garde son unité source.
@@ -461,6 +471,7 @@ export function buildKnowledgeFromSourceAnalysis(
     ].filter(hasEvidence),
     ...(ctx.sourceLayer ? { sourceLayer: ctx.sourceLayer } : {}),
     ...(ctx.operationCandidates ? { operationCandidates: ctx.operationCandidates } : {}),
+    ...(ctx.valueDecisions ? { valueDecisions: ctx.valueDecisions } : {}),
   };
 }
 

@@ -21,6 +21,7 @@ import type { ProjectedFact, T1AnalyzeDocumentOutput, T1FactWithRef } from './t1
 import { currencyEvidenceOf, gateOperationCandidates, type AnchoredOperationCandidate } from '../operation-candidates/prepare';
 import { transactionNature } from '../projection/rules';
 import type { AnalysisContext, SourceAnalysisResult, SourceInput } from '../types';
+import { validateValueDecisions, type PreparedValueDecision } from '../value-decisions/validate';
 
 export interface MasterGroupAnalysis {
   result: SourceAnalysisResult;
@@ -42,6 +43,13 @@ export interface MasterGroupAnalysis {
    * utilisateur ; T3 les lira (lot suivant).
    */
   operationCandidates: AnchoredOperationCandidate[];
+  /**
+   * Lot 91D — décisions de T1 sur les valeurs significatives, VALIDÉES contre
+   * les unités de la source (contrat `t1-value-decisions-v1`). Absent :
+   * contrat non porté par le prompt T1 effectif, ou aucune couche A — rien
+   * n'est persisté, aucune décision n'est simulée.
+   */
+  valueDecisions?: PreparedValueDecision[];
 }
 
 export async function analyseGroupWithMaster(
@@ -142,11 +150,30 @@ export async function analyseGroupWithMaster(
       + `${gate.omitted} non établi(s) sans motif omis, ${gate.truncated} au-delà de 20.`);
   }
 
+  // Lot 91D : décisions sur les valeurs significatives — exploitées SEULEMENT si le prompt T1 effectif porte le
+  // contrat (marqueur) et que la version qui a répondu est bien celle-là ; validées contre les unités de la source.
+  let valueDecisions: PreparedValueDecision[] | undefined;
+  if (analysed.valueDecisions && sourceLayer) {
+    const { valueDecisionsCapability } = await import('../value-decisions/contract');
+    const cap = await valueDecisionsCapability();
+    if (cap.carried && (cap.version === null || cap.version === analysed.promptVersion)) {
+      valueDecisions = validateValueDecisions(analysed.valueDecisions, {
+        units: sourceLayer.units,
+        keptFactRefs: new Set((a.facts as T1FactWithRef[]).flatMap((f) => (f.t1FactRef ? [f.t1FactRef] : []))),
+        candidateKeys: new Set(gate.candidates.map((c) => c.candidateKey)),
+      });
+    } else if (analysed.valueDecisions.length > 0) {
+      console.info(`[t1-value-decisions] fichier ${input.sourceIds[groupIndices[0]]} : ${analysed.valueDecisions.length} décision(s) ignorée(s) `
+        + `(contrat ${cap.reason}${cap.carried ? ', version du prompt différente' : ''}).`);
+    }
+  }
+
   return {
     result, facts: projection.facts, projection, documentAssetId: analysed.documentAssetId,
     promptVersion: analysed.promptVersion,
     ...(sourceLayer ? { sourceLayer } : {}),
     operationCandidates: gate.candidates,
+    ...(valueDecisions ? { valueDecisions } : {}),
   };
 }
 

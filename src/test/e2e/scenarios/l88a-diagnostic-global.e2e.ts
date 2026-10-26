@@ -1,7 +1,7 @@
 /**
  * Lot 88A — diagnostic global exhaustif et auto-suffisant d'un compte
  * (ticket P1), sur PostgreSQL 16 réel, PAR LA VRAIE ROUTE
- * (`GET /api/admin/diagnostics?scope=account`, garde `requireAdmin` réelle :
+ * (`GET /api/admin/diagnostics?scope=account` — lot 91A : filtre compte du moteur unique, garde `requireAdmin` réelle :
  * seule la lecture du cookie de session est simulée).
  *
  * Test de référence « prix d'achat », traité comme un cas GÉNÉRAL : un bien
@@ -66,7 +66,7 @@ scenario('L88A', 'Diagnostic global d’un compte : exhaustif, auto-suffisant, f
   };
   /** Lignes d'une table du compte (toutes parties). */
   const rows = (files: Record<string, string>, section: string, table: string): Json[] => {
-    const base = `compte/${section}/${table}`;
+    const base = `donnees/${section}/${table}`;
     return Object.keys(files).filter((p) => p === `${base}.json` || p.startsWith(`${base}.part-`)).sort().flatMap((p) => JSON.parse(files[p]) as Json[]);
   };
 
@@ -211,7 +211,7 @@ scenario('L88A', 'Diagnostic global d’un compte : exhaustif, auto-suffisant, f
       if (!Z.files[f.path] || f.path === 'manifeste.json') continue;
       expect(createHash('sha256').update(Z.files[f.path]).digest('hex'), f.path).toBe(f.sha256);
     }
-    expect(Z.files['LISEZMOI-ANALYSE.md']).toMatch(/source → extraction → fait → preuve/);
+    expect(Z.files['LISEZMOI-ANALYSE.md']).toMatch(/document → extraction → unité source → fait → preuve/);
     expect(m.couverture.nonClassees).toEqual([]);
     // Migrations appliquées : liste complète et décompte concordants.
     expect(rows(Z.files, 'technique', '_migrations').length).toBeGreaterThan(100);
@@ -316,7 +316,7 @@ scenario('L88A', 'Diagnostic global d’un compte : exhaustif, auto-suffisant, f
     expect(Z.raw).not.toMatch(/Bien Secret Etranger L88A|EXTRAIT-ETRANGER-L88A|7771919/);
     expect(Z.raw).not.toContain('Compte Etranger L88A');
     for (const [p, c] of Object.entries(Z.files)) {
-      if (!p.startsWith('compte/') || !p.endsWith('.json')) continue;
+      if (!p.startsWith('donnees/') || !p.endsWith('.json')) continue;
       for (const r of JSON.parse(c) as Json[]) {
         if (r && typeof r === 'object' && 'account_id' in r && r.account_id !== null) expect(r.account_id, `${p} #${r.id}`).toBe(A.id);
       }

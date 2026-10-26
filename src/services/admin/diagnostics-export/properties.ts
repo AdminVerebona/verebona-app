@@ -1,8 +1,9 @@
 /**
- * Lot 88A — diagnostic global : TRAÇABILITÉ PAR PROPRIÉTÉ et projection
+ * Lots 88A, 91A — diagnostic : TRAÇABILITÉ PAR PROPRIÉTÉ et projection
  * API → écran. Serveur uniquement.
  *
- * Pour chaque bien du compte et chaque propriété (champ) — qu'elle soit
+ * Lot 91A : pour CHAQUE bien du filtre — tous les biens de tous les comptes
+ * au périmètre « Ensemble de l'application » — et chaque propriété (champ) — qu'elle soit
  * affichée, renvoyée par l'API, persistée, ou seulement citée par une
  * preuve, une décision, un conflit ou une écriture — une entrée réunit la
  * chaîne complète :
@@ -20,7 +21,8 @@
  * attendu par l'écran mais non renvoyé). Aucun développement propre à un
  * champ : le prix d'achat n'est qu'un cas du principe général.
  */
-import type { DiagPlanKit } from './account';
+import { named } from '@/services/admin/account-data/session';
+import type { DiagPlanKit } from './engine';
 import {
   DETAILS_UI_COMPONENT, DETAILS_UI_COMMON_FIELDS, DETAILS_UI_FAMILY_SECTIONS, DETAILS_UI_ROUTE, DETAILS_UI_SECTION_FIELDS, DETAILS_UI_SECTION_LABELS,
   detailsUiFieldFor, detailsUiFields, type DetailsUiFamily,
@@ -124,10 +126,39 @@ async function projectApi(json: Row): Promise<ApiProjection> {
   return { status: 200, motif: null, family, uiFamily, sections };
 }
 
-/** Fichiers de traçabilité des propriétés et de projection API → écran. */
-export async function planPropertyFiles(kit: DiagPlanKit): Promise<void> {
-  const { s, A } = kit;
-  const assetIds = (await s.q(`SELECT id FROM assets WHERE account_id = $1 ORDER BY id`, [A])).map((r) => Number(r.id));
+type Projection = { json: Row | null; api: ApiProjection | null; error: string | null };
+
+/** Projection d'un bien (ligne persistée + réponse API recalculée), dans la session. */
+async function loadProjection(kit: DiagPlanKit, id: number, A: number): Promise<Projection> {
+  const { s } = kit;
+  try {
+    const [r] = await s.savepoint(() => s.q(`SELECT row_to_json(a.*) AS r FROM assets a WHERE a.id = $1 AND a.account_id = $2`, [id, A]));
+    const json = r ? (typeof r.r === 'string' ? JSON.parse(r.r) as Row : r.r as Row) : null;
+    return { json, api: json ? await projectApi(json) : null, error: null };
+  } catch (e) {
+    if ((e as { code?: string })?.code === '25006') throw e;
+    return { json: null, api: null, error: (e as Error)?.message ?? String(e) };
+  }
+}
+
+/**
+ * Fichiers de traçabilité des propriétés et de projection API → écran, pour
+ * les biens de `assetsSql` (paramètres nommés du moteur ; null : aucun bien
+ * dans le filtre). Un bien à la fois : mémoire bornée quel que soit le volume.
+ */
+export async function planPropertyFiles(kit: DiagPlanKit, assetsSql: string | null): Promise<void> {
+  const { s } = kit;
+  const assets: Array<{ id: number; A: number }> = [];
+  let listError: string | null = null;
+  if (assetsSql) {
+    try {
+      const c = named(assetsSql, kit.V);
+      for (const r of await s.savepoint(() => s.q(c.sql, c.params))) assets.push({ id: Number(r.id), A: Number(r.account_id) });
+    } catch (e) {
+      if ((e as { code?: string })?.code === '25006') throw e;
+      listError = `liste des biens illisible : ${(e as Error)?.message ?? String(e)}`;
+    }
+  }
   const sensitive = (k: string) => kit.isSensitiveKey(k);
   const maskValue = (k: string, v: unknown) => (sensitive(k) && !empty(v) ? { $etat: 'masque', motif: 'donnée sensible (registre)' } : v);
 
@@ -136,29 +167,12 @@ export async function planPropertyFiles(kit: DiagPlanKit): Promise<void> {
     return { expected: null, batches: 1, error: null };
   }, undefined, 'api-ui');
 
-  // Cache par bien, partagé entre les deux fichiers (lu une fois, libéré ensuite).
-  const projections = new Map<number, { json: Row | null; api: ApiProjection | null; error: string | null }>();
-  const load = async (id: number) => {
-    if (projections.has(id)) return projections.get(id)!;
-    let out: { json: Row | null; api: ApiProjection | null; error: string | null };
-    try {
-      const [r] = await s.savepoint(() => s.q(`SELECT row_to_json(a.*) AS r FROM assets a WHERE a.id = $1 AND a.account_id = $2`, [id, A]));
-      const json = r ? (typeof r.r === 'string' ? JSON.parse(r.r) as Row : r.r as Row) : null;
-      out = { json, api: json ? await projectApi(json) : null, error: null };
-    } catch (e) {
-      if ((e as { code?: string })?.code === '25006') throw e;
-      out = { json: null, api: null, error: (e as Error)?.message ?? String(e) };
-    }
-    projections.set(id, out);
-    return out;
-  };
-
   kit.entry('api-ui/fiches.json', `Réponse de ${DETAILS_UI_ROUTE} recalculée pour chaque bien par la même fonction que la route (buildSections), et champs rendus par l’écran avec leur valeur`, async (w) => {
     await w('[');
     let n = 0;
-    const errors: string[] = [];
-    for (const id of assetIds) {
-      const p = await load(id);
+    const errors: string[] = listError ? [listError] : [];
+    for (const { id, A } of assets) {
+      const p = await loadProjection(kit, id, A);
       if (p.error || !p.api) { errors.push(`bien #${id} : ${p.error ?? 'introuvable'}`); continue; }
       const api = p.api;
       const ecran = Object.entries(api.sections).map(([section, data]) => ({
@@ -166,31 +180,30 @@ export async function planPropertyFiles(kit: DiagPlanKit): Promise<void> {
         champs: detailsUiFields(api.uiFamily, section).map((f) => ({ champ: f.key, libelle: f.label, condition: f.condition ?? null, valeurLue: maskValue(f.key, data[f.key] ?? null), recuDeLApi: f.key in data })),
         renvoyesNonAffiches: Object.keys(data).filter((k) => !detailsUiFields(api.uiFamily, section).some((f) => f.key === k)),
       }));
-      const fiche = { bien: id, http: api.status, motif: api.motif, famille: api.family, familleEcran: api.uiFamily, reponseApi: { family: api.family, sections: Object.fromEntries(Object.entries(api.sections).map(([k, d]) => [k, Object.fromEntries(Object.entries(d).map(([f, v]) => [f, maskValue(f, v)]))])) }, ecran };
+      const fiche = { bien: id, compte: A, http: api.status, motif: api.motif, famille: api.family, familleEcran: api.uiFamily, reponseApi: { family: api.family, sections: Object.fromEntries(Object.entries(api.sections).map(([k, d]) => [k, Object.fromEntries(Object.entries(d).map(([f, v]) => [f, maskValue(f, v)]))])) }, ecran };
       await w(`${n++ ? ',' : ''}\n  ${kit.safeJson(kit.M(fiche))}`);
     }
     await w(`${n ? '\n' : ''}]\n`);
-    return { expected: assetIds.length, count: n, batches: 1, error: errors.length ? errors.join(' ; ') : null };
+    return { expected: listError ? null : assets.length, count: n, batches: 1, error: errors.length ? errors.join(' ; ') : null };
   }, undefined, 'api-ui');
 
-  kit.entry('tracabilite/proprietes.json', 'Chaîne de chaque propriété (bien × champ) : affichage ← API ← persistance ← écritures ← décisions / conflits ← preuves (candidates) ← faits ← extractions ← documents ← traitements ; verdict donnée / backend / affichage', async (w) => {
+  kit.entry('tracabilite/proprietes.json', 'Chaîne de chaque propriété (bien × champ) : affichage ← API ← persistance ← écritures ← décisions / conflits / reprises ← preuves (candidates) ← faits ← extractions ← documents ← traitements ; verdict donnée / backend / affichage', async (w) => {
     await w('[');
     let n = 0;
     let biens = 0;
-    const errors: string[] = [];
-    for (const id of assetIds) {
+    const errors: string[] = listError ? [listError] : [];
+    for (const { id, A } of assets) {
       try {
-        const entries = await s.savepoint(() => propertyEntries(kit, id, load));
+        const entries = await s.savepoint(() => propertyEntries(kit, A, id, () => loadProjection(kit, id, A)));
         for (const e of entries) await w(`${n++ ? ',' : ''}\n  ${kit.safeJson(kit.M(e))}`);
         biens++;
       } catch (e) {
         if ((e as { code?: string })?.code === '25006' || (e as Error)?.name === 'SinkError') throw e;
         errors.push(`bien #${id} : ${(e as Error)?.message ?? String(e)}`);
       }
-      projections.delete(id);
     }
     await w(`${n ? '\n' : ''}]\n`);
-    return { expected: assetIds.length, count: biens, batches: 1, error: errors.length ? errors.join(' ; ') : null };
+    return { expected: listError ? null : assets.length, count: biens, batches: 1, error: errors.length ? errors.join(' ; ') : null };
   }, undefined, 'tracabilite');
 }
 
@@ -204,10 +217,10 @@ const group = (rows: Row[], keys: (r: Row) => Array<unknown>): Map<string, Row[]
 };
 
 /** Entrées de traçabilité d'un bien (toutes ses propriétés). */
-async function propertyEntries(kit: DiagPlanKit, assetId: number, load: (id: number) => Promise<{ json: Row | null; api: ApiProjection | null; error: string | null }>): Promise<Row[]> {
-  const { s, A } = kit;
+async function propertyEntries(kit: DiagPlanKit, A: number, assetId: number, load: () => Promise<Projection>): Promise<Row[]> {
+  const { s } = kit;
   const maskValue = (k: string, v: unknown) => (kit.isSensitiveKey(k) && !empty(v) ? { $etat: 'masque', motif: 'donnée sensible (registre)' } : v);
-  const p = await load(assetId);
+  const p = await load();
   const json = p.json ?? {};
   let kc: Record<string, unknown> = {};
   try { kc = json.key_characteristics ? JSON.parse(String(json.key_characteristics)) as Record<string, unknown> : {}; } catch { kc = {}; }

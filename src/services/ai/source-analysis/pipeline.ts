@@ -423,6 +423,8 @@ export async function runSourceAnalysis(
         sourceLayer: master.sourceLayer,
         // Lot 40 : candidats Opération (barrière serveur appliquée), même transaction que les faits.
         operationCandidates: master.operationCandidates,
+        // Lot 91D : décisions T1 sur les valeurs significatives (contrat porté seulement), même transaction.
+        ...(master.valueDecisions ? { valueDecisions: master.valueDecisions } : {}),
       });
       rec.knowledge = knowledge;
       await persistDocumentKnowledgeDetailed(knowledge).then((k) => {
