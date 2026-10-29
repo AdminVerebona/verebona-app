@@ -1,17 +1,15 @@
 "use client";
 
 import { useEffect } from 'react';
-import { registerServiceWorker } from '@/lib/push/push-client';
+import { registerServiceWorker } from '@/lib/pwa/service-worker';
 import { reportServiceWorkerChunkProblem } from '@/lib/pwa/chunk-recovery';
 
 /**
- * Enregistre le service worker `/sw.js` une seule fois au montage (CDC §14.1).
- * Ne demande JAMAIS la permission de notification (§9.1) : cela reste réservé
- * à une action explicite de l'utilisateur, gérée ailleurs.
+ * Enregistre le service worker `/sw.js` une seule fois au montage.
+ * Lot 94 (décision PO M3) : aucun Web Push — le SW ne reçoit ni n'affiche
+ * plus de notification et le site ne demande jamais la permission.
  *
- * Écoute aussi les messages du SW :
- *   · `NOTIFICATION_NAVIGATE` : navigation demandée par un clic sur une
- *     notification quand le SW ne peut pas naviguer lui-même ;
+ * Écoute les messages du SW :
  *   · `CHUNK_LOAD_ERROR` (APP-PERF-10) : un chunk `/_next/static/` a échoué,
  *     avec sa cause — `missing` (404/410 : version retirée par un
  *     déploiement) ou `network` (transport). Le signal classe l'erreur de
@@ -21,7 +19,7 @@ import { reportServiceWorkerChunkProblem } from '@/lib/pwa/chunk-recovery';
  *
  * Mise à jour du SW : une nouvelle version installée prend la main sans
  * attendre la fermeture de tous les onglets. Elle ne sert que du réseau et
- * les notifications : aucun rechargement de page n'est nécessaire.
+ * du cache statique : aucun rechargement de page n'est nécessaire.
  */
 export function ServiceWorkerRegistration() {
   useEffect(() => {
@@ -47,10 +45,6 @@ export function ServiceWorkerRegistration() {
 
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
-      if (data?.type === 'NOTIFICATION_NAVIGATE' && typeof data.href === 'string') {
-        window.location.href = data.href;
-        return;
-      }
       if (data?.type === 'CHUNK_LOAD_ERROR') {
         // L'ancien SW (v5.0.0) n'envoyait ce message que sur échec réseau, sans `reason`.
         reportServiceWorkerChunkProblem(data.reason === 'missing' ? 'missing' : 'network');

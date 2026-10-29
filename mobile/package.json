@@ -1,0 +1,44 @@
+{
+  "name": "verebona-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Applications iOS / Android Verebona (Capacitor) — prototype Gate 0 (CDC 12 §3.2, lot 95).",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "prepare:native": "node scripts/prepare.mjs",
+    "sync:links": "node --no-warnings --experimental-strip-types scripts/app-links.mjs",
+    "check:links": "node --no-warnings --experimental-strip-types scripts/app-links.mjs --check",
+    "sync": "npm run prepare:native && npm run check:links && cap sync",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --no-warnings --experimental-strip-types --test test/*.test.mjs",
+    "check": "npm run typecheck && npm test && npm run check:links",
+    "sbom": "npm ls --all --json --omit=dev > sbom-dependances.json"
+  },
+  "dependencies": {
+    "@aparajita/capacitor-biometric-auth": "10.0.0",
+    "@aparajita/capacitor-secure-storage": "8.0.1",
+    "@capacitor-community/privacy-screen": "8.0.0",
+    "@capacitor-firebase/messaging": "8.5.2",
+    "@capacitor/android": "8.5.3",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/browser": "8.0.5",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/filesystem": "8.1.5",
+    "@capacitor/ios": "8.5.3",
+    "@capacitor/network": "8.0.1",
+    "@capacitor/share": "8.0.3",
+    "@capacitor/splash-screen": "8.0.2",
+    "@capacitor/status-bar": "8.0.4",
+    "@capgo/capacitor-document-scanner": "8.4.16",
+    "@capgo/capacitor-share-target": "8.0.64",
+    "@capgo/capacitor-uploader": "8.3.26"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3",
+    "@types/node": "22.19.1",
+    "typescript": "5.9.3"
+  },
+  "type": "module"
+}

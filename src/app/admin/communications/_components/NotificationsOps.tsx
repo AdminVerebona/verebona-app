@@ -179,7 +179,7 @@ export function NotificationsOps() {
         )}
         {metrics && (
           <p className="text-xs text-muted-foreground">
-            30 jours : succès {metrics.successRate == null ? '—' : `${metrics.successRate} %`} · {metrics.failedEmails} e-mail(s) en échec · {metrics.activeSubscriptions} abonnement(s) push actif(s)
+            30 jours : succès {metrics.successRate == null ? '—' : `${metrics.successRate} %`} · {metrics.failedEmails} e-mail(s) en échec · {metrics.activeSubscriptions} téléphone(s) avec push actif
           </p>
         )}
       </div>

@@ -744,10 +744,22 @@ const json = (body: Record<string, unknown>, signal: AbortSignal): RequestInit =
   signal,
 });
 
+/**
+ * Lot 95 (CDC 12 §11 UPL-01/02, G0-05) : dans l'application iOS / Android,
+ * la coque remplace le PUT du navigateur par un transfert NATIF de fond
+ * (URLSession background / service Android) — `lib/native/native-upload.ts`.
+ * Presign, confirmation et idempotence (`operationId`) sont inchangés. Jamais
+ * posé sur le Web : `null` → envoi XHR habituel.
+ */
+let envoiNatif: TransportDepot['envoyer'] | null = null;
+export function utiliserEnvoiNatif(fn: TransportDepot['envoyer'] | null): void {
+  envoiNatif = fn;
+}
+
 const transportNavigateur: TransportDepot = {
   hacher: (file, signal, onProgress) => computeFileSha256(file, { signal, onProgress }),
   presign: (body, signal) => fetchDepot('/api/files/presign', json(body, signal)),
-  envoyer: envoyerXhr,
+  envoyer: (url, file, mimeType, signal, onProgress) => (envoiNatif ?? envoyerXhr)(url, file, mimeType, signal, onProgress),
   confirmer: (body, signal) => fetchDepot('/api/files/confirm', json(body, signal)),
   attendre,
 };

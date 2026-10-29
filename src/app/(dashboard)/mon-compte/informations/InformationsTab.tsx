@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
-import { User, Key, ExternalLink, Loader2, Calendar, Copy, RefreshCw, ChevronDown, Lock, Trash2, AlertTriangle, Save, Crown } from 'lucide-react';
+import { User, ExternalLink, Loader2, Calendar, Copy, RefreshCw, ChevronDown, Lock, Trash2, AlertTriangle, Save, Crown } from 'lucide-react';
 import { AiHistoryBlock } from '@/components/account/AiHistoryBlock';
 import { Switch } from '@/components/ui/switch';
 import { apiClient } from '@/lib/api-client';
@@ -22,9 +22,10 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { PasswordInput } from '@/components/ui/password-input';
-import { PasswordRequirements } from '@/components/auth/PasswordRequirements';
 import { getPlanTheme } from '@/lib/plan-theme';
+import { SecurityCard } from '@/components/account/security/SecurityCard';
+import { ReauthProvider, useReauth } from '@/components/account/security/ReauthProvider';
+import { ApiClientError } from '@/lib/api-client';
 
 
 interface UserProfile {
@@ -111,7 +112,16 @@ function CalendarTutorial() {
  * Enveloppe à clé (`display: contents`) : ces blocs gardent leur état
  * quand le squelette de chargement laisse place au contenu.
  */
-export default function InformationsTab({ beforeDangerZone }: { beforeDangerZone?: ReactNode } = {}) {
+export default function InformationsTab(props: { beforeDangerZone?: ReactNode } = {}) {
+  // Lot 92 : fenêtre de réauthentification UNIQUE (Sécurité, suppression du compte).
+  return (
+    <ReauthProvider>
+      <InformationsTabContent {...props} />
+    </ReauthProvider>
+  );
+}
+
+function InformationsTabContent({ beforeDangerZone }: { beforeDangerZone?: ReactNode } = {}) {
   const router = useRouter();
   const { user: sessionUser, isLoading: sessionLoading, refetch: refetchSession } = useSession({ required: true });
   
@@ -137,17 +147,6 @@ export default function InformationsTab({ beforeDangerZone }: { beforeDangerZone
   const [calActive, setCalActive] = useState(false);
   const [calGenerating, setCalGenerating] = useState(false);
   const [calToggling, setCalToggling] = useState(false);
-
-  const [isPasswordDialogOpen, setIsPasswordDialogOpen] = useState(false);
-  const [passwordForm, setPasswordForm] = useState({
-    currentPassword: '',
-    newPassword: '',
-    confirmPassword: '',
-  });
-  const [changingPassword, setChangingPassword] = useState(false);
-  // Toutes les sessions sont révoquées au changement de mot de passe ; celle
-  // de cet appareil n'est conservée que si l'utilisateur le demande.
-  const [keepCurrentSession, setKeepCurrentSession] = useState(false);
 
   useEffect(() => {
     if (!sessionLoading && sessionUser) {
@@ -238,43 +237,6 @@ export default function InformationsTab({ beforeDangerZone }: { beforeDangerZone
     }
   };
 
-  const handleChangePassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      return toast.error("Les mots de passe ne correspondent pas");
-    }
-
-    try {
-      setChangingPassword(true);
-      const response = await fetch('/api/users/me/change-password', {
-      credentials: 'include',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          currentPassword: passwordForm.currentPassword,
-          newPassword: passwordForm.newPassword,
-          keepCurrentSession,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message || data.error);
-
-      if (data.reauthRequired) {
-        toast.success('Mot de passe modifié. Reconnectez-vous avec votre nouveau mot de passe.');
-        router.push('/login?raison=mot-de-passe-modifie');
-        return;
-      }
-      toast.success('Mot de passe modifié. Vos autres appareils ont été déconnectés.');
-      setIsPasswordDialogOpen(false);
-      setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
-    } catch (error: any) {
-      toast.error(error.message || "Erreur lors du changement de mot de passe");
-    } finally {
-      setChangingPassword(false);
-    }
-  };
-
   const handleGenerateCalToken = async () => {
     setCalGenerating(true);
     try {
@@ -353,8 +315,12 @@ export default function InformationsTab({ beforeDangerZone }: { beforeDangerZone
             <p className="text-xs text-muted-foreground">Affiché dans le message de bienvenue et les emails.</p>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="email">Email <span className="text-muted-foreground">(non modifiable)</span></Label>
+            <Label htmlFor="email">Adresse e-mail</Label>
             <Input id="email" value={profile.email} disabled className="bg-muted" />
+            {/* Lot 96A (CDC 18 Q8) : le changement d'adresse se fait dans la carte Sécurité (confirmation d'identité, lien à la nouvelle adresse). */}
+            <p className="text-xs text-muted-foreground">
+              Pour la changer : <a href="#securite" className="text-primary hover:underline">Sécurité › Méthodes de connexion</a>.
+            </p>
           </div>
         </div>
         <div className="flex justify-end">
@@ -372,65 +338,8 @@ export default function InformationsTab({ beforeDangerZone }: { beforeDangerZone
       {/* Le bloc « Abonnement » faisait doublon avec « Mon abonnement »
           (SubscriptionSummary, en tête de page) : il est supprimé. */}
 
-      {/* Sécurité */}
-      <CollapsibleCard
-        icon={<Key className="w-5 h-5" />}
-        title="Sécurité"
-        description="Modifiez le mot de passe de votre compte."
-      >
-        <Dialog open={isPasswordDialogOpen} onOpenChange={setIsPasswordDialogOpen}>
-          <DialogTrigger asChild>
-            <Button variant="outline" className="rounded-full gap-2">
-              <Key className="w-4 h-4" />
-              Modifier mon mot de passe
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <form onSubmit={handleChangePassword}>
-              <DialogHeader>
-                <DialogTitle>Modifier le mot de passe</DialogTitle>
-                <DialogDescription>Veuillez saisir votre mot de passe actuel avant d'en choisir un nouveau.</DialogDescription>
-              </DialogHeader>
-              <div className="space-y-4 py-4">
-                <div className="space-y-2">
-                  <Label htmlFor="currentPassword">Mot de passe actuel</Label>
-                  <PasswordInput id="currentPassword" value={passwordForm.currentPassword} onChange={e => setPasswordForm({...passwordForm, currentPassword: e.target.value})} required />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="newPassword">Nouveau mot de passe</Label>
-                  <PasswordInput id="newPassword" value={passwordForm.newPassword} onChange={e => setPasswordForm({...passwordForm, newPassword: e.target.value})} required />
-                  <PasswordRequirements password={passwordForm.newPassword} confirmPassword={passwordForm.confirmPassword} showConfirmRule={true} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="confirmPassword">Confirmer le nouveau mot de passe</Label>
-                  <PasswordInput id="confirmPassword" value={passwordForm.confirmPassword} onChange={e => setPasswordForm({...passwordForm, confirmPassword: e.target.value})} required />
-                </div>
-                <div className="space-y-1.5 rounded-lg border border-[color:var(--border-subtle)] px-3 py-2.5">
-                  <p className="text-xs text-muted-foreground">
-                    Tous les appareils et navigateurs connectés à votre compte seront déconnectés.
-                  </p>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={keepCurrentSession}
-                      onChange={(e) => setKeepCurrentSession(e.target.checked)}
-                      className="h-4 w-4"
-                    />
-                    Rester connecté sur cet appareil
-                  </label>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button type="button" variant="ghost" onClick={() => setIsPasswordDialogOpen(false)}>Annuler</Button>
-                <button type="submit" disabled={changingPassword} className="btn-add disabled:opacity-40">
-                  {changingPassword ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                  {changingPassword ? 'Mise à jour…' : 'Mettre à jour'}
-                </button>
-              </DialogFooter>
-            </form>
-          </DialogContent>
-        </Dialog>
-      </CollapsibleCard>
+      {/* Sécurité — lot 92 : 4 blocs (CDC 18 §27), réauthentification 5 min (§18). */}
+      <SecurityCard />
 
       {/* Synchronisation agenda — ancre utilisée par la page Agenda */}
       <CollapsibleCard
@@ -528,7 +437,6 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
   const [step, setStep] = useState<1 | 2>(1);
   const [open, setOpen] = useState(false);
   const [confirmation, setConfirmation] = useState('');
-  const [password, setPassword] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -536,10 +444,11 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
   // celle renvoyée par le serveur (et rappelée par e-mail).
   const plannedDate = formatLongDate(new Date(Date.now() + DELETION_DELAY_DAYS * 24 * 60 * 60 * 1000));
 
+  const { withReauth } = useReauth();
+
   const resetDialog = () => {
     setStep(1);
     setConfirmation('');
-    setPassword('');
     setDeleting(false);
     setError(null);
   };
@@ -550,35 +459,33 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
   };
 
   const handleDelete = async () => {
-    if (confirmation !== REQUIRED_TEXT || !password) return;
+    if (confirmation !== REQUIRED_TEXT) return;
     setDeleting(true);
     setError(null);
     try {
-      const res = await fetch('/api/users/me/deletion', {
-        credentials: 'include',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirmation, password }),
-      });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(d.message || 'Une erreur est survenue. Veuillez réessayer.');
-        setDeleting(false);
-        return;
-      }
+      // Lot 92 (CDC 18 §25, REAUTH-07) : texte de confirmation + identité
+      // confirmée (fenêtre unique, 5 min ; preuve consommée par la clôture).
+      // `apiClient` : renouvelle la session si besoin (point d'attention 53A).
+      const d = await withReauth(
+        () => apiClient.post<{ redirectTo?: string }>('/api/users/me/deletion', { confirmation }),
+        'Avant de supprimer votre compte.',
+        // Lot 93 : compte sans mot de passe → Google / Apple ; au retour, la carte se rouvre.
+        'delete-account',
+      );
       localStorage.removeItem('user');
       toast.success('Votre compte est clôturé. Sa suppression est programmée.');
       setOpen(false);
       // Session rouverte en mode « compte en cours de suppression ».
-      router.replace(d.redirectTo || '/compte-en-suppression');
-    } catch {
-      setError('Une erreur est survenue. Veuillez réessayer.');
+      router.replace(d?.redirectTo || '/compte-en-suppression');
+    } catch (e) {
+      setError(e instanceof ApiClientError && e.serverMessage ? e.serverMessage : 'Une erreur est survenue. Veuillez réessayer.');
       setDeleting(false);
     }
   };
 
   return (
     <CollapsibleCard
+      anchorId="delete-account"
       className="border-[color:var(--danger-edge)] bg-[color:var(--danger-soft)]"
       titleClassName="text-[color:var(--danger)]"
       icon={<Trash2 className="w-5 h-5 text-[color:var(--danger)]" />}
@@ -666,7 +573,7 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
               </>
             )}
 
-            {/* ── Étape 2 : confirmation renforcée (texte + mot de passe) ── */}
+            {/* ── Étape 2 : confirmation renforcée (texte + identité confirmée, lot 92) ── */}
             {step === 2 && (
               <>
                 <DialogHeader>
@@ -674,7 +581,7 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                     <Trash2 className="w-5 h-5" />
                     Confirmation
                   </DialogTitle>
-                  <DialogDescription className="sr-only">Saisie du texte de confirmation et du mot de passe</DialogDescription>
+                  <DialogDescription className="sr-only">Saisie du texte de confirmation</DialogDescription>
                 </DialogHeader>
                 <div className="py-2 space-y-4">
                   <p className="text-sm text-[color:var(--text-secondary)]">
@@ -692,16 +599,9 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                     disabled={deleting}
                     autoFocus
                   />
-                  <div className="space-y-2">
-                    <Label htmlFor="delete-account-password">Votre mot de passe</Label>
-                    <PasswordInput
-                      id="delete-account-password"
-                      value={password}
-                      onChange={e => setPassword(e.target.value)}
-                      autoComplete="current-password"
-                      disabled={deleting}
-                    />
-                  </div>
+                  <p className="text-xs text-[color:var(--text-muted)]">
+                    Pour votre sécurité, votre identité vous sera demandée si vous ne l’avez pas confirmée depuis moins de 5 minutes.
+                  </p>
                   <p className="text-xs text-[color:var(--text-muted)]">
                     Votre compte sera clôturé immédiatement et supprimé définitivement le {plannedDate}.
                   </p>
@@ -711,7 +611,7 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                   <Button variant="ghost" onClick={() => setOpen(false)} disabled={deleting}>Annuler</Button>
                   <Button
                     variant="destructive"
-                    disabled={confirmation !== REQUIRED_TEXT || !password || deleting}
+                    disabled={confirmation !== REQUIRED_TEXT || deleting}
                     onClick={handleDelete}
                     className="gap-2 btn-delete"
                   >

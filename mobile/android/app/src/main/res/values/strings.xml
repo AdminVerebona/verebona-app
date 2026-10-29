@@ -1,0 +1,6 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <!-- Lot 95 : `app_name`, `title_activity_main`, `package_name` et
+         `custom_url_scheme` sont définis PAR VARIANTE (resValue dans
+         app/build.gradle) : « Verebona Préprod » / « Verebona ». -->
+</resources>

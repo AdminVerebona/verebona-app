@@ -11,7 +11,7 @@ vi.mock('@/lib/admin-audit', () => ({ logAdminAction: async () => undefined }));
 const { canauxAReemettre } = await import('../notification-reemission.service');
 const { lireRestrictionReemission, appliquerRestrictionReemission, REEMISSION_KEY } = await import('@/lib/notifications/reemission-restriction');
 
-const t = (channel: string, status: string, pushSubscriptionId: string | null = null) => ({ channel, status, pushSubscriptionId });
+const t = (channel: string, status: string, mobileInstallationId: string | null = null) => ({ channel, status, mobileInstallationId });
 
 describe('canauxAReemettre', () => {
   it('ligne jamais distribuée : aucune restriction (tous les canaux)', () => {
@@ -22,9 +22,14 @@ describe('canauxAReemettre', () => {
     expect(canauxAReemettre([t('bell', 'sent'), t('email', 'failed')])).toEqual({ canaux: ['email'] });
   });
 
-  it('push : seuls les appareils en échec, jamais ceux déjà servis', () => {
+  it('push : seuls les appareils mobiles en échec, jamais ceux déjà servis', () => {
     const r = canauxAReemettre([t('bell', 'sent'), t('push', 'sent', 'a'), t('push', 'failed', 'b'), t('push', 'failed', 'b')]);
-    expect(r).toEqual({ canaux: ['push'], pushSubscriptionIds: ['b'] });
+    expect(r).toEqual({ canaux: ['push'], mobileInstallationIds: ['b'] });
+  });
+
+  it('lot 94 (M3) : un ancien échec Web Push (navigateur, sans appareil mobile) n’est jamais réémis', () => {
+    const web = { channel: 'push', status: 'failed', pushSubscriptionId: 'w1', mobileInstallationId: null };
+    expect(canauxAReemettre([t('bell', 'sent'), web])).toEqual({ canaux: [] });
   });
 
   it('canal en échec puis livré (nouvelle tentative) : non réémis', () => {
@@ -46,8 +51,8 @@ describe('restriction côté dispatcher', () => {
   });
 
   it('ne réactive jamais un canal coupé par les préférences', () => {
-    const { restriction } = lireRestrictionReemission({ [REEMISSION_KEY]: { canaux: ['email', 'push'], pushSubscriptionIds: ['b'] } });
-    expect(restriction?.pushSubscriptionIds).toEqual(['b']);
+    const { restriction } = lireRestrictionReemission({ [REEMISSION_KEY]: { canaux: ['email', 'push'], mobileInstallationIds: ['b'] } });
+    expect(restriction?.mobileInstallationIds).toEqual(['b']);
     expect(appliquerRestrictionReemission({ bell: true, email: false, push: true }, restriction)).toEqual({ bell: false, email: false, push: true });
   });
 

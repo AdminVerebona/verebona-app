@@ -1,6 +1,16 @@
 // Service Worker pour Verebona PWA
-// Version 5.2.0 — Web Push (push, notificationclick, pushsubscriptionchange)
-//                 + signalement des chunks Next.js manquants (APP-PERF-10)
+// Version 5.3.0 — cache statique + signalement des chunks Next.js manquants
+//                 (APP-PERF-10). AUCUN Web Push.
+//
+// 5.3.0 (lot 94, décision PO M3 du 26/10/2026 — aucun Web Push / PWA) :
+//   · les gestionnaires `push`, `notificationclick` et
+//     `pushsubscriptionchange` sont retirés : ce SW n'affiche plus aucune
+//     notification et ne recrée jamais d'abonnement ;
+//   · à l'activation, un éventuel abonnement push RÉSIDUEL du navigateur
+//     (créé avant le lot 97) est résilié localement — aucun appel serveur,
+//     aucune permission demandée ;
+//   · version de cache inchangée (v5.2.0) : le contenu mis en cache est le
+//     même, rien n'est vidé inutilement.
 //
 // 5.2.0 (lot 79B, icônes PWA) :
 //   · nouvelle version de cache : à l'activation, les caches `verebona-*`
@@ -41,10 +51,23 @@ self.addEventListener('install', (event) => {
   );
 });
 
+// Lot 94 (M3) : résilie l'abonnement push laissé par une ancienne version.
+// Silencieux, sans réseau ; navigateur sans Push API → rien à faire.
+async function retirerAbonnementPushResiduel () {
+  try {
+    const pushManager = self.registration && self.registration.pushManager;
+    if (!pushManager || typeof pushManager.getSubscription !== 'function') return;
+    const subscription = await pushManager.getSubscription();
+    if (subscription) await subscription.unsubscribe();
+  } catch {
+    /* best-effort : jamais bloquant pour l'activation */
+  }
+}
+
 // Activation — nettoyer les anciens caches
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
+    retirerAbonnementPushResiduel().then(() => caches.keys()).then((cacheNames) => {
       return Promise.all(
         cacheNames
           // Seulement les anciennes versions de CE service worker.
@@ -140,108 +163,3 @@ self.addEventListener('message', (event) => {
     );
   }
 });
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Web Push (CDC §14)
-// ═══════════════════════════════════════════════════════════════════════════
-
-// Lot 79B : même fichier que l'icône « any » 192 du manifeste (src/lib/pwa/icons.ts).
-const NOTIFICATION_ICON = '/pwa/icon-any-192-l79.png';
-const NOTIFICATION_BADGE = '/favicon-96x96.png';
-
-// §14.2 — Réception d'un push. Payload minimal, déjà sans donnée sensible.
-self.addEventListener('push', (event) => {
-  let data = {};
-  try {
-    data = event.data ? event.data.json() : {};
-  } catch {
-    data = {};
-  }
-
-  const title = typeof data.title === 'string' && data.title.trim() ? data.title : 'Verebona';
-  const body = typeof data.body === 'string' ? data.body : '';
-  const href = typeof data.href === 'string' ? data.href : '/';
-  const tag = typeof data.tag === 'string' ? data.tag : undefined;
-
-  event.waitUntil(
-    self.registration.showNotification(title, {
-      body,
-      icon: NOTIFICATION_ICON,
-      badge: NOTIFICATION_BADGE,
-      tag,               // remplace un doublon éventuel (§14.2)
-      renotify: false,
-      data: {
-        href,
-        notificationId: data.notificationId ?? null,
-        category: data.category ?? null,
-      },
-    })
-  );
-});
-
-// §14.3 — Clic sur une notification : focus fenêtre existante puis navigation,
-// sinon ouverture. L'application vérifie l'authentification elle-même.
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  const href = (event.notification.data && event.notification.data.href) || '/';
-  const targetUrl = new URL(href, self.location.origin).href;
-
-  event.waitUntil((async () => {
-    const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-    for (const client of clientsList) {
-      // Réutiliser un onglet Verebona déjà ouvert.
-      if ('focus' in client) {
-        await client.focus();
-        if ('navigate' in client) {
-          try { await client.navigate(targetUrl); } catch { /* origine identique requise */ }
-        } else {
-          client.postMessage({ type: 'NOTIFICATION_NAVIGATE', href });
-        }
-        return;
-      }
-    }
-    if (self.clients.openWindow) {
-      await self.clients.openWindow(targetUrl);
-    }
-  })());
-});
-
-// §14.4 — Renouvellement de souscription : recréer et resynchroniser le serveur.
-self.addEventListener('pushsubscriptionchange', (event) => {
-  event.waitUntil((async () => {
-    try {
-      const res = await fetch('/api/push/public-key');
-      if (!res.ok) return;
-      const { publicKey } = await res.json();
-      if (!publicKey) return;
-
-      const subscription = await self.registration.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(publicKey),
-      });
-
-      const json = subscription.toJSON();
-      await fetch('/api/push/subscriptions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-        body: JSON.stringify({
-          endpoint: json.endpoint,
-          keys: json.keys,
-          platform: 'web',
-        }),
-      });
-    } catch (err) {
-      // Sinon : appareil à réactiver au prochain lancement (le client re-souscrit).
-    }
-  })());
-});
-
-function urlBase64ToUint8Array (base64String) {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const raw = atob(base64);
-  const output = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i);
-  return output;
-}

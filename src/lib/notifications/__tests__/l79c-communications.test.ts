@@ -73,7 +73,7 @@ describe('L79C-AC02 / AC03 / AC05 — canaux supprimés bloqués quelles que soi
 
   it('réémission BO : un canal supprimé n’est jamais réémis', () => {
     expect(retirerCanauxSupprimes({ canaux: ['bell', 'email'] }, entry('DOCUMENT_BATCH_FAILED'))).toEqual({ canaux: ['bell'] });
-    expect(retirerCanauxSupprimes({ canaux: ['email', 'push'], pushSubscriptionIds: ['s1'] }, entry('DOCUMENT_UPLOAD_COMPLETED'))).toEqual({ canaux: [] });
+    expect(retirerCanauxSupprimes({ canaux: ['email', 'push'], mobileInstallationIds: ['s1'] }, entry('DOCUMENT_UPLOAD_COMPLETED'))).toEqual({ canaux: [] });
     expect(retirerCanauxSupprimes({ canaux: ['email'] }, entry('PAYMENT_FAILED'))).toEqual({ canaux: ['email'] });
   });
 });
@@ -117,16 +117,24 @@ describe('L79C-AC06 — récapitulatif « À traiter »', () => {
 });
 
 describe('L79C-AC07 — indispensables et facultatifs séparés', () => {
-  it.each(['duo', 'account', 'security'] as const)('catégorie %s : des e-mails indispensables ET facultatifs — le switch n’est plus verrouillé', (cat) => {
+  it.each(['duo', 'account'] as const)('catégorie %s : des e-mails indispensables ET facultatifs — le switch n’est plus verrouillé', (cat) => {
     const scope = categoryEmailScope(cat);
     expect(scope.essential.length).toBeGreaterThan(0);
     expect(scope.optional.length).toBeGreaterThan(0);
   });
 
+  it('lot 96B (CDC 18 Q6) : sécurité — tous les e-mails sont indispensables (« nouvel appareil » obligatoire), switch verrouillé', () => {
+    const scope = categoryEmailScope('security');
+    expect(scope.optional).toEqual([]);
+    expect(scope.essential).toContain('connexion depuis un nouvel appareil');
+  });
+
   it('libellés : ce que couvre le switch et ce qui part toujours', () => {
     expect(categoryEmailScope('security')).toEqual({
-      essential: ['mot de passe modifié', 'changement d’adresse e-mail demandé', 'adresse e-mail modifiée', 'mot de passe réinitialisé'],
-      optional: ['connexion depuis un nouvel appareil'],
+      // Lot 93 : association / dissociation Google ou Apple (NOTIF-01, obligatoires).
+      // Lot 96B (Q6) : « connexion depuis un nouvel appareil » devient obligatoire.
+      essential: ['mot de passe modifié', 'changement d’adresse e-mail demandé', 'adresse e-mail modifiée', 'mot de passe réinitialisé', 'connexion depuis un nouvel appareil', 'Google ou Apple associé', 'Google ou Apple dissocié'],
+      optional: [],
     });
     expect(categoryEmailScope('duo').optional).toEqual(['réponses à vos demandes de transfert ou de suppression']);
     expect(categoryEmailScope('account').essential).toContain('incident de paiement');
@@ -173,7 +181,9 @@ describe('L79C-AC08 — doublons d’accueil, de paiement et d’abonnement', ()
   }
 
   it('accueil : WELCOME seul déclencheur (vérification de l’adresse) ; TRIAL_CONFIRMATION sans aucun appelant', () => {
-    expect(producteurs(/send\(\{\s*templateCode: 'WELCOME'/)).toEqual(['src/app/api/auth/verify-email/route.ts']);
+    // Lot 93 : l'inscription Google / Apple (adresse attestée, sans lien de
+    // vérification) envoie le même accueil, une fois, à la création du compte.
+    expect(producteurs(/send\(\{\s*templateCode: 'WELCOME'/)).toEqual(['src/app/api/auth/verify-email/route.ts', 'src/lib/auth/oauth/social-signup.ts']);
     expect(producteurs(/sendTrialConfirmationEmail\(/)).toEqual(['src/lib/email/billing-emails.ts']);
     expect(TRANSACTIONAL_EMAILS.find((t) => t.templateCode === 'TRIAL_CONFIRMATION')?.label).toMatch(/NON UTILISÉ/);
   });

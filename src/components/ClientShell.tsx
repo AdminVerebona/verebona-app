@@ -9,6 +9,8 @@ import { WriteGuardProvider } from '@/contexts/WriteGuardContext';
 import { SessionProvider } from '@/contexts/SessionContext';
 import { EntitlementsProvider } from '@/hooks/useEntitlements';
 import { PwaRecovery } from '@/components/pwa/PwaRecovery';
+import { AppUpdateRequiredGate } from '@/components/mobile/AppUpdateRequiredGate';
+import { NativeBridgeHost } from '@/components/native/NativeBridgeHost';
 
 export function ClientShell({ children }: { children: ReactNode }) {
   return (
@@ -29,9 +31,13 @@ export function ClientShell({ children }: { children: ReactNode }) {
       <SessionProvider>
         <EntitlementsProvider>
           <WriteGuardProvider>{children}</WriteGuardProvider>
+          {/* Lot 95 : intégrations de l'application iOS / Android — ne rend rien et ne charge rien dans un navigateur. */}
+          <NativeBridgeHost />
         </EntitlementsProvider>
       </SessionProvider>
       <Toaster closeButton position="top-center" richColors />
+      {/* Lot 97 : application mobile native trop ancienne — écran bloquant (jamais dans un navigateur). */}
+      <AppUpdateRequiredGate />
       <ScrollToTop />
     </>
   );

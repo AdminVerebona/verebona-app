@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db, getRevokedTokenInfo, hashToken, getUserSessionCutoff, isIssuedBefore, revokeAllUserSessions } from '@/db';
-import { clearSessionCookies, setSessionCookies } from '@/lib/auth/session-tokens';
+import { clearSessionCookies } from '@/lib/auth/session-tokens';
+import { issueSession } from '@/lib/auth/session-issuance';
+import { isSessionRevoked } from '@/lib/auth/session-registry';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { verifyRefreshToken, generateSessionTokens, newSessionId, type JWTPayload } from '@/lib/jwt';
+import { verifyRefreshToken, newSessionId, type JWTPayload } from '@/lib/jwt';
 import { ApiErrors, apiError } from '@/lib/api-errors';
 import { AccountService } from '@/services/account-service';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
@@ -82,6 +84,24 @@ export async function POST(request: NextRequest) {
       return refus;
     }
 
+    // Lot 92 (CDC 18 §20.3, SESS-07) : session révoquée UNITAIREMENT dans le
+    // registre (« Déconnecter » cet appareil, « autres appareils », BO) :
+    // aucune nouvelle session, cookies effacés. Base injoignable : 503.
+    let revokedInRegistry: boolean;
+    try {
+      revokedInRegistry = await isSessionRevoked(payload);
+    } catch {
+      return NextResponse.json(
+        { error: 'Service temporairement indisponible', code: 'SERVICE_UNAVAILABLE' },
+        { status: 503 },
+      );
+    }
+    if (revokedInRegistry) {
+      const refus = apiError(401, 'SESSION_REVOKED', 'Session revoked, please log in again');
+      clearSessionCookies(refus);
+      return refus;
+    }
+
     // Fetch fresh user data
     const [user] = await db
       .select()
@@ -153,39 +173,48 @@ export async function POST(request: NextRequest) {
 
     // Famille conservée ; un jeton historique (sans `sid`) en reçoit une.
     const sid = typeof payload.sid === 'string' && payload.sid ? payload.sid : newSessionId();
-    const { accessToken: newAccessToken, refreshToken: newRefreshToken } = await generateSessionTokens({
-      id: user.id,
-      email: user.email,
-      role: user.role as UserRole,
-      planType: user.planType as PlanType,
-      status: user.status as UserStatus,
-      currentAccountId: defaultAccount?.id,
-      hasActiveAccount: isSubscribedOrTrialing,
-    }, sid);
+
+    // CDC §10.1 : aucun jeton dans le corps de reponse. Les nouveaux jetons
+    // sont deposes uniquement en cookies HttpOnly (émission unique, lot 92 :
+    // jetons + cookies + registre ; une session ouverte avant le registre y
+    // est inscrite ici — décision PO Q5, aucune déconnexion au déploiement).
+    const response = NextResponse.json({
+      success: true,
+      message: 'Token refreshed successfully',
+    });
+    const issued = await issueSession(request, response, {
+      kind: 'rotate',
+      sid,
+      subject: {
+        id: user.id,
+        email: user.email,
+        role: user.role as UserRole,
+        planType: user.planType as PlanType,
+        status: user.status as UserStatus,
+        currentAccountId: defaultAccount?.id,
+        hasActiveAccount: isSubscribedOrTrialing,
+      },
+    });
 
     // Le nouveau jeton est forcément distinct de l'ancien (jti aléatoire) ;
     // garde-fou si ce n'était pas le cas, plutôt que déposer un jeton révoqué.
-    if (newRefreshToken === refreshToken) {
+    if (issued.refreshToken === refreshToken) {
       return ApiErrors.internalError('REFRESH_ROTATION_ERROR');
+    }
+    // Session révoquée entre le contrôle et l'inscription : rien n'est accordé.
+    if (issued.registry === 'revoked' || issued.registry === 'foreign') {
+      const refus = apiError(401, 'SESSION_REVOKED', 'Session revoked, please log in again');
+      clearSessionCookies(refus);
+      return refus;
     }
 
     void logUserActivity({
       activityType: 'AUTH_TOKEN_REFRESH',
       userId: payload.userId,
       userEmail: user.email,
-      details: { sid },
+      details: { sid, registry: issued.registry ?? 'unavailable' },
       request,
     });
-
-    // CDC §10.1 : aucun jeton dans le corps de reponse. Les nouveaux jetons
-    // sont deposes uniquement en cookies HttpOnly ci-dessous.
-    const response = NextResponse.json({
-      success: true,
-      message: 'Token refreshed successfully',
-    });
-
-    // Durées des cookies = durées des JWT (source unique, lot 53A).
-    setSessionCookies(response, { accessToken: newAccessToken, refreshToken: newRefreshToken });
 
     return response;
   } catch (error) {

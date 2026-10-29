@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db } from '@/db';
-import { generateSessionTokens } from '@/lib/jwt';
 import { ApiErrors } from '@/lib/api-errors';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
 import { logUserActivity } from '@/lib/audit-logger';
@@ -12,8 +11,9 @@ import {
   checkLoginThrottle, loginThrottledBody, recordLoginFailure, recordLoginSuccess,
   type LoginAttemptContext, type ThrottleVerdict,
 } from '@/lib/auth/login-throttle';
-import { readDeviceCookie, rememberTrustedDevice, trustedDeviceFor } from '@/lib/auth/device-trust';
-import { setSessionCookies } from '@/lib/auth/session-tokens';
+import { rememberTrustedDevice } from '@/lib/auth/device-trust';
+import { deviceAccountOf, trustedDeviceForLogin } from '@/lib/auth/device-account';
+import { issueSession } from '@/lib/auth/session-issuance';
 import { comparePasswordConstantTime } from '@/lib/auth/anti-enumeration';
 import { EMAIL_NOT_VERIFIED_MESSAGE, INVALID_CREDENTIALS_MESSAGE } from '@/lib/auth/auth-messages';
 import { userGuideProgress } from '@/db/schema';
@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
     const throttleCtx: LoginAttemptContext = {
       identifier: normalized,
       ip: getClientIp(request.headers),
-      trustedDeviceId: trustedDeviceFor(readDeviceCookie(request), normalized),
+      trustedDeviceId: await trustedDeviceForLogin(request, email, normalized),
     };
 
     if (limitEnabled) {
@@ -104,7 +104,9 @@ export async function POST(request: NextRequest) {
       last_name: string | null;
       username: string | null;
       company: string | null;
-      password_hash: string;
+      // Lot 93 : NULL pour un compte Google / Apple sans mot de passe — la
+      // comparaison se fait alors contre l'empreinte factice (refus identique).
+      password_hash: string | null;
       status: string;
       is_active: boolean;
       role: string;
@@ -271,17 +273,6 @@ export async function POST(request: NextRequest) {
     // impayé reste connectable sans « abonnement actif » (APP-FUNC-31).
     const isSubscribedOrTrialing = !!defaultAccount && hasActiveSubscriptionStatus(defaultAccount.subscriptionStatus);
 
-    // Nouvelle session : nouvelle famille (`sid`), conservée par les rotations.
-    const { accessToken, refreshToken } = await generateSessionTokens({
-      id: user.id,
-      email: user.email,
-      role: user.role as UserRole,
-      planType: user.planType as PlanType,
-      status: user.status as UserStatus,
-      currentAccountId: defaultAccount?.id,
-      hasActiveAccount: isSubscribedOrTrialing,
-    });
-
     const response = NextResponse.json({
       success: true,
       user: {
@@ -300,10 +291,27 @@ export async function POST(request: NextRequest) {
       // Ils sont deposes uniquement en cookies HttpOnly ci-dessous.
     });
 
-    // Durées = celles des JWT (accès 15 min, renouvellement 30 j glissants).
-    setSessionCookies(response, { accessToken, refreshToken });
     // D1 : ce navigateur / cette application est désormais reconnu pour ce compte.
-    rememberTrustedDevice(request, response, normalizeEmail(user.email));
+    const deviceId = rememberTrustedDevice(request, response, deviceAccountOf(user));
+    // Lot 92 : émission UNIQUE (jetons + cookies + registre des sessions).
+    // Nouvelle famille (`sid`), conservée par les rotations ; une connexion
+    // n'éjecte jamais un autre appareil — seule l'ancienne session de CE
+    // navigateur est remplacée.
+    await issueSession(request, response, {
+      kind: 'open',
+      method: 'password',
+      replaceCurrent: true,
+      deviceId,
+      subject: {
+        id: user.id,
+        email: user.email,
+        role: user.role as UserRole,
+        planType: user.planType as PlanType,
+        status: user.status as UserStatus,
+        currentAccountId: defaultAccount?.id,
+        hasActiveAccount: isSubscribedOrTrialing,
+      },
+    });
 
     return response;
   } catch (error) {

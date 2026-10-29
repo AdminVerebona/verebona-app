@@ -78,7 +78,10 @@ export const NOTIFICATION_TYPES = {
   EMAIL_CHANGE_REQUESTED: 'EMAIL_CHANGE_REQUESTED',
   EMAIL_CHANGED: 'EMAIL_CHANGED',
   PASSWORD_RESET_COMPLETED: 'PASSWORD_RESET_COMPLETED',
-  NEW_DEVICE_LOGIN: 'NEW_DEVICE_LOGIN', // phase ultérieure (registre d'appareils)
+  NEW_DEVICE_LOGIN: 'NEW_DEVICE_LOGIN', // lot 96B (CDC 18 Q6) : connexion depuis un nouvel appareil
+  /** Lot 93 (CDC 18 §22, NOTIF-01) : Google / Apple associé ou dissocié. */
+  AUTH_IDENTITY_LINKED: 'AUTH_IDENTITY_LINKED',
+  AUTH_IDENTITY_UNLINKED: 'AUTH_IDENTITY_UNLINKED',
 
   // ── Actualités Verebona (consentement distinct, jamais dans la cloche) ───
   NEWS_ANNOUNCEMENT: 'NEWS_ANNOUNCEMENT',
@@ -205,7 +208,10 @@ export interface NotificationPayloadMap {
   EMAIL_CHANGE_REQUESTED: { newEmail?: string };
   EMAIL_CHANGED: { newEmail?: string };
   PASSWORD_RESET_COMPLETED: Record<string, never>;
-  NEW_DEVICE_LOGIN: { platform?: string };
+  // Lot 96B : date ISO de la connexion, libellés d'appareil (aucune IP, aucune localisation).
+  NEW_DEVICE_LOGIN: { at: string; deviceLabel: string; browserLabel: string; clientType?: string };
+  AUTH_IDENTITY_LINKED: { provider: 'google' | 'apple' };
+  AUTH_IDENTITY_UNLINKED: { provider: 'google' | 'apple' };
 
   NEWS_ANNOUNCEMENT: { announcementId?: string; url?: string };
 }

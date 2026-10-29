@@ -3,8 +3,9 @@
  *
  * SOURCE UNIQUE des chemins utilisés par le manifeste (`/api/manifest`),
  * les balises `<link>` du layout racine et, par recopie vérifiée par test,
- * `public/manifest.json` et `public/sw.js` (fichiers statiques qui ne peuvent
- * pas importer ce module).
+ * `public/manifest.json` (fichier statique qui ne peut pas importer ce
+ * module). Lot 94 (M3) : `public/sw.js` n'affiche plus de notification et ne
+ * référence plus d'icône.
  *
  * Symbole : planche validée par le PO au lot 71H (commit a179e11 — tuile
  * pétrole #17474D pleine, cases ivoire #F8F6F1, cube cuivre #D66B53, sans

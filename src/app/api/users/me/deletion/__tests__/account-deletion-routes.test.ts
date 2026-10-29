@@ -24,7 +24,7 @@ describe('/api/users/me/deletion', () => {
     expect([...route.matchAll(HANDLER)].map((m) => m[1]).sort()).toEqual(['DELETE', 'GET', 'POST']);
     expect((route.match(/SessionService\.getSession\s*\(/g) ?? []).length).toBe(2);
     expect(route).toContain('return handleCloseAccount(request)');
-    expect(close).toMatch(/userId = \(await SessionService\.getSession\(request\)\)\.userId/);
+    expect(close).toMatch(/const session = await SessionService\.getSession\(request\);\s*userId = session\.userId;/);
   });
 
   it('aucun identifiant d’utilisateur lu dans la requête', () => {
@@ -42,9 +42,16 @@ describe('/api/users/me/deletion', () => {
     expect((await DELETE(r('DELETE'))).status).toBe(401);
   });
 
-  it('la clôture exige le texte ET le mot de passe', () => {
-    expect(close).toContain('password: typeof body.password === \'string\' ? body.password : null');
-    expect(close).toContain('confirmation: typeof body.confirmation === \'string\' ? body.confirmation : null');
+  // Lot 92 (CDC 18 §25, REAUTH-07) : texte ET preuve d'identité — mot de passe
+  // dans la requête OU preuve de réauthentification fraîche de la session
+  // (lot 93 : Google / Apple, seule voie d'un compte sans mot de passe).
+  it('la clôture exige le texte ET une preuve d’identité (mot de passe ou réauthentification fraîche)', () => {
+    expect(close).toContain("const password = typeof body.password === 'string' && body.password ? body.password : null");
+    expect(close).toContain("const confirmation = typeof body.confirmation === 'string' ? body.confirmation : null");
+    expect(close).toContain("reauthProven: reauth?.state === 'fresh'");
+    expect(close).toContain("consumeReauthProof(reauth.proof.id, 'account_deletion', now)");
+    expect(close).toContain('revokeAppleAuthorizationsForUser(userId)');
+    expect(close).not.toContain('reauth-bridge');
   });
 });
 

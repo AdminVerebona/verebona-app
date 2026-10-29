@@ -244,8 +244,29 @@ describe('public/sw.js', () => {
     expect(sw.deleted.sort()).toEqual(['verebona-static-v5.1.0', 'verebona-v5.0.0']);
   });
 
-  it('les notifications push restent gérées (CA-03)', () => {
+  it('lot 94 (M3) : aucun Web Push — ni réception, ni clic, ni réabonnement ; cache et chunks conservés', () => {
     const sw = chargerSw(async () => new Response(''));
-    for (const t of ['push', 'notificationclick', 'pushsubscriptionchange']) expect(typeof sw.listeners[t]).toBe('function');
+    for (const t of ['push', 'notificationclick', 'pushsubscriptionchange']) expect(sw.listeners[t], t).toBeUndefined();
+    for (const t of ['install', 'activate', 'fetch', 'message']) expect(typeof sw.listeners[t], t).toBe('function');
+    expect(SOURCE).not.toMatch(/showNotification|pushManager\.subscribe|\/api\/push\//);
+  });
+
+  it('lot 94 (M3) : à l’activation, l’abonnement push résiduel du navigateur est résilié, sans réseau', async () => {
+    const listeners: Record<string, (e: unknown) => void> = {};
+    const appels: string[] = [];
+    const self = {
+      addEventListener: (t: string, fn: (e: unknown) => void) => { listeners[t] = fn; },
+      clients: { matchAll: async () => [], claim: async () => undefined },
+      registration: { pushManager: { getSubscription: async () => ({ unsubscribe: async () => { appels.push('unsubscribe'); return true; } }) } },
+      location: { origin: 'https://app' },
+      skipWaiting: () => undefined,
+    };
+    const caches = { keys: async () => [] as string[], delete: async () => true };
+    const fetchEspion = async () => { appels.push('fetch'); return new Response(''); };
+    vm.runInNewContext(SOURCE, { self, caches, fetch: fetchEspion, Response, Request, URL, location: { origin: 'https://app' }, console, Date, Map, Promise });
+    let attente: Promise<unknown> = Promise.resolve();
+    listeners.activate({ waitUntil: (p: Promise<unknown>) => { attente = p; } });
+    await attente;
+    expect(appels).toEqual(['unsubscribe']);
   });
 });

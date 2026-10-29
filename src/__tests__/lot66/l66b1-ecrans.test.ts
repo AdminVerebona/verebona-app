@@ -85,6 +85,9 @@ const LISTE_BLANCHE: Record<string, RegExp> = {
   'src/components/assets/DocumentDrawer.tsx': /^bg-black$/,
   'src/components/Logo.tsx': /^#(?:D66B53|17474D)$/,
   'src/components/LogoLoader.tsx': /^#D66B53$/,
+  // Lot 93 : logo « G » officiel de Google (couleurs imposées par la charte
+  // Google Identity pour le bouton « Continuer avec Google »).
+  'src/components/auth/SocialSignInButtons.tsx': /^#(?:EA4335|4285F4|FBBC05|34A853)$/,
 };
 
 describe('L66B1-01 — aucune couleur brute dans l’application (hors liste blanche)', () => {

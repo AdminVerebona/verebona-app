@@ -466,3 +466,32 @@ describe('règles pures', () => {
     expect(accountDeletionNotificationText('REMINDER', '2026-10-31T09:00:00Z')).toContain('le 31 octobre 2026');
   });
 });
+
+describe('lot 93 — compte sans mot de passe (CDC 18 §25, INT-05, E2E-22)', () => {
+  it('compte Google / Apple sans mot de passe, sans réauthentification : REAUTH_REQUIRED, rien n’est écrit', async () => {
+    const h = harness({ user: { passwordHash: null } });
+    expect(await closeAccountForDeletion({ userId: 3, confirmation: ACCOUNT_DELETION_CONFIRMATION, password: null, now: T0 }, h.deps))
+      .toMatchObject({ ok: false, code: 'REAUTH_REQUIRED' });
+    expect(await closeAccountForDeletion({ userId: 3, confirmation: ACCOUNT_DELETION_CONFIRMATION, password: 'quelconque', now: T0 }, h.deps))
+      .toMatchObject({ ok: false, code: 'REAUTH_REQUIRED' });
+    expect(h.calls).toEqual([]);
+  });
+
+  it('réauthentification fraîche par le fournisseur : clôture sans mot de passe, texte de confirmation toujours exigé', async () => {
+    const h = harness({ user: { passwordHash: null } });
+    expect(await closeAccountForDeletion({ userId: 3, confirmation: 'non', reauthProven: true, now: T0 }, h.deps))
+      .toMatchObject({ ok: false, code: 'INVALID_CONFIRMATION' });
+    const r = await closeAccountForDeletion({ userId: 3, confirmation: ACCOUNT_DELETION_CONFIRMATION, reauthProven: true, now: T0 }, h.deps);
+    expect(r.ok).toBe(true);
+    expect(h.calls).toContain('revokeSessions');
+    expect(h.deps.verifyPassword).not.toHaveBeenCalled();
+  });
+
+  it('compte avec mot de passe : sans preuve, le mot de passe reste exigé et vérifié', async () => {
+    const h = harness();
+    expect(await closeAccountForDeletion({ userId: 3, confirmation: ACCOUNT_DELETION_CONFIRMATION, now: T0 }, h.deps))
+      .toMatchObject({ ok: false, code: 'PASSWORD_REQUIRED' });
+    expect(await closeAccountForDeletion({ userId: 3, confirmation: ACCOUNT_DELETION_CONFIRMATION, password: 'faux', now: T0 }, h.deps))
+      .toMatchObject({ ok: false, code: 'INVALID_PASSWORD' });
+  });
+});

@@ -7,7 +7,12 @@
  *  - journal de livraison : supprimé après 12 mois ;
  *  - événements d'outbox : supprimés après 12 mois ;
  *  - notifications de cloche : supprimées après 12 mois ;
- *  - souscriptions push révoquées/expirées/en échec : supprimées après 30 jours.
+ *  - abonnements Web Push (table dormante depuis le lot 94, décision PO M3) :
+ *    les lignes encore « actives » sont révoquées (plus aucun envoi possible),
+ *    puis supprimées 30 jours après leur révocation / expiration / échec ;
+ *  - lot 97 — installations de l'application mobile : non revues depuis
+ *    MOBILE_PUSH_STALE_DAYS (180 j) → révoquées (jeton vidé, PUSH-09) ;
+ *    inactives depuis plus de 90 jours → supprimées.
  *
  * Ne touche jamais aux préférences (durée du compte) ni aux consentements.
  */
@@ -21,6 +26,11 @@ export interface PurgeResult {
   outboxDeleted: number;
   bellDeleted: number;
   subscriptionsDeleted: number;
+  /** Lot 94 (M3) : anciens abonnements Web Push encore « actifs » révoqués. */
+  webPushSubscriptionsRevoked?: number;
+  /** Lot 97 : installations mobiles révoquées pour inactivité / supprimées. */
+  mobileInstallationsStaled?: number;
+  mobileInstallationsDeleted?: number;
 }
 
 async function affected(query: ReturnType<typeof sql>): Promise<number> {
@@ -60,7 +70,17 @@ export async function runNotificationPurge(): Promise<PurgeResult> {
     RETURNING id;
   `);
 
-  // 5) Nettoyer les souscriptions push inactives depuis plus de 30 jours.
+  // 5) Web Push supprimé (lot 94, décision PO M3) : un ancien abonnement
+  //    navigateur ne doit plus figurer « actif » — révoqué ici (aucun appel
+  //    au navigateur), supprimé par l'étape suivante 30 jours plus tard.
+  const webPushSubscriptionsRevoked = await affected(sql`
+    UPDATE push_subscriptions
+       SET status = 'revoked', updated_at = now()
+     WHERE status = 'active'
+    RETURNING id;
+  `);
+
+  // 5 bis) Nettoyer les souscriptions push inactives depuis plus de 30 jours.
   const subscriptionsDeleted = await affected(sql`
     DELETE FROM push_subscriptions
      WHERE status IN ('revoked', 'expired', 'failed')
@@ -68,5 +88,17 @@ export async function runNotificationPurge(): Promise<PurgeResult> {
     RETURNING id;
   `);
 
-  return { outboxMinimized, deliveriesDeleted, outboxDeleted, bellDeleted, subscriptionsDeleted };
+  // 6) Lot 97 : installations mobiles (table 0814 ; absente → ignorée).
+  let mobile = { staled: 0, deleted: 0 };
+  try {
+    const { purgeMobileInstallations } = await import('@/lib/mobile/push-installations');
+    mobile = await purgeMobileInstallations();
+  } catch (e) {
+    if ((e as { code?: string }).code !== '42P01') console.error('[notifications/purge] installations mobiles :', (e as Error).message);
+  }
+
+  return {
+    outboxMinimized, deliveriesDeleted, outboxDeleted, bellDeleted, subscriptionsDeleted, webPushSubscriptionsRevoked,
+    mobileInstallationsStaled: mobile.staled, mobileInstallationsDeleted: mobile.deleted,
+  };
 }

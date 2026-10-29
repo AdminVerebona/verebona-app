@@ -1,0 +1,30 @@
+# Projet mobile (lot 95) — rien de secret ni de généré n'est versionné.
+node_modules/
+
+# Fichiers propres à UN build (écrits par scripts/prepare.mjs)
+www/app-config.js
+android/verebona.properties
+ios/Verebona.xcconfig
+
+# Configuration Firebase et signature : posées par la CI depuis les secrets GitHub
+google-services.json
+GoogleService-Info.plist
+*.jks
+*.keystore
+*.p12
+*.p8
+*.mobileprovision
+*.cer
+
+# Sorties de build
+android/app/build/
+ios/App/build/
+ios/App/output/
+*.aab
+*.apk
+*.ipa
+*.dSYM.zip
+sbom-dependances.json
+
+# Liens SwiftPM recréés par `cap sync` (chemins absolus de la machine)
+ios/App/CapApp-SPM/symlinks/

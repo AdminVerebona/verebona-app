@@ -3,8 +3,9 @@
  * par POST /api/users/me/deletion et DELETE /api/users/me (ancien point
  * d'entrée de la suppression immédiate, conservé pour les clients existants).
  *
- * Confirmation renforcée : texte « SUPPRIMER MON COMPTE » ET mot de passe
- * (même convention que le changement de mot de passe). Toutes les sessions
+ * Confirmation renforcée : texte « SUPPRIMER MON COMPTE » ET preuve
+ * d'identité — preuve de réauthentification fraîche de la session (lot 92,
+ * consommée) ou mot de passe dans la requête (historique). Toutes les sessions
  * sont révoquées ; CET appareil reçoit une session neuve, au statut
  * PENDING_DELETION, qui ne donne accès qu'à l'écran « Compte en cours de
  * suppression » (annuler, exporter).
@@ -14,15 +15,19 @@ import { eq } from 'drizzle-orm';
 import { db, getUserSessionCutoff, hashToken, revokeToken } from '@/db';
 import { users } from '@/db/schema';
 import { SessionService } from '@/lib/session-service';
-import { issueSessionTokens, setSessionCookies } from '@/lib/auth/session-tokens';
+import { sessionSubjectFor } from '@/lib/auth/session-tokens';
+import { issueSession } from '@/lib/auth/session-issuance';
 import {
+  ACCOUNT_DELETION_CONFIRMATION,
   CLOSURE_ERROR_STATUS,
   closeAccountForDeletion,
   toStatusView,
 } from '@/services/account/voluntary-deletion.service';
 import { PENDING_DELETION_PAGE } from '@/lib/auth/account-closure';
 import { reauthBlockedResponse, recordReauthFailure, recordReauthSuccess } from '@/lib/auth/reauth-throttle';
+import { consumeReauthProof, getReauthState, reauthRequiredResponse } from '@/lib/auth/reauth';
 import { REFRESH_TOKEN_TTL_S } from '@/lib/auth/token-lifetimes';
+import { revokeAppleAuthorizationsForUser } from '@/lib/auth/oauth/account-security';
 
 const REFRESH_TTL_MS = REFRESH_TOKEN_TTL_S * 1000;
 
@@ -39,7 +44,9 @@ export async function reopenSessionOnThisDevice(request: NextRequest, response: 
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
-  if (user) setSessionCookies(response, await issueSessionTokens(user));
+  // Lot 92 : nouvelle session (émise après la borne) qui REMPLACE celle de cet
+  // appareil dans le registre — émission unique.
+  if (user) await issueSession(request, response, { kind: 'open', method: 'session_reopen', replaceCurrent: true, subject: await sessionSubjectFor(user) });
   const presented = request.cookies.get('refresh_token')?.value;
   if (presented) {
     await revokeToken(await hashToken(presented), userId, new Date(Date.now() + REFRESH_TTL_MS))
@@ -49,8 +56,11 @@ export async function reopenSessionOnThisDevice(request: NextRequest, response: 
 
 export async function handleCloseAccount(request: NextRequest): Promise<NextResponse> {
   let userId: number;
+  let sid: string | undefined;
   try {
-    userId = (await SessionService.getSession(request)).userId;
+    const session = await SessionService.getSession(request);
+    userId = session.userId;
+    sid = session.sid;
   } catch (error) {
     return SessionService.handleSessionError(error);
   }
@@ -64,12 +74,28 @@ export async function handleCloseAccount(request: NextRequest): Promise<NextResp
   if (blocked) return blocked;
 
   const body = (await request.json().catch(() => ({}))) as { confirmation?: unknown; password?: unknown };
+  const password = typeof body.password === 'string' && body.password ? body.password : null;
+  const confirmation = typeof body.confirmation === 'string' ? body.confirmation : null;
   const now = new Date();
+
+  // Lot 92 (CDC 18 §25, REAUTH-07, Q7) : sans mot de passe dans la requête,
+  // l'identité est prouvée par la preuve de réauthentification fraîche de
+  // CETTE session, CONSOMMÉE au succès (action à risque maximal). Le texte
+  // « SUPPRIMER MON COMPTE » reste exigé. Mot de passe fourni : parcours
+  // historique inchangé (clients non mis à jour).
+  const reauth = password ? null : await getReauthState(userId, sid, now);
+  if (reauth && reauth.state !== 'fresh' && confirmation === ACCOUNT_DELETION_CONFIRMATION) {
+    return reauthRequiredResponse(reauth.state === 'expired' ? 'REAUTH_EXPIRED' : 'REAUTH_REQUIRED');
+  }
   try {
     const result = await closeAccountForDeletion({
       userId,
-      confirmation: typeof body.confirmation === 'string' ? body.confirmation : null,
-      password: typeof body.password === 'string' ? body.password : null,
+      confirmation,
+      password,
+      // Lot 92 + 93 (CDC 18 §25) : sans mot de passe saisi, la preuve de
+      // réauthentification fraîche de CETTE session (mot de passe, Google ou
+      // Apple — seule voie d'un compte sans mot de passe) vaut identité.
+      reauthProven: reauth?.state === 'fresh',
       now,
     });
     if (!result.ok) {
@@ -77,7 +103,11 @@ export async function handleCloseAccount(request: NextRequest): Promise<NextResp
       return NextResponse.json({ error: result.code, message: result.message }, { status: CLOSURE_ERROR_STATUS[result.code] });
     }
 
-    await recordReauthSuccess(userId);
+    if (reauth?.state === 'fresh') await consumeReauthProof(reauth.proof.id, 'account_deletion', now);
+    else await recordReauthSuccess(userId);
+    // Lot 93 (CDC 18 §25) : Sign in with Apple — autorisation révoquée chez
+    // Apple à la demande de suppression (au mieux).
+    await revokeAppleAuthorizationsForUser(userId).catch((e) => console.error('[account-deletion] révocation Apple :', (e as Error)?.message ?? e));
     const response = NextResponse.json({
       success: true,
       deletion: toStatusView(result.schedule, now),

@@ -34,11 +34,38 @@
  * message dédié et proposer un nouvel envoi, plutôt qu'un « lien invalide »
  * sans explication.
  * ══════════════════════════════════════════════════════════════════════════
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 96A — INSCRIPTION REMPLACÉE PAR UN TIERS (CDC 18 Q9, P1)
+ *
+ * Faille REPRODUITE sur le lot 93 : la victime s'inscrit ; un tiers
+ * s'inscrit ensuite avec la MÊME adresse et son propre mot de passe (réponse
+ * neutre, l'inscription en attente est remplacée) ; le lien d'activation de
+ * l'inscription du tiers arrive dans la boîte de la victime, qui clique :
+ * le compte du tiers est activé, une session ouverte, et le tiers s'y
+ * connecte ensuite avec son mot de passe.
+ *
+ * Correctif :
+ *   · le lien est attaché à UNE inscription : la signature couvre en plus
+ *     l'EMPREINTE d'inscription `users.signup_nonce` (migration 0828), tirée
+ *     au hasard à chaque nouvelle inscription. Inscriptions antérieures
+ *     (empreinte NULL) : signature inchangée, donc liens déjà envoyés
+ *     reconnus — mais soumis à la règle suivante ;
+ *   · le lien N'ACTIVE PLUS RIEN seul : il mène à une page qui demande le
+ *     mot de passe choisi à l'inscription (`POST /api/auth/verify-email`) ;
+ *     sans lui, rien n'est activé. La victime ne connaît pas le mot de passe
+ *     du tiers : le compte du tiers reste inactif, et elle reprend son
+ *     inscription (une réinscription avec un autre mot de passe remplace
+ *     l'inscription en attente) ;
+ *   · tentatives limitées (`AUTH_LIMITS.activationUser` / `activationIp`) et
+ *     journalisées (ACCOUNT_ACTIVATION_FAILED / _THROTTLED / ACCOUNT_ACTIVATED) ;
+ *   · comptes Google / Apple (« social-only ») : créés actifs, jamais concernés.
+ * ══════════════════════════════════════════════════════════════════════════
  */
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { db } from '@/db';
 import { users } from '@/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 
 /** Durée de validité d'un lien de vérification (annoncée dans l'e-mail). */
 export const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -76,11 +103,22 @@ export function emailVerificationSecret(): string {
 interface VerificationSubject {
   id: number;
   email: string;
+  /**
+   * Lot 96A : empreinte de l'inscription (`users.signup_nonce`). Absente ou
+   * NULL : inscription antérieure au lot 96A — signature historique.
+   */
+  signupNonce?: string | null;
+}
+
+/** Lot 96A : nouvelle empreinte d'inscription (128 bits aléatoires). */
+export function newSignupNonce(): string {
+  return randomBytes(16).toString('base64url');
 }
 
 function sign(subject: VerificationSubject, issuedAtMs: number, secret: string): string {
+  const nonce = subject.signupNonce ? `:${subject.signupNonce}` : '';
   return createHmac('sha256', secret)
-    .update(`${PURPOSE}:${subject.id}:${subject.email.trim().toLowerCase()}:${issuedAtMs}`)
+    .update(`${PURPOSE}:${subject.id}:${subject.email.trim().toLowerCase()}:${issuedAtMs}${nonce}`)
     .digest('base64url');
 }
 
@@ -173,19 +211,30 @@ export function buildEmailVerificationUrl(
 }
 
 /**
- * Active le compte SI ET SEULEMENT SI il ne l'est pas encore.
+ * Active le compte SI ET SEULEMENT SI il ne l'est pas encore ET que
+ * l'inscription est toujours celle du lien (empreinte inchangée, lot 96A).
  *
  * C'est ce qui rend le lien à usage unique, y compris en concurrence : deux
  * requêtes simultanées portant le même lien passent toutes deux la
  * vérification de signature, mais PostgreSQL sérialise les deux UPDATE sur la
  * ligne ; le second, réévaluant `is_active = false` après le premier, ne
- * modifie rien (0 ligne) et n'obtient donc pas de session.
+ * modifie rien (0 ligne) et n'obtient donc pas de session. Une réinscription
+ * concurrente (nouvelle empreinte, autre mot de passe) fait de même échouer
+ * l'activation. L'empreinte est CONSERVÉE : un lien déjà utilisé reste
+ * reconnu (« adresse déjà vérifiée ») au lieu de paraître fabriqué.
+ *
+ * L'appelant a VÉRIFIÉ le mot de passe de l'inscription (lot 96A) : cette
+ * fonction ne doit jamais être appelée sur la seule foi du lien.
  */
-export async function consumeEmailVerification(userId: number): Promise<boolean> {
+export async function consumeEmailVerification(userId: number, signupNonce: string | null = null): Promise<boolean> {
   const updated = await db
     .update(users)
     .set({ isActive: true, updatedAt: new Date() })
-    .where(and(eq(users.id, userId), eq(users.isActive, false)))
+    .where(and(
+      eq(users.id, userId),
+      eq(users.isActive, false),
+      signupNonce ? eq(users.signupNonce, signupNonce) : isNull(users.signupNonce),
+    ))
     .returning({ id: users.id });
   return updated.length === 1;
 }

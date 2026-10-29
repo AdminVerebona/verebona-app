@@ -146,9 +146,11 @@ export async function verifyPasswordResetToken(
     .from(users)
     .where(eq(users.id, parsed.userId))
     .limit(1);
-  const check = checkPasswordResetToken(token, user ?? null);
+  // Lot 93 : un compte sans mot de passe (Google / Apple) n'a jamais reçu de
+  // lien de réinitialisation — aucun jeton ne peut lui en créer un (PWD-07).
+  if (!user?.passwordHash) return { ok: false, code: 'INVALID_TOKEN' };
+  const check = checkPasswordResetToken(token, { ...user, passwordHash: user.passwordHash });
   if (!check.ok) return check;
-  if (!user) return { ok: false, code: 'INVALID_TOKEN' };
   return { ok: true, userId: check.userId, passwordHash: user.passwordHash };
 }
 
@@ -187,7 +189,10 @@ export async function consumePasswordResetToken(
 type StartResetResult =
   | { status: 'sent'; userId: number }
   | { status: 'unknown_email' }
-  | { status: 'send_failed'; userId: number; error?: string };
+  | { status: 'send_failed'; userId: number; error?: string }
+  // Lot 93 (CDC 18 §10.4, §26, PWD-07, INT-07) : compte sans mot de passe.
+  | { status: 'social_only_guidance_sent'; userId: number }
+  | { status: 'no_local_password'; userId: number };
 
 async function sendResetEmail(user: ResetSubject & { firstName: string }): Promise<StartResetResult> {
   const token = createPasswordResetToken(user);
@@ -212,6 +217,29 @@ async function sendResetEmail(user: ResetSubject & { firstName: string }): Promi
   return { status: 'sent', userId: user.id };
 }
 
+/**
+ * Lot 93 (CDC 18 §10.4) : « Mot de passe oublié » d'un compte SANS mot de
+ * passe (Google / Apple) — aucun mot de passe n'est créé ; l'e-mail indique
+ * de se connecter avec le fournisseur (et comment ajouter un mot de passe).
+ */
+async function sendSocialOnlyGuidance(user: { id: number; email: string; firstName: string }): Promise<StartResetResult> {
+  const { pgClient } = await import('@/db');
+  const rows = await pgClient<{ provider: string }[]>`SELECT provider FROM auth_identities WHERE user_id = ${user.id} ORDER BY provider`;
+  const names = rows.map((r) => (r.provider === 'apple' ? 'Apple' : 'Google'));
+  const providers = names.length === 0 ? 'Google ou Apple' : names.join(' ou ');
+  const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  const result = await emailService.send({
+    templateCode: 'PASSWORD_RESET_SOCIAL_ONLY',
+    to: user.email,
+    variables: { firstName: user.firstName, providers, loginUrl: `${baseUrl}/login` },
+    userId: user.id,
+  });
+  if (!result.success) return { status: 'send_failed', userId: user.id, error: result.error };
+  return { status: 'social_only_guidance_sent', userId: user.id };
+}
+
+const hasLocalPassword = (hash: string | null | undefined): hash is string => typeof hash === 'string' && hash.startsWith('$2');
+
 const RESET_SUBJECT_COLUMNS = {
   id: users.id,
   email: users.email,
@@ -230,7 +258,8 @@ export async function startPasswordReset(email: string): Promise<StartResetResul
     .where(eq(users.email, email.trim().toLowerCase()))
     .limit(1);
   if (!user) return { status: 'unknown_email' };
-  return sendResetEmail(user);
+  if (!hasLocalPassword(user.passwordHash)) return sendSocialOnlyGuidance(user);
+  return sendResetEmail({ ...user, passwordHash: user.passwordHash });
 }
 
 /**
@@ -241,5 +270,8 @@ export async function startPasswordReset(email: string): Promise<StartResetResul
 export async function startPasswordResetForUser(userId: number): Promise<StartResetResult> {
   const [user] = await db.select(RESET_SUBJECT_COLUMNS).from(users).where(eq(users.id, userId)).limit(1);
   if (!user) return { status: 'unknown_email' };
-  return sendResetEmail(user);
+  // Lot 93 (CDC 18 §26, INT-07) : l'administration ne crée jamais de mot de
+  // passe ; aucun e-mail — le BO informe qu'aucun mot de passe n'existe.
+  if (!hasLocalPassword(user.passwordHash)) return { status: 'no_local_password', userId: user.id };
+  return sendResetEmail({ ...user, passwordHash: user.passwordHash });
 }

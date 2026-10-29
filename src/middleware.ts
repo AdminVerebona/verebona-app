@@ -10,6 +10,23 @@ import {
   isPageAllowedWhilePendingDeletion,
   isPendingDeletion,
 } from '@/lib/auth/account-closure';
+import { readClientContext } from '@/lib/mobile/client-context';
+import {
+  APP_UPDATE_REQUIRED_STATUS, appUpdateRequiredBody, evaluateCompatibility, isExemptFromVersionGate, readMobileServerConfig,
+} from '@/lib/mobile/mobile-config';
+
+/** Lot 97 : refus contrôlé d'une application mobile trop ancienne, ou null. */
+function mobileVersionGate(request: NextRequest, pathname: string): NextResponse | null {
+  if (isExemptFromVersionGate(pathname)) return null;
+  const ctx = readClientContext(request);
+  if (ctx.client !== 'IOS' && ctx.client !== 'ANDROID') return null;
+  const r = evaluateCompatibility(ctx, readMobileServerConfig());
+  if (r.status !== 'update_required') return null;
+  return NextResponse.json(appUpdateRequiredBody(r), {
+    status: APP_UPDATE_REQUIRED_STATUS,
+    headers: { 'Cache-Control': 'no-store', ...(r.minVersion ? { 'X-Verebona-Min-Version': r.minVersion } : {}) },
+  });
+}
 
 // Lot 37 (C4) : plus aucun limiteur en mémoire ici. Le limiteur des parcours
 // d'authentification (connexion, mot de passe oublié, réinitialisation,
@@ -40,7 +57,7 @@ import {
  *   1. routes publiques manquantes : flux ICS par jeton (`/api/calendar/`,
  *      appelé par les agendas externes, sans cookie), transmission d'un bien
  *      (`/api/transmission/`, destinataire sans compte), manifeste PWA
- *      (chargé sans cookie par le navigateur), clé publique Web Push,
+ *      (chargé sans cookie par le navigateur), clé publique Web Push (retirée au lot 94),
  *      purge planifiée `/api/purge-pending-uploads` (CRON_SECRET) ;
  *   2. le blocage « pas de compte actif » (403 NO_ACTIVE_ACCOUNT, redirection
  *      vers l'onboarding) est RETIRÉ : il aurait interdit le mode restreint
@@ -91,7 +108,10 @@ export async function middleware(request: NextRequest) {
         return NextResponse.next();
       }
       const loginUrl = new URL('/login', request.url);
-      loginUrl.searchParams.set('returnUrl', pathname);
+      // Lot 97 (CDC 12 §19) : la destination mémorisée garde sa requête
+      // (`/documents?drawer=…`, `/agenda?date=…`) — un lien universel ou un
+      // push ouvert sans session revient à l'écran exact après connexion.
+      loginUrl.searchParams.set('returnUrl', `${pathname}${request.nextUrl.search}`);
       return NextResponse.redirect(loginUrl);
     }
 
@@ -134,6 +154,14 @@ export async function middleware(request: NextRequest) {
         },
       });
     }
+
+    // ── Lot 97 (CDC 12 §25 API-07, §30 VER-03) : version minimale mobile ──
+    // Seul un client natif (en-tête X-Verebona-Client IOS/ANDROID) déclarant
+    // une version inférieure au minimum de sa plateforme est refusé (426
+    // APP_UPDATE_REQUIRED). Jamais le Web ni la PWA. Configuration : variables
+    // MOBILE_MIN_VERSION_* lues à l'exécution (`lib/mobile/mobile-config`).
+    const versionGate = mobileVersionGate(request, pathname);
+    if (versionGate) return versionGate;
 
     // ── Protection CSRF (CDC §9.1) ──
     // La session voyageant par cookies, toute requete modifiant des donnees
@@ -193,7 +221,7 @@ export async function middleware(request: NextRequest) {
       '/api/referral/validate', // Validation publique du code parrainage
       '/api/contact', // Formulaire de contact du site vitrine (visiteur non connecte)
       '/api/manifest', // Manifeste PWA : chargé par le navigateur SANS cookie
-      '/api/push/public-key', // Clé publique VAPID : publique par nature
+      '/api/mobile/config', // Lot 97 : versions minimales, interrupteurs, liens stores — lue avant toute connexion
       '/api/purge-pending-uploads', // Tâche planifiée, protégée par CRON_SECRET
       // Invitation Premium Duo : GET vérifie le lien pour un invité pas encore
       // inscrit (« public endpoint » par conception). POST exige toujours une
@@ -233,7 +261,13 @@ export async function middleware(request: NextRequest) {
       // Transmission d'un bien : GET « public, sans auth » par conception ;
       // POST sans session renvoie `requiresSignup` au destinataire sans
       // compte. La route lit la session si elle existe.
-      pathname.startsWith('/api/transmission/');
+      pathname.startsWith('/api/transmission/') ||
+      // Lot 93 (CDC 18 §12.2, §29) : connexion Google / Apple — parcours SANS
+      // session (démarrage, retour du fournisseur, étape « Vous avez déjà un
+      // compte ? », échange de l'application mobile). Chaque route se protège
+      // (state, nonce, PKCE, liaison au navigateur) ; 404 tant que les
+      // identifiants du fournisseur ne sont pas posés.
+      pathname.startsWith('/api/auth/oauth/');
 
     if (publicRoutes.includes(pathname) || isPublicPrefix || isCronRoute) {
       return NextResponse.next();

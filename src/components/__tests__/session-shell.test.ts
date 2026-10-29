@@ -72,15 +72,13 @@ describe('câblage', () => {
     expect(layout).toMatch(/<SessionUnavailableScreen/);
   });
 
-  it('DashboardLayout : sortie par la procédure unique, push borné par elle', () => {
-    const layout = sansCommentaires(read('src/components/DashboardLayout.tsx'));
-    expect(layout).toMatch(/apiClient\.signOut\(\{ unsubscribePush: unsubscribeCurrentDevice \}\)/);
-    expect(layout).not.toMatch(/await unsubscribeCurrentDevice\(\)/);
-    expect(layout).not.toMatch(/apiClient\.post\('\/api\/auth\/logout'\)/);
-  });
-
-  it('push-client : la désinscription accepte un signal d’annulation', () => {
-    expect(read('src/lib/push/push-client.ts')).toMatch(/export async function unsubscribeCurrentDevice\(signal\?: AbortSignal\)/);
+  it('DashboardLayout / AdminSidebar : sortie par la procédure unique ; plus de Web Push (lot 94, M3)', () => {
+    for (const f of ['src/components/DashboardLayout.tsx', 'src/components/AdminSidebar.tsx']) {
+      const src = sansCommentaires(read(f));
+      expect(src, f).toMatch(/apiClient\.signOut\(\)/);
+      expect(src, f).not.toMatch(/unsubscribeCurrentDevice|lib\/push\//);
+      expect(src, f).not.toMatch(/apiClient\.post\('\/api\/auth\/logout'\)/);
+    }
   });
 
   it('logout serveur : résultat réel de la révocation rendu au client', () => {

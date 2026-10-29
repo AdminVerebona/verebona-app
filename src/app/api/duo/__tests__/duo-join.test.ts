@@ -59,8 +59,11 @@ vi.mock('@/services/account/membership.service', () => ({
   joinDuoByInvitation: (...a: unknown[]) => joinService(...a),
 }));
 vi.mock('@/lib/auth/session-tokens', () => ({
-  issueSessionTokensOnAccount: async () => ({ accessToken: 'a', refreshToken: 'r' }),
-  setSessionCookies: (res: { headers: Headers }) => { res.headers.set('x-session-reissued', '1'); },
+  sessionSubjectOnAccount: async () => ({ id: 1, email: 'a@b.fr', role: 'USER', planType: 'STANDARD', status: 'ACTIVE' }),
+}));
+// Lot 92 : émission unique de session (jetons + cookies + registre).
+vi.mock('@/lib/auth/session-issuance', () => ({
+  issueSession: async (_req: unknown, res: { headers: Headers }) => { res.headers.set('x-session-reissued', '1'); return { sid: 's' }; },
 }));
 vi.mock('@/services/duo/duo-exit.service', () => ({ signalerDroitsModifies: () => {} }));
 

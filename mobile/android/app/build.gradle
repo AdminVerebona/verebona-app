@@ -1,0 +1,111 @@
+apply plugin: 'com.android.application'
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 95 — variantes et paramètres de build (CDC 12 §27, §29 ; PO M7, M8).
+//
+// Valeurs lues dans `android/verebona.properties`, écrit par
+// `npm run prepare:native` (mobile/scripts/prepare.mjs) à partir de
+// VEREBONA_ENV / VEREBONA_APP_ORIGIN / VEREBONA_APP_VERSION / VEREBONA_APP_BUILD.
+// Signature (release) : variables d'environnement posées par la CI depuis les
+// secrets GitHub — aucun keystore ni mot de passe dans le dépôt (BUILD-05).
+// ══════════════════════════════════════════════════════════════════════════
+def vbProps = new Properties()
+def vbFile = rootProject.file('verebona.properties')
+if (vbFile.exists()) { vbFile.withInputStream { vbProps.load(it) } }
+def vb = { String key, String fallback -> (vbProps.getProperty(key) ?: fallback) }
+
+android {
+    namespace = "fr.verebona.app"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "fr.verebona.app"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode Integer.parseInt(vb('versionCode', '1'))
+        versionName vb('versionName', '0.1.0')
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+        // Domaine des App Links de l'environnement (fichier assetlinks.json servi par le serveur, lot 97).
+        manifestPlaceholders = [appHost: vb('appHost', 'invalid.verebona.invalid')]
+    }
+
+    flavorDimensions = ["env"]
+    productFlavors {
+        // Préproduction : installable À CÔTÉ de la production (M7).
+        preprod {
+            dimension "env"
+            applicationIdSuffix ".preprod"
+            resValue "string", "app_name", "Verebona Préprod"
+            resValue "string", "title_activity_main", "Verebona Préprod"
+            resValue "string", "package_name", "fr.verebona.app.preprod"
+            resValue "string", "custom_url_scheme", "fr.verebona.app.preprod"
+            manifestPlaceholders += [urlScheme: "fr.verebona.app.preprod"]
+        }
+        prod {
+            dimension "env"
+            resValue "string", "app_name", "Verebona"
+            resValue "string", "title_activity_main", "Verebona"
+            resValue "string", "package_name", "fr.verebona.app"
+            resValue "string", "custom_url_scheme", "fr.verebona.app"
+            manifestPlaceholders += [urlScheme: "fr.verebona.app"]
+        }
+    }
+
+    signingConfigs {
+        release {
+            // Clé d'IMPORT (« upload key ») de Google Play App Signing, fournie par la CI.
+            def ks = System.getenv('VEREBONA_ANDROID_KEYSTORE_FILE')
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv('VEREBONA_ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('VEREBONA_ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('VEREBONA_ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (System.getenv('VEREBONA_ANDROID_KEYSTORE_FILE')) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+// Push (FCM) : `google-services.json` du projet Firebase DE L'ENVIRONNEMENT,
+// écrit par la CI depuis un secret (jamais versionné, voir .gitignore).
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

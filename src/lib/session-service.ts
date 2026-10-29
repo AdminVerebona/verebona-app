@@ -6,7 +6,7 @@ import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { invalidateAccountReadCache, invalidateUserReadCache, isMutatingMethod } from './server-cache';
-import { isRevokedByCutoff } from './auth/session-guard';
+import { isAccessRevoked } from './auth/session-guard';
 import { assertSessionAccountAccess } from './auth/account-access';
 import {
   ACCOUNT_PENDING_DELETION_CODE,
@@ -25,6 +25,8 @@ export interface SessionPayload {
   status: UserStatus;
   planType: PlanType;
   currentAccountId?: number;
+  /** Lot 92 : famille de session (registre `user_sessions`) ; absente des jetons antérieurs au lot 37. */
+  sid?: string;
 }
 
 /**
@@ -103,7 +105,8 @@ export class SessionService {
     // Même contrôle que `lib/auth/session-guard` (routes hors SessionService).
     // Base injoignable : `SESSION_UNAVAILABLE` (503), jamais un faux
     // « non révoqué » (APP-PERF-20).
-    if (await isRevokedByCutoff(payload)) {
+    // Lot 92 : + révocation UNITAIRE de cette session (registre, sans cache).
+    if (await isAccessRevoked(payload)) {
       throw new Error('INVALID_TOKEN');
     }
 
@@ -140,6 +143,7 @@ export class SessionService {
       status: payload.status as UserStatus,
       planType: payload.planType as PlanType,
       currentAccountId: payload.currentAccountId,
+      ...(typeof payload.sid === 'string' && payload.sid ? { sid: payload.sid } : {}),
     };
   }
 

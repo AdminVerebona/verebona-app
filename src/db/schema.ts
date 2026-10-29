@@ -42,7 +42,13 @@ const tstzOptional = (name: string) =>
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
   email: text('email').notNull().unique(),
-  passwordHash: text('password_hash').notNull(),
+  // Lot 93 (CDC 18 §31.1, migration 0808) : NULL pour un compte créé avec
+  // Google ou Apple sans mot de passe (« social-only »).
+  passwordHash: text('password_hash'),
+  // Lot 96A (CDC 18 Q9, migration 0828) : empreinte de l'inscription non
+  // vérifiée, signée dans le lien d'activation. NULL : compte actif ou
+  // inscription antérieure au lot. Jamais exportée.
+  signupNonce: text('signup_nonce'),
   firstName: text('first_name').notNull().default(''),
   lastName: text('last_name').notNull().default(''),
   username: text('username').unique(),
@@ -2859,8 +2865,12 @@ export const notificationPreferences = pgTable('notification_preferences', {
 }));
 
 // §12.2 — Abonnements Web Push, un par appareil. endpoint + clés = données
-// sensibles de capacité : jamais en clair dans les logs, chiffrement applicatif
-// au repos recommandé (à brancher au Lot 2 via un wrapper crypto).
+// sensibles de capacité : jamais en clair dans les logs.
+// LOT 94 — TABLE DORMANTE (décision PO M3 du 26/10/2026 : aucun Web Push).
+// Plus aucun code n'y écrit d'abonnement ni n'y lit pour envoyer ; conservée
+// (migrations non destructives) : exclue du diagnostic (SÉCURITÉ), lue par
+// l'export RGPD, vidée par la neutralisation d'instantané, et la purge
+// planifiée révoque puis supprime les lignes restantes (30 jours).
 export const pushSubscriptions = pgTable('push_subscriptions', {
   id: uuid('id').primaryKey().defaultRandom(),
   userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
@@ -2881,6 +2891,42 @@ export const pushSubscriptions = pgTable('push_subscriptions', {
   statusIdx: index('push_subscriptions_status_idx').on(table.status),
   statusCheck: check('push_subscriptions_status_check',
     sql`${table.status} IN ('active','revoked','expired','failed')`),
+}));
+
+// Lot 97 (CDC 12 mobile §18.1, Annexe A, migration 0814) — installations de
+// l'application mobile native (push FCM / APNs via FCM). Une ligne par
+// installation (identifiant applicatif), rattachée à un UTILISATEUR. Jeton
+// chiffré au repos + empreinte ; vidés dès que l'installation n'est plus
+// active. `session_id` = famille de session (`sid`) : sa révocation coupe le
+// push de l'appareil (`deactivatePushForSession`).
+export const mobilePushInstallations = pgTable('mobile_push_installations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  installationId: text('installation_id').notNull().unique('mobile_push_installations_installation_unique'),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  accountId: integer('account_id').references(() => accounts.id, { onDelete: 'set null' }),
+  platform: text('platform').notNull(), // ios | android
+  appVersion: text('app_version'),
+  buildNumber: text('build_number'),
+  pushProvider: text('push_provider').notNull().default('fcm'),
+  pushTokenEnc: text('push_token_enc'),
+  pushTokenHash: text('push_token_hash'),
+  environment: text('environment').notNull(), // local | preprod | production
+  status: text('status').notNull().default('active'), // active | logged_out | invalid_token | revoked
+  statusReason: text('status_reason'),
+  sessionId: text('session_id'),
+  failureCount: integer('failure_count').notNull().default(0),
+  lastErrorCode: text('last_error_code'),
+  lastSeenAt: tstz('last_seen_at'),
+  lastSuccessAt: tstzOptional('last_success_at'),
+  lastFailureAt: tstzOptional('last_failure_at'),
+  revokedAt: tstzOptional('revoked_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (table) => ({
+  userStatusIdx: index('mobile_push_installations_user_status_idx').on(table.userId, table.status),
+  platformCheck: check('mobile_push_installations_platform_check', sql`${table.platform} IN ('ios','android')`),
+  statusCheck: check('mobile_push_installations_status_check',
+    sql`${table.status} IN ('active','logged_out','invalid_token','revoked')`),
 }));
 
 // §12.3 — File persistante des événements métier à traiter. Une source unique :
@@ -2935,6 +2981,8 @@ export const notificationDeliveries = pgTable('notification_deliveries', {
   userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   channel: text('channel').notNull(), // bell | push | email
   pushSubscriptionId: uuid('push_subscription_id').references(() => pushSubscriptions.id, { onDelete: 'set null' }),
+  // Lot 97 (0814) : appareil mobile natif visé (canal `push`), une ligne par appareil.
+  mobilePushInstallationId: uuid('mobile_push_installation_id').references(() => mobilePushInstallations.id, { onDelete: 'set null' }),
   status: text('status').notNull().default('pending'), // pending | sent | failed | skipped_preference | skipped_unavailable | expired
   providerMessageId: text('provider_message_id'),
   attemptCount: integer('attempt_count').notNull().default(0),
@@ -4427,4 +4475,95 @@ export const emailProviderEvents = pgTable('email_provider_events', {
   eventUnique: unique('email_provider_events_event_unique').on(t.provider, t.eventId),
   messageIdx: index('email_provider_events_message_idx').on(t.providerMessageId),
   emailJobIdx: index('email_provider_events_email_job_idx').on(t.emailJobId).where(sql`email_job_id IS NOT NULL`),
+}));
+
+/**
+ * Lot 93 (0808) — identités Google / Apple liées à un utilisateur (CDC 18
+ * §31.2). Clé de rattachement : (provider, issuer, subject), jamais l'adresse.
+ * Lue et écrite en SQL par `lib/auth/oauth/identities.ts`.
+ */
+export const authIdentities = pgTable('auth_identities', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  provider: text('provider').notNull(),
+  issuer: text('issuer').notNull(),
+  subject: text('subject').notNull(),
+  emailAtLinkTime: text('email_at_link_time'),
+  emailVerified: boolean('email_verified'),
+  lastProviderEmail: text('last_provider_email'),
+  isPrivateRelay: boolean('is_private_relay').notNull().default(false),
+  /** Jeton de renouvellement Apple CHIFFRÉ (révocation à la suppression du compte, §25). */
+  refreshTokenCiphertext: text('refresh_token_ciphertext'),
+  linkedAt: tstz('linked_at'),
+  lastUsedAt: tstzOptional('last_used_at'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  providerSubjectUq: uniqueIndex('auth_identities_provider_subject_uq').on(t.provider, t.issuer, t.subject),
+  userProviderUq: uniqueIndex('auth_identities_user_provider_uq').on(t.userId, t.provider),
+  providerCheck: check('auth_identities_provider_check', sql`${t.provider} IN ('google', 'apple')`),
+}));
+
+/**
+ * Lot 96A (0829) — demandes de changement de l'adresse principale (CDC 18
+ * §11.3, Q8). Empreinte du lien seulement ; lue et écrite en SQL par
+ * `services/auth/email-change.service.ts`.
+ */
+export const emailChangeRequests = pgTable('email_change_requests', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  oldEmail: text('old_email').notNull(),
+  newEmail: text('new_email').notNull(),
+  tokenHash: text('token_hash').notNull(),
+  requestedSid: text('requested_sid'),
+  reauthMethod: text('reauth_method'),
+  createdAt: tstz('created_at'),
+  expiresAt: pgTimestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: tstzOptional('consumed_at'),
+  cancelledAt: tstzOptional('cancelled_at'),
+  cancelReason: text('cancel_reason'),
+}, (t) => ({
+  tokenUq: uniqueIndex('email_change_requests_token_uq').on(t.tokenHash),
+  userIdx: index('email_change_requests_user_idx').on(t.userId, t.createdAt),
+}));
+
+/**
+ * Lot 93 (0808) — transactions OAuth serveur (CDC 18 §31.5) : courtes, à usage
+ * unique, secrets hachés. Lue et écrite en SQL par
+ * `lib/auth/oauth/transactions.ts`.
+ */
+export const authTransactions = pgTable('auth_transactions', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  provider: text('provider').notNull(),
+  intent: text('intent').notNull(),
+  status: text('status').notNull().default('pending'),
+  stateHash: text('state_hash').notNull(),
+  bindingHash: text('binding_hash').notNull(),
+  nonceHash: text('nonce_hash').notNull(),
+  codeVerifier: text('code_verifier').notNull(),
+  userId: integer('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  sessionSid: text('session_sid'),
+  context: jsonb('context').notNull().default({}),
+  claims: jsonb('claims'),
+  stage: text('stage'),
+  pendingEmail: text('pending_email'),
+  emailCodeHash: text('email_code_hash'),
+  emailCodeExpiresAt: tstzOptional('email_code_expires_at'),
+  emailCodeAttempts: integer('email_code_attempts').notNull().default(0),
+  emailCodeSentAt: tstzOptional('email_code_sent_at'),
+  handoffHash: text('handoff_hash'),
+  failureCode: text('failure_code'),
+  expiresAt: pgTimestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+  consumedAt: tstzOptional('consumed_at'),
+}, (t) => ({
+  stateUq: uniqueIndex('auth_transactions_state_uq').on(t.stateHash),
+  handoffUq: uniqueIndex('auth_transactions_handoff_uq').on(t.handoffHash).where(sql`handoff_hash IS NOT NULL`),
+  bindingIdx: index('auth_transactions_binding_idx').on(t.bindingHash),
+  expiresIdx: index('auth_transactions_expires_idx').on(t.expiresAt),
+  userIdx: index('auth_transactions_user_idx').on(t.userId).where(sql`user_id IS NOT NULL`),
+  providerCheck: check('auth_transactions_provider_check', sql`${t.provider} IN ('google', 'apple')`),
+  intentCheck: check('auth_transactions_intent_check', sql`${t.intent} IN ('login', 'signup', 'link', 'reauth')`),
+  statusCheck: check('auth_transactions_status_check', sql`${t.status} IN ('pending', 'received', 'awaiting_user', 'handoff', 'consumed', 'failed')`),
 }));

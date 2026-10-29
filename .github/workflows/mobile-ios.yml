@@ -1,0 +1,148 @@
+# Application mobile iOS — lot 95 (CDC 12 §28-§29, décisions PO M4, M7, M8).
+#
+# Indépendant de la CI web (.github/workflows/ci.yml, inchangé). Compilation sur
+# runner macOS (Xcode), signature automatique par clé d'API App Store Connect
+# (aucun certificat ni profil dans le dépôt), envoi direct à TestFlight.
+#   · préproduction (fr.verebona.app.preprod) → TestFlight, testeurs autorisés ;
+#   · production (fr.verebona.app) → UNIQUEMENT à la main, derrière l'environnement
+#     protégé « production-mobile » ; le build arrive dans TestFlight de l'app de
+#     production, la SOUMISSION à l'App Store reste un geste manuel dans App Store Connect.
+# Secrets et variables : docs/mobile/builds-et-secrets.md.
+name: Mobile — iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environnement de l'application"
+        type: choice
+        options: [preprod, prod]
+        default: preprod
+      ui_mode:
+        description: "Mode d'affichage (Gate 0) : remote = site distant (A), local = sonde interface embarquée (B)"
+        type: choice
+        options: [remote, local]
+        default: remote
+      publish:
+        description: "Envoyer à App Store Connect / TestFlight (sinon : compilation seule)"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - "src/lib/native/**"
+      - "src/lib/mobile/app-links.ts"
+      - ".github/workflows/mobile-ios.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "src/lib/native/**"
+      - "src/lib/mobile/app-links.ts"
+      - ".github/workflows/mobile-ios.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-ios-${{ github.ref }}-${{ inputs.environment || 'preprod' }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Contrôles (projet mobile)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - working-directory: mobile
+        run: npm ci --no-audit --no-fund --legacy-peer-deps
+      - working-directory: mobile
+        run: npm run check
+
+  build:
+    name: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'Production → TestFlight (approbation requise)' || 'Préproduction → TestFlight' }}
+    needs: checks
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    timeout-minutes: 60
+    # Préproduction : environnement « mobile-preprod ».
+    # Production : environnement PROTÉGÉ « production-mobile » (réviseurs obligatoires).
+    environment: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'production-mobile' || 'mobile-preprod' }}
+    env:
+      VEREBONA_ENV: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'prod' || 'preprod' }}
+      VEREBONA_APP_ORIGIN: ${{ vars.VEREBONA_APP_ORIGIN }}
+      VEREBONA_UI_MODE: ${{ inputs.ui_mode || 'remote' }}
+      VEREBONA_APP_VERSION: ${{ vars.VEREBONA_APP_VERSION }}
+      VEREBONA_APP_BUILD: ${{ github.run_number }}
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Dépendances
+        working-directory: mobile
+        run: npm ci --no-audit --no-fund --legacy-peer-deps
+      - name: Préparer le build de l'environnement + synchroniser le projet natif
+        working-directory: mobile
+        run: npm run sync -- ios
+      - name: Firebase (push) et clé d'API App Store Connect — depuis les secrets
+        env:
+          GOOGLE_SERVICE_INFO_PLIST_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_PLIST_BASE64 }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+        run: |
+          echo "$GOOGLE_SERVICE_INFO_PLIST_BASE64" | base64 --decode > mobile/ios/App/App/GoogleService-Info.plist
+          echo "$ASC_API_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/asc_api_key.p8"
+          plutil -replace teamID -string "$APPLE_TEAM_ID" mobile/ios/ExportOptions.plist
+      - name: Archiver (signature automatique, App Store Connect)
+        working-directory: mobile/ios/App
+        env:
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: |
+          xcodebuild -project App.xcodeproj -scheme App -configuration Release \
+            -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc_api_key.p8" \
+            -authenticationKeyID "$ASC_API_KEY_ID" -authenticationKeyIssuerID "$ASC_API_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic \
+            archive
+      - name: Envoyer à App Store Connect (TestFlight)
+        if: github.event_name == 'push' || inputs.publish
+        working-directory: mobile/ios/App
+        env:
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: |
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist ../ExportOptions.plist -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/asc_api_key.p8" \
+            -authenticationKeyID "$ASC_API_KEY_ID" -authenticationKeyIssuerID "$ASC_API_ISSUER_ID"
+      - name: Symboles de débogage (BUILD-08, diagnostic des plantages)
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/App.xcarchive/dSYMs" ]; then
+            ditto -c -k --keepParent "$RUNNER_TEMP/App.xcarchive/dSYMs" "$RUNNER_TEMP/dSYMs.zip"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-${{ env.VEREBONA_ENV }}-${{ env.VEREBONA_APP_VERSION }}-${{ github.run_number }}-dsyms
+          path: ${{ runner.temp }}/dSYMs.zip
+          if-no-files-found: ignore
+          retention-days: ${{ env.VEREBONA_ENV == 'prod' && 400 || 90 }}
+      - name: Nettoyer les fichiers sensibles du poste de build
+        if: always()
+        run: rm -f "$RUNNER_TEMP/asc_api_key.p8" mobile/ios/App/App/GoogleService-Info.plist

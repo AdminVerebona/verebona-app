@@ -9,7 +9,7 @@
  * dernière connexion, préférences de notifications, invitations liées,
  * historique des communications (COM-014) et des connexions sur 90 jours
  * (USR-D01, USR-D02, REC-USR-05). Les sessions actives ne sont pas listées
- * (USR-D03).
+ * (USR-D03), sauf réglage `AUTH_BO_SESSION_LIST=on` (lot 92).
  *
  * Actions (matrice §20) : renvoyer une invitation (USR-A01), désactiver /
  * réactiver (USR-A02..A05), déconnecter toutes les sessions (USR-A06),
@@ -51,6 +51,7 @@ import {
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { Textarea } from '@/components/ui/textarea';
 import { formatDate, formatDateTime } from '@/lib/admin/format';
+import { UserSessionsCard } from './_components/UserSessionsCard';
 
 interface UserDetails {
   id: number;
@@ -623,6 +624,9 @@ export default function UserDetailPage() {
           <p className="text-xs text-muted-foreground mt-2">Les anomalies de communication sont suivies dans Supervision.</p>
         </CardContent>
       </Card>
+
+      {/* Lot 92 : sessions actives — réglage AUTH_BO_SESSION_LIST (USR-D03 par défaut). */}
+      <UserSessionsCard userId={userId} />
 
       <Card>
         <CardHeader>

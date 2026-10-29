@@ -72,7 +72,8 @@ interface ReemissionResult {
 interface DeliveryTrace {
   channel: string;
   status: string;
-  pushSubscriptionId: string | null;
+  /** Lot 97 : appareil mobile natif de la livraison push (lot 94 : seul push réémis). */
+  mobileInstallationId?: string | null;
 }
 
 /**
@@ -86,22 +87,30 @@ interface DeliveryTrace {
 /** Lot 79C : retire d'une restriction les canaux supprimés du catalogue (pure). */
 export function retirerCanauxSupprimes(restriction: ReemissionRestriction, entry: Parameters<typeof isChannelRetired>[0]): ReemissionRestriction {
   const canaux = restriction.canaux.filter((c) => c === 'bell' || !isChannelRetired(entry, c));
-  return { canaux, ...(canaux.includes('push') && restriction.pushSubscriptionIds ? { pushSubscriptionIds: restriction.pushSubscriptionIds } : {}) };
+  return {
+    canaux,
+    ...(canaux.includes('push') && restriction.mobileInstallationIds ? { mobileInstallationIds: restriction.mobileInstallationIds } : {}),
+  };
 }
 
 export function canauxAReemettre(traces: DeliveryTrace[]): ReemissionRestriction | null {
   if (traces.length === 0) return null;
-  const livre = (c: string, sub: string | null = null) =>
-    traces.some((t) => t.channel === c && t.status === 'sent' && (sub === null || t.pushSubscriptionId === sub));
+  const livre = (c: string) => traces.some((t) => t.channel === c && t.status === 'sent');
   const echoue = (c: string) => traces.some((t) => t.channel === c && t.status === 'failed');
   const canaux: ReemissionChannel[] = [];
   for (const c of ['bell', 'email'] as const) if (echoue(c) && !livre(c)) canaux.push(c);
-  const appareils = [...new Set(traces
-    .filter((t) => t.channel === 'push' && t.status === 'failed' && t.pushSubscriptionId)
-    .map((t) => t.pushSubscriptionId as string))]
-    .filter((sub) => !livre('push', sub));
-  if (appareils.length > 0) canaux.push('push');
-  return { canaux, ...(appareils.length > 0 ? { pushSubscriptionIds: appareils } : {}) };
+  // Lot 97 : appareils mobiles natifs en échec, jamais livrés. Lot 94 (M3) :
+  // un ancien échec Web Push (navigateur) n'est jamais réémis.
+  const mobileLivre = (id: string) => traces.some((t) => t.channel === 'push' && t.status === 'sent' && t.mobileInstallationId === id);
+  const mobiles = [...new Set(traces
+    .filter((t) => t.channel === 'push' && t.status === 'failed' && t.mobileInstallationId)
+    .map((t) => t.mobileInstallationId as string))]
+    .filter((id) => !mobileLivre(id));
+  if (mobiles.length > 0) canaux.push('push');
+  return {
+    canaux,
+    ...(mobiles.length > 0 ? { mobileInstallationIds: mobiles } : {}),
+  };
 }
 
 /** Types dont la réémission suppose un consentement en vigueur (§20.3). */
@@ -176,7 +185,7 @@ export async function reemettreNotification(
   // contournement des préférences de l'utilisateur.
   // ── Canaux encore à servir ─────────────────────────────────────────────
   const traces = await pgClient<DeliveryTrace[]>`
-    SELECT channel, status, push_subscription_id AS "pushSubscriptionId"
+    SELECT channel, status, mobile_push_installation_id::text AS "mobileInstallationId"
     FROM notification_deliveries WHERE outbox_id = ${origine.id}::uuid
   `;
   const brute = canauxAReemettre([...traces]);

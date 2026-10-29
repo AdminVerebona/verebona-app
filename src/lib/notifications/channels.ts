@@ -3,17 +3,18 @@
  *
  *  - BellChannel   : écrit dans la table `notifications` (journal interne).
  *  - EmailChannel  : passe par `emailService` existant (Resend + templates admin).
- *  - WebPushChannel: STUB Lot 1 — le vrai envoi signé VAPID arrive au Lot 2.
+ *  - Push          : application mobile native uniquement (`mobile-push.ts`,
+ *                    lot 97). Lot 94 (décision PO M3) : le Web Push (VAPID,
+ *                    navigateurs) est supprimé — envoi, abonnements, routes.
  *
  * Chaque canal renvoie un statut de livraison conforme à `notification_deliveries`
  * (§12.4) : sent | failed | skipped_preference | skipped_unavailable | expired.
  */
 
 import { db } from '@/db';
-import { notifications, users, emailTemplates, pushSubscriptions } from '@/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { notifications, users, emailTemplates } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { emailService } from '@/lib/email/email-service';
-import { sendWebPush } from './web-push-sender';
 import type { CatalogEntry } from './catalog';
 import type { RenderResult } from './content-renderer';
 import { withSpaceParam } from '@/lib/shell/space-link';
@@ -35,8 +36,8 @@ export interface DeliveryContext {
   payload: any;
   dedupeKey: string;
   mustDeliverBell: boolean;
-  /** Réémission : seuls ces appareils push sont visés (ceux en échec). */
-  pushSubscriptionIds?: string[];
+  /** Lot 97 : réémission — seuls ces appareils MOBILES sont visés (ceux en échec). */
+  mobileInstallationIds?: string[];
   /** Lot 72D (Q7) : compte émetteur — le lien push rouvre cet espace. */
   accountId?: number | null;
 }
@@ -114,92 +115,6 @@ export async function deliverEmail(
   // journal des envois (`email_logs.delivery_status`, même identifiant).
   if (res.success) return { status: 'sent', ...(res.providerMessageId ? { providerMessageId: res.providerMessageId } : {}) };
   return { status: 'failed', errorCode: 'email_send_error', errorMessage: res.error };
-}
-
-// ── Web Push (envoi réel signé VAPID, multi-appareils) ─────────────────────
-interface PushDeliveryResult {
-  subscriptionId: string;
-  outcome: DeliveryOutcome;
-}
-
-const PUSH_MAX_FAILURES = 5;
-
-/**
- * Envoie le push à CHAQUE abonnement actif de l'utilisateur (§10.1) et renvoie
- * un résultat par appareil (le dispatcher journalise une livraison par appareil,
- * §12.4). Le contenu reste générique (vie privée, §4.3).
- *
- * - 404/410 → abonnement `expired`, plus jamais retenté (§10.4 / §18.2) ;
- * - autre erreur → `failure_count++`, `failed` au-delà du seuil ;
- * - jamais de modification des préférences push de l'utilisateur.
- * Retourne un tableau vide si aucun appareil autorisé.
- */
-export async function deliverWebPush(
-  ctx: DeliveryContext,
-  rendered: RenderResult,
-  notificationId?: number,
-): Promise<PushDeliveryResult[]> {
-  const actifs = await db
-    .select({
-      id: pushSubscriptions.id,
-      endpoint: pushSubscriptions.endpoint,
-      p256dh: pushSubscriptions.p256dhKey,
-      auth: pushSubscriptions.authKey,
-      failureCount: pushSubscriptions.failureCount,
-    })
-    .from(pushSubscriptions)
-    .where(and(eq(pushSubscriptions.userId, ctx.userId), eq(pushSubscriptions.status, 'active')));
-  const cibles = ctx.pushSubscriptionIds;
-  const subs = cibles ? actifs.filter((r) => cibles.includes(r.id)) : actifs;
-
-  if (subs.length === 0) return [];
-
-  // Payload minimal, sans donnée sensible ni jeton d'authentification (§14.2).
-  const payload = {
-    notificationId: notificationId ?? null,
-    title: rendered.pushTitle,
-    body: rendered.pushBody,
-    // Lot 72D (Q7) : le lien désigne l'espace émetteur (bascule à l'ouverture).
-    href: withSpaceParam(rendered.href, ctx.accountId ?? null),
-    tag: ctx.dedupeKey,
-    category: ctx.category,
-  };
-
-  const results: PushDeliveryResult[] = [];
-  for (const sub of subs) {
-    const res = await sendWebPush({ endpoint: sub.endpoint, p256dh: sub.p256dh, auth: sub.auth }, payload);
-
-    if (res.ok) {
-      await db.update(pushSubscriptions)
-        .set({ failureCount: 0, lastSuccessAt: new Date(), updatedAt: new Date() })
-        .where(eq(pushSubscriptions.id, sub.id));
-      results.push({ subscriptionId: sub.id, outcome: { status: 'sent' } });
-      continue;
-    }
-
-    if (res.gone) {
-      // Abonnement disparu : désactiver sans toucher aux préférences (§10.4).
-      await db.update(pushSubscriptions)
-        .set({ status: 'expired', lastFailureAt: new Date(), updatedAt: new Date() })
-        .where(eq(pushSubscriptions.id, sub.id));
-      results.push({ subscriptionId: sub.id, outcome: { status: 'expired', errorCode: `gone_${res.statusCode ?? ''}` } });
-      continue;
-    }
-
-    // Erreur technique : compteur d'échecs, bascule en `failed` au-delà du seuil.
-    const nextFailures = (sub.failureCount ?? 0) + 1;
-    await db.update(pushSubscriptions)
-      .set({
-        failureCount: nextFailures,
-        lastFailureAt: new Date(),
-        updatedAt: new Date(),
-        ...(nextFailures >= PUSH_MAX_FAILURES ? { status: 'failed' } : {}),
-      })
-      .where(eq(pushSubscriptions.id, sub.id));
-    results.push({ subscriptionId: sub.id, outcome: { status: 'failed', errorCode: 'push_send_error', errorMessage: res.error } });
-  }
-
-  return results;
 }
 
 function absoluteUrl(href: string): string {

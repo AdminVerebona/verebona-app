@@ -10,6 +10,7 @@ import { NextRequest } from 'next/server';
 import bcrypt from 'bcrypt';
 import { scenario } from '../scenario';
 import { uid } from '../factories';
+import { activerParLien } from '../activation';
 
 const PASSWORD = 'MotDePasseE2e1!';
 const ORIGIN = 'http://localhost:3000';
@@ -117,9 +118,14 @@ scenario('L53A', 'Sécurité CDC 18 — D1 anti-force brute, Q21 inscription et 
     expect((await inscription(email)).status).toBe(201);
     const [u] = await sql<{ id: number; email: string }[]>`SELECT id, email FROM users WHERE email = ${email}`;
     const { buildEmailVerificationUrl } = await import('@/services/auth/email-verification.service');
-    const url = new URL(buildEmailVerificationUrl(ORIGIN, { id: u.id, email: u.email }, null));
+    const [n] = await sql<{ signup_nonce: string | null }[]>`SELECT signup_nonce FROM users WHERE id = ${u.id}`;
+    const url = new URL(buildEmailVerificationUrl(ORIGIN, { id: u.id, email: u.email, signupNonce: n.signup_nonce }, null));
     const { GET } = await import('@/app/api/auth/verify-email/route');
-    const r1 = await GET(new NextRequest(url.toString()));
+    // Lot 96A (Q9) : le lien seul n'ouvre plus de session — page du mot de passe de l'inscription.
+    const r0 = await GET(new NextRequest(url.toString()));
+    expect(r0.headers.get('location')).toMatch(/\/verify-email\/activer\?token=/);
+    expect(jar(r0).get('access_token')).toBeUndefined();
+    const r1 = await activerParLien(url.toString(), 'NouveauMdp1!x');
     expect(r1.status).toBe(307);
     const c = jar(r1);
     expect(c.get('access_token')?.maxAge).toBe(900);

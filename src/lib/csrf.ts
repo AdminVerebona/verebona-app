@@ -35,6 +35,15 @@ const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  */
 const CSRF_EXEMPT_PREFIXES = ['/api/billing/stripe-webhook', '/api/webhooks/resend', '/api/cron/'];
 
+/**
+ * Lot 93 (CDC 18 §32 « Les callbacks OAuth restent protégés par
+ * state/nonce/PKCE ») : retour Apple en `form_post`, POST émis par
+ * appleid.apple.com (origine tierce par nature). Chemin EXACT ; aucun cookie
+ * de session n'y est lu (SameSite=Lax) : la liaison au navigateur est
+ * vérifiée à la reprise en GET.
+ */
+const CSRF_EXEMPT_EXACT = new Set(['/api/auth/oauth/apple/callback']);
+
 /** Construit la liste des origines autorisees a partir de l'environnement. */
 function allowedOrigins(): string[] {
   const origins = [
@@ -106,7 +115,7 @@ export function verifyRequestOrigin(request: NextRequest): CsrfVerdict {
 
   // Lectures et routes exemptees : rien a verifier.
   if (!MUTATING_METHODS.has(request.method)) return { allowed: true };
-  if (CSRF_EXEMPT_PREFIXES.some((prefix) => pathname.startsWith(prefix))) {
+  if (CSRF_EXEMPT_PREFIXES.some((prefix) => pathname.startsWith(prefix)) || CSRF_EXEMPT_EXACT.has(pathname)) {
     return { allowed: true };
   }
 

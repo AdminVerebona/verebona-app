@@ -27,14 +27,15 @@
  */
 
 import { db } from '@/db';
-import { notificationPreferences, pushSubscriptions } from '@/db/schema';
-import { and, eq } from 'drizzle-orm';
+import { notificationPreferences } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import {
   NOTIFICATION_CATALOG, CATEGORY_LABELS, CONFIGURABLE_CATEGORIES,
   type CatalogEntry, type NotificationCategory, type DeliveryMode,
 } from './catalog';
 import { isChannelRetired } from './retired-channels';
-import { getVapidPublicKey } from './web-push-sender';
+import { getMobilePushProvider } from '@/lib/mobile/push-provider';
+import { countActiveInstallations } from '@/lib/mobile/push-installations';
 import { getNewsConsent } from './news-consent';
 
 type ConfigurableChannel = 'push' | 'email';
@@ -128,6 +129,8 @@ export const EMAIL_EVENT_USER_LABELS: Partial<Record<string, string>> = {
   EMAIL_CHANGED: 'adresse e-mail modifiée',
   PASSWORD_RESET_COMPLETED: 'mot de passe réinitialisé',
   NEW_DEVICE_LOGIN: 'connexion depuis un nouvel appareil',
+  AUTH_IDENTITY_LINKED: 'Google ou Apple associé',
+  AUTH_IDENTITY_UNLINKED: 'Google ou Apple dissocié',
   NEWS_ANNOUNCEMENT: 'actualités',
 };
 
@@ -202,7 +205,12 @@ interface CategoryPreference {
 }
 interface PreferenceMatrix {
   categories: CategoryPreference[];
-  push: { supported: boolean; activeDeviceCount: number };
+  /**
+   * Lot 97 puis lot 94 (décision PO M3 : aucun Web Push) : le push ne part
+   * QUE vers les téléphones de l'application mobile. `activeDeviceCount` =
+   * `mobileDeviceCount`. `supported` : fournisseur push mobile configuré.
+   */
+  push: { supported: boolean; activeDeviceCount: number; mobileDeviceCount: number };
   newsConsent: { consented: boolean; consentedAt: string | null };
 }
 
@@ -236,10 +244,7 @@ export async function buildPreferenceMatrix(userId: number): Promise<PreferenceM
     .from(notificationPreferences)
     .where(eq(notificationPreferences.userId, userId));
 
-  const activeDevices = await db
-    .select({ id: pushSubscriptions.id })
-    .from(pushSubscriptions)
-    .where(and(eq(pushSubscriptions.userId, userId), eq(pushSubscriptions.status, 'active')));
+  const mobileDevices = await countActiveInstallations(userId);
 
   const categories: CategoryPreference[] = CONFIGURABLE_CATEGORIES.map((key) => {
     const ui = CATEGORY_UI[key];
@@ -267,7 +272,11 @@ export async function buildPreferenceMatrix(userId: number): Promise<PreferenceM
 
   return {
     categories,
-    push: { supported: !!getVapidPublicKey(), activeDeviceCount: activeDevices.length },
+    push: {
+      supported: !!getMobilePushProvider(),
+      activeDeviceCount: mobileDevices,
+      mobileDeviceCount: mobileDevices,
+    },
     newsConsent: { consented: consent.consented, consentedAt: consent.consentedAt },
   };
 }

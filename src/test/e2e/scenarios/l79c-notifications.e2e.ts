@@ -38,7 +38,11 @@ const etat = vi.hoisted(() => {
   process.env.RESEND_API_KEY = 're_e2e_simule';
   return { mails: [] as Array<{ to: string; subject?: string }>, pushes: [] as Array<{ endpoint: string; payload: Record<string, unknown> }>, n: 0 };
 });
-afterAll(() => { delete process.env.RESEND_API_KEY; });
+afterAll(async () => {
+  delete process.env.RESEND_API_KEY;
+  const { setMobilePushProviderForTests } = await import('@/lib/mobile/push-provider');
+  setMobilePushProviderForTests(undefined);
+});
 
 vi.mock('resend', () => ({
   Resend: class {
@@ -51,20 +55,20 @@ vi.mock('resend', () => ({
     };
   },
 }));
-vi.mock('@/lib/notifications/web-push-sender', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/notifications/web-push-sender')>('@/lib/notifications/web-push-sender');
-  return {
-    ...actual,
-    getVapidPublicKey: () => 'cle-publique-e2e',
-    sendWebPush: async (target: { endpoint: string }, payload: Record<string, unknown>) => {
-      etat.pushes.push({ endpoint: target.endpoint, payload });
-      return { ok: true };
-    },
-  };
-});
+// Lot 94 (décision PO M3) : plus de Web Push — le push part vers l'application
+// mobile, par un fournisseur SIMULÉ (aucun appel réseau). `endpoint` = jeton.
+const fournisseurPush = {
+  name: 'fake-l79c',
+  async send(m: { token: string; data: Record<string, string> }) {
+    etat.pushes.push({ endpoint: m.token, payload: m.data });
+    return { ok: true as const, messageId: `projects/e2e/messages/${etat.pushes.length}` };
+  },
+};
 
 scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupements, préférences', ({ sql, make }) => {
   beforeEach(async () => {
+    const { setMobilePushProviderForTests } = await import('@/lib/mobile/push-provider');
+    setMobilePushProviderForTests(fournisseurPush as never);
     await sql`INSERT INTO email_settings (id, emails_enabled, sender_name, sender_email, reply_to_email)
               VALUES (1, true, 'Verebona', 'bonjour@verebona.com', 'support@verebona.com')
               ON CONFLICT (id) DO UPDATE SET emails_enabled = true`;
@@ -73,9 +77,12 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
   async function compte() {
     const acc = await make.account({ plan: 'premium' });
     const [u] = await sql<{ email: string }[]>`SELECT email FROM users WHERE id = ${acc.ownerUserId}`;
-    await sql`INSERT INTO push_subscriptions (user_id, endpoint, p256dh_key, auth_key, status)
-              VALUES (${acc.ownerUserId}, ${`https://push.e2e/${acc.ownerUserId}`}, 'p256', 'auth', 'active')`;
-    return { ...acc, userId: acc.ownerUserId, email: u.email, endpoint: `https://push.e2e/${acc.ownerUserId}` };
+    // Téléphone de l'application mobile (lot 97) : seul destinataire possible d'un push.
+    const jeton = `l79c-${acc.ownerUserId}-${'x'.repeat(30)}`;
+    const { registerPushInstallation } = await import('@/lib/mobile/push-installations');
+    await registerPushInstallation({ userId: acc.ownerUserId, accountId: acc.id, sessionId: null, installationId: crypto.randomUUID(),
+      platform: 'ios', appVersion: '1.0.0', build: '1', pushToken: jeton });
+    return { ...acc, userId: acc.ownerUserId, email: u.email, endpoint: jeton };
   }
   async function pref(userId: number, category: string, channel: 'email' | 'push', enabled: boolean, mode = 'immediate') {
     await sql`INSERT INTO notification_preferences (user_id, category, delivery_mode, channel, enabled)
@@ -247,10 +254,14 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
 
     const m0 = await buildPreferenceMatrix(c.userId);
     const cat = (m: typeof m0, k: string) => m.categories.find((x) => x.key === k)!;
-    for (const k of ['duo', 'account', 'security']) {
+    for (const k of ['duo', 'account']) {
       expect(cat(m0, k).immediate.email).toEqual({ enabled: true, locked: false, available: true });
       expect(cat(m0, k).emailScope.essential.length).toBeGreaterThan(0);
     }
+    // Lot 96B (CDC 18 Q6) : « nouvel appareil » obligatoire — la catégorie Sécurité n'a plus
+    // d'e-mail facultatif : son switch e-mail est verrouillé (toujours envoyé).
+    expect(cat(m0, 'security').immediate.email).toEqual({ enabled: true, locked: true, available: true });
+    expect(cat(m0, 'security').emailScope.optional).toEqual([]);
     expect(cat(m0, 'documents').immediate.email.available).toBe(false);
     expect(cat(m0, 'to_process').immediate).toEqual({
       push: { enabled: false, locked: false, available: false }, email: { enabled: false, locked: false, available: false },
@@ -260,8 +271,9 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
     expect(await applyPreferenceChanges(c.userId, [
       { category: 'duo', channel: 'email', enabled: false },
       { category: 'account', channel: 'email', enabled: false },
-      { category: 'security', channel: 'email', enabled: false },
     ])).toEqual({ ok: true });
+    expect(await applyPreferenceChanges(c.userId, [{ category: 'security', channel: 'email', enabled: false }]))
+      .toEqual({ ok: false, error: 'EMAIL_MANDATORY:security' });
     expect(await applyPreferenceChanges(c.userId, [{ category: 'documents', channel: 'email', enabled: true }]))
       .toEqual({ ok: false, error: 'CHANNEL_RETIRED:documents:email' });
 
@@ -271,7 +283,8 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
     const email = async (t: string) => (await resolveChannels(c.userId, getCatalogEntry(t)!)).email;
     expect(await email('DUO_MOVE_ACCEPTED')).toBe(false);
     expect(await email('TRIAL_ENDING')).toBe(false);
-    expect(await email('NEW_DEVICE_LOGIN')).toBe(false);
+    // Lot 96B (CDC 18 Q6) : « nouvel appareil » devient une notification de sécurité OBLIGATOIRE.
+    expect(await email('NEW_DEVICE_LOGIN')).toBe(true);
     expect(await email('DUO_MOVE_REQUEST')).toBe(true);
     expect(await email('PAYMENT_FAILED')).toBe(true);
     expect(await email('PASSWORD_CHANGED')).toBe(true);

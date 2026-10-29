@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+/* Lot 95 : le projet mobile (Capacitor, projets natifs) n’alimente pas les classes du site. */
+@source not "../../mobile";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -930,3 +932,28 @@ html [data-sonner-toaster][data-sonner-theme] {
 @media (max-width: 1023px) {
   body:has([data-fullscreen-screen]) [data-mobile-bottom-nav] { display: none; }
 }
+
+/* Lot 93 (CDC 18 §9.1) — boutons « Continuer avec Google / Apple ». Couleurs
+   imposées par les chartes des fournisseurs (Google Identity : fond blanc,
+   filet #747775, texte #1F1F1F ; sombre : #131314 / #8E918F / #E3E3E3. Apple :
+   noir sur fond clair, blanc sur fond sombre). Hauteur ≥ 44 px (cible tactile). */
+.vb-social-btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; min-height: 44px; padding: 0 16px; border-radius: 9999px;
+  font-size: 15px; font-weight: 600; line-height: 1.2; letter-spacing: .01em;
+  border: 1px solid transparent; transition: filter .15s ease, background-color .15s ease;
+  cursor: pointer;
+}
+.vb-social-btn:focus-visible { outline: 2px solid var(--vb-cuivre); outline-offset: 2px; }
+.vb-social-btn:disabled { opacity: .6; cursor: progress; }
+.vb-social-btn svg { width: 18px; height: 18px; flex-shrink: 0; }
+.vb-social-btn--google { background: #FFFFFF; color: #1F1F1F; border-color: #747775; }
+.vb-social-btn--google:hover { background: #F7F8F8; }
+.vb-social-btn--apple { background: #000000; color: #FFFFFF; }
+.vb-social-btn--apple:hover { filter: brightness(1.25); }
+html[data-theme="blue"] .vb-social-btn--google { background: #131314; color: #E3E3E3; border-color: #8E918F; }
+html[data-theme="blue"] .vb-social-btn--google:hover { background: #1E1F20; }
+html[data-theme="blue"] .vb-social-btn--apple { background: #FFFFFF; color: #000000; }
+html[data-theme="blue"] .vb-social-btn--apple:hover { filter: brightness(.92); }
+.vb-or-separator { display: flex; align-items: center; gap: 12px; color: var(--text-muted); font-size: 13px; }
+.vb-or-separator::before, .vb-or-separator::after { content: ""; flex: 1; height: 1px; background: var(--border-subtle); }

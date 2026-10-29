@@ -44,6 +44,13 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   // Lot 85A : journal de la purge et reconstruction des Opérations (image avant par exécution, rapports par compte).
   'operations_rebuild_runs', 'operations_rebuild_accounts', 'operations_rebuild_snapshots',
   'revoked_tokens', 'user_session_revocations', 'auth_rate_limits',
+  // Lot 92 : une restauration ne ressuscite ni une session révoquée ni une preuve de réauthentification.
+  'user_sessions', 'reauth_proofs',
+  // Lot 96A : un lien de changement d'adresse utilisé ou annulé ne redevient jamais valable.
+  'email_change_requests',
+  // Lot 97 : appareils mobiles — un appareil déconnecté ou révoqué après le point ne doit jamais
+  // redevenir destinataire de notifications (même règle que les révocations de session).
+  'mobile_push_installations',
   'admin_anomalies', 'admin_anomaly_occurrences',
   'ai_usage_event', 'ai_usage_events', 'ai_usage_daily_rollup', 'ai_usage_account_counter', 'ai_call_diagnostics', 'ai_operation',
   'ai_pipeline_step', 'ai_log_archives', 'ai_admin_audit_log', 'ai_t2_content_access_log', 'ai_execution_reports', 'ai_execution_report_entries',

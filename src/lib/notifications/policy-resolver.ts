@@ -9,7 +9,7 @@
  * Règles de la cloche (§5.1) : non configurable en V1, toujours présente sauf
  * pour « À traiter » et les actualités (`neverBell`).
  * Le push est TOUJOURS facultatif (§5.2) ; la disponibilité réelle d'un
- * appareil est vérifiée plus tard par le WebPushChannel, pas ici.
+ * appareil mobile est vérifiée plus tard par le canal push mobile (`mobile-push.ts`), pas ici.
  */
 
 import type { CatalogEntry } from './catalog';

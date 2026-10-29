@@ -659,15 +659,46 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
   {
     // Lot 37 (C4) : compteurs du limiteur d'authentification partagé
     // (`auth_rate_limits`, migration 0313) — lignes inactives depuis 48 h et
-    // sans verrou en cours. Suppressions idempotentes.
+    // sans verrou en cours. Suppressions idempotentes. Lot 92 : aussi le
+    // registre des sessions (0802) et les preuves de réauthentification (0803) ;
+    // lot 93 : transactions OAuth (0808).
     code: 'auth-rate-limits-purge',
-    label: 'Sécurité : purge des compteurs de tentatives de connexion',
+    label: 'Sécurité : purge des compteurs de tentatives de connexion, des sessions terminées et des transactions Google / Apple',
     schedule: { kind: 'daily', at: [5, 30], graceMs: 6 * HOUR },
     timeoutMs: 5 * MIN,
     run: async () => {
       const { purgeAuthRateLimits } = await import('@/lib/auth/auth-rate-limit');
       const n = await purgeAuthRateLimits();
-      return { note: `${n} compteur(s) de tentatives supprimé(s)` };
+      // Lot 92 : registre des sessions (lignes terminées depuis 90 jours) et
+      // preuves de réauthentification expirées. Lot 93 : transactions OAuth
+      // Google / Apple (`auth_transactions`, 0808) expirées depuis plus d'un
+      // jour. Au mieux : jamais un échec de la tâche pour la purge des compteurs.
+      const notes: string[] = [`${n} compteur(s) de tentatives supprimé(s)`];
+      try {
+        const [{ purgeSessionRegistry }, { purgeReauthProofs }] = await Promise.all([
+          import('@/lib/auth/session-registry'), import('@/lib/auth/reauth'),
+        ]);
+        const sessions = await purgeSessionRegistry();
+        const proofs = await purgeReauthProofs();
+        notes.push(`${sessions} session(s) terminée(s) et ${proofs} preuve(s) de réauthentification supprimée(s)`);
+      } catch (e) {
+        notes.push(`purge des sessions impossible : ${(e as Error)?.message ?? e}`);
+      }
+      try {
+        const { purgeAuthTransactions } = await import('@/lib/auth/oauth/transactions');
+        const t = await purgeAuthTransactions();
+        notes.push(`${t} transaction(s) Google / Apple supprimée(s)`);
+      } catch (e) {
+        notes.push(`purge des transactions Google / Apple impossible : ${(e as Error)?.message ?? e}`);
+      }
+      // Lot 96A : demandes de changement d'adresse terminées depuis plus de 30 jours.
+      try {
+        const { purgeEmailChangeRequests } = await import('@/services/auth/email-change.service');
+        notes.push(`${await purgeEmailChangeRequests()} demande(s) de changement d’adresse supprimée(s)`);
+      } catch (e) {
+        notes.push(`purge des changements d’adresse impossible : ${(e as Error)?.message ?? e}`);
+      }
+      return { note: notes.join(' ; ') };
     },
   },
   {

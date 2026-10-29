@@ -14,6 +14,7 @@ import {
 } from '@/lib/auth/login-throttle';
 import {
   DEVICE_TRUST_COOKIE_PATH, DEVICE_TRUST_MAX_ACCOUNTS, buildDeviceCookieValue, parseDeviceCookie, trustedDeviceFor,
+  __legacyDeviceCookieValueForTests,
 } from '@/lib/auth/device-trust';
 
 const MIN = 60_000;
@@ -129,7 +130,7 @@ describe('PO-D1 — réussite, réinitialisation, non-énumération, traçabilit
     for (const k of passwordResetReleaseKeys('r@x.fr', '88.9.9.9')) await lim.reset(k);
     expect((await checkLoginThrottle(lim, untrusted('r@x.fr', '88.9.9.9'))).allowed).toBe(true);
     expect(read('src/app/api/auth/reset-password/route.ts')).toMatch(/passwordResetReleaseKeys\(identifier/);
-    expect(read('src/app/api/auth/reset-password/route.ts')).toMatch(/rememberTrustedDevice\(request, response, identifier\)/);
+    expect(read('src/app/api/auth/reset-password/route.ts')).toMatch(/rememberTrustedDevice\(request, response, deviceAccountOf\(\{ id: user\.id, email: identifier \}\)\)/);
   });
 
   it('PO-D1-10 aucune révélation de compte : clés et réponses ne dépendent que de l’adresse SAISIE et de l’IP', async () => {
@@ -169,40 +170,71 @@ describe('PO-D1 — réussite, réinitialisation, non-énumération, traçabilit
 describe('PO-D1 — appareil reconnu (cookie signé, CDC 18 §20.4)', () => {
   const T0 = Date.UTC(2026, 9, 13);
 
+  const moi = { userId: 1 };
+  const autre = { userId: 2 };
+
   it('PO-D1-13 reconnu pour CE compte seulement ; falsification, autre compte ou expiration → non reconnu', () => {
-    const { value, deviceId } = buildDeviceCookieValue(null, 'moi@x.fr', T0);
-    expect(trustedDeviceFor(value, 'moi@x.fr', T0 + 1000)).toBe(deviceId);
-    expect(trustedDeviceFor(value, 'autre@x.fr', T0 + 1000)).toBeNull();
+    const { value, deviceId } = buildDeviceCookieValue(null, moi, T0);
+    expect(trustedDeviceFor(value, moi, T0 + 1000)).toBe(deviceId);
+    expect(trustedDeviceFor(value, autre, T0 + 1000)).toBeNull();
+    expect(trustedDeviceFor(value, null, T0 + 1000)).toBeNull();
     // Signature modifiée.
     const parts = value.split('.');
     const forged = `${parts[0]}.${parts[1]}.${parts[2].slice(0, -1)}${parts[2].endsWith('A') ? 'B' : 'A'}`;
-    expect(trustedDeviceFor(forged, 'moi@x.fr', T0 + 1000)).toBeNull();
+    expect(trustedDeviceFor(forged, moi, T0 + 1000)).toBeNull();
     // Identifiant d'appareil échangé (cookie d'un autre navigateur recopié partiellement).
-    expect(trustedDeviceFor(`${parts[0]}.${'Z'.repeat(22)}.${parts[2]}`, 'moi@x.fr', T0 + 1000)).toBeNull();
+    expect(trustedDeviceFor(`${parts[0]}.${'Z'.repeat(22)}.${parts[2]}`, moi, T0 + 1000)).toBeNull();
     // Après 180 jours.
-    expect(trustedDeviceFor(value, 'moi@x.fr', T0 + 181 * 24 * 3600 * 1000)).toBeNull();
+    expect(trustedDeviceFor(value, moi, T0 + 181 * 24 * 3600 * 1000)).toBeNull();
     // Valeurs absurdes.
-    for (const v of ['', 'x', 'd1..', 'd1.abc.def', 'a'.repeat(2000)]) expect(trustedDeviceFor(v, 'moi@x.fr', T0)).toBeNull();
+    for (const v of ['', 'x', 'd1..', 'd1.abc.def', 'a'.repeat(2000)]) expect(trustedDeviceFor(v, moi, T0)).toBeNull();
   });
 
   it('PO-D1-14 plusieurs comptes sur un même appareil (foyer, Duo) : identifiant conservé, 5 comptes au plus', () => {
-    let v = buildDeviceCookieValue(null, 'a@x.fr', T0);
+    let v = buildDeviceCookieValue(null, { userId: 11 }, T0);
     const dev = v.deviceId;
-    v = buildDeviceCookieValue(v.value, 'b@x.fr', T0 + 1000);
+    v = buildDeviceCookieValue(v.value, { userId: 12 }, T0 + 1000);
     expect(v.deviceId).toBe(dev);
-    expect(trustedDeviceFor(v.value, 'a@x.fr', T0 + 2000)).toBe(dev);
-    expect(trustedDeviceFor(v.value, 'b@x.fr', T0 + 2000)).toBe(dev);
-    for (let i = 0; i < 6; i++) v = buildDeviceCookieValue(v.value, `n${i}@x.fr`, T0 + 3000 + i);
+    expect(trustedDeviceFor(v.value, { userId: 11 }, T0 + 2000)).toBe(dev);
+    expect(trustedDeviceFor(v.value, { userId: 12 }, T0 + 2000)).toBe(dev);
+    for (let i = 0; i < 6; i++) v = buildDeviceCookieValue(v.value, { userId: 20 + i, legacyEmail: `n${i}@x.fr` }, T0 + 3000 + i);
     expect(parseDeviceCookie(v.value)!.entries).toHaveLength(DEVICE_TRUST_MAX_ACCOUNTS);
     expect(v.value).not.toMatch(/@|x\.fr/); // aucune adresse en clair
+  });
+
+  it('INT96-P5 entrée liée à l’identifiant : un changement d’adresse ne change rien ; une adresse reprise n’hérite d’aucun appareil', () => {
+    const v = buildDeviceCookieValue(null, { userId: 31, legacyEmail: 'ancienne@x.fr' }, T0);
+    // Même compte après changement d'adresse (96A) : toujours reconnu.
+    expect(trustedDeviceFor(v.value, { userId: 31, legacyEmail: 'ancienne@x.fr', legacyNotBeforeMs: T0 - 1 }, T0 + 1000)).toBe(v.deviceId);
+    // Le compte 32 prend ensuite l'adresse « ancienne@x.fr » : appareil du 31 non reconnu pour lui.
+    expect(trustedDeviceFor(v.value, { userId: 32, legacyEmail: 'ancienne@x.fr', legacyNotBeforeMs: 0 }, T0 + 1000)).toBeNull();
+  });
+
+  it('INT96-P5 transition : entrée HÉRITÉE (adresse) acceptée seulement pour l’adresse d’origine du compte, émise après sa création', () => {
+    const legacy = __legacyDeviceCookieValueForTests('moi@x.fr', T0);
+    const compte = { userId: 41, legacyEmail: 'moi@x.fr', legacyNotBeforeMs: T0 - 24 * 3600 * 1000 };
+    // Déploiement : l'appareil reste reconnu (pas de fausse alerte, pas de pénalité D1)…
+    expect(trustedDeviceFor(legacy.value, compte, T0 + 1000)).toBe(legacy.deviceId);
+    // … y compris après un changement d'adresse : `legacyEmail` reste l'adresse d'ORIGINE.
+    // Sans information de transition : seules les entrées `uid` comptent (prudent).
+    expect(trustedDeviceFor(legacy.value, { userId: 41 }, T0 + 1000)).toBeNull();
+    // Entrée émise AVANT la création du compte (ancien titulaire de l'adresse) : refusée.
+    expect(trustedDeviceFor(legacy.value, { ...compte, legacyNotBeforeMs: T0 + 1000 }, T0 + 2000)).toBeNull();
+    // Autre adresse d'origine (le compte a pris cette adresse par un changement) : refusée.
+    expect(trustedDeviceFor(legacy.value, { ...compte, legacyEmail: 'autre@x.fr' }, T0 + 1000)).toBeNull();
+    // Reconnexion : l'entrée héritée est remplacée par l'entrée `uid`, le même appareil est conservé.
+    const renouvele = buildDeviceCookieValue(legacy.value, { userId: 41, legacyEmail: 'moi@x.fr' }, T0 + 2000);
+    expect(renouvele.deviceId).toBe(legacy.deviceId);
+    expect(parseDeviceCookie(renouvele.value)!.entries).toHaveLength(1);
+    expect(trustedDeviceFor(renouvele.value, { userId: 41 }, T0 + 3000)).toBe(legacy.deviceId);
   });
 
   it('PO-D1-15 cookie HttpOnly limité aux routes d’authentification, déposé après connexion, activation et réinitialisation', () => {
     expect(DEVICE_TRUST_COOKIE_PATH).toBe('/api/auth');
     const src = read('src/lib/auth/device-trust.ts');
     expect(src).toMatch(/httpOnly: true/);
-    expect(read('src/app/api/auth/login/route.ts')).toMatch(/rememberTrustedDevice\(request, response, normalizeEmail\(user\.email\)\)/);
-    expect(read('src/app/api/auth/verify-email/route.ts')).toMatch(/rememberTrustedDevice\(request, response, normalizeEmail\(user\.email\)\)/);
+    expect(read('src/app/api/auth/login/route.ts')).toMatch(/rememberTrustedDevice\(request, response, deviceAccountOf\(user\)\)/);
+    expect(read('src/app/api/auth/verify-email/route.ts')).toMatch(/rememberTrustedDevice\(request, response, deviceAccountOf\(user\)\)/);
     // Le verrou « adresse bloquée pour tous » du lot 37 a disparu.
     expect(read('src/lib/auth/auth-rate-limit.ts')).not.toMatch(/loginAccount:/);
   });

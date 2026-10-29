@@ -24,6 +24,7 @@ import { afterAll, beforeEach, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
 import { scenario } from '../scenario';
 import { uid } from '../factories';
+import { activerParLien } from '../activation';
 
 const APP = 'https://app.e2e.verebona.test';
 const etat = vi.hoisted(() => {
@@ -123,8 +124,8 @@ scenario('L57A-DUO-SIGNUP', 'Inscription des invités Premium Duo sans parrainag
     const mail = etat.calls.filter((c) => c.to === email).at(-1);
     const m = /href="([^"]*\/api\/auth\/verify-email\?token=[^"]+)"/.exec(mail?.html ?? '');
     expect(m, 'e-mail de vérification reçu').toBeTruthy();
-    const { GET } = await import('@/app/api/auth/verify-email/route');
-    const res = await GET(new NextRequest(m![1].replace(/&amp;/g, '&')));
+    // Lot 96A (Q9) : le lien mène à la page qui exige le mot de passe de l'inscription.
+    const res = await activerParLien(m![1].replace(/&amp;/g, '&'), PASSWORD);
     await (await import('@/lib/auth/anti-enumeration')).settleDetachedAuthTasks(); // e-mail de bienvenue
     return { location: res.headers.get('location') ?? '', access: (res as WithCookies).cookies.get('access_token')?.value };
   }

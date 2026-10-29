@@ -5,7 +5,10 @@
  * user »), SEC-04 (compteurs partagés entre instances).
  *
  * Actions concernées : changement du mot de passe (mot de passe actuel) et
- * clôture du compte (mot de passe + « SUPPRIMER MON COMPTE »). Une session
+ * clôture du compte (mot de passe + « SUPPRIMER MON COMPTE ») ; lot 92 :
+ * réauthentification du bloc Sécurité (`reauth.ts`, action `reauth`), MÊMES
+ * compteurs (par utilisateur et par IP) — la preuve de 5 min ne contourne
+ * jamais le limiteur. Une session
  * volée ne doit pas servir à deviner le mot de passe.
  *
  *   · compteurs PARTAGÉS (`auth_rate_limits`) — la clôture utilisait un `Map`
@@ -22,7 +25,7 @@ import { AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, rateLi
 import { getClientIp } from './client-ip';
 import { logUserActivity } from '@/lib/audit-logger';
 
-type ReauthAction = 'change_password' | 'account_deletion';
+type ReauthAction = 'change_password' | 'account_deletion' | 'reauth';
 
 function entries(userId: number, ip: string) {
   return [

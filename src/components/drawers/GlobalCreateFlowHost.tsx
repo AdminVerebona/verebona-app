@@ -16,7 +16,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useSession } from '@/hooks/useSession';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
-import { OPEN_CREATE_FLOW, createFlowView, parseCreateFlowRequest, type CreateFlowRequest } from '@/lib/create-flows';
+import {
+  OPEN_CREATE_FLOW, createFlowView, declareCreateFlowHost, parseCreateFlowRequest, type CreateFlowRequest,
+} from '@/lib/create-flows';
 import {
   LazyAssetFormDialog, LazyCreateAgendaItemDrawer, LazyUnifiedDocumentDialog, preloadAddForm,
 } from '@/components/mobile/add-forms';
@@ -45,7 +47,9 @@ export function GlobalCreateFlowHost() {
       if (r) ouvrir(r);
     };
     window.addEventListener(OPEN_CREATE_FLOW, handler);
-    return () => window.removeEventListener(OPEN_CREATE_FLOW, handler);
+    // Lot 95 : signal « hôte prêt » (fichiers scannés / partagés en attente dans l'app native).
+    const retirer = declareCreateFlowHost();
+    return () => { window.removeEventListener(OPEN_CREATE_FLOW, handler); retirer(); };
   }, [ouvrir]);
 
   const fermer = () => setOuvert(null);
@@ -59,6 +63,7 @@ export function GlobalCreateFlowHost() {
         open
         onOpenChange={(v) => { if (!v) fermer(); }}
         preselectedAssetId={assetId}
+        initialFiles={vue.initialFiles}
         onSuccess={() => { fermer(); signalMutation(); }}
       />
     );

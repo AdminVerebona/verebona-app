@@ -24,11 +24,12 @@ import { getCatalogEntry, isContentNotificationCategory, ACCOUNT_INELIGIBLE_SKIP
 import { renderContent } from './content-renderer';
 import { resolveChannels } from './policy-resolver';
 import { applyChannelActivation, loadDisabledChannels, CHANNEL_DISABLED_ERROR_CODE } from './channel-activation';
-import { deliverBell, deliverEmail, deliverWebPush, type DeliveryOutcome, type DeliveryContext } from './channels';
+import { deliverBell, deliverEmail, type DeliveryOutcome, type DeliveryContext } from './channels';
 import { lireRestrictionReemission, appliquerRestrictionReemission } from './reemission-restriction';
 import { claimByIds, claimPending, markGrouped, markProcessed, releaseOrFail, reopenGroupedBy, type OutboxRow } from './outbox';
 import { applyRetiredChannels, CHANNEL_RETIRED_ERROR_CODE } from './retired-channels';
 import { resolveIncidentGrouping, GROUPED_INCIDENT_ERROR_CODE } from './incident-grouping';
+import { deliverMobilePush } from './mobile-push';
 
 export interface DispatchSummary {
   claimed: number;
@@ -40,7 +41,7 @@ export interface DispatchSummary {
 
 async function recordDelivery(
   outboxId: string, userId: number, channel: 'bell' | 'push' | 'email', outcome: DeliveryOutcome,
-  pushSubscriptionId?: string,
+  mobilePushInstallationId?: string | null,
 ): Promise<void> {
   const now = new Date();
   const terminal = outcome.status === 'sent';
@@ -48,7 +49,8 @@ async function recordDelivery(
     outboxId,
     userId,
     channel,
-    pushSubscriptionId: pushSubscriptionId ?? null,
+    // Lot 97 : appareil mobile natif (une livraison par appareil).
+    ...(mobilePushInstallationId ? { mobilePushInstallationId } : {}),
     status: outcome.status,
     providerMessageId: outcome.providerMessageId ?? null,
     lastErrorCode: outcome.errorCode ?? null,
@@ -139,7 +141,8 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     dedupeKey: row.dedupe_key,
     mustDeliverBell: !!row.mandatory_bell || entry.mandatoryBell,
     accountId: typeof row.account_id === 'number' ? row.account_id : null,
-    ...(restriction?.pushSubscriptionIds ? { pushSubscriptionIds: restriction.pushSubscriptionIds } : {}),
+    // Lot 97 : réémission — seuls les appareils mobiles en échec ; aucun si la restriction n'en cite pas.
+    ...(restriction ? { mobileInstallationIds: restriction.mobileInstallationIds ?? [] } : {}),
   };
 
   const outcomes: DeliveryOutcome['status'][] = [];
@@ -178,15 +181,17 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     noter(o);
   }
   if (channels.push) {
-    // Une livraison par appareil (§12.4). Aucun appareil → une ligne skipped.
-    const pushResults = await deliverWebPush(ctx, rendered, bellNotificationId);
-    if (pushResults.length === 0) {
+    // Une livraison par appareil (§12.4), applications mobiles natives
+    // UNIQUEMENT (lot 97). Lot 94 (décision PO M3) : aucun Web Push, aucun
+    // envoi à un navigateur. Aucun appareil → une ligne skipped.
+    const mobileResults = await deliverMobilePush(ctx, entry, rendered, bellNotificationId);
+    if (mobileResults.length === 0) {
       const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: 'no_active_subscription' };
       await recordDelivery(row.id, ctx.userId, 'push', o);
       noter(o);
     } else {
-      for (const r of pushResults) {
-        await recordDelivery(row.id, ctx.userId, 'push', r.outcome, r.subscriptionId);
+      for (const r of mobileResults) {
+        await recordDelivery(row.id, ctx.userId, 'push', r.outcome, r.installationRowId);
         noter(r.outcome);
       }
     }

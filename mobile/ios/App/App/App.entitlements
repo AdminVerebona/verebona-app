@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Lot 95 : droits de l'app ; valeurs de l'environnement lues dans ios/Verebona.xcconfig. -->
+<plist version="1.0">
+<dict>
+	<!-- Notifications push (APNs, via Firebase). -->
+	<key>aps-environment</key>
+	<string>$(VB_APS_ENVIRONMENT)</string>
+	<!-- Liens universels + retour https d'ASWebAuthenticationSession (iOS 17.4+) :
+	     fichier /.well-known/apple-app-site-association du serveur de l'environnement. -->
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:$(VB_APP_HOST)</string>
+		<string>webcredentials:$(VB_APP_HOST)</string>
+	</array>
+	<!-- Groupe partagé avec l'extension de partage (IMP-02). -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(VB_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>

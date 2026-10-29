@@ -19,6 +19,8 @@ docs/*
 !docs/exploitation/
 # Recette versionnée (matrice exécutable lue par la CI, lot 48).
 !docs/recette/
+# Application mobile (lot 95) : comparaison d'architectures, grille Gate 0, builds.
+!docs/mobile/
 
 *.tsbuildinfo
 .orchids

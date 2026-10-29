@@ -73,7 +73,6 @@ describe('API', () => {
     '/api/calendar/0123abcd.ics',
     '/api/transmission/jeton-de-transmission',
     '/api/manifest',
-    '/api/push/public-key',
     '/api/legal/cgvu/current',
     '/api/withdrawal/public/start',
     '/api/public/help-feedback',

@@ -82,7 +82,8 @@ describe('L72D-19 — notifications (Q15) et liens vers un espace (Q7)', () => {
 
   it('push et e-mail portent l’espace émetteur ; la cloche bascule avant d’ouvrir', () => {
     const canaux = lire('src/lib/notifications/channels.ts');
-    expect(canaux).toMatch(/href: withSpaceParam\(rendered\.href, ctx\.accountId \?\? null\)/);
+    // Lot 94 (M3) : plus de Web Push ; le push mobile natif porte l'espace émetteur.
+    expect(lire('src/lib/notifications/mobile-push.ts')).toMatch(/withSpaceParam\(href \?\? null, accountId\)/);
     expect(canaux).toMatch(/absoluteUrl\(withSpaceParam\(rendered\.href/);
     const cloche = lire('src/components/NotificationBell.tsx');
     expect(cloche).toContain('switchToAccount(notif.accountId, cible)');

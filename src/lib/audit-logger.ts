@@ -12,7 +12,16 @@ type ActivityType = 'LOGIN_SUCCESS' | 'LOGIN_FAILED' | 'EMAIL_CHANGE' | 'PROFILE
   // inscription demandée sur une adresse déjà inscrite (aucun compte créé).
   'AUTH_LOGIN_THROTTLED' | 'AUTH_REAUTH_THROTTLED' | 'PASSWORD_RESET_COMPLETED' | 'SIGNUP_EXISTING_EMAIL' |
   // Lot 72D : changement d'espace (compte courant de la session).
-  'ACCOUNT_SWITCHED';
+  'ACCOUNT_SWITCHED' |
+  // Lot 96A (CDC 18 Q9, Q8 ; §23.1 PRIMARY_EMAIL_CHANGED) : activation protégée
+  // par le mot de passe de l'inscription ; changement de l'adresse principale.
+  'ACCOUNT_ACTIVATED' | 'ACCOUNT_ACTIVATION_FAILED' | 'ACCOUNT_ACTIVATION_THROTTLED' |
+  'PRIMARY_EMAIL_CHANGE_REQUESTED' | 'PRIMARY_EMAIL_CHANGE_REFUSED' | 'PRIMARY_EMAIL_CHANGED' |
+  // Lot 92 (CDC 18 §23.1) : registre des sessions et réauthentification.
+  'SESSION_CREATED' | 'SESSION_REVOKED' | 'REAUTH_SUCCESS' | 'REAUTH_FAILED' |
+  // Lot 93 (CDC 18 §23.1) : Google / Apple — sans aucun jeton ni code.
+  'OAUTH_START' | 'OAUTH_CALLBACK_SUCCESS' | 'OAUTH_CALLBACK_FAILED' | 'IDENTITY_LINKED' | 'IDENTITY_UNLINKED' |
+  'PASSWORD_CREATED' | 'SOCIAL_SIGNUP';
 
 interface LogActivityParams {
   activityType: ActivityType;

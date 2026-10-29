@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Verebona — sonde Gate 0 (mode B)</title>
+  <!-- Lot 95 : page LOCALE.
+       · Mode A (VEREBONA_UI_MODE=remote) : jamais affichée (la WebView ouvre le site).
+       · Mode B (VEREBONA_UI_MODE=local) : SONDE TECHNIQUE du Gate 0 — mesure sur un vrai
+         téléphone ce que l'interface embarquée obtiendrait de l'API (lecture publique,
+         connexion, cookies de session, refus CSRF). Ce n'est PAS l'interface Verebona :
+         voir docs/mobile/gate0-comparaison-architectures.md. -->
+  <link rel="stylesheet" href="probe/probe.css">
+</head>
+<body>
+  <main>
+    <h1>Sonde « interface embarquée » (B)</h1>
+    <p id="env"></p>
+    <section>
+      <h2>1. Lecture publique</h2>
+      <button id="t-config" type="button">GET /api/mobile/config</button>
+    </section>
+    <section>
+      <h2>2. Connexion par l’API</h2>
+      <form id="login">
+        <label>E-mail <input name="email" type="email" autocomplete="username" required></label>
+        <label>Mot de passe <input name="password" type="password" autocomplete="current-password" required></label>
+        <button type="submit">POST /api/auth/login</button>
+      </form>
+    </section>
+    <section>
+      <h2>3. Session</h2>
+      <button id="t-me" type="button">GET /api/auth/me</button>
+      <button id="t-refresh" type="button">POST /api/auth/refresh</button>
+      <button id="t-logout" type="button">POST /api/auth/logout</button>
+    </section>
+    <h2>Journal (aucun jeton ni mot de passe n’y figure)</h2>
+    <pre id="log" aria-live="polite"></pre>
+  </main>
+  <script src="app-config.js"></script>
+  <script src="probe/probe.js"></script>
+</body>
+</html>

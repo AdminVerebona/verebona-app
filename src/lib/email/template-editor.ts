@@ -166,6 +166,29 @@ const DECLARED: Record<string, { variables: TemplateVariable[]; required: Requir
     variables: [FIRST_NAME, v('requestDate', 'Date de la demande'), v('loginUrl', 'Lien de connexion', 'url'), v('forgotPasswordUrl', 'Lien « Mot de passe oublié »', 'url')],
     required: [req('lien « Mot de passe oublié »', 'forgotPasswordUrl')],
   },
+  // Lot 96A (migration 0830) : changement de l'adresse principale.
+  EMAIL_CHANGE_CONFIRMATION: {
+    variables: [FIRST_NAME, v('confirmUrl', 'Lien de confirmation de la nouvelle adresse', 'url'), v('expiresIn', 'Durée de validité du lien')],
+    required: [req('lien de confirmation', 'confirmUrl')],
+  },
+  PRIMARY_EMAIL_CHANGED: {
+    variables: [FIRST_NAME, v('oldEmail', 'Ancienne adresse (masquée)'), v('newEmail', 'Nouvelle adresse (masquée)'), v('changeDate', 'Date du changement'),
+      v('securityUrl', 'Lien « Mon compte › Sécurité »', 'url'), v('forgotPasswordUrl', 'Lien « Mot de passe oublié »', 'url')],
+    required: [req('lien « Mot de passe oublié »', 'forgotPasswordUrl'), req('date du changement', 'changeDate')],
+  },
+  EMAIL_CHANGE_ADDRESS_IN_USE: {
+    variables: [FIRST_NAME, v('requestDate', 'Date de la demande'), v('loginUrl', 'Lien de connexion', 'url')],
+    required: [req('lien de connexion', 'loginUrl')],
+  },
+  // Lot 93 (migration 0809) : connexion Google / Apple.
+  PASSWORD_RESET_SOCIAL_ONLY: {
+    variables: [FIRST_NAME, v('providers', 'Fournisseur(s) de connexion (« Google », « Apple », « Google ou Apple »)'), v('loginUrl', 'Lien de connexion', 'url')],
+    required: [req('lien de connexion', 'loginUrl'), req('fournisseur de connexion', 'providers')],
+  },
+  SOCIAL_SIGNUP_EMAIL_CODE: {
+    variables: [FIRST_NAME, v('code', 'Code de confirmation à 6 chiffres'), v('expiresIn', 'Durée de validité du code')],
+    required: [req('code de confirmation', 'code')],
+  },
   SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER: {
     variables: [FIRST_NAME, v('planLabel', 'Offre'), v('renewalDate', 'Date du renouvellement'), v('renewalDelayLabel', 'Délai avant renouvellement (« dans 7 jours »)'),
       v('amountLabel', 'Montant prévu du renouvellement'), v('manageSubscriptionUrl', 'Lien du portail Stripe (gérer l’abonnement)', 'url'), v('accountUrl', 'Lien « Mon compte »', 'url')],
@@ -226,7 +249,9 @@ export const NOTIFICATION_EMAIL_TEMPLATES: Readonly<Record<string, NotificationE
   NOTIF_GDPR_EXPORT: { label: 'Export de données prêt', events: ['GDPR_EXPORT_READY'] },
   NOTIF_PAYMENT_INCIDENT: { label: 'Incident de paiement', events: ['PAYMENT_FAILED', 'PAYMENT_ACTION_REQUIRED', 'SUBSCRIPTION_SUSPENDED', 'ACCOUNT_READ_ONLY'] },
   NOTIF_ACCOUNT_DELETION: { label: 'Suppression de compte programmée (clôture, rappel J−7)', events: ['ACCOUNT_DELETION_SCHEDULED', 'ACCOUNT_DELETION_REMINDER'] },
-  NOTIF_SECURITY: { label: 'Sécurité du compte', events: ['PASSWORD_CHANGED', 'EMAIL_CHANGE_REQUESTED', 'EMAIL_CHANGED', 'PASSWORD_RESET_COMPLETED', 'NEW_DEVICE_LOGIN'] },
+  NOTIF_SECURITY: { label: 'Sécurité du compte', events: ['PASSWORD_CHANGED', 'EMAIL_CHANGE_REQUESTED', 'EMAIL_CHANGED', 'PASSWORD_RESET_COMPLETED', 'AUTH_IDENTITY_LINKED', 'AUTH_IDENTITY_UNLINKED'] },
+  // Lot 96B (CDC 18 Q6, migration 0832) : gabarit dédié, non désactivable.
+  NOTIF_NEW_DEVICE_LOGIN: { label: 'Sécurité — connexion depuis un nouvel appareil', events: ['NEW_DEVICE_LOGIN'] },
   NOTIF_NEWS: { label: 'Actualités Verebona', events: ['NEWS_ANNOUNCEMENT'] },
 };
 

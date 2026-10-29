@@ -10,7 +10,10 @@
  * Rejouer `POST /api/auth/login` est sans risque :
  *   · les jetons sont sans état (JWT en cookies HttpOnly, aucune table de
  *     sessions ni rotation à usage unique) : une seconde réponse remplace
- *     simplement les cookies de la première ;
+ *     simplement les cookies de la première ; lot 92 : la session de la
+ *     première réponse, si elle a été inscrite au registre, est remplacée
+ *     quand le navigateur portait déjà son cookie d'appareil (sinon elle
+ *     reste listée jusqu'à son expiration, sans jeton utilisable) ;
  *   · effets de bord idempotents quant au résultat : `last_login_at` mis à
  *     jour, étapes de guide « ignorées » réinitialisées, une ligne
  *     LOGIN_SUCCESS de plus au journal d'activité ;
@@ -23,6 +26,7 @@
  * Journal côté client (console) : tentative, état `navigator.onLine`, nom et
  * message de l'erreur, durée — JAMAIS le mot de passe ni l'e-mail.
  */
+import { clientPlatformHeaders } from '@/lib/client-platform';
 
 export interface LoginNetworkLog {
   event: 'login.network_error';
@@ -58,7 +62,7 @@ export async function postLogin(
   const call = () => fetchImpl('/api/auth/login', {
     credentials: 'include',
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...clientPlatformHeaders() },
     body: JSON.stringify({ email: credentials.email, password: credentials.password }),
   });
 

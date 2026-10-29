@@ -20,7 +20,11 @@ const delivered: string[] = [];
 vi.mock('../channels', () => ({
   deliverBell: async () => { delivered.push('bell'); return { status: 'sent', notificationId: 1 }; },
   deliverEmail: async () => { delivered.push('email'); return { status: 'sent' }; },
-  deliverWebPush: async () => { delivered.push('push'); return [{ subscriptionId: 'dev-1', outcome: { status: 'sent' } }]; },
+}));
+
+// Lot 94 (M3) : le push ne part plus que vers l'application mobile (un appareil ici).
+vi.mock('../mobile-push', () => ({
+  deliverMobilePush: async () => { delivered.push('push'); return [{ installationRowId: 'dev-1', outcome: { status: 'sent' } }]; },
 }));
 
 vi.mock('../policy-resolver', () => ({

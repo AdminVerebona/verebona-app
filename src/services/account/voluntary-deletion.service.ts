@@ -118,6 +118,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 type ClosureErrorCode =
   | 'INVALID_CONFIRMATION'
   | 'PASSWORD_REQUIRED'
+  | 'REAUTH_REQUIRED'
   | 'INVALID_PASSWORD'
   | 'USER_NOT_FOUND'
   | 'USER_NOT_ACTIVE'
@@ -128,6 +129,7 @@ type ClosureErrorCode =
 const CLOSURE_ERROR_MESSAGES: Record<ClosureErrorCode, string> = {
   INVALID_CONFIRMATION: `Pour confirmer, recopiez exactement « ${ACCOUNT_DELETION_CONFIRMATION} ».`,
   PASSWORD_REQUIRED: 'Saisissez votre mot de passe pour confirmer la suppression.',
+  REAUTH_REQUIRED: 'Votre compte n’a pas de mot de passe : confirmez d’abord votre identité avec Google ou Apple.',
   INVALID_PASSWORD: 'Le mot de passe est incorrect.',
   USER_NOT_FOUND: 'Utilisateur introuvable.',
   USER_NOT_ACTIVE: 'Ce compte ne peut pas être supprimé dans son état actuel. Contactez le support Verebona.',
@@ -141,6 +143,7 @@ const CLOSURE_ERROR_MESSAGES: Record<ClosureErrorCode, string> = {
 export const CLOSURE_ERROR_STATUS: Record<ClosureErrorCode, number> = {
   INVALID_CONFIRMATION: 400,
   PASSWORD_REQUIRED: 400,
+  REAUTH_REQUIRED: 403,
   INVALID_PASSWORD: 401,
   USER_NOT_FOUND: 404,
   USER_NOT_ACTIVE: 409,
@@ -163,7 +166,8 @@ export interface DeletionUser {
   id: number;
   email: string;
   firstName: string | null;
-  passwordHash: string;
+  /** Lot 93 : NULL pour un compte Google / Apple sans mot de passe. */
+  passwordHash: string | null;
   status: string;
   role: string;
 }
@@ -271,16 +275,33 @@ const closureError = (code: ClosureErrorCode): ClosureResult => ({ ok: false, co
  * restantes sont rejouées.
  */
 export async function closeAccountForDeletion(
-  input: { userId: number; password?: string | null; confirmation?: string | null; now?: Date },
+  input: {
+    userId: number; password?: string | null; confirmation?: string | null; now?: Date;
+    /**
+     * Lot 92 (CDC 18 §25, REAUTH-07) : l'identité a été prouvée par une
+     * preuve de réauthentification fraîche de la session, vérifiée par la
+     * route (`requireFreshReauth` / `getReauthState`) — mot de passe ou,
+     * lot 93, Google / Apple (seule voie d'un compte sans mot de passe,
+     * INT-05). Le mot de passe n'est alors plus exigé ici.
+     */
+    reauthProven?: boolean;
+  },
   deps: VoluntaryDeletionDeps = defaultDeps,
 ): Promise<ClosureResult> {
   const now = input.now ?? new Date();
   if (input.confirmation !== ACCOUNT_DELETION_CONFIRMATION) return closureError('INVALID_CONFIRMATION');
-  if (!input.password) return closureError('PASSWORD_REQUIRED');
+  if (!input.reauthProven && !input.password) {
+    // Lot 93 : sans mot de passe, un compte « social-only » doit d'abord se réauthentifier.
+    const u = await deps.loadUser(input.userId);
+    return closureError(u && !u.passwordHash ? 'REAUTH_REQUIRED' : 'PASSWORD_REQUIRED');
+  }
 
   const user = await deps.loadUser(input.userId);
   if (!user) return closureError('USER_NOT_FOUND');
-  if (!(await deps.verifyPassword(input.password, user.passwordHash))) return closureError('INVALID_PASSWORD');
+  if (!input.reauthProven) {
+    if (!user.passwordHash) return closureError('REAUTH_REQUIRED');
+    if (!(await deps.verifyPassword(input.password as string, user.passwordHash))) return closureError('INVALID_PASSWORD');
+  }
 
   const existing = await deps.getActiveUserSchedule(user.id);
   if (existing && user.status === PENDING_DELETION_STATUS) {

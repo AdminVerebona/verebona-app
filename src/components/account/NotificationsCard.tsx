@@ -6,43 +6,37 @@ import { Bell, ChevronRight } from 'lucide-react';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
 import { apiClient } from '@/lib/api-client';
-import { getPermissionState, isPushSupported, type PushPermission } from '@/lib/push/push-client';
 
 /**
  * Carte d'accès aux réglages de notification, affichée sur la page Mon compte
- * (CDC §8.1). Résume l'état du push sur cet appareil et le nombre d'appareils
- * autorisés, puis renvoie vers la page dédiée.
+ * (CDC §8.1). Résume le nombre d'appareils qui reçoivent le push, puis
+ * renvoie vers la page dédiée. Lot 97 (CDC 12 §18) : plus d'état de
+ * permission du navigateur — le Web ne demande plus l'autorisation, les push
+ * arrivent sur les téléphones (application mobile).
  */
 export function NotificationsCard() {
   const router = useRouter();
-  const [permission, setPermission] = useState<PushPermission>('unsupported');
   const [deviceCount, setDeviceCount] = useState<number | null>(null);
 
   useEffect(() => {
-    setPermission(isPushSupported() ? getPermissionState() : 'unsupported');
     apiClient
       .get<{ push?: { activeDeviceCount: number } }>('/api/notification-preferences')
       .then((r) => setDeviceCount(r.push?.activeDeviceCount ?? 0))
       .catch(() => setDeviceCount(null));
   }, []);
 
-  const status = (() => {
-    if (permission === 'unsupported') return { label: 'Non pris en charge sur cet appareil', tone: 'muted' as const };
-    if (permission === 'denied') return { label: 'Bloqué dans le navigateur', tone: 'warn' as const };
-    if (permission === 'granted' && (deviceCount ?? 0) > 0) {
-      return { label: `Activé · ${deviceCount} appareil${(deviceCount ?? 0) > 1 ? 's' : ''}`, tone: 'ok' as const };
-    }
-    return { label: 'Non activé sur cet appareil', tone: 'muted' as const };
-  })();
+  const status = (deviceCount ?? 0) > 0
+    ? { label: `Push activé · ${deviceCount} appareil${(deviceCount ?? 0) > 1 ? 's' : ''}`, tone: 'ok' as const }
+    : { label: 'Push : aucun appareil pour le moment', tone: 'muted' as const };
 
-  const dot = status.tone === 'ok' ? 'bg-[color:var(--accent)]' : status.tone === 'warn' ? 'bg-[color:var(--badge-todo)]' : 'bg-muted-foreground/40';
+  const dot = status.tone === 'ok' ? 'bg-[color:var(--accent)]' : 'bg-muted-foreground/40';
 
   return (
     // Tiroir fermé par défaut : titre, une ligne, chevron (modèle « Informations légales »).
     <CollapsibleCard
       icon={<Bell className="w-5 h-5" />}
       title="Gestion des notifications"
-      description="Notifications de vos échéances et de vos documents sur vos appareils."
+      description="Notifications de vos échéances et de vos documents sur vos téléphones et par e-mail."
       contentClassName="flex flex-wrap items-center justify-between gap-3"
     >
       <p className="flex items-center gap-1.5 text-sm text-muted-foreground">

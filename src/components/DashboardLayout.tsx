@@ -29,7 +29,6 @@ import { MobileAccountPanel } from './mobile/mobile-account-panel';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { useSession, User as SessionUser } from '@/hooks/useSession';
 import { apiClient } from '@/lib/api-client';
-import { unsubscribeCurrentDevice } from '@/lib/push/push-client';
 import { useMountedOnce } from '@/hooks/useMountedOnce';
 import { useToProcessCount } from '@/hooks/useToProcessCount';
 import { useWelcomeOnboardingNeed } from '@/hooks/useWelcomeOnboardingNeed';
@@ -92,7 +91,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // ══════════════════════════════════════════════════════════════════════
   // LOT 72D (décision PO Q7) — LIEN VERS UN AUTRE ESPACE
   //
-  // Une notification (cloche, push web ou application mobile, même WebView)
+  // Une notification (cloche, e-mail ou push de l'application mobile)
   // porte `space=<compte>` : si ce n'est pas l'espace ouvert, la session
   // bascule sur lui (adhésion vérifiée par le serveur) puis la page s'ouvre ;
   // refus (plus membre) → accueil. Sinon le paramètre est simplement retiré.
@@ -219,11 +218,10 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // DÉCONNEXION BORNÉE — APP-PERF-21
   //
   // Une seule procédure (`apiClient.signOut`) : nettoyage local immédiat
-  // (identité, droits, caches, données privées), désassociation push de
-  // l'appareil AVANT d'invalider la session (§10.2, un appareil partagé ne
-  // doit plus recevoir les notifications de ce compte), puis déconnexion
-  // serveur. Chaque étape a son délai : un service worker ou une route qui
-  // ne répond pas ne retient plus la sortie.
+  // (identité, droits, caches, données privées), puis déconnexion serveur
+  // bornée. Lot 94 (M3) : plus de Web Push à désinscrire ; le push de
+  // l'application mobile est coupé côté serveur par la fin de session
+  // (crochet `onSessionRevoked`, lot 97).
   //
   // Si le serveur n'a pas confirmé (panne, délai), on ne fait pas croire à
   // une révocation : l'utilisateur choisit de réessayer ou de quitter.
@@ -238,7 +236,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   }, []);
   const handleLogout = useCallback(async () => {
     setLogoutState('pending');
-    const result = await apiClient.signOut({ unsubscribePush: unsubscribeCurrentDevice });
+    const result = await apiClient.signOut();
     if (result.server === 'failed' || result.server === 'timeout') {
       console.error('[logout] déconnexion serveur non confirmée :', result.server);
       setLogoutState('failed');

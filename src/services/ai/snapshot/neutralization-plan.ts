@@ -46,7 +46,7 @@
  *
  * Inventaire du code au 27/09/2026 : l'application n'émet AUCUN webhook
  * sortant (seul Stripe l'appelle, en entrant : `stripe_webhook_logs`), et ses
- * intégrations tierces sont configurées par l'environnement (Resend, VAPID,
+ * intégrations tierces sont configurées par l'environnement (Resend, Firebase,
  * Stripe, PDFMonkey, Gemini) — sauf deux choses stockées en base : la clé du
  * fournisseur IA administrée par le BO (`ai_provider_credential`) et les
  * rattachements Stripe (comptes, abonnements, Duo, rétractations). Tout est
@@ -193,11 +193,23 @@ export const NEUTRALIZATION_PLAN: readonly NeutralizationStep[] = [
     family: 'effets_externes',
     label: 'Supprimer les abonnements aux notifications poussées',
     risk:
-      'Les abonnements poussés visent des navigateurs réels : la préproduction leur '
-      + 'enverrait des notifications indiscernables de celles de la production.',
+      'Table dormante depuis le lot 94 (aucun Web Push) : ses lignes désignent des navigateurs réels de la '
+      + 'production ; vidée par précaution (minimisation), aucun envoi n’étant plus possible.',
     sql: `DELETE FROM push_subscriptions`,
     verify: `SELECT count(*) FROM push_subscriptions`,
     tables: ['push_subscriptions'],
+  },
+  {
+    // Lot 97 (CDC 12 §27 : push préprod ≠ prod).
+    id: 'mobile_push_installations',
+    family: 'effets_externes',
+    label: 'Supprimer les appareils mobiles enregistrés (jetons push)',
+    risk:
+      'Les jetons visent de vrais téléphones : la préproduction leur enverrait des '
+      + 'notifications indiscernables de celles de la production.',
+    sql: `DELETE FROM mobile_push_installations`,
+    verify: `SELECT count(*) FROM mobile_push_installations`,
+    tables: ['mobile_push_installations'],
   },
   {
     id: 'email_logs',

@@ -279,11 +279,12 @@ function contextOf(job: JobRow): Record<string, unknown> {
 }
 
 async function buildVerification(job: JobRow, now: Date, contentAt: Date = now): Promise<Built> {
+  // Lot 96A : `signup_nonce` — le lien est signé pour CETTE inscription.
   const [user] = job.user_id != null
-    ? await pgClient.unsafe<{ id: number; email: string; first_name: string; is_active: boolean; status: string | null }[]>(
-        `SELECT id, email, first_name, is_active, status FROM users WHERE id = $1`, [job.user_id as never])
-    : await pgClient.unsafe<{ id: number; email: string; first_name: string; is_active: boolean; status: string | null }[]>(
-        `SELECT id, email, first_name, is_active, status FROM users WHERE email = $1 ORDER BY is_active, id DESC LIMIT 1`,
+    ? await pgClient.unsafe<{ id: number; email: string; first_name: string; is_active: boolean; status: string | null; signup_nonce: string | null }[]>(
+        `SELECT id, email, first_name, is_active, status, signup_nonce FROM users WHERE id = $1`, [job.user_id as never])
+    : await pgClient.unsafe<{ id: number; email: string; first_name: string; is_active: boolean; status: string | null; signup_nonce: string | null }[]>(
+        `SELECT id, email, first_name, is_active, status, signup_nonce FROM users WHERE email = $1 ORDER BY is_active, id DESC LIMIT 1`,
         [job.recipient_email.trim().toLowerCase() as never]);
   if (!user) return { ok: false, reason: 'ACCOUNT_GONE' };
   if (job.user_id == null) {
@@ -302,7 +303,7 @@ async function buildVerification(job: JobRow, now: Date, contentAt: Date = now):
     templateCode: 'EMAIL_VERIFICATION',
     // Lien SIGNÉ neuf, valable 24 h à compter de CETTE tentative.
     // Lot 72F : réémission d'un appel incertain → lien signé À L'INSTANT de cet appel (contenu identique).
-    variables: { firstName: user.first_name, verificationUrl: buildEmailVerificationUrl(appBaseUrl(), { id: user.id, email: user.email }, plan, contentAt.getTime()) },
+    variables: { firstName: user.first_name, verificationUrl: buildEmailVerificationUrl(appBaseUrl(), { id: user.id, email: user.email, signupNonce: user.signup_nonce }, plan, contentAt.getTime()) },
     recipientUserId: user.id,
     triggeredByUserId: null,
   };

@@ -74,7 +74,10 @@ type ErrorCode =
     | 'USER_QUOTA_REACHED'
     | 'PREMIUM_REQUIRED'
     | 'TRIAL_EXPIRED'
-    | 'SUBSCRIPTION_REQUIRED';
+    | 'SUBSCRIPTION_REQUIRED'
+    // Lot 97 (CDC 12 §25 API-06/07) : application mobile sous la version
+    // minimale de sa plateforme (426) — jamais renvoyé au Web.
+    | 'APP_UPDATE_REQUIRED';
 
 interface ApiErrorResponse {
   error: string;

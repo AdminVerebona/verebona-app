@@ -1,6 +1,9 @@
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
 import { clearLegacyAuthStorage } from '@/lib/auth-migration';
+import { clientPlatformHeaders } from '@/lib/client-platform';
 import { FRESH_HEADER, isDataMutation, lastAccountMutationAt, markAccountDataMutated, mutatedSince, resetDataFreshness } from './data-freshness';
+import { notifyAppUpdateRequired } from '@/lib/mobile/native-shell';
+import { nativeSignOutPush } from '@/lib/native/push';
 import {
   beginSessionTransition,
   getSessionEpoch,
@@ -446,7 +449,7 @@ export const REFRESH_TIMEOUT_MS = 10_000;
 
 /** Délai de l'appel `/api/auth/logout` (APP-PERF-21). */
 export const LOGOUT_TIMEOUT_MS = 5_000;
-/** Délai de la désinscription push avant la déconnexion (APP-PERF-21). */
+/** Délai de la désinscription push optionnelle avant la déconnexion (APP-PERF-21). */
 export const PUSH_UNSUBSCRIBE_TIMEOUT_MS = 3_000;
 
 /**
@@ -595,6 +598,9 @@ export const apiClient = {
       credentials: 'include',
       headers: {
         'Content-Type': 'application/json',
+        // Lots 92 + 97 : en-têtes déclaratifs du client — coque native
+        // (version, build, installation) ou type Web / PWA (« Appareils connectés »).
+        ...clientPlatformHeaders(),
         ...fetchOptions.headers,
       },
     };
@@ -686,6 +692,9 @@ export const apiClient = {
           });
 
           report('http_error');
+          // Lot 97 (CDC 12 VER-03) : version d'application trop ancienne —
+          // l'écran bloquant « Mise à jour requise » s'affiche.
+          if (errorData.code === 'APP_UPDATE_REQUIRED') notifyAppUpdateRequired(errorData.details);
           throw new ApiClientError(
             response.status,
             errorData.code ?? errorData.error ?? 'UNKNOWN_ERROR',
@@ -799,6 +808,8 @@ export const apiClient = {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            // Lot 92 : une session ouverte avant le registre y est inscrite ici.
+            ...clientPlatformHeaders(),
           },
           signal: attempt.signal,
         });
@@ -876,8 +887,12 @@ export const apiClient = {
    * Déconnexion demandée par l'utilisateur — procédure UNIQUE (APP-PERF-21).
    *
    * 1. nettoyage local immédiat (aucune réponse tardive ne repeuple l'interface) ;
-   * 2. désinscription push de l'appareil, bornée (elle a besoin du cookie,
-   *    donc AVANT l'appel de déconnexion) ;
+   * 2. option `unsubscribePush` : désinscription locale de l'appareil,
+   *    bornée (avant l'appel de déconnexion, qui efface le cookie). Lot 94
+   *    (M3) : le site n'a plus de Web Push et ne la passe plus ; le push de
+   *    l'application mobile est coupé côté serveur par la fin de session et,
+   *    dans l'app (lot 95), CET appareil est désinscrit par défaut
+   *    (`nativeSignOutPush`, jeton FCM local supprimé) ;
    * 3. déconnexion serveur, bornée, dont le résultat réel est rendu.
    *
    * Les appels concurrents partagent la même procédure. La navigation est
@@ -889,11 +904,14 @@ export const apiClient = {
     pendingSignOut = (async (): Promise<SignOutResult> => {
       this.purgeLocalSession('logout');
 
+      // Lot 95 : dans l'application iOS / Android, désinscription push de CET
+      // appareil (AUTH-10) ; sur le Web, rien (aucun Web Push, M3).
+      const unsubscribePush = opts.unsubscribePush ?? nativeSignOutPush();
       let push: SignOutResult['push'] = 'skipped';
-      if (opts.unsubscribePush) {
+      if (unsubscribePush) {
         const attempt = attemptSignal(null, PUSH_UNSUBSCRIBE_TIMEOUT_MS);
         try {
-          await untilAborted(opts.unsubscribePush(attempt.signal), attempt.signal);
+          await untilAborted(unsubscribePush(attempt.signal), attempt.signal);
           push = 'done';
         } catch {
           push = attempt.cause() === 'timeout' ? 'timeout' : 'failed';

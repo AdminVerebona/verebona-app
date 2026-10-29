@@ -2,7 +2,7 @@
  * Amorçage applicatif, partie Node — appelé par `src/instrumentation.ts`.
  *
  * Isolé dans ce module pour que la compilation Edge de l'instrumentation
- * n'embarque pas les dépendances Node (web-push, pg, S3…) : Next.js retire
+ * n'embarque pas les dépendances Node (pg, S3…) : Next.js retire
  * l'import dynamique ci-dessous du bundle Edge, pas un retour anticipé.
  *
  * Point unique où le domaine IA est câblé. Quatre responsabilités :
@@ -47,6 +47,14 @@ export async function registerNode(): Promise<void> {
   const { resetSecret } = await import('@/services/auth/password-reset.service');
   emailVerificationSecret();
   resetSecret();
+
+  // 0 bis. Intégration 92 + 97 (CDC 12 AUTH-10, PUSH-08) : toute session
+  //    terminée côté serveur (déconnexion, « Déconnecter » un appareil,
+  //    autres appareils, révocation globale) désactive le push de
+  //    l'installation mobile qui lui est rattachée. Aucun accès base ici.
+  const { onSessionRevoked } = await import('@/lib/auth/session-hooks');
+  const { registerMobilePushSessionHook } = await import('@/lib/mobile/session-revocation-hook');
+  registerMobilePushSessionHook((h) => onSessionRevoked(h, { key: 'mobile-push' }));
 
   // 1. Schéma (APP-PERF-16). L'étape de référence est le hook `postdeploy`
   //    (`scripts/migrate.mjs`) : il précède la mise en service. Ici, filet

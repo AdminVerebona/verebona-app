@@ -84,6 +84,8 @@ export function missingActionLinks(text: string): string[] {
 export function redactActionLinks(variables: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(variables ?? {})) {
+    // Lot 93 : code de confirmation (inscription Google / Apple) — jamais en clair au journal.
+    if (/^(code|otp|verificationCode)$/i.test(k)) { out[k] = '[masqué]'; continue; }
     if (typeof v !== 'string' || !/^https?:\/\//.test(v)) { out[k] = v; continue; }
     out[k] = v
       .replace(/([?&](?:token|inviteToken|transmissionToken|code)=)[^&#]+/gi, '$1[masqué]')

@@ -38,6 +38,7 @@ import { NextRequest } from 'next/server';
 import bcrypt from 'bcrypt';
 import { scenario } from '../scenario';
 import { uid } from '../factories';
+import { activerParLien } from '../activation';
 
 const APP = 'https://app.e2e.verebona.test';
 const etat = vi.hoisted(() => {
@@ -128,14 +129,19 @@ scenario('L57A-MAIL', 'P0 e-mails : vérification et invitations Duo fiables', (
     SELECT id, status, attempts, next_attempt_at, last_error, user_id FROM transactional_email_jobs
      WHERE lower(recipient_email) = lower(${email}) ORDER BY id DESC LIMIT 1`)[0];
   const actif = async (email: string) => (await sql<{ is_active: boolean }[]>`SELECT is_active FROM users WHERE email = ${email}`)[0]?.is_active;
-  async function verifier(url: string) {
-    const { GET } = await import('@/app/api/auth/verify-email/route');
-    const res = await GET(new NextRequest(url));
-    return { location: res.headers.get('location') ?? '', access: (res as WithCookies).cookies.get('access_token')?.value };
+  async function verifier(url: string, password = PASSWORD) {
+    // Lot 96A (Q9) : le lien mène à la page qui exige le mot de passe de l'inscription.
+    const res = await activerParLien(url, password);
+    return {
+      location: res.headers.get('location') ?? '',
+      access: (res as WithCookies).cookies.get('access_token')?.value,
+      // Lot 96B : appareil reconnu (cookie signé) — la connexion suivante du MÊME navigateur n'alerte pas.
+      device: (res as WithCookies).cookies.get('vb_device')?.value,
+    };
   }
-  async function connexion(email: string) {
+  async function connexion(email: string, device?: string) {
     const { POST } = await import('@/app/api/auth/login/route');
-    const res = await POST(req('/api/auth/login', { body: { email, password: PASSWORD } }));
+    const res = await POST(req('/api/auth/login', { body: { email, password: PASSWORD }, cookie: device ? `vb_device=${device}` : undefined }));
     return { status: res.status, access: (res as WithCookies).cookies.get('access_token')?.value };
   }
   const retry = async (at: Date) => (await import('@/services/email/transactional-email-jobs.service'))
@@ -172,7 +178,9 @@ scenario('L57A-MAIL', 'P0 e-mails : vérification et invitations Duo fiables', (
     expect(v.location).toContain('status=success');
     expect(v.access).toBeTruthy();
     expect(await actif(email)).toBe(true);
-    const apres = await connexion(email);
+    // Même navigateur que l'activation (sinon : alerte « nouvel appareil » du lot 96B, envoyée
+    // en différé, qui consommerait les réponses Resend programmées du scénario suivant).
+    const apres = await connexion(email, v.device);
     expect(apres.status).toBe(200);
   });
 
@@ -311,7 +319,7 @@ scenario('L57A-MAIL', 'P0 e-mails : vérification et invitations Duo fiables', (
     await inscription(email2, { password: 'AutreMdp2!y' });
     await settle();
     expect((await verifier(vieux)).location).toContain('error=invalid_token');
-    expect((await verifier(lienDe(mailsA(email2)[1].html))).location).toContain('status=success');
+    expect((await verifier(lienDe(mailsA(email2)[1].html), 'AutreMdp2!y')).location).toContain('status=success');
   });
 
   it('MAIL-P0-E2E-07 — expiration (24 h) et usage unique des liens', async () => {
@@ -319,9 +327,9 @@ scenario('L57A-MAIL', 'P0 e-mails : vérification et invitations Duo fiables', (
     await inscription(email);
     await settle();
     const lien = lienDe(mailsA(email)[0].html);
-    const [u] = await sql<{ id: number }[]>`SELECT id FROM users WHERE email = ${email}`;
+    const [u] = await sql<{ id: number; signup_nonce: string | null }[]>`SELECT id, signup_nonce FROM users WHERE email = ${email}`;
     const { buildEmailVerificationUrl } = await import('@/services/auth/email-verification.service');
-    const vieux = buildEmailVerificationUrl(APP, { id: u.id, email }, null, Date.now() - 25 * 60 * MIN);
+    const vieux = buildEmailVerificationUrl(APP, { id: u.id, email, signupNonce: u.signup_nonce }, null, Date.now() - 25 * 60 * MIN);
     expect((await verifier(vieux)).location).toContain('error=token_expired');
     expect(await actif(email)).toBe(false);
     const a = await verifier(lien);

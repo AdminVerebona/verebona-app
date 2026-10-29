@@ -27,6 +27,7 @@ import { sessionCutoffCacheKey } from './session-cutoff';
 import { isApiAllowedWhilePendingDeletion, isPendingDeletion } from './account-closure';
 import { SESSION_UNAVAILABLE_CODE } from './session-errors';
 import { hasActiveAccountAccess } from './account-access';
+import { isSessionRevoked } from './session-registry';
 
 /**
  * Jeton émis avant la révocation globale de son utilisateur ? (borne en cache 60 s)
@@ -52,6 +53,17 @@ export async function isRevokedByCutoff(payload: { userId: number; iat?: number;
   return cutoffMs > 0 && isIssuedBefore(payload, new Date(cutoffMs));
 }
 
+/**
+ * Lot 92 (CDC 18 §20.3, SESS-07, SEC-03) : révocation globale (borne) OU
+ * révocation UNITAIRE de la session `sid` dans le registre — effet immédiat,
+ * sans attendre l'expiration du jeton d'accès. Lève `SESSION_UNAVAILABLE` si
+ * la base ne répond pas.
+ */
+export async function isAccessRevoked(payload: { userId: number; sid?: string | null; iat?: number; iatMs?: number }): Promise<boolean> {
+  if (await isRevokedByCutoff(payload)) return true;
+  return isSessionRevoked(payload);
+}
+
 /** Le statut porté par la session autorise-t-il cette requête ? */
 export function sessionStatusAllows(status: string | null | undefined, pathname: string, method: string): boolean {
   if (status === 'SUSPENDED' || status === 'DELETED') return false;
@@ -73,7 +85,7 @@ export async function verifySessionAccessToken(
   const payload = await verifyAccessToken(token);
   if (!payload?.userId) return null;
   if (!sessionStatusAllows(payload.status, request.nextUrl?.pathname ?? '', request.method ?? 'GET')) return null;
-  if (await isRevokedByCutoff(payload)) return null;
+  if (await isAccessRevoked(payload)) return null;
   // Lot 54 (SEC-01) : droit actif sur le compte du jeton (lu en base, sans
   // cache). Base injoignable : `SESSION_UNAVAILABLE` remonte (503).
   if (payload.currentAccountId != null

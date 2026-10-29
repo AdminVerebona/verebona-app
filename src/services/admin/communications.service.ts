@@ -84,6 +84,8 @@ const EVENT_LABELS: Record<string, string> = {
   EMAIL_CHANGED: 'E-mail modifié',
   PASSWORD_RESET_COMPLETED: 'Mot de passe réinitialisé',
   NEW_DEVICE_LOGIN: 'Connexion depuis un nouvel appareil',
+  AUTH_IDENTITY_LINKED: 'Google / Apple associé',
+  AUTH_IDENTITY_UNLINKED: 'Google / Apple dissocié',
   NEWS_ANNOUNCEMENT: 'Actualités Verebona',
 };
 
@@ -124,6 +126,13 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   // Lot 53A (migration 0342) : inscription demandée avec une adresse déjà
   // inscrite — aucun compte créé (inscription non énumérable, CDC 18 §7.1).
   { templateCode: 'SIGNUP_EXISTING_ACCOUNT', label: 'Inscription — adresse déjà associée à un compte' },
+  // Lot 96A (migration 0830) : changement de l'adresse principale (CDC 18 §11.3, EMAIL-07).
+  { templateCode: 'EMAIL_CHANGE_CONFIRMATION', label: 'Changement d’adresse — lien de confirmation (nouvelle adresse)' },
+  { templateCode: 'PRIMARY_EMAIL_CHANGED', label: 'Changement d’adresse — notification de sécurité (ancienne et nouvelle adresses)' },
+  { templateCode: 'EMAIL_CHANGE_ADDRESS_IN_USE', label: 'Changement d’adresse — adresse déjà associée à un autre compte' },
+  // Lot 93 (migration 0809) : connexion Google / Apple (CDC 18 §10.4, §37).
+  { templateCode: 'PASSWORD_RESET_SOCIAL_ONLY', label: 'Mot de passe oublié — compte sans mot de passe (Google / Apple)' },
+  { templateCode: 'SOCIAL_SIGNUP_EMAIL_CODE', label: 'Inscription Google / Apple — code de confirmation de l’adresse' },
   // Lot 68C (migration 0477) : rappel J−7 avant le renouvellement automatique
   // d'un abonnement ANNUEL (tâche `subscription-annual-renewal-reminders`).
   // Désactivable : une désactivation annule les rappels en file (jamais
@@ -535,6 +544,16 @@ export function resolveTemplateVariables(
     incidentDate: formatSecurityIncidentDate(new Date()),
     // SIGNUP_EXISTING_ACCOUNT (lot 53A).
     requestDate: formatSecurityIncidentDate(new Date()),
+    // Lot 96A : changement d'adresse (valeurs d'exemple ; jamais un vrai lien).
+    confirmUrl: `${base}/mon-compte/confirmer-adresse?token=exemple`,
+    oldEmail: 'a***@exemple.fr',
+    newEmail: 'n***@exemple.fr',
+    changeDate: formatSecurityIncidentDate(new Date()),
+    securityUrl: `${base}/mon-compte#securite`,
+    // PASSWORD_RESET_SOCIAL_ONLY et SOCIAL_SIGNUP_EMAIL_CODE (lot 93) : valeurs d'exemple.
+    providers: 'Google',
+    code: '123456',
+    expiresIn: '15 minutes',
     // DUO_MEMBERSHIP_ENDED (lot 64A) et DUO_MEMBERSHIP_LEFT (lot 65A) : liens génériques ; le prénom du
     // titulaire n'est pas inventé (signalé manquant, COM-007).
     accountUrl: `${base}/mon-compte`,

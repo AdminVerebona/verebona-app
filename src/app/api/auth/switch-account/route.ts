@@ -20,7 +20,8 @@ import { eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { users } from '@/db/schema';
 import { SessionService } from '@/lib/session-service';
-import { issueSessionTokensOnAccount, setSessionCookies } from '@/lib/auth/session-tokens';
+import { sessionSubjectOnAccount } from '@/lib/auth/session-tokens';
+import { issueSession } from '@/lib/auth/session-issuance';
 import { markAccountSelected } from '@/services/account/membership.service';
 import { invalidateUserReadCache } from '@/lib/server-cache';
 import { logUserActivity } from '@/lib/audit-logger';
@@ -39,8 +40,8 @@ export async function POST(request: NextRequest) {
       .from(users)
       .where(eq(users.id, session.userId))
       .limit(1);
-    const tokens = user ? await issueSessionTokensOnAccount(user, accountId) : null;
-    if (!tokens) {
+    const subject = user ? await sessionSubjectOnAccount(user, accountId) : null;
+    if (!subject) {
       console.warn(JSON.stringify({ event: 'security.switch_account_refused', userId: session.userId, accountId }));
       return NextResponse.json(
         { error: 'ACCOUNT_NOT_ACCESSIBLE', code: 'ACCOUNT_NOT_ACCESSIBLE', message: 'Cet espace n’est pas accessible.' },
@@ -59,7 +60,8 @@ export async function POST(request: NextRequest) {
     });
 
     const response = NextResponse.json({ success: true, accountId });
-    setSessionCookies(response, tokens);
+    // Lot 92 : même session (`sid` conservé), réémise sur l'espace choisi — émission unique.
+    await issueSession(request, response, { kind: 'reissue', sid: session.sid, subject });
     return response;
   } catch (error) {
     return SessionService.handleSessionError(error);

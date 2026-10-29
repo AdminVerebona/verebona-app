@@ -56,6 +56,7 @@ export interface NotificationHealth {
   erreursPushParCode: Array<{ code: string; total: number }>;
   /** Emails en échec, par gabarit. */
   emailsEnEchec: Array<{ gabarit: string; total: number }>;
+  /** Lot 94 (M3) : appareils de l'application mobile (le Web Push est supprimé). */
   abonnementsPush: { actifs: number; enEchec: number };
   outbox: {
     enAttente: number;
@@ -137,7 +138,7 @@ export async function getNotificationHealth(
     pgClient<{ actifs: number; enEchec: number }[]>`
       SELECT count(*) FILTER (WHERE status = 'active')::int  AS actifs,
              count(*) FILTER (WHERE status <> 'active')::int AS "enEchec"
-      FROM push_subscriptions
+      FROM mobile_push_installations
     `,
 
     pgClient<{

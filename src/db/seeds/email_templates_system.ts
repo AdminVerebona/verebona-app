@@ -14,6 +14,11 @@ export async function seedSystemEmailTemplates() {
         'PREMIUM_CONFIRMATION',
         'SECURITY_SESSIONS_REVOKED',
         'SIGNUP_EXISTING_ACCOUNT',
+        'EMAIL_CHANGE_CONFIRMATION',
+        'PRIMARY_EMAIL_CHANGED',
+        'EMAIL_CHANGE_ADDRESS_IN_USE',
+        'PASSWORD_RESET_SOCIAL_ONLY',
+        'SOCIAL_SIGNUP_EMAIL_CODE',
         'DUO_MEMBERSHIP_ENDED',
         'DUO_MEMBERSHIP_LEFT'
     ];
@@ -29,6 +34,11 @@ export async function seedSystemEmailTemplates() {
                 eq(emailTemplates.type, 'PREMIUM_CONFIRMATION'),
                 eq(emailTemplates.type, 'SECURITY_SESSIONS_REVOKED'),
                 eq(emailTemplates.type, 'SIGNUP_EXISTING_ACCOUNT'),
+                eq(emailTemplates.type, 'EMAIL_CHANGE_CONFIRMATION'),
+                eq(emailTemplates.type, 'PRIMARY_EMAIL_CHANGED'),
+                eq(emailTemplates.type, 'EMAIL_CHANGE_ADDRESS_IN_USE'),
+                eq(emailTemplates.type, 'PASSWORD_RESET_SOCIAL_ONLY'),
+                eq(emailTemplates.type, 'SOCIAL_SIGNUP_EMAIL_CODE'),
                 eq(emailTemplates.type, 'DUO_MEMBERSHIP_ENDED'),
                 eq(emailTemplates.type, 'DUO_MEMBERSHIP_LEFT')
             )
@@ -109,6 +119,61 @@ export async function seedSystemEmailTemplates() {
         },
         // Lot 53A : inscription sur une adresse déjà inscrite (migration 0342)
         // — même texte que `lib/email-defaults.ts`.
+        // Lot 96A (migration 0830) — même texte que `lib/email-defaults.ts`.
+        {
+            type: 'EMAIL_CHANGE_CONFIRMATION',
+            subject: DEFAULT_EMAIL_TEMPLATES.EMAIL_CHANGE_CONFIRMATION.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.EMAIL_CHANGE_CONFIRMATION.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.EMAIL_CHANGE_CONFIRMATION.placeholders,
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
+        // Lot 96A (migration 0830) — même texte que `lib/email-defaults.ts`.
+        {
+            type: 'PRIMARY_EMAIL_CHANGED',
+            subject: DEFAULT_EMAIL_TEMPLATES.PRIMARY_EMAIL_CHANGED.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.PRIMARY_EMAIL_CHANGED.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.PRIMARY_EMAIL_CHANGED.placeholders,
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
+        // Lot 96A (migration 0830) — même texte que `lib/email-defaults.ts`.
+        {
+            type: 'EMAIL_CHANGE_ADDRESS_IN_USE',
+            subject: DEFAULT_EMAIL_TEMPLATES.EMAIL_CHANGE_ADDRESS_IN_USE.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.EMAIL_CHANGE_ADDRESS_IN_USE.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.EMAIL_CHANGE_ADDRESS_IN_USE.placeholders,
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
+        // Lot 93 (migration 0809) — même texte que `lib/email-defaults.ts`.
+        {
+            type: 'PASSWORD_RESET_SOCIAL_ONLY',
+            subject: DEFAULT_EMAIL_TEMPLATES.PASSWORD_RESET_SOCIAL_ONLY.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.PASSWORD_RESET_SOCIAL_ONLY.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.PASSWORD_RESET_SOCIAL_ONLY.placeholders,
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
+        // Lot 93 (migration 0809) — même texte que `lib/email-defaults.ts`.
+        {
+            type: 'SOCIAL_SIGNUP_EMAIL_CODE',
+            subject: DEFAULT_EMAIL_TEMPLATES.SOCIAL_SIGNUP_EMAIL_CODE.subject,
+            body: DEFAULT_EMAIL_TEMPLATES.SOCIAL_SIGNUP_EMAIL_CODE.body,
+            placeholders: DEFAULT_EMAIL_TEMPLATES.SOCIAL_SIGNUP_EMAIL_CODE.placeholders,
+            triggerConfig: null,
+            sender: null,
+            updatedAt: new Date(),
+            updatedBy: null,
+        },
         {
             type: 'SIGNUP_EXISTING_ACCOUNT',
             subject: DEFAULT_EMAIL_TEMPLATES.SIGNUP_EXISTING_ACCOUNT.subject,

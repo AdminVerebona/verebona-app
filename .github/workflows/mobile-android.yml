@@ -1,0 +1,226 @@
+# Application mobile Android — lot 95 (CDC 12 §28-§29, décisions PO M4, M7, M8).
+#
+# Indépendant de la CI web (.github/workflows/ci.yml, inchangé) : ne se déclenche
+# que sur le projet mobile ou à la main.
+#   · contrôles (typecheck, tests, App Links) à chaque modification ;
+#   · préproduction (fr.verebona.app.preprod) → Google Play « Tests internes » ;
+#   · production (fr.verebona.app) → UNIQUEMENT à la main, derrière l'environnement
+#     protégé « production-mobile » (approbation explicite) ; la mise en ligne
+#     publique reste confirmée dans la Play Console (version « brouillon »).
+# Secrets et variables : docs/mobile/builds-et-secrets.md (aucun dans le dépôt).
+name: Mobile — Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environnement de l'application"
+        type: choice
+        options: [preprod, prod]
+        default: preprod
+      ui_mode:
+        description: "Mode d'affichage (Gate 0) : remote = site distant (A), local = sonde interface embarquée (B)"
+        type: choice
+        options: [remote, local]
+        default: remote
+      publish:
+        description: "Envoyer sur Google Play (sinon : artefact seulement)"
+        type: boolean
+        default: true
+      prod_track:
+        description: "Production : piste Google Play (internal = version candidate testée sur la fiche de production)"
+        type: choice
+        options: [internal, production]
+        default: internal
+  push:
+    branches: [main]
+    paths:
+      - "mobile/**"
+      - "src/lib/native/**"
+      - "src/lib/mobile/app-links.ts"
+      - ".github/workflows/mobile-android.yml"
+  pull_request:
+    paths:
+      - "mobile/**"
+      - "src/lib/native/**"
+      - "src/lib/mobile/app-links.ts"
+      - ".github/workflows/mobile-android.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-android-${{ github.ref }}-${{ inputs.environment || 'preprod' }}
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: Contrôles (projet mobile + module natif partagé)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            mobile/package-lock.json
+            package-lock.json
+      - name: Dépendances du projet mobile
+        working-directory: mobile
+        run: npm ci --no-audit --no-fund --legacy-peer-deps
+      - name: Typecheck, tests du projet mobile, App Links à jour
+        working-directory: mobile
+        run: npm run check
+      - name: Tests du module natif partagé (src/lib/native)
+        run: |
+          npm ci --no-audit --no-fund --ignore-scripts
+          npx vitest run --maxWorkers=2 src/lib/native src/lib/mobile
+      - name: Liste des dépendances (BUILD-09)
+        working-directory: mobile
+        run: npm run sbom
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-mobile-android
+          path: mobile/sbom-dependances.json
+          retention-days: 90
+
+  build-preprod:
+    name: Préproduction → Google Play (tests internes)
+    needs: checks
+    if: >-
+      (github.event_name == 'push') ||
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'preprod')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: mobile-preprod
+    env:
+      VEREBONA_ENV: preprod
+      VEREBONA_APP_ORIGIN: ${{ vars.VEREBONA_APP_ORIGIN }}
+      VEREBONA_UI_MODE: ${{ inputs.ui_mode || 'remote' }}
+      VEREBONA_APP_VERSION: ${{ vars.VEREBONA_APP_VERSION }}
+      VEREBONA_APP_BUILD: ${{ github.run_number }}
+      PACKAGE_NAME: fr.verebona.app.preprod
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - name: Dépendances
+        working-directory: mobile
+        run: npm ci --no-audit --no-fund --legacy-peer-deps
+      - name: Préparer le build de l'environnement + synchroniser le projet natif
+        working-directory: mobile
+        run: npm run sync -- android
+      - name: Firebase (push) et clé d'import Play — depuis les secrets
+        working-directory: mobile/android
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+          echo "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+      - name: Compiler l'AAB signé
+        working-directory: mobile/android
+        env:
+          VEREBONA_ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/upload.jks
+          VEREBONA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          VEREBONA_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          VEREBONA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon bundlePreprodRelease
+      - name: Nettoyer les fichiers sensibles du poste de build
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks" mobile/android/app/google-services.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-preprod-${{ env.VEREBONA_APP_VERSION }}-${{ github.run_number }}
+          path: mobile/android/app/build/outputs/bundle/preprodRelease/*.aab
+          retention-days: 90
+      - name: Google Play — piste « Tests internes »
+        if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.publish)
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ env.PACKAGE_NAME }}
+          releaseFiles: mobile/android/app/build/outputs/bundle/preprodRelease/*.aab
+          track: internal
+          status: completed
+          releaseName: ${{ env.VEREBONA_APP_VERSION }} (${{ github.run_number }}) — ${{ github.sha }}
+
+  build-prod:
+    name: Production → Google Play (approbation requise)
+    needs: checks
+    if: github.event_name == 'workflow_dispatch' && inputs.environment == 'prod'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Environnement PROTÉGÉ : réviseurs obligatoires (PO), branche main uniquement.
+    environment: production-mobile
+    env:
+      VEREBONA_ENV: prod
+      VEREBONA_APP_ORIGIN: ${{ vars.VEREBONA_APP_ORIGIN }}
+      VEREBONA_UI_MODE: ${{ inputs.ui_mode }}
+      VEREBONA_APP_VERSION: ${{ vars.VEREBONA_APP_VERSION }}
+      VEREBONA_APP_BUILD: ${{ github.run_number }}
+      PACKAGE_NAME: fr.verebona.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+      - name: Dépendances
+        working-directory: mobile
+        run: npm ci --no-audit --no-fund --legacy-peer-deps
+      - name: Préparer le build de l'environnement + synchroniser le projet natif
+        working-directory: mobile
+        run: npm run sync -- android
+      - name: Firebase (push) et clé d'import Play — depuis les secrets
+        working-directory: mobile/android
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+        run: |
+          echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+          echo "$ANDROID_UPLOAD_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/upload.jks"
+      - name: Compiler l'AAB signé
+        working-directory: mobile/android
+        env:
+          VEREBONA_ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/upload.jks
+          VEREBONA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          VEREBONA_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          VEREBONA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon bundleProdRelease
+      - name: Nettoyer les fichiers sensibles du poste de build
+        if: always()
+        run: rm -f "$RUNNER_TEMP/upload.jks" mobile/android/app/google-services.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-prod-${{ env.VEREBONA_APP_VERSION }}-${{ github.run_number }}
+          path: mobile/android/app/build/outputs/bundle/prodRelease/*.aab
+          retention-days: 400
+      - name: Google Play — production (brouillon) ou version candidate (tests internes)
+        if: inputs.publish
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ env.PACKAGE_NAME }}
+          releaseFiles: mobile/android/app/build/outputs/bundle/prodRelease/*.aab
+          track: ${{ inputs.prod_track }}
+          # Production : version en BROUILLON — le déploiement (progressif ou total)
+          # se confirme dans la Play Console. Tests internes : disponible aux testeurs.
+          status: ${{ inputs.prod_track == 'production' && 'draft' || 'completed' }}
+          releaseName: ${{ env.VEREBONA_APP_VERSION }} (${{ github.run_number }}) — ${{ github.sha }}

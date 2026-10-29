@@ -520,7 +520,19 @@ export async function getRevokedTokenInfo(tokenHash: string): Promise<{ revokedA
  * Rend la borne appliquée : un jeton émis APRÈS elle (session conservée
  * volontairement) reste valide.
  */
-export async function revokeAllUserSessions(userId: number, reason: string): Promise<Date> {
+export async function revokeAllUserSessions(
+  userId: number,
+  reason: string,
+  opts: {
+    /**
+     * Lot 92 : session du registre NON marquée par cette révocation (« déconnecter
+     * tous les autres appareils ») — ses jetons, émis avant la borne, sont
+     * refusés comme les autres ; l'appelant la remplace aussitôt par une session
+     * neuve sur le même appareil.
+     */
+    keepRegistrySid?: string;
+  } = {},
+): Promise<Date> {
   await ensureRevokedTokensTable();
   // Horloge de l'APPLICATION, celle qui date les jetons (`iatMs`) : un écart
   // d'horloge avec la base ne doit ni sauver un ancien jeton, ni invalider la
@@ -534,7 +546,52 @@ export async function revokeAllUserSessions(userId: number, reason: string): Pro
           reason = EXCLUDED.reason, updated_at = now()
     RETURNING revoked_before
   `;
-  return new Date(rows[0].revoked_before);
+  const cutoff = new Date(rows[0].revoked_before);
+  await reflectGlobalRevocationInRegistry(userId, at, reason, opts.keepRegistrySid ?? null);
+  return cutoff;
+}
+
+/**
+ * Lot 92 (CDC 18 §20, registre des sessions) : la révocation globale est
+ * REFLÉTÉE dans `user_sessions` — toute session ouverte avant la borne est
+ * marquée révoquée (même motif), ses preuves de réauthentification sont
+ * retirées, et les crochets `onSessionRevoked` sont appelés (`scope: 'all'`).
+ * La borne ci-dessus reste l'autorité : un échec ici (table absente avant la
+ * migration 0802, base momentanément indisponible) ne remet rien en cause.
+ */
+async function reflectGlobalRevocationInRegistry(userId: number, at: Date, reason: string, keepSid: string | null): Promise<void> {
+  try {
+    const revoked = await client<{ sid: string; user_id: number; device_key: string | null; client_type: string }[]>`
+      UPDATE user_sessions SET revoked_at = ${at.toISOString()}, revocation_reason = ${reason}
+       WHERE user_id = ${userId} AND revoked_at IS NULL AND created_at <= ${at.toISOString()}
+         AND (${keepSid}::text IS NULL OR sid <> ${keepSid})
+      RETURNING sid, user_id, device_key, client_type
+    `;
+    await client`DELETE FROM reauth_proofs WHERE user_id = ${userId} AND created_at <= ${at.toISOString()}
+                    AND (${keepSid}::text IS NULL OR sid <> ${keepSid})`;
+    if (revoked.length > 0) {
+      const { notifySessionsRevoked } = await import('@/lib/auth/session-hooks');
+      await notifySessionsRevoked(revoked.map((r) => ({
+        sid: r.sid, userId: Number(r.user_id), deviceKey: r.device_key, clientType: r.client_type,
+        reason, scope: 'all' as const, sameDeviceContinues: false,
+      })));
+    }
+  } catch (e) {
+    if ((e as { code?: string })?.code !== '42P01') {
+      console.error('[db] révocation globale : registre des sessions non mis à jour :', (e as Error)?.message ?? e);
+    }
+  }
+  // Intégration 96 (CDC 12 AUTH-10/11, PO M2 ; CDC 18 Q5, Q8) : la révocation
+  // globale coupe aussi le push mobile des autres appareils, y compris ceux
+  // rattachés à une session antérieure au registre (que le crochet ne voit pas).
+  try {
+    const { deactivateAllPushForUser } = await import('@/lib/mobile/push-installations');
+    await deactivateAllPushForUser(userId, `sessions_revoked:${reason}`.slice(0, 60), { exceptSessionId: keepSid });
+  } catch (e) {
+    if ((e as { code?: string })?.code !== '42P01') {
+      console.error('[db] révocation globale : push mobile non coupé :', (e as Error)?.message ?? e);
+    }
+  }
 }
 
 /** Borne de révocation globale de l'utilisateur, ou `null`. */

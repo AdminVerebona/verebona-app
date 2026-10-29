@@ -10,6 +10,9 @@ import { __setJobScopeCheckForTests } from '@/services/ai/queue/job-scope';
 import { __setT3EnqueueTraceWriterForTests } from '@/services/ai/queue/t3-enqueue-trace';
 import { __setAccountAccessCheckForTests } from '@/lib/auth/account-access';
 import { __setProcessingEligibilityForTests } from '@/services/account/processing-eligibility-override';
+import { __setSessionRegistryStoreForTests } from '@/lib/auth/session-registry';
+import { createMemorySessionRegistryStore } from '@/lib/auth/session-registry-memory';
+import { createMemoryReauthProofStore } from '@/lib/auth/reauth-memory';
 
 export const fakeProvider = new FakeProvider();
 
@@ -30,6 +33,20 @@ beforeEach(async () => {
   // accordé en test unitaire ; exercé par les e2e PostgreSQL et par
   // `account-access.test.ts`.
   __setAccountAccessCheckForTests(async () => true);
+  // Lot 92 : registre des sessions et preuves de réauthentification en
+  // mémoire (aucune connexion) ; exercés en base par l'e2e L92.
+  __setSessionRegistryStoreForTests(createMemorySessionRegistryStore());
+  // (même clé globale que `__setReauthProofStoreForTests`, sans importer `reauth.ts` ici)
+  (globalThis as Record<string, unknown>).__verebonaReauthProofStore = createMemoryReauthProofStore();
+  // Lot 96B : alerte « nouvel appareil » sans base (création du compte : non ;
+  // envoi : ignoré) — même clé globale que `__setNewDeviceAlertDepsForTests` ;
+  // exercée en base par l'e2e L96B.
+  (globalThis as Record<string, unknown>).__verebonaNewDeviceAlertDeps = {
+    // Intégration 96 : compte du cookie d'appareil sans base (entrées `uid` seulement).
+    account: async (userId: number) => ({ userId }),
+    isAccountCreation: async () => false,
+    send: async () => {},
+  };
   // Lot 82A (C-Q10) : éligibilité des comptes aux traitements (requête en
   // base) accordée en test unitaire ; exercée par les e2e PostgreSQL
   // (`l82a-eligibilite-comptes`) et par `processing-eligibility.test.ts`.

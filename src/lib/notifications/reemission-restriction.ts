@@ -13,8 +13,13 @@ export type ReemissionChannel = 'bell' | 'email' | 'push';
 
 export interface ReemissionRestriction {
   canaux: ReemissionChannel[];
-  /** Appareils push à servir (ceux en échec) ; absent = aucun push. */
-  pushSubscriptionIds?: string[];
+  /**
+   * Lot 97 : appareils MOBILES à servir (ceux en échec). Absent alors que le
+   * push est réémis = aucun appareil : jamais de doublon. Lot 94 (M3) :
+   * l'ancienne clé `pushSubscriptionIds` (navigateurs Web Push) d'une
+   * réémission déjà en file est ignorée — aucun envoi à un navigateur.
+   */
+  mobileInstallationIds?: string[];
 }
 
 const CANAUX: readonly ReemissionChannel[] = ['bell', 'email', 'push'];
@@ -28,13 +33,16 @@ export function lireRestrictionReemission(payload: unknown): {
   const brut = p[REEMISSION_KEY];
   delete p[REEMISSION_KEY];
   if (!brut || typeof brut !== 'object') return { payload: p, restriction: null };
-  const r = brut as { canaux?: unknown; pushSubscriptionIds?: unknown };
+  const r = brut as { canaux?: unknown; mobileInstallationIds?: unknown };
   // Restriction illisible : on ne sert RIEN plutôt que tout (pas de doublon).
   const canaux = Array.isArray(r.canaux) ? r.canaux.filter((c): c is ReemissionChannel => CANAUX.includes(c as ReemissionChannel)) : [];
-  const subs = Array.isArray(r.pushSubscriptionIds) ? r.pushSubscriptionIds.filter((s): s is string => typeof s === 'string') : [];
+  const mobiles = Array.isArray(r.mobileInstallationIds) ? r.mobileInstallationIds.filter((s): s is string => typeof s === 'string') : [];
   return {
     payload: p,
-    restriction: { canaux, ...(canaux.includes('push') ? { pushSubscriptionIds: subs } : {}) },
+    restriction: {
+      canaux,
+      ...(canaux.includes('push') && mobiles.length > 0 ? { mobileInstallationIds: mobiles } : {}),
+    },
   };
 }
 

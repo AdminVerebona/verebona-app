@@ -24,6 +24,10 @@ import { downloadFilename, makeUniqueNamer } from '@/lib/download-filename';
 export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   // Sécurité / authentification
   'revoked_tokens', 'user_session_revocations', 'withdrawal_verification_tokens',
+  // Lot 92 : registre des sessions (empreintes) et preuves de réauthentification.
+  'user_sessions', 'reauth_proofs',
+  // Lot 96A : demandes de changement d'adresse (empreintes de liens).
+  'email_change_requests',
   'idempotency_keys', 'ai_operation_idempotency', 'ai_security_lock',
   // Journaux internes du support et de l'administration
   'admin_audit_log', 'ai_admin_audit_log', 'legal_audit_log', 'account_audit_log',
@@ -57,6 +61,8 @@ const OMITTED_COLUMNS_BY_TABLE: Record<string, ReadonlySet<string>> = {
   users: new Set(['role', 'feature_flags']),
   accounts: new Set(['feature_flags', 'checkout_session_id', 'checkout_session_created_at', 'checkout_check_attempts', 'checkout_next_check_at']),
   asset_files: new Set(['category_confidence', 'type_confidence']),
+  // Lot 97 : appareils mobiles — plateforme, version, statut exportés ; jeton (déjà omis par motif) et session jamais.
+  mobile_push_installations: new Set(['push_token_enc', 'push_token_hash', 'session_id']),
 };
 
 export function isColumnExported(table: string, column: string): boolean {

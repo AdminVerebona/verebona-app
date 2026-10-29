@@ -40,6 +40,11 @@ const WRITE_GUARD_EXCEPTIONS: Readonly<Record<string, string>> = {
   // ── Sécurité, session ───────────────────────────────────────────────────
   'auth/': 'Sécurité et session (connexion, déconnexion, renouvellement, mot de passe, changement d’espace) : indispensable (82A).',
   'users/me/change-password/route.ts': 'Sécurité : indispensable (82A).',
+  'users/me/security/': 'Sécurité : confirmation d’identité (réauthentification, lot 92) — indispensable (82A).',
+  'users/me/sessions/': 'Sécurité : déconnexion d’appareils (registre des sessions, lot 92) — indispensable (82A).',
+  'users/me/auth-identities/': 'Sécurité : méthodes de connexion Google / Apple (associer, dissocier, confirmer son identité, lot 93) — indispensable (82A).',
+  'users/me/email-change/': 'Sécurité : changement de l’adresse principale (demande, annulation, confirmation du lien, lot 96A) — identifiant de connexion, indispensable (82A).',
+  'users/me/password/route.ts': 'Sécurité : ajout d’un premier mot de passe à un compte Google / Apple (lot 93) — indispensable (82A).',
   'users/route.ts': 'Inscription (aucun compte encore).',
   // ── Facturation, rétractation, réactivation ─────────────────────────────
   'billing/': 'Facturation (souscription, régularisation d’un impayé, changement d’offre) : c’est la sortie de la lecture seule (82A).',
@@ -60,7 +65,7 @@ const WRITE_GUARD_EXCEPTIONS: Readonly<Record<string, string>> = {
   // ── Préférences, notifications, appareils, télémétrie ───────────────────
   'notification-preferences/': 'Préférences de communication et consentement (RGPD) : indispensables.',
   'notifications/route.ts': 'État de lecture des notifications (dont alertes de facturation) : aucune donnée du patrimoine.',
-  'push/': 'Appareil du compte : reçoit les notifications indispensables (paiement, sécurité).',
+  'mobile/push-installations/': 'Lot 97 : appareil de l’application mobile (enregistrement / désinscription du jeton push) — aucune donnée du patrimoine ; la déconnexion doit rester possible.',
   'users/me/upload-notice/route.ts': 'Préférence d’affichage (bandeau d’information masqué).',
   'home/mascot/reminders/route.ts': 'Préférence PERSONNELLE de rappel (aucune donnée métier modifiée, lot 60).',
   'home/mascot/check/route.ts': 'Lecture (revalidation d’une cible) : POST sans écriture.',

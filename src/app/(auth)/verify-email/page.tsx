@@ -136,10 +136,12 @@ const ERROR_CONTENT: Record<VerificationError, { title: string; message: string;
       "Ce lien de vérification a plus de 24 heures et n'est plus valable. Demandez-en un nouveau, il arrivera dans quelques instants.",
     canResend: true,
   },
+  // Lot 96A (CDC 18 Q9) : aussi le lien d'une inscription REMPLACÉE par une
+  // inscription plus récente avec la même adresse — reprise de l'inscription.
   invalid_token: {
     title: 'Lien invalide',
     message:
-      "Ce lien n'a pas pu être vérifié. Vérifiez que vous l'avez copié en entier et qu'il s'agit du dernier lien reçu, ou demandez un nouvel envoi.",
+      "Ce lien ne correspond à aucune inscription en attente. Vérifiez que vous l'avez copié en entier et qu'il s'agit du dernier lien reçu. Si vous venez de vous inscrire, le plus simple est de recommencer votre inscription.",
     canResend: true,
   },
   user_not_found: {
@@ -267,6 +269,11 @@ function VerifyEmailContent() {
               onResend={handleResend}
             />
           )}
+          {error === 'invalid_token' && (
+            <Button asChild variant="outline" className="w-full" data-testid="restart-signup">
+              <Link href="/signup">Recommencer mon inscription</Link>
+            </Button>
+          )}
           {content.canResend && <SupportHint />}
           <div className="text-center text-sm text-[color:var(--text-muted)]">
             <Link href="/login" className="text-primary hover:underline">
@@ -301,13 +308,13 @@ function VerifyEmailContent() {
             <>
               Votre demande est enregistrée : un e-mail va être envoyé à{' '}
               <span className="font-medium text-[color:var(--text-primary)]">{emailFromUrl}</span>{' '}
-              dans quelques instants. Cliquez sur le lien qu&apos;il contient pour activer votre compte
+              dans quelques instants. Cliquez sur le lien qu&apos;il contient, puis saisissez votre mot de passe, pour activer votre compte
               {joinsSharedSpace ? '.' : ' et démarrer votre essai.'}
             </>
           ) : (
             <>
               Votre demande est enregistrée : un e-mail va vous être envoyé dans quelques instants.
-              Cliquez sur le lien qu&apos;il contient pour activer votre compte
+              Cliquez sur le lien qu&apos;il contient, puis saisissez votre mot de passe, pour activer votre compte
               {joinsSharedSpace ? '.' : ' et démarrer votre essai.'}
             </>
           )}

@@ -19,6 +19,7 @@ interface NotificationHealth {
   successRate: number | null;
   pushErrorsByCode: { code: string | null; count: number }[];
   failedEmails: number;
+  /** Lot 94 (M3) : téléphones de l'application mobile avec push actif (plus de Web Push). */
   activeSubscriptions: number;
   outboxPending: number;
   stuckEvents: number;
@@ -45,7 +46,7 @@ export async function getNotificationHealth(windowDays = 30): Promise<Notificati
                count(*) FILTER (WHERE channel = 'email' AND status = 'failed') AS failed_emails
              FROM notification_deliveries
              WHERE created_at > now() - (${windowDays} || ' days')::interval`),
-    rows(sql`SELECT count(*) AS c FROM push_subscriptions WHERE status = 'active'`),
+    rows(sql`SELECT count(*) AS c FROM mobile_push_installations WHERE status = 'active'`),
     rows(sql`SELECT count(*) AS c FROM notification_outbox WHERE status = 'pending'`),
     rows(sql`SELECT count(*) AS c FROM notification_outbox
              WHERE status IN ('pending','processing') AND created_at < now() - interval '1 hour'`),

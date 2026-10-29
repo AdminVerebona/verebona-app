@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Connexion Internet requise — Verebona</title>
+  <!-- Lot 95 (CDC 12 NET-01/02, REC-052) : page LOCALE affichée quand le service
+       Verebona ne répond pas (aucun réseau, serveur indisponible). Aucune donnée
+       métier n'est conservée sur le téléphone : rien d'autre n'est affiché. -->
+  <style>
+    :root { --bg: #F8F6F1; --card: #FFFFFF; --text: #1B2529; --muted: #52636A; --accent: #17474D; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #1B2529; --card: #22303A; --text: #F3F1EC; --muted: #B5C0C4; --accent: #7FB7BE; } }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    main { min-height: 100%; display: flex; align-items: center; justify-content: center;
+      padding: max(24px, env(safe-area-inset-top)) 24px max(24px, env(safe-area-inset-bottom)); }
+    .card { width: 100%; max-width: 360px; text-align: center; }
+    h1 { font-size: 26px; font-weight: 800; letter-spacing: -.03em; margin: 16px 0 8px; }
+    p { color: var(--muted); margin: 0 0 24px; }
+    button { width: 100%; min-height: 48px; border: 0; border-radius: 12px; background: var(--accent);
+      color: #fff; font-size: 16px; font-weight: 600; }
+    button[disabled] { opacity: .6; }
+    svg { width: 44px; height: 44px; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card" role="alert">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 20h.01"/><path d="M8.5 16.43a5 5 0 0 1 7 0"/><path d="M5 12.86a10 10 0 0 1 5.17-2.69"/>
+        <path d="M19 12.86a10 10 0 0 0-2.01-1.5"/><path d="M2 8.82a15 15 0 0 1 4.18-2.65"/><path d="M22 8.82a15 15 0 0 0-11.29-3.76"/>
+        <path d="m2 2 20 20"/>
+      </svg>
+      <h1>Connexion Internet requise</h1>
+      <p>Verebona a besoin d’Internet pour afficher vos biens et vos documents. Vérifiez votre connexion puis réessayez. Votre session est conservée.</p>
+      <button id="retry" type="button">Réessayer</button>
+    </div>
+  </main>
+  <script src="app-config.js"></script>
+  <script>
+    (function () {
+      var cfg = window.VEREBONA_APP || {};
+      var btn = document.getElementById('retry');
+      function retry() {
+        if (!cfg.startUrl) { location.reload(); return; }
+        btn.disabled = true;
+        location.replace(cfg.startUrl);
+      }
+      btn.addEventListener('click', retry);
+      // Reprise automatique au retour du réseau.
+      window.addEventListener('online', retry);
+    })();
+  </script>
+</body>
+</html>

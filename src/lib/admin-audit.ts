@@ -49,6 +49,8 @@ export type AdminActionType =
   | 'USER_SUSPEND'
   | 'USER_REACTIVATE'
   | 'USER_FORCE_LOGOUT'
+  // Lot 92 (CDC 18 §20, §26) : déconnexion d'UNE session depuis la fiche utilisateur.
+  | 'USER_SESSION_REVOKE'
   // Lot 72D (décision PO Q4) : réattribution manuelle d'un essai consommé.
   | 'USER_TRIAL_REASSIGNED'
   | 'USER_PASSWORD_RESET'

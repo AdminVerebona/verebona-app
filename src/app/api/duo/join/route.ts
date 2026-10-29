@@ -7,7 +7,8 @@ import { users, duoAccounts } from '@/db/schema';
 import { eq, and, isNotNull, sql } from 'drizzle-orm';
 import { inviteTokenHash } from '@/lib/duo/invite-token-hash';
 import { DUO_JOIN_HTTP_STATUS, joinDuoByInvitation } from '@/services/account/membership.service';
-import { issueSessionTokensOnAccount, setSessionCookies } from '@/lib/auth/session-tokens';
+import { sessionSubjectOnAccount } from '@/lib/auth/session-tokens';
+import { issueSession } from '@/lib/auth/session-issuance';
 
 /**
  * GET /api/duo/join?token=xxx
@@ -144,8 +145,9 @@ export async function POST(request: NextRequest) {
       .from(users)
       .where(eq(users.id, session.userId))
       .limit(1);
-    const tokens = user ? await issueSessionTokensOnAccount(user, result.accountId) : null;
-    if (tokens) setSessionCookies(response, tokens);
+    // Lot 92 : même session (`sid` conservé), réémise — émission unique.
+    const subject = user ? await sessionSubjectOnAccount(user, result.accountId) : null;
+    if (subject) await issueSession(request, response, { kind: 'reissue', sid: session.sid, subject });
     return response;
   } catch (error) {
     return SessionService.handleSessionError(error);

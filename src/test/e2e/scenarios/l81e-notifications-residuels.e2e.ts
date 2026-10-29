@@ -52,7 +52,11 @@ const etat = vi.hoisted(() => {
     subs: new Map<string, Record<string, unknown>>(),
   };
 });
-afterAll(() => { delete process.env.RESEND_API_KEY; delete process.env.STRIPE_WEBHOOK_SECRET; });
+afterAll(async () => {
+  delete process.env.RESEND_API_KEY; delete process.env.STRIPE_WEBHOOK_SECRET;
+  const { setMobilePushProviderForTests } = await import('@/lib/mobile/push-provider');
+  setMobilePushProviderForTests(undefined);
+});
 
 vi.mock('resend', () => ({
   Resend: class {
@@ -77,14 +81,15 @@ vi.mock('resend', () => ({
     };
   },
 }));
-vi.mock('@/lib/notifications/web-push-sender', async () => {
-  const actual = await vi.importActual<typeof import('@/lib/notifications/web-push-sender')>('@/lib/notifications/web-push-sender');
-  return {
-    ...actual,
-    getVapidPublicKey: () => 'cle-publique-e2e',
-    sendWebPush: async (target: { endpoint: string }) => { etat.pushes.push({ endpoint: target.endpoint }); return { ok: true }; },
-  };
-});
+// Lot 94 (décision PO M3) : plus de Web Push — push vers l'application mobile,
+// fournisseur SIMULÉ (aucun appel réseau). `endpoint` = jeton de l'appareil.
+const fournisseurPush = {
+  name: 'fake-l81e',
+  async send(m: { token: string }) {
+    etat.pushes.push({ endpoint: m.token });
+    return { ok: true as const, messageId: `projects/e2e/messages/${etat.pushes.length}` };
+  },
+};
 const fakeStripe = {
   webhooks: { constructEvent: (body: string) => JSON.parse(body) },
   subscriptions: {
@@ -160,6 +165,8 @@ async function webhook(type: string, object: Record<string, unknown>, id?: strin
 
 scenario('L81E', 'Notifications : écarts résiduels 79C (abonnement, paiement, renouvellement, récapitulatif, statuts)', ({ sql, make }) => {
   beforeEach(async () => {
+    const { setMobilePushProviderForTests } = await import('@/lib/mobile/push-provider');
+    setMobilePushProviderForTests(fournisseurPush as never);
     await sql`INSERT INTO email_settings (id, emails_enabled, sender_name, sender_email, reply_to_email)
               VALUES (1, true, 'Verebona', 'bonjour@verebona.com', 'support@verebona.com')
               ON CONFLICT (id) DO UPDATE SET emails_enabled = true`;
@@ -184,9 +191,12 @@ scenario('L81E', 'Notifications : écarts résiduels 79C (abonnement, paiement, 
                 VALUES (${acc.id}, ${(o.plan ?? 'STANDARD').toLowerCase()}, 'active', ${o.subId}, ${customer}, false)`;
     }
     const [u] = await sql<{ email: string }[]>`SELECT email FROM users WHERE id = ${acc.ownerUserId}`;
-    await sql`INSERT INTO push_subscriptions (user_id, endpoint, p256dh_key, auth_key, status)
-              VALUES (${acc.ownerUserId}, ${`https://push.e2e/l81e/${acc.ownerUserId}`}, 'p256', 'auth', 'active')`;
-    return { ...acc, userId: acc.ownerUserId, email: u.email, customer, endpoint: `https://push.e2e/l81e/${acc.ownerUserId}` };
+    // Téléphone de l'application mobile (lot 97) : seul destinataire possible d'un push.
+    const jeton = `l81e-${acc.ownerUserId}-${'x'.repeat(30)}`;
+    const { registerPushInstallation } = await import('@/lib/mobile/push-installations');
+    await registerPushInstallation({ userId: acc.ownerUserId, accountId: acc.id, sessionId: null, installationId: crypto.randomUUID(),
+      platform: 'android', appVersion: '1.0.0', build: '1', pushToken: jeton });
+    return { ...acc, userId: acc.ownerUserId, email: u.email, customer, endpoint: jeton };
   }
   /** Vide l'outbox, y compris les traitements immédiats encore en vol (lancés sans attente par `emit`). */
   async function traiter() {

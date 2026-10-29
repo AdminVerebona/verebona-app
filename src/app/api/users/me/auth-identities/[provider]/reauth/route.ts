@@ -1,0 +1,44 @@
+/**
+ * POST /api/users/me/auth-identities/{google|apple}/reauth — lot 93, CDC 18
+ * §18.2 (« Réauthentification Google / Apple et vérification du même subject
+ * lié »), §29 (« OAuth reauth via flow dédié ») : démarre la
+ * réauthentification par un fournisseur DÉJÀ lié à ce compte. Au retour, la
+ * preuve de 5 minutes du lot 92 (`issueReauthProof`) est émise pour CETTE
+ * session (`flow.ts › completeReauth`), puis l'écran Sécurité reprend l'action
+ * demandée (`resume`). Rend { redirectUrl }.
+ */
+import { NextResponse, type NextRequest } from 'next/server';
+import { SessionService } from '@/lib/session-service';
+import { getProviderConfig, isOAuthProvider } from '@/lib/auth/oauth/config';
+import { listIdentities } from '@/lib/auth/oauth/identities';
+import { oauthRateLimited, startFlow } from '@/lib/auth/oauth/flow';
+import { setBindingCookie } from '@/lib/auth/oauth/transactions';
+import { rateLimitBody } from '@/lib/auth/auth-rate-limit';
+
+// Lot 96A : 'change-email' (Mon compte › Sécurité › Adresse e-mail, Q8).
+const RESUMABLE = new Set(['add-password', 'link-google', 'link-apple', 'unlink-google', 'unlink-apple', 'delete-account', 'change-password', 'change-email']);
+
+export async function POST(request: NextRequest, context: { params: Promise<{ provider: string }> }) {
+  let userId: number;
+  let sid: string | undefined;
+  try {
+    ({ userId, sid } = await SessionService.getSession(request));
+  } catch (error) {
+    return SessionService.handleSessionError(error);
+  }
+  const provider = (await context.params).provider;
+  const cfg = isOAuthProvider(provider) ? getProviderConfig(provider) : null;
+  if (!cfg) return NextResponse.json({ error: 'Not found', code: 'NOT_FOUND' }, { status: 404 });
+  if (!(await listIdentities(userId)).some((i) => i.provider === cfg.provider)) {
+    return NextResponse.json({ error: 'Ce fournisseur n’est pas associé à votre compte.', code: 'NOT_LINKED' }, { status: 409 });
+  }
+  if (await oauthRateLimited(request, 'start')) return NextResponse.json(rateLimitBody(900), { status: 429 });
+  const body = (await request.json().catch(() => ({}))) as { resume?: unknown };
+  const resume = typeof body.resume === 'string' && RESUMABLE.has(body.resume) ? body.resume : undefined;
+  const flow = await startFlow({
+    request, cfg, intent: 'reauth', context: { client: 'web', ...(resume ? { resume } : {}) }, userId, sessionSid: sid ?? null,
+  });
+  const res = NextResponse.json({ redirectUrl: flow.url });
+  setBindingCookie(res, flow.binding);
+  return res;
+}

@@ -4,16 +4,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-import { Bell, BellOff, Lock, Loader2, Smartphone, Trash2, ShieldCheck, Info } from 'lucide-react';
+import { Lock, Smartphone, ShieldCheck, Info } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import {
-  isPushSupported, getPermissionState, subscribeCurrentDevice, unsubscribeCurrentDevice,
-  type PushPermission,
-} from '@/lib/push/push-client';
 
 interface ChannelState { enabled: boolean; locked: boolean; available?: boolean }
 interface CategoryPref {
@@ -27,100 +22,28 @@ interface CategoryPref {
 }
 interface Matrix {
   categories: CategoryPref[];
-  push: { supported: boolean; activeDeviceCount: number };
+  push: { supported: boolean; activeDeviceCount: number; mobileDeviceCount?: number };
   newsConsent: { consented: boolean; consentedAt: string | null };
-}
-interface Device {
-  id: string;
-  platform: string | null;
-  deviceLabel: string | null;
-  status: string;
-  lastSuccessAt: string | null;
-  createdAt: string | null;
 }
 
 export default function NotificationsSettingsPage() {
   const { setBreadcrumbs } = useBreadcrumb();
   const [mounted, setMounted] = useState(false);
   const [matrix, setMatrix] = useState<Matrix | null>(null);
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [permission, setPermission] = useState<PushPermission>('unsupported');
-  const [supported, setSupported] = useState(false);
-  const [iosNeedsInstall, setIosNeedsInstall] = useState(false);
-  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: 'Mon compte', href: '/mon-compte' }, { label: 'Notifications' }]);
   }, [setBreadcrumbs]);
 
   const refresh = useCallback(async () => {
-    const [m, d] = await Promise.all([
-      apiClient.get<Matrix>('/api/notification-preferences').catch(() => null),
-      apiClient.get<{ devices: Device[] }>('/api/push/subscriptions').catch(() => ({ devices: [] })),
-    ]);
+    const m = await apiClient.get<Matrix>('/api/notification-preferences').catch(() => null);
     if (m) setMatrix(m);
-    setDevices(d?.devices ?? []);
   }, []);
 
   useEffect(() => {
     setMounted(true);
-    const supp = isPushSupported();
-    setSupported(supp);
-    setPermission(supp ? getPermissionState() : 'unsupported');
-
-    // iOS n'autorise le push que si la PWA est installée sur l'écran d'accueil.
-    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
-    const isIOS = /iphone|ipad|ipod/i.test(ua);
-    const standalone = typeof window !== 'undefined'
-      && (window.matchMedia?.('(display-mode: standalone)').matches
-        || (navigator as unknown as { standalone?: boolean }).standalone === true);
-    setIosNeedsInstall(isIOS && !standalone && !supp);
-
     void refresh();
   }, [refresh]);
-
-  const activateDevice = async () => {
-    setBusy(true);
-    try {
-      const res = await subscribeCurrentDevice('Cet appareil');
-      setPermission(res.permission);
-      if (res.ok) {
-        toast.success('Notifications activées sur cet appareil');
-        await refresh();
-      } else if (res.reason === 'denied') {
-        toast.error('Autorisation refusée. Vous pouvez la réactiver dans les réglages du navigateur.');
-      } else if (res.reason === 'no_public_key') {
-        toast.error('Le service de notifications n\'est pas disponible pour le moment.');
-      } else {
-        toast.error('Impossible d\'activer les notifications sur cet appareil.');
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const deactivateDevice = async () => {
-    setBusy(true);
-    try {
-      await unsubscribeCurrentDevice();
-      toast.success('Notifications désactivées sur cet appareil');
-      await refresh();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const removeDevice = async (id: string) => {
-    setBusy(true);
-    try {
-      await apiClient.delete(`/api/push/subscriptions/${id}`);
-      await refresh();
-    } catch {
-      toast.error('Impossible de retirer cet appareil.');
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const toggle = async (category: string, mode: 'immediate' | 'daily_digest', channel: 'push' | 'email', next: boolean) => {
     if (!matrix) return;
@@ -182,62 +105,35 @@ export default function NotificationsSettingsPage() {
         </p>
       </div>
 
-      {/* ── Bloc 1 — Notifications sur cet appareil ─────────────────────────── */}
+      {/* ── Bloc 1 — Notifications sur vos téléphones ──────────────────────────
+          Lot 97 (CDC 12 §18) puis lot 94 (décision PO M3) : les push sont
+          exclusivement mobiles. Aucun Web Push : le site ne demande jamais
+          l'autorisation du navigateur et n'envoie rien aux navigateurs. */}
       <Card>
         <CardHeader>
-          <CardTitle>Notifications sur cet appareil</CardTitle>
-          <CardDescription>Les push apparaissent même lorsque Verebona est fermé.</CardDescription>
+          <CardTitle>Notifications sur vos téléphones</CardTitle>
+          <CardDescription>
+            Les notifications push s&apos;affichent sur les téléphones où vous utilisez l&apos;application mobile
+            Verebona (iPhone et Android), même lorsqu&apos;elle est fermée.
+          </CardDescription>
         </CardHeader>
-        <CardContent>
-          {!mounted ? (
+        <CardContent className="space-y-3">
+          {!mounted || !matrix ? (
             <div className="h-10 animate-pulse rounded-md bg-muted" />
-          ) : iosNeedsInstall ? (
-            <p className="text-sm text-muted-foreground">
-              Pour recevoir des notifications sur iPhone ou iPad, ajoutez d'abord Verebona à votre écran d\'accueil,
-              puis rouvrez l'application depuis cette icône.
-            </p>
-          ) : !supported ? (
-            <p className="text-sm text-muted-foreground">
-              Ce navigateur ne prend pas en charge les notifications. Vos réglages email ci-dessous restent actifs.
-            </p>
-          ) : matrix && !matrix.push.supported ? (
-            // Clé VAPID absente côté serveur : le bouton « Activer » ne peut
-            // qu'échouer. Le dire vaut mieux que de le laisser essayer.
-            <p className="text-sm text-muted-foreground">
-              Le service de notifications n&apos;est pas disponible pour le moment. Vos réglages email
-              ci-dessous restent actifs.
-            </p>
-          ) : permission === 'denied' ? (
-            <div className="space-y-2">
-              <p className="flex items-center gap-2 text-sm font-medium text-[color:var(--attention-on-soft)]">
-                <BellOff className="h-4 w-4" /> Notifications bloquées
-              </p>
-              <p className="text-sm text-muted-foreground">
-                Les notifications sont bloquées pour Verebona. Pour les réactiver, autorisez-les dans les réglages
-                de votre navigateur ou de votre système, puis revenez sur cette page.
-              </p>
-            </div>
-          ) : permission === 'granted' && matrix && matrix.push.activeDeviceCount > 0 ? (
-            <div className="flex items-center justify-between gap-4">
-              <p className="flex items-center gap-2 text-sm">
-                <Bell className="h-4 w-4 text-[color:var(--text-success)]" />
-                Activées sur cet appareil.
-              </p>
-              <Button variant="outline" onClick={deactivateDevice} disabled={busy}>
-                {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
-                Désactiver sur cet appareil
-              </Button>
-            </div>
           ) : (
-            <div className="flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-muted-foreground">
-                Recevez un rappel avant vos échéances et la fin de vos analyses, même application fermée.
+            <>
+              <p className="flex items-center gap-2 text-sm">
+                <Smartphone className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                {(matrix.push.mobileDeviceCount ?? 0) > 0
+                  ? `Activées sur ${matrix.push.mobileDeviceCount} téléphone${(matrix.push.mobileDeviceCount ?? 0) > 1 ? 's' : ''}.`
+                  : 'Aucun téléphone ne reçoit vos notifications pour le moment.'}
               </p>
-              <Button onClick={activateDevice} disabled={busy} className="shrink-0">
-                {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Bell className="mr-1 h-4 w-4" />}
-                Activer les notifications
-              </Button>
-            </div>
+              <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+                Sur ordinateur et dans un navigateur, Verebona n&apos;affiche pas de notifications : la cloche et vos
+                e-mails restent actifs.
+              </p>
+            </>
           )}
         </CardContent>
       </Card>
@@ -261,14 +157,14 @@ export default function NotificationsSettingsPage() {
                 L'utilisateur cochait « Push : oui », n'en voyait jamais
                 arriver, et rien dans l'écran ne le lui expliquait.
                 ══════════════════════════════════════════════════════════ */}
-            {matrix && matrix.push.supported && matrix.push.activeDeviceCount === 0 && pushDemande && (
-              <div className="mb-2 flex items-start gap-2 rounded-md border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] p-3">
-                <BellOff className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--attention-on-soft)]" />
+            {matrix && matrix.push.activeDeviceCount === 0 && pushDemande && (
+              <div className="mb-2 flex items-start gap-2 rounded-md border border-border/60 bg-muted/40 p-3">
+                <Info className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
                 <p className="text-sm text-[color:var(--text-primary)]">
                   Vous avez activé le push pour au moins une catégorie, mais{' '}
-                  <span className="font-medium">aucun appareil n&apos;est autorisé</span> :
-                  ces notifications ne peuvent pas vous parvenir. Utilisez « Activer les
-                  notifications » ci-dessus, sur chaque appareil concerné.
+                  <span className="font-medium">aucun téléphone ne les reçoit</span> pour le moment :
+                  ils arriveront sur votre téléphone dès que vous serez connecté à l&apos;application
+                  mobile Verebona.
                 </p>
               </div>
             )}
@@ -345,35 +241,6 @@ export default function NotificationsSettingsPage() {
         </Card>
       </TooltipProvider>
 
-      {/* ── Appareils autorisés ─────────────────────────────────────────────── */}
-      {devices.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Appareils autorisés</CardTitle>
-            <CardDescription>Appareils qui reçoivent vos notifications push.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {devices.map((d) => (
-              <div key={d.id} className="flex items-center justify-between gap-4 rounded-md border border-border/60 p-3">
-                <div className="flex items-center gap-3">
-                  <Smartphone className="h-4 w-4 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">{d.deviceLabel || d.platform || 'Appareil'}</p>
-                    {d.lastSuccessAt && (
-                      <p className="text-xs text-muted-foreground">
-                        Dernière notification : {new Date(d.lastSuccessAt).toLocaleDateString('fr-FR')}
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <Button variant="ghost" size="sm" onClick={() => removeDevice(d.id)} disabled={busy}>
-                  <Trash2 className="mr-1 h-4 w-4" /> Retirer
-                </Button>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 }

@@ -36,6 +36,7 @@ import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { fetchDepot, messageSelonStatut } from '@/lib/upload-http';
 import { signalerEnvoiReussi } from '@/lib/upload-notification-client';
 import { agendaItemIdOrNull, linkUploadedDocumentsToAgendaItem } from '@/lib/agenda/document-agenda-link-client';
+import { NativeScanButton } from '@/components/native/NativeScanButton';
 
 const jsonPost = (body: unknown): RequestInit => ({
   method: 'POST',
@@ -715,6 +716,9 @@ export function UnifiedDocumentDialog({
             className="hidden"
             onChange={handleFileSelect}
           />
+
+          {/* Lot 95 : scanner du téléphone (application iOS / Android uniquement ; rien sur le Web). */}
+          <NativeScanButton disabled={isUploading} onScanned={(f) => addFiles([f])} onFallback={openFilePicker} />
 
           {/* Drop zone — click opens file picker */}
           <div

@@ -125,6 +125,7 @@ const eslintConfig = [
       ".history/**",          // sauvegardes VS Code Local History
       "public/**",            // assets statiques + bundles vendor minifies (pdf.worker...)
       "src/db/migrations/**", // migrations generees par drizzle-kit
+      "mobile/**",            // lot 95 : projet Capacitor (scripts, natif) — contrôles propres (`npm run check` dans mobile/)
     ],
   },
 ];

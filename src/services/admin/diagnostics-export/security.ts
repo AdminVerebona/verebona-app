@@ -95,11 +95,24 @@ const DIAG_TABLE_OMITTED_COLUMNS: Readonly<Record<string, Readonly<Record<string
   ai_master_prompt_versions: { content: { kind: 'CONTENU', motif: 'texte du prompt maître : empreinte content_sha256 exportée' } },
   ai_prompt_versions: { content: { kind: 'CONTENU', motif: 'texte du prompt : empreinte content_hash exportée' } },
   ai_config_revisions: { snapshot: { kind: 'CONTENU', motif: 'instantané complet de configuration (prompts) : empreinte snapshot_sha256 exportée' } },
-  users: { username: { kind: 'CONTENU', motif: 'identité' }, company: { kind: 'CONTENU', motif: 'identité' } },
+  users: {
+    username: { kind: 'CONTENU', motif: 'identité' }, company: { kind: 'CONTENU', motif: 'identité' },
+    // Lot 96A (CDC 18 Q9) : empreinte d'inscription signée dans le lien d'activation.
+    signup_nonce: { kind: 'SECURITE', motif: 'empreinte d’inscription (entre dans la signature du lien d’activation)' },
+  },
+  // Lot 93 : identifiant stable chez Google / Apple et adresses observées (identité) ;
+  // `refresh_token_ciphertext` est exclu par la règle JETON.
+  auth_identities: {
+    subject: { kind: 'SECURITE', motif: 'identifiant de compte chez le fournisseur (clé de connexion)' },
+    email_at_link_time: { kind: 'CONTENU', motif: 'identité (adresse chez le fournisseur)' },
+    last_provider_email: { kind: 'CONTENU', motif: 'identité (adresse chez le fournisseur)' },
+  },
   // Lot 91A — tables transversales désormais exportées au périmètre global : codes utilisables omis.
   promo_codes: { code: { kind: 'SECURITE', motif: 'code promotionnel utilisable' } },
   signup_contexts: { raw_code: { kind: 'SECURITE', motif: 'code saisi à l’inscription (promotion ou parrainage utilisable)' } },
   referral_links: { code: { kind: 'SECURITE', motif: 'code de parrainage utilisable' } },
+  // Lot 97 : jeton push mobile (chiffré) — capacité d'envoyer sur le téléphone de l'utilisateur.
+  mobile_push_installations: { push_token_enc: { kind: 'SECURITE', motif: 'jeton push mobile (chiffré)' } },
 };
 
 /**

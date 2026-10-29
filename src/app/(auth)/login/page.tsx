@@ -16,6 +16,8 @@ import { publicSiteUrl } from '@/lib/external-urls';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
 import { safeReturnUrl } from '@/lib/safe-redirect';
 import { isNetworkError, postLogin } from '@/lib/auth/login-request';
+import { SocialSignInButtons } from '@/components/auth/SocialSignInButtons';
+import { socialErrorMessage } from '@/lib/auth/oauth/messages';
 
 function LoginForm() {
   const searchParams = useSearchParams();
@@ -28,10 +30,11 @@ function LoginForm() {
   const [password, setPassword] = useState('');
   // CDC §6.3 : message neutre lorsque la session a expire. Il n'indique pas
   // si un compte existe, et n'expose aucun detail technique.
+  // Lot 93 : retour d'un parcours Google / Apple refusé ou annulé (code stable, message en clair).
   const [error, setError] = useState(
     searchParams.get('expired') === '1'
       ? 'Votre session a expiré. Merci de vous reconnecter.'
-      : '',
+      : socialErrorMessage(searchParams.get('social_error')) ?? '',
   );
   // Code d'erreur : diagnostic, et proposition de renvoi du lien de
   // vérification quand le serveur répond EMAIL_NOT_VERIFIED — ce qu'il ne
@@ -154,6 +157,8 @@ function LoginForm() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {/* Lot 93 (CDC 18 §9.1) : Google et Apple, puis « ou », puis e-mail + mot de passe. */}
+            <SocialSignInButtons mode="login" returnUrl={returnUrl} disabled={isLoading} className="mb-4" />
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>

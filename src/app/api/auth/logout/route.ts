@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyRefreshToken } from '@/lib/jwt';
 import { revokeToken, hashToken } from '@/db';
 import { logUserActivity } from '@/lib/audit-logger';
+import { endSession } from '@/lib/auth/session-registry';
+import { invalidateReauthProofs } from '@/lib/auth/reauth';
 
 /**
  * Logout endpoint
@@ -18,6 +20,7 @@ export async function POST(request: NextRequest) {
   // Résultat RÉEL de la révocation, rendu au client (APP-PERF-21) : effacer
   // les cookies ne révoque pas la session. `none` : aucun jeton à révoquer.
   let revocation: 'revoked' | 'none' | 'failed' = 'none';
+  let loggedOut: { userId: number; sid: string } | null = null;
   if (refreshToken) {
     try {
       // Jeton de RENOUVELLEMENT (lot 37, C1) : un jeton d'accès glissé dans
@@ -30,6 +33,17 @@ export async function POST(request: NextRequest) {
           : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
         await revokeToken(tokenHash, payload.userId, expiresAt, 'logout');
         revocation = 'revoked';
+        // Lot 92 : la session quitte le registre (« Appareils connectés »),
+        // crochets `onSessionRevoked` (scope 'logout' : jeton push de CET
+        // appareil, CDC 12 AUTH-10). Les autres appareils sont inchangés.
+        if (typeof payload.sid === 'string' && payload.sid) {
+          await endSession(payload.userId, payload.sid, 'LOGOUT');
+          // Lot 96A (CDC 18 Q7) : la preuve de réauthentification de CETTE
+          // session disparaît avec elle — y compris pour une session ouverte
+          // avant le registre (aucune ligne à révoquer).
+          await invalidateReauthProofs(payload.userId, { sid: payload.sid, reason: 'logout' });
+          loggedOut = { userId: payload.userId, sid: payload.sid };
+        }
       }
     } catch {
       // Non-fatal : on efface les cookies même si la révocation échoue —
@@ -40,7 +54,9 @@ export async function POST(request: NextRequest) {
 
   void logUserActivity({
     activityType: 'AUTH_LOGOUT',
+    userId: loggedOut?.userId ?? null,
     userEmail: '',
+    ...(loggedOut ? { details: { sid: loggedOut.sid } } : {}),
     request,
   });
 

@@ -104,6 +104,30 @@ export const AUTH_LIMITS = {
    * — au plus UN par adresse et par heure (silencieux au-delà).
    */
   signupExistingEmail: { maxAttempts: 1, windowMs: HOUR, lockMs: HOUR },
+  /**
+   * Lot 93 (CDC 18 §33 « OAuth start/callback : limiter abus callback et
+   * création de transactions ») : demandes par IP. Un parcours normal = un
+   * démarrage + un retour (+ une reprise Apple).
+   */
+  oauthStartIp: { maxAttempts: 30, windowMs: 15 * MIN, lockMs: 15 * MIN },
+  oauthCallbackIp: { maxAttempts: 40, windowMs: 15 * MIN, lockMs: 15 * MIN },
+  /** Lot 93 : codes de confirmation d'adresse (inscription Google / Apple) — envois par adresse. */
+  socialEmailCodeAccount: { maxAttempts: 5, windowMs: HOUR, lockMs: HOUR },
+  /**
+   * Lot 96A (CDC 18 Q9, cohérent D1) : mot de passe de l'inscription demandé à
+   * l'activation. Seuls les ÉCHECS comptent. Clé par INSCRIPTION (seul le
+   * détenteur du lien, donc de la boîte, peut essayer : aucun tiers ne bloque
+   * le titulaire) : 5 échecs / 15 min → pause 15, 30, 60 min ; par IP : 20 / 15 min.
+   */
+  activationUser: { maxAttempts: 5, windowMs: 15 * MIN, lockMs: 15 * MIN, progressive: true, maxLockMs: HOUR, levelResetMs: 24 * HOUR },
+  activationIp: { maxAttempts: 20, windowMs: 15 * MIN, lockMs: 15 * MIN },
+  /**
+   * Lot 96A (CDC 18 Q8) : demandes de changement d'adresse principale — chaque
+   * DEMANDE compte, par utilisateur (session + preuve exigées) ; e-mail
+   * « adresse déjà utilisée » au plus UN par adresse et par heure.
+   */
+  emailChangeRequestUser: { maxAttempts: 5, windowMs: HOUR, lockMs: HOUR },
+  emailChangeInUseNotice: { maxAttempts: 1, windowMs: HOUR, lockMs: HOUR },
 } as const satisfies Record<string, AuthLimitPolicy>;
 
 /** Lignes sans verrou actif et sans activité depuis cette durée : purgées. */
@@ -378,7 +402,7 @@ export function normalizeEmail(email: unknown): string {
  * en clair (e-mail, IP) dans la table.
  */
 export function limitKey(
-  flow: 'login' | 'forgot' | 'resend' | 'reset' | 'security-email' | 'reauth' | 'signup',
+  flow: 'login' | 'forgot' | 'resend' | 'reset' | 'security-email' | 'reauth' | 'signup' | 'oauth' | 'activation' | 'email-change',
   kind: 'ip' | 'acct' | 'dev' | 'pair' | 'acctu' | 'user',
   value: string,
 ): string {

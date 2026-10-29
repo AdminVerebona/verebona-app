@@ -104,6 +104,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   accounts: C('etat-metier', { filter: 't.id = {{A}}', externalRefs: 'comptes cibles d’un transfert ou d’un Duo : identifiant seul' }),
   users: C('etat-metier', { filter: `t.id IN ${MEMBERS}`, externalRefs: 'acteurs hors compte (administrateurs BO, membres retirés) : identifiant seul' }),
   account_memberships: C('etat-metier'),
+  // Lot 93 : méthodes de connexion Google / Apple des membres du compte
+  // (fournisseur, dates, relais Apple) — identifiant fournisseur et adresses
+  // omis (security.ts), jeton chiffré jamais exporté.
+  auth_identities: C('etat-metier', { filter: `t.user_id IN ${MEMBERS}` }),
   account_subscriptions: C('etat-metier'),
   trial_grants: C('etat-metier'),
   duo_accounts: C('etat-metier'),
@@ -320,6 +324,9 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   notifications: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
   notification_deliveries: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
   notification_preferences: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
+  // Lot 97 (0814) : installations de l'application mobile (plateforme, version, statut, activité) —
+  // jeton push chiffré, empreinte et session jamais exportés (security.ts).
+  mobile_push_installations: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
   _migrations: C('technique', { global: true, filter: 'TRUE' }),
   scheduled_task_state: C('technique', { global: true, filter: 'TRUE' }),
   ai_queue_worker_heartbeats: C('technique', { global: true, filter: 'TRUE' }),
@@ -458,10 +465,18 @@ export const DIAG_TABLE_EXCLUSIONS: Readonly<Record<string, { category: DiagExcl
   auth_rate_limits: { category: 'SECURITE', motif: 'limitation des connexions (sécurité)' },
   revoked_tokens: { category: 'SECURITE', motif: 'jetons révoqués' },
   user_session_revocations: { category: 'SECURITE', motif: 'révocations de sessions' },
+  // Lot 92 (CDC 18 §20, §18.4) : empreintes de jetons de renouvellement et d'appareils, preuves de réauthentification.
+  user_sessions: { category: 'SECURITE', motif: 'registre des sessions (empreintes de jetons et d’appareils)' },
+  reauth_proofs: { category: 'SECURITE', motif: 'preuves de réauthentification (5 min)' },
+  // Lot 96A (CDC 18 §11.3) : empreintes des liens de changement d'adresse principale.
+  email_change_requests: { category: 'SECURITE', motif: 'demandes de changement d’adresse (empreintes de liens)' },
+  // Lot 93 : state / nonce / PKCE hachés, codes de confirmation, codes d'échange mobile.
+  auth_transactions: { category: 'SECURITE', motif: 'transactions OAuth Google / Apple (secrets de parcours)' },
   idempotency_keys: { category: 'SECURITE', motif: 'empreintes et corps de requêtes rejouables' },
   ai_provider_credential: { category: 'SECURITE', motif: 'secret fournisseur IA' },
   withdrawal_verification_tokens: { category: 'SECURITE', motif: 'jetons de vérification (rétractation)' },
-  push_subscriptions: { category: 'SECURITE', motif: 'abonnements push (points d’accès et clés)' },
+  // Lot 94 (décision PO M3) : Web Push supprimé — table DORMANTE, conservée (migrations non destructives).
+  push_subscriptions: { category: 'SECURITE', motif: 'anciens abonnements Web Push, table dormante (points d’accès et clés)' },
   account_isolation_checks: { category: 'SECURITE', motif: 'contrôle d’isolation multi-comptes (BO › Isolation des comptes)' },
   verebona_rate_limit_counters: { category: 'SECURITE', motif: 'assistant : compteurs de limitation de débit (clés de seau)' },
   // Contenu conversationnel personnel (assistant T2) : métadonnées des demandes exportées (verebona_request_runs, verebona_ai_runs).

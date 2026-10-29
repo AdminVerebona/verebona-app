@@ -10,6 +10,7 @@ import { getClientIp } from '@/lib/auth/client-ip';
 import { AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, normalizeEmail, rateLimitBody } from '@/lib/auth/auth-rate-limit';
 import { passwordResetReleaseKeys } from '@/lib/auth/login-throttle';
 import { rememberTrustedDevice } from '@/lib/auth/device-trust';
+import { deviceAccountOf } from '@/lib/auth/device-account';
 import { logUserActivity } from '@/lib/audit-logger';
 import { db } from '@/db';
 import { users } from '@/db/schema';
@@ -127,7 +128,7 @@ export async function POST(request: NextRequest) {
           const limiter = getAuthRateLimiter();
           for (const key of passwordResetReleaseKeys(identifier, getClientIp(request.headers))) await limiter.reset(key);
         }
-        rememberTrustedDevice(request, response, identifier);
+        rememberTrustedDevice(request, response, deviceAccountOf({ id: user.id, email: identifier }));
         void logUserActivity({
           activityType: 'PASSWORD_RESET_COMPLETED',
           userId: user.id,

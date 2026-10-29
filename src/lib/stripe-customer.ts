@@ -138,3 +138,59 @@ export async function ensureStripeCustomer(
 
   return { customerId: customer.id, created: true, replacedCustomerId: storedCustomerId };
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 96A — ADRESSE DU CLIENT STRIPE APRÈS UN CHANGEMENT D'ADRESSE PRINCIPALE
+// (CDC 18 Q8, P6 : « synchroniser les coordonnées de contact », « conserver
+// l'identifiant Stripe »).
+//
+// Met à jour l'adresse des clients Stripe EXISTANTS dont l'utilisateur est le
+// payeur (comptes dont il est titulaire, Premium Duo dont il est le payeur).
+// Jamais de création, jamais de changement d'identifiant `cus_…` en base :
+// l'abonnement, les factures et le Duo restent rattachés au même client.
+// Au mieux : un échec (Stripe indisponible, clé absente, client d'un autre
+// mode) est journalisé et n'annule pas le changement d'adresse.
+// ══════════════════════════════════════════════════════════════════════════
+
+type StripeCustomerEmailUpdater = (customerId: string, email: string) => Promise<void>;
+const UPDATER_OVERRIDE_KEY = '__verebonaStripeCustomerEmailUpdater';
+
+/** TESTS SEULEMENT : remplace l'appel Stripe (`null` : appel réel). */
+export function __setStripeCustomerEmailUpdaterForTests(fn: StripeCustomerEmailUpdater | null): void {
+  (globalThis as Record<string, unknown>)[UPDATER_OVERRIDE_KEY] = fn;
+}
+
+async function defaultUpdater(customerId: string, email: string): Promise<void> {
+  const { getStripeServer } = await import('@/lib/stripe-client');
+  await getStripeServer().customers.update(customerId, { email });
+}
+
+export interface StripeEmailSyncResult {
+  customerIds: string[];
+  updated: string[];
+  failed: string[];
+}
+
+export async function syncStripeCustomerEmail(userId: number, email: string): Promise<StripeEmailSyncResult> {
+  const owned = await db
+    .select({ id: accounts.stripeCustomerId })
+    .from(accounts)
+    .where(eq(accounts.ownerUserId, userId));
+  const duos = await db
+    .select({ id: duoAccounts.stripeCustomerId })
+    .from(duoAccounts)
+    .where(eq(duoAccounts.billingOwnerUserId, userId));
+  const customerIds = [...new Set([...owned, ...duos].map((r) => r.id).filter((id): id is string => !!id))];
+  const update = ((globalThis as Record<string, unknown>)[UPDATER_OVERRIDE_KEY] as StripeCustomerEmailUpdater | null | undefined) ?? defaultUpdater;
+  const result: StripeEmailSyncResult = { customerIds, updated: [], failed: [] };
+  for (const id of customerIds) {
+    try {
+      await update(id, email);
+      result.updated.push(id);
+    } catch (e) {
+      result.failed.push(id);
+      console.error(`[stripe-customer] adresse du client ${id} non synchronisée (utilisateur ${userId}) :`, (e as Error)?.message ?? e);
+    }
+  }
+  return result;
+}

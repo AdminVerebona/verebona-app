@@ -51,6 +51,69 @@ L'équipe Verebona`,
     placeholders: JSON.stringify(['firstName', 'incidentDate', 'loginUrl', 'forgotPasswordUrl'])
   },
 
+  // Lot 96A (migration 0830, CDC 18 §11.3, EMAIL-07, décision PO Q8) :
+  // changement de l'adresse principale — lien à la nouvelle adresse,
+  // notification aux deux adresses, adresse déjà utilisée par un autre compte.
+  EMAIL_CHANGE_CONFIRMATION: {
+    subject: 'Verebona : confirmez votre nouvelle adresse e-mail',
+    body: `Bonjour {{firstName}},
+
+Vous avez demandé à utiliser cette adresse comme adresse e-mail principale de votre compte Verebona.
+
+Pour confirmer, cliquez sur le lien ci-dessous :
+
+{{confirmUrl}}
+
+Ce lien est valable {{expiresIn}} et ne fonctionne qu'une fois. Tant que vous ne l'avez pas utilisé, votre adresse actuelle reste celle de votre compte.
+
+Si vous n'êtes pas à l'origine de cette demande, ignorez simplement ce message : rien ne sera modifié.
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'confirmUrl', 'expiresIn'])
+  },
+
+  PRIMARY_EMAIL_CHANGED: {
+    subject: 'Verebona : l\'adresse e-mail de votre compte a été modifiée',
+    body: `Bonjour {{firstName}},
+
+L'adresse e-mail principale de votre compte Verebona a été modifiée le {{changeDate}}.
+
+Ancienne adresse : {{oldEmail}}
+Nouvelle adresse : {{newEmail}}
+
+Par sécurité, vos autres appareils ont été déconnectés. Vos biens, documents, partages et votre abonnement sont inchangés.
+
+Si vous êtes à l'origine de ce changement, vous n'avez rien à faire.
+
+Si ce n'est pas vous, réinitialisez tout de suite votre mot de passe puis vérifiez vos appareils connectés :
+
+{{forgotPasswordUrl}}
+
+{{securityUrl}}
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'oldEmail', 'newEmail', 'changeDate', 'securityUrl', 'forgotPasswordUrl'])
+  },
+
+  EMAIL_CHANGE_ADDRESS_IN_USE: {
+    subject: 'Verebona : votre adresse e-mail a été proposée pour un autre compte',
+    body: `Bonjour {{firstName}},
+
+Le {{requestDate}}, quelqu'un a demandé à utiliser cette adresse e-mail pour un autre compte Verebona. Elle est déjà celle de votre compte : rien n'a été modifié, aucun compte n'a été fusionné ni transféré.
+
+Vous pouvez continuer à vous connecter normalement :
+
+{{loginUrl}}
+
+Si vous n'êtes pas à l'origine de cette demande, vous n'avez rien à faire.
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'requestDate', 'loginUrl'])
+  },
+
   // Lot 53A (retour PO Q21, CDC 18 §7.1) : inscription non énumérable — une
   // adresse déjà inscrite reçoit cet e-mail au lieu d'un refus « adresse déjà
   // utilisée ». Gabarit inséré par la migration 0342, modifiable dans le BO.
@@ -75,6 +138,48 @@ Si vous n'êtes pas à l'origine de cette demande, ignorez simplement ce message
 Cordialement,
 L'équipe Verebona`,
     placeholders: JSON.stringify(['firstName', 'requestDate', 'loginUrl', 'forgotPasswordUrl'])
+  },
+
+  // Lot 93 (migration 0809, CDC 18 §10.4) : « Mot de passe oublié » pour un
+  // compte sans mot de passe (connexion Google / Apple) — aucun mot de passe
+  // n'est créé ; l'e-mail indique comment se connecter.
+  PASSWORD_RESET_SOCIAL_ONLY: {
+    subject: 'Verebona : connectez-vous avec {{providers}}',
+    body: `Bonjour {{firstName}},
+
+Vous avez demandé à réinitialiser le mot de passe de votre compte Verebona. Votre compte n'a pas de mot de passe : vous vous connectez avec {{providers}}. Aucun mot de passe n'a été créé ni modifié.
+
+Pour vous connecter, choisissez « Continuer avec {{providers}} » :
+
+{{loginUrl}}
+
+Vous souhaitez aussi un mot de passe ? Connectez-vous avec {{providers}}, puis ouvrez Mon compte › Sécurité et choisissez « Ajouter un mot de passe ».
+
+Si vous n'êtes pas à l'origine de cette demande, ignorez simplement ce message.
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'providers', 'loginUrl'])
+  },
+
+  // Lot 93 (migration 0809, CDC 18 §6, §37) : inscription Google / Apple avec
+  // une adresse principale différente de celle attestée par le fournisseur —
+  // code à 6 chiffres (15 min, 5 essais), saisi dans le même navigateur.
+  SOCIAL_SIGNUP_EMAIL_CODE: {
+    subject: 'Verebona : votre code de confirmation',
+    body: `Bonjour {{firstName}},
+
+Pour terminer la création de votre compte Verebona, saisissez ce code de confirmation :
+
+{{code}}
+
+Ce code est valable {{expiresIn}}. Ne le communiquez à personne.
+
+Si vous n'êtes pas à l'origine de cette demande, ignorez simplement ce message : aucun compte ne sera créé.
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'code', 'expiresIn'])
   },
 
   // Lot 64A (migration 0459) : fin de l'accès d'un membre à un Premium Duo.

@@ -47,6 +47,19 @@ describe('jeton de vérification signé', () => {
     expect(checkEmailVerificationToken(token, null, now, secret).ok).toBe(false);
   });
 
+  it('lot 96A : le lien est attaché à UNE inscription (empreinte) ; sans empreinte, format historique inchangé', () => {
+    const a = { ...user, signupNonce: 'empreinte-a' };
+    const token = createEmailVerificationToken(a, now, secret);
+    expect(checkEmailVerificationToken(token, a, now, secret).ok).toBe(true);
+    // Même ligne, inscription remplacée (autre empreinte) ou empreinte effacée : refusé.
+    expect(checkEmailVerificationToken(token, { ...user, signupNonce: 'empreinte-b' }, now, secret).ok).toBe(false);
+    expect(checkEmailVerificationToken(token, { ...user, signupNonce: null }, now, secret).ok).toBe(false);
+    // Lien émis avant le lot 96A (sans empreinte) : reconnu pour une inscription sans empreinte seulement.
+    const ancien = createEmailVerificationToken(user, now, secret);
+    expect(checkEmailVerificationToken(ancien, { ...user, signupNonce: null }, now, secret).ok).toBe(true);
+    expect(checkEmailVerificationToken(ancien, a, now, secret).ok).toBe(false);
+  });
+
   it('l’adresse est comparée sans tenir compte de la casse', () => {
     const token = createEmailVerificationToken({ ...user, email: 'Jean@Exemple.FR' }, now, secret);
     expect(checkEmailVerificationToken(token, user, now, secret).ok).toBe(true);
@@ -123,16 +136,22 @@ describe('producteurs et consommateur du lien', () => {
   it('la route vérifie la signature, active de façon conditionnelle et explique les anciens liens', () => {
     const src = read('src/app/api/auth/verify-email/route.ts');
     expect(src).not.toMatch(/Buffer\.from\(token, 'base64'\)/);
-    expect(src).toMatch(/checkEmailVerificationToken\(token, user\)/);
-    expect(src).toMatch(/consumeEmailVerification\(user\.id\)/);
+    expect(src).toMatch(/checkEmailVerificationToken\(token, user \?\? null\)/);
     expect(src).toMatch(/error=link_outdated/);
-    // La session n'est posée qu'après l'activation conditionnelle.
-    expect(src.indexOf('consumeEmailVerification(user.id)')).toBeLessThan(src.indexOf('generateSessionTokens('));
+    // Lot 96A (Q9) : le mot de passe de l'inscription est vérifié AVANT l'activation
+    // conditionnelle (même empreinte), elle-même AVANT la session.
+    const post = src.slice(src.indexOf('export async function POST'));
+    expect(post.indexOf('bcrypt.compare(password')).toBeGreaterThan(-1);
+    expect(post.indexOf('bcrypt.compare(password')).toBeLessThan(post.indexOf('consumeEmailVerification(user.id, user.signupNonce)'));
+    expect(src.indexOf('consumeEmailVerification(user.id, user.signupNonce)')).toBeLessThan(src.indexOf('issueSession('));
+    // Le GET n'active rien.
+    const get = src.slice(src.indexOf('export async function GET'), src.indexOf('export async function POST'));
+    expect(get).not.toMatch(/consumeEmailVerification|issueSession/);
   });
 
-  it('l’activation n’écrit que sur un compte encore non vérifié (usage unique)', () => {
+  it('l’activation n’écrit que sur un compte encore non vérifié, de la même inscription (usage unique)', () => {
     const src = read('src/services/auth/email-verification.service.ts');
-    expect(src).toMatch(/and\(eq\(users\.id, userId\), eq\(users\.isActive, false\)\)/);
+    expect(src).toMatch(/eq\(users\.id, userId\),\s*eq\(users\.isActive, false\),\s*signupNonce \? eq\(users\.signupNonce, signupNonce\) : isNull\(users\.signupNonce\)/);
     expect(src).toMatch(/\.returning\(/);
   });
 

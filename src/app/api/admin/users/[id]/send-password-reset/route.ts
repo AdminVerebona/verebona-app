@@ -38,6 +38,17 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     if (result.status === 'unknown_email') {
       return NextResponse.json({ error: 'USER_NOT_FOUND', code: 'USER_NOT_FOUND', message: 'Utilisateur introuvable.' }, { status: 404 });
     }
+    if (result.status === 'no_local_password') {
+      // Lot 93 (CDC 18 §26, INT-07) : compte Google / Apple sans mot de passe.
+      return NextResponse.json(
+        {
+          error: 'NO_LOCAL_PASSWORD',
+          code: 'NO_LOCAL_PASSWORD',
+          message: 'Ce compte n’a pas de mot de passe (connexion Google ou Apple) : aucun e-mail n’a été envoyé. L’utilisateur peut ajouter un mot de passe depuis Mon compte › Sécurité.',
+        },
+        { status: 409 },
+      );
+    }
     if (result.status === 'send_failed') {
       return NextResponse.json(
         { error: 'EMAIL_SEND_FAILED', code: 'EMAIL_SEND_FAILED', message: "L'e-mail de réinitialisation n'a pas pu être envoyé." },

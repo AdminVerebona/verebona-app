@@ -233,7 +233,8 @@ describe('L79B-CACHE — nouveaux noms, cache HTTP et service worker', () => {
 
   it('L79B-CACHE-03 — service worker : nouvelle version de cache, anciens caches verebona-* supprimés, autres caches conservés', async () => {
     const source = read('public/sw.js');
-    expect(source).toContain("const NOTIFICATION_ICON = '/pwa/icon-any-192-l79.png';");
+    // Lot 94 (M3) : plus de notification affichée par le SW, donc plus d'icône de notification.
+    expect(source).not.toContain('NOTIFICATION_ICON');
     expect(source).not.toContain("const CACHE_VERSION = 'v5.1.0';");
     const listeners: Record<string, (e: unknown) => void> = {};
     const deleted: string[] = [];
@@ -279,7 +280,7 @@ describe('L79B-ID — identité de la PWA conservée', () => {
     expect(bureau.id).toBeUndefined();
     expect(bureau.start_url).toBeUndefined();
     expect(bureau.scope).toBeUndefined();
-    // Le SW reste enregistré au même chemin (même périmètre, même abonnement push).
-    expect(read('src/lib/push/push-client.ts')).toContain("navigator.serviceWorker.register('/sw.js')");
+    // Le SW reste enregistré au même chemin (même périmètre) — lot 94 : module PWA dédié, sans push.
+    expect(read('src/lib/pwa/service-worker.ts')).toContain("navigator.serviceWorker.register('/sw.js')");
   });
 });

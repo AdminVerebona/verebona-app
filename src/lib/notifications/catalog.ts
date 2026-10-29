@@ -26,6 +26,7 @@ import { NOTIFICATION_TYPES, type NotificationType } from '@/types/notifications
 import { subscriptionNotificationText } from './subscription-messages';
 import { formatUnpaidDeadline } from '@/services/billing/unpaid-cycle.rules';
 import { uploadNotificationText } from './upload-notification-text';
+import { formatSecurityIncidentDate } from '@/lib/auth/security-email';
 
 export type NotificationCategory =
   | 'deadlines'
@@ -739,20 +740,32 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   [T.EMAIL_CHANGE_REQUESTED]: security(T.EMAIL_CHANGE_REQUESTED, 'Changement d\'email demandé', 'Une modification de votre adresse email a été demandée.'),
   [T.EMAIL_CHANGED]: security(T.EMAIL_CHANGED, 'Email modifié', 'Votre adresse email a été modifiée.'),
   [T.PASSWORD_RESET_COMPLETED]: security(T.PASSWORD_RESET_COMPLETED, 'Mot de passe réinitialisé', 'Votre mot de passe a été réinitialisé.'),
+  // Lot 96B (CDC 18 Q6, SESS-11) : connexion réussie depuis un appareil
+  // inconnu pour ce compte (`lib/auth/new-device-alert.ts`). Sécurité
+  // OBLIGATOIRE (cloche + e-mail, non désactivable), comme les autres
+  // notifications de sécurité. Date, appareil et navigateur / application ;
+  // ni IP ni localisation. Lien : Mon compte › Sécurité › Appareils connectés.
   [T.NEW_DEVICE_LOGIN]: {
-    type: T.NEW_DEVICE_LOGIN,
-    category: 'security', priority: 'high', deliveryMode: 'immediate',
-    // Non obligatoire tant que le registre d'appareils n'existe pas (§7.7).
-    mandatoryBell: false, mandatoryEmail: false, neverBell: false,
-    defaults: { push: true, email: true }, retentionDays: 180,
-    render: () => content(
-      'Nouvelle connexion',
-      'Une connexion depuis un nouvel appareil a été détectée.',
-      { body: 'Nouvelle connexion détectée.' },
-      'notif_security',
-    ),
-    deepLink: () => '/mon-compte',
-    payloadSchema: z.object({ platform: z.string().optional() }),
+    ...security(T.NEW_DEVICE_LOGIN, 'Connexion depuis un nouvel appareil', 'Une connexion à votre compte depuis un nouvel appareil a eu lieu.'),
+    retentionDays: 180,
+    render: (p) => newDeviceContent(p),
+    deepLink: () => NEW_DEVICE_LOGIN_LINK,
+    payloadSchema: z.object({
+      at: z.string(), deviceLabel: z.string().max(80), browserLabel: z.string().max(80), clientType: z.string().max(20).optional(),
+    }),
+  },
+
+  // Lot 93 (CDC 18 §22, NOTIF-01) : obligatoires (cloche + e-mail), nom du
+  // fournisseur seulement — ni adresse, ni identifiant, ni appareil.
+  [T.AUTH_IDENTITY_LINKED]: {
+    ...security(T.AUTH_IDENTITY_LINKED, 'Méthode de connexion ajoutée', 'Un compte Google ou Apple a été associé à votre compte Verebona.'),
+    render: (p) => identityContent('linked', p?.provider),
+    payloadSchema: z.object({ provider: z.enum(['google', 'apple']) }),
+  },
+  [T.AUTH_IDENTITY_UNLINKED]: {
+    ...security(T.AUTH_IDENTITY_UNLINKED, 'Méthode de connexion retirée', 'Un compte Google ou Apple a été dissocié de votre compte Verebona.'),
+    render: (p) => identityContent('unlinked', p?.provider),
+    payloadSchema: z.object({ provider: z.enum(['google', 'apple']) }),
   },
 
   // ── Actualités Verebona (consentement distinct, jamais dans la cloche) ─────
@@ -853,6 +866,35 @@ function security(type: NotificationType, bellTitle: string, body: string): Cata
     deepLink: () => '/mon-compte',
     payloadSchema: z.object({}).passthrough(),
   };
+}
+
+/** Lot 96B : Mon compte › Sécurité (le bloc « Appareils connectés » y figure). */
+export const NEW_DEVICE_LOGIN_LINK = '/mon-compte/informations#securite';
+
+/**
+ * Lot 96B (Q6) : « Connexion depuis un nouvel appareil » — date et heure
+ * (Europe/Paris), appareil, navigateur ou application. Ni IP ni localisation.
+ */
+export function newDeviceContent(p: unknown): RenderedContent {
+  const x = (p ?? {}) as { at?: unknown; deviceLabel?: unknown; browserLabel?: unknown };
+  const at = typeof x.at === 'string' && !Number.isNaN(Date.parse(x.at)) ? new Date(x.at) : null;
+  const device = [x.deviceLabel, x.browserLabel].filter((v): v is string => typeof v === 'string' && v.trim() !== '').join(' · ');
+  const when = at ? `le ${formatSecurityIncidentDate(at)}` : 'récemment';
+  const title = 'Connexion depuis un nouvel appareil';
+  const body = `Une connexion à votre compte Verebona a eu lieu ${when}${device ? ` depuis : ${device}` : ''}. `
+    + 'Si c’est vous, vous n’avez rien à faire. Sinon, ouvrez Mon compte › Sécurité › Appareils connectés, '
+    + 'déconnectez cet appareil, puis modifiez votre mot de passe.';
+  return content(title, body, { body: 'Nouvelle connexion à votre compte.' }, 'notif_new_device_login');
+}
+
+/** Lot 93 : texte « Google / Apple associé ou dissocié » (NOTIF-01). */
+function identityContent(kind: 'linked' | 'unlinked', provider: unknown): RenderedContent {
+  const name = provider === 'apple' ? 'Apple' : provider === 'google' ? 'Google' : 'Google ou Apple';
+  const title = kind === 'linked' ? `Connexion avec ${name} activée` : `Connexion avec ${name} retirée`;
+  const body = kind === 'linked'
+    ? `Votre compte ${name} a été associé à votre compte Verebona : vous pouvez l’utiliser pour vous connecter. Si ce n’est pas vous, ouvrez Mon compte › Sécurité et changez votre mot de passe.`
+    : `Votre compte ${name} a été dissocié de votre compte Verebona : il ne permet plus de vous connecter. Si ce n’est pas vous, ouvrez Mon compte › Sécurité.`;
+  return content(title, body, { body: title }, 'notif_security');
 }
 
 function familyLabel(family: string): string {

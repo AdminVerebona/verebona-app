@@ -21,6 +21,8 @@ import { z } from 'zod';
 import { MIN_PASSWORD_LENGTH, checkPassword } from '@/lib/auth/password-rules';
 import { Checkbox } from '@/components/ui/checkbox';
 import { rememberPendingDuoJoin } from '@/lib/duo/pending-duo-join';
+import { SocialSignInButtons } from '@/components/auth/SocialSignInButtons';
+import { socialErrorMessage } from '@/lib/auth/oauth/messages';
 
 /**
  * Contexte d'invitation établi CÔTÉ SERVEUR par ./page.tsx à partir du jeton
@@ -137,6 +139,9 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
     const transmission = params.get('transmissionToken');
     const emailParam = params.get('email');
     const ref = params.get('ref');
+    // Lot 93 : retour d'un parcours Google / Apple refusé ou annulé.
+    const socialError = socialErrorMessage(params.get('social_error'));
+    if (socialError) setError(socialError);
 
     if (ref && !isDuoInvite) {
       // Lot 57A (P2) : jamais de parrainage pour un invité Premium Duo.
@@ -392,6 +397,16 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
             )}
           </CardHeader>
           <CardContent>
+            {/* Lot 93 (CDC 18 §7, SIGN-01) : Google, Apple, « ou », puis le formulaire.
+                Le contexte (invitation, transmission, parrainage) suit au serveur. */}
+            <SocialSignInButtons
+              mode="signup"
+              inviteToken={inviteToken}
+              transmissionToken={transmissionToken}
+              referralCode={isDuoInvite ? null : referralCode}
+              disabled={isLoading}
+              className="mb-4"
+            />
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">

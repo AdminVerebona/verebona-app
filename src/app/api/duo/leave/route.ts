@@ -4,7 +4,8 @@ import { leaveDuo, type DuoExitError } from '@/services/duo/duo-exit.service';
 import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
-import { issueSessionTokens, setSessionCookies } from '@/lib/auth/session-tokens';
+import { sessionSubjectFor } from '@/lib/auth/session-tokens';
+import { issueSession } from '@/lib/auth/session-issuance';
 
 const STATUS: Record<DuoExitError, number> = {
   DUO_NOT_FOUND: 404, NO_ACTIVE_MEMBER: 404, NOT_A_DUO_MEMBER: 404, OWNER_CANNOT_LEAVE: 409, DUO_UNPAID: 409,
@@ -32,7 +33,8 @@ export async function POST(request: NextRequest) {
       .from(users)
       .where(eq(users.id, session.userId))
       .limit(1);
-    if (user) setSessionCookies(response, await issueSessionTokens(user));
+    // Lot 92 : même session (`sid` conservé), réémise — émission unique.
+    if (user) await issueSession(request, response, { kind: 'reissue', sid: session.sid, subject: await sessionSubjectFor(user) });
     return response;
   } catch (error) {
     return SessionService.handleSessionError(error);

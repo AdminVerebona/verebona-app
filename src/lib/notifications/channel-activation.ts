@@ -62,6 +62,13 @@ export const LOCKED_TRANSACTIONAL_EMAILS: Readonly<Record<string, string>> = {
   // Suppression volontaire du compte (migration 0206) : dernier message à la
   // personne, qui n'a plus d'accès pour le constater autrement.
   ACCOUNT_DELETION_COMPLETED: 'Confirmation de l’effacement demandé par l’utilisateur (droit à l’effacement).',
+  // Lot 96A : changement de l'adresse principale (CDC 18 §11.3, §22, EMAIL-07).
+  EMAIL_CHANGE_CONFIRMATION: 'E-mail de sécurité : seul vecteur du lien de confirmation de la nouvelle adresse.',
+  PRIMARY_EMAIL_CHANGED: 'E-mail de sécurité : notification du changement d’adresse aux deux adresses.',
+  EMAIL_CHANGE_ADDRESS_IN_USE: 'E-mail de sécurité : information du titulaire d’une adresse proposée pour un autre compte.',
+  // Lot 93 : connexion Google / Apple (CDC 18 §10.4, §37).
+  PASSWORD_RESET_SOCIAL_ONLY: 'E-mail de sécurité : réponse à « Mot de passe oublié » d’un compte sans mot de passe.',
+  SOCIAL_SIGNUP_EMAIL_CODE: 'E-mail de sécurité : seul vecteur du code de confirmation de l’adresse.',
 };
 
 export function transactionalLockReason(templateCode: string): string | null {

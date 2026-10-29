@@ -88,7 +88,8 @@ scenario('FUNC31-PERF18', 'Impayé sans grâce et paiement en attente', ({ sql, 
     const { startUnpaidCycle } = await import('@/services/billing/unpaid-cycle.service');
     const { syncSubscriptionFromStripe } = await import('@/services/billing/subscription-sync.service');
     const { refuserSiLectureSeule, refuserSiPasDIA } = await import('@/lib/write-access-guard');
-    const { issueSessionTokens } = await import('@/lib/auth/session-tokens');
+    const { sessionSubjectFor } = await import('@/lib/auth/session-tokens');
+    const { generateSessionTokens } = await import('@/lib/jwt');
     const { verifyToken } = await import('@/lib/jwt');
 
     const c = await compte('premium');
@@ -126,7 +127,8 @@ scenario('FUNC31-PERF18', 'Impayé sans grâce et paiement en attente', ({ sql, 
     expect((await getEntitlements(c.id)).canWrite).toBe(false);
 
     // ── CA-03 / CA-12 : reconnexion et renouvellement pendant l'impayé ──
-    const tokens = await issueSessionTokens({ id: c.ownerUserId, email: c.owner.email, role: 'USER', planType: 'PREMIUM', status: 'ACTIVE' });
+    // Lot 92 : sujet de session (revendications) ; l'émission HTTP passe par `issueSession`.
+    const tokens = await generateSessionTokens(await sessionSubjectFor({ id: c.ownerUserId, email: c.owner.email, role: 'USER', planType: 'PREMIUM', status: 'ACTIVE' }));
     const payload = await verifyToken(tokens.accessToken);
     expect(payload).toMatchObject({ userId: c.ownerUserId, currentAccountId: c.id });
     expect((payload as { hasActiveAccount?: boolean }).hasActiveAccount).toBe(false);
