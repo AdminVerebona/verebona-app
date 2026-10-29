@@ -52,6 +52,22 @@
  *   volumes ZIP, manifeste) sur le collecteur 77C / 81C / 82E.
  * La répartition des erreurs d'APPELS reste dans la vue technique : ce ne
  * sont pas des exécutions en échec (BO-04, BO-11).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 99A — JOURNAL COMPLET : VUE SYNTHÉTIQUE PAR DÉFAUT (ticket P1 T3, §3)
+ *
+ * · Par défaut, aucune liste : un bloc compact (état global OK / À surveiller
+ *   / Incident calculé sur les issues réelles, période, total, synthèse par
+ *   traitement avec l'usage de l'IA en compteurs distincts) et le bouton
+ *   « Voir les exécutions ». Aucune ligne n'est lue (`rows=0`).
+ * · « Voir les exécutions » déplie le journal existant (filtres, lignes,
+ *   pagination serveur, détail métier / technique) ; « Masquer les
+ *   exécutions » le referme. État porté par l'URL (`liste=1` / `liste=0`).
+ * · Un clic sur « Échecs » / « Incomplètes » (ou sur la répartition par
+ *   traitement) ouvre directement la liste filtrée ; un lien filtré (issue,
+ *   traitement, compte, filtres d'appels, onglet) ouvre la liste d'emblée.
+ * · Même fonctionnement en vue métier et en vue technique, desktop et mobile.
+ *   Filtres, liens directs et exports inchangés ; rien n'est supprimé.
  */
 
 import { Suspense, useState, useEffect, useCallback } from 'react';
@@ -70,11 +86,12 @@ import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { UnansweredHelpQuestions } from './_components/UnansweredHelpQuestions';
 import { CopyBlockButton, ExecutionExportButtons } from './_components/CopyJson';
 import {
-  ExecutionCardsView, JournalFiltersView, JournalRowsView, journalParams, periodLabelOf, type JournalFilterState,
+  ExecutionCardsView, JournalFiltersView, JournalRowsView, JournalSynthesisView, initialJournalListOpen, journalParams, periodLabelOf,
+  type JournalFilterState, type SynthesisAiUsage,
 } from './_components/BusinessJournal';
 import { BusinessExecutionDetailSheet } from './_components/BusinessExecutionDetail';
 import { ExecutionExportsPanel } from './_components/ExecutionExportsPanel';
-import type { CardKind, ExecutionCards, JournalView } from '@/services/ai/business-execution/journal';
+import type { CardKind, ExecutionCards, JournalSynthesis, JournalView } from '@/services/ai/business-execution/journal';
 import { ExecutionDiagnosisPanel, type DiagnosisView } from './_components/ExecutionDiagnosisPanel';
 import { historyClassSummary, type HistoryClass } from '@/services/ai/history-reclassification/rule';
 import { RuntimeContractPanel, type ContractCallView } from './_components/RuntimeContractPanel';
@@ -250,6 +267,8 @@ interface JournalResponse {
   readAt: string;
   period: { from: string; to: string; rule: string };
   cards: ExecutionCards;
+  /** Lot 99A : vue synthétique (état global, total, synthèse par traitement, usage de l'IA). */
+  synthesis?: JournalSynthesis & { aiUsage: SynthesisAiUsage | null };
   total: number;
   rows: BusinessExecutionDto[];
   truncated: string[];
@@ -278,6 +297,10 @@ function AiExecutionsScreen() {
     return (TECH_TABS.some(([k]) => k === t) ? t : 'calls') as TechTab;
   });
   const [journal, setJournal] = useState<JournalResponse | null>(null);
+  // Lot 99A : vue synthétique par défaut ; la liste s'ouvre sur demande ou par un lien filtré.
+  const [listeOuverte, setListeOuverte] = useState<boolean>(() => initialJournalListOpen(searchParams));
+  const [synthese, setSynthese] = useState<JournalResponse['synthesis'] | null>(null);
+  const [syntheseErreur, setSyntheseErreur] = useState<string | null>(null);
   const [cards, setCards] = useState<ExecutionCards | null>(null);
   const [cardsError, setCardsError] = useState<string | null>(null);
   const [jOffset, setJOffset] = useState(0);
@@ -305,29 +328,55 @@ function AiExecutionsScreen() {
       q.set('tab', tab);
       if (tab === 't2' && t2Route) q.set('route', t2Route);
     }
+    q.set('liste', listeOuverte ? '1' : '0');
     router.replace(`?${q}`, { scroll: false });
-  }, [vue, jf, filters, tab, t2Route, router]);
+  }, [vue, jf, filters, tab, t2Route, router, listeOuverte]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setErreur(null);
     try {
+      if (!listeOuverte) {
+        // Lot 99A : vue synthétique — synthèse et cartes seulement, aucune ligne chargée.
+        const nature = vue === 'metier' ? 'BUSINESS' : 'TECHNICAL';
+        try {
+          const r = await apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams(jf, nature, { rows: '0' })}`);
+          setSynthese(r.synthesis ?? null);
+          setSyntheseErreur(null);
+          if (vue === 'metier') { setCards(r.cards); setCardsError(null); }
+        } catch (e) {
+          setSyntheseErreur((e as { message?: string })?.message ?? 'lecture impossible');
+        }
+        if (vue !== 'metier') {
+          void apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams({ ...jf, outcome: '' }, 'BUSINESS', { rows: '0' })}`)
+            .then((r) => { setCards(r.cards); setCardsError(null); }, (e: { message?: string }) => setCardsError(e?.message ?? 'lecture impossible'));
+        }
+        return;
+      }
       if (vue === 'metier') {
         // Une seule lecture : cartes, liste et total viennent du MÊME calcul (R24).
         const r = await apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams(jf, 'BUSINESS', { offset: String(jOffset), limit: '50' })}`);
         setJournal(r);
         setCards(r.cards);
         setCardsError(null);
+        if (r.synthesis) { setSynthese(r.synthesis); setSyntheseErreur(null); }
         return;
       }
       // Vue technique : les cartes (exécutions MÉTIER, même période et même périmètre) restent en tête.
-      void apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams({ ...jf, outcome: '' }, 'BUSINESS', { limit: '1' })}`)
+      void apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams({ ...jf, outcome: '' }, 'BUSINESS', { rows: '0' })}`)
         .then((r) => { setCards(r.cards); setCardsError(null); }, (e: { message?: string }) => setCardsError(e?.message ?? 'lecture impossible'));
+      if (tab !== 'tech') {
+        // Lot 99A : synthèse technique de la période (les onglets d'appels ne la portent pas).
+        void apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams(jf, 'TECHNICAL', { rows: '0' })}`)
+          .then((r) => { setSynthese(r.synthesis ?? null); setSyntheseErreur(null); }, (e: { message?: string }) => setSyntheseErreur(e?.message ?? 'lecture impossible'));
+      }
       const params = executionFiltersToParams(filters);
       params.set('offset', String(offset));
       params.set('limit', '50');
       if (tab === 'tech') {
-        setJournal(await apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams(jf, 'TECHNICAL', { offset: String(jOffset), limit: '50' })}`));
+        const r = await apiClient.get<JournalResponse>(`/api/admin/ai/business-executions?${journalParams(jf, 'TECHNICAL', { offset: String(jOffset), limit: '50' })}`);
+        setJournal(r);
+        if (r.synthesis) { setSynthese(r.synthesis); setSyntheseErreur(null); }
       } else if (tab === 'reports' || tab === 'completeness' || tab === 'qualification') {
         // Lots 58C et 34F : l'onglet charge lui-même ses données.
       } else if (tab === 'archives') {
@@ -353,7 +402,7 @@ function AiExecutionsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [vue, jf, jOffset, filters, offset, tab, t2Route]);
+  }, [vue, jf, jOffset, filters, offset, tab, t2Route, listeOuverte]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -368,7 +417,15 @@ function AiExecutionsScreen() {
   /** BO-01 : un clic sur une carte ouvre le journal métier filtré sur son issue (mêmes nombres). */
   const openCard = (c: CardKind) => {
     setVue('metier');
-    setJournalFilter({ outcome: jf.outcome === c ? '' : c });
+    // Lot 99A : la carte ouvre directement la liste filtrée (vue synthétique sinon).
+    setListeOuverte(true);
+    setJournalFilter({ outcome: jf.outcome === c && listeOuverte ? '' : c });
+  };
+  /** Lot 99A : répartition par traitement de la synthèse → liste filtrée (traitement + issue). */
+  const openFiltered = (p: { treatment: string; outcome: CardKind }) => {
+    setListeOuverte(true);
+    if (vue === 'technique') { setTab('tech'); setOffset(0); }
+    setJournalFilter({ treatment: p.treatment, outcome: p.outcome });
   };
 
   const openDetail = async (id: number) => {
@@ -381,7 +438,7 @@ function AiExecutionsScreen() {
 
   const total = vue === 'metier' || tab === 'tech' ? journal?.total ?? 0
     : tab === 'reports' || tab === 'completeness' || tab === 'qualification' ? 0 : tab === 't2' ? t2?.total ?? 0 : tab === 'archives' ? archives?.totals.archives ?? 0 : page?.total ?? 0;
-  const journalList = vue === 'metier' || tab === 'tech';
+  const journalList = listeOuverte && (vue === 'metier' || tab === 'tech');
 
   return (
     <div className="space-y-6 max-w-6xl min-w-0">
@@ -400,7 +457,7 @@ function AiExecutionsScreen() {
       </div>
 
       {/* Lot 84D (BO-01, BO-07) : deux cartes, même calcul que la liste et l'export. */}
-      <ExecutionCardsView cards={cards} periodLabel={periodLabelOf(jf)} active={vue === 'metier' && (jf.outcome === 'FAILED' || jf.outcome === 'INCOMPLETE') ? jf.outcome : null}
+      <ExecutionCardsView cards={cards} periodLabel={periodLabelOf(jf)} active={vue === 'metier' && listeOuverte && (jf.outcome === 'FAILED' || jf.outcome === 'INCOMPLETE') ? jf.outcome : null}
         onOpen={openCard} error={cardsError} />
 
       {/* BO-08 : Journal complet, accessible en permanence — vue métier / vue technique. */}
@@ -410,7 +467,7 @@ function AiExecutionsScreen() {
           <div role="group" aria-label="Vue du journal" className="inline-flex rounded-lg border border-[color:var(--border-subtle)] p-0.5">
             {([['metier', 'Vue métier'], ['technique', 'Vue technique']] as const).map(([k, label]) => (
               <button key={k} type="button" aria-pressed={vue === k} data-testid={`vue-${k}`}
-                onClick={() => { setVue(k); setJOffset(0); setOffset(0); }}
+                onClick={() => { setVue(k); setJOffset(0); setOffset(0); setSynthese(null); }}
                 className={`px-3 py-1.5 text-sm rounded-md ${vue === k ? 'bg-[color:var(--accent-soft)] text-[color:var(--text-primary)] font-medium' : 'text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)]'}`}>
                 {label}
               </button>
@@ -418,6 +475,13 @@ function AiExecutionsScreen() {
           </div>
         </div>
 
+        {/* Lot 99A : synthèse compacte, toujours visible ; la liste se déplie à la demande. */}
+        <JournalSynthesisView synthesis={synthese ?? null} aiUsage={synthese?.aiUsage ?? null} view={vue} periodLabel={periodLabelOf(jf)}
+          open={listeOuverte} loading={loading} error={syntheseErreur}
+          onToggle={() => { setListeOuverte((o) => !o); setJOffset(0); setOffset(0); }}
+          onOpenFiltered={openFiltered} />
+
+        {listeOuverte && <>
         {vue === 'technique' && (
           <div className="flex flex-wrap gap-2">
             {TECH_TABS.map(([k, label]) => (
@@ -544,7 +608,7 @@ function AiExecutionsScreen() {
 
       {erreur ? (
         <EcranEnErreur titre="Exécutions indisponibles" message={erreur} onRetry={load} />
-      ) : loading && !journalList ? (
+      ) : !listeOuverte ? null : loading && !journalList ? (
         <div className="flex items-center justify-center py-16 text-[color:var(--text-muted)]">
           <Loader2 className="w-4 h-4 mr-2 animate-spin" /> Chargement…
         </div>
@@ -663,6 +727,7 @@ function AiExecutionsScreen() {
           ))}
         </div>
       )}
+        </>}
 
       </section>
 
@@ -677,7 +742,7 @@ function AiExecutionsScreen() {
           </Button>
         </div>
       )}
-      {!journalList && total > 50 && (
+      {listeOuverte && !journalList && total > 50 && (
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Button size="sm" variant="outline" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - 50))}>
             <ChevronLeft className="w-3.5 h-3.5 mr-1.5" /> Précédents
@@ -691,8 +756,9 @@ function AiExecutionsScreen() {
         </div>
       )}
 
-      {/* EXP-01 à EXP-05 : export du journal filtré (mêmes exécutions que les cartes et la liste). */}
-      {journalList && (
+      {/* EXP-01 à EXP-05 : export du journal filtré (mêmes exécutions que les cartes et la liste).
+          Lot 99A : disponible aussi en vue synthétique (exports inchangés, liste repliée). */}
+      {(vue === 'metier' || tab === 'tech') && (
         <ExecutionExportsPanel params={journalParams(jf, vue === 'metier' ? 'BUSINESS' : 'TECHNICAL')}
           summary={`${vue === 'metier' ? 'exécutions métier' : 'exécutions techniques'}, ${periodLabelOf(jf)}${jf.treatment ? `, ${jf.treatment}` : ''}${jf.outcome ? `, issue ${jf.outcome}` : ''}${jf.origin ? `, origine ${jf.origin}` : ''}${jf.accountId ? `, compte ${jf.accountId}` : ''}`} />
       )}

@@ -28,6 +28,8 @@ const Body = z.object({
   accountIds: z.array(z.number().int().positive()).max(1_000).optional(),
   all: z.boolean().optional(),
   dryRun: z.boolean().optional(),
+  /** Lot 99A : T3 — relance forcée de la revue IA (sinon les décisions mémorisées sont réutilisées). */
+  forceAiReview: z.boolean().optional(),
 });
 
 export async function POST(req: NextRequest, { params }: { params: Promise<{ treatment: string }> }) {
@@ -42,7 +44,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ tre
 
   try {
     const result = await launchManual(
-      treatment, parsed.data, guard.ctx.adminUserId, { dryRun: parsed.data.dryRun }, await defaultManualLaunchDeps(),
+      treatment, parsed.data, guard.ctx.adminUserId,
+      { dryRun: parsed.data.dryRun, forceAiReview: treatment === 'T3' && parsed.data.forceAiReview === true },
+      await defaultManualLaunchDeps(),
     );
     if (!result.dryRun && (!Array.isArray(result.jobIds) || result.jobIds.length === 0)) {
       // Lot 54A : garde-fou du contrat — jamais 202 sans job (ne devrait pas arriver).

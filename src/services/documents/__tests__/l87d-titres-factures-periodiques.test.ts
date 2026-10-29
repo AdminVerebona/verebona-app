@@ -65,12 +65,18 @@ describe('L87D-U-02 — mois principal : décision IA seulement (point d’exten
 });
 
 describe('L87D-U-03 — convention « Facture {Fournisseur} — {Mois AAAA} »', () => {
-  it('CA1 : facture majoritairement de février, mois principal IA = février → « Facture Homiris — Février 2026 »', () => {
-    const p = homiris({ billedPeriod: { start: '2026-02-05', end: '2026-03-04', source: 'T1_INSTALLMENT' }, principalMonth: principalMonthFromAnalysis(T1_CERTAIN('2026-02')), invoiceReferences: ['94741358'] });
+  // Lot 99C : le mois n'est retenu sans décision T3 que s'il est EXPLICITEMENT désigné par le document
+  // (« Abonnement février 2026 ») ; le seul fondement « majorité de la période » n'est plus une règle de titre.
+  it('CA1 : mois février désigné par le document (« Abonnement février 2026 ») → « Facture Homiris — Février 2026 »', () => {
+    const p = homiris({ billedPeriod: { start: '2026-02-05', end: '2026-03-04', source: 'T1_INSTALLMENT' }, principalMonth: principalMonthFromAnalysis(T1_CERTAIN('2026-02', 'STATED_ON_DOCUMENT')), invoiceReferences: ['94741358'] });
     expect(p.title).toBe('Facture Homiris — Février 2026');
     expect(p.convention).toBe('PERIODIC');
     expect(p.canonicalKey).toBe(canonicalTitleKey('Facture', 'Homiris', 'Février 2026'));
     expect(p.title).not.toContain('94741358'); // le numéro reste dans les métadonnées (recherche), pas dans le titre principal
+  });
+  it('lot 99C : mois principal T1 fondé sur la seule MAJORITÉ de la période → indice seulement, période exacte (aucune règle « > 50 % »)', () => {
+    const p = homiris({ billedPeriod: { start: '2026-02-05', end: '2026-03-04', source: 'T1_INSTALLMENT' }, principalMonth: principalMonthFromAnalysis(T1_CERTAIN('2026-02')) });
+    expect(p.title).toBe('Facture Homiris — 5 février au 4 mars 2026');
   });
   it('sans mois principal : période exacte, jamais trompeuse (« Facture Homiris — 5 février au 4 mars 2026 »)', () => {
     expect(homiris({ billedPeriod: { start: '2026-02-05', end: '2026-03-04', source: 'T1_INSTALLMENT' } }).title).toBe('Facture Homiris — 5 février au 4 mars 2026');

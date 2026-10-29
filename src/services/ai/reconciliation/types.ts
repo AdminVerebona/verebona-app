@@ -37,6 +37,14 @@ export interface ReconciliationDecision {
   /** true si la décision a été prise par règle, false si un modèle a tranché. */
   deterministic: boolean;
   /**
+   * Lot 99A — origine d'une décision issue d'une demande de revue IA :
+   * `PROVIDER` appel réel au fournisseur, `CACHE` réponse du cache temporaire
+   * (aucun appel), `MEMORY` décision mémorisée réutilisée (aucun appel),
+   * `USER_ARBITRATION` arbitrage déjà tranché par l'utilisateur (aucun appel),
+   * `FAILED` échec IA (conflit prudent). Absent : décision déterministe.
+   */
+  aiSource?: 'PROVIDER' | 'CACHE' | 'MEMORY' | 'USER_ARBITRATION' | 'FAILED';
+  /**
    * Lot 81A — conflit : TOUTES les valeurs que les règles d'autorité ne
    * permettent pas de départager, réellement différentes de la valeur en
    * place (la première est `proposedValue`). Aucune n'est masquée
@@ -114,7 +122,16 @@ export interface ReconciliationRun {
   /** Lot 58C : décisions apply / update (intentions), pour comparaison. */
   intendedCount?: number;
   conflictCount: number;
+  /** Décisions assistées par l'IA (appel réel, cache ou mémoire) — pas un nombre d'appels. */
   aiReviewCount: number;
+  /** Lot 99A : appels RÉELS au fournisseur pendant ce run. */
+  providerCalls?: number;
+  /** Lot 99A : réponses servies par le cache temporaire (aucun appel). */
+  aiCacheHits?: number;
+  /** Lot 99A : décisions réutilisées sans appel (mémoire T3, arbitrage utilisateur déjà tranché). */
+  decisionsReused?: number;
+  /** Lot 99A : conflits déjà ouverts à l'identique, ni recréés ni réécrits. */
+  conflictsUnchanged?: number;
   /** true si les décisions n'ont pas été écrites (§10.2). */
   shadow: boolean;
 }

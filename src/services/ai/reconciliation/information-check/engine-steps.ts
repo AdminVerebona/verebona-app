@@ -144,6 +144,12 @@ export function checkSummary(rec: T3ExecutionRecorder): Record<string, number> {
 interface ConflictMemory {
   /** Décision rendue : conflit déjà tranché → conservation (ALREADY_DECIDED), sans carte. */
   filter(decision: ReconciliationDecision): Promise<ReconciliationDecision>;
+  /**
+   * Lot 99A : ce conflit est-il déjà TRANCHÉ par l'utilisateur à l'identique ?
+   * Lecture seule (aucune signature enregistrée) — consultée AVANT un appel IA :
+   * un arbitrage déjà rendu ne justifie jamais de rappeler le modèle.
+   */
+  isArbitrated(decision: ReconciliationDecision): Promise<boolean>;
   /** Signatures des conflits proposés pendant ce passage (état 0597). */
   readonly proposed: Record<string, string>;
 }
@@ -163,8 +169,21 @@ export async function loadConflictMemory(accountId: number, assetId: number, rec
     if (await annule(e)) throw e;
     rec?.fail('INFORMATION_CHECK_STATE', e);
   }
+  const tranche = async (d: ReconciliationDecision): Promise<boolean> => {
+    if (d.reasonCode === 'CONFIRMED_AGENDA_CONTRADICTION') return false;
+    const key = canonicalKeyOf(d.fieldKey);
+    const sig = conflictSignature(d);
+    if (!etat?.signatures[key] || etat.signatures[key].signature !== sig) return false;
+    try {
+      return (await (await import('./store')).arbitratedSignature(accountId, assetId, key, etat)) === sig;
+    } catch (e) {
+      if (await annule(e)) throw e;
+      return false;
+    }
+  };
   return {
     proposed,
+    isArbitrated: tranche,
     async filter(d) {
       if (d.action !== 'create_conflict') return d;
       const key = canonicalKeyOf(d.fieldKey);

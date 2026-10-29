@@ -202,6 +202,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   t1_quality_signals: C('extractions-ia'),
   ai_execution_reports: C('extractions-ia'),
   t3_knowledge_queries: C('extractions-ia'),
+  // Lot 99A (0858) : réponses sans appel facturé (cache, demandes partagées) et décisions réutilisées, par jour.
+  ai_reuse_counters: C('extractions-ia'),
   // Lot 91D : décisions de T1 sur les valeurs significatives des unités sources (historique SUPERSEDED compris).
   document_value_decisions: C('extractions-ia'),
   t6_evaluation_runs: C('extractions-ia'),
@@ -228,6 +230,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   account_reconciliation_runs: C('conflits-arbitrages'),
   inconsistency_registry: C('conflits-arbitrages'),
   t3_information_checks: C('conflits-arbitrages'),
+  // Lot 99A (0856) : mémoire durable des décisions T3 assistées par l'IA (réutilisations, invalidations et motifs).
+  t3_decision_memory: C('conflits-arbitrages'),
   t3_reconciliation_states: C('conflits-arbitrages'),
   t3_open_action_evaluations: C('conflits-arbitrages'),
   agenda_data_conflicts: C('conflits-arbitrages'),
@@ -380,6 +384,9 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_qualification_evidence: T('technique', 'qualification IA par couple (globale)'),
   ai_qualification_cases: T('technique', 'qualification IA : résultats par cas'),
   ai_master_corpus_runs: T('technique', 'qualification IA (corpus)'),
+  // Lot 99B : mise en conformité automatique des prompts (globale, sans compte).
+  ai_prompt_conformity_issues: T('technique', 'conformité des prompts IA : incompatibilités (globale)'),
+  ai_prompt_conformity_events: T('technique', 'conformité des prompts IA : journal (globale)'),
   ai_master_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
   ai_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
   ai_corpus_baseline: T('technique', 'ancien harnais de mesure retiré (table inerte)'),
@@ -716,7 +723,7 @@ export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperation
   t1_analyze_document: { treatment: 'T1', tables: [...CALL_TRACES, 'document_raw_extracts', 'document_source_units', 'document_extractions', 'document_facts', 'document_tables', 'document_table_cells', 'document_unresolved_facts', 'document_extraction_coverage', 'document_operation_candidates', 'document_value_decisions', 'field_evidence', 'ai_execution_reports', 'ai_execution_report_entries'] },
   collect_evidence: { treatment: 'T1', tables: [...CALL_TRACES, 'field_evidence'] },
   compare_values: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_runs', 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes'] },
-  t3_value_conflict: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes', 'ai_execution_reports', 'ai_execution_report_entries'] },
+  t3_value_conflict: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes', 'ai_execution_reports', 'ai_execution_report_entries', 't3_decision_memory', 'ai_reuse_counters'] },
   t3_link_ambiguity: { treatment: 'T3', tables: [...CALL_TRACES, 'document_asset_links', 'document_asset_resolutions'] },
   t3_operation_match: { treatment: 'T3', tables: [...CALL_TRACES, 'document_operation_candidates', 'business_operation_sources', 'business_operation_match_decisions', 'business_operation_identity_reviews', 'operation_semantic_reevaluations'] },
   t3_document_naming: { treatment: 'T3', tables: [...CALL_TRACES, 'document_naming_groups', 'document_naming_members', 'document_title_events', 'document_rename_events'] },

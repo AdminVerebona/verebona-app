@@ -1,0 +1,163 @@
+{
+  "case": "P-T3-23",
+  "description": "DOCUMENT_NAMING (lot 99C, garde R1/R6) — sortie délibérément fautive : mois de la date d’émission hors période (ARTIFICIAL_DATE), plage inventée (PERIOD_INVENTED), preuve « date d’import » (ARTIFICIAL_DATE), document hors du lot (monde fermé), document oublié (NO_DECISION) ; aucune décision retenue.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "documentNaming": {
+      "docs": [],
+      "periodRepresentation": {
+        "series": {
+          "nature": "Facture",
+          "supplier": "Homiris",
+          "members": []
+        },
+        "targets": [
+          {
+            "id": 2301,
+            "title": "Facture Homiris — 5 février au 4 mars 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Homiris",
+            "issueDate": "2026-04-02",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-02-05",
+                "end": "2026-03-04",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": null,
+              "issueDate": "2026-04-02"
+            }
+          },
+          {
+            "id": 2302,
+            "title": "Facture Homiris — 5 mars au 4 avril 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Homiris",
+            "issueDate": "2026-04-06",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-03-05",
+                "end": "2026-04-04",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": null,
+              "issueDate": "2026-04-06"
+            }
+          },
+          {
+            "id": 2303,
+            "title": "Facture Homiris — 5 avril au 4 mai 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Homiris",
+            "issueDate": "2026-05-06",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-04-05",
+                "end": "2026-05-04",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": null,
+              "issueDate": "2026-05-06"
+            }
+          },
+          {
+            "id": 2304,
+            "title": "Facture Homiris — 5 mai au 4 juin 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Homiris",
+            "issueDate": "2026-06-06",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-05-05",
+                "end": "2026-06-04",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": null,
+              "issueDate": "2026-06-06"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "recording": {
+    "operationCode": "t3_document_naming",
+    "task": "DOCUMENT_NAMING",
+    "output": {
+      "task": "DOCUMENT_NAMING",
+      "document_renames": [],
+      "period_representations": [
+        {
+          "document_id": 2301,
+          "representation": "MONTH",
+          "month": "2026-04",
+          "basis": "MONTHLY_INSTALLMENT",
+          "evidence": [
+            {
+              "source": "BILLED_PERIOD",
+              "document_id": 2301
+            }
+          ],
+          "reason": "Mois de la facture.",
+          "confidence": "certain"
+        },
+        {
+          "document_id": 2302,
+          "representation": "DATE_RANGE",
+          "start": "2026-03-01",
+          "end": "2026-03-31",
+          "basis": "EXACT_PERIOD",
+          "evidence": [
+            {
+              "source": "BILLED_PERIOD",
+              "document_id": 2302
+            }
+          ],
+          "reason": "Plage.",
+          "confidence": "certain"
+        },
+        {
+          "document_id": 2303,
+          "representation": "MONTH",
+          "month": "2026-04",
+          "basis": "MONTHLY_INSTALLMENT",
+          "evidence": [
+            {
+              "source": "IMPORT_DATE",
+              "document_id": 2303
+            }
+          ],
+          "reason": "Mois d’import.",
+          "confidence": "certain"
+        },
+        {
+          "document_id": 9999,
+          "representation": "NONE",
+          "basis": "NOT_DISCRIMINANT",
+          "evidence": [],
+          "reason": "Autre document.",
+          "confidence": "certain"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "periodRefused": {
+      "2301": "ARTIFICIAL_DATE",
+      "2302": "PERIOD_INVENTED",
+      "2303": "ARTIFICIAL_DATE",
+      "9999": "UNKNOWN_DOCUMENT",
+      "2304": "NO_DECISION"
+    }
+  }
+}

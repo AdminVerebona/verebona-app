@@ -117,6 +117,13 @@ export const aiOperationIdempotency = pgTable('ai_operation_idempotency', {
   resultJson: jsonb('result_json').notNull(),
   createdAt: tstz('created_at'),
   expiresAt: pgTimestamp('expires_at', { withTimezone: true }).notNull(),
+  // Lot 99A (0857) : état READY / PENDING (bail), compteurs de réutilisation et de renouvellement.
+  state: text('state').notNull().default('READY'),
+  ownerToken: text('owner_token'),
+  hitCount: integer('hit_count').notNull().default(0),
+  lastHitAt: pgTimestamp('last_hit_at', { withTimezone: true }),
+  renewedCount: integer('renewed_count').notNull().default(0),
+  renewedAt: pgTimestamp('renewed_at', { withTimezone: true }),
 }, (t) => ({
   expiresIdx: index('ai_operation_idempotency_expires_idx').on(t.expiresAt),
 }));

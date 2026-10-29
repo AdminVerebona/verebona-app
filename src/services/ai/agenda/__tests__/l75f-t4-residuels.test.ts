@@ -19,6 +19,7 @@ const { planSourceSync, computeAgendaFunctionalKey, isUserTouched, agendaUntouch
 const { runT4Job, T4IncompleteJobError, t4SyncFailure } = await import('../index');
 const { NO_GUARD } = await import('../../queue/execution-control');
 const { parseRecurrenceFr } = await import('../rules/recurrence');
+const { resolveRecurrenceEnd } = await import('../rules/recurrence-end');
 
 type SourceItem = import('@/services/agenda/agenda-functional-key').SourceItem;
 const TODAY = '2026-10-19';
@@ -64,8 +65,11 @@ describe('§A — tout choix utilisateur protège l’événement', () => {
   });
 
   it('T4-RES-01 — fin de récurrence : aucune prévision au statut utilisateur (« réalisé ») n’est retirée ; prévision intacte retirée (T4-RES-04)', async () => {
-    const excerpt = 'Entretien chaudière tous les 12 mois — contrat résilié';
-    const c = { title: 'Entretien chaudière', date: '2026-11-15', confidence: 'certain', excerpt, documentType: 'RAPPORT_ENTRETIEN', recurrence: parseRecurrenceFr(excerpt) };
+    // Lot 99D : la fin est une fin QUALIFIÉE (résiliation constatée, datée, preuve fiable) — plus un mot-clé.
+    const excerpt = 'Entretien chaudière tous les 12 mois';
+    const end = resolveRecurrenceEnd({ texts: [{ text: 'Le contrat d’entretien a été résilié le 15/10/2026.', confidence: 'certain', fieldKey: 'contractNote' }], endDates: [] }, { today: TODAY });
+    expect(end).toMatchObject({ status: 'CONFIRMED', reason: 'TERMINATION_EFFECTIVE', effectiveDate: '2026-10-15' });
+    const c = { title: 'Entretien chaudière', date: '2026-11-15', confidence: 'certain', excerpt, documentType: 'RAPPORT_ENTRETIEN', recurrence: { ...parseRecurrenceFr(excerpt)!, end } };
     const serie = (manual: boolean) => [
       { id: 10, title: 'Entretien chaudière', date: '2026-11-15', category: 'action', status: null, manual: false, originFieldKey: null, nature: 'CONFIRMED' },
       { id: 11, title: 'Entretien chaudière', date: '2027-11-15', category: 'action', status: manual ? 'realise' : null, manual, originFieldKey: null, nature: 'FORECAST' },

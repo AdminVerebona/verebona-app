@@ -1,0 +1,210 @@
+{
+  "case": "P-T3-22",
+  "description": "DOCUMENT_NAMING (lot 99C, cas E) — trois factures mensuelles Homiris, chacune du 5 au 4 du mois suivant : titres homogènes par mois métier (Janvier, Février, Mars 2026).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "documentNaming": {
+      "docs": [],
+      "periodRepresentation": {
+        "series": {
+          "nature": "Facture",
+          "supplier": "Homiris",
+          "members": [
+            {
+              "id": 2201,
+              "title": "Facture Homiris — 5 janvier au 4 février 2026",
+              "titleOrigin": "SYSTEM",
+              "billedPeriod": {
+                "start": "2026-01-05",
+                "end": "2026-02-04"
+              },
+              "statedMonth": null,
+              "representation": null
+            },
+            {
+              "id": 2202,
+              "title": "Facture Homiris — 5 février au 4 mars 2026",
+              "titleOrigin": "SYSTEM",
+              "billedPeriod": {
+                "start": "2026-02-05",
+                "end": "2026-03-04"
+              },
+              "statedMonth": null,
+              "representation": null
+            },
+            {
+              "id": 2203,
+              "title": "Facture Homiris — 5 mars au 4 avril 2026",
+              "titleOrigin": "SYSTEM",
+              "billedPeriod": {
+                "start": "2026-03-05",
+                "end": "2026-04-04"
+              },
+              "statedMonth": null,
+              "representation": null
+            }
+          ]
+        },
+        "targets": [
+          {
+            "id": 2201,
+            "title": "Facture Homiris — 5 janvier au 4 février 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Homiris",
+            "issueDate": "2026-02-06",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-01-05",
+                "end": "2026-02-04",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": {
+                "value": "2026-01",
+                "basis": "MAJORITY_OF_PERIOD"
+              },
+              "issueDate": "2026-02-06"
+            }
+          },
+          {
+            "id": 2202,
+            "title": "Facture Homiris — 5 février au 4 mars 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Homiris",
+            "issueDate": "2026-03-06",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-02-05",
+                "end": "2026-03-04",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": {
+                "value": "2026-02",
+                "basis": "MAJORITY_OF_PERIOD"
+              },
+              "issueDate": "2026-03-06"
+            }
+          },
+          {
+            "id": 2203,
+            "title": "Facture Homiris — 5 mars au 4 avril 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Homiris",
+            "issueDate": "2026-04-06",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-03-05",
+                "end": "2026-04-04",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": {
+                "value": "2026-03",
+                "basis": "MAJORITY_OF_PERIOD"
+              },
+              "issueDate": "2026-04-06"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "recording": {
+    "operationCode": "t3_document_naming",
+    "task": "DOCUMENT_NAMING",
+    "output": {
+      "task": "DOCUMENT_NAMING",
+      "document_renames": [],
+      "period_representations": [
+        {
+          "document_id": 2201,
+          "representation": "MONTH",
+          "month": "2026-01",
+          "basis": "SERIES_CONSISTENCY",
+          "evidence": [
+            {
+              "source": "BILLED_PERIOD",
+              "document_id": 2201,
+              "quote": "Période du 2026-01-05 au 2026-02-04"
+            },
+            {
+              "source": "SERIES_TITLES",
+              "document_id": 2202,
+              "quote": "factures mensuelles successives du 5 au 4"
+            }
+          ],
+          "reason": "Factures mensuelles successives du même abonnement : une mensualité = un mois.",
+          "confidence": "certain"
+        },
+        {
+          "document_id": 2202,
+          "representation": "MONTH",
+          "month": "2026-02",
+          "basis": "SERIES_CONSISTENCY",
+          "evidence": [
+            {
+              "source": "BILLED_PERIOD",
+              "document_id": 2202,
+              "quote": "Période du 2026-02-05 au 2026-03-04"
+            },
+            {
+              "source": "SERIES_TITLES",
+              "document_id": 2201,
+              "quote": "factures mensuelles successives du 5 au 4"
+            }
+          ],
+          "reason": "Factures mensuelles successives du même abonnement : une mensualité = un mois.",
+          "confidence": "certain"
+        },
+        {
+          "document_id": 2203,
+          "representation": "MONTH",
+          "month": "2026-03",
+          "basis": "SERIES_CONSISTENCY",
+          "evidence": [
+            {
+              "source": "BILLED_PERIOD",
+              "document_id": 2203,
+              "quote": "Période du 2026-03-05 au 2026-04-04"
+            },
+            {
+              "source": "SERIES_TITLES",
+              "document_id": 2201,
+              "quote": "factures mensuelles successives du 5 au 4"
+            }
+          ],
+          "reason": "Factures mensuelles successives du même abonnement : une mensualité = un mois.",
+          "confidence": "certain"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "periods": {
+      "2201": {
+        "allowed": [
+          "MONTH"
+        ],
+        "label": "Janvier 2026"
+      },
+      "2202": {
+        "allowed": [
+          "MONTH"
+        ],
+        "label": "Février 2026"
+      },
+      "2203": {
+        "allowed": [
+          "MONTH"
+        ],
+        "label": "Mars 2026"
+      }
+    }
+  }
+}

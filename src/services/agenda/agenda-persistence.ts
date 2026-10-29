@@ -681,6 +681,8 @@ async function createItem(
       date: decision.date, rule: decision.occurrence.recurrence?.rule, mode: decision.occurrence.recurrence?.mode,
       referenceDate: decision.occurrence.recurrence?.referenceDate, sourceFileId: decision.sourceFileId ?? null,
       seriesKey: decision.occurrence.seriesKey,
+      // Lot 99D : fin qualifiée de la série au moment du calcul (confirmée ou incertaine).
+      ...(decision.occurrence.recurrence?.end ? { end: decision.occurrence.recurrence.end } : {}),
     });
   }
 }
@@ -871,7 +873,15 @@ async function retireForecast(decision: AgendaDecision, accountId: number): Prom
   )) as unknown as unknown[];
   if (!rows.length) {
     console.info(JSON.stringify({ event: 't4.forecast_retire_protected', accountId, itemId: decision.existingItemId }));
+    return;
   }
+  // Lot 99D : arrêt TRACÉ (raison, date d'effet, source) — visible au diagnostic global
+  // (`agenda_occurrence_events`) ; distingue aussi ce retrait automatique d'une annulation par l'utilisateur.
+  await recordOccurrenceEvent(decision.existingItemId, accountId, 'FORECAST_RETIRED', {
+    reasonCode: decision.reasonCode, date: decision.date, sourceFileId: decision.sourceFileId ?? null,
+    bound: decision.recurrenceEnd?.bound ?? null, scheduleEndDate: decision.recurrenceEnd?.scheduleEndDate ?? null,
+    end: decision.recurrenceEnd?.end ?? null,
+  });
 }
 
 async function updateItem(decision: AgendaDecision, accountId: number): Promise<void> {

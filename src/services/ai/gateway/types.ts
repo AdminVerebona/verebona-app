@@ -154,6 +154,12 @@ export interface AiGatewayResponse<T> {
   /** true si le résultat provient du cache d'idempotence (aucun appel émis). */
   fromCache: boolean;
   /**
+   * Lot 99A — origine d'une réponse servie sans appel : `CACHE_HIT` (entrée
+   * valide du cache), `SHARED` (demande identique simultanée, même instance
+   * ou autre instance). Absent : appel réel au fournisseur.
+   */
+  cacheOutcome?: 'CACHE_HIT' | 'SHARED';
+  /**
    * Lot 33D — corrections appliquées à la sortie avant acceptation
    * (extraction JSON, adaptateur de compatibilité, normalisation, réparation
    * ciblée, retrait de champs facultatifs invalides). Vide ou absent : sortie

@@ -172,7 +172,7 @@ export async function launchManual(
   treatment: string,
   scope: ManualScope,
   adminUserId: number,
-  options: { dryRun?: boolean },
+  options: { dryRun?: boolean; forceAiReview?: boolean },
   deps: ManualLaunchDeps,
 ): Promise<ManualLaunchResult> {
   assertLaunchable(treatment);
@@ -300,7 +300,11 @@ export async function launchManual(
         scope: { accountId: o.accountId },
         origin: 'manual',
         triggerCode: 'manual',
-        payload: { kind: 'account', scope: 'full', requestedByUserId: adminUserId },
+        payload: {
+          kind: 'account', scope: 'full', requestedByUserId: adminUserId,
+          // Lot 99A : « Réévaluer avec l'IA » — relance forcée tracée (sinon les décisions mémorisées sont réutilisées).
+          ...(options.forceAiReview ? { forceAiReview: `relance forcée par l’administrateur #${adminUserId} (lancement manuel)` } : {}),
+        },
       }));
   }
 

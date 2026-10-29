@@ -42,6 +42,12 @@
  *   · séparateur unique « — » pour tous les titres automatiques ;
  *   · période présentée EXACTEMENT (`presentBilledPeriod`) ; plus aucun mois
  *     déduit de la date du document : une date utile est donnée au jour.
+ *
+ * LOT 99C — la représentation temporelle d'une facture périodique (mois,
+ * plage de dates, plusieurs mois, rien) est une décision SÉMANTIQUE de la
+ * branche T3 DOCUMENT_NAMING (contrat `t3-naming-period-v1`), validée par le
+ * serveur (`lib/documents/document-title-period.ts`) ; le mois principal T1
+ * n'est plus une règle de titre.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'node:crypto';
@@ -50,10 +56,13 @@ import {
   DOCUMENT_TITLE_RULE_VERSION, normalizeTitle, titleHasPeriod, type TitleExpectations,
 } from '@/lib/documents/document-title-rules';
 import {
-  canonicalTitleKey, composePeriodicTitle, disambiguatorFor, formatTitleDate, formatTitleMonth, PERIODIC_NATURES,
+  canonicalTitleKey, composePeriodicTitle, disambiguatorFor, formatTitleDate, PERIODIC_NATURES,
   presentBilledPeriod, presentSupplier, TITLE_CONVENTION_PERIODIC, TITLE_SEPARATOR,
   type DisambiguationMember, type PrincipalMonth, type TitleConvention,
 } from '@/lib/documents/document-title-convention';
+import {
+  resolveTitlePeriod, type PeriodFacts, type ResolvedTitlePeriod, type StoredPeriodDecision,
+} from '@/lib/documents/document-title-period';
 import type { SourceAnalysisResult } from './types';
 
 const TYPE_WORDS = [
@@ -130,14 +139,41 @@ const presentPeriod = (p: { start: string | null; end: string | null } | null | 
  * exploite et ce que la recherche indexe, avec la provenance de chaque champ.
  */
 export interface BillingBasis {
-  /** Période réellement facturée (montant d'échéance T1, sinon période des faits). */
-  billedPeriod: { start: string; end: string; source: 'T1_INSTALLMENT' | 'T1_COST_PERIOD' | 'T1_FACT' } | null;
-  /** Mois de rattachement principal décidé par l'IA (null tant que le contrat T1 ne le fournit pas). */
+  /**
+   * Période réellement facturée (montant d'échéance T1, sinon période des faits ;
+   * lot 99C : à défaut de toute autre donnée, `document.billingPeriod` de T1).
+   */
+  billedPeriod: { start: string; end: string; source: 'T1_INSTALLMENT' | 'T1_COST_PERIOD' | 'T1_FACT' | 'T1_BILLING_PERIOD' } | null;
+  /**
+   * Mois de rattachement principal proposé par T1 (null tant que le contrat T1 ne le fournit pas).
+   * Lot 99C : une DONNÉE — mois explicitement désigné (`STATED_ON_DOCUMENT`) ou simple indice —, jamais la règle du titre.
+   */
   principalMonth: PrincipalMonth | null;
   /** Références de facture lues (T1 `businessReferences[kind = INVOICE]`). */
   invoiceReferences: string[];
   /** Date d'émission (date du document). */
   issueDate: string | null;
+  /**
+   * Lot 99C : représentation temporelle décidée par T3 DOCUMENT_NAMING (contrat
+   * `t3-naming-period-v1`), persistée ; null / absente : repli prudent.
+   */
+  periodDecision?: StoredPeriodDecision | null;
+}
+
+/**
+ * Faits temporels d'un document (pure, lot 99C) : période facturée, mois
+ * EXPLICITEMENT désigné (fondement `STATED_ON_DOCUMENT` avec preuve citée),
+ * sinon le mois principal T1 comme simple INDICE, date d'émission.
+ */
+export function periodFactsOf(b: BillingBasis): PeriodFacts {
+  const pm = b.principalMonth;
+  const stated = pm && pm.basis === 'STATED_ON_DOCUMENT' && !!pm.quote?.trim();
+  return {
+    billedPeriod: b.billedPeriod ? { start: b.billedPeriod.start, end: b.billedPeriod.end, source: b.billedPeriod.source } : null,
+    statedMonth: stated ? { value: pm!.value, quote: pm!.quote } : null,
+    monthHint: pm && !stated ? { value: pm.value, basis: pm.basis } : null,
+    issueDate: b.issueDate,
+  };
 }
 
 export interface TitleContext {
@@ -187,6 +223,8 @@ export interface TitlePlan {
   convention: TitleConvention | null;
   /** Lot 87D : clé du groupe canonique (même nature, fournisseur, période), convention périodique seulement. */
   canonicalKey: string | null;
+  /** Lot 99C : représentation temporelle retenue et son fondement (convention périodique seulement). */
+  periodChoice?: ResolvedTitlePeriod | null;
 }
 
 /** Nature du document : tête du titre du modèle, sinon type, sinon « Document ». */
@@ -332,19 +370,22 @@ export function planBusinessTitle(modelTitle: string | null | undefined, ctx: Ti
 
 /**
  * Lot 87D — plan de la convention PÉRIODIQUE (pure), ou null si le document
- * n'en relève pas : nature récurrente, fournisseur connu, ET mois principal
- * décidé par l'IA (certain) ou période facturée présentable. La période n'est
- * jamais interprétée ici : mois principal IA, sinon période exacte.
+ * n'en relève pas : nature récurrente, fournisseur connu, ET période facturée
+ * ou mois désigné. Lot 99C : la REPRÉSENTATION de la période (mois, plage de
+ * dates, plusieurs mois, rien) est celle décidée par T3 DOCUMENT_NAMING et
+ * validée (`resolveTitlePeriod`) ; sans décision valable : mois explicitement
+ * désigné par le document, sinon période exacte. Aucune règle « mois
+ * majoritaire » : le mois principal T1 d'un autre fondement n'est qu'un indice.
  */
 function periodicPlan(nature: string, supplier: string | null, ctx: TitleContext): TitlePlan | null {
   if (!PERIODIC_NATURES.has(nature) || !supplier) return null;
   const b = ctx.billing;
   if (!b) return null;
-  const period = (b.principalMonth ? formatTitleMonth(b.principalMonth.value) : null)
-    ?? (b.billedPeriod ? presentBilledPeriod(b.billedPeriod.start, b.billedPeriod.end)?.label ?? null : null);
-  if (!period) return null;
+  const choix = resolveTitlePeriod(periodFactsOf(b), b.periodDecision ?? null);
+  if (choix.source === 'NONE') return null;
+  const period = choix.label;
   const fournisseur = presentSupplier(supplier);
-  const canonicalKey = canonicalTitleKey(nature, fournisseur, period);
+  const canonicalKey = canonicalTitleKey(nature, fournisseur, period ?? '');
   const self: DisambiguationMember = { id: ctx.selfId ?? 0, invoiceReferences: b.invoiceReferences, issueDate: b.issueDate };
   const reference = disambiguatorFor(self, ctx.periodicSiblings ?? []);
   const title = composePeriodicTitle({ nature, supplier: fournisseur, period, disambiguator: reference }).slice(0, MAX_TITLE).trim();
@@ -353,6 +394,7 @@ function periodicPlan(nature: string, supplier: string | null, ctx: TitleContext
     expectations: { nature, subject: null, supplier: fournisseur, target: null, period, duplicates: [] },
     convention: TITLE_CONVENTION_PERIODIC,
     canonicalKey,
+    periodChoice: choix,
   };
 }
 
@@ -364,6 +406,8 @@ export function titleContextFingerprint(plan: TitlePlan): string {
     t: plan.target ? [plan.target.kind, plan.target.id, plan.target.name] : null,
     p: plan.period, r: plan.reference, d: plan.duplicateResolved,
     c: plan.convention, k: plan.canonicalKey,
+    // Lot 99C : seulement pour une décision T3 (empreinte inchangée pour tout autre document).
+    ...(plan.periodChoice?.source === 'T3_DECISION' ? { pr: plan.periodChoice.representation } : {}),
   })).digest('hex');
 }
 

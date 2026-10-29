@@ -82,11 +82,15 @@ scenario('L87D', 'Titres homogènes des factures périodiques, même titre parto
                      document_date = ${o.emise}, metadata = ${JSON.stringify({ legacyDocumentType: 'FACTURE' })}::jsonb WHERE file_id = ${id}`;
     return id;
   };
-  /** Sortie T1 future (demande 87D-mois-principal-factures) : mois principal décidé par l'IA. */
+  /**
+   * Sortie T1 future (demande 87D-mois-principal-factures) : mois principal décidé par l'IA.
+   * Lot 99C : sans décision T3, seul un mois ÉCRIT sur le document (preuve citée) fait le titre ;
+   * le mois « majoritaire » n'est plus une règle (L99C).
+   */
   const runAvecMoisPrincipal = async (c: AccountRow, fileId: number, mois: string, debut: string, fin: string) => {
     const raw = { task: 'ANALYZE_DOCUMENT', document: {
       title: { value: 'Facture Homiris', confidence: 'certain' }, supplier: { name: 'HOMIRIS', confidence: 'certain' },
-      billingPeriod: { start: debut, end: fin, principalMonth: mois, principalMonthBasis: 'MAJORITY_OF_PERIOD', confidence: 'certain', evidence: { quote: `Abonnement du ${debut} au ${fin}`, page: 1 } },
+      billingPeriod: { start: debut, end: fin, principalMonth: mois, principalMonthBasis: 'STATED_ON_DOCUMENT', confidence: 'certain', evidence: { quote: 'Abonnement février 2026', page: 1 } },
     } };
     await sql`INSERT INTO document_analysis_runs (asset_file_id, input_file_hash, prompt_version, provider, model, status, is_current_reference, account_id, raw_response_json)
               VALUES (${fileId}, ${`h${fileId}`}, 't1_master_v1@file', 'replay', 'm', 'completed', true, ${c.id}, ${JSON.stringify(raw)})`;
@@ -202,7 +206,7 @@ scenario('L87D', 'Titres homogènes des factures périodiques, même titre parto
     // Correctif : réparation par le service de nommage (origine COHERENCE), traçable.
     await campagne(c, 'CORRECTIVE');
     expect((await fichier(fev)).retained_title).toBe('Facture Homiris — Février 2026');
-    expect((await fichier(fev)).title_basis.principalMonth).toMatchObject({ value: '2026-02', basis: 'MAJORITY_OF_PERIOD', source: 'T1_BILLING_PERIOD' });
+    expect((await fichier(fev)).title_basis.principalMonth).toMatchObject({ value: '2026-02', basis: 'STATED_ON_DOCUMENT', source: 'T1_BILLING_PERIOD' });
     // Sans mois principal décidé par l'IA : période exacte (jamais « Mars 2026 » déduit du premier jour).
     expect((await fichier(mars)).retained_title).toBe('Facture Homiris — 5 mars au 4 avril 2026');
     expect((await evenements(fev)).at(-1)).toMatchObject({ origin: 'COHERENCE', outcome: 'UPDATED', old_title: 'Facture Homiris _ Février à mars 2026' });

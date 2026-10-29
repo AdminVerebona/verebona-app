@@ -51,6 +51,9 @@ export interface T3JobSummary {
   objectsModified: number | null;
   openActionsExamined: number | null;
   aiCalls: number | null;
+  /** Lot 99A : réponses du cache et décisions réutilisées (sans appel). */
+  aiCacheResponses?: number | null;
+  aiDecisionsReused?: number | null;
   businessResult: string | null;
   reason: string | null;
 }
@@ -184,6 +187,8 @@ function JobBlock({ titre, job, onOpen }: { titre: string; job: T3JobSummary | n
               {job.objectsExamined != null && `${job.objectsExamined} objet(s) examiné(s) · ${job.objectsModified ?? 0} modifié(s)`}
               {job.openActionsExamined != null && ` · ${job.openActionsExamined} « À traiter » réexaminé(s)`}
               {job.aiCalls != null && (job.aiCalls === 0 ? ' · sans appel au modèle' : ` · ${job.aiCalls} appel(s) au modèle`)}
+              {!!job.aiCacheResponses && ` · ${job.aiCacheResponses} réponse(s) du cache`}
+              {!!job.aiDecisionsReused && ` · ${job.aiDecisionsReused} décision(s) réutilisée(s)`}
             </p>
           )}
           {job.reason && <p className="text-xs text-[color:var(--text-warning-soft)] break-words">{job.reason}</p>}

@@ -44,12 +44,17 @@ export function ManualLaunch({ onLaunched }: { onLaunched: (jobIds: number[]) =>
   const [treatment, setTreatment] = useState<Launchable>('T3');
   const [all, setAll] = useState(false);
   const [accounts, setAccounts] = useState('');
+  // Lot 99A : T3 — relance forcée de la revue IA (sinon les décisions mémorisées à contexte identique sont réutilisées).
+  const [forcer, setForcer] = useState(false);
   const [estimate, setEstimate] = useState<Estimate | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const body = () => (all
-    ? { all: true }
-    : { accountIds: accounts.split(/[\s,;]+/).map(Number).filter((n) => Number.isInteger(n) && n > 0) });
+  const body = () => ({
+    ...(all
+      ? { all: true }
+      : { accountIds: accounts.split(/[\s,;]+/).map(Number).filter((n) => Number.isInteger(n) && n > 0) }),
+    ...(treatment === 'T3' && forcer ? { forceAiReview: true } : {}),
+  });
 
   const estimer = async () => {
     setBusy(true);
@@ -109,6 +114,12 @@ export function ManualLaunch({ onLaunched }: { onLaunched: (jobIds: number[]) =>
           <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />
           Tout le périmètre
         </label>
+        {treatment === 'T3' && (
+          <label className="flex items-center gap-2 text-sm text-[color:var(--text-secondary)] min-h-[40px]" data-testid="t3-force-ai-review">
+            <input type="checkbox" checked={forcer} onChange={(e) => setForcer(e.target.checked)} />
+            Réévaluer avec l’IA même si rien n’a changé
+          </label>
+        )}
         <Button size="sm" onClick={estimer} disabled={busy || (!all && accounts.trim() === '')}>
           <Play className="w-3.5 h-3.5 mr-1.5" /> Estimer et lancer
         </Button>
@@ -117,6 +128,8 @@ export function ManualLaunch({ onLaunched }: { onLaunched: (jobIds: number[]) =>
         Chaque lancement crée une nouvelle exécution, identifiée « manuelle », même si une exécution
         automatique équivalente attend. T4 repasse sur les échéances candidates des dernières
         analyses T1 des documents du périmètre, sans les réanalyser.
+        {' '}T3 réutilise les décisions IA déjà prises quand rien n’a changé (aucun appel) ; « Réévaluer avec
+        l’IA » force un nouvel appel, tracé et facturé.
       </p>
 
       <Dialog open={estimate !== null} onOpenChange={(o) => !o && setEstimate(null)}>
@@ -128,6 +141,7 @@ export function ManualLaunch({ onLaunched }: { onLaunched: (jobIds: number[]) =>
                 <>
                   {estimate.objects} {treatment === 'T3' ? 'compte(s)' : 'document(s)'} sur {estimate.accounts} compte(s).
                   {estimate.waitsForReactivation && ` ${treatment} est actuellement coupé : les exécutions attendront sa réactivation.`}
+                  {treatment === 'T3' && forcer && ' Relance forcée : les champs ambigus seront réévalués par l’IA (appels facturés).'}
                   {estimate.excludedAccountIds && estimate.excludedAccountIds.length > 0
                     && ` Comptes non retenus (${treatment === 'T3' ? 'ni bien actif ni « À traiter » ouvert' : 'aucun objet à traiter'}) : ${estimate.excludedAccountIds.join(', ')}.`}
                 </>

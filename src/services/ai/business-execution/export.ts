@@ -185,7 +185,7 @@ export async function buildExecutionUnitExport(id: string, opts: { sensitive: bo
     const calls = (await readCallsOf(s.q, [x], opts.sensitive)).get(x.id) ?? [];
     const dto = toExecutionDto(x, callsSummary(calls));
     const jobs = x.jobIds.length ? await s.q(`SELECT id, treatment, account_id, target_type, target_id, status, origin, trigger_code, attempts, left(last_error, 500) AS last_error,
-        business_result, created_at, started_at, finished_at FROM ai_job_queue WHERE id = ANY($1::int[]) ORDER BY id`, [x.jobIds]) : [];
+        business_result, business_result_detail, created_at, started_at, finished_at FROM ai_job_queue WHERE id = ANY($1::int[]) ORDER BY id`, [x.jobIds]) : [];
     const { REPORT_COLS } = await import('@/services/admin/diagnostics-export/trace');
     const reports = x.reportIds.length ? await s.q(`SELECT ${REPORT_COLS} FROM ai_execution_reports WHERE id = ANY($1::bigint[]) ORDER BY id`, [x.reportIds]) : [];
     const entries = x.reportIds.length ? await s.q(`SELECT r.id AS report_id, e.seq, e.section, e.table_name, e.record_id, e.field_key, e.label, e.entity_type, e.entity_id,
@@ -197,6 +197,8 @@ export async function buildExecutionUnitExport(id: string, opts: { sensitive: bo
       sensitiveContent: opts.sensitive,
       execution: executionLine(dto), missing: missingOf(dto), causeUnknown: isCauseUnknown(dto),
       calls: calls.map((c) => callLine(x.id, c.row, c.capture, opts.sensitive)),
+      // Lot 99A (point D) : appels réels (lignes `calls`) / réponses du cache / décisions réutilisées — distincts.
+      aiUsage: aiUsageOfJobs(calls.length, jobs),
       jobs: maskForExport(jobs), reports: maskForExport(reports),
       writes: maskForExport(entries),
       notes: [
@@ -565,4 +567,24 @@ export async function purgeOldExecutionsExports(storage?: ExportStorage, now: Da
     token = r.IsTruncated ? r.NextContinuationToken : undefined;
   } while (token);
   return n;
+}
+
+/**
+ * Lot 99A — usage de l'IA d'une exécution en compteurs DISTINCTS (pure) :
+ * appels réels au fournisseur (traces `ai_usage_event` corrélées), réponses
+ * servies par le cache et décisions réutilisées (résumé métier des travaux).
+ */
+export function aiUsageOfJobs(providerCalls: number, jobs: ReadonlyArray<Record<string, unknown>>): {
+  providerCalls: number; cacheResponses: number; decisionsReused: number; withoutAiCall: boolean;
+} {
+  let cache = 0;
+  let reutilisees = 0;
+  for (const j of jobs) {
+    const raw = j.business_result_detail;
+    const d = (typeof raw === 'string' ? (() => { try { return JSON.parse(raw) as Record<string, unknown>; } catch { return null; } })() : raw) as Record<string, unknown> | null;
+    if (!d) continue;
+    cache += Number(d.aiCacheResponses ?? 0) || 0;
+    reutilisees += Number(d.aiDecisionsReused ?? 0) || 0;
+  }
+  return { providerCalls, cacheResponses: cache, decisionsReused: reutilisees, withoutAiCall: providerCalls === 0 };
 }

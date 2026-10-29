@@ -143,6 +143,9 @@ export const ASSET_SCOPED_TABLES: readonly string[] = [
   // Lot 88B : analyses et décisions des propriétés manquantes du bien et de ses équipements (`asset_id` = bien porteur) —
   // suivent le bien (le nouveau compte ne resoumet pas un contexte déjà arbitré ; preuves et valeurs écrites partent avec lui).
   'property_recovery_runs', 'property_recovery_decisions',
+  // Lot 99A : mémoire des décisions T3 du bien — suit le bien (historique des décisions et des réutilisations conservé ;
+  // l'empreinte inclut le compte : une seule réévaluation au premier passage dans le nouveau compte).
+  't3_decision_memory',
 ];
 
 /**

@@ -81,12 +81,14 @@ scenario('L75F-T4-RES', 'T4 : choix utilisateur, rapprochements historiques, amb
   let processCands: typeof import('@/services/ai/agenda/agenda-intelligence.service').processAgendaCandidates;
   let persistence: typeof import('@/services/agenda/agenda-persistence');
   let parseRecurrenceFr: typeof import('@/services/ai/agenda/rules/recurrence').parseRecurrenceFr;
+  let resolveRecurrenceEnd: typeof import('@/services/ai/agenda/rules/recurrence-end').resolveRecurrenceEnd;
 
   beforeAll(async () => {
     ({ runT4Job } = await import('@/services/ai/agenda'));
     ({ processAgendaCandidates: processCands } = await import('@/services/ai/agenda/agenda-intelligence.service'));
     persistence = await import('@/services/agenda/agenda-persistence');
     ({ parseRecurrenceFr } = await import('@/services/ai/agenda/rules/recurrence'));
+    ({ resolveRecurrenceEnd } = await import('@/services/ai/agenda/rules/recurrence-end'));
     await sql`DELETE FROM ai_master_prompt_test_runs`;
     await sql`DELETE FROM ai_master_prompt_activations`;
     await sql`DELETE FROM ai_master_prompt_versions`;
@@ -155,7 +157,12 @@ scenario('L75F-T4-RES', 'T4 : choix utilisateur, rapprochements historiques, amb
   // ── A — choix utilisateur sur les prévisions ─────────────────────────────
   const chaudiere = (date: string, excerpt = 'Entretien chaudière à réaliser tous les 12 mois') =>
     ({ title: 'Entretien chaudière', date, confidence: 'certain', excerpt, documentType: 'RAPPORT_ENTRETIEN', recurrence: parseRecurrenceFr(excerpt) });
-  const finDeRecurrence = () => chaudiere('2026-11-15', 'Entretien chaudière tous les 12 mois — contrat résilié, dernière échéance');
+  // Lot 99D : fin QUALIFIÉE (résiliation constatée et datée, preuve fiable) — un mot-clé ne suffit plus.
+  const finDeRecurrence = () => {
+    const c = chaudiere('2026-11-15', 'Entretien chaudière tous les 12 mois — contrat résilié, dernière échéance');
+    const end = resolveRecurrenceEnd({ texts: [{ text: 'Le contrat d’entretien a été résilié le 15/10/2026.', confidence: 'certain', fieldKey: 'contractNote' }], endDates: [] }, { today: TODAY });
+    return { ...c, recurrence: { ...c.recurrence!, end } };
+  };
 
   async function serie(c: Awaited<ReturnType<typeof contexte>>) {
     const l = await historique(c, [chaudiere('2026-11-15')], true);

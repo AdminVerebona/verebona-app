@@ -87,6 +87,8 @@ const SECTION_LABEL: Record<string, string> = {
   NAMING_RENAME: 'Harmonisation documentaire — renommages (proposition IA → issue en base)',
   NAMING_FAMILY: 'Harmonisation documentaire — familles (analyse IA)',
   NAMING_GROUP: 'Harmonisation documentaire — lots non examinés',
+  // Lot 99C : représentation temporelle des titres de factures périodiques (décision IA → validation serveur → titre).
+  NAMING_PERIOD: 'Titres — représentation de la période (décision IA → issue en base)',
   // Lot 76J : contrôle exhaustif de l'onglet « Informations » (T3).
   NOT_APPLICABLE: 'Champs non applicables',
   IDENTITY: 'Colonnes d’identité',

@@ -198,6 +198,8 @@ export async function afterCommit(reason: string, switches: WriteOutcome['master
   invalidateConfigCache();
   invalidateConfigVersionCache();
   for (const s of switches) invalidatePromptCache(s.masterPromptCode);
+  // Lot 99B : toute activation ou modification de configuration relance la détection des contrats de prompt (différée, non bloquante).
+  void import('../prompt-conformity/trigger').then(({ notifyConfigurationChanged }) => notifyConfigurationChanged(reason)).catch(() => undefined);
   // CDC Assistant §15.14 : tout changement de configuration effective refait
   // le contrôle du registre de modèles de l'assistant (non bloquant).
   void import('@/services/verebona-assistant/core/model-startup-check')
@@ -583,7 +585,7 @@ export async function createAutomaticCandidate(p: {
  * (capacités, Preview, modèle servi par la clé). L'état `QUALIFIED` est
  * revérifié sous verrou ; toute autre version est refusée.
  */
-export async function activateQualifiedCandidate(versionId: number): Promise<SwitchResult> {
+export async function activateQualifiedCandidate(versionId: number, opts: { summary?: string } = {}): Promise<SwitchResult> {
   if (getAiEnvironment() === 'production') {
     throw new ConfigOperationRefused('CANDIDATE_ACTIVATION_PREPROD_ONLY',
       'Activation automatique d’une candidate refusée : elle n’a lieu qu’en préproduction (la production importe le fichier global, décision 06).');
@@ -593,7 +595,7 @@ export async function activateQualifiedCandidate(versionId: number): Promise<Swi
     throw new ConfigOperationRefused('CANDIDATE_NOT_QUALIFIED', 'Seule une candidate automatique peut être activée par l’optimisation (une version manuelle s’active à la main).');
   }
   await assertVersionTechnicallyCompatible(version);
-  const r = await repo.activateVersion(versionId, null, undefined, { candidate: true }).catch(asRefusal);
+  const r = await repo.activateVersion(versionId, null, undefined, { candidate: true, summary: opts.summary }).catch(asRefusal);
   if (!r.alreadyActive) await afterCommit(`activate-candidate:${versionId}:r${r.revisionNumber}`, r.masterPromptSwitches);
   return { previousId: r.previousId, interrupts: false, requeuedJobs: 0, revisionNumber: r.revisionNumber, alreadyActive: r.alreadyActive };
 }

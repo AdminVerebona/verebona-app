@@ -125,6 +125,16 @@ export function fixtureExpectation(c: Pick<MasterCorpusCase, 'expected' | 'quali
   return { use: hasEvaluator ? 'INVARIANTS' : 'NONE', reason: c.qualificationRole === 'answer' ? 'réponse de référence sans attendu' : 'rôle du cas non déclaré par l’équipe IA (réponse de référence ou garde)' };
 }
 
+/**
+ * Lot 99B — corpus de qualification en vigueur (substitué par un test, sinon
+ * fichiers du dépôt) : entre dans l'empreinte du contexte d'un essai de mise
+ * en conformité (un corpus enrichi autorise un nouvel essai).
+ */
+export async function qualificationCorpus(readMasterFile: MasterFileReader): Promise<MasterCorpusCase[]> {
+  if (corpusOverride) return corpusOverride;
+  return (await import('../governance/master-corpus/cases')).loadMasterCorpusCases(readMasterFile);
+}
+
 async function fixtureCases(op: AiOperationDefinition, treatment: Treatment, readMasterFile: MasterFileReader, given?: MasterCorpusCase[]) {
   const [{ loadMasterCorpusCases }, { liveVariablesFor, branchSchemas }, { evaluateCorpusOutput }, { masterOutputSchemaFor }, { MASTER_CORPUS_EVALUATORS }] = await Promise.all([
     import('../governance/master-corpus/cases'), import('../governance/master-corpus/live'), import('../governance/master-corpus/runner'),

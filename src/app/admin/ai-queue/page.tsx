@@ -137,6 +137,9 @@ function t3Counters(job: Job): string | null {
   if (d.journal === 'FAILED') parts.push('journal par carte EN ÉCHEC');
   if (n(d.enqueued) != null) parts.push(`${n(d.enqueued)} compte(s) mis en file`);
   if (n(d.aiCalls) != null) parts.push(n(d.aiCalls) === 0 ? 'sans appel au modèle' : `${n(d.aiCalls)} appel(s) au modèle`);
+  // Lot 99A (point D) : réponses du cache et décisions réutilisées — jamais comptées comme appels.
+  if (n(d.aiCacheResponses)) parts.push(`${n(d.aiCacheResponses)} réponse(s) du cache`);
+  if (n(d.aiDecisionsReused)) parts.push(`${n(d.aiDecisionsReused)} décision(s) réutilisée(s)`);
   return parts.length ? parts.join(' · ') : null;
 }
 

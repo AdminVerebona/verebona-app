@@ -1,7 +1,9 @@
 /**
  * POST /api/admin/ai/reconciliation/accounts/[accountId] — lance T3 sur un
  *   compte (déclenchement manuel, tracé avec l'administrateur). Corps
- *   optionnel : { scope: 'full' | 'incremental' } (défaut : full).
+ *   optionnel : { scope: 'full' | 'incremental' } (défaut : full) ; lot 99A :
+ *   { forceAiReview: true } — relance FORCÉE et tracée de la revue IA (sinon
+ *   les décisions mémorisées à contexte identique sont réutilisées).
  * GET  /api/admin/ai/reconciliation/accounts/[accountId] — dernières
  *   exécutions T3 du compte, avec leur résultat consolidé.
  *
@@ -39,8 +41,11 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   }
   // Déclencheur manuel tracé : { type: 'manual', requestedByUserId: adminId }
   // est reconstitué par l'exécutant à partir du contexte du job.
-  const jobId = await enqueueT3Manual(accountId, adminId, scope);
-  return NextResponse.json({ queued: true, jobId, accountId, scope }, { status: 202 });
+  const forceAiReview = body.forceAiReview === true;
+  const jobId = forceAiReview
+    ? await enqueueT3Manual(accountId, adminId, scope, undefined, { forceAiReview })
+    : await enqueueT3Manual(accountId, adminId, scope);
+  return NextResponse.json({ queued: true, jobId, accountId, scope, forceAiReview }, { status: 202 });
 }
 
 export async function GET(req: NextRequest, { params }: Ctx) {
@@ -51,8 +56,12 @@ export async function GET(req: NextRequest, { params }: Ctx) {
   const runs = await pgClient.unsafe(
     `SELECT id, trigger_type, trigger_event, scope, status, requested_by_user_id, started_at, finished_at,
             objects_examined, objects_modified, decisions_applied, conflicts_created, arbitrations_needed,
-            errors, ai_calls, details_json
-       FROM account_reconciliation_runs WHERE account_id = $1 ORDER BY id DESC LIMIT 20`,
+            errors, ai_calls, details_json,
+            -- Lot 99A (0858) : appels réels / réponses cache / décisions réutilisées (NULL : non mesuré).
+            (to_jsonb(r) ->> 'provider_calls')::int AS provider_calls,
+            (to_jsonb(r) ->> 'ai_cache_hits')::int AS ai_cache_hits,
+            (to_jsonb(r) ->> 'decisions_reused')::int AS decisions_reused
+       FROM account_reconciliation_runs r WHERE account_id = $1 ORDER BY id DESC LIMIT 20`,
     [accountId] as never[],
   );
   return NextResponse.json({ runs });

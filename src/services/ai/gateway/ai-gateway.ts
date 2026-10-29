@@ -132,21 +132,7 @@ export class AiGateway {
     // Opération master : la version résolue du master entre dans la clé
     // (`t1_master_v1@file`, `@cfg<id>:<empreinte>` ou `@pv<id>:<empreinte>`) — un nouveau master ne
     // sert jamais une sortie mise en cache sous l'ancien (revue lot 12).
-    let masterVersion: string | null = null;
-    if (isMasterOperation(op)) {
-      const cfg = await resolveOperationConfig(op.operationCode);
-      masterVersion = masterPromptVersionOf({
-        masterPromptCode: op.masterPromptCode,
-        configuredText: configuredMasterText(op.useCaseCode, cfg),
-        configVersionId: cfg.configVersionId,
-        promptVersionId: configuredMasterText(op.useCaseCode, cfg) ? cfg.masterPromptVersionId ?? null : null,
-      });
-      // Lot 34D : le mode d'exécution et les versions de contrats entrent
-      // dans la clé — basculer T4 en contexte structuré ne sert jamais une
-      // sortie mise en cache sous l'autre mode. Inchangé en LEGACY_TEMPLATE.
-      const sig = executionSignature(masterExecutionOf(op.masterPromptCode, op.useCaseCode, cfg));
-      if (sig !== 'legacy') masterVersion = `${masterVersion}+${sig}`;
-    }
+    const masterVersion = await this.masterVersionOf(op);
     const key = req.idempotencyKey
       ? (masterVersion ? `${req.idempotencyKey}:${masterVersion}` : req.idempotencyKey)
       : buildIdempotencyKey({
@@ -161,7 +147,53 @@ export class AiGateway {
       key,
       () => this.call<T>(req, op.operationCode),
       req.idempotencyTtlSeconds && req.idempotencyTtlSeconds > 0 ? Math.floor(req.idempotencyTtlSeconds) : undefined,
+      // Lot 99A : rattachement des réponses servies sans appel (compteurs distincts).
+      { accountId: req.accountId ?? null, treatment: treatmentOfUseCase(op.useCaseCode) ?? null, operationCode: op.operationCode },
     );
+  }
+
+  /**
+   * Version résolue du master d'une opération (clé d'idempotence), ou null
+   * pour une opération hors master. Lot 34D : le mode d'exécution et les
+   * versions de contrats entrent dans la version.
+   */
+  private static async masterVersionOf(op: AiOperationDefinition): Promise<string | null> {
+    if (!isMasterOperation(op)) return null;
+    const cfg = await resolveOperationConfig(op.operationCode);
+    let masterVersion = masterPromptVersionOf({
+      masterPromptCode: op.masterPromptCode,
+      configuredText: configuredMasterText(op.useCaseCode, cfg),
+      configVersionId: cfg.configVersionId,
+      promptVersionId: configuredMasterText(op.useCaseCode, cfg) ? cfg.masterPromptVersionId ?? null : null,
+    });
+    const sig = executionSignature(masterExecutionOf(op.masterPromptCode, op.useCaseCode, cfg));
+    if (sig !== 'legacy') masterVersion = `${masterVersion}+${sig}`;
+    return masterVersion;
+  }
+
+  /**
+   * Lot 99A — signature de la configuration IA EFFECTIVE d'une opération :
+   * version du prompt (master, version BO ou fichier), mode d'exécution et
+   * versions de contrats, version de configuration, modèles de la cascade,
+   * raisonnement et plafond de sortie. Deux signatures égales ⇒ le modèle
+   * recevrait la même consigne avec la même configuration : une décision
+   * mémorisée reste valable. Ne lève jamais (signature `unresolved` sinon).
+   */
+  static async effectiveConfigSignature(operationCode: string): Promise<string> {
+    try {
+      const op = getOperation(operationCode);
+      const cfg = await resolveOperationConfig(operationCode);
+      const master = await this.masterVersionOf(op);
+      const parts = {
+        op: op.operationCode, master, prompt: master ? null : (op.promptCode ?? null),
+        cfg: cfg.configVersionId ?? null, rev: cfg.configRevisionId ?? null, models: [cfg.primaryModel, ...cfg.fallbackModels],
+        reasoning: cfg.reasoningByRank ?? null, maxOut: cfg.maxOutputTokens ?? null,
+      };
+      const { createHash } = await import('crypto');
+      return `${master ?? op.operationCode}#${createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)}`;
+    } catch {
+      return 'unresolved';
+    }
   }
 
   private static async call<T>(

@@ -62,6 +62,10 @@ import { PermanentJobError, JobDeferredError, type JobBusinessResult } from '../
 import type { T3Trigger } from './account-reconciliation.service';
 import type { ReconciliationDecision } from './types';
 import { envNumber } from '@/lib/env-number';
+import { OUT_OF_PORTFOLIO_ASSET_STATUSES } from '@/lib/asset-status';
+
+/** Statuts hors portefeuille (constantes du code, jamais une saisie) en littéraux SQL. */
+const OUT_OF_PORTFOLIO_SQL = OUT_OF_PORTFOLIO_ASSET_STATUSES.map((x) => `'${x.replace(/'/g, "''")}'`).join(', ');
 import {
   buildT3Payload, resolveT3Job,
   T3_TARGET_ASSET, T3_TARGET_EQUIPMENT, T3_TARGET_ROOM, T3_TARGET_SWEEP_PAGE,
@@ -284,6 +288,7 @@ export async function enqueueT3Manual(
   adminUserId: number,
   scope: 'full' | 'incremental' = 'full',
   deps?: T3QueueDeps,
+  opts: { forceAiReview?: boolean } = {},
 ): Promise<number | null> {
   const d = deps ?? await defaultDeps();
   const { jobId } = await d.enqueue({
@@ -291,9 +296,18 @@ export async function enqueueT3Manual(
     scope: { accountId },
     origin: 'manual',
     triggerCode: 'manual',
-    payload: buildT3Payload('account', { scope, requestedByUserId: adminUserId }),
+    payload: buildT3Payload('account', {
+      scope, requestedByUserId: adminUserId,
+      // Lot 99A : relance forcée tracée (motif conservé sur le job et dans la mémoire des décisions).
+      ...(opts.forceAiReview ? { forceAiReview: t3ForcedReviewReason(adminUserId) } : {}),
+    }),
   });
   return jobId;
+}
+
+/** Motif tracé d'une relance forcée de la revue IA (lot 99A). */
+export function t3ForcedReviewReason(adminUserId: number): string {
+  return `relance forcée par l’administrateur #${adminUserId}`;
 }
 
 // ── Exécutant ───────────────────────────────────────────────────────────────
@@ -397,7 +411,17 @@ async function runAsset(job: QueuedJob, p: T3AssetPayload, guard: ExecutionGuard
   });
   const confirmees = (run as { appliedCount?: unknown } | null)?.appliedCount;
   const res = reconciliationBusinessResult(decisionsDe(run), typeof confirmees === 'number' ? confirmees : null);
-  return { ...res, detail: { ...res.detail, assetId: p.assetId, runId: (run as { runId?: number } | null)?.runId ?? null } };
+  // Lot 99A (point D) : appels réels / cache / décisions réutilisées du run local.
+  const u = (run ?? {}) as { providerCalls?: number; aiCacheHits?: number; decisionsReused?: number };
+  return {
+    ...res,
+    detail: {
+      ...res.detail, assetId: p.assetId, runId: (run as { runId?: number } | null)?.runId ?? null,
+      ...(u.providerCalls !== undefined ? {
+        aiCalls: u.providerCalls, aiCacheResponses: u.aiCacheHits ?? 0, aiDecisionsReused: u.decisionsReused ?? 0, withoutAiCall: u.providerCalls === 0,
+      } : {}),
+    },
+  };
 }
 
 async function runEntity(job: QueuedJob, p: T3EntityPayload, guard: ExecutionGuard, deps: T3HandlerDeps): Promise<JobBusinessResult> {
@@ -443,6 +467,8 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
 
   const result = await deps.reconcileAccount(accountId, trigger, {
     scope, guard, userId: p.requestedByUserId ?? undefined, triggerCode: job.triggerCode ?? null,
+    // Lot 99A : relance forcée tracée — seulement pour un lancement manuel.
+    ...(job.origin === 'manual' && p.forceAiReview ? { forceAiReview: { reason: `${p.forceAiReview} (job #${job.id})` } } : {}),
     // Lot 52A (NR-10) : lien run ↔ job, pour reconnaître une exécution orpheline.
     queueJob: { id: job.id, executionId: job.executionId },
   });
@@ -481,7 +507,13 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     // Lot 52A (COR-04, COR-05) : objets modifiés et appels modèle du passage
     // (0 = passage sans appel Gemini, tracé comme tel).
     objectsModified: result.objectsModified,
+    // Lot 99A (point D) : `aiCalls` = appels RÉELS au fournisseur ; réponses du cache et décisions
+    // réutilisées comptées à part ; `withoutAiCall` : passage sans aucun appel facturé.
     aiCalls: (result.aiCalls ?? 0) + (result.openActions?.aiCalls ?? 0) + (result.documentNaming?.aiCalls ?? 0),
+    aiCacheResponses: result.aiCacheHits ?? 0,
+    aiDecisionsReused: result.decisionsReused ?? 0,
+    conflictsUnchanged: result.conflictsUnchanged ?? 0,
+    withoutAiCall: (result.aiCalls ?? 0) + (result.openActions?.aiCalls ?? 0) + (result.documentNaming?.aiCalls ?? 0) === 0,
     openActionsExamined: result.openActions?.examined ?? 0,
     // Lot 54A (écarts 4, 5) : passage GLOBAL du compte — toutes les cartes
     // ouvertes réexaminées ; vraies tentatives distinguées du simple constat.
@@ -676,13 +708,23 @@ export async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<nu
   // Même périmètre que l'ancienne planification (comptes ayant des biens,
   // sans exécution T3 réussie ou en cours sur la période), PAGINÉ par
   // identifiant croissant : curseur stable, aucun compte sauté.
-  const requete = (nommage: boolean) => `SELECT a.id FROM accounts a
+  // Lot 99A (ticket P1 T3, point C) : un compte qui possède un bien n'est plus remis en file à
+  // chaque cycle — seulement s'il a RÉELLEMENT du travail (voir `t3SweepNeedSql`). Rollback :
+  // T3_SWEEP_PREFILTER=0 (ancien périmètre : tout compte ayant un bien ou un « À traiter » ouvert).
+  const prefiltre = t3SweepPrefilterEnabled();
+  const versionControle = prefiltre ? (await import('./information-check/inventory')).INFORMATION_CHECK_VERSION : null;
+  const requete = (nommage: boolean, controles: boolean) => `SELECT a.id FROM accounts a${prefiltre ? `
+      ${T3_SWEEP_LAST_RUNS_SQL}` : ''}
       WHERE a.id > $2
         -- Lot 82A (C-Q10, §3.3) : balayage T3 des seuls comptes éligibles.
         AND ${processingEligibleSql('a.id')}
-        AND (EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
-             -- Lot 49B : une ligne « À traiter » ouverte est un problème actif, réexaminé à chaque cycle.
-             OR EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = a.id AND t.resolved_at IS NULL)${nommage ? `
+        AND (((
+             EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.deleted_at IS NULL)
+             -- Lot 49B : une ligne « À traiter » ouverte est un problème actif (lot 99A : réexaminée quand elle a
+             -- changé, quand son contexte a changé, à son échéance et au moins une fois par période de couverture).
+             OR EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = a.id AND t.resolved_at IS NULL)
+             )${prefiltre ? `
+             AND (${t3SweepNeedSql({ coverageHours: t3SweepCoverageHours(), informationCheckVersion: controles ? versionControle : null })})` : ''})${nommage ? `
              -- Lot 61 / 72B (E2) — harmonisation documentaire, même sans bien :
              -- (a) découverte initiale : documents, aucun état de compte « * » ;
              OR (EXISTS (SELECT 1 FROM asset_files f WHERE f.account_id = a.id AND f.deleted_at IS NULL AND f.retained_title IS NOT NULL)
@@ -730,12 +772,79 @@ export async function listSweepAccountsFromDb(q: SweepAccountsQuery): Promise<nu
   const params = [q.since.toISOString(), q.afterAccountId, q.limit] as never[];
   // Table 0450 absente (déploiement partiel) : périmètre historique, jamais un balayage en échec.
   // Harmonisation désactivée (T3_DOCUMENT_NAMING_ENABLED=0) : aucun compte réinscrit à ce seul titre.
+  // Lot 99A : table 0597 (contrôle « Informations ») absente → critère du rattrapage omis.
   const nommage = process.env.T3_DOCUMENT_NAMING_ENABLED?.trim() !== '0';
-  const rows = (await sql.unsafe(requete(nommage), params).catch((e) => {
+  const rows = (await sql.unsafe(requete(nommage, true), params).catch((e) => {
     if ((e as { code?: string })?.code !== '42P01') throw e;
-    return sql.unsafe(requete(false), params);
+    return sql.unsafe(requete(false, false), params);
   })) as unknown as Array<{ id: number }>;
   return rows.map((r) => Number(r.id));
+}
+
+/** Lot 99A : préfiltre du balayage actif (`T3_SWEEP_PREFILTER`, défaut 1 ; 0 = ancien périmètre). */
+export function t3SweepPrefilterEnabled(): boolean {
+  return process.env.T3_SWEEP_PREFILTER?.trim() !== '0';
+}
+
+/**
+ * Lot 99A : période de COUVERTURE EXHAUSTIVE (`T3_SWEEP_COVERAGE_HOURS`, 24 h
+ * par défaut, 1 à 168) — tout compte en périmètre est repassé au moins une
+ * fois par période, même sans changement détecté (filet : suppressions
+ * physiques, modifications sans horodatage, échéances).
+ */
+export function t3SweepCoverageHours(): number {
+  return Math.min(168, Math.max(1, Math.floor(envNumber('T3_SWEEP_COVERAGE_HOURS', 24, { min: 1 }))));
+}
+
+/** Dernier passage réussi (`reussi`) et dernier passage terminé (`dernier`) du compte `a`. */
+const T3_SWEEP_LAST_RUNS_SQL = `LEFT JOIN LATERAL (
+        SELECT max(r.finished_at) AS at FROM account_reconciliation_runs r
+         WHERE r.account_id = a.id AND r.status IN ('completed', 'partial')) reussi ON true
+      LEFT JOIN LATERAL (
+        SELECT r.status FROM account_reconciliation_runs r
+         WHERE r.account_id = a.id AND r.status IN ('completed', 'partial', 'failed') AND r.finished_at IS NOT NULL
+         ORDER BY r.finished_at DESC LIMIT 1) dernier ON true`;
+
+/**
+ * Lot 99A (point C) — un compte en périmètre a-t-il du travail T3 RÉEL ?
+ * Prédicat SQL (alias `a`, `reussi`, `dernier`), exporté pour les tests :
+ *
+ *   · jamais rationalisé, ou dernier passage réussi plus vieux que la
+ *     période de couverture (couverture exhaustive de la cohérence) ;
+ *   · dernier passage partiel ou en échec (REPRISE) ;
+ *   · changement depuis le dernier passage réussi : bien, preuve, document,
+ *     fait, rattachement, connaissance consolidée, Opération, agenda,
+ *     conflit, carte « À traiter » (créée, modifiée, résolue, échue) ;
+ *   · rattrapage du contrôle « Informations » encore dû (biens en
+ *     portefeuille jamais contrôlés dans la version courante).
+ *
+ * Un passage sans modification n'est pas une anomalie : simplement, le
+ * suivant n'est lancé que si quelque chose a changé ou si la couverture
+ * l'exige.
+ */
+export function t3SweepNeedSql(p: { coverageHours: number; informationCheckVersion: string | null }): string {
+  const h = Math.max(1, Math.floor(p.coverageHours));
+  const exclus = OUT_OF_PORTFOLIO_SQL;
+  return `reussi.at IS NULL
+             OR reussi.at < now() - interval '${h} hours'
+             OR dernier.status IN ('partial', 'failed')
+             OR EXISTS (SELECT 1 FROM assets s WHERE s.account_id = a.id AND s.updated_at > reussi.at)
+             OR EXISTS (SELECT 1 FROM field_evidence fe WHERE fe.account_id = a.id AND fe.extracted_at > reussi.at)
+             OR EXISTS (SELECT 1 FROM asset_files f WHERE f.account_id = a.id AND f.updated_at > reussi.at)
+             OR EXISTS (SELECT 1 FROM document_facts d WHERE d.account_id = a.id AND d.created_at > reussi.at)
+             OR EXISTS (SELECT 1 FROM document_asset_links l WHERE l.account_id = a.id
+                          AND (l.created_at > reussi.at OR l.updated_at > reussi.at))
+             OR EXISTS (SELECT 1 FROM account_knowledge_changes k WHERE k.account_id = a.id AND k.changed_at > reussi.at)
+             OR EXISTS (SELECT 1 FROM business_operations o WHERE o.account_id = a.id AND o.updated_at > reussi.at)
+             OR EXISTS (SELECT 1 FROM agenda_items i WHERE i.account_id = a.id AND i.updated_at > reussi.at)
+             OR EXISTS (SELECT 1 FROM inconsistency_registry c WHERE c.account_id = a.id AND c.updated_at > reussi.at)
+             OR EXISTS (SELECT 1 FROM to_process_actions t WHERE t.account_id = a.id
+                          AND (t.created_at > reussi.at OR t.updated_at > reussi.at OR t.resolved_at > reussi.at
+                               OR (t.resolved_at IS NULL AND t.due_date > reussi.at AND t.due_date <= now())))${p.informationCheckVersion ? `
+             OR EXISTS (SELECT 1 FROM assets s LEFT JOIN t3_information_checks ic ON ic.asset_id = s.id
+                         WHERE s.account_id = a.id AND s.deleted_at IS NULL
+                           AND COALESCE(s.status, 'EN_SERVICE') NOT IN (${exclus})
+                           AND ic.check_version IS DISTINCT FROM '${p.informationCheckVersion.replace(/'/g, "''")}')` : ''}`;
 }
 
 const dbChecks: Required<Pick<T3HandlerDeps,

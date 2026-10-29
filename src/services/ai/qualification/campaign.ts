@@ -50,9 +50,10 @@ import * as repo from './repository';
 import { runCoupleCases, type GatewayCall, type Observation } from './runner';
 import { sha256 } from './signature';
 import { optimizationPriority, QUALIFICATION_THRESHOLDS, type QualificationThresholds } from './thresholds';
-import { chooseCandidate, decideCoupleVerdict, establishedGain, percentile, type CandidateAssessment, type Verdict } from './verdict';
+import { chooseCandidate, decideCoupleVerdict, establishedGain, percentile, type CandidateAssessment, type Reason, type Verdict } from './verdict';
+import { assessNonRegression, type NonRegressionAssessment, type OperationRun } from './non-regression';
 
-interface CampaignDeps {
+export interface CampaignDeps {
   now?: () => Date;
   call?: GatewayCall;
   /** Point de restauration 82E (défaut : sauvegarde de la base, `runDatabaseBackup`). */
@@ -152,6 +153,56 @@ export async function requestAutomaticCampaign(p: { trigger: string }, deps: Cam
   return { campaignId: id, note: `${r.status}${r.refusal ? ` : ${r.refusal}` : ''} — ${r.couplesTested} couple(s) testé(s)${r.activatedVersionId ? `, candidate v${r.activatedVersionId} activée` : ''}` };
 }
 
+/**
+ * Lot 99B — campagne de NON-RÉGRESSION d'une révision de prompt
+ * (`CONFORMITY`) : ancienne version active (référence) et candidate de
+ * configuration (même configuration, seul le prompt maître du traitement
+ * change) exécutées sur les MÊMES cas, pour TOUTES les opérations du prompt.
+ * Préproduction seulement (même refus motivé en production). Point de
+ * restauration avant tout appel, comptes verrouillés, rejeu sans écriture
+ * métier : le déroulement 86A est réutilisé tel quel. AUCUNE activation ici :
+ * l'état de la candidate (QUALIFIED / REFUSED / INCONCLUSIVE) et l'évaluation
+ * de non-régression sont rendus à l'appelant (`prompt-conformity`).
+ */
+export async function requestConformityCampaign(p: {
+  treatment: Treatment; candidateVersionId: number; contractId: string; reason: string;
+  /** Prédicat des cas qui exercent la NOUVELLE branche (couverture exigée). */
+  coverage: { label: string; matches(c: { variables: Record<string, unknown>; operationCode: string }): boolean } | null;
+  /** Opérations dont la branche est absente des DEUX versions (fonction inactive) : hors périmètre, signalées. */
+  excludedOperations?: Array<{ operationCode: string; reason: string }>;
+  /**
+   * Cas qui exercent un contrat absent des DEUX versions (fonction inactive des deux côtés, ex. étape suivante du
+   * guide pas encore faite) : retirés AVANT exécution — ni réussis, ni bloquants —, signalés « hors périmètre ».
+   */
+  excludedCases?: Array<{ contractId: string; reason: string; matches(c: { variables: Record<string, unknown>; operationCode: string }): boolean }>;
+}, deps: CampaignDeps = {}): Promise<{ campaignId: number | null; status: repo.CampaignStatus | 'NOT_ALLOWED'; refusal: string | null; assessment: NonRegressionAssessment | null }> {
+  const env = deps.environment ?? getAiEnvironment();
+  const ok = campaignAllowed(env);
+  if (!ok.allowed) return { campaignId: null, status: 'NOT_ALLOWED', refusal: ok.reason, assessment: null };
+  const th = deps.thresholds ?? QUALIFICATION_THRESHOLDS;
+  await repo.interruptStaleCampaigns(th.campaign.staleAfterMs, (deps.now ?? (() => new Date()))());
+  const id = await repo.createCampaign({
+    kind: 'CONFORMITY', environment: env, trigger: 'prompt-conformity', reason: p.reason.slice(0, 1000), adminUserId: null,
+    configVersionId: null, candidateVersionId: p.candidateVersionId, thresholdsVersion: th.version,
+    request: { conformity: { treatment: p.treatment, candidateVersionId: p.candidateVersionId, contractId: p.contractId, coverage: p.coverage?.label ?? null, excluded: p.excludedOperations ?? [] } },
+  });
+  conformityCoverage.set(id, p.coverage);
+  conformityExcludedCases.set(id, p.excludedCases ?? []);
+  try {
+    const r = await runCampaign(id, deps);
+    return { campaignId: id, status: r.status, refusal: r.refusal, assessment: r.conformity ?? null };
+  } finally {
+    conformityCoverage.delete(id);
+    conformityExcludedCases.delete(id);
+  }
+}
+
+/** Lot 99B : cas hors périmètre des campagnes CONFORMITY en cours (contrat absent des deux versions). */
+const conformityExcludedCases = new Map<number, NonNullable<Parameters<typeof requestConformityCampaign>[0]['excludedCases']>>();
+
+/** Prédicats de couverture des campagnes CONFORMITY en cours (fonctions : jamais sérialisées en base). */
+const conformityCoverage = new Map<number, { label: string; matches(c: { variables: Record<string, unknown>; operationCode: string }): boolean } | null>();
+
 // ══════════════════════════════════════════════════════════════════════════
 // Exécution
 // ══════════════════════════════════════════════════════════════════════════
@@ -171,6 +222,8 @@ interface CampaignResult {
   couplesTested: number;
   evidenceIds: number[];
   activatedVersionId: number | null;
+  /** Lot 99B : évaluation de non-régression (campagne CONFORMITY). */
+  conformity?: NonRegressionAssessment;
 }
 
 const keyOf = (c: CoupleDescriptor) => `${repo.coupleKey(c.operationCode, c.model, c.rank)}|${c.signature}`;
@@ -198,7 +251,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
   try {
     // 1. Point de restauration AVANT tout appel.
     try {
-      const rp = await (deps.takeRestorePoint ?? defaultRestorePoint)(`Qualification IA — campagne ${campaignId} (${campaign.kind === 'AUTO' ? 'automatique' : 'test manuel'})`, campaign.kind === 'AUTO' ? 'scheduler' : 'admin');
+      const rp = await (deps.takeRestorePoint ?? defaultRestorePoint)(`Qualification IA — campagne ${campaignId} (${campaign.kind === 'AUTO' ? 'automatique' : campaign.kind === 'CONFORMITY' ? 'mise en conformité d’un prompt' : 'test manuel'})`, campaign.kind === 'MANUAL' ? 'admin' : 'scheduler');
       await repo.updateCampaign(campaignId, { restorePointId: rp.backupId, restorePointAt: rp.finishedAt });
       log(`point de restauration ${rp.backupId} (${rp.finishedAt})`);
     } catch (e) {
@@ -240,6 +293,18 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         const rk = addRef(want.operationCode);
         plan.push({ couple: cible, role: 'CANDIDATE', referenceKey: rk, candidateVersionId: null });
       }
+    } else if (campaign.kind === 'CONFORMITY') {
+      // Lot 99B : toutes les opérations du prompt modifié, ancienne version (référence) et candidate, rang 0, mêmes cas.
+      const want = campaign.request.conformity as { treatment: Treatment; candidateVersionId: number; excluded?: Array<{ operationCode: string }> };
+      const exclues = new Set((want.excluded ?? []).map((x) => x.operationCode));
+      if (!active) return await refuse('Aucune configuration active : aucune référence à comparer.');
+      const cand = await cfg.getVersion(want.candidateVersionId);
+      if (!cand) return await refuse(`Candidate ${want.candidateVersionId} introuvable.`);
+      for (const c of await couplesWithState(active, { ...caseOpts, treatments: [want.treatment] })) if (c.rank === 0) refOf.set(c.operationCode, c);
+      for (const c of (await couplesWithState(cand, { ...caseOpts, treatments: [want.treatment] })).filter((x) => x.rank === 0 && !exclues.has(x.operationCode))) {
+        plan.push({ couple: c, role: 'CANDIDATE', referenceKey: addRef(c.operationCode), candidateVersionId: cand.id });
+      }
+      if (!plan.length) return await refuse(`Aucune opération modèle pour ${want.treatment} : rien à comparer.`);
     } else {
       if (!active) return await refuse('Aucune configuration active : rien à qualifier ni à optimiser.');
       const actifs = await couplesWithState(active, caseOpts);
@@ -303,7 +368,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
 
     // 4. Cas (une fois par opération), exécution des couples.
     const caseSets = new Map<string, CaseSet>();
-    const runs = new Map<string, { observations: Observation[]; p95: number | null; evidenceId: number; verdict: Verdict }>();
+    const runs = new Map<string, { observations: Observation[]; p95: number | null; evidenceId: number; verdict: Verdict; reasons: Reason[] }>();
     const ordre = [...plan].sort((a, b) => (a.role === b.role ? 0 : a.role === 'REFERENCE' ? -1 : 1));
     for (const item of ordre) {
       const c = item.couple;
@@ -314,6 +379,15 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         });
         for (const x of (captures.get(c.operationCode) ?? []).filter((y) => occupes.has(y.accountId))) {
           set.skipped.push({ caseId: `replay:${x.id}`, source: 'PREPROD_REPLAY', reason: 'compte verrouillé par une autre campagne (QUAL-04)' });
+        }
+        // Lot 99B : cas d'un contrat absent des DEUX versions — retirés avant exécution (ni réussis, ni bloquants).
+        const horsPerimetre = conformityExcludedCases.get(campaignId) ?? [];
+        if (campaign.kind === 'CONFORMITY' && horsPerimetre.length) {
+          set.cases = set.cases.filter((x) => {
+            const e = horsPerimetre.find((h) => h.matches({ variables: x.variables, operationCode: x.operationCode }));
+            if (e) set!.skipped.push({ caseId: x.caseId, source: x.source, reason: `hors périmètre : ${e.reason}` });
+            return !e;
+          });
         }
         caseSets.set(c.operationCode, set);
       }
@@ -350,8 +424,30 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
       }, obs);
       result.evidenceIds.push(evidenceId);
       result.couplesTested += 1;
-      runs.set(keyOf(c), { observations: decisives, p95: percentile(decisives.filter((o) => o.durationMs != null).map((o) => o.durationMs!), th.latency.percentile), evidenceId, verdict: v.verdict });
+      runs.set(keyOf(c), { observations: decisives, p95: percentile(decisives.filter((o) => o.durationMs != null).map((o) => o.durationMs!), th.latency.percentile), evidenceId, verdict: v.verdict, reasons: v.reasons });
       log(`${c.operationCode} · ${c.model} · rang ${c.rank} (${item.role}) : ${v.verdict}`);
+    }
+
+    // 4 bis (lot 99B). Non-régression ancienne version ↔ candidate : aucune activation ici.
+    if (campaign.kind === 'CONFORMITY') {
+      const want = campaign.request.conformity as { candidateVersionId: number };
+      const opRuns: OperationRun[] = [...new Set(plan.map((x) => x.couple.operationCode))].map((op) => {
+        const c = plan.find((x) => x.couple.operationCode === op && x.role === 'CANDIDATE');
+        const r = c?.referenceKey ? runs.get(c.referenceKey) : null;
+        const k = c ? runs.get(keyOf(c.couple)) : null;
+        return {
+          operationCode: op,
+          reference: r ? { verdict: r.verdict, reasons: r.reasons, observations: r.observations, evidenceId: r.evidenceId } : null,
+          candidate: k ? { verdict: k.verdict, reasons: k.reasons, observations: k.observations, evidenceId: k.evidenceId } : null,
+        };
+      });
+      const couverture = conformityCoverage.get(campaignId) ?? null;
+      const caseIds = couverture ? [...caseSets.values()].flatMap((set) => set.cases.filter((x) => couverture.matches({ variables: x.variables, operationCode: x.operationCode })).map((x) => x.caseId)) : [];
+      const assessment = assessNonRegression({ runs: opRuns, coverage: couverture ? { label: couverture.label, caseIds } : null, thresholds: th });
+      await cfg.setCandidateState(want.candidateVersionId, assessment.decision === 'QUALIFIED' ? 'QUALIFIED' : assessment.decision === 'REFUSED' ? 'REFUSED' : 'INCONCLUSIVE',
+        [...assessment.refusalReasons, ...assessment.blockingReasons].join(' · ').slice(0, 1000) || 'non-régression démontrée');
+      const casExclus = [...caseSets.values()].flatMap((set) => set.skipped.filter((x) => x.reason.startsWith('hors périmètre : ')).map((x) => ({ caseId: x.caseId, reason: x.reason.slice('hors périmètre : '.length) })));
+      result.conformity = { ...assessment, excluded: (campaign.request.conformity as { excluded?: Array<{ operationCode: string; reason: string }> }).excluded ?? [], excludedCases: casExclus };
     }
 
     // 5. Candidates : activation automatique en préproduction si qualifiée et gain établi.
@@ -407,6 +503,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
           verdict: runs.get(keyOf(x.couple))?.verdict ?? null, evidenceId: runs.get(keyOf(x.couple))?.evidenceId ?? null,
         })),
         candidates: summaryCandidates, activatedVersionId: result.activatedVersionId,
+        ...(result.conformity ? { conformity: result.conformity } : {}),
         accounts: { eligible: comptes.length, locked: aVerrouiller.length - busy.length, busy: busy.length },
         dataUpdates: 'aucune : rejeu sans écriture métier (un rejeu sans attendu vérifiable n’autorise aucune mise à jour automatique)',
       },

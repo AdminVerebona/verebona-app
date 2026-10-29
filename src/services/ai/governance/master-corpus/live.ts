@@ -25,6 +25,39 @@ type Builder = (c: MasterCorpusCase) => Promise<Vars | null>;
 
 const ctx = <T>(c: MasterCorpusCase) => c.context as T;
 
+/**
+ * Lot 99B — contexte d'un cas du corpus au contrat t3-knowledge-query-v2
+ * (propriétés VIDES d'un objet, lot 88B) : clés du registre canonique,
+ * documents et éléments de la première page.
+ */
+export interface MissingPropertiesCase {
+  subject: { type: 'ASSET' | 'EQUIPMENT'; category: string | null; subtype: string | null; family: string | null };
+  properties: string[];
+  documents?: unknown[];
+  elements: unknown[];
+  today?: string;
+}
+
+/** Propriétés demandées d'un cas (registre canonique, mêmes questions qu'en production). */
+export async function missingPropertiesCaseQuestions(x: MissingPropertiesCase) {
+  const [{ questionOf }, { getField }] = await Promise.all([
+    import('../../reconciliation/missing-properties/catalog'), import('@/services/canonical/registry'),
+  ]);
+  return x.properties.map((k) => {
+    const d = getField(k);
+    if (!d) throw new Error(`propriété ${k} absente du registre canonique`);
+    return questionOf(d);
+  });
+}
+
+async function missingPropertiesCaseVariables(x: MissingPropertiesCase): Promise<Vars> {
+  const { missingPropertiesVariables } = await import('../../reconciliation/missing-properties/contract');
+  return missingPropertiesVariables({
+    subject: x.subject, properties: await missingPropertiesCaseQuestions(x), documents: (x.documents ?? []) as never,
+    page: { index: 1, count: 1, elements: x.elements as never }, today: x.today ?? '2026-10-24', truncated: false,
+  });
+}
+
 const BUILDERS: Record<string, Builder> = {
   async t1_group_upload(c) {
     const x = ctx<{ displayNames?: string[]; mimeTypes?: string[] }>(c);
@@ -99,7 +132,12 @@ const BUILDERS: Record<string, Builder> = {
   },
   async t3_document_naming(c) {
     // Lot 61 : variables construites par le constructeur de production (`namingVariables`).
-    const x = ctx<{ documentNaming?: { docs?: unknown[]; origins?: Record<string, string>; conventions?: unknown[] } }>(c).documentNaming;
+    const x = ctx<{ documentNaming?: { docs?: unknown[]; origins?: Record<string, string>; conventions?: unknown[]; periodRepresentation?: { series?: unknown; targets?: unknown[] } } }>(c).documentNaming;
+    // Lot 99C : représentation temporelle — constructeur de production (`periodRepresentationVariables`).
+    if (x?.periodRepresentation?.targets?.length) {
+      const { periodRepresentationVariables } = await import('../../reconciliation/document-naming/period-representation');
+      return periodRepresentationVariables({ series: x.periodRepresentation.series as never, targets: x.periodRepresentation.targets as never });
+    }
     if (!x?.docs?.length) return null;
     const { namingVariables, planChunks, groupKeyOf } = await import('../../reconciliation/document-naming/context');
     const docs = x.docs as never as import('../../reconciliation/document-naming/context').NamingDoc[];
@@ -111,6 +149,9 @@ const BUILDERS: Record<string, Builder> = {
     });
   },
   async t3_knowledge_query(c) {
+    // Lot 99B : cas au contrat d'entrée t3-knowledge-query-v2 (propriétés manquantes, 88B) — constructeur de production.
+    const mpx = ctx<{ missingProperties?: MissingPropertiesCase }>(c).missingProperties;
+    if (mpx) return missingPropertiesCaseVariables(mpx);
     // Lot 85F : variables construites par le constructeur de production (`knowledgeQueryVariables`), première page.
     const x = ctx<{ knowledgeQuery?: { question?: unknown; documents?: unknown[]; elements?: unknown[]; today?: string } }>(c).knowledgeQuery;
     if (!x?.question || !x.elements?.length) return null;

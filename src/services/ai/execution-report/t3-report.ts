@@ -48,7 +48,20 @@ export class T3ExecutionRecorder {
   readonly fields: T3FieldRecord[] = [];
   readonly steps: ReportStep[] = [];
   failure: string | null = null;
+  /** Lot 99A : appels RÉELS au fournisseur (un appel servi par le cache ou la mémoire n'en est pas un). */
   aiCalls = 0;
+  /** Lot 99A : réponses servies par le cache temporaire des réponses modèle (aucun appel). */
+  aiCacheHits = 0;
+  /** Lot 99A : décisions T3 mémorisées réutilisées à contexte identique (aucun appel). */
+  decisionsReused = 0;
+  /** Lot 99A : arbitrages déjà tranchés par l'utilisateur, conservés sans appel. */
+  userArbitrationsKept = 0;
+  /** Lot 99A : décisions assistées par l'IA (toutes origines). */
+  aiAssisted = 0;
+  /** Lot 99A : arbitrages déjà ouverts à l'identique — ni recréés ni réécrits. */
+  conflictsUnchanged = 0;
+  /** Lot 99A : réévaluations (champ, motifs : preuve, valeur, résolution, règle, configuration IA, relance forcée). */
+  readonly reevaluations: Array<{ fieldKey: string; reasons: string[] }> = [];
   /** Lot 76J : inventaire exhaustif des champs de l'onglet « Informations » (vides compris). */
   inventory: import('../reconciliation/information-check/inventory').InformationInventory | null = null;
   /** Lot 76J : confrontations transversales (agenda, Opérations, colonnes miroirs). */
@@ -170,6 +183,12 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
     currentValues: { consulted: true },
     canonicalFacts: { consulted: 'indirect', note: 'via les preuves projetées par T1 (field_evidence)' },
     aiCalls: rec.aiCalls,
+    // Lot 99A : compteurs distincts (jamais confondus avec les appels réels).
+    aiUsage: {
+      providerCalls: rec.aiCalls, cacheResponses: rec.aiCacheHits, decisionsReused: rec.decisionsReused,
+      userArbitrationsKept: rec.userArbitrationsKept, aiAssistedDecisions: rec.aiAssisted,
+      withoutAiCall: rec.aiCalls === 0, reevaluations: rec.reevaluations, conflictsUnchanged: rec.conflictsUnchanged,
+    },
   };
   if (!p.target) {
     const docs = `(SELECT id FROM asset_files WHERE account_id = $1 AND asset_id = $2 AND deleted_at IS NULL
@@ -241,6 +260,10 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
     notExamined: entries.filter((e) => e.writeResult === 'NOT_EXAMINED').length,
     conflicts: rec.fields.filter((f) => f.decision.action === 'create_conflict').length,
     decisionsIntended: rec.fields.filter((f) => f.decision.action === 'apply' || f.decision.action === 'update').length,
+    // Lot 99A : appels réels / réponses cache / décisions réutilisées.
+    aiProviderCalls: rec.aiCalls,
+    aiCacheResponses: rec.aiCacheHits,
+    aiDecisionsReused: rec.decisionsReused + rec.userArbitrationsKept,
   };
   return { entries, readSteps, sources, counters };
 }

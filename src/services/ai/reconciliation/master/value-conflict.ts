@@ -25,7 +25,7 @@ import {
   T3ValueConflictOutput, closedWorldValueConflict, type T3ValueConflictOutput as Out,
 } from './t3-contract';
 
-interface ValueConflictMasterInput {
+export interface ValueConflictMasterInput {
   accountId: number;
   assetId: number;
   decision: ReconciliationDecision;
@@ -123,8 +123,31 @@ export function translateValueConflict(
   };
 }
 
-/** Arbitrage par le master. Ne lève pas, sauf interruption d'exécution. */
-export async function resolveValueConflictMaster(input: ValueConflictMasterInput): Promise<ReconciliationDecision> {
+/** Lot 99A : issue détaillée d'un arbitrage (origine de la réponse, trace). */
+export interface ValueConflictOutcome {
+  decision: ReconciliationDecision;
+  /** PROVIDER : appel réel ; CACHE : réponse servie sans appel ; FAILED : échec (conflit prudent). */
+  aiSource: 'PROVIDER' | 'CACHE' | 'FAILED';
+  traceId: string | null;
+  /** Échec : code de la passerelle (null pour une erreur inconnue). */
+  errorCode: string | null;
+  /** Échec APRÈS contact du fournisseur (sortie invalide, refus, délai) : mémorisable. */
+  providerContacted: boolean;
+  /** Le modèle s'est abstenu (BUSINESS_ABSTENTION) : conflit laissé à l'utilisateur. */
+  abstained?: boolean;
+}
+
+/** Codes d'échec survenus après contact du fournisseur (appel facturable) — lot 99A. */
+const ECHECS_APRES_APPEL = new Set(['INVALID_OUTPUT', 'ALL_MODELS_FAILED', 'PROVIDER_REQUEST_REJECTED', 'TIMEOUT']);
+
+/**
+ * Arbitrage par le master, avec l'origine de la réponse (lot 99A). Ne lève
+ * pas, sauf interruption d'exécution. `idempotencyKey` : clé du cache des
+ * réponses alignée sur l'empreinte de la mémoire des décisions.
+ */
+export async function resolveValueConflictMasterDetailed(
+  input: ValueConflictMasterInput, opts: { idempotencyKey?: string } = {},
+): Promise<ValueConflictOutcome> {
   try {
     const res = await AiGateway.execute({
       useCaseCode: 'DATA_RECONCILIATION',
@@ -132,15 +155,31 @@ export async function resolveValueConflictMaster(input: ValueConflictMasterInput
       accountId: input.accountId,
       promptVariables: valueConflictVariables(input),
       outputSchema: T3ValueConflictOutput,
+      ...(opts.idempotencyKey ? { idempotencyKey: opts.idempotencyKey } : {}),
     });
     const { decision, warnings } = translateValueConflict(input, res.data);
     if (warnings.length > 0) {
       console.warn(`[t3_value_conflict] ${input.decision.fieldKey} : ${warnings.join(', ')} — arbitrage utilisateur`);
     }
-    return decision;
+    return {
+      decision, aiSource: res.fromCache ? 'CACHE' : 'PROVIDER', traceId: res.traceId ?? null, errorCode: null,
+      providerContacted: !res.fromCache, abstained: (res.data as { decision?: unknown } | null)?.decision === 'abstain',
+    };
   } catch (e) {
     if (isExecutionCancelled(e)) throw e;
     console.error('[t3_value_conflict] échec non bloquant :', (e as Error).message);
-    return { ...input.decision, action: 'create_conflict', reasonCode: 'AMBIGUOUS_EVIDENCE', deterministic: true };
+    const code = (e as { code?: unknown })?.code;
+    const errorCode = typeof code === 'string' ? code : null;
+    const traceId = (e as { traceId?: unknown })?.traceId;
+    return {
+      decision: { ...input.decision, action: 'create_conflict', reasonCode: 'AMBIGUOUS_EVIDENCE', deterministic: true },
+      aiSource: 'FAILED', traceId: typeof traceId === 'string' ? traceId : null, errorCode,
+      providerContacted: errorCode !== null && ECHECS_APRES_APPEL.has(errorCode),
+    };
   }
+}
+
+/** Arbitrage par le master. Ne lève pas, sauf interruption d'exécution. */
+export async function resolveValueConflictMaster(input: ValueConflictMasterInput): Promise<ReconciliationDecision> {
+  return (await resolveValueConflictMasterDetailed(input)).decision;
 }

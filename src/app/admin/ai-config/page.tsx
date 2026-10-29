@@ -48,6 +48,7 @@ import { AssistantSettings } from './_components/AssistantSettings';
 import { ModelRegistry } from './_components/ModelRegistry';
 import { ModelCapabilities } from './_components/ModelCapabilities';
 import { CoupleQualification } from './_components/CoupleQualification';
+import { PromptConformity } from './_components/PromptConformity';
 import { OperationProfilesEditor, type OperationProfile, type ProfiledOperation, type PlanView } from './_components/OperationProfilesEditor';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
@@ -231,7 +232,7 @@ const dateHeure = (d: string | null | undefined) => (d ? new Date(d).toLocaleStr
 
 /** Lot 86A : cycle d'une candidate automatique (VER-01). */
 const CANDIDATE_STATE_LABELS: Record<string, string> = {
-  CREATED: 'créée', QUALIFYING: 'en test', QUALIFIED: 'qualifiée', REFUSED: 'refusée', INCONCLUSIVE: 'non concluante', ACTIVATED: 'activée', NOT_CHOSEN: 'non retenue',
+  CREATED: 'créée', QUALIFYING: 'en test', QUALIFIED: 'qualifiée', REFUSED: 'refusée', INCONCLUSIVE: 'non concluante', ACTIVATED: 'activée', NOT_CHOSEN: 'non retenue', SUSPENDED: 'suspendue (retour arrière)',
 };
 
 function StateBadge({ v, environment }: { v: Pick<Version, 'active' | 'stateLabel'>; environment: string }) {
@@ -1077,6 +1078,9 @@ export default function AiConfigPage() {
 
       {/* Lot 86A (Pilotage IA V2 P5) : qualification par couple, seuils (lecture), candidates, test manuel. */}
       <CoupleQualification key={current?.id ?? 'active'} versionId={current?.id ?? null} />
+
+      {/* Lot 99B : conformité des prompts — contrats IA, corrections automatiques qualifiées (préproduction), retours arrière. */}
+      <PromptConformity />
 
       {/* Liste des versions */}
       <section className="space-y-2">

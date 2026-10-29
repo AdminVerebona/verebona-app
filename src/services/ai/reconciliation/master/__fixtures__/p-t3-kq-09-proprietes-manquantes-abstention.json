@@ -1,0 +1,36 @@
+{
+  "case": "P-T3-KQ-09",
+  "description": "KNOWLEDGE_QUERY, contrat d’entrée t3-knowledge-query-v2 (propriétés manquantes, lot 88B) — aucun élément transmis ne porte le prix d’achat : NOT_FOUND, abstention justifiée (aucune valeur inventée ; cas de référence de la nouvelle branche, lot 99B).",
+  "qualification": { "role": "answer" },
+  "context": {
+    "missingProperties": {
+      "subject": { "type": "ASSET", "category": "IMMOBILIER", "subtype": null, "family": null },
+      "properties": ["acquisitionPrice"],
+      "documents": [
+        { "ref": "D1", "fileId": 7, "relation": "LINKED", "title": "Attestation d’assurance habitation", "documentType": null, "rubric": null, "documentDate": null }
+      ],
+      "elements": [
+        {
+          "ref": "U-1", "document": "D1", "fileId": 7, "layer": "SOURCE_UNIT", "kind": "TEXT_BLOCK", "label": null, "value": null,
+          "text": "Attestation d’assurance multirisque habitation valable du 01/01/2026 au 31/12/2026. Cotisation annuelle : 312,00 €.", "confidence": "certain", "page": 1,
+          "provenance": { "fileIds": [7], "agendaItemIds": [] }
+        }
+      ],
+      "today": "2026-10-27"
+    }
+  },
+  "recording": {
+    "operationCode": "t3_knowledge_query",
+    "task": "KNOWLEDGE_QUERY",
+    "output": {
+      "task": "KNOWLEDGE_QUERY",
+      "outcome": "NOT_FOUND",
+      "findings": [],
+      "reason": "Aucun élément transmis ne mentionne le prix d’achat du bien ; la cotisation d’assurance n’en est pas un."
+    }
+  },
+  "expected": {
+    "outcome": "NOT_FOUND",
+    "decisions": { "acquisitionPrice": { "decision": "ABSTAINED", "cause": "NOT_FOUND" } }
+  }
+}

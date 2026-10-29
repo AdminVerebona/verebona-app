@@ -123,6 +123,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_field_values: { domain: 'extraits-ia', description: 'Valeurs de champs documentaires.' },
   document_rule_evaluations: { domain: 'extraits-ia', description: 'Évaluations de règles documentaires.' },
   // Lot 85F (0720) : mémoire des interprétations sémantiques T3 de la connaissance T1 (KNOWLEDGE_QUERY).
+  ai_reuse_counters: { domain: 'extraits-ia', description: 'Compteurs quotidiens des réponses IA sans appel facturé (cache, demandes simultanées partagées, entrées renouvelées) et des décisions réutilisées ou réévaluées — lot 99A.' },
   t3_knowledge_queries: { domain: 'extraits-ia', description: 'Interprétations T3 de la connaissance T1 persistée (question, empreinte du contexte, issue validée, constats et preuves citées, refus, appels IA) — lot 85F.' },
   document_operation_candidates: { domain: 'extraits-ia', description: 'Candidats d’Opération T1 et décision T3.' },
   t1_quality_signals: { domain: 'extraits-ia', description: 'Signaux de qualité T1.' },
@@ -152,6 +153,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   reconciliation_decisions: { domain: 'champs-preuves', description: 'Décisions de réconciliation T3 (action, motif, confiance, preuves).' },
   account_reconciliation_runs: { domain: 'champs-preuves', description: 'Réconciliations par compte.' },
   t3_information_checks: { domain: 'champs-preuves', description: 'Contrôles « Informations » (lot 76J).' },
+  t3_decision_memory: { domain: 'champs-preuves', description: 'Mémoire durable des décisions T3 assistées par l’IA (empreinte du contexte par composante, décision, abstention ou échec, réutilisations, invalidations et motif, relance forcée) — lot 99A.' },
   t3_reconciliation_states: { domain: 'champs-preuves', description: 'États de réconciliation T3.' },
   t3_open_action_evaluations: { domain: 'champs-preuves', description: 'Évaluations T3 des actions ouvertes.' },
   account_knowledge_changes: { domain: 'champs-preuves', description: 'Changements de connaissance du compte (déclencheurs de contrôle).' },
@@ -307,6 +309,9 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_qualification_campaign_accounts: 'qualification IA (verrous de compte des campagnes)',
   ai_qualification_evidence: 'qualification IA (preuves historisées par couple)',
   ai_qualification_cases: 'qualification IA (résultats par cas, empreintes)',
+  // Lot 99B : mise en conformité automatique des prompts — incompatibilités et journal (textes de prompt, empreintes, aucun contenu de compte).
+  ai_prompt_conformity_issues: 'configuration IA (conformité des prompts : incompatibilités)',
+  ai_prompt_conformity_events: 'configuration IA (conformité des prompts : journal)',
   // Ancien harnais de mesure (cron `corpus-run`, retiré au lot 86A : absorbé par la qualification par couple) — table inerte, créée à la volée en préproduction.
   ai_corpus_baseline: 'qualification IA (ancien harnais de mesure retiré au lot 86A, table inerte)',
   // Lot 86B (Pilotage IA V2 P6) : imports de la configuration globale, interventions manuelles, routage subordonné.

@@ -161,6 +161,18 @@ export function filteredIncludedInGlobal(filtered: Record<string, string>, globa
         }
         break;
       }
+      case 'tracabilite/usage-ia.json': {
+        // Lot 99A : agrégats (compteurs distincts) — chaque nombre filtré ≤ le même nombre au global.
+        const f = parse(filtered[base]) as Json;
+        const g = parse(global[base]) as Json | undefined;
+        if (g === undefined || g === null) { v.push(`${base} : absent du global`); break; }
+        const plats = (x: Json, pre = ''): Array<[string, number]> => (x && typeof x === 'object' && !Array.isArray(x)
+          ? Object.entries(x as Record<string, Json>).flatMap(([k, val]) => (typeof val === 'number' ? [[`${pre}${k}`, val] as [string, number]] : plats(val, `${pre}${k}.`)))
+          : []);
+        const gi = new Map(plats(g));
+        for (const [k, n] of plats(f)) if (n > (gi.get(k) ?? 0)) v.push(`${base} › ${k} : ${n} au filtre > ${gi.get(k) ?? 0} au global`);
+        break;
+      }
       case 'controle/comptes.json': {
         const f = parse(filtered[base]) as { comptes: Array<{ compte: number }> };
         const g = parse(global[base]) as { comptes: Array<{ compte: number }> } | undefined;

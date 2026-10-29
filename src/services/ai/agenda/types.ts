@@ -22,8 +22,8 @@ export type AgendaDecisionAction =
    */
   | 'confirm_forecast'
   /**
-   * Prévision automatique devenue sans objet (fin de récurrence explicite) :
-   * annulée — seulement si jamais modifiée par l'utilisateur.
+   * Prévision automatique devenue sans objet (série bornée par une fin ÉTABLIE —
+   * échéancier énoncé ou fin contractuelle qualifiée, lot 99D) : annulée — seulement si jamais modifiée par l'utilisateur.
    */
   | 'retire_forecast'
   /**
@@ -54,6 +54,15 @@ export interface T4DecisionTrace {
   recurrenceCandidate: {
     mode: 'EXPLICIT_SOURCE' | 'HISTORICAL_PATTERN'; frequency: string; interval: number;
     startDate: string | null; endDate: string | null; occurrenceCount: number | null; history: string[];
+    /**
+     * Lot 99D — fin QUALIFIÉE de la série (appliquée par le code après T4,
+     * jamais soumise au modèle) : raison, date d'effet, provenance. Seule une
+     * fin CONFIRMED borne la série.
+     */
+    end?: {
+      status: 'CONFIRMED' | 'UNCERTAIN'; reason: import('./rules/recurrence').RecurrenceEndReason; effectiveDate: string | null;
+      sourceKind: 'T1_FACT' | 'LEGACY'; fieldKey: string | null;
+    };
   } | null;
   homeCategory: 'action' | 'information' | 'unknown';
   businessType: string | null;
@@ -126,7 +135,19 @@ export interface AgendaDecision {
       /** Dates historiques ayant établi la récurrence (HISTORICAL_PATTERN). */
       history?: string[];
       computedAt: string;
+      /** Lot 99D — fin qualifiée de la série (raison, date d'effet, source) ; absente : aucune fin lue. */
+      end?: import('./rules/recurrence').RecurrenceEnd;
     };
+  };
+  /**
+   * Lot 99D — `retire_forecast` : ce qui borne la série (date), la fin
+   * qualifiée qui la justifie (raison, date d'effet, source) ou la fin de
+   * l'échéancier énoncé. Tracé dans `agenda_occurrence_events` (FORECAST_RETIRED).
+   */
+  recurrenceEnd?: {
+    bound: string;
+    end: import('./rules/recurrence').RecurrenceEnd | null;
+    scheduleEndDate: string | null;
   };
   /**
    * CDC 15 T4-10 : classification détaillée (catégorie éventuellement

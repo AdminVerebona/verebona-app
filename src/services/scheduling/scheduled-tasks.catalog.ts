@@ -52,6 +52,9 @@
  *   ai-qualification-campaign       chaque jour à 7 h 45 (86A)    une campagne AUTO ouverte au plus ;
  *                                                                 verrou par compte (index unique) ;
  *                                                                 préproduction seulement
+ *   ai-prompt-conformity            au démarrage, puis toutes     bail `ai-prompt-conformity:<env>` ;
+ *                                   les 2 h (99B)                 empreinte de contexte (aucun nouvel
+ *                                                                 essai sur contexte inchangé)
  *   ai-history-reclassification     au démarrage, puis /h tant    garde dans l'UPDATE (appel sans
  *                                   qu'il reste des appels ;      exécution du nouveau chemin, règle
  *                                   seulement AI_PILOTAGE_V2=on   différente) — idempotent (89A, P8)
@@ -563,6 +566,28 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const { requestAutomaticCampaign } = await import('@/services/ai/qualification/campaign');
       const r = await requestAutomaticCampaign({ trigger: `scheduler:${trigger}` });
       return { note: r.note.slice(0, 1500) };
+    },
+  },
+  {
+    // Lot 99B (ticket P1 « Mise en conformité automatique des prompts IA en
+    // préproduction ») : au démarrage (donc à chaque déploiement), puis toutes
+    // les 2 heures — détection des contrats IA absents / obsolètes / incomplets
+    // dans les prompts actifs, contrôle post-activation (retour arrière
+    // automatique), puis au plus une correction qualifiée par passage
+    // (`AI_PROMPT_CONFORMITY_MAX_PER_PASS`). Activation seulement en
+    // préproduction ; production : candidate et diagnostic. Coupure :
+    // `AI_PROMPT_CONFORMITY=off`. Bail partagé `ai-prompt-conformity:<env>`.
+    code: 'ai-prompt-conformity',
+    label: 'IA : mise en conformité automatique des prompts (préproduction)',
+    schedule: { kind: 'startup', delayMs: 9 * MIN, retryMs: 2 * HOUR },
+    timeoutMs: 180 * MIN,
+    run: async ({ trigger }) => {
+      const { runPromptConformityPass } = await import('@/services/ai/prompt-conformity/service');
+      const r = await runPromptConformityPass({ trigger: `scheduler:${trigger}` });
+      const note = r.disabled ?? `${r.note} — ${r.detected.length} incompatibilité(s), ${r.resolved.length} résolue(s), `
+        + `${r.processed.map((x) => `${x.contractId} → ${x.status}`).join(', ') || 'aucune correction tentée'}`
+        + `${r.postChecks.length ? ` ; contrôles post-activation : ${r.postChecks.map((x) => `${x.contractId} ${x.outcome}`).join(', ')}` : ''}`;
+      return { note: note.slice(0, 1500), again: true };
     },
   },
   {

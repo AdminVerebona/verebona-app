@@ -55,15 +55,22 @@ export async function recordDecisions(
 }
 
 export async function closeRun(runId: number, summary: ReconciliationRun): Promise<void> {
-  await pgClient.unsafe(
+  const base = [runId, summary.decisions.length, summary.appliedCount, summary.conflictCount, summary.aiReviewCount];
+  // Lot 99A (0858) : appels réels / réponses cache / décisions réutilisées, en colonnes distinctes.
+  const ecrire = (avecCompteurs: boolean) => pgClient.unsafe(
     `UPDATE reconciliation_runs
         SET status = 'completed', finished_at = NOW(),
             decisions_count = $2, applied_count = $3,
-            conflict_count = $4, ai_review_count = $5
+            conflict_count = $4, ai_review_count = $5${avecCompteurs ? ', provider_calls = $6, ai_cache_hits = $7, decisions_reused = $8' : ''}
       WHERE id = $1`,
-    [runId, summary.decisions.length, summary.appliedCount,
-     summary.conflictCount, summary.aiReviewCount] as never[],
+    (avecCompteurs
+      ? [...base, summary.providerCalls ?? null, summary.aiCacheHits ?? null, summary.decisionsReused ?? null]
+      : base) as never[],
   );
+  await ecrire(true).catch((e) => {
+    if ((e as { code?: string })?.code !== '42703') throw e;
+    return ecrire(false);
+  });
 }
 
 /** Clôt un run local interrompu par une erreur. */

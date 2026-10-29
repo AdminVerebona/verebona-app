@@ -10,7 +10,8 @@
  * `extract_agenda_v1` puis `agenda_detect_v1` traitaient la même information.
  */
 import type { ExtractedField, AgendaCandidate } from '../types';
-import { parseRecurrenceFr, type RecurrenceSpec } from '../../agenda/rules/recurrence';
+import { parseRecurrenceFr, type RecurrenceEnd, type RecurrenceSpec } from '../../agenda/rules/recurrence';
+import { CONTRACT_END_DATE_KEYS, resolveRecurrenceEnd, type ContractEndEvidence } from '../../agenda/rules/recurrence-end';
 import {
   documentMayCreateEvent,
   getEventEntry,
@@ -37,8 +38,12 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 export function buildAgendaCandidates(
   fields: ExtractedField[],
   documentTitle?: string,
+  today: string = todayParis(),
 ): AgendaCandidate[] {
   const candidates: AgendaCandidate[] = [];
+  // Lot 99D : fin de récurrence QUALIFIÉE par l'état contractuel du document (calculée au besoin).
+  let finDoc: RecurrenceEnd | null | undefined;
+  const finDe = () => (finDoc === undefined ? (finDoc = resolveRecurrenceEnd(contractEndEvidenceOf(fields, null), { today })) : finDoc);
 
   for (const field of fields) {
     const label = DEADLINE_FIELDS[field.fieldKey];
@@ -56,7 +61,7 @@ export function buildAgendaCandidates(
       excerpt: field.excerpt,
       originFieldKey: field.fieldKey,
       // Aucune catégorie suggérée : c'est la responsabilité de l'usage 4.
-      recurrence: recurrenceOf(field),
+      recurrence: withEnd(recurrenceOf(field), finDe),
     });
   }
 
@@ -78,6 +83,41 @@ export function recurrenceOf(field: ExtractedField): RecurrenceSpec | undefined 
     };
   }
   return parseRecurrenceFr(field.excerpt ?? '') ?? undefined;
+}
+
+/** Date du jour à Paris (AAAA-MM-JJ). */
+function todayParis(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+}
+
+/** Lot 99D : récurrence complétée de la fin qualifiée du document (aucune fin : inchangée). */
+function withEnd(spec: RecurrenceSpec | undefined, finDe: () => RecurrenceEnd | null): RecurrenceSpec | undefined {
+  if (!spec) return spec;
+  const end = finDe();
+  return end ? { ...spec, end } : spec;
+}
+
+/**
+ * Lot 99D — état contractuel STRUCTURÉ d'un document (pure) : textes lus des
+ * faits (extrait, valeur textuelle) avec leur confiance, et dates de fin
+ * contractuelle du registre (`contractEndDate`, `leaseEndDate`, alias
+ * contextuels compris). Observations visuelles exclues (une fin se LIT).
+ */
+export function contractEndEvidenceOf(fields: ExtractedField[], documentType: string | null): ContractEndEvidence {
+  const texts: ContractEndEvidence['texts'] = [];
+  const endDates: ContractEndEvidence['endDates'] = [];
+  for (const f of fields) {
+    if (f.provenance === 'VISUAL_ANALYSIS') continue;
+    const confidence = typeof f.confidence === 'string' ? f.confidence : null;
+    if (f.excerpt) texts.push({ text: f.excerpt, confidence, fieldKey: f.fieldKey });
+    const v = typeof f.value === 'string' ? f.value.trim() : null;
+    if (v && !ISO_DATE.test(v) && v.length >= 12) texts.push({ text: v, confidence, fieldKey: f.fieldKey });
+    const key = cleCanonique(f, documentType);
+    if (key && CONTRACT_END_DATE_KEYS.includes(key) && v && ISO_DATE.test(v)) {
+      endDates.push({ date: v, fieldKey: key, confidence: confidence ?? 'probable', excerpt: f.excerpt ?? null });
+    }
+  }
+  return { texts, endDates };
 }
 
 /** Deux champs différents portant la même date ne créent qu'un candidat. */
@@ -131,6 +171,8 @@ export interface T4CandidateContext {
    * un candidat — et elle n'est pas réattribuée au bien (garde-fou T4).
    */
   capabilities?: import('@/services/account-capabilities.service').AccountCapabilities;
+  /** Lot 99D : date de référence (AAAA-MM-JJ, Paris) de la qualification d'une fin de récurrence. */
+  today?: string;
 }
 
 /** Libellé d'un événement réalisé, par type métier (§13). */
@@ -193,6 +235,12 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
   const parChamp = (f: ExtractedField) => (semantique(f, documentType)?.originFieldKey ? 0 : 1);
   const ordonnes = [...fields].sort((a, b) => parChamp(a) - parChamp(b));
   const typesDates = new Set<string>();
+  // Lot 99D : fin de récurrence QUALIFIÉE par l'état contractuel du document —
+  // jamais en multi-biens (la clause peut viser le contrat d'un autre bien).
+  let finDoc: RecurrenceEnd | null | undefined;
+  const finDe = () => (finDoc === undefined
+    ? (finDoc = ctx.multiAsset ? null : resolveRecurrenceEnd(contractEndEvidenceOf(fields, documentType), { today: ctx.today ?? todayParis(), sourceFileId: ctx.sourceFileId }))
+    : finDoc);
 
   for (const field of ordonnes) {
     if (field.provenance === 'VISUAL_ANALYSIS' || !field.excerpt) continue;
@@ -240,7 +288,7 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
 
     const sujet = field.subject?.trim() || field.target?.targetEntityLabel?.trim() || ctx.documentTitle?.trim() || null;
     // Récurrence ÉNONCÉE (champ ou extrait) : T4 seul en tire des occurrences.
-    const recurrence = recurrenceOf(field);
+    const recurrence = withEnd(recurrenceOf(field), finDe);
     // T4-02 côté candidat : catégorie du REGISTRE (EVENT_CATALOG.homeCategory
     // de la nature) — un contrôle ou un entretien futur est une ACTION, un
     // fait réalisé une INFORMATION ; « selon l'événement » : laissé à T4.

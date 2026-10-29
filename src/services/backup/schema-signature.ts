@@ -61,6 +61,8 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   // Lot 86A (décision 13) : campagnes, verrous, preuves et cas de qualification — rapports de tests
   // consultables après une restauration (une campagne restaurée ne perd jamais sa preuve).
   'ai_qualification_campaigns', 'ai_qualification_campaign_accounts', 'ai_qualification_evidence', 'ai_qualification_cases',
+  // Lot 99B : journal de la mise en conformité des prompts (décisions, preuves, retours arrière) — consultable après une restauration.
+  'ai_prompt_conformity_issues', 'ai_prompt_conformity_events',
   'email_logs', 'email_provider_events', 'stripe_webhook_logs', 'legal_audit_log',
 ];
 

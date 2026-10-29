@@ -192,6 +192,11 @@ export interface T3AccountPayload {
   requestedByUserId: number | null;
   scheduled: boolean;
   requestedAt: string | null;
+  /**
+   * Lot 99A : relance FORCÉE et tracée de la revue IA (motif) — lancement
+   * manuel « Réévaluer avec l'IA ». Absent : décisions mémorisées réutilisées.
+   */
+  forceAiReview?: string | null;
 }
 
 export interface T3SweepPayload {
@@ -282,6 +287,7 @@ registerT3JobKind<T3AccountPayload>({
       requestedByUserId: optId(job, raw, 'requestedByUserId'),
       scheduled: raw.scheduled === true,
       requestedAt: optDate(job, raw, 'requestedAt'),
+      forceAiReview: optString(job, raw, 'forceAiReview'),
     };
   },
 });

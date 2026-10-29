@@ -165,7 +165,7 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
   // Lot 61 — DOCUMENT_NAMING : garde-fous serveur réels (`judgeProposal`,
   // `collidingProposals`) sur les propositions du modèle. Attendus :
   // `applied` (identifiant → nom retenu), `refused` (identifiant → motif).
-  async t3_document_naming(c, output) {
+  async t3_document_naming(c, output, ctx) {
     const { judgeProposal, collidingProposals } = await import('../../reconciliation/document-naming/guards');
     const { documentFingerprint } = await import('../../reconciliation/document-naming/context');
     const x = (c.context as { documentNaming: { docs: Array<Record<string, unknown>>; origins?: Record<string, string>; known?: Record<string, unknown> } }).documentNaming;
@@ -193,6 +193,7 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(JSON.stringify(appliques) === JSON.stringify(exp(c, 'applied') ?? {}), `renommages retenus ${JSON.stringify(appliques)}`),
       ...ecart(exp(c, 'refused') === undefined || JSON.stringify(refuses) === JSON.stringify(exp(c, 'refused')), `refus ${JSON.stringify(refuses)}`),
       ...ecart(familles === undefined || cle(obtenues) === cle(familles), `familles ${cle(obtenues)} ≠ ${familles ? cle(familles) : ''}`),
+      ...await periodRepresentationErrors(c, output, ctx?.masterText?.(c.masterPromptCode) ?? ''),
     ];
   },
   // Lot 85F — KNOWLEDGE_QUERY : validation SERVEUR réelle (`validateKnowledgeAnswer` :
@@ -205,6 +206,29 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
   // inventée), `endDate` (décision permise par la chaîne déterministe existante :
   // NO_ACTION_UNDATED_NOT_NEEDED, DATE_STILL_NEEDED, DATE_FOUND — `completeness.ts`).
   async t3_knowledge_query(c, output) {
+    // Lot 99B — cas au contrat d'entrée t3-knowledge-query-v2 (propriétés manquantes, 88B) : décision SERVEUR réelle
+    // (`decideProperties` : cible = clé demandée, extrait recopié, normaliseur du registre, valeur écrite seulement si
+    // établie). Attendus : `outcome`, `decisions` (clé → { decision, value? , cause? }).
+    const mpx = (c.context as { missingProperties?: import('./live').MissingPropertiesCase }).missingProperties;
+    if (mpx) {
+      const [{ decideProperties }, { defaultNormalizers }, { missingPropertiesCaseQuestions }] = await Promise.all([
+        import('../../reconciliation/missing-properties/decide'), import('../../reconciliation/knowledge-query/service'), import('./live'),
+      ]);
+      const sortie = output as { outcome: string };
+      const props = await missingPropertiesCaseQuestions(mpx);
+      const dec = decideProperties({ properties: props, answers: [{ page: { index: 1, count: 1, elements: mpx.elements as never }, output: output as never }], complete: true, norm: await defaultNormalizers() });
+      const attendues = exp<Record<string, { decision: string; value?: unknown; cause?: string }>>(c, 'decisions') ?? {};
+      const erreurs = [...ecart(exp(c, 'outcome') === undefined || sortie.outcome === exp(c, 'outcome'), `issue ${sortie.outcome} ≠ ${String(exp(c, 'outcome'))}`)];
+      for (const [cle, att] of Object.entries(attendues)) {
+        const d = dec.find((x) => x.key === cle) as { decision: string; value?: unknown; cause?: string } | undefined;
+        erreurs.push(...ecart(d?.decision === att.decision, `${cle} : décision ${d?.decision ?? 'absente'} ≠ attendu ${att.decision}`));
+        if (d && att.value !== undefined) erreurs.push(...ecart(JSON.stringify(d.value) === JSON.stringify(att.value), `${cle} : ${JSON.stringify(d.value)} ≠ attendu ${JSON.stringify(att.value)}`));
+        if (d && att.cause !== undefined) erreurs.push(...ecart(d.cause === att.cause, `${cle} : cause ${String(d.cause)} ≠ attendu ${att.cause}`));
+      }
+      // Aucune valeur établie pour une propriété dont l'attendu est l'abstention : invention.
+      for (const d of dec.filter((x) => x.decision === 'ESTABLISHED' && attendues[x.key]?.decision !== 'ESTABLISHED')) erreurs.push(`${d.key} : valeur inventée (établie sans être attendue)`);
+      return erreurs;
+    }
     const { validateKnowledgeAnswer } = await import('../../reconciliation/knowledge-query/validate');
     const { defaultNormalizers } = await import('../../reconciliation/knowledge-query/service');
     const { knowledgeCompleteness, endDateNeedOf } = await import('../../reconciliation/knowledge-query/completeness');
@@ -385,4 +409,46 @@ async function loadAnswer() {
   const { toGeneratedAnswer } = await import('@/services/verebona-assistant/core/generation.adapter');
   const { validateGeneratedAnswer } = await import('@/services/verebona-assistant/core/response-validator.service');
   return { toGeneratedAnswer, validateAnswerForCorpus: validateGeneratedAnswer };
+}
+
+/**
+ * Lot 99C — représentation temporelle (`period_representations`, contrat
+ * `t3-naming-period-v1`) : validation SERVEUR réelle (`judgePeriodRepresentations`)
+ * sur les factures du cas (`documentNaming.periodRepresentation.targets`).
+ * Attendus : `periods` (document → représentations admises, libellé attendu
+ * facultatif), `forbiddenLabels` (document → libellés interdits, ex. un mois
+ * imposé à une plage significative), `periodRefused` (document → motif).
+ * Section absente : écart seulement si le texte évalué porte le marqueur (un
+ * prompt sans le contrat n'est jamais appelé dans ce mode).
+ */
+async function periodRepresentationErrors(c: MasterCorpusCase, output: unknown, masterText: string): Promise<string[]> {
+  const x = (c.context as { documentNaming?: { periodRepresentation?: { targets?: unknown[] } } }).documentNaming?.periodRepresentation;
+  if (!x?.targets?.length) return [];
+  const [{ judgePeriodRepresentations }, { T3_NAMING_PERIOD_CONTRACT }] = await Promise.all([
+    import('../../reconciliation/document-naming/period-representation'), import('@/lib/documents/document-title-period'),
+  ]);
+  const o = output as { period_representations?: unknown[] };
+  if (!Array.isArray(o.period_representations)) {
+    return masterText.includes(T3_NAMING_PERIOD_CONTRACT) ? ['section period_representations absente (contrat t3-naming-period-v1 porté par le prompt)'] : [];
+  }
+  const verdicts = judgePeriodRepresentations(o as never, x.targets as never, { promptVersion: null, traceId: null, now: new Date() });
+  const errs: string[] = [];
+  const attendus = exp<Record<string, { allowed?: string[]; label?: string | null }>>(c, 'periods') ?? {};
+  for (const [id, a] of Object.entries(attendus)) {
+    const v = verdicts.find((y) => String(y.documentId) === id);
+    if (!v || v.status !== 'ACCEPTED') { errs.push(`document ${id} : représentation refusée (${v && v.status === 'REFUSED' ? v.code : 'absente'})`); continue; }
+    const rep = v.decision.representation ?? '';
+    if (a.allowed && !a.allowed.includes(rep)) errs.push(`document ${id} : représentation ${rep} ∉ ${a.allowed.join(' | ')}`);
+    if (a.label !== undefined && v.label !== a.label) errs.push(`document ${id} : libellé « ${String(v.label)} » ≠ « ${String(a.label)} »`);
+  }
+  for (const [id, interdits] of Object.entries(exp<Record<string, string[]>>(c, 'forbiddenLabels') ?? {})) {
+    const v = verdicts.find((y) => String(y.documentId) === id);
+    if (v && v.status === 'ACCEPTED' && v.label && interdits.includes(v.label)) errs.push(`document ${id} : libellé interdit « ${v.label} »`);
+  }
+  const refusAttendus = exp<Record<string, string>>(c, 'periodRefused');
+  if (refusAttendus) {
+    const obtenus = Object.fromEntries(verdicts.filter((v) => v.status === 'REFUSED').map((v) => [String(v.documentId), (v as { code: string }).code]));
+    errs.push(...ecart(JSON.stringify(obtenus) === JSON.stringify(refusAttendus), `refus de représentation ${JSON.stringify(obtenus)}`));
+  }
+  return errs;
 }

@@ -126,6 +126,96 @@ export function cardCounts(
 
 export type CardKind = 'FAILED' | 'INCOMPLETE';
 
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 99A (ticket P1 T3, §3) — VUE SYNTHÉTIQUE du Journal complet
+//
+// Par défaut, l'écran n'affiche plus la liste mais un bloc compact : état
+// global (OK / À surveiller / Incident) calculé sur les issues RÉELLES de la
+// période, total, synthèse par traitement. Même projection, même filtre que
+// les cartes et la liste (R24) : les nombres concordent toujours.
+// ══════════════════════════════════════════════════════════════════════════
+
+export type JournalHealth = 'OK' | 'WATCH' | 'INCIDENT';
+export const JOURNAL_HEALTH_LABELS: Record<JournalHealth, string> = { OK: 'OK', WATCH: 'À surveiller', INCIDENT: 'Incident' };
+
+/**
+ * Seuils de l'état global (isolés ici : un autre choix du PO se change en un
+ * point). INCIDENT : au moins `INCIDENT_MIN_FAILED` échecs, OU une part
+ * d'échecs ≥ `INCIDENT_FAILED_RATE` des exécutions finales. À SURVEILLER :
+ * au moins un échec, une exécution incomplète ou une issue indéterminée.
+ */
+export const JOURNAL_HEALTH_RULES = { INCIDENT_MIN_FAILED: 3, INCIDENT_FAILED_RATE: 0.1 } as const;
+
+export interface TreatmentSynthesis {
+  treatment: BusinessTreatment;
+  total: number;
+  succeeded: number;
+  incomplete: number;
+  failed: number;
+  /** En cours (non finales). */
+  notFinal: number;
+  /** Sans objet (rien à faire). */
+  void: number;
+  undetermined: number;
+}
+
+export interface JournalSynthesis {
+  health: JournalHealth;
+  healthLabel: string;
+  /** Motifs de l'état, en français simple (vide si OK). */
+  reasons: string[];
+  /** Exécutions de la vue (nature) sur la période, filtres de périmètre appliqués, toutes issues. */
+  total: number;
+  finals: number;
+  byTreatment: TreatmentSynthesis[];
+}
+
+const pluriel = (n: number, s: string, p = `${s}s`) => `${n} ${n > 1 ? p : s}`;
+
+/**
+ * Synthèse de la vue (pure) : mêmes filtres que les cartes — traitement,
+ * origine, compte et NATURE de la vue ; l'issue n'est pas filtrée (c'est la
+ * synthèse des issues). Seuls les traitements ayant au moins une exécution
+ * sont listés.
+ */
+export function journalSynthesis(
+  rows: readonly Pick<BusinessExecution, 'treatment' | 'outcome' | 'nature' | 'origin' | 'accountId'>[],
+  f: Pick<JournalFilter, 'treatment' | 'origin' | 'accountId' | 'nature'>,
+): JournalSynthesis {
+  const base = { treatment: f.treatment, origin: f.origin, accountId: f.accountId, nature: f.nature ?? 'BUSINESS', outcome: null };
+  const par = new Map<BusinessTreatment, TreatmentSynthesis>();
+  for (const r of rows) {
+    if (!matchesJournalFilter(r, base)) continue;
+    const t = par.get(r.treatment) ?? { treatment: r.treatment, total: 0, succeeded: 0, incomplete: 0, failed: 0, notFinal: 0, void: 0, undetermined: 0 };
+    t.total++;
+    switch (r.outcome) {
+      case 'SUCCEEDED': t.succeeded++; break;
+      case 'INCOMPLETE': t.incomplete++; break;
+      case 'FAILED': t.failed++; break;
+      case 'NOT_FINAL': t.notFinal++; break;
+      case 'VOID': t.void++; break;
+      default: t.undetermined++;
+    }
+    par.set(r.treatment, t);
+  }
+  const byTreatment = BUSINESS_TREATMENTS.map((t) => par.get(t)).filter((x): x is TreatmentSynthesis => !!x);
+  const sum = (k: keyof Omit<TreatmentSynthesis, 'treatment'>) => byTreatment.reduce((n, x) => n + x[k], 0);
+  const failed = sum('failed');
+  const incomplete = sum('incomplete');
+  const undetermined = sum('undetermined');
+  const finals = sum('succeeded') + incomplete + failed;
+  const reasons: string[] = [];
+  const detail = (k: 'failed' | 'incomplete' | 'undetermined') => byTreatment.filter((x) => x[k] > 0).map((x) => `${x.treatment} : ${x[k]}`).join(', ');
+  if (failed > 0) reasons.push(`${pluriel(failed, 'échec')} sur ${pluriel(finals, 'exécution finale', 'exécutions finales')} (${detail('failed')})`);
+  if (incomplete > 0) reasons.push(`${pluriel(incomplete, 'exécution incomplète', 'exécutions incomplètes')} (${detail('incomplete')})`);
+  if (undetermined > 0) reasons.push(`${pluriel(undetermined, 'issue indéterminée', 'issues indéterminées')} (${detail('undetermined')})`);
+  const health: JournalHealth = failed >= JOURNAL_HEALTH_RULES.INCIDENT_MIN_FAILED
+    || (failed > 0 && finals > 0 && failed / finals >= JOURNAL_HEALTH_RULES.INCIDENT_FAILED_RATE)
+    ? 'INCIDENT'
+    : failed + incomplete + undetermined > 0 ? 'WATCH' : 'OK';
+  return { health, healthLabel: JOURNAL_HEALTH_LABELS[health], reasons, total: sum('total'), finals, byTreatment };
+}
+
 /** Filtre appliqué par un clic sur une carte : même période, même périmètre, issue de la carte, vue métier. */
 export function cardJournalFilter<F extends Omit<JournalFilter, 'outcome' | 'nature'>>(f: F, card: CardKind): F & Pick<JournalFilter, 'outcome' | 'nature'> {
   return { ...f, outcome: card, nature: 'BUSINESS' };

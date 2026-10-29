@@ -220,6 +220,8 @@ const ORIGIN_LABEL: Record<repo.MasterPromptOrigin, string> = {
   admin: 'Modifiée depuis le BO',
   // Historique : origine des brouillons écrits par T5, supprimé au lot 49.
   prompt_control: 'Proposée par Prompt Control (T5, retiré — historique)',
+  // Lot 99B : révision préparée par la mise en conformité automatique (bloc officiel du guide, qualifiée avant activation).
+  auto_conformity: 'Préparée par la mise en conformité automatique (bloc officiel du guide)',
 };
 
 const iso = (x: Date | null) => (x ? x.toISOString() : null);
@@ -347,6 +349,15 @@ async function ensureActive(treatment: Treatment, environment: AiEnvironment): P
     // déclaré ; configuration : LEGACY_TEMPLATE). Sans contrat : rien.
     execution: structuredSpecFor(code) ? executionConfigFor({ masterPromptCode: code, source: base.source }) : null,
   });
+}
+
+/**
+ * Lot 99B — version ACTIVE réelle d'un prompt (créée v1 à partir du texte en
+ * service si aucune n'est encore historisée, comme au premier geste du BO).
+ */
+export async function ensureActivePromptVersion(treatment: Treatment, environment: AiEnvironment = getAiEnvironment()): Promise<MasterPromptVersionRow> {
+  await assertTables();
+  return ensureActive(treatment, environment);
 }
 
 /**
@@ -824,6 +835,8 @@ async function switchTo(treatment: Treatment, versionId: number, userId: number,
 
   await invalidateAfterSwitch(treatment, r.current.versionNumber, r.current.masterPromptCode);
   await recordAudit({ userId, email, treatment, action, from: r.previous, to: r.current, tests: testSummaryText(tests) });
+  // Lot 99B : une activation ou une réactivation de prompt relance la détection des contrats (différée, non bloquante).
+  void import('../prompt-conformity/trigger').then(({ notifyConfigurationChanged }) => notifyConfigurationChanged(`prompt:${treatment}:v${r.current.versionNumber}`)).catch(() => undefined);
 
   const notices: string[] = [];
   if (tests.state === 'never') notices.push('Cette version n’a pas encore été testée avec le corpus.');

@@ -73,6 +73,12 @@
  *   · origine `COHERENCE` : réparation du stock par le contrôle
  *     `COH-DOC-TITLES` (0761) — seul filet de convergence ; le balayage
  *     horaire paginé des titres est retiré.
+ *
+ * LOT 99C — REPRÉSENTATION TEMPORELLE : la période du titre périodique est
+ * représentée selon la décision de la branche T3 DOCUMENT_NAMING
+ * (`title_period_decision`, 0864, contrat `t3-naming-period-v1`), re-validée à
+ * chaque composition ; sans décision valable : mois explicitement désigné par
+ * le document, sinon période exacte — plus aucun « mois principal » imposé.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import {
@@ -80,10 +86,11 @@ import {
   type TitleEvaluation, type TitleIdentifiers,
 } from '@/lib/documents/document-title-rules';
 import {
-  hasLegacyTitleTypography, principalMonthFromAnalysis, type DisambiguationMember,
+  billedPeriodFromAnalysis, hasLegacyTitleTypography, principalMonthFromAnalysis, type DisambiguationMember,
 } from '@/lib/documents/document-title-convention';
+import { readStoredPeriodDecision } from '@/lib/documents/document-title-period';
 import {
-  planBusinessTitle, titleContextFingerprint, titleInputsFromAnalysis, type BillingBasis, type TitleContext, type TitleInputs, type TitlePlan,
+  periodFactsOf, planBusinessTitle, titleContextFingerprint, titleInputsFromAnalysis, type BillingBasis, type TitleContext, type TitleInputs, type TitlePlan,
 } from '@/services/ai/source-analysis/document-title';
 import { isExecutionCancelled, type ExecutionGuard } from '@/services/ai/queue/execution-control';
 
@@ -395,10 +402,14 @@ export function billingBasisFrom(p: {
   }
   const faits = new Map(p.factPeriods.filter((f) => isoDay(f.s) && isoDay(f.e)).map((f) => [`${f.s}|${f.e}`, { start: isoDay(f.s)!, end: isoDay(f.e)! }]));
   const unique = <T>(m: Map<string, T>): T | null => (m.size === 1 ? [...m.values()][0] : null);
+  // Lot 99C : la période facturée de T1 (`document.billingPeriod`, 97A) n'est lue qu'à défaut de
+  // TOUTE autre période (jamais pour trancher une ambiguïté entre échéances, coûts ou faits).
+  const t1 = echeances.size === 0 && couts.size === 0 && faits.size === 0 ? billedPeriodFromAnalysis(p.analysisResult) : null;
   const billedPeriod = unique(echeances) ? { ...unique(echeances)!, source: 'T1_INSTALLMENT' as const }
     : echeances.size === 0 && unique(couts) ? { ...unique(couts)!, source: 'T1_COST_PERIOD' as const }
       : echeances.size === 0 && couts.size === 0 && unique(faits) ? { ...unique(faits)!, source: 'T1_FACT' as const }
-        : null;
+        : t1 ? { start: t1.start, end: t1.end, source: 'T1_BILLING_PERIOD' as const }
+          : null;
   return {
     billedPeriod,
     principalMonth: principalMonthFromAnalysis(p.analysisResult),
@@ -407,10 +418,32 @@ export function billingBasisFrom(p: {
   };
 }
 
+/**
+ * Lot 99C — coupure d'urgence des décisions de représentation temporelle T3 :
+ * `T3_NAMING_PERIOD_ENABLED=0` → le nommage ignore les décisions persistées
+ * (repli prudent) et la phase T3 n'en demande plus. Pure.
+ */
+export const namingPeriodDecisionsEnabled = (env: Record<string, string | undefined> = process.env): boolean =>
+  (env.T3_NAMING_PERIOD_ENABLED ?? '1').trim() !== '0';
+
+/** Décision T3 persistée (`title_period_decision`, 0864) ; colonne absente : null. */
+async function loadPeriodDecision(sql: Sql, fileId: number, accountId: number): Promise<BillingBasis['periodDecision']> {
+  if (!namingPeriodDecisionsEnabled()) return null;
+  try {
+    const rows = (await sql.unsafe(
+      `SELECT title_period_decision AS d FROM asset_files WHERE id = $1 AND account_id = $2`,
+      [fileId, accountId] as never[],
+    )) as unknown as Array<{ d: unknown }>;
+    return readStoredPeriodDecision(rows[0]?.d ?? null);
+  } catch {
+    return null;
+  }
+}
+
 /** Données de facturation PERSISTÉES d'un document (lecture seule, bornée). */
 async function loadBillingBasis(fileId: number, accountId: number, issueDate: string | null): Promise<BillingBasis> {
   const sql = await sqlClient();
-  const [cands, faits, run] = await Promise.all([
+  const [cands, faits, run, decision] = await Promise.all([
     sql.unsafe(
       `SELECT payload FROM document_operation_candidates
         WHERE file_id = $1 AND account_id = $2 AND status = 'ACTIVE' ORDER BY id LIMIT 20`,
@@ -430,27 +463,46 @@ async function loadBillingBasis(fileId: number, accountId: number, issueDate: st
         ORDER BY is_current_reference DESC, id DESC LIMIT 1`,
       [fileId, accountId] as never[],
     ) as unknown as Promise<Array<{ raw: string }>>,
+    loadPeriodDecision(sql, fileId, accountId),
   ]);
   let resultat: unknown = null;
   try { resultat = run[0]?.raw ? JSON.parse(run[0].raw) : null; } catch { resultat = null; }
   const payloads = cands.map((c) => (typeof c.payload === 'string' ? safeJson(c.payload) : c.payload));
-  return billingBasisFrom({ candidatePayloads: payloads, factPeriods: faits, analysisResult: resultat, issueDate });
+  const basis = billingBasisFrom({ candidatePayloads: payloads, factPeriods: faits, analysisResult: resultat, issueDate });
+  return decision ? { ...basis, periodDecision: decision } : basis;
 }
 const safeJson = (s: string): unknown => { try { return JSON.parse(s); } catch { return null; } };
 
-/** Données de nommage à persister (`asset_files.title_basis`) — forme stable, versionnée. */
+/**
+ * Données de nommage à persister (`asset_files.title_basis`) — forme stable,
+ * versionnée. Lot 99C (v2) : mois explicitement désigné (`statedMonth`) et
+ * REPRÉSENTATION TEMPORELLE retenue avec son fondement et ses preuves
+ * (`periodRepresentation` : décision T3 ou repli prudent) — lue par le
+ * diagnostic global.
+ */
 export function titleBasisRecord(plan: TitlePlan, basis: BillingBasis, supplier: string | null): Record<string, unknown> {
+  const facts = periodFactsOf(basis);
+  const choix = plan.convention ? plan.periodChoice ?? null : null;
   return {
-    v: 1,
+    v: 2,
     nature: plan.nature,
     supplier: plan.supplier ?? supplier ?? null,
     billedPeriod: basis.billedPeriod,
     principalMonth: basis.principalMonth,
+    statedMonth: facts.statedMonth?.value ?? null,
     issueDate: basis.issueDate,
     invoiceReferences: basis.invoiceReferences,
     convention: plan.convention,
     period: plan.convention ? plan.period : null,
     disambiguator: plan.convention ? plan.reference : null,
+    periodRepresentation: choix ? {
+      representation: choix.representation, source: choix.source, label: choix.label, basis: choix.basis, evidence: choix.evidence,
+      decisionIgnored: choix.decisionIgnored ?? null,
+      decidedBy: choix.source === 'T3_DECISION' ? 'T3' : 'RULE',
+      ...(choix.source === 'T3_DECISION' && basis.periodDecision
+        ? { promptVersion: basis.periodDecision.promptVersion, traceId: basis.periodDecision.traceId, decidedAt: basis.periodDecision.decidedAt, reason: basis.periodDecision.reason }
+        : {}),
+    } : null,
   };
 }
 
@@ -807,6 +859,8 @@ export const DocumentTitleService = {
   ensureBusinessTitle,
   // Lot 87D : données de nommage persistées.
   billingBasisFrom,
+  // Lot 99C : représentation temporelle (décision T3, coupure d'urgence).
+  namingPeriodDecisionsEnabled,
   loadBillingBasis,
   titleBasisRecord,
 } as const;

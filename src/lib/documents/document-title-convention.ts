@@ -11,11 +11,13 @@
  *
  *   · facture périodique (nature récurrente + fournisseur + période facturée
  *     ou mois principal) : « {Nature} {Fournisseur} — {Période} » ;
- *   · {Période} = mois de rattachement PRINCIPAL décidé par l'IA
- *     (`principalMonthFromAnalysis`, confiance « certain » seulement) ; à
- *     défaut, la période facturée PRÉSENTÉE EXACTEMENT
- *     (`presentBilledPeriod`) — jamais déduite du premier jour, jamais « les
- *     deux mois » par principe, aucune règle « du 5 au 4 », aucun mois
+ *   · {Période} = REPRÉSENTATION TEMPORELLE décidée par la branche T3
+ *     DOCUMENT_NAMING (lot 99C, `document-title-period.ts` : mois, plage de
+ *     dates, plusieurs mois ou rien), validée par le serveur ; à défaut, le
+ *     mois EXPLICITEMENT désigné par le document (preuve T1), sinon la
+ *     période facturée PRÉSENTÉE EXACTEMENT (`presentBilledPeriod`) — jamais
+ *     déduite du premier jour, jamais « les deux mois » par principe, aucune
+ *     règle « du 5 au 4 », aucune règle « mois majoritaire », aucun mois
  *     inventé ;
  *   · deux factures distinctes du même fournisseur, de même période :
  *     désambiguïsation DÉTERMINISTE et symétrique (`disambiguatorFor`) par le
@@ -128,6 +130,23 @@ export function principalMonthFromAnalysis(raw: unknown): PrincipalMonth | null 
 }
 
 /**
+ * Lot 99C — période facturée lue dans le résultat PERSISTÉ d'une analyse T1
+ * (`document.billingPeriod.start / end`, contrat `t1-billing-period-v1`) :
+ * deux bornes lisibles, ordonnées, confiance autre que « conflictual ». Une
+ * DONNÉE documentaire — jamais une décision de nommage. Pure.
+ */
+export function billedPeriodFromAnalysis(raw: unknown): { start: string; end: string; quote: string | null } | null {
+  const doc = (raw && typeof raw === 'object' ? (raw as { document?: unknown }).document : null) as Record<string, unknown> | null;
+  const bp = doc && typeof doc === 'object' ? doc.billingPeriod as Record<string, unknown> | undefined : undefined;
+  if (!bp || typeof bp !== 'object' || bp.confidence === 'conflictual') return null;
+  const start = typeof bp.start === 'string' ? bp.start.slice(0, 10) : '';
+  const end = typeof bp.end === 'string' ? bp.end.slice(0, 10) : '';
+  if (!presentBilledPeriod(start, end)) return null;
+  const ev = bp.evidence && typeof bp.evidence === 'object' ? bp.evidence as Record<string, unknown> : null;
+  return { start, end, quote: typeof ev?.quote === 'string' ? ev.quote.slice(0, 200) : null };
+}
+
+/**
  * Casse du fournisseur : un nom entièrement en capitales de cinq lettres ou
  * plus prend une capitale initiale (« HOMIRIS » → « Homiris ») ; les sigles
  * courts restent tels quels (« EDF », « SFR »).
@@ -178,9 +197,12 @@ export function disambiguatorFor(self: DisambiguationMember, siblings: readonly 
   return ref ? `n° ${ref}` : null;
 }
 
-/** Titre périodique composé (pure) : « Facture Homiris — Février 2026 (n° 94741361) ». */
-export function composePeriodicTitle(p: { nature: string; supplier: string; period: string; disambiguator?: string | null }): string {
-  const base = `${p.nature} ${presentSupplier(p.supplier)}${TITLE_SEPARATOR}${p.period}`;
+/**
+ * Titre périodique composé (pure) : « Facture Homiris — Février 2026 (n° 94741361) ».
+ * Lot 99C : `period` null — représentation « NONE » décidée par T3 — « Facture Homiris (n° 94741361) ».
+ */
+export function composePeriodicTitle(p: { nature: string; supplier: string; period: string | null; disambiguator?: string | null }): string {
+  const base = p.period ? `${p.nature} ${presentSupplier(p.supplier)}${TITLE_SEPARATOR}${p.period}` : `${p.nature} ${presentSupplier(p.supplier)}`;
   return p.disambiguator ? `${base} (${p.disambiguator})` : base;
 }
 

@@ -67,7 +67,16 @@ export interface ObjectResult {
   localRunId?: number;
   applied: number;
   conflicts: number;
+  /** Décisions assistées par l'IA (appel, cache ou mémoire) — pas un nombre d'appels. */
   aiReviews: number;
+  /** Lot 99A : appels RÉELS au fournisseur (absent : run antérieur, `aiReviews` fait foi). */
+  providerCalls?: number;
+  /** Lot 99A : réponses servies par le cache (aucun appel). */
+  aiCacheHits?: number;
+  /** Lot 99A : décisions réutilisées sans appel. */
+  decisionsReused?: number;
+  /** Lot 99A : conflits déjà ouverts à l'identique (ni recréés ni réécrits). */
+  conflictsUnchanged?: number;
   reason?: string;
 }
 
@@ -86,7 +95,14 @@ interface AccountRunResult {
   conflictsCreated: number;
   arbitrationsNeeded: number;
   errors: number;
+  /** Lot 99A : appels RÉELS au fournisseur des biens examinés (plus jamais une décision servie par le cache ou la mémoire). */
   aiCalls: number;
+  /** Lot 99A : réponses servies par le cache temporaire (aucun appel). */
+  aiCacheHits?: number;
+  /** Lot 99A : décisions réutilisées sans appel (mémoire T3, arbitrage utilisateur déjà tranché). */
+  decisionsReused?: number;
+  /** Lot 99A : conflits déjà ouverts à l'identique (ni recréés ni réécrits). */
+  conflictsUnchanged?: number;
   details: ObjectResult[];
   /** Connaissance ouverte reprise (lot 34E) ; absente si la phase n'a pas tourné. */
   openKnowledge?: import('./continuous/open-knowledge.service').OpenKnowledgeResult;
@@ -242,7 +258,8 @@ async function assetDataRuleCodes(): Promise<string[]> {
 
 /** Consolidation — pure, testée sans base. */
 export function consolidate(details: ObjectResult[]): Pick<AccountRunResult,
-  'objectsExamined' | 'objectsModified' | 'decisionsApplied' | 'conflictsCreated' | 'arbitrationsNeeded' | 'errors' | 'aiCalls' | 'status'> {
+  'objectsExamined' | 'objectsModified' | 'decisionsApplied' | 'conflictsCreated' | 'arbitrationsNeeded' | 'errors' | 'aiCalls' | 'status'>
+  & { aiCacheHits: number; decisionsReused: number; conflictsUnchanged: number } {
   const examined = details.filter((d) => d.status !== 'SKIPPED');
   const errors = details.filter((d) => d.status === 'ERROR').length;
   return {
@@ -252,7 +269,11 @@ export function consolidate(details: ObjectResult[]): Pick<AccountRunResult,
     conflictsCreated: details.reduce((n, d) => n + d.conflicts, 0),
     arbitrationsNeeded: details.filter((d) => d.conflicts > 0).length,
     errors,
-    aiCalls: details.reduce((n, d) => n + d.aiReviews, 0),
+    // Lot 99A : appels RÉELS (une décision assistée servie par le cache ou la mémoire n'est pas un appel).
+    aiCalls: details.reduce((n, d) => n + (d.providerCalls ?? d.aiReviews), 0),
+    aiCacheHits: details.reduce((n, d) => n + (d.aiCacheHits ?? 0), 0),
+    decisionsReused: details.reduce((n, d) => n + (d.decisionsReused ?? 0), 0),
+    conflictsUnchanged: details.reduce((n, d) => n + (d.conflictsUnchanged ?? 0), 0),
     status: errors === 0 ? 'completed' : errors < examined.length ? 'partial' : 'failed',
   };
 }
@@ -442,6 +463,8 @@ export async function reconcileAccount(
     triggerCode?: string | null;
     /** Lot 52A : job de file porteur (exécution orpheline reconnue après un redéploiement). */
     queueJob?: { id: number; executionId: string | null } | null;
+    /** Lot 99A : relance forcée et tracée de la revue IA (lancement manuel). */
+    forceAiReview?: { reason: string } | null;
   } = {},
   deps: AccountReconciliationDeps = defaultDeps,
 ): Promise<AccountRunResult> {
@@ -491,11 +514,16 @@ export async function reconcileAccount(
           accountId, assetId: c.id, userId: options.userId ?? trigger.requestedByUserId ?? undefined,
           triggeredBy: LOCAL_TRIGGER[trigger.type], accountRunId: runId,
           ...(c.backfill ? { aiReview: false } : {}),
+          ...(options.forceAiReview ? { forceAiReview: options.forceAiReview } : {}),
         });
         details.push({
           objectType: 'asset', objectId: c.id, localRunId: run.runId,
           status: run.conflictCount > 0 ? 'CONFLICT' : 'SUCCESS',
           applied: run.appliedCount, conflicts: run.conflictCount, aiReviews: run.aiReviewCount,
+          ...(run.providerCalls !== undefined ? { providerCalls: run.providerCalls } : {}),
+          ...(run.aiCacheHits ? { aiCacheHits: run.aiCacheHits } : {}),
+          ...(run.decisionsReused ? { decisionsReused: run.decisionsReused } : {}),
+          ...(run.conflictsUnchanged ? { conflictsUnchanged: run.conflictsUnchanged } : {}),
         });
       } catch (e) {
         // Interruption (jeton révoqué, garde AI_BLOCKED) : on s'arrête là,
@@ -597,19 +625,27 @@ export async function reconcileAccount(
     const totals = consolidate(details);
     const issue = interrompue ? 'TECHNICAL_FAILURE' as const : issueDu(phases, totals, openActions);
     const statut = interrompue ? 'failed' : statutDu(details, totals, issue);
+    // Lot 99A : appels réels de TOUTES les phases (biens, « À traiter », nommage) ; cache et réutilisations à part.
+    const appelsReels = totals.aiCalls + (openActions?.aiCalls ?? 0) + (documentNaming?.aiCalls ?? 0);
     const valeurs = [runId, statut, totals.objectsExamined, totals.objectsModified,
       totals.decisionsApplied, totals.conflictsCreated, totals.arbitrationsNeeded, totals.errors,
       totals.aiCalls, JSON.stringify(details)];
-    const ecrire = (avecPhases: boolean) => pgClient.unsafe(
+    const ecrire = (avecPhases: boolean, avecCompteurs: boolean) => pgClient.unsafe(
       `UPDATE account_reconciliation_runs SET
          status = $2, finished_at = now(), objects_examined = $3, objects_modified = $4,
          decisions_applied = $5, conflicts_created = $6, arbitrations_needed = $7, errors = $8,
-         ai_calls = $9, details_json = $10::jsonb${avecPhases ? ', outcome = $11, phases_json = $12::jsonb' : ''}
+         ai_calls = $9, details_json = $10::jsonb${avecPhases ? ', outcome = $11, phases_json = $12::jsonb' : ''}${
+  avecPhases && avecCompteurs ? ', provider_calls = $13, ai_cache_hits = $14, decisions_reused = $15' : ''}
        WHERE id = $1`,
-      (avecPhases ? [...valeurs, issue, JSON.stringify(phases)] : valeurs) as never[],
+      (avecPhases
+        ? [...valeurs, issue, JSON.stringify(phases), ...(avecCompteurs ? [appelsReels, totals.aiCacheHits, totals.decisionsReused] : [])]
+        : valeurs) as never[],
     );
-    // Colonnes 0410 absentes (déploiement partiel) : statut seul, phases dans le résumé du job.
-    await ecrire(true).catch((e) => { if (colonneAbsente(e)) return ecrire(false); throw e; });
+    // Colonnes 0410 / 0858 absentes (déploiement partiel) : statut seul, phases dans le résumé du job.
+    await ecrire(true, true).catch((e) => {
+      if (!colonneAbsente(e)) throw e;
+      return ecrire(true, false).catch((e2) => { if (colonneAbsente(e2)) return ecrire(false, false); throw e2; });
+    });
   }
 
   const totals = consolidate(details);

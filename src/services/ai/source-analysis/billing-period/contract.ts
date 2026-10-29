@@ -16,6 +16,10 @@
  *   · rien n'est bloqué (analyse, faits, Opérations, TCO inchangés).
  * Le mois principal n'est exploité par le nommage qu'avec la confiance
  * « certain » (`principalMonthFromAnalysis`) ; le code ne le déduit jamais.
+ * Lot 99C : seul un mois ÉCRIT sur le document (`STATED_ON_DOCUMENT`, preuve
+ * citée) fait le titre sans décision T3 ; la représentation temporelle est
+ * décidée par T3 DOCUMENT_NAMING (`t3-naming-period-v1`). La période facturée
+ * (`start` / `end`) reste une donnée T1, lue par le nommage.
  * Coupure d'urgence : `T1_BILLING_PERIOD_ENABLED=0`.
  * ══════════════════════════════════════════════════════════════════════════
  */

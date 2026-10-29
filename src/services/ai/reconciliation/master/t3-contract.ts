@@ -147,10 +147,50 @@ const t3NamingFamily = z.object({
  * `namingOutputComplete` et `document-naming/phase.ts`). Plusieurs
  * renommages possibles dans une même exécution.
  */
+// ── Lot 99C — représentation temporelle des titres (contrat `t3-naming-period-v1`) ──
+/**
+ * Une décision de REPRÉSENTATION TEMPORELLE (section `period_representations`)
+ * pour une facture périodique fournie dans l'appel : mois (`month`), plage de
+ * dates (`start` / `end`), plusieurs mois (`from_month` / `to_month`) ou
+ * aucune (`NONE`), avec son fondement et ses preuves. Le serveur la VALIDE
+ * (`validatePeriodChoice`, R1 aucune période inventée, R6 jamais une date
+ * d'émission / d'import / du jour / d'échéance comme période, R7 titre
+ * utilisateur protégé) puis le service de nommage la compose. `source` des
+ * preuves : chaîne libre ici (une valeur inattendue est refusée par le
+ * serveur pour CETTE décision, jamais pour toute la sortie).
+ */
+const t3PeriodEvidence = z.object({
+  source: z.string().min(1).max(40),
+  document_id: z.number().int().positive().nullable().optional(),
+  quote: z.string().max(300).nullable().optional(),
+});
+const yearMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/);
+const isoDay = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/);
+const t3PeriodRepresentation = z.object({
+  document_id: z.number().int().positive(),
+  representation: z.enum(['MONTH', 'DATE_RANGE', 'MULTI_MONTH', 'NONE']),
+  month: yearMonth.nullable().optional(),
+  from_month: yearMonth.nullable().optional(),
+  to_month: yearMonth.nullable().optional(),
+  start: isoDay.nullable().optional(),
+  end: isoDay.nullable().optional(),
+  basis: z.string().min(1).max(60),
+  evidence: z.array(t3PeriodEvidence).max(10).default([]),
+  reason: z.string().min(1).max(400),
+  confidence,
+});
+export type T3PeriodRepresentation = z.infer<typeof t3PeriodRepresentation>;
+
 export const T3DocumentNamingOutput = z.object({
   task: z.literal('DOCUMENT_NAMING'),
   families: z.array(t3NamingFamily).max(100).optional(),
   document_renames: z.array(t3DocumentRename).max(200).optional(),
+  /**
+   * Lot 99C — FACULTATIVE (ancien format accepté) : décisions de
+   * représentation temporelle, demandées seulement par l'appel « mode
+   * PERIOD_REPRESENTATION » quand le prompt actif porte `t3-naming-period-v1`.
+   */
+  period_representations: z.array(t3PeriodRepresentation).max(100).optional(),
 });
 export type T3DocumentNamingOutput = z.infer<typeof T3DocumentNamingOutput>;
 

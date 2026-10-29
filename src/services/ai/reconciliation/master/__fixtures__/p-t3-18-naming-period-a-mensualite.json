@@ -1,0 +1,110 @@
+{
+  "case": "P-T3-18",
+  "description": "DOCUMENT_NAMING (lot 99C, cas A) — mensualité Homiris du 05/02/2026 au 04/03/2026, abonnement mensuel, série nommée par mois : représentation MONTH « Février 2026 » (mois de la mensualité, fondée sur la période facturée, le contrat et la série — jamais sur la date d’émission).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "documentNaming": {
+      "docs": [],
+      "periodRepresentation": {
+        "series": {
+          "nature": "Facture",
+          "supplier": "Homiris",
+          "members": [
+            {
+              "id": 1801,
+              "title": "Facture Homiris — Janvier 2026",
+              "titleOrigin": "USER",
+              "billedPeriod": {
+                "start": "2026-01-05",
+                "end": "2026-02-04"
+              },
+              "statedMonth": null,
+              "representation": null
+            },
+            {
+              "id": 1802,
+              "title": "Facture Homiris — 5 février au 4 mars 2026",
+              "titleOrigin": "SYSTEM",
+              "billedPeriod": {
+                "start": "2026-02-05",
+                "end": "2026-03-04"
+              },
+              "statedMonth": null,
+              "representation": null
+            }
+          ]
+        },
+        "targets": [
+          {
+            "id": 1802,
+            "title": "Facture Homiris — 5 février au 4 mars 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Homiris",
+            "issueDate": "2026-03-06",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-02-05",
+                "end": "2026-03-04",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": {
+                "value": "2026-02",
+                "basis": "MAJORITY_OF_PERIOD"
+              },
+              "issueDate": "2026-03-06"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "recording": {
+    "operationCode": "t3_document_naming",
+    "task": "DOCUMENT_NAMING",
+    "output": {
+      "task": "DOCUMENT_NAMING",
+      "document_renames": [],
+      "period_representations": [
+        {
+          "document_id": 1802,
+          "representation": "MONTH",
+          "month": "2026-02",
+          "basis": "MONTHLY_INSTALLMENT",
+          "evidence": [
+            {
+              "source": "BILLED_PERIOD",
+              "document_id": 1802,
+              "quote": "Période du 05/02/2026 au 04/03/2026"
+            },
+            {
+              "source": "CONTRACT",
+              "document_id": 1802,
+              "quote": "Abonnement mensuel télésurveillance"
+            },
+            {
+              "source": "SERIES_TITLES",
+              "document_id": 1801,
+              "quote": "Facture Homiris — Janvier 2026"
+            }
+          ],
+          "reason": "Mensualité d’un abonnement mensuel couvrant essentiellement février ; la série est nommée par mois.",
+          "confidence": "certain"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "periods": {
+      "1802": {
+        "allowed": [
+          "MONTH"
+        ],
+        "label": "Février 2026"
+      }
+    }
+  }
+}

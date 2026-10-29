@@ -103,6 +103,9 @@ interface T3JobSummary {
   objectsModified: number | null;
   openActionsExamined: number | null;
   aiCalls: number | null;
+  /** Lot 99A : réponses servies par le cache et décisions réutilisées (aucun appel). */
+  aiCacheResponses: number | null;
+  aiDecisionsReused: number | null;
   businessResult: string | null;
   /** Motif d'échec, d'attente ou d'abstention. */
   reason: string | null;
@@ -138,6 +141,9 @@ export function summarizeT3Job(job: QueuedJob & { attemptHistoryLength?: number 
     objectsModified: num(d.objectsModified) ?? num(d.decisionsApplied),
     openActionsExamined: num(d.openActionsExamined),
     aiCalls: num(d.aiCalls),
+    // Lot 99A (point D) : réponses du cache et décisions réutilisées — jamais des appels.
+    aiCacheResponses: num(d.aiCacheResponses),
+    aiDecisionsReused: num(d.aiDecisionsReused),
     businessResult: job.businessResult ?? null,
     reason,
   };

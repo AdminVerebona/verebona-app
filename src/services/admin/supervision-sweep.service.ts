@@ -176,6 +176,36 @@ export async function collectAiConditions(): Promise<Condition[]> {
   // une exécution métier échouée a UNE source d'alerte, la carte « Échecs » d'Exécutions & logs (même
   // nature, comptée une fois par exécution). Les anomalies « jobs-failed » encore ouvertes sont résolues
   // automatiquement au prochain balayage (condition disparue), leur historique est conservé.
+  // Lot 99B : une alerte par incompatibilité contrat IA ↔ prompt actif non résolue (bloquée, en échec, retour
+  // arrière, détectée…) — empreinte par contrat : une anomalie persistante ne produit pas d'alertes redondantes,
+  // l'alerte se résout seule quand l'incompatibilité est activée ou résolue.
+  try {
+    const { getAiEnvironment } = await import('@/services/ai/config/environment');
+    const issues = await pgClient.unsafe<Row[]>(
+      `SELECT contract_id, treatment, status, fault_kind, cause, decision, occurrences, last_detected_at, refusal_reasons
+         FROM ai_prompt_conformity_issues WHERE environment = $1 AND status NOT IN ('RESOLVED', 'ACTIVATED')`,
+      [getAiEnvironment()],
+    );
+    for (const r of issues) {
+      const fp = `ai:prompt-conformity:${String(r.contract_id)}`;
+      out.push({
+        fingerprint: fp,
+        occurredAt: new Date((r.last_detected_at as string) ?? Date.now()),
+        input: {
+          domain: 'ai', fingerprint: fp,
+          title: `Prompt ${String(r.treatment)} : contrat ${String(r.contract_id)} non conforme (${String(r.status)})`,
+          detail: {
+            contrat: String(r.contract_id), statut: String(r.status), nature: String(r.fault_kind), cause: String(r.cause ?? '').slice(0, 400),
+            decision: r.decision == null ? null : String(r.decision).slice(0, 400), occurrences: Number(r.occurrences ?? 1),
+            motifs: Array.isArray(r.refusal_reasons) ? (r.refusal_reasons as unknown[]).slice(0, 5).map(String) : [],
+            boLink: '/admin/ai-config',
+          },
+        },
+      });
+    }
+  } catch (e) {
+    if (!['42P01', '42703'].includes(String((e as { code?: unknown })?.code ?? ''))) console.error('[supervision-sweep] conformité des prompts :', (e as Error).message);
+  }
   // Lot 82C (LOG-07) : capture complète des échanges IA en défaut.
   const { captureGap } = await import('@/services/ai/telemetry/call-capture');
   const gap = await captureGap(SWEEP_LOOKBACK_DAYS);

@@ -33,7 +33,7 @@ import { resolveEventSemantics } from '@/services/agenda/agenda-functional-key';
 import { interpretDate, detectTemporalAmbiguity } from './rules/date-interpreter';
 import { findDuplicate, titleSimilarity, containmentSimilarity } from './dedupe.service';
 import {
-  computeOccurrences, describeRecurrence, inferHistoricalRecurrence, type RecurrenceSpec,
+  computeOccurrences, describeRecurrence, effectiveSeriesBound, inferHistoricalRecurrence, occurrenceWindowDays, recurrenceEndForTrace, type RecurrenceSpec,
 } from './rules/recurrence';
 import { createHash } from 'crypto';
 import type {
@@ -394,6 +394,8 @@ function t4Trace(
     recurrenceCandidate: c ? {
       mode: c.mode, frequency: c.frequency, interval: c.interval, startDate: c.startDate, endDate: c.endDate,
       occurrenceCount: c.occurrenceCount, history: c.history,
+      // Lot 99D : fin qualifiée appliquée par le code après T4 (sans extrait : trace BO).
+      ...(recurrence ? endTraceOf(recurrence.spec) : {}),
     } : null,
     homeCategory: t4.classification.category,
     // Lot 71E (§B) : type métier APPLIQUÉ (celui de l'Agenda) et sa provenance.
@@ -407,6 +409,12 @@ function t4Trace(
     ...(extra.fingerprint ? { fingerprint: extra.fingerprint } : {}),
     ...(extra.reused ? { reused: true } : {}),
   };
+}
+
+/** Lot 99D : fin de récurrence pour la trace T4 (raison, date d'effet, provenance — sans extrait). */
+function endTraceOf(spec: RecurrenceSpec): { end?: NonNullable<T4DecisionTrace['recurrenceCandidate']>['end'] } {
+  const e = recurrenceEndForTrace(spec);
+  return e ? { end: { status: e.status, reason: e.reason, effectiveDate: e.effectiveDate, sourceKind: e.source.kind, fieldKey: e.source.fieldKey ?? null } } : {};
 }
 
 /** Journal structuré + trace sur l'exécution IA (BO › Exécutions IA). Jamais bloquant. */
@@ -489,9 +497,12 @@ async function forecastsFor(
   const rule = describeRecurrence(spec);
   const out: AgendaDecision[] = [];
 
-  // Fin explicite : aucune nouvelle occurrence ; les prévisions automatiques
-  // de la série au-delà de la borne deviennent sans objet.
-  const borne = spec.ended ? candidate.date : spec.endDate ?? null;
+  // Lot 99D : seule une borne ÉTABLIE arrête la série — fin de l'échéancier
+  // énoncé, ou fin contractuelle QUALIFIÉE et datée (jamais un mot-clé). Les
+  // prévisions automatiques intactes POSTÉRIEURES deviennent sans objet ; une
+  // occurrence confirmée (réelle) ou touchée par l'utilisateur n'est jamais retirée.
+  const fin = recurrenceEndForTrace(spec);
+  const borne = effectiveSeriesBound(spec);
   if (borne) {
     for (const e of serie) {
       if (e.id > 0 && e.nature === 'FORECAST' && !e.manual && e.date > borne) {
@@ -499,6 +510,7 @@ async function forecastsFor(
           action: 'retire_forecast', title: e.title, date: e.date, category: e.category ?? 'information',
           confidence: candidate.confidence, reasonCode: 'RECURRENCE_ENDED', existingItemId: e.id,
           deterministic: true, sourceFileId: input.sourceFileId, originFieldKey: candidate.originFieldKey,
+          recurrenceEnd: { bound: borne, end: fin && fin.status === 'CONFIRMED' && fin.effectiveDate === borne ? fin : null, scheduleEndDate: spec.endDate ?? null },
         });
       }
     }
@@ -508,9 +520,7 @@ async function forecastsFor(
   // Fenêtre d'une occurrence dans la série : une occurrence déjà présente
   // dans la même période (déplacée par l'utilisateur, prévision antérieure)
   // EST cette occurrence — on ne la double pas, on ne la déplace pas.
-  const fenetre = spec.frequency === 'yearly' ? 45 * spec.interval
-    : spec.frequency === 'monthly' ? Math.min(10 * spec.interval, 40)
-    : spec.frequency === 'weekly' ? 2 : 0;
+  const fenetre = occurrenceWindowDays(spec);
   const jours = (a: string, b: string) => Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 86_400_000;
   for (const date of computeOccurrences(spec, reference, today)) {
     if (date === candidate.date) continue;
@@ -536,6 +546,8 @@ async function forecastsFor(
         startDate: spec.startDate ?? null, endDate: spec.endDate ?? null, occurrenceCount: spec.occurrenceCount ?? null,
         rule, excerpt: spec.excerpt ?? null, sourceFileId: input.sourceFileId ?? null,
         referenceDate: reference, history, computedAt,
+        // Lot 99D : fin qualifiée (confirmée ou incertaine) — traçabilité de la série.
+        ...(fin ? { end: fin } : {}),
       },
     };
     const common = {

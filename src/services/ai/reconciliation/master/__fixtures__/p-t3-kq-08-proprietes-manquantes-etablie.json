@@ -1,0 +1,43 @@
+{
+  "case": "P-T3-KQ-08",
+  "description": "KNOWLEDGE_QUERY, contrat d’entrée t3-knowledge-query-v2 (propriétés manquantes, lot 88B) — le prix d’achat vide d’un bien est écrit dans l’acte de vente rattaché : constat certain, propriété ÉTABLIE par la décision serveur (cas de référence de la nouvelle branche, lot 99B).",
+  "qualification": { "role": "answer" },
+  "context": {
+    "missingProperties": {
+      "subject": { "type": "ASSET", "category": "IMMOBILIER", "subtype": null, "family": null },
+      "properties": ["acquisitionPrice"],
+      "documents": [
+        { "ref": "D1", "fileId": 5, "relation": "LINKED", "title": "Acte de vente", "documentType": null, "rubric": null, "documentDate": null }
+      ],
+      "elements": [
+        {
+          "ref": "F-88", "document": "D1", "fileId": 5, "layer": "FACT", "kind": "prixVente", "label": "Acte de vente", "value": "245 000 €",
+          "text": "Prix de vente : 245 000 € payé comptant.", "confidence": "certain", "page": 3,
+          "provenance": { "fileIds": [5], "agendaItemIds": [] }
+        },
+        {
+          "ref": "U-2", "document": "D1", "fileId": 5, "layer": "SOURCE_UNIT", "kind": "TEXT_BLOCK", "label": null, "value": null,
+          "text": "Étude notariale du centre, 4 place de la Mairie.", "confidence": "certain", "page": 1,
+          "provenance": { "fileIds": [5], "agendaItemIds": [] }
+        }
+      ],
+      "today": "2026-10-27"
+    }
+  },
+  "recording": {
+    "operationCode": "t3_knowledge_query",
+    "task": "KNOWLEDGE_QUERY",
+    "output": {
+      "task": "KNOWLEDGE_QUERY",
+      "outcome": "CONSTITUENTS",
+      "findings": [
+        { "target": "acquisitionPrice", "rawValue": "245 000 €", "value": 245000, "evidenceRefs": ["F-88"], "excerpt": "Prix de vente : 245 000 €", "confidence": "certain", "meaning": "prix d’achat du bien indiqué par l’acte de vente" }
+      ],
+      "reason": "Le prix d’achat est écrit dans l’acte de vente rattaché au bien."
+    }
+  },
+  "expected": {
+    "outcome": "CONSTITUENTS",
+    "decisions": { "acquisitionPrice": { "decision": "ESTABLISHED", "value": 245000 } }
+  }
+}

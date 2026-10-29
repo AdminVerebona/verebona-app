@@ -161,7 +161,8 @@ async function charger(ctx: Pick<CheckContext, 'sql'>, accountId: number, ids: r
       expected = {
         title: candidat, convention: plan.convention, key: plan.canonicalKey, fingerprint,
         record: svc.titleBasisRecord(plan, basis, inputs.ctx.supplier ?? null),
-        principalMonth: basis.principalMonth?.value ?? null,
+        // Lot 99C : mois réellement représenté par le titre attendu (décision T3 ou mois désigné), jamais le mois principal T1 seul.
+        principalMonth: plan.convention ? plan.periodChoice?.month ?? null : null,
         invoiceReferences: basis.invoiceReferences,
         typographyReplaceable: !!candidat && !svc.titleLosesInformation(title ?? '', candidat, plan),
       };

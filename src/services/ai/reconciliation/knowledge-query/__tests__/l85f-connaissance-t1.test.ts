@@ -353,7 +353,7 @@ describe('L85F-U08 — registre IA : opération déclarée, branche facultative,
 });
 
 describe('L85F-U09 — corpus de recette de la branche (prêt pour la livraison de l’équipe IA)', () => {
-  it('branche absente du fichier : cas ignorés, corpus vert ; branche présente (version de test) : 7 cas rejoués (lot 98A : KQ-07) par l’évaluateur serveur', async () => {
+  it('branche absente du fichier : cas ignorés, corpus vert ; branche présente (version de test) : 9 cas rejoués (lot 98A : KQ-07 ; lot 99B : KQ-08 et KQ-09, contrat v2) par l’évaluateur serveur', async () => {
     const { runMasterCorpus } = await import('@/services/ai/governance/master-corpus/runner');
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const [sans] = await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T3'] });
@@ -362,7 +362,7 @@ describe('L85F-U09 — corpus de recette de la branche (prêt pour la livraison 
     const texte = `${readMasterFileFromRepo('t3_master_v1')}\n\nBRANCHE TASK = KNOWLEDGE_QUERY\n\n(section de test)\n`;
     const [avec] = await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T3'], texts: { t3_master_v1: { text: texte, source: 'config' } } });
     const kq = avec.cases.filter((c) => c.task === 'KNOWLEDGE_QUERY');
-    expect(kq.map((c) => c.id).sort()).toEqual(['P-T3-KQ-01', 'P-T3-KQ-02', 'P-T3-KQ-03', 'P-T3-KQ-04', 'P-T3-KQ-05', 'P-T3-KQ-06', 'P-T3-KQ-07']);
+    expect(kq.map((c) => c.id).sort()).toEqual(['P-T3-KQ-01', 'P-T3-KQ-02', 'P-T3-KQ-03', 'P-T3-KQ-04', 'P-T3-KQ-05', 'P-T3-KQ-06', 'P-T3-KQ-07', 'P-T3-KQ-08', 'P-T3-KQ-09']);
     expect(kq.filter((c) => !c.passed).map((c) => `${c.id} : ${c.errors.join(' ; ')}`)).toEqual([]);
     expect(avec.branchesPassed).toContain('KNOWLEDGE_QUERY');
   });

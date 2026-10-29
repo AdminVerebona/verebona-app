@@ -33,8 +33,11 @@ interface ConflictContext {
 export async function writeConflict(
   decision: ReconciliationDecision,
   ctx: ConflictContext,
-): Promise<void> {
-  await pgClient.unsafe(
+): Promise<'created' | 'updated' | 'unchanged'> {
+  // Lot 99A : un arbitrage ouvert IDENTIQUE (mêmes valeurs, mêmes preuves, même
+  // règle, même motif) n'est ni recréé ni réécrit — `updated_at` reste celui de
+  // sa dernière modification réelle (passages T3 répétés sans changement).
+  const rows = (await pgClient.unsafe(
     `INSERT INTO inconsistency_registry (
        account_id, asset_id, field_key, current_value, proposed_value,
        source_type, source_detail, inconsistency_type, status,
@@ -49,7 +52,13 @@ export async function writeConflict(
        current_evidence_ids = EXCLUDED.current_evidence_ids,
        authority_rule = EXCLUDED.authority_rule,
        reason_code = EXCLUDED.reason_code,
-       updated_at = NOW()`,
+       updated_at = NOW()
+     WHERE inconsistency_registry.proposed_value IS DISTINCT FROM EXCLUDED.proposed_value
+        OR inconsistency_registry.proposed_evidence_ids IS DISTINCT FROM EXCLUDED.proposed_evidence_ids
+        OR inconsistency_registry.current_evidence_ids IS DISTINCT FROM EXCLUDED.current_evidence_ids
+        OR inconsistency_registry.authority_rule IS DISTINCT FROM EXCLUDED.authority_rule
+        OR inconsistency_registry.reason_code IS DISTINCT FROM EXCLUDED.reason_code
+     RETURNING (xmax = 0) AS created`,
     [
       ctx.accountId, ctx.assetId, decision.fieldKey,
       stringify(decision.currentValue), stringify(decision.proposedValue),
@@ -63,7 +72,9 @@ export async function writeConflict(
       ctx.currentOrigin,
       ctx.traceId ?? null,
     ] as never[],
-  );
+  )) as unknown as Array<{ created: boolean }>;
+  if (!rows[0]) return 'unchanged';
+  return rows[0].created ? 'created' : 'updated';
 }
 
 /**

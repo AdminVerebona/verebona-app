@@ -1,0 +1,83 @@
+{
+  "case": "P-T3-20",
+  "description": "DOCUMENT_NAMING (lot 99C, cas C) — facture semestrielle du 01/01/2026 au 30/06/2026 : représentation sur plusieurs mois « Janvier à juin 2026 » (aucun mois choisi arbitrairement).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "documentNaming": {
+      "docs": [],
+      "periodRepresentation": {
+        "series": {
+          "nature": "Facture",
+          "supplier": "Assur Habitat",
+          "members": []
+        },
+        "targets": [
+          {
+            "id": 2001,
+            "title": "Facture Assur Habitat — Janvier à juin 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Assur Habitat",
+            "issueDate": "2025-12-15",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-01-01",
+                "end": "2026-06-30",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": null,
+              "issueDate": "2025-12-15"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "recording": {
+    "operationCode": "t3_document_naming",
+    "task": "DOCUMENT_NAMING",
+    "output": {
+      "task": "DOCUMENT_NAMING",
+      "document_renames": [],
+      "period_representations": [
+        {
+          "document_id": 2001,
+          "representation": "MULTI_MONTH",
+          "from_month": "2026-01",
+          "to_month": "2026-06",
+          "basis": "MULTI_MONTH_SPAN",
+          "evidence": [
+            {
+              "source": "BILLED_PERIOD",
+              "document_id": 2001,
+              "quote": "Cotisation du 1er janvier au 30 juin 2026"
+            }
+          ],
+          "reason": "Cotisation semestrielle : la période entière est le bon repère.",
+          "confidence": "certain"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "periods": {
+      "2001": {
+        "allowed": [
+          "MULTI_MONTH",
+          "DATE_RANGE"
+        ],
+        "label": "Janvier à juin 2026"
+      }
+    },
+    "forbiddenLabels": {
+      "2001": [
+        "Janvier 2026",
+        "Juin 2026",
+        "Décembre 2025"
+      ]
+    }
+  }
+}

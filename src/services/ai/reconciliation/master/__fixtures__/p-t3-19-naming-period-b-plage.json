@@ -1,0 +1,95 @@
+{
+  "case": "P-T3-19",
+  "description": "DOCUMENT_NAMING (lot 99C, cas B) — période facturée du 18/01/2026 au 17/03/2026, aucun mois désigné, aucune série mensuelle : une plage doit être retenue, jamais « Février 2026 » seul (le mois majoritaire n’est qu’un indice).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "documentNaming": {
+      "docs": [],
+      "periodRepresentation": {
+        "series": {
+          "nature": "Facture",
+          "supplier": "Jardins du Val",
+          "members": [
+            {
+              "id": 1901,
+              "title": "Facture Jardins du Val — 18 janvier au 17 mars 2026",
+              "titleOrigin": "SYSTEM",
+              "billedPeriod": {
+                "start": "2026-01-18",
+                "end": "2026-03-17"
+              },
+              "statedMonth": null,
+              "representation": null
+            }
+          ]
+        },
+        "targets": [
+          {
+            "id": 1901,
+            "title": "Facture Jardins du Val — 18 janvier au 17 mars 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Jardins du Val",
+            "issueDate": "2026-03-20",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-01-18",
+                "end": "2026-03-17",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": null,
+              "monthHint": {
+                "value": "2026-02",
+                "basis": "MAJORITY_OF_PERIOD"
+              },
+              "issueDate": "2026-03-20"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "recording": {
+    "operationCode": "t3_document_naming",
+    "task": "DOCUMENT_NAMING",
+    "output": {
+      "task": "DOCUMENT_NAMING",
+      "document_renames": [],
+      "period_representations": [
+        {
+          "document_id": 1901,
+          "representation": "DATE_RANGE",
+          "start": "2026-01-18",
+          "end": "2026-03-17",
+          "basis": "EXACT_PERIOD",
+          "evidence": [
+            {
+              "source": "BILLED_PERIOD",
+              "document_id": 1901,
+              "quote": "Prestations du 18/01/2026 au 17/03/2026"
+            }
+          ],
+          "reason": "La période couvre près de deux mois à cheval sur trois mois civils : un seul mois serait trompeur.",
+          "confidence": "certain"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "periods": {
+      "1901": {
+        "allowed": [
+          "DATE_RANGE",
+          "MULTI_MONTH"
+        ]
+      }
+    },
+    "forbiddenLabels": {
+      "1901": [
+        "Février 2026"
+      ]
+    }
+  }
+}

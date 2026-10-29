@@ -57,6 +57,7 @@ const TONE: Record<State, string> = {
 };
 const CAND: Record<string, string> = {
   CREATED: 'créée', QUALIFYING: 'en test', QUALIFIED: 'qualifiée', REFUSED: 'refusée', INCONCLUSIVE: 'non concluante', ACTIVATED: 'activée (préproduction)', NOT_CHOSEN: 'non retenue',
+  SUSPENDED: 'suspendue (retour arrière)',
 };
 const CAMPAGNE: Record<string, string> = { PENDING: 'en attente', RUNNING: 'en cours', COMPLETED: 'terminée', REFUSED: 'refusée', INTERRUPTED: 'interrompue', FAILED: 'en échec' };
 const RANG = ['principal', 'repli 1', 'repli 2'];
@@ -184,7 +185,7 @@ export function CoupleQualification({ versionId }: { versionId?: number | null }
             <h3 className="text-sm font-medium text-[color:var(--text-primary)]">Campagnes récentes</h3>
             {data.campaigns.length === 0 ? <p className="text-xs text-[color:var(--text-muted)]">Aucune campagne.</p> : data.campaigns.slice(0, 8).map((c) => (
               <p key={c.id} className="text-xs text-[color:var(--text-secondary)] break-words">
-                n° {c.id} · {c.kind === 'AUTO' ? 'automatique' : 'test manuel'} · {CAMPAGNE[c.status] ?? c.status} · {formatDateTime(c.createdAt)}
+                n° {c.id} · {c.kind === 'AUTO' ? 'automatique' : c.kind === 'CONFORMITY' ? 'non-régression d’un prompt' : 'test manuel'} · {CAMPAGNE[c.status] ?? c.status} · {formatDateTime(c.createdAt)}
                 {c.couples != null ? ` · ${c.couples} couple(s)` : ''}{c.restorePointId ? ' · point de restauration pris' : ''}
                 {c.activatedVersionId ? ` · candidate v${c.activatedVersionId} activée` : ''}{c.refusal ? ` — ${c.refusal}` : ''}{c.error ? ` — ${c.error}` : ''}
               </p>

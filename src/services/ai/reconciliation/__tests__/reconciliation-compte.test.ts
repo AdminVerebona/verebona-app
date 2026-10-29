@@ -19,7 +19,17 @@ describe('résultat consolidé', () => {
     expect(r).toEqual({
       objectsExamined: 3, objectsModified: 1, decisionsApplied: 2, conflictsCreated: 1,
       arbitrationsNeeded: 1, errors: 1, aiCalls: 1, status: 'partial',
+      // Lot 99A : compteurs distincts (aucun cache ni réutilisation déclarés par ces objets historiques).
+      aiCacheHits: 0, decisionsReused: 0, conflictsUnchanged: 0,
     });
+  });
+  it('lot 99A : appels RÉELS seulement — une décision assistée servie par le cache ou la mémoire n’est pas un appel', () => {
+    const r = consolidate([
+      { ...obj(1, 'CONFLICT', 0, 1, 1), providerCalls: 0, decisionsReused: 1 },
+      { ...obj(2, 'CONFLICT', 0, 1, 1), providerCalls: 0, aiCacheHits: 1 },
+      { ...obj(3, 'SUCCESS', 1, 0, 1), providerCalls: 1 },
+    ]);
+    expect(r).toMatchObject({ aiCalls: 1, aiCacheHits: 1, decisionsReused: 1 });
   });
   it('toutes les erreurs : échec ; aucune : terminé', () => {
     expect(consolidate([obj(1, 'ERROR'), obj(2, 'ERROR')]).status).toBe('failed');

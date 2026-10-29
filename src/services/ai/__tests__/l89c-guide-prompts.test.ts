@@ -120,7 +120,9 @@ describe('L89C-U01 — blocs du guide', () => {
     // Lot 97A : blocs T3 `t3-operation-identity-v1` et T4 `t4-agenda-representation-v1` (rejoués par l97a-guide-t3-t4.test.ts).
     expect(B.map((b) => b.id)).toEqual(['t3-valeurs', 't3-knowledge-query-v1', 't3-knowledge-query-v2', 't6-suggestions-v3', 't1-value-decisions-v1', 't3-operation-identity-v1', 't4-agenda-representation-v1',
       // Lot 98A : étape 7 (T3, rejouée par l98a-guide-etape7.test.ts).
-      't3-knowledge-query-constituants', 't3-knowledge-query-exemple-complet']);
+      't3-knowledge-query-constituants', 't3-knowledge-query-exemple-complet',
+      // Lot 99C : étape 9 (T3 DOCUMENT_NAMING, rejouée par l99c-representation-periode.test.ts).
+      't3-naming-period-v1']);
     // Aucun bloc n'introduit un emplacement {{X}} (bloquant au BO : « emplacement inconnu »).
     for (const b of B) expect(inspectMasterTemplate(b.text).placeholders, b.id).toEqual([]);
   });

@@ -490,6 +490,15 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
     return { expected: summaries.length, count: summaries.length, batches: 1, error: null };
   }, undefined, 'tracabilite');
 
+  // Lot 99A (ticket P1 T3, point D) : usage de l'IA en compteurs DISTINCTS — appels réels au fournisseur
+  // (`ai_usage_event`), réponses du cache, décisions réutilisées, passages T3 sans appel. Jamais confondus.
+  let usageIa: DiagAiUsageDistinct | null = null;
+  entry('tracabilite/usage-ia.json', 'Usage de l’IA en compteurs distincts : appels réels au fournisseur, réponses servies par le cache, décisions réutilisées, passages T3 sans appel', async (w) => {
+    usageIa = await s.savepoint(() => readAiUsageDistinct(s.q, global ? null : filter.accounts ?? []));
+    await w(`${JSON.stringify(M(usageIa as unknown as Row), null, 2)}\n`);
+    return { expected: 1, count: 1, batches: 1, error: null };
+  }, undefined, 'tracabilite');
+
   // Diagnostic renforcé : sorties modèle conservées (accès existant, journalisé) — annexe à accès restreint.
   if (req.reinforced) {
     entry('ia/sorties-modele.json', 'DIAGNOSTIC RENFORCÉ — sorties modèle conservées des traces du filtre (accès AI_MODEL_OUTPUT_READ journalisé)', async (w) => {
@@ -592,6 +601,8 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       ['Traitements (file)', counts['donnees/technique/ai_job_queue.json'] ?? 0],
       ['Rapports d’exécution', counts['donnees/extractions-ia/ai_execution_reports.json'] ?? 0],
       ['Appels IA', counts['donnees/technique/ai_usage_event.json'] ?? 0],
+      // Lot 99A : compteurs distincts (appels réels / cache / décisions réutilisées / passages T3 sans appel).
+      ...(usageIa ? usageSummaryLines(usageIa) : []),
       ['Montants tracés', nTraces],
       ['Montants à trace interrompue', nRuptures],
       ['Avertissements', warnings.length],
@@ -679,3 +690,65 @@ export async function previewPlan(plan: DiagPlan): Promise<{ manifest: DiagManif
   return { manifest, report, files: sizes };
 }
 
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 99A — usage de l'IA en compteurs distincts (diagnostic global)
+// ══════════════════════════════════════════════════════════════════════════
+
+export interface DiagAiUsageDistinct {
+  /** Appels RÉELS au fournisseur (`ai_usage_event`), par traitement / opération. */
+  providerCalls: { total: number; byOperation: Record<string, number> };
+  /** Réponses sans appel facturé et décisions réutilisées (`ai_reuse_counters`, 0858), par nature. */
+  reuse: { available: boolean; byKind: Record<string, number>; cacheResponses: number; decisionsReused: number };
+  /** Passages T3 de compte terminés : avec / sans appel réel, non mesurés (antérieurs au lot 99A). */
+  t3Runs: { total: number; withoutAiCall: number; withAiCall: number; unmeasured: number };
+  /** Mémoire durable des décisions T3 (0856) : entrées actives, remplacées, réutilisations cumulées. */
+  t3DecisionMemory: { available: boolean; active: number; superseded: number; reused: number };
+}
+
+/** Lecture des compteurs distincts (comptes du filtre ; `null` = global). Tables absentes : `available: false`. */
+async function readAiUsageDistinct(q: DiagQuery, accounts: number[] | null): Promise<DiagAiUsageDistinct> {
+  const f = (col: string) => (accounts === null ? 'TRUE' : `${col} = ANY($1::int[])`);
+  const p = accounts === null ? [] : [accounts];
+  const appels = await q(`SELECT coalesce(operation_code, operation_type) AS op, count(*)::bigint AS n FROM ai_usage_event
+     WHERE ${f('account_id')} GROUP BY 1`, p);
+  const byOperation = Object.fromEntries(appels.map((r) => [String(r.op), Number(r.n)]));
+  const out: DiagAiUsageDistinct = {
+    providerCalls: { total: Object.values(byOperation).reduce((a, b) => a + b, 0), byOperation },
+    reuse: { available: false, byKind: {}, cacheResponses: 0, decisionsReused: 0 },
+    t3Runs: { total: 0, withoutAiCall: 0, withAiCall: 0, unmeasured: 0 },
+    t3DecisionMemory: { available: false, active: 0, superseded: 0, reused: 0 },
+  };
+  const existe = async (t: string) => (await q(`SELECT to_regclass($1) IS NOT NULL AS ok`, [t]))[0]?.ok === true;
+  if (await existe('ai_reuse_counters')) {
+    const rows = await q(`SELECT kind, sum(count)::bigint AS n FROM ai_reuse_counters WHERE ${f('account_id')} GROUP BY kind`, p);
+    const byKind = Object.fromEntries(rows.map((r) => [String(r.kind), Number(r.n)]));
+    out.reuse = {
+      available: true, byKind,
+      cacheResponses: (byKind.PROVIDER_CACHE_HIT ?? 0) + (byKind.CONCURRENT_SHARED ?? 0),
+      decisionsReused: (byKind.DECISION_REUSED ?? 0) + (byKind.USER_ARBITRATION_KEPT ?? 0),
+    };
+  }
+  const [r] = await q(`SELECT count(*)::bigint AS total,
+       count(*) FILTER (WHERE (to_jsonb(r) ->> 'provider_calls')::int = 0)::bigint AS sans,
+       count(*) FILTER (WHERE (to_jsonb(r) ->> 'provider_calls')::int > 0)::bigint AS avec,
+       count(*) FILTER (WHERE to_jsonb(r) ->> 'provider_calls' IS NULL)::bigint AS inconnu
+     FROM account_reconciliation_runs r WHERE ${f('r.account_id')} AND r.status IN ('completed', 'partial')`, p);
+  out.t3Runs = { total: Number(r?.total ?? 0), withoutAiCall: Number(r?.sans ?? 0), withAiCall: Number(r?.avec ?? 0), unmeasured: Number(r?.inconnu ?? 0) };
+  if (await existe('t3_decision_memory')) {
+    const [m] = await q(`SELECT count(*) FILTER (WHERE status = 'ACTIVE')::bigint AS actives, count(*) FILTER (WHERE status = 'SUPERSEDED')::bigint AS remplacees,
+         coalesce(sum(reuse_count), 0)::bigint AS reutilisations FROM t3_decision_memory WHERE ${f('account_id')}`, p);
+    out.t3DecisionMemory = { available: true, active: Number(m?.actives ?? 0), superseded: Number(m?.remplacees ?? 0), reused: Number(m?.reutilisations ?? 0) };
+  }
+  return out;
+}
+
+/** Lignes du rapport synthétique (pure). */
+export function usageSummaryLines(u: DiagAiUsageDistinct): Array<[string, string | number]> {
+  return [
+    ['Appels IA réels (fournisseur)', u.providerCalls.total],
+    ['Réponses IA servies par le cache (sans appel)', u.reuse.available ? u.reuse.cacheResponses : 'non mesuré (migration 0858 absente)'],
+    ['Décisions IA réutilisées (sans appel)', u.reuse.available ? u.reuse.decisionsReused : 'non mesuré (migration 0858 absente)'],
+    ['Passages T3 sans appel IA', `${u.t3Runs.withoutAiCall} / ${u.t3Runs.total}${u.t3Runs.unmeasured ? ` (dont ${u.t3Runs.unmeasured} antérieurs au lot 99A, non mesurés)` : ''}`],
+  ];
+}

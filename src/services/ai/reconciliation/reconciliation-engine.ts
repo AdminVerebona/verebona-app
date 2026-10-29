@@ -19,7 +19,7 @@ import { randomUUID } from 'crypto';
 import { collectAssetEvidenceState } from './evidence-collector';
 import { decide, withoutEquivalentProposals } from './decision/decision-matrix';
 import { canRequestAiReview } from './decision/ai-exclusion';
-import { resolveAmbiguity } from './ambiguity-resolver';
+import { reviewAmbiguousField } from './decision-memory';
 import { applyDecision, retractAutomaticValue } from './apply-decision';
 import {
   planRetractions, retractionDecision, withoutStaleAuthority, NEGATIVE_REASON, isT4DateRevision, T4_REVISION_REASON,
@@ -53,6 +53,17 @@ export interface ReconcileInput {
    * aucune carte), comme avant le passage.
    */
   aiReview?: boolean;
+  /**
+   * Lot 99A : relance FORCÉE et tracée de la revue IA (lancement manuel
+   * « réévaluer ») — la mémoire des décisions est ignorée pour ce passage.
+   * Absent : une décision mémorisée à contexte identique est réutilisée.
+   */
+  forceAiReview?: { reason: string } | null;
+}
+
+/** Compteur de réutilisation, jamais bloquant (lot 99A). */
+async function noteReuseSafe(e: import('../reuse/reuse-counters').ReuseEvent): Promise<void> {
+  try { await (await import('../reuse/reuse-counters')).noteReuse(e); } catch { /* jamais bloquant */ }
 }
 
 export async function reconcileAsset(input: ReconcileInput): Promise<ReconciliationRun> {
@@ -159,13 +170,17 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
 
       case 'create_conflict':
         await assertJobActive(`proposition ${decision.fieldKey}`);
-        await writeConflict(decision, {
-          accountId: input.accountId,
-          assetId: input.assetId,
-          currentEvidenceIds: [],
-          currentOrigin: currentOrigin ?? 'USER',
-          traceId,
-        });
+        {
+          const ecrit = await writeConflict(decision, {
+            accountId: input.accountId,
+            assetId: input.assetId,
+            currentEvidenceIds: [],
+            currentOrigin: currentOrigin ?? 'USER',
+            traceId,
+          });
+          // Lot 99A : un arbitrage ouvert identique n'est ni recréé ni réécrit (compté à part).
+          if (ecrit === 'unchanged' && rec) rec.conflictsUnchanged++;
+        }
         break;
 
       case 'keep':
@@ -197,15 +212,33 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
 
     // Étape 7 du §4.2.8 : appel modèle UNIQUEMENT si le déterminisme n'a pas
     // tranché — et jamais sur un champ exclu du périmètre modèle.
+    // Lot 99A : mémoires consultées AVANT l'appel — arbitrage déjà tranché par
+    // l'utilisateur (aucun appel), puis décision IA mémorisée à contexte
+    // identique (aucun appel) ; sinon appel, par le cache des réponses.
     if (decision.action === 'request_ai_review' && input.aiReview !== false && canRequestAiReview(decision.fieldKey)) {
-      decision = await resolveAmbiguity({
-        accountId: input.accountId,
-        assetId: input.assetId,
-        decision,
-        candidates: field.input.candidates,
-        currentValue: field.input.current?.value ?? null,
-        currentOrigin: field.input.current?.origin ?? 'USER',
-      });
+      if (memoire && !input.forceAiReview && await memoire.isArbitrated({ ...decision, action: 'create_conflict' })) {
+        decision = { ...decision, action: 'keep', proposedValue: decision.currentValue, reasonCode: 'ALREADY_DECIDED', aiSource: 'USER_ARBITRATION' };
+        if (rec) rec.userArbitrationsKept++;
+        void noteReuseSafe({ kind: 'USER_ARBITRATION_KEPT', accountId: input.accountId, treatment: 'T3', operationCode: 't3_value_conflict' });
+      } else {
+        const revue = await reviewAmbiguousField({
+          accountId: input.accountId,
+          assetId: input.assetId,
+          canonicalKey: canonicalKeyOf(decision.fieldKey),
+          decision,
+          candidates: field.input.candidates,
+          currentValue: field.input.current?.value ?? null,
+          currentOrigin: field.input.current?.origin ?? 'USER',
+          force: input.forceAiReview ?? null,
+        });
+        decision = revue.decision;
+        if (rec) {
+          rec.aiCalls += revue.providerCalls;
+          if (revue.cacheHit) rec.aiCacheHits++;
+          if (revue.reused) rec.decisionsReused++;
+          if (revue.reevaluation) rec.reevaluations.push({ fieldKey: decision.fieldKey, reasons: revue.reevaluation });
+        }
+      }
     }
 
     // Lot 76J : texte libre (description, notes) jamais réécrit automatiquement ;
@@ -216,7 +249,9 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
     if (memoire) decision = await memoire.filter(decision);
 
     decisions.push(decision);
-    if (!decision.deterministic && rec) rec.aiCalls++;
+    // Lot 99A : `aiCalls` = appels RÉELS au fournisseur (compté ci-dessus) ;
+    // une décision assistée servie par le cache ou la mémoire n'en est pas un.
+    if (!decision.deterministic && rec) rec.aiAssisted++;
     const trace = { fieldKey: decision.fieldKey, current: field.input.current, candidates: field.input.candidates, decision, registry: isRegistryKey(decision.fieldKey) } as import('../execution-report/t3-report').T3FieldRecord;
     rec?.fields.push(trace);
 
@@ -316,6 +351,12 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
     intendedCount: decisions.filter((d) => d.action === 'apply' || d.action === 'update').length,
     conflictCount: decisions.filter((d) => d.action === 'create_conflict').length,
     aiReviewCount: decisions.filter((d) => !d.deterministic).length,
+    // Lot 99A : compteurs distincts (appels réels, cache, décisions réutilisées).
+    providerCalls: rec ? rec.aiCalls : decisions.filter((d) => d.aiSource === 'PROVIDER').length,
+    aiCacheHits: rec ? rec.aiCacheHits : decisions.filter((d) => d.aiSource === 'CACHE').length,
+    decisionsReused: rec ? rec.decisionsReused + rec.userArbitrationsKept
+      : decisions.filter((d) => d.aiSource === 'MEMORY' || d.aiSource === 'USER_ARBITRATION').length,
+    ...(rec ? { conflictsUnchanged: rec.conflictsUnchanged } : {}),
     shadow: false,
   };
 

@@ -1,0 +1,77 @@
+{
+  "case": "P-T3-21",
+  "description": "DOCUMENT_NAMING (lot 99C, cas D) — « Abonnement février 2026 », période du 05/02/2026 au 04/03/2026 : le mois explicitement désigné par le document est privilégié (« Février 2026 »).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "documentNaming": {
+      "docs": [],
+      "periodRepresentation": {
+        "series": {
+          "nature": "Facture",
+          "supplier": "Homiris",
+          "members": []
+        },
+        "targets": [
+          {
+            "id": 2101,
+            "title": "Facture Homiris — Février 2026",
+            "typeCode": "FACTURE",
+            "nature": "Facture",
+            "supplier": "Homiris",
+            "issueDate": "2026-03-06",
+            "facts": {
+              "billedPeriod": {
+                "start": "2026-02-05",
+                "end": "2026-03-04",
+                "source": "T1_INSTALLMENT"
+              },
+              "statedMonth": {
+                "value": "2026-02",
+                "quote": "Abonnement février 2026"
+              },
+              "monthHint": null,
+              "issueDate": "2026-03-06"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "recording": {
+    "operationCode": "t3_document_naming",
+    "task": "DOCUMENT_NAMING",
+    "output": {
+      "task": "DOCUMENT_NAMING",
+      "document_renames": [],
+      "period_representations": [
+        {
+          "document_id": 2101,
+          "representation": "MONTH",
+          "month": "2026-02",
+          "basis": "STATED_ON_DOCUMENT",
+          "evidence": [
+            {
+              "source": "STATED_MONTH",
+              "document_id": 2101,
+              "quote": "Abonnement février 2026"
+            }
+          ],
+          "reason": "Le document désigne explicitement la mensualité de février 2026.",
+          "confidence": "certain"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "periods": {
+      "2101": {
+        "allowed": [
+          "MONTH"
+        ],
+        "label": "Février 2026"
+      }
+    }
+  }
+}

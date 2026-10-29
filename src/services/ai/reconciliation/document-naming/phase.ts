@@ -80,6 +80,13 @@
  *     comptes ; plafonds d'appels existants), après tout autre travail ;
  *     reporting distinct : migration technique / réexamen attendu /
  *     réexamen effectué.
+ *
+ * LOT 99C — REPRÉSENTATION TEMPORELLE (`period-representation.ts`) : quand le
+ * prompt actif porte `t3-naming-period-v1`, la même branche décide comment
+ * représenter la période facturée dans le titre des factures périodiques
+ * (MONTH, DATE_RANGE, MULTI_MONTH, NONE) ; décision validée par le serveur
+ * puis titre recomposé par le service de nommage unique. Section du rapport
+ * `NAMING_PERIOD`, compteurs `periodRepresentation`.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { envNumber } from '@/lib/env-number';
@@ -210,6 +217,12 @@ export interface DocumentNamingPhaseResult {
   documentsRevalidated?: number;
   /** Lot 76B (C5). */
   upgrade?: NamingUpgradeReport;
+  /**
+   * Lot 99C : représentation temporelle des factures périodiques (contrat
+   * `t3-naming-period-v1`) — appels, décisions acceptées / refusées, titres
+   * recomposés, documents restant à décider.
+   */
+  periodRepresentation?: { status: string; candidates: number; calls: number; accepted: number; refused: number; titlesUpdated: number; remaining: number };
   scan: NamingScanResult;
   remaining: NamingRemaining;
   appliedFileIds: number[];
@@ -230,6 +243,8 @@ interface DocumentNamingDeps {
   upgradeReviewsLastDay?: () => Promise<number>;
   scanPageSize?: number;
   scanPagesPerPass?: number;
+  /** Lot 99C : appels de représentation temporelle par passage (défaut : `T3_NAMING_PERIOD_MAX_CALLS_PER_PASS`). */
+  maxPeriodCallsPerPass?: number;
   now?: () => Date;
   /** Écriture du rapport (défaut : rapport d'exécution T3, lot 58). `false` : aucun rapport. */
   writeReport?: boolean;
@@ -401,6 +416,9 @@ export async function runDocumentNamingPhase(
   }));
   const fpNow = new Map(items.map((i) => [i.group.key, i.fp]));
   const rec = new NamingRecorder();
+  // Lot 99C : version du prompt lue une seule fois par passage (harmonisation et représentation temporelle).
+  let promptMemo: Promise<NamingPromptStatus> | null = null;
+  const promptStatus = () => (promptMemo ??= (opts.promptStatus ?? (async () => (await import('./model')).documentNamingPromptStatus()))());
   let dailyFreeAt: string | null = null;
   const dailyFree = async () => {
     if (dailyFreeAt) return dailyFreeAt;
@@ -434,9 +452,13 @@ export async function runDocumentNamingPhase(
       }
     }
     examen = await examineDueGroups(accountId, items, {
-      repo, rec, res, maxDocs, now, opts, save, fpNow, dailyFree,
+      repo, rec, res, maxDocs, now, opts: { ...opts, promptStatus }, save, fpNow, dailyFree,
     });
   }
+
+  // ── 3 bis. Lot 99C : représentation temporelle des factures périodiques ──
+  const periode = await periodStep(accountId, { res, rec, now, opts, promptStatus, repo });
+  if (periode && (periode.calls > 0 || periode.entries.length > 0)) examen = true;
 
   // ── 4. État du compte et reporting (E2, E8) ──────────────────────────────
   const byReason: Record<string, number> = {};
@@ -462,15 +484,21 @@ export async function runDocumentNamingPhase(
   }
   // Lecture du stock pas encore couverte sur ce cycle : jamais terminé, reprise immédiate.
   if (!scan.complete) { byReason.SCAN_IN_PROGRESS = Math.max(1, byReason.SCAN_IN_PROGRESS ?? 0); reprises.push(null); }
+  // Lot 99C : factures périodiques restant à décider (plafond) — reprise au passage suivant.
+  const periodeRestante = periode?.remaining ?? 0;
+  if (periodeRestante > 0) {
+    byReason.PERIOD_REPRESENTATION_PENDING = periodeRestante;
+    reprises.push(periode?.status === 'CAPPED' ? await dailyFree() : null);
+  }
   const prochaine = reprises.length === 0 ? null : reprises.includes(null) ? null
     : (reprises as string[]).sort()[0];
   res.pendingWrites = [...pendantsFin.values()].reduce((a, b) => a + b, 0);
   res.remaining = { groups: restants, documents: docsRestants, byReason, nextRetryAt: prochaine, details };
   res.upgrade!.totals = await repo.upgradeTotals(accountId);
   const progres = res.groupsExamined > 0 || res.documentsExamined > 0 || res.applied > 0 || res.writesRetried > 0 || res.rebaselined > 0
-    || (res.upgrade!.expected > 0) || (scan.pages > 0 && !scan.complete);
+    || (res.upgrade!.expected > 0) || (scan.pages > 0 && !scan.complete) || (periode?.calls ?? 0) > 0;
   res.status = namingPhaseStatus({
-    remainingGroups: restants, scanComplete: scan.complete, progress: progres, errors: res.errors + res.renamesSectionMissing,
+    remainingGroups: restants + (periodeRestante > 0 ? 1 : 0), scanComplete: scan.complete, progress: progres, errors: res.errors + res.renamesSectionMissing,
     pendingWrites: res.pendingWrites,
   });
   mp.remaining = res.remaining;
@@ -478,6 +506,47 @@ export async function runDocumentNamingPhase(
   res.appliedFileIds = [...new Set(res.appliedFileIds)].sort((a, b) => a - b);
   if (examen && opts.writeReport !== false) res.reportId = await rec.write(accountId, res, opts, startedAt);
   return res;
+}
+
+/**
+ * Lot 99C — étape « représentation temporelle » (`period-representation.ts`) :
+ * seulement si le prompt actif porte `t3-naming-period-v1` ; plafonds propres
+ * par passage, plafond journalier partagé avec l'harmonisation. Ne lève pas,
+ * sauf interruption d'exécution.
+ */
+async function periodStep(accountId: number, p: {
+  res: DocumentNamingPhaseResult;
+  rec: NamingRecorder;
+  now: () => Date;
+  opts: DocumentNamingDeps & { guard?: ExecutionGuard };
+  promptStatus: () => Promise<NamingPromptStatus>;
+  repo: typeof import('./repository');
+}): Promise<import('./period-representation').PeriodStepResult | null> {
+  try {
+    const { namingPeriodDecisionsEnabled } = await import('@/services/documents/document-title.service');
+    if (!namingPeriodDecisionsEnabled()) return null;
+    const prompt = await p.promptStatus();
+    if (!prompt.available || !prompt.periodContract) return null;
+    const parJour = p.opts.maxCallsPerDay ?? namingCallsPerDay();
+    const dejaJour = (await (p.opts.callsWindow ?? p.repo.namingCallsWindow)(accountId).catch(() => ({ count: 0, oldestAt: null }))).count;
+    const { runPeriodRepresentationStep } = await import('./period-representation');
+    const r = await runPeriodRepresentationStep(accountId, {
+      prompt, now: p.now, guard: p.opts.guard, dailyBudget: parJour - dejaJour - p.res.aiCalls,
+      maxCallsPerPass: p.opts.maxPeriodCallsPerPass,
+      callModel: p.opts.callModel ?? (async (x: NamingCall) => (await import('./model')).callDocumentNamingModel(x)),
+    });
+    p.res.aiCalls += r.calls;
+    p.res.periodRepresentation = {
+      status: r.status, candidates: r.candidates, calls: r.calls, accepted: r.accepted, refused: r.refused, titlesUpdated: r.titlesUpdated, remaining: r.remaining,
+    };
+    p.rec.period(r.steps, r.entries, r.traceIds);
+    return r;
+  } catch (e) {
+    if (isExecutionCancelled(e)) throw e;
+    p.res.errors++;
+    p.rec.steps.push({ step: 'REPRÉSENTATION TEMPORELLE', status: 'FAILED', error: ((e as Error).message ?? 'erreur').slice(0, 200) });
+    return null;
+  }
 }
 
 /** Conventions des lots constitutifs d'un lot recomposé (aucune perte de convention). */
@@ -1343,6 +1412,13 @@ class NamingRecorder {
       label: `Lot ${it.group.key} (${it.ids.length} documents)`, value: it.ids.slice(0, 50),
       writeResult: 'NOT_EXAMINED', reasonCode: code, reason, links: { groupKey: it.group.key, documents: it.ids.length },
     });
+  }
+
+  /** Lot 99C : étapes, lignes et traces de la représentation temporelle. */
+  period(steps: readonly ReportStep[], entries: readonly ReportEntry[], traceIds: readonly string[]): void {
+    this.steps.push(...steps);
+    this.entries.push(...entries);
+    for (const t of traceIds) this.traceIds.add(t);
   }
 
   family(groupKey: string, f: NonNullable<T3DocumentNamingOutput['families']>[number], fournis: Set<number>): void {

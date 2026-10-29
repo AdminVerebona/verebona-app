@@ -761,6 +761,8 @@ export function lateLinkAgendaCandidates(p: {
   fileId: number;
   assetId: number;
   allowReassign: boolean;
+  /** Lot 99D : date de référence de la qualification d'une fin de récurrence (défaut : aujourd'hui, Paris). */
+  today?: string;
 }) {
   const e = p.knowledge.extraction;
   return buildAgendaCandidatesT4(
@@ -773,6 +775,7 @@ export function lateLinkAgendaCandidates(p: {
       documentDate: e.documentDate,
       documentType: (e.metadata?.legacyDocumentType as string | undefined) ?? null,
       documentTypeCode: e.documentTypeCode,
+      ...(p.today ? { today: p.today } : {}),
     },
   );
 }

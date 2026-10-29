@@ -33,7 +33,7 @@ const absent = (e: unknown) => ['42P01', '42703'].includes(String((e as { code?:
 
 // ── Campagnes ───────────────────────────────────────────────────────────────
 
-type CampaignKind = 'MANUAL' | 'AUTO';
+type CampaignKind = 'MANUAL' | 'AUTO' | 'CONFORMITY';
 export type CampaignStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'REFUSED' | 'INTERRUPTED' | 'FAILED';
 
 interface CampaignRow {

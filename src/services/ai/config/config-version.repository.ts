@@ -814,7 +814,7 @@ export async function recordMasterPromptRevisionInTx(sql: SqlLike, environment: 
 export async function activateVersion(
   versionId: number, userId: number | null, check?: (r: { snapshot: ConfigSnapshot; previouslyActivated: boolean }) => void,
   /** Lot 86A (VER-01) : activation AUTOMATIQUE d'une candidate qualifiée — vérifiée sous verrou, état ACTIVATED dans la transaction. */
-  opts: { candidate?: boolean } = {},
+  opts: { candidate?: boolean; summary?: string } = {},
 ): Promise<{
   previousId: number | null; alreadyActive: boolean; revisionNumber: number;
   masterPromptSwitches: WriteOutcome['masterPromptSwitches'];
@@ -823,7 +823,7 @@ export async function activateVersion(
   return pgClient.begin(async (tx) => {
     const sql = tx as unknown as SqlLike;
     await lockEnvironment(sql, environment);
-    return activateVersionInTx(sql, environment, versionId, userId, { check, candidate: opts.candidate });
+    return activateVersionInTx(sql, environment, versionId, userId, { check, candidate: opts.candidate, summary: opts.summary });
   }) as never;
 }
 
@@ -881,6 +881,18 @@ export async function setCandidateState(versionId: number, state: 'QUALIFYING' |
     `UPDATE ai_config_versions SET candidate_state = $2, candidate_reason = COALESCE($3, candidate_reason), updated_at = now()
       WHERE id = $1 AND origin = 'auto' AND candidate_state IS DISTINCT FROM 'ACTIVATED'`,
     [versionId, state, reason ?? null] as never[]);
+}
+
+/**
+ * Lot 99B : candidate SUSPENDUE après un retour arrière automatique (anomalie
+ * imputable au prompt) — y compris une candidate déjà activée. Jamais
+ * réactivée automatiquement ; la version reste consultable (historique).
+ */
+export async function suspendCandidate(versionId: number, reason: string): Promise<void> {
+  await pgClient.unsafe(
+    `UPDATE ai_config_versions SET candidate_state = 'SUSPENDED', candidate_reason = $2, updated_at = now()
+      WHERE id = $1 AND origin = 'auto'`,
+    [versionId, reason.slice(0, 1000)] as never[]);
 }
 
 /** Lot 86A : dernière candidate automatique portant cette clé de proposition. */

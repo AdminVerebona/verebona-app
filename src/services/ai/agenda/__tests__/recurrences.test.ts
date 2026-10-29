@@ -46,8 +46,11 @@ describe('calcul déterministe et borné', () => {
     expect(computeOccurrences({ mode: 'EXPLICIT_SOURCE', frequency: 'monthly', interval: 1, dates: ['2027-01-15', '2027-02-16', '2027-03-15'] }, '2027-01-15', TODAY))
       .toEqual(['2027-01-15', '2027-02-16', '2027-03-15']);
   });
-  it('fin explicite : plus aucune occurrence', () => {
-    expect(computeOccurrences(parseRecurrenceFr('Contrat résilié, dernière échéance annuelle')!, '2026-11-15', TODAY)).toEqual([]);
+  it('lot 99D — un mot ne fait plus une fin ; une fin CONFIRMÉE et datée arrête la série', () => {
+    // Avant 99D : `ended = true` sur le seul mot — désormais la série continue.
+    expect(computeOccurrences(parseRecurrenceFr('Contrat résilié, dernière échéance annuelle')!, '2026-11-15', TODAY)).toEqual(['2027-11-15']);
+    const fin = { status: 'CONFIRMED' as const, reason: 'TERMINATION_EFFECTIVE' as const, effectiveDate: '2026-11-15', source: { kind: 'T1_FACT' as const } };
+    expect(computeOccurrences({ ...parseRecurrenceFr('Entretien annuel')!, end: fin }, '2026-11-15', TODAY)).toEqual([]);
   });
   it('fins de mois', () => {
     expect(addInterval('2027-01-31', 'monthly', 1)).toBe('2027-02-28');

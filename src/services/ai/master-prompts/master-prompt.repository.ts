@@ -14,7 +14,7 @@ import { pgClient } from '@/db';
 import type { MasterExecutionConfig } from './structured-context';
 
 export type MasterPromptStatus = 'DRAFT' | 'ACTIVE' | 'PREVIOUS';
-export type MasterPromptOrigin = 'initial_file' | 'initial_config' | 'admin' | 'prompt_control';
+export type MasterPromptOrigin = 'initial_file' | 'initial_config' | 'admin' | 'prompt_control' | 'auto_conformity';
 
 export interface MasterPromptVersionRow {
   id: number;
@@ -329,6 +329,42 @@ export async function updateDraftExecution(p: { id: number; execution: MasterExe
     [p.id, ...executionValues(p.execution), p.userId],
   );
   return r[0] ? toVersion(r[0]) : null;
+}
+
+/**
+ * Lot 99B — révision CANDIDATE préparée par la mise en conformité automatique
+ * (origine `auto_conformity`) à partir de la version ACTIVE réelle. Créée
+ * « ancienne » (PREVIOUS, jamais activée) : le brouillon unique reste au PO ;
+ * elle n'est rendue active que par l'activation de sa candidate de
+ * configuration qualifiée (`applyMasterPromptRefs`). Idempotente : une
+ * version de même texte et de même configuration d'exécution est réutilisée.
+ */
+export async function insertConformityCandidateVersion(p: {
+  environment: string; treatment: string; masterPromptCode: string; content: string; basedOnId: number;
+  execution: MasterExecutionConfig | null;
+}): Promise<MasterPromptVersionRow> {
+  return pgClient.begin(async (tx) => {
+    const sql = tx as unknown as Sql;
+    await lock(sql, p.environment, p.treatment);
+    const sha = contentSha256(p.content);
+    const memes = await rows(
+      `SELECT * FROM ai_master_prompt_versions
+        WHERE environment = $1 AND treatment = $2 AND content_sha256 = $3 AND origin = 'auto_conformity' AND status <> 'DRAFT'
+        ORDER BY id DESC`, [p.environment, p.treatment, sha], sql);
+    const sig = (e: MasterExecutionConfig | null | undefined) => JSON.stringify(e ?? null);
+    const deja = memes.map(toVersion).find((v) => sig(v.execution) === sig(p.execution));
+    if (deja) return deja;
+    const ex = executionValues(p.execution);
+    const r = await rows(
+      `INSERT INTO ai_master_prompt_versions
+         (environment, treatment, master_prompt_code, version_number, status, content, content_sha256, origin, based_on_id
+          ${ex.length ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''})
+       VALUES ($1, $2, $3, ${NEXT_NUMBER}, 'PREVIOUS', $4, $5, 'auto_conformity', $6${ex.length ? ', $7, $8, $9, $10::jsonb' : ''})
+       RETURNING *`,
+      [p.environment, p.treatment, p.masterPromptCode, p.content, sha, p.basedOnId, ...ex], sql,
+    );
+    return toVersion(r[0]);
+  }) as Promise<MasterPromptVersionRow>;
 }
 
 /** Abandonne un brouillon (jamais activé, donc hors historique). */

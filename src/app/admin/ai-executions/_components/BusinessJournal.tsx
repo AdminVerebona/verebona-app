@@ -14,9 +14,9 @@
  * s'enroulent, aucune largeur fixe (`min-w-0`, `break-words`), cibles
  * tactiles ≥ 40 px.
  */
-import { AlertOctagon, CircleDashed } from 'lucide-react';
+import { AlertOctagon, ChevronDown, ChevronUp, CircleDashed } from 'lucide-react';
 import type { BusinessExecutionDto } from '@/services/ai/business-execution/dto';
-import type { CardKind, ExecutionCards, JournalView } from '@/services/ai/business-execution/journal';
+import type { CardKind, ExecutionCards, JournalHealth, JournalSynthesis, JournalView } from '@/services/ai/business-execution/journal';
 import { BUSINESS_ORIGINS } from '@/services/ai/business-execution/journal';
 import { BUSINESS_TREATMENTS, ORIGIN_LABELS, OUTCOME_LABELS, type BusinessOrigin, type BusinessOutcome } from '@/services/ai/business-execution/types';
 import { BusinessOutcomeBadge } from './BusinessExecutionsPanel';
@@ -164,4 +164,124 @@ export function JournalRowsView({ rows, view, onOpen }: { rows: BusinessExecutio
       ))}
     </ul>
   );
+}
+
+/** Usage de l'IA par traitement (compteurs distincts, lot 99A). */
+export interface SynthesisAiUsage {
+  available: boolean;
+  byTreatment: Record<string, { providerCalls: number; cacheResponses: number; decisionsReused: number }>;
+}
+
+const HEALTH_TONE: Record<JournalHealth, string> = {
+  OK: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]',
+  WATCH: 'bg-[color:var(--bg-warning)] text-[color:var(--text-warning-soft)] border-[color:var(--border-warning)]',
+  INCIDENT: 'bg-[color:var(--bg-danger)] text-[color:var(--text-danger)] border-[color:var(--border-danger)]',
+};
+
+const n = (x: number, un: string, plusieurs = `${un}s`) => `${x.toLocaleString('fr-FR')} ${x > 1 ? plusieurs : un}`;
+
+/**
+ * Lot 99A (ticket P1 T3, §3) — VUE SYNTHÉTIQUE du Journal complet, affichée
+ * par défaut à la place de la liste : état global (OK / À surveiller /
+ * Incident) calculé sur les issues réelles, période, total, synthèse par
+ * traitement (avec l'usage de l'IA en compteurs distincts) et bouton « Voir
+ * les exécutions » / « Masquer les exécutions ». Les échecs et incomplètes ne
+ * sont pas recomptés en tuiles (ce sont les cartes) : seulement leur
+ * répartition par traitement, en liens qui ouvrent la liste filtrée.
+ * Desktop et mobile : une colonne puis deux, enroulement, cibles ≥ 40 px.
+ */
+export function JournalSynthesisView({ synthesis, aiUsage, view, periodLabel, open, onToggle, onOpenFiltered, loading, error }: {
+  synthesis: JournalSynthesis | null;
+  aiUsage?: SynthesisAiUsage | null;
+  view: JournalView;
+  periodLabel: string;
+  open: boolean;
+  onToggle: () => void;
+  onOpenFiltered: (p: { treatment: string; outcome: CardKind }) => void;
+  loading?: boolean;
+  error?: string | null;
+}) {
+  const nature = view === 'metier' ? 'métier' : 'technique';
+  return (
+    <div className="rounded-xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 space-y-3 min-w-0" data-testid="journal-synthese">
+      <div className="flex flex-wrap items-center gap-2 min-w-0">
+        <span className={`inline-flex items-center text-sm px-2.5 py-1 rounded-full border font-medium whitespace-nowrap ${synthesis ? HEALTH_TONE[synthesis.health] : HEALTH_TONE.OK}`}
+          data-testid="journal-health" data-health={synthesis?.health ?? 'UNKNOWN'}>
+          {synthesis ? `État : ${synthesis.healthLabel}` : loading ? 'État : calcul…' : 'État : —'}
+        </span>
+        <span className="text-sm text-[color:var(--text-secondary)] break-words min-w-0" data-testid="journal-synthese-total">
+          {periodLabel} · {synthesis ? n(synthesis.total, `exécution ${nature}`, `exécutions ${nature}s`) : '—'}
+        </span>
+        <button type="button" onClick={onToggle} aria-expanded={open} data-testid="journal-toggle"
+          className="sm:ml-auto inline-flex items-center gap-1.5 min-h-[40px] px-3 rounded-lg border border-[color:var(--border-subtle)] text-sm font-medium text-[color:var(--text-primary)] hover:bg-[color:var(--bg-hover)]">
+          {open ? <ChevronUp className="w-4 h-4" aria-hidden /> : <ChevronDown className="w-4 h-4" aria-hidden />}
+          {open ? 'Masquer les exécutions' : 'Voir les exécutions'}
+        </button>
+      </div>
+      {error && <p className="text-xs text-[color:var(--text-danger)] break-words">Synthèse indisponible : {error}</p>}
+      {synthesis && synthesis.reasons.length > 0 && (
+        <ul className="text-xs text-[color:var(--text-secondary)] space-y-0.5 break-words" data-testid="journal-health-reasons">
+          {synthesis.reasons.map((r) => <li key={r}>{r}</li>)}
+        </ul>
+      )}
+      {synthesis && synthesis.byTreatment.length === 0 && (
+        <p className="text-sm text-[color:var(--text-muted)]" data-testid="journal-synthese-vide">
+          Aucune exécution {nature} sur la période.
+        </p>
+      )}
+      {synthesis && synthesis.byTreatment.length > 0 && (
+        <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2" data-testid="journal-synthese-traitements">
+          {synthesis.byTreatment.map((t) => {
+            const u = aiUsage?.byTreatment[t.treatment];
+            return (
+              <li key={t.treatment} className="rounded-lg border border-[color:var(--border-subtle)] p-3 min-w-0 space-y-1" data-testid="journal-synthese-traitement">
+                <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm min-w-0">
+                  <span className="font-medium text-[color:var(--text-primary)]">{t.treatment}</span>
+                  <span className="text-[color:var(--text-secondary)]">{n(t.total, 'exécution')}</span>
+                  <span className="text-[color:var(--text-muted)]">{n(t.succeeded, 'réussie')}</span>
+                  {t.notFinal > 0 && <span className="text-[color:var(--text-muted)]">{t.notFinal} en cours</span>}
+                  {t.void > 0 && <span className="text-[color:var(--text-muted)]">{t.void} sans objet</span>}
+                  {t.undetermined > 0 && <span className="text-[color:var(--text-muted)]">{n(t.undetermined, 'indéterminée')}</span>}
+                  {t.failed > 0 && (
+                    <button type="button" onClick={() => onOpenFiltered({ treatment: t.treatment, outcome: 'FAILED' })} data-testid="synthese-failed"
+                      className="min-h-[32px] text-[color:var(--text-danger)] hover:underline">{n(t.failed, 'échec')}</button>
+                  )}
+                  {t.incomplete > 0 && (
+                    <button type="button" onClick={() => onOpenFiltered({ treatment: t.treatment, outcome: 'INCOMPLETE' })} data-testid="synthese-incomplete"
+                      className="min-h-[32px] text-[color:var(--text-warning-soft)] hover:underline">{n(t.incomplete, 'incomplète')}</button>
+                  )}
+                </span>
+                {u && (u.providerCalls + u.cacheResponses + u.decisionsReused > 0) && (
+                  <span className="block text-xs text-[color:var(--text-muted)] break-words" data-testid="journal-synthese-ia">
+                    IA : {n(u.providerCalls, 'appel réel', 'appels réels')}
+                    {aiUsage?.available !== false && ` · ${n(u.cacheResponses, 'réponse du cache', 'réponses du cache')} · ${n(u.decisionsReused, 'décision réutilisée', 'décisions réutilisées')}`}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Lot 99A : la liste s'ouvre d'emblée seulement sur demande explicite
+ * (`liste=1`) ou par un LIEN FILTRÉ (issue, traitement, compte, origine,
+ * période choisie, filtres d'appels, onglet) — un lien direct reste un lien
+ * direct. Sinon, vue synthétique.
+ */
+export const JOURNAL_LIST_TRIGGERS = [
+  'liste', 'outcome', 'treatment', 'accountId', 'origin', 'from', 'to',
+  'errorsOnly', 'model', 'rank', 'jobId', 'operationCode', 'configVersionId', 'tab', 'route',
+  'status', 'userId', 'objectType', 'objectId', 'trigger', 'minDurationMs', 't6Mode', 'exec',
+] as const;
+
+export function initialJournalListOpen(sp: { get(k: string): string | null }): boolean {
+  if (sp.get('liste') === '0') return false;
+  return JOURNAL_LIST_TRIGGERS.some((k) => {
+    const v = sp.get(k);
+    return v !== null && v !== '' && !(k === 'errorsOnly' && v === 'false');
+  });
 }

@@ -170,7 +170,8 @@ describe('L63-T3P — corpus DOCUMENT_NAMING (P-T3-15 à P-T3-17) et empreinte',
     expect(r.status).toBe('PASSED');
     expect(r.branchesPassed).toContain('DOCUMENT_NAMING');
     const nommage = r.cases.filter((c) => c.task === 'DOCUMENT_NAMING');
-    expect(nommage.map((c) => c.id).sort()).toEqual(['P-T3-15', 'P-T3-16', 'P-T3-17']);
+    // Lot 99C : cas de représentation temporelle (P-T3-18 à P-T3-22 en rôle answer, P-T3-23 garde R1/R6).
+    expect(nommage.map((c) => c.id).sort()).toEqual(['P-T3-15', 'P-T3-16', 'P-T3-17', 'P-T3-18', 'P-T3-19', 'P-T3-20', 'P-T3-21', 'P-T3-22', 'P-T3-23']);
     expect(nommage.every((c) => c.passed && c.level === 'full')).toBe(true);
     expect(fingerprintDrift([r], { masters: { t3_master_v1: readFingerprints().masters.t3_master_v1 } })).toEqual([]);
   });
