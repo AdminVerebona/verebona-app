@@ -1,6 +1,7 @@
 {
   "case": "P-T3-08",
   "description": "OPERATION_MATCH — facture de freinage après le devis de freinage du même garage, même bien : SAME_OPERATION certain sur un candidat plausible → rattachement M3 (F-059).",
+  "qualification": { "role": "answer" },
   "context": {
     "operationMatch": {
       "subject": {

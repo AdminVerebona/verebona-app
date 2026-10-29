@@ -1,6 +1,7 @@
 {
   "case": "P-T6-01",
   "description": "T6 / FORMULATE — aucun fait supplémentaire, mêmes subjectId et même ordre (CDC 15 §30).",
+  "qualification": { "role": "answer" },
   "context": {
     "input": {
       "schemaVersion": "t6-input-v1",

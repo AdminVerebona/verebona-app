@@ -8,6 +8,8 @@ import { apiClient } from '@/lib/api-client';
 import { Bot, ArrowRight, ExternalLink, Lock, Crown } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 export interface AiHistoryItem {
   id: number;
@@ -49,6 +51,8 @@ const LOCKED_EXAMPLES = [
 
 export function AiHistoryBlock({ locked = false }: { locked?: boolean }) {
   const router = useRouter();
+  // Lot 97B : aucune incitation commerciale dans l'application (COM-01/05).
+  const commerceHidden = useNativeCommerceHidden();
   const [item, setItem] = useState<AiHistoryItem | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -91,14 +95,16 @@ export function AiHistoryBlock({ locked = false }: { locked?: boolean }) {
                 <p className="text-sm font-medium">Disponible en Premium</p>
                 <p className="text-xs text-muted-foreground">Suivez toutes les modifications effectuées automatiquement sur vos biens.</p>
               </div>
-              <Button
-                size="sm" variant="outline"
-                className="border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] gap-1.5 rounded-full"
-                onClick={() => router.push('/mon-compte/offres')}
-              >
-                <Crown className="w-3.5 h-3.5" />
-                Passer Premium
-              </Button>
+              {commerceHidden ? <NativeCommerceNotice /> : (
+                <Button
+                  size="sm" variant="outline"
+                  className="border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] gap-1.5 rounded-full"
+                  onClick={() => router.push('/mon-compte/offres')}
+                >
+                  <Crown className="w-3.5 h-3.5" />
+                  Passer Premium
+                </Button>
+              )}
             </div>
           </div>
         </div>

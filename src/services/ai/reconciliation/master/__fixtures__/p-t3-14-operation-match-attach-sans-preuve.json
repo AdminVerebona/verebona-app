@@ -1,6 +1,7 @@
 {
   "case": "P-T3-14",
   "description": "OPERATION_MATCH (lot 56A) — ATTACH sans aucun signal positif : l'absence de contradiction n'est pas une preuve, le serveur déclasse en question « À traiter ».",
+  "qualification": { "role": "guard" },
   "context": {
     "operationMatch": {
       "subject": {

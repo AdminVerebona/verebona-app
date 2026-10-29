@@ -13,8 +13,12 @@
  */
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
+import { NATIVE_COMMERCE_MESSAGE, nativeCommerceHidden } from '@/lib/native/commerce';
 
 export async function openBillingPortal(): Promise<boolean> {
+  // Lot 97B (COM-01/05) : jamais de portail de paiement depuis l'application
+  // (filet : les boutons y sont déjà masqués).
+  if (nativeCommerceHidden()) { toast.message(NATIVE_COMMERCE_MESSAGE); return false; }
   const onglet = typeof window !== 'undefined' ? window.open('', '_blank') : null;
   try {
     const res = await apiClient.post<{ portal_url?: string; message?: string }>(

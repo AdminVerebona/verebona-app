@@ -1,6 +1,7 @@
 {
   "case": "P-T3-16",
   "description": "DOCUMENT_NAMING (lot 63) — lot hétérogène d’un même émetteur : une famille de factures aux intitulés incohérents (nom de fichier technique, abréviations) harmonisée sur la convention majoritaire, sans rien inventer (mois justifié par la date du document) ; le contrat du même émetteur forme une AUTRE famille et n’est pas renommé.",
+  "qualification": { "role": "answer" },
   "context": {
     "documentNaming": {
       "docs": [

@@ -117,12 +117,13 @@ export function resolveBuildConfig(env) {
     if (variant.env === 'preprod' && !looksPreprod) errors.push(`Build de préproduction vers une adresse qui n’est pas de préproduction (${origin}) : refusé.`);
   }
 
-  const uiMode = (env.VEREBONA_UI_MODE ?? 'remote').trim();
+  // Variable GitHub non posée = chaîne vide : valeur par défaut (et non erreur).
+  const uiMode = (env.VEREBONA_UI_MODE ?? '').trim() || 'remote';
   if (!UI_MODES.includes(uiMode)) errors.push('VEREBONA_UI_MODE doit valoir « remote » (A) ou « local » (B).');
 
-  const version = (env.VEREBONA_APP_VERSION ?? '0.1.0').trim();
+  const version = (env.VEREBONA_APP_VERSION ?? '').trim() || '0.1.0';
   if (!VERSION.test(version)) errors.push('VEREBONA_APP_VERSION doit être de la forme 1.2.3.');
-  const build = (env.VEREBONA_APP_BUILD ?? '1').trim();
+  const build = (env.VEREBONA_APP_BUILD ?? '').trim() || '1';
   if (!BUILD.test(build)) errors.push('VEREBONA_APP_BUILD doit être un entier positif.');
 
   if (errors.length > 0 || !variant || !origin) {

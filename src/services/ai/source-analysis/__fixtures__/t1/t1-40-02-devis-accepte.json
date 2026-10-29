@@ -1,6 +1,7 @@
 {
   "case": "C3-DEVIS",
   "description": "Devis accepté (bon pour accord) : INTERVENTION ENVISAGED, coût PRÉVU seulement — le statut REALIZED et le coût réalisé annoncés à tort par le modèle sont corrigés par le serveur (C2.1 QUOTE).",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 20,
     "assets": [

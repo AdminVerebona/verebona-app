@@ -1,6 +1,7 @@
 {
   "case": "P-T4-05",
   "description": "TEMPORAL_AMBIGUITY — « à faire avant fin mars » sans année ni date : abstention ; une sortie hors liste serait aussi une abstention (U1).",
+  "qualification": { "role": "answer" },
   "context": {
     "temporal": {
       "title": "Ramonage",

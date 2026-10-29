@@ -1,6 +1,7 @@
 {
   "case": "P-T4-12",
   "description": "CLASSIFY_EVENT v2 — mention datée sans objet identifiable ⇒ agendaDecision=abstain (unknown, ambiguous), aucun événement inventé.",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": {
       "title": "Référence 2026-12",

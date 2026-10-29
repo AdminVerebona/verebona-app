@@ -168,6 +168,16 @@ export async function analyseGroupWithMaster(
     }
   }
 
+  // Lot 97A : période facturée et mois principal (contrat t1-billing-period-v1, demande 87D) — conservés avec le
+  // résultat SEULEMENT si le prompt T1 effectif porte le contrat et que c'est cette version qui a répondu.
+  if (a.document.billingPeriod) {
+    const { billingPeriodCapability, persistedBillingPeriod } = await import('../billing-period/contract');
+    const cap = await billingPeriodCapability();
+    const bp = persistedBillingPeriod(a.document.billingPeriod, cap, analysed.promptVersion);
+    if (bp) result.document.billingPeriod = bp;
+    else console.info(`[t1-billing-period] fichier ${input.sourceIds[groupIndices[0]]} : période facturée ignorée (contrat ${cap.reason}${cap.carried ? ', version du prompt différente' : ''}).`);
+  }
+
   return {
     result, facts: projection.facts, projection, documentAssetId: analysed.documentAssetId,
     promptVersion: analysed.promptVersion,

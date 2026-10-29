@@ -1,6 +1,7 @@
 {
   "case": "T1-33D-02",
   "description": "Lot 33D (cas 7) : ancien format de sortie T1 v1 (extract_source_v5 : métadonnées à la racine, fields[]) produit par un ancien texte de prompt — migré par l'adaptateur versionné t1_v1_to_v2.",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 184,
     "assets": [

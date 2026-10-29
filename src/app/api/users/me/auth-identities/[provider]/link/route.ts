@@ -7,12 +7,14 @@
  * déjà liée ailleurs est refusée (§8.3). Fournisseur inactif : 404.
  * Preuve : réauthentification du lot 92 (`requireReauth`, action
  * `link-provider`) ; corps facultatif { currentPassword } (clients anciens).
+ * Lot 97B : corps { client: 'app', appChallenge } depuis l'application →
+ * { redirectUrl } à ouvrir dans le NAVIGATEUR SYSTÈME (jamais la WebView).
  */
 import { NextResponse, type NextRequest } from 'next/server';
 import { getProviderConfig, isOAuthProvider } from '@/lib/auth/oauth/config';
 import { requireReauth } from '@/lib/auth/oauth/account-security';
 import { listIdentities } from '@/lib/auth/oauth/identities';
-import { oauthRateLimited, startFlow } from '@/lib/auth/oauth/flow';
+import { appAccountContextFromBody, appContextErrorResponse, oauthRateLimited, startAppAccountFlow, startFlow } from '@/lib/auth/oauth/flow';
 import { setBindingCookie } from '@/lib/auth/oauth/transactions';
 import { SOCIAL_ERROR_MESSAGES } from '@/lib/auth/oauth/messages';
 import { rateLimitBody } from '@/lib/auth/auth-rate-limit';
@@ -31,6 +33,15 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pr
     return NextResponse.json({ error: m, code: 'PROVIDER_ALREADY_LINKED', message: m }, { status: 409 });
   }
   if (await oauthRateLimited(request, 'start')) return NextResponse.json(rateLimitBody(900), { status: 429 });
+  // Lot 97B (PO M1) : depuis l'application, le parcours s'ouvre dans le
+  // navigateur système (ticket à usage unique) ; l'association est appliquée
+  // à l'échange, dans la vue de l'app (`/api/auth/oauth/app/exchange`).
+  const app = appAccountContextFromBody(body);
+  if (app && 'error' in app) return appContextErrorResponse(app.error);
+  if (app) {
+    const started = await startAppAccountFlow({ request, cfg, intent: 'link', context: app, userId, sessionSid: sid });
+    return NextResponse.json({ redirectUrl: started.redirectUrl });
+  }
   const flow = await startFlow({ request, cfg, intent: 'link', context: { client: 'web' }, userId, sessionSid: sid });
   const res = NextResponse.json({ redirectUrl: flow.url });
   setBindingCookie(res, flow.binding);

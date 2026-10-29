@@ -1,6 +1,7 @@
 {
   "case": "P-T2-08",
   "description": "ANSWER (lot 45, O6 — CDC Opérations V1 C15, F-132, B12) — « payé » sans preuve de paiement : le règlement n’est pas affirmé, le coût consolidé est restitué tel quel, sans le mot « Opération ».",
+  "qualification": { "role": "answer" },
   "context": {
     "intent": "ACCOUNT_FACT_ASSET",
     "question": "Combien ai-je payé pour l’entretien de la Polo ?",

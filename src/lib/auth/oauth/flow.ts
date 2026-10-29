@@ -26,7 +26,7 @@ import {
   APP_HANDOFF_TTL_MS, PENDING_SIGNUP_TTL_MS, PROVIDER_LABEL, appReturnUrl, getProviderConfig, oauthRedirectBase,
   type OAuthProvider, type ProviderConfig,
 } from './config';
-import { encryptProviderToken, randomToken, sha256Hex } from './crypto';
+import { encryptProviderToken, pkceChallenge, randomToken, sha256Hex } from './crypto';
 import {
   findIdentityBySubject, linkIdentity, touchIdentity,
 } from './identities';
@@ -35,14 +35,14 @@ import {
   validateIdToken,
 } from './providers';
 import {
-  bindingMatches, clearBindingCookie, createTransaction, ensureBinding, findAwaitingByBinding, findById, findByState,
+  bindingMatches, claimAppTicket, clearBindingCookie, createTransaction, ensureBinding, findAwaitingByBinding, findById, findByState,
   markFailed, readBinding, setBindingCookie, transition,
   type AuthTransaction, type OAuthIntent, type TxClaims, type TxContext,
 } from './transactions';
 import { checkSessionEligibility, landingPath, openSocialSession } from './session-bridge';
 import { issueReauthProof, ReauthError } from '@/lib/auth/reauth';
 import { emailHasAccount } from './social-signup';
-import type { SocialErrorCode } from './messages';
+import { socialErrorMessage, type SocialErrorCode } from './messages';
 
 export const PENDING_PAGE = '/connexion-sociale';
 export const SECURITY_PAGE = '/mon-compte/informations';
@@ -59,6 +59,13 @@ export function redirectTo(path: string, status: 302 | 303 = 302): NextResponse 
 }
 
 export function errorPath(intent: OAuthIntent, code: SocialErrorCode | string, context?: TxContext): string {
+  // Lot 97B : association / confirmation démarrée DANS L'APPLICATION — l'erreur
+  // revient à l'app (retour `APP_OAUTH_RETURN_URL?error=`), pas à une page web
+  // ouverte dans le navigateur système sans session.
+  if ((intent === 'link' || intent === 'reauth') && context?.client === 'app') {
+    const ret = appReturnUrl();
+    if (ret) return `${ret}?${new URLSearchParams({ error: String(code) }).toString()}`;
+  }
   if (intent === 'link' || intent === 'reauth') return `${SECURITY_PAGE}?securite=erreur&code=${encodeURIComponent(code)}#securite`;
   const base = intent === 'signup' ? '/signup' : '/login';
   const q = new URLSearchParams({ social_error: code });
@@ -139,6 +146,144 @@ export async function startFlow(input: {
     state: tx.state, nonce: tx.nonce, codeChallenge: tx.codeChallenge, reauth: input.intent === 'reauth', loginHint: input.loginHint,
   });
   return { url, binding, txId: tx.id };
+}
+
+// ── Lot 97B : association / confirmation depuis l'APPLICATION ──────────────
+//
+// La vue de l'app (session + réauthentification 5 min) ne fait JAMAIS l'OAuth
+// elle-même (PO M1) : elle crée la transaction puis ouvre dans le navigateur
+// système `/api/auth/oauth/app/continue?ticket=…` (ticket à usage unique) ; ce
+// navigateur reçoit sa liaison (`vb_oauth`) et part chez le fournisseur. Au
+// retour, aucun effet dans le navigateur système (il n'a pas de session) :
+// un code d'échange (2 min) repart vers l'app, qui le présente avec son
+// vérificateur PKCE DEPUIS SA VUE (cookies de session) — l'association ou la
+// preuve de réauthentification est alors appliquée à CETTE session.
+
+/** Corps `{ client: 'app', appChallenge }` des routes link / reauth (null : parcours web). */
+export function appAccountContextFromBody(body: Record<string, unknown>): TxContext | { error: 'APP_RETURN_NOT_CONFIGURED' | 'APP_CHALLENGE_INVALID' } | null {
+  if (body.client !== 'app') return null;
+  if (!appReturnUrl()) return { error: 'APP_RETURN_NOT_CONFIGURED' };
+  const challenge = typeof body.appChallenge === 'string' ? body.appChallenge : '';
+  if (!/^[A-Za-z0-9_-]{43}$/.test(challenge)) return { error: 'APP_CHALLENGE_INVALID' };
+  return { client: 'app', appChallenge: challenge };
+}
+
+/** Réponse d'erreur des routes link / reauth pour un contexte d'app invalide. */
+export function appContextErrorResponse(code: 'APP_RETURN_NOT_CONFIGURED' | 'APP_CHALLENGE_INVALID'): NextResponse {
+  const message = code === 'APP_RETURN_NOT_CONFIGURED'
+    ? 'Cette action n’est pas encore disponible dans l’application. Utilisez le site Verebona.'
+    : 'Demande invalide. Recommencez depuis l’application.';
+  return NextResponse.json({ error: message, code, message }, { status: code === 'APP_RETURN_NOT_CONFIGURED' ? 409 : 400 });
+}
+
+/** Adresse à ouvrir dans le navigateur système (pure, testée). */
+export function appContinueUrl(ticket: string): string {
+  return absolute(`/api/auth/oauth/app/continue?${new URLSearchParams({ ticket }).toString()}`);
+}
+
+/**
+ * Crée la transaction « link » / « reauth » de l'app, liée à l'utilisateur et
+ * à la session de la vue (jamais au cookie de liaison de la vue : le retour se
+ * fait dans le navigateur système). Rend l'adresse d'ouverture.
+ */
+export async function startAppAccountFlow(input: {
+  request: NextRequest; cfg: ProviderConfig; intent: 'link' | 'reauth'; context: TxContext; userId: number; sessionSid: string | null;
+}): Promise<{ redirectUrl: string; txId: number }> {
+  const ticket = randomToken(32);
+  const tx = await createTransaction({
+    provider: input.cfg.provider, intent: input.intent, binding: randomToken(32), context: input.context,
+    userId: input.userId, sessionSid: input.sessionSid, appTicket: ticket,
+  });
+  void logUserActivity({
+    activityType: 'OAUTH_START',
+    userId: input.userId,
+    userEmail: '',
+    details: { provider: input.cfg.provider, intent: input.intent, client: 'app', authTransactionId: tx.id },
+    request: input.request,
+  });
+  return { redirectUrl: appContinueUrl(ticket), txId: tx.id };
+}
+
+/** `GET /api/auth/oauth/app/continue?ticket=` — navigateur système : liaison puis fournisseur. */
+export async function continueAppTicket(request: NextRequest, ticket: string | null): Promise<NextResponse> {
+  const claimed = ticket ? await claimAppTicket(ticket) : null;
+  const cfg = claimed ? getProviderConfig(claimed.tx.provider) : null;
+  if (!claimed || !cfg) {
+    void logUserActivity({
+      activityType: 'OAUTH_CALLBACK_FAILED', userId: claimed?.tx.userId ?? null, userEmail: '',
+      details: { provider: claimed?.tx.provider ?? null, intent: claimed?.tx.intent ?? 'link', reason: 'app_ticket_invalid', authTransactionId: claimed?.tx.id ?? null },
+      request,
+    });
+    if (claimed) void markFailed(claimed.tx.id, 'provider_disabled').catch(() => {});
+    return redirectTo(errorPath('link', 'OAUTH_STATE_INVALID', { client: 'app' }));
+  }
+  const url = buildAuthorizationUrl(cfg, {
+    state: claimed.state, nonce: claimed.nonce, codeChallenge: pkceChallenge(claimed.tx.codeVerifier), reauth: claimed.tx.intent === 'reauth',
+  });
+  const res = NextResponse.redirect(url, 302);
+  setBindingCookie(res, claimed.binding);
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
+}
+
+/** Fin du passage chez le fournisseur pour l'app : code d'échange vers l'app (aucun effet ici). */
+async function handoffAccountToApp(request: NextRequest, tx: AuthTransaction): Promise<NextResponse> {
+  const ret = appReturnUrl();
+  if (!ret || !tx.userId) return callbackFailure(tx, tx.intent, 'OAUTH_STATE_INVALID', 'app_return_missing', request);
+  const handoff = randomToken(32);
+  const moved = await transition(tx.id, 'received', 'handoff', {
+    handoffHash: sha256Hex(handoff), expiresAt: new Date(Date.now() + APP_HANDOFF_TTL_MS),
+  });
+  if (!moved) return callbackFailure(null, tx.intent, 'OAUTH_STATE_INVALID', 'state_replayed', request);
+  const res = NextResponse.redirect(`${ret}?${new URLSearchParams({ handoff }).toString()}`, 302);
+  clearBindingCookie(res);
+  return res;
+}
+
+type AccountExchangeFailure = { code: SocialErrorCode; status: number };
+
+/**
+ * Échange (vue de l'app) d'une association / confirmation : la session qui
+ * présente le code doit être CELLE qui a démarré le parcours (même compte,
+ * même `sid`) ; puis mêmes règles que sur le site (identité déjà liée
+ * ailleurs refusée, même subject exigé, preuve 5 min de CETTE session).
+ */
+export async function completeAppAccountExchange(request: NextRequest, tx: AuthTransaction): Promise<NextResponse> {
+  const fail = (f: AccountExchangeFailure, reason: string) => {
+    void logUserActivity({
+      activityType: tx.intent === 'reauth' && f.code === 'REAUTH_SUBJECT_MISMATCH' ? 'REAUTH_FAILED' : 'OAUTH_CALLBACK_FAILED',
+      userId: tx.userId, userEmail: '',
+      details: tx.intent === 'reauth' && f.code === 'REAUTH_SUBJECT_MISMATCH'
+        ? { method: tx.provider, reason }
+        : { provider: tx.provider, intent: tx.intent, reason, authTransactionId: tx.id, client: 'app' },
+      request,
+    });
+    const message = socialErrorMessage(f.code)!;
+    return NextResponse.json({ error: message, code: f.code, message }, { status: f.status });
+  };
+  if (!tx.userId || !tx.claims || !(await sessionOwnsTransaction(request, tx))) {
+    return fail({ code: 'SESSION_EXPIRED', status: 401 }, 'session_mismatch');
+  }
+  if (tx.intent === 'link') {
+    const outcome = await linkIdentity(tx.userId, tx.claims);
+    if (!outcome.ok) return fail({ code: outcome.code, status: 409 }, outcome.code.toLowerCase());
+    if (!outcome.alreadyLinked) await notifyIdentityChange(request, tx.userId, await userEmail(tx.userId), tx.provider, 'linked', 'security_app');
+    return NextResponse.json({ success: true, intent: 'link', provider: tx.provider, redirectTo: `${SECURITY_PAGE}?securite=linked&provider=${tx.provider}#securite` });
+  }
+  // reauth — REAUTH-04/05 : même subject que l'identité liée à CE compte.
+  const identity = await findIdentityBySubject(tx.claims.provider, tx.claims.issuer, tx.claims.subject);
+  if (!identity || identity.userId !== tx.userId || identity.provider !== tx.provider) {
+    return fail({ code: 'REAUTH_SUBJECT_MISMATCH', status: 403 }, 'subject_mismatch');
+  }
+  await touchIdentity(identity.id, tx.claims);
+  try {
+    await issueReauthProof(tx.userId, tx.sessionSid!, tx.provider, { request });
+  } catch (e) {
+    if (!(e instanceof ReauthError)) throw e;
+    return fail({ code: 'SESSION_EXPIRED', status: 401 }, 'session_revoked');
+  }
+  const resume = tx.context.resume && /^[a-z-]{3,40}$/.test(tx.context.resume) ? `&resume=${tx.context.resume}` : '';
+  return NextResponse.json({ success: true, intent: 'reauth', provider: tx.provider, redirectTo: `${SECURITY_PAGE}?securite=reauth&provider=${tx.provider}${resume}#securite` });
 }
 
 /** Attache au parcours de connexion l'étape d'inscription en attente de ce navigateur (§8.1 via un autre fournisseur). */
@@ -380,6 +525,7 @@ async function sessionOwnsTransaction(request: NextRequest, tx: AuthTransaction)
 }
 
 async function completeLink(request: NextRequest, tx: AuthTransaction): Promise<NextResponse> {
+  if (tx.context.client === 'app') return handoffAccountToApp(request, tx);
   if (!tx.userId || !(await sessionOwnsTransaction(request, tx))) {
     return callbackFailure(tx, 'link', 'SESSION_EXPIRED', 'session_mismatch', request);
   }
@@ -395,6 +541,7 @@ async function completeLink(request: NextRequest, tx: AuthTransaction): Promise<
 }
 
 async function completeReauth(request: NextRequest, tx: AuthTransaction): Promise<NextResponse> {
+  if (tx.context.client === 'app') return handoffAccountToApp(request, tx);
   if (!tx.userId || !(await sessionOwnsTransaction(request, tx))) {
     return callbackFailure(tx, 'reauth', 'SESSION_EXPIRED', 'session_mismatch', request);
   }

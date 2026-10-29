@@ -1,0 +1,187 @@
+{
+  "case": "P-T4-V4-15",
+  "description": "Lot 97A (t4_output_v4, contrat t4-agenda-representation-v1) — AGENDA_REPRESENTATION : facture d’entretien et projection technique de la même Opération à la même date ⇒ une seule occurrence, l’élément issu du document reste principal, la projection intacte est retirée (trace restaurable).",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "representation": {
+      "today": "2026-10-26",
+      "accountId": 0,
+      "operation": {
+        "id": 501,
+        "typeCode": "INTERVENTION",
+        "status": "REALIZED",
+        "label": "Entretien annuel chaudière",
+        "provider": "Thermo Services",
+        "plannedDate": null,
+        "startDate": null,
+        "realizedDate": "2026-03-12",
+        "endDate": null,
+        "active": true,
+        "assetIds": [
+          20
+        ],
+        "equipmentIds": [],
+        "roomIds": [],
+        "fileIds": [
+          9001
+        ],
+        "amounts": [
+          {
+            "kind": "REALIZED_COST",
+            "amountMinor": 14500,
+            "currency": "EUR",
+            "date": "2026-03-12",
+            "periodStart": null,
+            "periodEnd": null
+          }
+        ],
+        "references": [
+          {
+            "kind": "INVOICE",
+            "value": "FA-2026-031"
+          }
+        ]
+      },
+      "neighbours": [],
+      "scopeItems": [
+        {
+          "id": 7001,
+          "title": "Entretien de la chaudière",
+          "date": "2026-03-12",
+          "nature": "HISTORICAL",
+          "businessType": "maintenance",
+          "isAutomatic": true,
+          "isAutomaticModified": false,
+          "manualStatus": null,
+          "pendingStatus": false,
+          "confirmedByUser": false,
+          "projected": false,
+          "operationId": 501,
+          "operationActive": true,
+          "role": "PRINCIPAL",
+          "roleOrigin": "T4",
+          "fileIds": [
+            9001
+          ],
+          "originFileId": 9001,
+          "sources": [
+            {
+              "fileId": 9001,
+              "role": "INVOICE"
+            }
+          ],
+          "assetIds": [
+            20
+          ],
+          "restoredByUser": false
+        },
+        {
+          "id": 7002,
+          "title": "Entretien annuel chaudière",
+          "date": "2026-03-12",
+          "nature": "HISTORICAL",
+          "businessType": "maintenance",
+          "isAutomatic": true,
+          "isAutomaticModified": false,
+          "manualStatus": null,
+          "pendingStatus": false,
+          "confirmedByUser": false,
+          "projected": true,
+          "operationId": 501,
+          "operationActive": true,
+          "role": null,
+          "roleOrigin": null,
+          "fileIds": [],
+          "originFileId": null,
+          "sources": [],
+          "assetIds": [
+            20
+          ],
+          "restoredByUser": false
+        }
+      ],
+      "contextItems": [],
+      "restorables": [],
+      "documents": [
+        {
+          "id": 9001,
+          "type": "FACTURE",
+          "title": "Facture Thermo Services mars 2026",
+          "date": "2026-03-12",
+          "provider": "Thermo Services",
+          "amounts": [
+            {
+              "kind": "DOCUMENT_AMOUNT",
+              "amountMinor": 14500,
+              "currency": "EUR",
+              "date": "2026-03-12",
+              "periodStart": null,
+              "periodEnd": null
+            }
+          ],
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "FA-2026-031"
+            }
+          ],
+          "excerpts": [
+            "Entretien annuel de la chaudière réalisé le 12/03/2026 — 145,00 € TTC"
+          ],
+          "operationIds": [
+            501
+          ]
+        }
+      ],
+      "decisions": {
+        "detachedItemIds": [],
+        "attachedItemIds": [],
+        "detachedLinks": [],
+        "principalWithdrawn": false,
+        "userPrincipalItemId": null,
+        "suppressedKeys": []
+      },
+      "prior": []
+    }
+  },
+  "recording": {
+    "operationCode": "t4_agenda_representation",
+    "task": "AGENDA_REPRESENTATION",
+    "outputContract": "t4_output_v4",
+    "output": {
+      "task": "AGENDA_REPRESENTATION",
+      "outcome": "DECIDED",
+      "occurrences": [
+        {
+          "items": [
+            "A1",
+            "A2"
+          ],
+          "keep": "A1",
+          "role": "PRINCIPAL",
+          "confidence": "certain",
+          "evidence": [
+            {
+              "document": "D1",
+              "excerpt": "Entretien annuel de la chaudière réalisé le 12/03/2026"
+            }
+          ],
+          "reason": "La facture du 12/03/2026 et la projection de l’Opération décrivent le même entretien : une seule occurrence."
+        }
+      ],
+      "restorations": [],
+      "identityConcern": null,
+      "reason": "Un seul entretien réalisé, représenté deux fois dans l’agenda."
+    }
+  },
+  "expected": {
+    "valid": true,
+    "outcome": "DECIDED",
+    "mutations": [
+      "REMOVE_PROJECTION"
+    ],
+    "refused": []
+  }
+}

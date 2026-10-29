@@ -20,6 +20,7 @@
 import { useEffect, useState } from 'react';
 import { Check, Loader2, Repeat } from 'lucide-react';
 import { DropdownMenuItem, DropdownMenuLabel } from '@/components/ui/dropdown-menu';
+import { clearPrivateSessionStorage } from '@/lib/session/private-session-storage';
 
 interface UserSpace {
   id: number;
@@ -42,6 +43,8 @@ export async function switchToAccount(accountId: number, target = '/accueil'): P
       const data = await res.json().catch(() => ({}));
       return { ok: false, message: (data as { message?: string }).message ?? 'Cet espace n’est pas accessible.' };
     }
+    // Lot 97C (AC17) : rien de la consultation de l'espace quitté n'est repris.
+    clearPrivateSessionStorage();
     window.location.assign(target);
     return { ok: true };
   } catch {

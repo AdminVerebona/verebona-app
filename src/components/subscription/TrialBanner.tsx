@@ -7,6 +7,8 @@ import { libelleEssai } from './trial-label';
 import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
 import { isUnpaid, isRecentPendingPayment, type TrialStatusPayload, type UnpaidCyclePayload } from '@/lib/trial-status';
 import { useEntitlements } from '@/hooks/useEntitlements';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 /**
  * Bandeau d'essai (CDC §9.2).
@@ -36,6 +38,9 @@ interface TrialStatus extends TrialStatusPayload {
 
 export function TrialBanner() {
   const router = useRouter();
+  // Lot 97B (COM-04/05) : dans l'application, l'essai reste affiché en
+  // lecture seule ; aucun bouton ni appel à choisir une offre.
+  const commerceHidden = useNativeCommerceHidden();
   const { entitlements } = useEntitlements();
   const data = entitlements as TrialStatus | null;
 
@@ -97,13 +102,14 @@ export function TrialBanner() {
             L&apos;essai gratuit a déjà été utilisé avec cette adresse.
           </span>{' '}
           <span className="text-[color:var(--text-muted)]">
-            Il est réservé à une première inscription. Choisissez votre offre pour
-            continuer.
+            Il est réservé à une première inscription.{commerceHidden ? '' : ' Choisissez votre offre pour continuer.'}
           </span>
         </p>
-        <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
-          Choisir mon offre
-        </Button>
+        {commerceHidden ? <NativeCommerceNotice className="text-xs text-[color:var(--text-muted)]" /> : (
+          <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
+            Choisir mon offre
+          </Button>
+        )}
       </div>
     );
   }
@@ -116,13 +122,14 @@ export function TrialBanner() {
         <p className="flex-1 text-sm text-[color:var(--text-primary)]">
           <span className="font-medium">Votre essai gratuit n&apos;a pas pu être activé.</span>{' '}
           <span className="text-[color:var(--text-muted)]">
-            Vos données sont conservées. Contactez-nous ou choisissez une offre pour
-            continuer.
+            Vos données sont conservées. {commerceHidden ? 'Contactez-nous.' : 'Contactez-nous ou choisissez une offre pour continuer.'}
           </span>
         </p>
-        <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
-          Voir les offres
-        </Button>
+        {commerceHidden ? <NativeCommerceNotice className="text-xs text-[color:var(--text-muted)]" /> : (
+          <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
+            Voir les offres
+          </Button>
+        )}
       </div>
     );
   }
@@ -145,9 +152,11 @@ export function TrialBanner() {
             Aucun prélèvement n&apos;a été effectué et vos données sont conservées.
           </span>
         </p>
-        <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
-          Choisir mon offre
-        </Button>
+        {commerceHidden ? <NativeCommerceNotice className="text-xs text-[color:var(--text-muted)]" /> : (
+          <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
+            Choisir mon offre
+          </Button>
+        )}
       </div>
     );
   }
@@ -169,20 +178,22 @@ export function TrialBanner() {
           <span className="font-medium">
             {libelleEssai(trial.daysRemaining)}
           </span>
-          {urgent && (
+          {urgent && !commerceHidden && (
             <span className="text-[color:var(--text-muted)]">
               {' '}
               · choisissez une offre pour ne pas perdre l&apos;accès.
             </span>
           )}
         </p>
-        <Button
-          size="sm"
-          variant={urgent ? 'default' : 'outline'}
-          onClick={() => router.push('/mon-compte/offres')}
-        >
-          {urgent ? 'Choisir une offre' : 'Voir les offres'}
-        </Button>
+        {commerceHidden ? <NativeCommerceNotice className="text-xs text-[color:var(--text-muted)]" /> : (
+          <Button
+            size="sm"
+            variant={urgent ? 'default' : 'outline'}
+            onClick={() => router.push('/mon-compte/offres')}
+          >
+            {urgent ? 'Choisir une offre' : 'Voir les offres'}
+          </Button>
+        )}
       </div>
     );
   }

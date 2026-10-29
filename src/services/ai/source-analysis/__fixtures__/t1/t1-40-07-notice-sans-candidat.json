@@ -1,6 +1,7 @@
 {
   "case": "F-004 / F-003",
   "description": "Notice datée avec un prix indicatif : aucune Opération — le candidat proposé à tort est rendu non établi par le serveur (type documentaire non métier).",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 20,
     "assets": [

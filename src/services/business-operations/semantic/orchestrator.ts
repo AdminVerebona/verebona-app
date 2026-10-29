@@ -153,6 +153,8 @@ export async function reevaluateRepresentation(req: RepresentationRequest): Prom
     const id = deja?.id ?? await store.recordReevaluation(sql, { ...base, status, reason, beforeState: stateSummary(b) });
     return vide(status, { fingerprint: b.fingerprint, journalId: id, reason, aiContract });
   };
+  // Lot 97A : détail de l'attente (marqueur absent, TASK non cochée, contrats…) — diagnostic et guide du PO.
+  if (!cap.available && cap.contractState) base.contextSummary = { ...base.contextSummary, contractState: cap.contractState };
   if (!cap.available) return attente('UNAVAILABLE', cap.reason, REPRESENTATION_AI_CONTRACT);
   if (b.tooLarge) return attente('DEFERRED', 'CONTEXT_TOO_LARGE');
   if (dry) return vide('WOULD_REQUEST', { fingerprint: b.fingerprint });
@@ -312,7 +314,7 @@ interface IdentityRequest {
    * (décision établie à rejouer, aucun nouvel appel).
    */
   discardVerdict?: boolean;
-  deps?: { sql?: Sql; now?: () => Date };
+  deps?: { sql?: Sql; now?: () => Date; identityDecider?: import('./identity-decider').IdentityDecider };
 }
 
 interface IdentityOutcome {
@@ -357,10 +359,28 @@ export async function requestIdentityReevaluation(req: IdentityRequest): Promise
     const fichiers = [...new Set(docs.map((d) => Number(d.file_id)))];
     if (fichiers.length !== 1 || Number(autres[0]?.n ?? 0) > 0) {
       const reason = fichiers.length === 0 ? 'NO_DOCUMENT_SOURCE' : 'MULTI_SOURCE_IDENTITY';
+      // Lot 97A (demande 87B-t3-identite-multi-operations) : Opération à plusieurs sources — décision T3
+      // OPERATION_IDENTITY si le prompt T3 ACTIF porte la branche et le marqueur (demande mise en attente,
+      // traitée par le passage T3 de la file durable : jamais d'appel IA ici). Sinon : constat d'avant.
+      const cap = fichiers.length > 0
+        ? await (req.deps?.identityDecider ?? (await import('./identity-decider')).identityDecider()).capability()
+        : null;
+      if (cap?.available) {
+        const { IDENTITY_CONTRACT_VERSION } = await import('./identity-contract');
+        const id = await store.recordReevaluation(sql, {
+          accountId: req.accountId, scope: 'T3', operationId, triggerKind: req.trigger, triggerRef: req.triggerRef ?? null, correlationId: req.correlationId ?? null,
+          status: 'PENDING', reason: req.reason, contractVersion: IDENTITY_CONTRACT_VERSION, deciderVersion: cap.version ?? '',
+          contextSummary: { kind: 'OPERATION_IDENTITY', documents: fichiers.length, otherSources: Number(autres[0]?.n ?? 0), request: req.reason.slice(0, 200) },
+        });
+        out.requested.push(operationId);
+        out.journalIds.push(id);
+        continue;
+      }
       const deja = await store.findSameWaiting(sql, { accountId: req.accountId, scope: 'T3', operationId, fingerprint: null, status: 'UNAVAILABLE', reason, deciderVersion: '' });
       const id = deja?.id ?? await store.recordReevaluation(sql, {
         accountId: req.accountId, scope: 'T3', operationId, triggerKind: req.trigger, triggerRef: req.triggerRef ?? null, correlationId: req.correlationId ?? null,
-        status: 'UNAVAILABLE', reason, contractVersion: 'OPERATION_MATCH', deciderVersion: '', contextSummary: { documents: fichiers.length, otherSources: Number(autres[0]?.n ?? 0), request: req.reason.slice(0, 200) },
+        status: 'UNAVAILABLE', reason, contractVersion: 'OPERATION_MATCH', deciderVersion: '',
+        contextSummary: { documents: fichiers.length, otherSources: Number(autres[0]?.n ?? 0), request: req.reason.slice(0, 200), ...(cap?.contractState ? { contractState: cap.contractState } : {}) },
       });
       out.unsupported.push({ operationId, reason, aiContract: T3_IDENTITY_AI_CONTRACT });
       out.journalIds.push(id);
@@ -410,7 +430,8 @@ export async function settleIdentityRequests(accountId: number, sql?: Sql): Prom
     if (!(await store.semanticJournalReady(s))) return 0;
     const lignes = await s.unsafe<Array<{ id: number; candidates: number[] | null; request_id: string | null }>>(`
       SELECT r.id, ARRAY(SELECT jsonb_array_elements_text(r.context_summary -> 'candidates')::int) AS candidates, r.context_summary ->> 'requestId' AS request_id
-        FROM operation_semantic_reevaluations r WHERE r.account_id = $1 AND r.scope = 'T3' AND r.status = 'PENDING' ORDER BY r.id LIMIT 200`, [accountId] as never[]);
+        FROM operation_semantic_reevaluations r WHERE r.account_id = $1 AND r.scope = 'T3' AND r.status = 'PENDING'
+         AND r.contract_version = 'OPERATION_MATCH' ORDER BY r.id LIMIT 200`, [accountId] as never[]);
     let n = 0;
     for (const l of lignes) {
       const c = await s.unsafe<Array<{ pending: boolean; retro_status: string | null; retro_result: string | null; outcome: string | null; op: number | null; done: string | null }>>(`

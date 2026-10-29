@@ -14,10 +14,12 @@
  *
  * Le tri n'est plus ici : il est global et a sa place dans la barre d'outils.
  *
- * ── TOUJOURS SANS CHAMP DE RECHERCHE ──────────────────────────────────────
+ * ── LA RECHERCHE N'EST PAS UN FILTRE DU PANNEAU ───────────────────────────
  *
- * §4.2 et UX-01 : « Aucun champ de recherche local. » La recherche reste
- * centralisée au niveau général de Verebona.
+ * Lot 97C (décision PO du 26/10/2026, UX-01 du CDC V2 annulé) : le champ de
+ * recherche locale est AU-DESSUS de la liste (`LocalSearchField`), toujours
+ * visible ; il s'ajoute aux filtres de ce panneau en intersection, sans les
+ * remplacer ni les effacer.
  *
  * ── LE FILTRE RUBRIQUE EST ARRIVÉ AVEC LE REGROUPEMENT OPTIONNEL ──────────
  *

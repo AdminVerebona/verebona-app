@@ -34,7 +34,7 @@ import {
   type MascotPoseName, type RecentSearchRow, type SpaceObject, type SpaceTurn,
 } from '@/lib/verebona/space';
 import {
-  LIVE_DEBOUNCE_MS, LIVE_MIN_CHARS, moveActive, navMatches, toLiveResults, type LiveResult,
+  LIVE_DEBOUNCE_MS, LIVE_MIN_CHARS, moveActive, navMatches, seeAllLinks, toLiveResults, type LiveResult, type LiveSeeAll,
 } from '@/lib/verebona/live-search';
 import { openDrawer } from '@/lib/drawers';
 import { openHelpFromLink } from '@/lib/help-center/open';
@@ -75,6 +75,10 @@ export interface VerebonaSpaceApi {
   setDraft: (text: string) => void;
   /** Suggestions pendant la frappe (biens, documents, échéances, pages). */
   live: LiveResult[];
+  /** Lot 97C : « Voir tous les documents / éléments d'agenda » (recherche préremplie). */
+  liveSeeAll: LiveSeeAll[];
+  /** Ouvre un écran complet de « Voir tous » (espace fermé, saisie vidée). */
+  openSeeAll: (l: LiveSeeAll) => void;
   liveLoading: boolean;
   /** Suggestion choisie au clavier (-1 : aucune, « Entrée » demande à Verebona). */
   activeLive: number;
@@ -191,6 +195,7 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   // ── Saisie et suggestions pendant la frappe ──────────────────────────────
   const [draft, setDraftState] = useState('');
   const [live, setLive] = useState<LiveResult[]>([]);
+  const [liveSeeAll, setLiveSeeAll] = useState<LiveSeeAll[]>([]);
   const [liveLoading, setLiveLoading] = useState(false);
   const [activeLive, setActiveLive] = useState(-1);
   const liveSeq = useRef(0);
@@ -201,8 +206,9 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   useEffect(() => {
     const q = draft.trim();
     const mine = ++liveSeq.current;
-    if (q.length < LIVE_MIN_CHARS) { setLive([]); setLiveLoading(false); return; }
+    if (q.length < LIVE_MIN_CHARS) { setLive([]); setLiveSeeAll([]); setLiveLoading(false); return; }
     setLive(navMatches(q));
+    setLiveSeeAll([]);
     setLiveLoading(true);
     const t = setTimeout(async () => {
       // Mode `instant` : recherche SQL seule, jamais d'appel modèle à la frappe.
@@ -210,6 +216,7 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
       const data = res && res.ok ? await res.json().catch(() => null) : null;
       if (mine !== liveSeq.current) return;
       setLive(toLiveResults(q, data?.results));
+      setLiveSeeAll(seeAllLinks(q, data?.results));
       setLiveLoading(false);
     }, LIVE_DEBOUNCE_MS);
     return () => clearTimeout(t);
@@ -301,6 +308,12 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
     if (r.drawer) openDrawer(r.drawer);
     // Lot 59 (point 3) : le Centre d'aide s'ouvre dans un nouvel onglet.
     else if (!openHelpFromLink(null, r.href)) router.push(r.href);
+  }, [close, router, setDraft]);
+
+  const openSeeAll = useCallback((l: LiveSeeAll) => {
+    setDraft('');
+    close();
+    router.push(l.href);
   }, [close, router, setDraft]);
 
   /** Échange construit par l'interface : aucune écriture, donc aucune garde. */
@@ -398,7 +411,7 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
 
   const api: VerebonaSpaceApi = {
     v, turns, isOpen, isDesktop, reducedMotion, pose, recent, removeRecent, showThread, suggestions,
-    draft, setDraft, live, liveLoading, activeLive, moveLive, openLive,
+    draft, setDraft, live, liveSeeAll, openSeeAll, liveLoading, activeLive, moveLive, openLive,
     open, close, toggle, leaveForOverlay, ask: envoyer, askLocal, runLocal, guard, newRequest, resume, registerInput, focusInput,
   };
 

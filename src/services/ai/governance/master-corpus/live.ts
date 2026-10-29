@@ -120,6 +120,22 @@ const BUILDERS: Record<string, Builder> = {
       page: { index: 1, count: 1, elements: x.elements as never }, today: x.today ?? '2026-10-24',
     });
   },
+  async t3_operation_identity(c) {
+    // Lot 97A : variables construites par le constructeur de production (`buildIdentityInput`, six emplacements T3).
+    const raw = ctx<{ identity?: unknown }>(c).identity;
+    if (!raw) return null;
+    const [{ buildIdentityInput }, { identityVariables }] = await Promise.all([
+      import('@/services/business-operations/semantic/identity-context'), import('@/services/business-operations/semantic/identity-contract'),
+    ]);
+    return identityVariables(buildIdentityInput(raw as never).input);
+  },
+  async t4_agenda_representation(c) {
+    // Lot 97A : contexte construit par le constructeur de production (`buildRepresentationInput`, contrat t4_input_v3).
+    const raw = ctx<{ representation?: unknown }>(c).representation;
+    if (!raw) return null;
+    const { buildRepresentationInput } = await import('@/services/business-operations/semantic/context');
+    return { AGENDA_REPRESENTATION: buildRepresentationInput(raw as never).input };
+  },
   async t3_link_ambiguity(c) {
     // Lot 31B — relation DOCUMENT_ASSET : même constructeur que la production.
     const da = ctx<{ documentAsset?: { subject: unknown; candidates: unknown[] } }>(c).documentAsset;

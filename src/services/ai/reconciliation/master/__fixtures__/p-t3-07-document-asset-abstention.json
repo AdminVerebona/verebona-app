@@ -1,6 +1,7 @@
 {
   "case": "P-T3-07",
   "description": "DOCUMENT_ASSET — preuves insuffisantes : liste vide, abstention, l’utilisateur tranche (« À traiter »).",
+  "qualification": { "role": "answer" },
   "context": {
     "variables": {
       "FIELD": null,

@@ -39,6 +39,8 @@ import {
 import { useThumbnailUrl } from '@/hooks/useThumbnailUrl';
 import { displayThumbnailKey } from '@/lib/assets/display-thumbnail';
 import { WriteBlockedDialog } from '@/components/premium/WriteBlockedDialog';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 // ⚡ Lazy load AssetFormDialog
 const AssetFormDialog = dynamic(
@@ -213,6 +215,8 @@ const AssetCardWithThumbnail = React.memo(function AssetCardWithThumbnail({
 
 function AssetsPageContent() {
   const { setBreadcrumbs } = useBreadcrumb();
+  // Lot 97B (COM-01/05) : aucun bouton d'offre dans l'application.
+  const commerceHidden = useNativeCommerceHidden();
 
   useEffect(() => {
     setBreadcrumbs([{ label: 'Mes biens' }]);
@@ -426,11 +430,13 @@ function AssetsPageContent() {
                     {limitMessage}
                   </p>
                 </div>
-                <Button asChild size="sm" variant="outline" className="w-full sm:w-auto flex-shrink-0">
-                  <Link href="/mon-compte/offres">
-                    Choisir une offre
-                  </Link>
-                </Button>
+                {commerceHidden ? <NativeCommerceNotice /> : (
+                  <Button asChild size="sm" variant="outline" className="w-full sm:w-auto flex-shrink-0">
+                    <Link href="/mon-compte/offres">
+                      Choisir une offre
+                    </Link>
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>

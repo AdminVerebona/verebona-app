@@ -27,10 +27,14 @@ export const T1_MASTER_PROMPT_CODE = 't1_master_v1';
  * une sortie v4 reste une v5 valide : champs facultatifs, listes étendues),
  * v6 lot 91D (`valueDecisions[]` facultatif : décision de T1 sur les valeurs
  * significatives des unités sources — une sortie v5 reste une v6 valide :
- * tableau ABSENT = contrat non porté, aucun adaptateur).
- * Affichée « t1_analyze_document@v6 ».
+ * tableau ABSENT = contrat non porté, aucun adaptateur),
+ * v7 lot 97A (`document.billingPeriod` facultatif : période facturée et mois
+ * principal de rattachement décidés par T1, contrat `t1-billing-period-v1`,
+ * demande `87D-mois-principal-factures` — une sortie v6 reste une v7 valide :
+ * bloc ABSENT = contrat non porté, aucun adaptateur).
+ * Affichée « t1_analyze_document@v7 ».
  */
-export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 6;
+export const T1_ANALYZE_DOCUMENT_CONTRACT_VERSION = 7;
 export const T1_TASKS = ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'] as const;
 
 const confidence = z.enum(['certain', 'probable', 'conflictual']);
@@ -330,6 +334,35 @@ export const t1ValueDecision = z.object({
 });
 export type T1ValueDecision = z.infer<typeof t1ValueDecision>;
 
+// ── Période facturée et mois principal (lot 97A, contrat t1-billing-period-v1) ──
+//
+// Demande `87D-mois-principal-factures` : pour une facture PÉRIODIQUE, T1 dit
+// quelle période est facturée et à quel MOIS elle se rattache principalement
+// (titre « Facture Homiris — Février 2026 »). Le code ne déduit jamais ce mois
+// d'une règle (date d'émission, mois de début…) : sans décision « certain » de
+// T1, aucun mois principal (`principalMonthFromAnalysis`).
+
+/**
+ * Fondement du mois principal :
+ *   STATED_ON_DOCUMENT  le mois est écrit tel quel sur le document (« Abonnement février 2026 ») ;
+ *   MAJORITY_OF_PERIOD  la période facturée court sur plusieurs mois et couvre majoritairement ce mois.
+ */
+export const T1_PRINCIPAL_MONTH_BASES = ['STATED_ON_DOCUMENT', 'MAJORITY_OF_PERIOD'] as const;
+export type T1PrincipalMonthBasis = (typeof T1_PRINCIPAL_MONTH_BASES)[number];
+
+export const t1BillingPeriod = z.object({
+  /** Premier jour facturé (AAAA-MM-JJ), null s'il n'est pas écrit. */
+  start: isoDate.nullable(),
+  /** Dernier jour facturé (AAAA-MM-JJ), null s'il n'est pas écrit. */
+  end: isoDate.nullable(),
+  /** Mois principal de rattachement (AAAA-MM), null si T1 ne peut pas le décider. */
+  principalMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).nullable(),
+  principalMonthBasis: z.enum(T1_PRINCIPAL_MONTH_BASES).nullable(),
+  confidence,
+  evidence: t1Evidence.default({}),
+});
+export type T1BillingPeriod = z.infer<typeof t1BillingPeriod>;
+
 // ── Branche GROUP_UPLOAD ────────────────────────────────────────────────────
 export const T1GroupUploadOutput = z.object({
   task: z.literal('GROUP_UPLOAD'),
@@ -360,6 +393,12 @@ export const T1AnalyzeDocumentOutput = z.object({
       confidence: z.number().min(0).max(1),
       evidence: t1Evidence.default({}),
     }).optional(),
+    /**
+     * Lot 97A (contrat v7, `t1-billing-period-v1`) : période facturée et mois
+     * principal d'une facture périodique. ABSENT = contrat non porté (aucun
+     * mois principal, comportement d'avant).
+     */
+    billingPeriod: t1BillingPeriod.optional(),
   }).default({}),
   entities: z.object({
     assets: z.array(entityCandidate).max(20).default([]),

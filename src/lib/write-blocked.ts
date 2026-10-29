@@ -17,6 +17,7 @@
  */
 import { toast } from 'sonner';
 import { unpaidRestrictionMessage } from '@/services/billing/unpaid-cycle.rules';
+import { NATIVE_COMMERCE_MESSAGE, nativeCommerceHidden } from '@/lib/native/commerce';
 
 /** Page de souscription — cible unique des CTA de deblocage. */
 export const OFFERS_PATH = '/mon-compte/offres';
@@ -176,6 +177,11 @@ export function setWriteBlockedListenerMounted(monte: boolean): void {
 export function notifyWriteBlocked(info: WriteBlockedInfo): void {
   if (typeof window !== 'undefined' && fenetreDisponible) {
     window.dispatchEvent(new CustomEvent<WriteBlockedInfo>(WRITE_BLOCKED_EVENT, { detail: info }));
+    return;
+  }
+  // Lot 97B (COM-01/05) : dans l'application, aucun renvoi vers les offres.
+  if (nativeCommerceHidden()) {
+    toast.error(info.message, { duration: 8000, description: NATIVE_COMMERCE_MESSAGE });
     return;
   }
   toast.error(info.message, {

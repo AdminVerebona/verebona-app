@@ -1,6 +1,7 @@
 {
   "case": "F-095",
   "description": "Avoir de 100 € sur une facture de réparation : rôle CREDIT_NOTE, montant converti en REDUCTION par le serveur (jamais un coût supplémentaire).",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 12,
     "assets": [

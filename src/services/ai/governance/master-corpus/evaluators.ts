@@ -213,7 +213,46 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
       ...ecart(exp(c, 'rejected') === undefined || JSON.stringify(refus) === JSON.stringify(exp(c, 'rejected')), `refus ${JSON.stringify(refus)}`),
     ];
   },
+  // Lot 97A — OPERATION_IDENTITY (contrat t3-operation-identity-v1) : contexte construit par le code de
+  // production (`buildIdentityInput`), validation serveur réelle (monde fermé, complétude, protections) puis
+  // plan (décisions certaines → décisions de rattachement). Attendus : `valid`, `outcome`, `mutations`
+  // (natures triées), `issues` (motifs de refus triés).
+  async t3_operation_identity(c, output) {
+    const [{ buildIdentityInput }, { validateIdentity, planIdentity }] = await Promise.all([
+      import('@/services/business-operations/semantic/identity-context'), import('@/services/business-operations/semantic/identity-validate'),
+    ]);
+    const b = buildIdentityInput((c.context as { identity: never }).identity);
+    const v = validateIdentity(output, b.scope);
+    const issues = v.ok ? [] : [...new Set(v.problems.map((p) => p.issue))].sort();
+    const kinds = v.ok && v.decision.outcome !== 'ABSTAIN' ? planIdentity(v.decision, b.scope).mutations.map((m) => m.kind).sort() : [];
+    return [
+      ...ecart(exp(c, 'valid') === undefined || v.ok === exp(c, 'valid'), `validité ${v.ok}${v.ok ? '' : ` (${issues.join(',')})`}`),
+      ...ecart(exp(c, 'outcome') === undefined || (v.ok && v.decision.outcome === exp(c, 'outcome')), `issue ${v.ok ? v.decision.outcome : 'refusée'}`),
+      ...ecart(exp(c, 'mutations') === undefined || JSON.stringify(kinds) === JSON.stringify(exp(c, 'mutations')), `mutations ${JSON.stringify(kinds)}`),
+      ...ecart(exp(c, 'issues') === undefined || JSON.stringify(issues) === JSON.stringify(exp(c, 'issues')), `refus ${JSON.stringify(issues)}`),
+    ];
+  },
   // ── T4 ─────────────────────────────────────────────────────────────────────
+  // Lot 97A — AGENDA_REPRESENTATION (contrat t4-agenda-representation-v1) : contexte construit par le code de
+  // production (`buildRepresentationInput`), validation (`validateRepresentation`) et plan (`planRepresentation`)
+  // réels. Attendus : `valid`, `outcome`, `mutations` (natures dans l'ordre du plan), `refused` (motifs), `issues`.
+  async t4_agenda_representation(c, output) {
+    const [{ buildRepresentationInput }, { validateRepresentation }, { planRepresentation }] = await Promise.all([
+      import('@/services/business-operations/semantic/context'), import('@/services/business-operations/semantic/validate'),
+      import('@/services/business-operations/semantic/plan'),
+    ]);
+    const b = buildRepresentationInput((c.context as { representation: never }).representation);
+    const v = validateRepresentation(output, b.scope);
+    const issues = v.ok ? [] : [...new Set(v.problems.map((p) => p.issue))].sort();
+    const plan = v.ok ? planRepresentation(v.decision, b.scope) : { mutations: [], refused: [] };
+    return [
+      ...ecart(exp(c, 'valid') === undefined || v.ok === exp(c, 'valid'), `validité ${v.ok}${v.ok ? '' : ` (${issues.join(',')})`}`),
+      ...ecart(exp(c, 'outcome') === undefined || (v.ok && v.decision.outcome === exp(c, 'outcome')), `issue ${v.ok ? v.decision.outcome : 'refusée'}`),
+      ...ecart(exp(c, 'mutations') === undefined || JSON.stringify(plan.mutations.map((m) => m.kind)) === JSON.stringify(exp(c, 'mutations')), `mutations ${JSON.stringify(plan.mutations.map((m) => m.kind))}`),
+      ...ecart(exp(c, 'refused') === undefined || JSON.stringify(plan.refused.map((r) => r.reason)) === JSON.stringify(exp(c, 'refused')), `refus ${JSON.stringify(plan.refused.map((r) => r.reason))}`),
+      ...ecart(exp(c, 'issues') === undefined || JSON.stringify(issues) === JSON.stringify(exp(c, 'issues')), `problèmes ${JSON.stringify(issues)}`),
+    ];
+  },
   async t4_classify_event(c, output) {
     const { translateClassifyEvent, translateEventDecision } = await import('../../agenda/master/classify-event');
     const r = translateClassifyEvent(output as never);

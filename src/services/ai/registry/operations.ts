@@ -353,6 +353,26 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     timeoutMs: 45_000, jsonResponse: true, defaultMaxOutputTokens: 1_500,
     outputSchema: 'T3KnowledgeQueryOutput', active: true, billable: false,
   },
+  // Lot 97A (demande `87B-t3-identite-multi-operations`) : réévaluation
+  // SÉMANTIQUE de l'identité d'une Opération à PLUSIEURS sources (quelles
+  // sources forment réellement la même Opération ; une source qui relève
+  // d'une autre Opération du contexte ou d'aucune). Contrat
+  // `t3-operation-identity-v1` (`business-operations/semantic/identity-contract.ts`).
+  // Appelée par l'orchestrateur sémantique (`requestIdentityReevaluation`)
+  // seulement si le prompt T3 ACTIF porte la section « BRANCHE TASK =
+  // OPERATION_IDENTITY » ET le marqueur ; sinon constat
+  // `MULTI_SOURCE_IDENTITY` (comportement d'avant). Réutilise les six
+  // emplacements T3 : aucun nouvel emplacement. Branche FACULTATIVE dont le
+  // texte est collé par le PO (`MASTER_TASKS_TEXT_PENDING`). Budget : plafonds
+  // existants du rapprochement sémantique. Non facturée (traitement de fond).
+  t3_operation_identity: {
+    operationCode: 't3_operation_identity', useCaseCode: 'DATA_RECONCILIATION',
+    label: 'T3 master — identité sémantique d’une Opération à plusieurs sources (TASK=OPERATION_IDENTITY)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T3_MASTER, masterPromptCode: T3_MASTER, task: 'OPERATION_IDENTITY', promptVariables: T3_MASTER_VARIABLES,
+    timeoutMs: 45_000, jsonResponse: true, defaultMaxOutputTokens: 2_000,
+    outputSchema: 'T3OperationIdentityOutput', active: true, billable: false,
+  },
 
   // ── Usage 3 — Assistant (CDC §4.3.4) ──────────────────────────────────────
   retrieve_data: {
@@ -448,6 +468,24 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     promptCode: T4_MASTER, masterPromptCode: T4_MASTER, task: 'TEMPORAL_AMBIGUITY', promptVariables: T4_MASTER_VARIABLES,
     timeoutMs: 15_000, jsonResponse: true,
     outputSchema: 'T4TemporalAmbiguityOutput', active: true, billable: false,
+  },
+  // Lot 97A (demande `87B-t4-representation-agenda-multi-evenements`) :
+  // représentation Agenda d'une Opération sur PLUSIEURS éléments à la fois
+  // (doublons, étapes, rattachements, principal, restaurations). Contrat
+  // `t4-agenda-representation-v1` (`business-operations/semantic/contract.ts`),
+  // contexte structuré `t4_input_v3` / `t4_output_v4` seulement (branche
+  // FACULTATIVE, jamais autorisée par défaut). Appelée par la réévaluation
+  // sémantique (`semantic/orchestrator.ts`) seulement si la version T4 ACTIVE
+  // porte le marqueur et autorise la TASK (`semantic/decider.ts`) ; sinon
+  // « contrat en attente » (comportement d'avant). Budget : plafonds existants
+  // du rapprochement sémantique. Non facturée (traitement de fond).
+  t4_agenda_representation: {
+    operationCode: 't4_agenda_representation', useCaseCode: 'AGENDA_INTELLIGENCE',
+    label: 'T4 master — représentation Agenda multi-événements d’une Opération (TASK=AGENDA_REPRESENTATION)',
+    provider: GEMINI, primaryModel: DOC_PRIMARY, fallbackModels: DOC_FALLBACKS,
+    promptCode: T4_MASTER, masterPromptCode: T4_MASTER, task: 'AGENDA_REPRESENTATION', promptVariables: ['AGENDA_REPRESENTATION'],
+    timeoutMs: 45_000, jsonResponse: true, defaultMaxOutputTokens: 4_000,
+    outputSchema: 'T4AgendaRepresentationOutput', active: true, billable: false,
   },
 
   // ── Usage technique — Gouvernance IA (CDC §4.5.3) ────────────────────────

@@ -1,6 +1,7 @@
 {
   "case": "T1-03",
   "description": "Montant 749 € : 749 EUR dans la fiche (acquisitionPrice), 74 900 cents au niveau document (amountCents).",
+  "qualification": { "role": "answer" },
   "context": {
     "linkedAssetId": 184,
     "assets": [

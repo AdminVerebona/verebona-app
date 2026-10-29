@@ -228,7 +228,8 @@ describe('L87D-U-COH — contrôle COH-DOC-TITLES : diagnostic pur', () => {
     expect(c.services).toEqual(['documents/document-title.service#ensureBusinessTitle']);
     expect(c.forbiddenRepairs.join(' ')).toMatch(/réécrire un titre utilisateur/);
   });
-  it('aucun prompt modifié : le contrat T1 de sortie n’est pas touché par le lot', () => {
-    expect(src('src/services/ai/source-analysis/master/t1-contract.ts')).not.toMatch(/billingPeriod|principalMonth/);
+  it('lot 97A : le contrat T1 de sortie porte le bloc facultatif `billingPeriod` (v7), aucun prompt modifié', () => {
+    expect(src('src/services/ai/source-analysis/master/t1-contract.ts')).toMatch(/billingPeriod: t1BillingPeriod\.optional\(\)/);
+    expect(src('src/services/ai/prompts/source-analysis/t1_master_v1.txt')).not.toMatch(/billingPeriod|t1-billing-period-v1/);
   });
 });

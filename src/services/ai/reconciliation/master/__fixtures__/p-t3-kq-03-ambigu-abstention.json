@@ -1,6 +1,7 @@
 {
   "case": "P-T3-KQ-03",
   "description": "KNOWLEDGE_QUERY — texte ambigu : abstention, aucune valeur retenue même si des candidats sont cités.",
+  "qualification": { "role": "answer" },
   "context": {
     "knowledgeQuery": {
       "question": {

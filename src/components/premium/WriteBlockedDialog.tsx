@@ -42,6 +42,8 @@ import {
   OFFERS_PATH,
   type WriteBlockedInfo,
 } from '@/lib/write-blocked';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 interface WriteBlockedDialogProps {
   open: boolean;
@@ -72,6 +74,9 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
   const premiumRequis = info?.code === 'PREMIUM_REQUIRED';
   const fermer = () => onOpenChange(false);
   const [portailEnCours, setPortailEnCours] = useState(false);
+  // Lot 97B (COM-01/05) : dans l'application, ni offre, ni portail de
+  // paiement, ni argumentaire d'achat — le message sobre seulement.
+  const commerceHidden = useNativeCommerceHidden();
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -130,6 +135,8 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
                 <strong className="text-foreground">{unpaidDeadlineLabel(info.unpaid)}</strong>.
               </p>
             </>
+          ) : commerceHidden ? (
+            <NativeCommerceNotice className="text-sm text-muted-foreground text-center" />
           ) : finEssai ? (
             <>
               <p className="text-sm text-muted-foreground text-center">
@@ -189,7 +196,9 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
           )}
 
           <div className="pt-1 space-y-2">
-            {impaye ? (
+            {commerceHidden ? (
+              impaye ? <NativeCommerceNotice className="text-sm text-muted-foreground text-center" /> : null
+            ) : impaye ? (
               <button
                 type="button"
                 disabled={portailEnCours}
@@ -230,7 +239,7 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
               onClick={fermer}
               className="w-full py-2.5 rounded-xl text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
-              Plus tard
+              {commerceHidden ? 'Fermer' : 'Plus tard'}
             </button>
           </div>
         </div>

@@ -85,10 +85,19 @@ describe('choix d’affichage — maquette 1a « Flux continu »', () => {
     expect(VUE).not.toMatch(/localStorage/);
   });
 
-  it('n’ajoute aucune recherche locale (UX-01)', () => {
+  // Lot 97C — décision PO du 26/10/2026 : l'interdiction UX-01 du CDC V2
+  // (« aucun champ de recherche local ») est ANNULÉE. Le test qui la
+  // verrouillait vérifie désormais l'inverse : UN champ commun, monté par
+  // l'écran (au-dessus de la liste), jamais dupliqué dans la barre d'outils
+  // ni dans le panneau de filtres, et appliqué côté serveur (`q` de la requête).
+  it('recherche locale : le champ commun, au-dessus de la liste, appliqué par le serveur (lot 97C, UX-01 annulé)', () => {
+    expect(VUE).toMatch(/import \{ LocalSearchField \} from '@\/components\/search\/LocalSearchField'/);
+    expect(VUE).toMatch(/<LocalSearchField\s+kind="document"/);
+    expect(VUE).toMatch(/ids: q \? null : resultIds,\s+q,/);
     for (const f of [VUE, BARRE, read('src/components/documents/v2/DocumentsFilterPanel.tsx')]) {
       expect(f).not.toMatch(/type="search"/);
     }
+    expect(read('src/components/search/LocalSearchField.tsx')).toMatch(/type="search"/);
   });
 });
 

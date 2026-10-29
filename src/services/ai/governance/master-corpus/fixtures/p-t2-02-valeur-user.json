@@ -1,6 +1,7 @@
 {
   "case": "P-T2-02",
   "description": "ANSWER — valeur USER contredit un ancien document : réponse USER/canonique ; affirmation non soutenue rejetée (T2-31).",
+  "qualification": { "role": "guard" },
   "context": {
     "intent": "ACCOUNT_FACT_ASSET",
     "sources": [

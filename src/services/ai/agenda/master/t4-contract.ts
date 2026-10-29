@@ -19,6 +19,16 @@ import { z } from 'zod';
 
 export const T4_MASTER_PROMPT_CODE = 't4_master_v1';
 export const T4_TASKS = ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] as const;
+/**
+ * Lot 97A (demande `87B-t4-representation-agenda-multi-evenements`) : branche
+ * FACULTATIVE `AGENDA_REPRESENTATION` — décision sur PLUSIEURS éléments
+ * d'agenda d'une même Opération (contrat `t4-agenda-representation-v1`,
+ * schéma `T4AgendaRepresentationOutput` de `business-operations/semantic/contract`).
+ * Contrats d'exécution `t4_input_v3` / `t4_output_v4` seulement ; jamais
+ * autorisée par défaut ; appelée seulement si le prompt T4 actif porte le
+ * marqueur (`semantic/decider.ts`).
+ */
+export const T4_OPTIONAL_TASKS = ['AGENDA_REPRESENTATION'] as const;
 
 const confidence = z.enum(['certain', 'probable', 'ambiguous']);
 

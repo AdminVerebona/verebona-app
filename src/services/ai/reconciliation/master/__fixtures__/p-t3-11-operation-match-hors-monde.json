@@ -1,6 +1,7 @@
 {
   "case": "P-T3-11",
   "description": "OPERATION_MATCH — candidat désigné hors du jeu fourni (U1) : ambiguïté, jamais un rattachement.",
+  "qualification": { "role": "guard" },
   "context": {
     "operationMatch": {
       "subject": {

@@ -148,6 +148,8 @@ export async function createTransaction(input: {
   context: TxContext;
   userId?: number | null;
   sessionSid?: string | null;
+  /** Lot 97B : ticket app → navigateur système (stocké haché, usage unique). */
+  appTicket?: string | null;
   now?: Date;
 }): Promise<{ id: number; state: string; nonce: string; codeChallenge: string }> {
   const now = input.now ?? new Date();
@@ -156,10 +158,12 @@ export async function createTransaction(input: {
   const { verifier, challenge } = createPkcePair();
   const [row] = await pgClient<{ id: string }[]>`
     INSERT INTO auth_transactions
-      (provider, intent, status, state_hash, binding_hash, nonce_hash, code_verifier, user_id, session_sid, context, expires_at, created_at, updated_at)
+      (provider, intent, status, state_hash, binding_hash, nonce_hash, code_verifier, user_id, session_sid, context, expires_at, created_at, updated_at,
+       app_ticket_hash)
     VALUES (${input.provider}, ${input.intent}, 'pending', ${sha256Hex(state)}, ${sha256Hex(input.binding)}, ${sha256Hex(nonce)},
             ${verifier}, ${input.userId ?? null}, ${input.sessionSid ?? null}, ${JSON.stringify(input.context)}::jsonb,
-            ${ts(new Date(now.getTime() + OAUTH_TX_TTL_MS))}, ${ts(now)}, ${ts(now)})
+            ${ts(new Date(now.getTime() + OAUTH_TX_TTL_MS))}, ${ts(now)}, ${ts(now)},
+            ${input.appTicket ? sha256Hex(input.appTicket) : null})
     RETURNING id`;
   return { id: Number(row.id), state, nonce, codeChallenge: challenge };
 }
@@ -250,6 +254,32 @@ export async function countEmailCodeAttempt(id: number, now = new Date()): Promi
      WHERE id = ${id} AND status = 'awaiting_user' AND expires_at > ${ts(now)}
     RETURNING email_code_attempts AS n`;
   return rows[0] ? Number(rows[0].n) : null;
+}
+
+/**
+ * Lot 97B — le navigateur système présente le ticket créé par la vue de
+ * l'application (association / confirmation Google / Apple depuis Mon compte).
+ * Consommation ATOMIQUE et à usage unique : le ticket est effacé, `state`,
+ * `nonce` et la liaison au navigateur sont tirés À NOUVEAU (ceux de la
+ * création n'ont jamais quitté le serveur) ; seul ce navigateur pourra donc
+ * revenir du fournisseur. Rend la transaction et les secrets à transmettre,
+ * ou `null` (inconnu, déjà utilisé, expiré, autre usage).
+ */
+export async function claimAppTicket(
+  ticket: string, now = new Date(),
+): Promise<{ tx: AuthTransaction; state: string; nonce: string; binding: string } | null> {
+  if (typeof ticket !== 'string' || ticket.length < 16 || ticket.length > 256) return null;
+  const state = randomToken(32);
+  const nonce = randomToken(32);
+  const binding = randomToken(32);
+  const rows = await pgClient<Row[]>`
+    UPDATE auth_transactions SET
+      app_ticket_hash = NULL, state_hash = ${sha256Hex(state)}, nonce_hash = ${sha256Hex(nonce)},
+      binding_hash = ${sha256Hex(binding)}, updated_at = ${ts(now)}
+     WHERE app_ticket_hash = ${sha256Hex(ticket)} AND status = 'pending' AND intent IN ('link', 'reauth')
+       AND context->>'client' = 'app' AND expires_at > ${ts(now)}
+    RETURNING ${pgClient.unsafe(COLUMNS)}`;
+  return rows[0] ? { tx: toTx(rows[0]), state, nonce, binding } : null;
 }
 
 /** Échange final de l'application : code d'échange à usage unique (§21.3). */

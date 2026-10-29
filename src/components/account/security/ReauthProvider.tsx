@@ -27,6 +27,7 @@ import { Loader2, ShieldCheck } from 'lucide-react';
 import { apiClient, ApiClientError } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { ProviderButton } from '@/components/auth/SocialSignInButtons';
+import { accountOAuthBody, followAccountOAuth } from './native-account-oauth';
 import { Label } from '@/components/ui/label';
 import { PasswordInput } from '@/components/ui/password-input';
 import {
@@ -143,9 +144,12 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
     setRedirecting(m.id);
     setError(null);
     try {
-      const r = await apiClient.post<{ redirectUrl?: string }>(m.startUrl, resumeRef.current ? { resume: resumeRef.current } : {});
-      if (r?.redirectUrl) { window.location.assign(r.redirectUrl); return; }
-      setError('La confirmation est impossible pour le moment. Réessayez.');
+      // Lot 97B : dans l'app, confirmation dans le navigateur système (Web inchangé).
+      const app = m.id === 'google' || m.id === 'apple' ? await accountOAuthBody(m.id, 'reauth') : {};
+      if (!app) { setError('La confirmation est impossible pour le moment. Réessayez.'); setRedirecting(null); return; }
+      const r = await apiClient.post<{ redirectUrl?: string }>(m.startUrl, { ...app, ...(resumeRef.current ? { resume: resumeRef.current } : {}) });
+      if (r?.redirectUrl && await followAccountOAuth(r.redirectUrl)) return;
+      if (!r?.redirectUrl) setError('La confirmation est impossible pour le moment. Réessayez.');
     } catch (e) {
       setError(e instanceof ApiClientError && e.serverMessage ? e.serverMessage : 'La confirmation est impossible pour le moment. Réessayez.');
     }

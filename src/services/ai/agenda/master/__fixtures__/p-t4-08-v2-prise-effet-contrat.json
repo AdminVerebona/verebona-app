@@ -1,6 +1,7 @@
 {
   "case": "P-T4-08",
   "description": "CLASSIFY_EVENT v2 — prise d'effet d'un contrat le 05/11/2026, sans récurrence envisagée ⇒ accept, information, recurrenceDecision=not_applicable.",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": {
       "title": "Prise d'effet du contrat",

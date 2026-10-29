@@ -10,6 +10,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { Crown, Users } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 
 interface PendingCheckoutModalProps {
   plan: 'premium' | 'premium_duo';
@@ -18,8 +19,11 @@ interface PendingCheckoutModalProps {
 
 export function PendingCheckoutModal({ plan, onDismiss }: PendingCheckoutModalProps) {
   const router = useRouter();
+  // Lot 97B (COM-01/05) : jamais de reprise de paiement dans l'application.
+  const commerceHidden = useNativeCommerceHidden();
 
   const isDuo = plan === 'premium_duo';
+  if (commerceHidden) return null;
 
   const handleCheckout = () => {
     onDismiss();

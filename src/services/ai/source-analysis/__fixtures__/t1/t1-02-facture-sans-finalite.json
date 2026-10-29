@@ -1,6 +1,7 @@
 {
   "case": "U14",
   "description": "FACTURE sans type V2 ni ligne d'achat : acquisitionDate / acquisitionPrice proposés par le modèle sans preuve d'achat du bien → connaissance générique, aucun événement purchase.",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 184,
     "assets": [

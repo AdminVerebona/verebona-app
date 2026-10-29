@@ -24,6 +24,7 @@
 
 import { equipmentFilterParam, parseEquipmentFilter, type EquipmentFacet } from '@/lib/filters/equipment-filter';
 import { roomFilterParam, type RoomFacet } from '@/lib/filters/room-filter';
+import { LOCAL_SEARCH_PARAM, normalizeLocalQuery } from '@/lib/search/local-search';
 
 /** Taille d'un lot (valeur indicative du ticket, ajustable après mesure). */
 export const FEED_DEFAULT_LIMIT = 50;
@@ -81,6 +82,15 @@ export interface FeedParams {
    * PÉRIMÈTRE (compteurs compris). `null` = pas de restriction, `[]` = aucun.
    */
   ids: number[] | null;
+  /**
+   * Lot 97C — recherche locale (`?q=`) : appliquée par le serveur AVANT la
+   * pagination et les compteurs, avec les règles de la barre de recherche.
+   * Elle restreint le PÉRIMÈTRE (total, Rubriques, options de filtre) ; les
+   * filtres s'y ajoutent en intersection. Une recherche active écarte `ids`
+   * (un ancien `?resultats=` ne la limite jamais en silence). Vide ou absente :
+   * aucune restriction.
+   */
+  q?: string;
   limit: number;
   cursor: string | null;
 }
@@ -178,6 +188,7 @@ export function parseFeedParams(p: URLSearchParams): FeedParams {
     ? Math.min(Math.floor(limitRaw), FEED_MAX_LIMIT)
     : FEED_DEFAULT_LIMIT;
   const idsRaw = p.get('ids');
+  const recherche = normalizeLocalQuery(p.get(LOCAL_SEARCH_PARAM));
   return {
     assetIds: positiveIds(list(p.get('assets'))),
     sort,
@@ -192,6 +203,7 @@ export function parseFeedParams(p: URLSearchParams): FeedParams {
       ...(roomFilterParam(p.get('piece')) ? { piece: roomFilterParam(p.get('piece'))! } : {}),
     },
     ids: idsRaw === null ? null : idsRaw === 'none' ? [] : positiveIds(list(idsRaw)),
+    ...(recherche ? { q: recherche } : {}),
     limit,
     cursor: p.get('cursor') || null,
   };
@@ -215,7 +227,11 @@ export function buildFeedQuery(params: Omit<FeedParams, 'cursor' | 'limit'> & { 
   if (equipment) q.set('equipment', equipment);
   const piece = roomFilterParam(params.filters.piece);
   if (piece) q.set('piece', piece);
-  if (params.ids) q.set('ids', params.ids.length ? [...params.ids].sort((a, b) => a - b).join(',') : 'none');
+  // Lot 97C : la recherche fait partie de la clé — toute modification invalide
+  // le curseur et recharge le premier lot du nouveau périmètre.
+  const recherche = normalizeLocalQuery(params.q);
+  if (recherche) q.set(LOCAL_SEARCH_PARAM, recherche);
+  else if (params.ids) q.set('ids', params.ids.length ? [...params.ids].sort((a, b) => a - b).join(',') : 'none');
   q.set('limit', String(params.limit ?? FEED_DEFAULT_LIMIT));
   if (params.cursor) q.set('cursor', params.cursor);
   return q.toString();

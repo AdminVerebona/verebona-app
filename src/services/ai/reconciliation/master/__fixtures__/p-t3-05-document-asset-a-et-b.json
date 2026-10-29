@@ -1,6 +1,7 @@
 {
   "case": "P-T3-05",
   "description": "DOCUMENT_ASSET — A ET B : attestation d’assurance flotte listant deux véhicules ; les deux biens sont reliés, aucun forçage vers un seul.",
+  "qualification": { "role": "answer" },
   "context": {
     "variables": {
       "FIELD": null,

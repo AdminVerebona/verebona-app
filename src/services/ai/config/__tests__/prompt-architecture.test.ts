@@ -21,7 +21,7 @@ import { runInJobContext } from '../../queue/job-context';
 import { T3_MASTER_VARIABLES } from '../../registry/operations';
 import { MASTER_ONLY_TREATMENTS, TREATMENTS } from '../treatments';
 
-const MASTER_T3 = `{{TASK}}\n${T3_MASTER_VARIABLES.map((v) => `{{${v}}}`).join('\n')}\nBRANCHE TASK = VALUE_CONFLICT\nBRANCHE TASK = LINK_AMBIGUITY\nBRANCHE TASK = OPERATION_MATCH\nBRANCHE TASK = DOCUMENT_NAMING\nBRANCHE TASK = KNOWLEDGE_QUERY\n`;
+const MASTER_T3 = `{{TASK}}\n${T3_MASTER_VARIABLES.map((v) => `{{${v}}}`).join('\n')}\nBRANCHE TASK = VALUE_CONFLICT\nBRANCHE TASK = LINK_AMBIGUITY\nBRANCHE TASK = OPERATION_MATCH\nBRANCHE TASK = DOCUMENT_NAMING\nBRANCHE TASK = KNOWLEDGE_QUERY\nBRANCHE TASK = OPERATION_IDENTITY\n`;
 /** Traitement fictif sans master (lot 16 : T1 à T6 en ont tous un). */
 const SANS_MASTER = 'T9' as never;
 const t3 = (over: Partial<TreatmentConfig> = {}): TreatmentConfig => ({
@@ -49,12 +49,12 @@ describe('valeur par défaut', () => {
       masterPromptCode: 't1_master_v1', tasks: ['GROUP_UPLOAD', 'ANALYZE_DOCUMENT'],
     });
     expect(masterPromptForTreatment('T3')).toEqual({
-      // Lot 85F : + KNOWLEDGE_QUERY (facultative, texte attendu de l'équipe IA).
-      masterPromptCode: 't3_master_v1', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY'],
+      // Lot 85F : + KNOWLEDGE_QUERY (facultative, texte attendu de l'équipe IA). Lot 97A : + OPERATION_IDENTITY (facultative).
+      masterPromptCode: 't3_master_v1', tasks: ['VALUE_CONFLICT', 'LINK_AMBIGUITY', 'OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY'],
     });
     expect(masterPromptForTreatment('T4')).toEqual({
-      // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5).
-      masterPromptCode: 't4_master_v1', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'],
+      // TEMPORAL_AMBIGUITY : active depuis le lot 18 (R5). Lot 97A : + AGENDA_REPRESENTATION (facultative, contexte structuré).
+      masterPromptCode: 't4_master_v1', tasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY', 'AGENDA_REPRESENTATION'],
     });
     expect(masterPromptForTreatment('T2')).toEqual({
       masterPromptCode: 't2_master_v1', tasks: ['UNDERSTAND', 'ANSWER', 'REVALIDATE'],

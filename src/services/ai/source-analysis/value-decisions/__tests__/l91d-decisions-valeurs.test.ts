@@ -111,8 +111,8 @@ const valeursSignalees = (i: { observed?: unknown }) => ((i.observed ?? []) as A
 
 describe('L91D-U01 — contrat de sortie T1 v6 (additif, facultatif, compatible avec le schéma strict)', () => {
   it('une sortie v5 reste valide ; le tableau ABSENT n’est pas une liste vide ; version et schéma fournisseur', () => {
-    expect(T1_ANALYZE_DOCUMENT_CONTRACT_VERSION).toBe(6);
-    expect(outputSchemaRef('T1AnalyzeDocumentOutput', T1AnalyzeDocumentOutput, 't1_analyze_document').version).toBe('t1_analyze_document@v6');
+    expect(T1_ANALYZE_DOCUMENT_CONTRACT_VERSION).toBe(7);
+    expect(outputSchemaRef('T1AnalyzeDocumentOutput', T1AnalyzeDocumentOutput, 't1_analyze_document').version).toBe('t1_analyze_document@v7');
     expect(T1AnalyzeDocumentOutput.parse(sortie()).valueDecisions).toBeUndefined();
     expect(T1AnalyzeDocumentOutput.parse(sortie([])).valueDecisions).toEqual([]);
     expect(recevoir(sortie()).anchored).toBeNull();
@@ -271,9 +271,11 @@ const T1_ETAPE4 = (() => {
   expect(T1_LIVRE.split(blocT1.attrs.anchor).length - 1).toBe(1);
   return T1_LIVRE.replace(blocT1.attrs.anchor, `${blocT1.text}\n\n${blocT1.attrs.anchor}`);
 })();
+/** PREMIER exemple JSON du bloc (lot 97A : le bloc T1 unique porte aussi l'exemple de période facturée). */
 const exempleJson = (): Record<string, unknown> => {
   const i = blocT1.text.indexOf('\n{\n');
-  return JSON.parse(blocT1.text.slice(i + 1, blocT1.text.lastIndexOf('}') + 1));
+  const fin = blocT1.text.indexOf('\n}\n', i);
+  return JSON.parse(blocT1.text.slice(i + 1, fin + 2));
 };
 
 describe('L91D-U04 — guide du PO : bloc T1 prêt à coller, vérifié contre le code réel', () => {
@@ -310,8 +312,9 @@ describe('L91D-U04 — guide du PO : bloc T1 prêt à coller, vérifié contre l
   it('le guide cite le marqueur, la demande d’origine, la table et le rattrapage BO', () => {
     for (const m of [T1_VALUE_DECISIONS_CONTRACT, T1_OMISSIONS_PENDING_CONTRACT, 'document_value_decisions', 'FACT_DECISION_UNDETERMINED', 'T1_VALUE_DECISIONS_ENABLED']) expect(GUIDE, m).toContain(m);
     // La demande n'est plus listée parmi celles qui ne se règlent pas dans le BO.
-    const section6 = GUIDE.slice(GUIDE.indexOf('## 6.'), GUIDE.indexOf('## 7.'));
-    expect(section6).not.toContain('82B-t1-omissions-extract');
+    const nonReglables = GUIDE.slice(GUIDE.indexOf('NE se règlent PAS dans le BO\n'), GUIDE.indexOf('Ce qui est déjà présent dans les prompts livrés'));
+    expect(nonReglables.length).toBeGreaterThan(100);
+    expect(nonReglables).not.toContain('82B-t1-omissions-extract');
   });
 });
 

@@ -35,7 +35,7 @@ import { declaredMasterVariables, masterPromptForTreatment } from '../config/pro
 import type { Treatment } from '../config/treatments';
 import { AI_OPERATIONS } from '../registry/operations';
 import { contractVersionsOf } from '../gateway/output-resolution/runtime-contract';
-import { checkExecutionConfig, structuredSpecFor, type MasterExecutionConfig } from './structured-context';
+import { allowedTasksOf, checkExecutionConfig, structuredSpecFor, type MasterExecutionConfig } from './structured-context';
 
 /**
  * Taille maximale d'un prompt maître (caractères). Les masters du dépôt font
@@ -210,7 +210,7 @@ function checkStructured(
     blocking.push(bloquant(CODE_PAR_CHAMP[i.field] ?? 'INPUT_CONTRACT_INVALID', i.message));
   }
   // Configuration modèle : chaque TASK autorisée a une opération active avec un modèle principal.
-  for (const t of (execution.allowedTasks ?? [...spec.knownTasks]).filter((x) => spec.knownTasks.includes(x))) {
+  for (const t of allowedTasksOf(spec, execution).filter((x) => spec.knownTasks.includes(x))) {
     const op = Object.values(AI_OPERATIONS).find((o) => o.active && o.masterPromptCode === spec.masterPromptCode && o.task === t);
     if (!op || !op.primaryModel) {
       blocking.push(bloquant('MODEL_CONFIG_INVALID', `Aucune opération active avec un modèle configuré pour la TASK ${t}.`));

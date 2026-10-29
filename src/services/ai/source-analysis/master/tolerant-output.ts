@@ -35,7 +35,7 @@
 import { z } from 'zod';
 import { normalizeDateValue } from '@/services/canonical/registry';
 import {
-  T1AnalyzeDocumentOutput, t1Fact, t1OperationCandidate, t1Table, t1ValueDecision, type T1Fact,
+  T1AnalyzeDocumentOutput, t1BillingPeriod, t1Fact, t1OperationCandidate, t1Table, t1ValueDecision, type T1Fact, T1_PRINCIPAL_MONTH_BASES,
   T1_MAX_OPERATION_CANDIDATES, T1_MAX_VALUE_DECISIONS, T1_VALUE_DECISIONS, T1_VALUE_KINDS, T1_OPERATION_TYPES, T1_OPERATION_STATUSES, T1_SOURCE_ROLES, T1_REFERENCE_KINDS,
   T1_EXCLUSION_REASONS, T1_FINANCIAL_ROLES, T1_AMOUNT_SCOPES,
 } from './t1-contract';
@@ -244,6 +244,33 @@ function prepare(brut: unknown): unknown {
           if (siret) garder('REMOVED', 'document.supplier.siret', s.siret, null);
           s.siret = null;
         } else s.siret = siret;
+      }
+    }
+    // Lot 97A (contrat t1-billing-period-v1) : bloc mal formé retiré SEUL (conservé dans les originaux),
+    // jamais corrigé par une déduction du code ; le document reste valide.
+    if ('billingPeriod' in doc) {
+      const bp = doc.billingPeriod;
+      if (!isObj(bp)) {
+        if (bp !== null && bp !== undefined) garder('REMOVED', 'document.billingPeriod', structuredClone(bp), null);
+        delete doc.billingPeriod;
+      } else {
+        const original = structuredClone(bp);
+        for (const k of ['start', 'end'] as const) {
+          if (bp[k] === '' || bp[k] === undefined) bp[k] = null;
+          else if (bp[k] !== null) { const iso = normalizeDateValue(bp[k]); if (iso) bp[k] = iso; }
+        }
+        if (bp.principalMonth === '' || bp.principalMonth === undefined) bp.principalMonth = null;
+        if (typeof bp.principalMonth === 'string') bp.principalMonth = bp.principalMonth.trim();
+        bp.principalMonthBasis = bp.principalMonthBasis === undefined || bp.principalMonthBasis === '' ? null
+          : dansListe(T1_PRINCIPAL_MONTH_BASES, majuscule(bp.principalMonthBasis)) ?? bp.principalMonthBasis;
+        if (typeof bp.confidence === 'string') {
+          const conf = bp.confidence.trim().toLowerCase();
+          bp.confidence = conf === 'uncertain' ? 'probable' : conf;
+        }
+        if (!t1BillingPeriod.safeParse(bp).success) {
+          garder('REMOVED', 'document.billingPeriod', original, null);
+          delete doc.billingPeriod;
+        }
       }
     }
     const c = doc.classification;

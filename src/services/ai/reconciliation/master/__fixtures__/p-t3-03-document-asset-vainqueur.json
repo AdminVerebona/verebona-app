@@ -1,6 +1,7 @@
 {
   "case": "P-T3-03",
   "description": "DOCUMENT_ASSET — un candidat désigné par un contrôle serveur exact (immatriculation) l’emporte nettement : rattachement PRIMARY.",
+  "qualification": { "role": "answer" },
   "context": {
     "variables": {
       "FIELD": null,

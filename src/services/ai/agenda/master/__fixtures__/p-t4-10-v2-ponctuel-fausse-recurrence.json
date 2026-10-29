@@ -1,6 +1,7 @@
 {
   "case": "P-T4-10",
   "description": "CLASSIFY_EVENT v2 — fin d'engagement explicite le 04/11/2027 sur un contrat facturé mensuellement : événement ponctuel valide, la mensualité est une facturation ⇒ accept, recurrenceDecision=reject.",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": {
       "title": "Fin d'engagement",

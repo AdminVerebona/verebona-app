@@ -721,6 +721,8 @@ export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperation
   t3_operation_match: { treatment: 'T3', tables: [...CALL_TRACES, 'document_operation_candidates', 'business_operation_sources', 'business_operation_match_decisions', 'business_operation_identity_reviews', 'operation_semantic_reevaluations'] },
   t3_document_naming: { treatment: 'T3', tables: [...CALL_TRACES, 'document_naming_groups', 'document_naming_members', 'document_title_events', 'document_rename_events'] },
   t3_knowledge_query: { treatment: 'T3', tables: [...CALL_TRACES, 't3_knowledge_queries'] },
+  // Lot 97A : demande, décision reçue, validation et mutations au journal 0752 ; décisions de rattachement `AI_IDENTITY`.
+  t3_operation_identity: { treatment: 'T3', tables: [...CALL_TRACES, 'operation_semantic_reevaluations', 'business_operation_match_decisions', 'business_operation_sources', 'document_operation_candidates'] },
   retrieve_data: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs'] },
   retrieve_evidence: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs'] },
   t2_understand: { treatment: 'T2', tables: [...CALL_TRACES, 'verebona_request_runs', 'verebona_ai_runs', 'verebona_command_plans'] },
@@ -731,6 +733,8 @@ export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperation
   t4_classify_event: { treatment: 'T4', tables: [...CALL_TRACES, 'agenda_items', 'agenda_item_sources', 'operation_semantic_reevaluations'] },
   t4_verify_completion: { treatment: 'T4', tables: [...CALL_TRACES, 'agenda_items', 'agenda_occurrence_events'] },
   t4_temporal_ambiguity: { treatment: 'T4', tables: [...CALL_TRACES, 'agenda_items', 'agenda_data_conflicts'] },
+  // Lot 97A : décision reçue, validation, mutations et rôles au journal 0752 ; consolidations d'agenda (0591).
+  t4_agenda_representation: { treatment: 'T4', tables: [...CALL_TRACES, 'operation_semantic_reevaluations', 'agenda_items', 'agenda_intervention_consolidations'] },
   evaluate_prompt: { treatment: 'GOUVERNANCE', tables: ['ai_usage_event', 'ai_prompt_versions', 'ai_master_prompt_versions'] },
   t6_formulate: { treatment: 'T6', tables: [...CALL_TRACES, 'home_mascot_generations', 'home_mascot_cache', 'home_mascot_events'] },
   t6_evaluate: { treatment: 'T6', tables: [...CALL_TRACES, 't6_evaluation_runs', 't6_interpellation_assessments', 't6_candidate_examinations'] },

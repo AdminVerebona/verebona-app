@@ -12,6 +12,9 @@ import {
 } from '@/lib/auth/account-closure';
 import { readClientContext } from '@/lib/mobile/client-context';
 import {
+  NATIVE_COMMERCE_INFO_PATH, NATIVE_COMMERCE_MESSAGE, isCommerceApiPath, isCommercePath, isNativeAppUserAgent,
+} from '@/lib/native/commerce';
+import {
   APP_UPDATE_REQUIRED_STATUS, appUpdateRequiredBody, evaluateCompatibility, isExemptFromVersionGate, readMobileServerConfig,
 } from '@/lib/mobile/mobile-config';
 
@@ -26,6 +29,27 @@ function mobileVersionGate(request: NextRequest, pathname: string): NextResponse
     status: APP_UPDATE_REQUIRED_STATUS,
     headers: { 'Cache-Control': 'no-store', ...(r.minVersion ? { 'X-Verebona-Min-Version': r.minVersion } : {}) },
   });
+}
+
+/**
+ * Lot 97B (CDC 12 COM-01/05, STORE-08) : aucune page ni opération commerciale
+ * dans l'application iOS / Android (`lib/native/commerce`). Navigation de la
+ * vue de l'app (marqueur `VerebonaApp/` de l'agent utilisateur) vers une page
+ * d'offres / d'abonnement → écran d'information ; opération commerciale de
+ * l'API demandée par un client natif déclaré → 403. Navigateur : null.
+ */
+function nativeCommerceGate(request: NextRequest, pathname: string): NextResponse | null {
+  if (pathname.startsWith('/api/')) {
+    if (!isCommerceApiPath(pathname)) return null;
+    const c = readClientContext(request).client;
+    if (c !== 'IOS' && c !== 'ANDROID') return null;
+    return NextResponse.json(
+      { error: NATIVE_COMMERCE_MESSAGE, code: 'NOT_AVAILABLE_IN_APP', message: NATIVE_COMMERCE_MESSAGE },
+      { status: 403, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
+  if (!isCommercePath(pathname) || !isNativeAppUserAgent(request.headers.get('user-agent'))) return null;
+  return NextResponse.redirect(new URL(NATIVE_COMMERCE_INFO_PATH, request.url), 307);
 }
 
 // Lot 37 (C4) : plus aucun limiteur en mémoire ici. Le limiteur des parcours
@@ -75,6 +99,10 @@ function mobileVersionGate(request: NextRequest, pathname: string): NextResponse
  */
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // Lot 97B : pages et opérations commerciales jamais dans l'app (Web inchangé).
+  const commerce = nativeCommerceGate(request, pathname);
+  if (commerce) return commerce;
 
   // Fichiers statiques de `public/` (ex. `/assets/verebona/…/md.webp`) :
   // jamais soumis à la session. Un identifiant de bien n'a pas d'extension.
@@ -352,5 +380,9 @@ export const config = {
     '/mon-compte/:path*',
     '/fournisseurs/:path*',
     '/compte-en-suppression/:path*',
+    // Lot 97B : pages commerciales — seule la vue de l'app est redirigée
+    // (`nativeCommerceGate`) ; un navigateur passe sans aucun effet.
+    '/abonnement/:path*',
+    '/retractation/:path*',
   ],
 };

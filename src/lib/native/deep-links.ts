@@ -23,6 +23,8 @@ import { APP_LINK_EXCLUSIONS, APP_LINK_ROUTES, OAUTH_APP_RETURN_PATH } from '@/l
 export type AppUrlResolution =
   | { kind: 'route'; path: string }
   | { kind: 'oauth'; handoff: string }
+  /** Lot 97B : parcours Google / Apple de Mon compte refusé côté serveur (`?error=<CODE>`). */
+  | { kind: 'oauth_error'; code: string }
   | { kind: 'external'; url: string }
   /** `<schéma>://share` : réveil par l'extension de partage iOS (le contenu arrive par le plugin). */
   | { kind: 'share' }
@@ -52,9 +54,14 @@ export function isAppRoutePath(pathname: string): boolean {
   return ROUTES.some((re) => re.test(pathname));
 }
 
+const OAUTH_ERROR = /^[A-Z][A-Z_]{2,59}$/;
+
 function oauthFrom(params: URLSearchParams): AppUrlResolution {
   const handoff = params.get('handoff') ?? '';
-  return HANDOFF.test(handoff) ? { kind: 'oauth', handoff } : { kind: 'rejected', reason: 'oauth_without_code' };
+  if (HANDOFF.test(handoff)) return { kind: 'oauth', handoff };
+  // Lot 97B : code d'erreur stable (jamais un message libre affiché tel quel).
+  const error = params.get('error') ?? '';
+  return OAUTH_ERROR.test(error) ? { kind: 'oauth_error', code: error } : { kind: 'rejected', reason: 'oauth_without_code' };
 }
 
 /** Résout un lien entrant (pur, testé). */

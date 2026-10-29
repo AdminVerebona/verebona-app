@@ -1,6 +1,7 @@
 {
   "case": "F-029 / F-028",
   "description": "Facture d'une même intervention sur deux véhicules : UN candidat avec plusieurs cibles (pas un par bien) ; l'identifiant inconnu du compte (99) est neutralisé (U9).",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 12,
     "assets": [

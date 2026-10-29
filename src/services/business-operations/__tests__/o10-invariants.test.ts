@@ -55,6 +55,9 @@ const ECRIVAINS: Record<string, string> = {
   // Lot 86F : trace de la date économique retenue des composantes — par le dépôt seulement (`recordComponentEconomicDate`),
   // jamais un fait T3 (montant, date propre) ; appelé par le contrôle COH-TCO-ECONOMIC-DATES.
   'src/services/business-operations/finance/economic-date.service.ts': 'trace de la date économique retenue (0744) par le dépôt, sous le verrou du compte (lot 86F)',
+  // Lot 97A : décision T3 d'identité multi-sources — décisions de rattachement `AI_IDENTITY` par le dépôt
+  // (`recordMatchDecision`, sous le verrou du compte) ; la séparation elle-même est faite par la consolidation T3.
+  'src/services/business-operations/semantic/identity-apply.ts': 'T3 identité multi-sources : décisions de rattachement AI_IDENTITY par le dépôt (lot 97A) — métier délégué à T3',
 };
 
 describe('INV-FINAL-009 / INV-006 / INV-FINAL-013 / INV-031 — T3 seul moteur ; TCO et autres modules consommateurs seulement', () => {

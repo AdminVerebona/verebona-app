@@ -1,6 +1,7 @@
 {
   "case": "P-T6-EV-02",
   "description": "T6 / EVALUATE — ordre des candidats inversé : sortie rejetée en entier (lot 61).",
+  "qualification": { "role": "guard" },
   "context": {
     "input": {
       "schemaVersion": "t6-evaluation-input-v1",

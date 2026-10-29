@@ -27,6 +27,8 @@ import {
 } from '@/lib/filters/equipment-filter';
 import { AGENDA_PERIOD_OPTIONS, agendaFilterChips, parseAgendaPeriod } from '@/lib/agenda/agenda-filters';
 import { NO_DEADLINE_LABEL } from '@/lib/agenda/no-deadline';
+import { LocalSearchField } from '@/components/search/LocalSearchField';
+import { LOCAL_SEARCH_PARAM, localSearchNoResult, readLocalQuery, searchWithLocalQuery } from '@/lib/search/local-search';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -132,6 +134,9 @@ function AgendaPageInner() {
   const equipment = equipmentFilterParam(searchParams.get('equipment'));
   // Lot 75B : filtre Pièce (échéances directes, de ses équipements et de ses documents).
   const piece = roomFilterParam(searchParams.get('piece'));
+  // Lot 97C (Q3-B) : recherche locale dans l'URL (`?q=`) — toutes périodes en
+  // vue Liste ; en vues Mensuelle / Annuelle, seuls les résultats de la période.
+  const q = readLocalQuery(searchParams);
 
   const [items, setItems] = useState<AgendaItemFull[]>([]);
   const [loading, setLoading] = useState(true);
@@ -157,6 +162,14 @@ function AgendaPageInner() {
     router.push(`/agenda?${params.toString()}`, { scroll: false });
   };
 
+  // Recherche validée par le champ (300 ms sans frappe, ou Entrée) : URL mise à
+  // jour SANS nouvelle entrée d'historique, filtres explicites conservés ; une
+  // recherche nouvelle ou modifiée passe en vue Liste (toutes périodes).
+  const changerRecherche = (next: string) => {
+    const { pathname, search, hash } = window.location;
+    window.history.replaceState(null, '', `${pathname}${searchWithLocalQuery(search, next, { switchToList: true })}${hash}`);
+  };
+
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams();
@@ -171,8 +184,10 @@ function AgendaPageInner() {
       if (equipment) params.set('equipment', equipment);
       if (piece) params.set('piece', piece);
     }
+    if (q) params.set(LOCAL_SEARCH_PARAM, q);
 
-    // Filtres enchaînés au clavier : seule la DERNIÈRE réponse est appliquée.
+    // Filtres enchaînés au clavier, saisies successives de la recherche : seule
+    // la DERNIÈRE réponse est appliquée.
     let actuel = true;
     apiClient.get<{ items: AgendaItemFull[]; equipmentFacet?: EquipmentFacet | null; roomFacet?: RoomFacet | null }>(`/api/agenda?${params}`)
       .then(data => {
@@ -184,7 +199,7 @@ function AgendaPageInner() {
       .catch(() => { if (actuel) toast.error('Erreur lors du chargement'); })
       .finally(() => { if (actuel) { setLoading(false); setLoadedOnce(true); } });
     return () => { actuel = false; };
-  }, [period, view, month, year, includeCancelled, assetIdsParam, equipment, piece, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [period, view, month, year, includeCancelled, assetIdsParam, equipment, piece, q, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Biens proposés au filtre (et libellés des pastilles « Filtré par … »).
   useEffect(() => {
@@ -240,7 +255,7 @@ function AgendaPageInner() {
   // événement n'est pas un agenda sans événement. D'où la condition sur la
   // vue liste.
   // ══════════════════════════════════════════════════════════════════════════
-  const agendaVide = !loading && items.length === 0 && activeFiltersCount === 0 && view === 'list';
+  const agendaVide = !loading && items.length === 0 && activeFiltersCount === 0 && !q && view === 'list';
 
   // Pendant le PREMIER chargement, on ne sait pas encore : on n'affiche pas
   // des commandes pour les retirer une seconde plus tard. Lot 71 : les
@@ -357,6 +372,20 @@ function AgendaPageInner() {
         )}
         {!masquerCommandes && <ActiveFilterChips chips={chips} onRemove={removeChip} onClear={clearFilters} />}
 
+        {/* Lot 97C : recherche locale — toujours accessible, même sans élément affiché. */}
+        <LocalSearchField
+          kind="agenda"
+          value={q}
+          onCommit={changerRecherche}
+          busy={!!q && loading}
+          resultCount={q && !loading ? items.length : null}
+        />
+        {q && !loading && view !== 'list' && (
+          <p className="-mt-3 text-xs text-muted-foreground" data-testid="recherche-agenda-periode">
+            Seuls les résultats de la période affichée sont présentés. La vue Liste montre toutes les périodes.
+          </p>
+        )}
+
         {/* Sélecteur Liste / Mensuel / Annuel et navigation de période —
             inutile tant qu'il n'y a rien à voir. Composant partagé avec
             l'onglet Agenda d'un bien (lot 59, point 5). */}
@@ -387,6 +416,12 @@ function AgendaPageInner() {
           <YearView items={items} year={year} onItemClick={setSelectedItem} onOpenMonth={(m) => updateURL({ view: 'calendar', month: m })} />
         ) : view === 'calendar' ? (
           <CalendarView items={items} month={month} onItemClick={setSelectedItem} onNew={() => setShowCreate(true)} />
+        ) : items.length === 0 && q ? (
+          <div className="text-center py-16 text-muted-foreground" data-testid="recherche-locale-aucun-resultat">
+            <Calendar className="h-12 w-12 mx-auto mb-3 opacity-30" />
+            <p className="font-medium">{localSearchNoResult('agenda', q, activeFiltersCount > 0)}</p>
+            <Button size="sm" variant="outline" className="mt-3" onClick={() => changerRecherche('')}>Effacer la recherche</Button>
+          </div>
         ) : items.length === 0 ? (
           activeFiltersCount > 0 ? (
             <div className="text-center py-16 text-muted-foreground">

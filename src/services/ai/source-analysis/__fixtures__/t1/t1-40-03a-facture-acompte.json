@@ -1,6 +1,7 @@
 {
   "case": "F-093 (acompte)",
   "description": "Facture d'acompte de 3 000 € : rôle DEPOSIT_INVOICE, montant de portée DEPOSIT (posée par le serveur) — jamais un coût total.",
+  "qualification": { "role": "answer" },
   "context": {
     "linkedAssetId": 20,
     "assets": [

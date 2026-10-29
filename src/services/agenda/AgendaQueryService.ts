@@ -18,6 +18,7 @@ import {
 import { isEquipmentFilterActive, type EquipmentFacet } from '@/lib/filters/equipment-filter';
 import { selectedRoomId, type RoomFacet } from '@/lib/filters/room-filter';
 import { agendaItemIdsByRoom, listRoomsOfAssets, type AssetRoom } from '@/services/rooms/room-scope.service';
+import { normalizeLocalQuery } from '@/lib/search/local-search';
 
 interface AgendaQueryParams {
   accountId: number;
@@ -41,6 +42,13 @@ interface AgendaQueryParams {
    * `services/rooms/room-scope.service.ts`.
    */
   piece?: string;
+  /**
+   * Lot 97C — recherche locale (`?q=`) : règles de la barre de recherche
+   * (titre, description, bien concerné), ensemble EXHAUSTIF du compte croisé
+   * avec le périmètre (biens, équipements, pièces) et les filtres explicites
+   * (période, mois, année, annulés). Vide : aucune restriction.
+   */
+  q?: string;
 }
 
 export interface AgendaItemFull {
@@ -450,6 +458,15 @@ async function getAgendaItemsInScope(params: AgendaQueryParams, extraIds: readon
   const now = new Date();
   const today = now.toISOString().slice(0, 10);
 
+  // Lot 97C : recherche locale résolue d'abord ; import différé (le service
+  // de recherche globale tire les dépendances de l'assistant).
+  const recherche = normalizeLocalQuery(params.q);
+  const searchIds = recherche
+    ? await (await import('@/services/search/global-search.service')).matchingIdsForList(accountId, recherche, 'agenda_item')
+    : null;
+  if (searchIds && searchIds.length === 0) return [];
+  const trouves = searchIds ? new Set(searchIds) : null;
+
   let rows: typeof agendaItems.$inferSelect[];
 
   if (fileId) {
@@ -487,8 +504,15 @@ async function getAgendaItemsInScope(params: AgendaQueryParams, extraIds: readon
       and(eq(agendaItems.accountId, accountId), inArray(agendaItems.id, ids))
     );
   } else {
-    rows = await db.select().from(agendaItems).where(eq(agendaItems.accountId, accountId));
+    rows = await db.select().from(agendaItems).where(
+      searchIds
+        ? and(eq(agendaItems.accountId, accountId), inArray(agendaItems.id, searchIds))
+        : eq(agendaItems.accountId, accountId),
+    );
   }
+
+  // Lot 97C : intersection avec la recherche (un élément n'apparaît qu'une fois).
+  if (trouves) rows = rows.filter((item) => trouves.has(item.id));
 
   // Filter by period
   if (period && period !== 'all') {

@@ -1,6 +1,7 @@
 {
   "case": "P-T4-03",
   "description": "VERIFY_COMPLETION — entretien annuel : la preuve de l'occurrence 2025 ne clôt pas l'occurrence 2026 (occurrenceMatch none).",
+  "qualification": { "role": "guard" },
   "context": {
     "item": { "id": 71, "title": "Entretien chaudière", "date": "2026-10-15", "category": "action", "status": null,
       "manual": false, "originFieldKey": "maintenanceDueDate", "businessType": "maintenance",

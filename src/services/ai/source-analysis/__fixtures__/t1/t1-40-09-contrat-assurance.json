@@ -1,6 +1,7 @@
 {
   "case": "F-010",
   "description": "Contrat d'assurance habitation : CONTRACT REALIZED, rôle CONTRACT_DOCUMENT, référence de police, date d'effet en startDate.",
+  "qualification": { "role": "answer" },
   "context": {
     "linkedAssetId": 20,
     "assets": [

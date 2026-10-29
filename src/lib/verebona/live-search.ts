@@ -8,6 +8,7 @@
  * envoie la demande complète à Verebona.
  */
 import type { DrawerTarget } from '@/lib/drawers';
+import { localSearchHref } from '@/lib/search/local-search';
 
 export interface LiveResult {
   id: string;
@@ -100,4 +101,27 @@ export function moveActive(current: number, delta: 1 | -1, length: number): numb
   if (next < -1) return length - 1;
   if (next >= length) return -1;
   return next;
+}
+
+/**
+ * Lot 97C — « Voir tous » de la recherche générale : quand les suggestions
+ * contiennent des documents (ou des éléments d'agenda), l'écran complet
+ * s'ouvre avec la recherche PRÉREMPLIE (`/documents?q=…`,
+ * `/agenda?q=…&view=list`) — le critère, jamais les quelques identifiants
+ * des suggestions (plafonnées). Pur.
+ */
+export interface LiveSeeAll {
+  id: 'voir-documents' | 'voir-agenda';
+  label: string;
+  href: string;
+}
+
+export function seeAllLinks(q: string, rows: ApiSearchRow[] | null | undefined): LiveSeeAll[] {
+  const saisie = q.trim();
+  if (saisie.length < LIVE_MIN_CHARS) return [];
+  const cats = new Set((rows ?? []).map((r) => r?.category));
+  const out: LiveSeeAll[] = [];
+  if (cats.has('Document')) out.push({ id: 'voir-documents', label: 'Voir tous les documents', href: localSearchHref('document', saisie) });
+  if (cats.has('Agenda')) out.push({ id: 'voir-agenda', label: 'Voir tous les éléments d’agenda', href: localSearchHref('agenda', saisie) });
+  return out;
 }

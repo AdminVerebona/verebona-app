@@ -36,6 +36,7 @@ import { treatmentOfUseCase, type Treatment } from '../config/treatments';
 import type { MasterCorpusCase, MasterFileReader } from '../governance/master-corpus/cases';
 import { defectsFromComparison, defectsFromEvaluator, schemaDefect, type Defect } from './defects';
 import { canonicalJson, sha256 } from './signature';
+import { structuredSpecFor } from '../master-prompts/structured-context';
 import type { CaseSource, ExpectedSource } from './verdict';
 
 export interface CaseEvaluation { defects: Defect[]; inconclusive: string | null }
@@ -89,6 +90,18 @@ export function outputSha256(v: unknown): string | null { return hashOf(v); }
 
 // ── 1. Corpus des prompts maîtres ───────────────────────────────────────────
 
+/**
+ * Lot 97A — schémas de sortie possibles de la branche d'un cas, dans l'ordre
+ * d'essai : contrat de la sortie enregistrée, schéma de l'opération, puis
+ * schémas des contrats de sortie déclarés (contexte structuré). Pur.
+ */
+export function branchSchemaNames(c: Pick<MasterCorpusCase, 'masterPromptCode' | 'task' | 'outputSchema' | 'outputContract'>): string[] {
+  const spec = structuredSpecFor(c.masterPromptCode);
+  const propre = c.outputContract ? spec?.outputContracts[c.outputContract]?.byTask[c.task]?.schemaName : undefined;
+  const declares = spec ? Object.values(spec.outputContracts).map((o) => o.byTask[c.task]?.schemaName) : [];
+  return [...new Set([propre, c.outputSchema, ...declares].filter((n): n is string => Boolean(n)))];
+}
+
 let corpusOverride: MasterCorpusCase[] | null = null;
 /** Tests seulement : corpus substitué (campagne ET lecture BO voient le même corpus). */
 export function __setQualificationCorpusForTests(cases: MasterCorpusCase[] | null): void { corpusOverride = cases; }
@@ -130,6 +143,7 @@ async function fixtureCases(op: AiOperationDefinition, treatment: Treatment, rea
     if (attendu.use === 'SKIP') { skipped.push({ caseId: `corpus:${c.id}`, source: 'CORPUS_FIXTURE', reason: attendu.reason! }); continue; }
     // Sans déclaration « réponse de référence », l'attendu (écrit pour une sortie enregistrée) n'est pas appliqué.
     const juge: MasterCorpusCase = attendu.use === 'REFERENCE' ? c : { ...c, expected: null };
+    const schemaNames = branchSchemaNames(c);
     cases.push({
       caseId: `corpus:${c.id}`, operationCode: op.operationCode, treatment, source: 'CORPUS_FIXTURE',
       expectedSource: attendu.use,
@@ -137,7 +151,16 @@ async function fixtureCases(op: AiOperationDefinition, treatment: Treatment, rea
       outputSchema: schema, acceptedOutputSchemas: branchSchemas(c),
       historicalOutput: c.output ?? null, marker: markerOf(variables),
       async evaluate(output, ctx) {
-        const r = await evaluateCorpusOutput(juge, output, ctx.masterText(c.masterPromptCode), ctx.masterText);
+        // Lot 97A : la sortie RÉELLE suit le contrat de sortie du prompt actif (T4 v1 / v2 / v3…), pas
+        // forcément celui de la sortie enregistrée : elle est jugée avec le premier schéma de la branche
+        // qui la valide (schéma du cas, de l'opération, puis des contrats déclarés), jamais avec un schéma
+        // d'un autre contrat qui la rejetterait à tort (ex. v1 : `unknown` exige `ambiguous`).
+        let r = await evaluateCorpusOutput(juge, output, ctx.masterText(c.masterPromptCode), ctx.masterText, schemaNames[0]);
+        for (const nom of schemaNames.slice(1)) {
+          if (!r.errors.some((e) => /^(sortie|schéma) /.test(e))) break;
+          const autre = await evaluateCorpusOutput(juge, output, ctx.masterText(c.masterPromptCode), ctx.masterText, nom);
+          if (!autre.errors.some((e) => /^(sortie|schéma) /.test(e))) r = autre;
+        }
         const defects: Defect[] = [];
         let inconclusive: string | null = null;
         for (const e of r.errors) {

@@ -1,0 +1,277 @@
+{
+  "case": "P-T3-ID-02",
+  "description": "Lot 97A — OPERATION_IDENTITY, cas limite : le devis a été rattaché par l’utilisateur (décision confirmée) ⇒ toute séparation ou tout déplacement proposé par le modèle est refusé en bloc (objet protégé), aucune écriture.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "identity": {
+      "today": "2026-10-26",
+      "accountId": 0,
+      "operation": {
+        "id": 601,
+        "typeCode": "INTERVENTION",
+        "status": "REALIZED",
+        "label": "Remplacement des plaquettes de frein",
+        "provider": "Garage Martin",
+        "plannedDate": null,
+        "startDate": null,
+        "realizedDate": "2026-06-05",
+        "endDate": null,
+        "active": true,
+        "assetIds": [
+          1
+        ],
+        "equipmentIds": [],
+        "roomIds": [],
+        "fileIds": [
+          8001,
+          8002
+        ],
+        "amounts": [
+          {
+            "kind": "REALIZED_COST",
+            "amountMinor": 24900,
+            "currency": "EUR",
+            "date": "2026-06-05",
+            "periodStart": null,
+            "periodEnd": null
+          }
+        ],
+        "references": [
+          {
+            "kind": "INVOICE",
+            "value": "FA-0612"
+          }
+        ]
+      },
+      "sources": [
+        {
+          "id": 11,
+          "kind": "DOCUMENT",
+          "fileId": 8001,
+          "candidateKey": "op1",
+          "matchMethod": null,
+          "role": "INVOICE",
+          "userConfirmed": false,
+          "payload": {
+            "typeHint": "INTERVENTION",
+            "statusHint": "REALIZED",
+            "summary": "Remplacement des plaquettes de frein avant",
+            "provider": "Garage Martin",
+            "sourceRoleHint": "INVOICE",
+            "temporalHints": {
+              "realizedDate": "2026-06-05"
+            },
+            "financialHints": [
+              {
+                "role": "REALIZED_COST",
+                "amountMinor": 24900,
+                "currency": "EUR",
+                "amountScope": "TOTAL"
+              }
+            ],
+            "businessReferences": [
+              {
+                "kind": "INVOICE",
+                "value": "FA-0612"
+              }
+            ],
+            "targetHints": [
+              {
+                "type": "ASSET",
+                "entityId": 1,
+                "rawLabel": "Clio"
+              }
+            ]
+          }
+        },
+        {
+          "id": 12,
+          "kind": "DOCUMENT",
+          "fileId": 8002,
+          "candidateKey": "op1",
+          "matchMethod": "M0",
+          "role": "QUOTE",
+          "userConfirmed": true,
+          "payload": {
+            "typeHint": "INTERVENTION",
+            "statusHint": "ENVISAGED",
+            "summary": "Remplacement des deux pneus avant",
+            "provider": "Garage Martin",
+            "sourceRoleHint": "QUOTE",
+            "temporalHints": {
+              "plannedDate": "2026-07-01"
+            },
+            "financialHints": [
+              {
+                "role": "FORECAST_COST",
+                "amountMinor": 38000,
+                "currency": "EUR",
+                "amountScope": "TOTAL"
+              }
+            ],
+            "businessReferences": [
+              {
+                "kind": "QUOTE",
+                "value": "DV-0701"
+              }
+            ],
+            "targetHints": [
+              {
+                "type": "ASSET",
+                "entityId": 1,
+                "rawLabel": "Clio"
+              }
+            ]
+          }
+        }
+      ],
+      "neighbours": [
+        {
+          "id": 602,
+          "typeCode": "INTERVENTION",
+          "status": "ENVISAGED",
+          "label": "Remplacement des pneus avant",
+          "provider": "Garage Martin",
+          "plannedDate": "2026-07-01",
+          "startDate": null,
+          "realizedDate": null,
+          "endDate": null,
+          "active": true,
+          "assetIds": [
+            1
+          ],
+          "equipmentIds": [],
+          "roomIds": [],
+          "fileIds": [
+            8003
+          ],
+          "amounts": [
+            {
+              "kind": "FORECAST_COST",
+              "amountMinor": 38000,
+              "currency": "EUR",
+              "date": null,
+              "periodStart": null,
+              "periodEnd": null
+            }
+          ],
+          "references": [
+            {
+              "kind": "QUOTE",
+              "value": "DV-0701"
+            }
+          ]
+        }
+      ],
+      "documents": [
+        {
+          "id": 8001,
+          "type": "FACTURE",
+          "title": "Facture Garage Martin juin 2026",
+          "date": "2026-06-05",
+          "provider": "Garage Martin",
+          "amounts": [],
+          "references": [
+            {
+              "kind": "INVOICE",
+              "value": "FA-0612"
+            }
+          ],
+          "excerpts": [
+            "Remplacement plaquettes de frein avant — Clio AB-123-CD — 249,00 € TTC"
+          ],
+          "operationIds": [
+            601
+          ]
+        },
+        {
+          "id": 8002,
+          "type": "DEVIS",
+          "title": "Devis Garage Martin pneus",
+          "date": "2026-06-20",
+          "provider": "Garage Martin",
+          "amounts": [],
+          "references": [
+            {
+              "kind": "QUOTE",
+              "value": "DV-0701"
+            }
+          ],
+          "excerpts": [
+            "Devis DV-0701 : remplacement des deux pneus avant — Clio AB-123-CD — 380,00 € TTC"
+          ],
+          "operationIds": [
+            601,
+            602
+          ]
+        },
+        {
+          "id": 8003,
+          "type": "DEVIS",
+          "title": "Devis pneus (copie)",
+          "date": "2026-06-20",
+          "provider": "Garage Martin",
+          "amounts": [],
+          "references": [
+            {
+              "kind": "QUOTE",
+              "value": "DV-0701"
+            }
+          ],
+          "excerpts": [
+            "Devis DV-0701 : remplacement des deux pneus avant"
+          ],
+          "operationIds": [
+            602
+          ]
+        }
+      ],
+      "request": "contrôle de cohérence : identité d’une Opération à plusieurs documents"
+    }
+  },
+  "recording": {
+    "operationCode": "t3_operation_identity",
+    "task": "OPERATION_IDENTITY",
+    "output": {
+      "task": "OPERATION_IDENTITY",
+      "outcome": "REVISED",
+      "sources": [
+        {
+          "source": "S1",
+          "decision": "KEEP",
+          "targetOperation": null,
+          "confidence": "certain",
+          "evidence": [
+            {
+              "document": "D1",
+              "excerpt": "Remplacement plaquettes de frein avant"
+            }
+          ],
+          "reason": "Source fondatrice : la facture du freinage."
+        },
+        {
+          "source": "S2",
+          "decision": "MOVE",
+          "targetOperation": "O2",
+          "confidence": "certain",
+          "evidence": [
+            {
+              "document": "D2",
+              "excerpt": "Devis DV-0701 : remplacement des deux pneus avant"
+            }
+          ],
+          "reason": "Le devis porte sur les pneus avant (référence DV-0701), objet de l’Opération O2, pas sur le freinage."
+        }
+      ],
+      "reason": "Le devis des pneus a été regroupé à tort avec la facture du freinage : il relève de l’Opération des pneus."
+    }
+  },
+  "expected": {
+    "valid": false,
+    "issues": [
+      "PROTECTED_OBJECT"
+    ]
+  }
+}

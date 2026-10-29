@@ -1,6 +1,7 @@
 {
   "case": "P-T3-13",
   "description": "OPERATION_MATCH (lot 56A) — échéance suivante d'un abonnement : issue ATTACH explicite (signaux positifs, aucune contradiction) → rattachement sans question, même si la confiance n'est que « probable ».",
+  "qualification": { "role": "answer" },
   "context": {
     "operationMatch": {
       "subject": {

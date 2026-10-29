@@ -4206,7 +4206,7 @@ export const businessOperationMatchDecisions = pgTable('business_operation_match
   kindChk: check('business_operation_match_decisions_kind_chk', sql`${t.sourceKind} IN (${BO_SOURCE_KINDS_SQL}, 'ROOM', 'EQUIPMENT', 'PRINCIPAL_LINK', 'PRINCIPAL', 'AGENDA_FILE_LINK')`),
   scopeChk: check('business_operation_match_decisions_scope_chk', sql`(${t.sourceKind} = 'AGENDA_FILE_LINK') = (${t.candidateOperationId} IS NULL)`),
   decisionChk: check('business_operation_match_decisions_decision_chk', sql`${t.decision} IN ('CONFIRMED', 'REJECTED')`),
-  originChk: check('business_operation_match_decisions_origin_chk', sql`${t.origin} IN ('USER_ARBITRATION', 'SYSTEM_EXPLICIT_REFERENCE', 'ADMIN_REVIEW')`),
+  originChk: check('business_operation_match_decisions_origin_chk', sql`${t.origin} IN ('USER_ARBITRATION', 'SYSTEM_EXPLICIT_REFERENCE', 'ADMIN_REVIEW', 'AI_IDENTITY')`),
   activeUidx: uniqueIndex('business_operation_match_decisions_active_uidx')
     .on(t.candidateOperationId, t.sourceKind, t.sourceEntityKey, sql`COALESCE(${t.sourceVersion}, '')`)
     .where(sql`active`),
@@ -4552,6 +4552,8 @@ export const authTransactions = pgTable('auth_transactions', {
   emailCodeAttempts: integer('email_code_attempts').notNull().default(0),
   emailCodeSentAt: tstzOptional('email_code_sent_at'),
   handoffHash: text('handoff_hash'),
+  /** Lot 97B (migration 0840) : ticket app → navigateur système (empreinte, usage unique). */
+  appTicketHash: text('app_ticket_hash'),
   failureCode: text('failure_code'),
   expiresAt: pgTimestamp('expires_at', { withTimezone: true }).notNull(),
   createdAt: tstz('created_at'),
@@ -4560,6 +4562,7 @@ export const authTransactions = pgTable('auth_transactions', {
 }, (t) => ({
   stateUq: uniqueIndex('auth_transactions_state_uq').on(t.stateHash),
   handoffUq: uniqueIndex('auth_transactions_handoff_uq').on(t.handoffHash).where(sql`handoff_hash IS NOT NULL`),
+  appTicketUq: uniqueIndex('auth_transactions_app_ticket_uq').on(t.appTicketHash).where(sql`app_ticket_hash IS NOT NULL`),
   bindingIdx: index('auth_transactions_binding_idx').on(t.bindingHash),
   expiresIdx: index('auth_transactions_expires_idx').on(t.expiresAt),
   userIdx: index('auth_transactions_user_idx').on(t.userId).where(sql`user_id IS NOT NULL`),

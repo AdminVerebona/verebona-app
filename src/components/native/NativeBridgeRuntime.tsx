@@ -31,7 +31,7 @@ import { utiliserEnvoiNatif } from '@/lib/upload-queue';
 import { NATIVE_PLUGINS, listenNative, nativePlugin } from '@/lib/native/bridge';
 import { appBuildEnv, appUrlContext, expectedServerEnvironment, initInstallationId } from '@/lib/native/shell-info';
 import { resolveAppUrl, pushTargetPath } from '@/lib/native/deep-links';
-import { completeNativeOAuth } from '@/lib/native/oauth';
+import { abandonNativeOAuth, completeNativeOAuth, nativeOAuthErrorMessage } from '@/lib/native/oauth';
 import {
   biometricsEnabled, biometryAvailability, clearBackgroundAt, readBackgroundAt, rememberBackgroundAt,
   shouldLockOnResume, unlockPath, verifyUser,
@@ -40,6 +40,7 @@ import { enableNativePush, nativePushPermission, syncNativePush, watchPushOpens,
 import { readSharedFile, triageSharedFiles } from '@/lib/native/share-in';
 import { nativeUploadSender } from '@/lib/native/native-upload';
 import { setNativeFeatures, setNativeOAuthReturn } from '@/lib/native/features';
+import { NATIVE_COMMERCE_INFO_PATH, NATIVE_COMMERCE_MESSAGE, isCommercePath } from '@/lib/native/commerce';
 
 type Features = Record<string, boolean>;
 const PUSH_PROMPT_DISMISSED_KEY = 'verebona:native:push-prompt-dismissed';
@@ -178,9 +179,16 @@ export default function NativeBridgeRuntime() {
       const r = resolveAppUrl(e?.url, ctx);
       if (r.kind === 'oauth') {
         void completeNativeOAuth(r.handoff).then((o) => {
-          if (o.status === 'signed_in') window.location.assign(o.redirectTo);
+          // Connexion, ou association / confirmation de Mon compte (lot 97B).
+          if (o.status === 'signed_in' || o.status === 'account_done') window.location.assign(o.redirectTo);
           else if (o.status === 'failed') toast.error(o.message);
         });
+        return;
+      }
+      if (r.kind === 'oauth_error') {
+        // Lot 97B : parcours refusé par le serveur (ticket expiré, identité déjà liée…).
+        void abandonNativeOAuth();
+        toast.error(nativeOAuthErrorMessage(r.code));
         return;
       }
       if (r.kind === 'share') return; // contenu remis par l'événement `shareReceived`
@@ -263,7 +271,26 @@ export default function NativeBridgeRuntime() {
     return () => window.removeEventListener(CREATE_FLOW_HOST_READY, onReady);
   }, [livrerFichiers, lockDue, pathname]);
 
+  // ── Pages commerciales (lot 97B, COM-01/05, STORE-08) ───────────────────
+  // Deuxième barrière (la première est le middleware) : aussi pour l'interface
+  // embarquée et la navigation côté client. L'écran est masqué tout de suite,
+  // puis remplacé par l'écran d'information (aucun lien d'achat).
+  const commerce = isCommercePath(pathname);
+  useEffect(() => {
+    if (commerce) router.replace(NATIVE_COMMERCE_INFO_PATH);
+  }, [commerce, router]);
+
   // ── Rendu ───────────────────────────────────────────────────────────────
+  if (commerce) {
+    return (
+      <div role="alertdialog" aria-modal="true" aria-labelledby="vb-commerce-title" className="fixed inset-0 z-[1001] flex items-center justify-center bg-background p-6">
+        <div className="w-full max-w-sm space-y-4 text-center">
+          <h1 id="vb-commerce-title" className="vb-app-title">Abonnement</h1>
+          <p className="text-sm text-muted-foreground">{NATIVE_COMMERCE_MESSAGE}</p>
+        </div>
+      </div>
+    );
+  }
   if (envMismatch) {
     return (
       <div role="alertdialog" aria-modal="true" aria-labelledby="vb-env-title" className="fixed inset-0 z-[1001] flex items-center justify-center bg-background p-6">

@@ -2319,6 +2319,19 @@ export async function consolidateAccountOperations(
     res.changes += n;
     res.contractsActivated = n > 0 ? dus.length : 0;
   }
+  // Lot 97A : identité T3 d'Opérations à plusieurs sources (contrat t3-operation-identity-v1) — hors verrou,
+  // bornée, seulement si le prompt T3 actif porte la branche ; documents touchés reconsolidés dans ce passage.
+  if (opts.operationMatch !== false) {
+    try {
+      const { runIdentityPhase } = await import('../semantic/identity-phase');
+      const id = await runIdentityPhase(accountId, { beforeCall: opts.beforeWrite });
+      for (const f of id.files) await passer(f);
+    } catch (e) {
+      if ((await import('@/services/ai/queue/execution-control')).isExecutionCancelled(e)) throw e;
+      res.errors++;
+      console.error(`[t3-operations] identité sémantique T3 (compte ${accountId}) :`, (e as Error).message);
+    }
+  }
   // Lot 87B (CODE-09) : réévaluations sémantiques T3 terminées par ce passage — clôturées au journal (0752).
   const { settleIdentityRequests } = await import('../semantic/orchestrator');
   await settleIdentityRequests(accountId);

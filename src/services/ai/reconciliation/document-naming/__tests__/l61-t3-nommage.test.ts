@@ -256,8 +256,8 @@ describe('T3-NOM-18 — Contrat de sortie T3 : section document_renames facultat
   });
   it('branche FACULTATIVE du master T3, opération déclarée, schéma relié ; texte livré au lot 63', () => {
     expect(T3_TASKS).toContain('DOCUMENT_NAMING');
-    // Lot 85F : + KNOWLEDGE_QUERY (facultative, texte attendu de l'équipe IA).
-    expect(OPTIONAL_MASTER_TASKS.t3_master_v1).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY']);
+    // Lot 85F : + KNOWLEDGE_QUERY (facultative, texte attendu de l'équipe IA) ; lot 97A : + OPERATION_IDENTITY (guide du PO).
+    expect(OPTIONAL_MASTER_TASKS.t3_master_v1).toEqual(['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY']);
     expect(isMasterTaskTextPending('t3_master_v1', 'DOCUMENT_NAMING')).toBe(false);
     expect(isMasterTaskTextPending('t3_master_v1', 'OPERATION_MATCH')).toBe(false);
     const op = getOperation('t3_document_naming');

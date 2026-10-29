@@ -1,6 +1,7 @@
 {
   "case": "P-T3-KQ-04",
   "description": "KNOWLEDGE_QUERY — deux dates de fin écrites différentes : contradiction, aucune écriture.",
+  "qualification": { "role": "answer" },
   "context": {
     "knowledgeQuery": {
       "question": {

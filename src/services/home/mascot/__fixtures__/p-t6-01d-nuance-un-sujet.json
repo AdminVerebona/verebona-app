@@ -1,6 +1,7 @@
 {
   "case": "P-T6-01d",
   "description": "T6 / FORMULATE — un seul paragraphe fautif (R9, vocabulaire alarmiste) : il reprend son texte de secours, l’autre reste formulé.",
+  "qualification": { "role": "guard" },
   "context": {
     "input": {
       "schemaVersion": "t6-input-v1",

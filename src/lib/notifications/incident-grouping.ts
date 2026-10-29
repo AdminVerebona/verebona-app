@@ -43,6 +43,18 @@
  * Le délai d'envoi de `PAYMENT_ACTION_REQUIRED` (2 min) ne fait que lisser
  * l'ordre habituel des webhooks : la décision n'en dépend pas.
  *
+ * Lot 97B (test L79C-E2E-08 instable) : quand l'échec et la demande
+ * d'authentification sont réclamés dans le MÊME lot du dispatcher, l'échec
+ * est déjà `processing` sans avoir encore décidé ; si la demande passait en
+ * premier, elle partait (« échec en cours sans l'action ») puis l'échec, la
+ * voyant, ajoutait l'action → deux messages. La décision de l'échec est
+ * désormais ENREGISTRÉE sous le verrou (`authenticationRequired` true OU
+ * false) : un échec `processing` encore indécis portera l'action (il verra
+ * cette demande, déjà en base) ; seul un échec qui a décidé « sans action »
+ * laisse partir la demande. Aucune horloge n'intervient (ni fenêtre, ni
+ * fuseau, ni heure calme) : seul l'état des lignes compte. Le dispatcher
+ * traite en outre chaque lot réclamé dans l'ordre de création.
+ *
  * Volontairement ÉTROIT : jamais une déduplication globale des incidents d'un
  * utilisateur — un autre lot, une autre facture, un rappel du cycle
  * d'impayé (`ACCOUNT_READ_ONLY`, J−7 / J−1) restent envoyés.
@@ -102,11 +114,30 @@ export function analysisIncidentKey(payload: Record<string, unknown> | null | un
  * Décision pour `PAYMENT_ACTION_REQUIRED` face au `PAYMENT_FAILED` de la même
  * facture (pure) : absorbé seulement si l'échec porte l'action ou n'est pas
  * encore parti.
+ *
+ * `authenticationRequired` : décision ENREGISTRÉE par l'échec — `true` (porte
+ * l'action), `false` (a décidé sans l'action), `null` (pas encore décidé).
+ *   · `pending` : pas encore parti → il portera l'action ;
+ *   · `processing` : réclamé ; indécis (`null`) → il verra cette demande et la
+ *     portera ; décidé `false` → la demande part (lot 97B) ;
+ *   · `sent` / `partial` : seulement s'il a porté l'action (`true`) — une
+ *     ligne historique sans décision enregistrée est traitée comme « sans » ;
+ *   · autre statut (échec, ignoré, regroupé…) : jamais.
  */
-export function actionRequiredCoveredBy(failed: { status: string; authenticationRequired: boolean } | null): boolean {
+export function actionRequiredCoveredBy(failed: { status: string; authenticationRequired: boolean | null } | null): boolean {
   if (!failed) return false;
   if (failed.status === 'pending') return true;
-  return (failed.status === 'processing' || failed.status === 'sent' || failed.status === 'partial') && failed.authenticationRequired;
+  if (failed.status === 'processing') return failed.authenticationRequired !== false;
+  return (failed.status === 'sent' || failed.status === 'partial') && failed.authenticationRequired === true;
+}
+
+/**
+ * Décision de `PAYMENT_FAILED` (pure, lot 97B) : porte l'action si le
+ * producteur l'a déjà indiquée ou si une demande d'authentification de la
+ * même facture existe. La valeur est TOUJOURS enregistrée (true / false).
+ */
+export function paymentFailedCarriesAction(input: { producerFlag: unknown; actionRequestExists: boolean }): boolean {
+  return input.producerFlag === true || input.actionRequestExists;
 }
 
 /** Facture réglée ou annulée : un incident de paiement n'a plus d'objet (pure). */
@@ -215,13 +246,14 @@ async function resolvePaymentIncident(row: GroupingInput, payload: Record<string
           LIMIT 1`,
         [row.recipient_user_id, row.id, invoiceId] as never[],
       );
-      if (!action) return NONE;
-      // Ce qui est communiqué est enregistré : la demande d'authentification
-      // (même facture) saura qu'elle est couverte.
+      const carries = paymentFailedCarriesAction({ producerFlag: payload.authenticationRequired, actionRequestExists: !!action });
+      // Ce qui est communiqué est enregistré, AVEC OU SANS l'action (lot 97B) :
+      // la demande d'authentification (même facture) sait si elle est couverte,
+      // même quand les deux sont réclamées dans le même lot.
       await tx.unsafe(
-        `UPDATE notification_outbox SET payload_json = COALESCE(payload_json, '{}'::jsonb) || '{"authenticationRequired": true}'::jsonb
-          WHERE id = $1`, [row.id] as never[]);
-      return { absorbedBy: null, payloadPatch: { authenticationRequired: true } };
+        `UPDATE notification_outbox SET payload_json = COALESCE(payload_json, '{}'::jsonb) || jsonb_build_object('authenticationRequired', $2::boolean)
+          WHERE id = $1`, [row.id, carries] as never[]);
+      return carries ? { absorbedBy: null, payloadPatch: { authenticationRequired: true } } : NONE;
     }
 
     // PAYMENT_ACTION_REQUIRED
@@ -233,7 +265,7 @@ async function resolvePaymentIncident(row: GroupingInput, payload: Record<string
         LIMIT 1`,
       [row.recipient_user_id, row.id, invoiceId] as never[],
     );
-    if (failed && actionRequiredCoveredBy({ status: failed.status, authenticationRequired: failed.auth === true })) {
+    if (failed && actionRequiredCoveredBy({ status: failed.status, authenticationRequired: failed.auth })) {
       return { absorbedBy: failed.id };
     }
     return NONE;

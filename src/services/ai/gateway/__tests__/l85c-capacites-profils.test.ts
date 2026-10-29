@@ -257,7 +257,8 @@ describe('L85C-U05 — R33 : couverture générée du registre', () => {
   it('les 14 opérations métier sont couvertes ; evaluate_prompt reste technique (AI_GOVERNANCE, active — décision 03) ; rien de non couvert', () => {
     const cov = P.operationProfileCoverage();
     // Intégration lot 85 : 85F ajoute l'opération métier T3 `t3_knowledge_query` (branche KNOWLEDGE_QUERY, en attente de l'équipe IA).
-    expect(cov.business.map((b) => b.operationCode).sort()).toEqual([...CDC_14, 't3_knowledge_query'].sort());
+    // Lot 97A : + `t3_operation_identity` et `t4_agenda_representation` (branches facultatives, textes du guide du PO).
+    expect(cov.business.map((b) => b.operationCode).sort()).toEqual([...CDC_14, 't3_knowledge_query', 't3_operation_identity', 't4_agenda_representation'].sort());
     expect(cov.technical).toEqual(['evaluate_prompt']);
     expect(AI_OPERATIONS.evaluate_prompt).toMatchObject({ useCaseCode: 'AI_GOVERNANCE', active: true });
     expect(cov.uncovered).toEqual([]);

@@ -1,6 +1,7 @@
 {
   "case": "P-T2-05",
   "description": "REVALIDATE (texte) — une correction s’appuie sur un extrait littéral du contenu ciblé (C2) ; sous-ensemble critique du passage réel.",
+  "qualification": { "role": "answer" },
   "context": {
     "provenance": "TEXT",
     "revalidate": {

@@ -18,6 +18,15 @@
  * La session est émise par l'échange (émission unique `issueSession`, lot 92)
  * dans les cookies HttpOnly de la WebView : même compte, mêmes données que
  * sur le site (M1).
+ *
+ * LOT 97B — MON COMPTE › SÉCURITÉ DANS L'APP : « Connecter » (associer) et
+ * « Confirmer avec Google / Apple » (réauthentification 5 min) suivent le
+ * MÊME parcours : la vue de l'app demande au serveur (session + preuve)
+ * une adresse d'ouverture à usage unique (`/api/auth/oauth/app/continue`),
+ * ouverte dans le navigateur système ; au retour, le même échange PKCE,
+ * présenté depuis la vue, applique l'association ou la preuve à CETTE
+ * session (aucune nouvelle session). La biométrie ne remplace jamais cette
+ * confirmation.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { clientPlatformHeaders } from '@/lib/client-platform';
@@ -27,6 +36,7 @@ import { appUrlContext } from './shell-info';
 import { resolveAppUrl } from './deep-links';
 import { OAUTH_APP_RETURN_PATH } from '@/lib/mobile/app-links';
 import { nativeOAuthReturn } from './features';
+import { socialErrorMessage } from '@/lib/auth/oauth/messages';
 
 export type SocialProvider = 'google' | 'apple';
 
@@ -75,10 +85,15 @@ export function authSessionCallback(
   return ctx.urlScheme ? { callbackScheme: ctx.urlScheme } : {};
 }
 
-interface PendingOAuth { verifier: string; provider: SocialProvider; startedAt: number }
+/** Parcours en attente : connexion, ou action de Mon compte (lot 97B). */
+export type NativeOAuthPurpose = 'sign_in' | 'link' | 'reauth';
+
+interface PendingOAuth { verifier: string; provider: SocialProvider; startedAt: number; purpose?: NativeOAuthPurpose }
 
 export type NativeOAuthOutcome =
   | { status: 'signed_in'; redirectTo: string }
+  /** Lot 97B : association ou confirmation appliquée à la session de l'app. */
+  | { status: 'account_done'; redirectTo: string }
   | { status: 'cancelled' }
   | { status: 'pending_return' }
   | { status: 'failed'; message: string };
@@ -99,15 +114,79 @@ interface BrowserPlugin { open(o: { url: string; presentationStyle?: string }): 
 export async function startNativeSocialSignIn(
   provider: SocialProvider, params: Record<string, string | null | undefined> = {},
 ): Promise<NativeOAuthOutcome> {
-  const platform = nativePlatform();
   const ctx = appUrlContext();
-  if (!platform || !ctx) return { status: 'failed', message: MESSAGE_ECHEC };
+  if (!nativePlatform() || !ctx) return { status: 'failed', message: MESSAGE_ECHEC };
+  const challenge = await rememberPending(provider, 'sign_in');
+  if (!challenge) return { status: 'failed', message: MESSAGE_ECHEC };
+  return openInSystemBrowser(nativeOAuthStartUrl(ctx.origin, provider, challenge, params));
+}
 
+/** Tire le vérificateur PKCE, le conserve (Keychain / Keystore) et rend le défi S256, ou null. */
+async function rememberPending(provider: SocialProvider, purpose: NativeOAuthPurpose): Promise<string | null> {
   const verifier = newPkceVerifier();
   const challenge = await pkceChallengeS256(verifier);
-  const pending: PendingOAuth = { verifier, provider, startedAt: Date.now() };
-  if (!(await secureSet(SECURE_KEYS.oauthVerifier, JSON.stringify(pending)))) return { status: 'failed', message: MESSAGE_ECHEC };
-  const url = nativeOAuthStartUrl(ctx.origin, provider, challenge, params);
+  const pending: PendingOAuth = { verifier, provider, startedAt: Date.now(), purpose };
+  return (await secureSet(SECURE_KEYS.oauthVerifier, JSON.stringify(pending))) ? challenge : null;
+}
+
+/**
+ * Lot 97B — étape 1 de « Connecter » / « Confirmer avec » depuis Mon compte :
+ * prépare le parcours et rend le corps à envoyer à
+ * `POST /api/users/me/auth-identities/<p>/link|reauth` (null : hors de l'app,
+ * ou stockage sécurisé indisponible).
+ */
+export async function prepareNativeAccountOAuth(
+  provider: SocialProvider, purpose: 'link' | 'reauth',
+): Promise<{ client: 'app'; appChallenge: string } | null> {
+  if (!nativePlatform() || !appUrlContext()) return null;
+  const challenge = await rememberPending(provider, purpose);
+  return challenge ? { client: 'app', appChallenge: challenge } : null;
+}
+
+/**
+ * Lot 97B — étape 2 : ouvre dans le navigateur système l'adresse rendue par le
+ * serveur. Seule une adresse de l'environnement du binaire, sur le chemin
+ * d'ouverture prévu, est acceptée (jamais une URL arbitraire).
+ */
+export async function openNativeAccountOAuth(redirectUrl: unknown): Promise<NativeOAuthOutcome> {
+  const ctx = appUrlContext();
+  if (!ctx || !isAppContinueUrl(redirectUrl, ctx.origin)) {
+    await secureRemove(SECURE_KEYS.oauthVerifier);
+    return { status: 'failed', message: MESSAGE_ECHEC };
+  }
+  return openInSystemBrowser(redirectUrl as string);
+}
+
+/** Adresse d'ouverture du parcours de Mon compte (pure, testée). */
+export function isAppContinueUrl(raw: unknown, origin: string): boolean {
+  if (typeof raw !== 'string') return false;
+  try {
+    const u = new URL(raw);
+    return u.origin === new URL(origin).origin && u.pathname === '/api/auth/oauth/app/continue' && /^[A-Za-z0-9_-]{16,256}$/.test(u.searchParams.get('ticket') ?? '');
+  } catch {
+    return false;
+  }
+}
+
+/** Abandon d'un parcours (retour en erreur, annulation) : vérificateur effacé, navigateur fermé. */
+export async function abandonNativeOAuth(): Promise<void> {
+  await secureRemove(SECURE_KEYS.oauthVerifier);
+  nativePlugin<BrowserPlugin>(NATIVE_PLUGINS.browser)?.close?.().catch(() => {});
+}
+
+/** Message d'un retour en erreur du serveur (`?error=<CODE>`). */
+export function nativeOAuthErrorMessage(code: string): string {
+  return socialErrorMessage(code) ?? MESSAGE_ECHEC;
+}
+
+/**
+ * Ouvre une adresse du parcours dans le navigateur système. iOS : attend le
+ * retour et termine ; Android : `pending_return` (le retour arrive par lien).
+ */
+async function openInSystemBrowser(url: string): Promise<NativeOAuthOutcome> {
+  const platform = nativePlatform();
+  const ctx = appUrlContext();
+  if (!platform || !ctx) { await secureRemove(SECURE_KEYS.oauthVerifier); return { status: 'failed', message: MESSAGE_ECHEC }; }
 
   const authSession = platform === 'ios' ? nativePlugin<AuthSessionPlugin>(NATIVE_PLUGINS.authSession) : null;
   if (authSession) {
@@ -115,6 +194,7 @@ export async function startNativeSocialSignIn(
       const r = await authSession.start({ url, ...authSessionCallback(nativeOAuthReturn(), ctx) });
       if (r.status !== 'completed' || !r.url) { await secureRemove(SECURE_KEYS.oauthVerifier); return { status: 'cancelled' }; }
       const res = resolveAppUrl(r.url, ctx);
+      if (res.kind === 'oauth_error') { await secureRemove(SECURE_KEYS.oauthVerifier); return { status: 'failed', message: nativeOAuthErrorMessage(res.code) }; }
       if (res.kind !== 'oauth') { await secureRemove(SECURE_KEYS.oauthVerifier); return { status: 'failed', message: MESSAGE_ECHEC }; }
       return completeNativeOAuth(res.handoff);
     } catch (e) {
@@ -151,6 +231,15 @@ export async function completeNativeOAuth(handoff: string, now: number = Date.no
   if (!pending || typeof pending.verifier !== 'string' || now - Number(pending.startedAt) > NATIVE_OAUTH_TTL_MS) {
     return { status: 'failed', message: 'Ce lien de connexion a expiré. Recommencez la connexion.' };
   }
+  const account = pending.purpose === 'link' || pending.purpose === 'reauth';
+  if (account) {
+    // Le code d'échange est à usage unique : la session de la vue est
+    // renouvelée AVANT (jeton d'accès de 15 min expiré pendant le parcours).
+    try {
+      const { apiClient } = await import('@/lib/api-client');
+      await apiClient.get('/api/users/me/security');
+    } catch { /* l'échange dira si la session manque */ }
+  }
   try {
     const res = await fetch('/api/auth/oauth/app/exchange', {
       method: 'POST',
@@ -159,13 +248,15 @@ export async function completeNativeOAuth(handoff: string, now: number = Date.no
       headers: { 'Content-Type': 'application/json', ...clientPlatformHeaders() },
       body: JSON.stringify({ handoff, verifier: pending.verifier }),
     });
-    const body = await res.json().catch(() => ({})) as { success?: boolean; redirectTo?: unknown; error?: unknown };
+    const body = await res.json().catch(() => ({})) as { success?: boolean; redirectTo?: unknown; error?: unknown; code?: unknown };
     if (!res.ok || body.success !== true) {
+      // Mon compte (lot 97B) : message du code stable (déjà associé ailleurs, autre compte, session…).
+      if (account && typeof body.code === 'string') return { status: 'failed', message: nativeOAuthErrorMessage(body.code) };
       return { status: 'failed', message: typeof body.error === 'string' && res.status === 400 ? body.error : MESSAGE_ECHEC };
     }
     const target = typeof body.redirectTo === 'string' && body.redirectTo.startsWith('/') && !body.redirectTo.startsWith('//')
       ? body.redirectTo : '/accueil';
-    return { status: 'signed_in', redirectTo: target };
+    return account ? { status: 'account_done', redirectTo: target } : { status: 'signed_in', redirectTo: target };
   } catch {
     return { status: 'failed', message: 'Connexion Internet requise pour terminer la connexion.' };
   }

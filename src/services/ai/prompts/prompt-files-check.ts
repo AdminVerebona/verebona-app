@@ -26,7 +26,7 @@ import type { AiOperationDefinition } from '../registry/operations';
 import {
   promptFileCandidates, inspectMasterTemplate, checkMasterTemplate, MASTER_TASK_PLACEHOLDER, isMasterTaskTextPending,
 } from './prompt-loader';
-import { structuredSpecFor, checkExecutionConfig, type StructuredContextSpec } from '../master-prompts/structured-context';
+import { allowedTasksOf, structuredSpecFor, checkExecutionConfig, type StructuredContextSpec } from '../master-prompts/structured-context';
 import { contractVersionsOf } from '../gateway/output-resolution/runtime-contract';
 
 /** Contrat d'exécution du fichier du dépôt, s'il est en contexte structuré. */
@@ -94,11 +94,19 @@ export function checkPromptFiles(input: PromptFilesCheckInput): PromptFilesRepor
       }
       if (op.promptVariables && structuredFileSpec(code)) {
         // Contexte structuré : chaque variable de l'opération doit être un champ du contrat d'entrée.
+        // Lot 97A : TASK facultative (jamais autorisée par défaut) — champ d'un contrat d'entrée qui DÉCRIT la TASK.
         const spec = structuredFileSpec(code)!;
-        const champs = new Set(Object.values(spec.inputContracts[spec.defaults.inputContractVersion ?? '']?.fields ?? {}).map((f) => f.legacyVariable));
+        const facultative = Boolean(op.task && (spec.optionalTasks ?? []).includes(op.task));
+        const contrats = facultative
+          ? Object.values(spec.inputContracts).filter((c) => c.tasks[op.task!])
+          : [spec.inputContracts[spec.defaults.inputContractVersion ?? '']].filter(Boolean);
+        const champs = new Set(contrats.flatMap((c) => Object.values(c.fields).map((f) => f.legacyVariable)));
         for (const v of op.promptVariables) {
-          if (!champs.has(v)) report.errors.push(`${op.operationCode} : variable ${v} sans champ dans le contrat d’entrée ${spec.defaults.inputContractVersion}`);
+          if (!champs.has(v)) {
+            report.errors.push(`${op.operationCode} : variable ${v} sans champ dans le contrat d’entrée ${facultative ? `qui décrit la TASK ${op.task}` : spec.defaults.inputContractVersion}`);
+          }
         }
+        if (facultative && !contrats.length) report.errors.push(`${op.operationCode} : aucun contrat d’entrée ne décrit la TASK facultative ${op.task}`);
       } else if (op.promptVariables) {
         const attendus = new Set(op.promptVariables);
         const info = inspectMasterTemplate(text);
@@ -122,7 +130,15 @@ export function checkPromptFiles(input: PromptFilesCheckInput): PromptFilesRepor
           report.errors.push(`master « ${op.masterPromptCode} » (contexte structuré) : ${i.message}`);
         }
         const taches = [...(tachesParMaster.get(op.masterPromptCode) ?? [])];
-        for (const t of taches.filter((x) => !(d.allowedTasks ?? structure.knownTasks).includes(x))) {
+        for (const t of taches.filter((x) => !allowedTasksOf(structure, d).includes(x))) {
+          // Lot 97A : TASK facultative — jamais autorisée par défaut ; son texte et sa configuration (contrats qui la
+          // décrivent, TASK cochée) sont posés par le PO au BO. Avertissement si au moins un contrat la décrit.
+          if ((structure.optionalTasks ?? []).includes(t)) {
+            const decrite = Object.values(structure.inputContracts).some((c) => c.tasks[t]) && Object.values(structure.outputContracts).some((c) => c.byTask[t]);
+            if (decrite) report.warnings.push(`master « ${op.masterPromptCode} » (contexte structuré) : TASK facultative ${t} non autorisée par la configuration du fichier — fonction inactive tant qu’une version BO ne la porte pas (marqueur, contrats, TASK cochée)`);
+            else report.errors.push(`master « ${op.masterPromptCode} » : TASK facultative ${t} décrite par aucun contrat d’exécution`);
+            continue;
+          }
           report.errors.push(`master « ${op.masterPromptCode} » : TASK ${t} déclarée au registre mais non autorisée par la configuration d’exécution`);
         }
         const restes = inspectMasterTemplate(text).placeholders;

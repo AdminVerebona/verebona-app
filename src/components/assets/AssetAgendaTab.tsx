@@ -22,6 +22,8 @@ import type { AgendaPeriod } from '@/lib/agenda/agenda-filters';
 import { buildRoomFilterModel, roomFilterParam, type RoomFacet } from '@/lib/filters/room-filter';
 import { assetAgendaChips, isAssetAgendaEmpty } from '@/lib/agenda/asset-agenda-filters';
 import { undatedLabel } from '@/lib/agenda/no-deadline';
+import { LocalSearchField } from '@/components/search/LocalSearchField';
+import { LOCAL_SEARCH_PARAM, localSearchNoResult, readLocalQuery, searchWithLocalQuery } from '@/lib/search/local-search';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -82,6 +84,9 @@ export function AssetAgendaTab({ assetId }: Props) {
   const [piece, setPiece] = useState<string | null>(null);
   const [roomFacet, setRoomFacet] = useState<RoomFacet | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Lot 97C : recherche locale de l'onglet (`?tab=agenda&q=`), limitée au bien.
+  // Lue à l'ouverture de l'onglet : une recherche des Documents n'est jamais reprise.
+  const [q, setQ] = useState<string>(() => (typeof window === 'undefined' ? '' : readLocalQuery(new URLSearchParams(window.location.search))));
   const filtersPanelId = `${useId()}-filtres-agenda-bien`;
   const [selectedItem, setSelectedItem] = useState<AgendaItemFull | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -93,6 +98,16 @@ export function AssetAgendaTab({ assetId }: Props) {
   // Autre bien (navigation d'une fiche à l'autre sans démontage) : le
   // filtre Équipement revient à « Tous ».
   useEffect(() => { setEquipment(null); setPiece(null); }, [assetId]);
+
+  // Recherche validée (300 ms sans frappe, ou Entrée) : URL de l'onglet mise à
+  // jour sans nouvelle entrée d'historique ; une recherche nouvelle ou modifiée
+  // passe en vue Liste (toutes périodes, Q3-B). Filtres explicites conservés.
+  const changerRecherche = (next: string) => {
+    if (next && next !== q) setView('list');
+    setQ(next);
+    const { pathname, search, hash } = window.location;
+    window.history.replaceState(null, '', `${pathname}${searchWithLocalQuery(search, next)}${hash}`);
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -110,8 +125,10 @@ export function AssetAgendaTab({ assetId }: Props) {
     params.set('equipmentFacet', '1');
     if (equipment) params.set('equipment', equipment);
     if (piece) params.set('piece', piece);
+    if (q) params.set(LOCAL_SEARCH_PARAM, q);
 
-    // Filtres enchaînés au clavier : seule la DERNIÈRE réponse est appliquée.
+    // Filtres enchaînés au clavier, saisies successives de la recherche : seule
+    // la DERNIÈRE réponse est appliquée.
     let actuel = true;
     apiClient.get<{ items: AgendaItemFull[]; equipmentFacet?: EquipmentFacet | null; roomFacet?: RoomFacet | null }>(`/api/agenda?${params}`)
       .then(data => {
@@ -123,7 +140,7 @@ export function AssetAgendaTab({ assetId }: Props) {
       .catch(() => { if (actuel) toast.error('Erreur lors du chargement'); })
       .finally(() => { if (actuel) { setLoading(false); setLoadedOnce(true); } });
     return () => { actuel = false; };
-  }, [assetId, period, includeCancelled, equipment, piece, refreshKey, view, month, year]);
+  }, [assetId, period, includeCancelled, equipment, piece, q, refreshKey, view, month, year]);
 
   const onMutated = () => {
     setRefreshKey(k => k + 1);
@@ -165,7 +182,7 @@ export function AssetAgendaTab({ assetId }: Props) {
   // Comme « Mon agenda » : commandes masquées seulement si l'agenda du bien
   // est RÉELLEMENT vide (vue Liste, aucun filtre) — un mois vide n'est pas un
   // agenda vide, et un filtre trop restrictif doit rester retirable.
-  const agendaVide = isAssetAgendaEmpty({ loading, itemCount: items.length, view, activeFilters: activeFiltersCount });
+  const agendaVide = isAssetAgendaEmpty({ loading, itemCount: items.length, view, activeFilters: activeFiltersCount + (q ? 1 : 0) });
   const masquerFiltres = !loadedOnce || agendaVide;
 
   return (
@@ -181,7 +198,7 @@ export function AssetAgendaTab({ assetId }: Props) {
             onToggle={() => setFiltersOpen(v => !v)}
           />
         )}
-        {(items.length > 0 || view !== 'list' || activeFiltersCount > 0) && (
+        {(items.length > 0 || view !== 'list' || activeFiltersCount > 0 || !!q) && (
           <Button variant="secondary" size="sm" onClick={ouvrirCreation} className="btn-add">
             <Plus className="h-4 w-4 btn-add-plus-icon" /> Ajouter
           </Button>
@@ -203,6 +220,20 @@ export function AssetAgendaTab({ assetId }: Props) {
         />
       )}
       {!masquerFiltres && <ActiveFilterChips chips={chips} onRemove={removeChip} onClear={clearFilters} />}
+
+      {/* Lot 97C : recherche locale limitée au bien — toujours accessible. */}
+      <LocalSearchField
+        kind="agenda"
+        value={q}
+        onCommit={changerRecherche}
+        busy={!!q && loading}
+        resultCount={q && !loading ? items.length : null}
+      />
+      {q && !loading && view !== 'list' && (
+        <p className="-mt-3 text-xs text-muted-foreground" data-testid="recherche-agenda-periode">
+          Seuls les résultats de la période affichée sont présentés. La vue Liste montre toutes les périodes.
+        </p>
+      )}
 
       {/* Lot 59 (point 5) : Liste / Mensuel / Annuel, comme « Mon agenda ». */}
       <AgendaViewControls
@@ -232,6 +263,12 @@ export function AssetAgendaTab({ assetId }: Props) {
         <YearView items={items} year={year} onItemClick={setSelectedItem} onOpenMonth={(m) => { setMonth(m); setView('calendar'); }} />
       ) : view === 'calendar' ? (
         <CalendarView items={items} month={month} onItemClick={setSelectedItem} onNew={ouvrirCreation} />
+      ) : items.length === 0 && q ? (
+        <div className="text-center py-12 text-muted-foreground" data-testid="recherche-locale-aucun-resultat">
+          <CalendarDays className="h-10 w-10 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">{localSearchNoResult('agenda', q, activeFiltersCount > 0)}</p>
+          <Button size="sm" variant="outline" className="mt-3" onClick={() => changerRecherche('')}>Effacer la recherche</Button>
+        </div>
       ) : items.length === 0 && activeFiltersCount > 0 ? (
         <div className="text-center py-12 text-muted-foreground">
           <CalendarDays className="h-10 w-10 mx-auto mb-3 opacity-30" />

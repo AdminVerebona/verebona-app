@@ -1,6 +1,7 @@
 {
   "case": "P-T2-09",
   "description": "ANSWER (lot 45, O6 — CDC Opérations V1 C15.2, B13, B14) — prix d’achat et cumul des dépenses présentés à part, jamais additionnés ; montant en devise restitué sans conversion.",
+  "qualification": { "role": "answer" },
   "context": {
     "intent": "ACCOUNT_FACT_ASSET",
     "question": "J’ai payé combien pour la Polo ?",

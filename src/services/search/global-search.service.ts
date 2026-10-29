@@ -216,7 +216,19 @@ function invoiceReferencesOf(basis: unknown): string[] {
   return Array.isArray(b?.invoiceReferences) ? (b!.invoiceReferences as unknown[]).filter((x): x is string => typeof x === 'string') : [];
 }
 
-async function documentCandidates(accountId: number, q: ParsedQuery, mode: Awaited<ReturnType<typeof searchExprMode>>): Promise<SearchCandidate[]> {
+/**
+ * Lot 97C — génération EXHAUSTIVE pour les listes (« Mes documents », « Mon
+ * agenda » et les onglets d'un bien) : mêmes champs, mêmes motifs, même
+ * éligibilité que la barre de recherche, mais ni plafond de candidats
+ * (`CANDIDATS_MAX`) ni ordre d'aperçu. La visibilité (brouillons, dépôts en
+ * cours) reste décidée par la liste elle-même, qui croise ensuite son propre
+ * périmètre avec ces identifiants.
+ */
+interface CandidateOptions { exhaustive?: boolean }
+
+async function documentCandidates(
+  accountId: number, q: ParsedQuery, mode: Awaited<ReturnType<typeof searchExprMode>>, opts: CandidateOptions = {},
+): Promise<SearchCandidate[]> {
   const p = new Params();
   const acc = p.add(accountId);
   // Lot 87D : numéro de facture recherchable (données de nommage persistées), même absent du titre.
@@ -232,11 +244,11 @@ async function documentCandidates(accountId: number, q: ParsedQuery, mode: Await
        LEFT JOIN assets a ON a.id = af.asset_id AND a.account_id = af.account_id
       WHERE af.account_id = ${acc}
         AND af.deleted_at IS NULL
-        AND af.upload_status = 'COMPLETED'
-        AND af.is_draft = false
+        ${opts.exhaustive ? '' : `AND af.upload_status = 'COMPLETED'
+        AND af.is_draft = false`}
         AND ${cond}
-      ORDER BY af.created_at DESC, af.id DESC
-      LIMIT ${CANDIDATS_MAX}`,
+      ${opts.exhaustive ? '' : `ORDER BY af.created_at DESC, af.id DESC
+      LIMIT ${CANDIDATS_MAX}`}`,
     p.values as never[],
   )) as unknown as Row[];
   return rows.map((r) => {
@@ -264,7 +276,9 @@ async function documentCandidates(accountId: number, q: ParsedQuery, mode: Await
   });
 }
 
-async function agendaCandidates(accountId: number, q: ParsedQuery, mode: Awaited<ReturnType<typeof searchExprMode>>): Promise<SearchCandidate[]> {
+async function agendaCandidates(
+  accountId: number, q: ParsedQuery, mode: Awaited<ReturnType<typeof searchExprMode>>, opts: CandidateOptions = {},
+): Promise<SearchCandidate[]> {
   const p = new Params();
   const acc = p.add(accountId);
   const cond = anyTokenLike(mode, p, q, ['ai.title', 'ai.description'], ['ai.title']);
@@ -278,8 +292,8 @@ async function agendaCandidates(accountId: number, q: ParsedQuery, mode: Awaited
       WHERE ai.account_id = ${acc}
         AND (${cond} OR EXISTS (SELECT 1 FROM agenda_asset_links aal JOIN assets a ON a.id = aal.asset_id
                                  WHERE aal.agenda_item_id = ai.id AND a.account_id = ai.account_id AND ${condLien}))
-      ORDER BY ai.start_date ASC NULLS LAST, ai.id
-      LIMIT ${CANDIDATS_MAX}`,
+      ${opts.exhaustive ? '' : `ORDER BY ai.start_date ASC NULLS LAST, ai.id
+      LIMIT ${CANDIDATS_MAX}`}`,
     p.values as never[],
   )) as unknown as Row[];
   return rows.map((r) => {
@@ -462,6 +476,37 @@ export async function globalSearch(accountId: number, rawQuery: string, opts: { 
     console.info('[search] trace', JSON.stringify({ query: q.raw, accountId, entries: trace }));
   }
   return { results, ...(opts.debug ? { trace } : {}) };
+}
+
+// ── Recherche locale des listes (lot 97C) ────────────────────────────────
+
+/** Listes consultables par une recherche locale. */
+export type ListSearchKind = 'document' | 'agenda_item';
+
+/**
+ * Lot 97C (ticket « recherche locale réactive », arbitrages PO Q1-B, Q2-A,
+ * Q3-B) — identifiants de TOUS les éléments du compte qui correspondent à
+ * la saisie, selon les règles de la barre de recherche (`runSearchPipeline`,
+ * politique globale : tous les mots retrouvés, catégorie et relation ne
+ * faisant que compléter, sauf le « bien concerné » d'une échéance).
+ *
+ * Aucun nouveau moteur, aucun plafond d'aperçu (8 documents / 5 échéances
+ * pour `globalSearch`) : l'ensemble est EXHAUSTIF, puis croisé par l'écran
+ * appelant avec son périmètre (bien, filtres) AVANT pagination et compteurs.
+ * Lecture seule, SQL seul : aucun appel IA, aucune réanalyse.
+ *
+ * `null` : la saisie ne contient aucun mot exploitable (vide, mots outils
+ * seuls) — la liste n'est alors pas restreinte. `[]` : aucune correspondance.
+ */
+export async function matchingIdsForList(accountId: number, rawQuery: string, kind: ListSearchKind): Promise<number[] | null> {
+  const q = parseSearchQuery(rawQuery);
+  if (q.tokens.length === 0) return null;
+  const mode = await searchExprMode();
+  const candidats = kind === 'document'
+    ? await documentCandidates(accountId, q, mode, { exhaustive: true })
+    : await agendaCandidates(accountId, q, mode, { exhaustive: true });
+  const { results } = runSearchPipeline(q, candidats, GLOBAL_SEARCH_POLICY);
+  return [...new Set(results.map((r) => Number(r.candidate.entityId)))];
 }
 
 // ── Résolution nominative de T2, AVANT toute IA (lot 71) ─────────────────

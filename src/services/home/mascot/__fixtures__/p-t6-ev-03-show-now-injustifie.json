@@ -1,6 +1,7 @@
 {
   "case": "P-T6-EV-03",
   "description": "T6 / EVALUATE — SHOW_NOW sans action ni preuve et référence inventée : décisions rejetées une à une, jamais acceptées en silence (lot 61).",
+  "qualification": { "role": "guard" },
   "context": {
     "input": {
       "schemaVersion": "t6-evaluation-input-v1",

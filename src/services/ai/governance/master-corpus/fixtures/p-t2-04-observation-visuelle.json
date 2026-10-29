@@ -1,6 +1,7 @@
 {
   "case": "P-T2-04",
   "description": "REVALIDATE — observation visuelle : preuve visuelle, aucun faux extrait (l’extrait inventé est retiré).",
+  "qualification": { "role": "guard" },
   "context": { "provenance": "VISUAL" },
   "recording": {
     "operationCode": "t2_revalidate", "task": "REVALIDATE",

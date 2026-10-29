@@ -1,6 +1,7 @@
 {
   "case": "INV-FINAL-015 / F-132",
   "description": "Avis de virement (type V2 preuve de paiement) : rôle PAYMENT_PROOF imposé, montant PAYMENT (jamais un coût), confiance ramenée à probable (enrichit, ne crée pas seul).",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 20,
     "assets": [

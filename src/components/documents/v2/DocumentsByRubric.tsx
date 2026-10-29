@@ -33,12 +33,23 @@
  *
  * Le clic ouvre le tiroir document (le même que partout ailleurs), où l'on
  * modifie, déplace ou supprime ; l'ajout passe par le dialogue commun, gardé
- * en lecture seule ; aucun champ de recherche local (§4.2, UX-01).
+ * en lecture seule.
+ *
+ * ── RECHERCHE LOCALE (LOT 97C, DÉCISION PO DU 26/10/2026) ─────────────────
+ *
+ * Le §4.2 / UX-01 du CDC V2 (« aucun champ de recherche local ») est ANNULÉ
+ * par décision PO (arbitrages Q1-B, Q2-A). Le champ commun
+ * (`LocalSearchField`) envoie `q` au serveur, qui l'applique avec les règles
+ * de la barre de recherche AVANT pagination et compteurs : le filtrage n'est
+ * jamais limité aux documents déjà chargés. `q` vit dans l'URL (mise à jour
+ * sans nouvelle entrée d'historique) ; une recherche active écarte un ancien
+ * `?resultats=` de l'assistant.
  * ══════════════════════════════════════════════════════════════════════════
  */
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { useSearchParams } from 'next/navigation';
 import { ChevronDown, Loader2 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
@@ -83,6 +94,8 @@ import { useDocumentsFeed, type FeedQuery } from './useDocumentsFeed';
 import { buildEquipmentFilterModel } from '@/lib/filters/equipment-filter';
 import { buildRoomFilterModel } from '@/lib/filters/room-filter';
 import { ROOM_ASSOCIATIONS_CHANGED } from '@/lib/rooms/room-associations';
+import { LocalSearchField } from '@/components/search/LocalSearchField';
+import { localSearchNoResult, readLocalQuery, searchWithLocalQuery } from '@/lib/search/local-search';
 
 /**
  * Le téléversement RÉUTILISE le dialogue existant, il n'est pas réécrit.
@@ -328,6 +341,8 @@ export function DocumentsByRubric({
   const restoreRef = useRef<ListSnapshot | null>(null);
   // ── Résultats de recherche de l'assistant (Mes documents seulement) ──────
   const [resultIds, setResultIds] = useState<number[] | null>(null);
+  // ── Recherche locale (lot 97C) : recherche ACTIVE, lue et écrite dans l'URL ──
+  const [q, setQ] = useState('');
   // ── Filtres (jamais mémorisés d'une visite à l'autre) et état local ──────
   const [filters, setFilters] = useState<ViewFilters>(EMPTY_FILTERS);
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -335,8 +350,13 @@ export function DocumentsByRubric({
 
   useEffect(() => {
     setPrefs(loadPrefs(context));
-    if (!assetId && typeof window !== 'undefined') {
-      setResultIds(parseSearchResults(new URLSearchParams(window.location.search).get('resultats')));
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      // `?q=` : page générale ou onglet `tab=documents` d'un bien (lot 97C).
+      const recherche = readLocalQuery(params);
+      setQ(recherche);
+      // Une recherche active n'est jamais limitée par un ancien `?resultats=`.
+      if (!assetId && !recherche) setResultIds(parseSearchResults(params.get('resultats')));
     }
     // Retour depuis une fiche : filtres et lots déjà chargés repris (borné).
     const snapshot = takeListSnapshot(restoreScope);
@@ -359,7 +379,29 @@ export function DocumentsByRubric({
     setResultIds(null);
     window.history.replaceState(null, '', window.location.pathname);
   };
+  // Recherche validée par le champ (300 ms sans frappe, ou Entrée) : URL mise
+  // à jour SANS nouvelle entrée d'historique ; les filtres sont conservés.
+  const changerRecherche = useCallback((next: string) => {
+    setQ(next);
+    if (next) setResultIds(null);
+    if (typeof window !== 'undefined') {
+      const { pathname, search, hash } = window.location;
+      window.history.replaceState(null, '', `${pathname}${searchWithLocalQuery(search, next, { dropResults: true })}${hash}`);
+    }
+  }, []);
   const changeFilters = (next: ViewFilters) => setFilters(next);
+
+  // URL changée sans remontage de l'écran (« Voir tous les documents » de la
+  // recherche générale ouvert depuis « Mes documents ») : la recherche suit.
+  const parametres = useSearchParams();
+  const qUrl = readLocalQuery(parametres);
+  const qRef = useRef(q);
+  qRef.current = q;
+  useEffect(() => {
+    if (!ready || qUrl === qRef.current) return;
+    setQ(qUrl);
+    if (qUrl) setResultIds(null);
+  }, [ready, qUrl]);
 
   // ── Requête : tri, filtres et recherche appliqués CÔTÉ SERVEUR ───────────
   // Tout changement produit une nouvelle clé : liste vidée, curseur oublié,
@@ -371,8 +413,9 @@ export function DocumentsByRubric({
     direction: prefs.dir,
     grouped: prefs.grouped,
     filters,
-    ids: resultIds,
-  } : null), [ready, assetId, sort, prefs.dir, prefs.grouped, filters, resultIds]);
+    ids: q ? null : resultIds,
+    q,
+  } : null), [ready, assetId, sort, prefs.dir, prefs.grouped, filters, resultIds, q]);
   const feed = useDocumentsFeed(query, restoreRef);
   const { documents: charges, meta, state: feedState } = feed;
   const load = feed.refresh;
@@ -542,7 +585,7 @@ export function DocumentsByRubric({
 
   // Rubriques vides : seulement sans filtre. Filtré, une Rubrique « sans
   // document » le serait par l'effet du filtre, et la ligne mentirait.
-  const emptyLine = prefs.grouped && showEmptyRubrics && !filtered && scopeTotal > 0
+  const emptyLine = prefs.grouped && showEmptyRubrics && !filtered && !q && scopeTotal > 0
     ? emptyRubricsLine((meta?.rubrics ?? []).filter((r) => r.scopeCount === 0).map((r) => r.label))
     : '';
 
@@ -590,8 +633,19 @@ export function DocumentsByRubric({
         </div>
       )}
 
+      {/* Lot 97C : recherche locale, au-dessus de la liste et près des filtres ;
+          toujours présente, même sans document affiché. */}
+      <LocalSearchField
+        kind="document"
+        value={q}
+        onCommit={changerRecherche}
+        busy={!!q && (feedState.pending?.kind === 'first' || (!meta && feedState.status !== 'error'))}
+        resultCount={q && meta ? total : null}
+        className="mb-1"
+      />
+
       <DocumentsToolbar
-        countLabel={!meta ? ' ' : countLabel(total, scopeTotal, filtered, context)}
+        countLabel={!meta ? ' ' : countLabel(total, scopeTotal, filtered, context, !!q)}
         grouped={prefs.grouped}
         onGroupedChange={(v) => updatePrefs({ grouped: v })}
         view={prefs.view}
@@ -620,7 +674,7 @@ export function DocumentsByRubric({
           onRoom={(value) => changeFilters(setRoomFilter(filters, value))}
         />
       )}
-      {resultIds && (
+      {resultIds && !q && (
         <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-[color:var(--text-secondary)]" data-testid="search-results-filter">
           {/* Compte des documents réellement trouvés dans le compte, pas des identifiants de l'URL. */}
           <span>
@@ -654,7 +708,14 @@ export function DocumentsByRubric({
         </div>
       )}
 
-      {meta && scopeTotal === 0 && (
+      {meta && q && total === 0 && (
+        <div className="flex flex-col items-center gap-3 py-12 text-center" data-testid="recherche-locale-aucun-resultat">
+          <p className="m-0 text-sm font-medium">{localSearchNoResult('document', q, filtered && scopeTotal > 0)}</p>
+          <Button size="sm" variant="outline" onClick={() => changerRecherche('')}>Effacer la recherche</Button>
+        </div>
+      )}
+
+      {meta && !q && scopeTotal === 0 && (
         <div className="py-12 text-center">
           <p className="text-sm font-medium">
             {assetId ? 'Aucun document rattaché à ce bien pour le moment.' : 'Aucun document pour le moment.'}
@@ -665,7 +726,7 @@ export function DocumentsByRubric({
         </div>
       )}
 
-      {meta && scopeTotal > 0 && total === 0 && (
+      {meta && !q && scopeTotal > 0 && total === 0 && (
         <p className="py-12 text-center text-sm text-[color:var(--text-muted)]">
           Aucun document ne correspond à ces filtres.
         </p>

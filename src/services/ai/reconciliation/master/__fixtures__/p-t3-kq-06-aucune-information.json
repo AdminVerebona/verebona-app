@@ -1,6 +1,7 @@
 {
   "case": "P-T3-KQ-06",
   "description": "KNOWLEDGE_QUERY — aucune information pertinente : NOT_FOUND.",
+  "qualification": { "role": "answer" },
   "context": {
     "knowledgeQuery": {
       "question": {

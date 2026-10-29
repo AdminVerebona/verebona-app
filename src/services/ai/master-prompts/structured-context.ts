@@ -76,6 +76,15 @@ export interface StructuredContextSpec {
   masterPromptCode: string;
   treatment: string;
   knownTasks: readonly string[];
+  /**
+   * Lot 97A — TASK FACULTATIVES (ajoutées après coup, ex. T4
+   * AGENDA_REPRESENTATION) : une configuration sans liste explicite de TASK
+   * (`allowedTasks: null`) ne les autorise QUE si ses contrats d'entrée et de
+   * sortie les décrivent — une version antérieure reste ainsi valide, sans
+   * erreur, et la fonction reste inactive. Cochée explicitement, une TASK
+   * facultative exige ses contrats (contrôle bloquant au BO).
+   */
+  optionalTasks?: readonly string[];
   inputContracts: Readonly<Record<string, InputContract>>;
   outputContracts: Readonly<Record<string, OutputContractMap>>;
   defaults: MasterExecutionConfig;
@@ -98,6 +107,37 @@ export function structuredSpecFor(masterPromptCode: string | null | undefined): 
 const EXECUTION_CONTEXT_LABEL = 'EXECUTION_CONTEXT';
 
 // ── Configuration ────────────────────────────────────────────────────────────
+
+/** Lot 97A : les contrats d'entrée ET de sortie de la configuration décrivent-ils la TASK ? Pur. */
+export function contractsDescribeTask(spec: StructuredContextSpec, c: MasterExecutionConfig, task: string): boolean {
+  const input = c.inputContractVersion ? spec.inputContracts[c.inputContractVersion] : undefined;
+  const output = c.outputContractVersion ? spec.outputContracts[c.outputContractVersion] : undefined;
+  return Boolean(input?.tasks[task] && output?.byTask[task]);
+}
+
+/**
+ * TASK autorisées par une configuration (pur) : la liste explicite, sinon
+ * toutes les TASK connues — sauf une TASK facultative que les contrats de la
+ * configuration ne décrivent pas (lot 97A).
+ */
+export function allowedTasksOf(spec: StructuredContextSpec, c: MasterExecutionConfig): string[] {
+  if (c.allowedTasks) return [...c.allowedTasks];
+  return spec.knownTasks.filter((t) => !(spec.optionalTasks ?? []).includes(t) || contractsDescribeTask(spec, c, t));
+}
+
+/**
+ * Lot 97A — une TASK est-elle EXÉCUTABLE avec cette configuration ? (pur)
+ * Contexte structuré, TASK autorisée, contrats d'entrée et de sortie qui la
+ * décrivent. Sert aux capacités activées par marqueur (T4 représentation).
+ */
+export function structuredTaskSupport(spec: StructuredContextSpec, c: MasterExecutionConfig, task: string): {
+  supported: boolean; reason: 'SUPPORTED' | 'LEGACY_TEMPLATE' | 'TASK_NOT_ALLOWED' | 'CONTRACTS_MISSING';
+} {
+  if (c.mode !== 'STRUCTURED_CONTEXT') return { supported: false, reason: 'LEGACY_TEMPLATE' };
+  if (!allowedTasksOf(spec, c).includes(task)) return { supported: false, reason: 'TASK_NOT_ALLOWED' };
+  if (!contractsDescribeTask(spec, c, task)) return { supported: false, reason: 'CONTRACTS_MISSING' };
+  return { supported: true, reason: 'SUPPORTED' };
+}
 
 /**
  * Configuration d'exécution APPLIQUÉE, selon la source du texte :
@@ -165,7 +205,7 @@ export function checkExecutionConfig(
   } else if (!input) {
     out.push({ code: spec.errorCodes.versionNotFound, field: 'inputContractVersion', message: `Le contrat d’entrée « ${c.inputContractVersion} » n’existe pas.` });
   }
-  const tasks = c.allowedTasks ?? [...spec.knownTasks];
+  const tasks = allowedTasksOf(spec, c);
   if (tasks.length === 0) {
     out.push({ code: spec.errorCodes.taskNotAllowed, field: 'allowedTasks', message: 'Aucune TASK n’est autorisée : aucun appel ne serait possible.' });
   }
@@ -265,7 +305,7 @@ export function buildExecutionContext(
   const err = (code: string, step: ContextStep, message: string, field: string | null = null, contract: string | null = null) =>
     new StructuredContextError(code, message, { task, field, contract, step });
 
-  const allowed = c.allowedTasks ?? [...spec.knownTasks];
+  const allowed = allowedTasksOf(spec, c);
   if (!spec.knownTasks.includes(task) || !allowed.includes(task)) {
     throw err(spec.errorCodes.taskNotAllowed, 'task', `TASK « ${task} » non autorisée (autorisées : ${allowed.join(', ') || 'aucune'}).`);
   }

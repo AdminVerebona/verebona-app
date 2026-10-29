@@ -1,6 +1,7 @@
 {
   "case": "P-T3-09",
   "description": "OPERATION_MATCH — même garage, même bien, objet différent : DISTINCT_OPERATION certain → création (source certaine, C5).",
+  "qualification": { "role": "guard" },
   "context": {
     "operationMatch": {
       "subject": {

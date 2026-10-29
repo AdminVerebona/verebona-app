@@ -149,6 +149,35 @@ export interface RepresentationInput {
   };
 }
 
+// ── Entrée validée côté serveur (lot 97A : contrat d'exécution `t4_input_v3`) ──
+
+const refOpaque = z.string().min(1).max(12);
+const amountSchema = z.looseObject({ kind: z.string(), amountMinor: z.number().int(), currency: z.string() });
+const contextOperationSchema = z.looseObject({
+  ref: refOpaque, type: z.string().nullable(), status: z.string(), assets: z.array(z.string()), amounts: z.array(amountSchema), documents: z.array(refOpaque),
+});
+
+/**
+ * Forme de l'entrée `t4-agenda-representation-v1` contrôlée AVANT tout appel
+ * (passerelle, contexte structuré) : version et branche exactes, références
+ * opaques seulement, au moins un élément à décider. Les champs descriptifs
+ * restent ouverts (`looseObject`) : le constructeur `context.ts` fait foi.
+ */
+export const T4AgendaRepresentationInput = z.looseObject({
+  contractVersion: z.literal(REPRESENTATION_CONTRACT_VERSION),
+  task: z.literal(REPRESENTATION_TASK),
+  today: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  operation: contextOperationSchema,
+  neighbours: z.array(contextOperationSchema).max(20),
+  agendaItems: z.array(z.looseObject({ ref: refOpaque, title: z.string(), inScope: z.boolean(), origin: z.enum(['USER', 'AUTOMATIC', 'PROJECTION']) })).min(1).max(60)
+    .refine((l) => l.some((i) => i.inScope), 'au moins un élément à décider (inScope)'),
+  restorable: z.array(z.looseObject({ ref: refOpaque })).max(20),
+  documents: z.array(z.looseObject({ ref: refOpaque })).max(20),
+  userDecisions: z.array(z.looseObject({ kind: z.string() })).max(100),
+  priorDecisions: z.array(z.looseObject({ at: z.string(), scope: z.enum(['T3', 'T4']), status: z.string() })).max(10),
+  bounds: z.looseObject({ complete: z.boolean() }),
+});
+
 // ── Sortie attendue de T4 (contrat demandé, CODE-03) ────────────────────────
 
 const confidence = z.enum(['certain', 'probable', 'ambiguous']);

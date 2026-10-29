@@ -30,7 +30,7 @@ import { treatmentForUseCase, type Treatment } from '../../config/treatments';
 import { loadMasterCorpusCases, type MasterCorpusCase, type MasterFileReader } from './cases';
 import { MASTER_CORPUS_EVALUATORS } from './evaluators';
 import {
-  buildExecutionContext, checkExecutionConfig, executionConfigFor, structuredSpecFor, type MasterExecutionConfig,
+  buildExecutionContext, checkExecutionConfig, executionConfigFor, structuredSpecFor, structuredTaskSupport, type MasterExecutionConfig,
 } from '../../master-prompts/structured-context';
 import { contractVersionsOf } from '../../gateway/output-resolution/runtime-contract';
 
@@ -220,8 +220,12 @@ export async function runMasterCorpus(o: RunMasterCorpusOptions): Promise<Master
       ?? executionConfigFor({ masterPromptCode: m.masterPromptCode, source: given ? (given.source === 'file' ? 'file' : 'config') : 'file' });
     // Lot 42 : branche OPTIONNELLE absente du texte évalué (version BO
     // antérieure) — ses cas sont ignorés et la branche n'est pas exigée.
-    const absentes = execution?.mode === 'STRUCTURED_CONTEXT' ? [] : m.tasks.filter((t) =>
-      isOptionalMasterTask(m.masterPromptCode, t) && !inspectMasterTemplate(text).branches.includes(t));
+    // Lot 97A : en contexte structuré, une TASK FACULTATIVE (T4 AGENDA_REPRESENTATION) est absente quand la
+    // configuration d'exécution évaluée ne la rend pas exécutable (non cochée, contrats qui ne la décrivent pas).
+    const spec = structuredSpecFor(m.masterPromptCode);
+    const absentes = execution?.mode === 'STRUCTURED_CONTEXT'
+      ? m.tasks.filter((t) => spec && (spec.optionalTasks ?? []).includes(t) && !structuredTaskSupport(spec, execution, t).supported)
+      : m.tasks.filter((t) => isOptionalMasterTask(m.masterPromptCode, t) && !inspectMasterTemplate(text).branches.includes(t));
     const exigees = m.tasks.filter((t) => !absentes.includes(t));
     for (const c of mine) {
       if (absentes.includes(c.task)) { ignores.push(c.id); continue; }

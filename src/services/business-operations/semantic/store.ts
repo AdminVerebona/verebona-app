@@ -149,6 +149,40 @@ export async function settlePending(sql: Sql, p: { id: number; status: SemanticS
      WHERE id = $1 AND status = 'PENDING'`, [p.id, p.status, p.reason.slice(0, 300), json(p.afterState)] as never[]);
 }
 
+/**
+ * Lot 97A — issue d'une demande T3 d'identité (contrat `t3-operation-identity-v1`)
+ * traitée par le passage T3 : la ligne PENDING devient la trace complète
+ * (décision reçue, validation, mutations appliquées / refusées, empreintes).
+ */
+export async function completeReevaluation(sql: Sql, id: number, r: {
+  status: SemanticStatus; reason: string; deciderVersion?: string; contextFingerprint?: string | null; resultingFingerprint?: string | null;
+  contextSummary?: Record<string, unknown>; aiOutput?: unknown; validation?: Record<string, unknown>;
+  applied?: ReadonlyArray<Record<string, unknown>>; refused?: ReadonlyArray<Record<string, unknown>>;
+  beforeState?: unknown; afterState?: unknown; aiCalls?: number; aiTraceId?: string | null; error?: string | null; decided?: boolean;
+}): Promise<void> {
+  await sql.unsafe(`
+    UPDATE operation_semantic_reevaluations
+       SET status = $2, reason = $3, decider_version = COALESCE($4, decider_version), context_fingerprint = COALESCE($5, context_fingerprint),
+           resulting_fingerprint = COALESCE($6, resulting_fingerprint), context_summary = context_summary || COALESCE($7::text::jsonb, '{}'::jsonb),
+           ai_output = COALESCE($8::text::jsonb, ai_output), validation = COALESCE($9::text::jsonb, validation),
+           mutations_applied = COALESCE($10::text::jsonb, mutations_applied), mutations_refused = COALESCE($11::text::jsonb, mutations_refused),
+           before_state = COALESCE($12::text::jsonb, before_state), after_state = COALESCE($13::text::jsonb, after_state),
+           ai_calls = ai_calls + $14, ai_trace_id = COALESCE($15, ai_trace_id), error = COALESCE($16, error),
+           decided_at = CASE WHEN $17::boolean THEN now() ELSE decided_at END
+     WHERE id = $1 AND status = 'PENDING'`,
+  [id, r.status, r.reason.slice(0, 300), r.deciderVersion ?? null, r.contextFingerprint ?? null, r.resultingFingerprint ?? null,
+    json(r.contextSummary), json(r.aiOutput), json(r.validation), r.applied ? json(r.applied) : null, r.refused ? json(r.refused) : null,
+    json(r.beforeState), json(r.afterState), r.aiCalls ?? 0, r.aiTraceId ?? null, r.error ? r.error.slice(0, 500) : null, r.decided === true] as never[]);
+}
+
+/** Lot 97A — demandes T3 d'identité en attente du compte (traitées par le passage T3, bornées). */
+export async function pendingIdentityRequests(sql: Sql, accountId: number, contractVersion: string, limit: number): Promise<Array<{ id: number; operationId: number; reason: string | null; triggerKind: string; correlationId: string | null }>> {
+  const r = await sql.unsafe<Row[]>(`
+    SELECT id, operation_id, reason, trigger_kind, correlation_id FROM operation_semantic_reevaluations
+     WHERE account_id = $1 AND scope = 'T3' AND status = 'PENDING' AND contract_version = $2 ORDER BY id LIMIT $3`, [accountId, contractVersion, limit] as never[]);
+  return r.map((x) => ({ id: Number(x.id), operationId: Number(x.operation_id), reason: (x.reason as string | null) ?? null, triggerKind: String(x.trigger_kind), correlationId: (x.correlation_id as string | null) ?? null }));
+}
+
 /** Demande T3 encore ouverte pour l'Opération (aucune seconde demande en parallèle). */
 export async function openT3Request(sql: Sql, accountId: number, operationId: number): Promise<StoredReevaluation | null> {
   const r = await sql.unsafe<Row[]>(`

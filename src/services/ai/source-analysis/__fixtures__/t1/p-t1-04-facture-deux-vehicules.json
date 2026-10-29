@@ -1,6 +1,7 @@
 {
   "case": "P-T1-04",
   "description": "Facture d'entretien couvrant deux véhicules (déposée depuis la Clio) : chaque fait sur sa cible, rien de la Tesla sur la Clio, fait ambigu conservé sans cible.",
+  "qualification": { "role": "answer" },
   "context": {
     "linkedAssetId": 12,
     "assets": [

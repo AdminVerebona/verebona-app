@@ -74,6 +74,8 @@ import {
 } from './document-cursor';
 import { ASSET_LIST_LINK_ROLES_SQL, OTHER_ASSET_IDS_SQL, documentInAssetsCondition, documentWithoutAssetCondition } from './asset-document-scope';
 import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
+import { matchingIdsForList } from '@/services/search/global-search.service';
+import { normalizeLocalQuery } from '@/lib/search/local-search';
 import {
   documentEquipmentFilterCondition,
   documentOfEquipmentsCondition,
@@ -156,13 +158,28 @@ function keysetSql(node: KeysetNode, keys: FeedKey[], values: Array<string | nul
  * recherche. Lot 32C (PO 9) : un document lié au bien par la relation N-N
  * (PRIMARY ou SECONDARY) figure dans sa liste, une seule fois.
  */
-function scopeConditions(query: { accountId: number; assetIds: number[]; ids: number[] | null }): SQL[] {
+function scopeConditions(query: { accountId: number; assetIds: number[]; ids: number[] | null }, searchIds: number[] | null = null): SQL[] {
   const scope = [eq(assetFiles.accountId, query.accountId), isNull(assetFiles.deletedAt)];
   if (query.assetIds.length > 0) {
     scope.push(documentInAssetsCondition(query.assetIds));
   }
-  if (query.ids) scope.push(inArray(assetFiles.id, query.ids));
+  // Lot 97C : une recherche locale active remplace la restriction `ids`
+  // (résultats de l'assistant) — jamais les deux à la fois.
+  if (searchIds) scope.push(searchIds.length ? sql`${assetFiles.id} = ANY(${sql.param(searchIds)}::int[])` : sql`FALSE`);
+  else if (query.ids) scope.push(inArray(assetFiles.id, query.ids));
   return scope;
+}
+
+/**
+ * Lot 97C — documents du COMPTE qui correspondent à la recherche locale
+ * (règles de la barre de recherche, sans plafond d'aperçu), `null` sans
+ * recherche exploitable. Le périmètre du bien et les filtres sont appliqués
+ * ensuite par `scopeConditions` : un document d'un autre bien n'entre jamais.
+ */
+export async function documentSearchIds(accountId: number, q: string | undefined): Promise<number[] | null> {
+  const recherche = normalizeLocalQuery(q);
+  if (!recherche) return null;
+  return matchingIdsForList(accountId, recherche, 'document');
 }
 
 /** Une dimension : OU entre ses valeurs, la valeur spéciale désignant l'absence. */
@@ -339,8 +356,11 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
   if (query.cursor && !values) throw new InvalidCursorError();
   const withMeta = query.withMeta ?? !query.cursor;
 
+  // Lot 97C : recherche locale résolue d'abord (ensemble exhaustif du compte).
+  const searchIds = await documentSearchIds(query.accountId, query.q);
+
   // `?resultats=aucun` : périmètre vide, inutile d'interroger la base.
-  if (query.ids && query.ids.length === 0) {
+  if (!searchIds && query.ids && query.ids.length === 0) {
     return {
       documents: [],
       nextCursor: null,
@@ -350,7 +370,7 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
     };
   }
 
-  const scope = scopeConditions(query);
+  const scope = scopeConditions(query, searchIds);
   // Lot 71 (71C) : équipements des biens retenus — lus seulement si le filtre
   // Équipement agit ou si les compteurs du premier lot les proposent.
   const equipmentAssets = equipmentAssetScope(query);

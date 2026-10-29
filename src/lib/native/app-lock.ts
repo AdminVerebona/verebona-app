@@ -92,10 +92,74 @@ export async function biometricsEnabled(): Promise<boolean> {
  * réussie est exigée avant d'enregistrer le choix. Refus : rien ne change.
  */
 export async function setBiometricsEnabled(enabled: boolean): Promise<boolean> {
-  if (!enabled) { await secureRemove(SECURE_KEYS.biometricsEnabled); return true; }
+  const r = await changeBiometrics(enabled);
+  return r === 'enabled' || r === 'disabled';
+}
+
+// ── Réglage Mon compte › Sécurité › Biométrie (lot 97B, ACC-06) ────────────
+//
+// AUCUN EFFET SERVEUR : le choix reste sur ce téléphone (Keychain / Keystore)
+// et ne sert qu'à déverrouiller l'app localement. Il ne remplace JAMAIS la
+// confirmation d'identité de 5 minutes exigée par le serveur pour les
+// réglages de sécurité (lot 92).
+
+/** Nom affiché du capteur (`BiometryType` du plugin : 1 Touch ID, 2 Face ID, 3 empreinte, 4 visage, 5 iris). */
+export function biometryLabel(type: number | null | undefined, platform: 'ios' | 'android' | null): string {
+  switch (type) {
+    case 1: return 'Touch ID';
+    case 2: return 'Face ID';
+    case 3: return 'l’empreinte digitale';
+    case 4: return 'la reconnaissance du visage';
+    case 5: return 'la reconnaissance de l’iris';
+    default: return platform === 'ios' ? 'Face ID ou Touch ID' : 'la biométrie du téléphone';
+  }
+}
+
+export interface BiometricSetting {
+  /** L'app peut-elle interroger le téléphone (plugin présent) ? */
+  supported: boolean;
+  /** Biométrie configurée et utilisable sur le téléphone, maintenant. */
+  available: boolean;
+  /** Code de verrouillage du téléphone défini. */
+  deviceSecure: boolean;
+  /** Choix enregistré sur ce téléphone. */
+  enabled: boolean;
+  /** Capteur, pour les libellés (« Face ID », « l’empreinte digitale »…). */
+  label: string;
+}
+
+/** État RÉEL : relu à chaque affichage (l'utilisateur a pu changer les réglages du téléphone). */
+export async function readBiometricSetting(platform: 'ios' | 'android' | null = null): Promise<BiometricSetting> {
+  const b = biometric();
+  if (!b) return { supported: false, available: false, deviceSecure: false, enabled: false, label: biometryLabel(null, platform) };
+  let available = false;
+  let deviceSecure = false;
+  let type: number | null = null;
+  try {
+    const r = await b.checkBiometry();
+    available = !!r.isAvailable;
+    deviceSecure = !!r.deviceIsSecure;
+    type = typeof r.biometryType === 'number' ? r.biometryType : null;
+  } catch { /* indisponible */ }
+  return { supported: true, available, deviceSecure, enabled: await biometricsEnabled(), label: biometryLabel(type, platform) };
+}
+
+export type BiometricsChange = 'enabled' | 'disabled' | 'refused' | 'unavailable' | 'storage_error';
+
+/**
+ * Active / désactive le déverrouillage biométrique. Activation : une
+ * vérification biométrique RÉUSSIE est exigée (refus ou annulation → rien ne
+ * change) ; désactivation : immédiate, sans vérification.
+ */
+export async function changeBiometrics(enabled: boolean): Promise<BiometricsChange> {
+  if (!enabled) {
+    await secureRemove(SECURE_KEYS.biometricsEnabled);
+    return 'disabled';
+  }
   const ok = await verifyUser({ biometryOnly: true, reason: 'Activer le déverrouillage de Verebona' });
-  if (ok !== 'ok') return false;
-  return secureSet(SECURE_KEYS.biometricsEnabled, '1');
+  if (ok === 'unavailable') return 'unavailable';
+  if (ok !== 'ok') return 'refused';
+  return (await secureSet(SECURE_KEYS.biometricsEnabled, '1')) ? 'enabled' : 'storage_error';
 }
 
 export type VerifyOutcome = 'ok' | 'cancelled' | 'unavailable';

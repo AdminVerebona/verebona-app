@@ -1,6 +1,7 @@
 {
   "case": "T1-06",
   "description": "« Dernier entretien » seul, annoncé comme prochaine échéance avec une récurrence non écrite : requalifié en lastRevision, aucune date future, aucune récurrence.",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 12,
     "assets": [

@@ -45,6 +45,8 @@ import { createSaleAdsRefresher } from './sale-ads-refresh';
 import { PreparationSection } from './PreparationSection';
 import { GenerateButtons, PreparationSummary } from './PreparationSummary';
 import { Callout, Eyebrow, Pill, formatDate } from './ui';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 const ESTIMATE_DEBOUNCE_MS = 400;
 const POLL_MS = 2000;
@@ -84,6 +86,8 @@ const STATUS_LABELS: Record<string, string> = {
 
 export function ExportPreparationScreen({ assetId, exportType, onClose, api: apiProp, afterLoad }: Props) {
   const api = useMemo(() => apiProp ?? httpPreparationApi(assetId), [apiProp, assetId]);
+  // Lot 97B : aucune incitation commerciale dans l'application (COM-01/05).
+  const commerceHidden = useNativeCommerceHidden();
   const [state, dispatch] = useReducer(prepReducer, initialPrepState);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -327,7 +331,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
           <p className="mt-1">{state.error?.message}</p>
         </Callout>
         <div className="mt-4 flex gap-2">
-          {premium ? <Button asChild><NextLink href={OFFERS_PATH}>Passer à Premium ou Premium Duo</NextLink></Button>
+          {premium ? (commerceHidden ? <NativeCommerceNotice className="text-sm text-muted-foreground" /> : <Button asChild><NextLink href={OFFERS_PATH}>Passer à Premium ou Premium Duo</NextLink></Button>)
             : !notEligible && <Button onClick={() => void load()}><RefreshCw aria-hidden />Réessayer</Button>}
         </div>
       </div>

@@ -29,7 +29,8 @@
 import { createHash } from 'node:crypto';
 
 /** Version du moteur de qualification : la changer rend toutes les preuves obsolètes. */
-export const QUALIFICATION_ENGINE_VERSION = 'qualif-couple-v1' as const;
+/** Lot 97A : v2 — sortie réelle jugée avec le schéma de SON contrat de sortie (`cases.branchSchemaNames`). */
+export const QUALIFICATION_ENGINE_VERSION = 'qualif-couple-v2' as const;
 
 export interface CoupleSignatureParts {
   operationCode: string;

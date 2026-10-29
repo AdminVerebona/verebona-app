@@ -1,6 +1,7 @@
 {
   "case": "P-T3-KQ-01",
   "description": "KNOWLEDGE_QUERY — cas constaté (offre de crédit) : durée comprise dans un bloc de texte, constituants retournés avec leur preuve, aucune date inventée.",
+  "qualification": { "role": "answer" },
   "context": {
     "knowledgeQuery": {
       "question": {

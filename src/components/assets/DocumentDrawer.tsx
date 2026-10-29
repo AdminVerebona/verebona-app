@@ -61,6 +61,8 @@ import {
   rubricTypeLabels,
   type RubricTypeValue,
 } from '@/components/documents/v2/RubricTypeFields';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 export interface DocumentDrawerItem {
   id: number;
@@ -284,6 +286,8 @@ function DocPreview({ fileId, mimeType, viewUrl, filename }: { fileId: number; m
 
 export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, autoAnalyze, showAnalysisResults, isPremium = true, onPrev, onNext, hasPrev, hasNext, returnFocusTo }: Props) {
   const { analysisStartTimes, analyzingFileIds } = useAnalysisBanner();
+  // Lot 97B : aucune incitation commerciale dans l'application (COM-01/05).
+  const commerceHidden = useNativeCommerceHidden();
   const [fullData, setFullData] = useState<FullFileData | null>(null);
   const [viewUrl, setViewUrl] = useState<string | null>(null);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
@@ -1466,13 +1470,15 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                       </li>
                     ))}
                   </ul>
-                  <a
-                    href="/mon-compte/offres"
-                    className="flex items-center justify-center gap-2 w-full py-2 rounded-[12px] bg-[color:var(--accent)] text-[color:var(--on-accent)] text-xs font-bold hover:bg-[color:var(--accent-hover)] transition-colors"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    Passer Premium
-                  </a>
+                  {commerceHidden ? <NativeCommerceNotice /> : (
+                    <a
+                      href="/mon-compte/offres"
+                      className="flex items-center justify-center gap-2 w-full py-2 rounded-[12px] bg-[color:var(--accent)] text-[color:var(--on-accent)] text-xs font-bold hover:bg-[color:var(--accent-hover)] transition-colors"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      Passer Premium
+                    </a>
+                  )}
                 </div>
               </div>
             )}

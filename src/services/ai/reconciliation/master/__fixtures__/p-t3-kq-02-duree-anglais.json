@@ -1,6 +1,7 @@
 {
   "case": "P-T3-KQ-02",
   "description": "KNOWLEDGE_QUERY — même concept, formulation différente (anglais) : même résultat côté serveur.",
+  "qualification": { "role": "answer" },
   "context": {
     "knowledgeQuery": {
       "question": {

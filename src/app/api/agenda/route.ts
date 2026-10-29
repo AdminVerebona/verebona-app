@@ -5,6 +5,7 @@ import { SessionService } from '@/lib/session-service';
 import { getAgendaItems, getAgendaItemsWithEquipmentFacet } from '@/services/agenda/AgendaQueryService';
 import { equipmentFilterParam } from '@/lib/filters/equipment-filter';
 import { roomFilterParam } from '@/lib/filters/room-filter';
+import { LOCAL_SEARCH_PARAM, normalizeLocalQuery } from '@/lib/search/local-search';
 import { createAgendaItem } from '@/services/agenda/AgendaWriteService';
 
 export async function GET(req: NextRequest) {
@@ -37,7 +38,9 @@ export async function GET(req: NextRequest) {
     // facette (`roomFacet`) accompagne `equipmentFacet=1`.
     const equipment = equipmentFilterParam(searchParams.get('equipment')) ?? undefined;
     const piece = roomFilterParam(searchParams.get('piece')) ?? undefined;
-    const query = { accountId, assetIds, fileId, period, includeCancelled, month, year, includeUndated, equipment, piece };
+    // Lot 97C : recherche locale (`?q=`), combinée aux filtres en intersection.
+    const q = normalizeLocalQuery(searchParams.get(LOCAL_SEARCH_PARAM)) || undefined;
+    const query = { accountId, assetIds, fileId, period, includeCancelled, month, year, includeUndated, equipment, piece, q };
     if (searchParams.get('equipmentFacet') === '1') {
       const { items, equipmentFacet, roomFacet } = await getAgendaItemsWithEquipmentFacet(query);
       return NextResponse.json({ items, equipmentFacet, roomFacet }, { headers: { 'Cache-Control': 'private, no-cache' } });

@@ -1,6 +1,7 @@
 {
   "case": "F-001 / F-028",
   "description": "Facture de réparation (pièces + main-d'œuvre) : UN candidat INTERVENTION REALIZED, rôle INVOICE, coût réalisé 749,00 € (centimes, EUR) prouvé par le total.",
+  "qualification": { "role": "answer" },
   "context": {
     "linkedAssetId": 12,
     "assets": [

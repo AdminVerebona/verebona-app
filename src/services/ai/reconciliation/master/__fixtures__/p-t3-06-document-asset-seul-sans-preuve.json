@@ -1,6 +1,7 @@
 {
   "case": "P-T3-06",
   "description": "DOCUMENT_ASSET — seul bien du compte, aucune preuve fournie : jamais choisi « parce qu’il est seul », même si le modèle le propose.",
+  "qualification": { "role": "guard" },
   "context": {
     "variables": {
       "FIELD": null,

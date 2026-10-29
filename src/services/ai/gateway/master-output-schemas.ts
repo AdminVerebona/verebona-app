@@ -22,6 +22,8 @@ import {
   T2AnswerOutput, T2MasterOutput, T2RevalidateOutput, T2UnderstandOutput,
 } from '../assistant/master/t2-contract';
 import { T6EvaluateOutput, T6FormulateOutput } from '@/services/home/mascot/t6-contract';
+import { T4AgendaRepresentationOutput } from '@/services/business-operations/semantic/contract';
+import { T3OperationIdentityOutput } from '@/services/business-operations/semantic/identity-contract';
 
 export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T1GroupUploadOutput,
@@ -34,6 +36,8 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T3DocumentNamingOutput,
   // Lot 85F : compréhension de la connaissance T1 persistée (branche facultative, texte attendu de l'équipe IA).
   T3KnowledgeQueryOutput,
+  // Lot 97A : identité sémantique d'une Opération à plusieurs sources (branche facultative, texte collé par le PO).
+  T3OperationIdentityOutput,
   T3MasterOutput,
   T4ClassifyEventOutput,
   // Lot 54 : contrat de sortie `t4_output_v2` de CLASSIFY_EVENT (décision Agenda + récurrence).
@@ -42,6 +46,8 @@ export const MASTER_OUTPUT_SCHEMAS: Readonly<Record<string, ZodType>> = {
   T4ClassifyEventV3Output,
   T4VerifyCompletionOutput,
   T4TemporalAmbiguityOutput,
+  // Lot 97A : représentation Agenda multi-événements (contrat `t4_output_v4`, branche facultative).
+  T4AgendaRepresentationOutput,
   T4MasterOutput,
   T2UnderstandOutput,
   T2AnswerOutput,

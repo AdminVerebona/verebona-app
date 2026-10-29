@@ -1,6 +1,7 @@
 {
   "case": "P-T1-01",
   "description": "Contrat 2 pages + facture distincte : [[0,1],[2]], aucun mélange.",
+  "qualification": { "role": "answer" },
   "context": {
     "displayNames": [
       "contrat-assurance-p1.jpg",

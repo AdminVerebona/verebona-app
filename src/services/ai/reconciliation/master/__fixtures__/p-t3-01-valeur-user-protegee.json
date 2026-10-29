@@ -1,6 +1,7 @@
 {
   "case": "P-T3-01",
   "description": "VALUE_CONFLICT — valeur USER protégée : abstention ou conflit, jamais écrasement, même si le modèle choisit une preuve avec certitude.",
+  "qualification": { "role": "guard" },
   "context": {
     "fieldKey": "livingArea",
     "current": { "value": "82", "normalized": "82", "origin": "USER" },

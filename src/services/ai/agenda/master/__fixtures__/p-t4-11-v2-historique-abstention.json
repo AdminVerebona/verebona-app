@@ -1,6 +1,7 @@
 {
   "case": "P-T4-11",
   "description": "CLASSIFY_EVENT v2 — trois dates régulières détectées par le serveur (HISTORICAL_PATTERN) sans mention de périodicité : événement accepté, récurrence non démontrée ⇒ recurrenceDecision=abstain.",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": {
       "title": "Ramonage",

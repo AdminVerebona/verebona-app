@@ -11,7 +11,7 @@ import { buildRepresentationInput, DEFAULT_REPRESENTATION_BOUNDS, type RawContex
 import { validateRepresentation } from '../validate';
 import { decidedRoles, planRepresentation } from '../plan';
 import { representationNeeded } from '../orchestrator';
-import { productionRepresentationDecider, representationEnabled } from '../decider';
+import { productionRepresentationDecider, representationCapabilityOf, representationEnabled } from '../decider';
 import { REPRESENTATION_CONTRACT_VERSION, T4AgendaRepresentationOutput } from '../contract';
 import {
   decideProjection, planOperationProjection, type AgendaItemSnapshot, type OperationSnapshot,
@@ -193,10 +193,21 @@ describe('L87B-U-ORCH — besoin de décision, capacité de production', () => {
     expect(representationNeeded(candidat)).toBe(false);
     expect(representationNeeded(candidat, [100])).toBe(true);
   });
-  it('L87B-U-ORCH-02 — contrat T4 multi-événements non livré : capacité de production INDISPONIBLE (aucun appel), coupure d’urgence', async () => {
-    expect(await productionRepresentationDecider.capability()).toEqual({ available: false, version: null, reason: 'CONTRACT_PENDING' });
+  it('L87B-U-ORCH-02 — prompt T4 livré (sans le marqueur, lot 97A) : capacité de production INDISPONIBLE (aucun appel), coupure d’urgence', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { executionConfigFor } = await import('@/services/ai/master-prompts/structured-context');
+    const texte = readFileSync(join(process.cwd(), 'src/services/ai/prompts/agenda/t4_master_v1.txt'), 'utf-8');
+    expect(representationCapabilityOf({ text: texte, version: 'file', execution: executionConfigFor({ masterPromptCode: 't4_master_v1', source: 'file' }) }))
+      .toEqual({ available: false, version: null, reason: 'CONTRACT_PENDING', contractState: 'MARKER_MISSING' });
     expect(representationEnabled({ T4_AGENDA_REPRESENTATION_ENABLED: '0' })).toBe(false);
-    await expect(productionRepresentationDecider.decide({} as never)).rejects.toThrow(/CONTRACT_PENDING/);
+    const prev = process.env.T4_AGENDA_REPRESENTATION_ENABLED;
+    process.env.T4_AGENDA_REPRESENTATION_ENABLED = '0';
+    try {
+      expect(await productionRepresentationDecider.capability()).toEqual({ available: false, version: null, reason: 'DISABLED' });
+    } finally {
+      if (prev === undefined) delete process.env.T4_AGENDA_REPRESENTATION_ENABLED; else process.env.T4_AGENDA_REPRESENTATION_ENABLED = prev;
+    }
   });
 });
 

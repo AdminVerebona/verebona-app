@@ -1,6 +1,7 @@
 {
   "case": "P-T3-10",
   "description": "OPERATION_MATCH — SAME_OPERATION seulement probable : jamais de rattachement silencieux, question « À traiter » (F-058).",
+  "qualification": { "role": "guard" },
   "context": {
     "operationMatch": {
       "subject": {

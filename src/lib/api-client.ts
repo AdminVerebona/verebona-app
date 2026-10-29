@@ -1,4 +1,5 @@
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
+import { clearPrivateSessionStorage } from '@/lib/session/private-session-storage';
 import { clearLegacyAuthStorage } from '@/lib/auth-migration';
 import { clientPlatformHeaders } from '@/lib/client-platform';
 import { FRESH_HEADER, isDataMutation, lastAccountMutationAt, markAccountDataMutated, mutatedSince, resetDataFreshness } from './data-freshness';
@@ -876,6 +877,8 @@ export const apiClient = {
     for (const key of PRIVATE_STORAGE_KEYS) {
       try { window.localStorage.removeItem(key); } catch { /* stockage indisponible */ }
     }
+    // Lot 97C (AC17) : instantanés de consultation (listes, recherche) du compte quitté.
+    clearPrivateSessionStorage();
   },
 
   /** Une déconnexion est-elle en cours ? */

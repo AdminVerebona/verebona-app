@@ -26,6 +26,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { apiClient, ApiClientError } from '@/lib/api-client';
 import { useReauth } from './ReauthProvider';
+import { accountOAuthBody, followAccountOAuth } from './native-account-oauth';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -99,11 +100,14 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
   const link = useCallback(async (p: Provider) => {
     setBusy(true);
     try {
+      // Lot 97B : dans l'app, parcours dans le navigateur système (Web inchangé).
+      const body = await accountOAuthBody(p, 'link');
+      if (!body) { toast.error('Association impossible pour le moment.'); return; }
       const d = await withReauth(
-        () => apiClient.post<{ redirectUrl?: string }>(`/api/users/me/auth-identities/${p}/link`, {}),
+        () => apiClient.post<{ redirectUrl?: string }>(`/api/users/me/auth-identities/${p}/link`, body),
         `Avant d’associer ${LABEL[p]}.`, `link-${p}`,
       );
-      if (d?.redirectUrl) { window.location.assign(d.redirectUrl); return; }
+      if (d?.redirectUrl && await followAccountOAuth(d.redirectUrl)) return;
     } catch (e) {
       fail(e, 'Association impossible pour le moment.');
     } finally { setBusy(false); }

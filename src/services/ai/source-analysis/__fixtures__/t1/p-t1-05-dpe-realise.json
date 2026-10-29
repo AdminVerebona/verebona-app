@@ -1,6 +1,7 @@
 {
   "case": "P-T1-05",
   "description": "DPE réalisé : dpeDate, classe ; la date de réalisation annoncée à tort comme expiration est requalifiée ; aucune expiration, aucune échéance.",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 30,
     "assets": [

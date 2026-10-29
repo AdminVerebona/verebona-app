@@ -1,6 +1,7 @@
 {
   "case": "T1-02",
   "description": "Achat de pneus pour la Clio : achat de la pièce, pas d'acquisition du véhicule (acquisitionPrice proposé à tort sur le bien, retiré).",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 12,
     "assets": [

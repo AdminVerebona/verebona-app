@@ -1,6 +1,7 @@
 {
   "case": "P-T3-02",
   "description": "LINK_AMBIGUITY — deux équipements équivalents pour un même document : aucun choix arbitraire, aucune liaison automatique.",
+  "qualification": { "role": "answer" },
   "context": {
     "variables": {
       "SUBJECT_CONTEXT": "Document — Titre: \"Facture entretien chaudière\" | Fournisseur: \"Chauffage Martin\"",

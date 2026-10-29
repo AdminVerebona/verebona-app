@@ -1,6 +1,7 @@
 {
   "case": "P-T6-01b",
   "description": "T6 / FORMULATE — cas limite : un montant absent des faits est ajouté → rejet (R2).",
+  "qualification": { "role": "guard" },
   "context": {
     "input": {
       "schemaVersion": "t6-input-v1",

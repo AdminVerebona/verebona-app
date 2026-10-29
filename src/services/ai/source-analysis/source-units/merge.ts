@@ -167,6 +167,8 @@ export function mergeChunkOutput(base: Out, chunk: Out): { output: Out; addedFac
         ...(d.supplier ? {} : c.supplier ? { supplier: c.supplier } : {}),
         ...(d.amountCents ? {} : c.amountCents ? { amountCents: c.amountCents } : {}),
         ...(d.classification ? {} : c.classification ? { classification: c.classification } : {}),
+        // Lot 97A : période facturée / mois principal (contrat t1-billing-period-v1) — première décision lue.
+        ...(d.billingPeriod ? {} : c.billingPeriod ? { billingPeriod: c.billingPeriod } : {}),
       },
       entities: {
         ...base.entities,

@@ -1,5 +1,6 @@
 "use client"
 
+import { searchForTab } from '@/lib/search/local-search';
 import { assetSupportsRooms } from '@/lib/asset-capabilities';
 import { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
@@ -278,9 +279,10 @@ export default function AssetDetailPage() {
   }, [asset, router]);
 
   const handleTabChange = useCallback((tab: string) => {
-    const url = new URL(window.location.href);
-    url.searchParams.set('tab', tab);
-    window.history.pushState({}, '', url.toString());
+    // Lot 97C (§7.2) : la recherche locale d'un onglet (`q`) n'est jamais
+    // appliquée automatiquement à un autre onglet.
+    const { pathname, search, hash } = window.location;
+    window.history.pushState({}, '', `${pathname}${searchForTab(search, tab)}${hash}`);
   }, []);
 
   const AssetIcon = useMemo(() =>

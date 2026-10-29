@@ -37,17 +37,23 @@ export async function enqueue(rows: NewOutboxRow[], dbh: DbHandle = db): Promise
  * `processing` de façon atomique (verrou ligne + SKIP LOCKED). Concurrence-safe.
  */
 export async function claimPending(limit: number): Promise<OutboxRow[]> {
+  // Lot 97B : `UPDATE … RETURNING` ne garantit AUCUN ordre (il suit la place
+  // physique des lignes, qui varie d'une base à l'autre) — le lot réclamé est
+  // retrié par ordre de création pour un traitement reproductible.
   const result = await db.execute(sql`
-    UPDATE notification_outbox SET status = 'processing'
-    WHERE id IN (
-      SELECT id FROM notification_outbox
-      WHERE status = 'pending'
-        AND (scheduled_for IS NULL OR scheduled_for <= now())
-      ORDER BY created_at
-      LIMIT ${limit}
-      FOR UPDATE SKIP LOCKED
+    WITH claimed AS (
+      UPDATE notification_outbox SET status = 'processing'
+      WHERE id IN (
+        SELECT id FROM notification_outbox
+        WHERE status = 'pending'
+          AND (scheduled_for IS NULL OR scheduled_for <= now())
+        ORDER BY created_at
+        LIMIT ${limit}
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING *
     )
-    RETURNING *;
+    SELECT * FROM claimed ORDER BY created_at, id;
   `);
   return result as unknown as OutboxRow[];
 }
@@ -58,13 +64,16 @@ export async function claimByIds(ids: string[]): Promise<OutboxRow[]> {
   // NB : on passe par `inArray` (paramètres liés individuellement) plutôt qu'un
   // littéral `ANY($1::uuid[])`, que le driver postgres-js sérialise mal.
   const result = await db.execute(sql`
-    UPDATE notification_outbox SET status = 'processing'
-    WHERE id IN (
-      SELECT id FROM notification_outbox
-      WHERE ${inArray(notificationOutbox.id, ids)} AND status = 'pending'
-      FOR UPDATE SKIP LOCKED
+    WITH claimed AS (
+      UPDATE notification_outbox SET status = 'processing'
+      WHERE id IN (
+        SELECT id FROM notification_outbox
+        WHERE ${inArray(notificationOutbox.id, ids)} AND status = 'pending'
+        FOR UPDATE SKIP LOCKED
+      )
+      RETURNING *
     )
-    RETURNING *;
+    SELECT * FROM claimed ORDER BY created_at, id;
   `);
   return result as unknown as OutboxRow[];
 }

@@ -1,6 +1,7 @@
 {
   "case": "P-T1-02",
   "description": "Ticket draisienne 24/04/2026, 129 € : acquisitionDate 2026-04-24 + acquisitionPrice 129 EUR par règle déterministe, événement purchase, preuve.",
+  "qualification": { "role": "answer" },
   "context": {
     "linkedAssetId": 184,
     "assets": [

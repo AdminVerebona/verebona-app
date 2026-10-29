@@ -65,10 +65,43 @@ jobs:
       - working-directory: mobile
         run: npm run check
 
-  build:
-    name: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'Production → TestFlight (approbation requise)' || 'Préproduction → TestFlight' }}
+  # Correctif 29/10/2026 : voir mobile-android.yml (job « readiness ») — build
+  # sauté sur push tant que la configuration n'est pas posée, échec explicite
+  # sur lancement manuel. Contrôle sur runner Linux (évite un runner macOS inutile).
+  readiness:
+    name: Configuration de l'environnement posée ?
     needs: checks
     if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'production-mobile' || 'mobile-preprod' }}
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: mobile
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - id: check
+        working-directory: mobile
+        env:
+          VEREBONA_ENV: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'prod' || 'preprod' }}
+          VEREBONA_APP_ORIGIN: ${{ vars.VEREBONA_APP_ORIGIN }}
+          VEREBONA_APP_VERSION: ${{ vars.VEREBONA_APP_VERSION }}
+          VEREBONA_UI_MODE: ${{ inputs.ui_mode || 'remote' }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          GOOGLE_SERVICE_INFO_PLIST_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_PLIST_BASE64 }}
+          ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: node scripts/readiness.mjs ios ${{ github.event_name == 'workflow_dispatch' && '--strict' || '' }}
+
+  build:
+    name: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'Production → TestFlight (approbation requise)' || 'Préproduction → TestFlight' }}
+    needs: [checks, readiness]
+    if: github.event_name != 'pull_request' && needs.readiness.outputs.ready == 'true'
     runs-on: macos-15
     timeout-minutes: 60
     # Préproduction : environnement « mobile-preprod ».

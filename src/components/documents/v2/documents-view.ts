@@ -456,8 +456,10 @@ export function documentSubtitle(d: DocumentItem, sort: SortKey, context: Docume
 }
 
 /** « 19 documents », « 4 documents sur 19 », « 12 documents rattachés à ce bien ». */
-export function countLabel(shown: number, scopeTotal: number, filtered: boolean, context: DocumentsContext): string {
+export function countLabel(shown: number, scopeTotal: number, filtered: boolean, context: DocumentsContext, searching = false): string {
   const base = `${shown} document${shown > 1 ? 's' : ''}`;
+  // Lot 97C : recherche locale active — le périmètre EST l'ensemble trouvé.
+  if (searching) return filtered ? `${base} sur ${scopeTotal} trouvé${scopeTotal > 1 ? 's' : ''}` : `${base} trouvé${shown > 1 ? 's' : ''}`;
   if (filtered) return `${base} sur ${scopeTotal}`;
   return context === 'fiche-bien' ? `${base} ${shown > 1 ? 'rattachés' : 'rattaché'} à ce bien` : base;
 }

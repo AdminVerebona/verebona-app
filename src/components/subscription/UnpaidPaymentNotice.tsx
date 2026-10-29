@@ -25,6 +25,8 @@ import { AlertTriangle, CreditCard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { openBillingPortal } from '@/lib/billing/open-billing-portal';
 import { unpaidDeadlineLabel, type UnpaidCyclePayload } from '@/lib/trial-status';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 /** Libellé du bouton — le même partout (bandeau, fenêtre, pages). */
 export const UPDATE_PAYMENT_METHOD_LABEL = 'Mettre à jour le moyen de paiement';
@@ -37,6 +39,9 @@ interface Props {
 
 export function UnpaidPaymentNotice({ unpaid, variant = 'card' }: Props) {
   const [loading, setLoading] = useState(false);
+  // Lot 97B : dans l'application, l'information (échéance, données) reste ;
+  // le portail de paiement est remplacé par le message sobre.
+  const commerceHidden = useNativeCommerceHidden();
   const echeance = unpaidDeadlineLabel(unpaid);
 
   const regulariser = async () => {
@@ -75,10 +80,12 @@ export function UnpaidPaymentNotice({ unpaid, variant = 'card' }: Props) {
           )}
         </p>
       </div>
-      <Button size="sm" onClick={regulariser} disabled={loading}>
-        <CreditCard className="mr-1.5 h-4 w-4" />
-        {UPDATE_PAYMENT_METHOD_LABEL}
-      </Button>
+      {commerceHidden ? <NativeCommerceNotice className="text-sm text-[color:var(--text-muted)]" /> : (
+        <Button size="sm" onClick={regulariser} disabled={loading}>
+          <CreditCard className="mr-1.5 h-4 w-4" />
+          {UPDATE_PAYMENT_METHOD_LABEL}
+        </Button>
+      )}
     </div>
   );
 }

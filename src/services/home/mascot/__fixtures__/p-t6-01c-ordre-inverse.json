@@ -1,6 +1,7 @@
 {
   "case": "P-T6-01c",
   "description": "T6 / FORMULATE — cas limite : sujets réordonnés → rejet (R1).",
+  "qualification": { "role": "guard" },
   "context": {
     "input": {
       "schemaVersion": "t6-input-v1",

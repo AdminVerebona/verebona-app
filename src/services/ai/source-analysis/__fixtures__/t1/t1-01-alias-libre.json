@@ -1,6 +1,7 @@
 {
   "case": "T1-01",
   "description": "Alias libre et clé inventée : « prixAchat » ramené à acquisitionPrice ; « boilerPower » (hors registre) conservé comme connaissance générique ; identifiant halluciné neutralisé.",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 184,
     "assets": [

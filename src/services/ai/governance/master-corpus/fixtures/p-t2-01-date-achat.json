@@ -1,6 +1,7 @@
 {
   "case": "P-T2-01",
   "description": "UNDERSTAND — « Indique-moi la date d’achat » : intention de LECTURE, jamais une commande ; fait du catalogue.",
+  "qualification": { "role": "guard" },
   "context": { "question": "Indique-moi la date d’achat de la Clio" },
   "recording": {
     "operationCode": "t2_understand", "task": "UNDERSTAND",

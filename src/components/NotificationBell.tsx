@@ -18,6 +18,7 @@ import {
   subscriptionNotificationText,
   type SubscriptionNotificationPayload,
 } from '@/lib/notifications/subscription-messages';
+import { isCommercePath, nativeCommerceHidden } from '@/lib/native/commerce';
 
 /**
  * Types retirés de l'affichage : les notifications « Analyse impossible ».
@@ -245,7 +246,17 @@ function formatDate(iso: unknown): string {
   return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
 }
 
+/**
+ * Lot 97B : dans l'application iOS / Android, une notification ne mène jamais
+ * à une page commerciale (offres, abonnement) — elle reste non cliquable.
+ */
 function getNotificationHref(type: string, payload: NotificationPayload | null): string | null {
+  const href = notificationHrefFor(type, payload);
+  if (href && nativeCommerceHidden() && isCommercePath(href.split(/[?#]/)[0])) return null;
+  return href;
+}
+
+function notificationHrefFor(type: string, payload: NotificationPayload | null): string | null {
   const p = payload ?? {};
   // Lot 74B : `/mon-compte/partage` n'a jamais existé (lien mort). Invitation
   // Duo → sa page réelle ; invitation à un compte partagé hors Duo → Mon

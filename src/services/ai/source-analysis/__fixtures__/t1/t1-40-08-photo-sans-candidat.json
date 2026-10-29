@@ -1,6 +1,7 @@
 {
   "case": "F-005",
   "description": "Photo d'une rayure : aucune Opération — preuves uniquement visuelles et type PHOTO, le candidat est rendu non établi.",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 12,
     "assets": [

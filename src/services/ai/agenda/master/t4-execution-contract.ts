@@ -47,8 +47,9 @@
  */
 import { z } from 'zod';
 import type { StructuredContextSpec } from '../../master-prompts/structured-context';
-import { T4_MASTER_PROMPT_CODE, T4_TASKS } from './t4-contract';
+import { T4_MASTER_PROMPT_CODE, T4_OPTIONAL_TASKS, T4_TASKS } from './t4-contract';
 import { RECURRENCE_MODES } from '../rules/recurrence';
+import { T4AgendaRepresentationInput } from '@/services/business-operations/semantic/contract';
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -131,10 +132,49 @@ const T4_INPUT_V2_FIELDS = {
   },
 } as const;
 
+/**
+ * Contrat d'entrée T4 v3 (lot 97A) : v2 + `agenda_representation` pour la
+ * branche FACULTATIVE AGENDA_REPRESENTATION (demande
+ * `87B-t4-representation-agenda-multi-evenements`) — contexte large et borné
+ * de la réévaluation sémantique d'une Opération (`semantic/context.ts`).
+ * Les trois branches historiques sont inchangées.
+ */
+const T4_INPUT_V3_FIELDS = {
+  ...T4_INPUT_V2_FIELDS,
+  agenda_representation: {
+    legacyVariable: 'AGENDA_REPRESENTATION',
+    description: 'Représentation Agenda d’une Opération (contrat t4-agenda-representation-v1) : Opération examinée (O1) et voisines, éléments d’agenda (A…, `inScope` = à décider), éléments restaurables (R…), documents (D…), décisions de l’utilisateur, décisions antérieures, bornes du contexte.',
+    schema: T4AgendaRepresentationInput,
+  },
+} as const;
+
+const T4_V2_TASK_RULES = {
+  CLASSIFY_EVENT: {
+    required: ['event_context', 'event_catalog'],
+    optional: ['evidence', 'document_type'],
+    schemas: {
+      evidence: z.string().max(2000).nullable(),
+      document_type: z.looseObject({ code: z.string().nullable(), label: z.string().nullable() }),
+    },
+  },
+  VERIFY_COMPLETION: {
+    required: ['agenda_item', 'document_type', 'evidence'],
+    optional: [],
+    schemas: {
+      evidence: z.looseObject({ excerpt: z.string(), documentDate: isoDate.nullable(), occurrenceDate: isoDate.nullable() }),
+    },
+  },
+  TEMPORAL_AMBIGUITY: {
+    required: ['temporal_context', 'temporal_candidates'],
+    optional: [],
+  },
+} as const;
+
 export const T4_EXECUTION_SPEC: StructuredContextSpec = {
   masterPromptCode: T4_MASTER_PROMPT_CODE,
   treatment: 'T4',
-  knownTasks: [...T4_TASKS],
+  knownTasks: [...T4_TASKS, ...T4_OPTIONAL_TASKS],
+  optionalTasks: [...T4_OPTIONAL_TASKS],
   inputContracts: {
     t4_input_v1: {
       version: 't4_input_v1',
@@ -184,6 +224,15 @@ export const T4_EXECUTION_SPEC: StructuredContextSpec = {
         },
       },
     },
+    // Lot 97A : v2 + AGENDA_REPRESENTATION (branche facultative, choisie explicitement au BO).
+    t4_input_v3: {
+      version: 't4_input_v3',
+      fields: T4_INPUT_V3_FIELDS,
+      tasks: {
+        ...T4_V2_TASK_RULES,
+        AGENDA_REPRESENTATION: { required: ['agenda_representation'], optional: [] },
+      },
+    },
   },
   outputContracts: {
     t4_output_v1: {
@@ -213,7 +262,19 @@ export const T4_EXECUTION_SPEC: StructuredContextSpec = {
         TEMPORAL_AMBIGUITY: { schemaName: 'T4TemporalAmbiguityOutput', contractVersion: 1 },
       },
     },
+    // Lot 97A : v3 + AGENDA_REPRESENTATION (représentation Agenda multi-événements, contrat t4-agenda-representation-v1).
+    t4_output_v4: {
+      version: 't4_output_v4',
+      byTask: {
+        CLASSIFY_EVENT: { schemaName: 'T4ClassifyEventV3Output', contractVersion: 3 },
+        VERIFY_COMPLETION: { schemaName: 'T4VerifyCompletionOutput', contractVersion: 1 },
+        TEMPORAL_AMBIGUITY: { schemaName: 'T4TemporalAmbiguityOutput', contractVersion: 1 },
+        AGENDA_REPRESENTATION: { schemaName: 'T4AgendaRepresentationOutput', contractVersion: 1 },
+      },
+    },
   },
+  // Lot 97A : défauts INCHANGÉS (v2 / v3, trois TASK) — AGENDA_REPRESENTATION n'est jamais autorisée
+  // par défaut ; le PO la coche au BO avec t4_input_v3 / t4_output_v4 (guide du PO).
   // Fichier du dépôt (`t4_master_v1.txt`, sans emplacement — texte de
   // référence v2 depuis le lot 54) et nouvelles versions créées depuis ce
   // texte : contexte structuré v2 (lot 61 : sortie `t4_output_v3`). Une

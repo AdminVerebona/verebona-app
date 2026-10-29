@@ -272,6 +272,10 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
   // (`t6-evaluation-input-v1`), toujours null en FORMULATE. Absent d'une
   // version BO antérieure : décision prudente sans IA.
   t6_master_v1: ['SUGGESTION_CONTEXT', 'INTERPELLATION_CONTEXT'],
+  // T4 : contexte de la représentation Agenda multi-événements, lot 97A —
+  // donnée du contexte structuré (t4_input_v3) ; jamais un emplacement exigé
+  // d'une version LEGACY_TEMPLATE (la branche n'y est pas exécutable).
+  t4_master_v1: ['AGENDA_REPRESENTATION'],
 };
 
 /**
@@ -292,7 +296,10 @@ export const OPTIONAL_MASTER_VARIABLES: Readonly<Record<string, readonly string[
  */
 export const OPTIONAL_MASTER_TASKS: Readonly<Record<string, readonly string[]>> = {
   // Lot 85F : KNOWLEDGE_QUERY — compréhension de la connaissance T1 persistée (texte attendu de l'équipe IA).
-  t3_master_v1: ['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY'],
+  // Lot 97A : OPERATION_IDENTITY — identité sémantique d'une Opération à plusieurs sources (texte collé par le PO).
+  t3_master_v1: ['OPERATION_MATCH', 'DOCUMENT_NAMING', 'KNOWLEDGE_QUERY', 'OPERATION_IDENTITY'],
+  // Lot 97A : AGENDA_REPRESENTATION — représentation Agenda multi-événements (texte collé par le PO).
+  t4_master_v1: ['AGENDA_REPRESENTATION'],
   // Lot 61 : mode EVALUATE de T6 (pertinence des interpellations). Sans lui
   // (version BO antérieure), aucune échéance non évaluée n'est présentée
   // d'office et l'accueil dit que l'examen des échéances est indisponible.
@@ -313,7 +320,11 @@ export const OPTIONAL_MASTER_TASKS: Readonly<Record<string, readonly string[]>> 
 export const MASTER_TASKS_TEXT_PENDING: Readonly<Record<string, readonly string[]>> = {
   // Lot 85F : texte de la branche demandé à l'équipe IA (`85F-t3-comprehension-connaissance-t1`) ;
   // Claude ne modifie aucun prompt. À retirer d'ici à la livraison du texte dans le fichier du dépôt.
-  t3_master_v1: ['KNOWLEDGE_QUERY'],
+  // Lot 97A : OPERATION_IDENTITY (demande `87B-t3-identite-multi-operations`), texte dans le guide du PO.
+  t3_master_v1: ['KNOWLEDGE_QUERY', 'OPERATION_IDENTITY'],
+  // Lot 97A : AGENDA_REPRESENTATION (demande `87B-t4-representation-agenda-multi-evenements`) ; T4 est en contexte
+  // structuré : la branche est un paragraphe libre repéré par son marqueur, jamais une section exigée.
+  t4_master_v1: ['AGENDA_REPRESENTATION'],
 };
 
 /** Texte de cette branche attendu d'un ticket séparé (`MASTER_TASKS_TEXT_PENDING`). */

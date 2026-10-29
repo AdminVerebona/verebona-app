@@ -37,6 +37,9 @@
  *     v6 — lot 91D : `valueDecisions[]` facultatif (décisions de T1 sur les
  *          valeurs significatives, contrat `t1-value-decisions-v1`). Une v5
  *          est toujours une v6 valide (tableau absent = contrat non porté).
+ *     v7 — lot 97A : `document.billingPeriod` facultatif (période facturée et
+ *          mois principal, contrat `t1-billing-period-v1`). Une v6 est
+ *          toujours une v7 valide (bloc absent = contrat non porté).
  *   adaptateurs : t1_v1_to_v2 ; v2 → v3 : aucun ; v4 → v5 : aucun ; t1_v3_to_v4 pour les
  *   seules formes ANTÉRIEURES du bloc candidat (texte BO divergent qui
  *   suivrait le CDC §7.1 / B3 : `businessOperationCandidate` unique,
@@ -215,7 +218,8 @@ const T1_V3_TO_V4: CompatAdapter = {
 
 const CONTRACTS: readonly OutputContract[] = [
   // Lot 91D : v6 = v5 + `valueDecisions[]` facultatif (une v5 reste une v6 valide, aucun adaptateur).
-  { name: 'T1AnalyzeDocumentOutput', label: 't1_analyze_document', version: 6, adapters: [T1_V1_TO_V2, T1_V3_TO_V4] },
+  // Lot 97A : v7 = v6 + `document.billingPeriod` facultatif (une v6 reste une v7 valide, aucun adaptateur).
+  { name: 'T1AnalyzeDocumentOutput', label: 't1_analyze_document', version: 7, adapters: [T1_V1_TO_V2, T1_V3_TO_V4] },
   { name: 'T1GroupUploadOutput', label: 't1_group_upload', version: 1, adapters: [] },
   { name: 'T3ValueConflictOutput', label: 't3_value_conflict', version: 1, adapters: [] },
   { name: 'T3LinkAmbiguityOutput', label: 't3_link_ambiguity', version: 1, adapters: [] },
@@ -224,6 +228,8 @@ const CONTRACTS: readonly OutputContract[] = [
   { name: 'T3DocumentNamingOutput', label: 't3_document_naming', version: 1, adapters: [] },
   // Lot 85F : contrat `t3-knowledge-query-v1` (demande à l'équipe IA 85F).
   { name: 'T3KnowledgeQueryOutput', label: 't3_knowledge_query', version: 1, adapters: [] },
+  // Lot 97A : contrat `t3-operation-identity-v1` (demande 87B-t3-identite-multi-operations).
+  { name: 'T3OperationIdentityOutput', label: 't3_operation_identity', version: 1, adapters: [] },
   { name: 'T4ClassifyEventOutput', label: 't4_classify_event', version: 1, adapters: [] },
   // Lot 54 : même contrat (T4_CLASSIFY_EVENT), version 2 — schéma distinct,
   // choisi par le contrat de sortie `t4_output_v2` de la version de prompt.
@@ -232,6 +238,8 @@ const CONTRACTS: readonly OutputContract[] = [
   { name: 'T4ClassifyEventV3Output', label: 't4_classify_event', version: 3, adapters: [] },
   { name: 'T4VerifyCompletionOutput', label: 't4_verify_completion', version: 1, adapters: [] },
   { name: 'T4TemporalAmbiguityOutput', label: 't4_temporal_ambiguity', version: 1, adapters: [] },
+  // Lot 97A : contrat `t4-agenda-representation-v1` (sortie `t4_output_v4`, demande 87B-t4-representation-agenda-multi-evenements).
+  { name: 'T4AgendaRepresentationOutput', label: 't4_agenda_representation', version: 1, adapters: [] },
   { name: 'T2UnderstandOutput', label: 't2_understand', version: 1, adapters: [] },
   { name: 'T2AnswerOutput', label: 't2_answer', version: 1, adapters: [] },
   { name: 'T2RevalidateOutput', label: 't2_revalidate', version: 1, adapters: [] },

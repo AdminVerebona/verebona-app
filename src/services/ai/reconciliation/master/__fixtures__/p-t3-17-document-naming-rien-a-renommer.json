@@ -1,6 +1,7 @@
 {
   "case": "P-T3-17",
   "description": "DOCUMENT_NAMING (lot 63) — noms personnalisés par l’utilisateur (protégés) qui font référence, documents examinés déjà conformes : rien à renommer, document_renames vide (abstention), aucun renommage retenu ni refusé.",
+  "qualification": { "role": "answer" },
   "context": {
     "documentNaming": {
       "docs": [

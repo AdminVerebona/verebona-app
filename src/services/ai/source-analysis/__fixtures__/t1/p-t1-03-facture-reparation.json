@@ -1,6 +1,7 @@
 {
   "case": "P-T1-03",
   "description": "Facture de réparation : événement repair, kilométrage ; jamais acquisitionPrice ni acquisitionDate (proposés à tort par le modèle, retirés), ni événement d'achat du bien.",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 12,
     "assets": [

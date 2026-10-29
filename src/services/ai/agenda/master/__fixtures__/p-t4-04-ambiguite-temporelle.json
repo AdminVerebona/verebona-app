@@ -1,6 +1,7 @@
 {
   "case": "P-T4-04",
   "description": "TEMPORAL_AMBIGUITY — « 03/04/2027 » lu mm/jj par l'extraction ; le contexte français désigne le 3 avril : le modèle choisit le candidat jj/mm de la liste fournie (U1, monde fermé).",
+  "qualification": { "role": "answer" },
   "context": {
     "temporal": {
       "title": "Prochain entretien chaudière",

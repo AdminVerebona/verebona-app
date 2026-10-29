@@ -1,6 +1,7 @@
 {
   "case": "F-105",
   "description": "Ticket d'achat en francs suisses : ACQUISITION REALIZED, montant conservé en CHF (devise d’origine, aucune conversion BCE — C12.3).",
+  "qualification": { "role": "answer" },
   "context": {
     "linkedAssetId": 30,
     "assets": [

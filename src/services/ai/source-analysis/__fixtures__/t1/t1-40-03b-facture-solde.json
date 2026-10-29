@@ -1,6 +1,7 @@
 {
   "case": "F-092 / F-093 (solde)",
   "description": "Facture de solde citant l'acompte : un seul candidat, montants distingués par leur portée (TOTAL, DEPOSIT, BALANCE) pour que T3 ne compte jamais deux fois.",
+  "qualification": { "role": "answer" },
   "context": {
     "linkedAssetId": 20,
     "assets": [

@@ -1,6 +1,7 @@
 {
   "case": "T1-04",
   "description": "Fin de garantie et numéro de série d'une chaudière : restent sur l'équipement, jamais rabattus sur l'appartement ; observation visuelle sans faux extrait.",
+  "qualification": { "role": "guard" },
   "context": {
     "linkedAssetId": 30,
     "assets": [

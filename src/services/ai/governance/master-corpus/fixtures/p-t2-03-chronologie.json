@@ -1,6 +1,7 @@
 {
   "case": "P-T2-03",
   "description": "ANSWER — chronologie : structure ordonnée conservée (events[]), pas de phrases aplaties.",
+  "qualification": { "role": "answer" },
   "context": {
     "intent": "ACCOUNT_TIMELINE",
     "sources": [

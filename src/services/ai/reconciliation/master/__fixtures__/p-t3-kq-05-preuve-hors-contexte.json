@@ -1,6 +1,7 @@
 {
   "case": "P-T3-KQ-05",
   "description": "KNOWLEDGE_QUERY — preuve citée hors du contexte transmis (U1) : constat refusé, aucune valeur.",
+  "qualification": { "role": "guard" },
   "context": {
     "knowledgeQuery": {
       "question": {

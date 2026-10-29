@@ -1,6 +1,7 @@
 {
   "case": "P-T4-V3-07",
   "description": "Lot 61 (t4_output_v3, contrat de référence) — CLASSIFY_EVENT v2 — facture d'abonnement de télésurveillance, période du 01/10/2026 au 31/10/2026, facturation mensuelle : une période facturée n'est ni une échéance ni une série d'actions ⇒ agendaDecision=reject, recurrenceDecision=reject. Sans demande « À traiter » : intervention = null.",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": {
       "title": "Abonnement télésurveillance",

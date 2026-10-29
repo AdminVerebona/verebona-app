@@ -26,6 +26,8 @@ import { getPlanTheme } from '@/lib/plan-theme';
 import { SecurityCard } from '@/components/account/security/SecurityCard';
 import { ReauthProvider, useReauth } from '@/components/account/security/ReauthProvider';
 import { ApiClientError } from '@/lib/api-client';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 
 interface UserProfile {
@@ -123,6 +125,8 @@ export default function InformationsTab(props: { beforeDangerZone?: ReactNode } 
 
 function InformationsTabContent({ beforeDangerZone }: { beforeDangerZone?: ReactNode } = {}) {
   const router = useRouter();
+  // Lot 97B (COM-01/05) : aucun bouton d'offre dans l'application.
+  const commerceHidden = useNativeCommerceHidden();
   const { user: sessionUser, isLoading: sessionLoading, refetch: refetchSession } = useSession({ required: true });
   
   const [loading, setLoading] = useState(true);
@@ -360,9 +364,11 @@ function InformationsTabContent({ beforeDangerZone }: { beforeDangerZone?: React
                   <p className="text-xs text-muted-foreground mt-0.5">Synchronisez vos événements avec Google Agenda, Apple Agenda ou Outlook.</p>
                 </div>
               </div>
-              <Button size="sm" variant="outline" className="w-full sm:w-auto sm:shrink-0 border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] gap-1 rounded-full" onClick={() => router.push('/mon-compte/offres')}>
-                <Crown className="w-3.5 h-3.5" />Passer Premium
-              </Button>
+              {commerceHidden ? <NativeCommerceNotice /> : (
+                <Button size="sm" variant="outline" className="w-full sm:w-auto sm:shrink-0 border-[color:var(--border-info)] text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] gap-1 rounded-full" onClick={() => router.push('/mon-compte/offres')}>
+                  <Crown className="w-3.5 h-3.5" />Passer Premium
+                </Button>
+              )}
             </div>
           );
         })() : !calToken ? (

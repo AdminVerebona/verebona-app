@@ -1,6 +1,7 @@
 {
   "case": "P-T4-06",
   "description": "CLASSIFY_EVENT — facture internet mensuelle, période du 08/08/2026 au 07/09/2026 : fin de période ≠ fin de contrat (U7, C6) ⇒ information (FACT_ONLY), aucune action (IGNORE), jamais une fin de contrat.",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": { "title": "Échéance abonnement internet", "date": "2026-09-07", "confidence": "probable",
       "excerpt": "Facture internet n° FI-2026-08 — Abonnement fibre — Période du 08/08/2026 au 07/09/2026 — 29,99 € TTC" }

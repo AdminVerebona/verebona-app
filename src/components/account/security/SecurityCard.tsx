@@ -9,7 +9,8 @@
  *   1. Méthodes de connexion (`SignInMethodsBlock`, lot 93) — adresse e-mail
  *      (modification : bientôt), mot de passe (Modifier / Ajouter, après
  *      confirmation d'identité), Google, Apple (Connecter / Déconnecter).
- *   2. Biométrie — uniquement dans l'application mobile (§27.3).
+ *   2. Biométrie — uniquement dans l'application mobile (§27.3) ; réglage
+ *      local branché sur `lib/native/app-lock` (lot 97B, `BiometricsBlock`).
  *   3. Appareils connectés — appareil, navigateur ou application, dernière
  *      activité, badge « Cet appareil », « Déconnecter » par appareil,
  *      « Déconnecter tous les autres appareils » après confirmation. Ni IP ni
@@ -30,9 +31,10 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { apiClient, ApiClientError } from '@/lib/api-client';
-import { clientPlatformHeaders } from '@/lib/client-platform';
+import { isNativeApp } from '@/lib/native/bridge';
 import { useReauth } from './ReauthProvider';
 import { SignInMethodsBlock } from './SignInMethodsBlock';
+import { BiometricsBlock } from './BiometricsBlock';
 
 interface DeviceSession {
   id: string;
@@ -82,10 +84,6 @@ function SubBlock({ icon, title, children }: { icon: React.ReactNode; title: str
       {children}
     </section>
   );
-}
-
-function ComingSoon({ children }: { children: React.ReactNode }) {
-  return <p className="text-sm text-[color:var(--text-muted)]">{children}</p>;
 }
 
 /* ── Bloc 1 : mot de passe ─────────────────────────────────────────────── */
@@ -289,12 +287,10 @@ function ConnectedDevices() {
 /* ── Carte ─────────────────────────────────────────────────────────────── */
 
 export function SecurityCard() {
-  // §27.3 : la biométrie n'existe que dans l'application mobile.
+  // §27.3 : la biométrie n'existe que dans l'application mobile (lot 97B :
+  // détection unique `lib/native/bridge`, décidée après hydratation).
   const [nativeApp, setNativeApp] = useState(false);
-  useEffect(() => {
-    const c = clientPlatformHeaders()['X-Verebona-Client']?.toLowerCase();
-    setNativeApp(c === 'ios' || c === 'android');
-  }, []);
+  useEffect(() => { setNativeApp(isNativeApp()); }, []);
 
   return (
     <CollapsibleCard
@@ -311,7 +307,7 @@ export function SecurityCard() {
 
       {nativeApp && (
         <SubBlock icon={<Fingerprint className="w-4 h-4" />} title="Biométrie">
-          <ComingSoon>Bientôt disponible dans l’application. Verebona ne reçoit jamais vos données biométriques.</ComingSoon>
+          <BiometricsBlock />
         </SubBlock>
       )}
 

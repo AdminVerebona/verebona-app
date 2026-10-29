@@ -17,6 +17,8 @@ import { openBillingPortal } from '@/lib/billing/open-billing-portal';
 import { isUnpaid, type UnpaidCyclePayload } from '@/lib/trial-status';
 import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
 import { formatEuroCents } from '@/lib/billing/plan-catalog';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 /**
  * Ecran « Mon abonnement » (CDC tarification §9.1 et §9.4).
@@ -192,6 +194,10 @@ function useAlsoDuoMember(enabled: boolean): boolean {
 
 export function SubscriptionSummary() {
   const router = useRouter();
+  // Lot 97B (COM-01/04/05, ACC-04) : dans l'application, l'offre, l'essai et
+  // les quotas restent affichés en lecture seule ; ni tarif, ni changement
+  // d'offre, ni portail de paiement, ni annulation — le message sobre.
+  const commerceHidden = useNativeCommerceHidden();
   const { user } = useSession();
   const isDuoMember = user?.duoRole === 'MEMBER';
   const alsoDuoMember = useAlsoDuoMember(!isDuoMember && (user?.accountsCount ?? 1) >= 2);
@@ -262,6 +268,8 @@ export function SubscriptionSummary() {
       {/* Départ volontaire du second utilisateur (AID-DUO-006). */}
       <DuoLeaveButton />
     </div>
+  ) : commerceHidden ? (
+    <NativeCommerceNotice className="text-sm text-[color:var(--text-muted)]" />
   ) : (
     <div className="flex flex-wrap gap-2">
       <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
@@ -363,7 +371,7 @@ export function SubscriptionSummary() {
       {/* Tarif de la période en cours et, si confirmé, du prochain
           renouvellement — distincts du prix des nouvelles souscriptions
           (CDC lookup_key LK-36, LK-113). Factures passées inchangées. */}
-      {subscription.currentPrice && (
+      {subscription.currentPrice && !commerceHidden && (
         <div className="mb-5 grid gap-4 sm:grid-cols-2" data-testid="tarif-contractuel">
           <div>
             <p className="vb-app-label">Tarif de la période en cours</p>
@@ -430,7 +438,7 @@ export function SubscriptionSummary() {
             {subscription.scheduledChange.effectiveAt
               ? ` le ${formatDate(subscription.scheduledChange.effectiveAt)}`
               : ' à la prochaine échéance'}
-            {typeof subscription.scheduledChange.unitAmountCents === 'number'
+            {typeof subscription.scheduledChange.unitAmountCents === 'number' && !commerceHidden
               ? ` (${formatEuroCents(subscription.scheduledChange.unitAmountCents)} ${subscription.scheduledChange.billingPeriod === 'monthly' ? 'par mois' : 'par an'})`
               : ''}
             .
@@ -440,9 +448,11 @@ export function SubscriptionSummary() {
               </span>
             )}
           </p>
-          <Button variant="ghost" size="sm" onClick={cancelChange} disabled={cancelLoading}>
-            Annuler
-          </Button>
+          {!commerceHidden && (
+            <Button variant="ghost" size="sm" onClick={cancelChange} disabled={cancelLoading}>
+              Annuler
+            </Button>
+          )}
         </div>
       )}
 
@@ -483,7 +493,7 @@ export function SubscriptionSummary() {
           <DuoInvitationPanel />
         </div>
       )}
-      {!isDuoMember && data.plan !== 'premium_duo' && (
+      {!isDuoMember && data.plan !== 'premium_duo' && !commerceHidden && (
         <div className="mt-5 border-t border-[color:var(--border)] pt-4">
           <div className="flex flex-col gap-3 rounded-lg border border-dashed border-[color:var(--border-success)] bg-[color:var(--bg-success)] px-3 py-3 sm:flex-row sm:items-start">
             <div className="flex min-w-0 flex-1 items-start gap-3">

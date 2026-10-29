@@ -20,6 +20,11 @@
  *               choix explicite d'un administrateur préservé ;
  *   L79C-E2E-08 (AC04/AC08) paiement : échec + authentification de la même
  *               facture → un message ; autre facture et rappels conservés ;
+ *   L79C-E2E-08b (lot 97B) même incident réclamé dans UN lot, demande
+ *               d'authentification traitée AVANT l'échec (ordre inversé,
+ *               horodatages figés autour de minuit et du changement d'heure du
+ *               25/10) → toujours un seul message ; échec décidé « sans
+ *               action » puis demande tardive → envoyée ;
  *   L79C-E2E-09 (AC08) renouvellement : sans push ; lot 81E — `receipt_number`
  *               n'est plus une preuve : e-mail selon la préférence.
  *
@@ -330,7 +335,8 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
   it('L79C-E2E-08 (AC04/AC08) paiement : échec + authentification de la même facture → un seul message ; autre facture conservée', async () => {
     const c = await compte();
     const { emit } = await import('@/lib/notifications');
-    const passe = new Date(Date.now() - 1000);
+    // Lot 97B : échéance FIGÉE dans le passé (aucune dépendance à l'heure réelle).
+    const passe = new Date('2026-10-25T01:30:00Z');
     await emit({ type: 'PAYMENT_FAILED', accountId: c.id, entityType: 'invoice', entityId: 'in_l79c_A', payload: { accountId: c.id, deadlineAt: '2027-01-20T00:00:00Z' },
       dedupeKey: `l79c:pf:A:${c.id}`, scheduledFor: passe });
     await emit({ type: 'PAYMENT_ACTION_REQUIRED', accountId: c.id, entityType: 'invoice', entityId: 'in_l79c_A', payload: { accountId: c.id },
@@ -350,6 +356,58 @@ scenario('L79C', 'E-mails et notifications : suppressions effectives, regroupeme
     expect(cloches.map((x) => x.type)).toEqual(['PAYMENT_ACTION_REQUIRED', 'PAYMENT_FAILED']);
     expect(cloches[1].body).toMatch(/Un paiement a échoué[\s\S]*Votre banque demande une validation/);
     // Deux e-mails : l'incident A (un seul message) et l'incident B (autre facture).
+    expect(mailsA(c.email)).toHaveLength(2);
+  });
+
+  it('L79C-E2E-08b (lot 97B) même lot réclamé, ordre inversé, minuit et changement d’heure : un seul message ; décision « sans action » enregistrée', async () => {
+    const { emit } = await import('@/lib/notifications');
+    // Horodatages de création FIGÉS (UTC) : la demande d'authentification est
+    // créée juste AVANT l'échec, donc traitée en premier dans le même lot, alors
+    // que l'échec est déjà « en cours » sans avoir décidé.
+    const cas = [
+      { nom: 'minuit (Paris, 24→25/10)', par: '2026-10-24T21:59:59.900Z', pf: '2026-10-24T22:00:00.100Z' },
+      // 02:59:59 CEST puis 02:00:01 CET : l'heure LOCALE de l'échec est antérieure.
+      { nom: 'changement d’heure 25/10', par: '2026-10-25T00:59:59.000Z', pf: '2026-10-25T01:00:01.000Z' },
+      { nom: 'heure d’été 29/03', par: '2026-03-29T00:59:59.000Z', pf: '2026-03-29T01:00:01.000Z' },
+      { nom: 'même instant', par: '2026-10-25T01:30:00.000Z', pf: '2026-10-25T01:30:00.000Z' },
+    ];
+    for (const k of cas) {
+      const c = await compte();
+      const inv = `in_l79c_8b_${c.id}`;
+      await emit({ type: 'PAYMENT_ACTION_REQUIRED', accountId: c.id, entityType: 'invoice', entityId: inv, payload: { accountId: c.id },
+        dedupeKey: `l79c:8b:par:${c.id}`, scheduledFor: new Date(k.par) });
+      await emit({ type: 'PAYMENT_FAILED', accountId: c.id, entityType: 'invoice', entityId: inv, payload: { accountId: c.id },
+        dedupeKey: `l79c:8b:pf:${c.id}`, scheduledFor: new Date(k.pf) });
+      await sql`UPDATE notification_outbox SET created_at = CASE event_type WHEN 'PAYMENT_ACTION_REQUIRED' THEN ${k.par}::timestamptz ELSE ${k.pf}::timestamptz END
+                 WHERE recipient_user_id = ${c.userId}`;
+      await traiter();
+      const rows = await sql<{ event_type: string; status: string; auth: boolean | null }[]>`
+        SELECT event_type, status, (payload_json->>'authenticationRequired')::boolean AS auth FROM notification_outbox
+         WHERE recipient_user_id = ${c.userId} ORDER BY event_type`;
+      expect(rows.map((r) => [r.event_type, r.status, r.auth]), k.nom).toEqual([
+        ['PAYMENT_ACTION_REQUIRED', 'grouped', null],
+        ['PAYMENT_FAILED', 'sent', true],
+      ]);
+      expect(mailsA(c.email), k.nom).toHaveLength(1);
+    }
+
+    // Échec traité SEUL (aucune demande) : décision « sans action » enregistrée ;
+    // la demande tardive (évolution significative) part ensuite.
+    const c = await compte();
+    const inv = `in_l79c_8b_tardif_${c.id}`;
+    await emit({ type: 'PAYMENT_FAILED', accountId: c.id, entityType: 'invoice', entityId: inv, payload: { accountId: c.id },
+      dedupeKey: `l79c:8b:pf:${c.id}`, scheduledFor: new Date('2026-10-25T01:30:00Z') });
+    await traiter();
+    await emit({ type: 'PAYMENT_ACTION_REQUIRED', accountId: c.id, entityType: 'invoice', entityId: inv, payload: { accountId: c.id },
+      dedupeKey: `l79c:8b:par:${c.id}`, scheduledFor: new Date('2026-10-25T01:31:00Z') });
+    await traiter();
+    const rows = await sql<{ event_type: string; status: string; auth: boolean | null }[]>`
+      SELECT event_type, status, (payload_json->>'authenticationRequired')::boolean AS auth FROM notification_outbox
+       WHERE recipient_user_id = ${c.userId} ORDER BY event_type`;
+    expect(rows.map((r) => [r.event_type, r.status, r.auth])).toEqual([
+      ['PAYMENT_ACTION_REQUIRED', 'sent', null],
+      ['PAYMENT_FAILED', 'sent', false],
+    ]);
     expect(mailsA(c.email)).toHaveLength(2);
   });
 

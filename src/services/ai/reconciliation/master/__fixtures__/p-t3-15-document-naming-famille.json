@@ -1,6 +1,7 @@
 {
   "case": "P-T3-15",
   "description": "DOCUMENT_NAMING (lot 61) — famille de factures aux intitulés incohérents : deux renommages conformes retenus, un renommage qui supprime la période refusé par le serveur (information discriminante), nom utilisateur protégé.",
+  "qualification": { "role": "guard" },
   "context": {
     "documentNaming": {
       "docs": [

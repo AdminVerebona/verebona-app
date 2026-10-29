@@ -375,11 +375,12 @@ describe('L86A-U13 — source de la vérité attendue d’un cas du corpus (QUAL
     expect(fixtureExpectation({ expected: { valid: false }, qualificationRole: null }, true)).toMatchObject({ use: 'INVARIANTS', reason: expect.stringMatching(/non déclaré/) });
     expect(fixtureExpectation({ expected: null, qualificationRole: 'answer' }, false).use).toBe('NONE');
   });
-  it('corpus du dépôt : aucun rôle déclaré aujourd’hui → aucun cas REFERENCE (demande à l’équipe IA), cas exécutables quand même', async () => {
+  it('corpus du dépôt (lot 97A : rôles déclarés) : réponses de référence REFERENCE, gardes écartées, cas exécutables', async () => {
     const { buildCaseSet } = await import('../cases');
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const set = await buildCaseSet('t3_link_ambiguity', { readMasterFile: readMasterFileFromRepo });
     expect(set.cases.length).toBeGreaterThan(0);
-    expect(set.cases.every((c) => c.expectedSource !== 'REFERENCE' || c.source !== 'CORPUS_FIXTURE')).toBe(true);
+    expect(set.cases.every((c) => c.expectedSource === 'REFERENCE')).toBe(true);
+    expect(set.skipped.filter((s) => /garde/.test(s.reason)).map((s) => s.caseId).sort()).toEqual(['corpus:P-T3-04', 'corpus:P-T3-06']);
   });
 });

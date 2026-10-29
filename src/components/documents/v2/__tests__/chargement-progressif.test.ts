@@ -438,7 +438,8 @@ describe('écran Mes documents', () => {
   });
 
   it('compteurs de section et total issus du serveur, pas des documents chargés', () => {
-    expect(VUE).toMatch(/countLabel\(total, scopeTotal, filtered, context\)/);
+    // Lot 97C : la recherche locale active (`!!q`) ne change que le libellé, pas la source des compteurs.
+    expect(VUE).toMatch(/countLabel\(total, scopeTotal, filtered, context, !!q\)/);
     expect(VUE).toMatch(/groupCounts\.get\(group\.code\)/);
   });
 

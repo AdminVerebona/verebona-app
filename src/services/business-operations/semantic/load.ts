@@ -32,7 +32,7 @@ async function journalPresent(sql: Sql, table: string): Promise<boolean> {
   return r?.ok === true;
 }
 
-async function loadOperations(sql: Sql, accountId: number, ids: readonly number[]): Promise<RawOperation[]> {
+export async function loadOperations(sql: Sql, accountId: number, ids: readonly number[]): Promise<RawOperation[]> {
   if (!ids.length) return [];
   const r = await sql.unsafe<Row[]>(`
     SELECT o.id, o.type_code, o.status, o.technical_label, o.provider,
@@ -116,7 +116,7 @@ async function loadItemsOfOperations(sql: Sql, accountId: number, opIds: readonl
 }
 
 /** Voisines : Opérations actives d'un bien commun, datées dans la fenêtre (ou sans date), les plus proches d'abord. */
-async function loadNeighbourIds(sql: Sql, accountId: number, op: RawOperation): Promise<number[]> {
+export async function loadNeighbourIds(sql: Sql, accountId: number, op: RawOperation): Promise<number[]> {
   if (!op.assetIds.length) return [];
   const ref = op.realizedDate ?? op.plannedDate ?? op.startDate;
   const r = await sql.unsafe<Row[]>(`
@@ -152,7 +152,7 @@ async function loadRestorables(sql: Sql, accountId: number, operationId: number)
   });
 }
 
-async function loadDocuments(sql: Sql, accountId: number, fileIds: readonly number[]): Promise<RawDocument[]> {
+export async function loadDocuments(sql: Sql, accountId: number, fileIds: readonly number[]): Promise<RawDocument[]> {
   const ids = [...new Set(fileIds)].filter((x) => Number.isSafeInteger(x) && x > 0);
   if (!ids.length) return [];
   const r = await sql.unsafe<Row[]>(`

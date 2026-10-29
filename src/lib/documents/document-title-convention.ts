@@ -106,9 +106,10 @@ export interface PrincipalMonth {
 }
 
 /**
- * Mois de rattachement principal lu dans la sortie BRUTE d'une analyse T1
- * (contrat demandé à l'équipe IA : `document.billingPeriod.principalMonth`,
- * demande 87D-mois-principal-factures). Seule une décision `certain` est
+ * Mois de rattachement principal lu dans le résultat PERSISTÉ d'une analyse T1
+ * (`document.billingPeriod.principalMonth`, contrat T1 `t1-billing-period-v1`
+ * depuis le lot 97A, demande 87D-mois-principal-factures ; conservé seulement
+ * si le prompt T1 effectif porte le contrat — `billing-period/contract.ts`). Seule une décision `certain` est
  * retenue ; absente, illisible ou moins sûre → null. Jamais calculé ici.
  */
 export function principalMonthFromAnalysis(raw: unknown): PrincipalMonth | null {

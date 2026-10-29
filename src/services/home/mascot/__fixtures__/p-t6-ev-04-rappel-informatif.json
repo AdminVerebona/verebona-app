@@ -1,6 +1,7 @@
 {
   "case": "P-T6-EV-04",
   "description": "T6 / EVALUATE — rappel informatif (lot 68) : SHOW_NOW + INFORMATION + INFORMATIVE_REMINDER sans action, justifié et prouvé, accepté ; une échéance sans action en ACTION_NOW n'est jamais convertie en rappel ; un rappel qui porte une action est rejeté.",
+  "qualification": { "role": "guard" },
   "context": {
     "input": {
       "schemaVersion": "t6-evaluation-input-v1",

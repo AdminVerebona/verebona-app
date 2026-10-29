@@ -83,6 +83,9 @@ envisagé qu'en cas d'échec démontré. »
 | Tester l’échec, l’annulation et la reprise du flux de connexion sans exposer de jetons ni créer de session incohérente. | iOS | | | | | | | | |
 | Tester l’échec, l’annulation et la reprise du flux de connexion sans exposer de jetons ni créer de session incohérente. | Android | | | | | | | | |
 | Contrôle technique : le parcours s’ouvre dans le **navigateur système** (ASWebAuthenticationSession / Custom Tabs), jamais dans la vue de l’app. | iOS + Android | | | | | | | | |
+| Lot 97B — Mon compte › Sécurité dans l’app : « Connecter » Google puis Apple (navigateur système, retour dans l’app, message « C’est fait ») ; « Déconnecter » (confirmation d’identité puis dissociation) ; refus si c’est la dernière méthode. | iOS | | | | | | | | |
+| Lot 97B — idem. | Android | | | | | | | | |
+| Lot 97B — « Confirmer avec Google / Apple » dans la fenêtre « Confirmez votre identité » de l’app : l’action demandée reprend au retour ; un autre compte Google est refusé ; annulation chez le fournisseur → message, rien de modifié. | iOS + Android | | | | | | | | |
 
 Préalable : `APP_OAUTH_RETURN_URL` posée en préprod (voir `docs/mobile/builds-et-secrets.md` § 5).
 
@@ -95,6 +98,17 @@ Préalable : `APP_OAUTH_RETURN_URL` posée en préprod (voir `docs/mobile/builds
 | Un appareil uniquement enregistré pour le push n’est jamais présenté à tort comme une session active. | iOS + Android | | | | | | | | |
 | La vue web et la vue mobile exposent les mêmes données de sécurité et respectent l’isolation des comptes. | iOS + Android | | | | | | | | |
 | Contrôle technique : après « Déconnecter cet appareil » depuis le web, le téléphone ne reçoit plus de notification personnelle. | iOS + Android | | | | | | | | |
+
+## 3 bis. Mise en production (lot 97B) — abonnement et biométrie
+
+| Vérification | Plateforme | Test technique (Dév) | Validation (PO) | Résultat | Appareil | OS | Version (build) | Preuve | Anomalies |
+|---|---|---|---|---|---|---|---|---|---|
+| Aucun bouton ni lien « Choisir une offre », « Passer à Premium », « Passer au Duo », « Factures et moyens de paiement », « Changer d’offre », aucun tarif, aucun parrainage ni rétractation : à la place, « La gestion de l’abonnement se fait sur le site. » (texte seul, sans lien). Parcours : accueil (essai), barre latérale, Mon compte, fenêtre « Limite atteinte », document (analyse Premium), exports, historique IA, agenda (synchronisation). | iOS + Android | | | | | | | | |
+| Ouverture directe d’une page commerciale dans l’app (lien d’e-mail, notification, saisie) : écran « Abonnement » d’information, sans lien d’achat ; le site web reste inchangé dans un navigateur. | iOS + Android | | | | | | | | |
+| Offre, essai et quotas visibles en lecture seule dans Mon compte (COM-04). | iOS + Android | | | | | | | | |
+| Mon compte › Sécurité › Biométrie (app seulement) : activer (Face ID / Touch ID / empreinte demandé), refuser la vérification (rien ne change), désactiver ; retirer la biométrie dans les réglages du téléphone puis revenir : l’état affiché suit le téléphone. | iOS | | | | | | | | |
+| Idem. | Android | | | | | | | | |
+| La biométrie ne remplace pas la confirmation d’identité : avec la biométrie activée, « Déconnecter Google » demande toujours le mot de passe ou Google / Apple. | iOS + Android | | | | | | | | |
 
 ## 4. Décision M9 — Scanner documentaire
 

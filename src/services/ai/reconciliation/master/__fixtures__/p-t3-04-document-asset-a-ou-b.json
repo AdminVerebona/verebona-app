@@ -1,6 +1,7 @@
 {
   "case": "P-T3-04",
   "description": "DOCUMENT_ASSET — A OU B : deux biens à Lyon, seule la ville est citée ; aucun choix arbitraire, abstention vers « À traiter ».",
+  "qualification": { "role": "guard" },
   "context": {
     "variables": {
       "FIELD": null,

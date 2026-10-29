@@ -1,6 +1,7 @@
 {
   "case": "P-T4-09",
   "description": "CLASSIFY_EVENT v2 — entretien de chaudière à réaliser tous les 12 mois (mention explicite) ⇒ accept, action, recurrenceDecision=accept.",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": {
       "title": "Entretien chaudière",

@@ -172,7 +172,10 @@ describe('T4C-04 — TASK invalide : rejet avant appel', () => {
     expect(fake.calls).toHaveLength(0);
   });
   it('liste des TASK définie hors du texte du prompt (configuration)', () => {
-    expect(T4_EXECUTION_SPEC.knownTasks).toEqual(['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY']);
+    // Lot 97A : + AGENDA_REPRESENTATION, FACULTATIVE (jamais autorisée par défaut, contrats t4_input_v3 / t4_output_v4).
+    expect(T4_EXECUTION_SPEC.knownTasks).toEqual(['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY', 'AGENDA_REPRESENTATION']);
+    expect(T4_EXECUTION_SPEC.optionalTasks).toEqual(['AGENDA_REPRESENTATION']);
+    expect(T4_EXECUTION_SPEC.defaults.allowedTasks).toEqual(['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY']);
     const sansTask = FICHIER.replace(/CLASSIFY_EVENT|VERIFY_COMPLETION|TEMPORAL_AMBIGUITY/g, 'X');
     expect(checkMasterPromptContent('T4', sansTask, STRUCTURE).ok).toBe(true);
   });

@@ -1,6 +1,7 @@
 {
   "case": "T1-02",
   "description": "Ticket à deux articles (draisienne 99 € + casque 30 €) : le total de 129 € n'est pas le prix du bien ; acquisitionPrice = 99 € tiré de la ligne d'achat du bien.",
+  "qualification": { "role": "answer" },
   "context": {
     "linkedAssetId": 184,
     "assets": [

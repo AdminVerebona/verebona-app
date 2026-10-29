@@ -1,6 +1,7 @@
 {
   "case": "P-T4-V3-14",
   "description": "Lot 61 (t4_output_v3) — « À traiter », échéance PASSÉE d'un contrat terminé sans reconduction ni démarche restante : aucune intervention (needed=no), aucune carte.",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": {
       "title": "Fin de contrat",

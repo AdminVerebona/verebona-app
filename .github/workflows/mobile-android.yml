@@ -86,12 +86,52 @@ jobs:
           path: mobile/sbom-dependances.json
           retention-days: 90
 
+  # Correctif 29/10/2026 : tant que les comptes stores ne sont pas créés (guide
+  # des comptes, C3), les variables et secrets de l'environnement GitHub sont
+  # vides. Un push sur main ne doit plus échouer pour autant : le build est
+  # SAUTÉ avec la liste des éléments manquants (aucune valeur affichée) ; un
+  # lancement manuel, lui, échoue explicitement.
+  readiness:
+    name: Configuration de l'environnement posée ?
+    needs: checks
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'production-mobile' || 'mobile-preprod' }}
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: mobile
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - id: check
+        working-directory: mobile
+        env:
+          VEREBONA_ENV: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'prod' || 'preprod' }}
+          VEREBONA_APP_ORIGIN: ${{ vars.VEREBONA_APP_ORIGIN }}
+          VEREBONA_APP_VERSION: ${{ vars.VEREBONA_APP_VERSION }}
+          VEREBONA_UI_MODE: ${{ inputs.ui_mode || 'remote' }}
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+          ANDROID_UPLOAD_KEYSTORE_BASE64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_BASE64 }}
+          ANDROID_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
+          ANDROID_UPLOAD_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
+          ANDROID_UPLOAD_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: >-
+          node scripts/readiness.mjs android
+          ${{ github.event_name == 'workflow_dispatch' && '--strict' || '' }}
+          ${{ (github.event_name == 'push' || inputs.publish) && '--publish' || '' }}
+
   build-preprod:
     name: Préproduction → Google Play (tests internes)
-    needs: checks
+    needs: [checks, readiness]
     if: >-
+      needs.readiness.outputs.ready == 'true' && (
       (github.event_name == 'push') ||
-      (github.event_name == 'workflow_dispatch' && inputs.environment == 'preprod')
+      (github.event_name == 'workflow_dispatch' && inputs.environment == 'preprod'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: mobile-preprod
@@ -157,8 +197,8 @@ jobs:
 
   build-prod:
     name: Production → Google Play (approbation requise)
-    needs: checks
-    if: github.event_name == 'workflow_dispatch' && inputs.environment == 'prod'
+    needs: [checks, readiness]
+    if: needs.readiness.outputs.ready == 'true' && github.event_name == 'workflow_dispatch' && inputs.environment == 'prod'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Environnement PROTÉGÉ : réviseurs obligatoires (PO), branche main uniquement.

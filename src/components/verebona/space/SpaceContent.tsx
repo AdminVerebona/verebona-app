@@ -417,6 +417,22 @@ function LiveResults({ api }: { api: VerebonaSpaceApi }) {
           );
         })}
       </ul>
+      {/* Lot 97C : écran complet, recherche préremplie (jamais les seuls identifiants affichés). */}
+      {(api.liveSeeAll ?? []).length > 0 && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 px-0.5">
+          {api.liveSeeAll.map((l) => (
+            <a
+              key={l.id}
+              href={l.href}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={(e) => { e.preventDefault(); api.openSeeAll(l); }}
+              className="inline-flex min-h-11 items-center text-[12.5px] font-medium text-[color:var(--accent)] hover:underline md:min-h-0"
+            >
+              {l.label}
+            </a>
+          ))}
+        </div>
+      )}
       <p className="m-0 px-0.5 text-[11.5px] text-[color:var(--text-muted)]">
         Entrée : demander à Verebona « {api.draft.trim()} »
       </p>

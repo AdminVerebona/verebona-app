@@ -2,6 +2,8 @@
 
 import Link from 'next/link';
 import { Clock } from 'lucide-react';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 interface SidebarPlanCardProps {
   /** Jours d'essai restants. `null`/`undefined` hors essai en cours
@@ -30,6 +32,8 @@ const TRIAL_DAYS = 7;
  * ══════════════════════════════════════════════════════════════════════════
  */
 export function SidebarPlanCard({ trialDaysLeft }: SidebarPlanCardProps) {
+  // Lot 97B : dans l'application, essai affiché en lecture seule (COM-04), sans bouton d'offre.
+  const commerceHidden = useNativeCommerceHidden();
   if (typeof trialDaysLeft !== 'number' || trialDaysLeft < 0) return null;
 
   return (
@@ -49,12 +53,14 @@ export function SidebarPlanCard({ trialDaysLeft }: SidebarPlanCardProps) {
         />
       </div>
       {/* Même libellé et même destination que le bandeau d'accueil. */}
-      <Link
-        href="/mon-compte/offres"
-        className="block w-full h-8 leading-8 text-center rounded-full bg-[color:var(--accent)] text-[color:var(--on-accent)] text-[11.5px] font-bold transition-colors duration-[180ms] hover:bg-[color:var(--accent-hover)]"
-      >
-        Choisir une offre
-      </Link>
+      {commerceHidden ? <NativeCommerceNotice className="text-[11px] leading-relaxed text-[color:var(--text-muted)]" /> : (
+        <Link
+          href="/mon-compte/offres"
+          className="block w-full h-8 leading-8 text-center rounded-full bg-[color:var(--accent)] text-[color:var(--on-accent)] text-[11.5px] font-bold transition-colors duration-[180ms] hover:bg-[color:var(--accent-hover)]"
+        >
+          Choisir une offre
+        </Link>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 {
   "case": "P-T6-01e",
   "description": "T6 / FORMULATE — violation qui touche tous les sujets (R9) : bulle rejetée, texte de secours complet.",
+  "qualification": { "role": "guard" },
   "context": {
     "input": {
       "schemaVersion": "t6-input-v1",

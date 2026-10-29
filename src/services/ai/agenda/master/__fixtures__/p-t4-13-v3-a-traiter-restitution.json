@@ -1,6 +1,7 @@
 {
   "case": "P-T4-V3-13",
   "description": "Lot 61 (t4_output_v3) — « À traiter », échéance PASSÉE d'un contrat de location qui impose la restitution du matériel sous 30 jours : intervention réelle identifiée (RETURN_OR_RESTITUTE), preuve citée, jamais une question de date.",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": {
       "title": "Fin de contrat",

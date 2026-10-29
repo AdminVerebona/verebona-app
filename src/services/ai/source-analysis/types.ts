@@ -382,6 +382,21 @@ export interface SourceAnalysisResult {
     date?: EvidenceValue<string>;
     supplier?: EvidenceValue<SupplierCandidate>;
     amountCents?: EvidenceValue<number>;
+    /**
+     * Lot 97A (contrat T1 `t1-billing-period-v1`, demande 87D) : période
+     * facturée et mois principal décidés par T1, persistés tels quels avec
+     * la sortie (`document_analysis_runs.raw_response_json`) et lus par le
+     * nommage (`principalMonthFromAnalysis`). Absent tant que le prompt T1
+     * effectif ne porte pas le contrat.
+     */
+    billingPeriod?: {
+      start: string | null;
+      end: string | null;
+      principalMonth: string | null;
+      principalMonthBasis: string | null;
+      confidence: 'certain' | 'probable' | 'conflictual';
+      evidence: { quote: string | null; page: number | null };
+    };
   };
   assetCandidates: LinkCandidate[];
   roomCandidates: LinkCandidate[];

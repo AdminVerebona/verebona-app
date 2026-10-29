@@ -58,8 +58,8 @@ describe('C3-01 — contrat v4 : vocabulaire fermé aligné sur le modèle des O
     expect([...T1_FINANCIAL_ROLES]).toEqual([...FINANCIAL_COMPONENT_KINDS, 'PAYMENT', 'LOAN_PRINCIPAL']);
   });
   it('version 5 affichée par le registre des contrats (lot 53D)', () => {
-    expect(T1_ANALYZE_DOCUMENT_CONTRACT_VERSION).toBe(6);
-    expect(outputSchemaRef('T1AnalyzeDocumentOutput', T1AnalyzeDocumentOutput, 't1_analyze_document').version).toBe('t1_analyze_document@v6');
+    expect(T1_ANALYZE_DOCUMENT_CONTRACT_VERSION).toBe(7);
+    expect(outputSchemaRef('T1AnalyzeDocumentOutput', T1AnalyzeDocumentOutput, 't1_analyze_document').version).toBe('t1_analyze_document@v7');
   });
 });
 

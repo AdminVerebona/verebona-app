@@ -1,6 +1,7 @@
 {
   "case": "P-T3-12",
   "description": "OPERATION_MATCH — AMBIGUOUS pour une source sans montant, sans bien ni changement de statut : attente silencieuse, aucune question (C5).",
+  "qualification": { "role": "answer" },
   "context": {
     "operationMatch": {
       "subject": {

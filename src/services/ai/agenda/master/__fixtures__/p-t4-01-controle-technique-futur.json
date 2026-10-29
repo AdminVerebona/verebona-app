@@ -1,6 +1,7 @@
 {
   "case": "P-T4-01",
   "description": "CLASSIFY_EVENT — contrôle technique futur : action (jamais « information » parce qu'il vient d'un champ de bien, C3).",
+  "qualification": { "role": "answer" },
   "context": {
     "candidate": { "title": "Échéance véhicule", "date": "2027-05-12", "confidence": "certain",
       "excerpt": "Prochain contrôle technique à effectuer avant le 12/05/2027." },

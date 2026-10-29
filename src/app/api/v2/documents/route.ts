@@ -14,6 +14,9 @@
  *   ?assets=12,45           restreint au périmètre d'un ou plusieurs biens
  *   ?biens=12,__NO_ASSET__  ?rubrics=MEDIA,__UNFILED__  ?types=DPE,__NO_TYPE__
  *   ?ids=3,4 | none         résultats d'une recherche de l'assistant
+ *   ?q=homiris              lot 97C : recherche locale (règles de la barre de
+ *                           recherche), avant pagination et compteurs ;
+ *                           écarte `ids` quand elle est active
  *   ?piece=7                lot 75B : filtre Pièce (documents directs de la
  *                           pièce + documents de ses équipements, une fois)
  *   ?equipment=asset|42     lot 71 : filtre Équipement (bien uniquement, ou
@@ -67,6 +70,8 @@ export async function GET(req: NextRequest) {
       grouped: params.grouped,
       filtered: params.filters.biens.length + params.filters.rubrics.length + params.filters.types.length > 0
         || !!params.filters.equipment || !!params.filters.piece,
+      // Lot 97C : recherche locale active (jamais son texte).
+      searched: !!params.q,
     }));
     return new NextResponse(body, {
       headers: {
