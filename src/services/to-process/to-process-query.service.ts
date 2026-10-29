@@ -44,6 +44,7 @@ import { selectDisplayedProposals } from './action-model';
 import { getRule } from './rules-catalog';
 import { sortActions, type OrderMode } from './priority';
 import { presentCardLabels, targetFallbackLabel } from './card-labels';
+import { publishableCardCondition } from './publishability';
 
 /** Contexte objet affiché sur la carte (§8.4). */
 interface ActionTargetContext {
@@ -129,9 +130,13 @@ export async function getToProcessPage(
   const orderMode: OrderMode = options.orderMode ?? 'BY_PRIORITY';
   const filters = options.filters ?? {};
 
+  // Lot 98B (P0-E) : carte OUVERTE et PUBLIABLE — une carte retenue pour
+  // blocage technique (T4 incompatible, interprétation en attente, panne)
+  // relève de la Supervision, jamais de la page, du compteur ni de la mascotte.
   const conditions = [
     eq(toProcessActions.accountId, accountId),
     isNull(toProcessActions.resolvedAt),
+    publishableCardCondition(),
   ];
   if (filters.targetType) conditions.push(eq(toProcessActions.targetType, filters.targetType));
   if (filters.actionKind) conditions.push(eq(toProcessActions.actionKind, filters.actionKind));
@@ -161,7 +166,7 @@ export async function getToProcessPage(
       .select({ total: sql<number>`COUNT(*)::int` })
       .from(toProcessActions)
       .where(
-        and(eq(toProcessActions.accountId, accountId), isNull(toProcessActions.resolvedAt)),
+        and(eq(toProcessActions.accountId, accountId), isNull(toProcessActions.resolvedAt), publishableCardCondition()),
       ),
   ]);
 

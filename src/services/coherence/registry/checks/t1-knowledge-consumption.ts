@@ -38,6 +38,22 @@
  *                                   dont une preuve n'est reliée à aucun fait
  *                                   T1 persisté actif (constat T1).
  *
+ * Lot 98B (P0-D, version 2) — réponse T3 VALIDE mais INCOMPLÈTE : T3 a
+ * analysé la connaissance et rendu des constituants (ex. une durée), mais
+ * pas celui dont la DÉCISION de la carte déclare avoir besoin (trace
+ * `missing_sources` « DECISION_GAP:<rôle> », ou, pour une décision
+ * antérieure, la même règle pure `knowledgeGaps` appliquée à son calcul
+ * tracé) — et la carte est maintenue. Aucune regex, aucune règle métier :
+ * le code confronte le besoin DÉCLARÉ aux constituants RENDUS.
+ *   · KNOWLEDGE_ANSWER_INCOMPLETE        RÉPARABLE : nouvelle demande T3
+ *                                   ciblée (sémantique) par la décision
+ *                                   centrale, budget et anti-boucle existants,
+ *                                   au plus une fois par jour ;
+ *   · KNOWLEDGE_ANSWER_STILL_INCOMPLETE  CONSTAT : demande ciblée déjà faite
+ *                                   et exploitée, constituant toujours absent
+ *                                   (texte du prompt T3, demande IA) — jamais
+ *                                   CONSISTENT.
+ *
  * Coût IA borné : budget du compte (`T3_KNOWLEDGE_QUERY_DAILY_MAX`), mémoire
  * des réponses (aucun rappel sur une entrée inchangée), empreinte des entrées
  * (anti-boucle du moteur) ; une connaissance non interprétée n'est réessayée
@@ -45,6 +61,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { ChainLink, CoherenceCheck, Inspection, RepairResult } from '../types';
+import type { ConstituentRole } from '@/services/ai/reconciliation/knowledge-query/contract';
+import type { SemanticResolution } from '@/services/ai/reconciliation/knowledge-query/service';
 import { hashOf, idsOf, intArray, rows } from '../util';
 
 const T1_KNOWLEDGE_CHECK_ID = 'COH-T1-KNOWLEDGE-CONSUMPTION';
@@ -54,12 +72,31 @@ const CONTRAT_T1 = '82B-t1-omissions-extract';
 /** Motifs de décision « interprétation en attente » (document-rule-bridge, lot 85F). */
 const INTERPRETATION_PENDING_REASONS = ['INTERPRETATION_PENDING', 'INTERPRETATION_INCOMPLETE', 'KEPT_INTERPRETATION_PENDING', 'KEPT_INTERPRETATION_INCOMPLETE'];
 
-const REPARABLES = new Set(['CARD_ASKS_KNOWN_INFORMATION', 'KNOWLEDGE_NOT_EXPLOITED', 'FIELD_NOT_IN_T1_WITH_KNOWLEDGE', 'KNOWLEDGE_NOT_INTERPRETED']);
+const REPARABLES = new Set(['CARD_ASKS_KNOWN_INFORMATION', 'KNOWLEDGE_NOT_EXPLOITED', 'FIELD_NOT_IN_T1_WITH_KNOWLEDGE', 'KNOWLEDGE_NOT_INTERPRETED',
+  'KNOWLEDGE_ANSWER_INCOMPLETE']);
 const MAILLON: Record<string, ChainLink> = {
   CARD_ASKS_KNOWN_INFORMATION: 'TO_PROCESS', KNOWLEDGE_NOT_EXPLOITED: 'T3', FIELD_NOT_IN_T1_WITH_KNOWLEDGE: 'T3', KNOWLEDGE_NOT_INTERPRETED: 'T3',
   INTERPRETATION_PENDING: 'T3', INTERPRETATION_INCOMPLETE: 'T3', INTERPRETATION_FAILED: 'T3', PARTIALLY_STRUCTURED_UNIT: 'T1',
-  OPERATION_CANDIDATE_WITHOUT_T1_EVIDENCE: 'T1',
+  OPERATION_CANDIDATE_WITHOUT_T1_EVIDENCE: 'T1', KNOWLEDGE_ANSWER_INCOMPLETE: 'T3', KNOWLEDGE_ANSWER_STILL_INCOMPLETE: 'T3',
 };
+
+/**
+ * Lot 98B (P0-D) — besoins DÉCLARÉS par la dernière décision (pure) : motifs
+ * `DECISION_GAP:<rôle>` de la trace, et — décision antérieure au lot 98B —
+ * la même règle `knowledgeGaps` appliquée au calcul et aux propositions tracés.
+ */
+export function declaredDecisionGaps(ev: { missing_sources?: unknown; derivation?: unknown; proposals?: unknown } | null, knowledgeGaps: (p: {
+  endDateNeed: { repaymentSchedule: boolean; endActions: readonly string[] } | null; readValue: boolean;
+}) => string[], prefix: string): string[] {
+  if (!ev) return [];
+  const manquants = Array.isArray(ev.missing_sources) ? ev.missing_sources.map(String) : [];
+  const declares = manquants.filter((m) => m.startsWith(prefix)).map((m) => m.slice(prefix.length));
+  const d = (ev.derivation ?? null) as { endDateNeed?: { repaymentSchedule?: boolean; endActions?: string[] } | null } | null;
+  const end = d?.endDateNeed && typeof d.endDateNeed.repaymentSchedule === 'boolean'
+    ? { repaymentSchedule: d.endDateNeed.repaymentSchedule, endActions: Array.isArray(d.endDateNeed.endActions) ? d.endDateNeed.endActions : [] } : null;
+  const lus = Array.isArray(ev.proposals) && ev.proposals.length > 0;
+  return [...new Set([...declares, ...knowledgeGaps({ endDateNeed: end, readValue: lus })])].sort();
+}
 
 async function fieldRules(): Promise<Array<{ code: string; key: string; question: string }>> {
   const { documentBridgeRules } = await import('@/services/to-process/rules-catalog');
@@ -104,7 +141,8 @@ interface RuleAnomaly { rule: string; code: string; memoId?: number | null; cont
 
 export const t1KnowledgeConsumptionCheck: CoherenceCheck = {
   id: T1_KNOWLEDGE_CHECK_ID,
-  version: 1,
+  // Lot 98B (P0-D) : version 2 — réponse T3 valide mais incomplète détectée (réexamen du stock).
+  version: 2,
   status: 'ACTIVE',
   title: 'Connaissance T1 persistée : exploitée par T3 avant de conclure qu’une information manque',
   domain: 'a-traiter',
@@ -116,7 +154,8 @@ export const t1KnowledgeConsumptionCheck: CoherenceCheck = {
   applicability: 'compte éligible',
   invariant: 'une information n’est déclarée absente (FIELD_NOT_IN_T1) qu’après examen de toute la connaissance T1 persistée et interprétation sémantique de sa part non structurée ; une carte ne demande jamais une information comprise ou calculable',
   anomalies: ['CARD_ASKS_KNOWN_INFORMATION', 'KNOWLEDGE_NOT_EXPLOITED', 'FIELD_NOT_IN_T1_WITH_KNOWLEDGE', 'KNOWLEDGE_NOT_INTERPRETED', 'INTERPRETATION_PENDING',
-    'INTERPRETATION_INCOMPLETE', 'INTERPRETATION_FAILED', 'PARTIALLY_STRUCTURED_UNIT', 'OPERATION_CANDIDATE_WITHOUT_T1_EVIDENCE'],
+    'INTERPRETATION_INCOMPLETE', 'INTERPRETATION_FAILED', 'PARTIALLY_STRUCTURED_UNIT', 'OPERATION_CANDIDATE_WITHOUT_T1_EVIDENCE',
+    'KNOWLEDGE_ANSWER_INCOMPLETE', 'KNOWLEDGE_ANSWER_STILL_INCOMPLETE'],
   autoRepairWhen: 'capacité KNOWLEDGE_QUERY disponible : réexamen par la décision centrale existante (compréhension validée, calcul déterministe, pertinence, fermeture des cartes obsolètes), dans le budget IA du compte',
   forbiddenRepairs: ['écrire une valeur comprise sans le moteur de décision', 'conclure FIELD_NOT_IN_T1 sans interprétation de la connaissance non structurée',
     'relancer T1', 'écraser une valeur de l’utilisateur ou de l’administrateur', 'interpréter un texte par une règle lexicale'],
@@ -125,7 +164,7 @@ export const t1KnowledgeConsumptionCheck: CoherenceCheck = {
   triggers: ['SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'DOCUMENT_DELETED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque changement',
   criticality: 'MEDIUM',
-  tests: ['L85F-U-COH', 'L85F-E2E-COH-01', 'L85F-E2E-COH-02'],
+  tests: ['L85F-U-COH', 'L85F-E2E-COH-01', 'L85F-E2E-COH-02', 'L98B-U-GAPS', 'L98B-E2E-02'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, await documentsConcernesSql(ctx.sql, 'f.id > $2', 'LIMIT $5'),
@@ -142,7 +181,8 @@ export const t1KnowledgeConsumptionCheck: CoherenceCheck = {
   async inspect(ctx, accountId, ids) {
     const out = new Map<number, Inspection>();
     const regles = await fieldRules();
-    const { knowledgeQueryState } = await import('@/services/ai/reconciliation/knowledge-query/service');
+    const { knowledgeQueryState, buildKnowledgeQuestion } = await import('@/services/ai/reconciliation/knowledge-query/service');
+    const sk = await import('@/services/to-process/document-semantic-knowledge');
     const vivants = new Set(idsOf(await rows(ctx.sql, `
       SELECT id FROM asset_files WHERE account_id = $1 AND id = ANY($2::int[]) AND deleted_at IS NULL AND grouped_into_file_id IS NULL`, [accountId, intArray(ids)])));
     const cartes = await rows(ctx.sql, `
@@ -150,7 +190,8 @@ export const t1KnowledgeConsumptionCheck: CoherenceCheck = {
        WHERE account_id = $1 AND target_type = 'DOCUMENT' AND target_id = ANY($2::int[]) AND resolved_at IS NULL AND rule_code = ANY($3::text[])`,
     [accountId, intArray(ids), regles.map((r) => r.code)]);
     const evals = await rows(ctx.sql, `
-      SELECT DISTINCT ON (file_id, rule_code) file_id, rule_code, reason_code, outcome, sources ->> 'T3_SEMANTIC_QUERY' AS query_id
+      SELECT DISTINCT ON (file_id, rule_code) file_id, rule_code, reason_code, outcome, sources ->> 'T3_SEMANTIC_QUERY' AS query_id,
+             sources ->> 'T3_SEMANTIC_FOLLOW_UP_QUERY' AS follow_up_id, missing_sources, derivation, proposals
         FROM document_rule_evaluations WHERE account_id = $1 AND file_id = ANY($2::int[]) AND rule_code = ANY($3::text[])
        ORDER BY file_id, rule_code, id DESC`, [accountId, intArray(ids), regles.map((r) => r.code)]);
     const candidats = await rows(ctx.sql, `
@@ -175,6 +216,31 @@ export const t1KnowledgeConsumptionCheck: CoherenceCheck = {
           if (s.memo.outcome === 'FOUND' && carte?.action_kind === 'COMPLETE') anomalies.push({ ...base, code: 'CARD_ASKS_KNOWN_INFORMATION', detail: { actionId: Number(carte.id) } });
           else if (!exploitee) anomalies.push({ ...base, code: 'KNOWLEDGE_NOT_EXPLOITED', detail: { actionId: carte ? Number(carte.id) : null, outcome: s.memo.outcome } });
           else if (s.memo.outcome === 'INCOMPLETE') anomalies.push({ ...base, code: 'INTERPRETATION_INCOMPLETE' });
+          else if (carte) {
+            // Lot 98B (P0-D) : réponse valide, exploitée, mais sans le constituant dont la décision a besoin.
+            const besoins = declaredDecisionGaps(ev, sk.knowledgeGaps, sk.DECISION_GAP_PREFIX) as ConstituentRole[];
+            const offerts = (await buildKnowledgeQuestion({ code: r.code, question: r.question }, r.key)).constituents.map((c) => c.role);
+            const reponse = { status: 'ANSWERED', outcome: s.memo.outcome, findings: s.memo.findings } as unknown as SemanticResolution;
+            const manque = sk.isKnowledgeAnswerIncompleteForCard({ answer: reponse, needs: besoins, offered: offerts }).missing;
+            if (manque.length) {
+              const suite = await knowledgeQueryState(accountId, id, { code: r.code, question: r.question }, r.key, {}, manque);
+              const info = { actionId: Number(carte.id), missing: manque, rendered: sk.renderedRoles(reponse), lastReason: ev?.reason_code ?? null };
+              const suiteExploitee = suite.memo?.status === 'ANSWERED' && String(ev?.follow_up_id ?? '') === String(suite.memo.id);
+              if (suiteExploitee) {
+                const encore = manque.filter((g) => !sk.renderedRoles({ findings: suite.memo!.findings }).includes(g));
+                if (encore.length) {
+                  anomalies.push({ ...base, code: 'KNOWLEDGE_ANSWER_STILL_INCOMPLETE', memoId: suite.memo!.id,
+                    detail: { ...info, missing: encore, followUpQuery: suite.memo!.id, qualification: 'UNDETERMINED_DECISION', pendingContract: CONTRAT_T3 } });
+                }
+              } else if (suite.memo?.status === 'AI_FAILED' && suite.memo.attempts >= 3) {
+                anomalies.push({ ...base, code: 'INTERPRETATION_FAILED', detail: { ...info, attempts: suite.memo.attempts, followUp: true } });
+              } else if (!suite.capability.available) {
+                anomalies.push({ ...base, code: 'INTERPRETATION_PENDING', detail: { ...info, capability: suite.capability.reason, pendingContract: CONTRAT_T3, followUp: true } });
+              } else {
+                anomalies.push({ ...base, code: 'KNOWLEDGE_ANSWER_INCOMPLETE', memoId: suite.memo?.id ?? s.memo.id, detail: info });
+              }
+            }
+          }
           continue;
         }
         if (!carte && !enAttente) continue;
@@ -191,7 +257,7 @@ export const t1KnowledgeConsumptionCheck: CoherenceCheck = {
       const reparables = anomalies.filter((a) => REPARABLES.has(a.code));
       const tete = reparables[0] ?? anomalies[0];
       // Une connaissance jamais interprétée n'est réessayée qu'une fois par jour (budget IA, anti-boucle).
-      const jour = reparables.some((a) => a.code === 'KNOWLEDGE_NOT_INTERPRETED' || a.code === 'FIELD_NOT_IN_T1_WITH_KNOWLEDGE') ? ctx.today : null;
+      const jour = reparables.some((a) => a.code === 'KNOWLEDGE_NOT_INTERPRETED' || a.code === 'FIELD_NOT_IN_T1_WITH_KNOWLEDGE' || a.code === 'KNOWLEDGE_ANSWER_INCOMPLETE') ? ctx.today : null;
       out.set(id, {
         verdict: reparables.length ? 'REPAIRABLE' : 'FINDING',
         anomaly: tete.code, faultyLink: MAILLON[tete.code] ?? 'T3',

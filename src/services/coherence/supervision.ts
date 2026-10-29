@@ -123,6 +123,23 @@ export async function computeCoherenceAlerts(now: Date = new Date(), sql: Sql = 
       });
     }
   }
+  // Lot 98B (P0-E) : cartes « À traiter » OUVERTES mais RETENUES (maintien technique : T4 incompatible,
+  // interprétation T3 en attente, panne IA, évaluation en erreur) — non publiées à l'utilisateur ; cause et
+  // nouvelle tentative (automatique : contrôle de cohérence ; manuelle : BO › IA › File d'attente).
+  const { heldCardsOverview, HOLD_CAUSE_LABELS } = await import('@/services/to-process/publishability');
+  for (const g of await heldCardsOverview({ sql: sql as never })) {
+    alerts.push({
+      fingerprint: `${COHERENCE_ANOMALY_PREFIX}a-traiter-retenues:${g.cause.toLowerCase()}`,
+      title: `« À traiter » : ${g.count} carte(s) retenue(s), non publiée(s) — ${HOLD_CAUSE_LABELS[g.cause]}`,
+      count: g.count,
+      detail: {
+        cause: g.cause, causeLabel: HOLD_CAUSE_LABELS[g.cause], accountIds: g.accountIds.join(', '),
+        retry: 'automatique : contrôle de cohérence (COH-TODO-DOCUMENT-FIELDS) dès que la cause est levée ; manuelle : BO › IA › File d’attente › « À traiter » › Nouvelle tentative',
+        boLink: '/admin/ai-queue',
+        ...(g.cause === 'T4_INCOMPATIBLE' || g.cause === 'INTERPRETATION_PENDING' ? { guide: 'docs/exploitation/prompts-a-appliquer-par-le-po.md' } : {}),
+      },
+    });
+  }
   const repetes = await rows(sql, `
     SELECT check_id, count(*)::int AS n, (array_agg(DISTINCT account_id))[1:20] AS accounts FROM (
       SELECT check_id, account_id, object_id FROM coherence_repairs

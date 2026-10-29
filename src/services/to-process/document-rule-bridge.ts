@@ -93,9 +93,11 @@ import { upsertAction } from './to-process-action.service';
 import { unnamedLabel } from './card-labels';
 import { ASSET_LINK_QUESTION_ALLOWED_SQL, assetLinkQuestionAllowed } from '@/services/ai/reconciliation/document-asset/question-gate';
 import {
-  interpretT1Knowledge, interpretationPending, semanticallyAbsent, type KnowledgeQueryDeps, type SemanticResolution,
+  buildKnowledgeQuestion, interpretT1Knowledge, interpretationPending, semanticallyAbsent, type KnowledgeQueryDeps, type SemanticResolution,
 } from '@/services/ai/reconciliation/knowledge-query/service';
-import { semanticConstituents, semanticEvidenceFacts, semanticFieldProposals } from './document-semantic-knowledge';
+import {
+  DECISION_GAP_PREFIX, isKnowledgeAnswerIncompleteForCard, knowledgeGaps, renderedRoles, semanticConstituents, semanticEvidenceFacts, semanticFieldProposals, withFollowUp,
+} from './document-semantic-knowledge';
 
 // ══════════════════════════════════════════════════════════════════════════
 // PLANIFICATION — fonction pure, testée sans base (TEST-ATP-01 à 11)
@@ -1017,6 +1019,49 @@ async function evaluateFieldRule(i: FieldRuleInput): Promise<FieldRuleOutcome> {
             extra = { valueKind: 'CALCULATED', derivation };
           }
         }
+
+        // ── Lot 98B (P0-D) : réponse T3 valide mais INCOMPLÈTE pour CETTE décision ──
+        // La décision déclare ce qui lui manque (`knowledgeGaps` : ex. remboursement
+        // établi pour conclure qu'une date de fin est inutile) ; T3 a rendu des
+        // constituants SANS celui-là : une demande COMPLÉMENTAIRE ciblée lui est
+        // faite (sémantique, aucune regex ni règle métier), une seule fois par
+        // entrée (mémoire 0720), dans le budget du compte. Jamais sur un écran.
+        const besoins = knowledgeGaps({ endDateNeed: derivation?.endDateNeed ?? null, readValue: proposals.length > 0 });
+        if (plan.kind !== 'WRITE' && besoins.length && i.trigger !== 'USER') {
+          const offerts = (await buildKnowledgeQuestion(rule, key)).constituents.map((c) => c.role);
+          const manque = isKnowledgeAnswerIncompleteForCard({ answer: semantic, needs: besoins, offered: offerts }).missing;
+          if (manque.length) {
+            failedStep = 'SEMANTIC';
+            const suite = await interpretT1Knowledge({
+              accountId, fileId, rule, key, trigger: i.trigger, allowAi: true, runRef: i.runRef ?? null,
+              today: i.deps?.today ?? todayParis(), deps: i.deps?.knowledge, focus: manque,
+            });
+            semantic = withFollowUp(semantic, manque, suite);
+            if (suite.queryId) evidence.sources.T3_SEMANTIC_FOLLOW_UP_QUERY = suite.queryId;
+            if (suite.status === 'PENDING') evidence.missing.push(`T3_SEMANTIC_FOLLOW_UP:${suite.pendingReason ?? 'UNKNOWN'}`);
+            if (suite.status === 'ANSWERED' && suite.findings.length) {
+              evidence.sources.T3_SEMANTIC_FINDINGS = semantic.findings.length;
+              for (const f of suite.findings.slice(0, 10)) {
+                evidence.observations.push({ source: 'T3_SEMANTIC', key: f.target, raw: f.rawValue.slice(0, 120), normalized: f.normalized, status: f.dateStatus ?? 'TEXT' });
+              }
+              const complets = semanticConstituents(semantic);
+              if (complets && derivationFor(key)) {
+                failedStep = 'DERIVATION';
+                derivation = (await gatherDerivation(accountId, fileId, key, { relatedFiles: lies.relatedFiles ?? [], extra: complets }))?.result ?? null;
+                if (derivation?.schedule) {
+                  derivation = { ...derivation, endDateNeed: endDateNeed({ repaymentSchedule: derivation.schedule.evidenced, textes: (evidence.lifecycleTexts ?? []).map((t) => t.text) }) };
+                }
+              }
+            }
+          }
+        }
+      }
+      // Lot 98B (P0-D) : besoin de la décision RESTÉ sans réponse — déclaré dans la trace (contrôle COH-T1-KNOWLEDGE-CONSUMPTION).
+      if (plan.kind !== 'WRITE' && plan.kind !== 'RESOLVE') {
+        const rendus = new Set(renderedRoles(semantic));
+        for (const g of knowledgeGaps({ endDateNeed: derivation?.endDateNeed ?? null, readValue: proposals.length > 0 })) {
+          if (!rendus.has(g)) evidence.missing.push(`${DECISION_GAP_PREFIX}${g}`);
+        }
       }
 
       // ── Étapes B / C : pertinence d'une question sur une échéance ──────────
@@ -1780,6 +1825,8 @@ interface KnowledgeFieldResolution {
   knowledgeQuery?: {
     status: string; outcome: string | null; pendingReason: string | null; aiCalled: boolean; cached: boolean; calls: number;
     traceIds: string[]; findings: number; queryId: number | null;
+    /** Lot 98B (P0-D) : demande complémentaire (constituants manquants à la décision). */
+    followUp?: SemanticResolution['followUp'];
   } | null;
 }
 
@@ -1868,6 +1915,7 @@ export async function resolveDocumentRuleFromKnowledge(
     knowledgeQuery: sem ? {
       status: sem.status, outcome: sem.outcome ?? null, pendingReason: sem.pendingReason ?? null, aiCalled: sem.aiCalled, cached: sem.cached,
       calls: sem.calls, traceIds: sem.traceIds.slice(0, 5), findings: sem.findings.length, queryId: sem.queryId,
+      followUp: sem.followUp ?? null,
     } : null,
   };
   if (SANS_OBJET.includes(o.plan.reason)) {
@@ -1904,7 +1952,9 @@ export async function resolveDocumentRuleFromKnowledge(
  *   · ALREADY_SATISFIED : valeur lue ou saisie déjà présente ;
  *   · USER_PROTECTED : valeur retirée par l'utilisateur — rien à faire ;
  *   · DECISION_CURRENT : la décision centrale a déjà jugé CETTE connaissance
- *     (même moteur, même révision, aucun report échu) — carte justifiée ;
+ *     (même moteur, même révision, aucun report échu). Lot 98B (P0-C) : ce
+ *     n'est PAS une preuve d'utilité — le contrôle distingue, d'après le motif
+ *     (`publishability.ts#cardStanding`), carte justifiée et maintien technique ;
  *   · ANSWER_AVAILABLE : une seule valeur dans la connaissance T1 persistée,
  *     non encore jugée par le moteur courant ;
  *   · CONFLICTING_VALUES : plusieurs valeurs — l'arbitrage existant reste seul juge ;
@@ -1921,7 +1971,7 @@ interface DocumentRuleCardDiagnosis {
   values?: string[];
   /** Révision de connaissance et version du moteur comparées. */
   knowledgeRev?: string | null;
-  lastDecision?: { engineVersion: string; knowledgeRev: string | null; outcome: string | null } | null;
+  lastDecision?: { engineVersion: string; knowledgeRev: string | null; outcome: string | null; reasonCode?: string | null; configRef?: string | null } | null;
 }
 
 export async function diagnoseDocumentRuleCard(accountId: number, fileId: number, ruleCode: string, now: Date = new Date()): Promise<DocumentRuleCardDiagnosis> {
@@ -1949,12 +1999,14 @@ export async function diagnoseDocumentRuleCard(accountId: number, fileId: number
   let current = false;
   if (await ruleEvaluationsReady() && await relevanceColumnsReady()) {
     const [d] = (await pgClient.unsafe(
-      `SELECT engine_version, knowledge_rev, outcome, reevaluate_at FROM document_rule_evaluations
+      `SELECT engine_version, knowledge_rev, outcome, reevaluate_at, reason_code, config_ref FROM document_rule_evaluations
         WHERE account_id = $1 AND file_id = $2 AND rule_code = $3 ORDER BY id DESC LIMIT 1`,
       [accountId, fileId, rule.code] as never[],
-    )) as unknown as Array<{ engine_version: string; knowledge_rev: string | null; outcome: string | null; reevaluate_at: Date | string | null }>;
+    )) as unknown as Array<{ engine_version: string; knowledge_rev: string | null; outcome: string | null; reevaluate_at: Date | string | null; reason_code: string | null; config_ref: string | null }>;
     if (d) {
-      last = { engineVersion: d.engine_version, knowledgeRev: d.knowledge_rev, outcome: d.outcome };
+      // Lot 98B (P0-C) : motif et configuration de la décision — une décision ACTUELLE n'est pas pour autant DÉMONTRÉE
+      // (maintien technique : T4 incompatible, interprétation en attente, panne) ; le contrôle de cohérence en juge.
+      last = { engineVersion: d.engine_version, knowledgeRev: d.knowledge_rev, outcome: d.outcome, reasonCode: d.reason_code, configRef: d.config_ref };
       const echu = d.outcome === 'DEFER' && d.reevaluate_at !== null && new Date(d.reevaluate_at).getTime() <= now.getTime();
       // Une décision de FERMETURE (ou en erreur) alors que la carte est encore ouverte n'est pas appliquée : à rejouer.
       const maintient = d.outcome === null || ['KEEP', 'CREATE_ACTION', 'DEFER'].includes(d.outcome);

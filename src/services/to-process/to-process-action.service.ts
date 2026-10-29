@@ -39,6 +39,7 @@ import { isDisplayableArbitration, sanitizeArbitrationProposals, selectDisplayed
 import { getRule, priorityForRule } from './rules-catalog';
 import { admitToDoFirst, resolvePriority } from './priority';
 import { loadDoFirst } from './priority-scheduler.service';
+import { publishableCardCondition } from './publishability';
 
 interface UpsertActionInput {
   accountId: number;
@@ -499,7 +500,8 @@ export async function countActiveActions(accountId: number): Promise<number> {
     .select({ total: sql<number>`COUNT(*)::int` })
     .from(toProcessActions)
     .where(
-      and(eq(toProcessActions.accountId, accountId), isNull(toProcessActions.resolvedAt)),
+      // Lot 98B (P0-E) : même définition « publiable » que la page (`publishability.ts`).
+      and(eq(toProcessActions.accountId, accountId), isNull(toProcessActions.resolvedAt), publishableCardCondition()),
     );
 
   return row?.total ?? 0;

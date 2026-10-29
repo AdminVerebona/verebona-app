@@ -31,6 +31,7 @@
 import { db } from '@/db';
 import { assets, assetFiles, agendaItems, equipments, substructures, toProcessActions } from '@/db/schema';
 import { and, desc, eq, isNull, or, sql, type SQL } from 'drizzle-orm';
+import { publishableCardCondition } from '@/services/to-process/publishability';
 import { documentCodeLabel, documentCodesMatchingWord } from '@/lib/referential/document-codes';
 import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
@@ -465,7 +466,7 @@ const toProcessAdapter: RetrievalAdapter = {
     // informations à compléter SONT les éléments « À traiter » en attente.
     const liste = q.intent === 'ACCOUNT_TO_PROCESS' || q.intent === 'ACCOUNT_MISSING_INFORMATION';
     if (!cond && !liste) return [];
-    const conditions = [eq(toProcessActions.accountId, q.accountId), isNull(toProcessActions.resolvedAt)];
+    const conditions = [eq(toProcessActions.accountId, q.accountId), isNull(toProcessActions.resolvedAt), publishableCardCondition()];
     if (cond && !liste) conditions.push(cond);
     // CDC 15 T2-17 : bien ciblé → éléments DE ce bien —
     // le bien lui-même, ses équipements, ses documents (lien N-N ou

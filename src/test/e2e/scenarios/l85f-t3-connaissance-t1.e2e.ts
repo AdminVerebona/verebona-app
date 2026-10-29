@@ -392,7 +392,7 @@ scenario('L85F-T3-T1', 'T3 exploite toute la connaissance T1 persistée avant de
     await capacite(false);
     const compte = await make.account();
     const f = await doc(compte, { units: [{ text: BNP }] });
-    await carte(compte, f);
+    const idCarte = await carte(compte, f);
     // Passage T3 sans capacité : la carte reste (motif « interprétation en attente »).
     expect((await resoudre(compte, f)).status).toBe('INTERPRETATION_PENDING');
     const g = await doc(compte, { type: 'INVOICE', title: 'Facture', units: [{ text: 'Total TTC 120 €' }] });
@@ -403,10 +403,14 @@ scenario('L85F-T3-T1', 'T3 exploite toute la connaissance T1 persistée avant de
     modele.repondre = BNP_CONSTITUANTS;
     await runCoherenceFor(sql, [compte.id], { mode: 'CORRECTIVE' });
     // Réparation journalisée (service métier existant), carte obsolète fermée, un seul appel IA.
+    // Lot 98B (P0-C) : le maintien « interprétation en attente » n'est plus une carte justifiée — COH-TODO-DOCUMENT-FIELDS
+    // (avant dans le registre) le réexamine dès que la capacité est livrée ; même service, même issue.
     const [rep] = await sql<Array<{ outcome: string; recheck_verdict: string; service: string; anomaly: string; ai_calls: number }>>`
       SELECT outcome, recheck_verdict, service, anomaly, ai_calls FROM coherence_repairs
-       WHERE account_id = ${compte.id} AND check_id = 'COH-T1-KNOWLEDGE-CONSUMPTION' AND object_id = ${f} ORDER BY id`;
-    expect(rep).toMatchObject({ outcome: 'REPAIRED', service: 'resolveDocumentRuleFromKnowledge', anomaly: 'FIELD_NOT_IN_T1_WITH_KNOWLEDGE' });
+       WHERE account_id = ${compte.id} AND ((check_id = 'COH-T1-KNOWLEDGE-CONSUMPTION' AND object_id = ${f}) OR (check_id = 'COH-TODO-DOCUMENT-FIELDS' AND object_id = ${idCarte}))
+       ORDER BY id`;
+    expect(rep).toMatchObject({ outcome: 'REPAIRED', service: 'resolveDocumentRuleFromKnowledge' });
+    expect(['FIELD_NOT_IN_T1_WITH_KNOWLEDGE', 'DECISION_NOT_DEMONSTRATED']).toContain(rep.anomaly);
     expect(await ouvertes(f)).toEqual([]);
     expect(modele.appels).toHaveLength(1);
     // Reste un constat T1 (maillon distinct) : l'unité couverte n'avait structuré qu'une partie de ses informations.
@@ -424,7 +428,8 @@ scenario('L85F-T3-T1', 'T3 exploite toute la connaissance T1 persistée avant de
     expect(appelsApresConvergence).toBeLessThanOrEqual(2);
     await runCoherenceFor(sql, [compte.id], { mode: 'CORRECTIVE' });
     expect(modele.appels).toHaveLength(appelsApresConvergence);
-    expect((await sql`SELECT 1 FROM coherence_repairs WHERE account_id = ${compte.id} AND check_id = 'COH-T1-KNOWLEDGE-CONSUMPTION' AND object_id = ${f}`).length).toBeLessThanOrEqual(2);
+    expect((await sql`SELECT 1 FROM coherence_repairs WHERE account_id = ${compte.id} AND ((check_id = 'COH-T1-KNOWLEDGE-CONSUMPTION' AND object_id = ${f})
+                         OR (check_id = 'COH-TODO-DOCUMENT-FIELDS' AND object_id = ${idCarte}))`).length).toBeLessThanOrEqual(2);
     expect(await ouvertes(f)).toEqual([]);
   });
 });

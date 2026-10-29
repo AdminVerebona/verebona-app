@@ -199,18 +199,34 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
   // monde fermé, extrait recopié, valeur exprimée et normalisée, contradiction).
   // Attendus : `outcome` (issue effective), `findings` (cible → valeur normalisée,
   // facultatif), `rejected` (motifs de refus, facultatif).
+  // Lot 98A (P0-A) — attendus de COMPLÉTUDE, robustes à la formulation d'une réponse réelle :
+  // `required` (cibles qui doivent figurer : une réponse « durée seule » est INCOMPLÈTE),
+  // `values` (cible → valeur normalisée, autres cibles admises), `forbidden` (`FIELD` : date
+  // inventée), `endDate` (décision permise par la chaîne déterministe existante :
+  // NO_ACTION_UNDATED_NOT_NEEDED, DATE_STILL_NEEDED, DATE_FOUND — `completeness.ts`).
   async t3_knowledge_query(c, output) {
     const { validateKnowledgeAnswer } = await import('../../reconciliation/knowledge-query/validate');
     const { defaultNormalizers } = await import('../../reconciliation/knowledge-query/service');
-    const x = (c.context as { knowledgeQuery: { question: never; elements: never[] } }).knowledgeQuery;
-    const v = validateKnowledgeAnswer(output as never, x.question, x.elements, await defaultNormalizers());
+    const { knowledgeCompleteness, endDateNeedOf } = await import('../../reconciliation/knowledge-query/completeness');
+    const x = (c.context as { knowledgeQuery: { question: never; elements: Array<{ label: string | null; value: string | null; text: string | null }> } }).knowledgeQuery;
+    const v = validateKnowledgeAnswer(output as never, x.question, x.elements as never[], await defaultNormalizers());
     const obtenus = Object.fromEntries(v.findings.map((f) => [f.target, f.normalized ?? f.rawValue]));
     const attendus = exp<Record<string, string>>(c, 'findings');
     const refus = v.rejected.map((r) => r.code).sort();
+    const k = knowledgeCompleteness(v.findings, {
+      required: exp<string[]>(c, 'required'), values: exp<Record<string, string>>(c, 'values'), forbidden: exp<string[]>(c, 'forbidden'),
+    });
+    const finAttendue = exp<string>(c, 'endDate');
+    const fin = finAttendue === undefined ? null : await endDateNeedOf(v.findings, x.elements);
     return [
       ...ecart(v.outcome === exp(c, 'outcome'), `issue ${v.outcome} ≠ ${String(exp(c, 'outcome'))}`),
       ...ecart(attendus === undefined || JSON.stringify(obtenus) === JSON.stringify(attendus), `constats ${JSON.stringify(obtenus)}`),
       ...ecart(exp(c, 'rejected') === undefined || JSON.stringify(refus) === JSON.stringify(exp(c, 'rejected')), `refus ${JSON.stringify(refus)}`),
+      ...ecart(k.missing.length === 0, `réponse incomplète : constituant(s) manquant(s) ${k.missing.join(', ')}`),
+      ...ecart(k.forbiddenPresent.length === 0, `cible(s) non attendue(s) ${k.forbiddenPresent.join(', ')}${k.forbiddenPresent.includes('FIELD') ? ' : date inventée' : ''}`),
+      ...k.valueMismatches.map((m) => `${m.target} : ${JSON.stringify(m.obtained)} ≠ attendu ${m.expected}`),
+      ...ecart(fin === null || fin.decision === finAttendue,
+        `décision date de fin ${fin?.decision ?? ''} ≠ ${String(finAttendue)} (échéancier ${fin?.repaymentSchedule ? 'identifié' : 'non identifié'}, démarches de fin ${fin?.endActions.length ?? 0})`),
     ];
   },
   // Lot 97A — OPERATION_IDENTITY (contrat t3-operation-identity-v1) : contexte construit par le code de

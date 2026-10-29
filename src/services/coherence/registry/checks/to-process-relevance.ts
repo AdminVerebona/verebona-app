@@ -58,6 +58,7 @@
  */
 import type { CheckContext, CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, idsOf, intArray, rows, type Row } from '../util';
+import { heldCardSql } from '@/services/to-process/publishability';
 
 // ── Règles (catalogue de la production) ─────────────────────────────────────
 
@@ -217,7 +218,9 @@ export const toProcessStaleDecisionsCheck: CoherenceCheck = {
 
 export const toProcessRelevanceCardsCheck: CoherenceCheck = {
   id: 'COH-TODO-RELEVANCE-CARDS',
-  version: 1,
+  // Lot 98B (P0-C) : version 2 — une carte documentaire dont la dernière décision de SA règle est un maintien
+  // technique (évaluation en erreur…) n'est plus CONSISTENT du seul fait d'une décision de la version courante.
+  version: 2,
   status: 'ACTIVE',
   title: '« À traiter » : cartes jamais jugées par la version courante de leur moteur',
   domain: 'a-traiter',
@@ -227,7 +230,7 @@ export const toProcessRelevanceCardsCheck: CoherenceCheck = {
   sources: ['to_process_actions', 'document_rule_evaluations', 'to_process_decisions'],
   applicability: 'compte éligible ; cible vivante (sinon : COH-TODO-ORPHAN-CARDS)',
   invariant: 'une carte ouverte est justifiée par une décision de la version courante du moteur de sa famille',
-  anomalies: ['CARD_NOT_REEVALUATED'],
+  anomalies: ['CARD_NOT_REEVALUATED', 'DECISION_NOT_DEMONSTRATED'],
   autoRepairWhen: 'toujours (producteur de la famille restreint à la cible : même décision que le balayage horaire)',
   forbiddenRepairs: ['fermer une carte sans décision du moteur', 'relancer T1', 'écraser une valeur de l’utilisateur', 'supprimer une carte'],
   services: [
@@ -266,7 +269,8 @@ export const toProcessRelevanceCardsCheck: CoherenceCheck = {
              CASE WHEN a.target_type = 'DOCUMENT'
                   THEN EXISTS (SELECT 1 FROM document_rule_evaluations e WHERE e.account_id = a.account_id AND e.file_id = a.target_id AND e.engine_version = $3)
                   ELSE EXISTS (SELECT 1 FROM to_process_decisions d WHERE d.account_id = a.account_id AND d.target_type = a.target_type
-                                 AND d.target_id = a.target_id AND d.rule_code = a.rule_code AND d.engine_version = $4) END AS current
+                                 AND d.target_id = a.target_id AND d.rule_code = a.rule_code AND d.engine_version = $4) END AS current,
+             ${heldCardSql('a')} AS held
         FROM to_process_actions a WHERE a.account_id = $1 AND a.id = ANY($2::int[])`,
     [accountId, intArray(ids), DOCUMENT_RULE_ENGINE_VERSION, ADMISSIBILITY_VERSION]);
     const parId = new Map(r.map((x) => [Number(x.id), x]));
@@ -276,6 +280,15 @@ export const toProcessRelevanceCardsCheck: CoherenceCheck = {
       const detail = { targetType: x.target_type, targetId: Number(x.target_id), rule: x.rule_code };
       // Cible disparue : relève de COH-TODO-ORPHAN-CARDS (une seule chaîne).
       if (x.alive !== true) { out.set(id, { verdict: 'CONSISTENT', detail: { ...detail, delegatedTo: 'COH-TODO-ORPHAN-CARDS' } }); continue; }
+      if (x.current === true && x.held === true) {
+        // Lot 98B (P0-C) : décision à jour mais maintien TECHNIQUE — jamais une carte justifiée ; nouvelle tentative quotidienne.
+        out.set(id, {
+          verdict: 'REPAIRABLE', anomaly: 'DECISION_NOT_DEMONSTRATED', faultyLink: 'TO_PROCESS',
+          expected: 'décision démontrant l’utilité de la carte', observed: 'maintien technique', detail: { ...detail, standing: 'NOT_DEMONSTRATED' },
+          inputHash: hashOf({ id, held: true, rule: x.rule_code, target: [x.target_type, x.target_id], jour: ctx.today }),
+        });
+        continue;
+      }
       if (x.current === true) { out.set(id, { verdict: 'CONSISTENT', detail }); continue; }
       const version = x.target_type === 'DOCUMENT' ? DOCUMENT_RULE_ENGINE_VERSION : ADMISSIBILITY_VERSION;
       out.set(id, {

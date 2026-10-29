@@ -7,7 +7,8 @@
  *     statut défini par le modèle (une action résolue, non applicable,
  *     obsolète ou dont la cible est supprimée a une date de résolution) ;
  *     cible encore présente (document non supprimé, équipement non archivé,
- *     échéance existante) et bien rattaché DISPONIBLE (règle unique
+ *     échéance existante), PUBLIABLE (lot 98B : `publishability.ts`, même
+ *     définition que la page) et bien rattaché DISPONIBLE (règle unique
  *     `asset-availability` : ni supprimé, ni archivé, ni transmis, ni vendu) ;
  *   · ÉCHÉANCES ACTIVES : `agenda_items` ouverts (`manual_status` vide — ni
  *     réalisée, ni annulée), datées, jamais HISTORICAL (D-14, même règle que
@@ -27,6 +28,7 @@ import { assistantAssetAvailability } from '../core/asset-availability';
 import { MAX_DEADLINE_ROWS, MAX_TODO_ROWS, type DeadlineRow, type TodoRow } from '../core/actionable-request';
 import { HISTORICAL_FIELD_KEYS, NOT_HISTORICAL } from './agenda';
 import { DOC_OF_ASSETS } from './repository';
+import { publishableCardSql } from '@/services/to-process/publishability';
 
 /** Bornes de lecture (au-delà, la page « À traiter » / l'agenda font foi) — module pur partagé (lot 53). */
 export { MAX_TODO_ROWS, MAX_DEADLINE_ROWS };
@@ -66,7 +68,7 @@ export async function listOpenTodos(accountId: number, opts: { assetIds?: number
             WHEN 'DOCUMENT' THEN coalesce(f.asset_id, f.linked_asset_id)
             WHEN 'AGENDA_ITEM' THEN (SELECT min(l.asset_id) FROM agenda_asset_links l WHERE l.agenda_item_id = t.target_id)
           END
-      WHERE t.account_id = $1 AND t.resolved_at IS NULL
+      WHERE t.account_id = $1 AND t.resolved_at IS NULL AND ${publishableCardSql('t')}
         AND NOT (t.target_type = 'DOCUMENT' AND (f.id IS NULL OR f.deleted_at IS NOT NULL))
         AND NOT (t.target_type = 'EQUIPMENT' AND (e.id IS NULL OR e.archived_at IS NOT NULL))
         AND NOT (t.target_type = 'AGENDA_ITEM' AND (ai.id IS NULL OR coalesce(trim(ai.manual_status), '') <> ''))

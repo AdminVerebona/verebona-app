@@ -37,6 +37,7 @@ import { accounts, toProcessActions } from '@/db/schema';
 import { emit } from '@/lib/notifications';
 import { getCatalogEntry } from '../catalog';
 import { isChannelRetired } from '../retired-channels';
+import { publishableCardCondition } from '@/services/to-process/publishability';
 
 /**
  * Lot 79C : plus d'alerte immédiate pour un élément ordinaire « À traiter »
@@ -97,6 +98,8 @@ export async function runToProcessScan(
           and(
             eq(toProcessActions.accountId, acc.id),
             isNull(toProcessActions.resolvedAt),
+            // Lot 98B (P0-E) : seule une carte PUBLIABLE est annoncée.
+            publishableCardCondition(),
             gt(toProcessActions.activeSince, depuis),
           ),
         );

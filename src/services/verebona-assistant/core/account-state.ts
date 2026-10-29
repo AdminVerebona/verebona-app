@@ -8,6 +8,7 @@
  * compte, dans un libellé du catalogue validé.
  */
 import { pgClient } from '@/db';
+import { publishableCardSql } from '@/services/to-process/publishability';
 import {
   SUGGESTIONS, isAssetNameSuggestable,
   type AccountSuggestionState, type SuggestionAsset, type SuggestionContext,
@@ -51,7 +52,7 @@ async function countActionsDueToday(accountId: number, today = aujourdhuiParis()
 export async function loadAccountSuggestionState(accountId: number): Promise<AccountSuggestionState> {
   const rows = (await pgClient.unsafe(
     `SELECT
-       (SELECT count(*)::int FROM to_process_actions WHERE account_id = $1 AND resolved_at IS NULL) AS "toProcessPending",
+       (SELECT count(*)::int FROM to_process_actions t WHERE t.account_id = $1 AND t.resolved_at IS NULL AND ${publishableCardSql('t')}) AS "toProcessPending",
        (SELECT count(*)::int FROM assets a WHERE a.account_id = $1 AND ${assistantAssetAvailableSql('a')}) AS "assetsTotal",
        (SELECT count(*)::int FROM asset_files WHERE account_id = $1 AND deleted_at IS NULL) AS "documentsTotal",
        (SELECT count(*)::int FROM asset_files

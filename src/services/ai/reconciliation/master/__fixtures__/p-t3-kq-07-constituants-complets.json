@@ -1,0 +1,138 @@
+{
+  "case": "P-T3-KQ-07",
+  "description": "KNOWLEDGE_QUERY — cas de référence générique (lot 98A) : financement dont seule la durée est écrite ; la réponse complète donne la durée ET l'indice de remboursement, aucune date inventée ; date de fin non nécessaire (aucune démarche de fin). Une réponse qui ne rend que la durée échoue.",
+  "qualification": { "role": "answer" },
+  "context": {
+    "knowledgeQuery": {
+      "question": {
+        "key": "contractEndDate",
+        "label": "Date de fin de contrat",
+        "valueType": "date",
+        "businessQuestion": "Quelle est la date de fin de ce contrat ?",
+        "ruleCode": "DATA-CONTRACT-END",
+        "constituents": [
+          {
+            "role": "start",
+            "key": "contractStartDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "duration",
+            "key": "contractDurationMonths",
+            "label": null,
+            "valueType": "duration"
+          },
+          {
+            "role": "firstInstalment",
+            "key": "firstInstalmentDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "lastInstalment",
+            "key": "lastInstalmentDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "count",
+            "key": "instalmentCount",
+            "label": null,
+            "valueType": "count"
+          },
+          {
+            "role": "periodicity",
+            "key": "instalmentPeriodicity",
+            "label": null,
+            "valueType": "periodicity"
+          },
+          {
+            "role": "disbursement",
+            "key": "disbursementDate",
+            "label": null,
+            "valueType": "date"
+          },
+          {
+            "role": "repayment",
+            "key": "repaymentSchedule",
+            "label": null,
+            "valueType": "indicator"
+          }
+        ]
+      },
+      "documents": [
+        {
+          "ref": "D0",
+          "fileId": 7,
+          "role": "TARGET",
+          "relation": null,
+          "title": "Contrat de financement",
+          "documentType": "FINANCING_CONTRACT"
+        }
+      ],
+      "elements": [
+        {
+          "ref": "U-3",
+          "document": "D0",
+          "fileId": 7,
+          "layer": "SOURCE_UNIT",
+          "kind": "TEXT_BLOCK",
+          "label": null,
+          "value": null,
+          "text": "Capital emprunté : 18 500,00 euros. Durée du financement : 60 mois. Taux débiteur fixe : 4,10 %.",
+          "confidence": "certain",
+          "page": 1
+        }
+      ],
+      "today": "2026-10-24"
+    }
+  },
+  "recording": {
+    "operationCode": "t3_knowledge_query",
+    "task": "KNOWLEDGE_QUERY",
+    "output": {
+      "task": "KNOWLEDGE_QUERY",
+      "outcome": "CONSTITUENTS",
+      "findings": [
+        {
+          "target": "duration",
+          "rawValue": "60 mois",
+          "value": 60,
+          "evidenceRefs": [
+            "U-3"
+          ],
+          "excerpt": "Durée du financement : 60 mois",
+          "confidence": "certain",
+          "meaning": "durée totale du financement"
+        },
+        {
+          "target": "repayment",
+          "rawValue": "Capital emprunté : 18 500,00 euros",
+          "value": null,
+          "evidenceRefs": [
+            "U-3"
+          ],
+          "excerpt": "Capital emprunté : 18 500,00 euros. Durée du financement : 60 mois",
+          "confidence": "certain",
+          "meaning": "capital emprunté remboursé sur la durée du financement"
+        }
+      ],
+      "reason": "La durée du financement est écrite ; le capital emprunté est remboursé sur cette durée ; aucune date de fin n'est écrite."
+    }
+  },
+  "expected": {
+    "outcome": "CONSTITUENTS",
+    "required": [
+      "duration",
+      "repayment"
+    ],
+    "values": {
+      "duration": "60"
+    },
+    "forbidden": [
+      "FIELD"
+    ],
+    "endDate": "NO_ACTION_UNDATED_NOT_NEEDED"
+  }
+}

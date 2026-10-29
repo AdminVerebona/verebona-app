@@ -3,6 +3,10 @@
  *
  *   POST   — « Modifier » : ouvre le brouillon (copie de l'Actif, ou le
  *            brouillon existant). Corps facultatif `{ content }`.
+ *            Lot 98A (P0-B, T4 seulement) : `{ conformT4: true }` —
+ *            « Préparer une version conforme » : brouillon au MÊME texte que
+ *            l'Actif, configuration d'exécution conforme (`t4_output_v3`…),
+ *            jamais activé automatiquement.
  *   PUT    — « Enregistrer le brouillon » : `{ versionId, content }`.
  *            Seul un brouillon est modifiable ; l'Actif n'est jamais touché.
  *            Lot 34D (T4) : `execution` facultatif — mode d'exécution
@@ -16,12 +20,12 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { startDraft, saveDraft, saveDraftExecution, discardDraft, getPromptDetail } from '@/services/ai/master-prompts/master-prompt.service';
+import { startDraft, prepareConformingT4Draft, saveDraft, saveDraftExecution, discardDraft, getPromptDetail } from '@/services/ai/master-prompts/master-prompt.service';
 import { requireAdminContext, parseTreatment, parseId, invalidId, masterPromptError } from '../../_shared';
 
 type Ctx = { params: Promise<{ treatment: string }> };
 
-const Start = z.object({ content: z.string().optional() }).nullable();
+const Start = z.object({ content: z.string().optional(), conformT4: z.boolean().optional() }).nullable();
 const Execution = z.object({
   mode: z.enum(['LEGACY_TEMPLATE', 'STRUCTURED_CONTEXT']),
   inputContractVersion: z.string().max(60).nullable().optional(),
@@ -38,7 +42,12 @@ export async function POST(req: NextRequest, { params }: Ctx) {
   const body = Start.safeParse(await req.json().catch(() => null));
   if (!body.success) return NextResponse.json({ error: 'INVALID_PAYLOAD', message: 'Requête illisible.' }, { status: 400 });
   try {
-    const d = await startDraft(t.treatment, guard.ctx.adminUserId, body.data?.content);
+    if (body.data?.conformT4 && t.treatment !== 'T4') {
+      return NextResponse.json({ error: 'INVALID_PAYLOAD', message: 'La mise en conformité ne concerne que T4.' }, { status: 400 });
+    }
+    const d = body.data?.conformT4
+      ? await prepareConformingT4Draft(guard.ctx.adminUserId)
+      : await startDraft(t.treatment, guard.ctx.adminUserId, body.data?.content);
     const detail = await getPromptDetail(t.treatment);
     return NextResponse.json({ draftId: d.id, versionNumber: d.versionNumber, detail }, { status: 201 });
   } catch (e) {

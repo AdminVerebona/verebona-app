@@ -904,9 +904,10 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     // EXHAUSTIVE quotidienne (tous les objets des comptes éligibles, y compris
     // inchangés ; curseur en base, reprise ; PARTIAL si la couverture n'est
     // pas atteinte à l'échéance). « Exécuter » depuis le BO sans campagne en
-    // cours : campagne MANUELLE exhaustive. Mode à blanc par défaut
-    // (COHERENCE_CAMPAIGN_MODE=corrective pour réparer, par les services
-    // métier). Remplace l'ancienne maintenance horaire (`coherence-
+    // cours : campagne MANUELLE exhaustive. Lot 98B (P1, C-Q2 / C-Q5) : sans
+    // réglage, mode AUTO — à blanc jusqu'à la première campagne quotidienne à
+    // blanc aboutie, puis CORRECTIF (réparations par les services métier) ;
+    // COHERENCE_CAMPAIGN_MODE=dry_run : coupure d'urgence, =corrective : forcé. Remplace l'ancienne maintenance horaire (`coherence-
     // maintenance`) et le rattrapage ponctuel des doublons d'agenda 76H
     // (`agenda-intervention-duplicates-reprise`), retirés. Échecs, constats
     // persistants et campagnes partielles : BO › Supervision.

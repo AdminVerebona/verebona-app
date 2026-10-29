@@ -31,9 +31,12 @@
  *     « à contrôler » (`events.ts`) ; regroupés (temporisation), contrôlés au
  *     passage suivant ; les contrôles en erreur sont repris (délai croissant).
  *
- * MODE : à blanc (DRY_RUN, défaut — aucune écriture métier) ou correctif
+ * MODE : à blanc (DRY_RUN — aucune écriture métier) ou correctif
  * (CORRECTIVE), lu à la création de la campagne (`COHERENCE_CAMPAIGN_MODE`)
  * et figé pour sa durée (C-Q5 : première campagne à blanc, puis corrective).
+ * Lot 98B (P1, C-Q2) : sans réglage, mode AUTO — à blanc jusqu'à la première
+ * campagne quotidienne à blanc ABOUTIE, puis correctif ; coupure d'urgence :
+ * `COHERENCE_CAMPAIGN_MODE=dry_run` (`resolveCoherenceMode`).
  *
  * ÉLIGIBILITÉ (C-Q10) : vérifiée à l'entrée de chaque compte, puis avant la
  * première réparation de chaque lot ; un compte non éligible ne reçoit aucun
@@ -90,6 +93,39 @@ export type CampaignStatus = 'PENDING' | 'RUNNING' | 'COMPLETE' | 'PARTIAL' | 'F
 export function coherenceMode(env: Record<string, string | undefined> = process.env): CoherenceMode {
   const v = (env.COHERENCE_CAMPAIGN_MODE ?? '').trim().toLowerCase();
   return ['corrective', 'correctif', 'correction', 'repair'].includes(v) ? 'CORRECTIVE' : 'DRY_RUN';
+}
+
+/**
+ * Lot 98B (P1, arbitrages C-Q2 « autoréparation quand elle est sûre » et
+ * C-Q5 « première campagne à blanc, puis corrective ») — réglage du mode :
+ *   · `corrective` (ou correctif…) : CORRECTIVE ;
+ *   · `dry_run` / `dry-run` / `a_blanc` / `blanc` / `off` : DRY_RUN — COUPURE
+ *     D'URGENCE (aucune écriture métier, effet à la campagne suivante) ;
+ *   · absente ou vide : AUTO — à blanc tant qu'aucune campagne quotidienne À
+ *     BLANC n'est allée à son terme (C-Q5), corrective ensuite (C-Q2) ;
+ *   · toute autre valeur : DRY_RUN (prudence : faute de frappe).
+ * Pure.
+ */
+export function coherenceModeSetting(env: Record<string, string | undefined> = process.env): CoherenceMode | 'AUTO' {
+  const v = (env.COHERENCE_CAMPAIGN_MODE ?? '').trim().toLowerCase();
+  if (v === '') return 'AUTO';
+  return coherenceMode(env);
+}
+
+/**
+ * Mode EFFECTIF des nouvelles campagnes et des contrôles ciblés (lot 98B, P1) :
+ * réglage explicite, sinon AUTO (corrective dès qu'une campagne quotidienne à
+ * blanc a abouti). Une lecture impossible garde le mode à blanc.
+ */
+export async function resolveCoherenceMode(sql: Sql = pgClient, env: Record<string, string | undefined> = process.env): Promise<CoherenceMode> {
+  const reglage = coherenceModeSetting(env);
+  if (reglage !== 'AUTO') return reglage;
+  try {
+    const [r] = await rows(sql, `SELECT EXISTS (SELECT 1 FROM coherence_campaigns WHERE kind = 'DAILY' AND mode = 'DRY_RUN' AND status = 'COMPLETE') AS ok`);
+    return r?.ok === true ? 'CORRECTIVE' : 'DRY_RUN';
+  } catch {
+    return 'DRY_RUN';
+  }
 }
 
 export async function coherenceTablesReady(sql: Sql = pgClient): Promise<boolean> {
@@ -325,10 +361,11 @@ export async function startCampaign(p: StartCampaignInput): Promise<number> {
   const sql = p.sql ?? pgClient;
   const now = p.now ?? new Date();
   const checks = activeChecks().map((c) => ({ id: c.id, version: c.version }));
+  const mode = p.mode ?? await resolveCoherenceMode(sql);
   const [r] = await rows(sql, `
     INSERT INTO coherence_campaigns (kind, mode, campaign_date, scope_account_ids, trigger_code, registry_version, checks, started_at, deadline_at, metrics)
     VALUES ($1, $2, $3::date, $4::int[], $5, $6, $7::text::jsonb, $8, $9, $10::text::jsonb) RETURNING id`,
-  [p.kind, p.mode ?? coherenceMode(), p.kind === 'DAILY' ? todayParisDateStr(now) : null, p.scopeAccountIds ? intArray(p.scopeAccountIds) : null,
+  [p.kind, mode, p.kind === 'DAILY' ? todayParisDateStr(now) : null, p.scopeAccountIds ? intArray(p.scopeAccountIds) : null,
     p.trigger, registryVersion(), JSON.stringify(checks), now,
     p.deadlineAt === undefined ? (p.kind === 'DAILY' ? dailyDeadline(now) : new Date(now.getTime() + 24 * 3_600_000)) : p.deadlineAt,
     JSON.stringify(zeroMetrics())]);
@@ -663,6 +700,8 @@ export async function runTargetedChecks(o: RunOptions & { mode?: CoherenceMode; 
      GROUP BY account_id, check_id ORDER BY account_id, check_id`,
   [new Date(now.getTime() - TARGETED_DEBOUNCE_MS), now, o.limit ?? TARGETED_MAX_PER_RUN]);
   const eligibilite = new Map<number, { eligible: boolean; reason: string }>();
+  // Lot 98B (P1) : même mode effectif que les campagnes (réglage explicite, sinon AUTO).
+  const mode = o.mode ?? (lots.length ? await resolveCoherenceMode(sql) : 'DRY_RUN');
   for (const lot of lots) {
     if (Date.now() >= o.deadline) break;
     const accountId = Number(lot.account_id);
@@ -681,7 +720,7 @@ export async function runTargetedChecks(o: RunOptions & { mode?: CoherenceMode; 
       continue;
     }
     for (let i = 0; i < ids.length && Date.now() < o.deadline; i += COHERENCE_BATCH) {
-      const ctx = contexte(null, o.mode ?? coherenceMode(), sql, new Date(now.getTime() + (Date.now() - t0)), o.today, check);
+      const ctx = contexte(null, mode, sql, new Date(now.getTime() + (Date.now() - t0)), o.today, check);
       try {
         const s = await controlObjects({
           ctx, check, accountId, ids: ids.slice(i, i + COHERENCE_BATCH), trigger: 'TARGETED', campaignId: null,

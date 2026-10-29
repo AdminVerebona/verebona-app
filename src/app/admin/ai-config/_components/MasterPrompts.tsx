@@ -81,6 +81,15 @@ interface Detail {
     active: T2Capabilities; draft: T2Capabilities | null;
     activeOrigin?: { kind: 'BO_VERSION' | 'INITIAL_CONFIG' | 'REPOSITORY_FILE'; versionNumber: number | null };
   } | null;
+  /** Lot 98A (P0-B) : compatibilité T4 de la version active et du brouillon. */
+  t4Compatibility?: { active: T4Compatibility; draft: T4Compatibility | null } | null;
+}
+/** Lot 98A (P0-B) — compatibilité T4 avec le moteur « À traiter » (service `assessT4Compatibility`). */
+interface T4Compatibility {
+  compatible: boolean; textReady: boolean;
+  issues: Array<{ code: string; message: string }>;
+  remedy: 'NONE' | 'PREPARE_SAME_TEXT' | 'RESTART_FROM_REFERENCE';
+  target: ExecutionConfig;
 }
 interface T2Capabilities {
   checks: Array<{ code: string; label: string; present: boolean }>; arbitration: boolean; interaction: boolean; message: string | null;
@@ -131,6 +140,62 @@ function T2CapabilitiesPanel({ caps, titre, recette = false }: { caps: T2Capabil
     </div>
   );
 }
+/**
+ * Lot 98A (P0-B) — diagnostic visible : la version T4 donne-t-elle au moteur
+ * « À traiter » l'évaluation structurée d'une intervention (`t4_output_v3`) ?
+ * Sinon, ce qui manque et le chemin (bouton de préparation d'un brouillon
+ * conforme au même texte, ou « Repartir du texte de référence »). Jamais
+ * d'activation automatique.
+ */
+function T4CompatibilityPanel({ compat, titre, busy, onPrepare }: {
+  compat: T4Compatibility; titre: string; busy?: boolean; onPrepare?: () => void;
+}) {
+  const ok = compat.compatible && compat.textReady;
+  return (
+    <div className={`rounded border p-2 text-xs space-y-1 ${ok ? 'border-[color:var(--border-success)] bg-[color:var(--bg-success)]' : 'border-[color:var(--border-warning)] bg-[color:var(--bg-warning)]'}`}
+      data-testid="t4-compatibility">
+      <p className="font-medium flex items-center gap-1.5 text-[color:var(--text-primary)]">
+        {ok ? <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-[color:var(--text-success)]" /> : <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-[color:var(--text-warning-soft)]" />}
+        <span className="min-w-0 break-words">
+          {titre} : {ok
+            ? 'compatible avec le moteur « À traiter » (évaluation structurée de l’intervention, t4_output_v3 ou suivant)'
+            : compat.compatible
+              ? 'contrat compatible, mais le texte ne décrit pas l’évaluation de l’intervention'
+              : 'INCOMPATIBLE avec le moteur « À traiter » : les cartes de date inconnue ou d’échéance passée restent en attente (T4_INCOMPATIBLE)'}
+        </span>
+      </p>
+      {compat.issues.length > 0 && (
+        <ul className="space-y-0.5 text-[color:var(--text-secondary)]">
+          {compat.issues.map((i) => (
+            <li key={i.code} className="flex items-start gap-1 break-words">
+              <XCircle className="w-3 h-3 mt-0.5 shrink-0 text-[color:var(--text-danger)]" /><span className="min-w-0">{i.message}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {!ok && (
+        <p className="text-[color:var(--text-muted)] break-words">Configuration attendue : {executionSummary(compat.target)}</p>
+      )}
+      {compat.remedy === 'PREPARE_SAME_TEXT' && onPrepare && (
+        <div className="space-y-1">
+          <p className="text-[color:var(--text-secondary)] break-words">
+            Le texte actif porte déjà l’évaluation : un brouillon avec le même texte et la configuration attendue peut être préparé. Il n’est pas activé : vérifiez-le, puis cliquez sur « Activer ».
+          </p>
+          <Button size="sm" variant="outline" className="min-h-[44px] sm:min-h-0" disabled={busy} onClick={onPrepare}>
+            {busy ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Pencil className="w-3.5 h-3.5 mr-1.5" />}
+            Préparer une version conforme
+          </Button>
+        </div>
+      )}
+      {compat.remedy === 'RESTART_FROM_REFERENCE' && (
+        <p className="text-[color:var(--text-secondary)] break-words">
+          Cliquez sur « Modifier », choisissez le mode « Contexte structuré », puis « Repartir du texte de référence (Contexte structuré) », enregistrez et activez (guide du PO, étape 8).
+        </p>
+      )}
+    </div>
+  );
+}
+
 interface Summary {
   treatment: string; label: string; masterPromptCode: string;
   active: { versionNumber: number | null; initial: boolean; activatedAt: string | null; test: TestState };
@@ -266,7 +331,7 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
   const [erreur, setErreur] = useState<string | null>(null);
   const [texte, setTexte] = useState('');
   const [dirty, setDirty] = useState(false);
-  const [busy, setBusy] = useState<null | 'draft' | 'save' | 'test' | 'activate' | 'discard' | 'reactivate'>(null);
+  const [busy, setBusy] = useState<null | 'draft' | 'conform' | 'save' | 'test' | 'activate' | 'discard' | 'reactivate'>(null);
   const [confirm, setConfirm] = useState<null | { kind: 'activate' } | { kind: 'reactivate'; version: VersionView } | { kind: 'discard' }>(null);
   const [apercu, setApercu] = useState<null | (VersionView & { content: string })>(null);
   const [execution, setExecution] = useState<ExecutionConfig | null>(null);
@@ -320,6 +385,17 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
       appliquer(r.detail);
       onChanged();
     } catch (e) { toast.error(errMessage(e, 'Le brouillon n’a pas pu être créé.')); } finally { setBusy(null); }
+  };
+
+  /** Lot 98A (P0-B) : brouillon T4 conforme au même texte (jamais activé automatiquement). */
+  const preparerConforme = async () => {
+    setBusy('conform');
+    try {
+      const r = await apiClient.post<{ detail: Detail }>(`/api/admin/ai/master-prompts/${treatment}/draft`, { conformT4: true });
+      appliquer(r.detail);
+      toast.success('Brouillon conforme préparé : vérifiez-le puis cliquez sur « Activer ».');
+      onChanged();
+    } catch (e) { toast.error(errMessage(e, 'Le brouillon conforme n’a pas pu être préparé.')); } finally { setBusy(null); }
   };
 
   /** Enregistre le brouillon ; rend le détail à jour (ou null en cas d'échec). */
@@ -436,6 +512,10 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
           </pre>
         </details>
         {detail.t2Capabilities && <T2CapabilitiesPanel caps={detail.t2Capabilities.active} titre={origineT2(detail.t2Capabilities.activeOrigin)} recette />}
+        {detail.t4Compatibility && (
+          <T4CompatibilityPanel compat={detail.t4Compatibility.active} titre={`Version active ${nomActive}`}
+            busy={busy !== null} onPrepare={draft ? undefined : () => void preparerConforme()} />
+        )}
         {!draft && (
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={modifier} disabled={busy !== null}>
@@ -476,6 +556,7 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
             Le brouillon n’est jamais utilisé par l’application tant qu’il n’est pas activé. La version active continue de servir.
           </p>
           {detail.t2Capabilities?.draft && !dirty && <T2CapabilitiesPanel caps={detail.t2Capabilities.draft} titre="Brouillon" />}
+          {detail.t4Compatibility?.draft && !dirty && <T4CompatibilityPanel compat={detail.t4Compatibility.draft} titre={`Brouillon v${draft.versionNumber}`} />}
           <Textarea
             aria-label={`Texte du brouillon ${treatment}`}
             value={texte}

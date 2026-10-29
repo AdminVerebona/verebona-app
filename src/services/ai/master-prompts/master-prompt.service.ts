@@ -61,6 +61,7 @@ import {
   MASTER_EXECUTION_MODES, LEGACY_EXECUTION, executionSignature, type MasterExecutionConfig,
 } from './structured-context';
 import * as repo from './master-prompt.repository';
+import { assessT4Compatibility, type T4Compatibility } from '../agenda/master/t4-compatibility';
 import type { MasterPromptTestRunRow, MasterPromptVersionRow, MasterPromptActivationRow, TestFailure } from './master-prompt.repository';
 
 /** Refus fonctionnel (409), contrôle technique (422) ou introuvable (404). */
@@ -203,6 +204,13 @@ interface PromptDetail {
     /** Lot 75J : origine du texte actif contrôlé (version BO, texte initial, fichier du dépôt). */
     activeOrigin?: { kind: 'BO_VERSION' | 'INITIAL_CONFIG' | 'REPOSITORY_FILE'; versionNumber: number | null };
   } | null;
+  /**
+   * Lot 98A (P0-B) — compatibilité de la version T4 active (et du brouillon)
+   * avec le moteur « À traiter » (`t4_output_v3`, évaluation structurée d'une
+   * intervention) : ce qui manque, en clair, et le chemin de mise en
+   * conformité. Autres traitements : absent.
+   */
+  t4Compatibility?: { active: T4Compatibility; draft: T4Compatibility | null } | null;
 }
 
 const STATUS_LABEL: Record<repo.MasterPromptStatus, string> = { DRAFT: 'Brouillon', ACTIVE: 'Active', PREVIOUS: 'Ancienne' };
@@ -485,6 +493,16 @@ export async function getPromptDetail(treatment: Treatment, environment: AiEnvir
       activeOrigin: active ? { kind: 'BO_VERSION', versionNumber: active.versionNumber } : { kind: initialContent?.source === 'config' ? 'INITIAL_CONFIG' : 'REPOSITORY_FILE', versionNumber: null },
     };
   }
+  // Lot 98A (P0-B) : compatibilité T4 de la version RÉELLEMENT en service (active, sinon texte initial).
+  const spec = structuredSpecFor(master.masterPromptCode);
+  const t4Compatibility = treatment === 'T4' && spec ? {
+    active: assessT4Compatibility({
+      spec, referenceText: fichier || null,
+      content: active?.content ?? initialContent?.content ?? fichier,
+      execution: active ? executionOfVersion(active) : initialContent?.source === 'config' ? LEGACY_EXECUTION : executionConfigFor({ masterPromptCode: master.masterPromptCode, source: 'file' }),
+    }),
+    draft: draft ? assessT4Compatibility({ spec, referenceText: fichier || null, content: draft.content, execution: executionOfVersion(draft) }) : null,
+  } : null;
   return {
     treatment, label: TREATMENT_DEFINITIONS[treatment].label, masterPromptCode: master.masterPromptCode, environment,
     initial: !active,
@@ -500,6 +518,7 @@ export async function getPromptDetail(treatment: Treatment, environment: AiEnvir
     },
     structured: await withScenarios(treatment, structuredInfoOf(master.masterPromptCode, fichier)),
     t2Capabilities,
+    t4Compatibility,
   };
 }
 
@@ -564,6 +583,54 @@ export async function startDraft(treatment: Treatment, userId: number, content?:
   });
   // Création concurrente : un autre administrateur vient d'ouvrir le brouillon.
   return cree ?? (await repo.getDraft(environment, treatment))!;
+}
+
+/**
+ * Lot 98A (P0-B) — « Préparer une version T4 conforme » : rattrapage
+ * IDEMPOTENT de la version T4 active en mode historique (ou à contrat de
+ * sortie antérieur à `t4_output_v3`) dont le TEXTE porte déjà l'évaluation
+ * d'intervention. Crée un BROUILLON avec le MÊME texte et la configuration
+ * d'exécution conforme (contexte structuré, contrats du texte livré ou
+ * suivants) ; ne modifie jamais le texte ; n'active JAMAIS : le PO vérifie le
+ * brouillon (contrôles, aperçu) puis clique « Activer ».
+ *
+ * Idempotence : un brouillon déjà conforme (même texte, même configuration)
+ * est rendu tel quel. Refus explicites : version active déjà compatible,
+ * texte sans l'évaluation d'intervention (« Repartir du texte de référence »),
+ * autre brouillon en cours (le terminer ou l'abandonner d'abord).
+ */
+export async function prepareConformingT4Draft(userId: number): Promise<MasterPromptVersionRow> {
+  await assertTables();
+  const environment = getAiEnvironment();
+  const master = masterPromptForTreatment('T4');
+  const spec = master ? structuredSpecFor(master.masterPromptCode) : null;
+  if (!master || !spec) throw new MasterPromptRefused('EXECUTION_MODE_UNSUPPORTED', 'Le prompt T4 n’a pas de mode d’exécution configurable.', null, 400);
+  const active = await ensureActive('T4', environment);
+  const { readMasterFileFromRepo } = await import('../governance/master-corpus/cases');
+  let fichier: string | null = null;
+  try { fichier = readMasterFileFromRepo(master.masterPromptCode); } catch { /* fichier absent : comparaison par repère seulement */ }
+  const etat = assessT4Compatibility({ spec, execution: executionOfVersion(active), content: active.content, referenceText: fichier });
+  if (etat.remedy === 'NONE') {
+    throw new MasterPromptRefused('ALREADY_COMPATIBLE', `La version T4 active (v${active.versionNumber}) est déjà compatible : rien à préparer.`);
+  }
+  if (etat.remedy === 'RESTART_FROM_REFERENCE') {
+    throw new MasterPromptRefused('TEXT_NOT_COMPATIBLE',
+      'Le texte T4 actif ne décrit pas l’évaluation d’une intervention « À traiter » : cliquez sur « Modifier », choisissez le mode « Contexte structuré », '
+      + 'puis « Repartir du texte de référence (Contexte structuré) », enregistrez et activez (guide du PO, étape 8).');
+  }
+  const cible = etat.target;
+  const existant = await repo.getDraft(environment, 'T4');
+  if (existant) {
+    const memeTexte = existant.content.replace(/\r\n?/g, '\n').trim() === active.content.replace(/\r\n?/g, '\n').trim();
+    if (memeTexte && executionSignature(executionOfVersion(existant) ?? LEGACY_EXECUTION) === executionSignature(cible)) return existant;
+    throw new MasterPromptRefused('DRAFT_EXISTS',
+      `Un brouillon T4 (v${existant.versionNumber}) est déjà ouvert : activez-le ou abandonnez-le, puis relancez « Préparer une version conforme ».`);
+  }
+  const cree = await repo.insertDraft({
+    environment, treatment: 'T4', masterPromptCode: active.masterPromptCode, content: active.content,
+    origin: 'admin', basedOnId: active.id, userId, execution: cible,
+  });
+  return cree ?? (await repo.getDraft(environment, 'T4'))!;
 }
 
 function assertStorable(content: string): void {

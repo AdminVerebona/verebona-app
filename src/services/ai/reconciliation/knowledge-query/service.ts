@@ -79,6 +79,11 @@ export interface SemanticResolution {
   queryId: number | null;
   /** Éléments COUVERTS cités par un constat retenu (unités partiellement structurées, diagnostic). */
   citedCoveredUnits?: Array<{ ref: string; fileId: number; sourceUnitId: string | null }>;
+  /**
+   * Lot 98B (P0-D) : demande COMPLÉMENTAIRE (constituants manquants à la
+   * décision) — ses constats sont fusionnés dans `findings`.
+   */
+  followUp?: { focus: string[]; status: SemanticStatus; outcome: SemanticOutcome | null; pendingReason: PendingReason | null; queryId: number | null; cached: boolean; calls: number } | null;
 }
 
 export interface KnowledgeMemory {
@@ -111,7 +116,9 @@ const typeDeValeur = (key: string): FieldValueType => {
  * registre, question de la règle, constituants des calculs DÉCLARÉS pour
  * cette donnée (début / durée ; échéancier). Aucun vocabulaire.
  */
-export async function buildKnowledgeQuestion(rule: Pick<ProcessingRule, 'code' | 'question'>, key: string): Promise<KnowledgeQuestion> {
+export async function buildKnowledgeQuestion(
+  rule: Pick<ProcessingRule, 'code' | 'question'>, key: string, focus?: readonly ConstituentRole[] | null,
+): Promise<KnowledgeQuestion> {
   const { derivationFor, scheduleDerivationFor } = await import('@/services/to-process/document-derivations');
   const constituents: KnowledgeConstituent[] = [];
   const ajouter = (role: ConstituentRole, cle: string) => {
@@ -124,7 +131,10 @@ export async function buildKnowledgeQuestion(rule: Pick<ProcessingRule, 'code' |
   if (s) {
     for (const role of ['firstInstalment', 'lastInstalment', 'count', 'periodicity', 'disbursement', 'repayment'] as const) ajouter(role, s[role].key);
   }
-  return { key, label: getField(key)?.label ?? null, valueType: typeDeValeur(key), businessQuestion: rule.question, ruleCode: rule.code, constituents };
+  // Lot 98B (P0-D) : demande COMPLÉMENTAIRE — seuls les constituants dont la décision a déclaré avoir besoin
+  // (ex. `repayment`) sont offerts : autre question (empreinte distincte), même contrat, même prompt.
+  const offerts = focus?.length ? constituents.filter((c) => focus.includes(c.role)) : constituents;
+  return { key, label: getField(key)?.label ?? null, valueType: typeDeValeur(key), businessQuestion: rule.question, ruleCode: rule.code, constituents: offerts };
 }
 
 /** Normaliseurs de valeur : analyseurs EXISTANTS du moteur « À traiter » (dates, durées). */
@@ -158,6 +168,12 @@ interface InterpretInput {
   runRef?: string | null;
   today: string;
   deps?: KnowledgeQueryDeps;
+  /**
+   * Lot 98B (P0-D) : demande complémentaire ciblée sur des constituants
+   * MANQUANTS à la décision (déclarés par le moteur, jamais devinés). Mémoire,
+   * budget et anti-boucle inchangés : une seule interprétation par entrée.
+   */
+  focus?: readonly ConstituentRole[] | null;
 }
 
 /**
@@ -170,7 +186,7 @@ export async function interpretT1Knowledge(i: InterpretInput): Promise<SemanticR
   const d = { ...base, ...(i.deps ?? {}) };
   const bounds = i.deps?.bounds ?? knowledgeBounds();
   const now = d.now();
-  const question = await buildKnowledgeQuestion(i.rule, i.key);
+  const question = await buildKnowledgeQuestion(i.rule, i.key, i.focus);
   const qfp = questionFingerprint(question, KNOWLEDGE_QUERY_CONTRACT_VERSION);
   const vide = (p: Partial<SemanticResolution> & Pick<SemanticResolution, 'status'>): SemanticResolution => ({
     findings: [], rejected: [], contradictions: [], aiCalled: false, calls: 0, cached: false, traceIds: [], promptVersion: null,
@@ -288,6 +304,8 @@ interface KnowledgeQueryState {
  */
 export async function knowledgeQueryState(
   accountId: number, fileId: number, rule: Pick<ProcessingRule, 'code' | 'question'>, key: string, deps: KnowledgeQueryDeps = {},
+  /** Lot 98B (P0-D) : état de la demande complémentaire ciblée sur ces constituants. */
+  focus?: readonly ConstituentRole[] | null,
 ): Promise<KnowledgeQueryState> {
   const d = { ...(await defaultDeps()), ...deps };
   const bounds = deps.bounds ?? knowledgeBounds();
@@ -296,7 +314,7 @@ export async function knowledgeQueryState(
   if (!collected.hasExtraction) return { hasExtraction: false, unstructured: 0, complete: true, contextFingerprint: null, capability, memo: null, citedCoveredUnits: [] };
   const plan = planKnowledgePages(collected.elements, collected.documents, bounds);
   const cfp = contextFingerprint(collected.documents, plan);
-  const question = await buildKnowledgeQuestion(rule, key);
+  const question = await buildKnowledgeQuestion(rule, key, focus);
   const memo = (await d.memory.ready())
     ? await d.memory.find({ accountId, fileId, fieldKey: key, questionFp: questionFingerprint(question, KNOWLEDGE_QUERY_CONTRACT_VERSION), contextFp: cfp, promptVersion: capability.version ?? '' })
     : null;

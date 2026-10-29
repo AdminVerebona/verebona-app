@@ -82,6 +82,8 @@ interface Data {
   incompatibleDecisions?: number;
   /** Lot 76 (C8) : décisions appliquées dont la trace a échoué (reprise 0582). */
   traceRetries?: { available: boolean; counts: Record<string, number>; items: TraceRetry[] };
+  /** Lot 98B (P0-E) : cartes ouvertes RETENUES (maintien technique), non publiées à l'utilisateur, par cause. */
+  heldCards?: Array<{ cause: string; label: string; count: number; accountIds: number[] }>;
 }
 
 const STATUT_CAMPAGNE: Record<string, string> = {
@@ -208,7 +210,7 @@ export function ToProcessRelevancePanel() {
   }, [filters]);
   useEffect(() => { void charger(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const lancer = async (action: 'recette' | 'retry-traces') => {
+  const lancer = async (action: 'recette' | 'retry-traces' | 'retry-held') => {
     setBusy(true);
     setError(null);
     try {
@@ -240,7 +242,7 @@ export function ToProcessRelevancePanel() {
             <span className={data.config.interventionCapable ? 'text-[color:var(--text-success)]' : 'text-[color:var(--text-warning-soft)]'}>
               {data.config.interventionCapable
                 ? 'évaluation structurée de l’intervention active (t4_output_v3)'
-                : 'version active SANS t4_output_v3 : aucune question ni carte par défaut, décisions différées et signalées (contrat incompatible). Activer la version de référence dans Prompts maîtres › T4 : elles seront réévaluées automatiquement.'}
+                : 'version active SANS t4_output_v3 : aucune question ni carte par défaut, décisions différées et signalées (contrat incompatible). Configuration IA › Prompts maîtres › T4 : l’encadré de compatibilité dit ce qui manque et prépare une version conforme (guide du PO, étape 8) ; une fois activée, elles seront réévaluées automatiquement.'}
             </span>
             {!!data.incompatibleDecisions && (
               <span className="text-[color:var(--text-warning-soft)]"> · {data.incompatibleDecisions} décision(s) en attente d’une configuration T4 compatible.</span>
@@ -305,6 +307,28 @@ export function ToProcessRelevancePanel() {
               </ul>
             )}
           </div>
+
+          {data.heldCards && (
+            <div className="space-y-2" data-testid="held-cards">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs text-[color:var(--text-secondary)] break-words">
+                  Cartes retenues (ouvertes, non montrées à l’utilisateur : Verebona n’a pas pu statuer)
+                  {data.heldCards.length ? ` : ${data.heldCards.reduce((n, g) => n + g.count, 0)}` : ' : aucune'}
+                </p>
+                {data.heldCards.length > 0 && (
+                  <Button type="button" size="sm" variant="outline" className="h-8" disabled={busy} onClick={() => void lancer('retry-held')}>
+                    <RefreshCw className="w-3.5 h-3.5 mr-1" />Nouvelle tentative
+                  </Button>
+                )}
+              </div>
+              {data.heldCards.map((g) => (
+                <p key={g.cause} className="text-xs break-words rounded border border-[color:var(--border-subtle)] px-2 py-1">
+                  <span className="text-[color:var(--text-primary)]">{g.count} carte(s)</span> · <span className="text-[color:var(--text-warning-soft)]">{g.label}</span>
+                  <span className="text-[color:var(--text-muted)]"> · comptes {g.accountIds.join(', ') || '—'}</span>
+                </p>
+              ))}
+            </div>
+          )}
 
           {data.traceRetries && (
             <div className="space-y-2" data-testid="trace-retries">

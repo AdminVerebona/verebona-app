@@ -61,6 +61,7 @@ import { getCatalogEntry } from '../catalog';
 import { getPreference } from '../preferences';
 import { resolveActiveAccountMembers } from '../recipient-resolver';
 import { todayParisDateStr } from '../time-paris';
+import { publishableCardSql } from '@/services/to-process/publishability';
 
 interface DigestRunResult {
   accountsProcessed: number;
@@ -297,11 +298,12 @@ async function processUser(
 
 async function activeActions(accountId: number): Promise<DigestItem[]> {
   // Actions ACTIVES uniquement : `resolved_at IS NULL` (« mis de côté » a
-  // disparu avec la V1, §7.1).
+  // disparu avec la V1, §7.1). Lot 98B (P0-E) : et PUBLIABLES (même définition
+  // que la page : une carte retenue pour blocage technique n'est pas annoncée).
   return pgClient.unsafe<DigestItem[]>(
     `SELECT public_id::text AS "publicId", cycle_number AS "cycleNumber", action_kind AS "actionKind",
             priority, question, due_date AS "dueDate"
-       FROM to_process_actions WHERE account_id = $1 AND resolved_at IS NULL`,
+       FROM to_process_actions a WHERE a.account_id = $1 AND a.resolved_at IS NULL AND ${publishableCardSql('a')}`,
     [accountId] as never[],
   );
 }

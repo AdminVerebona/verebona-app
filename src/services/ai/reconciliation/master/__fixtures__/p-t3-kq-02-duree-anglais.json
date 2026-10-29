@@ -112,8 +112,11 @@
   },
   "expected": {
     "outcome": "CONSTITUENTS",
-    "findings": {
+    "values": {
       "duration": "264"
-    }
+    },
+    "forbidden": [
+      "FIELD"
+    ]
   }
 }

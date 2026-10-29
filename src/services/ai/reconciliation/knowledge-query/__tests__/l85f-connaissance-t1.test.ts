@@ -353,7 +353,7 @@ describe('L85F-U08 — registre IA : opération déclarée, branche facultative,
 });
 
 describe('L85F-U09 — corpus de recette de la branche (prêt pour la livraison de l’équipe IA)', () => {
-  it('branche absente du fichier : cas ignorés, corpus vert ; branche présente (version de test) : 6 cas rejoués par l’évaluateur serveur', async () => {
+  it('branche absente du fichier : cas ignorés, corpus vert ; branche présente (version de test) : 7 cas rejoués (lot 98A : KQ-07) par l’évaluateur serveur', async () => {
     const { runMasterCorpus } = await import('@/services/ai/governance/master-corpus/runner');
     const { readMasterFileFromRepo } = await import('@/services/ai/governance/master-corpus/cases');
     const [sans] = await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T3'] });
@@ -362,7 +362,7 @@ describe('L85F-U09 — corpus de recette de la branche (prêt pour la livraison 
     const texte = `${readMasterFileFromRepo('t3_master_v1')}\n\nBRANCHE TASK = KNOWLEDGE_QUERY\n\n(section de test)\n`;
     const [avec] = await runMasterCorpus({ readMasterFile: readMasterFileFromRepo, treatments: ['T3'], texts: { t3_master_v1: { text: texte, source: 'config' } } });
     const kq = avec.cases.filter((c) => c.task === 'KNOWLEDGE_QUERY');
-    expect(kq.map((c) => c.id).sort()).toEqual(['P-T3-KQ-01', 'P-T3-KQ-02', 'P-T3-KQ-03', 'P-T3-KQ-04', 'P-T3-KQ-05', 'P-T3-KQ-06']);
+    expect(kq.map((c) => c.id).sort()).toEqual(['P-T3-KQ-01', 'P-T3-KQ-02', 'P-T3-KQ-03', 'P-T3-KQ-04', 'P-T3-KQ-05', 'P-T3-KQ-06', 'P-T3-KQ-07']);
     expect(kq.filter((c) => !c.passed).map((c) => `${c.id} : ${c.errors.join(' ; ')}`)).toEqual([]);
     expect(avec.branchesPassed).toContain('KNOWLEDGE_QUERY');
   });
@@ -375,7 +375,7 @@ describe('L85F-U-COH — registre de cohérence', () => {
     expect(ids.indexOf('COH-T1-KNOWLEDGE-CONSUMPTION')).toBeGreaterThan(ids.indexOf('COH-OPS-RECURRING-SERIES'));
     expect(activeChecks().map((c) => c.id)).toContain('COH-T1-KNOWLEDGE-CONSUMPTION');
     const c = getCheck('COH-T1-KNOWLEDGE-CONSUMPTION')!;
-    expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'document', chain: ['T1', 'T3', 'PERSISTENCE', 'TO_PROCESS'] });
+    expect(c).toMatchObject({ status: 'ACTIVE', version: 2, objectType: 'document', chain: ['T1', 'T3', 'PERSISTENCE', 'TO_PROCESS'] });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['relancer T1', 'interpréter un texte par une règle lexicale']));
     expect(c.anomalies).toEqual(expect.arrayContaining(['CARD_ASKS_KNOWN_INFORMATION', 'FIELD_NOT_IN_T1_WITH_KNOWLEDGE', 'KNOWLEDGE_NOT_INTERPRETED', 'PARTIALLY_STRUCTURED_UNIT', 'OPERATION_CANDIDATE_WITHOUT_T1_EVIDENCE']));
     expect(typeof c.listObjects).toBe('function');

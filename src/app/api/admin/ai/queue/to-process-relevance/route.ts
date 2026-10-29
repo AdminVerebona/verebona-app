@@ -9,7 +9,8 @@
  *   POST : { action: 'recette' } — recette du corpus livré avec le VÉRITABLE
  *          T4 de l'environnement (exécutée en arrière-plan, suivie par GET) ;
  *          lot 76 : { action: 'retry-traces' } — relance des traces de
- *          décision abandonnées (0582).
+ *          décision abandonnées (0582) ; lot 98B : { action: 'retry-held' }
+ *          — nouvelle tentative sur les cartes RETENUES (maintien technique).
  *          Lot 83E (C-Q9) : les actions « campaign » et « retry-errors » sont
  *          RETIRÉES avec le moteur de campagne — la réévaluation est faite
  *          par le contrôle de cohérence (registre, tâche `coherence-control`) ;
@@ -54,6 +55,11 @@ export async function GET(req: NextRequest) {
       incompatibleDecisions: await ev.countIncompatibleDecisions(),
       // Lot 76 (C8) : décisions appliquées NON tracées (reprise identifiable).
       traceRetries: await (await import('@/services/to-process/trace-retries')).traceRetryOverview({ accountId: n('accountId'), limit: 50 }),
+      // Lot 98B (P0-E) : cartes ouvertes RETENUES (maintien technique), non publiées — cause par cause.
+      heldCards: await (async () => {
+        const { heldCardsOverview, HOLD_CAUSE_LABELS } = await import('@/services/to-process/publishability');
+        return (await heldCardsOverview({ accountId: n('accountId') })).map((g) => ({ ...g, label: HOLD_CAUSE_LABELS[g.cause] }));
+      })(),
     });
   } catch (e) {
     return toErrorResponse(e, 'GET /api/admin/ai/queue/to-process-relevance');
@@ -77,6 +83,11 @@ export async function POST(req: NextRequest) {
       const { requeueAbandonedTraces, replayPendingTraces } = await import('@/services/to-process/trace-retries');
       const relances = await requeueAbandonedTraces();
       return NextResponse.json({ ok: true, requeued: relances, run: await replayPendingTraces({ limit: 100, deadline: Date.now() + 20_000 }) });
+    }
+    if (body.action === 'retry-held') {
+      // Lot 98B (P0-E) : nouvelle tentative de décision sur les cartes retenues (décision centrale, budget IA du compte).
+      const { retryHeldCards } = await import('@/services/to-process/publishability');
+      return NextResponse.json({ ok: true, run: await retryHeldCards({ limit: 50, deadline: Date.now() + 25_000 }) });
     }
     if (body.action === 'recette') {
       const session = await SessionService.getSession(req);

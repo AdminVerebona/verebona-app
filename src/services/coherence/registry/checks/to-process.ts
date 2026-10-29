@@ -20,12 +20,27 @@
  *     carte maintenue ; valeur de l'utilisateur jamais écrasée ; T1 jamais
  *     relancé.
  * Valeurs contradictoires : AMBIGUOUS, aucune écriture (l'arbitrage existant
- * reste seul juge). Les autres familles de cartes (agenda, équipements,
+ * reste seul juge).
+ *
+ * Lot 98B (P0-C, version 2) : une décision ACTUELLE (même moteur, même
+ * connaissance) n'est plus assimilée à une carte justifiée. D'après son motif
+ * (`to-process/publishability#cardStanding`, même règle que la publication) :
+ *   · carte JUSTIFIÉE (donnée utile, intervention, arbitrage d'une réelle
+ *     ambiguïté) → CONSISTENT ;
+ *   · maintien TECHNIQUE (T4 incompatible, interprétation T3 en attente ou
+ *     incomplète, panne IA / configuration) → DECISION_NOT_DEMONSTRATED :
+ *     RÉPARABLE dès que la cause est levée (contrat T4 compatible actif,
+ *     capacité T3 livrée, panne : nouvelle tentative au plus une fois par
+ *     jour) — réévaluation par la décision centrale ; sinon CONSTAT
+ *     (« décision non démontrée », cause et demande IA) : jamais CONSISTENT.
+ * La carte retenue n'est pas publiée (« À traiter », compteur, mascotte) :
+ * elle relève de la Supervision. Les autres familles de cartes (agenda, équipements,
  * fournisseurs, Opérations) sont réévaluées par leurs producteurs horaires :
  * lacune DÉCLARÉE dans l'inventaire de couverture, jamais réputée couverte.
  */
 import type { CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, idsOf, intArray, rows, type Row } from '../util';
+import { cardStanding, HOLD_CAUSE_LABELS, type TechnicalHoldCause } from '@/services/to-process/publishability';
 
 /** Règles « donnée documentaire » du pont (même source que la production). */
 async function fieldRuleCodes(): Promise<string[]> {
@@ -34,6 +49,31 @@ async function fieldRuleCodes(): Promise<string[]> {
 }
 
 const REPAIR_BY_STATE = new Set(['TARGET_GONE', 'RESOLVABLE_FROM_STATE', 'ALREADY_SATISFIED']);
+
+/**
+ * Lot 98B (P0-C) — la cause d'un maintien TECHNIQUE est-elle levée ? (lecture
+ * seule, sans appel IA) : contrat T4 compatible désormais actif, capacité T3
+ * KNOWLEDGE_QUERY désormais disponible, panne (toujours retentée, une fois par
+ * jour). Une interprétation incomplète (connaissance au-delà des bornes)
+ * n'est pas levée par une simple nouvelle tentative.
+ */
+async function causeLevee(cause: TechnicalHoldCause, configRef: string | null): Promise<{ lifted: boolean; why: string; pendingContract?: string }> {
+  if (cause === 'T4_INCOMPATIBLE') {
+    const { t4AssessmentConfig } = await import('@/services/to-process/document-field-evidence');
+    const cfg = await t4AssessmentConfig();
+    return cfg.interventionCapable
+      ? { lifted: true, why: `t4_compatible:${cfg.ref}` }
+      : { lifted: false, why: `t4_incompatible:${cfg.ref}`, pendingContract: 't4_output_v3' };
+  }
+  if (cause === 'INTERPRETATION_PENDING') {
+    const { knowledgeQueryCapability } = await import('@/services/ai/reconciliation/knowledge-query/model');
+    const { KNOWLEDGE_QUERY_PENDING_CONTRACT } = await import('@/services/ai/reconciliation/knowledge-query/contract');
+    const cap = await knowledgeQueryCapability();
+    return cap.available ? { lifted: true, why: `t3_available:${cap.version ?? '?'}` } : { lifted: false, why: `t3_${cap.reason.toLowerCase()}`, pendingContract: KNOWLEDGE_QUERY_PENDING_CONTRACT };
+  }
+  if (cause === 'INTERPRETATION_INCOMPLETE') return { lifted: false, why: 'context_beyond_bounds' };
+  return { lifted: true, why: `retry:${configRef ?? 'unknown'}` };
+}
 
 async function cartes(sql: Parameters<typeof rows>[0], accountId: number, ids: readonly number[]): Promise<Map<number, Row>> {
   const r = await rows(sql, `
@@ -44,7 +84,8 @@ async function cartes(sql: Parameters<typeof rows>[0], accountId: number, ids: r
 
 export const toProcessDocumentFieldsCheck: CoherenceCheck = {
   id: 'COH-TODO-DOCUMENT-FIELDS',
-  version: 1,
+  // Lot 98B (P0-C) : version 2 — DECISION_CURRENT n'est plus CONSISTENT par défaut (réexamen du stock).
+  version: 2,
   status: 'ACTIVE',
   title: '« À traiter » : cartes documentaires dont la réponse est disponible ou la question sans objet',
   domain: 'a-traiter',
@@ -54,15 +95,16 @@ export const toProcessDocumentFieldsCheck: CoherenceCheck = {
   sources: ['to_process_actions', 'document_field_values', 'document_facts', 'document_unresolved_facts', 'document_source_units', 'document_rule_evaluations'],
   applicability: 'compte éligible',
   invariant: 'une carte ouverte correspond à une information réellement manquante, nécessaire et non déjà disponible ou calculable',
-  anomalies: ['CARD_TARGET_DELETED', 'CARD_RESOLVABLE_FROM_STATE', 'ANSWER_ALREADY_PRESENT', 'ANSWER_AVAILABLE', 'DECISION_STALE', 'CONFLICTING_VALUES'],
+  anomalies: ['CARD_TARGET_DELETED', 'CARD_RESOLVABLE_FROM_STATE', 'ANSWER_ALREADY_PRESENT', 'ANSWER_AVAILABLE', 'DECISION_STALE', 'CONFLICTING_VALUES', 'DECISION_NOT_DEMONSTRATED'],
   autoRepairWhen: 'réévaluation par la décision centrale existante (état, ou connaissance T1 persistée), écriture relue avant fermeture',
-  forbiddenRepairs: ['fermer une carte sans décision du moteur', 'relancer T1', 'écraser une valeur de l’utilisateur', 'choisir entre valeurs contradictoires'],
+  forbiddenRepairs: ['fermer une carte sans décision du moteur', 'relancer T1', 'écraser une valeur de l’utilisateur', 'choisir entre valeurs contradictoires',
+    'tenir un maintien technique (T4 incompatible, interprétation en attente, panne IA) pour une carte justifiée'],
   services: ['to-process/document-rule-bridge#syncDocumentRulesFromState', 'to-process/document-rule-bridge#resolveDocumentRuleFromKnowledge'],
   chain: ['T1', 'PERSISTENCE', 'TO_PROCESS'],
   triggers: ['SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'DOCUMENT_DELETED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque changement',
   criticality: 'MEDIUM',
-  tests: ['L82B-E2E-03', 'L82B-E2E-04'],
+  tests: ['L82B-E2E-03', 'L82B-E2E-04', 'L98B-U-COH', 'L98B-E2E-03', 'L98B-E2E-04'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `
@@ -113,8 +155,28 @@ export const toProcessDocumentFieldsCheck: CoherenceCheck = {
         case 'CONFLICTING_VALUES':
           out.set(id, { verdict: 'AMBIGUOUS', anomaly: 'CONFLICTING_VALUES', faultyLink: 'T1', observed: d.values, detail, inputHash });
           break;
+        case 'DECISION_CURRENT': {
+          // Lot 98B (P0-C) : décision à jour ≠ carte justifiée.
+          const st = cardStanding(d.lastDecision ? { outcome: d.lastDecision.outcome, reasonCode: d.lastDecision.reasonCode ?? null } : null);
+          if (st.kind !== 'TECHNICAL_HOLD') {
+            out.set(id, { verdict: 'CONSISTENT', detail: { ...detail, standing: st.kind === 'JUSTIFIED' && st.ambiguity ? 'REAL_AMBIGUITY' : 'JUSTIFIED' } });
+            break;
+          }
+          const levee = await causeLevee(st.cause, d.lastDecision?.configRef ?? null);
+          const base = { ...detail, standing: 'NOT_DEMONSTRATED', cause: st.cause, causeLabel: HOLD_CAUSE_LABELS[st.cause], causeLifted: levee.lifted, why: levee.why };
+          out.set(id, levee.lifted
+            ? { verdict: 'REPAIRABLE', anomaly: 'DECISION_NOT_DEMONSTRATED', faultyLink: st.cause === 'T4_INCOMPATIBLE' || st.cause === 'AI_UNAVAILABLE' ? 'T4' : 'T3',
+              expected: 'décision démontrant l’utilité de la carte', observed: `maintien technique (${st.reasonCode ?? st.cause})`, detail: base,
+              // Une nouvelle tentative au plus par jour (budget IA, anti-boucle).
+              inputHash: hashOf({ id, kind: d.kind, cause: st.cause, why: levee.why, rev: d.knowledgeRev ?? null, jour: ctx.today }) }
+            : { verdict: 'FINDING', anomaly: 'DECISION_NOT_DEMONSTRATED', faultyLink: st.cause === 'T4_INCOMPATIBLE' ? 'T4' : 'T3',
+              expected: 'décision démontrant l’utilité de la carte', observed: `maintien technique (${st.reasonCode ?? st.cause})`,
+              detail: { ...base, qualification: 'UNDETERMINED_DECISION', ...(levee.pendingContract ? { pendingContract: levee.pendingContract } : {}) },
+              inputHash: hashOf({ id, kind: d.kind, cause: st.cause, why: levee.why, rev: d.knowledgeRev ?? null }) });
+          break;
+        }
         default:
-          // DECISION_CURRENT, USER_PROTECTED, NO_ACTIVE_CARD, NOT_A_FIELD : carte justifiée ou hors objet.
+          // USER_PROTECTED, NO_ACTIVE_CARD, NOT_A_FIELD : hors objet.
           out.set(id, { verdict: 'CONSISTENT', detail });
       }
     }

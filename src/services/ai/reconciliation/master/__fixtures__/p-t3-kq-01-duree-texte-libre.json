@@ -1,6 +1,6 @@
 {
   "case": "P-T3-KQ-01",
-  "description": "KNOWLEDGE_QUERY — cas constaté (offre de crédit) : durée comprise dans un bloc de texte, constituants retournés avec leur preuve, aucune date inventée.",
+  "description": "KNOWLEDGE_QUERY — cas constaté (offre de crédit) : durée comprise dans un bloc de texte, constituants retournés avec leur preuve (durée ET remboursement), aucune date inventée ; lot 98A : une réponse « durée seule » est incomplète (la carte de date de fin resterait ouverte).",
   "qualification": { "role": "answer" },
   "context": {
     "knowledgeQuery": {
@@ -123,9 +123,16 @@
   },
   "expected": {
     "outcome": "CONSTITUENTS",
-    "findings": {
-      "duration": "264",
-      "repayment": "La durée est égale à 22 ans"
-    }
+    "required": [
+      "duration",
+      "repayment"
+    ],
+    "values": {
+      "duration": "264"
+    },
+    "forbidden": [
+      "FIELD"
+    ],
+    "endDate": "NO_ACTION_UNDATED_NOT_NEEDED"
   }
 }

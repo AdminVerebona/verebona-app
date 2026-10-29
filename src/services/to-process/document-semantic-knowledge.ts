@@ -17,6 +17,8 @@ import type { EvidenceFact } from './document-field-evidence';
 import type { ExtraDerivationFacts } from './document-derivations';
 import type { ScheduleFacts } from './document-derivations';
 import type { SemanticResolution } from '@/services/ai/reconciliation/knowledge-query/service';
+import type { ConstituentRole } from '@/services/ai/reconciliation/knowledge-query/contract';
+import { contradictoryTargets, mergeFindings } from '@/services/ai/reconciliation/knowledge-query/validate';
 
 /** Source des faits issus du traitement sémantique (diagnostic, pertinence). */
 const SEMANTIC_SOURCE = 'T3_SEMANTIC';
@@ -76,4 +78,88 @@ export function semanticConstituents(r: SemanticResolution | null): ExtraDerivat
     n += 1;
   }
   return n ? out : null;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// LOT 98B (P0-D) — RÉPONSE T3 VALIDE MAIS INCOMPLÈTE
+//
+// Le code ne reconstruit AUCUNE compréhension (ni regex, ni règle métier) :
+// il confronte ce que la DÉCISION déclare lui avoir manqué aux constituants
+// que T3 a rendus. Seul besoin déclaré aujourd'hui par le moteur : la règle
+// « date de fin nécessaire ? » (`endDateNeed`, lot 76 I) conclut sans IA
+// qu'une date de fin inconnue est inutile quand un REMBOURSEMENT par
+// échéances est établi et qu'aucune démarche n'est attachée à la fin ; sans
+// cet élément, elle ne peut pas statuer (T4, ou maintien prudent). Une autre
+// règle qui déclare un besoin s'ajoute ici, jamais un vocabulaire.
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Préfixe des besoins déclarés par la décision (`missing_sources` de la trace). */
+export const DECISION_GAP_PREFIX = 'DECISION_GAP:';
+
+/**
+ * Constituants dont la décision a besoin et qu'elle n'a pas (pure) :
+ * aucune valeur lue de la donnée, date de fin dont la nécessité n'a pas pu
+ * être tranchée faute de remboursement établi, aucune démarche de fin lue.
+ */
+export function knowledgeGaps(p: {
+  endDateNeed: { repaymentSchedule: boolean; endActions: readonly string[] } | null | undefined;
+  /** Une valeur de la donnée a été lue (faits, documents liés, T3) : la décision ne dépend plus des constituants. */
+  readValue: boolean;
+}): ConstituentRole[] {
+  if (p.readValue || !p.endDateNeed) return [];
+  return !p.endDateNeed.repaymentSchedule && p.endDateNeed.endActions.length === 0 ? ['repayment'] : [];
+}
+
+/** Rôles de constituants rendus par une interprétation (constats retenus). Pure. */
+export const renderedRoles = (r: Pick<SemanticResolution, 'findings'> | null | undefined): string[] =>
+  [...new Set((r?.findings ?? []).map((f) => f.target))].sort();
+
+/**
+ * La réponse T3 est-elle valide mais INCOMPLÈTE pour la décision ? (pure) —
+ * T3 a rendu des constituants (issue CONSTITUENTS) sans ceux que la décision
+ * déclare manquants. Rend les rôles à redemander (sous-ensemble des
+ * constituants offerts), vide sinon.
+ */
+export function incompleteAnswerGaps(r: SemanticResolution | null | undefined, gaps: readonly ConstituentRole[], offered: readonly string[]): ConstituentRole[] {
+  if (!r || r.status !== 'ANSWERED' || r.outcome !== 'CONSTITUENTS' || !gaps.length) return [];
+  const rendus = new Set(renderedRoles(r));
+  return gaps.filter((g) => offered.includes(g) && !rendus.has(g));
+}
+
+/**
+ * POINT DE RACCORD UNIQUE (lot 98B, P0-D) — constituants à redemander à T3
+ * pour CETTE carte : besoin déclaré par la décision (`endDateNeed` tracé ou
+ * courant → `knowledgeGaps`) confronté à la réponse rendue. Utilisé par la
+ * décision centrale (demande complémentaire) ET par le contrôle
+ * COH-T1-KNOWLEDGE-CONSUMPTION. À l'intégration, c'est ici que se branche le
+ * classement de complétude du chantier 98A (`knowledgeCompleteness`) si l'on
+ * veut une seule source ; aucune regex, aucune règle métier.
+ */
+export function isKnowledgeAnswerIncompleteForCard(p: {
+  answer: SemanticResolution | null | undefined;
+  /** Besoins déclarés par la décision de la carte (rôles). */
+  needs: readonly ConstituentRole[];
+  /** Constituants offerts à T3 par la question. */
+  offered: readonly string[];
+}): { incomplete: boolean; missing: ConstituentRole[] } {
+  const missing = incompleteAnswerGaps(p.answer, p.needs, p.offered);
+  return { incomplete: missing.length > 0, missing };
+}
+
+/** Fusion de la demande complémentaire dans l'interprétation principale (pure). */
+export function withFollowUp(main: SemanticResolution, focus: readonly ConstituentRole[], suite: SemanticResolution): SemanticResolution {
+  const findings = suite.status === 'ANSWERED' ? mergeFindings([main.findings, suite.findings]) : main.findings;
+  return {
+    ...main,
+    findings,
+    contradictions: contradictoryTargets(findings),
+    aiCalled: main.aiCalled || suite.aiCalled,
+    calls: main.calls + suite.calls,
+    traceIds: [...main.traceIds, ...suite.traceIds],
+    citedCoveredUnits: [...(main.citedCoveredUnits ?? []), ...(suite.citedCoveredUnits ?? [])],
+    followUp: {
+      focus: [...focus], status: suite.status, outcome: suite.outcome ?? null, pendingReason: suite.pendingReason ?? null,
+      queryId: suite.queryId, cached: suite.cached, calls: suite.calls,
+    },
+  };
 }
