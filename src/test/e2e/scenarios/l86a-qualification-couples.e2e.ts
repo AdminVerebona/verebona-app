@@ -180,6 +180,8 @@ scenario('L86A', 'Qualification par couple et candidates automatiques (Pilotage 
     await svc.activate(v.id, adminId);
     baseVersionId = v.id;
     await preparerCorpus();
+    // Lot 100B : le verrou A1 (couverture du corpus #601) est recetté par l100b-corpus-certification ; ici, verrou levé.
+    (await import('@/services/ai/governance/master-corpus/certification/promotion')).__setPromotionLockForTests((await import('@/services/ai/governance/master-corpus/certification/promotion')).OPEN_LOCK_FOR_TESTS);
     const { FakeProvider, setAiProvider, getAiProvider } = await import('@/services/ai/gateway/providers');
     avantProvider = getAiProvider();
     provider = new FakeProvider();
@@ -203,6 +205,7 @@ scenario('L86A', 'Qualification par couple et candidates automatiques (Pilotage 
     (await import('@/services/ai/provider/model-capabilities.repository')).invalidateModelCapabilities();
     (await import('@/services/ai/qualification/cases')).__setQualificationCorpusForTests(null);
     (await import('@/services/ai/qualification/context')).__resetQualificationContextForTests();
+    (await import('@/services/ai/governance/master-corpus/certification/promotion')).__setPromotionLockForTests(null);
   });
 
   let evidenceE01 = 0;

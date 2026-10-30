@@ -14,10 +14,21 @@ import {
   Sparkles,
   Loader2,
   CheckCheck,
+  Share2,
 } from 'lucide-react';
 import { apiClient, ApiClientError } from '@/lib/api-client';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { canShareNatively, shareContent } from '@/lib/native/share';
 
 const INVITATION_ERROR = 'L\'invitation n\'a pas pu être envoyée. Réessayez plus tard ou copiez votre lien pour le partager.';
+
+/**
+ * Lot 100D (décision PO A9) : texte d'invitation partagé — sans prix ni
+ * promesse commerciale (identique dans l'app et sur le Web).
+ */
+export function referralShareText(code: string): string {
+  return `Je vous invite à découvrir Verebona, l’espace qui garde en ordre vos biens et leurs documents. Mon code de parrainage : ${code}`;
+}
 
 // ─── Composant principal ─────────────────────────────────────────────────────
 
@@ -37,6 +48,12 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
   const [email, setEmail] = useState('');
   const [sendingEmail, setSendingEmail] = useState(false);
   const [stats, setStats] = useState<{ validatedCount: number; monthsEarned: number } | null>(null);
+  // Lot 100D (A9) : le parrainage reste dans l'application (code visible,
+  // copiable, partageable) ; seules les mentions qui poussent à souscrire
+  // sont remplacées par un texte neutre.
+  const inApp = useNativeCommerceHidden();
+  const [canShare, setCanShare] = useState(false);
+  useEffect(() => { setCanShare(canShareNatively()); }, []);
 
   useEffect(() => {
     loadReferralData();
@@ -101,6 +118,20 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
     }
   };
 
+  /** Feuille de partage native (app) ou du navigateur ; sinon, copie de l'invitation. */
+  const handleShare = async () => {
+    if (!data?.link) return;
+    const text = referralShareText(data.link.code);
+    const outcome = await shareContent({ title: 'Invitation Verebona', text, url: data.link.url });
+    if (outcome !== 'unavailable') return;
+    try {
+      await navigator.clipboard.writeText(`${text}\n${data.link.url}`);
+      toast.success('Invitation copiée : collez-la dans le message de votre choix.');
+    } catch {
+      toast.error('Impossible de copier l’invitation');
+    }
+  };
+
   const handleSendInvitation = async () => {
     if (!email.trim() || sendingEmail) return;
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -157,13 +188,21 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
           Parrainage
         </h4>
         )}
-        <p className="text-xs text-muted-foreground">
-          Disponible après votre première facturation sur les offres Premium ou Premium Duo annuelles.
-        </p>
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Users className="w-3.5 h-3.5 flex-shrink-0" />
-          <span>Parrainez vos proches et gagnez <strong>1 mois d&apos;abonnement</strong> par parrainage validé.</span>
-        </div>
+        {inApp ? (
+          <p className="text-xs text-muted-foreground" data-testid="referral-not-yet">
+            Le parrainage n’est pas encore disponible pour votre compte.
+          </p>
+        ) : (
+          <>
+            <p className="text-xs text-muted-foreground">
+              Disponible après votre première facturation sur les offres Premium ou Premium Duo annuelles.
+            </p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Users className="w-3.5 h-3.5 flex-shrink-0" />
+              <span>Parrainez vos proches et gagnez <strong>1 mois d&apos;abonnement</strong> par parrainage validé.</span>
+            </div>
+          </>
+        )}
       </div>
     );
   }
@@ -294,6 +333,19 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
           </Button>
         </div>
       </div>
+
+      {/* Lot 100D (A9) : partager l'invitation — feuille de partage native dans
+          l'app, celle du navigateur si elle existe, sinon copie. */}
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleShare}
+        className="w-full sm:w-auto gap-1.5"
+        data-testid="referral-share"
+      >
+        {canShare ? <Share2 className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+        {canShare ? 'Partager mon invitation' : 'Copier mon invitation'}
+      </Button>
 
       {/* Inviter par email — CDC §6.4 */}
       <div className="space-y-2 pt-1 border-t border-[color:var(--border-subtle)]">

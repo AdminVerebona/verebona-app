@@ -48,9 +48,15 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'user_sessions', 'reauth_proofs',
   // Lot 96A : un lien de changement d'adresse utilisé ou annulé ne redevient jamais valable.
   'email_change_requests',
+  // Lot 100D (A3) : une étiquette de transition retirée ne redevient jamais valable.
+  'device_trust_legacy_accounts',
   // Lot 97 : appareils mobiles — un appareil déconnecté ou révoqué après le point ne doit jamais
   // redevenir destinataire de notifications (même règle que les révocations de session).
   'mobile_push_installations',
+  // Lot 100G : une restauration ne lève jamais une opposition aux communications
+  // commerciales, et ne rouvre jamais un e-mail de fin d'essai déjà envoyé ou
+  // clos (aucun second envoi) ; le journal reste consultable.
+  'marketing_oppositions', 'trial_lifecycle_messages', 'trial_lifecycle_events',
   'admin_anomalies', 'admin_anomaly_occurrences',
   'ai_usage_event', 'ai_usage_events', 'ai_usage_daily_rollup', 'ai_usage_account_counter', 'ai_call_diagnostics', 'ai_operation',
   'ai_pipeline_step', 'ai_log_archives', 'ai_admin_audit_log', 'ai_t2_content_access_log', 'ai_execution_reports', 'ai_execution_report_entries',
@@ -63,6 +69,8 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'ai_qualification_campaigns', 'ai_qualification_campaign_accounts', 'ai_qualification_evidence', 'ai_qualification_cases',
   // Lot 99B : journal de la mise en conformité des prompts (décisions, preuves, retours arrière) — consultable après une restauration.
   'ai_prompt_conformity_issues', 'ai_prompt_conformity_events',
+  // Lot 100B : approbations humaines des oracles, rejets motivés et journal du verrou A1 — jamais perdus par une restauration.
+  'ai_corpus_oracle_approvals', 'ai_corpus_case_decisions', 'ai_corpus_a1_assessments',
   'email_logs', 'email_provider_events', 'stripe_webhook_logs', 'legal_audit_log',
 ];
 

@@ -186,7 +186,9 @@ describe('URL, historique et onglets (§7)', () => {
     ]) {
       const src = read(f);
       const bloc = src.slice(src.indexOf('const changerRecherche'), src.indexOf('const changerRecherche') + 900);
-      expect(bloc).toMatch(/window\.history\.replaceState\(null, '', `\$\{pathname\}\$\{searchWithLocalQuery\(search, next/);
+      // Lot 100E (A8) : « Mon agenda » passe par `agendaSearchParams` (période suspendue), qui appelle `searchWithLocalQuery`.
+      expect(bloc).toMatch(/window\.history\.replaceState\(null, '', `\$\{pathname\}\$\{(searchWithLocalQuery\(search, next|suite\})/);
+      expect(bloc).toContain('searchWithLocalQuery(');
       expect(bloc).not.toMatch(/pushState|router\.push/);
     }
     const fiche = read('src/app/(dashboard)/assets/[id]/page.tsx');

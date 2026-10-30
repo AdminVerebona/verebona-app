@@ -408,6 +408,8 @@ async function correctIssue(
   const qualification = {
     campaignId: camp.campaignId, campaignStatus: camp.status, refusal: camp.refusal, decision: a?.decision ?? null,
     coverage: a?.coverage ?? null, refusalReasons: a?.refusalReasons ?? [], blockingReasons: a?.blockingReasons ?? [], excluded: a?.excluded ?? excludedOperations, excludedCases: a?.excludedCases ?? [],
+    // Lot 100B : verrou A1 (couverture du corpus #601) — manques affichés au BO.
+    a1: a?.a1 ? { allowed: a.a1.allowed, blockers: a.a1.blockers.slice(0, 20) } : null,
     operations: (a?.operations ?? []).map((o) => ({
       operationCode: o.operationCode, referenceVerdict: o.referenceVerdict, candidateVerdict: o.candidateVerdict, decision: o.decision, cases: o.cases,
       regressions: o.regressions.map((x) => x.caseId), improvements: o.improvements.map((x) => x.caseId),
@@ -445,7 +447,7 @@ async function correctIssue(
   const { activateQualifiedCandidate } = await import('../config/config-version.service');
   let previousId: number | null = null;
   try {
-    const r = await activateQualifiedCandidate(candidate!.id, { summary: `Mise en conformité automatique ${c.id} : ${c.treatment} v${active.versionNumber} → v${version.versionNumber}` });
+    const r = await activateQualifiedCandidate(candidate!.id, { summary: `Mise en conformité automatique ${c.id} : ${c.treatment} v${active.versionNumber} → v${version.versionNumber}`, a1: a.a1?.token ?? null });
     previousId = r.previousId;
   } catch (e) {
     await store.transition(issue, 'BLOCKED', { kind: 'ACTIVATION_REFUSED', message: `Activation refusée par les contrôles de configuration : ${(e as Error).message}`.slice(0, 1500) },

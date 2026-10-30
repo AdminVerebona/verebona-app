@@ -14,9 +14,16 @@
  *     actuelle ;
  *   · `legacyNotBeforeMs` : création du compte.
  * Aucune entrée héritée n'est plus émise ; elles expirent au plus tard 180
- * jours après la dernière connexion d'avant l'intégration. Les demandes de
- * changement CONFIRMÉES sont conservées 180 jours (purge, `email-change.service`)
- * pour que l'adresse d'origine reste connue pendant toute cette transition.
+ * jours après la dernière connexion d'avant l'intégration.
+ *
+ * LOT 100D (décision PO A3) — la reconnaissance ne dépend plus de
+ * l'historique des adresses : les demandes de changement confirmées sont
+ * purgées après 30 jours ; juste avant, la purge garde pour le compte la
+ * seule ÉTIQUETTE héritée de son adresse d'origine
+ * (`device_trust_legacy_accounts.legacy_tag`, HMAC — jamais l'adresse,
+ * 180 jours au plus). Ordre de résolution : étiquette gardée, sinon ancienne
+ * adresse de la première demande confirmée encore présente, sinon adresse
+ * actuelle. Les entrées `uid` (identifiant stable) n'ont besoin de rien.
  *
  * Jamais bloquant : en cas d'erreur, le compte est rendu sans information de
  * transition (seules les entrées `uid` comptent) — prudent, jamais permissif.
@@ -29,11 +36,15 @@ interface AccountRow {
   email: string;
   created_at: Date | string | null;
   original_email: string | null;
+  legacy_tag?: string | null;
 }
 
 function toAccount(r: AccountRow | undefined): DeviceTrustAccount | null {
   if (!r || !Number.isInteger(Number(r.id))) return null;
   const created = r.created_at ? new Date(r.created_at).getTime() : NaN;
+  if (r.legacy_tag) {
+    return { userId: Number(r.id), legacyTag: r.legacy_tag, legacyNotBeforeMs: Number.isFinite(created) ? created : null };
+  }
   return {
     userId: Number(r.id),
     legacyEmail: normalizeEmail(r.original_email ?? r.email) || null,
@@ -54,7 +65,9 @@ export async function deviceAccountByEmail(email: string, normalized: string): P
       SELECT id, email, created_at,
              (SELECT r.old_email FROM email_change_requests r
                WHERE r.user_id = users.id AND r.consumed_at IS NOT NULL
-               ORDER BY r.consumed_at ASC LIMIT 1) AS original_email
+               ORDER BY r.consumed_at ASC LIMIT 1) AS original_email,
+             (SELECT l.legacy_tag FROM device_trust_legacy_accounts l
+               WHERE l.user_id = users.id AND l.expires_at > now()) AS legacy_tag
         FROM users
        WHERE email IN (${email}, ${normalized})
        ORDER BY (email = ${email}) DESC
@@ -73,7 +86,9 @@ export async function deviceAccountById(userId: number): Promise<DeviceTrustAcco
       SELECT id, email, created_at,
              (SELECT r.old_email FROM email_change_requests r
                WHERE r.user_id = users.id AND r.consumed_at IS NOT NULL
-               ORDER BY r.consumed_at ASC LIMIT 1) AS original_email
+               ORDER BY r.consumed_at ASC LIMIT 1) AS original_email,
+             (SELECT l.legacy_tag FROM device_trust_legacy_accounts l
+               WHERE l.user_id = users.id AND l.expires_at > now()) AS legacy_tag
         FROM users
        WHERE id = ${userId}
        LIMIT 1`;

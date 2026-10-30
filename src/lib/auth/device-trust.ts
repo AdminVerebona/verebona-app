@@ -76,6 +76,11 @@
  * adresse. Une entrée héritée est remplacée par l'entrée `uid` à la
  * connexion suivante ; aucune n'est plus jamais émise.
  * Résolution du compte : `device-account.ts`.
+ *
+ * LOT 100D (décision PO A3) : l'adresse d'origine n'est plus lue dans
+ * l'historique des changements d'adresse au-delà de 30 jours ; le compte
+ * garde seulement l'ÉTIQUETTE héritée (`legacyTag`, table
+ * `device_trust_legacy_accounts`, 180 jours au plus) — jamais l'adresse.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -102,6 +107,15 @@ function legacyEmailTag(normalizedEmail: string): string {
   return hmac(`acct:${normalizedEmail}`, 16);
 }
 
+/**
+ * Lot 100D (A3) : étiquette HÉRITÉE d'une adresse, telle qu'elle figure dans
+ * un ancien cookie — conservée par compte à la place de l'adresse
+ * (`device_trust_legacy_accounts`). Jamais l'adresse en clair.
+ */
+export function legacyDeviceTagFor(normalizedEmail: string): string | null {
+  return normalizedEmail ? legacyEmailTag(normalizedEmail) : null;
+}
+
 /** Étiquette du compte : identifiant utilisateur stable — jamais en clair. */
 function userTag(userId: number): string {
   return hmac(`uid:${userId}`, 16);
@@ -116,6 +130,8 @@ export interface DeviceTrustAccount {
   userId: number;
   /** Adresse D'ORIGINE du compte (avant tout changement), normalisée. */
   legacyEmail?: string | null;
+  /** Lot 100D : étiquette héritée de l'adresse d'origine, gardée sans l'adresse (prioritaire sur `legacyEmail`). */
+  legacyTag?: string | null;
   /** Création du compte (ms) : une entrée héritée plus ancienne n'est pas de ce compte. */
   legacyNotBeforeMs?: number | null;
 }
@@ -125,10 +141,17 @@ function validAccount(a: DeviceTrustAccount | null | undefined): a is DeviceTrus
 }
 
 /** L'entrée appartient-elle à ce compte (étiquette `uid`, ou héritée sous conditions) ? */
+/** Étiquette héritée attendue pour ce compte (étiquette gardée, sinon adresse d'origine). */
+function expectedLegacyTag(account: DeviceTrustAccount): string | null {
+  if (account.legacyTag && TAG_RE.test(account.legacyTag)) return account.legacyTag;
+  return account.legacyEmail ? legacyEmailTag(account.legacyEmail) : null;
+}
+
 function entryIsFor(e: TrustEntry, account: DeviceTrustAccount): boolean {
   if (e.tag === userTag(account.userId)) return true;
-  if (!account.legacyEmail || account.legacyNotBeforeMs == null || !Number.isFinite(account.legacyNotBeforeMs)) return false;
-  if (e.tag !== legacyEmailTag(account.legacyEmail)) return false;
+  const legacy = expectedLegacyTag(account);
+  if (!legacy || account.legacyNotBeforeMs == null || !Number.isFinite(account.legacyNotBeforeMs)) return false;
+  if (e.tag !== legacy) return false;
   const issuedS = e.expS - DEVICE_TRUST_TTL_S;
   return issuedS >= Math.floor(account.legacyNotBeforeMs / 1000);
 }
@@ -207,7 +230,7 @@ export function buildDeviceCookieValue(raw: string | null | undefined, account: 
   const deviceId = authenticDeviceId(raw, nowMs) ?? randomBytes(16).toString('base64url');
   const nowS = Math.floor(nowMs / 1000);
   const tag = userTag(account.userId);
-  const legacy = account.legacyEmail ? legacyEmailTag(account.legacyEmail) : null;
+  const legacy = expectedLegacyTag(account);
   const kept = (parsed?.entries ?? []).filter((e) =>
     e.tag !== tag && e.tag !== legacy && e.expS > nowS && safeEqual(e.sig, entrySignature(deviceId, e.tag, e.expS)));
   const expS = nowS + DEVICE_TRUST_TTL_S;

@@ -106,9 +106,11 @@ afterEach(() => {
 describe('L97B-COM — aucun achat ni gestion commerciale dans l’app', () => {
   it('pages commerciales : offres, abonnement (gestion, paiement), rétractation — préfixes exacts', () => {
     for (const p of ['/mon-compte/offres', '/mon-compte/offres?plan=premium'.split('?')[0], '/mon-compte/abonnement/gerer', '/mon-compte/abonnement/gerer/42',
-      '/abonnement', '/abonnement/checkout', '/abonnement/success', '/abonnement/essai-termine', '/retractation']) {
+      '/abonnement', '/abonnement/checkout', '/abonnement/success', '/abonnement/essai-termine']) {
       expect(isCommercePath(p), p).toBe(true);
     }
+    // Lot 100D (décision PO A9) : la rétractation est un droit de l'utilisateur, ouverte dans l'app.
+    expect(isCommercePath('/retractation')).toBe(false);
     for (const p of ['/mon-compte', '/mon-compte/notifications', '/mon-compte/offresX', '/abonnements', '/accueil', '/app/abonnement', null]) {
       expect(isCommercePath(p as string), String(p)).toBe(false);
     }
@@ -126,7 +128,8 @@ describe('L97B-COM — aucun achat ni gestion commerciale dans l’app', () => {
 
   it('opérations commerciales de l’API ; lectures (offre, essai, quotas) conservées', () => {
     for (const p of NATIVE_COMMERCE_API_PATHS) expect(isCommerceApiPath(p)).toBe(true);
-    expect(isCommerceApiPath('/api/withdrawal/confirm')).toBe(true);
+    // Lot 100D (A9) : rétractation permise à l'app.
+    expect(isCommerceApiPath('/api/withdrawal/confirm')).toBe(false);
     for (const p of ['/api/billing/me', '/api/billing/trial-status', '/api/billing/catalog', '/api/billing/upgradeX', '/api/users/me']) {
       expect(isCommerceApiPath(p), p).toBe(false);
     }
@@ -163,11 +166,13 @@ describe('L97B-COM — middleware : navigation directe et API', () => {
 
   it('vue de l’app → écran d’information (offres, gestion, paiement, rétractation)', async () => {
     const { middleware, config } = await import('@/middleware');
-    for (const p of ['/mon-compte/offres', '/mon-compte/abonnement/gerer/7', '/abonnement/checkout?plan=premium', '/retractation']) {
+    for (const p of ['/mon-compte/offres', '/mon-compte/abonnement/gerer/7', '/abonnement/checkout?plan=premium']) {
       const res = await middleware(req(p, { 'user-agent': UA_IOS }));
       expect(res.status, p).toBe(307);
       expect(new URL(res.headers.get('location')!).pathname, p).toBe(NATIVE_COMMERCE_INFO_PATH);
     }
+    // Lot 100D (décision PO A9) : la rétractation est servie dans l'app (droit de l'utilisateur).
+    expect((await middleware(req('/retractation', { 'user-agent': UA_IOS }))).headers.get('x-middleware-next')).toBe('1');
     expect(config.matcher).toEqual(expect.arrayContaining(['/abonnement/:path*', '/retractation/:path*']));
   });
 

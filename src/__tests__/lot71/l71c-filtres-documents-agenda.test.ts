@@ -343,7 +343,8 @@ describe('FILT-05 — « Mon agenda » : filtres dans la page, sans tiroir (ordi
   });
 
   it('FILT-05d — filtres propres à l’agenda conservés : période, statut annulé, vues Liste/Mensuel/Annuel', () => {
-    expect(AGENDA_PERIOD_OPTIONS.map((o) => o.label)).toEqual(['Tout', 'À venir', "Aujourd'hui", 'Passés']);
+    // Lot 100E (A8) : « Tous » (libellé de la décision PO) remplace « Tout ».
+    expect(AGENDA_PERIOD_OPTIONS.map((o) => o.label)).toEqual(['Tous', 'À venir', "Aujourd'hui", 'Passés']);
     expect(PAGE).toContain('title="Période"');
     expect(PAGE).toContain("label: 'Afficher les annulés'");
     expect(PAGE).toContain('<AgendaViewControls');
@@ -355,7 +356,8 @@ describe('FILT-05 — « Mon agenda » : filtres dans la page, sans tiroir (ordi
     expect(PAGE).toMatch(/const equipment = equipmentFilterParam\(searchParams\.get\('equipment'\)\)/);
     // Lot 75B : le filtre Pièce est réinitialisé avec le filtre Équipement.
     expect(PAGE).toMatch(/updateURL\(\{ assetIds: next\.length > 0 \? next\.join\(','\) : null, equipment: null, piece: null \}\)/);
-    expect(PAGE).toMatch(/const clearFilters = \(\) => updateURL\(\{ period: null, assetIds: null, equipment: null, piece: null, includeCancelled: null \}\)/);
+    // Lot 100E (A8) : la période suspendue par une recherche est aussi effacée.
+    expect(PAGE).toMatch(/const clearFilters = \(\) => updateURL\(\{ period: null, \[SUSPENDED_PERIOD_PARAM\]: null, assetIds: null, equipment: null, piece: null, includeCancelled: null \}\)/);
     expect(PAGE).toMatch(/params\.set\('equipmentFacet', '1'\)/);
   });
 

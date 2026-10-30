@@ -20,11 +20,16 @@ function corpusFingerprintOf(operationCode: string, opts: { readMasterFile: Mast
     readMasterFile: opts.readMasterFile, corpusCases: opts.corpusCases, includeT1Reference: opts.includeT1Reference,
   })).corpusFingerprint;
   if (opts.corpusCases || opts.includeT1Reference === false) return build();
-  const hit = corpusFp.get(operationCode);
-  if (hit) return hit;
-  const p = build().catch((e) => { corpusFp.delete(operationCode); throw e; });
-  corpusFp.set(operationCode, p);
-  return p;
+  // Lot 100B : la certification (approbations, rejets du BO) évolue sans redéploiement — elle entre dans la clé.
+  return (async () => {
+    const stamp = await (await import('../governance/master-corpus/certification/state')).certificationStampNow().catch(() => 'absent');
+    const key = `${operationCode}|${stamp}`;
+    const hit = corpusFp.get(key);
+    if (hit) return hit;
+    const p = build().catch((e) => { corpusFp.delete(key); throw e; });
+    corpusFp.set(key, p);
+    return p;
+  })();
 }
 
 export function __resetQualificationContextForTests(): void {

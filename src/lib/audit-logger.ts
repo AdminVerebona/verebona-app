@@ -21,7 +21,9 @@ type ActivityType = 'LOGIN_SUCCESS' | 'LOGIN_FAILED' | 'EMAIL_CHANGE' | 'PROFILE
   'SESSION_CREATED' | 'SESSION_REVOKED' | 'REAUTH_SUCCESS' | 'REAUTH_FAILED' |
   // Lot 93 (CDC 18 §23.1) : Google / Apple — sans aucun jeton ni code.
   'OAUTH_START' | 'OAUTH_CALLBACK_SUCCESS' | 'OAUTH_CALLBACK_FAILED' | 'IDENTITY_LINKED' | 'IDENTITY_UNLINKED' |
-  'PASSWORD_CREATED' | 'SOCIAL_SIGNUP';
+  'PASSWORD_CREATED' | 'SOCIAL_SIGNUP' |
+  // Lot 100D (décision PO A9) : résiliation (fin de période) demandée depuis l'application.
+  'SUBSCRIPTION_RENEWAL_STOPPED';
 
 interface LogActivityParams {
   activityType: ActivityType;

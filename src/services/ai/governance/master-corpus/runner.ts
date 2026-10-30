@@ -229,6 +229,9 @@ export async function runMasterCorpus(o: RunMasterCorpusOptions): Promise<Master
     const exigees = m.tasks.filter((t) => !absentes.includes(t));
     for (const c of mine) {
       if (absentes.includes(c.task)) { ignores.push(c.id); continue; }
+      // Lot 100B : cas du corpus #601 sans sortie enregistrée (spécification convertie, attendu = oracle) —
+      // rien à REJOUER ; il n'est exécuté que sur appel réel (qualification par couple, passage réel).
+      if (!o.live && c.output === undefined) { ignores.push(c.id); continue; }
       // Lot 54 : sortie enregistrée d'un autre contrat de sortie que celui de
       // la version évaluée (T4 CLASSIFY_EVENT v1 ↔ v2) — non rejouée ici.
       if (caseSchemaName(c) !== schemaNameFor(c, execution)) { ignores.push(c.id); continue; }

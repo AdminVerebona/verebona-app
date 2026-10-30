@@ -26,6 +26,16 @@
  */
 export async function registerNode(): Promise<void> {
 
+  // 00. Lot 100C (CVE-2026-111497) : runtime Node EN SERVICE journalisé en
+  //     tout premier — même un démarrage qui échoue ensuite le montre dans
+  //     les journaux du conteneur. Jamais bloquant ; l'alerte de Supervision
+  //     est posée après les migrations (étape 1 bis).
+  const { currentNodeRuntime, formatRuntimeLogLine } = await import('@/lib/health/node-runtime');
+  const runtimeNode = currentNodeRuntime();
+  (runtimeNode.status === 'error' ? console.error : runtimeNode.status === 'warning' ? console.warn : console.info)(
+    formatRuntimeLogLine(runtimeNode),
+  );
+
   // 0. Secrets de signature des liens envoyés par e-mail (vérification
   //    d'adresse, réinitialisation du mot de passe). En production, sans
   //    secret, ces fonctions LÈVENT : le démarrage échoue volontairement.
@@ -74,6 +84,12 @@ export async function registerNode(): Promise<void> {
   const { assertMigrationBootPolicy } = await import('@/db/migration-boot');
   assertMigrationBootPolicy(await ensureMigrations());
   startIndexMaintenance();
+
+  // 1 bis. Lot 100C : runtime non corrigé → anomalie de Supervision ;
+  //    corrigé → résolution automatique. Sans attente, ne lève jamais.
+  void import('@/services/admin/node-runtime-supervision')
+    .then((m) => m.syncNodeRuntimeAnomaly(runtimeNode))
+    .catch((e) => console.error('[startup] supervision du runtime Node non effectuée :', (e as Error).message));
 
   //    CDC 15 DP-05 : colonnes de trace de la migration 0217. Absentes, les
   //    traces IA continuent sans TASK ni prompt maître — signalé ici, au

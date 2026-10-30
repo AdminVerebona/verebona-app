@@ -87,6 +87,12 @@ export const RETIRED_TRANSACTIONAL_EMAILS: Readonly<Record<string, string>> = {
   // l'e-mail « appareils déconnectés par précaution » est supprimé, sans
   // notification de remplacement.
   SECURITY_SESSIONS_REVOKED: 'Supprimé (lot 79) : la déconnexion par précaution reste journalisée, sans e-mail.',
+  // Lot 100G (E2, un seul circuit) : anciens modèles d'essai, jamais déclenchés
+  // par le code et en concurrence avec les gabarits réellement expédiés —
+  // remplacés par la séquence de fin d'essai (notif_trial_ending, notif_trial_ended).
+  TRIAL_REMINDER_J3: 'Retiré (lot 100G) : remplacé par la séquence de fin d’essai (J−2 : notif_trial_ending).',
+  TRIAL_REMINDER_J1: 'Retiré (lot 100G) : remplacé par la séquence de fin d’essai (J−2 : notif_trial_ending).',
+  TRIAL_ENDED: 'Retiré (lot 100G) : remplacé par la séquence de fin d’essai (J0 : notif_trial_ended).',
 };
 
 export function transactionalRetiredReason(templateCode: string): string | null {

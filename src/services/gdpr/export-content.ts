@@ -28,6 +28,8 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'user_sessions', 'reauth_proofs',
   // Lot 96A : demandes de changement d'adresse (empreintes de liens).
   'email_change_requests',
+  // Lot 100D (A3) : étiquettes de transition des appareils reconnus (empreintes).
+  'device_trust_legacy_accounts',
   'idempotency_keys', 'ai_operation_idempotency', 'ai_security_lock',
   // Journaux internes du support et de l'administration
   'admin_audit_log', 'ai_admin_audit_log', 'legal_audit_log', 'account_audit_log',

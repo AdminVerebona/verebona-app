@@ -24,6 +24,19 @@
  *      (`NATIVE_COMMERCE_API_PATHS`, 403 `NOT_AVAILABLE_IN_APP`).
  * Dans un navigateur : aucune de ces règles ne s'applique.
  * La lecture du plan, de l'essai et des quotas reste affichée (COM-04).
+ *
+ * LOT 100D (décision PO A9 du 27/10/2026) — DROITS DE L'UTILISATEUR CONSERVÉS
+ * Seul l'ACHAT est retiré de l'app (paiement, tarifs, offres, portail Stripe,
+ * changement d'offre, incitation ou lien d'achat). Restent proposés dans
+ * l'app, sans aucun prix ni lien d'achat :
+ *   · le droit de rétractation (`/retractation`, `/api/withdrawal`) — retirés
+ *     des listes ci-dessous ; le montant estimé du remboursement n'y est pas
+ *     affiché ;
+ *   · la résiliation (fin de période, `/api/billing/stop-renewal`, hors
+ *     portail Stripe) ;
+ *   · la gestion et la suppression du compte, le parrainage (code visible,
+ *     copiable, partageable — `lib/native/share`) et l'invitation Premium Duo.
+ * Une souscription se fait toujours sur le site (message ci-dessous).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { isNativeApp } from './bridge';
@@ -35,8 +48,11 @@ export const NATIVE_COMMERCE_MESSAGE = 'La gestion de l’abonnement se fait sur
 /** Écran d'information servi dans l'app à la place d'une page commerciale. */
 export const NATIVE_COMMERCE_INFO_PATH = '/app/abonnement';
 
-/** Pages commerciales (préfixes) — les mêmes que les exclusions des liens d'app (`app-links.ts`). */
-export const NATIVE_COMMERCE_PATHS: readonly string[] = ['/mon-compte/offres', '/mon-compte/abonnement', '/abonnement', '/retractation'];
+/**
+ * Pages commerciales (préfixes) — toutes exclues des liens d'app (`app-links.ts`).
+ * Lot 100D (A9) : `/retractation` n'en fait plus partie (droit de l'utilisateur).
+ */
+export const NATIVE_COMMERCE_PATHS: readonly string[] = ['/mon-compte/offres', '/mon-compte/abonnement', '/abonnement'];
 
 /** Opérations commerciales de l'API refusées à l'app (préfixes). */
 export const NATIVE_COMMERCE_API_PATHS: readonly string[] = [
@@ -46,8 +62,8 @@ export const NATIVE_COMMERCE_API_PATHS: readonly string[] = [
   '/api/billing/upgrade',
   '/api/billing/upgrade-apply',
   '/api/billing/upgrade-preview',
+  // Ancienne route (change aussi le statut local) : l'app utilise `/api/billing/stop-renewal` (lot 100D).
   '/api/billing/cancel-subscription',
-  '/api/withdrawal',
 ];
 
 const underPrefix = (pathname: string, prefix: string) => pathname === prefix || pathname.startsWith(`${prefix}/`);

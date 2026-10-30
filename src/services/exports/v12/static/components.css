@@ -134,6 +134,9 @@ h1, h2 { font-weight: 700; }
   letter-spacing: var(--ls-cover); line-height: 1.04; color: var(--on-navy);
 }
 .cover-body { padding: 170px var(--cover-x) 0; flex: 1; }
+/* Lot 100A : le corps cède la place (jamais le pied « Page 1 / N » ni les métadonnées). */
+.cover-body { min-height: 0; overflow: hidden; }
+.cover-meta, .cover-foot, .cover-top { flex-shrink: 0; }
 .cover-address { font-size: 16px; line-height: 1.5; color: var(--on-navy-addr); }
 .cover-lead { font-size: var(--fs-lead-cover); line-height: 1.55; color: var(--on-navy-lead); max-width: 440px; }
 .cover-note {
@@ -148,7 +151,7 @@ h1, h2 { font-weight: 700; }
 .cover-foot { display: flex; justify-content: space-between; padding: 0 var(--cover-x) 30px; font-size: var(--fs-chrome); color: var(--on-navy-label); }
 
 /* Variante « premium » (dossier complet) : panneau photo arrondi */
-.cover.premium .cover-body { padding-top: 32px; flex: none; }
+.cover.premium .cover-body { padding-top: 32px; flex: 0 1 auto; }
 .cover.premium h1 { font-size: 56px; margin-bottom: 18px; }
 /* Couverture documentaire (charte §8) : vignette 260 × 180 puis titre, méta en compteurs. */
 .cover.premium .cover-top { order: 0; }

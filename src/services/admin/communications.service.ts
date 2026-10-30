@@ -66,8 +66,8 @@ const EVENT_LABELS: Record<string, string> = {
   TRANSMISSION_ACCEPTED: 'Transmission acceptée',
   TRANSMISSION_REFUSED: 'Transmission refusée',
   TRANSMISSION_EXPIRED: 'Transmission expirée',
-  TRIAL_ENDING: 'Fin d’essai proche',
-  TRIAL_ENDED: 'Fin d’essai',
+  TRIAL_ENDING: 'Fin d’essai proche (J−2)',
+  TRIAL_ENDED: 'Fin d’essai (J0)',
   SUBSCRIPTION_RENEWED: 'Abonnement renouvelé',
   SUBSCRIPTION_ACTIVATED: 'Offre activée',
   SUBSCRIPTION_CHANGED: 'Offre modifiée',
@@ -84,6 +84,7 @@ const EVENT_LABELS: Record<string, string> = {
   EMAIL_CHANGED: 'E-mail modifié',
   PASSWORD_RESET_COMPLETED: 'Mot de passe réinitialisé',
   NEW_DEVICE_LOGIN: 'Connexion depuis un nouvel appareil',
+  OTHER_SESSIONS_REVOKED: 'Autres appareils déconnectés (à la demande du titulaire)',
   AUTH_IDENTITY_LINKED: 'Google / Apple associé',
   AUTH_IDENTITY_UNLINKED: 'Google / Apple dissocié',
   NEWS_ANNOUNCEMENT: 'Actualités Verebona',
@@ -141,6 +142,14 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   // Ancien modèle : déclenché par aucun code (il évoquait une expiration et un
   // renouvellement manuel). Conservé en base, signalé comme non utilisé.
   { templateCode: 'SUBSCRIPTION_EXPIRING', label: 'Ancien rappel d’expiration — NON UTILISÉ (remplacé par le rappel de renouvellement annuel)' },
+  // Lot 100G (décision PO E1) : campagne commerciale après l'essai, DISTINCTE des
+  // notifications de service, désactivée par défaut (BO › Communications › Fin
+  // d'essai) ; consentement, opposition et désinscription contrôlés à l'envoi.
+  { templateCode: 'TRIAL_FOLLOWUP_J3', label: 'Après l’essai — relance commerciale J+3 (campagne commerciale)' },
+  { templateCode: 'TRIAL_FOLLOWUP_J10', label: 'Après l’essai — relance commerciale J+10 (campagne commerciale)' },
+  { templateCode: 'TRIAL_FOLLOWUP_J30', label: 'Après l’essai — relance commerciale J+30 (campagne commerciale)' },
+  { templateCode: 'TRIAL_FOLLOWUP_J60', label: 'Après l’essai — dernière relance commerciale J+60 (campagne commerciale)' },
+  { templateCode: 'TRIAL_DATA_RETENTION_J80', label: 'Après l’essai — rappel sur les données J+80 (ENVOI BLOQUÉ : politique de conservation non fixée)' },
 ];
 
 export const CHANNEL_LABELS: Record<CommunicationChannel, string> = {
@@ -567,6 +576,12 @@ export function resolveTemplateVariables(
     renewalDelayLabel: 'dans 7 jours',
     planLabel: ctx.planLabel ? (planLabelOf({ planCode: ctx.planLabel }) ?? '') : '',
     appUrl: base,
+    // Lot 100G : séquence de fin d'essai — liens réels sans jeton ; la date de
+    // fin d'essai, les jours restants et la date de suppression ne sont jamais
+    // inventés (signalés manquants, COM-009).
+    offersUrl: `${base}/mon-compte/offres`,
+    unsubscribeUrl: `${base}/desinscription?apercu=1`,
+    exportUrl: `${base}/mon-compte#mes-donnees`,
     year: String(new Date().getFullYear()),
     ...(ctx.extra ?? {}),
   };

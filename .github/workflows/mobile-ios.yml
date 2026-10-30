@@ -57,9 +57,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24.22.1"
           cache: npm
           cache-dependency-path: mobile/package-lock.json
+      # Lot 100C (CVE-2026-111497) : version exacte corrigée + contrôle bloquant.
+      - name: Runtime Node (≥ 24.22.1, CVE-2026-111497)
+        run: node scripts/check-node-runtime.mjs
       - working-directory: mobile
         run: npm ci --no-audit --no-fund --legacy-peer-deps
       - working-directory: mobile
@@ -80,10 +83,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: mobile
+          sparse-checkout: |
+            mobile
+            scripts
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24.22.1"
+      - name: Runtime Node (≥ 24.22.1, CVE-2026-111497)
+        run: node scripts/check-node-runtime.mjs
       - id: check
         working-directory: mobile
         env:
@@ -121,9 +128,12 @@ jobs:
           xcode-version: latest-stable
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24.22.1"
           cache: npm
           cache-dependency-path: mobile/package-lock.json
+      # Lot 100C (CVE-2026-111497) : version exacte corrigée + contrôle bloquant.
+      - name: Runtime Node (≥ 24.22.1, CVE-2026-111497)
+        run: node scripts/check-node-runtime.mjs
       - name: Dépendances
         working-directory: mobile
         run: npm ci --no-audit --no-fund --legacy-peer-deps

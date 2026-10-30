@@ -72,7 +72,9 @@ const PAIRS: Array<[string, string, string]> = [
   ['défaut WELCOME', fx.defaults.WELCOME.body, DEFAULT_EMAIL_TEMPLATES.WELCOME.body],
   ['défaut PREMIUM_CONFIRMATION', fx.defaults.PREMIUM_CONFIRMATION.body, DEFAULT_EMAIL_TEMPLATES.PREMIUM_CONFIRMATION.body],
   ['défaut DUO_INVITATION', fx.defaults.DUO_INVITATION.body, DEFAULT_EMAIL_TEMPLATES.DUO_INVITATION.body],
-  ['défaut TRIAL_CONFIRMATION', fx.defaults.TRIAL_CONFIRMATION.body, DEFAULT_EMAIL_TEMPLATES.TRIAL_CONFIRMATION.body],
+  // Lot 100G (E2) : le défaut TRIAL_CONFIRMATION annonçait un essai de 60 jours et un
+  // passage automatique à 59 € — texte volontairement CORRIGÉ (essai de 7 jours, sans
+  // prélèvement), contrôlé par `services/trial-lifecycle/__tests__/l100g-fin-essai.test.ts`.
 ];
 
 /** Tous les rendus « charte » à contrôler. */
@@ -251,6 +253,9 @@ describe('L66C-MAIL-08 — amorçages et défauts branchés sur le module partag
       'src/db/seeds/legal/email_template_cgvu.ts', 'src/db/seeds/withdrawal/email_template_withdrawal.ts', 'src/lib/email-defaults.ts', 'src/app/api/assets/[id]/transmission/route.ts']) {
       const src = read(f);
       expect(src, f).not.toMatch(/<!DOCTYPE html>|#3B82F6|#2D3748/i);
+      // Lot 100G : l'amorçage de l'essai livre les modèles TEXTE de la séquence de fin
+      // d'essai (`services/trial-lifecycle/templates.ts`, enveloppe de la charte à l'envoi).
+      if (f.includes('email_templates_trial')) { expect(src, f).toContain("from '@/services/trial-lifecycle/templates'"); continue; }
       if (!f.includes('transmission')) expect(src, f).toContain("from '@/lib/email/email-html-templates'");
     }
   });

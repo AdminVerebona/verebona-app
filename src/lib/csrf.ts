@@ -42,7 +42,14 @@ const CSRF_EXEMPT_PREFIXES = ['/api/billing/stripe-webhook', '/api/webhooks/rese
  * de session n'y est lu (SameSite=Lax) : la liaison au navigateur est
  * vérifiée à la reprise en GET.
  */
-const CSRF_EXEMPT_EXACT = new Set(['/api/auth/oauth/apple/callback']);
+const CSRF_EXEMPT_EXACT = new Set([
+  '/api/auth/oauth/apple/callback',
+  // Lot 100G : désinscription « en un clic » (RFC 8058) — POST émis par la
+  // messagerie du destinataire (origine tierce par nature). Aucun cookie lu :
+  // seul le jeton signé du lien permet de s'opposer aux communications
+  // commerciales de SON titulaire (aucune autre action possible).
+  '/api/public/marketing/unsubscribe',
+]);
 
 /** Construit la liste des origines autorisees a partir de l'environnement. */
 function allowedOrigins(): string[] {

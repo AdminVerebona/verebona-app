@@ -6,6 +6,10 @@ certificat, clé ou fichier Firebase n'est dans le dépôt : tout est déposé d
 Environments**. Le PO ne lance aucune commande : il crée les comptes, dépose les valeurs et approuve les
 publications.
 
+> Création des comptes, dépôt des secrets, tests et reprise des accès : **guide unique**
+> `docs/exploitation/guide-comptes-unique.md` (C3, 29/10/2026). Architecture retenue (B1 : interface
+> embarquée) : `docs/mobile/plan-architecture-embarquee.md`. Icônes : `docs/design/brief-graphiste-icone-et-mascotte.md`.
+
 ## 1. Organisation du dépôt
 
 ```
@@ -125,7 +129,12 @@ Déjà décrites dans `docs/exploitation/application-mobile-serveur.md` (lot 97)
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | compte de service du projet Firebase préprod | Notifications |
 | `APP_OAUTH_RETURN_URL` | `https://<adresse préprod>/app/retour-connexion` (recommandé) — ou `fr.verebona.app.preprod:/oauth` | Retour de la connexion Google / Apple vers l'app (lot 93). L'app accepte les deux formes ; le Gate 0 dira laquelle garder (voir ci-dessous). |
 
-Choix de `APP_OAUTH_RETURN_URL` : l'adresse **https** (lien d'app vérifié) est la plus sûre ; elle exige
+**Décision B4 (27/10/2026)** : schéma propre à l'application, distinct par environnement — cible
+`fr.verebona.app.preprod://retour` / `fr.verebona.app://retour` (adaptation : étape E3 du plan
+`plan-architecture-embarquee.md`) ; la ligne du tableau ci-dessus et le paragraphe suivant décrivent les
+formes acceptées au Gate 0.
+
+Choix de `APP_OAUTH_RETURN_URL` (Gate 0) : l'adresse **https** (lien d'app vérifié) est la plus sûre ; elle exige
 iOS 17.4 ou plus pour être captée par la session d'authentification d'Apple. Le **schéma privé**
 (RFC 8252) fonctionne sur toutes les versions ; il reste sûr car le code reçu ne sert à rien sans le
 vérificateur PKCE gardé par l'app. Une seule valeur par environnement : la retenir au Gate 0 selon la
@@ -147,6 +156,7 @@ version minimale d'iOS décidée. L'app n'a rien à reconstruire : le serveur an
 ## 7. Icônes et nom
 
 Nom affiché : « Verebona Préprod » / « Verebona » (variantes Gradle, `Verebona.xcconfig`). Icône : celle
-de Capacitor par défaut pour l'instant ; la variante préprod (`AppIcon-Preprod`, ressources Android de la
-variante `preprod`) attend le visuel du PO (M7 : « différencier visuellement la préproduction »).
+de Capacitor par défaut pour l'instant ; décision B5 : nouvelle icône et variante « PRÉPROD » conçues par
+le graphiste, livrées directement aux développeurs, selon `docs/design/brief-graphiste-icone-et-mascotte.md`
+(fichiers attendus et procédure d'intégration § 8).
 Génération des tailles : `npx @capacitor/assets generate` à partir d'une image 1024 × 1024 par variante.

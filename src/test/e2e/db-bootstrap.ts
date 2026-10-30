@@ -27,8 +27,11 @@
  * raison ; toute AUTRE migration en échec fait échouer le démarrage du
  * harnais — c'est précisément ce que la CI doit attraper.
  *
- * Chaque exécution crée sa propre base (`verebona_e2e_<horodatage>`) et la
- * supprime à la fin (`E2E_KEEP_DB=1` pour la garder et l'inspecter).
+ * Chaque exécution crée sa propre base MODÈLE (`verebona_e2e_<horodatage>_<pid>_modele`)
+ * et, depuis le lot 100A, une copie de ce modèle PAR FICHIER de scénarios
+ * (`…_f_<suffixe>`, `cloneE2eDatabase`) ; tout est supprimé à la fin
+ * (`E2E_KEEP_DB=1` pour garder les bases et les inspecter ; `E2E_SHARED_DB=1`
+ * pour revenir à une base commune à tous les fichiers).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import postgres from 'postgres';
@@ -203,6 +206,69 @@ export async function bootstrapE2eDatabase(options: {
     await sql.end({ timeout: 5 }).catch(() => undefined);
     await dropE2eDatabase(options.adminUrl, database, { force: true }).catch(() => undefined);
     throw e;
+  }
+}
+
+/**
+ * Lot 100A — nom d'une base E2E dérivée d'un préfixe d'exécution (pur).
+ * Identifiant PostgreSQL : minuscules, chiffres et `_`, 63 caractères au plus.
+ */
+export function derivedDatabaseName(prefix: string, suffix: string): string {
+  const name = `${prefix}_${suffix}`.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  if (!/^[a-z0-9_]+$/.test(name) || name.length > 63) throw new Error(`Nom de base E2E invalide : ${name}`);
+  return name;
+}
+
+/**
+ * Lot 100A — copie d'une base MODÈLE déjà construite (`CREATE DATABASE … TEMPLATE`) :
+ * même schéma, mêmes migrations, mêmes données de référence, en une fraction de seconde
+ * (contre ~20 s pour `bootstrapE2eDatabase`). Le modèle ne doit avoir AUCUNE connexion
+ * ouverte : PostgreSQL refuse sinon (55006) — nouvelle tentative brève dans ce cas.
+ */
+export async function cloneE2eDatabase(options: {
+  adminUrl: string;
+  template: string;
+  database: string;
+}): Promise<string> {
+  assertSafeAdminUrl(options.adminUrl);
+  for (const n of [options.template, options.database]) {
+    if (!/^[a-z0-9_]+$/.test(n)) throw new Error(`Nom de base E2E invalide : ${n}`);
+  }
+  const admin = postgres(options.adminUrl, { max: 1, onnotice: () => undefined });
+  try {
+    await admin.unsafe(`DROP DATABASE IF EXISTS ${options.database} WITH (FORCE)`);
+    for (let essai = 1; ; essai += 1) {
+      try {
+        await admin.unsafe(`CREATE DATABASE ${options.database} TEMPLATE ${options.template} ENCODING 'UTF8'`);
+        break;
+      } catch (e) {
+        if ((e as { code?: string }).code !== '55006' || essai >= 20) throw e;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+    }
+  } finally {
+    await admin.end({ timeout: 5 });
+  }
+  return withDatabase(options.adminUrl, options.database);
+}
+
+/**
+ * Lot 100A — supprime les bases `<prefix>_*` d'une exécution, sauf `except` (base du
+ * fichier en cours). Appelé à la fin de chaque fichier pour les bases des fichiers
+ * PRÉCÉDENTS — jamais la sienne : une écriture lancée sans attente (journal, e-mail…)
+ * encore en vol à la fin d'un fichier se termine sur sa base au lieu d'échouer sur une
+ * connexion coupée — et à la fin de l'exécution pour toutes.
+ */
+export async function dropE2eDatabasesWithPrefix(adminUrl: string, prefix: string, opts: { except?: string } = {}): Promise<string[]> {
+  if (!/^[a-z0-9_]+$/.test(prefix) || prefix.length < 16) throw new Error(`Préfixe de base E2E invalide : ${prefix}`);
+  const admin = postgres(adminUrl, { max: 1, onnotice: () => undefined });
+  try {
+    const rows = (await admin<{ datname: string }[]>`SELECT datname FROM pg_database WHERE starts_with(datname, ${`${prefix}_`})`)
+      .filter((r) => r.datname !== opts.except);
+    for (const r of rows) await admin.unsafe(`DROP DATABASE IF EXISTS ${r.datname} WITH (FORCE)`);
+    return rows.map((r) => r.datname);
+  } finally {
+    await admin.end({ timeout: 5 });
   }
 }
 

@@ -255,6 +255,9 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
     seuils = { ...QUALIFICATION_THRESHOLDS, latency: { ...QUALIFICATION_THRESHOLDS.latency, maxP95Degradation: 1 } };
     await preparerCorpus();
     await viderCaches();
+    // Lot 100B : le verrou A1 (couverture du corpus #601) est recetté par l100b-corpus-certification ; ici, verrou levé.
+    const promo = await import('@/services/ai/governance/master-corpus/certification/promotion');
+    promo.__setPromotionLockForTests(promo.OPEN_LOCK_FOR_TESTS);
   }, 300_000);
 
   afterAll(async () => {
@@ -263,6 +266,7 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
     (await import('@/services/ai/provider/provider-secret')).setProviderSecretResolver(null);
     (await import('@/services/ai/qualification/cases')).__setQualificationCorpusForTests(null);
     (await import('@/services/ai/qualification/context')).__resetQualificationContextForTests();
+    (await import('@/services/ai/governance/master-corpus/certification/promotion')).__setPromotionLockForTests(null);
     await sql`UPDATE ai_config_versions SET status = 'INACTIVE' WHERE environment = 'preprod' AND status = 'ACTIVE'`;
     await sql`UPDATE ai_master_prompt_versions SET status = 'PREVIOUS' WHERE environment = 'preprod' AND status = 'ACTIVE'`;
     (await import('@/services/ai/config/config-cache-version')).__setConfigVersionCounterStoreForTests(null);

@@ -47,6 +47,8 @@ import { documentTitlesCheck } from './checks/document-titles';
 // Lot 88B — propriétés métier manquantes reprises à partir de l'ensemble des preuves (réparation : arbitrage T3 puis writer canonique).
 import { missingPropertiesCheck, missingPropertiesEquipmentCheck } from './checks/missing-properties';
 import { agendaRecurrenceEndCheck } from './checks/agenda-recurrence-end';
+// Lot 100E (décision PO A7) — cartes « À traiter » devenues inutiles, toutes familles (nettoyage rétroactif).
+import { toProcessPublishabilityCheck } from './checks/to-process-publishability';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -98,6 +100,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   missingPropertiesEquipmentCheck,
   // Lot 99D (ajouté en fin de liste, sans réordonner l'existant) : séries arrêtées par l'ancienne règle « mot-clé ».
   agendaRecurrenceEndCheck,
+  // Lot 100E (ajouté en fin de liste, sans réordonner l'existant) : publiabilité A7 de toutes les familles.
+  toProcessPublishabilityCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

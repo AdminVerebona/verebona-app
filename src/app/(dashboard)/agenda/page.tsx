@@ -25,7 +25,10 @@ import { buildRoomFilterModel, roomFilterParam, type RoomFacet } from '@/lib/fil
 import {
   buildEquipmentFilterModel, equipmentFilterParam, type EquipmentFacet,
 } from '@/lib/filters/equipment-filter';
-import { AGENDA_PERIOD_OPTIONS, agendaFilterChips, parseAgendaPeriod } from '@/lib/agenda/agenda-filters';
+import {
+  AGENDA_PERIOD_OPTIONS, SUSPENDED_PERIOD_PARAM, agendaFilterChips, agendaSearchParams, parseAgendaPeriod, parseSuspended, type AgendaPeriod,
+} from '@/lib/agenda/agenda-filters';
+import { AgendaSearchPeriodNotice } from '@/components/agenda/AgendaSearchPeriodNotice';
 import { NO_DEADLINE_LABEL } from '@/lib/agenda/no-deadline';
 import { LocalSearchField } from '@/components/search/LocalSearchField';
 import { LOCAL_SEARCH_PARAM, localSearchNoResult, readLocalQuery, searchWithLocalQuery } from '@/lib/search/local-search';
@@ -137,6 +140,8 @@ function AgendaPageInner() {
   // Lot 97C (Q3-B) : recherche locale dans l'URL (`?q=`) — toutes périodes en
   // vue Liste ; en vues Mensuelle / Annuelle, seuls les résultats de la période.
   const q = readLocalQuery(searchParams);
+  // Lot 100E (A8) : période suspendue le temps d'une recherche (rétablie à l'effacement).
+  const periodeSuspendue = parseSuspended(searchParams.get(SUSPENDED_PERIOD_PARAM));
 
   const [items, setItems] = useState<AgendaItemFull[]>([]);
   const [loading, setLoading] = useState(true);
@@ -165,10 +170,15 @@ function AgendaPageInner() {
   // Recherche validée par le champ (300 ms sans frappe, ou Entrée) : URL mise à
   // jour SANS nouvelle entrée d'historique, filtres explicites conservés ; une
   // recherche nouvelle ou modifiée passe en vue Liste (toutes périodes).
+  // Lot 100E (A8) : au lancement, une période restrictive (« À venir »…) passe
+  // VISIBLEMENT à « Tous » et est mémorisée ; à l'effacement, elle revient.
   const changerRecherche = (next: string) => {
     const { pathname, search, hash } = window.location;
-    window.history.replaceState(null, '', `${pathname}${searchWithLocalQuery(search, next, { switchToList: true })}${hash}`);
+    const suite = agendaSearchParams(search, next, (s, v) => searchWithLocalQuery(s, v, { switchToList: true }));
+    window.history.replaceState(null, '', `${pathname}${suite}${hash}`);
   };
+  // Choix EXPLICITE d'une période (panneau, pastille, ligne d'état) : appliqué, conservé pendant la recherche.
+  const choisirPeriode = (v: AgendaPeriod) => updateURL({ period: v === 'all' ? null : v, [SUSPENDED_PERIOD_PARAM]: null });
 
   useEffect(() => {
     setLoading(true);
@@ -235,13 +245,13 @@ function AgendaPageInner() {
     updateURL({ assetIds: next.length > 0 ? next.join(',') : null, equipment: null, piece: null });
   };
   const removeChip = (key: string) => {
-    if (key === 'period') updateURL({ period: null });
+    if (key === 'period') choisirPeriode('all');
     else if (key === 'cancelled') updateURL({ includeCancelled: null });
     else if (key === 'equipment') updateURL({ equipment: null });
     else if (key === 'piece') updateURL({ piece: null });
     else if (key.startsWith('bien:')) toggleAsset(Number(key.slice(5)));
   };
-  const clearFilters = () => updateURL({ period: null, assetIds: null, equipment: null, piece: null, includeCancelled: null });
+  const clearFilters = () => updateURL({ period: null, [SUSPENDED_PERIOD_PARAM]: null, assetIds: null, equipment: null, piece: null, includeCancelled: null });
 
   // ══════════════════════════════════════════════════════════════════════════
   // « AGENDA VIDE » N'EST PAS « AUCUN RÉSULTAT »
@@ -342,7 +352,7 @@ function AgendaPageInner() {
               id={`${filtersPanelId}-periode`}
               title="Période"
               options={AGENDA_PERIOD_OPTIONS.map(o => ({ ...o, active: o.value === period }))}
-              onSelect={(v) => updateURL({ period: v === 'all' ? null : v })}
+              onSelect={(v) => choisirPeriode(parseAgendaPeriod(v))}
             />
             <FilterPillSection
               id={`${filtersPanelId}-bien`}
@@ -380,6 +390,8 @@ function AgendaPageInner() {
           busy={!!q && loading}
           resultCount={q && !loading ? items.length : null}
         />
+        {/* Lot 100E (A8) : période réellement appliquée à la recherche — « Tous » ou la période choisie. */}
+        <AgendaSearchPeriodNotice q={q} state={{ period, suspended: periodeSuspendue }} onChoose={choisirPeriode} />
         {q && !loading && view !== 'list' && (
           <p className="-mt-3 text-xs text-muted-foreground" data-testid="recherche-agenda-periode">
             Seuls les résultats de la période affichée sont présentés. La vue Liste montre toutes les périodes.

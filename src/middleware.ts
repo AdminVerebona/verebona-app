@@ -259,6 +259,9 @@ export async function middleware(request: NextRequest) {
       // depuis le lien reçu, sans compte. La route lit la session si elle
       // existe ; le refus « de mon adresse » (écran sans espace) l'exige.
       '/api/duo/decline',
+      // Lot 100G : désinscription des relances commerciales depuis l'e-mail,
+      // sans connexion — jeton signé vérifié par la route.
+      '/api/public/marketing/unsubscribe',
     ];
 
     // Cron endpoints utilisent leur propre CRON_SECRET — pas de JWT

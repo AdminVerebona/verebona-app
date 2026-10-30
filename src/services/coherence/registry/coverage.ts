@@ -101,11 +101,15 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       'COH-TODO-T3-FIELD-CARDS', 'COH-TODO-OPERATION-CARDS', 'COH-TODO-MIGRATION-REVIEW-CARDS', 'COH-TODO-AGENDA-PROPOSAL-CARDS',
       // Lot 85F : carte demandant une information présente dans la connaissance T1 non structurée.
       'COH-T1-KNOWLEDGE-CONSUMPTION',
+      // Lot 100E (A7) : cartes devenues inutiles, TOUTES familles (contrat commun de publication).
+      'COH-TODO-PUBLISHABILITY',
     ],
     // Lot 83E : la campagne de pertinence l76 est devenue COH-TODO-STALE-DECISIONS + COH-TODO-RELEVANCE-CARDS (moteur retiré).
     // Lot 85B : la campagne automatique 81A des faux arbitrages est devenue COH-TODO-T3-FIELD-CARDS (même réexamen).
     gap: {
-      what: 'pertinence des familles T4 « statut » (AGENDA-DONE / AGENDA-NOT-DONE / ASSET-STATUS), doublon d’agenda (AGENDA-DUPLICATE), rapprochement agenda incertain (AGENDA-PROJECTION-MATCH), lien document → équipement proposé (LINK-ELT) et classification (DOC-RUB / DOC-TYP) : décisions T4 / T3 non conservées avec leur candidat, rejeu impossible sans IA (cartes orphelines : COH-TODO-ORPHAN-CARDS) ; effets d’après résolution d’une proposition d’agenda acceptée (recopie de la date d’achat, statut du bien)',
+      // Lot 100E (A7) : statut déjà posé par l'utilisateur (AGENDA-DONE / -NOT-DONE), statut du bien changé (ASSET-STATUS), document
+      // déjà rattaché à un bien (LINK-ASSET), réalité retirée (AGENDA-PROJECTION-MATCH) : fermés par COH-TODO-PUBLISHABILITY.
+      what: 'pertinence SÉMANTIQUE (hors état déjà tranché, couvert par COH-TODO-PUBLISHABILITY) des familles T4 « statut » (AGENDA-DONE / AGENDA-NOT-DONE / ASSET-STATUS), doublon d’agenda (AGENDA-DUPLICATE), rapprochement agenda incertain (AGENDA-PROJECTION-MATCH), lien document → équipement proposé (LINK-ELT) et classification (DOC-RUB / DOC-TYP) : décisions T4 / T3 non conservées avec leur candidat, rejeu impossible sans IA (cartes orphelines : COH-TODO-ORPHAN-CARDS) ; effets d’après résolution d’une proposition d’agenda acceptée (recopie de la date d’achat, statut du bien)',
       existingMechanism: 'producteurs T4 / T3 à l’analyse (file durable) ; conflits de rattachement clos par le balayage horaire (closeObsoleteAssetConflicts) ; projection des faits après rattachement contrôlée par COH-DOC-EXTRACT-CHAIN (aval) ; date d’achat : T3 « Informations » 76J',
       planned: 'persistance durable des décisions T4 (même point d’extension que COH-AGENDA-T4-DOCUMENT-DEADLINES)',
     } },

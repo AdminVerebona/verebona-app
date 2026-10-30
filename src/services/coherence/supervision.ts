@@ -124,7 +124,8 @@ export async function computeCoherenceAlerts(now: Date = new Date(), sql: Sql = 
     }
   }
   // Lot 98B (P0-E) : cartes « À traiter » OUVERTES mais RETENUES (maintien technique : T4 incompatible,
-  // interprétation T3 en attente, panne IA, évaluation en erreur) — non publiées à l'utilisateur ; cause et
+  // interprétation T3 en attente, panne IA, évaluation en erreur ; lot 100E : décision de famille différée,
+  // règle sans contrat déclaré — toutes familles) — non publiées à l'utilisateur ; cause et
   // nouvelle tentative (automatique : contrôle de cohérence ; manuelle : BO › IA › File d'attente).
   const { heldCardsOverview, HOLD_CAUSE_LABELS } = await import('@/services/to-process/publishability');
   for (const g of await heldCardsOverview({ sql: sql as never })) {
@@ -134,7 +135,11 @@ export async function computeCoherenceAlerts(now: Date = new Date(), sql: Sql = 
       count: g.count,
       detail: {
         cause: g.cause, causeLabel: HOLD_CAUSE_LABELS[g.cause], accountIds: g.accountIds.join(', '),
-        retry: 'automatique : contrôle de cohérence (COH-TODO-DOCUMENT-FIELDS) dès que la cause est levée ; manuelle : BO › IA › File d’attente › « À traiter » › Nouvelle tentative',
+        // Lot 100E (A7) : toutes familles (documents, agenda, équipements, fournisseurs…).
+        families: (g.families ?? []).join(', '),
+        retry: g.cause === 'RULE_NOT_DECLARED'
+          ? 'aucune : déclarer la règle dans le contrat commun (src/services/to-process/publishability.ts) — les cartes restent ouvertes, non montrées'
+          : 'automatique : contrôle de cohérence (COH-TODO-DOCUMENT-FIELDS, COH-TODO-RELEVANCE-CARDS) dès que la cause est levée ; manuelle : BO › IA › File d’attente › « À traiter » › Nouvelle tentative',
         boLink: '/admin/ai-queue',
         ...(g.cause === 'T4_INCOMPATIBLE' || g.cause === 'INTERPRETATION_PENDING' ? { guide: 'docs/exploitation/prompts-a-appliquer-par-le-po.md' } : {}),
       },

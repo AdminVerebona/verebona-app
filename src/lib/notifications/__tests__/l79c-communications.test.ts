@@ -133,7 +133,8 @@ describe('L79C-AC07 — indispensables et facultatifs séparés', () => {
     expect(categoryEmailScope('security')).toEqual({
       // Lot 93 : association / dissociation Google ou Apple (NOTIF-01, obligatoires).
       // Lot 96B (Q6) : « connexion depuis un nouvel appareil » devient obligatoire.
-      essential: ['mot de passe modifié', 'changement d’adresse e-mail demandé', 'adresse e-mail modifiée', 'mot de passe réinitialisé', 'connexion depuis un nouvel appareil', 'Google ou Apple associé', 'Google ou Apple dissocié'],
+      // Lot 100D (A2) : « autres appareils déconnectés à votre demande », obligatoire.
+      essential: ['mot de passe modifié', 'changement d’adresse e-mail demandé', 'adresse e-mail modifiée', 'mot de passe réinitialisé', 'connexion depuis un nouvel appareil', 'autres appareils déconnectés à votre demande', 'Google ou Apple associé', 'Google ou Apple dissocié'],
       optional: [],
     });
     expect(categoryEmailScope('duo').optional).toEqual(['réponses à vos demandes de transfert ou de suppression']);
@@ -228,7 +229,8 @@ describe('L79C-AC01 / AC10 — le BO reflète les canaux réellement disponibles
 
   it('SECURITY_SESSIONS_REVOKED : supprimé, aucun canal ni gabarit proposé', () => {
     expect(transactionalRetiredReason('security_sessions_revoked')).toBeTruthy();
-    expect(Object.keys(RETIRED_TRANSACTIONAL_EMAILS)).toEqual(['SECURITY_SESSIONS_REVOKED']);
+    // Lot 100G : anciens modèles d'essai retirés (un seul circuit, séquence de fin d'essai).
+    expect(Object.keys(RETIRED_TRANSACTIONAL_EMAILS)).toEqual(['SECURITY_SESSIONS_REVOKED', 'TRIAL_REMINDER_J3', 'TRIAL_REMINDER_J1', 'TRIAL_ENDED']);
     const d = def('email:SECURITY_SESSIONS_REVOKED');
     expect(d.channels).toEqual([]);
     expect(d.emailTemplateCode).toBeNull();

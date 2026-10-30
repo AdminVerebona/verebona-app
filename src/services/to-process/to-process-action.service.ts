@@ -39,7 +39,7 @@ import { isDisplayableArbitration, sanitizeArbitrationProposals, selectDisplayed
 import { getRule, priorityForRule } from './rules-catalog';
 import { admitToDoFirst, resolvePriority } from './priority';
 import { loadDoFirst } from './priority-scheduler.service';
-import { publishableCardCondition } from './publishability';
+import { cardPremiseStillHolds, publishableCardCondition } from './publishability';
 
 interface UpsertActionInput {
   accountId: number;
@@ -64,7 +64,7 @@ interface UpsertActionInput {
 export interface UpsertActionResult {
   status: 'CREATED' | 'UPDATED' | 'SKIPPED';
   /** Motif machine d'un SKIPPED, quand il y en a un. */
-  code?: 'NOT_APPLICABLE_UNCHANGED' | 'NO_REAL_ALTERNATIVE';
+  code?: 'NOT_APPLICABLE_UNCHANGED' | 'NO_REAL_ALTERNATIVE' | 'NO_LONGER_USEFUL';
   actionId?: number;
   priority?: ActionPriority;
   /** Action rétrogradée pour faire place à l'entrante (§9.3). */
@@ -136,6 +136,18 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
   const rule = getRule(input.ruleCode);
   if (!rule) {
     return { status: 'SKIPPED', reason: `Règle inconnue : ${input.ruleCode}.` };
+  }
+
+  // Lot 100E (décision PO A7) : conditions de pertinence réévaluées à la
+  // CRÉATION et à la CONSERVATION — réponse déjà connue ou intérêt disparu
+  // (prémisse du contrat de la famille, `publishability.ts`) : rien n'est
+  // créé ni reconduit ; une carte déjà ouverte est fermée par la campagne de
+  // cohérence (COH-TODO-PUBLISHABILITY) et n'est plus affichée d'ici là.
+  if (!(await cardPremiseStillHolds({
+    accountId: input.accountId, targetType: input.targetType, targetId: input.targetId, ruleCode: input.ruleCode, actionKind: input.actionKind,
+    fieldKey: input.fieldKey ?? null, relationKey: input.relationKey ?? null, proposals: input.proposals ?? [], triggerContext: input.triggerContext ?? null,
+  }))) {
+    return { status: 'SKIPPED', code: 'NO_LONGER_USEFUL', reason: 'Carte inutile : la réponse est déjà connue ou la question n’a plus d’intérêt (A7).' };
   }
 
   // Lot 81A : contrôle déterministe d'équivalence avant création OU mise à

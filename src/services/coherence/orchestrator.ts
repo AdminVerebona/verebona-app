@@ -155,7 +155,53 @@ export interface CampaignRow {
   rulesChanges: RulesChange[];
 }
 
-interface CheckVersion { id: string; version: number }
+interface CheckVersion {
+  id: string;
+  version: number;
+  /**
+   * Lot 100E (décision PO A6) : contrôle NON QUALIFIÉ dans une campagne
+   * corrective du mode AUTO — exécuté À BLANC dans cette campagne (version
+   * nouvelle, famille nouvelle) ; correctif dès la campagne suivante, une fois
+   * ce passage à blanc allé au terme d'une campagne quotidienne complète.
+   */
+  dryRun?: true;
+}
+
+/**
+ * Lot 100E (décision PO A6 : « première campagne exhaustive et contrôlée ;
+ * aucune activation corrective sur campagne partielle ») — contrôles
+ * QUALIFIÉS : leur version courante a été exécutée par une campagne
+ * QUOTIDIENNE allée à son TERME (COMPLETE), à blanc ou déjà corrective. Une
+ * lecture impossible ne qualifie rien (prudence : à blanc).
+ */
+export async function qualifiedChecks(checks: readonly CheckVersion[], sql: Sql = pgClient): Promise<Set<string>> {
+  if (!checks.length) return new Set();
+  try {
+    const r = await rows(sql, `
+      SELECT x.id FROM jsonb_to_recordset($1::text::jsonb) AS x(id text, version int)
+       WHERE EXISTS (SELECT 1 FROM coherence_campaigns c WHERE c.kind = 'DAILY' AND c.status = 'COMPLETE'
+                       AND c.checks @> jsonb_build_array(jsonb_build_object('id', x.id, 'version', x.version)))`,
+    [JSON.stringify(checks.map((c) => ({ id: c.id, version: c.version })))]);
+    return new Set(r.map((x) => String(x.id)));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Lot 100E (A6) — contrôles d'une campagne CORRECTIVE du mode AUTO (pure) :
+ * un contrôle non qualifié est marqué « à blanc » pour cette campagne.
+ * Réglage explicite (`corrective`, `dry_run`) ou campagne à blanc : inchangés.
+ */
+export function withQualification(checks: readonly CheckVersion[], o: { mode: CoherenceMode; auto: boolean; qualified: ReadonlySet<string> }): CheckVersion[] {
+  if (!o.auto || o.mode !== 'CORRECTIVE') return checks.map((c) => ({ id: c.id, version: c.version }));
+  return checks.map((c) => (o.qualified.has(c.id) ? { id: c.id, version: c.version } : { id: c.id, version: c.version, dryRun: true as const }));
+}
+
+/** Lot 100E (A6) — mode EFFECTIF d'un contrôle dans une campagne (pure). */
+export function effectiveCheckMode(c: Pick<CampaignRow, 'mode' | 'checks'>, checkId: string): CoherenceMode {
+  return c.mode === 'CORRECTIVE' && c.checks.some((x) => x.id === checkId && x.dryRun) ? 'DRY_RUN' : c.mode;
+}
 
 /**
  * Lot 85B (CDC §6.4, CA-11) — changement de version de règles constaté EN
@@ -319,9 +365,16 @@ async function versionColumnsReady(sql: Sql): Promise<boolean> {
  *     soit déclaré exhaustif.
  * Rend vrai si un changement a été constaté.
  */
-export function adoptDeployedRegistry(c: CampaignRow, checks: readonly CoherenceCheck[], version: string, now: Date): boolean {
+export function adoptDeployedRegistry(c: CampaignRow, checks: readonly CoherenceCheck[], version: string, now: Date, o: { autoQualify?: boolean } = {}): boolean {
   if (!c.registryVersion || c.registryVersion === version) return false;
-  const cur = checks.map((x) => ({ id: x.id, version: x.version }));
+  // Lot 100E (A6) : en mode AUTO correctif, un contrôle ajouté ou dont la version change en cours de campagne
+  // passe À BLANC jusqu'à la fin de celle-ci ; un contrôle inchangé garde son mode.
+  const avant = new Map(c.checks.map((x) => [x.id, x]));
+  const cur: CheckVersion[] = checks.map((x) => {
+    const prev = avant.get(x.id);
+    const aBlanc = prev && prev.version === x.version ? prev.dryRun === true : o.autoQualify === true;
+    return aBlanc ? { id: x.id, version: x.version, dryRun: true as const } : { id: x.id, version: x.version };
+  });
   const diff = diffRegistryChecks(c.checks, cur);
   const verifyRestarted = c.phase === 'VERIFY';
   c.rulesChanges = [...c.rulesChanges, { at: now.toISOString(), phase: c.phase, from: c.registryVersion, to: version, ...diff, verifyRestarted }].slice(-20);
@@ -360,8 +413,11 @@ export function dailyDeadline(now: Date): Date {
 export async function startCampaign(p: StartCampaignInput): Promise<number> {
   const sql = p.sql ?? pgClient;
   const now = p.now ?? new Date();
-  const checks = activeChecks().map((c) => ({ id: c.id, version: c.version }));
   const mode = p.mode ?? await resolveCoherenceMode(sql);
+  // Lot 100E (A6) : mode AUTO devenu correctif — chaque contrôle non qualifié (version nouvelle) reste à blanc.
+  const auto = !p.mode && coherenceModeSetting() === 'AUTO';
+  const versions = activeChecks().map((c) => ({ id: c.id, version: c.version }));
+  const checks = withQualification(versions, { mode, auto, qualified: auto && mode === 'CORRECTIVE' ? await qualifiedChecks(versions, sql) : new Set() });
   const [r] = await rows(sql, `
     INSERT INTO coherence_campaigns (kind, mode, campaign_date, scope_account_ids, trigger_code, registry_version, checks, started_at, deadline_at, metrics)
     VALUES ($1, $2, $3::date, $4::int[], $5, $6, $7::text::jsonb, $8, $9, $10::text::jsonb) RETURNING id`,
@@ -503,7 +559,7 @@ export async function runCampaignStep(campaignId: number, o: RunOptions): Promis
   const cpu0 = process.cpuUsage();
   const checks = activeChecks();
   // Lot 85B (§6.4) : nouvelle version de règles déployée depuis le passage précédent → curseur repositionné, journalisé.
-  if (adoptDeployedRegistry(c, checks, registryVersion(), now)) await saveProgress(sql, c);
+  if (adoptDeployedRegistry(c, checks, registryVersion(), now, { autoQualify: c.mode === 'CORRECTIVE' && coherenceModeSetting() === 'AUTO' })) await saveProgress(sql, c);
   let controlled = 0;
   let errorSample: string | null = null;
   let eligibleAccount: number | null = null;
@@ -550,7 +606,8 @@ export async function runCampaignStep(campaignId: number, o: RunOptions): Promis
         c.cursorCheckIndex += 1; c.cursorObjectId = 0;
         continue;
       }
-      const ctx = contexte(c, c.mode, sql, new Date(now.getTime() + (Date.now() - t0)), o.today ?? todayParisDateStr(now), check, scope);
+      // Lot 100E (A6) : mode effectif du contrôle (à blanc tant qu'il n'est pas qualifié).
+      const ctx = contexte(c, effectiveCheckMode(c, check.id), sql, new Date(now.getTime() + (Date.now() - t0)), o.today ?? todayParisDateStr(now), check, scope);
       const page = await check.listObjects!(ctx, accountId, c.cursorObjectId, COHERENCE_BATCH);
       if (!page.length) { c.cursorCheckIndex += 1; c.cursorObjectId = 0; await saveProgress(sql, c); continue; }
       let cible = page;
@@ -702,6 +759,9 @@ export async function runTargetedChecks(o: RunOptions & { mode?: CoherenceMode; 
   const eligibilite = new Map<number, { eligible: boolean; reason: string }>();
   // Lot 98B (P1) : même mode effectif que les campagnes (réglage explicite, sinon AUTO).
   const mode = o.mode ?? (lots.length ? await resolveCoherenceMode(sql) : 'DRY_RUN');
+  // Lot 100E (A6) : en mode AUTO correctif, un contrôle non qualifié reste à blanc (même règle que les campagnes).
+  const qualifies = !o.mode && mode === 'CORRECTIVE' && coherenceModeSetting() === 'AUTO'
+    ? await qualifiedChecks(activeChecks().map((c) => ({ id: c.id, version: c.version })), sql) : null;
   for (const lot of lots) {
     if (Date.now() >= o.deadline) break;
     const accountId = Number(lot.account_id);
@@ -720,7 +780,7 @@ export async function runTargetedChecks(o: RunOptions & { mode?: CoherenceMode; 
       continue;
     }
     for (let i = 0; i < ids.length && Date.now() < o.deadline; i += COHERENCE_BATCH) {
-      const ctx = contexte(null, mode, sql, new Date(now.getTime() + (Date.now() - t0)), o.today, check);
+      const ctx = contexte(null, qualifies && !qualifies.has(check.id) ? 'DRY_RUN' : mode, sql, new Date(now.getTime() + (Date.now() - t0)), o.today, check);
       try {
         const s = await controlObjects({
           ctx, check, accountId, ids: ids.slice(i, i + COHERENCE_BATCH), trigger: 'TARGETED', campaignId: null,

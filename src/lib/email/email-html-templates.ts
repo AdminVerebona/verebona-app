@@ -81,21 +81,18 @@ export const PREMIUM_CONFIRMATION_DEFAULT_HTML = doc('Confirmation de votre abon
   p("Merci de votre confiance et bienvenue dans l'univers Premium de Verebona !"),
 ].join('\n'), foot(FOOT_COPYRIGHT, FOOT_TAGLINE));
 
-/** TRIAL_CONFIRMATION des défauts du code (la base garde son gabarit texte). */
+/**
+ * TRIAL_CONFIRMATION des défauts du code (la base garde son gabarit texte).
+ * Lot 100G (E2) : l'ancien texte annonçait un essai de 60 jours (« 2 mois
+ * offerts ») et un passage automatique à 59 € par an — faux. L'essai dure 7
+ * jours, sans carte bancaire ni prélèvement (aucun appelant n'envoie ce modèle).
+ */
 export const TRIAL_CONFIRMATION_DEFAULT_HTML = doc("Activation de votre période d'essai", [
   h1("🎁 Période d'essai activée"),
   p('Bonjour {{firstName}},'),
-  p(`Nous vous confirmons l'activation de votre offre d'essai ${strong('Verebona Premium (2 mois offerts)')}. Votre accès Premium est entièrement gratuit pendant 60 jours, soit jusqu'au ${strong('{{trialEndsAt}}')}.`),
-  emailCallout([
-    `<p class="vb-eyebrow" style="${S.eyebrow}">Résumé de votre offre d'essai</p>`,
-    `<p style="margin:0 0 6px 0;">${strong('Offre :')} Verebona Premium - Essai de 60 jours</p>`,
-    `<p style="margin:0 0 6px 0;">${strong("Montant aujourd'hui :")} 0 € (Entièrement gratuit)</p>`,
-    `<p style="margin:0 0 6px 0;">${strong("Date de fin d'essai :")} {{trialEndsAt}}</p>`,
-    `<p style="margin:0;">${strong("À la fin de l'essai :")} Passage automatique à l'abonnement annuel de 59 € / an (TTC), sauf résiliation préalable.</p>`,
-  ].join('')),
-  p('Cette offre est 100 % libre et sans engagement. Vous pouvez annuler votre essai à tout moment et en un seul clic depuis votre compte, via le portail de gestion ("Gérer mon abonnement").'),
-  emailButton('{{loginUrl}}', 'Profiter de mon offre'),
-  p('Merci de votre confiance et bonne découverte de Verebona Premium !'),
+  p(`Votre essai gratuit ${strong('Verebona')} de 7 jours est ouvert. Il prendra fin le ${strong('{{trialEndsAt}}')}.`),
+  emailCallout("Aucune carte bancaire n'est demandée et aucun prélèvement automatique n'aura lieu à la fin de votre essai."),
+  emailButton('{{loginUrl}}', 'Accéder à Verebona'),
 ].join('\n'), foot(FOOT_COPYRIGHT, FOOT_TAGLINE));
 
 // ───────────────────────────── Essai (rappels, fin) ─────────────────────────────

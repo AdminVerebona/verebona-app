@@ -72,6 +72,16 @@ export interface CaseObservation {
   historicalSha256?: string | null;
   observedSha256?: string | null;
   matchesHistorical?: boolean | null;
+  /** Lot 100B : cas du manifeste du corpus (certification, verrou A1). */
+  manifestCaseId?: string | null;
+  /** Lot 100B : défauts sur un fait CRITIQUE de l'oracle (verrou A1, recette 9). */
+  criticalDefects?: Defect[];
+  /** Lot 100B : décisions lues sur la sortie (paires adversariales). */
+  decisions?: string[];
+  /** Lot 100B : réponse servie par le cache (coût fournisseur nul, jamais une mesure). */
+  fromCache?: boolean;
+  /** Lot 100B : essais consommés (relances d'erreur transitoire comprises). */
+  attempts?: number;
 }
 
 export interface ConcurrencyReport {

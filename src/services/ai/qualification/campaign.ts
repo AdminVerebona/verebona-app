@@ -52,6 +52,7 @@ import { sha256 } from './signature';
 import { optimizationPriority, QUALIFICATION_THRESHOLDS, type QualificationThresholds } from './thresholds';
 import { chooseCandidate, decideCoupleVerdict, establishedGain, percentile, type CandidateAssessment, type Reason, type Verdict } from './verdict';
 import { assessNonRegression, type NonRegressionAssessment, type OperationRun } from './non-regression';
+import { withRuntimeLimits } from './limits';
 
 export interface CampaignDeps {
   now?: () => Date;
@@ -142,7 +143,7 @@ export async function requestAutomaticCampaign(p: { trigger: string }, deps: Cam
   const env = deps.environment ?? getAiEnvironment();
   const ok = campaignAllowed(env);
   if (!ok.allowed) return { campaignId: null, note: ok.reason! };
-  const th = deps.thresholds ?? QUALIFICATION_THRESHOLDS;
+  const th = deps.thresholds ?? withRuntimeLimits(QUALIFICATION_THRESHOLDS);
   await repo.interruptStaleCampaigns(th.campaign.staleAfterMs, (deps.now ?? (() => new Date()))());
   if ((await repo.runningCampaigns(env)).some((c) => c.kind === 'AUTO')) return { campaignId: null, note: 'campagne automatique déjà en cours' };
   const id = await repo.createCampaign({
@@ -179,7 +180,7 @@ export async function requestConformityCampaign(p: {
   const env = deps.environment ?? getAiEnvironment();
   const ok = campaignAllowed(env);
   if (!ok.allowed) return { campaignId: null, status: 'NOT_ALLOWED', refusal: ok.reason, assessment: null };
-  const th = deps.thresholds ?? QUALIFICATION_THRESHOLDS;
+  const th = deps.thresholds ?? withRuntimeLimits(QUALIFICATION_THRESHOLDS);
   await repo.interruptStaleCampaigns(th.campaign.staleAfterMs, (deps.now ?? (() => new Date()))());
   const id = await repo.createCampaign({
     kind: 'CONFORMITY', environment: env, trigger: 'prompt-conformity', reason: p.reason.slice(0, 1000), adminUserId: null,
@@ -229,7 +230,7 @@ interface CampaignResult {
 const keyOf = (c: CoupleDescriptor) => `${repo.coupleKey(c.operationCode, c.model, c.rank)}|${c.signature}`;
 
 async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise<CampaignResult> {
-  const th = deps.thresholds ?? QUALIFICATION_THRESHOLDS;
+  const th = deps.thresholds ?? withRuntimeLimits(QUALIFICATION_THRESHOLDS);
   const now = deps.now ?? (() => new Date());
   const log = deps.log ?? (() => undefined);
   const campaign = await repo.getCampaignRow(campaignId);
@@ -368,7 +369,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
 
     // 4. Cas (une fois par opération), exécution des couples.
     const caseSets = new Map<string, CaseSet>();
-    const runs = new Map<string, { observations: Observation[]; p95: number | null; evidenceId: number; verdict: Verdict; reasons: Reason[] }>();
+    const runs = new Map<string, { observations: Observation[]; all: Observation[]; p95: number | null; evidenceId: number; verdict: Verdict; reasons: Reason[] }>();
     const ordre = [...plan].sort((a, b) => (a.role === b.role ? 0 : a.role === 'REFERENCE' ? -1 : 1));
     for (const item of ordre) {
       const c = item.couple;
@@ -424,7 +425,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
       }, obs);
       result.evidenceIds.push(evidenceId);
       result.couplesTested += 1;
-      runs.set(keyOf(c), { observations: decisives, p95: percentile(decisives.filter((o) => o.durationMs != null).map((o) => o.durationMs!), th.latency.percentile), evidenceId, verdict: v.verdict, reasons: v.reasons });
+      runs.set(keyOf(c), { observations: decisives, all: obs, p95: percentile(decisives.filter((o) => o.durationMs != null).map((o) => o.durationMs!), th.latency.percentile), evidenceId, verdict: v.verdict, reasons: v.reasons });
       log(`${c.operationCode} · ${c.model} · rang ${c.rank} (${item.role}) : ${v.verdict}`);
     }
 
@@ -443,7 +444,20 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
       });
       const couverture = conformityCoverage.get(campaignId) ?? null;
       const caseIds = couverture ? [...caseSets.values()].flatMap((set) => set.cases.filter((x) => couverture.matches({ variables: x.variables, operationCode: x.operationCode })).map((x) => x.caseId)) : [];
-      const assessment = assessNonRegression({ runs: opRuns, coverage: couverture ? { label: couverture.label, caseIds } : null, thresholds: th });
+      const assessment: NonRegressionAssessment = assessNonRegression({ runs: opRuns, coverage: couverture ? { label: couverture.label, caseIds } : null, thresholds: th });
+      // Lot 100B — verrou A1 (couverture du corpus #601) : une révision non régressive ne s'active pas pour autant
+      // si la couverture métier de son traitement est insuffisante (même avec un excellent score global).
+      {
+        const want2 = campaign.request.conformity as { treatment: Treatment; candidateVersionId: number };
+        const obsCand = plan.filter((x) => x.role === 'CANDIDATE').flatMap((x) => runs.get(keyOf(x.couple))?.all ?? []);
+        const { assessPromotion, a1RefusalMessage } = await import('../governance/master-corpus/certification/promotion');
+        const a1 = await assessPromotion({ context: 'PROMPT_CONFORMITY', environment: env, treatments: [want2.treatment], observations: obsCand, campaignId, candidateVersionId: want2.candidateVersionId });
+        assessment.a1 = { allowed: a1.assessment.allowed, blockers: a1.assessment.blockers.map((b) => b.message), token: a1.token };
+        if (!a1.assessment.allowed && assessment.decision === 'QUALIFIED') {
+          assessment.decision = 'INCONCLUSIVE';
+          assessment.blockingReasons.push(a1RefusalMessage(a1.assessment));
+        }
+      }
       await cfg.setCandidateState(want.candidateVersionId, assessment.decision === 'QUALIFIED' ? 'QUALIFIED' : assessment.decision === 'REFUSED' ? 'REFUSED' : 'INCONCLUSIVE',
         [...assessment.refusalReasons, ...assessment.blockingReasons].join(' · ').slice(0, 1000) || 'non-régression démontrée');
       const casExclus = [...caseSets.values()].flatMap((set) => set.skipped.filter((x) => x.reason.startsWith('hors périmètre : ')).map((x) => ({ caseId: x.caseId, reason: x.reason.slice('hors périmètre : '.length) })));
@@ -479,8 +493,20 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
       }
       if (choix.chosen) {
         const { activateQualifiedCandidate } = await import('../config/config-version.service');
+        // Lot 100B — verrou A1 sur les résultats de la candidate retenue (mêmes cas, même campagne).
+        const cand = candidates.find((c) => String(c.versionId) === choix.chosen)!;
+        const items = plan.filter((x) => x.candidateVersionId === cand.versionId);
+        const { assessPromotion, a1RefusalMessage } = await import('../governance/master-corpus/certification/promotion');
+        const a1 = await assessPromotion({
+          context: 'AUTO_CANDIDATE', environment: env, treatments: [cand.treatment], campaignId, candidateVersionId: cand.versionId,
+          observations: items.flatMap((x) => runs.get(keyOf(x.couple))?.all ?? []),
+          gains: assessments.find((a) => a.key === choix.chosen)?.gains ?? [],
+        });
+        const s0 = summaryCandidates.find((x) => String(x.versionId) === choix.chosen);
+        if (s0) s0.a1 = { allowed: a1.assessment.allowed, blockers: a1.assessment.blockers.slice(0, 20).map((b) => b.message) };
         try {
-          await activateQualifiedCandidate(Number(choix.chosen));
+          if (!a1.token) throw new Error(a1RefusalMessage(a1.assessment));
+          await activateQualifiedCandidate(Number(choix.chosen), { a1: a1.token });
           result.activatedVersionId = Number(choix.chosen);
           const s = summaryCandidates.find((x) => String(x.versionId) === choix.chosen);
           if (s) s.state = 'ACTIVATED';

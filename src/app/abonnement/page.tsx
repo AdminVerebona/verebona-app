@@ -11,6 +11,8 @@ import { useRouter } from 'next/navigation';
  * session vit dans un cookie HttpOnly (CDC cookies §5.6). On interroge donc le
  * serveur, comme le fait déjà la page de connexion.
  */
+const OFFERS_LOGIN_PATH = `/login?returnUrl=${encodeURIComponent('/mon-compte/offres')}`;
+
 export default function AbonnementRedirect() {
   const router = useRouter();
 
@@ -20,11 +22,14 @@ export default function AbonnementRedirect() {
       try {
         const res = await fetch('/api/auth/me', { credentials: 'include' });
         if (cancelled) return;
-        // Une session valide mène à la gestion de l'offre ; sinon, à la
-        // présentation publique des tarifs.
-        router.replace(res.ok ? '/mon-compte/offres' : '/#pricing');
+        // Une session valide mène à la gestion de l'offre. Lot 100G (E2, F) :
+        // sans session, connexion PUIS retour aux offres (utilisateur déjà
+        // inscrit reconnu, aucun jeton dans l'URL) — l'ancien repli `/#pricing`
+        // visait l'application, dont la racine renvoie à la connexion en
+        // perdant l'ancre (la section Tarifs `#pricing` est sur le site public).
+        router.replace(res.ok ? '/mon-compte/offres' : OFFERS_LOGIN_PATH);
       } catch {
-        if (!cancelled) router.replace('/#pricing');
+        if (!cancelled) router.replace(OFFERS_LOGIN_PATH);
       }
     })();
     return () => { cancelled = true; };

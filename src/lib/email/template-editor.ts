@@ -72,6 +72,15 @@ const LOGO: TemplateVariable = { name: 'logoUrl', label: 'Logo Verebona (en-têt
 /** Noms repris sous `actionUrl` / `inviteUrl` / `invitationLink` par `withActionLinkAliases`. */
 const ACTION_ALIASES = (label: string) => [v('actionUrl', `${label} (nom générique)`, 'url'), v('inviteUrl', `${label} (autre nom)`, 'url'), v('invitationLink', `${label} (autre nom)`, 'url')];
 
+/** Lot 100G : anciens noms des gabarits notif_trial_* (texte personnalisé antérieur). */
+const TRIAL_LEGACY_VARIABLES = [v('title', 'Titre de la notification (ancien nom)'), v('body', 'Message de la notification (ancien nom)'), v('actionUrl', 'Lien vers les offres (ancien nom)', 'url')];
+const TRIAL_UNSUBSCRIBE = v('unsubscribeUrl', 'Lien de désinscription (sans connexion)', 'url');
+/** Lot 100G : relances commerciales J+3 → J+60 (désinscription obligatoire). */
+const TRIAL_COMMERCIAL_SPEC = {
+  variables: [FIRST_NAME, v('offersUrl', 'Lien vers les offres (souscription sur le site Web)', 'url'), TRIAL_UNSUBSCRIBE],
+  required: [req('lien vers les offres', 'offersUrl'), req('lien de désinscription', 'unsubscribeUrl')],
+};
+
 /**
  * Variables FOURNIES par le code d'envoi de chaque gabarit (appelants audités au
  * lot 70A) et variables obligatoires. Clé : type en majuscules.
@@ -194,6 +203,27 @@ const DECLARED: Record<string, { variables: TemplateVariable[]; required: Requir
       v('amountLabel', 'Montant prévu du renouvellement'), v('manageSubscriptionUrl', 'Lien du portail Stripe (gérer l’abonnement)', 'url'), v('accountUrl', 'Lien « Mon compte »', 'url')],
     required: [req('lien du portail de gestion', 'manageSubscriptionUrl'), req('montant du renouvellement', 'amountLabel'), req('date du renouvellement', 'renewalDate')],
   },
+  // Lot 100G — séquence de fin d'essai (décision PO E1). J−2 / J0 : gabarits des
+  // notifications TRIAL_ENDING / TRIAL_ENDED (un seul circuit) ; anciens noms
+  // {{title}} / {{body}} / {{actionUrl}} toujours fournis (gabarit personnalisé
+  // antérieur). Aucune variable de désinscription dans un e-mail de SERVICE.
+  NOTIF_TRIAL_ENDING: {
+    variables: [FIRST_NAME, v('trialEndsAt', 'Date et heure de fin de l’essai'), v('offersUrl', 'Lien vers les offres (souscription sur le site Web)', 'url'), ...TRIAL_LEGACY_VARIABLES],
+    required: [req('lien vers les offres', 'offersUrl', 'actionUrl')],
+  },
+  NOTIF_TRIAL_ENDED: {
+    variables: [FIRST_NAME, v('trialEndsAt', 'Date et heure de fin de l’essai'), v('offersUrl', 'Lien vers les offres (souscription sur le site Web)', 'url'), ...TRIAL_LEGACY_VARIABLES],
+    required: [req('lien vers les offres', 'offersUrl', 'actionUrl')],
+  },
+  TRIAL_FOLLOWUP_J3: TRIAL_COMMERCIAL_SPEC,
+  TRIAL_FOLLOWUP_J10: TRIAL_COMMERCIAL_SPEC,
+  TRIAL_FOLLOWUP_J30: TRIAL_COMMERCIAL_SPEC,
+  TRIAL_FOLLOWUP_J60: TRIAL_COMMERCIAL_SPEC,
+  TRIAL_DATA_RETENTION_J80: {
+    variables: [FIRST_NAME, v('daysRemaining', 'Jours restants avant la suppression planifiée'), v('dataDeletionDate', 'Date de suppression réellement planifiée'),
+      v('offersUrl', 'Lien vers les offres (souscription sur le site Web)', 'url'), v('exportUrl', 'Lien « Mes données » (export)', 'url'), TRIAL_UNSUBSCRIBE],
+    required: [req('jours restants', 'daysRemaining'), req('date de suppression', 'dataDeletionDate'), req('lien d’export', 'exportUrl'), req('lien de désinscription', 'unsubscribeUrl')],
+  },
   // SUBSCRIPTION_EXPIRING : déclenché par aucun code (ancien modèle) — non déclaré,
   // seules ses variables actuelles sont admises.
   ACCOUNT_DELETION_COMPLETED: {
@@ -239,8 +269,9 @@ export const NOTIFICATION_EMAIL_TEMPLATES: Readonly<Record<string, NotificationE
   NOTIF_ACCOUNT_INVITATION: { label: 'Invitation à rejoindre un compte', events: ['ACCOUNT_INVITATION'] },
   NOTIF_TRANSMISSION_RECEIVED: { label: 'Transmission reçue — NON UTILISÉ (aucune notification ne l’envoie par e-mail)', events: [] },
   NOTIF_TRANSMISSION_RESULT: { label: 'Transmission acceptée, refusée ou expirée', events: ['TRANSMISSION_ACCEPTED', 'TRANSMISSION_REFUSED', 'TRANSMISSION_EXPIRED'] },
-  NOTIF_TRIAL_ENDING: { label: 'Fin d’essai proche', events: ['TRIAL_ENDING'] },
-  NOTIF_TRIAL_ENDED: { label: 'Fin d’essai', events: ['TRIAL_ENDED'] },
+  // Lot 100G : e-mails envoyés par la séquence de fin d'essai (même gabarit, un seul circuit).
+  NOTIF_TRIAL_ENDING: { label: 'Fin d’essai proche (J−2, séquence de fin d’essai)', events: ['TRIAL_ENDING'] },
+  NOTIF_TRIAL_ENDED: { label: 'Fin d’essai (J0, séquence de fin d’essai)', events: ['TRIAL_ENDED'] },
   NOTIF_SUBSCRIPTION: {
     label: 'Abonnement (renouvellement, activation, changement, résiliation)',
     events: ['SUBSCRIPTION_RENEWED', 'SUBSCRIPTION_ACTIVATED', 'SUBSCRIPTION_CHANGED', 'SUBSCRIPTION_CHANGE_SCHEDULED', 'SUBSCRIPTION_CANCELLATION_SCHEDULED', 'SUBSCRIPTION_CANCELLED'],
@@ -252,6 +283,8 @@ export const NOTIFICATION_EMAIL_TEMPLATES: Readonly<Record<string, NotificationE
   NOTIF_SECURITY: { label: 'Sécurité du compte', events: ['PASSWORD_CHANGED', 'EMAIL_CHANGE_REQUESTED', 'EMAIL_CHANGED', 'PASSWORD_RESET_COMPLETED', 'AUTH_IDENTITY_LINKED', 'AUTH_IDENTITY_UNLINKED'] },
   // Lot 96B (CDC 18 Q6, migration 0832) : gabarit dédié, non désactivable.
   NOTIF_NEW_DEVICE_LOGIN: { label: 'Sécurité — connexion depuis un nouvel appareil', events: ['NEW_DEVICE_LOGIN'] },
+  // Lot 100D (décision PO A2, migration 0878) : gabarit dédié, non désactivable.
+  NOTIF_OTHER_SESSIONS_REVOKED: { label: 'Sécurité — autres appareils déconnectés (à la demande du titulaire)', events: ['OTHER_SESSIONS_REVOKED'] },
   NOTIF_NEWS: { label: 'Actualités Verebona', events: ['NEWS_ANNOUNCEMENT'] },
 };
 
@@ -331,6 +364,8 @@ export const CONTENT_LOCKED_TEMPLATES: Readonly<Record<string, string>> = {
     'Accusé de réception de la rétractation sur support durable (Code de la consommation, art. L221-21) : il atteste la référence, la date de réception, le contrat et le remboursement. Toute modification passe par une livraison.',
 };
 
+const TRIAL_COMMERCIAL_REASON = 'Relance commerciale après l’essai (campagne distincte des notifications de service) : le lien vers les offres et le lien de désinscription « Ne plus recevoir… » doivent rester présents.';
+
 /** Gabarits modifiables avec des mentions obligatoires (édition limitée). */
 const LIMITED_TEMPLATES: Readonly<Record<string, string>> = {
   PREMIUM_CONFIRMATION:
@@ -344,7 +379,17 @@ const LIMITED_TEMPLATES: Readonly<Record<string, string>> = {
     'E-mail d’actualités (prospection, consentement distinct) : la mention permettant de ne plus recevoir ces actualités (préférences de notification) doit rester présente.',
   NOTIF_ACCOUNT_DELETION:
     'Notification obligatoire de suppression de compte : le lien vers la page qui permet d’annuler la suppression ou d’exporter ses données doit rester présent.',
+  // Lot 100G : séquence de fin d'essai.
+  NOTIF_TRIAL_ENDING: 'Notification de service (J−2) : envoyée par la séquence de fin d’essai ; le lien vers les offres du site Web doit rester présent. Aucun lien de désinscription : ce n’est pas une relance commerciale.',
+  NOTIF_TRIAL_ENDED: 'Notification de service (J0) : envoyée par la séquence de fin d’essai ; le lien vers les offres du site Web doit rester présent. Aucun lien de désinscription : ce n’est pas une relance commerciale.',
+  TRIAL_FOLLOWUP_J3: TRIAL_COMMERCIAL_REASON,
+  TRIAL_FOLLOWUP_J10: TRIAL_COMMERCIAL_REASON,
+  TRIAL_FOLLOWUP_J30: TRIAL_COMMERCIAL_REASON,
+  TRIAL_FOLLOWUP_J60: TRIAL_COMMERCIAL_REASON,
+  TRIAL_DATA_RETENTION_J80: 'Rappel conditionnel sur les données (J+80) : ENVOI VERROUILLÉ tant que la conservation des données n’est pas fixée et appliquée. Jours restants, date réelle de suppression, lien d’export et lien de désinscription doivent rester présents.',
 };
+
+const TRIAL_UNSUBSCRIBE_MENTION = { label: 'libellé du lien de désinscription (ex. « Ne plus recevoir ces relances : »)', pattern: /ne plus recevoir|d[ée]sinscri|d[ée]sabonn/i };
 
 /**
  * Lot 73A — mentions de TEXTE obligatoires (au-delà des variables), contrôlées
@@ -352,6 +397,12 @@ const LIMITED_TEMPLATES: Readonly<Record<string, string>> = {
  */
 const REQUIRED_MENTIONS: Readonly<Record<string, ReadonlyArray<{ label: string; pattern: RegExp }>>> = {
   NOTIF_NEWS: [{ label: 'moyen de ne plus recevoir ces actualités (ex. « Pour ne plus recevoir ces actualités, gérez vos préférences… »)', pattern: /ne plus recevoir|d[ée]sabonn|d[ée]sinscri|pr[ée]f[ée]rences/i }],
+  // Lot 100G : relances commerciales — libellé du lien de désinscription.
+  TRIAL_FOLLOWUP_J3: [TRIAL_UNSUBSCRIBE_MENTION],
+  TRIAL_FOLLOWUP_J10: [TRIAL_UNSUBSCRIBE_MENTION],
+  TRIAL_FOLLOWUP_J30: [TRIAL_UNSUBSCRIBE_MENTION],
+  TRIAL_FOLLOWUP_J60: [TRIAL_UNSUBSCRIBE_MENTION],
+  TRIAL_DATA_RETENTION_J80: [TRIAL_UNSUBSCRIBE_MENTION],
 };
 
 function requiredMentionIssues(code: string, subject: string, body: string): ValidationIssue[] {

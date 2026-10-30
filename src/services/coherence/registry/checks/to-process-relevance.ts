@@ -220,7 +220,9 @@ export const toProcessRelevanceCardsCheck: CoherenceCheck = {
   id: 'COH-TODO-RELEVANCE-CARDS',
   // Lot 98B (P0-C) : version 2 — une carte documentaire dont la dernière décision de SA règle est un maintien
   // technique (évaluation en erreur…) n'est plus CONSISTENT du seul fait d'une décision de la version courante.
-  version: 2,
+  // Lot 100E (A7) : version 3 — même règle pour les familles « état » (agenda, équipements, fournisseurs) :
+  // dernière décision de famille en erreur ou différée en gardant la carte (`publishability#holdCauseSql`).
+  version: 3,
   status: 'ACTIVE',
   title: '« À traiter » : cartes jamais jugées par la version courante de leur moteur',
   domain: 'a-traiter',

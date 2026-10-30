@@ -217,10 +217,13 @@ function ConnectedDevices() {
     setBusy('others');
     try {
       const r = await withReauth(
-        () => apiClient.post<{ revoked: number }>('/api/users/me/sessions/revoke-others', {}),
+        () => apiClient.post<{ revoked: number; securityEmail?: boolean }>('/api/users/me/sessions/revoke-others', {}),
         'Avant de déconnecter vos autres appareils.',
       );
-      toast.success(r?.revoked ? 'Vos autres appareils ont été déconnectés.' : 'Aucun autre appareil n’était connecté.');
+      // Lot 100D (A2) : un e-mail de confirmation part seulement si des appareils ont réellement été déconnectés.
+      toast.success(r?.revoked
+        ? `Vos autres appareils ont été déconnectés.${r.securityEmail ? ' Un e-mail de confirmation vous a été envoyé.' : ''}`
+        : 'Aucun autre appareil n’était connecté.');
     } catch (e) {
       toast.error(errorMessage(e, 'La déconnexion des autres appareils a échoué.'));
     } finally {

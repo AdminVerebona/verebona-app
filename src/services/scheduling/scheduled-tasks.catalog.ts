@@ -112,6 +112,10 @@
  *                                                                 une transition traitée une seule fois
  *                                                                 (lot 82A, C-Q10 : neutralisation /
  *                                                                 reprise + rattrapage)
+ *   trial-lifecycle-emails          /h de 9 h à 19 h (Paris)      message unique compte × essai × jalon
+ *                                                                 (0886) pris par UPDATE conditionnel ;
+ *                                                                 clé d'idempotence Resend stable ;
+ *                                                                 rattrapage borné à la fenêtre (lot 100G)
  *
  * Créneaux fixes hors de la fenêtre de sauvegarde de nuit (1 h – 5 h) et de
  * la plage ambiguë des changements d'heure (2 h – 3 h).
@@ -999,6 +1003,30 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const r = await runAnnualRenewalReconciliation({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
       // Lot 76D : un passage partiel ou en erreur n'est jamais présenté comme réussi.
       return describeReconcileRun(r);
+    },
+  },
+  {
+    // Lot 100G (décision PO « Questions PO 3 », E / E2 / F) : séquence d'e-mails
+    // de fin d'essai — J−2 et J0 (notifications de service, gabarits
+    // notif_trial_ending / notif_trial_ended : UN seul circuit), J+3 → J+60
+    // (campagne commerciale distincte, désactivée par défaut, consentement et
+    // désinscription), J+80 (verrouillé : conservation non fixée). État relu
+    // juste avant chaque envoi, motif de chaque non-envoi, journal auditable
+    // (BO › Communications › Fin d'essai). Rattrapage limité à la fenêtre de
+    // chaque jalon : jamais d'envoi tardif ni de nuit. Coupures :
+    // TRIAL_LIFECYCLE_EMAILS=off (tout), TRIAL_COMMERCIAL_EMAILS=off (relances).
+    code: 'trial-lifecycle-emails',
+    label: 'E-mails de fin d’essai (J−2, J0, relances commerciales)',
+    schedule: { kind: 'interval', everyMs: HOUR, window: { from: [9, 0], to: [19, 0] } },
+    timeoutMs: 10 * MIN,
+    startupDelayMs: 6 * MIN,
+    run: async ({ deadline }) => {
+      const { runTrialLifecycle } = await import('@/services/trial-lifecycle/sequence.service');
+      const r = await runTrialLifecycle({ deadline: Math.min(deadline, Date.now() + 8 * MIN) });
+      const note = `${r.examined} message(s) examiné(s) : ${r.sent} envoyé(s), ${r.failed} en échec, ${r.skipped} non envoyé(s) (motif tracé), `
+        + `${r.deferred} en attente, ${r.blocked} bloqué(s) ; ${r.conversions} conversion(s)${r.more ? ' — reste à traiter' : ''}`;
+      if (r.examined === 0 && r.conversions === 0) return;
+      return { note, ...(r.failed > 0 && r.sent === 0 && r.failed >= r.examined ? { error: `${r.failed} envoi(s) en échec` } : {}) };
     },
   },
   {

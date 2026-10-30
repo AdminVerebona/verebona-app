@@ -31,6 +31,9 @@ import { applyRetiredChannels, CHANNEL_RETIRED_ERROR_CODE } from './retired-chan
 import { resolveIncidentGrouping, GROUPED_INCIDENT_ERROR_CODE } from './incident-grouping';
 import { deliverMobilePush } from './mobile-push';
 
+/** Lot 100G : e-mail de l'événement envoyé par la séquence de fin d'essai (cause tracée). */
+export const EMAIL_DELIVERED_ELSEWHERE_ERROR_CODE = 'email_sent_by_trial_sequence';
+
 export interface DispatchSummary {
   claimed: number;
   sent: number;
@@ -175,7 +178,13 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     await recordDelivery(row.id, ctx.userId, 'bell', o);
     noter(o);
   }
-  if (channels.email) {
+  // Lot 100G (E2) : e-mail porté par la séquence de fin d'essai (même gabarit,
+  // contrôles juste avant l'envoi, journal propre) — jamais deux circuits.
+  if (channels.email && entry.emailDeliveredBy) {
+    const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: EMAIL_DELIVERED_ELSEWHERE_ERROR_CODE };
+    await recordDelivery(row.id, ctx.userId, 'email', o);
+    noter(o);
+  } else if (channels.email) {
     const o = await deliverEmail(ctx, entry, rendered);
     await recordDelivery(row.id, ctx.userId, 'email', o);
     noter(o);

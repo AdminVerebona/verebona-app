@@ -533,6 +533,23 @@ export async function revokeAllUserSessions(
     keepRegistrySid?: string;
   } = {},
 ): Promise<Date> {
+  return (await revokeAllUserSessionsWithReport(userId, reason, opts)).cutoff;
+}
+
+/**
+ * Lot 100D (décision PO A2) : même révocation globale, avec le NOMBRE de
+ * sessions du registre réellement terminées par CET appel (lignes passées de
+ * « active » à « révoquée », écriture validée). `0` si aucune ne l'a été, ou
+ * si le registre n'a pas pu être mis à jour (prudent : une confirmation de
+ * sécurité ne doit jamais annoncer une révocation non prouvée). Les sessions
+ * antérieures au registre sont coupées par la borne mais ne sont pas
+ * comptées (on ne peut pas prouver qu'elles existaient).
+ */
+export async function revokeAllUserSessionsWithReport(
+  userId: number,
+  reason: string,
+  opts: { keepRegistrySid?: string } = {},
+): Promise<{ cutoff: Date; registryRevoked: number }> {
   await ensureRevokedTokensTable();
   // Horloge de l'APPLICATION, celle qui date les jetons (`iatMs`) : un écart
   // d'horloge avec la base ne doit ni sauver un ancien jeton, ni invalider la
@@ -547,8 +564,8 @@ export async function revokeAllUserSessions(
     RETURNING revoked_before
   `;
   const cutoff = new Date(rows[0].revoked_before);
-  await reflectGlobalRevocationInRegistry(userId, at, reason, opts.keepRegistrySid ?? null);
-  return cutoff;
+  const registryRevoked = await reflectGlobalRevocationInRegistry(userId, at, reason, opts.keepRegistrySid ?? null);
+  return { cutoff, registryRevoked };
 }
 
 /**
@@ -559,14 +576,18 @@ export async function revokeAllUserSessions(
  * La borne ci-dessus reste l'autorité : un échec ici (table absente avant la
  * migration 0802, base momentanément indisponible) ne remet rien en cause.
  */
-async function reflectGlobalRevocationInRegistry(userId: number, at: Date, reason: string, keepSid: string | null): Promise<void> {
+async function reflectGlobalRevocationInRegistry(userId: number, at: Date, reason: string, keepSid: string | null): Promise<number> {
+  let revokedCount = 0;
   try {
-    const revoked = await client<{ sid: string; user_id: number; device_key: string | null; client_type: string }[]>`
+    const revoked = await client<{ sid: string; user_id: number; device_key: string | null; client_type: string; expires_at: Date }[]>`
       UPDATE user_sessions SET revoked_at = ${at.toISOString()}, revocation_reason = ${reason}
        WHERE user_id = ${userId} AND revoked_at IS NULL AND created_at <= ${at.toISOString()}
          AND (${keepSid}::text IS NULL OR sid <> ${keepSid})
-      RETURNING sid, user_id, device_key, client_type
+      RETURNING sid, user_id, device_key, client_type, expires_at
     `;
+    // Seules comptent les sessions encore ACTIVES (une ligne déjà expirée
+    // par inactivité est marquée, mais elle n'était plus une session ouverte).
+    revokedCount = revoked.filter((r) => new Date(r.expires_at).getTime() > at.getTime()).length;
     await client`DELETE FROM reauth_proofs WHERE user_id = ${userId} AND created_at <= ${at.toISOString()}
                     AND (${keepSid}::text IS NULL OR sid <> ${keepSid})`;
     if (revoked.length > 0) {
@@ -592,6 +613,7 @@ async function reflectGlobalRevocationInRegistry(userId: number, at: Date, reaso
       console.error('[db] révocation globale : push mobile non coupé :', (e as Error)?.message ?? e);
     }
   }
+  return revokedCount;
 }
 
 /** Borne de révocation globale de l'utilisateur, ou `null`. */

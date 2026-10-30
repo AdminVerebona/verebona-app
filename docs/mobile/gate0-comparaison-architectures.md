@@ -1,5 +1,14 @@
 # Gate 0 — comparaison des architectures de mutualisation de l'interface (lot 95)
 
+> **DÉCISION PO B1 du 27/10/2026 : option B retenue** — application hybride avec **interface mobile
+> embarquée** et composants natifs ciblés (pas une WebView du site distant). Décisions liées : **B2**
+> session au Keychain / Android Keystore (§ 5 : « jeton mobile », désormais requis), **B3** code du
+> téléphone après 5 minutes sans biométrie (§ 10 n° 2), **B4** retour Google / Apple par le schéma
+> `fr.verebona.app[.preprod]://retour`. La proposition « A renforcé » ci-dessous (§ 0, § 7.2) **n'est pas
+> retenue** ; ce document reste la trace de l'analyse et de l'inventaire du code. Plan du lot :
+> `docs/mobile/plan-architecture-embarquee.md`. Le mode A du prototype reste utilisable pour le
+> diagnostic, il n'est plus la cible.
+
 Référence : CDC 12 « Application mobile iOS & Android V1 » §3 et §3.2 (G0-01 à G0-10) ; décisions PO
 du 26/10/2026 M1 à M10 (elles priment) ; CDC 18 (sessions, Google / Apple). Statut : **document de
 qualification**. Il ne fige rien : le choix définitif est pris par le PO après les essais sur vrais
@@ -261,7 +270,7 @@ prototype** (`server.errorPath`, écrans locaux).
 
 **Option D** (React Native / natif) : pour mémoire, écartée par le CDC et M5 sauf échec démontré.
 
-### 7.2 Proposition pour la production
+### 7.2 Proposition pour la production (non retenue — décision B1 : option B)
 
 **Retenir A « renforcé » pour la V1**, **sous condition** que le Gate 0 apporte les preuves listées au § 8.
 Arguments :
@@ -328,6 +337,10 @@ téléphone et prononce la validation finale. Grille : `docs/mobile/gate0-grille
 ---
 
 ## 10. Décisions à demander au PO (après les essais)
+
+> **Tranchées le 27/10/2026** : n° 1 → **Keychain / Keystore exigé** (B2) ; n° 2 → **code du téléphone**
+> (B3, réglage `UNLOCK_WITHOUT_BIOMETRICS = 'device_credential'` déjà en place) ; n° 3 → **option B**
+> (B1). Mise en œuvre : `docs/mobile/plan-architecture-embarquee.md`.
 
 1. **Connexion conservée sur le téléphone** : accepter que la connexion soit gardée dans l'espace
    protégé de l'application (comme le fait le navigateur, chiffré par le téléphone, non sauvegardé) ?

@@ -49,6 +49,7 @@ import { ModelRegistry } from './_components/ModelRegistry';
 import { ModelCapabilities } from './_components/ModelCapabilities';
 import { CoupleQualification } from './_components/CoupleQualification';
 import { PromptConformity } from './_components/PromptConformity';
+import { CorpusCertification } from './_components/CorpusCertification';
 import { OperationProfilesEditor, type OperationProfile, type ProfiledOperation, type PlanView } from './_components/OperationProfilesEditor';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
@@ -1081,6 +1082,9 @@ export default function AiConfigPage() {
 
       {/* Lot 99B : conformité des prompts — contrats IA, corrections automatiques qualifiées (préproduction), retours arrière. */}
       <PromptConformity />
+
+      {/* Lot 100B (ticket #601, arbitrage A1) : corpus de qualification certifié — approbations individuelles, couverture, verrou A1, vue T2. */}
+      <CorpusCertification />
 
       {/* Liste des versions */}
       <section className="space-y-2">

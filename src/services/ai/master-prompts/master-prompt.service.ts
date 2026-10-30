@@ -842,6 +842,12 @@ async function switchTo(treatment: Treatment, versionId: number, userId: number,
   if (tests.state === 'never') notices.push('Cette version n’a pas encore été testée avec le corpus.');
   if (tests.state === 'done' && tests.run.failed > 0) notices.push(tests.message);
   for (const w of checks.warnings) notices.push(w.message);
+  // Lot 100B (#345, arbitrage A1) : l'activation MANUELLE reste possible ; elle affiche la matrice et les manques
+  // de couverture du corpus, à titre d'information (jamais bloquant).
+  if (action === 'activate') {
+    const { a1NoticesFor } = await import('../governance/master-corpus/certification/service');
+    notices.push(...(await a1NoticesFor(treatment).catch(() => ({ notices: [] as string[] }))).notices);
+  }
   return {
     treatment, previousVersionNumber: r.previous?.versionNumber ?? null,
     activeVersionNumber: r.current.versionNumber, activeVersionId: r.current.id, notices,

@@ -38,8 +38,16 @@ import { defectsFromComparison, defectsFromEvaluator, schemaDefect, type Defect 
 import { canonicalJson, sha256 } from './signature';
 import { structuredSpecFor } from '../master-prompts/structured-context';
 import type { CaseSource, ExpectedSource } from './verdict';
+import type { AiAttachment } from '../gateway/types';
 
-export interface CaseEvaluation { defects: Defect[]; inconclusive: string | null }
+export interface CaseEvaluation {
+  defects: Defect[];
+  inconclusive: string | null;
+  /** Lot 100B : défauts sur un fait critique de l'oracle approuvé. */
+  criticalDefects?: Defect[];
+  /** Lot 100B : décisions lues sur la sortie (paires adversariales). */
+  decisions?: string[];
+}
 
 export interface QualificationCase {
   caseId: string;
@@ -59,6 +67,10 @@ export interface QualificationCase {
   historicalOutput: unknown | null;
   /** Jeton propre au cas présent dans le prompt (simulation, diagnostic). */
   marker: string | null;
+  /** Lot 100B : cas du manifeste du corpus (null : rejeu de préproduction). */
+  manifestCaseId?: string | null;
+  /** Lot 100B : fichiers RÉELS transmis au modèle (cas multimodal du corpus). */
+  attachments?: AiAttachment[];
   evaluate(output: unknown, ctx: { masterText: MasterFileReader }): Promise<CaseEvaluation>;
 }
 
@@ -136,20 +148,35 @@ export async function qualificationCorpus(readMasterFile: MasterFileReader): Pro
 }
 
 async function fixtureCases(op: AiOperationDefinition, treatment: Treatment, readMasterFile: MasterFileReader, given?: MasterCorpusCase[]) {
-  const [{ loadMasterCorpusCases }, { liveVariablesFor, branchSchemas }, { evaluateCorpusOutput }, { masterOutputSchemaFor }, { MASTER_CORPUS_EVALUATORS }] = await Promise.all([
+  const [{ loadMasterCorpusCases }, { liveVariablesFor, branchSchemas }, { evaluateCorpusOutput }, { masterOutputSchemaFor }, { MASTER_CORPUS_EVALUATORS }, cert, mf, { evaluateOracle }] = await Promise.all([
     import('../governance/master-corpus/cases'), import('../governance/master-corpus/live'), import('../governance/master-corpus/runner'),
     import('../gateway/master-output-schemas'), import('../governance/master-corpus/evaluators'),
+    import('../governance/master-corpus/certification/state'), import('../governance/master-corpus/certification/manifest'),
+    import('../governance/master-corpus/certification/oracle'),
   ]);
   const all = (given ?? corpusOverride ?? loadMasterCorpusCases(readMasterFile)).filter((c) => c.operationCode === op.operationCode);
+  // Lot 100B : manifeste du corpus #601 et approbations en vigueur (base absente : aucune approbation).
+  const etat = await cert.loadCertificationState();
   const cases: QualificationCase[] = [];
   const skipped: CaseSet['skipped'] = [];
   const schema = masterOutputSchemaFor(op.outputSchema);
   for (const c of all) {
+    const entree = mf.entryForFixture(etat.manifest, c.file, c.id);
+    const statut = entree ? etat.statusOf(entree) : null;
+    if (entree && statut === 'REJETEE') { skipped.push({ caseId: `corpus:${c.id}`, source: 'CORPUS_FIXTURE', reason: `cas rejeté (manifeste ${entree.id}) : ${entree.reason.slice(0, 200)}` }); continue; }
+    // Lot 100B (ticket #601, partie 2/5) : un cas MULTIMODAL n'est rejoué qu'avec le fichier RÉEL transmis au modèle.
+    let attachments: AiAttachment[] | undefined;
+    if (entree?.inputMode === 'FILE') {
+      if (!entree.sourcePieces.length) { skipped.push({ caseId: `corpus:${c.id}`, source: 'CORPUS_FIXTURE', reason: `non rejouable : le cas teste un fichier (OCR / multimodal) que le corpus ne fournit pas (${entree.id}) — jamais compté vert` }); continue; }
+      try { attachments = await readPieces(entree.sourcePieces); } catch (e) { skipped.push({ caseId: `corpus:${c.id}`, source: 'CORPUS_FIXTURE', reason: `non rejouable : pièce source illisible (${(e as Error).message})` }); continue; }
+    }
     if (!schema) { skipped.push({ caseId: c.id, source: 'CORPUS_FIXTURE', reason: `schéma ${op.outputSchema} inconnu` }); continue; }
     let variables: Record<string, unknown> | null = null;
     try { variables = await liveVariablesFor(c); } catch (e) { skipped.push({ caseId: c.id, source: 'CORPUS_FIXTURE', reason: `variables : ${(e as Error).message}` }); continue; }
     if (!variables) { skipped.push({ caseId: c.id, source: 'CORPUS_FIXTURE', reason: 'hors sous-ensemble réel (pièce jointe ou contexte non reconstituable)' }); continue; }
-    const attendu = fixtureExpectation(c, op.operationCode in MASTER_CORPUS_EVALUATORS);
+    // Oracle APPROUVÉ (empreinte exacte) : ses assertions s'ajoutent aux contrôles serveur de la branche.
+    const oracle = entree && statut === 'REFERENCE_APPROUVEE' ? entree.oracle : null;
+    const attendu = oracle && c.qualificationRole !== 'guard' ? { use: 'REFERENCE' as const, reason: null } : fixtureExpectation(c, op.operationCode in MASTER_CORPUS_EVALUATORS);
     if (attendu.use === 'SKIP') { skipped.push({ caseId: `corpus:${c.id}`, source: 'CORPUS_FIXTURE', reason: attendu.reason! }); continue; }
     // Sans déclaration « réponse de référence », l'attendu (écrit pour une sortie enregistrée) n'est pas appliqué.
     const juge: MasterCorpusCase = attendu.use === 'REFERENCE' ? c : { ...c, expected: null };
@@ -160,6 +187,7 @@ async function fixtureCases(op: AiOperationDefinition, treatment: Treatment, rea
       mandatory: true, advisory: false, accountId: null, captureId: null, variables,
       outputSchema: schema, acceptedOutputSchemas: branchSchemas(c),
       historicalOutput: c.output ?? null, marker: markerOf(variables),
+      manifestCaseId: entree?.id ?? null, attachments,
       async evaluate(output, ctx) {
         // Lot 97A : la sortie RÉELLE suit le contrat de sortie du prompt actif (T4 v1 / v2 / v3…), pas
         // forcément celui de la sortie enregistrée : elle est jugée avec le premier schéma de la branche
@@ -178,13 +206,34 @@ async function fixtureCases(op: AiOperationDefinition, treatment: Treatment, rea
           else if (/^contrôle : /.test(e)) inconclusive = `contrôle serveur en erreur (${e.slice(10, 160)})`;
           else defects.push(...defectsFromEvaluator([e]));
         }
-        return { defects, inconclusive: defects.length ? null : inconclusive };
+        // Lot 100B : assertions de l'oracle approuvé (faits, preuves, entités, décisions, abstention, sources).
+        const o = oracle ? evaluateOracle(oracle, output) : null;
+        if (o) defects.push(...o.defects);
+        return { defects, inconclusive: defects.length ? null : inconclusive, ...(o ? { criticalDefects: o.criticalDefects, decisions: o.decisions } : {}) };
       },
     });
   }
-  const corpusFingerprint = sha256(canonicalJson(all.map((c) => ({ id: c.id, file: c.file, context: c.context, expected: c.expected, contract: c.outputContract ?? null, role: c.qualificationRole ?? null }))
-    .sort((a, b) => `${a.file}#${a.id}`.localeCompare(`${b.file}#${b.id}`))));
+  // Lot 100B : l'empreinte porte aussi la CERTIFICATION de l'opération (oracles, approbations, décisions) —
+  // modifier un oracle, l'approuver ou le révoquer rend obsolètes les qualifications antérieures (recette 8).
+  const certification = mf.certificationFingerprint(etat.manifest, op.operationCode, etat.approvals, etat.decisions);
+  const corpusFingerprint = sha256(canonicalJson({
+    cases: all.map((c) => ({ id: c.id, file: c.file, context: c.context, expected: c.expected, contract: c.outputContract ?? null, role: c.qualificationRole ?? null }))
+      .sort((a, b) => `${a.file}#${a.id}`.localeCompare(`${b.file}#${b.id}`)),
+    certification,
+  }));
   return { cases, skipped, corpusFingerprint };
+}
+
+/** Pièces sources RÉELLES d'un cas multimodal (dépôt), transmises en données en ligne. */
+async function readPieces(pieces: ReadonlyArray<{ path: string; mimeType: string; sha256?: string | null }>): Promise<AiAttachment[]> {
+  const [{ readFileSync }, { join }, { createHash: h }, { REPO_ROOT }] = await Promise.all([
+    import('node:fs'), import('node:path'), import('node:crypto'), import('../governance/master-corpus/certification/manifest'),
+  ]);
+  return pieces.map((p) => {
+    const b = readFileSync(join(REPO_ROOT, p.path));
+    if (p.sha256 && h('sha256').update(b).digest('hex') !== p.sha256) throw new Error(`empreinte de ${p.path} différente du manifeste`);
+    return { url: `corpus://${p.path}`, mimeType: p.mimeType, displayName: p.path.split('/').pop(), data: b.toString('base64') };
+  });
 }
 
 // ── 2. Cas de référence T1 (harnais historique absorbé) ─────────────────────
@@ -206,6 +255,7 @@ async function t1ReferenceCases(op: AiOperationDefinition, treatment: Treatment)
       caseId: `t1ref:${c.caseId}`, operationCode: op.operationCode, treatment, source: 'T1_REFERENCE', expectedSource: 'REFERENCE',
       mandatory: false, advisory: true, accountId: null, captureId: null, variables,
       outputSchema: tol.T1AnalyzeDocumentTolerantOutput, acceptedOutputSchemas: [], historicalOutput: null, marker: c.caseId,
+      manifestCaseId: `R-T1-${c.caseId.toUpperCase().replace(/[^A-Z0-9]+/g, '-')}`,
       async evaluate(output) {
         const { output: out } = tol.splitNormalisation(output as never);
         return { defects: defectsFromComparison(compareCase(c, t1.observedFromT1Output(c, out))), inconclusive: null };

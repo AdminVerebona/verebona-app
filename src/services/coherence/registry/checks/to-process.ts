@@ -34,9 +34,10 @@
  *     jour) — réévaluation par la décision centrale ; sinon CONSTAT
  *     (« décision non démontrée », cause et demande IA) : jamais CONSISTENT.
  * La carte retenue n'est pas publiée (« À traiter », compteur, mascotte) :
- * elle relève de la Supervision. Les autres familles de cartes (agenda, équipements,
- * fournisseurs, Opérations) sont réévaluées par leurs producteurs horaires :
- * lacune DÉCLARÉE dans l'inventaire de couverture, jamais réputée couverte.
+ * elle relève de la Supervision. Lot 100E (A7) : la même règle vaut pour les
+ * autres familles (agenda, équipements, fournisseurs, biens, événements de
+ * référence) — contrat commun `publishability.ts`, nettoyage rétroactif des
+ * cartes devenues inutiles par COH-TODO-PUBLISHABILITY.
  */
 import type { CoherenceCheck, Inspection, RepairResult } from '../types';
 import { hashOf, idsOf, intArray, rows, type Row } from '../util';

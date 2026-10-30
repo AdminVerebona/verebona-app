@@ -69,15 +69,17 @@ const BUILDERS: Record<string, Builder> = {
     } as never) as unknown as Vars;
   },
   async t1_analyze_document(c) {
-    const x = ctx<{ extractedContent?: string; displayNames?: string[]; mimeTypes?: string[] }>(c);
-    if (!x.extractedContent) return null;
+    const x = ctx<{ extractedContent?: string; displayNames?: string[]; mimeTypes?: string[]; attachments?: Array<{ path: string; mimeType: string }> }>(c);
+    // Lot 100B : un cas MULTIMODAL fournit le fichier réel (`attachments`, transmis au modèle par la
+    // qualification) ; sans texte extrait ni fichier, le cas n'est pas rejouable.
+    if (!x.extractedContent && !x.attachments?.length) return null;
     const { buildAnalyzeDocumentVariables } = await import('../../source-analysis/master/prompt-context');
     const { fixtureAnalysisContext } = await import('../../source-analysis/__fixtures__/t1/load');
-    const names = x.displayNames ?? ['document.pdf'];
+    const names = x.displayNames ?? x.attachments?.map((a) => a.path.split('/').pop() ?? a.path) ?? ['document.pdf'];
     return buildAnalyzeDocumentVariables({
       input: {
         sourceType: 'file', sourceIds: names.map((_n, i) => i + 1), accountId: 0, userId: 0,
-        displayNames: names, mimeTypes: x.mimeTypes ?? names.map(() => 'application/pdf'), extractedContent: x.extractedContent,
+        displayNames: names, mimeTypes: x.mimeTypes ?? x.attachments?.map((a) => a.mimeType) ?? names.map(() => 'application/pdf'), extractedContent: x.extractedContent,
       } as never,
       groupIndices: [0], ctx: fixtureAnalysisContext(c as never), v2Families: [],
       // Corpus : compte Premium (pièces et équipements), cas des fixtures.

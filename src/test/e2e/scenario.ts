@@ -8,7 +8,9 @@
  *   docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
  *   E2E_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres npm run test:e2e
  *
- *   E2E_KEEP_DB=1 : garder la base `verebona_e2e_*` pour l'inspecter.
+ *   E2E_KEEP_DB=1 : garder les bases `verebona_e2e_*` pour les inspecter.
+ *   Lot 100A : une base par FICHIER (copie de la base modèle, `setup.ts`),
+ *   ordre fixe ; E2E_SHARED_DB=1 : ancienne base commune (diagnostic seulement).
  *   Seule E2E_DATABASE_URL est lue (jamais DATABASE_URL) ; un hôte non local
  *   est refusé sauf E2E_ALLOW_REMOTE=1.
  *

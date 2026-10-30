@@ -79,6 +79,8 @@ export const NOTIFICATION_TYPES = {
   EMAIL_CHANGED: 'EMAIL_CHANGED',
   PASSWORD_RESET_COMPLETED: 'PASSWORD_RESET_COMPLETED',
   NEW_DEVICE_LOGIN: 'NEW_DEVICE_LOGIN', // lot 96B (CDC 18 Q6) : connexion depuis un nouvel appareil
+  /** Lot 100D (décision PO A2) : « Déconnecter tous les autres appareils » a pris effet. */
+  OTHER_SESSIONS_REVOKED: 'OTHER_SESSIONS_REVOKED',
   /** Lot 93 (CDC 18 §22, NOTIF-01) : Google / Apple associé ou dissocié. */
   AUTH_IDENTITY_LINKED: 'AUTH_IDENTITY_LINKED',
   AUTH_IDENTITY_UNLINKED: 'AUTH_IDENTITY_UNLINKED',
@@ -210,6 +212,8 @@ export interface NotificationPayloadMap {
   PASSWORD_RESET_COMPLETED: Record<string, never>;
   // Lot 96B : date ISO de la connexion, libellés d'appareil (aucune IP, aucune localisation).
   NEW_DEVICE_LOGIN: { at: string; deviceLabel: string; browserLabel: string; clientType?: string };
+  // Lot 100D (A2) : date ISO, nombre de sessions réellement révoquées, appareil qui a fait la demande (ni IP ni localisation).
+  OTHER_SESSIONS_REVOKED: { at: string; count: number; deviceLabel?: string; browserLabel?: string };
   AUTH_IDENTITY_LINKED: { provider: 'google' | 'apple' };
   AUTH_IDENTITY_UNLINKED: { provider: 'google' | 'apple' };
 

@@ -331,6 +331,13 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   // Lot 97 (0814) : installations de l'application mobile (plateforme, version, statut, activité) —
   // jeton push chiffré, empreinte et session jamais exportés (security.ts).
   mobile_push_installations: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
+  // Lot 100G (0886) : séquence d'e-mails de fin d'essai — messages (jalon, état,
+  // motif de non-envoi, modèle et version), journal auditable (envois, échecs,
+  // conversions, désinscriptions ; réglages BO : sans compte) et oppositions
+  // aux communications commerciales des membres du compte.
+  trial_lifecycle_messages: C('technique'),
+  trial_lifecycle_events: C('technique'),
+  marketing_oppositions: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
   _migrations: C('technique', { global: true, filter: 'TRUE' }),
   scheduled_task_state: C('technique', { global: true, filter: 'TRUE' }),
   ai_queue_worker_heartbeats: C('technique', { global: true, filter: 'TRUE' }),
@@ -387,6 +394,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   // Lot 99B : mise en conformité automatique des prompts (globale, sans compte).
   ai_prompt_conformity_issues: T('technique', 'conformité des prompts IA : incompatibilités (globale)'),
   ai_prompt_conformity_events: T('technique', 'conformité des prompts IA : journal (globale)'),
+  // Lot 100B : certification du corpus de qualification (#601) — approbations individuelles, rejets motivés, verrou A1 (globales, sans compte).
+  ai_corpus_oracle_approvals: T('technique', 'corpus de qualification IA : approbations des oracles (globale)'),
+  ai_corpus_case_decisions: T('technique', 'corpus de qualification IA : rejets et rétablissements motivés (globale)'),
+  ai_corpus_a1_assessments: T('technique', 'corpus de qualification IA : journal du verrou A1 (globale)'),
   ai_master_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
   ai_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
   ai_corpus_baseline: T('technique', 'ancien harnais de mesure retiré (table inerte)'),
@@ -411,6 +422,7 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   referral_events: T('technique', 'parrainage : événements (deux comptes par ligne)'),
   referral_links: T('technique', 'parrainage : liens (code omis)'),
   news_consents: T('technique', 'consentements de communication'),
+  trial_lifecycle_settings: T('referentiels', 'séquence de fin d’essai : réglages BO (une ligne)'),
   user_guide_progress: T('technique', 'progression du guide'),
   help_article_feedback: T('technique', 'aide en ligne : avis'),
   legal_acceptances: T('technique', 'acceptations juridiques (adresses IP masquées)'),
@@ -477,6 +489,8 @@ export const DIAG_TABLE_EXCLUSIONS: Readonly<Record<string, { category: DiagExcl
   reauth_proofs: { category: 'SECURITE', motif: 'preuves de réauthentification (5 min)' },
   // Lot 96A (CDC 18 §11.3) : empreintes des liens de changement d'adresse principale.
   email_change_requests: { category: 'SECURITE', motif: 'demandes de changement d’adresse (empreintes de liens)' },
+  // Lot 100D (A3) : étiquette HMAC de l'adresse d'origine (transition des appareils reconnus, 180 jours au plus).
+  device_trust_legacy_accounts: { category: 'SECURITE', motif: 'appareils reconnus : étiquettes de transition (empreintes)' },
   // Lot 93 : state / nonce / PKCE hachés, codes de confirmation, codes d'échange mobile.
   auth_transactions: { category: 'SECURITE', motif: 'transactions OAuth Google / Apple (secrets de parcours)' },
   idempotency_keys: { category: 'SECURITE', motif: 'empreintes et corps de requêtes rejouables' },

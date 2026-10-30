@@ -1,5 +1,5 @@
 {
-  "case": "T1-02",
+  "case": "T1-02-ACHAT-PIECE",
   "description": "Achat de pneus pour la Clio : achat de la pièce, pas d'acquisition du véhicule (acquisitionPrice proposé à tort sur le bien, retiré).",
   "qualification": { "role": "guard" },
   "context": {

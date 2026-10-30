@@ -1,70 +1,42 @@
 import { db } from '@/db';
 import { emailTemplates } from '@/db/schema';
-import { inArray } from 'drizzle-orm';
-import { TRIAL_ENDED_HTML, TRIAL_REMINDER_J1_HTML, TRIAL_REMINDER_J3_HTML } from '@/lib/email/email-html-templates';
+import { sql } from 'drizzle-orm';
+import { TRIAL_SHIPPED_TEMPLATES } from '@/services/trial-lifecycle/templates';
 
 /**
- * Modeles de courriels lies a l'essai gratuit (CDC tarification §14).
+ * Modeles de courriels de la sequence de fin d'essai (lot 100G, decision PO
+ * « Questions PO 3 », E1 — textes repris mot pour mot) :
  *
- *   TRIAL_REMINDER_J3 — rappel a trois jours de la fin
- *   TRIAL_REMINDER_J1 — rappel la veille
- *   TRIAL_ENDED       — information de fin d'essai
+ *   notif_trial_ending       J−2  notification de service (evenement TRIAL_ENDING)
+ *   notif_trial_ended        J0   notification de service (evenement TRIAL_ENDED)
+ *   TRIAL_FOLLOWUP_J3 … J60       relances commerciales (campagne distincte)
+ *   TRIAL_DATA_RETENTION_J80      rappel conditionnel (envoi verrouille)
  *
- * Chaque message rappelle explicitement, comme l'exige le cahier des charges :
- *   - qu'aucune carte bancaire n'a ete enregistree ;
- *   - qu'aucun prelevement automatique n'aura lieu ;
- *   - que les donnees restent conservees ;
- *   - qu'une offre doit etre choisie pour continuer.
+ * Un seul circuit (E2) : les anciens modeles TRIAL_REMINDER_J3, TRIAL_REMINDER_J1
+ * et TRIAL_ENDED ne sont plus amorces ni envoyes (retires, lot 100G).
  *
  * Usage : npx tsx src/db/seeds/email_templates_trial.ts
- * Le script est reexecutable : il remplace les trois modeles a chaque passage.
+ * Rejouable : un modele absent est cree ; un modele present n'est jamais
+ * ecrase (la migration 0887 livre les textes, l'editeur du BO les modifie).
  */
-
-const TYPES = ['TRIAL_REMINDER_J3', 'TRIAL_REMINDER_J1', 'TRIAL_ENDED'];
-
-/** Lot 66C : corps HTML à la charte « Sérénité » 2026, partagés avec la migration 0465. */
-
-const templates = [
-  {
-    type: 'TRIAL_REMINDER_J3',
-    subject: 'Votre essai Verebona se termine dans {{daysRemaining}} jours',
-    body: TRIAL_REMINDER_J3_HTML,
-    placeholders: JSON.stringify(['firstName', 'daysRemaining', 'trialEndsAt', 'offersUrl']),
-  },
-  {
-    type: 'TRIAL_REMINDER_J1',
-    subject: 'Dernier jour de votre essai Verebona',
-    body: TRIAL_REMINDER_J1_HTML,
-    placeholders: JSON.stringify(['firstName', 'trialEndsAt', 'offersUrl']),
-  },
-  {
-    type: 'TRIAL_ENDED',
-    subject: 'Votre essai Verebona est termine',
-    body: TRIAL_ENDED_HTML,
-    placeholders: JSON.stringify(['firstName', 'offersUrl']),
-  },
-];
-
 export async function seedTrialEmailTemplates() {
-  console.log('\nModeles de courriels — essai gratuit\n');
-
-  // Remplacement integral : le script est rejouable sans creer de doublon.
-  await db.delete(emailTemplates).where(inArray(emailTemplates.type, TYPES));
-
-  for (const t of templates) {
+  console.log('\nModeles de courriels — sequence de fin d\'essai\n');
+  for (const t of TRIAL_SHIPPED_TEMPLATES) {
+    const existing = await db.select({ id: emailTemplates.id }).from(emailTemplates)
+      .where(sql`upper(${emailTemplates.type}) = upper(${t.type})`).limit(1);
+    if (existing.length) { console.log(`  present : ${t.type}`); continue; }
     await db.insert(emailTemplates).values({
       type: t.type,
       subject: t.subject,
       body: t.body,
-      placeholders: t.placeholders,
+      placeholders: JSON.stringify(t.placeholders),
       triggerConfig: null,
       sender: null,
       updatedAt: new Date(),
       updatedBy: null,
-    });
+    }).onConflictDoNothing();
     console.log(`  cree : ${t.type}`);
   }
-
   console.log('\nTermine.\n');
 }
 

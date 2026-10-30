@@ -104,7 +104,9 @@ scenario('L77B', 'Libellés des cartes « À traiter » : formulations utilisate
     const [eq] = await sql<{ id: number }[]>`INSERT INTO equipments (asset_id, name) VALUES (${maison.id}, 'Chaudière') RETURNING id`;
     const [eq2] = await sql<{ id: number }[]>`INSERT INTO equipments (asset_id, name) VALUES (${maison.id}, 'Ancien ballon') RETURNING id`;
     for (const id of [eq.id, eq2.id]) {
-      await action(c.id, { targetType: 'EQUIPMENT', targetId: id, relationKey: 'assetId', rule: 'LINK-EQUIP-ASSET', question: 'À quel bien cet équipement appartient-il ?' });
+      // Lot 100E (décision PO A7) : une carte « À quel bien… ? » sur un équipement déjà porté par un bien VIVANT n'est
+      // plus montrée (réponse connue) — le libellé est vérifié sur une carte de champ d'équipement (ENTITY-FIELD).
+      await action(c.id, { targetType: 'EQUIPMENT', targetId: id, fieldKey: 'brand', kind: 'ARBITRATE', rule: 'ENTITY-FIELD', question: 'Quelle est la marque de cet équipement ?' });
     }
     await sql`DELETE FROM equipments WHERE id = ${eq2.id}`;
     const cartes = (await page(c.id)).actions.filter((a) => a.targetType === 'EQUIPMENT');

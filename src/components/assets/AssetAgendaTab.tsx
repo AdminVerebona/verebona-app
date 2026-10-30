@@ -18,7 +18,8 @@ import { AssetAgendaFilterPanel } from '@/components/assets/AssetAgendaFilters';
 import {
   buildEquipmentFilterModel, equipmentFilterParam, type EquipmentFacet,
 } from '@/lib/filters/equipment-filter';
-import type { AgendaPeriod } from '@/lib/agenda/agenda-filters';
+import { periodOnExplicitChoice, periodOnSearchChange, type AgendaPeriod } from '@/lib/agenda/agenda-filters';
+import { AgendaSearchPeriodNotice } from '@/components/agenda/AgendaSearchPeriodNotice';
 import { buildRoomFilterModel, roomFilterParam, type RoomFacet } from '@/lib/filters/room-filter';
 import { assetAgendaChips, isAssetAgendaEmpty } from '@/lib/agenda/asset-agenda-filters';
 import { undatedLabel } from '@/lib/agenda/no-deadline';
@@ -76,6 +77,8 @@ export function AssetAgendaTab({ assetId }: Props) {
   const [year, setYear] = useState<number>(() => new Date().getFullYear());
   const [refreshKey, setRefreshKey] = useState(0);
   const [period, setPeriod] = useState<AgendaPeriod>('all');
+  // Lot 100E (A8) : période suspendue le temps d'une recherche (rétablie à l'effacement).
+  const [periodeSuspendue, setPeriodeSuspendue] = useState<AgendaPeriod | null>(null);
   const [includeCancelled, setIncludeCancelled] = useState(false);
   // Lot 72 (72E) : `null` = « Tous (bien et équipements) », jamais transmis.
   const [equipment, setEquipment] = useState<string | null>(null);
@@ -104,6 +107,10 @@ export function AssetAgendaTab({ assetId }: Props) {
   // passe en vue Liste (toutes périodes, Q3-B). Filtres explicites conservés.
   const changerRecherche = (next: string) => {
     if (next && next !== q) setView('list');
+    // Lot 100E (A8) : lancement → « Tous » visible, période mémorisée ; effacement → période d'avant.
+    const p = periodOnSearchChange({ period, suspended: periodeSuspendue }, q, next);
+    setPeriod(p.period);
+    setPeriodeSuspendue(p.suspended);
     setQ(next);
     const { pathname, search, hash } = window.location;
     window.history.replaceState(null, '', `${pathname}${searchWithLocalQuery(search, next)}${hash}`);
@@ -171,13 +178,19 @@ export function AssetAgendaTab({ assetId }: Props) {
     roomChipLabel: piece ? roomModel.chipLabel : null,
   });
   const activeFiltersCount = chips.length;
+  // Choix EXPLICITE d'une période (panneau, pastille, ligne d'état) : appliqué, conservé pendant la recherche.
+  const choisirPeriode = (v: AgendaPeriod) => {
+    const p = periodOnExplicitChoice(v);
+    setPeriod(p.period);
+    setPeriodeSuspendue(p.suspended);
+  };
   const removeChip = (key: string) => {
-    if (key === 'period') setPeriod('all');
+    if (key === 'period') choisirPeriode('all');
     else if (key === 'cancelled') setIncludeCancelled(false);
     else if (key === 'equipment') setEquipment(null);
     else if (key === 'piece') setPiece(null);
   };
-  const clearFilters = () => { setPeriod('all'); setIncludeCancelled(false); setEquipment(null); setPiece(null); };
+  const clearFilters = () => { choisirPeriode('all'); setIncludeCancelled(false); setEquipment(null); setPiece(null); };
 
   // Comme « Mon agenda » : commandes masquées seulement si l'agenda du bien
   // est RÉELLEMENT vide (vue Liste, aucun filtre) — un mois vide n'est pas un
@@ -212,7 +225,7 @@ export function AssetAgendaTab({ assetId }: Props) {
           period={period}
           includeCancelled={includeCancelled}
           equipment={equipmentModel}
-          onPeriod={setPeriod}
+          onPeriod={choisirPeriode}
           onToggleCancelled={() => setIncludeCancelled(v => !v)}
           onEquipment={(v) => setEquipment(equipmentFilterParam(v))}
           room={roomModel}
@@ -229,6 +242,8 @@ export function AssetAgendaTab({ assetId }: Props) {
         busy={!!q && loading}
         resultCount={q && !loading ? items.length : null}
       />
+      {/* Lot 100E (A8) : période réellement appliquée à la recherche — « Tous » ou la période choisie. */}
+      <AgendaSearchPeriodNotice q={q} state={{ period, suspended: periodeSuspendue }} onChoose={choisirPeriode} />
       {q && !loading && view !== 'list' && (
         <p className="-mt-3 text-xs text-muted-foreground" data-testid="recherche-agenda-periode">
           Seuls les résultats de la période affichée sont présentés. La vue Liste montre toutes les périodes.

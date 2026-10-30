@@ -129,6 +129,7 @@ export const EMAIL_EVENT_USER_LABELS: Partial<Record<string, string>> = {
   EMAIL_CHANGED: 'adresse e-mail modifiée',
   PASSWORD_RESET_COMPLETED: 'mot de passe réinitialisé',
   NEW_DEVICE_LOGIN: 'connexion depuis un nouvel appareil',
+  OTHER_SESSIONS_REVOKED: 'autres appareils déconnectés à votre demande',
   AUTH_IDENTITY_LINKED: 'Google ou Apple associé',
   AUTH_IDENTITY_UNLINKED: 'Google ou Apple dissocié',
   NEWS_ANNOUNCEMENT: 'actualités',

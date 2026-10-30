@@ -59,7 +59,8 @@ describe('L98B-U-PUB — « carte ouverte » ≠ « carte publiable » (P0-E)', 
     expect(h).toContain('d.rule_code = t.rule_code');
     expect(h).toContain('ORDER BY d.id DESC LIMIT 1');
     expect(h).toContain("t.target_type = 'DOCUMENT'");
-    expect(publishableCardSql('t')).toBe(`NOT ${h}`);
+    // Lot 100E (A7) : publiable = cible vivante, prémisse de la famille vraie, ET aucun maintien technique.
+    expect(publishableCardSql('t')).toContain(`NOT ${h}`);
   });
 
   it('L98B-U-PUB-04 — page, compteur, pastille, accueil / mascotte, notifications, assistant : une seule définition, aucun appel T3 / T4 à la lecture', () => {
@@ -81,7 +82,8 @@ describe('L98B-U-PUB — « carte ouverte » ≠ « carte publiable » (P0-E)', 
 describe('L98B-U-COH — une décision À JOUR n’est pas une carte justifiée (P0-C)', () => {
   it('L98B-U-COH-01 — versions incrémentées (réexamen du stock par la campagne)', () => {
     expect(getCheck('COH-TODO-DOCUMENT-FIELDS')?.version).toBe(2);
-    expect(getCheck('COH-TODO-RELEVANCE-CARDS')?.version).toBe(2);
+    // Lot 100E (A7) : version 3 (familles « état » comprises).
+    expect(getCheck('COH-TODO-RELEVANCE-CARDS')?.version).toBe(3);
     expect(getCheck('COH-T1-KNOWLEDGE-CONSUMPTION')?.version).toBe(2);
     expect(getCheck('COH-TODO-DOCUMENT-FIELDS')?.anomalies).toContain('DECISION_NOT_DEMONSTRATED');
   });

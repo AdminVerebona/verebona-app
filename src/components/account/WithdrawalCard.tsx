@@ -35,6 +35,7 @@ import Link from 'next/link';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
 import { AlertTriangle, FileMinus } from 'lucide-react';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 
 interface Contract {
   offerLabel: string;
@@ -54,6 +55,10 @@ function parisDate(iso: string | null): string {
 }
 
 export function WithdrawalCard() {
+  // Lot 100D (décision PO A9) : affichée aussi dans l'application ; aucun
+  // montant n'y figure (le remboursement est intégral, sur le moyen de
+  // paiement d'origine — le montant estimé reste affiché sur le Web).
+  const inApp = useNativeCommerceHidden();
   const [loading, setLoading] = useState(true);
   const [offerWithdrawal, setOfferWithdrawal] = useState(false);
   const [contract, setContract] = useState<Contract | null>(null);
@@ -130,7 +135,9 @@ export function WithdrawalCard() {
                 : '')
             }
           />
-          <Row label="Remboursement estimé" value={contract.amountLabel} />
+          {inApp
+            ? <Row label="Remboursement" value="Intégral, sur votre moyen de paiement d’origine" />
+            : <Row label="Remboursement estimé" value={contract.amountLabel} />}
         </dl>
       ) : null}
     </CollapsibleCard>

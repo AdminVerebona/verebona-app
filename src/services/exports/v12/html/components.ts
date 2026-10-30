@@ -116,7 +116,16 @@ export const clip = <T,>(v: T, max: number): T | string =>
   (typeof v === 'string' && v.length > max ? `${v.slice(0, max - 1).trimEnd()}…` : v);
 
 /** Bornes des zones de hauteur fixe (caractères). */
-export const TEXT_BOUNDS = { header: 110, bannerTitle: 140, bannerMeta: 90, refsMeta: 80, refsLead: 60, refsParagraph: 700 } as const;
+export const TEXT_BOUNDS = { header: 110, bannerTitle: 140, bannerMeta: 90, refsMeta: 80, refsLead: 60, refsParagraph: 700, coverTitleLine: 90 } as const;
+
+/**
+ * Lot 100A — titre de couverture (hauteur fixe, A4) : chaque ligne bornée. Un nom
+ * de bien très long repoussait hors de la page le pied de couverture (« Page 1 / N »,
+ * mention Verebona) et les métadonnées (date, référence) : la couverture est coupée
+ * (`overflow: hidden`), ils disparaissaient du PDF.
+ */
+const coverTitle = (v: string[] | string): string[] | string =>
+  (Array.isArray(v) ? v.map((l) => clip(l, TEXT_BOUNDS.coverTitleLine)) : clip(v, TEXT_BOUNDS.coverTitleLine));
 
 // ───────────────────────────── Page, en-tête, pied ─────────────────────────────
 
@@ -239,7 +248,7 @@ export function CoverDocumentary({ sys, variant = 'regulatory', kind, kicker, ti
   photo?: CoverPhoto | null; meta?: MetaItem[]; sheet?: string; pageLabel?: string;
 }): string {
   const top = `<div class="cover-top">${brand(sys)}<div class="cover-kind">${esc(kind)}</div></div>`;
-  const h1 = `<h1>${lines(titleLines)}</h1>`;
+  const h1 = `<h1>${lines(coverTitle(titleLines))}</h1>`;
   const kick = isEmpty(kicker) ? '' : `<div class="cover-kicker">${esc(kicker)}</div>`;
   if (variant === 'band') {
     return `<section class="cover band">
@@ -279,7 +288,7 @@ export function CoverMarketing({ sys, kind, kicker, titleLines, lead, photo, met
   <div class="cover-top">${brand(sys)}<div class="cover-kind">${esc(kind)}</div></div>
   <div class="cover-bottom">
     ${isEmpty(kicker) ? '' : `<div class="cover-kicker">${esc(kicker)}</div>`}
-    <h1>${lines(titleLines)}</h1>
+    <h1>${lines(coverTitle(titleLines))}</h1>
     ${isEmpty(lead) ? '' : `<p class="cover-lead">${esc(lead)}</p>`}
     ${coverMeta(meta)}
   </div>

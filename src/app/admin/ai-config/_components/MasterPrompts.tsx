@@ -333,6 +333,7 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState<null | 'draft' | 'conform' | 'save' | 'test' | 'activate' | 'discard' | 'reactivate'>(null);
   const [confirm, setConfirm] = useState<null | { kind: 'activate' } | { kind: 'reactivate'; version: VersionView } | { kind: 'discard' }>(null);
+  const [a1, setA1] = useState<{ allowed: boolean; notices: string[] } | null>(null);
   const [apercu, setApercu] = useState<null | (VersionView & { content: string })>(null);
   const [execution, setExecution] = useState<ExecutionConfig | null>(null);
 
@@ -438,6 +439,9 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
   const demanderActivation = async () => {
     if (dirty && !(await enregistrer(true))) return;
     setConfirm({ kind: 'activate' });
+    // Lot 100B (#345, arbitrage A1) : matrice et manques de couverture affichés, jamais bloquants.
+    setA1(null);
+    apiClient.get<{ allowed: boolean; notices: string[] }>(`/api/admin/ai/corpus/a1?treatment=${treatment}`).then(setA1).catch(() => setA1(null));
   };
 
   const activer = async () => {
@@ -726,6 +730,11 @@ function MasterPromptEditor({ treatment, onChanged }: { treatment: string; onCha
               )}
               {confirm?.kind === 'activate' && draft?.test.state === 'done' && draft.test.run.failed > 0 && (
                 <span className="block mt-2 text-[color:var(--text-warning-soft)]">{draft.test.message}</span>
+              )}
+              {confirm?.kind === 'activate' && a1 && !a1.allowed && (
+                <span className="block mt-2 text-xs text-[color:var(--text-warning-soft)] max-h-40 overflow-y-auto break-words" data-testid="a1-notices">
+                  {a1.notices.slice(0, 7).map((n, k) => <span key={k} className="block">{n}</span>)}
+                </span>
               )}
             </DialogDescription>
           </DialogHeader>

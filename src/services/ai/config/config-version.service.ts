@@ -585,7 +585,15 @@ export async function createAutomaticCandidate(p: {
  * (capacités, Preview, modèle servi par la clé). L'état `QUALIFIED` est
  * revérifié sous verrou ; toute autre version est refusée.
  */
-export async function activateQualifiedCandidate(versionId: number, opts: { summary?: string } = {}): Promise<SwitchResult> {
+export async function activateQualifiedCandidate(versionId: number, opts: {
+  summary?: string;
+  /**
+   * Lot 100B — jeton du VERROU A1 (couverture du corpus #601, arbitrage PO A1) rendu par
+   * `certification/promotion.assessPromotion` sur les résultats de la candidate : sans lui,
+   * aucune activation automatique (l'activation manuelle #345 ne passe jamais par ici).
+   */
+  a1?: { allowed: true; rulesVersion: string } | null;
+} = {}): Promise<SwitchResult> {
   if (getAiEnvironment() === 'production') {
     throw new ConfigOperationRefused('CANDIDATE_ACTIVATION_PREPROD_ONLY',
       'Activation automatique d’une candidate refusée : elle n’a lieu qu’en préproduction (la production importe le fichier global, décision 06).');
@@ -593,6 +601,11 @@ export async function activateQualifiedCandidate(versionId: number, opts: { summ
   const version = await load(versionId);
   if (version.origin !== 'auto') {
     throw new ConfigOperationRefused('CANDIDATE_NOT_QUALIFIED', 'Seule une candidate automatique peut être activée par l’optimisation (une version manuelle s’active à la main).');
+  }
+  // Le refus « non qualifiée » (contrôlé à l'activation) prime ; une candidate QUALIFIÉE exige en plus le jeton A1.
+  if (version.candidateState === 'QUALIFIED' && !opts.a1?.allowed) {
+    throw new ConfigOperationRefused('A1_COVERAGE_LOCK',
+      'Activation automatique refusée : verrou A1 non levé (couverture du corpus de qualification insuffisante ou non évaluée). L’activation manuelle reste possible.');
   }
   await assertVersionTechnicallyCompatible(version);
   const r = await repo.activateVersion(versionId, null, undefined, { candidate: true, summary: opts.summary }).catch(asRefusal);

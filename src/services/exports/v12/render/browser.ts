@@ -229,15 +229,24 @@ export function withBrowser<T>(fn: (browser: Browser) => Promise<T>, timeoutMs: 
  * Utilisé par les tests d'intégration et le diagnostic.
  */
 export async function isChromiumAvailable(): Promise<boolean> {
+  return (await chromiumAvailability()).ok;
+}
+
+/**
+ * Lot 100A — même vérification, avec la raison d'une indisponibilité (binaire
+ * introuvable, lancement refusé…) : un test ignoré dit POURQUOI, et un test
+ * exigé (`EXPORTS_CHROMIUM_TESTS=1`) échoue avec cette raison.
+ */
+export async function chromiumAvailability(): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
     prepareBrowsersPath();
     const explicit = chromiumExecutablePath();
-    if (explicit && !fs.existsSync(explicit)) return false;
+    if (explicit && !fs.existsSync(explicit)) return { ok: false, reason: `binaire introuvable : ${explicit}` };
     const { chromium } = await import('playwright-core');
     const b = await chromium.launch({ headless: true, executablePath: explicit, args: CHROMIUM_ARGS, timeout: 20_000 });
     await b.close();
-    return true;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: `lancement impossible : ${String((e as Error)?.message ?? e).split('\n')[0].slice(0, 300)}` };
   }
 }

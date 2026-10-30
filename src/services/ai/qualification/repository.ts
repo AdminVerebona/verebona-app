@@ -203,11 +203,14 @@ export async function recordEvidence(e: EvidenceInput, observations: readonly (C
       await t.unsafe(
         `INSERT INTO ai_qualification_cases
            (evidence_id, case_id, source, expected_source, observation, account_id, capture_id, mandatory, outcome, defects, inconclusive_reason,
-            historical_sha256, observed_sha256, matches_historical, duration_ms, timeout_ms, cost_micros, served_model, trace_id)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+            historical_sha256, observed_sha256, matches_historical, duration_ms, timeout_ms, cost_micros, served_model, trace_id,
+            from_cache, attempts, manifest_case_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
         [id, o.caseId, o.source, o.advisory ? `${o.expectedSource}:ADVISORY` : o.expectedSource, o.observation, o.accountId ?? null, o.captureId ?? null,
          o.mandatory, o.outcome, JSON.stringify(o.defects satisfies Defect[]), o.inconclusiveReason, o.historicalSha256 ?? null, o.observedSha256 ?? null,
-         o.matchesHistorical ?? null, o.durationMs, o.timeoutMs, o.costMicros, o.servedModel, o.traceId] as never[],
+         o.matchesHistorical ?? null, o.durationMs, o.timeoutMs, o.costMicros, o.servedModel, o.traceId,
+         // Lot 100B (0870) : coût fournisseur réel vs cache, essais consommés, cas du manifeste.
+         o.fromCache ?? null, o.attempts ?? null, o.manifestCaseId ?? null] as never[],
       );
     }
     return id;

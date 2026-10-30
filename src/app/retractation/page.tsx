@@ -43,6 +43,7 @@ import { FollowTheme } from '@/components/FollowTheme';
 import { AlertTriangle, ArrowLeft, CheckCircle, Loader2, MailCheck, ShieldAlert } from 'lucide-react';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { resolveWithdrawalBackTarget } from '@/lib/withdrawal-back-target';
+import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 
 interface Summary {
   firstName: string;
@@ -78,6 +79,9 @@ function WithdrawalContent() {
   const token = params.get('token');
 
   const [step, setStep] = useState<Step>('presentation');
+  // Lot 100D (décision PO A9) : la rétractation reste ouverte dans
+  // l'application ; aucun montant ni lien vers le site commercial n'y figure.
+  const inApp = useNativeCommerceHidden();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [blockedMessage, setBlockedMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -306,14 +310,17 @@ function WithdrawalContent() {
                     : '')
                 }
               />
-              <Row label="Remboursement estimé" value={summary.amountLabel} />
+              {inApp
+                ? <Row label="Remboursement" value="Intégral" />
+                : <Row label="Remboursement estimé" value={summary.amountLabel} />}
               <Row label="Moyen de remboursement" value="Votre moyen de paiement d’origine" />
               <Row label="Suppression du compte et des données" value="Immédiate, dès la confirmation" />
             </dl>
 
             <p className="text-xs text-muted-foreground">
-              Le montant est une estimation calculée sur les sommes encaissées. Le
-              remboursement portera sur les paiements effectivement perçus.
+              {inApp
+                ? 'Le remboursement porte sur les paiements effectivement perçus.'
+                : 'Le montant est une estimation calculée sur les sommes encaissées. Le remboursement portera sur les paiements effectivement perçus.'}
             </p>
 
             {/* Ces liens étaient relatifs : ils ouvraient
@@ -386,7 +393,7 @@ function WithdrawalContent() {
               Conservez la référence ci-dessus. Merci d&apos;avoir essayé Verebona.
             </p>
             <Button variant="outline" className="w-full" asChild>
-              <a href={publicSiteUrl('/')}>Retour au site Verebona</a>
+              {inApp ? <Link href="/login">Fermer</Link> : <a href={publicSiteUrl('/')}>Retour au site Verebona</a>}
             </Button>
           </CardContent>
         </>

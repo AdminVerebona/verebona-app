@@ -261,6 +261,16 @@ export default function AdminCommunicationsPage() {
         </Button>
       </div>
 
+      {/* Lot 100G : séquence d'e-mails de fin d'essai (synthèse, réglages, journal). */}
+      <Link
+        href="/admin/communications/fin-essai"
+        data-testid="lien-fin-essai"
+        className="flex flex-wrap items-center justify-between gap-2 rounded-xl border bg-card px-4 py-3 min-h-[44px] hover:bg-[color:var(--bg-hover)]"
+      >
+        <span className="text-sm font-medium">E-mails de fin d’essai — J−2, J0, relances commerciales, J+80 (bloqué)</span>
+        <span className="text-xs text-muted-foreground">Synthèse, réglages et journal →</span>
+      </Link>
+
       {loading && !groups ? (
         <div className="flex justify-center py-12">
           <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />

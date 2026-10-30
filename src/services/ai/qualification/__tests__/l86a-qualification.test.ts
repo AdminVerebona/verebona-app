@@ -362,8 +362,11 @@ describe('L86A-U12 — cas de référence T1 (harnais historique absorbé, C-Q9)
     expect(ref.every((c) => c.advisory && !c.mandatory)).toBe(true);
     for (const v of T1_PROMPT_VARIABLES) expect(Object.keys(ref[0].variables)).toContain(v);
     const corpus = set.cases.filter((c) => c.source === 'CORPUS_FIXTURE');
-    expect(corpus.length).toBeGreaterThan(0);
     expect(corpus.every((c) => c.mandatory && !c.advisory)).toBe(true);
+    // Lot 100B (ticket #601, partie 2/5) : P-T1-02 (ticket photographié, transcription « parfaite » fournie) prétend tester
+    // l'analyse d'une IMAGE sans le fichier réel : non rejouable, écarté avec son motif — jamais compté vert.
+    expect(set.skipped.find((x) => x.caseId === 'corpus:P-T1-02')?.reason).toMatch(/non rejouable.*fichier/);
+    expect(corpus.some((c) => c.caseId === 'corpus:P-T1-02')).toBe(false);
     expect(set.corpusFingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
 });

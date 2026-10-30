@@ -4,6 +4,10 @@
  * Émis dans le créneau du matin. Sélectionne les abonnements encore en essai
  * dont la fin tombe dans ~2 jours (fenêtre de 24 h). Déduplication stable par
  * compte et date de fin d'essai → un seul rappel par essai.
+ *
+ * Lot 100G : cet événement porte la CLOCHE et le push ; l'e-mail J−2 (même
+ * gabarit `notif_trial_ending`, textes PO E1) est envoyé par la séquence de fin
+ * d'essai (`services/trial-lifecycle`), après ses contrôles juste avant l'envoi.
  */
 
 import { db } from '@/db';

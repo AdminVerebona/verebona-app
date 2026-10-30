@@ -110,6 +110,20 @@ function fillPlainText(text: string, variables: Record<string, string>): string 
     (Object.prototype.hasOwnProperty.call(variables, name) ? variables[name] ?? '' : all));
 }
 
+/**
+ * Lot 100G — en-têtes supplémentaires admis : désinscription uniquement, valeur
+ * sur une ligne. Tout autre en-tête (From, Reply-To, Bcc…) est ignoré.
+ */
+export function safeExtraHeaders(headers: Record<string, string> | undefined): Record<string, string> | null {
+  if (!headers) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    if (!/^List-Unsubscribe(-Post)?$/i.test(k) || typeof v !== 'string' || /[\r\n]/.test(v) || v.length > 1000) continue;
+    out[k] = v;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 /** Lot 70A — objet sur une seule ligne : aucune injection d'en-tête par une valeur. */
 export function sanitizeSubjectHeader(subject: string): string {
   return subject.replace(/[\r\n\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
@@ -374,6 +388,11 @@ class EmailService {
       const url = labelled ? labelled[2] : (trimmed.startsWith('http://') || trimmed.startsWith('https://')) ? trimmed : null;
       if (url) {
         const label = labelled ? labelled[1].trim() : 'Cliquez ici';
+        // Lot 100G : « Ne plus recevoir … : <lien> » (désinscription des relances)
+        // — lien discret, jamais un bouton d'action.
+        if (/^ne plus recevoir\b/i.test(label)) {
+          return `<p class="vb-muted" style="${EMAIL_STYLES.muted}"><a class="vb-link" href="${url}" style="${EMAIL_STYLES.link}">${label}</a></p>`;
+        }
         return emailButton(url, label);
       }
       
@@ -462,6 +481,12 @@ class EmailService {
     idempotencyKey?: string;
     /** Lot 72F : étiquettes Resend (demande d'origine) — réconciliation par webhook ou consultation. */
     tags?: Array<{ name: string; value: string }>;
+    /**
+     * Lot 100G : en-têtes supplémentaires (désinscription « en un clic » des
+     * relances commerciales : List-Unsubscribe, List-Unsubscribe-Post).
+     * Jamais d'en-tête d'expéditeur (« From » reste celui des réglages).
+     */
+    headers?: Record<string, string>;
     /** Lot 72F : appelé juste avant la transmission au prestataire (marque persistante de l'appel). */
     beforeProviderCall?: () => Promise<void>;
     /** Lot 57A : envoi durable dont cette ligne est une tentative. */
@@ -612,6 +637,7 @@ class EmailService {
         text: bodyText,
         replyTo: settings.replyToEmail,
         ...(options.tags && options.tags.length ? { tags: options.tags } : {}),
+        ...(safeExtraHeaders(options.headers) ? { headers: safeExtraHeaders(options.headers)! } : {}),
       }, options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : undefined);
       
       if (error) {

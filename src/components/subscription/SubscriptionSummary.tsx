@@ -19,6 +19,7 @@ import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
 import { formatEuroCents } from '@/lib/billing/plan-catalog';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
+import { NativeResiliation } from './NativeResiliation';
 
 /**
  * Ecran « Mon abonnement » (CDC tarification §9.1 et §9.4).
@@ -269,7 +270,18 @@ export function SubscriptionSummary() {
       <DuoLeaveButton />
     </div>
   ) : commerceHidden ? (
-    <NativeCommerceNotice className="text-sm text-[color:var(--text-muted)]" />
+    // Lot 100D (A9) : la souscription reste sur le site, mais la RÉSILIATION
+    // (droit de l'utilisateur) est proposée dans l'app, hors portail Stripe.
+    <div className="space-y-3">
+      <NativeCommerceNotice className="text-sm text-[color:var(--text-muted)]" />
+      {data?.subscription.hasStripeSubscription && !isUnpaid(data) && (
+        <NativeResiliation
+          cancelAtPeriodEnd={data.subscription.cancelAtPeriodEnd}
+          periodEndAt={data.subscription.currentPeriodEndAt}
+          onDone={() => { void refresh(); }}
+        />
+      )}
+    </div>
   ) : (
     <div className="flex flex-wrap gap-2">
       <Button size="sm" onClick={() => router.push('/mon-compte/offres')}>
@@ -420,7 +432,7 @@ export function SubscriptionSummary() {
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[color:var(--attention-on-soft)]" />
           <p className="text-sm text-[color:var(--text-primary)]">
             Votre essai est terminé et aucun prélèvement n&apos;a été effectué. Vos données sont
-            conservées : choisissez une offre pour reprendre l&apos;ajout et la modification.
+            conservées{commerceHidden ? '.' : ' : choisissez une offre pour reprendre l’ajout et la modification.'}
           </p>
         </div>
       )}

@@ -80,6 +80,9 @@ describe('L73A-NOTIF-02 — variables déclarées et textes livrés', () => {
     const rows = [...sql.matchAll(/\('(notif_[a-z0-9_]+)',\s*'((?:[^']|'')*)',\s*E'((?:[^']|'')*)'/g)];
     expect(rows.length).toBeGreaterThan(15);
     for (const [, type, subject, body] of rows) {
+      // Lot 100G : notif_trial_ending / notif_trial_ended reçoivent les textes E1
+      // (0887) ; leur ancien texte reste accepté (anciens noms déclarés), contrôlé
+      // avec les variables propres à la séquence de fin d'essai.
       const s = subject.replace(/''/g, "'");
       const b = body.replace(/''/g, "'").replace(/\\n/g, '\n');
       expect(check(type.toUpperCase(), s, b), type).toEqual([]);

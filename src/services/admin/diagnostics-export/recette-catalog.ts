@@ -264,6 +264,7 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   user_sessions: 'sécurité : registre des sessions (empreintes de jetons et d’appareils)',
   reauth_proofs: 'sécurité : preuves de réauthentification',
   email_change_requests: 'sécurité : demandes de changement d’adresse (empreintes de liens)',
+  device_trust_legacy_accounts: 'sécurité : appareils reconnus, étiquettes de transition (empreintes)',
   auth_transactions: 'sécurité : transactions OAuth Google / Apple',
   auth_identities: 'sécurité : méthodes de connexion Google / Apple (identifiant chez le fournisseur, jeton chiffré)',
   idempotency_keys: 'technique : idempotence des requêtes',
@@ -312,6 +313,10 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   // Lot 99B : mise en conformité automatique des prompts — incompatibilités et journal (textes de prompt, empreintes, aucun contenu de compte).
   ai_prompt_conformity_issues: 'configuration IA (conformité des prompts : incompatibilités)',
   ai_prompt_conformity_events: 'configuration IA (conformité des prompts : journal)',
+  // Lot 100B : corpus de qualification certifié (#601) — décisions humaines tracées et journal du verrou A1 (identifiants, empreintes, aucun contenu de document).
+  ai_corpus_oracle_approvals: 'qualification IA (approbations individuelles des oracles du corpus)',
+  ai_corpus_case_decisions: 'qualification IA (rejets / rétablissements motivés des cas du corpus)',
+  ai_corpus_a1_assessments: 'qualification IA (journal du verrou A1 de couverture)',
   // Ancien harnais de mesure (cron `corpus-run`, retiré au lot 86A : absorbé par la qualification par couple) — table inerte, créée à la volée en préproduction.
   ai_corpus_baseline: 'qualification IA (ancien harnais de mesure retiré au lot 86A, table inerte)',
   // Lot 86B (Pilotage IA V2 P6) : imports de la configuration globale, interventions manuelles, routage subordonné.
@@ -347,6 +352,9 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   notification_deliveries: 'livraisons de notifications', notification_events: 'journal des notifications', notification_preferences: 'préférences de notification',
   notifications: 'notifications (cloche)', push_subscriptions: 'anciens abonnements Web Push (table dormante)',
   mobile_push_installations: 'appareils de l’application mobile (jetons push)',
+  // Lot 100G : séquence d'e-mails de fin d'essai.
+  trial_lifecycle_messages: 'séquence de fin d’essai : messages par jalon', trial_lifecycle_events: 'séquence de fin d’essai : journal',
+  trial_lifecycle_settings: 'séquence de fin d’essai : réglages', marketing_oppositions: 'oppositions aux communications commerciales',
   // Juridique, RGPD, rétractation.
   legal_acceptances: 'juridique', legal_audit_log: 'juridique', legal_document_versions: 'juridique',
   gdpr_exports: 'RGPD', gdpr_requests: 'RGPD',

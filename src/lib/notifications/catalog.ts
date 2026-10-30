@@ -97,6 +97,14 @@ export interface CatalogEntry {
    * Différent d'un défaut à `false`, qu'une préférence peut réactiver.
    */
   retiredChannels?: Partial<Record<'email' | 'push', string>>;
+  /**
+   * Lot 100G (E2, un seul circuit) : l'E-MAIL de cet événement est envoyé par
+   * un autre traitement — la séquence de fin d'essai (`services/trial-lifecycle`),
+   * avec le MÊME gabarit et le MÊME interrupteur du BO, après ses propres
+   * contrôles (souscription, paiement, compte, préférences, doublon, fenêtre).
+   * Le moteur de notifications ne livre alors que la cloche et le push.
+   */
+  emailDeliveredBy?: 'trial-lifecycle';
   // Le payload est validé par `payloadSchema` (Zod) à l'entrée dans l'outbox ;
   // le typage fort par type est assuré côté producteur via emit<T>() (Lot 1).
   render: (payload: any) => RenderedContent;
@@ -546,8 +554,10 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   },
 
   // ── Compte et abonnement — configurables ───────────────────────────────────
-  [T.TRIAL_ENDING]: accountConfigurable(T.TRIAL_ENDING, 'Votre essai se termine bientôt', 'Votre période d\'essai se termine bientôt.', 'notif_trial_ending'),
-  [T.TRIAL_ENDED]: accountConfigurable(T.TRIAL_ENDED, 'Votre essai est terminé', 'Votre période d\'essai est terminée.', 'notif_trial_ended'),
+  // Lot 100G : e-mail (gabarits notif_trial_ending / notif_trial_ended, textes
+  // PO E1) envoyé par la séquence de fin d'essai ; cloche et push ici.
+  [T.TRIAL_ENDING]: { ...accountConfigurable(T.TRIAL_ENDING, 'Votre essai se termine bientôt', 'Votre période d\'essai se termine bientôt.', 'notif_trial_ending'), emailDeliveredBy: 'trial-lifecycle' },
+  [T.TRIAL_ENDED]: { ...accountConfigurable(T.TRIAL_ENDED, 'Votre essai est terminé', 'Votre période d\'essai est terminée.', 'notif_trial_ended'), emailDeliveredBy: 'trial-lifecycle' },
   [T.SUBSCRIPTION_RENEWED]: {
     ...accountConfigurable(T.SUBSCRIPTION_RENEWED, 'Abonnement renouvelé', 'Votre abonnement a été renouvelé.', 'notif_subscription'),
     // Lot 79C : plus de push systématique à chaque échéance.
@@ -755,6 +765,23 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     }),
   },
 
+  // Lot 100D (décision PO A2 ; CDC 18 §22 « Déconnexion de toutes les autres
+  // sessions ») : confirmation de sécurité OBLIGATOIRE (cloche + e-mail),
+  // envoyée UNIQUEMENT par « Déconnecter tous les autres appareils » quand au
+  // moins une session a réellement été révoquée — jamais pour un appareil
+  // seul, ni pour une révocation du BO, un changement de mot de passe ou un
+  // rejeu. Aucun lien commercial, aucun secret.
+  [T.OTHER_SESSIONS_REVOKED]: {
+    ...security(T.OTHER_SESSIONS_REVOKED, 'Vos autres appareils ont été déconnectés', 'La déconnexion de vos autres appareils a pris effet.'),
+    retentionDays: 180,
+    render: (p) => otherSessionsRevokedContent(p),
+    deepLink: () => NEW_DEVICE_LOGIN_LINK,
+    payloadSchema: z.object({
+      at: z.string(), count: z.number().int().min(1).max(1000),
+      deviceLabel: z.string().max(80).optional(), browserLabel: z.string().max(80).optional(),
+    }),
+  },
+
   // Lot 93 (CDC 18 §22, NOTIF-01) : obligatoires (cloche + e-mail), nom du
   // fournisseur seulement — ni adresse, ni identifiant, ni appareil.
   [T.AUTH_IDENTITY_LINKED]: {
@@ -885,6 +912,27 @@ export function newDeviceContent(p: unknown): RenderedContent {
     + 'Si c’est vous, vous n’avez rien à faire. Sinon, ouvrez Mon compte › Sécurité › Appareils connectés, '
     + 'déconnectez cet appareil, puis modifiez votre mot de passe.';
   return content(title, body, { body: 'Nouvelle connexion à votre compte.' }, 'notif_new_device_login');
+}
+
+/**
+ * Lot 100D (A2) : « Vos autres appareils ont été déconnectés » — date et heure
+ * (Europe/Paris), nombre d'appareils déconnectés, appareil qui a fait la
+ * demande. Ni IP, ni localisation, ni lien commercial, ni jeton.
+ */
+export function otherSessionsRevokedContent(p: unknown): RenderedContent {
+  const x = (p ?? {}) as { at?: unknown; count?: unknown; deviceLabel?: unknown; browserLabel?: unknown };
+  const at = typeof x.at === 'string' && !Number.isNaN(Date.parse(x.at)) ? new Date(x.at) : null;
+  const n = typeof x.count === 'number' && Number.isFinite(x.count) && x.count > 0 ? Math.floor(x.count) : null;
+  const device = [x.deviceLabel, x.browserLabel].filter((v): v is string => typeof v === 'string' && v.trim() !== '').join(' · ');
+  const when = at ? `le ${formatSecurityIncidentDate(at)}` : 'récemment';
+  const combien = n === null ? 'Vos autres appareils ont été déconnectés'
+    : n === 1 ? '1 autre appareil a été déconnecté' : `${n} autres appareils ont été déconnectés`;
+  const title = 'Vos autres appareils ont été déconnectés';
+  const body = `${combien} de votre compte Verebona ${when}, à la demande faite depuis Mon compte › Sécurité`
+    + `${device ? ` sur : ${device}` : ''}. Seul l’appareil qui a fait la demande est resté connecté. `
+    + 'Si c’est vous, vous n’avez rien à faire. Sinon, modifiez dès maintenant votre mot de passe '
+    + 'depuis Mon compte › Sécurité : tous les appareils seront alors déconnectés.';
+  return content(title, body, { body: 'Vos autres appareils ont été déconnectés.' }, 'notif_other_sessions_revoked');
 }
 
 /** Lot 93 : texte « Google / Apple associé ou dissocié » (NOTIF-01). */

@@ -105,22 +105,33 @@ describe('applyChannelActivation (pure)', () => {
 });
 
 describe('dispatcher', () => {
-  it('ne livre pas le canal e-mail désactivé et livre les autres', async () => {
-    disabledInBase({ TRIAL_ENDING: ['email'] });
+  // Lot 100G : l'e-mail de TRIAL_ENDING / TRIAL_ENDED est envoyé par la séquence de
+  // fin d'essai ; les cas génériques utilisent un autre événement configurable.
+  it('TRIAL_ENDING : e-mail porté par la séquence de fin d’essai (cause tracée), cloche et push livrés', async () => {
+    disabledInBase({});
     claimed = [outboxRow('TRIAL_ENDING')];
     await processOutboxIds(['ob-TRIAL_ENDING']);
+    expect(delivered).toEqual(['bell', 'push']);
+    expect(inserted.find((r) => r.channel === 'email')).toMatchObject({ status: 'skipped_unavailable', lastErrorCode: 'email_sent_by_trial_sequence' });
+    expect(processed).toEqual([['ob-TRIAL_ENDING', 'sent']]);
+  });
+
+  it('ne livre pas le canal e-mail désactivé et livre les autres', async () => {
+    disabledInBase({ SUBSCRIPTION_CANCELLATION_SCHEDULED: ['email'] });
+    claimed = [outboxRow('SUBSCRIPTION_CANCELLATION_SCHEDULED')];
+    await processOutboxIds(['ob-SUBSCRIPTION_CANCELLATION_SCHEDULED']);
 
     expect(delivered).toEqual(['bell', 'push']);
     const emailRow = inserted.find((r) => r.channel === 'email');
     expect(emailRow).toMatchObject({ status: 'skipped_unavailable', lastErrorCode: 'channel_disabled_by_admin', sentAt: null });
     // Un canal ignoré n'est pas un échec : l'événement est « sent ».
-    expect(processed).toEqual([['ob-TRIAL_ENDING', 'sent']]);
+    expect(processed).toEqual([['ob-SUBSCRIPTION_CANCELLATION_SCHEDULED', 'sent']]);
   });
 
   it('désactivation du push et de l’in-app : seul l’e-mail part', async () => {
-    disabledInBase({ TRIAL_ENDING: ['push', 'in_app'] });
-    claimed = [outboxRow('TRIAL_ENDING')];
-    await processOutboxIds(['ob-TRIAL_ENDING']);
+    disabledInBase({ SUBSCRIPTION_CANCELLATION_SCHEDULED: ['push', 'in_app'] });
+    claimed = [outboxRow('SUBSCRIPTION_CANCELLATION_SCHEDULED')];
+    await processOutboxIds(['ob-SUBSCRIPTION_CANCELLATION_SCHEDULED']);
     expect(delivered).toEqual(['email']);
   });
 
@@ -133,17 +144,17 @@ describe('dispatcher', () => {
   });
 
   it('obligation portée par la ligne d’outbox respectée', async () => {
-    disabledInBase({ TRIAL_ENDING: ['email'] });
-    claimed = [outboxRow('TRIAL_ENDING', { mandatory_email: true })];
-    await processOutboxIds(['ob-TRIAL_ENDING']);
+    disabledInBase({ SUBSCRIPTION_CANCELLATION_SCHEDULED: ['email'] });
+    claimed = [outboxRow('SUBSCRIPTION_CANCELLATION_SCHEDULED', { mandatory_email: true })];
+    await processOutboxIds(['ob-SUBSCRIPTION_CANCELLATION_SCHEDULED']);
     expect(delivered).toContain('email');
   });
 
   it('lecture impossible : les envois sont maintenus (fail-open)', async () => {
     unsafe.mockRejectedValue(new Error('relation "communication_channel_settings" does not exist'));
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    claimed = [outboxRow('TRIAL_ENDING')];
-    await processOutboxIds(['ob-TRIAL_ENDING']);
+    claimed = [outboxRow('SUBSCRIPTION_CANCELLATION_SCHEDULED')];
+    await processOutboxIds(['ob-SUBSCRIPTION_CANCELLATION_SCHEDULED']);
     expect(delivered).toEqual(['bell', 'email', 'push']);
   });
 

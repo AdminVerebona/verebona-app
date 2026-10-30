@@ -23,7 +23,10 @@
  *
  * Ignoré proprement sans Chromium : `EXPORTS_CHROMIUM_TESTS=0`, ou binaire
  * introuvable (`CHROMIUM_EXECUTABLE_PATH`, `PLAYWRIGHT_BROWSERS_PATH`,
- * ou `/opt/pw-browsers` s'il existe).
+ * ou `/opt/pw-browsers` s'il existe). Lot 100A : la raison est affichée ; avec
+ * `EXPORTS_CHROMIUM_TESTS=1` (environnement qui DOIT rendre, ex. un job CI
+ * qui installe Chromium), l'absence de Chromium est un ÉCHEC, jamais un saut
+ * silencieux.
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -38,13 +41,26 @@ if (!process.env.PLAYWRIGHT_BROWSERS_PATH && !process.env.CHROMIUM_EXECUTABLE_PA
   process.env.PLAYWRIGHT_BROWSERS_PATH = '/opt/pw-browsers';
 }
 
-const { isChromiumAvailable, closeBrowser } = await import('../render/browser');
+const { chromiumAvailability, closeBrowser } = await import('../render/browser');
 // Lecture du PDF par pdfjs-dist 5 : il lui faut `process.getBuiltinModule`
 // (Node ≥ 20.16 / 22.3) pour son polyfill DOMMatrix. Sous Node 20.12 (poste
 // de développement, lot 22) : ignoré au lieu d'échouer — la CI (Node 22) l'exécute.
 const pdfjsLisible = typeof (process as { getBuiltinModule?: unknown }).getBuiltinModule === 'function'
   || typeof (globalThis as { DOMMatrix?: unknown }).DOMMatrix !== 'undefined';
-const enabled = process.env.EXPORTS_CHROMIUM_TESTS !== '0' && pdfjsLisible && (await isChromiumAvailable());
+const disponibilite = process.env.EXPORTS_CHROMIUM_TESTS === '0'
+  ? { ok: false as const, reason: 'désactivé (EXPORTS_CHROMIUM_TESTS=0)' }
+  : !pdfjsLisible
+    ? { ok: false as const, reason: `pdf.js illisible sous Node ${process.version} (≥ 20.16 requis)` }
+    : await chromiumAvailability();
+const enabled = disponibilite.ok;
+const exige = process.env.EXPORTS_CHROMIUM_TESTS === '1';
+if (!disponibilite.ok) console.info(`[v12-render] intégration Chromium ignorée : ${disponibilite.reason}${exige ? ' — EXIGÉE (EXPORTS_CHROMIUM_TESTS=1) : échec' : ''}`);
+
+describe.runIf(!disponibilite.ok && exige)('Rendu Chromium exigé (EXPORTS_CHROMIUM_TESTS=1)', () => {
+  it('Chromium est disponible', () => {
+    throw new Error(`Chromium exigé mais indisponible : ${disponibilite.ok ? '' : disponibilite.reason}`);
+  });
+});
 
 async function pdfText(bytes: Buffer): Promise<string[]> {
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');

@@ -3,6 +3,10 @@
 Exigences G0-01 à G0-10 **au libellé exact du CDC 12 §3.2**, complétées des vérifications des décisions
 PO M1, M2 et M9 et des mesures d'architecture (`docs/mobile/gate0-comparaison-architectures.md` § 8).
 
+> Décision B1 du 27/10/2026 (option B, interface embarquée) : les critères complémentaires GB-01 à GB-18
+> (B1 à B4) sont dans `docs/mobile/plan-architecture-embarquee.md` § 4 ; la section 5 ci-dessous (mesures
+> de l'option A) ne sert plus qu'au diagnostic.
+
 **Répartition des rôles (décision M10)** — organisation de recette, pas exigence fonctionnelle :
 - **Développeur (Dév)** : prépare les versions installables (TestFlight, Google Play tests internes),
   exécute **d'abord** les tests techniques sur de **vrais** iPhone et Android, joint les preuves, corrige
@@ -144,7 +148,7 @@ Préalable : `APP_OAUTH_RETURN_URL` posée en préprod (voir `docs/mobile/builds
 | Builds testés (iOS / Android) | |
 | Appareils | |
 | Anomalies critiques ou majeures ouvertes | |
-| Architecture retenue (A renforcé / B) | |
+| Architecture retenue | B — interface embarquée (décision PO B1 du 27/10/2026) |
 | Décisions PO n° 1 et n° 2 (document de comparaison § 10) | |
 | Décision Gate 0 | Validé / Validé avec réserves / Non validé |
 | Validation PO (nom, date) | |

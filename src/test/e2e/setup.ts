@@ -2,11 +2,43 @@
  * Préambule de chaque fichier de scénarios E2E (vitest `setupFiles`).
  *
  * Exécuté AVANT tout import de `@/db` par les scénarios : la connexion
- * applicative vise la base E2E de l'exécution.
+ * applicative vise la base E2E de CE fichier.
+ *
+ * Lot 100A — isolation entre fichiers (tous exécutés dans le même processus) :
+ *   · base : une copie neuve de la base modèle par fichier (`global-setup.ts`),
+ *     supprimée à la fin du fichier SUIVANT ; `E2E_SHARED_DB=1` rétablit la base commune ;
+ *   · environnement : `process.env` est remis, au début de chaque fichier, dans
+ *     l'état où le premier fichier l'a trouvé — une variable posée par un
+ *     fichier sans être restaurée (seuils, drapeaux, tailles de page…) ne
+ *     change plus le comportement des fichiers suivants.
  */
 import { inject, beforeEach, afterAll } from 'vitest';
+import { cloneE2eDatabase, derivedDatabaseName, dropE2eDatabasesWithPrefix } from './db-bootstrap';
+import { restoreProcessEnv } from './isolation';
 
-process.env.DATABASE_URL = inject('e2eDatabaseUrl');
+const ORIGINE = Symbol.for('verebona.e2e.envOrigine');
+const g = globalThis as unknown as Record<symbol, Record<string, string | undefined> | undefined>;
+g[ORIGINE] ??= { ...process.env };
+restoreProcessEnv(process.env, g[ORIGINE]!);
+
+if (process.env.E2E_SHARED_DB === '1') {
+  process.env.DATABASE_URL = inject('e2eDatabaseUrl');
+} else {
+  const adminUrl = process.env.E2E_DATABASE_URL!;
+  const prefix = inject('e2eRunPrefix');
+  const database = derivedDatabaseName(prefix, `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`);
+  process.env.DATABASE_URL = await cloneE2eDatabase({ adminUrl, template: inject('e2eTemplateDatabase'), database });
+  // Fin du fichier : suppression des bases des fichiers PRÉCÉDENTS, pas de la sienne (supprimée à la fin
+  // du fichier suivant, ou en fin d'exécution) — une écriture sans attente encore en vol (journal
+  // d'activité, e-mail…) se termine sur sa base au lieu d'échouer sur une connexion coupée (ECONNRESET).
+  // Jamais plus de deux copies sur le serveur. `E2E_KEEP_DB=1` : tout est conservé.
+  afterAll(async () => {
+    if (process.env.E2E_KEEP_DB === '1') return;
+    await dropE2eDatabasesWithPrefix(adminUrl, prefix, { except: database })
+      .catch((e) => console.warn(`[e2e] bases précédentes non supprimées : ${(e as Error).message}`));
+  }, 60_000);
+}
+
 // Ni clé ni réseau : la passerelle passe par le rejeu (`replay-gateway.ts`).
 process.env.GEMINI_API_KEY = 'e2e-sans-reseau';
 process.env.NEXT_PUBLIC_APP_ENV = process.env.NEXT_PUBLIC_APP_ENV ?? 'local';
@@ -16,7 +48,7 @@ process.env.NEXT_PUBLIC_APP_ENV = process.env.NEXT_PUBLIC_APP_ENV ?? 'local';
 process.env.AI_IDEMPOTENCY_DISABLED = 'true';
 // Lot 86 : le budget de relances T1 du contrôle de cohérence est commun à la plateforme
 // (200 / 24 h, décision PO L83-Q3). Dans une exécution complète, les relances de tous les
-// fichiers précédents s'y cumulent : un scénario pouvait se voir refuser sa relance selon l'ordre.
+// fichiers précédents s'y cumulaient : un scénario pouvait se voir refuser sa relance selon l'ordre.
 // Les scénarios qui testent le budget le fixent eux-mêmes (L83B-E2E-11).
 process.env.COHERENCE_T1_RELAUNCH_DAILY_MAX = process.env.COHERENCE_T1_RELAUNCH_DAILY_MAX ?? '100000';
 

@@ -51,6 +51,8 @@ const ALLOWED_MUTATIONS: Record<string, string[]> = {
   // arrière, décisions sur couverture ou acceptation incertaines ;
   // administrateurs, journalisés (ANNUAL_RENEWAL_OPERATION).
   'communications/annual-renewal/route.ts': ['POST'],
+  // Lot 100G : réglages de la séquence d'e-mails de fin d'essai (confirmés, journalisés).
+  'communications/fin-essai/settings/route.ts': ['PATCH'],
 };
 
 describe('routes de consultation BO (§7 à §10)', () => {

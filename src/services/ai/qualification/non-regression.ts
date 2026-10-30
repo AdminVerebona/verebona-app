@@ -77,6 +77,8 @@ export interface NonRegressionAssessment {
   excluded?: Array<{ operationCode: string; reason: string }>;
   /** Cas retirés avant exécution : ils exercent un contrat absent des deux versions (ni réussis, ni bloquants). */
   excludedCases?: Array<{ caseId: string; reason: string }>;
+  /** Lot 100B : verrou A1 (couverture du corpus #601) — jeton exigé pour l'activation automatique. */
+  a1?: { allowed: boolean; blockers: string[]; token: import('../governance/master-corpus/certification/promotion').A1Token | null };
 }
 
 type Outcome = CaseComparison['reference'];

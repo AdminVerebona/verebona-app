@@ -101,15 +101,18 @@ export async function runCoupleCases(p: {
       caseId: c.caseId, source: c.source, expectedSource: c.expectedSource, mandatory: c.mandatory, advisory: c.advisory, observation: obs,
       outcome: 'INCONCLUSIVE', defects: [], inconclusiveReason: null, durationMs: null, timeoutMs: p.couple.profile.timeoutMs, costMicros: null,
       servedModel: null, traceId: null, accountId: c.accountId, captureId: c.captureId, historicalSha256: outputSha256(c.historicalOutput),
-      observedSha256: null, matchesHistorical: null,
+      observedSha256: null, matchesHistorical: null, manifestCaseId: c.manifestCaseId ?? null, attempts: 0,
     };
     const accountId = c.accountId ?? p.technicalAccountId;
     if (!accountId) return { ...base, inconclusiveReason: 'compte technique de mesure absent (CORPUS_ACCOUNT_ID) : cas du corpus non exécuté' };
     let derniere = '';
     for (let essai = 0; essai <= th.transientRetries; essai += 1) {
+      base.attempts = essai + 1;
       try {
         const res = await call({
           useCaseCode: op.useCaseCode, operationCode: c.operationCode, accountId, promptVariables: c.variables,
+          // Lot 100B : fichiers RÉELS du cas multimodal (jamais un nom de fichier seul).
+          ...(c.attachments?.length ? { attachments: c.attachments } : {}),
           outputSchema: c.outputSchema, acceptedOutputSchemas: c.acceptedOutputSchemas,
           idempotencyKey: `qualif:${p.campaignId}:${p.couple.signature.slice(0, 16)}:${c.caseId}:${obs}:${essai}`,
           firstModelIndex: p.couple.rank, maxModelAttempts: 1, costCapExempt: true, triggerCode: 'qualification',
@@ -119,7 +122,7 @@ export async function runCoupleCases(p: {
           traceId: res.traceId, observedSha256: outputSha256(res.data),
           matchesHistorical: c.historicalOutput == null ? null : outputSha256(res.data) === outputSha256(c.historicalOutput),
         };
-        if (res.fromCache) return { ...vu, durationMs: null, inconclusiveReason: 'réponse issue du cache : ne vaut pas une nouvelle mesure (QUAL-05)' };
+        if (res.fromCache) return { ...vu, durationMs: null, fromCache: true, inconclusiveReason: 'réponse issue du cache : ne vaut pas une nouvelle mesure (QUAL-05)' };
         // Le modèle SERVI fait foi (`usedFallback` vaut vrai dès qu'un rang > 0 est sollicité, même forcé).
         if (res.model !== p.couple.model) {
           return { ...vu, inconclusiveReason: `réponse servie par ${res.model} : un autre modèle ne qualifie jamais le candidat ${p.couple.model}` };
@@ -127,10 +130,11 @@ export async function runCoupleCases(p: {
         if (traces.has(res.traceId)) return { ...vu, inconclusiveReason: `trace ${res.traceId} déjà rattachée à ${traces.get(res.traceId)}` };
         traces.set(res.traceId, `${c.caseId}#${obs}`);
         const ev = await c.evaluate(res.data, { masterText: p.masterText });
-        if (ev.defects.length) return { ...vu, outcome: 'FAILED', defects: ev.defects };
-        if (ev.inconclusive) return { ...vu, inconclusiveReason: ev.inconclusive };
-        if (c.expectedSource !== 'REFERENCE') return { ...vu, inconclusiveReason: 'résultat non vérifiable : aucun attendu (non vérifiable = non concluant)' };
-        return { ...vu, outcome: 'PASSED' };
+        const lu = { ...vu, fromCache: false, criticalDefects: ev.criticalDefects ?? [], decisions: ev.decisions ?? [] };
+        if (ev.defects.length) return { ...lu, outcome: 'FAILED', defects: ev.defects };
+        if (ev.inconclusive) return { ...lu, inconclusiveReason: ev.inconclusive };
+        if (c.expectedSource !== 'REFERENCE') return { ...lu, inconclusiveReason: 'résultat non vérifiable : aucun attendu (non vérifiable = non concluant)' };
+        return { ...lu, outcome: 'PASSED' };
       } catch (e) {
         const code = failureCodeOf(e);
         derniere = `${code} : ${String((e as Error)?.message ?? e).slice(0, 200)}`;

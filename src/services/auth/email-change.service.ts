@@ -47,7 +47,7 @@ import { pgClient } from '@/db';
 import { AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, normalizeEmail } from '@/lib/auth/auth-rate-limit';
 import { formatSecurityIncidentDate } from '@/lib/auth/security-email';
 import { logUserActivity } from '@/lib/audit-logger';
-import { DEVICE_TRUST_TTL_S } from '@/lib/auth/device-trust';
+import { DEVICE_TRUST_TTL_S, legacyDeviceTagFor } from '@/lib/auth/device-trust';
 
 /** Validité du lien envoyé à la nouvelle adresse (EMAIL-02 : 24 h), propre au lien. */
 export const EMAIL_CHANGE_LINK_TTL_MS = 24 * 60 * 60 * 1000;
@@ -300,22 +300,57 @@ export async function notifyEmailChanged(input: { userId: number; oldEmail: stri
 }
 
 /**
- * Purge : demandes terminées (annulées, expirées) depuis plus de 30 jours ;
- * demandes CONFIRMÉES après 180 jours (durée du cookie d'appareil reconnu) :
- * la plus ancienne donne l'adresse d'origine du compte, qui seule permet
- * d'accepter sans usurpation les entrées d'appareil héritées
- * (`lib/auth/device-account.ts`, intégration 96).
+ * Lot 100D (décision PO A3) : conservation des demandes CONFIRMÉES (avant :
+ * 180 jours, durée du cookie d'appareil reconnu). Un seul point à changer.
+ */
+export const EMAIL_CHANGE_CONFIRMED_RETENTION_DAYS = 30;
+/** Demandes terminées sans confirmation (annulées, expirées). */
+export const EMAIL_CHANGE_UNCONFIRMED_RETENTION_DAYS = 30;
+
+/**
+ * Purge (tâche `auth-rate-limits-purge`) : demandes terminées (annulées,
+ * expirées) depuis plus de 30 jours ; demandes CONFIRMÉES depuis plus de
+ * `EMAIL_CHANGE_CONFIRMED_RETENTION_DAYS` (30 jours, décision PO A3).
+ *
+ * La reconnaissance des appareils ne dépend plus de cet historique : avant
+ * de supprimer la PREMIÈRE demande confirmée d'un compte (qui porte son
+ * adresse d'origine), la purge garde l'ÉTIQUETTE héritée de cette adresse
+ * (`device_trust_legacy_accounts`, HMAC — jamais l'adresse) jusqu'à
+ * l'expiration de toute entrée héritée possible (180 jours). Même
+ * transaction : jamais de suppression sans étiquette gardée. Les étiquettes
+ * expirées sont supprimées au passage.
  */
 export async function purgeEmailChangeRequests(now = new Date()): Promise<number> {
   try {
-    const limit = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
-    const confirmedLimit = new Date(now.getTime() - DEVICE_TRUST_TTL_S * 1000).toISOString();
-    const rows = await pgClient`
-      DELETE FROM email_change_requests
-       WHERE (consumed_at IS NULL AND COALESCE(cancelled_at, expires_at) < ${limit})
-          OR (consumed_at IS NOT NULL AND consumed_at < ${confirmedLimit})
-      RETURNING id`;
-    return rows.length;
+    const limit = new Date(now.getTime() - EMAIL_CHANGE_UNCONFIRMED_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const confirmedLimit = new Date(now.getTime() - EMAIL_CHANGE_CONFIRMED_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    const legacyUntil = new Date(now.getTime() + DEVICE_TRUST_TTL_S * 1000).toISOString();
+    return await pgClient.begin(async (tx) => {
+      // Adresse d'origine des comptes dont une demande confirmée part : leur PREMIÈRE demande confirmée.
+      const origins = await tx<{ user_id: number; old_email: string }[]>`
+        SELECT DISTINCT ON (r.user_id) r.user_id, r.old_email
+          FROM email_change_requests r
+         WHERE r.consumed_at IS NOT NULL
+           AND r.user_id IN (SELECT q.user_id FROM email_change_requests q
+                              WHERE q.consumed_at IS NOT NULL AND q.consumed_at < ${confirmedLimit})
+           AND NOT EXISTS (SELECT 1 FROM device_trust_legacy_accounts l WHERE l.user_id = r.user_id)
+         ORDER BY r.user_id, r.consumed_at ASC, r.id ASC`;
+      for (const o of origins) {
+        const tag = legacyDeviceTagFor(normalizeEmail(o.old_email));
+        if (!tag) continue;
+        await tx`
+          INSERT INTO device_trust_legacy_accounts (user_id, legacy_tag, created_at, expires_at)
+          VALUES (${o.user_id}, ${tag}, ${now.toISOString()}, ${legacyUntil})
+          ON CONFLICT (user_id) DO NOTHING`;
+      }
+      await tx`DELETE FROM device_trust_legacy_accounts WHERE expires_at < ${now.toISOString()}`;
+      const rows = await tx`
+        DELETE FROM email_change_requests
+         WHERE (consumed_at IS NULL AND COALESCE(cancelled_at, expires_at) < ${limit})
+            OR (consumed_at IS NOT NULL AND consumed_at < ${confirmedLimit})
+        RETURNING id`;
+      return rows.length;
+    });
   } catch (e) {
     if ((e as { code?: string })?.code === '42P01') return 0;
     throw e;

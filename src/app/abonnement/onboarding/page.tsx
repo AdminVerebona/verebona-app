@@ -27,6 +27,10 @@ function OnboardingContent() {
   const [priceChanged, setPriceChanged] = useState(false);
   const shownOffer = confirmedOffer ?? (planFromUrl ? findOffer(catalog, planFromUrl, periodChoice) : null);
 
+  // Lot 100G (E2) : plus aucune mention d'un essai de 60 jours (« 2 mois
+  // offerts ») ni d'une facturation « à la fin de l'essai » : l'essai dure 7
+  // jours sans prélèvement ; cette page mène à un paiement immédiat (Stripe).
+
   // CDC §5.1 / §16.4 : plus aucun jeton n'est transporte par l'URL ni ecrit
   // dans le navigateur. La session est deja etablie par les cookies HttpOnly
   // poses lors de la verification. Les anciens parametres `at` et `rt` ne sont
@@ -89,13 +93,13 @@ function OnboardingContent() {
           <div className="p-8 space-y-6">
             <div className="text-center space-y-2">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-[color:var(--text-success)] bg-[color:var(--bg-success)] border border-[color:var(--border-success)] rounded-full">
-                <Gift className="w-3.5 h-3.5" /> Offre de bienvenue
+                <Gift className="w-3.5 h-3.5" /> Votre offre
               </span>
               <h1 className="vb-app-title mt-3">
-                Activez vos 2 mois offerts
+                Finalisez votre abonnement
               </h1>
               <p className="text-[color:var(--text-muted)] text-sm sm:text-base max-w-md mx-auto">
-                Accédez gratuitement à l'ensemble de nos outils pour organiser, sécuriser et valoriser vos biens.
+                Souscrivez l&apos;offre choisie pour organiser, sécuriser et valoriser vos biens.
               </p>
             </div>
 
@@ -127,9 +131,9 @@ function OnboardingContent() {
                   <Gift className="w-5 h-5" />
                 </div>
                 <div>
-                  <p className="font-semibold text-[color:var(--text-primary)] text-sm">2 mois gratuits (60 jours d'essai)</p>
+                  <p className="font-semibold text-[color:var(--text-primary)] text-sm">Essai gratuit de 7 jours, sans prélèvement</p>
                   <p className="text-xs text-[color:var(--text-muted)]">
-                    Découvrez sans engagement l'ensemble des outils conçus pour vos documents et biens.
+                    L&apos;essai ne demande aucune carte bancaire et aucun prélèvement automatique n&apos;a lieu à sa fin. Vous pouvez aussi souscrire dès maintenant.
                   </p>
                 </div>
               </div>
@@ -139,9 +143,9 @@ function OnboardingContent() {
                   <Calendar className="w-5 h-5" />
                 </div>
                 <div>
-                  <p className="font-semibold text-[color:var(--text-primary)] text-sm">Libre et sans engagement</p>
+                  <p className="font-semibold text-[color:var(--text-primary)] text-sm">Sans engagement de durée</p>
                   <p className="text-xs text-[color:var(--text-muted)]">
-                    Annulez en un clic à tout moment depuis votre compte. Vous ne payez rien aujourd'hui.
+                    Vous pouvez résilier votre abonnement à tout moment depuis votre compte.
                   </p>
                 </div>
               </div>
@@ -172,7 +176,7 @@ function OnboardingContent() {
                   </>
                 ) : (
                   <>
-                    Commencer mes 2 mois offerts
+                    Souscrire maintenant
                     <ArrowRight className="w-5 h-5" />
                   </>
                 )}
@@ -194,7 +198,7 @@ function OnboardingContent() {
 
               <div className="text-center">
                 <p className="text-xs text-[color:var(--text-muted)]">
-                  Facturation selon le plan choisi à la fin des 2 mois d'essai, sauf annulation préalable de votre part.
+                  Le paiement de l&apos;offre choisie a lieu à la souscription, sur la page de paiement sécurisée Stripe.
                 </p>
               </div>
             </div>

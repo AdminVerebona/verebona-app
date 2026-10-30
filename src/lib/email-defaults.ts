@@ -320,7 +320,8 @@ L’équipe Verebona`,
   },
 
   TRIAL_CONFIRMATION: {
-    subject: "Activation de votre période d'essai de 2 mois sur Verebona Premium",
+    // Lot 100G (E2) : essai de 7 jours, sans prélèvement (plus « 2 mois »).
+    subject: 'Votre essai gratuit Verebona a commencé',
     body: TRIAL_CONFIRMATION_DEFAULT_HTML,
     placeholders: JSON.stringify(['firstName', 'logoUrl', 'trialEndsAt', 'loginUrl', 'year'])
   }

@@ -88,14 +88,20 @@ scenario('L96B', 'Sécurité des connexions — alertes, reconnaissance d’appa
       SELECT payload_json, dedupe_key, mandatory_email FROM notification_outbox
        WHERE recipient_user_id = ${userId} AND event_type = 'NEW_DEVICE_LOGIN' ORDER BY created_at`;
   }
-  async function journal(userId: number, type: string) {
-    for (let i = 0; i < 40; i++) {
-      const rows = await sql<{ details: Record<string, unknown> }[]>`
+  /**
+   * Journal d'activité (écrit en tâche de fond, sans bloquer la connexion). Lot 100A : attend
+   * `attendues` lignes — rendre dès la PREMIÈRE ligne laissait la dernière écriture encore en
+   * vol sur une machine chargée (4 lignes lues au lieu de 5). L'assertion compare ensuite le contenu exact.
+   */
+  async function journal(userId: number, type: string, attendues = 1) {
+    let rows: { details: Record<string, unknown> }[] = [];
+    for (let i = 0; i < 200; i++) {
+      rows = await sql<{ details: Record<string, unknown> }[]>`
         SELECT details FROM user_activity_log WHERE user_id = ${userId} AND activity_type = ${type} ORDER BY id`;
-      if (rows.length > 0) return rows;
+      if (rows.length >= attendues) return rows;
       await new Promise((r) => setTimeout(r, 25));
     }
-    return [];
+    return rows;
   }
   const parse = (d: unknown) => (typeof d === 'string' ? JSON.parse(d) : d) as Record<string, unknown>;
 
@@ -124,7 +130,7 @@ scenario('L96B', 'Sécurité des connexions — alertes, reconnaissance d’appa
     expect(rows.map((x) => `${x.payload_json.deviceLabel} · ${x.payload_json.browserLabel}`).sort()).toEqual(['Mac · Firefox', 'PC Windows · Chrome']);
 
     // Journal : la décision est tracée, sans IP.
-    const created = (await journal(u.id, 'SESSION_CREATED')).map((r) => parse(r.details));
+    const created = (await journal(u.id, 'SESSION_CREATED', 5)).map((r) => parse(r.details));
     expect(created.map((d) => d.newDeviceAlert)).toEqual(['sent', 'known_device', 'known_device', 'known_device', 'sent']);
 
     // Notification de sécurité OBLIGATOIRE : l'e-mail part même si l'utilisateur coupe les e-mails « sécurité ».

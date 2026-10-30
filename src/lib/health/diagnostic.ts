@@ -112,6 +112,26 @@ export interface HealthCheckResult {
      * l'instance (avertissement, statut global inchangé).
      */
     authRateLimiter?: { status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null };
+    /**
+     * Lot 100C (CVE-2026-111497) : runtime Node.js EN SERVICE (`process.version`
+     * de ce processus) — distinct de `version`, qui est la version APPLICATIVE.
+     * `error` : sous le seuil corrigé de sa majeure (22.23.4 / 24.22.1 /
+     * 26.12.1), majeure sans seuil connu ou version illisible ; `warning` :
+     * corrigé mais hors de la plage `engines.node` déclarée. Sonde publique :
+     * statut seul ; version, binaire et verdict en diagnostic autorisé.
+     */
+    runtime?: {
+      status: 'ok' | 'warning' | 'error';
+      production: boolean;
+      verdict?: import('@/lib/health/node-runtime').NodeRuntimeVerdict;
+      node?: string;
+      execPath?: string;
+      major?: number | null;
+      patchedThreshold?: string | null;
+      enginesRange?: string;
+      withinEngines?: boolean;
+      message?: string;
+    };
     /** Diagnostic autorisé : pool PostgreSQL du processus (lot 24, APP-PERF-01). */
     dbPool?: { status: 'ok'; role: string; max: number; maxSource: string } & import('@/db/pool-metrics').PoolMetricsSnapshot;
     assistantRateLimiter?: { status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null };
@@ -264,6 +284,21 @@ export async function buildHealthReport(opts: { detailed: boolean }): Promise<{ 
     /* contrôle indicatif */
   }
 
+  // Check 10 (lot 100C) : runtime Node en service. Statut seul en public.
+  try {
+    const { currentNodeRuntime } = await import('@/lib/health/node-runtime');
+    const r = currentNodeRuntime();
+    const production = process.env.NODE_ENV === 'production';
+    result.checks.runtime = detailed
+      ? {
+          status: r.status, production, verdict: r.verdict, node: r.node, execPath: r.execPath, major: r.major,
+          patchedThreshold: r.patchedThreshold, enginesRange: r.enginesRange, withinEngines: r.withinEngines, message: r.message,
+        }
+      : { status: r.status, production };
+  } catch {
+    /* contrôle indicatif */
+  }
+
   // Statut global
   if (result.checks.database.status === 'error') {
     result.status = 'down';
@@ -276,6 +311,10 @@ export async function buildHealthReport(opts: { detailed: boolean }): Promise<{ 
   } else if (result.checks.jwtSecret?.status === 'error' && result.checks.jwtSecret.production) {
     // Secret de session non conforme en production (normalement impossible :
     // le démarrage est refusé) : jamais `ok`.
+    result.status = 'degraded';
+  } else if (result.checks.runtime?.status === 'error' && result.checks.runtime.production) {
+    // Lot 100C : runtime Node non corrigé en production (préproduction
+    // comprise) — le service répond, mais le statut ne doit pas être vert.
     result.status = 'degraded';
   } else if (migrationFailures.length > 0 || schema.phase === 'degraded') {
     // Index optionnels manquants : signalé, service rendu.

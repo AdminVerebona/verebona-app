@@ -35,6 +35,8 @@ export const MASTER_CORPUS_DIRS: readonly string[] = [
   join(AI_ROOT, 'agenda', 'master', '__fixtures__'),
   join(AI_ROOT, 'governance', 'master-corpus', 'fixtures'),
   join(AI_ROOT, '..', 'home', 'mascot', '__fixtures__'),
+  // Lot 100B : cas convertis du corpus de référence #601 (importeur `certification/importer.ts`).
+  join(AI_ROOT, 'governance', 'master-corpus', 'corpus-601'),
 ];
 
 export interface MasterCorpusCase {
