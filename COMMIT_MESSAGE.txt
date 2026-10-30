@@ -1,0 +1,44 @@
+feat: lot 101 — assistant : continuité sur l'objet et propriétés produit distinctes (cas « Et la série ? »), notifications de sécurité par e-mail seulement, appareils connectés repliés
+
+Assistant T2 (101A) — l'objet actif de la conversation est mémorisé par
+  son identifiant et réutilisé par les questions elliptiques (« Et la
+  série / le modèle / son prix ? ») sur plusieurs tours ; ambiguïté réelle
+  → demande de précision. Garde-fou de routage : question contextuelle ou
+  propriété sans cible → compréhension T2 avant toute recherche ;
+  recherche bornée à l'objet et à ses sources, recherche compte entier en
+  dernier recours tracé. Validation objet → propriété → source → valeur
+  avant revalidation (prix, VIN, offre refusés comme série / numéro de
+  série). Propriétés distinctes : marque, série du produit, modèle,
+  référence commerciale, désignation, numéro de série (référentiel, T1,
+  index, tiroir équipement, exports). Pages fournisseur : produit
+  principal seul, produits connexes écartés, modèles incompatibles en
+  conflit. Contrôle COH-EQUIPMENT-IDENTITY (autoréparation des seules
+  valeurs automatiques manifestement fausses). Diagnostic par tour (bloc
+  turn, anomalies ELLIPTIC_CONTEXT_UNRESOLVED, ACCOUNT_SEARCH_WITH_ACTIVE_
+  OBJECT, ACTIVE_OBJECT_SWITCHED). Guide PO : étapes 10 (T1
+  t1-product-identity-v1) et 11 (T2 t2-property-continuity-v1), déclarées
+  au registre de conformité.
+Notifications (101B) — les 8 événements de sécurité (nouvel appareil,
+  autres appareils déconnectés, mot de passe, réinitialisation, liaison
+  Google/Apple, changement d'adresse) partent par e-mail seulement :
+  cloche, toast et push retirés par la politique centrale (catalogue
+  securityInformation, applyRetiredChannels étendu à la cloche, API
+  /api/notifications filtrée, réémission sans canal retiré). Anciennes
+  alertes conservées pour l'audit mais plus servies. Canal retiré tracé
+  « ignoré », jamais en échec. Détection, déduplication et e-mails
+  obligatoires inchangés.
+Sécurité (101C) — « Appareils connectés » dans un sous-bloc fermé par
+  défaut (résumé « 2 appareils · dont celui-ci »), accessible, ouvert par
+  l'ancre #appareils-connectes des e-mails de sécurité ; la redirection
+  /mon-compte/informations conserve désormais ancre et paramètres
+  (reprise après confirmation Google / Apple).
+Garde-fou de structure — un dossier app/ ou pages/ à la racine du dépôt
+  (zip de livraison copié avec son dossier) faisait ignorer src/app par
+  Next.js : build réussi mais vide (seule /404), alors que la CI était
+  verte. scripts/check-repo-structure.mjs en prebuild + test unitaire.
+Tests — attentes mises à jour pour les nouvelles propriétés de la fiche
+  équipement et le contrôle COH-EQUIPMENT-IDENTITY ajouté après
+  COH-TODO-PUBLISHABILITY.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01CVhHDwBGz4DhPUAphwUTE2

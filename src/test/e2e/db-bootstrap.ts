@@ -117,6 +117,20 @@ export const PRE_O10_LEGACY_DDL: readonly string[] = [
 ];
 
 /** Instructions DDL du schéma Drizzle, depuis une base vide. */
+/**
+ * Lot 101 — collation de la base E2E. Une base créée par l'image Docker
+ * `postgres:16` (CI GitHub) ou par un hébergeur trie le texte selon une
+ * collation linguistique (en_US : « 0001_base_idx_1.sql » AVANT
+ * « 0001_base.sql »), alors qu'un cluster local `C.UTF-8` trie par octets.
+ * `E2E_DB_ICU_LOCALE=en-US` reproduit localement le tri de la CI.
+ */
+export function icuLocaleClause(env: NodeJS.ProcessEnv = process.env): string {
+  const loc = (env.E2E_DB_ICU_LOCALE ?? '').trim();
+  if (!loc) return '';
+  if (!/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(loc)) throw new Error(`E2E_DB_ICU_LOCALE invalide : ${loc}`);
+  return ` LOCALE_PROVIDER icu ICU_LOCALE '${loc}' LOCALE 'C.UTF-8'`;
+}
+
 export async function drizzleSchemaStatements(): Promise<string[]> {
   const [{ generateDrizzleJson, generateMigration }, schema] = await Promise.all([
     import('drizzle-kit/api'),
@@ -169,7 +183,7 @@ export async function bootstrapE2eDatabase(options: {
   const admin = postgres(options.adminUrl, { max: 1, onnotice: () => undefined });
   try {
     await admin.unsafe(`DROP DATABASE IF EXISTS ${database}`);
-    await admin.unsafe(`CREATE DATABASE ${database} ENCODING 'UTF8' TEMPLATE template0`);
+    await admin.unsafe(`CREATE DATABASE ${database} ENCODING 'UTF8' TEMPLATE template0${icuLocaleClause()}`);
   } finally {
     await admin.end({ timeout: 5 });
   }

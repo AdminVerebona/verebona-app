@@ -100,7 +100,7 @@ async function dossier(files: MigrationFile[]): Promise<string> {
 }
 
 async function marques(sql: postgres.Sql, schema: string): Promise<string[]> {
-  const rows = await sql.unsafe(`SELECT filename FROM ${schema}._migrations ORDER BY 1`) as unknown as Array<{ filename: string }>;
+  const rows = await sql.unsafe(`SELECT filename FROM ${schema}._migrations ORDER BY filename COLLATE "C"`) as unknown as Array<{ filename: string }>;
   return rows.map((r) => r.filename);
 }
 

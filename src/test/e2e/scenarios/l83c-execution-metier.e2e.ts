@@ -96,6 +96,11 @@ scenario('L83C', 'Exécution métier et issue finale (Pilotage IA V2 P2)', ({ sq
                 SELECT id, account_id, ${quality}, ${anomalies}, clock_timestamp() FROM asset_files WHERE id = ${fileId}`;
     }
   };
+  /** Diagnostic (lot 101-bis) : phases et étapes des rapports T1 du compte, pour un échec lisible en CI. */
+  const rapportsT1 = async (accountId: number) => JSON.stringify(await sql`
+    SELECT id, status, file_id, sources->'phases' AS phases,
+           (SELECT jsonb_agg(s) FROM jsonb_array_elements(steps) s WHERE s->>'status' <> 'OK') AS steps_ko
+      FROM ai_execution_reports WHERE treatment = 'T1' AND account_id = ${accountId} ORDER BY id`);
   const appels = (executionId: string) => sql<{ id: number; status: string; metadata: Record<string, unknown> }[]>`
     SELECT id, status, metadata FROM ai_usage_event WHERE business_execution_id = ${executionId} ORDER BY id`;
 
@@ -141,7 +146,7 @@ scenario('L83C', 'Exécution métier et issue finale (Pilotage IA V2 P2)', ({ sq
     const t1 = p.rows.filter((x) => x.treatment === 'T1');
     expect(t1).toHaveLength(5);
     expect(new Set(t1.map((x) => x.objectId))).toEqual(new Set(docs.map((d) => String(d.id))));
-    expect(t1.filter((x) => x.outcome === 'SUCCEEDED'), JSON.stringify(t1.map((x) => [x.outcome, x.cause, x.native]))).toHaveLength(4);
+    expect(t1.filter((x) => x.outcome === 'SUCCEEDED'), JSON.stringify(t1.map((x) => [x.outcome, x.cause, x.native])) + ' — rapports : ' + await rapportsT1(c.id)).toHaveLength(4);
     const inc = t1.filter((x) => x.outcome === 'INCOMPLETE');
     expect(inc.map((x) => x.objectId)).toEqual([String(docs[4].id)]);
     expect(inc[0].cause).toContain('T1_VERIFICATION_INCOMPLETE');
@@ -215,7 +220,7 @@ scenario('L83C', 'Exécution métier et issue finale (Pilotage IA V2 P2)', ({ sq
     await couverture(f.id, 'COMPLETE');
     x = (await projeter(c.id)).rows.filter((e) => e.treatment === 'T1');
     expect(x).toHaveLength(1);
-    expect(x[0], JSON.stringify([x[0].cause, x[0].native])).toMatchObject({ id, outcome: 'SUCCEEDED', origin: 'USER' });
+    expect(x[0], JSON.stringify([x[0].cause, x[0].native]) + ' — rapports : ' + await rapportsT1(c.id)).toMatchObject({ id, outcome: 'SUCCEEDED', origin: 'USER' });
     expect(x[0].jobIds).toEqual([Number(job.id)]);
     expect(x[0].reportIds).toHaveLength(2);
     expect(x[0].resumptions).toBeGreaterThanOrEqual(1);

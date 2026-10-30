@@ -1,0 +1,926 @@
+/**
+ * Base de connaissance documentaire — persistance, lecture, recherche,
+ * projections (T1 → T2 / T3 / T4 et traitements futurs).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * RÈGLE D'USAGE
+ *
+ * Après un passage de T1, un traitement qui a besoin du CONTENU d'un document
+ * lit d'abord ici (`getDocumentKnowledge`, `searchDocumentKnowledge`). Il ne
+ * revient au fichier original que pour une vérification ou une nouvelle
+ * analyse du contenu brut. Le fichier reste la preuve de référence.
+ *
+ * ── ÉCRITURE ──────────────────────────────────────────────────────────────
+ *
+ * Toujours, quel que soit le rattachement : un document sans bien garde son
+ * texte, sa description, ses métadonnées et ses faits. Une nouvelle analyse
+ * remplace la ligne courante et fait passer les faits précédents en
+ * `superseded` (transaction unique : jamais d'état mixte lisible).
+ *
+ * Contrat T1 enrichi (CDC 15 PM-T1-PRE, T1-04, T4-06 ; migration 0218) : clé
+ * canonique, valeur brute, unité, cible, événement, récurrence et origine de
+ * projection sont écrits quand le fait les porte et que la 0218 est
+ * appliquée ; sinon le fait est écrit sur les colonnes historiques (il n'est
+ * jamais perdu). Un fait sans cible vérifiée garde `target_entity_id` NULL.
+ *
+ * ── PROJECTIONS ───────────────────────────────────────────────────────────
+ *
+ * `projectDocumentKnowledgeToAsset` produit les preuves par champ du bien
+ * (`field_evidence`) à partir des faits persistés, puis relance la
+ * réconciliation (T3). C'est ce qui permet de rattacher un document à un bien
+ * APRÈS son analyse sans relire le fichier.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+import { documentTitleJsonSql, withDocumentTitles } from '@/lib/documents/document-title-source';
+import { wordStartPattern } from '@/lib/search/match-engine';
+import { pgClient } from '@/db';
+import type { DocumentKnowledge, DocumentFactRecord } from './document-knowledge';
+import { factsToExtractedFields } from './document-knowledge';
+import type { TableCellRow } from './document-tables';
+import type { ExtractedTableCell, ExtractedField } from '../source-analysis/types';
+import { documentFactsCanonicalReady } from '../evidence/canonical-columns';
+import { sourceLayerReady, writeSourceLayer } from '../source-analysis/source-units/repository';
+import { buildAgendaCandidatesT4 } from '../source-analysis/steps/build-agenda-candidates.step';
+import { operationCandidatesReady, replaceOperationCandidates, type PersistedFactAnchor } from '../source-analysis/operation-candidates/persist';
+import { insertValueDecisions, supersedeFileDecisions, valueDecisionsTableReady } from '../source-analysis/value-decisions/store';
+
+const json = (v: unknown) => JSON.stringify(v ?? null);
+
+/** Colonnes historiques d'un fait ($1…$23 ; `status` = 'active'). */
+const FACT_INSERT_COLUMNS = `account_id, file_id, extraction_id, fact_key, subject, attribute, label,
+           value_text, value_number, value_unit, value_json, normalized_value, period_start, period_end,
+           confidence, excerpt, location, source_type, provider, model, prompt_version, status,
+           evidence_origin, visual_evidence`;
+const FACT_INSERT_VALUES = `$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13::date,$14::date,$15,$16,$17::jsonb,$18,$19,$20,$21,'active',$22,$23::jsonb`;
+
+/** Le fait porte-t-il au moins une donnée du contrat enrichi (0218) ? */
+function hasCanonicalFactData(f: DocumentFactRecord): boolean {
+  return f.canonicalKey != null || f.rawKey != null || f.rawValue != null || f.valueType != null
+    || f.canonicalUnit != null || f.targetType != null || f.semanticEventType != null
+    || f.recurrence != null || f.projectionOrigin != null || f.projectionRule != null;
+}
+
+/** Enregistre la représentation courante d'un document. Rend l'id d'extraction. */
+export async function persistDocumentKnowledge(k: DocumentKnowledge): Promise<number> {
+  return (await persistDocumentKnowledgeDetailed(k)).extractionId;
+}
+
+/**
+ * Lot 75C (ticket T1 résiduels, E) — résultat de la couche source (unités,
+ * provenance, couverture), écrite sous point de sauvegarde dans la même
+ * transaction que les faits :
+ *   · WRITTEN        : écrite ;
+ *   · NOT_APPLICABLE : aucune couche à écrire (analyse sans matière) ;
+ *   · FAILED         : couche attendue NON écrite (point de sauvegarde en
+ *                      échec, ou tables 0295-0297 absentes) — les faits
+ *                      restent écrits ; l'appelant ne déclare JAMAIS la
+ *                      persistance réussie et programme la reprise, qui la
+ *                      reconstruit (même transaction, remplacement idempotent).
+ */
+interface PersistedKnowledge {
+  extractionId: number;
+  sourceLayer: 'WRITTEN' | 'NOT_APPLICABLE' | 'FAILED';
+  sourceLayerError: string | null;
+}
+
+export async function persistDocumentKnowledgeDetailed(k: DocumentKnowledge): Promise<PersistedKnowledge> {
+  const e = k.extraction;
+  let extractionId = 0;
+  let coucheErreur: string | null = null;
+  // Contrôle HORS transaction (lecture du catalogue) : colonnes 0218 présentes ?
+  const canonical = k.facts.some(hasCanonicalFactData) || e.multiAsset != null
+    ? await documentFactsCanonicalReady() : false;
+  if (!canonical && k.facts.some((f) => f.recurrence)) {
+    // T4-06 : sans 0218, la récurrence ne peut pas être persistée — signalé.
+    console.warn(`[knowledge] fichier ${e.fileId} : récurrence non persistée (migration 0218 absente).`);
+  }
+  // Lot 34F : couche A (0295-0297) — contrôle HORS transaction, comme 0218.
+  const couche = k.sourceLayer || k.facts.some((f) => f.sourceUnitIds?.length) ? await sourceLayerReady() : false;
+  let coucheEcrite = couche;
+  // Lot 40 : candidats Opération (0317 / 0320) — contrôle HORS transaction.
+  // La branche maître (seul chemin T1 depuis le lot 16b-3) fournit TOUJOURS
+  // la liste, vide comprise : les candidats sont alors remplacés avec les
+  // faits. Absente (connaissance construite hors T1, tests historiques) :
+  // aucun contrôle de schéma, candidats inchangés.
+  const candidats = k.operationCandidates !== undefined ? await operationCandidatesReady() : false;
+  // Lot 91D : décisions T1 sur les valeurs (0798) — contrôle HORS transaction. Toute nouvelle analyse T1 (couche A
+  // ou décisions présentes) supersède les décisions précédentes du document : elles visaient l'extraction d'avant.
+  const decisions = k.sourceLayer || k.valueDecisions ? await valueDecisionsTableReady() : false;
+
+  await pgClient.begin(async (tx) => {
+    const rows = await tx.unsafe(
+      `INSERT INTO document_extractions (
+         account_id, file_id, analysis_run_id, asset_id_at_analysis, engine, source_type, source_version,
+         title, description, document_date, supplier_name, supplier_siret, amount_cents, currency,
+         full_text, full_text_chars, document_type_code, rubric_code, has_exploitable_content,
+         structural_evidence, metadata, fact_count, provider, model, prompt_version, operation_trace_id,
+         visual_summary, visual_observations,
+         extracted_at, updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::date,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21::jsonb,$22,$23,$24,$25,$26,$27,$28::jsonb, now(), now())
+       ON CONFLICT (file_id) DO UPDATE SET
+         account_id = EXCLUDED.account_id,
+         analysis_run_id = EXCLUDED.analysis_run_id,
+         asset_id_at_analysis = EXCLUDED.asset_id_at_analysis,
+         engine = EXCLUDED.engine,
+         source_type = EXCLUDED.source_type,
+         source_version = EXCLUDED.source_version,
+         title = EXCLUDED.title,
+         description = EXCLUDED.description,
+         document_date = EXCLUDED.document_date,
+         supplier_name = EXCLUDED.supplier_name,
+         supplier_siret = EXCLUDED.supplier_siret,
+         amount_cents = EXCLUDED.amount_cents,
+         currency = EXCLUDED.currency,
+         full_text = EXCLUDED.full_text,
+         full_text_chars = EXCLUDED.full_text_chars,
+         document_type_code = EXCLUDED.document_type_code,
+         rubric_code = EXCLUDED.rubric_code,
+         has_exploitable_content = EXCLUDED.has_exploitable_content,
+         structural_evidence = EXCLUDED.structural_evidence,
+         metadata = EXCLUDED.metadata,
+         fact_count = EXCLUDED.fact_count,
+         provider = EXCLUDED.provider,
+         model = EXCLUDED.model,
+         prompt_version = EXCLUDED.prompt_version,
+         operation_trace_id = EXCLUDED.operation_trace_id,
+         visual_summary = EXCLUDED.visual_summary,
+         visual_observations = EXCLUDED.visual_observations,
+         extracted_at = now(),
+         updated_at = now()
+       RETURNING id, (xmax <> 0) AS reanalysis`,
+      [
+        e.accountId, e.fileId, e.analysisRunId, e.assetIdAtAnalysis, e.engine, e.sourceType, e.sourceVersion,
+        e.title, e.description, e.documentDate, e.supplierName, e.supplierSiret, e.amountCents, e.currency,
+        e.fullText, e.fullText?.length ?? 0, e.documentTypeCode, e.rubricCode, e.hasExploitableContent,
+        json(e.structuralEvidence), json(e.metadata), k.facts.length, e.provider, e.model, e.promptVersion, e.operationTraceId,
+        e.visualSummary ?? null, json(e.visualObservations ?? []),
+      ] as never[],
+    );
+    extractionId = (rows as unknown as Array<{ id: number }>)[0].id;
+    // Lot 40 : le fichier avait déjà une extraction (UPSERT) → réanalyse (C4 TRG-002).
+    const reanalysis = Boolean((rows as unknown as Array<{ reanalysis: boolean }>)[0].reanalysis);
+    // Indicateur multi-biens (0218, T1-05) : écrit à part, colonne
+    // conditionnelle, et SEULEMENT s'il est connu (branche maître).
+    if (canonical && e.multiAsset != null) {
+      await tx.unsafe(
+        `UPDATE document_extractions SET multi_asset = $2 WHERE id = $1`,
+        [extractionId, e.multiAsset ?? null] as never[],
+      );
+    }
+
+    // Les faits précédents ne sont pas effacés : ils cessent d'être courants.
+    await tx.unsafe(
+      `UPDATE document_facts SET status = 'superseded' WHERE file_id = $1 AND status = 'active'`,
+      [e.fileId] as never[],
+    );
+    // Idem pour les tableaux : une nouvelle lecture remplace la structure.
+    await tx.unsafe(
+      `UPDATE document_tables SET status = 'superseded' WHERE file_id = $1 AND status = 'active'`,
+      [e.fileId] as never[],
+    );
+    for (const t of k.tables ?? []) {
+      const [row] = (await tx.unsafe(
+        `INSERT INTO document_tables (
+           account_id, file_id, extraction_id, table_index, title, page_start, page_end,
+           column_count, row_count, columns, confidence, uncertain, issues,
+           source_version, provider, model, prompt_version, status
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13::jsonb,$14,$15,$16,$17,'active')
+         RETURNING id`,
+        [
+          e.accountId, e.fileId, extractionId, t.index, t.title, t.pageStart, t.pageEnd,
+          t.columnCount, t.rowCount, json(t.columns), t.confidence, t.uncertain, json(t.issues),
+          e.sourceVersion, e.provider, e.model, e.promptVersion,
+        ] as never[],
+      )) as unknown as Array<{ id: number }>;
+      if (t.cells.length === 0) continue;
+      // Une seule requête par tableau : les cellules voyagent en JSON.
+      await tx.unsafe(
+        `INSERT INTO document_table_cells (
+           table_id, account_id, file_id, row_index, column_index, row_header, column_header, column_path,
+           value_text, normalized_value, value_type, is_empty, colspan, rowspan, page, confidence
+         )
+         SELECT $1, $2, $3, c.row, c.column, c."rowHeader", c."columnHeader", coalesce(c."columnPath", '[]'::jsonb),
+                c.value, c.normalized, c."valueType", c.value IS NULL, coalesce(c.colspan, 1), coalesce(c.rowspan, 1),
+                c.page, c.confidence
+           FROM jsonb_to_recordset($4::jsonb) AS c(
+             "row" int, "column" int, "rowHeader" text, "columnHeader" text, "columnPath" jsonb,
+             value text, normalized text, "valueType" text, colspan int, rowspan int, page int, confidence text
+           )`,
+        [row.id, e.accountId, e.fileId, json(t.cells)] as never[],
+      );
+    }
+
+    const factIds = await insertFactRows(tx as unknown as SqlTx, e, extractionId, k.facts, { canonical, provenance: couche });
+
+    // Lot 40 (CDC Opérations V1 C3.2, C9.1) : candidats Opération — anciens
+    // supersédés, nouveaux écrits avec des preuves ANCRÉES sur les faits
+    // persistés à l'instant (empreinte → identifiant), même transaction.
+    if (candidats && k.operationCandidates) {
+      const ancres = new Map<string, PersistedFactAnchor[]>();
+      k.facts.forEach((f, i) => {
+        if (!f.t1FactRef || factIds[i] === undefined) return;
+        const l = ancres.get(f.t1FactRef) ?? [];
+        l.push({ factId: factIds[i], sourceUnitIds: couche ? f.sourceUnitIds ?? [] : [] });
+        ancres.set(f.t1FactRef, l);
+      });
+      await replaceOperationCandidates(tx as never, {
+        accountId: e.accountId, fileId: e.fileId, extractionId, analysisRunId: e.analysisRunId,
+        reanalysis, candidates: k.operationCandidates, facts: ancres,
+      });
+    }
+
+    // Lot 91D : décisions T1 sur les valeurs significatives — anciennes supersédées (jamais supprimées), nouvelles
+    // écrites avec les faits persistés à l'instant (empreinte → identifiants). Point de sauvegarde : une écriture
+    // impossible n'emporte jamais les faits (le contrôle continue alors de signaler les valeurs sans décision).
+    if (decisions) {
+      const parRef = new Map<string, number[]>();
+      k.facts.forEach((f, i) => {
+        if (!f.t1FactRef || factIds[i] === undefined) return;
+        parRef.set(f.t1FactRef, [...(parRef.get(f.t1FactRef) ?? []), factIds[i]]);
+      });
+      await (tx as unknown as { savepoint: (f: (sp: unknown) => Promise<void>) => Promise<void> })
+        .savepoint(async (sp) => {
+          await supersedeFileDecisions(sp as never, e.fileId, 'REANALYSIS');
+          if (k.valueDecisions?.length) {
+            await insertValueDecisions(sp as never, {
+              accountId: e.accountId, fileId: e.fileId, extractionId, analysisRunId: e.analysisRunId, promptVersion: e.promptVersion,
+              aiTraceId: e.operationTraceId, factIds: parRef,
+            }, k.valueDecisions);
+          }
+        })
+        .catch((err: Error) => console.error(`[t1-value-decisions] décisions du fichier ${e.fileId} non écrites :`, err.message));
+    }
+
+    // Lot 34F : couche A (unités, couverture, faits non résolus) — même
+    // transaction que les faits : jamais de provenance vers une unité absente.
+    // Point de sauvegarde : une couche A impossible à écrire n'emporte jamais
+    // les faits (écrits comme avant) — signalé, rattrapé par la reprise.
+    if (k.sourceLayer && couche) {
+      const layer = k.sourceLayer;
+      await (tx as unknown as { savepoint: (f: (sp: unknown) => Promise<void>) => Promise<void> })
+        .savepoint((sp) => writeSourceLayer(sp as never, { accountId: e.accountId, fileId: e.fileId, extractionId, layer, origin: 'ANALYSIS' }))
+        .catch((err: Error) => {
+          coucheEcrite = false;
+          coucheErreur = err.message;
+          console.error(`[t1-source-units] couche A du fichier ${e.fileId} non écrite :`, err.message);
+        });
+    }
+  });
+  if (k.sourceLayer && !couche) coucheErreur = 'tables de la couche source absentes (migrations 0295-0297)';
+
+  if (k.sourceLayer) {
+    // Surveillance (journal T1, anomalies BO) : jamais bloquante.
+    const { recordT1Completeness } = await import('../source-analysis/source-units/monitoring');
+    await recordT1Completeness({
+      accountId: e.accountId, fileId: e.fileId, report: k.sourceLayer.report, persisted: coucheEcrite,
+    }).catch((err: Error) => console.error('[t1-completeness] surveillance impossible :', err.message));
+  }
+
+  return {
+    extractionId,
+    sourceLayer: !k.sourceLayer ? 'NOT_APPLICABLE' : coucheEcrite && couche ? 'WRITTEN' : 'FAILED',
+    sourceLayerError: k.sourceLayer && !(coucheEcrite && couche) ? (coucheErreur ?? 'couche source non écrite') : null,
+  };
+}
+
+/** Transaction (ou client) SQL minimal. */
+type SqlTx = { unsafe: (q: string, p?: never[]) => Promise<unknown> };
+
+/**
+ * Écrit des faits ACTIFS d'une extraction (colonnes historiques, contrat
+ * enrichi 0218 s'il est appliqué, provenance 0297 si elle l'est). Lot 34F :
+ * factorisé pour la reprise ciblée, qui AJOUTE des faits sans réécrire les
+ * autres.
+ */
+export async function insertFactRows(
+  tx: SqlTx,
+  e: Pick<DocumentKnowledge['extraction'], 'accountId' | 'fileId' | 'sourceType' | 'provider' | 'model' | 'promptVersion'>,
+  extractionId: number,
+  facts: readonly DocumentFactRecord[],
+  opts: { canonical: boolean; provenance: boolean },
+): Promise<number[]> {
+  const { canonical, provenance: couche } = opts;
+  // Lot 40 : identifiants des faits écrits, dans l'ordre de `facts` (ancrage
+  // des preuves des candidats Opération).
+  const ids: number[] = [];
+  const idOf = (r: unknown) => Number((r as Array<{ id: number | string }>)[0]?.id);
+  for (const f of facts) {
+    const base = [
+      e.accountId, e.fileId, extractionId, f.factKey, f.subject, f.attribute, f.label,
+      f.valueText, f.valueNumber, f.valueUnit, json(f.valueJson), f.normalizedValue, f.periodStart, f.periodEnd,
+      // Observation visuelle : aucune citation (la contrainte 0161 l'impose aussi).
+      f.confidence, f.evidenceOrigin === 'VISUAL_ANALYSIS' ? null : f.excerpt, json(f.location), e.sourceType, e.provider, e.model, e.promptVersion,
+      f.evidenceOrigin ?? 'TEXT_EXTRACTION',
+      f.evidenceOrigin === 'VISUAL_ANALYSIS' && f.visualEvidence ? json({ ...f.visualEvidence, fileId: e.fileId }) : null,
+    ];
+    // Lot 34F (0297) : provenance fait → sourceUnitId[].
+    const prov = couche && f.sourceUnitIds?.length ? f.sourceUnitIds : null;
+    if (canonical && hasCanonicalFactData(f)) {
+      ids.push(idOf(await tx.unsafe(
+        `INSERT INTO document_facts (${FACT_INSERT_COLUMNS},
+           canonical_key, raw_key, raw_value, value_type, canonical_unit,
+           target_type, target_entity_id, target_entity_label, target_confidence,
+           semantic_event_type, semantic_event_nature, recurrence, projection_origin, projection_rule${prov ? ', source_unit_ids' : ''}
+         ) VALUES (${FACT_INSERT_VALUES},$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35::jsonb,$36,$37${prov ? ',$38::text[]' : ''})
+         RETURNING id`,
+        [
+          ...base,
+          f.canonicalKey ?? null, f.rawKey ?? null, f.rawValue ?? null, f.valueType ?? null, f.canonicalUnit ?? null,
+          f.targetType ?? null, f.targetEntityId ?? null, f.targetEntityLabel ?? null, f.targetConfidence ?? null,
+          f.semanticEventType ?? null, f.semanticEventNature ?? null,
+          f.recurrence ? json(f.recurrence) : null,
+          f.projectionOrigin ?? null, f.projectionRule ?? null,
+          ...(prov ? [prov] : []),
+        ] as never[],
+      )));
+    } else {
+      ids.push(idOf(await tx.unsafe(
+        `INSERT INTO document_facts (${FACT_INSERT_COLUMNS}${prov ? ', source_unit_ids' : ''}) VALUES (${FACT_INSERT_VALUES}${prov ? ',$24::text[]' : ''})
+         RETURNING id`,
+        [...base, ...(prov ? [prov] : [])] as never[],
+      )));
+    }
+  }
+  return ids;
+}
+
+// ── Lecture ────────────────────────────────────────────────────────────────
+
+interface StoredTable {
+  id: number;
+  fileId: number;
+  index: number;
+  title: string | null;
+  pageStart: number | null;
+  pageEnd: number | null;
+  columns: Array<{ header: string; path: string[] }>;
+  rowCount: number;
+  columnCount: number;
+  confidence: string;
+  uncertain: boolean;
+  issues: string[];
+  cells: ExtractedTableCell[];
+}
+
+async function loadTables(where: string, params: unknown[]): Promise<StoredTable[]> {
+  const tables = (await pgClient.unsafe(
+    `SELECT id::float8 AS id, file_id AS "fileId", table_index AS index, title, page_start AS "pageStart", page_end AS "pageEnd",
+            columns, row_count AS "rowCount", column_count AS "columnCount", confidence, uncertain, issues
+       FROM document_tables WHERE ${where} AND status = 'active' ORDER BY table_index`,
+    params as never[],
+  )) as unknown as Array<Omit<StoredTable, 'cells'>>;
+  if (tables.length === 0) return [];
+  const cells = (await pgClient.unsafe(
+    `SELECT table_id::float8 AS "tableId", row_index AS row, column_index AS column, row_header AS "rowHeader",
+            column_header AS "columnHeader", column_path AS "columnPath", value_text AS value,
+            normalized_value AS normalized, value_type AS "valueType", colspan, rowspan, page, confidence
+       FROM document_table_cells WHERE table_id = ANY($1::bigint[]) ORDER BY table_id, row_index, column_index`,
+    [tables.map((t) => t.id)] as never[],
+  )) as unknown as Array<ExtractedTableCell & { tableId: number }>;
+  return tables.map((t) => ({ ...t, cells: cells.filter((c) => c.tableId === t.id).map(({ tableId: _t, ...c }) => c) }));
+}
+
+/** Tableaux courants d'un document (structure complète). */
+export function getDocumentTables(accountId: number, fileId: number): Promise<StoredTable[]> {
+  return loadTables('account_id = $1 AND file_id = $2', [accountId, fileId]);
+}
+
+/**
+ * Cellules des lignes où un terme apparaît (en-tête de ligne, de colonne,
+ * titre ou valeur) — avec TOUTES les cellules de ces lignes, pour que T2
+ * puisse lire l'intersection ligne / colonne sans rouvrir le document.
+ */
+export async function searchTableCells(
+  accountId: number,
+  terms: string[],
+  opts: { assetId?: number | null; limit?: number } = {},
+): Promise<TableCellRow[]> {
+  const clean = terms.map((t) => t.trim()).filter((t) => t.length >= 3).slice(0, 8);
+  if (clean.length === 0) return [];
+  const hay = `unaccent(lower(coalesce(c.row_header,'') || ' ' || coalesce(c.column_header,'') || ' ' || coalesce(c.value_text,'') || ' ' || coalesce(t.title,'')))`;
+  // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
+  const cond = clean.map((_, i) => `${hay} ~ $${i + 3}`).join(' OR ');
+  const rows = await withDocumentTitles(pgClient.unsafe(
+    `WITH lignes AS (
+       SELECT DISTINCT c.table_id, c.row_index
+         FROM document_table_cells c
+         JOIN document_tables t ON t.id = c.table_id AND t.status = 'active'
+         JOIN asset_files af ON af.id = t.file_id AND af.account_id = $1 AND af.deleted_at IS NULL
+        WHERE c.account_id = $1
+          AND ($2::int IS NULL OR af.asset_id = $2 OR af.linked_asset_id = $2)
+          AND (${cond})
+        LIMIT ${Math.min(Math.max(opts.limit ?? 200, 1), 500)}
+     )
+     SELECT c.table_id::float8 AS "tableId", t.file_id AS "fileId",
+            ${documentTitleJsonSql('af')} AS "documentTitle",
+            t.title AS "tableTitle", t.uncertain AS "tableUncertain",
+            c.row_index AS row, c.column_index AS column, c.row_header AS "rowHeader",
+            c.column_header AS "columnHeader", c.column_path AS "columnPath",
+            c.value_text AS value, c.normalized_value AS normalized, c.page, c.confidence
+       FROM lignes l
+       JOIN document_table_cells c ON c.table_id = l.table_id AND c.row_index = l.row_index
+       JOIN document_tables t ON t.id = c.table_id
+       JOIN asset_files af ON af.id = t.file_id AND af.account_id = $1
+      ORDER BY c.table_id, c.row_index, c.column_index`,
+    [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)] as never[],
+  ));
+  return rows as unknown as TableCellRow[];
+}
+
+interface StoredExtraction {
+  /** 0218 : null = inconnu (extraction antérieure, ou colonne absente). */
+  multiAsset?: boolean | null;
+  id: number;
+  accountId: number;
+  fileId: number;
+  engine: string;
+  title: string | null;
+  description: string | null;
+  documentDate: string | null;
+  supplierName: string | null;
+  amountCents: number | null;
+  currency: string;
+  fullText: string | null;
+  visualSummary: string | null;
+  visualObservations: unknown[];
+  documentTypeCode: string | null;
+  rubricCode: string | null;
+  structuralEvidence: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+  factCount: number;
+  model: string | null;
+  promptVersion: string | null;
+  extractedAt: string;
+  /** Bien du document au moment de l'analyse (ancien bien après un déplacement). */
+  assetIdAtAnalysis?: number | null;
+  /** `asset_file` | `web_link` (0139). */
+  sourceType?: string | null;
+}
+
+interface StoredFact extends DocumentFactRecord {
+  id: number;
+  fileId: number;
+  extractionId: number;
+  model: string | null;
+  promptVersion: string | null;
+  createdAt: string;
+}
+
+const EXTRACTION_COLUMNS = `
+  id, account_id AS "accountId", file_id AS "fileId", engine, title, description,
+  to_char(document_date, 'YYYY-MM-DD') AS "documentDate", supplier_name AS "supplierName",
+  amount_cents::int AS "amountCents", currency, full_text AS "fullText",
+  visual_summary AS "visualSummary", visual_observations AS "visualObservations",
+  document_type_code AS "documentTypeCode", rubric_code AS "rubricCode",
+  structural_evidence AS "structuralEvidence", metadata, fact_count AS "factCount",
+  model, prompt_version AS "promptVersion", extracted_at AS "extractedAt",
+  asset_id_at_analysis AS "assetIdAtAnalysis", source_type AS "sourceType"`;
+
+/**
+ * Colonnes d'un fait, préfixées par l'alias de table (`f.` ou rien). Avec
+ * `canonical` (0218 appliquée), le contrat enrichi est relu aussi — dont la
+ * récurrence (T4-06).
+ */
+function factColumns(alias = '', canonical = false): string {
+  const a = alias ? `${alias}.` : '';
+  const enrichi = canonical ? `,
+  ${a}canonical_key AS "canonicalKey", ${a}raw_key AS "rawKey", ${a}raw_value AS "rawValue", ${a}value_type AS "valueType",
+  ${a}canonical_unit AS "canonicalUnit", ${a}target_type AS "targetType", ${a}target_entity_id AS "targetEntityId",
+  ${a}target_entity_label AS "targetEntityLabel", ${a}target_confidence AS "targetConfidence",
+  ${a}semantic_event_type AS "semanticEventType", ${a}semantic_event_nature AS "semanticEventNature",
+  ${a}recurrence, ${a}projection_origin AS "projectionOrigin", ${a}projection_rule AS "projectionRule"` : '';
+  return `
+  ${a}id::float8 AS id, ${a}file_id AS "fileId", ${a}extraction_id AS "extractionId", ${a}fact_key AS "factKey",
+  ${a}subject, ${a}attribute, ${a}label,
+  ${a}value_text AS "valueText", ${a}value_number::float8 AS "valueNumber", ${a}value_unit AS "valueUnit",
+  ${a}value_json AS "valueJson", ${a}normalized_value AS "normalizedValue",
+  to_char(${a}period_start, 'YYYY-MM-DD') AS "periodStart", to_char(${a}period_end, 'YYYY-MM-DD') AS "periodEnd",
+  ${a}confidence, ${a}excerpt, ${a}location,
+  ${a}evidence_origin AS "evidenceOrigin", ${a}visual_evidence AS "visualEvidence", ${a}model, ${a}prompt_version AS "promptVersion", ${a}created_at AS "createdAt"${enrichi}`;
+}
+
+/** Représentation courante d'un document (null si T1 n'est jamais passé). */
+export async function getDocumentKnowledge(
+  accountId: number,
+  fileId: number,
+): Promise<{ extraction: StoredExtraction; facts: StoredFact[] } | null> {
+  const canonical = await documentFactsCanonicalReady();
+  const rows = await pgClient.unsafe(
+    `SELECT ${EXTRACTION_COLUMNS}${canonical ? ', multi_asset AS "multiAsset"' : ''}
+       FROM document_extractions WHERE account_id = $1 AND file_id = $2 LIMIT 1`,
+    [accountId, fileId] as never[],
+  );
+  const extraction = (rows as unknown as StoredExtraction[])[0];
+  if (!extraction) return null;
+  const facts = await pgClient.unsafe(
+    `SELECT ${factColumns('', canonical)} FROM document_facts WHERE file_id = $1 AND status = 'active' ORDER BY id`,
+    [fileId] as never[],
+  );
+  return { extraction, facts: facts as unknown as StoredFact[] };
+}
+
+/**
+ * Vrai si le document possède des faits T1 actifs, donc projetables sur un
+ * bien. Une représentation issue du moteur historique (texte seul, sans
+ * faits) ne suffit pas : le rattachement doit alors relancer l'analyse.
+ */
+export async function hasProjectableKnowledge(fileId: number): Promise<boolean> {
+  const rows = await pgClient.unsafe(
+    `SELECT 1 FROM document_facts WHERE file_id = $1 AND status = 'active' LIMIT 1`,
+    [fileId] as never[],
+  );
+  return (rows as unknown as unknown[]).length > 0;
+}
+
+// ── Recherche (T2, niveau 2) ───────────────────────────────────────────────
+
+interface KnowledgeFactHit extends StoredFact {
+  documentTitle: string | null;
+  assetId: number | null;
+  /** Lot 101A : le document du fait est rattaché à l'objet demandé (`opts.entity`). */
+  linkedToEntity?: boolean | null;
+  /** Nombre de termes de la requête retrouvés dans le fait (0 à n). */
+  matchedTerms: number;
+}
+
+interface KnowledgeTextHit {
+  fileId: number;
+  title: string | null;
+  assetId: number | null;
+  snippet: string;
+  matchedTerms: number;
+}
+
+/**
+ * Faits actifs du compte correspondant aux termes (sujet, attribut, libellé,
+ * clé, valeur). Insensible à la casse et aux accents. Les faits des
+ * documents supprimés sont exclus.
+ */
+export async function searchDocumentFacts(
+  accountId: number,
+  terms: string[],
+  opts: {
+    assetId?: number | null; limit?: number;
+    /**
+     * Lot 101A (C) : objet métier RÉSOLU (équipement, pièce) — seuls ses faits
+     * (cible = cet objet) et ceux des documents qui lui sont rattachés
+     * (`document_asset_links` actif) sont candidats. Jamais le compte entier.
+     */
+    entity?: { type: 'EQUIPMENT' | 'ROOM'; id: number } | null;
+  } = {},
+): Promise<KnowledgeFactHit[]> {
+  const clean = terms.map((t) => t.trim()).filter((t) => t.length >= 3).slice(0, 8);
+  if (clean.length === 0) return [];
+  const haystack = `unaccent(lower(coalesce(f.fact_key,'') || ' ' || coalesce(f.subject,'') || ' ' || coalesce(f.attribute,'') || ' ' || coalesce(f.label,'') || ' ' || coalesce(f.value_text,'')))`;
+  // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
+  const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} ~ $${i + 5} THEN 1 ELSE 0 END)`).join(' + ');
+  const canonical = await documentFactsCanonicalReady().catch(() => false);
+  const ent = opts.entity && Number.isInteger(opts.entity.id) && opts.entity.id > 0 ? opts.entity : null;
+  const params: unknown[] = [accountId, opts.assetId ?? null, ent?.type ?? null, ent?.id ?? null, ...clean.map(wordStartPattern)];
+  // Objet résolu : faits CIBLANT l'objet, ou faits d'un document rattaché à l'objet.
+  const lienObjet = `EXISTS (SELECT 1 FROM document_asset_links l WHERE l.file_id = f.file_id AND l.account_id = f.account_id AND l.status = 'ACTIVE'
+                       AND ((($3::text = 'EQUIPMENT') AND l.equipment_id = $4) OR (($3::text = 'ROOM') AND l.substructure_id = $4)))`;
+  const bornageObjet = canonical
+    ? `($4::int IS NULL OR (f.target_type = $3::text AND f.target_entity_id = $4) OR ${lienObjet})`
+    : `($4::int IS NULL OR ${lienObjet})`;
+  const rows = await withDocumentTitles(pgClient.unsafe(
+    `SELECT * FROM (
+       SELECT ${factColumns('f', canonical)},
+              ${documentTitleJsonSql('af')} AS "documentTitle",
+              coalesce(af.asset_id, af.linked_asset_id) AS "assetId",
+              ${lienObjet.replace('EXISTS', '(EXISTS').concat(')')} AS "linkedToEntity",
+              (${scoreSql}) AS "matchedTerms"
+         FROM document_facts f
+         JOIN asset_files af ON af.id = f.file_id AND af.account_id = f.account_id AND af.deleted_at IS NULL
+        WHERE f.account_id = $1 AND f.status = 'active'
+          AND ($2::int IS NULL OR af.asset_id = $2 OR af.linked_asset_id = $2)
+          AND ${bornageObjet}
+     ) s
+     WHERE s."matchedTerms" > 0
+     ORDER BY s."matchedTerms" DESC, s.id DESC
+     LIMIT ${Math.min(Math.max(opts.limit ?? 20, 1), 100)}`,
+    params as never[],
+  ));
+  return rows as unknown as KnowledgeFactHit[];
+}
+
+/**
+ * Documents dont le contenu extrait (titre, description, émetteur, texte
+ * intégral) contient les termes. Rend un extrait autour de la 1re occurrence.
+ */
+export async function searchDocumentText(
+  accountId: number,
+  terms: string[],
+  opts: { assetId?: number | null; limit?: number } = {},
+): Promise<KnowledgeTextHit[]> {
+  const clean = terms.map((t) => t.trim()).filter((t) => t.length >= 3).slice(0, 8);
+  if (clean.length === 0) return [];
+  const haystack = `unaccent(lower(coalesce(e.title,'') || ' ' || coalesce(e.description,'') || ' ' || coalesce(e.supplier_name,'') || ' ' || coalesce(e.full_text,'')))`;
+  // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
+  const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
+  const params: unknown[] = [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)];
+  const rows = await pgClient.unsafe(
+    `SELECT * FROM (
+       SELECT e.file_id AS "fileId", e.title,
+              coalesce(af.asset_id, af.linked_asset_id) AS "assetId",
+              coalesce(e.full_text, e.description, '') AS body,
+              (${scoreSql}) AS "matchedTerms"
+         FROM document_extractions e
+         JOIN asset_files af ON af.id = e.file_id AND af.account_id = e.account_id AND af.deleted_at IS NULL
+        WHERE e.account_id = $1
+          AND ($2::int IS NULL OR af.asset_id = $2 OR af.linked_asset_id = $2)
+     ) s
+     WHERE s."matchedTerms" > 0
+     ORDER BY s."matchedTerms" DESC
+     LIMIT ${Math.min(Math.max(opts.limit ?? 10, 1), 50)}`,
+    params as never[],
+  );
+  return (rows as unknown as Array<Omit<KnowledgeTextHit, 'snippet'> & { body: string }>).map((r) => ({
+    fileId: r.fileId,
+    title: r.title,
+    assetId: r.assetId,
+    matchedTerms: Number(r.matchedTerms),
+    snippet: snippetAround(r.body, clean),
+  }));
+}
+
+/** Extrait d'environ 240 caractères autour du premier terme trouvé. */
+function snippetAround(body: string, terms: string[]): string {
+  if (!body) return '';
+  const plain = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const hay = plain(body);
+  let at = -1;
+  for (const t of terms) {
+    const i = hay.indexOf(plain(t));
+    if (i >= 0 && (at < 0 || i < at)) at = i;
+  }
+  if (at < 0) return body.slice(0, 240).trim();
+  const start = Math.max(0, at - 100);
+  const end = Math.min(body.length, at + 140);
+  return `${start > 0 ? '…' : ''}${body.slice(start, end).trim()}${end < body.length ? '…' : ''}`;
+}
+
+// ── Projections métier (niveau 3) ──────────────────────────────────────────
+
+/**
+ * Projette les faits persistés d'un document sur un bien : preuves par champ
+ * (`field_evidence`) puis réconciliation (T3). Aucune lecture du fichier.
+ *
+ * Rend le nombre de preuves produites (0 si aucune représentation T1).
+ */
+export async function projectDocumentKnowledgeToAsset(p: {
+  accountId: number;
+  userId: number;
+  fileId: number;
+  assetId: number;
+}): Promise<number> {
+  const knowledge = await getDocumentKnowledge(p.accountId, p.fileId);
+  if (!knowledge || knowledge.facts.length === 0) return 0;
+  const { fields, allowReassign } = linkedAssetProjection(knowledge, p.assetId);
+
+  const { persistEvidence } = await import('../source-analysis/steps/persist-evidence.step');
+  const byField = await persistEvidence({
+    input: {
+      // Lien web (R4) : ses preuves restent de type `web_link` après un
+      // rattachement ou un déplacement, comme à l'analyse.
+      sourceType: knowledge.extraction.sourceType === 'web_link' ? 'web_link' : 'file',
+      sourceIds: [p.fileId],
+      accountId: p.accountId,
+      userId: p.userId,
+      mimeTypes: [],
+      displayNames: [],
+    },
+    leadSourceId: p.fileId,
+    assetId: p.assetId,
+    fields,
+    documentType: (knowledge.extraction.metadata?.legacyDocumentType as string | undefined) ?? undefined,
+    documentDate: knowledge.extraction.documentDate ?? undefined,
+    promptVersion: knowledge.extraction.promptVersion ?? null,
+    trace: {
+      traceIds: [], operationCodes: ['knowledge_projection'], totalInputTokens: 0, totalOutputTokens: 0,
+      totalCostMicros: 0, totalDurationMs: 0, usedFallback: false,
+      models: knowledge.extraction.model ? [knowledge.extraction.model] : [],
+    },
+  });
+
+  // T3 : même moteur que pour un document analysé, déclenché par le rattachement.
+  const { reconcileAsset } = await import('../reconciliation');
+  await reconcileAsset({
+    accountId: p.accountId,
+    userId: p.userId,
+    assetId: p.assetId,
+    triggeredBy: 'document_linked',
+    sourceFileId: p.fileId,
+  }).catch((e: Error) => console.error('[knowledge] réconciliation après rattachement :', e.message));
+
+  // Lot 71A (BUG P1, point B) : document rattaché tardivement à un bien →
+  // rapprochement avec les équipements de CE bien (données persistées).
+  await import('@/services/equipment/document-equipment-link.service')
+    .then(({ syncDocumentEquipmentLinks }) => syncDocumentEquipmentLinks({ accountId: p.accountId, fileId: p.fileId, allowAi: true }))
+    .catch((e: Error) => console.error('[knowledge] rattachement aux équipements après rattachement :', e.message));
+
+  // Rattachement d'un document : impact possible au-delà de ce bien (T3,
+  // différé — la réconciliation locale ci-dessus traite l'immédiat).
+  const { notifyCoherenceEvent } = await import('../reconciliation/account-reconciliation.service');
+  notifyCoherenceEvent(p.accountId, { event: 'document_linked', objectType: 'asset', objectId: p.assetId });
+  // Lot 41 (C4 TRG-005) : la cible des Opérations soutenues par ce document est réévaluée.
+  const { notifyOperationsEvent } = await import('@/services/business-operations/consolidation/queue');
+  notifyOperationsEvent(p.accountId, { trigger: 'document_linked', fileId: p.fileId });
+
+  // T4-05 (lot 14) : candidats agenda reconstruits
+  // depuis les faits persistés — récurrence comprise (T4-06) — par LE MÊME
+  // constructeur que l'analyse, puis passés par le chemin agenda existant
+  // (file T4). Même document rattaché avant ou après analyse → même état
+  // final (DOD-05). Non bloquant : preuves et T3 sont déjà faits.
+  await rebuildAgendaAfterLink({ ...p, knowledge, allowReassign }).catch((e: Error) =>
+    console.error('[knowledge] candidats agenda après rattachement :', e.message));
+
+  return byField.size;
+}
+
+/**
+ * Champs d'un document rattaché tardivement, pour les candidats agenda :
+ * comme `fieldsForLinkedAsset`, mais les faits GÉNÉRIQUES portant un
+ * événement (réparation, sinistre, vente…) sont conservés — ils ne sont pas
+ * des preuves de champ, mais ils datent un événement (§13).
+ */
+export function candidateFieldsForLinkedAsset(
+  fields: ExtractedField[],
+  assetId: number,
+  opts: { allowReassign: boolean; previousAssetId?: number | null },
+): ExtractedField[] {
+  return fields.map((f) => {
+    const enrichi = f.origin !== undefined || f.canonicalKey !== undefined || f.target !== undefined;
+    if (!enrichi || !opts.allowReassign) return f;
+    if (!f.target || (f.target.targetType === 'ASSET' && f.target.targetEntityId == null)) {
+      return {
+        ...f,
+        target: {
+          targetType: 'ASSET' as const, targetEntityId: assetId,
+          targetEntityLabel: f.target?.targetEntityLabel ?? null,
+          targetConfidence: f.target?.targetConfidence ?? 'probable' as const,
+        },
+      };
+    }
+    return f;
+  });
+}
+
+/** Candidats T4 d'un document projeté sur un bien (rattachement tardif). */
+/** Ce que lit la reconstruction des candidats (représentation persistée ou en mémoire). */
+interface KnowledgeForAgenda {
+  extraction: {
+    title: string | null; documentDate: string | null; documentTypeCode: string | null;
+    multiAsset?: boolean | null; metadata?: Record<string, unknown> | null;
+  };
+  facts: Parameters<typeof factsToExtractedFields>[0];
+}
+
+export function lateLinkAgendaCandidates(p: {
+  knowledge: KnowledgeForAgenda;
+  fileId: number;
+  assetId: number;
+  allowReassign: boolean;
+  /** Lot 99D : date de référence de la qualification d'une fin de récurrence (défaut : aujourd'hui, Paris). */
+  today?: string;
+}) {
+  const e = p.knowledge.extraction;
+  return buildAgendaCandidatesT4(
+    candidateFieldsForLinkedAsset(factsToExtractedFields(p.knowledge.facts), p.assetId, { allowReassign: p.allowReassign }),
+    {
+      sourceFileId: p.fileId,
+      documentAssetId: p.assetId,
+      multiAsset: !p.allowReassign && e.multiAsset === true,
+      documentTitle: e.title,
+      documentDate: e.documentDate,
+      documentType: (e.metadata?.legacyDocumentType as string | undefined) ?? null,
+      documentTypeCode: e.documentTypeCode,
+      ...(p.today ? { today: p.today } : {}),
+    },
+  );
+}
+
+async function rebuildAgendaAfterLink(p: {
+  accountId: number; userId: number; fileId: number; assetId: number;
+  knowledge: KnowledgeForAgenda; allowReassign: boolean;
+}): Promise<void> {
+  const candidates = lateLinkAgendaCandidates(p);
+  if (candidates.length === 0) return;
+  const { enqueueT4Candidates } = await import('../agenda');
+  await enqueueT4Candidates({
+    accountId: p.accountId, userId: p.userId, assetId: p.assetId, leadSourceId: p.fileId, candidates,
+  });
+}
+
+/**
+ * Champs projetables sur le bien auquel l'utilisateur rattache le document
+ * (CDC 15 T1-01, T1-04) :
+ *  - fait historique (sans contrat enrichi) : inchangé, porté par le bien ;
+ *  - connaissance générique du contrat enrichi (`canonicalKey` null) :
+ *    jamais une preuve de champ (« aucun alias libre dans field_evidence ») ;
+ *  - fait de cible ASSET sans identifiant : le rattachement EXPLICITE de
+ *    l'utilisateur fournit la cible — UNIQUEMENT si `allowReassign` (document
+ *    mono-bien ne mentionnant aucun autre bien, voir
+ *    `lateLinkAllowsReassignment`) ; sinon il reste non rattaché (T1-05) ;
+ *  - fait de cible vérifiée (autre bien, équipement, pièce) : conservé tel
+ *    quel, `persistEvidence` l'écrit sur SA cible ;
+ *  - fait de cible DOCUMENT / SUPPLIER / GENERIC : pas un champ de bien.
+ */
+/**
+ * Champs que la projection d'un document sur son bien produit à partir des
+ * faits persistés (même calcul que `projectDocumentKnowledgeToAsset`) — pure.
+ * Lot 83B : le contrôle de cohérence C-Q7 compare cet état ATTENDU aux
+ * preuves réellement écrites (« présent dans T1 mais non exploité »).
+ *
+ * Document déplacé A → B : A est le bien de l'analyse. Ses faits ciblés ne
+ * sont jamais recopiés sur B ni réécrits sur A (E2E-11) ; ils ne bloquent pas
+ * non plus l'attribution des faits sans cible.
+ */
+function linkedAssetProjection(
+  knowledge: { extraction: StoredExtraction; facts: StoredFact[] },
+  assetId: number,
+): { fields: ExtractedField[]; allowReassign: boolean; previousAssetId: number | null } {
+  const ancien = knowledge.extraction.assetIdAtAnalysis != null && Number(knowledge.extraction.assetIdAtAnalysis) !== assetId
+    ? Number(knowledge.extraction.assetIdAtAnalysis) : null;
+  const allowReassign = lateLinkAllowsReassignment(knowledge.extraction, knowledge.facts, assetId, ancien);
+  return {
+    fields: fieldsForLinkedAsset(factsToExtractedFields(knowledge.facts), assetId, { allowReassign, previousAssetId: ancien }),
+    allowReassign, previousAssetId: ancien,
+  };
+}
+
+/** Champs de la projection attendue (voir `linkedAssetProjection`). */
+export function linkedAssetProjectionFields(knowledge: { extraction: StoredExtraction; facts: StoredFact[] }, assetId: number): ExtractedField[] {
+  return linkedAssetProjection(knowledge, assetId).fields;
+}
+
+export function fieldsForLinkedAsset(
+  fields: ExtractedField[],
+  assetId: number,
+  opts: { allowReassign: boolean; previousAssetId?: number | null },
+): ExtractedField[] {
+  const out: ExtractedField[] = [];
+  for (const f of fields) {
+    const enrichi = f.origin !== undefined || f.canonicalKey !== undefined || f.target !== undefined;
+    if (!enrichi) { out.push(f); continue; }
+    if (!f.canonicalKey) continue;
+    if (f.target && !['ASSET', 'EQUIPMENT', 'ROOM'].includes(f.target.targetType)) continue;
+    if (!f.target || (f.target.targetType === 'ASSET' && f.target.targetEntityId == null)) {
+      // Document multi-biens ou mentionnant un autre bien : aucune
+      // réattribution — le fait reste non rattaché (T1-05, U8).
+      if (!opts.allowReassign) continue;
+      out.push({
+        ...f,
+        target: {
+          targetType: 'ASSET', targetEntityId: assetId,
+          targetEntityLabel: f.target?.targetEntityLabel ?? null,
+          targetConfidence: f.target?.targetConfidence ?? 'probable',
+        },
+      });
+      continue;
+    }
+    // Équipement / pièce sans identifiant : aucune cible à déduire du bien.
+    if (f.target.targetEntityId == null) continue;
+    // Fait ciblant explicitement l'ANCIEN bien d'un document déplacé A → B :
+    // jamais projeté (ni recopié sur B, ni réécrit sur A dont T3 vient de
+    // retirer les preuves — corpus §15, E2E-11). Un fait ciblant
+    // explicitement un TIERS garde sa cible, comme avant.
+    if (f.target.targetType === 'ASSET' && opts.previousAssetId != null && f.target.targetEntityId === opts.previousAssetId) continue;
+    out.push(f);
+  }
+  return out;
+}
+
+/**
+ * Rattachement tardif (CDC 15 T1-05, recette P-T1-04) : peut-on attribuer au
+ * bien choisi les faits ASSET SANS identifiant ? Non si le document
+ * concerne plusieurs biens (indicateur 0218, sinon relu dans `metadata` :
+ * avertissement MULTI_ASSET_DOCUMENT ou candidats distincts) ou s'il en
+ * mentionne un autre (candidat vérifié ou fait ciblé sur un autre bien).
+ */
+export function lateLinkAllowsReassignment(
+  extraction: { multiAsset?: boolean | null; metadata?: Record<string, unknown> | null },
+  facts: Array<{ targetType?: string | null; targetEntityId?: number | null }>,
+  assetId: number,
+  /** Ancien bien d'un document déplacé : ses mentions ne comptent pas comme « autre bien ». */
+  previousAssetId: number | null = null,
+): boolean {
+  if (extraction.multiAsset === true) return false;
+  const meta = extraction.metadata ?? {};
+  const warnings = Array.isArray(meta.warnings) ? (meta.warnings as unknown[]) : [];
+  if (extraction.multiAsset == null && warnings.includes('MULTI_ASSET_DOCUMENT')) return false;
+  const candidats = (Array.isArray(meta.assetCandidates)
+    ? (meta.assetCandidates as Array<{ entityId?: number | null; rawLabel?: string | null }>)
+    : []).filter((c) => previousAssetId == null || c.entityId !== previousAssetId);
+  const identites = new Set(candidats
+    .map((c) => (c.entityId != null ? `#${c.entityId}` : c.rawLabel?.trim().toLowerCase() || null))
+    .filter(Boolean));
+  if (extraction.multiAsset == null && identites.size > 1) return false;
+  if (candidats.some((c) => c.entityId != null && c.entityId !== assetId)) return false;
+  if (facts.some((f) => f.targetType === 'ASSET' && f.targetEntityId != null && f.targetEntityId !== assetId
+    && f.targetEntityId !== previousAssetId)) return false;
+  return true;
+}
+
+// Lot 16b-3 : la représentation minimale issue du moteur historique T1
+// (`engine: 'legacy'`) n'est plus produite ; ce moteur est supprimé.

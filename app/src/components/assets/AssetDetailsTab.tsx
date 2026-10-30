@@ -1,0 +1,622 @@
+"use client"
+
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { categoryOptionsWithCurrent } from '@/lib/asset-taxonomy';
+import { assetHasRegistration } from '@/lib/asset-capabilities';
+import { isDisposalStatus, salePriceApplies } from '@/lib/assets/sale-fields';
+
+/**
+ * Champs d'immatriculation (capacité `registration` du registre) : sans objet
+ * pour un vélo — ni proposés par « À traiter », ni affichés ici (lot 32, L32-1).
+ */
+const REGISTRATION_FIELD_KEYS = new Set(['registrationNumber', 'registrationExpiry', 'firstRegistrationDate']);
+import { Skeleton } from '@/components/ui/skeleton';
+import { Button } from '@/components/ui/button';
+import { AssetDetailSection, type FieldDef } from './AssetDetailSection';
+import { ValuationHistoryDrawer } from './ValuationHistoryDrawer';
+import { TcoSection } from './TcoSection';
+import { AssetAdditionalInfosSection } from './AssetAdditionalInfosSection';
+import { OCCUPANCY_USAGE_OPTIONS } from '@/lib/assets/occupancy';
+import { apiClient } from '@/lib/api-client';
+import type { AssetDetail } from '@/types/asset-detail';
+import { ChevronDown, ChevronUp, TrendingUp } from 'lucide-react';
+import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { TENURE_END_LABEL, TENURE_META_KEY, tenureEndKey, tenureSourceLabel, type TenureEndMeta } from '@/lib/assets/tenure-end';
+
+interface Props {
+  asset: AssetDetail;
+  onRefresh: () => void;
+  readOnly?: boolean;
+  highlightField?: string | null;
+}
+
+/**
+ * Catégorie de bien (Immobilier / Véhicule) : liste de `lib/asset-taxonomy`,
+ * plus la valeur enregistrée si elle n'y figure pas (catégorie ancienne),
+ * pour ne jamais l'effacer à l'enregistrement.
+ */
+export function getCommonFields(category: string, currentSubtype?: string | null): FieldDef[] {
+  const subtypes = category === 'IMMOBILIER' || category === 'VEHICULE'
+    ? categoryOptionsWithCurrent(category, currentSubtype)
+    : null;
+  return [
+    { key: 'name', label: 'Nom' },
+    subtypes
+      ? { key: 'subCategory', label: 'Catégorie de bien', type: 'select', options: subtypes }
+      : { key: 'subCategory', label: 'Catégorie de bien', readonly: true },
+    { key: 'description', label: 'Description', type: 'textarea' },
+    { key: 'acquisitionDate', label: 'Date d\'achat', type: 'date',
+      ...(category === 'VEHICULE' ? { notApplicableWhen: (d: Record<string, unknown>) => ['LLD', 'LOA', 'PRET_GRATUIT'].includes(String(d.vehicleOwnershipStatus ?? '')) } : {}) },
+    { key: 'acquisitionPrice', label: 'Prix d\'achat (€)', type: 'number',
+      ...(category === 'VEHICULE' ? { notApplicableWhen: (d: Record<string, unknown>) => ['LLD', 'LOA', 'PRET_GRATUIT'].includes(String(d.vehicleOwnershipStatus ?? '')) } : {}) },
+    ...(category === 'VEHICULE' ? [{ key: 'vehicleOwnershipStatus', label: 'Statut de détention', type: 'select' as const, options: [
+      { value: 'PROPRIETAIRE',  label: 'Propriétaire' },
+      { value: 'LLD',           label: 'Location longue durée (LLD)' },
+      { value: 'LOA',           label: "Location avec option d'achat (LOA)" },
+      { value: 'CREDIT',        label: 'Crédit auto' },
+      { value: 'PRET_GRATUIT',  label: 'Prêt / utilisation gratuite' },
+    ]}] : []),
+    // Lot 43 (O4, décision PO Q5) : vente réalisée — bien VENDU (date et prix)
+    // ou TRANSMIS (date seule : cession sans prix). Le prix souhaité reste dans
+    // les informations commerciales (C18).
+    { key: 'saleDate', label: 'Date de vente / cession', type: 'date', visibleWhen: (d: Record<string, unknown>) => isDisposalStatus(d.status) },
+    { key: 'salePrice', label: 'Prix de vente réalisé (€)', type: 'number', visibleWhen: (d: Record<string, unknown>) => salePriceApplies(d.status) },
+    { key: 'notes', label: 'Notes', type: 'textarea' },
+  ];
+}
+
+/**
+ * Contrats de véhicule (CDC 15, D-E) : sans objet quand le statut de
+ * détention est renseigné et n'est pas l'un de ceux qui portent ce contrat.
+ * Statut vide : le champ reste saisissable.
+ */
+const vehicleContractNa = (statuts: string[]) => (d: Record<string, unknown>) => {
+  const statut = String(d.vehicleOwnershipStatus ?? '');
+  return statut !== '' && !statuts.includes(statut);
+};
+
+/**
+ * Lot 49A (ticket 9) / lot 53 (D18) — « Fin de contrat prévue » dans la
+ * section usage, visible seulement pour une détention à durée limitée. Deux
+ * clés canoniques EXISTANTES (aucun doublon) : `leaseEndDate` (LLD / LOA,
+ * locataire) ou `contractEndDate` (prêt, occupant gratuit, objet loué ou
+ * prêté) — celle que produit l'analyse d'un document pour cette situation.
+ * Desktop et mobile : même composant (grille responsive).
+ */
+function tenureEndDefs(family: 'IMMOBILIER' | 'VEHICULE' | 'OBJET'): FieldDef[] {
+  const badge = (key: string) => (d: Record<string, unknown>) => {
+    const meta = d[TENURE_META_KEY] as TenureEndMeta | undefined;
+    return meta?.key === key ? tenureSourceLabel(meta.source) : null;
+  };
+  const keys: Array<'leaseEndDate' | 'contractEndDate'> = family === 'OBJET' ? ['contractEndDate'] : ['leaseEndDate', 'contractEndDate'];
+  return keys.map((key) => ({
+    key, label: TENURE_END_LABEL, type: 'date' as const,
+    visibleWhen: (d: Record<string, unknown>) => tenureEndKey(family, d) === key,
+    badge: badge(key),
+  }));
+}
+
+// Section field definitions per section key (common section uses getCommonFields() instead)
+const SECTION_FIELDS: Record<string, FieldDef[]> = {
+  location_identification: [
+    { key: 'address1', label: 'Adresse' },
+    { key: 'address2', label: 'Complément d\'adresse' },
+    { key: 'postalCode', label: 'Code postal' },
+    { key: 'city', label: 'Ville' },
+    { key: 'country', label: 'Pays' },
+    { key: 'cadastralRef', label: 'Référence cadastrale' },
+    { key: 'lotNumber', label: 'Numéro de lot' },
+    { key: 'floor', label: 'Étage' },
+    { key: 'gpsCoords', label: 'Coordonnées GPS' },
+  ],
+  physical_characteristics: [
+    { key: 'livingArea', label: 'Surface habitable (m²)', type: 'number' },
+    { key: 'carrezArea', label: 'Surface Carrez (m²)', type: 'number' },
+    // Fait d'annonce : saisie seule (jamais écrit par l'IA — registre `inputOnly`).
+    { key: 'listedArea', label: 'Surface annoncée (m²)', type: 'number' },
+    { key: 'landArea', label: 'Surface terrain (m²)', type: 'number' },
+    { key: 'roomCount', label: 'Nombre de pièces', type: 'number' },
+    { key: 'bedroomCount', label: 'Nombre de chambres', type: 'number' },
+    { key: 'levels', label: 'Nombre de niveaux', type: 'number' },
+    { key: 'constructionYear', label: 'Année de construction', type: 'number' },
+    { key: 'parking', label: 'Stationnement' },
+    { key: 'generalCondition', label: 'État général', type: 'select', options: [
+      { value: 'NEUF', label: 'Neuf' },
+      { value: 'BON', label: 'Bon' },
+      { value: 'MOYEN', label: 'Moyen' },
+      { value: 'MAUVAIS', label: 'Mauvais' },
+    ]},
+  ],
+  occupancy_usage: [
+    // « Mis en location » : seule donnée qui dit qu'un bien est loué (l'ancien
+    // attribut séparé « Bien mis en location » a été retiré).
+    { key: 'occupancyUsage', label: 'Usage', type: 'select', options: OCCUPANCY_USAGE_OPTIONS },
+    { key: 'occupancyStatus', label: 'Statut d\'occupation', type: 'select', options: [
+      { value: 'PROPRIETAIRE',     label: 'Propriétaire' },
+      { value: 'LOCATAIRE',        label: 'Locataire' },
+      { value: 'OCCUPANT_GRATUIT', label: 'Occupant à titre gratuit' },
+      { value: 'USUFRUITIER',      label: 'Usufruitier' },
+    ]},
+    ...tenureEndDefs('IMMOBILIER'),
+    { key: 'monthlyRent', label: 'Loyer mensuel (€)', type: 'number',
+      notApplicableWhen: (d: Record<string, unknown>) => ['PROPRIETAIRE', 'OCCUPANT_GRATUIT'].includes(String(d.occupancyStatus ?? '')) },
+    { key: 'charges', label: 'Charges (€)', type: 'number',
+      notApplicableWhen: (d: Record<string, unknown>) => d.occupancyStatus === 'PROPRIETAIRE' },
+    { key: 'occupancyNotes', label: 'Notes occupation', type: 'textarea' },
+  ],
+  performance_technical: [
+    { key: 'heatingType', label: 'Type de chauffage' },
+    { key: 'mainEnergy', label: 'Énergie principale' },
+    { key: 'dpeClass', label: 'Classe DPE', type: 'select', options: ['A','B','C','D','E','F','G'].map(v => ({ value: v, label: v })) },
+    { key: 'dpeDate', label: 'Date DPE', type: 'date' },
+    { key: 'dpeExpiryDate', label: 'Fin de validité du DPE', type: 'date' },
+    { key: 'dpeAdemeNumber', label: 'N° ADEME du DPE' },
+    { key: 'energyConsumption', label: 'Consommation énergétique (kWh/m²/an)', type: 'number' },
+    { key: 'gesClass', label: 'Classe GES', type: 'select', options: ['A','B','C','D','E','F','G'].map(v => ({ value: v, label: v })) },
+    { key: 'lastRevision', label: 'Dernier entretien', type: 'date' },
+    { key: 'maintenanceDueDate', label: 'Prochain entretien', type: 'date' },
+    { key: 'networks', label: 'Réseaux', type: 'textarea' },
+  ],
+  valuation: [
+    { key: 'estimatedValue', label: 'Valeur estimée (€)', type: 'number' },
+    { key: 'valuationSource', label: 'Source de valorisation' },
+    { key: 'valuationDate', label: 'Date de valorisation', type: 'date' },
+    // Fait d'annonce : saisie seule (registre `inputOnly`).
+    { key: 'listingPrice', label: 'Prix annoncé (€)', type: 'number' },
+  ],
+  vehicle_identification: [
+    { key: 'make', label: 'Marque' },
+    { key: 'model', label: 'Modèle' },
+    { key: 'registrationNumber', label: 'Immatriculation' },
+    { key: 'registrationExpiry', label: 'Fin de validité d\'immatriculation', type: 'date' },
+    { key: 'vin', label: 'VIN / Numéro de série' },
+    { key: 'year', label: 'Année', type: 'number' },
+  ],
+  vehicle_technical: [
+    { key: 'engine', label: 'Motorisation' },
+    { key: 'engineDisplacement', label: 'Cylindrée (cm³)', type: 'number' },
+    { key: 'fuelType', label: 'Carburant', type: 'select', options: [
+      { value: 'ESSENCE', label: 'Essence' },
+      { value: 'DIESEL', label: 'Diesel' },
+      { value: 'ELECTRIQUE', label: 'Électrique' },
+      { value: 'HYBRIDE', label: 'Hybride' },
+      { value: 'GPL', label: 'GPL' },
+      { value: 'AUTRE', label: 'Autre' },
+    ]},
+    { key: 'fiscalHp', label: 'Puissance administrative (CV)', type: 'number' },
+    { key: 'powerKw', label: 'Puissance réelle (kW)', type: 'number' },
+    { key: 'ptac', label: 'PTAC (kg)', type: 'number' },
+    { key: 'seats', label: 'Nombre de places', type: 'number' },
+    { key: 'firstRegistrationDate', label: 'Première mise en circulation', type: 'date' },
+  ],
+  vehicle_usage: [
+    { key: 'vehicleOwnershipStatus', label: 'Statut de détention', type: 'select', options: [
+      { value: 'PROPRIETAIRE',    label: 'Propriétaire' },
+      { value: 'LLD',             label: 'Location longue durée (LLD)' },
+      { value: 'LOA',             label: 'Location avec option d\'achat (LOA)' },
+      { value: 'CREDIT',          label: 'Crédit auto' },
+      { value: 'PRET_GRATUIT',    label: 'Prêt / utilisation gratuite' },
+    ]},
+    { key: 'mileage', label: 'Kilométrage', type: 'number' },
+    { key: 'mileageUnit', label: 'Unité (km/h)', type: 'select', options: [{ value: 'km', label: 'Km' }, { value: 'h', label: 'Heures' }] },
+    { key: 'mileageDate', label: 'Date du relevé', type: 'date' },
+    { key: 'primaryUse', label: 'Usage principal' },
+    { key: 'lastRevision', label: 'Dernière révision', type: 'date' },
+    { key: 'maintenanceDueDate', label: 'Prochain entretien', type: 'date' },
+    { key: 'contractNumber', label: 'N° de contrat (LLD / LOA / crédit)',
+      notApplicableWhen: vehicleContractNa(['LLD', 'LOA', 'CREDIT']) },
+    { key: 'contractStartDate', label: 'Début de contrat', type: 'date',
+      notApplicableWhen: vehicleContractNa(['LLD', 'LOA', 'CREDIT']) },
+    { key: 'leaseDurationMonths', label: 'Durée du contrat (mois)', type: 'number',
+      notApplicableWhen: vehicleContractNa(['LLD', 'LOA', 'CREDIT']) },
+    ...tenureEndDefs('VEHICULE'),
+    { key: 'leaseMonthlyPayment', label: 'Loyer mensuel LLD / LOA (€)', type: 'number',
+      notApplicableWhen: vehicleContractNa(['LLD', 'LOA']) },
+    { key: 'leaseResidualValue', label: 'Valeur de rachat (€)', type: 'number',
+      notApplicableWhen: vehicleContractNa(['LOA']) },
+  ],
+  vehicle_insurance: [
+    { key: 'isInsured', label: 'Assuré', type: 'select', options: [{ value: 'true', label: 'Oui' }, { value: 'false', label: 'Non' }] },
+    { key: 'insurer', label: 'Assureur' },
+    { key: 'insuranceContractNumber', label: 'N° de contrat' },
+    { key: 'insuranceClientNumber', label: 'N° de client' },
+    { key: 'insuranceExpiry', label: 'Date d\'échéance', type: 'date' },
+    { key: 'insurancePremium', label: 'Prime annuelle (€)', type: 'number' },
+    { key: 'lastInspectionDate', label: 'Dernier contrôle technique', type: 'date' },
+    { key: 'nextInspection', label: 'Prochain contrôle technique', type: 'date', futureOnly: true },
+  ],
+  insurance: [
+    { key: 'isInsured', label: 'Assuré', type: 'select', options: [{ value: 'true', label: 'Oui' }, { value: 'false', label: 'Non' }] },
+    { key: 'insurer', label: 'Assureur' },
+    { key: 'insuranceContractNumber', label: 'N° de contrat' },
+    { key: 'insuranceClientNumber', label: 'N° de client' },
+    { key: 'insuranceExpiry', label: 'Date d\'échéance', type: 'date' },
+    { key: 'insurancePremium', label: 'Prime annuelle (€)', type: 'number' },
+  ],
+  object_identification: [
+    { key: 'objectCategory', label: 'Catégorie' },
+    { key: 'brand', label: 'Marque' },
+    { key: 'productSeries', label: 'Série du produit' },
+    { key: 'modelName', label: 'Modèle' },
+    { key: 'productReference', label: 'Référence commerciale' },
+    { key: 'productDesignation', label: 'Désignation commerciale' },
+    { key: 'serialNumber', label: 'Numéro de série' },
+  ],
+  object_condition: [
+    { key: 'condition', label: 'État', type: 'select', options: [
+      { value: 'NEUF', label: 'Neuf' },
+      { value: 'BON', label: 'Bon état' },
+      { value: 'MOYEN', label: 'État moyen' },
+      { value: 'MAUVAIS', label: 'Mauvais état' },
+    ]},
+    { key: 'dimensions', label: 'Dimensions' },
+    { key: 'weight', label: 'Poids (kg)', type: 'number' },
+    { key: 'accessories', label: 'Accessoires', type: 'textarea' },
+  ],
+  object_provenance: [
+    { key: 'acquisitionMode', label: 'Mode d\'acquisition' },
+    { key: 'provenance', label: 'Provenance', type: 'textarea' },
+    { key: 'authenticityProof', label: 'Preuve d\'authenticité' },
+    { key: 'warrantyStartDate', label: 'Début de garantie', type: 'date' },
+  ],
+  object_usage: [
+    { key: 'primaryUse', label: 'Usage principal' },
+    { key: 'storageLocation', label: 'Lieu de stockage' },
+    { key: 'lastRevision', label: 'Dernière révision', type: 'date' },
+    { key: 'maintenanceDueDate', label: 'Prochain entretien', type: 'date' },
+    { key: 'isInsured', label: 'Assuré', type: 'select', options: [{ value: 'true', label: 'Oui' }, { value: 'false', label: 'Non' }] },
+    ...tenureEndDefs('OBJET'),
+  ],
+};
+
+/** Définitions des champs d'une section (hors « common ») — tests et outillage. */
+export function sectionFieldDefs(section: string): FieldDef[] {
+  return SECTION_FIELDS[section] ?? [];
+}
+
+export const SECTION_LABELS: Record<string, string> = {
+  common: 'Informations générales',
+  location_identification: 'Localisation et identification',
+  physical_characteristics: 'Caractéristiques physiques',
+  occupancy_usage: 'Occupation / usage',
+  performance_technical: 'Performance / technique',
+  valuation: 'Valorisation',
+  vehicle_identification: 'Identification',
+  vehicle_technical: 'Caractéristiques techniques',
+  vehicle_usage: 'Usage / kilométrage',
+  vehicle_insurance: 'Assurance / conformité',
+  insurance: 'Assurance',
+  object_identification: 'Identification',
+  object_condition: 'Caractéristiques / état',
+  object_provenance: 'Provenance / traçabilité',
+  object_usage: 'Usage / conservation',
+};
+
+// ─── CIL Checklist ─────────────────────────────────────────────────────────────
+
+const CIL_RUBRICS = [
+  { code: 'PLAN_CONSTRUCTION',         label: 'Plans de construction',                     section: 'construction' },
+  { code: 'RE2020',                    label: 'Attestation RE2020',                         section: 'construction' },
+  { code: 'LABEL_CERTIFICATION',       label: 'Label ou certification',                     section: 'construction' },
+  { code: 'DPE',                       label: 'DPE (Diagnostic de Performance Énergétique)', section: 'construction' },
+  { code: 'ISOLATION_TOITURE',         label: 'Isolation thermique — toiture',              section: 'construction' },
+  { code: 'ISOLATION_MURS',            label: 'Isolation thermique — murs extérieurs',      section: 'construction' },
+  { code: 'ISOLATION_VITRAGE',         label: 'Isolation thermique — vitrages',             section: 'construction' },
+  { code: 'ISOLATION_PLANCHERS',       label: 'Isolation thermique — planchers bas',        section: 'construction' },
+  { code: 'EQUIPEMENT_CHAUFFAGE',      label: 'Système de chauffage',                       section: 'construction' },
+  { code: 'EQUIPEMENT_REFROIDISSEMENT',label: 'Système de refroidissement',                 section: 'construction' },
+  { code: 'EQUIPEMENT_ECS',            label: "Eau chaude sanitaire",                       section: 'construction' },
+  { code: 'RESEAU_CHALEUR',            label: 'Réseau de chaleur ou de froid',              section: 'construction' },
+  { code: 'EQUIPEMENT_VENTILATION',    label: 'Système de ventilation (VMC…)',              section: 'construction' },
+  { code: 'AUDIT_ENERGETIQUE',         label: 'Audit énergétique',                          section: 'renovation' },
+  { code: 'AMIANTE',                   label: 'Diagnostic amiante',                         section: 'diagnostic' },
+  { code: 'PLOMB',                     label: 'Diagnostic plomb (CREP)',                    section: 'diagnostic' },
+  { code: 'GAZ',                       label: 'Diagnostic installation gaz',                section: 'diagnostic' },
+  { code: 'ELECTRICITE',               label: 'Diagnostic installation électrique',         section: 'diagnostic' },
+  { code: 'ASSAINISSEMENT',            label: 'Diagnostic assainissement non collectif',    section: 'diagnostic' },
+  { code: 'ERNMT',                     label: 'État des risques naturels et technologiques', section: 'diagnostic' },
+] as const;
+
+interface CilDocRef { code: string; date: string | null; title: string | null }
+
+function CilChecklist({ assetId, naRubrics = new Set<string>() }: { assetId: number; naRubrics?: Set<string> }) {
+  const [open, setOpen] = useState(false);
+  const [docs, setDocs] = useState<CilDocRef[]>([]);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!open || loaded) return;
+    apiClient.get<{ items: Array<{ id: number; retainedFunctionCode: string | null; documentType: string; cilRubricCodes: string[] | null; documentDate: string | null; retainedTitle: string | null; originalFilename: string | null }> }>(
+      `/api/assets/${assetId}/cil-checklist`
+    ).then(data => {
+      const result: CilDocRef[] = [];
+      for (const rubric of CIL_RUBRICS) {
+        const match = data.items.find(d => {
+          if (d.retainedFunctionCode === rubric.code) return true;
+          if (d.documentType === rubric.code) return true;
+          const crc = d.cilRubricCodes;
+          if (Array.isArray(crc)) return crc.includes(rubric.code);
+          return false;
+        });
+        result.push({
+          code: rubric.code,
+          date: match?.documentDate ?? null,
+          title: match ? (displayDocumentTitle(match, '') || null) : null,
+        });
+      }
+      setDocs(result);
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
+  }, [open, loaded, assetId]);
+
+  const sections = [
+    { key: 'construction', label: 'Construction / performance' },
+    { key: 'renovation',   label: 'Rénovation énergétique' },
+    { key: 'diagnostic',   label: 'Diagnostics techniques' },
+  ] as const;
+
+  const applicableRubrics = CIL_RUBRICS.filter(r => !naRubrics.has(r.code));
+  const available = docs.filter(d => d.title !== null && !naRubrics.has(d.code)).length;
+  const total = applicableRubrics.length;
+
+  return (
+    <div className="border rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-muted/30 hover:bg-muted/50 transition-colors text-left"
+      >
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-medium text-sm">Checklist CIL</span>
+          {loaded && (
+            <span className="text-[10px] font-medium text-[color:var(--accent)] bg-[color:var(--accent-soft)] rounded px-1.5 py-0.5 shrink-0">
+              {available} / {total}
+            </span>
+          )}
+        </div>
+        {open ? <ChevronUp className="w-4 h-4 text-muted-foreground shrink-0" /> : <ChevronDown className="w-4 h-4 text-muted-foreground shrink-0" />}
+      </button>
+
+      {open && (
+        <div className="p-4 space-y-4">
+          {!loaded ? (
+            <div className="space-y-2">
+              {[1,2,3].map(i => <Skeleton key={i} className="h-6 w-full" />)}
+            </div>
+          ) : (
+            sections.map(sec => (
+              <div key={sec.key}>
+                <p className="vb-app-label mb-2">{sec.label}</p>
+                <div className="space-y-1">
+                  {CIL_RUBRICS.filter(r => r.section === sec.key).map(rubric => {
+                    const doc = docs.find(d => d.code === rubric.code);
+                    const isAvailable = !!doc?.title;
+                    const isNa = naRubrics.has(rubric.code);
+                    return (
+                      <div key={rubric.code} className="flex items-center justify-between gap-2 py-1 border-b border-border/20 last:border-0">
+                        <span className={`text-xs ${isAvailable ? 'text-foreground' : 'text-muted-foreground'}`}>
+                          {rubric.label}
+                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {isAvailable && doc?.date && (
+                            <span className="text-[10px] text-muted-foreground">
+                              {new Intl.DateTimeFormat('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(doc.date))}
+                            </span>
+                          )}
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                            isAvailable
+                              ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)]'
+                              : isNa
+                              ? 'bg-[color:var(--bg-subtle)] text-[color:var(--text-muted)]'
+                              : 'bg-muted/50 text-muted-foreground'
+                          }`}>
+                            {isAvailable ? 'Disponible' : isNa ? 'Non applicable' : 'Non renseigné'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export const FAMILY_SECTIONS: Record<string, string[]> = {
+  IMMOBILIER: ['common', 'location_identification', 'physical_characteristics', 'occupancy_usage', 'performance_technical', 'valuation', 'insurance'],
+  VEHICULE:   ['common', 'vehicle_identification', 'vehicle_technical', 'vehicle_usage', 'vehicle_insurance', 'valuation'],
+  OBJET:      ['common', 'object_identification', 'object_condition', 'object_provenance', 'object_usage', 'valuation', 'insurance'],
+};
+
+// Build a map from fieldKey → sectionKey, restricted to the sections applicable to this category
+function buildFieldToSectionMap(category: string): Record<string, string> {
+  const applicable = FAMILY_SECTIONS[category] ?? FAMILY_SECTIONS.OBJET;
+  const map: Record<string, string> = {};
+  const commonFields = getCommonFields(category);
+  for (const f of commonFields) map[f.key] = 'common';
+  for (const sectionKey of applicable) {
+    const fields = SECTION_FIELDS[sectionKey];
+    if (!fields) continue;
+    for (const f of fields) map[f.key] = sectionKey;
+  }
+  return map;
+}
+
+export function AssetDetailsTab({ asset, onRefresh, readOnly = false, highlightField }: Props) {
+  const [detailData, setDetailData] = useState<{ family: string; sections: Record<string, Record<string, unknown>> } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // Modification confirmée depuis l'assistant : la fiche affichée est relue.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent<{ assetId?: number }>).detail?.assetId;
+      if (!id || id === asset.id) setRefreshTrigger((n) => n + 1);
+    };
+    window.addEventListener('asset-details-updated', handler);
+    return () => window.removeEventListener('asset-details-updated', handler);
+  }, [asset.id]);
+  // Resolve forcedOpenSection immediately from URL param — no need to wait for data load
+  const [forcedOpenSection] = useState<string | null>(() => {
+    if (!highlightField) return null;
+    const map = buildFieldToSectionMap(asset.category);
+    return map[highlightField] ?? null;
+  });
+  const [valuationDrawerOpen, setValuationDrawerOpen] = useState(false);
+  const highlightAppliedRef = useRef(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await apiClient.get<{ family: string; sections: Record<string, Record<string, unknown>> }>(
+        `/api/assets/${asset.id}/details`
+      );
+      setDetailData(data);
+      return data;
+    } catch {
+      // silently fail — sections show empty
+      return null;
+    } finally {
+      setLoading(false);
+    }
+  }, [asset.id]);
+
+  // Lot 16b-3 (D-H1) : plus de préremplissage IA silencieux de la fiche.
+  useEffect(() => {
+    load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshTrigger]);
+
+  // Scroll to the highlighted section as soon as sections are rendered (detailData available)
+  const fieldToSection = useMemo(() => buildFieldToSectionMap(asset.category), [asset.category]);
+
+  // Lot 71B (décision PO du 19/10) : plus de « Appliquer la valeur suggérée »
+  // ni « Conserver » sur la fiche — une contradiction est une carte « À traiter ».
+
+  useEffect(() => {
+    if (!highlightField || !detailData || highlightAppliedRef.current) return;
+    const sectionKey = fieldToSection[highlightField] ?? null;
+    if (!sectionKey) return;
+    highlightAppliedRef.current = true;
+    // Section is already open (forcedOpenSection initialized at mount) — just scroll
+    const tryScroll = (attempts: number) => {
+      const el = document.getElementById(`asset-section-${sectionKey}`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } else if (attempts > 0) {
+        setTimeout(() => tryScroll(attempts - 1), 100);
+      }
+    };
+    setTimeout(() => tryScroll(5), 100);
+  }, [highlightField, detailData, fieldToSection]);
+
+  if (loading) {
+    return (
+      <div className="space-y-3">
+        {[1, 2, 3].map(i => <Skeleton key={i} className="h-16 w-full" />)}
+      </div>
+    );
+  }
+
+  if (!detailData) return null;
+
+  const sectionEntries = Object.entries(detailData.sections);
+
+  return (
+    <div className="space-y-3">
+      <ValuationHistoryDrawer
+        open={valuationDrawerOpen}
+        onClose={() => setValuationDrawerOpen(false)}
+        assetId={asset.id}
+        assetName={asset.name}
+        onSaved={onRefresh}
+      />
+
+      {/* ── Sections ──────────────────────────────────────────────────────────── */}
+      {sectionEntries.map(([key, data]) => {
+        const fields = (key === 'common' ? getCommonFields(asset.category, asset.subtype) : (SECTION_FIELDS[key] ?? []))
+          .filter((f) => !REGISTRATION_FIELD_KEYS.has(f.key) || assetHasRegistration({ category: asset.category, subtype: asset.subtype }));
+        const sectionData = key === 'common' ? { ...data, status: asset.status } : data;
+        const isForced = forcedOpenSection === key;
+
+        return (
+          <div
+            key={key}
+            id={`asset-section-${key}`}
+            {...(key === 'common' ? { 'data-guide': 'asset-first-field' } : {})}
+          >
+            <AssetDetailSection
+              title={SECTION_LABELS[key] ?? key}
+              sectionKey={key}
+              assetId={asset.id}
+              data={sectionData}
+              fields={fields}
+              onRefresh={() => setRefreshTrigger(prev => prev + 1)}
+              defaultOpen={key === 'common' || isForced}
+              forceOpen={isForced}
+              highlightField={isForced ? (highlightField ?? undefined) : undefined}
+              readOnly={readOnly}
+              headerActions={key === 'valuation' ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setValuationDrawerOpen(true)}
+                  title="Historique de valorisation"
+                >
+                  <TrendingUp className="w-3.5 h-3.5 mr-1" />
+                  Valorisation
+                </Button>
+              ) : undefined}
+            />
+            {/* Lot 61 (TCO §5.1) : section autonome « Coût total de possession », au même
+                niveau que « Valorisation » et placée juste après elle — toutes familles,
+                desktop et mobile (même composant). Plus aucun bouton TCO dans « Valorisation ». */}
+            {key === 'valuation' && (
+              <div className="mt-3">
+                <TcoSection assetId={asset.id} readOnly={readOnly} defaultOpen={highlightField === 'tco'} />
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* Lot 61 : la section TCO existe pour toutes les familles, même si « Valorisation » n'est pas servie. */}
+      {!sectionEntries.some(([k]) => k === 'valuation') && (
+        <TcoSection assetId={asset.id} readOnly={readOnly} defaultOpen={highlightField === 'tco'} />
+      )}
+
+      {/* Lot 83D (V-Q1, CDC v5 §15) : plus de rubrique « Sinistres » sur le bien,
+          ni de remplacement ailleurs — le sinistre est porté par l'Agenda, les
+          documents et le dossier Assurance-sinistre (Opération CLAIM). */}
+
+      {/* ── Préparation des dossiers (ex-« Informations complémentaires »,
+          lot 34 point 6 ; CDC Exports V12 §4, DEC-007) ─────────────────────
+          Vente, location (immobilier), assurance : reprises dans les
+          dossiers prêts à l'emploi. Écriture réservée au droit de créer des
+          dossiers (le composant applique la garde commune). */}
+      <AssetAdditionalInfosSection
+        assetId={asset.id}
+        category={asset.category}
+        readOnly={readOnly}
+        defaultOpen={highlightField === 'additional_infos'}
+      />
+
+      {/* ── CIL Checklist — after insurance section, IMMOBILIER only ─────────── */}
+      {asset.category === 'IMMOBILIER' && (() => {
+        const perf = detailData?.sections?.performance_technical as { mainEnergy?: string; heatingType?: string } | undefined;
+        const combined = [(perf?.mainEnergy ?? ''), (perf?.heatingType ?? '')].join(' ')
+          .toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+        const naRubrics = new Set<string>();
+        // GAZ is N/A when energy info is present and clearly non-gas
+        if ((perf?.mainEnergy || perf?.heatingType) && !combined.includes('gaz')) {
+          naRubrics.add('GAZ');
+        }
+        return <CilChecklist assetId={asset.id} naRubrics={naRubrics} />;
+      })()}
+    </div>
+  );
+}

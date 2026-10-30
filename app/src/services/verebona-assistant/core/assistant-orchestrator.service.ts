@@ -1,0 +1,3026 @@
+/**
+ * Orchestrateur de l'assistant — CDC §9, §12, §30.
+ *
+ * Chef d'orchestre du pipeline : routage déterministe → état de compréhension
+ * (COMPLETE / PARTIAL / UNKNOWN_INTENT — lot 32) → clarification | UNDERSTAND
+ * → (retrieval) → déterministe|IA → validation → résolution sources/actions
+ * → persistance. Il applique le budget IA
+ * (≤ 2 appels — §15.5), les timeouts (§30.2) et le repli déterministe (§30.3).
+ *
+ * Ce fichier est le point d'entrée appelé par la route `POST /api/verebona/messages`.
+ * Les dépendances lourdes (DB, provider) sont injectées pour rester testable (§25.5).
+ */
+import { currentBusinessExecutionIds, runInBusinessExecution } from '@/services/ai/business-execution/context';
+import { t2ExecutionId } from '@/services/ai/business-execution/identity';
+import { runWithConfigSnapshot } from '@/services/ai/config/execution-snapshot';
+// Lot 87A : résolveur chargé (il enregistre le relevé de l'instantané d'exécution).
+import '@/services/ai/config/config-resolver';
+import { randomUUID } from 'crypto';
+import type {
+  AssistantRequestInput, AssistantRunResult, IntentRoute, ResponseMode, VerebonaErrorCode,
+} from '../types/contracts';
+import type { RetrievedSource, ResolvedSource, Claim } from '../types/sources';
+import type { VerebonaAction } from '../types/actions';
+import { getAssistantConfig } from '../config/assistant-config';
+import { ConversationMachine } from './conversation-machine';
+import { routeClarificationReason, routeDeterministic, routeForIntent } from './intent-router.service';
+import { analyserPeriode, aujourdhuiParis } from './query-period';
+import {
+  buildActionClarification,
+  buildAssetClarification,
+  buildPeriodClarification,
+  FALLBACK_ASSET_MESSAGE,
+  MAX_CLARIFICATION_CHAIN,
+} from './clarification-builder';
+import type { ClarificationState } from '../types/machine';
+import {
+  formatConversationForPrompt,
+  propertyFollowUp,
+  resolveThreadReference,
+  type ReferencedType,
+  type ThreadContext,
+} from './reference-resolver';
+import { buildEntityClarification } from './clarification-builder';
+import { decideT2Routing, isShortFollowUp, turnAnomalies, type T2TurnDiagnostic } from './routing-guard';
+import { findReadableFields } from '../canonical/field-vocabulary';
+import { formatDateFr } from './deterministic-format';
+import { marquerDisponibilite } from './source-availability.service';
+import { analyzeScope } from './blocked-topics';
+import { tryDeterministic } from './deterministic-answer.service';
+import { isPlanAiEligible } from '../registries/capability-registry';
+import type { CascadeTrace } from '../types/contracts';
+import {
+  admissibleSourceTypes,
+  answerFromRetrievedSources,
+  fallbackUnderContract,
+  nearResultsAnswer,
+  type DataAnswerOutcome,
+} from './data-answer.service';
+import { dedupeLogique } from './source-dedupe';
+import { DEFAULT_THRESHOLDS, type CascadeThresholdsLike } from './sufficiency';
+import {
+  contradictionAnswer, detectHelpContradiction, fallbackFromHelpSources, helpAnswerFromSources, HELP_EXACT_THRESHOLD,
+  HELP_CORPUS_OPEN_BUDGET_MS, HELP_CORPUS_UNAVAILABLE_RESULT, helpCorpusLoadInfo, howToSynthesis,
+  isHelpIntent, type HelpCorpus, type HelpCorpusArticle, type HelpCorpusLoadInfo,
+} from './help-corpus.service';
+import {
+  helpObservability, queriesFromUnderstanding, runHelpCascade, type HelpCascadeResult, type HelpSearcher, type HelpUnderstandOutcome,
+} from './help-cascade';
+import { maskSensitiveText, sensitiveNecessityFor } from './sensitive-data.policy';
+import { MONTHLY_BUDGET_NOTICE } from './budget.service';
+
+/** Repli sans modèle pendant un arrêt d'urgence ou une désactivation de T2 (T2-041, WF-34). */
+export const AI_UNAVAILABLE_NOTICE =
+  'La partie « réponse rédigée » de l’assistant est momentanément indisponible : '
+  + 'cette réponse est construite à partir de vos données uniquement. La recherche et le Centre d’aide restent disponibles.';
+import { createAiCallBudget, type AiCallBudget } from './ai-call-budget';
+import { findNavigationTarget } from './navigation-targets';
+import { assistantErrorMessage } from '@/lib/verebona/error-messages';
+import { isAssistantFlagOn } from '../config/assistant-flags.server';
+import { buildResultGroups } from './result-groups';
+import { foundWithoutInfoMessage } from './document-status';
+import { getIntentDefinition } from '../registries/intent-registry';
+import { ROUTES } from './entity-ref';
+import { targetsFromInput, type AssistantTargets } from './assistant-targets';
+import type { TargetAnswer } from './target-answer';
+import { buildTargetClarification } from './clarification-builder';
+import { diagnosticMessage, TargetReadError } from './t2-diagnostics';
+import { deterministicRequestedFacts, unconsumedInformationWords } from '../canonical/field-vocabulary';
+import { fieldRequestForm } from '../canonical/structured-answers';
+import { requestedFactsMissingMessage, substitutedFieldKeys } from './requested-facts-guard';
+import { getField } from '@/services/canonical/registry';
+import { parseEntityRef } from './entity-ref';
+import { ASSET_NO_LONGER_AVAILABLE_MESSAGE } from './asset-availability';
+import { clientTimelineEvents, planTimelineEvents, timelineAnswer, type SynthesisPlan } from './synthesis-planner';
+import { documentSearchFilters, extractSearchTerms, hasDocumentFilters } from './query-terms';
+import { CLARIFICATION_TTL_MS } from './clarification-builder';
+import type { VerebonaIntent } from '../types/intents';
+import {
+  assessUnderstanding, intentRequiresResolvedTarget, targetRequirement, threadAssetCandidates,
+  type UnderstandingReason, type UnderstandingResolver, type UnderstandingStatus,
+} from './understanding-status';
+import type { AssetCandidate } from './target-lookup.repository';
+import {
+  detectValueNeed, emptySemanticTrace, semanticResidue,
+  type BusinessSource, type SemanticNeed, type SemanticTrace,
+} from './semantic-scope';
+import { runSemanticStage, resumeSemanticChoice, type SemanticOutcome } from './semantic-stage';
+import { type ArbitrationCandidate } from './semantic-stage';
+import type { RawSemanticDecision } from './semantic-scope';
+import {
+  CONTEXT_ONLY_MESSAGE, UPDATE_DISABLED_MESSAGE, UPDATE_READ_ONLY_MESSAGE, interactionHandling, updateFactsOf,
+  contextFactsOf, validateContextFacts, contextCalculationAnswer, classifySuppliedFacts,
+} from './interaction';
+import { expenseThemeWords } from '../canonical/expense-classes';
+import {
+  decideNamedEntity, isNamedEntityQuery, namedEntityAnswer, namedEntityChoiceQuestion, namedEntitySource,
+  type NamedEntityLookupResult,
+} from './named-entity-stage';
+
+/** Ports injectés (implémentés par les autres services / le repo). */
+export interface OrchestratorPorts {
+  retrieve(route: IntentRoute, input: AssistantRequestInput): Promise<RetrievedSource[]>;
+  /**
+   * Résultats proches (§11.4) : seconde passe tolérante, appelée seulement
+   * quand la recherche n'a rien trouvé. Absent : pas de résultats proches.
+   */
+  retrieveNear?(route: IntentRoute, input: AssistantRequestInput): Promise<RetrievedSource[]>;
+  resolveSources(sources: RetrievedSource[], accountId: number): Promise<ResolvedSource[]>;
+  classifyWithAI?(message: string, input: AssistantRequestInput): Promise<IntentRoute | null>;
+  generateWithAI?(
+    route: IntentRoute, sources: RetrievedSource[], input: AssistantRequestInput,
+  ): Promise<{
+    answer: string; claims: Claim[]; actions: VerebonaAction[]; supportLevel: AssistantRunResult['supportLevel'];
+    model?: string; path?: 'first' | 'repair' | 'escalation';
+    /** Chronologie structurée (T2-35, master T2 format `timeline`). */
+    events?: Array<{ date: string | null; text: string; sourceIds: string[] }>;
+  } | null>;
+  /**
+   * Niveaux 1 et 2 de la cascade : réponse exacte depuis les données
+   * structurées et les données T1, sans modèle. Absent : la cascade passe
+   * directement au retrieval classique.
+   */
+  answerFromData?(
+    route: IntentRoute, input: AssistantRequestInput, thresholds: CascadeThresholdsLike,
+  ): Promise<DataAnswerOutcome>;
+  /** Seuils de non-escalade (gouvernance IA). Absent : seuils par défaut. */
+  loadThresholds?(): Promise<CascadeThresholdsLike & { source: string }>;
+  /**
+   * Corpus du Centre d'aide (§9.4, étape 7 « recherche dans la base
+   * d'aide »). Consulté seulement quand aucune règle n'a tranché, AVANT la
+   * classification par modèle. Absent : étape sautée.
+   */
+  loadHelpCorpus?(): Promise<HelpCorpus | null>;
+  /**
+   * Les SOURCES sont transmises, pas seulement leurs identifiants : le type et
+   * les métadonnées (bien parent d'un équipement, par exemple) sont ce qui
+   * permet de choisir la bonne action et de contrôler la bonne table (§22.7).
+   */
+  resolveActions(
+    route: IntentRoute, input: AssistantRequestInput, sources: RetrievedSource[],
+  ): Promise<VerebonaAction[]>;
+  /** Rend les identifiants enregistrés (fil, message) quand la persistance a eu lieu. */
+  persist(
+    result: AssistantRunResult,
+    input: AssistantRequestInput,
+  ): Promise<{ conversationId: number; messageId: number } | null | void>;
+  hasPendingClarification(accountId: number, userId: number, conversationId?: number): Promise<boolean>;
+  /**
+   * Enregistre une clarification sur le fil de la demande. Absent, ou `false`
+   * (fil introuvable) : aucune question n'est posée — une clarification à
+   * laquelle on ne pourrait pas répondre ne sert à rien.
+   */
+  saveClarification?(state: ClarificationState): Promise<boolean>;
+  /** Contexte conversationnel du fil courant (et de lui seul). */
+  loadThreadContext?(input: AssistantRequestInput): Promise<ThreadContext | null>;
+  /**
+   * L'entité existe-t-elle toujours, dans ce compte, et reste-t-elle
+   * accessible ? Rend son libellé (et sa date pour un document) ou `null`.
+   * Une référence conversationnelle n'est jamais une autorisation.
+   */
+  describeEntity?(accountId: number, e: { type: ReferencedType; id: number }): Promise<{ label: string; date?: string | null; assetId?: number | null } | null>;
+  /**
+   * Commande métier (« ajoute un rappel… », « marque … comme réalisée »).
+   * Prépare et fige un plan SANS RIEN ÉCRIRE ; l'exécution n'a lieu qu'après
+   * confirmation explicite (route de confirmation).
+   */
+  /**
+   * Revalidation ciblée de faits T1 insuffisants (contenu persisté d'abord,
+   * relecture ciblée de la source ensuite), avec réinjection du fait
+   * amélioré. Rend les résultats et, en cas d'échec, une réponse prudente.
+   */
+  revalidateFacts?(input: AssistantRequestInput, req: { trigger: 'LOW_CONFIDENCE' | 'CONFLICT'; factIds: number[] }): Promise<{
+    results: NonNullable<CascadeTrace['revalidations']>;
+    established: boolean;
+    prudentAnswer?: string;
+  }>;
+  prepareCommand?(input: AssistantRequestInput): Promise<
+    | { kind: 'plan'; preview: import('../commands/catalog').CommandPlanPreview }
+    | { kind: 'need_info'; message: string }
+    | null
+  >;
+  /**
+   * La demande a-t-elle été annulée (DELETE /requests/{id}) ? Consulté avant
+   * chaque appel modèle : une demande annulée n'en déclenche plus (§7.8).
+   */
+  isCancelled?(requestId: string): Promise<boolean>;
+  /**
+   * La partie IA de T2 est-elle bloquée par l'exploitation (arrêt d'urgence,
+   * T2 désactivé ou suspendu) ? Consulté seulement au repli sans modèle, pour
+   * dire à l'utilisateur que c'est l'IA — et non ses données — qui manque
+   * (CDC BO IA T2-041, WF-34 étape 3). Absent : aucun message.
+   */
+  isAiUnavailable?(): Promise<boolean>;
+  /** Plafond budgétaire mensuel du compte (§6.6, §31.3). Absent : pas de plafond. */
+  checkMonthlyBudget?(accountId: number): Promise<{ allowed: boolean }>;
+  /**
+   * CDC 15 T2-19, T2-20, T2-21 (lecture canonique) : lecture
+   * ciblée d'un document ou d'une échéance déjà désignés (page, fil,
+   * clarification) — « quel est le montant ? », « et sa date ? ». `null` :
+   * la question ne porte pas sur la cible, la demande suit son cours.
+   */
+  readTarget?(input: AssistantRequestInput, targets: AssistantTargets, route?: IntentRoute): Promise<TargetAnswer | null>;
+  /**
+   * Lot 32 : résolution SERVEUR des cibles de la demande (`resolveAssistantTargets` :
+   * clarification, fil, nom, VIN / plaque, page, catégorie, indices d'UNDERSTAND),
+   * bornée au compte et aux biens DISPONIBLES (règle unique `asset-availability`).
+   * Sert à évaluer la compréhension (cible exigée résolue ?) et à ramener les
+   * `entityHints` du modèle au compte — le modèle ne choisit jamais d'identifiant.
+   * Absent : l'évaluation de la cible exigée est sautée.
+   */
+  resolveTargets?(input: AssistantRequestInput, route: IntentRoute): Promise<AssistantTargets>;
+  /**
+   * CDC 15 T2-10, T2-33, T2-34 (lecture canonique) :
+   * planificateurs dédiés de synthèse, comparaison et chronologie. `null` :
+   * pas de plan (recherche générique en repli).
+   */
+  buildSynthesisContext?(route: IntentRoute, input: AssistantRequestInput): Promise<SynthesisPlan | null>;
+  /**
+   * Lot 33 : recherche du Centre d'aide pour la cascade d'aide (corpus de
+   * l'environnement, contexte de page et rôles lus UNE fois par demande).
+   * Absent : la cascade interroge `retrieve` requête par requête.
+   */
+  openHelpSearch?(input: AssistantRequestInput): Promise<{ search: HelpSearcher; article(id: string): HelpCorpusArticle | null; corpus?: HelpCorpusLoadInfo }>;
+  /**
+   * Lot 49 : sources MÉTIER réelles d'un périmètre déjà résolu par le serveur
+   * (opérations d'abord, champs du registre, agenda, documents) — exposées à
+   * l'étape sémantique, jamais choisies par le modèle. Absent : l'étape est
+   * sautée (la cascade suit son cours, sans élargissement).
+   */
+  listBusinessSources?(accountId: number, req: { assetIds: number[]; assetNames?: Record<number, string>; need: SemanticNeed }): Promise<{ sources: BusinessSource[]; domains: string[] }>;
+  /** Lot 49 : relecture d'UNE source métier (reprise après clarification), revalidée. */
+  readBusinessSource?(accountId: number, ref: string, ctx: { assetIds: number[]; assetNames?: Record<number, string> }): Promise<BusinessSource | null>;
+  /**
+   * Lot 54E (#419 écart 1) : ARBITRAGE par T2 entre candidats PRÉVALIDÉS
+   * (références opaques). Décision brute, validée ensuite par le serveur.
+   * Absent : aucun arbitrage IA (clarification).
+   */
+  arbitrateWithAI?(message: string, input: AssistantRequestInput, candidates: ArbitrationCandidate[]): Promise<RawSemanticDecision | null>;
+  /**
+   * Lot 54E : le prompt maître T2 ACTIF sait-il arbitrer (emplacement
+   * {{BUSINESS_CANDIDATES}}) ? Non : aucun appel dépensé, clarification.
+   */
+  canArbitrateWithAI?(): Promise<boolean>;
+  /**
+   * Lot 54E (#419 §15) : plan PENDING_CONFIRMATION issu d'une information
+   * APPORTÉE (UPDATE_PROPOSAL) — même table et même confirmation que les
+   * commandes ; AUCUNE écriture. `null` : modifications désactivées.
+   */
+  prepareUpdateProposal?(input: AssistantRequestInput, req: {
+    fact: import('../types/contracts').SuppliedFact; assetId: number | null;
+    /** Lot 59 (#419 R08) : autres informations apportées dans le même message. */
+    more?: Array<{ fact: import('../types/contracts').SuppliedFact; assetId: number | null }>;
+  }): Promise<
+    | { kind: 'plan'; preview: import('../commands/catalog').CommandPlanPreview; capability: string; proposed?: number; refused?: Array<{ fieldKey: string | null; reason: string }> }
+    | { kind: 'need_info'; message: string; reason: string; capability: string | null; proposed?: number; refused?: Array<{ fieldKey: string | null; reason: string }> }
+    | null>;
+  /**
+   * Lot 59 (#419) : capacités du prompt maître T2 EFFECTIF (version active du
+   * BO) — arbitrage (A9, {{BUSINESS_CANDIDATES}}), informations apportées
+   * (A7, A8). `null` : inconnues.
+   */
+  t2PromptCapabilities?(): Promise<{ arbitration: boolean; interaction: boolean; version: string | null; compatible?: boolean | null } | null>;
+  /**
+   * Lot 71 (71D) : équipements / pièces du compte dont le nom EST la saisie
+   * (correspondance exacte normalisée, même moteur que la barre de recherche :
+   * `findNamedEntities`). Lecture seule, bornée au compte ; `assetIds`
+   * restreint au bien parent (revalidation d'un choix). Absent : étape sautée.
+   */
+  findNamedEntities?(input: AssistantRequestInput, opts?: { assetIds?: number[] | null }): Promise<NamedEntityLookupResult>;
+}
+
+export async function runAssistant(
+  input: AssistantRequestInput,
+  ports: OrchestratorPorts,
+): Promise<AssistantRunResult> {
+  const cfg = getAssistantConfig();
+  // §39 `verebona_assistant_account_ai` / VEREBONA_ASSISTANT_AI_ENABLED, lus
+  // à CHAQUE demande : coupés, aucun appel modèle (rollback « désactiver
+  // l'IA » en gardant recherche classique et aide).
+  const aiActif = cfg.aiEnabled && isAssistantFlagOn('account_ai');
+  // ── Budget d'appels modèle du message (§15.5, CA-07) ──────────────────
+  // Un seul compteur pour classification, revalidation et génération,
+  // replis compris. Partagé par référence : les copies `{ ...input }`
+  // successives gardent le même objet.
+  const budget: AiCallBudget = input.aiBudget ?? createAiCallBudget(cfg.maxAiCallsPerRequest);
+  // Identifiant RÉSERVÉ par la route (ligne `pending`, annulable) s'il
+  // existe ; sinon généré ici (reprise de clarification, tests).
+  const requestId = input.requestId ?? randomUUID();
+  // Lot 83C (SEM-01, SEM-04) : une demande = une exécution métier T2
+  // (`T2:<request_id>`), portée par tous ses appels (UNDERSTAND, ANSWER,
+  // REVALIDATE, replis, réparations). Les relances internes gardent la même.
+  if (!currentBusinessExecutionIds().some((x) => x.startsWith('T2:'))) {
+    // Lot 87A (P7, RUN-04, R53) : configuration IA figée au démarrage de la
+    // demande — tous ses appels (compréhension, réponse, revalidation)
+    // utilisent la même ; un import ou une activation pendant la demande ne
+    // vaut que pour les demandes suivantes.
+    return runInBusinessExecution(t2ExecutionId(requestId), () => runWithConfigSnapshot('T2', () => runAssistant({ ...input, requestId }, ports)));
+  }
+  // Rapport des appels modèle (sécurité, réparation, escalade), partagé par
+  // référence comme le budget et versé dans la trace à la fin.
+  const aiReport = input.aiReport ?? { securityEvents: [], events: [] };
+  // Lot 101A (I) : appels de compréhension (UNDERSTAND) réellement faits pendant
+  // le tour, quel que soit le chemin — versés dans le diagnostic du tour.
+  const turnState = input.turnState ?? { understandCalls: 0 };
+  if (ports.classifyWithAI && !input.turnState) {
+    const classer = ports.classifyWithAI;
+    ports = { ...ports, classifyWithAI: (m, i) => { turnState.understandCalls += 1; return classer(m, i); } };
+  }
+  input = { ...input, aiBudget: budget, requestId, aiReport, turnState };
+  const messageId = randomUUID();
+  const machine = new ConversationMachine('IDLE');
+  const deadline = Date.now() + cfg.totalTimeoutMs;
+  // §30.1 : retrieval déterministe borné à 3 s (dans l'échéance globale).
+  const retrievalDeadline = () => Math.min(deadline, Date.now() + Math.max(1, cfg.retrievalTimeoutMs || 3000));
+
+  const base: AssistantRunResult = {
+    requestId, messageId, finalState: 'IDLE', mode: 'deterministic',
+    route: null as unknown as IntentRoute, answer: '', supportLevel: null,
+    claims: [], sources: [], actions: [], clarification: null,
+  };
+
+  try {
+    machine.transition('SUBMITTING');
+
+    // ══════════════════════════════════════════════════════════════════════
+    // SUJETS RÉSERVÉS — §4.3.3 et §13, AVANT TOUT TRAITEMENT
+    //
+    // Le §13 interdit à l'assistant tout conseil juridique, fiscal, médical
+    // ou assurantiel personnalisé.
+    //
+    // Le contrôle vient EN PREMIER, avant le routage, la récupération et
+    // l'appel modèle. Le placer plus loin laisserait une question interdite
+    // atteindre les documents du compte, et lui ferait consommer un appel
+    // facturé pour une réponse qu'on refusera de rendre.
+    //
+    // La distinction porte sur la demande, pas sur le thème : « quel est le
+    // montant de ma prime ? » interroge les DONNÉES du compte et reste
+    // légitime ; « dois-je changer d'assurance ? » demande un CONSEIL.
+    // ══════════════════════════════════════════════════════════════════════
+    //
+    // ── REQUÊTE MIXTE ─────────────────────────────────────────────────────
+    //
+    // Le message est découpé en sous-demandes, chacune classée. Refuser tout
+    // le message parce qu'une partie demande un conseil faisait perdre la
+    // donnée — parfaitement légitime — demandée dans la même phrase.
+    //   · FULLY_BLOCKED / AMBIGUOUS : aucun retrieval, aucun modèle ;
+    //   · PARTIALLY_ALLOWED : SEULES les parties autorisées continuent (la
+    //     partie interdite n'atteint ni les données ni le modèle), et le refus
+    //     ciblé est ajouté à la réponse.
+    // ══════════════════════════════════════════════════════════════════════
+    const scope = analyzeScope(input.message ?? '');
+    const sujet = { blocked: scope.kind === 'FULLY_BLOCKED' || scope.kind === 'AMBIGUOUS', reason: scope.reasons[0] ?? null };
+    const scopeTrace = { kind: scope.kind, parts: scope.parts.map((p) => ({ text: p.text, allowed: p.allowed, reason: p.reason })) };
+    if (sujet.blocked) {
+      machine.transition('READY');
+      const refus: AssistantRunResult = {
+        ...base,
+        finalState: 'READY',
+        mode: 'deterministic',
+        answer: (scope.kind === 'AMBIGUOUS' ? scope.clarification : scope.refusal)
+          ?? "Cette question sort du périmètre de l'assistant.",
+        // Ni source ni action : rien n'a été lu, et aucune suite n'est
+        // proposée sur un sujet refusé.
+        sources: [],
+        claims: [],
+        actions: [],
+        blockedReason: sujet.reason,
+        scope: scopeTrace,
+      };
+      await safePersist(ports, refus, input);
+      return refus;
+    }
+    base.scope = scopeTrace;
+    if (scope.kind === 'PARTIALLY_ALLOWED') {
+      input = { ...input, originalMessage: input.message, message: scope.allowedText };
+      base.partialRefusal = scope.refusal;
+      base.blockedReason = sujet.reason;
+    }
+
+    // ── Routage (§9.4) ──────────────────────────────────────────────────────
+    machine.transition('ROUTING');
+    const startedAt = Date.now();
+    const thresholds = ports.loadThresholds
+      ? await ports.loadThresholds().catch(() => ({ ...DEFAULT_THRESHOLDS, source: 'default' }))
+      : { ...DEFAULT_THRESHOLDS, source: 'default' };
+    const trace: CascadeTrace = {
+      intent: 'UNKNOWN', strategy: 'none', answeredBy: 'fallback', sufficiency: null,
+      escalationReasons: [], attempts: [], sourceCount: 0, aiCalls: 0, model: null,
+      thresholds: { database: thresholds.database, text: thresholds.text, source: thresholds.source },
+      latencyMs: 0,
+    };
+    base.cascade = trace;
+    // Sous-demandes et leur classement, tracés avec la demande.
+    trace.scope = scopeTrace;
+    const done = (answeredBy: CascadeTrace['answeredBy'], strategy: string, sufficiency: string | null, sourceCount: number) => {
+      // Appels réellement consommés sur le budget du message (≤ plafond).
+      trace.aiCalls = budget.used;
+      trace.answeredBy = answeredBy;
+      trace.strategy = strategy;
+      trace.sufficiency = sufficiency;
+      trace.sourceCount = sourceCount;
+      trace.latencyMs = Date.now() - startedAt;
+      if (aiReport.securityEvents.length) trace.securityEvents = [...aiReport.securityEvents];
+      if (aiReport.events.length) trace.aiEvents = [...aiReport.events];
+    };
+
+    // ══════════════════════════════════════════════════════════════════════
+    // AVANT TOUT APPEL MODÈLE : ANNULATION ET PLAFOND MENSUEL
+    //
+    // · Annulée (§7.8, CA-22) : aucun appel de plus, la demande se termine
+    //   en CANCELLED ; la persistance n'écrira que la trace.
+    // · Plafond mensuel du compte atteint (§6.6) : le budget du message est
+    //   épuisé d'office — même repli déterministe que « budget épuisé », avec
+    //   un message non culpabilisant.
+    // Le plafond n'est lu qu'une fois par demande, et seulement si un appel
+    // modèle est envisagé (aucune requête pour une réponse déterministe).
+    // ══════════════════════════════════════════════════════════════════════
+    let budgetMensuelVerifie = false;
+    let budgetMensuelAtteint = false;
+    // Lot 29 (8b §K) : la classification par modèle a échoué (motif distinct).
+    let comprehensionEchouee = false;
+    /**
+     * Erreur d'une lecture ciblée : une erreur TECHNIQUE de lecture remonte
+     * (réponse d'erreur tracée), jamais avalée en « aucun résultat » (8b §K) ;
+     * un délai dépassé laisse la demande suivre son cours.
+     */
+    const lectureEchouee = (e: unknown): null => {
+      if (e instanceof TargetReadError) throw e;
+      return null;
+    };
+    /**
+     * Sert une lecture ciblée de faits (lot 29) : clarification de cible
+     * (une seule pour toute la demande), motif explicite (cible introuvable
+     * ou indisponible, champ non renseigné), ou valeurs lues — sans modèle.
+     * `null` : la demande suit son cours.
+     */
+    const servirLectureCiblee = async (lu: TargetAnswer, r: IntentRoute, o: { reprise: boolean }): Promise<AssistantRunResult | null> => {
+      const intention = r.intent === 'UNKNOWN' || !r.intent.startsWith('ACCOUNT_') ? lu.intent : r.intent;
+      if (lu.ambiguity) {
+        const chainDepth = (input.resume?.chainDepth ?? 0) + 1;
+        trace.diagnostic = 'TARGET_AMBIGUOUS';
+        // Champs compris, cible ambiguë : manque connu exactement (lot 32).
+        marquer('PARTIAL', ['AMBIGUOUS_TARGET'], 'clarification');
+        trace.escalationReasons.push(`CLARIFICATION:${lu.ambiguity.reason}`);
+        const routeAmb = { ...routeForIntent(intention, input.planType, 'cible ambiguë'), entityHints: r.entityHints, understanding: r.understanding };
+        base.route = routeAmb;
+        trace.intent = routeAmb.intent;
+        if (chainDepth > MAX_CLARIFICATION_CHAIN) {
+          const actions = await ports.resolveActions(routeAmb, input, []);
+          done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
+        }
+        const state = buildTargetClarification({
+          ambiguity: lu.ambiguity, question: lu.text,
+          accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+          originalMessage: input.message, originalMessageId: messageId, originalIntent: intention,
+          pageAssetId: Number(input.pageContext?.assetId) || null, requestedFacts: lu.requestedFacts, chainDepth,
+        });
+        if (ports.saveClarification && await ports.saveClarification(state).catch(() => false)) {
+          done('template', 'clarification.target', 'AMBIGUOUS_TARGET', state.candidates.length);
+          return finalizeClarification(base, machine, state, ports, input);
+        }
+        // Sans fil où enregistrer la question : la poser quand même, candidats
+        // compris — jamais de choix arbitraire.
+        const texte = `${lu.text} ${state.candidates.map((c) => (c.secondaryLabel ? `${c.label} (${c.secondaryLabel})` : c.label)).join(', ')}.`;
+        done('template', 'clarification.target_unsaved', 'AMBIGUOUS_TARGET', 0);
+        return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
+      }
+      // Champs tous vides qui portent une ÉCHÉANCE (garantie, contrôle,
+      // entretien…) : l'agenda peut encore la connaître — la demande suit son
+      // cours plutôt que d'affirmer « non renseigné » trop tôt.
+      if (lu.diagnostic === 'FIELD_NOT_SET' && !o.reprise
+        && (lu.facts ?? []).some((f) => f.key && getField(f.key)?.agendaEffect?.nature === 'DEADLINE')) {
+        trace.escalationReasons.push('FACT:DEADLINE_FIELD_NOT_SET');
+        return null;
+      }
+      // Lot 32 : champs ET cible compris (vocabulaire canonique, résolution
+      // SQL) — une intention inconnue des règles est comprise par le
+      // déterministe ; une compréhension PARTIELLE le reste (partie servie).
+      if (comprehension.status === 'UNKNOWN_INTENT' && !comprisParModele) marquer('COMPLETE', [], 'deterministic');
+      const routeLu = { ...routeForIntent(intention, input.planType, 'lecture canonique ciblée'), entityHints: r.entityHints, understanding: r.understanding };
+      base.route = routeLu;
+      trace.intent = routeLu.intent;
+      if (lu.diagnostic) trace.diagnostic = lu.diagnostic;
+      if (lu.contextUpdate && !base.contextUpdate) base.contextUpdate = lu.contextUpdate;
+      const actions = await ports.resolveActions(routeLu, input, lu.sources);
+      const sansCible = lu.diagnostic === 'TARGET_NOT_FOUND' || lu.diagnostic === 'TARGET_UNAVAILABLE';
+      done(sansCible ? 'template' : 'structured', lu.strategy, sansCible ? 'INSUFFICIENT' : 'SUFFICIENT_STRUCTURED', lu.sources.length);
+      const resolvedLu = lu.sources.length ? await ports.resolveSources(lu.sources, input.accountId) : [];
+      return finalize(base, machine, 'deterministic', lu.text, lu.claims, resolvedLu, actions, ports, input, sansCible ? 'insufficient' : 'supported');
+    };
+    const avantAppelModele = async (): Promise<'ok' | 'cancelled'> => {
+      if (ports.isCancelled && await ports.isCancelled(requestId).catch(() => false)) return 'cancelled';
+      if (!budgetMensuelVerifie && ports.checkMonthlyBudget) {
+        budgetMensuelVerifie = true;
+        const b = await ports.checkMonthlyBudget(input.accountId).catch(() => ({ allowed: true }));
+        if (!b.allowed) {
+          budgetMensuelAtteint = true;
+          budget.consume(budget.max);
+          trace.escalationReasons.push('AI_MONTHLY_BUDGET_EXCEEDED');
+        }
+      }
+      return 'ok';
+    };
+    const annuler = async (): Promise<AssistantRunResult> => {
+      machine.transition('CANCELLED');
+      done('fallback', 'cancelled', null, 0);
+      const r: AssistantRunResult = { ...base, finalState: 'CANCELLED', mode: 'fallback', answer: '', sources: [], claims: [], actions: [] };
+      await safePersist(ports, r, input);
+      return r;
+    };
+
+    /**
+     * Lot 49 — sert l'issue de l'étape sémantique : réponse canonique d'UNE
+     * interprétation, clarification métier (choix issus des données), ou
+     * information insuffisante — jamais un total plus large. `null` : la
+     * cascade continue (étape non applicable ou nouvelle route).
+     */
+    const servirSemantique = async (o: SemanticOutcome, r: IntentRoute): Promise<AssistantRunResult | null> => {
+      if (o.kind === 'continue' || o.kind === 'reroute' || o.kind === 'interaction') return null;
+      const routeSem: IntentRoute = { ...routeForIntent(o.intent, input.planType, 'périmètre sémantique'), entityHints: r.entityHints, understanding: r.understanding };
+      base.route = routeSem;
+      trace.intent = routeSem.intent;
+      if (o.kind === 'answer') {
+        const actions = await ports.resolveActions(routeSem, input, o.sources);
+        done('structured', o.strategy, 'SUFFICIENT_STRUCTURED', o.sources.length);
+        trace.fallbackUsed = false;
+        const resolvedSem = o.sources.length ? await ports.resolveSources(o.sources, input.accountId) : [];
+        return finalize(base, machine, 'deterministic', o.text, o.claims, resolvedSem, actions, ports, input, 'supported');
+      }
+      if (o.kind === 'clarify') {
+        trace.escalationReasons.push(`CLARIFICATION:${o.state.ambiguity?.reason ?? 'SEMANTIC'}`);
+        if ((o.state.chainDepth ?? 1) > MAX_CLARIFICATION_CHAIN) {
+          const actions = await ports.resolveActions(routeSem, input, []);
+          done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
+        }
+        if (ports.saveClarification && await ports.saveClarification(o.state).catch(() => false)) {
+          done('template', 'clarification.semantic', 'AMBIGUOUS_TARGET', o.state.candidates.length);
+          return finalizeClarification(base, machine, o.state, ports, input);
+        }
+        // Sans fil où enregistrer la question : la poser, candidats compris.
+        const texte = `${o.state.question} ${o.state.candidates.map((c) => (c.secondaryLabel ? `${c.label} (${c.secondaryLabel})` : c.label)).join(', ')}.`;
+        done('template', 'clarification.semantic_unsaved', 'AMBIGUOUS_TARGET', 0);
+        return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
+      }
+      // Information insuffisante : compréhension aboutie, aucune donnée
+      // correspondante — ou ambiguïté non levable. Jamais « rien trouvé »
+      // d'un périmètre plus large.
+      const actions = await ports.resolveActions(routeSem, input, []);
+      done('template', o.strategy, 'INSUFFICIENT', 0);
+      return finalize(base, machine, 'deterministic', o.text, [], [], actions, ports, input, 'insufficient');
+    };
+
+    // ══════════════════════════════════════════════════════════════════════
+    // MÉMOIRE DU FIL — AVANT LE ROUTAGE (§16.4)
+    //
+    // message → contexte du fil → résolution des références → demande
+    // enrichie → routage → retrieval → réponse. « Ouvre le deuxième » est
+    // compris ici, sans modèle, à partir de l'ordre RÉELLEMENT affiché dans
+    // CE fil — jamais d'un autre fil ni de l'autre membre d'un Duo.
+    // ══════════════════════════════════════════════════════════════════════
+    const early = await applyThreadMemory(input, ports, trace);
+    input = early.input;
+    if (early.contextUpdate) base.contextUpdate = early.contextUpdate;
+    if (early.clarification) {
+      done('template', 'reference.clarification', 'AMBIGUOUS_TARGET', early.clarification.candidates.length);
+      return finalizeClarification(base, machine, early.clarification, ports, input);
+    }
+    if (early.answer) {
+      const route = routeForIntent(early.answer.intent, input.planType, 'référence du fil');
+      base.route = route;
+      trace.intent = route.intent;
+      const actions = await ports.resolveActions(route, input, early.answer.sources);
+      done('structured', early.answer.strategy, 'SUFFICIENT_STRUCTURED', early.answer.sources.length);
+      const resolvedEarly = early.answer.sources.length ? await ports.resolveSources(early.answer.sources, input.accountId) : [];
+      return finalize(base, machine, 'deterministic', early.answer.text, early.answer.claims ?? [], resolvedEarly, actions, ports, input,
+        early.answer.claims?.length ? 'supported' : null);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // COMMANDE MÉTIER — préparation et aperçu, AUCUNE ÉCRITURE ICI
+    // ══════════════════════════════════════════════════════════════════════
+    // Compte en lecture seule (fin d'essai, §6.5) : aucune commande d'écriture.
+    if (ports.prepareCommand && !input.resume && !input.planLimit) {
+      const prep = await ports.prepareCommand(input).catch((e) => {
+        console.error('[verebona] préparation de commande impossible :', (e as Error).message);
+        return null;
+      });
+      if (prep) {
+        const route = routeForIntent('UNSUPPORTED_ACTION', input.planType, 'commande métier');
+        base.route = route;
+        trace.intent = 'WRITE_COMMAND';
+        done('template', prep.kind === 'plan' ? 'command.preview' : 'command.need_info', null, 0);
+        const result = await finalize(base, machine, 'deterministic',
+          prep.kind === 'plan' ? prep.preview.summary : prep.message, [], [], [], ports, input);
+        if (prep.kind === 'plan') result.commandPlan = prep.preview;
+        return result;
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // CIBLE DE LA PAGE — CDC 15 T2-21 (lecture canonique)
+    //
+    // « Quel est le montant ? » sur la page d'un ticket vise CE ticket : la
+    // page devient une cible explicite, lue AVANT toute analyse textuelle qui
+    // chercherait dans le compte entier. Seulement si la question ne nomme
+    // rien d'autre (garde-fou de `answerFromTarget`).
+    // ══════════════════════════════════════════════════════════════════════
+    if (ports.readTarget && !input.resume) {
+      const cibles = targetsFromInput(input);
+      if (cibles.primary && (cibles.primary.type === 'document' || cibles.primary.type === 'agenda_item')) {
+        const lu = await withDeadline(ports.readTarget(input, cibles), retrievalDeadline()).catch(lectureEchouee);
+        if (lu) {
+          const route = routeForIntent(lu.intent, input.planType, `cible ${cibles.primary.origin}`);
+          base.route = route;
+          trace.intent = route.intent;
+          const actions = await ports.resolveActions(route, input, lu.sources);
+          done('structured', lu.strategy, 'SUFFICIENT_STRUCTURED', lu.sources.length);
+          const resolvedCible = await ports.resolveSources(lu.sources, input.accountId);
+          return finalize(base, machine, 'deterministic', lu.text, lu.claims, resolvedCible, actions, ports, input, 'supported');
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 49 — REPRISE D'UNE CLARIFICATION MÉTIER
+    //
+    // « Contrat de LLD » choisi : la source RÉELLE est relue (compte, bien
+    // disponible) puis servie par lecture canonique — contexte STRUCTURÉ, ni
+    // reformulation ni reclassement, aucun appel modèle.
+    // ══════════════════════════════════════════════════════════════════════
+    if (input.resume?.semanticSource && ports.readBusinessSource) {
+      const sem = emptySemanticTrace({ trigger: 'resume_choice', deterministicMatch: 'reprise après clarification', deterministicConfidence: 'STRONG' });
+      trace.semantic = sem;
+      const o = await resumeSemanticChoice({ input, ports, trace: sem, withDeadline: (x) => withDeadline(x, retrievalDeadline()) });
+      const servi = await servirSemantique(o, routeForIntent(input.resume.intent, input.planType, 'reprise sémantique'));
+      if (servi) return servi;
+    }
+
+    // Reprise après clarification : la demande initiale garde son intention —
+    // elle n'est ni re-routée ni re-classée par le modèle.
+    let outcome: ReturnType<typeof routeDeterministic> = input.resume
+      ? { kind: 'route' as const, route: routeForIntent(input.resume.intent, input.planType, 'reprise après clarification') }
+      : routeDeterministic({
+          message: input.message,
+          planType: input.planType,
+          hasPendingClarification: await ports.hasPendingClarification(input.accountId, input.userId, input.conversationId),
+          pageRoute: input.pageContext?.route,
+          pageContext: input.pageContext,
+        });
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 71 (71D) — SAISIE NOMINATIVE : ÉQUIPEMENT OU PIÈCE, AVANT TOUTE IA
+    //
+    // « Pompe à chaleur », « Cuisine » soumis seuls : aucune règle n'a
+    // tranché (`needs_classification`). Le nom est d'abord cherché dans les
+    // équipements et pièces DU COMPTE (même moteur que la barre de recherche,
+    // correspondance exacte normalisée) : unique → proposé sans modèle ;
+    // homonymes → choix avec le bien parent ; rien (ou un bien du même nom)
+    // → la cascade suit son cours, inchangée. La reprise d'un choix est
+    // revalidée par le même nom, restreinte au bien parent.
+    // ══════════════════════════════════════════════════════════════════════
+    if (ports.findNamedEntities) {
+      const choisie = input.resume?.entity && input.resume.intent === 'NAVIGATION_OPEN' && !input.resume.semanticSource
+        ? input.resume.entity : null;
+      const tenter = choisie != null
+        || (!input.resume && outcome.kind === 'needs_classification' && isNamedEntityQuery(input.message));
+      if (tenter) {
+        const lookup = await withDeadline(
+          ports.findNamedEntities(input, choisie?.assetId ? { assetIds: [choisie.assetId] } : {}), retrievalDeadline(),
+        ).catch(() => null);
+        const decision = decideNamedEntity(lookup, choisie);
+        if (decision.kind === 'none') {
+          if (decision.reason === 'ASSET_HOMONYM') trace.escalationReasons.push('NAMED_ENTITY:ASSET_HOMONYM');
+        } else {
+          const routeNom = routeForIntent('NAVIGATION_OPEN', input.planType, 'nom d’un équipement ou d’une pièce');
+          base.route = routeNom;
+          trace.intent = routeNom.intent;
+          if (decision.kind === 'choice') {
+            const memeType = decision.entities.every((e) => e.kind === decision.entities[0].kind);
+            if (memeType && ports.saveClarification) {
+              const kind = decision.entities[0].kind;
+              const state = buildTargetClarification({
+                ambiguity: { kind, reason: kind === 'room' ? 'ROOM_MULTIPLE_CANDIDATES' : 'EQUIPMENT_MULTIPLE_CANDIDATES', candidates: decision.entities },
+                question: namedEntityChoiceQuestion(decision.entities),
+                accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+                originalMessage: input.message, originalMessageId: messageId, originalIntent: 'NAVIGATION_OPEN',
+                pageAssetId: null, chainDepth: 1,
+              });
+              if (await ports.saveClarification(state).catch(() => false)) {
+                trace.escalationReasons.push('CLARIFICATION:NAMED_ENTITY_HOMONYMS');
+                done('template', 'named_entity.clarification', 'AMBIGUOUS_TARGET', state.candidates.length);
+                return finalizeClarification(base, machine, state, ports, input);
+              }
+            }
+            // Types mêlés (un équipement et une pièce du même nom) ou fil
+            // indisponible : la liste, chaque élément ouvrable — aucun choix
+            // fait à la place de l'utilisateur.
+            const sourcesNom = decision.entities.map(namedEntitySource);
+            const actionsNom = await ports.resolveActions(routeNom, input, sourcesNom);
+            done('structured', 'named_entity.candidates', 'AMBIGUOUS_TARGET', sourcesNom.length);
+            const resolvedNom = await ports.resolveSources(sourcesNom, input.accountId);
+            return finalize(base, machine, 'deterministic', namedEntityChoiceQuestion(decision.entities), [], resolvedNom, actionsNom, ports, input);
+          }
+          const sourceNom = namedEntitySource(decision.entity);
+          const reponse = namedEntityAnswer(decision.entity);
+          const actionsNom = await ports.resolveActions(routeNom, input, [sourceNom]);
+          done('structured', 'named_entity.exact', 'SUFFICIENT_STRUCTURED', 1);
+          const resolvedNom = await ports.resolveSources([sourceNom], input.accountId);
+          return finalize(base, machine, 'deterministic', reponse.text, reponse.claims, resolvedNom, actionsNom, ports, input, 'supported');
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // BASE D'AIDE — §9.4 étape 7, AVANT toute classification par modèle
+    //
+    // Aucune règle n'a tranché : une question d'usage formulée autrement
+    // (« je veux changer mon mot de passe ») est cherchée dans le Centre
+    // d'aide. Un article pertinent suffit à la router en aide produit, sans
+    // appel modèle. Le corpus n'est chargé qu'ici, pas à chaque message.
+    // ══════════════════════════════════════════════════════════════════════
+    if (outcome.kind === 'needs_classification' && ports.loadHelpCorpus) {
+      const corpus = await ports.loadHelpCorpus().catch(() => null);
+      if (corpus) {
+        const viaAide = routeDeterministic({
+          message: input.message,
+          planType: input.planType,
+          hasPendingClarification: false,
+          pageRoute: input.pageContext?.route,
+          pageContext: input.pageContext,
+          helpCorpus: corpus,
+        });
+        if (viaAide.kind === 'route') outcome = viaAide;
+      }
+    }
+
+    // UNDERSTAND n'est pas sollicité d'emblée pour une intention inconnue :
+    // c'est un appel modèle, et la cascade tente d'abord les niveaux gratuits
+    // (sauf cible exigée non résolue — évaluation de la compréhension, lot 32).
+    let route: IntentRoute = outcome.kind === 'route' ? outcome.route : fallbackUnknownRoute();
+    route = affinerRoute(route, input);
+    const needsClassification = outcome.kind === 'needs_classification';
+    base.route = route;
+    trace.intent = route.intent;
+    // Lot 49 : force de la décision déterministe tracée pour TOUTE demande.
+    const semTrace: SemanticTrace = trace.semantic ?? emptySemanticTrace({
+      trigger: 'none', deterministicMatch: needsClassification ? null : route.routeReason,
+      deterministicConfidence: route.deterministicConfidence ?? 'STRONG',
+    });
+    trace.semantic = semTrace;
+
+    // ══════════════════════════════════════════════════════════════════════
+    // CLARIFICATION EXIGÉE PAR LE ROUTAGE — §20.1
+    //
+    // Période non identifiable (« mes factures de mars » sans année) ou
+    // action ambiguë (« ajoute », sans objet) : l'utilisateur choisit, rien
+    // n'est tranché au hasard. Jamais sur une reprise (la demande rejouée
+    // porte déjà le choix) ; sans fil où l'enregistrer, la demande suit son
+    // cours normal.
+    // ══════════════════════════════════════════════════════════════════════
+    if (route.clarificationRequired && !input.resume && ports.saveClarification) {
+      const raison = routeClarificationReason(input.message, route.intent);
+      const commun = {
+        accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+        originalMessage: input.message, originalMessageId: messageId, originalIntent: route.intent, chainDepth: 1,
+      };
+      const periode = raison === 'PERIOD_UNIDENTIFIABLE' ? analyserPeriode(input.message, aujourdhuiParis()) : null;
+      const state = periode?.kind === 'ambiguous'
+        ? buildPeriodClarification({ ...commun, expression: periode.expression, choices: periode.choices })
+        : raison === 'ACTION_AMBIGUOUS' ? buildActionClarification(commun) : null;
+      if (state && await ports.saveClarification(state).catch(() => false)) {
+        trace.escalationReasons.push(`CLARIFICATION:${raison}`);
+        done('template', raison === 'PERIOD_UNIDENTIFIABLE' ? 'clarification.period' : 'clarification.action', 'AMBIGUOUS_TARGET', state.candidates.length);
+        return finalizeClarification(base, machine, state, ports, input);
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // ÉTAT DE COMPRÉHENSION — lot 32 (UNDERSTAND, fallback général)
+    //
+    // Une intention reconnue n'est pas une demande comprise. Le déterministe
+    // reste le PREMIER niveau ; dès qu'il ne suffit pas, l'état le dit :
+    //   COMPLETE       → la suite, sans IA ;
+    //   PARTIAL        → cible requise inconnue (MISSING_TARGET), ambiguë
+    //                    (AMBIGUOUS_TARGET), renvoi non levé
+    //                    (UNRESOLVED_REFERENCE), sens non consommé
+    //                    (UNCONSUMED_MEANING, étape des faits ci-dessous) ;
+    //   UNKNOWN_INTENT → UNDERSTAND (classification plus bas, ou ici si la
+    //                    question exige en plus une cible).
+    // Manque connu EXACTEMENT (« ce bien » sans contexte) : clarification
+    // directe, candidats DU COMPTE, sans appel modèle. Sinon UNDERSTAND si
+    // autorisé, puis résolution SERVEUR de ses indices. Une cible exigée non
+    // résolue ne devient jamais une recherche à l'échelle du compte.
+    // ══════════════════════════════════════════════════════════════════════
+    const comprehension: NonNullable<CascadeTrace['understanding']> = {
+      initialStatus: needsClassification ? 'UNKNOWN_INTENT' : 'COMPLETE',
+      status: needsClassification ? 'UNKNOWN_INTENT' : 'COMPLETE',
+      reasons: needsClassification ? ['UNKNOWN_INTENT'] : [],
+      resolvedBy: needsClassification ? null : 'deterministic',
+    };
+    trace.understanding = comprehension;
+    const marquer = (status: UnderstandingStatus, reasons: UnderstandingReason[], resolvedBy: UnderstandingResolver) => {
+      comprehension.status = status;
+      for (const r of reasons) if (!comprehension.reasons.includes(r)) comprehension.reasons.push(r);
+      comprehension.resolvedBy = resolvedBy;
+    };
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 54E (#419 §15) — INFORMATION APPORTÉE PAR L'UTILISATEUR
+    //
+    // Appliqué après CHAQUE compréhension UNDERSTAND : T2 a lu la nature du
+    // message (`interactionMode`, `suppliedFacts`). Une information à
+    // enregistrer devient au mieux un plan PENDING_CONFIRMATION préparé par
+    // le SERVEUR (cible, capacité, droits, valeur actuelle — CommandPlan
+    // existant) ; une information de contexte n'est jamais persistée.
+    // AUCUNE écriture ici. `null` : la demande suit son cours (question).
+    // ══════════════════════════════════════════════════════════════════════
+    /** Cible d'une information apportée : résolue par le SERVEUR (biens disponibles), jamais un identifiant du modèle. */
+    const cibleInformation = async (hint: string | null): Promise<{ assetId: number | null; refus: string | null }> => {
+      if (!hint || !ports.resolveTargets) return { assetId: null, refus: null };
+      const r: IntentRoute = { ...routeForIntent('ACCOUNT_FACT_ASSET', input.planType, 'cible d’une information apportée'), entityHints: [{ type: 'asset', value: hint }] };
+      const cibles = await withDeadline(ports.resolveTargets(input, r), retrievalDeadline()).catch(() => null);
+      if (cibles?.asset) return { assetId: cibles.asset.id, refus: null };
+      const ambigus = cibles?.ambiguity?.kind === 'asset' ? cibles.ambiguity.candidates : [];
+      return {
+        assetId: null,
+        refus: ambigus.length >= 2
+          ? `Plusieurs biens correspondent à « ${hint} » : ${ambigus.slice(0, 5).map((c) => c.name).join(', ')}. Précisez lequel ; rien n’a été modifié.`
+          : `Je n’ai pas trouvé « ${hint} » parmi vos biens disponibles : rien n’a été modifié.`,
+      };
+    };
+
+    /**
+     * Lot 75J (#419 §3) — prompt maître T2 EFFECTIF constaté pour la
+     * COMPRÉHENSION de cette demande (version, capacités, compatibilité) :
+     * tracé une fois, après un appel UNDERSTAND. Une version incapable de
+     * comprendre les informations apportées est signalée explicitement.
+     */
+    const noterPromptT2 = async (): Promise<void> => {
+      if (semTrace.t2PromptAtUnderstand || !ports.t2PromptCapabilities || !comprisParModele) return;
+      const c = await ports.t2PromptCapabilities().catch(() => null);
+      if (!c) return;
+      semTrace.t2PromptAtUnderstand = { version: c.version, arbitration: c.arbitration, interaction: c.interaction, compatible: c.compatible ?? null };
+      if (!c.interaction) {
+        semTrace.interactionUnavailableReason = 'PROMPT_UNSUPPORTED';
+        if (!trace.escalationReasons.includes('UNDERSTANDING:INTERACTION_PROMPT_UNSUPPORTED')) trace.escalationReasons.push('UNDERSTANDING:INTERACTION_PROMPT_UNSUPPORTED');
+      }
+    };
+
+    const traiterInteraction = async (compris: IntentRoute | null): Promise<AssistantRunResult | null> => {
+      if (compris) await noterPromptT2();
+      const inter = compris?.understanding?.interaction;
+      if (!inter || input.resume) return null;
+      semTrace.interactionMode = inter.mode;
+      semTrace.suppliedFactsCount = inter.suppliedFacts.length;
+      const traitement = interactionHandling(inter, input.message);
+      if (!traitement) return null;
+      const routeI = routeForIntent('UNSUPPORTED_ACTION', input.planType, `information apportée (${inter.mode})`);
+      base.route = routeI;
+      trace.intent = traitement === 'proposal' ? 'WRITE_COMMAND' : routeI.intent;
+      marquer('COMPLETE', [], 'understand');
+      if (traitement === 'context_only') {
+        trace.escalationReasons.push('INTERACTION:CONTEXT_ONLY');
+        done('template', 'interaction.context_only', null, 0);
+        return finalize(base, machine, 'deterministic', CONTEXT_ONLY_MESSAGE, [], [], [], ports, input);
+      }
+      if (traitement === 'context_calculation') {
+        // ══════════════════════════════════════════════════════════════════
+        // LOT 59 (#419 R07) — INFORMATION DE CONTEXTE + DÉCOMPTE
+        // L'information apportée sert à CETTE réponse seulement : relue dans
+        // le message (jamais crue sur parole), comparée à la donnée
+        // enregistrée de même clé (contradiction signalée, jamais tranchée),
+        // jamais enregistrée. Le SERVEUR calcule ; sans date fiable, il dit
+        // ce qui manque.
+        // ══════════════════════════════════════════════════════════════════
+        trace.escalationReasons.push(`INTERACTION:${inter.mode}:CONTEXT_CALCULATION`);
+        trace.intent = 'ACCOUNT_FACT_ASSET';
+        const faits = contextFactsOf(inter);
+        const { valid, ignored } = validateContextFacts(faits, input.message, aujourdhuiParis());
+        semTrace.contextFactsIgnored = ignored;
+        const hint = faits.find((f) => f.targetHint)?.targetHint ?? compris?.entityHints?.find((h) => h.type === 'asset')?.value ?? null;
+        const cible = await cibleInformation(hint);
+        const assetId = cible.assetId ?? (Number(input.pageContext?.assetId) || null);
+        let nom: string | null = null;
+        const stored: Array<{ fieldKey: string; value: string; display: string }> = [];
+        if (assetId && valid.length && ports.listBusinessSources) {
+          const lus = await withDeadline(ports.listBusinessSources(input.accountId, {
+            assetIds: [assetId], need: { terms: [], facts: valid.map((v) => v.fieldKey), need: 'date' },
+          }), retrievalDeadline()).catch(() => null);
+          for (const x of lus?.sources ?? []) {
+            if (x.domain === 'field' && x.fieldKey && x.assetId === assetId && valid.some((v) => v.fieldKey === x.fieldKey)) {
+              stored.push({ fieldKey: x.fieldKey, value: String(x.endDate ?? x.date ?? ''), display: String((x.meta as { display?: unknown } | undefined)?.display ?? x.detail ?? '') });
+              nom ??= ((x.meta as { assetName?: unknown } | undefined)?.assetName as string | undefined) ?? null;
+            }
+          }
+        }
+        if (cible.assetId && !nom && hint) nom = hint;
+        const r = contextCalculationAnswer({ message: input.message, today: aujourdhuiParis(), facts: valid, stored, assetName: nom });
+        semTrace.contextFactsUsed = r.used;
+        semTrace.contextContradiction = r.contradiction;
+        semTrace.calculation = r.calculation;
+        done('template', r.calculation === 'remaining_periods' ? 'interaction.context_calculation' : 'interaction.context_missing', null, 0);
+        return finalize(base, machine, 'deterministic', r.text, [], [], [], ports, input, r.calculation === 'remaining_periods' ? undefined : 'insufficient');
+      }
+      if (traitement === 'context_question') {
+        // ══════════════════════════════════════════════════════════════════
+        // LOT 75J (#419 R07) — QUESTION MIXED + INFORMATIONS DE CONTEXTE
+        // Les informations apportées « pour contexte » sont mises à la
+        // disposition du traitement de CETTE question : relues dans le
+        // message, typées par le registre, cible résolue par le serveur,
+        // comparées aux données enregistrées (contradiction signalée), jamais
+        // enregistrées. Une information non utilisée est dite.
+        // ══════════════════════════════════════════════════════════════════
+        trace.escalationReasons.push(`INTERACTION:${inter.mode}:CONTEXT_QUESTION`);
+        const faits = contextFactsOf(inter);
+        const { valid, ignored, rejected } = validateContextFacts(faits, input.message, aujourdhuiParis());
+        semTrace.contextFactsIgnored = ignored;
+        semTrace.contextFactsRejected = [...rejected];
+        const hint = faits.find((f) => f.targetHint)?.targetHint ?? compris?.entityHints?.find((h) => h.type === 'asset')?.value ?? null;
+        const cible = await cibleInformation(hint);
+        if (cible.refus && valid.length) {
+          // Cible ambiguë ou introuvable : l'information n'est attribuée à aucun bien, rien n'est calculé ni enregistré.
+          semTrace.contextFactsRejected.push(...valid.map((v) => ({ fieldKey: v.fieldKey, reason: 'TARGET_UNRESOLVED' })));
+          trace.intent = 'ACCOUNT_FACT_ASSET';
+          done('template', 'interaction.context_target_unresolved', 'AMBIGUOUS_TARGET', 0);
+          const texte = `${cible.refus.replace(/ ?;? rien n’a été modifié\.?$/, '').replace(/\.$/, '')} : je ne peux pas utiliser l’information indiquée dans votre message pour répondre. Rien n’a été modifié.`;
+          return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
+        }
+        if (!ports.listBusinessSources) return null;
+        const r0: IntentRoute = compris ?? route;
+        const noms = hint ? [hint] : [];
+        const issue = await runSemanticStage({
+          input, route: r0, ports, trace: semTrace, messageId,
+          residue: semanticResidue(input.message, { assetNames: noms, consumed: expenseThemeWords(input.message) }),
+          understood: r0, understand: null, preset: null,
+          withDeadline: (x) => withDeadline(x, retrievalDeadline()),
+          arbitrate: arbitrer,
+          contextFacts: { facts: valid, assetId: cible.assetId ?? (Number(input.pageContext?.assetId) || null) },
+        });
+        if (issue.kind === 'continue' || issue.kind === 'reroute' || issue.kind === 'interaction') {
+          semTrace.contextFactsRejected.push(...valid.map((v) => ({ fieldKey: v.fieldKey, reason: 'NOT_USED' })));
+          return null;
+        }
+        if (issue.kind === 'answer') marquer('COMPLETE', [], 'understand');
+        else marquer('PARTIAL', ['UNCONSUMED_MEANING'], issue.kind === 'clarify' ? 'clarification' : 'understand');
+        return servirSemantique(issue, r0);
+      }
+      trace.escalationReasons.push(`INTERACTION:${inter.mode}`);
+      if (input.planLimit) {
+        semTrace.updateCapabilityResolved = false;
+        done('template', 'interaction.read_only', null, 0);
+        return finalize(base, machine, 'deterministic', UPDATE_READ_ONLY_MESSAGE, [], [], [], ports, input);
+      }
+      // Lot 59 (#419 R08) : TOUTES les informations apportées sont traitées
+      // (jamais seulement la première). Cible de chacune résolue par le
+      // SERVEUR ; une cible introuvable ou ambiguë : rien n'est proposé.
+      // Lot 75J (#419 R08) : y compris celles sans valeur ou sans champ résolu
+      // (refusées explicitement par le serveur, jamais abandonnées).
+      const faits = updateFactsOf(inter);
+      const classes = classifySuppliedFacts(inter);
+      /** Message MIXED : la question qui accompagne la modification est DITE (jamais ignorée en silence). */
+      const noteMixte = inter.mode === 'MIXED'
+        ? ' Votre message contient aussi une question : je n’y réponds pas dans cette proposition. Posez-la de nouveau après avoir confirmé ou refusé la modification.' : '';
+      const contexteNonEnregistre = classes.filter((c) => c.category === 'context').length
+        ? ' Les autres informations de votre message, données pour contexte, ne sont pas enregistrées.' : '';
+      const demandes: Array<{ fact: (typeof faits)[number]; assetId: number | null }> = [];
+      for (const fait of faits) {
+        const c = await cibleInformation(fait.targetHint);
+        if (c.refus) {
+          semTrace.updateCapabilityResolved = false;
+          semTrace.updateFactsRefused = [{ fieldKey: fait.fieldKey ?? null, reason: 'TARGET_UNRESOLVED' }];
+          const texte = faits.length > 1
+            ? `${c.refus.replace(/ ?;? rien n’a été modifié\.?$/, '').replace(/\.$/, '')}. Votre message contient ${faits.length} informations : je n’ai rien préparé et rien n’a été modifié.`
+            : c.refus;
+          done('template', 'interaction.target_unresolved', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
+        }
+        demandes.push({ fact: fait, assetId: c.assetId });
+      }
+      const [premiere, ...autres] = demandes;
+      const prep = ports.prepareUpdateProposal ? await ports.prepareUpdateProposal(input, { ...premiere, ...(autres.length ? { more: autres } : {}) }).catch((e) => {
+        console.error('[verebona] proposition de mise à jour impossible :', (e as Error).message);
+        return null;
+      }) : null;
+      if (!prep) {
+        semTrace.updateCapabilityResolved = false;
+        done('template', 'interaction.update_disabled', null, 0);
+        return finalize(base, machine, 'deterministic', UPDATE_DISABLED_MESSAGE, [], [], [], ports, input);
+      }
+      semTrace.updateTargetType = prep.capability;
+      semTrace.updateCapabilityResolved = prep.kind === 'plan' || (prep.capability != null && prep.reason !== 'FIELD_NOT_WRITABLE');
+      semTrace.confirmationPlanCreated = prep.kind === 'plan';
+      semTrace.updateFactsProposed = prep.kind === 'plan' ? prep.proposed ?? 1 : 0;
+      semTrace.updateFactsRefused = (prep.refused ?? (prep.kind === 'need_info' ? [{ fieldKey: premiere.fact.fieldKey ?? null, reason: prep.reason }] : []))
+        .map((x) => ({ fieldKey: x.fieldKey, reason: x.reason }));
+      if (prep.kind === 'need_info') trace.escalationReasons.push(`INTERACTION:PROPOSAL_REFUSED:${prep.reason}`);
+      if (noteMixte) trace.escalationReasons.push('INTERACTION:MIXED_QUESTION_DEFERRED');
+      done('template', prep.kind === 'plan' ? 'command.proposal_preview' : 'command.proposal_need_info', null, 0);
+      const result = await finalize(base, machine, 'deterministic',
+        `${prep.kind === 'plan' ? prep.preview.summary : prep.message}${noteMixte}${contexteNonEnregistre}`, [], [], [], ports, input);
+      if (prep.kind === 'plan') result.commandPlan = prep.preview;
+      return result;
+    };
+
+    /**
+     * Lot 54E (#419 écart 1) — ARBITRAGE T2 borné : même éligibilité que
+     * UNDERSTAND (IA active, offre, budget du message, annulation). `null` :
+     * pas d'appel — l'étape sémantique clarifie, jamais un choix lexical.
+     */
+    const arbitrer = async (cands: ArbitrationCandidate[]): Promise<RawSemanticDecision | null> => {
+      if (!aiActif || !ports.arbitrateWithAI || !isPlanAiEligible(input.planType) || !budget.canCall()) {
+        if (ports.arbitrateWithAI && aiActif && !budget.canCall()) trace.escalationReasons.push('SEMANTIC:ARBITRATION_BUDGET_EXHAUSTED');
+        // Lot 59 : motif EXPLICITE de l'arbitrage impossible (trace, BO).
+        semTrace.arbitrationUnavailableReason = !ports.arbitrateWithAI ? 'NO_ARBITRATION_PORT' : !aiActif ? 'AI_DISABLED'
+          : !isPlanAiEligible(input.planType) ? 'PLAN_WITHOUT_AI' : 'BUDGET_EXHAUSTED';
+        return null;
+      }
+      // Lot 59 (#419) : prompt maître T2 EFFECTIF contrôlé (A9, {{BUSINESS_CANDIDATES}}, semanticDecision).
+      const caps = ports.t2PromptCapabilities ? await ports.t2PromptCapabilities().catch(() => null) : null;
+      if (caps) semTrace.t2PromptCapabilities = caps;
+      // Lot 75J (§3) : une version INCOMPATIBLE (variables, contrat) ne peut pas arbitrer non plus — jamais un choix arbitraire.
+      if ((caps && (!caps.arbitration || caps.compatible === false)) || (!caps && ports.canArbitrateWithAI && !(await ports.canArbitrateWithAI().catch(() => false)))) {
+        // Version de prompt antérieure (action BO) : aucun appel inutile.
+        trace.escalationReasons.push('SEMANTIC:ARBITRATION_PROMPT_UNSUPPORTED');
+        semTrace.arbitrationUnavailableReason = 'PROMPT_UNSUPPORTED';
+        return null;
+      }
+      if (await avantAppelModele() === 'cancelled') return null;
+      if (!budget.canCall()) return null;
+      trace.escalationReasons.push(`SEMANTIC:ARBITRATION:${cands.length}`);
+      const avant = budget.used;
+      const d = await ports.arbitrateWithAI(input.message, input, cands).catch(() => null);
+      reconcilierBudget(budget, avant, 1);
+      trace.aiCalls = budget.used;
+      return d;
+    };
+
+    /** UNDERSTAND déjà appelé pour cette demande (jamais un second appel). */
+    let comprisParModele = false;
+    /** UNDERSTAND appelé au routage (intention inconnue des règles) — lot 33. */
+    let classeAuRoutage = false;
+    /** Cascade du Centre d'aide exécutée pour cette demande (lot 33). */
+    let aideCascade: HelpCascadeResult | null = null;
+    let articleAide: ((id: string) => HelpCorpusArticle | null) | null = null;
+    /** Cible retenue par l'évaluation (phrase « aucun document lié à … »). */
+    let cibleComprise: { id: number; name: string } | null = null;
+    const repriseAvecCible = Boolean(input.resume?.assetId || input.resume?.entity || input.resume?.documentId);
+    const exigence = !repriseAvecCible && !isHelpIntent(route.intent) && ports.resolveTargets
+      && intentRequiresResolvedTarget(route.intent, needsClassification) ? targetRequirement(input.message) : null;
+    if (exigence) {
+      const immediates = targetsFromInput(input);
+      let cibles: AssistantTargets = immediates;
+      // Catalogue des biens disponibles lu ? (sinon : question sans candidats).
+      let catalogueLu = false;
+      if (!(immediates.asset || immediates.equipment || immediates.room)) {
+        const lues = await withDeadline(ports.resolveTargets!(input, route), retrievalDeadline()).catch(lectureEchouee);
+        if (lues) { cibles = lues; catalogueLu = Array.isArray(lues.catalog); }
+      }
+      const resolue = Boolean(cibles.asset || cibles.equipment || cibles.room);
+      if (resolue) {
+        if (cibles.asset) cibleComprise = { id: cibles.asset.id, name: cibles.asset.label ?? '' };
+      } else {
+        const catalogue = cibles.catalog ?? [];
+        const candidatsFil = threadAssetCandidates({
+          ambiguous: early.ambiguousCandidates, presentedLists: early.thread?.presentedLists, messages: early.thread?.messages, catalog: catalogue,
+        });
+        const ambigus = cibles.ambiguity?.kind === 'asset' ? cibles.ambiguity.candidates : [];
+        const evaluation = assessUnderstanding({
+          needsClassification, intent: route.intent, message: input.message, targetResolved: false,
+          targetCandidates: Math.max(ambigus.length, candidatsFil.length),
+        });
+        marquer(evaluation.status, evaluation.reasons, null);
+        trace.escalationReasons.push(`UNDERSTANDING:${evaluation.status}:${evaluation.reasons.join('+')}`);
+
+        /** Bien retenu sans ambiguïté : il devient la cible de la demande (et du fil). */
+        const retenir = (a: { id: number; name: string }, method: string, par: UnderstandingResolver) => {
+          input = {
+            ...input,
+            reference: { type: 'asset', id: a.id, label: a.name, method },
+            pageContext: { ...input.pageContext, assetId: String(a.id) },
+          };
+          if (!base.contextUpdate) base.contextUpdate = { type: 'asset', id: a.id, label: a.name };
+          cibleComprise = { id: a.id, name: a.name };
+          marquer('COMPLETE', [], par);
+          trace.escalationReasons.push(`UNDERSTANDING:TARGET_RESOLVED_BY_${method.toUpperCase()}`);
+        };
+        /** Clarification de la cible : candidats DU COMPTE (disponibles), jamais du modèle. */
+        const clarifierCible = async (cands: AssetCandidate[], motif: string, intention: VerebonaIntent): Promise<AssistantRunResult> => {
+          const chainDepth = (input.resume?.chainDepth ?? 0) + 1;
+          trace.diagnostic = cands.length >= 2 ? 'TARGET_AMBIGUOUS' : trace.diagnostic;
+          trace.escalationReasons.push(`CLARIFICATION:${motif}`);
+          const routeCl = { ...routeForIntent(intention, input.planType, `cible exigée non résolue (${motif})`), entityHints: route.entityHints, understanding: route.understanding };
+          base.route = routeCl;
+          trace.intent = routeCl.intent;
+          marquer(comprehension.status, [], 'clarification');
+          if (cands.length === 0) {
+            // Rien à proposer : aucun bien disponible (le dire), ou catalogue
+            // illisible (la question seule) — jamais une recherche ailleurs.
+            if (catalogueLu) trace.diagnostic = 'TARGET_NOT_FOUND';
+            const actions = await ports.resolveActions(routeCl, input, []);
+            done('template', catalogueLu ? 'understanding.no_available_target' : 'understanding.target_question', 'INSUFFICIENT', 0);
+            return finalize(base, machine, 'deterministic', catalogueLu ? NO_AVAILABLE_ASSET_MESSAGE : TARGET_QUESTION_MESSAGE,
+              [], [], actions, ports, input, 'insufficient');
+          }
+          if (chainDepth > MAX_CLARIFICATION_CHAIN) {
+            const actions = await ports.resolveActions(routeCl, input, []);
+            done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
+            return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
+          }
+          const noms = cands.map((c) => `« ${c.name} »`);
+          const question = cands.length === 2 ? `Parlez-vous de ${noms[0]} ou de ${noms[1]} ?` : 'De quel bien parlez-vous ?';
+          const state = buildTargetClarification({
+            ambiguity: { kind: 'asset', reason: motif, candidates: cands }, question,
+            accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+            originalMessage: input.message, originalMessageId: messageId, originalIntent: intention,
+            pageAssetId: Number(input.pageContext?.assetId) || null, requestedFacts: route.understanding?.requestedFacts ?? [], chainDepth,
+          });
+          if (ports.saveClarification && await ports.saveClarification(state).catch(() => false)) {
+            done('template', 'clarification.understanding_target', 'AMBIGUOUS_TARGET', state.candidates.length);
+            return finalizeClarification(base, machine, state, ports, input);
+          }
+          const texte = cands.length === 2 ? question
+            : `${question} ${state.candidates.map((c) => (c.secondaryLabel ? `${c.label} (${c.secondaryLabel})` : c.label)).join(', ')}.`;
+          done('template', 'clarification.understanding_target_unsaved', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic', texte, [], [], [], ports, input, 'insufficient');
+        };
+        /** Compréhension impossible (sans modèle, ou modèle en échec) : le dire, jamais chercher. */
+        const nonCompris = async (): Promise<AssistantRunResult> => {
+          trace.diagnostic = 'UNDERSTANDING_FAILED';
+          const actions = await ports.resolveActions(route, input, []);
+          done('template', 'understanding.failed', 'INSUFFICIENT', 0);
+          return finalize(base, machine, 'deterministic', diagnosticMessage('UNDERSTANDING_FAILED'), [], [], actions, ports, input, 'insufficient');
+        };
+        const candidatsPrudents = candidatsFil.length >= 2 ? candidatsFil : ambigus.length >= 2 ? ambigus : catalogue;
+
+        if (evaluation.requirement?.kind === 'deictic' && route.intent.startsWith('ACCOUNT_')) {
+          // ── Manque connu exactement : QUEL bien. Aucun appel modèle. ─────
+          if (ambigus.length >= 2) return clarifierCible(ambigus, cibles.ambiguity!.reason, route.intent);
+          if (candidatsFil.length === 1) retenir(candidatsFil[0], 'thread_unique', 'thread');
+          else if (candidatsFil.length >= 2) return clarifierCible(candidatsFil, 'THREAD_MULTIPLE_ASSETS', route.intent);
+          else if (catalogue.length === 1) retenir(catalogue[0], 'single_available_asset', 'deterministic');
+          else return clarifierCible(catalogue, 'MISSING_TARGET', route.intent);
+        } else {
+          // ── Renvoi non levé, ou intention inconnue : UNDERSTAND. ────────
+          const iaPossible = !input.resume && aiActif && ports.classifyWithAI != null && isPlanAiEligible(input.planType) && budget.canCall();
+          if (!iaPossible && needsClassification && ports.classifyWithAI && !aiActif) trace.escalationReasons.push('ROUTING:AI_DISABLED');
+          let compris: IntentRoute | null = null;
+          if (iaPossible) {
+            if (await avantAppelModele() === 'cancelled') return annuler();
+            if (budget.canCall()) {
+              trace.escalationReasons.push(`UNDERSTANDING:CALL:${evaluation.reasons.join('+')}`);
+              const avantCl = budget.used;
+              compris = await ports.classifyWithAI!(input.message, input).catch(() => null);
+              reconcilierBudget(budget, avantCl, 1);
+              trace.aiCalls = budget.used;
+              comprisParModele = true;
+              if (!compris) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
+            } else {
+              trace.escalationReasons.push('ROUTING:AI_BUDGET_EXHAUSTED');
+            }
+          }
+          // Lot 54E (#419 §15) : information APPORTÉE — proposition ou contexte, jamais une lecture.
+          const interactionCible = await traiterInteraction(compris);
+          if (interactionCible) return interactionCible;
+          const intentionModele = compris && compris.intent.startsWith('ACCOUNT_') ? compris.intent : null;
+          const intention: VerebonaIntent | null = intentionModele ?? (route.intent.startsWith('ACCOUNT_') ? route.intent : null);
+          if (compris && !intentionModele && compris.confidence !== 'ambiguous' && compris.intent !== 'UNKNOWN') {
+            // Le modèle lit autre chose qu'une question sur les données (aide,
+            // politesse…) : cette compréhension prime, la cible n'est plus exigée.
+            route = affinerRoute(compris, input);
+            base.route = route;
+            trace.intent = route.intent;
+            marquer('COMPLETE', [], 'understand');
+          } else if (!intention) {
+            if (compris?.confidence === 'ambiguous') marquer('UNKNOWN_INTENT', ['AMBIGUOUS_INTENT'], null);
+            // Intention ambiguë : choix d'intention (registre) ; sinon repli prudent.
+            if (compris && ports.saveClarification) {
+              const state = buildIntentClarification({
+                accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+                originalMessage: input.message, originalMessageId: messageId, proposed: compris.intent,
+              });
+              if (await ports.saveClarification(state).catch(() => false)) {
+                trace.escalationReasons.push('CLARIFICATION:CLASSIFICATION_AMBIGUOUS');
+                marquer(comprehension.status, [], 'clarification');
+                done('template', 'clarification.classification', 'AMBIGUOUS_TARGET', state.candidates.length);
+                return finalizeClarification(base, machine, state, ports, input);
+              }
+            }
+            return nonCompris();
+          } else {
+            if (compris) {
+              // Le modèle a STRUCTURÉ la demande (intention, indices, faits,
+              // filtres) ; le serveur reprend la main pour la cible.
+              route = affinerRoute({ ...compris, intent: intention }, input);
+              base.route = route;
+              trace.intent = route.intent;
+            }
+            const indices = compris && compris.confidence !== 'ambiguous'
+              ? await withDeadline(ports.resolveTargets!(input, route), retrievalDeadline()).catch(lectureEchouee) : null;
+            if (indices?.asset) retenir({ id: indices.asset.id, name: indices.asset.label ?? '' }, 'understanding_hint', 'understand');
+            else if (indices?.equipment || indices?.room) marquer('COMPLETE', [], 'understand');
+            else if (indices?.ambiguity?.kind === 'asset') return clarifierCible(indices.ambiguity.candidates, indices.ambiguity.reason, intention);
+            else {
+              if (compris) marquer(comprehension.status, ['AMBIGUOUS_TARGET'], null);
+              return clarifierCible(candidatsPrudents, compris ? 'UNDERSTANDING_TARGET_UNRESOLVED' : 'UNRESOLVED_REFERENCE', intention);
+            }
+          }
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // FAITS DU COMPTE, SQL-FIRST — lot 29 (tickets 8a, 8b, 12, 13, 14)
+    //
+    // « Quelle est l'adresse de la maison ? », « numéro de série de la
+    // chaudière ? », « date d'achat et kilométrage de la Polo ? » : les champs
+    // sont compris par le VOCABULAIRE CANONIQUE (registre), la cible par SQL
+    // (nom, VIN / plaque exacts, équipement, pièce, catégorie unique) — lus
+    // sur la fiche canonique, réponse rédigée par le serveur : AUCUN appel
+    // modèle. Plusieurs cibles → une clarification ; cible indisponible ou
+    // introuvable → motif explicite. Sans cible identifiée, la demande suit
+    // son cours (le modèle peut encore la comprendre).
+    // ══════════════════════════════════════════════════════════════════════
+    let classeParFaits = false;
+    /**
+     * Lot 53 (53H) : faits demandés DÉTERMINÉS (compréhension déterministe
+     * complète, UNDERSTAND, reprise). Garde-fou de fidélité : une réponse qui
+     * ne porte que sur un AUTRE champ est rejetée (`garantirFidelite`).
+     */
+    let faitsExiges: string[] = [];
+    /**
+     * Garde-fou de fidélité (lot 53, AC09) : `null` si la réponse est fidèle
+     * (ou ne porte sur aucun champ). Sinon elle est REJETÉE : lecture ciblée
+     * des champs demandés (fiche canonique, puis cascade documentaire du
+     * champ), à défaut absence explicite — jamais la donnée substituée.
+     */
+    const garantirFidelite = async (claims: Claim[], origine: string): Promise<AssistantRunResult | null> => {
+      const autres = substitutedFieldKeys(faitsExiges, claims);
+      if (!autres.length) return null;
+      trace.escalationReasons.push(`FIDELITY:REJECTED_OTHER_FIELD:${origine}:${autres.join('+')}`);
+      if (ports.readTarget) {
+        const r: IntentRoute = { ...route, understanding: { ...route.understanding, requestedFacts: faitsExiges, filters: route.understanding?.filters ?? {} } };
+        const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, r), r), retrievalDeadline()).catch(lectureEchouee);
+        // Une ambiguïté de cible n'est pas posée ici (étape tardive) : absence prudente.
+        const facts = lu?.facts ?? [];
+        if (lu && !lu.ambiguity && facts.some((f) => f.key && faitsExiges.includes(f.key))) {
+          const servi = await servirLectureCiblee(lu, r, { reprise: true });
+          if (servi) return servi;
+        }
+      }
+      trace.diagnostic = 'FIELD_NOT_SET';
+      const actions = await ports.resolveActions(route, input, []);
+      done('template', 'fidelity.requested_fact_missing', 'INSUFFICIENT', 0);
+      return finalize(base, machine, 'deterministic', requestedFactsMissingMessage(faitsExiges), [], [], actions, ports, input, 'insufficient');
+    };
+    if (ports.readTarget && !isHelpIntent(route.intent)) {
+      const faitsReprise = input.resume?.requestedFacts ?? [];
+      let faits = faitsReprise.length ? faitsReprise : deterministicRequestedFacts(input.message);
+      const cibleDocument = Boolean(input.pageContext?.documentId) || input.reference?.type === 'document' || Boolean(input.resume?.documentId);
+      const intentionCompatible = needsClassification || FACT_STEP_INTENTS.has(route.intent)
+        || (route.intent === 'ACCOUNT_FACT_DOCUMENT' && !cibleDocument);
+      // Lot 53 (53H) : la FORME de la demande. Une question explicite est une
+      // compréhension complète ; une commande ou un comptage n'est pas une
+      // lecture ; sinon la forme est INDÉTERMINÉE (« date d'achat polo »).
+      const forme = fieldRequestForm(input.message);
+      if (faits.length && !faitsReprise.length && intentionCompatible && forme === 'undetermined') {
+        // ════════════════════════════════════════════════════════════════
+        // LOT 53 (53H) — CHAMP DÉTECTÉ, FORME INDÉTERMINÉE → UNDERSTAND
+        //
+        // Un champ du registre est reconnu mais la demande n'est pas une
+        // question explicite : compréhension INCOMPLÈTE. Jamais l'abandon du
+        // champ puis une recherche large sur le bien (qui rendait « Motorisation
+        // de Polo » pour une date d'achat). T2 UNDERSTAND traduit la demande en
+        // `requestedFacts` (FIELD_CATALOG) ; le serveur valide les champs,
+        // résout la cible dans le compte et lit la donnée canonique.
+        // ════════════════════════════════════════════════════════════════
+        marquer('PARTIAL', ['UNDETERMINED_FIELD_REQUEST'], null);
+        trace.escalationReasons.push('UNDERSTANDING:UNDETERMINED_FIELD_REQUEST');
+        // Déjà compris par le modèle (évaluation de la cible) : sa route vaut
+        // compréhension, jamais un second appel.
+        let compris: IntentRoute | null = comprisParModele && !comprehensionEchouee ? route : null;
+        if (!comprisParModele && aiActif && ports.classifyWithAI && isPlanAiEligible(input.planType) && budget.canCall()) {
+          if (await avantAppelModele() === 'cancelled') return annuler();
+          if (budget.canCall()) {
+            const avantCl = budget.used;
+            compris = await ports.classifyWithAI(input.message, input).catch(() => null);
+            reconcilierBudget(budget, avantCl, 1);
+            trace.aiCalls = budget.used;
+            classeParFaits = true;
+            comprisParModele = true;
+            if (!compris) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
+          }
+        } else if (!aiActif && ports.classifyWithAI) {
+          trace.escalationReasons.push('ROUTING:AI_DISABLED');
+        }
+        // Lot 54E (#419 §15) : « La date de fin de LLD de la Cupra est le
+        // 21/05/2027 » — un champ détecté n'en fait pas une question.
+        const interactionChamp = await traiterInteraction(compris);
+        if (interactionChamp) return interactionChamp;
+        if (compris) {
+          // Champs du modèle VALIDÉS par le serveur : registre, lisibles par l'assistant.
+          const faitsModele = dedupeLecture(compris.understanding?.requestedFacts ?? []);
+          if (compris.confidence === 'ambiguous' || (!faitsModele.length && compris.intent === 'UNKNOWN')) {
+            // Formulation ambiguë (« date polo ») : jamais un champ choisi au hasard.
+            marquer('PARTIAL', ['AMBIGUOUS_INTENT'], null);
+            if (ports.saveClarification) {
+              const state = buildIntentClarification({
+                accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+                originalMessage: input.message, originalMessageId: messageId, proposed: compris.intent,
+              });
+              if (await ports.saveClarification(state).catch(() => false)) {
+                trace.escalationReasons.push('CLARIFICATION:UNDETERMINED_FIELD_REQUEST');
+                marquer(comprehension.status, [], 'clarification');
+                done('template', 'clarification.classification', 'AMBIGUOUS_TARGET', state.candidates.length);
+                return finalizeClarification(base, machine, state, ports, input);
+              }
+            }
+            const actions = await ports.resolveActions(route, input, []);
+            trace.diagnostic = 'UNDERSTANDING_FAILED';
+            done('template', 'understanding.failed', 'INSUFFICIENT', 0);
+            return finalize(base, machine, 'deterministic', diagnosticMessage('UNDERSTANDING_FAILED'), [], [], actions, ports, input, 'insufficient');
+          }
+          route = affinerRoute(compris, input);
+          base.route = route;
+          trace.intent = route.intent;
+          marquer('COMPLETE', [], 'understand');
+          if (faitsModele.length) {
+            faitsExiges = faitsModele;
+            trace.escalationReasons.push(`UNDERSTANDING:REQUESTED_FACTS:${faitsModele.join('+')}`);
+            const routeModele: IntentRoute = { ...route, understanding: { ...route.understanding, requestedFacts: faitsModele, filters: route.understanding?.filters ?? {} } };
+            const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, routeModele), routeModele), retrievalDeadline()).catch(lectureEchouee);
+            const servi = lu ? await servirLectureCiblee(lu, routeModele, { reprise: false }) : null;
+            if (servi) return servi;
+          }
+          // Le modèle ne lit pas une demande de champ : sa compréhension prime,
+          // la cascade continue sur SA route (garde-fou actif si des faits sont exigés).
+        } else {
+          // Sans UNDERSTAND (IA coupée, offre, budget, échec) : repli PRUDENT —
+          // seul le champ reconnu par le registre canonique est lu, jamais une
+          // autre donnée du bien ; sinon absence explicite (garde-fou).
+          faitsExiges = dedupeLecture(faits);
+          trace.escalationReasons.push('UNDERSTANDING:REGISTRY_FALLBACK');
+          if (faitsExiges.length) {
+            const routeFaits: IntentRoute = { ...route, understanding: { ...route.understanding, requestedFacts: faitsExiges, filters: route.understanding?.filters ?? {} } };
+            const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, routeFaits), routeFaits), retrievalDeadline()).catch(lectureEchouee);
+            const servi = lu ? await servirLectureCiblee(lu, routeFaits, { reprise: false }) : null;
+            if (servi) return servi;
+          }
+        }
+      } else if (faits.length && (faitsReprise.length || (intentionCompatible && forme === 'question'))) {
+        let routeFaits: IntentRoute = { ...route, understanding: { requestedFacts: faits, filters: route.understanding?.filters ?? {} } };
+        // Compréhension PARTIELLE (« quand ai-je acheté la Polo et combien
+        // l'ai-je payée ? ») : le modèle comprend la demande — une intention
+        // STRUCTURÉE seulement — puis le serveur reprend la main (8b §G).
+        const partielle = !faitsReprise.length && unconsumedInformationWords(input.message).length > 0;
+        if (partielle) marquer('PARTIAL', ['UNCONSUMED_MEANING'], null);
+        if (partielle && !comprisParModele && aiActif && ports.classifyWithAI && isPlanAiEligible(input.planType) && budget.canCall()) {
+          if (await avantAppelModele() === 'cancelled') return annuler();
+          if (budget.canCall()) {
+            trace.escalationReasons.push('UNDERSTANDING:PARTIAL_DETERMINISTIC');
+            const avantCl = budget.used;
+            const classified = await ports.classifyWithAI(input.message, input).catch(() => null);
+            reconcilierBudget(budget, avantCl, 1);
+            trace.aiCalls = budget.used;
+            classeParFaits = true;
+            comprisParModele = true;
+            const interactionPartielle = await traiterInteraction(classified);
+            if (interactionPartielle) return interactionPartielle;
+            if (classified) {
+              marquer('COMPLETE', [], 'understand');
+              route = affinerRoute(classified, input);
+              base.route = route;
+              trace.intent = route.intent;
+              if (route.understanding?.requestedFacts.length) {
+                faits = route.understanding.requestedFacts;
+                routeFaits = route;
+              }
+            } else {
+              comprehensionEchouee = true;
+              trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED');
+            }
+          }
+        }
+        faitsExiges = dedupeLecture(routeFaits.understanding?.requestedFacts ?? faits);
+        const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, routeFaits), routeFaits), retrievalDeadline()).catch(lectureEchouee);
+        const servi = lu ? await servirLectureCiblee(lu, routeFaits, { reprise: faitsReprise.length > 0 }) : null;
+        if (servi) return servi;
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 49 — PÉRIMÈTRE SÉMANTIQUE (DETERMINISTIC_STRONG / DETERMINISTIC_WEAK)
+    //
+    // Une règle décidée par des signaux FAIBLES (« quand », « combien »,
+    // « paye », « contrat »…) n'est exécutée telle quelle que si la question
+    // ne contient RIEN d'autre de significatif. Sinon (« Quand finit le
+    // CONTRAT de la Cupra ? », « Je paye combien pour INTERNET à la
+    // maison ? ») : T2 UNDERSTAND (une fois au plus), cible résolue par le
+    // serveur, sources métier réelles (opérations d'abord) → réponse
+    // canonique, clarification métier, ou information insuffisante.
+    // Une décision FORTE (« Quelles sont mes échéances ? », « Combien ai-je
+    // dépensé en abonnements pour la Maison ? ») reste servie sans IA.
+    // ══════════════════════════════════════════════════════════════════════
+    /** UNDERSTAND borné (une fois par demande, budget, annulation, offre) ; `null` : pas d'appel. */
+    const comprendrePourSemantique = async (): Promise<IntentRoute | null> => {
+      if (comprisParModele || !aiActif || !ports.classifyWithAI || !isPlanAiEligible(input.planType) || !budget.canCall()) {
+        if (!aiActif && ports.classifyWithAI) trace.escalationReasons.push('ROUTING:AI_DISABLED');
+        return null;
+      }
+      trace.escalationReasons.push('UNDERSTANDING:SEMANTIC_SCOPE');
+      const avantCl = budget.used;
+      const compris = await ports.classifyWithAI(input.message, input).catch(() => null);
+      reconcilierBudget(budget, avantCl, 1);
+      trace.aiCalls = budget.used;
+      comprisParModele = true;
+      semTrace.understandCalled = true;
+      if (!compris) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
+      await noterPromptT2();
+      return compris;
+    };
+    /** Exécute l'étape sémantique ; `null` : la cascade continue (route éventuellement remplacée). */
+    const etapeSemantique = async (
+      declencheur: SemanticTrace['trigger'], residu: string[],
+      o: { preset?: { terms: string[]; facts: string[]; need: SemanticNeed['need'] } | null; continueOnInsufficient?: boolean } = {},
+    ): Promise<AssistantRunResult | null> => {
+      semTrace.trigger = declencheur;
+      semTrace.semanticResidue = [...residu];
+      if (!o.preset && aiActif && ports.classifyWithAI && !comprisParModele && isPlanAiEligible(input.planType) && budget.canCall()) {
+        if (await avantAppelModele() === 'cancelled') return annuler();
+      }
+      const issue = await runSemanticStage({
+        input, route, ports, trace: semTrace, messageId, residue: residu,
+        understood: comprisParModele && !o.preset ? route : null,
+        understand: o.preset ? null : comprendrePourSemantique,
+        preset: o.preset ?? null,
+        withDeadline: (x) => withDeadline(x, retrievalDeadline()),
+        arbitrate: arbitrer,
+      });
+      if (issue.kind === 'interaction') return traiterInteraction(issue.route);
+      if (issue.kind === 'reroute') {
+        route = affinerRoute(issue.route, input);
+        base.route = route;
+        trace.intent = route.intent;
+        marquer('COMPLETE', [], 'understand');
+        return null;
+      }
+      // Lot 53 (D21) : étape ajoutée APRÈS la classification — une absence
+      // de correspondance y laisse la cascade existante suivre son cours.
+      if (o.continueOnInsufficient && issue.kind === 'insufficient') return null;
+      if (issue.kind !== 'continue') {
+        if (issue.kind === 'answer') marquer('COMPLETE', [], semTrace.understandCalled ? 'understand' : 'deterministic');
+        else if (issue.kind === 'clarify') marquer('PARTIAL', ['UNCONSUMED_MEANING'], 'clarification');
+        else marquer('PARTIAL', ['UNCONSUMED_MEANING'], semTrace.understandCalled ? 'understand' : null);
+      }
+      return servirSemantique(issue, route);
+    };
+
+    if (ports.listBusinessSources && !isHelpIntent(route.intent)) {
+      if (input.resume?.semantic && !input.resume.semanticSource) {
+        // Reprise après une clarification de CIBLE : besoin déjà compris.
+        const r = input.resume.semantic;
+        const servi = await etapeSemantique('resume_scope', r.terms, { preset: { terms: r.terms, facts: r.facts, need: r.need } });
+        if (servi) return servi;
+      } else if ((!input.resume ? route.deterministicConfidence === 'WEAK' : repriseDePeriodeFaible(input)) && route.intent.startsWith('ACCOUNT_')) {
+        // Lot 53 (PO D21) : la reprise d'une clarification de PÉRIODE (« mars »
+        // → « mars 2025 ») rejoue la demande : elle garde l'analyse sémantique
+        // qu'aurait eue la question initiale (jamais un total plus large).
+        const besoin = detectValueNeed(input.message);
+        if (besoin) {
+          const cibles = ports.resolveTargets ? await withDeadline(ports.resolveTargets(input, route), retrievalDeadline()).catch(() => null) : null;
+          const noms = [...(cibles?.catalog ?? []).map((a) => a.name), ...(cibles?.asset?.label ? [cibles.asset.label] : [])];
+          const residu = semanticResidue(input.message, { assetNames: noms, consumed: expenseThemeWords(input.message) });
+          if (residu.length) {
+            const servi = await etapeSemantique('weak_route', residu);
+            if (servi) return servi;
+          }
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // NAVIGATION EXPLICITE — §22.9, §22.10, CA-14, 37.11
+    //
+    // « Ouvre mon agenda » répondait « Je n'ai pas trouvé d'élément
+    // suffisant… » avec trois boutons : NAVIGATION_OPEN n'avait ni gabarit ni
+    // action ciblée. Une destination connue du dictionnaire produit désormais
+    // une phrase courte et UN seul bouton ; rien ne s'ouvre sans clic (§22.10).
+    // ══════════════════════════════════════════════════════════════════════
+    if (route.intent === 'NAVIGATION_OPEN') {
+      const nav = findNavigationTarget(input.message);
+      if (nav) {
+        const actions = await ports.resolveActions(route, input, []);
+        done('template', `template.NAVIGATION_OPEN.${nav.key}`, 'SUFFICIENT_STRUCTURED', 0);
+        return finalize(base, machine, 'deterministic', nav.answer, [], [], actions, ports, input);
+      }
+    }
+
+    // ── Flag §39 `verebona_assistant_product_help` coupé ────────────────────
+    // Rollback de l'aide produit : aucune réponse d'aide rédigée, renvoi au
+    // Centre d'aide (la recherche classique reste disponible).
+    if (isHelpIntent(route.intent) && !isAssistantFlagOn('product_help')) {
+      const actions = await ports.resolveActions(route, input, []);
+      done('template', 'flag.product_help_off', null, 0);
+      return finalize(base, machine, 'deterministic', PRODUCT_HELP_OFF_MESSAGE, [], [], actions, ports, input);
+    }
+
+    // ── Réponse déterministe par gabarit (§14) ──────────────────────────────
+    // Offre et limite du compte : le gabarit « offre » en dépend (§9.2).
+    const detCtx = { planType: input.planType, planLimit: input.planLimit ?? null };
+    let det = tryDeterministic(route.intent, detCtx);
+    if (det.handled && det.answer) {
+      const actions = await ports.resolveActions(route, input, []);
+      done('template', `template.${route.intent}`, 'SUFFICIENT_STRUCTURED', 0);
+      return finalize(base, machine, 'deterministic', det.answer, [], [], actions, ports, input);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // NIVEAUX 1 ET 2 — DONNÉES STRUCTURÉES PUIS DONNÉES T1, SANS MODÈLE
+    //
+    // Tentés pour toute question portant sur les données du compte, AVANT la
+    // classification IA et AVANT la génération. Une réponse suffisante ici
+    // est définitive, quel que soit `aiEligible` : l'éligibilité autorise un
+    // appel modèle, elle ne l'impose jamais.
+    // ══════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 101A (B) — GARDE-FOU DE ROUTAGE T2
+    //
+    // « Et la série ? » (UNKNOWN, elliptique, contexte présent) partait en
+    // `retrieval.t1_fact` sur le compte entier et remontait des tickets
+    // Decathlon, une offre Orange, un compteur EDF, un VIN. Une intention
+    // inconnue qui dépend du contexte, ou qui porte sur une propriété sans
+    // cible fiable, passe d'abord par la compréhension T2 et la résolution
+    // serveur ; le chemin déterministe reste ouvert quand la cible est sûre,
+    // la propriété normalisée et les données bornées à la cible.
+    // ══════════════════════════════════════════════════════════════════════
+    {
+      const ellipse = propertyFollowUp(input.message);
+      const parLeFil = trace.reference?.outcome === 'resolved';
+      const contextuel = Boolean(ellipse) || parLeFil
+        || (needsClassification && (early.thread?.messages.length ?? 0) > 0 && isShortFollowUp(input.message));
+      const objetResolu = Boolean(input.reference && input.reference.type !== 'document' && input.reference.type !== 'agenda_item')
+        || Boolean(input.resume?.entity || input.resume?.assetId) || Boolean(cibleComprise);
+      const proprietes = faitsExiges.length ? faitsExiges : dedupeLecture(route.understanding?.requestedFacts?.length
+        ? route.understanding.requestedFacts : (ellipse?.fields.length ? ellipse.fields : findReadableFields(input.message).map((x) => x.def.key)));
+      const garde = decideT2Routing({
+        intentUnknown: needsClassification && !comprisParModele && (route.intent === 'UNKNOWN' || !route.intent.startsWith('ACCOUNT_')),
+        contextual: contextuel && !comprisParModele,
+        targetResolved: objetResolu,
+        propertyNormalized: proprietes.length > 0,
+        propertyQuestion: proprietes.length > 0 || Boolean(ellipse),
+        ellipticalProperty: Boolean(ellipse) && !comprisParModele,
+      });
+      trace.routingGuard = garde;
+      if (garde.decision !== 'DETERMINISTIC' && garde.decision !== 'FREE_LEVELS_FIRST') trace.escalationReasons.push(`ROUTING_GUARD:${garde.decision}:${garde.reasons.join('+')}`);
+      if (garde.decision === 'UNDERSTAND_FIRST' && !input.resume) {
+        const iaPossible = aiActif && ports.classifyWithAI != null && isPlanAiEligible(input.planType) && budget.canCall();
+        let compris: IntentRoute | null = null;
+        if (iaPossible && !comprisParModele) {
+          if (await avantAppelModele() === 'cancelled') return annuler();
+          if (budget.canCall()) {
+            const avantCl = budget.used;
+            compris = await ports.classifyWithAI!(input.message, input).catch(() => null);
+            reconcilierBudget(budget, avantCl, 1);
+            trace.aiCalls = budget.used;
+            comprisParModele = true;
+            classeParFaits = true;
+            semTrace.understandCalled = true;
+            if (!compris) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
+          }
+        } else if (!aiActif && ports.classifyWithAI) {
+          trace.escalationReasons.push('ROUTING:AI_DISABLED');
+        }
+        const interactionGarde = await traiterInteraction(compris);
+        if (interactionGarde) return interactionGarde;
+        if (compris && compris.intent !== 'UNKNOWN' && compris.confidence !== 'ambiguous') {
+          route = affinerRoute(compris, input);
+          base.route = route;
+          trace.intent = route.intent;
+          marquer('COMPLETE', [], 'understand');
+          const faitsModele = dedupeLecture(compris.understanding?.requestedFacts ?? []);
+          if (faitsModele.length && ports.readTarget) {
+            faitsExiges = faitsModele;
+            trace.escalationReasons.push(`UNDERSTANDING:REQUESTED_FACTS:${faitsModele.join('+')}`);
+            const routeModele: IntentRoute = { ...route, understanding: { ...route.understanding, requestedFacts: faitsModele, filters: route.understanding?.filters ?? {} } };
+            const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, routeModele), routeModele), retrievalDeadline()).catch(lectureEchouee);
+            const servi = lu ? await servirLectureCiblee(lu, routeModele, { reprise: false }) : null;
+            if (servi) return servi;
+          }
+        } else if (proprietes.length && !faitsExiges.length) {
+          // Sans compréhension : seule la propriété reconnue par le registre est lue.
+          faitsExiges = proprietes;
+        }
+        // Renvoi au contexte sans AUCUNE cible : jamais une recherche du compte
+        // entier — la question de la cible est posée (aucun choix arbitraire).
+        if (contextuel && !objetResolu && !input.reference) {
+          trace.diagnostic = 'TARGET_NOT_FOUND';
+          const actions = await ports.resolveActions(route, input, []);
+          done('template', 'routing.context_target_unresolved', 'INSUFFICIENT', 0);
+          return finalize(base, machine, 'deterministic', CONTEXT_TARGET_QUESTION_MESSAGE, [], [], actions, ports, input, 'insufficient');
+        }
+        // Propriété d'un objet non identifié, hors contexte : la recherche du
+        // compte reste possible en REPLI EXPLICITE (tracé), candidats validés
+        // par objet → propriété → valeur.
+        if (!objetResolu) trace.escalationReasons.push('RETRIEVAL:ACCOUNT_FALLBACK_EXPLICIT');
+      }
+    }
+
+    let data: DataAnswerOutcome | null = null;
+    if (ports.answerFromData && isDataQuestion(route, input.message)) {
+      machine.transition('RETRIEVING');
+      data = await withDeadline(ports.answerFromData(route, input, thresholds), retrievalDeadline()).catch(() => null);
+
+      // ══════════════════════════════════════════════════════════════════
+      // REVALIDATION CIBLÉE (§ T2) — seulement si les données T1 sont
+      // insuffisantes : confiance trop faible ou valeurs en conflit. Le fait
+      // amélioré est réinjecté, puis la cascade est rejouée UNE fois sur la
+      // connaissance mise à jour.
+      // ══════════════════════════════════════════════════════════════════
+      if (data?.revalidation && ports.revalidateFacts && !input.revalidationDone && aiActif) {
+        if (await avantAppelModele() === 'cancelled') return annuler();
+        const avantRv = budget.used;
+        const rv = await ports.revalidateFacts(input, data.revalidation).catch(() => null);
+        if (rv) {
+          trace.revalidations = rv.results;
+          // Un port qui n'a pas décompté ses appels sur le budget (double de
+          // test, implémentation tierce) est rattrapé ici : le plafond reste
+          // garanti au niveau de l'orchestrateur.
+          reconcilierBudget(budget, avantRv, rv.results.reduce((n, r) => n + r.aiCalls, 0));
+          trace.aiCalls = budget.used;
+          trace.escalationReasons.push(`REVALIDATION:${data.revalidation.trigger}`);
+          if (rv.established) {
+            input = { ...input, revalidationDone: true };
+            trace.attempts.push(...data.attempts);
+            data = await withDeadline(ports.answerFromData(route, input, thresholds), retrievalDeadline()).catch(() => data);
+          } else if (rv.prudentAnswer && !data.handled) {
+            const actions = await ports.resolveActions(route, input, data.contextSources);
+            const resolvedCtx = await ports.resolveSources(data.contextSources.slice(0, 3), input.accountId);
+            done('retrieval', 'revalidation.unconfirmed', 'INSUFFICIENT', data.contextSources.length);
+            return finalize(base, machine, 'deterministic', rv.prudentAnswer, [], resolvedCtx, actions, ports, input, 'insufficient');
+          }
+        }
+      }
+
+      if (data) {
+        trace.attempts.push(...data.attempts);
+        // Lot 101A (C, D, I) : périmètre exact et verdict de chaque candidat.
+        if (data.retrieval) trace.retrieval = data.retrieval;
+        // Lot 101A (A) : faits retenus portant tous sur UN même équipement /
+        // UNE même pièce → cet objet devient l'objet actif du fil (« Et la
+        // série ? » au tour suivant), même si la réponse cite des documents.
+        if (data.handled && !base.contextUpdate && data.retrieval) {
+          const objets = [...new Map(data.retrieval.candidates
+            .filter((c) => c.decision === 'KEPT' && c.sourceObject && (c.sourceObject.type === 'EQUIPMENT' || c.sourceObject.type === 'ROOM') && c.sourceObject.id != null)
+            .map((c) => [`${c.sourceObject!.type}:${c.sourceObject!.id}`, c.sourceObject!])).values()];
+          const tous = data.retrieval.candidates.filter((c) => c.decision === 'KEPT');
+          if (objets.length === 1 && tous.every((c) => c.sourceObject?.type === objets[0].type && c.sourceObject?.id === objets[0].id)) {
+            base.contextUpdate = { type: objets[0].type === 'ROOM' ? 'room' : 'equipment', id: objets[0].id!, label: null };
+          }
+        }
+
+        // ── Demande d'actions (lot 34) : trace dédiée, route alignée ──────
+        // La famille reconnue porte une intention EXISTANTE (À traiter ou
+        // agenda) : une intention voisine proposée par UNDERSTAND est
+        // ramenée à celle-ci, pour que le contrat de sources et les actions
+        // proposées soient ceux de la réponse.
+        if (data.actionable) {
+          trace.actionable = data.actionable;
+          const intention = data.actionable.intent as VerebonaIntent;
+          if (route.intent !== intention && data.actionable.resolution === 'SUCCESS') {
+            trace.escalationReasons.push(`ROUTING:ACTIONABLE_${data.actionable.intentResolution}`);
+            route = { ...routeForIntent(intention, input.planType, `demande d’actions — ${data.actionable.intentResolution}`), entityHints: route.entityHints };
+            base.route = route;
+            trace.intent = route.intent;
+          }
+          // Demande comprise par la règle (ou par UNDERSTAND) : résolue.
+          if (data.handled && comprehension.status === 'UNKNOWN_INTENT') marquer('COMPLETE', [], comprisParModele ? 'understand' : 'deterministic');
+        }
+
+        // ══════════════════════════════════════════════════════════════════
+        // AMBIGUÏTÉ → CLARIFICATION (§20)
+        //
+        // La demande vise un bien et plusieurs correspondent aussi bien :
+        // aucun n'est choisi arbitrairement. Les candidats viennent des
+        // données du compte (jamais du modèle) ; l'état complet de la demande
+        // est enregistré pour une reprise structurée. Au-delà de deux
+        // clarifications successives, repli.
+        // ══════════════════════════════════════════════════════════════════
+        if (data.ambiguity && data.ambiguity.candidates.length >= 2) {
+          const chainDepth = (input.resume?.chainDepth ?? 0) + 1;
+          trace.escalationReasons.push(`CLARIFICATION:${data.ambiguity.reason}`);
+          if (chainDepth > MAX_CLARIFICATION_CHAIN) {
+            const actions = await ports.resolveActions(route, input, []);
+            done('template', 'clarification.chain_exhausted', 'AMBIGUOUS_TARGET', 0);
+            return finalize(base, machine, 'deterministic', FALLBACK_ASSET_MESSAGE, [], [], actions, ports, input);
+          }
+          const state = buildAssetClarification({
+            assets: data.ambiguity.candidates,
+            reason: data.ambiguity.reason,
+            accountId: input.accountId,
+            userId: input.userId,
+            conversationId: input.conversationId,
+            originalMessage: input.message,
+            originalMessageId: messageId,
+            originalIntent: route.intent,
+            pageAssetId: Number(input.pageContext?.assetId) || null,
+            chainDepth,
+          });
+          const saved = ports.saveClarification ? await ports.saveClarification(state).catch(() => false) : false;
+          if (saved) {
+            done('template', 'clarification.asset', 'AMBIGUOUS_TARGET', state.candidates.length);
+            return finalizeClarification(base, machine, state, ports, input);
+          }
+        }
+
+        // ════════════════════════════════════════════════════════════════
+        // LOT 49 — STRATÉGIE STRUCTURÉE CANDIDATE, PÉRIMÈTRE NON RÉSOLU
+        //
+        // `tryCanonicalStructured` n'a PAS exécuté sa stratégie : un sujet de
+        // la question (« internet ») n'est consommé par rien. Aucun total
+        // plus large n'est rendu ; T2 comprend, le serveur expose les
+        // sources réelles, valide et calcule.
+        // ════════════════════════════════════════════════════════════════
+        if (data.semanticScope && !data.handled) {
+          semTrace.structuredStrategyCandidate = data.semanticScope.strategyCandidate;
+          semTrace.structuredStrategyExecuted = false;
+          semTrace.structuredScopeFallbackPrevented = true;
+          trace.escalationReasons.push(`SEMANTIC:SCOPE_UNRESOLVED:${data.semanticScope.strategyCandidate}`);
+          if (ports.listBusinessSources && !input.resume?.semanticSource) {
+            const servi = await etapeSemantique('structured_scope', data.semanticScope.terms);
+            if (servi) return servi;
+          }
+        }
+
+        if (data.handled && data.answer) {
+          // Lot 53 (53H) : jamais une autre donnée à la place de celle demandée.
+          const infidele = await garantirFidelite(data.claims, data.strategy);
+          if (infidele) return infidele;
+          if (data.strategy.startsWith('structured.')) semTrace.structuredStrategyExecuted = true;
+          const resolvedData = await ports.resolveSources(data.sources, input.accountId);
+          const actions = await ports.resolveActions(route, input, data.sources);
+          done(data.decision.level === 1 ? 'structured' : 'retrieval', data.strategy, data.decision.status, data.sources.length);
+          // Listes et document retrouvé : cartes de résultats (§22.2, §22.3).
+          if (CARD_STRATEGIES.has(data.strategy)) base.resultGroups = buildResultGroups(data.sources);
+          if (data.documentState) trace.escalationReasons.push(`DOCUMENT:${data.documentState.kind}`);
+          trace.fallbackUsed = false;
+          return finalize(base, machine, 'deterministic', data.answer, data.claims, resolvedData, actions, ports, input,
+            data.decision.status === 'CONFLICTING' ? 'conflicting' : data.documentState ? 'insufficient' : 'supported');
+        }
+        if (data.decision.reason) trace.escalationReasons.push(`N${data.decision.level}:${data.decision.reason}`);
+      }
+    }
+
+    // ── UNDERSTAND pour une intention inconnue (§9.4.9, §15.5 ; lot 32) ────
+    // Flag §39 `account_ai` (ou VEREBONA_ASSISTANT_AI_ENABLED) coupé : AUCUN
+    // appel modèle — ni compréhension, ni revalidation, ni génération.
+    // Déjà compris par le modèle (étape des faits, évaluation de la cible) :
+    // pas de second appel.
+    const classifier = needsClassification && !classeParFaits && !comprisParModele && ports.classifyWithAI && aiActif && isPlanAiEligible(input.planType);
+    if (needsClassification && !comprisParModele && ports.classifyWithAI && !aiActif) trace.escalationReasons.push('ROUTING:AI_DISABLED');
+    if (classifier) {
+      if (await avantAppelModele() === 'cancelled') return annuler();
+    }
+    if (classifier && !budget.canCall()) {
+      trace.escalationReasons.push('ROUTING:AI_BUDGET_EXHAUSTED');
+    } else if (classifier && ports.classifyWithAI) {
+      trace.escalationReasons.push('ROUTING:NO_DETERMINISTIC_RULE');
+      const avantCl = budget.used;
+      const classified = await ports.classifyWithAI(outcome.kind === 'needs_classification' ? outcome.normalized : input.message, input);
+      reconcilierBudget(budget, avantCl, 1);
+      trace.aiCalls = budget.used;
+      classeAuRoutage = Boolean(classified);
+      // Lot 54E (#419 §15) : information APPORTÉE (proposition, contexte seul).
+      const interactionRoutage = await traiterInteraction(classified);
+      if (interactionRoutage) return interactionRoutage;
+      // Lot 29 (8b §K) : compréhension impossible (modèle en échec) — motif
+      // distinct, jamais confondu avec « rien trouvé ».
+      if (!classified) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
+      route = affinerRoute(classified ?? fallbackUnknownRoute(), input);
+      base.route = route;
+      trace.intent = route.intent;
+      // UNDERSTAND a fourni une intention du catalogue : compréhension
+      // complétée par le modèle ; ambiguë : elle reste incomplète.
+      if (classified && !route.clarificationRequired && route.intent !== 'UNKNOWN') marquer('COMPLETE', [], 'understand');
+      else if (classified?.confidence === 'ambiguous') marquer('UNKNOWN_INTENT', ['AMBIGUOUS_INTENT'], null);
+
+      // ════════════════════════════════════════════════════════════════
+      // CLASSIFICATION AMBIGUË — CDC 15 T2-09 (lecture canonique)
+      //
+      // Le modèle a répondu `ambiguous` : pas de recherche large sur une
+      // demande qu'on n'a pas comprise. Résolution déterministe si une
+      // cible est déjà connue (page, fil, clarification) pour une question
+      // sur les données ; sinon clarification — les choix viennent du
+      // registre des intentions, jamais du modèle.
+      // ════════════════════════════════════════════════════════════════
+      if (route.clarificationRequired && !input.resume) {
+        const cible = targetsFromInput(input, route).primary;
+        if (route.intent.startsWith('ACCOUNT_') && cible) {
+          trace.escalationReasons.push(`CLASSIFICATION:AMBIGUOUS_RESOLVED_BY_${cible.origin.toUpperCase()}`);
+        } else {
+          trace.escalationReasons.push('CLARIFICATION:CLASSIFICATION_AMBIGUOUS');
+          const state = buildIntentClarification({
+            accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+            originalMessage: input.message, originalMessageId: messageId, proposed: route.intent,
+          });
+          if (ports.saveClarification && await ports.saveClarification(state).catch(() => false)) {
+            done('template', 'clarification.classification', 'AMBIGUOUS_TARGET', state.candidates.length);
+            return finalizeClarification(base, machine, state, ports, input);
+          }
+          // Sans fil où enregistrer la question : la poser quand même, sans
+          // chercher (jamais de retrieval sur une demande ambiguë).
+          const actions = await ports.resolveActions(route, input, []);
+          done('template', 'clarification.classification_unsaved', 'AMBIGUOUS_TARGET', 0);
+          return finalize(base, machine, 'deterministic',
+            `${state.question} Par exemple : ${state.candidates.map((c) => c.label.toLowerCase()).join(', ')}.`, [], [], actions, ports, input, 'insufficient');
+        }
+      }
+
+      // L'intention classée peut appeler une réponse imposée (hors périmètre,
+      // conseil réservé, demande malveillante, politesse…) : le gabarit
+      // s'applique alors, et le besoin de retrieval est réévalué.
+      det = tryDeterministic(route.intent, detCtx);
+      if (det.handled && det.answer) {
+        const actions = await ports.resolveActions(route, input, []);
+        done('template', `template.${route.intent}`, 'SUFFICIENT_STRUCTURED', 0);
+        return finalize(base, machine, 'deterministic', det.answer, [], [], actions, ports, input);
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 53 (PO D21) — PÉRIMÈTRE SÉMANTIQUE APRÈS CLASSIFICATION
+    //
+    // « Je paye combien pour internet ? » (aucun bien nommé) n'avait pas de
+    // règle déterministe : UNDERSTAND la classait en question sur les données,
+    // puis la recherche plein texte répondait « rien trouvé ». La compréhension
+    // obtenue (même appel, aucun second appel modèle) alimente désormais la
+    // même étape que la route faible : sources réelles de TOUS les biens
+    // disponibles, réponse si une seule interprétation, clarification (biens
+    // distingués) sinon. Aucune correspondance : la cascade suit son cours.
+    // ══════════════════════════════════════════════════════════════════════
+    if (classeAuRoutage && !input.resume && ports.listBusinessSources && route.intent.startsWith('ACCOUNT_')
+      && !route.clarificationRequired && !route.understanding?.requestedFacts.length) {
+      const besoin = detectValueNeed(input.message);
+      if (besoin) {
+        const cibles = ports.resolveTargets ? await withDeadline(ports.resolveTargets(input, route), retrievalDeadline()).catch(() => null) : null;
+        const noms = [...(cibles?.catalog ?? []).map((a) => a.name), ...(cibles?.asset?.label ? [cibles.asset.label] : [])];
+        const residu = semanticResidue(input.message, { assetNames: noms, consumed: expenseThemeWords(input.message) });
+        if (residu.length) {
+          // La classification VAUT compréhension : aucun second appel modèle.
+          comprisParModele = true;
+          const servi = await etapeSemantique('classified_scope', residu, { continueOnInsufficient: true });
+          if (servi) return servi;
+        }
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // FAIT DEMANDÉ PAR LE MASTER T2 — CDC 15 §24 A4 (lecture canonique)
+    //
+    // `t2_understand` a identifié UN champ du FIELD_CATALOG : s'il porte sur
+    // UN bien ciblé (question, fil, page, indice), il est lu sur la fiche
+    // canonique, sans recherche ni génération.
+    // ══════════════════════════════════════════════════════════════════════
+    if (ports.readTarget && route.understanding?.requestedFacts.length) {
+      // Lot 53 (53H) : faits exigés — garde-fou de fidélité pour la suite.
+      if (!faitsExiges.length) faitsExiges = dedupeLecture(route.understanding.requestedFacts);
+      // L'IA n'a produit qu'une intention STRUCTURÉE (champs, indices) : le
+      // serveur reprend la main — résolution dans le compte, lecture
+      // canonique, réponse rédigée par le serveur (8b §G ; aucun SQL du modèle).
+      const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, route), route), retrievalDeadline()).catch(lectureEchouee);
+      const servi = lu ? await servirLectureCiblee(lu, route, { reprise: false }) : null;
+      if (servi) return servi;
+    }
+
+    // ── Retrieval-first (§13) ───────────────────────────────────────────────
+    let sources: RetrievedSource[] = [];
+    let resolved: ResolvedSource[] = [];
+    let plan: SynthesisPlan | null = null;
+    if (isHelpIntent(route.intent) && (route.requiresRetrieval || det.needsSimpleRetrieval)) {
+      // ════════════════════════════════════════════════════════════════════
+      // CASCADE DU CENTRE D'AIDE — lot 33 (ticket T2 PRODUCT_HELP_HOW_TO)
+      //
+      // Plein texte → recherche élargie (référentiel des synonymes et
+      // concepts) → UNDERSTAND (requêtes de recherche, jamais de réponse) →
+      // nouvelle recherche → réponse fondée sur l'article ; repli seulement
+      // au bout, avec un motif explicite. Le Centre d'aide reste la seule
+      // source de vérité (§5, T2-06) : ni document ni donnée du compte.
+      // ════════════════════════════════════════════════════════════════════
+      if (machine.state !== 'RETRIEVING') machine.transition('RETRIEVING');
+      // Lot 34G : l'ouverture (corpus à froid + dernier corpus valide en
+      // base) a son propre budget — l'échéance de recherche (3 s) l'
+      // interrompait avant le terme du téléchargement. Échec d'ouverture :
+      // corpus INDISPONIBLE tracé avec son code — jamais un autre chercheur
+      // qui se dirait « corpus disponible » (le repli muet du lot 33).
+      let echecOuverture: 'HELP_CORPUS_TIMEOUT' | 'HELP_CORPUS_UNAVAILABLE' | null = null;
+      const ouvert = ports.openHelpSearch
+        ? await withDeadline(ports.openHelpSearch(input), Math.min(deadline, Date.now() + Math.max(cfg.retrievalTimeoutMs || 3000, HELP_CORPUS_OPEN_BUDGET_MS)))
+          .catch((e) => {
+            echecOuverture = (e as Error)?.message === 'REQUEST_TIMEOUT' ? 'HELP_CORPUS_TIMEOUT' : 'HELP_CORPUS_UNAVAILABLE';
+            console.warn(`[verebona] ${echecOuverture} — ouverture de la recherche d’aide impossible (${(e as Error)?.message}).`);
+            return null;
+          })
+        : null;
+      articleAide = ouvert?.article ?? null;
+      const indisponible: HelpSearcher | null = echecOuverture
+        ? async () => ({ ...HELP_CORPUS_UNAVAILABLE_RESULT, corpus: { ...helpCorpusLoadInfo(null), diagnostic: echecOuverture } })
+        : null;
+      const chercher: HelpSearcher = ouvert?.search ?? indisponible ?? (async (queries, stage) => {
+        // Sans port dédié : `retrieve` requête par requête (même contrat).
+        const lots = await Promise.all(queries.map(async (q) => {
+          const r = await withDeadline(ports.retrieve(route, { ...input, message: q }), retrievalDeadline());
+          return r.filter((x) => x.type === 'help_entry').map((x) => ({ ...x, stage, query: q, queryHits: 1 }));
+        }));
+        const sources = lots.flat();
+        return {
+          corpusAvailable: true, corpusVersion: null, sources,
+          candidateCount: sources.length, rejected: { lowCoverage: 0, contextExcluded: 0 },
+        };
+      });
+      const deja = classeAuRoutage || comprisParModele || classeParFaits;
+      const comprendre = async (): Promise<HelpUnderstandOutcome> => {
+        // Déjà compris par le modèle pour cette demande : ses indices servent
+        // de requêtes, sans second appel.
+        if (deja) {
+          return {
+            status: 'reused', intent: route.intent,
+            queries: queriesFromUnderstanding({
+              requestedTopics: route.understanding?.requestedTopics, entityHints: route.entityHints, reason: route.routeReason,
+            }, input.message),
+          };
+        }
+        if (!aiActif || !route.aiEligible || !isPlanAiEligible(input.planType) || input.planLimit) return { status: 'blocked', reason: 'AI_NOT_ALLOWED' };
+        if (!ports.classifyWithAI) return { status: 'blocked', reason: 'AI_UNAVAILABLE' };
+        if (budgetMensuelAtteint || !budget.canCall()) return { status: 'blocked', reason: 'AI_BUDGET_BLOCKED' };
+        if (ports.isAiUnavailable && await ports.isAiUnavailable().catch(() => false)) return { status: 'blocked', reason: 'AI_UNAVAILABLE' };
+        if (await avantAppelModele() === 'cancelled') return { status: 'cancelled' };
+        if (budgetMensuelAtteint || !budget.canCall()) return { status: 'blocked', reason: 'AI_BUDGET_BLOCKED' };
+        const avantCl = budget.used;
+        let delai = false;
+        const compris = await withDeadline(ports.classifyWithAI(input.message, input), deadline).catch((e) => {
+          delai = (e as Error)?.message === 'REQUEST_TIMEOUT';
+          return null;
+        });
+        reconcilierBudget(budget, avantCl, 1);
+        trace.aiCalls = budget.used;
+        comprisParModele = true;
+        if (!compris) return { status: 'failed', reason: delai ? 'AI_TIMEOUT' : 'AI_UNAVAILABLE' };
+        return {
+          status: 'called', intent: compris.intent,
+          queries: queriesFromUnderstanding({
+            requestedTopics: compris.understanding?.requestedTopics, entityHints: compris.entityHints, reason: compris.routeReason,
+          }, input.message),
+        };
+      };
+      const aide = await runHelpCascade({
+        message: input.message, threshold: thresholds.text, search: chercher, understand: comprendre, maxSources: cfg.maxSources,
+      });
+      aideCascade = aide;
+      if (aide.cancelled) return annuler();
+      // Trace : chaque niveau exécuté, ses requêtes, candidats, scores, seuil.
+      const masque = (q: string) => maskSensitiveText(q, sensitiveNecessityFor(input.message)).text;
+      trace.help = {
+        ...aide.trace,
+        retrievalQueryInitial: masque(aide.trace.retrievalQueryInitial),
+        retrievalQueriesExpanded: aide.trace.retrievalQueriesExpanded.map(masque),
+        levels: aide.trace.levels.map((l) => ({ ...l, queries: l.queries.map(masque) })),
+        understanding: aide.trace.understanding ? { ...aide.trace.understanding, queries: aide.trace.understanding.queries.map(masque) } : null,
+      };
+      trace.retrievalQueryInitial = trace.help.retrievalQueryInitial;
+      trace.retrievalQueriesExpanded = trace.help.retrievalQueriesExpanded;
+      for (const l of aide.trace.levels) {
+        trace.attempts.push({ level: l.level, strategy: l.strategy, status: l.status, score: l.bestScore, threshold: l.threshold, ...(l.reason ? { reason: l.reason } : {}) });
+        if (l.status !== 'SUFFICIENT') trace.escalationReasons.push(`HELP:N${l.level}:${l.status === 'EXECUTED' ? 'UNDERSTAND_' + (aide.trace.understanding?.status ?? 'EXECUTED').toUpperCase() : l.reason ?? l.status}`);
+      }
+      if (aide.sufficient) {
+        sources = aide.sources.map(({ stage, query: _q, queryHits: _h, ...src }) => ({ ...src, meta: { ...(src.meta ?? {}), stage } }));
+        resolved = await ports.resolveSources(sources, input.accountId);
+        // T2-04 : deux articles également pertinents qui se contredisent ne
+        // sont arbitrés ni par le code, ni par le modèle.
+        const contradiction = detectHelpContradiction(sources);
+        if (contradiction) {
+          console.warn(`[verebona][alerte-éditoriale] CONTRADICTION ${contradiction.articles[0]} / ${contradiction.articles[1]} (${contradiction.unit}) — correction documentaire à prévoir (T2-04).`);
+          trace.escalationReasons.push(`HELP_CONTRADICTION:${contradiction.articles.join('|')}`);
+          // Lot 34G : motif tracé comme tel (le support est alors proposé).
+          trace.fallbackReason = 'HELP_CONTRADICTION';
+          trace.help.fallbackReason = 'HELP_CONTRADICTION';
+          trace.help.observability = { ...helpObservability(trace.help, trace.help.observability?.candidateCount ?? 0), articleId: null };
+          const actions = await ports.resolveActions(route, input, sources);
+          done('template', 'help.contradiction', 'CONFLICTING', sources.length);
+          return finalize(base, machine, 'deterministic', contradictionAnswer(contradiction), [], resolved, actions, ports, input, 'conflicting');
+        }
+        // §10.5 / §10.6 : un article qui répond nettement (≥ seuil
+        // « exact ») suffit, sans modèle — la procédure elle-même, extraite
+        // de l'article. Entre le seuil de suffisance et le seuil « exact »,
+        // ANSWER rédige à partir des articles si l'IA est permise ; sinon
+        // l'extraction est servie.
+        const exact = aide.bestScore >= HELP_EXACT_THRESHOLD;
+        const redactionPossible = aiActif && comprehension.status === 'COMPLETE' && route.aiEligible
+          && ports.generateWithAI != null && budget.canCall() && !budgetMensuelAtteint;
+        // Lot 34G (§2 du ticket) : procédure SIMPLE — action comprise avec
+        // certitude (ajouter un document, créer un bien, une échéance) et
+        // article qui porte la procédure → synthèse DÉTERMINISTE en 1-2
+        // phrases, jamais un appel IA pour la raccourcir. Une question
+        // d'explication (« comment fonctionne… ») garde la rédaction.
+        const meilleureId = String(sources[0].meta?.articleId ?? '');
+        const syntheseCourte = route.intent === 'PRODUCT_HELP_HOW_TO' && Boolean(aide.concept?.certain)
+          && howToSynthesis(sources, articleAide?.(meilleureId) ?? null) !== null;
+        if (exact || !redactionPossible || syntheseCourte) {
+          const actions = await ports.resolveActions(route, input, sources);
+          if (!exact && !syntheseCourte) trace.escalationReasons.push('HELP:N6:ANSWER_NOT_AVAILABLE');
+          if (!exact && syntheseCourte) trace.escalationReasons.push('HELP:N6:SHORT_SYNTHESIS');
+          done('retrieval', exact ? 'help.exact_article' : syntheseCourte ? 'help.short_synthesis' : 'help.article_excerpt', 'SUFFICIENT_RETRIEVAL', sources.length);
+          const meilleure = String(sources[0].meta?.articleId ?? '');
+          return finalize(base, machine, 'classic_search', helpAnswerFromSources(sources, route.intent, articleAide?.(meilleure) ?? null),
+            [], resolved, actions, ports, input, 'supported');
+        }
+        trace.escalationReasons.push('HELP:N6:SYNTHESIS_FROM_SOURCES');
+      } else {
+        sources = [];
+        resolved = [];
+        trace.fallbackReason = aide.trace.fallbackReason;
+      }
+    } else if (route.requiresRetrieval || det.needsSimpleRetrieval) {
+      if (machine.state !== 'RETRIEVING') machine.transition('RETRIEVING');
+      let adapters: RetrievedSource[];
+      // Tous les candidats classés (≤ 20, §13.9) : cartes et quotas (§11.3).
+      let candidats: RetrievedSource[] = [];
+      try {
+        // CDC 15 T2-10, T2-33 : planificateur dédié pour une synthèse, une
+        // comparaison ou une chronologie ; recherche générique en repli.
+        plan = SYNTHESIS_INTENTS.has(route.intent) && ports.buildSynthesisContext
+          ? await withDeadline(ports.buildSynthesisContext(route, input), retrievalDeadline()).catch((err) => {
+            if ((err as Error)?.message === 'REQUEST_TIMEOUT') throw err;
+            return null;
+          })
+          : null;
+        // R7 : comparaison à plus de 3 biens → l'utilisateur choisit, rien
+        // n'est comparé ni recherché (aucun choix arbitraire).
+        if (plan?.clarification) {
+          trace.escalationReasons.push(`CLARIFICATION:${plan.clarification.reason}`);
+          const actions = await ports.resolveActions(route, input, []);
+          done('template', 'clarification.comparison_scope', 'AMBIGUOUS_TARGET', plan.clarification.candidates.length);
+          return finalize(base, machine, 'deterministic', plan.clarification.question, [], [], actions, ports, input, 'insufficient');
+        }
+        if (plan && plan.sources.length) {
+          trace.escalationReasons.push(`SYNTHESIS:${plan.kind}:${plan.sources.length}${plan.timeline ? `:events=${plan.timeline.events.length}/${plan.timeline.totalEvents}` : ''}`);
+          candidats = plan.sources;
+        } else {
+          plan = null;
+          candidats = await withDeadline(ports.retrieve(route, input), retrievalDeadline());
+        }
+        adapters = candidats.slice(0, cfg.maxSources);
+      } catch (e) {
+        // ══════════════════════════════════════════════════════════════════
+        // TIMEOUT : LES RÉSULTATS DÉTERMINISTES SONT CONSERVÉS (§9.6, §30.1)
+        //
+        // L'échéance globale levait jusqu'au `catch` final : ERROR_FINAL et
+        // perte de ce que les niveaux 1 et 2 avaient déjà trouvé. Si des
+        // sources du compte sont déjà en main, elles sont rendues (état
+        // récupérable, « Réessayer » reste possible) ; sinon, l'erreur suit
+        // son cours.
+        // ══════════════════════════════════════════════════════════════════
+        // Lot 34 : seules les sources du contrat de l'intention sont rendues
+        // (jamais un document pour une demande d'actions ou d'échéances).
+        const contrat = admissibleSourceTypes(route.intent);
+        const deja = (data?.contextSources ?? []).filter((x) => !contrat || contrat.includes(x.type));
+        if ((e as Error)?.message !== 'REQUEST_TIMEOUT' || deja.length === 0) throw e;
+        machine.fail(false);
+        trace.escalationReasons.push('TIMEOUT:PARTIAL_RESULTS');
+        const partiel = dedupeSources(deja).slice(0, cfg.maxSources);
+        const resolvedPartiel = await ports.resolveSources(partiel, input.accountId).catch(() => []);
+        const actionsPartiel = await ports.resolveActions(route, input, partiel).catch(() => []);
+        done('fallback', 'timeout.partial', 'INSUFFICIENT', partiel.length);
+        trace.fallbackUsed = true;
+        const titresPartiels = [...new Set(partiel.map((x) => x.title))].slice(0, 5).map((t) => `« ${t} »`);
+        const r = await finalize(base, machine, 'classic_search',
+          `La recherche complète a pris trop de temps. Éléments déjà trouvés : ${titresPartiels.join(', ')}.`,
+          [], resolvedPartiel, actionsPartiel, ports, input, 'insufficient');
+        // État récupérable, mais PAS de `error` dans la réponse : le client
+        // remplacerait le texte par le libellé d'erreur et perdrait les
+        // résultats déjà trouvés, qui sont précisément ce qu'on conserve.
+        r.finalState = 'ERROR_RECOVERABLE';
+        return r;
+      }
+      // Les données T1 rassemblées au niveau 2 enrichissent le contexte : le
+      // modèle, s'il est appelé, répond sur ce que T1 a déjà extrait. (Les
+      // questions d'utilisation passent par la cascade du Centre d'aide.)
+      const contexte = data?.contextSources ?? [];
+      sources = dedupeSources([...contexte, ...adapters]).slice(0, cfg.maxSources);
+      resolved = await ports.resolveSources(sources, input.accountId);
+
+      // ══════════════════════════════════════════════════════════════════
+      // AUCUN RÉSULTAT → RÉSULTATS PROCHES (§11.4)
+      //
+      // Reformulation, filtre et aide étaient proposés ; les « résultats
+      // proches » manquaient. Seconde passe tolérante (fautes, préfixes),
+      // même périmètre, au plus 3 cartes présentées comme proches — jamais
+      // comme la réponse. Sans modèle, en Standard comme en Premium.
+      // ══════════════════════════════════════════════════════════════════
+      if (adapters.length === 0 && !data?.documentState && ports.retrieveNear
+        && route.intent.startsWith('ACCOUNT_') && !SYNTHESIS_INTENTS.has(route.intent)) {
+        const proches = await withDeadline(ports.retrieveNear(route, input), retrievalDeadline()).catch(() => [] as RetrievedSource[]);
+        if (proches.length > 0) {
+          const resolvedProches = await ports.resolveSources(proches, input.accountId);
+          const actions = await ports.resolveActions(route, input, proches);
+          done('retrieval', 'retrieval.near', 'INSUFFICIENT', proches.length);
+          base.resultGroups = buildResultGroups(proches);
+          return finalize(base, machine, 'classic_search', nearResultsAnswer(input.message, proches, isPlanAiEligible(input.planType)),
+            [], resolvedProches, actions, ports, input, 'insufficient');
+        }
+      }
+
+      // Réponse exacte à partir des résultats (tryDeterministicFromRetrieval).
+      const exact = answerFromRetrievedSources(route.intent, input.message, adapters, thresholds, {
+        candidates: candidats, aiEligible: isPlanAiEligible(input.planType),
+      });
+      trace.attempts.push({ level: 2, strategy: 'retrieval.adapters', status: exact.decision.status, score: exact.decision.score, threshold: exact.decision.threshold, reason: exact.decision.reason });
+      // « Aucun résultat » ne s'applique pas quand un document a été trouvé
+      // au niveau 2 sans l'information cherchée (§12.4 : états distincts).
+      const documentTrouve = adapters.length === 0 && Boolean(data?.documentState);
+      if (exact.handled && exact.answer && (adapters.length > 0 || !route.aiEligible) && !documentTrouve) {
+        // Recherche effectuée, aucun résultat : seul cas du « rien trouvé » (8b §K).
+        // Lot 32 : seulement sur une demande COMPRISE — une compréhension
+        // incomplète (intention inconnue, cible manquante ou ambiguë, sens non
+        // consommé) ne devient jamais « aucun résultat ».
+        // Lot 53 (53H) : des cartes de CHAMPS autres que ceux demandés ne
+        // répondent pas à la demande (fidélité, AC09).
+        const infideleRecherche = await garantirFidelite([{ claimKey: 'retrieval.adapters', text: '', sourceIds: adapters.map((x) => x.id), derivation: 'direct' }], 'retrieval.adapters');
+        if (infideleRecherche) return infideleRecherche;
+        const incomprise = comprehensionEchouee || comprehension.status !== 'COMPLETE';
+        if (adapters.length === 0) trace.diagnostic = incomprise ? 'UNDERSTANDING_FAILED' : 'SEARCH_NO_RESULT';
+        const resolvedAdapters = adapters.length ? await ports.resolveSources(adapters, input.accountId) : [];
+        const actions = await ports.resolveActions(route, input, adapters);
+        done('retrieval', 'retrieval.adapters', exact.decision.status, adapters.length);
+        if (exact.groups?.length) base.resultGroups = exact.groups;
+        const reponse = adapters.length > 0 ? exact.answer
+          : incomprise ? diagnosticMessage('UNDERSTANDING_FAILED')
+            : await aucunResultatCible(route, input, ports, cibleComprise, retrievalDeadline()) ?? exact.answer;
+        return finalize(base, machine, 'classic_search', reponse, [], resolvedAdapters, actions, ports, input);
+      }
+      if (exact.decision.reason) trace.escalationReasons.push(`N2:${exact.decision.reason}`);
+    } else if (data?.contextSources.length) {
+      sources = dedupeSources(data.contextSources).slice(0, cfg.maxSources);
+      resolved = await ports.resolveSources(sources, input.accountId);
+    }
+
+    // ── Niveau 3 : modèle, uniquement après insuffisance constatée (§15.1) ──
+    // Lot 32 : ANSWER rédige, il ne COMPREND pas — jamais appelé pour pallier
+    // une compréhension restée incomplète.
+    const comprehensionComplete = comprehension.status === 'COMPLETE';
+    if (!comprehensionComplete && route.aiEligible && sources.length > 0) trace.escalationReasons.push('N3:UNDERSTANDING_INCOMPLETE');
+    const canUseAI =
+      aiActif &&
+      comprehensionComplete &&
+      route.aiEligible &&
+      ports.generateWithAI != null &&
+      sources.length > 0 &&
+      // Budget du message épuisé (classification + revalidation) : repli
+      // déterministe plutôt qu'un troisième appel (§15.5, CA-07).
+      budget.canCall();
+    if (!canUseAI && route.aiEligible && sources.length > 0 && ports.generateWithAI != null && !budget.canCall()) {
+      trace.escalationReasons.push('N3:AI_BUDGET_EXHAUSTED');
+    }
+
+    if (canUseAI) {
+      const okGuard = machine.transition('GENERATING', {
+        aiAllowed: true,
+        clarificationCount: 0,
+      });
+      if (okGuard && await avantAppelModele() === 'cancelled') return annuler();
+      if (okGuard && !budget.canCall()) {
+        // Plafond mensuel atteint à l'instant : pas d'appel (repli ci-dessous).
+        trace.escalationReasons.push('N3:AI_BUDGET_EXHAUSTED');
+      } else if (okGuard) {
+        const avantGen = budget.used;
+        const evenementsAvant = aiReport.events.length;
+        const gen = await withDeadline(ports.generateWithAI!(route, sources, input), deadline).catch(() => null);
+        reconcilierBudget(budget, avantGen, 1);
+        trace.aiCalls = budget.used;
+        // §9.6 : une sortie réparée (ou dont la réparation a échoué) passe par
+        // l'état REPAIRING — la réparation n'est plus invisible de la machine.
+        const repare = gen?.path === 'repair'
+          || aiReport.events.slice(evenementsAvant).some((e) => e.startsWith('REPAIR:'));
+        if (repare) machine.transition('REPAIRING');
+        if (gen) {
+          // Lot 53 (53H) : la réponse rédigée reste fidèle aux faits demandés.
+          const infideleGen = await garantirFidelite(gen.claims ?? [], 'llm.generate_answer');
+          if (infideleGen) return infideleGen;
+          machine.transition('VALIDATING');
+          trace.model = gen.model ?? null;
+          const actions = gen.actions.length ? gen.actions : await ports.resolveActions(route, input, sources);
+          // T2-35 : chronologie structurée transmise au client, liens résolus
+          // côté serveur à partir des sources fournies.
+          if (gen.events?.length) base.events = clientTimelineEvents(gen.events, sources);
+          done('llm', 'llm.generate_answer', trace.escalationReasons.length ? 'INSUFFICIENT' : null, sources.length);
+          return finalize(base, machine, 'ai', gen.answer, gen.claims, resolved, actions, ports, input, gen.supportLevel);
+        }
+        trace.escalationReasons.push('N3:GENERATION_UNAVAILABLE');
+      }
+      // Repli déterministe si l'IA échoue/expire (§30.3).
+      machine.fail(false);
+    } else if (sources.length > 0 && !route.aiEligible) {
+      trace.escalationReasons.push('N3:NOT_AI_ELIGIBLE');
+    }
+
+    // ── Repli sans modèle : jamais une phrase vide de contenu ───────────────
+    // Question d'utilisation : articles cités, ou aveu explicite et contact —
+    // jamais « ces éléments de votre compte » (CDC Centre d'aide §5, T2-03).
+    // Document trouvé mais information absente (§12.4, §19.12) : le dire,
+    // plutôt que « ces éléments semblent liés ».
+    // Compréhension impossible et rien trouvé : le dire (8b §K, AC17).
+    const nonCompris = comprehensionEchouee && sources.length === 0 && !isHelpIntent(route.intent);
+    if (nonCompris) trace.diagnostic = 'UNDERSTANDING_FAILED';
+    // ── Repli sous contrat (lot 34) ─────────────────────────────────────────
+    // Intention à type de réponse connu : aucune source hors contrat n'est
+    // présentée, et jamais « ces éléments semblent liés » (substitution
+    // inter-domaines interdite) — résultats proches du BON type, ou « rien
+    // trouvé ». Intention inconnue : repli générique, tracé comme tel.
+    const chronologie = plan?.kind === 'timeline' && Boolean(plan.timeline?.events.length);
+    const sousContrat = !nonCompris && !isHelpIntent(route.intent) && !chronologie && data?.documentState?.kind !== 'FOUND_WITHOUT_INFO'
+      ? fallbackUnderContract(route.intent, sources, input.message, isPlanAiEligible(input.planType))
+      : null;
+    if (sousContrat) {
+      if (sousContrat.dropped > 0) {
+        const admis = new Set(sousContrat.sources.map((x) => x.id));
+        sources = sousContrat.sources;
+        resolved = resolved.filter((x) => admis.has(x.id));
+        trace.escalationReasons.push(`FALLBACK:OUT_OF_CONTRACT_DROPPED:${sousContrat.dropped}`);
+      }
+      trace.fallbackUsed = sousContrat.fallbackUsed;
+      trace.escalationReasons.push(`FALLBACK:${sousContrat.fallbackReason}`);
+      trace.fallbackReason = sousContrat.fallbackReason;
+    }
+    // Lot 53 (53H) : un repli qui ne présenterait que des cartes d'AUTRES
+    // champs (« Motorisation — Polo ») ne répond pas à la demande (AC09).
+    if (!nonCompris && !isHelpIntent(route.intent)) {
+      const infideleRepli = await garantirFidelite([{ claimKey: 'fallback.sources', text: '', sourceIds: sources.map((x) => x.id), derivation: 'direct' }], 'fallback.sources');
+      if (infideleRepli) return infideleRepli;
+    }
+    const repli = nonCompris
+      ? diagnosticMessage('UNDERSTANDING_FAILED')
+      : isHelpIntent(route.intent)
+      // Lot 33 : sources fiables (rédaction indisponible) → la procédure
+      // extraite de l'article ; aucune source fiable → l'aveu, sans plus.
+      ? (sources.length
+        ? helpAnswerFromSources(sources, route.intent, articleAide?.(String(sources[0].meta?.articleId ?? '')) ?? null)
+        : fallbackFromHelpSources([]))
+      // Chronologie planifiée (T2-34) : la liste datée elle-même, sans modèle.
+      : plan?.kind === 'timeline' && plan.timeline?.events.length
+        ? timelineAnswer(plan)
+        : data?.documentState?.kind === 'FOUND_WITHOUT_INFO'
+        ? foundWithoutInfoMessage(data.documentState.title)
+        : sousContrat!.answer;
+    if (data?.documentState?.kind === 'FOUND_WITHOUT_INFO') trace.escalationReasons.push('DOCUMENT:FOUND_WITHOUT_INFO');
+    // Chronologie planifiée servie sans modèle : liste structurée aussi.
+    if (!isHelpIntent(route.intent) && plan?.kind === 'timeline' && plan.timeline?.events.length) base.events = planTimelineEvents(plan);
+    // Plafond mensuel : le dire, sans culpabiliser (§6.6).
+    // IA bloquée par l'exploitation (EStop, T2 désactivé/suspendu) alors que
+    // la question en aurait eu besoin : le dire (T2-041, WF-34 étape 3) —
+    // y compris quand aucune source n'a été trouvée : sans IA, l'utilisateur
+    // doit savoir pourquoi la réponse est pauvre.
+    const iaIndisponible = !budgetMensuelAtteint && route.aiEligible
+      && ports.isAiUnavailable != null
+      && await ports.isAiUnavailable().catch(() => false);
+    if (iaIndisponible) trace.escalationReasons.push('N3:AI_BLOCKED');
+    // Fin d'essai / sans abonnement (§6.5) : la question aurait demandé une
+    // réponse intelligente — l'assistant explique la limite et propose la
+    // page des offres. La recherche et l'aide restent servies normalement.
+    const limiteOffre = Boolean(input.planLimit) && !isPlanAiEligible(input.planType)
+      && (needsClassification || getIntentDefinition(route.intent).geminiEligible);
+    if (limiteOffre) trace.escalationReasons.push(`PLAN_LIMIT:${input.planLimit}`);
+    const answerBase = budgetMensuelAtteint && route.aiEligible
+      ? `${repli}\n\n${MONTHLY_BUDGET_NOTICE}`
+      : iaIndisponible ? `${repli}\n\n${AI_UNAVAILABLE_NOTICE}` : repli;
+    const answer = limiteOffre ? `${answerBase}\n\n${planLimitNotice(input.planLimit!)}` : answerBase;
+    const actionsBrutes = await ports.resolveActions(route, input, sources);
+    // Lot 33 (§12 du ticket) : repli d'aide sans source fiable — aucune
+    // action métier précise « comme si la demande était résolue », sauf
+    // action comprise AVEC CERTITUDE (concept du référentiel : verbe ET objet).
+    const aideSansSource = Boolean(aideCascade && !aideCascade.sufficient);
+    const certaine = aideSansSource && aideCascade?.concept?.certain ? aideCascade.concept.concept.action : null;
+    const actionsResolues = aideSansSource
+      ? actionsBrutes.filter((a) => !String(a.type).startsWith('START_') || a.type === certaine)
+      : actionsBrutes;
+    const actions = limiteOffre && !actionsResolues.some((a) => a.type === 'OPEN_PRICING')
+      ? [pricingAction(), ...actionsResolues]
+      : actionsResolues;
+    if (aideCascade && aideCascade.sufficient && sources.length) {
+      // Sources fiables, rédaction indisponible ou échouée : l'extraction de
+      // l'article EST la réponse (jamais « fallback » avec des sources).
+      done('retrieval', 'help.article_excerpt', 'SUFFICIENT_RETRIEVAL', sources.length);
+      return finalize(base, machine, 'classic_search', answer, [], resolved, actions, ports, input, 'supported');
+    }
+    // Lot 33 (§14 du ticket) : une escalade annoncée (N1/N2 insuffisants)
+    // mais non exécutée est TOUJOURS justifiée — jamais « SYNTHESIS_REQUIRED
+    // + 0 appel + repli » sans explication.
+    if (!aideCascade && budget.used === 0 && trace.escalationReasons.some((r) => /^N[12]:/.test(r))
+      && !trace.escalationReasons.some((r) => r.startsWith('N3:'))) {
+      const motif = !aiActif || !route.aiEligible || !isPlanAiEligible(input.planType) || input.planLimit ? 'AI_NOT_ALLOWED'
+        : iaIndisponible || !ports.generateWithAI ? 'AI_UNAVAILABLE'
+          : budgetMensuelAtteint || !budget.canCall() ? 'AI_BUDGET_BLOCKED'
+            : sources.length === 0 ? 'NO_SOURCE_FOR_SYNTHESIS'
+              : comprehension.status !== 'COMPLETE' ? 'UNDERSTANDING_INCOMPLETE' : 'GENERATION_UNAVAILABLE';
+      trace.escalationReasons.push(`N3:NOT_EXECUTED:${motif}`);
+      trace.fallbackReason = motif;
+    }
+    if (aideSansSource) {
+      trace.fallbackReason = aideCascade!.trace.fallbackReason;
+      trace.escalationReasons.push(`HELP:FALLBACK:${aideCascade!.trace.fallbackReason ?? 'NO_RELEVANT_HELP_ARTICLE'}`);
+    }
+    done('fallback', aideSansSource ? 'fallback.help' : 'fallback.sources', 'INSUFFICIENT', sources.length);
+    return finalize(base, machine, resolved.length ? 'classic_search' : 'fallback', answer, [], resolved, actions, ports, input);
+  } catch (e) {
+    machine.fail(true);
+    // §27.11 : le dépassement de l'échéance globale est un REQUEST_TIMEOUT,
+    // distinct d'une panne. Le message est un libellé Verebona, jamais le
+    // texte brut de l'exception (§4.2) — celui-ci reste dans les journaux.
+    const code = (e as Error)?.message === 'REQUEST_TIMEOUT' ? 'REQUEST_TIMEOUT' as const : 'ASSISTANT_UNAVAILABLE' as const;
+    console.error('[verebona] échec de la demande', code, (e as Error)?.message);
+    // Lot 29 (8b §K) : erreur technique de LECTURE — tracée comme telle,
+    // jamais présentée comme une absence de donnée.
+    const lecture = e instanceof TargetReadError;
+    if (lecture && base.cascade) {
+      base.cascade.diagnostic = 'TECHNICAL_READ_FAILURE';
+      base.cascade.escalationReasons.push('T2:TECHNICAL_READ_FAILURE');
+    }
+    const libelle = lecture ? diagnosticMessage('TECHNICAL_READ_FAILURE') : assistantErrorMessage(code);
+    const result: AssistantRunResult = {
+      ...base,
+      finalState: machine.state,
+      error: { code, message: libelle, recoverable: true },
+      answer: libelle,
+    };
+    await safePersist(ports, result, input);
+    return result;
+  }
+}
+
+const OPEN_REF = /\b(ouvre|ouvrir|montre|affiche|voir|consulter|va sur)\b/;
+const CONTENT_NOUN = /\b(documents?|factures?|fichiers?|echeances?|rappels?|montants?|prix|equipements?|pieces?|travaux|entretiens?|contrats?|garanties?)\b/;
+const DATE_REF = /\b(date|quand|date[e]?|daté|datee)\b/;
+const plainTxt = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+
+/** Source synthétique d'une entité référencée (actions et affichage). */
+function entitySource(type: ReferencedType, id: number, label: string, assetId?: number | null): RetrievedSource {
+  const prefix = type === 'document' ? 'doc' : type === 'asset' ? 'asset' : type === 'equipment' || type === 'room' ? type : 'agenda';
+  return {
+    id: `${prefix}_${id}`,
+    type: type === 'document' ? 'document' : type === 'asset' || type === 'equipment' || type === 'room' ? 'asset_field' : 'agenda_item',
+    title: label, content: '', relevanceScore: 1,
+    meta: type === 'asset' ? { assetId: id } : type === 'document' ? { fileId: id }
+      : (type === 'equipment' || type === 'room') && assetId ? { assetId } : {},
+  } as RetrievedSource;
+}
+
+/**
+ * Charge le contexte du fil et résout une référence conversationnelle.
+ * Rend la demande enrichie, et — pour les références simples — une réponse
+ * immédiate sans modèle (« ouvre le deuxième », « et sa date ? »).
+ */
+async function applyThreadMemory(
+  input: AssistantRequestInput,
+  ports: OrchestratorPorts,
+  trace: CascadeTrace,
+): Promise<{
+  input: AssistantRequestInput;
+  contextUpdate?: AssistantRunResult['contextUpdate'];
+  clarification?: ClarificationState;
+  /** Contexte du fil chargé (lot 32 : candidats d'une cible exigée non résolue). */
+  thread?: ThreadContext | null;
+  /** Candidats d'une référence AMBIGUË du fil, quand aucune clarification n'a été posée. */
+  ambiguousCandidates?: Array<{ type: string; id: number }>;
+  answer?: {
+    text: string; sources: RetrievedSource[]; strategy: string;
+    intent: 'NAVIGATION_OPEN' | 'ACCOUNT_FACT_DOCUMENT' | 'ACCOUNT_FACT_AGENDA' | 'ACCOUNT_FACT_ASSET';
+    claims?: Claim[];
+  };
+}> {
+  // Reprise d'une clarification : le choix EST la référence.
+  if (input.resume) {
+    const r = input.resume;
+    const ref = r.documentId ? { type: 'document' as const, id: r.documentId }
+      : r.entity ? { type: r.entity.type, id: r.entity.id }
+        : r.assetId ? { type: 'asset' as const, id: r.assetId } : null;
+    if (!ref) return { input };
+    // Équipement / pièce choisi : l'entité est la cible ; son bien parent
+    // devient le contexte (filtre, actions) — ticket 13 §G.
+    const pageRef = ref.type === 'document' ? { documentId: String(ref.id) }
+      : ref.type === 'asset' ? { assetId: String(ref.id) }
+        : r.entity?.assetId ? { assetId: String(r.entity.assetId) } : {};
+    const enriched: AssistantRequestInput = {
+      ...input,
+      reference: { ...ref, label: r.choiceLabel, method: 'clarification' },
+      pageContext: { ...input.pageContext, ...pageRef },
+    };
+    const update = { ...ref, label: r.choiceLabel };
+    // CDC 15 T2-19 (lecture canonique) : document choisi → lecture ciblée
+    // (« son montant »), avant les réponses immédiates historiques.
+    if (ref.type === 'document') {
+      const lu = await lectureCiblee(enriched, ports);
+      if (lu) return { input: enriched, contextUpdate: update, answer: lu };
+    }
+    // Une référence résolue par clarification peut appeler la même réponse
+    // immédiate qu'une référence directe (« ouvre… », « sa date… »).
+    if (ref.type === 'document' && ports.describeEntity) {
+      const d = await ports.describeEntity(input.accountId, ref).catch(() => null);
+      // La référence ambiguë d'origine (« ce document ») est désormais levée :
+      // elle ne compte pas comme un autre objet demandé.
+      const ambigu = plainTxt(input.message).match(/\b(ce|cet|cette)\s+\w+|l'autre|celui-ci|celle-ci/)?.[0];
+      const quick = d ? quickAnswer(input.message, ref.type, ref.id, d, ambigu) : null;
+      if (quick) return { input: enriched, contextUpdate: update, answer: quick };
+    }
+    return { input: enriched, contextUpdate: update };
+  }
+
+  if (!ports.loadThreadContext || !input.conversationId) return { input };
+  const ctx = await ports.loadThreadContext(input).catch(() => null);
+  if (!ctx) return { input };
+
+  const res = resolveThreadReference(input.message, ctx);
+  // Lot 101A (I) : objets actifs AVANT le tour (identifiants métier seulement).
+  const actifs: NonNullable<NonNullable<CascadeTrace['reference']>['activeObjects']> = [];
+  if (ctx.lastSelected) actifs.push({ type: ctx.lastSelected.type, id: ctx.lastSelected.id, via: 'lastSelected' });
+  for (const e of ctx.presentedLists.find((l) => l.length > 0) ?? []) {
+    if (!actifs.some((a) => a.type === e.type && a.id === e.id)) actifs.push({ type: e.type, id: e.id, via: 'presented' });
+  }
+  trace.reference = {
+    contextMessages: ctx.messages.length,
+    presentedLists: ctx.presentedLists.length,
+    detected: res.kind === 'none' ? null : res.detected,
+    outcome: res.kind,
+    method: res.kind === 'resolved' ? res.method : res.kind === 'ambiguous' ? 'clarification' : null,
+    entity: null,
+    activeObjects: actifs.slice(0, 10),
+  };
+  let enriched: AssistantRequestInput = { ...input, threadContextText: formatConversationForPrompt(ctx, null) };
+
+  if (res.kind === 'ambiguous') {
+    const memeType = res.candidates.every((c) => c.type === res.candidates[0].type);
+    if (memeType && res.candidates.length >= 2 && ports.saveClarification) {
+      // Lot 32 : la reprise garde l'intention de la DEMANDE (« quels documents
+      // lui sont liés ? » reste une recherche de documents), pas « ouvrir ».
+      const demande = routeDeterministic({ message: input.message, planType: input.planType, hasPendingClarification: false, pageContext: input.pageContext });
+      const intentionDemande = demande.kind === 'route' && demande.route.intent.startsWith('ACCOUNT_') ? demande.route.intent : null;
+      const state = buildEntityClarification({
+        entities: res.candidates,
+        accountId: input.accountId, userId: input.userId, conversationId: input.conversationId,
+        originalMessage: input.message, originalMessageId: randomUUID(),
+        originalIntent: intentionDemande ?? (res.candidates[0].type === 'document' ? 'NAVIGATION_OPEN' : 'ACCOUNT_SEARCH_ASSET'),
+        chainDepth: 1,
+      });
+      if (await ports.saveClarification(state).catch(() => false)) return { input: enriched, clarification: state };
+    }
+    return { input: enriched, thread: ctx, ambiguousCandidates: res.candidates };
+  }
+  if (res.kind !== 'resolved') return { input: enriched, thread: ctx };
+
+  // Re-vérification : existe, appartient au compte, reste accessible.
+  const d = ports.describeEntity ? await ports.describeEntity(input.accountId, res.entity).catch(() => null) : null;
+  if (!d) {
+    trace.reference.outcome = 'unavailable';
+    // Ticket 14 §D : un BIEN du fil devenu archivé / transmis / supprimé est
+    // signalé comme tel — jamais « je n'ai rien trouvé », jamais lu.
+    if (res.entity.type === 'asset') trace.diagnostic = 'TARGET_UNAVAILABLE';
+    return {
+      input: enriched,
+      answer: {
+        text: res.entity.type === 'asset' ? ASSET_NO_LONGER_AVAILABLE_MESSAGE : 'Cet élément n’est plus disponible dans votre compte.',
+        sources: [], strategy: 'reference.unavailable', intent: 'NAVIGATION_OPEN',
+      },
+    };
+  }
+  trace.reference.entity = { type: res.entity.type, id: res.entity.id };
+  const label = d.label || res.entity.label || null;
+  enriched = {
+    ...enriched,
+    reference: { type: res.entity.type, id: res.entity.id, label, method: res.method },
+    threadContextText: formatConversationForPrompt(ctx, { ...res.entity, label }),
+    pageContext: {
+      ...input.pageContext,
+      ...(res.entity.type === 'asset' ? { assetId: String(res.entity.id) } : {}),
+      ...(res.entity.type === 'document' ? { documentId: String(res.entity.id) } : {}),
+      // Équipement / pièce du fil : le bien parent devient le contexte (filtre).
+      ...((res.entity.type === 'equipment' || res.entity.type === 'room') && d.assetId ? { assetId: String(d.assetId) } : {}),
+    },
+  };
+  const contextUpdate = { type: res.entity.type, id: res.entity.id, label };
+  // CDC 15 T2-19, T2-20 (lecture canonique) : « et son montant ? », « et sa
+  // date ? » sur le document ou l'échéance cités — lus sur l'objet lui-même.
+  const lu = await lectureCiblee(enriched, ports);
+  if (lu) return { input: enriched, contextUpdate, answer: lu };
+  const quick = quickAnswer(input.message, res.entity.type, res.entity.id, d, res.detected);
+  return quick ? { input: enriched, contextUpdate, answer: quick } : { input: enriched, contextUpdate, thread: ctx };
+}
+
+/** Lecture ciblée (canonique) d'une entité du fil ou d'une clarification. */
+async function lectureCiblee(
+  input: AssistantRequestInput,
+  ports: OrchestratorPorts,
+): Promise<NonNullable<Awaited<ReturnType<typeof applyThreadMemory>>['answer']> | null> {
+  if (!ports.readTarget) return null;
+  const lu = await ports.readTarget(input, targetsFromInput(input)).catch((e) => {
+    if (e instanceof TargetReadError) throw e;
+    return null;
+  });
+  // Ambiguïté de cible sur une question de suivi : la suite normale la traitera.
+  if (lu?.ambiguity) return null;
+  return lu ? { text: lu.text, sources: lu.sources, strategy: lu.strategy, intent: lu.intent, claims: lu.claims } : null;
+}
+
+/** Réponses immédiates sur une entité référencée : l'ouvrir, donner sa date. */
+function quickAnswer(
+  message: string,
+  type: ReferencedType,
+  id: number,
+  d: { label: string; date?: string | null; assetId?: number | null },
+  detected?: string,
+): { text: string; sources: RetrievedSource[]; strategy: string; intent: 'NAVIGATION_OPEN' | 'ACCOUNT_FACT_DOCUMENT' } | null {
+  const m = plainTxt(message);
+  const src = [entitySource(type, id, d.label, d.assetId)];
+  // Lot 101A (A) : une question sur une PROPRIÉTÉ de l'objet (« Et la
+  // série ? », « et son prix ? ») n'est jamais une demande d'ouverture : la
+  // demande suit son cours, bornée à l'objet résolu.
+  const surPropriete = type !== 'document' && (propertyFollowUp(message) !== null || findReadableFields(message).length > 0);
+  if (surPropriete && !OPEN_REF.test(m)) return null;
+  if (type === 'document' && DATE_REF.test(m) && !OPEN_REF.test(m)) {
+    return {
+      text: d.date ? `« ${d.label} » est daté du ${formatDateFr(d.date)}.` : `Aucune date n’est enregistrée pour « ${d.label} ».`,
+      sources: src, strategy: 'reference.document_date', intent: 'ACCOUNT_FACT_DOCUMENT',
+    };
+  }
+  // « ouvre le deuxième », « le deuxième » : ouvrir l'élément désigné — pas
+  // « montre-moi les documents de cette maison », qui demande autre chose que
+  // le bien lui-même.
+  const reste = detected ? m.replace(plainTxt(detected), ' ') : m;
+  if (CONTENT_NOUN.test(reste)) return null;
+  const court = m.replace(/[?!.]/g, '').trim().split(/\s+/).length <= 5;
+  if (OPEN_REF.test(m) || court) {
+    return { text: `Voici « ${d.label} ».`, sources: src, strategy: 'reference.open', intent: 'NAVIGATION_OPEN' };
+  }
+  return null;
+}
+
+
+/**
+ * Rend une clarification : la question, ses candidats, et rien d'autre —
+ * aucune réponse partielle sur un bien choisi au hasard.
+ */
+async function finalizeClarification(
+  base: AssistantRunResult,
+  machine: ConversationMachine,
+  state: ClarificationState,
+  ports: OrchestratorPorts,
+  input: AssistantRequestInput,
+): Promise<AssistantRunResult> {
+  if (machine.state !== 'CLARIFYING') machine.transition('CLARIFYING');
+  const result: AssistantRunResult = {
+    ...base,
+    finalState: machine.state,
+    mode: 'deterministic',
+    answer: state.question,
+    claims: [], sources: [], actions: [],
+    clarification: state,
+  };
+  await safePersist(ports, result, input);
+  return result;
+}
+
+/** Intentions portant sur les données du compte : la cascade y est tentée. */
+function isDataQuestion(route: IntentRoute, message = ''): boolean {
+  // Synthèse, comparaison, chronologie : une valeur exacte n'y répond pas —
+  // ces intentions vont directement au retrieval puis, si éligible, au modèle.
+  if (SYNTHESIS_INTENTS.has(route.intent)) return false;
+  // CDC 15 T2-14 (lecture canonique) : une recherche de documents FILTRÉE
+  // (non rattachés, statut d'analyse, fournisseur) est servie par
+  // l'adaptateur documents, seul à appliquer ces filtres exactement.
+  if (route.intent === 'ACCOUNT_SEARCH_DOCUMENT' && hasDocumentFilters(documentSearchFilters(message).filters)) return false;
+  return route.intent.startsWith('ACCOUNT_') || route.intent === 'UNKNOWN';
+}
+
+/**
+ * Correction de route, lecture canonique (CDC 15 T2-14) : « quels documents
+ * sont en cours d'analyse ? » ou « … ne sont rattachés à aucun bien ? » est
+ * une RECHERCHE de documents filtrée, pas une synthèse.
+ */
+export function affinerRoute(route: IntentRoute, input: Pick<AssistantRequestInput, 'message' | 'planType'>): IntentRoute {
+  if (route.intent !== 'ACCOUNT_SUMMARY' && route.intent !== 'UNKNOWN') return route;
+  const plainMsg = plainTxt(input.message ?? '');
+  if (!/\b(documents?|fichiers?|factures?|devis|contrats?|pieces?)\b/.test(plainMsg)) return route;
+  if (!hasDocumentFilters(documentSearchFilters(input.message ?? '').filters)) return route;
+  return { ...routeForIntent('ACCOUNT_SEARCH_DOCUMENT', input.planType, 'recherche de documents filtrée'), entityHints: route.entityHints };
+}
+
+/**
+ * Clarification d'une classification ambiguë — CDC 15 T2-09. Choix issus du
+ * registre des intentions (l'intention proposée par le modèle d'abord) ; la
+ * reprise rejoue la demande avec l'intention choisie, sans re-classement.
+ */
+export function buildIntentClarification(p: {
+  accountId: number; userId: number; conversationId?: number;
+  originalMessage: string; originalMessageId: string; proposed: VerebonaIntent; now?: Date;
+}): ClarificationState {
+  const now = p.now ?? new Date();
+  const CHOIX: Array<[VerebonaIntent, string]> = [
+    ['ACCOUNT_SEARCH_DOCUMENT', 'Retrouver un document'],
+    ['ACCOUNT_SEARCH_AGENDA', 'Retrouver une échéance'],
+    ['ACCOUNT_FACT_ASSET', 'Une information sur un bien'],
+    ['PRODUCT_HELP_HOW_TO', 'Savoir comment faire dans Verebona'],
+  ];
+  const propose = p.proposed.startsWith('ACCOUNT_') || p.proposed.startsWith('PRODUCT_HELP')
+    ? [[p.proposed, getIntentDefinition(p.proposed).label] as [VerebonaIntent, string]] : [];
+  const choix = [...propose, ...CHOIX.filter(([i]) => i !== p.proposed)].slice(0, 4);
+  return {
+    clarificationId: randomUUID(),
+    conversationId: p.conversationId, accountId: p.accountId, userId: p.userId,
+    originalMessageId: p.originalMessageId, originalMessage: p.originalMessage, originalIntent: p.proposed,
+    resolvedContext: {},
+    ambiguity: { kind: 'action', field: 'intent', reason: 'CLASSIFICATION_AMBIGUOUS' },
+    candidateType: 'action',
+    candidates: choix.map(([intent, label]) => ({ id: `intent_${intent.toLowerCase()}`, label, resumeMessage: p.originalMessage, resumeIntent: intent })),
+    question: 'Je ne suis pas sûr de comprendre votre demande. Que cherchez-vous ?',
+    createdAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + CLARIFICATION_TTL_MS).toISOString(),
+    attemptCount: 0, chainDepth: 1, status: 'PENDING',
+  };
+}
+
+const SYNTHESIS_INTENTS = new Set(['ACCOUNT_SUMMARY', 'ACCOUNT_COMPARISON', 'ACCOUNT_TIMELINE']);
+
+/**
+ * Intentions où une question de CHAMP (« quelle est l'adresse de la
+ * maison ? ») est lue directement sur la fiche canonique (lot 29, 8b) —
+ * en plus d'une question qui demandait une classification.
+ */
+const FACT_STEP_INTENTS = new Set<string>(['ACCOUNT_FACT_ASSET', 'ACCOUNT_SEARCH_ASSET', 'UNKNOWN']);
+
+/**
+ * Reprise d'une clarification de PÉRIODE sur une question à route FAIBLE
+ * (lot 53, PO D21) : reprise sans autre contexte (ni bien, ni document, ni
+ * entité, ni faits, ni besoin sémantique) dont la demande rejouée — celle que
+ * le serveur a construite avec la période choisie — est encore décidée par
+ * des signaux faibles. Pure.
+ */
+function repriseDePeriodeFaible(input: AssistantRequestInput): boolean {
+  const r = input.resume;
+  if (!r || r.assetId || r.documentId || r.entity || r.requestedFacts?.length || r.semantic || r.semanticSource) return false;
+  const p = analyserPeriode(input.message, aujourdhuiParis());
+  if (p?.kind !== 'resolved') return false;
+  const o = routeDeterministic({ message: input.message, planType: input.planType, hasPendingClarification: false });
+  return o.kind === 'route' && o.route.deterministicConfidence === 'WEAK';
+}
+
+/**
+ * Faits demandés VALIDÉS par le serveur (lot 53, 53H) : clés du registre
+ * canonique lisibles par l'assistant (`assistantReadable`), dédoublonnées,
+ * ordre conservé, ≤ 20. Une clé proposée par le modèle hors registre n'est
+ * jamais lue.
+ */
+function dedupeLecture(keys: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const k of keys) {
+    if (getField(k)?.assistantReadable && !out.includes(k)) out.push(k);
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+/** Dédoublonnage logique (§13.8) : même entité, même contenu, copie. */
+function dedupeSources(list: RetrievedSource[]): RetrievedSource[] {
+  return dedupeLogique(list);
+}
+
+/** Stratégies dont le résultat est une liste d'objets : rendu en cartes. */
+const CARD_STRATEGIES = new Set<string>([
+  'structured.list_documents', 'structured.list_assets', 'structured.list_rented', 'retrieval.document',
+  'retrieval.document_status',
+  // Statut d'un document en question directe et exports disponibles (§12.1, §12.2).
+  'structured.document_status', 'structured.exports',
+  // Lot 34 : À traiter et échéances d'une demande d'actions.
+  'structured.actionable',
+]);
+
+/** Lot 32 : cible exigée, aucun bien disponible à proposer. */
+const NO_AVAILABLE_ASSET_MESSAGE =
+  'Je n’ai identifié aucun bien actif dans votre compte pour cette demande. Ajoutez le bien ou précisez son nom tel qu’il apparaît dans Verebona.';
+/** Lot 32 : cible exigée, catalogue des biens momentanément illisible. */
+const TARGET_QUESTION_MESSAGE = 'De quel bien parlez-vous ? Précisez son nom tel qu’il apparaît dans Verebona.';
+/** Lot 101A (A, B) : question elliptique sans objet identifiable dans le fil — jamais une recherche du compte entier. */
+export const CONTEXT_TARGET_QUESTION_MESSAGE = 'De quel élément parlez-vous ? Précisez le bien ou l’équipement concerné.';
+
+/**
+ * « Aucun document… » d'une recherche RÉELLEMENT exécutée sur UN bien résolu
+ * (lot 32, test I) : la phrase nomme le périmètre recherché. `null` : pas de
+ * bien unique (phrase générique « rien trouvé »).
+ */
+async function aucunResultatCible(
+  route: IntentRoute,
+  input: AssistantRequestInput,
+  ports: OrchestratorPorts,
+  connue: { id: number; name: string } | null,
+  deadlineMs: number,
+): Promise<string | null> {
+  if (route.intent !== 'ACCOUNT_SEARCH_DOCUMENT' || hasDocumentFilters(documentSearchFilters(input.message).filters)) return null;
+  let bien = connue?.name ? connue : null;
+  if (!bien && ports.resolveTargets) {
+    const t = await withDeadline(ports.resolveTargets(input, route), deadlineMs).catch(() => null);
+    const unique = t?.asset && !(t.namedAssets.length > 1) ? t.asset : null;
+    if (unique) bien = { id: unique.id, name: unique.label ?? t!.catalog?.find((a) => a.id === unique.id)?.name ?? '' };
+  }
+  if (!bien?.name) return null;
+  // Liste des documents DU bien (aucun autre critère) : « aucun document lié » ;
+  // recherche avec d'autres termes : rien de correspondant POUR ce bien.
+  const motsBien = new Set(extractSearchTerms(bien.name));
+  const autres = extractSearchTerms(input.message).filter((w) => !motsBien.has(w) && !MOTS_LISTE_DOCUMENTS.has(w));
+  return autres.length === 0
+    ? `Aucun document n’est lié à « ${bien.name} » dans votre compte.`
+    : `Aucun document correspondant n’est lié à « ${bien.name} » dans votre compte.`;
+}
+
+/** Mots d'une demande de LISTE des documents d'un bien (aucun critère de plus). */
+const MOTS_LISTE_DOCUMENTS = new Set([
+  'document', 'documents', 'fichier', 'fichiers', 'piece', 'pieces', 'lie', 'lies', 'liee', 'liees', 'rattache', 'rattaches',
+  'rattachee', 'rattachees', 'associe', 'associes', 'associee', 'associees', 'concerne', 'concernent', 'concernant', 'bien', 'biens',
+  'quels', 'quelles', 'quel', 'quelle', 'sont', 'lui', 'leur', 'liste', 'montre', 'affiche', 'donne',
+  // Renvois levés (« l'autre », « ceux qui… ») : ils désignent le bien, pas un critère.
+  'autre', 'ceux', 'celles', 'celui', 'celle', 'et', 'qui',
+]);
+
+/** Flag `verebona_assistant_product_help` coupé (§39). */
+export const PRODUCT_HELP_OFF_MESSAGE =
+  'L’aide de l’assistant est momentanément indisponible. Vous pouvez consulter le Centre d’aide Verebona.';
+
+/** Limite d'offre à l'expiration de l'essai ou sans abonnement (§6.5). */
+export function planLimitNotice(kind: 'TRIAL_EXPIRED' | 'SUBSCRIPTION_REQUIRED'): string {
+  return kind === 'TRIAL_EXPIRED'
+    ? 'Votre essai est terminé : les réponses intelligentes sont désactivées tant qu’une offre n’est pas choisie. La recherche et l’aide restent disponibles.'
+    : 'Les réponses intelligentes demandent une offre active. La recherche et l’aide restent disponibles.';
+}
+
+/** Action « Voir les offres » (§6.5, catalogue §22.4), construite côté serveur. */
+function pricingAction(): VerebonaAction {
+  return {
+    actionId: randomUUID(), type: 'OPEN_PRICING', label: 'Voir les offres', href: ROUTES.OFFRES,
+    token: null, requiresConfirmation: false, expiresAt: null, analyticsCode: 'verebona.action.open_pricing',
+  };
+}
+
+function fallbackUnknownRoute(): IntentRoute {
+  return {
+    intent: 'UNKNOWN', confidence: 'ambiguous', accountScope: 'server-enforced',
+    entityHints: [], requiresRetrieval: false, aiEligible: false,
+    clarificationRequired: false, allowedActionTypes: ['OPEN_HELP'],
+    routeReason: 'aucune règle déterministe, classification indisponible',
+  };
+}
+
+async function finalize(
+  base: AssistantRunResult,
+  machine: ConversationMachine,
+  mode: ResponseMode,
+  answer: string,
+  claims: Claim[],
+  sources: ResolvedSource[],
+  actions: VerebonaAction[],
+  ports: OrchestratorPorts,
+  input: AssistantRequestInput,
+  supportLevel: AssistantRunResult['supportLevel'] = null,
+): Promise<AssistantRunResult> {
+  if (machine.state !== 'VALIDATING') machine.transition('VALIDATING');
+  machine.transition('READY');
+
+  // §19.10 — dernier moment utile pour vérifier qu'une source citée existe
+  // encore et reste accessible. Une source supprimée entre sa récupération et
+  // l'affichage produirait un lien mort, et l'historique conservé
+  // `historyDays` jours (3 mois, CDC 15 T2-46) en produirait davantage encore.
+  //
+  // Ne lève jamais : une vérification impossible ne doit pas empêcher
+  // l'affichage d'une réponse.
+  const sourcesVerifiees = trierParContribution(
+    await marquerDisponibilite(sources, input.accountId).catch(() => sources),
+    claims,
+  );
+
+  // Lot 29 (ticket 13 AC08) : une réponse qui porte sur UN seul équipement
+  // ou UNE seule pièce en fait la cible courante du fil (« et son numéro de
+  // série ? »). Jamais pour une liste d'objets mélangés.
+  if (!base.contextUpdate && sourcesVerifiees.length) {
+    const refs = sourcesVerifiees.map((x) => ({ x, ref: parseEntityRef(x.id) }));
+    const entites = [...new Map(refs.filter((r) => r.ref && (r.ref.kind === 'equipment' || r.ref.kind === 'room'))
+      .map((r) => [`${r.ref!.kind}:${r.ref!.id}`, r])).values()];
+    const autres = refs.filter((r) => r.ref && r.ref.kind !== 'equipment' && r.ref.kind !== 'room');
+    if (entites.length === 1 && autres.length === 0) {
+      const e = entites[0];
+      base.contextUpdate = { type: e.ref!.kind as 'equipment' | 'room', id: e.ref!.id, label: e.x.title ?? null };
+    }
+  }
+
+  const result: AssistantRunResult = {
+    ...base, finalState: machine.state, mode,
+    // Requête mixte : la réponse factuelle, PUIS le refus ciblé — sans
+    // laisser croire que la partie interdite a été évaluée.
+    answer: base.partialRefusal ? `${answer}\n\n${base.partialRefusal}` : answer,
+    claims,
+    sources: sourcesVerifiees, actions, supportLevel,
+  };
+  await safePersist(ports, result, input);
+  return result;
+}
+
+/**
+ * Qualité du type de source (§19.4, critère 3) — rang croissant : l'état
+ * canonique de la fiche d'abord (CDC 15 B2 : il prime sur un document
+ * historique), puis le document lui-même et ce qui en est extrait, l'agenda,
+ * les objets liés, les éléments « À traiter », enfin l'aide et les règles
+ * d'offre (hors données du compte).
+ */
+export const RANG_TYPE_SOURCE: Readonly<Record<string, number>> = {
+  asset_field: 0, document: 1, document_extraction: 2, agenda_item: 3,
+  supplier: 4, export_item: 4, to_process_item: 5, help_entry: 6, product_rule: 6,
+};
+
+/**
+ * Deux échéances : leur date est une date d'ÉVÉNEMENT, pas de mise à jour —
+ * l'ordre chronologique du retrieval (prochaines échéances, chronologie) est
+ * conservé, jamais inversé par la récence.
+ */
+const chronologique = (a: ResolvedSource, b: ResolvedSource) => a.type === 'agenda_item' && b.type === 'agenda_item';
+
+/** Date utile ISO (AAAA-MM-JJ…) d'une source, ou null. */
+const dateUtile = (s: ResolvedSource): string | null =>
+  (typeof s.usefulDate === 'string' && /^\d{4}-\d{2}-\d{2}/.test(s.usefulDate) ? s.usefulDate.slice(0, 10) : null);
+
+/**
+ * Ordre d'affichage des sources — §19.4 : d'abord celles qui soutiennent le
+ * plus d'affirmations (la première affirmation, principale, départage), puis
+ * le score de retrieval ; à égalité, l'ordre d'origine. Sans affirmation,
+ * l'ordre du retrieval est conservé tel quel.
+ *
+ * Lecture canonique (lot 19) : entre la contribution et le score, critères 3
+ * (qualité du type de source, `RANG_TYPE_SOURCE`) et 4 (date utile la plus
+ * récente ; sans date, après ; entre deux échéances, l'ordre chronologique
+ * d'origine est gardé). La récence ne passe jamais devant le type (« la
+ * récence seule ne permet pas d'écarter une source contractuelle »).
+ */
+export function trierParContribution(sources: ResolvedSource[], claims: Claim[]): ResolvedSource[] {
+  if (sources.length < 2 || claims.length === 0) return sources;
+  const citations = new Map<string, number>();
+  const principale = new Set(claims[0]?.sourceIds ?? []);
+  for (const c of claims) for (const id of new Set(c.sourceIds)) citations.set(id, (citations.get(id) ?? 0) + 1);
+  const rang = (s: ResolvedSource) => RANG_TYPE_SOURCE[s.type] ?? 9;
+  return sources
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) =>
+      (citations.get(b.s.id) ?? 0) - (citations.get(a.s.id) ?? 0)
+      || Number(principale.has(b.s.id)) - Number(principale.has(a.s.id))
+      || rang(a.s) - rang(b.s)
+      || (!chronologique(a.s, b.s) ? (dateUtile(b.s) ?? '').localeCompare(dateUtile(a.s) ?? '') : 0)
+      || (b.s.relevanceScore ?? 0) - (a.s.relevanceScore ?? 0)
+      || a.i - b.i)
+    .map((x) => x.s);
+}
+
+/**
+ * Persiste puis reporte les identifiants de la base sur le résultat : le
+ * messageId rendu au client doit être celui que les routes sources /
+ * explication / avis savent retrouver, et conversationId le fil réellement
+ * utilisé.
+ */
+/**
+ * Lot 101A (I) — diagnostic COMPLET du tour (codes et identifiants, aucun
+ * contenu), calculé sur le résultat final et versé dans la trace persistée
+ * (`verebona_request_runs.retrieval_methods_json.turn` : BO « Routage T2 » et
+ * diagnostic global). Pure, exportée pour les tests.
+ */
+export function buildTurnDiagnostic(r: AssistantRunResult, input: AssistantRequestInput): T2TurnDiagnostic | null {
+  const c = r.cascade;
+  if (!c) return null;
+  const message = input.originalMessage ?? input.message ?? '';
+  const ellipse = propertyFollowUp(message);
+  const ref = c.reference ?? null;
+  const cibles: T2TurnDiagnostic['resolvedTargets'] = [];
+  const ajouter = (type: string, id: number | null | undefined, origin: string) => {
+    if (id && !cibles.some((x) => x.type === type && x.id === id)) cibles.push({ type, id, origin });
+  };
+  if (input.resume?.entity) ajouter(input.resume.entity.type, input.resume.entity.id, 'clarification');
+  if (input.resume?.assetId) ajouter('asset', input.resume.assetId, 'clarification');
+  if (input.resume?.documentId) ajouter('document', input.resume.documentId, 'clarification');
+  if (input.reference) ajouter(input.reference.type, input.reference.id, input.reference.method === 'clarification' ? 'clarification' : 'thread');
+  if (r.contextUpdate) ajouter(r.contextUpdate.type, r.contextUpdate.id, 'answer');
+  const proprietes = r.route?.understanding?.requestedFacts?.length ? r.route.understanding.requestedFacts
+    : ellipse?.fields.length ? ellipse.fields : findReadableFields(message).map((x) => x.def.key);
+  const cibleLue = c.strategy.startsWith('target.') && cibles.length > 0;
+  const routing = c.routingGuard ?? (cibleLue && proprietes.length ? { decision: 'DETERMINISTIC_BOUNDED' as const, reasons: ['TARGET_AND_PROPERTY' as const] } : null);
+  const portee = c.retrieval?.scope ?? (cibleLue
+    ? { kind: 'OBJECT', objectType: cibles[0].type, objectId: cibles[0].id, assetId: null, reason: 'TARGET_READ' } : null);
+  const d: T2TurnDiagnostic = {
+    version: 1,
+    contextMessages: ref?.contextMessages ?? 0,
+    activeObjectsBefore: ref?.activeObjects ?? [],
+    reference: ref ? { detected: ref.detected, outcome: ref.outcome, method: ref.method, entity: ref.entity } : null,
+    elliptical: ellipse !== null,
+    resolvedTargets: cibles,
+    intent: c.intent,
+    requestedProperty: [...new Set(proprietes)],
+    routing,
+    understandCalled: (input.turnState?.understandCalls ?? 0) > 0 || c.semantic?.understandCalled === true,
+    strategy: c.strategy,
+    retrievalScope: portee,
+    candidates: (c.retrieval?.candidates ?? []).slice(0, 25),
+    revalidations: (c.revalidations ?? []).map((x) => ({ factId: x.factId, status: x.status })),
+    answer: {
+      supportLevel: r.supportLevel ?? null, clarification: Boolean(r.clarification),
+      sourceCount: r.sources.length, claimKeys: r.claims.map((x) => x.claimKey),
+    },
+    factsUsed: [...new Set(r.claims.flatMap((x) => x.sourceIds))].slice(0, 25),
+    anomalies: [],
+  };
+  d.anomalies = turnAnomalies(d);
+  return d;
+}
+
+async function safePersist(ports: OrchestratorPorts, r: AssistantRunResult, input: AssistantRequestInput) {
+  // Lot 101A (I) : diagnostic du tour ; anomalies visibles aussi dans les motifs.
+  if (r.cascade) {
+    const tour = buildTurnDiagnostic(r, input);
+    if (tour) {
+      r.cascade.turn = tour;
+      for (const a of tour.anomalies) if (!r.cascade.escalationReasons.includes(`ANOMALY:${a}`)) r.cascade.escalationReasons.push(`ANOMALY:${a}`);
+    }
+  }
+  // §27.11 : codes informatifs (non bloquants), calculés sur le résultat
+  // final — ils partent avec la réponse et restent dans la trace.
+  const notices = noticesFor(r);
+  if (notices.length) {
+    r.notices = notices;
+    if (r.cascade) r.cascade.notices = notices.map((n) => n.code);
+  }
+  // §28.7 : retrieval servi par le cache (§43 RETRIEVAL_CACHE_TTL_SECONDS).
+  if (r.cascade && (input.aiReport?.events ?? []).includes(RETRIEVAL_CACHE_HIT_EVENT)) r.cascade.cacheHit = true;
+  try {
+    const ids = await ports.persist(r, input);
+    if (ids) {
+      r.messageId = String(ids.messageId);
+      r.conversationId = ids.conversationId;
+    }
+  } catch (e) { console.error('[verebona] persist error', (e as Error).message); }
+}
+
+/** Événement posé par le port de retrieval quand le cache a répondu (§43). */
+export const RETRIEVAL_CACHE_HIT_EVENT = 'CACHE:RETRIEVAL';
+
+/**
+ * Codes fonctionnels du §27.11 émis À TITRE INFORMATIF avec une réponse
+ * rendue — ils étaient déclarés (`VEREBONA_ERROR_CODES`) sans jamais être
+ * émis. Une erreur bloquante garde son propre `error` ; aucun code n'est
+ * doublé.
+ *
+ *   PLAN_NOT_ELIGIBLE   la réponse intelligente dépasse l'offre (§6.5) ;
+ *   NO_RELEVANT_SOURCE  repli sans aucune source pertinente ;
+ *   INVALID_ACTION      action proposée par le modèle rejetée (§22.7, 37.12) ;
+ *   SOURCE_UNAVAILABLE  une source citée n'existe plus ou n'est plus
+ *                       accessible (§19.10) ;
+ *   VALIDATION_FAILED   sortie modèle rejetée par la validation serveur
+ *                       (§18.5, §18.6) — repli déterministe servi ;
+ *   UNSAFE_REQUEST      demande refusée : sujet réservé, malveillance (§13,
+ *                       §29.2).
+ */
+export function noticesFor(r: AssistantRunResult): NonNullable<AssistantRunResult['notices']> {
+  const codes = new Set<VerebonaErrorCode>();
+  const c = r.cascade;
+  const raisons = c?.escalationReasons ?? [];
+  if (raisons.some((x) => x.startsWith('PLAN_LIMIT:'))) codes.add('PLAN_NOT_ELIGIBLE');
+  if (r.finalState !== 'CANCELLED' && !r.error && !r.clarification && !r.commandPlan
+      && c?.answeredBy === 'fallback' && r.sources.length === 0 && c.strategy.startsWith('fallback.')) {
+    codes.add('NO_RELEVANT_SOURCE');
+  }
+  if ((c?.securityEvents ?? []).some((e) => e.code === 'MODEL_ACTION_REJECTED')) codes.add('INVALID_ACTION');
+  if (r.sources.some((s) => s.isAvailable === false)) codes.add('SOURCE_UNAVAILABLE');
+  if ((c?.aiEvents ?? []).some((e) => e.startsWith('GENERATION_REJECTED:') || e === 'REPAIR_FAILED')) codes.add('VALIDATION_FAILED');
+  if (r.blockedReason || r.scope?.kind === 'FULLY_BLOCKED' || r.scope?.kind === 'PARTIALLY_ALLOWED'
+      || r.route?.intent === 'UNSAFE_OR_MALICIOUS' || r.route?.intent === 'SENSITIVE_ADVICE') {
+    codes.add('UNSAFE_REQUEST');
+  }
+  if (r.error) codes.delete(r.error.code);
+  return [...codes].map((code) => ({ code, message: assistantErrorMessage(code) }));
+}
+
+/**
+ * Rattrape sur le budget les appels qu'un port n'y aurait pas décomptés
+ * lui-même (`attendu` = appels déclarés ou supposés). Les adaptateurs réels
+ * décomptent déjà via `executeWithinBudget` : rien n'est alors ajouté.
+ */
+function reconcilierBudget(budget: AiCallBudget, avant: number, attendu: number): void {
+  const decompte = budget.used - avant;
+  if (decompte < attendu) budget.consume(attendu - decompte);
+}
+
+/** Applique une échéance globale à une promesse (§30.2). */
+async function withDeadline<T>(p: Promise<T>, deadlineMs: number): Promise<T> {
+  const remaining = deadlineMs - Date.now();
+  if (remaining <= 0) throw new Error('REQUEST_TIMEOUT');
+  return Promise.race([
+    p,
+    new Promise<T>((_, rej) => setTimeout(() => rej(new Error('REQUEST_TIMEOUT')), remaining)),
+  ]);
+}

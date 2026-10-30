@@ -1,0 +1,444 @@
+/**
+ * Contrats de l'analyse unifiée des sources — CDC §4.1.5 et §4.1.6.
+ *
+ * EXIGENCE CENTRALE (§4.1.7) : « Un lien web produit exactement le même schéma
+ * de sortie qu'un fichier. » C'est le critère d'acceptation n°6. Toute source,
+ * présente ou future, entre par `SourceInput` et ressort par
+ * `SourceAnalysisResult` — sans exception et sans variante.
+ */
+import type { EvidenceValue, EvidenceConfidence } from '../evidence/evidence.types';
+import type { AssetIdentifierRecord } from '../reconciliation/document-asset/identifiers';
+import type {
+  PersistedFactTarget, ProjectionOrigin, T1SemanticEvent,
+} from './master/t1-contract';
+
+/**
+ * Branche « prompt maître T1 » (CDC 15 §23, lot 12) : types du contrat
+ * partagé, réexportés pour que les consommateurs n'aient qu'un point d'entrée
+ * (`source-analysis/types`). La source de vérité reste `master/t1-contract.ts`.
+ */
+export type {
+  T1SemanticEvent,
+  PersistedFactTarget, ProjectionOrigin, ProjectedFact,
+} from './master/t1-contract';
+
+/**
+ * Types de source pris en charge. L'ajout d'une source (email, import externe)
+ * consiste à écrire un adaptateur, jamais à modifier le pipeline (§4.1.2).
+ */
+export type SourceType = 'file' | 'web_link' | 'future_source';
+
+/** Entrée normalisée du pipeline commun — CDC §4.1.5. */
+export interface SourceInput {
+  sourceType: SourceType;
+  /** Identifiants `asset_files.id` — plusieurs si les fichiers forment un même document. */
+  sourceIds: number[];
+  accountId: number;
+  userId: number;
+  mimeTypes: string[];
+  displayNames: string[];
+  /** URLs exploitables par le fournisseur (S3 signées, durée limitée). */
+  contentUrls?: string[];
+  /** Contenu déjà extrait par l'adaptateur (cas d'une page web nettoyée). */
+  extractedContent?: string;
+  linkedAssetId?: number | null;
+  /** Version de la source — clé d'idempotence et évitement de réanalyse (§6.3). */
+  sourceVersion?: number;
+  /**
+   * Lot 101A (F) : page fournisseur — produit PRINCIPAL établi par
+   * l'adaptateur (données structurées, titre, h1) et zones connexes retirées
+   * du texte (produits recommandés, carrousels, comparatifs, accessoires).
+   * Jamais transmis au modèle : sert au garde-fou `guardProductIdentity`.
+   */
+  webPage?: {
+    mainProduct: { codes: string[]; name: string | null; brand: string | null } | null;
+    /** Codes produit lus dans les zones connexes retirées (conservés séparément, trace). */
+    relatedProductCodes: string[];
+    removedZones: number;
+  };
+}
+
+/** Candidat de rattachement à une entité du compte. */
+export interface LinkCandidate {
+  /** Identifiant renvoyé par le modèle — TOUJOURS revérifié en base (§4.1.7). */
+  entityId: number | null;
+  /** Libellé brut lorsque l'entité n'existe pas encore. */
+  rawLabel?: string;
+  confidence: EvidenceConfidence;
+  score: number;
+  reason: string;
+  excerpt: string;
+  /** false tant que `identifier-verifier` n'a pas confirmé l'existence. */
+  verified: boolean;
+}
+
+/** Champ extrait, destiné au moteur de réconciliation (usage 2). */
+export type FactProvenance = 'TEXT_EXTRACTION' | 'VISUAL_ANALYSIS';
+
+/** Preuve d'une observation visuelle : où regarder, et ce qui y est vu. */
+export interface VisualEvidence {
+  page?: number;
+  imageIndex?: number;
+  /** Zone relative (0 à 1). */
+  region?: { x1: number; y1: number; x2: number; y2: number };
+  description: string;
+  /** Fichier observé (renseigné à la persistance). */
+  fileId?: number;
+}
+
+export interface VisualObservation {
+  description: string;
+  subject?: string;
+  confidence: EvidenceConfidence;
+  page?: number;
+  imageIndex?: number;
+  region?: { x1: number; y1: number; x2: number; y2: number };
+}
+
+export interface ExtractedTableCell {
+  row: number;
+  column: number;
+  rowHeader: string | null;
+  columnHeader: string | null;
+  columnPath: string[];
+  /** Valeur brute ; `null` pour une cellule vide. */
+  value: string | null;
+  normalized: string | null;
+  valueType: string | null;
+  colspan: number;
+  rowspan: number;
+  page: number | null;
+  confidence: EvidenceConfidence;
+}
+
+export interface ExtractedTable {
+  index: number;
+  title: string | null;
+  pageStart: number | null;
+  pageEnd: number | null;
+  columns: Array<{ header: string; path: string[] }>;
+  rowCount: number;
+  columnCount: number;
+  cells: ExtractedTableCell[];
+  confidence: EvidenceConfidence;
+  uncertain: boolean;
+  /** Incertitudes de structure (lecture, doublons, cellules hors grille). */
+  issues: string[];
+}
+
+export interface ExtractedField {
+  fieldKey: string;
+  value: unknown;
+  normalizedValue?: string;
+  confidence: EvidenceConfidence;
+  /**
+   * Extrait littéral de la source. Présent pour TEXT_EXTRACTION ; ABSENT pour
+   * VISUAL_ANALYSIS — une observation n'a pas de citation, et lui en fabriquer
+   * une ferait passer une interprétation pour un texte.
+   */
+  excerpt?: string;
+  /** Lu dans la source, ou observé sur l'image (défaut : lu). */
+  provenance?: FactProvenance;
+  visualEvidence?: VisualEvidence;
+  /** Cellule de tableau d'où provient la valeur (index dans `document.tables`). */
+  table?: { index: number; row: number; column: number };
+  page?: number;
+  selector?: string;
+  /** Fait générique : sujet (« Chaudière »), attribut (« puissance »), unité (« kW »). */
+  subject?: string;
+  attribute?: string;
+  label?: string;
+  unit?: string;
+  /** Période couverte (ISO), lorsque pertinent (contrat, relevé, garantie…). */
+  periodStart?: string;
+  periodEnd?: string;
+  /** Zone de la source (en-tête, tableau, rubrique…). */
+  section?: string;
+  /**
+   * Récurrence EXPLICITEMENT mentionnée par la source pour cette échéance
+   * (jamais déduite de connaissances générales).
+   */
+  recurrence?: ExtractedRecurrence;
+
+  // ── Contrat T1 enrichi — CDC 15 PM-T1-PRE, T1-01, T1-03, T1-04 ──────────
+  //
+  // Tous OPTIONNELS : le mode « étapes » historique ne les renseigne pas et
+  // continue de fonctionner à l'identique. Renseignés par la projection
+  // déterministe (`ProjectedFact`) de la branche maître.
+
+  /**
+   * Clé EXISTANTE du registre canonique (`getField(key)` défini), ou `null`
+   * pour une connaissance générique (T1-01). Absente = contrat historique :
+   * `fieldKey` fait foi.
+   */
+  canonicalKey?: string | null;
+  /** Libellé/clé tel que lu dans la source, avant canonicalisation. */
+  rawKey?: string | null;
+  /** Valeur telle que lue, avant normalisation (jamais convertie). */
+  rawValue?: string | number | boolean | null;
+  /** Type de valeur du registre (`money_eur`, `money_cents`, `date`…). */
+  valueType?: string | null;
+  /** Unité canonique du registre (T1-03 : `EUR` pour la fiche, `cents` pour `*Cents`). */
+  canonicalUnit?: string | null;
+  /**
+   * Cible du fait (T1-04, T1-05) : bien, équipement, pièce, document… avec
+   * un identifiant VÉRIFIÉ en base, ou `null`. Absente = contrat historique
+   * (un seul bien déterminé par le pipeline).
+   */
+  target?: PersistedFactTarget;
+  /** Événement métier énoncé (U13) : type du catalogue et nature temporelle. */
+  semanticEvent?: T1SemanticEvent | null;
+  /** Origine du fait après projection (modèle, règle déterministe, générique). */
+  origin?: ProjectionOrigin;
+  /** Règle déterministe appliquée (ex. `PURCHASE_RECEIPT_ACQUISITION`). */
+  ruleCode?: string | null;
+  /** Lot 34F — provenance : unités de la source (`document_source_units`) qui prouvent le fait. */
+  sourceUnitIds?: string[];
+  /**
+   * Lot 40 (interne) : empreinte du fait T1 d'origine — ancre les preuves des
+   * candidats Opération sur le fait persisté. Jamais écrite en colonne.
+   */
+  t1FactRef?: string;
+}
+
+/** Récurrence telle que la source l'énonce (T1) — le calcul des dates relève de T4. */
+export interface ExtractedRecurrence {
+  frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  interval?: number;
+  startDate?: string;
+  endDate?: string;
+  occurrenceCount?: number;
+  /** Dates explicitement listées (échéancier). */
+  dates?: string[];
+  excerpt?: string;
+}
+
+/** Candidat d'événement, destiné au moteur agenda (usage 4). */
+export interface AgendaCandidate {
+  title: string;
+  date: string;
+  /** Classification laissée à l'usage 4 lorsqu'elle n'est pas déterministe. */
+  suggestedCategory?: 'action' | 'information';
+  confidence: EvidenceConfidence;
+  excerpt: string;
+  originFieldKey?: string;
+  /** Récurrence démontrée par la source (EXPLICIT_SOURCE), le cas échéant. */
+  recurrence?: import('../agenda/rules/recurrence').RecurrenceSpec;
+
+  // ── Candidat T4 enrichi — CDC 15 T4-01, T4-03, T4-04, T4-08 (lot 14) ────
+  // Renseignés par `buildAgendaCandidatesT4` ; absents (candidat d'un
+  // travail ancien) : traité comme un candidat sans sémantique.
+
+  /** Nature du registre (§13) : fait passé ou échéance à venir. */
+  nature?: 'HISTORICAL' | 'DEADLINE';
+  /** Type métier de l'EVENT_CATALOG (purchase, maintenance, repair, dpe…). */
+  businessType?: string;
+  /** Cible de l'événement (clé fonctionnelle T4-08) ; `id` null si non déterminée. */
+  target?: { type: 'ASSET' | 'EQUIPMENT' | 'ROOM'; id: number | null };
+  /**
+   * Occurrence (clé fonctionnelle T4-08) : `single` pour le fait unique d'un
+   * champ d'origine (une date corrigée MET À JOUR l'événement), sinon la date.
+   */
+  occurrence?: string;
+  /** Document source (clé fonctionnelle T4-08, liens document ↔ agenda T4-07). */
+  sourceFileId?: number;
+  /** D'où vient la date : le champ lui-même, ou la date du document (réparation…). */
+  dateSource?: 'FIELD' | 'DOCUMENT_DATE';
+  /** Type documentaire canonique de la source (DOCUMENT_CATALOG) — T4-04. */
+  documentType?: string | null;
+  /** Autorité du type documentaire (T4-04) ; null si type inconnu (jamais autoritaire). */
+  authority?: 'AUTHORITATIVE' | 'SUPPORTING' | 'WEAK' | null;
+  /** Le type documentaire autorise-t-il la création automatique (T4-04) ? */
+  mayCreateAgenda?: boolean | null;
+  /**
+   * Documents de l'événement (liens source ↔ agenda T4-07, clé fonctionnelle
+   * T4-08) : le document source et, dès qu'elle est écrite, la preuve
+   * (`field_evidence.id`) du champ d'origine. Même forme que
+   * `AgendaSourceRef` de la primitive agenda.
+   */
+  sources?: Array<{ fileId: number; role: 'SOURCE'; evidenceId?: number | null }>;
+}
+
+export type AnalysisWarningCode =
+  | 'NO_EXPLOITABLE_CONTENT'
+  | 'PARTIAL_EXTRACTION'
+  | 'UNVERIFIED_IDENTIFIER'
+  | 'AMBIGUOUS_ASSET'
+  | 'MULTI_ASSET_DOCUMENT'
+  | 'LOW_CONFIDENCE_OVERALL'
+  | 'SOURCE_UNREACHABLE'
+  /** Information écartée : lue sans extrait, ou observée sans preuve visuelle. */
+  | 'FIELD_WITHOUT_EVIDENCE'
+  /** Tableau dont la structure (associations ligne/colonne) est douteuse. */
+  | 'TABLE_STRUCTURE_UNCERTAIN'
+  /** Fait annoncé canonique, requalifié en connaissance générique (clé hors registre ou inapplicable) — CDC 15 T1-01. */
+  | 'FACT_REQUALIFIED_GENERIC'
+  /** Fait retiré par une règle déterministe de projection (ex. futur non explicite) — CDC 15 T1-06, T1-07. */
+  | 'FACT_REJECTED_BY_RULE'
+  /** Unité annoncée incohérente avec l'unité canonique du registre — CDC 15 T1-03. */
+  | 'UNIT_MISMATCH'
+  /** Sortie master limitée à 300 faits : faits au-delà non retenus — CDC 15 D-06. */
+  | 'FACTS_TRUNCATED'
+  /** Fait mal formé ou à valeur trop longue écarté seul (sortie tolérante) — CDC 15 D-06. */
+  | 'FACT_INVALID_DROPPED'
+  /** Extrait « lu » introuvable dans le texte lisible : confiance ramenée à probable — U2, U11. */
+  | 'EXCERPT_NOT_FOUND'
+  /** Lot 34F : unité(s) de la source non analysée(s) (lot de pages ou réparation en échec) — contenu conservé. */
+  | 'SOURCE_UNIT_FAILED'
+  /** Lot 34F : couverture de la source incomplète (état INCOMPLETE_RETRYABLE / INCOMPLETE_FINAL). */
+  | 'COVERAGE_INCOMPLETE'
+  /**
+   * Lot 31B : le document contient un identifiant canonique exact (adresse,
+   * immatriculation, VIN, n° de série) d'un AUTRE bien que celui choisi par
+   * l'utilisateur — rattachement utilisateur conservé, contradiction remontée.
+   * Lot 32C (PO 10) : aussi quand l'analyse retiendrait avec certitude un
+   * autre bien (candidat unique certain) ; « À traiter » LINK-ASSET-CONFLICT.
+   */
+  | 'ASSET_TARGET_CONTRADICTION'
+  /**
+   * HISTORIQUE (résultats antérieurs au lot 16b-3, encore lus par
+   * l'observabilité) : échec total du prompt maître, groupe analysé par les
+   * étapes. Plus jamais produit : un échec du master met désormais la source
+   * en `ANALYSIS_FAILED`, reprise par la file durable.
+   */
+  | 'MASTER_FALLBACK_STEPS'
+  /** Nombre d'articles d'un ticket non établi : prix d'acquisition gardé en proposition — T1-02. */
+  | 'LINE_COUNT_UNKNOWN'
+  /** Fait ciblé sur une pièce / un équipement hors capacités du compte : connaissance générique. */
+  | 'FORBIDDEN_TARGET_REQUALIFIED';
+
+export interface AnalysisWarning {
+  code: AnalysisWarningCode;
+  message: string;
+  /** Champ ou entité concerné, si applicable. */
+  target?: string;
+  /**
+   * `ASSET_TARGET_CONTRADICTION` (lot 32C, PO 8 / PO 10) : bien que
+   * l'analyse aurait retenu à la place du bien choisi par l'utilisateur, et
+   * sur quelle base — identifiant canonique exact (natures, jamais la
+   * valeur) ou candidat unique certain du modèle. Alimente l'action « À
+   * traiter » LINK-ASSET-CONFLICT ; jamais de déplacement automatique.
+   */
+  assetConflict?: { assetId: number; basis: 'IDENTIFIER' | 'ANALYSIS'; kinds: string[] };
+}
+
+export interface SupplierCandidate {
+  name: string;
+  siret?: string;
+  /** Identifiant `suppliers.id` si le fournisseur existe déjà, après vérification. */
+  supplierId?: number | null;
+}
+
+/** Trace technique de l'analyse — rattachement usage / opérations (§5.5). */
+export interface AiOperationTrace {
+  traceIds: string[];
+  operationCodes: string[];
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCostMicros: number;
+  totalDurationMs: number;
+  usedFallback: boolean;
+  models: string[];
+  /**
+   * T1 : capacités du compte appliquées à l'analyse et compteurs de filtrage
+   * (aucune valeur métier). Absent hors chemin master.
+   */
+  accountCapabilities?: T1CapabilityTrace;
+}
+
+export interface T1CapabilityTrace {
+  rooms: boolean;
+  equipments: boolean;
+  forbiddenTargetsReturned: number;
+  forbiddenTargetsRequalified: number;
+  forbiddenEntitiesDropped: number;
+  roomsFilteredFromContext: number;
+  equipmentsFilteredFromContext: number;
+  fieldsFilteredByCapabilities: number;
+}
+
+/**
+ * Sortie unifiée du pipeline — CDC §4.1.6.
+ * Identique pour un fichier, un lien web et toute source future.
+ */
+export interface SourceAnalysisResult {
+  sourceGroup: {
+    sourceIds: number[];
+    leadSourceId: number;
+  };
+  document: {
+    title?: EvidenceValue<string>;
+    type?: EvidenceValue<string>;
+    /** Catégorie documentaire proposée (CDC 5 §7.1). */
+    category?: EvidenceValue<string>;
+    /**
+     * Classement V2 (CDC V2 §3, §11.4).
+     *
+     * Structure distincte de `category` : la confiance y est NUMÉRIQUE, le
+     * §11.2 raisonnant sur un seuil de 90 % que trois niveaux qualitatifs ne
+     * permettent pas de situer.
+     */
+    rubric?: {
+      rubricCode: string;
+      documentTypeCode: string | null;
+      confidence: number;
+      excerpt: string;
+      promptVersion: string | null;
+    };
+    description?: EvidenceValue<string>;
+    transcription?: string;
+    /** Observations visuelles — jamais mêlées à la transcription. */
+    visual?: { summary?: string; observations: VisualObservation[] };
+    /** Tableaux structurés (ligne/colonne), validés par `normalizeTables`. */
+    tables?: ExtractedTable[];
+    date?: EvidenceValue<string>;
+    supplier?: EvidenceValue<SupplierCandidate>;
+    amountCents?: EvidenceValue<number>;
+    /**
+     * Lot 97A (contrat T1 `t1-billing-period-v1`, demande 87D) : période
+     * facturée et mois principal décidés par T1, persistés tels quels avec
+     * la sortie (`document_analysis_runs.raw_response_json`) et lus par le
+     * nommage (`principalMonthFromAnalysis`). Absent tant que le prompt T1
+     * effectif ne porte pas le contrat.
+     */
+    billingPeriod?: {
+      start: string | null;
+      end: string | null;
+      principalMonth: string | null;
+      principalMonthBasis: string | null;
+      confidence: 'certain' | 'probable' | 'conflictual';
+      evidence: { quote: string | null; page: number | null };
+    };
+  };
+  assetCandidates: LinkCandidate[];
+  roomCandidates: LinkCandidate[];
+  equipmentCandidates: LinkCandidate[];
+  extractedFields: ExtractedField[];
+  agendaCandidates: AgendaCandidate[];
+  warnings: AnalysisWarning[];
+  operationTrace: AiOperationTrace;
+}
+
+/** Contexte du compte transmis aux étapes — borné et minimisé (§5.6). */
+export interface AnalysisContext {
+  accountId: number;
+  userId: number;
+  assets: Array<{ id: number; name: string; category: string | null; subtype: string | null }>;
+  rooms: Array<{ id: number; name: string; assetId: number }>;
+  equipments: Array<{ id: number; name: string; type: string | null; assetId: number }>;
+  existingTitles: string[];
+  linkedAssetId: number | null;
+  /**
+   * Lot 31B — identifiants canoniques des biens (adresse, code postal, ville,
+   * immatriculation, VIN, n° de série…), lus dans la fiche canonique.
+   * Contient des valeurs SENSIBLES (adresse) : jamais sérialisé vers un
+   * modèle — ENTITY_CONTEXT n'en reprend que `promptIdentifiers` (filtre
+   * `sensitive` du registre) ; la correspondance d'adresse est serveur.
+   */
+  assetIdentifiers?: AssetIdentifierRecord[];
+  /**
+   * Capacités effectives du compte (pièces, équipements), résolues côté
+   * serveur au moment de l'analyse. Absentes : relues par l'étape T1.
+   */
+  capabilities?: import('@/services/account-capabilities.service').AccountCapabilities;
+}
