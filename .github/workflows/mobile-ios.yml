@@ -144,9 +144,32 @@ jobs:
         env:
           GOOGLE_SERVICE_INFO_PLIST_BASE64: ${{ secrets.GOOGLE_SERVICE_INFO_PLIST_BASE64 }}
           ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        # Lot 101 : chaque secret est accepté en base64 OU collé tel quel, puis
+        # CONTRÔLÉ avant Xcode, avec un message explicite (aucun contenu affiché).
         run: |
-          echo "$GOOGLE_SERVICE_INFO_PLIST_BASE64" | base64 --decode > mobile/ios/App/App/GoogleService-Info.plist
-          echo "$ASC_API_KEY_P8_BASE64" | base64 --decode > "$RUNNER_TEMP/asc_api_key.p8"
+          set -euo pipefail
+          ecrire() { # $1 valeur, $2 fichier, $3 début attendu du contenu en clair
+            local v; v="$(printf '%s' "$1" | tr -d '\r')"
+            if printf '%s' "$v" | head -c 64 | grep -q -- "$3"; then printf '%s\n' "$v" > "$2"
+            else printf '%s' "$v" | tr -d ' \n\t' | base64 --decode > "$2" 2>/dev/null || : ; fi
+          }
+          KEY="$RUNNER_TEMP/AuthKey_${ASC_API_KEY_ID}.p8"
+          ecrire "$ASC_API_KEY_P8_BASE64" "$KEY" "BEGIN PRIVATE KEY"
+          ecrire "$GOOGLE_SERVICE_INFO_PLIST_BASE64" mobile/ios/App/App/GoogleService-Info.plist "<?xml"
+          ok=1
+          if ! [[ "$ASC_API_KEY_ID" =~ ^[A-Z0-9]{10}$ ]]; then echo "::error::ASC_API_KEY_ID : 10 caractères (lettres majuscules et chiffres) attendus — c'est le Key ID affiché sur la ligne de la clé dans App Store Connect › Utilisateurs et accès › Intégrations."; ok=0; fi
+          if ! [[ "$ASC_API_ISSUER_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then echo "::error::ASC_API_ISSUER_ID : identifiant de la forme xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx attendu (Issuer ID, en haut de la liste des clés)."; ok=0; fi
+          if ! head -1 "$KEY" | grep -q -- "-----BEGIN PRIVATE KEY-----" || ! openssl pkey -in "$KEY" -noout 2>/dev/null; then
+            if head -c 64 "$KEY" | grep -q "<?xml\|plist"; then echo "::error::ASC_API_KEY_P8_BASE64 contient un fichier plist (GoogleService-Info.plist ?) au lieu de la clé AuthKey_….p8 de l'API App Store Connect."
+            else echo "::error::ASC_API_KEY_P8_BASE64 ne contient pas une clé privée lisible : utiliser le fichier AuthKey_<KeyID>.p8 de la clé d'API App Store Connect (pas celle de Sign in with Apple), en base64 ou collé tel quel."; fi
+            ok=0
+          fi
+          if ! plutil -lint -s mobile/ios/App/App/GoogleService-Info.plist >/dev/null 2>&1; then echo "::error::GOOGLE_SERVICE_INFO_PLIST_BASE64 ne contient pas un fichier GoogleService-Info.plist valide (Firebase › Paramètres du projet › app iOS)."; ok=0; fi
+          [ "$ok" = 1 ] || exit 1
+          echo "ASC_KEY_PATH=$KEY" >> "$GITHUB_ENV"
+          echo "Clé d'API et fichier Firebase contrôlés."
           plutil -replace teamID -string "$APPLE_TEAM_ID" mobile/ios/ExportOptions.plist
       - name: Archiver (signature automatique, App Store Connect)
         working-directory: mobile/ios/App
@@ -157,7 +180,7 @@ jobs:
           xcodebuild -project App.xcodeproj -scheme App -configuration Release \
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/App.xcarchive" \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/asc_api_key.p8" \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
             -authenticationKeyID "$ASC_API_KEY_ID" -authenticationKeyIssuerID "$ASC_API_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic \
             archive
@@ -171,7 +194,7 @@ jobs:
           xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/App.xcarchive" \
             -exportOptionsPlist ../ExportOptions.plist -exportPath "$RUNNER_TEMP/export" \
             -allowProvisioningUpdates \
-            -authenticationKeyPath "$RUNNER_TEMP/asc_api_key.p8" \
+            -authenticationKeyPath "$ASC_KEY_PATH" \
             -authenticationKeyID "$ASC_API_KEY_ID" -authenticationKeyIssuerID "$ASC_API_ISSUER_ID"
       - name: Symboles de débogage (BUILD-08, diagnostic des plantages)
         if: always()
@@ -188,4 +211,4 @@ jobs:
           retention-days: ${{ env.VEREBONA_ENV == 'prod' && 400 || 90 }}
       - name: Nettoyer les fichiers sensibles du poste de build
         if: always()
-        run: rm -f "$RUNNER_TEMP/asc_api_key.p8" mobile/ios/App/App/GoogleService-Info.plist
+        run: rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP/asc_api_key.p8" mobile/ios/App/App/GoogleService-Info.plist
