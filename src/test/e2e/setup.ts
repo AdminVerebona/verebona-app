@@ -21,6 +21,18 @@ const g = globalThis as unknown as Record<symbol, Record<string, string | undefi
 g[ORIGINE] ??= { ...process.env };
 restoreProcessEnv(process.env, g[ORIGINE]!);
 
+// Lot 101-quinquies — pollution de prototype propre aux tests : drizzle-kit (jamais chargé
+// par l'application) ajoute `Array.prototype.random` ÉNUMÉRABLE dans le processus unique de
+// la suite ; pdf.js refuse alors de lire tout PDF (« Array.prototype contains unexpected
+// enumerable property "random" »), ce qui faisait échouer en CI les analyses T1 des fichiers
+// suivants (L83C). Retirée au début de chaque fichier et avant chaque test.
+function retirerPollutionPrototype(): void {
+  const d = Object.getOwnPropertyDescriptor(Array.prototype, 'random');
+  if (d?.enumerable) delete (Array.prototype as unknown as Record<string, unknown>).random;
+}
+retirerPollutionPrototype();
+beforeEach(retirerPollutionPrototype);
+
 if (process.env.E2E_SHARED_DB === '1') {
   process.env.DATABASE_URL = inject('e2eDatabaseUrl');
 } else {

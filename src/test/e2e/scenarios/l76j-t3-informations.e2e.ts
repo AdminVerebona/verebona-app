@@ -339,6 +339,15 @@ scenario('L76J', 'T3 — complétude et cohérence exhaustives de l’onglet Inf
     await sql`INSERT INTO account_reconciliation_runs (account_id, trigger_type, correlation_id, scope, status, started_at, finished_at)
       VALUES (${c.id}, 'scheduled', ${`l76j-${c.id}`}, 'incremental', 'completed', now(), now())`;
     await sql`UPDATE assets SET updated_at = now() - interval '1 day' WHERE id = ANY(${ids})`;
+    // Lot 101-quinquies : une écriture asynchrone déclenchée par la création des pièces
+    // (rattachements, files) peut « toucher » un bien APRÈS le recul ci-dessus sur un
+    // serveur lent (CI) ; on attend que les biens restent non touchés (3 s au plus).
+    for (let essai = 0; essai < 30; essai += 1) {
+      await new Promise((r) => setTimeout(r, 100));
+      const touches = await sql`SELECT id FROM assets WHERE id = ANY(${ids}) AND updated_at > now() - interval '1 hour'`;
+      if (touches.length === 0) break;
+      await sql`UPDATE assets SET updated_at = now() - interval '1 day' WHERE id = ANY(${ids})`;
+    }
     process.env.T3_INFORMATION_BACKFILL_MAX_ASSETS = '2';
     try {
       const passe = () => account.reconcileAccount(c.id, { type: 'scheduled' }, { scope: 'incremental' }, {
