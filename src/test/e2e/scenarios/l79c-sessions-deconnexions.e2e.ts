@@ -122,9 +122,16 @@ scenario('L79C-SES', 'Déconnexions SESSION_REVOKED : scénarios légitimes repr
     //    personne n'a jamais utilisé : aucun tiers n'est intervenu.
     expect(await revocations(u.id)).toHaveLength(1);
     expect((await renouveler(successeurJamaisRecu)).status).toBe(401);
-    const [journal] = await sql<{ details: string }[]>`
-      SELECT details FROM user_activity_log WHERE user_id = ${u.id} AND activity_type = 'AUTH_TOKEN_REUSE_DETECTED' ORDER BY id DESC LIMIT 1`;
-    const d = JSON.parse(journal.details);
+    // Le journal d'activité est écrit sans bloquer la réponse : on l'attend (5 s au plus),
+    // le contenu restant vérifié exactement (course observée en CI, lot 101-ter).
+    let journal: { details: string } | undefined;
+    for (let essai = 0; essai < 50 && !journal; essai += 1) {
+      [journal] = await sql<{ details: string }[]>`
+        SELECT details FROM user_activity_log WHERE user_id = ${u.id} AND activity_type = 'AUTH_TOKEN_REUSE_DETECTED' ORDER BY id DESC LIMIT 1`;
+      if (!journal) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(journal, 'journal AUTH_TOKEN_REUSE_DETECTED écrit').toBeDefined();
+    const d = JSON.parse(journal!.details);
     expect(d).toMatchObject({ severity: 'security_incident', sessionsRevoked: true });
     expect(d.rotationAgeMs).toBeGreaterThanOrEqual(45_000);
     expect(d.rotationAgeMs).toBeLessThan(120_000);
