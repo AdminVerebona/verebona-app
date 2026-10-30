@@ -185,14 +185,14 @@ describe('L97 — push : fournisseur, jetons, politique (§18)', () => {
     expect(pushTokenHash('t')).not.toContain('t:');
   });
 
-  it('catalogue §18.3 : échéances, À traiter, Duo, sécurité oui ; commercial et actualités non', () => {
+  it('catalogue §18.3 : échéances, À traiter, Duo oui ; sécurité (lot 101B : e-mail seul), commercial et actualités non', () => {
     const r = (t: string) => mobilePushPolicy(getCatalogEntry(t as never)!);
     expect(r('DEADLINE_DUE_IN_7_DAYS')).toBe('yes');
     expect(r('TO_PROCESS_DAILY_DIGEST')).toBe('yes');
     expect(r('DUO_INVITATION_RECEIVED')).toBe('yes');
     expect(r('DOCUMENT_BATCH_FAILED')).toBe('yes');
     expect(r('DOCUMENT_BATCH_COMPLETED')).toBe('optional');
-    expect(r('PASSWORD_CHANGED')).toBe('yes');
+    expect(r('PASSWORD_CHANGED')).toBe('no');
     expect(r('GDPR_EXPORT_READY')).toBe('optional');
     expect(r('PAYMENT_FAILED')).toBe('no');
     expect(r('TRIAL_ENDING')).toBe('no');

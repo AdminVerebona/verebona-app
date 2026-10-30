@@ -15,6 +15,10 @@
  *    valeur patrimoniale ni détail de document. Le détail va dans la cloche ou
  *    l'écran ouvert après le clic.
  *  - Obligatoire ≠ configurable (§2.11) : `mandatoryBell` / `mandatoryEmail`.
+ *  - Lot 101B : obligation d'INFORMER ≠ CANAL obligatoire ≠ affichage dans
+ *    l'application. Les informations de sécurité sont obligatoires, leur canal
+ *    obligatoire est l'e-mail ; aucune n'appelle d'action immédiate dans
+ *    l'application : cloche et push y sont SUPPRIMÉS (`securityInformation`).
  *  - « À traiter » et « Actualités » ne sont jamais ajoutés dans la cloche
  *    (`neverBell`).
  */
@@ -95,8 +99,10 @@ export interface CatalogEntry {
    * l'envoi, quelles que soient les préférences enregistrées, l'activation BO,
    * la file existante, les reprises et les réémissions (`retired-channels.ts`).
    * Différent d'un défaut à `false`, qu'une préférence peut réactiver.
+   * Lot 101B : la cloche (`bell`) peut aussi être supprimée ; ses lignes
+   * historiques ne sont alors plus servies au client.
    */
-  retiredChannels?: Partial<Record<'email' | 'push', string>>;
+  retiredChannels?: Partial<Record<'bell' | 'email' | 'push', string>>;
   /**
    * Lot 100G (E2, un seul circuit) : l'E-MAIL de cet événement est envoyé par
    * un autre traitement — la séquence de fin d'essai (`services/trial-lifecycle`),
@@ -132,6 +138,13 @@ const T = NOTIFICATION_TYPES;
 
 // ── Lot 79C : textes partagés ───────────────────────────────────────────────
 const RETIRED_ANALYSIS_EMAIL = 'Supprimé (lot 79) : le résultat de l’analyse est présenté dans l’application.';
+/**
+ * Lot 101B — motif (affiché au BO › Communications) de la suppression de la
+ * cloche et du push des informations de sécurité.
+ */
+export const RETIRED_SECURITY_IN_APP =
+  'Supprimé (lot 101) : information de sécurité déjà envoyée par l’e-mail obligatoire, sans action immédiate dans l’application.';
+
 /** Action réellement possible après un échec d'analyse (source : `lot-notification-text`). */
 export { ANALYSIS_RETRY_ACTION };
 /** Action attendue quand la banque demande une authentification (3D Secure). */
@@ -745,18 +758,25 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     payloadSchema: z.object({ scheduledAt: z.string(), daysLeft: z.number() }),
   },
 
-  // ── Sécurité — obligatoires (§7.7) ─────────────────────────────────────────
-  [T.PASSWORD_CHANGED]: security(T.PASSWORD_CHANGED, 'Mot de passe modifié', 'Votre mot de passe a été modifié.'),
-  [T.EMAIL_CHANGE_REQUESTED]: security(T.EMAIL_CHANGE_REQUESTED, 'Changement d\'email demandé', 'Une modification de votre adresse email a été demandée.'),
-  [T.EMAIL_CHANGED]: security(T.EMAIL_CHANGED, 'Email modifié', 'Votre adresse email a été modifiée.'),
-  [T.PASSWORD_RESET_COMPLETED]: security(T.PASSWORD_RESET_COMPLETED, 'Mot de passe réinitialisé', 'Votre mot de passe a été réinitialisé.'),
+  // ── Sécurité — information obligatoire PAR E-MAIL (§7.7 ; lot 101B) ───────
+  // Décision PO du 30/10/2026 : l'e-mail de sécurité obligatoire suffit ;
+  // aucune cloche, aucun toast, aucun push pour ces événements
+  // (`securityInformation`). Détection, déduplication et contenu inchangés.
+  [T.PASSWORD_CHANGED]: securityInformation(T.PASSWORD_CHANGED, 'Mot de passe modifié', 'Votre mot de passe a été modifié.'),
+  // EMAIL_CHANGE_REQUESTED / EMAIL_CHANGED : déclarés, sans producteur — le
+  // changement d'adresse (lot 96A) envoie ses propres e-mails de sécurité
+  // transactionnels (`PRIMARY_EMAIL_CHANGED` aux deux adresses).
+  [T.EMAIL_CHANGE_REQUESTED]: securityInformation(T.EMAIL_CHANGE_REQUESTED, 'Changement d\'email demandé', 'Une modification de votre adresse email a été demandée.'),
+  [T.EMAIL_CHANGED]: securityInformation(T.EMAIL_CHANGED, 'Email modifié', 'Votre adresse email a été modifiée.'),
+  [T.PASSWORD_RESET_COMPLETED]: securityInformation(T.PASSWORD_RESET_COMPLETED, 'Mot de passe réinitialisé', 'Votre mot de passe a été réinitialisé.'),
   // Lot 96B (CDC 18 Q6, SESS-11) : connexion réussie depuis un appareil
-  // inconnu pour ce compte (`lib/auth/new-device-alert.ts`). Sécurité
-  // OBLIGATOIRE (cloche + e-mail, non désactivable), comme les autres
-  // notifications de sécurité. Date, appareil et navigateur / application ;
-  // ni IP ni localisation. Lien : Mon compte › Sécurité › Appareils connectés.
+  // inconnu pour ce compte (`lib/auth/new-device-alert.ts`). E-mail de
+  // sécurité OBLIGATOIRE (non désactivable) ; lot 101B : plus de cloche ni de
+  // push (c'était le grand toast de l'accueil mobile). Date, appareil et
+  // navigateur / application ; ni IP ni localisation. Lien : Mon compte ›
+  // Sécurité › Appareils connectés.
   [T.NEW_DEVICE_LOGIN]: {
-    ...security(T.NEW_DEVICE_LOGIN, 'Connexion depuis un nouvel appareil', 'Une connexion à votre compte depuis un nouvel appareil a eu lieu.'),
+    ...securityInformation(T.NEW_DEVICE_LOGIN, 'Connexion depuis un nouvel appareil', 'Une connexion à votre compte depuis un nouvel appareil a eu lieu.'),
     retentionDays: 180,
     render: (p) => newDeviceContent(p),
     deepLink: () => NEW_DEVICE_LOGIN_LINK,
@@ -766,13 +786,14 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
   },
 
   // Lot 100D (décision PO A2 ; CDC 18 §22 « Déconnexion de toutes les autres
-  // sessions ») : confirmation de sécurité OBLIGATOIRE (cloche + e-mail),
-  // envoyée UNIQUEMENT par « Déconnecter tous les autres appareils » quand au
-  // moins une session a réellement été révoquée — jamais pour un appareil
-  // seul, ni pour une révocation du BO, un changement de mot de passe ou un
-  // rejeu. Aucun lien commercial, aucun secret.
+  // sessions ») : e-mail de sécurité OBLIGATOIRE, envoyé UNIQUEMENT par
+  // « Déconnecter tous les autres appareils » quand au moins une session a
+  // réellement été révoquée — jamais pour un appareil seul, ni pour une
+  // révocation du BO, un changement de mot de passe ou un rejeu. Lot 101B :
+  // plus de cloche (la confirmation de l'action reste le message affiché à
+  // l'écran par Mon compte › Sécurité). Aucun lien commercial, aucun secret.
   [T.OTHER_SESSIONS_REVOKED]: {
-    ...security(T.OTHER_SESSIONS_REVOKED, 'Vos autres appareils ont été déconnectés', 'La déconnexion de vos autres appareils a pris effet.'),
+    ...securityInformation(T.OTHER_SESSIONS_REVOKED, 'Vos autres appareils ont été déconnectés', 'La déconnexion de vos autres appareils a pris effet.'),
     retentionDays: 180,
     render: (p) => otherSessionsRevokedContent(p),
     deepLink: () => NEW_DEVICE_LOGIN_LINK,
@@ -782,15 +803,16 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     }),
   },
 
-  // Lot 93 (CDC 18 §22, NOTIF-01) : obligatoires (cloche + e-mail), nom du
-  // fournisseur seulement — ni adresse, ni identifiant, ni appareil.
+  // Lot 93 (CDC 18 §22, NOTIF-01) : e-mail obligatoire, nom du fournisseur
+  // seulement — ni adresse, ni identifiant, ni appareil. Lot 101B : plus de
+  // cloche ni de push.
   [T.AUTH_IDENTITY_LINKED]: {
-    ...security(T.AUTH_IDENTITY_LINKED, 'Méthode de connexion ajoutée', 'Un compte Google ou Apple a été associé à votre compte Verebona.'),
+    ...securityInformation(T.AUTH_IDENTITY_LINKED, 'Méthode de connexion ajoutée', 'Un compte Google ou Apple a été associé à votre compte Verebona.'),
     render: (p) => identityContent('linked', p?.provider),
     payloadSchema: z.object({ provider: z.enum(['google', 'apple']) }),
   },
   [T.AUTH_IDENTITY_UNLINKED]: {
-    ...security(T.AUTH_IDENTITY_UNLINKED, 'Méthode de connexion retirée', 'Un compte Google ou Apple a été dissocié de votre compte Verebona.'),
+    ...securityInformation(T.AUTH_IDENTITY_UNLINKED, 'Méthode de connexion retirée', 'Un compte Google ou Apple a été dissocié de votre compte Verebona.'),
     render: (p) => identityContent('unlinked', p?.provider),
     payloadSchema: z.object({ provider: z.enum(['google', 'apple']) }),
   },
@@ -883,20 +905,50 @@ function accountMandatory(type: NotificationType, bellTitle: string, body: strin
   };
 }
 
-function security(type: NotificationType, bellTitle: string, body: string): CatalogEntry {
+/**
+ * Information de sécurité (§7.7) — lot 101B, trois notions SÉPARÉES :
+ *
+ *  1. OBLIGATION D'INFORMER : oui, toujours (non désactivable) ;
+ *  2. CANAL OBLIGATOIRE : l'e-mail (`mandatoryEmail`) — préférence, BO et
+ *     réémission ne peuvent pas le couper ; gabarit, déduplication, journal
+ *     des envois et traçabilité des échecs inchangés ;
+ *  3. AFFICHAGE DANS L'APPLICATION : aucun — l'événement n'appelle aucune
+ *     action immédiate. Cloche et push sont SUPPRIMÉS (`retiredChannels`),
+ *     donc coupés à l'envoi même pour une ligne mise en file avant le lot 101B
+ *     (`mandatory_bell` historique), et les cloches déjà persistées ne sont
+ *     plus servies (`bellRetiredTypes`). Pas de `mandatoryBell` : c'est lui
+ *     qui déclenchait le toast d'arrivée de la cloche.
+ *
+ * Consommateurs (analysés au lot 101B) : uniquement les 8 entrées de la
+ * catégorie « Sécurité » ci-dessus, toutes visées par la décision PO.
+ * Les messages FONCTIONNELS liés à une action (erreur d'authentification,
+ * session expirée, réauthentification, échec d'une opération sensible,
+ * confirmation « Appareil déconnecté »…) ne passent pas par ce catalogue :
+ * ils restent affichés par l'écran qui a fait la demande.
+ */
+function securityInformation(type: NotificationType, bellTitle: string, body: string): CatalogEntry {
   return {
     type,
     category: 'security', priority: 'high', deliveryMode: 'immediate',
-    mandatoryBell: true, mandatoryEmail: true, neverBell: false,
-    defaults: { push: true, email: true }, retentionDays: 365,
-    render: () => content(bellTitle, body, { body }, 'notif_security'),
+    mandatoryBell: false, mandatoryEmail: true, neverBell: false,
+    defaults: { push: false, email: true }, retentionDays: 365,
+    retiredChannels: { bell: RETIRED_SECURITY_IN_APP, push: RETIRED_SECURITY_IN_APP },
+    // `bellTitle` / `bellBody` restent le titre et le texte de l'E-MAIL
+    // (variables {{title}} / {{body}} du gabarit, `channels.ts`).
+    render: () => content(bellTitle, body, undefined, 'notif_security'),
     deepLink: () => '/mon-compte',
     payloadSchema: z.object({}).passthrough(),
   };
 }
 
-/** Lot 96B : Mon compte › Sécurité (le bloc « Appareils connectés » y figure). */
-export const NEW_DEVICE_LOGIN_LINK = '/mon-compte/informations#securite';
+/**
+ * Lot 96B : Mon compte › Sécurité › Appareils connectés.
+ * Lot 101C : ancre du sous-bloc (fermé par défaut) — le lien ouvre la carte
+ * Sécurité ET le sous-bloc, puis le fait défiler. Directement `/mon-compte`
+ * (lien d'application Android déclaré ; pas de détour par la redirection
+ * `/mon-compte/informations`).
+ */
+export const NEW_DEVICE_LOGIN_LINK = '/mon-compte#appareils-connectes';
 
 /**
  * Lot 96B (Q6) : « Connexion depuis un nouvel appareil » — date et heure
@@ -911,7 +963,8 @@ export function newDeviceContent(p: unknown): RenderedContent {
   const body = `Une connexion à votre compte Verebona a eu lieu ${when}${device ? ` depuis : ${device}` : ''}. `
     + 'Si c’est vous, vous n’avez rien à faire. Sinon, ouvrez Mon compte › Sécurité › Appareils connectés, '
     + 'déconnectez cet appareil, puis modifiez votre mot de passe.';
-  return content(title, body, { body: 'Nouvelle connexion à votre compte.' }, 'notif_new_device_login');
+  // Lot 101B : ni cloche ni push — titre et texte de l'e-mail seulement.
+  return content(title, body, undefined, 'notif_new_device_login');
 }
 
 /**
@@ -932,7 +985,7 @@ export function otherSessionsRevokedContent(p: unknown): RenderedContent {
     + `${device ? ` sur : ${device}` : ''}. Seul l’appareil qui a fait la demande est resté connecté. `
     + 'Si c’est vous, vous n’avez rien à faire. Sinon, modifiez dès maintenant votre mot de passe '
     + 'depuis Mon compte › Sécurité : tous les appareils seront alors déconnectés.';
-  return content(title, body, { body: 'Vos autres appareils ont été déconnectés.' }, 'notif_other_sessions_revoked');
+  return content(title, body, undefined, 'notif_other_sessions_revoked');
 }
 
 /** Lot 93 : texte « Google / Apple associé ou dissocié » (NOTIF-01). */
@@ -942,7 +995,7 @@ function identityContent(kind: 'linked' | 'unlinked', provider: unknown): Render
   const body = kind === 'linked'
     ? `Votre compte ${name} a été associé à votre compte Verebona : vous pouvez l’utiliser pour vous connecter. Si ce n’est pas vous, ouvrez Mon compte › Sécurité et changez votre mot de passe.`
     : `Votre compte ${name} a été dissocié de votre compte Verebona : il ne permet plus de vous connecter. Si ce n’est pas vous, ouvrez Mon compte › Sécurité.`;
-  return content(title, body, { body: title }, 'notif_security');
+  return content(title, body, undefined, 'notif_security');
 }
 
 function familyLabel(family: string): string {

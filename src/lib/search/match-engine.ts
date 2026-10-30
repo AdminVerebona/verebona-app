@@ -138,6 +138,9 @@ export const SEARCH_FIELDS: Readonly<Record<SearchEntityType, readonly SearchFie
     F('registrationNumber', 'Immatriculation', 'identifier', 1),
     F('vin', 'VIN', 'identifier', 1),
     F('serialNumber', 'Numéro de série', 'identifier', 0.95),
+    // Lot 101A (E) : série du produit et référence commerciale, distinctes du modèle et du n° de série.
+    F('productSeries', 'Série du produit', 'identifier', 0.85),
+    F('productReference', 'Référence commerciale', 'identifier', 0.9),
     F('address', 'Adresse', 'text', 0.7),
     F('city', 'Ville', 'text', 0.75),
     F('postalCode', 'Code postal', 'identifier', 0.7),
@@ -163,6 +166,12 @@ export const SEARCH_FIELDS: Readonly<Record<SearchEntityType, readonly SearchFie
   equipment: [
     F('name', 'Nom', 'name', 1),
     F('type', 'Type', 'category', 0.6, 'free'),
+    // Lot 101A (E) : identité produit de l'équipement.
+    F('brand', 'Marque', 'name', 0.8),
+    F('modelName', 'Modèle', 'identifier', 0.9),
+    F('productSeries', 'Série du produit', 'identifier', 0.85),
+    F('productReference', 'Référence commerciale', 'identifier', 0.9),
+    F('serialNumber', 'Numéro de série', 'identifier', 0.95),
     F('assetName', 'Bien', 'relation', 0.4),
   ],
   room: [

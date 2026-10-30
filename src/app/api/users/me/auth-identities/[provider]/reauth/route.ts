@@ -18,7 +18,8 @@ import { setBindingCookie } from '@/lib/auth/oauth/transactions';
 import { rateLimitBody } from '@/lib/auth/auth-rate-limit';
 
 // Lot 96A : 'change-email' (Mon compte › Sécurité › Adresse e-mail, Q8).
-const RESUMABLE = new Set(['add-password', 'link-google', 'link-apple', 'unlink-google', 'unlink-apple', 'delete-account', 'change-password', 'change-email']);
+// Lot 101C : 'revoke-others' rouvre seulement le sous-bloc « Appareils connectés » (aucune action rejouée).
+const RESUMABLE = new Set(['add-password', 'link-google', 'link-apple', 'unlink-google', 'unlink-apple', 'delete-account', 'change-password', 'change-email', 'revoke-others']);
 
 export async function POST(request: NextRequest, context: { params: Promise<{ provider: string }> }) {
   let userId: number;

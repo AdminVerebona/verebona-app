@@ -156,7 +156,10 @@ interface AssetDetailSections {
   object_identification?: {
     objectCategory?: string | null;
     brand?: string | null;
+    productSeries?: string | null;
     modelName?: string | null;
+    productReference?: string | null;
+    productDesignation?: string | null;
     serialNumber?: string | null;
   };
   object_condition?: {
@@ -377,7 +380,10 @@ export function buildDetailSections(
     object_identification: {
       objectCategory: (kc.objectCategory as string) ?? null,
       brand: (kc.brand as string) ?? null,
+      productSeries: (kc.productSeries as string) ?? null,
       modelName: (kc.modelName as string) ?? null,
+      productReference: (kc.productReference as string) ?? null,
+      productDesignation: (kc.productDesignation as string) ?? null,
       serialNumber: (kc.serialNumber as string) ?? null,
     },
     object_condition: {

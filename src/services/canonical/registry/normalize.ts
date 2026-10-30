@@ -12,6 +12,7 @@
  */
 import { detectDocumentCurrency, foreignCurrencyOf } from '@/lib/document-currency';
 import { getField } from './registry';
+import { identityValueProblem } from '../product-identity';
 import type { CanonicalFieldDef, NormalizeOptions, NormalizeResult } from './types';
 
 const ko = (reason: string): NormalizeResult => ({ ok: false, reason });
@@ -267,6 +268,12 @@ export function normalizeValue(key: string, raw: unknown, opts: NormalizeOptions
     default: {
       if (typeof raw === 'object') return ko(`${key} : texte attendu`);
       const s = formerChaine(key, String(raw).trim());
+      // Lot 101A (E, H) : propriété d'identité d'un produit — une valeur
+      // MANIFESTEMENT d'une autre nature (prix, date, VIN, offre commerciale)
+      // est refusée, quelle que soit l'origine. Les cas seulement suspects
+      // (libellé générique) relèvent de T1 et du contrôle de cohérence.
+      const pb = s === '' ? null : identityValueProblem(key, s);
+      if (pb && pb !== 'GENERIC_LABEL' && pb !== 'FREE_TEXT') return ko(`${key} : valeur incompatible avec la propriété (${pb})`);
       return s === '' ? okv(null) : okv(s);
     }
   }

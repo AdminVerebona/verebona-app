@@ -45,6 +45,7 @@ import { buildGenerationPort } from './generation.adapter';
 import { isTreatmentRunnable } from '@/services/ai/queue/runnable-guard';
 import { buildArbitrationPort, buildClassificationPort } from './classification.adapter';
 import { answerFromData } from './data-answer.service';
+import { deterministicRequestedFacts } from '../canonical/field-vocabulary';
 import { accountDataRepository } from './account-data.repository';
 import { loadCascadeThresholds } from './cascade-thresholds';
 import { loadHelpCorpus } from './help-corpus.service';
@@ -334,6 +335,14 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
           ?? (input.reference?.type === 'asset' ? input.reference.id : null),
         thresholds,
         intent: route.intent,
+        // Lot 101A (C, D) : objet métier résolu (fil, clarification) et
+        // propriétés normalisées demandées — retrieval borné et validé.
+        object: input.resume?.entity && (input.resume.entity.type === 'equipment' || input.resume.entity.type === 'room')
+          ? { type: input.resume.entity.type, id: input.resume.entity.id }
+          : input.reference && (input.reference.type === 'equipment' || input.reference.type === 'room')
+            ? { type: input.reference.type, id: input.reference.id } : null,
+        requestedFacts: route.understanding?.requestedFacts?.length
+          ? route.understanding.requestedFacts : deterministicRequestedFacts(input.message),
       }),
     loadThresholds: () => loadCascadeThresholds(),
     // Étape « base d'aide » du routage (§9.4.7) — corpus en cache (§43 HELP_CACHE_TTL_SECONDS).

@@ -120,6 +120,9 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
 
   // Lot 79C : canaux SUPPRIMÉS — coupés quelles que soient les anciennes
   // préférences, la file, la reprise ou la réémission (`retired-channels.ts`).
+  // Lot 101B : y compris la CLOCHE des informations de sécurité, même pour une
+  // ligne mise en file avant le déploiement avec `mandatory_bell` (aucune
+  // ligne `notifications`, donc aucun toast) ; l'e-mail obligatoire part.
   const { channels: resolved, retired } = applyRetiredChannels(restricted, entry);
   const rendered = renderContent(entry, payload, row.deep_link);
 
@@ -156,7 +159,7 @@ async function processRow(row: OutboxRow): Promise<'sent' | 'partial' | 'failed'
     if (o.status !== 'sent' && o.status !== 'failed') skipCodes.push(o.errorCode ?? o.status);
   };
 
-  // Trace : canal supprimé (lot 79C) — ni envoi, ni échec.
+  // Trace : canal supprimé (lot 79C ; cloche : lot 101B) — ni envoi, ni échec.
   for (const channel of retired) {
     const o: DeliveryOutcome = { status: 'skipped_unavailable', errorCode: CHANNEL_RETIRED_ERROR_CODE };
     await recordDelivery(row.id, ctx.userId, channel, o);

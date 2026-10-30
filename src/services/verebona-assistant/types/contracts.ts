@@ -234,6 +234,11 @@ export interface AssistantRequestInput {
    */
   aiReport?: { securityEvents: import('../core/output-safety').SecurityEvent[]; events: string[] };
   /**
+   * Lot 101A (I) : état du tour partagé par référence comme `aiReport`
+   * (appels de compréhension réellement faits). Jamais fourni par le client.
+   */
+  turnState?: { understandCalls: number };
+  /**
    * Fin d'essai ou abonnement absent (§6.5) : l'assistant reste disponible
    * pour la recherche et l'aide, SANS appel intelligent, et explique la
    * limite avec l'action « Voir les offres ».
@@ -336,7 +341,15 @@ export interface CascadeTrace {
     outcome: 'none' | 'resolved' | 'ambiguous' | 'unavailable';
     method: string | null;
     entity: { type: string; id: number } | null;
+    /** Lot 101A : objets actifs du fil AVANT le tour (dernière désignation, dernière liste). */
+    activeObjects?: Array<{ type: string; id: number; via: 'lastSelected' | 'presented' }>;
   };
+  /** Lot 101A (B) : garde-fou de routage T2 — décision et motifs. */
+  routingGuard?: { decision: import('../core/routing-guard').T2RoutingDecision; reasons: import('../core/routing-guard').T2RoutingReason[] };
+  /** Lot 101A (C, D) : périmètre exact du retrieval des faits et verdict de chaque candidat. */
+  retrieval?: import('../core/data-answer.service').DataAnswerOutcome['retrieval'];
+  /** Lot 101A (I) : diagnostic complet du tour conversationnel (codes et identifiants, aucun contenu). */
+  turn?: import('../core/routing-guard').T2TurnDiagnostic;
   /** Analyse du périmètre : sous-demandes, classement, motif de blocage. */
   scope?: { kind: string; parts: Array<{ text: string; allowed: boolean; reason: string | null }> };
   /** Revalidations ciblées déclenchées par la demande (mode, résultat). */

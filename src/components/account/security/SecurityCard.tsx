@@ -15,6 +15,11 @@
  *      activité, badge « Cet appareil », « Déconnecter » par appareil,
  *      « Déconnecter tous les autres appareils » après confirmation. Ni IP ni
  *      localisation (SESS-09).
+ *      Lot 101C (retour PO) : sous-bloc repliable FERMÉ par défaut (non
+ *      mémorisé) ; l'en-tête montre le titre et un résumé (« 2 appareils ·
+ *      dont celui-ci »). Ancre `#appareils-connectes` (e-mails « nouvel
+ *      appareil » / « autres appareils déconnectés », retour de
+ *      confirmation d'identité) : ouvre la carte, le sous-bloc, et défile.
  * Desktop et mobile (lignes empilées sous 640 px), charte Sérénité.
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -22,6 +27,7 @@ import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Key, Loader2, LogOut, Monitor, Save, ShieldCheck, Smartphone, Fingerprint, Tablet } from 'lucide-react';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
+import { CollapsibleSubBlock } from '@/components/ui/collapsible-sub-block';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
@@ -47,6 +53,20 @@ interface DeviceSession {
 }
 
 const PARIS = 'Europe/Paris';
+
+/** Lot 101C : ancre du sous-bloc « Appareils connectés » (liens d'e-mail, retour de confirmation). */
+export const CONNECTED_DEVICES_ANCHOR = 'appareils-connectes';
+
+/** Lot 101C : résumé de l'en-tête du sous-bloc fermé — « 2 appareils · dont celui-ci ». */
+export function devicesSummary(sessions: Pick<DeviceSession, 'current'>[] | null, loadError = false): string {
+  if (loadError) return 'Liste indisponible pour le moment';
+  if (!sessions) return 'Chargement…';
+  const n = sessions.length;
+  if (n === 0) return 'Aucun appareil';
+  const base = `${n} appareil${n > 1 ? 's' : ''}`;
+  if (!sessions.some((s) => s.current)) return base;
+  return n === 1 ? `${base} · celui-ci` : `${base} · dont celui-ci`;
+}
 
 /** « à l’instant », « il y a 12 min », « aujourd’hui à 09:41 », « le 12 octobre à 09:41 ». */
 export function formatLastActivity(iso: string, now = new Date()): string {
@@ -176,6 +196,12 @@ function ChangePasswordAction() {
 
 /* ── Bloc 3 : appareils connectés ──────────────────────────────────────── */
 
+/**
+ * Lot 101C : la liste est chargée à l'affichage de la carte Sécurité (comme
+ * avant) parce que le résumé de l'en-tête fermé en a besoin (nombre, « dont
+ * celui-ci ») et que ce chargement inscrit la session courante au registre
+ * (Q5). Elle est relue à chaque ouverture du sous-bloc (dernière activité à jour).
+ */
 function ConnectedDevices() {
   const { withReauth } = useReauth();
   const [sessions, setSessions] = useState<DeviceSession[] | null>(null);
@@ -219,6 +245,8 @@ function ConnectedDevices() {
       const r = await withReauth(
         () => apiClient.post<{ revoked: number; securityEmail?: boolean }>('/api/users/me/sessions/revoke-others', {}),
         'Avant de déconnecter vos autres appareils.',
+        // Lot 101C : au retour d'une confirmation Google / Apple, le sous-bloc se rouvre (rien n'est rejoué).
+        'revoke-others',
       );
       // Lot 100D (A2) : un e-mail de confirmation part seulement si des appareils ont réellement été déconnectés.
       toast.success(r?.revoked
@@ -232,7 +260,27 @@ function ConnectedDevices() {
     }
   };
 
-  if (loadError) return <p className="text-sm text-[color:var(--danger)]">La liste des appareils n’a pas pu être chargée.</p>;
+  return (
+    <CollapsibleSubBlock
+      anchorId={CONNECTED_DEVICES_ANCHOR}
+      icon={<Monitor className="w-4 h-4" />}
+      title="Appareils connectés"
+      summary={devicesSummary(sessions, loadError && !sessions)}
+      onOpenChange={(o) => { if (o) void load(false); }}
+    >
+      <DevicesList sessions={sessions} loadError={loadError} busy={busy} onRevokeOne={revokeOne} onRevokeOthers={revokeOthers} />
+    </CollapsibleSubBlock>
+  );
+}
+
+function DevicesList({ sessions, loadError, busy, onRevokeOne, onRevokeOthers }: {
+  sessions: DeviceSession[] | null;
+  loadError: boolean;
+  busy: string | null;
+  onRevokeOne: (s: DeviceSession) => void;
+  onRevokeOthers: () => void;
+}) {
+  if (loadError && !sessions) return <p className="text-sm text-[color:var(--danger)]">La liste des appareils n’a pas pu être chargée.</p>;
   if (!sessions) return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" />Chargement…</div>;
 
   const others = sessions.filter((s) => !s.current);
@@ -257,9 +305,9 @@ function ConnectedDevices() {
               <Button
                 size="sm"
                 variant="outline"
-                className="rounded-full gap-2 w-full sm:w-auto"
+                className="rounded-full gap-2 w-full sm:w-auto min-h-11 sm:min-h-8"
                 disabled={busy !== null}
-                onClick={() => revokeOne(s)}
+                onClick={() => onRevokeOne(s)}
               >
                 {busy === s.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
                 Déconnecter
@@ -275,9 +323,9 @@ function ConnectedDevices() {
         </p>
         <Button
           variant="outline"
-          className="rounded-full gap-2 w-full sm:w-auto border-[color:var(--danger-edge)] text-[color:var(--danger)] hover:bg-[color:var(--danger-soft)]"
+          className="rounded-full gap-2 w-full sm:w-auto min-h-11 sm:min-h-9 h-auto whitespace-normal text-center sm:whitespace-nowrap border-[color:var(--danger-edge)] text-[color:var(--danger)] hover:bg-[color:var(--danger-soft)]"
           disabled={busy !== null || others.length === 0}
-          onClick={revokeOthers}
+          onClick={onRevokeOthers}
         >
           {busy === 'others' ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogOut className="w-4 h-4" />}
           Déconnecter tous les autres appareils
@@ -298,6 +346,7 @@ export function SecurityCard() {
   return (
     <CollapsibleCard
       anchorId="securite"
+      innerAnchorIds={[CONNECTED_DEVICES_ANCHOR]}
       icon={<ShieldCheck className="w-5 h-5" />}
       title="Sécurité"
       description="Méthodes de connexion, appareils connectés et protection de votre compte."
@@ -314,9 +363,8 @@ export function SecurityCard() {
         </SubBlock>
       )}
 
-      <SubBlock icon={<Monitor className="w-4 h-4" />} title="Appareils connectés">
-        <ConnectedDevices />
-      </SubBlock>
+      {/* Lot 101C : sous-bloc repliable, fermé par défaut (retour PO). */}
+      <ConnectedDevices />
     </CollapsibleCard>
   );
 }

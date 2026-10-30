@@ -25,6 +25,11 @@ interface CollapsibleCardProps {
    * ouvre le tiroir et le fait défiler à l'écran.
    */
   anchorId?: string
+  /**
+   * Ancres de sous-blocs (lot 101C, ex. `appareils-connectes`) : un lien
+   * `…#<id>` ouvre aussi la carte ; le sous-bloc s'ouvre et défile lui-même.
+   */
+  innerAnchorIds?: readonly string[]
   /** Fermé par défaut. */
   defaultOpen?: boolean
   className?: string
@@ -45,6 +50,7 @@ export function CollapsibleCard({
   description,
   headerExtra,
   anchorId,
+  innerAnchorIds,
   defaultOpen = false,
   className,
   titleClassName,
@@ -54,10 +60,14 @@ export function CollapsibleCard({
   const [open, setOpen] = React.useState(defaultOpen)
   const ref = React.useRef<HTMLDivElement | null>(null)
 
+  const inner = (innerAnchorIds ?? []).join(" ")
+
   // Arrivée par un lien profond : le tiroir visé s'ouvre et vient à l'écran.
   React.useEffect(() => {
     if (!anchorId || typeof window === "undefined") return
     const viser = () => {
+      // Ancre d'un sous-bloc : la carte s'ouvre, le sous-bloc défile lui-même.
+      if (inner && inner.split(" ").includes(window.location.hash.slice(1))) { setOpen(true); return }
       if (window.location.hash !== `#${anchorId}`) return
       setOpen(true)
       setTimeout(() => ref.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 100)
@@ -65,7 +75,7 @@ export function CollapsibleCard({
     viser()
     window.addEventListener("hashchange", viser)
     return () => window.removeEventListener("hashchange", viser)
-  }, [anchorId])
+  }, [anchorId, inner])
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>

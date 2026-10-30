@@ -35,11 +35,14 @@ import {
 import type { ClarificationState } from '../types/machine';
 import {
   formatConversationForPrompt,
+  propertyFollowUp,
   resolveThreadReference,
   type ReferencedType,
   type ThreadContext,
 } from './reference-resolver';
 import { buildEntityClarification } from './clarification-builder';
+import { decideT2Routing, isShortFollowUp, turnAnomalies, type T2TurnDiagnostic } from './routing-guard';
+import { findReadableFields } from '../canonical/field-vocabulary';
 import { formatDateFr } from './deterministic-format';
 import { marquerDisponibilite } from './source-availability.service';
 import { analyzeScope } from './blocked-topics';
@@ -316,7 +319,14 @@ export async function runAssistant(
   // Rapport des appels modèle (sécurité, réparation, escalade), partagé par
   // référence comme le budget et versé dans la trace à la fin.
   const aiReport = input.aiReport ?? { securityEvents: [], events: [] };
-  input = { ...input, aiBudget: budget, requestId, aiReport };
+  // Lot 101A (I) : appels de compréhension (UNDERSTAND) réellement faits pendant
+  // le tour, quel que soit le chemin — versés dans le diagnostic du tour.
+  const turnState = input.turnState ?? { understandCalls: 0 };
+  if (ports.classifyWithAI && !input.turnState) {
+    const classer = ports.classifyWithAI;
+    ports = { ...ports, classifyWithAI: (m, i) => { turnState.understandCalls += 1; return classer(m, i); } };
+  }
+  input = { ...input, aiBudget: budget, requestId, aiReport, turnState };
   const messageId = randomUUID();
   const machine = new ConversationMachine('IDLE');
   const deadline = Date.now() + cfg.totalTimeoutMs;
@@ -1533,6 +1543,89 @@ export async function runAssistant(
     // est définitive, quel que soit `aiEligible` : l'éligibilité autorise un
     // appel modèle, elle ne l'impose jamais.
     // ══════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 101A (B) — GARDE-FOU DE ROUTAGE T2
+    //
+    // « Et la série ? » (UNKNOWN, elliptique, contexte présent) partait en
+    // `retrieval.t1_fact` sur le compte entier et remontait des tickets
+    // Decathlon, une offre Orange, un compteur EDF, un VIN. Une intention
+    // inconnue qui dépend du contexte, ou qui porte sur une propriété sans
+    // cible fiable, passe d'abord par la compréhension T2 et la résolution
+    // serveur ; le chemin déterministe reste ouvert quand la cible est sûre,
+    // la propriété normalisée et les données bornées à la cible.
+    // ══════════════════════════════════════════════════════════════════════
+    {
+      const ellipse = propertyFollowUp(input.message);
+      const parLeFil = trace.reference?.outcome === 'resolved';
+      const contextuel = Boolean(ellipse) || parLeFil
+        || (needsClassification && (early.thread?.messages.length ?? 0) > 0 && isShortFollowUp(input.message));
+      const objetResolu = Boolean(input.reference && input.reference.type !== 'document' && input.reference.type !== 'agenda_item')
+        || Boolean(input.resume?.entity || input.resume?.assetId) || Boolean(cibleComprise);
+      const proprietes = faitsExiges.length ? faitsExiges : dedupeLecture(route.understanding?.requestedFacts?.length
+        ? route.understanding.requestedFacts : (ellipse?.fields.length ? ellipse.fields : findReadableFields(input.message).map((x) => x.def.key)));
+      const garde = decideT2Routing({
+        intentUnknown: needsClassification && !comprisParModele && (route.intent === 'UNKNOWN' || !route.intent.startsWith('ACCOUNT_')),
+        contextual: contextuel && !comprisParModele,
+        targetResolved: objetResolu,
+        propertyNormalized: proprietes.length > 0,
+        propertyQuestion: proprietes.length > 0 || Boolean(ellipse),
+        ellipticalProperty: Boolean(ellipse) && !comprisParModele,
+      });
+      trace.routingGuard = garde;
+      if (garde.decision !== 'DETERMINISTIC' && garde.decision !== 'FREE_LEVELS_FIRST') trace.escalationReasons.push(`ROUTING_GUARD:${garde.decision}:${garde.reasons.join('+')}`);
+      if (garde.decision === 'UNDERSTAND_FIRST' && !input.resume) {
+        const iaPossible = aiActif && ports.classifyWithAI != null && isPlanAiEligible(input.planType) && budget.canCall();
+        let compris: IntentRoute | null = null;
+        if (iaPossible && !comprisParModele) {
+          if (await avantAppelModele() === 'cancelled') return annuler();
+          if (budget.canCall()) {
+            const avantCl = budget.used;
+            compris = await ports.classifyWithAI!(input.message, input).catch(() => null);
+            reconcilierBudget(budget, avantCl, 1);
+            trace.aiCalls = budget.used;
+            comprisParModele = true;
+            classeParFaits = true;
+            semTrace.understandCalled = true;
+            if (!compris) { comprehensionEchouee = true; trace.escalationReasons.push('ROUTING:UNDERSTANDING_FAILED'); }
+          }
+        } else if (!aiActif && ports.classifyWithAI) {
+          trace.escalationReasons.push('ROUTING:AI_DISABLED');
+        }
+        const interactionGarde = await traiterInteraction(compris);
+        if (interactionGarde) return interactionGarde;
+        if (compris && compris.intent !== 'UNKNOWN' && compris.confidence !== 'ambiguous') {
+          route = affinerRoute(compris, input);
+          base.route = route;
+          trace.intent = route.intent;
+          marquer('COMPLETE', [], 'understand');
+          const faitsModele = dedupeLecture(compris.understanding?.requestedFacts ?? []);
+          if (faitsModele.length && ports.readTarget) {
+            faitsExiges = faitsModele;
+            trace.escalationReasons.push(`UNDERSTANDING:REQUESTED_FACTS:${faitsModele.join('+')}`);
+            const routeModele: IntentRoute = { ...route, understanding: { ...route.understanding, requestedFacts: faitsModele, filters: route.understanding?.filters ?? {} } };
+            const lu = await withDeadline(ports.readTarget(input, targetsFromInput(input, routeModele), routeModele), retrievalDeadline()).catch(lectureEchouee);
+            const servi = lu ? await servirLectureCiblee(lu, routeModele, { reprise: false }) : null;
+            if (servi) return servi;
+          }
+        } else if (proprietes.length && !faitsExiges.length) {
+          // Sans compréhension : seule la propriété reconnue par le registre est lue.
+          faitsExiges = proprietes;
+        }
+        // Renvoi au contexte sans AUCUNE cible : jamais une recherche du compte
+        // entier — la question de la cible est posée (aucun choix arbitraire).
+        if (contextuel && !objetResolu && !input.reference) {
+          trace.diagnostic = 'TARGET_NOT_FOUND';
+          const actions = await ports.resolveActions(route, input, []);
+          done('template', 'routing.context_target_unresolved', 'INSUFFICIENT', 0);
+          return finalize(base, machine, 'deterministic', CONTEXT_TARGET_QUESTION_MESSAGE, [], [], actions, ports, input, 'insufficient');
+        }
+        // Propriété d'un objet non identifié, hors contexte : la recherche du
+        // compte reste possible en REPLI EXPLICITE (tracé), candidats validés
+        // par objet → propriété → valeur.
+        if (!objetResolu) trace.escalationReasons.push('RETRIEVAL:ACCOUNT_FALLBACK_EXPLICIT');
+      }
+    }
+
     let data: DataAnswerOutcome | null = null;
     if (ports.answerFromData && isDataQuestion(route, input.message)) {
       machine.transition('RETRIEVING');
@@ -1571,6 +1664,20 @@ export async function runAssistant(
 
       if (data) {
         trace.attempts.push(...data.attempts);
+        // Lot 101A (C, D, I) : périmètre exact et verdict de chaque candidat.
+        if (data.retrieval) trace.retrieval = data.retrieval;
+        // Lot 101A (A) : faits retenus portant tous sur UN même équipement /
+        // UNE même pièce → cet objet devient l'objet actif du fil (« Et la
+        // série ? » au tour suivant), même si la réponse cite des documents.
+        if (data.handled && !base.contextUpdate && data.retrieval) {
+          const objets = [...new Map(data.retrieval.candidates
+            .filter((c) => c.decision === 'KEPT' && c.sourceObject && (c.sourceObject.type === 'EQUIPMENT' || c.sourceObject.type === 'ROOM') && c.sourceObject.id != null)
+            .map((c) => [`${c.sourceObject!.type}:${c.sourceObject!.id}`, c.sourceObject!])).values()];
+          const tous = data.retrieval.candidates.filter((c) => c.decision === 'KEPT');
+          if (objets.length === 1 && tous.every((c) => c.sourceObject?.type === objets[0].type && c.sourceObject?.id === objets[0].id)) {
+            base.contextUpdate = { type: objets[0].type === 'ROOM' ? 'room' : 'equipment', id: objets[0].id!, label: null };
+          }
+        }
 
         // ── Demande d'actions (lot 34) : trace dédiée, route alignée ──────
         // La famille reconnue porte une intention EXISTANTE (À traiter ou
@@ -2331,6 +2438,12 @@ async function applyThreadMemory(
   if (!ctx) return { input };
 
   const res = resolveThreadReference(input.message, ctx);
+  // Lot 101A (I) : objets actifs AVANT le tour (identifiants métier seulement).
+  const actifs: NonNullable<NonNullable<CascadeTrace['reference']>['activeObjects']> = [];
+  if (ctx.lastSelected) actifs.push({ type: ctx.lastSelected.type, id: ctx.lastSelected.id, via: 'lastSelected' });
+  for (const e of ctx.presentedLists.find((l) => l.length > 0) ?? []) {
+    if (!actifs.some((a) => a.type === e.type && a.id === e.id)) actifs.push({ type: e.type, id: e.id, via: 'presented' });
+  }
   trace.reference = {
     contextMessages: ctx.messages.length,
     presentedLists: ctx.presentedLists.length,
@@ -2338,6 +2451,7 @@ async function applyThreadMemory(
     outcome: res.kind,
     method: res.kind === 'resolved' ? res.method : res.kind === 'ambiguous' ? 'clarification' : null,
     entity: null,
+    activeObjects: actifs.slice(0, 10),
   };
   let enriched: AssistantRequestInput = { ...input, threadContextText: formatConversationForPrompt(ctx, null) };
 
@@ -2424,6 +2538,11 @@ function quickAnswer(
 ): { text: string; sources: RetrievedSource[]; strategy: string; intent: 'NAVIGATION_OPEN' | 'ACCOUNT_FACT_DOCUMENT' } | null {
   const m = plainTxt(message);
   const src = [entitySource(type, id, d.label, d.assetId)];
+  // Lot 101A (A) : une question sur une PROPRIÉTÉ de l'objet (« Et la
+  // série ? », « et son prix ? ») n'est jamais une demande d'ouverture : la
+  // demande suit son cours, bornée à l'objet résolu.
+  const surPropriete = type !== 'document' && (propertyFollowUp(message) !== null || findReadableFields(message).length > 0);
+  if (surPropriete && !OPEN_REF.test(m)) return null;
   if (type === 'document' && DATE_REF.test(m) && !OPEN_REF.test(m)) {
     return {
       text: d.date ? `« ${d.label} » est daté du ${formatDateFr(d.date)}.` : `Aucune date n’est enregistrée pour « ${d.label} ».`,
@@ -2586,6 +2705,8 @@ const NO_AVAILABLE_ASSET_MESSAGE =
   'Je n’ai identifié aucun bien actif dans votre compte pour cette demande. Ajoutez le bien ou précisez son nom tel qu’il apparaît dans Verebona.';
 /** Lot 32 : cible exigée, catalogue des biens momentanément illisible. */
 const TARGET_QUESTION_MESSAGE = 'De quel bien parlez-vous ? Précisez son nom tel qu’il apparaît dans Verebona.';
+/** Lot 101A (A, B) : question elliptique sans objet identifiable dans le fil — jamais une recherche du compte entier. */
+export const CONTEXT_TARGET_QUESTION_MESSAGE = 'De quel élément parlez-vous ? Précisez le bien ou l’équipement concerné.';
 
 /**
  * « Aucun document… » d'une recherche RÉELLEMENT exécutée sur UN bien résolu
@@ -2765,7 +2886,68 @@ export function trierParContribution(sources: ResolvedSource[], claims: Claim[])
  * explication / avis savent retrouver, et conversationId le fil réellement
  * utilisé.
  */
+/**
+ * Lot 101A (I) — diagnostic COMPLET du tour (codes et identifiants, aucun
+ * contenu), calculé sur le résultat final et versé dans la trace persistée
+ * (`verebona_request_runs.retrieval_methods_json.turn` : BO « Routage T2 » et
+ * diagnostic global). Pure, exportée pour les tests.
+ */
+export function buildTurnDiagnostic(r: AssistantRunResult, input: AssistantRequestInput): T2TurnDiagnostic | null {
+  const c = r.cascade;
+  if (!c) return null;
+  const message = input.originalMessage ?? input.message ?? '';
+  const ellipse = propertyFollowUp(message);
+  const ref = c.reference ?? null;
+  const cibles: T2TurnDiagnostic['resolvedTargets'] = [];
+  const ajouter = (type: string, id: number | null | undefined, origin: string) => {
+    if (id && !cibles.some((x) => x.type === type && x.id === id)) cibles.push({ type, id, origin });
+  };
+  if (input.resume?.entity) ajouter(input.resume.entity.type, input.resume.entity.id, 'clarification');
+  if (input.resume?.assetId) ajouter('asset', input.resume.assetId, 'clarification');
+  if (input.resume?.documentId) ajouter('document', input.resume.documentId, 'clarification');
+  if (input.reference) ajouter(input.reference.type, input.reference.id, input.reference.method === 'clarification' ? 'clarification' : 'thread');
+  if (r.contextUpdate) ajouter(r.contextUpdate.type, r.contextUpdate.id, 'answer');
+  const proprietes = r.route?.understanding?.requestedFacts?.length ? r.route.understanding.requestedFacts
+    : ellipse?.fields.length ? ellipse.fields : findReadableFields(message).map((x) => x.def.key);
+  const cibleLue = c.strategy.startsWith('target.') && cibles.length > 0;
+  const routing = c.routingGuard ?? (cibleLue && proprietes.length ? { decision: 'DETERMINISTIC_BOUNDED' as const, reasons: ['TARGET_AND_PROPERTY' as const] } : null);
+  const portee = c.retrieval?.scope ?? (cibleLue
+    ? { kind: 'OBJECT', objectType: cibles[0].type, objectId: cibles[0].id, assetId: null, reason: 'TARGET_READ' } : null);
+  const d: T2TurnDiagnostic = {
+    version: 1,
+    contextMessages: ref?.contextMessages ?? 0,
+    activeObjectsBefore: ref?.activeObjects ?? [],
+    reference: ref ? { detected: ref.detected, outcome: ref.outcome, method: ref.method, entity: ref.entity } : null,
+    elliptical: ellipse !== null,
+    resolvedTargets: cibles,
+    intent: c.intent,
+    requestedProperty: [...new Set(proprietes)],
+    routing,
+    understandCalled: (input.turnState?.understandCalls ?? 0) > 0 || c.semantic?.understandCalled === true,
+    strategy: c.strategy,
+    retrievalScope: portee,
+    candidates: (c.retrieval?.candidates ?? []).slice(0, 25),
+    revalidations: (c.revalidations ?? []).map((x) => ({ factId: x.factId, status: x.status })),
+    answer: {
+      supportLevel: r.supportLevel ?? null, clarification: Boolean(r.clarification),
+      sourceCount: r.sources.length, claimKeys: r.claims.map((x) => x.claimKey),
+    },
+    factsUsed: [...new Set(r.claims.flatMap((x) => x.sourceIds))].slice(0, 25),
+    anomalies: [],
+  };
+  d.anomalies = turnAnomalies(d);
+  return d;
+}
+
 async function safePersist(ports: OrchestratorPorts, r: AssistantRunResult, input: AssistantRequestInput) {
+  // Lot 101A (I) : diagnostic du tour ; anomalies visibles aussi dans les motifs.
+  if (r.cascade) {
+    const tour = buildTurnDiagnostic(r, input);
+    if (tour) {
+      r.cascade.turn = tour;
+      for (const a of tour.anomalies) if (!r.cascade.escalationReasons.includes(`ANOMALY:${a}`)) r.cascade.escalationReasons.push(`ANOMALY:${a}`);
+    }
+  }
   // §27.11 : codes informatifs (non bloquants), calculés sur le résultat
   // final — ils partent avec la réponse et restent dans la trace.
   const notices = noticesFor(r);

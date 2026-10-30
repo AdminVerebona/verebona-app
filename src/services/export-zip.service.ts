@@ -172,7 +172,10 @@ function buildRecapTxt(snapshot: AssetSnapshot): string {
     lines.push('IDENTIFICATION');
     if (oi?.objectCategory) lines.push(`  Catégorie objet : ${oi.objectCategory}`);
     if (oi?.brand)          lines.push(`  Marque : ${oi.brand}`);
+    if (oi?.productSeries)  lines.push(`  Série du produit : ${oi.productSeries}`);
     if (oi?.modelName)      lines.push(`  Modèle : ${oi.modelName}`);
+    if (oi?.productReference) lines.push(`  Référence commerciale : ${oi.productReference}`);
+    if (oi?.productDesignation) lines.push(`  Désignation commerciale : ${oi.productDesignation}`);
     if (oi?.serialNumber)   lines.push(`  N° de série : ${oi.serialNumber}`);
     if (oc?.condition)      lines.push(`  État : ${oc.condition}`);
     if (oc?.dimensions)     lines.push(`  Dimensions : ${oc.dimensions}`);

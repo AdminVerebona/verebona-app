@@ -59,7 +59,7 @@ const CATEGORY_RULES: Readonly<Record<NotificationCategory, MobilePushRule>> = {
   duo: 'yes',            // Invitation Duo, demandes du Duo
   transmission: 'yes',   // Transmission reçue : action attendue
   documents: 'yes',      // Erreur de traitement nécessitant action ; terminé = optionnel (ci-dessous)
-  security: 'yes',       // Sécurité compte, message minimal
+  security: 'no',        // Lot 101B : information de sécurité par e-mail obligatoire seul (push supprimé au catalogue)
   account: 'no',         // Abonnement, paiement, offres : jamais de push commercial dans l'app (COM-05)
   news: 'no',            // Marketing / promotions : hors V1
 };

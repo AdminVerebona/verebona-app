@@ -44,6 +44,18 @@ export interface SourceInput {
   linkedAssetId?: number | null;
   /** Version de la source — clé d'idempotence et évitement de réanalyse (§6.3). */
   sourceVersion?: number;
+  /**
+   * Lot 101A (F) : page fournisseur — produit PRINCIPAL établi par
+   * l'adaptateur (données structurées, titre, h1) et zones connexes retirées
+   * du texte (produits recommandés, carrousels, comparatifs, accessoires).
+   * Jamais transmis au modèle : sert au garde-fou `guardProductIdentity`.
+   */
+  webPage?: {
+    mainProduct: { codes: string[]; name: string | null; brand: string | null } | null;
+    /** Codes produit lus dans les zones connexes retirées (conservés séparément, trace). */
+    relatedProductCodes: string[];
+    removedZones: number;
+  };
 }
 
 /** Candidat de rattachement à une entité du compte. */

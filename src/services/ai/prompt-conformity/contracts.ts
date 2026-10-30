@@ -163,6 +163,16 @@ export const MARKER_CONTRACT_DECLARATIONS: readonly MarkerContractDeclaration[] 
     blockId: 't3-naming-period-v1', killSwitch: 'T3_NAMING_PERIOD_ENABLED', label: 'T3 : période dans le nommage des documents',
     impact: 'Titre prudent (mois seulement s\'il est écrit sur le document, sinon période exacte, sinon rien) tant que le contrat manque.',
     detect: async (t) => (await import('../reconciliation/document-naming/model')).promptCarriesNamingPeriod(t) },
+  // Lot 101A : identité du produit et produit principal d'une page fournisseur (étape 10 du guide).
+  { id: 't1-product-identity-v1', treatment: 'T1', rank: 11, guideStep: 10, lot: '101A', task: 'ANALYZE_DOCUMENT',
+    blockId: 't1-product-identity-v1', killSwitch: null, label: 'T1 : série, modèle, référence et numéro de série distincts ; produit principal d’une page fournisseur',
+    impact: 'Le garde-fou serveur s’applique déjà (libellé générique ≠ modèle, produit connexe jamais rattaché, modèles incompatibles en conflit) ; sans le contrat, T1 range plus souvent ces valeurs en connaissance générique.',
+    detect: async (t) => (await import('../source-analysis/master/product-identity-contract')).promptCarriesProductIdentity(t) },
+  // Lot 101A : continuité conversationnelle et propriété exacte (étape 11 du guide).
+  { id: 't2-property-continuity-v1', treatment: 'T2', rank: 12, guideStep: 11, lot: '101A', task: 'UNDERSTAND',
+    blockId: 't2-property-continuity-v1', killSwitch: null, label: 'T2 : ellipses sur l’objet du tour précédent, propriété exacte (série ≠ numéro de série)',
+    impact: 'L’objet actif est déjà résolu par le serveur et le retrieval borné ; sans le contrat, une ellipse sans formulation reconnue (« Et son prix ? ») est moins souvent comprise par UNDERSTAND.',
+    detect: async (t) => (await import('@/services/verebona-assistant/core/property-continuity-contract')).promptCarriesPropertyContinuity(t) },
 ];
 
 let registryCache: Promise<PromptContract[]> | null = null;

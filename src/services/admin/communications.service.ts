@@ -247,7 +247,8 @@ function catalogChannels(entry: CatalogEntry): ChannelDefinition[] {
   }
   // Le push est toujours facultatif (CDC notifications §5.2).
   if (!entry.retiredChannels?.push) out.push({ channel: 'push', locked: false, lockReason: null });
-  if (!entry.neverBell) {
+  // Lot 101B : cloche supprimée (informations de sécurité) → non proposée.
+  if (!entry.neverBell && !entry.retiredChannels?.bell) {
     out.push({
       channel: 'in_app',
       locked: entry.mandatoryBell,
@@ -262,6 +263,7 @@ function catalogRetiredChannels(entry: CatalogEntry): RetiredChannelView[] {
   const out: RetiredChannelView[] = [];
   if (entry.retiredChannels?.email) out.push({ channel: 'email', reason: entry.retiredChannels.email });
   if (entry.retiredChannels?.push) out.push({ channel: 'push', reason: entry.retiredChannels.push });
+  if (entry.retiredChannels?.bell) out.push({ channel: 'in_app', reason: entry.retiredChannels.bell });
   return out;
 }
 

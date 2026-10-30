@@ -80,8 +80,10 @@ const CATEGORY_UI: Record<NotificationCategory, CategoryUi> = {
     displayDefault: { push: true, email: true },
   },
   security: {
-    description: 'Connexions et modifications de vos identifiants.',
-    displayDefault: { push: true, email: true },
+    // Lot 101B : e-mail obligatoire seul — ni cloche, ni push (supprimés au
+    // catalogue : le réglage push n'est plus proposé pour cette catégorie).
+    description: 'Connexions et modifications de vos identifiants. Toujours envoyés par e-mail, sans notification dans l\'application.',
+    displayDefault: { push: false, email: true },
   },
   news: {
     description: 'Nouveautés et conseils Verebona. Nécessite votre consentement.',

@@ -398,6 +398,29 @@ export const CANONICAL_FIELDS: readonly CanonicalFieldDef[] = [
   f({ key: 'brand', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Marque', families: O, valueType: 'string', section: 'object_identification', aliases: ['marque', 'fabricant', 'manufacturer'] }),
   f({ key: 'modelName', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Modèle', families: O, valueType: 'string', section: 'object_identification', aliases: ['modele', 'model'] }),
   f({ key: 'serialNumber', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Numéro de série', families: O, valueType: 'string', section: 'object_identification', aliases: ['numeroSerie', 'serial', 'numSerie'] }),
+  // Lot 101A (ticket « série d'un équipement », E) : identité du PRODUIT en
+  // propriétés distinctes — série / gamme (MG23K3515), modèle (MG23K3515AK),
+  // référence commerciale complète (MG23K3515AK/EF), désignation commerciale
+  // (« Micro-ondes gril 23 L »), numéro de série de l'EXEMPLAIRE. Fiche
+  // canonique seule (aucune colonne miroir). La série n'est jamais un numéro
+  // de série ; une désignation générique n'est jamais un modèle
+  // (`canonical/product-identity`).
+  f({
+    key: 'productSeries', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Série du produit', families: O, valueType: 'string', section: 'object_identification',
+    aliases: ['serieProduit', 'gamme', 'productFamily', 'productLine', 'familleProduit', 'series'],
+    assistantPhrases: ['serie', 'gamme'],
+    // « numéro de série », « n° de série », « fabriqué en série » : jamais la série du produit.
+    assistantPhrasesNotAfter: ['de', "d'", 'en'],
+  }),
+  f({
+    key: 'productReference', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Référence commerciale', families: O, valueType: 'string', section: 'object_identification',
+    aliases: ['referenceCommerciale', 'referenceProduit', 'sku', 'productRef', 'commercialReference', 'codeProduit'],
+    assistantPhrases: ['reference'],
+  }),
+  f({
+    key: 'productDesignation', targetTypes: ['ASSET', 'EQUIPMENT'], label: 'Désignation commerciale', families: O, valueType: 'string', section: 'object_identification',
+    aliases: ['designation', 'designationCommerciale', 'productName', 'nomCommercial'],
+  }),
   f({
     key: 'condition', label: 'État', families: O, valueType: 'enum', enumValues: ETATS,
     enumLabels: { NEUF: 'Neuf', BON: 'Bon état', MOYEN: 'État moyen', MAUVAIS: 'Mauvais état' },

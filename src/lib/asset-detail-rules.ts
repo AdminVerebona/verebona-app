@@ -97,6 +97,14 @@ export function acceptDetailDate(key: string, day: string, today: string = today
  * d'achat et la valeur estimée (`recordManualEntityEdit`).
  */
 export const EQUIPMENT_FICHE_FIELDS: ReadonlyArray<{ key: string; label: string; type: 'number' | 'text'; unit?: string; max?: number }> = [
+  // Lot 101A (E) : identité du produit — propriétés DISTINCTES du registre
+  // (la série n'est pas le numéro de série ; une désignation n'est pas un modèle).
+  { key: 'brand', label: 'Marque', type: 'text' },
+  { key: 'productSeries', label: 'Série du produit', type: 'text' },
+  { key: 'modelName', label: 'Modèle', type: 'text' },
+  { key: 'productReference', label: 'Référence commerciale', type: 'text' },
+  { key: 'productDesignation', label: 'Désignation commerciale', type: 'text' },
+  { key: 'serialNumber', label: 'Numéro de série', type: 'text' },
   { key: 'powerKw', label: 'Puissance (kW)', type: 'number', unit: 'kW' },
   { key: 'cop', label: 'COP', type: 'number', max: 20 },
   { key: 'refrigerant', label: 'Fluide frigorigène', type: 'text' },

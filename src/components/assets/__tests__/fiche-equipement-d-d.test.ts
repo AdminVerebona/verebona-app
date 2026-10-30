@@ -12,8 +12,11 @@ const ROOT = resolve(__dirname, '../../../..');
 const src = (...p: string[]) => readFileSync(resolve(ROOT, 'src', ...p), 'utf8').replace(/\r\n?/g, '\n');
 
 describe('fiche équipement : champs saisissables', () => {
-  it('puissance, COP, fluide frigorigène, compteur horaire : clés canoniques ciblant l’équipement', () => {
-    expect(EQUIPMENT_FICHE_FIELDS.map((f) => f.key)).toEqual(['powerKw', 'cop', 'refrigerant', 'hourMeter']);
+  it('identité produit (lot 101A) puis puissance, COP, fluide frigorigène, compteur horaire : clés canoniques ciblant l’équipement', () => {
+    expect(EQUIPMENT_FICHE_FIELDS.map((f) => f.key)).toEqual([
+      'brand', 'productSeries', 'modelName', 'productReference', 'productDesignation', 'serialNumber',
+      'powerKw', 'cop', 'refrigerant', 'hourMeter',
+    ]);
     for (const f of EQUIPMENT_FICHE_FIELDS) {
       const def = getField(f.key);
       expect(def?.key, f.key).toBe(f.key);

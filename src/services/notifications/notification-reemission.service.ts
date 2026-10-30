@@ -84,9 +84,13 @@ interface DeliveryTrace {
  * - push : seuls les appareils en échec (jamais livrés) sont visés.
  * Résultat vide (`canaux: []`) : tout a été livré, rien à réémettre.
  */
-/** Lot 79C : retire d'une restriction les canaux supprimés du catalogue (pure). */
+/**
+ * Lot 79C : retire d'une restriction les canaux supprimés du catalogue (pure).
+ * Lot 101B : la cloche aussi (informations de sécurité : e-mail seul) — une
+ * réémission ne rallume jamais une cloche ni un toast supprimés.
+ */
 export function retirerCanauxSupprimes(restriction: ReemissionRestriction, entry: Parameters<typeof isChannelRetired>[0]): ReemissionRestriction {
-  const canaux = restriction.canaux.filter((c) => c === 'bell' || !isChannelRetired(entry, c));
+  const canaux = restriction.canaux.filter((c) => !isChannelRetired(entry, c));
   return {
     canaux,
     ...(canaux.includes('push') && restriction.mobileInstallationIds ? { mobileInstallationIds: restriction.mobileInstallationIds } : {}),
@@ -194,7 +198,7 @@ export async function reemettreNotification(
   const entree = getCatalogEntry(origine.eventType);
   const restriction = brute ? retirerCanauxSupprimes(brute, entree) : null;
   if (brute && brute.canaux.length > 0 && restriction && restriction.canaux.length === 0) {
-    throw new ReemissionError('RIEN_A_REEMETTRE', 'Les canaux en échec de cet événement ont été supprimés (lot 79) : rien à réémettre.');
+    throw new ReemissionError('RIEN_A_REEMETTRE', 'Les canaux en échec de cet événement ont été supprimés (lots 79 et 101) : rien à réémettre.');
   }
   if (restriction && restriction.canaux.length === 0) {
     throw new ReemissionError('RIEN_A_REEMETTRE', 'Tous les canaux de cet événement ont été livrés : rien à réémettre.');

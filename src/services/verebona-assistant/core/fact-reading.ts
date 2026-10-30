@@ -98,6 +98,26 @@ async function protege<T>(p: Promise<T>): Promise<{ ok: true; v: T } | { ok: fal
   try { return { ok: true, v: await p }; } catch (e) { return { ok: false, e: e as Error }; }
 }
 
+const libelleNorm = (s: string) => s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+/**
+ * Champs homonymes (même libellé) d'une lecture (pure, testée) : un champ
+ * « sans objet » est écarté dès qu'un homonyme s'applique à la cible ; deux
+ * homonymes sans objet n'en font qu'un.
+ */
+export function collapseHomonyms<T extends Pick<FactResult, 'label' | 'status'>>(facts: readonly T[]): T[] {
+  const out: T[] = [];
+  for (const f of facts) {
+    const memes = facts.filter((g) => libelleNorm(g.label) === libelleNorm(f.label));
+    if (memes.length > 1 && f.status === 'FIELD_NOT_APPLICABLE') {
+      if (memes.some((g) => g.status !== 'FIELD_NOT_APPLICABLE' && g.status !== 'FIELD_UNAVAILABLE')) continue;
+      if (out.some((g) => libelleNorm(g.label) === libelleNorm(f.label))) continue;
+    }
+    out.push(f);
+  }
+  return out;
+}
+
 /**
  * Lit les champs demandés sur UNE cible (ordre conservé, ≤ 20, dédoublonnés).
  * Lève `TargetReadError` si TOUTES les lectures ont échoué (erreur technique,
@@ -200,6 +220,12 @@ export async function readFactsOnTarget(
     return { fact: { ...base, status: statut, sourceIds: statut === 'MISSING_CANONICAL_VALUE' ? [src.id] : [] }, sources: statut === 'MISSING_CANONICAL_VALUE' ? [src] : [] };
   }));
 
+  // Lot 101A : champs HOMONYMES (« marque » = `make` du véhicule et `brand`
+  // de l'objet / de l'équipement) — seul celui qui s'applique à la cible est
+  // rendu ; aucun « sans objet » pour son homonyme.
+  const homonymes = collapseHomonyms(lus.map((x) => x.fact));
+  const gardes = lus.filter((x) => homonymes.includes(x.fact));
+  lus.splice(0, lus.length, ...gardes);
   const facts = lus.map((x) => x.fact);
   if (facts.length > 0 && facts.every((f) => f.failed)) {
     throw new TargetReadError(`lecture canonique impossible (${target.type} ${target.id}, ${cles.length} champ(s))`);

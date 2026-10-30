@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
     await revokeAllUserSessions(user.id, 'PASSWORD_RESET');
     serverCacheDelete(sessionCutoffCacheKey(user.id));
 
-    // Événement de sécurité obligatoire (cloche + email, CDC §7.7).
+    // Événement de sécurité obligatoire (e-mail seul depuis le lot 101B, CDC §7.7).
     try {
       await emit({
         type: 'PASSWORD_RESET_COMPLETED',

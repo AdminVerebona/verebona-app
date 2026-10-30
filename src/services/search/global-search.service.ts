@@ -179,6 +179,9 @@ async function assetCandidates(accountId: number, q: ParsedQuery, mode: Awaited<
         registrationNumber: [str(r.registrationNumber), ...kcValues(kc, 'registrationNumber')],
         vin: kcValues(kc, 'vin'),
         serialNumber: kcValues(kc, 'serialNumber'),
+        // Lot 101A (E) : série et référence commerciale du produit, propriétés distinctes.
+        productSeries: kcValues(kc, 'productSeries'),
+        productReference: kcValues(kc, 'productReference'),
         address: [str(r.address), ...kcValues(kc, 'address1')],
         city: [str(r.city), ...kcValues(kc, 'city')],
         postalCode: [str(r.postalCode), ...kcValues(kc, 'postalCode')],
@@ -328,6 +331,9 @@ async function agendaCandidates(
  */
 type NestedKind = 'equipment' | 'room';
 
+/** Lot 101A : propriétés d'identité produit d'un équipement cherchées par la barre de recherche. */
+const EQUIPMENT_IDENTITY_SEARCH_KEYS = ['brand', 'productSeries', 'modelName', 'productReference', 'serialNumber'] as const;
+
 async function nestedCandidates(
   kind: NestedKind, accountId: number, q: ParsedQuery, mode: Awaited<ReturnType<typeof searchExprMode>>,
   opts: { assetIds?: number[] | null } = {},
@@ -342,9 +348,15 @@ async function nestedCandidates(
   const exactEnTete = (col: string) => `(trim(regexp_replace(${normalizedText(mode, col)}, '[^a-z0-9]+', ' ', 'g')) = ${norm}) DESC`;
   const sqlText = kind === 'equipment'
     ? (() => {
-        const cond = anyTokenLike(mode, p, q, ['e.name', 'e.type'], ['e.name']);
-        return `SELECT e.id, e.name, e.type, e.asset_id AS "assetId", a.name AS "assetName", a.account_id AS "accountId"
+        // Lot 101A (E) : identité produit de la fiche canonique de l'équipement
+        // (marque, série, modèle, référence, n° de série) — « MG23K3515AK »
+        // retrouve le micro-onde. Colonnes historiques comprises.
+        const ident = [...EQUIPMENT_IDENTITY_SEARCH_KEYS.map((k) => `(e.key_characteristics->>'${k}')`), 's.brand', 's.model', 's.serial_number'];
+        const cond = anyTokenLike(mode, p, q, ['e.name', 'e.type', ...ident], ['e.name']);
+        return `SELECT e.id, e.name, e.type, e.asset_id AS "assetId", a.name AS "assetName", a.account_id AS "accountId",
+                  e.key_characteristics AS kc, s.brand AS "specBrand", s.model AS "specModel", s.serial_number AS "specSerial"
            FROM equipments e
+           LEFT JOIN equipment_cil_specs s ON s.equipment_id = e.id
            JOIN assets a ON a.id = e.asset_id
           WHERE a.account_id = ${acc} AND ${dispo} AND e.archived_at IS NULL
             AND (${ids}::int[] IS NULL OR e.asset_id = ANY(${ids}::int[]))
@@ -372,7 +384,17 @@ async function nestedCandidates(
       entityId: Number(r.id),
       displayName: String(r.name),
       fields: kind === 'equipment'
-        ? { name: str(r.name), type: str(r.type), assetName: str(r.assetName) }
+        ? (() => {
+            const kc = parseKc(r.kc);
+            return {
+              name: str(r.name), type: str(r.type), assetName: str(r.assetName),
+              brand: [...kcValues(kc, 'brand'), str(r.specBrand)].filter(Boolean) as string[],
+              productSeries: kcValues(kc, 'productSeries'),
+              modelName: [...kcValues(kc, 'modelName'), str(r.specModel)].filter(Boolean) as string[],
+              productReference: kcValues(kc, 'productReference'),
+              serialNumber: [...kcValues(kc, 'serialNumber'), str(r.specSerial)].filter(Boolean) as string[],
+            };
+          })()
         : { name: str(r.name), assetName: str(r.assetName) },
       retrievalStrategy: 'sql.token_like',
       _assetId: Number(r.assetId),

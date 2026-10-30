@@ -258,10 +258,20 @@ describe('53H — critères d’acceptation', () => {
     // déterministe (registre `assistantPhrases` + libellés + pluriels) : un
     // ajout (« date achat », « km », « moteur »…) la change.
     const lignes = catalogForT2Read().fields.flatMap((f) => fieldPhrasesOf(getField(f.key)!).map((p) => `${f.key}:${p}`)).sort();
-    expect(lignes).toHaveLength(241);
-    expect(createHash('sha256').update(lignes.join('\n')).digest('hex')).toBe('9fd6c942c3d925ea2dfaa775dface57cebcd5be0e228f19134792d3377f275ea');
-    // FIELD_CATALOG transmis à UNDERSTAND (catalogue de capacités) : inchangé, prompt non modifié.
-    expect(createHash('sha256').update(describeFieldCatalog()).digest('hex')).toBe('ea5f3a8af2385094bad17c262cae986a5dba3c2d7553fe8fa9443b93ba6a0edd');
+    // Lot 101A (ticket « série d'un équipement », E) : SEUL ajout délibéré —
+    // trois propriétés d'identité du produit (productSeries « série du
+    // produit », « série », « gamme » ; productReference « référence
+    // commerciale », « référence » ; productDesignation « désignation
+    // commerciale »), pluriels compris : 241 + 12 formulations. Aucune des
+    // formulations du lot 53 ci-dessous n'est devenue déterministe.
+    expect(lignes).toHaveLength(253);
+    expect(lignes.filter((l) => /^(productSeries|productReference|productDesignation):/.test(l))).toHaveLength(12);
+    expect(createHash('sha256').update(lignes.filter((l) => !/^(productSeries|productReference|productDesignation):/.test(l)).join('\n')).digest('hex'))
+      .toBe('9fd6c942c3d925ea2dfaa775dface57cebcd5be0e228f19134792d3377f275ea');
+    expect(createHash('sha256').update(lignes.join('\n')).digest('hex')).toBe('c81a3f7cb8cf7bd0a23f24a283724c59da2981b7b10d1cfc1d23f42bf5858e39');
+    // FIELD_CATALOG transmis à UNDERSTAND (catalogue de capacités, DONNÉE du
+    // prompt) : il porte les trois propriétés du lot 101A ; texte du prompt non modifié.
+    expect(createHash('sha256').update(describeFieldCatalog()).digest('hex')).toBe('425836a0491444b53e98f3f3567de4cb375296c9965752cf8fae9f852836ffba');
     // Les formulations du ticket ne sont PAS devenues des règles déterministes.
     for (const m of ['km polo', 'moteur cupra', 'date polo', 'assurance maison']) expect(deterministicRequestedFacts(m)).toEqual([]);
     // La forme d'une demande reste décidée par les SEULS motifs du lot 52.

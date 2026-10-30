@@ -10,8 +10,9 @@
  *
  * Notification §22 « Déconnexion de toutes les autres sessions » — lot 100D
  * (décision PO A2 du 27/10/2026, qui rétablit l'e-mail retiré au lot 79C) :
- * confirmation de sécurité OTHER_SESSIONS_REVOKED (cloche + e-mail
- * obligatoires, gabarit `notif_other_sessions_revoked` éditable au BO),
+ * confirmation de sécurité OTHER_SESSIONS_REVOKED (e-mail obligatoire,
+ * gabarit `notif_other_sessions_revoked` éditable au BO ; lot 101B : plus de
+ * cloche — la confirmation de l'action est le message affiché à l'écran),
  *   · UNIQUEMENT ici (action globale demandée par le titulaire) — jamais pour
  *     « Déconnecter » un seul appareil, ni pour la déconnexion forcée du BO,
  *     un changement de mot de passe ou un rejeu ;

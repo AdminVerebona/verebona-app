@@ -365,7 +365,13 @@ export function NotificationBell() {
       // Process new notifications (not yet seen)
       const newNotifs = visibles.filter(n => !seenIdsRef.current.has(n.id));
       newNotifs.forEach(n => {
-        // Toast for mustDeliver (excluant DOCUMENT_ANALYZED)
+        // Toast d'arrivée d'une notification à cloche OBLIGATOIRE (`mustDeliver` :
+        // paiement, suppression de compte, refus Duo…), hors DOCUMENT_ANALYZED.
+        // Lot 101B : c'est ce toast qui affichait l'alerte « Connexion depuis
+        // un nouvel appareil » au chargement de l'accueil mobile. Les
+        // informations de sécurité n'arrivent plus jusqu'ici : le catalogue
+        // supprime leur cloche (aucune ligne créée) et `GET /api/notifications`
+        // ne sert plus leurs lignes historiques — aucune règle ici.
         if (n.mustDeliver && !n.readAt && n.type !== 'DOCUMENT_ANALYZED') {
           toast(getNotificationText(n.type, n.payload, n), { duration: 6000 });
         }

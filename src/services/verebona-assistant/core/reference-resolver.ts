@@ -13,7 +13,8 @@
 
 /** Lot 29 (ticket 13) : un équipement ou une pièce peut être la cible courante du fil. */
 import { leadingAssetTerm } from '@/lib/asset-taxonomy';
-import { findReadableFields } from '../canonical/field-vocabulary';
+import { findReadableFields, isRegistryPropertyWord } from '../canonical/field-vocabulary';
+import { fieldTargetTypes, getField } from '@/services/canonical/registry';
 import { plain } from './routing-text';
 
 /** Réponse du fil restituant une donnée sensible, telle que vue par le modèle. */
@@ -42,6 +43,13 @@ export interface ThreadContext {
   lastPresentedEntities: PresentedEntity[];
   /** Dernière entité explicitement désignée (référence résolue, choix de clarification). */
   lastSelected: { type: ReferencedType; id: number; label?: string | null } | null;
+  /**
+   * Lot 101A : message (assistant) qui a désigné `lastSelected` — absent pour
+   * un fil antérieur au lot (l'objet actif garde alors la priorité).
+   */
+  lastSelectedMessageId?: number | null;
+  /** Lot 101A : message de chaque liste de `presentedLists` (même ordre). */
+  presentedListMessageIds?: number[];
   currentAssetId: number | null;
   currentDocumentId: number | null;
   pendingClarification: string | null;
@@ -65,6 +73,75 @@ function pronomDeChamp(m: string): string | null {
     if (champ && champ.index === 0) return `${x[0]}${champ.phrase}`;
   }
   return null;
+}
+
+/**
+ * Lot 101A (A) — question ELLIPTIQUE sur une propriété (pure, testée) :
+ * « Et la série ? », « et le modèle ? », « Et sa référence ? », « La date ? »,
+ * « et pour le prix ? ». Le reste du message (après l'article ou le
+ * possessif) est court et commence par un mot du REGISTRE canonique (libellés
+ * et formulations) — jamais une liste de mots propre à T2, jamais un nom
+ * (« Et la Clio ? » n'est pas une ellipse : « clio » n'est pas une propriété).
+ * Rend la formulation détectée et les clés de champs reconnues (vides si la
+ * propriété reste à comprendre : « Et son prix ? »).
+ */
+export function propertyFollowUp(message: string): { detected: string; fields: string[] } | null {
+  const m = plain(message).replace(/[?!.…]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const hit = /^(et|mais|puis|alors|ok|d'accord|et pour|et concernant|et quant a)?\s*(pour|concernant)?\s*(la|le|les|l'|l |son|sa|ses|sa propre|son propre)\s*(.+)$/.exec(m);
+  if (!hit) return null;
+  const lie = Boolean(hit[1]) || /^(son|sa|ses)/.test(hit[3]);
+  const reste = hit[4].trim();
+  const mots = reste.split(/\s+/).filter(Boolean);
+  if (mots.length === 0 || mots.length > 5) return null;
+  // Sans « et » ni possessif, seule une question très courte est une ellipse (« La série ? »).
+  if (!lie && m.split(/\s+/).length > 3) return null;
+  const champs = findReadableFields(reste);
+  const premier = mots[0].replace(/^[^a-z0-9]+/, '');
+  if (!(champs.length && champs[0].index === 0) && !isRegistryPropertyWord(premier)) return null;
+  return { detected: `${hit[3]} ${reste}`.replace(/' /, "'"), fields: [...new Set(champs.map((c) => c.def.key))] };
+}
+
+/** Types d'objets auxquels s'appliquent les champs (aucun champ : tous). */
+function typesAdmis(fields: string[]): Set<ReferencedType> | null {
+  if (!fields.length) return null;
+  const out = new Set<ReferencedType>();
+  for (const k of fields) {
+    const d = getField(k);
+    if (!d) continue;
+    for (const t of fieldTargetTypes(d)) out.add(t === 'EQUIPMENT' ? 'equipment' : t === 'ROOM' ? 'room' : 'asset');
+  }
+  return out.size ? out : null;
+}
+
+/**
+ * Objet ACTIF d'une ellipse (pure, testée) : la dernière désignation
+ * explicite, sauf si une réponse PLUS RÉCENTE a présenté d'autres objets
+ * (alors : celui-là s'il est seul, une ambiguïté s'ils sont plusieurs).
+ * Jamais un choix arbitraire ; seuls les objets auxquels la propriété
+ * s'applique sont candidats.
+ */
+function objetActif(ctx: ThreadContext, fields: string[], detected: string): ReferenceResolution {
+  const admis = typesAdmis(fields);
+  // Propriété non reconnue par le registre : seuls un bien, un équipement ou
+  // une pièce peuvent porter l'ellipse (« Ses statuts ? » sur un document
+  // reste sans renvoi — parité lot 16).
+  const ok = (t: ReferencedType) => (admis ? admis.has(t) : t === 'asset' || t === 'equipment' || t === 'room');
+  const sel = ctx.lastSelected && ok(ctx.lastSelected.type) ? ctx.lastSelected : null;
+  const idx = ctx.presentedLists.findIndex((l) => l.length > 0);
+  const liste = idx >= 0 ? ctx.presentedLists[idx] : [];
+  const listeMsg = idx >= 0 ? ctx.presentedListMessageIds?.[idx] ?? null : null;
+  const selMsg = ctx.lastSelectedMessageId ?? null;
+  // La liste la plus récente prime sur une sélection PLUS ANCIENNE (connue).
+  const listePlusRecente = listeMsg !== null && (sel === null || (selMsg !== null && listeMsg > selMsg));
+  if (listePlusRecente) {
+    const vus = new Set<string>();
+    const cands = liste.filter((e) => ok(e.type))
+      .filter((e) => !vus.has(`${e.type}:${e.id}`) && (vus.add(`${e.type}:${e.id}`), true));
+    if (cands.length === 1) return { kind: 'resolved', entity: cands[0], method: 'ellipsis', detected };
+    if (cands.length >= 2) return { kind: 'ambiguous', candidates: cands, detected };
+  }
+  if (sel) return { kind: 'resolved', entity: sel, method: 'ellipsis', detected };
+  return { kind: 'none' };
 }
 
 const ORDINAUX: Array<[RegExp, number]> = [
@@ -210,6 +287,11 @@ export function resolveThreadReference(message: string, ctx: ThreadContext): Ref
     if (seul) return { kind: 'resolved', entity: seul, method: 'pronoun', detected: pron };
     if (derniere.length >= 2) return { kind: 'ambiguous', candidates: derniere, detected: pron };
   }
+
+  // 6. Lot 101A — ellipse sur une propriété (« Et la série ? ») : l'objet
+  //    ACTIF du fil (identifiant métier), jamais le texte seul.
+  const ellipse = propertyFollowUp(message);
+  if (ellipse) return objetActif(ctx, ellipse.fields, ellipse.detected);
 
   return { kind: 'none' };
 }

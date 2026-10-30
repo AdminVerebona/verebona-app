@@ -36,12 +36,13 @@
  * simultanées du même navigateur n'envoient qu'un e-mail ; ensuite le
  * cookie signé reconnaît l'appareil.
  *
- * CONTENU (catalogue `NEW_DEVICE_LOGIN`, sécurité OBLIGATOIRE : cloche +
- * e-mail, non désactivable ; gabarit `notif_new_device_login`, migration
- * 0832) : date et heure (Europe/Paris), appareil et navigateur ou
- * « Application Verebona », lien vers Mon compte › Sécurité › Appareils
- * connectés. Ni IP ni localisation. Aucune validation du nouvel appareil
- * n'est demandée (Q6) : l'alerte n'est pas une MFA.
+ * CONTENU (catalogue `NEW_DEVICE_LOGIN`, e-mail de sécurité OBLIGATOIRE,
+ * non désactivable ; gabarit `notif_new_device_login`, migration 0832 ;
+ * lot 101B : ni cloche, ni toast, ni push — décision PO du 30/10/2026) :
+ * date et heure (Europe/Paris), appareil et navigateur ou « Application
+ * Verebona », lien vers Mon compte › Sécurité › Appareils connectés. Ni IP
+ * ni localisation. Aucune validation du nouvel appareil n'est demandée
+ * (Q6) : l'alerte n'est pas une MFA.
  *
  * Jamais bloquant : un échec est journalisé, la session est émise.
  * ══════════════════════════════════════════════════════════════════════════

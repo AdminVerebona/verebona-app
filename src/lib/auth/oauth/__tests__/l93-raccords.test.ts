@@ -16,10 +16,11 @@ import { excludedColumnMotif } from '@/services/admin/diagnostics-export/securit
 import { RECETTE_EXCLUDED } from '@/services/admin/diagnostics-export/recette-catalog';
 
 describe('L93 — raccords', () => {
-  it('NOTIF-01 : Google / Apple associé ou dissocié — cloche + e-mail obligatoires, nom du fournisseur seulement', () => {
+  it('NOTIF-01 : Google / Apple associé ou dissocié — e-mail obligatoire (lot 101B : sans cloche ni push), nom du fournisseur seulement', () => {
     for (const t of ['AUTH_IDENTITY_LINKED', 'AUTH_IDENTITY_UNLINKED']) {
       const e = getCatalogEntry(t)!;
-      expect(e).toMatchObject({ category: 'security', mandatoryBell: true, mandatoryEmail: true });
+      expect(e).toMatchObject({ category: 'security', mandatoryBell: false, mandatoryEmail: true });
+      expect(Object.keys(e.retiredChannels ?? {}).sort()).toEqual(['bell', 'push']);
       const r = e.render({ provider: 'apple' });
       expect(r.emailTemplateCode).toBe('notif_security');
       expect(r.bellTitle).toMatch(/Apple/);

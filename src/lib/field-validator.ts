@@ -31,7 +31,7 @@ const SECTION_FIELDS: Record<string, string[]> = {
   vehicle_technical:        ['engine', 'fuelType', 'fiscalHp', 'powerKw', 'ptac', 'seats', 'firstRegistrationDate'],
   vehicle_usage:            ['vehicleOwnershipStatus', 'mileage', 'mileageUnit', 'mileageDate', 'primaryUse'],
   vehicle_insurance:        ['isInsured', 'insurer', 'insuranceExpiry', 'insuranceContractNumber', 'insuranceClientNumber', 'insurancePremium', 'nextInspection'],
-  object_identification:    ['objectCategory', 'brand', 'modelName', 'serialNumber'],
+  object_identification:    ['objectCategory', 'brand', 'productSeries', 'modelName', 'productReference', 'productDesignation', 'serialNumber'],
   object_condition:         ['condition', 'dimensions', 'weight', 'accessories'],
   object_provenance:        ['acquisitionMode', 'provenance', 'authenticityProof'],
   object_usage:             ['primaryUse', 'storageLocation', 'lastRevision', 'isInsured'],

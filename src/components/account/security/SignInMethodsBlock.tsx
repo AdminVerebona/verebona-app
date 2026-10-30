@@ -50,7 +50,7 @@ export interface SecuritySummary {
 }
 
 /** Action sensible à reprendre après une confirmation d'identité. */
-export type SecurityAction = 'add-password' | 'link-google' | 'link-apple' | 'unlink-google' | 'unlink-apple' | 'delete-account' | 'change-password' | 'change-email';
+export type SecurityAction = 'add-password' | 'link-google' | 'link-apple' | 'unlink-google' | 'unlink-apple' | 'delete-account' | 'change-password' | 'change-email' | 'revoke-others';
 
 export function useSecuritySummary() {
   const [summary, setSummary] = useState<SecuritySummary | null>(null);
@@ -202,6 +202,8 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
       else if (resume === 'unlink-google' || resume === 'unlink-apple') setUnlinkFor(resume.slice(7) as Provider);
       // La carte « Zone dangereuse » s'ouvre sur son ancre (CollapsibleCard).
       else if (resume === 'delete-account') window.location.hash = 'delete-account';
+      // Lot 101C : le sous-bloc « Appareils connectés » se rouvre ; l'utilisateur reclique (rien n'est rejoué).
+      else if (resume === 'revoke-others') window.location.hash = 'appareils-connectes';
     }
   }, [summary, link, reload]);
 

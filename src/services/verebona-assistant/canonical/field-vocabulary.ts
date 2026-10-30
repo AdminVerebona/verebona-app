@@ -56,9 +56,16 @@ export function findReadableFields(message: string): FieldMention[] {
   const m = plain(message);
   const brutes: FieldMention[] = [];
   for (const d of champsLisibles()) {
+    const pasApres = (d.assistantPhrasesNotAfter ?? []).map((w) => plain(w));
     for (const p of fieldPhrasesOf(d)) {
       const re = new RegExp(`(^|[^a-z])${esc(p)}(?=$|[^a-z])`, 'g');
-      for (let x = re.exec(m); x; x = re.exec(m)) brutes.push({ def: d, phrase: p, index: x.index + x[1].length });
+      for (let x = re.exec(m); x; x = re.exec(m)) {
+        const index = x.index + x[1].length;
+        // Lot 101A : « numéro DE série » — complément d'un autre nom, pas ce champ.
+        const avant = m.slice(0, index).replace(/\s+$/, '');
+        if (pasApres.some((w) => avant.endsWith(w) && (avant.length === w.length || /[^a-z]/.test(avant[avant.length - w.length - 1] ?? ' ')))) continue;
+        brutes.push({ def: d, phrase: p, index });
+      }
     }
   }
   // Les plus longues d'abord : une mention couverte par une plus longue est écartée.
@@ -66,7 +73,13 @@ export function findReadableFields(message: string): FieldMention[] {
   const retenues: FieldMention[] = [];
   for (const b of brutes) {
     const fin = b.index + b.phrase.length;
-    if (retenues.some((r) => b.index < r.index + r.phrase.length && fin > r.index)) continue;
+    // Lot 101A : une MÊME mention (même formulation, même position) désigne
+    // tous les champs HOMONYMES du registre — « marque » : `make` (véhicule)
+    // ET `brand` (objet, équipement). La cible, résolue ensuite, départage
+    // (`collapseHomonyms`) : jamais le seul premier champ du registre, qui
+    // privait « la marque de mon micro-onde » de toute lecture d'équipement.
+    const memeMention = (r: FieldMention) => r.index === b.index && r.phrase === b.phrase;
+    if (retenues.some((r) => !memeMention(r) && b.index < r.index + r.phrase.length && fin > r.index)) continue;
     retenues.push(b);
   }
   const vues = new Set<string>();
@@ -105,10 +118,21 @@ export function dedupeFacts(keys: readonly string[], max = MAX_REQUESTED_FACTS):
   return out;
 }
 
+/**
+ * Lot 101A : positions DISTINCTES des mentions (des champs homonymes partagent
+ * la même mention — elle ne doit être retirée qu'une fois), de la fin au début.
+ */
+function mentionSpans(message: string): Array<{ index: number; phrase: string }> {
+  const vus = new Set<string>();
+  return findReadableFields(message)
+    .filter((x) => !vus.has(`${x.index}:${x.phrase}`) && (vus.add(`${x.index}:${x.phrase}`), true))
+    .sort((a, b) => b.index - a.index);
+}
+
 /** Retire du message les formulations de champs (reste : la désignation de la cible). */
 export function withoutFieldPhrases(message: string): string {
   let m = plain(message);
-  for (const x of findReadableFields(message).sort((a, b) => b.index - a.index)) {
+  for (const x of mentionSpans(message)) {
     m = `${m.slice(0, x.index)} ${m.slice(x.index + x.phrase.length)}`;
   }
   return m;
@@ -134,6 +158,17 @@ function motsDuRegistre(): Set<string> {
 }
 
 /**
+ * Lot 101A — le mot désigne-t-il une PROPRIÉTÉ du registre (pure, testée) ?
+ * Mots des libellés et formulations (« serie », « prix », « date »,
+ * « reference », « modele »…) : sert à reconnaître une question elliptique
+ * (« Et la série ? ») sans liste de synonymes propre à T2.
+ */
+export function isRegistryPropertyWord(word: string): boolean {
+  const w = plain(word).replace(/[^a-z0-9]/g, '');
+  return w.length >= 4 && motsDuRegistre().has(w);
+}
+
+/**
  * Mots d'INFORMATION non couverts par les champs reconnus (pure, testée) :
  * « Quand ai-je acheté la Polo et combien l'ai-je payée ? » → `payee` ;
  * « la date d'achat, le prix et le kilométrage » → `prix`. Non vide : la
@@ -144,7 +179,7 @@ export function unconsumedInformationWords(message: string): string[] {
   // Formulations reconnues remplacées par un repère : un mot qui les
   // QUALIFIE (« la DATE de fin de garantie ») n'est pas une autre demande.
   let m = plain(message);
-  for (const x of findReadableFields(message).sort((a, b) => b.index - a.index)) {
+  for (const x of mentionSpans(message)) {
     m = `${m.slice(0, x.index)} § ${m.slice(x.index + x.phrase.length)}`;
   }
   const achat = purchaseMention(m);

@@ -16,6 +16,7 @@ import type { SourceLayer } from '../source-units/types';
 import { deduceFromType, loadAssetFamilies, validateProposal } from './rubric-rules';
 import { projectDocumentFacts, type DocumentProjection } from '../projection/document-projection';
 import { combineTraces } from '../trace';
+import { guardProductIdentity } from './product-identity-guard';
 import { toSourceAnalysisResult } from './to-source-analysis-result';
 import type { ProjectedFact, T1AnalyzeDocumentOutput, T1FactWithRef } from './t1-contract';
 import { currencyEvidenceOf, gateOperationCandidates, type AnchoredOperationCandidate } from '../operation-candidates/prepare';
@@ -80,6 +81,11 @@ export async function analyseGroupWithMaster(
     assetFamilies,
     verifiedIds: analysed.verifiedIds,
   });
+  // Lot 101A (E, F, G) : identité produit — libellé générique ≠ modèle,
+  // produit connexe d'une page fournisseur jamais rattaché, modèles
+  // incompatibles en conflit. Même nombre de faits, même ordre (couche A).
+  const identite = guardProductIdentity(projection.facts, { mainProduct: input.webPage?.mainProduct ?? null });
+  projection.facts = identite.facts;
 
   const assetIds = analysed.assetCandidates
     .filter((c) => c.verified && c.entityId !== null)
@@ -106,6 +112,11 @@ export async function analyseGroupWithMaster(
     warnings: analysed.warnings,
     trace: combineTraces(groupTrace, analysed.trace),
   });
+
+  result.warnings.push(...identite.warnings);
+  if (input.webPage?.relatedProductCodes.length) {
+    result.warnings.push({ code: 'FACT_REJECTED_BY_RULE', message: `Page fournisseur : ${input.webPage.removedZones} zone(s) de produits connexes écartée(s) (${input.webPage.relatedProductCodes.length} code(s) produit), jamais rattachée(s).` });
+  }
 
   // Lot 34F : provenance des faits (sourceUnitIds), rapport de complétude,
   // anomalies fonctionnelles (SOURCE_UNIT_FAILED, COVERAGE_INCOMPLETE).

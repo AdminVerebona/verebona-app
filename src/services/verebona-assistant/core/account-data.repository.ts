@@ -103,9 +103,13 @@ const baseAccountDataRepository: BaseAccountDataPort = {
     return rows<{ n: number }>(r)[0]?.n ?? 0;
   },
 
-  async searchFacts(accountId, terms, assetId) {
-    const hits = await searchDocumentFacts(accountId, terms, { assetId: assetId ?? null, limit: 20 });
+  async searchFacts(accountId, terms, assetId, opts) {
+    const hits = await searchDocumentFacts(accountId, terms, { assetId: assetId ?? null, limit: 20, entity: opts?.entity ?? null });
     return hits.map<FactHit>((h) => ({
+      // Lot 101A (C, D) : provenance du candidat — objet et propriété source.
+      canonicalKey: h.canonicalKey ?? null, rawKey: h.rawKey ?? null, valueType: h.valueType ?? null,
+      targetType: h.targetType ?? null, targetEntityId: h.targetEntityId == null ? null : Number(h.targetEntityId),
+      linkedToEntity: h.linkedToEntity === true, assetId: h.assetId == null ? null : Number(h.assetId),
       id: Number(h.id), fileId: h.fileId, factKey: h.factKey, subject: h.subject, attribute: h.attribute,
       label: h.label, valueText: h.valueText, valueNumber: h.valueNumber, valueUnit: h.valueUnit,
       confidence: h.confidence, excerpt: h.excerpt ?? '', documentTitle: h.documentTitle, matchedTerms: Number(h.matchedTerms),

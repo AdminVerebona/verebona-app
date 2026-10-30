@@ -225,7 +225,9 @@ function FamilyBlock({ category, kc, asset }: { category: string; kc: Record<str
     return (
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
         {!!kc.brand && <KV label="Marque" value={String(kc.brand)} />}
+        {!!kc.productSeries && <KV label="Série du produit" value={String(kc.productSeries)} />}
         {!!kc.modelName && <KV label="Modèle" value={String(kc.modelName)} />}
+        {!!kc.productReference && <KV label="Référence commerciale" value={String(kc.productReference)} />}
         {!!kc.serialNumber && <KV label="N° de série" value={String(kc.serialNumber)} />}
         {!!kc.condition && <KV label="État" value={CONDITION_LABELS[String(kc.condition)] ?? String(kc.condition)} />}
         {!!asset.purchaseDate && <KV label="Date d'achat" value={formatDate(asset.purchaseDate)} />}

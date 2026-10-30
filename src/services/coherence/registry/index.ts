@@ -49,6 +49,7 @@ import { missingPropertiesCheck, missingPropertiesEquipmentCheck } from './check
 import { agendaRecurrenceEndCheck } from './checks/agenda-recurrence-end';
 // Lot 100E (décision PO A7) — cartes « À traiter » devenues inutiles, toutes familles (nettoyage rétroactif).
 import { toProcessPublishabilityCheck } from './checks/to-process-publishability';
+import { equipmentIdentityCheck } from './checks/equipment-identity';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -102,6 +103,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   agendaRecurrenceEndCheck,
   // Lot 100E (ajouté en fin de liste, sans réordonner l'existant) : publiabilité A7 de toutes les familles.
   toProcessPublishabilityCheck,
+  // Lot 101A (ajouté en fin de liste, sans réordonner l'existant) : identité produit des équipements.
+  equipmentIdentityCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

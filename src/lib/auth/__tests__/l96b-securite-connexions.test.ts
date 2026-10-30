@@ -154,9 +154,10 @@ describe('L96B-Q6 alerte « connexion depuis un nouvel appareil »', () => {
     err.mockRestore();
   });
 
-  it('contenu : date / heure, appareil et navigateur, lien Appareils connectés ; ni IP ni localisation ; sécurité obligatoire', () => {
+  it('contenu : date / heure, appareil et navigateur, lien Appareils connectés ; ni IP ni localisation ; e-mail obligatoire (lot 101B : sans cloche ni push)', () => {
     const e = getCatalogEntry('NEW_DEVICE_LOGIN')!;
-    expect(e).toMatchObject({ category: 'security', mandatoryBell: true, mandatoryEmail: true });
+    expect(e).toMatchObject({ category: 'security', mandatoryBell: false, mandatoryEmail: true });
+    expect(Object.keys(e.retiredChannels ?? {}).sort()).toEqual(['bell', 'push']);
     const r = e.render({ at: '2026-10-26T13:05:00.000Z', deviceLabel: 'iPhone', browserLabel: 'Application Verebona', clientType: 'IOS' });
     expect(r.emailTemplateCode).toBe('notif_new_device_login');
     expect(r.bellBody).toContain('le 26 octobre 2026 à 14 h 05');
@@ -164,7 +165,8 @@ describe('L96B-Q6 alerte « connexion depuis un nouvel appareil »', () => {
     expect(r.bellBody).toContain('Mon compte › Sécurité › Appareils connectés');
     expect(r.bellBody).not.toMatch(/\b\d{1,3}(\.\d{1,3}){3}\b|\bIP\b|adresse IP|localisation|ville/);
     expect(e.deepLink({})).toBe(NEW_DEVICE_LOGIN_LINK);
-    expect(NEW_DEVICE_LOGIN_LINK).toBe('/mon-compte/informations#securite');
+    // Lot 101C : ancre du sous-bloc « Appareils connectés » (fermé par défaut, ouvert par ce lien).
+    expect(NEW_DEVICE_LOGIN_LINK).toBe('/mon-compte#appareils-connectes');
     expect(e.payloadSchema.safeParse({ at: 'x', deviceLabel: 'a', browserLabel: 'b', ip: '1.2.3.4' }).success).toBe(true);
     expect(Object.keys((e.payloadSchema.parse({ at: 'x', deviceLabel: 'a', browserLabel: 'b', ip: '1.2.3.4' }) as object))).not.toContain('ip');
     expect(NOTIFICATION_EMAIL_TEMPLATES.NOTIF_NEW_DEVICE_LOGIN.events).toEqual(['NEW_DEVICE_LOGIN']);

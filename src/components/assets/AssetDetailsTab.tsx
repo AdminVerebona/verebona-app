@@ -236,7 +236,10 @@ const SECTION_FIELDS: Record<string, FieldDef[]> = {
   object_identification: [
     { key: 'objectCategory', label: 'Catégorie' },
     { key: 'brand', label: 'Marque' },
+    { key: 'productSeries', label: 'Série du produit' },
     { key: 'modelName', label: 'Modèle' },
+    { key: 'productReference', label: 'Référence commerciale' },
+    { key: 'productDesignation', label: 'Désignation commerciale' },
     { key: 'serialNumber', label: 'Numéro de série' },
   ],
   object_condition: [

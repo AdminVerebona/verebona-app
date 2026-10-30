@@ -606,7 +606,9 @@ export async function persistResult(
       // devient le contexte courant du fil — « sa date », « cette maison ».
       if (result.contextUpdate) {
         const u = result.contextUpdate;
-        const patch: Record<string, unknown> = { lastSelected: { type: u.type, id: u.id, label: u.label ?? null } };
+        // Lot 101A : message qui désigne l'objet actif (comparé à la liste
+        // présentée la plus récente pour résoudre une ellipse).
+        const patch: Record<string, unknown> = { lastSelected: { type: u.type, id: u.id, label: u.label ?? null }, lastSelectedMessageId: Number(messageId) };
         if (u.type === 'asset') patch.currentAssetId = u.id;
         if (u.type === 'document') patch.currentDocumentId = u.id;
         await tx.unsafe(
@@ -969,9 +971,10 @@ export async function loadThreadContext(
     [conversationId],
   ).catch(() => [])) as unknown as Array<{ message_id: number; position: number; entity_type: ReferencedType; entity_id: number; label: string | null }>;
   const lists: PresentedEntity[][] = [];
+  const listMessageIds: number[] = [];
   let courant: number | null = null;
   for (const r of pres) {
-    if (r.message_id !== courant) { lists.push([]); courant = r.message_id; }
+    if (r.message_id !== courant) { lists.push([]); listMessageIds.push(Number(r.message_id)); courant = r.message_id; }
     lists[lists.length - 1].push({ position: r.position, type: r.entity_type, id: r.entity_id, label: r.label });
   }
 
@@ -983,6 +986,8 @@ export async function loadThreadContext(
     presentedLists: lists,
     lastPresentedEntities: lists[0] ?? [],
     lastSelected: sel && typeof sel.id === 'number' ? sel : null,
+    lastSelectedMessageId: typeof c.lastSelectedMessageId === 'number' ? c.lastSelectedMessageId : null,
+    presentedListMessageIds: listMessageIds,
     currentAssetId: typeof c.currentAssetId === 'number' ? c.currentAssetId : null,
     currentDocumentId: typeof c.currentDocumentId === 'number' ? c.currentDocumentId : null,
     pendingClarification: conv[0].clarification_state_json?.clarificationId ?? null,

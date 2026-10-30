@@ -96,10 +96,12 @@ describe('L100D-A2 — confirmation après « Déconnecter tous les autres appar
     expect(r.bellBody).not.toMatch(/Opération/);
   });
 
-  it('notification de sécurité OBLIGATOIRE (cloche + e-mail), lien Appareils connectés, gabarit éditable au BO', () => {
+  it('notification de sécurité : e-mail OBLIGATOIRE (lot 101B : cloche et push supprimés), lien Appareils connectés, gabarit éditable au BO', () => {
     const entry = getCatalogEntry('OTHER_SESSIONS_REVOKED')!;
-    expect(entry).toMatchObject({ category: 'security', mandatoryBell: true, mandatoryEmail: true });
-    expect(entry.deepLink({})).toBe('/mon-compte/informations#securite');
+    expect(entry).toMatchObject({ category: 'security', mandatoryBell: false, mandatoryEmail: true });
+    expect(Object.keys(entry.retiredChannels ?? {}).sort()).toEqual(['bell', 'push']);
+    // Lot 101C : ancre du sous-bloc « Appareils connectés » (fermé par défaut, ouvert par ce lien).
+    expect(entry.deepLink({})).toBe('/mon-compte#appareils-connectes');
     expect(entry.payloadSchema.safeParse({ at: new Date().toISOString(), count: 0 }).success).toBe(false);
     expect(NOTIFICATION_EMAIL_TEMPLATES.NOTIF_OTHER_SESSIONS_REVOKED.events).toEqual(['OTHER_SESSIONS_REVOKED']);
     const sql = read('src/db/migrations/0878_l100d_gabarit_autres_appareils_deconnectes.sql');

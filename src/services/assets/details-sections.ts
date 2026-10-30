@@ -167,7 +167,10 @@ export function buildSections(family: string, kc: Record<string, unknown>, asset
     sections.object_identification = {
       objectCategory: kc.objectCategory ?? assetRow.objectCategory ?? null,
       brand: kc.brand ?? null,
+      productSeries: kc.productSeries ?? null,
       modelName: kc.modelName ?? null,
+      productReference: kc.productReference ?? null,
+      productDesignation: kc.productDesignation ?? null,
       serialNumber: kc.serialNumber ?? null,
     };
     sections.object_condition = {

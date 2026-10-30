@@ -625,9 +625,9 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
         {EQUIPMENT_FICHE_FIELDS.map((f) => {
           const v = ficheValueLabel(f.key, fiche?.[f.key]);
           return v ? (
-            <div key={f.key} className="flex items-center justify-between">
-              <span className="text-muted-foreground">{f.unit ? f.label.replace(/ \([^)]*\)$/, '') : f.label}</span>
-              <span className="font-medium">{v}</span>
+            <div key={f.key} className="flex items-center justify-between gap-3">
+              <span className="text-muted-foreground shrink-0">{f.unit ? f.label.replace(/ \([^)]*\)$/, '') : f.label}</span>
+              <span className="font-medium min-w-0 text-right break-words">{v}</span>
             </div>
           ) : null;
         })}

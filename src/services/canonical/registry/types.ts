@@ -109,6 +109,12 @@ export interface CanonicalFieldDef {
    */
   assistantPhrases?: string[];
   /**
+   * Lot 101A : mots qui, placés JUSTE AVANT une formulation, en font le
+   * complément d'un autre nom — « numéro DE série », « n° DE série » ne
+   * désignent pas la série du produit. La mention est alors ignorée.
+   */
+  assistantPhrasesNotAfter?: string[];
+  /**
    * Unité de la valeur portée par un alias quand elle diffère de l'unité
    * canonique (ex. `purchasePriceCents` → `cents` pour `acquisitionPrice`).
    * À transmettre à `normalizeValue(..., { sourceUnit })`.

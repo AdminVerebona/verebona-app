@@ -537,6 +537,8 @@ export async function hasProjectableKnowledge(fileId: number): Promise<boolean> 
 interface KnowledgeFactHit extends StoredFact {
   documentTitle: string | null;
   assetId: number | null;
+  /** Lot 101A : le document du fait est rattaché à l'objet demandé (`opts.entity`). */
+  linkedToEntity?: boolean | null;
   /** Nombre de termes de la requête retrouvés dans le fait (0 à n). */
   matchedTerms: number;
 }
@@ -557,24 +559,42 @@ interface KnowledgeTextHit {
 export async function searchDocumentFacts(
   accountId: number,
   terms: string[],
-  opts: { assetId?: number | null; limit?: number } = {},
+  opts: {
+    assetId?: number | null; limit?: number;
+    /**
+     * Lot 101A (C) : objet métier RÉSOLU (équipement, pièce) — seuls ses faits
+     * (cible = cet objet) et ceux des documents qui lui sont rattachés
+     * (`document_asset_links` actif) sont candidats. Jamais le compte entier.
+     */
+    entity?: { type: 'EQUIPMENT' | 'ROOM'; id: number } | null;
+  } = {},
 ): Promise<KnowledgeFactHit[]> {
   const clean = terms.map((t) => t.trim()).filter((t) => t.length >= 3).slice(0, 8);
   if (clean.length === 0) return [];
   const haystack = `unaccent(lower(coalesce(f.fact_key,'') || ' ' || coalesce(f.subject,'') || ' ' || coalesce(f.attribute,'') || ' ' || coalesce(f.label,'') || ' ' || coalesce(f.value_text,'')))`;
   // Lot 33 : début de mot (`~`), jamais une sous-chaîne d'un autre mot.
-  const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} ~ $${i + 3} THEN 1 ELSE 0 END)`).join(' + ');
-  const params: unknown[] = [accountId, opts.assetId ?? null, ...clean.map(wordStartPattern)];
+  const scoreSql = clean.map((_, i) => `(CASE WHEN ${haystack} ~ $${i + 5} THEN 1 ELSE 0 END)`).join(' + ');
+  const canonical = await documentFactsCanonicalReady().catch(() => false);
+  const ent = opts.entity && Number.isInteger(opts.entity.id) && opts.entity.id > 0 ? opts.entity : null;
+  const params: unknown[] = [accountId, opts.assetId ?? null, ent?.type ?? null, ent?.id ?? null, ...clean.map(wordStartPattern)];
+  // Objet résolu : faits CIBLANT l'objet, ou faits d'un document rattaché à l'objet.
+  const lienObjet = `EXISTS (SELECT 1 FROM document_asset_links l WHERE l.file_id = f.file_id AND l.account_id = f.account_id AND l.status = 'ACTIVE'
+                       AND ((($3::text = 'EQUIPMENT') AND l.equipment_id = $4) OR (($3::text = 'ROOM') AND l.substructure_id = $4)))`;
+  const bornageObjet = canonical
+    ? `($4::int IS NULL OR (f.target_type = $3::text AND f.target_entity_id = $4) OR ${lienObjet})`
+    : `($4::int IS NULL OR ${lienObjet})`;
   const rows = await withDocumentTitles(pgClient.unsafe(
     `SELECT * FROM (
-       SELECT ${factColumns('f')},
+       SELECT ${factColumns('f', canonical)},
               ${documentTitleJsonSql('af')} AS "documentTitle",
               coalesce(af.asset_id, af.linked_asset_id) AS "assetId",
+              ${lienObjet.replace('EXISTS', '(EXISTS').concat(')')} AS "linkedToEntity",
               (${scoreSql}) AS "matchedTerms"
          FROM document_facts f
          JOIN asset_files af ON af.id = f.file_id AND af.account_id = f.account_id AND af.deleted_at IS NULL
         WHERE f.account_id = $1 AND f.status = 'active'
           AND ($2::int IS NULL OR af.asset_id = $2 OR af.linked_asset_id = $2)
+          AND ${bornageObjet}
      ) s
      WHERE s."matchedTerms" > 0
      ORDER BY s."matchedTerms" DESC, s.id DESC

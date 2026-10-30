@@ -38,6 +38,7 @@ import {
   ANALYSIS_STATUS_LABELS, IN_ANALYSIS_MESSAGE, analysisFailedMessage, documentAnalysisStatus,
 } from './document-status';
 import { buildResultGroups, summarizeGroups, type ResultGroup } from './result-groups';
+import { validateFactCandidate, type CandidateObject, type CandidateVerdict } from './candidate-validation';
 import { getIntentDefinition } from '../registries/intent-registry';
 import type { VerebonaIntent } from '../types/intents';
 import type { ActionableTrace } from '../types/contracts';
@@ -115,6 +116,18 @@ export interface FactHit {
   matchedTerms: number;
   /** Lu dans le document, ou observé sur l'image (0161). */
   evidenceOrigin?: 'TEXT_EXTRACTION' | 'VISUAL_ANALYSIS';
+  // ── Lot 101A (C, D) : provenance du candidat (objet → propriété → source) ──
+  /** Propriété canonique portée par le fait (registre), si T1 l'a établie. */
+  canonicalKey?: string | null;
+  rawKey?: string | null;
+  valueType?: string | null;
+  /** Objet visé par le fait (ASSET, EQUIPMENT, ROOM, GENERIC…) et son identifiant vérifié. */
+  targetType?: string | null;
+  targetEntityId?: number | null;
+  /** Le document du fait est rattaché à l'objet demandé. */
+  linkedToEntity?: boolean;
+  /** Bien du document. */
+  assetId?: number | null;
   visualDescription?: string | null;
   page?: number | null;
   /**
@@ -148,7 +161,7 @@ export interface AccountDataPort {
   countAgenda(accountId: number, opts?: { assetIds?: number[]; futureOnly?: boolean }): Promise<number>;
   upcomingAgenda(accountId: number, opts?: { assetIds?: number[]; terms?: string[]; limit?: number }): Promise<AgendaRow[]>;
   sumDocumentAmounts(accountId: number, opts?: { assetIds?: number[]; year?: number; terms?: string[] }): Promise<{ sumCents: number; count: number }>;
-  searchFacts(accountId: number, terms: string[], assetId?: number | null): Promise<FactHit[]>;
+  searchFacts(accountId: number, terms: string[], assetId?: number | null, opts?: { entity?: { type: 'EQUIPMENT' | 'ROOM'; id: number } | null }): Promise<FactHit[]>;
   /** Cellules des tableaux T1 (lignes complètes) — facultatif. */
   searchTableCells?(accountId: number, terms: string[], assetId?: number | null): Promise<TableCellRow[]>;
   searchDocuments(accountId: number, terms: string[], assetId?: number | null): Promise<DocumentHit[]>;
@@ -303,6 +316,16 @@ export interface DataAnswerOutcome {
    * rendu ; l'orchestrateur confie la compréhension à T2 (UNDERSTAND).
    */
   semanticScope?: { resolved: false; strategyCandidate: string; terms: string[]; assetIds: number[] };
+  /**
+   * Lot 101A (C, D, I) : périmètre EXACT du retrieval des faits (objet résolu,
+   * bien, ou compte entier en repli explicite) et verdict de CHAQUE candidat
+   * (objet et propriété source, score, motif de sélection ou de rejet).
+   */
+  retrieval?: {
+    scope: { kind: 'OBJECT' | 'ASSET' | 'ACCOUNT'; objectType: string | null; objectId: number | null; assetId: number | null; reason: string };
+    requestedFacts: string[];
+    candidates: CandidateVerdict[];
+  };
 }
 
 // ── Analyse de la question ─────────────────────────────────────────────────
@@ -862,6 +885,14 @@ export async function answerFromData(p: {
   thresholds: CascadeThresholdsLike;
   /** Faux pour une recherche de document explicite : on privilégie le niveau 2 document. */
   intent?: string;
+  /**
+   * Lot 101A (C) : objet métier RÉSOLU (équipement / pièce du fil, d'une
+   * clarification) — le retrieval des faits est BORNÉ à cet objet et à ses
+   * documents rattachés ; jamais le compte entier.
+   */
+  object?: CandidateObject | null;
+  /** Lot 101A (D) : propriétés normalisées demandées (registre) — filtre de propriété des candidats. */
+  requestedFacts?: string[];
 }): Promise<DataAnswerOutcome> {
   const attempts: CascadeAttempt[] = [];
   const contextSources: RetrievedSource[] = [];
@@ -1007,8 +1038,33 @@ export async function answerFromData(p: {
     }
   }
 
+  // ── Lot 101A (C) : périmètre du retrieval des faits ──────────────────────
+  // compte → objet résolu → relations explicites (documents rattachés) →
+  // propriété → sources → score → validation. Le compte entier n'est qu'un
+  // REPLI explicite, tracé, quand aucun objet n'est identifié.
+  const objet = p.object && p.object.type !== 'asset' ? p.object : null;
+  const demandes = p.requestedFacts ?? [];
+  const retrieval: NonNullable<DataAnswerOutcome['retrieval']> = {
+    scope: objet
+      ? { kind: 'OBJECT', objectType: objet.type, objectId: objet.id, assetId: scopedAssetId, reason: 'RESOLVED_OBJECT' }
+      : scopedAssetId
+        ? { kind: 'ASSET', objectType: 'asset', objectId: scopedAssetId, assetId: scopedAssetId, reason: 'RESOLVED_ASSET' }
+        : { kind: 'ACCOUNT', objectType: null, objectId: null, assetId: null, reason: 'NO_IDENTIFIABLE_OBJECT' },
+    requestedFacts: [...demandes],
+    candidates: [],
+  };
+  const avecRetrieval = (o: DataAnswerOutcome): DataAnswerOutcome => ({ ...o, retrieval });
+
   if (!wantsDocument && !seulementLeBien) {
-    const facts = await p.port.searchFacts(p.accountId, terms, scopedAssetId);
+    const bruts = await p.port.searchFacts(p.accountId, terms, objet ? null : scopedAssetId,
+      objet ? { entity: { type: objet.type === 'room' ? 'ROOM' : 'EQUIPMENT', id: objet.id } } : undefined);
+    // Lot 101A (D) : objet → propriété → source → valeur, AVANT toute
+    // revalidation. Un candidat rejeté n'est ni retenu, ni revalidé, ni
+    // transmis au modèle (contextSources).
+    const verdicts = bruts.map((f) => validateFactCandidate(f, { object: p.object ?? null, requestedFacts: demandes }));
+    retrieval.candidates = verdicts;
+    const gardes = new Set(verdicts.filter((v) => v.decision === 'KEPT').map((v) => v.factId));
+    const facts = bruts.filter((f) => gardes.has(f.id));
 
     // CDC 15 T2-02 : un fait qui porte une clé du registre cède la
     // place à la VALEUR CANONIQUE du bien (fiche, arbitrage T3), avec son
@@ -1027,7 +1083,7 @@ export async function answerFromData(p: {
         const decision: SufficiencyDecision = { status: 'SUFFICIENT_STRUCTURED', level: 2, score: 1, threshold: p.thresholds.text, detail: 'valeur canonique' };
         attempts.push({ level: 2, strategy: 'retrieval.canonical_field', status: decision.status, score: 1, threshold: decision.threshold });
         const sources = [src, ...autres.slice(0, 2).map((f) => docSource(f.fileId, f.documentTitle ?? 'Document', evidenceText(f)))];
-        return { handled: true, answer, sources, claims: [claim(`field:${r.key}`, answer, [src], 'direct')], decision, strategy: 'retrieval.canonical_field', attempts, contextSources };
+        return avecRetrieval({ handled: true, answer, sources, claims: [claim(`field:${r.key}`, answer, [src], 'direct')], decision, strategy: 'retrieval.canonical_field', attempts, contextSources });
       }
     }
 
@@ -1054,7 +1110,7 @@ export async function answerFromData(p: {
         // Lot 33 : la source n'est plus citée dans le texte (sources et claims la portent).
         : formatAttributeValue({ subject: f.subject, attribute: f.attribute, label: f.label, value: displayValue(f) });
       const sources = [...new Map(retained.map((r) => [r.fileId, docSource(r.fileId, r.documentTitle ?? 'Document', evidenceText(r))])).values()];
-      return { handled: true, answer, sources, claims: [claim('fact', answer, sources, 'direct')], decision, strategy: 'retrieval.t1_fact', attempts, contextSources };
+      return avecRetrieval({ handled: true, answer, sources, claims: [claim('fact', answer, sources, 'direct')], decision, strategy: 'retrieval.t1_fact', attempts, contextSources });
     }
     if (decision.status === 'CONFLICTING') {
       const best = Math.max(...facts.map((f) => f.matchedTerms));
@@ -1066,18 +1122,27 @@ export async function answerFromData(p: {
       const answer = formatConflict(what, [...byValue.values()].map((f) => ({ value: displayValue(f), source: `« ${f.documentTitle ?? 'document'} »` })));
       const sources = [...byValue.values()].map((f) => docSource(f.fileId, f.documentTitle ?? 'Document', evidenceText(f)));
       // Le conflit est rendu tel quel ; une revalidation ciblée peut le lever.
-      return {
+      return avecRetrieval({
         handled: true, answer, sources, claims: [claim('conflict', answer, sources, 'direct')], decision, strategy: 'retrieval.t1_fact', attempts, contextSources,
         revalidation: { trigger: 'CONFLICT', factIds: [...byValue.values()].slice(0, 3).map((f) => f.id) },
-      };
+      });
     }
     if (decision.status === 'INSUFFICIENT' && decision.reason === 'LOW_CONFIDENCE' && facts.length > 0) {
       const best = Math.max(...facts.map((f) => f.matchedTerms));
       // Revalidation ciblée : faits lus (comparaison d'un extrait au texte) ;
       // observations visuelles aussi en T2 master (VISUAL_RECHECK).
       const low = facts.filter((f) => f.matchedTerms === best).slice(0, 2);
-      if (low.length) return { ...noAnswer(decision, 'retrieval.t1_fact'), revalidation: { trigger: 'LOW_CONFIDENCE', factIds: low.map((f) => f.id) } };
+      if (low.length) return avecRetrieval({ ...noAnswer(decision, 'retrieval.t1_fact'), revalidation: { trigger: 'LOW_CONFIDENCE', factIds: low.map((f) => f.id) } });
     }
+  }
+
+  // Lot 101A (C) : question de VALEUR bornée à un objet résolu — aucun repli
+  // vers « le document le plus pertinent » du compte (un document n'est pas
+  // une valeur, et ceux des autres objets n'ont rien à faire ici).
+  if (objet && !wantsDocument) {
+    const d: SufficiencyDecision = { status: 'INSUFFICIENT', level: 2, score: 0, threshold: p.thresholds.text, reason: 'NO_RESULT', detail: 'retrieval borné à l’objet' };
+    attempts.push({ level: 2, strategy: 'retrieval.t1_fact', status: d.status, score: 0, threshold: d.threshold, reason: d.reason });
+    return avecRetrieval(noAnswer(d));
   }
 
   // ── Niveau 2 : document le plus pertinent ─────────────────────────────────
@@ -1123,7 +1188,7 @@ export async function answerFromData(p: {
         : '';
     const answer = `J’ai trouvé ce document : « ${d.title} »${details ? ` (${details})` : ''}.${suite}`;
     const sources = [docSourceAvecStatut(d)];
-    return { handled: true, answer, sources, claims: [claim('document', answer, sources, 'direct')], decision, strategy: 'retrieval.document', attempts, contextSources };
+    return avecRetrieval({ handled: true, answer, sources, claims: [claim('document', answer, sources, 'direct')], decision, strategy: 'retrieval.document', attempts, contextSources });
   }
 
   // ══════════════════════════════════════════════════════════════════════
@@ -1142,11 +1207,11 @@ export async function answerFromData(p: {
     const sources = [docSourceAvecStatut(best)];
     const d2: SufficiencyDecision = { ...decision, reason: statut === 'IN_ANALYSIS' ? 'DOCUMENT_IN_ANALYSIS' : 'DOCUMENT_ANALYSIS_FAILED' };
     attempts.push({ level: 2, strategy: 'retrieval.document_status', status: d2.status, score: d2.score, threshold: d2.threshold, reason: d2.reason });
-    return {
+    return avecRetrieval({
       handled: true, answer, sources, claims: [claim('document_status', answer, sources, 'direct')], decision: d2,
       strategy: 'retrieval.document_status', attempts, contextSources,
       documentState: { kind: statut, fileId: best.fileId, title: best.title },
-    };
+    });
   }
 
   const out = noAnswer(
@@ -1156,7 +1221,7 @@ export async function answerFromData(p: {
       : decision,
   );
   if (best) out.documentState = { kind: 'FOUND_WITHOUT_INFO', fileId: best.fileId, title: best.title };
-  return out;
+  return avecRetrieval(out);
 }
 
 // ── Demandes d'actions (lot 34) ────────────────────────────────────────────
