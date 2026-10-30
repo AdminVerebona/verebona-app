@@ -228,3 +228,270 @@ jobs:
             ai-inventory.json
             scripts/ai-legacy-baseline.json
           retention-days: 365
+
+  # ── Lot 100A : contrôles E2E bloquants (docs/exploitation/ci-tests-bloquants.md) ──
+  e2e-auth:
+    name: E2E sessions, Google/Apple et sécurité (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.1"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Sessions, réauthentification, appareils (lots 37, 53A, 57A, 79C, 92, 96A, 96B)
+        run: npm run test:e2e:auth -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-auth.xml
+      - name: Connexion Google / Apple et liaison application (lots 93, 96B, 97B)
+        run: npm run test:e2e:auth-social -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-auth-social.xml
+      - name: Isolation entre comptes (lots 40, 49, 53A, 53B, 54B, 83D)
+        run: npm run test:security:e2e -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-securite.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-e2e-auth
+          path: rapports/
+          retention-days: 30
+
+  e2e-mobile:
+    name: E2E application mobile (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.1"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Socle serveur de l'application mobile, dépôt idempotent (lot 97)
+        run: npm run test:e2e:mobile -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-mobile.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-e2e-mobile
+          path: rapports/
+          retention-days: 30
+
+  e2e-diagnostic:
+    name: E2E diagnostic et exports BO (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.1"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Diagnostic global unifié (lots 77C, 81C, 88A, 91A)
+        run: npm run test:e2e:diagnostic -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic.xml
+      - name: Exports BO, export de recette et restauration (lots 75N, 82E)
+        run: npm run test:e2e:bo-exports -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-bo-exports.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-e2e-diagnostic
+          path: rapports/
+          retention-days: 30
+
+  e2e-coherence:
+    name: E2E cohérence (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.1"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Contrôle de cohérence, réparations, cartes « À traiter » (lots 81A à 98B)
+        run: npm run test:e2e:coherence -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-coherence.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-e2e-coherence
+          path: rapports/
+          retention-days: 30
+
+  e2e-recherche:
+    name: E2E recherche locale (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.1"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Recherche locale, filtres équipements et agenda (lots 71C, 71D, 72E, 97C)
+        run: npm run test:e2e:recherche-locale -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-recherche.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-e2e-recherche
+          path: rapports/
+          retention-days: 30
+
+  e2e-ia:
+    name: "E2E IA : conformité des prompts et appels T3 (PostgreSQL 16)"
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.1"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Conformité automatique des prompts, qualification (lots 86A, 88B, 91B, 99B)
+        run: npm run test:e2e:conformite-prompts -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-conformite-prompts.xml
+      - name: Appels T3 redondants, cache d'idempotence (lot 99A)
+        run: npm run test:e2e:t3-appels -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t3-appels.xml
+      - name: Corpus de qualification, verrou A1, stress E2E métier (lot 100B)
+        run: npm run test:e2e:corpus-ia -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-corpus-ia.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-e2e-ia
+          path: rapports/
+          retention-days: 30
+
+  # Informatif : série complète après fusion sur main (et à la demande depuis l'onglet
+  # Actions si `workflow_dispatch:` est ajouté sous `on:`). Jamais exigé avant fusion.
+  e2e-complet:
+    name: E2E série complète (PostgreSQL 16)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.22.1"
+          cache: npm
+      - name: Installation
+        run: npm ci
+      - name: Série E2E complète (une base par fichier, ordre fixe)
+        run: npm run test:e2e -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-complet.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rapports-e2e-complet
+          path: rapports/
+          retention-days: 30
