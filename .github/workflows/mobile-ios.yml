@@ -171,6 +171,11 @@ jobs:
           echo "ASC_KEY_PATH=$KEY" >> "$GITHUB_ENV"
           echo "Clé d'API et fichier Firebase contrôlés."
           plutil -replace teamID -string "$APPLE_TEAM_ID" mobile/ios/ExportOptions.plist
+      - name: Appareil iOS pour la signature automatique (créé une fois si l'équipe n'en a aucun)
+        env:
+          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+        run: node mobile/scripts/asc-ensure-device.mjs
       - name: Archiver (signature automatique, App Store Connect)
         working-directory: mobile/ios/App
         env:

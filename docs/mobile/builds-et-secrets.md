@@ -160,3 +160,18 @@ de Capacitor par défaut pour l'instant ; décision B5 : nouvelle icône et vari
 le graphiste, livrées directement aux développeurs, selon `docs/design/brief-graphiste-icone-et-mascotte.md`
 (fichiers attendus et procédure d'intégration § 8).
 Génération des tailles : `npx @capacitor/assets generate` à partir d'une image 1024 × 1024 par variante.
+
+## Signature iOS en CI : appareil technique et rôle de la clé d'API (lot 101-septies)
+
+- `xcodebuild archive` en signature automatique génère d'abord un profil de
+  développement, qu'Apple refuse tant que l'équipe n'a **aucun appareil
+  enregistré**. L'étape « Appareil iOS pour la signature automatique »
+  (`mobile/scripts/asc-ensure-device.mjs`) enregistre, une seule fois, un
+  appareil technique « CI Verebona appareil technique (ne pas supprimer) » si
+  l'équipe n'en a aucun. Ne pas le supprimer de Certificates, Identifiers &
+  Profiles › Devices tant qu'aucun vrai iPhone de test n'est enregistré.
+- La clé d'API App Store Connect utilisée par la CI doit pouvoir gérer
+  appareils, certificats et profils : rôle **Admin** (une clé « Gestionnaire
+  d'apps » est refusée avec une erreur 403, message explicite dans le job).
+- L'envoi à TestFlight (`-exportArchive`) re-signe pour la distribution App
+  Store : l'appareil technique n'intervient pas dans l'app distribuée.
