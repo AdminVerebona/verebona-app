@@ -81,6 +81,9 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   // Lot 102C : registre des copies de données réelles et identité de la base — une restauration ne
   // les remplace jamais (la copie importée resterait sinon invisible, ou l'identité de l'environnement usurpée).
   'production_data_copies', 'environment_identity',
+  // Lot 104A : sujets des copies et état de la propagation des suppressions — une restauration ne
+  // les remonte jamais dans le temps (un compte purgé réapparu doit être purgé de nouveau).
+  'production_copy_subjects', 'production_deletion_signal_state',
 ];
 
 /** Colonnes d'une table, triées : `nom:type` (`:g` si générée — jamais réinjectée). */

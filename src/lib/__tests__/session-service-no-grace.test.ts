@@ -17,6 +17,11 @@ vi.mock('@/db', async (orig) => ({
   ...(await orig<typeof import('@/db')>()),
   getUserSessionCutoff: vi.fn(async () => null),
 }));
+// Lot 104A (P1-E) : le contrôle de réacceptation des CGUV n'accepte plus
+// implicitement une écriture quand la base est injoignable (503
+// CGUV_CHECK_UNAVAILABLE). Ce test porte sur l'invalidation des caches : la
+// réacceptation y est déclarée « non requise » explicitement.
+vi.mock('@/services/legal/cguv-reacceptance.service', () => ({ isReacceptanceRequired: vi.fn(async () => false) }));
 
 import { db } from '@/db';
 import { generateAccessToken } from '@/lib/jwt';

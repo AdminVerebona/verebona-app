@@ -197,22 +197,82 @@ export async function fetchCguvManifest(opts: { fetchImpl?: FetchLike; env?: Env
   }
 }
 
+/** Taille maximale d'un texte figé vérifié (un texte juridique HTML reste bien en deçà). */
+export const LEGAL_TEXT_MAX_BYTES = 5_000_000;
+
 /**
- * Vérifie l'empreinte d'un texte figé (`textUrl`) : SHA-256 des octets servis.
- * `null` = vérification impossible (réseau) — sans conclusion.
+ * Lot 104A (P1-C) — résultat DÉTAILLÉ d'une vérification d'octets. Seul
+ * `{ ok: true }` autorise un import, une activation ou un rattachement :
+ * toute autre issue (URL absente, 404, réseau, délai, empreinte différente,
+ * empreinte attendue invalide) est un REFUS. Jamais de « sans conclusion »
+ * qui laisserait passer.
  */
-export async function verifyTextSha256(textUrl: string, expected: string, opts: { fetchImpl?: FetchLike; timeoutMs?: number } = {}): Promise<boolean | null> {
+export type TextVerification =
+  | { ok: true; sha256: string; bytes: number }
+  | { ok: false; reason: TextVerificationFailure; detail: string; sha256?: string };
+
+export type TextVerificationFailure =
+  | 'TEXT_URL_MISSING'
+  | 'EXPECTED_SHA_INVALID'
+  | 'HTTP_NOT_FOUND'
+  | 'HTTP_ERROR'
+  | 'TIMEOUT'
+  | 'NETWORK'
+  | 'TOO_LARGE'
+  | 'SHA_MISMATCH';
+
+/** Libellé court (BO, Supervision, journal) d'un échec de vérification — sans URL ni secret. */
+export const TEXT_VERIFICATION_LABELS: Readonly<Record<TextVerificationFailure, string>> = Object.freeze({
+  TEXT_URL_MISSING: 'adresse du texte figé (textUrl) absente du manifeste',
+  EXPECTED_SHA_INVALID: 'empreinte attendue invalide',
+  HTTP_NOT_FOUND: 'texte figé introuvable (404)',
+  HTTP_ERROR: 'texte figé inaccessible (erreur HTTP)',
+  TIMEOUT: 'délai de lecture du texte figé dépassé',
+  NETWORK: 'texte figé injoignable (réseau)',
+  TOO_LARGE: 'texte figé trop volumineux',
+  SHA_MISMATCH: 'les octets servis ne correspondent pas à l’empreinte annoncée',
+});
+
+/**
+ * Vérifie les octets d'un texte figé (`textUrl`) : SHA-256 des octets EXACTS
+ * servis, comparé à l'empreinte attendue. Ne lève jamais.
+ */
+export async function verifyTextBytes(
+  textUrl: string | null | undefined,
+  expected: string | null | undefined,
+  opts: { fetchImpl?: FetchLike; timeoutMs?: number } = {},
+): Promise<TextVerification> {
+  if (!textUrl) return { ok: false, reason: 'TEXT_URL_MISSING', detail: TEXT_VERIFICATION_LABELS.TEXT_URL_MISSING };
+  const want = (expected ?? '').toLowerCase();
+  if (!SHA256.test(want)) return { ok: false, reason: 'EXPECTED_SHA_INVALID', detail: TEXT_VERIFICATION_LABELS.EXPECTED_SHA_INVALID };
   const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as FetchLike);
+  const timeoutMs = opts.timeoutMs ?? LEGAL_MANIFEST_DEFAULTS.timeoutMs;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? LEGAL_MANIFEST_DEFAULTS.timeoutMs);
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetchImpl(textUrl, { cache: 'no-store', signal: ctrl.signal });
-    if (!res.ok) return null;
+    const res = await fetchImpl(textUrl, { cache: 'no-store', signal: ctrl.signal, redirect: 'error' });
+    if (res.status === 404 || res.status === 410) return { ok: false, reason: 'HTTP_NOT_FOUND', detail: `${TEXT_VERIFICATION_LABELS.HTTP_NOT_FOUND} — HTTP ${res.status}` };
+    if (!res.ok) return { ok: false, reason: 'HTTP_ERROR', detail: `${TEXT_VERIFICATION_LABELS.HTTP_ERROR} — HTTP ${res.status}` };
     const buf = Buffer.from(await res.arrayBuffer());
-    return createHash('sha256').update(buf).digest('hex') === expected;
-  } catch {
-    return null;
+    if (buf.length > LEGAL_TEXT_MAX_BYTES) return { ok: false, reason: 'TOO_LARGE', detail: TEXT_VERIFICATION_LABELS.TOO_LARGE };
+    const got = createHash('sha256').update(buf).digest('hex');
+    if (got !== want) return { ok: false, reason: 'SHA_MISMATCH', detail: `${TEXT_VERIFICATION_LABELS.SHA_MISMATCH} (servi ${got.slice(0, 12)}…, annoncé ${want.slice(0, 12)}…)`, sha256: got };
+    return { ok: true, sha256: got, bytes: buf.length };
+  } catch (e) {
+    if (ctrl.signal.aborted) return { ok: false, reason: 'TIMEOUT', detail: `${TEXT_VERIFICATION_LABELS.TIMEOUT} (${timeoutMs} ms)` };
+    return { ok: false, reason: 'NETWORK', detail: `${TEXT_VERIFICATION_LABELS.NETWORK} — ${shortError(e).slice(0, 120)}` };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Compatibilité (lot 102B) : `true` = conforme, `false` = empreinte
+ * différente, `null` = vérification impossible. Depuis le lot 104A, l'import
+ * n'utilise plus cette fonction : un `null` y vaut un REFUS (`verifyTextBytes`).
+ */
+export async function verifyTextSha256(textUrl: string, expected: string, opts: { fetchImpl?: FetchLike; timeoutMs?: number } = {}): Promise<boolean | null> {
+  const r = await verifyTextBytes(textUrl, expected, opts);
+  if (r.ok) return true;
+  return r.reason === 'SHA_MISMATCH' ? false : null;
 }

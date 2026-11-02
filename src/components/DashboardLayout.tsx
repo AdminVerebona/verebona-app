@@ -35,7 +35,8 @@ import { useWelcomeOnboardingNeed } from '@/hooks/useWelcomeOnboardingNeed';
 import { LogoutStatusScreen, SessionUnavailableScreen } from './shell/SessionStateScreen';
 import { NoSpaceScreen } from './shell/NoSpaceScreen';
 import { CguvReacceptanceScreen } from './shell/CguvReacceptanceScreen';
-import { CGUV_REACCEPTANCE_EVENT } from '@/lib/legal/reacceptance-gate';
+import { CguvCheckUnavailableNotice } from './shell/CguvCheckUnavailableNotice';
+import { CGUV_CHECK_UNAVAILABLE_EVENT, CGUV_REACCEPTANCE_EVENT, reacceptanceStatusOf } from '@/lib/legal/reacceptance-gate';
 import { switchToAccount } from './account/AccountSwitcher';
 import { readSpaceParam } from '@/lib/shell/space-link';
 const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
@@ -130,6 +131,20 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     const onRequired = () => { void refetchSessionRef.current(); };
     window.addEventListener(CGUV_REACCEPTANCE_EVENT, onRequired);
     return () => window.removeEventListener(CGUV_REACCEPTANCE_EVENT, onRequired);
+  }, []);
+  // Lot 104A (P1-E) : contrôle des CGUV impossible côté serveur (503
+  // CGUV_CHECK_UNAVAILABLE) → bandeau « modifications suspendues » pendant
+  // une minute (ou tant que la session le signale) ; aucun écran bloquant.
+  const [cguvCheckUnavailable, setCguvCheckUnavailable] = useState(false);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onUnavailable = () => {
+      setCguvCheckUnavailable(true);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => setCguvCheckUnavailable(false), 60_000);
+    };
+    window.addEventListener(CGUV_CHECK_UNAVAILABLE_EVENT, onUnavailable);
+    return () => { window.removeEventListener(CGUV_CHECK_UNAVAILABLE_EVENT, onUnavailable); if (timer) clearTimeout(timer); };
   }, []);
 
   // Dialogs states
@@ -459,6 +474,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
         <VerebonaDesktopPanel />
 
         <div id="main-scroll-container" className="relative flex min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden scroll-smooth">
+          {/* Lot 104A : contrôle des CGUV impossible — modifications suspendues. */}
+          {(cguvCheckUnavailable || reacceptanceStatusOf(user.legalReacceptance) === 'unavailable') && <CguvCheckUnavailableNotice />}
           {/* Bandeau d'essai / fin d'essai (CDC §9.2) */}
           <TrialBanner />
 

@@ -369,6 +369,9 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   // Lot 102C : preuves d'information à l'inscription, copies de données réelles, identité de la base.
   marketing_collection_proofs: 'preuves d’information et de choix sur les relances (inscription)',
   production_data_copies: 'copies de données réelles hors production (registre)', environment_identity: 'identité de la base (environnement)',
+  // Lot 104A : propagation des suppressions de production vers les copies.
+  production_copy_subjects: 'copies de données réelles : comptes copiés (empreintes) et purge sur suppression en production',
+  production_deletion_signal_state: 'copies de données réelles : dernier échange avec la production',
   withdrawal_events: 'rétractation', withdrawal_requests: 'rétractation', withdrawal_verification_tokens: 'rétractation (jetons)',
   // Exports V12 et fichiers techniques.
   export_generation: 'dossiers V12 générés (fichiers expirant à 30 jours)', export_generation_items: 'dossiers V12', export_generation_logs: 'dossiers V12',

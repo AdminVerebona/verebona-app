@@ -65,7 +65,16 @@ const SYNC_LABELS: Record<string, string> = {
   never: 'Jamais lu', awaiting_public_site: 'En attente du site public (information)', ok: 'Lu avec succès', ok_with_anomalies: 'Lu — écarts signalés', unavailable: 'Indisponible', invalid: 'Invalide',
 };
 
-const EMPTY_FORM = { code: '', permalink: '', sha256: '', publishedAt: '', requiresReacceptance: false, makeCurrent: true, changeSummary: '' };
+// Lot 104A : refus faute de vérification positive du texte figé.
+const ANOMALY_LABELS: Record<string, string> = {
+  TEXT_URL_MISSING: 'Version refusée — texte figé non indiqué',
+  TEXT_UNAVAILABLE: 'Version refusée — texte figé inaccessible',
+  HASH_MISMATCH: 'Version refusée — empreinte différente',
+  CURRENT_NOT_VERIFIED: 'Version en vigueur non changée',
+  LEGACY_LINK_REFUSED: 'Archive historique non rattachée',
+};
+
+const EMPTY_FORM = { code: '', permalink: '', textUrl: '', sha256: '', publishedAt: '', requiresReacceptance: false, makeCurrent: true, changeSummary: '' };
 
 export default function CguvReferentialPage() {
   const [data, setData] = useState<Data | null>(null);
@@ -97,7 +106,7 @@ export default function CguvReferentialPage() {
       if (body.action === 'sync') {
         const r = json.result;
         setMessage(r?.status === 'ok' || r?.status === 'ok_with_anomalies'
-          ? `Manifeste relu : ${r.imported?.length ?? 0} version(s) importée(s), version en vigueur ${r.current ?? '—'}${r.anomalies?.length ? `, ${r.anomalies.length} écart(s)` : ''}.`
+          ? `Manifeste relu : ${r.imported?.length ?? 0} version(s) importée(s)${r.refused?.length ? `, ${r.refused.length} refusée(s) faute de texte vérifié (${r.refused.join(', ')})` : ''}, version en vigueur ${r.current ?? '—'}${r.anomalies?.length ? `, ${r.anomalies.length} écart(s)` : ''}.`
           : r?.status === 'awaiting_public_site'
             ? `Manifeste pas encore publié par le site public (${r?.error ?? ''}). Liens légaux sur les adresses actuelles ; aucune réacceptation exigée.`
             : `Manifeste ${r?.status === 'invalid' ? 'invalide' : 'indisponible'} : ${r?.error ?? 'erreur inconnue'}. Le dernier état connu reste en service.`);
@@ -144,7 +153,7 @@ export default function CguvReferentialPage() {
             {s && s.anomalies.length > 0 && (
               <div className="md:col-span-2">
                 <dt className="text-muted-foreground">Écarts signalés (Supervision)</dt>
-                <dd><ul className="list-disc pl-5">{s.anomalies.map((a, i) => <li key={i}><span className="font-mono">{a.code}</span> — {a.detail}</li>)}</ul></dd>
+                <dd><ul className="list-disc pl-5">{s.anomalies.map((a, i) => <li key={i}><span className="font-mono">{a.code}</span> — {ANOMALY_LABELS[a.kind] ? `${ANOMALY_LABELS[a.kind]} : ` : ''}{a.detail}</li>)}</ul></dd>
               </div>
             )}
           </dl>
@@ -198,7 +207,8 @@ export default function CguvReferentialPage() {
         <summary className="cursor-pointer vb-app-section">Saisie de secours (manifeste illisible)</summary>
         <p className="mt-2 text-sm text-muted-foreground">
           À n’utiliser que si le manifeste ne peut pas être lu. Mêmes règles que le manifeste (format AAAA-MM-JJ-vN, lien sur le
-          site public, empreinte SHA-256). La décision « substantielle » est figée à l’enregistrement ; la version sera
+          site public, empreinte SHA-256 vérifiée sur les octets du texte figé servi par le site : sans vérification réussie,
+          rien n’est enregistré). La décision « substantielle » est figée à l’enregistrement ; la version sera
           confirmée par la prochaine lecture du manifeste (tout écart est signalé).
         </p>
         <form
@@ -208,6 +218,7 @@ export default function CguvReferentialPage() {
           <div className="space-y-1"><Label htmlFor="cg-code">Code</Label><Input id="cg-code" placeholder="2026-10-30-v1" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.trim() })} /></div>
           <div className="space-y-1"><Label htmlFor="cg-date">Publiée le</Label><Input id="cg-date" type="datetime-local" value={form.publishedAt} onChange={(e) => setForm({ ...form, publishedAt: e.target.value })} /></div>
           <div className="space-y-1 md:col-span-2"><Label htmlFor="cg-link">Permalien (site public)</Label><Input id="cg-link" value={form.permalink} onChange={(e) => setForm({ ...form, permalink: e.target.value.trim() })} /></div>
+          <div className="space-y-1 md:col-span-2"><Label htmlFor="cg-text">Texte figé (fichier .html du site public — vide : permalien + « .html »)</Label><Input id="cg-text" value={form.textUrl} onChange={(e) => setForm({ ...form, textUrl: e.target.value.trim() })} /></div>
           <div className="space-y-1 md:col-span-2"><Label htmlFor="cg-sha">Empreinte SHA-256</Label><Input id="cg-sha" className="font-mono" value={form.sha256} onChange={(e) => setForm({ ...form, sha256: e.target.value.trim().toLowerCase() })} /></div>
           <div className="space-y-1 md:col-span-2"><Label htmlFor="cg-sum">Résumé des modifications (affiché à la réacceptation)</Label><Input id="cg-sum" value={form.changeSummary} onChange={(e) => setForm({ ...form, changeSummary: e.target.value })} /></div>
           <div className="flex items-center gap-2"><Checkbox id="cg-sub" checked={form.requiresReacceptance} onCheckedChange={(v) => setForm({ ...form, requiresReacceptance: v === true })} /><Label htmlFor="cg-sub" className="font-normal">Modification substantielle (réacceptation obligatoire)</Label></div>

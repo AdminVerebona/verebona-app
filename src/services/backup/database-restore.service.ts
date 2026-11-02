@@ -400,8 +400,16 @@ export async function restoreDatabaseBackup(
   report.durationMs = Date.now() - t0;
   // Lot 102C : copie de données réelles importée → active, comptes inventoriés, purge à l'échéance.
   if (originDecision.allowed && originDecision.copyId) {
-    await markRestoreImported(originDecision.copyId, sql, opts.now?.() ?? new Date());
+    await markRestoreImported(originDecision.copyId, sql, opts.now?.() ?? new Date(), { snapshotAt: manifest.snapshot.at });
     log(`Copie de données réelles #${originDecision.copyId} tracée : purge automatique à l’échéance (Supervision).`);
+    // Lot 104A (P1-F) : suppressions faites en production depuis l'état copié → purgées tout de suite.
+    try {
+      const { syncProductionDeletionSignals } = await import('@/services/admin/production-copies/deletion-propagation.service');
+      const p = await syncProductionDeletionSignals({ sql, trigger: 'restore' });
+      log(`Suppressions de production répercutées sur la copie : ${p.purged} purge(s), ${p.failed} échec(s) (${p.status}).`);
+    } catch (e) {
+      log(`Propagation des suppressions de production non exécutée (${(e as Error).message.slice(0, 120)}) — reprise par la tâche horaire.`);
+    }
   }
   log(`Restauration terminée : ${report.rows} ligne(s) dans ${report.restoredTables} table(s).`);
   return report;

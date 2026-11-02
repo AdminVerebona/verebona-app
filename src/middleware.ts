@@ -275,6 +275,9 @@ export async function middleware(request: NextRequest) {
       // Lot 102C : bloc d'information / de choix (relances commerciales) du
       // formulaire d'inscription — lu sans session, aucune donnée personnelle.
       '/api/public/marketing/signup-notice',
+      // Lot 104A : suppressions de production lues par la préproduction (serveur à
+      // serveur) — requête signée HMAC vérifiée par la route, 404 hors production.
+      '/api/internal/production-deletion-signals',
     ];
 
     // Cron endpoints utilisent leur propre CRON_SECRET — pas de JWT

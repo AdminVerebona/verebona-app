@@ -30,7 +30,9 @@
  */
 import { NextResponse } from 'next/server';
 import { ACCOUNT_PENDING_DELETION_CODE, ACCOUNT_PENDING_DELETION_MESSAGE } from './account-closure';
-import { CGUV_REACCEPTANCE_REQUIRED_CODE, CGUV_REACCEPTANCE_REQUIRED_MESSAGE } from '../legal/reacceptance-gate';
+import {
+  CGUV_CHECK_UNAVAILABLE_CODE, CGUV_CHECK_UNAVAILABLE_MESSAGE, CGUV_REACCEPTANCE_REQUIRED_CODE, CGUV_REACCEPTANCE_REQUIRED_MESSAGE,
+} from '../legal/reacceptance-gate';
 
 /** Vérification de session impossible (base injoignable) : ni succès, ni refus. */
 export const SESSION_UNAVAILABLE_CODE = 'SESSION_UNAVAILABLE';
@@ -53,6 +55,8 @@ const SESSION_ERRORS: Readonly<Record<string, SessionErrorSpec>> = {
   [ACCOUNT_PENDING_DELETION_CODE]: { status: 403, code: ACCOUNT_PENDING_DELETION_CODE, error: 'Forbidden', message: ACCOUNT_PENDING_DELETION_MESSAGE },
   // Lot 102B : version substantielle des CGUV à accepter (écritures métier).
   [CGUV_REACCEPTANCE_REQUIRED_CODE]: { status: 403, code: CGUV_REACCEPTANCE_REQUIRED_CODE, error: 'Forbidden', message: CGUV_REACCEPTANCE_REQUIRED_MESSAGE },
+  // Lot 104A (P1-E) : contrôle de réacceptation impossible → écriture refusée TEMPORAIREMENT (jamais acceptée).
+  [CGUV_CHECK_UNAVAILABLE_CODE]: { status: 503, code: CGUV_CHECK_UNAVAILABLE_CODE, error: 'Service Unavailable', message: CGUV_CHECK_UNAVAILABLE_MESSAGE },
   INSUFFICIENT_PERMISSIONS: { status: 403, code: 'INSUFFICIENT_PERMISSIONS', error: 'Insufficient permissions', message: 'Vous n’avez pas les droits nécessaires pour cette action.' },
   FORBIDDEN: { status: 403, code: 'ACCESS_DENIED', error: 'Access denied', message: 'Accès refusé à cette ressource.' },
   [SESSION_UNAVAILABLE_CODE]: { status: 503, code: SESSION_UNAVAILABLE_CODE, error: 'Service Unavailable', message: 'Vérification de session momentanément impossible. Réessayez dans un instant.' },

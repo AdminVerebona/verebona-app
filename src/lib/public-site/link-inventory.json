@@ -4,16 +4,19 @@
     "static": [
       "/",
       "/aide",
-      "/cgu",
-      "/confidentialite",
       "/contact",
       "/inscription",
-      "/mentions-legales",
+      "/legal/cguv",
+      "/legal/confidentialite",
+      "/legal/mentions-legales",
+      "/legal/parrainage",
+      "/legal/sous-traitants",
       "/ressources"
     ],
     "dynamic": [
       "/aide/:slug",
       "/aide/theme/:category",
+      "/legal/cguv/versions/:code",
       "/ressources/:slug"
     ]
   },
@@ -27,8 +30,7 @@
     "how",
     "pricing",
     "top",
-    "uc-kinds",
-    "uc-kinds-title"
+    "uc-kinds"
   ],
   "pages": {
     "help": [
@@ -179,7 +181,11 @@
     ]
   },
   "legacyRedirects": {
-    "/comment-ca-marche": "/#how"
+    "/cgu": "/legal/cguv",
+    "/comment-ca-marche": "/#how",
+    "/confidentialite": "/legal/confidentialite",
+    "/legal": "/legal/mentions-legales",
+    "/mentions-legales": "/legal/mentions-legales"
   },
   "retired": [
     "/pourquoi-verebona"
@@ -194,6 +200,7 @@
   ],
   "dataFiles": [
     "/aide/catalogue.json",
-    "/aide/corpus-t2.json"
+    "/aide/corpus-t2.json",
+    "/legal/cguv/versions.json"
   ]
 }

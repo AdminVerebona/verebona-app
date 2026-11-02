@@ -226,6 +226,14 @@ scenario('L102C', 'Conformité : export restreint, stockage, copies de données 
 
     const svc = await import('@/services/admin/production-copies/production-copies.service');
     await expect(svc.authorizeRestoreImport({ backupId, reason: 'court', admin, manifestEnvironment: 'production' })).rejects.toMatchObject({ code: 'REASON_REQUIRED' });
+    // Lot 104A (P1-F) : politique prudente — refus tant que la propagation des suppressions
+    // de production n'est pas configurée ET vérifiée (scénarios complets : l104a-legal-finition).
+    await expect(svc.authorizeRestoreImport({ backupId, reason: 'Analyse d’un incident de production L102C', admin, manifestEnvironment: 'production' }))
+      .rejects.toMatchObject({ code: 'DELETION_PROPAGATION_NOT_READY' });
+    process.env.PRODUCTION_DELETION_SIGNAL_KEY = 'cle-partagee-e2e-l102c-xxxxxxxxxxxxxxxx';
+    process.env.PRODUCTION_DELETION_SIGNAL_URL = 'https://prod.e2e.verebona.test';
+    await sql`INSERT INTO production_deletion_signal_state (id, last_attempt_at, last_success_at, last_status) VALUES (1, now(), now(), 'ok')
+              ON CONFLICT (id) DO UPDATE SET last_success_at = now(), last_status = 'ok'`;
     const copy = await svc.authorizeRestoreImport({ backupId, reason: 'Analyse d’un incident de production L102C', admin, manifestEnvironment: 'production' });
     expect(copy).toMatchObject({ status: 'authorized', sourceEnvironment: 'production', targetEnvironment: 'preprod', responsibleEmail: admin.email });
     const [audit] = await sql<Json[]>`SELECT action_type, target_type, target_id FROM admin_audit_log WHERE action_type = 'PRODUCTION_COPY_AUTHORIZE' ORDER BY id DESC LIMIT 1`;
@@ -253,6 +261,8 @@ scenario('L102C', 'Conformité : export restreint, stockage, copies de données 
     expect(purgee.status).toBe('purged');
     expect(purgee.purge_report).toMatchObject({ executed: 1 });
     expect(await ouverte()).toBe(0);
+    delete process.env.PRODUCTION_DELETION_SIGNAL_KEY;
+    delete process.env.PRODUCTION_DELETION_SIGNAL_URL;
   });
 
   it('L102C-E2E-04 — copie de base détectée au démarrage, clôture BO journalisée', async () => {

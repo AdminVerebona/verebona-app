@@ -24,6 +24,13 @@
  *       environnement n'est restaurable qu'après une autorisation BO
  *       explicite pour CE point (motif, administrateur, journal d'audit
  *       `PRODUCTION_COPY_AUTHORIZE`), valable PRODUCTION_COPY_AUTHORIZATION_HOURS.
+ *   (d) LOT 104A — SUPPRESSIONS DE PRODUCTION PROPAGÉES : chaque copie
+ *       inventorie ses comptes et utilisateurs (empreintes des identifiants
+ *       source, `production_copy_subjects`) ; une suppression en production
+ *       les purge sans attendre l'échéance (`deletion-propagation.service`).
+ *       Politique prudente : AUCUNE autorisation ni restauration d'un point
+ *       d'un autre environnement tant que la propagation n'est pas
+ *       configurée ET vérifiée (`deletionPropagationReadiness`).
  *
  * En PRODUCTION, rien de tout cela ne s'applique (aucune purge possible).
  * ══════════════════════════════════════════════════════════════════════════
@@ -57,6 +64,10 @@ export interface ProductionCopy {
   closedAt: string | null;
   closeReason: string | null;
   lastError: string | null;
+  /** Lot 104A : instant de l'état source copié (point de restauration). */
+  sourceSnapshotAt: string | null;
+  /** Lot 104A : inventaire des comptes copiés établi (propagation des suppressions). */
+  subjectsCapturedAt: string | null;
 }
 
 const iso = (v: unknown) => (v == null ? null : new Date(v as string).toISOString());
@@ -79,6 +90,8 @@ function toCopy(r: Row): ProductionCopy {
     closedAt: iso(r.closed_at),
     closeReason: (r.close_reason as string) ?? null,
     lastError: (r.last_error as string) ?? null,
+    sourceSnapshotAt: iso(r.source_snapshot_at),
+    subjectsCapturedAt: iso(r.subjects_captured_at),
   };
 }
 
@@ -133,6 +146,15 @@ export async function authorizeRestoreImport(input: {
     throw new ProductionCopyError('SAME_ENVIRONMENT', 'Ce point provient de cet environnement : aucune autorisation n’est nécessaire.', 409);
   }
 
+  // Lot 104A (P1-F) : pas d'import de données réelles sans garantie de
+  // propagation des suppressions de production (configurée ET vérifiée).
+  const { deletionPropagationReadiness } = await import('./deletion-propagation.service');
+  const readiness = await deletionPropagationReadiness({ sql, now });
+  if (!readiness.ready) {
+    throw new ProductionCopyError('DELETION_PROPAGATION_NOT_READY',
+      `Import de données réelles refusé : ${readiness.reason}. Voir docs/exploitation/copies-donnees-reelles-preproduction.md (§ 5).`, 409);
+  }
+
   await expireStaleAuthorizations(sql, now);
   let row: Row;
   try {
@@ -176,19 +198,47 @@ export async function guardRestoreOrigin(manifestEnvironment: string | null | un
   } catch {
     authorization = null; // registre absent (0916) : refus par défaut
   }
-  return decideRestoreOrigin({ manifestEnvironment, backupId, authorization, now });
+  const decision = decideRestoreOrigin({ manifestEnvironment, backupId, authorization, now });
+  // Lot 104A (P1-F) : même au dernier moment, aucune restauration d'un autre
+  // environnement si la propagation des suppressions n'est pas (ou plus) vérifiée.
+  if (decision.allowed && decision.origin !== 'same_environment' && !isProductionEnvironment(currentEnvironmentName())) {
+    const { deletionPropagationReadiness } = await import('./deletion-propagation.service');
+    const readiness = await deletionPropagationReadiness({ sql, now });
+    if (!readiness.ready) {
+      return { allowed: false, origin: decision.origin, reason: `Import de données réelles refusé : ${readiness.reason}.` };
+    }
+  }
+  return decision;
 }
 
-/** Restauration d'une copie autorisée réussie : copie active, échéance posée, comptes inventoriés. */
-export async function markRestoreImported(copyId: number, sql: Sql = pgClient, now = new Date()): Promise<void> {
+/**
+ * Restauration d'une copie autorisée réussie : copie active, échéance posée,
+ * comptes inventoriés ; lot 104A : instant de l'état source et inventaire des
+ * comptes / utilisateurs copiés (empreintes) pour la propagation des
+ * suppressions de production.
+ */
+export async function markRestoreImported(copyId: number, sql: Sql = pgClient, now = new Date(), opts: { snapshotAt?: string | Date | null } = {}): Promise<void> {
+  const snap = opts.snapshotAt ? new Date(opts.snapshotAt) : null;
   await sql`
     UPDATE production_data_copies
        SET status = 'active', imported_at = ${now.toISOString()},
            expires_at = ${addDays(now, copyRetentionDays()).toISOString()},
            account_ids = COALESCE((SELECT jsonb_agg(id ORDER BY id) FROM accounts), '[]'::jsonb),
+           source_snapshot_at = ${snap && !Number.isNaN(snap.getTime()) ? snap.toISOString() : null},
            updated_at = ${now.toISOString()}
      WHERE id = ${copyId}`;
+  await captureSubjectsSafely(copyId, sql, now);
   await syncProductionCopiesAnomaly(sql);
+}
+
+/** Inventaire des sujets d'une copie (lot 104A) — ne fait jamais échouer l'appelant (rattrapage horaire). */
+async function captureSubjectsSafely(copyId: number, sql: Sql, now: Date): Promise<void> {
+  try {
+    const { captureCopySubjects } = await import('./deletion-propagation.service');
+    await captureCopySubjects(copyId, { sql, now });
+  } catch (e) {
+    console.error(`[production-copy] inventaire de la copie #${copyId} impossible (repris par la tâche horaire) :`, (e as Error).message);
+  }
 }
 
 /* ── Détection d'une copie de base au démarrage ──────────────────────────── */
@@ -227,6 +277,7 @@ export async function startupProductionCopyCheck(sql: Sql = pgClient, now = new 
                   ${now.toISOString()}, ${now.toISOString()})
           RETURNING id`;
         copyId = Number(row.id);
+        await captureSubjectsSafely(copyId, sql, now);
         console.error(`[production-copy] COPIE DE BASE DÉTECTÉE : base initialisée par « ${d.source} », servie en « ${d.target} » — `
           + `copie #${copyId} tracée, purge planifiée dans ${copyRetentionDays()} jour(s).`);
       }
@@ -306,6 +357,8 @@ export async function closeProductionCopy(input: {
              close_reason = ${reason}, updated_at = ${now.toISOString()}
        WHERE id = ${input.id} RETURNING *`;
     if (before.origin === 'database_copy') await adoptCurrentEnvironment(sql, now);
+    const { closeCopySubjects } = await import('./deletion-propagation.service');
+    await closeCopySubjects(input.id, 'closed', sql, now).catch(() => undefined);
   }
   const { logAdminAction } = await import('@/lib/admin-audit');
   await logAdminAction({
@@ -386,6 +439,8 @@ export async function purgeExpiredProductionCopies(
       UPDATE production_data_copies SET status = 'purged', purged_at = ${now.toISOString()}, purge_report = ${JSON.stringify(report)}::jsonb,
              last_error = NULL, updated_at = ${now.toISOString()} WHERE id = ${id}`;
     if (c.origin === 'database_copy') await adoptCurrentEnvironment(sql, now);
+    const { closeCopySubjects } = await import('./deletion-propagation.service');
+    await closeCopySubjects(id, 'purged', sql, now).catch(() => undefined);
   }
   await syncProductionCopiesAnomaly(sql);
   return { purged, failed };

@@ -16,7 +16,7 @@ import { cguvVersionPath, isCguvVersionCode } from '@/lib/legal/public-legal';
 import { renderLegalErrorPage } from './legal-error-page';
 import { getVersionByCode } from './legal-versions.service';
 import { publicSiteBase } from './cguv-manifest';
-import { getLegalLinksMode, serverLegalUrl, versionProofInfo } from './cguv-referential.service';
+import { getLegalLinksMode, hasVerifiedPublicLink, serverLegalUrl, versionProofInfo } from './cguv-referential.service';
 
 const NO_STORE = { 'Cache-Control': 'no-store' };
 
@@ -41,7 +41,9 @@ export async function resolveCguvVersionTarget(code: string): Promise<VersionTar
   const found = await getVersionByCode(code);
   const siteDelivered = (await getLegalLinksMode()) === 'v2';
   if (found) {
-    if (found.source === 'APP_LEGACY' && !found.publicPermalink) {
+    // Lot 104A (P1-D) : archive non rattachée, ou rattachée avec une empreinte
+    // publique différente de l'empreinte historique → l'archive d'origine.
+    if (found.source === 'APP_LEGACY' && !hasVerifiedPublicLink(found)) {
       if (found.htmlContent) return { kind: 'archive', html: found.htmlContent, versionCode: found.versionCode };
       return siteDelivered ? { kind: 'redirect', url: `${publicSiteBase()}${cguvVersionPath(found.versionCode)}` } : { kind: 'unknown' };
     }

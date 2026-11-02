@@ -32,6 +32,8 @@
  *   legal-verify-integrity          le lundi à 6 h 40             lecture seule (+ journal)
  *   legal-cguv-manifest-sync        toutes les heures (102B)      import idempotent (code unique), versions
  *                                                                 jamais réécrites ; panne → dernier état connu
+ *   production-deletion-signals     toutes les heures (104A,      purge idempotente (sujet marqué, moteur
+ *                                   hors production)              existant), lecture seule côté production
  *   t3-legacy-transfer              au démarrage, puis /h tant    bail `t3-legacy-transfer`
  *                                   que des demandes subsistent
  *   mascot-pregeneration            toutes les minutes            FOR UPDATE SKIP LOCKED + bail par compte
@@ -399,6 +401,26 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
         return { error: `manifeste ${r.status === 'invalid' ? 'invalide' : 'indisponible'} : ${r.error ?? ''} — dernier état connu conservé (${r.lastKnown.current ?? 'aucune version'})` };
       }
       return { note: `version en vigueur ${r.current ?? '—'} ; ${r.imported.length} importée(s) ; ${r.anomalies.length} écart(s)` };
+    },
+  },
+  {
+    // Lot 104A (P1-F) : suppressions faites en production répercutées sur les
+    // copies de données réelles présentes ici (préproduction) + rattrapage
+    // (échecs, comptes réapparus après restauration, copies sans inventaire).
+    // Sans objet en production ou sans NEXT_PUBLIC_APP_ENV.
+    code: 'production-deletion-signals',
+    label: 'Copies de données réelles : suppressions de production répercutées',
+    schedule: { kind: 'interval', everyMs: HOUR },
+    timeoutMs: 20 * MIN,
+    run: async (ctx) => {
+      const { syncProductionDeletionSignals } = await import('@/services/admin/production-copies/deletion-propagation.service');
+      const r = await syncProductionDeletionSignals({ trigger: ctx.trigger });
+      const note = `${r.status}${r.reason ? ` (${r.reason})` : ''} — ${r.entries} suppression(s) lue(s), ${r.matched} correspondance(s), ${r.purged} purge(s), ${r.repurged} reprise(s), ${r.failed} échec(s)`;
+      if (r.status === 'skipped') return { note };
+      // Non configurée sans copie présente : rien à protéger (les imports restent refusés).
+      if (r.status === 'not_configured' && r.issues.length === 0) return { note };
+      if (r.issues.length > 0) return { note, error: r.issues.map((i) => i.code).join(', ') };
+      return { note };
     },
   },
   {

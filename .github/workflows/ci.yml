@@ -471,6 +471,8 @@ jobs:
         run: npm run test:e2e:filtres-documents -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-filtres-documents.xml
       - name: Compte technique de qualification IA, reprise automatique (lot 103G)
         run: npm run test:e2e:compte-technique -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-compte-technique.xml
+      - name: Légal — vérification des CGUV publiées, réacceptation sûre, propagation des suppressions (lot 104A)
+        run: npm run test:e2e:legal-finition -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-legal-finition.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

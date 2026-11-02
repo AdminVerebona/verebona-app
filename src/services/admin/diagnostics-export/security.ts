@@ -111,6 +111,12 @@ const DIAG_TABLE_OMITTED_COLUMNS: Readonly<Record<string, Readonly<Record<string
   promo_codes: { code: { kind: 'SECURITE', motif: 'code promotionnel utilisable' } },
   signup_contexts: { raw_code: { kind: 'SECURITE', motif: 'code saisi à l’inscription (promotion ou parrainage utilisable)' } },
   referral_links: { code: { kind: 'SECURITE', motif: 'code de parrainage utilisable' } },
+  // Lot 104A : empreintes HMAC d'identifiants et d'adresses (propagation des suppressions) — corrélation interdite.
+  production_copy_subjects: {
+    id_fingerprints: { kind: 'SECURITE', motif: 'empreintes HMAC des identifiants source (propagation des suppressions)' },
+    contact_fingerprints: { kind: 'SECURITE', motif: 'empreintes HMAC des adresses (propagation des suppressions)' },
+  },
+  account_deletion_registry: { signal_contacts: { kind: 'SECURITE', motif: 'empreintes HMAC des adresses supprimées (propagation des suppressions)' } },
   // Lot 97 : jeton push mobile (chiffré) — capacité d'envoyer sur le téléphone de l'utilisateur.
   mobile_push_installations: { push_token_enc: { kind: 'SECURITE', motif: 'jeton push mobile (chiffré)' } },
 };

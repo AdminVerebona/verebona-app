@@ -6,8 +6,10 @@
  *   POST : { action: 'sync' } — « Relire le manifeste » (même fonction que la
  *          tâche planifiée `legal-cguv-manifest-sync`) ;
  *          { action: 'manual', code, permalink, sha256, publishedAt,
- *            effectiveAt?, requiresReacceptance, changeSummary?, makeCurrent? }
- *          — saisie de secours (mêmes règles que le manifeste), jamais une
+ *            effectiveAt?, requiresReacceptance, changeSummary?, makeCurrent?,
+ *            textUrl? }
+ *          — saisie de secours (mêmes règles que le manifeste, dont la
+ *          vérification des octets du texte figé — lot 104A), jamais une
  *          modification : une version enregistrée est immuable.
  * Aucune édition de texte : le site public publie le texte officiel.
  * Chaque action est tracée dans le journal juridique (`legal_audit_log`).
@@ -54,14 +56,14 @@ export async function POST(request: NextRequest) {
     if (action === 'manual') {
       try {
         const version = await svc.recordManualCguvVersion({
-          code: body?.code, permalink: body?.permalink, sha256: body?.sha256, publishedAt: body?.publishedAt,
+          code: body?.code, permalink: body?.permalink, textUrl: body?.textUrl, sha256: body?.sha256, publishedAt: body?.publishedAt,
           effectiveAt: body?.effectiveAt, requiresReacceptance: body?.requiresReacceptance,
           changeSummary: body?.changeSummary, makeCurrent: body?.makeCurrent,
         }, g.adminId);
         return NextResponse.json({ action, version }, { headers: NO_STORE });
       } catch (e) {
         if (e instanceof svc.ReferentialInputError) {
-          return NextResponse.json({ code: e.code, message: e.message }, { status: e.code === 'VERSION_CODE_TAKEN' ? 409 : 400, headers: NO_STORE });
+          return NextResponse.json({ code: e.code, message: e.message }, { status: e.code === 'VERSION_CODE_TAKEN' ? 409 : e.code === 'TEXT_NOT_VERIFIED' ? 422 : 400, headers: NO_STORE });
         }
         throw e;
       }

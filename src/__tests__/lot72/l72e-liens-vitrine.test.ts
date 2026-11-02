@@ -39,8 +39,15 @@ const { LEGAL_PUBLIC_PATHS, LEGAL_LEGACY_PATHS } = await import('@/lib/legal/pub
  * l'inventaire dès qu'il les contient.
  */
 const LEGAL_CONTRACT_PATHS = new Set(Object.values(LEGAL_PUBLIC_PATHS));
-const legalPathVerdict = (path: string) =>
-  LEGAL_CONTRACT_PATHS.has(path) && checkPublicHref(path).status === 'missing-page' ? { status: 'ok' } : checkPublicHref(path);
+// Lot 104 : la vitrine a livré la rubrique « Légal » ; les adresses ACTUELLES du repli
+// (/cgu, /mentions-legales, /confidentialite) y sont redirigées en 301 vers /legal/… :
+// une redirection vers un chemin du contrat est une destination valide (aucun 404).
+const legalPathVerdict = (path: string) => {
+  const v = checkPublicHref(path) as { status: string; target?: string };
+  if (LEGAL_CONTRACT_PATHS.has(path) && v.status === 'missing-page') return { status: 'ok' };
+  if (v.status === 'redirect' && v.target && LEGAL_CONTRACT_PATHS.has(v.target)) return { status: 'ok' };
+  return v;
+};
 
 const ROOT = process.cwd();
 const lire = (f: string) => readFileSync(join(ROOT, f), 'utf8');
@@ -168,7 +175,8 @@ describe('L72E-LV-02 — audit transversal app → vitrine (headers, footers, au
     expect(checkPublicHref('/comment-ca-marche')).toEqual({ status: 'redirect', target: '/#how' });
     expect(checkPublicHref('/pourquoi-verebona')).toEqual({ status: 'retired' });
     expect(checkPublicHref('/#comment-ca-marche')).toEqual({ status: 'missing-anchor', anchor: 'comment-ca-marche' });
-    expect(checkPublicHref('/legal')).toEqual({ status: 'missing-page' });
+    expect(checkPublicHref('/legal')).toEqual({ status: 'redirect', target: '/legal/mentions-legales' });
+    expect(checkPublicHref('/legal/inexistant')).toEqual({ status: 'missing-page' });
     expect(checkPublicHref('/aide/article-qui-n-existe-pas')).toEqual({ status: 'missing-page' });
     expect(checkPublicHref(inv.pages.help[0])).toEqual({ status: 'ok' });
   });
@@ -234,7 +242,7 @@ describe('L72E-LV-05 — lot 102B : rubrique « Légal » du site public (contra
   });
 
   it('L72E-LV-05d — repli : chaque adresse ACTUELLE existe sur la vitrine (inventaire) — aucun 404 avant la livraison du site', () => {
-    for (const p of Object.values(LEGAL_LEGACY_PATHS)) expect({ p, v: checkPublicHref(p) }).toEqual({ p, v: { status: 'ok' } });
+    for (const p of Object.values(LEGAL_LEGACY_PATHS)) expect({ p, v: legalPathVerdict(p) }).toEqual({ p, v: { status: 'ok' } });
     expect(liens.filter((l) => l.via === 'legal-repli').length).toBeGreaterThan(8);
   });
 });

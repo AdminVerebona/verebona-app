@@ -1,5 +1,5 @@
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
-import { CGUV_REACCEPTANCE_EVENT, CGUV_REACCEPTANCE_REQUIRED_CODE } from '@/lib/legal/reacceptance-gate';
+import { CGUV_CHECK_UNAVAILABLE_CODE, CGUV_CHECK_UNAVAILABLE_EVENT, CGUV_REACCEPTANCE_EVENT, CGUV_REACCEPTANCE_REQUIRED_CODE } from '@/lib/legal/reacceptance-gate';
 import { clearPrivateSessionStorage } from '@/lib/session/private-session-storage';
 import { clearLegacyAuthStorage } from '@/lib/auth-migration';
 import { clientPlatformHeaders } from '@/lib/client-platform';
@@ -724,6 +724,10 @@ export const apiClient = {
           // Lot 97 (CDC 12 VER-03) : version d'application trop ancienne —
           // l'écran bloquant « Mise à jour requise » s'affiche.
           if (errorData.code === 'APP_UPDATE_REQUIRED') notifyAppUpdateRequired(errorData.details);
+          // Lot 104A : contrôle des CGUV impossible → bandeau « modifications suspendues » (coquille).
+          if (errorData.code === CGUV_CHECK_UNAVAILABLE_CODE && typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent(CGUV_CHECK_UNAVAILABLE_EVENT));
+          }
           throw new ApiClientError(
             response.status,
             errorData.code ?? errorData.error ?? 'UNKNOWN_ERROR',

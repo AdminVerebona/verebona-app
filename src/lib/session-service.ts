@@ -121,7 +121,8 @@ export class SessionService {
     // métier refusées (403 CGUV_REACCEPTANCE_REQUIRED) jusqu'à l'acceptation
     // explicite. Lectures, acceptation, déconnexion, export RGPD, résiliation,
     // rétractation et BO restent ouverts (`lib/legal/reacceptance-gate`).
-    // Base injoignable : jamais de blocage (contrôle non bloquant).
+    // Lot 104A : contrôle impossible (base injoignable…) → `isReacceptanceRequired`
+    // LÈVE CGUV_CHECK_UNAVAILABLE (503) : écriture suspendue, jamais acceptée.
     if (isMutatingMethod(request.method)
       && !isApiAllowedDuringReacceptance(request.nextUrl?.pathname ?? '', request.method ?? 'GET')) {
       const { isReacceptanceRequired } = await import('@/services/legal/cguv-reacceptance.service');

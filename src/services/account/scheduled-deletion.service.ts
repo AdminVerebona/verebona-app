@@ -569,6 +569,24 @@ export interface ExecutionResult {
   retryAt?: Date;
 }
 
+/**
+ * Lot 104A — empreintes HMAC des adresses des utilisateurs supprimés (aucune
+ * adresse conservée). Clé absente : liste vide. Ne fait jamais échouer la
+ * suppression (les empreintes d'identifiants restent calculables à l'export).
+ */
+async function deletedContactFingerprints(tx: Tx, userIds: number[]): Promise<string[]> {
+  if (userIds.length === 0) return [];
+  try {
+    const { signalKey, emailFingerprint } = await import('@/services/admin/production-copies/deletion-signals');
+    const key = signalKey();
+    if (!key) return [];
+    const rows = await tx.select({ email: users.email }).from(users).where(inArray(users.id, userIds));
+    return [...new Set(rows.map((r) => emailFingerprint(key, r.email)).filter((x): x is string => !!x))];
+  } catch {
+    return [];
+  }
+}
+
 /** Tables de preuves qui survivent (pseudonymisées) — exclues du contrôle d'orphelins. */
 const SURVIVING_TABLES = new Set([
   'legal_acceptances', 'withdrawal_requests', 'withdrawal_events', 'scheduled_account_deletions',
@@ -838,6 +856,12 @@ export async function executeScheduledDeletion(
         or(inArray(assetTransmissions.initiatorUserId, userIds), inArray(assetTransmissions.recipientUserId, userIds)),
       );
 
+      // Lot 104A (P1-F) : empreintes NON RÉVERSIBLES des adresses supprimées
+      // (HMAC, clé partagée avec la préproduction) — seule trace de l'adresse
+      // dans le registre, pour retrouver les copies en préproduction. Rien si
+      // la clé n'est pas configurée.
+      const signalContacts = await deletedContactFingerprints(tx, userIds);
+
       // 5. La cascade fait le reste : comptes, données métier, adhésions,
       //    compte Duo, sessions… Le schéma est la seule liste qui vaille.
       await tx.delete(users).where(inArray(users.id, userIds));
@@ -911,6 +935,7 @@ export async function executeScheduledDeletion(
         executedAt: now,
         source: options.replay ? 'replay' : 'execution',
         createdAt: now,
+        signalContacts,
       });
 
       return {

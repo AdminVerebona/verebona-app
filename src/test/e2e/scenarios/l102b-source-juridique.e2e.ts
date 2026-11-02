@@ -17,6 +17,7 @@
  *   L102B-E2E-10  décision « substantielle » figée par la base
  */
 import { afterAll, beforeAll, expect, it } from 'vitest';
+import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { NextRequest } from 'next/server';
@@ -27,7 +28,15 @@ import { uid } from '../factories';
 const PASSWORD = 'MotDePasseE2e1!';
 const ORIGIN = 'http://localhost:3000';
 const SITE = 'https://site-e2e.verebona.test';
-const sha = (c: string) => c.repeat(64).slice(0, 64);
+// Lot 104A : une version n'est importée qu'après vérification des octets de son
+// texte figé — chaque empreinte est donc celle d'un vrai texte, servi par le site simulé.
+const TEXTS = new Map<string, string>();
+const sha = (c: string) => {
+  const text = `<!doctype html><meta charset="utf-8"><p>CGUV e2e — texte figé ${c}</p>`;
+  const h = createHash('sha256').update(text, 'utf8').digest('hex');
+  TEXTS.set(h, text);
+  return h;
+};
 
 function req(path: string, init: { body?: unknown; cookie?: string; method?: string; headers?: Record<string, string> } = {}) {
   const headers: Record<string, string> = { 'content-type': 'application/json', origin: ORIGIN, ...(init.headers ?? {}) };
@@ -43,12 +52,21 @@ function manifestBody(current: string, versions: V[]) {
   return JSON.stringify({
     schema: 'verebona-legal-cguv-versions-v1', document: 'CGUV', generatedAt: new Date().toISOString(), current,
     versions: versions.map((v) => ({
-      code: v.code, permalink: `${SITE}/legal/cguv/versions/${v.code}`, sha256: v.sha256 ?? sha('a'),
+      code: v.code, permalink: `${SITE}/legal/cguv/versions/${v.code}`, textUrl: `${SITE}/legal/cguv/versions/${v.code}.html`, sha256: v.sha256 ?? sha('a'),
       publishedAt: v.publishedAt, requiresReacceptance: v.requiresReacceptance, changeSummary: v.changeSummary,
     })),
   });
 }
-const serve = (body: string, status = 200) => async () => new Response(body, { status, headers: { 'content-type': 'application/json' } });
+/** Site public simulé : le manifeste, et chaque texte figé (octets dont l'empreinte est annoncée). */
+const serve = (body: string, status = 200) => async (url: string) => {
+  if (url.endsWith('.html')) {
+    let versions: Array<{ textUrl?: string; sha256?: string }> = [];
+    try { versions = (JSON.parse(body) as { versions: typeof versions }).versions; } catch { /* manifeste illisible */ }
+    const text = TEXTS.get(versions.find((v) => v.textUrl === url)?.sha256 ?? '');
+    return text ? new Response(text, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } }) : new Response('', { status: 404 });
+  }
+  return new Response(body, { status, headers: { 'content-type': 'application/json' } });
+};
 
 scenario('L102B', 'Source juridique unique (site public) et preuves d’acceptation', ({ sql, make }) => {
   const saved = { site: process.env.NEXT_PUBLIC_PUBLIC_SITE_URL, app: process.env.APP_URL };

@@ -179,8 +179,11 @@ describe('L102B-04 — preuve : permalien et empreinte selon l’origine de la v
     const legacy = { versionCode: '2026-07-30-v1', permalink: '/cgvu/versions/2026-07-30-v1', sha256: 'c'.repeat(64), source: 'APP_LEGACY' as const };
     expect(versionProofInfo({ ...legacy, publicPermalink: null, publicSha256: null }, 'https://app.test/'))
       .toEqual({ permalinkUrl: 'https://app.test/cguv/versions/2026-07-30-v1', sha256: 'c'.repeat(64) });
+    expect(versionProofInfo({ ...legacy, publicPermalink: 'https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1', publicSha256: 'c'.repeat(64) }, 'https://app.test'))
+      .toEqual({ permalinkUrl: 'https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1', sha256: 'c'.repeat(64) });
+    // Lot 104A (P1-D) : empreinte publique ≠ empreinte historique → jamais le permalien public.
     expect(versionProofInfo({ ...legacy, publicPermalink: 'https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1', publicSha256: 'd'.repeat(64) }, 'https://app.test'))
-      .toEqual({ permalinkUrl: 'https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1', sha256: 'd'.repeat(64) });
+      .toEqual({ permalinkUrl: 'https://app.test/cguv/versions/2026-07-30-v1', sha256: 'c'.repeat(64) });
   });
 });
 
@@ -236,8 +239,9 @@ describe('L102B-05 — réacceptation : règles d’accès', () => {
     expect(src).toMatch(/status IN \('CURRENT', 'ARCHIVED'\)/);
     expect(src).toMatch(/COALESCE\(effective_at, published_at\) <= now\(\)/);
     expect(src).toMatch(/v\.published_at >= s\.published_at/);
-    expect(src).toMatch(/if \(!pending\) serverCacheSet/);
-    expect(src).toMatch(/aucun blocage/);
+    // Lot 104A : seul un « non requis » est mis en cache ; contrôle impossible ≠ non requis.
+    expect(src).toMatch(/decision\.status === 'not_required'\) \{[\s\S]{0,120}serverCacheSet/);
+    expect(src).toMatch(/throw new Error\(CGUV_CHECK_UNAVAILABLE_CODE\)/);
   });
 });
 
@@ -325,7 +329,7 @@ describe('L102B-07 — plus aucun texte juridique servi ni maintenu par l’appl
     // Seule exception : archive de preuve APP_LEGACY non republiée, marquée.
     const redirects = lire('src/services/legal/legal-redirects.ts');
     expect(redirects).toContain("'X-Legal-Source': 'archive-historique'");
-    expect(redirects).toMatch(/found\.source === 'APP_LEGACY' && !found\.publicPermalink/);
+    expect(redirects).toMatch(/found\.source === 'APP_LEGACY' && !hasVerifiedPublicLink\(found\)/);
   });
 
   it('L102B-07d — contrôle d’intégrité : archives APP_LEGACY seulement (le texte public est vérifié par empreinte au manifeste)', () => {
@@ -449,9 +453,12 @@ describe('L102B-10 — repli des liens légaux (site public pas encore livré)',
 
   it('L102B-10f — preuve « en attente du site public » pour une version connue seulement par son archive applicative', async () => {
     const { proofStatusFor } = await import('../cguv-referential.service');
-    expect(proofStatusFor({ source: 'APP_LEGACY', publicPermalink: null })).toBe('EN_ATTENTE_SITE_PUBLIC');
-    expect(proofStatusFor({ source: 'APP_LEGACY', publicPermalink: 'https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1' })).toBe('COMPLETE');
-    expect(proofStatusFor({ source: 'PUBLIC_SITE', publicPermalink: null })).toBe('COMPLETE');
+    const h = 'c'.repeat(64);
+    expect(proofStatusFor({ source: 'APP_LEGACY', sha256: h, publicPermalink: null, publicSha256: null })).toBe('EN_ATTENTE_SITE_PUBLIC');
+    expect(proofStatusFor({ source: 'APP_LEGACY', sha256: h, publicPermalink: 'https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1', publicSha256: h })).toBe('COMPLETE');
+    // Lot 104A (P1-D) : rattachement d'empreinte différente → l'archive d'origine reste la référence.
+    expect(proofStatusFor({ source: 'APP_LEGACY', sha256: h, publicPermalink: 'https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1', publicSha256: 'd'.repeat(64) })).toBe('EN_ATTENTE_SITE_PUBLIC');
+    expect(proofStatusFor({ source: 'PUBLIC_SITE', sha256: h, publicPermalink: null, publicSha256: null })).toBe('COMPLETE');
   });
 
   it('L102B-10g — aucune réacceptation tant que le manifeste n’a jamais été lu', () => {

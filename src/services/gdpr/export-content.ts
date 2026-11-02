@@ -45,6 +45,8 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'gdpr_exports', 'gdpr_export_parts',
   // Lot 102C : registre d'exploitation des copies de données réelles (sans utilisateur).
   'production_data_copies',
+  // Lot 104A : sujets des copies (empreintes) et état de la propagation — exploitation, sans contenu utile.
+  'production_copy_subjects', 'production_deletion_signal_state',
 ]);
 
 /**

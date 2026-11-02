@@ -349,6 +349,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   marketing_collection_proofs: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
   production_data_copies: C('technique', { global: true, filter: 'TRUE' }),
   environment_identity: C('technique', { global: true, filter: 'TRUE' }),
+  // Lot 104A (0970) : sujets des copies (cibles locales + empreintes HMAC, omises par security.ts)
+  // et dernier échange de la propagation des suppressions de production (globaux, sans compte).
+  production_copy_subjects: C('technique', { global: true, filter: 'TRUE' }),
+  production_deletion_signal_state: C('technique', { global: true, filter: 'TRUE' }),
   // Lot 102D (0921) : opposition à l'utilisation des données pour l'amélioration —
   // état courant et journal de preuve (canal, libellé affiché, empreinte).
   account_data_use_preferences: C('technique'),

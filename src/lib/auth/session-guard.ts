@@ -94,6 +94,8 @@ export async function verifySessionAccessToken(
   // Lot 102B : même garde que `SessionService` — version substantielle des
   // CGUV non acceptée → écriture métier refusée. LÈVE (jamais `null`, qui
   // vaudrait 401 et déconnecterait) : `sessionErrorToResponse` → 403.
+  // Lot 104A : contrôle impossible → CGUV_CHECK_UNAVAILABLE (503), levé par
+  // `isReacceptanceRequired` lui-même (jamais un faux « non requis »).
   const method = request.method ?? 'GET';
   if (isMutatingMethod(method) && !isApiAllowedDuringReacceptance(request.nextUrl?.pathname ?? '', method)) {
     const { isReacceptanceRequired } = await import('@/services/legal/cguv-reacceptance.service');

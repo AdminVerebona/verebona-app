@@ -15,6 +15,14 @@
  * déconnecter, exporter ses données (RGPD), supprimer son compte, résilier
  * son abonnement, exercer la rétractation, la sécurité du compte et le BO.
  * Version NON substantielle : aucune réacceptation, aucun blocage.
+ *
+ * LOT 104A (P1-E) — « NON REQUIS » ≠ « CONTRÔLE IMPOSSIBLE »
+ * Si le contrôle ne peut pas être fait (base injoignable, état incohérent :
+ * version substantielle due mais aucune version en vigueur à présenter), les
+ * écritures métier sont refusées TEMPORAIREMENT (503
+ * `CGUV_CHECK_UNAVAILABLE`, message explicite, Supervision) — jamais
+ * acceptées implicitement. Les accès indispensables ci-dessous restent
+ * ouverts dans les deux cas (même liste).
  * ══════════════════════════════════════════════════════════════════════════
  */
 
@@ -25,6 +33,16 @@ export const CGUV_REACCEPTANCE_REQUIRED_MESSAGE =
 
 /** Événement navigateur émis par le client API sur ce refus. */
 export const CGUV_REACCEPTANCE_EVENT = 'verebona:cguv-reacceptance-required';
+
+/** Lot 104A : contrôle de réacceptation impossible → écritures métier suspendues (503). */
+export const CGUV_CHECK_UNAVAILABLE_CODE = 'CGUV_CHECK_UNAVAILABLE';
+
+export const CGUV_CHECK_UNAVAILABLE_MESSAGE =
+  'Vérification des CGUV momentanément impossible : par sécurité, les modifications sont suspendues. '
+  + 'Vous pouvez consulter et exporter vos données, lire les CGUV ou vous déconnecter. Réessayez dans un instant.';
+
+/** Événement navigateur émis par le client API sur ce refus temporaire. */
+export const CGUV_CHECK_UNAVAILABLE_EVENT = 'verebona:cguv-check-unavailable';
 
 /** Préfixes d'API toujours ouverts (écritures comprises). */
 const ALWAYS_ALLOWED_PREFIXES: readonly string[] = [
@@ -62,9 +80,19 @@ export function isPageAllowedDuringReacceptance(pathname: string): boolean {
   return pathname === '/compte-en-suppression' || pathname.startsWith('/admin');
 }
 
+/**
+ * Issue du contrôle (lot 104A) : `not_required` (aucune version substantielle
+ * due, ou phase de transition), `required` (écran dédié, écritures refusées),
+ * `unavailable` (contrôle impossible : écritures suspendues, pas d'écran
+ * d'acceptation — il n'y a rien de fiable à présenter).
+ */
+export type ReacceptanceStatus = 'not_required' | 'required' | 'unavailable';
+
 /** État servi au client par `/api/users/me` et `/api/me/legal/cguv-applicable`. */
 export interface ReacceptanceState {
   required: boolean;
+  /** Lot 104A : absent chez un serveur antérieur (= déduit de `required`). */
+  status?: ReacceptanceStatus;
   /** Version à accepter (la version en vigueur). */
   versionCode: string | null;
   permalinkUrl: string | null;
@@ -75,5 +103,17 @@ export interface ReacceptanceState {
 }
 
 export const NO_REACCEPTANCE: ReacceptanceState = Object.freeze({
-  required: false, versionCode: null, permalinkUrl: null, changeSummary: null, effectiveAt: null, substantialVersionCode: null,
+  required: false, status: 'not_required', versionCode: null, permalinkUrl: null, changeSummary: null, effectiveAt: null, substantialVersionCode: null,
 }) as ReacceptanceState;
+
+/** Lot 104A : contrôle impossible — aucune écriture métier tant qu'il le reste. */
+export const REACCEPTANCE_UNAVAILABLE: ReacceptanceState = Object.freeze({
+  required: false, status: 'unavailable', versionCode: null, permalinkUrl: null, changeSummary: null, effectiveAt: null, substantialVersionCode: null,
+}) as ReacceptanceState;
+
+/** Statut effectif d'un état reçu (compatibilité : état sans `status`). */
+export function reacceptanceStatusOf(state: Pick<ReacceptanceState, 'required' | 'status'> | null | undefined): ReacceptanceStatus {
+  if (!state) return 'not_required';
+  if (state.status === 'unavailable' || state.status === 'required' || state.status === 'not_required') return state.status;
+  return state.required ? 'required' : 'not_required';
+}

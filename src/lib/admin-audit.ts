@@ -171,7 +171,9 @@ export type AdminActionType =
   // nominative d'importer un point de restauration d'un autre environnement,
   // clôture (purge constatée ou fausse détection) — motif, point, échéance.
   | 'PRODUCTION_COPY_AUTHORIZE'
-  | 'PRODUCTION_COPY_CLOSE';
+  | 'PRODUCTION_COPY_CLOSE'
+  // Lot 104A : « Vérifier la propagation » des suppressions de production (bilan chiffré, sans empreinte).
+  | 'PRODUCTION_COPY_DELETION_SYNC';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'

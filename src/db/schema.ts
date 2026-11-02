@@ -3290,6 +3290,8 @@ export const accountDeletionRegistry = pgTable('account_deletion_registry', {
   replayCount: integer('replay_count').notNull().default(0),
   lastReplayedAt: tstzOptional('last_replayed_at'),
   createdAt: tstz('created_at'),
+  /** Lot 104A (0970) : empreintes HMAC des adresses supprimées (propagation vers les copies). */
+  signalContacts: text('signal_contacts').array().notNull().default(sql`'{}'`),
 }, (table) => ({
   adrExecutedIdx: index('account_deletion_registry_executed_idx').on(table.executedAt),
 }));

@@ -139,6 +139,46 @@ async function replaySchedule(input: { scope: 'account' | 'user'; accountId: num
   return active.id;
 }
 
+export type ReplayOutcome =
+  | { status: 'replayed'; scheduleIds: number[] }
+  | { status: 'nothing' }
+  | { status: 'failed'; reason: string };
+
+/**
+ * Rejoue UNE entrée (identifiants LOCAUX) par le moteur de suppression
+ * existant (`executeScheduledDeletion`, origine système, échéance immédiate).
+ * Idempotent : rien de présent → `nothing`. Ne lève jamais.
+ * Réutilisé par la propagation des suppressions de production vers les
+ * copies en préproduction (lot 104A) : aucun second moteur de purge.
+ */
+export async function replayRegistryEntry(entry: RegistryEntry, now: Date = new Date()): Promise<ReplayOutcome> {
+  try {
+    const back = await present(entry);
+    if (back.userIds.length === 0 && back.accountIds.length === 0) return { status: 'nothing' };
+
+    const ids: number[] = [];
+    if (entry.scope === 'account' && back.accountIds.length > 0) {
+      const id = await replaySchedule({ scope: 'account', accountId: back.accountIds[0], userId: back.userIds[0] ?? null, reason: entry.reason, now });
+      if (id) ids.push(id);
+    } else {
+      // Portée utilisateur (ou compte déjà absent mais utilisateur revenu) :
+      // chaque utilisateur revenu est clôturé puis supprimé (portée user).
+      for (const userId of back.userIds) {
+        await db.update(users).set({ status: 'PENDING_DELETION', updatedAt: now }).where(eq(users.id, userId));
+        const id = await replaySchedule({ scope: 'user', accountId: back.accountIds[0] ?? entry.accountIds[0] ?? 0, userId, reason: entry.reason, now });
+        if (id) ids.push(id);
+      }
+    }
+    const outcomes = [];
+    for (const id of ids) outcomes.push(await executeScheduledDeletion(id, { now, replay: true }));
+    const failed = outcomes.find((o) => o.status === 'failed');
+    if (failed || ids.length === 0) return { status: 'failed', reason: failed?.reason ?? 'REPLAY_SCHEDULE_UNAVAILABLE' };
+    return { status: 'replayed', scheduleIds: ids };
+  } catch (e) {
+    return { status: 'failed', reason: (e as Error).message.slice(0, 300) };
+  }
+}
+
 /**
  * Rejoue les suppressions du registre (en base, complété par `entries` d'un
  * fichier le cas échéant). Ne lève jamais pour une entrée : chaque échec est
@@ -169,37 +209,13 @@ export async function replayDeletionRegistry(opts: { now?: Date; entries?: Regis
       scheduleId: r.scheduleId ?? null, reason: r.reason, scope: r.scope === 'user' ? 'user' : 'account',
       userIds: r.userIds ?? [], accountIds: r.accountIds ?? [], executedAt: r.executedAt.toISOString(),
     };
-    try {
-      const back = await present(entry);
-      if (back.userIds.length === 0 && back.accountIds.length === 0) { report.nothingToDo += 1; continue; }
-
-      const ids: number[] = [];
-      if (entry.scope === 'account' && back.accountIds.length > 0) {
-        const id = await replaySchedule({ scope: 'account', accountId: back.accountIds[0], userId: back.userIds[0] ?? null, reason: entry.reason, now });
-        if (id) ids.push(id);
-      } else {
-        // Portée utilisateur (ou compte déjà absent mais utilisateur revenu) :
-        // chaque utilisateur revenu est clôturé puis supprimé (portée user).
-        for (const userId of back.userIds) {
-          await db.update(users).set({ status: 'PENDING_DELETION', updatedAt: now }).where(eq(users.id, userId));
-          const id = await replaySchedule({ scope: 'user', accountId: back.accountIds[0] ?? entry.accountIds[0] ?? 0, userId, reason: entry.reason, now });
-          if (id) ids.push(id);
-        }
-      }
-      const outcomes = [];
-      for (const id of ids) outcomes.push(await executeScheduledDeletion(id, { now, replay: true }));
-      const failed = outcomes.find((o) => o.status === 'failed');
-      if (failed || ids.length === 0) {
-        report.failures.push({ scheduleId: entry.scheduleId, reason: failed?.reason ?? 'REPLAY_SCHEDULE_UNAVAILABLE' });
-        continue;
-      }
-      await db.update(accountDeletionRegistry)
-        .set({ replayCount: (r.replayCount ?? 0) + 1, lastReplayedAt: now })
-        .where(eq(accountDeletionRegistry.id, r.id));
-      report.replayed += 1;
-    } catch (e) {
-      report.failures.push({ scheduleId: entry.scheduleId, reason: (e as Error).message.slice(0, 300) });
-    }
+    const outcome = await replayRegistryEntry(entry, now);
+    if (outcome.status === 'nothing') { report.nothingToDo += 1; continue; }
+    if (outcome.status === 'failed') { report.failures.push({ scheduleId: entry.scheduleId, reason: outcome.reason }); continue; }
+    await db.update(accountDeletionRegistry)
+      .set({ replayCount: (r.replayCount ?? 0) + 1, lastReplayedAt: now })
+      .where(eq(accountDeletionRegistry.id, r.id));
+    report.replayed += 1;
   }
   if (report.replayed > 0 || report.failures.length > 0) {
     console.info(`[deletion-registry] rejeu : ${report.replayed} suppression(s) rejouée(s), ${report.failures.length} échec(s), ${report.examined} entrée(s).`);
