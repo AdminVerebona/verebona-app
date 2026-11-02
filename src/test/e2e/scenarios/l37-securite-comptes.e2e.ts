@@ -100,9 +100,18 @@ scenario('L37', 'Sécurité des comptes — C1 à C5', ({ sql, make }) => {
     serverCacheClear();
     await expect(SessionService.getSession(new NextRequest(`${ORIGIN}/api/users/me`, { headers: { cookie: `access_token=${accesNeuf}` } })))
       .rejects.toThrow('INVALID_TOKEN');
-    const [journal] = await sql<{ details: string }[]>`
-      SELECT details FROM user_activity_log WHERE user_id = ${u.id} AND activity_type = 'AUTH_TOKEN_REUSE_DETECTED' ORDER BY id DESC LIMIT 1`;
-    expect(JSON.parse(journal.details)).toMatchObject({ severity: 'security_incident', sessionsRevoked: true });
+    // Le journal d'activité est écrit SANS attente par la route (`void logUserActivity`) :
+    // en CI, la ligne peut arriver quelques millisecondes après la réponse — on l'attend
+    // (5 s au plus) au lieu de la lire une seule fois (échec intermittent du 02/11/2026).
+    let journal: { details: string } | undefined;
+    for (let essai = 0; essai < 50 && !journal; essai += 1) {
+      [journal] = await sql<{ details: string }[]>`
+        SELECT details FROM user_activity_log WHERE user_id = ${u.id} AND activity_type = 'AUTH_TOKEN_REUSE_DETECTED'
+           AND details LIKE '%security_incident%' ORDER BY id DESC LIMIT 1`;
+      if (!journal) await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(journal, 'journal AUTH_TOKEN_REUSE_DETECTED (incident) attendu').toBeDefined();
+    expect(JSON.parse(journal!.details)).toMatchObject({ severity: 'security_incident', sessionsRevoked: true });
     // Une nouvelle connexion reste possible.
     await connexion(u.email);
   });
