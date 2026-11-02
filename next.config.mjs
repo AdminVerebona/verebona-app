@@ -109,6 +109,21 @@ const nextConfig = {
   experimental: {
     // Réduit le pic mémoire de la compilation webpack (Next 15).
     webpackMemoryOptimizations: true,
+    // Lot 104 (build Scalingo en manque de mémoire, 02/11/2026) : un seul
+    // processus de collecte des pages au lieu d'un par cœur.
+    cpus: 1,
+    // Le code serveur n'est jamais envoyé au navigateur : sa minification
+    // ne sert à rien et coûte une grosse part de la mémoire du build.
+    serverMinification: false,
+  },
+  // Lot 104 : pas de cache webpack persistant en production (Scalingo repart
+  // d'un dossier .next vide) et une seule tâche webpack à la fois.
+  webpack: (config, { dev }) => {
+    if (!dev) {
+      config.cache = false;
+      config.parallelism = 1;
+    }
+    return config;
   },
   compress: true,
   images: {

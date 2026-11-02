@@ -32,3 +32,8 @@ coverage
 
 # VS Code Local History
 .history/
+
+google-services.json
+GoogleService-Info.plist
+*.jks
+*.p8

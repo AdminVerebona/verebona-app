@@ -82,7 +82,16 @@ export async function listSuppliersOfItems(accountId: number, itemIds: readonly 
     const k = num(l.item_id);
     out.set(k, [...(out.get(k) ?? []), { id: num(l.id), name: String(l.name), status: String(l.status), provenance: l.provenance }]);
   }
+  // Ordre alphabétique FRANÇAIS calculé ici, jamais par la collation de la base :
+  // « Électricité » avant « Vauban » partout (base en locale C ici, en_US en CI / Scalingo).
+  for (const [k, v] of out) out.set(k, v.sort(compareSupplierNames));
   return out;
+}
+
+const SUPPLIER_NAME_COLLATOR = new Intl.Collator('fr', { sensitivity: 'base', numeric: true });
+/** Tri d'affichage des fournisseurs d'un élément : nom (français, sans casse ni accents), puis identifiant. */
+export function compareSupplierNames(a: { name: string; id: number }, b: { name: string; id: number }): number {
+  return SUPPLIER_NAME_COLLATOR.compare(a.name, b.name) || a.id - b.id;
 }
 
 /** Fournisseurs d'un élément, ou `null` si l'élément n'est pas du compte (anti-énumération). */

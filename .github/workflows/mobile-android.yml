@@ -185,7 +185,7 @@ jobs:
           VEREBONA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
           VEREBONA_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
           VEREBONA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon bundlePreprodRelease
+        run: chmod +x gradlew && ./gradlew --no-daemon bundlePreprodRelease
       - name: Nettoyer les fichiers sensibles du poste de build
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.jks" mobile/android/app/google-services.json
@@ -256,7 +256,7 @@ jobs:
           VEREBONA_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_PASSWORD }}
           VEREBONA_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
           VEREBONA_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon bundleProdRelease
+        run: chmod +x gradlew && ./gradlew --no-daemon bundleProdRelease
       - name: Nettoyer les fichiers sensibles du poste de build
         if: always()
         run: rm -f "$RUNNER_TEMP/upload.jks" mobile/android/app/google-services.json

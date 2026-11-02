@@ -229,7 +229,8 @@ scenario('L103E-AGENDA-FOURNISSEURS', 'Agenda / Fournisseurs : relation bidirect
     const liste = (await getAgendaItems({ accountId: a.id, includeUndated: false })).filter((i) => i.id === futur);
     const noms = await listSuppliersOfItems(a.id, [futur]);
     const ics = computeICSContent(liste.map((i) => ({ ...i, supplierNames: (noms.get(i.id) ?? []).map((x) => x.name) })), 'Compte').replace(/\r\n /g, '');
-    expect(ics).toContain('Fournisseurs / intervenants : Vauban Dépannage\\, Électricité Vauban');
+    // Ordre alphabétique français, indépendant de la collation de la base (lot 104, CI en_US).
+    expect(ics).toContain('Fournisseurs / intervenants : Électricité Vauban\\, Vauban Dépannage');
     expect(ics).not.toMatch(/contact@vauban|0102030405|ATTENDEE/);
 
     // AC13 : renommage — affichage et recherche à jour (jointure, pas de copie).
