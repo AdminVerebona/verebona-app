@@ -11,15 +11,7 @@ import { db } from '@/db';
 import { legalDocumentVersions } from '@/db/schema';
 import { and, desc, eq, ne } from 'drizzle-orm';
 import { recordLegalAudit } from './legal-audit.service';
-import {
-  renderLegalVersionHtml,
-  LEGAL_DOCUMENT_LABEL,
-} from './legal-html.renderer';
-import {
-  buildLegalStorageKey,
-  mirrorToObjectStorage,
-  readFromObjectStorage,
-} from './legal-storage';
+import { readFromObjectStorage } from './legal-storage';
 
 export const DOCUMENT_TYPE_CGVU = 'CGVU';
 
@@ -40,7 +32,14 @@ interface LegalVersion {
   htmlStorageKey: string | null;
   permalink: string | null;
   sha256: string | null;
+  /** Lot 102B : APP_LEGACY | PUBLIC_SITE | BO_MANUAL. */
+  source: VersionSource;
+  publicPermalink: string | null;
+  publicSha256: string | null;
 }
+
+export type VersionSource = 'APP_LEGACY' | 'PUBLIC_SITE' | 'BO_MANUAL';
+export type { LegalVersion };
 
 /* ── Format de version (§7) ────────────────────────────────────────────── */
 
@@ -58,11 +57,6 @@ export function isValidVersionCode(code: string): boolean {
     date.getUTCMonth() === month - 1 &&
     date.getUTCDate() === day
   );
-}
-
-/** Construit le permalien d'une version (§3.2). */
-function buildPermalink(versionCode: string): string {
-  return `/cgvu/versions/${versionCode}`;
 }
 
 /** Empreinte du document publié (§16.2). */
@@ -88,6 +82,9 @@ function toVersion(row: typeof legalDocumentVersions.$inferSelect): LegalVersion
     htmlStorageKey: row.htmlStorageKey ?? null,
     permalink: row.permalink ?? null,
     sha256: row.sha256 ?? null,
+    source: (row.source ?? 'APP_LEGACY') as VersionSource,
+    publicPermalink: row.publicPermalink ?? null,
+    publicSha256: row.publicSha256 ?? null,
   };
 }
 
@@ -136,7 +133,7 @@ export async function getVersionByCode(
   return row ? toVersion(row) : null;
 }
 
-async function getVersionById(id: string): Promise<LegalVersion | null> {
+export async function getVersionById(id: string): Promise<LegalVersion | null> {
   const [row] = await db
     .select()
     .from(legalDocumentVersions)
@@ -157,19 +154,6 @@ export async function listVersions(
   return rows.map(toVersion);
 }
 
-/* ── Brouillons (§5, §6.1) ─────────────────────────────────────────────── */
-
-interface CreateDraftInput {
-  versionCode: string;
-  title?: string;
-  bodyHtml: string;
-  changeSummary: string;
-  effectiveAt: Date;
-  requiresReacceptance?: boolean;
-  actorUserId?: number | null;
-  documentType?: string;
-}
-
 export class LegalVersionError extends Error {
   constructor(readonly code: string, message: string) {
     super(message);
@@ -177,176 +161,15 @@ export class LegalVersionError extends Error {
   }
 }
 
-/**
- * Crée un brouillon.
+/* ── Plus de rédaction ni de publication de texte (lot 102B) ────────────────
  *
- * Le corps est conservé tel quel dans `html_content` tant que la version est
- * en brouillon : c'est seulement à la publication qu'il est enveloppé dans le
- * document autonome et figé.
- */
-export async function createDraft(input: CreateDraftInput): Promise<LegalVersion> {
-  const documentType = input.documentType ?? DOCUMENT_TYPE_CGVU;
-
-  if (!isValidVersionCode(input.versionCode)) {
-    throw new LegalVersionError(
-      'INVALID_VERSION_CODE',
-      `Code de version invalide : ${input.versionCode}. Format attendu AAAA-MM-JJ-vN.`,
-    );
-  }
-  if (!input.changeSummary?.trim()) {
-    // §14.1 : le résumé est obligatoire. Il est affiché à l'utilisateur lors
-    // d'une modification substantielle (§8.3) : le rendre facultatif reviendrait
-    // à le laisser vide le jour où il compte.
-    throw new LegalVersionError('MISSING_CHANGE_SUMMARY', 'Le résumé des modifications est obligatoire.');
-  }
-
-  const existing = await db
-    .select({ id: legalDocumentVersions.id })
-    .from(legalDocumentVersions)
-    .where(
-      and(
-        eq(legalDocumentVersions.documentType, documentType),
-        eq(legalDocumentVersions.versionCode, input.versionCode),
-      ),
-    )
-    .limit(1);
-
-  if (existing.length > 0) {
-    throw new LegalVersionError(
-      'VERSION_CODE_TAKEN',
-      `Le code ${input.versionCode} est déjà utilisé. Un code de version n'est jamais réutilisé (§5).`,
-    );
-  }
-
-  const now = new Date();
-  const [row] = await db
-    .insert(legalDocumentVersions)
-    .values({
-      documentType,
-      versionCode: input.versionCode,
-      title: input.title ?? LEGAL_DOCUMENT_LABEL,
-      status: 'DRAFT',
-      effectiveAt: input.effectiveAt,
-      changeSummary: input.changeSummary.trim(),
-      requiresReacceptance: input.requiresReacceptance ?? false,
-      htmlContent: input.bodyHtml,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning();
-
-  await recordLegalAudit({
-    action: 'DRAFT_CREATED',
-    actorUserId: input.actorUserId,
-    versionCode: row.versionCode,
-    versionId: row.id,
-  });
-
-  return toVersion(row);
-}
-
-/* ── Publication (§6.2) ────────────────────────────────────────────────── */
-
-export interface PublishOptions {
-  actorUserId?: number | null;
-  /** Désigne la version comme courante dans la foulée (§6.2, étape 9). */
-  setAsCurrent?: boolean;
-}
-
-/**
- * Publie un brouillon, en suivant les neuf étapes du §6.2.
- *
- * L'ordre est significatif : la copie sur stockage objet est tentée AVANT
- * l'écriture en base. Une clé déjà occupée fait donc échouer la publication
- * sans laisser de version à demi publiée — le §16.1 interdit l'écrasement, et
- * une clé occupée signale une réutilisation d'identifiant, c'est-à-dire
- * précisément ce que le §5 proscrit.
- */
-export async function publishVersion(
-  id: string,
-  options: PublishOptions = {},
-): Promise<LegalVersion> {
-  const draft = await getVersionById(id);
-  if (!draft) throw new LegalVersionError('NOT_FOUND', `Version ${id} introuvable.`);
-
-  if (draft.status !== 'DRAFT') {
-    throw new LegalVersionError(
-      'ALREADY_PUBLISHED',
-      `Version ${draft.versionCode} déjà publiée le ${draft.publishedAt?.toISOString()}.`,
-    );
-  }
-  if (!draft.effectiveAt) {
-    throw new LegalVersionError(
-      'MISSING_EFFECTIVE_DATE',
-      "La date d'entrée en vigueur est obligatoire avant publication (§14.1).",
-    );
-  }
-  if (!draft.htmlContent?.trim()) {
-    throw new LegalVersionError('EMPTY_CONTENT', 'Le contenu du brouillon est vide.');
-  }
-
-  // Étape 2 : rendu autonome. Étape 3 : le fichier figé.
-  const html = renderLegalVersionHtml({
-    versionCode: draft.versionCode,
-    title: draft.title,
-    bodyHtml: draft.htmlContent,
-    effectiveAt: draft.effectiveAt,
-    changeSummary: draft.changeSummary,
-  });
-
-  // Étape 4 : empreinte. Étapes 5 et 6 : clé et permalien.
-  const sha256 = computeSha256(html);
-  const storageKey = buildLegalStorageKey(draft.documentType, draft.versionCode);
-  const permalink = buildPermalink(draft.versionCode);
-
-  const mirror = await mirrorToObjectStorage(storageKey, html);
-  if (mirror.status === 'failed') {
-    await recordLegalAudit({
-      action: 'PUBLISHED',
-      actorUserId: options.actorUserId,
-      versionCode: draft.versionCode,
-      versionId: draft.id,
-      result: 'failure',
-      details: `copie sur stockage objet impossible : ${mirror.reason}`,
-    });
-    throw new LegalVersionError('STORAGE_FAILED', `Publication interrompue : ${mirror.reason}`);
-  }
-
-  const publishedAt = new Date();
-
-  // Étapes 7 et 8 : le passage hors de DRAFT arme le déclencheur d'immutabilité.
-  const [row] = await db
-    .update(legalDocumentVersions)
-    .set({
-      status: 'PUBLISHED',
-      htmlContent: html,
-      htmlStorageKey: storageKey,
-      permalink,
-      sha256,
-      publishedAt,
-      publishedBy: options.actorUserId ?? null,
-      updatedAt: publishedAt,
-    })
-    .where(eq(legalDocumentVersions.id, id))
-    .returning();
-
-  await recordLegalAudit({
-    action: 'PUBLISHED',
-    actorUserId: options.actorUserId,
-    versionCode: row.versionCode,
-    versionId: row.id,
-    details:
-      `sha256=${sha256}` +
-      (mirror.status === 'skipped' ? ' ; stockage objet non configuré' : ''),
-  });
-
-  // Étape 9.
-  if (options.setAsCurrent) {
-    return setCurrentVersion(row.id, options.actorUserId);
-  }
-
-  return toVersion(row);
-}
+ * Les brouillons HTML, leur rendu et leur publication par l'application
+ * (`createDraft`, `publishVersion`, amorçages de textes) sont RETIRÉS : le site
+ * public publie le texte officiel et ses archives immuables. L'application
+ * importe le référentiel des versions depuis le manifeste public
+ * (`cguv-referential.service.ts`). Les versions APP_LEGACY déjà publiées
+ * restent en base, figées, comme archives historiques.
+ * ──────────────────────────────────────────────────────────────────────── */
 
 /**
  * Désigne une version publiée comme version courante (§6.1).
@@ -420,7 +243,9 @@ interface IntegrityReport {
 export async function verifyIntegrity(
   documentType = DOCUMENT_TYPE_CGVU,
 ): Promise<IntegrityReport> {
-  const versions = (await listVersions(documentType)).filter((v) => v.status !== 'DRAFT');
+  // Lot 102B : seules les archives APP_LEGACY portent un texte en base ; le
+  // texte des versions publiques est sur le site (empreinte au manifeste).
+  const versions = (await listVersions(documentType)).filter((v) => v.status !== 'DRAFT' && v.source === 'APP_LEGACY');
   const issues: IntegrityIssue[] = [];
 
   for (const version of versions) {

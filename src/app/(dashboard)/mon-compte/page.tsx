@@ -9,6 +9,7 @@ import { WithdrawalCard } from '@/components/account/WithdrawalCard';
 import { SubscriptionSummary } from '@/components/subscription/SubscriptionSummary';
 import { MyDataCard } from './mes-donnees/MyDataCard';
 import { ReferralCard } from '@/components/account/ReferralCard';
+import { PrivacyCard } from '@/components/account/PrivacyCard';
 
 export default function MonComptePage() {
   const { setBreadcrumbs } = useBreadcrumb();
@@ -45,6 +46,8 @@ export default function MonComptePage() {
             <WithdrawalCard />
             {/* Export RGPD « Mes données » (CDC BO GDP-020). */}
             <MyDataCard />
+            {/* Lot 102D : opposition à l'utilisation des données pour l'amélioration. */}
+            <PrivacyCard />
             <LegalInformationCard />
           </>
         }

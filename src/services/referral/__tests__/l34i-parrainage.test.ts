@@ -47,6 +47,12 @@ describe('AC-7.1 — une invitation n’est comptée envoyée que si le service 
         senderName: 'Camille Durand',
         referralUrl: 'https://app.verebona.fr/r/ABCD2345',
         actionUrl: 'https://app.verebona.fr/r/ABCD2345',
+        // Lot 102D : conditions issues de la règle centrale. Lien de la
+        // configuration unique 102B : adresse actuelle du site (/cgu) tant
+        // qu'il n'a pas livré, /legal/parrainage ensuite.
+        referralTermsUrl: expect.stringMatching(/\/(legal\/parrainage|cgu)$/),
+        referralWindowDays: '90',
+        referralReward: 'un mois offert',
       },
     });
   });
@@ -183,7 +189,8 @@ describe('AC-8.2 — redirection de /r/<code>', () => {
     const res = await get('edtbb66q');
     expect(resolveReferralCode).toHaveBeenCalledWith('EDTBB66Q', null);
     expect(res.status).toBe(307);
-    expect(res.headers.get('location')).toBe('https://app.preprod.verebona.fr/signup?ref=EDTBB66Q');
+    // Lot 102D : `rt` = instant signé d'usage du lien (fenêtre de 90 jours).
+    expect(res.headers.get('location')).toMatch(/^https:\/\/app\.preprod\.verebona\.fr\/signup\?ref=EDTBB66Q&rt=\d{9,11}\.[A-Za-z0-9_-]{22}$/);
     expect(res.headers.get('set-cookie')).toBeNull();
     expect(res.headers.get('cache-control')).toBe('no-store');
   });
@@ -205,6 +212,6 @@ describe('AC-8.2 — redirection de /r/<code>', () => {
     resolveReferralCode.mockRejectedValue(new Error('ECONNREFUSED'));
     const res = await get('ABCD2345');
     expect(res.status).toBe(307);
-    expect(res.headers.get('location')).toBe('https://app.preprod.verebona.fr/signup?ref=ABCD2345');
+    expect(res.headers.get('location')).toMatch(/^https:\/\/app\.preprod\.verebona\.fr\/signup\?ref=ABCD2345&rt=/);
   });
 });

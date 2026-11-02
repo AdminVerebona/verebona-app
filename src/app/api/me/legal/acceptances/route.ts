@@ -1,14 +1,15 @@
 /**
- * GET /api/me/legal/acceptances — CDC 7 §11 et §15.
+ * GET /api/me/legal/acceptances — CDC 7 §11 et §15 ; lot 102B.
  *
- * Alimente la rubrique « Mon compte → Informations légales » : identifiant de
- * version, date d'acceptation, lien de consultation et de téléchargement.
+ * Alimente « Mon compte → Informations légales » : version, date, contexte,
+ * canal, permalien historique de la version acceptée (site public, ou archive
+ * figée d'une version antérieure) et empreinte du texte accepté. Une preuve
+ * antérieure au lot 102B est marquée « historique » (aucune empreinte inventée).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
 import { listUserAcceptances } from '@/services/legal/legal-acceptances.service';
-import { buildDownloadFilename } from '@/services/legal';
 
 export async function GET(req: NextRequest) {
   let session;
@@ -28,10 +29,12 @@ export async function GET(req: NextRequest) {
       title: a.title,
       acceptedAt: a.acceptedAt,
       context: a.context,
+      channel: a.channel,
       offerCode: a.offerCode,
-      permalink: a.permalink,
-      downloadUrl: `/api/legal/cgvu/versions/${a.versionCode}/download`,
-      downloadFilename: buildDownloadFilename(a.versionCode),
+      permalink: a.permalinkUrl,
+      permalinkUrl: a.permalinkUrl,
+      sha256: a.textSha256,
+      proofStatus: a.proofStatus,
     })),
   });
 }

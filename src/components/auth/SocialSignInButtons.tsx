@@ -75,6 +75,8 @@ export function SocialSignInButtons(props: {
   inviteToken?: string | null;
   transmissionToken?: string | null;
   referralCode?: string | null;
+  /** Lot 102D : instant signé d'usage du lien de parrainage (`rt`). */
+  referralTouch?: string | null;
   disabled?: boolean;
   className?: string;
 }) {
@@ -97,6 +99,7 @@ export function SocialSignInButtons(props: {
       inviteToken: props.inviteToken ?? undefined,
       transmissionToken: props.transmissionToken ?? undefined,
       ref: props.referralCode ?? undefined,
+      rt: props.referralCode ? props.referralTouch ?? undefined : undefined,
     };
     // Lot 95 (PO M1) : dans l'application iOS / Android, le parcours s'ouvre
     // dans le navigateur système (jamais dans la vue de l'app). Web : inchangé.

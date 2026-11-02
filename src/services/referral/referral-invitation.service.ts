@@ -27,6 +27,8 @@
  */
 
 /** Gabarit e-mail de l'invitation (migration 0301). */
+import { REFERRAL_RULES, referralTermsUrl } from './referral-rules';
+
 export const REFERRAL_INVITATION_TEMPLATE = 'REFERRAL_INVITATION';
 
 /** Nombre maximal de destinataires par envoi. */
@@ -126,6 +128,8 @@ export async function sendReferralInvitations(input: {
   send: SendFn;
 }): Promise<InvitationResult> {
   const result: InvitationResult = { sent: [], failed: [] };
+  // Lot 102D : conditions factuelles issues de la règle centrale (lien résolu une fois).
+  const ruleVariables = await referralInvitationRuleVariables();
   for (const email of input.recipients) {
     try {
       const r = await input.send({
@@ -135,6 +139,7 @@ export async function sendReferralInvitations(input: {
           senderName: input.senderName,
           referralUrl: input.referralUrl,
           actionUrl: input.referralUrl,
+          ...ruleVariables,
         },
       });
       if (r.success) result.sent.push(email);
@@ -144,6 +149,28 @@ export async function sendReferralInvitations(input: {
     }
   }
   return result;
+}
+
+/**
+ * Variables du gabarit REFERRAL_INVITATION issues de la règle centrale
+ * (lot 102D) : jamais de durée ni de récompense écrite dans le gabarit.
+ */
+export async function referralInvitationRuleVariables(): Promise<Record<string, string>> {
+  const n = REFERRAL_RULES.rewardMonths;
+  // Raccord 102B : lien résolu par le serveur (bascule sur /legal/parrainage dès
+  // que le manifeste du site a été lu) ; repli sur la configuration de build.
+  let termsUrl: string;
+  try {
+    const { serverLegalUrl } = await import('@/services/legal/cguv-referential.service');
+    termsUrl = await serverLegalUrl('parrainage');
+  } catch {
+    termsUrl = referralTermsUrl();
+  }
+  return {
+    referralTermsUrl: termsUrl,
+    referralWindowDays: String(REFERRAL_RULES.attributionWindowDays),
+    referralReward: n === 1 ? 'un mois offert' : `${n} mois offerts`,
+  };
 }
 
 /** Masque une adresse pour les journaux applicatifs (`j***@exemple.fr`). */
@@ -162,6 +189,8 @@ export function maskEmail(email: string): string {
  * Aucun cookie : le CDC §4.2 interdit toute conservation persistante du code ;
  * il ne circule que par l'URL et l'état mémoire du parcours (§4.3).
  */
-export function referralRedirectPath(code: string | null): string {
-  return code ? `/signup?ref=${encodeURIComponent(code)}` : '/signup';
+export function referralRedirectPath(code: string | null, touch?: string | null): string {
+  if (!code) return '/signup';
+  // Lot 102D : `rt` atteste l'instant d'usage du lien (fenêtre de 90 jours).
+  return `/signup?ref=${encodeURIComponent(code)}${touch ? `&rt=${encodeURIComponent(touch)}` : ''}`;
 }

@@ -5,6 +5,7 @@
  * public : les deux doivent montrer exactement la même chose, faute de quoi
  * l'instantané figé à la confirmation dépendrait du chemin emprunté.
  */
+import { LIFECYCLE_DURATIONS } from '@/lib/account-lifecycle/retention-policy';
 import { db } from '@/db';
 import { accountSubscriptions, invoices, users } from '@/db/schema';
 import { and, desc, eq } from 'drizzle-orm';
@@ -26,11 +27,13 @@ export interface WithdrawalSummary {
   amountExpected: number | null;
   amountLabel: string;
   /**
-   * Lot 32 (PO-Q2) : le compte et ses données sont supprimés IMMÉDIATEMENT à
-   * la confirmation (plus de délai d'export de 30 jours). Figé dans
-   * l'instantané de la déclaration : c'est ce qui a été annoncé.
+   * Lot 102A (décision PO du 31/10/2026, remplace la suppression immédiate
+   * du lot 32) : après la rétractation, le compte passe en lecture seule et
+   * ses données sont conservées `retentionDays` jours. Figé dans l'instantané
+   * de la déclaration : c'est ce qui a été annoncé.
    */
-  accountDeletion: 'immediate';
+  accountAfterWithdrawal: 'read_only_retention';
+  retentionDays: number;
   stripeSubscriptionId: string | null;
 }
 
@@ -137,7 +140,8 @@ export async function buildSummary(
     deadlineDeferralReason: contract?.deadlineDeferralReason ?? null,
     amountExpected,
     amountLabel: formatAmount(amountExpected),
-    accountDeletion: 'immediate',
+    accountAfterWithdrawal: 'read_only_retention',
+    retentionDays: LIFECYCLE_DURATIONS.restrictedRetentionDays,
     stripeSubscriptionId: contract?.stripeSubscriptionId ?? null,
   };
 }

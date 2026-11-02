@@ -33,6 +33,8 @@ interface Settings {
   commercialOffsets: { J3: number; J10: number; J30: number; J60: number };
   catchUpHours: Record<Code, number>; sendHours: { from: number; to: number };
   offers: { target: 'app_offers' | 'public_pricing'; pricingAnchor: string };
+  /** Lot 102C : information et choix à l'inscription. */
+  signupCollection?: { enabled: boolean; softOptInMechanism: 'opt_out_checkbox' | 'mention' };
 }
 interface Counts { sent: number; failed: number; skipped: number; waiting: number; blocked: number; conversions: number }
 interface MilestoneView {
@@ -127,7 +129,7 @@ export default function TrialLifecyclePage() {
     if (!draft || !summary) return;
     const before = summary.settings;
     const patch: Record<string, unknown> = {};
-    for (const k of ['serviceEnabled', 'commercialEnabled', 'legalBasis', 'commercialOffsets', 'catchUpHours', 'sendHours', 'offers'] as const) {
+    for (const k of ['serviceEnabled', 'commercialEnabled', 'legalBasis', 'commercialOffsets', 'catchUpHours', 'sendHours', 'offers', 'signupCollection'] as const) {
       if (JSON.stringify(draft[k]) !== JSON.stringify(before[k])) patch[k] = draft[k];
     }
     if (declare !== null) patch.softOptInDeclared = declare;
@@ -301,6 +303,38 @@ export default function TrialLifecyclePage() {
                     </label>
                   )}
                 </div>
+                {/* Lot 102C : information et choix recueillis à l'inscription (inscription locale et Google / Apple). */}
+                <fieldset className="space-y-2" data-testid="reglage-inscription">
+                  <legend className="text-sm font-medium">À l’inscription</legend>
+                  <label className="flex items-center justify-between gap-3 min-h-[40px]">
+                    <span className="text-sm">Informer et recueillir le choix sur ces relances
+                      <span className="block text-xs text-[color:var(--text-muted)]">
+                        {draft.legalBasis === 'consent'
+                          ? 'Case d’acceptation non cochée par défaut, sous le formulaire d’inscription.'
+                          : 'Information et opposition gratuite, sous le formulaire d’inscription.'}
+                        {' '}Le choix est conservé comme preuve. Désactivé : rien n’est affiché.
+                      </span>
+                    </span>
+                    <Switch
+                      checked={!!draft.signupCollection?.enabled}
+                      onCheckedChange={(v) => setDraft({ ...draft, signupCollection: { softOptInMechanism: draft.signupCollection?.softOptInMechanism ?? 'opt_out_checkbox', enabled: v } })}
+                      aria-label="Information à l’inscription"
+                    />
+                  </label>
+                  {draft.legalBasis === 'soft_opt_in' && (
+                    <label className="text-sm space-y-1 block">
+                      <span>Moyen d’opposition à l’inscription</span>
+                      <select
+                        className={input}
+                        value={draft.signupCollection?.softOptInMechanism ?? 'opt_out_checkbox'}
+                        onChange={(e) => setDraft({ ...draft, signupCollection: { enabled: !!draft.signupCollection?.enabled, softOptInMechanism: e.target.value as 'opt_out_checkbox' | 'mention' } })}
+                      >
+                        <option value="opt_out_checkbox">Case « Je ne souhaite pas recevoir ces e-mails »</option>
+                        <option value="mention">Mention seule (opposition par le lien de chaque e-mail ou Mon compte)</option>
+                      </select>
+                    </label>
+                  )}
+                </fieldset>
                 <fieldset className="space-y-2">
                   <legend className="text-sm font-medium">Jours des relances (après la fin de l’essai, J+60 au plus tard)</legend>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">

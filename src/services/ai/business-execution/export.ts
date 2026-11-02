@@ -41,6 +41,7 @@ import {
   type ExecutionsManifest, type ExportFile, type ExportPerimeter, type ExportResumeState,
 } from './export-model';
 import { BUSINESS_TREATMENTS, type BusinessExecution } from './types';
+import { improvementCaptureUsableSql } from '@/services/privacy/improvement-opt-out-rules';
 
 type Row = Record<string, unknown>;
 
@@ -79,6 +80,9 @@ const CONTENT_FIELDS = [
  * `sensitive`, sinon longueur + SHA-256 (calculés en base : le contenu n'est
  * jamais lu) ; contenu absent signalé avec son motif (jamais reconstitué, LOG-08).
  */
+/** Lot 102D : motif d'exclusion du contenu (opposition à l'amélioration). */
+const IMPROVEMENT_EXCLUSION = 'opposition du compte à l’utilisation de ses données pour l’amélioration (lot 102D)';
+
 export function exchangeOf(capture: Row | null, sensitive: boolean): Record<string, unknown> {
   if (!capture) return { $etat: 'absent', motif: 'aucune capture : appel antérieur à la capture (lot 82C) ou capture non écrite — non reconstitué' };
   const out: Row = {
@@ -86,8 +90,19 @@ export function exchangeOf(capture: Row | null, sensitive: boolean): Record<stri
     promptStatus: capture.prompt_status ?? null, responseStatus: capture.response_status ?? null,
     attemptDurationMs: capture.attempt_duration_ms ?? null, executionElapsedMs: capture.execution_elapsed_ms ?? null,
   };
+  // Lot 102D : compte opposé à l'utilisation de ses données pour
+  // l'amélioration (ou capture antérieure à la fin de son opposition) — un
+  // export sert l'analyse et l'amélioration : contenu jamais exporté, même
+  // pour un administrateur habilité (longueur et empreinte conservées). La
+  // consultation unitaire par le support (fiche d'exécution) reste possible.
+  const excluded = capture.improvement_excluded === true;
+  if (excluded) out.exclusion = IMPROVEMENT_EXCLUSION;
   for (const [key, col, statusCol] of CONTENT_FIELDS) {
     const len = capture[`${col}_len`];
+    if (excluded && len !== null && len !== undefined) {
+      out[key] = { $etat: 'exclu', motif: IMPROVEMENT_EXCLUSION, longueur: Number(len), sha256: String(capture[`${col}_sha`]) };
+      continue;
+    }
     const present = sensitive ? capture[col] !== null && capture[col] !== undefined : len !== null && len !== undefined;
     if (!present) {
       const st = statusCol ? capture[statusCol] : null;
@@ -106,6 +121,7 @@ export function exchangeOf(capture: Row | null, sensitive: boolean): Record<stri
 
 const metaOf = (col: string) => `length(${col}::text) AS ${col}_len, encode(sha256(convert_to(${col}::text, 'UTF8')), 'hex') AS ${col}_sha`;
 const CAPTURE_META = `usage_event_id, capture_status, capture_reason, prompt_status, response_status, attempt_duration_ms, execution_elapsed_ms,
+  NOT (${improvementCaptureUsableSql('ai_call_captures')}) AS improvement_excluded,
   ${CONTENT_FIELDS.map(([, col]) => metaOf(col)).join(', ')}`;
 const CAPTURE_CONTENT = `, prompt_text, variables, messages, attachments, request_params, provider_steps, response_raw, parsed_output`;
 

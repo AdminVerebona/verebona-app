@@ -68,8 +68,10 @@ export interface User {
   unpaidRecoveryEndsAt?: string;
   duoEntitlement?: boolean;
   isInRecovery?: boolean;
-  /** Avis de dépôt (CGVU) déjà affiché — servi par `/api/users/me`. */
+  /** Avis de dépôt déjà affiché — servi par `/api/users/me`. */
   hasSeenUploadNotice?: boolean;
+  /** Lot 102B : version substantielle des CGUV à accepter (écran dédié). */
+  legalReacceptance?: import('@/lib/legal/reacceptance-gate').ReacceptanceState;
 }
 
 export type SessionStatus = 'checking' | 'authenticated' | 'unauthenticated' | 'temporarily-unavailable';

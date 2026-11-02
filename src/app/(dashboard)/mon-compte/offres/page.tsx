@@ -16,9 +16,13 @@ import { fr } from 'date-fns/locale';
 import { getPlanTheme } from '@/lib/plan-theme';
 import { isTrialOver, isUnpaid, type UnpaidCyclePayload } from '@/lib/trial-status';
 import { UnpaidPaymentNotice } from '@/components/subscription/UnpaidPaymentNotice';
+import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
+import { useLegalLinks } from '@/hooks/useLegalLinks';
 import { PriceChangedDialog } from '@/components/billing/PriceChangedDialog';
+import { ImmediateStartDialog } from '@/components/billing/ImmediateStartDialog';
+import { IMMEDIATE_START_FIELD } from '@/lib/legal/immediate-start';
 import { useBillingCatalog } from '@/hooks/useBillingCatalog';
-import { formatEuroCents } from '@/lib/billing/plan-catalog';
+import { formatEuroCents, PLAN_LABELS } from '@/lib/billing/plan-catalog';
 import {
   billingMention,
   findOffer,
@@ -102,6 +106,7 @@ const offers = [
 ];
 
 export default function OffresPage() {
+  const legalLinks = useLegalLinks();
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user, refetch: relireSession } = useSession();
@@ -311,23 +316,16 @@ export default function OffresPage() {
     }
   };
 
-  // Code de parrainage — depuis URL (?ref=CODE) ou cookie
-  const [referralCode, setReferralCode] = useState<string | null>(null);
-  const [referralValid, setReferralValid] = useState<boolean | null>(null);
-
+  // Lot 102D (règle centrale `referral-rules.ts`) : l'attribution du
+  // parrainage est faite à l'INSCRIPTION. Cette page n'accepte plus de code
+  // (`?ref=`) : elle affiche seulement, pour un filleul, que son parrainage
+  // est enregistré et ce qui déclenchera la récompense de son parrain.
+  const [referredAttributed, setReferredAttributed] = useState(false);
   useEffect(() => {
-    // CDC §4.3 : le code provient uniquement du parcours en cours (URL).
-    // Aucune lecture de cookie ni de stockage local.
-    const code = searchParams?.get('ref');
-    if (code) {
-      setReferralCode(code.toUpperCase());
-      // Valider le code
-      fetch(`/api/referral/validate/${code.toUpperCase()}`, { credentials: 'include' })
-        .then((r) => r.json())
-        .then((data) => setReferralValid(data.valid === true))
-        .catch(() => setReferralValid(false));
-    }
-  }, [searchParams]);
+    apiClient.get<{ referred?: { attributed: boolean } }>('/api/referral/me')
+      .then((d) => setReferredAttributed(Boolean(d?.referred?.attributed)))
+      .catch(() => setReferredAttributed(false));
+  }, []);
 
   const [downgradeDialog, setDowngradeDialog] = useState<{
     open: boolean;
@@ -369,15 +367,21 @@ export default function OffresPage() {
     ? format(new Date(Number(billingInfo.premium_until) * 1000), 'PPP', { locale: fr })
     : null;
 
-  const handleUpgrade = async (planId: string, revision: string | null = revisionFor(planId, billingPeriod)) => {
+  // Lot 102B : la demande expresse de démarrage immédiat est recueillie dans
+  // une fenêtre (case non pré-cochée) avant toute session de paiement.
+  const [immediateStartFor, setImmediateStartFor] = useState<{ planId: string; revision: string | null } | null>(null);
+  const handleUpgrade = (planId: string, revision: string | null = revisionFor(planId, billingPeriod)) => {
+    setImmediateStartFor({ planId, revision });
+  };
+  const startCheckout = async (planId: string, revision: string | null) => {
     setCheckoutLoading(planId);
     try {
       const data = await apiClient.post<any>('/api/billing/create-checkout-session', {
         plan: planId.toLowerCase(),
         billing_period: billingPeriod,
         displayed_price_revision: revision,
+        [IMMEDIATE_START_FIELD]: true,
         entry_point: 'app_offer_comparison',
-        ...(referralValid && referralCode ? { referralCode } : {}),
       });
       if (data.checkout_url) {
         window.location.href = data.checkout_url;
@@ -385,10 +389,11 @@ export default function OffresPage() {
         toast.error(data.message || 'Impossible de démarrer le paiement.');
       }
     } catch (error: any) {
-      if (demanderConfirmation(priceConfirmationFromError(error), (rev) => handleUpgrade(planId, rev))) return;
+      if (demanderConfirmation(priceConfirmationFromError(error), (rev) => startCheckout(planId, rev))) return;
       toast.error(error.message || 'Une erreur est survenue.');
     } finally {
       setCheckoutLoading(null);
+      setImmediateStartFor(null);
     }
   };
 
@@ -519,25 +524,18 @@ export default function OffresPage() {
           </div>
         )}
 
-        {/* Bandeau parrainage filleul */}
-        {referralValid && referralCode && (
-          <div className="flex items-start gap-3 bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg px-4 py-3">
+        {/* Bandeau parrainage filleul — lot 102D : attribution lue côté
+            serveur, libellé de la règle centrale. */}
+        {referredAttributed && (
+          <div className="flex items-start gap-3 bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg px-4 py-3" data-testid="referred-banner">
             <Gift className="w-5 h-5 text-[color:var(--accent)] flex-shrink-0 mt-0.5" />
             <div>
-              <p className="text-sm font-semibold text-[color:var(--text-info-soft)]">Offre parrainage active — code <span className="font-mono">{referralCode}</span></p>
-              {/* ⚠️ Promettait « 3 mois d'essai offerts » AU FILLEUL. L'avantage
-                  revient au parrain seul — règle appliquée dans le cron, sur
-                  l'écran d'inscription, dans l'email d'invitation et sur la
-                  vitrine. Cet écran avait été oublié. */}
-              <p className="text-xs text-[color:var(--text-info)] mt-0.5">En souscrivant une offre annuelle, <strong>votre parrain bénéficiera d'un mois offert</strong>.</p>
+              <p className="text-sm font-semibold text-[color:var(--text-info-soft)]">Parrainage enregistré</p>
+              <p className="text-xs text-[color:var(--text-info)] mt-0.5">
+                {REFERRAL_TEXT.referredNotice}{' '}
+                <a href={legalLinks.parrainage} target="_blank" rel="noopener noreferrer" className="underline">{REFERRAL_TEXT.termsLinkLabel}</a>
+              </p>
             </div>
-          </div>
-        )}
-
-        {referralCode && referralValid === false && (
-          <div className="flex items-start gap-3 bg-[color:var(--attention-soft)] border border-[color:var(--attention-edge)] rounded-lg px-4 py-3">
-            <Gift className="w-5 h-5 text-[color:var(--attention-on-soft)] flex-shrink-0 mt-0.5" />
-            <p className="text-sm text-[color:var(--text-warning-soft)]">Le code de parrainage <span className="font-mono font-semibold">{referralCode}</span> n'est pas valide ou a expiré.</p>
           </div>
         )}
 
@@ -691,6 +689,13 @@ export default function OffresPage() {
           })}
         </div>
 
+        <ImmediateStartDialog
+          open={immediateStartFor !== null}
+          offerLabel={immediateStartFor ? ((PLAN_LABELS as Record<string, string>)[immediateStartFor.planId.toLowerCase()] ?? null) : null}
+          busy={checkoutLoading !== null}
+          onCancel={() => setImmediateStartFor(null)}
+          onConfirm={() => { if (immediateStartFor) void startCheckout(immediateStartFor.planId, immediateStartFor.revision); }}
+        />
         <PriceChangedDialog
           pending={priceConfirmation?.payload ?? null}
           busy={checkoutLoading !== null}

@@ -1,4 +1,5 @@
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
+import { CGUV_REACCEPTANCE_EVENT, CGUV_REACCEPTANCE_REQUIRED_CODE } from '@/lib/legal/reacceptance-gate';
 import { clearPrivateSessionStorage } from '@/lib/session/private-session-storage';
 import { clearLegacyAuthStorage } from '@/lib/auth-migration';
 import { clientPlatformHeaders } from '@/lib/client-platform';
@@ -674,6 +675,11 @@ export const apiClient = {
             // L'appelant reçoit toujours l'erreur, pour interrompre son traitement.
             const refus = method === 'GET' ? null : parseWriteBlocked(errorBody);
             if (refus) notifyWriteBlocked(refus);
+            // Lot 102B : version substantielle des CGUV à accepter → l'écran
+            // dédié s'affiche (la coquille relit la session).
+            if (errorBody?.code === CGUV_REACCEPTANCE_REQUIRED_CODE && typeof window !== 'undefined') {
+              window.dispatchEvent(new CustomEvent(CGUV_REACCEPTANCE_EVENT));
+            }
             report('http_error');
             throw new ApiClientError(
               response.status,

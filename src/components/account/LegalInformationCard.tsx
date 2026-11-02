@@ -1,10 +1,11 @@
 'use client';
 
 /**
- * Mon compte → Informations légales — CDC 7 §11.
+ * Mon compte → Informations légales — CDC 7 §11 ; lot 102B.
  *
- * Quatre liens attendus par la spécification : CGVU en vigueur, CGVU acceptées
- * par l'utilisateur, mentions légales, politique de confidentialité.
+ * Liens : CGUV en vigueur, CGUV acceptées par l'utilisateur (permalien
+ * historique de la version acceptée), et les contenus de la rubrique « Légal »
+ * du SITE PUBLIC (source juridique unique, `lib/legal/public-legal`).
  *
  * Pour la version acceptée, le §11 impose d'afficher l'identifiant de version,
  * la date d'acceptation, un bouton « Consulter » et un bouton « Télécharger en
@@ -16,7 +17,8 @@ import { useEffect, useState } from 'react';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
 import { Scale, ExternalLink, Loader2 } from 'lucide-react';
-import { publicSiteUrl } from '@/lib/external-urls';
+import { CGUV_SHORT_LABEL, legalLinksList } from '@/lib/legal/public-legal';
+import { useLegalLinks } from '@/hooks/useLegalLinks';
 
 interface AcceptanceItem {
   acceptanceId: string;
@@ -24,22 +26,32 @@ interface AcceptanceItem {
   title: string;
   acceptedAt: string;
   context: string;
-  permalink: string | null;
-  downloadUrl: string;
+  channel?: string;
+  /** Permalien historique de la version acceptée (site public ou archive figée). */
+  permalinkUrl: string | null;
+  sha256: string | null;
+  proofStatus?: 'COMPLETE' | 'HISTORIQUE' | 'EN_ATTENTE_SITE_PUBLIC';
 }
 
 interface CurrentVersion {
   versionCode: string;
-  permalink: string;
+  permalinkUrl: string;
+  publicUrl: string;
   effectiveAt: string | null;
 }
 
-/** Libellés des contextes du §9, pour ne pas afficher les codes bruts. */
+/** Libellés des contextes, pour ne pas afficher les codes bruts. */
 const CONTEXT_LABELS: Record<string, string> = {
   ACCOUNT_CREATION: 'à la création du compte',
+  SOCIAL_SIGNUP: 'à la création du compte (Google / Apple)',
   TRIAL_START: 'au démarrage de l’essai',
   PAID_SUBSCRIPTION: 'lors de la souscription',
   VERSION_UPDATE: 'suite à une nouvelle version',
+  IMMEDIATE_START_REQUEST: 'avec la demande de démarrage immédiat',
+};
+
+const CHANNEL_LABELS: Record<string, string> = {
+  WEB: 'sur le web', IOS: 'sur l’application iPhone', ANDROID: 'sur l’application Android', MOBILE: 'sur l’application',
 };
 
 function formatDate(value: string): string {
@@ -51,6 +63,7 @@ function formatDate(value: string): string {
 }
 
 export function LegalInformationCard() {
+  const legal = useLegalLinks();
   const [acceptances, setAcceptances] = useState<AcceptanceItem[]>([]);
   const [current, setCurrent] = useState<CurrentVersion | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,7 +75,7 @@ export function LegalInformationCard() {
       fetch('/api/me/legal/acceptances', { credentials: 'include' })
         .then((r) => (r.ok ? r.json() : { acceptances: [] }))
         .catch(() => ({ acceptances: [] })),
-      fetch('/api/legal/cgvu/current', { credentials: 'include' })
+      fetch('/api/legal/cguv/current', { credentials: 'include' })
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null),
     ]).then(([mine, currentVersion]) => {
@@ -85,7 +98,7 @@ export function LegalInformationCard() {
     <CollapsibleCard
       icon={<Scale className="w-5 h-5" />}
       title="Informations légales"
-      description="Consultez les conditions que vous avez acceptées et celles en vigueur."
+      description="Consultez les CGUV que vous avez acceptées et celles en vigueur."
       contentClassName="space-y-6"
     >
         {loading ? (
@@ -97,7 +110,7 @@ export function LegalInformationCard() {
           <>
             {/* ── Version acceptée ─────────────────────────────────────── */}
             <section className="space-y-2">
-              <h3 className="vb-app-subsection">Conditions que vous avez acceptées</h3>
+              <h3 className="vb-app-subsection">{CGUV_SHORT_LABEL} que vous avez acceptées</h3>
 
               {latest ? (
                 <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-2">
@@ -107,12 +120,22 @@ export function LegalInformationCard() {
                       {' '}
                       — acceptée le {formatDate(latest.acceptedAt)}{' '}
                       {CONTEXT_LABELS[latest.context] ?? ''}
+                      {latest.channel && CHANNEL_LABELS[latest.channel] ? ` ${CHANNEL_LABELS[latest.channel]}` : ''}
                     </span>
+                    {latest.proofStatus === 'HISTORIQUE' && (
+                      <span className="block text-xs text-muted-foreground mt-1">Acceptation antérieure au nouveau registre (preuve historique).</span>
+                    )}
+                    {latest.proofStatus === 'EN_ATTENTE_SITE_PUBLIC' && (
+                      <span className="block text-xs text-muted-foreground mt-1">Version conservée par Verebona, en attente de sa publication sur le site public.</span>
+                    )}
+                    {latest.sha256 && (
+                      <span className="block text-xs text-muted-foreground mt-1 break-all">Empreinte du texte : <span className="font-mono">{latest.sha256}</span></span>
+                    )}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" asChild>
                       <a
-                        href={latest.permalink ?? '#'}
+                        href={latest.permalinkUrl ?? legal.cguv}
                         target="_blank"
                         rel="noopener noreferrer"
                       >
@@ -129,8 +152,8 @@ export function LegalInformationCard() {
                         qui reste figé sur cette version — mais l'utilisateur
                         n'a plus de copie locale.
 
-                        La route `downloadUrl` existe toujours côté serveur :
-                        rétablir le bouton est une affaire de six lignes.
+                        Lot 102B : le site public propose l'enregistrement et
+                        l'impression de chaque version (permalien).
                         ══════════════════════════════════════════════════ */}
                   </div>
                 </div>
@@ -152,7 +175,7 @@ export function LegalInformationCard() {
                     {acceptances.slice(1).map((a) => (
                       <li key={a.acceptanceId} className="text-muted-foreground">
                         <a
-                          href={a.permalink ?? '#'}
+                          href={a.permalinkUrl ?? legal.cguv}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="font-mono hover:underline"
@@ -170,7 +193,7 @@ export function LegalInformationCard() {
 
             {/* ── Version en vigueur ───────────────────────────────────── */}
             <section className="space-y-2">
-              <h3 className="vb-app-subsection">Conditions actuellement en vigueur</h3>
+              <h3 className="vb-app-subsection">{CGUV_SHORT_LABEL} actuellement en vigueur</h3>
               {current ? (
                 <p className="text-sm text-muted-foreground">
                   {/* Le numéro de version disparaît ici : il n'apprend rien à
@@ -178,12 +201,12 @@ export function LegalInformationCard() {
                       reste dans « Conditions que vous avez acceptées », où il
                       identifie ce qui a été signé. */}
                   <a
-                    href={current.permalink}
+                    href={current.publicUrl ?? legal.cguv}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-primary hover:underline"
                   >
-                    Lire les conditions générales
+                    Lire les CGUV
                   </a>
                   {latest && latest.versionCode !== current.versionCode && (
                     <span className="block mt-1">
@@ -197,27 +220,13 @@ export function LegalInformationCard() {
               )}
             </section>
 
-            {/* ── Autres documents (§11) ─────────────────────────────────
-                Ces deux liens étaient RELATIFS : ils ouvraient
-                `app.preprod.verebona.fr/mentions-legales`, qui n'existe pas —
-                d'où les 404. Les pages vivent sur la vitrine. */}
+            {/* ── Rubrique « Légal » du site public (lot 102B) ──────────── */}
             <section className="flex flex-wrap gap-3 text-sm">
-              <a
-                href={publicSiteUrl('/mentions-legales')}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                Mentions légales
-              </a>
-              <a
-                href={publicSiteUrl('/confidentialite')}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                Politique de confidentialité
-              </a>
+              {legalLinksList(legal).filter((l) => l.key !== 'cguv').map((l) => (
+                <a key={l.key} href={l.href} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                  {l.label}
+                </a>
+              ))}
             </section>
           </>
         )}

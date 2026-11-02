@@ -101,10 +101,20 @@ vi.mock('@/lib/stripe', () => ({
   StripeConfigError: class extends Error {},
 }));
 
+// ── Lot 102B : preuve de la demande expresse de démarrage immédiat ──────────
+const immediate = vi.hoisted(() => ({ calls: [] as unknown[], result: { ok: true, acceptanceId: 'a1', versionCode: '2026-10-30-v1', permalinkUrl: 'https://www.verebona.fr/legal/cguv/versions/2026-10-30-v1', textSha256: 'f'.repeat(64), acceptedAt: new Date() } as Record<string, unknown> }));
+vi.mock('@/services/legal/immediate-start.service', () => ({
+  recordImmediateStartRequest: async (input: unknown) => { immediate.calls.push(input); return immediate.result; },
+}));
+
 const { POST } = await import('../route');
 
+/** Corps envoyé tel quel ; la case de démarrage immédiat est cochée par défaut (lot 102B). */
 function req(body: unknown) {
-  return new NextRequest('https://app.test/api/billing/create-checkout-session', { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json' } });
+  const withConsent = body && typeof body === 'object' && !Array.isArray(body) && !('immediate_start_requested' in (body as object))
+    ? { ...(body as object), immediate_start_requested: true }
+    : body;
+  return new NextRequest('https://app.test/api/billing/create-checkout-session', { method: 'POST', body: JSON.stringify(withConsent), headers: { 'content-type': 'application/json' } });
 }
 
 beforeEach(() => {
@@ -113,6 +123,8 @@ beforeEach(() => {
   tables.updates.length = 0;
   ops.open = null; ops.n = 0; ops.marks.length = 0;
   resolveCalls.length = 0;
+  immediate.calls.length = 0;
+  immediate.result = { ok: true, acceptanceId: 'a1', versionCode: '2026-10-30-v1', permalinkUrl: 'https://www.verebona.fr/legal/cguv/versions/2026-10-30-v1', textSha256: 'f'.repeat(64), acceptedAt: new Date() };
   stripe.create.mockReset().mockImplementation(async (p: unknown, o: { idempotencyKey: string }) => ({ id: `cs_${o.idempotencyKey.slice(-1)}`, url: 'https://checkout.stripe.com/x', params: p }));
   stripe.retrieve.mockReset();
   stripe.lines.mockReset();
@@ -229,5 +241,40 @@ describe('tentative unique, réutilisation et réponse perdue (LK-42 à LK-45)',
     await POST(req(body));
     expect(stripe.create).toHaveBeenCalledTimes(2);
     expect(stripe.create.mock.calls[1][1].idempotencyKey).toBe(stripe.create.mock.calls[0][1].idempotencyKey);
+  });
+});
+
+
+describe('lot 102B — demande expresse de démarrage immédiat pendant le délai de rétractation', () => {
+  const body = { plan: 'premium', billing_period: 'monthly', displayed_price_revision: REV };
+
+  it.each([[undefined], [false], ['true'], [1]])('case absente ou non booléenne (%j) : 400 IMMEDIATE_START_REQUEST_REQUIRED, aucune preuve ni session', async (value) => {
+    const res = await POST(req({ ...body, immediate_start_requested: value }));
+    expect(res.status).toBe(400);
+    expect((await res.json()).code).toBe('IMMEDIATE_START_REQUEST_REQUIRED');
+    expect(immediate.calls).toHaveLength(0);
+    expect(stripe.create).not.toHaveBeenCalled();
+  });
+
+  it('case cochée : preuve enregistrée AVANT la session Stripe (utilisateur, offre, périodicité, canal web)', async () => {
+    stripe.create.mockImplementation(async () => { expect(immediate.calls).toHaveLength(1); return { id: 'cs_9', url: 'https://checkout.stripe.com/x' }; });
+    const res = await POST(req(body));
+    expect(res.status).toBe(200);
+    expect(immediate.calls[0]).toMatchObject({ userId: 1, planCode: 'premium', billingPeriod: 'monthly', channel: 'WEB' });
+  });
+
+  it('aucune version des CGUV connue : 503 explicite, aucune session', async () => {
+    immediate.result = { ok: false, code: 'NO_CURRENT_VERSION' };
+    const res = await POST(req(body));
+    expect(res.status).toBe(503);
+    expect((await res.json()).code).toBe('NO_CURRENT_LEGAL_VERSION');
+    expect(stripe.create).not.toHaveBeenCalled();
+  });
+
+  it('un membre non titulaire est refusé avant toute preuve', async () => {
+    tables.memberships = [{ accountId: 10, role: 'member' }];
+    const res = await POST(req(body));
+    expect(res.status).toBe(403);
+    expect(immediate.calls).toHaveLength(0);
   });
 });

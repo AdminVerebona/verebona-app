@@ -262,6 +262,9 @@ export async function middleware(request: NextRequest) {
       // Lot 100G : désinscription des relances commerciales depuis l'e-mail,
       // sans connexion — jeton signé vérifié par la route.
       '/api/public/marketing/unsubscribe',
+      // Lot 102C : bloc d'information / de choix (relances commerciales) du
+      // formulaire d'inscription — lu sans session, aucune donnée personnelle.
+      '/api/public/marketing/signup-notice',
     ];
 
     // Cron endpoints utilisent leur propre CRON_SECRET — pas de JWT
@@ -277,6 +280,9 @@ export async function middleware(request: NextRequest) {
     const isPublicPrefix =
       pathname.startsWith('/api/referral/validate/') ||
       pathname.startsWith('/api/legal/cgvu/') ||
+      // Lot 102B : métadonnées publiques de la version en vigueur (aucun texte).
+      pathname.startsWith('/api/legal/cguv/') ||
+      pathname === '/api/legal/links' ||
       // CDC rétractation §6.1 : « la page doit être accessible sans
       // authentification ». Un consommateur qui ne parvient plus à se
       // connecter doit pouvoir exercer son droit — subordonner la

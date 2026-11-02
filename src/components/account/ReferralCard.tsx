@@ -12,6 +12,7 @@ import { Gift } from 'lucide-react';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { useSession } from '@/hooks/useSession';
 import { ReferralBlock } from './ReferralBlock';
+import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
 
 export function ReferralCard() {
   const { user } = useSession();
@@ -20,7 +21,7 @@ export function ReferralCard() {
     <CollapsibleCard
       icon={<Gift className="w-5 h-5" />}
       title="Parrainage"
-      description="Invitez vos proches et gagnez 1 mois d’abonnement."
+      description={REFERRAL_TEXT.reward}
     >
       <ReferralBlock withHeading={false} />
     </CollapsibleCard>

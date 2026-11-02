@@ -19,6 +19,8 @@ import {
 import { apiClient, ApiClientError } from '@/lib/api-client';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { canShareNatively, shareContent } from '@/lib/native/share';
+import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
+import { useLegalLinks } from '@/hooks/useLegalLinks';
 
 const INVITATION_ERROR = 'L\'invitation n\'a pas pu être envoyée. Réessayez plus tard ou copiez votre lien pour le partager.';
 
@@ -28,6 +30,25 @@ const INVITATION_ERROR = 'L\'invitation n\'a pas pu être envoyée. Réessayez p
  */
 export function referralShareText(code: string): string {
   return `Je vous invite à découvrir Verebona, l’espace qui garde en ordre vos biens et leurs documents. Mon code de parrainage : ${code}`;
+}
+
+/**
+ * Lot 102D : conditions du parrainage, issues de la règle centrale
+ * (`referral-rules.ts`) — mêmes mots que l'API, l'e-mail et le BO. Libellés
+ * factuels ; les conditions complètes sont sur la page publique.
+ */
+export function ReferralConditions() {
+  const legalLinks = useLegalLinks();
+  return (
+    <div className="space-y-1" data-testid="referral-conditions">
+      <ul className="list-disc pl-4 space-y-0.5 text-xs text-muted-foreground">
+        {REFERRAL_TEXT.conditions.map((c) => <li key={c}>{c}</li>)}
+      </ul>
+      <a href={legalLinks.parrainage} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline">
+        {REFERRAL_TEXT.termsLinkLabel}
+      </a>
+    </div>
+  );
 }
 
 // ─── Composant principal ─────────────────────────────────────────────────────
@@ -194,13 +215,14 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
           </p>
         ) : (
           <>
-            <p className="text-xs text-muted-foreground">
-              Disponible après votre première facturation sur les offres Premium ou Premium Duo annuelles.
-            </p>
+            {/* Lot 102D : « offres Premium ou Premium Duo annuelles » contredisait
+                l'API et l'aide. Règle centrale : titulaire d'un abonnement payant. */}
+            <p className="text-xs text-muted-foreground">{REFERRAL_TEXT.notEligible}</p>
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <Users className="w-3.5 h-3.5 flex-shrink-0" />
-              <span>Parrainez vos proches et gagnez <strong>1 mois d&apos;abonnement</strong> par parrainage validé.</span>
+              <span>{REFERRAL_TEXT.reward}</span>
             </div>
+            <ReferralConditions />
           </>
         )}
       </div>
@@ -221,9 +243,8 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
             referral-reward.service.ts). L'avantage filleul « 3 mois d'essai au
             lieu de 2 » n'existe plus côté serveur : il est retiré pour que
             l'interface, l'aide (AID-BILL-010) et la vitrine disent la même chose. */}
-        <p className="text-xs text-muted-foreground">
-          Parrainez vos proches et gagnez <strong>1 mois d&apos;abonnement</strong> pour chaque filleul qui souscrit une offre annuelle.
-        </p>
+        <p className="text-xs text-muted-foreground">{REFERRAL_TEXT.reward}</p>
+        <ReferralConditions />
         <Button onClick={handleCreateLink} disabled={creatingLink} size="sm">
           {creatingLink ? (
             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -254,9 +275,8 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
           {/* GAP-07 : « devient client payant » laissait croire qu'un abonnement
               mensuel suffit. Condition réelle (referral-eligibility.service.ts) :
               abonnement annuel, premier paiement encaissé, rétractation expirée. */}
-          <p className="text-xs text-muted-foreground">
-            Vous recevez 1 mois offert lorsque votre filleul souscrit un abonnement annuel, une fois son premier paiement réussi et le délai de rétractation expiré.
-          </p>
+          <p className="text-xs text-muted-foreground">{REFERRAL_TEXT.reward}</p>
+          <ReferralConditions />
         </div>
         {(stats?.validatedCount ?? 0) > 0 && (
           <Badge variant="secondary" className="flex-shrink-0 text-xs gap-1">

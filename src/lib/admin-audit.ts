@@ -161,13 +161,23 @@ export type AdminActionType =
   | 'AI_EXECUTION_RELAUNCH'
   // Lot 100G : réglages de la séquence d'e-mails de fin d'essai (BO ›
   // Communications › Fin d'essai) — avant / après.
-  | 'TRIAL_LIFECYCLE_SETTINGS_UPDATE';
+  | 'TRIAL_LIFECYCLE_SETTINGS_UPDATE'
+  // Lot 102A : BO › Exploitation › Cycle de vie des comptes — téléchargement
+  // du registre des suppressions et rejeu après restauration (nombre d'entrées,
+  // suppressions rejouées, échecs).
+  | 'DELETION_REGISTRY_DOWNLOAD'
+  | 'DELETION_REGISTRY_REPLAY'
+  // Lot 102C : copies de données réelles hors production — autorisation
+  // nominative d'importer un point de restauration d'un autre environnement,
+  // clôture (purge constatée ou fausse détection) — motif, point, échéance.
+  | 'PRODUCTION_COPY_AUTHORIZE'
+  | 'PRODUCTION_COPY_CLOSE';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
   | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG' | 'AI_EXECUTION_REPORT' | 'EMAIL_SETTINGS'
   | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL' | 'TECH_DIAGNOSTIC' | 'OPERATION_IDENTITY_REVIEW' | 'RECETTE_EXPORT'
-  | 'AI_EXECUTIONS_EXPORT' | 'TRIAL_LIFECYCLE';
+  | 'AI_EXECUTIONS_EXPORT' | 'TRIAL_LIFECYCLE' | 'DELETION_REGISTRY' | 'PRODUCTION_COPY';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

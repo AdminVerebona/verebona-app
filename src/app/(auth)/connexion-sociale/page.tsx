@@ -10,7 +10,7 @@
  *     (puis l'association) est proposée — jamais de second compte ;
  *   · sinon (§8.2, obligatoire) → « Vous avez déjà un compte Verebona ? » :
  *     « J'ai déjà un compte Verebona » (connexion complète puis association)
- *     ou « Créer un nouveau compte » (prénom, nom, adresse, CGSU).
+ *     ou « Créer un nouveau compte » (prénom, nom, adresse, CGUV).
  * Autre adresse que celle du fournisseur (ou relais Apple remplacé) : code à
  * 6 chiffres envoyé à cette adresse, saisi ici. Rien n'est créé avant la
  * validation finale ; « Annuler » ne laisse aucune trace (SIGN-11).
@@ -25,6 +25,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { LogoWithBaseline } from '@/components/Logo';
 import { PasswordInput } from '@/components/ui/password-input';
 import { Checkbox } from '@/components/ui/checkbox';
+import { MarketingSignupNotice, type MarketingChoiceValue } from '@/components/auth/MarketingSignupNotice';
+import { useLegalLinks } from '@/hooks/useLegalLinks';
 import { AuthFooter } from '@/components/LandingFooter';
 import { FollowTheme } from '@/components/FollowTheme';
 import { ProviderButton, socialStartUrl } from '@/components/auth/SocialSignInButtons';
@@ -86,7 +88,10 @@ function SocialPending() {
   const [email, setEmail] = useState('');
   const [referral, setReferral] = useState('');
   const [accepted, setAccepted] = useState(false);
+  // Lot 102C : choix sur les relances commerciales (bloc fourni par le serveur selon le réglage BO).
+  const [marketingChoice, setMarketingChoice] = useState<MarketingChoiceValue | null>(null);
   const [legal, setLegal] = useState<{ versionCode: string; permalink: string } | null>(null);
+  const legalLinks = useLegalLinks();
 
   // Code
   const [code, setCode] = useState('');
@@ -112,10 +117,11 @@ function SocialPending() {
         setView('expired');
       }
     })();
-    // Version des CGSU affichée = celle enregistrée (CDC 7 §18, SIGN-03).
-    fetch('/api/legal/cgvu/current', { credentials: 'include' })
+    // Version des CGUV affichée = celle enregistrée (CDC 7 §18, SIGN-03) ;
+    // lot 102B : métadonnées seules, texte sur le site public.
+    fetch('/api/legal/cguv/current', { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d?.versionCode) setLegal({ versionCode: d.versionCode, permalink: d.permalink }); })
+      .then((d) => { if (d?.versionCode) setLegal({ versionCode: d.versionCode, permalink: d.permalinkUrl ?? d.permalink }); })
       .catch(() => {});
   }, []);
 
@@ -137,11 +143,12 @@ function SocialPending() {
   const createAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    if (!accepted) { setError('Vous devez accepter les conditions générales pour créer un compte.'); return; }
+    if (!accepted) { setError('Vous devez accepter les CGUV pour créer un compte.'); return; }
     setBusy(true);
     const r = await post({
       action: 'signup', firstName, lastName, email, acceptedTerms: accepted, termsVersion: legal?.versionCode,
       referralCode: state?.context === 'invitation' ? undefined : referral || undefined,
+      marketing: marketingChoice ?? undefined,
     }).catch(() => null);
     setBusy(false);
     if (r?.ok && r.data.stage === 'email_code') {
@@ -294,11 +301,14 @@ function SocialPending() {
                 <div className="flex items-start gap-3">
                   <Checkbox id="sp-terms" checked={accepted} onCheckedChange={(v) => setAccepted(v === true)} disabled={busy} className="mt-1" />
                   <Label htmlFor="sp-terms" className="text-sm leading-relaxed cursor-pointer font-normal text-foreground">
-                    J’ai lu et j’accepte les Conditions générales de vente et d’utilisation de Verebona, incluant la Politique de confidentialité.{' '}
-                    <Link href={legal?.permalink ?? '/cgvu'} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Lire les conditions</Link>
+                    J’ai lu et j’accepte les CGUV (Conditions générales d’utilisation et de vente) de Verebona, incluant la Politique de confidentialité.{' '}
+                    <a href={legal?.permalink ?? legalLinks.cguv} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Lire les CGUV</a>
+                    {' · '}
+                    <a href={legalLinks.confidentialite} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Confidentialité</a>
                     {legal && <span className="block text-xs text-[color:var(--text-muted)] mt-1">Version {legal.versionCode}</span>}
                   </Label>
                 </div>
+                <MarketingSignupNotice onChange={setMarketingChoice} disabled={busy} />
                 <Button type="submit" className="w-full min-h-11" disabled={busy}>{busy ? 'Création…' : 'Créer mon compte'}</Button>
                 <Button type="button" variant="ghost" className="w-full" onClick={() => setView('choice')} disabled={busy}>Retour</Button>
               </form>

@@ -10,6 +10,7 @@ import { eq, and, or } from 'drizzle-orm';
 import { serverCacheGet, serverCacheSet, userCacheKey, wantsFreshRead } from '@/lib/server-cache';
 import { getTrialState } from '@/services/trial.service';
 import { handleCloseAccount } from './deletion/close-account';
+import { getReacceptanceState } from '@/services/legal/cguv-reacceptance.service';
 
 export async function GET(request: NextRequest) {
   try {
@@ -170,6 +171,10 @@ export async function GET(request: NextRequest) {
     `;
     const nombreEspaces = espaces?.total ?? 1;
 
+    // Lot 102B : version substantielle des CGUV à accepter → écran dédié
+    // (jamais d'exception : en cas de doute, aucun blocage).
+    const legalReacceptance = await getReacceptanceState(userData.id);
+
     const corps = {
       id: userData.id,
       email: userData.email,
@@ -193,6 +198,8 @@ export async function GET(request: NextRequest) {
       // PENDING_DELETION : compte clôturé, suppression programmée (J+30).
       status: userData.status,
       hasSeenUploadNotice: userData.hasSeenUploadNotice ?? false,
+      /** Lot 102B : réacceptation des CGUV (écran bloquant si `required`). */
+      legalReacceptance,
       subscription: {
         plan: effectivePlan,
         status: finalSubscriptionStatus,

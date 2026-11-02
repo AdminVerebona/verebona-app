@@ -57,6 +57,12 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   // commerciales, et ne rouvre jamais un e-mail de fin d'essai déjà envoyé ou
   // clos (aucun second envoi) ; le journal reste consultable.
   'marketing_oppositions', 'trial_lifecycle_messages', 'trial_lifecycle_events',
+  // Lot 102A : registre minimal des suppressions exécutées — jamais remonté dans le
+  // temps par une restauration ; il sert justement à REJOUER ces suppressions après elle.
+  'account_deletion_registry',
+  // Lot 102D : une restauration ne lève jamais une opposition à l'utilisation des
+  // données pour l'amélioration ; le journal de preuve reste consultable.
+  'account_data_use_preferences', 'account_data_use_preference_events',
   'admin_anomalies', 'admin_anomaly_occurrences',
   'ai_usage_event', 'ai_usage_events', 'ai_usage_daily_rollup', 'ai_usage_account_counter', 'ai_call_diagnostics', 'ai_operation',
   'ai_pipeline_step', 'ai_log_archives', 'ai_admin_audit_log', 'ai_t2_content_access_log', 'ai_execution_reports', 'ai_execution_report_entries',
@@ -72,6 +78,9 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   // Lot 100B : approbations humaines des oracles, rejets motivés et journal du verrou A1 — jamais perdus par une restauration.
   'ai_corpus_oracle_approvals', 'ai_corpus_case_decisions', 'ai_corpus_a1_assessments',
   'email_logs', 'email_provider_events', 'stripe_webhook_logs', 'legal_audit_log',
+  // Lot 102C : registre des copies de données réelles et identité de la base — une restauration ne
+  // les remplace jamais (la copie importée resterait sinon invisible, ou l'identité de l'environnement usurpée).
+  'production_data_copies', 'environment_identity',
 ];
 
 /** Colonnes d'une table, triées : `nom:type` (`:g` si générée — jamais réinjectée). */

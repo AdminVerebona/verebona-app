@@ -24,7 +24,7 @@ interface LegalErrorPageInput {
 export function renderLegalErrorPage(input: LegalErrorPageInput): string {
   const currentLink = input.offerCurrentLink
     ? `      <p>
-        <a href="/cgvu">Consulter la version actuellement en vigueur</a>
+        <a href="/cguv">Consulter la version des CGUV actuellement en vigueur</a>
       </p>
       <p class="warn">
         Attention : cette version peut différer de celle que vous recherchez.

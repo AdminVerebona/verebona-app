@@ -6,6 +6,7 @@ import {
     handleSubscriptionCancelled,
 } from '@/services/withdrawal/withdrawal-webhook.service';
 import { cancelDeletion } from '@/services/account/scheduled-deletion.service';
+import { onPaidSubscriptionEnded } from '@/services/account/restricted-state.service';
 import { db } from '@/db';
 import {
   accounts,
@@ -481,6 +482,12 @@ async function handleSubscriptionDeleted(subscription: Stripe.Subscription) {
   if (oldPlanType !== 'STANDARD') {
     await enforceStandardLimits(account.id, account.ownerUserId);
   }
+
+  // Lot 102A : fin effective de la période payée → lecture seule (droits
+  // ci-dessus) et purge programmée à +90 jours, annulée par une nouvelle
+  // souscription. Idempotent ; ne lève jamais (le webhook n'est pas rejoué
+  // pour cela).
+  await onPaidSubscriptionEnded(account.id, subscription.ended_at ? new Date(subscription.ended_at * 1000) : null);
 }
 
 // ─── invoice.payment_succeeded ────────────────────────────────────────────────
@@ -865,12 +872,15 @@ async function downgradeDuoAccount(duoAccountId: number, subscriptionId: string,
 
       if (byOwner) {
         await performDuoDowngrade(byOwner.id, byOwner.ownerUserId, subscriptionId, endedAt);
+        await onPaidSubscriptionEnded(byOwner.id, endedAt ? new Date(endedAt * 1000) : null);
       }
     }
     return;
   }
 
   await performDuoDowngrade(linked.id, linked.ownerUserId, subscriptionId, endedAt);
+  // Lot 102A : même cycle de vie qu'un abonnement Premium (lecture seule, +90 jours).
+  await onPaidSubscriptionEnded(linked.id, endedAt ? new Date(endedAt * 1000) : null);
 }
 
 async function performDuoDowngrade(accountId: number, ownerUserId: number, subscriptionId: string, endedAt: number | null) {

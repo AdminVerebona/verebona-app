@@ -19,20 +19,33 @@
 import { db } from '@/db';
 import { legalAcceptances, legalDocumentVersions } from '@/db/schema';
 import { and, desc, eq } from 'drizzle-orm';
+import type { AcceptanceChannel } from '@/lib/legal/public-legal';
 import { recordLegalAudit } from './legal-audit.service';
 import { DOCUMENT_TYPE_CGVU, LegalVersionError, getCurrentVersion } from './legal-versions.service';
+import { proofStatusFor, versionProofInfo, type ProofStatus } from './cguv-referential.service';
 
-type AcceptanceContext =
+/**
+ * Contexte d'une preuve (lot 102B) : inscription (ACCOUNT_CREATION), connexion
+ * sociale Google / Apple (SOCIAL_SIGNUP), réacceptation d'une version
+ * substantielle (VERSION_UPDATE), souscription (PAID_SUBSCRIPTION), demande
+ * expresse de démarrage immédiat pendant le délai de rétractation
+ * (IMMEDIATE_START_REQUEST). Le canal (web / mobile) est une colonne à part.
+ */
+export type AcceptanceContext =
   | 'ACCOUNT_CREATION'
+  | 'SOCIAL_SIGNUP'
   | 'TRIAL_START'
   | 'PAID_SUBSCRIPTION'
-  | 'VERSION_UPDATE';
+  | 'VERSION_UPDATE'
+  | 'IMMEDIATE_START_REQUEST';
 
 const ACCEPTANCE_CONTEXTS: readonly AcceptanceContext[] = [
   'ACCOUNT_CREATION',
+  'SOCIAL_SIGNUP',
   'TRIAL_START',
   'PAID_SUBSCRIPTION',
   'VERSION_UPDATE',
+  'IMMEDIATE_START_REQUEST',
 ] as const;
 
 export function isAcceptanceContext(value: unknown): value is AcceptanceContext {
@@ -51,6 +64,10 @@ interface RecordAcceptanceInput {
   userAgent?: string | null;
   acceptedAt?: Date;
   documentType?: string;
+  /** Lot 102B : canal (WEB, IOS, ANDROID, MOBILE). */
+  channel?: AcceptanceChannel;
+  /** Lot 102B : abonnement Stripe concerné (ou session de paiement). */
+  subscriptionReference?: string | null;
 }
 
 interface AcceptanceRecord {
@@ -58,6 +75,9 @@ interface AcceptanceRecord {
   versionCode: string;
   versionId: string;
   permalink: string | null;
+  /** Lot 102B : URL absolue et empreinte figées dans la preuve. */
+  permalinkUrl: string;
+  textSha256: string | null;
   acceptedAt: Date;
   context: AcceptanceContext;
   /** `true` lorsque l'appel a été rejoué et n'a rien créé de nouveau. */
@@ -83,6 +103,10 @@ export async function recordAcceptance(
       versionCode: legalDocumentVersions.versionCode,
       status: legalDocumentVersions.status,
       permalink: legalDocumentVersions.permalink,
+      sha256: legalDocumentVersions.sha256,
+      source: legalDocumentVersions.source,
+      publicPermalink: legalDocumentVersions.publicPermalink,
+      publicSha256: legalDocumentVersions.publicSha256,
     })
     .from(legalDocumentVersions)
     .where(
@@ -109,6 +133,12 @@ export async function recordAcceptance(
   }
 
   const acceptedAt = input.acceptedAt ?? new Date();
+  // Preuve complète (lot 102B) : version + permalien + empreinte + date + contexte + canal.
+  const typed = { ...version, source: version.source as 'APP_LEGACY' | 'PUBLIC_SITE' | 'BO_MANUAL' };
+  const proof = versionProofInfo(typed);
+  // Site public pas encore livré : preuve « en attente du site public »
+  // (permalien d'archive et empreinte d'origine de la version présentée).
+  const proofStatus = proofStatusFor(typed);
 
   const inserted = await db
     .insert(legalAcceptances)
@@ -121,6 +151,12 @@ export async function recordAcceptance(
       offerCode: input.offerCode ?? null,
       ipAddress: input.ipAddress ?? null,
       userAgent: input.userAgent ?? null,
+      versionCode: version.versionCode,
+      permalinkUrl: proof.permalinkUrl,
+      textSha256: proof.sha256,
+      proofStatus,
+      channel: input.channel ?? 'UNKNOWN',
+      subscriptionReference: input.subscriptionReference ?? null,
       createdAt: acceptedAt,
     })
     .onConflictDoNothing()
@@ -132,7 +168,7 @@ export async function recordAcceptance(
       actorUserId: input.userId,
       versionCode: version.versionCode,
       versionId: version.id,
-      details: `contexte ${input.context}`,
+      details: `contexte ${input.context} ; canal ${input.channel ?? 'UNKNOWN'} ; sha256=${proof.sha256 ?? 'inconnue'}`,
       occurredAt: acceptedAt,
     });
 
@@ -141,6 +177,8 @@ export async function recordAcceptance(
       versionCode: version.versionCode,
       versionId: version.id,
       permalink: version.permalink,
+      permalinkUrl: proof.permalinkUrl,
+      textSha256: proof.sha256,
       acceptedAt,
       context: input.context,
       alreadyRecorded: false,
@@ -165,6 +203,8 @@ export async function recordAcceptance(
     versionCode: version.versionCode,
     versionId: version.id,
     permalink: version.permalink,
+    permalinkUrl: existing.permalinkUrl ?? proof.permalinkUrl,
+    textSha256: existing.textSha256 ?? proof.sha256,
     acceptedAt: existing.acceptedAt,
     context: input.context,
     alreadyRecorded: true,
@@ -177,6 +217,11 @@ interface UserAcceptance {
   versionId: string;
   title: string;
   permalink: string | null;
+  /** Lot 102B : permalien à consulter (figé dans la preuve, sinon celui de la version). */
+  permalinkUrl: string;
+  textSha256: string | null;
+  proofStatus: ProofStatus;
+  channel: string;
   acceptedAt: Date;
   context: string;
   offerCode: string | null;
@@ -197,6 +242,14 @@ export async function listUserAcceptances(
       versionCode: legalDocumentVersions.versionCode,
       title: legalDocumentVersions.title,
       permalink: legalDocumentVersions.permalink,
+      sha256: legalDocumentVersions.sha256,
+      source: legalDocumentVersions.source,
+      publicPermalink: legalDocumentVersions.publicPermalink,
+      publicSha256: legalDocumentVersions.publicSha256,
+      proofPermalinkUrl: legalAcceptances.permalinkUrl,
+      proofSha256: legalAcceptances.textSha256,
+      proofStatus: legalAcceptances.proofStatus,
+      channel: legalAcceptances.channel,
     })
     .from(legalAcceptances)
     .innerJoin(
@@ -211,16 +264,26 @@ export async function listUserAcceptances(
     )
     .orderBy(desc(legalAcceptances.acceptedAt));
 
-  return rows.map((r) => ({
+  return rows.map((r) => {
+    // Preuve HISTORIQUE : aucune empreinte inventée ; le lien de consultation
+    // est celui de la version (permalien public si le site l'a republiée,
+    // sinon archive figée de l'application).
+    const fallback = versionProofInfo({ ...r, source: r.source as 'APP_LEGACY' | 'PUBLIC_SITE' | 'BO_MANUAL' });
+    return {
     id: r.id,
     versionCode: r.versionCode,
     versionId: r.versionId,
     title: r.title,
     permalink: r.permalink,
+    permalinkUrl: r.proofPermalinkUrl ?? fallback.permalinkUrl,
+    textSha256: r.proofSha256 ?? null,
+    proofStatus: (['HISTORIQUE', 'EN_ATTENTE_SITE_PUBLIC'].includes(r.proofStatus) ? r.proofStatus : 'COMPLETE') as ProofStatus,
+    channel: r.channel,
     acceptedAt: r.acceptedAt,
     context: r.context,
     offerCode: r.offerCode,
-  }));
+    };
+  });
 }
 
 interface ApplicableVersion {

@@ -11,7 +11,8 @@
  *   • AVANTAGE — « un mois offert au parrain ». Le filleul ne reçoit rien.
  *     Acquis lorsque le filleul souscrit un abonnement ANNUEL, et attribué
  *     après expiration du délai de rétractation (CDC tarification §13).
- *     C'est le rôle de `referral-reward.service.ts`, inchangé.
+ *     C'est le rôle de `referral-rewards.job.ts` (règle centrale :
+ *     `referral/referral-rules.ts`, lot 102D).
  *
  * Séparer les deux est ce qui rend le programme opérationnel : l'inscription
  * et la souscription sont séparées par une vérification d'adresse email et
@@ -22,20 +23,16 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { db } from '@/db';
-import { referralLinks, signupContexts } from '@/db/schema';
-import { and, eq, isNull, or, gt } from 'drizzle-orm';
+import { accountMemberships, referralEvents, referralLinks, signupContexts, users } from '@/db/schema';
+import { and, eq } from 'drizzle-orm';
 import { reportReferralAttributionFailure } from '@/services/admin/anomaly.service';
+import {
+  attributionDeadline, isWithinAttributionWindow, signupSelfReferralReason, type SelfReferralReason,
+} from '@/services/referral/referral-rules';
+import { verifyReferralTouch } from '@/services/referral/referral-touch';
 
-/**
- * Durée de validité de l'attribution mémorisée.
- *
- * ⚠️ PARAMÈTRE NON FIXÉ PAR LES CDC. La colonne `expires_at` est `NOT NULL`
- * (migration 0071) et sa valeur par défaut de 7 jours correspondait à un autre
- * usage. Elle est portée ici à 90 jours : un filleul qui laisse passer son
- * essai de 7 jours puis souscrit quelques semaines plus tard doit conserver
- * son parrain. À confirmer avec le responsable métier.
- */
-const REFERRAL_ATTRIBUTION_DAYS = 90;
+// Lot 102D : la durée d'attribution (90 jours, usage du lien → inscription)
+// est un paramètre de la règle centrale (`referral-rules.ts`).
 
 /** Longueur maximale acceptée pour un code, alignée sur `/api/referral/validate`. */
 const MAX_CODE_LENGTH = 20;
@@ -99,14 +96,36 @@ interface RecordSignupReferralInput {
   accountId: number | null;
   /** Code brut tel que transmis par le formulaire, avant normalisation. */
   rawCode: unknown;
+  /**
+   * Lot 102D : jeton `rt` signé par `/r/<code>` (instant d'usage du lien).
+   * Absent ou invalide → le code est réputé utilisé à l'inscription.
+   */
+  referralTouch?: unknown;
   /** Origine de la saisie : lien de parrainage ou champ du formulaire. */
   codeSource?: 'referral_link' | 'signup_form';
   entryPoint?: string;
   now?: Date;
 }
 
+/** Membres actifs (titulaire compris) du compte parrain, avec leur adresse. */
+async function referrerMembers(referrerAccountId: number): Promise<Array<{ userId: number; email: string | null }>> {
+  const rows = await db
+    .select({ userId: accountMemberships.userId, email: users.email })
+    .from(accountMemberships)
+    .innerJoin(users, eq(users.id, accountMemberships.userId))
+    .where(and(eq(accountMemberships.accountId, referrerAccountId), eq(accountMemberships.status, 'active')));
+  return rows.filter((r) => r.userId !== null).map((r) => ({ userId: r.userId as number, email: r.email ?? null }));
+}
+
 /**
  * Mémorise l'attribution au moment de la création du compte (§4.5).
+ *
+ * Lot 102D — règle centrale (`referral-rules.ts`) :
+ *   · fenêtre : inscription au plus 90 jours après l'usage du lien (`rt`) ;
+ *   · auto-parrainage refusé : même compte, filleul membre du compte parrain,
+ *     même adresse e-mail normalisée qu'un membre du compte parrain ;
+ *   · l'ÉVÉNEMENT de parrainage (`referral_events`, statut `link_used`) est
+ *     créé ICI, à l'inscription : le paiement ne crée plus d'attribution.
  *
  * NE LÈVE JAMAIS. Un parrainage est un avantage commercial : son échec ne doit
  * en aucun cas empêcher la création d'un compte. Un code invalide est
@@ -126,24 +145,68 @@ export async function recordSignupReferral(
   if (!code) return null;
 
   try {
-    const resolved = await resolveReferralCode(code, input.accountId);
+    const touchedAt = verifyReferralTouch(code, input.referralTouch);
+    const codeUsedAt = touchedAt && touchedAt.getTime() <= now.getTime() ? touchedAt : now;
+    let resolved = await resolveReferralCode(code, input.accountId);
+    let rejection: string | null = resolved ? null : 'CODE_NOT_FOUND_OR_INACTIVE';
 
-    await db
+    if (resolved && !isWithinAttributionWindow(codeUsedAt, now)) {
+      resolved = null;
+      rejection = 'ATTRIBUTION_WINDOW_EXPIRED';
+    }
+    if (resolved) {
+      const [me] = await db.select({ email: users.email }).from(users).where(eq(users.id, input.userId)).limit(1);
+      const self: SelfReferralReason | null = signupSelfReferralReason({
+        referrerAccountId: resolved.referrerAccountId,
+        referredAccountId: input.accountId,
+        referredUserId: input.userId,
+        referredEmail: me?.email ?? null,
+        referrerMembers: await referrerMembers(resolved.referrerAccountId),
+      });
+      if (self) {
+        resolved = null;
+        rejection = self;
+      }
+    }
+
+    const [ctx] = await db
       .insert(signupContexts)
       .values({
         userId: input.userId,
         accountId: input.accountId,
         entryPoint: input.entryPoint ?? 'direct_signup',
         rawCode: code,
-        codeSource: input.codeSource ?? 'referral_link',
+        codeSource: input.codeSource ?? (touchedAt ? 'referral_link' : 'signup_form'),
         resolvedCodeType: resolved ? 'referral_link' : null,
         resolvedCodeId: resolved ? resolved.linkId : null,
         validationStatus: resolved ? 'valid' : 'rejected',
-        validationMessage: resolved ? null : 'CODE_NOT_FOUND_OR_INACTIVE',
+        validationMessage: rejection,
         createdAt: now,
-        expiresAt: new Date(now.getTime() + REFERRAL_ATTRIBUTION_DAYS * 24 * 60 * 60 * 1000),
+        codeUsedAt,
+        // Date limite d'inscription pour ce lien (usage + 90 jours).
+        expiresAt: attributionDeadline(codeUsedAt),
       })
-      .onConflictDoNothing();
+      .onConflictDoNothing()
+      .returning({ id: signupContexts.id });
+
+    if (resolved && input.accountId !== null) {
+      await db
+        .insert(referralEvents)
+        .values({
+          referralLinkId: resolved.linkId,
+          referrerAccountId: resolved.referrerAccountId,
+          referredAccountId: input.accountId,
+          referredUserId: input.userId,
+          status: 'link_used',
+          rewardCredits: 0,
+          signupContextId: ctx?.id ?? null,
+          capturedAt: now,
+          metadataJson: { attribution: 'signup', codeUsedAt: codeUsedAt.toISOString() },
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing();
+    }
 
     return resolved;
   } catch (e) {
@@ -159,8 +222,12 @@ export async function recordSignupReferral(
 /**
  * Relit l'attribution mémorisée à l'inscription.
  *
- * Appelée au checkout lorsque la requête ne porte pas de code : c'est le cas
- * normal, puisque le filleul souscrit plusieurs jours après s'être inscrit.
+ * Lot 102D : depuis ce lot, l'événement de parrainage est créé à
+ * l'inscription. Cette relecture ne sert plus qu'aux comptes inscrits AVANT
+ * (contexte valide sans événement) : le paiement crée alors l'événement à
+ * partir de l'attribution d'origine. Jamais à partir d'un code saisi au
+ * paiement. Aucune date limite de souscription (règle centrale : la fenêtre
+ * de 90 jours porte sur « usage du lien → inscription »).
  *
  * NE LÈVE JAMAIS : un incident de lecture ne doit pas empêcher un paiement.
  */
@@ -169,14 +236,7 @@ export async function getStoredReferralCode(userId: number): Promise<string | nu
     const [row] = await db
       .select({ rawCode: signupContexts.rawCode })
       .from(signupContexts)
-      .where(
-        and(
-          eq(signupContexts.userId, userId),
-          eq(signupContexts.validationStatus, 'valid'),
-          // Une attribution expirée n'est plus utilisée.
-          or(isNull(signupContexts.expiresAt), gt(signupContexts.expiresAt, new Date())),
-        ),
-      )
+      .where(and(eq(signupContexts.userId, userId), eq(signupContexts.validationStatus, 'valid')))
       .limit(1);
 
     return row?.rawCode ?? null;

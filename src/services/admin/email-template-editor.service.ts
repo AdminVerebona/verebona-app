@@ -35,7 +35,7 @@ import { db } from '@/db';
 import { logAdminAction, type AdminActionType } from '@/lib/admin-audit';
 import { transactionalLockReason } from '@/lib/notifications/channel-activation';
 import { DEFAULT_EMAIL_TEMPLATES } from '@/lib/email-defaults';
-import { EMAIL_HTML_TEMPLATES_L66 } from '@/lib/email/email-html-templates';
+import { EMAIL_HTML_TEMPLATES_CURRENT } from '@/lib/email/email-html-templates';
 import {
   EDITOR_LIMITS,
   NOTIFICATION_EMAIL_TEMPLATES,
@@ -251,7 +251,7 @@ function resolveShipped(row: Pick<TemplateRow, 'type' | 'subject' | 'shipped_sub
   }
   const key = row.type.toUpperCase();
   const def = (DEFAULT_EMAIL_TEMPLATES as Record<string, { subject: string; body: string } | undefined>)[key];
-  const html = EMAIL_HTML_TEMPLATES_L66[key];
+  const html = EMAIL_HTML_TEMPLATES_CURRENT[key];
   if (html) return { subject: def?.subject ?? row.subject, body: html, source: 'code' };
   if (def) return { subject: def.subject, body: def.body, source: 'code' };
   return null;

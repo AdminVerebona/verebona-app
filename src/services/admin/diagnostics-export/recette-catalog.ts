@@ -60,6 +60,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   account_analysis_credits: { domain: 'comptes', description: 'Crédits d’analyses du compte.' },
   account_audit_log: { domain: 'comptes', description: 'Journal des événements du compte.' },
   scheduled_account_deletions: { domain: 'comptes', description: 'Suppressions de compte programmées.' },
+  account_deletion_registry: { domain: 'comptes', description: 'Registre minimal des suppressions exécutées (identifiants internes seulement), pour les rejouer après une restauration (lot 102A).' },
   account_processing_states: { domain: 'comptes', description: 'Éligibilité au traitement (actif / lecture seule / suspendu), transitions, neutralisations et rattrapages à la réactivation (lot 82A).' },
   // ── Biens ──────────────────────────────────────────────────────────────
   assets: { domain: 'biens', description: 'Biens (fiche, caractéristiques clés, statut, cycle de vie).' },
@@ -355,9 +356,15 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   // Lot 100G : séquence d'e-mails de fin d'essai.
   trial_lifecycle_messages: 'séquence de fin d’essai : messages par jalon', trial_lifecycle_events: 'séquence de fin d’essai : journal',
   trial_lifecycle_settings: 'séquence de fin d’essai : réglages', marketing_oppositions: 'oppositions aux communications commerciales',
+  // Lot 102D : opposition à l'utilisation des données pour l'amélioration.
+  account_data_use_preferences: 'opposition à l’amélioration : état', account_data_use_preference_events: 'opposition à l’amélioration : journal de preuve',
   // Juridique, RGPD, rétractation.
   legal_acceptances: 'juridique', legal_audit_log: 'juridique', legal_document_versions: 'juridique',
-  gdpr_exports: 'RGPD', gdpr_requests: 'RGPD',
+  legal_manifest_sync_state: 'juridique : manifeste public des CGUV',
+  gdpr_exports: 'RGPD', gdpr_requests: 'RGPD', gdpr_export_parts: 'RGPD (parties de l’archive « Mes données »)',
+  // Lot 102C : preuves d'information à l'inscription, copies de données réelles, identité de la base.
+  marketing_collection_proofs: 'preuves d’information et de choix sur les relances (inscription)',
+  production_data_copies: 'copies de données réelles hors production (registre)', environment_identity: 'identité de la base (environnement)',
   withdrawal_events: 'rétractation', withdrawal_requests: 'rétractation', withdrawal_verification_tokens: 'rétractation (jetons)',
   // Exports V12 et fichiers techniques.
   export_generation: 'dossiers V12 générés (fichiers expirant à 30 jours)', export_generation_items: 'dossiers V12', export_generation_logs: 'dossiers V12',

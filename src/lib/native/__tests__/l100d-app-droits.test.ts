@@ -181,7 +181,8 @@ describe('L100D-A9-UI — écrans de l’app : droits présents, aucun prix ni l
     expect(card).toContain('Renoncer au contrat ici');
     const page = read('src/app/retractation/page.tsx');
     expect(page).toMatch(/inApp\s*\?\s*<Row label="Remboursement" value="Intégral" \/>/);
-    expect(page).toMatch(/inApp \? <Link href="\/login">Fermer<\/Link> : <a href=\{publicSiteUrl\('\/'\)\}>/);
+    // Lot 102A : le compte reste accessible (lecture seule) — retour à Mon compte dans l'app.
+    expect(page).toMatch(/authenticated \|\| inApp \? <Link href="\/mon-compte">Aller à mon compte<\/Link> : <a href=\{publicSiteUrl\('\/'\)\}>/);
     expect(page).toContain('Confirmer la rétractation');
   });
 

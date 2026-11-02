@@ -111,6 +111,12 @@ export interface RestoreReport {
   triggersSuspended: number;
   sequencesAdvanced: string[];
   neutralized: Array<{ table: string; label: string; rows: number }>;
+  /**
+   * Lot 102A : suppressions de compte rejouées après la restauration (registre
+   * `account_deletion_registry`) — un compte supprimé après le point ne
+   * réapparaît jamais. `null` : rejeu impossible (signalé en anomalie).
+   */
+  deletionReplay?: { examined: number; replayed: number; failures: number } | null;
   durationMs: number;
 }
 
@@ -186,6 +192,15 @@ export async function restoreDatabaseBackup(
   const manifest = await findBackupManifest(backupId, opts.storage);
   if (!manifest) throw new RestoreRefusedError(`Point de restauration ${backupId} introuvable (purgé après ${process.env.BACKUP_RETENTION_DAYS || 30} jours ?).`);
   const q: Query = async (text, params = []) => (await sql.unsafe(text, params as never[])) as unknown as Row[];
+
+  // 0. Lot 102C : point d'un AUTRE environnement (ex. production déposée dans
+  //    le bucket de préproduction) → refus par défaut, sans aucune écriture,
+  //    sauf autorisation BO explicite et journalisée pour CE point
+  //    (`production-copies`). Copie autorisée : tracée, échéance posée.
+  const { guardRestoreOrigin, markRestoreImported } = await import('@/services/admin/production-copies/production-copies.service');
+  const originDecision = await guardRestoreOrigin(manifest.environment, backupId, sql, opts.now?.() ?? new Date());
+  if (!originDecision.allowed) throw new RestoreRefusedError(originDecision.reason);
+  if (originDecision.origin !== 'same_environment') log(`Point d’un autre environnement (${manifest.environment}) : import autorisé (copie #${originDecision.copyId ?? '—'}).`);
 
   // 1. Compatibilité (aucune écriture).
   log('Contrôle de compatibilité du point avec le schéma courant…');
@@ -366,7 +381,28 @@ export async function restoreDatabaseBackup(
       }
     }
   }
+  // 6. Lot 102A : suppressions RE-JOUÉES (comptes supprimés après le point,
+  //    réapparus avec lui) — même moteur de purge, conservations légales
+  //    comprises. Après la transaction : un échec n'annule pas la
+  //    restauration, il est rapporté et signalé (anomalie Sauvegardes).
+  try {
+    log('Rejeu des suppressions de compte postérieures au point…');
+    const { replayDeletionRegistry } = await import('@/services/account/deletion-registry.service');
+    const r = await replayDeletionRegistry();
+    report.deletionReplay = { examined: r.examined, replayed: r.replayed, failures: r.failures.length };
+    log(`Suppressions rejouées : ${r.replayed} (échecs : ${r.failures.length}).`);
+  } catch (e) {
+    report.deletionReplay = null;
+    console.error('[restore] rejeu des suppressions impossible :', (e as Error).message);
+    log(`Rejeu des suppressions impossible : ${(e as Error).message.slice(0, 200)} — à relancer depuis BO › Exploitation › Cycle de vie des comptes.`);
+  }
+
   report.durationMs = Date.now() - t0;
+  // Lot 102C : copie de données réelles importée → active, comptes inventoriés, purge à l'échéance.
+  if (originDecision.allowed && originDecision.copyId) {
+    await markRestoreImported(originDecision.copyId, sql, opts.now?.() ?? new Date());
+    log(`Copie de données réelles #${originDecision.copyId} tracée : purge automatique à l’échéance (Supervision).`);
+  }
   log(`Restauration terminée : ${report.rows} ligne(s) dans ${report.restoredTables} table(s).`);
   return report;
 }

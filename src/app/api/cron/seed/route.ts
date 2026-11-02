@@ -22,8 +22,9 @@
  *
  * ── L'ORDRE COMPTE ────────────────────────────────────────────────────────
  *
- * Les CGVU d'abord : sans version publiée, la création de compte est refusée
- * par conception — on n'enregistre pas une acceptation rattachée à rien.
+ * Le référentiel des CGUV d'abord : sans version connue, la création de compte
+ * est refusée par conception — on n'enregistre pas une acceptation rattachée à
+ * rien. Lot 102B : il est lu dans le manifeste du site public.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -80,10 +81,14 @@ const AMORCAGES: Amorcage[] = [
   },
 
   // ── Données de référence ────────────────────────────────────────────────
+  // Lot 102B : plus d'amorçage de TEXTE des CGUV. Le référentiel des versions
+  // est importé du manifeste du site public (tâche `legal-cguv-manifest-sync`,
+  // bouton BO « Relire le manifeste ») ; les versions déjà publiées restent.
   {
-    nom: 'cgvu',
-    description: 'Publie la version initiale des CGVU — débloque la création de compte',
-    executer: async () => (await import('@/db/seeds/legal/seed-cgvu')).seedCgvuV1(),
+    nom: 'cguv-referentiel',
+    description: 'Relit le manifeste public des CGUV (référentiel des versions, aucun texte)',
+    executer: async () =>
+      (await import('@/services/legal/cguv-referential.service')).syncCguvManifest({ trigger: 'seed' }),
   },
   {
     nom: 'cgvu-email',

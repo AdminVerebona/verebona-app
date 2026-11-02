@@ -1582,7 +1582,10 @@ export const signupContexts = pgTable('signup_contexts', {
   validationMessage: text('validation_message'),
   stripePromotionCodeId: text('stripe_promotion_code_id'),
   createdAt: tstz('created_at'),
+  /** Lot 102D (0920) : date limite d'inscription du lien (usage + 90 jours). */
   expiresAt: tstz('expires_at'),
+  /** Lot 102D (0920) : instant d'usage du lien / code (fenêtre d'attribution). */
+  codeUsedAt: tstzOptional('code_used_at'),
 }, (table) => ({
   scCreatedAtIdx: index('signup_contexts_created_at_idx').on(table.createdAt),
   scUserIdx: index('signup_contexts_user_id_idx').on(table.userId),
@@ -3075,6 +3078,12 @@ export const legalDocumentVersions = pgTable('legal_document_versions', {
   htmlStorageKey: text('html_storage_key'),
   permalink: text('permalink'),
   sha256: text('sha256'),
+  /** Lot 102B : APP_LEGACY (archive, HTML conservé) | PUBLIC_SITE (manifeste, sans texte) | BO_MANUAL. */
+  source: text('source').notNull().default('APP_LEGACY'),
+  /** Lot 102B : correspondance publique d'une version APP_LEGACY (renseignée une fois). */
+  publicPermalink: text('public_permalink'),
+  publicSha256: text('public_sha256'),
+  syncedAt: tstzOptional('synced_at'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -3101,6 +3110,16 @@ export const legalAcceptances = pgTable('legal_acceptances', {
   offerCode: text('offer_code'),
   ipAddress: text('ip_address'),
   userAgent: text('user_agent'),
+  /** Lot 102B : preuve complète figée — code, URL présentée, empreinte, canal. */
+  versionCode: text('version_code'),
+  permalinkUrl: text('permalink_url'),
+  textSha256: text('text_sha256'),
+  /** COMPLETE | HISTORIQUE (preuve antérieure au lot 102B, empreinte non inventée). */
+  proofStatus: text('proof_status').notNull().default('COMPLETE'),
+  /** WEB | IOS | ANDROID | MOBILE | UNKNOWN. */
+  channel: text('channel').notNull().default('UNKNOWN'),
+  /** Abonnement Stripe concerné (demande de démarrage immédiat, souscription). */
+  subscriptionReference: text('subscription_reference'),
   createdAt: tstz('created_at'),
 }, (table) => ({
   laUserIdx: index('legal_acceptances_user_idx2').on(table.userId),
@@ -3121,6 +3140,24 @@ export const legalAuditLog = pgTable('legal_audit_log', {
 }, (table) => ({
   lalOccurredIdx: index('legal_audit_occurred_idx2').on(table.occurredAt),
 }));
+
+/** Lot 102B (migration 0910) : dernier état connu du manifeste public des CGUV. */
+export const legalManifestSyncState = pgTable('legal_manifest_sync_state', {
+  documentType: text('document_type').primaryKey(),
+  manifestUrl: text('manifest_url'),
+  lastAttemptAt: tstzOptional('last_attempt_at'),
+  lastSuccessAt: tstzOptional('last_success_at'),
+  /** never | ok | ok_with_anomalies | unavailable | invalid */
+  lastStatus: text('last_status').notNull().default('never'),
+  lastError: text('last_error'),
+  consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+  manifestSha256: text('manifest_sha256'),
+  currentVersionCode: text('current_version_code'),
+  versionsCount: integer('versions_count').notNull().default(0),
+  anomalies: jsonb('anomalies').notNull().default([]),
+  lastTrigger: text('last_trigger'),
+  updatedAt: tstz('updated_at'),
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Suppression planifiée de compte (CDC rétractation §13.3, migration 0116)
@@ -3169,6 +3206,31 @@ export const scheduledAccountDeletions = pgTable('scheduled_account_deletions', 
   sadAccountIdx: index('scheduled_deletions_account_idx').on(table.accountId),
   sadScheduledIdx: index('scheduled_deletions_scheduled_idx').on(table.scheduledAt),
   sadUserIdx: index('scheduled_deletions_user_idx2').on(table.userId),
+}));
+
+/**
+ * Lot 102A (migration 0900) — registre MINIMAL des suppressions exécutées :
+ * identifiants internes du périmètre supprimé (aucune donnée nominative),
+ * pour rejouer une suppression après la restauration d'une sauvegarde.
+ * Conservé dans son état courant par une restauration BO ; purgé après la
+ * rotation des sauvegardes.
+ */
+export const accountDeletionRegistry = pgTable('account_deletion_registry', {
+  id: serial('id').primaryKey(),
+  scheduleId: integer('schedule_id'),
+  reason: text('reason').notNull(),
+  /** account | user. */
+  scope: text('scope').notNull().default('account'),
+  userIds: integer('user_ids').array().notNull().default(sql`'{}'`),
+  accountIds: integer('account_ids').array().notNull().default(sql`'{}'`),
+  executedAt: tstz('executed_at'),
+  /** execution | replay. */
+  source: text('source').notNull().default('execution'),
+  replayCount: integer('replay_count').notNull().default(0),
+  lastReplayedAt: tstzOptional('last_replayed_at'),
+  createdAt: tstz('created_at'),
+}, (table) => ({
+  adrExecutedIdx: index('account_deletion_registry_executed_idx').on(table.executedAt),
 }));
 
 // ═══════════════════════════════════════════════════════════════════════════

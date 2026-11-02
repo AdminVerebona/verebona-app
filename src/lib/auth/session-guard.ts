@@ -22,7 +22,8 @@
 import type { NextRequest } from 'next/server';
 import { getUserSessionCutoff, isIssuedBefore } from '@/db';
 import { verifyAccessToken, type AccessTokenPayload } from '@/lib/jwt';
-import { serverCacheGet, serverCacheSet } from '@/lib/server-cache';
+import { isMutatingMethod, serverCacheGet, serverCacheSet } from '@/lib/server-cache';
+import { CGUV_REACCEPTANCE_REQUIRED_CODE, isApiAllowedDuringReacceptance } from '@/lib/legal/reacceptance-gate';
 import { sessionCutoffCacheKey } from './session-cutoff';
 import { isApiAllowedWhilePendingDeletion, isPendingDeletion } from './account-closure';
 import { SESSION_UNAVAILABLE_CODE } from './session-errors';
@@ -90,5 +91,13 @@ export async function verifySessionAccessToken(
   // cache). Base injoignable : `SESSION_UNAVAILABLE` remonte (503).
   if (payload.currentAccountId != null
     && !(await hasActiveAccountAccess(payload.userId, payload.currentAccountId))) return null;
+  // Lot 102B : même garde que `SessionService` — version substantielle des
+  // CGUV non acceptée → écriture métier refusée. LÈVE (jamais `null`, qui
+  // vaudrait 401 et déconnecterait) : `sessionErrorToResponse` → 403.
+  const method = request.method ?? 'GET';
+  if (isMutatingMethod(method) && !isApiAllowedDuringReacceptance(request.nextUrl?.pathname ?? '', method)) {
+    const { isReacceptanceRequired } = await import('@/services/legal/cguv-reacceptance.service');
+    if (await isReacceptanceRequired(payload.userId)) throw new Error(CGUV_REACCEPTANCE_REQUIRED_CODE);
+  }
   return payload;
 }

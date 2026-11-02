@@ -13,6 +13,7 @@ import {
   isApiAllowedWhilePendingDeletion,
   isPendingDeletion,
 } from './auth/account-closure';
+import { CGUV_REACCEPTANCE_REQUIRED_CODE, isApiAllowedDuringReacceptance } from './legal/reacceptance-gate';
 
 /**
  * Session payload extrait du JWT.
@@ -115,6 +116,17 @@ export class SessionService {
     // tout de suite, même avec un jeton encore valide. Le renouvellement lui
     // rend une session sur ses autres espaces (`lib/auth/account-access`).
     await assertSessionAccountAccess(payload);
+
+    // Lot 102B : version substantielle des CGUV non acceptée → écritures
+    // métier refusées (403 CGUV_REACCEPTANCE_REQUIRED) jusqu'à l'acceptation
+    // explicite. Lectures, acceptation, déconnexion, export RGPD, résiliation,
+    // rétractation et BO restent ouverts (`lib/legal/reacceptance-gate`).
+    // Base injoignable : jamais de blocage (contrôle non bloquant).
+    if (isMutatingMethod(request.method)
+      && !isApiAllowedDuringReacceptance(request.nextUrl?.pathname ?? '', request.method ?? 'GET')) {
+      const { isReacceptanceRequired } = await import('@/services/legal/cguv-reacceptance.service');
+      if (await isReacceptanceRequired(payload.userId)) throw new Error(CGUV_REACCEPTANCE_REQUIRED_CODE);
+    }
 
     // ══════════════════════════════════════════════════════════════════════
     // AUCUN CONTRÔLE D'ABONNEMENT ICI (APP-FUNC-31)

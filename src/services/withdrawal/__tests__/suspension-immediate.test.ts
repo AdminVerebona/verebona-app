@@ -15,9 +15,12 @@ vi.mock('@/db', () => ({
   },
 }));
 vi.mock('@/lib/stripe', () => ({ getStripeServer: () => { order.push('stripe'); throw new Error('Stripe indisponible'); } }));
-vi.mock('@/services/account/scheduled-deletion.service', () => ({
-  scheduleDeletion: async (i: { delayDays?: number }) => { order.push(`suppression-planifiée:${i.delayDays}`); return { id: 77, scheduledAt: new Date() }; },
-  executeScheduledDeletion: async () => { order.push('suppression-exécutée'); return { status: 'executed', preserved: { legalAcceptances: 0, withdrawalRequests: 1, invoices: 1 } }; },
+// Lot 102A : conservation 90 jours (état restreint RETRACTATION), plus de suppression immédiate.
+vi.mock('@/services/account/restricted-state.service', () => ({
+  enterRestrictedState: async (i: { reason: string }) => {
+    order.push(`conservation:${i.reason}`);
+    return { status: 'scheduled', schedule: { id: 77, scheduledAt: new Date(Date.now() + 90 * 86_400_000) } };
+  },
 }));
 vi.mock('@/services/admin/account-status.service', () => ({ revokeUserSessionsNow: async () => { order.push('sessions-révoquées'); return new Date(); } }));
 vi.mock('../withdrawal-journal.service', () => ({ recordWithdrawalEvent: async (e: { eventType: string }) => { order.push(`journal:${e.eventType}`); } }));
@@ -40,14 +43,15 @@ describe('Stripe indisponible', () => {
     expect(order).toContain('demande:STRIPE_UNAVAILABLE');
   });
 
-  // Lot 32 (PO-Q2) : la suppression du compte est IMMÉDIATE (délai 0) et ne
-  // dépend pas de Stripe — la reprise Stripe se fait sur la demande seule.
-  it('PO-Q2 — Stripe indisponible : compte supprimé quand même, immédiatement (délai 0)', async () => {
+  // Lot 102A (décision PO du 31/10/2026) : plus de suppression immédiate —
+  // compte en lecture seule et purge programmée à +90 jours, quel que soit Stripe.
+  it('L102A — Stripe indisponible : conservation 90 jours programmée quand même, aucune suppression, sessions conservées', async () => {
     const r = await processWithdrawal('RET-X');
-    expect(r.accountDeletion).toBe('deleted');
-    expect(order).toContain('suppression-planifiée:0');
-    expect(order.indexOf('suppression-exécutée')).toBeGreaterThan(order.indexOf('stripe'));
-    expect(order).toContain('journal:DELETION_EXECUTED');
+    expect(r.retention).toBe('scheduled');
+    expect(order).toContain('conservation:RETRACTATION');
+    expect(order).toContain('journal:DELETION_SCHEDULED');
+    expect(order).not.toContain('sessions-révoquées');
+    expect(order.join(' ')).not.toMatch(/suppression-exécutée/);
   });
 });
 

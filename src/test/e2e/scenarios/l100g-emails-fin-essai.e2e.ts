@@ -11,7 +11,8 @@
  * L100G-E2E-02 Campagne commerciale : désactivée par défaut, puis sans
  *              consentement (en attente), puis J+3, J+10, J+30, J+60 envoyés
  *              (désinscription + en-têtes « en un clic ») ; rien après J+60 ;
- *              J+80 BLOQUÉ (politique de conservation non fixée).
+ *              J+80 (lot 102A) : bloqué sans suppression programmée, envoyé
+ *              avec la date réelle et les jours restants dès qu'elle l'est.
  * L100G-E2E-03 Désinscription sans connexion : signée, idempotente ; plus
  *              aucune relance ; la notification de service n'est pas un
  *              contournement (J0 envoyé, sans offre de relance) ; lien falsifié refusé.
@@ -189,22 +190,24 @@ scenario('L100G', 'E-mails de fin d’essai : séquence, contrôles avant envoi,
 
     // Après J+60 : plus aucune relance (aucun jalon commercial au-delà).
     for (const day of ['2033-05-12', '2033-05-20', '2033-06-30', '2033-09-01']) await run(`${day}T15:00:00Z`, [a.id]);
-    // J+80 : modèle présent, ENVOI IMPOSSIBLE — bloqué côté serveur, même campagne active et consentement.
+    // J+80 (lot 102A : purge J+90 livrée) : JAMAIS envoyé sans suppression réellement programmée.
     await run('2033-05-29T15:00:00Z', [a.id]);
     expect(mailsTo(a.email)).toHaveLength(4);
-    expect(await message(a.id, 'J80')).toMatchObject({ status: 'blocked', reason: 'retention_policy_not_set', template_code: 'TRIAL_DATA_RETENTION_J80' });
-    // Même avec une suppression « essai abandonné » planifiée : aucune date promise sans purge réelle.
+    expect(await message(a.id, 'J80')).toMatchObject({ status: 'blocked', reason: 'deletion_not_scheduled', template_code: 'TRIAL_DATA_RETENTION_J80' });
+    // Suppression « fin d'essai » programmée : envoyé, avec la date RÉELLE et les jours restants.
     await sql`INSERT INTO scheduled_account_deletions (account_id, user_id, reason, origin, confirmed_at, scheduled_at, status)
-              VALUES (${a.id}, ${a.ownerUserId}, 'TRIAL_ABANDONED', 'system', now(), '2033-06-08T00:00:00Z', 'SCHEDULED')`;
+              VALUES (${a.id}, ${a.ownerUserId}, 'TRIAL_ABANDONED', 'system', now(), '2033-06-08T14:05:00Z', 'SCHEDULED')`;
     await run('2033-05-29T16:00:00Z', [a.id]);
-    expect(await message(a.id, 'J80')).toMatchObject({ status: 'blocked', reason: 'retention_policy_not_set' });
-    expect(mailsTo(a.email)).toHaveLength(4);
+    expect(await message(a.id, 'J80')).toMatchObject({ status: 'sent' });
+    expect(mailsTo(a.email)).toHaveLength(5);
+    expect(mailsTo(a.email)[4].subject).toBe('Vos données Verebona : encore 10 jours pour les récupérer');
+    expect(mailsTo(a.email)[4].html).toContain('8 juin 2033');
     const blocked = (await events(a.id)).filter((e) => e.event_type === 'blocked');
     expect(blocked).toHaveLength(1); // une ligne par changement de motif, pas par passage
     const { getTrialLifecycleSummary } = await import('@/services/trial-lifecycle/supervision.service');
     const s = await getTrialLifecycleSummary(D('2033-05-29T16:30:00Z'));
-    expect(s.milestones.find((m) => m.code === 'J80')!.state).toEqual({ active: false, label: 'Bloqué : politique de conservation non fixée' });
-    expect(s.retention.locked).toBe(true);
+    expect(s.milestones.find((m) => m.code === 'J80')!.state).toEqual({ active: true, label: 'Actif — seulement si une suppression est réellement programmée' });
+    expect(s.retention.locked).toBe(false);
   });
 
   it('L100G-E2E-03 — désinscription sans connexion, signée, idempotente ; aucun contournement par les notifications de service', async () => {

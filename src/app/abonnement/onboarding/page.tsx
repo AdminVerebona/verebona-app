@@ -8,6 +8,8 @@ import { Loader2, ShieldCheck, Gift, Calendar, ArrowRight, AlertCircle } from 'l
 import { apiClient } from '@/lib/api-client';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
 import { useBillingCatalog } from '@/hooks/useBillingCatalog';
+import { ImmediateStartConsent } from '@/components/billing/ImmediateStartConsent';
+import { IMMEDIATE_START_FIELD } from '@/lib/legal/immediate-start';
 import { billingMention, findOffer, offerAmount, periodSuffix, priceConfirmationFromError, type CatalogOffer } from '@/lib/billing/catalog-client';
 
 function OnboardingContent() {
@@ -25,6 +27,8 @@ function OnboardingContent() {
   const { catalog } = useBillingCatalog();
   const [confirmedOffer, setConfirmedOffer] = useState<CatalogOffer | null>(null);
   const [priceChanged, setPriceChanged] = useState(false);
+  // Lot 102B : demande expresse de démarrage immédiat (case non pré-cochée).
+  const [immediateStart, setImmediateStart] = useState(false);
   const shownOffer = confirmedOffer ?? (planFromUrl ? findOffer(catalog, planFromUrl, periodChoice) : null);
 
   // Lot 100G (E2) : plus aucune mention d'un essai de 60 jours (« 2 mois
@@ -46,6 +50,7 @@ function OnboardingContent() {
       router.push('/mon-compte/offres');
       return;
     }
+    if (!immediateStart) return;
     setLoading(true);
     setError(null);
     try {
@@ -58,6 +63,7 @@ function OnboardingContent() {
       // CDC §4.1 : periodicite choisie (defaut annuel).
       payload.billing_period = periodChoice;
       payload.displayed_price_revision = shownOffer?.price_revision ?? null;
+      payload[IMMEDIATE_START_FIELD] = immediateStart;
 
       const data = await apiClient.post<{ checkout_url?: string; message?: string }>('/api/billing/create-checkout-session', payload);
       if (data.checkout_url) {
@@ -164,9 +170,12 @@ function OnboardingContent() {
             </div>
 
             <div className="space-y-4">
+              {planFromUrl && (
+                <ImmediateStartConsent checked={immediateStart} onChange={setImmediateStart} disabled={loading} />
+              )}
               <button
                 onClick={handleStartTrial}
-                disabled={loading}
+                disabled={loading || (Boolean(planFromUrl) && !immediateStart)}
                 className="w-full flex items-center justify-center gap-2 py-3.5 px-4 bg-[color:var(--accent)] hover:bg-[color:var(--accent-hover)] text-[color:var(--on-accent)] font-bold rounded-[12px] transition-colors disabled:opacity-50 disabled:cursor-not-allowed group cursor-pointer"
               >
                 {loading ? (

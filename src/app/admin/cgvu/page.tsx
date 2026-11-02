@@ -1,10 +1,10 @@
 import { redirect } from 'next/navigation';
 
 /**
- * Ancien écran « CGSU » — supprimé par le CDC Back-Office V1 §15 (LEG-001 : gestion et versionnement hors BO).
- * L'URL historique renvoie vers l'écran cible ; aucune donnée ni action n'est
- * plus servie ici.
+ * Ancienne adresse de l'écran des conditions générales (identifiant technique
+ * conservé). Lot 102B : l'écran BO est « CGUV » — référentiel des versions
+ * relu dans le manifeste du site public, sans édition de texte.
  */
 export default function LegacyRedirect() {
-  redirect('/admin');
+  redirect('/admin/cguv');
 }

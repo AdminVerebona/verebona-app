@@ -175,6 +175,25 @@ export function dailyTasks(env: NodeJS.ProcessEnv = process.env): DailyTask[] {
     },
   });
 
+  // Lot 102C : purge des copies de données réelles échues (hors production
+  // seulement ; environnement connu). Tâche absente en production et sur un
+  // poste sans NEXT_PUBLIC_APP_ENV. Échec d'un compte : la copie reste « en
+  // purge », anomalie ouverte, reprise au passage suivant.
+  const appEnv = (env.NEXT_PUBLIC_APP_ENV ?? '').trim().toLowerCase();
+  const prodNames = (env.PRODUCTION_ENVIRONMENT_NAMES ?? 'production,prod,live').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  if (appEnv && appEnv !== 'unknown' && !prodNames.includes(appEnv)) {
+    tasks.push({
+      lock: 'daily-production-copies',
+      window: [5, 8],
+      run: async () => {
+        const { purgeExpiredProductionCopies } = await import('@/services/admin/production-copies/production-copies.service');
+        const r = await purgeExpiredProductionCopies();
+        if (r.purged || r.failed) console.info('[daily-jobs] production-copies :', JSON.stringify(r));
+        if (r.failed) throw new Error(`${r.failed} copie(s) de données réelles non entièrement purgée(s)`);
+      },
+    });
+  }
+
   // Archivage S3 des logs IA > 90 jours — CDC BO IA WF-25, WF-45. Placé
   // AVANT la purge de l'assistant, même fenêtre (un tour exécute les tâches
   // dans l'ordre) ; le seuil de 88 jours complets garantit de toute façon

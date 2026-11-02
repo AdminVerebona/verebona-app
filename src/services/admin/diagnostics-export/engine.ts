@@ -576,6 +576,11 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
           FROM ai_master_prompt_versions WHERE ${global ? 'TRUE' : `status = 'ACTIVE' OR (master_prompt_code, version_number::text) IN (SELECT DISTINCT master_prompt_code, master_prompt_version FROM ai_usage_event WHERE account_id = ANY({{accounts}}::int[]) AND master_prompt_code IS NOT NULL)`}
          ORDER BY treatment, master_prompt_code, version_number`)),
       variablesDeFonctionnement: runtimeFlags(),
+      // Lot 102C : localisation du stockage documentaire (région, hôte, liste autorisée, motifs — sans secret)
+      // et copies de données réelles présentes dans cet environnement.
+      stockageDocumentaire: await safe('stockage documentaire', async () => (await import('@/lib/storage-location')).evaluateStorageLocation()),
+      copiesDeDonneesReelles: await safe('copies de données réelles', async () => qn(`SELECT id, origin, source_environment, target_environment, backup_id, status, responsible_email, authorized_at, imported_at, expires_at, jsonb_array_length(account_ids) AS comptes, purged_at, closed_at
+          FROM production_data_copies ORDER BY id DESC`)),
       erreurs: errors,
     };
     await w(`${JSON.stringify(kit.M(v), null, 2)}\n`);

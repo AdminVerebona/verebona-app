@@ -3,9 +3,11 @@
  *
  *   PO-Q1  : délai de rétractation à partir du PAIEMENT (premier paiement de
  *            l'abonnement payant), pas de la création ;
- *   PO-Q2  : traitement IMMÉDIAT — accès coupés, remboursement intégral,
- *            compte supprimé (factures et preuve conservées), reprise
- *            automatique d'un remboursement échoué, idempotence ;
+ *   PO-Q2  : traitement IMMÉDIAT — droits payants coupés, remboursement
+ *            intégral, reprise automatique d'un remboursement échoué,
+ *            idempotence ; LOT 102A (décision PO du 31/10/2026) : le compte
+ *            n'est PLUS supprimé — lecture seule, données conservées 90 jours
+ *            (purge programmée, annulée par une nouvelle souscription) ;
  *   PO-Q11 : statuts officiels (migration 0278, rejouable) ;
  *   PO-Q18/Q19 : une notification par lot d'envoi réussi, tous comptes ;
  *   PO-Q25 : le rappel du matin se coupe par le réglage des notifications.
@@ -122,7 +124,7 @@ scenario('L32F', 'Décisions PO du 07/10 : rétractation, statuts, notifications
 
   // ── PO-Q2 ──────────────────────────────────────────────────────────────────
 
-  it('PO-Q2 — confirmation : accès coupés, compte supprimé immédiatement, factures et preuve conservées, e-mail d’au revoir ; remboursement échoué repris automatiquement ; idempotent', async () => {
+  it('PO-Q2 / L102A — confirmation : abonnement annulé, compte en LECTURE SEULE et CONSERVÉ (purge à +90 jours), accusé ; remboursement échoué repris automatiquement ; idempotent', async () => {
     stripeState.refundFails = true;
     stripeState.refunds = [];
     stripeState.cancelled = 0;
@@ -139,32 +141,46 @@ scenario('L32F', 'Décisions PO du 07/10 : rétractation, statuts, notifications
     const res = await confirmer(cle);
     expect(res.status).toBe(201);
     const body = await res.json();
-    expect(body).toMatchObject({ accountDeletion: 'immediate', processing: 'done', alreadyRecorded: false });
+    expect(body).toMatchObject({ accountAfterWithdrawal: 'read_only_retention', processing: 'done', alreadyRecorded: false });
     expect(body.dataExportDeadlineAt).toBeUndefined();
 
-    // Compte, utilisateur et données supprimés immédiatement.
-    expect(await sql`SELECT 1 FROM accounts WHERE id = ${acc.id}`).toHaveLength(0);
-    expect(await sql`SELECT 1 FROM users WHERE id = ${acc.ownerUserId}`).toHaveLength(0);
-    expect(await sql`SELECT 1 FROM assets WHERE id = ${bien.id}`).toHaveLength(0);
-    // Obligations légales : facture conservée (détachée), demande de rétractation conservée.
+    // Lot 102A : RIEN n'est supprimé — compte en lecture seule, données conservées.
+    expect(await sql`SELECT 1 FROM accounts WHERE id = ${acc.id}`).toHaveLength(1);
+    expect(await sql`SELECT 1 FROM users WHERE id = ${acc.ownerUserId} AND status = 'ACTIVE'`).toHaveLength(1);
+    expect(await sql`SELECT 1 FROM assets WHERE id = ${bien.id}`).toHaveLength(1);
+    const [etat] = await sql<{ s: string; r: string }[]>`
+      SELECT a.subscription_status AS s, sub.status AS r FROM accounts a JOIN account_subscriptions sub ON sub.account_id = a.id WHERE a.id = ${acc.id}`;
+    expect(etat).toEqual({ s: 'WITHDRAWN', r: 'readonly' });
+    const { getEntitlements } = await import('@/services/entitlements.service');
+    expect(await getEntitlements(acc.id)).toMatchObject({ canWrite: false, canRead: true, premiumFeatures: false });
+    // Purge programmée à +90 jours (motif RETRACTATION), origine système : aucune demande RGPD.
+    const [purge] = await sql<{ reason: string; origin: string; scheduled_at: Date; confirmed_at: Date }[]>`
+      SELECT reason, origin, scheduled_at, confirmed_at FROM scheduled_account_deletions WHERE account_id = ${acc.id} AND status = 'SCHEDULED'`;
+    expect(purge).toMatchObject({ reason: 'WITHDRAWAL', origin: 'system' });
+    expect(Math.round((new Date(purge.scheduled_at).getTime() - new Date(purge.confirmed_at).getTime()) / JOUR)).toBe(90);
+    // Facture toujours rattachée au compte (conservé).
     const [f] = await sql<{ account_id: number | null }[]>`SELECT account_id FROM invoices WHERE id = ${facture.id}`;
-    expect(f).toEqual({ account_id: null });
+    expect(f).toEqual({ account_id: acc.id });
     const [demande] = await sql<{ public_reference: string; status: string; account_id: number | null; failure_code: string | null; data_export_deadline_at: Date | null; cancellation_status: string }[]>`
       SELECT public_reference, status, account_id, failure_code, data_export_deadline_at, cancellation_status
         FROM withdrawal_requests WHERE idempotency_key = ${cle}`;
-    expect(demande).toMatchObject({ account_id: null, status: 'failed', cancellation_status: 'cancelled', data_export_deadline_at: null });
+    expect(demande).toMatchObject({ account_id: acc.id, status: 'failed', cancellation_status: 'cancelled', data_export_deadline_at: null });
     expect(demande.failure_code).toMatch(/^REFUND_FAILED/);
     const journal = await sql<{ event_type: string; result: string }[]>`
       SELECT event_type, result FROM withdrawal_events WHERE public_reference = ${demande.public_reference} ORDER BY id`;
-    expect(journal.map((e) => e.event_type)).toEqual(expect.arrayContaining(['DECLARATION_RECEIVED', 'EXPORT_ONLY_ENTERED', 'SUBSCRIPTION_CANCELLED', 'DELETION_EXECUTED']));
-    // E-mail d'au revoir (= accusé) envoyé une fois, sans lien de suivi.
+    expect(journal.map((e) => e.event_type)).toEqual(expect.arrayContaining(['DECLARATION_RECEIVED', 'EXPORT_ONLY_ENTERED', 'SUBSCRIPTION_CANCELLED', 'DELETION_SCHEDULED']));
+    expect(journal.map((e) => e.event_type)).not.toContain('DELETION_EXECUTED');
+    // Accusé envoyé une fois, sans lien de suivi ; conservation annoncée.
     expect(emails.filter((e) => e.templateCode === 'WITHDRAWAL_RECEIPT')).toHaveLength(1);
     expect(emails[0].variables.trackingUrl).toBeUndefined();
-    const [modele] = await sql<{ body: string }[]>`SELECT body FROM email_templates WHERE type = 'WITHDRAWAL_RECEIPT'`;
-    expect(modele.body).toContain('sont <strong>supprimés</strong>');
+    expect(emails[0].variables.retentionDays).toBe('90');
+    const [modele] = await sql<{ body: string; subject: string }[]>`SELECT body, subject FROM email_templates WHERE type = 'WITHDRAWAL_RECEIPT'`;
+    expect(modele.body).toContain('<strong>lecture seule</strong>');
+    expect(modele.body).not.toContain('sont <strong>supprimés</strong>');
+    expect(modele.subject).not.toMatch(/supprim/);
     expect(modele.body).not.toContain('{{trackingUrl}}');
 
-    // Double soumission après suppression : même déclaration, rien de nouveau.
+    // Double soumission : même déclaration, rien de nouveau.
     const bis = await confirmer(cle);
     expect(bis.status).toBe(200);
     expect(await bis.json()).toMatchObject({ publicReference: demande.public_reference, alreadyRecorded: true });

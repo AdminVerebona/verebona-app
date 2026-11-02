@@ -30,6 +30,14 @@ interface ExportState {
   error: string | null;
 }
 
+/** Lot 102C : partie téléchargeable de l'archive. */
+interface ExportPart {
+  number: number;
+  sizeBytes: number | null;
+  documents: number;
+  downloadUrl: string;
+}
+
 const ENDPOINT = '/api/users/me/gdpr-export';
 
 function parisDateTime(iso: string): string {
@@ -47,15 +55,17 @@ function size(bytes: number | null): string {
 export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = {}) {
   const [state, setState] = useState<ExportState | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [parts, setParts] = useState<ExportPart[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const poll = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const apply = (data: { export: ExportState | null; downloadUrl: string | null }) => {
+  const apply = (data: { export: ExportState | null; downloadUrl: string | null; parts?: ExportPart[] }) => {
     setState(data.export);
     setDownloadUrl(data.downloadUrl);
+    setParts(Array.isArray(data.parts) ? data.parts : []);
   };
 
   const load = useCallback(async () => {
@@ -119,6 +129,8 @@ export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = 
           L’archive (ZIP) contient les données de votre compte utilisateur et de votre espace Verebona
           au format JSON — biens, documents, échéances, notifications, abonnement… — ainsi que les
           documents que vous avez déposés. Elle est distincte des exports de vos biens.
+          Tous vos documents sont inclus : une archive volumineuse est découpée en plusieurs parties.
+          Ce téléchargement reste disponible même si votre compte est en lecture seule ou en cours de suppression.
         </p>
 
         {loading ? (
@@ -151,13 +163,36 @@ export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = 
                   {state.sizeBytes ? ` (${size(state.sizeBytes)})` : ''}.
                   {state.expiresAt && <> Disponible jusqu’au {parisDateTime(state.expiresAt)}.</>}
                 </p>
-                <Button size="sm" asChild>
-                  {/* Route authentifiée : redirige vers un lien de stockage à durée courte. */}
-                  <a href={downloadUrl} rel="noopener">
-                    <Download className="w-4 h-4 mr-1.5" />
-                    Télécharger l’archive
-                  </a>
-                </Button>
+                {parts.length > 1 ? (
+                  <div className="space-y-2">
+                    <p>
+                      Votre archive est découpée en {parts.length} parties pour contenir tous vos documents.
+                      Téléchargez chaque partie : la partie 1 contient vos données et l’inventaire complet.
+                    </p>
+                    <ul className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                      {parts.map((p) => (
+                        <li key={p.number}>
+                          <Button size="sm" variant={p.number === 1 ? 'default' : 'outline'} asChild className="w-full sm:w-auto">
+                            {/* Route authentifiée : redirige vers un lien de stockage à durée courte. */}
+                            <a href={p.downloadUrl} rel="noopener">
+                              <Download className="w-4 h-4 mr-1.5" />
+                              Partie {p.number} sur {parts.length}
+                              {p.sizeBytes ? ` (${size(p.sizeBytes)})` : ''}
+                            </a>
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : (
+                  <Button size="sm" asChild>
+                    {/* Route authentifiée : redirige vers un lien de stockage à durée courte. */}
+                    <a href={downloadUrl} rel="noopener">
+                      <Download className="w-4 h-4 mr-1.5" />
+                      Télécharger l’archive
+                    </a>
+                  </Button>
+                )}
               </div>
             )}
 

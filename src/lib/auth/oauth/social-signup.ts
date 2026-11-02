@@ -7,7 +7,7 @@
  *
  *   · Le compte n'est créé qu'APRÈS le choix explicite « Créer un nouveau
  *     compte », le profil (prénom, nom, adresse principale) et l'acceptation
- *     des CGSU dans la version RÉELLEMENT affichée (SIGN-02/03).
+ *     des CGUV dans la version RÉELLEMENT affichée (SIGN-02/03).
  *   · Compte ET identité externe créés dans UNE transaction : jamais
  *     d'identité orpheline ni de compte sans identité (§7.2 étape 14).
  *   · Adresse principale = celle attestée (vérifiée) par le fournisseur →
@@ -17,7 +17,7 @@
  *   · Mêmes règles métier que l'inscription par mot de passe
  *     (`app/api/users/route.ts`) : offre STANDARD imposée côté serveur, essai
  *     de 7 jours (`grantTrial`, anti-fraude par adresse), preuve d'acceptation
- *     des CGSU, parrainage (sans double attribution), pré-lancement fermé
+ *     des CGUV, parrainage (sans double attribution), pré-lancement fermé
  *     sauf invitation valide, invitation à un compte partagé (adhésion
  *     activée : l'adresse est prouvée), invitation Premium Duo (identité
  *     seule, rattachement par /api/duo/join), transmission (acceptée après
@@ -33,6 +33,8 @@ import { db, pgClient } from '@/db';
 import { accountAuditLog, accountMemberships, accounts, authIdentities, users } from '@/db/schema';
 import { getCurrentVersion } from '@/services/legal';
 import { recordAcceptance } from '@/services/legal/legal-acceptances.service';
+import { channelFrom } from '@/lib/legal/public-legal';
+import { readClientContext } from '@/lib/mobile/client-context';
 import { grantTrial } from '@/services/trial.service';
 import { recordSignupReferral } from '@/services/referral-attribution.service';
 import { getSignupMode } from '@/lib/prelaunch';
@@ -50,6 +52,10 @@ export interface SocialProfile {
   email: string;
   termsVersion: string;
   referralCode: string | null;
+  /** Lot 102C : choix sur les relances commerciales (conservé à travers l'étape « code »). */
+  marketing?: { checked?: unknown; noticeSha256?: unknown } | null;
+  /** Lot 102D : jeton `rt` du lien de parrainage (facultatif). */
+  referralTouch?: string | null;
 }
 
 export type ProfileError =
@@ -59,8 +65,8 @@ export const PROFILE_ERROR_MESSAGES: Readonly<Record<ProfileError, string>> = {
   MISSING_FIRST_NAME: 'Le prénom est requis.',
   MISSING_LAST_NAME: 'Le nom est requis.',
   INVALID_EMAIL: 'Adresse e-mail invalide.',
-  TERMS_NOT_ACCEPTED: 'Vous devez accepter les conditions générales pour créer un compte.',
-  NO_CURRENT_LEGAL_VERSION: 'Les conditions générales sont momentanément indisponibles. Réessayez dans quelques instants.',
+  TERMS_NOT_ACCEPTED: 'Vous devez accepter les CGUV pour créer un compte.',
+  NO_CURRENT_LEGAL_VERSION: 'Les CGUV sont momentanément indisponibles. Réessayez dans quelques instants.',
 };
 
 const clean = (v: unknown, max: number): string => (typeof v === 'string' ? v.trim().replace(/[\u0000-\u001f\u007f]/g, '').slice(0, max) : '');
@@ -70,7 +76,7 @@ export function isPlausibleEmail(email: string): boolean {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-/** Contrôle du profil saisi (pur, hors version CGSU). */
+/** Contrôle du profil saisi (pur, hors version CGUV). */
 export function validateProfileInput(raw: Record<string, unknown>): { ok: true; firstName: string; lastName: string; email: string; referralCode: string | null; presentedVersion: string | null } | { ok: false; code: ProfileError } {
   const firstName = clean(raw.firstName, 100);
   const lastName = clean(raw.lastName, 100);
@@ -84,7 +90,7 @@ export function validateProfileInput(raw: Record<string, unknown>): { ok: true; 
   return { ok: true, firstName, lastName, email, referralCode: referral || null, presentedVersion: presented || null };
 }
 
-/** Version des CGSU retenue : celle présentée, sinon la courante (§7, CDC 7 §18). `null` : aucune publiée. */
+/** Version des CGUV retenue : celle présentée, sinon la courante (§7, CDC 7 §18). `null` : aucune publiée. */
 export async function acceptedTermsVersion(presented: string | null): Promise<string | null> {
   const current = await getCurrentVersion();
   if (!current) return null;
@@ -230,7 +236,9 @@ export async function createSocialAccount(input: {
     await recordAcceptance({
       userId: created.userId,
       versionCode: profile.termsVersion,
-      context: 'ACCOUNT_CREATION',
+      // Lot 102B : contexte « connexion sociale » et canal figés dans la preuve.
+      context: 'SOCIAL_SIGNUP',
+      channel: channelFrom(readClientContext(input.request).client, input.request.headers.get('user-agent')),
       ipAddress: getClientIp(input.request.headers),
       userAgent: input.request.headers.get('user-agent'),
       acceptedAt: now,
@@ -238,9 +246,14 @@ export async function createSocialAccount(input: {
   } catch (e) {
     console.error(`[social-signup] preuve d'acceptation non enregistrée (utilisateur ${created.userId}) :`, (e as Error)?.message ?? e);
   }
+  // Lot 102C : preuve de l'information et du choix (relances commerciales). Ne lève jamais.
+  {
+    const { readSignupMarketingInput, recordSignupMarketingChoice } = await import('@/services/trial-lifecycle/signup-collection');
+    await recordSignupMarketingChoice({ userId: created.userId, context: 'social_signup', marketing: readSignupMarketingInput(profile.marketing ?? null), now });
+  }
   if (created.accountId && profile.referralCode) {
     try {
-      await recordSignupReferral({ userId: created.userId, accountId: created.accountId, rawCode: profile.referralCode, entryPoint: 'direct_signup', now });
+      await recordSignupReferral({ userId: created.userId, accountId: created.accountId, rawCode: profile.referralCode, referralTouch: profile.referralTouch ?? null, entryPoint: 'direct_signup', now });
     } catch (e) {
       console.error('[social-signup] parrainage :', (e as Error)?.message ?? e);
     }

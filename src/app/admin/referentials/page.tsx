@@ -17,6 +17,7 @@
  * désormais redirigées ici. Onglet, tri et sens sont portés par l'URL (UX-004).
  */
 import { Suspense, useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -175,6 +176,8 @@ function ReferentialsScreen() {
           <p className="text-sm text-muted-foreground mt-0.5">
             Consultation et utilisations actuelles. Les référentiels sont versionnés dans le code{data ? ` (version ${data.version})` : ''} et ne sont pas modifiables ici.
           </p>
+          {/* Lot 102B : versions des CGUV (manifeste du site public). */}
+          <Link href="/admin/cguv" className="text-sm underline">CGUV — référentiel des versions (site public)</Link>
         </div>
         <Button variant="outline" size="sm" onClick={() => load()} disabled={loading}>
           <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} /> Actualiser

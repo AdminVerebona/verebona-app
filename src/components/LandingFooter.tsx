@@ -1,6 +1,13 @@
+'use client';
+
 import Link from 'next/link';
 import { Logo } from './Logo';
 import { publicSiteUrl } from '@/lib/external-urls';
+import type { LegalDocumentKey, LegalLinks } from '@/lib/legal/public-legal';
+import { useLegalLinks } from '@/hooks/useLegalLinks';
+
+/** Lot 102B : `legalKey` = contenu légal résolu par `useLegalLinks` (repli : adresses actuelles du site). */
+type FooterLink = { href: string; label: string; external?: boolean; legalKey?: LegalDocumentKey };
 
 /**
  * Colonnes du pied de page public.
@@ -13,14 +20,14 @@ import { publicSiteUrl } from '@/lib/external-urls';
  * app.verebona.fr, où aucune n'existe : six 404 apparaissaient dans la
  * console au seul survol, Next préchargeant les liens.
  *
- * Seuls `/cgvu` et `/retractation` sont servis par l'application, et c'est
- * délibéré : le §12 du CDC CGVU exige que les conditions restent accessibles
- * sans session, et le §6.1 du CDC rétractation impose le même parcours partout.
+ * Seul `/retractation` est servi par l'application (§6.1 du CDC rétractation).
+ * Lot 102B : tous les contenus légaux, CGUV comprises, sont sur le site public
+ * (source juridique unique, URL directe par contenu).
  * ══════════════════════════════════════════════════════════════════════════
  */
 const COLUMNS: Array<{
   title: string;
-  links: Array<{ href: string; label: string; external?: boolean }>;
+  links: FooterLink[];
 }> = [
   {
     title: 'Produit',
@@ -44,35 +51,44 @@ const COLUMNS: Array<{
   {
     title: 'Légal',
     links: [
-      { href: '/mentions-legales',  label: 'Mentions légales', external: true },
-      { href: '/cgvu',              label: 'CGVU' },
+      { href: 'legal:mentionsLegales', legalKey: 'mentionsLegales', label: 'Mentions légales' },
+      { href: 'legal:cguv',            legalKey: 'cguv',            label: 'CGUV' },
       // CDC rétractation §6.1 : libellé imposé mot pour mot.
       { href: '/retractation',      label: 'Renoncer au contrat ici' },
-      { href: '/confidentialite',   label: 'Confidentialité', external: true },
+      { href: 'legal:confidentialite', legalKey: 'confidentialite', label: 'Confidentialité' },
+      { href: 'legal:sousTraitants',   legalKey: 'sousTraitants',   label: 'Sous-traitants et prestataires' },
+      // « Parrainage » : onglet du site public, volontairement absent d'ici —
+      // ce pied de page est aussi celui de l'inscription d'un invité Premium
+      // Duo, sans aucune mention de parrainage (lot 57A). Lien dans Mon compte.
     ],
   },
 ];
 
-/** Cible réelle d'un lien : vitrine ou application. */
-function resolveHref(link: { href: string; external?: boolean }): string {
+/** Cible réelle d'un lien : contenu légal, vitrine ou application. */
+function resolveHref(link: FooterLink, legal: LegalLinks): string {
+  if (link.legalKey) return legal[link.legalKey];
   return link.external ? publicSiteUrl(link.href) : link.href;
 }
 
 export function AuthFooter() {
+  const legal = useLegalLinks();
   return (
     <footer className="py-4 px-6 text-center">
       <p className="text-xs text-[color:var(--text-muted)]">
         © {new Date().getFullYear()} Verebona. Tous droits réservés.
         {' · '}
-        <a href={publicSiteUrl('/mentions-legales')} className="hover:text-[color:var(--text-primary)] transition-colors">Mentions légales</a>
+        <a href={legal.mentionsLegales} className="hover:text-[color:var(--text-primary)] transition-colors">Mentions légales</a>
         {' · '}
-        <a href={publicSiteUrl('/confidentialite')} className="hover:text-[color:var(--text-primary)] transition-colors">Confidentialité</a>
+        <a href={legal.cguv} className="hover:text-[color:var(--text-primary)] transition-colors">CGUV</a>
+        {' · '}
+        <a href={legal.confidentialite} className="hover:text-[color:var(--text-primary)] transition-colors">Confidentialité</a>
       </p>
     </footer>
   );
 }
 
 export function LandingFooter() {
+  const legal = useLegalLinks();
   // Charte « Sérénité » : pied des pages publiques sur le fond du menu du
   // thème courant (`.public-page` suit le thème depuis le lot 67, comme les
   // pages d'authentification), filet du thème, textes aux jetons.
@@ -101,7 +117,7 @@ export function LandingFooter() {
                 {col.links.map((link) => (
                   <li key={link.href}>
                     <Link
-                      href={resolveHref(link)}
+                      href={resolveHref(link, legal)}
                       className="text-sm text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] transition-colors"
                     >
                       {link.label}

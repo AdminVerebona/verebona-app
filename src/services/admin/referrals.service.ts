@@ -20,7 +20,7 @@
  */
 import { pgClient } from '@/db';
 import { stripeDashboardUrl } from '@/lib/stripe-links';
-import { REFERRAL_REWARD_MONTHS, withdrawalDeadline } from '@/services/referral-reward.service';
+import { REFERRAL_REASON_LABELS, REFERRAL_RULES, rewardEarliestAt } from '@/services/referral/referral-rules';
 import type { Page } from './subscriptions.service';
 
 type ListSortDirection = 'asc' | 'desc';
@@ -146,6 +146,8 @@ interface ReferralEventSource {
   status: string;
   usedAt: Date;
   firstBilledAt: Date | null;
+  /** Lot 102D : départ légal du délai de rétractation (si connu). */
+  contractConcludedAt?: Date | null;
   rewardAppliedAt: Date | null;
   rewardedAt: Date | null;
   rewardGrantedAt: Date | null;
@@ -166,6 +168,8 @@ interface ReferralEventView {
   rewardedAt: string | null;
   reward: string | null;
   canceledAt: string | null;
+  /** Lot 102D : motif d'annulation ou d'attente, en clair (règle centrale). */
+  reasonLabel: string | null;
 }
 
 export function toReferralStatus(status: string): ReferralEventStatus {
@@ -176,13 +180,16 @@ export function toReferralStatus(status: string): ReferralEventStatus {
 
 /**
  * Vue d'un parrainage. Date prévisionnelle : fin du délai de rétractation du
- * filleul après son premier paiement (CDC tarification §13) ; inconnue tant
- * que le filleul n'a pas été facturé.
+ * filleul après son premier paiement ANNUEL (règle centrale, lot 102D :
+ * calendrier légal + marge) ; inconnue tant que ce paiement n'existe pas.
  */
 export function describeReferralEvent(e: ReferralEventSource): ReferralEventView {
   const status = toReferralStatus(e.status);
   const rewardedAt = e.rewardAppliedAt ?? e.rewardedAt ?? e.rewardGrantedAt;
-  const ineligibility = (e.metadata?.rewardIneligibility as { at?: string } | undefined)?.at;
+  const ineligibilityInfo = e.metadata?.rewardIneligibility as { at?: string; reason?: string } | undefined;
+  const ineligibility = ineligibilityInfo?.at;
+  const pending = (e.metadata?.rewardPending as { reason?: string } | undefined)?.reason;
+  const reasonCode = status === 'canceled' ? ineligibilityInfo?.reason : status === 'in_progress' ? pending : undefined;
   return {
     id: e.id,
     referredAccountId: e.referredAccountId,
@@ -190,14 +197,15 @@ export function describeReferralEvent(e: ReferralEventSource): ReferralEventView
     status,
     statusLabel: REFERRAL_STATUS_LABELS[status],
     usedAt: e.usedAt.toISOString(),
-    forecastRewardAt: status === 'in_progress' && e.firstBilledAt ? withdrawalDeadline(e.firstBilledAt).toISOString() : null,
+    forecastRewardAt: status === 'in_progress' && e.firstBilledAt ? rewardEarliestAt({ firstBilledAt: e.firstBilledAt, contractConcludedAt: e.contractConcludedAt ?? null })?.toISOString() ?? null : null,
     rewardedAt: status === 'validated' && rewardedAt ? rewardedAt.toISOString() : null,
     reward: status === 'validated'
-      ? `${REFERRAL_REWARD_MONTHS} mois offert${REFERRAL_REWARD_MONTHS > 1 ? 's' : ''} au parrain`
+      ? `${REFERRAL_RULES.rewardMonths} mois offert${REFERRAL_RULES.rewardMonths > 1 ? 's' : ''} au parrain`
       : null,
     canceledAt: status === 'canceled'
       ? (ineligibility ? new Date(ineligibility).toISOString() : e.updatedAt?.toISOString() ?? null)
       : null,
+    reasonLabel: reasonCode ? (REFERRAL_REASON_LABELS[reasonCode] ?? reasonCode) : null,
   };
 }
 
@@ -221,7 +229,7 @@ export async function getReferrerDetail(linkId: number): Promise<ReferrerDetail 
   const rows = await pgClient.unsafe<Array<Record<string, unknown>>>(
     `SELECT re.id, re.referred_account_id, a.name AS referred_account_name, re.status,
             coalesce(re.captured_at, re.created_at) AS used_at,
-            coalesce(re.first_billed_at, s.first_billed_at) AS first_billed_at,
+            re.first_billed_at, re.contract_concluded_at,
             re.reward_applied_at, re.rewarded_at, re.reward_granted_at, re.updated_at, re.metadata_json
        FROM referral_events re
        LEFT JOIN accounts a ON a.id = re.referred_account_id
@@ -244,6 +252,7 @@ export async function getReferrerDetail(linkId: number): Promise<ReferrerDetail 
       status: String(r.status),
       usedAt: new Date(r.used_at as string),
       firstBilledAt: d(r.first_billed_at),
+      contractConcludedAt: d(r.contract_concluded_at),
       rewardAppliedAt: d(r.reward_applied_at),
       rewardedAt: d(r.rewarded_at),
       rewardGrantedAt: d(r.reward_granted_at),

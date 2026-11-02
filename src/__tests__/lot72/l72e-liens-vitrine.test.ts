@@ -29,6 +29,18 @@ import { renderToStaticMarkup } from 'react-dom/server';
 const { checkPublicHref, PUBLIC_LINK_INVENTORY: inv, LINK_INVENTORY_SCHEMA } = await import('@/lib/public-site/link-inventory');
 const { publicSiteUrl } = await import('@/lib/external-urls');
 const { HELP_CONTACT_PATH } = await import('@/lib/help-center/open');
+const { LEGAL_PUBLIC_PATHS, LEGAL_LEGACY_PATHS } = await import('@/lib/legal/public-legal');
+
+/**
+ * Lot 102B : chemins de la rubrique « Légal » fixés par le CONTRAT avec le
+ * site public (docs/exploitation/contrat-site-public-legal.md). Ils ne sont
+ * pas encore dans l'inventaire généré par la vitrine tant qu'elle ne les a pas
+ * livrés : ils sont contrôlés contre le contrat (L72E-LV-05), puis contre
+ * l'inventaire dès qu'il les contient.
+ */
+const LEGAL_CONTRACT_PATHS = new Set(Object.values(LEGAL_PUBLIC_PATHS));
+const legalPathVerdict = (path: string) =>
+  LEGAL_CONTRACT_PATHS.has(path) && checkPublicHref(path).status === 'missing-page' ? { status: 'ok' } : checkPublicHref(path);
 
 const ROOT = process.cwd();
 const lire = (f: string) => readFileSync(join(ROOT, f), 'utf8');
@@ -79,10 +91,10 @@ describe('L72E-LV-01 — pied de page public (LandingFooter)', () => {
       for (const href of hrefs) {
         if (href.startsWith(base)) {
           const chemin = href.slice(base.length) || '/';
-          expect({ href, verdict: checkPublicHref(chemin) }).toEqual({ href, verdict: { status: 'ok' } });
+          expect({ href, verdict: legalPathVerdict(chemin) }).toEqual({ href, verdict: { status: 'ok' } });
         } else {
-          // Liens servis par l'application (CGVU, rétractation).
-          expect(['/cgvu', '/retractation']).toContain(href);
+          // Lien servi par l'application (rétractation) ; lot 102B : plus les CGUV.
+          expect(['/retractation']).toContain(href);
         }
       }
     }
@@ -99,6 +111,17 @@ for (const file of SOURCES) {
     if (!/export function publicSiteUrl\(/.test(src.slice(Math.max(0, (m.index ?? 0) - 16), (m.index ?? 0) + 15))) nonLitteraux.push(file);
   }
   for (const m of src.matchAll(/\{\s*href:\s*'([^']+)'[^}]*\bexternal:\s*true[^}]*\}/g)) liens.push({ file, path: m[1], via: 'external: true' });
+  // Lot 102B : liens légaux par CONTENU (`legalKey: 'cguv'`, `legal.cguv` /
+  // `legalLinks.cguv` de `useLegalLinks`) — chacun vise l'adresse ACTUELLE du
+  // site (repli) puis la NOUVELLE (/legal/…) : les deux sont contrôlées.
+  const legalKeys = [
+    ...[...src.matchAll(/\blegalKey:\s*'(\w+)'/g)].map((m) => m[1]),
+    ...(src.includes('useLegalLinks()') ? [...src.matchAll(/\blegal(?:Links)?\.(mentionsLegales|cguv|confidentialite|sousTraitants|parrainage)\b/g)].map((m) => m[1]) : []),
+  ];
+  for (const k of legalKeys) {
+    liens.push({ file, path: (LEGAL_LEGACY_PATHS as Record<string, string>)[k] ?? `?${k}`, via: 'legal-repli' });
+    liens.push({ file, path: (LEGAL_PUBLIC_PATHS as Record<string, string>)[k] ?? `?${k}`, via: 'legal-v2' });
+  }
   for (const m of src.matchAll(/https?:\/\/(?:www\.|preprod\.)?verebona\.fr(\/[^\s'"`)<>\]]*)/g)) liens.push({ file, path: m[1], via: 'URL absolue' });
 }
 
@@ -114,7 +137,7 @@ describe('L72E-LV-02 — audit transversal app → vitrine (headers, footers, au
 
   it('L72E-LV-02b — aucune ancienne URL, aucune page retirée, aucun lien cassé, aucune ancre absente', () => {
     const anomalies = liens
-      .map((l) => ({ ...l, verdict: checkPublicHref(l.path) }))
+      .map((l) => ({ ...l, verdict: legalPathVerdict(l.path) }))
       .filter((l) => l.verdict.status !== 'ok');
     expect(anomalies).toEqual([]);
   });
@@ -124,8 +147,12 @@ describe('L72E-LV-02 — audit transversal app → vitrine (headers, footers, au
     // · Centre d'aide : `helpPageUrl` n'accepte que `/aide…` ou `/contact`
     //   (`isHelpPath`), et les articles viennent du catalogue publié de
     //   l'environnement (contrôle `check-help-shortcuts`).
+    // · lot 102B : `lib/legal/public-legal` — chemins du contrat (L72E-LV-05).
+    // · lot 102C : `privacyPolicyUrl(env)` — chemin `/confidentialite` ou réglé
+    //   par l'exploitation (appel sans argument = configuration 102B ci-dessus).
     expect([...new Set(nonLitteraux)].sort()).toEqual([
-      'src/components/Footer.tsx', 'src/components/LandingFooter.tsx', 'src/lib/help-center/open.ts',
+      'src/components/Footer.tsx', 'src/components/LandingFooter.tsx', 'src/lib/help-center/open.ts', 'src/lib/legal/public-legal.ts',
+      'src/services/trial-lifecycle/signup-collection.ts',
     ]);
     expect(checkPublicHref('/aide')).toEqual({ status: 'ok' });
     expect(checkPublicHref(HELP_CONTACT_PATH)).toEqual({ status: 'ok' });
@@ -184,6 +211,31 @@ describe('L72E-LV-03 — sens vitrine → application', () => {
     expect(appRouteExists('/api/nexiste-pas')).toBe(false);
     expect(appRouteExists('/cgvu')).toBe(true);
     expect(relative(ROOT, join(ROOT, 'src/app'))).toBe(join('src', 'app'));
+  });
+});
+
+describe('L72E-LV-05 — lot 102B : rubrique « Légal » du site public (contrat)', () => {
+  it('L72E-LV-05a — cinq contenus, une URL directe et stable chacun, sous /legal/', () => {
+    expect(Object.keys(LEGAL_PUBLIC_PATHS).sort()).toEqual(['cguv', 'confidentialite', 'mentionsLegales', 'parrainage', 'sousTraitants']);
+    for (const p of LEGAL_CONTRACT_PATHS) expect(p).toMatch(/^\/legal\/[a-z-]+$/);
+    expect(new Set(LEGAL_CONTRACT_PATHS).size).toBe(5);
+  });
+
+  it('L72E-LV-05b — les chemins sont ceux du contrat documenté pour l’équipe du site public', () => {
+    const contrat = lire('docs/exploitation/contrat-site-public-legal.md');
+    for (const p of LEGAL_CONTRACT_PATHS) expect(contrat, p).toContain(p);
+    expect(contrat).toContain('/legal/cguv/versions.json');
+  });
+
+  it('L72E-LV-05c — chaque lien légal de l’application vise un contenu connu : chemin du contrat (v2) et adresse actuelle (repli)', () => {
+    const v2 = liens.filter((l) => l.via === 'legal-v2');
+    expect(v2.length).toBeGreaterThan(8);
+    for (const l of v2) expect(LEGAL_CONTRACT_PATHS.has(l.path), `${l.file} → ${l.path}`).toBe(true);
+  });
+
+  it('L72E-LV-05d — repli : chaque adresse ACTUELLE existe sur la vitrine (inventaire) — aucun 404 avant la livraison du site', () => {
+    for (const p of Object.values(LEGAL_LEGACY_PATHS)) expect({ p, v: checkPublicHref(p) }).toEqual({ p, v: { status: 'ok' } });
+    expect(liens.filter((l) => l.via === 'legal-repli').length).toBeGreaterThan(8);
   });
 });
 

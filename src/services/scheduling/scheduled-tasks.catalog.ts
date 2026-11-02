@@ -30,6 +30,8 @@
  *   withdrawal-process              toutes les heures             bail `withdrawal-sweep`
  *   referral-rewards                chaque jour à 10 h 15         prise atomique par événement
  *   legal-verify-integrity          le lundi à 6 h 40             lecture seule (+ journal)
+ *   legal-cguv-manifest-sync        toutes les heures (102B)      import idempotent (code unique), versions
+ *                                                                 jamais réécrites ; panne → dernier état connu
  *   t3-legacy-transfer              au démarrage, puis /h tant    bail `t3-legacy-transfer`
  *                                   que des demandes subsistent
  *   mascot-pregeneration            toutes les minutes            FOR UPDATE SKIP LOCKED + bail par compte
@@ -112,6 +114,9 @@
  *                                                                 une transition traitée une seule fois
  *                                                                 (lot 82A, C-Q10 : neutralisation /
  *                                                                 reprise + rattrapage)
+ *   account-lifecycle               toutes les heures             verrou du balayage des suppressions
+ *                                                                 (partagé) ; exécution idempotente ;
+ *                                                                 anomalies consolidées (lot 102A)
  *   trial-lifecycle-emails          /h de 9 h à 19 h (Paris)      message unique compte × essai × jalon
  *                                                                 (0886) pris par UPDATE conditionnel ;
  *                                                                 clé d'idempotence Resend stable ;
@@ -290,7 +295,9 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     run: async () => {
       const { runTrialExpiry } = await import('@/services/trial-expiry.job');
       const r = await runTrialExpiry();
-      if (r.expired > 0) return { note: `${r.expired} essai(s) basculé(s) en lecture seule` };
+      if (r.expired > 0 || r.purgesScheduled > 0) {
+        return { note: `${r.expired} essai(s) basculé(s) en lecture seule, ${r.purgesScheduled} purge(s) J+90 programmée(s)` };
+      }
     },
   },
   {
@@ -371,6 +378,27 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const r = await verifyIntegrity();
       if (r.issues.length > 0) return { error: `${r.issues.length} écart(s) d'intégrité sur ${r.checked} version(s)` };
       return { note: `${r.checked} version(s) contrôlée(s)` };
+    },
+  },
+  {
+    // Lot 102B : référentiel des versions de CGUV relu dans le manifeste du
+    // site public (source juridique unique). Panne : dernier état connu
+    // conservé, alerte Supervision (`cguv-referential.service`).
+    code: 'legal-cguv-manifest-sync',
+    label: 'CGUV : lecture du manifeste du site public',
+    schedule: { kind: 'interval', everyMs: HOUR },
+    timeoutMs: 5 * MIN,
+    run: async (ctx) => {
+      const { syncCguvManifest } = await import('@/services/legal/cguv-referential.service');
+      const r = await syncCguvManifest({ trigger: ctx.trigger === 'manual' ? 'manual' : ctx.trigger === 'startup' ? 'startup' : 'schedule' });
+      if (r.status === 'awaiting_public_site') {
+        // Phase de transition (site public pas encore livré) : information, pas un échec.
+        return { note: `manifeste pas encore publié par le site public — liens sur les adresses actuelles, version connue ${r.lastKnown.current ?? '—'}` };
+      }
+      if (r.status === 'unavailable' || r.status === 'invalid') {
+        return { error: `manifeste ${r.status === 'invalid' ? 'invalide' : 'indisponible'} : ${r.error ?? ''} — dernier état connu conservé (${r.lastKnown.current ?? 'aucune version'})` };
+      }
+      return { note: `version en vigueur ${r.current ?? '—'} ; ${r.imported.length} importée(s) ; ${r.anomalies.length} écart(s)` };
     },
   },
   {
@@ -1010,7 +1038,8 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     // de fin d'essai — J−2 et J0 (notifications de service, gabarits
     // notif_trial_ending / notif_trial_ended : UN seul circuit), J+3 → J+60
     // (campagne commerciale distincte, désactivée par défaut, consentement et
-    // désinscription), J+80 (verrouillé : conservation non fixée). État relu
+    // désinscription), J+80 (lot 102A : information, seulement si une purge
+    // de fin d'essai est réellement programmée — date et jours restants réels). État relu
     // juste avant chaque envoi, motif de chaque non-envoi, journal auditable
     // (BO › Communications › Fin d'essai). Rattrapage limité à la fenêtre de
     // chaque jalon : jamais d'envoi tardif ni de nuit. Coupures :
@@ -1050,6 +1079,29 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const note = JSON.stringify(r);
       if (r.errors > 0 && r.errors >= r.examined) return { note, error: `${r.errors} compte(s) en échec` };
       if (r.examined > 0) return { note, again: r.more };
+    },
+  },
+  {
+    // Lot 102A — cycle de vie des comptes (états restreints, conservation,
+    // purge) : suppressions DEMANDÉES arrivées à échéance exécutées au plus
+    // tôt (balayage existant, verrou partagé avec la tâche quotidienne et la
+    // route, mode ACCOUNT_DELETION_SWEEP respecté) ; anomalies de Supervision
+    // (purge en retard, plafond technique de 30 jours dépassé) ; rotation du
+    // registre de rejeu après restauration. Les purges J+90 (fin d'essai, fin
+    // d'abonnement, rétractation) passent par le balayage quotidien
+    // `account-deletion` ; la programmation des purges de fin d'essai par
+    // `expire-trials`.
+    code: 'account-lifecycle',
+    label: 'Comptes : cycle de vie (suppressions demandées, supervision des purges)',
+    schedule: { kind: 'interval', everyMs: HOUR },
+    timeoutMs: 20 * MIN,
+    startupDelayMs: 9 * MIN,
+    run: async () => {
+      const { runAccountLifecycleTask } = await import('@/services/account/account-lifecycle.job');
+      const r = await runAccountLifecycleTask();
+      const note = JSON.stringify(r);
+      if (r.sweep === 'busy') return { note: 'balayage des suppressions déjà en cours', skipped: true };
+      return { note, ...(r.failed > 0 ? { error: `${r.failed} suppression(s) en échec` } : {}) };
     },
   },
 ];

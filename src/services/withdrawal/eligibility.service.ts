@@ -7,7 +7,8 @@
  *   · le délai court à partir du PAIEMENT (premier paiement réussi de
  *     l'abonnement payant en cours, `withdrawalWindowStart`), plus de la
  *     conclusion technique de l'abonnement ;
- *   · la rétractation est traitée IMMÉDIATEMENT et supprime le compte : plus
+ *   · la rétractation est traitée IMMÉDIATEMENT (lot 102A : compte en lecture
+ *     seule, données conservées 90 jours, plus de suppression immédiate) : plus
  *     d'examen manuel. Ce module répond toujours `eligible`, `ineligible` ou
  *     `undetermined` ; `undetermined` ne vient plus que d'une panne de
  *     lecture (base indisponible, compte introuvable). L'appelant REFUSE

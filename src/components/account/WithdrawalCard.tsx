@@ -8,10 +8,9 @@
  *
  * Date du paiement (départ du délai), date limite, bouton « Renoncer au
  * contrat ici », explication distinguant rétractation et résiliation, et
- * AVERTISSEMENT : la rétractation supprime le compte immédiatement.
- *
- * Plus de suivi de demande : la rétractation est traitée sur-le-champ et le
- * compte supprimé — il n'y a plus de Mon compte où suivre quoi que ce soit.
+ * rappel des conséquences (lot 102A) : abonnement annulé et remboursé,
+ * compte en lecture seule, données conservées 90 jours (paramètre central
+ * `retention-policy`), puis supprimées sauf nouvelle souscription.
  *
  * Le §6.2 précise qu'« après expiration du délai, le bouton peut être masqué
  * dans l'espace personnel, mais le lien public reste disponible ». Lot 26 :
@@ -36,6 +35,7 @@ import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
 import { AlertTriangle, FileMinus } from 'lucide-react';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { LIFECYCLE_DURATIONS } from '@/lib/account-lifecycle/retention-policy';
 
 interface Contract {
   offerLabel: string;
@@ -101,14 +101,15 @@ export function WithdrawalCard() {
       headerExtra={lienRetractation}
       contentClassName="space-y-4"
     >
-      {/* Lot 32 (PO-Q1) : avertissement explicite AVANT toute action. */}
-      <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm flex items-start gap-2">
-        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-destructive" aria-hidden />
+      {/* Lot 102A : conséquences sur le compte, AVANT toute action. */}
+      <div role="note" className="rounded-lg border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] p-3 text-sm flex items-start gap-2">
+        <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-[color:var(--attention-on-soft)]" aria-hidden />
         <p>
-          <strong>Votre compte sera supprimé immédiatement.</strong>{' '}
-          Dès la confirmation, l&apos;accès est coupé et toutes vos données
-          (biens, documents, fichiers, échéances) sont définitivement effacées.
-          Exportez-les avant, depuis Mes informations.
+          <strong>Votre compte passe en lecture seule.</strong>{' '}
+          Dès la confirmation, l&apos;abonnement est annulé et remboursé, et les
+          fonctions payantes sont coupées. Vos biens et documents restent
+          consultables et exportables pendant {LIFECYCLE_DURATIONS.restrictedRetentionDays} jours,
+          puis sont supprimés, sauf nouvelle souscription d&apos;ici là.
         </p>
       </div>
 

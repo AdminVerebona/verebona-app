@@ -451,6 +451,12 @@ jobs:
         run: npm run test:e2e:corpus-ia -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-corpus-ia.xml
       - name: Assistant T2 — continuité conversationnelle, série d'un équipement (lot 101A)
         run: npm run test:e2e:assistant-continuite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-assistant-continuite.xml
+      - name: Cycle de vie des comptes — lecture seule, purge à 90 jours, rétractation, J+80 (lot 102A)
+        run: npm run test:e2e:cycle-vie -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-cycle-vie.xml
+      - name: Source juridique unique, CGUV versionnées, réacceptation (lot 102B)
+        run: npm run test:e2e:legal -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-legal.xml
+      - name: Conformité technique — export complet, stockage en France, prospection, copies de production (lot 102C)
+        run: npm run test:e2e:conformite-legale -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-conformite-legale.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

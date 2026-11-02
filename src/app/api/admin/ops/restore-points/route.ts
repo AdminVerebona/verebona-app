@@ -26,10 +26,14 @@ export async function GET(request: NextRequest) {
       import('@/services/backup/database-restore.service'), import('@/db'),
     ]);
     const current = await readSchemaSignature(async (sql, p = []) => (await pgClient.unsafe(sql, p as never[])) as unknown as Array<Record<string, unknown>>);
+    const { classifyRestoreOrigin } = await import('@/services/admin/production-copies/rules');
     const items = (await listDatabaseBackups(120)).map(({ manifest, ...b }) => {
       const c = manifest ? checkRestoreCompatibility(manifest as never, current) : null;
       return {
         ...b,
+        // Lot 102C : point d'un autre environnement → autorisation BO préalable (copies de données réelles).
+        sourceEnvironment: manifest?.environment ?? null,
+        origin: classifyRestoreOrigin(manifest?.environment ?? null),
         restorable: !!c?.restorable,
         reason: c ? c.reason : 'Manifeste illisible.',
         differences: c?.differences.slice(0, 30) ?? [],

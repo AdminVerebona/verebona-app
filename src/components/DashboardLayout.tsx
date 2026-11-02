@@ -8,7 +8,7 @@
  * basse flottante sur mobile. Le champ et l'espace de réponse remplacent la
  * loupe de recherche indépendante et le tiroir latéral de l'assistant.
  */
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { usePathname } from 'next/navigation';
 
@@ -34,6 +34,8 @@ import { useToProcessCount } from '@/hooks/useToProcessCount';
 import { useWelcomeOnboardingNeed } from '@/hooks/useWelcomeOnboardingNeed';
 import { LogoutStatusScreen, SessionUnavailableScreen } from './shell/SessionStateScreen';
 import { NoSpaceScreen } from './shell/NoSpaceScreen';
+import { CguvReacceptanceScreen } from './shell/CguvReacceptanceScreen';
+import { CGUV_REACCEPTANCE_EVENT } from '@/lib/legal/reacceptance-gate';
 import { switchToAccount } from './account/AccountSwitcher';
 import { readSpaceParam } from '@/lib/shell/space-link';
 const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
@@ -108,6 +110,27 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     }
     void switchToAccount(accountId, cleaned).then((r) => { if (!r.ok) window.location.assign('/accueil'); });
   }, [sessionUserId, sessionAccountId]);
+
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 102B — RÉACCEPTATION DES CGUV
+  //
+  // Version substantielle non acceptée (`user.legalReacceptance.required`) :
+  // écran dédié à la place de la coquille (ordinateur, mobile, WebView). Un
+  // refus d'écriture 403 CGUV_REACCEPTANCE_REQUIRED (client API) relit la
+  // session pour l'afficher sans attendre. Version acceptée ici : l'écran se
+  // ferme aussitôt, la session est relue.
+  // ══════════════════════════════════════════════════════════════════════
+  const [acceptedCguv, setAcceptedCguv] = useState<string | null>(null);
+  const refetchSession = sessionResult.refetch;
+  // Dernière fonction de relecture dans une référence : l'écouteur est posé
+  // une seule fois (jamais de dépendance sur `refetch`, cf. use-session-refetch-stable).
+  const refetchSessionRef = useRef(refetchSession);
+  refetchSessionRef.current = refetchSession;
+  useEffect(() => {
+    const onRequired = () => { void refetchSessionRef.current(); };
+    window.addEventListener(CGUV_REACCEPTANCE_EVENT, onRequired);
+    return () => window.removeEventListener(CGUV_REACCEPTANCE_EVENT, onRequired);
+  }, []);
 
   // Dialogs states
   const [helpModalOpen, setHelpModalOpen] = useState(false);
@@ -364,6 +387,18 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // ══════════════════════════════════════════════════════════════════════
   if (!userProp && user.accountId === null && user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN') {
     return <NoSpaceScreen firstName={user.firstName} onLogout={handleLogout} />;
+  }
+
+  const reacceptance = user.legalReacceptance;
+  if (!userProp && reacceptance?.required && reacceptance.versionCode !== acceptedCguv) {
+    return (
+      <CguvReacceptanceScreen
+        state={reacceptance}
+        firstName={user.firstName}
+        onAccepted={(code) => { setAcceptedCguv(code); void refetchSession(); }}
+        onLogout={handleLogout}
+      />
+    );
   }
 
   const isHome = pathname === '/accueil';

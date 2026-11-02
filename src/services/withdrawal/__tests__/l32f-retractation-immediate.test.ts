@@ -9,6 +9,11 @@
  *           d'au revoir), plus de suivi ni d'examen manuel, suppression
  *           immédiate du compte ; plus de délai d'export de 30 jours.
  *
+ * LOT 102A (décision PO du 31/10/2026) : la rétractation NE SUPPRIME PLUS le
+ * compte — abonnement annulé, remboursement intégral, compte en lecture
+ * seule, données conservées 90 jours, suppression seulement sur demande
+ * explicite ou à l'échéance. Les tests ci-dessous suivent cette décision.
+ *
  * Le parcours complet sur PostgreSQL réel est dans
  * `src/test/e2e/scenarios/l32f-decisions-po.e2e.ts`.
  */
@@ -57,30 +62,36 @@ describe('PO-Q1 — le délai de rétractation commence au paiement', () => {
     expect(read('src/app/api/withdrawal/confirm/route.ts')).toContain('evaluateEligibility(caller.userId, caller.accountId)');
   });
 
-  it('avertissement important et explicite AVANT confirmation (page publique et connectée)', () => {
+  it('lot 102A — conséquences rappelées AVANT confirmation (page publique et connectée) : lecture seule, conservation, plus de suppression immédiate', () => {
     const page = read('src/app/retractation/page.tsx');
-    expect(page).toContain('Votre compte sera supprimé immédiatement');
-    expect(page).toContain('role="alert"');
+    expect(page).toContain('Votre compte passe en lecture seule');
+    expect(page).not.toContain('supprimé immédiatement');
+    expect(page).not.toContain('supprimés immédiatement');
+    expect(page).toContain('LIFECYCLE_DURATIONS.restrictedRetentionDays');
     // Sur la présentation ET juste au-dessus du bouton de confirmation.
     const review = page.slice(page.indexOf("{step === 'review' && summary && ("), page.indexOf("{step === 'blocked' && ("));
-    expect(review.indexOf('<DeletionWarning />')).toBeGreaterThan(-1);
-    expect(review.indexOf('<DeletionWarning />')).toBeLessThan(review.indexOf('Confirmer la rétractation'));
+    expect(review.indexOf('<RetentionNotice />')).toBeGreaterThan(-1);
+    expect(review.indexOf('<RetentionNotice />')).toBeLessThan(review.indexOf('Confirmer la rétractation'));
     const presentation = page.slice(page.indexOf("{step === 'presentation' && ("), page.indexOf("{step === 'identify' && ("));
-    expect(presentation).toContain('<DeletionWarning />');
-    // Mon compte : même avertissement dans la carte.
-    expect(read('src/components/account/WithdrawalCard.tsx')).toContain('Votre compte sera supprimé immédiatement.');
+    expect(presentation).toContain('<RetentionNotice />');
+    // Mon compte : même rappel dans la carte, sans couleur d'erreur.
+    const carte = read('src/components/account/WithdrawalCard.tsx');
+    expect(carte).toContain('Votre compte passe en lecture seule.');
+    expect(carte).not.toContain('supprimé immédiatement');
   });
 });
 
 describe('PO-Q2 — traitement immédiat, plus de suivi ni d’examen manuel', () => {
-  it('plus de délai d’export de 30 jours affiché ; texte cohérent avec la suppression immédiate', () => {
+  it('lot 102A — aucune durée écrite en dur : conservation lue dans le paramètre central ; récapitulatif figé = lecture seule', () => {
     const page = read('src/app/retractation/page.tsx');
     expect(page).not.toContain('<strong>30 jours</strong>');
-    expect(page).not.toMatch(/exportables pendant/);
-    expect(page).not.toContain('Données exportables jusqu’au');
-    expect(page).toContain('Immédiate, dès la confirmation');
-    expect(page).toContain('supprimés immédiatement');
-    expect(read('src/services/withdrawal/summary.service.ts')).not.toContain('DATA_RECOVERY_DAYS');
+    const code = page.split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l)).join('\n');
+    expect(code).not.toMatch(/\b90 jours\b/);
+    expect(page).toContain('{RETENTION_DAYS}');
+    const summary = read('src/services/withdrawal/summary.service.ts');
+    expect(summary).not.toContain('DATA_RECOVERY_DAYS');
+    expect(summary).toContain("accountAfterWithdrawal: 'read_only_retention'");
+    expect(summary).toContain('retentionDays: LIFECYCLE_DURATIONS.restrictedRetentionDays');
   });
 
   it('plus d’écran ni de carte de suivi de demande', () => {
@@ -110,21 +121,33 @@ describe('PO-Q2 — traitement immédiat, plus de suivi ni d’examen manuel', (
     expect(confirm).not.toContain('void processWithdrawal');
   });
 
-  it('suppression immédiate par le service existant (délai 0), qui conserve factures et preuves', () => {
+  it('lot 102A — plus de suppression immédiate : état restreint RETRACTATION (purge à +90 jours par le moteur unique, qui conserve factures et preuves)', () => {
     const proc = read('src/services/withdrawal/withdrawal-processor.service.ts');
-    expect(proc).toMatch(/scheduleDeletion\(\{[\s\S]*reason: 'WITHDRAWAL',[\s\S]*delayDays: 0,/);
-    expect(proc).toContain('await executeScheduledDeletion(schedule.id, { now })');
+    expect(proc).not.toContain('executeScheduledDeletion');
+    expect(proc).not.toContain('delayDays: 0');
+    expect(proc).toMatch(/enterRestrictedState\(\{[\s\S]*reason: 'RETRACTATION'/);
     const del = read('src/services/account/scheduled-deletion.service.ts');
     expect(del).toContain("'invoices',");          // factures conservées (SURVIVING_TABLES)
     expect(del).toContain("'withdrawal_requests'"); // preuve de la rétractation conservée
   });
 
-  it('e-mail d’au revoir : modèle sans lien de suivi ni délai d’export, migré sans commande (0279)', () => {
+  it('lot 102A — accusé de réception : lecture seule et conservation, plus de « compte supprimé » (migration 0901) ; ancien corps conservé pour 0279 / 0465', () => {
+    const mod = read('src/lib/email/email-html-templates.ts');
+    const courant = mod.slice(mod.indexOf('export const WITHDRAWAL_RECEIPT_HTML = doc('), mod.indexOf('export const EMAIL_HTML_TEMPLATES_L66'));
+    expect(courant).toContain('lecture seule');
+    expect(courant).toContain('{{retentionDays}}');
+    expect(courant).not.toMatch(/supprimés'\)\} : vous ne pouvez plus/);
+    expect(courant).not.toContain('Au revoir');
+    expect(read('src/db/seeds/withdrawal/email_template_withdrawal.ts')).toContain("export const WITHDRAWAL_RECEIPT_SUBJECT = 'Votre rétractation est enregistrée — {{publicReference}}';");
+    expect(read('src/db/migrations/0901_l102a_accuse_retractation.sql')).toContain("'WITHDRAWAL_RECEIPT'");
+  });
+
+  it('e-mail d’au revoir (lot 32, historique) : modèle sans lien de suivi ni délai d’export, migré sans commande (0279)', () => {
     // Lot 66C : le corps courant (charte 2026) vit dans `lib/email/email-html-templates.ts`
     // et passe en base par la migration 0465 ; 0279 garde le corps du lot 32, qui est
     // celui relevé au lot 65 (fixture L66C).
     const mod = read('src/lib/email/email-html-templates.ts');
-    const corps = mod.slice(mod.indexOf('export const WITHDRAWAL_RECEIPT_HTML'), mod.indexOf('export const EMAIL_HTML_TEMPLATES_L66'));
+    const corps = mod.slice(mod.indexOf('export const WITHDRAWAL_RECEIPT_HTML_L66'), mod.indexOf('export const WITHDRAWAL_RECEIPT_HTML = doc('));
     expect(corps).not.toContain('{{trackingUrl}}');
     expect(corps).not.toContain('{{dataExportDeadlineLabel}}');
     expect(corps).toMatch(/sont \$\{strong\('supprimés'\)\}/);
@@ -141,7 +164,7 @@ describe('PO-Q2 — traitement immédiat, plus de suivi ni d’examen manuel', (
 
   it('robustesse : un échec Stripe ou de suppression laisse la demande en reprise automatique', () => {
     const proc = read('src/services/withdrawal/withdrawal-processor.service.ts');
-    expect(proc).toContain("'ACCOUNT_DELETION_FAILED'");
+    expect(proc).toContain("'RETENTION_SCHEDULE_FAILED'");
     const sweep = read('src/services/withdrawal/withdrawal-sweep.job.ts');
     expect(sweep).toContain("inArray(withdrawalRequests.status, ['received', 'failed', 'processing'])");
   });

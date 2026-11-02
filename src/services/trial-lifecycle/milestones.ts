@@ -12,8 +12,10 @@
  *   J+10 commercial    } de service : consentement / base légale, droit
  *   J+30 commercial    } d'opposition, désinscription simple, arrêt après
  *   J+60 commercial    } J+60 (aucune relance indéfinie)
- *   J+80 conditionnel  modèle créé, ENVOI IMPOSSIBLE tant que la conservation
- *                      des données n'est pas fixée ET appliquée (verrou serveur)
+ *   J+80 conditionnel  information sur la suppression des données : lot 102A —
+ *                      purge J+90 livrée, envoi SEULEMENT si une suppression
+ *                      « fin d'essai » est réellement programmée (date et jours
+ *                      restants lus sur cette programmation, juste avant l'envoi)
  *
  * CONTRÔLES JUSTE AVANT CHAQUE ENVOI, sur l'état ACTUEL (`decideMessage`) :
  * souscription active, paiement en cours, compte supprimé / suspendu /
@@ -26,6 +28,8 @@
  * avec ce dernier motif. Jamais d'envoi hors fenêtre.
  * ══════════════════════════════════════════════════════════════════════════
  */
+
+import { trialPurgeReminderOffsetDays } from '@/lib/account-lifecycle/retention-policy';
 
 export type MilestoneCode = 'J_MINUS_2' | 'J0' | 'J3' | 'J10' | 'J30' | 'J60' | 'J80';
 export type MilestoneNature = 'service' | 'commercial' | 'conditional';
@@ -51,7 +55,7 @@ export const MILESTONES: readonly MilestoneDef[] = [
   { code: 'J10', label: 'J+10 — relance commerciale', nature: 'commercial', templateCode: 'TRIAL_FOLLOWUP_J10', defaultOffsetDays: 10, offsetEditable: true, defaultCatchUpHours: 120 },
   { code: 'J30', label: 'J+30 — relance commerciale', nature: 'commercial', templateCode: 'TRIAL_FOLLOWUP_J30', defaultOffsetDays: 30, offsetEditable: true, defaultCatchUpHours: 168 },
   { code: 'J60', label: 'J+60 — dernière relance commerciale', nature: 'commercial', templateCode: 'TRIAL_FOLLOWUP_J60', defaultOffsetDays: 60, offsetEditable: true, defaultCatchUpHours: 168 },
-  { code: 'J80', label: 'J+80 — rappel conditionnel sur les données', nature: 'conditional', templateCode: 'TRIAL_DATA_RETENTION_J80', defaultOffsetDays: 80, offsetEditable: false, defaultCatchUpHours: 120 },
+  { code: 'J80', label: 'J+80 — rappel conditionnel sur les données', nature: 'conditional', templateCode: 'TRIAL_DATA_RETENTION_J80', defaultOffsetDays: trialPurgeReminderOffsetDays(), offsetEditable: false, defaultCatchUpHours: 120 },
 ];
 
 export const MILESTONE_CODES = MILESTONES.map((m) => m.code);
@@ -71,15 +75,29 @@ const CATCH_UP_MAX_HOURS = 14 * 24;
  */
 export const OUT_OF_WINDOW_EVIDENCE_DAYS = 7;
 /**
- * VERROU SERVEUR DU J+80 (E, E2, F). Le code actuel laisse les essais expirés
- * en lecture seule SANS aucune purge automatique : aucune date de suppression
- * ne peut être promise. Seule une livraison qui implémente la purge (et une
- * décision PO sur la durée, cohérente avec les CGU/CGVU et la politique de
- * confidentialité) peut passer cette constante à `true` — jamais un réglage
- * du BO. Même alors, le J+80 n'est envoyé qu'à un compte dont la suppression
- * « essai abandonné » est réellement planifiée (date affichée = cette date).
+ * VERROU SERVEUR DU J+80 (E, E2, F). Lot 102A : la purge J+90 des essais
+ * terminés est livrée (décision PO du 31/10/2026 : conservation 90 jours,
+ * état restreint FIN_ESSAI, `account/restricted-state.service.ts`, moteur de
+ * purge unique) — la constante passe à `true` par cette livraison, jamais
+ * par un réglage du BO. Le J+80 n'est envoyé QU'À un compte dont la
+ * suppression « fin d'essai » est réellement programmée et encore à venir
+ * (date affichée = cette date, contrôlée juste avant l'envoi).
  */
-export const TRIAL_RETENTION_PURGE_IMPLEMENTED = false;
+export const TRIAL_RETENTION_PURGE_IMPLEMENTED = true;
+
+/**
+ * Base d'envoi du J+80 (lot 102A, décision PO E : « Information
+ * conditionnelle », distincte des relances commerciales) :
+ *   · `information` (défaut) : notification de service sur les données de
+ *     l'utilisateur — réglage « notifications de service », interrupteur
+ *     e-mail du BO ; aucun consentement commercial exigé ; l'opposition aux
+ *     communications commerciales est RESPECTÉE (le modèle contient le lien
+ *     vers les offres) ;
+ *   · `commercial` : mêmes conditions que les relances J+3 → J+60
+ *     (campagne active, base légale, consentement).
+ * Un autre choix du PO se change ICI, en un point.
+ */
+export const J80_DELIVERY_BASIS: 'information' | 'commercial' = 'information';
 
 /** Tentatives d'envoi (même clé d'idempotence chez le prestataire). */
 export const MAX_SEND_ATTEMPTS = 3;
@@ -117,7 +135,21 @@ export interface TrialLifecycleSettings {
    *   · `public_pricing` : section Tarifs du site public (`#<ancre>`).
    */
   offers: { target: OffersTarget; pricingAnchor: string };
+  /**
+   * Lot 102C (ticket conformité, P2 « Prospection post-essai ») — information
+   * et choix recueillis À L'INSCRIPTION, selon la base légale :
+   *   · `consent` → case d'acceptation NON pré-cochée (consentement prouvé) ;
+   *   · `soft_opt_in` → information + opposition simple et gratuite :
+   *     case « je ne souhaite pas » (`opt_out_checkbox`) ou mention seule
+   *     (`mention`, opposition par le lien de chaque e-mail / Mon compte).
+   * Désactivé par défaut tant que le PO n'a pas choisi au BO : aucune case
+   * ni mention à l'inscription, et aucune relance « client existant »
+   * possible (aucune preuve d'information).
+   */
+  signupCollection: { enabled: boolean; softOptInMechanism: SoftOptInMechanism };
 }
+
+export type SoftOptInMechanism = 'opt_out_checkbox' | 'mention';
 
 export const DEFAULT_SETTINGS: TrialLifecycleSettings = {
   serviceEnabled: true,
@@ -132,6 +164,8 @@ export const DEFAULT_SETTINGS: TrialLifecycleSettings = {
   // Ancre réelle de la section Tarifs du site public : `#pricing` (lien
   // « Tarifs » de l'application, test L72E-LV-01b) — `#tarifs` n'existe pas.
   offers: { target: 'app_offers', pricingAnchor: 'pricing' },
+  // Lot 102C : choix prudent — rien à l'inscription tant que le PO n'a pas choisi.
+  signupCollection: { enabled: false, softOptInMechanism: 'opt_out_checkbox' },
 };
 
 export interface SettingsIssue { field: string; message: string }
@@ -153,6 +187,10 @@ export function mergeSettings(stored: unknown): TrialLifecycleSettings {
     catchUpHours: { ...DEFAULT_SETTINGS.catchUpHours, ...(s.catchUpHours ?? {}) },
     sendHours: { ...DEFAULT_SETTINGS.sendHours, ...(s.sendHours ?? {}) },
     offers: { ...DEFAULT_SETTINGS.offers, ...(s.offers ?? {}) },
+    signupCollection: {
+      enabled: typeof s.signupCollection?.enabled === 'boolean' ? s.signupCollection.enabled : DEFAULT_SETTINGS.signupCollection.enabled,
+      softOptInMechanism: s.signupCollection?.softOptInMechanism === 'mention' ? 'mention' : 'opt_out_checkbox',
+    },
   };
   // Une valeur stockée invalide (édition hors BO) ne doit jamais élargir l'envoi.
   return validateSettings(merged).length ? { ...DEFAULT_SETTINGS, commercialEnabled: false, serviceEnabled: merged.serviceEnabled } : merged;
@@ -181,6 +219,14 @@ export function validateSettings(s: TrialLifecycleSettings): SettingsIssue[] {
   }
   if (s.legalBasis === 'soft_opt_in' && !s.softOptInDeclaration) {
     issues.push({ field: 'softOptInDeclaration', message: 'Base « client existant » : la déclaration de vérification (information et opposition à l’inscription) est obligatoire.' });
+  }
+  // Lot 102C : la base « client existant » suppose l'information et
+  // l'opposition à la collecte — campagne impossible sans elles.
+  if (s.legalBasis === 'soft_opt_in' && s.commercialEnabled && !s.signupCollection?.enabled) {
+    issues.push({ field: 'signupCollection.enabled', message: 'Base « client existant » : activez d’abord l’information et l’opposition à l’inscription.' });
+  }
+  if (s.signupCollection && s.signupCollection.softOptInMechanism !== 'opt_out_checkbox' && s.signupCollection.softOptInMechanism !== 'mention') {
+    issues.push({ field: 'signupCollection.softOptInMechanism', message: 'Mécanisme d’opposition inconnu (case ou mention).' });
   }
   return issues;
 }
@@ -227,6 +273,7 @@ export const NON_SEND_REASONS = {
   channel_disabled_by_admin: { label: 'E-mail désactivé dans BO › Communications', terminal: false },
   user_preference_email_off: { label: 'Préférence de l’utilisateur : e-mail désactivé', terminal: false },
   no_consent: { label: 'Aucun consentement aux communications commerciales', terminal: false },
+  no_signup_information: { label: 'Base « client existant » : aucune preuve d’information et d’opposition à l’inscription', terminal: false },
   legal_basis_not_declared: { label: 'Base légale « client existant » non déclarée', terminal: false },
   unsubscribe_unavailable: { label: 'Lien de désinscription indisponible (secret absent)', terminal: false },
   links_unavailable: { label: 'Adresse de l’application inconnue (liens impossibles)', terminal: false },
@@ -260,6 +307,12 @@ export interface CurrentState {
   trialDeletionScheduledAt: Date | null;
   opposed: boolean;
   consented: boolean;
+  /**
+   * Lot 102C : preuve que l'utilisateur a été informé à l'inscription avec
+   * une possibilité d'opposition (`marketing_collection_proofs`, choix
+   * « non opposé » ou « informé »). Absent = aucune preuve.
+   */
+  signupInformed?: boolean;
   /** Déjà envoyé par ce circuit pour le même utilisateur, jalon et essai, ou par l'ancien circuit. */
   alreadySent: boolean;
   /** Préférence e-mail de l'utilisateur (service) ; null = sans objet. */
@@ -341,25 +394,30 @@ export function decideMessage(input: {
   if (stateIssue) return stateIssue;
   if (st.alreadySent) return { kind: 'skip', reason: 'duplicate' };
 
-  const marketing = m.nature !== 'service';
-  if (marketing && st.opposed) return { kind: 'skip', reason: 'opposition' };
+  const conditional = m.nature === 'conditional';
+  const marketing = m.nature === 'commercial' || (conditional && J80_DELIVERY_BASIS === 'commercial');
+  if ((marketing || conditional) && st.opposed) return { kind: 'skip', reason: 'opposition' };
 
   if (env.allOff || (marketing && env.commercialOff)) return { kind: 'defer', reason: 'disabled_by_env' };
+  if (conditional) {
+    // Verrou SERVEUR (E, E2, F) : aucune date de suppression promise sans
+    // source fiable — purge réellement implémentée ET suppression planifiée
+    // (encore à venir), relue juste avant l'envoi.
+    if (!env.retentionPurgeImplemented) return { kind: 'block', reason: 'retention_policy_not_set' };
+    if (!st.trialDeletionScheduledAt || st.trialDeletionScheduledAt.getTime() <= now.getTime()) return { kind: 'block', reason: 'deletion_not_scheduled' };
+  }
   if (!marketing) {
     if (!s.serviceEnabled) return { kind: 'defer', reason: 'service_disabled' };
     if (st.channelDisabled) return { kind: 'defer', reason: 'channel_disabled_by_admin' };
     if (st.emailPreference === false) return { kind: 'defer', reason: 'user_preference_email_off' };
+    // Le modèle J+80 porte le lien « Ne plus recevoir… » : jamais sans lui.
+    if (conditional && !env.unsubscribeAvailable) return { kind: 'defer', reason: 'unsubscribe_unavailable' };
   } else {
-    if (m.nature === 'conditional') {
-      // Verrou SERVEUR (E, E2, F) : aucune date de suppression promise sans
-      // source fiable — purge réellement implémentée ET suppression planifiée.
-      if (!env.retentionPurgeImplemented) return { kind: 'block', reason: 'retention_policy_not_set' };
-      if (!st.trialDeletionScheduledAt || st.trialDeletionScheduledAt.getTime() <= now.getTime()) return { kind: 'block', reason: 'deletion_not_scheduled' };
-    }
     if (!s.commercialEnabled) return { kind: 'defer', reason: 'campaign_disabled' };
     if (st.channelDisabled) return { kind: 'defer', reason: 'channel_disabled_by_admin' };
     if (s.legalBasis === 'consent' && !st.consented) return { kind: 'defer', reason: 'no_consent' };
     if (s.legalBasis === 'soft_opt_in' && !s.softOptInDeclaration) return { kind: 'defer', reason: 'legal_basis_not_declared' };
+    if (s.legalBasis === 'soft_opt_in' && st.signupInformed !== true) return { kind: 'defer', reason: 'no_signup_information' };
     if (!env.unsubscribeAvailable) return { kind: 'defer', reason: 'unsubscribe_unavailable' };
   }
   if (!env.linksAvailable) return { kind: 'defer', reason: 'links_unavailable' };
@@ -375,8 +433,7 @@ export function isBlockingReason(reason: string | null | undefined): boolean {
 
 /**
  * Le J+80 est-il verrouillé pour TOUTE la plateforme ? Oui tant que la purge
- * des essais expirés n'existe pas : le code actuel laisse les essais expirés
- * en lecture seule sans aucune suppression automatique (E2, F).
+ * des essais expirés n'est pas livrée (E2, F) ; lot 102A : livrée.
  */
 export function retentionLockState(env: Pick<DecisionEnv, 'retentionPurgeImplemented'>): { locked: boolean; label: string } {
   return env.retentionPurgeImplemented

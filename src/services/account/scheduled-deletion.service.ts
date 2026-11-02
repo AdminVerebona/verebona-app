@@ -21,6 +21,7 @@
  */
 import { db } from '@/db';
 import {
+  accountDeletionRegistry,
   accountMemberships,
   accounts,
   assetFiles,
@@ -47,8 +48,14 @@ import {
 /** Délai avant suppression effective, en jours (§13.3). */
 export const DELETION_DELAY_DAYS = 30;
 
-/** UNPAID : J+90 d'un impayé non régularisé (Centre d'aide GAP-06, migration 0182). */
-export type DeletionReason = 'WITHDRAWAL' | 'VOLUNTARY' | 'TRIAL_ABANDONED' | 'ADMIN' | 'UNPAID';
+/**
+ * UNPAID : J+90 d'un impayé non régularisé (Centre d'aide GAP-06, migration 0182).
+ * SUBSCRIPTION_ENDED : fin effective d'un abonnement payant, purge à +90 jours
+ * (lot 102A, migration 0900). Les motifs des états restreints (fin d'essai,
+ * fin d'abonnement, rétractation, suppression demandée) et leurs durées sont
+ * décrits par `lib/account-lifecycle/retention-policy.ts`.
+ */
+export type DeletionReason = 'WITHDRAWAL' | 'VOLUNTARY' | 'TRIAL_ABANDONED' | 'ADMIN' | 'UNPAID' | 'SUBSCRIPTION_ENDED';
 
 /**
  * Qui a engagé la suppression (CDC Back-Office ACC-A14, migration 0170).
@@ -62,7 +69,7 @@ export type DeletionOrigin = 'user' | 'system' | 'admin';
 
 function defaultOriginFor(reason: DeletionReason): DeletionOrigin {
   if (reason === 'ADMIN') return 'admin';
-  if (reason === 'TRIAL_ABANDONED' || reason === 'UNPAID') return 'system';
+  if (reason === 'TRIAL_ABANDONED' || reason === 'UNPAID' || reason === 'SUBSCRIPTION_ENDED') return 'system';
   return 'user';
 }
 type DeletionStatus = 'SCHEDULED' | 'CANCELLED' | 'EXECUTED' | 'FAILED';
@@ -124,6 +131,12 @@ interface ScheduleInput {
   /** Instant de référence. `scheduledAt` en découle et n'est jamais recalculé. */
   confirmedAt?: Date;
   delayDays?: number;
+  /**
+   * Lot 102A : échéance explicite (états restreints : entrée + 90 jours,
+   * préavis minimal d'un rattrapage, délai court d'une suppression
+   * volontaire — `retention-policy.ts`). Prioritaire sur `delayDays`.
+   */
+  scheduledAt?: Date;
 }
 
 /**
@@ -136,7 +149,7 @@ interface ScheduleInput {
  */
 export async function scheduleDeletion(input: ScheduleInput): Promise<ScheduledDeletion> {
   const confirmedAt = input.confirmedAt ?? new Date();
-  const scheduledAt = addDays(confirmedAt, input.delayDays ?? DELETION_DELAY_DAYS);
+  const scheduledAt = input.scheduledAt ?? addDays(confirmedAt, input.delayDays ?? DELETION_DELAY_DAYS);
 
   const scope = scopeFor(input.reason);
   const inserted = await db
@@ -244,8 +257,16 @@ export async function getActiveUserSchedule(userId: number): Promise<ScheduledDe
 export async function cancelDeletion(
   accountId: number,
   reason: string,
+  options: {
+    /**
+     * Lot 102A : n'annule que ces motifs (ex. purges des états restreints à
+     * la (re)souscription — jamais une suppression engagée par le BO).
+     */
+    onlyReasons?: readonly DeletionReason[];
+    now?: Date;
+  } = {},
 ): Promise<ScheduledDeletion | null> {
-  const now = new Date();
+  const now = options.now ?? new Date();
   const [row] = await db
     .update(scheduledAccountDeletions)
     .set({
@@ -259,6 +280,10 @@ export async function cancelDeletion(
         eq(scheduledAccountDeletions.accountId, accountId),
         eq(scheduledAccountDeletions.status, 'SCHEDULED'),
         eq(scheduledAccountDeletions.scope, 'account'),
+        // Une exécution réservée n'est plus annulable.
+        or(isNull(scheduledAccountDeletions.processingStartedAt),
+          lte(scheduledAccountDeletions.processingStartedAt, new Date(now.getTime() - EXECUTION_CLAIM_TTL_MS))),
+        options.onlyReasons ? inArray(scheduledAccountDeletions.reason, [...options.onlyReasons]) : undefined,
       ),
     )
     .returning();
@@ -553,6 +578,8 @@ const SURVIVING_TABLES = new Set([
   'gdpr_requests',
   // Factures : pièces comptables conservées, détachées (migration 0206).
   'invoices',
+  // Lot 102A : registre minimal des suppressions (identifiants, rejeu après restauration).
+  'account_deletion_registry',
 ]);
 const ACCOUNT_COLUMNS = ['account_id', 'owner_account_id'];
 const USER_COLUMNS = ['user_id', 'owner_user_id', 'billing_owner_user_id', 'initiator_user_id', 'recipient_user_id', 'created_by_user_id'];
@@ -596,7 +623,12 @@ const USER_COLUMNS = ['user_id', 'owner_user_id', 'billing_owner_user_id', 'init
  */
 export async function executeScheduledDeletion(
   scheduleId: number,
-  options: { dryRun?: boolean; now?: Date } = {},
+  options: {
+    dryRun?: boolean;
+    now?: Date;
+    /** Lot 102A : rejeu d'une suppression après restauration (trace du registre). */
+    replay?: boolean;
+  } = {},
 ): Promise<ExecutionResult> {
   const now = options.now ?? new Date();
 
@@ -694,11 +726,17 @@ export async function executeScheduledDeletion(
       const asRows = <T,>(res: unknown): T[] =>
         Array.isArray(res) ? (res as T[]) : ((res as { rows?: T[] }).rows ?? []);
       const [reg] = asRows<{ t: string | null }>(await tx.execute(sql`SELECT to_regclass('gdpr_exports')::text AS t`));
+      // Lot 102C : archives en parties (0915) — toutes les parties confiées à la file.
+      const [regParts] = asRows<{ t: string | null }>(await tx.execute(sql`SELECT to_regclass('gdpr_export_parts')::text AS t`));
       const archiveRows = reg?.t
         ? asRows<{ s3_key: string }>(await tx.execute(sql`
             SELECT s3_key FROM gdpr_exports
              WHERE s3_key IS NOT NULL
                AND user_id IN (${sql.join(userIds.map((u) => sql`${u}`), sql`, `)})
+            ${regParts?.t ? sql`UNION
+            SELECT p.s3_key FROM gdpr_export_parts p JOIN gdpr_exports e ON e.id = p.export_id
+             WHERE p.s3_key IS NOT NULL
+               AND e.user_id IN (${sql.join(userIds.map((u) => sql`${u}`), sql`, `)})` : sql``}
           `))
         : [];
       if (archiveRows.length > 0) {
@@ -751,6 +789,15 @@ export async function executeScheduledDeletion(
         .update(legalAcceptances)
         .set({ userId: null, ipAddress: null, userAgent: null })
         .where(inArray(legalAcceptances.userId, userIds));
+
+      // Lot 102A — journal de sécurité (`user_activity_log`, connexions et
+      // actions sensibles) : conservation légale ISOLÉE — la ligne survit
+      // (lien utilisateur mis à vide par la cascade) mais l'adresse e-mail
+      // recopiée est effacée : plus rien ne la rattache à la personne.
+      await tx.execute(sql`
+        UPDATE user_activity_log SET user_email = 'utilisateur supprimé'
+         WHERE user_id IN (${sql.join(userIds.map((u) => sql`${u}`), sql`, `)})
+      `);
 
       // Demandes de rétractation : preuve d'un acte juridique, conservée
       // telle quelle — la déclaration est figée en base (trigger
@@ -850,6 +897,21 @@ export async function executeScheduledDeletion(
         .where(and(eq(scheduledAccountDeletions.id, scheduleId), eq(scheduledAccountDeletions.status, 'SCHEDULED')))
         .returning({ id: scheduledAccountDeletions.id });
       if (done.length === 0) throw new SkipExecution('STATUS_CHANGED');
+
+      // 8. Lot 102A : registre MINIMAL des suppressions (identifiants internes
+      //    seulement), dans la même transaction — sans lui, une restauration
+      //    de sauvegarde antérieure ferait réapparaître le compte sans moyen
+      //    de rejouer sa suppression (procedure-restauration-suppressions.md).
+      await tx.insert(accountDeletionRegistry).values({
+        scheduleId,
+        reason: schedule.reason,
+        scope,
+        userIds,
+        accountIds,
+        executedAt: now,
+        source: options.replay ? 'replay' : 'execution',
+        createdAt: now,
+      });
 
       return {
         preserved: {

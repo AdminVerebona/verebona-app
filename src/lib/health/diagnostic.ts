@@ -132,6 +132,24 @@ export interface HealthCheckResult {
       withinEngines?: boolean;
       message?: string;
     };
+    /**
+     * Lot 102C (décision PO « stockage durable des documents en France ») :
+     * région / point d'accès du stockage objet dans la liste autorisée
+     * (`lib/storage-location`). Sonde publique : statut seul ; région, hôte,
+     * liste autorisée et motifs en diagnostic autorisé. `error` → statut
+     * global « Dégradé » (jamais vert).
+     */
+    storageLocation?: {
+      status: 'ok' | 'error' | 'unconfigured';
+      production?: boolean;
+      region?: string | null;
+      endpointHost?: string | null;
+      endpointRegion?: string | null;
+      allowedRegions?: string[];
+      problems?: string[];
+      acknowledged?: boolean;
+      message?: string;
+    };
     /** Diagnostic autorisé : pool PostgreSQL du processus (lot 24, APP-PERF-01). */
     dbPool?: { status: 'ok'; role: string; max: number; maxSource: string } & import('@/db/pool-metrics').PoolMetricsSnapshot;
     assistantRateLimiter?: { status: 'ok' | 'warning'; mode: string; degradedSince: string | null; lastError: string | null };
@@ -299,6 +317,20 @@ export async function buildHealthReport(opts: { detailed: boolean }): Promise<{ 
     /* contrôle indicatif */
   }
 
+  // Check 11 (lot 102C) : localisation du stockage documentaire. Pur, sans réseau.
+  try {
+    const { evaluateStorageLocation } = await import('@/lib/storage-location');
+    const l = evaluateStorageLocation();
+    result.checks.storageLocation = detailed
+      ? {
+          status: l.status, production: l.production, region: l.region, endpointHost: l.endpointHost, endpointRegion: l.endpointRegion,
+          allowedRegions: l.allowedRegions, problems: l.problems, acknowledged: l.acknowledged, message: l.message,
+        }
+      : { status: l.status };
+  } catch {
+    /* contrôle indicatif */
+  }
+
   // Statut global
   if (result.checks.database.status === 'error') {
     result.status = 'down';
@@ -311,6 +343,11 @@ export async function buildHealthReport(opts: { detailed: boolean }): Promise<{ 
   } else if (result.checks.jwtSecret?.status === 'error' && result.checks.jwtSecret.production) {
     // Secret de session non conforme en production (normalement impossible :
     // le démarrage est refusé) : jamais `ok`.
+    result.status = 'degraded';
+  } else if (result.checks.storageLocation?.status === 'error') {
+    // Lot 102C : stockage hors des régions autorisées — jamais silencieux,
+    // en préproduction comme en production (le démarrage n'a été permis que
+    // par STORAGE_LOCATION_ACKNOWLEDGED_REGION, ou hors production).
     result.status = 'degraded';
   } else if (result.checks.runtime?.status === 'error' && result.checks.runtime.production) {
     // Lot 100C : runtime Node non corrigé en production (préproduction

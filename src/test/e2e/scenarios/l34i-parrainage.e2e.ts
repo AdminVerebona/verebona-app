@@ -191,7 +191,8 @@ scenario('L34I', 'Parrainage : e-mail d’invitation réellement envoyé, lien /
 
     const redir = await suivreLien('E2ELNK23');
     expect(redir.status).toBe(307);
-    expect(redir.headers.get('location')).toBe(`${APP}/signup?ref=E2ELNK23`);
+    // Lot 102D : `rt` = instant signé d'usage du lien (fenêtre de 90 jours).
+    expect(redir.headers.get('location')).toMatch(new RegExp(`^${APP.replace(/\./g, '\\.')}/signup\\?ref=E2ELNK23&rt=`));
     expect(redir.headers.get('set-cookie')).toBeNull(); // CDC §4.2 : aucun cookie
   });
 
@@ -204,7 +205,7 @@ scenario('L34I', 'Parrainage : e-mail d’invitation réellement envoyé, lien /
     }
     // Casse indifférente : le code est normalisé.
     await parrain('E2EMIN23');
-    expect((await suivreLien('e2emin23')).headers.get('location')).toBe(`${APP}/signup?ref=E2EMIN23`);
+    expect((await suivreLien('e2emin23')).headers.get('location')).toMatch(/\/signup\?ref=E2EMIN23&rt=/);
   });
 
   it('AC-8.3 — de bout en bout : le code reçu par /r/ est attribué au filleul à l’inscription', async () => {

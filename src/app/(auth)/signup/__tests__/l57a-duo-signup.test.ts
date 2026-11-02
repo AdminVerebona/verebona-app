@@ -51,7 +51,7 @@ describe('L57A — inscription des invités Premium Duo', () => {
     expect(REFERRAL_FIELD_HELP).toBe("Vous disposez d'un code de parrainage ? Saisissez-le ici.");
     expect(out).toContain('Code de parrainage (facultatif)');
     expect(out).toContain(REFERRAL_FIELD_HELP);
-    expect(out).toContain('parrain bénéficiera');
+    expect(out).toContain('parrain recevra'); // lot 102D : libellé de la règle centrale (REFERRAL_TEXT.referredNotice)
     expect(out).not.toContain('Un proche vous a invité');
     expect(out).not.toContain(DUO_INVITE_SIGNUP_TEXT);
     expect(out).toContain('Créer mon compte et démarrer l’essai gratuit');

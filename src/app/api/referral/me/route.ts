@@ -3,13 +3,14 @@ import { SessionService } from '@/lib/session-service';
 import { effectiveAccountId, getSessionRole, resolveOwnedSessionAccount } from '@/services/account/membership.service';
 import { db } from '@/db';
 import {
-  accounts,
+  accountSubscriptions,
   referralLinks,
   referralEvents,
 } from '@/db/schema';
-import { eq, count, and } from 'drizzle-orm';
+import { eq, count, and, ne } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { buildReferralUrl } from '@/services/referral/referral-invitation.service';
+import { REFERRAL_RULES, referrerEligibility } from '@/services/referral/referral-rules';
 
 /**
  * Génère un code de parrainage de 8 caractères alphanumériques (uppercase).
@@ -26,28 +27,35 @@ function generateCode(): string {
 }
 
 /**
- * Vérifie l'éligibilité parrain :
- * - Plan Standard, Premium ou Premium Duo (titulaire uniquement pour Duo)
- * - A déjà été facturé au moins une fois (firstBilledAt non null)
+ * Éligibilité parrain — règle centrale (lot 102D, `referrerEligibility`) :
+ * titulaire d'un abonnement PAYANT en cours (Standard, Premium ou Premium
+ * Duo, mensuel ou annuel ; premier paiement constaté). La récompense étant un
+ * report d'échéance de cet abonnement, un compte sans abonnement payant n'a
+ * rien à recevoir. Avant ce lot : `plan_type` PREMIUM / PREMIUM_DUO seul
+ * (Standard exclu, compte forcé sans paiement admis), contraire à l'aide.
  */
-async function isReferralEligible(accountId: number): Promise<boolean> {
-  const [account] = await db
+async function isReferralEligible(accountId: number, role: string | null): Promise<boolean> {
+  const [subscription] = await db
     .select({
-      planType: accounts.planType,
-      subscriptionStatus: accounts.subscriptionStatus,
+      planCode: accountSubscriptions.planCode,
+      status: accountSubscriptions.status,
+      firstBilledAt: accountSubscriptions.firstBilledAt,
+      stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
     })
-    .from(accounts)
-    .where(eq(accounts.id, accountId))
+    .from(accountSubscriptions)
+    .where(eq(accountSubscriptions.accountId, accountId))
     .limit(1);
+  return referrerEligibility({ role, subscription: subscription ?? null }).eligible;
+}
 
-  if (!account) return false;
-
-  const plan = (account.planType || '').toUpperCase();
-  // STANDARD seul n'est pas éligible (sauf s'il a déjà payé via Stripe)
-  if (!['PREMIUM', 'PREMIUM_DUO'].includes(plan)) return false;
-
-  // Plan PREMIUM/PREMIUM_DUO = nécessairement payé ou forcé admin → toujours éligible
-  return true;
+/** Le compte courant est-il un FILLEUL dont l'attribution est en cours ou acquise ? */
+async function referredState(accountId: number): Promise<{ attributed: boolean }> {
+  const [ev] = await db
+    .select({ id: referralEvents.id })
+    .from(referralEvents)
+    .where(and(eq(referralEvents.referredAccountId, accountId), ne(referralEvents.status, 'canceled')))
+    .limit(1);
+  return { attributed: Boolean(ev) };
 }
 
 /**
@@ -66,11 +74,13 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ code: 'NO_ACCOUNT' }, { status: 404 });
     }
     const membership = { accountId: courant };
-    if ((await getSessionRole(session)) !== 'owner') {
-      return NextResponse.json({ eligible: false, link: null, stats: null, reason: 'NOT_ACCOUNT_OWNER' });
+    const referred = await referredState(courant);
+    const role = await getSessionRole(session);
+    if (role !== 'owner') {
+      return NextResponse.json({ eligible: false, link: null, stats: null, reason: 'NOT_ACCOUNT_OWNER', referred });
     }
 
-    const eligible = await isReferralEligible(membership.accountId);
+    const eligible = await isReferralEligible(membership.accountId, role);
 
     const [link] = await db
       .select()
@@ -79,11 +89,11 @@ export async function GET(request: NextRequest) {
       .limit(1);
 
     if (!eligible) {
-      return NextResponse.json({ eligible: false, link: null, stats: null });
+      return NextResponse.json({ eligible: false, link: null, stats: null, reason: 'NO_PAID_SUBSCRIPTION', referred });
     }
 
     if (!link) {
-      return NextResponse.json({ eligible: true, link: null, stats: null });
+      return NextResponse.json({ eligible: true, link: null, stats: null, referred });
     }
 
     // Stats
@@ -103,18 +113,8 @@ export async function GET(request: NextRequest) {
       .where(eq(referralEvents.referrerAccountId, membership.accountId));
 
     const validatedCount = validatedRow?.total ?? 0;
-    // ══════════════════════════════════════════════════════════════════
-    // UN MOIS PAR PARRAINAGE VALIDÉ, PLUS DIX ANALYSES
-    //
-    // Le calcul rendait `validatedCount * 10` — l'ancienne récompense. La
-    // règle actuelle diffère la prochaine échéance d'un mois, ce que
-    // l’ancien report d’un mois appliquait dans le cron.
-    //
-    // Le rapport reste explicite plutôt que sous-entendu : si la règle passe
-    // un jour à deux mois, c'est ici que ça se change, pas dans l'affichage.
-    // ══════════════════════════════════════════════════════════════════
-    const MOIS_PAR_PARRAINAGE = 1;
-    const monthsEarned = validatedCount * MOIS_PAR_PARRAINAGE;
+    // Lot 102D : récompense lue dans la règle centrale (`rewardMonths`).
+    const monthsEarned = validatedCount * REFERRAL_RULES.rewardMonths;
 
     return NextResponse.json({
       eligible: true,
@@ -129,6 +129,7 @@ export async function GET(request: NextRequest) {
         validatedCount,
         monthsEarned,
       },
+      referred,
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes('AUTH_REQUIRED')) {
@@ -152,7 +153,7 @@ export async function POST(request: NextRequest) {
     if (!owned.ok) return owned.response;
     const membership = { accountId: owned.accountId };
 
-    const eligible = await isReferralEligible(membership.accountId);
+    const eligible = await isReferralEligible(membership.accountId, 'owner');
     if (!eligible) {
       return NextResponse.json({ code: 'NOT_ELIGIBLE', message: 'Votre compte n\'est pas éligible au parrainage.' }, { status: 403 });
     }

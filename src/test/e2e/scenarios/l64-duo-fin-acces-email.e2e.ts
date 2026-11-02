@@ -201,13 +201,18 @@ scenario('L64-MAIL', 'Duo : e-mail au membre quand son accès prend fin (déclen
     expect(await membershipStatus(b.membershipId)).toBe('REMOVED');
     expect(await jobsOf(b.membre.id)).toHaveLength(1);
 
-    // Suppression du compte titulaire : Duo effacé en cascade, la demande reste.
+    // Rétractation du titulaire (lot 102A) : Duo fermé tout de suite, compte en
+    // lecture seule, puis purge à l'échéance : Duo effacé en cascade, la demande reste.
     const d = await duoAvecMembre();
     const ref = `RET-L64-${uid('d')}`;
     await sql`INSERT INTO withdrawal_requests (public_reference, account_id, user_id, stripe_subscription_id, status, cancellation_status)
               VALUES (${ref}, ${d.id}, ${d.ownerUserId}, ${d.subId}, 'received', 'pending')`;
-    const { deleteAccountNow } = await import('@/services/withdrawal/withdrawal-processor.service');
-    expect(await deleteAccountNow({ accountId: d.id, userId: d.ownerUserId }, ref)).toBe('deleted');
+    const { enterRecoveryMode, keepAccountRestricted } = await import('@/services/withdrawal/withdrawal-processor.service');
+    await enterRecoveryMode(d.id);
+    expect(await keepAccountRestricted({ accountId: d.id, userId: d.ownerUserId, effectiveAt: null }, ref)).toBe('scheduled');
+    const [purge] = await sql<{ id: number }[]>`SELECT id FROM scheduled_account_deletions WHERE account_id = ${d.id} AND status = 'SCHEDULED'`;
+    const { executeScheduledDeletion } = await import('@/services/account/scheduled-deletion.service');
+    expect((await executeScheduledDeletion(purge.id)).status).toBe('executed');
     expect(await sql`SELECT 1 FROM duo_accounts WHERE id = ${d.duoId}`).toHaveLength(0);
     const [jd] = await jobsOf(d.membre.id);
     expect(jd).toMatchObject({ status: 'pending', context: { ownerFirstName: 'Claire' } });

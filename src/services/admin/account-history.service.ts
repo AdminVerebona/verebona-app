@@ -78,6 +78,7 @@ const DELETION_REASONS: Record<string, string> = {
   TRIAL_ABANDONED: 'fin d’essai sans souscription',
   ADMIN: 'par un administrateur',
   UNPAID: 'suite à des impayés',
+  SUBSCRIPTION_ENDED: 'fin d’abonnement sans nouvelle souscription',
 };
 
 /** Libellés d'une suppression selon sa portée (CDC 13, point 3). */

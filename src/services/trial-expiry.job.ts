@@ -5,7 +5,10 @@
  * interne `expire-trials` (lot 25).
  *
  * Aucun paiement n'est déclenché, aucun compte n'est supprimé : seul le statut
- * d'abonnement passe en lecture seule. Sûr en double exécution : la bascule
+ * d'abonnement passe en lecture seule. Lot 102A : la purge est PROGRAMMÉE à
+ * fin d'essai + 90 jours (état restreint FIN_ESSAI, `restricted-state`),
+ * annulée par une souscription ; les comptes déjà en lecture seule avant la
+ * livraison sont rattrapés au même passage (préavis minimal). Sûr en double exécution : la bascule
  * est un seul `UPDATE … WHERE status = 'trialing' RETURNING`, donc deux
  * passages simultanés se partagent des comptes DISJOINTS, et la notification
  * de fin d'essai est dédupliquée par compte (`dedupeKey`).
@@ -14,7 +17,7 @@ import { expireOverdueTrials } from '@/services/trial.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
 import { emit } from '@/lib/notifications';
 
-export async function runTrialExpiry(now: Date = new Date()): Promise<{ expired: number }> {
+export async function runTrialExpiry(now: Date = new Date()): Promise<{ expired: number; purgesScheduled: number }> {
   const { expired, accountIds } = await expireOverdueTrials(now);
 
   // Lot 82A (C-Q10, §3.3) : fin des 7 jours d'essai sans souscription — plus
@@ -41,5 +44,15 @@ export async function runTrialExpiry(now: Date = new Date()): Promise<{ expired:
   if (expired > 0) {
     console.info(`[expire-trials] ${expired} essai(s) basculé(s) en mode restreint`);
   }
-  return { expired };
+
+  // Lot 102A : purge J+90 programmée (essais de ce passage et rattrapage).
+  let purgesScheduled = 0;
+  try {
+    const { scheduleTrialPurges } = await import('@/services/account/restricted-state.service');
+    purgesScheduled = (await scheduleTrialPurges({ now })).scheduled;
+    if (purgesScheduled > 0) console.info(`[expire-trials] ${purgesScheduled} purge(s) de fin d'essai programmée(s)`);
+  } catch (e) {
+    console.error('[expire-trials] programmation des purges de fin d’essai impossible :', (e as Error).message);
+  }
+  return { expired, purgesScheduled };
 }

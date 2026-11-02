@@ -41,8 +41,10 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'field_origin_migration_audit', 'home_mascot_cache', 'home_mascot_generations',
   // Miniatures des documents : dérivés techniques régénérables (0241).
   'asset_file_thumbnails',
-  // L'export lui-même (clés de stockage)
-  'gdpr_exports',
+  // L'export lui-même (clés de stockage) ; lot 102C : ses parties.
+  'gdpr_exports', 'gdpr_export_parts',
+  // Lot 102C : registre d'exploitation des copies de données réelles (sans utilisateur).
+  'production_data_copies',
 ]);
 
 /** Colonnes jamais exportées, quelle que soit la table. */
@@ -107,8 +109,82 @@ export interface DocumentCandidate {
 
 interface DocumentPlan {
   include: Array<DocumentCandidate & { path: string }>;
-  skipped: Array<{ id: number; name: string; reason: 'TOTAL_SIZE_LIMIT' | 'NO_STORED_FILE' }>;
+  skipped: Array<{ id: number; name: string; reason: 'TOTAL_SIZE_LIMIT' | 'NO_STORED_FILE' | 'PART_LIMIT' }>;
   includedBytes: number;
+}
+
+/** Lot 102C : une partie de l'archive (numérotée à partir de 1). */
+export interface ExportPartPlan {
+  number: number;
+  documents: Array<DocumentCandidate & { path: string }>;
+  bytes: number;
+}
+
+/** Lot 102C : documents répartis en parties de taille bornée. */
+export interface PartedDocumentPlan extends DocumentPlan {
+  parts: ExportPartPlan[];
+}
+
+/**
+ * Lot 102C (ticket conformité, P2 export RGPD) — répartition de TOUS les
+ * documents en parties numérotées de taille bornée, au lieu d'un plafond
+ * global au-delà duquel les documents n'étaient pas joints.
+ *
+ *   · ordre stable (identifiant), noms uniques sur toute l'archive (une
+ *     partie extraite dans le même dossier qu'une autre n'écrase rien) ;
+ *   · une partie se ferme quand le document suivant la ferait dépasser
+ *     `maxPartBytes` ; un document plus gros que la borne occupe seul sa
+ *     partie (jamais coupé, jamais omis) ;
+ *   · la partie 1 existe toujours (données JSON, manifeste global) ;
+ *   · garde-fou `maxParts` : au-delà, documents listés `PART_LIMIT` (cas
+ *     théorique — les quotas d'offre le rendent inatteignable avec les
+ *     réglages par défaut) et signalés dans le manifeste.
+ * Pur, testé sans base.
+ */
+export function planExportParts(docs: DocumentCandidate[], opts: { maxPartBytes: number; maxParts: number }): PartedDocumentPlan {
+  const maxPartBytes = Math.max(1, Math.floor(opts.maxPartBytes));
+  const maxParts = Math.max(1, Math.floor(opts.maxParts));
+  const plan: PartedDocumentPlan = { include: [], skipped: [], includedBytes: 0, parts: [{ number: 1, documents: [], bytes: 0 }] };
+  const uniqueName = makeUniqueNamer();
+  for (const d of [...docs].sort((a, b) => a.id - b.id)) {
+    const name = downloadFilename(d);
+    if (!d.s3Key) {
+      plan.skipped.push({ id: d.id, name, reason: 'NO_STORED_FILE' });
+      continue;
+    }
+    const size = Math.max(0, Number(d.size ?? 0));
+    let current = plan.parts[plan.parts.length - 1];
+    if (current.documents.length > 0 && current.bytes + size > maxPartBytes) {
+      if (plan.parts.length >= maxParts) {
+        plan.skipped.push({ id: d.id, name, reason: 'PART_LIMIT' });
+        continue;
+      }
+      current = { number: plan.parts.length + 1, documents: [], bytes: 0 };
+      plan.parts.push(current);
+    }
+    const entry = { ...d, path: uniqueName(name, 'documents') };
+    current.documents.push(entry);
+    current.bytes += size;
+    plan.include.push(entry);
+    plan.includedBytes += size;
+  }
+  return plan;
+}
+
+/** Manifeste propre à une partie (`manifest-partie-N.json`). */
+export function partManifest(input: { generatedAt: Date; part: ExportPartPlan; totalParts: number }): string {
+  return JSON.stringify({
+    format: 'verebona-gdpr-export-part',
+    version: 1,
+    generatedAt: input.generatedAt.toISOString(),
+    part: input.part.number,
+    totalParts: input.totalParts,
+    contenu: input.part.number === 1
+      ? 'Données de votre compte (dossier « donnees »), manifeste global (manifest.json) et premiers documents.'
+      : 'Documents seulement (dossier « documents »). Le manifeste global se trouve dans la partie 1.',
+    documents: input.part.documents.map((d) => ({ id: d.id, path: d.path, size: d.size ?? null })),
+    documentsBytes: input.part.bytes,
+  }, null, 2);
 }
 
 
@@ -142,12 +218,15 @@ export function planDocumentFiles(docs: DocumentCandidate[], maxTotalBytes: numb
 
 export interface ExportManifest {
   format: 'verebona-gdpr-export';
-  version: 1;
+  /** 1 : archive unique (historique) ; 2 : archive en parties (lot 102C). */
+  version: 1 | 2;
   generatedAt: string;
   subject: { userId: number; accountIds: number[] };
   tables: Array<{ table: string; rows: number; truncated: boolean; omittedColumns: string[] }>;
   excludedTables: string[];
   documents: { included: number; includedBytes: number; skipped: DocumentPlan['skipped']; files: Array<{ id: number; path: string }> };
+  /** Lot 102C : contenu de chaque partie (absent : archive unique). */
+  parts?: Array<{ part: number; fileName: string; documents: number; documentsBytes: number; files: Array<{ id: number; path: string }> }>;
 }
 
 interface ExportContent {
@@ -167,6 +246,8 @@ export function buildGdprExportContent(input: {
   accountIds: number[];
   tables: CollectedTable[];
   documents: DocumentPlan;
+  /** Lot 102C : parties et nom de fichier de chacune (archive en parties). */
+  parts?: Array<{ plan: ExportPartPlan; fileName: string }>;
 }): ExportContent {
   const textFiles: Record<string, string> = {};
   const manifestTables: ExportManifest['tables'] = [];
@@ -206,7 +287,7 @@ export function buildGdprExportContent(input: {
 
   const manifest: ExportManifest = {
     format: 'verebona-gdpr-export',
-    version: 1,
+    version: input.parts ? 2 : 1,
     generatedAt: input.generatedAt.toISOString(),
     subject: { userId: input.userId, accountIds: [...input.accountIds].sort((a, b) => a - b) },
     tables: manifestTables,
@@ -217,6 +298,12 @@ export function buildGdprExportContent(input: {
       skipped: input.documents.skipped,
       files: input.documents.include.map((d) => ({ id: d.id, path: d.path })),
     },
+    ...(input.parts ? {
+      parts: input.parts.map(({ plan, fileName }) => ({
+        part: plan.number, fileName, documents: plan.documents.length, documentsBytes: plan.bytes,
+        files: plan.documents.map((d) => ({ id: d.id, path: d.path })),
+      })),
+    } : {}),
   };
   textFiles['manifest.json'] = JSON.stringify(manifest, null, 2);
   textFiles['LISEZ-MOI.txt'] = readme(manifest);
@@ -242,6 +329,24 @@ function readme(m: ExportManifest): string {
     'jetons de session), les journaux techniques internes et les notes internes',
     'du support.',
   ];
+  if (m.parts && m.parts.length > 1) {
+    lines.push(
+      '',
+      `Votre archive est découpée en ${m.parts.length} parties numérotées. Celle-ci est la partie 1 :`,
+      'elle contient vos données et le présent inventaire. Les autres parties contiennent',
+      'la suite de vos documents ; chacune porte son propre inventaire',
+      '(manifest-partie-N.json). La rubrique « parts » de manifest.json indique le',
+      'contenu de chaque partie. Téléchargez toutes les parties depuis Mon compte.',
+    );
+  }
+  if (m.documents.skipped.some((s) => s.reason === 'PART_LIMIT')) {
+    lines.push(
+      '',
+      `${m.documents.skipped.filter((s) => s.reason === 'PART_LIMIT').length} document(s) n’ont pas pu être répartis dans les parties`,
+      '(nombre maximal de parties atteint) ; ils sont listés dans manifest.json et',
+      'restent téléchargeables depuis l’application. Contactez le support si besoin.',
+    );
+  }
   if (m.documents.skipped.some((s) => s.reason === 'TOTAL_SIZE_LIMIT')) {
     lines.push(
       '',

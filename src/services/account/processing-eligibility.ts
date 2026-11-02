@@ -56,7 +56,9 @@ export type IneligibilityReason =
   | 'UNPAID'
   | 'SUBSCRIPTION_ENDED'
   | 'READ_ONLY'
-  | 'NO_SUBSCRIPTION';
+  | 'NO_SUBSCRIPTION'
+  /** Lot 102A : le titulaire a demandé la suppression de son compte (clôturé). */
+  | 'DELETION_REQUESTED';
 
 export interface ProcessingEligibility {
   eligible: boolean;
@@ -76,6 +78,7 @@ export const INELIGIBILITY_LABELS: Readonly<Record<IneligibilityReason, string>>
   SUBSCRIPTION_ENDED: 'abonnement terminé',
   READ_ONLY: 'compte en lecture seule',
   NO_SUBSCRIPTION: 'aucun abonnement',
+  DELETION_REQUESTED: 'suppression du compte demandée',
 });
 
 /** État lu en base pour un compte (une requête). */
@@ -86,6 +89,11 @@ export interface AccountProcessingRow {
   /** `accounts.subscription_status` (WITHDRAWN…), seulement pour le motif. */
   accountSubscriptionStatus: string | null;
   subscription: SubscriptionRightsRow | null;
+  /**
+   * Lot 102A : titulaire clôturé en attente de suppression (`users.status =
+   * PENDING_DELETION`) — plus aucun traitement non nécessaire.
+   */
+  ownerPendingDeletion?: boolean;
 }
 
 /** Compte technique des campagnes de mesure (même règle que `account-cost-cap`). */
@@ -103,6 +111,7 @@ export function processingEligibilityOf(row: AccountProcessingRow | null, now: D
   if (isTechnicalProcessingAccount(row.accountId)) return ELIGIBLE;
   if (row.isActive === false) return { eligible: false, reason: 'ACCOUNT_SUSPENDED' };
   if (row.archivedAt) return { eligible: false, reason: 'ACCOUNT_ARCHIVED' };
+  if (row.ownerPendingDeletion) return { eligible: false, reason: 'DELETION_REQUESTED' };
   const ent = entitlementsFromSubscription(row.subscription, now);
   if (ent.canWrite) return ELIGIBLE;
   switch (ent.status) {
@@ -132,6 +141,7 @@ export function processingEligibleSql(accountIdExpr: string, nowExpr = 'now()'):
   const technique = technicalAccountSql(accountIdExpr);
   return `(${technique}EXISTS (SELECT 1 FROM accounts pe_a JOIN account_subscriptions pe_s ON pe_s.account_id = pe_a.id
     WHERE pe_a.id = ${accountIdExpr} AND pe_a.is_active IS NOT FALSE AND pe_a.archived_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM users pe_u WHERE pe_u.id = pe_a.owner_user_id AND pe_u.status = 'PENDING_DELETION')
       AND pe_s.status NOT IN ('readonly', 'canceled', 'past_due')
       AND NOT (pe_s.status = 'trialing' AND pe_s.first_billed_at IS NULL AND pe_s.trial_ends_at IS NOT NULL
                AND pe_s.trial_ends_at <= ${nowExpr})))`;
@@ -183,8 +193,10 @@ const dbLoader: Loader = async (accountId) => {
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(
     `SELECT a.id, a.is_active, a.archived_at, a.subscription_status,
-            s.plan_code, s.status, s.trial_ends_at, s.first_billed_at
+            s.plan_code, s.status, s.trial_ends_at, s.first_billed_at,
+            (u.status = 'PENDING_DELETION') AS owner_pending_deletion
        FROM accounts a LEFT JOIN account_subscriptions s ON s.account_id = a.id
+       LEFT JOIN users u ON u.id = a.owner_user_id
       WHERE a.id = $1`,
     [accountId] as never[],
   )) as unknown as Array<Record<string, unknown>>;
@@ -196,6 +208,7 @@ const dbLoader: Loader = async (accountId) => {
     isActive: r.is_active == null ? null : Boolean(r.is_active),
     archivedAt: date(r.archived_at),
     accountSubscriptionStatus: (r.subscription_status as string | null) ?? null,
+    ownerPendingDeletion: r.owner_pending_deletion === true,
     subscription: r.status == null ? null : {
       planCode: (r.plan_code as string | null) ?? null,
       status: String(r.status),

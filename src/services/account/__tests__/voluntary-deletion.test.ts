@@ -5,6 +5,7 @@
  * décisions et leur ORDRE. Les cascades réelles sont couvertes par
  * `voluntary-deletion.pg.test.ts` (opt-in, PostgreSQL jetable).
  */
+import { LIFECYCLE_DURATIONS } from '@/lib/account-lifecycle/retention-policy';
 import { describe, it, expect, vi } from 'vitest';
 import type Stripe from 'stripe';
 import {
@@ -68,11 +69,12 @@ function harness(opts: {
       log('schedule')();
       active = schedule({
         accountId: input.accountId, userId: input.userId, confirmedAt: input.confirmedAt!,
-        scheduledAt: new Date(input.confirmedAt!.getTime() + (input.delayDays ?? 30) * DAY),
+        scheduledAt: input.scheduledAt ?? new Date(input.confirmedAt!.getTime() + (input.delayDays ?? 30) * DAY),
       });
       return active;
     }),
     cancelUserDeletion: vi.fn(async () => { log('cancel')(); const was = active; active = null; return was; }),
+    syncProcessing: vi.fn(async () => { log('syncProcessing')(); }),
     markClosed: vi.fn(async () => { log('markClosed')(); if (user) user.status = 'PENDING_DELETION'; }),
     billing: {
       stopRenewal: vi.fn(async () => { log('stopRenewal')(); return opts.stopRenewal ? opts.stopRenewal() : ['sub_1']; }),
@@ -122,19 +124,34 @@ describe('clôture (J0)', () => {
     expect(h.calls).toEqual([]);
   });
 
-  it('clôt le compte : plus de renouvellement AVANT toute écriture, puis date J+30 figée, partages, sessions, e-mail', async () => {
+  it('clôt le compte : plus de renouvellement AVANT toute écriture, puis date figée AU PLUS TÔT (lot 102A : 24 h, plafond 30 j), partages, sessions, traitements arrêtés, e-mail', async () => {
     const h = harness();
     const r = await closeAccountForDeletion({ userId: 3, ...confirm }, h.deps);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.schedule.scheduledAt.getTime() - T0.getTime()).toBe(30 * DAY);
+    expect(r.schedule.scheduledAt.getTime() - T0.getTime()).toBe(LIFECYCLE_DURATIONS.voluntaryDeletionDelayHours * 3_600_000);
+    expect(r.schedule.scheduledAt.getTime() - T0.getTime()).toBeLessThan(30 * DAY);
     expect(r.stoppedSubscriptions).toEqual(['sub_1']);
     expect(h.calls).toEqual([
-      'stopRenewal', 'schedule', 'markClosed', 'detachSharing', 'revokeSessions', 'notify:ACCOUNT_DELETION_SCHEDULED',
+      'stopRenewal', 'schedule', 'markClosed', 'detachSharing', 'revokeSessions', 'syncProcessing', 'notify:ACCOUNT_DELETION_SCHEDULED',
     ]);
     expect(h.deps.scheduleDeletion).toHaveBeenCalledWith(expect.objectContaining({
-      reason: 'VOLUNTARY', origin: 'user', delayDays: 30, confirmedAt: T0,
+      reason: 'VOLUNTARY', origin: 'user', confirmedAt: T0,
     }));
+  });
+
+  it('lot 102A : aucun rappel J−7 pour une suppression au plus tôt (délai court) ; le balayage horaire ne traite que les suppressions demandées', async () => {
+    const court = schedule({ id: 9, scheduledAt: new Date(T0.getTime() + DAY) });
+    const h = harness({ reminders: { j7: [], j1: [court] } });
+    const r = await runAccountDeletionSweep({ now: new Date(T0.getTime() + 2 * 3_600_000) }, h.deps);
+    expect(r.reminders.emails).toBe(0);
+    expect(h.calls).toEqual(['markReminder:j1']);
+
+    const due = [schedule({ id: 10, reason: 'TRIAL_ABANDONED', scope: 'account' }), schedule({ id: 11 })];
+    const h2 = harness({ due, claim: { ok: true, user: { id: 3, email: 'membre@exemple.fr', status: 'PENDING_DELETION' } } });
+    const r2 = await runAccountDeletionSweep({ now: new Date(T0.getTime() + 31 * DAY), voluntaryOnly: true }, h2.deps);
+    expect(r2.deletions.executed + r2.deletions.failed + r2.deletions.skipped).toBe(1);
+    expect(h2.calls).not.toContain('markReminder:j7');
   });
 
   it('Stripe injoignable : refus explicite, rien n’est modifié', async () => {
@@ -172,7 +189,7 @@ describe('annulation', () => {
     const h = harness({ user: { status: 'PENDING_DELETION' }, active: schedule() });
     const r = await cancelAccountDeletion({ userId: 3, now: new Date(T0.getTime() + 3 * DAY) }, h.deps);
     expect(r.ok).toBe(true);
-    expect(h.calls).toEqual(['cancel', 'revokeSessions']);
+    expect(h.calls).toEqual(['cancel', 'revokeSessions', 'syncProcessing']);
     expect(h.deps.billing.stopRenewal).not.toHaveBeenCalled();
     expect(h.deps.billing.cancelNow).not.toHaveBeenCalled();
   });

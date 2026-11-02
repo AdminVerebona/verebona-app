@@ -16,13 +16,16 @@ import { PasswordInput } from '@/components/ui/password-input';
 import { LandingFooter } from '@/components/LandingFooter';
 import { ArrowLeft, Crown, Users } from 'lucide-react';
 import { FollowTheme } from '@/components/FollowTheme';
+import { useLegalLinks } from '@/hooks/useLegalLinks';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { z } from 'zod';
 import { MIN_PASSWORD_LENGTH, checkPassword } from '@/lib/auth/password-rules';
 import { Checkbox } from '@/components/ui/checkbox';
+import { MarketingSignupNotice, type MarketingChoiceValue } from '@/components/auth/MarketingSignupNotice';
 import { rememberPendingDuoJoin } from '@/lib/duo/pending-duo-join';
 import { SocialSignInButtons } from '@/components/auth/SocialSignInButtons';
 import { socialErrorMessage } from '@/lib/auth/oauth/messages';
+import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
 
 /**
  * Contexte d'invitation établi CÔTÉ SERVEUR par ./page.tsx à partir du jeton
@@ -77,7 +80,7 @@ const signupSchema = z.object({
   }),
   confirmPassword: z.string(),
   acceptedTerms: z.boolean().refine((val) => val === true, {
-    message: "Vous devez accepter les CGSU pour créer un compte",
+    message: "Vous devez accepter les CGUV pour créer un compte",
   }),
 }).refine((data) => data.password === data.confirmPassword, {
   message: "Les mots de passe ne correspondent pas.",
@@ -95,14 +98,17 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
   // première connexion (accueil → `pending_transfer_token`).
   const [transmissionToken, setTransmissionToken] = useState<string | null>(null);
   const [referralCode, setReferralCode] = useState<string | null>(null);
+  // Lot 102D : instant signé d'usage du lien `/r/<code>` (fenêtre de 90 jours).
+  const [referralTouch, setReferralTouch] = useState<string | null>(null);
   // ══════════════════════════════════════════════════════════════════════════
-  // VERSION DES CGVU RÉELLEMENT PRÉSENTÉE — CDC 7 §8.1 et §18
+  // VERSION DES CGUV RÉELLEMENT PRÉSENTÉE — CDC 7 §8.1 et §18
   //
   // Chargée à l'ouverture du formulaire et transmise telle quelle au serveur.
   // Si une nouvelle version devient courante pendant que l'utilisateur remplit
   // le formulaire, c'est bien celle qu'il a eu sous les yeux qui est
   // enregistrée : « ne pas remplacer silencieusement le document ».
   // ══════════════════════════════════════════════════════════════════════════
+  const legalLinks = useLegalLinks();
   const [legalVersion, setLegalVersion] = useState<{
     versionCode: string;
     permalink: string;
@@ -149,6 +155,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
       // maniere persistante. Il vit uniquement en memoire pour la duree du
       // parcours, puis est propage par le parametre d'URL (§4.4).
       setReferralCode(ref.toUpperCase());
+      setReferralTouch(params.get('rt'));
     }
     {
       setInviteToken(token);
@@ -168,11 +175,12 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
     }
 
     // La version applicable est figée pour toute la durée du parcours.
-    fetch('/api/legal/cgvu/current', { credentials: 'include' })
+    // Lot 102B : métadonnées seules (le texte est sur le site public).
+    fetch('/api/legal/cguv/current', { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.versionCode) {
-          setLegalVersion({ versionCode: data.versionCode, permalink: data.permalink });
+          setLegalVersion({ versionCode: data.versionCode, permalink: data.permalinkUrl ?? data.permalink });
         }
       })
       .catch(() => {
@@ -187,6 +195,9 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- lecture unique à l'ouverture du formulaire
   }, []);
+
+  // Lot 102C : choix sur les relances commerciales (bloc fourni par le serveur selon le réglage BO).
+  const [marketingChoice, setMarketingChoice] = useState<MarketingChoiceValue | null>(null);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData(prev => ({
@@ -223,7 +234,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
       setIsLoading(true);
 
       if (!formData.acceptedTerms) {
-        setErrors({ acceptedTerms: "Vous devez accepter les CGSU pour créer un compte." });
+        setErrors({ acceptedTerms: "Vous devez accepter les CGUV pour créer un compte." });
         setIsLoading(false);
         return;
       }
@@ -266,8 +277,10 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
           // Code de la version affichée, jamais « la version courante » (§18).
           termsVersion: legalVersion?.versionCode,
           referralCode: isDuoInvite ? undefined : referralCode || undefined,
+          referralTouch: isDuoInvite || !referralCode ? undefined : referralTouch || undefined,
           inviteToken: inviteToken || undefined,
           transmissionToken: transmissionToken || undefined,
+          marketing: marketingChoice ?? undefined,
         }),
       });
 
@@ -389,8 +402,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   <span className="font-medium text-[color:var(--text-info)]">Code de parrainage appliqué</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
                     Code <span className="font-mono font-semibold text-[color:var(--accent)]">{referralCode}</span> enregistré.
-                    Votre parrain bénéficiera d&apos;un mois offert lorsque vous souscrirez un
-                    abonnement annuel.
+                    {' '}{REFERRAL_TEXT.referredNotice}
                   </p>
                 </div>
               </div>
@@ -404,6 +416,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
               inviteToken={inviteToken}
               transmissionToken={transmissionToken}
               referralCode={isDuoInvite ? null : referralCode}
+              referralTouch={isDuoInvite ? null : referralTouch}
               disabled={isLoading}
               className="mb-4"
             />
@@ -519,8 +532,8 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   autoComplete="off"
                 />
                 <p className="text-xs text-[color:var(--text-muted)]">
-                  {REFERRAL_FIELD_HELP} Votre parrain bénéficiera d&apos;un mois offert lorsque
-                  vous souscrirez un abonnement annuel.
+                  {REFERRAL_FIELD_HELP} {REFERRAL_TEXT.referredNotice}{' '}
+                  <a href={legalLinks.parrainage} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{REFERRAL_TEXT.termsLinkLabel}</a>
                 </p>
               </div>
               )}
@@ -538,8 +551,8 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                     htmlFor="acceptedTerms" 
                     className="text-base leading-relaxed cursor-pointer font-normal text-foreground"
                   >
-                    J&apos;ai lu et j&apos;accepte les Conditions générales de vente et
-                    d&apos;utilisation de Verebona, incluant la Politique de confidentialité.
+                    J&apos;ai lu et j&apos;accepte les CGUV (Conditions générales d&apos;utilisation
+                    et de vente) de Verebona, incluant la Politique de confidentialité.
                     {legalVersion && (
                       <span className="block text-xs text-[color:var(--text-muted)] mt-1">
                         Version {legalVersion.versionCode}
@@ -547,7 +560,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                     )}
                   </Label>
                 </div>
-                <div className="flex justify-center">
+                <div className="flex flex-wrap justify-center gap-2">
                   <Button
                     type="button"
                     variant="outline"
@@ -556,19 +569,25 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                     disabled={isLoading}
                   >
                     {/* Ouvre la version EXACTE proposée à cet instant (§8.1),
-                        et non la page courante qui pourrait changer. */}
-                    <Link
-                      href={legalVersion?.permalink ?? '/cgvu'}
+                        sur le site public (lot 102B : source juridique unique). */}
+                    <a
+                      href={legalVersion?.permalink ?? legalLinks.cguv}
                       target="_blank"
                       rel="noopener noreferrer"
                     >
-                      Lire les conditions générales
-                    </Link>
+                      Lire les CGUV
+                    </a>
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" asChild disabled={isLoading}>
+                    <a href={legalLinks.confidentialite} target="_blank" rel="noopener noreferrer">
+                      Confidentialité
+                    </a>
                   </Button>
                 </div>
                 {errors.acceptedTerms && (
                   <p className="text-sm text-destructive">{errors.acceptedTerms}</p>
                 )}
+                <MarketingSignupNotice onChange={setMarketingChoice} disabled={isLoading} />
               </div>
 
               {error && (

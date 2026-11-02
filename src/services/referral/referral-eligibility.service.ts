@@ -21,6 +21,13 @@
  * Paiement introuvable ou Stripe injoignable : pas d'attribution, nouvelle
  * tentative au passage suivant — jamais un cadeau « par défaut ».
  * Le bénéficiaire reste le parrain seul.
+ *
+ * Lot 102D (règle centrale `referral-rules.ts`) :
+ *   0. délai de rétractation du filleul réellement clos (calendrier légal,
+ *      prorogation comprise, + marge) — avant : 14 × 24 h ;
+ *   4. auto-parrainage au paiement : la carte (empreinte Stripe) ou l'adresse
+ *      de facturation qui a payé l'abonnement du filleul est celle du parrain
+ *      → refus définitif.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type Stripe from 'stripe';
@@ -28,6 +35,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '@/db';
 import { accountSubscriptions, withdrawalRequests } from '@/db/schema';
 import { listInvoicePaidCharges, type PaidCharge } from '@/services/billing/stripe-payments';
+import { addressKey, paymentSelfReferralReason, rewardEarliestAt, type SelfReferralReason } from './referral-rules';
 
 export type IneligibilityReason =
   | 'NOT_YEARLY'
@@ -37,7 +45,9 @@ export type IneligibilityReason =
   | 'PAYMENT_REFUNDED'
   | 'PAYMENT_DISPUTED'
   | 'PAYMENT_NOT_FOUND'
-  | 'STRIPE_UNAVAILABLE';
+  | 'STRIPE_UNAVAILABLE'
+  | 'WITHDRAWAL_PERIOD_RUNNING'
+  | SelfReferralReason;
 
 interface EligibilityDecision {
   eligible: boolean;
@@ -51,7 +61,7 @@ interface EligibilityDecision {
 }
 
 /** Statuts de rétractation qui annulent la souscription (toute demande non rejetée). */
-const WITHDRAWAL_BLOCKING = ['received', 'manual_review', 'processing', 'completed', 'failed'];
+export const WITHDRAWAL_BLOCKING = ['received', 'manual_review', 'processing', 'completed', 'failed'];
 const DISPUTE_OPEN = ['warning_needs_response', 'warning_under_review', 'needs_response', 'under_review'];
 
 interface EligibilityFacts {
@@ -60,6 +70,8 @@ interface EligibilityFacts {
   stripeSubscription: { status: string; interval: string | null; cancelAtPeriodEnd: boolean; canceledAt: number | null } | null;
   charges: PaidCharge[] | null;
   disputes: Array<{ status: string }>;
+  /** Lot 102D : moyens de paiement et adresses du parrain (null : non lus). */
+  referrer?: { cardFingerprints: string[]; addressKeys: string[] } | null;
 }
 
 /** Contrôles sur la seule base locale ; `null` si rien ne s'oppose encore. */
@@ -101,16 +113,76 @@ function decideEligibility(f: EligibilityFacts): EligibilityDecision {
     // Contestation en cours : pas de cadeau tant qu'elle n'est pas close.
     return { eligible: false, reason: 'PAYMENT_DISPUTED', final: false };
   }
+  if (f.referrer) {
+    const self = paymentSelfReferralReason({
+      referredCardFingerprints: f.charges.map((c) => c.cardFingerprint ?? null),
+      referredAddressKeys: f.charges.map((c) => addressKey(c.billingAddress)),
+      referrerCardFingerprints: f.referrer.cardFingerprints,
+      referrerAddressKeys: f.referrer.addressKeys,
+    });
+    if (self) return { eligible: false, reason: self, final: true };
+  }
   return { eligible: true };
 }
 
-type StripeLike = Pick<Stripe, 'subscriptions' | 'invoicePayments' | 'charges' | 'paymentIntents' | 'disputes' | 'invoices'>;
+type StripeLike = Pick<Stripe, 'subscriptions' | 'invoicePayments' | 'charges' | 'paymentIntents' | 'disputes' | 'invoices'>
+  & Partial<Pick<Stripe, 'paymentMethods' | 'customers'>>;
+
+/**
+ * Cartes (empreintes) et adresses de facturation du PARRAIN, lues chez
+ * Stripe (client du compte parrain). `null` si le parrain n'a pas de client
+ * Stripe ou si le client fourni ne sait pas les lire.
+ */
+async function referrerPaymentIdentity(
+  stripe: StripeLike, referrerAccountId: number,
+): Promise<{ cardFingerprints: string[]; addressKeys: string[] } | null> {
+  if (!stripe.paymentMethods || !stripe.customers) return null;
+  const [row] = await db
+    .select({ customerId: accountSubscriptions.stripeCustomerId })
+    .from(accountSubscriptions)
+    .where(eq(accountSubscriptions.accountId, referrerAccountId))
+    .limit(1);
+  const customerId = row?.customerId ?? null;
+  if (!customerId) return null;
+  const out = { cardFingerprints: [] as string[], addressKeys: [] as string[] };
+  const methods = await stripe.paymentMethods.list({ customer: customerId, type: 'card', limit: 100 });
+  for (const m of methods.data) {
+    if (m.card?.fingerprint) out.cardFingerprints.push(m.card.fingerprint);
+    const k = addressKey(m.billing_details?.address ?? null);
+    if (k) out.addressKeys.push(k);
+  }
+  const customer = await stripe.customers.retrieve(customerId);
+  if (!('deleted' in customer && customer.deleted)) {
+    const k = addressKey((customer as Stripe.Customer).address ?? null);
+    if (k) out.addressKeys.push(k);
+  }
+  return out;
+}
 
 /** Réunit les faits (base + Stripe) puis décide. */
 export async function checkReferralEligibility(
   stripe: StripeLike,
-  event: { referredAccountId: number; stripeInvoiceId: string | null; stripeSubscriptionId?: string | null },
+  event: {
+    referredAccountId: number;
+    stripeInvoiceId: string | null;
+    stripeSubscriptionId?: string | null;
+    /** Lot 102D : parrain (contrôle d'auto-parrainage au paiement). */
+    referrerAccountId?: number;
+    /** Lot 102D : premier paiement annuel du filleul (délai de rétractation). */
+    firstBilledAt?: Date | null;
+    contractConcludedAt?: Date | null;
+  },
+  now: Date = new Date(),
 ): Promise<EligibilityDecision> {
+  // 0. Délai de rétractation du filleul : calendrier légal + marge (pur).
+  if (event.firstBilledAt !== undefined) {
+    const earliest = rewardEarliestAt({ firstBilledAt: event.firstBilledAt, contractConcludedAt: event.contractConcludedAt ?? null });
+    if (!earliest) return { eligible: false, reason: 'PAYMENT_NOT_FOUND', final: false };
+    if (now.getTime() < earliest.getTime()) {
+      return { eligible: false, reason: 'WITHDRAWAL_PERIOD_RUNNING', final: false, detail: earliest.toISOString() };
+    }
+  }
+
   const [local] = await db
     .select({
       billingPeriod: accountSubscriptions.billingPeriod,
@@ -167,6 +239,9 @@ export async function checkReferralEligibility(
         const list = await stripe.disputes.list({ charge: c.chargeId, limit: 10 });
         facts.disputes.push(...list.data.map((d) => ({ status: d.status })));
       }
+    }
+    if (event.referrerAccountId !== undefined) {
+      facts.referrer = await referrerPaymentIdentity(stripe, event.referrerAccountId);
     }
   } catch (e) {
     return { eligible: false, reason: 'STRIPE_UNAVAILABLE', final: false, detail: (e as Error).message };

@@ -17,7 +17,14 @@ type LegalAuditAction =
   | 'INTEGRITY_FAILED'
   | 'FILE_RESTORED'
   | 'USER_ACCEPTED'
-  | 'CONFIRMATION_EMAIL_SENT';
+  | 'CONFIRMATION_EMAIL_SENT'
+  // Lot 102B (migration 0910) : référentiel public, saisie BO, démarrage immédiat.
+  | 'MANIFEST_SYNCED'
+  | 'MANIFEST_SYNC_FAILED'
+  | 'MANIFEST_ANOMALY'
+  | 'VERSION_IMPORTED'
+  | 'VERSION_MANUAL_ENTRY'
+  | 'IMMEDIATE_START_REQUESTED';
 
 interface LegalAuditEntry {
   action: LegalAuditAction;

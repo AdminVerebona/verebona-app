@@ -19,7 +19,7 @@
 import { pgClient } from '@/db';
 import { computeDueDateFromInstant, type GdprRightType, type GdprStatus } from './rules';
 
-type DeletionReason = 'WITHDRAWAL' | 'VOLUNTARY' | 'TRIAL_ABANDONED' | 'ADMIN' | 'UNPAID';
+type DeletionReason = 'WITHDRAWAL' | 'VOLUNTARY' | 'TRIAL_ABANDONED' | 'ADMIN' | 'UNPAID' | 'SUBSCRIPTION_ENDED';
 type DeletionOrigin = 'user' | 'system' | 'admin';
 
 /**
@@ -43,6 +43,8 @@ const DELETION_REASON_LABELS: Record<DeletionReason, string> = {
   ADMIN: 'back-office',
   // Cycle d'impayé de 90 jours (Centre d'aide GAP-06) : origine système.
   UNPAID: 'impayé non régularisé',
+  // Lot 102A : fin d'abonnement payant, conservation 90 jours (origine système).
+  SUBSCRIPTION_ENDED: 'fin d’abonnement (conservation échue)',
 };
 
 interface SystemRequestInput {

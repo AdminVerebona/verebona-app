@@ -58,6 +58,15 @@ export async function registerNode(): Promise<void> {
   emailVerificationSecret();
   resetSecret();
 
+  // 0 ter. Lot 102C (décision PO « stockage durable des documents en
+  //    France ») : région / point d'accès du stockage objet dans la liste
+  //    autorisée (`lib/storage-location`). Production (préproduction
+  //    comprise) : démarrage REFUSÉ sinon, sauf reconnaissance explicite
+  //    (STORAGE_LOCATION_ACKNOWLEDGED_REGION) qui laisse le service
+  //    « Dégradé » et l'anomalie ouverte. Aucun accès base ici.
+  const { assertStorageLocationAllowed } = await import('@/lib/storage-location');
+  const storageLocation = assertStorageLocationAllowed();
+
   // 0 bis. Intégration 92 + 97 (CDC 12 AUTH-10, PUSH-08) : toute session
   //    terminée côté serveur (déconnexion, « Déconnecter » un appareil,
   //    autres appareils, révocation globale) désactive le push de
@@ -90,6 +99,16 @@ export async function registerNode(): Promise<void> {
   void import('@/services/admin/node-runtime-supervision')
     .then((m) => m.syncNodeRuntimeAnomaly(runtimeNode))
     .catch((e) => console.error('[startup] supervision du runtime Node non effectuée :', (e as Error).message));
+
+  // 1 ter. Lot 102C : localisation du stockage (anomalie ouverte / résolue)
+  //    et copies de données réelles (identité de la base, copie détectée,
+  //    Supervision). Sans attente, ne lèvent jamais.
+  void import('@/services/admin/storage-location-supervision')
+    .then((m) => m.syncStorageLocationAnomaly(storageLocation))
+    .catch((e) => console.error('[startup] supervision du stockage non effectuée :', (e as Error).message));
+  void import('@/services/admin/production-copies/production-copies.service')
+    .then((m) => m.startupProductionCopyCheck())
+    .catch((e) => console.error('[startup] contrôle des copies de données réelles non effectué :', (e as Error).message));
 
   //    CDC 15 DP-05 : colonnes de trace de la migration 0217. Absentes, les
   //    traces IA continuent sans TASK ni prompt maître — signalé ici, au

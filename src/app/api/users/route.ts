@@ -9,6 +9,8 @@ import { recordSignupReferral } from '@/services/referral-attribution.service';
 import { getCurrentVersion } from '@/services/legal';
 import { logDatabaseError } from '@/lib/database-diagnostic';
 import { recordAcceptance } from '@/services/legal/legal-acceptances.service';
+import { channelFrom } from '@/lib/legal/public-legal';
+import { readClientContext } from '@/lib/mobile/client-context';
 import { getSignupMode, SIGNUP_CLOSED_CODE, SIGNUP_CLOSED_MESSAGE } from '@/lib/prelaunch';
 import { resolveSignupInvitation, type SignupInvitation } from '@/lib/prelaunch-invitations';
 import { SIGNUP_NEUTRAL_MESSAGE } from '@/lib/auth/auth-messages';
@@ -101,7 +103,9 @@ export async function POST(request: NextRequest) {
       // (voir `lib/prelaunch-invitations.ts`), sans rien consommer ici.
       transmissionToken,
       referralCode, // CDC parrainage §4.3 : transmis directement au serveur a la creation du compte
+      referralTouch, // Lot 102D : instant signé d'usage du lien (fenêtre de 90 jours)
       signupPlan: rawSignupPlan, // conserve pour compatibilite : l'inscription ne choisit plus d'offre (CDC tarification §3.1)
+      marketing: rawMarketing, // Lot 102C : choix sur les relances commerciales (bloc du réglage BO)
     } = body;
 
     const signupPlan = rawSignupPlan === 'duo' ? 'premium_duo' : rawSignupPlan;
@@ -152,7 +156,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ══════════════════════════════════════════════════════════════════════
-    // ACCEPTATION DES CGVU — CDC 7 §8.1, §9 et §18
+    // ACCEPTATION DES CGUV — CDC 7 §8.1, §9 et §18
     //
     // La version enregistrée est celle que le formulaire a RÉELLEMENT
     // présentée, transmise en clair par le client. Résoudre ici « la version
@@ -166,7 +170,7 @@ export async function POST(request: NextRequest) {
     if (!acceptedTerms) {
       return NextResponse.json(
         {
-          error: 'Vous devez accepter les Conditions générales de vente et d’utilisation',
+          error: 'Vous devez accepter les CGUV (Conditions générales d’utilisation et de vente)',
           code: 'TERMS_NOT_ACCEPTED',
         },
         { status: 400 }
@@ -181,10 +185,10 @@ export async function POST(request: NextRequest) {
       // Aucune version publiée : la création de compte est impossible, faute
       // de contrat à opposer. Refuser explicitement vaut mieux qu'enregistrer
       // une acceptation vide.
-      console.error('[signup] aucune version de CGVU publiée — création de compte refusée.');
+      console.error('[signup] aucune version des CGUV connue — création de compte refusée.');
       return NextResponse.json(
         {
-          error: 'Les conditions générales sont momentanément indisponibles. Réessayez dans quelques instants.',
+          error: 'Les CGUV sont momentanément indisponibles. Réessayez dans quelques instants.',
           code: 'NO_CURRENT_LEGAL_VERSION',
         },
         { status: 503 }
@@ -448,6 +452,8 @@ export async function POST(request: NextRequest) {
           userId: newUser.id,
           versionCode: acceptedVersionCode,
           context: 'ACCOUNT_CREATION',
+          // Lot 102B : canal (web / application) figé dans la preuve.
+          channel: channelFrom(readClientContext(request).client, request.headers.get('user-agent')),
           ipAddress: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? null,
           userAgent: request.headers.get('user-agent'),
           acceptedAt: now,
@@ -460,6 +466,14 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // Lot 102C (ticket conformité, P2 prospection post-essai) : preuve de
+      // l'information et du choix (consentement / opposition) sur les
+      // relances commerciales, selon la base légale du BO. Ne lève jamais.
+      {
+        const { readSignupMarketingInput, recordSignupMarketingChoice } = await import('@/services/trial-lifecycle/signup-collection');
+        await recordSignupMarketingChoice({ userId: newUser.id, context: 'signup', marketing: readSignupMarketingInput(rawMarketing), now });
+      }
+
       // Parrainage : l'attribution est memorisee a la creation effective du
       // COMPTE (CDC parrainage §4.5) ; l'avantage reste acquis a la
       // souscription d'un abonnement annuel (CDC tarification §13). Une
@@ -469,6 +483,7 @@ export async function POST(request: NextRequest) {
           userId: newUser.id,
           accountId: newAccount.id,
           rawCode: referralCode,
+          referralTouch,
           entryPoint: 'direct_signup',
           now,
         });

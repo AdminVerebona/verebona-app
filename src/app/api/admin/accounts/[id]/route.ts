@@ -17,6 +17,7 @@ import { deleteAccountAsAdmin } from '@/services/account/admin-account-deletion.
 import { planAtDate } from '@/lib/admin/plan-at-date';
 import { loadAccountHistory } from '@/services/admin/account-history.service';
 import { loadAccountPendingDeletion } from '@/services/admin/account-deletion-status.service';
+import { getAdminRestrictedState } from '@/services/account/restricted-state.service';
 import { pgClient } from '@/db';
 import { duoOfAccount } from '@/services/account/membership.service';
 
@@ -124,9 +125,11 @@ export async function GET(
     // Historique consolidé (ACC-D09 à ACC-D11) : date, événement, origine.
     const accountHistory = await loadAccountHistory(accountId);
 
-    // LEG-003 : dernière acceptation des CGSU par un membre du compte.
-    const legalAcceptances = await pgClient.unsafe<{ accepted_at: string; version_code: string; acceptance_context: string; email: string | null }[]>(
-      `SELECT la.accepted_at, v.version_code, la.acceptance_context, u.email
+    // LEG-003 : dernières acceptations des CGUV par un membre du compte ;
+    // lot 102B : preuve complète (permalien, empreinte, canal, statut).
+    const legalAcceptances = await pgClient.unsafe<{ accepted_at: string; version_code: string; acceptance_context: string; email: string | null; permalink_url: string | null; text_sha256: string | null; channel: string | null; proof_status: string | null }[]>(
+      `SELECT la.accepted_at, v.version_code, la.acceptance_context, u.email,
+              la.permalink_url, la.text_sha256, la.channel, la.proof_status
          FROM legal_acceptances la
          JOIN legal_document_versions v ON v.id = la.legal_document_version_id
          LEFT JOIN users u ON u.id = la.user_id
@@ -181,6 +184,9 @@ export async function GET(
 
     // §5.2.1 : suppression en cours (même règle que la liste, ACC-L01).
     // Lecture seule : aucune action d'annulation depuis le BO (GDP-008).
+    // Lot 102A : état restreint (motif, entrée, date de purge) et dernières
+    // purges du cycle de vie avec leur annulation — lecture seule.
+    const restrictedState = await getAdminRestrictedState(accountId, account.ownerUserId).catch(() => null);
     const deletion = await loadAccountPendingDeletion(accountId, account.ownerUserId);
 
     // ── Consommations et quotas §5.2.3 (ACC-D04 : lecture seule) ─────────
@@ -253,6 +259,7 @@ export async function GET(
       account: { ...accountPublic, lastLoginAt: lastLogin?.at ?? null },
       subscription: subscription ?? null,
       deletion,
+      restrictedState,
       stripeLinks,
       quotas,
       payments,
@@ -265,6 +272,10 @@ export async function GET(
         versionCode: l.version_code,
         context: l.acceptance_context,
         email: l.email,
+        permalinkUrl: l.permalink_url,
+        sha256: l.text_sha256,
+        channel: l.channel,
+        proofStatus: l.proof_status,
       })),
       duoAccount: duoAccountData,
     });

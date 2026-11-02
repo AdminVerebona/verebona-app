@@ -5,6 +5,7 @@ import { Clock, AlertTriangle, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { libelleEssai } from './trial-label';
 import { UnpaidPaymentNotice } from './UnpaidPaymentNotice';
+import { RestrictedStateNotice } from './RestrictedStateNotice';
 import { isUnpaid, isRecentPendingPayment, type TrialStatusPayload, type UnpaidCyclePayload } from '@/lib/trial-status';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
@@ -88,6 +89,14 @@ export function TrialBanner() {
         </p>
       </div>
     );
+  }
+
+  // Lot 102A : état restreint avec suppression RÉELLEMENT programmée (fin
+  // d'essai, fin d'abonnement, rétractation) — bandeau sobre « Lecture seule
+  // jusqu'au … », export et souscription. Prioritaire sur les bandeaux
+  // génériques ci-dessous, qui ne connaissent pas la date.
+  if (isRestricted && data.restrictedState && data.restrictedState.reason !== 'SUPPRESSION_DEMANDEE') {
+    return <RestrictedStateNotice state={data.restrictedState} commerceHidden={commerceHidden} />;
   }
 
   // Essai déjà consommé par cette adresse (§3.4). Ce n'est pas une panne :

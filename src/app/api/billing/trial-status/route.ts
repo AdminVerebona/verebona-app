@@ -11,6 +11,7 @@ import { getEntitlements, quotaUsage } from '@/services/entitlements.service';
 import { getScheduledChange } from '@/services/plan-change.service';
 import { kickPendingCheckoutReconciliation, pendingCheckoutState } from '@/services/billing/pending-checkout.service';
 import { computeUnpaidCycle } from '@/services/billing/unpaid-cycle.rules';
+import { getRestrictedState } from '@/services/account/restricted-state.service';
 
 /**
  * GET /api/billing/trial-status
@@ -126,6 +127,13 @@ export async function GET(request: NextRequest) {
     const pending = pendingCheckoutState(accountRow, now);
     if (pending?.due) kickPendingCheckoutReconciliation(accountId);
 
+    // Lot 102A : purge programmée d'un état restreint (fin d'essai, fin
+    // d'abonnement, rétractation) — affichée seulement si le compte est
+    // effectivement en lecture seule. Lecture locale, jamais bloquante.
+    const restrictedState = entitlements.isRestricted
+      ? await getRestrictedState(accountId, now).catch(() => null)
+      : null;
+
     const assetsUsed = assetRow?.value ?? 0;
     const documentsUsed = docRow?.value ?? 0;
 
@@ -213,6 +221,11 @@ export async function GET(request: NextRequest) {
             deadlineAt: unpaidCycle.deadlineAt.toISOString(),
             daysLeft: unpaidCycle.daysLeft,
           }
+        : null,
+      // Lot 102A : état restreint (lecture seule jusqu'à la date de suppression
+      // programmée), seulement pour un compte réellement restreint.
+      restrictedState: restrictedState
+        ? { reason: restrictedState.reason, purgeAt: restrictedState.purgeAt, daysLeft: restrictedState.daysLeft, cancelledBySubscription: restrictedState.cancelledBySubscription }
         : null,
       premiumFeatures: entitlements.premiumFeatures,
       canWrite: entitlements.canWrite,

@@ -30,11 +30,10 @@ import { WITHDRAWAL_RECEIPT_HTML as WITHDRAWAL_RECEIPT_HTML_2026 } from '@/lib/e
 const TYPE = 'WITHDRAWAL_RECEIPT';
 
 /**
- * Lot 32 (décision PO du 07/10/2026, Q2) : accusé de réception ET e-mail
- * d'au revoir. La rétractation est traitée immédiatement : accès coupés,
- * abonnement annulé, remboursement intégral lancé, compte supprimé. Plus de
- * lien de suivi (`trackingUrl`) ni de délai d'export (`dataExportDeadlineLabel`).
- * Même contenu que la migration 0279 (qui met à jour la base sans commande).
+ * Lot 102A (décision PO du 31/10/2026) : accusé de réception. La rétractation
+ * est traitée immédiatement : abonnement annulé, remboursement intégral lancé,
+ * compte en lecture seule, données conservées `retentionDays` jours.
+ * Même contenu que la migration 0901 (qui met à jour la base sans commande).
  */
 export const WITHDRAWAL_RECEIPT_VARIABLES = [
   'firstName',
@@ -43,15 +42,19 @@ export const WITHDRAWAL_RECEIPT_VARIABLES = [
   'requestedAtLabel',
   'contractLabel',
   'amountLabel',
+  'retentionDays',
+  'accountUrl',
   'legalPermalinkUrl',
   'contactEmail',
 ] as const;
 
-export const WITHDRAWAL_RECEIPT_SUBJECT = 'Votre rétractation est enregistrée et votre compte supprimé — {{publicReference}}';
+export const WITHDRAWAL_RECEIPT_SUBJECT = 'Votre rétractation est enregistrée — {{publicReference}}';
 
 /**
  * Lot 66C : corps à la charte « Sérénité » (lib/email/email-html-templates.ts). Le corps du lot 32,
  * inséré par la migration 0279, est mis à jour par la migration 0465 s'il n'a pas été personnalisé.
+ * Lot 102A : compte en lecture seule et données conservées (plus de suppression immédiate) —
+ * migration 0901.
  */
 export const WITHDRAWAL_RECEIPT_HTML = WITHDRAWAL_RECEIPT_HTML_2026;
 

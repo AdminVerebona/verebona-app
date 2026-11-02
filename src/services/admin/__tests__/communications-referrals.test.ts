@@ -98,7 +98,9 @@ describe('Parrainage — détail (REF-007, REF-008)', () => {
   it('en cours : date prévisionnelle = premier paiement + délai de rétractation', () => {
     const v = describeReferralEvent({ ...base, status: 'link_used', firstBilledAt: new Date('2026-09-10T00:00:00Z') });
     expect(v.status).toBe('in_progress');
-    expect(v.forecastRewardAt).toBe('2026-09-24T00:00:00.000Z');
+    // Lot 102D (règle centrale) : clôture du délai de 14 jours le 24/09 à
+    // 23 h 59 min 59 s (Paris), puis 1 jour de marge avant l'attribution.
+    expect(v.forecastRewardAt).toBe('2026-09-25T21:59:59.000Z');
     expect(v.rewardedAt).toBeNull();
   });
 

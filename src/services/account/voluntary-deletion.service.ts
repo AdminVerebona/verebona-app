@@ -1,5 +1,21 @@
 /**
- * Suppression VOLONTAIRE du compte par son utilisateur — différée de 30 jours.
+ * Suppression VOLONTAIRE du compte par son utilisateur.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 102A (ticket « Conformité légale », P1 « Suppression volontaire »)
+ *
+ *   Le délai de 30 jours ne doit pas devenir une durée de conservation :
+ *   accès désactivé immédiatement (clôture, inchangée), traitements arrêtés
+ *   (éligibilité IA : `DELETION_REQUESTED`), suppression ACTIVE au plus tôt —
+ *   délai court `voluntaryDeletionDelayHours` (24 h : corriger une erreur,
+ *   télécharger ses données), exécutée par le balayage horaire
+ *   (`account-lifecycle`) ; 30 jours = PLAFOND TECHNIQUE (reprises d'échec
+ *   comprises, anomalie de Supervision au-delà). Durées :
+ *   `lib/account-lifecycle/retention-policy.ts`. Le rappel J−7 ne part que
+ *   pour un délai d'au moins 7 jours (demandes antérieures au lot 102A).
+ *   Les sections ci-dessous décrivent le parcours historique ; « J+30 » s'y
+ *   lit « échéance de la suppression ».
+ * ══════════════════════════════════════════════════════════════════════════
  *
  * ══════════════════════════════════════════════════════════════════════════
  * DÉCISION PRODUIT
@@ -81,8 +97,8 @@ import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 import { PENDING_DELETION_STATUS } from '@/lib/auth/account-closure';
 import { endDuoSharing } from '@/lib/plan-enforcement';
 import { endMembership, leaveDuo } from '@/services/duo/duo-exit.service';
+import { purgeDateFor, voluntaryReminderApplies } from '@/lib/account-lifecycle/retention-policy';
 import {
-  DELETION_DELAY_DAYS,
   DeletionError,
   cancelUserDeletion,
   claimUserDeletion,
@@ -105,8 +121,6 @@ import {
 /** Texte à recopier, inchangé depuis le parcours historique (AID-ACCOUNT-006). */
 export const ACCOUNT_DELETION_CONFIRMATION = 'SUPPRIMER MON COMPTE';
 
-/** Délai de la suppression volontaire, en jours. */
-const VOLUNTARY_DELETION_DELAY_DAYS = DELETION_DELAY_DAYS;
 
 /** Au-delà, la confirmation finale non envoyée est abandonnée et l'adresse effacée. */
 const FINAL_EMAIL_RETRY_DAYS = 7;
@@ -193,6 +207,8 @@ export interface VoluntaryDeletionDeps {
   /** Rompt les partages (Duo, comptes partagés). Idempotent. */
   detachSharing(userId: number, now: Date): Promise<{ role: SharingRole; removedMemberships: number }>;
   revokeSessions(userId: number, reason: string): Promise<Date>;
+  /** Lot 102A : éligibilité IA des comptes dont il est titulaire resynchronisée (jamais bloquant). */
+  syncProcessing(userId: number): Promise<void>;
   notify(input: {
     type: 'ACCOUNT_DELETION_SCHEDULED' | 'ACCOUNT_DELETION_REMINDER';
     userId: number;
@@ -326,14 +342,15 @@ export async function closeAccountForDeletion(
     throw e;
   }
 
-  // 2. Compte à rebours (date figée) et registre RGPD.
+  // 2. Compte à rebours (date figée) et registre RGPD. Lot 102A : échéance
+  //    au plus tôt (délai court, plafond technique 30 jours).
   const schedule = existing ?? await deps.scheduleDeletion({
     accountId,
     userId: user.id,
     reason: 'VOLUNTARY',
     origin: 'user',
     confirmedAt: now,
-    delayDays: VOLUNTARY_DELETION_DELAY_DAYS,
+    scheduledAt: purgeDateFor('SUPPRESSION_DEMANDEE', now),
   });
 
   // 3. Clôture : l'usage normal cesse.
@@ -345,6 +362,10 @@ export async function closeAccountForDeletion(
   // 5. Toutes les sessions révoquées (la route rouvre celle de cet appareil,
   //    en mode « compte en cours de suppression »).
   await deps.revokeSessions(user.id, 'ACCOUNT_CLOSED');
+
+  // 5 bis. Lot 102A : arrêt des traitements non nécessaires (travaux IA en
+  //    attente neutralisés pour les comptes dont il est titulaire).
+  await deps.syncProcessing(user.id);
 
   // 6. Confirmation par e-mail (dédupliquée par compte à rebours).
   try {
@@ -392,6 +413,8 @@ export async function cancelAccountDeletion(
   // Les jetons émis pendant la clôture portent l'ancien statut : révoqués,
   // la route rouvre une session normale sur cet appareil.
   await deps.revokeSessions(user.id, 'ACCOUNT_DELETION_CANCELLED');
+  // Lot 102A : traitements rétablis selon les droits du compte.
+  await deps.syncProcessing(user.id);
   return { ok: true, cancelled };
 }
 
@@ -434,7 +457,7 @@ interface SweepLock {
 
 /** Balayage sous verrou ; `null` si un autre balayage est en cours. */
 export async function runAccountDeletionSweepExclusive(
-  options: { now?: Date; dryRun?: boolean; includeBacklog?: boolean } = {},
+  options: { now?: Date; dryRun?: boolean; includeBacklog?: boolean; voluntaryOnly?: boolean } = {},
   deps: VoluntaryDeletionDeps = defaultDeps,
   lock?: SweepLock,
 ): Promise<AccountDeletionSweepResult | null> {
@@ -490,7 +513,15 @@ export function isBacklog(item: Pick<ScheduledDeletion, 'scheduledAt' | 'attempt
  *   signalées une fois en anomalie.
  */
 export async function runAccountDeletionSweep(
-  options: { now?: Date; dryRun?: boolean; includeBacklog?: boolean } = {},
+  options: {
+    now?: Date; dryRun?: boolean; includeBacklog?: boolean;
+    /**
+     * Lot 102A : passage HORAIRE (tâche `account-lifecycle`) limité aux
+     * suppressions demandées arrivées à échéance — suppression au plus tôt ;
+     * pas de rappel (le passage quotidien les envoie en journée).
+     */
+    voluntaryOnly?: boolean;
+  } = {},
   deps: VoluntaryDeletionDeps = defaultDeps,
 ): Promise<AccountDeletionSweepResult> {
   const now = options.now ?? new Date();
@@ -510,7 +541,7 @@ export async function runAccountDeletionSweep(
   if (!dryRun) await flushFinalEmails(now, deps, result);
 
   // 1. Rappels.
-  const reminders = await deps.listDueReminders(now);
+  const reminders = options.voluntaryOnly ? { j7: [], j1: [] } : await deps.listDueReminders(now);
   for (const [which, items] of [['j7', reminders.j7], ['j1', reminders.j1]] as const) {
     for (const item of items) {
       result.reminders[which] += 1;
@@ -520,7 +551,10 @@ export async function runAccountDeletionSweep(
       // de 7 jours), il part au moment du J-1 plutôt que jamais. Les autres
       // motifs gardent leur comportement (rappels marqués, e-mails portés par
       // leur propre parcours).
+      // Lot 102A : jamais de rappel pour un délai court (suppression au plus
+      // tôt) — l'e-mail de clôture annonce déjà la date.
       const sendReminder = item.reason === 'VOLUNTARY' && item.userId != null
+        && voluntaryReminderApplies(item.confirmedAt, item.scheduledAt)
         && (which === 'j7' || !item.reminderJ7SentAt);
       if (sendReminder) {
         try {
@@ -544,6 +578,7 @@ export async function runAccountDeletionSweep(
 
   // 2. Échéances.
   for (const item of await deps.listDueDeletions(now)) {
+    if (options.voluntaryOnly && item.reason !== 'VOLUNTARY') continue;
     if (!options.includeBacklog && isBacklog(item, now)) {
       result.deletions.backlog += 1;
       result.backlog.push({ scheduleId: item.id, accountId: item.accountId, scheduledAt: item.scheduledAt });
@@ -889,6 +924,19 @@ export const defaultDeps: VoluntaryDeletionDeps = {
     },
   },
   detachSharing: detachSharingDefault,
+  async syncProcessing(userId) {
+    try {
+      const owned = await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.ownerUserId, userId));
+      const { syncAccountEligibilitySafe } = await import('@/services/account/processing-lifecycle');
+      const { invalidateProcessingEligibility } = await import('@/services/account/processing-eligibility');
+      for (const a of owned) {
+        invalidateProcessingEligibility(a.id);
+        await syncAccountEligibilitySafe(a.id, 'voluntary_deletion');
+      }
+    } catch (e) {
+      console.error(`[account-deletion] éligibilité des traitements (utilisateur ${userId}) :`, (e as Error).message);
+    }
+  },
   async revokeSessions(userId, reason) {
     const cutoff = await revokeAllUserSessions(userId, reason);
     serverCacheDelete(sessionCutoffCacheKey(userId));

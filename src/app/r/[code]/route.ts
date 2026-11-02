@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { normalizeReferralCode, resolveReferralCode } from '@/services/referral-attribution.service';
 import { appBaseUrl, referralRedirectPath } from '@/services/referral/referral-invitation.service';
+import { createReferralTouch } from '@/services/referral/referral-touch';
 
 // Lu à chaque requête : un lien désactivé dans le BO cesse aussitôt d'être propagé.
 export const dynamic = 'force-dynamic';
@@ -20,7 +21,9 @@ export const dynamic = 'force-dynamic';
  * avec son motif), le visiteur n'est pas bloqué.
  *
  * Pas de cookie : le CDC parrainage §4.2 interdit toute conservation
- * persistante du code (voir `referralRedirectPath`).
+ * persistante du code (voir `referralRedirectPath`). Lot 102D : la
+ * redirection porte `rt`, l'instant signé d'usage du lien (fenêtre
+ * d'attribution de 90 jours, `referral-touch.ts`).
  */
 export async function GET(
   _request: NextRequest,
@@ -33,11 +36,11 @@ export async function GET(
   if (code) {
     try {
       const resolved = await resolveReferralCode(code, null);
-      if (resolved) target = referralRedirectPath(code);
+      if (resolved) target = referralRedirectPath(code, createReferralTouch(code));
       else console.info(`[referral] lien /r/ inconnu ou inactif : ${code}`);
     } catch (error) {
       console.error('[referral] vérification du lien /r/ impossible :', (error as Error).message);
-      target = referralRedirectPath(code);
+      target = referralRedirectPath(code, createReferralTouch(code));
     }
   }
 

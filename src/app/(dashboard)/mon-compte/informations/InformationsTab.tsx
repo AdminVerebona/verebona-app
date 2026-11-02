@@ -28,6 +28,7 @@ import { ReauthProvider, useReauth } from '@/components/account/security/ReauthP
 import { ApiClientError } from '@/lib/api-client';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
+import { voluntaryDelayLabel } from '@/lib/account-lifecycle/retention-policy';
 
 
 interface UserProfile {
@@ -424,16 +425,14 @@ function InformationsTabContent({ beforeDangerZone }: { beforeDangerZone?: React
 }
 
 /* ─────────────────────────────────────────────────────────────────
-   Composant : suppression de compte — différée de 30 jours
-   (décision produit ; AID-ACCOUNT-006). Clôture immédiate, annulation et
-   export possibles pendant 30 jours, suppression définitive ensuite.
+   Composant : suppression de compte (AID-ACCOUNT-006). Lot 102A : clôture
+   immédiate, suppression active AU PLUS TÔT après un délai court
+   (`voluntaryDeletionDelayHours`, retention-policy) — le temps d'annuler
+   une erreur ou de télécharger ses données ; ce n'est pas une durée de
+   conservation.
 ───────────────────────────────────────────────────────────────── */
-const DELETION_DELAY_DAYS = 30;
 const REQUIRED_TEXT = 'SUPPRIMER MON COMPTE';
 
-function formatLongDate(d: Date): string {
-  return new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', dateStyle: 'long' }).format(d);
-}
 
 function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
   duoRole: 'BILLING_OWNER' | 'MEMBER' | null;
@@ -446,9 +445,9 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Date indicative affichée avant confirmation ; la date qui fait foi est
+  // Délai indicatif affiché avant confirmation ; la date qui fait foi est
   // celle renvoyée par le serveur (et rappelée par e-mail).
-  const plannedDate = formatLongDate(new Date(Date.now() + DELETION_DELAY_DAYS * 24 * 60 * 60 * 1000));
+  const delayLabel = voluntaryDelayLabel();
 
   const { withReauth } = useReauth();
 
@@ -500,8 +499,8 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
       contentClassName="space-y-4"
     >
       <p className="text-sm text-muted-foreground">
-        Votre compte est clôturé immédiatement, puis supprimé définitivement {DELETION_DELAY_DAYS} jours plus tard.
-        Pendant ce délai, vous pouvez annuler la suppression ou exporter vos données.
+        Votre compte est clôturé immédiatement, puis supprimé définitivement {delayLabel}.
+        D’ici là, vous pouvez encore annuler la suppression ou exporter vos données.
       </p>
         <Dialog open={open} onOpenChange={handleOpenChange}>
           <DialogTrigger asChild>
@@ -540,7 +539,7 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                   </div>
 
                   <div className="rounded-lg border border-[color:var(--danger-edge)] bg-[color:var(--danger-soft)] px-4 py-3 space-y-1.5">
-                    <p className="font-semibold text-[color:var(--danger)]">Le {plannedDate}, suppression définitive de :</p>
+                    <p className="font-semibold text-[color:var(--danger)]">Suppression définitive, {delayLabel}, de :</p>
                     <ul className="text-[color:var(--text-secondary)] space-y-1 list-disc list-inside">
                       <li>vos <strong>biens</strong> et toutes leurs informations ;</li>
                       <li>vos <strong>documents, photos et fichiers</strong> stockés ;</li>
@@ -554,11 +553,10 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                   </div>
 
                   <div className="rounded-lg border border-[color:var(--border-subtle)] px-4 py-3 space-y-1">
-                    <p className="font-semibold">Jusqu’au {plannedDate}</p>
+                    <p className="font-semibold">Jusqu’à la suppression</p>
                     <p className="text-[color:var(--text-secondary)]">
                       Reconnectez-vous pour <strong>annuler la suppression</strong> ou <strong>exporter vos données</strong>.
                       Annuler rétablit votre accès, mais ne réactive pas l’abonnement ni le partage Duo.
-                      Un e-mail de rappel vous est envoyé 7 jours avant la suppression.
                     </p>
                   </div>
 
@@ -609,7 +607,7 @@ function DeleteAccountCard({ duoRole, hasPaidSubscription }: {
                     Pour votre sécurité, votre identité vous sera demandée si vous ne l’avez pas confirmée depuis moins de 5 minutes.
                   </p>
                   <p className="text-xs text-[color:var(--text-muted)]">
-                    Votre compte sera clôturé immédiatement et supprimé définitivement le {plannedDate}.
+                    Votre compte sera clôturé immédiatement et supprimé définitivement {delayLabel}.
                   </p>
                   {error && <p className="text-sm text-[color:var(--danger)]" role="alert">{error}</p>}
                 </div>

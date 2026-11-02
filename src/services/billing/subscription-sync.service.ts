@@ -606,6 +606,20 @@ async function synchroniserAbonnement(
   });
   for (const op of operations) await dispatchRecordedOperation(op);
 
+  // Lot 102A — cycle de vie : une souscription payante en cours ANNULE la
+  // purge d'un état restreint (fin d'essai, fin d'abonnement, rétractation) ;
+  // la fin effective d'un abonnement payé ouvre l'état restreint FIN_ABONNEMENT
+  // (lecture seule, purge à +90 jours). Idempotent, jamais bloquant.
+  if (!withdrawn) {
+    const lifecycle = await import('@/services/account/restricted-state.service');
+    if (isPaid && (newStatus === 'ACTIVE' || newStatus === 'CANCELED')) {
+      await lifecycle.liftRestrictedState(account.id, 'Nouvelle souscription conclue');
+    } else if (!isPaid && status === 'canceled') {
+      const endedAt = subscription.ended_at ? new Date(subscription.ended_at * 1000) : null;
+      await lifecycle.onPaidSubscriptionEnded(account.id, endedAt, now);
+    }
+  }
+
   // Rétractation (lot 63B) : sortie de Duo complète — second utilisateur,
   // invitation. Idempotente ; jamais bloquante pour la synchronisation.
   if (withdrawn && (duoBefore || duoAccountId)) {

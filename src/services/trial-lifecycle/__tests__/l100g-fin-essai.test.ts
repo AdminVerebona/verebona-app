@@ -243,7 +243,9 @@ describe('L100G-RUL-03 — motifs de non-envoi, sur l’état actuel', () => {
     expect(decide('J0', at('2033-03-10T15:00:00Z'), state(), COMMERCIAL_ON, { ...ENV, commercialOff: true })).toEqual({ kind: 'send' });
     expect(decide('J0', at('2033-03-10T15:00:00Z'), state(), COMMERCIAL_ON, { ...ENV, allOff: true })).toEqual({ kind: 'defer', reason: 'disabled_by_env' });
     expect(decide('J3', J3, state(), { ...COMMERCIAL_ON, legalBasis: 'soft_opt_in' })).toEqual({ kind: 'defer', reason: 'legal_basis_not_declared' });
-    expect(decide('J3', J3, state({ consented: false }), { ...COMMERCIAL_ON, legalBasis: 'soft_opt_in', softOptInDeclaration: { declaredAt: '2033-01-01', declaredBy: 'po@x' } })).toEqual({ kind: 'send' });
+    // Lot 102C : « client existant » exige en plus la preuve d'information / opposition à l'inscription.
+    expect(decide('J3', J3, state({ consented: false }), { ...COMMERCIAL_ON, legalBasis: 'soft_opt_in', softOptInDeclaration: { declaredAt: '2033-01-01', declaredBy: 'po@x' } })).toEqual({ kind: 'defer', reason: 'no_signup_information' });
+    expect(decide('J3', J3, state({ consented: false, signupInformed: true }), { ...COMMERCIAL_ON, legalBasis: 'soft_opt_in', softOptInDeclaration: { declaredAt: '2033-01-01', declaredBy: 'po@x' } })).toEqual({ kind: 'send' });
     expect(decide('J3', J3, state(), COMMERCIAL_ON, { ...ENV, unsubscribeAvailable: false })).toEqual({ kind: 'defer', reason: 'unsubscribe_unavailable' });
   });
   it('notification de service : préférence de l’utilisateur respectée ; opposition commerciale sans effet', () => {
@@ -258,11 +260,21 @@ describe('L100G-RUL-03 — motifs de non-envoi, sur l’état actuel', () => {
   });
 });
 
-describe('L100G-RUL-04 — J+80 : envoi impossible (verrou serveur)', () => {
+describe('L100G-RUL-04 — J+80 : verrou serveur (lot 102A : purge J+90 livrée)', () => {
   const J80 = at('2033-05-29T15:00:00Z');
-  it('aucune purge implémentée : bloqué, même campagne active, consentement et suppression planifiée', () => {
-    expect(TRIAL_RETENTION_PURGE_IMPLEMENTED).toBe(false);
-    expect(decide('J80', J80, state({ trialDeletionScheduledAt: at('2033-06-08T00:00:00Z') }))).toEqual({ kind: 'block', reason: 'retention_policy_not_set' });
+  it('verrou toujours effectif sans purge implémentée (env) : bloqué, même suppression planifiée', () => {
+    expect(decide('J80', J80, state({ trialDeletionScheduledAt: at('2033-06-08T00:00:00Z') }), COMMERCIAL_ON, { ...ENV, retentionPurgeImplemented: false })).toEqual({ kind: 'block', reason: 'retention_policy_not_set' });
+  });
+  it('lot 102A : purge livrée (constante à true) — envoyé (information) seulement si une suppression est programmée et à venir', () => {
+    expect(TRIAL_RETENTION_PURGE_IMPLEMENTED).toBe(true);
+    const ON = { ...ENV, retentionPurgeImplemented: true };
+    expect(decide('J80', J80, state({ trialDeletionScheduledAt: at('2033-06-08T00:00:00Z') }), DEFAULT_SETTINGS, ON)).toEqual({ kind: 'send' });
+    // Information : ni campagne commerciale ni consentement exigés ; opposition respectée ; réglage de service respecté.
+    expect(decide('J80', J80, state({ trialDeletionScheduledAt: at('2033-06-08T00:00:00Z'), consented: false }), DEFAULT_SETTINGS, ON)).toEqual({ kind: 'send' });
+    expect(decide('J80', J80, state({ trialDeletionScheduledAt: at('2033-06-08T00:00:00Z'), opposed: true }), DEFAULT_SETTINGS, ON)).toEqual({ kind: 'skip', reason: 'opposition' });
+    expect(decide('J80', J80, state({ trialDeletionScheduledAt: at('2033-06-08T00:00:00Z') }), { ...DEFAULT_SETTINGS, serviceEnabled: false }, ON)).toEqual({ kind: 'defer', reason: 'service_disabled' });
+    // Suppression déjà passée ou absente : jamais envoyé.
+    expect(decide('J80', J80, state({ trialDeletionScheduledAt: at('2033-05-29T00:00:00Z') }), DEFAULT_SETTINGS, ON)).toEqual({ kind: 'block', reason: 'deletion_not_scheduled' });
   });
   it('même déverrouillé par une livraison : jamais sans suppression réellement planifiée', () => {
     expect(decide('J80', J80, state(), COMMERCIAL_ON, { ...ENV, retentionPurgeImplemented: true })).toEqual({ kind: 'block', reason: 'deletion_not_scheduled' });

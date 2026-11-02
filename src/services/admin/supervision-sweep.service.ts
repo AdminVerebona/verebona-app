@@ -269,6 +269,14 @@ async function applyConditions(prefix: string, collect: () => Promise<Condition[
 export async function runSupervisionSweep(): Promise<{ exports: SweepDomainResult; ai: SweepDomainResult }> {
   const exportsResult = await applyConditions('exports:', collectExportConditions, 'export_sweep_condition_cleared');
   const aiResult = await applyConditions('ai:', collectAiConditions, 'ai_sweep_condition_cleared');
+  // Lot 102C : localisation du stockage documentaire et copies de données
+  // réelles — ouverture / résolution automatique, jamais bloquant.
+  await import('@/services/admin/storage-location-supervision')
+    .then((m) => m.syncStorageLocationAnomaly())
+    .catch(() => undefined);
+  await import('@/services/admin/production-copies/production-copies.service')
+    .then((m) => m.syncProductionCopiesAnomaly())
+    .catch(() => undefined);
   return { exports: exportsResult, ai: aiResult };
 }
 

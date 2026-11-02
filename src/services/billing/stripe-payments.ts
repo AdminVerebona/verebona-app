@@ -24,6 +24,10 @@ export interface PaidCharge {
   currency: string;
   created: Date;
   disputed: boolean;
+  /** Lot 102D : empreinte de la carte (contrôle d'auto-parrainage), si carte. */
+  cardFingerprint?: string | null;
+  /** Lot 102D : adresse de facturation de la charge (contrôle d'auto-parrainage). */
+  billingAddress?: { line1?: string | null; postal_code?: string | null; country?: string | null } | null;
 }
 
 export class PaymentLookupError extends Error {
@@ -81,6 +85,8 @@ export async function listInvoicePaidCharges(stripe: StripeLike, invoiceId: stri
       currency: charge.currency,
       created: new Date(charge.created * 1000),
       disputed: Boolean(charge.disputed),
+      cardFingerprint: charge.payment_method_details?.card?.fingerprint ?? null,
+      billingAddress: charge.billing_details?.address ?? null,
     });
   }
   return out;

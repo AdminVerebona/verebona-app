@@ -150,6 +150,12 @@ export async function signup(request: NextRequest, tx: AuthTransaction, body: Re
     firstName: v.firstName, lastName: v.lastName, email: v.email, termsVersion,
     // Jamais de parrainage pour une identité qui rejoint un compte (même règle que l'inscription locale).
     referralCode: invitation.invitation?.valid && invitation.invitation.kind !== 'transmission' ? null : v.referralCode,
+    // Lot 102C : choix sur les relances commerciales (bloc du réglage BO), preuve à la création.
+    marketing: body.marketing && typeof body.marketing === 'object'
+      ? { checked: (body.marketing as Record<string, unknown>).checked === true, noticeSha256: String((body.marketing as Record<string, unknown>).noticeSha256 ?? '').slice(0, 64) }
+      : null,
+    // Lot 102D : jeton d'usage du lien, vérifié contre le code finalement saisi.
+    referralTouch: tx.context.referralTouch ?? null,
   };
   const c = tx.claims!;
 

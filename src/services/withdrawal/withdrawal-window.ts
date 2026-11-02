@@ -117,7 +117,7 @@ type WithdrawalVerdict = 'eligible' | 'ineligible' | 'undetermined';
  *     rétracté) : rien n'est proposé ;
  *   · `eligible` avec une date : proposé tant que la fenêtre est ouverte ;
  *   · `undetermined` (panne de lecture) : rien n'est proposé. Lot 32 : la
- *     rétractation supprime le compte IMMÉDIATEMENT ; plus d'examen manuel
+ *     rétractation est traitée IMMÉDIATEMENT ; plus d'examen manuel
  *     (décision PO Q2), donc rien n'est proposé sur une éligibilité
  *     incertaine — l'écran réessaie au prochain affichage.
  */

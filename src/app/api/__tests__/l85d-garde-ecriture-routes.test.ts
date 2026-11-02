@@ -54,6 +54,8 @@ const WRITE_GUARD_EXCEPTIONS: Readonly<Record<string, string>> = {
   'users/me/route.ts': 'Compte : profil (PUT) et suppression différée du compte (DELETE) — indispensables (82A).',
   'users/me/deletion/route.ts': 'Suppression de compte et son annulation : indispensables (82A).',
   'users/me/gdpr-export/route.ts': 'Export RGPD : indispensable (82A).',
+  'users/me/data-use/route.ts': 'RGPD : opposition à l’utilisation des données pour l’amélioration (lot 102D) — droit d’opposition, possible dans tout état du compte.',
+  'me/legal/cguv/accept/route.ts': 'Acceptation des CGUV (lot 102B) : preuve contractuelle, doit rester possible pour tout compte, y compris restreint.',
   'legal/acceptances/route.ts': 'Acceptation des conditions (obligation légale) : indispensable.',
   'accounts/[accountId]/route.ts': 'Compte : nom de l’espace (gestion du compte).',
   'accounts/[accountId]/leave/route.ts': 'Compte : quitter un espace partagé — doit rester possible en mode restreint (récupération Duo, AID-TRANSFER-007).',

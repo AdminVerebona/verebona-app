@@ -72,6 +72,7 @@ export function errorPath(intent: OAuthIntent, code: SocialErrorCode | string, c
   if (intent === 'signup' && context?.inviteToken) q.set('inviteToken', context.inviteToken);
   if (intent === 'signup' && context?.transmissionToken) q.set('transmissionToken', context.transmissionToken);
   if (intent === 'signup' && context?.referralCode) q.set('ref', context.referralCode);
+  if (intent === 'signup' && context?.referralCode && context.referralTouch) q.set('rt', context.referralTouch);
   return `${base}?${q.toString()}`;
 }
 
@@ -105,6 +106,8 @@ export function contextFromQuery(q: URLSearchParams): TxContext | { error: 'APP_
   if (transmission && CONTEXT_TOKEN.test(transmission)) ctx.transmissionToken = transmission;
   const ref = (q.get('ref') ?? '').trim().toUpperCase();
   if (ref && REFERRAL.test(ref)) ctx.referralCode = ref;
+  const rt = (q.get('rt') ?? '').trim();
+  if (ctx.referralCode && /^\d{9,11}\.[A-Za-z0-9_-]{22}$/.test(rt)) ctx.referralTouch = rt;
   if (q.get('client') === 'app') {
     if (!appReturnUrl()) return { error: 'APP_RETURN_NOT_CONFIGURED' };
     const challenge = q.get('app_challenge') ?? '';

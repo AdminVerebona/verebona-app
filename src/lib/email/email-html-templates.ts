@@ -187,8 +187,12 @@ export const LEGAL_CONFIRMATION_HTML = doc('Confirmation — vos conditions gén
   p(`Une question ? Écrivez-nous à ${link('mailto:{{contactEmail}}', '{{contactEmail}}')}.`),
 ].join('\n'), foot('Verebona — {{year}}'), wordmark);
 
-/** WITHDRAWAL_RECEIPT — accusé de réception de rétractation et au revoir (lot 32). */
-export const WITHDRAWAL_RECEIPT_HTML = doc('Rétractation enregistrée — Verebona', [
+/**
+ * WITHDRAWAL_RECEIPT du lot 32 / 66C (suppression immédiate) — corps FIGÉ,
+ * référence de la migration 0465 (charte 2026). Remplacé en base par
+ * `WITHDRAWAL_RECEIPT_HTML` (lot 102A, migration 0901).
+ */
+export const WITHDRAWAL_RECEIPT_HTML_L66 = doc('Rétractation enregistrée — Verebona', [
   p('Bonjour {{firstName}} {{lastName}},'),
   p('Nous avons bien reçu votre déclaration de rétractation. Elle est enregistrée et a été traitée immédiatement.'),
   emailCallout([
@@ -210,6 +214,35 @@ export const WITHDRAWAL_RECEIPT_HTML = doc('Rétractation enregistrée — Vereb
 ].join('\n'), foot('Conservez ce message : il atteste de la date de votre déclaration.<br />Verebona — {{year}}'), wordmark);
 
 /**
+ * WITHDRAWAL_RECEIPT — accusé de réception de rétractation (lot 102A,
+ * décision PO du 31/10/2026) : abonnement annulé, remboursement intégral
+ * lancé, compte en lecture seule, données conservées {{retentionDays}} jours
+ * puis supprimées sauf nouvelle souscription, suppression anticipée sur
+ * demande. Formulations factuelles (aucun texte juridique).
+ */
+export const WITHDRAWAL_RECEIPT_HTML = doc('Rétractation enregistrée — Verebona', [
+  p('Bonjour {{firstName}} {{lastName}},'),
+  p('Nous avons bien reçu votre déclaration de rétractation. Elle est enregistrée et a été traitée immédiatement.'),
+  emailCallout([
+    `<p style="margin:0 0 6px 0;">${strong('Référence :')} {{publicReference}}</p>`,
+    `<p style="margin:0 0 6px 0;">${strong('Reçue le :')} {{requestedAtLabel}}</p>`,
+    `<p style="margin:0 0 6px 0;">${strong('Contrat :')} {{contractLabel}}</p>`,
+    `<p style="margin:0;">${strong('Remboursement :')} {{amountLabel}}, intégral</p>`,
+  ].join('')),
+  `<p class="vb-eyebrow" style="${S.eyebrow}">Ce qui a été fait</p>`,
+  `<ul style="margin:0 0 16px 0;padding:0 0 0 20px;">`
+    + `<li style="${S.li}">Votre abonnement est annulé : aucun nouveau prélèvement n'interviendra.</li>`
+    + `<li style="${S.li}">Le remboursement intégral est ${strong('lancé')} sur votre moyen de paiement d'origine, sans retenue. Selon votre banque, il apparaît sous quelques jours.</li>`
+    + `<li style="${S.li}">Votre compte Verebona passe en ${strong('lecture seule')} : vos biens et documents restent consultables et exportables.</li>`
+    + `</ul>`,
+  `<p class="vb-eyebrow" style="${S.eyebrow}">Vos données</p>`,
+  p('Vos données sont conservées {{retentionDays}} jours, puis supprimées, sauf nouvelle souscription d\'ici là. Vous pouvez aussi demander la suppression de votre compte à tout moment depuis Mon compte.'),
+  p(`Accéder à mon compte : ${link('{{accountUrl}}', 'Mon compte')}.`),
+  p(`Conditions générales applicables : ${link('{{legalPermalinkUrl}}', 'consulter')}.`),
+  p(`Une question ? ${link('mailto:{{contactEmail}}', '{{contactEmail}}')}`),
+].join('\n'), foot('Conservez ce message : il atteste de la date de votre déclaration.<br />Verebona — {{year}}'), wordmark);
+
+/**
  * Gabarits HTML complets mis à jour par la migration 0465 (type → nouveau corps),
  * uniquement quand le corps en base est celui livré au lot 65 (non personnalisé).
  */
@@ -224,5 +257,15 @@ export const EMAIL_HTML_TEMPLATES_L66: Readonly<Record<string, string>> = {
   MEMBER_REMOVED_DUE_TO_DOWNGRADE: MEMBER_REMOVED_DUE_TO_DOWNGRADE_HTML,
   ACCOUNT_OWNERSHIP_TRANSFERRED: ACCOUNT_OWNERSHIP_TRANSFERRED_HTML,
   LEGAL_CONFIRMATION: LEGAL_CONFIRMATION_HTML,
+  WITHDRAWAL_RECEIPT: WITHDRAWAL_RECEIPT_HTML_L66,
+};
+
+/**
+ * Corps HTML LIVRÉS actuellement (texte de référence « livré » du BO) :
+ * ceux du lot 66C, sauf l'accusé de rétractation, remplacé au lot 102A
+ * (migration 0901).
+ */
+export const EMAIL_HTML_TEMPLATES_CURRENT: Readonly<Record<string, string>> = {
+  ...EMAIL_HTML_TEMPLATES_L66,
   WITHDRAWAL_RECEIPT: WITHDRAWAL_RECEIPT_HTML,
 };

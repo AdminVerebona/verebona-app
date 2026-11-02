@@ -22,6 +22,7 @@
  * `SessionService` (défense en profondeur côté route).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { GDPR_EXPORT_API_ALLOWLIST } from '@/services/gdpr/restricted-export-access';
 
 /** Statut utilisateur d'un compte clôturé, en attente de suppression. */
 export const PENDING_DELETION_STATUS = 'PENDING_DELETION' as const;
@@ -50,8 +51,9 @@ export function isPendingDeletion(status: string | null | undefined): boolean {
  */
 const ALLOWED: ReadonlyArray<{ path: string; methods: ReadonlyArray<string> }> = [
   { path: '/api/users/me/deletion', methods: ['GET', 'DELETE'] },
-  { path: '/api/users/me/gdpr-export', methods: ['GET', 'POST'] },
-  { path: '/api/users/me/gdpr-export/download', methods: ['GET'] },
+  // Lot 102C : export RGPD — liste unique (`gdpr/restricted-export-access`),
+  // reprise telle quelle par le modèle d'état restreint (102A).
+  ...GDPR_EXPORT_API_ALLOWLIST,
   { path: '/api/users/me', methods: ['GET'] },
   { path: '/api/auth/me', methods: ['GET'] },
   { path: '/api/auth/logout', methods: ['POST', 'GET'] },

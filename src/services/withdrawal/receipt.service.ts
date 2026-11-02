@@ -1,12 +1,13 @@
 /**
  * Envoi de l'accusé de réception — CDC 6 §8 et §10.
  *
- * Lot 32 (décision PO Q2) : c'est aussi l'E-MAIL D'AU REVOIR. Le compte est
- * supprimé immédiatement après la confirmation ; le message atteste la
- * déclaration (support durable), annonce l'annulation, le remboursement
- * intégral en cours et la suppression du compte, et prend congé. Plus de
- * lien de suivi ni de délai d'export. Renvoyé par le traitement
- * (`withdrawal-processor`) s'il n'a pas pu partir à la confirmation.
+ * Lot 102A (décision PO du 31/10/2026, remplace l'« e-mail d'au revoir » du
+ * lot 32) : le message atteste la déclaration (support durable), annonce
+ * l'annulation, le remboursement intégral en cours, le passage du compte en
+ * lecture seule et la conservation des données ({{retentionDays}} jours,
+ * paramètre central), avec le lien vers Mon compte. Renvoyé par le
+ * traitement (`withdrawal-processor`) s'il n'a pas pu partir à la
+ * confirmation.
  *
  * NE LÈVE JAMAIS. Le §10 le prévoit explicitement : « l'acceptation reste
  * valide si elle a été correctement enregistrée ; l'email est retenté ; le
@@ -14,13 +15,14 @@
  * invalider une déclaration déjà écrite.
  */
 import { emailService } from '@/lib/email/email-service';
+import { LIFECYCLE_DURATIONS } from '@/lib/account-lifecycle/retention-policy';
 import { markReceiptSent } from './withdrawal.service';
 import type { WithdrawalSummary } from './summary.service';
 
 interface ReceiptInput {
   publicReference: string;
   to: string;
-  /** `null` : utilisateur déjà supprimé (renvoi par le traitement). */
+  /** `null` : renvoi par le traitement (destinataire figé dans la demande). */
   userId: number | null;
   firstName: string;
   lastName: string;
@@ -56,6 +58,8 @@ export async function sendWithdrawalReceipt(input: ReceiptInput): Promise<{ sent
         requestedAtLabel: parisLabel(input.requestedAt),
         contractLabel: `${input.summary.offerLabel} — facturation ${input.summary.billingPeriodLabel}`,
         amountLabel: input.summary.amountLabel,
+        retentionDays: String(LIFECYCLE_DURATIONS.restrictedRetentionDays),
+        accountUrl: `${base}/mon-compte`,
         legalPermalinkUrl: `${base}/cgvu`,
         contactEmail: process.env.CONTACT_EMAIL || 'contact@verebona.com',
       },

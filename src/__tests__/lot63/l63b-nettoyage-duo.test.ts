@@ -120,8 +120,9 @@ describe('L63-DUO — gardes des chemins webhook (rétractation)', () => {
     expect(service).toContain('await endDuoSharing(ownerUserId);');
     expect(service).toContain("inArray(duoAccounts.subscriptionStatus, IN_OFFER)");
     const processor = lire('src/services/withdrawal/withdrawal-processor.service.ts');
-    // Coupure locale (avant Stripe) et suppression du compte (avant la cascade).
-    expect(processor.match(/await closeDuoForWithdrawal\(/g)).toHaveLength(2);
+    // Coupure locale (avant Stripe). Lot 102A : plus de suppression immédiate —
+    // le Duo est fermé dès la rétractation, la purge (90 jours) le trouve fermé.
+    expect(processor.match(/await closeDuoForWithdrawal\(/g)).toHaveLength(1);
     expect(lire('src/lib/plan-enforcement.ts')).toContain('if (isWithdrawnStatus(newSubStatus)) await endDuoSharing(ownerUserId);');
   });
 });

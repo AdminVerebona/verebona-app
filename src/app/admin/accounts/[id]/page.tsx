@@ -14,6 +14,7 @@
  *   - « Ouvrir dans Stripe » (SUB-011, UX-008), sans afficher d'identifiant
  *     (SUB-012) ; resynchronisation Stripe conservée comme outil de diagnostic.
  */
+import type { AdminRestrictedState } from '@/services/account/restricted-state.service';
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
@@ -46,12 +47,80 @@ import { getPlanTheme } from '@/lib/plan-theme';
 import { formatBytes, formatDate, formatDateTime, formatMoney } from '@/lib/admin/format';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { AccountWithdrawals } from './_components/AccountWithdrawals';
+import { AccountDataUse } from './_components/AccountDataUse';
 import { AccountDocuments } from './_components/AccountDocuments';
 import { AccountDataSection } from './_components/account-data/AccountDataSection';
 import { ReconsolidateAccountButton } from '../../operations/_components/ReconsolidateAccountButton';
 import { AccountIdBadge } from '@/components/admin/AccountIdBadge';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+const LIFECYCLE_STATUS_LABELS: Record<string, string> = {
+  SCHEDULED: 'Programmée', CANCELLED: 'Annulée', EXECUTED: 'Exécutée', FAILED: 'En échec',
+};
+
+/**
+ * Lot 102A — état restreint du compte : motif, date d'entrée, date de
+ * suppression programmée, et historique des purges du cycle de vie avec leur
+ * annulation (souscription, demande de l'utilisateur). Lecture seule : le BO
+ * n'annule ni ne modifie une suppression (GDP-008).
+ */
+function RestrictedStateSection({ state }: { state: AdminRestrictedState }) {
+  const c = state.current;
+  return (
+    <section className="rounded-xl border bg-card overflow-hidden" data-testid="bo-restricted-state">
+      <div className="px-5 py-4 border-b">
+        <h2 className="vb-app-section">Cycle de vie du compte</h2>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Lecture seule — lecture et export autorisés pendant l’état restreint ; aucune annulation depuis le back-office
+        </p>
+      </div>
+      <div className="px-5 py-4 space-y-3 text-sm">
+        {c ? (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            <div><p className="text-xs text-muted-foreground">État restreint</p><p className="font-medium">{c.label}</p></div>
+            <div><p className="text-xs text-muted-foreground">Depuis le</p><p>{formatDate(c.enteredAt)}</p></div>
+            <div>
+              <p className="text-xs text-muted-foreground">Suppression programmée</p>
+              <p className="font-medium">{formatDate(c.purgeAt)} <span className="text-muted-foreground font-normal">({c.daysLeft} j)</span></p>
+              <p className="text-xs text-muted-foreground">{c.cancelledBySubscription ? 'Annulée en cas de souscription' : 'Annulable par l’utilisateur'}</p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-muted-foreground">Aucun état restreint en cours.</p>
+        )}
+        {state.history.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs text-muted-foreground border-b">
+                  <th className="py-2 pr-3 font-medium">Motif</th>
+                  <th className="py-2 pr-3 font-medium">Entrée</th>
+                  <th className="py-2 pr-3 font-medium">Purge</th>
+                  <th className="py-2 pr-3 font-medium">Statut</th>
+                  <th className="py-2 font-medium">Annulation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.history.map((h) => (
+                  <tr key={h.id} className="border-b last:border-b-0">
+                    <td className="py-2 pr-3">{DELETION_REASON_LABELS[h.reasonCode] ?? h.reasonCode}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{formatDate(h.enteredAt)}</td>
+                    <td className="py-2 pr-3 whitespace-nowrap">{formatDate(h.executedAt ?? h.purgeAt)}</td>
+                    <td className="py-2 pr-3">{LIFECYCLE_STATUS_LABELS[h.status] ?? h.status}</td>
+                    <td className="py-2 text-xs text-muted-foreground">
+                      {h.cancelledAt ? `${formatDate(h.cancelledAt)} — ${h.cancellationReason ?? ''}` : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
 
 const ORIGIN_LABELS: Record<'user' | 'admin' | 'system' | 'stripe', string> = {
   user: 'Utilisateur',
@@ -65,8 +134,9 @@ const DELETION_REASON_LABELS: Record<string, string> = {
   VOLUNTARY: 'suppression demandée par le titulaire',
   WITHDRAWAL: 'rétractation',
   UNPAID: 'impayé non régularisé',
-  TRIAL_ABANDONED: 'essai abandonné',
+  TRIAL_ABANDONED: 'fin d’essai sans souscription (conservation 90 jours)',
   ADMIN: 'suppression engagée par le back-office',
+  SUBSCRIPTION_ENDED: 'fin d’abonnement (conservation 90 jours)',
 };
 
 interface DuoMember {
@@ -139,6 +209,8 @@ interface AccountDetail {
   } | null;
   /** Suppression en cours (§5.2.1, ACC-L01) : lecture seule, aucune annulation depuis le BO. */
   deletion: { scheduledAt: string; reason: string; origin: string } | null;
+  /** Lot 102A : état restreint (lecture seule) et purges du cycle de vie — lecture seule. */
+  restrictedState?: AdminRestrictedState | null;
   stripeLinks: { customer: string | null; subscription: string | null };
   quotas: {
     assets: Quota;
@@ -151,7 +223,7 @@ interface AccountDetail {
   members: AccountMember[];
   assets: Array<{ id: number; name: string; category: string; status: string; createdAt: string }>;
   history: Array<{ at: string; event: string; origin: 'user' | 'admin' | 'system' | 'stripe'; detail: string | null; scheduled?: boolean }>;
-  legalAcceptances: Array<{ acceptedAt: string; versionCode: string; context: string; email: string | null }>;
+  legalAcceptances: Array<{ acceptedAt: string; versionCode: string; context: string; email: string | null; permalinkUrl?: string | null; sha256?: string | null; channel?: string | null; proofStatus?: string | null }>;
   duoAccount: DuoAccountData | null;
 }
 
@@ -403,6 +475,11 @@ export default function AccountDetailPage() {
         {/* ═══ Colonne gauche (2/3) ═══ */}
         <div className="lg:col-span-2 space-y-6">
 
+          {/* ── Lot 102A : état restreint et purge programmée (lecture seule) ── */}
+          {data.restrictedState && (data.restrictedState.current || data.restrictedState.history.length > 0) && (
+            <RestrictedStateSection state={data.restrictedState} />
+          )}
+
           {/* ── Synthèse abonnement & paiement (§5.2.1) ── */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b flex items-start justify-between gap-3">
@@ -566,6 +643,8 @@ export default function AccountDetailPage() {
 
           {/* ── Rétractations (SUB-015) ── */}
           <AccountWithdrawals accountId={account.id} />
+          {/* Lot 102D : opposition à l'utilisation des données pour l'amélioration. */}
+          <AccountDataUse accountId={account.id} />
 
           {/* ── Changement exceptionnel d'offre (ACC-A06) ── */}
           <section className="rounded-xl border border-[color:var(--border-warning)] bg-[color:var(--bg-warning)] overflow-hidden">
@@ -688,10 +767,10 @@ export default function AccountDetailPage() {
             </div>
           </section>
 
-          {/* ── CGSU acceptées (LEG-003) ── */}
+          {/* ── CGUV acceptées (LEG-003 ; preuve complète, lot 102B) ── */}
           <section className="rounded-xl border bg-card overflow-hidden">
             <div className="px-5 py-4 border-b">
-              <h2 className="vb-app-section">Conditions générales acceptées</h2>
+              <h2 className="vb-app-section">CGUV acceptées</h2>
             </div>
             {legalAcceptances.length === 0 ? (
               <p className="px-5 py-4 text-xs text-muted-foreground italic">Aucune acceptation enregistrée</p>
@@ -701,6 +780,13 @@ export default function AccountDetailPage() {
                   <li key={i}>
                     Version <span className="font-mono">{l.versionCode}</span> acceptée le {formatDateTime(l.acceptedAt)}
                     {l.email && <span className="text-muted-foreground"> par {l.email}</span>}
+                    <span className="text-muted-foreground"> · {l.context}{l.channel && l.channel !== 'UNKNOWN' ? ` · ${l.channel}` : ''}</span>
+                    {l.proofStatus === 'HISTORIQUE' && <span className="text-muted-foreground"> · preuve historique</span>}
+                    {l.proofStatus === 'EN_ATTENTE_SITE_PUBLIC' && <span className="text-muted-foreground"> · en attente du site public</span>}
+                    {l.permalinkUrl && (
+                      <> · <a href={l.permalinkUrl} target="_blank" rel="noopener noreferrer" className="underline">permalien</a></>
+                    )}
+                    {l.sha256 && <span className="block font-mono text-muted-foreground break-all">sha256 {l.sha256}</span>}
                   </li>
                 ))}
               </ul>
@@ -834,7 +920,7 @@ export default function AccountDetailPage() {
                             <li>Tous les biens ({assets.length}), documents et fichiers stockés</li>
                           </ul>
                           <span className="block text-xs">
-                            Les preuves légales (acceptations des CGSU, rétractations) sont conservées sous forme pseudonymisée.
+                            Les preuves légales (acceptations des CGUV, rétractations) sont conservées sous forme pseudonymisée.
                             Un abonnement Stripe encore actif doit d’abord être résilié dans Stripe.
                           </span>
                           <div className="space-y-1.5 pt-1">

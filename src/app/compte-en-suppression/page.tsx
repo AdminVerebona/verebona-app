@@ -2,7 +2,7 @@
 
 /**
  * « Compte en cours de suppression » — seul écran d'un compte clôturé
- * (suppression volontaire différée de 30 jours, `lib/auth/account-closure`).
+ * (suppression volontaire au plus tôt — lot 102A —, `lib/auth/account-closure`).
  *
  * Deux actions, et rien d'autre :
  *   - ANNULER la suppression : l'accès normal est rétabli immédiatement ;

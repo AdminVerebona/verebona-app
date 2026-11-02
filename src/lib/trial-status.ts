@@ -43,6 +43,17 @@ export interface TrialStatusPayload {
   unpaid?: UnpaidCyclePayload | null;
   /** Paiement Checkout engagé, pas encore constaté (APP-PERF-18). N'ouvre aucun droit. */
   pendingPayment?: { since: string } | null;
+  /**
+   * Lot 102A : état restreint du compte — lecture seule jusqu'à `purgeAt`
+   * (suppression programmée), annulée par une souscription si
+   * `cancelledBySubscription`.
+   */
+  restrictedState?: {
+    reason: 'FIN_ESSAI' | 'FIN_ABONNEMENT' | 'RETRACTATION' | 'SUPPRESSION_DEMANDEE';
+    purgeAt: string;
+    daysLeft: number;
+    cancelledBySubscription: boolean;
+  } | null;
 }
 
 /** Au-delà, un paiement engagé non constaté n'est plus annoncé (session abandonnée). */

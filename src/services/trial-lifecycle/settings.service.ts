@@ -29,7 +29,7 @@ export async function loadTrialLifecycleSettings(): Promise<StoredSettings> {
 }
 
 /** Champs modifiables depuis le BO (le reste est refusé). */
-const EDITABLE_KEYS = new Set(['serviceEnabled', 'commercialEnabled', 'legalBasis', 'softOptInDeclared', 'commercialOffsets', 'catchUpHours', 'sendHours', 'offers']);
+const EDITABLE_KEYS = new Set(['serviceEnabled', 'commercialEnabled', 'legalBasis', 'softOptInDeclared', 'commercialOffsets', 'catchUpHours', 'sendHours', 'offers', 'signupCollection']);
 
 export type SaveSettingsResult =
   | { ok: true; settings: TrialLifecycleSettings; before: TrialLifecycleSettings; changed: boolean }
@@ -59,6 +59,15 @@ export async function saveTrialLifecycleSettings(input: { patch: unknown; admin:
   if (patch.catchUpHours && typeof patch.catchUpHours === 'object') next.catchUpHours = { ...next.catchUpHours, ...(patch.catchUpHours as object) };
   if (patch.sendHours && typeof patch.sendHours === 'object') next.sendHours = { ...next.sendHours, ...(patch.sendHours as object) };
   if (patch.offers && typeof patch.offers === 'object') next.offers = { ...next.offers, ...(patch.offers as object) };
+  // Lot 102C : information et opposition / consentement à l'inscription.
+  if (patch.signupCollection && typeof patch.signupCollection === 'object') {
+    const sc = patch.signupCollection as Record<string, unknown>;
+    if (sc.enabled !== undefined && typeof sc.enabled !== 'boolean') return { ok: false, issues: [{ field: 'signupCollection.enabled', message: 'Valeur attendue : oui ou non.' }] };
+    next.signupCollection = {
+      enabled: typeof sc.enabled === 'boolean' ? sc.enabled : next.signupCollection.enabled,
+      softOptInMechanism: (sc.softOptInMechanism ?? next.signupCollection.softOptInMechanism) as TrialLifecycleSettings['signupCollection']['softOptInMechanism'],
+    };
+  }
 
   const issues = validateSettings(next);
   if (issues.length) return { ok: false, issues };

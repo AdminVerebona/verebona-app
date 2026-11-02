@@ -26,12 +26,14 @@
  *
  * Seule une déclaration ÉLIGIBLE est enregistrée (statut `received`) : plus
  * d'examen manuel. Elle est traitée sur-le-champ par `processWithdrawal` —
- * accès coupés, abonnement annulé, remboursement intégral, compte supprimé,
- * e-mail d'au revoir — et reprise automatiquement par le balayage en cas
- * d'échec Stripe. Plus de délai d'export : `data_deletion_scheduled_at` vaut
- * l'instant de la déclaration, `data_export_deadline_at` reste vide.
+ * droits payants coupés, abonnement annulé, remboursement intégral, compte
+ * en lecture seule (lot 102A : données conservées 90 jours, purge ensuite
+ * sauf nouvelle souscription) — et reprise automatiquement par le balayage en
+ * cas d'échec Stripe. `data_deletion_scheduled_at` = date de suppression
+ * annoncée (déclaration + 90 jours, figée), `data_export_deadline_at` vide.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { purgeDateFor } from '@/lib/account-lifecycle/retention-policy';
 import { createHash, randomBytes } from 'crypto';
 import { db } from '@/db';
 import { withdrawalRequests } from '@/db/schema';
@@ -173,7 +175,9 @@ export async function recordDeclaration(
       cancellationStatus: contract?.stripeSubscriptionId ? 'pending' : 'not_applicable',
       // Lot 32 : suppression immédiate, aucun délai d'export.
       dataExportDeadlineAt: null,
-      dataDeletionScheduledAt: now,
+      // Lot 102A : date annoncée de la purge (la date qui fait foi est celle du
+      // compte à rebours, programmée au traitement).
+      dataDeletionScheduledAt: purgeDateFor('RETRACTATION', now),
       idempotencyKey: input.idempotencyKey ?? null,
       createdAt: now,
       updatedAt: now,
@@ -281,9 +285,9 @@ async function findActiveRequest(params: {
 
 /**
  * Demande déjà enregistrée sous cette clé d'idempotence (double soumission).
- * Lot 32 : lue AVANT l'éligibilité — le premier envoi a pu supprimer le
- * compte entre-temps, et le second doit retrouver la déclaration, pas
- * conclure à une panne.
+ * Lot 32 : lue AVANT l'éligibilité — le premier envoi a pu changer l'état du
+ * compte entre-temps (rétracté), et le second doit retrouver la déclaration,
+ * pas conclure à une panne.
  */
 export async function findByIdempotencyKey(idempotencyKey: string | null | undefined) {
   if (!idempotencyKey) return null;

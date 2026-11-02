@@ -8,8 +8,7 @@ import {
   accountAnalysisCredits,
   referralEvents,
 } from '@/db/schema';
-import { NOTIFICATION_TYPES } from '@/types/notifications';
-import { emit } from '@/lib/notifications';
+import { REFERRAL_RULES } from '@/services/referral/referral-rules';
 
 export type CommercialPlanCode = 'standard' | 'premium' | 'premium_duo' | 'premium_pro';
 type AnalysisPeriodType = 'trial' | 'annual';
@@ -266,6 +265,18 @@ export async function consumeAnalysisCredits(accountId: number, amount = 1): Pro
   }
 }
 
+/**
+ * Premier paiement ANNUEL du filleul : rend l'événement de parrainage
+ * éligible à l'attribution (traitement planifié `referral-rewards`).
+ *
+ * Lot 102D (règle centrale `referral/referral-rules.ts`) :
+ *   · seul un paiement d'abonnement ANNUEL qualifie : un premier paiement
+ *     mensuel ne marque rien (motif conservé) ; un passage ultérieur à
+ *     l'annuel, payé, qualifie à ce moment-là ;
+ *   · plus AUCUNE notification ici : « récompense créditée » partait au
+ *     premier paiement, avant la fin du délai de rétractation. Elle est
+ *     émise après l'attribution effective (`referral-rewards.job.ts`).
+ */
 export async function grantReferralRewardForFirstBilling(
   referredAccountId: number,
   stripeInvoiceId?: string,
@@ -277,52 +288,44 @@ export async function grantReferralRewardForFirstBilling(
     .limit(1);
 
   if (!event) return false;
-  if (event.status === 'first_billed' || event.status === 'reward_granted') return false;
+  if (event.status === 'first_billed' || event.status === 'reward_granted' || event.status === 'canceled') return false;
 
   // Idempotence : si l'invoice a déjà été traitée, on skip
   if (stripeInvoiceId && event.stripeInvoiceId === stripeInvoiceId) return false;
 
-  // CDC tarification §13 : la recompense n'est plus un lot de credits d'analyse
-  // mais UN MOIS D'ABONNEMENT OFFERT, attribue apres le delai de retractation
-  // par la tache /api/cron/referral-rewards.
-  //
-  // Cette fonction se limite desormais a marquer la premiere facturation :
-  // c'est ce marquage qui rend l'evenement eligible a l'attribution.
+  const [sub] = await db
+    .select({
+      billingPeriod: accountSubscriptions.billingPeriod,
+      stripeSubscriptionId: accountSubscriptions.stripeSubscriptionId,
+      contractConcludedAt: accountSubscriptions.contractConcludedAt,
+    })
+    .from(accountSubscriptions)
+    .where(eq(accountSubscriptions.accountId, referredAccountId))
+    .limit(1);
+  const now = new Date();
+
+  if (sub?.billingPeriod !== REFERRAL_RULES.requiredBillingPeriod) {
+    await db
+      .update(referralEvents)
+      .set({
+        metadataJson: { ...(event.metadataJson ?? {}), rewardPending: { reason: 'NOT_YEARLY', at: now.toISOString() } },
+        updatedAt: now,
+      })
+      .where(eq(referralEvents.id, event.id));
+    return false;
+  }
+
   await db
     .update(referralEvents)
     .set({
       status: 'first_billed',
-      firstBilledAt: new Date(),
+      firstBilledAt: now,
+      contractConcludedAt: sub.contractConcludedAt ?? null,
+      stripeSubscriptionId: sub.stripeSubscriptionId ?? event.stripeSubscriptionId ?? null,
       ...(stripeInvoiceId ? { stripeInvoiceId } : {}),
-      updatedAt: new Date(),
+      updatedAt: now,
     })
     .where(eq(referralEvents.id, event.id));
-
-  // Notification interne au parrain
-  try {
-    const [referrerAccount] = await db
-      .select({ ownerUserId: accounts.ownerUserId })
-      .from(accounts)
-      .where(eq(accounts.id, event.referrerAccountId))
-      .limit(1);
-
-    if (referrerAccount?.ownerUserId) {
-      await emit({
-        type: NOTIFICATION_TYPES.REFERRAL_REWARD_GRANTED,
-        recipientUserIds: [referrerAccount.ownerUserId],
-        entityType: 'referral_event',
-        entityId: event.id,
-        payload: {
-          referralEventId: event.id,
-          referredAccountId,
-        },
-        dedupeKey: `account:referral-reward-granted:${event.id}`,
-      });
-    }
-  } catch (err) {
-    // Ne pas bloquer le reward si la notif échoue
-    console.error('[grantReferralReward] notification error:', err);
-  }
 
   return true;
 }

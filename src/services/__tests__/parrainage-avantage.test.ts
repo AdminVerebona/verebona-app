@@ -18,6 +18,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
 
@@ -71,7 +72,9 @@ describe('rien ne promet plus un avantage au filleul', () => {
   });
 
   it('l’écran d’inscription désigne le parrain comme bénéficiaire', () => {
-    expect(SIGNUP).toMatch(/parrain bénéficiera/);
+    // Lot 102D : libellé de la règle centrale (« Votre parrain recevra … »).
+    expect(SIGNUP).toContain('REFERRAL_TEXT.referredNotice');
+    expect(REFERRAL_TEXT.referredNotice).toMatch(/^Votre parrain recevra/);
   });
 
   it('l’email d’invitation ne promet plus trois mois', () => {
@@ -104,17 +107,19 @@ describe('le bloc « Mon compte » annonce la bonne récompense', () => {
     expect(API).not.toMatch(/creditsEarned/);
   });
 
-  it('la récompense est un mois d’abonnement', () => {
-    expect(BLOC).toMatch(/1 mois d&apos;abonnement/);
+  it('la récompense est un mois d’abonnement (règle centrale, lot 102D)', () => {
+    expect(BLOC).toContain('REFERRAL_TEXT.reward');
+    expect(REFERRAL_TEXT.reward).toMatch(/^1 mois offert pour vous/);
   });
 
   it('le rapport est explicite, pas sous-entendu', () => {
-    // Si la règle passe un jour à deux mois, c'est ici que ça se change.
-    expect(API).toMatch(/MOIS_PAR_PARRAINAGE = 1/);
-    expect(API).toMatch(/validatedCount \* MOIS_PAR_PARRAINAGE/);
+    // Lot 102D : si la règle passe un jour à deux mois, c'est dans
+    // `referral-rules.ts` que ça se change (API, écrans, e-mail, BO).
+    expect(API).toMatch(/validatedCount \* REFERRAL_RULES\.rewardMonths/);
   });
 
-  it('l’éligibilité annoncée mentionne les offres annuelles', () => {
-    expect(BLOC).toMatch(/Premium ou Premium Duo annuelles/);
+  it('l’éligibilité annoncée est celle de l’API (lot 102D : plus « Premium ou Premium Duo annuelles »)', () => {
+    expect(BLOC).not.toMatch(/Premium ou Premium Duo annuelles/);
+    expect(BLOC).toContain('REFERRAL_TEXT.notEligible');
   });
 });

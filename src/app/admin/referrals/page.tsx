@@ -20,6 +20,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { EcranEnErreur } from '@/components/admin/EcranEnErreur';
 import { formatDate } from '@/lib/admin/format';
+import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
 import { ExternalLink, Gift, Loader2, RefreshCw } from 'lucide-react';
 import { AdminPagination, SortHeader, nextSort } from '../subscriptions/_components/list-controls';
 
@@ -58,6 +59,7 @@ interface ReferralEvent {
   rewardedAt: string | null;
   reward: string | null;
   canceledAt: string | null;
+  reasonLabel?: string | null;
 }
 
 interface ReferrerDetail { code: string; accountId: number; accountName: string; events: ReferralEvent[] }
@@ -179,6 +181,15 @@ function ReferralsScreen() {
           <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? 'animate-spin' : ''}`} /> Actualiser
         </Button>
       </div>
+
+      {/* Lot 102D : règle appliquée, issue des paramètres centraux (lecture seule). */}
+      <details className="rounded-xl border bg-card p-4 text-sm" data-testid="referral-rule">
+        <summary className="font-semibold cursor-pointer">Règle de parrainage appliquée</summary>
+        <ul className="list-disc pl-5 mt-2 space-y-1 text-muted-foreground">
+          {REFERRAL_TEXT.conditions.map((c) => <li key={c}>{c}</li>)}
+          <li>Parrain : {REFERRAL_TEXT.notEligible.charAt(0).toLowerCase() + REFERRAL_TEXT.notEligible.slice(1)}</li>
+        </ul>
+      </details>
 
       {/* §8.1 : deux blocs distincts, aucun total consolidé */}
       {summary && (
@@ -310,6 +321,7 @@ function ReferralsScreen() {
                         <TableHead>Attribution réelle</TableHead>
                         <TableHead>Avantage</TableHead>
                         <TableHead>Annulation</TableHead>
+                        <TableHead>Motif</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -322,10 +334,11 @@ function ReferralsScreen() {
                           </TableCell>
                           <TableCell className="text-xs">{formatDate(e.usedAt)}</TableCell>
                           <TableCell className="text-sm">{e.statusLabel}</TableCell>
-                          <TableCell className="text-xs">{e.forecastRewardAt ? formatDate(e.forecastRewardAt) : e.statusLabel === 'En cours' ? 'Après le 1er paiement' : '—'}</TableCell>
+                          <TableCell className="text-xs">{e.forecastRewardAt ? formatDate(e.forecastRewardAt) : e.statusLabel === 'En cours' ? 'Après le 1er paiement annuel' : '—'}</TableCell>
                           <TableCell className="text-xs">{formatDate(e.rewardedAt)}</TableCell>
                           <TableCell className="text-xs">{e.reward ?? '—'}</TableCell>
                           <TableCell className="text-xs">{formatDate(e.canceledAt)}</TableCell>
+                          <TableCell className="text-xs">{e.reasonLabel ?? '—'}</TableCell>
                         </TableRow>
                       ))}
                     </TableBody>

@@ -22,13 +22,17 @@
  * Accessible sans session (§6.1). L'authentification sert seulement à
  * préremplir : elle n'est jamais la seule voie d'accès.
  *
- * LOT 32 (décisions PO du 07/10/2026, Q1/Q2) — même règle pour le parcours
+ * LOT 32 (décisions PO du 07/10/2026, Q1) — même règle pour le parcours
  * connecté et le parcours public par jeton : le délai court à partir du
- * paiement ; la confirmation entraîne la suppression IMMÉDIATE du compte
- * (accès coupés, remboursement intégral, e-mail d'au revoir). Un
- * avertissement explicite (`DeletionWarning`) le dit sur la présentation ET
- * juste au-dessus du bouton « Confirmer la rétractation ». Plus de délai
- * d'export de 30 jours ni de suivi de demande.
+ * paiement.
+ *
+ * LOT 102A (décision PO du 31/10/2026, remplace la suppression immédiate du
+ * lot 32) : la confirmation annule l'abonnement, lance le remboursement
+ * intégral et coupe les fonctions payantes ; le compte passe en LECTURE
+ * SEULE et ses données sont conservées 90 jours (purge ensuite, sauf
+ * nouvelle souscription) ; suppression avant sur demande explicite (Mon
+ * compte). Le rappel (`RetentionNotice`) figure sur la présentation ET juste
+ * au-dessus du bouton « Confirmer la rétractation ».
  */
 
 import { useCallback, useEffect, useState, Suspense } from 'react';
@@ -42,8 +46,13 @@ import { LogoWithBaseline } from '@/components/Logo';
 import { FollowTheme } from '@/components/FollowTheme';
 import { AlertTriangle, ArrowLeft, CheckCircle, Loader2, MailCheck, ShieldAlert } from 'lucide-react';
 import { publicSiteUrl } from '@/lib/external-urls';
+import { useLegalLinks } from '@/hooks/useLegalLinks';
 import { resolveWithdrawalBackTarget } from '@/lib/withdrawal-back-target';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { LIFECYCLE_DURATIONS } from '@/lib/account-lifecycle/retention-policy';
+
+/** Conservation après rétractation (paramètre central du cycle de vie). */
+const RETENTION_DAYS = LIFECYCLE_DURATIONS.restrictedRetentionDays;
 
 interface Summary {
   firstName: string;
@@ -76,6 +85,7 @@ function parisDateTime(iso: string): string {
 
 function WithdrawalContent() {
   const params = useSearchParams();
+  const legal = useLegalLinks();
   const token = params.get('token');
 
   const [step, setStep] = useState<Step>('presentation');
@@ -210,11 +220,13 @@ function WithdrawalContent() {
               <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
                 <li>Le contrat sera annulé immédiatement.</li>
                 <li>Le remboursement sera <strong>intégral</strong>, sans retenue ni frais.</li>
-                <li>Votre compte et toutes ses données seront <strong>supprimés immédiatement</strong>.</li>
+                <li>Votre compte passe en <strong>lecture seule</strong> : vos biens et documents restent consultables et exportables.</li>
+                <li>Vos données sont conservées <strong>{RETENTION_DAYS} jours</strong>, puis supprimées, sauf nouvelle souscription d&apos;ici là.</li>
+                <li>Vous pouvez demander la suppression de votre compte à tout moment depuis Mon compte.</li>
               </ul>
             </div>
 
-            <DeletionWarning />
+            <RetentionNotice />
 
             {/* §7.1 : « aucun motif de rétractation ne doit être exigé ». */}
             <p className="text-sm text-muted-foreground">
@@ -314,7 +326,8 @@ function WithdrawalContent() {
                 ? <Row label="Remboursement" value="Intégral" />
                 : <Row label="Remboursement estimé" value={summary.amountLabel} />}
               <Row label="Moyen de remboursement" value="Votre moyen de paiement d’origine" />
-              <Row label="Suppression du compte et des données" value="Immédiate, dès la confirmation" />
+              <Row label="Compte après la rétractation" value="Lecture seule (consultation et export)" />
+              <Row label="Conservation des données" value={`${RETENTION_DAYS} jours, sauf nouvelle souscription`} />
             </dl>
 
             <p className="text-xs text-muted-foreground">
@@ -327,19 +340,19 @@ function WithdrawalContent() {
                 `app.preprod.verebona.fr/cgvu`, qui n'existe pas. Les pages
                 légales vivent sur la vitrine. */}
             <p className="text-xs text-muted-foreground">
-              <a href={publicSiteUrl('/cgu')} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
-                Conditions générales
+              <a href={legal.cguv} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                CGUV
               </a>
               {' · '}
-              <a href={publicSiteUrl('/confidentialite')} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              <a href={legal.confidentialite} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
                 Politique de confidentialité
               </a>
             </p>
 
             {error && <ErrorBox message={error} />}
 
-            {/* Lot 32 (PO-Q1) : avertissement important, juste avant le bouton. */}
-            <DeletionWarning />
+            {/* Lot 102A : conséquences rappelées juste avant le bouton. */}
+            <RetentionNotice />
 
             {/* §7.3 : libellé exact, aucun « Valider » ou « Envoyer » seul. */}
             <Button className="w-full" onClick={confirm} disabled={busy}>
@@ -347,7 +360,7 @@ function WithdrawalContent() {
               Confirmer la rétractation
             </Button>
             <p className="text-xs text-muted-foreground text-center">
-              Cette action est définitive : votre compte sera supprimé immédiatement.
+              L&apos;abonnement est annulé dès la confirmation ; votre compte reste accessible en lecture seule.
             </p>
           </CardContent>
         </>
@@ -388,12 +401,12 @@ function WithdrawalContent() {
             </dl>
             <p className="text-sm text-muted-foreground">
               Votre abonnement est annulé et le remboursement intégral est lancé sur
-              votre moyen de paiement d&apos;origine. Votre compte Verebona et ses
-              données sont supprimés : vous ne pouvez plus vous y connecter.
-              Conservez la référence ci-dessus. Merci d&apos;avoir essayé Verebona.
+              votre moyen de paiement d&apos;origine. Votre compte reste accessible en
+              lecture seule : vous pouvez consulter et exporter vos données pendant
+              {' '}{RETENTION_DAYS} jours. Conservez la référence ci-dessus.
             </p>
             <Button variant="outline" className="w-full" asChild>
-              {inApp ? <Link href="/login">Fermer</Link> : <a href={publicSiteUrl('/')}>Retour au site Verebona</a>}
+              {authenticated || inApp ? <Link href="/mon-compte">Aller à mon compte</Link> : <a href={publicSiteUrl('/')}>Retour au site Verebona</a>}
             </Button>
           </CardContent>
         </>
@@ -423,20 +436,21 @@ function Field({ id, label, value, onChange, type = 'text' }: {
 }
 
 /**
- * Avertissement de suppression immédiate (lot 32, PO-Q1) — composants et
- * jetons existants (même gabarit que `ErrorBox`).
+ * Conséquences de la rétractation sur le compte (lot 102A, décision PO du
+ * 31/10/2026 : lecture seule, conservation 90 jours, suppression seulement
+ * sur demande explicite ou à l'échéance). Formulation factuelle d'interface.
  */
-function DeletionWarning() {
+function RetentionNotice() {
   return (
-    <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 text-sm p-3 flex items-start gap-2">
-      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-destructive" aria-hidden />
+    <div role="note" className="rounded-md border border-[color:var(--attention-edge)] bg-[color:var(--attention-soft)] text-sm p-3 flex items-start gap-2">
+      <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0 text-[color:var(--attention-on-soft)]" aria-hidden />
       <div className="space-y-1">
-        <p className="font-medium text-destructive">Votre compte sera supprimé immédiatement</p>
+        <p className="font-medium">Votre compte passe en lecture seule</p>
         <p className="text-muted-foreground">
-          Dès la confirmation, l&apos;accès à Verebona est coupé et votre compte est
-          définitivement supprimé avec toutes ses données (biens, documents,
-          fichiers, échéances, historique). Aucune récupération ne sera possible :
-          exportez vos données avant de confirmer.
+          Dès la confirmation, l&apos;abonnement est annulé et les fonctions payantes
+          sont coupées. Vos biens et documents restent consultables et exportables
+          pendant {RETENTION_DAYS} jours ; ils sont ensuite supprimés, sauf nouvelle
+          souscription d&apos;ici là.
         </p>
       </div>
     </div>

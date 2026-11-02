@@ -883,7 +883,8 @@ export function unpaidNotificationText(moment: 'J0' | 'REMINDER', deadlineAt?: s
 /** Texte cloche/e-mail de la suppression volontaire du compte (AID-ACCOUNT-006). */
 export function accountDeletionNotificationText(moment: 'SCHEDULED' | 'REMINDER', scheduledAt?: string | null): string {
   const date = scheduledAt ? formatUnpaidDeadline(scheduledAt) : '';
-  const quand = date ? `le ${date}` : 'dans 30 jours';
+  // Lot 102A : suppression au plus tôt — la date réelle est toujours fournie.
+  const quand = date ? `le ${date}` : 'très prochainement';
   if (moment === 'SCHEDULED') {
     return `Votre compte Verebona est clôturé à votre demande. Il sera définitivement supprimé ${quand}, ` +
       'avec vos biens, documents, fichiers et échéances. D’ici là, vous pouvez annuler la suppression ou ' +

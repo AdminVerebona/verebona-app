@@ -5,7 +5,7 @@
  */
 import { pgClient } from '@/db';
 import {
-  MILESTONES, TRIAL_RETENTION_PURGE_IMPLEMENTED, envSwitches, offsetDaysOf, reasonLabel, retentionLockState,
+  J80_DELIVERY_BASIS, MILESTONES, TRIAL_RETENTION_PURGE_IMPLEMENTED, envSwitches, offsetDaysOf, reasonLabel, retentionLockState,
   type MilestoneCode, type TrialLifecycleSettings,
 } from './milestones';
 import { appBaseUrl, buildOffersUrl, unsubscribeSecret } from './links';
@@ -55,6 +55,13 @@ function milestoneState(code: MilestoneCode, s: TrialLifecycleSettings, sw: { al
   if (m.nature === 'conditional') {
     const lock = retentionLockState({ retentionPurgeImplemented: TRIAL_RETENTION_PURGE_IMPLEMENTED });
     if (lock.locked) return { active: false, label: lock.label };
+    // Lot 102A : information (hors campagne commerciale) — seulement si une
+    // suppression de fin d'essai est réellement programmée.
+    if (J80_DELIVERY_BASIS === 'information') {
+      return s.serviceEnabled
+        ? { active: true, label: 'Actif — seulement si une suppression est réellement programmée' }
+        : { active: false, label: 'Désactivé (réglage des notifications de service)' };
+    }
   }
   if (m.nature === 'service') return s.serviceEnabled ? { active: true, label: 'Actif' } : { active: false, label: 'Désactivé (réglage)' };
   if (sw.commercialOff) return { active: false, label: 'Coupé (variable TRIAL_COMMERCIAL_EMAILS)' };

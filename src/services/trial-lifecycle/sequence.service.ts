@@ -176,6 +176,7 @@ async function readState(c: Candidate, m: MilestoneDef, now: Date): Promise<Curr
     trialDeletionScheduledAt: deletion?.trial_at ? new Date(deletion.trial_at) : null,
     opposed: !!flags?.opposed,
     consented: !!flags?.consented,
+    signupInformed: await signupInformedOf(userId),
     alreadySent: !!flags?.sent_here || legacySent,
     emailPreference,
     channelDisabled,
@@ -212,6 +213,22 @@ async function logEvent(e: {
 }
 
 /** Applique une décision de non-envoi (clos, en attente ou bloqué). */
+/**
+ * Lot 102C : preuve d'information + possibilité d'opposition à l'inscription
+ * (dernier choix enregistré non « opposé »). Table absente (0917) : aucune
+ * preuve — prudent (aucune relance « client existant »).
+ */
+async function signupInformedOf(userId: number | null): Promise<boolean> {
+  if (!userId) return false;
+  try {
+    const [p] = await pgClient<{ choice: string }[]>`
+      SELECT choice FROM marketing_collection_proofs WHERE user_id = ${userId} ORDER BY created_at DESC, id DESC LIMIT 1`;
+    return !!p && (p.choice === 'not_opposed' || p.choice === 'informed');
+  } catch {
+    return false;
+  }
+}
+
 async function applyNonSend(msg: ClaimedMessage, c: Candidate, m: MilestoneDef, d: Exclude<Decision, { kind: 'send' }>, legalBasis: string | null, now: Date): Promise<'skipped' | 'deferred' | 'blocked'> {
   // Fenêtre refermée sur un message en attente : clos avec son DERNIER motif.
   let reason: string = d.reason;

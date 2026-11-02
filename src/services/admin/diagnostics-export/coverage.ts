@@ -338,6 +338,17 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   trial_lifecycle_messages: C('technique'),
   trial_lifecycle_events: C('technique'),
   marketing_oppositions: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
+  // Lot 102C (0915) : parties de l'archive « Mes données » (clé de stockage omise par motif de colonne) ;
+  // (0917) preuves d'information et de choix sur les relances à l'inscription ;
+  // (0916) registre des copies de données réelles et identité de la base (globaux, sans compte).
+  gdpr_export_parts: C('historique', { filter: 't.export_id IN (SELECT e.id FROM gdpr_exports e WHERE e.account_id = {{A}})' }),
+  marketing_collection_proofs: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
+  production_data_copies: C('technique', { global: true, filter: 'TRUE' }),
+  environment_identity: C('technique', { global: true, filter: 'TRUE' }),
+  // Lot 102D (0921) : opposition à l'utilisation des données pour l'amélioration —
+  // état courant et journal de preuve (canal, libellé affiché, empreinte).
+  account_data_use_preferences: C('technique'),
+  account_data_use_preference_events: C('technique'),
   _migrations: C('technique', { global: true, filter: 'TRUE' }),
   scheduled_task_state: C('technique', { global: true, filter: 'TRUE' }),
   ai_queue_worker_heartbeats: C('technique', { global: true, filter: 'TRUE' }),
@@ -382,6 +393,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_retired_treatment_archive: T('technique', 'archives de traitements retirés (multi-comptes)'),
   migration_0250_unpaid_backup: T('technique', 'sauvegarde technique d’une migration'),
   pending_blob_deletions: T('technique', 'file de suppression du stockage'),
+  // Lot 102A (0900) : registre minimal des suppressions exécutées (identifiants internes, rejeu après restauration).
+  account_deletion_registry: T('historique', 'registre des suppressions exécutées (multi-comptes, identifiants seulement)'),
   job_locks: T('technique', 'baux des tâches'),
   ai_call_capture_state: T('technique', 'configuration de la capture IA'),
   ai_operation_idempotency: T('technique', 'idempotence IA (résultats rejouables : contenu restreint)'),
@@ -460,7 +473,9 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   email_template_versions: T('referentiels', 'modèles d’e-mails'),
   email_templates: T('referentiels', 'modèles d’e-mails'),
   communication_channel_settings: T('referentiels', 'configuration des canaux'),
-  legal_document_versions: T('referentiels', 'documents juridiques (HTML restreint : empreinte)'),
+  legal_document_versions: T('referentiels', 'CGUV : référentiel des versions (archives HTML restreintes : empreinte)'),
+  // Lot 102B : dernier état connu du manifeste public des CGUV (aucun texte, aucun secret).
+  legal_manifest_sync_state: T('referentiels', 'CGUV : état de lecture du manifeste public'),
   export_templates: T('referentiels', 'modèles d’export V12'),
   export_dossier_availability: T('referentiels', 'disponibilité des dossiers V12'),
   system_logos: T('referentiels', 'logos système (image restreinte : empreinte)'),

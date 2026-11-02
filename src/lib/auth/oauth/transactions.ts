@@ -41,6 +41,8 @@ export interface TxContext {
   inviteToken?: string;
   transmissionToken?: string;
   referralCode?: string;
+  /** Lot 102D : instant signé d'usage du lien de parrainage (vérifié à l'inscription). */
+  referralTouch?: string;
   /** Défi PKCE de l'application mobile (échange final, §21.3). */
   appChallenge?: string;
   /** Rattachement en attente prouvé par un AUTRE fournisseur déjà lié (§8.1, §18.2). */

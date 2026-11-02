@@ -22,6 +22,7 @@
  * s'éditent dans `email-template-editor.service.ts` (remplace COM-013).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { LIFECYCLE_DURATIONS } from '@/lib/account-lifecycle/retention-policy';
 import { pgClient } from '@/db';
 import {
   NOTIFICATION_CATALOG,
@@ -917,8 +918,10 @@ export function contextVariables(ctx: SelectedPreviewContext, appUrl: string = a
     v.amountLabel = w.amountExpected == null ? 'à déterminer' : formatAmountLabel(w.amountExpected, w.currency);
     const contract = contractLabelOf(w.planCode, w.billingPeriod);
     if (contract) v.contractLabel = contract;
-    // Lot 32 (PO-Q2) : plus de lien de suivi ni de délai d'export dans
-    // l'accusé (compte supprimé immédiatement).
+    // Lot 32 : plus de lien de suivi dans l'accusé. Lot 102A : lecture seule
+    // et conservation annoncées (durée = paramètre central), lien Mon compte.
+    v.retentionDays = String(LIFECYCLE_DURATIONS.restrictedRetentionDays);
+    v.accountUrl = `${base}/mon-compte`;
     v.legalPermalinkUrl = `${base}/cgvu`;
   }
   return v;

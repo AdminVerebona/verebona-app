@@ -16,14 +16,15 @@
  * est écrite et l'accusé envoyé AVANT tout appel Stripe.
  *
  * LOT 32 (décisions PO du 07/10/2026, Q1/Q2) : traitement IMMÉDIAT. Juste
- * après l'accusé (qui est aussi l'e-mail d'au revoir), `processWithdrawal`
- * coupe les accès, annule l'abonnement, rembourse intégralement et supprime
- * le compte. La réponse attend ce traitement dans une limite de temps
+ * après l'accusé, `processWithdrawal` coupe les droits payants, annule
+ * l'abonnement et rembourse intégralement ; lot 102A : le compte passe en
+ * lecture seule et ses données sont conservées 90 jours (plus de
+ * suppression immédiate). La réponse attend ce traitement dans une limite de temps
  * (`PROCESSING_BUDGET_MS`) ; au-delà, il continue en arrière-plan et le
  * balayage planifié le reprend en cas d'échec — sans action manuelle.
  * Plus d'examen manuel : une éligibilité négative est refusée avec son motif
  * (409), une éligibilité indéterminable (panne) est refusée temporairement
- * (503, « réessayez ») — jamais de suppression de compte sur un doute.
+ * (503, « réessayez »).
  *
  * La protection CSRF exigée au §12.4 est assurée par le middleware, qui
  * contrôle l'origine de toute requête mutante.
@@ -70,8 +71,7 @@ export async function POST(req: NextRequest) {
   let caller: Caller;
 
   // Double soumission (double clic, rechargement) : la déclaration existe déjà
-  // sous cette clé — restituée telle quelle, même si le premier envoi a déjà
-  // supprimé le compte (lot 32). La clé est tirée au hasard par la page ;
+  // sous cette clé — restituée telle quelle. La clé est tirée au hasard par la page ;
   // la réponse ne contient que la référence et l'horodatage.
   const idempotencyKey = typeof body.idempotencyKey === 'string' ? body.idempotencyKey : null;
   const deja = await findByIdempotencyKey(idempotencyKey);
@@ -80,7 +80,7 @@ export async function POST(req: NextRequest) {
       publicReference: deja.publicReference,
       status: deja.status,
       requestedAt: deja.requestedAt.toISOString(),
-      accountDeletion: 'immediate',
+      accountAfterWithdrawal: 'read_only_retention',
       alreadyRecorded: true,
     }, { status: 200 });
   }
@@ -146,7 +146,7 @@ export async function POST(req: NextRequest) {
       publicReference: eligibility.existingRequest.publicReference,
       status: eligibility.existingRequest.status,
       requestedAt: eligibility.existingRequest.requestedAt.toISOString(),
-      accountDeletion: 'immediate',
+      accountAfterWithdrawal: 'read_only_retention',
       alreadyRecorded: true,
     }, { status: 200 });
   }
@@ -250,8 +250,8 @@ export async function POST(req: NextRequest) {
         status: declaration.status,
         // Enregistré en UTC, affiché en heure de Paris par le client (§7.4).
         requestedAt: declaration.requestedAt.toISOString(),
-        // Lot 32 : compte supprimé immédiatement (plus de délai d'export).
-        accountDeletion: 'immediate',
+        // Lot 102A : compte en lecture seule, données conservées 90 jours.
+        accountAfterWithdrawal: 'read_only_retention',
         processing,
         alreadyRecorded: declaration.alreadyRecorded,
       },

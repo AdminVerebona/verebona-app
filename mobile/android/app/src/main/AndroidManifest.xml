@@ -95,6 +95,12 @@
              jeton n'est demandé qu'après l'accord de l'utilisateur (PUSH-02). -->
         <meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false" />
         <meta-data android:name="firebase_analytics_collection_enabled" android:value="false" />
+        <!-- Lot 102C (décision PO : Firebase Analytics désactivé tant qu'aucun besoin n'est validé) :
+             désactivation DÉFINITIVE de la collecte (non réactivable à l'exécution), sans identifiant
+             publicitaire ni signaux de personnalisation, au cas où une dépendance tirerait le SDK. -->
+        <meta-data android:name="firebase_analytics_collection_deactivated" android:value="true" />
+        <meta-data android:name="google_analytics_adid_collection_enabled" android:value="false" />
+        <meta-data android:name="google_analytics_default_allow_ad_personalization_signals" android:value="false" />
     </application>
 
     <!-- Permissions (STORE-04 : uniquement celles utilisées). Les plugins ajoutent les leurs

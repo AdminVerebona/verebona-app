@@ -4,8 +4,9 @@
  * Regle : 1 mois offert AU PARRAIN SEUL lorsque le filleul, sur un
  * NOUVEAU compte, souscrit un abonnement ANNUEL.
  *
- * L'avantage est attribue apres le delai de retractation (14 jours), afin de
- * ne pas offrir un mois sur une souscription annulee.
+ * L'avantage est attribue apres le delai de retractation du filleul (calendrier
+ * legal, `rewardEarliestAt`, lot 102D), afin de ne pas offrir un mois sur une
+ * souscription annulee.
  *
  * Mise en oeuvre Stripe : on repousse la prochaine echeance d'un mois via
  * `trial_end` sur l'abonnement en cours. Stripe ne facture rien jusqu'a cette
@@ -25,12 +26,15 @@ import { accountSubscriptions } from '@/db/schema';
 import { eq } from 'drizzle-orm';
 import { getStripeServer } from '@/lib/stripe';
 import type Stripe from 'stripe';
+import { REFERRAL_RULES } from '@/services/referral/referral-rules';
 
-/** Delai de retractation legal, en jours (vente a distance). */
-export const WITHDRAWAL_PERIOD_DAYS = 14;
-
-/** Duree de l'avantage accorde, en mois. */
-export const REFERRAL_REWARD_MONTHS = 1;
+/**
+ * Duree de l'avantage accorde, en mois — règle centrale (lot 102D,
+ * `referral/referral-rules.ts`). Le délai de rétractation n'est plus un
+ * compte de 14 × 24 h écrit ici : `rewardEarliestAt` (calendrier légal,
+ * prorogation comprise).
+ */
+export const REFERRAL_REWARD_MONTHS = REFERRAL_RULES.rewardMonths;
 
 type RewardOutcome =
   | { granted: true; newPeriodEnd: Date; alreadyApplied?: boolean }
@@ -57,11 +61,6 @@ function addMonths(date: Date, months: number): Date {
     result.setUTCDate(0);
   }
   return result;
-}
-
-/** Date a partir de laquelle l'avantage peut etre attribue (CDC §13). */
-export function withdrawalDeadline(firstBilledAt: Date): Date {
-  return new Date(firstBilledAt.getTime() + WITHDRAWAL_PERIOD_DAYS * 24 * 60 * 60 * 1000);
 }
 
 /**

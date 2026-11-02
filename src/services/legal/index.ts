@@ -7,8 +7,6 @@
  */
 export {
   LegalVersionError,
-  createDraft,
-  publishVersion,
   setCurrentVersion,
   getCurrentVersion,
   getVersionByCode,

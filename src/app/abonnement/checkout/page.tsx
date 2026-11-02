@@ -10,6 +10,8 @@ import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import { useBillingCatalog } from '@/hooks/useBillingCatalog';
 import { parsePlanInput, PLAN_LABELS } from '@/lib/billing/plan-catalog';
+import { ImmediateStartConsent } from '@/components/billing/ImmediateStartConsent';
+import { IMMEDIATE_START_FIELD } from '@/lib/legal/immediate-start';
 import { billingMention, findOffer, offerAmount, periodSuffix, priceConfirmationFromError, type CatalogOffer } from '@/lib/billing/catalog-client';
 
 /**
@@ -32,6 +34,8 @@ function CheckoutRedirect() {
   const [changed, setChanged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Lot 102B : demande expresse de démarrage immédiat (case non pré-cochée).
+  const [immediateStart, setImmediateStart] = useState(false);
 
   useEffect(() => {
     if (!plan || changed) return;
@@ -39,7 +43,7 @@ function CheckoutRedirect() {
   }, [catalog, plan, billingPeriod, changed]);
 
   const start = async () => {
-    if (!plan || !offer) return;
+    if (!plan || !offer || !immediateStart) return;
     setBusy(true);
     setError(null);
     try {
@@ -48,6 +52,7 @@ function CheckoutRedirect() {
         billing_period: billingPeriod,
         displayed_price_revision: offer.price_revision,
         entry_point: 'signup_offer_flow',
+        [IMMEDIATE_START_FIELD]: immediateStart,
       });
       if (data.checkout_url) {
         window.location.href = data.checkout_url;
@@ -98,7 +103,8 @@ function CheckoutRedirect() {
                     Le tarif a changé depuis l&apos;affichage de cette page. Vérifiez le nouveau montant avant de continuer.
                   </p>
                 )}
-                <Button className="w-full" disabled={busy} onClick={start}>
+                <ImmediateStartConsent checked={immediateStart} onChange={setImmediateStart} disabled={busy} />
+                <Button className="w-full" disabled={busy || !immediateStart} onClick={start}>
                   {busy && <Loader2 className="mr-1 h-4 w-4 animate-spin" />}
                   Continuer vers le paiement
                 </Button>

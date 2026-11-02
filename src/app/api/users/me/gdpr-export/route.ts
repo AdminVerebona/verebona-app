@@ -30,10 +30,16 @@ function immediateBudgetMs(): number {
   return Number.isFinite(v) && v >= 0 ? v : 8000;
 }
 
+/**
+ * Lot 102C : une URL par partie (`?part=N`) ; `downloadUrl` reste la
+ * partie 1 (compatibilité). Accessible dans tous les états restreints.
+ */
 function body(exp: GdprExportState | null) {
+  const ready = exp?.status === 'ready';
   return {
     export: exp,
-    downloadUrl: exp?.status === 'ready' ? DOWNLOAD_PATH : null,
+    downloadUrl: ready ? DOWNLOAD_PATH : null,
+    parts: ready ? exp!.parts.map((p) => ({ ...p, downloadUrl: p.number === 1 ? DOWNLOAD_PATH : `${DOWNLOAD_PATH}?part=${p.number}` })) : [],
   };
 }
 
@@ -83,7 +89,7 @@ export async function POST(request: NextRequest) {
       await run.catch(() => null);
       await purgeExpiredExports({ limit: 20 }).catch(() => 0);
     });
-    return NextResponse.json(body({ ...exp, status: 'generating' }), { status: 202 });
+    return NextResponse.json(body({ ...exp, status: 'generating', parts: [] }), { status: 202 });
   } catch (error) {
     console.error('[users/me/gdpr-export] demande :', error);
     return NextResponse.json(

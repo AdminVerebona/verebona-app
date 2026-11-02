@@ -34,6 +34,8 @@ import { eq } from 'drizzle-orm';
 import { getCurrentVersion } from './legal-versions.service';
 import { recordAcceptance } from './legal-acceptances.service';
 import { sendLegalConfirmationEmail } from './legal-confirmation.service';
+import { versionProofInfo } from './cguv-referential.service';
+import { linkImmediateStartRequest } from './immediate-start.service';
 
 interface PaidSubscriptionAcceptanceInput {
   accountId: number;
@@ -68,7 +70,7 @@ export async function recordPaidSubscriptionAcceptance(
       // Sans version publiée, rien à rattacher. Le paiement reste valide : ce
       // n'est pas ici qu'on refuse une souscription déjà encaissée.
       console.error(
-        `[legal] souscription ${input.stripeSubscriptionId} : aucune version de CGVU publiée, ` +
+        `[legal] souscription ${input.stripeSubscriptionId} : aucune version des CGUV connue, ` +
         'acceptation non enregistrée. À régulariser.',
       );
       return { status: 'skipped', reason: 'NO_CURRENT_VERSION' };
@@ -115,6 +117,17 @@ export async function recordPaidSubscriptionAcceptance(
       context: 'PAID_SUBSCRIPTION',
       subscriptionId: subscription?.id ?? null,
       offerCode,
+      // Lot 102B : abonnement concerné et canal (souscription : web seulement).
+      subscriptionReference: input.stripeSubscriptionId,
+      channel: 'WEB',
+    });
+
+    // Lot 102B : la demande expresse de démarrage immédiat recueillie avant
+    // le paiement est rattachée à cet abonnement (traçabilité).
+    await linkImmediateStartRequest({
+      userId: owner.id,
+      subscriptionId: subscription?.id ?? null,
+      stripeSubscriptionId: input.stripeSubscriptionId,
     });
 
     const now = new Date();
@@ -123,7 +136,8 @@ export async function recordPaidSubscriptionAcceptance(
       userId: owner.id,
       firstName: owner.firstName ?? '',
       versionCode: version.versionCode,
-      permalink: version.permalink ?? `/cgvu/versions/${version.versionCode}`,
+      // Lot 102B : permalien PUBLIC de la version (site public = source unique).
+      permalink: versionProofInfo(version).permalinkUrl,
       subscription: {
         offerLabel: OFFER_LABELS[offerCode ?? ''] ?? 'Verebona',
         priceLabel:

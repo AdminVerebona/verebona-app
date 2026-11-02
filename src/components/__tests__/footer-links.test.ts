@@ -23,8 +23,8 @@ import { join } from 'path';
 const FOOTER = readFileSync(join(process.cwd(), 'src/components/Footer.tsx'), 'utf-8');
 const LANDING = readFileSync(join(process.cwd(), 'src/components/LandingFooter.tsx'), 'utf-8');
 
-/** Chemins que l'application sert vraiment. */
-const SERVIS_PAR_LAPP = ['/cgvu', '/retractation'];
+/** Chemins que l'application sert vraiment (lot 102B : plus les CGUV). */
+const SERVIS_PAR_LAPP = ['/retractation'];
 
 /**
  * Chemins de la vitrine liés par les pieds de page. Lot 72 : `/pourquoi-verebona`
@@ -32,7 +32,7 @@ const SERVIS_PAR_LAPP = ['/cgvu', '/retractation'];
  * EXISTENCE est vérifiée contre l'inventaire généré par la vitrine (plus
  * de liste tenue à la main qui garantirait une page disparue).
  */
-const PAGES_VITRINE = ['/mentions-legales', '/confidentialite', '/contact', '/aide'];
+const PAGES_VITRINE = ['/contact', '/aide'];
 
 describe('les pages servies par l’application existent', () => {
   it('chaque chemin interne correspond à une route', () => {
@@ -93,15 +93,24 @@ describe('lot 72 — destinations réelles de la vitrine (inventaire généré)'
   });
 });
 
-describe('les liens imposés par les CDC restent internes', () => {
-  it('CGVU est servi par l’application (CDC 7 §12)', () => {
-    // Le §12 exige que les conditions restent accessibles après fermeture du
-    // compte : les renvoyer vers la vitrine romprait le permalien.
+describe('lot 102B — contenus légaux sur le site public (source juridique unique)', () => {
+  it('CGUV, Mentions légales, Confidentialité : liens par contenu résolus par useLegalLinks (repli puis /legal/…), libellé « CGUV »', () => {
     for (const source of [FOOTER, LANDING]) {
-      expect(source).toMatch(/\{ href: '\/cgvu',\s+label: 'CGVU' \}/);
+      expect(source).toMatch(/legalKey: 'cguv',\s+label: 'CGUV'/);
+      expect(source).toMatch(/legalKey: 'mentionsLegales'/);
+      expect(source).toMatch(/legalKey: 'confidentialite'/);
+      expect(source).toContain('useLegalLinks()');
+      expect(source).not.toMatch(/'\/cgvu'|label: 'CGVU'|CGSU/);
     }
   });
 
+  it('le pied de page public expose aussi Sous-traitants et prestataires (Parrainage : Mon compte, pas l’inscription Duo — lot 57A)', () => {
+    expect(LANDING).toMatch(/legalKey: 'sousTraitants',\s+label: 'Sous-traitants et prestataires'/);
+    expect(LANDING).not.toMatch(/legalKey: 'parrainage'/);
+  });
+});
+
+describe('les liens imposés par les CDC restent internes', () => {
   it('« Renoncer au contrat ici » est servi par l’application (CDC 6 §6.1)', () => {
     for (const source of [FOOTER, LANDING]) {
       expect(source).toContain("Renoncer au contrat ici");
@@ -109,9 +118,8 @@ describe('les liens imposés par les CDC restent internes', () => {
     }
   });
 
-  it('ni CGVU ni rétractation ne sont marqués externes', () => {
+  it('la rétractation n’est pas marquée externe', () => {
     for (const source of [FOOTER, LANDING]) {
-      expect(source).not.toMatch(/href: '\/cgvu'[^}]*external/);
       expect(source).not.toMatch(/href: '\/retractation'[^}]*external/);
     }
   });

@@ -46,7 +46,9 @@ describe('routes utilisateur de l’export RGPD', () => {
 
   it('le téléchargement porte sur l’utilisateur de la session, jamais un identifiant fourni', () => {
     const src = read('src/app/api/users/me/gdpr-export/download/route.ts');
-    expect(src).toContain('getDownloadUrl(userId)');
-    expect(src).not.toMatch(/searchParams/);
+    // Lot 102C : seul le NUMÉRO DE PARTIE est lu dans l'URL (jamais un identifiant d'export ni d'utilisateur).
+    expect(src).toContain('getDownloadUrl(userId, { part })');
+    expect((src.match(/searchParams\.get\('([a-z]+)'\)/g) ?? [])).toEqual(["searchParams.get('part')"]);
+    expect(src).not.toMatch(/searchParams\.get\('(id|exportId|userId)'\)/);
   });
 });

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
     getStoredReferralCode,
-    normalizeReferralCode,
     resolveReferralCode,
 } from '@/services/referral-attribution.service';
 import { SessionService } from '@/lib/session-service';
@@ -20,6 +19,9 @@ import { parseBillingPeriodInput, parseDisplayedRevision, parsePlanInput } from 
 import { BillingCatalogError, toPublicOffer, type ResolvedPrice } from '@/services/billing/catalog-types';
 import { assertDisplayedRevision, resolveCurrentPrice } from '@/services/billing/price-catalog.service';
 import { markOperation, reserveCheckout, type PriceOperation } from '@/services/billing/price-operations.service';
+import { IMMEDIATE_START_REQUIRED_CODE, IMMEDIATE_START_REQUIRED_MESSAGE, isImmediateStartRequested } from '@/lib/legal/immediate-start';
+import { channelFrom } from '@/lib/legal/public-legal';
+import { readClientContext } from '@/lib/mobile/client-context';
 
 /**
  * POST /api/billing/create-checkout-session — NOUVELLE souscription.
@@ -27,7 +29,15 @@ import { markOperation, reserveCheckout, type PriceOperation } from '@/services/
  * Body : { plan: 'standard' | 'premium' | 'premium_duo' | 'duo',
  *          billing_period: 'monthly' | 'yearly',
  *          displayed_price_revision: 'pr_…',     // révision du prix affiché
- *          referralCode?, entry_point? }
+ *          immediate_start_requested: true,       // lot 102B : case cochée
+ *          entry_point? }
+ *   (`referralCode` est ignoré depuis le lot 102D : l'attribution du
+ *   parrainage se fait à l'inscription, jamais au paiement.)
+ *
+ * Lot 102B : la demande EXPRESSE de démarrage immédiat pendant le délai de
+ * rétractation (case non pré-cochée, `lib/legal/immediate-start`) est exigée
+ * et prouvée AVANT toute session Stripe (400 IMMEDIATE_START_REQUEST_REQUIRED
+ * sinon). Aucune déduction en cas de rétractation (décision PO).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * CDC « Migration Stripe vers lookup_key » V4 — §10, LK-37 à LK-46
@@ -77,7 +87,6 @@ export async function POST(request: NextRequest) {
         const period = parseBillingPeriodInput(body.billing_period);
         if (!period.ok) return catalogError(new BillingCatalogError('INVALID_BILLING_PERIOD'));
         const displayedRevision = parseDisplayedRevision(body.displayed_price_revision);
-        const referralCodeFromBody = normalizeReferralCode(body.referralCode);
         const entryPoint = typeof body.entry_point === 'string' ? body.entry_point.slice(0, 60) : 'app_subscription_page';
         const planCode = plan.plan;
         const billingPeriod = period.period;
@@ -143,9 +152,32 @@ export async function POST(request: NextRequest) {
             );
         }
 
+        // ── Lot 102B : demande expresse de démarrage immédiat exigée ──────
+        if (!isImmediateStartRequested(body)) {
+            return NextResponse.json({ code: IMMEDIATE_START_REQUIRED_CODE, message: IMMEDIATE_START_REQUIRED_MESSAGE }, { status: 400 });
+        }
+
         // ── 3. Prix courant relu chez Stripe + révision affichée ──────────
         const resolved = await resolveCurrentPrice(planCode, billingPeriod, { forPayment: true });
         assertDisplayedRevision(resolved, displayedRevision);
+
+        // ── Lot 102B : preuve de la demande de démarrage immédiat ─────────
+        // Enregistrée avant le paiement (version des CGUV, permalien,
+        // empreinte, date, canal, offre) ; rattachée à l'abonnement Stripe par
+        // le webhook. Sans version des CGUV connue : refus explicite.
+        const { recordImmediateStartRequest } = await import('@/services/legal/immediate-start.service');
+        const immediate = await recordImmediateStartRequest({
+            userId: user.id,
+            planCode,
+            billingPeriod,
+            channel: channelFrom(readClientContext(request).client, request.headers.get('user-agent')),
+        });
+        if (!immediate.ok) {
+            return NextResponse.json(
+                { code: 'NO_CURRENT_LEGAL_VERSION', message: 'Les CGUV sont momentanément indisponibles. Réessayez dans quelques instants.' },
+                { status: 503 },
+            );
+        }
 
         const stripe = getStripeServer();
 
@@ -161,9 +193,12 @@ export async function POST(request: NextRequest) {
         });
         const customerId = ensured.customerId;
 
-        // ── Parrainage : code explicite prioritaire, sinon code retenu à
-        //    l'inscription (CDC parrainage §4.5). Règles inchangées.
-        const referralCode = referralCodeFromBody ?? (await getStoredReferralCode(user.id));
+        // ── Parrainage (lot 102D, règle centrale `referral-rules.ts`) :
+        //    l'attribution est faite À L'INSCRIPTION (fenêtre de 90 jours
+        //    depuis l'usage du lien). Un code saisi au paiement est ignoré ;
+        //    seul le code retenu à l'inscription est relu (comptes inscrits
+        //    avant ce lot, dont l'événement n'existe pas encore).
+        const referralCode = await getStoredReferralCode(user.id);
         const resolvedReferral = referralCode ? await resolveReferralCode(referralCode, account.id) : null;
         const promoContext = process.env.STRIPE_CHECKOUT_ALLOW_PROMOTION_CODES === 'true' ? 'promo-codes' : 'none';
 
@@ -257,7 +292,7 @@ export async function POST(request: NextRequest) {
                 referredAccountId: account.id,
                 referredUserId: user.id,
                 status: 'link_used',
-                rewardCredits: 10,
+                rewardCredits: 0,
                 metadataJson: { checkoutSessionId: checkoutSession.id, referralCode: referralCode ?? '' },
                 createdAt: new Date(),
                 updatedAt: new Date(),
@@ -290,7 +325,7 @@ export async function POST(request: NextRequest) {
         if (error instanceof BillingCatalogError) return catalogError(error);
         console.error('[Checkout Session Error]', error);
 
-        if (error instanceof Error && ['AUTH_REQUIRED', 'INVALID_TOKEN', 'ACCOUNT_SUSPENDED'].includes(error.message)) {
+        if (error instanceof Error && ['AUTH_REQUIRED', 'INVALID_TOKEN', 'ACCOUNT_SUSPENDED', 'CGUV_REACCEPTANCE_REQUIRED', 'SESSION_UNAVAILABLE', 'ACCOUNT_PENDING_DELETION'].includes(error.message)) {
             return SessionService.handleSessionError(error);
         }
 

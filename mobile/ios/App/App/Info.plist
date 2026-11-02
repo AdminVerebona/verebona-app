@@ -50,6 +50,16 @@
 	<!-- Push : jeton demandé seulement après l'accord de l'utilisateur (PUSH-02). -->
 	<key>FirebaseMessagingAutoInitEnabled</key>
 	<false/>
+	<!-- Lot 102C (décision PO : Firebase Analytics désactivé tant qu'aucun besoin n'est validé) :
+	     collecte désactivée DÉFINITIVEMENT, prioritaire sur IS_ANALYTICS_ENABLED de GoogleService-Info.plist. -->
+	<key>FIREBASE_ANALYTICS_COLLECTION_ENABLED</key>
+	<false/>
+	<key>FIREBASE_ANALYTICS_COLLECTION_DEACTIVATED</key>
+	<true/>
+	<key>GOOGLE_ANALYTICS_IDFV_COLLECTION_ENABLED</key>
+	<false/>
+	<key>GOOGLE_ANALYTICS_DEFAULT_ALLOW_AD_PERSONALIZATION_SIGNALS</key>
+	<false/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>remote-notification</string>

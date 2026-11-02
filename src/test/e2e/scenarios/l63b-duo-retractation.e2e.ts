@@ -190,11 +190,17 @@ scenario('L63B-DUO', 'Duo : la rétractation ferme le Duo (sortie d’offre, mem
     expect(await planOf(c.membre.id)).toBe('STANDARD');
   });
 
-  it('L63-DUO-05 — suppression du compte (reprise) : Duo fermé et membre sorti avant la cascade ; le membre garde son compte', async () => {
+  it('L63-DUO-05 — rétractation puis purge à l’échéance (lot 102A) : Duo fermé et membre sorti avant la cascade ; le membre garde son compte', async () => {
     const c = await duoAvecMembre();
     const ref = await demande(c);
-    const { deleteAccountNow } = await import('@/services/withdrawal/withdrawal-processor.service');
-    expect(await deleteAccountNow({ accountId: c.id, userId: c.ownerUserId }, ref)).toBe('deleted');
+    const { enterRecoveryMode, keepAccountRestricted } = await import('@/services/withdrawal/withdrawal-processor.service');
+    await enterRecoveryMode(c.id);
+    expect(await keepAccountRestricted({ accountId: c.id, userId: c.ownerUserId, effectiveAt: null }, ref)).toBe('scheduled');
+    // Rien n'est supprimé avant l'échéance (conservation 90 jours).
+    expect(await sql`SELECT 1 FROM accounts WHERE id = ${c.id}`).toHaveLength(1);
+    const [purge] = await sql<{ id: number }[]>`SELECT id FROM scheduled_account_deletions WHERE account_id = ${c.id} AND status = 'SCHEDULED'`;
+    const { executeScheduledDeletion } = await import('@/services/account/scheduled-deletion.service');
+    expect((await executeScheduledDeletion(purge.id)).status).toBe('executed');
     expect(await sql`SELECT 1 FROM accounts WHERE id = ${c.id}`).toHaveLength(0);
     expect(await sql`SELECT 1 FROM duo_accounts WHERE id = ${c.duoId}`).toHaveLength(0);
     // Le membre n'est pas supprimé ; son offre affichée est la sienne, plus « Premium Duo ».

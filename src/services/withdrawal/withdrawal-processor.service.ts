@@ -13,36 +13,38 @@
  * le statut passe à `failed`, et le balayage du §10 reprendra plus tard. À
  * aucun moment une exception ne remonte jusqu'à effacer une preuve.
  *
- * ── L'ORDRE EST IMPOSÉ (lot 32 : traitement et suppression IMMÉDIATS) ─────
+ * ── L'ORDRE EST IMPOSÉ ────────────────────────────────────────────────────
  *
- *   1. COUPER LES ACCÈS, localement, AVANT tout appel Stripe : droits
- *      suspendus (`WITHDRAWN`, lecture seule) et sessions révoquées, même si
- *      Stripe est indisponible.
+ *   1. COUPER LES DROITS PAYANTS, localement, AVANT tout appel Stripe :
+ *      compte en lecture seule (`WITHDRAWN`), même si Stripe est
+ *      indisponible. L'utilisateur garde l'accès en LECTURE et à l'EXPORT.
  *   2. ANNULER L'ABONNEMENT chez Stripe. Le §3.3 exige un effet immédiat et
  *      le §9.2 interdit `cancel_at_period_end`.
  *   3. REMBOURSER intégralement. Les identifiants Stripe et le contrat sont
  *      portés par la demande elle-même : le remboursement n'a besoin ni du
  *      compte ni de l'utilisateur.
- *   4. SUPPRIMER LE COMPTE IMMÉDIATEMENT (décision PO du 07/10/2026, Q2) —
- *      service de suppression existant (`executeScheduledDeletion`, délai 0),
- *      qui CONSERVE ce que la loi impose : factures (10 ans, L123-22 C. com.)
- *      détachées, demande et journal de rétractation (preuve de l'acte),
- *      preuves d'acceptation des CGVU pseudonymisées, registre RGPD.
- *      Faite à CHAQUE passage, que Stripe ait répondu ou non : la reprise
- *      Stripe ne dépend pas du compte.
+ *   4. CONSERVER LES DONNÉES 90 JOURS (lot 102A, décision PO du 31/10/2026,
+ *      remplace la suppression immédiate du lot 32) : état restreint
+ *      RETRACTATION, purge programmée à +90 jours par le moteur unique
+ *      (`restricted-state.service`), annulée par une nouvelle souscription.
+ *      Le compte n'est supprimé avant que sur DEMANDE EXPLICITE de
+ *      l'utilisateur (suppression volontaire existante). La purge conserve
+ *      ce que la loi impose : factures détachées, demande et journal de
+ *      rétractation, preuves d'acceptation pseudonymisées.
+ *      Faite à CHAQUE passage, que Stripe ait répondu ou non.
  *
- * Un échec (Stripe, suppression) laisse la demande en `failed` : le balayage
- * planifié (`withdrawal-process`) la reprend automatiquement, sans action
- * manuelle. Rejouer est sans effet sur ce qui a déjà abouti (clés
- * d'idempotence Stripe, compte à rebours de suppression verrouillé).
- * L'e-mail d'au revoir est l'accusé de réception (`receipt.service`), envoyé
- * à la confirmation et renvoyé ici s'il n'est pas parti.
+ * Un échec (Stripe, programmation) laisse la demande en `failed` : le
+ * balayage planifié (`withdrawal-process`) la reprend automatiquement, sans
+ * action manuelle. Rejouer est sans effet sur ce qui a déjà abouti (clés
+ * d'idempotence Stripe, compte à rebours unique par compte).
+ * L'accusé de réception (`receipt.service`) est envoyé à la confirmation et
+ * renvoyé ici s'il n'est pas parti.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type Stripe from 'stripe';
 import { db } from '@/db';
-import { accountMemberships, accountSubscriptions, accounts, withdrawalRequests } from '@/db/schema';
-import { and, eq, isNotNull } from 'drizzle-orm';
+import { accountSubscriptions, accounts, withdrawalRequests } from '@/db/schema';
+import { eq } from 'drizzle-orm';
 import { getStripeServer } from '@/lib/stripe';
 import {
   buildRefundPlan,
@@ -50,7 +52,7 @@ import {
   type RefundPlan,
 } from './refund-calculator';
 import { decideWithdrawalStatus, legacyLists, parseEntries, upsertRefund, type RefundEntry } from './refund-tracker';
-import { executeScheduledDeletion, scheduleDeletion } from '@/services/account/scheduled-deletion.service';
+import { enterRestrictedState } from '@/services/account/restricted-state.service';
 import { listInvoicePaidCharges, PaymentLookupError } from '@/services/billing/stripe-payments';
 import { recordWithdrawalEvent } from './withdrawal-journal.service';
 
@@ -60,8 +62,11 @@ interface ProcessResult {
   refundedAmount?: number;
   failureCode?: string;
   detail?: string;
-  /** Suppression du compte (lot 32) : faite, déjà faite, ou en échec (reprise). */
-  accountDeletion?: 'deleted' | 'already_deleted' | 'failed';
+  /**
+   * Lot 102A : conservation 90 jours (état restreint RETRACTATION) —
+   * programmée, déjà programmée, compte déjà absent, ou en échec (reprise).
+   */
+  retention?: 'scheduled' | 'existing' | 'account_gone' | 'failed';
 }
 
 /** Délai au-delà duquel le balayage renvoie un accusé non remis (le parcours l'envoie d'abord). */
@@ -97,23 +102,23 @@ export async function processWithdrawal(
     stripeResult = await processStripe(request, publicReference, now, options.stripe);
   } catch (e) {
     // Jamais d'exception jusqu'à l'appelant (voir l'en-tête) ; la
-    // suppression du compte a lieu quand même.
+    // conservation est programmée quand même.
     stripeResult = await recordFailure(publicReference, 'PROCESSING_ERROR', (e as Error).message);
   }
 
-  // 4. Suppression immédiate du compte (lot 32), quel que soit Stripe.
-  const deletion = await deleteAccountNow(request, publicReference, now);
-  if (deletion === 'failed' && stripeResult.status !== 'failed') {
-    // Stripe a abouti mais le compte est toujours là : la demande reste
-    // `failed` pour que le balayage reprenne la suppression.
-    await recordFailure(publicReference, 'ACCOUNT_DELETION_FAILED', 'Suppression du compte à reprendre.');
-    stripeResult = { ...stripeResult, status: 'failed', failureCode: 'ACCOUNT_DELETION_FAILED' };
+  // 4. Conservation 90 jours (lot 102A), quel que soit Stripe.
+  const retention = await keepAccountRestricted(request, publicReference, now);
+  if (retention === 'failed' && stripeResult.status !== 'failed') {
+    // Stripe a abouti mais la purge n'est pas programmée : la demande reste
+    // `failed` pour que le balayage reprenne la programmation.
+    await recordFailure(publicReference, 'RETENTION_SCHEDULE_FAILED', 'Programmation de la conservation à reprendre.');
+    stripeResult = { ...stripeResult, status: 'failed', failureCode: 'RETENTION_SCHEDULE_FAILED' };
   }
 
-  // E-mail d'au revoir (= accusé de réception) non remis : renvoi.
+  // Accusé de réception non remis : renvoi.
   await resendReceiptIfMissing(request, now);
 
-  return { ...stripeResult, accountDeletion: deletion };
+  return { ...stripeResult, retention };
 }
 
 type WithdrawalRow = typeof withdrawalRequests.$inferSelect;
@@ -142,10 +147,9 @@ async function processStripe(
     await recordWithdrawalEvent({
       publicReference,
       eventType: 'EXPORT_ONLY_ENTERED',
-      summary: 'Accès au compte coupés (lecture seule, sessions révoquées) avant sa suppression.',
+      summary: 'Droits payants coupés : compte en lecture seule (consultation et export conservés).',
     });
   }
-  if (request.accountId) await revokeAccountSessions(request.accountId, publicReference);
 
   let stripe: Stripe;
   try {
@@ -430,90 +434,48 @@ export async function listContractPayments(
 }
 
 /**
- * Sessions des membres du compte révoquées (lot 32 : « couper les accès »).
- * Best-effort : la suppression du compte, juste après, emporte de toute façon
- * utilisateurs et jetons de rafraîchissement.
- */
-async function revokeAccountSessions(accountId: number, publicReference: string): Promise<void> {
-  try {
-    const [acc] = await db.select({ owner: accounts.ownerUserId }).from(accounts).where(eq(accounts.id, accountId)).limit(1);
-    const members = await db
-      .select({ userId: accountMemberships.userId })
-      .from(accountMemberships)
-      .where(and(eq(accountMemberships.accountId, accountId), eq(accountMemberships.status, 'active'), isNotNull(accountMemberships.userId)));
-    const ids = new Set<number>([acc?.owner, ...members.map((m) => m.userId)].filter((v): v is number => typeof v === 'number'));
-    const { revokeUserSessionsNow } = await import('@/services/admin/account-status.service');
-    for (const id of ids) await revokeUserSessionsNow(id, 'WITHDRAWAL');
-  } catch (e) {
-    console.error(`[withdrawal] ${publicReference} : révocation des sessions impossible — ${(e as Error).message}`);
-  }
-}
-
-/**
- * Suppression IMMÉDIATE du compte (lot 32, décision PO Q2), par le service de
- * suppression existant : compte à rebours ouvert à délai nul (motif
- * WITHDRAWAL, portée compte), puis exécuté sur-le-champ. Ce service conserve
- * les factures (détachées), les demandes et le journal de rétractation, les
- * preuves d'acceptation pseudonymisées et le registre RGPD.
+ * Conservation 90 jours après la rétractation (lot 102A) : état restreint
+ * RETRACTATION, purge programmée à la date du traitement + 90 jours par le
+ * moteur unique (annulée par une nouvelle souscription). Le compte et ses
+ * données restent consultables et exportables ; rien n'est supprimé ici.
  *
- * Idempotente : compte déjà supprimé (lien de la demande tombé à NULL par la
- * cascade, ou compte introuvable) → `already_deleted`. Un échec est consigné
- * et repris par le balayage. Ne lève jamais.
+ * Idempotente (un compte à rebours actif par compte, date jamais déplacée).
+ * Compte déjà absent (supprimé à la demande de l'utilisateur) → `account_gone`.
+ * Ne lève jamais : un échec est consigné et repris par le balayage.
  */
-export async function deleteAccountNow(
-  request: Pick<WithdrawalRow, 'accountId' | 'userId'>,
+export async function keepAccountRestricted(
+  request: Pick<WithdrawalRow, 'accountId' | 'userId' | 'effectiveAt'>,
   publicReference: string,
   now: Date = new Date(),
-): Promise<'deleted' | 'already_deleted' | 'failed'> {
-  if (!request.accountId) return 'already_deleted';
+): Promise<'scheduled' | 'existing' | 'account_gone' | 'failed'> {
+  if (!request.accountId) return 'account_gone';
   try {
-    const [acc] = await db
-      .select({ id: accounts.id, owner: accounts.ownerUserId })
-      .from(accounts)
-      .where(eq(accounts.id, request.accountId))
-      .limit(1);
-    if (!acc) return 'already_deleted';
-    // Lot 63B : le Duo est fermé et le second utilisateur sorti AVANT la
-    // cascade (qui emporterait le Duo sans ramener l'offre du membre à la
-    // sienne ni déverrouiller ses demandes). Échec → suppression reportée.
-    const { closeDuoForWithdrawal } = await import('@/services/duo/duo-withdrawal.service');
-    await closeDuoForWithdrawal(acc.id);
-    const userId = request.userId ?? acc.owner;
-    const schedule = await scheduleDeletion({
-      accountId: acc.id,
-      userId,
-      reason: 'WITHDRAWAL',
-      confirmedAt: now,
-      delayDays: 0,
+    const res = await enterRestrictedState({
+      accountId: request.accountId,
+      userId: request.userId ?? null,
+      reason: 'RETRACTATION',
+      enteredAt: request.effectiveAt ?? now,
     });
-    const result = await executeScheduledDeletion(schedule.id, { now });
-    if (result.status === 'executed') {
+    if (res.status === 'skipped' && res.reason === 'ACCOUNT_GONE') return 'account_gone';
+    if (res.status === 'scheduled') {
       await recordWithdrawalEvent({
         publicReference,
-        eventType: 'DELETION_EXECUTED',
-        summary: 'Compte et données supprimés immédiatement ; factures, demande de rétractation et preuves conservées.',
-        payload: { scheduleId: schedule.id, preserved: result.preserved ?? null, deleted: result.deleted ?? null },
+        eventType: 'DELETION_SCHEDULED',
+        summary: `Compte en lecture seule, données conservées : suppression programmée le ${res.schedule.scheduledAt.toISOString().slice(0, 10)}, annulée en cas de nouvelle souscription.`,
+        payload: { scheduleId: res.schedule.id, scheduledAt: res.schedule.scheduledAt.toISOString() },
       });
-      return 'deleted';
+      return 'scheduled';
     }
-    // Compte disparu entre-temps, ou exécution concurrente : vérifier.
-    const [still] = await db.select({ id: accounts.id }).from(accounts).where(eq(accounts.id, acc.id)).limit(1);
-    if (!still) return 'already_deleted';
-    await recordWithdrawalEvent({
-      publicReference,
-      eventType: 'DELETION_EXECUTED',
-      result: 'failure',
-      summary: `Suppression du compte non aboutie (${result.reason ?? result.status}) : reprise automatique.`,
-      payload: { scheduleId: schedule.id, reason: result.reason ?? null },
-    });
-    return 'failed';
+    // Déjà programmée (rejeu) ou autre suppression en cours (back-office,
+    // suppression demandée) : la date la plus proche s'applique, rien à faire.
+    return 'existing';
   } catch (e) {
-    console.error(`[withdrawal] ${publicReference} : suppression du compte impossible — ${(e as Error).message}`);
+    console.error(`[withdrawal] ${publicReference} : programmation de la conservation impossible — ${(e as Error).message}`);
     await recordWithdrawalEvent({
       publicReference,
-      eventType: 'DELETION_EXECUTED',
+      eventType: 'DELETION_SCHEDULED',
       result: 'failure',
-      summary: `Suppression du compte impossible : ${(e as Error).message.slice(0, 300)}.`,
+      summary: `Programmation de la conservation impossible : ${(e as Error).message.slice(0, 300)}.`,
     }).catch(() => undefined);
     return 'failed';
   }
@@ -546,12 +508,12 @@ async function resendReceiptIfMissing(request: WithdrawalRow, now: Date): Promis
 }
 
 /**
- * Coupe les droits du compte dès la confirmation (§13).
+ * Coupe les droits payants du compte dès la confirmation (§13).
  *
  * Réutilise le statut `readonly` déjà connu du moteur de droits : plus
- * aucune écriture. Lot 32 : ce n'est plus une période de récupération de 30
- * jours mais l'état transitoire de quelques instants qui précède la
- * suppression immédiate (ou sa reprise si elle échoue).
+ * aucune écriture, plus aucun traitement IA ; consultation et export
+ * conservés. Lot 102A : état durable pendant les 90 jours de conservation
+ * (purge programmée par `keepAccountRestricted`).
  */
 export async function enterRecoveryMode(accountId: number): Promise<boolean> {
   const [before] = await db

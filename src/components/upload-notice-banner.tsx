@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { X, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import Link from 'next/link';
+import { useLegalLinks } from '@/hooks/useLegalLinks';
 import { apiClient } from '@/lib/api-client';
 import { useSession } from '@/hooks/useSession';
 
@@ -20,6 +20,7 @@ interface UploadNoticeBannerProps {
  */
 export function UploadNoticeBanner({ onClose }: UploadNoticeBannerProps) {
   const { user } = useSession();
+  const legal = useLegalLinks();
   const [visible, setVisible] = useState(false);
   const affiche = useRef(false);
 
@@ -52,14 +53,14 @@ export function UploadNoticeBanner({ onClose }: UploadNoticeBannerProps) {
         <div className="flex-1 min-w-0">
           <p className="text-sm text-[color:var(--accent)] leading-relaxed">
             En déposant un document, vous acceptez qu'il soit traité conformément aux{' '}
-            <Link 
-              href="/cgvu" 
-              target="_blank" 
+            <a
+              href={legal.cguv}
+              target="_blank"
               rel="noopener noreferrer"
               className="font-medium underline hover:text-[color:var(--accent)] transition-colors"
             >
-              conditions générales
-            </Link>
+              CGUV
+            </a>
             {' '}pour son stockage, sa prévisualisation et, si votre offre le permet, son analyse automatisée (OCR).
           </p>
         </div>

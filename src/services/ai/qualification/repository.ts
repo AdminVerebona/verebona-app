@@ -18,6 +18,7 @@
  * contrat est rendue « obsolète », jamais « active » (VER-03).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { improvementAccountAllowedSql, improvementCaptureUsableSql } from '@/services/privacy/improvement-opt-out-rules';
 import { pgClient } from '@/db';
 import type { Defect } from './defects';
 import type { CoupleSignatureParts } from './signature';
@@ -351,6 +352,8 @@ export async function readCases(evidenceId: number): Promise<CaseRecord[]> {
  * Entrées modèle capturées (82C) des traitements applicables sur les comptes
  * EXISTANTS éligibles (C-Q10), hors appels de qualification eux-mêmes, au
  * plus `perAccount` par compte et `max` au total (les plus récentes).
+ * Lot 102D : jamais une capture d'un compte opposé, ni une capture faite
+ * avant la fin d'une opposition (`improvementCaptureUsableSql`).
  */
 export async function loadReplayCaptures(p: { operationCode: string; accountIds: readonly number[]; perAccount: number; max: number }): Promise<import('./cases').CaptureRow[]> {
   if (!p.accountIds.length || p.max <= 0) return [];
@@ -363,6 +366,7 @@ export async function loadReplayCaptures(p: { operationCode: string; accountIds:
            LEFT JOIN ai_usage_event u ON u.id = c.usage_event_id
           WHERE c.operation_code = $1 AND c.account_id = ANY($2::int[]) AND c.call_kind = 'analysis' AND c.capture_status = 'CAPTURED'
             AND COALESCE(u.metadata->>'trigger', '') <> 'qualification'
+            AND ${improvementCaptureUsableSql('c')}
             AND COALESCE(u.status, 'success') = 'success'
        ) x WHERE rn <= $3 ORDER BY id DESC LIMIT $4`,
       [p.operationCode, [...p.accountIds], p.perAccount, p.max],
@@ -378,10 +382,14 @@ export async function loadReplayCaptures(p: { operationCode: string; accountIds:
   }
 }
 
-/** Comptes existants éligibles au traitement (C-Q10), hors compte technique de mesure. */
+/**
+ * Comptes existants éligibles au traitement (C-Q10), hors compte technique de
+ * mesure. Lot 102D : hors comptes OPPOSÉS à l'utilisation de leurs données
+ * pour l'amélioration (`improvement-opt-out-rules.ts`).
+ */
 export async function eligibleAccountIds(technicalAccountId: number | null): Promise<number[]> {
   const { processingEligibleSql } = await import('@/services/account/processing-eligibility');
-  const rows = await q(`SELECT a.id FROM accounts a WHERE ${processingEligibleSql('a.id')} ORDER BY a.id`);
+  const rows = await q(`SELECT a.id FROM accounts a WHERE ${processingEligibleSql('a.id')} AND ${improvementAccountAllowedSql('a.id')} ORDER BY a.id`);
   return rows.map((r) => Number(r.id)).filter((id) => id !== technicalAccountId);
 }
 
