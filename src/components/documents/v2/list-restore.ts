@@ -23,8 +23,10 @@
  */
 import type { FeedMeta } from '@/lib/documents/document-feed';
 import type { PageEnd } from './documents-feed';
-import type { DocumentItem, ViewFilters } from './documents-view';
+import { hasActiveFilters, type DocumentItem, type ViewFilters } from './documents-view';
 import { equipmentFilterParam } from '@/lib/filters/equipment-filter';
+import { roomFilterParam } from '@/lib/filters/room-filter';
+import { parseDateFilter } from '@/lib/filters/date-filter';
 
 export const RESTORE_MAX_DOCUMENTS = 300;
 export const RESTORE_TTL_MS = 10 * 60 * 1000;
@@ -75,6 +77,11 @@ export function parseSnapshot(raw: unknown, now: number): ListSnapshot | null {
       biens: f.biens, rubrics: f.rubrics, types: f.types,
       // Lot 71 : filtre Équipement repris s'il est lisible (sinon « Tous »).
       ...(typeof f.equipment === 'string' && equipmentFilterParam(f.equipment) ? { equipment: equipmentFilterParam(f.equipment)! } : {}),
+      // Lot 103F : filtre Pièce et périodes repris aussi — un retour depuis
+      // un document n'efface aucun critère en silence.
+      ...(typeof f.piece === 'string' && roomFilterParam(f.piece) ? { piece: roomFilterParam(f.piece)! } : {}),
+      ...(parseDateFilter(f.documentDate, true) ? { documentDate: parseDateFilter(f.documentDate, true)! } : {}),
+      ...(parseDateFilter(f.addedDate, false) ? { addedDate: parseDateFilter(f.addedDate, false)! } : {}),
     },
     documents: o.documents as DocumentItem[],
     meta: (o.meta ?? null) as FeedMeta | null,
@@ -100,7 +107,10 @@ export function takeListSnapshot(scope: string, now = Date.now(), storage?: Stor
 
 export function saveListSnapshot(scope: string, snapshot: ListSnapshot, storage?: StorageLike | null): void {
   const s = storageOrNull(storage);
-  if (!s || snapshot.documents.length === 0 || snapshot.documents.length > RESTORE_MAX_DOCUMENTS) return;
+  // Lot 103F : une liste vide n'est gardée que pour ses critères (filtres
+  // trop étroits) — sa clé vide ne restaure aucun lot, elle recharge.
+  if (!s || snapshot.documents.length > RESTORE_MAX_DOCUMENTS) return;
+  if (snapshot.documents.length === 0 && !hasActiveFilters(snapshot.filters)) return;
   try {
     s.setItem(snapshotStorageKey(scope), JSON.stringify(snapshot));
   } catch {

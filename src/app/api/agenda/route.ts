@@ -1,12 +1,14 @@
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { NextRequest, NextResponse } from 'next/server';
+import { structuralLinkRefusal } from '@/services/agenda/housing-scope-http';
 import { SessionService } from '@/lib/session-service';
 import { getAgendaItems, getAgendaItemsWithEquipmentFacet } from '@/services/agenda/AgendaQueryService';
 import { equipmentFilterParam } from '@/lib/filters/equipment-filter';
 import { roomFilterParam } from '@/lib/filters/room-filter';
 import { LOCAL_SEARCH_PARAM, normalizeLocalQuery } from '@/lib/search/local-search';
 import { createAgendaItem } from '@/services/agenda/AgendaWriteService';
+import { appliquerFournisseurs, preparerFournisseurs } from '@/lib/agenda/agenda-suppliers-route';
 
 export async function GET(req: NextRequest) {
   try {
@@ -82,16 +84,26 @@ export async function POST(req: NextRequest) {
 
     const validManualStatus = manualStatus === 'realise' || manualStatus === 'annule' ? manualStatus : null;
 
+    // Lot 103E : « Fournisseur / intervenant » (facultatif) — validé AVANT toute écriture :
+    // une sélection invalide ne crée ni l'élément, ni une fiche, ni un lien.
+    const fournisseurs = await preparerFournisseurs(accountId, body.suppliers, null);
+    if (fournisseurs instanceof NextResponse) return fournisseurs;
+
     const item = await createAgendaItem(
       // Lot 77A : « Sans échéance » validée par le service (booléen, incompatible avec une date).
       { title: title.trim(), description, startDate, startTime, endDate, endTime, manualStatus: validManualStatus, assetIds, fileIds, substructureIds, equipmentIds, noDeadline },
       accountId,
       session.userId
     );
+    const itemId = (item as { id?: number } | null)?.id ?? null;
+    const suppliers = fournisseurs && itemId ? await appliquerFournisseurs(accountId, itemId, session.userId ?? null, fournisseurs) : undefined;
     // CDC Assistant §25.7, §31.7 : cache de l'assistant invalidé avant la réponse.
-    await emitBusinessEvent({ type: 'AGENDA_ITEM_CREATED', accountId, entityId: (item as { id?: number } | null)?.id ?? null });
-    return NextResponse.json({ item }, { status: 201 });
+    await emitBusinessEvent({ type: 'AGENDA_ITEM_CREATED', accountId, entityId: itemId });
+    return NextResponse.json({ item, ...(suppliers ? { suppliers } : {}) }, { status: 201 });
   } catch (err) {
+    // Lot 103D : pièce / équipement sans logement rattaché — code stable, rien n'est écrit.
+    const refusLogement = structuralLinkRefusal(err);
+    if (refusLogement) return refusLogement;
     const message = err instanceof Error ? err.message : 'Internal server error';
     const status = message.includes('Validation') || message.includes('Cohérence') ? 400 : 500;
     return NextResponse.json({ error: message }, { status });

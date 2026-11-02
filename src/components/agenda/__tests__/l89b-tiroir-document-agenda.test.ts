@@ -70,7 +70,8 @@ describe('L89B-UI03 — libellés d’association centralisés', () => {
     expect(L.detach).toBe('Retirer l’association');
     expect(L.detachFromItem('Devis')).toBe('Retirer l’association avec « Devis »');
     expect(L.detachItemFromDocument('Visite')).toBe('Retirer l’association avec « Visite »');
-    expect(L.createAgendaItem).toBe('Créer un élément d’agenda');
+    // Lot 103D (wording des associations, décision PO du 31/10) : plus de jargon « élément d’agenda ».
+    expect(L.createAgendaItem).toBe('Créer un événement');
     const textes = [L.documentAgendaTitle, L.add.documents, L.detach, L.createAgendaItem, L.associatedToast, L.detachedToast].join(' ');
     expect(textes).not.toMatch(/opération|principal|Relier|Détacher/i);
   });

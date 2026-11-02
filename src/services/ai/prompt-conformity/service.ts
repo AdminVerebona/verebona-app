@@ -37,6 +37,21 @@
  *   inchangé (empreinte : version active, bloc officiel, corpus, seuils,
  *   modèles) ; seul un nouvel essai demandé par un administrateur passe outre.
  *
+ * Lot 103G — PRÉREQUIS D'EXPLOITATION (compte technique de qualification) :
+ *   · précontrôle AVANT toute candidate : compte inutilisable → l'incompatibilité
+ *     reste dans son statut, marquée « en attente de prérequis »
+ *     (`prerequisite`, motif CORPUS_ACCOUNT_*), aucune candidate, aucune
+ *     campagne, anomalie de Supervision regroupée ;
+ *   · qualification bloquée par le compte (refus amont ou cas du corpus refusés)
+ *     → BLOQUÉE « prérequis », jamais présentée comme un refus de
+ *     non-régression ;
+ *   · compte réparé → REPRISE AUTOMATIQUE au passage suivant des seules
+ *     incompatibilités bloquées pour cette cause (y compris l'historique),
+ *     une fois par état réparé, bornée (`prerequisite.ts`) ; vrais refus,
+ *     cas obligatoires non concluants, couverture et verrou A1 inchangés ;
+ *   · synthèse détaillée et SANTÉ FONCTIONNELLE du passage, distincte du succès
+ *     technique de la tâche (`passHealth`).
+ *
  * Production : détection + candidate + diagnostic, jamais de campagne ni
  * d'activation (garde d'environnement stricte, en plus de celles de 86A).
  * Coupure : `AI_PROMPT_CONFORMITY=off` (rien), `detect` (diagnostic seul),
@@ -53,6 +68,8 @@ import { promptContracts, type ContractCheck, type PromptContract, type PromptUn
 import { applyCorrection, verifyCandidate } from './correct';
 import type { GuideBlock } from './guide-blocks';
 import * as store from './repository';
+import { currentPrerequisite, EMPTY_PASS_SUMMARY, passHealth, passNote, resumeDecision, type PassHealth, type PassSummary } from './prerequisite';
+import type { CorpusAccountStatus } from '../qualification/technical-account';
 
 /** Version du moteur de mise en conformité (entre dans l'empreinte d'un essai). */
 export const CONFORMITY_ENGINE_VERSION = 'conformite-prompts-v1';
@@ -89,7 +106,7 @@ const num = (v: string | undefined, d: number) => { const n = Number(v); return 
 /** Fenêtre de surveillance après activation (heures). */
 const watchHours = () => num(process.env.AI_PROMPT_CONFORMITY_WATCH_HOURS, 24);
 /** Nombre maximal de corrections tentées par passage (chacune lance une campagne). */
-const maxPerPass = () => num(process.env.AI_PROMPT_CONFORMITY_MAX_PER_PASS, 1);
+export const maxPerPass = () => num(process.env.AI_PROMPT_CONFORMITY_MAX_PER_PASS, 1);
 
 export interface PassDeps {
   now?: () => Date;
@@ -110,6 +127,24 @@ export interface PassReport {
   processed: Array<{ contractId: string; status: string; decision: string | null }>;
   postChecks: Array<{ contractId: string; outcome: string }>;
   note: string;
+  /** Lot 103G : compteurs distincts (détectées ≠ essayées ≠ qualifiées…), santé fonctionnelle, prérequis. */
+  summary: PassSummary;
+  health: PassHealth;
+  maxPerPass: number;
+  corpusAccount: Pick<CorpusAccountStatus, 'ok' | 'code' | 'label' | 'accountId' | 'reasons' | 'warnings' | 'nextAction' | 'security'> | null;
+  /** Note de la tâche planifiée (santé d'abord). */
+  taskNote: string;
+}
+
+/** Complète un rapport : santé fonctionnelle et note de tâche (pur). */
+function finalize(r: Omit<PassReport, 'health' | 'taskNote'> & Partial<Pick<PassReport, 'health' | 'taskNote'>>): PassReport {
+  const health = passHealth({ summary: r.summary, mode: r.mode, disabled: r.disabled ?? null, maxPerPass: r.maxPerPass, corpus: r.corpusAccount });
+  const extra = [
+    r.maxPerPass <= 0 ? 'AI_PROMPT_CONFORMITY_MAX_PER_PASS=0 : aucune correction ne peut être tentée' : null,
+    ...(r.corpusAccount?.warnings ?? []).slice(0, 1),
+    r.postChecks.length ? `contrôles post-activation : ${r.postChecks.map((x) => `${x.contractId} ${x.outcome}`).join(', ')}` : null,
+  ].filter((x): x is string => Boolean(x));
+  return { ...r, health, taskNote: r.disabled ? `Santé : INACTIVE — ${r.disabled}` : passNote(health, r.summary, extra) };
 }
 
 type Row = Record<string, unknown>;
@@ -162,14 +197,17 @@ async function effectivePrompts(env: AiEnvironment, treatments: readonly Treatme
 export async function runPromptConformityPass(p: { trigger: string }, deps: PassDeps = {}): Promise<PassReport> {
   const env = deps.environment ?? getAiEnvironment();
   const m = conformityMode(env);
-  const report: PassReport = { mode: m.mode, environment: env, detected: [], resolved: [], processed: [], postChecks: [], note: m.note };
-  if (m.mode === 'off') return { ...report, disabled: m.note };
-  if (!(await store.conformityTablesReady())) return { ...report, disabled: 'migration 0860 absente : mise en conformité des prompts inactive' };
-  const travail = () => pass(p.trigger, env, m, deps, report);
+  const report = {
+    mode: m.mode, environment: env, detected: [], resolved: [], processed: [], postChecks: [], note: m.note,
+    summary: { ...EMPTY_PASS_SUMMARY }, maxPerPass: maxPerPass(), corpusAccount: null,
+  } as Omit<PassReport, 'health' | 'taskNote'> as PassReport;
+  if (m.mode === 'off') return finalize({ ...report, disabled: m.note });
+  if (!(await store.conformityTablesReady())) return finalize({ ...report, disabled: 'migration 0860 absente : mise en conformité des prompts inactive' });
+  const travail = async () => finalize(await pass(p.trigger, env, m, deps, report));
   if (deps.skipLease) return travail();
   const { withJobLock } = await import('@/lib/job-lock');
   const r = await withJobLock(`ai-prompt-conformity:${env}`, 3 * 3_600_000, travail);
-  return r ?? { ...report, note: 'passage déjà en cours sur une autre instance' };
+  return r ?? finalize({ ...report, note: 'passage déjà en cours sur une autre instance', disabled: 'passage déjà en cours sur une autre instance (bail partagé) : rien fait ici' });
 }
 
 async function pass(trigger: string, env: AiEnvironment, m: ReturnType<typeof conformityMode>, deps: PassDeps, report: PassReport): Promise<PassReport> {
@@ -230,24 +268,55 @@ async function pass(trigger: string, env: AiEnvironment, m: ReturnType<typeof co
   }
 
   // 3. Corrections.
-  if (m.mode === 'detect') return report;
   const issues = await store.listIssues(env);
+  const sum = report.summary;
+  const suivis = new Set(contracts.map((c) => c.id));
+  sum.detected = issues.filter((i) => suivis.has(i.contractId) && i.status !== 'RESOLVED').length;
+  sum.resolved = report.resolved.length;
+  sum.monitoredOnly = contracts.filter((c) => c.rank === 0 && issues.some((i) => i.contractId === c.id && i.status !== 'RESOLVED')).length;
+  if (m.mode === 'detect') return report;
   const occupe = new Set(issues.filter((i) => ['CORRECTING', 'TESTING', 'ACTIVATED'].includes(i.status)).map((i) => i.treatment));
+  // Lot 103G : précontrôle du compte technique (une fois par passage) dès qu'une campagne peut être nécessaire.
+  const campagnes = m.mode === 'auto' && env !== 'production';
+  const ouvertes = contracts.filter((c) => c.rank > 0 && issues.some((i) => i.contractId === c.id && !['RESOLVED', 'ACTIVATED'].includes(i.status)));
+  let corpus: CorpusAccountStatus | null = null;
+  if (campagnes && ouvertes.length) {
+    const { precheckCorpusAccount } = await import('../qualification/campaign');
+    corpus = await precheckCorpusAccount(deps.campaign ?? {}, { source: 'ai-prompt-conformity', contracts: ouvertes.map((c) => c.id).slice(0, 30) });
+    report.corpusAccount = { ok: corpus.ok, code: corpus.code, label: corpus.label, accountId: corpus.accountId, reasons: corpus.reasons, warnings: corpus.warnings, nextAction: corpus.nextAction, security: corpus.security };
+  }
   let faits = 0;
   for (const c of contracts.filter((x) => x.rank > 0)) {
-    if (faits >= maxPerPass()) break;
     const issue = issues.find((i) => i.contractId === c.id);
     if (!issue || issue.status === 'RESOLVED' || issue.status === 'ACTIVATED' || occupe.has(c.treatment)) continue;
     const prerequis = c.requires.filter((r) => checks.has(r) ? checks.get(r)!.state !== 'SATISFIED' : false);
     if (prerequis.length) {
+      sum.waitingContract += 1;
       if (issue.decision !== `En attente du contrat ${prerequis.join(', ')}.`) await store.updateIssue(issue.id, { decision: `En attente du contrat ${prerequis.join(', ')}.` });
       continue;
     }
-    const r = await correctIssue(issue, c, all, prompts.get(c.treatment)!, env, m, deps, now, log);
-    if (r === 'SKIPPED_UNCHANGED') continue;
+    sum.eligible += 1;
+    if (faits >= maxPerPass()) {
+      // Budget du passage atteint (ou AI_PROMPT_CONFORMITY_MAX_PER_PASS=0) : jamais compté comme un essai.
+      const bloquee = FINAL_UNCHANGED.includes(issue.status) && !issue.retryRequestedAt && !currentPrerequisite(issue);
+      if (bloquee) sum.alreadyBlocked += 1;
+      else if (corpus && !corpus.ok && currentPrerequisite(issue)) sum.waitingPrerequisite += 1;
+      else sum.deferredByBudget += 1;
+      continue;
+    }
+    const r = await correctIssue(issue, c, all, prompts.get(c.treatment)!, env, m, deps, now, log, campagnes ? corpus : null);
+    if (r === 'SKIPPED_UNCHANGED') { sum.alreadyBlocked += 1; continue; }
+    if (r === 'WAITING_PREREQUISITE') { sum.waitingPrerequisite += 1; continue; }
+    if (r === 'RESUMED') sum.resumed += 1;
     occupe.add(c.treatment);
     faits += 1;
+    sum.attempted += 1;
     const apres = (await store.getIssue(issue.id))!;
+    const decision = (apres.qualification as { decision?: string | null }).decision ?? null;
+    if (apres.status === 'ACTIVATED') sum.activated += 1;
+    if (decision === 'QUALIFIED' || apres.status === 'ACTIVATED') sum.qualified += 1;
+    else if (apres.status === 'FAILED' || (apres.status === 'BLOCKED' && !apres.prerequisite?.code)) sum.refused += 1;
+    else if (apres.status === 'BLOCKED' && apres.prerequisite?.code) sum.waitingPrerequisite += 1;
     report.processed.push({ contractId: c.id, status: apres.status, decision: apres.decision });
   }
   return report;
@@ -279,7 +348,9 @@ const FINAL_UNCHANGED: readonly store.IssueStatus[] = ['BLOCKED', 'FAILED', 'ROL
 async function correctIssue(
   issue0: store.IssueRow, c: PromptContract, all: readonly PromptContract[], effective: TreatmentPrompt, env: AiEnvironment,
   m: ReturnType<typeof conformityMode>, deps: PassDeps, now: () => Date, log: (s: string) => void,
-): Promise<'DONE' | 'SKIPPED_UNCHANGED'> {
+  /** Lot 103G : état du compte technique (null : aucune campagne possible dans ce mode / cet environnement). */
+  corpus: CorpusAccountStatus | null = null,
+): Promise<'DONE' | 'RESUMED' | 'SKIPPED_UNCHANGED' | 'WAITING_PREREQUISITE'> {
   let issue = issue0;
   const svc = await import('../master-prompts/master-prompt.service');
   const repo = await import('../master-prompts/master-prompt.repository');
@@ -300,22 +371,39 @@ async function correctIssue(
   const plan = await c.plan(pr);
   const blocs = plan.ok ? plan.steps.flatMap((s) => (s.kind === 'block' ? [s.block] : [])) : [];
   const fp = await contextFingerprint(c, base, blocs, env);
-  if (FINAL_UNCHANGED.includes(issue.status) && issue.contextFingerprint === fp && !issue.retryRequestedAt) return 'SKIPPED_UNCHANGED';
-  const relance = issue.retryRequestedAt ? { retryRequestedAt: null, retryRequestedBy: null } : {};
-  issue = await store.transition(issue, 'CORRECTING', { kind: 'CORRECTION_STARTED', message: `Correction à partir de la version active v${active.versionNumber} du prompt ${c.treatment}.`, payload: { activeVersionId: active.id, activeSha256: active.contentSha256, fingerprint: fp } },
-    { contextFingerprint: fp, activePromptVersionId: active.id, activePromptSha256: active.contentSha256, refusalReasons: [], ...relance });
-
+  // Lot 103G : reprise automatique d'un blocage de PRÉREQUIS (compte technique réparé), bornée et sans boucle.
+  const reprise = corpus ? resumeDecision(issue, corpus, (await import('../qualification/technical-account')).CORPUS_ACCOUNT_PARAMS.maxAutoResumes) : { kind: 'NONE' as const };
+  if (FINAL_UNCHANGED.includes(issue.status) && issue.contextFingerprint === fp && !issue.retryRequestedAt && reprise.kind !== 'RESUME') {
+    if (reprise.kind === 'WAIT') { await markWaitingPrerequisite(issue, corpus!, now); return 'WAITING_PREREQUISITE'; }
+    return 'SKIPPED_UNCHANGED';
+  }
   // b. Effectif ≠ version active (propagation) : défaut du code, jamais corrigé à l'aveugle.
   const surActive = await c.check(pr);
+  // Lot 103G : précontrôle AVANT toute candidate — une correction qui mènerait à une campagne attend le prérequis.
+  if (corpus && !corpus.ok && plan.ok && surActive.state !== 'SATISFIED') {
+    await markWaitingPrerequisite(issue, corpus, now);
+    return 'WAITING_PREREQUISITE';
+  }
+  const relance = issue.retryRequestedAt ? { retryRequestedAt: null, retryRequestedBy: null } : {};
+  const pq = currentPrerequisite(issue);
+  if (reprise.kind === 'RESUME') await store.addEvent(issue, { kind: 'PREREQUISITE_RESUMED', message: reprise.message, payload: { blockedCode: pq?.code ?? null, resumes: (pq?.resumes ?? 0) + 1 } });
+  const prerequisite = pq ? {
+    ...issue.prerequisite, code: null, clearedAt: now().toISOString(),
+    ...(reprise.kind === 'RESUME' ? { resumes: (pq.resumes ?? 0) + 1, lastResumeStateFingerprint: corpus!.stateFingerprint, lastResumedAt: now().toISOString() } : {}),
+  } : undefined;
+  issue = await store.transition(issue, 'CORRECTING', { kind: 'CORRECTION_STARTED', message: `Correction à partir de la version active v${active.versionNumber} du prompt ${c.treatment}.`, payload: { activeVersionId: active.id, activeSha256: active.contentSha256, fingerprint: fp } },
+    { contextFingerprint: fp, activePromptVersionId: active.id, activePromptSha256: active.contentSha256, refusalReasons: [], ...relance, ...(prerequisite ? { prerequisite } : {}) });
+  const fin = (r: 'DONE'): 'DONE' | 'RESUMED' => (reprise.kind === 'RESUME' ? 'RESUMED' : r);
+
   if (surActive.state === 'SATISFIED') {
     await store.transition(issue, 'FAILED', { kind: 'CORRECTION_REFUSED', message: `La version active v${active.versionNumber} porte déjà le contrat, mais le prompt effectif non : défaut de propagation (cache, configuration épinglée).` },
       { faultKind: 'CODE', decision: 'Aucune correction : le texte actif est conforme, le prompt effectif ne l’est pas (défaut du code).' });
-    return 'DONE';
+    return fin('DONE');
   }
   if (!plan.ok) {
     await store.transition(issue, 'BLOCKED', { kind: 'CORRECTION_REFUSED', message: plan.message, payload: { code: plan.code } },
       { faultKind: plan.code === 'BLOCK_UNAVAILABLE' ? 'CODE' : 'PROMPT', refusalReasons: [plan.message], decision: `Pas de correction automatique (${plan.code}) : ${plan.message}` });
-    return 'DONE';
+    return fin('DONE');
   }
 
   // c. Correction minimale déterministe + diff.
@@ -326,7 +414,7 @@ async function correctIssue(
       ? `Ancre introuvable ou ambiguë dans le texte actif : ${corr.message}` : corr.message;
     await store.transition(issue, 'BLOCKED', { kind: 'CORRECTION_REFUSED', message, payload: { code: corr.code, steps: corr.steps } },
       { faultKind: 'PROMPT', refusalReasons: [message], decision: `Pas de correction automatique : texte actif trop divergent (${corr.code}).`, correction: { code: corr.code, steps: corr.steps } });
-    return 'DONE';
+    return fin('DONE');
   }
   const verif = await verifyCandidate({ treatment: c.treatment, contract: c, contracts: all, before: base, after: { text: corr.text, execution: corr.execution }, referenceText: effective.referenceText, insertedBlocks: blocs });
   const correction = {
@@ -337,7 +425,7 @@ async function correctIssue(
   if (verif.length) {
     await store.transition(issue, 'FAILED', { kind: 'VERIFICATION_FAILED', message: `Correction officielle non compatible : ${verif.map((v) => v.message).join(' ')}`.slice(0, 1500), payload: { verification: verif } },
       { faultKind: 'CODE', correction, refusalReasons: verif.map((v) => v.message), decision: 'Aucune activation : la révision corrigée échoue à la vérification de compatibilité (défaut du code ou du bloc officiel).' });
-    return 'DONE';
+    return fin('DONE');
   }
 
   // d. Révision de prompt candidate + candidate de configuration (86A), non actives.
@@ -345,7 +433,7 @@ async function correctIssue(
   if (!activeCfg) {
     await store.transition(issue, 'BLOCKED', { kind: 'CORRECTION_REFUSED', message: 'Aucune configuration IA active : une candidate ne peut pas être préparée ni comparée.' },
       { faultKind: 'CODE', correction, decision: 'Pas de candidate : aucune configuration IA active dans cet environnement.' });
-    return 'DONE';
+    return fin('DONE');
   }
   const version = await repo.insertConformityCandidateVersion({
     environment: env, treatment: c.treatment, masterPromptCode: active.masterPromptCode, content: corr.text, basedOnId: active.id,
@@ -369,7 +457,7 @@ async function correctIssue(
   if (m.mode === 'candidate' || env === 'production') {
     await store.transition(issue, 'BLOCKED', { kind: 'ACTIVATION_REFUSED', message: `${m.note} : candidate préparée et diagnostiquée, aucune campagne ni activation.` },
       { decision: `${env === 'production' ? 'Production' : 'Mode candidate'} : candidate préparée, non active — qualification et activation en préproduction seulement.` });
-    return 'DONE';
+    return fin('DONE');
   }
 
   // e. Non-régression : campagne CONFORMITY (préproduction).
@@ -402,7 +490,7 @@ async function correctIssue(
   } catch (e) {
     await store.transition(issue, 'FAILED', { kind: 'QUALIFICATION_RESULT', message: `Campagne en échec : ${(e as Error).message}`.slice(0, 1500) },
       { faultKind: 'CODE', refusalReasons: [(e as Error).message.slice(0, 500)], decision: 'Aucune activation : campagne de qualification en échec technique.' });
-    return 'DONE';
+    return fin('DONE');
   }
   const a = camp.assessment;
   const qualification = {
@@ -417,12 +505,27 @@ async function correctIssue(
       defects: o.defects.map((x) => `${x.caseId} : ${x.defects.join(' ; ')}`).slice(0, 10), cost: o.cost, reasons: o.reasons,
     })),
   };
-  issue = await store.updateIssue(issue.id, { campaignId: camp.campaignId, qualification });
+  issue = await store.updateIssue(issue.id, { campaignId: camp.campaignId, qualification: { ...qualification, prerequisite: camp.prerequisite ?? null } });
+  // Lot 103G : blocage par un PRÉREQUIS d'exploitation (compte technique) — distinct d'un refus de non-régression. Un
+  // vrai refus (régression / défaut constaté sur d'autres cas) l'emporte toujours.
+  if (camp.prerequisite && a?.decision !== 'REFUSED') {
+    const pr0 = camp.prerequisite;
+    const motif = `${pr0.code} : ${pr0.label}${pr0.cases?.length ? ` (${pr0.cases.length} cas du corpus non exécuté(s))` : ''}`;
+    await store.transition(issue, 'BLOCKED', {
+      kind: 'PREREQUISITE_BLOCKED', message: `Qualification non exécutée faute de prérequis d’exploitation : ${motif}. Ce n’est pas un refus de non-régression.`.slice(0, 1800),
+      payload: { campaignId: camp.campaignId, code: pr0.code, stage: pr0.stage, cases: pr0.cases ?? [] },
+    }, {
+      refusalReasons: [`Prérequis d’exploitation : ${motif}`, ...pr0.reasons].slice(0, 20),
+      prerequisite: { ...issue.prerequisite, code: pr0.code, label: pr0.label, since: issue.prerequisite?.since ?? now().toISOString(), stateFingerprint: pr0.stateFingerprint, stage: pr0.stage, clearedAt: null },
+      decision: `Bloquée par un prérequis d’exploitation (${pr0.code}) : compte technique de qualification à réparer. L’ancienne version reste active ; reprise automatique au prochain passage une fois le compte réparé (aucun clic requis).`,
+    });
+    return fin('DONE');
+  }
   if (!a || camp.status !== 'COMPLETED') {
     const motif = camp.refusal ?? `campagne ${camp.status}`;
     await store.transition(issue, 'BLOCKED', { kind: 'QUALIFICATION_RESULT', message: `Qualification non concluante : ${motif}`, payload: { campaignId: camp.campaignId } },
       { refusalReasons: [motif], decision: `Activation refusée : qualification non concluante (${motif}).` });
-    return 'DONE';
+    return fin('DONE');
   }
   if (a.decision !== 'QUALIFIED') {
     const motifs = [...a.refusalReasons, ...a.blockingReasons];
@@ -435,12 +538,12 @@ async function correctIssue(
         ? 'Activation refusée : la candidate dégrade un résultat ou viole un critère éliminatoire. L’ancienne version reste active.'
         : 'Activation refusée : non-régression non démontrée (cas non concluant ou couverture insuffisante). L’ancienne version reste active.',
     });
-    return 'DONE';
+    return fin('DONE');
   }
   if (!m.activationAllowed) {
     await store.transition(issue, 'BLOCKED', { kind: 'ACTIVATION_REFUSED', message: `Candidate qualifiée, activation automatique non autorisée : ${m.note}.` },
       { decision: `Candidate qualifiée, non activée (${m.note}).` });
-    return 'DONE';
+    return fin('DONE');
   }
 
   // f. Activation (préproduction seulement : garde ici ET dans activateQualifiedCandidate).
@@ -452,7 +555,7 @@ async function correctIssue(
   } catch (e) {
     await store.transition(issue, 'BLOCKED', { kind: 'ACTIVATION_REFUSED', message: `Activation refusée par les contrôles de configuration : ${(e as Error).message}`.slice(0, 1500) },
       { refusalReasons: [(e as Error).message.slice(0, 500)], decision: 'Candidate qualifiée mais activation refusée par les contrôles techniques : l’ancienne version reste active.' });
-    return 'DONE';
+    return fin('DONE');
   }
   const caches = await invalidateAll();
   const t = now();
@@ -472,7 +575,22 @@ async function correctIssue(
     await store.addEvent(issue, { kind: 'CATCHUP', message: `Rattrapage : ${JSON.stringify((catchup as { summary?: unknown }).summary ?? catchup).slice(0, 600)}`, payload: catchup as Record<string, unknown> });
   }
   await postActivationCheck(issue, c, env, now(), log);
-  return 'DONE';
+  return fin('DONE');
+}
+
+/**
+ * Lot 103G : incompatibilité EN ATTENTE du prérequis (compte technique inutilisable) — statut inchangé, aucune
+ * candidate, aucune campagne ; un événement par état constaté du compte (jamais un par passage).
+ */
+async function markWaitingPrerequisite(issue: store.IssueRow, corpus: CorpusAccountStatus, now: () => Date): Promise<void> {
+  const p = issue.prerequisite ?? {};
+  const decision = `En attente du prérequis : ${corpus.label} (${corpus.code}). Aucune candidate ni campagne tant que le compte n’est pas réparé ; reprise automatique au passage suivant la réparation.`;
+  if (p.code === corpus.code && p.stateFingerprint === corpus.stateFingerprint && issue.decision === decision) return;
+  const suivant = { ...p, code: corpus.code, label: corpus.label, since: p.code ? p.since ?? now().toISOString() : now().toISOString(), stateFingerprint: corpus.stateFingerprint, stage: p.stage === 'EXECUTION' || p.stage === 'LEGACY' ? p.stage : 'PRECHECK' as const, clearedAt: null };
+  const maj = await store.updateIssue(issue.id, { prerequisite: suivant, decision });
+  if (p.code !== corpus.code || p.stateFingerprint !== corpus.stateFingerprint) {
+    await store.addEvent(maj, { kind: 'PREREQUISITE_WAITING', message: `En attente du prérequis d’exploitation : ${corpus.label} (${corpus.code}) — ${corpus.reasons.join(' ; ')}`.slice(0, 1500), payload: { code: corpus.code, nextAction: corpus.nextAction } });
+  }
 }
 
 async function invalidateAll(): Promise<string[]> {
@@ -687,13 +805,39 @@ export async function conformityOverview(environment: AiEnvironment = getAiEnvir
       state: chk?.state ?? 'UNKNOWN', cause: chk?.cause ?? (pr?.readError ?? null),
     });
   }
+  const essais = await store.countAttempts(issues.map((i) => i.id));
   const vues = [];
   for (const i of issues) {
+    const pq = i.status === 'RESOLVED' || i.status === 'ACTIVATED' ? null : currentPrerequisite(i);
     vues.push({
-      ...i, statusLabel: STATUS_LABELS[i.status], faultLabel: FAULT_LABELS[i.faultKind],
+      ...i, statusLabel: pq ? `${STATUS_LABELS[i.status]} · prérequis` : STATUS_LABELS[i.status], faultLabel: FAULT_LABELS[i.faultKind],
+      // Lot 103G : occurrences = passages de DÉTECTION ; essais = corrections réellement lancées (jamais confondus).
+      detections: i.occurrences, attempts: essais.get(i.id) ?? 0,
+      prerequisiteBlock: pq ? { code: pq.code ?? null, label: pq.label ?? null, since: pq.since ?? null, stage: pq.stage ?? null, resumes: pq.resumes ?? 0 } : null,
       contract: registre.find((r) => r.id === i.contractId) ?? null,
       events: (await store.listEvents(i.id, 20)).map((e) => ({ kind: e.kind, message: e.message, at: e.createdAt, statusAfter: e.statusAfter })),
     });
   }
-  return { readAt: new Date().toISOString(), environment, mode: m.mode, note: m.note, activationAllowed: m.activationAllowed, registry: registre, issues: vues };
+  // Lot 103G : état du compte technique (lecture seule, aucune écriture ni anomalie depuis l'écran) et paramétrage.
+  const { assessCorpusAccount, readCorpusAccountSnapshot } = await import('../qualification/technical-account');
+  const corpus = await readCorpusAccountSnapshot().then((x) => assessCorpusAccount(x)).catch(() => null);
+  const ouvertes = vues.filter((v) => v.status !== 'RESOLVED');
+  const attente = ouvertes.filter((v) => v.prerequisiteBlock).length;
+  const max = maxPerPass();
+  const functional = m.mode === 'off' ? { state: 'DISABLED', label: m.note }
+    : m.mode !== 'auto' || environment === 'production' ? { state: 'DETECTION_ONLY', label: m.note }
+      : ouvertes.length && corpus && !corpus.ok ? { state: 'BLOCKED_PREREQUISITE', label: `Bloquée par un prérequis : ${corpus.label} (${corpus.code}). ${corpus.nextAction ?? ''}`.trim() }
+        : ouvertes.length && max <= 0 ? { state: 'NO_CAPACITY', label: 'AI_PROMPT_CONFORMITY_MAX_PER_PASS=0 : aucune correction ne peut être tentée (remettre 1, défaut).' }
+          : ouvertes.length ? { state: 'OPERATIONAL', label: `Moteur opérationnel : au plus ${max} correction(s) par passage.` }
+            : { state: 'HEALTHY', label: 'Aucune incompatibilité ouverte.' };
+  return {
+    readAt: new Date().toISOString(), environment, mode: m.mode, note: m.note, activationAllowed: m.activationAllowed, registry: registre, issues: vues,
+    maxPerPass: max, functional,
+    counts: {
+      open: ouvertes.length, waitingPrerequisite: attente, blocked: ouvertes.filter((v) => v.status === 'BLOCKED' && !v.prerequisiteBlock).length,
+      failed: ouvertes.filter((v) => v.status === 'FAILED' || v.status === 'ROLLED_BACK').length, activated: vues.filter((v) => v.status === 'ACTIVATED').length,
+      resolved: vues.filter((v) => v.status === 'RESOLVED').length, attempts: vues.reduce((n, v) => n + v.attempts, 0),
+    },
+    corpusAccount: corpus ? { ok: corpus.ok, code: corpus.code, label: corpus.label, accountId: corpus.accountId, reasons: corpus.reasons, warnings: corpus.warnings, nextAction: corpus.nextAction, security: corpus.security } : null,
+  };
 }

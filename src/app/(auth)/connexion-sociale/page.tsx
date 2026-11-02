@@ -10,7 +10,9 @@
  *     (puis l'association) est proposée — jamais de second compte ;
  *   · sinon (§8.2, obligatoire) → « Vous avez déjà un compte Verebona ? » :
  *     « J'ai déjà un compte Verebona » (connexion complète puis association)
- *     ou « Créer un nouveau compte » (prénom, nom, adresse, CGUV).
+ *     ou « Créer un nouveau compte » (« Prénom ou pseudo » prérempli avec le
+ *     prénom transmis par Google / Apple s'il existe — lot 103B —, adresse,
+ *     CGUV ; parrainage replié).
  * Autre adresse que celle du fournisseur (ou relais Apple remplacé) : code à
  * 6 chiffres envoyé à cette adresse, saisi ici. Rien n'est créé avant la
  * validation finale ; « Annuler » ne laisse aucune trace (SIGN-11).
@@ -27,10 +29,15 @@ import { PasswordInput } from '@/components/ui/password-input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { MarketingSignupNotice, type MarketingChoiceValue } from '@/components/auth/MarketingSignupNotice';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
+import { LegalLink } from '@/components/legal/LegalLink';
 import { AuthFooter } from '@/components/LandingFooter';
 import { FollowTheme } from '@/components/FollowTheme';
 import { ProviderButton, socialStartUrl } from '@/components/auth/SocialSignInButtons';
 import { SOCIAL_ERROR_MESSAGES } from '@/lib/auth/oauth/messages';
+import { ReferralCodeDisclosure } from '@/components/auth/ReferralCodeDisclosure';
+import {
+  DISPLAY_NAME_HELP, DISPLAY_NAME_LABEL, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_PLACEHOLDER, validateDisplayName,
+} from '@/lib/auth/display-name';
 
 interface PendingState {
   provider: 'google' | 'apple';
@@ -39,6 +46,8 @@ interface PendingState {
   stage: 'choice' | 'existing_email' | 'email_code';
   firstName: string | null;
   lastName: string | null;
+  /** Lot 103B : prénom transmis par le fournisseur, pour préremplir « Prénom ou pseudo ». */
+  suggestedDisplayName?: string | null;
   providerEmail: string | null;
   providerEmailVerified: boolean;
   isPrivateRelay: boolean;
@@ -82,9 +91,9 @@ function SocialPending() {
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
 
-  // Profil
-  const [firstName, setFirstName] = useState('');
-  const [lastName, setLastName] = useState('');
+  // Profil — lot 103B : un seul nom, « Prénom ou pseudo » (modifiable).
+  const [displayName, setDisplayName] = useState('');
+  const [displayNameError, setDisplayNameError] = useState('');
   const [email, setEmail] = useState('');
   const [referral, setReferral] = useState('');
   const [accepted, setAccepted] = useState(false);
@@ -105,8 +114,8 @@ function SocialPending() {
         if (!res.ok) { setView('expired'); return; }
         const s = (await res.json()) as PendingState;
         setState(s);
-        setFirstName(s.firstName ?? '');
-        setLastName(s.lastName ?? '');
+        // Prérempli avec le prénom fourni (Apple : seulement à la première autorisation) ; sinon à saisir.
+        setDisplayName(s.suggestedDisplayName ?? s.firstName ?? '');
         setEmail(s.providerEmail ?? '');
         setLoginEmail(s.providerEmail && !s.isPrivateRelay ? s.providerEmail : '');
         setReferral(s.referralCode ?? '');
@@ -143,10 +152,13 @@ function SocialPending() {
   const createAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setDisplayNameError('');
+    const dn = validateDisplayName(displayName);
+    if (!dn.ok) { setDisplayNameError(dn.message); return; }
     if (!accepted) { setError('Vous devez accepter les CGUV pour créer un compte.'); return; }
     setBusy(true);
     const r = await post({
-      action: 'signup', firstName, lastName, email, acceptedTerms: accepted, termsVersion: legal?.versionCode,
+      action: 'signup', username: dn.value, email, acceptedTerms: accepted, termsVersion: legal?.versionCode,
       referralCode: state?.context === 'invitation' ? undefined : referral || undefined,
       marketing: marketingChoice ?? undefined,
     }).catch(() => null);
@@ -158,6 +170,10 @@ function SocialPending() {
     if (r?.ok) return finish(r.data);
     if (r?.status === 410) { setView('expired'); return; }
     if (r?.data.code === 'ACCOUNT_ALREADY_EXISTS') { setView('existing'); }
+    if (r && ['MISSING_DISPLAY_NAME', 'DISPLAY_NAME_TOO_LONG', 'INVALID_DISPLAY_NAME'].includes(String(r.data.code))) {
+      setDisplayNameError(messageOf(r.data));
+      return;
+    }
     setError(r ? messageOf(r.data) : 'Connexion au serveur impossible. Vérifiez votre réseau.');
   };
 
@@ -271,15 +287,18 @@ function SocialPending() {
 
             {view === 'profile' && state && (
               <form onSubmit={createAccount} className="space-y-4" data-testid="social-profile">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="sp-first">Prénom *</Label>
-                    <Input id="sp-first" value={firstName} onChange={(e) => setFirstName(e.target.value)} required disabled={busy} autoComplete="given-name" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="sp-last">Nom *</Label>
-                    <Input id="sp-last" value={lastName} onChange={(e) => setLastName(e.target.value)} required disabled={busy} autoComplete="family-name" />
-                  </div>
+                <div className="space-y-2">
+                  <Label htmlFor="sp-display-name">{DISPLAY_NAME_LABEL} *</Label>
+                  <Input
+                    id="sp-display-name" value={displayName}
+                    onChange={(e) => { setDisplayName(e.target.value); if (displayNameError) setDisplayNameError(''); }}
+                    required disabled={busy} autoComplete="nickname" autoCapitalize="words"
+                    placeholder={DISPLAY_NAME_PLACEHOLDER} maxLength={DISPLAY_NAME_MAX_LENGTH * 2}
+                    aria-invalid={displayNameError ? true : undefined}
+                    aria-describedby={displayNameError ? 'sp-display-name-help sp-display-name-error' : 'sp-display-name-help'}
+                  />
+                  <p id="sp-display-name-help" className="text-xs text-[color:var(--text-muted)]">{DISPLAY_NAME_HELP}</p>
+                  {displayNameError && <p id="sp-display-name-error" role="alert" className="text-sm text-destructive">{displayNameError}</p>}
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="sp-email">Adresse e-mail principale *</Label>
@@ -293,18 +312,20 @@ function SocialPending() {
                   </p>
                 </div>
                 {state.context !== 'invitation' && (
-                  <div className="space-y-2">
-                    <Label htmlFor="sp-ref">Code de parrainage (facultatif)</Label>
-                    <Input id="sp-ref" value={referral} onChange={(e) => setReferral(e.target.value.toUpperCase().trim())} disabled={busy} autoComplete="off" />
-                  </div>
+                  // Lot 103B : replié ; un code venu du lien `?ref=` (conservé
+                  // dans la transaction Google / Apple) est affiché appliqué.
+                  <ReferralCodeDisclosure
+                    id="sp-ref" value={referral} onChange={setReferral}
+                    appliedFromLink={!!state.referralCode} termsHref={legalLinks.parrainage} disabled={busy}
+                  />
                 )}
                 <div className="flex items-start gap-3">
                   <Checkbox id="sp-terms" checked={accepted} onCheckedChange={(v) => setAccepted(v === true)} disabled={busy} className="mt-1" />
                   <Label htmlFor="sp-terms" className="text-sm leading-relaxed cursor-pointer font-normal text-foreground">
                     J’ai lu et j’accepte les CGUV (Conditions générales d’utilisation et de vente) de Verebona, incluant la Politique de confidentialité.{' '}
-                    <a href={legal?.permalink ?? legalLinks.cguv} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Lire les CGUV</a>
+                    <LegalLink href={legal?.permalink ?? legalLinks.cguv} fallbackHref={legalLinks.cguv} target="_blank" className="text-primary hover:underline">Lire les CGUV</LegalLink>
                     {' · '}
-                    <a href={legalLinks.confidentialite} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">Confidentialité</a>
+                    <LegalLink href={legalLinks.confidentialite} target="_blank" className="text-primary hover:underline">Confidentialité</LegalLink>
                     {legal && <span className="block text-xs text-[color:var(--text-muted)] mt-1">Version {legal.versionCode}</span>}
                   </Label>
                 </div>

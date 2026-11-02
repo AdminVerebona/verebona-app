@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { X, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
+import { LegalLink } from '@/components/legal/LegalLink';
 import { apiClient } from '@/lib/api-client';
 import { useSession } from '@/hooks/useSession';
 
@@ -53,14 +54,13 @@ export function UploadNoticeBanner({ onClose }: UploadNoticeBannerProps) {
         <div className="flex-1 min-w-0">
           <p className="text-sm text-[color:var(--accent)] leading-relaxed">
             En déposant un document, vous acceptez qu'il soit traité conformément aux{' '}
-            <a
+            <LegalLink
               href={legal.cguv}
               target="_blank"
-              rel="noopener noreferrer"
               className="font-medium underline hover:text-[color:var(--accent)] transition-colors"
             >
               CGUV
-            </a>
+            </LegalLink>
             {' '}pour son stockage, sa prévisualisation et, si votre offre le permet, son analyse automatisée (OCR).
           </p>
         </div>

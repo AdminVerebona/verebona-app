@@ -151,8 +151,9 @@ scenario('L86A', 'Qualification par couple et candidates automatiques (Pilotage 
     const admin = await make.user({ role: 'ADMIN' });
     adminId = admin.id;
     session.adminId = admin.id;
-    const tech = await make.account();
-    techAccount = tech.id;
+    // Lot 103G : compte technique RÉEL (mécanisme unique, marqueur en base) — un compte client n'est plus accepté.
+    const tech = await (await import('@/services/ai/qualification/technical-account')).provisionCorpusAccount({ actor: 'e2e-l86a' });
+    techAccount = tech.accountId!;
     process.env.CORPUS_ACCOUNT_ID = String(techAccount);
     const { setProviderSecretResolver } = await import('@/services/ai/provider/provider-secret');
     setProviderSecretResolver(async () => CLE);

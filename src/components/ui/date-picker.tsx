@@ -48,16 +48,20 @@ export function DatePicker({
   max,
 }: DatePickerProps) {
   const [open, setOpen] = React.useState(false)
+  // Lot 103F : la valeur (`YYYY-MM-DD`) est lue comme un jour LOCAL, comme
+  // les bornes : `new Date('2026-03-01')` vaut minuit UTC, soit la veille
+  // dans un fuseau à l'ouest de Greenwich (jour affiché et coché décalé).
   const [month, setMonth] = React.useState<Date>(
-    value ? new Date(value) : new Date()
+    parseLocalDay(value) ?? new Date()
   )
 
   // Sync month with external value
   React.useEffect(() => {
-    if (value) setMonth(new Date(value))
+    const jour = parseLocalDay(value)
+    if (jour) setMonth(jour)
   }, [value])
 
-  const selectedDate = value ? new Date(value) : undefined
+  const selectedDate = parseLocalDay(value)
 
   const handleDateSelect = (date: Date | undefined) => {
     if (date) {
@@ -104,8 +108,8 @@ export function DatePicker({
     setMonth(newMonth)
   }
 
-  const displayValue = value
-    ? format(new Date(value), "dd/MM/yyyy")
+  const displayValue = selectedDate
+    ? format(selectedDate, "dd/MM/yyyy")
     : null
 
   return (

@@ -12,6 +12,7 @@
  * statistiques : le seul chiffre conservé est la pastille « À traiter » de
  * la navigation. Le champ Verebona est dans le header (coquille).
  */
+import { greetingName as formatGreetingName } from '@/lib/user-display-name';
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -255,8 +256,9 @@ export default function DashboardPage() {
   // Compte vide (§12ter) : aucun bien, aucun document.
   const isEmpty = !!summary && summary.assets.total === 0 && summary.documents.total === 0;
   // Salutation : le nom d'utilisateur par défaut ; le prénom seulement s'il
-  // n'a pas été choisi (2 oct. 2026).
-  const greetingName = user.username?.trim() || user.firstName || '';
+  // n'a pas été choisi (2 oct. 2026). Lot 103B : source unique
+  // (`greetingName` : pseudo → ancien prénom → aucun nom, « Bonjour » seul).
+  const greetingName = formatGreetingName(user);
 
   return (
     <>

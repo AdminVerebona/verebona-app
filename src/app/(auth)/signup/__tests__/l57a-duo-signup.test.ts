@@ -40,18 +40,22 @@ describe('L57A — inscription des invités Premium Duo', () => {
     expect(out).not.toMatch(/parrain/i);
     expect(out).not.toContain('referralCode');
     expect(out).not.toContain('Un proche vous a invité');
-    // Champs classiques conservés.
-    for (const id of ['firstName', 'lastName', 'email', 'password', 'confirmPassword', 'acceptedTerms']) expect(out).toContain(`id="${id}"`);
+    // Champs classiques conservés (lot 103B : « Prénom ou pseudo » remplace prénom / nom).
+    for (const id of ['username', 'email', 'password', 'confirmPassword', 'acceptedTerms']) expect(out).toContain(`id="${id}"`);
+    for (const id of ['firstName', 'lastName']) expect(out).not.toContain(`id="${id}"`);
     // Le texte de contexte est en haut : avant le premier champ.
-    expect(out.indexOf(DUO_INVITE_SIGNUP_TEXT)).toBeLessThan(out.indexOf('id="firstName"'));
+    expect(out.indexOf(DUO_INVITE_SIGNUP_TEXT)).toBeLessThan(out.indexOf('id="username"'));
   });
 
-  it('DUO-SIGNUP-02 — inscription classique : parrainage facultatif avec le nouveau texte', () => {
+  it('DUO-SIGNUP-02 — inscription classique : parrainage facultatif, replié derrière « J’ai un code de parrainage » (lot 103B)', () => {
     const out = html(h(SignupForm, {}));
     expect(REFERRAL_FIELD_HELP).toBe("Vous disposez d'un code de parrainage ? Saisissez-le ici.");
-    expect(out).toContain('Code de parrainage (facultatif)');
-    expect(out).toContain(REFERRAL_FIELD_HELP);
-    expect(out).toContain('parrain recevra'); // lot 102D : libellé de la règle centrale (REFERRAL_TEXT.referredNotice)
+    expect(out).toContain('J’ai un code de parrainage');
+    expect(out).not.toContain('id="referralCode"'); // champ replié au chargement
+    // Texte du champ déplié : aide + règle centrale (lot 102D, REFERRAL_TEXT.referredNotice).
+    const form = read('src/app/(auth)/signup/SignupForm.tsx');
+    expect(form).toContain('help={`${REFERRAL_FIELD_HELP} ${REFERRAL_TEXT.referredNotice}`}');
+    expect(read('src/components/auth/ReferralCodeDisclosure.tsx')).toContain('Code de parrainage (facultatif)');
     expect(out).not.toContain('Un proche vous a invité');
     expect(out).not.toContain(DUO_INVITE_SIGNUP_TEXT);
     expect(out).toContain('Créer mon compte et démarrer l’essai gratuit');

@@ -456,7 +456,14 @@ export async function runEquipmentAutoLink(
       .map(a => a.id)
       .filter(id => candidateAgendaItems.some(i => i.id === id));
 
+    const { structuralLinkAllowedForItem, logStructuralLinkDecision } = await import('@/services/agenda/housing-scope.service');
+    const { drizzleRunner } = await import('@/services/business-operations/grouping/runner');
     for (const agendaId of validAgendaIds) {
+      // Lot 103D : jamais un équipement associé à un élément d'agenda sans son logement rattaché.
+      if (!(await structuralLinkAllowedForItem(drizzleRunner(db), accountId, agendaId, { equipmentId }))) {
+        logStructuralLinkDecision('filtered', { accountId, agendaItemId: agendaId, equipmentId, origin: 'EQUIPMENT_AUTO_LINK', code: 'AGENDA_STRUCTURAL_LINK_INCOMPATIBLE' });
+        continue;
+      }
       // Insertion bornée au compte (élément d'agenda ET équipement).
       const r = (await db.execute(sql`
         INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id)

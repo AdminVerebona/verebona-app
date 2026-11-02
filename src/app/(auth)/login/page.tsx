@@ -10,9 +10,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { LogoWithBaseline } from '@/components/Logo';
 import { PasswordInput } from '@/components/ui/password-input';
 import { AuthFooter } from '@/components/LandingFooter';
-import { ArrowLeft } from 'lucide-react';
 import { FollowTheme } from '@/components/FollowTheme';
 import { publicSiteUrl } from '@/lib/external-urls';
+import { AuthBackHomeLink } from '@/components/auth/AuthBackHomeLink';
+import { apiClient } from '@/lib/api-client';
+import {
+  AUTH_EXIT_MESSAGES, LOGIN_BANNER_PARAMS, isLoginAttemptId, loginBannerFromParams, loginFailureMessage,
+  newLoginAttemptId, rememberLoginAttempt,
+} from '@/lib/auth/login-diagnostics';
 import { runAuthStorageMigration } from '@/lib/auth-migration';
 import { safeReturnUrl } from '@/lib/safe-redirect';
 import { isNetworkError, postLogin } from '@/lib/auth/login-request';
@@ -31,11 +36,20 @@ function LoginForm() {
   // CDC §6.3 : message neutre lorsque la session a expire. Il n'indique pas
   // si un compte existe, et n'expose aucun detail technique.
   // Lot 93 : retour d'un parcours Google / Apple refusé ou annulé (code stable, message en clair).
+  // Lot 103A : un message PAR MOTIF (`reason` : session expirée, absence de
+  // session, session révoquée, rejet juste après une connexion acceptée,
+  // compte suspendu) — « Votre session a expiré. Merci de vous reconnecter. »
+  // n'est plus affiché que pour une expiration réelle. Lu une seule fois :
+  // les paramètres sont retirés de l'adresse (jamais réaffichés).
   const [error, setError] = useState(
-    searchParams.get('expired') === '1'
-      ? 'Votre session a expiré. Merci de vous reconnecter.'
-      : socialErrorMessage(searchParams.get('social_error')) ?? '',
+    () => loginBannerFromParams(searchParams)?.message ?? socialErrorMessage(searchParams.get('social_error')) ?? '',
   );
+  // Lot 103A : code de diagnostic (identifiant de la tentative de connexion),
+  // affiché pour que le support retrouve les traces serveur — aucun secret.
+  const [diagCode, setDiagCode] = useState<string | null>(() => {
+    const d = searchParams.get('diag')?.toUpperCase() ?? null;
+    return searchParams.get('reason') === 'post_login_rejected' && isLoginAttemptId(d) ? d : null;
+  });
   // Code d'erreur : diagnostic, et proposition de renvoi du lien de
   // vérification quand le serveur répond EMAIL_NOT_VERIFIED — ce qu'il ne
   // fait qu'APRÈS la preuve du mot de passe (lot 37, CDC 18 §9.4).
@@ -46,6 +60,19 @@ function LoginForm() {
   // Si une session valide existe deja (cookie HttpOnly), ne pas afficher le
   // formulaire. L'etat de session n'est plus lisible en JavaScript : on
   // interroge le serveur (CDC §5.6).
+  // Lot 103A : motif lu → retiré de l'adresse (rechargement, retour arrière,
+  // nouvelle tentative : aucun message obsolète réaffiché). `returnUrl` et
+  // `email` sont conservés.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    let changed = false;
+    for (const k of LOGIN_BANNER_PARAMS) if (url.searchParams.has(k)) { url.searchParams.delete(k); changed = true; }
+    if (changed) {
+      try { window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`); } catch { /* sans effet */ }
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -63,46 +90,56 @@ function LoginForm() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    // Nouvelle tentative : aucun message ni code de la précédente ne subsiste.
     setError('');
     setErrorCode('');
+    setDiagCode(null);
     setResendState('idle');
     setIsLoading(true);
+
+    // Lot 103A : identifiant de corrélation de CETTE tentative (journal serveur
+    // `[auth.diag]`, BO › historique des connexions). Aucun secret.
+    const attemptId = newLoginAttemptId();
+    const startedAt = Date.now();
+    rememberLoginAttempt({ id: attemptId, at: startedAt, ok: false });
 
     try {
       // Une reprise automatique sur coupure réseau (mobile), journalisée sans
       // identifiants — voir `login-request.ts` (rejouer la connexion est sûr).
-      const response = await postLogin({ email, password });
+      const response = await postLogin({ email, password }, { attemptId });
 
       let data: Record<string, string> = {};
       try { data = await response.json(); } catch { /* body vide ou non-JSON */ }
 
       if (!response.ok) {
-        if (response.status === 503 || data.code === 'SERVICE_UNAVAILABLE') {
-          setError('Service temporairement indisponible. Veuillez réessayer dans quelques instants.');
-        } else if (response.status >= 500) {
-          setError('Une erreur est survenue sur le serveur. Veuillez réessayer.');
-        } else {
-          setError(data.message || data.error || 'Identifiants incorrects. Veuillez réessayer.');
-        }
-        setErrorCode(data.code || '');
+        // Refus de la CONNEXION (identifiants, compte, anti-abus, version de
+        // l'app, origine) : message propre au code, jamais « session expirée ».
+        const failure = loginFailureMessage(response.status, data);
+        setError(failure.message);
+        setErrorCode(failure.code);
         setIsLoading(false);
         return;
       }
 
-      if (data.accessToken) {
-      }
-      if (data.refreshToken) {
-      }
+      rememberLoginAttempt({ id: attemptId, at: startedAt, ok: true });
 
-      // Pré-remplir le cache user avec le bon format (subscription.plan requis par useSession)
+      // Lot 103A — premier appel authentifié AVANT de quitter l'écran : la
+      // session tout juste émise est-elle conservée et transmise par cette vue
+      // (WKWebView / WebView Android : cookies HttpOnly) ? Un refus ici n'est
+      // pas une expiration : l'utilisateur reste sur l'écran, avec un message
+      // dédié et le code de diagnostic. Une lenteur ou une panne ne bloque pas.
       try {
-        const meRes = await fetch('/api/users/me', {
-      credentials: 'include',
-        });
-        if (meRes.ok) {
-          await meRes.json();
+        await apiClient.get('/api/users/me', { onAuthFailure: 'silent', dedupe: false, cache: 'no-store' });
+      } catch (checkError) {
+        const status = (checkError as { status?: unknown })?.status;
+        if (status === 401) {
+          setError(AUTH_EXIT_MESSAGES.post_login_rejected);
+          setErrorCode('POST_LOGIN_SESSION_MISSING');
+          setDiagCode(attemptId);
+          setIsLoading(false);
+          return;
         }
-      } catch { /* silently ignore — useSession refera l'appel */ }
+      }
 
       // Compte clôturé (suppression programmée) : seul l'écran d'annulation
       // et d'export est accessible.
@@ -141,13 +178,9 @@ function LoginForm() {
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-md bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           <CardHeader className="space-y-4">
-            <a
-              href={publicSiteUrl("/")}
-              className="inline-flex items-center gap-2 text-sm text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors w-fit"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Retour à l'accueil
-            </a>
+            {/* Lot 103A : lien Web seulement — jamais rendu dans l'app iOS / Android
+                (écran racine) ; le logo devient alors le premier élément. */}
+            <AuthBackHomeLink />
             <div className="flex justify-center">
               <LogoWithBaseline size={50} />
             </div>
@@ -187,9 +220,16 @@ function LoginForm() {
               </div>
 
               {error && (
-                <div className="flex items-start gap-2 text-sm bg-[color:var(--danger-soft)] border border-[color:var(--danger-edge)] text-[color:var(--danger)] p-3 rounded-md">
+                <div role="alert" data-error-code={errorCode || undefined} className="flex items-start gap-2 text-sm bg-[color:var(--danger-soft)] border border-[color:var(--danger-edge)] text-[color:var(--danger)] p-3 rounded-md">
                   <span className="shrink-0 mt-0.5">⚠</span>
-                  <p>{error}</p>
+                  <div>
+                    <p>{error}</p>
+                    {diagCode && (
+                      <p className="mt-1 text-xs">
+                        Code de diagnostic : <span className="font-mono select-all" data-testid="login-diag-code">{diagCode}</span>
+                      </p>
+                    )}
+                  </div>
                 </div>
               )}
 

@@ -18,6 +18,7 @@ import { apiClient, ApiClientError } from '@/lib/api-client';
 import { isNativeApp } from '@/lib/native/bridge';
 import { IMPROVEMENT_OPT_OUT_TEXT as T } from '@/services/privacy/improvement-opt-out-rules';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
+import { LegalLink } from '@/components/legal/LegalLink';
 
 interface DataUseState {
   preference: { optOut: boolean; optedOutAt: string | null; withdrawnAt: string | null };
@@ -95,9 +96,9 @@ export function PrivacyCard() {
             <p id="improvement-opt-out-effect" className="text-xs text-muted-foreground">{T.effect}</p>
           </>
         )}
-        <a href={legalLinks.confidentialite} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline">
+        <LegalLink href={legalLinks.confidentialite} target="_blank" className="text-xs text-primary hover:underline">
           {T.privacyLinkLabel}
-        </a>
+        </LegalLink>
       </div>
     </CollapsibleCard>
   );

@@ -7,6 +7,14 @@ import { FRESH_HEADER, isDataMutation, lastAccountMutationAt, markAccountDataMut
 import { notifyAppUpdateRequired } from '@/lib/mobile/native-shell';
 import { nativeSignOutPush } from '@/lib/native/push';
 import {
+  LOGOUT_REASON_HEADER,
+  classifyAuthExit,
+  currentLoginAttempt,
+  loginAttemptHeaders,
+  type AuthExitReason,
+  type LogoutReason,
+} from '@/lib/auth/login-diagnostics';
+import {
   beginSessionTransition,
   getSessionEpoch,
   onSessionTransition,
@@ -435,6 +443,12 @@ export function dedupeKey(url: string, options: ApiClientOptions, epoch: number 
 
 /** Promesse de renouvellement en cours (CDC §7.3). */
 let pendingRefresh: Promise<boolean | 'server_error'> | null = null;
+/**
+ * Lot 103A : code du dernier refus de `/api/auth/refresh` (AUTH_REQUIRED :
+ * aucun jeton présenté ; SESSION_REVOKED ; INVALID_TOKEN…) — motif du retour
+ * à la connexion, jamais une donnée secrète.
+ */
+let lastRefreshRefusal: string | null = null;
 
 /**
  * Délai maximal du renouvellement de session.
@@ -603,6 +617,9 @@ export const apiClient = {
         // Lots 92 + 97 : en-têtes déclaratifs du client — coque native
         // (version, build, installation) ou type Web / PWA (« Appareils connectés »).
         ...clientPlatformHeaders(),
+        // Lot 103A : identifiant de la dernière tentative de connexion (10 min),
+        // pour relier un refus au journal serveur. Aucune donnée secrète.
+        ...loginAttemptHeaders(),
         ...fetchOptions.headers,
       },
     };
@@ -661,7 +678,12 @@ export const apiClient = {
               report('http_error');
               throw new ApiClientError(503, 'SERVICE_UNAVAILABLE', {}, undefined, 'Service temporairement indisponible');
             }
-            if (onAuthFailure !== 'silent') void this.handleAuthFailure();
+            // Lot 103A : requête partie sous une ÉPOQUE de session antérieure
+            // (avant une connexion, un changement de compte) — son refus ne
+            // dit rien de la session actuelle. Lancer la procédure de sortie
+            // révoquerait la session tout juste ouverte (rejet post-connexion).
+            const stale = getSessionEpoch() !== epochAtStart;
+            if (onAuthFailure !== 'silent' && !stale) void this.handleAuthFailure();
             report('http_error');
             throw new ApiClientError(response.status, 'UNAUTHORIZED', {}, errorBody.requestId);
           } else if (response.status === 403) {
@@ -817,6 +839,7 @@ export const apiClient = {
             'Content-Type': 'application/json',
             // Lot 92 : une session ouverte avant le registre y est inscrite ici.
             ...clientPlatformHeaders(),
+            ...loginAttemptHeaders(),
           },
           signal: attempt.signal,
         });
@@ -830,9 +853,12 @@ export const apiClient = {
           // Corps lu sous le même délai ; son contenu n'est pas utilisé
           // (les jetons voyagent par cookies).
           await untilAborted(response.json().catch(() => null), attempt.signal);
+          lastRefreshRefusal = null;
           return true;
         }
 
+        const refusal = await untilAborted(response.json().catch(() => null), attempt.signal).catch(() => null) as { code?: unknown } | null;
+        lastRefreshRefusal = typeof refusal?.code === 'string' ? refusal.code : `HTTP_${response.status}`;
         return false;
       } catch {
         // Network error or timeout — treat as transient server error, don't log out
@@ -850,14 +876,15 @@ export const apiClient = {
    * nettoyage JavaScript n'efface pas un cookie HttpOnly et ne révoque rien.
    * @internal
    */
-  async requestServerLogout(): Promise<ServerSignOutOutcome> {
+  async requestServerLogout(reason: LogoutReason = 'user'): Promise<ServerSignOutOutcome> {
     const attempt = attemptSignal(null, LOGOUT_TIMEOUT_MS);
     try {
       const res = await fetch('/api/auth/logout', {
         method: 'POST',
         credentials: 'include',
         cache: 'no-store',
-        headers: { 'Content-Type': 'application/json' },
+        // Lot 103A : origine de la déconnexion et corrélation (journal serveur, BO).
+        headers: { 'Content-Type': 'application/json', [LOGOUT_REASON_HEADER]: reason, ...loginAttemptHeaders() },
         signal: attempt.signal,
       });
       if (!res.ok) return 'failed';
@@ -952,7 +979,7 @@ export const apiClient = {
    * Aucune boucle possible : la redirection est ignoree si l'on se trouve
    * deja sur une page d'authentification.
    */
-  handleAuthFailure(opts: { code?: string } = {}): Promise<void> {
+  handleAuthFailure(opts: { code?: string; reason?: AuthExitReason } = {}): Promise<void> {
     requestCache.clear();
     pendingRefresh = null;
 
@@ -968,13 +995,20 @@ export const apiClient = {
     this.purgeLocalSession('auth-failure');
 
     const returnUrl = `${window.location.pathname}${window.location.search}`;
-    const target = opts.code === 'ACCOUNT_SUSPENDED'
+    // Lot 103A : motif codé (session expirée, absence de session, session
+    // révoquée, rejet juste après une connexion acceptée) — l'écran de
+    // connexion affiche le message de CE motif, une seule fois.
+    const reason: AuthExitReason = opts.code === 'ACCOUNT_SUSPENDED'
+      ? 'account_suspended'
+      : opts.reason ?? classifyAuthExit({ refreshCode: lastRefreshRefusal, lastAttempt: currentLoginAttempt() });
+    const diag = currentLoginAttempt()?.id;
+    const target = reason === 'account_suspended'
       ? '/login?error=ACCOUNT_SUSPENDED'
-      : `/login?expired=1&returnUrl=${encodeURIComponent(returnUrl)}`;
+      : `/login?expired=1&returnUrl=${encodeURIComponent(returnUrl)}&reason=${reason}${reason === 'post_login_rejected' && diag ? `&diag=${diag}` : ''}`;
 
     // Invalidation cote serveur : effacer le cookie sans revoquer la session
     // ne suffit pas (CDC §8). Bornée : la redirection suit dans tous les cas.
-    return this.requestServerLogout().then(() => { navigate(target); });
+    return this.requestServerLogout('auth-failure').then(() => { navigate(target); });
   },
 
   get<T = unknown>(url: string, options?: ApiClientOptions): Promise<T> {
@@ -1026,6 +1060,7 @@ export function __resetApiClientForTests(): void {
   for (const entry of inflight.values()) entry.controller.abort();
   inflight.clear();
   pendingRefresh = null;
+  lastRefreshRefusal = null;
   pendingSignOut = null;
   authFailureInProgress = false;
   observer = null;

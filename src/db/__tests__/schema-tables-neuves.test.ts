@@ -16,6 +16,7 @@ import { agendaItemRemovals, aiMasterCorpusRuns, documentFieldValues, cdc15Migra
   businessOperationAssetDataMarks, stripeCatalogRecoveries, businessOperationIdentityReviews,
   transactionalEmailJobs, emailProviderEvents, documentRawExtracts, businessOperationRoomLinks, businessOperationDocuments,
   annualRenewalReminderState, annualRenewalReminderChecks, emailTemplateVersions,
+  agendaItemSuppliers, agendaItemSupplierSuppressions, agendaItemSupplierHistory,
 } from '../schema';
 import * as schema from '../schema';
 import { LEGACY_CLAIM_COLUMNS, LEGACY_CLAIM_TABLES, LEGACY_PARENT_OBJECTS } from '@/services/business-operations/claims/legacy-schema';
@@ -133,6 +134,10 @@ const CAS: Array<[PgTable, string, string]> = [
   [annualRenewalReminderChecks, '0477_annual_renewal_reminder.sql', 'annual_renewal_reminder_checks'],
   // Lot 70A : historique des versions des modèles d'e-mails (éditeur du BO).
   [emailTemplateVersions, '0483_email_template_editor.sql', 'email_template_versions'],
+  // Lot 103E : fournisseurs / intervenants des éléments d'Agenda.
+  [agendaItemSuppliers, '0950_l103e_agenda_fournisseurs.sql', 'agenda_item_suppliers'],
+  [agendaItemSupplierSuppressions, '0950_l103e_agenda_fournisseurs.sql', 'agenda_item_supplier_suppressions'],
+  [agendaItemSupplierHistory, '0950_l103e_agenda_fournisseurs.sql', 'agenda_item_supplier_history'],
 ];
 
 describe('tables neuves : Drizzle = SQL', () => {

@@ -216,6 +216,10 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   agenda_file_links: { domain: 'agenda-timeline', description: 'Liens agenda ↔ document.' },
   agenda_room_links: { domain: 'agenda-timeline', description: 'Liens agenda ↔ Pièce.' },
   agenda_item_sources: { domain: 'agenda-timeline', description: 'Sources des éléments d’agenda.' },
+  // Lot 103E : fournisseurs / intervenants des éléments d'Agenda.
+  agenda_item_suppliers: { domain: 'agenda-timeline', description: 'Fournisseurs / intervenants des éléments d’agenda (provenance utilisateur, document ou mention ; lot 103E).' },
+  agenda_item_supplier_suppressions: { domain: 'agenda-timeline', description: 'Retraits manuels d’un fournisseur d’un élément d’agenda — jamais recréés automatiquement (lot 103E).' },
+  agenda_item_supplier_history: { domain: 'agenda-timeline', description: 'Historique des liens agenda ↔ fournisseur (provenance, auteur, corrélation ; lot 103E).' },
   agenda_occurrence_events: { domain: 'agenda-timeline', description: 'Occurrences (récurrences).' },
   agenda_item_removals: { domain: 'agenda-timeline', description: 'Retraits d’éléments d’agenda (traçables, restaurables).' },
   agenda_intervention_consolidations: { domain: 'agenda-timeline', description: 'Consolidations d’interventions (lot 76H).' },

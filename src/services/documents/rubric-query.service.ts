@@ -85,6 +85,7 @@ import {
 } from '@/services/equipments/equipment-filter-scope';
 import { isEquipmentFilterActive, type EquipmentFacet } from '@/lib/filters/equipment-filter';
 import { selectedRoomId, type RoomFacet } from '@/lib/filters/room-filter';
+import { DATE_FILTER_TIME_ZONE, isDateFilterActive, nextDay, type DateFilterValue } from '@/lib/filters/date-filter';
 import {
   documentRoomFilterCondition,
   listRoomsOfAssets,
@@ -215,6 +216,42 @@ function filterConditions(f: FeedFilters): SQL[] {
   ].filter((c): c is SQL => c !== null);
 }
 
+/**
+ * Lot 103F — « Date du document » : `document_date` (type `DATE`, le jour
+ * documentaire de référence), bornes INCLUSES ; « Sans date » : absente.
+ * Jamais la date d'ajout, d'analyse ou de modification.
+ */
+function documentDateCondition(f: DateFilterValue | undefined): SQL | null {
+  if (!isDateFilterActive(f)) return null;
+  if (f.preset === 'none') return sql`${assetFiles.documentDate} IS NULL`;
+  const parts: SQL[] = [];
+  if (f.from) parts.push(sql`${assetFiles.documentDate} >= ${f.from}::date`);
+  if (f.to) parts.push(sql`${assetFiles.documentDate} <= ${f.to}::date`);
+  return parts.length ? sql`(${sql.join(parts, sql` AND `)})` : null;
+}
+
+/**
+ * Lot 103F — « Date d'ajout » : `uploaded_at` (horodatage serveur d'entrée,
+ * jamais recalculé). Un jour est l'intervalle [00:00, 24:00[ du fuseau de
+ * présentation : `>= Du 00:00` et `< (Au + 1 jour) 00:00`, à l'heure de
+ * Paris (changements d'heure compris), jamais un jour UTC.
+ */
+function addedDateCondition(f: DateFilterValue | undefined): SQL | null {
+  if (!isDateFilterActive(f) || f.preset === 'none') return null;
+  const tz = DATE_FILTER_TIME_ZONE;
+  const parts: SQL[] = [];
+  if (f.from) parts.push(sql`${assetFiles.uploadedAt} >= ((${f.from}::date)::timestamp AT TIME ZONE ${tz})`);
+  if (f.to) parts.push(sql`${assetFiles.uploadedAt} < ((${nextDay(f.to)}::date)::timestamp AT TIME ZONE ${tz})`);
+  return parts.length ? sql`(${sql.join(parts, sql` AND `)})` : null;
+}
+
+/** Les deux filtres temporels réunis (intersection) ; `null` : aucun. */
+function dateFilterCondition(f: Pick<FeedFilters, 'documentDate' | 'addedDate'>): SQL | null {
+  const parts = [documentDateCondition(f.documentDate), addedDateCondition(f.addedDate)].filter((c): c is SQL => c !== null);
+  if (parts.length === 0) return null;
+  return parts.length === 1 ? parts[0] : sql`(${sql.join(parts, sql` AND `)})`;
+}
+
 /** Biens d'une ligne agrégée : principal puis liés ; `[FEED_NO_ASSET]` si aucun. */
 function biensOf(row: Pick<ScopeCountRow, 'assetId' | 'otherAssets'>): string[] {
   const ids = [row.assetId, ...(row.otherAssets ?? []).map((o) => o.id)].filter((x): x is number => !!x);
@@ -223,7 +260,7 @@ function biensOf(row: Pick<ScopeCountRow, 'assetId' | 'otherAssets'>): string[] 
 
 /** Même règle que `filterConditions`, sur une ligne agrégée (compteurs). */
 export function matchesFilters(
-  row: Pick<ScopeCountRow, 'assetId' | 'otherAssets' | 'rubricCode' | 'documentTypeCode' | 'equipmentMatch' | 'roomMatch'>,
+  row: Pick<ScopeCountRow, 'assetId' | 'otherAssets' | 'rubricCode' | 'documentTypeCode' | 'equipmentMatch' | 'roomMatch' | 'dateMatch'>,
   f: FeedFilters,
 ): boolean {
   const biens = biensOf(row);
@@ -235,7 +272,9 @@ export function matchesFilters(
     // Lot 71 : `equipmentMatch` n'est renseigné que si le filtre Équipement agit.
     && row.equipmentMatch !== false
     // Lot 75B : idem pour le filtre Pièce.
-    && row.roomMatch !== false;
+    && row.roomMatch !== false
+    // Lot 103F : idem pour les filtres temporels.
+    && row.dateMatch !== false;
 }
 
 // ── Compteurs ────────────────────────────────────────────────────────────
@@ -261,6 +300,11 @@ interface ScopeCountRow {
    * un équipement de la pièce) ? Absent quand le filtre n'agit pas.
    */
   roomMatch?: boolean;
+  /**
+   * Lot 103F : ces documents satisfont-ils les filtres temporels (date du
+   * document, date d'ajout) ? Absent quand aucun n'agit.
+   */
+  dateMatch?: boolean;
   count: number;
 }
 
@@ -388,6 +432,9 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
   const where = [...scope, ...filterConditions(query.filters)];
   if (equipmentCondition) where.push(equipmentCondition);
   if (roomCondition) where.push(roomCondition);
+  // Lot 103F : périodes appliquées AVANT tri et découpage en lots.
+  const dateCondition = dateFilterCondition(query.filters);
+  if (dateCondition) where.push(dateCondition);
   if (values) where.push(keysetSql(keysetCondition(components, values), keys, values));
 
   const keyColumns = Object.fromEntries(
@@ -420,7 +467,7 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
       .where(and(...where))
       .orderBy(...components.map((c) => sql`${KEY_SQL[c.key].expr} ${sql.raw(c.dir === 'asc' ? 'ASC' : 'DESC')} NULLS LAST`))
       .limit(query.limit + 1),
-    withMeta ? loadMeta(query, scope, equipmentCondition, assetEquipments, roomCondition, assetRooms) : Promise.resolve(undefined),
+    withMeta ? loadMeta(query, scope, equipmentCondition, assetEquipments, roomCondition, assetRooms, dateCondition) : Promise.resolve(undefined),
   ]);
 
   const hasMore = rows.length > query.limit;
@@ -488,6 +535,7 @@ async function loadMeta(
   assetEquipments: readonly AssetEquipment[] = [],
   roomCondition: SQL | null = null,
   assetRooms: readonly AssetRoom[] = [],
+  dateCondition: SQL | null = null,
 ): Promise<FeedMeta> {
   const [rows, context, equipmentFacet, roomFacet] = await Promise.all([
     db
@@ -502,11 +550,13 @@ async function loadMeta(
         equipmentMatch: equipmentCondition ? sql<boolean>`(${equipmentCondition})` : sql<null>`NULL::boolean`,
         // Lot 75B : 8e colonne, dans la clé d'agrégation (total filtré exact, dédupliqué).
         roomMatch: roomCondition ? sql<boolean>`(${roomCondition})` : sql<null>`NULL::boolean`,
+        // Lot 103F : 9e colonne, dans la clé d'agrégation (total filtré exact).
+        dateMatch: dateCondition ? sql<boolean>`(${dateCondition})` : sql<null>`NULL::boolean`,
       })
       .from(assetFiles)
       .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
       .where(and(...scope))
-      .groupBy(assetFiles.assetId, assets.name, sql`3`, assetFiles.rubricCode, assetFiles.documentTypeCode, sql`7`, sql`8`),
+      .groupBy(assetFiles.assetId, assets.name, sql`3`, assetFiles.rubricCode, assetFiles.documentTypeCode, sql`7`, sql`8`, sql`9`),
     loadVisibilityContext(query.accountId, query.assetIds),
     loadEquipmentFacet(query, scope, assetEquipments, roomCondition),
     loadRoomFacet(query, scope, assetRooms, equipmentCondition),
@@ -519,6 +569,7 @@ async function loadMeta(
       count: Number(r.count), ...(autres.length ? { otherAssets: autres } : {}),
       ...(equipmentCondition ? { equipmentMatch: r.equipmentMatch === true } : {}),
       ...(roomCondition ? { roomMatch: r.roomMatch === true } : {}),
+      ...(dateCondition ? { dateMatch: r.dateMatch === true } : {}),
     };
   }), query.filters, context);
   return { ...meta, ...(equipmentFacet ? { equipmentFacet } : {}), ...(roomFacet ? { roomFacet } : {}) };

@@ -28,6 +28,15 @@
  *      reste intacte, cause et résultats conservés (R04, R47). Aucune mise à
  *      jour automatique des DONNÉES : un rejeu sans attendu vérifiable n'est
  *      jamais une validation (décision 13 : non vérifiable = non concluant).
+ *   0 bis (lot 103G). PRÉCONTRÔLE du compte technique de qualification
+ *      (`technical-account.ts` : présent, unique, identité dédiée, statut,
+ *      liaison de configuration) AVANT le point de restauration, toute
+ *      candidate et tout appel : absent / incohérent / non conforme →
+ *      campagne REFUSÉE avec un motif structuré (CORPUS_ACCOUNT_MISSING /
+ *      MISMATCH / INVALID), aucune candidate créée, aucune fausse mesure,
+ *      anomalie de Supervision regroupée. Réussi : les appels s'exécutent dans
+ *      le contexte serveur du compte VÉRIFIÉ (seule source d'exemption C-Q10 /
+ *      plafond de coût du compte technique).
  *   6. Verrous libérés, résumé enregistré. Interruption (processus arrêté) :
  *      la campagne passe INTERROMPUE au prochain passage, preuves non
  *      concluantes, journaux conservés (R13) ; rien à restaurer côté métier
@@ -53,14 +62,20 @@ import { optimizationPriority, QUALIFICATION_THRESHOLDS, type QualificationThres
 import { chooseCandidate, decideCoupleVerdict, establishedGain, percentile, type CandidateAssessment, type Reason, type Verdict } from './verdict';
 import { assessNonRegression, type NonRegressionAssessment, type OperationRun } from './non-regression';
 import { withRuntimeLimits } from './limits';
+import type { CorpusAccountCode, CorpusAccountStatus } from './technical-account';
 
 export interface CampaignDeps {
   now?: () => Date;
   call?: GatewayCall;
   /** Point de restauration 82E (défaut : sauvegarde de la base, `runDatabaseBackup`). */
   takeRestorePoint?: (label: string, trigger: 'admin' | 'scheduler') => Promise<{ backupId: string; finishedAt: string }>;
-  /** Compte technique de mesure des cas du corpus (défaut : `CORPUS_ACCOUNT_ID`). */
+  /**
+   * Compte technique ATTENDU (remplace la valeur de `CORPUS_ACCOUNT_ID` pour le précontrôle). Lot 103G : jamais une
+   * exemption en soi — le compte doit porter le marqueur d'identité technique en base.
+   */
   technicalAccountId?: number | null;
+  /** Lot 103G : précontrôle du compte technique (défaut : `checkCorpusAccount`, base réelle, Supervision). */
+  corpusAccount?: (impact: import('./technical-account').CorpusAccountImpact) => Promise<CorpusAccountStatus>;
   readMasterFile?: MasterFileReader;
   corpusCases?: MasterCorpusCase[];
   includeT1Reference?: boolean;
@@ -86,11 +101,33 @@ export function campaignAllowed(env: AiEnvironment): { allowed: boolean; reason:
     : { allowed: true, reason: null };
 }
 
-function technicalAccount(deps: CampaignDeps): number | null {
-  if (deps.technicalAccountId !== undefined) return deps.technicalAccountId;
-  const n = Number(process.env.CORPUS_ACCOUNT_ID);
-  return Number.isInteger(n) && n > 0 ? n : null;
+/**
+ * Lot 103G — précontrôle du compte technique (avant tout appel, toute candidate, tout point de restauration).
+ * Auto-provisionnement de préproduction (idempotent, jamais en production) ; anomalie de Supervision regroupée.
+ */
+export async function precheckCorpusAccount(deps: CampaignDeps, impact: import('./technical-account').CorpusAccountImpact): Promise<CorpusAccountStatus> {
+  if (deps.corpusAccount) return deps.corpusAccount(impact);
+  const { checkCorpusAccount } = await import('./technical-account');
+  const env = deps.technicalAccountId !== undefined ? { ...process.env, CORPUS_ACCOUNT_ID: deps.technicalAccountId == null ? '' : String(deps.technicalAccountId) } : undefined;
+  return checkCorpusAccount({ report: true, autoProvision: true, impact, environment: deps.environment ?? getAiEnvironment(), env });
 }
+
+/** Motif structuré d'un refus de campagne pour prérequis (lu par la mise en conformité et le BO). */
+export interface CampaignPrerequisite {
+  code: CorpusAccountCode;
+  label: string;
+  reasons: string[];
+  nextAction: string | null;
+  security: boolean;
+  stateFingerprint: string;
+  /** Refus amont (précontrôle) ou cas bloqués en cours de campagne (compte devenu non éligible). */
+  stage: 'PRECHECK' | 'EXECUTION';
+  /** Cas du corpus non exécutés pour cette cause (exécution seulement). */
+  cases?: string[];
+}
+
+/** Préfixe stable de l'état d'une candidate automatique bloquée par un prérequis (reprise automatique). */
+export const PREREQUISITE_CANDIDATE_PREFIX = 'PREREQUISITE:';
 
 async function defaultRestorePoint(label: string, trigger: 'admin' | 'scheduler'): Promise<{ backupId: string; finishedAt: string }> {
   const { isS3Configured } = await import('@/lib/s3-config');
@@ -139,7 +176,7 @@ export async function requestManualCoupleTest(p: { adminUserId: number; reason?:
 }
 
 /** Campagne AUTOMATIQUE de préproduction (tâche planifiée). Production : refus motivé, rien de créé. */
-export async function requestAutomaticCampaign(p: { trigger: string }, deps: CampaignDeps = {}): Promise<{ campaignId: number | null; note: string }> {
+export async function requestAutomaticCampaign(p: { trigger: string }, deps: CampaignDeps = {}): Promise<{ campaignId: number | null; note: string; prerequisite?: CampaignPrerequisite | null }> {
   const env = deps.environment ?? getAiEnvironment();
   const ok = campaignAllowed(env);
   if (!ok.allowed) return { campaignId: null, note: ok.reason! };
@@ -151,7 +188,10 @@ export async function requestAutomaticCampaign(p: { trigger: string }, deps: Cam
     configVersionId: null, thresholdsVersion: th.version, request: { auto: true },
   });
   const r = await runCampaign(id, deps);
-  return { campaignId: id, note: `${r.status}${r.refusal ? ` : ${r.refusal}` : ''} — ${r.couplesTested} couple(s) testé(s)${r.activatedVersionId ? `, candidate v${r.activatedVersionId} activée` : ''}` };
+  if (r.prerequisite?.stage === 'PRECHECK') {
+    return { campaignId: id, prerequisite: r.prerequisite, note: `BLOQUÉE PAR UN PRÉREQUIS (${r.prerequisite.code}) : ${r.prerequisite.label} — aucune campagne exécutée, aucune candidate créée. Prochain geste : ${r.prerequisite.nextAction ?? '—'}` };
+  }
+  return { campaignId: id, prerequisite: r.prerequisite ?? null, note: `${r.status}${r.refusal ? ` : ${r.refusal}` : ''} — ${r.couplesTested} couple(s) testé(s)${r.activatedVersionId ? `, candidate v${r.activatedVersionId} activée` : ''}${r.prerequisite ? ` ; ${r.prerequisite.cases?.length ?? 0} cas bloqué(s) par un prérequis (${r.prerequisite.code})` : ''}` };
 }
 
 /**
@@ -176,10 +216,10 @@ export async function requestConformityCampaign(p: {
    * guide pas encore faite) : retirés AVANT exécution — ni réussis, ni bloquants —, signalés « hors périmètre ».
    */
   excludedCases?: Array<{ contractId: string; reason: string; matches(c: { variables: Record<string, unknown>; operationCode: string }): boolean }>;
-}, deps: CampaignDeps = {}): Promise<{ campaignId: number | null; status: repo.CampaignStatus | 'NOT_ALLOWED'; refusal: string | null; assessment: NonRegressionAssessment | null }> {
+}, deps: CampaignDeps = {}): Promise<{ campaignId: number | null; status: repo.CampaignStatus | 'NOT_ALLOWED'; refusal: string | null; assessment: NonRegressionAssessment | null; prerequisite: CampaignPrerequisite | null }> {
   const env = deps.environment ?? getAiEnvironment();
   const ok = campaignAllowed(env);
-  if (!ok.allowed) return { campaignId: null, status: 'NOT_ALLOWED', refusal: ok.reason, assessment: null };
+  if (!ok.allowed) return { campaignId: null, status: 'NOT_ALLOWED', refusal: ok.reason, assessment: null, prerequisite: null };
   const th = deps.thresholds ?? withRuntimeLimits(QUALIFICATION_THRESHOLDS);
   await repo.interruptStaleCampaigns(th.campaign.staleAfterMs, (deps.now ?? (() => new Date()))());
   const id = await repo.createCampaign({
@@ -191,7 +231,7 @@ export async function requestConformityCampaign(p: {
   conformityExcludedCases.set(id, p.excludedCases ?? []);
   try {
     const r = await runCampaign(id, deps);
-    return { campaignId: id, status: r.status, refusal: r.refusal, assessment: r.conformity ?? null };
+    return { campaignId: id, status: r.status, refusal: r.refusal, assessment: r.conformity ?? null, prerequisite: r.prerequisite ?? null };
   } finally {
     conformityCoverage.delete(id);
     conformityExcludedCases.delete(id);
@@ -225,6 +265,8 @@ interface CampaignResult {
   activatedVersionId: number | null;
   /** Lot 99B : évaluation de non-régression (campagne CONFORMITY). */
   conformity?: NonRegressionAssessment;
+  /** Lot 103G : blocage par un prérequis d'exploitation (compte technique), distinct d'un refus métier. */
+  prerequisite?: CampaignPrerequisite | null;
 }
 
 const keyOf = (c: CoupleDescriptor) => `${repo.coupleKey(c.operationCode, c.model, c.rank)}|${c.signature}`;
@@ -248,6 +290,22 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
   const ok = campaignAllowed(deps.environment ?? getAiEnvironment());
   if (!ok.allowed) return refuse(ok.reason!);
   await repo.updateCampaign(campaignId, { status: 'RUNNING', startedAt: now() });
+
+  // 0 bis (lot 103G). Précontrôle du compte technique : AVANT point de restauration, candidates et appels.
+  const corpus = await precheckCorpusAccount(deps, {
+    source: `campagne ${campaign.kind}`, campaignId,
+    operations: campaign.kind === 'MANUAL' ? [String((campaign.request.couple as ManualCoupleRequest | undefined)?.operationCode ?? '')] : undefined,
+    contracts: campaign.kind === 'CONFORMITY' ? [String((campaign.request.conformity as { contractId?: string } | undefined)?.contractId ?? '')] : undefined,
+  });
+  if (!corpus.ok) {
+    result.prerequisite = {
+      code: corpus.code, label: corpus.label, reasons: corpus.reasons, nextAction: corpus.nextAction, security: corpus.security,
+      stateFingerprint: corpus.stateFingerprint, stage: 'PRECHECK',
+    };
+    await repo.updateCampaign(campaignId, { summary: { prerequisite: result.prerequisite, note: 'campagne non exécutée : prérequis d’exploitation absent (aucun appel, aucune candidate, aucune mesure)' } });
+    return refuse(`${corpus.code} : ${corpus.label} — ${corpus.reasons.join(' ; ').slice(0, 600)}. Aucun appel effectué, aucune candidate créée.`);
+  }
+  const tech = corpus.accountId;
 
   try {
     // 1. Point de restauration AVANT tout appel.
@@ -310,7 +368,11 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
       if (!active) return await refuse('Aucune configuration active : rien à qualifier ni à optimiser.');
       const actifs = await couplesWithState(active, caseOpts);
       for (const c of actifs) if (c.rank === 0) refOf.set(c.operationCode, c);
-      const retry = (c: CoupleWithState) => c.state.state === 'INCONCLUSIVE' && c.state.verdictAt != null && now().getTime() - Date.parse(c.state.verdictAt) >= th.campaign.inconclusiveRetryAfterMs;
+      // Lot 103G : un couple non concluant UNIQUEMENT faute de compte technique est requalifié dès que le compte est
+      // utilisable (précontrôle ci-dessus réussi) — sans attendre le délai des non concluants ordinaires.
+      const bloquesPrerequis = await repo.prerequisiteBlockedEvidence(actifs.filter((c) => c.state.state === 'INCONCLUSIVE' && c.state.evidenceId != null).map((c) => c.state.evidenceId!));
+      const retry = (c: CoupleWithState) => c.state.state === 'INCONCLUSIVE' && c.state.verdictAt != null
+        && (now().getTime() - Date.parse(c.state.verdictAt) >= th.campaign.inconclusiveRetryAfterMs || bloquesPrerequis.has(c.state.evidenceId!));
       // Requalification ciblée : jamais testés / obsolètes (événement), non concluants anciens ; rang 0 d'abord.
       const aRequalifier = actifs.filter((c) => !c.technicalRefusal && (c.state.state === 'NEVER_TESTED' || c.state.state === 'OBSOLETE' || retry(c)))
         .sort((a, b) => a.rank - b.rank).slice(0, th.campaign.maxCouplesPerCampaign);
@@ -330,7 +392,9 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
           if (pris >= th.campaign.maxCandidatesPerTreatment) break;
           const key = sha256(`${e.treatment}|${model}|${active.currentRevisionId}|${capabilitiesSha256(capabilitiesOf(model))}|${th.version}`);
           const deja = await cfg.findCandidateByKey(env, key);
-          if (deja && !(deja.state === 'INCONCLUSIVE' && now().getTime() - deja.createdAt.getTime() >= th.campaign.inconclusiveRetryAfterMs)) continue;
+          // Lot 103G : une candidate non concluante faute de compte technique est reproposée dès que le compte est utilisable.
+          const prerequis = deja?.state === 'INCONCLUSIVE' && (deja.reason ?? '').startsWith(PREREQUISITE_CANDIDATE_PREFIX);
+          if (deja && !(deja.state === 'INCONCLUSIVE' && (prerequis || now().getTime() - deja.createdAt.getTime() >= th.campaign.inconclusiveRetryAfterMs))) continue;
           const v = await svc.createAutomaticCandidate({
             treatment: e.treatment, primaryModel: model, key, campaignId,
             reason: `Optimisation de préproduction : ${model} proposé en principal de ${e.treatment} à la place de ${e.primaryModel} (modèle utilisable, non testé sur ce couple).`,
@@ -356,7 +420,6 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
     });
 
     // 3. Comptes existants éligibles, verrouillés ; entrées capturées.
-    const tech = technicalAccount(deps);
     const ops = [...new Set(plan.map((x) => x.couple.operationCode))];
     const comptes = await (deps.accounts ?? (() => repo.eligibleAccountIds(tech)))();
     const captures = new Map<string, CaptureRow[]>();
@@ -394,16 +457,32 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
       }
       const version = c.versionId === active?.id ? active : await cfg.getVersion(c.versionId);
       const prompts = await promptContextOf(version as ConfigVersionWithEntries, readMasterFile);
-      const run = c.technicalRefusal ? null : await runCoupleCases({
-        couple: c, cases: set.cases, observations: campaign.kind === 'AUTO' ? th.campaign.observationsAuto : th.campaign.observationsManual,
+      const { runWithTechnicalAccount } = await import('./technical-context');
+      const casSet = set;
+      // Lot 103G : appels dans le contexte serveur du compte technique VÉRIFIÉ (seule source d'exemption).
+      const run = c.technicalRefusal ? null : await runWithTechnicalAccount(corpus, `campagne ${campaignId}`, () => runCoupleCases({
+        couple: c, cases: casSet.cases, observations: campaign.kind === 'AUTO' ? th.campaign.observationsAuto : th.campaign.observationsManual,
         campaignId, technicalAccountId: tech, masterText: masterTextReader(version as ConfigVersionWithEntries, prompts), call: deps.call, thresholds: th,
-      });
+      }));
       await repo.heartbeat(campaignId);
       const obs = run?.observations ?? [];
       const decisives = obs.filter((o) => !o.advisory);
       const isSelf = item.role === 'REFERENCE';
       const ref = item.referenceKey && !isSelf ? runs.get(item.referenceKey) : null;
-      const preconditions = !tech && set.cases.every((x) => x.accountId === null) ? ['Compte technique de mesure absent (CORPUS_ACCOUNT_ID) : les cas du corpus ne peuvent pas être exécutés.'] : [];
+      // Lot 103G : cas bloqués par le compte technique (devenu non éligible en cours de campagne) — prérequis, pas un défaut.
+      const bloques = obs.filter((o) => o.blockedBy === 'TECHNICAL_ACCOUNT').map((o) => o.caseId);
+      if (bloques.length) {
+        const cases = [...new Set([...(result.prerequisite?.cases ?? []), ...bloques])];
+        result.prerequisite = {
+          code: 'CORPUS_ACCOUNT_INVALID', label: 'compte technique de qualification refusé par la passerelle en cours de campagne',
+          reasons: [...new Set(obs.filter((o) => o.blockedBy === 'TECHNICAL_ACCOUNT').map((o) => o.inconclusiveReason ?? ''))].slice(0, 5),
+          nextAction: 'BO › Configuration IA › Compte technique de qualification : contrôler puis « Provisionner / réparer ».', security: false,
+          stateFingerprint: corpus.stateFingerprint, stage: 'EXECUTION', cases: cases.slice(0, 50),
+        };
+      }
+      const preconditions = bloques.length
+        ? [`Prérequis d’exploitation : ${new Set(bloques).size} cas du corpus non exécuté(s), compte technique de qualification non éligible — ni une régression ni une absence de preuve métier.`]
+        : [];
       const v = decideCoupleVerdict({
         observations: decisives, preconditions, technicalRefusal: c.technicalRefusal ?? run?.requestRejected ?? null,
         reference: { p95Ms: isSelf ? null : ref?.p95 ?? null, isSelf }, concurrency: run?.concurrency ?? null, thresholds: th,
@@ -420,6 +499,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
           advisory: { observations: obs.length - decisives.length, defects: obs.filter((o) => o.advisory).reduce((n, o) => n + o.defects.length, 0) },
           sources: Object.fromEntries(['CORPUS_FIXTURE', 'T1_REFERENCE', 'PREPROD_REPLAY'].map((s) => [s, new Set(obs.filter((o) => o.source === s).map((o) => o.caseId)).size])),
           campaignKind: campaign.kind,
+          ...(bloques.length ? { prerequisite: { code: 'CORPUS_ACCOUNT_INVALID', cases: [...new Set(bloques)].slice(0, 50) } } : {}),
         },
         referenceEvidenceId: ref?.evidenceId ?? null,
       }, obs);
@@ -488,7 +568,8 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
       for (const a of assessments) {
         const cand = candidates.find((c) => String(c.versionId) === a.key)!;
         const etat = a.verdicts.includes('REFUSED') ? 'REFUSED' : a.verdicts.every((v) => v === 'ADMISSIBLE') ? (choix.chosen === a.key ? 'QUALIFIED' : 'NOT_CHOSEN') : 'INCONCLUSIVE';
-        await cfg.setCandidateState(cand.versionId, etat, choix.reasons[a.key] ?? null);
+        const bloquee = etat === 'INCONCLUSIVE' && plan.some((x) => x.candidateVersionId === cand.versionId && (runs.get(keyOf(x.couple))?.all ?? []).some((o) => o.blockedBy === 'TECHNICAL_ACCOUNT'));
+        await cfg.setCandidateState(cand.versionId, etat, bloquee ? `${PREREQUISITE_CANDIDATE_PREFIX}CORPUS_ACCOUNT_INVALID — compte technique de qualification non éligible pendant la campagne : non concluante faute de prérequis (reprise automatique au prochain passage).` : choix.reasons[a.key] ?? null);
         summaryCandidates.push({ versionId: cand.versionId, treatment: cand.treatment, model: cand.model, state: etat, reason: choix.reasons[a.key] ?? null, gains: a.gains });
       }
       if (choix.chosen) {
@@ -531,6 +612,8 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         candidates: summaryCandidates, activatedVersionId: result.activatedVersionId,
         ...(result.conformity ? { conformity: result.conformity } : {}),
         accounts: { eligible: comptes.length, locked: aVerrouiller.length - busy.length, busy: busy.length },
+        technicalAccount: { accountId: tech, resolvedBy: corpus.resolvedBy, warnings: corpus.warnings },
+        ...(result.prerequisite ? { prerequisite: result.prerequisite } : {}),
         dataUpdates: 'aucune : rejeu sans écriture métier (un rejeu sans attendu vérifiable n’autorise aucune mise à jour automatique)',
       },
     });

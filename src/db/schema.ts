@@ -51,7 +51,11 @@ export const users = pgTable('users', {
   signupNonce: text('signup_nonce'),
   firstName: text('first_name').notNull().default(''),
   lastName: text('last_name').notNull().default(''),
-  username: text('username').unique(),
+  // Lot 103B (décision PO du 31/10/2026, migration 0935) : « Prénom ou pseudo »,
+  // nom d'AFFICHAGE non unique (plusieurs « Sophie ») — jamais un identifiant
+  // de connexion ni une identité légale. Obligatoire pour les nouveaux inscrits
+  // (`lib/auth/display-name.ts`) ; NULL possible pour un compte historique.
+  username: text('username'),
   company: text('company'),
   planType: text('plan_type').notNull().default('STANDARD'),
   featureFlags: text('feature_flags'),
@@ -1145,6 +1149,9 @@ export const accounts = pgTable('accounts', {
   // Lot 72D (0519) : neutralisation réversible d'un compte artificiel vide.
   archivedAt: tstzOptional('archived_at'),
   archivedReason: text('archived_reason'),
+  // Lot 103G (0960) : marqueur d'identité technique — 'AI_QUALIFICATION_CORPUS'
+  // pour le seul compte de mesure du corpus, NULL pour tout compte client.
+  technicalKind: text('technical_kind'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
 }, (table) => ({
@@ -2268,6 +2275,60 @@ export const supplierReviewItems = pgTable('supplier_review_items', {
   accountStatusIdx: index('idx_supplier_review_items_account_status').on(table.accountId, table.status),
   supplierIdIdx: index('supplier_review_items_supplier_id_idx').on(table.supplierId),
   publicIdIdx: index('supplier_review_items_public_id_idx').on(table.publicId),
+}));
+
+// ─── Lot 103E : fournisseurs / intervenants des éléments d'Agenda (0950) ──────
+// Lien persistant élément × fournisseur (référentiel `suppliers`), provenance
+// USER / DOCUMENT / AUTO ; retrait manuel mémorisé ; historique. Le
+// déclencheur `agenda_item_suppliers_same_account` (migration seulement)
+// refuse tout lien intercomptes.
+
+export const agendaItemSuppliers = pgTable('agenda_item_suppliers', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  agendaItemId: integer('agenda_item_id').notNull().references(() => agendaItems.id, { onDelete: 'cascade' }),
+  supplierId: integer('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  provenance: text('provenance').notNull(),
+  evidence: jsonb('evidence'),
+  sourceDocumentId: integer('source_document_id').references(() => assetFiles.id, { onDelete: 'set null' }),
+  createdByUserId: integer('created_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  correlationId: text('correlation_id'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  provenanceCheck: check('agenda_item_suppliers_provenance_check', sql`${t.provenance} IN ('USER', 'DOCUMENT', 'AUTO')`),
+  pairKey: unique('agenda_item_suppliers_pair_key').on(t.agendaItemId, t.supplierId),
+  supplierIdx: index('agenda_item_suppliers_supplier_idx').on(t.supplierId),
+  accountIdx: index('agenda_item_suppliers_account_idx').on(t.accountId, t.agendaItemId),
+}));
+
+export const agendaItemSupplierSuppressions = pgTable('agenda_item_supplier_suppressions', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  agendaItemId: integer('agenda_item_id').notNull().references(() => agendaItems.id, { onDelete: 'cascade' }),
+  supplierId: integer('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  previousProvenance: text('previous_provenance'),
+  suppressedByUserId: integer('suppressed_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  suppressedAt: tstz('suppressed_at'),
+}, (t) => ({
+  pairKey: unique('agenda_item_supplier_suppressions_pair_key').on(t.agendaItemId, t.supplierId),
+  supplierIdx: index('agenda_item_supplier_suppressions_supplier_idx').on(t.supplierId),
+}));
+
+export const agendaItemSupplierHistory = pgTable('agenda_item_supplier_history', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  agendaItemId: integer('agenda_item_id').notNull().references(() => agendaItems.id, { onDelete: 'cascade' }),
+  supplierId: integer('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  action: text('action').notNull(),
+  provenance: text('provenance'),
+  actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  correlationId: text('correlation_id'),
+  detail: jsonb('detail'),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  actionCheck: check('agenda_item_supplier_history_action_check', sql`${t.action} IN ('LINKED', 'UNLINKED', 'SUPPRESSED', 'RESTORED', 'MERGED', 'PROVENANCE_UPGRADED')`),
+  itemIdx: index('agenda_item_supplier_history_item_idx').on(t.agendaItemId, t.createdAt),
 }));
 
 // ─── CIL Réglementaire V1 ─────────────────────────────────────────────────────

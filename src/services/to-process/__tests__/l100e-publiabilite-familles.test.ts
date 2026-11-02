@@ -163,7 +163,8 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
   it('L100E-U-COH-02 — registre : ajouté EN FIN, versions (stock réexaminé), couverture du domaine « À traiter »', () => {
     // Ajouté en fin de registre au lot 100E ; seuls des contrôles plus récents (lot 101A et suivants) le suivent.
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
-    expect(ids.slice(ids.indexOf(PUBLISHABILITY_CHECK_ID) + 1)).toEqual(['COH-EQUIPMENT-IDENTITY']);
+    // Lots suivants ajoutés APRÈS (101A, 103E, 103D), sans réordonner l'existant.
+    expect(ids.slice(ids.indexOf(PUBLISHABILITY_CHECK_ID) + 1)).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS']);
     const c = getCheck(PUBLISHABILITY_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'to_process_action' });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur']));

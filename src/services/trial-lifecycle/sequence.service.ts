@@ -121,7 +121,7 @@ async function readState(c: Candidate, m: MilestoneDef, now: Date): Promise<Curr
   }[]>`
     SELECT a.id AS account_id, a.is_active, a.archived_at, a.checkout_session_id, a.checkout_session_created_at,
            s.status AS sub_status, s.trial_ends_at, s.first_billed_at, s.stripe_subscription_id,
-           u.id AS user_id, u.email, u.first_name, u.status AS user_status
+           u.id AS user_id, u.email, COALESCE(NULLIF(btrim(u.username), ''), u.first_name) AS first_name, u.status AS user_status
       FROM (SELECT ${c.accountId}::int AS id) k
       LEFT JOIN accounts a ON a.id = k.id
       LEFT JOIN account_subscriptions s ON s.account_id = k.id

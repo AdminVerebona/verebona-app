@@ -112,6 +112,15 @@ export async function POST(request: NextRequest) {
       return apiError(400, 'INVALID_INPUT', 'name is required');
     }
 
+    // Lot 103E : vérification À BLANC (tiroir Agenda, « Créer un fournisseur ») — mêmes
+    // validations, même rapprochement que les documents (`findCandidates` / `assessMatch`),
+    // AUCUNE écriture : la fiche n'est créée qu'à l'enregistrement de l'élément.
+    if (body.dryRun === true) {
+      if (String(name).trim().length > 200) return apiError(400, 'INVALID_INPUT', 'name is too long');
+      const { checkSupplierDuplicate } = await import('@/services/agenda/agenda-suppliers');
+      return NextResponse.json(await checkSupplierDuplicate(accountId, String(name)));
+    }
+
     const normalizedName = normalizeName(name.trim());
 
     const [newSupplier] = await db.insert(suppliers).values({

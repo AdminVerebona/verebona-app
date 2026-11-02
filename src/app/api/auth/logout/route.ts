@@ -4,6 +4,8 @@ import { revokeToken, hashToken } from '@/db';
 import { logUserActivity } from '@/lib/audit-logger';
 import { endSession } from '@/lib/auth/session-registry';
 import { invalidateReauthProofs } from '@/lib/auth/reauth';
+import { withAuthDiag } from '@/lib/auth/auth-diagnostics';
+import { readLoginAttemptId, readLogoutReason } from '@/lib/auth/login-diagnostics';
 
 /**
  * Logout endpoint
@@ -11,6 +13,12 @@ import { invalidateReauthProofs } from '@/lib/auth/reauth';
  * pour bloquer toute réutilisation après déconnexion (TC-020, TC-024).
  */
 export async function POST(request: NextRequest) {
+  // Lot 103A : origine déclarée de la déconnexion (utilisateur, ou procédure de
+  // sortie après un refus d'authentification) et corrélation de la tentative.
+  return withAuthDiag(request, 'logout', () => logout(request), { trigger: readLogoutReason(request.headers) });
+}
+
+async function logout(request: NextRequest): Promise<NextResponse> {
   // Révoquer le refresh token en base pour invalider la session côté serveur
   // Priorité : Authorization header > cookie > body JSON
   // CDC §7.2 / §8 : le jeton est lu uniquement depuis le cookie HttpOnly.
@@ -52,11 +60,20 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Lot 103A (BO › historique des connexions) : une sortie « auth-failure »
+  // juste après une connexion acceptée signe un rejet post-connexion.
+  const trigger = readLogoutReason(request.headers);
+  const loginAttemptId = readLoginAttemptId(request.headers);
+  const details: Record<string, string> = {
+    ...(loggedOut ? { sid: loggedOut.sid } : {}),
+    ...(trigger ? { trigger } : {}),
+    ...(loginAttemptId ? { loginAttemptId } : {}),
+  };
   void logUserActivity({
     activityType: 'AUTH_LOGOUT',
     userId: loggedOut?.userId ?? null,
     userEmail: '',
-    ...(loggedOut ? { details: { sid: loggedOut.sid } } : {}),
+    ...(Object.keys(details).length ? { details } : {}),
     request,
   });
 

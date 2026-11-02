@@ -35,7 +35,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { BLOCK_ACTION_SECONDARY } from './bubble-actions';
 import { apiClient } from '@/lib/api-client';
 import type { MascotReminderRef } from '@/services/home/mascot/types';
-import { T6_MAX_SNOOZE_DAYS, addDays, parisDayOf, snoozeDateError } from '@/services/home/mascot/t6-interpellation';
+import { T6_MAX_SNOOZE_DAYS, actionSentence, addDays, parisDayOf, snoozeDateError } from '@/services/home/mascot/t6-interpellation';
+import { REMINDER_BLOCK_LABELS, type AgendaReminderRelevance } from '@/lib/agenda/reminder-relevance';
 
 const ROUTE = '/api/home/mascot/reminders';
 
@@ -43,6 +44,8 @@ interface T6ReminderPrefView { scope: 'OCCURRENCE' | 'SERIES'; decision: 'SNOOZE
 interface T6ReminderStateView {
   agendaItemId: number; hasSeries: boolean; suggestedDate: string;
   occurrence: T6ReminderPrefView | null; series: T6ReminderPrefView | null;
+  /** Lot 103D : rappel effectif (décision T6 existante ou préférence) — sinon aucun bloc dans la fiche. */
+  relevance?: AgendaReminderRelevance;
 }
 
 /** « 12 novembre 2026 » (date civile, sans fuseau). */
@@ -67,8 +70,8 @@ export function reminderStatusLabel(s: Pick<T6ReminderStateView, 'occurrence' | 
   if (s.series?.decision === 'DISMISSED') return 'Désactivés pour toutes les échéances de cette série';
   if (s.occurrence?.decision === 'DISMISSED') return 'Désactivés pour cette échéance';
   if (s.occurrence?.decision === 'SNOOZED' && s.occurrence.remindAt) return `Reportés au ${reminderDateLabel(s.occurrence.remindAt)}`;
-  // Lot 71G : depuis le lot 68, une information utile peut aussi être rappelée (sans démarche).
-  return 'Actifs : Verebona vous sollicite quand une démarche est utile ou qu’un rappel vous sera utile';
+  // Lot 103D : la phrase générique « Actifs : Verebona vous sollicite… » est supprimée — état concret.
+  return REMINDER_BLOCK_LABELS.active;
 }
 
 type Done = 'snoozed' | 'dismissed' | 'cleared';
@@ -102,9 +105,11 @@ export async function confirmReminder(run: () => Promise<unknown>, fallback: str
 type Confirm<T> = (v: T) => Promise<string | null>;
 
 /** Fenêtre « Me le rappeler plus tard » : date proposée, modifiable. */
-function SnoozeDialog({ open, onOpenChange, suggestedDate, subject, onConfirm }: {
+function SnoozeDialog({ open, onOpenChange, suggestedDate, subject, onConfirm, heading = 'Me le rappeler plus tard' }: {
   open: boolean; onOpenChange: (o: boolean) => void; suggestedDate: string; subject: string;
   onConfirm: Confirm<string>;
+  /** Lot 103D : intitulé de la fenêtre (fiche Agenda : « Reporter ce rappel »). */
+  heading?: string;
 }) {
   const [day, setDay] = useState(suggestedDate);
   const [busy, setBusy] = useState(false);
@@ -129,7 +134,7 @@ function SnoozeDialog({ open, onOpenChange, suggestedDate, subject, onConfirm }:
     <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
       <DialogContent className="sm:max-w-md" data-testid="t6-snooze-dialog">
         <DialogHeader>
-          <DialogTitle>Me le rappeler plus tard</DialogTitle>
+          <DialogTitle>{heading}</DialogTitle>
           <DialogDescription>{subject} — je vous le rappellerai à cette date, si c’est toujours utile.</DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
@@ -152,9 +157,11 @@ function SnoozeDialog({ open, onOpenChange, suggestedDate, subject, onConfirm }:
 }
 
 /** Fenêtre « Ne plus me rappeler » : cette échéance, ou toute la série (récurrente). */
-function DismissDialog({ open, onOpenChange, hasSeries, subject, onConfirm }: {
+function DismissDialog({ open, onOpenChange, hasSeries, subject, onConfirm, heading = 'Ne plus me rappeler' }: {
   open: boolean; onOpenChange: (o: boolean) => void; hasSeries: boolean; subject: string;
   onConfirm: Confirm<'OCCURRENCE' | 'SERIES'>;
+  /** Lot 103D : intitulé de la fenêtre et du bouton (fiche Agenda : « Ne plus rappeler cette échéance »). */
+  heading?: string;
 }) {
   const [scope, setScope] = useState<'OCCURRENCE' | 'SERIES'>('OCCURRENCE');
   const [busy, setBusy] = useState(false);
@@ -175,7 +182,7 @@ function DismissDialog({ open, onOpenChange, hasSeries, subject, onConfirm }: {
     <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
       <DialogContent className="sm:max-w-md" data-testid="t6-dismiss-dialog">
         <DialogHeader>
-          <DialogTitle>Ne plus me rappeler</DialogTitle>
+          <DialogTitle>{heading}</DialogTitle>
           <DialogDescription>{subject} — l’échéance et ses documents restent dans l’agenda ; seul le rappel sur l’accueil s’arrête.</DialogDescription>
         </DialogHeader>
         {hasSeries && (
@@ -197,7 +204,7 @@ function DismissDialog({ open, onOpenChange, hasSeries, subject, onConfirm }: {
             disabled={busy}
             onClick={() => void valider()}
           >
-            Ne plus me rappeler
+            {heading}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -323,48 +330,58 @@ export function T6ReminderSettings({ agendaItemId, title }: { agendaItemId: numb
   };
 
   if (failed) return null;
-  const actif = !state?.occurrence && !state?.series;
+  // Lot 103D (CA04) : aucun bloc tant que l'état n'est pas connu, ni quand aucun rappel effectif
+  // n'existe (fait historique, décision T6 « aucune interpellation », aucune évaluation ni préférence) :
+  // la disponibilité d'un réglage n'est pas une interpellation.
+  if (!state || state.relevance?.visible === false) return null;
+  const actif = !state.occurrence && !state.series;
+  // Démarche T6 présentable (une phrase, sans emoji), sinon l'intitulé de l'échéance.
+  const objet = actionSentence(state.relevance?.action ?? null) || title;
+  const dateUtile = state.relevance?.actionDate ? reminderDateLabel(state.relevance.actionDate) : null;
   return (
     <div className="flex items-start gap-3" data-testid="t6-reminder-settings">
       <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
         {actif ? <BellRing className="h-4 w-4 text-[color:var(--text-muted)]" /> : <BellOff className="h-4 w-4 text-[color:var(--text-muted)]" />}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="vb-app-label mb-1">Rappels sur l’accueil</p>
-        <p className="text-sm text-[color:var(--text-primary)]">{reminderStatusLabel(state)}</p>
-        {state && (
-          <div className="mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5 -ml-2">
-            {state.occurrence?.decision !== 'SNOOZED' && state.series?.decision !== 'DISMISSED' && state.occurrence?.decision !== 'DISMISSED' && (
-              <button type="button" className={LINK} onClick={() => setSnooze(true)}>Me le rappeler plus tard</button>
-            )}
-            {state.occurrence?.decision === 'SNOOZED' && (
-              <button type="button" className={LINK} onClick={() => setSnooze(true)}>Changer la date</button>
-            )}
-            {state.occurrence?.decision !== 'DISMISSED' && state.series?.decision !== 'DISMISSED' && (
-              <button type="button" className={LINK} onClick={() => setDismiss(true)}>Ne plus me rappeler</button>
-            )}
-            {state.occurrence && (
-              <button type="button" className={LINK} onClick={() => void reactiver('OCCURRENCE', 'Rappels rétablis pour cette échéance.')}>
-                Réactiver les rappels
-              </button>
-            )}
-            {state.series && (
-              <button type="button" className={LINK} onClick={() => void reactiver('SERIES', 'Rappels rétablis pour cette série.')}>
-                Réactiver pour la série
-              </button>
-            )}
-          </div>
-        )}
+        <p className="vb-app-label mb-1">{REMINDER_BLOCK_LABELS.title}</p>
+        {/* Lot 103D (CA05) : nature de l'action, date utile, état du rappel — formulation concrète. */}
+        <p className="text-sm text-[color:var(--text-primary)] break-words" data-testid="t6-reminder-subject">{objet}</p>
+        <p className="text-xs text-[color:var(--text-muted)] mt-0.5" data-testid="t6-reminder-state">
+          {[dateUtile ? REMINDER_BLOCK_LABELS.dueOn(dateUtile) : null, reminderStatusLabel(state)].filter(Boolean).join(' · ')}
+        </p>
+        <div className="mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5 -ml-2">
+          {state.occurrence?.decision !== 'SNOOZED' && state.series?.decision !== 'DISMISSED' && state.occurrence?.decision !== 'DISMISSED' && (
+            <button type="button" className={LINK} onClick={() => setSnooze(true)}>{REMINDER_BLOCK_LABELS.snooze}</button>
+          )}
+          {state.occurrence?.decision === 'SNOOZED' && (
+            <button type="button" className={LINK} onClick={() => setSnooze(true)}>{REMINDER_BLOCK_LABELS.changeDate}</button>
+          )}
+          {state.occurrence?.decision !== 'DISMISSED' && state.series?.decision !== 'DISMISSED' && (
+            <button type="button" className={LINK} onClick={() => setDismiss(true)}>{REMINDER_BLOCK_LABELS.dismiss}</button>
+          )}
+          {state.occurrence && (
+            <button type="button" className={LINK} onClick={() => void reactiver('OCCURRENCE', 'Rappels rétablis pour cette échéance.')}>
+              {REMINDER_BLOCK_LABELS.reactivate}
+            </button>
+          )}
+          {state.series && (
+            <button type="button" className={LINK} onClick={() => void reactiver('SERIES', 'Rappels rétablis pour cette série.')}>
+              {REMINDER_BLOCK_LABELS.reactivateSeries}
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-[color:var(--text-muted)] mt-1">{REMINDER_BLOCK_LABELS.scope}</p>
       </div>
       {state && (
         <>
           <SnoozeDialog
-            open={snooze} onOpenChange={setSnooze} subject={title}
+            open={snooze} onOpenChange={setSnooze} subject={title} heading={REMINDER_BLOCK_LABELS.snooze}
             suggestedDate={state.occurrence?.decision === 'SNOOZED' && state.occurrence.remindAt ? state.occurrence.remindAt : state.suggestedDate}
             onConfirm={(day) => apply('POST', { action: 'SNOOZE', remindAt: day }, `C’est noté : je vous le rappellerai le ${reminderDateLabel(day)}.`)}
           />
           <DismissDialog
-            open={dismiss} onOpenChange={setDismiss} hasSeries={state.hasSeries} subject={title}
+            open={dismiss} onOpenChange={setDismiss} hasSeries={state.hasSeries} subject={title} heading={REMINDER_BLOCK_LABELS.dismiss}
             onConfirm={(scope) => apply('POST', { action: 'DISMISS', scope }, 'C’est noté : je ne vous le rappellerai plus.')}
           />
         </>

@@ -68,11 +68,16 @@ type GroupingErrorCode =
   | 'ITEM_NOT_FOUND' | 'OPERATION_NOT_FOUND' | 'OPERATION_INACTIVE' | 'CROSS_ACCOUNT' | 'LINKED_ELSEWHERE'
   | 'SESSION_REQUIRED' | 'SAME_ITEM' | 'MERGE_REFUSED' | 'DOCUMENT_NOT_FOUND' | 'NOT_GROUPED'
   /** Lot 86D : retrait automatique d'une provenance MANUAL_DIRECT demandé (refusé). */
-  | 'MANUAL_LINK_PROTECTED';
+  | 'MANUAL_LINK_PROTECTED'
+  /** Lot 103D : pièce / équipement dont le bien porteur n'est pas un logement rattaché (refus sans écriture). */
+  | 'AGENDA_STRUCTURAL_LINK_INCOMPATIBLE'
+  /** Lot 103D : retrait d'un logement dont des pièces / équipements restent associés (confirmation requise). */
+  | 'AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS';
 
 /** Erreur TECHNIQUE du regroupement (jamais une carte « À traiter ») ; annule la transaction. */
 export class GroupingError extends Error {
-  constructor(readonly code: GroupingErrorCode, message: string) {
+  /** Lot 103D : `detail` borné (identifiants seulement) transmis à l'écran pour expliquer un refus. */
+  constructor(readonly code: GroupingErrorCode, message: string, readonly detail?: Record<string, unknown>) {
     super(`[grouping] ${code} : ${message}`);
     this.name = 'GroupingError';
   }
@@ -555,6 +560,69 @@ export async function withdrawAutomaticLinkProvenances(
   return { removed: cibles, linkDeleted: !reste, operationId: op };
 }
 
+// ── Lot 103D : pièces / équipements seulement pour un logement rattaché ────
+
+/**
+ * Le bien porteur de la pièce / de l'équipement est-il un LOGEMENT rattaché à
+ * l'ensemble (biens de l'ensemble et de son événement de référence) ? Règle
+ * unique `lib/agenda/housing-scope`. Objet introuvable dans le compte : faux
+ * (le déclencheur de compte refuse de toute façon).
+ */
+async function structuralTargetAllowed(ctx: GroupingContext, operationId: number, target: { substructureId?: number; equipmentId?: number }): Promise<boolean> {
+  const { loadStructuralParents, operationHousingAssetIds } = await import('@/services/agenda/housing-scope.service');
+  const { incompatibleStructuralLinks } = await import('@/lib/agenda/housing-scope');
+  const parents = await loadStructuralParents(ctx.runner, ctx.accountId, target.substructureId ? [target.substructureId] : [], target.equipmentId ? [target.equipmentId] : []);
+  if (!parents.rooms.length && !parents.equipments.length) return false;
+  const ko = incompatibleStructuralLinks(await operationHousingAssetIds(ctx.runner, ctx.accountId, operationId), parents.rooms, parents.equipments);
+  return ko.roomIds.length === 0 && ko.equipmentIds.length === 0;
+}
+
+/** Même règle pour un appelant hors contexte de regroupement (consolidation T3 des équipements). */
+export async function structuralTargetAllowedFor(runner: GroupingRunner, accountId: number, operationId: number, target: { substructureId?: number; equipmentId?: number }): Promise<boolean> {
+  return structuralTargetAllowed(runnerContext(runner, accountId), operationId, target);
+}
+
+/** Refus (geste de l'utilisateur) ou abstention tracée (T3) d'un lien incompatible. */
+async function guardStructuralTarget(
+  ctx: GroupingContext, operationId: number, origin: 'USER' | 'T3', target: { substructureId?: number; equipmentId?: number }, reasonCode: string,
+): Promise<boolean> {
+  if (await structuralTargetAllowed(ctx, operationId, target)) return true;
+  const { logStructuralLinkDecision } = await import('@/services/agenda/housing-scope.service');
+  logStructuralLinkDecision(origin === 'USER' ? 'refused' : 'filtered', {
+    accountId: ctx.accountId, operationId, origin, reasonCode, code: 'AGENDA_STRUCTURAL_LINK_INCOMPATIBLE', correlationId: ctx.correlationId, ...target,
+  });
+  if (origin === 'USER') throw new GroupingError('AGENDA_STRUCTURAL_LINK_INCOMPATIBLE', `Cible ${JSON.stringify(target)} hors des logements de l'ensemble ${operationId}.`);
+  return false;
+}
+
+/**
+ * Pièces et équipements ACTIFS de l'ensemble qui deviendraient incompatibles
+ * si le bien `assetId` était retiré (lecture seule).
+ */
+export async function dependentsOfAssetRemoval(ctx: GroupingContext, operationId: number, assetId: number): Promise<{ roomIds: number[]; equipmentIds: number[] }> {
+  const { housingAssetIdsOf, operationScopeAssetIds } = await import('@/services/agenda/housing-scope.service');
+  const { incompatibleStructuralLinks } = await import('@/lib/agenda/housing-scope');
+  // Le bien reste rattaché à l'ensemble par son événement de référence : rien ne devient incompatible.
+  const [parPrincipal] = await ctx.runner.q(
+    `SELECT 1 FROM agenda_items i JOIN agenda_asset_links al ON al.agenda_item_id = i.id AND al.asset_id = $3
+      WHERE i.account_id = $1 AND i.business_operation_id = $2 AND i.operation_role = 'PRINCIPAL' LIMIT 1`, [ctx.accountId, operationId, assetId]);
+  if (parPrincipal) return { roomIds: [], equipmentIds: [] };
+  const restants = (await operationScopeAssetIds(ctx.runner, ctx.accountId, operationId)).filter((a) => a !== assetId);
+  const logements = await housingAssetIdsOf(ctx.runner, ctx.accountId, restants);
+  const rooms = await ctx.runner.q<{ id: number; asset_id: number }>(
+    `SELECT s.id, s.asset_id FROM business_operation_room_links l JOIN substructures s ON s.id = l.substructure_id
+      WHERE l.operation_id = $1 AND l.account_id = $2 AND l.active`, [operationId, ctx.accountId]);
+  const equips = await ctx.runner.q<{ id: number; asset_id: number }>(
+    `SELECT e.id, e.asset_id FROM business_operation_equipment_links l JOIN equipments e ON e.id = l.equipment_id
+      WHERE l.operation_id = $1 AND l.active`, [operationId]);
+  const avant = incompatibleStructuralLinks(await housingAssetIdsOf(ctx.runner, ctx.accountId, [...restants, assetId]),
+    rooms.map((x) => ({ id: Number(x.id), assetId: Number(x.asset_id) })), equips.map((x) => ({ id: Number(x.id), assetId: Number(x.asset_id) })));
+  const apres = incompatibleStructuralLinks(logements,
+    rooms.map((x) => ({ id: Number(x.id), assetId: Number(x.asset_id) })), equips.map((x) => ({ id: Number(x.id), assetId: Number(x.asset_id) })));
+  // Seuls les liens rendus incompatibles PAR ce retrait (les incompatibilités anciennes relèvent du contrôle de cohérence).
+  return { roomIds: apres.roomIds.filter((x) => !avant.roomIds.includes(x)), equipmentIds: apres.equipmentIds.filter((x) => !avant.equipmentIds.includes(x)) };
+}
+
 // ── Pièces (V-Q6 : la Pièce existante, jamais un second modèle) ────────────
 
 interface AttachRoomInput {
@@ -567,10 +635,12 @@ interface AttachRoomInput {
 }
 
 /** Rattache une Pièce EXISTANTE (aucune création) ; une inférence respecte un refus utilisateur. */
-export async function attachRoom(ctx: GroupingContext, p: AttachRoomInput): Promise<{ changed: boolean; skipped?: 'USER_REJECTED' }> {
+export async function attachRoom(ctx: GroupingContext, p: AttachRoomInput): Promise<{ changed: boolean; skipped?: 'USER_REJECTED' | 'HOUSING_NOT_LINKED' }> {
   await lockGroupingAccount(ctx.runner, ctx.accountId);
   await loadOperation(ctx, p.operationId);
   if (p.origin !== 'USER' && await isRejected(ctx.runner, ctx.accountId, p.operationId, 'ROOM', p.substructureId)) return { changed: false, skipped: 'USER_REJECTED' };
+  // Lot 103D : jamais une pièce hors des logements rattachés (refus utilisateur, abstention T3 tracée).
+  if (!(await guardStructuralTarget(ctx, p.operationId, p.origin, { substructureId: p.substructureId }, p.reasonCode))) return { changed: false, skipped: 'HOUSING_NOT_LINKED' };
   const authority = p.authority ?? (p.origin === 'USER' ? 'USER' : 'DOCUMENT');
   const [cur] = await ctx.runner.q<{ id: string; active: boolean }>(
     `SELECT id, active FROM business_operation_room_links WHERE operation_id = $1 AND substructure_id = $2`, [p.operationId, p.substructureId]);
@@ -644,9 +714,11 @@ export async function syncOperationRoomsFromT3(
 
 export async function attachEquipment(
   ctx: GroupingContext, p: { operationId: number; equipmentId: number; origin: 'USER' | 'T3'; sourceId?: number | null; reasonCode: string },
-): Promise<{ changed: boolean; skipped?: 'USER_REJECTED' }> {
+): Promise<{ changed: boolean; skipped?: 'USER_REJECTED' | 'HOUSING_NOT_LINKED' }> {
   const { repo } = requireSession(ctx, 'attachEquipment');
   if (p.origin !== 'USER' && await isRejected(ctx.runner, ctx.accountId, p.operationId, 'EQUIPMENT', p.equipmentId)) return { changed: false, skipped: 'USER_REJECTED' };
+  // Lot 103D : jamais un équipement hors des logements rattachés (refus utilisateur, abstention T3 tracée).
+  if (!(await guardStructuralTarget(ctx, p.operationId, p.origin, { equipmentId: p.equipmentId }, p.reasonCode))) return { changed: false, skipped: 'HOUSING_NOT_LINKED' };
   const changed = await repo.linkEquipment(p.operationId, { equipmentId: p.equipmentId, authority: p.origin === 'USER' ? 'USER' : 'DOCUMENT', sourceId: p.sourceId ?? null }, p.reasonCode);
   if (p.origin === 'USER') await recordGroupingDecision(ctx.runner, { accountId: ctx.accountId, operationId: p.operationId, subject: 'EQUIPMENT', entityId: p.equipmentId, decision: 'CONFIRMED', reasonCode: p.reasonCode });
   return { changed };

@@ -348,7 +348,8 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
       <div className="flex min-w-0 flex-col gap-1 md:gap-3.5 md:pt-1.5">
         <span className="text-[12px] text-[color:var(--text-muted)] md:text-[13px]" data-greeting-date>{now ? greetingDateLong(now) : '\u00a0'}</span>
         <h1 className="m-0 text-[26px] font-extrabold leading-[1.1] tracking-[-.03em] text-[color:var(--text-primary)] md:text-[32px]">
-          {now ? greetingWord(now) : 'Bonjour'}, {greetingName}
+          {/* Lot 103B : sans nom connu, « Bonjour » seul (jamais « Bonjour, »). */}
+          {now ? greetingWord(now) : 'Bonjour'}{greetingName ? `, ${greetingName}` : ''}
         </h1>
       </div>
 

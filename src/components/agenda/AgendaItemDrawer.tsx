@@ -54,7 +54,9 @@ import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
 import { assetSupportsStructuralFeatures } from "@/types/domain";
 import type { AgendaItemFull } from "@/services/agenda/AgendaQueryService";
-import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
+import { EFFECTIVE_STATUS_LABELS, attentionFlagLabel, automaticStatusOptionLabel, visibleAttentionFlags, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
+// Lot 103D : Pièces / Équipements seulement pour un logement rattaché (règle unique, desktop et mobile).
+import { AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS, HOUSING_SCOPE_LABELS, agendaHousingAssetIds, restrictToHousing } from "@/lib/agenda/housing-scope";
 import { openDrawer } from "@/lib/drawers";
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
@@ -62,6 +64,8 @@ import { NoDeadlineField } from "@/components/agenda/NoDeadlineField";
 import { NO_DEADLINE_HELP, NO_DEADLINE_LABEL, toggleNoDeadline, undatedLabel, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
 // Lot 84B (CDC v5 O-3, §14) : regroupement de l'élément — événement de référence, élément rattaché, élément seul.
 import { AgendaGroupingSection } from "@/components/agenda/AgendaGroupingSection";
+// Lot 103E : « Fournisseur / intervenant » — composant dédié (consultation et modification).
+import { AgendaSuppliersField, AgendaSuppliersView, suppliersPayload, type AgendaSuppliersSelection } from "@/components/agenda/AgendaSuppliersSection";
 
 // Lot 53 (D17) : libellés partagés des cinq états.
 type EffectiveStatus = AgendaEffectiveStatus;
@@ -182,6 +186,14 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
   const [dirty, setDirty] = useState(false);
   const [showDirtyConfirm, setShowDirtyConfirm] = useState(false);
   const [temporalError, setTemporalError] = useState<string | null>(null);
+  // Lot 103E : fournisseurs / intervenants (null tant que la sélection actuelle n'est pas chargée : rien n'est envoyé).
+  const [editSuppliers, setEditSuppliers] = useState<AgendaSuppliersSelection | null>(null);
+  const [suppliersEditKey, setSuppliersEditKey] = useState(0);
+  const [suppliersViewKey, setSuppliersViewKey] = useState(0);
+  const onSuppliersChange = useCallback((next: AgendaSuppliersSelection, initial?: boolean) => {
+    setEditSuppliers(next);
+    if (!initial) setDirty(true);
+  }, []);
 
   // Lot 75H : pièce / équipement / document associés s'ouvrent en tiroir
   // EMPILÉ (GlobalDrawerHost, fiche relue par son identifiant) : la fermeture
@@ -193,21 +205,14 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     Record<number, { substructures: SubOption[]; equipments: SubOption[] }>
   >({});
 
-  // All immo assets (for structural feature)
-  const allImmoAssets = allAssets.filter((a) =>
-    assetSupportsStructuralFeatures(a),
-  );
-  // Immo assets currently selected
+  // Lot 103D (règle `lib/agenda/housing-scope`) : rubriques Pièces / Équipements seulement si un
+  // LOGEMENT est sélectionné ; on ne propose que ses pièces et équipements (plus jamais ceux de tous
+  // les biens du compte quand aucun bien n'est choisi).
   const selectedImmoAssets = allAssets.filter(
     (a) => editAssetIds.includes(a.id) && assetSupportsStructuralFeatures(a),
   );
-  // Show structural when at least one immo asset selected OR no bien selected but immo assets exist
-  const showStructural =
-    selectedImmoAssets.length > 0 ||
-    (editAssetIds.length === 0 && allImmoAssets.length > 0);
-  // When no bien selected: show all immo equipments/substructures; otherwise only selected ones
-  const sourceAssets =
-    editAssetIds.length === 0 ? allImmoAssets : selectedImmoAssets;
+  const showStructural = selectedImmoAssets.length > 0;
+  const sourceAssets = selectedImmoAssets;
   const substructures = sourceAssets.flatMap(
     (a) => assetDetails[a.id]?.substructures ?? [],
   );
@@ -230,6 +235,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       setEditAssetIds(item.assetLinks.map((l) => l.assetId));
       setEditSubstructureIds(item.roomLinks.map((l) => l.substructureId));
       setEditEquipmentIds(item.equipmentLinks.map((l) => l.equipmentId));
+      setEditSuppliers(null);
+      setSuppliersEditKey((k) => k + 1);
       setDirty(false);
       setSaveError(null);
       setTemporalError(null);
@@ -284,20 +291,10 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       .catch(() => {});
   }, [open]);
 
-  // Clear structural selection when asset selection changes (only filter, don't wipe)
-  useEffect(() => {
-    if (mode !== "edit") return;
-    if (substructures.length > 0) {
-      setEditSubstructureIds((prev) =>
-        prev.filter((id) => substructures.some((s) => s.id === id)),
-      );
-    }
-    if (equipments.length > 0) {
-      setEditEquipmentIds((prev) =>
-        prev.filter((id) => equipments.some((e) => e.id === id)),
-      );
-    }
-  }, [editAssetIds.join(",")]);
+  // Lot 103D : plus de filtrage SILENCIEUX de la sélection au changement de biens — une pièce ou un
+  // équipement devenu incompatible (logement retiré) est signalé à l'enregistrement par le serveur
+  // (`AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS`) et dissocié seulement après confirmation explicite.
+  const [dissociation, setDissociation] = useState<{ rooms: number; equipments: number } | null>(null);
 
   const startEdit = useCallback(() => {
     if (!item) return;
@@ -312,6 +309,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     setEditAssetIds(item.assetLinks.map((l) => l.assetId));
     setEditSubstructureIds(item.roomLinks.map((l) => l.substructureId));
     setEditEquipmentIds(item.equipmentLinks.map((l) => l.equipmentId));
+    setEditSuppliers(null);
+    setSuppliersEditKey((k) => k + 1);
     setDirty(false);
     setSaveError(null);
     setTemporalError(null);
@@ -339,14 +338,15 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
    * fenêtre habituelle, aucun appel. Le serveur refuse de toute façon (403).
    */
   const autorise = () => { let ok = false; garder(() => { ok = true; }); return ok; };
-  const handleSave = async () => {
+  const handleSave = async (dissociateIncompatible = false) => {
     if (!autorise()) return;
 
     if (!item) return;
     setSaving(true);
     setSaveError(null);
     try {
-      await apiClient.put(`/api/agenda/${item.id}`, {
+      const saved = await apiClient.put<{ suppliers?: { ok: boolean; error?: string } }>(`/api/agenda/${item.id}`, {
+        ...(dissociateIncompatible ? { dissociateIncompatible: true } : {}),
         title: editTitle.trim(),
         description: editDescription || null,
         startDate: editStartDate || null,
@@ -357,7 +357,11 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
         assetIds: editAssetIds,
         substructureIds: editSubstructureIds,
         equipmentIds: editEquipmentIds,
+        // Lot 103E : absent tant que la sélection n'est pas chargée (rien ne change côté serveur).
+        suppliers: suppliersPayload(editSuppliers),
       });
+      if (saved?.suppliers && saved.suppliers.ok === false) toast.error(saved.suppliers.error ?? "Les fournisseurs n’ont pas pu être associés.");
+      setSuppliersViewKey((k) => k + 1);
       // Update status separately if changed
       const newManualStatus =
         editManualStatus === "null"
@@ -368,13 +372,19 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
           manualStatus: newManualStatus,
         });
       }
-      toast.success("Agenda mis à jour");
+      toast.success(dissociateIncompatible ? HOUSING_SCOPE_LABELS.dissociatedToast : "Agenda mis à jour");
       setMode("view");
       setDirty(false);
       dispatchAgendaMutated();
       onMutated();
     } catch (err: any) {
-      const msg = err?.message || "Erreur lors de la sauvegarde";
+      // Lot 103D : logement retiré alors que des pièces / équipements y restent associés — confirmation.
+      if (err?.code === AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS && !dissociateIncompatible) {
+        const inc = (err?.details ?? {}) as { substructureIds?: number[]; equipmentIds?: number[] };
+        setDissociation({ rooms: (inc.substructureIds ?? []).length, equipments: (inc.equipmentIds ?? []).length });
+        return;
+      }
+      const msg = err?.serverMessage || err?.message || "Erreur lors de la sauvegarde";
       setSaveError(msg);
       if (
         msg.includes("temporelle") ||
@@ -477,6 +487,10 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
   if (!item) return null;
 
   const statusStyle = STATUS_STYLES[item.effectiveStatus];
+  // Lot 103D : logements rattachés (catégorie fournie par le serveur) → pièces / équipements affichables.
+  const viewHousing = agendaHousingAssetIds(item.assetLinks.map((l) => ({ id: l.assetId, category: l.assetCategory, subtype: l.assetSubtype })));
+  const viewRooms = restrictToHousing(item.roomLinks.map((l) => ({ ...l, assetId: l.resolvedAssetId })), viewHousing);
+  const viewEquipments = restrictToHousing(item.equipmentLinks.map((l) => ({ ...l, assetId: l.resolvedAssetId })), viewHousing);
 
   return (
     <>
@@ -614,7 +628,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="null">À venir</SelectItem>
+                      {/* Lot 103D : statut CALCULÉ (jamais « À venir » en dur pour une date passée). */}
+                      <SelectItem value="null">{automaticStatusOptionLabel(item)}</SelectItem>
                       <SelectItem value="realise">Réalisé</SelectItem>
                       <SelectItem value="annule">Annulé</SelectItem>
                     </SelectContent>
@@ -736,7 +751,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="null">À venir</SelectItem>
+                    <SelectItem value="null">{automaticStatusOptionLabel(item)}</SelectItem>
                     <SelectItem value="realise">Réalisé</SelectItem>
                     <SelectItem value="annule">Annulé</SelectItem>
                   </SelectContent>
@@ -829,9 +844,9 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
               </div>
             )}
 
-            {/* Pièces */}
+            {/* Pièces — lot 103D : seulement si un logement est rattaché, et seulement ses pièces. */}
             {mode === "view"
-              ? item.roomLinks.length > 0 && (
+              ? viewRooms.length > 0 && (
                   <div className="flex items-start gap-3">
                     <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
                       <Grid2X2 className="h-4 w-4 text-[color:var(--text-muted)]" />
@@ -841,7 +856,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                         Pièces
                       </p>
                       <div className="flex flex-wrap gap-2">
-                        {item.roomLinks.map((l) => (
+                        {viewRooms.map((l) => (
                           l.resolvedAssetId ? (
                             <button
                               key={l.substructureId}
@@ -917,9 +932,9 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                   </div>
                 )}
 
-            {/* Équipements */}
+            {/* Équipements — lot 103D : seulement si un logement est rattaché, et seulement ses équipements. */}
             {mode === "view"
-              ? item.equipmentLinks.length > 0 && (
+              ? viewEquipments.length > 0 && (
                   <div className="flex items-start gap-3">
                     <div className="w-8 h-8 rounded-lg bg-[color:var(--accent-soft)] flex items-center justify-center shrink-0 mt-0.5">
                       <Wrench className="h-4 w-4 text-[color:var(--text-muted)]" />
@@ -929,7 +944,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                         Équipements
                       </p>
                       <div className="flex flex-wrap gap-2">
-                        {item.equipmentLinks.map((l) => (
+                        {viewEquipments.map((l) => (
                           l.resolvedAssetId ? (
                             <button
                               key={l.equipmentId}
@@ -1004,6 +1019,12 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                     </Popover>
                   </div>
                 )}
+
+            {/* Lot 103E : fournisseurs / intervenants — rubrique masquée en consultation s'il n'y en a aucun ;
+                champ toujours disponible en modification (toutes catégories, facultatif). */}
+            {mode === "view"
+              ? <AgendaSuppliersView itemId={item.id} refreshKey={`${String(item.updatedAt)}:${suppliersViewKey}`} />
+              : <AgendaSuppliersField key={suppliersEditKey} itemId={item.id} value={editSuppliers} onChange={onSuppliersChange} idPrefix={`agenda-${item.id}-fournisseurs`} />}
 
             {/* Documents — lot 86D : en consultation, le regroupement (ci-dessous) présente les documents
                 de l'élément quel que soit son rôle (ouvrir, relier, détacher) ; cette liste reste un
@@ -1092,7 +1113,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                 <button
                   type="button"
                   className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-primary/10 transition-colors text-primary disabled:opacity-40 disabled:cursor-not-allowed"
-                  onClick={handleSave}
+                  onClick={() => { void handleSave(); }}
                   disabled={saving || !editTitle.trim() || !!temporalError}
                 >
                   {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
@@ -1120,6 +1141,24 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
               className="bg-[color:var(--danger)] hover:bg-[color:var(--danger)]/90"
             >
               {deleting ? 'Suppression…' : 'Supprimer définitivement'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Lot 103D : dissociation CONFIRMÉE des pièces / équipements d'un logement retiré (liens seulement). */}
+      <AlertDialog open={dissociation !== null} onOpenChange={(o) => { if (!o) setDissociation(null); }}>
+        <AlertDialogContent data-testid="agenda-dissociation-logement">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{HOUSING_SCOPE_LABELS.confirmTitle}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {dissociation ? HOUSING_SCOPE_LABELS.confirmBody(dissociation.rooms, dissociation.equipments) : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDissociation(null)}>Annuler</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { setDissociation(null); void handleSave(true); }}>
+              {HOUSING_SCOPE_LABELS.confirmActionSave}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -232,6 +232,20 @@ export async function PUT(
         };
       }
     }
+    // Lot 103F : une date du document MODIFIÉE ici est une correction
+    // utilisateur, prioritaire : aucune analyse ultérieure ne la remplace
+    // (`updateSourceMetadata` respecte `userEditedFields.documentDate`) —
+    // même posée avant la première analyse, quand le tiroir ne la marque pas.
+    {
+      const avant = (oldDoc.userEditedFields ?? {}) as Record<string, boolean>;
+      const dateModifiee = documentDate !== undefined && (documentDate || null) !== (oldDoc.documentDate ?? null);
+      if (dateModifiee || avant.documentDate === true) {
+        updateData.userEditedFields = {
+          ...((updateData.userEditedFields ?? avant) as Record<string, boolean>),
+          documentDate: true,
+        };
+      }
+    }
     if (substructureId !== undefined) {
       updateData.substructureId = substructureId === null || substructureId === 0 ? null : parseInt(substructureId);
     }

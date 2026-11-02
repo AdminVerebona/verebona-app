@@ -73,7 +73,7 @@ const run = async (sql: string, params: unknown[]) => {
   if (q.startsWith('SELECT a.id, a.name')) return pour(LIES.assets);
   if (q.startsWith('SELECT f.id')) return pour(LIES.documents);
   if (q.includes('FROM equipment_suppliers es JOIN equipments')) return pour(LIES.equipments);
-  if (q.includes('FROM agenda_items i')) return pour(LIES.agenda);
+  if (q.includes('FROM agenda_item_suppliers l')) return pour(LIES.agenda);
   if (q.includes('FROM supplier_review_items')) return accountId === 10 && supplierId === 4 ? [{ n: 2 }] : [{ n: 0 }];
   throw new Error(`requête inattendue : ${q.slice(0, 60)}`);
 };

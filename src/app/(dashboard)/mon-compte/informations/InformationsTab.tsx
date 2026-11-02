@@ -29,6 +29,7 @@ import { ApiClientError } from '@/lib/api-client';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 import { voluntaryDelayLabel } from '@/lib/account-lifecycle/retention-policy';
+import { DISPLAY_NAME_HELP, DISPLAY_NAME_LABEL, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_PLACEHOLDER, validateDisplayName } from '@/lib/auth/display-name';
 
 
 interface UserProfile {
@@ -204,34 +205,51 @@ function InformationsTabContent({ beforeDangerZone }: { beforeDangerZone?: React
     }
   };
 
+  const [usernameError, setUsernameError] = useState('');
+
   const handleSaveProfile = async () => {
     if (!sessionUser) return;
-    if (!profile.firstName || !profile.lastName) return toast.error("Le prénom et le nom sont requis");
+    // Lot 103B : seuls les champs MODIFIÉS partent (mise à jour partielle) ;
+    // « Prénom ou pseudo » suit les règles de l'inscription, prénom / nom
+    // civils sont facultatifs et jamais exigés pour changer le pseudo.
+    const patch: Record<string, string> = {};
+    if (profile.username !== initialProfile.username) {
+      const dn = validateDisplayName(profile.username);
+      if (!dn.ok) { setUsernameError(dn.message); return; }
+      patch.username = dn.value;
+    }
+    if (profile.firstName !== initialProfile.firstName) patch.firstName = profile.firstName.trim();
+    if (profile.lastName !== initialProfile.lastName) patch.lastName = profile.lastName.trim();
+    if (Object.keys(patch).length === 0) return;
+    setUsernameError('');
 
     try {
       setSavingProfile(true);
-      const data = await apiClient.put<any>(`/api/users/me`, {
-        firstName: profile.firstName.trim(),
-        lastName: profile.lastName.trim(),
-        username: profile.username.trim() || null,
-      });
+      const data = await apiClient.put<any>(`/api/users/me`, patch);
       
       if (data.error) throw new Error(data.error);
+      const saved: UserProfile = {
+        ...profile,
+        username: patch.username ?? profile.username,
+        firstName: patch.firstName ?? profile.firstName,
+        lastName: patch.lastName ?? profile.lastName,
+      };
+      setProfile(saved);
 
       // Update localStorage immediately and broadcast so all components re-render at once
       try {
         const cached = localStorage.getItem('user');
         if (cached) {
           const parsed = JSON.parse(cached);
-          parsed.firstName = profile.firstName.trim();
-          parsed.lastName = profile.lastName.trim();
-          parsed.username = profile.username.trim() || null;
+          if (patch.firstName !== undefined) parsed.firstName = patch.firstName;
+          if (patch.lastName !== undefined) parsed.lastName = patch.lastName;
+          if (patch.username !== undefined) parsed.username = patch.username;
           localStorage.setItem('user', JSON.stringify(parsed));
           window.dispatchEvent(new CustomEvent('user-profile-updated', { detail: parsed }));
         }
       } catch {}
 
-      setInitialProfile(profile);
+      setInitialProfile(saved);
       apiClient.clearCache();
       await refetchSession();
       toast.success("Profil mis à jour");
@@ -302,22 +320,33 @@ function InformationsTabContent({ beforeDangerZone }: { beforeDangerZone?: React
       <CollapsibleCard
         icon={<User className="w-5 h-5" />}
         title="Mon profil"
-        description="Vos informations personnelles et votre nom d’utilisateur."
+        description="Votre prénom ou pseudo et vos informations personnelles."
         contentClassName="space-y-3"
       >
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="space-y-1.5">
-            <Label htmlFor="firstName">Prénom</Label>
-            <Input id="firstName" value={profile.firstName} onChange={e => setProfile({...profile, firstName: e.target.value})} />
+          {/* Lot 103B : « Prénom ou pseudo » au premier plan (non unique). */}
+          <div className="space-y-1.5 sm:col-span-2">
+            <Label htmlFor="username">{DISPLAY_NAME_LABEL}</Label>
+            <Input
+              id="username"
+              value={profile.username}
+              placeholder={DISPLAY_NAME_PLACEHOLDER}
+              maxLength={DISPLAY_NAME_MAX_LENGTH * 2}
+              autoComplete="nickname"
+              aria-invalid={usernameError ? true : undefined}
+              aria-describedby={usernameError ? 'username-help username-error' : 'username-help'}
+              onChange={e => { setProfile({...profile, username: e.target.value}); if (usernameError) setUsernameError(''); }}
+            />
+            <p id="username-help" className="text-xs text-muted-foreground">{DISPLAY_NAME_HELP} et dans vos e-mails.</p>
+            {usernameError && <p id="username-error" role="alert" className="text-sm text-destructive">{usernameError}</p>}
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="lastName">Nom</Label>
-            <Input id="lastName" value={profile.lastName} onChange={e => setProfile({...profile, lastName: e.target.value})} />
+            <Label htmlFor="firstName">Prénom (facultatif)</Label>
+            <Input id="firstName" autoComplete="given-name" value={profile.firstName} onChange={e => setProfile({...profile, firstName: e.target.value})} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="username">Nom d'utilisateur</Label>
-            <Input id="username" value={profile.username} onChange={e => setProfile({...profile, username: e.target.value})} />
-            <p className="text-xs text-muted-foreground">Affiché dans le message de bienvenue et les emails.</p>
+            <Label htmlFor="lastName">Nom (facultatif)</Label>
+            <Input id="lastName" autoComplete="family-name" value={profile.lastName} onChange={e => setProfile({...profile, lastName: e.target.value})} />
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="email">Adresse e-mail</Label>

@@ -47,6 +47,7 @@ import { FollowTheme } from '@/components/FollowTheme';
 import { AlertTriangle, ArrowLeft, CheckCircle, Loader2, MailCheck, ShieldAlert } from 'lucide-react';
 import { publicSiteUrl } from '@/lib/external-urls';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
+import { LegalLink } from '@/components/legal/LegalLink';
 import { resolveWithdrawalBackTarget } from '@/lib/withdrawal-back-target';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { LIFECYCLE_DURATIONS } from '@/lib/account-lifecycle/retention-policy';
@@ -340,13 +341,13 @@ function WithdrawalContent() {
                 `app.preprod.verebona.fr/cgvu`, qui n'existe pas. Les pages
                 légales vivent sur la vitrine. */}
             <p className="text-xs text-muted-foreground">
-              <a href={legal.cguv} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              <LegalLink href={legal.cguv} target="_blank" className="text-primary hover:underline">
                 CGUV
-              </a>
+              </LegalLink>
               {' · '}
-              <a href={legal.confidentialite} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+              <LegalLink href={legal.confidentialite} target="_blank" className="text-primary hover:underline">
                 Politique de confidentialité
-              </a>
+              </LegalLink>
             </p>
 
             {error && <ErrorBox message={error} />}

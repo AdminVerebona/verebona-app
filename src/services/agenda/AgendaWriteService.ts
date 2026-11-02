@@ -13,8 +13,10 @@ import {
 } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { getAgendaItemById, type AgendaItemFull } from './AgendaQueryService';
-import { validateAgendaWrite, syncPurchaseDate, AgendaValidationError, type AgendaItemValues,
+import { validateAgendaWrite, syncPurchaseDate, AgendaValidationError, AgendaStructuralLinkError, type AgendaItemValues,
 } from './write-agenda-item';
+import { drizzleRunner } from '@/services/business-operations/grouping/runner';
+import { logStructuralLinkDecision, planStructuralLinks } from './housing-scope.service';
 import { upsertAgendaItem, agendaItemValues, type AgendaUpsertInput } from './agenda-write-primitive';
 import { resolveNoDeadlineWrite } from '@/lib/agenda/no-deadline';
 
@@ -48,7 +50,15 @@ interface CreateAgendaItemInput {
   noDeadline?: boolean;
 }
 
-type UpdateAgendaItemInput = Partial<CreateAgendaItemInput>;
+type UpdateAgendaItemInput = Partial<CreateAgendaItemInput> & {
+  /**
+   * Lot 103D : l'utilisateur a CONFIRMÉ la dissociation des pièces /
+   * équipements devenus incompatibles (logement retiré) — liens seulement,
+   * dans la même écriture ; sans cette confirmation, refus
+   * `AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS` et rien n'est écrit.
+   */
+  dissociateIncompatible?: boolean;
+};
 
 export async function createAgendaItem(
   input: CreateAgendaItemInput,
@@ -67,6 +77,13 @@ export async function createAgendaItem(
   const fileIds = input.fileIds ?? [];
   const substructureIds = input.substructureIds ?? [];
   const equipmentIds = input.equipmentIds ?? [];
+  // Lot 103D : pièces / équipements seulement pour un logement rattaché (code stable, refus avant tout appel
+  // modèle). Seuls les objets DU COMPTE sont lus : une référence étrangère est refusée juste après (SEC-07).
+  const plan = await planStructuralLinks(drizzleRunner(db), accountId, { assetIds, substructureIds, equipmentIds });
+  if (plan.roomIds.length || plan.equipmentIds.length) {
+    logStructuralLinkDecision('refused', { accountId, agendaItemId: null, roomIds: plan.roomIds, equipmentIds: plan.equipmentIds });
+    throw new AgendaStructuralLinkError({ roomIds: plan.roomIds, equipmentIds: plan.equipmentIds });
+  }
   // Lot 49 (SEC-07) : appartenance au compte contrôlée d'abord (la
   // primitive la recontrôle dans sa transaction).
   await validateAgendaWrite(
@@ -173,8 +190,34 @@ export async function updateAgendaItem(
 
   const assetIds = input.assetIds ?? existing.assetLinks.map(l => l.assetId);
   const fileIds = input.fileIds ?? existing.fileLinks.map(l => l.assetFileId);
-  const substructureIds = input.substructureIds ?? existing.roomLinks.map(l => l.substructureId);
-  const equipmentIds = input.equipmentIds ?? existing.equipmentLinks.map(l => l.equipmentId);
+  let substructureIds = input.substructureIds ?? existing.roomLinks.map(l => l.substructureId);
+  let equipmentIds = input.equipmentIds ?? existing.equipmentLinks.map(l => l.equipmentId);
+
+  // Lot 103D : pièces / équipements seulement pour un logement rattaché. Un lien
+  // DÉJÀ présent rendu incompatible (logement retiré) n'est dissocié que sur
+  // confirmation explicite, dans cette même écriture ; un lien NOUVEAU
+  // incompatible est toujours refusé. Rien n'est écrit en cas de refus.
+  const dissocies = await (async () => {
+    const plan = await planStructuralLinks(drizzleRunner(db), accountId, { assetIds, substructureIds, equipmentIds });
+    if (!plan.roomIds.length && !plan.equipmentIds.length) return null;
+    const dejaLiees = new Set(existing.roomLinks.map((l) => l.substructureId));
+    const dejaLies = new Set(existing.equipmentLinks.map((l) => l.equipmentId));
+    const nouveaux = plan.roomIds.some((id) => !dejaLiees.has(id)) || plan.equipmentIds.some((id) => !dejaLies.has(id));
+    const ko = { roomIds: plan.roomIds, equipmentIds: plan.equipmentIds };
+    if (nouveaux) {
+      logStructuralLinkDecision('refused', { accountId, agendaItemId: id, ...ko });
+      throw new AgendaStructuralLinkError(ko, 'INCOMPATIBLE');
+    }
+    if (input.dissociateIncompatible !== true) {
+      logStructuralLinkDecision('dependents', { accountId, agendaItemId: id, ...ko });
+      throw new AgendaStructuralLinkError(ko, 'DEPENDENTS');
+    }
+    return { before: { roomIds: [...substructureIds], equipmentIds: [...equipmentIds] }, removed: ko };
+  })();
+  if (dissocies) {
+    substructureIds = substructureIds.filter((x) => !dissocies.removed.roomIds.includes(x));
+    equipmentIds = equipmentIds.filter((x) => !dissocies.removed.equipmentIds.includes(x));
+  }
 
   await validateAgendaWrite(sansEcheance.clearDates ? {
     startDate: null, startTime: null, endDate: null, endTime: null,
@@ -227,6 +270,16 @@ export async function updateAgendaItem(
       } : {},
     },
   }, { linkMode: 'replace', validate: false });
+
+  // Lot 103D : dissociation confirmée — journal avant / après (liens seulement, aucun objet supprimé).
+  if (dissocies) {
+    const { recordOccurrenceEvent } = await import('./agenda-persistence');
+    await recordOccurrenceEvent(id, accountId, 'STRUCTURAL_LINKS_DISSOCIATED', {
+      reason: 'USER_CONFIRMED_HOUSING_REMOVAL', removed: dissocies.removed, before: dissocies.before,
+      after: { roomIds: substructureIds, equipmentIds, assetIds },
+    }, actorUserId);
+    logStructuralLinkDecision('dissociated', { accountId, agendaItemId: id, origin: 'USER', ...dissocies.removed });
+  }
 
   if (isAutomaticModified || confirmeParUtilisateur) {
     const { recordOccurrenceEvent } = await import('./agenda-persistence');

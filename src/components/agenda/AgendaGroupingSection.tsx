@@ -45,12 +45,13 @@ import { apiClient } from "@/lib/api-client";
 import { openDrawer } from "@/lib/drawers";
 import { useWriteGuard } from "@/contexts/WriteGuardContext";
 import {
-  GROUPING_LABELS as L, LINK_ACTION,
+  GROUPING_LABELS as L, LINK_ACTION, groupingActionToast,
   type AgendaGroupingView, type GroupingAction, type GroupingCandidate, type GroupingCandidateKind,
 } from "@/lib/agenda/grouping-view";
+import { AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS, HOUSING_SCOPE_LABELS } from "@/lib/agenda/housing-scope";
 import { AgendaGroupingPanel, GroupingPicker } from "@/components/agenda/AgendaGroupingPanel";
 
-export { AgendaGroupingPanel, GroupingPicker, MAIN_CATEGORIES, categoryRows } from "@/components/agenda/AgendaGroupingPanel";
+export { AgendaGroupingPanel, GroupingPicker, MAIN_CATEGORIES, categoryRows, visibleMainCategories } from "@/components/agenda/AgendaGroupingPanel";
 
 const CreateAgendaItemDrawer = dynamic(
   () => import("@/components/agenda/CreateAgendaItemDrawer").then((m) => ({ default: m.CreateAgendaItemDrawer })),
@@ -75,6 +76,8 @@ export function AgendaGroupingSection({ itemId, onOpenDocument, onChanged, onRol
   const [picker, setPicker] = useState<GroupingCandidateKind | null>(null);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  // Lot 103D : retrait d'un logement dont des pièces / équipements restent associés — confirmation.
+  const [dissociation, setDissociation] = useState<{ assetId: number; rooms: number; equipments: number } | null>(null);
   const { garder } = useWriteGuard();
 
   const charger = useCallback(async () => {
@@ -96,16 +99,22 @@ export function AgendaGroupingSection({ itemId, onOpenDocument, onChanged, onRol
 
   const autorise = () => { let ok = false; garder(() => { ok = true; }); return ok; };
 
-  const agir = useCallback(async (action: GroupingAction, targetId?: number) => {
+  const agir = useCallback(async (action: GroupingAction, targetId?: number, dissocier = false) => {
     if (!autorise()) return;
     setBusy(true);
     try {
-      const r = await apiClient.post<{ view: AgendaGroupingView | null }>(`/api/agenda/${itemId}/liens`, { action, targetId: targetId ?? null });
+      const r = await apiClient.post<{ view: AgendaGroupingView | null }>(`/api/agenda/${itemId}/liens`, { action, targetId: targetId ?? null, ...(dissocier ? { dissocier: true } : {}) });
       if (r.view) setView(r.view);
-      toast.success(action === "detacher-document" ? L.detachedToast : "C’est enregistré");
+      toast.success(groupingActionToast(action));
       window.dispatchEvent(new CustomEvent("agenda-mutated"));
       onChanged?.();
     } catch (err: any) {
+      // Lot 103D : bien retiré dont des pièces / équipements dépendent — explication et confirmation.
+      if (err?.code === AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS && action === "retirer-bien" && targetId && !dissocier) {
+        const d = (err?.details ?? {}) as { substructureIds?: number[]; equipmentIds?: number[] };
+        setDissociation({ assetId: targetId, rooms: (d.substructureIds ?? []).length, equipments: (d.equipmentIds ?? []).length });
+        return;
+      }
       if (err?.status !== 403) toast.error(err?.serverMessage || err?.message || "Ce geste n’a pas abouti");
     } finally {
       setBusy(false);
@@ -133,7 +142,9 @@ export function AgendaGroupingSection({ itemId, onOpenDocument, onChanged, onRol
       />
       <GroupingPicker
         open={picker !== null}
-        title={picker ? L.add[picker] : ""}
+        title={picker ? L.pickerTitle[picker] : ""}
+        searchLabel={picker ? L.pickerSearch[picker] : L.search}
+        description={picker ? L.pickerHint[picker] : undefined}
         load={load}
         onClose={() => setPicker(null)}
         onPick={(c) => { const k = picker; setPicker(null); if (k) void agir(LINK_ACTION[k], c.id); }}
@@ -147,6 +158,20 @@ export function AgendaGroupingSection({ itemId, onOpenDocument, onChanged, onRol
           <AlertDialogFooter>
             <AlertDialogCancel>Annuler</AlertDialogCancel>
             <AlertDialogAction onClick={() => { setConfirmRelease(false); void agir("retirer-reference"); }}>Confirmer</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={dissociation !== null} onOpenChange={(o) => { if (!o) setDissociation(null); }}>
+        <AlertDialogContent data-testid="regroupement-dissociation-logement">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{HOUSING_SCOPE_LABELS.confirmTitle}</AlertDialogTitle>
+            <AlertDialogDescription>{dissociation ? HOUSING_SCOPE_LABELS.confirmBody(dissociation.rooms, dissociation.equipments) : ""}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { const d = dissociation; setDissociation(null); if (d) void agir("retirer-bien", d.assetId, true); }}>
+              {HOUSING_SCOPE_LABELS.confirmActionRemoveAsset}
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

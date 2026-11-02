@@ -27,6 +27,7 @@
  * message de l'erreur, durée — JAMAIS le mot de passe ni l'e-mail.
  */
 import { clientPlatformHeaders } from '@/lib/client-platform';
+import { LOGIN_ATTEMPT_HEADER, isLoginAttemptId } from './login-diagnostics';
 
 export interface LoginNetworkLog {
   event: 'login.network_error';
@@ -52,6 +53,8 @@ export async function postLogin(
     sleep?: (ms: number) => Promise<void>;
     log?: (entry: LoginNetworkLog) => void;
     online?: () => boolean | null;
+    /** Lot 103A : identifiant de corrélation de la tentative (aucune donnée secrète). */
+    attemptId?: string;
   } = {},
 ): Promise<Response> {
   const fetchImpl = deps.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
@@ -62,7 +65,11 @@ export async function postLogin(
   const call = () => fetchImpl('/api/auth/login', {
     credentials: 'include',
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...clientPlatformHeaders() },
+    headers: {
+      'Content-Type': 'application/json',
+      ...clientPlatformHeaders(),
+      ...(isLoginAttemptId(deps.attemptId) ? { [LOGIN_ATTEMPT_HEADER]: deps.attemptId } : {}),
+    },
     body: JSON.stringify({ email: credentials.email, password: credentials.password }),
   });
 

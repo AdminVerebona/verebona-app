@@ -27,6 +27,7 @@ interface UserRow {
   id: number;
   firstName: string;
   lastName: string;
+  username?: string | null;
   email: string;
   accountId: number | null;
   accountName: string | null;
@@ -171,7 +172,7 @@ function UsersScreen() {
                         <tr key={u.id} className="border-b last:border-0 hover:bg-[color:var(--bg-hover)]">
                           <td className="py-2 pr-3">
                             <Link href={`/admin/users/${u.id}`} className="font-medium hover:underline">
-                              {`${u.firstName} ${u.lastName}`.trim() || '—'}
+                              {`${u.firstName} ${u.lastName}`.trim() || u.username?.trim() || '—'}
                             </Link>
                           </td>
                           <td className="py-2 pr-3 text-muted-foreground">{u.email}</td>

@@ -957,3 +957,30 @@ html[data-theme="blue"] .vb-social-btn--apple { background: #FFFFFF; color: #000
 html[data-theme="blue"] .vb-social-btn--apple:hover { filter: brightness(.92); }
 .vb-or-separator { display: flex; align-items: center; gap: 12px; color: var(--text-muted); font-size: 13px; }
 .vb-or-separator::before, .vb-or-separator::after { content: ""; flex: 1; height: 1px; background: var(--border-subtle); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Lot 103B — écrans d'authentification et barre d'état iOS (capture du 31/10).
+   La page s'étend sous la barre d'état (`viewport-fit=cover`,
+   `black-translucent`, WebView Capacitor `contentInset: 'never'`) : la
+   coquille connectée réserve `--vb-safe-*`, les écrans d'auth (connexion,
+   inscription, Google / Apple, vérification) ne réservaient que 16 px — le
+   haut du formulaire passait sous l'heure et les icônes. La coquille
+   `(auth)/layout.tsx` réserve désormais les quatre encarts, un voile fixe de
+   la couleur de la page masque le contenu qui défile sous la barre d'état,
+   et la hauteur minimale des pages tient compte des encarts (pas de
+   défilement superflu). Hors iPhone / Android bord à bord : encarts = 0.
+   ══════════════════════════════════════════════════════════════════════════ */
+.vb-auth-shell {
+  min-height: 100dvh;
+  box-sizing: border-box;
+  padding: var(--vb-safe-top) var(--vb-safe-right) var(--vb-safe-bottom) var(--vb-safe-left);
+  background-color: var(--bg-page);
+}
+.vb-auth-shell::before {
+  content: "";
+  position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+  height: var(--vb-safe-top);
+  background-color: var(--bg-page);
+  pointer-events: none;
+}
+.vb-auth-shell .min-h-screen { min-height: calc(100dvh - var(--vb-safe-top) - var(--vb-safe-bottom)); }

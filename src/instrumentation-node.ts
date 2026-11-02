@@ -228,6 +228,11 @@ export async function registerNode(): Promise<void> {
   // SIRET) que T1 lit dans chaque document — abonné à l'analyse comme T3/T4.
   const { registerSupplierReferentialHandler } = await import('@/services/suppliers/supplier-from-analysis');
   await registerSupplierReferentialHandler();
+  // Lot 103E : fournisseurs / intervenants des éléments d'Agenda — APRÈS le
+  // référentiel (le fournisseur du document analysé est alors établi).
+  const { registerAgendaSupplierHandlers } = await import('@/services/agenda/agenda-suppliers');
+  await registerAgendaSupplierHandlers().catch((e) =>
+    console.error('[startup] fournisseurs des éléments d’agenda non abonnés :', (e as Error).message));
 
   // 6. Reprise automatique des analyses.
   //

@@ -63,7 +63,11 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   { domain: 'agenda', label: 'Agenda (occurrences, échéances calculables des Opérations, événements obsolètes, échéances de fiche, appartenance aux Opérations)',
     checks: ['COH-AGENDA-OCCURRENCES', 'COH-AGENDA-ORPHANS', 'COH-AGENDA-OPERATION-PROJECTION', 'COH-AGENDA-PROJECTION-ORPHANS', 'COH-OPS-CONTRACT-DATES', ...O1.filter((id) => /AGENDA|PRINCIPAL|LINK-PROVENANCE/.test(id)), 'COH-DOC-AGENDA-LINKS',
       // Lot 99D : séries récurrentes arrêtées à tort par l'ancienne règle « mot-clé » (rétablies, T4 relancé).
-      'COH-AGENDA-RECURRENCE-END'],
+      'COH-AGENDA-RECURRENCE-END',
+      // Lot 103E : fournisseurs / intervenants des éléments (preuve propre à l'élément, retraits manuels respectés).
+      'COH-AGENDA-SUPPLIERS',
+      // Lot 103D : pièces / équipements sans logement rattaché ; faits historiques prouvés restés « à confirmer ».
+      'COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS'],
     // Lot 83E : les échéances calculables issues des Opérations sont contrôlées (projection rejouée sans IA) ; 83B : invariants O-1.
     gap: {
       what: 'échéances DOCUMENTAIRES décidées par T4 (IA) : décisions non conservées avec leur candidat, rejeu impossible sans IA ; groupes T4 « même document, même date » sans Opération',

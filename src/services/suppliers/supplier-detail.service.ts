@@ -8,7 +8,7 @@
  * n'est rendue que pour le compte actif de la session ; un identifiant d'un
  * autre compte est traité comme INEXISTANT (404), sans rien révéler.
  *
- * Les liens (documents, biens, équipements, échéances) passent par des tables
+ * Les liens (documents, biens, équipements, événements d'Agenda) passent par des tables
  * de jonction sans colonne de compte : chaque objet lié est donc RE-FILTRÉ
  * sur le compte actif, jamais déduit du seul fournisseur. Une jonction
  * corrompue qui pointerait vers le document d'un autre compte ne le fait pas
@@ -36,6 +36,8 @@ const defaultRunner: SqlRunner = async (sql, params) =>
 
 /** Plafond par section : la fiche n'est pas une liste exhaustive. */
 const SUPPLIER_DETAIL_LIMIT = 50;
+/** Lot 103E : événements rattachés — relation explicite, liste complète (borne de sécurité seulement). */
+const AGENDA_LIMIT = 500;
 
 export interface SupplierDetail {
   supplier: {
@@ -69,7 +71,8 @@ export interface SupplierDetail {
     id: number; name: string; type: string | null; relationshipType: string | null; isPrimary: boolean;
     assetId: number; assetName: string; available: boolean;
   }>;
-  agendaItems: Array<{ id: number; title: string; startDate: string | null; manualStatus: string | null }>;
+  /** Lot 103E : événements rattachés (relation persistante), avec la provenance du lien. */
+  agendaItems: Array<{ id: number; title: string; startDate: string | null; manualStatus: string | null; provenance?: string | null }>;
   openReviewCount: number;
 }
 
@@ -146,20 +149,16 @@ export async function getSupplierDetail(
         LIMIT ${L}`,
       [supplierId, accountId],
     ),
-    // Échéances : rattachées à un document ou à un équipement du fournisseur.
+    // Lot 103E : événements d'Agenda RATTACHÉS au fournisseur (relation persistante
+    // `agenda_item_suppliers`) — passés, à venir et sans date. Plus aucune déduction par
+    // voisinage (document ou équipement commun) : le ticket l'interdit.
     run(
-      `SELECT i.id, i.title, i.start_date AS "startDate", i.manual_status AS "manualStatus"
-         FROM agenda_items i
-        WHERE i.account_id = $2 AND i.manual_status IS DISTINCT FROM 'annule'
-          AND (
-            EXISTS (SELECT 1 FROM agenda_file_links fl JOIN document_suppliers ds ON ds.document_id = fl.asset_file_id
-                     JOIN asset_files f ON f.id = fl.asset_file_id AND f.account_id = $2 AND f.deleted_at IS NULL
-                     WHERE fl.agenda_item_id = i.id AND ds.supplier_id = $1)
-            OR EXISTS (SELECT 1 FROM agenda_equipment_links el JOIN equipment_suppliers es ON es.equipment_id = el.equipment_id
-                     WHERE el.agenda_item_id = i.id AND es.supplier_id = $1)
-          )
-        ORDER BY (i.manual_status IS NULL) DESC, i.start_date ASC NULLS LAST, i.id
-        LIMIT ${L}`,
+      `SELECT i.id, i.title, i.start_date AS "startDate", i.manual_status AS "manualStatus", l.provenance
+         FROM agenda_item_suppliers l
+         JOIN agenda_items i ON i.id = l.agenda_item_id AND i.account_id = $2
+        WHERE l.supplier_id = $1 AND l.account_id = $2
+        ORDER BY i.start_date DESC NULLS LAST, i.id DESC
+        LIMIT ${AGENDA_LIMIT}`,
       [supplierId, accountId],
     ),
     run(

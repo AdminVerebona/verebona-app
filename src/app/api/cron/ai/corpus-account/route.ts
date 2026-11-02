@@ -5,112 +5,58 @@
  * POURQUOI UNE ROUTE PLUTÔT QUE LE SEED
  *
  * `npm run db:seed:corpus-account` suppose un accès à la base depuis un poste.
- * La préproduction n'en offre pas — et c'est bien ainsi.
+ * La préproduction n'en offre pas — et c'est bien ainsi. Le serveur, lui, a
+ * déjà la connexion.
  *
- * Le serveur, lui, a déjà la connexion. Même raisonnement que pour les
- * amorçages et la reprise du classement.
- *
- * ── POURQUOI UN COMPTE SÉPARÉ ─────────────────────────────────────────────
- *
- * Les appels d'une campagne de mesure sont facturés comme les autres. Les
- * rattacher à un compte client mélangerait ses coûts réels avec ceux de la
- * mesure — et fausserait précisément le chiffrage que le corpus sert à
- * produire avant une bascule.
- *
- * ── LE COMPTE N'EST PAS UTILISABLE ────────────────────────────────────────
- *
- * `is_active = false` sur l'utilisateur : personne ne peut s'y connecter. Le
- * mot de passe vaut `!corpus-no-login` — aucun hachage bcrypt ne commence par
- * `!`, donc aucune comparaison ne peut réussir.
- *
- * `subscription_status = 'NONE'` : il ne compte pas comme client dans les
- * tableaux d'abonnement ni dans les rapprochements Stripe.
+ * Lot 103G : la route délègue au mécanisme UNIQUE
+ * (`services/ai/qualification/technical-account.ts`) — le même que le seed,
+ * l'action auditée du BO (Configuration IA › Compte technique de
+ * qualification) et l'auto-provisionnement de préproduction :
+ *   · GET  : diagnostic en lecture seule (motif CORPUS_ACCOUNT_*, variable
+ *            déclarée / cohérente, prochain geste, campagnes et
+ *            incompatibilités affectées) ;
+ *   · POST : provisionnement IDEMPOTENT (crée, ou marque le compte existant à
+ *            l'identité dédiée ; jamais de doublon, jamais un compte client),
+ *            puis contrôle (anomalie de Supervision résolue si réparé).
+ * Le compte n'est ni connectable (utilisateur inactif, mot de passe marqueur
+ * `!`), ni facturable (`subscription_status = NONE`, aucun Stripe).
+ * Aucune adresse e-mail client ni secret dans la réponse.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NextRequest, NextResponse } from 'next/server';
-import { ensureMigrations, pgClient } from '@/db';
+import { ensureMigrations } from '@/db';
 
 export const dynamic = 'force-dynamic';
 
-const EMAIL = 'corpus@verebona.local';
-const NOM = 'Corpus de recette IA';
-
-/** État actuel : le compte existe-t-il, et la variable est-elle posée ? */
-async function etat() {
-  const rows = await pgClient<{ account_id: number; user_id: number }[]>`
-    SELECT a.id AS account_id, u.id AS user_id
-    FROM users u JOIN accounts a ON a.owner_user_id = u.id
-    WHERE u.email = ${EMAIL}
-    LIMIT 1
-  `;
-  const declare = Number(process.env.CORPUS_ACCOUNT_ID) || null;
-  return {
-    compte: rows[0]?.account_id ?? null,
-    utilisateur: rows[0]?.user_id ?? null,
-    variableDeclaree: declare,
-    // Un compte créé mais non déclaré ne sert à rien : la campagne lit la
-    // variable, pas la base.
-    coherent: rows[0] ? rows[0].account_id === declare : declare === null,
-  };
+function autorise(req: NextRequest): boolean {
+  const secret = process.env.CRON_SECRET;
+  return Boolean(secret) && req.headers.get('authorization') === `Bearer ${secret}`;
 }
 
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret || req.headers.get('authorization') !== `Bearer ${secret}`) {
-    return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
-  }
+  if (!autorise(req)) return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   await ensureMigrations();
-
-  const e = await etat();
+  const { corpusAccountDiagnostic } = await import('@/services/ai/qualification/technical-account-diagnostic');
+  const d = await corpusAccountDiagnostic();
   return NextResponse.json({
-    ...e,
-    note: e.compte === null
-      ? 'Compte absent. Appeler cette route en POST pour le créer.'
-      : e.coherent
-        ? 'Compte présent et déclaré. La campagne peut s’exécuter.'
-        : `Compte ${e.compte} présent, mais CORPUS_ACCOUNT_ID vaut ${e.variableDeclaree ?? 'rien'}. ` +
-          'Corriger la variable côté hébergeur, puis redémarrer.',
-  });
+    ...d,
+    // Compatibilité des champs historiques de la route.
+    compte: d.status.accountId ?? d.status.markedAccountId,
+    variableDeclaree: d.status.variable.value,
+    coherent: d.status.ok,
+    note: d.status.ok ? 'Compte présent et conforme. La campagne peut s’exécuter.' : `${d.status.code} : ${d.status.reasons.join(' ; ')}. ${d.status.nextAction ?? ''}`.trim(),
+  }, { headers: { 'Cache-Control': 'no-store' } });
 }
 
 export async function POST(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret || req.headers.get('authorization') !== `Bearer ${secret}`) {
-    return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
-  }
+  if (!autorise(req)) return NextResponse.json({ error: 'UNAUTHORIZED' }, { status: 401 });
   await ensureMigrations();
-
-  const existant = await etat();
-  if (existant.compte !== null) {
-    // Idempotent : deux comptes de mesure disperseraient les coûts et
-    // rendraient la comparaison entre campagnes impossible.
-    return NextResponse.json({
-      statut: 'deja_present',
-      ...existant,
-      aFaire: existant.coherent
-        ? null
-        : `Poser CORPUS_ACCOUNT_ID=${existant.compte} côté hébergeur, puis redémarrer.`,
-    });
-  }
-
-  const [utilisateur] = await pgClient<{ id: number }[]>`
-    INSERT INTO users (email, password_hash, first_name, last_name, is_active, role,
-                       plan_type, accepted_terms_at, terms_version)
-    VALUES (${EMAIL}, '!corpus-no-login', 'Corpus', 'Recette', false, 'USER',
-            'PREMIUM', now(), 'n/a')
-    RETURNING id
-  `;
-
-  const [compte] = await pgClient<{ id: number }[]>`
-    INSERT INTO accounts (name, owner_user_id, plan_type, subscription_status, is_active)
-    VALUES (${NOM}, ${utilisateur.id}, 'PREMIUM', 'NONE', true)
-    RETURNING id
-  `;
-
+  const { provisionCorpusAccount, checkCorpusAccount } = await import('@/services/ai/qualification/technical-account');
+  const r = await provisionCorpusAccount({ actor: 'cron-route' });
+  const check = await checkCorpusAccount({ report: true, impact: { source: 'POST /api/cron/ai/corpus-account' } });
   return NextResponse.json({
-    statut: 'cree',
-    compte: compte.id,
-    utilisateur: utilisateur.id,
-    aFaire: `Poser CORPUS_ACCOUNT_ID=${compte.id} côté hébergeur, puis redémarrer.`,
-  });
+    statut: r.status === 'created' ? 'cree' : r.status === 'refused' ? 'refuse' : r.status === 'marked' ? 'marque' : 'deja_present',
+    compte: r.accountId, utilisateur: r.userId, message: r.message, check,
+    aFaire: check.ok ? (check.warnings[0] ?? null) : check.nextAction,
+  }, { status: r.status === 'refused' ? 409 : 200 });
 }

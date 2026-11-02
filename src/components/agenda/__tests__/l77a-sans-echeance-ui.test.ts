@@ -59,7 +59,7 @@ describe('L77A-UI — câblage des tiroirs (création ET modification, desktop E
     expect(edition.match(/setEditNoDeadline\(item\.noDeadline === true\)/g)).toHaveLength(2);
     expect(edition).toContain('applyEditDates(toggleNoDeadline(editDates, checked))');
     expect(edition).toContain('applyEditDates(withDateEntry(editDates, { startDate: v }))');
-    expect(edition).toMatch(/apiClient\.put\(`\/api\/agenda\/\$\{item\.id\}`, \{[\s\S]*?noDeadline: editNoDeadline,/);
+    expect(edition).toMatch(/apiClient\.put(?:<[^>]*>)?\(`\/api\/agenda\/\$\{item\.id\}`, \{[\s\S]*?noDeadline: editNoDeadline,/);
     expect(edition).toContain('className="w-full sm:max-w-[520px]');
   });
 

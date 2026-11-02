@@ -413,6 +413,14 @@ export async function persistAgendaDecisions(
       }));
     }
   }
+  // Lot 103E : fournisseurs / intervenants des éléments écrits — preuves PROPRES à l'élément (document
+  // directement rattaché, fournisseur fiable), mêmes règles que le contrôle de cohérence ; jamais bloquant.
+  const sources = [...new Set([opts.sourceFileId, ...decisions.map((d) => d.sourceFileId)].filter((v): v is number => typeof v === 'number'))];
+  if (sources.length) {
+    const { itemsDirectlyLinkedToDocuments, syncAgendaSuppliersSafely } = await import('./agenda-suppliers');
+    const ids = await itemsDirectlyLinkedToDocuments(accountId, sources).catch(() => [] as number[]);
+    await syncAgendaSuppliersSafely(accountId, ids, `agenda-suppliers:t4:${sources[0]}`);
+  }
   return bilan;
 }
 

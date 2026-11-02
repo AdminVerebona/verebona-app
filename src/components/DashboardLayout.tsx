@@ -19,7 +19,7 @@ const DocumentDrawer = dynamic(
 import { leaveAfterLogout } from '@/lib/shell/logout-exit';
 import { TrialBanner } from '@/components/subscription/TrialBanner';
 import { isUnpaid } from '@/lib/trial-status';
-import { formatUserDisplayName, formatUserInitials } from '@/lib/user-display-name';
+import { formatUserDisplayName, formatUserInitials, greetingName } from '@/lib/user-display-name';
 import { LogoLoader } from './LogoLoader';
 import { useThemeToggle } from './ThemeToggle';
 import { BottomNavigation } from './mobile/bottom-navigation';
@@ -386,7 +386,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
   // l'accès au BO sans compte (règle de suspension inchangée).
   // ══════════════════════════════════════════════════════════════════════
   if (!userProp && user.accountId === null && user.role !== 'ADMIN' && user.role !== 'SUPER_ADMIN') {
-    return <NoSpaceScreen firstName={user.firstName} onLogout={handleLogout} />;
+    return <NoSpaceScreen firstName={greetingName(user) || null} onLogout={handleLogout} />;
   }
 
   const reacceptance = user.legalReacceptance;
@@ -394,7 +394,7 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     return (
       <CguvReacceptanceScreen
         state={reacceptance}
-        firstName={user.firstName}
+        firstName={greetingName(user) || null}
         onAccepted={(code) => { setAcceptedCguv(code); void refetchSession(); }}
         onLogout={handleLogout}
       />

@@ -393,6 +393,30 @@ export async function eligibleAccountIds(technicalAccountId: number | null): Pro
   return rows.map((r) => Number(r.id)).filter((id) => id !== technicalAccountId);
 }
 
+/**
+ * Lot 103G — preuves NON CONCLUANTES faute de compte technique de qualification (prérequis d'exploitation, pas un
+ * refus métier) : marquées à l'enregistrement (`metrics.prerequisite`) ou, pour l'historique antérieur, reconnues
+ * à leurs cas du corpus refusés par la passerelle (`ACCOUNT_INELIGIBLE` / compte technique absent) sans aucun défaut.
+ */
+export async function prerequisiteBlockedEvidence(evidenceIds: readonly number[]): Promise<Set<number>> {
+  if (!evidenceIds.length) return new Set();
+  try {
+    const rows = await q(
+      `SELECT e.id FROM ai_qualification_evidence e
+        WHERE e.id = ANY($1::int[]) AND e.verdict = 'INCONCLUSIVE'
+          AND (e.metrics ? 'prerequisite'
+               OR (EXISTS (SELECT 1 FROM ai_qualification_cases c WHERE c.evidence_id = e.id AND c.case_id LIKE 'corpus:%' AND c.outcome = 'INCONCLUSIVE'
+                            AND (c.inconclusive_reason LIKE '%ACCOUNT_INELIGIBLE%' OR c.inconclusive_reason LIKE '%compte technique de mesure absent%'
+                                 OR c.inconclusive_reason LIKE '%CORPUS_ACCOUNT_%'))
+                   AND NOT EXISTS (SELECT 1 FROM ai_qualification_cases c WHERE c.evidence_id = e.id AND c.outcome = 'FAILED')))`,
+      [[...new Set(evidenceIds)]],
+    );
+    return new Set(rows.map((r) => Number(r.id)));
+  } catch {
+    return new Set();
+  }
+}
+
 /** Modèle servi (version déclarée par le fournisseur) d'une trace, si connue. */
 export async function servedModelVersionOf(traceId: string | null): Promise<string | null> {
   if (!traceId) return null;

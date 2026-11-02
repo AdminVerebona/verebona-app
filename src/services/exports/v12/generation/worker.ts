@@ -17,6 +17,11 @@
  *
  * `EXPORTS_WORKER_DISABLED=true` : aucune génération sur cette instance
  * (instance web dédiée, par exemple).
+ *
+ * Lot 103C : la même boucle consomme aussi la file des archives RGPD
+ * « Mes données » (`services/gdpr/gdpr-export.job.ts`) — une génération
+ * lourde à la fois par instance, dossiers V12 et archives RGPD confondus
+ * (borne mémoire) ; après chaque archive RGPD, la file V12 est revue.
  */
 
 import { hostname } from 'node:os';
@@ -71,6 +76,17 @@ export async function drainExportQueue(workerId = EXPORT_WORKER_ID): Promise<num
   }
 }
 
+/** Lot 103C : une génération RGPD « Mes données » (jamais bloquant pour la file V12). */
+async function drainGdprExportsSafely(): Promise<number> {
+  try {
+    const { drainGdprExportQueue } = await import('@/services/gdpr/gdpr-export.job');
+    return await drainGdprExportQueue(EXPORT_WORKER_ID, { maxJobs: 1 });
+  } catch (e) {
+    console.error('[exports-v12] file RGPD « Mes données » en échec (non bloquant) :', (e as Error).message);
+    return 0;
+  }
+}
+
 async function tick(): Promise<void> {
   const st = state();
   if (st.running) { st.again = true; return; }
@@ -79,6 +95,8 @@ async function tick(): Promise<void> {
     do {
       st.again = false;
       await drainExportQueue();
+      // Lot 103C : une archive RGPD par passage, puis retour à la file V12.
+      if ((await drainGdprExportsSafely()) > 0) st.again = true;
     } while (st.again);
   } catch (e) {
     console.error('[exports-v12] tour du worker en échec (non bloquant) :', (e as Error).message);

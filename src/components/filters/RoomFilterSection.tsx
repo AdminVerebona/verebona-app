@@ -11,7 +11,7 @@
  * même composant (les pastilles passent à la ligne).
  */
 import type { RoomFilterModel } from '@/lib/filters/room-filter';
-import { FilterChoiceGroup, FilterSection, type ChoiceGroup } from './FilterControls';
+import { FilterChoiceGroup, FilterSection, type ChoiceGroup, type DescribeCount, type SectionCollapse } from './FilterControls';
 import { EQUIPMENT_COLLAPSE_AFTER } from './EquipmentFilterSection';
 
 export function RoomFilterSection({
@@ -19,11 +19,17 @@ export function RoomFilterSection({
   model,
   onSelect,
   className = '',
+  collapse,
+  describeCount,
 }: {
   id: string;
   model: RoomFilterModel;
   onSelect: (value: string) => void;
   className?: string;
+  /** Lot 103F : section repliable (« Mes documents »). */
+  collapse?: SectionCollapse;
+  /** Lot 103F : nom accessible du compteur des pastilles (« 3 documents »). */
+  describeCount?: DescribeCount;
 }) {
   if (!model.visible) return null;
   const groups: ChoiceGroup[] = [
@@ -36,9 +42,9 @@ export function RoomFilterSection({
     })),
   ];
   return (
-    <FilterSection id={id} title="Pièce" className={className}>
+    <FilterSection id={id} title="Pièce" className={className} collapse={collapse}>
       <div data-testid="filtre-piece">
-        <FilterChoiceGroup labelledBy={id} groups={groups} onSelect={onSelect} collapseAfter={EQUIPMENT_COLLAPSE_AFTER} />
+        <FilterChoiceGroup labelledBy={id} groups={groups} onSelect={onSelect} collapseAfter={EQUIPMENT_COLLAPSE_AFTER} describeCount={describeCount} />
       </div>
     </FilterSection>
   );

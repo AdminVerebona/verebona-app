@@ -6,8 +6,11 @@
  * RÈGLES
  *
  *   · Le compte n'est créé qu'APRÈS le choix explicite « Créer un nouveau
- *     compte », le profil (prénom, nom, adresse principale) et l'acceptation
- *     des CGUV dans la version RÉELLEMENT affichée (SIGN-02/03).
+ *     compte », le profil (« Prénom ou pseudo » — lot 103B —, adresse
+ *     principale) et l'acceptation des CGUV dans la version RÉELLEMENT
+ *     affichée (SIGN-02/03). Prénom / nom civils : facultatifs, jamais
+ *     fabriqués à partir du pseudo ni recopiés depuis le fournisseur sans
+ *     saisie de l'utilisateur.
  *   · Compte ET identité externe créés dans UNE transaction : jamais
  *     d'identité orpheline ni de compte sans identité (§7.2 étape 14).
  *   · Adresse principale = celle attestée (vérifiée) par le fournisseur →
@@ -45,8 +48,18 @@ import { emailService } from '@/lib/email/email-service';
 import { logUserActivity } from '@/lib/audit-logger';
 import { getClientIp } from '@/lib/auth/client-ip';
 import type { TxClaims, TxContext } from './transactions';
+import {
+  DISPLAY_NAME_ERROR_MESSAGES, cleanCivilName, personalAccountName, validateDisplayName, type DisplayNameError,
+} from '@/lib/auth/display-name';
 
 export interface SocialProfile {
+  /**
+   * Lot 103B : « Prénom ou pseudo » (`users.username`, non unique). Absent
+   * d'une étape « code » enregistrée avant le déploiement : le prénom saisi
+   * alors en tient lieu (`profileDisplayName`).
+   */
+  username?: string;
+  /** Champs civils facultatifs : seulement ce que l'utilisateur a saisi (ancien formulaire), sinon vides. */
   firstName: string;
   lastName: string;
   email: string;
@@ -59,11 +72,10 @@ export interface SocialProfile {
 }
 
 export type ProfileError =
-  | 'MISSING_FIRST_NAME' | 'MISSING_LAST_NAME' | 'INVALID_EMAIL' | 'TERMS_NOT_ACCEPTED' | 'NO_CURRENT_LEGAL_VERSION';
+  | DisplayNameError | 'INVALID_EMAIL' | 'TERMS_NOT_ACCEPTED' | 'NO_CURRENT_LEGAL_VERSION';
 
 export const PROFILE_ERROR_MESSAGES: Readonly<Record<ProfileError, string>> = {
-  MISSING_FIRST_NAME: 'Le prénom est requis.',
-  MISSING_LAST_NAME: 'Le nom est requis.',
+  ...DISPLAY_NAME_ERROR_MESSAGES,
   INVALID_EMAIL: 'Adresse e-mail invalide.',
   TERMS_NOT_ACCEPTED: 'Vous devez accepter les CGUV pour créer un compte.',
   NO_CURRENT_LEGAL_VERSION: 'Les CGUV sont momentanément indisponibles. Réessayez dans quelques instants.',
@@ -76,18 +88,30 @@ export function isPlausibleEmail(email: string): boolean {
   return email.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
-/** Contrôle du profil saisi (pur, hors version CGUV). */
-export function validateProfileInput(raw: Record<string, unknown>): { ok: true; firstName: string; lastName: string; email: string; referralCode: string | null; presentedVersion: string | null } | { ok: false; code: ProfileError } {
-  const firstName = clean(raw.firstName, 100);
-  const lastName = clean(raw.lastName, 100);
+/**
+ * Contrôle du profil saisi (pur, hors version CGUV). Lot 103B : un seul nom
+ * obligatoire, `username` (« Prénom ou pseudo ») ; un ancien formulaire
+ * (prénom + nom, sans `username`) reste accepté : son prénom devient le nom
+ * d'affichage et prénom / nom sont conservés tels que saisis.
+ */
+export function validateProfileInput(raw: Record<string, unknown>): { ok: true; username: string; firstName: string; lastName: string; email: string; referralCode: string | null; presentedVersion: string | null } | { ok: false; code: ProfileError } {
+  const usernameProvided = typeof raw.username === 'string' && raw.username.trim() !== '';
+  const display = validateDisplayName(usernameProvided ? raw.username : raw.firstName);
+  if (!display.ok) return { ok: false, code: display.code };
+  const firstName = cleanCivilName(raw.firstName);
+  const lastName = cleanCivilName(raw.lastName);
   const email = clean(raw.email, 254).toLowerCase();
-  if (!firstName) return { ok: false, code: 'MISSING_FIRST_NAME' };
-  if (!lastName) return { ok: false, code: 'MISSING_LAST_NAME' };
   if (!isPlausibleEmail(email)) return { ok: false, code: 'INVALID_EMAIL' };
   if (raw.acceptedTerms !== true) return { ok: false, code: 'TERMS_NOT_ACCEPTED' };
   const referral = clean(raw.referralCode, 40).toUpperCase();
   const presented = clean(raw.termsVersion, 80);
-  return { ok: true, firstName, lastName, email, referralCode: referral || null, presentedVersion: presented || null };
+  return { ok: true, username: display.value, firstName, lastName, email, referralCode: referral || null, presentedVersion: presented || null };
+}
+
+/** Nom d'affichage d'un profil (étape « code » d'avant le lot 103B : le prénom saisi). */
+export function profileDisplayName(profile: Pick<SocialProfile, 'username' | 'firstName'>): string {
+  const v = validateDisplayName(profile.username?.trim() ? profile.username : profile.firstName);
+  return v.ok ? v.value : '';
 }
 
 /** Version des CGUV retenue : celle présentée, sinon la courante (§7, CDC 7 §18). `null` : aucune publiée. */
@@ -144,6 +168,7 @@ export async function createSocialAccount(input: {
 }): Promise<CreateOutcome> {
   const now = input.now ?? new Date();
   const { claims, profile, invitation } = input;
+  const username = profileDisplayName(profile) || null;
   await releaseUnverifiedEmail(profile.email);
 
   const pendingMembership = invitation?.valid && invitation.kind === 'account' ? invitation.membership : undefined;
@@ -155,8 +180,9 @@ export async function createSocialAccount(input: {
       const [u] = await tx.insert(users).values({
         email: profile.email,
         passwordHash: null,
-        firstName: profile.firstName,
-        lastName: profile.lastName,
+        firstName: profile.firstName ?? '',
+        lastName: profile.lastName ?? '',
+        username,
         planType: 'STANDARD',
         isActive: true,
         locale: 'fr-FR',
@@ -203,7 +229,8 @@ export async function createSocialAccount(input: {
       if (joinsExistingAccount) return { userId: u.id, accountId: null, joinedAccountId: null };
 
       const [acc] = await tx.insert(accounts).values({
-        name: `Compte de ${profile.firstName} ${profile.lastName}`,
+        // Lot 103B : « Compte de Sophie », fondé sur le nom d'affichage.
+        name: personalAccountName({ username, firstName: profile.firstName, lastName: profile.lastName }),
         ownerUserId: u.id,
         planType: 'STANDARD',
         subscriptionTier: 'free',
@@ -261,7 +288,7 @@ export async function createSocialAccount(input: {
   runDetached('e-mail de bienvenue (inscription Google / Apple)', () => emailService.send({
     templateCode: 'WELCOME',
     to: profile.email,
-    variables: { firstName: profile.firstName, loginUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/login` },
+    variables: { firstName: username ?? '', loginUrl: `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/login` },
     userId: created.userId,
   }));
   void logUserActivity({

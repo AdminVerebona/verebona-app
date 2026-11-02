@@ -49,6 +49,7 @@ import { ModelRegistry } from './_components/ModelRegistry';
 import { ModelCapabilities } from './_components/ModelCapabilities';
 import { CoupleQualification } from './_components/CoupleQualification';
 import { PromptConformity } from './_components/PromptConformity';
+import { CorpusAccount } from './_components/CorpusAccount';
 import { CorpusCertification } from './_components/CorpusCertification';
 import { OperationProfilesEditor, type OperationProfile, type ProfiledOperation, type PlanView } from './_components/OperationProfilesEditor';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
@@ -1079,6 +1080,9 @@ export default function AiConfigPage() {
 
       {/* Lot 86A (Pilotage IA V2 P5) : qualification par couple, seuils (lecture), candidates, test manuel. */}
       <CoupleQualification key={current?.id ?? 'active'} versionId={current?.id ?? null} />
+
+      {/* Lot 103G : compte technique de qualification — prérequis des campagnes (constat et réparation sans accès base). */}
+      <CorpusAccount />
 
       {/* Lot 99B : conformité des prompts — contrats IA, corrections automatiques qualifiées (préproduction), retours arrière. */}
       <PromptConformity />

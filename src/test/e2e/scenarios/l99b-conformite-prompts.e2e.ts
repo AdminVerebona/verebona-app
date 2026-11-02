@@ -203,7 +203,8 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
     const admin = await make.user({ role: 'ADMIN' });
     adminId = admin.id;
     session.adminId = admin.id;
-    techAccount = (await make.account()).id;
+    // Lot 103G : compte technique RÉEL (mécanisme unique, marqueur en base) — un compte client n'est plus accepté.
+    techAccount = (await (await import('@/services/ai/qualification/technical-account')).provisionCorpusAccount({ actor: 'e2e-l99b' })).accountId!;
     process.env.CORPUS_ACCOUNT_ID = String(techAccount);
     const { setProviderSecretResolver } = await import('@/services/ai/provider/provider-secret');
     setProviderSecretResolver(async () => CLE);

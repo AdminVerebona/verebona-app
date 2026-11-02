@@ -78,6 +78,7 @@ import {
   isToClassify,
   libelleResultats,
   parseSearchResults,
+  setDateFilter,
   setEquipmentFilter,
   setRoomFilter,
   sortOptionsFor,
@@ -90,6 +91,7 @@ import {
 } from './documents-view';
 import { DEFAULT_PREFS, loadPrefs, savePrefs, type ViewPrefs } from './view-prefs';
 import { saveListSnapshot, takeListSnapshot, type ListSnapshot } from './list-restore';
+import { useFilterSections } from './filter-sections';
 import { useDocumentsFeed, type FeedQuery } from './useDocumentsFeed';
 import { buildEquipmentFilterModel } from '@/lib/filters/equipment-filter';
 import { buildRoomFilterModel } from '@/lib/filters/room-filter';
@@ -345,7 +347,6 @@ export function DocumentsByRubric({
   const [q, setQ] = useState('');
   // ── Filtres (jamais mémorisés d'une visite à l'autre) et état local ──────
   const [filters, setFilters] = useState<ViewFilters>(EMPTY_FILTERS);
-  const [filtersOpen, setFiltersOpen] = useState(false);
   const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
 
   useEffect(() => {
@@ -390,6 +391,11 @@ export function DocumentsByRubric({
     }
   }, []);
   const changeFilters = (next: ViewFilters) => setFilters(next);
+  // Lot 103F : panneau « Filtres » et sections repliables — présentation
+  // seulement (jamais dans `filters`, donc jamais dans la requête), gardée
+  // pour la session de l'onglet, par écran.
+  const sections = useFilterSections(restoreScope, filters, ready);
+  const filtersOpen = sections.panelOpen;
 
   // URL changée sans remontage de l'écran (« Voir tous les documents » de la
   // recherche générale ouvert depuis « Mes documents ») : la recherche suit.
@@ -482,6 +488,14 @@ export function DocumentsByRubric({
     const sauver = () => {
       const s = feed.snapshot();
       if (s) saveListSnapshot(restoreScope, { ...s, filters: filtersRef.current, scrollTop: scrollTopRef.current, savedAt: Date.now() });
+      // Lot 103F : aucun document affiché (filtres trop étroits) — les
+      // critères sont gardés quand même ; la liste sera redemandée.
+      else if (hasActiveFilters(filtersRef.current)) {
+        saveListSnapshot(restoreScope, {
+          v: 1, key: '', filters: filtersRef.current, documents: [], meta: null, nextCursor: null, pageEnds: [],
+          scrollTop: 0, savedAt: Date.now(),
+        });
+      }
     };
     window.addEventListener('pagehide', sauver);
     return () => {
@@ -658,7 +672,7 @@ export function DocumentsByRubric({
         filterCount={activeFilterCount(filters)}
         filtersOpen={filtersOpen}
         filtersPanelId={filtersPanelId}
-        onFiltersToggle={() => setFiltersOpen((v) => !v)}
+        onFiltersToggle={() => sections.setPanelOpen(!filtersOpen)}
         onAdd={ajouter}
       />
 
@@ -672,6 +686,9 @@ export function DocumentsByRubric({
           onEquipment={(value) => changeFilters(setEquipmentFilter(filters, value))}
           room={roomModel}
           onRoom={(value) => changeFilters(setRoomFilter(filters, value))}
+          filters={filters}
+          onDate={(dim, value) => changeFilters(setDateFilter(filters, dim, value))}
+          sections={{ open: sections.open, onOpenChange: sections.setSectionOpen }}
         />
       )}
       {resultIds && !q && (
@@ -689,7 +706,9 @@ export function DocumentsByRubric({
         onRemove={(dim, value) => changeFilters(
           dim === 'equipment' ? setEquipmentFilter(filters, null)
             : dim === 'piece' ? setRoomFilter(filters, null)
-              : toggleFilter(filters, dim, value),
+              // Lot 103F : retirer une date garde l'autre.
+              : dim === 'documentDate' || dim === 'addedDate' ? setDateFilter(filters, dim, null)
+                : toggleFilter(filters, dim, value),
         )}
         onClear={() => changeFilters(EMPTY_FILTERS)}
       />
@@ -727,9 +746,15 @@ export function DocumentsByRubric({
       )}
 
       {meta && !q && scopeTotal > 0 && total === 0 && (
-        <p className="py-12 text-center text-sm text-[color:var(--text-muted)]">
-          Aucun document ne correspond à ces filtres.
-        </p>
+        <div className="flex flex-col items-center gap-3 py-12 text-center">
+          <p className="m-0 text-sm text-[color:var(--text-muted)]">
+            Aucun document ne correspond à ces filtres.
+          </p>
+          {/* Lot 103F : retour direct à la liste complète (sélections seulement). */}
+          {filtered && (
+            <Button size="sm" variant="outline" onClick={() => changeFilters(EMPTY_FILTERS)}>Réinitialiser les filtres</Button>
+          )}
+        </div>
       )}
 
       <div className="flex flex-col gap-[30px]">

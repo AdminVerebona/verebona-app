@@ -84,6 +84,8 @@ export async function GET(
         eventNature: natures?.get(item.id)?.nature ?? null,
         businessType: natures?.get(item.id)?.businessType ?? null,
         originFieldKey: item.originFieldKey ?? null,
+        // Lot 103D : réalisation prouvée (0945).
+        completionProven: natures?.get(item.id)?.completionProven === true,
       }, now),
       originType: item.originType,
       // Lot 77A : tâche « Sans échéance » (mention dans la fiche équipement).

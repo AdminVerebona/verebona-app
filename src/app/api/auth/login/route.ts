@@ -19,6 +19,9 @@ import { EMAIL_NOT_VERIFIED_MESSAGE, INVALID_CREDENTIALS_MESSAGE } from '@/lib/a
 import { userGuideProgress } from '@/db/schema';
 import { eq, and } from 'drizzle-orm';
 import { resolveSessionAccount, accountSuspendedResponse } from '@/lib/auth/account-suspension';
+import { withAuthDiag } from '@/lib/auth/auth-diagnostics';
+import { readLoginAttemptId } from '@/lib/auth/login-diagnostics';
+import { readClientContext } from '@/lib/mobile/client-context';
 
 
 function invalidCredentials() {
@@ -71,6 +74,22 @@ function throttleDetails(ctx: LoginAttemptContext, verdict: ThrottleVerdict | nu
  * ══════════════════════════════════════════════════════════════════════════
  */
 export async function POST(request: NextRequest) {
+  // Lot 103A : une ligne `[auth.diag]` par tentative (statut, code, plateforme,
+  // identifiant de corrélation) — jamais l'e-mail ni le mot de passe.
+  return withAuthDiag(request, 'login', () => login(request), { always: true });
+}
+
+/** Lot 103A : corrélation et plateforme dans le journal d'activité (BO › historique des connexions). */
+function diagDetails(request: NextRequest): Record<string, string> {
+  const attemptId = readLoginAttemptId(request.headers);
+  const ctx = readClientContext(request);
+  return {
+    ...(attemptId ? { loginAttemptId: attemptId } : {}),
+    ...(ctx.declared ? { client: ctx.client } : {}),
+  };
+}
+
+async function login(request: NextRequest): Promise<NextResponse> {
   let body: { email?: string; password?: string } = {};
   try {
     body = await request.json();
@@ -132,8 +151,8 @@ export async function POST(request: NextRequest) {
         userId: row?.id ?? null,
         userEmail: row?.email ?? normalized,
         details: row
-          ? { reason: 'invalid_password', attemptCount: 1, accountStatus: String(row.status).toLowerCase(), ...throttle }
-          : { reason: 'user_not_found', attemptCount: 1, accountStatus: 'not_found', ...throttle },
+          ? { reason: 'invalid_password', attemptCount: 1, accountStatus: String(row.status).toLowerCase(), ...throttle, ...diagDetails(request) }
+          : { reason: 'user_not_found', attemptCount: 1, accountStatus: 'not_found', ...throttle, ...diagDetails(request) },
         request,
       });
       if (verdict?.lockedNow) {
@@ -255,6 +274,7 @@ export async function POST(request: NextRequest) {
         currentAccountId: defaultAccount?.id,
         // D1 : appareil déjà reconnu pour ce compte (sinon : premier succès ici).
         trustedDevice: !!throttleCtx.trustedDeviceId,
+        ...diagDetails(request),
       },
       request,
     });

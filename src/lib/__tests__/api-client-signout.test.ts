@@ -150,7 +150,8 @@ describe('handleAuthFailure — une seule sortie, bornée', () => {
     stop();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(raisons).toEqual(['auth-failure']);
-    expect(fenetre.location.href).toBe(`/login?expired=1&returnUrl=${encodeURIComponent('/assets/12?onglet=docs')}`);
+    // Lot 103A : motif codé (`reason`) ajouté ; `expired=1` conservé pour les anciens liens.
+    expect(fenetre.location.href).toBe(`/login?expired=1&returnUrl=${encodeURIComponent('/assets/12?onglet=docs')}&reason=session_expired`);
   });
 
   it('logout sans réponse : la navigation a lieu après LOGOUT_TIMEOUT_MS', async () => {

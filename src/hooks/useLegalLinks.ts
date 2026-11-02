@@ -10,6 +10,7 @@
  */
 import { useEffect, useState } from 'react';
 import { LEGAL_DOCUMENT_KEYS, clientLegalLinks, type LegalLinks } from '@/lib/legal/public-legal';
+import { registerServerLegalOrigins } from '@/lib/legal/open-legal-link';
 
 let shared: Promise<LegalLinks | null> | null = null;
 
@@ -20,9 +21,18 @@ function isLinks(v: unknown): v is LegalLinks {
 function loadServerLinks(): Promise<LegalLinks | null> {
   shared ??= fetch('/api/legal/links', { credentials: 'omit' })
     .then((r) => (r.ok ? r.json() : null))
-    .then((d: { links?: unknown } | null) => (isLinks(d?.links) ? d!.links as LegalLinks : null))
+    .then((d: { links?: unknown; allowedOrigins?: unknown } | null) => {
+      // Lot 103A : origines juridiques admises par le serveur (liste blanche de `LegalLink`).
+      registerServerLegalOrigins(d?.allowedOrigins);
+      return isLinks(d?.links) ? d!.links as LegalLinks : null;
+    })
     .catch(() => null);
   return shared;
+}
+
+/** Lance (une fois) la lecture des liens et origines juridiques du serveur. */
+export function preloadLegalLinks(): void {
+  if (typeof window !== 'undefined') void loadServerLinks();
 }
 
 export function useLegalLinks(): LegalLinks {

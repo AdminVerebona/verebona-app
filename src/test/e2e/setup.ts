@@ -13,7 +13,7 @@
  *     change plus le comportement des fichiers suivants.
  */
 import { inject, beforeEach, afterAll } from 'vitest';
-import { cloneE2eDatabase, derivedDatabaseName, dropE2eDatabasesWithPrefix } from './db-bootstrap';
+import { cloneE2eDatabase, derivedDatabaseName, dropE2eDatabasesWithPrefix, withDatabase } from './db-bootstrap';
 import { restoreProcessEnv } from './isolation';
 
 const ORIGINE = Symbol.for('verebona.e2e.envOrigine');
@@ -39,6 +39,14 @@ if (process.env.E2E_SHARED_DB === '1') {
   const adminUrl = process.env.E2E_DATABASE_URL!;
   const prefix = inject('e2eRunPrefix');
   const database = derivedDatabaseName(prefix, `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`);
+  // Lot 103 — DATABASE_URL posée AVANT toute attente. `restoreProcessEnv` vient de la retirer
+  // (absente de l'environnement d'origine) ; pendant la copie de la base (asynchrone), un
+  // traitement encore en vol du fichier PRÉCÉDENT pouvait faire `import('@/db')` dans le
+  // registre de modules de CE fichier : `@/db` était alors construit SANS URL, le pilote se
+  // connectait sous le compte système (« password authentication failed for user runner / root »)
+  // et tout le fichier échouait (L76E en CI, L53A en local, de façon intermittente).
+  // Le pilote ne se connecte qu'à la première requête : la base existe à ce moment-là.
+  process.env.DATABASE_URL = withDatabase(adminUrl, database);
   process.env.DATABASE_URL = await cloneE2eDatabase({ adminUrl, template: inject('e2eTemplateDatabase'), database });
   // Fin du fichier : suppression des bases des fichiers PRÉCÉDENTS, pas de la sienne (supprimée à la fin
   // du fichier suivant, ou en fin d'exécution) — une écriture sans attente encore en vol (journal

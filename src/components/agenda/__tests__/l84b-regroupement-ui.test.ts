@@ -34,6 +34,8 @@ const principal: AgendaGroupingView = {
     rooms: [{ id: 7, name: 'Cuisine', assetId: 5 }],
     equipments: [],
   },
+  // Lot 103D : « Maison » est un logement rattaché — les catégories Pièces / Équipements existent.
+  structuralScope: { allowed: true, housingAssetIds: [5] },
 };
 
 describe('L84B-UI01 — tiroir de l’événement de référence (AC27)', () => {
@@ -50,7 +52,9 @@ describe('L84B-UI01 — tiroir de l’événement de référence (AC27)', () => 
   it('relier pour chaque catégorie, créer une étape, retirer chaque objet, retirer le rôle', () => {
     for (const k of MAIN_CATEGORIES) expect(html).toContain(`data-testid="regroupement-relier-${k}"`);
     expect(html).toContain('data-testid="regroupement-creer-etape"');
-    for (const t of ['Visite expert', 'Maison', 'Cuisine']) expect(html).toContain(`aria-label="Retirer « ${t} »"`);
+    for (const t of ['Maison', 'Cuisine']) expect(html).toContain(`aria-label="Retirer « ${t} »"`);
+    // Lot 103D (wording des associations) : un événement associé se « dissocie » (lien seul).
+    expect(html).toContain('aria-label="Dissocier « Visite expert »"');
     // Lot 86D : pour un document, « retirer de l’ensemble » est distingué de « détacher de cet événement ».
     expect(html).toContain('aria-label="Retirer « Rapport d’expertise » de l’ensemble"');
     expect(html).toContain('Ne plus en faire l’événement de référence');
@@ -87,7 +91,10 @@ describe('L84B-UI02 — tiroir d’un élément rattaché : léger (AC28)', () =
 describe('L84B-UI03 / UI04 — élément seul ; ensemble sans événement de référence', () => {
   it('élément seul : relier un élément de l’agenda (AC02) ou un document (AC01)', () => {
     const html = rendre({ itemId: 9, role: 'NONE', linkedDocuments: [], main: null, mainWithdrawn: false, ensemble: null, counts: null });
-    expect(html).toContain('Relier un élément de l’agenda');
+    // Lot 103D (décision PO du 31/10) : rubrique « Associations », « Associer à un autre événement ».
+    expect(html).toContain('Associer à un autre événement');
+    expect(html).toContain('Associations');
+    expect(html).not.toContain('Relier un élément de l’agenda');
     // Lot 89B : « Associer un document » (libellé PO du 25/10).
     expect(html).toContain('Associer un document');
     expect(html).toContain('data-role="seul"');
@@ -116,7 +123,7 @@ describe('L84B-UI05 — accessibilité, mobile', () => {
     expect(panneau).toContain('<SheetTitle>{title}</SheetTitle>');
     expect(panneau).toContain('<SheetDescription className="sr-only">');
     expect(panneau).not.toMatch(/side=["']bottom/);
-    expect(panneau).toContain('aria-label={L.search}');
+    expect(panneau).toContain('aria-label={searchLabel}');
   });
   it('retrait du rôle : confirmation explicite (rien n’est supprimé, jamais rétabli de soi-même)', () => {
     expect(src).toContain('<AlertDialogTitle>{L.releaseTitle}</AlertDialogTitle>');

@@ -52,7 +52,8 @@ scenario('L53A', 'Sécurité CDC 18 — D1 anti-force brute, Q21 inscription et 
     const termsVersion = await cgvuCourantes();
     const res = await POST(req('/api/users', {
       ip,
-      body: { email, password: 'NouveauMdp1!x', firstName: 'Nouvel', lastName: 'Inscrit', acceptedTerms: true, termsVersion, ...over },
+      // Lot 103B : charge utile du formulaire actuel (« Prénom ou pseudo » seul).
+      body: { email, password: 'NouveauMdp1!x', username: 'Nouvel inscrit', acceptedTerms: true, termsVersion, ...over },
     }));
     return { status: res.status, body: await res.json() };
   }
@@ -98,19 +99,30 @@ scenario('L53A', 'Sécurité CDC 18 — D1 anti-force brute, Q21 inscription et 
     expect(JSON.parse(trace.details)).toMatchObject({ accountCreated: false });
   });
 
-  it('PO-Q21-E2E-02 les refus de l’inscription ne dépendent pas de l’existence du compte (nom d’utilisateur pris, mot de passe faible, invitation invalide)', async () => {
+  it('PO-Q21-E2E-02 les refus de l’inscription ne dépendent pas de l’existence du compte (pseudo vide, mot de passe faible, invitation invalide) ; un pseudo déjà porté n’est PAS un refus (lot 103B)', async () => {
     const existant = await compte();
     const pris = uid('pseudo');
     await sql`UPDATE users SET username = ${pris} WHERE id = ${existant.id}`;
     const libre = () => `${uid('libre')}@test.invalid`;
     const autre = await compte();
-    for (const over of [{ username: pris }, { password: 'faible' }, { inviteToken: 'jeton-inconnu' }]) {
+    for (const over of [{ username: '   ' }, { password: 'faible' }, { inviteToken: 'jeton-inconnu' }]) {
       const x = await inscription(libre(), over);
       const y = await inscription(autre.email, over);
       expect(y).toEqual(x);
       expect(x.status).toBeGreaterThanOrEqual(400);
     }
     expect((await inscription(libre(), { password: 'faible' })).body.code).toBe('WEAK_PASSWORD');
+    expect((await inscription(libre(), { username: ' ' })).body.code).toBe('MISSING_DISPLAY_NAME');
+    // Lot 103B (décision PO du 31/10/2026) : le pseudo n'est pas unique — même
+    // réponse neutre (201) qu'une adresse libre, aucun 409 DUPLICATE_USERNAME.
+    const libreAvecPseudoPris = libre();
+    const x = await inscription(libreAvecPseudoPris, { username: pris });
+    const y = await inscription(autre.email, { username: pris });
+    expect(x.status).toBe(201);
+    expect(y).toEqual(x);
+    expect(JSON.stringify(x)).not.toMatch(/DUPLICATE/);
+    const homonymes = await sql<{ id: number }[]>`SELECT id FROM users WHERE username = ${pris}`;
+    expect(homonymes).toHaveLength(2);
   });
 
   it('PO-Q21-E2E-03 activation par le lien reçu : session ouverte avec accès 15 min, renouvellement 30 j, appareil reconnu ; lien à usage unique', async () => {

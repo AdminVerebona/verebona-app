@@ -48,8 +48,17 @@ interface Issue {
   postCheck: { residualFindings?: number; after?: { total: number; invalid: number } };
   contract: Contract | null;
   events: Array<{ kind: string; message: string; at: string }>;
+  /** Lot 103G : passages de détection ≠ essais réellement lancés ; blocage de prérequis. */
+  detections?: number; attempts?: number;
+  prerequisiteBlock?: { code: string | null; label: string | null; since: string | null; stage: string | null; resumes: number } | null;
 }
-interface Overview { readAt: string; environment: string; mode: string; note: string; activationAllowed: boolean; registry: Contract[]; issues: Issue[] }
+interface CorpusAccountState { ok: boolean; code: string; label: string; accountId: number | null; reasons: string[]; warnings: string[]; nextAction: string | null; security: boolean }
+interface Overview {
+  readAt: string; environment: string; mode: string; note: string; activationAllowed: boolean; registry: Contract[]; issues: Issue[];
+  maxPerPass?: number; functional?: { state: string; label: string };
+  counts?: { open: number; waitingPrerequisite: number; blocked: number; failed: number; activated: number; resolved: number; attempts: number };
+  corpusAccount?: CorpusAccountState | null;
+}
 
 const TONE: Record<string, string> = {
   ok: 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]',
@@ -81,8 +90,16 @@ function IssueCard({ i, busy, onRetry }: { i: Issue; busy: boolean; onRetry: (i:
     <div data-testid="conformity-issue" className="rounded-lg border border-[color:var(--border-subtle)] p-3 space-y-2 min-w-0">
       <div className="flex flex-wrap items-center gap-2">
         <span className={`text-xs px-2 py-0.5 rounded-full border ${STATUS_TONE[i.status]}`}>{i.statusLabel}</span>
-        <span className="text-xs text-[color:var(--text-secondary)]">{i.treatment} · {i.faultLabel} · {i.occurrences} occurrence(s)</span>
+        <span className="text-xs text-[color:var(--text-secondary)]" data-testid="conformity-counters">
+          {i.treatment} · {i.faultLabel} · détectée {i.detections ?? i.occurrences} fois (passages de détection) · {i.attempts ?? 0} essai(s) de correction
+        </span>
       </div>
+      {i.prerequisiteBlock && (
+        <p className={`text-xs px-2 py-1 rounded-lg border break-words ${TONE.warn}`} data-testid="conformity-prerequisite">
+          En attente d’un prérequis d’exploitation{i.prerequisiteBlock.code ? ` (${i.prerequisiteBlock.code})` : ''} : {i.prerequisiteBlock.label ?? 'compte technique de qualification'}.
+          {' '}Ce n’est pas un refus de non-régression ; reprise automatique au passage suivant la réparation{i.prerequisiteBlock.resumes ? ` (${i.prerequisiteBlock.resumes} reprise(s) déjà faite(s))` : ''}.
+        </p>
+      )}
       <p className="text-sm font-medium text-[color:var(--text-primary)] break-words">{i.contract?.label ?? i.contractId}</p>
       <p className="text-xs text-[color:var(--text-muted)] break-words">Contrat <code>{i.contractId}</code>{i.contract?.guideStep ? ` · étape ${i.contract.guideStep} du guide` : ''}</p>
       <p className="text-xs text-[color:var(--text-secondary)] break-words"><span className="font-medium">Cause : </span>{i.cause}</p>
@@ -211,6 +228,19 @@ export function PromptConformity() {
               </Button>
             </div>
           </div>
+          {data.functional && (
+            <div className={`rounded-lg border p-2 text-xs space-y-1 break-words ${data.functional.state === 'HEALTHY' || data.functional.state === 'OPERATIONAL' ? TONE.ok : data.functional.state === 'DETECTION_ONLY' || data.functional.state === 'DISABLED' ? TONE.muted : TONE.warn}`} data-testid="conformity-functional">
+              <p className="font-medium">État fonctionnel : {data.functional.label}</p>
+              {data.counts && (
+                <p>
+                  {data.counts.open} ouverte(s) · {data.counts.waitingPrerequisite} en attente de prérequis · {data.counts.blocked} bloquée(s) · {data.counts.failed} en échec ·
+                  {' '}{data.counts.activated} activée(s) · {data.counts.resolved} résolue(s) · {data.counts.attempts} essai(s) lancé(s) au total · au plus {data.maxPerPass ?? 1} correction(s) par passage
+                </p>
+              )}
+              {data.maxPerPass === 0 && <p>AI_PROMPT_CONFORMITY_MAX_PER_PASS=0 : aucune correction ne peut être tentée.</p>}
+              {data.corpusAccount && !data.corpusAccount.ok && <p>Compte technique de qualification : {data.corpusAccount.label} ({data.corpusAccount.code}). {data.corpusAccount.nextAction}</p>}
+            </div>
+          )}
           <p className="text-xs text-[color:var(--text-secondary)] break-words">
             Seuls les blocs officiels du guide du PO sont insérés, à partir de la version active ; une révision n’est activée qu’en préproduction, après une qualification
             concluante sans régression sur toutes les branches du prompt. Sinon l’ancienne version reste active et le motif est affiché ici.

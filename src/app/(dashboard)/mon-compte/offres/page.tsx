@@ -18,6 +18,7 @@ import { isTrialOver, isUnpaid, type UnpaidCyclePayload } from '@/lib/trial-stat
 import { UnpaidPaymentNotice } from '@/components/subscription/UnpaidPaymentNotice';
 import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
+import { LegalLink } from '@/components/legal/LegalLink';
 import { PriceChangedDialog } from '@/components/billing/PriceChangedDialog';
 import { ImmediateStartDialog } from '@/components/billing/ImmediateStartDialog';
 import { IMMEDIATE_START_FIELD } from '@/lib/legal/immediate-start';
@@ -533,7 +534,7 @@ export default function OffresPage() {
               <p className="text-sm font-semibold text-[color:var(--text-info-soft)]">Parrainage enregistré</p>
               <p className="text-xs text-[color:var(--text-info)] mt-0.5">
                 {REFERRAL_TEXT.referredNotice}{' '}
-                <a href={legalLinks.parrainage} target="_blank" rel="noopener noreferrer" className="underline">{REFERRAL_TEXT.termsLinkLabel}</a>
+                <LegalLink href={legalLinks.parrainage} target="_blank" className="underline">{REFERRAL_TEXT.termsLinkLabel}</LegalLink>
               </p>
             </div>
           </div>

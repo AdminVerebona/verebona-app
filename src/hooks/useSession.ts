@@ -52,6 +52,20 @@ interface UseSessionReturn {
 
 const serverSnapshot = () => INITIAL_SESSION_SNAPSHOT;
 
+/**
+ * Lot 103A — la procédure de sortie n'est lancée que sur un refus DÉFINITIF
+ * encore actuel : magasin « non authentifié » au moment de décider, hors
+ * déconnexion volontaire (pur, testé).
+ */
+export function shouldExitOnAuthFailure(
+  live: { status: SessionStatus; error: SessionError | null },
+  signingOut: boolean,
+): boolean {
+  if (live.status !== 'unauthenticated') return false;
+  if (live.error?.code === SIGNED_OUT_CODE || signingOut) return false;
+  return true;
+}
+
 export function useSession(
   options: UseSessionOptions = {}
 ): UseSessionReturn {
@@ -68,10 +82,18 @@ export function useSession(
   const { status, error } = snapshot;
   useEffect(() => {
     if (!required || status !== 'unauthenticated') return;
-    // Déconnexion volontaire : la procédure de sortie gère déjà la suite.
-    if (error?.code === SIGNED_OUT_CODE || apiClient.isSigningOut()) return;
-    void apiClient.handleAuthFailure({ code: error?.code });
-  }, [required, status, error]);
+    // Lot 103A — l'état lu au RENDU peut être périmé : après une connexion par
+    // navigation client (formulaire e-mail / mot de passe, vérification
+    // d'adresse), la page protégée est rendue avec l'état « non authentifié »
+    // laissé par la page de connexion (dans l'app, `NativeBridgeRuntime` lit
+    // la session dès l'écran de connexion), puis le fournisseur ouvre la
+    // nouvelle époque (effet de mise en page) AVANT cet effet. Décider sur
+    // l'état ACTUEL du magasin : sinon la procédure de sortie révoquait la
+    // session tout juste ouverte et renvoyait à « Votre session a expiré ».
+    const live = store.getSnapshot();
+    if (!shouldExitOnAuthFailure(live, apiClient.isSigningOut())) return;
+    void apiClient.handleAuthFailure({ code: live.error?.code });
+  }, [required, status, error, store]);
 
   // Référence STABLE (lot 24) : une fonction recréée à chaque rendu, placée
   // dans les dépendances d'un effet, relançait cet effet à chaque rendu

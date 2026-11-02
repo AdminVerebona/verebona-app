@@ -3,7 +3,7 @@
 // Formulaire d'inscription. Rendu par ./page.tsx, qui décide selon
 // SIGNUP_MODE (src/lib/prelaunch.ts) de l'afficher ou non.
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useId } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
@@ -14,10 +14,11 @@ import { LogoWithBaseline } from '@/components/Logo';
 import { PasswordRequirements } from '@/components/auth/PasswordRequirements';
 import { PasswordInput } from '@/components/ui/password-input';
 import { LandingFooter } from '@/components/LandingFooter';
-import { ArrowLeft, Crown, Users } from 'lucide-react';
+import { AuthBackHomeLink } from '@/components/auth/AuthBackHomeLink';
+import { Crown, Users } from 'lucide-react';
 import { FollowTheme } from '@/components/FollowTheme';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
-import { publicSiteUrl } from '@/lib/external-urls';
+import { LegalLink } from '@/components/legal/LegalLink';
 import { z } from 'zod';
 import { MIN_PASSWORD_LENGTH, checkPassword } from '@/lib/auth/password-rules';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -26,6 +27,10 @@ import { rememberPendingDuoJoin } from '@/lib/duo/pending-duo-join';
 import { SocialSignInButtons } from '@/components/auth/SocialSignInButtons';
 import { socialErrorMessage } from '@/lib/auth/oauth/messages';
 import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
+import { ReferralCodeDisclosure } from '@/components/auth/ReferralCodeDisclosure';
+import {
+  DISPLAY_NAME_HELP, DISPLAY_NAME_LABEL, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_PLACEHOLDER, validateDisplayName,
+} from '@/lib/auth/display-name';
 
 /**
  * Contexte d'invitation établi CÔTÉ SERVEUR par ./page.tsx à partir du jeton
@@ -61,10 +66,17 @@ function invitationErrorMessage(code: string, duo: boolean): string | null {
   }
 }
 
+/**
+ * Lot 103B (décision PO du 31/10/2026) : un seul nom, « Prénom ou pseudo »
+ * (`username`, non unique) — mêmes règles que le serveur
+ * (`lib/auth/display-name.ts`). Prénom / nom civils : plus demandés ici
+ * (facultatifs, dans Mon compte).
+ */
 const signupSchema = z.object({
-  firstName: z.string().min(1, "Le prénom est requis"),
-  lastName: z.string().min(1, "Le nom est requis"),
-  username: z.string().optional(),
+  username: z.string().superRefine((value, ctx) => {
+    const r = validateDisplayName(value);
+    if (!r.ok) ctx.addIssue({ code: 'custom', message: r.message });
+  }),
   email: z.string().email("Email invalide"),
   // CDC 18 §10.1 (lot 53A) : la règle vient de la SOURCE PARTAGÉE
   // `password-rules` — celle que le serveur applique — et n'est plus
@@ -127,8 +139,6 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
   // desormais ignore.
   // ══════════════════════════════════════════════════════════════════════════
   const [formData, setFormData] = useState({
-    firstName: '',
-    lastName: '',
     username: '',
     email: '',
     password: '',
@@ -138,6 +148,11 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  // Lot 103B : critères du mot de passe détaillés au focus / pendant la saisie / en erreur.
+  const [passwordFocused, setPasswordFocused] = useState(false);
+  // Code arrivé par un lien `?ref=` : affiché « appliqué », le champ reste replié.
+  const [referralFromLink, setReferralFromLink] = useState(false);
+  const fieldIds = useId();
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -155,6 +170,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
       // maniere persistante. Il vit uniquement en memoire pour la duree du
       // parcours, puis est propage par le parametre d'URL (§4.4).
       setReferralCode(ref.toUpperCase());
+      setReferralFromLink(true);
       setReferralTouch(params.get('rt'));
     }
     {
@@ -267,9 +283,8 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
         body: JSON.stringify({
           email: formData.email,
           password: formData.password,
-          firstName: formData.firstName,
-          lastName: formData.lastName,
-          username: formData.username || undefined,
+          // Lot 103B : seul nom transmis (prénom / nom civils non demandés).
+          username: formData.username,
           // Pas de `signupPlan` : l'essai de 7 jours est attribue par le
           // serveur (`grantTrial`), et l'offre est choisie plus tard.
           planType: 'STANDARD',
@@ -289,8 +304,9 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
           if (!response.ok) {
             if (data.code === 'DUPLICATE_EMAIL') {
               setError('Cette adresse email est déjà utilisée. Connectez-vous pour continuer.');
-            } else if (data.code === 'DUPLICATE_USERNAME') {
-              setError(data.error || 'Ce nom d\'utilisateur est déjà utilisé.');
+            } else if (['MISSING_DISPLAY_NAME', 'DISPLAY_NAME_TOO_LONG', 'INVALID_DISPLAY_NAME'].includes(String(data.code))) {
+              // Lot 103B : refus du « Prénom ou pseudo » (mêmes règles que le client).
+              setErrors({ username: data.error || 'Indiquez votre prénom ou un pseudo.' });
             } else if (data.code === 'WEAK_PASSWORD') {
             setError(data.message || 'Le mot de passe ne respecte pas les exigences de sécurité.');
           } else if (invitationErrorMessage(String(data.code ?? ''), isDuoInvite)) {
@@ -326,13 +342,8 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-lg bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           <CardHeader className="space-y-4">
-            <a
-              href={publicSiteUrl("/")}
-              className="inline-flex items-center gap-2 text-sm text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors w-fit"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Retour à l'accueil
-            </a>
+            {/* Lot 103A : lien Web seulement — jamais rendu dans l'app iOS / Android. */}
+            <AuthBackHomeLink />
             <div className="flex justify-center">
               <LogoWithBaseline size={50} />
             </div>
@@ -356,27 +367,22 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
             <CardDescription className="text-center text-[color:var(--text-muted)]">
               {inviteToken
                 ? 'Créez votre compte pour rejoindre le compte partagé'
-                : 'Votre essai gratuit de 7 jours commence dès la création du compte'}
+                : '7 jours d\u2019essai gratuit, sans carte bancaire'}
             </CardDescription>
             )}
 
             {/* Essai de 7 jours — CDC tarification §3.1 à §3.3. Les trois
                 mentions rassurantes sont explicitement demandées au §14 :
-                aucune carte, aucun prélèvement, données conservées. */}
+                aucune carte, aucun prélèvement, données conservées.
+                Lot 103B : introduction courte (une ligne + une note). */}
             {!inviteToken && (
-              <div className="bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg p-3 flex items-start gap-3">
-                <Crown className="w-5 h-5 text-[color:var(--accent)] flex-shrink-0 mt-0.5" />
-                <div className="text-sm">
-                  <span className="font-medium text-[color:var(--text-info)]">7 jours d&apos;essai, toutes les fonctions Premium</span>
-                  <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
-                    Sans carte bancaire et sans engagement. Aucun prélèvement automatique
-                    à la fin de l&apos;essai : vous choisirez votre offre à ce moment-là,
-                    et vos données sont conservées.
-                  </p>
-                  <p className="text-[color:var(--text-muted)] text-xs mt-1">
-                    Pendant l&apos;essai : 2 biens et 30 documents.
-                  </p>
-                </div>
+              <div className="flex items-start gap-2 text-xs text-[color:var(--text-muted)]" data-testid="trial-intro">
+                <Crown className="w-4 h-4 text-[color:var(--accent)] flex-shrink-0 mt-0.5" aria-hidden="true" />
+                <p>
+                  Toutes les fonctions Premium. Aucun prélèvement automatique à la fin de
+                  l&apos;essai : vous choisirez votre offre à ce moment-là, et vos données
+                  sont conservées. Pendant l&apos;essai : 2 biens et 30 documents.
+                </p>
               </div>
             )}
 
@@ -387,22 +393,6 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   <span className="font-medium text-[color:var(--text-success)]">Invitation à un compte partagé</span>
                   <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
                     Vous rejoignez un compte Premium Duo existant. Rien ne vous sera facturé.
-                  </p>
-                </div>
-              </div>
-            )}
-            {referralCode && !isDuoInvite && (
-              <div className="bg-[color:var(--accent-soft)] border border-[color:var(--border-info)] rounded-lg p-3 flex items-start gap-3">
-                <span className="text-xl flex-shrink-0">🎁</span>
-                <div className="text-sm">
-                  {/* L'avantage revient au parrain, jamais au filleul.
-                      Ce bandeau annonçait « un mois offert » à qui le lit —
-                      une promesse non tenue, affichée au moment précis où il
-                      décide de payer. */}
-                  <span className="font-medium text-[color:var(--text-info)]">Code de parrainage appliqué</span>
-                  <p className="text-[color:var(--text-muted)] text-xs mt-0.5">
-                    Code <span className="font-mono font-semibold text-[color:var(--accent)]">{referralCode}</span> enregistré.
-                    {' '}{REFERRAL_TEXT.referredNotice}
                   </p>
                 </div>
               </div>
@@ -421,52 +411,31 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
               className="mb-4"
             />
             <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="firstName">Prénom *</Label>
-                  <Input
-                    id="firstName"
-                    type="text"
-                    value={formData.firstName}
-                    onChange={handleChange}
-                    required
-                    disabled={isLoading}
-                  />
-                  {errors.firstName && (
-                    <p className="text-sm text-destructive">{errors.firstName}</p>
-                  )}
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="lastName">Nom *</Label>
-                  <Input
-                    id="lastName"
-                    type="text"
-                    value={formData.lastName}
-                    onChange={handleChange}
-                    required
-                    disabled={isLoading}
-                  />
-                  {errors.lastName && (
-                    <p className="text-sm text-destructive">{errors.lastName}</p>
-                  )}
-                </div>
-              </div>
-
+              {/* Lot 103B : un seul nom, « Prénom ou pseudo » (non unique, obligatoire). */}
               <div className="space-y-2">
-                <Label htmlFor="username">Nom d'utilisateur (optionnel)</Label>
+                <Label htmlFor="username">{DISPLAY_NAME_LABEL} *</Label>
                 <Input
                   id="username"
                   type="text"
-                  placeholder="Ex: sophiem"
+                  placeholder={DISPLAY_NAME_PLACEHOLDER}
                   value={formData.username}
                   onChange={handleChange}
+                  required
+                  maxLength={DISPLAY_NAME_MAX_LENGTH * 2}
+                  autoComplete="nickname"
+                  autoCapitalize="words"
+                  aria-invalid={errors.username ? true : undefined}
+                  aria-describedby={`${fieldIds}-username-help${errors.username ? ` ${fieldIds}-username-error` : ''}`}
                   disabled={isLoading}
                 />
+                <p id={`${fieldIds}-username-help`} className="text-xs text-[color:var(--text-muted)]">{DISPLAY_NAME_HELP}</p>
+                {errors.username && (
+                  <p id={`${fieldIds}-username-error`} role="alert" className="text-sm text-destructive">{errors.username}</p>
+                )}
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="email">Email *</Label>
+                <Label htmlFor="email">E-mail *</Label>
                 <Input
                   id="email"
                   type="email"
@@ -474,10 +443,14 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   value={formData.email}
                   onChange={handleChange}
                   required
+                  autoComplete="email"
+                  inputMode="email"
+                  autoCapitalize="none"
+                  aria-invalid={errors.email ? true : undefined}
                   disabled={isLoading}
                 />
                 {errors.email && (
-                  <p className="text-sm text-destructive">{errors.email}</p>
+                  <p role="alert" className="text-sm text-destructive">{errors.email}</p>
                 )}
               </div>
 
@@ -488,16 +461,25 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   autoComplete="new-password"
                   value={formData.password}
                   onChange={handleChange}
+                  onFocus={() => setPasswordFocused(true)}
+                  onBlur={() => setPasswordFocused(false)}
                   required
+                  aria-invalid={errors.password ? true : undefined}
+                  aria-describedby={`${fieldIds}-password-rules`}
                   disabled={isLoading}
                 />
                 {errors.password && (
-                  <p className="text-sm text-destructive">{errors.password}</p>
+                  <p role="alert" className="text-sm text-destructive">{errors.password}</p>
                 )}
-                <PasswordRequirements 
+                {/* Lot 103B : aide courte, critères détaillés au focus / en saisie / en erreur.
+                    Règles inchangées (`password-rules`, vérifiées aussi par le serveur). */}
+                <PasswordRequirements
+                  id={`${fieldIds}-password-rules`}
                   password={formData.password}
                   confirmPassword={formData.confirmPassword}
                   showConfirmRule={true}
+                  progressive
+                  expanded={passwordFocused || formData.password.length > 0 || !!errors.password || !!errors.confirmPassword}
                 />
               </div>
 
@@ -509,10 +491,11 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   value={formData.confirmPassword}
                   onChange={handleChange}
                   required
+                  aria-invalid={errors.confirmPassword ? true : undefined}
                   disabled={isLoading}
                 />
                 {errors.confirmPassword && (
-                  <p className="text-sm text-destructive">{errors.confirmPassword}</p>
+                  <p role="alert" className="text-sm text-destructive">{errors.confirmPassword}</p>
                 )}
               </div>
 
@@ -520,22 +503,17 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   Pre-rempli si l'utilisateur est arrive par un lien ?ref=.
                   Lot 57A (P2) : absent pour un invité Premium Duo. */}
               {!isDuoInvite && (
-              <div className="space-y-2" data-testid="referral-code-field">
-                <Label htmlFor="referralCode">Code de parrainage (facultatif)</Label>
-                <Input
+                // Lot 103B : replié derrière « J'ai un code de parrainage » ;
+                // code reçu par lien `?ref=` affiché déjà appliqué.
+                <ReferralCodeDisclosure
                   id="referralCode"
-                  type="text"
-                  placeholder="Ex. ABC123"
                   value={referralCode ?? ''}
-                  onChange={(e) => setReferralCode(e.target.value.toUpperCase().trim() || null)}
+                  onChange={(code) => setReferralCode(code || null)}
+                  appliedFromLink={referralFromLink}
+                  help={`${REFERRAL_FIELD_HELP} ${REFERRAL_TEXT.referredNotice}`}
+                  termsHref={legalLinks.parrainage}
                   disabled={isLoading}
-                  autoComplete="off"
                 />
-                <p className="text-xs text-[color:var(--text-muted)]">
-                  {REFERRAL_FIELD_HELP} {REFERRAL_TEXT.referredNotice}{' '}
-                  <a href={legalLinks.parrainage} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">{REFERRAL_TEXT.termsLinkLabel}</a>
-                </p>
-              </div>
               )}
 
               <div className="space-y-3 pt-2">
@@ -570,18 +548,18 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   >
                     {/* Ouvre la version EXACTE proposée à cet instant (§8.1),
                         sur le site public (lot 102B : source juridique unique). */}
-                    <a
+                    <LegalLink
                       href={legalVersion?.permalink ?? legalLinks.cguv}
+                      fallbackHref={legalLinks.cguv}
                       target="_blank"
-                      rel="noopener noreferrer"
                     >
                       Lire les CGUV
-                    </a>
+                    </LegalLink>
                   </Button>
                   <Button type="button" variant="ghost" size="sm" asChild disabled={isLoading}>
-                    <a href={legalLinks.confidentialite} target="_blank" rel="noopener noreferrer">
+                    <LegalLink href={legalLinks.confidentialite} target="_blank">
                       Confidentialité
-                    </a>
+                    </LegalLink>
                   </Button>
                 </div>
                 {errors.acceptedTerms && (

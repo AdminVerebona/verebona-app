@@ -21,6 +21,12 @@ interface AgendaItemRaw extends AgendaNatureSignals {
   endDate: string | null;
   endTime: string | null;
   manualStatus: ManualStatus;
+  /**
+   * Lot 103D (0945) : réalisation PROUVÉE par un document lié (contrôle
+   * COH-AGENDA-HISTORICAL-STATUS) — « réalisé » à la lecture, sans statut
+   * manuel (l'élément reste automatique et intact). Un statut manuel prime.
+   */
+  completionProven?: boolean;
 }
 
 export interface ResolvedLink {
@@ -69,6 +75,7 @@ export function computeEffectiveStatus(item: AgendaItemRaw, now: Date = new Date
   const passee = agendaDatePassed(item, now);
   if (passee === null) return 'a_venir';
   if (!passee) return 'a_venir';
+  if (item.completionProven === true) return 'realise';
   return isPastHistoricalUnconfirmed(item, now) ? 'a_confirmer' : 'en_retard';
 }
 

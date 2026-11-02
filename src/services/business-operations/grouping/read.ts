@@ -12,7 +12,8 @@ import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import type {
   AgendaGroupingView, GroupingCandidate, GroupingCandidateKind, GroupingCounts, GroupingDocumentRef, GroupingItemRef, GroupingNamedRef,
 } from '@/lib/agenda/grouping-view';
-import { drizzleRunner, type GroupingRunner } from './runner';
+import { drizzleRunner, intArray, type GroupingRunner } from './runner';
+import { operationDisplayHousingAssetIds } from '@/services/agenda/housing-scope.service';
 
 const CANDIDATE_LIMIT = 30;
 
@@ -110,10 +111,13 @@ export async function getAgendaGroupingView(accountId: number, itemId: number, r
   const items = await ensembleItems(r, accountId, op, itemId);
   const retire = await withdrawn(r, accountId, op);
   if (it.role === 'PRINCIPAL') {
+    // Lot 103D : Pièces / Équipements seulement si un logement est rattaché (règle unique).
+    const housingAssetIds = await operationDisplayHousingAssetIds(r, accountId, op);
     return {
       itemId, role: 'MAIN', main: null, mainWithdrawn: false,
       ensemble: { items, documents: await ensembleDocuments(r, accountId, op, itemId), ...(await ensembleTargets(r, accountId, op)) },
       counts: null, linkedDocuments,
+      structuralScope: { allowed: housingAssetIds.length > 0, housingAssetIds },
     };
   }
   const principal = items.find((i) => i.isMain) ?? null;
@@ -181,19 +185,24 @@ export async function listGroupingCandidates(
       return x.map((y) => ({ id: Number(y.id), title: y.name, meta: null }));
     }
     case 'pieces': {
+      // Lot 103D : uniquement les pièces des LOGEMENTS rattachés (jamais celles des autres biens du compte).
+      const logements = it.op === null ? [] : await operationDisplayHousingAssetIds(r, accountId, it.op);
+      if (!logements.length) return [];
       const x = await r.q<{ id: number; name: string; asset: string }>(
         `SELECT s.id, s.name, a.name AS asset FROM substructures s JOIN assets a ON a.id = s.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
-          WHERE s.name ILIKE $4
+          WHERE s.name ILIKE $4 AND s.asset_id = ANY($5::int[])
             AND NOT EXISTS (SELECT 1 FROM business_operation_room_links l WHERE l.operation_id = $3 AND l.substructure_id = s.id AND l.active)
-          ORDER BY (s.asset_id IN ${biens}) DESC, a.name, s.name, s.id LIMIT ${CANDIDATE_LIMIT}`, [accountId, itemId, op, like]);
+          ORDER BY a.name, s.name, s.id LIMIT ${CANDIDATE_LIMIT}`, [accountId, itemId, op, like, intArray(logements)]);
       return x.map((y) => ({ id: Number(y.id), title: y.name, meta: y.asset }));
     }
     case 'equipements': {
+      const logements = it.op === null ? [] : await operationDisplayHousingAssetIds(r, accountId, it.op);
+      if (!logements.length) return [];
       const x = await r.q<{ id: number; name: string; asset: string }>(
         `SELECT e.id, e.name, a.name AS asset FROM equipments e JOIN assets a ON a.id = e.asset_id AND a.account_id = $1 AND a.deleted_at IS NULL
-          WHERE e.name ILIKE $4
+          WHERE e.name ILIKE $4 AND e.asset_id = ANY($5::int[])
             AND NOT EXISTS (SELECT 1 FROM business_operation_equipment_links l WHERE l.operation_id = $3 AND l.equipment_id = e.id AND l.active)
-          ORDER BY (e.asset_id IN ${biens}) DESC, a.name, e.name, e.id LIMIT ${CANDIDATE_LIMIT}`, [accountId, itemId, op, like]);
+          ORDER BY a.name, e.name, e.id LIMIT ${CANDIDATE_LIMIT}`, [accountId, itemId, op, like, intArray(logements)]);
       return x.map((y) => ({ id: Number(y.id), title: y.name, meta: y.asset }));
     }
   }

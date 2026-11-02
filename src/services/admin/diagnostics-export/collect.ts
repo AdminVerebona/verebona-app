@@ -499,6 +499,18 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
     return { expected: 1, count: 1, batches: 1, error: null };
   }, undefined, 'tracabilite');
 
+  // Lot 103G (ticket P1 « compte technique de qualification », point D) : diagnostic du compte technique — identité
+  // technique non sensible, variable déclarée / cohérente, motif CORPUS_ACCOUNT_*, incompatibilités et campagnes
+  // affectées, cas du corpus concernés, reprises automatiques. Global seulement (aucune donnée de compte client).
+  if (global) {
+    entry('ia/compte-technique-qualification.json', 'Compte technique de qualification IA : état (CORPUS_ACCOUNT_*), variable, incompatibilités et campagnes bloquées par ce prérequis, reprises automatiques', async (w) => {
+      const { corpusAccountDiagnostic } = await import('@/services/ai/qualification/technical-account-diagnostic');
+      const d = await corpusAccountDiagnostic({ query: (t, p) => s.savepoint(() => s.q(t, p)) });
+      await w(`${JSON.stringify(d, null, 2)}\n`);
+      return { expected: 1, count: 1, batches: 1, error: null };
+    }, undefined, 'extractions-ia');
+  }
+
   // Diagnostic renforcé : sorties modèle conservées (accès existant, journalisé) — annexe à accès restreint.
   if (req.reinforced) {
     entry('ia/sorties-modele.json', 'DIAGNOSTIC RENFORCÉ — sorties modèle conservées des traces du filtre (accès AI_MODEL_OUTPUT_READ journalisé)', async (w) => {

@@ -10,6 +10,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { IMMEDIATE_START_HINT, IMMEDIATE_START_LABEL } from '@/lib/legal/immediate-start';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
+import { LegalLink } from '@/components/legal/LegalLink';
 
 export function ImmediateStartConsent({
   checked,
@@ -30,9 +31,9 @@ export function ImmediateStartConsent({
         {IMMEDIATE_START_LABEL}
         <span className="block text-xs text-[color:var(--text-muted)] mt-1">
           {IMMEDIATE_START_HINT}{' '}
-          <a href={legal.cguv} target="_blank" rel="noopener noreferrer" className="underline">
+          <LegalLink href={legal.cguv} target="_blank" className="underline">
             Lire les CGUV
-          </a>
+          </LegalLink>
         </span>
       </Label>
     </div>

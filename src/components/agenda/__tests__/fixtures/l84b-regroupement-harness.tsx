@@ -24,6 +24,8 @@ const VUE: AgendaGroupingView = {
     ],
     assets: [{ id: 5, name: 'Maison de Vannes' }], rooms: [{ id: 7, name: 'Cuisine', assetId: 5 }], equipments: [],
   },
+  // Lot 103D : logement rattaché — catégories Pièces / Équipements présentes.
+  structuralScope: { allowed: true, housingAssetIds: [5] },
 };
 
 /** Lot 86D : élément RATTACHÉ (tiroir léger) avec ses propres documents — détachement individuel. */

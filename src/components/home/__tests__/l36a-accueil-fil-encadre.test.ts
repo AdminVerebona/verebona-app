@@ -216,7 +216,7 @@ describe('AC36A-4 — en-tête mascotte', () => {
     expect(src).toContain('onClick={() => openItem(it)}');
     expect(src).toContain('<TodoChoicesDialog');
     expect(src).toMatch(/run\(s\.secondary\.action, s\.secondary, 'secondary'\)/);
-    expect(src).toContain("{now ? greetingWord(now) : 'Bonjour'}, {greetingName}");
+    expect(src).toContain("{now ? greetingWord(now) : 'Bonjour'}{greetingName ? `, ${greetingName}` : ''}");
     expect(src).toContain('useGreetingNow()');
   });
 });

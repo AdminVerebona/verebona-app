@@ -54,6 +54,8 @@ scenario('L82D', 'Opérations v5 — socle O-1 : principal, intégrité, provena
   async function contexte(): Promise<{ compte: AccountRow & { owner: { id: number } }; maison: AssetRow }> {
     const compte = await make.account({ plan: 'premium' });
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
+    // Lot 103D : une Maison réelle porte son sous-type — pièces et équipements ne s'associent qu'à un logement.
+    await sql`UPDATE assets SET subtype = 'Maison' WHERE id = ${maison.id}`;
     return { compte, maison };
   }
   /** Opération créée par le dépôt (même chemin que T3), source DOCUMENT. */

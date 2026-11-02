@@ -53,6 +53,8 @@ export interface Condition {
 export const exportFailureFingerprint = (assetId: number, exportType: string) =>
   buildFingerprint('exports', 'generation', 'asset', assetId, exportType);
 const exportStuckFingerprint = (exportId: number) => buildFingerprint('exports', 'stuck', exportId);
+/** Lot 103C : anomalie compacte de l'export RGPD « Mes données ». */
+export const gdprExportFingerprint = () => buildFingerprint('exports', 'gdpr', 'mes-donnees');
 const aiSuspendedFingerprint = (treatment: string) => buildFingerprint('ai', 'treatment-suspended', treatment);
 /** Empreinte des anciennes anomalies « jobs en échec définitif » (retirées au lot 84D, résolues au balayage). */
 export const aiJobsFailedFingerprint = (treatment: string) => buildFingerprint('ai', 'jobs-failed', treatment);
@@ -144,6 +146,22 @@ async function collectExportConditions(): Promise<Condition[]> {
       },
     });
   }
+  // Lot 103C : export RGPD « Mes données » — UNE anomalie compacte (échecs,
+  // générations bloquées, archives partielles, dette du registre) avec le
+  // détail par export. Colonnes 0940 absentes : rien conclu, rien signalé.
+  try {
+    const { collectGdprIssueRows, gdprSupervisionCondition } = await import('@/services/gdpr/gdpr-export-supervision');
+    const c = gdprSupervisionCondition(await collectGdprIssueRows());
+    if (c) {
+      out.push({
+        fingerprint: gdprExportFingerprint(),
+        occurredAt: c.occurredAt,
+        input: { domain: 'exports', fingerprint: gdprExportFingerprint(), title: c.title, detail: c.detail },
+      });
+    }
+  } catch (e) {
+    if (!['42P01', '42703'].includes(String((e as { code?: unknown })?.code ?? ''))) console.error('[supervision-sweep] export RGPD :', (e as Error).message);
+  }
   return out;
 }
 
@@ -179,6 +197,18 @@ export async function collectAiConditions(): Promise<Condition[]> {
   // Lot 99B : une alerte par incompatibilité contrat IA ↔ prompt actif non résolue (bloquée, en échec, retour
   // arrière, détectée…) — empreinte par contrat : une anomalie persistante ne produit pas d'alertes redondantes,
   // l'alerte se résout seule quand l'incompatibilité est activée ou résolue.
+  // Lot 103G : compte technique de qualification — UNE anomalie regroupée (et une de sécurité si la variable désigne
+  // un compte client) ; les incompatibilités bloquées par ce seul prérequis n'ont pas d'alerte propre (pas de
+  // cartes multipliées). Même diagnostic que le BO et le diagnostic global.
+  const enAttentePrerequis = new Set<string>();
+  try {
+    const { corpusAccountDiagnostic, corpusAccountConditions } = await import('@/services/ai/qualification/technical-account-diagnostic');
+    const d = await corpusAccountDiagnostic();
+    out.push(...corpusAccountConditions(d));
+    for (const c of d.conformity) enAttentePrerequis.add(c.contractId);
+  } catch (e) {
+    console.error('[supervision-sweep] compte technique de qualification :', (e as Error).message);
+  }
   try {
     const { getAiEnvironment } = await import('@/services/ai/config/environment');
     const issues = await pgClient.unsafe<Row[]>(
@@ -187,6 +217,7 @@ export async function collectAiConditions(): Promise<Condition[]> {
       [getAiEnvironment()],
     );
     for (const r of issues) {
+      if (enAttentePrerequis.has(String(r.contract_id))) continue;
       const fp = `ai:prompt-conformity:${String(r.contract_id)}`;
       out.push({
         fingerprint: fp,

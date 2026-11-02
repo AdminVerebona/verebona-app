@@ -282,9 +282,9 @@ async function buildVerification(job: JobRow, now: Date, contentAt: Date = now):
   // Lot 96A : `signup_nonce` — le lien est signé pour CETTE inscription.
   const [user] = job.user_id != null
     ? await pgClient.unsafe<{ id: number; email: string; first_name: string; is_active: boolean; status: string | null; signup_nonce: string | null }[]>(
-        `SELECT id, email, first_name, is_active, status, signup_nonce FROM users WHERE id = $1`, [job.user_id as never])
+        `SELECT id, email, COALESCE(NULLIF(btrim(username), ''), first_name) AS first_name, is_active, status, signup_nonce FROM users WHERE id = $1`, [job.user_id as never])
     : await pgClient.unsafe<{ id: number; email: string; first_name: string; is_active: boolean; status: string | null; signup_nonce: string | null }[]>(
-        `SELECT id, email, first_name, is_active, status, signup_nonce FROM users WHERE email = $1 ORDER BY is_active, id DESC LIMIT 1`,
+        `SELECT id, email, COALESCE(NULLIF(btrim(username), ''), first_name) AS first_name, is_active, status, signup_nonce FROM users WHERE email = $1 ORDER BY is_active, id DESC LIMIT 1`,
         [job.recipient_email.trim().toLowerCase() as never]);
   if (!user) return { ok: false, reason: 'ACCOUNT_GONE' };
   if (job.user_id == null) {
@@ -403,7 +403,7 @@ const CLOSED_ACCOUNT_STATUSES = new Set(['SUSPENDED', 'PENDING_DELETION', 'DELET
 async function buildDuoMembershipEnded(job: JobRow): Promise<Built> {
   if (job.user_id == null) return { ok: false, reason: 'ACCOUNT_GONE' };
   const [user] = await pgClient.unsafe<{ id: number; email: string; first_name: string | null; status: string | null }[]>(
-    `SELECT id, email, first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
+    `SELECT id, email, COALESCE(NULLIF(btrim(username), ''), first_name) AS first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
   if (!user || !user.email) return { ok: false, reason: 'ACCOUNT_GONE' };
   if (CLOSED_ACCOUNT_STATUSES.has(String(user.status ?? '').toUpperCase())) return { ok: false, reason: 'ACCOUNT_CLOSED' };
   const ctx = contextOf(job);
@@ -442,7 +442,7 @@ async function buildDuoMembershipEnded(job: JobRow): Promise<Built> {
 async function buildDuoInvitationDeclined(job: JobRow): Promise<Built> {
   if (job.user_id == null) return { ok: false, reason: 'ACCOUNT_GONE' };
   const [user] = await pgClient.unsafe<{ id: number; email: string; first_name: string | null; status: string | null }[]>(
-    `SELECT id, email, first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
+    `SELECT id, email, COALESCE(NULLIF(btrim(username), ''), first_name) AS first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
   if (!user || !user.email) return { ok: false, reason: 'ACCOUNT_GONE' };
   if (CLOSED_ACCOUNT_STATUSES.has(String(user.status ?? '').toUpperCase())) return { ok: false, reason: 'ACCOUNT_CLOSED' };
   const ctx = contextOf(job);
@@ -498,7 +498,7 @@ async function buildAnnualRenewal(job: JobRow, now: Date, contentAt: Date = now)
 async function buildPremiumConfirmation(job: JobRow): Promise<Built> {
   if (job.user_id == null) return { ok: false, reason: 'ACCOUNT_GONE' };
   const [user] = await pgClient.unsafe<{ id: number; email: string; first_name: string | null; status: string | null }[]>(
-    `SELECT id, email, first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
+    `SELECT id, email, COALESCE(NULLIF(btrim(username), ''), first_name) AS first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
   if (!user || !user.email) return { ok: false, reason: 'ACCOUNT_GONE' };
   if (CLOSED_ACCOUNT_STATUSES.has(String(user.status ?? '').toUpperCase())) return { ok: false, reason: 'ACCOUNT_CLOSED' };
   const ctx = contextOf(job);
@@ -518,7 +518,7 @@ async function buildPremiumConfirmation(job: JobRow): Promise<Built> {
 async function buildDowngradeNotification(job: JobRow): Promise<Built> {
   if (job.user_id == null) return { ok: false, reason: 'ACCOUNT_GONE' };
   const [user] = await pgClient.unsafe<{ id: number; email: string; first_name: string | null; status: string | null }[]>(
-    `SELECT id, email, first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
+    `SELECT id, email, COALESCE(NULLIF(btrim(username), ''), first_name) AS first_name, status FROM users WHERE id = $1`, [job.user_id as never]);
   if (!user || !user.email) return { ok: false, reason: 'ACCOUNT_GONE' };
   if (CLOSED_ACCOUNT_STATUSES.has(String(user.status ?? '').toUpperCase())) return { ok: false, reason: 'ACCOUNT_CLOSED' };
   const { downgradeNotificationVariables } = await import('@/lib/email/billing-emails');

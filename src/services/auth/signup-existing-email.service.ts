@@ -17,6 +17,7 @@
  *     désactivable dans BO › Communications ;
  *   · variables limitées : prénom, date de la demande, deux liens publics.
  */
+import { greetingName } from '@/lib/user-display-name';
 import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -46,7 +47,7 @@ export function signupExistingEmailVariables(p: { firstName: string | null; at: 
 /** Envoi (attendu) — exposé pour les tests ; la route passe par `scheduleSignupExistingEmail`. */
 async function sendSignupExistingEmail(userId: number, at: Date = new Date()): Promise<SignupExistingEmailOutcome> {
   const [user] = await db
-    .select({ email: users.email, firstName: users.firstName, status: users.status })
+    .select({ email: users.email, firstName: users.firstName, username: users.username, status: users.status })
     .from(users)
     .where(eq(users.id, userId))
     .limit(1);
@@ -62,7 +63,7 @@ async function sendSignupExistingEmail(userId: number, at: Date = new Date()): P
     templateCode: SIGNUP_EXISTING_ACCOUNT_TEMPLATE,
     to: user.email,
     userId,
-    variables: signupExistingEmailVariables({ firstName: user.firstName ?? null, at, appUrl: appUrl() }),
+    variables: signupExistingEmailVariables({ firstName: greetingName(user) || null, at, appUrl: appUrl() }),
   });
   return res?.success ? 'sent' : 'failed';
 }

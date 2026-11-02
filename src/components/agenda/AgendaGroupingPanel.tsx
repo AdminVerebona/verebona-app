@@ -12,7 +12,7 @@
  * composant de base 81F (zones sûres, bouton « Fermer », retour Android).
  *
  * Lot 86D (ticket « Documents / Agenda » §2) : quel que soit son rôle, un
- * élément montre SES documents (« Documents de cet élément ») — ouvrir,
+ * élément montre SES documents (« Documents associés », lot 103D) — ouvrir,
  * relier, DÉTACHER individuellement (le document et l'élément restent, rien
  * n'est supprimé ; décision mémorisée côté serveur). Pour l'événement de
  * référence, la catégorie « Documents » de l'ensemble porte les deux gestes :
@@ -54,6 +54,16 @@ export const ASSOCIATION_BTN =
 
 /** Les cinq catégories, dans l'ordre du CDC §14.2. */
 export const MAIN_CATEGORIES: readonly GroupingCandidateKind[] = ["elements", "documents", "biens", "pieces", "equipements"];
+
+/**
+ * Lot 103D (règle `lib/agenda/housing-scope`) : catégories réellement affichées —
+ * « Pièces » et « Équipements » n'existent que si un logement est rattaché
+ * (`structuralScope.allowed`, calculé par le serveur). Pur.
+ */
+export function visibleMainCategories(view: Pick<AgendaGroupingView, "structuralScope">): GroupingCandidateKind[] {
+  const logement = view.structuralScope?.allowed === true;
+  return MAIN_CATEGORIES.filter((k) => logement || (k !== "pieces" && k !== "equipements"));
+}
 
 interface Row { id: number; title: string; meta?: string | null; badge?: string | null; /** Lot 86D : document relié à CET élément (détachable). */ linked?: boolean }
 
@@ -154,7 +164,8 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
 
   const removeButton = (kind: GroupingCandidateKind, row: Row) => (
     <button type="button" disabled={busy} onClick={() => onAction(REMOVE_ACTION[kind], row.id)}
-      aria-label={kind === "documents" ? L.removeFromEnsemble(row.title) : `${L.remove} « ${row.title} »`}
+      aria-label={kind === "documents" ? L.removeFromEnsemble(row.title) : kind === "elements" ? L.dissociateEvent(row.title) : `${L.remove} « ${row.title} »`}
+      title={kind === "elements" ? L.dissociate : undefined}
       className="inline-flex size-11 sm:size-8 items-center justify-center rounded-[10px] text-[color:var(--text-muted)] hover:bg-[color:var(--danger-soft)] hover:text-[color:var(--danger)] disabled:opacity-40">
       <X className="w-3.5 h-3.5" aria-hidden />
     </button>
@@ -182,7 +193,7 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
         <h3 id={`regroupement-${view.itemId}`} className="vb-app-label">{L.sectionLinked}</h3>
         {view.mainWithdrawn && <p className="vb-meta text-xs text-[color:var(--text-muted)]">{L.withdrawnNote}</p>}
         {rows.length ? <EntityCardList>{rows.map((r) => card("elements", r))}</EntityCardList>
-          : <p className="text-xs text-[color:var(--text-muted)]">{L.empty.elements}</p>}
+          : <p className="text-xs text-[color:var(--text-muted)]">{L.emptyLinkedEvents}</p>}
         <div className="flex flex-wrap gap-2">
           {pickButton("elements")}{pickButton("documents")}
           <Button type="button" variant="secondary" size="sm" className={BTN} onClick={() => onAction("designer-reference")} disabled={busy}>
@@ -203,7 +214,7 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
         <h3 id={`regroupement-${view.itemId}`} className="vb-app-subsection">{L.sectionMain}</h3>
         <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)]">{L.mainBadge}</span>
       </div>
-      {MAIN_CATEGORIES.map((kind) => {
+      {visibleMainCategories(view).map((kind) => {
         const rows = categoryRows(view, kind);
         return (
           <div key={kind} className="space-y-2" data-testid={`regroupement-categorie-${kind}`}>
@@ -241,10 +252,13 @@ interface GroupingPickerProps {
    * en pied du choix. Choisir un élément n'en crée jamais ; seule cette action le fait.
    */
   createAction?: { label: string; onCreate: () => void; testId?: string };
+  /** Lot 103D : libellé de la recherche (« Rechercher un événement ») et aide lue par les lecteurs d'écran. */
+  searchLabel?: string;
+  description?: string;
 }
 
 /** Tiroir de choix : recherche + liste ; même composant desktop et mobile (plein écran). */
-export function GroupingPicker({ open, title, load, onPick, onClose, createAction }: GroupingPickerProps) {
+export function GroupingPicker({ open, title, load, onPick, onClose, createAction, searchLabel = L.search, description = L.pickerHint.elements }: GroupingPickerProps) {
   const [q, setQ] = useState("");
   const [items, setItems] = useState<GroupingCandidate[] | null>(null);
   const seq = useRef(0);
@@ -268,10 +282,10 @@ export function GroupingPicker({ open, title, load, onPick, onClose, createActio
         onCloseAutoFocus={(e) => { restoreFocusOnClose(e, retour.current); }}>
         <div className="px-6 pt-6 pb-3 border-b border-[color:var(--border-subtle)]">
           <SheetTitle>{title}</SheetTitle>
-          <SheetDescription className="sr-only">Choisissez l’élément à associer.</SheetDescription>
+          <SheetDescription className="sr-only">{description}</SheetDescription>
           <div className="relative mt-3">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[color:var(--text-muted)]" aria-hidden />
-            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={L.search} aria-label={L.search} className="pl-9 h-11 sm:h-9" />
+            <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={searchLabel} aria-label={searchLabel} className="pl-9 h-11 sm:h-9" />
           </div>
         </div>
         <div className="flex-1 overflow-y-auto px-4 py-3">

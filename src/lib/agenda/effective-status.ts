@@ -26,6 +26,25 @@ export const EFFECTIVE_STATUS_LABELS: Record<AgendaEffectiveStatus, string> = {
   annule: 'Annulé',
 };
 
+/**
+ * Lot 103D (ticket « Agenda — statut et rappels ») : libellé de l'option
+ * « sans statut manuel » du sélecteur de statut (tiroir Agenda, desktop et
+ * mobile). Cette option rend la main au calcul serveur : elle affiche donc le
+ * statut CALCULÉ (`automaticStatus`, sinon le statut effectif d'un élément
+ * sans statut manuel) — jamais « À venir » en dur. Cause démontrée du
+ * « À venir » affiché pour un contrôle du 22/12/2020 : cette option portait le
+ * libellé fixe « À venir » quel que soit l'état calculé (badge « Statut à
+ * confirmer » juste au-dessus).
+ */
+export const AUTOMATIC_STATUS_FALLBACK_LABEL = 'Selon la date';
+export function automaticStatusOptionLabel(item: {
+  automaticStatus?: string | null; effectiveStatus?: string | null; manualStatus?: string | null;
+}): string {
+  if (item.automaticStatus) return effectiveStatusLabel(item.automaticStatus);
+  if (!item.manualStatus && item.effectiveStatus) return effectiveStatusLabel(item.effectiveStatus);
+  return AUTOMATIC_STATUS_FALLBACK_LABEL;
+}
+
 /** Libellé d'un statut reçu (valeur inconnue : rendue telle quelle). */
 export function effectiveStatusLabel(status: string | null | undefined): string {
   return (status && EFFECTIVE_STATUS_LABELS[status as AgendaEffectiveStatus]) || (status ?? '');

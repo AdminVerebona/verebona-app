@@ -20,6 +20,7 @@ import { MICROCOPY } from '@/lib/referential/v2/microcopy';
 import { UNFILED_COLORS, rubricColors } from '@/lib/referential/v2/rubrics';
 import { equipmentFilterParam, isEquipmentFilterActive } from '@/lib/filters/equipment-filter';
 import { isRoomFilterActive, roomFilterParam } from '@/lib/filters/room-filter';
+import { dateFilterChipLabel, isDateFilterActive, type DateFilterDim, type DateFilterValue } from '@/lib/filters/date-filter';
 
 /** Identifiant de la zone « Sans rubrique » — le même que côté serveur. */
 export const UNFILED = '__UNFILED__';
@@ -74,6 +75,13 @@ export interface ViewFilters {
    * chaque changement de bien.
    */
   piece?: string;
+  /**
+   * Lot 103F — « Date du document » : période résolue (bornes incluses) ou
+   * « Sans date ». Indépendante du bien : un changement de bien la garde.
+   */
+  documentDate?: DateFilterValue;
+  /** Lot 103F — « Date d'ajout » : période résolue (bornes incluses). */
+  addedDate?: DateFilterValue;
 }
 
 /** Dimensions à choix multiples (pastilles à bascule). */
@@ -133,7 +141,37 @@ export function hasActiveFilters(f: ViewFilters): boolean {
 
 export function activeFilterCount(f: ViewFilters): number {
   return f.biens.length + f.rubrics.length + f.types.length + (isEquipmentFilterActive(f.equipment) ? 1 : 0)
-    + (isRoomFilterActive(f.piece) ? 1 : 0);
+    + (isRoomFilterActive(f.piece) ? 1 : 0)
+    + (isDateFilterActive(f.documentDate) ? 1 : 0) + (isDateFilterActive(f.addedDate) ? 1 : 0);
+}
+
+/** Sections repliables du panneau de filtres (lot 103F), dans l'ordre d'affichage. */
+export type FilterSectionKey = 'bien' | 'rubrique' | 'type' | 'piece' | 'equipement' | 'dateDocument' | 'dateAjout';
+
+/**
+ * Sélections actives d'UNE section — compteur « N actifs » de son en-tête,
+ * distinct des compteurs de documents des pastilles.
+ */
+export function sectionActiveCount(f: ViewFilters, section: FilterSectionKey): number {
+  switch (section) {
+    case 'bien': return f.biens.length;
+    case 'rubrique': return f.rubrics.length;
+    case 'type': return f.types.length;
+    case 'piece': return isRoomFilterActive(f.piece) ? 1 : 0;
+    case 'equipement': return isEquipmentFilterActive(f.equipment) ? 1 : 0;
+    case 'dateDocument': return isDateFilterActive(f.documentDate) ? 1 : 0;
+    case 'dateAjout': return isDateFilterActive(f.addedDate) ? 1 : 0;
+  }
+}
+
+/**
+ * Lot 103F — pose ou retire un filtre temporel ; l'autre date et les autres
+ * critères sont conservés (retirer l'un n'efface jamais l'autre).
+ */
+export function setDateFilter(f: ViewFilters, dim: DateFilterDim, value: DateFilterValue | null | undefined): ViewFilters {
+  const next: ViewFilters = { ...f };
+  if (isDateFilterActive(value)) next[dim] = value; else delete next[dim];
+  return next;
 }
 
 /** Filtres combinés : ET entre dimensions, OU à l'intérieur d'une dimension. */
@@ -151,6 +189,7 @@ export function toggleFilter(f: ViewFilters, dim: FilterDim, value: string): Vie
   const next: ViewFilters = { ...f, [dim]: list.includes(value) ? list.filter((v) => v !== value) : [...list, value] };
   // Lot 71 : changer de bien réinitialise le filtre Équipement (« Tous ») ;
   // lot 75B : et le filtre Pièce (« Toutes les pièces »).
+  // Lot 103F : les périodes ne dépendent pas du bien, elles sont conservées.
   if (dim === 'biens') { delete next.equipment; delete next.piece; }
   return next;
 }
@@ -267,13 +306,19 @@ export function buildFilterOptions(
   return filterOptionsFromFacets(facetsFromDocuments(scope), f, rubrics);
 }
 
-/** Pastilles « Filtré par … », dans l'ordre Bien, Pièce, Équipement, Rubrique, Type. */
+/** Dimension d'une pastille « Filtré par … ». */
+export type ChipDim = FilterDim | 'equipment' | 'piece' | DateFilterDim;
+
+/**
+ * Pastilles « Filtré par … », dans l'ordre Bien, Pièce, Équipement, Rubrique,
+ * Type, Date du document, Date d'ajout (ordre des sections).
+ */
 export function activeFilterChips(
   f: ViewFilters,
   options: ReturnType<typeof buildFilterOptions>,
   equipmentChipLabel: string | null = null,
   roomChipLabel: string | null = null,
-): Array<{ dim: FilterDim | 'equipment' | 'piece'; value: string; label: string }> {
+): Array<{ dim: ChipDim; value: string; label: string }> {
   const libelle = (list: FilterOption[], v: string) => list.find((o) => o.value === v)?.label ?? v;
   const equipment = equipmentFilterParam(f.equipment);
   const piece = roomFilterParam(f.piece);
@@ -283,6 +328,10 @@ export function activeFilterChips(
     ...(equipment && equipmentChipLabel ? [{ dim: 'equipment' as const, value: equipment, label: equipmentChipLabel }] : []),
     ...f.rubrics.map((v) => ({ dim: 'rubrics' as const, value: v, label: libelle(options.rubrics, v) })),
     ...f.types.map((v) => ({ dim: 'types' as const, value: v, label: libelle(options.types, v) })),
+    ...(isDateFilterActive(f.documentDate)
+      ? [{ dim: 'documentDate' as const, value: 'documentDate', label: dateFilterChipLabel('documentDate', f.documentDate) }] : []),
+    ...(isDateFilterActive(f.addedDate)
+      ? [{ dim: 'addedDate' as const, value: 'addedDate', label: dateFilterChipLabel('addedDate', f.addedDate) }] : []),
   ];
 }
 

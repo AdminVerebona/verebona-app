@@ -25,6 +25,12 @@
 import { equipmentFilterParam, parseEquipmentFilter, type EquipmentFacet } from '@/lib/filters/equipment-filter';
 import { roomFilterParam, type RoomFacet } from '@/lib/filters/room-filter';
 import { LOCAL_SEARCH_PARAM, normalizeLocalQuery } from '@/lib/search/local-search';
+import {
+  readDateFilterParams,
+  writeDateFilterParams,
+  type DateFilterValue,
+  type DateRangeError,
+} from '@/lib/filters/date-filter';
 
 /** Taille d'un lot (valeur indicative du ticket, ajustable après mesure). */
 export const FEED_DEFAULT_LIMIT = 50;
@@ -62,6 +68,18 @@ export interface FeedFilters {
    * Voir `lib/filters/room-filter.ts`.
    */
   piece?: string;
+  /**
+   * Lot 103F — « Date du document » (`asset_files.document_date`) : bornes
+   * incluses (jours), ou « Sans date » (`preset: 'none'`). Absent : aucune
+   * restriction. Voir `lib/filters/date-filter.ts`.
+   */
+  documentDate?: DateFilterValue;
+  /**
+   * Lot 103F — « Date d'ajout » (`asset_files.uploaded_at`, horodatage
+   * serveur d'entrée) : bornes incluses, jours de Paris. Absent : aucune
+   * restriction.
+   */
+  addedDate?: DateFilterValue;
 }
 
 export interface FeedParams {
@@ -93,6 +111,11 @@ export interface FeedParams {
   q?: string;
   limit: number;
   cursor: string | null;
+  /**
+   * Lot 103F — période refusée à la lecture (jour invalide, début après la
+   * fin) : la route répond 400 au lieu d'élargir le résultat en silence.
+   */
+  dateRangeError?: DateRangeError;
 }
 
 /** Document d'un lot — identique à l'ancienne réponse par Rubrique. */
@@ -189,6 +212,10 @@ export function parseFeedParams(p: URLSearchParams): FeedParams {
     : FEED_DEFAULT_LIMIT;
   const idsRaw = p.get('ids');
   const recherche = normalizeLocalQuery(p.get(LOCAL_SEARCH_PARAM));
+  // Lot 103F : filtres temporels (bornes incluses, jours `YYYY-MM-DD`).
+  const docDate = readDateFilterParams(p, 'documentDate');
+  const added = readDateFilterParams(p, 'addedDate');
+  const dateRangeError = docDate.error ?? added.error;
   return {
     assetIds: positiveIds(list(p.get('assets'))),
     sort,
@@ -201,11 +228,14 @@ export function parseFeedParams(p: URLSearchParams): FeedParams {
       types: list(p.get('types')),
       ...(equipmentFilterParam(p.get('equipment')) ? { equipment: parseEquipmentFilter(p.get('equipment')) } : {}),
       ...(roomFilterParam(p.get('piece')) ? { piece: roomFilterParam(p.get('piece'))! } : {}),
+      ...(docDate.filter ? { documentDate: docDate.filter } : {}),
+      ...(added.filter ? { addedDate: added.filter } : {}),
     },
     ids: idsRaw === null ? null : idsRaw === 'none' ? [] : positiveIds(list(idsRaw)),
     ...(recherche ? { q: recherche } : {}),
     limit,
     cursor: p.get('cursor') || null,
+    ...(dateRangeError ? { dateRangeError } : {}),
   };
 }
 
@@ -227,6 +257,9 @@ export function buildFeedQuery(params: Omit<FeedParams, 'cursor' | 'limit'> & { 
   if (equipment) q.set('equipment', equipment);
   const piece = roomFilterParam(params.filters.piece);
   if (piece) q.set('piece', piece);
+  // Lot 103F : périodes (bornes résolues) — partie de la clé de requête.
+  writeDateFilterParams(q, 'documentDate', params.filters.documentDate);
+  writeDateFilterParams(q, 'addedDate', params.filters.addedDate);
   // Lot 97C : la recherche fait partie de la clé — toute modification invalide
   // le curseur et recharge le premier lot du nouveau périmètre.
   const recherche = normalizeLocalQuery(params.q);

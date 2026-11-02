@@ -129,7 +129,9 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
     factId, fileId, key, value, confidence: 'certain', sourceType: 'asset_file', ruleCode: null, linkedToThis: true, linkedToOther: false, ...o,
   });
   it('déclaré en FIN de registre, couvert (domaine équipements), jamais destructeur', () => {
-    expect(COHERENCE_REGISTRY[COHERENCE_REGISTRY.length - 1].id).toBe('COH-EQUIPMENT-IDENTITY');
+    // Lots 103E et 103D : contrôles ajoutés APRÈS (sans réordonner l'existant).
+    const ids = COHERENCE_REGISTRY.map((c) => c.id);
+    expect(ids.slice(ids.indexOf('COH-EQUIPMENT-IDENTITY'))).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

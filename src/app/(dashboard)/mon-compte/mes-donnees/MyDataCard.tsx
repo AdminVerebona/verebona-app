@@ -8,15 +8,31 @@
  * données du compte et de l'utilisateur (droit d'accès et portabilité), au
  * format JSON, avec les documents déposés, dans une archive ZIP.
  *
- * Génération immédiate quand elle tient dans la requête ; sinon asynchrone :
- * le bloc interroge l'état toutes les 5 s tant qu'il est affiché, et une
- * notification prévient quand l'archive est prête. Le lien de
- * téléchargement exige la session et expire (GDP-022).
+ * Lot 103C (ticket P1 « Fiabilisation de l'export », §3 C et F) :
+ *  · client HTTP commun (`apiClient`) : renouvellement de session sécurisé
+ *    (jeton d'accès de 15 min expiré pendant que l'écran est ouvert — iOS
+ *    comme Web), en-têtes de plateforme, budgets, codes d'erreur. Un POST
+ *    n'est jamais rejoué implicitement ; la clé d'idempotence
+ *    (`Idempotency-Key`) est CONSERVÉE après un échec réseau ou une réponse
+ *    illisible : la nouvelle tentative de l'utilisateur renvoie la même
+ *    demande au lieu d'en créer une seconde ;
+ *  · après un échec de la demande, l'état est RELU : une demande
+ *    enregistrée malgré une réponse perdue s'affiche « en cours » ;
+ *  · UN seul message (calculé par le serveur, `export-state.ts`) et le
+ *    bouton seulement quand il peut servir ; jamais l'ancien échec et
+ *    l'erreur de relance à la fois ; référence à donner au support.
+ *
+ * Génération asynchrone : le bloc interroge l'état toutes les 5 s tant qu'il
+ * est affiché, et une notification prévient quand l'archive est prête. Le
+ * lien de téléchargement exige la session et expire (GDP-022).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { CollapsibleCard } from '@/components/ui/collapsible-card';
 import { Button } from '@/components/ui/button';
 import { Database, Download, Loader2, RefreshCw } from 'lucide-react';
+import { apiClient, ApiClientError } from '@/lib/api-client';
+import { publicSiteUrl } from '@/lib/external-urls';
+import { requestErrorMessage, type GdprExportView } from '@/services/gdpr/export-state';
 
 type ExportStatus = 'pending' | 'generating' | 'ready' | 'error' | 'expired';
 
@@ -28,6 +44,10 @@ interface ExportState {
   expiresAt: string | null;
   sizeBytes: number | null;
   error: string | null;
+  completeness?: 'complete' | 'partial' | null;
+  missing?: Array<{ label: string; reason: string }>;
+  missingCount?: number;
+  view?: GdprExportView;
 }
 
 /** Lot 102C : partie téléchargeable de l'archive. */
@@ -36,6 +56,13 @@ interface ExportPart {
   sizeBytes: number | null;
   documents: number;
   downloadUrl: string;
+}
+
+interface ExportResponse {
+  export: ExportState | null;
+  downloadUrl: string | null;
+  parts?: ExportPart[];
+  view?: GdprExportView | null;
 }
 
 const ENDPOINT = '/api/users/me/gdpr-export';
@@ -51,9 +78,20 @@ function size(bytes: number | null): string {
   return mo >= 1 ? `${mo.toLocaleString('fr-FR', { maximumFractionDigits: 1 })} Mo` : `${Math.ceil(bytes / 1024)} Ko`;
 }
 
+function newRequestKey(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  return `mes-donnees-${c?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`}`;
+}
+
+function errorOf(e: unknown): { status: number; code: string | null; message: string | null; requestId: string | null } {
+  if (e instanceof ApiClientError) return { status: e.status, code: e.code, message: e.serverMessage ?? null, requestId: e.requestId ?? null };
+  return { status: 0, code: 'NETWORK_ERROR', message: null, requestId: null };
+}
+
 /** `defaultOpen` : tiroir ouvert d'emblée (page « Compte en cours de suppression »). */
 export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = {}) {
   const [state, setState] = useState<ExportState | null>(null);
+  const [view, setView] = useState<GdprExportView | null>(null);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [parts, setParts] = useState<ExportPart[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,21 +99,27 @@ export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const poll = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Clé de la demande en cours d'envoi : gardée tant que la réponse n'a pas été lue. */
+  const pendingKey = useRef<string | null>(null);
 
-  const apply = (data: { export: ExportState | null; downloadUrl: string | null; parts?: ExportPart[] }) => {
+  const apply = (data: ExportResponse) => {
     setState(data.export);
+    setView(data.view ?? data.export?.view ?? null);
     setDownloadUrl(data.downloadUrl);
     setParts(Array.isArray(data.parts) ? data.parts : []);
   };
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<ExportResponse | null> => {
     try {
       setLoadError(null);
-      const res = await fetch(ENDPOINT, { credentials: 'include', cache: 'no-store' });
-      if (!res.ok) throw new Error();
-      apply(await res.json());
-    } catch {
-      setLoadError('Impossible de charger l’état de votre export.');
+      const data = await apiClient.fetch<ExportResponse>(ENDPOINT, { cache: 'no-store' });
+      if (!data || typeof data !== 'object' || !('export' in data)) throw new ApiClientError(0, 'INVALID_RESPONSE');
+      apply(data);
+      return data;
+    } catch (e) {
+      const err = errorOf(e);
+      if (err.code !== 'REQUEST_ABORTED') setLoadError(`Impossible de charger l’état de votre export.${err.requestId ? ` (référence ${err.requestId.slice(0, 8).toUpperCase()})` : ''}`);
+      return null;
     } finally {
       setLoading(false);
     }
@@ -94,23 +138,34 @@ export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = 
   const requestExport = async () => {
     setSubmitting(true);
     setActionError(null);
+    pendingKey.current ??= newRequestKey();
     try {
-      const res = await fetch(ENDPOINT, { method: 'POST', credentials: 'include' });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data) {
-        setActionError(data?.message ?? 'Votre demande n’a pas pu être enregistrée. Réessayez.');
-        return;
-      }
+      const data = await apiClient.fetch<ExportResponse>(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': pendingKey.current },
+      });
+      if (!data || typeof data !== 'object' || !('export' in data)) throw new ApiClientError(0, 'INVALID_RESPONSE');
+      pendingKey.current = null;
       apply(data);
-    } catch {
-      setActionError('Erreur réseau : votre demande n’a pas pu être envoyée.');
+    } catch (e) {
+      const err = errorOf(e);
+      // Refus définitif (ni réseau ni réponse illisible) : la clé peut être renouvelée.
+      const uncertain = err.status === 0 || err.status >= 500 || err.code === 'INVALID_RESPONSE' || err.code === 'UNKNOWN_ERROR';
+      if (!uncertain) pendingKey.current = null;
+      // La demande a-t-elle été enregistrée malgré tout ? L'état fait foi.
+      const fresh = uncertain ? await load() : null;
+      const recorded = fresh?.export && (fresh.export.status === 'pending' || fresh.export.status === 'generating');
+      if (recorded) pendingKey.current = null;
+      else if (err.code !== 'REQUEST_ABORTED') setActionError(requestErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
   };
 
-  const expired = state?.status === 'expired'
-    || (state?.status === 'ready' && state.expiresAt !== null && new Date(state.expiresAt) <= new Date());
+  const kind = view?.kind ?? (inProgress ? 'in_progress' : state ? null : 'none');
+  const readyLike = (kind === 'ready' || kind === 'partial') && downloadUrl && state?.status === 'ready';
+  // Un seul message d'alerte à la fois : l'erreur de la demande remplace l'ancien échec.
+  const showViewMessage = !(actionError && (kind === 'interrupted' || kind === 'needs_support' || kind === 'none' || kind === 'expired'));
 
   return (
     <div>
@@ -145,24 +200,38 @@ export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = 
             </button>
           </div>
         ) : (
-          <div className="space-y-3">
-            {inProgress && (
-              <div className="flex items-start gap-2 rounded-lg border border-[color:var(--border-subtle)] p-3 text-sm">
+          <div className="space-y-3" data-testid="mes-donnees-etat" data-etat={kind ?? ''}>
+            {kind === 'in_progress' && view && (
+              <div className="flex items-start gap-2 rounded-lg border border-[color:var(--border-subtle)] p-3 text-sm" role="status">
                 <Loader2 className="w-4 h-4 mt-0.5 animate-spin shrink-0" />
-                <p>
-                  Préparation de votre archive en cours. Vous pouvez quitter cette page :
-                  une notification vous préviendra dès qu’elle sera prête.
-                </p>
+                <p>{view.message}</p>
               </div>
             )}
 
-            {state?.status === 'ready' && !expired && downloadUrl && (
+            {readyLike && state && (
               <div className="rounded-lg border border-[color:var(--border-subtle)] p-3 text-sm space-y-2">
                 <p>
-                  Archive prête{state.completedAt ? ` depuis le ${parisDateTime(state.completedAt)}` : ''}
+                  {kind === 'partial' ? 'Archive prête mais incomplète' : 'Archive prête'}
+                  {state.completedAt ? ` depuis le ${parisDateTime(state.completedAt)}` : ''}
                   {state.sizeBytes ? ` (${size(state.sizeBytes)})` : ''}.
                   {state.expiresAt && <> Disponible jusqu’au {parisDateTime(state.expiresAt)}.</>}
                 </p>
+                {kind === 'partial' && view && (
+                  <div className="space-y-1" role="status">
+                    <p>{view.message}</p>
+                    {state.missing && state.missing.length > 0 && (
+                      <details className="text-xs text-muted-foreground">
+                        <summary className="cursor-pointer">Voir les éléments non inclus</summary>
+                        <ul className="mt-1 list-disc pl-5 space-y-0.5">
+                          {state.missing.map((m, i) => <li key={i}>{m.label} : {m.reason}</li>)}
+                          {(state.missingCount ?? 0) > state.missing.length && (
+                            <li>… et {(state.missingCount ?? 0) - state.missing.length} autre(s), listés dans manifest.json.</li>
+                          )}
+                        </ul>
+                      </details>
+                    )}
+                  </div>
+                )}
                 {parts.length > 1 ? (
                   <div className="space-y-2">
                     <p>
@@ -185,9 +254,9 @@ export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = 
                     </ul>
                   </div>
                 ) : (
-                  <Button size="sm" asChild>
+                  <Button size="sm" asChild className="w-full sm:w-auto">
                     {/* Route authentifiée : redirige vers un lien de stockage à durée courte. */}
-                    <a href={downloadUrl} rel="noopener">
+                    <a href={downloadUrl!} rel="noopener">
                       <Download className="w-4 h-4 mr-1.5" />
                       Télécharger l’archive
                     </a>
@@ -196,28 +265,34 @@ export function MyDataCard({ defaultOpen = false }: { defaultOpen?: boolean } = 
               </div>
             )}
 
-            {state?.status === 'error' && (
-              <p className="text-sm text-destructive">
-                La préparation de votre dernière archive a échoué. Vous pouvez relancer la demande.
-              </p>
+            {showViewMessage && view && (kind === 'interrupted' || kind === 'needs_support') && (
+              <div className="text-sm space-y-1" role="alert">
+                <p className="text-destructive">{view.message}</p>
+                {kind === 'needs_support' && (
+                  <a href={publicSiteUrl('/contact')} className="text-primary underline text-xs" target="_blank" rel="noopener noreferrer">
+                    Contacter l’assistance
+                  </a>
+                )}
+              </div>
             )}
-            {expired && (
-              <p className="text-sm text-muted-foreground">
-                Votre dernière archive a expiré. Demandez-en une nouvelle si besoin.
-              </p>
+            {showViewMessage && view && (kind === 'expired' || kind === 'none') && (
+              <p className="text-sm text-muted-foreground">{view.message}</p>
             )}
 
-            {actionError && <p className="text-sm text-destructive">{actionError}</p>}
+            {actionError && <p className="text-sm text-destructive" role="alert">{actionError}</p>}
 
-            <Button
-              variant={state?.status === 'ready' && !expired ? 'outline' : 'default'}
-              size="sm"
-              onClick={requestExport}
-              disabled={submitting || inProgress}
-            >
-              {submitting ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1.5" />}
-              {state?.status === 'ready' && !expired ? 'Générer une nouvelle archive' : 'Exporter mes données'}
-            </Button>
+            {(view ? view.canRequest : !inProgress) && (
+              <Button
+                variant={kind === 'ready' ? 'outline' : 'default'}
+                size="sm"
+                onClick={requestExport}
+                disabled={submitting || inProgress}
+                className="w-full sm:w-auto"
+              >
+                {submitting ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1.5" />}
+                {view?.requestLabel ?? 'Exporter mes données'}
+              </Button>
+            )}
           </div>
         )}
       </CollapsibleCard>

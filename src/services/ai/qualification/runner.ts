@@ -42,7 +42,17 @@ export const productionGatewayCall: GatewayCall = async (req, ctx) => {
   return runInJobContext(ctx, () => AiGateway.execute(req));
 };
 
-export type Observation = CaseObservation & { advisory: boolean };
+/**
+ * Lot 103G : cas non exécuté faute de PRÉREQUIS d'exploitation (cause établie,
+ * jamais « non établie ») — compte technique de qualification (corpus) ou
+ * compte de données d'un rejeu devenu non éligible (C-Q10).
+ */
+export type PrerequisiteBlock = 'TECHNICAL_ACCOUNT' | 'REPLAY_ACCOUNT';
+
+export type Observation = CaseObservation & { advisory: boolean; blockedBy?: PrerequisiteBlock };
+
+/** Préfixe stable des motifs « prérequis » (reconnu par la reprise automatique et le BO). */
+export const PREREQUISITE_REASON_PREFIX = 'prérequis d’exploitation';
 
 interface CoupleRun {
   observations: Observation[];
@@ -104,7 +114,10 @@ export async function runCoupleCases(p: {
       observedSha256: null, matchesHistorical: null, manifestCaseId: c.manifestCaseId ?? null, attempts: 0,
     };
     const accountId = c.accountId ?? p.technicalAccountId;
-    if (!accountId) return { ...base, inconclusiveReason: 'compte technique de mesure absent (CORPUS_ACCOUNT_ID) : cas du corpus non exécuté' };
+    const technique = c.accountId == null;
+    if (!accountId) {
+      return { ...base, blockedBy: 'TECHNICAL_ACCOUNT', inconclusiveReason: `${PREREQUISITE_REASON_PREFIX} : compte technique de qualification absent (CORPUS_ACCOUNT_MISSING) — cas du corpus non exécuté` };
+    }
     let derniere = '';
     for (let essai = 0; essai <= th.transientRetries; essai += 1) {
       base.attempts = essai + 1;
@@ -145,6 +158,14 @@ export async function runCoupleCases(p: {
           const parameter = (e as { rejectedParameter?: string }).rejectedParameter ?? null;
           requestRejected ??= { parameter, message: String((e as Error).message).slice(0, 300) };
           return { ...base, inconclusiveReason: `requête refusée (${code}) : incompatibilité de réglage du couple` };
+        }
+        if (code === 'ACCOUNT_INELIGIBLE') {
+          // Lot 103G : cause ÉTABLIE et actionnable (refus C-Q10 avant tout contact fournisseur : aucun appel conclu,
+          // latence non mesurable). Jamais rejoué dans la campagne : le compte ne redevient pas éligible en cours d'essai.
+          const motif = (e as { reason?: string }).reason ?? 'READ_ONLY';
+          return technique
+            ? { ...base, blockedBy: 'TECHNICAL_ACCOUNT', inconclusiveReason: `${PREREQUISITE_REASON_PREFIX} : compte technique de qualification ${accountId} non éligible (ACCOUNT_INELIGIBLE : ${motif}) — aucun appel conclu, latence non mesurable` }
+            : { ...base, blockedBy: 'REPLAY_ACCOUNT', inconclusiveReason: `${PREREQUISITE_REASON_PREFIX} : compte de données du rejeu non éligible (ACCOUNT_INELIGIBLE : ${motif}, C-Q10) — cas non exécuté` };
         }
         if (TRANSIENT.has(code) && essai < th.transientRetries) continue;
         return { ...base, inconclusiveReason: TRANSIENT.has(code) ? `erreur fournisseur transitoire, nouvel essai épuisé (${derniere})` : `cause non établie (${derniere})` };

@@ -168,13 +168,20 @@ describe('contrôle de la passerelle', () => {
     ]);
   });
 
-  it('compte technique des campagnes (CORPUS_ACCOUNT_ID) : jamais plafonné, opérations comme pipeline', async () => {
+  it('lot 103G : CORPUS_ACCOUNT_ID seule n’exempte plus (compte client désigné → plafonné) ; seul le compte vérifié du contexte de campagne est exempté', async () => {
     vi.stubEnv('CORPUS_ACCOUNT_ID', '7');
     setCostCapStoreForTests(fakeStore({ offer: { premium: 1 }, spent: 10 }).store);
-    expect(isCostCapped({ accountId: 7, useCaseCode: 'SOURCE_ANALYSIS' })).toBe(false);
-    await expect(appel()).resolves.toBeUndefined();
-    expect(await costCapReachedFor(7, NOW)).toBeNull();
-    expect(isCostCapped({ accountId: 8, useCaseCode: 'SOURCE_ANALYSIS' })).toBe(true);
+    expect(isCostCapped({ accountId: 7, useCaseCode: 'SOURCE_ANALYSIS' })).toBe(true);
+    await expect(appel()).rejects.toBeInstanceOf(AiCostCapReachedError);
+    const { runWithTechnicalAccount } = await import('../../qualification/technical-context');
+    await runWithTechnicalAccount({ ok: true, accountId: 7 }, 'test', async () => {
+      expect(isCostCapped({ accountId: 7, useCaseCode: 'SOURCE_ANALYSIS' })).toBe(false);
+      await expect(appel()).resolves.toBeUndefined();
+      expect(await costCapReachedFor(7, NOW)).toBeNull();
+      expect(isCostCapped({ accountId: 8, useCaseCode: 'SOURCE_ANALYSIS' })).toBe(true);
+    });
+    // Contexte jamais ouvert sans précontrôle réussi.
+    expect(() => runWithTechnicalAccount({ ok: false, accountId: 7 }, 'test', () => 1)).toThrow(/non vérifié/);
     vi.unstubAllEnvs();
   });
 

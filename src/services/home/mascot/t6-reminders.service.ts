@@ -31,6 +31,9 @@
 import { pgClient } from '@/db';
 import { todayParis } from './collector';
 import { agendaFingerprint, currentT6Fingerprints } from './t6-interpellation.service';
+import { agendaReminderRelevance, type AgendaReminderRelevance } from '@/lib/agenda/reminder-relevance';
+import { historicalSql } from '@/services/agenda/agenda-historical';
+import { agendaFunctionalColumnsReady } from '@/services/agenda/agenda-columns';
 import { agendaSubjectKey, preferenceAppliesToCycle, seriesSubjectKey, snoozeDateError, suggestReminderDate, t6CycleKeySql,
   type T6PreferenceDecision, type T6PreferenceScope,
 } from './t6-interpellation';
@@ -78,6 +81,12 @@ interface T6ReminderState {
   suggestedDate: string;
   occurrence: T6ReminderPrefView | null;
   series: T6ReminderPrefView | null;
+  /**
+   * Lot 103D : un rappel EFFECTIF existe-t-il pour cette échéance (décision T6
+   * existante ou préférence de l'utilisateur) ? Sinon la fiche n'affiche aucun
+   * bloc « Rappels sur l'accueil » (ni report, ni refus).
+   */
+  relevance?: AgendaReminderRelevance;
 }
 
 type T6ReminderError = { ok: false; code: 'NOT_FOUND' | 'INVALID_DATE' | 'NO_SERIES' | 'INVALID_INPUT'; message: string };
@@ -122,6 +131,12 @@ export async function getT6ReminderState(p: { accountId: number; userId: number;
   const t = await targetOf(p.accountId, p.agendaItemId);
   if (!t) return { ok: false, code: 'NOT_FOUND', message: 'Cette échéance n’est plus disponible.' };
   const today = p.today ?? todayParis();
+  // Lot 103D : statut et nature de l'échéance (sujet clos, fait historique D-14).
+  const col0223 = await agendaFunctionalColumnsReady();
+  const [etat] = await rows(
+    `SELECT i.manual_status, ${historicalSql('i', col0223)} AS historical FROM agenda_items i WHERE i.id = $1 AND i.account_id = $2`,
+    [t.id, p.accountId],
+  ).catch(() => [] as Row[]);
   const cles = [agendaSubjectKey(t.id), ...(t.seriesKey ? [seriesSubjectKey(t.seriesKey)] : [])];
   const r = await rows(
     `SELECT subject_key, scope, decision, to_char(remind_at, 'YYYY-MM-DD') AS remind_at, updated_at,
@@ -135,10 +150,18 @@ export async function getT6ReminderState(p: { accountId: number; userId: number;
     && preferenceAppliesToCycle({ scope: 'OCCURRENCE', cycleKey: typeof x.cycle_key === 'string' ? x.cycle_key : null }, t.cycleKey));
   const ser = t.seriesKey ? r.find((x) => x.subject_key === seriesSubjectKey(t.seriesKey!)) : undefined;
   const [a] = await rows(
-    `SELECT to_char(action_date, 'YYYY-MM-DD') AS action_date, to_char(reevaluate_on, 'YYYY-MM-DD') AS reevaluate_on
+    `SELECT to_char(action_date, 'YYYY-MM-DD') AS action_date, to_char(reevaluate_on, 'YYYY-MM-DD') AS reevaluate_on,
+            interpellation, action
        FROM t6_interpellation_assessments WHERE account_id = $1 AND agenda_item_id = $2`,
     [p.accountId, t.id],
   ).catch(() => [] as Row[]);
+  const relevance = agendaReminderRelevance({
+    manualStatus: (etat?.manual_status as string | null | undefined) ?? null,
+    historical: etat?.historical === true,
+    dueDate: t.date,
+    hasPreference: !!occ || !!ser,
+    assessment: a ? { interpellation: (a.interpellation as string | null) ?? null, action: (a.action as string | null) ?? null, actionDate: (a.action_date as string | null) ?? null } : null,
+  });
   return {
     agendaItemId: t.id,
     hasSeries: !!t.seriesKey,
@@ -148,6 +171,7 @@ export async function getT6ReminderState(p: { accountId: number; userId: number;
     }),
     occurrence: occ ? view(occ) : null,
     series: ser ? view(ser) : null,
+    relevance,
   };
 }
 

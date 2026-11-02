@@ -9,8 +9,9 @@
  * ceux de la mesure — et fausserait précisément le chiffrage que le corpus
  * sert à produire avant une bascule.
  *
- * Ce seed crée donc un compte isolé et affiche son identifiant, à reporter
- * dans `CORPUS_ACCOUNT_ID`.
+ * Ce seed crée donc un compte isolé, MARQUÉ comme compte technique en base
+ * (lot 103G, `accounts.technical_kind`), et affiche son identifiant
+ * (`CORPUS_ACCOUNT_ID` : confirmation facultative).
  *
  * ── CE COMPTE NE DOIT PAS ÊTRE UTILISABLE ─────────────────────────────────
  *
@@ -25,13 +26,13 @@
  */
 // ⚠️ EN PREMIER : `@/db` lit DATABASE_URL au chargement du module.
 import '@/lib/load-env';
-import { db, ensureMigrations, getMigrationFailures } from '@/db';
-import { accounts, users } from '@/db/schema';
-import { eq } from 'drizzle-orm';
+import { getMigrationFailures } from '@/db';
+import { CORPUS_ACCOUNT_NAME, CORPUS_EMAIL, provisionCorpusAccount } from '@/services/ai/qualification/technical-account';
 
-/** Adresse du compte technique. Locale et non routable, jamais joignable. */
-export const CORPUS_EMAIL = 'corpus@verebona.local';
-export const CORPUS_ACCOUNT_NAME = 'Corpus de recette IA';
+// Lot 103G : un seul mécanisme de provisionnement (`technical-account.ts`), partagé avec la route
+// `corpus-account`, l'action du BO et l'auto-provisionnement de préproduction. Le compte est MARQUÉ en base
+// (`accounts.technical_kind`) : `CORPUS_ACCOUNT_ID` devient une simple confirmation facultative.
+export { CORPUS_ACCOUNT_NAME, CORPUS_EMAIL };
 
 export interface CorpusAccountResult {
   status: 'created' | 'already_present';
@@ -40,81 +41,13 @@ export interface CorpusAccountResult {
 }
 
 export async function seedCorpusAccount(): Promise<CorpusAccountResult> {
-  await ensureMigrations();
-
+  const r = await provisionCorpusAccount({ actor: 'seed' });
   const failures = getMigrationFailures();
   if (failures.length > 0) {
-    throw new Error(
-      `Migrations en échec, schéma incomplet : ${failures.map((f) => f.filename).join(', ')}.`,
-    );
+    throw new Error(`Migrations en échec, schéma incomplet : ${failures.map((f) => f.filename).join(', ')}.`);
   }
-
-  const now = new Date();
-
-  // Idempotent : relancé, il retourne le compte existant plutôt que d'en
-  // créer un second. Deux comptes de mesure disperseraient les coûts et
-  // rendraient la comparaison entre campagnes impossible.
-  const [existingUser] = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, CORPUS_EMAIL))
-    .limit(1);
-
-  if (existingUser) {
-    const [existingAccount] = await db
-      .select({ id: accounts.id })
-      .from(accounts)
-      .where(eq(accounts.ownerUserId, existingUser.id))
-      .limit(1);
-
-    if (existingAccount) {
-      return {
-        status: 'already_present',
-        accountId: existingAccount.id,
-        userId: existingUser.id,
-      };
-    }
-  }
-
-  const userId = existingUser?.id ?? (
-    await db
-      .insert(users)
-      .values({
-        email: CORPUS_EMAIL,
-        // Marqueur impossible à satisfaire : aucun hachage bcrypt ne commence
-        // par `!`, donc aucune comparaison de mot de passe ne peut réussir.
-        passwordHash: '!corpus-no-login',
-        firstName: 'Corpus',
-        lastName: 'Recette',
-        isActive: false,
-        role: 'USER',
-        planType: 'PREMIUM',
-        acceptedTermsAt: now,
-        termsVersion: 'n/a',
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning({ id: users.id })
-  )[0].id;
-
-  const [account] = await db
-    .insert(accounts)
-    .values({
-      name: CORPUS_ACCOUNT_NAME,
-      ownerUserId: userId,
-      // Premium : la mesure doit s'exécuter sans buter sur un quota d'offre
-      // inférieure, sinon elle mesurerait la limite et non le moteur.
-      planType: 'PREMIUM',
-      // `NONE` : aucun abonnement, donc aucune place dans les statistiques
-      // commerciales ni dans les rapprochements Stripe.
-      subscriptionStatus: 'NONE',
-      isActive: true,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning({ id: accounts.id });
-
-  return { status: 'created', accountId: account.id, userId };
+  if (r.status === 'refused' || r.accountId == null || r.userId == null) throw new Error(r.message);
+  return { status: r.status === 'created' ? 'created' : 'already_present', accountId: r.accountId, userId: r.userId };
 }
 
 if (process.argv[1]?.includes('seed-corpus-account')) {
@@ -127,7 +60,7 @@ if (process.argv[1]?.includes('seed-corpus-account')) {
       );
       console.log(`[corpus] Utilisateur : ${r.userId} (${CORPUS_EMAIL}, connexion impossible)`);
       console.log(`[corpus] Compte      : ${r.accountId}\n`);
-      console.log('  Reportez cette ligne dans .env.local :\n');
+      console.log('  Facultatif (le compte est reconnu par son marqueur en base) — confirmation dans .env.local :\n');
       console.log(`      CORPUS_ACCOUNT_ID=${r.accountId}\n`);
       console.log('  Puis : BO › Configuration IA › Qualification par couple (« Tester ce couple »).\n');
       process.exit(0);

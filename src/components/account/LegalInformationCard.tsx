@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/button';
 import { Scale, ExternalLink, Loader2 } from 'lucide-react';
 import { CGUV_SHORT_LABEL, legalLinksList } from '@/lib/legal/public-legal';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
+import { LegalLink } from '@/components/legal/LegalLink';
 
 interface AcceptanceItem {
   acceptanceId: string;
@@ -134,14 +135,17 @@ export function LegalInformationCard() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button variant="outline" size="sm" asChild>
-                      <a
-                        href={latest.permalinkUrl ?? legal.cguv}
+                      {/* Lot 103A : permalien historique EXACT de la version acceptée ;
+                          dans l'app, navigateur externe du téléphone. */}
+                      <LegalLink
+                        href={latest.permalinkUrl}
+                        fallbackHref={legal.cguv}
                         target="_blank"
-                        rel="noopener noreferrer"
+                        data-testid="legal-accepted-version"
                       >
                         <ExternalLink className="w-4 h-4 mr-1.5" />
                         Consulter
-                      </a>
+                      </LegalLink>
                     </Button>
                     {/* ══════════════════════════════════════════════════
                         BOUTON DE TÉLÉCHARGEMENT RETIRÉ
@@ -174,14 +178,14 @@ export function LegalInformationCard() {
                   <ul className="mt-2 space-y-1 pl-4">
                     {acceptances.slice(1).map((a) => (
                       <li key={a.acceptanceId} className="text-muted-foreground">
-                        <a
-                          href={a.permalinkUrl ?? legal.cguv}
+                        <LegalLink
+                          href={a.permalinkUrl}
+                          fallbackHref={legal.cguv}
                           target="_blank"
-                          rel="noopener noreferrer"
                           className="font-mono hover:underline"
                         >
                           {a.versionCode}
-                        </a>
+                        </LegalLink>
                         {' — '}
                         {formatDate(a.acceptedAt)}
                       </li>
@@ -200,14 +204,14 @@ export function LegalInformationCard() {
                       qui veut simplement lire les conditions en cours. Il
                       reste dans « Conditions que vous avez acceptées », où il
                       identifie ce qui a été signé. */}
-                  <a
+                  <LegalLink
                     href={current.publicUrl ?? legal.cguv}
+                    fallbackHref={legal.cguv}
                     target="_blank"
-                    rel="noopener noreferrer"
                     className="text-primary hover:underline"
                   >
                     Lire les CGUV
-                  </a>
+                  </LegalLink>
                   {latest && latest.versionCode !== current.versionCode && (
                     <span className="block mt-1">
                       Une version plus récente que la vôtre est en vigueur. Elle
@@ -223,9 +227,9 @@ export function LegalInformationCard() {
             {/* ── Rubrique « Légal » du site public (lot 102B) ──────────── */}
             <section className="flex flex-wrap gap-3 text-sm">
               {legalLinksList(legal).filter((l) => l.key !== 'cguv').map((l) => (
-                <a key={l.key} href={l.href} target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">
+                <LegalLink key={l.key} href={l.href} target="_blank" className="text-primary hover:underline">
                   {l.label}
-                </a>
+                </LegalLink>
               ))}
             </section>
           </>

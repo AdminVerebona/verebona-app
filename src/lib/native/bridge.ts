@@ -23,6 +23,13 @@ export type NativePlatform = 'ios' | 'android';
 /** Noms des plugins natifs appelés par le code partagé (identifiants Capacitor). */
 export const NATIVE_PLUGINS = {
   app: 'App',
+  /**
+   * Lot 103A : ouverture dans le NAVIGATEUR EXTERNE du téléphone
+   * (@capacitor/app-launcher : UIApplication.open / Intent ACTION_VIEW) —
+   * textes juridiques (`lib/legal/open-legal-link`). À ne pas confondre avec
+   * `Browser` (SFSafariViewController / Custom Tabs, intégré à l'app).
+   */
+  appLauncher: 'AppLauncher',
   browser: 'Browser',
   network: 'Network',
   secureStorage: 'SecureStorage',

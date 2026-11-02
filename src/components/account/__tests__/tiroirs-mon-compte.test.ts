@@ -57,8 +57,9 @@ describe('tiroirs de Mon compte', () => {
 describe('accueil', () => {
   it('salue par le nom d’utilisateur, le prénom à défaut', () => {
     const src = read('src/app/(dashboard)/accueil/page.tsx');
-    expect(src).toContain("const greetingName = user.username?.trim() || user.firstName || '';");
+    // Lot 103B : source unique `greetingName` (pseudo → ancien prénom → aucun nom).
+    expect(src).toContain('const greetingName = formatGreetingName(user);');
     // Lot 78C : salutation du jour (useGreetingClock), « Bonjour » au seul rendu serveur.
-    expect(read('src/components/home/MascotSpeaks.tsx')).toContain("{now ? greetingWord(now) : 'Bonjour'}, {greetingName}");
+    expect(read('src/components/home/MascotSpeaks.tsx')).toContain("{now ? greetingWord(now) : 'Bonjour'}{greetingName ? `, ${greetingName}` : ''}");
   });
 });

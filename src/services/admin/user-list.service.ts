@@ -42,6 +42,8 @@ interface UserListItem {
   id: number;
   firstName: string;
   lastName: string;
+  /** Lot 103B : « Prénom ou pseudo » (non unique) — l'ID et l'e-mail distinguent deux homonymes. */
+  username: string | null;
   email: string;
   accountId: number | null;
   accountName: string | null;
@@ -66,7 +68,7 @@ const ACCOUNT_LATERAL = `
   ) acc ON TRUE`;
 
 const SEARCH_SQL = `(
-     u.email ILIKE $1 OR u.first_name ILIKE $1 OR u.last_name ILIKE $1
+     u.email ILIKE $1 OR u.first_name ILIKE $1 OR u.last_name ILIKE $1 OR u.username ILIKE $1
   OR (u.first_name || ' ' || u.last_name) ILIKE $1
   OR (u.last_name || ' ' || u.first_name) ILIKE $1
   OR EXISTS (
@@ -97,9 +99,9 @@ export async function getUsersPage(params: ListParams<UserSort>): Promise<PageRe
   const limitIdx = args.length + 1;
 
   const rows = await pgClient.unsafe<
-    { id: number; first_name: string; last_name: string; email: string; status: string; account_id: number | null; account_name: string | null; plan_type: string | null }[]
+    { id: number; first_name: string; last_name: string; username: string | null; email: string; status: string; account_id: number | null; account_name: string | null; plan_type: string | null }[]
   >(
-    `SELECT u.id, u.first_name, u.last_name, u.email, u.status,
+    `SELECT u.id, u.first_name, u.last_name, u.username, u.email, u.status,
             acc.id AS account_id, acc.name AS account_name, acc.plan_type
        FROM users u
        ${ACCOUNT_LATERAL}
@@ -114,6 +116,7 @@ export async function getUsersPage(params: ListParams<UserSort>): Promise<PageRe
       id: r.id,
       firstName: r.first_name,
       lastName: r.last_name,
+      username: r.username ?? null,
       email: r.email,
       accountId: r.account_id,
       accountName: r.account_name,

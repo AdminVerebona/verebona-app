@@ -17,6 +17,7 @@ import { serverCacheDelete } from '@/lib/server-cache';
 import { sessionCutoffCacheKey } from '@/lib/auth/session-cutoff';
 import { classifyRefreshReplay, REFRESH_REUSE_GRACE_MS } from '@/lib/auth/refresh-replay';
 import { REFRESH_TOKEN_TTL_S } from '@/lib/auth/token-lifetimes';
+import { withAuthDiag } from '@/lib/auth/auth-diagnostics';
 
 const REFRESH_TTL_MS = REFRESH_TOKEN_TTL_S * 1000;
 
@@ -54,6 +55,11 @@ const REFRESH_TTL_MS = REFRESH_TOKEN_TTL_S * 1000;
  * ══════════════════════════════════════════════════════════════════════════
  */
 export async function POST(request: NextRequest) {
+  // Lot 103A : journalisé seulement pour un appel corrélé à une tentative de connexion récente.
+  return withAuthDiag(request, 'refresh', () => refresh(request));
+}
+
+async function refresh(request: NextRequest): Promise<NextResponse> {
   try {
     const refreshToken = request.cookies.get('refresh_token')?.value;
 

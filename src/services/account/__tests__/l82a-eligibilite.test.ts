@@ -61,10 +61,24 @@ describe('L82A-R01 — règle d’éligibilité (pure)', () => {
     }
   });
 
-  it('compte technique des campagnes de mesure (CORPUS_ACCOUNT_ID) : toujours éligible, comme pour le plafond de coût', () => {
+  it('lot 103G : compte technique éligible SEULEMENT avec le marqueur en base ET le contexte serveur de campagne — jamais par CORPUS_ACCOUNT_ID seule', () => {
     process.env.CORPUS_ACCOUNT_ID = '42';
-    expect(processingEligibilityOf(ligne({}, null), NOW)).toEqual({ eligible: true, reason: null });
-    expect(processingEligibleSql('x.id')).toContain('x.id = 42 OR ');
+    const marque = ligne({ technicalKind: 'AI_QUALIFICATION_CORPUS', accountSubscriptionStatus: 'NONE' }, null);
+    // Variable seule (ancien comportement) : plus aucune exemption.
+    expect(processingEligibilityOf(ligne({}, null), NOW)).toEqual({ eligible: false, reason: 'NO_SUBSCRIPTION' });
+    // Marqueur sans contexte serveur : traité comme tout compte (sans abonnement → non éligible).
+    expect(processingEligibilityOf(marque, NOW, () => false)).toEqual({ eligible: false, reason: 'NO_SUBSCRIPTION' });
+    // Marqueur + contexte de campagne pour CE compte : éligible.
+    expect(processingEligibilityOf(marque, NOW, (id) => id === 42)).toEqual({ eligible: true, reason: null });
+    // Contexte d'un AUTRE compte : aucune exemption.
+    expect(processingEligibilityOf(marque, NOW, (id) => id === 7)).toEqual({ eligible: false, reason: 'NO_SUBSCRIPTION' });
+    // Compte client (sans marqueur) dans un contexte de campagne à son identifiant : C-Q10 s'applique (R3).
+    for (const etat of [ligne({ isActive: false }), ligne({}, { status: 'readonly', trialEndsAt: HIER, firstBilledAt: null }), ligne({}, { status: 'past_due' })]) {
+      expect(processingEligibilityOf(etat, NOW, () => true).eligible).toBe(false);
+    }
+    // Balayages SQL : jamais d'exemption du compte technique.
+    expect(processingEligibleSql('x.id')).not.toContain('x.id = 42');
+    expect(processingEligibleSql('x.id')).not.toMatch(/ OR EXISTS|technical_kind/);
   });
 });
 

@@ -38,14 +38,25 @@
  * facturation, e-mails légaux et transactionnels, rétractation, suppression
  * de compte, export de données, réactivation, purges techniques.
  *
- * Compte technique des campagnes de mesure (`CORPUS_ACCOUNT_ID`) : toujours
- * éligible (même exemption que le plafond de coût, ce n'est pas un client).
+ * Compte technique des campagnes de mesure — lot 103G (sécurité) : PLUS
+ * AUCUNE exemption sur la seule égalité avec `CORPUS_ACCOUNT_ID`. Le compte
+ * n'est éligible que s'il porte le marqueur d'identité technique en base
+ * (`accounts.technical_kind`, migration 0960) ET qu'il est le compte vérifié du
+ * contexte serveur d'une campagne (`technical-context.ts`, ouvert après le
+ * précontrôle `checkCorpusAccount`). Hors de ce contexte il est traité comme
+ * tout compte (sans abonnement : non éligible) ; un compte client désigné par
+ * la variable reste soumis à C-Q10 dans tous ses états. Les balayages SQL
+ * (`processingEligibleSql`) ne l'exemptent jamais : il n'a aucune donnée métier.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { entitlementsFromSubscription, type SubscriptionRightsRow } from '@/services/entitlements.service';
 import {
   __setProcessingEligibilityForTests as setOverride, currentEligibilityOverride, onEligibilityOverrideChange,
 } from './processing-eligibility-override';
+import { technicalAccountInContext } from '@/services/ai/qualification/technical-context';
+
+/** Marqueur d'identité technique (`accounts.technical_kind`) — même valeur que `technical-account.ts`. */
+const TECHNICAL_KIND_CORPUS = 'AI_QUALIFICATION_CORPUS';
 
 export type IneligibilityReason =
   | 'ACCOUNT_NOT_FOUND'
@@ -94,21 +105,27 @@ export interface AccountProcessingRow {
    * PENDING_DELETION`) — plus aucun traitement non nécessaire.
    */
   ownerPendingDeletion?: boolean;
+  /** Lot 103G : marqueur d'identité technique (`accounts.technical_kind`), null pour tout compte client. */
+  technicalKind?: string | null;
 }
 
-/** Compte technique des campagnes de mesure (même règle que `account-cost-cap`). */
-function isTechnicalProcessingAccount(accountId: number, env: NodeJS.ProcessEnv = process.env): boolean {
-  const n = Number(env.CORPUS_ACCOUNT_ID);
-  return Number.isInteger(n) && n > 0 && n === accountId;
+/**
+ * Lot 103G : exemption du compte technique — marqueur en base ET contexte
+ * serveur de campagne vérifié pour CE compte. Jamais l'égalité seule avec une
+ * variable d'environnement.
+ */
+function isTechnicalProcessingAccount(row: AccountProcessingRow, inContext: (id: number) => boolean = technicalAccountInContext): boolean {
+  return row.technicalKind === TECHNICAL_KIND_CORPUS && inContext(row.accountId);
 }
 
 /**
  * Éligibilité à partir de l'état lu (pure, testée). `row` nul : compte
- * introuvable (supprimé).
+ * introuvable (supprimé). `inContext` : contexte serveur de campagne (défaut :
+ * contexte courant ; injecté par les tests).
  */
-export function processingEligibilityOf(row: AccountProcessingRow | null, now: Date = new Date()): ProcessingEligibility {
+export function processingEligibilityOf(row: AccountProcessingRow | null, now: Date = new Date(), inContext?: (id: number) => boolean): ProcessingEligibility {
   if (!row) return { eligible: false, reason: 'ACCOUNT_NOT_FOUND' };
-  if (isTechnicalProcessingAccount(row.accountId)) return ELIGIBLE;
+  if (isTechnicalProcessingAccount(row, inContext)) return ELIGIBLE;
   if (row.isActive === false) return { eligible: false, reason: 'ACCOUNT_SUSPENDED' };
   if (row.archivedAt) return { eligible: false, reason: 'ACCOUNT_ARCHIVED' };
   if (row.ownerPendingDeletion) return { eligible: false, reason: 'DELETION_REQUESTED' };
@@ -138,18 +155,13 @@ export function processingEligibilityOf(row: AccountProcessingRow | null, now: D
  * `l82a-eligibilite-comptes` (matrice de tous les états).
  */
 export function processingEligibleSql(accountIdExpr: string, nowExpr = 'now()'): string {
-  const technique = technicalAccountSql(accountIdExpr);
-  return `(${technique}EXISTS (SELECT 1 FROM accounts pe_a JOIN account_subscriptions pe_s ON pe_s.account_id = pe_a.id
+  // Lot 103G : aucune exemption du compte technique dans les balayages (ni par variable, ni par marqueur).
+  return `(EXISTS (SELECT 1 FROM accounts pe_a JOIN account_subscriptions pe_s ON pe_s.account_id = pe_a.id
     WHERE pe_a.id = ${accountIdExpr} AND pe_a.is_active IS NOT FALSE AND pe_a.archived_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM users pe_u WHERE pe_u.id = pe_a.owner_user_id AND pe_u.status = 'PENDING_DELETION')
       AND pe_s.status NOT IN ('readonly', 'canceled', 'past_due')
       AND NOT (pe_s.status = 'trialing' AND pe_s.first_billed_at IS NULL AND pe_s.trial_ends_at IS NOT NULL
                AND pe_s.trial_ends_at <= ${nowExpr})))`;
-}
-
-function technicalAccountSql(accountIdExpr: string): string {
-  const n = Number(process.env.CORPUS_ACCOUNT_ID);
-  return Number.isInteger(n) && n > 0 ? `${accountIdExpr} = ${n} OR ` : '';
 }
 
 /** Motif écrit sur un travail neutralisé (lu au BO › File IA). */
@@ -189,17 +201,28 @@ export function ineligibilityReasonOf(e: unknown): IneligibilityReason | null {
 
 type Loader = (accountId: number) => Promise<AccountProcessingRow | null>;
 
+/** Colonne `technical_kind` lue (lot 103G) ; avant la migration 0960 : NULL — aucun marqueur, donc aucune exemption. */
+let technicalKindSelect = 'a.technical_kind';
+
 const dbLoader: Loader = async (accountId) => {
   const { pgClient } = await import('@/db');
-  const rows = (await pgClient.unsafe(
+  const lire = () => pgClient.unsafe(
     `SELECT a.id, a.is_active, a.archived_at, a.subscription_status,
             s.plan_code, s.status, s.trial_ends_at, s.first_billed_at,
-            (u.status = 'PENDING_DELETION') AS owner_pending_deletion
+            (u.status = 'PENDING_DELETION') AS owner_pending_deletion, ${technicalKindSelect}
        FROM accounts a LEFT JOIN account_subscriptions s ON s.account_id = a.id
        LEFT JOIN users u ON u.id = a.owner_user_id
       WHERE a.id = $1`,
     [accountId] as never[],
-  )) as unknown as Array<Record<string, unknown>>;
+  );
+  let rows: Array<Record<string, unknown>>;
+  try {
+    rows = (await lire()) as unknown as Array<Record<string, unknown>>;
+  } catch (e) {
+    if (String((e as { code?: unknown })?.code ?? '') !== '42703' || technicalKindSelect.startsWith('NULL')) throw e;
+    technicalKindSelect = 'NULL::text AS technical_kind';
+    rows = (await lire()) as unknown as Array<Record<string, unknown>>;
+  }
   const r = rows[0];
   if (!r) return null;
   const date = (v: unknown) => (v == null ? null : v instanceof Date ? v : new Date(String(v)));
@@ -209,6 +232,7 @@ const dbLoader: Loader = async (accountId) => {
     archivedAt: date(r.archived_at),
     accountSubscriptionStatus: (r.subscription_status as string | null) ?? null,
     ownerPendingDeletion: r.owner_pending_deletion === true,
+    technicalKind: r.technical_kind == null ? null : String(r.technical_kind),
     subscription: r.status == null ? null : {
       planCode: (r.plan_code as string | null) ?? null,
       status: String(r.status),
@@ -247,12 +271,15 @@ export async function getAccountProcessingEligibility(accountId: number, now: Da
 // Cache court, réservé au chemin chaud de la passerelle IA (un appel modèle
 // peut en enchaîner plusieurs) : la neutralisation des travaux, elle, est
 // immédiate (file durable, transitions).
-const cache = new Map<number, { at: number; value: ProcessingEligibility }>();
+// Lot 103G : la clé distingue le contexte serveur du compte technique (une décision prise DANS une campagne n'est
+// jamais resservie hors campagne, et inversement).
+const cache = new Map<string, { at: number; value: ProcessingEligibility }>();
+const cacheKey = (accountId: number) => `${accountId}|${technicalAccountInContext(accountId) ? 'tech' : '-'}`;
 
 /** Vide le cache local (transition constatée sur cette instance). */
 export function invalidateProcessingEligibility(accountId?: number): void {
   if (accountId === undefined) cache.clear();
-  else cache.delete(accountId);
+  else { cache.delete(`${accountId}|tech`); cache.delete(`${accountId}|-`); }
 }
 
 /**
@@ -263,14 +290,15 @@ export async function checkAccountProcessingEligibility(
   opts: { maxAgeMs?: number; now?: Date } = {},
 ): Promise<ProcessingEligibility> {
   const maxAge = opts.maxAgeMs ?? 0;
+  const key = cacheKey(accountId);
   if (maxAge > 0) {
-    const hit = cache.get(accountId);
+    const hit = cache.get(key);
     if (hit && Date.now() - hit.at < maxAge) return hit.value;
   }
   const value = await getAccountProcessingEligibility(accountId, opts.now ?? new Date());
   if (maxAge > 0) {
     if (cache.size > 5_000) cache.clear();
-    cache.set(accountId, { at: Date.now(), value });
+    cache.set(key, { at: Date.now(), value });
   }
   return value;
 }

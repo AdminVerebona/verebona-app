@@ -35,6 +35,8 @@ export interface IssueRow {
   qualification: Record<string, unknown>;
   catchup: Record<string, unknown>;
   postCheck: Record<string, unknown>;
+  /** Lot 103G (0960) : blocage par un prérequis d'exploitation et reprises automatiques ({} : aucun). */
+  prerequisite: import('./prerequisite').IssuePrerequisite;
   refusalReasons: string[];
   decision: string | null;
   activatedAt: string | null;
@@ -70,6 +72,7 @@ const toIssue = (r: Row): IssueRow => ({
   candidatePromptVersionId: num(r.candidate_prompt_version_id), candidateConfigVersionId: num(r.candidate_config_version_id),
   previousConfigVersionId: num(r.previous_config_version_id), campaignId: num(r.campaign_id),
   correction: obj(r.correction), qualification: obj(r.qualification), catchup: obj(r.catchup), postCheck: obj(r.post_check),
+  prerequisite: obj(r.prerequisite) as import('./prerequisite').IssuePrerequisite,
   refusalReasons: Array.isArray(r.refusal_reasons) ? (r.refusal_reasons as unknown[]).map(String) : [],
   decision: str(r.decision), activatedAt: iso(r.activated_at), watchUntil: iso(r.watch_until), rolledBackAt: iso(r.rolled_back_at),
   resolvedAt: iso(r.resolved_at), retryRequestedBy: num(r.retry_requested_by), retryRequestedAt: iso(r.retry_requested_at), updatedAt: iso(r.updated_at)!,
@@ -153,6 +156,7 @@ type Patch = Partial<{
   activePromptVersionId: number | null; activePromptSha256: string | null;
   candidatePromptVersionId: number | null; candidateConfigVersionId: number | null; previousConfigVersionId: number | null; campaignId: number | null;
   correction: Record<string, unknown>; qualification: Record<string, unknown>; catchup: Record<string, unknown>; postCheck: Record<string, unknown>;
+  prerequisite: import('./prerequisite').IssuePrerequisite;
   refusalReasons: string[]; decision: string | null; activatedAt: Date | null; watchUntil: Date | null; rolledBackAt: Date | null; resolvedAt: Date | null;
   retryRequestedBy: number | null; retryRequestedAt: Date | null;
 }>;
@@ -163,6 +167,7 @@ const COLS: Record<keyof Patch, [string, string]> = {
   candidatePromptVersionId: ['candidate_prompt_version_id', ''], candidateConfigVersionId: ['candidate_config_version_id', ''],
   previousConfigVersionId: ['previous_config_version_id', ''], campaignId: ['campaign_id', ''],
   correction: ['correction', '::jsonb'], qualification: ['qualification', '::jsonb'], catchup: ['catchup', '::jsonb'], postCheck: ['post_check', '::jsonb'],
+  prerequisite: ['prerequisite', '::jsonb'],
   refusalReasons: ['refusal_reasons', '::jsonb'], decision: ['decision', ''], activatedAt: ['activated_at', '::timestamptz'],
   watchUntil: ['watch_until', '::timestamptz'], rolledBackAt: ['rolled_back_at', '::timestamptz'], resolvedAt: ['resolved_at', '::timestamptz'],
   retryRequestedBy: ['retry_requested_by', ''], retryRequestedAt: ['retry_requested_at', '::timestamptz'],
@@ -191,6 +196,23 @@ export async function addEvent(issue: Pick<IssueRow, 'id' | 'environment' | 'con
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
     [issue.id, issue.environment, issue.contractId, e.kind, e.statusBefore ?? null, e.statusAfter ?? null, e.message.slice(0, 2000), JSON.stringify(e.payload ?? {})],
   );
+}
+
+/**
+ * Lot 103G : essais RÉELLEMENT lancés par incompatibilité (événements `CORRECTION_STARTED`) — jamais confondus
+ * avec les occurrences de détection (une par passage).
+ */
+export async function countAttempts(issueIds: readonly number[]): Promise<Map<number, number>> {
+  const out = new Map<number, number>();
+  if (!issueIds.length) return out;
+  try {
+    for (const r of await q(`SELECT issue_id, count(*)::int AS n FROM ai_prompt_conformity_events WHERE issue_id = ANY($1::int[]) AND kind = 'CORRECTION_STARTED' GROUP BY issue_id`, [[...issueIds]])) {
+      out.set(Number(r.issue_id), Number(r.n));
+    }
+  } catch (e) {
+    if (!absent(e)) throw e;
+  }
+  return out;
 }
 
 /** Changement de statut journalisé (une ligne d'événement par transition). */

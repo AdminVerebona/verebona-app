@@ -9,10 +9,17 @@
  */
 import { NextResponse } from 'next/server';
 import { getServerLegalLinks } from '@/services/legal/cguv-referential.service';
+import { allowedLegalOrigins } from '@/services/legal/cguv-manifest';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const { mode, links } = await getServerLegalLinks();
-  return NextResponse.json({ mode, links }, { headers: { 'Cache-Control': 'public, max-age=300' } });
+  // Lot 103A : origines où un texte juridique peut être ouvert (site public,
+  // LEGAL_PUBLIC_EXTRA_ORIGINS, surcharges) — liste blanche de `LegalLink`.
+  const allowedOrigins = new Set(allowedLegalOrigins());
+  for (const href of Object.values(links)) {
+    try { allowedOrigins.add(new URL(href).origin); } catch { /* lien relatif : ignoré */ }
+  }
+  return NextResponse.json({ mode, links, allowedOrigins: [...allowedOrigins] }, { headers: { 'Cache-Control': 'public, max-age=300' } });
 }

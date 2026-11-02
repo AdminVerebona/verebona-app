@@ -254,7 +254,10 @@ async function updateSourceMetadata(p: PersistResultInput, x: Exec = db, opts: {
   // l'utilisateur (DATA-SUPPLIER, pont « À traiter » `document-rule-bridge`).
   if (d.supplier?.value.name && d.supplier.confidence !== 'conflictual') patch.supplier = d.supplier.value.name;
   if (typeof d.amountCents?.value === 'number') patch.amountCents = d.amountCents.value;
-  if (d.date?.value) patch.documentDate = d.date.value;
+  // Lot 103F : une date documentaire CONTRADICTOIRE n'est pas posée comme
+  // certaine (même règle que le fournisseur) : le document reste « Sans
+  // date » plutôt que de sortir sous une période qu'il ne prouve pas.
+  if (d.date?.value && d.date.confidence !== 'conflictual') patch.documentDate = d.date.value;
 
   // Une valeur modifiée à la main par l'utilisateur n'est jamais écrasée par
   // une nouvelle analyse (le tiroir marque ces champs dans userEditedFields).

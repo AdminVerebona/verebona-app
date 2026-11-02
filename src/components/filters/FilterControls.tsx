@@ -24,11 +24,27 @@
  *
  * Les styles sont ceux, inchangés, du panneau de « Mes documents » (charte
  * « Sérénité », jetons existants).
+ *
+ * ── LOT 103F : SECTIONS REPLIABLES (OPTION) ───────────────────────────────
+ *
+ * `collapse` rend une section repliable : en-tête toujours visible (titre,
+ * compteur « N actifs » des sélections, chevron), toute la ligne activable
+ * au doigt (≥ 44 px), au clavier (Entrée / Espace : bouton natif) et
+ * annoncée (`aria-expanded`, `aria-controls`). Même primitive que
+ * `CollapsibleSubBlock` (Radix Collapsible) ; la zone des options reste
+ * montée (`hidden` une fois fermée) : la cible d'`aria-controls` existe
+ * toujours et un repli ne perd rien (« Afficher les N autres » compris).
+ * Sans `collapse`, rendu inchangé (« Mon agenda »).
+ *
+ * `describeCount` : nom accessible des pastilles avec leur compteur
+ * (« Maison, 9 documents ») — le « · 9 » affiché seul ne dit pas ce qu'il
+ * compte.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
-import { SlidersHorizontal, X } from 'lucide-react';
+import { useId, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
+import { ChevronDown, SlidersHorizontal, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 
 export interface PillOption {
   value: string;
@@ -48,14 +64,23 @@ function pillText(option: PillOption): string {
   return option.count === null || option.count === undefined ? option.label : `${option.label} · ${option.count}`;
 }
 
+/** Ce que compte une pastille, en toutes lettres (« 9 documents ») — lot 103F. */
+export type DescribeCount = (count: number) => string;
+
+/** Nom accessible d'une pastille : le sien, plus son compteur décrit s'il y a lieu. */
+function pillAriaLabel(option: PillOption, describeCount?: DescribeCount): string | undefined {
+  if (!describeCount || option.count === null || option.count === undefined) return option.ariaLabel;
+  return `${option.ariaLabel ?? option.label}, ${describeCount(option.count)}`;
+}
+
 /** Pastille de filtre à bascule (choix multiples) — FilterPill du design system. */
-function FilterPill({ option, onClick }: { option: PillOption; onClick: () => void }) {
+function FilterPill({ option, onClick, describeCount }: { option: PillOption; onClick: () => void; describeCount?: DescribeCount }) {
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={option.active}
-      aria-label={option.ariaLabel}
+      aria-label={pillAriaLabel(option, describeCount)}
       className={`${PILL_BASE} ${option.active ? PILL_ON : PILL_OFF}`}
     >
       {pillText(option)}
@@ -63,18 +88,91 @@ function FilterPill({ option, onClick }: { option: PillOption; onClick: () => vo
   );
 }
 
-/** Section titrée du panneau (groupe nommé par son titre). */
-export function FilterSection({
+/** Lot 103F — section repliable : état contrôlé par l'écran, compteur de sélections. */
+export interface SectionCollapse {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Sélections actives de la section ; 0 : aucun compteur affiché. */
+  activeCount: number;
+}
+
+/** « 1 actif », « 3 actifs » — sélections, jamais des documents. */
+export function activeCountLabel(n: number): string {
+  return `${n} actif${n > 1 ? 's' : ''}`;
+}
+
+/** Section repliable (lot 103F) : en-tête permanent, options masquées une fois repliée. */
+function CollapsibleFilterSection({
   id,
   title,
+  collapse,
   className = '',
   children,
 }: {
   id: string;
   title: string;
+  collapse: SectionCollapse;
   className?: string;
   children: ReactNode;
 }) {
+  const contentId = `${useId()}-options`;
+  const { open, onOpenChange, activeCount } = collapse;
+  return (
+    <Collapsible open={open} onOpenChange={onOpenChange}>
+      <div
+        role="group"
+        aria-labelledby={id}
+        data-state={open ? 'open' : 'closed'}
+        data-filter-section={id}
+        className={`flex min-w-0 flex-col ${className}`}
+      >
+        <CollapsibleTrigger
+          aria-controls={contentId}
+          className="group -mx-1.5 flex min-h-11 w-[calc(100%+0.75rem)] items-center gap-2 rounded-[10px] px-1.5 text-left transition-colors hover:bg-[color:var(--accent-soft)] motion-reduce:transition-none"
+        >
+          <span id={id} className="vb-app-label">{title}</span>
+          {activeCount > 0 && (
+            <span
+              data-slot="section-active-count"
+              className="shrink-0 rounded-full border border-[color:var(--accent)] px-2 py-px text-[11px] font-semibold text-[color:var(--text-primary)]"
+            >
+              <span className="sr-only">, </span>
+              <span aria-hidden>{activeCountLabel(activeCount)}</span>
+              <span className="sr-only">{activeCount > 1 ? `${activeCount} filtres actifs` : '1 filtre actif'}</span>
+            </span>
+          )}
+          <span aria-hidden className="flex-1" />
+          <ChevronDown
+            aria-hidden
+            className="h-4 w-4 shrink-0 text-[color:var(--text-muted)] transition-transform duration-200 group-data-[state=open]:rotate-180 motion-reduce:transition-none"
+          />
+        </CollapsibleTrigger>
+        {/* `forceMount` : la zone (cible d'aria-controls) reste ; fermée, `hidden`. */}
+        <CollapsibleContent forceMount id={contentId} hidden={!open} className="pb-1 pt-1.5">
+          <div className="flex min-w-0 flex-col gap-2.5">{children}</div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
+/** Section titrée du panneau (groupe nommé par son titre) ; repliable avec `collapse` (lot 103F). */
+export function FilterSection({
+  id,
+  title,
+  className = '',
+  collapse,
+  children,
+}: {
+  id: string;
+  title: string;
+  className?: string;
+  collapse?: SectionCollapse;
+  children: ReactNode;
+}) {
+  if (collapse) {
+    return <CollapsibleFilterSection id={id} title={title} collapse={collapse} className={className}>{children}</CollapsibleFilterSection>;
+  }
   return (
     <div role="group" aria-labelledby={id} className={`flex min-w-0 flex-col gap-2.5 ${className}`}>
       <p id={id} className="vb-app-label">
@@ -93,6 +191,8 @@ export function FilterPillSection({
   onToggle,
   className,
   emptyText = 'Rien à filtrer ici pour le moment.',
+  collapse,
+  describeCount,
 }: {
   id: string;
   title: string;
@@ -100,15 +200,17 @@ export function FilterPillSection({
   onToggle: (value: string) => void;
   className?: string;
   emptyText?: string;
+  collapse?: SectionCollapse;
+  describeCount?: DescribeCount;
 }) {
   return (
-    <FilterSection id={id} title={title} className={className}>
+    <FilterSection id={id} title={title} className={className} collapse={collapse}>
       {options.length === 0 ? (
         <p className="text-xs text-[color:var(--text-muted)]">{emptyText}</p>
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {options.map((o) => (
-            <FilterPill key={o.value} option={o} onClick={() => onToggle(o.value)} />
+            <FilterPill key={o.value} option={o} onClick={() => onToggle(o.value)} describeCount={describeCount} />
           ))}
         </div>
       )}
@@ -140,11 +242,13 @@ export function FilterChoiceGroup({
   groups,
   onSelect,
   collapseAfter,
+  describeCount,
 }: {
   labelledBy: string;
   groups: ChoiceGroup[];
   onSelect: (value: string) => void;
   collapseAfter?: number;
+  describeCount?: DescribeCount;
 }) {
   const [expanded, setExpanded] = useState(false);
   const refs = useRef(new Map<string, HTMLButtonElement>());
@@ -202,7 +306,7 @@ export function FilterChoiceGroup({
                   type="button"
                   role="radio"
                   aria-checked={o.active}
-                  aria-label={o.ariaLabel}
+                  aria-label={pillAriaLabel(o, describeCount)}
                   tabIndex={i === activeIndex ? 0 : -1}
                   onClick={() => onSelect(o.value)}
                   onKeyDown={(e) => move(e, i)}
@@ -308,21 +412,40 @@ interface ActiveChip {
   label: string;
 }
 
-/** Ligne « Filtré par … » : un filtre actif = une pastille retirable. */
+/**
+ * Ligne « Filtré par … » : un filtre actif = une pastille retirable.
+ *
+ * Lot 103F : `maxVisible` borne la ligne (téléphone) — au-delà, « + N
+ * autres » la déplie ; `clearLabel` nomme l'action de remise à zéro
+ * (« Tout effacer » par défaut, inchangé pour « Mon agenda »).
+ */
 export function ActiveFilterChips({
   chips,
   onRemove,
   onClear,
+  clearLabel = 'Tout effacer',
+  maxVisible,
 }: {
   chips: ActiveChip[];
   onRemove: (key: string) => void;
   onClear: () => void;
+  clearLabel?: string;
+  maxVisible?: number;
 }) {
+  const [all, setAll] = useState(false);
   if (chips.length === 0) return null;
+  const limite = maxVisible !== undefined && !all ? maxVisible : chips.length;
+  const visibles = chips.slice(0, limite);
+  const caches = chips.length - visibles.length;
   return (
-    <div className="-mt-2 mb-5 flex flex-wrap items-center gap-1.5 text-xs text-[color:var(--text-muted)]" data-testid="filtres-actifs">
+    <div
+      role="group"
+      aria-label="Filtres actifs"
+      className="-mt-2 mb-5 flex flex-wrap items-center gap-1.5 text-xs text-[color:var(--text-muted)]"
+      data-testid="filtres-actifs"
+    >
       <span className="mr-1">Filtré par</span>
-      {chips.map((c) => (
+      {visibles.map((c) => (
         <button
           key={c.key}
           type="button"
@@ -334,12 +457,22 @@ export function ActiveFilterChips({
           <X className="h-3 w-3 shrink-0" aria-hidden />
         </button>
       ))}
+      {(caches > 0 || (all && maxVisible !== undefined && chips.length > maxVisible)) && (
+        <button
+          type="button"
+          onClick={() => setAll((v) => !v)}
+          aria-expanded={all}
+          className="rounded px-1 font-medium text-[color:var(--text-info)] underline"
+        >
+          {all ? 'Réduire' : `+ ${caches} autre${caches > 1 ? 's' : ''}`}
+        </button>
+      )}
       <button
         type="button"
         onClick={onClear}
         className="ml-1.5 underline transition-colors hover:text-[color:var(--text-primary)] rounded"
       >
-        Tout effacer
+        {clearLabel}
       </button>
     </div>
   );

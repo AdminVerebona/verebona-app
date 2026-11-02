@@ -29,8 +29,8 @@ describe('PO-Q21 — inscription non énumérable', () => {
     expect((route.match(/return neutralSignupResponse\(\);/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 
-  it('PO-Q21-SIGN-02 aucun refus ne dépend de l’existence du compte : nom d’utilisateur et invitation contrôlés AVANT l’adresse', () => {
-    const iUser = route.indexOf("code: 'DUPLICATE_USERNAME'");
+  it('PO-Q21-SIGN-02 aucun refus ne dépend de l’existence du compte : « Prénom ou pseudo » et invitation contrôlés AVANT l’adresse ; aucune unicité du pseudo (lot 103B)', () => {
+    const iUser = route.indexOf('const displayName = validateDisplayName(');
     const iInvite = route.indexOf('invitation ??= await resolveSignupInvitation(inviteToken, sanitizedEmail)');
     const iEmail = route.indexOf('const existingUserByEmail = await db');
     expect(iUser).toBeGreaterThan(0);
@@ -38,6 +38,9 @@ describe('PO-Q21 — inscription non énumérable', () => {
     expect(iInvite).toBeLessThan(iEmail);
     // Seule exception : invitation VALIDE pour cette adresse (preuve de la boîte).
     expect(route).toContain('if (invitation?.valid) return duplicateEmailResponse();');
+    // Lot 103B : plus de recherche de doublon ni de refus « nom déjà utilisé ».
+    expect(route).not.toMatch(/DUPLICATE_USERNAME|existingUserByUsername|eq\(users\.username/);
+    expect(route).not.toMatch(/MISSING_FIRST_NAME|MISSING_LAST_NAME/);
   });
 
   it('PO-Q21-SIGN-03 e-mails après la réponse dans les deux cas (même durée de réponse)', () => {

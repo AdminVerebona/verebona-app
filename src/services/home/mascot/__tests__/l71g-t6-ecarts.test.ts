@@ -343,7 +343,8 @@ describe('T6-08 — confirmations de rappel', () => {
 describe('Lot 68 — libellés et reporting', () => {
   it('Lot 68 — libellé « Actifs » : actions ET rappels informatifs', async () => {
     const { reminderStatusLabel } = await import('@/components/home/T6ReminderControls');
-    expect(reminderStatusLabel({ occurrence: null, series: null })).toBe('Actifs : Verebona vous sollicite quand une démarche est utile ou qu’un rappel vous sera utile');
+    // Lot 103D (ticket « Agenda — statut et rappels ») : la phrase générique « Actifs : Verebona vous sollicite… » est supprimée.
+    expect(reminderStatusLabel({ occurrence: null, series: null })).toBe('Rappel actif');
   });
   it('Reporting — décisions provisoires distinguées, motif de réévaluation et preuves (références seules)', () => {
     const d = {

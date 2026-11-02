@@ -7,7 +7,8 @@ import { db, pgClient } from '@/db';
 import { users, accounts, accountMemberships, duoAccounts } from '@/db/schema';
 import { duoOfAccount } from '@/services/account/membership.service';
 import { eq, and, or } from 'drizzle-orm';
-import { serverCacheGet, serverCacheSet, userCacheKey, wantsFreshRead } from '@/lib/server-cache';
+import { invalidateUserReadCache, serverCacheGet, serverCacheSet, userCacheKey, wantsFreshRead } from '@/lib/server-cache';
+import { validateDisplayName, cleanCivilName } from '@/lib/auth/display-name';
 import { getTrialState } from '@/services/trial.service';
 import { handleCloseAccount } from './deletion/close-account';
 import { getReacceptanceState } from '@/services/legal/cguv-reacceptance.service';
@@ -260,20 +261,41 @@ export async function PUT(req: NextRequest) {
       return SessionService.handleSessionError(e);
     }
 
-    const body = await req.json();
-    const { firstName, lastName, username, company } = body;
-
-    if (!firstName?.trim() || !lastName?.trim()) {
-      return NextResponse.json({ error: 'Le prénom et le nom sont requis' }, { status: 400 });
+    const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: 'Requête invalide.', code: 'INVALID_BODY' }, { status: 400 });
     }
 
-    await db.update(users).set({
-      firstName: firstName.trim(),
-      lastName: lastName.trim(),
-      username: username?.trim() || null,
-      company: company?.trim() || null,
-      updatedAt: new Date(),
-    }).where(eq(users.id, session.userId));
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 103B — MISE À JOUR PARTIELLE DU PROFIL
+    //
+    // Avant : prénom ET nom exigés (refus 400 sans eux) et
+    // tous les champs réécrits — modifier son seul pseudo était impossible
+    // sans civils, et un champ absent était effacé. Désormais SEULS les champs
+    // présents dans le corps sont modifiés :
+    //   · `username` (« Prénom ou pseudo », non unique) : mêmes règles qu'à
+    //     l'inscription (`lib/auth/display-name.ts`) ; une fois présent, il
+    //     ne peut pas être vidé ;
+    //   · `firstName` / `lastName` (civils, facultatifs) : nettoyés ; une
+    //     valeur vide explicite les efface (choix de l'utilisateur) ;
+    //   · `company` : inchangé (vide → NULL).
+    // Un champ absent n'est jamais touché : les civils historiques restent.
+    // ══════════════════════════════════════════════════════════════════════
+    const patch: Partial<typeof users.$inferInsert> = {};
+    if ('username' in body) {
+      const dn = validateDisplayName(body.username);
+      if (!dn.ok) return NextResponse.json({ error: dn.message, code: dn.code }, { status: 400 });
+      patch.username = dn.value;
+    }
+    if ('firstName' in body) patch.firstName = cleanCivilName(body.firstName);
+    if ('lastName' in body) patch.lastName = cleanCivilName(body.lastName);
+    if ('company' in body) patch.company = typeof body.company === 'string' && body.company.trim() ? body.company.trim() : null;
+
+    if (Object.keys(patch).length === 0) return NextResponse.json({ success: true, unchanged: true });
+
+    await db.update(users).set({ ...patch, updatedAt: new Date() }).where(eq(users.id, session.userId));
+    // Nom affiché à jour tout de suite (accueil, menu, panneau mobile).
+    invalidateUserReadCache(session.userId);
 
     return NextResponse.json({ success: true });
   } catch (error) {

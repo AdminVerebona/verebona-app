@@ -5,6 +5,7 @@ import { Logo } from './Logo';
 import { publicSiteUrl } from '@/lib/external-urls';
 import type { LegalDocumentKey, LegalLinks } from '@/lib/legal/public-legal';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
+import { LegalLink } from '@/components/legal/LegalLink';
 
 /** Lot 102B : `legalKey` = contenu légal résolu par `useLegalLinks` (repli : adresses actuelles du site). */
 type FooterLink = { href: string; label: string; external?: boolean; legalKey?: LegalDocumentKey };
@@ -77,11 +78,11 @@ export function AuthFooter() {
       <p className="text-xs text-[color:var(--text-muted)]">
         © {new Date().getFullYear()} Verebona. Tous droits réservés.
         {' · '}
-        <a href={legal.mentionsLegales} className="hover:text-[color:var(--text-primary)] transition-colors">Mentions légales</a>
+        <LegalLink href={legal.mentionsLegales} className="hover:text-[color:var(--text-primary)] transition-colors">Mentions légales</LegalLink>
         {' · '}
-        <a href={legal.cguv} className="hover:text-[color:var(--text-primary)] transition-colors">CGUV</a>
+        <LegalLink href={legal.cguv} className="hover:text-[color:var(--text-primary)] transition-colors">CGUV</LegalLink>
         {' · '}
-        <a href={legal.confidentialite} className="hover:text-[color:var(--text-primary)] transition-colors">Confidentialité</a>
+        <LegalLink href={legal.confidentialite} className="hover:text-[color:var(--text-primary)] transition-colors">Confidentialité</LegalLink>
       </p>
     </footer>
   );
@@ -116,12 +117,22 @@ export function LandingFooter() {
               <ul className="space-y-1.5">
                 {col.links.map((link) => (
                   <li key={link.href}>
-                    <Link
-                      href={resolveHref(link, legal)}
-                      className="text-sm text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] transition-colors"
-                    >
-                      {link.label}
-                    </Link>
+                    {link.legalKey ? (
+                      // Lot 103A : texte juridique — navigateur externe dans l'app ; Web inchangé.
+                      <LegalLink
+                        href={resolveHref(link, legal)}
+                        className="text-sm text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] transition-colors"
+                      >
+                        {link.label}
+                      </LegalLink>
+                    ) : (
+                      <Link
+                        href={resolveHref(link, legal)}
+                        className="text-sm text-[color:var(--text-secondary)] hover:text-[color:var(--text-primary)] transition-colors"
+                      >
+                        {link.label}
+                      </Link>
+                    )}
                   </li>
                 ))}
               </ul>

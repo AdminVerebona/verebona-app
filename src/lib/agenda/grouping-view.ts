@@ -64,6 +64,14 @@ export interface AgendaGroupingView {
    * « Documents » de l'ensemble les présente déjà (avec leur nature de lien).
    */
   linkedDocuments: GroupingDocumentRef[];
+  /**
+   * Lot 103D (règle `lib/agenda/housing-scope`) : les catégories « Pièces » et
+   * « Équipements » n'existent que si au moins un LOGEMENT est rattaché
+   * (biens de l'ensemble et de l'événement de référence). Absent ou
+   * `allowed: false` : aucune des deux catégories (ni titre, ni « Aucun… », ni
+   * bouton).
+   */
+  structuralScope?: { allowed: boolean; housingAssetIds: number[] };
 }
 
 export type GroupingCandidateKind = 'elements' | 'documents' | 'biens' | 'pieces' | 'equipements';
@@ -83,11 +91,20 @@ export const GROUPING_ACTIONS = [
 export type GroupingAction = (typeof GROUPING_ACTIONS)[number];
 export const isGroupingAction = (v: unknown): v is GroupingAction => typeof v === 'string' && (GROUPING_ACTIONS as readonly string[]).includes(v);
 
-/** Libellés visibles (langage utilisateur). */
+/**
+ * Libellés visibles (langage utilisateur).
+ *
+ * Lot 103D (ticket « Agenda — wording des associations », décision PO du
+ * 31/10) : dans le parcours d'association entre deux entrées de l'Agenda,
+ * « événement » est le terme générique visible pour l'AUTRE entrée (contrôle,
+ * échéance, rappel…) ; « élément de l'agenda » n'est plus jamais affiché. Les
+ * titres et types métier des entrées restent inchangés. Retirer un lien se
+ * dit « Dissocier » / « Retirer l'association » — jamais « Supprimer ».
+ */
 export const GROUPING_LABELS = {
   sectionMain: 'Tout ce qui se rattache à cet événement',
-  sectionLinked: 'Éléments reliés',
-  sectionAlone: 'Relier cet élément',
+  sectionLinked: 'Événements associés',
+  sectionAlone: 'Associations',
   partOf: 'Fait partie de',
   openMain: 'Voir l’ensemble',
   mainBadge: 'Événement de référence',
@@ -105,7 +122,7 @@ export const GROUPING_LABELS = {
     equipements: 'Équipements',
   } satisfies Record<GroupingCandidateKind, string>,
   add: {
-    elements: 'Relier un élément de l’agenda',
+    elements: 'Associer à un autre événement',
     // Lot 89B (demande PO 25/10) : libellé d'association agenda → document.
     documents: 'Associer un document',
     biens: 'Relier un bien',
@@ -115,23 +132,56 @@ export const GROUPING_LABELS = {
   createStep: 'Créer une étape',
   empty: {
     elements: 'Aucune autre étape.',
-    documents: 'Aucun document.',
+    documents: 'Aucun document associé.',
     biens: 'Aucun bien.',
     pieces: 'Aucune pièce.',
     equipements: 'Aucun équipement.',
   } satisfies Record<GroupingCandidateKind, string>,
   search: 'Rechercher',
+  /** Lot 103D : état vide de la liste des événements associés (ensemble sans événement de référence). */
+  emptyLinkedEvents: 'Aucun événement associé.',
+  /** Lot 103D : titre, aide et recherche du sélecteur selon ce qui est choisi. */
+  pickerTitle: {
+    elements: 'Choisir un événement à associer',
+    documents: 'Choisir un document à associer',
+    biens: 'Relier un bien',
+    pieces: 'Relier une pièce',
+    equipements: 'Relier un équipement',
+  } satisfies Record<GroupingCandidateKind, string>,
+  pickerHint: {
+    elements: 'Choisissez l’événement à associer.',
+    documents: 'Choisissez le document à associer.',
+    biens: 'Choisissez le bien à relier.',
+    pieces: 'Choisissez la pièce à relier.',
+    equipements: 'Choisissez l’équipement à relier.',
+  } satisfies Record<GroupingCandidateKind, string>,
+  pickerSearch: {
+    elements: 'Rechercher un événement',
+    documents: 'Rechercher un document',
+    biens: 'Rechercher',
+    pieces: 'Rechercher',
+    equipements: 'Rechercher',
+  } satisfies Record<GroupingCandidateKind, string>,
   noCandidate: 'Aucun résultat.',
   remove: 'Retirer',
+  /** Lot 103D : retrait d'un événement associé (lien seul, jamais l'événement). */
+  dissociate: 'Dissocier',
+  dissociateEvent: (title: string) => `Dissocier « ${title} »`,
+  /** Lot 103D : confirmations des gestes d'association. */
+  eventAssociatedToast: 'Événement associé',
+  associationRemovedToast: 'Association retirée',
+  savedToast: 'C’est enregistré',
   directLink: 'Lien direct',
   // Lot 89B (demande PO 25/10) : association document → agenda — ouvre la SÉLECTION des éléments
   // existants, ne crée jamais d'élément ; la création reste une action distincte et explicite.
   documentAgendaTitle: 'Associer à l’agenda',
-  documentAgendaPickerHint: 'Choisissez un élément d’agenda existant.',
-  createAgendaItem: 'Créer un élément d’agenda',
+  documentAgendaPickerHint: 'Choisissez un événement existant.',
+  createAgendaItem: 'Créer un événement',
+  /** Lot 103D : liste des événements associés dans la fiche d'un document. */
+  documentLinkedEvents: 'Événements associés',
   associatedToast: 'Document associé',
   // Lot 86D : détachement individuel (le document et l'élément restent, rien n'est supprimé).
-  linkedDocuments: 'Documents de cet élément',
+  linkedDocuments: 'Documents associés',
   // Lot 89B : « Retirer l’association » (lien seul ; document et élément restent).
   detach: 'Retirer l’association',
   detachFromItem: (title: string) => `Retirer l’association avec « ${title} »`,
@@ -139,6 +189,19 @@ export const GROUPING_LABELS = {
   removeFromEnsemble: (title: string) => `Retirer « ${title} » de l’ensemble`,
   detachedToast: 'Association retirée. Le document reste disponible dans vos documents.',
 } as const;
+
+/** Lot 103D : message de confirmation d'un geste réussi du tiroir (pur). */
+export function groupingActionToast(action: GroupingAction): string {
+  switch (action) {
+    case 'relier-element': return GROUPING_LABELS.eventAssociatedToast;
+    case 'relier-document': return GROUPING_LABELS.associatedToast;
+    case 'detacher-document': return GROUPING_LABELS.detachedToast;
+    case 'retirer-element': case 'quitter-ensemble': case 'retirer-document':
+    case 'retirer-bien': case 'retirer-piece': case 'retirer-equipement':
+      return GROUPING_LABELS.associationRemovedToast;
+    default: return GROUPING_LABELS.savedToast;
+  }
+}
 
 /** Action « retirer » de chaque catégorie. */
 export const REMOVE_ACTION: Record<GroupingCandidateKind, GroupingAction> = {

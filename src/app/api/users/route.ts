@@ -20,6 +20,7 @@ import { scheduleSignupExistingEmail } from '@/services/auth/signup-existing-ema
 import { logUserActivity } from '@/lib/audit-logger';
 import { releaseUnverifiedEmail } from '@/services/auth/release-unverified-email';
 import { newSignupNonce } from '@/services/auth/email-verification.service';
+import { validateDisplayName, cleanCivilName, personalAccountName } from '@/lib/auth/display-name';
 
 const VALID_PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
 
@@ -39,8 +40,8 @@ const VALID_PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
  *     un compte » au propriétaire de la boîte (au plus un par heure) ;
  *     journal SIGNUP_EXISTING_EMAIL.
  * Ordre des contrôles choisi pour qu'aucun refus ne dépende de l'existence
- * du compte : champs, CGVU, mot de passe, nom d'utilisateur, invitation —
- * puis seulement l'adresse. Même coût bcrypt dans les deux cas ; l'e-mail
+ * du compte : champs (dont « Prénom ou pseudo »), CGVU, mot de passe,
+ * invitation — puis seulement l'adresse. Même coût bcrypt dans les deux cas ; l'e-mail
  * part après la réponse dans les deux cas.
  *
  * Exception assumée : une INVITATION valide pour cette adresse (compte
@@ -147,12 +148,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Password is required', code: 'MISSING_PASSWORD' }, { status: 400 });
     }
 
-    if (!firstName) {
-      return NextResponse.json({ error: 'First name is required', code: 'MISSING_FIRST_NAME' }, { status: 400 });
-    }
-
-    if (!lastName) {
-      return NextResponse.json({ error: 'Last name is required', code: 'MISSING_LAST_NAME' }, { status: 400 });
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 103B — « PRÉNOM OU PSEUDO » : SEUL NOM OBLIGATOIRE, NON UNIQUE
+    //
+    // Décision PO du 31/10/2026. Le formulaire n'envoie plus que `username`
+    // (nom d'affichage, `lib/auth/display-name.ts`) ; prénom et nom civils
+    // sont facultatifs et ne sont JAMAIS fabriqués à partir du pseudo.
+    // Aucune recherche de doublon : deux « Sophie » coexistent (l'ancien
+    // refus « nom déjà utilisé » et la contrainte `users_username_unique`,
+    // migration 0935, sont supprimés).
+    // Compatibilité des anciens clients (application mobile encore en
+    // circulation, page en cache) : ils envoient prénom + nom obligatoires
+    // et un `username` facultatif souvent vide → le prénom saisi devient le
+    // nom d'affichage, et prénom / nom restent enregistrés comme saisis.
+    // ══════════════════════════════════════════════════════════════════════
+    const usernameProvided = typeof username === 'string' && username.trim() !== '';
+    const displayName = validateDisplayName(usernameProvided ? username : firstName);
+    if (!displayName.ok) {
+      return NextResponse.json({ error: displayName.message, code: displayName.code }, { status: 400 });
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -222,26 +235,10 @@ export async function POST(request: NextRequest) {
 
     // Sanitize inputs
     const sanitizedEmail = email.trim().toLowerCase();
-    const sanitizedFirstName = firstName.trim();
-    const sanitizedLastName = lastName.trim();
-    const sanitizedUsername = username ? String(username).trim() : null;
-
-    // Nom d'utilisateur (facultatif) : contrôlé AVANT l'adresse, pour que son
-    // refus ne dépende jamais de l'existence d'un compte (lot 53A).
-    if (sanitizedUsername) {
-      const existingUserByUsername = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(eq(users.username, sanitizedUsername))
-        .limit(1);
-
-      if (existingUserByUsername.length > 0) {
-        return NextResponse.json(
-          { error: "Ce nom d'utilisateur est déjà utilisé.", code: 'DUPLICATE_USERNAME' },
-          { status: 409 }
-        );
-      }
-    }
+    // Champs civils : seulement ce que le client a réellement saisi (vide sinon).
+    const sanitizedFirstName = cleanCivilName(firstName);
+    const sanitizedLastName = cleanCivilName(lastName);
+    const sanitizedUsername = displayName.value;
 
     // Invitation : contrôlée AVANT l'adresse — son verdict ne dépend que du
     // jeton et de l'adresse saisie, jamais de l'existence d'un compte.
@@ -395,7 +392,8 @@ export async function POST(request: NextRequest) {
         const [newAccount] = await tx
           .insert(accounts)
           .values({
-            name: `Compte de ${sanitizedFirstName} ${sanitizedLastName}`,
+            // Lot 103B : « Compte de Sophie », fondé sur le nom d'affichage.
+            name: personalAccountName({ username: sanitizedUsername }),
             ownerUserId: newUser.id,
             // Même règle que l'utilisateur : jamais l'offre fournie par le client.
             planType: 'STANDARD',
@@ -527,13 +525,6 @@ export async function POST(request: NextRequest) {
           // Inscription concurrente sur la même adresse : même réponse neutre
           // (lot 53A), sauf invitation valide (orientation explicite).
           return invitation?.valid ? duplicateEmailResponse() : neutralSignupResponse();
-        }
-
-        if (errorMessage.includes('username') || errorMessage.includes('users.username')) {
-          return NextResponse.json(
-            { error: "Ce nom d'utilisateur est déjà utilisé.", code: 'DUPLICATE_USERNAME' },
-            { status: 409 }
-          );
         }
 
         return NextResponse.json(

@@ -12,7 +12,7 @@
  */
 import type { GroupingAction } from '@/lib/agenda/grouping-view';
 import {
-  GroupingError, attachAsset, attachEquipment, attachRoom, designatePrincipal, detachAgendaItem, detachAsset, detachDocumentFromAgendaGroup, detachDocumentFromAgendaItem,
+  GroupingError, attachAsset, attachEquipment, attachRoom, dependentsOfAssetRemoval, designatePrincipal, detachAgendaItem, detachAsset, detachDocumentFromAgendaGroup, detachDocumentFromAgendaItem,
   detachEquipment, detachRoom, linkAgendaItems, linkDocumentToAgendaItem, releasePrincipal, withGroupingWrite, type GroupingContext,
 } from './service';
 
@@ -37,7 +37,16 @@ function requireGroup(g: { op: number | null }, itemId: number): number {
 
 /** Applique un geste du tiroir de l'élément `itemId` (cible `targetId` selon le geste). */
 export async function applyAgendaDrawerAction(
-  p: { accountId: number; actorUserId: number | null; itemId: number; action: GroupingAction; targetId: number | null },
+  p: {
+    accountId: number; actorUserId: number | null; itemId: number; action: GroupingAction; targetId: number | null;
+    /**
+     * Lot 103D : retrait d'un bien CONFIRMÉ par l'utilisateur — les pièces /
+     * équipements devenus incompatibles sont dissociés dans la même
+     * transaction (liens seulement). Sans confirmation : refus
+     * `AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS`, rien n'est écrit.
+     */
+    dissocier?: boolean;
+  },
 ): Promise<DrawerActionResult> {
   const { accountId, actorUserId, itemId, action } = p;
   const target = () => {
@@ -82,6 +91,17 @@ export async function applyAgendaDrawerAction(
       }
       case 'retirer-bien': {
         const op = requireGroup(g, itemId);
+        // Lot 103D : aucune pièce / aucun équipement ne reste associé sans son logement.
+        const dep = await dependentsOfAssetRemoval(ctx, op, target());
+        if (dep.roomIds.length || dep.equipmentIds.length) {
+          if (p.dissocier !== true) {
+            throw new GroupingError('AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS', `Bien ${target()} : pièces / équipements dépendants.`,
+              { substructureIds: dep.roomIds, equipmentIds: dep.equipmentIds });
+          }
+          const motif = `${reasonCode}_DISSOCIATION`;
+          for (const substructureId of dep.roomIds) await detachRoom(ctx, { operationId: op, substructureId, origin: 'USER', reasonCode: motif });
+          for (const equipmentId of dep.equipmentIds) await detachEquipment(ctx, { operationId: op, equipmentId, origin: 'USER', reasonCode: motif });
+        }
         return { action, changed: await detachAsset(ctx, { operationId: op, assetId: target(), origin: 'USER', reasonCode }), operationId: op };
       }
       case 'relier-piece': {

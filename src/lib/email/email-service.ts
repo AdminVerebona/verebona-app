@@ -4,7 +4,7 @@ import { emailTemplates, emailSettings, emailLogs } from '@/db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { isTransactionalEmailActive, transactionalRetiredReason, COMMUNICATION_RETIRED_ERROR } from '@/lib/notifications/channel-activation';
 import { EMAIL_COLORS, EMAIL_STYLES, emailButton, emailDocument, emailLogoHtml } from './email-layout';
-import { safeTemplateVariables } from './variable-safety';
+import { neutralizeEmptyGreeting, safeTemplateVariables } from './variable-safety';
 import { buildContactEmail, type ContactInput } from './contact-message';
 
 /**
@@ -446,6 +446,11 @@ class EmailService {
     // l'application et blocs HTML du code intacts (`variable-safety.ts`).
     const htmlVariables = { ...safeTemplateVariables(aliased, 'html'), year };
     const textVariables = { ...safeTemplateVariables(aliased, 'text'), year };
+    // Lot 103B : « Bonjour, » quand aucun nom n'est connu (jamais « Bonjour , »).
+    template = {
+      subject: neutralizeEmptyGreeting(template.subject, aliased),
+      body: neutralizeEmptyGreeting(template.body, aliased),
+    };
     const subjectRaw = this.replaceVariables(template.subject, textVariables, settings, computedLogo);
     const bodyProcessed = this.replaceVariables(template.body, htmlVariables, settings, computedLogo);
     const all = `${subjectRaw}\n${bodyProcessed}`;

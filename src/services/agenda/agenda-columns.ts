@@ -95,3 +95,36 @@ export async function agendaSourcesColumnsReady(): Promise<boolean> {
   return ready;
 }
 
+
+// ── Preuve de réalisation d'un fait historique (0945, lot 103D) ─────────────
+
+let etatPreuve: { ready: boolean; checkedAt: number } | null = null;
+
+/**
+ * Colonnes `completion_proof_file_id` / `completion_proven_at` (0945) présentes
+ * sur `agenda_items` ? Absentes : aucun fait n'est qualifié « réalisation
+ * prouvée » (le contrôle COH-AGENDA-HISTORICAL-STATUS s'abstient) et la lecture
+ * ignore la preuve. Ne lève jamais.
+ */
+export async function agendaCompletionColumnsReady(): Promise<boolean> {
+  if (etatPreuve && (etatPreuve.ready || Date.now() - etatPreuve.checkedAt < RECONTROLE_MS)) return etatPreuve.ready;
+  let ready = false;
+  try {
+    const { pgClient } = await import('@/db');
+    const rows = (await pgClient.unsafe(
+      `SELECT COUNT(*)::int AS n FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = 'agenda_items' AND column_name IN ('completion_proof_file_id', 'completion_proven_at')`,
+    )) as unknown as Array<{ n: number }>;
+    ready = probeCount(rows) === 2;
+  } catch {
+    ready = false;
+  }
+  if (!ready && (!etatPreuve || etatPreuve.ready)) {
+    console.error(schemaNotReadyMessage({
+      scope: '[agenda]', migration: '0945', expected: ['agenda_items.completion_proof_file_id', 'agenda_items.completion_proven_at'], found: null,
+      consequence: 'Faits historiques prouvés non qualifiés « Réalisé » (restent « Statut à confirmer »).',
+    }));
+  }
+  etatPreuve = { ready, checkedAt: Date.now() };
+  return ready;
+}

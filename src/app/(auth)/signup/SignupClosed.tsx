@@ -1,9 +1,10 @@
 import Link from 'next/link';
-import { ArrowLeft, Sparkles } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
 import { LandingFooter } from '@/components/LandingFooter';
+import { AuthBackHomeLink } from '@/components/auth/AuthBackHomeLink';
 import { FollowTheme } from '@/components/FollowTheme';
 import { publicSiteUrl } from '@/lib/external-urls';
 import type { InvitationError } from '@/lib/prelaunch-invitations';
@@ -25,13 +26,8 @@ export function SignupClosed({ invitationError }: { invitationError?: Invitation
       <div className="flex-1 flex items-center justify-center p-4">
         <Card className="w-full max-w-lg bg-[color:var(--bg-card)] border-[color:var(--border-subtle)] shadow-xl">
           <CardHeader className="space-y-4">
-            <a
-              href={publicSiteUrl('/')}
-              className="inline-flex items-center gap-2 text-sm text-[color:var(--text-muted)] hover:text-[color:var(--text-primary)] transition-colors w-fit"
-            >
-              <ArrowLeft className="w-4 h-4" />
-              Retour à l&apos;accueil
-            </a>
+            {/* Lot 103A : lien Web seulement — jamais rendu dans l'app iOS / Android. */}
+            <AuthBackHomeLink />
             <div className="flex justify-center">
               <LogoWithBaseline size={50} />
             </div>

@@ -1,9 +1,11 @@
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { NextRequest, NextResponse } from 'next/server';
+import { structuralLinkRefusal } from '@/services/agenda/housing-scope-http';
 import { SessionService } from '@/lib/session-service';
 import { getAgendaItemById } from '@/services/agenda/AgendaQueryService';
 import { updateAgendaItem, deleteAgendaItem } from '@/services/agenda/AgendaWriteService';
+import { appliquerFournisseurs, preparerFournisseurs } from '@/lib/agenda/agenda-suppliers-route';
 
 /**
  * ⚠️ `params` EST UNE PROMESSE (Next.js 15).
@@ -60,13 +62,22 @@ export async function PUT(req: NextRequest, context: RouteContext) {
     const refus = await refuserSiLectureSeule(accountId);
     if (refus) return refus;
 
-    const body = await req.json();
+    const { suppliers: suppliersBody, ...body } = await req.json();
+    // Lot 103E : « Fournisseur / intervenant » — validé AVANT toute écriture (élément du compte requis).
+    const fournisseurs = await preparerFournisseurs(accountId, suppliersBody, id);
+    if (fournisseurs instanceof NextResponse) return fournisseurs;
+    // Lot 103D : dissociation des pièces / équipements devenus incompatibles — seulement sur confirmation explicite.
+    if (body && typeof body === 'object' && 'dissociateIncompatible' in body && (body as Record<string, unknown>).dissociateIncompatible !== true) delete (body as Record<string, unknown>).dissociateIncompatible;
     // Lot 77A : l'auteur est tracé avec l'option « Sans échéance » (cochée / retirée).
     const item = await updateAgendaItem(id, body, accountId, session.userId ?? null);
+    const suppliers = fournisseurs ? await appliquerFournisseurs(accountId, id, session.userId ?? null, fournisseurs) : undefined;
     // CDC Assistant §25.7 : événement métier (caches de l'assistant).
     await emitBusinessEvent({ type: 'AGENDA_ITEM_UPDATED', accountId, entityId: id });
-    return NextResponse.json({ item });
+    return NextResponse.json({ item, ...(suppliers ? { suppliers } : {}) });
   } catch (err) {
+    // Lot 103D : pièce / équipement sans logement rattaché, ou logement retiré sans confirmation — code stable, rien n'est écrit.
+    const refusLogement = structuralLinkRefusal(err);
+    if (refusLogement) return refusLogement;
     const message = err instanceof Error ? err.message : 'Internal server error';
     const status = message.includes('Validation') || message.includes('Cohérence') ? 400 : message === 'Item not found' ? 404 : 500;
     if (status === 500) console.error('[api/agenda/:id] PUT', err);

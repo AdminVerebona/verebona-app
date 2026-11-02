@@ -30,6 +30,7 @@
  * heure) ne sont plus acceptés — l'utilisateur en redemande un.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { greetingName } from '@/lib/user-display-name';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { db } from '@/db';
 import { users } from '@/db/schema';
@@ -194,7 +195,7 @@ type StartResetResult =
   | { status: 'social_only_guidance_sent'; userId: number }
   | { status: 'no_local_password'; userId: number };
 
-async function sendResetEmail(user: ResetSubject & { firstName: string }): Promise<StartResetResult> {
+async function sendResetEmail(user: ResetSubject & { firstName: string; username?: string | null }): Promise<StartResetResult> {
   const token = createPasswordResetToken(user);
   const baseUrl = process.env.APP_URL || process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
   const resetUrl = `${baseUrl}/reset-password?token=${encodeURIComponent(token)}`;
@@ -203,7 +204,7 @@ async function sendResetEmail(user: ResetSubject & { firstName: string }): Promi
     templateCode: 'PASSWORD_RESET',
     to: user.email,
     variables: {
-      firstName: user.firstName,
+      firstName: greetingName(user),
       resetUrl,
       expiresAt: '1 heure',
     },
@@ -222,7 +223,7 @@ async function sendResetEmail(user: ResetSubject & { firstName: string }): Promi
  * passe (Google / Apple) — aucun mot de passe n'est créé ; l'e-mail indique
  * de se connecter avec le fournisseur (et comment ajouter un mot de passe).
  */
-async function sendSocialOnlyGuidance(user: { id: number; email: string; firstName: string }): Promise<StartResetResult> {
+async function sendSocialOnlyGuidance(user: { id: number; email: string; firstName: string; username?: string | null }): Promise<StartResetResult> {
   const { pgClient } = await import('@/db');
   const rows = await pgClient<{ provider: string }[]>`SELECT provider FROM auth_identities WHERE user_id = ${user.id} ORDER BY provider`;
   const names = rows.map((r) => (r.provider === 'apple' ? 'Apple' : 'Google'));
@@ -231,7 +232,7 @@ async function sendSocialOnlyGuidance(user: { id: number; email: string; firstNa
   const result = await emailService.send({
     templateCode: 'PASSWORD_RESET_SOCIAL_ONLY',
     to: user.email,
-    variables: { firstName: user.firstName, providers, loginUrl: `${baseUrl}/login` },
+    variables: { firstName: greetingName(user), providers, loginUrl: `${baseUrl}/login` },
     userId: user.id,
   });
   if (!result.success) return { status: 'send_failed', userId: user.id, error: result.error };
@@ -244,6 +245,8 @@ const RESET_SUBJECT_COLUMNS = {
   id: users.id,
   email: users.email,
   firstName: users.firstName,
+  // Lot 103B : salutation par le « Prénom ou pseudo » (repli : prénom).
+  username: users.username,
   passwordHash: users.passwordHash,
 };
 

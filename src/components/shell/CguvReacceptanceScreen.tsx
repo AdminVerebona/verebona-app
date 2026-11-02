@@ -20,7 +20,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import { LogoWithBaseline } from '@/components/Logo';
 import { MyDataCard } from '@/app/(dashboard)/mon-compte/mes-donnees/MyDataCard';
-import { CGUV_FULL_LABEL } from '@/lib/legal/public-legal';
+import { CGUV_FULL_LABEL, legalPublicUrl } from '@/lib/legal/public-legal';
+import { LegalLink } from '@/components/legal/LegalLink';
 import type { ReacceptanceState } from '@/lib/legal/reacceptance-gate';
 
 const cadre = 'min-h-screen flex items-start md:items-center justify-center bg-[color:var(--bg-page)] p-4 md:p-6 pt-[max(16px,env(safe-area-inset-top))]';
@@ -97,10 +98,12 @@ export function CguvReacceptanceScreen({
         )}
 
         <Button variant="outline" className="w-full min-h-11" asChild>
-          <a href={shown.permalinkUrl ?? '#'} target="_blank" rel="noopener noreferrer">
+          {/* Lot 103A : version EXACTE à accepter ; dans l'app, navigateur externe
+              (l'écran et la case cochée restent en place au retour). */}
+          <LegalLink href={shown.permalinkUrl} fallbackHref={legalPublicUrl('cguv')} target="_blank">
             <ExternalLink className="mr-1.5 h-4 w-4" />
             Lire les CGUV{shown.versionCode ? ` (version ${shown.versionCode})` : ''}
-          </a>
+          </LegalLink>
         </Button>
 
         <div className="flex items-start gap-3">

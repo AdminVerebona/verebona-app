@@ -162,6 +162,10 @@ export const SEARCH_FIELDS: Readonly<Record<SearchEntityType, readonly SearchFie
     F('title', 'Libellé', 'name', 1),
     F('description', 'Description', 'text', 0.7),
     F('assetNames', 'Bien concerné', 'relation', 0.5, undefined, true),
+    // Lot 103E : fournisseurs / intervenants LIÉS à l'élément (relation persistante), puis leurs
+    // désignations déjà reconnues par le référentiel (noms relevés dans les documents de la fiche).
+    F('supplierNames', 'Fournisseur / intervenant', 'text', 0.75),
+    F('supplierAliases', 'Désignation du fournisseur', 'text', 0.6),
   ],
   equipment: [
     F('name', 'Nom', 'name', 1),

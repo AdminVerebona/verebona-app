@@ -19,15 +19,18 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const credentialId = parseVersionId(id);
   if (credentialId === null) return invalidId(id);
 
-  const compte = Number(process.env.CORPUS_ACCOUNT_ID);
-  if (!Number.isInteger(compte) || compte <= 0) {
-    // Le test consomme un appel : il doit être imputé à un compte technique,
-    // jamais à un compte client.
+  // Le test consomme un appel : il doit être imputé au compte technique, jamais à un compte client. Lot 103G :
+  // compte VÉRIFIÉ (marqueur en base, identité dédiée) — plus la seule variable CORPUS_ACCOUNT_ID, qui pouvait
+  // désigner un compte client.
+  const { checkCorpusAccount } = await import('@/services/ai/qualification/technical-account');
+  const corpus = await checkCorpusAccount({ report: true, impact: { source: 'BO test de clé fournisseur' } });
+  if (!corpus.ok || !corpus.accountId) {
     return NextResponse.json(
-      { error: 'NO_TECHNICAL_ACCOUNT', message: 'CORPUS_ACCOUNT_ID est absente.' },
+      { error: 'NO_TECHNICAL_ACCOUNT', code: corpus.code, message: `${corpus.label}. ${corpus.nextAction ?? ''}`.trim() },
       { status: 503 },
     );
   }
+  const compte = corpus.accountId;
 
   try {
     const secret = await getSecret(credentialId);

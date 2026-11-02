@@ -3,23 +3,41 @@
  * Per plan §2.6
  */
 import type { AgendaItemFull } from './AgendaQueryService';
+import { supplierNamesLine } from '@/lib/agenda/agenda-suppliers-rules';
 
-function escapeICS(str: string): string {
+export function escapeICS(str: string): string {
   return str
     .replace(/\\/g, '\\\\')
     .replace(/;/g, '\\;')
     .replace(/,/g, '\\,')
+    // Lot 103E : fins de ligne CRLF / CR normalisées (une ligne de contenu ne contient jamais de retour brut).
+    .replace(/\r\n?/g, '\n')
     .replace(/\n/g, '\\n');
 }
 
-function foldLine(line: string): string {
-  // RFC 5545: fold lines longer than 75 octets
+/**
+ * RFC 5545 §3.1 : lignes repliées à 75 OCTETS (UTF-8), jamais au milieu d'un
+ * caractère (lot 103E : noms de fournisseurs accentués ; l'ancien repli
+ * comptait des caractères JavaScript).
+ */
+export function foldLine(line: string): string {
+  const enc = new TextEncoder();
   const result: string[] = [];
-  while (line.length > 75) {
-    result.push(line.slice(0, 75));
-    line = ' ' + line.slice(75);
+  let courant = '';
+  let octets = 0;
+  let limite = 75;
+  for (const ch of line) {
+    const n = enc.encode(ch).length;
+    if (octets + n > limite) {
+      result.push(courant);
+      courant = ' ';
+      octets = 1;
+      limite = 75;
+    }
+    courant += ch;
+    octets += n;
   }
-  result.push(line);
+  result.push(courant);
   return result.join('\r\n');
 }
 
@@ -62,6 +80,10 @@ export function computeICSContent(items: AgendaItemFull[], calendarName: string)
     if (assetNames) desc += `\nBiens : ${assetNames}`;
     if (roomNames) desc += `\nPièces : ${roomNames}`;
     if (equipNames) desc += `\nÉquipements : ${equipNames}`;
+    // Lot 103E : fournisseurs / intervenants — NOMS seulement (aucune coordonnée, aucun ATTENDEE /
+    // ORGANIZER : pas d'invitation ni d'e-mail envoyé par le calendrier).
+    const fournisseurs = supplierNamesLine(item.supplierNames ?? []);
+    if (fournisseurs) desc += `\n${fournisseurs}`;
     desc = desc.trim();
 
     // DTSTART

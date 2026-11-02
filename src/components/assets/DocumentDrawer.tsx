@@ -1747,7 +1747,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {linkedAgendaItems.length > 0 && (
                     <div className="pt-2 border-t">
                       <p className="vb-app-label mb-2 flex items-center gap-1">
-                        <Calendar className="w-3 h-3" />Éléments agenda
+                        <Calendar className="w-3 h-3" />{GROUPING_LABELS.documentLinkedEvents}
                       </p>
                       <EntityCardList>
                         {linkedAgendaItems.map(item => (
@@ -1963,7 +1963,9 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
 
       <GroupingPicker
         open={agendaPickerOpen}
-        title={GROUPING_LABELS.documentAgendaTitle}
+        title={GROUPING_LABELS.pickerTitle.elements}
+        searchLabel={GROUPING_LABELS.pickerSearch.elements}
+        description={GROUPING_LABELS.documentAgendaPickerHint}
         load={loadAgendaCandidates}
         onClose={() => setAgendaPickerOpen(false)}
         onPick={(c) => { setAgendaPickerOpen(false); void relierAgenda(c.id); }}

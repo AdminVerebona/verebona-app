@@ -52,7 +52,10 @@ export async function GET(req: NextRequest, context: { params: Promise<{ token: 
       includeUndated: false,
     });
 
-    const ics = computeICSContent(items, account.name);
+    // Lot 103E : noms des fournisseurs / intervenants liés (à jour à chaque synchronisation), sans coordonnée.
+    const { listSuppliersOfItems } = await import('@/services/agenda/agenda-suppliers');
+    const fournisseurs = await listSuppliersOfItems(account.id, items.filter((i) => i.startDate).map((i) => i.id));
+    const ics = computeICSContent(items.map((i) => ({ ...i, supplierNames: (fournisseurs.get(i.id) ?? []).map((s) => s.name) })), account.name);
 
     return new NextResponse(ics, {
       status: 200,

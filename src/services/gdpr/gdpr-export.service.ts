@@ -2,21 +2,29 @@
  * Export RGPD « Mes données » — CDC Back-Office V1 GDP-020 à GDP-022, GDP-009.
  *
  * ══════════════════════════════════════════════════════════════════════════
- * CYCLE
+ * CYCLE (lot 103C : génération DURABLE, voir `gdpr-export.job.ts`)
  *
- *   demande (POST)  → `gdpr_exports` pending + demande système « Accès »
- *                     En cours (GDP-007) ;
- *   génération      → collecte (schéma) → filtre (pur) → ZIP (JSZip, déjà
- *                     utilisé par les exports de biens) → dépôt S3 via
- *                     `export-upload.service` ;
- *   prêt            → demande système Traitée ; si la réponse faite à
- *                     l'utilisateur était asynchrone, notification
- *                     GDPR_EXPORT_READY (GDP-021) ;
- *   échec           → erreur conservée sur l'export et sur la demande
- *                     (`last_error`), qui reste En cours : le BO la suit,
- *                     sans relance manuelle (GDP-009). L'utilisateur peut
- *                     relancer depuis Mon compte ; la même demande est
- *                     alors reprise, sans doublon au registre.
+ *   demande (POST)  → dans UNE transaction (verrou par utilisateur) :
+ *                     ligne `gdpr_exports` `pending` = travail en file,
+ *                     identifiant de corrélation, clé d'idempotence du
+ *                     client. Double clic, POST parallèles ou rejoués :
+ *                     la demande active (ou de même clé) est renvoyée,
+ *                     jamais une seconde archive. Puis, HORS transaction et
+ *                     sans jamais bloquer : registre `gdpr_requests`
+ *                     (GDP-007) — un échec y est noté comme DETTE et rejoué ;
+ *   génération      → worker des exports (bail, tentatives bornées,
+ *                     reprise après arrêt du processus) : collecte paginée
+ *                     → fichiers temporaires → ZIP en flux → dépôt S3 en
+ *                     parties ; manifeste construit depuis les fichiers
+ *                     réellement présents ; COMPLÈTE ou PARTIELLE ;
+ *   prêt            → demande système Traitée ; notification
+ *                     GDPR_EXPORT_READY (GDP-021, une seule fois) ;
+ *   échec           → après les tentatives automatiques : code stable,
+ *                     référence, demande du registre restée En cours avec
+ *                     `last_error` (GDP-009), anomalie de Supervision
+ *                     compacte. L'utilisateur peut relancer (la même demande
+ *                     du registre est reprise) ; après des échecs répétés,
+ *                     il est orienté vers l'assistance.
  *   téléchargement  → route authentifiée qui redirige vers une URL S3
  *                     présignée courte (GDP-022). L'archive expire après
  *                     GDPR_EXPORT_RETENTION_HOURS, puis est supprimée.
@@ -25,38 +33,20 @@
  * (`asset_id NOT NULL`) et porte des payloads de dossiers métier.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import JSZip from 'jszip';
+import { randomUUID } from 'node:crypto';
 import { pgClient } from '@/db';
-import { buildGdprExportContent, partManifest, planExportParts, type ExportPartPlan } from './export-content';
-import { collectUserData } from './export-collector';
-import { upsertSystemRequest, updateSystemRequest } from './system-requests';
+import { gdprExportView, type GdprExportView } from './export-state';
+import type { MissingItem } from './export-content';
+import { syncGdprRegistry } from './gdpr-export.job';
 
-/* ── Paramètres techniques (GDP-022 : durée à définir) ────────────────── */
+/* ── Paramètres techniques (GDP-022) ──────────────────────────────────── */
 
 function envInt(name: string, fallback: number): number {
   const v = Number(process.env[name]);
   return Number.isFinite(v) && v > 0 ? Math.floor(v) : fallback;
 }
-/** Durée de conservation de l'archive générée. */
-const RETENTION_HOURS = () => envInt('GDPR_EXPORT_RETENTION_HOURS', 72);
 /** Durée de validité de l'URL S3 présignée délivrée au clic. */
 const LINK_TTL_SECONDS = () => envInt('GDPR_EXPORT_LINK_TTL_SECONDS', 300);
-/**
- * Lot 102C — taille maximale des documents d'UNE partie de l'archive. Plus
- * aucun plafond global : tous les originaux sont livrés, répartis en parties
- * numérotées (`planExportParts`). Borne mémoire : une partie est construite,
- * déposée puis libérée avant la suivante. L'ancienne variable
- * GDPR_EXPORT_MAX_DOCUMENT_BYTES (plafond global) n'est plus lue.
- */
-export const PART_MAX_BYTES = () => envInt('GDPR_EXPORT_PART_MAX_BYTES', 100 * 1024 * 1024);
-/** Garde-fou du nombre de parties (cas théorique au vu des quotas d'offre). */
-export const MAX_PARTS = () => envInt('GDPR_EXPORT_MAX_PARTS', 200);
-/**
- * Sans progression depuis ce délai, une génération « en cours » est
- * considérée comme interrompue (lot 102C : mesuré depuis la dernière partie
- * déposée, une archive en plusieurs parties peut durer plus longtemps).
- */
-const STALE_MINUTES = 20;
 
 type GdprExportStatus = 'pending' | 'generating' | 'ready' | 'error' | 'expired';
 
@@ -70,6 +60,13 @@ export interface GdprExportState {
   error: string | null;
   /** Lot 102C : parties téléchargeables (1 pour une archive unique). */
   parts: GdprExportPartState[];
+  /** Lot 103C : archive prête COMPLÈTE ou PARTIELLE. */
+  completeness: 'complete' | 'partial' | null;
+  /** Lot 103C : inventaire des manques (archive partielle, 50 premiers). */
+  missing: Array<{ label: string; reason: string }>;
+  missingCount: number;
+  /** Lot 103C : état unique présenté (message, action possible, référence). */
+  view: GdprExportView;
 }
 
 export interface GdprExportPartState {
@@ -81,10 +78,22 @@ export interface GdprExportPartState {
 type Raw = Record<string, unknown>;
 const iso = (v: unknown) => (v == null ? null : new Date(v as string).toISOString());
 
-function toState(r: Raw, parts: Raw[] = []): GdprExportState {
+const REASON_LABELS: Record<string, string> = {
+  OBJECT_MISSING: 'fichier introuvable dans le stockage',
+  READ_FAILED: 'lecture momentanément impossible',
+  PART_LIMIT: 'nombre maximal de parties atteint',
+  ROW_LIMIT: 'catégorie lue en partie seulement',
+  DEPTH_LIMIT: 'catégorie lue en partie seulement',
+};
+
+function toState(r: Raw, parts: Raw[] = [], consecutiveFailures = 1): GdprExportState {
+  const summary = (r.summary ?? {}) as Raw;
   const partStates: GdprExportPartState[] = parts.length
     ? parts.map((p) => ({ number: Number(p.part_number), sizeBytes: p.size_bytes == null ? null : Number(p.size_bytes), documents: Number(p.document_count ?? 0) }))
-    : (r.status === 'ready' && r.s3_key ? [{ number: 1, sizeBytes: r.size_bytes == null ? null : Number(r.size_bytes), documents: Number((r.summary as Raw | null)?.documents ?? 0) }] : []);
+    : (r.status === 'ready' && r.s3_key ? [{ number: 1, sizeBytes: r.size_bytes == null ? null : Number(r.size_bytes), documents: Number(summary.documents ?? 0) }] : []);
+  const completeness = r.status === 'ready' ? ((r.completeness as 'complete' | 'partial' | null) ?? 'complete') : null;
+  const missingList = Array.isArray(summary.missing) ? (summary.missing as MissingItem[]) : [];
+  const missingCount = completeness === 'partial' ? Number(summary.missingCount ?? missingList.length) : 0;
   return {
     id: Number(r.id),
     status: r.status as GdprExportStatus,
@@ -95,6 +104,23 @@ function toState(r: Raw, parts: Raw[] = []): GdprExportState {
     // Message destiné à l'utilisateur : jamais le détail technique.
     error: r.status === 'error' ? 'La génération de l’archive a échoué.' : null,
     parts: r.status === 'ready' ? partStates : [],
+    completeness,
+    missing: completeness === 'partial'
+      ? missingList.slice(0, 50).map((m) => ({
+        label: m.kind === 'document' ? `Document « ${m.name} »` : `Catégorie « ${m.table} »`,
+        reason: REASON_LABELS[m.reason] ?? m.reason,
+      }))
+      : [],
+    missingCount,
+    view: gdprExportView({
+      status: String(r.status),
+      completeness,
+      expiresAt: iso(r.expires_at),
+      errorCode: (r.error_code as string | null) ?? null,
+      correlationId: (r.correlation_id as string | null) ?? null,
+      nextAttemptAt: iso(r.next_attempt_at),
+      missingCount,
+    }, { consecutiveFailures }),
   };
 }
 
@@ -108,232 +134,93 @@ async function partsOf(exportId: number): Promise<Raw[]> {
   }
 }
 
-/** Clôt les générations interrompues (processus arrêté) et les archives expirées de l'utilisateur. */
-async function sweepUser(userId: number): Promise<void> {
-  const stale = await pgClient<Raw[]>`
-    UPDATE gdpr_exports
-       SET status = 'error', error_message = 'GENERATION_INTERRUPTED', completed_at = now()
-     WHERE user_id = ${userId} AND status IN ('pending', 'generating')
-       AND coalesce(progress_at, started_at, created_at) < now() - make_interval(mins => ${STALE_MINUTES})
-     RETURNING request_id`;
-  for (const s of stale) {
-    if (s.request_id) await updateSystemRequest({ id: Number(s.request_id) }, { lastError: 'Génération interrompue.' });
-  }
-  await purgeExpiredExports({ userId });
+/** Demandes consécutives terminées en échec (la plus récente d'abord). */
+async function consecutiveFailures(userId: number): Promise<number> {
+  const rows = await pgClient<{ status: string }[]>`
+    SELECT status FROM gdpr_exports WHERE user_id = ${userId} ORDER BY created_at DESC, id DESC LIMIT 10`;
+  let n = 0;
+  for (const r of rows) { if (r.status === 'error') n++; else break; }
+  return n;
+}
+
+/** Réveille le worker de cette instance (sans effet s'il n'y est pas démarré). */
+async function nudgeWorker(): Promise<void> {
+  try {
+    const { nudgeExportWorker } = await import('@/services/exports/v12/generation/worker');
+    nudgeExportWorker();
+  } catch { /* le tour périodique prendra la demande */ }
 }
 
 /** Dernier export de l'utilisateur (état affiché dans Mon compte). */
 export async function getLatestExport(userId: number): Promise<GdprExportState | null> {
-  await sweepUser(userId);
+  await purgeExpiredExports({ userId }).catch(() => 0);
   const [row] = await pgClient<Raw[]>`
     SELECT * FROM gdpr_exports WHERE user_id = ${userId} ORDER BY created_at DESC, id DESC LIMIT 1`;
-  return row ? toState(row, row.status === 'ready' ? await partsOf(Number(row.id)) : []) : null;
+  if (!row) return null;
+  if (row.status === 'pending') void nudgeWorker();
+  return toState(row, row.status === 'ready' ? await partsOf(Number(row.id)) : [], row.status === 'error' ? await consecutiveFailures(userId) : 0);
 }
 
 /**
- * Enregistre une demande d'export. Idempotent : une génération déjà en cours
- * est renvoyée telle quelle (double clic, ERR-002).
+ * Enregistre une demande d'export — atomique et idempotente (§3 B).
+ *
+ * Verrou consultatif par utilisateur DANS la transaction d'insertion : deux
+ * POST simultanés sont sérialisés ; le second trouve la demande active (ou
+ * celle de même clé client) et la renvoie (`created: false`). Une demande
+ * active est TOUJOURS exécutable : c'est une ligne de la file du worker,
+ * reprise même si le processus qui l'a enregistrée s'arrête.
+ *
+ * Le registre RGPD est alimenté ENSUITE, hors transaction : son échec ne
+ * fait jamais échouer la demande (dette notée, rejouée).
  */
-export async function requestGdprExport(userId: number): Promise<{ export: GdprExportState; created: boolean }> {
-  await sweepUser(userId);
+export async function requestGdprExport(userId: number, opts: { clientKey?: string | null } = {}): Promise<{ export: GdprExportState; created: boolean }> {
+  await purgeExpiredExports({ userId }).catch(() => 0);
+  const clientKey = opts.clientKey ?? null;
 
-  const [active] = await pgClient<Raw[]>`
-    SELECT * FROM gdpr_exports WHERE user_id = ${userId} AND status IN ('pending', 'generating')
-     ORDER BY id DESC LIMIT 1`;
-  if (active) return { export: toState(active), created: false };
+  const { row, created } = await pgClient.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtext('gdpr_export_request'), ${userId})`;
+    if (clientKey) {
+      const [same] = await tx<Raw[]>`
+        SELECT * FROM gdpr_exports WHERE user_id = ${userId} AND client_request_key = ${clientKey} ORDER BY id DESC LIMIT 1`;
+      if (same) return { row: same, created: false };
+    }
+    const [active] = await tx<Raw[]>`
+      SELECT * FROM gdpr_exports WHERE user_id = ${userId} AND status IN ('pending', 'generating')
+       ORDER BY id DESC LIMIT 1`;
+    if (active) return { row: active, created: false };
 
-  // Lot 102C : en état restreint (rétractation, fin d'abonnement, suppression
-  // demandée) l'adhésion peut ne plus être « active » : repli sur le compte
-  // dont l'utilisateur est titulaire, pour que l'export reste rattaché.
-  const [membership] = await pgClient<{ account_id: number }[]>`
-    SELECT account_id FROM (
-      SELECT account_id, 0 AS rang, id FROM account_memberships WHERE user_id = ${userId} AND lower(status) = 'active'
-      UNION ALL
-      SELECT id AS account_id, 1 AS rang, id FROM accounts WHERE owner_user_id = ${userId}
-    ) c ORDER BY rang, id LIMIT 1`;
-  const accountId = membership ? Number(membership.account_id) : null;
-
-  // Relance après un échec : la demande restée ouverte est reprise.
-  const [openRequest] = await pgClient<{ id: number }[]>`
-    SELECT r.id FROM gdpr_requests r
-     WHERE r.origin = 'system' AND r.status <> 'done' AND r.subject_user_ref = ${userId}
-       AND r.source_ref LIKE 'gdpr_export:%'
-     ORDER BY r.id DESC LIMIT 1`;
-
-  let row: Raw;
-  try {
-    [row] = await pgClient<Raw[]>`
-      INSERT INTO gdpr_exports (user_id, account_id, request_id, status)
-      VALUES (${userId}, ${accountId}, ${openRequest?.id ?? null}, 'pending')
+    // Lot 102C : en état restreint (rétractation, fin d'abonnement, suppression
+    // demandée) l'adhésion peut ne plus être « active » : repli sur le compte
+    // dont l'utilisateur est titulaire, pour que l'export reste rattaché.
+    const [membership] = await tx<{ account_id: number }[]>`
+      SELECT account_id FROM (
+        SELECT account_id, 0 AS rang, id FROM account_memberships WHERE user_id = ${userId} AND lower(status) = 'active'
+        UNION ALL
+        SELECT id AS account_id, 1 AS rang, id FROM accounts WHERE owner_user_id = ${userId}
+      ) c ORDER BY rang, id LIMIT 1`;
+    const accountId = membership ? Number(membership.account_id) : null;
+    const [inserted] = await tx<Raw[]>`
+      INSERT INTO gdpr_exports (user_id, account_id, status, correlation_id, client_request_key, notify_on_ready, registry_pending)
+      VALUES (${userId}, ${accountId}, 'pending', ${randomUUID()}, ${clientKey}, true, true)
       RETURNING *`;
-  } catch (e) {
-    // Course entre deux requêtes : l'index unique a gardé la première.
-    if ((e as { code?: string }).code === '23505') {
-      const [again] = await pgClient<Raw[]>`
-        SELECT * FROM gdpr_exports WHERE user_id = ${userId} AND status IN ('pending', 'generating') LIMIT 1`;
-      if (again) return { export: toState(again), created: false };
-    }
-    throw e;
+    return { row: inserted, created: true };
+  });
+
+  if (created) {
+    console.info(`[gdpr-export] demande enregistrée : export #${String(row.id)} réf=${String(row.correlation_id)} utilisateur #${userId}`);
+    await syncGdprRegistry(Number(row.id)); // ne lève jamais
+    void nudgeWorker();
   }
-
-  if (!openRequest) {
-    const requestId = await upsertSystemRequest({
-      sourceRef: `gdpr_export:${row.id}`,
-      rightType: 'access',
-      userId,
-      accountId,
-      receivedAt: new Date(row.created_at as string),
-      status: 'in_progress',
-    }).catch((e) => {
-      console.error('[gdpr-export] registre non alimenté :', (e as Error).message);
-      return null;
-    });
-    if (requestId) await pgClient`UPDATE gdpr_exports SET request_id = ${requestId} WHERE id = ${Number(row.id)}`;
-  } else {
-    await updateSystemRequest({ id: openRequest.id }, { lastError: null });
-  }
-
-  return { export: toState(row), created: true };
-}
-
-/**
- * Génère l'archive. Verrou : seule la transition pending → generating
- * autorise la génération ; un second appel ne fait rien.
- */
-export async function runGdprExport(exportId: number): Promise<GdprExportState | null> {
-  const [claimed] = await pgClient<Raw[]>`
-    UPDATE gdpr_exports
-       SET status = 'generating', started_at = now(), attempt_count = attempt_count + 1
-     WHERE id = ${exportId} AND status = 'pending'
-     RETURNING *`;
-  if (!claimed) return null;
-
-  const userId = Number(claimed.user_id);
-  const requestId = claimed.request_id == null ? null : Number(claimed.request_id);
-  const now = new Date();
-
-  try {
-    const data = await collectUserData(userId);
-    // Lot 102C : TOUS les documents, répartis en parties de taille bornée.
-    const plan = planExportParts(data.documents, { maxPartBytes: PART_MAX_BYTES(), maxParts: MAX_PARTS() });
-    const day = now.toISOString().slice(0, 10);
-    const total = plan.parts.length;
-    const fileNameOf = (n: number) => (total === 1
-      ? `verebona-mes-donnees-${day}.zip`
-      : `verebona-mes-donnees-${day}-partie-${String(n).padStart(String(total).length, '0')}-sur-${total}.zip`);
-    const content = buildGdprExportContent({
-      generatedAt: now, userId, accountIds: data.accountIds, tables: data.tables, documents: plan,
-      parts: plan.parts.map((p) => ({ plan: p, fileName: fileNameOf(p.number) })),
-    });
-
-    const { downloadStoredFile } = await import('./gdpr-storage');
-    const { uploadExportFile } = await import('@/services/export-upload.service');
-    // Reprise propre d'une tentative précédente (parties d'un échec).
-    await pgClient`DELETE FROM gdpr_export_parts WHERE export_id = ${exportId}`.catch(() => undefined);
-
-    let totalBytes = 0;
-    let missingTotal = 0;
-    let firstKey: string | null = null;
-    for (const part of plan.parts) {
-      const zip = new JSZip();
-      if (part.number === 1) for (const [path, text] of Object.entries(content.textFiles)) zip.file(path, text);
-      zip.file(`manifest-partie-${part.number}.json`, partManifest({ generatedAt: now, part, totalParts: total }));
-      const missing = await addPartDocuments(zip, part, downloadStoredFile);
-      if (missing.length) {
-        zip.file('documents/NON-RECUPERES.txt',
-          `Documents de cette partie qui n'ont pas pu être relus lors de la génération (identifiants) : ${missing.join(', ')}\n`);
-      }
-      const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-      const s3Key = `gdpr-exports/${userId}/${exportId}/${fileNameOf(part.number)}`;
-      await uploadExportFile(buffer, s3Key, 'application/zip');
-      firstKey ??= s3Key;
-      totalBytes += buffer.length;
-      missingTotal += missing.length;
-      await recordPart(exportId, part, s3Key, buffer.length, missing.length);
-    }
-
-    const summary = {
-      tables: content.manifest.tables.length,
-      rows: content.manifest.tables.reduce((n, t) => n + t.rows, 0),
-      documents: plan.include.length - missingTotal,
-      documentsSkipped: plan.skipped.length + missingTotal,
-      parts: total,
-    };
-    const [ready] = await pgClient<Raw[]>`
-      UPDATE gdpr_exports
-         SET status = 'ready', s3_key = ${firstKey}, size_bytes = ${totalBytes}, parts_count = ${total},
-             summary = ${JSON.stringify(summary)}::jsonb, error_message = NULL, completed_at = now(), progress_at = now(),
-             expires_at = now() + make_interval(hours => ${RETENTION_HOURS()})
-       WHERE id = ${exportId}
-       RETURNING *`;
-
-    if (requestId) {
-      const expires = new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', dateStyle: 'short', timeStyle: 'short' })
-        .format(new Date(ready.expires_at as string));
-      await updateSystemRequest({ id: requestId }, {
-        status: 'done',
-        lastError: null,
-        result: `Archive générée (${summary.tables} catégories, ${summary.rows} enregistrements, ` +
-          `${summary.documents} document(s)${summary.documentsSkipped ? `, ${summary.documentsSkipped} non joint(s)` : ''}` +
-          `${total > 1 ? `, en ${total} parties` : ''}) ` +
-          `et mise à disposition jusqu’au ${expires}.`,
-      }).catch((e) => console.error('[gdpr-export] registre non mis à jour :', (e as Error).message));
-    }
-
-    await notifyIfDue(exportId);
-    return toState(ready, await partsOf(exportId));
-  } catch (e) {
-    const message = (e as Error).message ?? String(e);
-    console.error(`[gdpr-export] export #${exportId} en échec :`, message);
-    const [failed] = await pgClient<Raw[]>`
-      UPDATE gdpr_exports SET status = 'error', error_message = ${message.slice(0, 2000)}, completed_at = now()
-       WHERE id = ${exportId} RETURNING *`;
-    if (requestId) {
-      await updateSystemRequest({ id: requestId }, { lastError: `Échec de génération : ${message.slice(0, 500)}` })
-        .catch(() => undefined);
-    }
-    return failed ? toState(failed) : null;
-  }
-}
-
-/** Documents d'une partie lus un à un (mémoire bornée à la partie). Renvoie les identifiants non relus. */
-async function addPartDocuments(
-  zip: JSZip,
-  part: ExportPartPlan,
-  download: (key: string, bucket?: string | null) => Promise<Buffer | null>,
-): Promise<number[]> {
-  const missing: number[] = [];
-  for (const doc of part.documents) {
-    const buffer = await download(doc.s3Key!, doc.s3Bucket);
-    if (buffer) zip.file(doc.path, buffer);
-    else missing.push(doc.id);
-  }
-  return missing;
-}
-
-/** Partie déposée : enregistrée et progression notée (la génération n'est pas « interrompue »). */
-async function recordPart(exportId: number, part: ExportPartPlan, s3Key: string, size: number, missing: number): Promise<void> {
-  await pgClient`
-    INSERT INTO gdpr_export_parts (export_id, part_number, s3_key, size_bytes, document_count, missing_count)
-    VALUES (${exportId}, ${part.number}, ${s3Key}, ${size}, ${part.documents.length - missing}, ${missing})
-    ON CONFLICT (export_id, part_number) DO UPDATE
-       SET s3_key = EXCLUDED.s3_key, size_bytes = EXCLUDED.size_bytes,
-           document_count = EXCLUDED.document_count, missing_count = EXCLUDED.missing_count`;
-  await pgClient`UPDATE gdpr_exports SET progress_at = now() WHERE id = ${exportId}`;
-}
-
-/**
- * La réponse faite à l'utilisateur a été asynchrone : il sera notifié quand
- * l'archive sera prête. Si elle l'est déjà (course), la notification part
- * immédiatement.
- */
-export async function markNotifyOnReady(exportId: number): Promise<void> {
-  await pgClient`UPDATE gdpr_exports SET notify_on_ready = true WHERE id = ${exportId}`;
-  await notifyIfDue(exportId);
+  const [fresh] = await pgClient<Raw[]>`SELECT * FROM gdpr_exports WHERE id = ${Number(row.id)}`;
+  const current = fresh ?? row;
+  return {
+    export: toState(current, current.status === 'ready' ? await partsOf(Number(current.id)) : [], current.status === 'error' ? await consecutiveFailures(userId) : 0),
+    created,
+  };
 }
 
 /** Envoie la notification « export prêt » une seule fois (garde atomique). */
-async function notifyIfDue(exportId: number): Promise<void> {
+export async function notifyGdprExportIfDue(exportId: number): Promise<void> {
   const [row] = await pgClient<Raw[]>`
     UPDATE gdpr_exports SET notified_at = now()
      WHERE id = ${exportId} AND status = 'ready' AND notify_on_ready AND notified_at IS NULL
@@ -358,7 +245,9 @@ async function notifyIfDue(exportId: number): Promise<void> {
 /**
  * URL présignée courte d'une partie de l'archive prête et non expirée de
  * l'utilisateur (partie 1 par défaut). Lot 102C : chaque partie a son lien,
- * généré au clic, valable GDPR_EXPORT_LINK_TTL_SECONDS.
+ * généré au clic, valable GDPR_EXPORT_LINK_TTL_SECONDS. Archive PARTIELLE
+ * comprise (ses manques sont annoncés). Toujours filtrée par utilisateur :
+ * aucun lien vers l'archive d'un autre.
  */
 export async function getDownloadUrl(userId: number, opts: { exportId?: number; part?: number } | number = {}): Promise<string | null> {
   const o = typeof opts === 'number' ? { exportId: opts } : opts;
@@ -380,13 +269,17 @@ export async function getDownloadUrl(userId: number, opts: { exportId?: number; 
   return getExportSignedUrl(key, LINK_TTL_SECONDS(), key.split('/').pop() || 'verebona-mes-donnees.zip');
 }
 
-/** Supprime les archives expirées (objet S3 + état `expired`). */
+/**
+ * Supprime les archives expirées (objets S3 + état `expired`) et, lot 103C,
+ * les parties restées en stockage d'un export en ÉCHEC (suppression manquée).
+ */
 export async function purgeExpiredExports(scope: { userId?: number; limit?: number } = {}): Promise<number> {
   const rows = await pgClient<Raw[]>`
-    SELECT id, s3_key FROM gdpr_exports
-     WHERE status = 'ready' AND expires_at <= now()
-       ${scope.userId ? pgClient`AND user_id = ${scope.userId}` : pgClient``}
-     ORDER BY expires_at LIMIT ${scope.limit ?? 50}`;
+    SELECT id, s3_key, status FROM gdpr_exports e
+     WHERE ((e.status = 'ready' AND e.expires_at <= now())
+         OR (e.status = 'error' AND EXISTS (SELECT 1 FROM gdpr_export_parts p WHERE p.export_id = e.id AND p.s3_key IS NOT NULL)))
+       ${scope.userId ? pgClient`AND e.user_id = ${scope.userId}` : pgClient``}
+     ORDER BY e.id LIMIT ${scope.limit ?? 50}`;
   if (!rows.length) return 0;
   const { deleteStoredFile } = await import('./gdpr-storage');
   let n = 0;
@@ -400,8 +293,12 @@ export async function purgeExpiredExports(scope: { userId?: number; limit?: numb
     for (const key of keys) ok = (await deleteStoredFile(key)) && ok;
     if (!ok) continue;
     await pgClient`UPDATE gdpr_export_parts SET s3_key = NULL WHERE export_id = ${Number(r.id)}`.catch(() => undefined);
-    await pgClient`UPDATE gdpr_exports SET status = 'expired', s3_key = NULL WHERE id = ${Number(r.id)}`;
-    n++;
+    if (r.status === 'ready') {
+      await pgClient`UPDATE gdpr_exports SET status = 'expired', s3_key = NULL WHERE id = ${Number(r.id)}`;
+      n++;
+    } else {
+      await pgClient`UPDATE gdpr_exports SET s3_key = NULL WHERE id = ${Number(r.id)}`;
+    }
   }
   return n;
 }
@@ -421,6 +318,9 @@ export async function purgeExpiredExports(scope: { userId?: number; limit?: numb
  * Lots de 50, bornés : une archive dont la suppression échoue (stockage
  * injoignable) reste `ready` et serait relue à chaque lot — la borne évite
  * de boucler, le passage suivant réessaiera.
+ *
+ * Lot 103C : le même passage rejoue la dette du registre RGPD et rattrape
+ * les générations orphelines (filet quotidien en plus du worker).
  * ══════════════════════════════════════════════════════════════════════════
  */
 export async function purgeAllExpiredExports(maxBatches = 20): Promise<{ purged: number; batches: number }> {
@@ -433,6 +333,11 @@ export async function purgeAllExpiredExports(maxBatches = 20): Promise<{ purged:
     purged += n;
     if (n < BATCH) break;
   }
+  try {
+    const { gdprExportMaintenance } = await import('./gdpr-export.job');
+    await gdprExportMaintenance(true);
+  } catch (e) {
+    console.error('[gdpr-export] rattrapage quotidien impossible :', (e as Error).message);
+  }
   return { purged, batches };
 }
-

@@ -22,6 +22,11 @@
  *   ?equipment=asset|42     lot 71 : filtre Équipement (bien uniquement, ou
  *                           un équipement des biens retenus) ; sans bien
  *                           retenu ou sans équipement, sans effet
+ *   ?docFrom=2024-01-01&docTo=2024-12-31 | ?docNone=1
+ *                           lot 103F : « Date du document » (bornes incluses)
+ *                           ou « Sans date »
+ *   ?addedFrom=…&addedTo=…  lot 103F : « Date d'ajout » (jours de Paris,
+ *                           bornes incluses) ; période invalide → 400
  *
  * Réponse : `{ documents, nextCursor, hasMore, limit, meta? }` ; `meta`
  * (compteurs globaux, options de filtre) accompagne le premier lot. En fin de
@@ -51,6 +56,11 @@ export async function GET(req: NextRequest) {
   }
 
   const params = parseFeedParams(req.nextUrl.searchParams);
+  // Lot 103F : une période refusée (jour invalide, début après la fin) n'est
+  // jamais élargie en silence à « toutes les dates ».
+  if (params.dateRangeError) {
+    return NextResponse.json({ error: 'INVALID_DATE_RANGE', code: params.dateRangeError }, { status: 400 });
+  }
   const phase = params.cursor ? 'next' : 'first';
   const started = performance.now();
 
@@ -69,7 +79,10 @@ export async function GET(req: NextRequest) {
       sort: params.sort,
       grouped: params.grouped,
       filtered: params.filters.biens.length + params.filters.rubrics.length + params.filters.types.length > 0
-        || !!params.filters.equipment || !!params.filters.piece,
+        || !!params.filters.equipment || !!params.filters.piece
+        || !!params.filters.documentDate || !!params.filters.addedDate,
+      // Lot 103F : filtres temporels actifs (jamais leurs bornes).
+      dated: !!params.filters.documentDate || !!params.filters.addedDate,
       // Lot 97C : recherche locale active (jamais son texte).
       searched: !!params.q,
     }));

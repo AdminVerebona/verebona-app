@@ -118,7 +118,7 @@ export async function requestEmailChange(input: {
   if (!isPlausibleEmail(newEmail)) {
     return { ok: false, code: 'INVALID_EMAIL', message: 'Saisissez une adresse e-mail valide.' };
   }
-  const [me] = await pgClient<{ email: string; first_name: string | null }[]>`SELECT email, first_name FROM users WHERE id = ${input.userId}`;
+  const [me] = await pgClient<{ email: string; first_name: string | null }[]>`SELECT email, COALESCE(NULLIF(btrim(username), ''), first_name) AS first_name FROM users WHERE id = ${input.userId}`;
   if (!me) throw new Error('USER_NOT_FOUND');
   if (normalizeEmail(me.email) === newEmail) {
     return { ok: false, code: 'SAME_EMAIL', message: 'C’est déjà l’adresse de votre compte.' };
@@ -132,7 +132,7 @@ export async function requestEmailChange(input: {
 
   // Adresse d'un AUTRE compte actif ? (une inscription non vérifiée ne compte pas)
   const [taken] = await pgClient<{ id: number; first_name: string | null }[]>`
-    SELECT id, first_name FROM users WHERE email = ${newEmail} AND id <> ${input.userId} AND is_active = true LIMIT 1`;
+    SELECT id, COALESCE(NULLIF(btrim(username), ''), first_name) AS first_name FROM users WHERE email = ${newEmail} AND id <> ${input.userId} AND is_active = true LIMIT 1`;
 
   const token = randomBytes(32).toString('base64url');
   const expiresAt = new Date(now.getTime() + EMAIL_CHANGE_LINK_TTL_MS);
@@ -267,7 +267,7 @@ export async function confirmEmailChange(input: { userId: number; token: unknown
  */
 export async function notifyEmailChanged(input: { userId: number; oldEmail: string; newEmail: string; at?: Date }): Promise<{ notified: string[]; stripe: { updated: number; failed: number } }> {
   const at = input.at ?? new Date();
-  const [me] = await pgClient<{ first_name: string | null }[]>`SELECT first_name FROM users WHERE id = ${input.userId}`;
+  const [me] = await pgClient<{ first_name: string | null }[]>`SELECT COALESCE(NULLIF(btrim(username), ''), first_name) AS first_name FROM users WHERE id = ${input.userId}`;
   const { emailService } = await import('@/lib/email/email-service');
   const variables = {
     firstName: me?.first_name?.trim() || '',

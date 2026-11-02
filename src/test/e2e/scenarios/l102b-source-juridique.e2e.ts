@@ -120,7 +120,8 @@ scenario('L102B', 'Source juridique unique (site public) et preuves d’acceptat
     expect(await (await links()).json()).toEqual({ mode: 'legacy', links: {
       mentionsLegales: `${SITE}/mentions-legales`, cguv: `${SITE}/cgu`, confidentialite: `${SITE}/confidentialite`,
       sousTraitants: `${SITE}/confidentialite`, parrainage: `${SITE}/cgu`,
-    } });
+    // Lot 103A : origines juridiques admises (liste blanche des liens ouverts depuis l'app).
+    }, allowedOrigins: [SITE] });
     const { GET: cgvu } = await import('@/app/cgvu/route');
     expect((await cgvu()).headers.get('location')).toBe(`${SITE}/cgu`);
     const ctx = (version: string) => ({ params: Promise.resolve({ version }) });

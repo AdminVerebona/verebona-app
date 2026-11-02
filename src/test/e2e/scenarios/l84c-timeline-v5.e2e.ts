@@ -46,6 +46,8 @@ scenario('L84C', 'Opérations v5 — O-4 : Timeline regroupée / détaillée, re
   async function compteEtBien(nom = 'Maison'): Promise<{ compte: AccountRow & { owner: { id: number } }; bien: AssetRow }> {
     const compte = await make.account({ plan: 'premium' });
     const bien = await make.asset(compte, { category: 'IMMOBILIER', name: nom });
+    // Lot 103D : une Maison réelle porte son sous-type — pièces et équipements ne s'associent qu'à un logement.
+    await sql`UPDATE assets SET subtype = 'Maison' WHERE id = ${bien.id}`;
     return { compte, bien };
   }
   const asUser = (c: AccountRow) => { session.currentAccountId = c.id; session.userId = c.ownerUserId; };

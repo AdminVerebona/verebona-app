@@ -55,6 +55,8 @@ scenario('L84B', 'Opérations v5 — O-3 : Agenda et navigation (liens manuels, 
   async function contexte(plan: 'premium' | null = 'premium'): Promise<{ compte: Compte; maison: AssetRow }> {
     const compte = await make.account({ plan }) as Compte;
     const maison = await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
+    // Lot 103D : une Maison réelle porte son sous-type — pièces et équipements ne s'associent qu'à un logement.
+    await sql`UPDATE assets SET subtype = 'Maison' WHERE id = ${maison.id}`;
     as(compte);
     return { compte, maison };
   }

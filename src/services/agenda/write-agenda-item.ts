@@ -47,6 +47,8 @@ import { findRejectedRefs, logCrossAccountRefusal, type SqlExecutor } from '@/se
 import { addFileLinkProvenance, replaceDirectFileLinks } from '@/services/business-operations/grouping/provenance';
 import { liftLinkRejections, recordGroupingDecision, recordLinkDecision } from '@/services/business-operations/grouping/decisions';
 import { drizzleRunner } from '@/services/business-operations/grouping/runner';
+import { AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS, AGENDA_STRUCTURAL_LINK_INCOMPATIBLE, HOUSING_SCOPE_LABELS } from '@/lib/agenda/housing-scope';
+import { agendaItemAssetIds, logStructuralLinkDecision, planStructuralLinks } from './housing-scope.service';
 
 type ItemInsert = typeof agendaItems.$inferInsert;
 
@@ -146,6 +148,55 @@ export class AgendaOwnershipError extends AgendaValidationError {
 }
 
 /**
+ * Lot 103D (ticket « Pièces / Équipements seulement pour un logement lié ») :
+ * une pièce ou un équipement dont le bien porteur n'est pas un LOGEMENT
+ * rattaché à l'élément (règle unique `lib/agenda/housing-scope`). Refus
+ * entier, rien n'est écrit. `DEPENDENTS` : liens déjà présents rendus
+ * incompatibles par le retrait d'un logement — l'utilisateur doit confirmer
+ * leur dissociation (`dissociateIncompatible`).
+ */
+export class AgendaStructuralLinkError extends AgendaValidationError {
+  readonly code: typeof AGENDA_STRUCTURAL_LINK_INCOMPATIBLE | typeof AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS;
+  constructor(readonly incompatible: { roomIds: number[]; equipmentIds: number[] }, readonly kind: 'INCOMPATIBLE' | 'DEPENDENTS' = 'INCOMPATIBLE') {
+    super(kind === 'DEPENDENTS' ? HOUSING_SCOPE_LABELS.dependents : HOUSING_SCOPE_LABELS.refused);
+    this.name = 'AgendaStructuralLinkError';
+    this.code = kind === 'DEPENDENTS' ? AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS : AGENDA_STRUCTURAL_LINK_INCOMPATIBLE;
+  }
+}
+
+/**
+ * Lot 103D — garde « logement rattaché » DANS la transaction, avant l'écriture
+ * des liens, pour TOUS les appelants : agenda manuel (refus,
+ * `AgendaStructuralLinkError`), T4 / projection / IA (pièces et équipements
+ * incompatibles ÉCARTÉS, tracés — jamais un logement ajouté implicitement).
+ * Biens de référence : ceux de l'écriture (`replace`) ou ceux déjà liés plus
+ * ceux ajoutés (`add`). Liens existants : jamais retirés ici (contrôle de
+ * cohérence COH-AGENDA-STRUCTURAL-HOUSING).
+ */
+async function enforceHousingScope(
+  tx: any, agendaItemId: number, links: AgendaItemLinks, mode: 'replace' | 'add', accountId: number, channel: 'MANUAL' | 'T4',
+): Promise<AgendaItemLinks> {
+  const rooms = links.substructureIds ?? [];
+  const equips = links.equipmentIds ?? [];
+  if (!rooms.length && !equips.length) return links;
+  const runner = drizzleRunner(tx);
+  const assetIds = mode === 'replace' ? (links.assetIds ?? [])
+    : [...new Set([...(await agendaItemAssetIds(runner, accountId, agendaItemId)), ...(links.assetIds ?? [])])];
+  const plan = await planStructuralLinks(runner, accountId, { assetIds, substructureIds: rooms, equipmentIds: equips });
+  if (!plan.roomIds.length && !plan.equipmentIds.length) return links;
+  if (channel === 'MANUAL') {
+    logStructuralLinkDecision('refused', { accountId, agendaItemId, code: AGENDA_STRUCTURAL_LINK_INCOMPATIBLE, roomIds: plan.roomIds, equipmentIds: plan.equipmentIds });
+    throw new AgendaStructuralLinkError({ roomIds: plan.roomIds, equipmentIds: plan.equipmentIds });
+  }
+  logStructuralLinkDecision('filtered', { accountId, agendaItemId, channel, code: AGENDA_STRUCTURAL_LINK_INCOMPATIBLE, roomIds: plan.roomIds, equipmentIds: plan.equipmentIds });
+  return {
+    ...links,
+    substructureIds: rooms.filter((id) => !plan.roomIds.includes(id)),
+    equipmentIds: equips.filter((id) => !plan.equipmentIds.includes(id)),
+  };
+}
+
+/**
  * Contrôle de SÉCURITÉ de l'élément : toutes les références (liens et
  * documents sources) appartiennent au compte. Indépendant de `validate`.
  */
@@ -232,12 +283,15 @@ async function writeAgendaLinks(
    * par T4, seule la provenance AI_DIRECT est retirée.
    */
   fileProvenance: 'MANUAL_DIRECT' | 'AI_DIRECT' = 'MANUAL_DIRECT',
+  channel: 'MANUAL' | 'T4' = fileProvenance === 'AI_DIRECT' ? 'T4' : 'MANUAL',
 ): Promise<void> {
+  await assertAgendaRefsInAccount(accountId, links, undefined, tx);
+  // Lot 103D : pièces / équipements seulement pour un logement rattaché (refus manuel, filtre automatique).
+  links = await enforceHousingScope(tx, agendaItemId, links, mode, accountId, channel);
   const assetIds = links.assetIds ?? [];
   const fileIds = links.fileIds ?? [];
   const substructureIds = links.substructureIds ?? [];
   const equipmentIds = links.equipmentIds ?? [];
-  await assertAgendaRefsInAccount(accountId, links, undefined, tx);
   if (mode === 'replace') {
     const biensDuCompte = tx.select({ id: assets.id }).from(assets).where(eq(assets.accountId, accountId));
     await Promise.all([
@@ -344,7 +398,7 @@ export async function writeAgendaItem(
       // Élément d'un autre compte (ou disparu) : aucun lien n'est écrit.
       if (touchees.length === 0) throw new AgendaValidationError('Validation : élément introuvable dans le compte');
     }
-    if (input.links) await writeAgendaLinks(tx, itemId, input.links, opts.linkMode ?? 'replace', opts.accountId, opts.channel === 'T4' ? 'AI_DIRECT' : 'MANUAL_DIRECT');
+    if (input.links) await writeAgendaLinks(tx, itemId, input.links, opts.linkMode ?? 'replace', opts.accountId, opts.channel === 'T4' ? 'AI_DIRECT' : 'MANUAL_DIRECT', opts.channel);
 
     if (effets) {
       // Colonnes 0223 (non déclarées dans Drizzle) : SQL direct, même transaction.

@@ -32,6 +32,8 @@ import { assetSupportsStructuralFeatures } from "@/types/domain";
 import { useWriteGuard } from "@/contexts/WriteGuardContext";
 import { isWriteBlockedCode } from "@/lib/write-blocked";
 import { NoDeadlineField } from "@/components/agenda/NoDeadlineField";
+// Lot 103E : « Fournisseur / intervenant » (facultatif) — composant dédié.
+import { AgendaSuppliersField, EMPTY_SUPPLIERS_SELECTION, suppliersPayload, type AgendaSuppliersSelection } from "@/components/agenda/AgendaSuppliersSection";
 import { toggleNoDeadline, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
 
 interface Asset {
@@ -110,6 +112,8 @@ export function CreateAgendaItemDrawer({
   const [showEndDate, setShowEndDate] = useState(false);
   // Lot 77A : option « Sans échéance » (incompatible avec une date).
   const [noDeadline, setNoDeadline] = useState(false);
+  // Lot 103E : fournisseurs choisis / nouveaux noms (créés seulement à l'enregistrement).
+  const [suppliers, setSuppliers] = useState<AgendaSuppliersSelection>(EMPTY_SUPPLIERS_SELECTION);
   const dateState: AgendaDateFormState = { startDate, startTime, endDate, endTime, noDeadline };
   const applyDates = (s: AgendaDateFormState) => {
     setStartDate(s.startDate);
@@ -232,6 +236,7 @@ export function CreateAgendaItemDrawer({
     setAssetDetails({});
     setShowEndDate(false);
     setNoDeadline(false);
+    setSuppliers(EMPTY_SUPPLIERS_SELECTION);
     setError(null);
   };
 
@@ -258,7 +263,7 @@ export function CreateAgendaItemDrawer({
     setSaving(true);
     setError(null);
     try {
-      const created: { item?: { id?: number } } | undefined = await apiClient.post("/api/agenda", {
+      const created: { item?: { id?: number }; suppliers?: { ok: boolean; error?: string } } | undefined = await apiClient.post("/api/agenda", {
         title: title.trim(),
         description: description || null,
         startDate: startDate || null,
@@ -269,10 +274,14 @@ export function CreateAgendaItemDrawer({
         noDeadline,
         assetIds: selectedAssetIds,
         fileIds: prefilledFileId ? [prefilledFileId] : [],
-        substructureIds: selectedSubstructureIds,
-        equipmentIds: selectedEquipmentIds,
+        // Lot 103D : pièces / équipements seulement avec un logement sélectionné (règle `lib/agenda/housing-scope`).
+        substructureIds: showStructural ? selectedSubstructureIds : [],
+        equipmentIds: showStructural ? selectedEquipmentIds : [],
+        // Lot 103E : sélection vide → champ absent (aucune contrainte, aucun lien).
+        ...(suppliers.selected.length || suppliers.pending.length ? { suppliers: suppliersPayload(suppliers) } : {}),
       });
       toast.success("Élément créé");
+      if (created?.suppliers && created.suppliers.ok === false) toast.error(created.suppliers.error ?? "Les fournisseurs n’ont pas pu être associés.");
       if (onCreated && typeof created?.item?.id === "number") await onCreated(created.item.id);
       window.dispatchEvent(new CustomEvent('agenda-mutated'));
       reset();
@@ -497,6 +506,9 @@ export function CreateAgendaItemDrawer({
                 placeholder="Description (optionnel)"
               />
             </div>
+
+            {/* Lot 103E : Fournisseur / intervenant (toutes catégories, facultatif). */}
+            <AgendaSuppliersField value={suppliers} onChange={(next) => setSuppliers(next)} idPrefix="creation-agenda-fournisseurs" />
 
             {/* Dates */}
             <div className="grid grid-cols-2 gap-3">

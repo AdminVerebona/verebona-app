@@ -58,6 +58,7 @@ interface UserDetails {
   email: string;
   firstName: string;
   lastName: string;
+  username?: string | null;
   company: string | null;
   role: string;
   status: string;
@@ -383,6 +384,8 @@ export default function UserDetailPage() {
         </CardHeader>
         <CardContent className="grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
           <Field label="Identité">{`${user.firstName} ${user.lastName}`.trim() || '—'}</Field>
+          {/* Lot 103B : nom d'affichage non unique — l'ID et l'e-mail identifient le compte. */}
+          <Field label="Prénom ou pseudo">{user.username?.trim() || '—'}</Field>
           <Field label="E-mail (non modifiable)">{user.email}</Field>
           <Field label="Statut">{userStatusLabel}</Field>
           <Field label="Compte rattaché">

@@ -107,6 +107,13 @@ export async function POST(
         ));
       }
 
+      // Lot 103E : fournisseurs / intervenants des éléments d'Agenda reportés sur la fiche conservée
+      // (provenance la plus forte, retraits manuels conservés, sans doublon ni lien orphelin).
+      const { mergeAgendaSupplierLinksInTx } = await import('@/services/agenda/agenda-suppliers');
+      await db.transaction((tx) => mergeAgendaSupplierLinksInTx(tx, {
+        accountId, fromSupplierId: item.supplierId!, toSupplierId: Number(targetSupplierId), actorUserId: session.userId ?? null,
+      }));
+
       // Archive old supplier
       await db.update(suppliers)
         .set({ status: 'archived', updatedAt: new Date() })

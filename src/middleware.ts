@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { verifyAccessToken, extractToken } from '@/lib/jwt';
 import { verifyRequestOrigin, CSRF_REJECTED_MESSAGE } from '@/lib/csrf';
+import { authDiagEntry, logAuthDiag } from '@/lib/auth/auth-diagnostics';
+import { readLoginAttemptId } from '@/lib/auth/login-diagnostics';
 import {
   ACCOUNT_PENDING_DELETION_CODE,
   ACCOUNT_PENDING_DELETION_MESSAGE,
@@ -189,7 +191,12 @@ export async function middleware(request: NextRequest) {
     // APP_UPDATE_REQUIRED). Jamais le Web ni la PWA. Configuration : variables
     // MOBILE_MIN_VERSION_* lues à l'exécution (`lib/mobile/mobile-config`).
     const versionGate = mobileVersionGate(request, pathname);
-    if (versionGate) return versionGate;
+    if (versionGate) {
+      if (pathname === '/api/auth/login' || readLoginAttemptId(request.headers)) {
+        logAuthDiag(authDiagEntry(request, pathname === '/api/auth/login' ? 'login' : 'api_rejected', versionGate.status, 'APP_UPDATE_REQUIRED'));
+      }
+      return versionGate;
+    }
 
     // ── Protection CSRF (CDC §9.1) ──
     // La session voyageant par cookies, toute requete modifiant des donnees
@@ -197,6 +204,9 @@ export async function middleware(request: NextRequest) {
     // pour rejeter au plus tot les requetes inter-sites.
     const csrf = verifyRequestOrigin(request);
     if (!csrf.allowed) {
+      if (readLoginAttemptId(request.headers) || pathname === '/api/auth/login') {
+        logAuthDiag(authDiagEntry(request, pathname === '/api/auth/login' ? 'login' : 'api_rejected', 403, 'CSRF_ORIGIN_REJECTED'));
+      }
       console.warn('[MW] requete rejetee (CSRF)', {
         pathname,
         method: request.method,
@@ -317,6 +327,9 @@ export async function middleware(request: NextRequest) {
 
     // No token → 401
     if (!token) {
+      // Lot 103A : refus corrélé à une connexion récente (cookie non transmis
+      // par la vue de l'app ?) — journal sans secret.
+      if (readLoginAttemptId(request.headers)) logAuthDiag(authDiagEntry(request, 'api_rejected', 401, 'MISSING_TOKEN'));
       return NextResponse.json(
         {
           error: 'Unauthorized',
@@ -331,6 +344,7 @@ export async function middleware(request: NextRequest) {
     // renouvellement présenté en Bearer ou en cookie `access_token` est refusé.
     const payload = await verifyAccessToken(token);
     if (!payload) {
+      if (readLoginAttemptId(request.headers)) logAuthDiag(authDiagEntry(request, 'api_rejected', 401, 'INVALID_TOKEN'));
       return NextResponse.json(
         {
           error: 'Unauthorized',

@@ -10,7 +10,7 @@ import {
 import { eq, and, or, isNull, inArray, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { computeEffectiveStatus, computeAttentionFlags, type EffectiveStatus, type AttentionFlag } from './AgendaDomainService';
-import { agendaFunctionalColumnsReady } from './agenda-columns';
+import { agendaCompletionColumnsReady, agendaFunctionalColumnsReady } from './agenda-columns';
 import { listAgendaItemIdsForSource } from './agenda-source-links';
 import {
   countItemsByEquipment, filterItemsByEquipment, listEquipmentsOfAssets,
@@ -64,6 +64,12 @@ export interface AgendaItemFull {
   endTime: string | null;
   manualStatus: 'realise' | 'annule' | null;
   effectiveStatus: EffectiveStatus;
+  /**
+   * Lot 103D : statut CALCULÉ hors statut manuel (date, nature, preuves déjà
+   * appliquées) — libellé de l'option « automatique » du sélecteur de statut :
+   * jamais « À venir » pour une date passée. Optionnel (objets construits ailleurs).
+   */
+  automaticStatus?: EffectiveStatus;
   isAutomatic: boolean;
   isAutomaticModified: boolean;
   requiresQualification: boolean;
@@ -90,7 +96,8 @@ export interface AgendaItemFull {
   noDeadline?: boolean;
   createdAt: Date;
   updatedAt: Date;
-  assetLinks: { id: number; assetId: number; assetName: string }[];
+  /** Lot 103D : `assetCategory` / `assetSubtype` — règle unique `lib/agenda/housing-scope` (vues desktop et mobile). */
+  assetLinks: { id: number; assetId: number; assetName: string; assetCategory?: string | null; assetSubtype?: string | null }[];
   fileLinks: { id: number; assetFileId: number; filename: string | null; retainedTitle: string | null; originalFilename: string | null; resolvedAssetId: number | null }[];
   roomLinks: { id: number; substructureId: number; name: string; resolvedAssetId: number | null }[];
   equipmentLinks: { id: number; equipmentId: number; name: string; resolvedAssetId: number | null }[];
@@ -100,6 +107,12 @@ export interface AgendaItemFull {
    * migration 0223 est appliquée ; absent sinon.
    */
   eventNature?: 'HISTORICAL' | 'DEADLINE' | null;
+  /**
+   * Lot 103E — NOMS des fournisseurs / intervenants liés : renseignés seulement
+   * pour les représentations structurées qui les exportent (ICS) — jamais dans
+   * les listes et vues compactes (fiche détaillée : `/api/agenda/:id/fournisseurs`).
+   */
+  supplierNames?: string[];
 }
 
 interface AgendaSearchResult {
@@ -126,6 +139,9 @@ async function loadLinks(itemIds: number[]) {
       agendaItemId: agendaAssetLinks.agendaItemId,
       assetId: agendaAssetLinks.assetId,
       assetName: assets.name,
+      // Lot 103D : catégorie du bien — règle « Pièces / Équipements seulement pour un logement rattaché ».
+      assetCategory: assets.category,
+      assetSubtype: assets.subtype,
     })
     .from(agendaAssetLinks)
     .innerJoin(agendaItems, eq(agendaItems.id, agendaAssetLinks.agendaItemId))
@@ -243,6 +259,8 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       eventNature: natures?.get(item.id)?.nature ?? null,
       businessType: natures?.get(item.id)?.businessType ?? null,
       originFieldKey: item.originFieldKey,
+      // Lot 103D : réalisation prouvée (0945) — « réalisé » à la lecture.
+      completionProven: natures?.get(item.id)?.completionProven === true,
     };
     const effectiveStatus = computeEffectiveStatus({
       startDate: item.startDate,
@@ -251,6 +269,10 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       endTime: item.endTime,
       manualStatus: item.manualStatus as 'realise' | 'annule' | null,
       ...signaux,
+    }, now);
+
+    const automaticStatus = computeEffectiveStatus({
+      startDate: item.startDate, startTime: item.startTime, endDate: item.endDate, endTime: item.endTime, manualStatus: null, ...signaux,
     }, now);
 
     const attentionFlags = computeAttentionFlags(
@@ -288,6 +310,7 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       endTime: item.endTime,
       manualStatus: item.manualStatus as 'realise' | 'annule' | null,
       effectiveStatus,
+      automaticStatus,
       isAutomatic: item.isAutomatic,
       isAutomaticModified: item.isAutomaticModified,
       requiresQualification: item.requiresQualification,
@@ -303,7 +326,7 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
       noDeadline: item.noDeadline === true,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
-      assetLinks: itemAssets.map(a => ({ id: a.id, assetId: a.assetId, assetName: a.assetName ?? '' })),
+      assetLinks: itemAssets.map(a => ({ id: a.id, assetId: a.assetId, assetName: a.assetName ?? '', assetCategory: a.assetCategory ?? null, assetSubtype: a.assetSubtype ?? null })),
       fileLinks: itemFiles.map(f => ({ id: f.id, assetFileId: f.assetFileId, filename: f.filename ?? null, retainedTitle: f.retainedTitle ?? null, originalFilename: f.originalFilename ?? null, title: f.title, resolvedAssetId: f.resolvedAssetId ?? null })),
       roomLinks: itemRooms.map(r => ({ id: r.id, substructureId: r.substructureId, name: r.name ?? '', resolvedAssetId: r.resolvedAssetId ?? null })),
       equipmentLinks: itemEquips.map(e => ({ id: e.id, equipmentId: e.equipmentId, name: e.name ?? '', resolvedAssetId: e.resolvedAssetId ?? null })),
@@ -318,14 +341,18 @@ async function enrichItems(rows: typeof agendaItems.$inferSelect[]): Promise<Age
  * Drizzle) ; null si la migration n'est pas appliquée (rien n'est lu).
  * Lot 47B : exportée pour les routes qui calculent le statut effectif.
  */
-export async function loadEventNatures(ids: number[]): Promise<Map<number, { nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null }> | null> {
+export async function loadEventNatures(ids: number[]): Promise<Map<number, { nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null; completionProven?: boolean }> | null> {
   if (ids.length === 0 || !(await agendaFunctionalColumnsReady())) return null;
   const { pgClient } = await import('@/db');
+  // Lot 103D (0945) : réalisation prouvée — document du compte, non supprimé (revérifié à chaque lecture).
+  const preuve = (await agendaCompletionColumnsReady())
+    ? `EXISTS (SELECT 1 FROM asset_files f WHERE f.id = i.completion_proof_file_id AND f.account_id = i.account_id AND f.deleted_at IS NULL)`
+    : 'false';
   const rows = (await pgClient.unsafe(
-    `SELECT id, event_nature AS nature, business_type AS "businessType" FROM agenda_items WHERE id = ANY($1::int[])`,
+    `SELECT i.id, i.event_nature AS nature, i.business_type AS "businessType", ${preuve} AS "completionProven" FROM agenda_items i WHERE i.id = ANY($1::int[])`,
     [ids] as never[],
-  )) as unknown as Array<{ id: number; nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null }>;
-  return new Map(rows.map((r) => [Number(r.id), { nature: r.nature, businessType: r.businessType ?? null }]));
+  )) as unknown as Array<{ id: number; nature: 'HISTORICAL' | 'DEADLINE' | null; businessType: string | null; completionProven: boolean | null }>;
+  return new Map(rows.map((r) => [Number(r.id), { nature: r.nature, businessType: r.businessType ?? null, completionProven: r.completionProven === true }]));
 }
 
 // ── Prochaines échéances (CDC 15 D-14) — helpers pour l'accueil (C) ─────────
@@ -606,10 +633,23 @@ export async function searchAgendaItems(query: string, accountId: number): Promi
     )
   ).limit(10);
 
+  // Lot 103E : fournisseurs / intervenants liés (relation persistante, fournisseur du compte).
+  const { pgClient } = await import('@/db');
+  const supplierRows = (await pgClient.unsafe(
+    `SELECT DISTINCT i.id, i.public_id AS "publicId", i.title, i.start_date::text AS "startDate", i.start_time::text AS "startTime",
+            i.end_date::text AS "endDate", i.end_time::text AS "endTime", i.manual_status AS "manualStatus"
+       FROM agenda_items i
+       JOIN agenda_item_suppliers l ON l.agenda_item_id = i.id
+       JOIN suppliers s ON s.id = l.supplier_id AND s.account_id = i.account_id AND s.status <> 'deleted'
+      WHERE i.account_id = $1 AND s.name ILIKE $2
+      LIMIT 10`,
+    [accountId, `%${q.replace(/[%_\\]/g, (c) => `\\${c}`)}%`] as never[],
+  )) as unknown as typeof assetNameRows;
+
   // Deduplicate
   const seen = new Set<number>();
   const combined = [...rows];
-  for (const row of assetNameRows) {
+  for (const row of [...assetNameRows, ...supplierRows]) {
     if (!seen.has(row.id) && !combined.find(r => r.id === row.id)) {
       combined.push({
         ...row,
@@ -643,6 +683,7 @@ export async function searchAgendaItems(query: string, accountId: number): Promi
       eventNature: natures?.get(item.id)?.nature ?? null,
       businessType: natures?.get(item.id)?.businessType ?? null,
       originFieldKey: item.originFieldKey ?? null,
+      completionProven: natures?.get(item.id)?.completionProven === true,
     }, now);
     return {
       type: 'agenda' as const,

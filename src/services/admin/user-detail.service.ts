@@ -188,7 +188,7 @@ export function describeLoginActivity(activityType: string, rawDetails: string |
     return { result: 'throttled', detail: `${label}${minutes ? ` — ${minutes} min` : ''}` };
   }
   if (activityType === 'LOGIN_FAILED') {
-    return { result: 'failure', detail: `${FAILURE_LABELS[String(d.reason)] ?? 'Échec'}${trusted}` };
+    return { result: 'failure', detail: `${FAILURE_LABELS[String(d.reason)] ?? 'Échec'}${trusted}${diagSuffix(d)}` };
   }
   // Lot 79C (diagnostic des déconnexions, sans SQL) : l'âge de la rotation
   // distingue une réponse perdue (quelques dizaines de secondes à minutes)
@@ -200,7 +200,27 @@ export function describeLoginActivity(activityType: string, rawDetails: string |
       detail: `Sessions révoquées par précaution : ancien jeton présenté${age ? ` ${age} après son renouvellement` : ''}${d.sessionsRevoked === false ? ' (révocation non confirmée)' : ''}`,
     };
   }
-  return { result: 'success', detail: d.trustedDevice === false ? 'Premier succès sur cet appareil' : null };
+  // Lot 103A : sortie lancée par l'application après un refus d'authentification
+  // (renouvellement impossible). Juste après un succès, elle signe un rejet
+  // post-connexion (session non conservée par l'appareil) — à rapprocher du
+  // code de diagnostic affiché sur le téléphone.
+  if (activityType === 'AUTH_LOGOUT') {
+    return { result: 'session_revoked', detail: `Session fermée par l’application après un refus d’authentification${diagSuffix(d)}` };
+  }
+  const base = d.trustedDevice === false ? 'Premier succès sur cet appareil' : null;
+  const suffix = diagSuffix(d);
+  if (activityType === 'LOGIN_SUCCESS' && suffix) return { result: 'success', detail: `${base ?? 'Connexion acceptée'}${suffix}` };
+  return { result: 'success', detail: base };
+}
+
+const CLIENT_LABELS: Record<string, string> = { IOS: 'app iPhone', ANDROID: 'app Android', WEB: 'Web', PWA: 'app Web installée' };
+
+/** Lot 103A : « · app iPhone · diagnostic K7M2… » (plateforme déclarée, identifiant de tentative). */
+function diagSuffix(d: Record<string, unknown>): string {
+  const parts: string[] = [];
+  if (typeof d.client === 'string' && CLIENT_LABELS[d.client]) parts.push(CLIENT_LABELS[d.client]);
+  if (typeof d.loginAttemptId === 'string' && /^[A-Z0-9]{8,16}$/.test(d.loginAttemptId)) parts.push(`diagnostic ${d.loginAttemptId}`);
+  return parts.length ? ` · ${parts.join(' · ')}` : '';
 }
 
 type Row = Record<string, unknown>;
@@ -522,7 +542,9 @@ export async function loadLoginHistory(userId: number, now = new Date()): Promis
       WHERE user_id = $1 AND timestamp >= $2
         AND (activity_type IN ('LOGIN_SUCCESS', 'LOGIN_FAILED', 'AUTH_LOGIN_THROTTLED')
              -- Lot 79C : révocations globales seulement (pas les refus simples).
-             OR (activity_type = 'AUTH_TOKEN_REUSE_DETECTED' AND details LIKE '%"severity":"security_incident"%'))
+             OR (activity_type = 'AUTH_TOKEN_REUSE_DETECTED' AND details LIKE '%"severity":"security_incident"%')
+             -- Lot 103A : sorties lancées par l'app après un refus d'authentification.
+             OR (activity_type = 'AUTH_LOGOUT' AND details LIKE '%"trigger":"auth-failure"%'))
       ORDER BY timestamp DESC LIMIT 500`,
     [userId, since.toISOString()],
   );

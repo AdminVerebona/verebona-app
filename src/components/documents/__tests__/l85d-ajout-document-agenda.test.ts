@@ -145,7 +145,8 @@ describe('L85D-UI06 — tiroir d’un élément d’agenda (desktop et mobile : 
   const src = lire('src/components/agenda/AgendaItemDrawer.tsx');
   it('chaque écriture passe par la garde partagée', () => {
     expect(src).toMatch(/const autorise = \(\) => \{ let ok = false; garder\(\(\) => \{ ok = true; \}\); return ok; \};/);
-    expect(src).toMatch(/const handleSave = async \(\) => \{\s*if \(!autorise\(\)\) return;/);
+    // Lot 103D : `handleSave(dissociateIncompatible)` (confirmation de dissociation) — garde toujours en tête.
+    expect(src).toMatch(/const handleSave = async \(dissociateIncompatible = false\) => \{\s*if \(!autorise\(\)\) return;/);
     expect(src).toMatch(/const handleStatusChange = async \(val: string\) => \{\s*if \(!item \|\| !autorise\(\)\) return;/);
     expect(src).toMatch(/const handleConfirmForecast = async \(\) => \{\s*if \(!item \|\| !autorise\(\)\) return;/);
     expect(src).toMatch(/const handleDelete = async \(\) => \{\s*if \(!item \|\| !autorise\(\)\) return;/);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { greetingName } from '@/lib/user-display-name';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { db } from '@/db';
 import { users, duoAccounts, accountMemberships, accountAuditLog } from '@/db/schema';
@@ -54,7 +55,7 @@ const KNOWN_PLANS = new Set(['standard', 'premium', 'premium_duo', 'premium_pro'
  */
 
 type PendingUser = {
-  id: number; email: string; firstName: string; isActive: boolean; role: string; planType: string;
+  id: number; email: string; firstName: string; username?: string | null; isActive: boolean; role: string; planType: string;
   status: string; passwordHash: string | null; signupNonce: string | null;
 };
 type Resolution =
@@ -74,7 +75,7 @@ async function resolveLink(token: string | null | undefined): Promise<Resolution
   // et fait echouer la verification des qu'une seule manque en base.
   const [user] = await db
     .select({
-      id: users.id, email: users.email, firstName: users.firstName, isActive: users.isActive, role: users.role,
+      id: users.id, email: users.email, firstName: users.firstName, username: users.username, isActive: users.isActive, role: users.role,
       planType: users.planType, status: users.status, passwordHash: users.passwordHash, signupNonce: users.signupNonce,
     })
     .from(users)
@@ -234,7 +235,8 @@ async function completeActivation(request: NextRequest, response: NextResponse, 
     templateCode: 'WELCOME',
     to: user.email,
     variables: {
-      firstName: user.firstName,
+      // Lot 103B : « Prénom ou pseudo » (repli : prénom ; vide → « Bonjour, »).
+      firstName: greetingName(user),
       loginUrl: `${baseUrl()}/login`,
     },
     userId: user.id,

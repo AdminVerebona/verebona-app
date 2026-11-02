@@ -130,7 +130,8 @@ describe('L102C-EXP-04 — tous les originaux, en parties de taille bornée', ()
     expect(m2).toMatchObject({ part: 2, totalParts: 2, documents: [{ id: 2 }] });
   });
   it('l’ancien plafond global n’est plus appliqué par la génération', () => {
-    const src = read('src/services/gdpr/gdpr-export.service.ts');
+    // Lot 103C : la génération est portée par le travail durable `gdpr-export.job.ts`.
+    const src = read('src/services/gdpr/gdpr-export.job.ts');
     expect(src).toMatch(/planExportParts\(/);
     expect(src).not.toMatch(/planDocumentFiles\(|envInt\('GDPR_EXPORT_MAX_DOCUMENT_BYTES'/);
     expect(src).toMatch(/GDPR_EXPORT_PART_MAX_BYTES/);

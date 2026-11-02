@@ -32,6 +32,7 @@ import { accountAuditLog, accountMemberships, accounts, duoAccounts, duoMembersh
 import { isDuoJoinable } from '@/lib/billing/subscription-status';
 import { inviteTokenHash } from '@/lib/duo/invite-token-hash';
 import { invalidateAccountReadCache, invalidateUserReadCache } from '@/lib/server-cache';
+import { personalAccountName } from '@/lib/auth/display-name';
 
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type Runner = typeof db | Tx;
@@ -493,7 +494,7 @@ type PersonalSpaceResult =
  * seulement si l'adresse n'en a jamais consommé. Refusé si l'utilisateur est
  * déjà titulaire d'un espace actif non archivé.
  */
-export async function createPersonalSpace(user: { id: number; email: string; firstName: string | null; lastName: string | null }): Promise<PersonalSpaceResult> {
+export async function createPersonalSpace(user: { id: number; email: string; firstName: string | null; lastName: string | null; username?: string | null }): Promise<PersonalSpaceResult> {
   const now = new Date();
   const created = await db.transaction(async (tx) => {
     // Sérialise deux demandes simultanées du même utilisateur.
@@ -511,7 +512,8 @@ export async function createPersonalSpace(user: { id: number; email: string; fir
       .limit(1);
     if (owned) return null;
     const [account] = await tx.insert(accounts).values({
-      name: `Compte de ${(user.firstName ?? '').trim()} ${(user.lastName ?? '').trim()}`.replace(/\s+/g, ' ').trim(),
+      // Lot 103B : « Compte de <pseudo> » (repli prénom nom, puis « Mon compte » — jamais « Compte de  »).
+      name: personalAccountName(user),
       ownerUserId: user.id,
       planType: 'STANDARD',
       subscriptionTier: 'free',

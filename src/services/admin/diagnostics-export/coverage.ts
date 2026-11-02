@@ -188,6 +188,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   agenda_file_links: C('relations', { filter: `t.agenda_item_id IN ${AGENDA}` }),
   agenda_room_links: C('relations', { filter: `t.agenda_item_id IN ${AGENDA}` }),
   agenda_item_sources: C('relations', { filter: `t.agenda_item_id IN ${AGENDA}` }),
+  // Lot 103E : fournisseurs / intervenants des éléments d'Agenda (lien, retraits manuels mémorisés, historique).
+  agenda_item_suppliers: C('relations'),
+  agenda_item_supplier_suppressions: C('relations'),
+  agenda_item_supplier_history: C('relations'),
   // ── Extractions IA ───────────────────────────────────────────────────────
   document_raw_extracts: C('extractions-ia'),
   document_extractions: C('extractions-ia'),

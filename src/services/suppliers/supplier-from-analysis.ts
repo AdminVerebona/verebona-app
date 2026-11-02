@@ -70,6 +70,8 @@ type SupplierFeedResult =
 
 /** Espace du verrou consultatif (deux entiers : espace, compte). */
 const VERROU_FOURNISSEURS = 22410;
+/** Lot 103E : même verrou pour les fiches créées depuis le tiroir Agenda (aucun doublon concurrent). */
+export const SUPPLIER_REFERENTIAL_LOCK = VERROU_FOURNISSEURS;
 
 /** Confiance T1 retenue pour alimenter le référentiel (un fournisseur contradictoire est ignoré). */
 const confianceRetenue = (c: string | null | undefined) => !c || c === 'certain' || c === 'probable';

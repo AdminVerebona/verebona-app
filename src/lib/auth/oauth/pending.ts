@@ -9,7 +9,7 @@
  *                   compte existant (mêmes limiteurs, même temps de réponse
  *                   que la connexion), puis rattachement et session (§8.1,
  *                   SIGN-08). Aucun second facteur en V1 (décision PO Q2) ;
- *   · inscription : profil + CGSU → compte (adresse attestée) ou code
+ *   · inscription : « Prénom ou pseudo » (lot 103B) + adresse + CGUV → compte (adresse attestée) ou code
  *                   d'adresse (autre adresse) ;
  *   · code        : 6 chiffres, 15 min, 5 essais ;
  *   · annulation  : rien n'est créé (SIGN-11).
@@ -41,7 +41,7 @@ import { checkSessionEligibility } from './session-bridge';
 import { finishWithSession, notifyIdentityChange } from './flow';
 import {
   PROFILE_ERROR_MESSAGES, acceptedTermsVersion, checkSignupInvitation, createSocialAccount, emailHasAccount,
-  validateProfileInput, type SocialProfile,
+  profileDisplayName, validateProfileInput, type SocialProfile,
 } from './social-signup';
 import { SOCIAL_ERROR_MESSAGES, type SocialErrorCode } from './messages';
 
@@ -75,8 +75,12 @@ export async function pendingState(tx: AuthTransaction) {
     providerLabel: PROVIDER_LABEL[tx.provider],
     intent: tx.intent,
     stage: tx.stage ?? 'choice',
+    // Lot 103B : prénom fourni par Google / Apple (Apple : seulement à la
+    // première autorisation) — sert UNIQUEMENT à préremplir « Prénom ou
+    // pseudo », que l'utilisateur peut modifier ; jamais enregistré sans lui.
     firstName: c.firstName,
     lastName: c.lastName,
+    suggestedDisplayName: c.firstName?.trim() || null,
     providerEmail: c.email,
     providerEmailVerified: c.emailVerified,
     isPrivateRelay: c.isPrivateRelay,
@@ -147,7 +151,7 @@ export async function signup(request: NextRequest, tx: AuthTransaction, body: Re
   if (!invitation.ok) return err(invitation.code, 403);
 
   const profile: SocialProfile = {
-    firstName: v.firstName, lastName: v.lastName, email: v.email, termsVersion,
+    username: v.username, firstName: v.firstName, lastName: v.lastName, email: v.email, termsVersion,
     // Jamais de parrainage pour une identité qui rejoint un compte (même règle que l'inscription locale).
     referralCode: invitation.invitation?.valid && invitation.invitation.kind !== 'transmission' ? null : v.referralCode,
     // Lot 102C : choix sur les relances commerciales (bloc du réglage BO), preuve à la création.
@@ -203,7 +207,7 @@ async function sendEmailCode(request: NextRequest, tx: AuthTransaction, profile:
       const r = await emailService.send({
         templateCode: 'SOCIAL_SIGNUP_EMAIL_CODE',
         to: profile.email,
-        variables: { firstName: profile.firstName, code, expiresIn: '15 minutes' },
+        variables: { firstName: profileDisplayName(profile), code, expiresIn: '15 minutes' },
       });
       if (!r?.success) console.error('[oauth] envoi du code de confirmation en échec');
     });

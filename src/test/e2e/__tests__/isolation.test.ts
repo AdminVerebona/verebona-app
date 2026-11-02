@@ -31,3 +31,17 @@ describe('L100A — isolation de la série E2E', () => {
     expect(() => derivedDatabaseName('x'.repeat(60), 'suffixe')).toThrow(/invalide/);
   });
 });
+
+describe('Lot 103 — DATABASE_URL jamais absente pendant la copie de la base du fichier', () => {
+  it('setup.ts pose DATABASE_URL (URL de la base du fichier) AVANT d’attendre la copie', async () => {
+    const { readFileSync } = await import('node:fs');
+    const src = readFileSync(new URL('../setup.ts', import.meta.url), 'utf8');
+    const pose = src.indexOf('process.env.DATABASE_URL = withDatabase(adminUrl, database);');
+    const attente = src.indexOf('await cloneE2eDatabase(');
+    expect(pose).toBeGreaterThan(0);
+    expect(attente).toBeGreaterThan(pose);
+    // Entre la remise à zéro de l'environnement et la pose de l'URL : aucune attente.
+    const entre = src.slice(src.indexOf('restoreProcessEnv(process.env'), pose);
+    expect(entre).not.toMatch(/\bawait\b/);
+  });
+});

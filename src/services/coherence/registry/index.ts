@@ -50,6 +50,10 @@ import { agendaRecurrenceEndCheck } from './checks/agenda-recurrence-end';
 // Lot 100E (décision PO A7) — cartes « À traiter » devenues inutiles, toutes familles (nettoyage rétroactif).
 import { toProcessPublishabilityCheck } from './checks/to-process-publishability';
 import { equipmentIdentityCheck } from './checks/equipment-identity';
+// Lot 103E — fournisseurs / intervenants des éléments d'Agenda (preuves propres à l'élément, retraits manuels respectés).
+import { agendaSuppliersCheck } from './checks/agenda-suppliers';
+import { agendaStructuralHousingCheck } from './checks/agenda-structural-housing';
+import { agendaHistoricalStatusCheck } from './checks/agenda-historical-status';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -105,6 +109,12 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessPublishabilityCheck,
   // Lot 101A (ajouté en fin de liste, sans réordonner l'existant) : identité produit des équipements.
   equipmentIdentityCheck,
+  // Lot 103E (ajouté en fin de liste, sans réordonner l'existant) : fournisseurs des éléments d'Agenda.
+  agendaSuppliersCheck,
+  // Lot 103D (ajoutés en fin de liste, sans réordonner l'existant) : pièces / équipements sans logement rattaché,
+  // puis faits historiques prouvés restés « à confirmer ».
+  agendaStructuralHousingCheck,
+  agendaHistoricalStatusCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

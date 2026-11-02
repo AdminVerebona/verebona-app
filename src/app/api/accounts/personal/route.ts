@@ -22,7 +22,7 @@ export async function POST(request: NextRequest) {
     const session = await SessionService.getSession(request);
     const [user] = await db
       .select({ id: users.id, email: users.email, role: users.role, planType: users.planType, status: users.status,
-        firstName: users.firstName, lastName: users.lastName })
+        firstName: users.firstName, lastName: users.lastName, username: users.username })
       .from(users)
       .where(eq(users.id, session.userId))
       .limit(1);

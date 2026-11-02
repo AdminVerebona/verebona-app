@@ -5,7 +5,7 @@
  * Point d'arrivée des cartes « Fournisseur » de l'assistant (OPEN_SUPPLIER),
  * du tiroir fournisseur (« Voir la fiche ») et de la liste `/fournisseurs`.
  * Lecture seule : coordonnées, puis ce qui relie le fournisseur au compte
- * (biens, documents, équipements, échéances). La modification des
+ * (biens, documents, équipements, événements d'Agenda). La modification des
  * coordonnées reste dans le tiroir existant.
  *
  * Les droits sont ceux des biens, appliqués côté serveur
@@ -17,7 +17,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import {
-  Building2, Mail, Phone, Globe, MapPin, FileText, Wrench, CalendarDays, Home, Pencil, AlertTriangle, ChevronRight,
+  Building2, Mail, Phone, Globe, MapPin, FileText, Wrench, Home, Pencil, AlertTriangle, ChevronRight,
 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -28,6 +28,7 @@ import { openDrawer } from '@/lib/drawers';
 import { userFacingLabel } from '@/lib/referential/user-facing-labels';
 import { SUPPLIERS_ROUTE } from '@/lib/supplier-routes';
 import type { SupplierDetail } from '@/services/suppliers/supplier-detail.service';
+import { SupplierAgendaSection } from '@/components/suppliers/SupplierAgendaSection';
 
 const SupplierDrawer = dynamic(
   () => import('@/components/suppliers/SupplierDrawer').then((m) => ({ default: m.SupplierDrawer })),
@@ -146,7 +147,7 @@ export default function SupplierPage() {
     );
   }
 
-  const { supplier: s, assets, documents, equipments, agendaItems } = data;
+  const { supplier: s, assets, documents, equipments } = data;
   const adresse = [s.addressLine1, s.addressLine2, [s.postalCode, s.city].filter(Boolean).join(' '), s.country]
     .filter((x) => x && String(x).trim()).join(', ');
 
@@ -238,16 +239,9 @@ export default function SupplierPage() {
           ))}
         </Section>
 
-        <Section icon={CalendarDays} title="Échéances" count={agendaItems.length} empty="Aucune échéance n’est liée à ce fournisseur.">
-          {agendaItems.map((i) => (
-            <Row
-              key={i.id}
-              title={i.title}
-              subtitle={`${formatDate(i.startDate)}${i.manualStatus === 'realise' ? ' · Réalisée' : ''}`}
-              onOpen={() => openDrawer({ kind: 'echeance', id: i.id })}
-            />
-          ))}
-        </Section>
+        {/* Lot 103E : événements d'Agenda RATTACHÉS (relation persistante, bidirectionnelle) — passés,
+            à venir, sans date ; association / dissociation depuis la fiche. */}
+        <SupplierAgendaSection supplierId={s.id} supplierName={s.name} />
       </div>
 
       <SupplierDrawer

@@ -33,8 +33,9 @@
  * `assertAccountCostCap` est appelée par `AiGateway` après le cache
  * d'idempotence (un résultat déjà payé reste servi) et avant tout contact
  * fournisseur. Exemptés : appels sans compte (sonde, système), usage technique AI_GOVERNANCE,
- * le compte technique des campagnes (`CORPUS_ACCOUNT_ID`, opérations comme
- * pipeline) et les appels marqués `costCapExempt`. Chaque appelant traduit
+ * le compte technique VÉRIFIÉ dans le contexte serveur d'une campagne (lot
+ * 103G : marqueur en base + contexte, jamais la seule variable
+ * `CORPUS_ACCOUNT_ID`) et les appels marqués `costCapExempt`. Chaque appelant traduit
  * le refus `COST_CAP_REACHED` :
  *   · T1 : analyse non lancée, job reporté au 1er du mois suivant (file
  *     durable, une seule reprise, aucune boucle), fichier « en file » avec le
@@ -61,6 +62,7 @@
  */
 import { AiCostCapReachedError } from './errors';
 import { isTechnicalUseCase } from '../config/treatments';
+import { technicalAccountInContext } from '../qualification/technical-context';
 import type { AiUseCaseCode } from '../registry/use-cases';
 
 export type CostCapPlan = 'standard' | 'premium' | 'premium_duo' | 'premium_pro';
@@ -172,12 +174,15 @@ export function costCapLevel(spentMicros: number, capMicros: number | null, rati
 }
 
 /**
- * Compte technique des campagnes de mesure et tests du BO
- * (`CORPUS_ACCOUNT_ID`) : jamais plafonné — opérations ou pipeline complet.
+ * Compte technique des campagnes de mesure et tests du BO : jamais plafonné —
+ * opérations ou pipeline complet. Lot 103G (sécurité) : SEULEMENT le compte
+ * vérifié (marqueur d'identité technique en base) du contexte serveur d'une
+ * campagne (`technical-context.ts`, ouvert après `checkCorpusAccount`) —
+ * plus jamais l'égalité seule avec `CORPUS_ACCOUNT_ID` : une variable pointant
+ * vers un compte client n'exempte pas ce client.
  */
-function isTechnicalAccount(accountId: number, env: NodeJS.ProcessEnv = process.env): boolean {
-  const n = Number(env.CORPUS_ACCOUNT_ID);
-  return Number.isInteger(n) && n > 0 && n === accountId;
+function isTechnicalAccount(accountId: number): boolean {
+  return technicalAccountInContext(accountId);
 }
 
 /** Le traitement de cet usage est-il soumis au plafond du compte ? */

@@ -287,26 +287,42 @@ async function agendaCandidates(
   const cond = anyTokenLike(mode, p, q, ['ai.title', 'ai.description'], ['ai.title']);
   // Bien lié : candidat seulement pour TRACER le rejet RELATION_ONLY — jamais un match seul.
   const condLien = anyTokenLike(mode, p, q, ['a.name']);
+  // Lot 103E : fournisseurs / intervenants LIÉS (jointure sur la relation persistante, noms à jour —
+  // jamais une copie de texte) et leurs désignations déjà reconnues par le référentiel (noms relevés
+  // dans les documents rattachés à la fiche). Une ligne par élément, quel que soit le nombre de fournisseurs.
+  const condFournisseur = anyTokenLike(mode, p, q, ['s.name']);
+  const condAlias = anyTokenLike(mode, p, q, ['o.observed_name']);
   const rows = (await pgClient.unsafe(
     `SELECT ai.id, ai.title, ai.description, ai.start_date AS "startDate",
             (SELECT array_agg(DISTINCT a.name) FROM agenda_asset_links aal JOIN assets a ON a.id = aal.asset_id
-              WHERE aal.agenda_item_id = ai.id AND a.account_id = ai.account_id) AS "assetNames"
+              WHERE aal.agenda_item_id = ai.id AND a.account_id = ai.account_id) AS "assetNames",
+            (SELECT array_agg(DISTINCT s.name) FROM agenda_item_suppliers ls JOIN suppliers s ON s.id = ls.supplier_id
+              WHERE ls.agenda_item_id = ai.id AND s.account_id = ai.account_id AND s.status <> 'deleted') AS "supplierNames",
+            (SELECT array_agg(DISTINCT o.observed_name) FROM agenda_item_suppliers ls JOIN suppliers s ON s.id = ls.supplier_id
+               JOIN supplier_contact_observations o ON o.supplier_id = s.id
+              WHERE ls.agenda_item_id = ai.id AND s.account_id = ai.account_id AND s.status <> 'deleted'
+                AND NULLIF(btrim(o.observed_name), '') IS NOT NULL) AS "supplierAliases"
        FROM agenda_items ai
       WHERE ai.account_id = ${acc}
         AND (${cond} OR EXISTS (SELECT 1 FROM agenda_asset_links aal JOIN assets a ON a.id = aal.asset_id
-                                 WHERE aal.agenda_item_id = ai.id AND a.account_id = ai.account_id AND ${condLien}))
+                                 WHERE aal.agenda_item_id = ai.id AND a.account_id = ai.account_id AND ${condLien})
+             OR EXISTS (SELECT 1 FROM agenda_item_suppliers ls JOIN suppliers s ON s.id = ls.supplier_id
+                         WHERE ls.agenda_item_id = ai.id AND s.account_id = ai.account_id AND s.status <> 'deleted'
+                           AND (${condFournisseur}
+                                OR EXISTS (SELECT 1 FROM supplier_contact_observations o WHERE o.supplier_id = s.id AND ${condAlias}))))
       ${opts.exhaustive ? '' : `ORDER BY ai.start_date ASC NULLS LAST, ai.id
       LIMIT ${CANDIDATS_MAX}`}`,
     p.values as never[],
   )) as unknown as Row[];
   return rows.map((r) => {
     const noms = Array.isArray(r.assetNames) ? (r.assetNames as unknown[]).map(str).filter((x): x is string => !!x) : [];
+    const liste = (v: unknown) => (Array.isArray(v) ? (v as unknown[]).map(str).filter((x): x is string => !!x) : []);
     const start = str(r.startDate);
     return {
       entityType: 'agenda_item' as const,
       entityId: Number(r.id),
       displayName: String(r.title ?? ''),
-      fields: { title: str(r.title), description: str(r.description), assetNames: noms },
+      fields: { title: str(r.title), description: str(r.description), assetNames: noms, supplierNames: liste(r.supplierNames), supplierAliases: liste(r.supplierAliases) },
       retrievalStrategy: 'sql.token_like',
       _start: start ? start.slice(0, 10) : null,
       _assets: noms.join(', '),

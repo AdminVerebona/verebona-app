@@ -21,6 +21,7 @@ import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { canShareNatively, shareContent } from '@/lib/native/share';
 import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
+import { LegalLink } from '@/components/legal/LegalLink';
 
 const INVITATION_ERROR = 'L\'invitation n\'a pas pu être envoyée. Réessayez plus tard ou copiez votre lien pour le partager.';
 
@@ -44,9 +45,9 @@ export function ReferralConditions() {
       <ul className="list-disc pl-4 space-y-0.5 text-xs text-muted-foreground">
         {REFERRAL_TEXT.conditions.map((c) => <li key={c}>{c}</li>)}
       </ul>
-      <a href={legalLinks.parrainage} target="_blank" rel="noopener noreferrer" className="text-xs text-primary hover:underline">
+      <LegalLink href={legalLinks.parrainage} target="_blank" className="text-xs text-primary hover:underline">
         {REFERRAL_TEXT.termsLinkLabel}
-      </a>
+      </LegalLink>
     </div>
   );
 }

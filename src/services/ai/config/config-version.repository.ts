@@ -896,11 +896,11 @@ export async function suspendCandidate(versionId: number, reason: string): Promi
 }
 
 /** Lot 86A : dernière candidate automatique portant cette clé de proposition. */
-export async function findCandidateByKey(environment: string, key: string): Promise<{ id: number; state: string | null; createdAt: Date } | null> {
+export async function findCandidateByKey(environment: string, key: string): Promise<{ id: number; state: string | null; createdAt: Date; reason: string | null } | null> {
   try {
     const r = (await q(pgClient as unknown as SqlLike,
-      `SELECT id, candidate_state, created_at FROM ai_config_versions WHERE environment = $1 AND candidate_key = $2 ORDER BY id DESC LIMIT 1`, [environment, key]))[0];
-    return r ? { id: Number(r.id), state: r.candidate_state == null ? null : String(r.candidate_state), createdAt: new Date(String(r.created_at)) } : null;
+      `SELECT id, candidate_state, created_at, candidate_reason FROM ai_config_versions WHERE environment = $1 AND candidate_key = $2 ORDER BY id DESC LIMIT 1`, [environment, key]))[0];
+    return r ? { id: Number(r.id), state: r.candidate_state == null ? null : String(r.candidate_state), createdAt: new Date(String(r.created_at)), reason: r.candidate_reason == null ? null : String(r.candidate_reason) } : null;
   } catch (e) {
     if ((e as { code?: string })?.code === '42703') return null;
     throw e;

@@ -41,7 +41,7 @@ describe('L86D-UI01 — « Documents de cet élément », quel que soit son rôl
     it(`${role} : liste, ouvrir (carte), détacher chaque document, relier un document`, () => {
       const html = rendre(vue);
       expect(html).toContain(`data-role="${role}"`);
-      expect(html).toContain('Documents de cet élément (2)');
+      expect(html).toContain('Documents associés (2)'); // lot 103D (ancien « Documents de cet élément »)
       for (const d of docs) {
         expect(html).toContain(`data-testid="regroupement-document-element-${d.id}"`);
         expect(html).toContain(`aria-label="Retirer l’association avec « ${d.title} »"`);
@@ -54,8 +54,8 @@ describe('L86D-UI01 — « Documents de cet élément », quel que soit son rôl
   }
   it('aucun document : message vide, toujours « Associer un document »', () => {
     const html = rendre({ itemId: 9, role: 'NONE', main: null, mainWithdrawn: false, ensemble: null, counts: null, linkedDocuments: [] });
-    expect(html).toContain('Documents de cet élément');
-    expect(html).toContain('Aucun document.');
+    expect(html).toContain('Documents associés');
+    expect(html).toContain('Aucun document associé.');
     expect(html).toContain('Associer un document');
   });
 });
@@ -98,7 +98,8 @@ describe('L86D-UI04 — câblage des deux tiroirs (même composant desktop / mob
     const sec = lire('components/agenda/AgendaGroupingSection.tsx');
     expect(sec).toContain('window.dispatchEvent(new CustomEvent("agenda-mutated"))');
     expect(sec).toContain('window.addEventListener("agenda-mutated", h)');
-    expect(sec).toContain('action === "detacher-document" ? L.detachedToast');
+    // Lot 103D : confirmations centralisées (`groupingActionToast` : détacher → `L.detachedToast`).
+    expect(sec).toContain('toast.success(groupingActionToast(action))');
   });
   it('tiroir du document : détacher par élément (DELETE), garde d’écriture, relecture sur `agenda-mutated`', () => {
     const src = lire('components/assets/DocumentDrawer.tsx');

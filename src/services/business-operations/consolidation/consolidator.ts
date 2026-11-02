@@ -79,7 +79,7 @@ import {
 import { computeProvenance, isDurableRelationType, type AttributeProvenance, type ComponentEvidence } from './model';
 // Lot 82D (CDC v5 O-1) : Pièces et décisions utilisateur par le service unique de regroupement.
 import { rejectedSubjects } from '../grouping/decisions';
-import { runnerContext, syncOperationRoomsFromT3 } from '../grouping/service';
+import { runnerContext, structuralTargetAllowedFor, syncOperationRoomsFromT3 } from '../grouping/service';
 import { drizzleRunner } from '../grouping/runner';
 
 /**
@@ -993,6 +993,11 @@ async function syncEquipments(
   const refuses = new Set(await rejectedSubjects(drizzleRunner(tx), repo.accountId, opId, 'EQUIPMENT'));
   for (const d of desired) {
     if (refuses.has(d.equipmentId)) continue;
+    // Lot 103D : un équipement n'est relié que si son logement est rattaché à l'Opération (jamais de logement ajouté implicitement).
+    if (!(await structuralTargetAllowedFor(drizzleRunner(tx), repo.accountId, opId, { equipmentId: d.equipmentId }))) {
+      console.info(JSON.stringify({ event: 'agenda.structural_housing.filtered', accountId: repo.accountId, operationId: opId, origin: 'T3', equipmentId: d.equipmentId, code: 'AGENDA_STRUCTURAL_LINK_INCOMPATIBLE' }));
+      continue;
+    }
     changes.track(await repo.linkEquipment(opId, { equipmentId: d.equipmentId, authority: 'DOCUMENT', sourceId: d.sourceId }, 'T3_TARGET_LINKED'));
   }
 }

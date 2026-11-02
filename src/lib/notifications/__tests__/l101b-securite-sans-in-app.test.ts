@@ -268,7 +268,9 @@ describe('L101B-U07 — messages fonctionnels liés à une action conservés', (
   });
 
   it('session expirée, réauthentification, erreur d’authentification', () => {
-    expect(read('src/app/(auth)/login/page.tsx')).toContain('Votre session a expiré. Merci de vous reconnecter.');
+    // Lot 103A : message conservé mot pour mot, centralisé (un message par motif de retour).
+    expect(read('src/lib/auth/login-diagnostics.ts')).toContain('Votre session a expiré. Merci de vous reconnecter.');
+    expect(read('src/app/(auth)/login/page.tsx')).toContain('loginBannerFromParams(searchParams)');
     expect(read('src/lib/auth/reauth.ts')).toMatch(/export function reauthRequiredResponse/);
     expect(read('src/components/account/security/ReauthProvider.tsx').length).toBeGreaterThan(0);
     expect(read('src/components/account/security/SignInMethodsBlock.tsx')).toContain('SECURITY_RETURN_MESSAGES.linked');

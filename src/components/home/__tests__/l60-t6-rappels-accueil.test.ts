@@ -94,7 +94,7 @@ describe('Cartes T6 de l’accueil — commandes de rappel', () => {
 
   it('état affiché dans le détail : actif, reporté (date), refusé (occurrence / série)', () => {
     expect(reminderDateLabel('2026-11-04')).toBe('4 novembre 2026');
-    expect(reminderStatusLabel({ occurrence: null, series: null })).toMatch(/^Actifs/);
+    expect(reminderStatusLabel({ occurrence: null, series: null })).toBe('Rappel actif'); // lot 103D
     expect(reminderStatusLabel({ occurrence: { scope: 'OCCURRENCE', decision: 'SNOOZED', remindAt: '2026-11-04', updatedAt: '' }, series: null })).toBe('Reportés au 4 novembre 2026');
     expect(reminderStatusLabel({ occurrence: { scope: 'OCCURRENCE', decision: 'DISMISSED', remindAt: null, updatedAt: '' }, series: null })).toBe('Désactivés pour cette échéance');
     expect(reminderStatusLabel({ occurrence: null, series: { scope: 'SERIES', decision: 'DISMISSED', remindAt: null, updatedAt: '' } })).toMatch(/série/);

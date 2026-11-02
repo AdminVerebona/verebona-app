@@ -16,6 +16,7 @@ import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { GROUPING_CANDIDATE_KINDS, isGroupingAction, type GroupingCandidateKind } from '@/lib/agenda/grouping-view';
+import { HOUSING_SCOPE_LABELS } from '@/lib/agenda/housing-scope';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -30,6 +31,9 @@ const MESSAGES: Record<string, { status: number; message: string }> = {
   SAME_ITEM: { status: 400, message: 'Un élément ne peut pas être relié à lui-même.' },
   MERGE_REFUSED: { status: 409, message: 'Ces deux éléments ne peuvent pas être réunis automatiquement.' },
   LINKED_ELSEWHERE: { status: 409, message: 'Cet élément est déjà relié à un autre ensemble.' },
+  // Lot 103D : règle « logement rattaché » (lib/agenda/housing-scope) — codes stables, rien n'est écrit.
+  AGENDA_STRUCTURAL_LINK_INCOMPATIBLE: { status: 409, message: HOUSING_SCOPE_LABELS.refused },
+  AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS: { status: 409, message: HOUSING_SCOPE_LABELS.dependents },
 };
 
 async function compte(req: NextRequest, context: RouteContext): Promise<NextResponse | { accountId: number; userId: number | null; id: number }> {
@@ -76,21 +80,21 @@ export async function POST(req: NextRequest, context: RouteContext) {
     if (c instanceof NextResponse) return c;
     const refus = await refuserSiLectureSeule(c.accountId);
     if (refus) return refus;
-    const body = await req.json().catch(() => null) as { action?: unknown; targetId?: unknown } | null;
+    const body = await req.json().catch(() => null) as { action?: unknown; targetId?: unknown; dissocier?: unknown } | null;
     if (!body || !isGroupingAction(body.action)) return NextResponse.json({ error: 'Geste inconnu.' }, { status: 400 });
     const targetId = body.targetId === undefined || body.targetId === null ? null : Number(body.targetId);
     if (targetId !== null && (!Number.isSafeInteger(targetId) || targetId <= 0)) return NextResponse.json({ error: 'Cible invalide.' }, { status: 400 });
     const { applyAgendaDrawerAction } = await import('@/services/business-operations/grouping/drawer-actions');
     const { GroupingError } = await import('@/services/business-operations/grouping/service');
     try {
-      const result = await applyAgendaDrawerAction({ accountId: c.accountId, actorUserId: c.userId, itemId: c.id, action: body.action, targetId });
+      const result = await applyAgendaDrawerAction({ accountId: c.accountId, actorUserId: c.userId, itemId: c.id, action: body.action, targetId, dissocier: body.dissocier === true });
       await emitBusinessEvent({ type: 'AGENDA_ITEM_UPDATED', accountId: c.accountId, entityId: c.id });
       const { getAgendaGroupingView } = await import('@/services/business-operations/grouping/read');
       return NextResponse.json({ changed: result.changed, view: await getAgendaGroupingView(c.accountId, c.id) });
     } catch (e) {
       if (e instanceof GroupingError) {
         const m = MESSAGES[e.code] ?? { status: 409, message: 'Ce geste n’a pas pu être appliqué.' };
-        return NextResponse.json({ error: m.message, code: e.code }, { status: m.status });
+        return NextResponse.json({ error: m.message, code: e.code, ...(e.detail ? { details: e.detail } : {}) }, { status: m.status });
       }
       throw e;
     }

@@ -238,8 +238,14 @@ describe('L93 — règles pures du parcours', () => {
     expect(contextFromQuery(new URLSearchParams({ client: 'app', app_challenge: 'x'.repeat(43) }))).toEqual({ error: 'APP_RETURN_NOT_CONFIGURED' });
   });
 
-  it('profil d’inscription : prénom, nom, adresse, CGSU obligatoires', () => {
-    expect(validateProfileInput({ firstName: ' ', lastName: 'M', email: 'a@b.fr', acceptedTerms: true })).toEqual({ ok: false, code: 'MISSING_FIRST_NAME' });
+  it('profil d’inscription : « Prénom ou pseudo » (lot 103B), adresse, CGSU obligatoires ; nom civil facultatif', () => {
+    expect(validateProfileInput({ firstName: ' ', lastName: 'M', email: 'a@b.fr', acceptedTerms: true })).toEqual({ ok: false, code: 'MISSING_DISPLAY_NAME' });
+    expect(validateProfileInput({ username: ' ', email: 'a@b.fr', acceptedTerms: true })).toEqual({ ok: false, code: 'MISSING_DISPLAY_NAME' });
+    expect(validateProfileInput({ username: 'Sophie', email: 'a@b.fr', acceptedTerms: true }))
+      .toMatchObject({ ok: true, username: 'Sophie', firstName: '', lastName: '' });
+    // Ancien formulaire : le prénom saisi devient le nom d'affichage, le nom n'est plus exigé.
+    expect(validateProfileInput({ firstName: 'Léa', email: 'a@b.fr', acceptedTerms: true }))
+      .toMatchObject({ ok: true, username: 'Léa', firstName: 'Léa', lastName: '' });
     expect(validateProfileInput({ firstName: 'L', lastName: 'M', email: 'pas-une-adresse', acceptedTerms: true })).toEqual({ ok: false, code: 'INVALID_EMAIL' });
     expect(validateProfileInput({ firstName: 'L', lastName: 'M', email: 'a@b.fr', acceptedTerms: false })).toEqual({ ok: false, code: 'TERMS_NOT_ACCEPTED' });
     expect(validateProfileInput({ firstName: 'Léa', lastName: 'Martin', email: ' Lea@B.fr ', acceptedTerms: true, referralCode: 'ab12' }))

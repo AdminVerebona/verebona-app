@@ -107,6 +107,8 @@ export async function GET(
         eventNature: natures?.get(r.id)?.nature ?? null,
         businessType: natures?.get(r.id)?.businessType ?? null,
         originFieldKey: r.originFieldKey ?? null,
+        // Lot 103D : réalisation prouvée (0945).
+        completionProven: natures?.get(r.id)?.completionProven === true,
       });
       const isDone = effectiveStatus === 'realise' || effectiveStatus === 'annule';
       if (!includeDone && isDone) return [];

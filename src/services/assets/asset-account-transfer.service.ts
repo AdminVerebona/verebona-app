@@ -504,7 +504,7 @@ export async function transferAssetDataInTx(
   }
 
   // ── 8. Fournisseurs (fiches par compte) ───────────────────────────────────
-  await transferSuppliers(tx, { A, E, M, from, to }, out);
+  await transferSuppliers(tx, { A, E, M, from, to, agMove }, out);
 
   // ── 9. Opérations : aucune source ni lien Agenda entre deux comptes ───────
   // Lot 82D (CDC v5 §28) : par le service unique de regroupement — éléments d'agenda
@@ -520,7 +520,7 @@ export async function transferAssetDataInTx(
 }
 
 async function transferSuppliers(
-  tx: DbTx, p: { A: number; E: number[]; M: number[]; from: number; to: number }, out: AssetDataTransferResult,
+  tx: DbTx, p: { A: number; E: number[]; M: number[]; from: number; to: number; agMove?: number[] }, out: AssetDataTransferResult,
 ): Promise<void> {
   const correspondance = new Map<number, number | null>();
   const fournisseur = async (ancien: number): Promise<number | null> => {
@@ -581,6 +581,31 @@ async function transferSuppliers(
   await relier('asset_suppliers', 'asset_id', [p.A]);
   await relier('equipment_suppliers', 'equipment_id', p.E);
   await relier('document_suppliers', 'document_id', p.M);
+  // Lot 103E : fournisseurs / intervenants des éléments d'Agenda qui partent — même règle (fiche
+  // réutilisée ou copiée dans le nouveau compte), liens, retraits manuels et historique suivent ;
+  // aucun lien intercomptes (déclencheur 0950).
+  if (p.agMove?.length) {
+    for (const t of ['agenda_item_suppliers', 'agenda_item_supplier_suppressions', 'agenda_item_supplier_history'] as const) {
+      const liens = await rows<{ id: number; supplier_id: number; agenda_item_id: number }>(tx, sql`
+        SELECT x.id, x.supplier_id, x.agenda_item_id FROM ${sql.identifier(t)} x
+         WHERE x.agenda_item_id = ANY(${ints(p.agMove)}) AND x.account_id <> ${p.to}`);
+      for (const l of liens) {
+        const nouveau = await fournisseur(num(l.supplier_id));
+        const doublon = nouveau === null || t === 'agenda_item_supplier_history' ? [] : await rows(tx, sql`
+          SELECT 1 FROM ${sql.identifier(t)} WHERE agenda_item_id = ${num(l.agenda_item_id)} AND supplier_id = ${nouveau} AND id <> ${num(l.id)}`);
+        if (nouveau === null || doublon.length) {
+          await tx.execute(sql`DELETE FROM ${sql.identifier(t)} WHERE id = ${num(l.id)}`);
+          continue;
+        }
+        await tx.execute(sql`UPDATE ${sql.identifier(t)} SET account_id = ${p.to}, supplier_id = ${nouveau} WHERE id = ${num(l.id)}`);
+        out.rowsMoved[t] = (out.rowsMoved[t] ?? 0) + 1;
+      }
+    }
+    // Document de preuve resté dans l'ancien compte : référence retirée (le lien garde sa provenance).
+    await tx.execute(sql`
+      UPDATE agenda_item_suppliers l SET source_document_id = NULL FROM asset_files f
+       WHERE l.agenda_item_id = ANY(${ints(p.agMove)}) AND f.id = l.source_document_id AND f.account_id <> ${p.to}`);
+  }
   // Source d'un lien équipement ↔ fournisseur restée dans l'ancien compte : retirée.
   if (p.E.length) {
     await tx.execute(sql`

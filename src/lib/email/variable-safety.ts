@@ -101,3 +101,25 @@ export function safeTemplateVariables(variables: Record<string, unknown>, mode: 
   for (const [k, v] of Object.entries(variables ?? {})) out[k] = safeTemplateValue(k, v, mode);
   return out;
 }
+
+/**
+ * Lot 103B — salutation neutre : « Bonjour {{firstName}}, » devient
+ * « Bonjour, » quand le nom est vide ou absent (nouvel inscrit sans prénom
+ * civil, compte incomplet) — jamais « Bonjour , » ni « Bonjour undefined ».
+ * S'applique au gabarit AVANT le remplacement des variables (texte et HTML,
+ * gabarits du code et du BO). Le nom transmis est, pour les e-mails de
+ * compte, le « Prénom ou pseudo » (`greetingName`).
+ */
+const GREETING_VARIABLES = ['firstName'] as const;
+export function neutralizeEmptyGreeting(text: string, variables: Record<string, unknown>): string {
+  let out = text;
+  for (const name of GREETING_VARIABLES) {
+    const v = variables?.[name];
+    if (typeof v === 'string' ? v.trim() && v.trim() !== 'undefined' && v.trim() !== 'null' : v != null) continue;
+    out = out.replace(
+      new RegExp(`(Bonjour|Bonsoir|Hello|Salut)(?:\\s|&nbsp;)+\\{\\{\\s*${name}\\s*\\}\\}[ \\t]*`, 'g'),
+      '$1',
+    );
+  }
+  return out;
+}

@@ -596,6 +596,7 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     timeoutMs: 90 * MIN,
     run: async ({ trigger }) => {
       const { requestAutomaticCampaign } = await import('@/services/ai/qualification/campaign');
+      // Lot 103G : précontrôle du compte technique ; refus amont motivé (CORPUS_ACCOUNT_*) dans la note.
       const r = await requestAutomaticCampaign({ trigger: `scheduler:${trigger}` });
       return { note: r.note.slice(0, 1500) };
     },
@@ -616,10 +617,11 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
     run: async ({ trigger }) => {
       const { runPromptConformityPass } = await import('@/services/ai/prompt-conformity/service');
       const r = await runPromptConformityPass({ trigger: `scheduler:${trigger}` });
-      const note = r.disabled ?? `${r.note} — ${r.detected.length} incompatibilité(s), ${r.resolved.length} résolue(s), `
-        + `${r.processed.map((x) => `${x.contractId} → ${x.status}`).join(', ') || 'aucune correction tentée'}`
-        + `${r.postChecks.length ? ` ; contrôles post-activation : ${r.postChecks.map((x) => `${x.contractId} ${x.outcome}`).join(', ')}` : ''}`;
-      return { note: note.slice(0, 1500), again: true };
+      // Lot 103G : la note commence par la SANTÉ FONCTIONNELLE (distincte du succès technique de la tâche) puis les
+      // compteurs distincts — détectées ≠ essayées ≠ qualifiées ; « occurrences » de détection jamais présentées
+      // comme des essais. Un blocage de prérequis n'est pas une panne du planificateur : la tâche reste « réussie »,
+      // l'anomalie est portée par la Supervision (une seule, regroupée).
+      return { note: r.taskNote.slice(0, 1500), again: true };
     },
   },
   {

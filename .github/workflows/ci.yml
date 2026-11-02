@@ -457,6 +457,20 @@ jobs:
         run: npm run test:e2e:legal -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-legal.xml
       - name: Conformité technique — export complet, stockage en France, prospection, copies de production (lot 102C)
         run: npm run test:e2e:conformite-legale -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-conformite-legale.xml
+      - name: Connexion mobile, retour à l'accueil, liens juridiques externes (lot 103A)
+        run: npm run test:e2e:connexion-mobile -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-connexion-mobile.xml
+      - name: Inscription « Prénom ou pseudo » non unique, Google / Apple (lot 103B)
+        run: npm run test:e2e:inscription-pseudo -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-pseudo.xml
+      - name: Export « Mes données » durable, complet ou partiel déclaré (lot 103C)
+        run: npm run test:e2e:export-rgpd -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-export-rgpd.xml
+      - name: Fiche Agenda — pièces / équipements, statut passé, rappels, libellés (lot 103D)
+        run: npm run test:e2e:agenda-fiche -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-agenda-fiche.xml
+      - name: Agenda — fournisseurs / intervenants, recherche, ICS (lot 103E)
+        run: npm run test:e2e:agenda-fournisseurs -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-agenda-fournisseurs.xml
+      - name: Mes documents — filtres repliables, dates du document et d'ajout (lot 103F)
+        run: npm run test:e2e:filtres-documents -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-filtres-documents.xml
+      - name: Compte technique de qualification IA, reprise automatique (lot 103G)
+        run: npm run test:e2e:compte-technique -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-compte-technique.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

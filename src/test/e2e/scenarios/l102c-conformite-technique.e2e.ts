@@ -36,7 +36,6 @@ const etat = vi.hoisted(() => {
   process.env.APP_URL = 'https://app.e2e.verebona.test';
   process.env.JWT_SECRET = process.env.JWT_SECRET ?? 'secret-e2e-l102c-xxxxxxxxxxxxxxxxxxxx';
   process.env.GDPR_EXPORT_PART_MAX_BYTES = '100';
-  process.env.GDPR_EXPORT_IMMEDIATE_MS = '20000';
   return {
     objects: new Map<string, Buffer>(),
     session: { userId: 0 },
@@ -55,12 +54,22 @@ vi.mock('@/lib/session-service', () => ({
     handleSessionError: () => new Response('unauthorized', { status: 401 }),
   },
 }));
-vi.mock('@/services/gdpr/gdpr-storage', () => ({
-  downloadStoredFile: async (key: string) => etat.objects.get(key) ?? null,
-  deleteStoredFile: async (key: string) => { etat.objects.delete(key); return true; },
-}));
+// Lot 103C : stockage de l'export RGPD en flux disque ↔ stockage (profil worker).
+vi.mock('@/services/gdpr/gdpr-storage', async () => {
+  const fs = await import('node:fs');
+  const { createHash } = await import('node:crypto');
+  return {
+    downloadStoredFileToPath: async (key: string, _bucket: string | null, dest: string) => {
+      const b = etat.objects.get(key);
+      if (!b) return { ok: false, reason: 'NOT_FOUND', detail: 'NOT_FOUND' };
+      await fs.promises.writeFile(dest, b);
+      return { ok: true, bytes: b.length, sha256: createHash('sha256').update(b).digest('hex') };
+    },
+    uploadFileFromPath: async (local: string, key: string) => { etat.objects.set(key, await fs.promises.readFile(local)); },
+    deleteStoredFile: async (key: string) => { etat.objects.delete(key); return true; },
+  };
+});
 vi.mock('@/services/export-upload.service', () => ({
-  uploadExportFile: async (buffer: Buffer, key: string) => { etat.objects.set(key, Buffer.from(buffer)); return key; },
   getExportSignedUrl: async (key: string, ttl: number, name?: string) => `https://s3.e2e.invalid/${key}?ttl=${ttl}&nom=${encodeURIComponent(name ?? '')}`,
 }));
 vi.mock('@/lib/notifications/event-service', () => ({ emit: async () => undefined }));
@@ -109,6 +118,9 @@ scenario('L102C', 'Conformité : export restreint, stockage, copies de données 
     const route = await import('@/app/api/users/me/gdpr-export/route');
     const post = await route.POST(req('/api/users/me/gdpr-export', 'POST'));
     expect([200, 202]).toContain(post.status);
+    // Lot 103C : la génération est faite par le worker durable (ici, un tour explicite).
+    const { drainGdprExportQueue } = await import('@/services/gdpr/gdpr-export.job');
+    await drainGdprExportQueue('e2e-l102c', { maxJobs: 5 });
     for (let i = 0; i < 50; i++) {
       const body = await (await route.GET(req('/api/users/me/gdpr-export'))).json() as Json;
       if (body.export?.status === 'ready') return body;
@@ -141,7 +153,8 @@ scenario('L102C', 'Conformité : export restreint, stockage, copies de données 
       expect((await download(req('/api/users/me/gdpr-export/download?part=abc'))).status).toBe(400);
 
       const manifest = JSON.parse(await zips[0].file('manifest.json')!.async('string')) as Json;
-      expect(manifest.version).toBe(2);
+      expect(manifest.version).toBe(3);
+      expect(manifest.status).toBe('COMPLET');
       expect(manifest.documents.included).toBe(5);
       expect(manifest.documents.skipped).toEqual([]);
       expect(manifest.parts).toHaveLength(3);
