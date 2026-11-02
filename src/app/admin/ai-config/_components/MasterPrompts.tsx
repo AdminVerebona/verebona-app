@@ -37,20 +37,23 @@ import { Loader2, Pencil, Save, FlaskConical, CheckCircle2, RotateCcw, Trash2, A
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { MasterPromptExecutionPanel, executionSummary, type ExecutionConfig, type StructuredInfo } from './MasterPromptExecutionPanel';
+import { T4MasterPromptEditor } from './T4MasterPromptEditor';
 
 // ─── Types rendus par /api/admin/ai/master-prompts ────────────────────────────
 
-interface TestFailure { scenario: string; description: string; branch: string; expected: string; obtained: string }
-interface TestRun {
+export interface TestFailure { scenario: string; description: string; branch: string; expected: string; obtained: string }
+export interface TestRun {
   id: number; status: 'RUNNING' | 'DONE' | 'ERROR'; startedAt: string; finishedAt: string | null;
   total: number; passed: number; failed: number; failures: TestFailure[]; error: string | null; current: boolean;
   requestedBy: string | null;
+  /** Lot 105C : synthèse par branche (fonction). */
+  byBranch?: Record<string, { total: number; failed: number }>;
 }
-type TestState =
+export type TestState =
   | { state: 'never'; label: string; message: string; previous: TestRun | null }
   | { state: 'running' | 'done' | 'error'; label: string; message: string; run: TestRun };
 
-interface VersionView {
+export interface VersionView {
   id: number; versionNumber: number; status: 'DRAFT' | 'ACTIVE' | 'PREVIOUS'; statusLabel: string;
   originLabel: string; createdAt: string; createdBy: string | null; updatedAt: string;
   activatedAt: string | null; activatedBy: string | null; basedOnVersionNumber: number | null;
@@ -59,12 +62,12 @@ interface VersionView {
   /** Lot 34D : configuration d'exécution (T4) ; `null` pour les autres prompts. */
   execution?: ExecutionConfig | null;
 }
-interface Issue { code: string; message: string; blocking: boolean }
-interface Activation {
+export interface Issue { code: string; message: string; blocking: boolean }
+export interface Activation {
   id: number; action: 'activate' | 'rollback'; actionLabel: string; fromVersionNumber: number | null;
   toVersionNumber: number; user: string | null; at: string; testSummary: string | null;
 }
-interface Detail {
+export interface Detail {
   treatment: string; label: string; masterPromptCode: string; environment: string; initial: boolean;
   active: (VersionView & { content: string }) | null;
   initialContent: { content: string; source: 'config' | 'file' } | null;
@@ -200,21 +203,23 @@ interface Summary {
   treatment: string; label: string; masterPromptCode: string;
   active: { versionNumber: number | null; initial: boolean; activatedAt: string | null; test: TestState };
   draft: { versionNumber: number; updatedAt: string; test: TestState } | null;
+  /** Lot 105C : prompt à activation unifiée (T4) — écran simplifié. */
+  unifiedActivation?: boolean;
 }
 
 // ─── Fragments ────────────────────────────────────────────────────────────────
 
 /** « 05/10/2026 à 21:42 » */
-function dateHeure(iso: string | null): string {
+export function dateHeure(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return `${d.toLocaleDateString('fr-FR')} à ${d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
 }
 
-const errMessage = (e: unknown, defaut: string) => (e as { message?: string })?.message || defaut;
+export const errMessage = (e: unknown, defaut: string) => (e as { message?: string })?.message || defaut;
 
 /** Badge léger, jamais bloquant. */
-function TestBadge({ test }: { test: TestState }) {
+export function TestBadge({ test }: { test: TestState }) {
   const style = test.state === 'done' && test.run.failed === 0
     ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]'
     : test.state === 'done' || test.state === 'error'
@@ -223,7 +228,7 @@ function TestBadge({ test }: { test: TestState }) {
   return <span className={`text-xs px-2 py-0.5 rounded-full border ${style}`}>{test.label}</span>;
 }
 
-function StatusPill({ status, label }: { status: VersionView['status']; label: string }) {
+export function StatusPill({ status, label }: { status: VersionView['status']; label: string }) {
   const style = status === 'ACTIVE'
     ? 'bg-[color:var(--bg-success)] text-[color:var(--text-success)] border-[color:var(--border-success)]'
     : status === 'DRAFT'
@@ -232,7 +237,7 @@ function StatusPill({ status, label }: { status: VersionView['status']; label: s
   return <span className={`text-xs px-2 py-0.5 rounded-full border ${style}`}>{label}</span>;
 }
 
-function FailureList({ failures }: { failures: TestFailure[] }) {
+export function FailureList({ failures }: { failures: TestFailure[] }) {
   if (failures.length === 0) return <p className="text-xs text-[color:var(--text-muted)]">Aucun scénario en échec.</p>;
   return (
     <ul className="space-y-2">
@@ -305,11 +310,16 @@ function TestPanel({ test, versionLabel, busy, onRun }: {
       <p className="text-xs text-[color:var(--text-muted)]">
         Facultatif : le test rejoue les scénarios de référence sans appeler le modèle (aucun coût). Il n’empêche jamais l’activation.
       </p>
+      <p className="text-xs text-[color:var(--text-muted)]" data-testid="corpus-replay-scope">
+        Ce rejeu sans appel modèle n’est ni la qualification IA réelle (appels du modèle sur le corpus, en préproduction) ni la preuve de couverture A1 :
+        il ne qualifie pas la version et ne lève jamais le verrou A1 d’une promotion automatique. Les manques A1 (opérations sans référence approuvée,
+        risques non couverts) s’affichent à l’activation.
+      </p>
     </div>
   );
 }
 
-function TechnicalDetails({ v, environment }: { v: VersionView; environment: string }) {
+export function TechnicalDetails({ v, environment }: { v: VersionView; environment: string }) {
   return (
     <details className="text-xs text-[color:var(--text-muted)]">
       <summary className="cursor-pointer">Détails techniques</summary>
@@ -863,7 +873,10 @@ export function MasterPrompts({ refreshKey, onChanged }: {
           </summary>
           {ouverts.has(p.treatment) && (
             <div className="px-3 pb-3">
-              <MasterPromptEditor key={`${p.treatment}-${refreshKey ?? 0}`} treatment={p.treatment} onChanged={() => { void charger(); onChanged?.(); }} />
+              {/* Lot 105C : T4 — un prompt, une activation (aucun choix technique). */}
+              {p.unifiedActivation
+                ? <T4MasterPromptEditor key={`${p.treatment}-${refreshKey ?? 0}`} treatment={p.treatment} onChanged={() => { void charger(); onChanged?.(); }} />
+                : <MasterPromptEditor key={`${p.treatment}-${refreshKey ?? 0}`} treatment={p.treatment} onChanged={() => { void charger(); onChanged?.(); }} />}
             </div>
           )}
         </details>

@@ -159,8 +159,9 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
     const [carte] = await ouvertes(doc.id);
     const empreinte = await figer(compte, doc.id);
     const avant = await resolution(doc.id);
-    // Lot 57B (ticket P0, défaut B) : aucun candidat STRUCTURÉ → recherche sémantique IA à chaque
-    // passage (tentative réelle) ; le modèle s'abstient → toujours NO_CANDIDATE.
+    // Lot 57B (ticket P0, défaut B) : aucun candidat STRUCTURÉ → recherche sémantique IA ; le modèle
+    // s'abstient → toujours NO_CANDIDATE. Lot 105D (D4) : réexamen réel à chaque passage, mais la décision
+    // du modèle est RÉUTILISÉE au second passage (contexte inchangé : aucun appel redondant).
     const replay = await rejouer([T3_ABSTENTION]);
 
     for (const n of [1, 2]) {
@@ -168,7 +169,7 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
       expect(entree(r, carte.id), `passage ${n}`).toMatchObject({
         ruleCode: 'LINK-ASSET', targetType: 'DOCUMENT', targetId: doc.id, resolver: 'T3_DOCUMENT_ASSET',
         previousResolution: 'NO_CANDIDATE', newResolution: 'NO_CANDIDATE', candidateCount: 0,
-        deterministicAttempted: true, aiCalled: true, actionEffect: 'STILL_OPEN', fingerprint: empreinte, fingerprintChanged: false,
+        deterministicAttempted: true, aiCalled: n === 1, actionEffect: 'STILL_OPEN', fingerprint: empreinte, fingerprintChanged: false,
       });
       const apres = await resolution(doc.id);
       expect(apres.e).toMatchObject({ result: 'NO_CANDIDATE', reevaluated: true, fingerprintChanged: false, openActionId: carte.id, reprocessReason: 'OPEN_ACTION' });
@@ -176,11 +177,12 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
       // Nouvelle tentative RÉELLE (décision réécrite) : le compteur d'évaluations avance.
       expect(apres.runs).toBe(avant.runs + n);
     }
-    expect(appels(replay, 't3_link_ambiguity')).toBe(2);
+    expect(appels(replay, 't3_link_ambiguity')).toBe(1);
     expect(await ouvertes(doc.id)).toHaveLength(1);
   });
 
-  it('T3OA-02 / T3OA-06 — ABSTAINED, données identiques : nouvel arbitrage T3 (IA rappelée), toujours ambigu → carte maintenue, sans doublon, propositions actualisées', async () => {
+  // Lot 105D (D4) : données identiques → réexamen réel (Candidate Builder, déterministe), décision du modèle RÉUTILISÉE.
+  it('T3OA-02 / T3OA-06 — ABSTAINED, données identiques : réexamen réel, décision T3 réutilisée sans appel (lot 105D), toujours ambigu → carte maintenue, sans doublon, propositions actualisées', async () => {
     const compte = await make.account();
     const a = await maison(compte, 'Maison A');
     const b = await maison(compte, 'Maison B');
@@ -194,11 +196,11 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
     const replay = await rejouer([T3_ABSTENTION]);
     const r = await passage(compte);
     expect(entree(r, carte.id)).toMatchObject({
-      previousResolution: 'ABSTAINED', newResolution: 'ABSTAINED', aiCalled: true, deterministicAttempted: true, candidateCount: 2,
+      previousResolution: 'ABSTAINED', newResolution: 'ABSTAINED', aiCalled: false, deterministicAttempted: true, candidateCount: 2,
       actionEffect: 'STILL_OPEN', fingerprintChanged: false,
     });
-    expect(appels(replay, 't3_link_ambiguity')).toBe(1);
-    expect((await resolution(doc.id)).e).toMatchObject({ result: 'ABSTAINED', aiCalled: true, reevaluated: true });
+    expect(appels(replay, 't3_link_ambiguity')).toBe(0);
+    expect((await resolution(doc.id)).e).toMatchObject({ result: 'ABSTAINED', aiCalled: false, aiReused: true, reevaluated: true });
     const act = await ouvertes(doc.id);
     expect(act).toHaveLength(1);
     expect(act[0].id).toBe(carte.id);
@@ -341,10 +343,11 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
     try {
       const replay = await rejouer([T3_ABSTENTION]);
       const r = await passage(compte);
-      expect(entree(r, carte.id)).toMatchObject({ actionEffect: 'STILL_OPEN', aiCalled: true, evaluationMode: 'AI_REEVALUATION', resolutionAttempted: true });
+      // Lot 105D (D4) : contexte inchangé → décision réutilisée (aucun appel), jamais un report pour quota.
+      expect(entree(r, carte.id)).toMatchObject({ actionEffect: 'STILL_OPEN', aiCalled: false, evaluationMode: 'FULL_REEVALUATION', resolutionAttempted: true });
       expect(r.aiDeferred).toBe(0);
-      expect(appels(replay, 't3_link_ambiguity')).toBe(1);
-      expect((await resolution(doc.id)).e).toMatchObject({ result: 'ABSTAINED', reevaluated: true, aiCalled: true });
+      expect(appels(replay, 't3_link_ambiguity')).toBe(0);
+      expect((await resolution(doc.id)).e).toMatchObject({ result: 'ABSTAINED', reevaluated: true, aiCalled: false, aiReused: true });
       expect(await ouvertes(doc.id)).toHaveLength(1);
     } finally {
       delete process.env.T3_OPEN_ACTION_AI_MAX_PER_PASS;

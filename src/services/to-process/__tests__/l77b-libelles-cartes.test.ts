@@ -30,6 +30,7 @@ const ops = await import('../operation-cards');
 const projection = await import('../agenda-projection-cards');
 const statut = await import('../agenda-status-cards');
 const conflit = await import('../document-asset-conflict');
+const groupe = await import('../identity-group-cards');
 const { interventionQuestion } = await import('../document-intervention');
 const { entityConflictProposals } = await import('../entity-field-cards');
 const { buildMigrationProposals } = await import('../migration-review-cards');
@@ -168,6 +169,10 @@ describe('L77B-03 — toutes les familles : aucun libellé technique', () => {
     ['LINK-ASSET-CONFLICT', vue({ targetType: 'DOCUMENT', ruleCode: 'LINK-ASSET-CONFLICT', relationKey: 'assetConflict', label: 'Carte grise',
       question: conflit.assetConflictQuestion({ basis: 'IDENTIFIER', kinds: ['VIN'], currentName: 'Clio', suggestedName: 'Peugeot 208' }),
       proposals: conflit.assetConflictProposals({ currentAssetId: 1, suggestedAssetId: 2, currentName: 'Clio', suggestedName: 'Peugeot 208', basis: 'IDENTIFIER' }) })],
+    // Lot 105D : confirmation groupée d'identité (« Le logement du … est-il votre bien « Maison » ? »).
+    ['LINK-ASSET-GROUP', vue({ targetType: 'DOCUMENT', ruleCode: 'LINK-ASSET-GROUP', relationKey: 'identityGroup', label: 'Avis de taxe foncière',
+      question: groupe.identityGroupQuestion({ family: 'PROPERTY', label: '12 rue des Érables Fictifs, 69000 Lyon', assetName: 'Maison' }),
+      proposals: groupe.identityGroupProposals({ assetId: 32, assetName: 'Maison', documentCount: 5 }) })],
     ['LINK-ELT (justification héritée)', vue({ targetType: 'DOCUMENT', ruleCode: 'LINK-ELT', relationKey: 'equipmentId', label: 'Facture chaudière',
       proposals: [{ value: 3, label: 'Équipement 3', confidence: 0.5, sourceContext: { label: 'EQUIPMENT_NAME_MATCH (score 0.7)' } }, { value: 4, label: 'Chaudière', confidence: 0.4 }] })],
     ['DATA-AGENDA-DATE (capture « #9 »)', vue({ targetType: 'AGENDA_ITEM', ruleCode: 'DATA-AGENDA-DATE', fieldKey: 'date', kind: 'COMPLETE', label: '#9', question: 'À quelle date « Contrôle technique » a-t-il lieu ?' })],

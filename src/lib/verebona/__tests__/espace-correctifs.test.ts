@@ -113,7 +113,9 @@ describe('suggestions pendant la frappe', () => {
   });
 
   it('jamais d’appel modèle à la frappe : recherche lexicale seule (D-H2, lot 16b-2)', () => {
-    expect(read('src/components/verebona/space/VerebonaSpaceProvider.tsx')).toMatch(/\/api\/search\?instant=1&q=/);
+    // Lot 105A : la requête part de l'exécuteur annulable (`createLiveSearchRunner`) qu'emploie le Provider.
+    expect(read('src/components/verebona/space/VerebonaSpaceProvider.tsx')).toContain('createLiveSearchRunner(');
+    expect(read('src/lib/verebona/live-search.ts')).toMatch(/\/api\/search\?instant=1&q=/);
     const route = read('src/app/api/search/route.ts');
     // Aucun import de moteur IA (recherche Gemini, drapeaux, passerelle).
     expect(route).not.toMatch(/^import[^\n]*(gemini|ai-feature-flags|ai-gateway|\/services\/ai\/)/im);

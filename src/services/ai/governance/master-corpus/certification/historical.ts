@@ -38,6 +38,15 @@ export const ADDED_AFTER_LOT88 = new Set([
 ]);
 
 /**
+ * Lot 105D : fixtures de DÉVELOPPEUR ajoutées après le lot 100B (preuves croisées DOCUMENT_ASSET,
+ * contrat `t3-document-asset-cross-v1`) — provenance DEVELOPPEUR, jamais confondues avec les 86 historiques.
+ */
+export const DEVELOPER_FIXTURES = new Set([
+  'p-t3-24-preuves-croisees-facturation.json', 'p-t3-25-preuves-croisees-maison-sans-adresse.json', 'p-t3-26-preuves-croisees-preuve-inventee.json',
+  'p-t3-27-preuves-croisees-relation-non-etablie.json', 'p-t3-28-preuves-croisees-etablie.json',
+]);
+
+/**
  * Identifiants `case` dupliqués CORRIGÉS au lot 100B (deux fixtures
  * différentes portaient « T1-02 » : leurs observations se confondaient dans
  * le verdict d'un couple, regroupé par identifiant de cas).
@@ -216,7 +225,7 @@ export function historicalEntry(c: MasterCorpusCase, f: HistoricalFacts, at: str
     contract: c.outputContract ?? null, schema: c.outputSchema,
     riskFamily: k.inputMode === 'FILE' ? 'T1_MULTIMODAL' : RISK_BY_CASE[c.id] ?? RISK_BY_OPERATION[c.operationCode] ?? null,
     difficulty: difficultyOf(c), critical: k.critical, pair: null,
-    provenance: ADDED_AFTER_LOT88.has(file) ? 'AJOUT_LOTS_97_99' : 'HISTORIQUE_86', sourcePieces: [], inputMode: k.inputMode,
+    provenance: ADDED_AFTER_LOT88.has(file) ? 'AJOUT_LOTS_97_99' : DEVELOPER_FIXTURES.has(file) ? 'DEVELOPPEUR' : 'HISTORIQUE_86', sourcePieces: [], inputMode: k.inputMode,
     testType: k.cls === 'GARDE' ? 'GARDE_SERVEUR' : 'QUALITE_MODELE', evaluationType: k.cls === 'GARDE' ? 'GARDE_SERVEUR' : 'ORACLE',
     status: k.status, reason: k.reason, historicalClass: k.cls,
     cdc35Category: null, oracle, expectedSummary: c.expected ? JSON.stringify(c.expected).slice(0, 2000) : null,

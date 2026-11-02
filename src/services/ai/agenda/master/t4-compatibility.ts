@@ -20,8 +20,16 @@
  * Une version active est IMMUABLE : la mise en conformité passe toujours par
  * un BROUILLON (nouvelle version), que le PO vérifie puis active lui-même.
  * Aucune activation automatique.
+ *
+ * Lot 105C — version créée avec le BUNDLE COMPLET (`bundleId`) : aucune
+ * recherche de `toProcessAssessment` / `intervention` dans le texte (plus de
+ * « mot magique ») ; la disponibilité technique résulte du bundle validé, la
+ * qualité du texte se juge par le corpus et la recette. Le repère textuel
+ * reste un DIAGNOSTIC des seules versions historiques. (Le BO ne propose
+ * plus `conformingT4Execution` aux nouvelles versions : elles reçoivent le
+ * bundle complet ; la fonction reste utilisée par la mise en conformité 99B.)
  */
-import type { MasterExecutionConfig, StructuredContextSpec } from '../../master-prompts/structured-context';
+import { isBundleExecution, type MasterExecutionConfig, type StructuredContextSpec } from '../../master-prompts/structured-context';
 
 /** Contrat de sortie minimal pour l'évaluation structurée d'une intervention (lot 61). */
 export const T4_INTERVENTION_OUTPUT_CONTRACT = 't4_output_v3';
@@ -114,7 +122,8 @@ export function assessT4Compatibility(p: {
   if (structure && e?.allowedTasks && !e.allowedTasks.includes('CLASSIFY_EVENT')) {
     issues.push({ code: 'CLASSIFY_EVENT_NOT_ALLOWED', message: 'La TASK CLASSIFY_EVENT n’est pas cochée : l’évaluation d’une intervention passe par elle.' });
   }
-  const textReady = t4TextCarriesIntervention(p.content, p.referenceText);
+  // Lot 105C : version à bundle complet — aucun repère textuel exigé (disponibilité = bundle validé).
+  const textReady = isBundleExecution(e) || t4TextCarriesIntervention(p.content, p.referenceText);
   if (!textReady) {
     issues.push({ code: 'TEXT_WITHOUT_INTERVENTION', message: 'Le texte ne décrit pas l’évaluation d’une intervention « À traiter » (champ toProcessAssessment, réponse intervention) : il faut repartir du texte de référence livré avec l’application.' });
   }

@@ -77,6 +77,8 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'ai_prompt_conformity_issues', 'ai_prompt_conformity_events',
   // Lot 100B : approbations humaines des oracles, rejets motivés et journal du verrou A1 — jamais perdus par une restauration.
   'ai_corpus_oracle_approvals', 'ai_corpus_case_decisions', 'ai_corpus_a1_assessments',
+  // Lot 105B : journal de la promotion automatique IA (revalidations, relances, retours arrière) — jamais perdu par une restauration.
+  'ai_promotion_events',
   'email_logs', 'email_provider_events', 'stripe_webhook_logs', 'legal_audit_log',
   // Lot 102C : registre des copies de données réelles et identité de la base — une restauration ne
   // les remplace jamais (la copie importée resterait sinon invisible, ou l'identité de l'environnement usurpée).

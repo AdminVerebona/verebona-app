@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "generatedAt": "2026-10-29T14:41:38.165Z",
+  "version": 2,
+  "generatedAt": "2026-11-02T14:34:02.029Z",
   "reference": {
     "ticket": "#601",
     "announcedScenarios": 401,
@@ -7924,6 +7924,242 @@
           "oracleFingerprint": "d7d687a9bfbf4e4598ec5668781e03ee7222f6770f80d02d980e271f2b13ecc5"
         }
       ]
+    },
+    {
+      "id": "H-P-T3-24-PREUVES-CROISEES-FACTURATION",
+      "sourceCaseId": "P-T3-24",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-24-preuves-croisees-facturation.json",
+      "operationCode": "t3_link_ambiguity",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3LinkAmbiguityOutput",
+      "riskFamily": "T3_RATTACHEMENT",
+      "difficulty": "DIFFICILE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "decision": "ABSTAIN",
+          "neverDecisions": [
+            "APPLY",
+            "MULTI_ASSET"
+          ]
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"decision\":\"ABSTAIN\",\"neverDecisions\":[\"APPLY\",\"MULTI_ASSET\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-02T14:34:02.029Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : DOCUMENT_ASSET + preuves croisées — facture d’un appareil livré à l’adresse du logement (rôle LIVRAISON, document EXCLU du groupe) : aucune appartenance au bien « Maison » sans preuve, abstention.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "368bb85cc69f7a8a53e46c10eb3e5bdfabe4f16734d3f7ade93da8ef9bc3763f"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-25-PREUVES-CROISEES-MAISON-SANS-ADRESSE",
+      "sourceCaseId": "P-T3-25",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-25-preuves-croisees-maison-sans-adresse.json",
+      "operationCode": "t3_link_ambiguity",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3LinkAmbiguityOutput",
+      "riskFamily": "T3_RATTACHEMENT",
+      "difficulty": "INTERMEDIAIRE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"decision\":\"ABSTAIN\",\"reasonCode\":\"UNSUPPORTED_CHOICE\",\"neverDecisions\":[\"APPLY\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-02T14:34:02.029Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : DOCUMENT_ASSET + preuves croisées — logement reconstruit par plusieurs documents, bien « Maison » SANS adresse : le modèle affirme à tort la relation groupe → bien ; aucun signal serveur propre → jamais rattaché.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-26-PREUVES-CROISEES-PREUVE-INVENTEE",
+      "sourceCaseId": "P-T3-26",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-26-preuves-croisees-preuve-inventee.json",
+      "operationCode": "t3_link_ambiguity",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3LinkAmbiguityOutput",
+      "riskFamily": "T3_RATTACHEMENT",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"decision\":\"ABSTAIN\",\"reasonCode\":\"CLOSED_WORLD_VIOLATION\",\"neverDecisions\":[\"APPLY\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-02T14:34:02.029Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : DOCUMENT_ASSET + preuves croisées — le modèle cite une preuve (evidenceId 99) absente des preuves fournies : monde fermé violé, abstention.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-27-PREUVES-CROISEES-RELATION-NON-ETABLIE",
+      "sourceCaseId": "P-T3-27",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-27-preuves-croisees-relation-non-etablie.json",
+      "operationCode": "t3_link_ambiguity",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3LinkAmbiguityOutput",
+      "riskFamily": "T3_RATTACHEMENT",
+      "difficulty": "SIMPLE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"decision\":\"ABSTAIN\",\"reasonCode\":\"INSUFFICIENT_EVIDENCE\",\"neverDecisions\":[\"APPLY\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-02T14:34:02.029Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : DOCUMENT_ASSET + preuves croisées — candidat nommé (signal serveur), mais le modèle déclare la relation groupe → bien NON établie et demande une validation : aucun rattachement automatique.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T3-28-PREUVES-CROISEES-ETABLIE",
+      "sourceCaseId": "P-T3-28",
+      "file": "src/services/ai/reconciliation/master/__fixtures__/p-t3-28-preuves-croisees-etablie.json",
+      "operationCode": "t3_link_ambiguity",
+      "treatment": "T3",
+      "contract": null,
+      "schema": "T3LinkAmbiguityOutput",
+      "riskFamily": "T3_RATTACHEMENT",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "decision": "APPLY",
+          "assetIds": [
+            32
+          ],
+          "neverDecisions": [
+            "MULTI_ASSET"
+          ]
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"decision\":\"APPLY\",\"assetIds\":[32],\"neverDecisions\":[\"MULTI_ASSET\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-02T14:34:02.029Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : DOCUMENT_ASSET + preuves croisées — contrôle serveur exact (adresse) sur le candidat, document membre du groupe, relation et portée établies : rattachement.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "3eb03dcc41c20546051a74ab875c43562e8f06e652743e2b0f79f45e84419631"
+        }
+      ]
     }
   ],
   "ledger": [
@@ -8053,6 +8289,11 @@
     "R-T1-ANNONCE-PORTAIL",
     "R-T1-FICHE-PRODUIT",
     "R-T1-PAGE-SEPARATION",
-    "R-T1-TICKET-ILLISIBLE"
+    "R-T1-TICKET-ILLISIBLE",
+    "H-P-T3-24-PREUVES-CROISEES-FACTURATION",
+    "H-P-T3-25-PREUVES-CROISEES-MAISON-SANS-ADRESSE",
+    "H-P-T3-26-PREUVES-CROISEES-PREUVE-INVENTEE",
+    "H-P-T3-27-PREUVES-CROISEES-RELATION-NON-ETABLIE",
+    "H-P-T3-28-PREUVES-CROISEES-ETABLIE"
   ]
 }

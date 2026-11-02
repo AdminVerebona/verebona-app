@@ -124,7 +124,9 @@ describe('L89C-U01 — blocs du guide', () => {
       // Lot 99C : étape 9 (T3 DOCUMENT_NAMING, rejouée par l99c-representation-periode.test.ts).
       't3-naming-period-v1',
       // Lot 101A : étapes 10 (T1) et 11 (T2), rejouées par l101a-guide-etapes-10-11.test.ts.
-      't1-product-identity-v1', 't2-property-continuity-v1']);
+      't1-product-identity-v1', 't2-property-continuity-v1',
+      // Lot 105D : étape 12 (T3 LINK_AMBIGUITY / DOCUMENT_ASSET, rejouée par l105d-contrat-preuves-croisees.test.ts).
+      't3-document-asset-cross-v1']);
     // Aucun bloc n'introduit un emplacement {{X}} (bloquant au BO : « emplacement inconnu »).
     for (const b of B) expect(inspectMasterTemplate(b.text).placeholders, b.id).toEqual([]);
   });

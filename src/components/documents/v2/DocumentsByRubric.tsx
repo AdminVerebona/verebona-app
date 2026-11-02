@@ -90,7 +90,7 @@ import {
   type ViewFilters,
 } from './documents-view';
 import { DEFAULT_PREFS, loadPrefs, savePrefs, type ViewPrefs } from './view-prefs';
-import { saveListSnapshot, takeListSnapshot, type ListSnapshot } from './list-restore';
+import { DOCUMENTS_SEE_ALL_EVENT, saveListSnapshot, takeListSnapshot, type ListSnapshot } from './list-restore';
 import { useFilterSections } from './filter-sections';
 import { useDocumentsFeed, type FeedQuery } from './useDocumentsFeed';
 import { buildEquipmentFilterModel } from '@/lib/filters/equipment-filter';
@@ -408,6 +408,20 @@ export function DocumentsByRubric({
     setQ(qUrl);
     if (qUrl) setResultIds(null);
   }, [ready, qUrl]);
+
+  // Lot 105A : « Voir tous les documents (N) » ouvert alors que « Mes
+  // documents » est déjà affiché — la liste montre la SEULE recherche (les N
+  // annoncés), sans filtre resté actif de la consultation précédente.
+  useEffect(() => {
+    if (assetId) return;
+    const reinitialiser = () => {
+      restoreRef.current = null;
+      setFilters(EMPTY_FILTERS);
+      setResultIds(null);
+    };
+    window.addEventListener(DOCUMENTS_SEE_ALL_EVENT, reinitialiser);
+    return () => window.removeEventListener(DOCUMENTS_SEE_ALL_EVENT, reinitialiser);
+  }, [assetId]);
 
   // ── Requête : tri, filtres et recherche appliqués CÔTÉ SERVEUR ───────────
   // Tout changement produit une nouvelle clé : liste vidée, curseur oublié,

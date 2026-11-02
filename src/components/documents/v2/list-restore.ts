@@ -119,6 +119,23 @@ export function saveListSnapshot(scope: string, snapshot: ListSnapshot, storage?
 }
 
 /**
+ * Lot 105A — « Voir tous les documents (N) » de la recherche générale : la
+ * liste s'ouvre avec la SEULE recherche. L'instantané de retour de l'écran
+ * (filtres d'une visite précédente) est effacé, et un écran déjà monté
+ * (`DocumentsByRubric`) reçoit `DOCUMENTS_SEE_ALL_EVENT` pour retirer ses
+ * filtres : la liste affichée correspond au total annoncé.
+ */
+export const DOCUMENTS_SEE_ALL_EVENT = 'verebona:documents-see-all';
+
+export function clearListSnapshot(scope: string, storage?: StorageLike | null): void {
+  const s = storageOrNull(storage);
+  if (!s) return;
+  try {
+    s.removeItem(snapshotStorageKey(scope));
+  } catch { /* stockage indisponible */ }
+}
+
+/**
  * Efface tous les instantanés de listes (changement de session ou de compte) :
  * un retour arrière ne doit jamais réafficher les documents d'un autre compte.
  */

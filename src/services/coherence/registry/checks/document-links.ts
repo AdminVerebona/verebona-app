@@ -97,7 +97,7 @@ export const documentLinksCheck: CoherenceCheck = {
   domain: 'documents-liens',
   level: 'N2',
   objectType: 'document',
-  scope: 'tous les documents visibles du compte (non supprimés, non regroupés, dépôt terminé)',
+  scope: 'tous les documents visibles du compte (non supprimés, non regroupés, dépôt terminé) — partie équipement et bien supprimé ; le bien PRINCIPAL est contrôlé par COH-DOC-PRIMARY-LINK (lot 105D)',
   sources: ['asset_files', 'document_asset_links', 'document_facts', 'document_unresolved_facts', 'document_source_units', 'equipments', 'equipment_cil_specs',
     'business_operation_documents', 'business_operation_equipment_links'],
   applicability: 'compte éligible (actif et modifiable) ; document rattaché à au moins un bien vivant pour la partie équipement',
@@ -186,7 +186,8 @@ export const documentLinksCheck: CoherenceCheck = {
           inputHash: hashOf({ fileId, unproven: a }),
         });
       } else {
-        out.set(fileId, { verdict: 'CONSISTENT', detail });
+        // Lot 105D : ce contrôle ne juge PAS le bien principal (COH-DOC-PRIMARY-LINK) — dit explicitement.
+        out.set(fileId, { verdict: 'CONSISTENT', detail: { ...detail, primaryLink: 'NOT_COVERED_HERE:COH-DOC-PRIMARY-LINK' } });
       }
     }
     return out;

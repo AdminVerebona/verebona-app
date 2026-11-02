@@ -114,10 +114,12 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
     // Lot 31B — relation DOCUMENT_ASSET : décision serveur réelle
     // (`decideFromAiOutput` : monde fermé, seuil, certain exigé, marge A OU B,
     // A ET B déclaré, jamais un candidat sans preuve).
-    const da = (c.context as { documentAsset?: { candidates: unknown[] } }).documentAsset;
+    const da = (c.context as { documentAsset?: { candidates: unknown[]; cross?: { context: { evidences: Array<{ evidenceId: number }>; documentIdentity: { status: string } } } } }).documentAsset;
     if (da) {
       const { decideFromAiOutput } = await import('../../reconciliation/document-asset/decision');
-      const r = decideFromAiOutput(output as never, da.candidates as never);
+      // Lot 105D : section `crossDocument` vérifiée (monde fermé des preuves, portée, relation groupe → bien).
+      const cross = da.cross ? { allowedEvidenceIds: new Set(da.cross.context.evidences.map((e) => e.evidenceId)), member: da.cross.context.documentIdentity.status === 'MEMBER' } : null;
+      const r = decideFromAiOutput(output as never, da.candidates as never, cross);
       const ids = r.kind === 'APPLY' ? [r.assetId] : r.kind === 'MULTI_ASSET' ? r.assetIds : [];
       return [
         ...ecart(r.kind === exp(c, 'decision'), `décision ${r.kind} ≠ ${String(exp(c, 'decision'))}`),

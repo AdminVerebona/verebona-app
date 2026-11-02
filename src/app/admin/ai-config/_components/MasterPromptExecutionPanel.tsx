@@ -92,7 +92,7 @@ function Volet({ titre, children, ouvert }: { titre: string; children: React.Rea
 }
 
 export function MasterPromptExecutionPanel({
-  treatment, info, execution, editable, versionTarget, disabled, onChange, onLoadReference,
+  treatment, info, execution, editable, versionTarget, disabled, onChange, onLoadReference, managed,
 }: {
   treatment: string;
   info: StructuredInfo;
@@ -105,6 +105,11 @@ export function MasterPromptExecutionPanel({
   onChange?: (e: ExecutionConfig) => void;
   /** Lot 54 : le texte de référence du contexte structuré arrive AVEC sa configuration (jamais un ancien mode hérité). */
   onLoadReference?: (text: string, execution?: ExecutionConfig) => void;
+  /**
+   * Lot 105C — configuration gérée par le serveur (T4, bundle complet) :
+   * vue experte en LECTURE SEULE, sans indication de choix de mode.
+   */
+  managed?: boolean;
 }) {
   const cfg: ExecutionConfig = execution ?? { mode: 'LEGACY_TEMPLATE', inputContractVersion: null, outputContractVersion: null, allowedTasks: null };
   const [task, setTask] = useState(info.knownTasks[0] ?? '');
@@ -203,9 +208,11 @@ export function MasterPromptExecutionPanel({
           {structure
             ? 'Les données sont transmises automatiquement au modèle (bloc EXECUTION_CONTEXT) : le texte est libre, aucun emplacement {{…}} ni titre de section n’est exigé.'
             : 'Mode historique à emplacements : le texte doit contenir {{TASK}}, les emplacements de données et une section « BRANCHE TASK = … » par TASK.'}
-          {' '}Retour au mode historique : le choisir sur un brouillon (texte de référence à emplacements), ou réactiver une version historique depuis l’historique.
+          {managed
+            ? ' Configuration gérée automatiquement : une version historique se restaure depuis l’historique.'
+            : ' Retour au mode historique : le choisir sur un brouillon (texte de référence à emplacements), ou réactiver une version historique depuis l’historique.'}
         </p>
-        {editable && onLoadReference && (
+        {editable && !managed && onLoadReference && (
           <Button size="sm" variant="outline" disabled={disabled || !info.references[cfg.mode]} onClick={() => onLoadReference(
             info.references[cfg.mode],
             cfg.mode === 'STRUCTURED_CONTEXT' && info.defaults ? { ...info.defaults } : undefined,

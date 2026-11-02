@@ -217,9 +217,9 @@ describe('L103D-U-COH — contrôles du registre', () => {
     const { COHERENCE_REGISTRY } = await import('@/services/coherence/registry');
     const { COVERAGE_INVENTORY } = await import('@/services/coherence/registry/coverage');
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
-    expect(ids.slice(-2)).toEqual(['COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS']);
-    // Lot 103E : COH-AGENDA-SUPPLIERS entre COH-EQUIPMENT-IDENTITY et les contrôles 103D.
-    expect(ids.indexOf('COH-EQUIPMENT-IDENTITY')).toBe(ids.length - 4);
+    // Ordre d'ajout en fin de registre (sans réordonner l'existant) : 101A, 103E, 103D, puis lots suivants (105D…).
+    const apres = ids.slice(ids.indexOf('COH-EQUIPMENT-IDENTITY'));
+    expect(apres.slice(0, 4)).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS']);
     const agenda = COVERAGE_INVENTORY.find((d) => d.domain === 'agenda')!;
     expect(agenda.checks).toEqual(expect.arrayContaining(['COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS']));
     const housing = COHERENCE_REGISTRY.find((c) => c.id === 'COH-AGENDA-STRUCTURAL-HOUSING')!;

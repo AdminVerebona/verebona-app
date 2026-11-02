@@ -92,7 +92,7 @@ scenario('L34D', 'Contrat runtime et T4 en contexte structuré (migrations 0290-
     expect(cfg.masterPromptText).toBe(legacy);
   });
 
-  it('E2E-T4C-02 — BO : passage en contexte structuré, aperçu, activation sans emplacement, utilisé à l’exécution', async () => {
+  it('E2E-T4C-02 — BO : passage en contexte structuré, aperçu, activation sans emplacement, utilisé à l’exécution (lot 105C : bundle complet automatique)', async () => {
     const a = await api();
     const fichier = await lire('src/services/ai/prompts/agenda/t4_master_v1.txt');
     const d0 = await a.detail('T4');
@@ -100,33 +100,35 @@ scenario('L34D', 'Contrat runtime et T4 en contexte structuré (migrations 0290-
     expect(d0.body.structured.context.map((c: Json) => c.field)).toEqual(expect.arrayContaining(['task', 'evidence', 'agenda_item', 'temporal_candidates']));
     expect(d0.body.structured.references.STRUCTURED_CONTEXT).toBe(fichier);
 
-    // Brouillon : reprend le mode de la version de départ (legacy).
+    // Lot 105C : le brouillon d'un Actif legacy hérite du TEXTE seulement — configuration = bundle complet (aucun choix).
     const s = await a.startDraft('T4');
     expect(s.status).toBe(201);
     const id = s.body.draftId as number;
-    expect(s.body.detail.draft.execution).toMatchObject({ mode: 'LEGACY_TEMPLATE' });
-    // Texte livré (sans {{…}}) + mode explicite, enregistrés ensemble.
+    const BUNDLE = { mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v3', outputContractVersion: 't4_output_v4',
+      allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY', 'AGENDA_REPRESENTATION'], bundleId: 't4-bundle-v1' };
+    expect(s.body.detail.draft.execution).toEqual(BUNDLE);
+    // Texte livré (sans {{…}}) ; une configuration envoyée (ancien écran) est ignorée.
     const sv = await a.saveDraft('T4', {
       versionId: id, content: fichier,
       execution: { mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v1', outputContractVersion: 't4_output_v1', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] },
     });
     expect(sv.status).toBe(200);
-    expect(sv.body.detail.draft.execution).toEqual({ mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v1', outputContractVersion: 't4_output_v1', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] });
+    expect(sv.body.detail.draft.execution).toEqual(BUNDLE);
     expect(sv.body.detail.draft).toMatchObject({ issues: [], warnings: [] });
 
     // Aperçu du brouillon : chaque étape inspectable.
-    const pv = await a.preview('T4', { versionId: id, task: 'CLASSIFY_EVENT', scenarioId: 'P-T4-06' });
+    const pv = await a.preview('T4', { versionId: id, task: 'CLASSIFY_EVENT', scenarioId: 'P-T4-V3-07' });
     expect(pv.status).toBe(200);
-    expect(pv.body).toMatchObject({ mode: 'STRUCTURED_CONTEXT', task: 'CLASSIFY_EVENT', contextError: null, outputContract: { contractId: 'T4_CLASSIFY_EVENT' }, validated: { ok: true } });
+    expect(pv.body).toMatchObject({ mode: 'STRUCTURED_CONTEXT', task: 'CLASSIFY_EVENT', contextError: null, outputContract: { contractId: 'T4_CLASSIFY_EVENT', contractVersion: 3 }, validated: { ok: true } });
     expect(pv.body.prompt).toContain('EXECUTION_CONTEXT');
 
     // Activation sans aucun emplacement {{…}} dans le texte.
     const act = await a.activate('T4', id);
     expect(act.status).toBe(200);
-    expect(act.body.detail.active).toMatchObject({ versionNumber: 2, execution: { mode: 'STRUCTURED_CONTEXT' } });
+    expect(act.body.detail.active).toMatchObject({ versionNumber: 2, execution: { mode: 'STRUCTURED_CONTEXT', bundleId: 't4-bundle-v1' } });
     const [ligne] = await sql<{ execution_mode: string; input_contract_version: string; output_contract_version: string; allowed_tasks: string[] }[]>`
       SELECT execution_mode, input_contract_version, output_contract_version, allowed_tasks FROM ai_master_prompt_versions WHERE treatment = 'T4' AND status = 'ACTIVE'`;
-    expect(ligne).toMatchObject({ execution_mode: 'STRUCTURED_CONTEXT', input_contract_version: 't4_input_v1', output_contract_version: 't4_output_v1' });
+    expect(ligne).toMatchObject({ execution_mode: 'STRUCTURED_CONTEXT', input_contract_version: 't4_input_v3', output_contract_version: 't4_output_v4' });
 
     // Exécution réelle : contexte injecté, versions tracées.
     const { invalidateConfigCache } = await import('@/services/ai/config/config-resolver');
@@ -134,7 +136,7 @@ scenario('L34D', 'Contrat runtime et T4 en contexte structuré (migrations 0290-
     const { FakeProvider, setAiProvider } = await import('@/services/ai/gateway/providers');
     const fake = new FakeProvider();
     setAiProvider(fake);
-    fake.onAny(() => ({ rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', businessType: null, homeCategory: 'information', confidence: 'certain', reason: 'période de facturation' }), inputTokens: 1, outputTokens: 1 }));
+    fake.onAny(() => ({ rawText: JSON.stringify({ task: 'CLASSIFY_EVENT', agendaDecision: 'accept', recurrenceDecision: 'not_applicable', businessType: null, homeCategory: 'information', confidence: 'certain', reason: 'période de facturation', recurrenceReason: null, intervention: null }), inputTokens: 1, outputTokens: 1 }));
     const { classifyAgendaEvent } = await import('@/services/ai/agenda/agenda-intelligence.service');
     const compte = await make.account();
     const extrait = 'Facture internet — Période du 08/08/2026 au 07/09/2026 — 29,99 € TTC';
@@ -143,24 +145,27 @@ scenario('L34D', 'Contrat runtime et T4 en contexte structuré (migrations 0290-
     expect(fake.calls[0].prompt).toContain('\nEXECUTION_CONTEXT\n');
     expect(fake.calls[0].prompt).not.toMatch(/\{\{[A-Z_]+\}\}/);
     const [trace] = await sql<{ metadata: Json }[]>`SELECT metadata FROM ai_usage_event WHERE operation_code = 't4_classify_event' AND account_id = ${compte.id} ORDER BY id DESC LIMIT 1`;
-    expect(trace.metadata.structuredContext).toMatchObject({ mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v1', outputContractVersion: 't4_output_v1', task: 'CLASSIFY_EVENT' });
-    expect(trace.metadata.runtimeContract).toMatchObject({ contractId: 'T4_CLASSIFY_EVENT', contractVersion: 1 });
+    expect(trace.metadata.structuredContext).toMatchObject({ mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v3', outputContractVersion: 't4_output_v4', task: 'CLASSIFY_EVENT', bundleId: 't4-bundle-v1' });
+    expect(trace.metadata.runtimeContract).toMatchObject({ contractId: 'T4_CLASSIFY_EVENT', contractVersion: 3 });
   });
 
-  it('E2E-T4C-03 — activation refusée sur un défaut technique (contrat de sortie inconnu), jamais sur la formulation', async () => {
+  it('E2E-T4C-03 — activation refusée sur un défaut technique du moteur, jamais sur la formulation (lot 105C : message unique)', async () => {
     const a = await api();
     const s = await a.startDraft('T4');
     const id = s.body.draftId as number;
-    expect(s.body.detail.draft.execution).toMatchObject({ mode: 'STRUCTURED_CONTEXT' });
-    await a.saveDraft('T4', { versionId: id, content: 'Tu es T4. Règles métier réécrites librement, sans titre imposé.',
-      execution: { mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v1', outputContractVersion: 't4_output_v7', allowedTasks: null } });
-    const refus = await a.activate('T4', id);
-    expect(refus.status).toBeGreaterThanOrEqual(400);
-    expect(refus.body.error).toBe('TECHNICAL_CHECK_FAILED');
-    expect(refus.body.message).toMatch(/contrat de sortie/i);
-    // Même texte libre, contrat de sortie rétabli : activable.
-    await a.saveDraft('T4', { versionId: id, content: 'Tu es T4. Règles métier réécrites librement, sans titre imposé.',
-      execution: { mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v1', outputContractVersion: 't4_output_v1', allowedTasks: null } });
+    expect(s.body.detail.draft.execution).toMatchObject({ mode: 'STRUCTURED_CONTEXT', bundleId: 't4-bundle-v1' });
+    await a.saveDraft('T4', { versionId: id, content: 'Tu es T4. Règles métier réécrites librement, sans titre imposé.' });
+    // Contrat de sortie du bundle absent du code déployé : refus, rien d'activé.
+    const { T4_EXECUTION_SPEC } = await import('@/services/ai/agenda/master/t4-execution-contract');
+    const b = T4_EXECUTION_SPEC.completeBundle as { outputContractVersion: string };
+    b.outputContractVersion = 't4_output_v7';
+    let refus;
+    try { refus = await a.activate('T4', id); } finally { b.outputContractVersion = 't4_output_v4'; }
+    expect(refus.status).toBe(422);
+    expect(refus.body.error).toBe('ENGINE_INCOMPATIBLE');
+    expect(refus.body.message).toBe('Impossible d’activer T4 : configuration du moteur incompatible');
+    expect(JSON.stringify(refus.body.details.issues)).toMatch(/contrat de sortie/i);
+    // Même texte libre, moteur rétabli : activable.
     expect((await a.activate('T4', id)).status).toBe(200);
   });
 

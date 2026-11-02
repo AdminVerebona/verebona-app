@@ -21,6 +21,7 @@ import { decideLinks, LINK_MIN_MARGIN } from '../master/link-ambiguity';
 import type { IdentifierResolution } from './identifiers';
 import { isPromptSafeKey } from './identifiers';
 import type { CandidateSource } from './candidate-builder';
+import { validateCrossDocumentOutput, type CrossDocumentContext } from './identity/decision';
 
 /** Seuil de rattachement automatique par le modèle (et confiance `certain`). */
 export const DOCUMENT_ASSET_AUTO_THRESHOLD = 0.8;
@@ -64,7 +65,11 @@ export type DocumentAssetDecision =
   | { kind: 'MULTI_ASSET'; assetIds: number[]; reason: string; method: 'DETERMINISTIC' | 'AI' }
   | {
     kind: 'ABSTAIN';
-    reasonCode: 'NO_CANDIDATE' | 'INSUFFICIENT_EVIDENCE' | 'AMBIGUOUS' | 'CLOSED_WORLD_VIOLATION' | 'UNSUPPORTED_CHOICE' | 'AI_UNAVAILABLE';
+    reasonCode: 'NO_CANDIDATE' | 'INSUFFICIENT_EVIDENCE' | 'AMBIGUOUS' | 'CLOSED_WORLD_VIOLATION' | 'UNSUPPORTED_CHOICE' | 'AI_UNAVAILABLE'
+      /** Lot 105D : identité du groupe à confirmer par l'utilisateur (carte groupée) — aucune IA, aucune carte individuelle. */
+      | 'GROUP_CONFIRMATION_PENDING'
+      /** Lot 105D : seuls des biens REFUSÉS par l'utilisateur pour ce groupe restaient candidats — aucune question répétée. */
+      | 'GROUP_REFUSED';
     /** Candidats proposés à l'utilisateur, du plus au moins probable. */
     ranked: Array<{ assetId: number; score: number; reason: string }>;
   };
@@ -199,7 +204,17 @@ function describeCandidate(c: DocumentAssetCandidate): string {
  * LINK_AMBIGUITY). Candidats triés par identifiant (ordre neutre, comme
  * `reconcileLinksMaster`). Faits : clés sensibles du registre exclues.
  */
-export function documentAssetVariables(subject: DocumentSubject, candidates: DocumentAssetCandidate[]): Record<string, unknown> {
+export function documentAssetVariables(
+  subject: DocumentSubject,
+  candidates: DocumentAssetCandidate[],
+  /**
+   * Lot 105D — contrat `t3-document-asset-cross-v1` : transmis SEULEMENT quand
+   * la version active du prompt porte le marqueur (sinon : variables
+   * d'avant, à l'identique). Ajoute `document.fileId` et `crossDocument` au
+   * SUBJECT_CONTEXT — aucun emplacement nouveau, aucune valeur sensible.
+   */
+  cross?: { fileId: number; context: CrossDocumentContext | null } | null,
+): Record<string, unknown> {
   const facts = subject.facts
     .filter((f) => !f.canonicalKey || isPromptSafeKey(f.canonicalKey))
     .slice(0, 25)
@@ -210,11 +225,13 @@ export function documentAssetVariables(subject: DocumentSubject, candidates: Doc
     EVIDENCES: null,
     SUBJECT_CONTEXT: JSON.stringify({
       document: {
+        ...(cross ? { fileId: cross.fileId } : {}),
         title: borne(subject.title, 160), type: subject.documentType, date: subject.documentDate,
         supplier: borne(subject.supplier, 120), description: borne(subject.description, 300),
         multiAssetDeclaredByT1: subject.multiAssetDeclared,
       },
       facts,
+      ...(cross ? { crossDocument: cross.context ?? { contract: 't3-document-asset-cross-v1', documentIdentity: { status: 'NONE' } } } : {}),
     }),
     CANDIDATES: [...candidates]
       .sort((a, b) => a.assetId - b.assetId)
@@ -226,10 +243,22 @@ export function documentAssetVariables(subject: DocumentSubject, candidates: Doc
 // ── Après le modèle ─────────────────────────────────────────────────────────
 
 /** Décision déterministe sur la sortie du master (pure). */
-export function decideFromAiOutput(output: T3LinkAmbiguityOutput, candidates: DocumentAssetCandidate[]): DocumentAssetDecision {
+export function decideFromAiOutput(
+  output: T3LinkAmbiguityOutput,
+  candidates: DocumentAssetCandidate[],
+  /**
+   * Lot 105D — preuves croisées transmises (contrat `t3-document-asset-cross-v1`) :
+   * la section facultative `crossDocument` de la sortie est vérifiée (preuves
+   * citées en monde fermé ; portée, validation, relation groupe → bien). Absent :
+   * comportement d'avant.
+   */
+  cross?: { allowedEvidenceIds: ReadonlySet<number>; member: boolean } | null,
+): DocumentAssetDecision {
   const byId = new Map(candidates.map((c) => [c.assetId, c]));
   const { output: out, warnings } = closedWorldLinkAmbiguity(output, new Set(byId.keys()));
   if (warnings.length > 0) return { kind: 'ABSTAIN', reasonCode: 'CLOSED_WORLD_VIOLATION', ranked: rankCandidates(candidates) };
+  const croise = cross ? validateCrossDocumentOutput(output.crossDocument ?? null, cross) : null;
+  if (croise?.violation) return { kind: 'ABSTAIN', reasonCode: 'CLOSED_WORLD_VIOLATION', ranked: rankCandidates(candidates) };
 
   const ranked = (() => {
     const vus = new Map<number, { assetId: number; score: number; reason: string }>();
@@ -256,6 +285,9 @@ export function decideFromAiOutput(output: T3LinkAmbiguityOutput, candidates: Do
   if (eligibles.length === 0) {
     return { kind: 'ABSTAIN', reasonCode: sansPreuve.length > 0 ? 'UNSUPPORTED_CHOICE' : 'INSUFFICIENT_EVIDENCE', ranked };
   }
+  // Lot 105D : le modèle décrit une portée non établie, une validation requise ou une relation groupe → bien
+  // non établie (document membre d'un groupe) — aucun rattachement automatique, l'utilisateur tranche.
+  if (croise?.blockApply) return { kind: 'ABSTAIN', reasonCode: 'INSUFFICIENT_EVIDENCE', ranked };
   // A OU B : marge entre les candidats au-dessus du seuil (toutes confiances).
   const { ambiguity } = decideLinks(auDessus, { exclusive: true, threshold: DOCUMENT_ASSET_AUTO_THRESHOLD, minMargin: LINK_MIN_MARGIN });
   if (ambiguity) return { kind: 'ABSTAIN', reasonCode: 'AMBIGUOUS', ranked };

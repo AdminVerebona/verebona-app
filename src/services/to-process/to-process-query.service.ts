@@ -91,6 +91,24 @@ export interface ToProcessActionView {
   inputType?: 'date' | 'text' | null;
   activeSince: string;
   target: ActionTargetContext;
+  /**
+   * Lot 105D — carte groupée LINK-ASSET-GROUP : périmètre EXACT visible avant
+   * application (identité lue, documents inclus et preuve, exceptions et motif).
+   */
+  scope?: { label: string; documents: Array<{ id: number; title: string; evidence: string }>; exceptions: Array<{ id: number; title: string; reason: string }> };
+}
+
+/** Périmètre d'une carte groupée lu dans son contexte (pure, borné). */
+export function groupScopeOf(ruleCode: string, ctx: unknown): ToProcessActionView['scope'] | undefined {
+  if (ruleCode !== 'LINK-ASSET-GROUP' || !ctx || typeof ctx !== 'object') return undefined;
+  const sc = (ctx as { scope?: { label?: unknown; documents?: unknown; exceptions?: unknown } }).scope;
+  if (!sc || typeof sc.label !== 'string') return undefined;
+  const liste = <T>(v: unknown, f: (x: Record<string, unknown>) => T): T[] => (Array.isArray(v) ? v.slice(0, 30).map((x) => f(x as Record<string, unknown>)) : []);
+  return {
+    label: sc.label,
+    documents: liste(sc.documents, (x) => ({ id: Number(x.id), title: String(x.title ?? 'Document'), evidence: String(x.evidence ?? '') })),
+    exceptions: liste(sc.exceptions, (x) => ({ id: Number(x.id), title: String(x.title ?? 'Document'), reason: String(x.reason ?? '') })),
+  };
 }
 
 interface ToProcessFilters {
@@ -174,6 +192,7 @@ export async function getToProcessPage(
 
   let views: ToProcessActionView[] = rows.map((row) => {
     const proposals = (row.proposalsJson as ActionProposal[] | null) ?? [];
+    const scope = groupScopeOf(row.ruleCode, row.triggerContext);
     // Lot 77B : libellés recalculés À LA LECTURE (`card-labels.ts`) — cible
     // jamais « #id », contexte de source reformulé ou retiré, valeurs brutes
     // formatées. Même vue pour la page, la pastille, l'accueil et la mascotte ;
@@ -195,6 +214,7 @@ export async function getToProcessPage(
       target: contexts.get(`${row.targetType}:${row.targetId}`) ?? {
         label: targetFallbackLabel(row.targetType),
       },
+      ...(scope ? { scope } : {}),
     }, getRule(row.ruleCode)?.question ?? null);
   });
 

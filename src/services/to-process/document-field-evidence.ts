@@ -1228,6 +1228,9 @@ export function withThresholds(c: T4AssessmentConfig, thresholds: ToProcessThres
 let configOverride: T4AssessmentConfig | null = null;
 export function __setT4AssessmentConfigForTests(c: T4AssessmentConfig | null): void { configOverride = c; configCache = null; }
 
+/** Lot 105C — invalidation après une bascule de version T4 dans le BO (ce conteneur ; les autres : ≤ 60 s). */
+export function invalidateT4AssessmentConfigCache(): void { configCache = null; }
+
 /**
  * Configuration T4 effective (lue au plus toutes les 60 s) : version ACTIVE
  * du BO (numéro + contrat de sortie), sinon défaut du texte du dépôt. Une

@@ -338,6 +338,8 @@ export class AiGateway {
         mode: 'STRUCTURED_CONTEXT', task: op.task, promptVersion, promptHash: promptHash(text),
         inputContractVersion: execution.inputContractVersion, outputContractVersion: execution.outputContractVersion,
         contextHash: structured?.built.hash ?? null,
+        // Lot 105C : bundle et TASK effectifs de la version (traces par appel / version).
+        bundleId: execution.bundleId ?? null, allowedTasks: execution.allowedTasks ? [...execution.allowedTasks] : null,
       };
     } else if (isMasterOperation(op)) {
       let resolved;

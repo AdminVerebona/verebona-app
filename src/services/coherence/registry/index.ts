@@ -54,6 +54,8 @@ import { equipmentIdentityCheck } from './checks/equipment-identity';
 import { agendaSuppliersCheck } from './checks/agenda-suppliers';
 import { agendaStructuralHousingCheck } from './checks/agenda-structural-housing';
 import { agendaHistoricalStatusCheck } from './checks/agenda-historical-status';
+// Lot 105D : rattachement principal récupérable des documents (fin de registre).
+import { documentPrimaryLinkCheck } from './checks/document-primary-link';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -115,6 +117,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   // puis faits historiques prouvés restés « à confirmer ».
   agendaStructuralHousingCheck,
   agendaHistoricalStatusCheck,
+  // Lot 105D (ticket « Rattachement rétroactif après création d'un bien », §G) : ajouté EN FIN de registre.
+  documentPrimaryLinkCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

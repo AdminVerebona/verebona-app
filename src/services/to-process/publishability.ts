@@ -160,6 +160,9 @@ export const PUBLISHABILITY_CONTRACTS: Readonly<Record<string, PublishabilityCon
   },
   // Conflit de rattachement : clos par le balayage horaire (`closeObsoleteAssetConflicts`).
   'LINK-ASSET-CONFLICT': parProduction('DOCUMENTS', 'SWEEP:closeObsoleteAssetConflicts'),
+  // Lot 105D : confirmation groupée d'identité — jugée par la production (phase « identités documentaires » de T3,
+  // `syncIdentityGroupCards` : fermée dès que le groupe n'est plus à confirmer).
+  'LINK-ASSET-GROUP': parProduction('DOCUMENTS', 'SWEEP:syncIdentityGroupCards'),
   // Lien document → équipement proposé par T3 : un document peut concerner PLUSIEURS équipements — un premier
   // rattachement ne tranche pas l'ambiguïté restante ; jugé par la production (T3), cible disparue : orphelins.
   'LINK-ELT': parProduction('DOCUMENTS', 'COH-TODO-ORPHAN-CARDS'),

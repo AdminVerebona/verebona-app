@@ -24,6 +24,12 @@
  *     (FASTER_BUT_WRONG — recette 9).
  * L'activation MANUELLE (#345) reste possible : elle affiche la matrice et
  * les manques (`a1Notices`), sans jamais être bloquée par ce verrou.
+ *
+ * Lot 105B (a1-v2) : le RÉFÉRENTIEL D'INVENTAIRE ATTENDU versionné
+ * (`expected-inventory.ts`) s'ajoute au verrou — totaux #601 rapprochés,
+ * difficultés, types de test, paires, cas obligatoires, cas non approuvés ou
+ * non concluants, complétude T2 (CDC 4 §35.3) : tout manque non exclu (motif
+ * tracé) BLOQUE la promotion automatique.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { Defect } from '../../../qualification/defects';
@@ -33,9 +39,11 @@ import {
   type ActiveOperation, type CaseStatus, type ManifestEntry,
 } from './model';
 import { assessPairs, type PairAssessment, type PairSideResult } from './pairs';
+import { assessInventory, currentExpectedInventory, type ExpectedInventory, type InventoryBlockerCode, type RequirementState } from './expected-inventory';
 
 /** Version des règles du verrou : entre dans les rapports (une évolution est explicite). */
-export const A1_RULES_VERSION = 'a1-v1';
+/** Lot 105B : a1-v2 — référentiel d'inventaire attendu versionné intégré à la décision bloquante. */
+export const A1_RULES_VERSION = 'a1-v2';
 
 /** Résultat d'un cas du manifeste pour le couple évalué (candidate). */
 export interface CaseResult extends PairSideResult {
@@ -46,9 +54,21 @@ export interface CaseResult extends PairSideResult {
 
 export type A1BlockerCode =
   | 'OPERATION_NOT_COVERED' | 'RISK_NOT_COVERED' | 'CRITICAL_WITHOUT_APPROVED_ORACLE' | 'CRITICAL_NOT_CONCLUSIVE'
-  | 'CRITICAL_FAILED' | 'CRITICAL_OMISSION' | 'PAIR_INVALID' | 'FASTER_BUT_WRONG' | 'NO_RESULTS';
+  | 'CRITICAL_FAILED' | 'CRITICAL_OMISSION' | 'PAIR_INVALID' | 'FASTER_BUT_WRONG' | 'NO_RESULTS' | InventoryBlockerCode;
 
-export interface A1Blocker { code: A1BlockerCode; operationCode: string | null; caseId: string | null; message: string }
+export interface A1Blocker {
+  code: A1BlockerCode; operationCode: string | null; caseId: string | null; message: string;
+  /**
+   * Lot 105B : manque qu'aucun nouvel appel modèle ne peut combler (import, approbation humaine, classement) — une
+   * candidate bloquée pour une telle cause n'est pas relancée tant qu'il subsiste (pas d'appels inutiles).
+   */
+  structural?: boolean;
+  /** Lot 105B : exigence du référentiel d'inventaire concernée. */
+  requirement?: string;
+}
+
+/** Codes structurels du verrou 100B (indépendants des résultats de la candidate). */
+const STRUCTURAL_CODES: ReadonlySet<string> = new Set(['OPERATION_NOT_COVERED', 'RISK_NOT_COVERED', 'CRITICAL_WITHOUT_APPROVED_ORACLE']);
 
 export interface MatrixCell {
   treatment: Treatment;
@@ -91,6 +111,8 @@ export interface A1Assessment {
   pairs: PairAssessment[];
   /** Résultats évalués (null : matrice seule, avant campagne). */
   measured: boolean;
+  /** Lot 105B : référentiel d'inventaire attendu (version, exigences évaluées, exclusions motivées). */
+  inventory: { version: string; requirements: RequirementState[]; waived: RequirementState[] } | null;
 }
 
 export type StatusOf = (e: ManifestEntry) => CaseStatus;
@@ -149,11 +171,13 @@ export function assessA1(p: {
   results: ReadonlyMap<string, CaseResult> | null;
   gains?: ReadonlyArray<{ operationCode: string; outcome: string }>;
   operations?: ActiveOperation[];
+  /** Lot 105B : référentiel d'inventaire attendu (défaut : référentiel du dépôt ; null : verrou 100B seul). */
+  inventory?: ExpectedInventory | null;
 }): A1Assessment {
   const ops = (p.operations ?? activeQualificationOperations()).filter((o) => p.treatments.includes(o.treatment));
   const matrix = buildCoverageMatrix(p.entries, p.statusOf, ops, p.treatments);
   const blockers: A1Blocker[] = [];
-  const add = (code: A1BlockerCode, operationCode: string | null, caseId: string | null, message: string) => blockers.push({ code, operationCode, caseId, message });
+  const add = (code: A1BlockerCode, operationCode: string | null, caseId: string | null, message: string) => blockers.push({ code, operationCode, caseId, message, structural: STRUCTURAL_CODES.has(code) });
   const opCodes = new Set(ops.map((o) => o.operationCode));
   const inScope = p.entries.filter((e) => e.operationCode && opCodes.has(e.operationCode));
 
@@ -194,8 +218,24 @@ export function assessA1(p: {
   for (const x of pairs.filter((y) => y.verdict !== 'VALID')) {
     if (!p.results && x.verdict === 'INVALID_SIDE_MISSING' && x.a && x.b) continue;
     add('PAIR_INVALID', null, x.pairId, `paire ${x.pairId} : ${x.reason}`);
+    // Côté absent du corpus ou déclaration incohérente : aucun appel ne le comble.
+    if (x.verdict === 'INCOMPLETE_DECLARATION' || (x.verdict === 'INVALID_SIDE_MISSING' && (!x.a || !x.b))) blockers[blockers.length - 1].structural = true;
   }
-  return { rulesVersion: A1_RULES_VERSION, allowed: blockers.length === 0, scope: [...p.treatments], blockers, matrix, pairs, measured: Boolean(p.results) };
+  // Lot 105B : référentiel d'inventaire attendu (manques bloquants, exclusions motivées visibles).
+  const inv = p.inventory === undefined ? currentExpectedInventory() : p.inventory;
+  let inventory: A1Assessment['inventory'] = null;
+  if (inv) {
+    const t2 = p.treatments.includes('T2') ? t2SearchView(inScope, p.statusOf, p.results) : null;
+    const r = assessInventory({ inventory: inv, treatments: p.treatments, entries: p.entries, statusOf: p.statusOf, operations: ops, results: p.results, t2 });
+    for (const b of r.blockers) blockers.push({ code: b.code, operationCode: b.operationCode, caseId: b.caseId, message: b.message, structural: b.structural, requirement: b.requirement });
+    inventory = { version: inv.version, requirements: r.requirements, waived: r.requirements.filter((x) => x.waived) };
+  }
+  return { rulesVersion: A1_RULES_VERSION, allowed: blockers.length === 0, scope: [...p.treatments], blockers, matrix, pairs, measured: Boolean(p.results), inventory };
+}
+
+/** Lot 105B : manques STRUCTURELS (qu'aucun nouvel appel modèle ne comble) d'une évaluation. */
+export function structuralBlockers(a: A1Assessment): A1Blocker[] {
+  return a.blockers.filter((b) => b.structural && b.code !== 'NO_RESULTS');
 }
 
 /** Messages courts pour l'activation manuelle (#345) : informatifs, jamais bloquants. */
@@ -219,6 +259,14 @@ export const A1_CODE_LABELS: Readonly<Record<A1BlockerCode, string>> = {
   PAIR_INVALID: 'paire incomplète ou invalide',
   FASTER_BUT_WRONG: 'plus rapide mais erroné sur un risque critique',
   NO_RESULTS: 'résultats non mesurés',
+  INVENTORY_INCOMPLETE: 'inventaire #601 incomplet',
+  DIFFICULTY_NOT_COVERED: 'difficulté non couverte',
+  TEST_TYPE_NOT_COVERED: 'type de test non couvert',
+  REQUIRED_CASE_MISSING: 'cas obligatoire absent',
+  CASE_NOT_APPROVED: 'cas non approuvé',
+  CASE_NOT_CONCLUSIVE: 'cas approuvé non exécuté ou non concluant',
+  PAIRS_MISSING: 'paires A/B manquantes',
+  T2_INCOMPLETE: 'complétude T2 (CDC 4 §35) insuffisante',
 };
 
 // ══════════════════════════════════════════════════════════════════════════

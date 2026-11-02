@@ -236,6 +236,9 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   t3_information_checks: C('conflits-arbitrages'),
   // Lot 99A (0856) : mémoire durable des décisions T3 assistées par l'IA (réutilisations, invalidations et motifs).
   t3_decision_memory: C('conflits-arbitrages'),
+  // Lot 105D (0995) : groupes d'identité documentaire (journal) et décisions de l'utilisateur sur ces groupes.
+  document_identity_groups: C('conflits-arbitrages'),
+  document_identity_decisions: C('corrections-utilisateur'),
   t3_reconciliation_states: C('conflits-arbitrages'),
   t3_open_action_evaluations: C('conflits-arbitrages'),
   agenda_data_conflicts: C('conflits-arbitrages'),
@@ -419,6 +422,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_corpus_oracle_approvals: T('technique', 'corpus de qualification IA : approbations des oracles (globale)'),
   ai_corpus_case_decisions: T('technique', 'corpus de qualification IA : rejets et rétablissements motivés (globale)'),
   ai_corpus_a1_assessments: T('technique', 'corpus de qualification IA : journal du verrou A1 (globale)'),
+  // Lot 105B : journal de la promotion automatique IA (revalidation d'activation, A1, surveillance post-activation, retours arrière) — globale, sans compte.
+  ai_promotion_events: T('technique', 'promotion automatique IA : journal (globale)'),
   ai_master_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
   ai_prompt_test_runs: T('technique', 'qualification IA (tests de prompts)'),
   ai_corpus_baseline: T('technique', 'ancien harnais de mesure retiré (table inerte)'),
@@ -761,7 +766,7 @@ export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperation
   collect_evidence: { treatment: 'T1', tables: [...CALL_TRACES, 'field_evidence'] },
   compare_values: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_runs', 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes'] },
   t3_value_conflict: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes', 'ai_execution_reports', 'ai_execution_report_entries', 't3_decision_memory', 'ai_reuse_counters'] },
-  t3_link_ambiguity: { treatment: 'T3', tables: [...CALL_TRACES, 'document_asset_links', 'document_asset_resolutions'] },
+  t3_link_ambiguity: { treatment: 'T3', tables: [...CALL_TRACES, 'document_asset_links', 'document_asset_resolutions', 'document_identity_groups', 'document_identity_decisions', 'ai_reuse_counters'] },
   t3_operation_match: { treatment: 'T3', tables: [...CALL_TRACES, 'document_operation_candidates', 'business_operation_sources', 'business_operation_match_decisions', 'business_operation_identity_reviews', 'operation_semantic_reevaluations'] },
   t3_document_naming: { treatment: 'T3', tables: [...CALL_TRACES, 'document_naming_groups', 'document_naming_members', 'document_title_events', 'document_rename_events'] },
   t3_knowledge_query: { treatment: 'T3', tables: [...CALL_TRACES, 't3_knowledge_queries'] },

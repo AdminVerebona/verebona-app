@@ -23,6 +23,11 @@
  *            fermée, écran BO
  *  L99B-E04  régression simulée APRÈS activation → retour arrière automatique à la version précédente, candidate
  *            suspendue ; aucun nouvel essai sur contexte inchangé
+ *  L99B-E05  lot 105B (R3 / R4) : qualification métier réussie mais verrou A1 fermé → candidate BLOCKED_A1 (ni
+ *            REFUSED, ni QUALIFIED activable), incompatibilité « bloquée A1 » ; contexte inchangé : aucun nouvel essai ;
+ *            certification changée mais manques STRUCTURELS restants : « en attente du verrou A1 », aucun appel ;
+ *            certification complétée (verrou levé) : NOUVEL ESSAI AUTOMATIQUE sans clic, même candidate, activation
+ *            après revalidation depuis la base
  */
 import type postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -327,6 +332,10 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
       if (JSON.stringify(await liveVariablesFor(c) ?? {}).includes('t3-naming-period-v1')) periode.push(`corpus:${c.id}`);
     }
     expect(periode.length).toBeGreaterThan(0);
+    // Lot 105D : cas « preuves croisées » (contrat t3-document-asset-cross-v1, étape 12 non faite) — même règle : hors périmètre.
+    for (const c of loadMasterCorpusCases(readMasterFileFromRepo).filter((x) => x.operationCode === 't3_link_ambiguity' && x.qualificationRole === 'answer')) {
+      if (JSON.stringify(await liveVariablesFor(c) ?? {}).includes('t3-document-asset-cross-v1')) periode.push(`corpus:${c.id}`);
+    }
     expect((i.qualification.excludedCases as Json[]).map((x) => x.caseId).sort()).toEqual([...periode].sort());
     const evid = await sql<Json[]>`SELECT q.case_id FROM ai_qualification_cases q JOIN ai_qualification_evidence e ON e.id = q.evidence_id WHERE e.campaign_id = ${i.campaign_id}`;
     expect(evid.length).toBeGreaterThan(0);
@@ -471,5 +480,65 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
     expect(await campagnes()).toBe(n);
     expect((await issue()).status).toBe('ROLLED_BACK');
     expect((await t3Actif()).id).toBe(t3ActifId);
+  });
+
+  it('L99B-E05 (lot 105B, R3/R4) — bloquée A1 sans faux refus ; aucune relance à cause inchangée ; relance automatique après certification, activation revalidée', async () => {
+    const promo = await import('@/services/ai/governance/master-corpus/certification/promotion');
+    let a1: 'STRUCTUREL' | 'LEVE' = 'STRUCTUREL';
+    promo.__setPromotionLockForTests((p) => (a1 === 'LEVE' ? promo.OPEN_LOCK_FOR_TESTS(p) : {
+      rulesVersion: 'test', allowed: false, scope: p.treatments, measured: true, inventory: null, pairs: [],
+      matrix: { rulesVersion: 'test', operations: [], cells: [], risks: [] },
+      blockers: [{ code: 'CASE_NOT_APPROVED', operationCode: 't3_operation_match', caseId: 'SCENE', message: 'scène : références T3 non approuvées (manque structurel)', structural: true }],
+    }) as never);
+    const decision = async (caseId: string, status: 'REJETEE' | 'RETABLIE') =>
+      sql`INSERT INTO ai_corpus_case_decisions (case_id, status, reason, admin_user_id, admin_label) VALUES (${caseId}, ${status}, 'scène e2e lot 105B', ${adminId}, 'e2e')`;
+    const CAS = 'H-P-T3-12-OPERATION-MATCH-AMBIGU-SANS-IMPACT';
+    try {
+      // 1. Certification changée (rejet motivé d'un cas T3) : contexte A1 nouveau → nouvel essai SANS clic ; verrou fermé.
+      const avant = await configActive();
+      await decision(CAS, 'REJETEE');
+      await passage();
+      const i1 = await issue();
+      expect(i1.status).toBe('BLOCKED');
+      expect(i1.qualification).toMatchObject({ businessDecision: 'QUALIFIED', a1Blocked: true });
+      expect(i1.decision).toMatch(/Qualification métier réussie.*verrou A1.*pas un refus métier/);
+      const cand = Number(i1.candidate_config_version_id);
+      const [cv1] = await sql<Json[]>`SELECT status, candidate_state, candidate_promotion FROM ai_config_versions WHERE id = ${cand}`;
+      expect(cv1).toMatchObject({ status: 'INACTIVE', candidate_state: 'BLOCKED_A1' });
+      expect(cv1.candidate_promotion.qualification).toMatchObject({ state: 'QUALIFIED', treatment: 'T3' });
+      expect(cv1.candidate_promotion.a1).toMatchObject({ allowed: false, structural: 1 });
+      expect(await configActive()).toBe(avant);
+      const [j1] = await sql<Json[]>`SELECT count(*)::int AS n FROM ai_promotion_events WHERE kind = 'A1_BLOCKED' AND candidate_version_id = ${cand}`;
+      expect(j1.n).toBe(1);
+      // 2. Contexte inchangé : aucun nouvel essai, aucune campagne.
+      const n1 = await campagnes();
+      await passage();
+      expect(await campagnes()).toBe(n1);
+      // 3. Certification encore changée, mais manques structurels restants : en attente du verrou A1, aucun appel.
+      await decision(CAS, 'RETABLIE');
+      const r3 = await passage();
+      expect(await campagnes()).toBe(n1);
+      expect(r3.summary.waitingA1).toBe(1);
+      expect((await evenements(i1.id)).filter((e) => e.kind === 'A1_WAITING')).toHaveLength(1);
+      await passage();
+      expect(await campagnes()).toBe(n1);
+      expect((await evenements(i1.id)).filter((e) => e.kind === 'A1_WAITING')).toHaveLength(1);
+      // 4. Références complétées (verrou levé) + certification changée : nouvel essai AUTOMATIQUE, même candidate, activée.
+      a1 = 'LEVE';
+      await decision(CAS, 'REJETEE');
+      await passage();
+      expect(await campagnes()).toBe(n1 + 1);
+      const i4 = await issue();
+      if (i4.status !== 'ACTIVATED') console.log('MOTIFS', i4.decision, JSON.stringify(i4.refusal_reasons));
+      expect(i4.status).toBe('ACTIVATED');
+      expect(Number(i4.candidate_config_version_id)).toBe(cand);
+      expect(await configActive()).toBe(cand);
+      const gate = await sql<Json[]>`SELECT allowed, code, reference FROM ai_promotion_events WHERE kind = 'ACTIVATION_GATE' AND candidate_version_id = ${cand} ORDER BY id DESC LIMIT 1`;
+      expect(gate[0]).toMatchObject({ allowed: true, code: null, reference: expect.objectContaining({ treatment: 'T3', campaignId: Number(i4.campaign_id) }) });
+      expect((gate[0].reference.evidence as Json[]).length).toBeGreaterThan(0);
+    } finally {
+      promo.__setPromotionLockForTests(promo.OPEN_LOCK_FOR_TESTS);
+      await sql`DELETE FROM ai_corpus_case_decisions WHERE reason = 'scène e2e lot 105B'`;
+    }
   });
 });

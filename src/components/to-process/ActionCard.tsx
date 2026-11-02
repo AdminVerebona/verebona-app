@@ -68,6 +68,8 @@ export interface ActionView {
     /** Fournisseur résolu (cible SUPPLIER) — ouvre `/fournisseurs/[id]`. */
     supplierId?: number | null;
   };
+  /** Lot 105D — carte groupée : périmètre exact (documents, exceptions) visible avant de répondre. */
+  scope?: { label: string; documents: Array<{ id: number; title: string; evidence: string }>; exceptions: Array<{ id: number; title: string; reason: string }> };
 }
 
 interface Handlers {
@@ -292,6 +294,46 @@ function InlineCompletion({ action, onChoose, onOpenTarget, busy }: { action: Ac
   );
 }
 
+/**
+ * Lot 105D — périmètre d'une carte GROUPÉE (« Le logement du … est-il votre
+ * bien « Maison » ? ») : documents concernés et preuve de chacun, exceptions et
+ * motif — visible AVANT de répondre (aucune action cachée). Repli natif
+ * `<details>` : accessible au clavier et au lecteur d'écran, sans JavaScript,
+ * lisible à 320 px (retour à la ligne, aucune largeur fixe).
+ */
+export function GroupScope({ scope }: { scope: NonNullable<ActionView['scope']> }) {
+  const n = scope.documents.length;
+  return (
+    <details data-card-scope className="mt-2 max-w-full text-xs text-muted-foreground">
+      <summary className="cursor-pointer select-none underline-offset-2 hover:underline focus-visible:underline">
+        Voir les {n} document{n > 1 ? 's' : ''} concerné{n > 1 ? 's' : ''}{scope.exceptions.length ? ` et ${scope.exceptions.length} exception${scope.exceptions.length > 1 ? 's' : ''}` : ''}
+      </summary>
+      <ul data-scope-documents className="mt-1.5 space-y-1 pl-4 [overflow-wrap:anywhere]">
+        {scope.documents.map((d) => (
+          <li key={`d-${d.id}`} className="list-disc">
+            <span className="text-foreground">{d.title}</span>
+            {d.evidence && <span> — {d.evidence}</span>}
+          </li>
+        ))}
+      </ul>
+      {scope.exceptions.length > 0 && (
+        <>
+          <p className="mt-2 font-medium">Non inclus :</p>
+          <ul data-scope-exceptions className="mt-1 space-y-1 pl-4 [overflow-wrap:anywhere]">
+            {scope.exceptions.map((x) => (
+              <li key={`x-${x.id}`} className="list-disc">
+                <span className="text-foreground">{x.title}</span>
+                {x.reason && <span> — {x.reason}</span>}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      <p className="mt-2">Seuls les documents dont le lien est démontré seront rattachés ; les autres restent à vérifier.</p>
+    </details>
+  );
+}
+
 /** Source affichée « légèrement », et ouvrable quand elle existe (§8.4, UX-03). */
 function Source({ action, onOpenTarget }: { action: ActionView; onOpenTarget: Handlers['onOpenTarget'] }) {
   const source = action.proposals.find((p) => p.sourceContext)?.sourceContext;
@@ -361,6 +403,7 @@ function CardBody({ action, ...handlers }: { action: ActionView } & Handlers) {
       <div className="mt-2">
         <Source action={action} onOpenTarget={handlers.onOpenTarget} />
       </div>
+      {action.scope && <GroupScope scope={action.scope} />}
     </>
   );
 }

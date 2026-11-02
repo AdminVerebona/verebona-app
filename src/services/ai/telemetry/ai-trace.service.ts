@@ -181,6 +181,10 @@ export interface StructuredContextTrace {
   inputContractVersion: string | null;
   outputContractVersion: string | null;
   contextHash: string | null;
+  /** Lot 105C — bundle complet figé avec la version de prompt (absent : version historique). */
+  bundleId?: string | null;
+  /** Lot 105C — TASK autorisées par la version (configuration effective de l'appel). */
+  allowedTasks?: string[] | null;
 }
 
 /**

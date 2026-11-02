@@ -509,6 +509,15 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       await w(`${JSON.stringify(d, null, 2)}\n`);
       return { expected: 1, count: 1, batches: 1, error: null };
     }, undefined, 'extractions-ia');
+    // Lot 105B (ticket P1 « IA auto-amélioration », §5) : état RÉEL de la promotion automatique — planificateur lancé,
+    // tests réellement exécutés (compte technique), couverture et manques A1, blocages, candidates (créées, qualifiées,
+    // bloquées A1, refusées, activées, surveillées, restaurées), journal ; P2 différé. Global seulement, sans compte.
+    entry('ia/promotion-automatique.json', 'Promotion automatique IA : planificateur, tests réellement exécutés, couverture A1, blocages, candidates, surveillance post-activation, journal (P2 différé)', async (w) => {
+      const { promotionStatus } = await import('@/services/ai/qualification/promotion-status');
+      const d = await promotionStatus({ query: (t, p) => s.savepoint(() => s.q(t, p)) });
+      await w(`${JSON.stringify(d, null, 2)}\n`);
+      return { expected: 1, count: 1, batches: 1, error: null };
+    }, undefined, 'extractions-ia');
   }
 
   // Diagnostic renforcé : sorties modèle conservées (accès existant, journalisé) — annexe à accès restreint.

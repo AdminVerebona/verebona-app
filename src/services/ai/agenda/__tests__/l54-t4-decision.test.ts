@@ -230,8 +230,12 @@ describe('T4-V2-09 — compatibilité', () => {
     expect(checkMasterPromptContent('T4', LEGACY, sc.LEGACY_EXECUTION)).toMatchObject({ ok: true });
   });
 
-  it('nouvelle version : contrats du texte de référence (v2), jamais l’ancien mode hérité pour ce texte', () => {
-    expect(sc.draftExecutionConfig('t4_master_v1', null)).toEqual(V3);
+  it('nouvelle version : jamais l’ancien mode hérité — lot 105C : toujours le bundle complet (quatre TASK), quelle que soit la version de départ', () => {
+    const BUNDLE = { mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v3', outputContractVersion: 't4_output_v4',
+      allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY', 'AGENDA_REPRESENTATION'], bundleId: 't4-bundle-v1' };
+    expect(sc.draftExecutionConfig('t4_master_v1', null)).toEqual(BUNDLE);
+    expect(sc.draftExecutionConfig('t4_master_v1', V1)).toEqual(BUNDLE);
+    expect(sc.draftExecutionConfig('t4_master_v1', sc.LEGACY_EXECUTION)).toEqual(BUNDLE);
   });
 
   it('passerelle : version BO v1 → sortie v1 SANS acceptation implicite (abstain, lot 71E §D), récurrence non décidée ; fichier v2 → sortie v2', async () => {

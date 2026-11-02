@@ -115,6 +115,8 @@ export interface PassSummary {
   alreadyBlocked: number;
   /** En attente du prérequis d'exploitation (compte technique). */
   waitingPrerequisite: number;
+  /** Lot 105B : qualifiées métier mais en attente du verrou A1 (manques structurels : import #601, approbations). */
+  waitingA1: number;
   /** En attente d'un autre contrat (ordre du guide). */
   waitingContract: number;
   /** Surveillées seulement (aucun bloc officiel : jamais corrigées automatiquement). */
@@ -132,7 +134,7 @@ export interface PassSummary {
 }
 
 export const EMPTY_PASS_SUMMARY: PassSummary = Object.freeze({
-  detected: 0, eligible: 0, alreadyBlocked: 0, waitingPrerequisite: 0, waitingContract: 0, monitoredOnly: 0, deferredByBudget: 0,
+  detected: 0, eligible: 0, alreadyBlocked: 0, waitingPrerequisite: 0, waitingA1: 0, waitingContract: 0, monitoredOnly: 0, deferredByBudget: 0,
   attempted: 0, qualified: 0, refused: 0, activated: 0, resolved: 0, resumed: 0,
 }) as PassSummary;
 
@@ -169,7 +171,9 @@ export function passHealth(p: {
   }
   if (s.attempted > 0) return { code: 'PROGRESS', healthy: true, label: `${s.attempted} essai(s) lancé(s)`, cause: null, nextAction: null };
   if (s.detected === 0) return { code: 'HEALTHY', healthy: true, label: 'aucune incompatibilité ouverte', cause: null, nextAction: null };
-  const cause = s.alreadyBlocked > 0
+  const cause = s.waitingA1 > 0
+    ? `${s.waitingA1} incompatibilité(s) qualifiée(s) métier, en attente du verrou A1 (corpus #601 incomplet ou références non approuvées) — aucun appel tant que ces manques subsistent`
+    : s.alreadyBlocked > 0
     ? `${s.alreadyBlocked} incompatibilité(s) bloquée(s) sur un contexte inchangé (pas de nouvel essai sans changement ou décision)`
     : s.waitingContract > 0 ? `${s.waitingContract} incompatibilité(s) en attente d’un autre contrat du guide` : 'aucun essai lancé';
   return { code: 'NO_PROGRESS', healthy: false, label: `${s.detected} incompatibilité(s), aucun essai à ce passage`, cause, nextAction: 'BO › Configuration IA › Conformité des prompts : lire les motifs de chaque incompatibilité.' };
@@ -183,6 +187,7 @@ const HEALTH_WORD: Record<PassHealthCode, string> = {
 /** Note de la tâche planifiée (≤ 500 caractères conservés) : santé d'abord, puis compteurs distincts. */
 export function passNote(h: PassHealth, s: PassSummary, extra: string[] = []): string {
   const comp = `${s.detected} détectée(s) · ${s.eligible} éligible(s) · ${s.alreadyBlocked} déjà bloquée(s) · ${s.waitingPrerequisite} en attente de prérequis`
+    + `${s.waitingA1 ? ` · ${s.waitingA1} en attente du verrou A1` : ''}`
     + `${s.waitingContract ? ` · ${s.waitingContract} en attente d’un contrat` : ''} · ${s.attempted} essayée(s)${s.resumed ? ` (dont ${s.resumed} reprise(s) auto)` : ''}`
     + ` · ${s.qualified} qualifiée(s) · ${s.refused} refusée(s) · ${s.activated} activée(s) · ${s.resolved} résolue(s)`;
   return [`Santé : ${HEALTH_WORD[h.code]} — ${h.label}`, comp, h.cause && h.code !== 'PROGRESS' ? `cause : ${h.cause}` : null, h.nextAction ? `geste : ${h.nextAction}` : null, ...extra]

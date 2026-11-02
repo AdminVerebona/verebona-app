@@ -79,6 +79,10 @@ export interface NonRegressionAssessment {
   excludedCases?: Array<{ caseId: string; reason: string }>;
   /** Lot 100B : verrou A1 (couverture du corpus #601) — jeton exigé pour l'activation automatique. */
   a1?: { allowed: boolean; blockers: string[]; token: import('../governance/master-corpus/certification/promotion').A1Token | null };
+  /** Lot 105B : décision MÉTIER (non-régression) avant le verrou A1 — jamais écrasée par un refus de couverture. */
+  businessDecision?: NonRegressionDecision;
+  /** Lot 105B : qualifiée métier mais bloquée par le verrou A1 (candidate BLOCKED_A1). */
+  a1Blocked?: boolean;
 }
 
 type Outcome = CaseComparison['reference'];

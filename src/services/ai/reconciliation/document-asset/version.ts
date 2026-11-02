@@ -36,5 +36,12 @@
  *     de connaissance du compte. Toutes les abstentions (NO_CANDIDATE,
  *     ABSTAINED, MULTI_ASSET) sans décision utilisateur sont réévaluées au
  *     moins une fois avec le nouveau Candidate Builder (rattrapage horaire).
+ *   · 4 — lot 105D (ticket « Rattachement rétroactif après création d'un
+ *     bien ») : identités documentaires croisées (groupes d'orphelins, contrat
+ *     à un saut), règles déterministes de groupe (DEMONSTRABLE, ATTESTED,
+ *     CONFIRMED), rôle des adresses (facturation / livraison ≠ bien), carte
+ *     groupée, mémoire des décisions du modèle. Les abstentions sans décision
+ *     utilisateur sont réévaluées une fois (déterministe d'abord, puis IA une
+ *     fois au plus par document, ensuite réutilisée à contexte inchangé).
  */
-export const DOCUMENT_ASSET_RESOLUTION_VERSION = 3;
+export const DOCUMENT_ASSET_RESOLUTION_VERSION = 4;

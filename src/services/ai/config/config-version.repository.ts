@@ -375,7 +375,21 @@ function executionOfRow(r: Row): MasterExecutionConfig | null {
     inputContractVersion: r.input_contract_version == null ? null : String(r.input_contract_version),
     outputContractVersion: r.output_contract_version == null ? null : String(r.output_contract_version),
     allowedTasks: Array.isArray(r.allowed_tasks) ? (r.allowed_tasks as unknown[]).map(String) : null,
+    // Lot 105C (0990) : bundle complet figé — l'instantané le garde (capacités de la version exacte).
+    ...(bundleIdOfRow(r) ? { bundleId: bundleIdOfRow(r) } : {}),
   } as MasterExecutionConfig;
+}
+
+/** Lot 105C — identifiant du bundle figé d'une version (colonne 0990 absente ou nulle : `null`). */
+function bundleIdOfRow(r: Row): string | null {
+  const b = r.execution_bundle as { id?: unknown } | null | undefined;
+  return b && typeof b === 'object' && typeof b.id === 'string' && b.id ? b.id : null;
+}
+
+/** Lot 105C — colonne `execution_bundle` (0990) présente ? */
+async function bundleColumnExists(sql: SqlLike): Promise<boolean> {
+  return (await q(sql, `SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
+      AND table_name = 'ai_master_prompt_versions' AND column_name = 'execution_bundle'`)).length > 0;
 }
 
 export function masterPromptRefOf(r: Row): MasterPromptRef {
@@ -449,15 +463,18 @@ export async function applyMasterPromptRefs(
       const exec = ref.execution && (await q(sql,
         `SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema()
             AND table_name = 'ai_master_prompt_versions' AND column_name = 'execution_mode'`)).length > 0 ? ref.execution : null;
+      // Lot 105C : bundle de l'instantané conservé (version recréée = mêmes capacités).
+      const bundle = exec?.bundleId && await bundleColumnExists(sql) ? JSON.stringify({ id: exec.bundleId }) : null;
       const recree = (await q(sql,
         `INSERT INTO ai_master_prompt_versions
            (environment, treatment, master_prompt_code, version_number, status, content, content_sha256, origin,
-            created_by, updated_by, activated_by, activated_at, first_activated_at${exec ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''})
+            created_by, updated_by, activated_by, activated_at, first_activated_at${exec ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''}${bundle ? ', execution_bundle' : ''})
          VALUES ($1, $2, $3, (SELECT COALESCE(MAX(version_number), 0) + 1 FROM ai_master_prompt_versions WHERE environment = $1 AND treatment = $2),
-                 'ACTIVE', $4, $5, 'admin', $6, $6, $6, now(), now()${exec ? ', $7, $8, $9, $10::jsonb' : ''})
+                 'ACTIVE', $4, $5, 'admin', $6, $6, $6, now(), now()${exec ? ', $7, $8, $9, $10::jsonb' : ''}${bundle ? ', $11::jsonb' : ''})
          RETURNING id, version_number, master_prompt_code`,
         [environment, treatment, ref.masterPromptCode, ref.content, ref.contentSha256, actor.userId,
-         ...(exec ? [exec.mode, exec.inputContractVersion, exec.outputContractVersion, exec.allowedTasks ? JSON.stringify(exec.allowedTasks) : null] : [])]))[0];
+         ...(exec ? [exec.mode, exec.inputContractVersion, exec.outputContractVersion, exec.allowedTasks ? JSON.stringify(exec.allowedTasks) : null] : []),
+         ...(bundle ? [bundle] : [])]))[0];
       await sql.unsafe(
         `INSERT INTO ai_master_prompt_activations
            (environment, treatment, action, from_version_id, from_version_number, to_version_id, to_version_number,
@@ -814,7 +831,14 @@ export async function recordMasterPromptRevisionInTx(sql: SqlLike, environment: 
 export async function activateVersion(
   versionId: number, userId: number | null, check?: (r: { snapshot: ConfigSnapshot; previouslyActivated: boolean }) => void,
   /** Lot 86A (VER-01) : activation AUTOMATIQUE d'une candidate qualifiée — vérifiée sous verrou, état ACTIVATED dans la transaction. */
-  opts: { candidate?: boolean; summary?: string } = {},
+  opts: {
+    candidate?: boolean; summary?: string;
+    /**
+     * Lot 105B : revalidation FINALE dans la transaction (verrou de l'environnement pris, ligne de la version
+     * verrouillée) — lève une erreur pour tout annuler (rien n'est activé).
+     */
+    guard?: (sql: SqlLike) => Promise<void>;
+  } = {},
 ): Promise<{
   previousId: number | null; alreadyActive: boolean; revisionNumber: number;
   masterPromptSwitches: WriteOutcome['masterPromptSwitches'];
@@ -823,7 +847,7 @@ export async function activateVersion(
   return pgClient.begin(async (tx) => {
     const sql = tx as unknown as SqlLike;
     await lockEnvironment(sql, environment);
-    return activateVersionInTx(sql, environment, versionId, userId, { check, candidate: opts.candidate, summary: opts.summary });
+    return activateVersionInTx(sql, environment, versionId, userId, { check, candidate: opts.candidate, summary: opts.summary, guard: opts.guard });
   }) as never;
 }
 
@@ -838,6 +862,8 @@ export async function activateVersionInTx(sql: SqlLike, environment: string, ver
   summary?: string;
   /** Lot 86A (VER-01) : activation AUTOMATIQUE d'une candidate qualifiée — vérifiée sous verrou, état ACTIVATED dans la transaction. */
   candidate?: boolean;
+  /** Lot 105B : revalidation finale dans la transaction (après les contrôles d'état, avant toute écriture). */
+  guard?: (sql: SqlLike) => Promise<void>;
 } = {}): Promise<{
   previousId: number | null; alreadyActive: boolean; revisionId: number; revisionNumber: number;
   masterPromptSwitches: WriteOutcome['masterPromptSwitches'];
@@ -856,6 +882,7 @@ export async function activateVersionInTx(sql: SqlLike, environment: string, ver
       `Version ${versionId} : seule une candidate automatique QUALIFIÉE peut être activée automatiquement (origine ${String(r.origin ?? 'manual')}, état ${String(r.candidate_state ?? 'aucun')}).`);
   }
   opts.check?.({ snapshot: cur.snapshot, previouslyActivated: r.activated_at != null });
+  if (opts.guard) await opts.guard(sql);
   if (opts.candidate) await sql.unsafe(`UPDATE ai_config_versions SET candidate_state = 'ACTIVATED' WHERE id = $1`, [versionId] as never[]);
   const anciennes = await q(sql,
     `UPDATE ai_config_versions SET status = 'INACTIVE', updated_at = now()
@@ -876,7 +903,7 @@ export async function activateVersionInTx(sql: SqlLike, environment: string, ver
 }
 
 /** Lot 86A : état d'une candidate automatique (jamais sur une version manuelle). */
-export async function setCandidateState(versionId: number, state: 'QUALIFYING' | 'QUALIFIED' | 'REFUSED' | 'INCONCLUSIVE' | 'NOT_CHOSEN', reason?: string | null): Promise<void> {
+export async function setCandidateState(versionId: number, state: 'QUALIFYING' | 'QUALIFIED' | 'REFUSED' | 'INCONCLUSIVE' | 'NOT_CHOSEN' | 'BLOCKED_A1', reason?: string | null): Promise<void> {
   await pgClient.unsafe(
     `UPDATE ai_config_versions SET candidate_state = $2, candidate_reason = COALESCE($3, candidate_reason), updated_at = now()
       WHERE id = $1 AND origin = 'auto' AND candidate_state IS DISTINCT FROM 'ACTIVATED'`,
@@ -893,6 +920,64 @@ export async function suspendCandidate(versionId: number, reason: string): Promi
     `UPDATE ai_config_versions SET candidate_state = 'SUSPENDED', candidate_reason = $2, updated_at = now()
       WHERE id = $1 AND origin = 'auto'`,
     [versionId, reason.slice(0, 1000)] as never[]);
+}
+
+// ── Lot 105B : promotion automatique (écrit par le SERVEUR seulement) ─────────
+
+/** Fusionne une partie du suivi de promotion d'une candidate automatique (qualification, A1, relances, surveillance). */
+export async function mergeCandidatePromotion(versionId: number, patch: Record<string, unknown>, sql: SqlLike = pgClient as unknown as SqlLike): Promise<void> {
+  try {
+    await sql.unsafe(
+      `UPDATE ai_config_versions SET candidate_promotion = COALESCE(candidate_promotion, '{}'::jsonb) || $2::jsonb, updated_at = now() WHERE id = $1 AND origin = 'auto'`,
+      [versionId, JSON.stringify(patch)] as never[]);
+  } catch (e) {
+    if ((e as { code?: string })?.code !== '42703') throw e; // colonne 0985 absente : suivi non conservé
+  }
+}
+
+/** Suivi de promotion d'une candidate (null : version absente ; {} : rien). */
+export async function readCandidatePromotion(versionId: number, sql: SqlLike = pgClient as unknown as SqlLike): Promise<{
+  id: number; environment: string; origin: string | null; state: string | null; reason: string | null; campaignId: number | null;
+  status: string; deleted: boolean; currentRevisionId: number | null; promotion: Record<string, any>;
+} | null> {
+  try {
+    const r = (await q(sql, `SELECT id, environment, origin, candidate_state, candidate_reason, candidate_campaign_id, status, deleted_at, current_revision_id,
+                                    COALESCE(to_jsonb(v)->'candidate_promotion', '{}'::jsonb) AS promotion
+                               FROM ai_config_versions v WHERE id = $1`, [versionId]))[0];
+    if (!r) return null;
+    return {
+      id: Number(r.id), environment: String(r.environment), origin: r.origin == null ? null : String(r.origin), state: r.candidate_state == null ? null : String(r.candidate_state),
+      reason: r.candidate_reason == null ? null : String(r.candidate_reason), campaignId: r.candidate_campaign_id == null ? null : Number(r.candidate_campaign_id),
+      status: String(r.status), deleted: r.deleted_at != null, currentRevisionId: r.current_revision_id == null ? null : Number(r.current_revision_id),
+      promotion: (r.promotion ?? {}) as Record<string, any>,
+    };
+  } catch (e) {
+    if ((e as { code?: string })?.code === '42703') return null;
+    throw e;
+  }
+}
+
+/** Campagne de qualification COURANTE d'une candidate (relance après blocage A1, campagne CONFORMITY). */
+export async function setCandidateCampaign(versionId: number, campaignId: number): Promise<void> {
+  await pgClient.unsafe(`UPDATE ai_config_versions SET candidate_campaign_id = $2, updated_at = now() WHERE id = $1 AND origin = 'auto' AND candidate_state IS DISTINCT FROM 'ACTIVATED'`,
+    [versionId, campaignId] as never[]);
+}
+
+/** Candidates automatiques de l'environnement dans ces états (suivi de promotion compris). */
+export async function listCandidates(environment: string, states: readonly string[]): Promise<Array<{ id: number; state: string; treatmentLabel: string; createdAt: string; reason: string | null; campaignId: number | null; status: string; promotion: Record<string, any> }>> {
+  try {
+    return (await q(pgClient as unknown as SqlLike,
+      `SELECT id, candidate_state, label, created_at, candidate_reason, candidate_campaign_id, status, COALESCE(to_jsonb(v)->'candidate_promotion', '{}'::jsonb) AS promotion
+         FROM ai_config_versions v WHERE environment = $1 AND origin = 'auto' AND candidate_state = ANY($2::text[]) AND deleted_at IS NULL ORDER BY id DESC LIMIT 200`,
+      [environment, [...states]])).map((r) => ({
+      id: Number(r.id), state: String(r.candidate_state), treatmentLabel: String(r.label ?? ''), createdAt: new Date(String(r.created_at)).toISOString(),
+      reason: r.candidate_reason == null ? null : String(r.candidate_reason), campaignId: r.candidate_campaign_id == null ? null : Number(r.candidate_campaign_id),
+      status: String(r.status), promotion: (r.promotion ?? {}) as Record<string, any>,
+    }));
+  } catch (e) {
+    if (['42703', '42P01'].includes(String((e as { code?: string })?.code))) return [];
+    throw e;
+  }
 }
 
 /** Lot 86A : dernière candidate automatique portant cette clé de proposition. */
@@ -978,21 +1063,24 @@ export async function findOrCreateMasterPromptVersionInTx(sql: SqlLike, environm
     `SELECT * FROM ai_master_prompt_versions
       WHERE environment = $1 AND treatment = $2 AND content_sha256 = $3 AND status <> 'DRAFT'
       ORDER BY (status = 'ACTIVE') DESC, version_number DESC`, [environment, treatment, ref.contentSha256]);
-  const signature = (e: MasterExecutionConfig | null) => JSON.stringify(e ? { m: e.mode, i: e.inputContractVersion, o: e.outputContractVersion, t: e.allowedTasks } : null);
+  // Lot 105C : le bundle figé fait partie de la configuration (une version historique sans bundle n'est pas « la même »).
+  const signature = (e: MasterExecutionConfig | null) => JSON.stringify(e ? { m: e.mode, i: e.inputContractVersion, o: e.outputContractVersion, t: e.allowedTasks, ...(e.bundleId ? { b: e.bundleId } : {}) } : null);
   const voulu = ref.execution && ref.execution.mode === 'STRUCTURED_CONTEXT' ? ref.execution : null;
   const trouve = candidats.find((c) => String(c.master_prompt_code) === ref.masterPromptCode
     && (!execCol || signature(executionOfRow(c)?.mode === 'STRUCTURED_CONTEXT' ? executionOfRow(c) : null) === signature(voulu)));
   if (trouve) return masterPromptRefOf(trouve);
   const exec = execCol && voulu ? voulu : null;
+  const bundle = exec?.bundleId && await bundleColumnExists(sql) ? JSON.stringify({ id: exec.bundleId }) : null;
   const cree = (await q(sql,
     `INSERT INTO ai_master_prompt_versions
        (environment, treatment, master_prompt_code, version_number, status, content, content_sha256, origin,
-        created_by, updated_by${exec ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''})
+        created_by, updated_by${exec ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''}${bundle ? ', execution_bundle' : ''})
      VALUES ($1, $2, $3, (SELECT COALESCE(MAX(version_number), 0) + 1 FROM ai_master_prompt_versions WHERE environment = $1 AND treatment = $2),
-             'PREVIOUS', $4, $5, 'admin', $6, $6${exec ? ', $7, $8, $9, $10::jsonb' : ''})
+             'PREVIOUS', $4, $5, 'admin', $6, $6${exec ? ', $7, $8, $9, $10::jsonb' : ''}${bundle ? ', $11::jsonb' : ''})
      RETURNING *`,
     [environment, treatment, ref.masterPromptCode, ref.content, ref.contentSha256, userId,
-     ...(exec ? [exec.mode, exec.inputContractVersion, exec.outputContractVersion, exec.allowedTasks ? JSON.stringify(exec.allowedTasks) : null] : [])]))[0];
+     ...(exec ? [exec.mode, exec.inputContractVersion, exec.outputContractVersion, exec.allowedTasks ? JSON.stringify(exec.allowedTasks) : null] : []),
+     ...(bundle ? [bundle] : [])]))[0];
   return masterPromptRefOf(cree);
 }
 

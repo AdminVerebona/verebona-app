@@ -42,6 +42,20 @@
  *      concluantes, journaux conservés (R13) ; rien à restaurer côté métier
  *      (aucune écriture de données), le point de restauration reste
  *      disponible.
+ *   5 bis (lot 105B). Qualification MÉTIER, décision A1 et preuves conservées
+ *      SÉPARÉMENT (`candidate_promotion`, écrit par le serveur) : une candidate
+ *      qualifiée mais refusée par le verrou A1 passe BLOCKED_A1 — jamais
+ *      laissée « QUALIFIED » activable, jamais un faux REFUSED métier.
+ *      L'activation revalide tout depuis la base (`promotion-gate.ts`).
+ *      Relance AUTOMATIQUE ciblée d'une candidate BLOCKED_A1 quand le contexte
+ *      A1 de son traitement change (approbation, révocation, oracle, rejet,
+ *      manifeste, référentiel d'inventaire) ET qu'aucun manque structurel ne
+ *      subsiste (sinon aucun appel inutile) ; même version, même modèle ;
+ *      bornée (`promotion-params.ts`), idempotente (empreinte mémorisée).
+ *      Activée → surveillance post-activation (`promotion-watch.ts`).
+ *   POST_CHECK (lot 105B). Rejeu des cas certifiés APRÈS activation : ancienne
+ *      version (référence) ↔ candidate active, mêmes cas — aucune activation,
+ *      aucun changement d'état ici (`post-activation.ts` décide).
  * Aucun effet externe : seuls des appels modèle passent (passerelle) — ni
  * notification, ni e-mail, ni Stripe, ni travail de file.
  * ══════════════════════════════════════════════════════════════════════════
@@ -238,6 +252,35 @@ export async function requestConformityCampaign(p: {
   }
 }
 
+/**
+ * Lot 105B — REJEU DES CAS CERTIFIÉS après une activation automatique (campagne `POST_CHECK`) : ancienne
+ * configuration (référence, désormais inactive) et candidate active, MÊMES cas, toutes les opérations du
+ * traitement. Préproduction seulement ; point de restauration et compte technique comme toute campagne. Rend
+ * l'évaluation de non-régression (aucune activation ni changement d'état ici).
+ */
+export async function requestPostActivationReplay(p: {
+  treatment: Treatment; candidateVersionId: number; referenceVersionId: number; reason: string;
+}, deps: CampaignDeps = {}): Promise<{ campaignId: number | null; status: repo.CampaignStatus | 'NOT_ALLOWED'; refusal: string | null; assessment: NonRegressionAssessment | null; prerequisite: CampaignPrerequisite | null }> {
+  const env = deps.environment ?? getAiEnvironment();
+  const ok = campaignAllowed(env);
+  if (!ok.allowed) return { campaignId: null, status: 'NOT_ALLOWED', refusal: ok.reason, assessment: null, prerequisite: null };
+  const th = deps.thresholds ?? withRuntimeLimits(QUALIFICATION_THRESHOLDS);
+  await repo.interruptStaleCampaigns(th.campaign.staleAfterMs, (deps.now ?? (() => new Date()))());
+  const id = await repo.createCampaign({
+    kind: 'POST_CHECK', environment: env, trigger: 'promotion-watch', reason: p.reason.slice(0, 1000), adminUserId: null,
+    configVersionId: p.referenceVersionId, candidateVersionId: p.candidateVersionId, thresholdsVersion: th.version,
+    request: { postCheck: { treatment: p.treatment, candidateVersionId: p.candidateVersionId, referenceVersionId: p.referenceVersionId } },
+  });
+  const r = await runCampaign(id, deps);
+  return { campaignId: id, status: r.status, refusal: r.refusal, assessment: r.conformity ?? null, prerequisite: r.prerequisite ?? null };
+}
+
+/** Lot 105B : codes de revalidation qui relèvent du verrou A1 / de la certification (candidate → BLOCKED_A1). */
+const A1_GATE_CODES = new Set(['A1_ASSESSMENT_REFUSED', 'A1_CONTEXT_CHANGED', 'A1_NOW_REFUSED', 'A1_EXPIRED', 'A1_RULES_CHANGED', 'A1_ASSESSMENT_MISSING', 'CONCURRENT_CHANGE']);
+
+/** Lot 105B : préfixe stable d'une candidate qualifiée dont l'activation a été refusée hors A1 (technique, gel). */
+export const ACTIVATION_REFUSED_PREFIX = 'ACTIVATION_REFUSED:';
+
 /** Lot 99B : cas hors périmètre des campagnes CONFORMITY en cours (contrat absent des deux versions). */
 const conformityExcludedCases = new Map<number, NonNullable<Parameters<typeof requestConformityCampaign>[0]['excludedCases']>>();
 
@@ -352,14 +395,17 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         const rk = addRef(want.operationCode);
         plan.push({ couple: cible, role: 'CANDIDATE', referenceKey: rk, candidateVersionId: null });
       }
-    } else if (campaign.kind === 'CONFORMITY') {
+    } else if (campaign.kind === 'CONFORMITY' || campaign.kind === 'POST_CHECK') {
       // Lot 99B : toutes les opérations du prompt modifié, ancienne version (référence) et candidate, rang 0, mêmes cas.
-      const want = campaign.request.conformity as { treatment: Treatment; candidateVersionId: number; excluded?: Array<{ operationCode: string }> };
+      // Lot 105B (POST_CHECK) : même plan, la référence est l'ANCIENNE configuration (inactive), la candidate l'active.
+      const want = (campaign.kind === 'POST_CHECK' ? campaign.request.postCheck : campaign.request.conformity) as { treatment: Treatment; candidateVersionId: number; referenceVersionId?: number; excluded?: Array<{ operationCode: string }> };
       const exclues = new Set((want.excluded ?? []).map((x) => x.operationCode));
-      if (!active) return await refuse('Aucune configuration active : aucune référence à comparer.');
+      const referenceVersion = campaign.kind === 'POST_CHECK' ? await cfg.getVersion(Number(want.referenceVersionId)) : active;
+      if (!referenceVersion) return await refuse(campaign.kind === 'POST_CHECK' ? `Configuration de référence ${want.referenceVersionId ?? '—'} introuvable.` : 'Aucune configuration active : aucune référence à comparer.');
       const cand = await cfg.getVersion(want.candidateVersionId);
       if (!cand) return await refuse(`Candidate ${want.candidateVersionId} introuvable.`);
-      for (const c of await couplesWithState(active, { ...caseOpts, treatments: [want.treatment] })) if (c.rank === 0) refOf.set(c.operationCode, c);
+      if (campaign.kind === 'CONFORMITY') await cfg.setCandidateCampaign(cand.id, campaignId).catch(() => undefined);
+      for (const c of await couplesWithState(referenceVersion, { ...caseOpts, treatments: [want.treatment] })) if (c.rank === 0) refOf.set(c.operationCode, c);
       for (const c of (await couplesWithState(cand, { ...caseOpts, treatments: [want.treatment] })).filter((x) => x.rank === 0 && !exclues.has(x.operationCode))) {
         plan.push({ couple: c, role: 'CANDIDATE', referenceKey: addRef(c.operationCode), candidateVersionId: cand.id });
       }
@@ -392,6 +438,19 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
           if (pris >= th.campaign.maxCandidatesPerTreatment) break;
           const key = sha256(`${e.treatment}|${model}|${active.currentRevisionId}|${capabilitiesSha256(capabilitiesOf(model))}|${th.version}`);
           const deja = await cfg.findCandidateByKey(env, key);
+          // Lot 105B : candidate qualifiée MÉTIER mais bloquée par le verrou A1 — relance ciblée (même version, même
+          // modèle) seulement si le contexte A1 du traitement a changé et qu'aucun manque structurel ne subsiste.
+          if (deja?.state === 'BLOCKED_A1') {
+            const relance = await relaunchBlockedA1(deja.id, e.treatment, campaignId, env, now);
+            if (relance) {
+              candidates.push({ versionId: relance.id, treatment: e.treatment, model });
+              pris += 1;
+              for (const c of (await couplesWithState(relance, { ...caseOpts, treatments: [e.treatment] })).filter((x) => x.rank === 0)) {
+                plan.push({ couple: c, role: 'CANDIDATE', referenceKey: addRef(c.operationCode), candidateVersionId: relance.id });
+              }
+            }
+            continue;
+          }
           // Lot 103G : une candidate non concluante faute de compte technique est reproposée dès que le compte est utilisable.
           const prerequis = deja?.state === 'INCONCLUSIVE' && (deja.reason ?? '').startsWith(PREREQUISITE_CANDIDATE_PREFIX);
           if (deja && !(deja.state === 'INCONCLUSIVE' && (prerequis || now().getTime() - deja.createdAt.getTime() >= th.campaign.inconclusiveRetryAfterMs))) continue;
@@ -456,6 +515,7 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         caseSets.set(c.operationCode, set);
       }
       const version = c.versionId === active?.id ? active : await cfg.getVersion(c.versionId);
+      if (!version) throw new Error(`version ${c.versionId} introuvable`);
       const prompts = await promptContextOf(version as ConfigVersionWithEntries, readMasterFile);
       const { runWithTechnicalAccount } = await import('./technical-context');
       const casSet = set;
@@ -533,15 +593,41 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         const { assessPromotion, a1RefusalMessage } = await import('../governance/master-corpus/certification/promotion');
         const a1 = await assessPromotion({ context: 'PROMPT_CONFORMITY', environment: env, treatments: [want2.treatment], observations: obsCand, campaignId, candidateVersionId: want2.candidateVersionId });
         assessment.a1 = { allowed: a1.assessment.allowed, blockers: a1.assessment.blockers.map((b) => b.message), token: a1.token };
+        // Lot 105B : qualification MÉTIER conservée à part ; un refus A1 seul n'est jamais un refus métier.
+        assessment.businessDecision = assessment.decision;
+        const evidenceIds = plan.filter((x) => x.role === 'CANDIDATE').map((x) => runs.get(keyOf(x.couple))?.evidenceId).filter((x): x is number => x != null);
+        await recordBusinessQualification(want2.candidateVersionId, {
+          campaignId, treatment: want2.treatment, state: assessment.decision, evidenceIds, gains: [], excluded: [...exclusOf(campaign)],
+          reasons: [...assessment.refusalReasons, ...assessment.blockingReasons].slice(0, 20), at: now().toISOString(),
+        });
         if (!a1.assessment.allowed && assessment.decision === 'QUALIFIED') {
           assessment.decision = 'INCONCLUSIVE';
+          assessment.a1Blocked = true;
           assessment.blockingReasons.push(a1RefusalMessage(a1.assessment));
+          await recordA1Block(want2.candidateVersionId, { campaignId, treatment: want2.treatment, env, a1, now });
         }
       }
-      await cfg.setCandidateState(want.candidateVersionId, assessment.decision === 'QUALIFIED' ? 'QUALIFIED' : assessment.decision === 'REFUSED' ? 'REFUSED' : 'INCONCLUSIVE',
-        [...assessment.refusalReasons, ...assessment.blockingReasons].join(' · ').slice(0, 1000) || 'non-régression démontrée');
+      await cfg.setCandidateState(want.candidateVersionId,
+        assessment.a1Blocked ? 'BLOCKED_A1' : assessment.decision === 'QUALIFIED' ? 'QUALIFIED' : assessment.decision === 'REFUSED' ? 'REFUSED' : 'INCONCLUSIVE',
+        (assessment.a1Blocked ? 'Qualification métier réussie (non-régression démontrée) ; promotion bloquée par le verrou A1 (couverture du corpus) — pas un refus métier. ' : '')
+        + ([...assessment.refusalReasons, ...assessment.blockingReasons].join(' · ').slice(0, 900) || 'non-régression démontrée'));
       const casExclus = [...caseSets.values()].flatMap((set) => set.skipped.filter((x) => x.reason.startsWith('hors périmètre : ')).map((x) => ({ caseId: x.caseId, reason: x.reason.slice('hors périmètre : '.length) })));
       result.conformity = { ...assessment, excluded: (campaign.request.conformity as { excluded?: Array<{ operationCode: string; reason: string }> }).excluded ?? [], excludedCases: casExclus };
+    }
+
+    // 4 ter (lot 105B). POST_CHECK : non-régression ancienne configuration ↔ candidate active (aucune activation).
+    if (campaign.kind === 'POST_CHECK') {
+      const opRuns: OperationRun[] = [...new Set(plan.map((x) => x.couple.operationCode))].map((op) => {
+        const c = plan.find((x) => x.couple.operationCode === op && x.role === 'CANDIDATE');
+        const r = c?.referenceKey ? runs.get(c.referenceKey) : null;
+        const k = c ? runs.get(keyOf(c.couple)) : null;
+        return {
+          operationCode: op,
+          reference: r ? { verdict: r.verdict, reasons: r.reasons, observations: r.observations, evidenceId: r.evidenceId } : null,
+          candidate: k ? { verdict: k.verdict, reasons: k.reasons, observations: k.observations, evidenceId: k.evidenceId } : null,
+        };
+      });
+      result.conformity = assessNonRegression({ runs: opRuns, coverage: null, thresholds: th });
     }
 
     // 5. Candidates : activation automatique en préproduction si qualifiée et gain établi.
@@ -570,6 +656,11 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
         const etat = a.verdicts.includes('REFUSED') ? 'REFUSED' : a.verdicts.every((v) => v === 'ADMISSIBLE') ? (choix.chosen === a.key ? 'QUALIFIED' : 'NOT_CHOSEN') : 'INCONCLUSIVE';
         const bloquee = etat === 'INCONCLUSIVE' && plan.some((x) => x.candidateVersionId === cand.versionId && (runs.get(keyOf(x.couple))?.all ?? []).some((o) => o.blockedBy === 'TECHNICAL_ACCOUNT'));
         await cfg.setCandidateState(cand.versionId, etat, bloquee ? `${PREREQUISITE_CANDIDATE_PREFIX}CORPUS_ACCOUNT_INVALID — compte technique de qualification non éligible pendant la campagne : non concluante faute de prérequis (reprise automatique au prochain passage).` : choix.reasons[a.key] ?? null);
+        // Lot 105B : qualification MÉTIER enregistrée par le serveur (lue par la revalidation d'activation), à part de l'A1.
+        await recordBusinessQualification(cand.versionId, {
+          campaignId, treatment: cand.treatment, state: etat, gains: a.gains, excluded: [], reasons: [choix.reasons[a.key] ?? ''].filter(Boolean), at: now().toISOString(),
+          evidenceIds: plan.filter((x) => x.candidateVersionId === cand.versionId).map((x) => runs.get(keyOf(x.couple))?.evidenceId).filter((x): x is number => x != null),
+        });
         summaryCandidates.push({ versionId: cand.versionId, treatment: cand.treatment, model: cand.model, state: etat, reason: choix.reasons[a.key] ?? null, gains: a.gains });
       }
       if (choix.chosen) {
@@ -584,18 +675,29 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
           gains: assessments.find((a) => a.key === choix.chosen)?.gains ?? [],
         });
         const s0 = summaryCandidates.find((x) => String(x.versionId) === choix.chosen);
-        if (s0) s0.a1 = { allowed: a1.assessment.allowed, blockers: a1.assessment.blockers.slice(0, 20).map((b) => b.message) };
-        try {
-          if (!a1.token) throw new Error(a1RefusalMessage(a1.assessment));
-          await activateQualifiedCandidate(Number(choix.chosen), { a1: a1.token });
-          result.activatedVersionId = Number(choix.chosen);
-          const s = summaryCandidates.find((x) => String(x.versionId) === choix.chosen);
-          if (s) s.state = 'ACTIVATED';
-          log(`candidate ${choix.chosen} activée (préproduction)`);
-        } catch (e) {
-          const s = summaryCandidates.find((x) => String(x.versionId) === choix.chosen);
-          if (s) { s.state = 'QUALIFIED'; s.activationRefused = (e as Error).message; }
-          log(`activation refusée : ${(e as Error).message}`);
+        if (s0) s0.a1 = { allowed: a1.assessment.allowed, blockers: a1.assessment.blockers.slice(0, 20).map((b) => b.message), assessmentId: a1.assessmentId };
+        if (!a1.token) {
+          // Lot 105B : qualifiée MÉTIER, refusée par A1 → BLOCKED_A1 (jamais laissée QUALIFIED activable).
+          await cfg.setCandidateState(cand.versionId, 'BLOCKED_A1', `Qualification métier réussie ; promotion bloquée par le verrou A1 (couverture du corpus) — pas un refus métier. ${a1RefusalMessage(a1.assessment)}`.slice(0, 1000));
+          await recordA1Block(cand.versionId, { campaignId, treatment: cand.treatment, env, a1, now });
+          if (s0) { s0.state = 'BLOCKED_A1'; s0.activationRefused = a1RefusalMessage(a1.assessment); }
+          log(`candidate ${choix.chosen} bloquée par le verrou A1`);
+        } else {
+          try {
+            const r = await activateQualifiedCandidate(Number(choix.chosen), { a1: a1.token, caseOptions: caseOpts });
+            result.activatedVersionId = Number(choix.chosen);
+            if (s0) s0.state = 'ACTIVATED';
+            await startWatch(cand.versionId, { treatment: cand.treatment, previousVersionId: r.previousId, campaignId, operations: items.map((x) => x.couple.operationCode), now });
+            log(`candidate ${choix.chosen} activée (préproduction)`);
+          } catch (e) {
+            const gateCode = ((e as { details?: { gateCode?: string } }).details?.gateCode) ?? null;
+            const a1Cause = gateCode != null && A1_GATE_CODES.has(gateCode);
+            await cfg.setCandidateState(cand.versionId, a1Cause ? 'BLOCKED_A1' : 'INCONCLUSIVE',
+              `${a1Cause ? 'Qualification métier réussie ; promotion bloquée à la revalidation A1' : `${ACTIVATION_REFUSED_PREFIX} qualification métier réussie, activation refusée`} : ${(e as Error).message}`.slice(0, 1000));
+            if (a1Cause) await recordA1Block(cand.versionId, { campaignId, treatment: cand.treatment, env, a1: { ...a1, gateCode }, now });
+            if (s0) { s0.state = a1Cause ? 'BLOCKED_A1' : 'QUALIFIED_NOT_ACTIVATED'; s0.activationRefused = (e as Error).message; }
+            log(`activation refusée : ${(e as Error).message}`);
+          }
         }
       }
     }
@@ -625,4 +727,100 @@ async function runCampaign(campaignId: number, deps: CampaignDeps = {}): Promise
   } finally {
     await repo.releaseAccounts(campaignId).catch(() => undefined);
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Lot 105B — qualification métier, décision A1, relances, surveillance
+// ══════════════════════════════════════════════════════════════════════════
+
+/** Opérations hors périmètre d'une campagne CONFORMITY (branche absente des deux versions). */
+function exclusOf(campaign: { request: Record<string, unknown> }): string[] {
+  return ((campaign.request.conformity as { excluded?: Array<{ operationCode: string }> } | undefined)?.excluded ?? []).map((x) => x.operationCode);
+}
+
+/** Qualification MÉTIER d'une candidate (écrite par le serveur, lue par la revalidation d'activation). */
+async function recordBusinessQualification(versionId: number, q: {
+  campaignId: number; treatment: Treatment; state: string; evidenceIds: number[]; gains: ReadonlyArray<{ operationCode: string; outcome: string }>;
+  excluded: string[]; reasons: string[]; at: string;
+}): Promise<void> {
+  const cfg = await import('../config/config-version.repository');
+  await cfg.mergeCandidatePromotion(versionId, { qualification: { ...q, gains: q.gains.map((g) => ({ operationCode: g.operationCode, outcome: g.outcome })) } });
+}
+
+/** Décision A1 d'une candidate bloquée (journal + suivi), séparée de sa qualification métier. */
+async function recordA1Block(versionId: number, p: {
+  campaignId: number; treatment: Treatment; env: string; now: () => Date;
+  a1: { assessment: import('../governance/master-corpus/certification/coverage').A1Assessment; assessmentId: number | null; contextFingerprint: string; gateCode?: string | null };
+}): Promise<void> {
+  const { structuralBlockers } = await import('../governance/master-corpus/certification/coverage');
+  const cfg = await import('../config/config-version.repository');
+  const blockers = p.a1.assessment.blockers;
+  const structural = structuralBlockers(p.a1.assessment).length;
+  const a1 = {
+    allowed: false, assessmentId: p.a1.assessmentId, rulesVersion: p.a1.assessment.rulesVersion, inventoryVersion: p.a1.assessment.inventory?.version ?? null,
+    contextFingerprint: p.a1.contextFingerprint, gateCode: p.a1.gateCode ?? null, structural, campaignId: p.campaignId, at: p.now().toISOString(),
+    blockers: blockers.slice(0, 20).map((b) => ({ code: b.code, message: b.message.slice(0, 300), structural: Boolean(b.structural) })), blockerCount: blockers.length,
+  };
+  await cfg.mergeCandidatePromotion(versionId, { a1 });
+  const { recordPromotionEvent } = await import('./promotion-journal');
+  await recordPromotionEvent({
+    environment: p.env, kind: 'A1_BLOCKED', candidateVersionId: versionId, campaignId: p.campaignId, treatment: p.treatment, allowed: false, code: p.a1.gateCode ?? blockers[0]?.code ?? 'A1',
+    message: `Candidate qualifiée métier, promotion bloquée par le verrou A1 (${blockers.length} manque(s), dont ${structural} structurel(s)) : ${blockers.slice(0, 3).map((b) => b.message).join(' ; ')}`.slice(0, 2000),
+    reference: { assessmentId: p.a1.assessmentId, contextFingerprint: p.a1.contextFingerprint, rulesVersion: a1.rulesVersion, inventoryVersion: a1.inventoryVersion },
+  });
+}
+
+/**
+ * Relance d'une candidate BLOCKED_A1 (même version, même modèle). Rend la version à requalifier, ou null :
+ *   · contexte A1 inchangé depuis le blocage ou la dernière vérification → rien (aucun appel à contexte identique) ;
+ *   · relances épuisées → rien (décision humaine) ;
+ *   · manques STRUCTURELS restants (import, approbation humaine) → rien, empreinte mémorisée (idempotent).
+ */
+export async function relaunchBlockedA1(versionId: number, treatment: Treatment, campaignId: number, env: string, now: () => Date = () => new Date()): Promise<ConfigVersionWithEntries | null> {
+  const cfg = await import('../config/config-version.repository');
+  const row = await cfg.readCandidatePromotion(versionId);
+  if (!row || row.state !== 'BLOCKED_A1') return null;
+  const a1 = (row.promotion.a1 ?? {}) as { contextFingerprint?: string };
+  const rel = (row.promotion.relaunch ?? {}) as { count?: number; lastCheckedFingerprint?: string; exhaustedAt?: string };
+  const { a1ContextFingerprint, structuralA1 } = await import('../governance/master-corpus/certification/promotion');
+  const ctx = await a1ContextFingerprint([treatment]);
+  if (ctx.fingerprint === a1.contextFingerprint || ctx.fingerprint === rel.lastCheckedFingerprint) return null;
+  const { promotionParams } = await import('./promotion-params');
+  const { recordPromotionEvent } = await import('./promotion-journal');
+  const max = promotionParams().relaunch.maxPerCandidate;
+  if ((rel.count ?? 0) >= max) {
+    if (!rel.exhaustedAt) {
+      await cfg.mergeCandidatePromotion(versionId, { relaunch: { ...rel, exhaustedAt: now().toISOString(), lastCheckedFingerprint: ctx.fingerprint } });
+      await recordPromotionEvent({ environment: env, kind: 'A1_WAITING', candidateVersionId: versionId, campaignId, treatment, allowed: false, code: 'RELAUNCH_EXHAUSTED',
+        message: `Relances automatiques épuisées (${rel.count}/${max}) : décision humaine requise (nouvelle candidate ou activation manuelle).`, reference: { contextFingerprint: ctx.fingerprint } });
+    }
+    return null;
+  }
+  const restants = await structuralA1([treatment]);
+  if (restants.length) {
+    await cfg.mergeCandidatePromotion(versionId, { relaunch: { ...rel, lastCheckedFingerprint: ctx.fingerprint, waiting: restants.slice(0, 10).map((b) => b.message.slice(0, 200)), checkedAt: now().toISOString() } });
+    await recordPromotionEvent({ environment: env, kind: 'A1_WAITING', candidateVersionId: versionId, campaignId, treatment, allowed: false, code: restants[0].code,
+      message: `Contexte A1 changé mais ${restants.length} manque(s) structurel(s) subsistent (aucun appel modèle ne peut les combler) : ${restants.slice(0, 3).map((b) => b.message).join(' ; ')}`.slice(0, 2000),
+      reference: { contextFingerprint: ctx.fingerprint } });
+    return null;
+  }
+  await cfg.setCandidateState(versionId, 'QUALIFYING', `Relance automatique après changement du contexte A1 (relance ${(rel.count ?? 0) + 1}/${max}).`);
+  await cfg.setCandidateCampaign(versionId, campaignId);
+  await cfg.mergeCandidatePromotion(versionId, { relaunch: { count: (rel.count ?? 0) + 1, lastFingerprint: ctx.fingerprint, lastCheckedFingerprint: ctx.fingerprint, at: now().toISOString(), campaignId } });
+  await recordPromotionEvent({ environment: env, kind: 'A1_RELAUNCH', candidateVersionId: versionId, campaignId, treatment, allowed: null, code: null,
+    message: `Relance automatique de la candidate ${versionId} (contexte A1 changé, aucun manque structurel) : requalification sur les mêmes cas, même modèle.`, reference: { contextFingerprint: ctx.fingerprint, previous: a1.contextFingerprint ?? null } });
+  return cfg.getVersion(versionId);
+}
+
+/** Début de la surveillance post-activation d'une candidate activée automatiquement. */
+async function startWatch(versionId: number, p: { treatment: Treatment; previousVersionId: number | null; campaignId: number; operations: string[]; now: () => Date }): Promise<void> {
+  const { promotionParams } = await import('./promotion-params');
+  const cfg = await import('../config/config-version.repository');
+  const t = p.now();
+  await cfg.mergeCandidatePromotion(versionId, {
+    watch: {
+      status: 'WATCHING', activatedAt: t.toISOString(), watchUntil: new Date(t.getTime() + promotionParams().watch.windowMs).toISOString(),
+      previousVersionId: p.previousVersionId, treatment: p.treatment, operations: [...new Set(p.operations)], campaignId: p.campaignId, replays: 0, alerts: [], checks: 0,
+    },
+  });
 }

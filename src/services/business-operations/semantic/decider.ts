@@ -14,13 +14,24 @@
  *     contrats d'entrée et de sortie.
  * Sinon : `CONTRACT_PENDING` (comportement d'avant : aucun appel, aucune
  * décision du code à sa place, constat qualifié du contrôle de cohérence).
+ *
+ * Lot 105C (ticket « BO T4 : un prompt, une activation ») — version créée
+ * avec le BUNDLE COMPLET (`execution.bundleId`, figé à l'activation) : la
+ * disponibilité TECHNIQUE résulte du bundle validé (contexte structuré, TASK
+ * couverte, contrats d'entrée et de sortie présents dans le code déployé),
+ * JAMAIS de la présence du marqueur dans le texte — une reformulation du
+ * prompt n'éteint plus la fonction. Les versions HISTORIQUES (sans bundle)
+ * gardent exactement la règle d'époque (marqueur + contrats), pour un retour
+ * arrière fidèle. Les validations strictes de sortie (schéma
+ * `T4AgendaRepresentationOutput`, `validateRepresentation`, monde fermé,
+ * protections utilisateur) sont inchangées.
  * Coupure d'urgence : `T4_AGENDA_REPRESENTATION_ENABLED=0`.
  *
  * Tests : `__setRepresentationDeciderForTests` installe un fournisseur
  * SIMULÉ (unitaires et e2e PG16).
  */
 import { REPRESENTATION_CONTRACT_VERSION, REPRESENTATION_TASK, type RepresentationInput } from './contract';
-import { structuredTaskSupport, type MasterExecutionConfig } from '@/services/ai/master-prompts/structured-context';
+import { isBundleExecution, structuredTaskSupport, type MasterExecutionConfig } from '@/services/ai/master-prompts/structured-context';
 import { T4_EXECUTION_SPEC } from '@/services/ai/agenda/master/t4-execution-contract';
 
 interface RepresentationCapability {
@@ -60,7 +71,10 @@ export function promptCarriesRepresentation(text: string | null | undefined): bo
  * même règle pour la production, le diagnostic et les tests.
  */
 export function representationCapabilityOf(p: { text: string; version: string; execution: MasterExecutionConfig }): RepresentationCapability {
-  if (!promptCarriesRepresentation(p.text)) return { available: false, version: null, reason: 'CONTRACT_PENDING', contractState: 'MARKER_MISSING' };
+  // Version historique seulement (sans bundle figé) : le marqueur reste exigé (règle d'époque, retour arrière exact).
+  if (!isBundleExecution(p.execution) && !promptCarriesRepresentation(p.text)) {
+    return { available: false, version: null, reason: 'CONTRACT_PENDING', contractState: 'MARKER_MISSING' };
+  }
   const support = structuredTaskSupport(T4_EXECUTION_SPEC, p.execution, REPRESENTATION_TASK);
   if (!support.supported) {
     return { available: false, version: null, reason: 'CONTRACT_PENDING', contractState: support.reason === 'SUPPORTED' ? undefined : support.reason };
@@ -73,6 +87,9 @@ const CACHE_MS = 60_000;
 
 /** Réservé aux tests : vide le cache de disponibilité. */
 export function __resetRepresentationCapabilityCacheForTests(): void { cache = null; }
+
+/** Lot 105C — invalidation après une bascule de version T4 (ce conteneur ; les autres : ≤ 60 s). */
+export function invalidateRepresentationCapabilityCache(): void { cache = null; }
 
 /** Décideur de production : prompt T4 effectif (marqueur + contrats), passerelle IA. Ne lève jamais sur `capability`. */
 export const productionRepresentationDecider: RepresentationDecider = {

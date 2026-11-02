@@ -97,7 +97,10 @@ scenario('L54A-OPEN', 'T3 : réexamen RÉEL de tous les À traiter ouverts (éca
 
   // ══ Écart 1 — plus de quota T3 interne ═══════════════════════════════════
 
-  it('T3-OPEN-E01 / TC1 — ABSTAINED LINK-ASSET, même contexte : Candidate Builder, déterministe ET IA rejoués à chaque passage (jamais AI_DEFERRED)', async () => {
+  // Lot 105D (ticket « Rattachement rétroactif », D4, coordonné avec #596) : à contexte INCHANGÉ, la carte reste
+  // réellement réexaminée (Candidate Builder, déterministe) mais la décision du modèle est RÉUTILISÉE (aucun appel
+  // fournisseur) ; une relance explicite (passage manuel) ou un contexte modifié rappelle le modèle.
+  it('T3-OPEN-E01 / TC1 — ABSTAINED LINK-ASSET, même contexte : Candidate Builder et déterministe rejoués à chaque passage, décision IA réutilisée (lot 105D) ; relance manuelle → appel', async () => {
     const compte = await make.account();
     const a = await maison(compte, 'Maison A');
     const b = await maison(compte, 'Maison B');
@@ -109,16 +112,23 @@ scenario('L54A-OPEN', 'T3 : réexamen RÉEL de tous les À traiter ouverts (éca
       const replay = await rejouer([T3_ABSTENTION]);
       const r = await passage(compte);
       expect(entree(r, c), `passage ${n}`).toMatchObject({
-        previousResolution: 'ABSTAINED', candidateCount: 2, deterministicAttempted: true, aiCalled: true,
-        examined: true, resolutionAttempted: true, evaluationMode: 'AI_REEVALUATION', actionEffect: 'STILL_OPEN',
+        previousResolution: 'ABSTAINED', candidateCount: 2, deterministicAttempted: true, aiCalled: false,
+        examined: true, resolutionAttempted: true, evaluationMode: 'FULL_REEVALUATION', actionEffect: 'STILL_OPEN',
       });
       expect(String(entree(r, c)!.note ?? '')).not.toMatch(/ai_deferred/);
-      expect(appels(replay, 't3_link_ambiguity')).toBe(1);
+      expect(appels(replay, 't3_link_ambiguity')).toBe(0);
       expect(r.aiDeferred).toBe(0);
+      expect(r.aiReused).toBe(1);
     }
+    // Relance explicite : la mémoire n'est pas lue.
+    const replay = await rejouer([T3_ABSTENTION]);
+    const { resolveDocumentAsset } = await import('@/services/ai/reconciliation/document-asset/resolve-document-asset.service');
+    const m = await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id, triggerCode: 'manual', reprocessReason: 'FORCED' });
+    expect(m.aiCalled).toBe(true);
+    expect(appels(replay, 't3_link_ambiguity')).toBe(1);
   });
 
-  it('T3-OPEN-E01 / TC2 — 25 LINK-ASSET ambigus : examinés 25, réellement retentés 25, 25 arbitrages IA (pas d’arrêt à 10)', async () => {
+  it('T3-OPEN-E01 / TC2 — 25 LINK-ASSET ambigus : examinés 25, réellement retentés 25, aucun appel IA redondant (lot 105D) ; contexte modifié → 25 arbitrages réels', async () => {
     const compte = await make.account();
     const a = await maison(compte, 'Maison A');
     const b = await maison(compte, 'Maison B');
@@ -133,9 +143,17 @@ scenario('L54A-OPEN', 'T3 : réexamen RÉEL de tous les À traiter ouverts (éca
     const r = await passage(compte);
     const liens = (r.entries as unknown as Entree[]).filter((e) => e.ruleCode === 'LINK-ASSET');
     expect(liens).toHaveLength(25);
-    expect(liens.every((e) => e.resolutionAttempted === true && e.aiCalled === true)).toBe(true);
+    expect(liens.every((e) => e.resolutionAttempted === true && e.aiCalled === false)).toBe(true);
     expect(r.resolutionAttempted).toBeGreaterThanOrEqual(25);
-    expect(appels(replay, 't3_link_ambiguity')).toBe(25);
+    expect(appels(replay, 't3_link_ambiguity')).toBe(0);
+    expect(r.aiReused).toBe(25);
+    // Nouveau bien candidat (contexte modifié) : réévaluation RÉELLE, une fois par document.
+    await maison(compte, 'Maison C');
+    await sql`UPDATE assets SET name = 'Maison B bis' WHERE id = ${b.id}`;
+    const replay2 = await rejouer([T3_ABSTENTION]);
+    const r2 = await passage(compte);
+    expect(appels(replay2, 't3_link_ambiguity')).toBe(25);
+    expect(r2.aiReused ?? 0).toBe(0);
   }, 240_000);
 
   // ══ Écart 2 — LINK-ELT reconstruit ses candidats ═════════════════════════

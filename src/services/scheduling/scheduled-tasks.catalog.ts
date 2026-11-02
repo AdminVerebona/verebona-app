@@ -32,6 +32,8 @@
  *   legal-verify-integrity          le lundi à 6 h 40             lecture seule (+ journal)
  *   legal-cguv-manifest-sync        toutes les heures (102B)      import idempotent (code unique), versions
  *                                                                 jamais réécrites ; panne → dernier état connu
+ *   ai-promotion-watch              toutes les heures (105B,      bail `ai-promotion-watch:<env>` ; état
+ *                                   préproduction)                dans candidate_promotion.watch (idempotent)
  *   production-deletion-signals     toutes les heures (104A,      purge idempotente (sujet marqué, moteur
  *                                   hors production)              existant), lecture seule côté production
  *   t3-legacy-transfer              au démarrage, puis /h tant    bail `t3-legacy-transfer`
@@ -620,7 +622,30 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       const { requestAutomaticCampaign } = await import('@/services/ai/qualification/campaign');
       // Lot 103G : précontrôle du compte technique ; refus amont motivé (CORPUS_ACCOUNT_*) dans la note.
       const r = await requestAutomaticCampaign({ trigger: `scheduler:${trigger}` });
-      return { note: r.note.slice(0, 1500) };
+      // Lot 105B : la note commence par la SANTÉ de la promotion (tests réels, blocage A1 / compte, progrès effectif) :
+      // une tâche « réussie » techniquement n'est jamais présentée comme une promotion automatique effective.
+      const { promotionStatus, promotionHealthNote } = await import('@/services/ai/qualification/promotion-status');
+      const h = await promotionStatus().then((x) => promotionHealthNote(x.health)).catch(() => null);
+      return { note: `${h ? `${h} · ` : ''}${r.note}`.slice(0, 1500) };
+    },
+  },
+  {
+    // Lot 105B (ticket P1 « IA auto-amélioration », §5) : surveillance des
+    // candidates de configuration activées automatiquement en préproduction —
+    // signaux métier attribués à la candidate (contrôles serveur,
+    // disponibilité, latence / coût en alerte, cas certifiés rejoués), retour
+    // arrière ATOMIQUE et journalisé seulement si une dégradation imputable est
+    // démontrée. Production : sans objet. Bail `ai-promotion-watch:<env>`.
+    code: 'ai-promotion-watch',
+    label: 'IA : surveillance post-activation des candidates (préproduction)',
+    schedule: { kind: 'interval', everyMs: HOUR },
+    startupDelayMs: 17 * MIN,
+    timeoutMs: 60 * MIN,
+    run: async ({ trigger }) => {
+      const { runPromotionWatch } = await import('@/services/ai/qualification/promotion-watch');
+      const r = await runPromotionWatch({ trigger: `scheduler:${trigger}` });
+      if (r.skipped) return { note: r.skipped };
+      return { note: `${r.watched} candidate(s) surveillée(s) · ${r.replays} rejeu(x) de cas certifiés · ${r.alerts} alerte(s) · ${r.rolledBack} retour(s) arrière · ${r.resolved} résolue(s) · ${r.replaced} remplacée(s)` };
     },
   },
   {

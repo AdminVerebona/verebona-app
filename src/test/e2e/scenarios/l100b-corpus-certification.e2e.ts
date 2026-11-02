@@ -188,6 +188,9 @@ scenario('L100B', 'Certification du corpus de qualification IA (#601, verrou A1)
     // Paire complète : PAIRE-0 côté A (op 0) et côté B porté par l'op 1.
     entries.find((e) => e.id === 'S-1-0')!.pair = { id: 'PAIRE-0', side: 'B', discriminantChangesDecision: false };
     mf.__setCorpusManifestForTests({ version: 99, generatedAt: 'x', reference: { ticket: '#601', announcedScenarios: 401, announcedStress: 15, zipReceived: true }, entries, ledger: entries.map((e) => e.id) });
+    // Lot 105B : le référentiel d'inventaire attendu (totaux #601, difficultés…) est recetté par l105b ; ici, règles 100B seules.
+    const inv = await import('@/services/ai/governance/master-corpus/certification/expected-inventory');
+    inv.__setExpectedInventoryForTests(inv.EMPTY_INVENTORY_FOR_TESTS);
     try {
       for (const e of entries) {
         await sql`INSERT INTO ai_corpus_oracle_approvals (case_id, manifest_version, oracle_version, oracle_fingerprint, decision, sources, admin_user_id, admin_label)
@@ -208,6 +211,7 @@ scenario('L100B', 'Certification du corpus de qualification IA (#601, verrou A1)
       expect(rapide.assessment.blockers.map((b) => b.code)).toContain('FASTER_BUT_WRONG');
     } finally {
       mf.__setCorpusManifestForTests(null);
+      inv.__setExpectedInventoryForTests(null);
       await sql`DELETE FROM ai_corpus_oracle_approvals WHERE case_id LIKE 'S-%'`;
     }
     // Activation automatique d'une candidate sans jeton A1 : refusée (la garde est dans activateQualifiedCandidate).

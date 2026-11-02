@@ -8,7 +8,7 @@
  * envoie la demande complète à Verebona.
  */
 import type { DrawerTarget } from '@/lib/drawers';
-import { localSearchHref } from '@/lib/search/local-search';
+import { LOCAL_SEARCH_PARAM, localSearchHref, normalizeLocalQuery } from '@/lib/search/local-search';
 
 export interface LiveResult {
   id: string;
@@ -109,19 +109,145 @@ export function moveActive(current: number, delta: 1 | -1, length: number): numb
  * s'ouvre avec la recherche PRÉREMPLIE (`/documents?q=…`,
  * `/agenda?q=…&view=list`) — le critère, jamais les quelques identifiants
  * des suggestions (plafonnées). Pur.
+ *
+ * Lot 105A (ticket « Voir tous les documents (N) ») : le lien des documents
+ * annonce le nombre TOTAL de documents correspondants, calculé par le serveur
+ * sur EXACTEMENT l'ensemble que « Mes documents » listera
+ * (`GET /api/v2/documents?count=1&q=…`, même fonction serveur que la liste) —
+ * jamais le nombre de suggestions affichées.
+ *   · total connu et > 0 → « Voir tous les documents (N) » ;
+ *   · total connu = 0 (ou saisie sans mot exploitable) → aucun lien ;
+ *   · total en cours → lien sans chiffre, marqué « en cours » (jamais un
+ *     chiffre provisoire), seulement si des documents sont déjà suggérés ;
+ *   · total indisponible (erreur) → lien sans chiffre si des documents sont
+ *     suggérés, rien sinon.
  */
 export interface LiveSeeAll {
   id: 'voir-documents' | 'voir-agenda';
   label: string;
   href: string;
+  /** Lot 105A : total exact des documents correspondants (lien des documents). */
+  count?: number;
+  /** Lot 105A : total en cours de calcul — aucun chiffre affiché. */
+  pending?: true;
 }
 
-export function seeAllLinks(q: string, rows: ApiSearchRow[] | null | undefined): LiveSeeAll[] {
+/** Lot 105A — état du décompte des documents pour la saisie courante. */
+export type DocumentsCountState =
+  | { status: 'loading' }
+  | { status: 'ready'; total: number; searchApplied: boolean }
+  | { status: 'error' };
+
+export const SEE_ALL_DOCUMENTS_LABEL = 'Voir tous les documents';
+
+const ENTIER_FR = new Intl.NumberFormat('fr-FR', { maximumFractionDigits: 0 });
+
+/** « Voir tous les documents (12) » — `null` : libellé sans chiffre. */
+export function seeAllDocumentsLabel(total: number | null): string {
+  return total === null ? SEE_ALL_DOCUMENTS_LABEL : `${SEE_ALL_DOCUMENTS_LABEL} (${ENTIER_FR.format(total)})`;
+}
+
+/**
+ * Adresse du décompte : MÊME normalisation de la saisie que le lien
+ * (`localSearchHref` → `normalizeLocalQuery`) et que l'écran d'arrivée
+ * (`readLocalQuery`), mêmes paramètres que la liste — sans filtre : « Voir
+ * tous » ouvre « Mes documents » sans autre critère que la recherche.
+ */
+export function documentsCountUrl(q: string): string | null {
+  const valeur = normalizeLocalQuery(q);
+  if (valeur.length < LIVE_MIN_CHARS) return null;
+  return `/api/v2/documents?${new URLSearchParams({ count: '1', [LOCAL_SEARCH_PARAM]: valeur })}`;
+}
+
+/** Réponse du décompte validée ; `null` si elle est illisible (traitée comme une erreur). */
+export function parseDocumentsCount(body: unknown): { total: number; searchApplied: boolean } | null {
+  const o = body as { total?: unknown; searchApplied?: unknown } | null;
+  if (!o || typeof o !== 'object') return null;
+  if (typeof o.total !== 'number' || !Number.isSafeInteger(o.total) || o.total < 0) return null;
+  return { total: o.total, searchApplied: o.searchApplied !== false };
+}
+
+export function seeAllLinks(q: string, rows: ApiSearchRow[] | null | undefined, documents?: DocumentsCountState): LiveSeeAll[] {
   const saisie = q.trim();
   if (saisie.length < LIVE_MIN_CHARS) return [];
   const cats = new Set((rows ?? []).map((r) => r?.category));
   const out: LiveSeeAll[] = [];
-  if (cats.has('Document')) out.push({ id: 'voir-documents', label: 'Voir tous les documents', href: localSearchHref('document', saisie) });
+  const href = localSearchHref('document', saisie);
+  if (!documents) {
+    // Sans décompte (appelant historique) : comportement du lot 97C.
+    if (cats.has('Document')) out.push({ id: 'voir-documents', label: SEE_ALL_DOCUMENTS_LABEL, href });
+  } else if (documents.status === 'ready') {
+    if (documents.searchApplied && documents.total > 0) {
+      out.push({ id: 'voir-documents', label: seeAllDocumentsLabel(documents.total), href, count: documents.total });
+    }
+  } else if (cats.has('Document')) {
+    out.push({ id: 'voir-documents', label: SEE_ALL_DOCUMENTS_LABEL, href, ...(documents.status === 'loading' ? { pending: true as const } : {}) });
+  }
   if (cats.has('Agenda')) out.push({ id: 'voir-agenda', label: 'Voir tous les éléments d’agenda', href: localSearchHref('agenda', saisie) });
   return out;
+}
+
+// ── Requêtes de la frappe : jamais de réponse périmée (lot 105A) ──────────
+
+/** Lecture JSON d'une URL (`null` : échec réseau, statut non 2xx, corps illisible). */
+export type LiveFetchJson = (url: string, signal: AbortSignal) => Promise<unknown | null>;
+
+export interface LiveSearchHandlers {
+  /** Réponse de `/api/search` pour la saisie `q` (`null` : indisponible). */
+  onResults: (q: string, rows: ApiSearchRow[] | null) => void;
+  /** État du décompte des documents pour la saisie `q`. */
+  onDocumentsCount: (q: string, state: DocumentsCountState) => void;
+}
+
+export interface LiveSearchRunner {
+  /** Lance suggestions et décompte pour `q` ; la recherche précédente est annulée. */
+  run: (q: string) => void;
+  /** Annule tout (nouvelle frappe, saisie trop courte, démontage). */
+  cancel: () => void;
+}
+
+/**
+ * Suggestions et décompte partent EN PARALLÈLE (le décompte ne retarde jamais
+ * les suggestions). Chaque recherche reçoit un numéro et son propre
+ * `AbortController` : une nouvelle frappe annule les requêtes en vol, et une
+ * réponse arrivée malgré tout (ordre réseau quelconque) dont le numéro n'est
+ * plus le dernier est ignorée — aucun total d'une ancienne saisie ne peut
+ * s'afficher.
+ */
+export function createLiveSearchRunner(fetchJson: LiveFetchJson, handlers: LiveSearchHandlers): LiveSearchRunner {
+  let seq = 0;
+  let controller: AbortController | null = null;
+  const cancel = () => {
+    seq += 1;
+    controller?.abort();
+    controller = null;
+  };
+  return {
+    cancel,
+    run: (q) => {
+      cancel();
+      const mine = seq;
+      const ctrl = new AbortController();
+      controller = ctrl;
+      const actuel = () => mine === seq && !ctrl.signal.aborted;
+      const lire = (url: string) => fetchJson(url, ctrl.signal).catch(() => null);
+      const countUrl = documentsCountUrl(q);
+      handlers.onDocumentsCount(q, { status: 'loading' });
+      // Mode `instant` : recherche SQL seule, jamais d'appel modèle à la frappe.
+      void lire(`/api/search?instant=1&q=${encodeURIComponent(q)}`).then((data) => {
+        if (!actuel()) return;
+        const rows = (data as { results?: ApiSearchRow[] } | null)?.results;
+        handlers.onResults(q, Array.isArray(rows) ? rows : null);
+      });
+      if (!countUrl) {
+        handlers.onDocumentsCount(q, { status: 'ready', total: 0, searchApplied: false });
+        return;
+      }
+      void lire(countUrl).then((data) => {
+        if (!actuel()) return;
+        const parsed = parseDocumentsCount(data);
+        handlers.onDocumentsCount(q, parsed ? { status: 'ready', ...parsed } : { status: 'error' });
+      });
+    },
+  };
 }

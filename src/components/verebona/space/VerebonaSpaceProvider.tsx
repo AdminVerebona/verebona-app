@@ -34,8 +34,10 @@ import {
   type MascotPoseName, type RecentSearchRow, type SpaceObject, type SpaceTurn,
 } from '@/lib/verebona/space';
 import {
-  LIVE_DEBOUNCE_MS, LIVE_MIN_CHARS, moveActive, navMatches, seeAllLinks, toLiveResults, type LiveResult, type LiveSeeAll,
+  LIVE_DEBOUNCE_MS, LIVE_MIN_CHARS, createLiveSearchRunner, moveActive, navMatches, seeAllLinks, toLiveResults,
+  type DocumentsCountState, type LiveResult, type LiveSeeAll,
 } from '@/lib/verebona/live-search';
+import { DOCUMENTS_SEE_ALL_EVENT, clearListSnapshot } from '@/components/documents/v2/list-restore';
 import { openDrawer } from '@/lib/drawers';
 import { openHelpFromLink } from '@/lib/help-center/open';
 import { trackAssistantUsage } from '@/lib/verebona/usage-events';
@@ -75,7 +77,11 @@ export interface VerebonaSpaceApi {
   setDraft: (text: string) => void;
   /** Suggestions pendant la frappe (biens, documents, échéances, pages). */
   live: LiveResult[];
-  /** Lot 97C : « Voir tous les documents / éléments d'agenda » (recherche préremplie). */
+  /**
+   * Lot 97C : « Voir tous les documents / éléments d'agenda » (recherche
+   * préremplie). Lot 105A : le lien des documents porte le total exact
+   * (`count`) ou l'état « en cours » (`pending`), jamais un chiffre provisoire.
+   */
   liveSeeAll: LiveSeeAll[];
   /** Ouvre un écran complet de « Voir tous » (espace fermé, saisie vidée). */
   openSeeAll: (l: LiveSeeAll) => void;
@@ -195,32 +201,55 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   // ── Saisie et suggestions pendant la frappe ──────────────────────────────
   const [draft, setDraftState] = useState('');
   const [live, setLive] = useState<LiveResult[]>([]);
-  const [liveSeeAll, setLiveSeeAll] = useState<LiveSeeAll[]>([]);
+  // Lot 105A : réponse brute de la recherche et décompte des documents, tous
+  // deux rattachés à LEUR saisie — un état d'une autre saisie n'est jamais lu.
+  const [liveRows, setLiveRows] = useState<{ q: string; rows: Parameters<typeof seeAllLinks>[1] } | null>(null);
+  const [docCount, setDocCount] = useState<{ q: string; state: DocumentsCountState } | null>(null);
   const [liveLoading, setLiveLoading] = useState(false);
   const [activeLive, setActiveLive] = useState(-1);
-  const liveSeq = useRef(0);
   const setDraft = useCallback((t: string) => {
     setDraftState(t.slice(0, 2000));
     setActiveLive(-1);
   }, []);
+  const runnerRef = useRef<ReturnType<typeof createLiveSearchRunner> | null>(null);
+  if (!runnerRef.current) {
+    runnerRef.current = createLiveSearchRunner(
+      async (url, signal) => {
+        const res = await fetch(url, { credentials: 'include', signal });
+        return res.ok ? res.json().catch(() => null) : null;
+      },
+      {
+        onResults: (q, rows) => {
+          setLive(toLiveResults(q, rows));
+          setLiveRows({ q, rows });
+          setLiveLoading(false);
+        },
+        onDocumentsCount: (q, state) => setDocCount({ q, state }),
+      },
+    );
+  }
   useEffect(() => {
     const q = draft.trim();
-    const mine = ++liveSeq.current;
-    if (q.length < LIVE_MIN_CHARS) { setLive([]); setLiveSeeAll([]); setLiveLoading(false); return; }
+    const runner = runnerRef.current!;
+    runner.cancel();
+    setLiveRows(null);
+    setDocCount(null);
+    if (q.length < LIVE_MIN_CHARS) { setLive([]); setLiveLoading(false); return; }
     setLive(navMatches(q));
-    setLiveSeeAll([]);
     setLiveLoading(true);
-    const t = setTimeout(async () => {
-      // Mode `instant` : recherche SQL seule, jamais d'appel modèle à la frappe.
-      const res = await fetch(`/api/search?instant=1&q=${encodeURIComponent(q)}`, { credentials: 'include' }).catch(() => null);
-      const data = res && res.ok ? await res.json().catch(() => null) : null;
-      if (mine !== liveSeq.current) return;
-      setLive(toLiveResults(q, data?.results));
-      setLiveSeeAll(seeAllLinks(q, data?.results));
-      setLiveLoading(false);
-    }, LIVE_DEBOUNCE_MS);
-    return () => clearTimeout(t);
+    const t = setTimeout(() => runner.run(q), LIVE_DEBOUNCE_MS);
+    // Nouvelle frappe ou démontage : délai annulé ET requêtes en vol abandonnées.
+    return () => { clearTimeout(t); runner.cancel(); };
   }, [draft]);
+  const liveSeeAll = useMemo<LiveSeeAll[]>(() => {
+    const q = draft.trim();
+    if (q.length < LIVE_MIN_CHARS) return [];
+    const rows = liveRows?.q === q ? liveRows.rows : null;
+    const count = docCount?.q === q ? docCount.state : ({ status: 'loading' } as const);
+    // Ni suggestions ni décompte pour CETTE saisie : rien à proposer encore.
+    if (!rows && count.status !== 'ready') return [];
+    return seeAllLinks(q, rows, count);
+  }, [draft, liveRows, docCount]);
   const moveLive = useCallback((delta: 1 | -1) => {
     setActiveLive((i) => moveActive(i, delta, live.length));
   }, [live.length]);
@@ -313,6 +342,13 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
   const openSeeAll = useCallback((l: LiveSeeAll) => {
     setDraft('');
     close();
+    if (l.id === 'voir-documents') {
+      // Lot 105A : « Mes documents » s'ouvre avec la SEULE recherche — aucun
+      // filtre d'une visite précédente (instantané de retour, écran déjà
+      // monté) ne réduit en silence la liste sous le total annoncé.
+      clearListSnapshot('mes-documents');
+      window.dispatchEvent(new CustomEvent(DOCUMENTS_SEE_ALL_EVENT));
+    }
     router.push(l.href);
   }, [close, router, setDraft]);
 

@@ -51,6 +51,7 @@ import { CoupleQualification } from './_components/CoupleQualification';
 import { PromptConformity } from './_components/PromptConformity';
 import { CorpusAccount } from './_components/CorpusAccount';
 import { CorpusCertification } from './_components/CorpusCertification';
+import { AutoPromotion } from './_components/AutoPromotion';
 import { OperationProfilesEditor, type OperationProfile, type ProfiledOperation, type PlanView } from './_components/OperationProfilesEditor';
 import { Supervision, type Metric, type MetricTable } from './_components/Supervision';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
@@ -1089,6 +1090,9 @@ export default function AiConfigPage() {
 
       {/* Lot 100B (ticket #601, arbitrage A1) : corpus de qualification certifié — approbations individuelles, couverture, verrou A1, vue T2. */}
       <CorpusCertification />
+
+      {/* Lot 105B : promotion automatique — état réel (planificateur, tests exécutés, couverture, blocages, candidates, surveillance), P2 différé. */}
+      <AutoPromotion />
 
       {/* Liste des versions */}
       <section className="space-y-2">

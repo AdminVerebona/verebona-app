@@ -32,7 +32,7 @@ import { readCanonicalValue, type AssetRowJson } from '@/services/canonical/asse
 import { buildCanonicalEntityState } from '@/services/canonical/entity-state/entity-view';
 import type { CanonicalEntityType } from '@/services/canonical/entity-state/types';
 import { identifierRecordOf } from './asset-identifiers.repository';
-import { normalizeCode, normalizePostalCode, normalizeText, type AssetIdentifierRecord } from './identifiers';
+import { isDiscriminantReference, normalizeCode, normalizePostalCode, normalizeText, type AssetIdentifierRecord } from './identifiers';
 
 /** Pagination technique de la lecture des biens (transparente). */
 const INDEX_PAGE_SIZE = 500;
@@ -216,10 +216,8 @@ async function loadReferences(accountId: number): Promise<Map<string, Map<number
   return out;
 }
 
-/** Une référence assez longue et mêlant chiffres pour désigner UN dossier. */
-export function isDiscriminantReference(normalized: string): boolean {
-  return normalized.length >= 6 && /\d/.test(normalized) && /[0-9]{3,}/.test(normalized);
-}
+// Lot 105D : règle déplacée dans `identifiers.ts` (module pur, partagé avec les identités documentaires).
+export { isDiscriminantReference };
 
 /** Construit l'index de rapprochement d'un compte (lectures groupées, sans borne de découverte). */
 export async function loadAccountMatchingIndex(accountId: number): Promise<AccountMatchingIndex> {

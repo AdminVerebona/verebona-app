@@ -11,7 +11,8 @@
  *            Seul un brouillon est modifiable ; l'Actif n'est jamais touché.
  *            Lot 34D (T4) : `execution` facultatif — mode d'exécution
  *            explicite (LEGACY_TEMPLATE / STRUCTURED_CONTEXT), contrats
- *            d'entrée et de sortie, TASK autorisées.
+ *            d'entrée et de sortie, TASK autorisées. Lot 105C : ignoré pour
+ *            T4 — configuration gérée par le serveur (bundle complet).
  *   DELETE — « Abandonner le brouillon » : `?versionId=`.
  *
  * Enregistrer un brouillon imparfait est permis (il n'est pas utilisé) : les
@@ -20,7 +21,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { startDraft, prepareConformingT4Draft, saveDraft, saveDraftExecution, discardDraft, getPromptDetail } from '@/services/ai/master-prompts/master-prompt.service';
+import { startDraft, prepareConformingT4Draft, saveDraft, saveDraftExecution, discardDraft, getPromptDetail, isUnifiedActivation } from '@/services/ai/master-prompts/master-prompt.service';
 import { requireAdminContext, parseTreatment, parseId, invalidId, masterPromptError } from '../../_shared';
 
 type Ctx = { params: Promise<{ treatment: string }> };
@@ -64,7 +65,8 @@ export async function PUT(req: NextRequest, { params }: Ctx) {
   if (!body.success) return NextResponse.json({ error: 'INVALID_PAYLOAD', message: 'Requête illisible.' }, { status: 400 });
   try {
     let d = await saveDraft(t.treatment, body.data.versionId, body.data.content, guard.ctx.adminUserId);
-    if (body.data.execution) {
+    // Lot 105C : T4 — configuration gérée par le serveur (bundle complet) ; une configuration envoyée est ignorée.
+    if (body.data.execution && !isUnifiedActivation(t.treatment)) {
       d = await saveDraftExecution(t.treatment, body.data.versionId, {
         mode: body.data.execution.mode,
         inputContractVersion: body.data.execution.inputContractVersion ?? null,

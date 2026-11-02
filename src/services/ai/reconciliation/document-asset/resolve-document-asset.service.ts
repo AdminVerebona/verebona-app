@@ -68,6 +68,20 @@
  *     plus jamais AI_DEFERRED ; seuls les freins globaux de la passerelle) ;
  *   · sources documentaires réellement utilisées (`documentSources`) et
  *     unités source considérées (`matchedSourceUnitIds`) tracées.
+ *
+ * Lot 105D (ticket « Rattachement rétroactif après création d'un bien ») :
+ *   · identité documentaire (`identity/`) : après les identifiants forts et
+ *     les règles contextuelles, un membre d'un groupe DEMONSTRABLE /
+ *     ATTESTED / CONFIRMED est rattaché SANS IA (`decideFromIdentity`) ; un
+ *     membre d'un groupe à confirmer par carte groupée s'abstient sans IA ni
+ *     carte individuelle (GROUP_CONFIRMATION_PENDING) ; un bien refusé par
+ *     l'utilisateur n'est plus jamais reproposé (GROUP_REFUSED) ;
+ *   · MÉMOIRE DES DÉCISIONS IA (lot 99A étendu, D4) : à contexte inchangé
+ *     (empreinte, configuration IA effective, contrat, version), une
+ *     abstention du modèle est RÉUTILISÉE sans nouvel appel — nouvelle preuve,
+ *     nouveau bien, décision USER, version ou relance manuelle l'invalident ;
+ *   · preuves croisées transmises au modèle (contrat
+ *     `t3-document-asset-cross-v1`) seulement si le prompt actif le porte.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
@@ -93,6 +107,10 @@ import {
   type DocumentAssetResolution, type ResolutionStatus, type StoredCandidate,
 } from './resolution.repository';
 import { getAccountKnowledgeRevision, knowledgeChangedSince } from '../continuous/knowledge-revision';
+import { crossDocumentContext, decideFromIdentity, identityGate } from './identity/decision';
+import { crossDocumentContractActive, documentAssetAiMemoryEnabled } from './identity/contract';
+import type { AccountIdentityGraph } from './identity/graph';
+import { createHash } from 'node:crypto';
 
 /** Issue métier d'une exécution (vocabulaire de la file T3). */
 type DocumentAssetOutcome = 'APPLIED' | 'NO_CHANGE' | 'ABSTAIN' | 'SUPERSEDED' | 'TARGET_GONE';
@@ -162,6 +180,43 @@ export interface DocumentAssetEvaluation {
   semanticSearch?: {
     attempted: boolean; reason: string; rounds: number; presented: number; matched: number; origins: Record<string, number>;
   } | null;
+  /** Lot 105D : identité documentaire du document (groupe, rôle, statut). */
+  identity?: {
+    groupKey: string | null; status: string | null; via: string | null; targetAssetId: number | null; cardEligible: boolean;
+    exclusions: Array<{ groupKey: string; reason: string }>;
+  } | null;
+  /** Lot 105D : mémoire de la dernière décision du modèle (réutilisée à contexte inchangé). */
+  aiMemory?: AiMemoryEntry | null;
+  /** Lot 105D : décision du modèle réutilisée (aucun appel). */
+  aiReused?: boolean;
+  /** Lot 105D : preuves croisées transmises au modèle (contrat t3-document-asset-cross-v1). */
+  crossDocumentSent?: boolean;
+}
+
+/** Lot 105D — décision du modèle mémorisée (abstention seulement : un rattachement clôt le document). */
+export interface AiMemoryEntry {
+  key: string;
+  path: 'STRUCTURED' | 'SEMANTIC';
+  reasonCode: string;
+  ranked: Array<{ assetId: number; score: number; reason: string }>;
+  at: string;
+  traceId: string | null;
+}
+
+/** Mémoire IA de la résolution précédente (monitoring), ou null. Pure. */
+export function previousAiMemory(r: Pick<DocumentAssetResolution, 'lastEvaluation'> | null): AiMemoryEntry | null {
+  const m = (r?.lastEvaluation as { aiMemory?: AiMemoryEntry | null } | null | undefined)?.aiMemory;
+  return m && typeof m.key === 'string' && Array.isArray(m.ranked) ? m : null;
+}
+
+/**
+ * Clé de la mémoire IA (pure) : contexte pertinent (empreinte, qui couvre
+ * connaissance du document, candidats, identité du groupe et versions),
+ * voie (structurée / sémantique), configuration IA effective (prompt, modèle),
+ * contrat de variables transmis.
+ */
+export function aiMemoryKey(p: { fingerprint: string; path: 'STRUCTURED' | 'SEMANTIC'; aiConfigSignature: string; crossContract: boolean }): string {
+  return createHash('sha256').update(JSON.stringify([DOCUMENT_ASSET_RESOLUTION_VERSION, p.fingerprint, p.path, p.aiConfigSignature, p.crossContract])).digest('hex').slice(0, 40);
 }
 
 /** Dernier appel modèle connu d'une résolution (monitoring précédent). Pure. */
@@ -199,6 +254,8 @@ interface ResolveDocumentAssetInput {
   rearbitration?: 'allow' | { defer: RearbitrationDeferral };
   /** Lot 49B : carte LINK-ASSET ouverte déjà connue (phase « open actions ») ; à défaut, relue. */
   openActionId?: number | null;
+  /** Lot 105D : graphe d'identité du passage (phase « open actions ») ; à défaut, mémorisé par index. */
+  identityGraph?: AccountIdentityGraph | null;
 }
 
 interface ResolveDocumentAssetResult {
@@ -222,6 +279,19 @@ interface ResolveDocumentAssetDeps {
   /** Plafond journalier des réarbitrages (défaut : `ai_usage_event`). */
   /** Lot 54A : IGNORÉ (plafond journalier supprimé). */
   dailyRearbitrationAllowed?: (accountId: number) => Promise<boolean>;
+  /** Lot 105D : le prompt actif porte-t-il le contrat « preuves croisées » ? (défaut : version effective) */
+  crossContractActive?: () => Promise<boolean>;
+  /** Lot 105D : signature de la configuration IA effective (défaut : passerelle). */
+  aiConfigSignature?: () => Promise<string>;
+}
+
+async function defaultAiConfigSignature(): Promise<string> {
+  return AiGateway.effectiveConfigSignature('t3_link_ambiguity');
+}
+
+/** Relance explicite (lancement manuel, motif forcé) : la mémoire IA n'est jamais lue. */
+function forcedReevaluation(input: Pick<ResolveDocumentAssetInput, 'triggerCode' | 'reprocessReason'>): boolean {
+  return input.triggerCode === 'manual' || input.reprocessReason === 'FORCED' || input.reprocessReason === 'MANUAL';
 }
 
 /** Carte « À traiter » LINK-ASSET ouverte d'un document (identifiant), ou null. */
@@ -285,6 +355,13 @@ export function evaluationBase(p: {
     lastAiAt: previousAiAt(p.resolution),
     knowledgeCounts: knowledgeSourceCounts(p.ctx.sources),
     missingSources: p.ctx.sources ? [...(p.ctx.sources.failedOrigins ?? [])] : ['EXTRACTION'],
+    identity: p.ctx.identity && (p.ctx.identity.group || p.ctx.identity.exclusions.length) ? {
+      groupKey: p.ctx.identity.group?.groupKey ?? null, status: p.ctx.identity.group?.status ?? null, via: p.ctx.identity.member?.via ?? null,
+      targetAssetId: p.ctx.identity.group?.targetAssetId ?? null, cardEligible: p.ctx.identity.group?.cardEligible ?? false,
+      exclusions: p.ctx.identity.exclusions.slice(0, 5),
+    } : null,
+    // Lot 105D : la mémoire IA suit l'évaluation tant qu'elle n'est pas remplacée.
+    aiMemory: previousAiMemory(p.resolution),
   };
 }
 
@@ -308,7 +385,9 @@ export async function resolveDocumentAsset(
   //       connaissance persistée + Candidate Builder sur TOUS les biens.
   const revision = await getAccountKnowledgeRevision(accountId);
   const resolution = await getResolution(fileId);
-  const ctx = await computeDocumentAssetContext({ accountId, fileId, state, resolution, index: input.index });
+  const ctx = await computeDocumentAssetContext({
+    accountId, fileId, state, resolution, index: input.index, ...(input.identityGraph !== undefined ? { identityGraph: input.identityGraph } : {}),
+  });
   const changed = resolution?.knowledgeRevision != null ? await knowledgeChangedSince(accountId, resolution.knowledgeRevision) : [];
   const base = evaluationBase({ fileId, ctx, resolution, revision, changed, triggerCode: input.triggerCode, reprocessReason: input.reprocessReason });
 
@@ -334,7 +413,9 @@ export async function resolveDocumentAsset(
 
   // ── 3. Déterministe : identifiants forts, puis référence partagée / nom distinctif ──
   let decision = decideDeterministic(ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared })
-    ?? decideContextualDeterministic(ctx.candidates, ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared });
+    ?? decideContextualDeterministic(ctx.candidates, ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared })
+    // Lot 105D : identité du groupe (identifiant d'un seul bien, documents déjà rattachés, confirmation de l'utilisateur).
+    ?? decideFromIdentity(ctx.identity ?? null, ctx.candidates, { multiAssetDeclared: ctx.multiAssetDeclared, identifiedAssetIds: ctx.identification.assetIds });
   let aiCalled = false;
   let pourModele = promptCandidates(ctx.candidates);
   const traces: string[] = [];
@@ -349,44 +430,108 @@ export async function resolveDocumentAsset(
     facts: (ctx.sources?.facts ?? []).map((f) => ({ canonicalKey: f.canonicalKey, label: f.label, value: f.value, excerpt: f.excerpt })),
   };
 
+  // ── 4 bis. Lot 105D : garde d'identité AVANT tout appel modèle ─────────
+  const gate = decision ? null : identityGate(ctx.identity ?? null);
+  let candidatsIa = ctx.candidates;
+  if (!decision && gate?.kind === 'GROUP_CONFIRMATION_PENDING') {
+    // La relation groupe → bien appartient à l'utilisateur (carte groupée) : aucune IA, aucune carte individuelle.
+    aiReason = 'GROUP_CONFIRMATION_PENDING';
+    decision = { kind: 'ABSTAIN', reasonCode: 'GROUP_CONFIRMATION_PENDING', ranked: [] };
+  } else if (!decision && gate?.kind === 'REFUSED_ASSETS') {
+    const refuses = new Set(gate.refusedAssetIds);
+    candidatsIa = ctx.candidates.filter((c) => !refuses.has(c.assetId));
+    if (candidatsIa.length === 0) {
+      // Seuls des biens refusés restaient : aucune question répétée, aucune recherche sémantique.
+      aiReason = 'GROUP_REFUSED';
+      decision = { kind: 'ABSTAIN', reasonCode: 'GROUP_REFUSED', ranked: [] };
+    } else pourModele = promptCandidates(candidatsIa);
+  }
+
+  // ── 4 ter. Lot 105D : mémoire IA et contrat « preuves croisées » ───────
+  let aiMemory = null as AiMemoryEntry | null;
+  let aiReused = false as boolean;
+  let crossSent = false;
+  const memoire = async (path: 'STRUCTURED' | 'SEMANTIC'): Promise<{ key: string; reuse: AiMemoryEntry | null; cross: boolean }> => {
+    const cross = await (deps.crossContractActive ?? crossDocumentContractActive)().catch(() => false);
+    if (!documentAssetAiMemoryEnabled()) return { key: '', reuse: null, cross };
+    const sig = await (deps.aiConfigSignature ?? defaultAiConfigSignature)().catch(() => 'unresolved');
+    const key = aiMemoryKey({ fingerprint: ctx.fingerprint, path, aiConfigSignature: sig, crossContract: cross });
+    const prev = previousAiMemory(resolution);
+    return { key, reuse: !forcedReevaluation(input) && prev?.key === key && prev.path === path ? prev : null, cross };
+  };
+  const reutiliser = (m: AiMemoryEntry) => {
+    for (const r of m.ranked) {
+      const a = ctx.index.byId.get(r.assetId);
+      if (a && !ctx.labels.has(r.assetId)) ctx.labels.set(r.assetId, { name: a.name, category: a.category, subtype: a.subtype });
+    }
+    aiReused = true;
+    aiMemory = m;
+    void import('../../reuse/reuse-counters').then(({ noteReuse }) => noteReuse({ kind: 'DECISION_REUSED', accountId, treatment: 'T3', operationCode: 't3_link_ambiguity' })).catch(() => undefined);
+    const ids = new Set(ctx.index.assets.map((a) => a.assetId));
+    return { kind: 'ABSTAIN' as const, reasonCode: m.reasonCode as Extract<DocumentAssetDecision, { kind: 'ABSTAIN' }>['reasonCode'], ranked: m.ranked.filter((r) => ids.has(r.assetId)) };
+  };
+  const memoriser = (key: string, path: 'STRUCTURED' | 'SEMANTIC', d: DocumentAssetDecision) => {
+    if (!key || d.kind !== 'ABSTAIN' || aiError) return;
+    aiMemory = { key, path, reasonCode: d.reasonCode, ranked: d.ranked.slice(0, 20), at: new Date().toISOString(), traceId: traces[0] ?? null };
+  };
+
   // ── 4. Modèle (candidats du serveur seulement, monde fermé) ───────────
   if (!decision) {
-    if (ctx.candidates.length === 0) {
+    if (candidatsIa.length === 0) {
       // Lot 57B (défaut B) : aucun candidat STRUCTURÉ → recherche sémantique
       // IA parmi les biens du compte (sélection progressive), jamais un
       // NO_CANDIDATE sans raisonnement quand la connaissance T1 existe.
-      const r = await semanticSearch({
-        accountId, fileId, userId: input.userId ?? state.userId, ctx, subject: subject0, skipAi: input.skipAi === true,
-        guard: input.guard, callModel, supplierHistory: deps.supplierHistory ?? loadSupplierHistory, traces,
-      });
-      decision = r.decision;
-      aiCalled = r.aiCalled;
-      aiError = r.aiError;
-      semantic = r.semantic;
-      aiReason = r.aiCalled ? 'SEMANTIC_SEARCH' : `SEMANTIC_SEARCH_SKIPPED:${r.semantic.reason}`;
-      if (r.presented.length) pourModele = r.presented;
+      const m = input.skipAi ? null : await memoire('SEMANTIC');
+      if (m?.reuse) {
+        decision = reutiliser(m.reuse);
+        aiReason = 'DECISION_REUSED';
+        semantic = { attempted: false, reason: 'DECISION_REUSED', rounds: 0, presented: 0, matched: m.reuse.ranked.length, origins: {} };
+      } else {
+        const r = await semanticSearch({
+          accountId, fileId, userId: input.userId ?? state.userId, ctx, subject: subject0, skipAi: input.skipAi === true,
+          guard: input.guard, callModel, supplierHistory: deps.supplierHistory ?? loadSupplierHistory, traces,
+        });
+        decision = r.decision;
+        aiCalled = r.aiCalled;
+        aiError = r.aiError;
+        semantic = r.semantic;
+        aiReason = r.aiCalled ? 'SEMANTIC_SEARCH' : `SEMANTIC_SEARCH_SKIPPED:${r.semantic.reason}`;
+        if (r.presented.length) pourModele = r.presented;
+        if (r.aiCalled && m) memoriser(m.key, 'SEMANTIC', decision);
+      }
     } else if (input.skipAi) {
       aiReason = 'AI_DISABLED';
-      decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(ctx.candidates) };
+      decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(candidatsIa) };
     } else {
+      const m = await memoire('STRUCTURED');
+      if (m.reuse) {
+        // Lot 105D (D4) : même contexte, même configuration IA → décision du modèle réutilisée, aucun appel.
+        decision = reutiliser(m.reuse);
+        aiReason = 'DECISION_REUSED';
+      } else {
       // Lot 54A (écart 1) : plus aucun report pour quota T3 interne — une carte
       // ouverte qui demande un arbitrage est TOUJOURS arbitrée (le plafond de
       // coût du compte, la disponibilité du modèle et le circuit breaker de la
       // passerelle restent les seuls freins ; `rearbitration` est ignoré).
       await input.guard?.assertActive('T3 DOCUMENT_ASSET — appel du modèle');
       aiReason = 'STRUCTURED_CANDIDATES_NEED_ARBITRATION';
+      // Lot 105D (§E) : preuves croisées vérifiées par le serveur, seulement si le prompt actif porte le contrat.
+      const croise = m.cross ? crossDocumentContext(ctx.identity ?? null, fileId, ctx.identity?.graph.documents) : null;
+      crossSent = m.cross;
       try {
         aiCalled = true;
         const output = await callModel({
-          accountId, userId: input.userId ?? state.userId, fileId, variables: documentAssetVariables(subject0, pourModele),
+          accountId, userId: input.userId ?? state.userId, fileId,
+          variables: documentAssetVariables(subject0, pourModele, m.cross ? { fileId, context: croise?.context ?? null } : null),
           onTrace: (t) => traces.push(t),
         });
-        decision = decideFromAiOutput(output, pourModele);
+        decision = decideFromAiOutput(output, pourModele, croise ? { allowedEvidenceIds: croise.allowedEvidenceIds, member: !!ctx.identity?.member } : null);
         // Candidats découverts au-delà de la borne du prompt : toujours proposés à l'utilisateur.
-        if (decision.kind === 'ABSTAIN' && pourModele.length < ctx.candidates.length) {
+        if (decision.kind === 'ABSTAIN' && pourModele.length < candidatsIa.length) {
           const vus = new Set(decision.ranked.map((r) => r.assetId));
-          decision.ranked.push(...rankCandidates(ctx.candidates).filter((r) => !vus.has(r.assetId)).map((r) => ({ ...r, score: Math.min(r.score, 0.3) })));
+          decision.ranked.push(...rankCandidates(candidatsIa).filter((r) => !vus.has(r.assetId)).map((r) => ({ ...r, score: Math.min(r.score, 0.3) })));
         }
+        memoriser(m.key, 'STRUCTURED', decision);
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
         aiError = (e as Error).message.slice(0, 200);
@@ -395,7 +540,8 @@ export async function resolveDocumentAsset(
         // document sans bien.
         if (!input.finalAttempt) throw e;
         console.warn(`[t3-document-asset] document ${fileId} : modèle indisponible (${(e as Error).message}) — « À traiter ».`);
-        decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(ctx.candidates) };
+        decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(candidatsIa) };
+      }
       }
     }
   }
@@ -409,6 +555,10 @@ export async function resolveDocumentAsset(
       reasonCode: decision.kind === 'ABSTAIN' ? (aiError && decision.reasonCode === 'NO_CANDIDATE' ? 'AI_UNAVAILABLE' : decision.reasonCode) : 'RESOLVED',
       ai: { operation: 't3_link_ambiguity', traceIds: traces.slice(0, 5), status: aiError ? 'ERROR' : aiCalled ? 'OK' : 'NOT_CALLED', error: aiError, reason: aiReason },
       semanticSearch: semantic,
+      // Lot 105D : mémoire IA (nouvelle décision, réutilisée, ou précédente conservée).
+      aiMemory: aiMemory ?? reexamen.aiMemory ?? null,
+      aiReused,
+      crossDocumentSent: crossSent,
     },
   });
   console.info(`[t3-document-asset] document ${fileId} : ${decision.kind}${decision.kind === 'ABSTAIN' ? ` (${decision.reasonCode})` : ` [${decision.method}]`} → ${result.outcome}`);
@@ -548,14 +698,25 @@ async function applyDecision(p: {
     const candidates: StoredCandidate[] = decision.ranked.map((r) => ({
       assetId: r.assetId, label: ctx.labels.get(r.assetId)?.name ?? unnamedLabel('ASSET'), score: r.score, reason: r.reason,
     }));
-    // Carte LINK-ASSET synchronisée sur l'état COURANT (créée, ou
-    // COMPLETE → ARBITRATE, ou propositions actualisées).
-    const effet = await openUserQuestion({ accountId, fileId, state: avant, candidates, g, supplier: ctx.sources?.extraction?.supplier ?? null });
+    // Lot 105D : la question appartient à la carte GROUPÉE (ou l'utilisateur a refusé ces biens) —
+    // aucune carte individuelle : celle qui subsiste est fermée (pas de doublon, aucune question répétée).
+    const parGroupe = decision.reasonCode === 'GROUP_CONFIRMATION_PENDING' || decision.reasonCode === 'GROUP_REFUSED';
+    let effet: ToProcessEffect;
+    if (parGroupe) {
+      await g('question « À traiter »');
+      const { closeIndividualCards } = await import('@/services/to-process/identity-group-cards');
+      const motif = decision.reasonCode === 'GROUP_REFUSED' ? `REFUSED:${ctx.identity?.group?.groupKey ?? '?'}` : ctx.identity?.group?.groupKey ?? '?';
+      effet = (await closeIndividualCards(accountId, [fileId], motif)) > 0 ? 'CLOSED' : 'NONE';
+    } else {
+      // Carte LINK-ASSET synchronisée sur l'état COURANT (créée, ou
+      // COMPLETE → ARBITRATE, ou propositions actualisées).
+      effet = await openUserQuestion({ accountId, fileId, state: avant, candidates, g, supplier: ctx.sources?.extraction?.supplier ?? null });
+    }
     const status = decision.reasonCode === 'NO_CANDIDATE' ? 'NO_CANDIDATE' : 'ABSTAINED';
     const evaluation = fin({ newResolution: status, toProcessAction: effet, result: status });
     await g('état de résolution');
     await recordOutcome({
-      accountId, fileId, status, method: decision.reasonCode === 'NO_CANDIDATE' ? 'NONE' : 'AI', reasonCode: decision.reasonCode,
+      accountId, fileId, status, method: decision.reasonCode === 'NO_CANDIDATE' || parGroupe ? 'NONE' : 'AI', reasonCode: decision.reasonCode,
       candidates, ...commun, lastEvaluation: { ...evaluation },
     });
     return { outcome: 'ABSTAIN', status, evaluation };

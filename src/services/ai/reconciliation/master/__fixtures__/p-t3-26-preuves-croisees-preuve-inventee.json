@@ -1,0 +1,237 @@
+{
+  "case": "P-T3-26",
+  "description": "DOCUMENT_ASSET + preuves croisées — le modèle cite une preuve (evidenceId 99) absente des preuves fournies : monde fermé violé, abstention.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "variables": {
+      "FIELD": null,
+      "CURRENT_STATE": null,
+      "EVIDENCES": null,
+      "SUBJECT_CONTEXT": "{\"document\":{\"fileId\":364,\"title\":\"Déclaration de sinistre\",\"type\":\"CLAIM\",\"date\":\"2025-09-15\",\"supplier\":\"Assur Fictive\",\"description\":null,\"multiAssetDeclaredByT1\":false},\"facts\":[],\"crossDocument\":{\"contract\":\"t3-document-asset-cross-v1\",\"documentIdentity\":{\"status\":\"MEMBER\",\"identityRef\":\"I1\",\"family\":\"PROPERTY\",\"membership\":\"CONTRACT\",\"exclusionReason\":null,\"hopFromFileId\":363},\"groupDocuments\":[{\"fileId\":364,\"title\":\"Déclaration de sinistre\",\"documentType\":\"CLAIM\",\"supplier\":\"Assur Fictive\",\"membership\":\"CONTRACT\"},{\"fileId\":355,\"title\":\"Avis de taxe foncière 2025\",\"documentType\":\"PROPERTY_TAX\",\"supplier\":null,\"membership\":\"OWN_IDENTITY\"},{\"fileId\":358,\"title\":\"Facture lave-vaisselle Bosch\",\"documentType\":\"PURCHASE_INVOICE\",\"supplier\":\"Bosch\",\"membership\":\"EXCLUDED\",\"exclusionReason\":\"EQUIPMENT_DOCUMENT\"},{\"fileId\":361,\"title\":\"Diagnostic de performance énergétique\",\"documentType\":\"DPE\",\"supplier\":null,\"membership\":\"OWN_IDENTITY\"},{\"fileId\":363,\"title\":\"Attestation assurance habitation\",\"documentType\":\"INSURANCE_CERTIFICATE\",\"supplier\":\"Assur Fictive\",\"membership\":\"OWN_IDENTITY\"}],\"evidences\":[{\"evidenceId\":1,\"fileId\":364,\"identityRef\":\"C1\",\"identityFamily\":\"CONTRACT\",\"kind\":\"CONTRACT_REF\",\"role\":\"IDENTIFIER\",\"field\":\"insuranceContractNumber\",\"origin\":\"FACT\",\"reliability\":\"HIGH\",\"verifiedByServer\":true,\"thisDocument\":true},{\"evidenceId\":2,\"fileId\":355,\"identityRef\":\"I1\",\"identityFamily\":\"PROPERTY\",\"kind\":\"ADDRESS\",\"role\":\"PROPERTY\",\"field\":\"BODY\",\"origin\":\"TEXT\",\"reliability\":\"MEDIUM\",\"verifiedByServer\":true,\"thisDocument\":false},{\"evidenceId\":3,\"fileId\":361,\"identityRef\":\"I1\",\"identityFamily\":\"PROPERTY\",\"kind\":\"ADDRESS\",\"role\":\"PROPERTY\",\"field\":\"BODY\",\"origin\":\"TEXT\",\"reliability\":\"MEDIUM\",\"verifiedByServer\":true,\"thisDocument\":false},{\"evidenceId\":4,\"fileId\":363,\"identityRef\":\"I1\",\"identityFamily\":\"PROPERTY\",\"kind\":\"ADDRESS\",\"role\":\"PROPERTY\",\"field\":\"BODY\",\"origin\":\"TEXT\",\"reliability\":\"MEDIUM\",\"verifiedByServer\":true,\"thisDocument\":false}],\"edges\":[{\"fromFileId\":355,\"toFileId\":361,\"via\":\"SAME_IDENTITY\",\"kind\":\"ADDRESS\",\"evidenceIds\":[2,3]},{\"fromFileId\":355,\"toFileId\":363,\"via\":\"SAME_IDENTITY\",\"kind\":\"ADDRESS\",\"evidenceIds\":[2,4]},{\"fromFileId\":361,\"toFileId\":363,\"via\":\"SAME_IDENTITY\",\"kind\":\"ADDRESS\",\"evidenceIds\":[3,4]},{\"fromFileId\":363,\"toFileId\":364,\"via\":\"SAME_CONTRACT\",\"kind\":\"CONTRACT_REF\",\"evidenceIds\":[1]}],\"contradictions\":[],\"groupToAsset\":{\"status\":\"TO_CONFIRM\",\"targetAssetId\":null,\"candidateAssetIds\":[32],\"refusedAssetIds\":[],\"confirmedByUser\":false}}}",
+      "CANDIDATES": [
+        {
+          "candidateId": 32,
+          "description": "\"Maison des Érables\" (IMMOBILIER, maison) — contrôle serveur: nom du bien cité dans le titre, la description ou un fait du document (contrôle serveur exact)"
+        }
+      ],
+      "RELATION_TYPE": "DOCUMENT_ASSET — bien(s) existant(s) du compte auquel rattacher ce document : un seul bien principal, plusieurs seulement si le document concerne réellement plusieurs biens (documentScope = MULTIPLE)"
+    },
+    "documentAsset": {
+      "subject": {
+        "title": "Déclaration de sinistre",
+        "documentType": "CLAIM",
+        "documentDate": "2025-09-15",
+        "supplier": "Assur Fictive",
+        "description": null,
+        "multiAssetDeclared": false,
+        "facts": []
+      },
+      "candidates": [
+        {
+          "family": "IMMOBILIER",
+          "subtype": "maison",
+          "identifiers": {},
+          "serverSignals": [
+            "nom du bien cité dans le titre, la description ou un fait du document (contrôle serveur exact)"
+          ],
+          "t1": null,
+          "currentRole": null,
+          "assetId": 32,
+          "name": "Maison des Érables"
+        }
+      ],
+      "cross": {
+        "fileId": 364,
+        "context": {
+          "contract": "t3-document-asset-cross-v1",
+          "documentIdentity": {
+            "status": "MEMBER",
+            "identityRef": "I1",
+            "family": "PROPERTY",
+            "membership": "CONTRACT",
+            "exclusionReason": null,
+            "hopFromFileId": 363
+          },
+          "groupDocuments": [
+            {
+              "fileId": 364,
+              "title": "Déclaration de sinistre",
+              "documentType": "CLAIM",
+              "supplier": "Assur Fictive",
+              "membership": "CONTRACT"
+            },
+            {
+              "fileId": 355,
+              "title": "Avis de taxe foncière 2025",
+              "documentType": "PROPERTY_TAX",
+              "supplier": null,
+              "membership": "OWN_IDENTITY"
+            },
+            {
+              "fileId": 358,
+              "title": "Facture lave-vaisselle Bosch",
+              "documentType": "PURCHASE_INVOICE",
+              "supplier": "Bosch",
+              "membership": "EXCLUDED",
+              "exclusionReason": "EQUIPMENT_DOCUMENT"
+            },
+            {
+              "fileId": 361,
+              "title": "Diagnostic de performance énergétique",
+              "documentType": "DPE",
+              "supplier": null,
+              "membership": "OWN_IDENTITY"
+            },
+            {
+              "fileId": 363,
+              "title": "Attestation assurance habitation",
+              "documentType": "INSURANCE_CERTIFICATE",
+              "supplier": "Assur Fictive",
+              "membership": "OWN_IDENTITY"
+            }
+          ],
+          "evidences": [
+            {
+              "evidenceId": 1,
+              "fileId": 364,
+              "identityRef": "C1",
+              "identityFamily": "CONTRACT",
+              "kind": "CONTRACT_REF",
+              "role": "IDENTIFIER",
+              "field": "insuranceContractNumber",
+              "origin": "FACT",
+              "reliability": "HIGH",
+              "verifiedByServer": true,
+              "thisDocument": true
+            },
+            {
+              "evidenceId": 2,
+              "fileId": 355,
+              "identityRef": "I1",
+              "identityFamily": "PROPERTY",
+              "kind": "ADDRESS",
+              "role": "PROPERTY",
+              "field": "BODY",
+              "origin": "TEXT",
+              "reliability": "MEDIUM",
+              "verifiedByServer": true,
+              "thisDocument": false
+            },
+            {
+              "evidenceId": 3,
+              "fileId": 361,
+              "identityRef": "I1",
+              "identityFamily": "PROPERTY",
+              "kind": "ADDRESS",
+              "role": "PROPERTY",
+              "field": "BODY",
+              "origin": "TEXT",
+              "reliability": "MEDIUM",
+              "verifiedByServer": true,
+              "thisDocument": false
+            },
+            {
+              "evidenceId": 4,
+              "fileId": 363,
+              "identityRef": "I1",
+              "identityFamily": "PROPERTY",
+              "kind": "ADDRESS",
+              "role": "PROPERTY",
+              "field": "BODY",
+              "origin": "TEXT",
+              "reliability": "MEDIUM",
+              "verifiedByServer": true,
+              "thisDocument": false
+            }
+          ],
+          "edges": [
+            {
+              "fromFileId": 355,
+              "toFileId": 361,
+              "via": "SAME_IDENTITY",
+              "kind": "ADDRESS",
+              "evidenceIds": [
+                2,
+                3
+              ]
+            },
+            {
+              "fromFileId": 355,
+              "toFileId": 363,
+              "via": "SAME_IDENTITY",
+              "kind": "ADDRESS",
+              "evidenceIds": [
+                2,
+                4
+              ]
+            },
+            {
+              "fromFileId": 361,
+              "toFileId": 363,
+              "via": "SAME_IDENTITY",
+              "kind": "ADDRESS",
+              "evidenceIds": [
+                3,
+                4
+              ]
+            },
+            {
+              "fromFileId": 363,
+              "toFileId": 364,
+              "via": "SAME_CONTRACT",
+              "kind": "CONTRACT_REF",
+              "evidenceIds": [
+                1
+              ]
+            }
+          ],
+          "contradictions": [],
+          "groupToAsset": {
+            "status": "TO_CONFIRM",
+            "targetAssetId": null,
+            "candidateAssetIds": [
+              32
+            ],
+            "refusedAssetIds": [],
+            "confirmedByUser": false
+          }
+        }
+      }
+    }
+  },
+  "recording": {
+    "operationCode": "t3_link_ambiguity",
+    "task": "LINK_AMBIGUITY",
+    "output": {
+      "task": "LINK_AMBIGUITY",
+      "matches": [
+        {
+          "candidateId": 32,
+          "score": 0.9,
+          "confidence": "certain",
+          "reason": "contrat identique"
+        }
+      ],
+      "documentScope": "SINGLE",
+      "crossDocument": {
+        "documentIdentity": "ESTABLISHED",
+        "groupToAsset": "ESTABLISHED",
+        "documentApplicability": "APPLIES",
+        "citedEvidenceIds": [
+          99
+        ],
+        "contradictions": [],
+        "userValidationRequired": false
+      }
+    }
+  },
+  "expected": {
+    "decision": "ABSTAIN",
+    "reasonCode": "CLOSED_WORLD_VIOLATION",
+    "neverDecisions": [
+      "APPLY"
+    ]
+  }
+}

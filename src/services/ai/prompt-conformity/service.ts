@@ -52,6 +52,20 @@
  *   · synthèse détaillée et SANTÉ FONCTIONNELLE du passage, distincte du succès
  *     technique de la tâche (`passHealth`).
  *
+ * Lot 105B — PROMOTION SUR PREUVES :
+ *   · l'empreinte d'un essai inclut désormais le CONTEXTE A1 du traitement
+ *     (règles, référentiel d'inventaire, manifeste, oracles / approbations /
+ *     révocations / rejets des opérations), les capacités des modèles de la
+ *     chaîne, la définition du contrat et l'état (grossier) du prérequis
+ *     compte technique : un nouvel oracle approuvé ou révoqué relance l'essai
+ *     sans clic « Nouvel essai » ; un contexte identique n'est jamais rejoué ;
+ *   · qualifiée métier mais refusée par A1 : candidate BLOCKED_A1, décision
+ *     métier conservée (`businessDecision`), jamais présentée comme un refus
+ *     de non-régression ; relance seulement si aucun manque STRUCTUREL A1 ne
+ *     subsiste (sinon « en attente du verrou A1 », aucun appel) ;
+ *   · contrôle post-activation complété par des signaux métier attribués à la
+ *     candidate (`qualification/post-activation.ts`).
+ *
  * Production : détection + candidate + diagnostic, jamais de campagne ni
  * d'activation (garde d'environnement stricte, en plus de celles de 86A).
  * Coupure : `AI_PROMPT_CONFORMITY=off` (rien), `detect` (diagnostic seul),
@@ -63,7 +77,7 @@ import { createHash } from 'node:crypto';
 import { pgClient } from '@/db';
 import { getAiEnvironment, type AiEnvironment } from '../config/environment';
 import type { Treatment } from '../config/treatments';
-import type { MasterExecutionConfig } from '../master-prompts/structured-context';
+import { completeBundleConfig, structuredSpecFor, type MasterExecutionConfig } from '../master-prompts/structured-context';
 import { promptContracts, type ContractCheck, type PromptContract, type PromptUnderCheck } from './contracts';
 import { applyCorrection, verifyCandidate } from './correct';
 import type { GuideBlock } from './guide-blocks';
@@ -307,6 +321,7 @@ async function pass(trigger: string, env: AiEnvironment, m: ReturnType<typeof co
     const r = await correctIssue(issue, c, all, prompts.get(c.treatment)!, env, m, deps, now, log, campagnes ? corpus : null);
     if (r === 'SKIPPED_UNCHANGED') { sum.alreadyBlocked += 1; continue; }
     if (r === 'WAITING_PREREQUISITE') { sum.waitingPrerequisite += 1; continue; }
+    if (r === 'WAITING_A1') { sum.waitingA1 += 1; continue; }
     if (r === 'RESUMED') sum.resumed += 1;
     occupe.add(c.treatment);
     faits += 1;
@@ -326,8 +341,12 @@ async function pass(trigger: string, env: AiEnvironment, m: ReturnType<typeof co
 // Correction, qualification, activation
 // ══════════════════════════════════════════════════════════════════════════
 
-/** Empreinte du contexte d'un essai : un essai non abouti n'est jamais rejoué sans changement. */
-async function contextFingerprint(c: PromptContract, base: { text: string; execution: MasterExecutionConfig }, blocks: readonly GuideBlock[], env: AiEnvironment): Promise<string> {
+/**
+ * Empreinte du contexte d'un essai : un essai non abouti n'est jamais rejoué sans changement.
+ * Lot 105B : + contexte A1 du traitement (certification, référentiel), capacités des modèles de la chaîne,
+ * définition du contrat, état grossier du prérequis compte technique (`ok` ou son code).
+ */
+export async function contextFingerprint(c: PromptContract, base: { text: string; execution: MasterExecutionConfig }, blocks: readonly GuideBlock[], env: AiEnvironment, corpusAccount: Pick<CorpusAccountStatus, 'ok' | 'code'> | null = null): Promise<string> {
   const [{ qualificationCorpus }, { readMasterFileFromRepo }, { QUALIFICATION_THRESHOLDS }, cfg] = await Promise.all([
     import('../qualification/cases'), import('../governance/master-corpus/cases'), import('../qualification/thresholds'), import('../config/config-version.repository'),
   ]);
@@ -336,10 +355,19 @@ async function contextFingerprint(c: PromptContract, base: { text: string; execu
     .sort((a, b) => `${a.file}#${a.id}`.localeCompare(`${b.file}#${b.id}`));
   const active = await cfg.getActiveVersion(env).catch(() => null);
   const entry = active?.entries.find((e) => e.treatment === c.treatment) ?? null;
+  const chain = entry ? [entry.primaryModel, entry.fallback1, entry.fallback2].filter((m): m is string => Boolean(m)) : [];
+  const [{ a1ContextFingerprint }, caps] = await Promise.all([
+    import('../governance/master-corpus/certification/promotion'), import('../provider/model-capabilities'),
+  ]);
+  const a1 = await a1ContextFingerprint([c.treatment]).then((x) => x.fingerprint).catch(() => 'illisible');
   return sha(JSON.stringify({
     engine: CONFORMITY_ENGINE_VERSION, contract: c.id, text: sha(normText(base.text)), execution: base.execution,
     blocks: blocks.map((b) => b.sha256), corpus: sha(JSON.stringify(corpus)), thresholds: QUALIFICATION_THRESHOLDS.version,
     chain: entry ? [entry.primaryModel, entry.fallback1, entry.fallback2, entry.reasoningPrimary] : null,
+    // Lot 105B.
+    a1, capabilities: chain.map((m) => caps.capabilitiesSha256(caps.capabilitiesOf(m))),
+    contractDefinition: sha(JSON.stringify({ version: c.version, markers: c.markers, blockIds: c.blockIds, requires: c.requires, expected: c.expectedExecution ?? null, operations: c.operations })),
+    prerequisite: corpusAccount ? (corpusAccount.ok ? 'ok' : corpusAccount.code) : 'non-vérifié',
   }));
 }
 
@@ -350,7 +378,7 @@ async function correctIssue(
   m: ReturnType<typeof conformityMode>, deps: PassDeps, now: () => Date, log: (s: string) => void,
   /** Lot 103G : état du compte technique (null : aucune campagne possible dans ce mode / cet environnement). */
   corpus: CorpusAccountStatus | null = null,
-): Promise<'DONE' | 'RESUMED' | 'SKIPPED_UNCHANGED' | 'WAITING_PREREQUISITE'> {
+): Promise<'DONE' | 'RESUMED' | 'SKIPPED_UNCHANGED' | 'WAITING_PREREQUISITE' | 'WAITING_A1'> {
   let issue = issue0;
   const svc = await import('../master-prompts/master-prompt.service');
   const repo = await import('../master-prompts/master-prompt.repository');
@@ -370,12 +398,24 @@ async function correctIssue(
   const pr: PromptUnderCheck = { text: base.text, execution: base.execution, referenceText: effective.referenceText };
   const plan = await c.plan(pr);
   const blocs = plan.ok ? plan.steps.flatMap((s) => (s.kind === 'block' ? [s.block] : [])) : [];
-  const fp = await contextFingerprint(c, base, blocs, env);
+  const fp = await contextFingerprint(c, base, blocs, env, corpus);
   // Lot 103G : reprise automatique d'un blocage de PRÉREQUIS (compte technique réparé), bornée et sans boucle.
   const reprise = corpus ? resumeDecision(issue, corpus, (await import('../qualification/technical-account')).CORPUS_ACCOUNT_PARAMS.maxAutoResumes) : { kind: 'NONE' as const };
   if (FINAL_UNCHANGED.includes(issue.status) && issue.contextFingerprint === fp && !issue.retryRequestedAt && reprise.kind !== 'RESUME') {
     if (reprise.kind === 'WAIT') { await markWaitingPrerequisite(issue, corpus!, now); return 'WAITING_PREREQUISITE'; }
     return 'SKIPPED_UNCHANGED';
+  }
+  // Lot 105B : bloquée par le verrou A1 au dernier essai, contexte changé — relance seulement si aucun manque
+  // STRUCTUREL ne subsiste (import, approbation humaine) : sinon aucun appel, empreinte mémorisée.
+  if (FINAL_UNCHANGED.includes(issue.status) && !issue.retryRequestedAt && reprise.kind !== 'RESUME' && (issue.qualification as { a1Blocked?: boolean }).a1Blocked) {
+    const { structuralA1 } = await import('../governance/master-corpus/certification/promotion');
+    const restants = await structuralA1([c.treatment]).catch(() => []);
+    if (restants.length) {
+      const decision = `Qualification métier réussie au dernier essai ; en attente du verrou A1 : ${restants.length} manque(s) structurel(s) (${restants.slice(0, 2).map((b) => b.message).join(' ; ')}). Aucun nouvel essai tant qu’ils subsistent.`.slice(0, 1000);
+      const maj = await store.updateIssue(issue.id, { contextFingerprint: fp, decision });
+      if (issue.decision !== decision) await store.addEvent(maj, { kind: 'A1_WAITING', message: decision, payload: { blockers: restants.slice(0, 10).map((b) => b.code) } });
+      return 'WAITING_A1';
+    }
   }
   // b. Effectif ≠ version active (propagation) : défaut du code, jamais corrigé à l'aveugle.
   const surActive = await c.check(pr);
@@ -437,13 +477,18 @@ async function correctIssue(
   }
   const version = await repo.insertConformityCandidateVersion({
     environment: env, treatment: c.treatment, masterPromptCode: active.masterPromptCode, content: corr.text, basedOnId: active.id,
-    execution: svc.executionOfVersion(active) === null ? null : corr.execution,
+    // Raccord 105B / 105C : un prompt à activation unifiée (T4) reçoit TOUJOURS sa
+    // configuration complète (les 4 fonctions) — jamais une révision partielle.
+    execution: structuredSpecFor(active.masterPromptCode)?.completeBundle
+      ? completeBundleConfig(structuredSpecFor(active.masterPromptCode))
+      : svc.executionOfVersion(active) === null ? null : corr.execution,
   });
   const ref = { versionId: version.id, versionNumber: version.versionNumber, masterPromptCode: version.masterPromptCode, contentSha256: version.contentSha256, content: version.content, execution: version.execution ?? null };
   const key = sha(`${CONFORMITY_ENGINE_VERSION}|${c.id}|${version.contentSha256}|${JSON.stringify(ref.execution)}|${activeCfg.currentRevisionId ?? activeCfg.id}`);
   const reason = `Mise en conformité automatique : contrat ${c.id} (${c.label}) — prompt ${c.treatment} v${active.versionNumber} → v${version.versionNumber}, bloc officiel du guide (étape ${c.guideStep ?? '—'}).`;
   const deja = await cfg.findCandidateByKey(env, key);
-  const candidate = deja && ['CREATED', 'QUALIFYING', 'QUALIFIED', 'INCONCLUSIVE'].includes(String(deja.state)) ? await cfg.getVersion(deja.id) : await cfg.createVersion({
+  // Lot 105B : une candidate BLOCKED_A1 est REPRISE telle quelle (même version : aucune version créée en boucle).
+  const candidate = deja && ['CREATED', 'QUALIFYING', 'QUALIFIED', 'INCONCLUSIVE', 'BLOCKED_A1'].includes(String(deja.state)) ? await cfg.getVersion(deja.id) : await cfg.createVersion({
     userId: null, environment: env, label: `Conformité ${c.treatment} · ${c.id}`.slice(0, 200), description: reason.slice(0, 1000), source: { active: true },
     candidate: { key, reason, campaignId: null, transform: (s) => ({ ...s, masterPrompts: { ...s.masterPrompts, [c.treatment]: ref } }) },
   });
@@ -498,6 +543,8 @@ async function correctIssue(
     coverage: a?.coverage ?? null, refusalReasons: a?.refusalReasons ?? [], blockingReasons: a?.blockingReasons ?? [], excluded: a?.excluded ?? excludedOperations, excludedCases: a?.excludedCases ?? [],
     // Lot 100B : verrou A1 (couverture du corpus #601) — manques affichés au BO.
     a1: a?.a1 ? { allowed: a.a1.allowed, blockers: a.a1.blockers.slice(0, 20) } : null,
+    // Lot 105B : décision MÉTIER conservée à part ; blocage A1 distinct d'un refus de non-régression.
+    businessDecision: a?.businessDecision ?? a?.decision ?? null, a1Blocked: Boolean(a?.a1Blocked),
     operations: (a?.operations ?? []).map((o) => ({
       operationCode: o.operationCode, referenceVerdict: o.referenceVerdict, candidateVerdict: o.candidateVerdict, decision: o.decision, cases: o.cases,
       regressions: o.regressions.map((x) => x.caseId), improvements: o.improvements.map((x) => x.caseId),
@@ -527,6 +574,17 @@ async function correctIssue(
       { refusalReasons: [motif], decision: `Activation refusée : qualification non concluante (${motif}).` });
     return fin('DONE');
   }
+  if (a.a1Blocked) {
+    const motifs = [...a.refusalReasons, ...a.blockingReasons];
+    await store.transition(issue, 'BLOCKED', {
+      kind: 'QUALIFICATION_RESULT', message: `Non-régression démontrée, promotion bloquée par le verrou A1 (couverture du corpus) : ${(a.a1?.blockers ?? []).slice(0, 4).join(' · ')}`.slice(0, 1800),
+      payload: { campaignId: camp.campaignId, decision: a.decision, businessDecision: a.businessDecision ?? null, a1Blocked: true },
+    }, {
+      refusalReasons: motifs.slice(0, 50),
+      decision: 'Qualification métier réussie (aucune régression) ; activation automatique bloquée par le verrou A1 — preuve de couverture insuffisante, pas un refus métier. Relance automatique quand la certification du corpus change. L’ancienne version reste active.',
+    });
+    return fin('DONE');
+  }
   if (a.decision !== 'QUALIFIED') {
     const motifs = [...a.refusalReasons, ...a.blockingReasons];
     await store.transition(issue, a.decision === 'REFUSED' ? 'FAILED' : 'BLOCKED', {
@@ -550,7 +608,7 @@ async function correctIssue(
   const { activateQualifiedCandidate } = await import('../config/config-version.service');
   let previousId: number | null = null;
   try {
-    const r = await activateQualifiedCandidate(candidate!.id, { summary: `Mise en conformité automatique ${c.id} : ${c.treatment} v${active.versionNumber} → v${version.versionNumber}`, a1: a.a1?.token ?? null });
+    const r = await activateQualifiedCandidate(candidate!.id, { summary: `Mise en conformité automatique ${c.id} : ${c.treatment} v${active.versionNumber} → v${version.versionNumber}`, a1: a.a1?.token ?? null, caseOptions: deps.campaign });
     previousId = r.previousId;
   } catch (e) {
     await store.transition(issue, 'BLOCKED', { kind: 'ACTIVATION_REFUSED', message: `Activation refusée par les contrôles de configuration : ${(e as Error).message}`.slice(0, 1500) },
@@ -703,11 +761,31 @@ async function postActivationCheck(issue0: store.IssueRow, c: PromptContract, en
   const tauxAvant = avant.total ? avant.invalid / avant.total : 0;
   const tauxApres = apres.total ? apres.invalid / apres.total : 0;
   const residuels = await openFindings(c);
-  const postCheck = { at: now.toISOString(), after: apres, before: avant, residualFindings: residuels.length };
+  const postCheck: Record<string, unknown> = { at: now.toISOString(), after: apres, before: avant, residualFindings: residuels.length };
   if (apres.invalid > 0 && tauxApres > tauxAvant) {
     log(`${c.id} : anomalie après activation (${apres.invalid}/${apres.total} sorties refusées) → retour arrière`);
     await rollback(issue, c, env, now, `${apres.invalid} sortie(s) refusée(s) par le schéma sur ${apres.total} appel(s) depuis l’activation (avant : ${avant.invalid}/${avant.total})`, postCheck);
     return 'ROLLED_BACK';
+  }
+  // Lot 105B : signaux métier vérifiables attribués à la candidate (version de configuration exacte) et rejeu des
+  // cas certifiés (ancienne configuration ↔ candidate) — retour arrière seulement si la dégradation est IMPUTABLE.
+  if (issue.candidateConfigVersionId) {
+    const cfg = await import('../config/config-version.repository');
+    const actifCfg = await cfg.getActiveVersion(env).catch(() => null);
+    const precedent = ((issue.postCheck ?? {}) as { business?: { replays?: number } }).business ?? {};
+    const { evaluatePostActivation } = await import('../qualification/post-activation');
+    const biz = await evaluatePostActivation({
+      treatment: c.treatment, operations: c.operations, candidateVersionId: issue.candidateConfigVersionId, previousVersionId: issue.previousConfigVersionId ?? null,
+      activatedAt: depuis, now, replaysDone: Number(precedent.replays ?? 0), candidateActive: actifCfg?.id === issue.candidateConfigVersionId,
+    }).catch(() => null);
+    if (biz) {
+      postCheck.business = { verdict: biz.assessment.verdict, signals: biz.assessment.signals, before: biz.before, after: biz.after, replay: biz.replay, replays: Number(precedent.replays ?? 0) + (biz.replay ? 1 : 0) };
+      if (biz.assessment.rollback) {
+        log(`${c.id} : dégradation métier imputable après activation → retour arrière`);
+        await rollback(issue, c, env, now, `dégradation métier imputable à la candidate : ${biz.assessment.reasons.join(' ; ')}`.slice(0, 900), postCheck);
+        return 'ROLLED_BACK';
+      }
+    }
   }
   issue = await store.updateIssue(issue.id, { postCheck });
   if (issue.watchUntil && now.getTime() >= new Date(issue.watchUntil).getTime()) {

@@ -306,12 +306,16 @@ scenario('L31B', 'Rattachement document → bien : identifiants canoniques (T1) 
     // ambigu : aucune association, aucun doublon d'action.
     const relance = await rejouer([{ ...t3Sortie([{ candidateId: maison.id, score: 0.86, confidence: 'certain' }, { candidateId: studio.id, score: 0.84, confidence: 'certain' }]), repeat: true }]);
     const { resolveDocumentAsset } = await import('@/services/ai/reconciliation');
+    // Lot 105D (D4) : contexte inchangé → réexamen réel mais décision du modèle RÉUTILISÉE (aucun appel) ;
+    // seule une relance EXPLICITE (manuelle) rappelle le modèle.
     const r = await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id, userId: compte.ownerUserId });
-    expect(r).toMatchObject({ outcome: 'ABSTAIN', aiCalled: true });
+    expect(r).toMatchObject({ outcome: 'ABSTAIN', aiCalled: false });
     const { requestDocumentAssetResolution } = await import('@/services/ai/reconciliation');
     await requestDocumentAssetResolution({ accountId: compte.id, userId: compte.ownerUserId, fileId: doc.id, triggerCode: 'schedule_hourly' });
     await drainQueues();
-    expect(appelsT3(relance)).toBe(2);
+    expect(appelsT3(relance)).toBe(0);
+    expect(await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id, userId: compte.ownerUserId, triggerCode: 'manual' })).toMatchObject({ outcome: 'ABSTAIN', aiCalled: true });
+    expect(appelsT3(relance)).toBe(1);
     expect(await actionsLink(doc.id)).toHaveLength(1);
     expect((await liens(doc.id)).filter((l) => l[1] !== 'MENTIONED')).toEqual([]);
   });

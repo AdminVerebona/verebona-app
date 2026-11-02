@@ -81,6 +81,8 @@ export const importCaseSchema = z.object({
   referenceOutput: z.unknown().optional(),
   /** Fixture historique visée (révision d'un cas existant). */
   historicalFixture: z.string().max(400).optional(),
+  /** Lot 105B : groupe de l'inventaire attendu #601 (rapprochement ; adaptateur JSONL `zip-jsonl-adapter.ts`). */
+  inventoryGroup: z.enum(['HISTORIQUE', 'A_REVALIDER', 'NOUVEAU', 'STRESS']).optional(),
 });
 export type ImportCase = z.infer<typeof importCaseSchema>;
 
@@ -397,6 +399,8 @@ export async function convertImport(given: ImportSource, manifest: CorpusManifes
       status, reason: [c.reason ?? (stress ? 'scénario de stress #601 : exécution E2E avec données persistées' : 'cas #601 importé : oracle à vérifier sur les sources puis approuver individuellement'), ...causes].join(' ; ').slice(0, 1000),
       historicalClass: hist?.historicalClass ?? null, cdc35Category: c.cdc35Category ?? hist?.cdc35Category ?? null,
       oracle: oracle ?? hist?.oracle ?? null, expectedSummary: expected ? JSON.stringify(expected).slice(0, 2000) : c.description.slice(0, 2000) || null,
+      // Lot 105B : groupe d'inventaire (déclaré par la livraison, conservé pour un historique, sinon NOUVEAU / STRESS).
+      ...((c.inventoryGroup ?? (hist ? hist.inventoryGroup ?? null : stress ? 'STRESS' : 'NOUVEAU')) ? { inventoryGroup: c.inventoryGroup ?? (hist ? hist.inventoryGroup! : stress ? 'STRESS' : 'NOUVEAU') } : {}),
     };
     let outcome: ImportOutcome;
     const i = entries.findIndex((e) => e.id === id);

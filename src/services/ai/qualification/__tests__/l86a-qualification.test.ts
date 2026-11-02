@@ -384,6 +384,7 @@ describe('L86A-U13 — source de la vérité attendue d’un cas du corpus (QUAL
     const set = await buildCaseSet('t3_link_ambiguity', { readMasterFile: readMasterFileFromRepo });
     expect(set.cases.length).toBeGreaterThan(0);
     expect(set.cases.every((c) => c.expectedSource === 'REFERENCE')).toBe(true);
-    expect(set.skipped.filter((s) => /garde/.test(s.reason)).map((s) => s.caseId).sort()).toEqual(['corpus:P-T3-04', 'corpus:P-T3-06']);
+    // Lot 105D : gardes serveur des preuves croisées (P-T3-25 à P-T3-27) écartées de la vérité de référence, comme les autres gardes.
+    expect(set.skipped.filter((s) => /garde/.test(s.reason)).map((s) => s.caseId).sort()).toEqual(['corpus:P-T3-04', 'corpus:P-T3-06', 'corpus:P-T3-25', 'corpus:P-T3-26', 'corpus:P-T3-27']);
   });
 });

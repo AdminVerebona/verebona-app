@@ -337,6 +337,13 @@ export async function resolveArbitration(
       return resolveDocumentAssetConflict(tx, action, value, accountId, options);
     }
 
+    // Confirmation groupée d'identité (lot 105D) : « Oui, c'est ce bien » / « Non » —
+    // décision mémorisée, puis chaque document repasse par T3 (jamais « rattacher tout »).
+    if (action.ruleCode === 'LINK-ASSET-GROUP') {
+      const { resolveIdentityGroupCard } = await import('./identity-group-cards');
+      return resolveIdentityGroupCard(tx, action, value, accountId, options);
+    }
+
     // Rapprochement agenda incertain de la projection (lot 53, retour PO D14).
     if (action.ruleCode === 'AGENDA-PROJECTION-MATCH') {
       const { resolveAgendaProjectionMatch } = await import('./agenda-projection-cards');
@@ -477,6 +484,11 @@ export async function undoArbitration(
   if (action.ruleCode === 'LINK-ASSET-CONFLICT') {
     const { undoDocumentAssetConflict } = await import('./document-asset-conflict');
     return undoDocumentAssetConflict(action, accountId);
+  }
+
+  if (action.ruleCode === 'LINK-ASSET-GROUP') {
+    const { undoIdentityGroupCard } = await import('./identity-group-cards');
+    return undoIdentityGroupCard(action, accountId);
   }
 
   if (action.ruleCode === 'AGENDA-PROJECTION-MATCH') {

@@ -200,6 +200,31 @@ export async function collectAiConditions(): Promise<Condition[]> {
   // Lot 103G : compte technique de qualification — UNE anomalie regroupée (et une de sécurité si la variable désigne
   // un compte client) ; les incompatibilités bloquées par ce seul prérequis n'ont pas d'alerte propre (pas de
   // cartes multipliées). Même diagnostic que le BO et le diagnostic global.
+  // Lot 105B : promotion automatique IA — une anomalie par candidate restaurée (retour arrière automatique), retour
+  // arrière impossible ou alerte post-activation (latence / coût), sur 7 jours ; instant stable (date de l'événement).
+  try {
+    const { getAiEnvironment } = await import('@/services/ai/config/environment');
+    const { listPromotionEvents } = await import('@/services/ai/qualification/promotion-journal');
+    const evs = await listPromotionEvents({ environment: getAiEnvironment(), kinds: ['ROLLBACK', 'ROLLBACK_FAILED', 'POST_ALERT'], sinceMs: 7 * 86_400_000, limit: 50 });
+    const vus = new Set<string>();
+    for (const e of evs) {
+      const fp = `ai:promotion:${e.kind.toLowerCase()}:${e.candidateVersionId ?? 0}${e.kind === 'POST_ALERT' ? `:${e.code ?? ''}` : ''}`;
+      if (vus.has(fp)) continue;
+      vus.add(fp);
+      out.push({
+        fingerprint: fp, occurredAt: new Date(e.createdAt),
+        input: {
+          domain: 'ai', fingerprint: fp,
+          title: e.kind === 'ROLLBACK' ? `IA : retour arrière automatique de la candidate ${e.candidateVersionId} (dégradation imputable)`
+            : e.kind === 'ROLLBACK_FAILED' ? `IA : retour arrière automatique IMPOSSIBLE (candidate ${e.candidateVersionId}) — intervention manuelle`
+              : `IA : alerte post-activation (${e.code ?? 'signal'}) sur la candidate ${e.candidateVersionId}`,
+          detail: { message: e.message.slice(0, 1000), treatment: e.treatment, candidateVersionId: e.candidateVersionId, at: e.createdAt, ecran: 'BO › Configuration IA › Promotion automatique' },
+        },
+      });
+    }
+  } catch (e) {
+    console.error('[supervision-sweep] promotion automatique IA :', (e as Error).message);
+  }
   const enAttentePrerequis = new Set<string>();
   try {
     const { corpusAccountDiagnostic, corpusAccountConditions } = await import('@/services/ai/qualification/technical-account-diagnostic');

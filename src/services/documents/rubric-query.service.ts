@@ -392,40 +392,50 @@ export function buildFeedMeta(
  * microsecondes, et deux documents ajoutés dans la même milliseconde
  * sortiraient de la pagination.
  */
-export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedResponse> {
-  const components = keyComponents(query.sort, query.direction, query.grouped);
-  const keys = components.map((c) => c.key);
-  const signature = orderSignature(query.sort, query.direction, query.grouped);
-  const values = query.cursor ? decodeFeedCursor(query.cursor, signature, components.length) : null;
-  if (query.cursor && !values) throw new InvalidCursorError();
-  const withMeta = query.withMeta ?? !query.cursor;
+/** Critères qui délimitent l'ensemble listé (sans tri ni découpage). */
+type FeedSetQuery = Pick<DocumentFeedQuery, 'accountId' | 'assetIds' | 'filters' | 'ids' | 'q'>;
 
+interface FeedSet {
+  /** Identifiants de la recherche locale ; `null` : aucune recherche exploitable. */
+  searchIds: number[] | null;
+  /** `?resultats=aucun` : périmètre vide, inutile d'interroger la base. */
+  empty: boolean;
+  scope: SQL[];
+  /** Périmètre + tous les filtres : EXACTEMENT les lignes que la liste énumère. */
+  where: SQL[];
+  equipmentCondition: SQL | null;
+  assetEquipments: AssetEquipment[];
+  roomCondition: SQL | null;
+  assetRooms: AssetRoom[];
+  dateCondition: SQL | null;
+}
+
+/**
+ * Lot 105A — ensemble des documents listés, résolu en UN seul endroit pour
+ * la liste (`getDocumentFeed`) et son décompte (`countDocumentFeed`) : même
+ * normalisation de la recherche, même périmètre de compte, mêmes exclusions
+ * (documents supprimés / corbeille), mêmes filtres. Aucune seconde
+ * implémentation ne peut diverger.
+ */
+async function resolveFeedSet(query: FeedSetQuery, withFacets: boolean): Promise<FeedSet> {
   // Lot 97C : recherche locale résolue d'abord (ensemble exhaustif du compte).
   const searchIds = await documentSearchIds(query.accountId, query.q);
-
-  // `?resultats=aucun` : périmètre vide, inutile d'interroger la base.
-  if (!searchIds && query.ids && query.ids.length === 0) {
-    return {
-      documents: [],
-      nextCursor: null,
-      hasMore: false,
-      limit: query.limit,
-      ...(withMeta ? { meta: buildFeedMeta([], query.filters, await loadVisibilityContext(query.accountId, query.assetIds)) } : {}),
-    };
-  }
-
+  const empty = !searchIds && !!query.ids && query.ids.length === 0;
   const scope = scopeConditions(query, searchIds);
+  if (empty) {
+    return { searchIds, empty, scope, where: scope, equipmentCondition: null, assetEquipments: [], roomCondition: null, assetRooms: [], dateCondition: null };
+  }
   // Lot 71 (71C) : équipements des biens retenus — lus seulement si le filtre
   // Équipement agit ou si les compteurs du premier lot les proposent.
   const equipmentAssets = equipmentAssetScope(query);
-  const assetEquipments = equipmentAssets.length > 0 && (withMeta || isEquipmentFilterActive(query.filters.equipment))
+  const assetEquipments = equipmentAssets.length > 0 && (withFacets || isEquipmentFilterActive(query.filters.equipment))
     ? await listEquipmentsOfAssets(query.accountId, equipmentAssets)
     : [];
   const equipmentCondition = documentEquipmentFilterCondition(query.filters.equipment, assetEquipments);
   // Lot 75 (75B) : filtre Pièce — documents directs ET documents des
   // équipements de la pièce (résolution centrale `room-scope.service`).
   const pieceId = selectedRoomId(query.filters.piece);
-  const assetRooms = equipmentAssets.length > 0 && (withMeta || pieceId !== null)
+  const assetRooms = equipmentAssets.length > 0 && (withFacets || pieceId !== null)
     ? await listRoomsOfAssets(query.accountId, equipmentAssets)
     : [];
   const roomCondition = documentRoomFilterCondition(pieceId, assetRooms);
@@ -435,6 +445,64 @@ export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedRes
   // Lot 103F : périodes appliquées AVANT tri et découpage en lots.
   const dateCondition = dateFilterCondition(query.filters);
   if (dateCondition) where.push(dateCondition);
+  return { searchIds, empty, scope, where, equipmentCondition, assetEquipments, roomCondition, assetRooms, dateCondition };
+}
+
+/** Résultat d'un décompte (lot 105A). */
+export interface DocumentFeedCount {
+  /** Documents que la liste énumérerait avec ces critères (tous lots confondus). */
+  total: number;
+  /**
+   * La saisie contient-elle un mot exploitable ? Sinon la liste n'est pas
+   * restreinte (`documentSearchIds` → `null`) : un appelant qui annonce « les
+   * documents qui correspondent » ne doit alors rien annoncer.
+   */
+  searchApplied: boolean;
+}
+
+/**
+ * Lot 105A (ticket « Voir tous les documents (N) ») — nombre EXACT de
+ * documents que « Mes documents » (ou l'onglet d'un bien) énumère pour ces
+ * critères : MÊME ensemble que `getDocumentFeed` (`resolveFeedSet`), compté en
+ * base (`COUNT(*)` sur les lignes `asset_files`, une par document : aucun
+ * doublon possible), sans rien transmettre au navigateur. Requête indexée :
+ * compte + `id = ANY(…)` (clé primaire) + `deleted_at IS NULL`.
+ */
+export async function countDocumentFeed(query: FeedSetQuery): Promise<DocumentFeedCount> {
+  const set = await resolveFeedSet(query, false);
+  const searchApplied = set.searchIds !== null;
+  if (set.empty || (set.searchIds && set.searchIds.length === 0)) return { total: 0, searchApplied };
+  const [row] = await db
+    .select({ total: sql<number>`COUNT(*)::int` })
+    .from(assetFiles)
+    .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, assetFiles.accountId)))
+    .where(and(...set.where));
+  return { total: Number(row?.total ?? 0), searchApplied };
+}
+
+export async function getDocumentFeed(query: DocumentFeedQuery): Promise<FeedResponse> {
+  const components = keyComponents(query.sort, query.direction, query.grouped);
+  const keys = components.map((c) => c.key);
+  const signature = orderSignature(query.sort, query.direction, query.grouped);
+  const values = query.cursor ? decodeFeedCursor(query.cursor, signature, components.length) : null;
+  if (query.cursor && !values) throw new InvalidCursorError();
+  const withMeta = query.withMeta ?? !query.cursor;
+
+  const set = await resolveFeedSet(query, withMeta);
+
+  // `?resultats=aucun` : périmètre vide, inutile d'interroger la base.
+  if (set.empty) {
+    return {
+      documents: [],
+      nextCursor: null,
+      hasMore: false,
+      limit: query.limit,
+      ...(withMeta ? { meta: buildFeedMeta([], query.filters, await loadVisibilityContext(query.accountId, query.assetIds)) } : {}),
+    };
+  }
+
+  const { scope, equipmentCondition, assetEquipments, roomCondition, assetRooms, dateCondition } = set;
+  const where = [...set.where];
   if (values) where.push(keysetSql(keysetCondition(components, values), keys, values));
 
   const keyColumns = Object.fromEntries(

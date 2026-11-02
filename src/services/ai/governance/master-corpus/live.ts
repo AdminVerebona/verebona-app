@@ -181,10 +181,11 @@ const BUILDERS: Record<string, Builder> = {
   },
   async t3_link_ambiguity(c) {
     // Lot 31B — relation DOCUMENT_ASSET : même constructeur que la production.
-    const da = ctx<{ documentAsset?: { subject: unknown; candidates: unknown[] } }>(c).documentAsset;
+    const da = ctx<{ documentAsset?: { subject: unknown; candidates: unknown[]; cross?: { fileId: number; context: unknown } } }>(c).documentAsset;
     if (da) {
       const { documentAssetVariables } = await import('../../reconciliation/document-asset/decision');
-      return documentAssetVariables(da.subject as never, da.candidates as never);
+      // Lot 105D : preuves croisées (contrat t3-document-asset-cross-v1) quand le cas les porte.
+      return documentAssetVariables(da.subject as never, da.candidates as never, da.cross ? { fileId: da.cross.fileId, context: da.cross.context as never } : null);
     }
     const vars = ctx<{ variables?: Record<string, unknown> }>(c).variables;
     if (!vars) return null;

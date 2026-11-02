@@ -55,8 +55,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   {
     domain: 'rapprochements', label: 'Rapprochements (pièces ↔ Opérations, documents ↔ biens)',
     // Lot 86D : associations Document ↔ Agenda confrontées à leurs preuves (COH-DOC-AGENDA-LINKS).
-    checks: ['COH-DOC-LINKS', 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', ...O1.filter((id) => /DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS'],
-    gap: { what: 'rattachement document → bien principal ; relation document ↔ équipement que le document ne désigne pas lui-même (constat seul, contrat IA 82D-t3-document-equipement — lot 84E : réparée par O-6 quand le document la désigne)', existingMechanism: 'T3 DOCUMENT_ASSET (balayage continu des documents sans bien) ; consolidation M1–M3 ; reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' },
+    // Lot 105D : rattachement document → bien principal récupérable (COH-DOC-PRIMARY-LINK).
+    checks: ['COH-DOC-LINKS', 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', ...O1.filter((id) => /DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS', 'COH-DOC-PRIMARY-LINK'],
+    gap: { what: 'relation document ↔ équipement que le document ne désigne pas lui-même (constat seul, contrat IA 82D-t3-document-equipement — lot 84E : réparée par O-6 quand le document la désigne)', existingMechanism: 'T3 DOCUMENT_ASSET (balayage continu des documents sans bien) ; consolidation M1–M3 ; reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' },
   },
   // Lot 86F : date économique de chaque dépense justifiée (jamais la date de l'Opération par défaut), stock réparé.
   { domain: 'tco', label: 'TCO et dépenses', checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-TCO-ECONOMIC-DATES'] },
@@ -97,7 +98,7 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   { domain: 'equipements', label: 'Équipements (documents rattachés, séparation bien / équipement, propriétés manquantes, identité produit)', checks: ['COH-DOC-LINKS', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-MISSING-PROPERTIES-EQUIPMENT', 'COH-EQUIPMENT-IDENTITY'],
     gap: { what: 'situations de séparation SUSPECTES (constat seul) ; document d’équipement rattaché au seul bien sans preuve propre au document (constat seul — réparé par la reconsolidation ciblée O-6 dès que le document désigne l’équipement, lot 84E) ; liens d’un équipement déplacé vers un autre bien', existingMechanism: 'rattrapage BO « equipment-separation » (même code) ; file EQUIPMENT_DOCUMENT au déplacement et reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' } },
   { domain: 'documents-liens', label: 'Liens documentaires (documents ↔ biens / équipements, documents ↔ agenda)',
-    checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS'],
+    checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS', 'COH-DOC-PRIMARY-LINK'],
     // Lot 86D : un lien Document ↔ Agenda automatique sans preuve propre reste un constat (jugement de pertinence : contrat IA demandé).
     gap: { what: 'pertinence SÉMANTIQUE d’un lien Document ↔ Agenda automatique sans preuve propre au couple (constat AUTOMATIC_LINK_UNPROVEN, aucune écriture)', existingMechanism: 'détachement par l’utilisateur depuis les tiroirs de l’élément et du document (décision mémorisée)', planned: 'contrat IA 86D-t4-pertinence-lien-document-agenda' } },
   { domain: 'a-traiter', label: 'Cartes « À traiter »',

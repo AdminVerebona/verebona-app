@@ -268,6 +268,11 @@ export const manifestEntry = z.object({
   historicalClass: z.enum(HISTORICAL_CLASSES).nullable(),
   /** Catégorie CDC 4 §35.1 (cas T2 de recherche de l'assistant). */
   cdc35Category: z.string().max(40).nullable().optional(),
+  /**
+   * Lot 105B — groupe de l'inventaire ATTENDU #601 (rapprochement du ZIP : 86 historiques + 20 à revalider + 295
+   * nouveaux ; 15 stress distincts). Absent : déduit de la provenance (`inventoryGroupOf`).
+   */
+  inventoryGroup: z.enum(['HISTORIQUE', 'A_REVALIDER', 'NOUVEAU', 'STRESS']).nullable().optional(),
   oracle: oracleSchema.nullable(),
   /** Résumé de l'attendu (lecture humaine). */
   expectedSummary: z.string().max(2000).nullable(),

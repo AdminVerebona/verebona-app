@@ -45,6 +45,20 @@
  * master entre dans les clés d'idempotence et du cache T6
  * (`code@pv<id>:<empreinte>`) : aucune sortie produite sous l'ancien texte
  * n'est resservie.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 105C : T4 — UN PROMPT MAÎTRE, UNE ACTIVATION
+ *
+ * Un prompt qui déclare un BUNDLE COMPLET (`completeBundle`, T4) ne propose
+ * plus aucun choix de mode, de contrat ni de TASK : tout brouillon (nouveau
+ * ou existant, quelle que soit la version de départ) porte le bundle complet
+ * — texte conservé tel quel. « Activer la version »
+ * (`activateEditedVersion`) prend le texte édité (même non enregistré), le
+ * persiste dans le brouillon, résout et valide le bundle côté serveur
+ * (contrats, couverture des TASK, modèles, contexte constructible), puis
+ * fige le bundle et bascule dans UNE transaction — ou n'active rien. Les
+ * versions historiques restent intactes et réactivables à l'identique (leurs
+ * fonctions limitées sont signalées). T1, T2, T3 et T6 : inchangés.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -58,8 +72,12 @@ import { masterPromptVersionOf } from '../prompts/prompt-loader';
 import { checkMasterPromptContent, MASTER_PROMPT_MAX_CHARS, type MasterPromptIssue } from './master-prompt-checks';
 import {
   structuredSpecFor, executionConfigFor, draftExecutionConfig, normalizeExecutionConfig, availableContextOf,
-  MASTER_EXECUTION_MODES, LEGACY_EXECUTION, executionSignature, type MasterExecutionConfig,
+  MASTER_EXECUTION_MODES, LEGACY_EXECUTION, executionSignature, completeBundleConfig, resolveCompleteBundle, promptHash,
+  type MasterExecutionConfig, type BundleIssue, type FrozenBundle,
 } from './structured-context';
+import { t4FunctionsOf, t4LimitationsText, type T4FunctionState } from '../agenda/master/t4-functions';
+import { AI_OPERATIONS } from '../registry/operations';
+import { contractVersionsOf } from '../gateway/output-resolution/runtime-contract';
 import * as repo from './master-prompt.repository';
 import { assessT4Compatibility, type T4Compatibility } from '../agenda/master/t4-compatibility';
 import type { MasterPromptTestRunRow, MasterPromptVersionRow, MasterPromptActivationRow, TestFailure } from './master-prompt.repository';
@@ -107,6 +125,8 @@ interface TestRunView {
   /** Le test porte sur le texte actuel de la version. */
   current: boolean;
   requestedBy: string | null;
+  /** Lot 105C — synthèse par branche (fonction) : scénarios rejoués et en échec. */
+  byBranch?: Record<string, { total: number; failed: number }>;
 }
 
 /** État des tests d'une version — information, jamais une condition. */
@@ -138,6 +158,12 @@ interface VersionView {
    * TASK) ; `null` pour un prompt sans contrat d'exécution.
    */
   execution: MasterExecutionConfig | null;
+  /**
+   * Lot 105C (T4) — fonctions de la version (disponibilité technique) et
+   * bundle figé (détails techniques, lecture seule) ; `null` hors T4.
+   */
+  functions: T4FunctionState[] | null;
+  bundle: repo.ExecutionBundleRecord | null;
 }
 
 /** Lot 34D — informations « contexte structuré » d'un prompt qui déclare un contrat d'exécution (T4). */
@@ -173,6 +199,18 @@ interface PromptSummary {
   masterPromptCode: string;
   active: { versionNumber: number | null; initial: boolean; activatedAt: string | null; test: TestState };
   draft: { versionNumber: number; updatedAt: string; test: TestState } | null;
+  /** Lot 105C — prompt à activation unifiée (T4) : écran simplifié, aucun choix technique. */
+  unifiedActivation: boolean;
+}
+
+/** Lot 105C — état du parcours unifié (T4) rendu au BO. */
+interface UnifiedInfo {
+  /** Bundle complet stable du code déployé (lecture seule). */
+  bundle: FrozenBundle | null;
+  /** Diagnostic serveur si le bundle n'est pas activable (vide : activable). */
+  bundleIssues: BundleIssue[];
+  /** Fonctions de la version réellement en service (active, sinon texte initial). */
+  activeFunctions: T4FunctionState[];
 }
 
 interface PromptDetail {
@@ -211,6 +249,8 @@ interface PromptDetail {
    * conformité. Autres traitements : absent.
    */
   t4Compatibility?: { active: T4Compatibility; draft: T4Compatibility | null } | null;
+  /** Lot 105C — activation unifiée (T4) ; `null` pour les autres prompts. */
+  unified: UnifiedInfo | null;
 }
 
 const STATUS_LABEL: Record<repo.MasterPromptStatus, string> = { DRAFT: 'Brouillon', ACTIVE: 'Active', PREVIOUS: 'Ancienne' };
@@ -240,7 +280,21 @@ function runView(r: MasterPromptTestRunRow, sha: string, emails: Map<number, str
     error: interrompu ? 'Le test a été interrompu avant la fin. Relancez-le.' : r.error,
     current: r.contentSha256 === sha,
     requestedBy: r.requestedBy == null ? null : emails.get(r.requestedBy) ?? null,
+    byBranch: byBranchOf(r),
   };
+}
+
+/** Lot 105C — synthèse par branche d'un rejeu (détails enregistrés + échecs). Pure. */
+function byBranchOf(r: Pick<MasterPromptTestRunRow, 'details' | 'failures'>): Record<string, { total: number; failed: number }> {
+  const out: Record<string, { total: number; failed: number }> = {};
+  const branches = (r.details as { branches?: Record<string, number> } | null | undefined)?.branches ?? {};
+  for (const [b, n] of Object.entries(branches)) out[b] = { total: Number(n) || 0, failed: 0 };
+  for (const f of r.failures ?? []) {
+    const x = out[f.branch] ?? (out[f.branch] = { total: 0, failed: 0 });
+    x.failed += 1;
+    if (x.total < x.failed) x.total = x.failed;
+  }
+  return out;
 }
 
 /**
@@ -297,6 +351,9 @@ function versionView(
     contentLength: v.content.length,
     test: testStateOf(runs),
     execution: executionOfVersion(v),
+    functions: v.treatment === 'T4' && structuredSpecFor(v.masterPromptCode)?.completeBundle
+      ? t4FunctionsOf({ text: v.content, execution: executionOfVersion(v) }) : null,
+    bundle: v.executionBundle ?? null,
     technical: {
       masterPromptCode: v.masterPromptCode,
       contentSha256: v.contentSha256,
@@ -368,6 +425,46 @@ export async function ensureActivePromptVersion(treatment: Treatment, environmen
 export function executionOfVersion(v: Pick<MasterPromptVersionRow, 'masterPromptCode' | 'execution'>): MasterExecutionConfig | null {
   if (!structuredSpecFor(v.masterPromptCode)) return null;
   return v.execution ? normalizeExecutionConfig(v.execution) : LEGACY_EXECUTION;
+}
+
+// ── Lot 105C : bundle complet (T4) ──────────────────────────────────────────
+
+/** Spécification d'exécution d'un prompt qui déclare un bundle complet (T4), sinon `null`. */
+function bundleSpecOf(masterPromptCode: string) {
+  const spec = structuredSpecFor(masterPromptCode);
+  return spec?.completeBundle ? spec : null;
+}
+
+/** Prompt à activation unifiée (bundle complet déclaré) ? */
+export function isUnifiedActivation(treatment: Treatment): boolean {
+  const master = masterPromptForTreatment(treatment);
+  return Boolean(master && bundleSpecOf(master.masterPromptCode));
+}
+
+/**
+ * Bundle complet résolu et validé pour le code DÉPLOYÉ (contrats, couverture
+ * des TASK, contrat runtime de chaque TASK, modèle configuré par TASK) —
+ * même registre que la passerelle et les contrôles bloquants.
+ */
+export function resolveBundleFor(masterPromptCode: string): ReturnType<typeof resolveCompleteBundle> {
+  const spec = structuredSpecFor(masterPromptCode);
+  return resolveCompleteBundle(spec, {
+    contractExists: (name, v) => contractVersionsOf(name).includes(v),
+    modelConfigured: (task) => Boolean(Object.values(AI_OPERATIONS).find((o) => o.active && o.masterPromptCode === masterPromptCode && o.task === task)?.primaryModel),
+  });
+}
+
+/**
+ * Lot 105C — NORMALISATION d'un brouillon d'un prompt à bundle complet :
+ * configuration ramenée au bundle complet, TEXTE INCHANGÉ (aucune perte).
+ * Idempotente ; silencieuse (auteur et date de modification conservés).
+ */
+async function normalizeBundleDraft(draft: MasterPromptVersionRow): Promise<MasterPromptVersionRow> {
+  const target = completeBundleConfig(bundleSpecOf(draft.masterPromptCode));
+  if (!target || draft.status !== 'DRAFT') return draft;
+  const actuelle = executionOfVersion(draft);
+  if (actuelle && executionSignature(actuelle) === executionSignature(target)) return draft;
+  return (await repo.updateDraftExecution({ id: draft.id, execution: target, userId: null, touch: false })) ?? draft;
 }
 
 /** Texte de référence d'un prompt pour un mode (T4 : modèle legacy livré à côté du fichier). */
@@ -473,6 +570,7 @@ export async function listPromptSummaries(environment: AiEnvironment = getAiEnvi
       treatment: t, label: TREATMENT_DEFINITIONS[t].label, masterPromptCode: master.masterPromptCode,
       active: { versionNumber: active?.versionNumber ?? null, initial: !active, activatedAt: iso(active?.activatedAt ?? null), test: etat(active) },
       draft: draft ? { versionNumber: draft.versionNumber, updatedAt: draft.updatedAt.toISOString(), test: etat(draft) } : null,
+      unifiedActivation: Boolean(bundleSpecOf(master.masterPromptCode)),
     });
   }
   return out;
@@ -482,7 +580,11 @@ export async function listPromptSummaries(environment: AiEnvironment = getAiEnvi
 export async function getPromptDetail(treatment: Treatment, environment: AiEnvironment = getAiEnvironment()): Promise<PromptDetail> {
   await assertTables();
   const master = masterPromptForTreatment(treatment)!;
-  const versions = await repo.listPromptVersions(environment, treatment);
+  let versions = await repo.listPromptVersions(environment, treatment);
+  // Lot 105C : brouillon existant d'un prompt à bundle complet (T4) — configuration normalisée, texte conservé.
+  if (bundleSpecOf(master.masterPromptCode)) {
+    versions = await Promise.all(versions.map((v) => (v.status === 'DRAFT' ? normalizeBundleDraft(v) : v)));
+  }
   const { byVersion, emails } = await runsByVersion(versions);
   const numbers = new Map(versions.map((v) => [v.id, v.versionNumber]));
   const vue = (v: MasterPromptVersionRow) => versionView(v, byVersion.get(v.id) ?? [], emails, numbers);
@@ -514,6 +616,18 @@ export async function getPromptDetail(treatment: Treatment, environment: AiEnvir
     }),
     draft: draft ? assessT4Compatibility({ spec, referenceText: fichier || null, content: draft.content, execution: executionOfVersion(draft) }) : null,
   } : null;
+  // Lot 105C : activation unifiée (T4) — bundle du code déployé, diagnostic, fonctions de la version en service.
+  let unified: UnifiedInfo | null = null;
+  if (bundleSpecOf(master.masterPromptCode)) {
+    const b = resolveBundleFor(master.masterPromptCode);
+    const executionEnService = active ? executionOfVersion(active)
+      : initialContent?.source === 'config' ? LEGACY_EXECUTION : executionConfigFor({ masterPromptCode: master.masterPromptCode, source: 'file' });
+    unified = {
+      bundle: b.ok ? b.frozen : null,
+      bundleIssues: b.ok ? [] : b.issues,
+      activeFunctions: t4FunctionsOf({ text: active?.content ?? initialContent?.content ?? fichier, execution: executionEnService }),
+    };
+  }
   return {
     treatment, label: TREATMENT_DEFINITIONS[treatment].label, masterPromptCode: master.masterPromptCode, environment,
     initial: !active,
@@ -530,6 +644,7 @@ export async function getPromptDetail(treatment: Treatment, environment: AiEnvir
     structured: await withScenarios(treatment, structuredInfoOf(master.masterPromptCode, fichier)),
     t2Capabilities,
     t4Compatibility,
+    unified,
   };
 }
 
@@ -576,7 +691,9 @@ export async function startDraft(treatment: Treatment, userId: number, content?:
   const environment = getAiEnvironment();
   const existant = await repo.getDraft(environment, treatment);
   if (existant) {
-    return content === undefined ? existant : saveDraft(treatment, existant.id, content, userId);
+    // Lot 105C : brouillon existant réutilisé — configuration normalisée au bundle complet (T4), texte conservé.
+    const repris = await normalizeBundleDraft(existant);
+    return content === undefined ? repris : saveDraft(treatment, repris.id, content, userId);
   }
   const active = await ensureActive(treatment, environment);
   const texte = content ?? active.content;
@@ -584,31 +701,29 @@ export async function startDraft(treatment: Treatment, userId: number, content?:
   const cree = await repo.insertDraft({
     environment, treatment, masterPromptCode: active.masterPromptCode, content: texte,
     origin: 'admin', basedOnId: active.id, userId,
-    // Lot 34D : le brouillon reprend le mode de la version de départ —
+    // Lot 105C : prompt à bundle complet (T4) — TOUJOURS le bundle complet,
+    // quel que soit le mode de la version de départ (texte hérité seul).
+    // Lot 34D : sinon, le brouillon reprend le mode de la version de départ —
     // SAUF (lot 54) s'il part du texte de référence livré : il prend alors
-    // la configuration de ce texte (T4 : contexte structuré v2), jamais un
-    // ancien mode Legacy incompatible hérité silencieusement.
-    execution: await isReferenceText(active.masterPromptCode, texte)
-      ? referenceExecution(active.masterPromptCode)
-      : draftExecutionConfig(active.masterPromptCode, executionOfVersion(active)),
+    // la configuration de ce texte, jamais un ancien mode Legacy incompatible
+    // hérité silencieusement.
+    execution: bundleSpecOf(active.masterPromptCode)
+      ? completeBundleConfig(bundleSpecOf(active.masterPromptCode))
+      : await isReferenceText(active.masterPromptCode, texte)
+        ? referenceExecution(active.masterPromptCode)
+        : draftExecutionConfig(active.masterPromptCode, executionOfVersion(active)),
   });
   // Création concurrente : un autre administrateur vient d'ouvrir le brouillon.
   return cree ?? (await repo.getDraft(environment, treatment))!;
 }
 
 /**
- * Lot 98A (P0-B) — « Préparer une version T4 conforme » : rattrapage
- * IDEMPOTENT de la version T4 active en mode historique (ou à contrat de
- * sortie antérieur à `t4_output_v3`) dont le TEXTE porte déjà l'évaluation
- * d'intervention. Crée un BROUILLON avec le MÊME texte et la configuration
- * d'exécution conforme (contexte structuré, contrats du texte livré ou
- * suivants) ; ne modifie jamais le texte ; n'active JAMAIS : le PO vérifie le
- * brouillon (contrôles, aperçu) puis clique « Activer ».
- *
- * Idempotence : un brouillon déjà conforme (même texte, même configuration)
- * est rendu tel quel. Refus explicites : version active déjà compatible,
- * texte sans l'évaluation d'intervention (« Repartir du texte de référence »),
- * autre brouillon en cours (le terminer ou l'abandonner d'abord).
+ * Lot 98A (P0-B) — « Préparer une version T4 conforme ». Lot 105C : la
+ * configuration conforme est TOUJOURS le bundle complet (source unique) ;
+ * le brouillon reprend le TEXTE de la version active (ou le brouillon
+ * existant, normalisé, texte conservé). N'active JAMAIS : « Activer la
+ * version » le fait. Refus : version active déjà à bundle complet et
+ * compatible (rien à préparer).
  */
 export async function prepareConformingT4Draft(userId: number): Promise<MasterPromptVersionRow> {
   await assertTables();
@@ -617,31 +732,12 @@ export async function prepareConformingT4Draft(userId: number): Promise<MasterPr
   const spec = master ? structuredSpecFor(master.masterPromptCode) : null;
   if (!master || !spec) throw new MasterPromptRefused('EXECUTION_MODE_UNSUPPORTED', 'Le prompt T4 n’a pas de mode d’exécution configurable.', null, 400);
   const active = await ensureActive('T4', environment);
-  const { readMasterFileFromRepo } = await import('../governance/master-corpus/cases');
-  let fichier: string | null = null;
-  try { fichier = readMasterFileFromRepo(master.masterPromptCode); } catch { /* fichier absent : comparaison par repère seulement */ }
-  const etat = assessT4Compatibility({ spec, execution: executionOfVersion(active), content: active.content, referenceText: fichier });
-  if (etat.remedy === 'NONE') {
-    throw new MasterPromptRefused('ALREADY_COMPATIBLE', `La version T4 active (v${active.versionNumber}) est déjà compatible : rien à préparer.`);
-  }
-  if (etat.remedy === 'RESTART_FROM_REFERENCE') {
-    throw new MasterPromptRefused('TEXT_NOT_COMPATIBLE',
-      'Le texte T4 actif ne décrit pas l’évaluation d’une intervention « À traiter » : cliquez sur « Modifier », choisissez le mode « Contexte structuré », '
-      + 'puis « Repartir du texte de référence (Contexte structuré) », enregistrez et activez (guide du PO, étape 8).');
-  }
-  const cible = etat.target;
   const existant = await repo.getDraft(environment, 'T4');
-  if (existant) {
-    const memeTexte = existant.content.replace(/\r\n?/g, '\n').trim() === active.content.replace(/\r\n?/g, '\n').trim();
-    if (memeTexte && executionSignature(executionOfVersion(existant) ?? LEGACY_EXECUTION) === executionSignature(cible)) return existant;
-    throw new MasterPromptRefused('DRAFT_EXISTS',
-      `Un brouillon T4 (v${existant.versionNumber}) est déjà ouvert : activez-le ou abandonnez-le, puis relancez « Préparer une version conforme ».`);
+  const fonctions = t4FunctionsOf({ text: active.content, execution: executionOfVersion(active) });
+  if (!existant && executionOfVersion(active)?.bundleId && fonctions.every((f) => f.available && !f.partial)) {
+    throw new MasterPromptRefused('ALREADY_COMPATIBLE', `La version T4 active (v${active.versionNumber}) est déjà complète : rien à préparer.`);
   }
-  const cree = await repo.insertDraft({
-    environment, treatment: 'T4', masterPromptCode: active.masterPromptCode, content: active.content,
-    origin: 'admin', basedOnId: active.id, userId, execution: cible,
-  });
-  return cree ?? (await repo.getDraft(environment, 'T4'))!;
+  return startDraft('T4', userId);
 }
 
 function assertStorable(content: string): void {
@@ -674,6 +770,11 @@ export async function saveDraftExecution(
   const spec = structuredSpecFor(v.masterPromptCode);
   if (!spec) {
     throw new MasterPromptRefused('EXECUTION_MODE_UNSUPPORTED', `Le prompt de ${treatment} n’a pas de mode d’exécution configurable.`, null, 400);
+  }
+  // Lot 105C : configuration gérée par le serveur (bundle complet) — aucun choix accepté, rien de partiel.
+  if (spec.completeBundle) {
+    throw new MasterPromptRefused('EXECUTION_MANAGED_BY_SERVER',
+      `La configuration technique de ${treatment} est gérée automatiquement par Verebona : il n’y a rien à choisir.`, null, 409);
   }
   if (v.status !== 'DRAFT') {
     throw new MasterPromptRefused('VERSION_NOT_EDITABLE',
@@ -711,6 +812,8 @@ export async function saveDraft(treatment: Treatment, versionId: number, content
   if (!ecrit) {
     throw new MasterPromptRefused('VERSION_NOT_EDITABLE', 'Ce brouillon vient d’être activé ou abandonné : rechargez la page.');
   }
+  // Lot 105C : prompt à bundle complet (T4) — configuration toujours le bundle (texte de référence ou non).
+  if (bundleSpecOf(ecrit.masterPromptCode)) return normalizeBundleDraft(ecrit);
   // Lot 54 : brouillon repris depuis le texte de référence livré alors qu'il
   // portait une autre configuration (copie d'un Actif Legacy ou v1) — il
   // prend la configuration de ce texte. Une configuration EXPLICITE envoyée
@@ -758,6 +861,10 @@ interface SwitchOutcome {
   activeVersionId: number;
   /** Informations NON bloquantes (tests, emplacements facultatifs). */
   notices: string[];
+  /** Lot 105C (T4) — fonctions de la version désormais active (limites signalées après une réactivation). */
+  functions?: T4FunctionState[] | null;
+  /** Lot 105C (T4) — bundle figé avec la version activée (activation unifiée). */
+  bundle?: repo.ExecutionBundleRecord | null;
 }
 
 /**
@@ -766,7 +873,133 @@ interface SwitchOutcome {
  * autre prompt n'est consulté (AC06).
  */
 export async function activateDraft(treatment: Treatment, versionId: number, userId: number): Promise<SwitchOutcome> {
+  // Lot 105C : prompt à bundle complet (T4) — même chemin que « Activer la version » (bundle résolu, figé, atomique).
+  if (isUnifiedActivation(treatment)) {
+    const v = await repo.getPromptVersion(versionId);
+    if (v && v.treatment === treatment && v.environment === getAiEnvironment() && v.status === 'DRAFT') {
+      return activateEditedVersion(treatment, { content: v.content, draftId: v.id }, userId);
+    }
+  }
   return switchTo(treatment, versionId, userId, 'activate');
+}
+
+/** Codes des contrôles qui portent sur le TEXTE (seuls à pouvoir être corrigés par l'administrateur). */
+const TEXT_ISSUE_CODES = new Set(['PROMPT_EMPTY', 'TOO_LONG', 'INVALID_CONTENT', 'NO_MASTER']);
+
+/** Message unique d'un refus technique du moteur (jamais « choisissez t4_input_v3 »). */
+const engineMessage = (treatment: Treatment) => `Impossible d’activer ${treatment} : configuration du moteur incompatible`;
+
+/**
+ * Lot 105C — contexte CONSTRUCTIBLE pour chaque TASK du bundle : le contexte
+ * d'un scénario de référence par TASK est construit et validé par le contrat
+ * d'entrée (mêmes constructeurs que la production). Aucune TASK sans
+ * scénario n'est jugée ici (le contrôle statique du contrat suffit).
+ */
+async function contextIssuesFor(masterPromptCode: string, config: MasterExecutionConfig): Promise<BundleIssue[]> {
+  const spec = structuredSpecFor(masterPromptCode);
+  if (!spec) return [];
+  const [{ loadMasterCorpusCases, readMasterFileFromRepo }, { liveVariablesFor }, { caseMatchesExecution }, { buildExecutionContext, StructuredContextError }] = await Promise.all([
+    import('../governance/master-corpus/cases'), import('../governance/master-corpus/live'),
+    import('../governance/master-corpus/runner'), import('./structured-context'),
+  ]);
+  let cases: Awaited<ReturnType<typeof loadMasterCorpusCases>>;
+  try { cases = loadMasterCorpusCases(readMasterFileFromRepo).filter((c) => c.masterPromptCode === masterPromptCode); } catch { return []; }
+  const issues: BundleIssue[] = [];
+  for (const task of config.allowedTasks ?? []) {
+    const c = cases.find((x) => x.task === task && caseMatchesExecution(x, config));
+    if (!c) continue;
+    const variables = await liveVariablesFor(c).catch(() => null);
+    if (!variables) continue;
+    try {
+      buildExecutionContext(spec, config, task, variables);
+    } catch (e) {
+      if (!(e instanceof StructuredContextError)) throw e;
+      issues.push({ code: 'CONTEXT_NOT_BUILDABLE', task, message: `Contexte de la fonction ${task} impossible à construire (${e.code}) : ${e.message}` });
+    }
+  }
+  return issues;
+}
+
+interface UnifiedActivationOutcome extends SwitchOutcome {
+  /** Brouillon où le texte activé a été enregistré. */
+  draftVersionNumber: number;
+}
+
+/**
+ * Lot 105C — « ACTIVER LA VERSION » (T4) : UN geste, tout le reste par le serveur.
+ *
+ *   1. le texte ÉDITÉ (même non enregistré) est persisté dans le brouillon
+ *      (créé depuis la version active si besoin) — jamais perdu, même en
+ *      cas de refus ;
+ *   2. la configuration du brouillon est ramenée au bundle complet ;
+ *   3. contrôles serveur : texte (non vide, valide, taille), bundle
+ *      (contrats d'entrée et de sortie, couverture des quatre TASK, contrat
+ *      runtime de chaque TASK, modèle configuré), contexte constructible ;
+ *   4. une transaction : texte vérifié sous verrou (empreinte), bundle figé
+ *      sur la version, bascule, journal, révision de configuration ;
+ *   5. caches et capacités invalidés ; confirmation après succès réel.
+ * Tout échec : AUCUNE activation, version active inchangée ; refus
+ * `ENGINE_INCOMPATIBLE` (« Impossible d'activer T4 : configuration du moteur
+ * incompatible » + détail) ou `TEXT_INVALID` (motif du texte).
+ */
+export async function activateEditedVersion(
+  treatment: Treatment, p: { content: string; draftId?: number | null }, userId: number,
+): Promise<UnifiedActivationOutcome> {
+  await assertTables();
+  const environment = getAiEnvironment();
+  const master = masterPromptForTreatment(treatment);
+  if (!master || !bundleSpecOf(master.masterPromptCode)) {
+    throw new MasterPromptRefused('UNIFIED_ACTIVATION_UNSUPPORTED', `L’activation en un geste n’est pas proposée pour ${treatment}.`, null, 400);
+  }
+  if (typeof p.content !== 'string') throw new MasterPromptRefused('INVALID_CONTENT', 'Le texte du prompt est illisible.', null, 400);
+  try {
+    assertStorable(p.content);
+  } catch (e) {
+    if (e instanceof MasterPromptRefused) {
+      throw new MasterPromptRefused('TEXT_INVALID', `Impossible d’activer ${treatment} : ${e.message}`, { issues: [{ code: e.code, message: e.message }], draftSaved: false }, 422);
+    }
+    throw e;
+  }
+
+  // 1-2. Brouillon : celui qui est édité (refus s'il a changé entre-temps), sinon créé depuis l'Actif.
+  const existant = await repo.getDraft(environment, treatment);
+  if (p.draftId != null && existant?.id !== p.draftId) {
+    throw new MasterPromptRefused('DRAFT_CHANGED',
+      'Le brouillon a été activé ou remplacé entre-temps (autre administrateur ?) : rechargez la page — votre texte est encore dans l’éditeur.', null, 409);
+  }
+  let draft = existant ? await saveDraft(treatment, existant.id, p.content, userId) : await startDraft(treatment, userId, p.content);
+  draft = await normalizeBundleDraft(draft);
+  const saved = { draftSaved: true, draftVersionNumber: draft.versionNumber };
+
+  // 3. Contrôles serveur.
+  const bundle = resolveBundleFor(master.masterPromptCode);
+  const config = bundle.config ?? completeBundleConfig(bundleSpecOf(master.masterPromptCode))!;
+  const checks = checkMasterPromptContent(treatment, draft.content, config);
+  const texte = checks.blocking.filter((i) => TEXT_ISSUE_CODES.has(i.code));
+  if (texte.length > 0) {
+    throw new MasterPromptRefused('TEXT_INVALID', `Impossible d’activer ${treatment} : ${texte.map((i) => i.message).join(' ')}`,
+      { issues: texte.map((i) => ({ code: i.code, message: i.message })), ...saved }, 422);
+  }
+  const moteur: Array<{ code: string; message: string; task?: string }> = [
+    ...(bundle.ok ? [] : bundle.issues),
+    ...checks.blocking.filter((i) => !TEXT_ISSUE_CODES.has(i.code)).map((i) => ({ code: i.code, message: i.message })),
+  ];
+  if (moteur.length === 0) moteur.push(...await contextIssuesFor(master.masterPromptCode, config));
+  if (!bundle.ok || moteur.length > 0) {
+    console.warn(`[master-prompts] activation ${treatment} refusée (moteur) : ${moteur.map((i) => i.code).join(', ')}`);
+    throw new MasterPromptRefused('ENGINE_INCOMPATIBLE', engineMessage(treatment), { issues: dedupeIssues(moteur), ...saved }, 422);
+  }
+
+  // 4-5. Bascule atomique, bundle figé avec la version.
+  const frozen = { ...bundle.frozen, promptSha256: draft.contentSha256, frozenAt: new Date().toISOString() } satisfies repo.ExecutionBundleRecord;
+  const r = await switchTo(treatment, draft.id, userId, 'activate', { contentSha256: draft.contentSha256, bundle: frozen });
+  console.info(`[master-prompts] ${treatment} v${r.activeVersionNumber} activée — bundle ${frozen.id} (${frozen.inputContractVersion}/${frozen.outputContractVersion}, ${frozen.tasks.join('+')}), texte ${promptHash(draft.content)}`);
+  return { ...r, bundle: frozen, draftVersionNumber: draft.versionNumber };
+}
+
+function dedupeIssues<T extends { code: string; message: string }>(l: T[]): T[] {
+  const vus = new Set<string>();
+  return l.filter((i) => { const k = `${i.code}|${i.message}`; if (vus.has(k)) return false; vus.add(k); return true; });
 }
 
 /** « Réactiver cette version » depuis l'historique (AC11). L'Actif courant reste dans l'historique. */
@@ -774,7 +1007,10 @@ export async function reactivateVersion(treatment: Treatment, versionId: number,
   return switchTo(treatment, versionId, userId, 'rollback');
 }
 
-async function switchTo(treatment: Treatment, versionId: number, userId: number, action: 'activate' | 'rollback'): Promise<SwitchOutcome> {
+async function switchTo(
+  treatment: Treatment, versionId: number, userId: number, action: 'activate' | 'rollback',
+  expect?: { contentSha256: string; bundle: repo.ExecutionBundleRecord | null },
+): Promise<SwitchOutcome> {
   await assertTables();
   const environment = getAiEnvironment();
   const v = await repo.getPromptVersion(versionId);
@@ -815,6 +1051,7 @@ async function switchTo(treatment: Treatment, versionId: number, userId: number,
   const cfg = await import('../config/config-version.repository');
   const r = await repo.switchActivePrompt({
     environment, treatment, targetId: v.id, action, userId, userEmail: email, testSummary: testSummaryText(tests),
+    ...(expect ? { expect } : {}),
   }, {
     before: async (sql) => {
       if ((await sql.unsafe(`SELECT to_regclass('ai_config_revisions') IS NOT NULL AS ok`) as Array<{ ok: boolean }>)[0]?.ok) {
@@ -829,7 +1066,9 @@ async function switchTo(treatment: Treatment, versionId: number, userId: number,
   });
   if ('refused' in r) {
     throw new MasterPromptRefused(r.refused === 'NOT_FOUND' ? 'VERSION_NOT_FOUND' : 'VERSION_CHANGED',
-      r.refused === 'NOT_FOUND' ? 'Version introuvable.' : 'La version vient de changer d’état : rechargez la page.',
+      r.refused === 'NOT_FOUND' ? 'Version introuvable.'
+        : r.refused === 'CONTENT_CHANGED' ? 'Le brouillon a été modifié entre-temps : rien n’a été activé. Rechargez la page.'
+          : 'La version vient de changer d’état : rechargez la page.',
       null, r.refused === 'NOT_FOUND' ? 404 : 409);
   }
 
@@ -842,6 +1081,10 @@ async function switchTo(treatment: Treatment, versionId: number, userId: number,
   if (tests.state === 'never') notices.push('Cette version n’a pas encore été testée avec le corpus.');
   if (tests.state === 'done' && tests.run.failed > 0) notices.push(tests.message);
   for (const w of checks.warnings) notices.push(w.message);
+  // Lot 105C (T4) : fonctions de la version désormais active — une version restaurée ancienne dit ses limites.
+  const functions = bundleSpecOf(r.current.masterPromptCode) ? t4FunctionsOf({ text: r.current.content, execution: executionOfVersion(r.current) }) : null;
+  const limites = functions ? t4LimitationsText(functions) : null;
+  if (limites) notices.push(`Version v${r.current.versionNumber} : ${limites}`);
   // Lot 100B (#345, arbitrage A1) : l'activation MANUELLE reste possible ; elle affiche la matrice et les manques
   // de couverture du corpus, à titre d'information (jamais bloquant).
   if (action === 'activate') {
@@ -851,6 +1094,7 @@ async function switchTo(treatment: Treatment, versionId: number, userId: number,
   return {
     treatment, previousVersionNumber: r.previous?.versionNumber ?? null,
     activeVersionNumber: r.current.versionNumber, activeVersionId: r.current.id, notices,
+    functions, bundle: r.current.executionBundle ?? null,
   };
 }
 
@@ -867,6 +1111,14 @@ async function invalidateAfterSwitch(treatment: Treatment, versionNumber: number
   invalidateConfigCache();
   invalidateConfigVersionCache();
   invalidatePromptCache(masterPromptCode);
+  // Lot 105C : capacités dérivées de la version T4 active (représentation Agenda, évaluation « À traiter »).
+  if (treatment === 'T4') {
+    const [{ invalidateRepresentationCapabilityCache }, { invalidateT4AssessmentConfigCache }] = await Promise.all([
+      import('@/services/business-operations/semantic/decider'), import('@/services/to-process/document-field-evidence'),
+    ]);
+    invalidateRepresentationCapabilityCache();
+    invalidateT4AssessmentConfigCache();
+  }
 }
 
 async function recordAudit(a: {
@@ -882,7 +1134,11 @@ async function recordAudit(a: {
       adminEmail: a.email ?? `user:${a.userId}`,
       actionType: a.action === 'rollback' ? 'ai_master_prompt_rollback' : 'ai_master_prompt_activate',
       beforeValue: { treatment: a.treatment, versionId: a.from?.id ?? null, versionNumber: a.from?.versionNumber ?? null },
-      afterValue: { treatment: a.treatment, versionId: a.to.id, versionNumber: a.to.versionNumber, tests: a.tests },
+      afterValue: {
+        treatment: a.treatment, versionId: a.to.id, versionNumber: a.to.versionNumber, tests: a.tests,
+        // Lot 105C : configuration figée avec la version (traçabilité de l'activation) ; absente : version historique.
+        ...(a.to.executionBundle ? { bundle: a.to.executionBundle.id, contentSha256: a.to.contentSha256 } : {}),
+      },
       reason: null,
       createdAt: new Date(),
     });

@@ -155,6 +155,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   account_reconciliation_runs: { domain: 'champs-preuves', description: 'Réconciliations par compte.' },
   t3_information_checks: { domain: 'champs-preuves', description: 'Contrôles « Informations » (lot 76J).' },
   t3_decision_memory: { domain: 'champs-preuves', description: 'Mémoire durable des décisions T3 assistées par l’IA (empreinte du contexte par composante, décision, abstention ou échec, réutilisations, invalidations et motif, relance forcée) — lot 99A.' },
+  document_identity_groups: { domain: 'champs-preuves', description: 'Groupes d’identité documentaire T3 (documents sans bien qui désignent une même adresse de bien, un cadastre, une immatriculation ou un VIN) : membres, ancres, exclus et motif, provenance des arêtes, contradictions, statut face aux biens, carte groupée — lot 105D.' },
+  document_identity_decisions: { domain: 'champs-preuves', description: 'Décisions de l’utilisateur sur une carte groupée (« ce logement est / n’est pas mon bien ») : bien, empreinte de l’identité du bien, documents concernés, statut actif / remplacé / annulé — lot 105D.' },
   t3_reconciliation_states: { domain: 'champs-preuves', description: 'États de réconciliation T3.' },
   t3_open_action_evaluations: { domain: 'champs-preuves', description: 'Évaluations T3 des actions ouvertes.' },
   account_knowledge_changes: { domain: 'champs-preuves', description: 'Changements de connaissance du compte (déclencheurs de contrôle).' },
@@ -322,6 +324,8 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_corpus_oracle_approvals: 'qualification IA (approbations individuelles des oracles du corpus)',
   ai_corpus_case_decisions: 'qualification IA (rejets / rétablissements motivés des cas du corpus)',
   ai_corpus_a1_assessments: 'qualification IA (journal du verrou A1 de couverture)',
+  // Lot 105B : journal de la promotion automatique IA (identifiants, empreintes, motifs ; aucun contenu de document).
+  ai_promotion_events: 'qualification IA (journal de la promotion automatique : revalidation, A1, surveillance, retours arrière)',
   // Ancien harnais de mesure (cron `corpus-run`, retiré au lot 86A : absorbé par la qualification par couple) — table inerte, créée à la volée en préproduction.
   ai_corpus_baseline: 'qualification IA (ancien harnais de mesure retiré au lot 86A, table inerte)',
   // Lot 86B (Pilotage IA V2 P6) : imports de la configuration globale, interventions manuelles, routage subordonné.

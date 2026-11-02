@@ -152,6 +152,9 @@ const REASON_CODES = [
   // Lot 85F : connaissance T1 non structurée pas encore interprétée par T3 (capacité IA non livrée,
   // budget, panne, contexte trop grand) — jamais « information absente » ; carte conservée.
   'INTERPRETATION_PENDING',
+  // Lot 105D : identité du groupe à confirmer par la carte GROUPÉE (aucune carte individuelle, aucune IA) ;
+  // biens refusés par l'utilisateur pour ce groupe (aucune question répétée).
+  'GROUP_CONFIRMATION_PENDING', 'GROUP_REFUSED',
 ] as const;
 export type ReasonCode = (typeof REASON_CODES)[number];
 
@@ -240,6 +243,8 @@ export interface OpenActionsResult {
   /** Lot 57B : état du journal durable (OK, PARTIAL : colonnes 0410 absentes, FAILED : écriture impossible). */
   journalStatus: 'OK' | 'PARTIAL' | 'FAILED';
   journalError: string | null;
+  /** Lot 105D : décisions du modèle RÉUTILISÉES à contexte inchangé (aucun appel fournisseur). */
+  aiReused?: number;
 }
 
 interface ActionRow {
@@ -265,6 +270,8 @@ export function resolverOf(ruleCode: string): { resolver: string; t3: boolean } 
     RECONCILIATION_BRIDGE: 'T3_ASSET',
     T3_ENTITY_FIELDS: 'T3_ENTITY',
     T3_OPERATIONS: 'T3_OPERATIONS',
+    // Lot 105D : carte groupée d'identité — décision de l'utilisateur, synchronisée par la phase « identités ».
+    T3_IDENTITY_GROUP: 'T3_IDENTITY_GROUP',
     // Lot 57B (défaut E) : données documentaires du pont, reprises depuis la connaissance T1 persistée.
     DOCUMENT_BRIDGE: 'T3_DOCUMENT_FIELD',
   };
@@ -330,7 +337,7 @@ const vide = (): OpenActionsResult => ({
   byEffect: Object.fromEntries(OPEN_ACTION_EFFECTS.map((k) => [k, 0])) as Record<OpenActionEffect, number>,
   byResolver: {}, aiCalls: 0, aiDeferred: 0, resolutionAttempted: 0, byEvaluationMode: {}, operationsConsolidations: 0,
   journaled: 0, entries: [], omittedEntries: 0,
-  openAtStart: 0, resolved: 0, keptAmbiguous: 0, delegated: 0, stalledRecovered: 0, errors: 0, byReasonCode: {}, aiCallsByOperation: {},
+  openAtStart: 0, resolved: 0, keptAmbiguous: 0, delegated: 0, stalledRecovered: 0, errors: 0, byReasonCode: {}, aiCallsByOperation: {}, aiReused: 0,
   journalStatus: 'OK', journalError: null,
 });
 
@@ -579,7 +586,8 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
     if (e.actionEffect === 'ERROR') out.errors += 1;
     if (e.reasonCode === 'JOB_PENDING' || e.reasonCode === 'DEPENDENCY_STALLED') out.delegated += 1;
     if ((e.actionEffect === 'STILL_OPEN' || e.actionEffect === 'UPDATED' || (e.actionEffect === 'SUPERSEDED' && e.note === 'card_replaced'))
-      && ['AMBIGUOUS', 'INSUFFICIENT_EVIDENCE', 'UNSUPPORTED_CHOICE', 'NO_CANDIDATE', 'FIELD_NOT_IN_T1', 'AWAITING_USER'].includes(e.reasonCode)) out.keptAmbiguous += 1;
+      && ['AMBIGUOUS', 'INSUFFICIENT_EVIDENCE', 'UNSUPPORTED_CHOICE', 'NO_CANDIDATE', 'FIELD_NOT_IN_T1', 'AWAITING_USER', 'GROUP_CONFIRMATION_PENDING'].includes(e.reasonCode)) out.keptAmbiguous += 1;
+    if (e.aiReason === 'DECISION_REUSED') out.aiReused = (out.aiReused ?? 0) + 1;
     if (out.entries.length < OPEN_ACTIONS_REPORT_MAX) out.entries.push(entreeRapport(e));
     else out.omittedEntries += 1;
     tampon.push(e);
@@ -591,6 +599,17 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
   const ctxAutres: OtherCtx = {
     reconciledAssetIds: opts.reconciledAssetIds, d, entites: new Set<string>(), guard: opts.guard, borne: Number(borne), operations: null, out,
     runRef: opts.accountRunId ? `t3_run:${opts.accountRunId}${opts.queueJobId ? `/job:${opts.queueJobId}` : ''}` : opts.queueJobId ? `job:${opts.queueJobId}` : null,
+  };
+  // Lot 105D : graphe d'identité (groupes, décisions) construit à la première carte LINK-ASSET, partagé par la phase.
+  let graphe: Promise<import('../document-asset/identity/graph').AccountIdentityGraph | null> | null = null;
+  const grapheIdentite = () => {
+    graphe ??= (async () => {
+      const [{ loadAccountMatchingIndex }, { identityGraphFor }] = await Promise.all([
+        import('../document-asset/matching-index'), import('../document-asset/identity/load'),
+      ]);
+      return identityGraphFor(accountId, opts.indexes ? await opts.indexes.get(accountId) : await loadAccountMatchingIndex(accountId));
+    })().catch(() => null);
+    return graphe;
   };
   let curseur = 0;
   for (;;) {
@@ -631,7 +650,7 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
         }
         if (resolver === 'T3_DOCUMENT_ASSET') {
           // Réexamen complet, IA si nécessaire — lot 54A : jamais reporté pour quota T3.
-          enregistrer(await reexamineDocument(accountId, row, base, { ...opts, d, trace, out }), t0);
+          enregistrer(await reexamineDocument(accountId, row, base, { ...opts, d, trace, out, identity: grapheIdentite }), t0);
           continue;
         }
         enregistrer(await reexamineOther(accountId, row, base, resolver, t3, ctxAutres, trace), t0);
@@ -696,6 +715,8 @@ function candidateOriginsOf(ev: { candidateSources?: Record<string, string[]>; s
 /** LINK-ASSET : réexamen complet du document (voie canonique). */
 async function reexamineDocument(accountId: number, row: ActionRow, base: Base, o: {
   guard?: ExecutionGuard; triggerCode?: string | null; indexes?: MatchingIndexCache; d: OpenActionsDeps; trace?: Trace; out?: OpenActionsResult;
+  /** Lot 105D : graphe d'identité du compte, construit à la première carte LINK-ASSET de la phase. */
+  identity?: () => Promise<import('../document-asset/identity/graph').AccountIdentityGraph | null>;
 }): Promise<OpenActionEntry> {
   const fileId = Number(row.target_id);
   const cle = { actionId: base.actionId, ruleCode: base.ruleCode, targetType: base.targetType, targetId: base.targetId };
@@ -721,11 +742,13 @@ async function reexamineDocument(accountId: number, row: ActionRow, base: Base, 
   }
   etape(o.trace, 'KNOWLEDGE');
   const index = o.indexes ? await o.indexes.get(accountId) : undefined;
+  // Lot 105D : graphe d'identité construit UNE fois pour la phase (jamais un par carte).
+  const identityGraph = o.identity ? await o.identity() : undefined;
   const avant = await cardSnapshot(Number(row.id));
   etape(o.trace, 'RESOLVER');
   const r = await o.d.resolveDocumentAsset({
     accountId, fileId, guard: o.guard, triggerCode: o.triggerCode ?? 'schedule_hourly', reprocessReason: 'OPEN_ACTION',
-    openActionId: Number(row.id), rearbitration: 'allow', ...(index ? { index } : {}),
+    openActionId: Number(row.id), rearbitration: 'allow', ...(index ? { index } : {}), ...(identityGraph !== undefined ? { identityGraph } : {}),
   });
   etape(o.trace, 'DECISION');
   const ev = r.evaluation;
@@ -936,6 +959,11 @@ async function reexamineOther(accountId: number, row: ActionRow, base: Base, res
         evaluationMode: 'DETERMINISTIC_REEVALUATION', resolutionAttempted: r.status !== 'NOT_A_FIELD', reasonCode: rc,
         ...(rc === 'USER_DECISION_PROTECTED' ? { note: 'user_decision_protected' } : apres === null ? { note: 'card_replaced' } : {}),
       });
+    }
+    case 'T3_IDENTITY_GROUP': {
+      // Lot 105D : synchronisée en tête de passage par la phase « identités documentaires » (ouverte, actualisée ou fermée) ;
+      // la relation groupe → bien appartient à l'utilisateur : constat seulement, jamais d'IA.
+      return entry({ actionEffect: 'STILL_OPEN', deterministicAttempted: true, evaluationMode: 'OBSOLESCENCE_ONLY', resolutionAttempted: false, reasonCode: 'GROUP_CONFIRMATION_PENDING' });
     }
     case 'T3_ASSET_CONFLICT': {
       // Obsolescence évaluée en tête de phase (une requête par compte) : constat seulement.

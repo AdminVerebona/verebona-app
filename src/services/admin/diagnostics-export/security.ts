@@ -117,6 +117,8 @@ const DIAG_TABLE_OMITTED_COLUMNS: Readonly<Record<string, Readonly<Record<string
     contact_fingerprints: { kind: 'SECURITE', motif: 'empreintes HMAC des adresses (propagation des suppressions)' },
   },
   account_deletion_registry: { signal_contacts: { kind: 'SECURITE', motif: 'empreintes HMAC des adresses supprimées (propagation des suppressions)' } },
+  // Lot 105D : adresse du bien telle que lue dans les documents (libellé de la carte groupée) — donnée sensible (lot 29).
+  document_identity_groups: { identity_label: { kind: 'CONTENU', motif: 'adresse d’un bien lue dans les documents (donnée sensible)' } },
   // Lot 97 : jeton push mobile (chiffré) — capacité d'envoyer sur le téléphone de l'utilisateur.
   mobile_push_installations: { push_token_enc: { kind: 'SECURITE', motif: 'jeton push mobile (chiffré)' } },
 };

@@ -33,6 +33,9 @@ export const COHERENCE_BUSINESS_EVENTS: ReadonlySet<string> = new Set([
   'DOCUMENT_UPDATED', 'DOCUMENT_DELETED', 'DOCUMENT_UPLOADED', 'ASSET_UPDATED', 'ASSET_DELETED', 'AGENDA_ITEM_CREATED', 'AGENDA_ITEM_UPDATED',
   // Lot 83E : évolution de l'abonnement, des droits / relations Duo, résolution d'une carte « À traiter » (CDC §6.1).
   'PLAN_CHANGED', 'ACCOUNT_PERMISSION_CHANGED', 'TO_PROCESS_ITEM_UPDATED',
+  // Lot 105D : création d'un bien (POST /api/assets, déplacement d'espace) — les documents historiquement sans
+  // bien deviennent potentiellement rattachables (COH-DOC-PRIMARY-LINK). Distinct du déclencheur T3 (fonctionnel).
+  'ASSET_CREATED',
 ]);
 
 /** Lot 83B : type relayé pour toute écriture d'une Opération (bus des Opérations). */

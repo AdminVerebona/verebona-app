@@ -220,31 +220,31 @@ scenario('L54-T4-BO', 'T4 v2 : brouillon depuis le texte de référence, Legacy 
     (await import('@/services/ai/config/config-resolver')).invalidateConfigCache();
   });
 
-  it('T4-V2-09 — Actif Legacy : copie Legacy conservée ; texte de référence v2 → STRUCTURED_CONTEXT v2 sans {{TASK}} ; Legacy réactivable et exécuté (t4_output_v1)', async () => {
+  it('T4-V2-09 — Actif Legacy : texte hérité, bundle complet (lot 105C) sans {{TASK}} ; Legacy réactivable et exécuté (t4_output_v1)', async () => {
     const legacy = await lire('src/services/ai/agenda/master/reference/t4_master_v1.legacy-template.txt');
     const reference = await lire('src/services/ai/prompts/agenda/t4_master_v1.txt');
     await sql`INSERT INTO ai_master_prompt_versions (environment, treatment, master_prompt_code, version_number, status, content, content_sha256, origin, activated_at, first_activated_at, execution_mode)
       VALUES ('local', 'T4', 't4_master_v1', 1, 'ACTIVE', ${legacy}, 'x', 'initial_file', now(), now(), 'LEGACY_TEMPLATE')`;
 
-    // « Modifier » sur un Actif Legacy : le brouillon reste Legacy (version historique supportée)…
+    // Lot 105C : « Modifier » sur un Actif Legacy — le brouillon hérite du TEXTE seulement et reçoit le bundle
+    // complet (jamais l'ancien mode) ; repartir du texte de référence ne change pas la configuration.
+    const BUNDLE = { mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v3', outputContractVersion: 't4_output_v4',
+      allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY', 'AGENDA_REPRESENTATION'], bundleId: 't4-bundle-v1' };
     const copie = await svc.startDraft('T4', admin);
-    expect(svc.executionOfVersion(copie)).toMatchObject({ mode: 'LEGACY_TEMPLATE' });
-    // … mais repartir du texte de référence v2 initialise le contexte structuré v2.
+    expect(copie.content).toBe(legacy);
+    expect(svc.executionOfVersion(copie)).toEqual(BUNDLE);
     const v2 = await svc.saveDraft('T4', copie.id, reference, admin);
-    // Lot 61 : le texte de référence sort en `t4_output_v3` (v2 + intervention « À traiter »).
-    expect(svc.executionOfVersion(v2)).toEqual({
-      mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v3',
-      allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'],
-    });
+    expect(svc.executionOfVersion(v2)).toEqual(BUNDLE);
     const detail = await svc.getPromptDetail('T4');
-    expect(detail.draft).toMatchObject({ issues: [], execution: { mode: 'STRUCTURED_CONTEXT', outputContractVersion: 't4_output_v3' } });
+    expect(detail.draft).toMatchObject({ issues: [], execution: { mode: 'STRUCTURED_CONTEXT', outputContractVersion: 't4_output_v4' } });
+    // Le texte livré (fichier du dépôt) garde sa configuration d'origine (aucun déploiement ne change ce qui s'exécute).
     expect(detail.structured?.defaults).toMatchObject({ inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v3' });
     // Activable sans {{TASK}} ni emplacement.
     expect(reference).not.toMatch(/\{\{[A-Z_]+\}\}/);
     const act = await svc.activateDraft('T4', copie.id, admin);
     expect(act.activeVersionNumber).toBe(2);
 
-    // Exécution : contexte v2, sortie v2.
+    // Exécution : contexte structuré (bundle), décision d'existence du modèle (sortie v2 et suivantes).
     const { invalidateConfigCache } = await import('@/services/ai/config/config-resolver');
     invalidateConfigCache();
     const { decideAgendaEvent } = await import('@/services/ai/agenda/master/classify-event');

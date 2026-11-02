@@ -43,6 +43,9 @@
  *
  * Versions INDÉPENDANTES (ticket « Versioning indépendant ») : le prompt
  * (version BO), `t4_input_vN` et `t4_output_vN` évoluent séparément.
+ *
+ * Lot 105C : l'administrateur ne choisit plus ces versions — chaque nouvelle
+ * version reçoit le bundle complet stable (`completeBundle` ci-dessous).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { z } from 'zod';
@@ -282,11 +285,30 @@ export const T4_EXECUTION_SPEC: StructuredContextSpec = {
   // intervention, variante prudente). Une version BO antérieure au lot 34D reste
   // LEGACY_TEMPLATE (migration 0290, explicite) ; une version structurée v1
   // reste v1 (réactivable).
+  //
+  // Lot 105C : `defaults` ne décrit plus QUE le texte livré (fichier du dépôt,
+  // qui ne porte pas la branche AGENDA_REPRESENTATION) et l'exécution d'un
+  // environnement sans version BO — inchangé, pour qu'aucun déploiement ne
+  // modifie ce qui s'exécute. Toute NOUVELLE version prend `completeBundle`.
   defaults: {
     mode: 'STRUCTURED_CONTEXT',
     inputContractVersion: 't4_input_v2',
     outputContractVersion: 't4_output_v3',
     allowedTasks: [...T4_TASKS],
+  },
+  // Lot 105C (ticket « BO T4 : un prompt, une activation ») — BUNDLE T4
+  // COMPLET STABLE, SOURCE UNIQUE pour le BO, les routes, les contrôles et
+  // l'orchestrateur : contexte structuré, entrée t4_input_v3, sortie
+  // t4_output_v4 (schémas DISTINCTS par TASK : T4ClassifyEventV3Output,
+  // T4VerifyCompletionOutput, T4TemporalAmbiguityOutput,
+  // T4AgendaRepresentationOutput), les QUATRE TASK. Figé (identifiant compris)
+  // dans chaque nouvelle version activée. Un futur contrat compatible =
+  // nouvel identifiant ici, aucune sélection manuelle.
+  completeBundle: {
+    id: 't4-bundle-v1',
+    inputContractVersion: 't4_input_v3',
+    outputContractVersion: 't4_output_v4',
+    tasks: [...T4_TASKS, ...T4_OPTIONAL_TASKS],
   },
   errorCodes: {
     missingField: 'T4_INPUT_CONTRACT_MISSING_FIELD',

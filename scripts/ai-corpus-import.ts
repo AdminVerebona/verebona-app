@@ -4,7 +4,7 @@
  *
  *   npm run ai:corpus:import -- <livraison.zip|dossier>            # ESSAI : rapport ligne par ligne, rien n'est écrit
  *   npm run ai:corpus:import -- <livraison.zip|dossier> --write    # écrit fixtures, pièces, manifeste et rapport
- *   options : --by "<nom du développeur>" · --json
+ *   options : --by "<nom du développeur>" · --json · --accept-gaps (lot 105B : import partiel assumé malgré des écarts de rapprochement)
  *
  * Outil de DÉVELOPPEUR (le PO ne lance aucune commande). N'approuve RIEN :
  * chaque référence s'approuve ensuite individuellement au BO (Configuration
@@ -27,8 +27,22 @@ async function main() {
   const imp = await import('@/services/ai/governance/master-corpus/certification/importer');
   const { loadCorpusManifest, MANIFEST_PATH, REPO_ROOT, validateManifest } = await import('@/services/ai/governance/master-corpus/certification/manifest');
   const { liveVariablesFor } = await import('@/services/ai/governance/master-corpus/live');
-  const src = statSync(cible).isDirectory() ? await imp.readDirectorySource(cible) : await imp.readZipSource(cible.split('/').pop() ?? cible, readFileSync(cible));
+  const brut = statSync(cible).isDirectory() ? await imp.readDirectorySource(cible) : await imp.readZipSource(cible.split('/').pop() ?? cible, readFileSync(cible));
   const before = loadCorpusManifest();
+  // Lot 105B : livraison JSONL (format réel du ZIP #601) → adaptateur + RAPPROCHEMENT entrée par entrée (86 + 20 + 295,
+  // 15 stress, 110 paires) AVANT toute conversion ; écarts → rien n'est écrit avec --write.
+  let src = brut;
+  let rapprochementOk = true;
+  if ([...brut.files.keys()].some((p) => /\.(jsonl|ndjson)$/i.test(p))) {
+    const ad = await import('@/services/ai/governance/master-corpus/certification/zip-jsonl-adapter');
+    const { EXPECTED_INVENTORY } = await import('@/services/ai/governance/master-corpus/certification/expected-inventory');
+    const rec = ad.reconcileInventory({ lines: ad.readJsonl(brut), manifest: before, expected: EXPECTED_INVENTORY.totals });
+    console.log(ad.reconcileReportText(rec));
+    rapprochementOk = rec.ok;
+    const a = ad.adaptJsonl(brut);
+    for (const e of a.errors) console.log(`  ✗ JSONL : ${e}`);
+    src = a.source;
+  }
   const r = await imp.convertImport(src, before, { liveVariables: liveVariablesFor, by: val('--by') ?? 'importeur-601' });
   const problems = validateManifest(r.manifest, null, before);
   if (has('--json')) console.log(JSON.stringify({ report: r.report, problems }, null, 2));
@@ -38,6 +52,7 @@ async function main() {
   }
   if (!has('--write')) { console.log('\n(essai : rien n’a été écrit — relancer avec --write)'); return; }
   if (problems.length) { console.error('[ai:corpus:import] manifeste invalide : rien n’est écrit.'); process.exit(1); }
+  if (!rapprochementOk && !has('--accept-gaps')) { console.error('[ai:corpus:import] rapprochement #601 en écart : rien n’est écrit (relire les écarts ; --accept-gaps pour un import PARTIEL assumé, les manques restent bloquants pour la promotion).'); process.exit(1); }
   for (const [rel, b] of r.writes) {
     const p = join(REPO_ROOT, rel);
     mkdirSync(dirname(p), { recursive: true });

@@ -135,7 +135,7 @@ export function checkPromptFiles(input: PromptFilesCheckInput): PromptFilesRepor
           // décrivent, TASK cochée) sont posés par le PO au BO. Avertissement si au moins un contrat la décrit.
           if ((structure.optionalTasks ?? []).includes(t)) {
             const decrite = Object.values(structure.inputContracts).some((c) => c.tasks[t]) && Object.values(structure.outputContracts).some((c) => c.byTask[t]);
-            if (decrite) report.warnings.push(`master « ${op.masterPromptCode} » (contexte structuré) : TASK facultative ${t} non autorisée par la configuration du fichier — fonction inactive tant qu’une version BO ne la porte pas (marqueur, contrats, TASK cochée)`);
+            if (decrite) report.warnings.push(`master « ${op.masterPromptCode} » (contexte structuré) : TASK facultative ${t} non autorisée par la configuration du fichier — fonction inactive tant qu’aucune version BO n’est activée avec la configuration complète (lot 105C : « Activer la version », aucun choix ni marqueur)`);
             else report.errors.push(`master « ${op.masterPromptCode} » : TASK facultative ${t} décrite par aucun contrat d’exécution`);
             continue;
           }

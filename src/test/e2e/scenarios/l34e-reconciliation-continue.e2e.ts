@@ -275,9 +275,11 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     expect(s2.updated_at).toEqual(s1.updated_at);
     expect(s2.evaluated_at).toEqual(s1.evaluated_at);
     expect(appels(replay, 't3_link_ambiguity')).toBe(0);
-    // Relance explicite du travail : carte ouverte → réexamen réel (arbitrage), toujours ambigu, aucun doublon.
+    // Relance explicite (manuelle) du travail : carte ouverte → réexamen réel (arbitrage), toujours ambigu, aucun doublon.
+    // Lot 105D (D4) : sans relance explicite, la décision du modèle serait réutilisée (contexte inchangé).
     const { resolveDocumentAsset } = await import('@/services/ai/reconciliation/document-asset/resolve-document-asset.service');
-    expect(await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id })).toMatchObject({ outcome: 'ABSTAIN', aiCalled: true });
+    expect(await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id })).toMatchObject({ outcome: 'ABSTAIN', aiCalled: false });
+    expect(await resolveDocumentAsset({ accountId: compte.id, fileId: doc.id, triggerCode: 'manual' })).toMatchObject({ outcome: 'ABSTAIN', aiCalled: true });
     expect(appels(replay, 't3_link_ambiguity')).toBe(1);
     expect(await cartes(doc.id)).toHaveLength(1);
     expect(await liens(doc.id)).toEqual(expect.not.arrayContaining([expect.objectContaining({ link_role: 'PRIMARY' })]));
@@ -419,7 +421,7 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     await drainQueues();
     expect(await colonne(doc.id)).toBe(valence.id);
     const r = await resolution(doc.id);
-    expect(r).toMatchObject({ status: 'RESOLVED', resolution_version: 3 });
+    expect(r).toMatchObject({ status: 'RESOLVED', resolution_version: 4 }); // lot 105D : version 4
     expect(r.e).toMatchObject({ reprocessReason: 'ENGINE_VERSION', previousResolution: 'NO_CANDIDATE' });
   });
 });

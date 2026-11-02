@@ -68,9 +68,17 @@ export function attentionFlagLabel(flag: string): string {
 }
 
 /**
- * Signaux à afficher À CÔTÉ du statut : « en_retard » est déjà porté par le
- * badge de statut « Date échue » (rouge) — ne pas le répéter.
+ * Signaux JAMAIS affichés à l'utilisateur :
+ *   · « en_retard » : déjà porté par le badge de statut « Date échue » ;
+ *   · « donnee_distincte_a_qualifier » : métadonnée interne de qualification
+ *     (décision PO lot 105, 02/11/2026 : badge « Donnée à qualifier » supprimé
+ *     de toutes les vues Agenda). Le signal reste calculé et conservé pour
+ *     T3 / T4, la cohérence, le diagnostic et la supervision ; un vrai besoin
+ *     de décision passe par « À traiter », jamais par un badge.
  */
+export const HIDDEN_ATTENTION_FLAGS: ReadonlySet<string> = new Set(['en_retard', 'donnee_distincte_a_qualifier']);
+
+/** Signaux à afficher À CÔTÉ du statut (règle unique : fiche, liste, onglet du bien). */
 export function visibleAttentionFlags(flags: readonly string[] | null | undefined): string[] {
-  return (flags ?? []).filter((f) => f !== 'en_retard');
+  return (flags ?? []).filter((f) => !HIDDEN_ATTENTION_FLAGS.has(f));
 }

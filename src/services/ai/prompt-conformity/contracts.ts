@@ -173,6 +173,11 @@ export const MARKER_CONTRACT_DECLARATIONS: readonly MarkerContractDeclaration[] 
     blockId: 't2-property-continuity-v1', killSwitch: null, label: 'T2 : ellipses sur l’objet du tour précédent, propriété exacte (série ≠ numéro de série)',
     impact: 'L’objet actif est déjà résolu par le serveur et le retrieval borné ; sans le contrat, une ellipse sans formulation reconnue (« Et son prix ? ») est moins souvent comprise par UNDERSTAND.',
     detect: async (t) => (await import('@/services/verebona-assistant/core/property-continuity-contract')).promptCarriesPropertyContinuity(t) },
+  // Lot 105D : preuves croisées de la relation DOCUMENT_ASSET (étape 12 du guide).
+  { id: 't3-document-asset-cross-v1', treatment: 'T3', rank: 13, guideStep: 12, lot: '105D', task: 'LINK_AMBIGUITY',
+    blockId: 't3-document-asset-cross-v1', killSwitch: 'T3_CROSS_DOCUMENT_CONTEXT_ENABLED', label: 'T3 : preuves croisées entre documents pour le rattachement à un bien',
+    impact: 'Déjà sûr côté serveur (groupes, rattachements démontrés, carte groupée) ; sans le contrat, T3 reçoit les variables d’avant (aucune preuve croisée) pour les cas qui demandent encore un arbitrage.',
+    detect: async (t) => (await import('../reconciliation/document-asset/identity/contract')).promptCarriesCrossDocument(t) },
 ];
 
 let registryCache: Promise<PromptContract[]> | null = null;

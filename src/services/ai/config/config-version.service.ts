@@ -582,18 +582,28 @@ export async function createAutomaticCandidate(p: {
  * Active AUTOMATIQUEMENT une candidate QUALIFIÉE — en PRÉPRODUCTION
  * seulement (décision 06, VER-01, OBJ-04 : la production n'expérimente pas de
  * nouveau couple). Contrôles techniques de toute activation conservés
- * (capacités, Preview, modèle servi par la clé). L'état `QUALIFIED` est
- * revérifié sous verrou ; toute autre version est refusée.
+ * (capacités, Preview, modèle servi par la clé).
+ *
+ * Lot 105B (§3, R5) : l'objet A1 transmis n'est qu'une RÉCLAMATION. Tout est
+ * revalidé DEPUIS LA BASE ici (`promotion-gate.revalidatePromotion` : état
+ * QUALIFIED, préproduction, identité candidate + traitement + campagne,
+ * décision A1 journalisée et COURANTE, empreintes corpus / oracles / contrats
+ * / profils / modèles, preuve admissible de chaque opération, verrou A1
+ * recalculé sur les résultats persistés, gel) puis dans la TRANSACTION finale
+ * (`transactionGuard` : certification, configuration active, révision,
+ * campagne, gel inchangés). Tout refus est journalisé avec la version de
+ * référence. L'activation manuelle (#345) ne passe jamais par ici.
  */
 export async function activateQualifiedCandidate(versionId: number, opts: {
   summary?: string;
   /**
-   * Lot 100B — jeton du VERROU A1 (couverture du corpus #601, arbitrage PO A1) rendu par
-   * `certification/promotion.assessPromotion` sur les résultats de la candidate : sans lui,
-   * aucune activation automatique (l'activation manuelle #345 ne passe jamais par ici).
+   * Réclamation du VERROU A1 rendue par `certification/promotion.assessPromotion` (jeton désignant l'évaluation
+   * journalisée, la campagne, la candidate, le périmètre et l'empreinte de contexte). Jamais suffisante seule.
    */
-  a1?: { allowed: true; rulesVersion: string } | null;
-} = {}): Promise<SwitchResult> {
+  a1?: unknown;
+  /** Lot 105B : options de cas de la campagne (mêmes empreintes de corpus que la qualification). */
+  caseOptions?: import('../qualification/promotion-gate').GateCaseOptions;
+} = {}): Promise<SwitchResult & { reference?: import('../qualification/promotion-gate').GateReference }> {
   if (getAiEnvironment() === 'production') {
     throw new ConfigOperationRefused('CANDIDATE_ACTIVATION_PREPROD_ONLY',
       'Activation automatique d’une candidate refusée : elle n’a lieu qu’en préproduction (la production importe le fichier global, décision 06).');
@@ -602,13 +612,40 @@ export async function activateQualifiedCandidate(versionId: number, opts: {
   if (version.origin !== 'auto') {
     throw new ConfigOperationRefused('CANDIDATE_NOT_QUALIFIED', 'Seule une candidate automatique peut être activée par l’optimisation (une version manuelle s’active à la main).');
   }
-  // Le refus « non qualifiée » (contrôlé à l'activation) prime ; une candidate QUALIFIÉE exige en plus le jeton A1.
-  if (version.candidateState === 'QUALIFIED' && !opts.a1?.allowed) {
+  if (version.candidateState !== 'QUALIFIED') {
+    throw new ConfigOperationRefused('CANDIDATE_NOT_QUALIFIED',
+      `Version ${versionId} : seule une candidate automatique QUALIFIÉE peut être activée automatiquement (état ${version.candidateState ?? 'aucun'}).`);
+  }
+  if (!opts.a1) {
     throw new ConfigOperationRefused('A1_COVERAGE_LOCK',
       'Activation automatique refusée : verrou A1 non levé (couverture du corpus de qualification insuffisante ou non évaluée). L’activation manuelle reste possible.');
   }
+  const gate = await import('../qualification/promotion-gate');
+  const d = await gate.revalidatePromotion({ versionId, claim: opts.a1, caseOptions: opts.caseOptions });
+  if (!d.ok) {
+    throw new ConfigOperationRefused('PROMOTION_REVALIDATION_REFUSED',
+      `Activation automatique refusée après revalidation depuis la base (${d.code}) : ${gate.GATE_CODE_LABELS[d.code!]} — ${d.reasons.join(' ; ')}`.slice(0, 1500),
+      { gateCode: d.code, reference: d.reference });
+  }
   await assertVersionTechnicallyCompatible(version);
-  const r = await repo.activateVersion(versionId, null, undefined, { candidate: true, summary: opts.summary }).catch(asRefusal);
+  const { recordPromotionEvent } = await import('../qualification/promotion-journal');
+  let r: Awaited<ReturnType<typeof repo.activateVersion>>;
+  try {
+    r = await repo.activateVersion(versionId, null, undefined, { candidate: true, summary: opts.summary, guard: gate.transactionGuard(d.reference) });
+  } catch (e) {
+    const code = e instanceof gate.PromotionGateRefused ? e.gateCode : (e as { code?: string }).code ?? 'ERROR';
+    await recordPromotionEvent({
+      environment: d.reference.environment, kind: 'ACTIVATION_TX', candidateVersionId: versionId, campaignId: d.reference.campaignId, treatment: d.reference.treatment,
+      allowed: false, code, message: (e as Error).message.slice(0, 1500), reference: d.reference as unknown as Record<string, unknown>,
+    });
+    if (e instanceof gate.PromotionGateRefused) throw new ConfigOperationRefused('PROMOTION_REVALIDATION_REFUSED', e.message, { gateCode: e.gateCode, reference: d.reference });
+    asRefusal(e);
+  }
   if (!r.alreadyActive) await afterCommit(`activate-candidate:${versionId}:r${r.revisionNumber}`, r.masterPromptSwitches);
-  return { previousId: r.previousId, interrupts: false, requeuedJobs: 0, revisionNumber: r.revisionNumber, alreadyActive: r.alreadyActive };
+  await recordPromotionEvent({
+    environment: d.reference.environment, kind: 'ACTIVATED', candidateVersionId: versionId, campaignId: d.reference.campaignId, treatment: d.reference.treatment,
+    allowed: true, code: null, message: `Candidate ${versionId} activée automatiquement en préproduction (configuration précédente ${r.previousId ?? '—'}).`,
+    reference: { ...d.reference, previousVersionId: r.previousId } as unknown as Record<string, unknown>,
+  });
+  return { previousId: r.previousId, interrupts: false, requeuedJobs: 0, revisionNumber: r.revisionNumber, alreadyActive: r.alreadyActive, reference: d.reference };
 }

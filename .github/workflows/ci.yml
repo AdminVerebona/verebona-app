@@ -473,6 +473,14 @@ jobs:
         run: npm run test:e2e:compte-technique -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-compte-technique.xml
       - name: Légal — vérification des CGUV publiées, réacceptation sûre, propagation des suppressions (lot 104A)
         run: npm run test:e2e:legal-finition -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-legal-finition.xml
+      - name: Recherche globale — « Voir tous les documents (N) » (lot 105A)
+        run: npm run test:e2e:recherche-compteur -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-recherche-compteur.xml
+      - name: IA — promotion sécurisée, verrou A1 revérifié, relances et surveillance (lot 105B)
+        run: npm run test:e2e:ia-promotion -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-ia-promotion.xml
+      - name: T4 — un prompt, une activation, les 4 fonctions (lot 105C)
+        run: npm run test:e2e:t4-activation -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t4-activation.xml
+      - name: T3 — rattachement rétroactif après création d'un bien (lot 105D)
+        run: npm run test:e2e:t3-retroactif -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t3-retroactif.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -28,6 +28,11 @@
  *   ?addedFrom=…&addedTo=…  lot 103F : « Date d'ajout » (jours de Paris,
  *                           bornes incluses) ; période invalide → 400
  *
+ *   ?count=1                lot 105A : décompte seul — `{ total, searchApplied }`,
+ *                           MÊME ensemble que la liste (mêmes paramètres,
+ *                           `countDocumentFeed`) ; utilisé par « Voir tous
+ *                           les documents (N) » de la recherche générale
+ *
  * Réponse : `{ documents, nextCursor, hasMore, limit, meta? }` ; `meta`
  * (compteurs globaux, options de filtre) accompagne le premier lot. En fin de
  * liste, `nextCursor: null, hasMore: false`.
@@ -38,7 +43,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { parseFeedParams } from '@/lib/documents/document-feed';
-import { InvalidCursorError, getDocumentFeed } from '@/services/documents/rubric-query.service';
+import { InvalidCursorError, countDocumentFeed, getDocumentFeed } from '@/services/documents/rubric-query.service';
 
 export const dynamic = 'force-dynamic';
 
@@ -61,8 +66,30 @@ export async function GET(req: NextRequest) {
   if (params.dateRangeError) {
     return NextResponse.json({ error: 'INVALID_DATE_RANGE', code: params.dateRangeError }, { status: 400 });
   }
-  const phase = params.cursor ? 'next' : 'first';
   const started = performance.now();
+
+  // Lot 105A : décompte exact, sans aucun document transmis au navigateur.
+  if (req.nextUrl.searchParams.get('count') === '1') {
+    try {
+      const out = await countDocumentFeed({ ...params, accountId });
+      // Jamais le texte de la recherche, ni un identifiant de document.
+      console.info('[documents/count]', JSON.stringify({
+        ms: Math.round(performance.now() - started),
+        total: out.total,
+        searched: !!params.q,
+        searchApplied: out.searchApplied,
+      }));
+      return NextResponse.json(out, { headers: { 'Cache-Control': 'private, no-store' } });
+    } catch (e) {
+      console.error('[documents/count]', JSON.stringify({
+        ms: Math.round(performance.now() - started),
+        error: e instanceof Error ? e.name : 'Error',
+      }));
+      return NextResponse.json({ error: 'DOCUMENTS_UNAVAILABLE' }, { status: 500 });
+    }
+  }
+
+  const phase = params.cursor ? 'next' : 'first';
 
   try {
     const page = await getDocumentFeed({ ...params, accountId });

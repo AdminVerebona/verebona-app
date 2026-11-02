@@ -560,7 +560,16 @@ export async function reconcileAccount(
       if (options.guard) await options.guard.assertActive('connaissance ouverte du compte');
       try {
         openKnowledge = await deps.reconcileOpenKnowledge(accountId, { guard: options.guard, triggerCode: options.triggerCode ?? null });
-        phases.OPEN_KNOWLEDGE = { status: 'DONE', error: null };
+        // Lot 105D : compteurs des identités documentaires (groupes, cartes groupées) ; erreur d'une sous-phase = passage partiel.
+        const idt = openKnowledge.identity;
+        const idtErr = (openKnowledge.errors ?? []).find((x) => x.startsWith('IDENTITY_GROUPS:'));
+        phases.OPEN_KNOWLEDGE = {
+          status: idtErr ? 'PARTIAL' : 'DONE', error: idtErr ?? null,
+          ...(idt && !idt.skipped ? { counts: {
+            identityGroups: idt.groups, identityToConfirm: idt.byStatus.TO_CONFIRM ?? 0, identityRecoverable: idt.recoverableMembers,
+            groupCardsOpened: idt.cards.opened, groupCardsClosed: idt.cards.closed, individualCardsCovered: idt.cards.individualClosed,
+          } } : {}),
+        };
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
         // Lot 57B (défaut A) : l'échec est porté par le statut du passage (jamais masqué).
@@ -638,7 +647,7 @@ export async function reconcileAccount(
   avecPhases && avecCompteurs ? ', provider_calls = $13, ai_cache_hits = $14, decisions_reused = $15' : ''}
        WHERE id = $1`,
       (avecPhases
-        ? [...valeurs, issue, JSON.stringify(phases), ...(avecCompteurs ? [appelsReels, totals.aiCacheHits, totals.decisionsReused] : [])]
+        ? [...valeurs, issue, JSON.stringify(phases), ...(avecCompteurs ? [appelsReels, totals.aiCacheHits, totals.decisionsReused + (openActions?.aiReused ?? 0)] : [])]
         : valeurs) as never[],
     );
     // Colonnes 0410 / 0858 absentes (déploiement partiel) : statut seul, phases dans le résumé du job.

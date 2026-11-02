@@ -41,7 +41,6 @@ import {
   FileText,
   Grid2X2,
   Wrench,
-  Zap,
   Edit,
   Trash2,
   AlertCircle,
@@ -515,11 +514,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                     Prévisionnelle
                   </span>
                 )}
-                {item.isAutomatic && !item.isAutomaticModified && (
-                  <span className="inline-flex items-center rounded-full px-3 py-1 text-xs font-medium bg-[color:var(--accent-soft)] text-[color:var(--accent)] border border-[color:var(--border-info)]">
-                    <Zap className="h-3 w-3 mr-1" /> Automatique
-                  </span>
-                )}
+                {/* Lot 105 (décision PO 02/11/2026) : plus de badge « Automatique » — la provenance
+                    reste en base (isAutomatic) pour les traitements et le diagnostic. */}
                 {visibleAttentionFlags(item.attentionFlags)
                   .map((f) => (
                     <span

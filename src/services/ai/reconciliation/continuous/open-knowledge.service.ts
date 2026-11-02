@@ -21,6 +21,10 @@
  *      (y compris ceux présents dans « À traiter ») : contexte reconstruit,
  *      empreinte comparée — inchangée → CONFIRMED_NO_CHANGE sans IA ;
  *      modifiée → travail T3 DOCUMENT_ASSET (déterministe d'abord) ;
+ *   1 quater. (lot 105D) identités documentaires : groupes de documents sans
+ *      bien qui désignent une même identité (adresse du bien, cadastre,
+ *      immatriculation, VIN), confrontés aux biens ACTUELS — journal, cartes
+ *      groupées de confirmation (`document-asset/identity/phase.ts`) ;
  *   3. titres SYSTEM dont le contexte a pu changer (rattachement /
  *      détachement, bien ou équipement renommé, nouvelle analyse) : contrôle
  *      ciblé par le moteur de titre commun (même sélection que le balayage
@@ -52,6 +56,8 @@ export interface OpenKnowledgeResult {
   targeted: Omit<TargetingResult, 'documents'> & { documents: number } | null;
   /** `delegated` (lot 49B) : cartes LINK-ASSET ouvertes laissées à la phase « open actions ». */
   documents: { examined: number; confirmed: number; enqueued: number; delegated?: number };
+  /** Lot 105D : groupes d'identité documentaire (journal, cartes groupées). */
+  identity?: import('../document-asset/identity/phase').IdentityPhaseResult | null;
   titles: { updated: number; examined: number };
   errors: string[];
 }
@@ -92,6 +98,16 @@ export async function reconcileOpenKnowledge(
   } catch (e) {
     if (isExecutionCancelled(e)) throw e;
     out.errors.push(`SOURCE_UNITS: ${(e as Error).message}`.slice(0, 300));
+  }
+  // Lot 105D : identités documentaires (groupes, cartes groupées) AVANT le balayage des
+  // documents sans bien — même index, même graphe : les membres d'un groupe devenu
+  // rattachable ont une empreinte de contexte modifiée et sont réévalués juste après.
+  try {
+    const { reconcileIdentityGroups } = await import('../document-asset/identity/phase');
+    out.identity = await reconcileIdentityGroups({ accountId, indexes, guard: opts.guard });
+  } catch (e) {
+    if (isExecutionCancelled(e)) throw e;
+    out.errors.push(`IDENTITY_GROUPS: ${(e as Error).message}`.slice(0, 300));
   }
   try {
     const d = await sweepAccountDocuments({

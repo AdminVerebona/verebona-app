@@ -162,7 +162,8 @@ scenario('L57B-T3', 'T3 : À traiter non résolus corrigés, journal et diagnost
     expect(r.keptAmbiguous).toBe(1);
   });
 
-  it('T3-P0-TC04 — contexte inchangé, carte ouverte : nouvelle tentative RÉELLE à chaque passage (IA rappelée)', async () => {
+  // Lot 105D (D4) : nouvelle tentative réelle à chaque passage ; le modèle n'est rappelé qu'au premier (contexte inchangé ensuite).
+  it('T3-P0-TC04 — contexte inchangé, carte ouverte : nouvelle tentative RÉELLE à chaque passage (IA au premier, décision réutilisée ensuite — lot 105D)', async () => {
     const compte = await make.account();
     const maison = await make.asset(compte, { name: 'Maison de Lyon', category: 'IMMOBILIER' });
     await make.asset(compte, { name: 'Clio', registrationNumber: 'CC-333-CC' });
@@ -174,8 +175,8 @@ scenario('L57B-T3', 'T3 : À traiter non résolus corrigés, journal et diagnost
         SELECT id FROM to_process_actions WHERE target_type = 'DOCUMENT' AND target_id = ${doc.id} AND rule_code = 'LINK-ASSET' AND resolved_at IS NULL`;
       const replay = await rejouer([]);
       const r = await passage(compte);
-      expect(entree(r, c), `passage ${n}`).toMatchObject({ resolutionAttempted: true, aiCalled: true, reasonCode: 'INSUFFICIENT_EVIDENCE' });
-      expect(appels(replay)).toHaveLength(1);
+      expect(entree(r, c), `passage ${n}`).toMatchObject({ resolutionAttempted: true, aiCalled: n === 1, reasonCode: 'INSUFFICIENT_EVIDENCE' });
+      expect(appels(replay)).toHaveLength(n === 1 ? 1 : 0);
       // Proposition (bien désigné par le modèle, sans preuve serveur) : arbitrage utilisateur, jamais une écriture.
       expect((await propositions(c)).map((p) => Number(p.value))).toEqual([maison.id]);
       expect(await colonne(doc.id)).toBeNull();

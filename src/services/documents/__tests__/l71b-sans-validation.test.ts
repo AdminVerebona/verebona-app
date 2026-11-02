@@ -119,12 +119,16 @@ describe('VALID-09 — plus aucun producteur de l’état « à valider »', () 
       'src/db/schema.ts',
       'src/lib/ai/processing-status.ts',
       'src/services/admin/account-documents.service.ts',
+      // Lot 105D : code de motif distinct « USER_VALIDATION_REQUIRED » (décision de groupe), aucun lien avec l'ancien état.
+      'src/services/ai/reconciliation/document-asset/identity/decision.ts',
       'src/services/ai/reconciliation/document-asset/question-gate.ts',
       'src/services/ai/reconciliation/document-asset/resolve-document-asset.service.ts',
       // Lot 81E : lecture seule (état abouti → document « analysé » dans le résultat du lot).
       'src/services/ai/source-analysis/lot-notification.ts',
       'src/services/ai/source-analysis/pipeline.ts',
       // Lot 82B : coherence-maintenance.service.ts retiré (maintenance horaire remplacée par le registre de cohérence).
+      // Lot 105D : lecture seule (un document resté dans l'ancien état n'est pas « en attente » d'analyse).
+      'src/services/coherence/registry/checks/document-primary-link.ts',
       'src/services/documents/validation-reprise.ts',
       'src/services/home/home-blocks.ts',
       'src/services/to-process/document-rule-bridge.ts',

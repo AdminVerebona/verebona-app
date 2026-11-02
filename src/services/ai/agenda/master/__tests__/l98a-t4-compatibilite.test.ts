@@ -37,6 +37,13 @@ vi.mock('@/services/ai/master-prompts/master-prompt.repository', async (orig) =>
     userEmails: async () => new Map(),
     listActivations: async () => [],
     switchActivePrompt: async () => { base.switches += 1; throw new Error('aucune activation attendue'); },
+    // Lot 105C : normalisation d'un brouillon existant (configuration seule, texte conservé).
+    updateDraftExecution: async (p: { id: number; execution: Exec }) => {
+      const r = base.rows.find((x) => x.id === p.id && x.status === 'DRAFT');
+      if (!r) return null;
+      r.execution = p.execution;
+      return r;
+    },
     insertDraft: async (p: { environment: string; treatment: string; masterPromptCode: string; content: string; basedOnId: number | null; userId: number; execution?: Exec | null }) => {
       base.inserts.push(p);
       const r = ligne({ id: 100 + base.rows.length, status: 'DRAFT', content: p.content, execution: p.execution ?? null, basedOnId: p.basedOnId, versionNumber: 99, environment: p.environment });
@@ -69,6 +76,11 @@ const LIVRE = lire('src/services/ai/prompts/agenda/t4_master_v1.txt');
 const LEGACY_TXT = lire('src/services/ai/agenda/master/reference/t4_master_v1.legacy-template.txt');
 const LEGACY: Exec = { mode: 'LEGACY_TEMPLATE', inputContractVersion: null, outputContractVersion: null, allowedTasks: null };
 const NORMALE: Exec = { mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v2', outputContractVersion: 't4_output_v3', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY'] };
+/** Lot 105C : bundle complet stable (source unique `T4_EXECUTION_SPEC.completeBundle`). */
+const BUNDLE: Exec = {
+  mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v3', outputContractVersion: 't4_output_v4',
+  allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY', 'AGENDA_REPRESENTATION'], bundleId: 't4-bundle-v1',
+};
 const V3V4: Exec = { mode: 'STRUCTURED_CONTEXT', inputContractVersion: 't4_input_v3', outputContractVersion: 't4_output_v4', allowedTasks: ['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY', 'AGENDA_REPRESENTATION'] };
 const diag = (execution: Exec | null, content = LIVRE) => compat.assessT4Compatibility({ spec: T4_EXECUTION_SPEC, execution, content, referenceText: LIVRE });
 
@@ -135,7 +147,8 @@ describe('L98A-T04 — « Préparer une version conforme » (rattrapage idempote
   it('brouillon au MÊME texte, configuration conforme ; second appel : même brouillon, aucun doublon', async () => {
     base.rows.push(ligne({ id: 1, content: LIVRE, execution: LEGACY }));
     const d1 = await svc.prepareConformingT4Draft(5);
-    expect(d1).toMatchObject({ status: 'DRAFT', content: LIVRE, execution: NORMALE, basedOnId: 1 });
+    // Lot 105C : configuration conforme = bundle complet (plus t4_input_v2 / t4_output_v3).
+    expect(d1).toMatchObject({ status: 'DRAFT', content: LIVRE, execution: BUNDLE, basedOnId: 1 });
     expect(base.inserts).toHaveLength(1);
     const d2 = await svc.prepareConformingT4Draft(5);
     expect(d2.id).toBe(d1.id);
@@ -144,14 +157,23 @@ describe('L98A-T04 — « Préparer une version conforme » (rattrapage idempote
     expect(base.rows.find((r) => r.id === 1)).toMatchObject({ status: 'ACTIVE', execution: LEGACY });
     expect(base.switches).toBe(0);
   });
-  it('refus : déjà compatible, texte sans évaluation, autre brouillon ouvert', async () => {
-    base.rows.push(ligne({ id: 1, content: LIVRE, execution: NORMALE }));
+  it('lot 105C : refus seulement si l’active est déjà complète ; texte historique hérité tel quel ; brouillon existant normalisé sans perte', async () => {
+    base.rows.push(ligne({ id: 1, content: LIVRE, execution: BUNDLE }));
     await expect(svc.prepareConformingT4Draft(5)).rejects.toMatchObject({ code: 'ALREADY_COMPATIBLE' });
+    // Active v2/v3 (trois fonctions) : pas « complète » — brouillon au bundle complet.
+    base.rows = [ligne({ id: 1, content: LIVRE, execution: NORMALE })];
+    expect(await svc.prepareConformingT4Draft(5)).toMatchObject({ status: 'DRAFT', content: LIVRE, execution: BUNDLE });
+    // Texte historique à emplacements : hérité sans réécriture, jamais le mode legacy (avertissement seulement).
     base.rows = [ligne({ id: 1, content: LEGACY_TXT, execution: LEGACY })];
-    await expect(svc.prepareConformingT4Draft(5)).rejects.toMatchObject({ code: 'TEXT_NOT_COMPATIBLE' });
+    const legacy = await svc.prepareConformingT4Draft(5);
+    expect(legacy).toMatchObject({ status: 'DRAFT', content: LEGACY_TXT, execution: BUNDLE });
+    expect(checkMasterPromptContent('T4', LEGACY_TXT, BUNDLE).warnings.map((w) => w.code)).toContain('STRUCTURED_PLACEHOLDER_PRESENT');
+    // Brouillon existant (configuration legacy) : repris, configuration normalisée, TEXTE INCHANGÉ.
+    base.inserts = [];
     base.rows = [ligne({ id: 1, content: LIVRE, execution: LEGACY }), ligne({ id: 2, status: 'DRAFT', content: `${LIVRE}\nmodif`, execution: LEGACY })];
-    await expect(svc.prepareConformingT4Draft(5)).rejects.toMatchObject({ code: 'DRAFT_EXISTS' });
+    expect(await svc.prepareConformingT4Draft(5)).toMatchObject({ id: 2, content: `${LIVRE}\nmodif`, execution: BUNDLE });
     expect(base.inserts).toHaveLength(0);
+    expect(base.switches).toBe(0);
   });
 });
 

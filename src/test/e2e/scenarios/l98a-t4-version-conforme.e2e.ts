@@ -5,7 +5,7 @@
  *
  *  · E2E-98A-T4-01 diagnostic BO : version active incompatible, ce qui manque,
  *    chemin « même texte » ; « Préparer une version conforme » crée un
- *    BROUILLON au même texte (contexte structuré, t4_input_v2 / t4_output_v3),
+ *    BROUILLON au même texte (lot 105C : bundle complet t4_input_v3 / t4_output_v4),
  *    idempotent, la version active reste intacte et rien n'est activé ;
  *  · E2E-98A-T4-02 après activation MANUELLE du brouillon : le moteur « À
  *    traiter » voit une configuration compatible (plus de T4_INCOMPATIBLE),
@@ -92,8 +92,9 @@ scenario('L98A-T4', 'Version T4 active conforme au contrat t4_output_v3 (BO)', (
       FROM ai_master_prompt_versions WHERE treatment = 'T4' ORDER BY id`;
     expect(lignes).toHaveLength(2);
     expect(lignes[0]).toMatchObject({ status: 'ACTIVE', execution_mode: 'LEGACY_TEMPLATE' });
-    expect(lignes[1]).toMatchObject({ status: 'DRAFT', content: texte, execution_mode: 'STRUCTURED_CONTEXT', input_contract_version: 't4_input_v2', output_contract_version: 't4_output_v3' });
-    expect(lignes[1].allowed_tasks).toEqual(['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY']);
+    // Lot 105C : configuration conforme = bundle complet (quatre fonctions), texte identique.
+    expect(lignes[1]).toMatchObject({ status: 'DRAFT', content: texte, execution_mode: 'STRUCTURED_CONTEXT', input_contract_version: 't4_input_v3', output_contract_version: 't4_output_v4' });
+    expect(lignes[1].allowed_tasks).toEqual(['CLASSIFY_EVENT', 'VERIFY_COMPLETION', 'TEMPORAL_AMBIGUITY', 'AGENDA_REPRESENTATION']);
     expect((await sql`SELECT count(*)::int AS n FROM ai_master_prompt_activations`)[0].n).toBe(0);
     // T3 : refus explicite (T4 seulement).
     expect((await a.conform('T3')).status).toBe(400);
@@ -109,7 +110,7 @@ scenario('L98A-T4', 'Version T4 active conforme au contrat t4_output_v3 (BO)', (
     fe.__setT4AssessmentConfigForTests(null);
     const cfg = await fe.t4AssessmentConfig();
     expect(cfg.interventionCapable).toBe(true);
-    expect(cfg.ref).toMatch(/t4_output_v3/);
+    expect(cfg.ref).toMatch(/t4_output_v4/);
     const d = await a.detail('T4');
     expect(d.body.t4Compatibility.active).toMatchObject({ compatible: true, remedy: 'NONE', issues: [] });
     const refus = await a.conform('T4');

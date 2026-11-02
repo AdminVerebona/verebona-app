@@ -46,6 +46,14 @@ export interface MasterExecutionConfig {
   outputContractVersion: string | null;
   /** TASK autorisées (hors du texte du prompt). `null` : toutes celles du registre. */
   allowedTasks: string[] | null;
+  /**
+   * Lot 105C — identifiant du BUNDLE COMPLET figé avec la version (T4 :
+   * `completeBundle` du contrat d'exécution). Présent : la version a été
+   * créée et activée par le parcours unifié — la disponibilité TECHNIQUE de
+   * ses TASK résulte du bundle validé, jamais d'un marqueur dans le texte.
+   * Absent : version historique, règles d'époque conservées à l'identique.
+   */
+  bundleId?: string | null;
 }
 
 export const LEGACY_EXECUTION: MasterExecutionConfig = Object.freeze({
@@ -87,11 +95,34 @@ export interface StructuredContextSpec {
   optionalTasks?: readonly string[];
   inputContracts: Readonly<Record<string, InputContract>>;
   outputContracts: Readonly<Record<string, OutputContractMap>>;
+  /**
+   * Configuration du TEXTE LIVRÉ (fichier du dépôt) et des versions
+   * historiques sans configuration : jamais celle d'une nouvelle version
+   * quand `completeBundle` est déclaré.
+   */
   defaults: MasterExecutionConfig;
+  /**
+   * Lot 105C — BUNDLE COMPLET STABLE : SOURCE UNIQUE des contrats et TASK de
+   * toute NOUVELLE version (BO, API, contrôles, orchestrateur). Le serveur
+   * l'applique seul ; aucun choix de mode, de contrat ou de TASK n'est
+   * proposé à l'administrateur. Faire évoluer le bundle = changer CETTE
+   * déclaration (nouvel identifiant), jamais une version existante.
+   */
+  completeBundle?: CompleteBundleDeclaration;
   errorCodes: {
     missingField: string; invalidType: string; taskNotAllowed: string;
     outputMissing: string; versionNotFound: string; buildFailed: string;
   };
+}
+
+/** Lot 105C — déclaration du bundle complet stable d'un prompt maître. */
+export interface CompleteBundleDeclaration {
+  /** Identifiant stable (figé dans chaque version créée avec ce bundle). */
+  id: string;
+  inputContractVersion: string;
+  outputContractVersion: string;
+  /** TASK couvertes : TOUTES les TASK connues du prompt. */
+  tasks: readonly string[];
 }
 
 /** Contrats d'exécution déclarés (T4 seulement au lot 34D). */
@@ -165,20 +196,105 @@ export function normalizeExecutionConfig(stored: Partial<MasterExecutionConfig> 
     inputContractVersion: stored.inputContractVersion ?? null,
     outputContractVersion: stored.outputContractVersion ?? null,
     allowedTasks: Array.isArray(stored.allowedTasks) ? [...stored.allowedTasks] : null,
+    ...(typeof stored.bundleId === 'string' && stored.bundleId ? { bundleId: stored.bundleId } : {}),
   };
 }
 
-/** Configuration d'une NOUVELLE version : celle de la version de départ, sinon le défaut du contrat. */
+/**
+ * Configuration d'une NOUVELLE version. Lot 105C : prompt qui déclare un
+ * bundle complet (T4) — TOUJOURS ce bundle, quelle que soit la version de
+ * départ (LEGACY_TEMPLATE, t4_input_v1/v2, t4_output_v1/v2/v3 : le texte est
+ * hérité, jamais les anciens sélecteurs). Sinon : celle de la version de
+ * départ, à défaut le défaut du contrat.
+ */
 export function draftExecutionConfig(masterPromptCode: string, base: MasterExecutionConfig | null): MasterExecutionConfig | null {
   const spec = structuredSpecFor(masterPromptCode);
   if (!spec) return null;
+  const bundle = completeBundleConfig(spec);
+  if (bundle) return bundle;
   return base ?? { ...spec.defaults, allowedTasks: spec.defaults.allowedTasks ? [...spec.defaults.allowedTasks] : null };
 }
 
 /** Signature courte de la configuration (clé d'idempotence, traces). */
 export function executionSignature(c: MasterExecutionConfig): string {
   if (c.mode === 'LEGACY_TEMPLATE') return 'legacy';
-  return `ctx:${c.inputContractVersion ?? '?'}/${c.outputContractVersion ?? '?'}/${(c.allowedTasks ?? ['*']).join('+')}`;
+  return `ctx:${c.inputContractVersion ?? '?'}/${c.outputContractVersion ?? '?'}/${(c.allowedTasks ?? ['*']).join('+')}${c.bundleId ? `@${c.bundleId}` : ''}`;
+}
+
+// ── Lot 105C : bundle complet stable ────────────────────────────────────────
+
+/** Configuration d'exécution du bundle complet déclaré (`null` : aucun bundle). Pure. */
+export function completeBundleConfig(spec: StructuredContextSpec | null | undefined): MasterExecutionConfig | null {
+  const b = spec?.completeBundle;
+  if (!b) return null;
+  return {
+    mode: 'STRUCTURED_CONTEXT', inputContractVersion: b.inputContractVersion, outputContractVersion: b.outputContractVersion,
+    allowedTasks: [...b.tasks], bundleId: b.id,
+  };
+}
+
+/** La configuration est-elle celle d'une version créée avec un bundle complet ? Pure. */
+export function isBundleExecution(c: MasterExecutionConfig | null | undefined): boolean {
+  return Boolean(c && c.mode === 'STRUCTURED_CONTEXT' && c.bundleId);
+}
+
+/** Problème technique d'un bundle (diagnostic serveur, jamais un choix demandé à l'administrateur). */
+export interface BundleIssue {
+  code: 'BUNDLE_UNDECLARED' | 'BUNDLE_INCOMPLETE' | 'INPUT_CONTRACT_INVALID' | 'OUTPUT_CONTRACT_INVALID' | 'TASKS_INVALID' | 'MODEL_CONFIG_INVALID' | 'CONTEXT_NOT_BUILDABLE';
+  message: string;
+  task?: string;
+}
+
+/** Bundle résolu et FIGÉ avec une version (traces, détails techniques). */
+export interface FrozenBundle {
+  id: string;
+  mode: 'STRUCTURED_CONTEXT';
+  inputContractVersion: string;
+  outputContractVersion: string;
+  tasks: string[];
+  /** Contrat runtime de sortie DISTINCT par TASK (`T4AgendaRepresentationOutput@1`…). */
+  outputs: Record<string, string>;
+}
+
+/**
+ * Lot 105C — résout et VALIDE le bundle complet déclaré (pur, dépendances
+ * injectées) : bundle déclaré, couverture de TOUTES les TASK connues,
+ * contrats d'entrée et de sortie présents et cohérents (chaque TASK reliée à
+ * son contrat runtime distinct), modèle configuré par TASK. Aucun repli
+ * silencieux vers un sous-ensemble de TASK : tout manque est un refus.
+ */
+export function resolveCompleteBundle(
+  spec: StructuredContextSpec | null | undefined,
+  deps: { contractExists: (schemaName: string, version: number) => boolean; modelConfigured: (task: string) => boolean },
+): { ok: true; config: MasterExecutionConfig; frozen: FrozenBundle } | { ok: false; issues: BundleIssue[]; config: MasterExecutionConfig | null } {
+  const config = completeBundleConfig(spec);
+  if (!spec || !spec.completeBundle || !config) {
+    return { ok: false, config: null, issues: [{ code: 'BUNDLE_UNDECLARED', message: 'Aucune configuration complète n’est déclarée par le moteur pour ce prompt.' }] };
+  }
+  const b = spec.completeBundle;
+  const issues: BundleIssue[] = [];
+  for (const t of spec.knownTasks.filter((x) => !b.tasks.includes(x))) {
+    issues.push({ code: 'BUNDLE_INCOMPLETE', task: t, message: `La configuration complète du moteur ne couvre pas la fonction ${t}.` });
+  }
+  for (const i of checkExecutionConfig(spec, config, deps.contractExists)) {
+    issues.push({
+      code: i.field === 'outputContractVersion' ? 'OUTPUT_CONTRACT_INVALID' : i.field === 'allowedTasks' ? 'TASKS_INVALID' : 'INPUT_CONTRACT_INVALID',
+      message: i.message,
+    });
+  }
+  for (const t of b.tasks.filter((x) => spec.knownTasks.includes(x))) {
+    if (!deps.modelConfigured(t)) issues.push({ code: 'MODEL_CONFIG_INVALID', task: t, message: `Aucun modèle n’est configuré pour la fonction ${t}.` });
+  }
+  if (issues.length > 0) return { ok: false, issues, config };
+  const output = spec.outputContracts[b.outputContractVersion];
+  return {
+    ok: true, config,
+    frozen: {
+      id: b.id, mode: 'STRUCTURED_CONTEXT', inputContractVersion: b.inputContractVersion, outputContractVersion: b.outputContractVersion,
+      tasks: [...b.tasks],
+      outputs: Object.fromEntries(b.tasks.map((t) => [t, `${output.byTask[t].schemaName}@${output.byTask[t].contractVersion}`])),
+    },
+  };
 }
 
 interface ExecutionConfigIssue {

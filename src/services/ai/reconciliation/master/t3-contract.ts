@@ -67,6 +67,22 @@ export const T3LinkAmbiguityOutput = z.object({
    * les autres relations, et lu `SINGLE` par défaut.
    */
   documentScope: z.enum(['SINGLE', 'MULTIPLE']).nullable().optional(),
+  /**
+   * Lot 105D — contrat `t3-document-asset-cross-v1` (relation DOCUMENT_ASSET
+   * avec preuves croisées) : identité documentaire, relation groupe → bien et
+   * portée de CE document décrites SÉPARÉMENT, preuves citées (identifiants
+   * fournis), contradictions, validation utilisateur requise. FACULTATIVE :
+   * absente pour les autres relations et pour un prompt sans le bloc ;
+   * présente, vérifiée par le serveur (`validateCrossDocumentOutput`).
+   */
+  crossDocument: z.object({
+    documentIdentity: z.enum(['ESTABLISHED', 'UNCERTAIN', 'NONE']),
+    groupToAsset: z.enum(['ESTABLISHED', 'UNCERTAIN', 'NOT_ESTABLISHED', 'NOT_APPLICABLE']),
+    documentApplicability: z.enum(['APPLIES', 'DOES_NOT_APPLY', 'UNCERTAIN']),
+    citedEvidenceIds: z.array(z.number().int().positive()).max(40).optional(),
+    contradictions: z.array(z.string().min(1).max(200)).max(10).optional(),
+    userValidationRequired: z.boolean().optional(),
+  }).nullable().optional(),
 });
 export type T3LinkAmbiguityOutput = z.infer<typeof T3LinkAmbiguityOutput>;
 

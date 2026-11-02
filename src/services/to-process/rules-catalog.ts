@@ -61,7 +61,8 @@ export type RuleProducer =
   | 'T3_ASSET_CONFLICT'
   | 'T3_OPERATIONS'
   | 'T4_PROJECTION_MATCH'
-  | 'DOCUMENT_INTERVENTION';
+  | 'DOCUMENT_INTERVENTION'
+  | 'T3_IDENTITY_GROUP';
 
 /** Où vit chaque producteur, et par quelle(s) fonction(s) il est appelé. */
 export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
@@ -93,6 +94,12 @@ export const RULE_PRODUCERS: Readonly<Record<RuleProducer, {
   DOCUMENT_INTERVENTION: {
     module: 'src/services/to-process/document-intervention.ts',
     entries: ['upsertDocumentIntervention', 'resolveDocumentIntervention'], generic: false,
+  },
+  // Lot 105D : confirmation groupée de l'identité d'un bien (synchronisée par la
+  // phase « identités documentaires » de T3, résolue depuis la carte).
+  T3_IDENTITY_GROUP: {
+    module: 'src/services/to-process/identity-group-cards.ts',
+    entries: ['syncIdentityGroupCards', 'resolveIdentityGroupCard', 'closeIndividualCards'], generic: false,
   },
 };
 
@@ -220,6 +227,26 @@ export const PROCESSING_RULES: readonly ProcessingRule[] = [
     question: 'Ce document semble concerner un autre bien : lequel garder ?',
     businessImpact: 72,
     producer: 'T3_ASSET_CONFLICT',
+  },
+
+  // ── Lot 105D : confirmation GROUPÉE de l'identité d'un bien ─────────────
+  // Plusieurs documents sans bien désignent une même identité (« 12 rue des
+  // Érables Fictifs ») mais le bien compatible n'a pas d'identifiant (« Maison »
+  // sans adresse) : jamais d'attribution implicite. Une carte par groupe, sur
+  // le premier document du groupe, périmètre visible (documents, exceptions,
+  // preuves). « Oui » / « Non » mémorisés ; chaque document repasse ensuite
+  // par T3. Voir `identity-group-cards.ts`.
+  {
+    code: 'LINK-ASSET-GROUP',
+    targetType: 'DOCUMENT',
+    relationKey: 'identityGroup',
+    arbitratePriority: 'DO_NEXT',
+    completePriority: null,
+    // « Non » est un choix explicite, mémorisé : pas de « Non applicable ».
+    allowNotApplicable: false,
+    question: 'Ces documents concernent-ils ce bien ?',
+    businessImpact: 76,
+    producer: 'T3_IDENTITY_GROUP',
   },
 
   // ── §10.4 Rattachement secondaire ───────────────────────────────────────

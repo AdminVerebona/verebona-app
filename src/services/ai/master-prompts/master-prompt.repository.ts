@@ -39,6 +39,23 @@ export interface MasterPromptVersionRow {
    * (T4) ; `null` : aucune (prompt sans contrat d'exécution, LEGACY_TEMPLATE).
    */
   execution?: MasterExecutionConfig | null;
+  /**
+   * Lot 105C (0990) — bundle complet figé avec la version (activation
+   * unifiée) ; `{ id }` seul sur un brouillon ; `null` : version historique.
+   */
+  executionBundle?: ExecutionBundleRecord | null;
+}
+
+/** Lot 105C — bundle enregistré avec une version (colonne `execution_bundle`). */
+export interface ExecutionBundleRecord {
+  id: string;
+  mode?: string;
+  inputContractVersion?: string;
+  outputContractVersion?: string;
+  tasks?: string[];
+  outputs?: Record<string, string>;
+  promptSha256?: string;
+  frozenAt?: string;
 }
 
 export interface MasterPromptActivationRow {
@@ -77,6 +94,8 @@ export interface MasterPromptTestRunRow {
   requestedBy: number | null;
   startedAt: Date;
   finishedAt: Date | null;
+  /** Lot 105C : détails techniques du rejeu (scénarios par branche). */
+  details?: Record<string, unknown> | null;
 }
 
 type Row = Record<string, unknown>;
@@ -109,7 +128,20 @@ const toVersion = (r: Row): MasterPromptVersionRow => ({
   activatedAt: d(r.activated_at),
   firstActivatedAt: d(r.first_activated_at),
   execution: executionOf(r),
+  executionBundle: bundleOf(r),
 });
+
+/** Lot 105C : bundle lu en base (colonne 0990 absente ou nulle : `null`). */
+function bundleOf(r: Row): ExecutionBundleRecord | null {
+  const b = r.execution_bundle as ExecutionBundleRecord | null | undefined;
+  return b && typeof b === 'object' && typeof b.id === 'string' && b.id ? b : null;
+}
+
+/** Valeur JSON du bundle à écrire avec une configuration d'exécution (lot 105C). */
+function bundleValue(e: MasterExecutionConfig | null | undefined, frozen?: ExecutionBundleRecord | null): string | null {
+  if (frozen) return JSON.stringify(frozen);
+  return e?.bundleId ? JSON.stringify({ id: e.bundleId }) : null;
+}
 
 /** Configuration d'exécution lue en base (colonnes 0290 ; absentes ou nulles : `null`). */
 function executionOf(r: Row): MasterExecutionConfig | null {
@@ -121,6 +153,7 @@ function executionOf(r: Row): MasterExecutionConfig | null {
     inputContractVersion: r.input_contract_version == null ? null : String(r.input_contract_version),
     outputContractVersion: r.output_contract_version == null ? null : String(r.output_contract_version),
     allowedTasks: taches,
+    ...(bundleOf(r) ? { bundleId: bundleOf(r)!.id } : {}),
   };
 }
 
@@ -157,6 +190,7 @@ const toRun = (r: Row): MasterPromptTestRunRow => ({
   requestedBy: n(r.requested_by),
   startedAt: new Date(String(r.started_at)),
   finishedAt: d(r.finished_at),
+  details: (r.details ?? null) as Record<string, unknown> | null,
 });
 
 const db = (): Sql => pgClient as unknown as Sql;
@@ -284,13 +318,15 @@ export async function insertDraft(p: {
     );
     if (existant[0]) return null;
     const ex = executionValues(p.execution);
+    // Lot 105C : brouillon d'un prompt à bundle complet — identifiant du bundle posé (colonne 0990).
+    const bundle = bundleValue(p.execution);
     const r = await rows(
       `INSERT INTO ai_master_prompt_versions
          (environment, treatment, master_prompt_code, version_number, status, content, content_sha256, origin,
-          based_on_id, created_by, updated_by${ex.length ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''})
-       VALUES ($1, $2, $3, ${NEXT_NUMBER}, 'DRAFT', $4, $5, $6, $7, $8, $8${ex.length ? ', $9, $10, $11, $12::jsonb' : ''})
+          based_on_id, created_by, updated_by${ex.length ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''}${bundle ? ', execution_bundle' : ''})
+       VALUES ($1, $2, $3, ${NEXT_NUMBER}, 'DRAFT', $4, $5, $6, $7, $8, $8${ex.length ? ', $9, $10, $11, $12::jsonb' : ''}${bundle ? `, $${ex.length ? 13 : 9}::jsonb` : ''})
        RETURNING *`,
-      [p.environment, p.treatment, p.masterPromptCode, p.content, contentSha256(p.content), p.origin, p.basedOnId, p.userId, ...ex], sql,
+      [p.environment, p.treatment, p.masterPromptCode, p.content, contentSha256(p.content), p.origin, p.basedOnId, p.userId, ...ex, ...(bundle ? [bundle] : [])], sql,
     );
     return toVersion(r[0]);
   }) as Promise<MasterPromptVersionRow | null>;
@@ -319,14 +355,20 @@ export async function updateDraftContent(p: {
  * Lot 34D — configuration d'exécution d'un BROUILLON (mode, contrats, TASK).
  * Rend la ligne écrite, ou `null` (plus un brouillon).
  */
-export async function updateDraftExecution(p: { id: number; execution: MasterExecutionConfig; userId: number }): Promise<MasterPromptVersionRow | null> {
+export async function updateDraftExecution(p: {
+  id: number; execution: MasterExecutionConfig; userId: number | null;
+  /** Lot 105C : `false` — normalisation technique silencieuse (auteur et date de modification conservés). */
+  touch?: boolean;
+}): Promise<MasterPromptVersionRow | null> {
+  // Lot 105C : le bundle suit la configuration (identifiant posé) — colonne 0990 écrite seulement si utile.
+  const bundle = bundleValue(p.execution);
+  const params: unknown[] = [p.id, ...executionValues(p.execution)];
+  const sets = ['execution_mode = $2', 'input_contract_version = $3', 'output_contract_version = $4', 'allowed_tasks = $5::jsonb'];
+  if (p.touch !== false) { params.push(p.userId); sets.push(`updated_by = $${params.length}`, 'updated_at = now()'); }
+  if (bundle) { params.push(bundle); sets.push(`execution_bundle = $${params.length}::jsonb`); }
   const r = await rows(
-    `UPDATE ai_master_prompt_versions
-        SET execution_mode = $2, input_contract_version = $3, output_contract_version = $4, allowed_tasks = $5::jsonb,
-            updated_by = $6, updated_at = now()
-      WHERE id = $1 AND status = 'DRAFT'
-      RETURNING *`,
-    [p.id, ...executionValues(p.execution), p.userId],
+    `UPDATE ai_master_prompt_versions SET ${sets.join(', ')} WHERE id = $1 AND status = 'DRAFT' RETURNING *`,
+    params,
   );
   return r[0] ? toVersion(r[0]) : null;
 }
@@ -355,13 +397,15 @@ export async function insertConformityCandidateVersion(p: {
     const deja = memes.map(toVersion).find((v) => sig(v.execution) === sig(p.execution));
     if (deja) return deja;
     const ex = executionValues(p.execution);
+    // Lot 105 (raccord 105B / 105C) : configuration complète figée avec la révision.
+    const bundle = ex.length ? bundleValue(p.execution) : null;
     const r = await rows(
       `INSERT INTO ai_master_prompt_versions
          (environment, treatment, master_prompt_code, version_number, status, content, content_sha256, origin, based_on_id
-          ${ex.length ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''})
-       VALUES ($1, $2, $3, ${NEXT_NUMBER}, 'PREVIOUS', $4, $5, 'auto_conformity', $6${ex.length ? ', $7, $8, $9, $10::jsonb' : ''})
+          ${ex.length ? ', execution_mode, input_contract_version, output_contract_version, allowed_tasks' : ''}${bundle ? ', execution_bundle' : ''})
+       VALUES ($1, $2, $3, ${NEXT_NUMBER}, 'PREVIOUS', $4, $5, 'auto_conformity', $6${ex.length ? ', $7, $8, $9, $10::jsonb' : ''}${bundle ? ', $11::jsonb' : ''})
        RETURNING *`,
-      [p.environment, p.treatment, p.masterPromptCode, p.content, sha, p.basedOnId, ...ex], sql,
+      [p.environment, p.treatment, p.masterPromptCode, p.content, sha, p.basedOnId, ...ex, ...(bundle ? [bundle] : [])], sql,
     );
     return toVersion(r[0]);
   }) as Promise<MasterPromptVersionRow>;
@@ -382,6 +426,12 @@ export async function deleteDraft(id: number): Promise<boolean> {
 export async function switchActivePrompt(p: {
   environment: string; treatment: string; targetId: number; action: 'activate' | 'rollback';
   userId: number; userEmail: string | null; testSummary: string | null;
+  /**
+   * Lot 105C — activation unifiée : la cible doit porter EXACTEMENT ce texte
+   * (empreinte vérifiée sous verrou) ; `bundle` est figé sur la cible dans la
+   * MÊME transaction, avant sa promotion. Écart : rien n'est écrit.
+   */
+  expect?: { contentSha256: string; bundle: ExecutionBundleRecord | null };
 }, hooks: {
   /**
    * Lot 54 : appelé AVANT le verrou du prompt (ordre des verrous : version
@@ -391,7 +441,7 @@ export async function switchActivePrompt(p: {
   before?: (sql: Sql) => Promise<void>;
   /** Lot 54 : appelé dans la transaction après la bascule (révision de la configuration active). */
   after?: (sql: Sql, current: MasterPromptVersionRow) => Promise<void>;
-} = {}): Promise<{ previous: MasterPromptVersionRow | null; current: MasterPromptVersionRow; activationId: number } | { refused: 'NOT_FOUND' | 'WRONG_STATUS'; status?: string }> {
+} = {}): Promise<{ previous: MasterPromptVersionRow | null; current: MasterPromptVersionRow; activationId: number } | { refused: 'NOT_FOUND' | 'WRONG_STATUS' | 'CONTENT_CHANGED'; status?: string }> {
   return pgClient.begin(async (tx) => {
     const sql = tx as unknown as Sql;
     if (hooks.before) await hooks.before(sql);
@@ -403,6 +453,13 @@ export async function switchActivePrompt(p: {
     if (!cible) return { refused: 'NOT_FOUND' as const };
     const attendu = p.action === 'activate' ? 'DRAFT' : 'PREVIOUS';
     if (String(cible.status) !== attendu) return { refused: 'WRONG_STATUS' as const, status: String(cible.status) };
+    if (p.expect) {
+      if (String(cible.content_sha256) !== p.expect.contentSha256) return { refused: 'CONTENT_CHANGED' as const, status: String(cible.status) };
+      if (p.expect.bundle) {
+        await rows(`UPDATE ai_master_prompt_versions SET execution_bundle = $2::jsonb WHERE id = $1 AND status = 'DRAFT'`,
+          [p.targetId, JSON.stringify(p.expect.bundle)], sql);
+      }
+    }
 
     const anciennes = await rows(
       `UPDATE ai_master_prompt_versions SET status = 'PREVIOUS', updated_at = now()

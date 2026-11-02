@@ -8,7 +8,7 @@
  */
 import { useEffect, useState } from 'react';
 import {
-  ArrowRight, Building2, CalendarDays, CircleAlert, Clock, FileText, Home, Info, Package, Settings, Trash2,
+  ArrowRight, Building2, CalendarDays, CircleAlert, Clock, FileText, Home, Info, Loader2, Package, Settings, Trash2,
 } from 'lucide-react';
 import { liveSubtitle, type LiveResult } from '@/lib/verebona/live-search';
 import type { VerebonaAction, VerebonaMessage } from '@/lib/verebona/useVerebona';
@@ -417,18 +417,27 @@ function LiveResults({ api }: { api: VerebonaSpaceApi }) {
           );
         })}
       </ul>
-      {/* Lot 97C : écran complet, recherche préremplie (jamais les seuls identifiants affichés). */}
+      {/* Lot 97C : écran complet, recherche préremplie (jamais les seuls identifiants affichés).
+          Lot 105A : « Voir tous les documents (N) », N = total exact ; pendant le calcul, aucun chiffre. */}
       {(api.liveSeeAll ?? []).length > 0 && (
         <div className="flex flex-wrap gap-x-4 gap-y-1 px-0.5">
           {api.liveSeeAll.map((l) => (
             <a
               key={l.id}
               href={l.href}
+              data-testid={l.id}
+              aria-busy={l.pending ? true : undefined}
               onMouseDown={(e) => e.preventDefault()}
               onClick={(e) => { e.preventDefault(); api.openSeeAll(l); }}
-              className="inline-flex min-h-11 items-center text-[12.5px] font-medium text-[color:var(--accent)] hover:underline md:min-h-0"
+              className="inline-flex min-h-11 items-center gap-1.5 text-[12.5px] font-medium text-[color:var(--accent)] hover:underline md:min-h-0"
             >
               {l.label}
+              {l.pending && (
+                <>
+                  <Loader2 className="h-3 w-3 text-[color:var(--text-muted)] motion-safe:animate-spin" aria-hidden />
+                  <span className="sr-only">(nombre en cours de calcul)</span>
+                </>
+              )}
             </a>
           ))}
         </div>

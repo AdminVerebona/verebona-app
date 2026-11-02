@@ -128,6 +128,11 @@ export function normalizeCode(value: unknown): string {
   return String(value ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 }
 
+/** Une référence (contrat, police, DPE) assez longue et mêlant chiffres pour désigner UN dossier. */
+export function isDiscriminantReference(normalized: string): boolean {
+  return normalized.length >= 6 && /\d/.test(normalized) && /[0-9]{3,}/.test(normalized);
+}
+
 /** Code postal : chiffres seulement. */
 export function normalizePostalCode(value: unknown): string {
   return String(value ?? '').replace(/\D/g, '');
