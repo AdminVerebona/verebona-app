@@ -29,9 +29,10 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type {
-  MascotAction, MascotDuoInvite, MascotParagraph, MascotPresentation, MascotPresentationState, MascotReminderRef, MascotSecondary, MascotSubject,
+  MascotAction, MascotDiscoveryInvitation, MascotDuoInvite, MascotParagraph, MascotPresentation, MascotPresentationState, MascotReminderRef, MascotSecondary, MascotSubject,
   MascotTile, MascotTodoItem,
 } from './types';
+import { MAX_HOME_SUGGESTIONS } from './types';
 import { emptyAccountSuggestions } from '@/services/verebona-assistant/registries/capability-registry';
 import { displayableText, hasCountingIntro } from './counting-intro';
 
@@ -709,18 +710,8 @@ interface HomeSuggestion {
   secondary?: MascotSecondary;
 }
 
-/**
- * Jusqu'à 3 pastilles « Ou demandez-moi : » : les questions proposées par le
- * moteur (secondaires de type `ask`, catalogue unique rendu côté serveur),
- * puis les suggestions de la page qui ne dépendent d'aucune donnée — jamais
- * d'autres questions pour atteindre 3 (lot 34) ; compte vide : les questions
- * d'amorce du catalogue (§12ter).
- */
-export function homeSuggestions(
-  p: MascotPresentation | null,
-  empty: boolean,
-  pageSuggestions: string[],
-): HomeSuggestion[] {
+/** Questions candidates (sans plafond) : moteur, puis page ; compte vide : amorce. */
+function questionCandidates(p: MascotPresentation | null, empty: boolean, pageSuggestions: readonly string[]): HomeSuggestion[] {
   if (empty) return EMPTY_ACCOUNT_SUGGESTIONS.map((label) => ({ label }));
   const out: HomeSuggestion[] = [];
   const vus = new Set<string>();
@@ -732,25 +723,103 @@ export function homeSuggestions(
   for (const label of pageSuggestions) {
     if (!vus.has(label)) { vus.add(label); out.push({ label }); }
   }
-  return out.slice(0, 3);
+  return out;
+}
+
+/**
+ * Questions « Ou demandez-moi » : les questions proposées par le moteur
+ * (secondaires de type `ask`), puis les suggestions de la page qui ne
+ * dépendent d'aucune donnée — jamais d'autres questions pour compléter
+ * (lot 34) ; compte vide : les questions d'amorce du catalogue (§12ter).
+ * Lot 106B : au plus `MAX_HOME_SUGGESTIONS` (2) suggestions simultanées.
+ */
+export function homeSuggestions(
+  p: MascotPresentation | null,
+  empty: boolean,
+  pageSuggestions: string[],
+): HomeSuggestion[] {
+  return questionCandidates(p, empty, pageSuggestions).slice(0, MAX_HOME_SUGGESTIONS);
+}
+
+// ── Lot 106B : suggestions de l'accueil (questions et invitations) ──────────
+
+/** Élément affiché dans la zone des suggestions (même emplacement, au plus deux). */
+export type HomeSuggestionSlot =
+  | { kind: 'question'; key: string; label: string; context?: { intent: string; assetId?: number }; secondary?: MascotSecondary }
+  | { kind: 'invitation'; key: string; invitation: MascotDiscoveryInvitation; secondary: MascotSecondary };
+
+/**
+ * Invitation → élément secondaire du moteur (télémétrie « affiché / cliqué »)
+ * dont l'action est le formulaire d'ajout EXISTANT, sans bien présélectionné :
+ * aucun bien créé ni rattachement imposé (l'utilisateur choisit).
+ */
+export function discoverySecondary(inv: MascotDiscoveryInvitation): MascotSecondary {
+  return {
+    id: inv.key, kind: 'discovery', sourceCode: 'DISC', occurrenceKey: inv.key,
+    action: { actionId: `${inv.key}:add`, label: inv.cta, target: { kind: 'upload_document', assetId: null } },
+  };
+}
+
+/** Clé d'une question affichée (passage « Autre suggestion », masquage local). */
+export function questionSlotKey(q: HomeSuggestion): string {
+  return q.secondary?.occurrenceKey ?? `PAGE:${q.label}`;
+}
+
+/**
+ * Suggestions de l'accueil (pure, testée) — au plus `MAX_HOME_SUGGESTIONS`,
+ * sans doublon :
+ *   1. la première question PERSONNALISÉE du moteur (T6, contrat fondé) ;
+ *   2. les invitations de découverte, dans l'ordre de rotation du serveur,
+ *      deux invitations voisines toujours d'univers différents ;
+ *   3. les autres questions personnalisées ;
+ *   4. les questions de la page (aide) ou d'amorce (compte vide) en complément.
+ * `hidden` : suggestions passées pendant la visite (« Autre suggestion ») —
+ * la suivante prend la place, sans relecture ni appel IA.
+ */
+export function homeSuggestionSlots(
+  p: MascotPresentation | null,
+  empty: boolean,
+  pageSuggestions: readonly string[],
+  hidden: ReadonlySet<string> = new Set(),
+): HomeSuggestionSlot[] {
+  const questions = questionCandidates(p, empty, pageSuggestions)
+    .map((q) => ({ kind: 'question' as const, key: questionSlotKey(q), label: q.label, context: q.context, secondary: q.secondary }))
+    .filter((q) => !hidden.has(q.key));
+  const perso = questions.filter((q) => q.secondary);
+  const autres = questions.filter((q) => !q.secondary);
+  const invitations = (p?.discovery?.invitations ?? []).filter((i) => !hidden.has(i.key));
+  // Deux invitations voisines d'univers différents (la suivante d'un autre univers remonte).
+  const alternees: MascotDiscoveryInvitation[] = [];
+  const reste = [...invitations];
+  while (reste.length) {
+    const prec = alternees.at(-1)?.universe;
+    const j = reste.findIndex((x) => x.universe !== prec);
+    alternees.push(...reste.splice(j >= 0 ? j : 0, 1));
+  }
+  const inv = alternees.map((i) => ({ kind: 'invitation' as const, key: i.key, invitation: i, secondary: discoverySecondary(i) }));
+  const ordre: HomeSuggestionSlot[] = [...perso.slice(0, 1), ...inv, ...perso.slice(1), ...autres];
+  const vus = new Set<string>();
+  return ordre.filter((x) => (vus.has(x.key) ? false : (vus.add(x.key), true))).slice(0, MAX_HOME_SUGGESTIONS);
 }
 
 /**
  * Secondaires qui ne sont PAS des questions (onboarding — place réservée
  * SEC-001 —, recommandations) : affichés en pastilles d'action, exécutées
  * par le parcours réel du moteur. Compte vide : les tuiles d'amorce les
- * remplacent.
+ * remplacent. Lot 106B : les invitations de découverte n'en font jamais
+ * partie (elles restent dans la zone des suggestions, hors de la bulle).
  */
 export function secondaryActions(p: MascotPresentation | null, empty: boolean): MascotSecondary[] {
   if (empty) return [];
-  return (p?.secondaries ?? []).filter((s) => s.action.target.kind !== 'ask');
+  return (p?.secondaries ?? []).filter((s) => s.action.target.kind !== 'ask' && s.kind !== 'discovery');
 }
 
 /**
  * Secondaires réellement affichés — la télémétrie « affiché » ne compte
- * qu'eux (LOG-001) : actions, puis questions retenues parmi les 3 pastilles.
+ * qu'eux (LOG-001) : actions, puis les suggestions de l'accueil affichées
+ * (questions du moteur et invitations de découverte, lot 106B).
  */
-export function displayedSecondaries(p: MascotPresentation | null, empty: boolean): MascotSecondary[] {
-  const questions = homeSuggestions(p, empty, []).map((x) => x.secondary).filter((x): x is MascotSecondary => !!x);
-  return [...secondaryActions(p, empty), ...questions];
+export function displayedSecondaries(p: MascotPresentation | null, empty: boolean, hidden: ReadonlySet<string> = new Set()): MascotSecondary[] {
+  const suggestions = homeSuggestionSlots(p, empty, [], hidden).map((x) => x.secondary).filter((x): x is MascotSecondary => !!x);
+  return [...secondaryActions(p, empty), ...suggestions];
 }

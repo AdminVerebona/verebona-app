@@ -166,6 +166,8 @@ export interface FaitT1 {
   confidence?: 'certain' | 'probable';
   semanticEvent?: { type: string; nature: 'HISTORICAL' | 'DEADLINE' } | null;
   recurrence?: Record<string, unknown> | null;
+  /** Lot 106A : sujet lu par T1 (« DPE », « Installation électrique »…) — intitulé « … — sujet ». */
+  subject?: string | null;
 }
 
 /**
@@ -222,7 +224,7 @@ export function sortieT1(p: {
       canonicalKey: f.canonicalKey,
       rawKey: f.rawKey ?? f.canonicalKey ?? 'prestation',
       label: f.label ?? null,
-      subject: null,
+      subject: f.subject ?? null,
       attribute: null,
       rawValue: String(f.value),
       normalizedValue: f.value,

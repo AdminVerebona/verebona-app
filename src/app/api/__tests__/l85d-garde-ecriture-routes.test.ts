@@ -70,6 +70,7 @@ const WRITE_GUARD_EXCEPTIONS: Readonly<Record<string, string>> = {
   'mobile/push-installations/': 'Lot 97 : appareil de l’application mobile (enregistrement / désinscription du jeton push) — aucune donnée du patrimoine ; la déconnexion doit rester possible.',
   'users/me/upload-notice/route.ts': 'Préférence d’affichage (bandeau d’information masqué).',
   'home/mascot/reminders/route.ts': 'Préférence PERSONNELLE de rappel (aucune donnée métier modifiée, lot 60).',
+  'home/mascot/suggestions/skip/route.ts': 'Préférence PERSONNELLE d’affichage « Autre suggestion » (lot 106B) : aucune donnée métier modifiée, possible en lecture seule.',
   'home/mascot/check/route.ts': 'Lecture (revalidation d’une cible) : POST sans écriture.',
   'home/mascot/events/route.ts': 'Télémétrie produit.',
   'home/mascot/pregenerate/route.ts': 'Demande de préparation en arrière-plan : l’éligibilité 82A (processingEligibleSql) est appliquée à la mise en file et au traitement.',

@@ -143,6 +143,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   home_mascot_acknowledgments: { domain: 'extraits-ia', description: 'Acquittements de l’accueil (T6).' },
   home_mascot_cache: { domain: 'extraits-ia', description: 'Cache de l’accueil (T6).' },
   home_mascot_pregen_requests: { domain: 'extraits-ia', description: 'Demandes de pré-génération de l’accueil.' },
+  home_suggestion_skips: { domain: 'extraits-ia', description: 'Suggestions de l’accueil passées par l’utilisateur (« Autre suggestion »).' },
   // ── Champs structurés, preuves, décisions ─────────────────────────────
   property_recovery_runs: { domain: 'champs-preuves', description: 'Analyses T3 des propriétés manquantes (contexte : empreinte, résumé borné, troncature ; issue, appels IA) — lot 88B.' },
   property_recovery_decisions: { domain: 'champs-preuves', description: 'Décisions par propriété manquante (écrite / abstention et cause, avant / après, preuves, provenance, traitement) — lot 88B.' },
@@ -224,7 +225,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   agenda_item_supplier_history: { domain: 'agenda-timeline', description: 'Historique des liens agenda ↔ fournisseur (provenance, auteur, corrélation ; lot 103E).' },
   agenda_occurrence_events: { domain: 'agenda-timeline', description: 'Occurrences (récurrences).' },
   agenda_item_removals: { domain: 'agenda-timeline', description: 'Retraits d’éléments d’agenda (traçables, restaurables).' },
-  agenda_intervention_consolidations: { domain: 'agenda-timeline', description: 'Consolidations d’interventions (lot 76H).' },
+  agenda_intervention_consolidations: { domain: 'agenda-timeline', description: 'Consolidations d’interventions (lot 76H) et de représentations équivalentes (origine COHERENCE, lot 106A) — restaurables.' },
+  agenda_equivalence_decisions: { domain: 'agenda-timeline', description: 'Décisions du contrôle COH-AGENDA-EQUIVALENT-REPRESENTATIONS : groupe (bien, nature, type, date), verdict, élément conservé, éléments absorbés (remappage), preuves, état avant / après, file des réévaluations T4 (lot 106A).' },
   agenda_data_conflicts: { domain: 'agenda-timeline', description: 'Conflits de données d’agenda.' },
   deadlines: { domain: 'agenda-timeline', description: 'Échéances historiques.' },
   events: { domain: 'agenda-timeline', description: 'Événements historiques.' },

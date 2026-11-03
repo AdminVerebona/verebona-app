@@ -298,6 +298,9 @@ export async function persistAgendaDecisions(
           // est tracée sur l'échéance existante : c'est l'indicateur
           // « consolidées » de l'écran T4 (T4-UI-06, SCR-05).
           await recordConsolidation(decision, accountId);
+          // Lot 106A : un fait HISTORIQUE unique décrit par un second document (même DPE, même n° ADEME)
+          // reste UN élément portant les DEUX preuves — jamais une seconde représentation.
+          await attachCorroboratingSource(decision, accountId);
           // Lot 71E (§C) : correction de classification d'un doublon exact.
           if (decision.classificationCorrection && await correctClassification(decision, accountId, assetId)) bilan.corrected++;
           break;
@@ -790,6 +793,41 @@ export async function recordConsolidation(decision: AgendaDecision, accountId: n
     deterministic: decision.deterministic,
   });
   return true;
+}
+
+/**
+ * Lot 106A — doublon CERTAIN d'un fait HISTORIQUE porté par un champ unique du
+ * registre (`dpeDate`…) lu dans un AUTRE document : ce document devient une
+ * preuve supplémentaire de l'élément existant (lien document + trace SOURCE),
+ * par le service unique de liaison. Jamais un lien que l'utilisateur a détaché
+ * (mémoire 82D) ; jamais bloquant. Rend vrai si une preuve a été ajoutée.
+ */
+export async function attachCorroboratingSource(decision: AgendaDecision, accountId: number): Promise<boolean> {
+  const id = decision.existingItemId;
+  const fileId = decision.sourceFileId;
+  if (decision.reasonCode !== CONSOLIDATION_REASON || !id || id <= 0 || !fileId || !decision.originFieldKey) return false;
+  const sem = resolveEventSemantics({ originFieldKey: decision.originFieldKey, ...semanticsOf(decision) });
+  if (sem.nature !== 'HISTORICAL') return false;
+  try {
+    const { linkRejectedSql } = await import('@/services/business-operations/grouping/decisions');
+    const [etat] = (await pgClient.unsafe(
+      `SELECT EXISTS (SELECT 1 FROM agenda_file_links l WHERE l.agenda_item_id = $1 AND l.asset_file_id = $3) AS deja,
+              ${linkRejectedSql('$1::int', '$3::int')} AS refuse
+         FROM agenda_items i WHERE i.id = $1 AND i.account_id = $2`,
+      [id, accountId, fileId] as never[],
+    )) as unknown as Array<{ deja: boolean; refuse: boolean }>;
+    if (!etat || etat.deja || etat.refuse) return false;
+    const { recordAgendaItemSources } = await import('./agenda-source-links');
+    const evidenceId = decision.sources?.find((s) => s.fileId === fileId)?.evidenceId ?? null;
+    await db.transaction((tx) => recordAgendaItemSources(tx, id, [{ fileId, role: 'SOURCE', evidenceId }], 'AI_DIRECT'));
+    await recordOccurrenceEvent(id, accountId, 'CORROBORATING_SOURCE_ADDED', {
+      reasonCode: 'EXACT_DUPLICATE_HISTORICAL', sourceFileId: fileId, originFieldKey: decision.originFieldKey, date: decision.date,
+    });
+    return true;
+  } catch (e) {
+    console.error('[agenda] preuve supplémentaire non rattachée :', (e as Error).message);
+    return false;
+  }
 }
 
 /** Trace d'une étape du cycle de vie d'une occurrence. Ne bloque jamais. */

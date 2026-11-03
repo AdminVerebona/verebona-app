@@ -178,6 +178,12 @@ export const MARKER_CONTRACT_DECLARATIONS: readonly MarkerContractDeclaration[] 
     blockId: 't3-document-asset-cross-v1', killSwitch: 'T3_CROSS_DOCUMENT_CONTEXT_ENABLED', label: 'T3 : preuves croisées entre documents pour le rattachement à un bien',
     impact: 'Déjà sûr côté serveur (groupes, rattachements démontrés, carte groupée) ; sans le contrat, T3 reçoit les variables d’avant (aucune preuve croisée) pour les cas qui demandent encore un arbitrage.',
     detect: async (t) => (await import('../reconciliation/document-asset/identity/contract')).promptCarriesCrossDocument(t) },
+  // Lot 106B : invitations de découverte de l'accueil (étape 13 du guide), après les questions fondées (étape 3).
+  { id: 't6-discovery-v1', treatment: 'T6', rank: 14, guideStep: 13, lot: '106B', task: 'FORMULATE',
+    blockId: 't6-discovery-v1', killSwitch: null, label: 'T6 : invitations de découverte sur l’accueil (documents à ajouter : logement, véhicules, objets)',
+    impact: 'Déjà sûr côté serveur : les invitations viennent du catalogue éditorial (sans IA, sans donnée personnelle) ; sans le contrat, T6 ne les rédige pas.',
+    requires: ['t6-suggestions-v3'],
+    detect: async (t) => (await import('@/services/home/mascot/discovery')).promptSupportsDiscovery(t) },
 ];
 
 let registryCache: Promise<PromptContract[]> | null = null;

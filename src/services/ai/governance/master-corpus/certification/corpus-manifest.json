@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "generatedAt": "2026-11-02T14:34:02.029Z",
+  "version": 3,
+  "generatedAt": "2026-11-02T20:41:35.929Z",
   "reference": {
     "ticket": "#601",
     "announcedScenarios": 401,
@@ -8160,6 +8160,78 @@
           "oracleFingerprint": "3eb03dcc41c20546051a74ab875c43562e8f06e652743e2b0f79f45e84419631"
         }
       ]
+    },
+    {
+      "id": "H-P-T6-DISC-01-INVITATIONS-GENERIQUES",
+      "sourceCaseId": "P-T6-DISC-01",
+      "file": "src/services/home/mascot/__fixtures__/p-t6-disc-01-invitations-generiques.json",
+      "operationCode": "t6_formulate",
+      "treatment": "T6",
+      "contract": null,
+      "schema": "T6FormulateOutput",
+      "riskFamily": "T6_INFORMATION_UTILE",
+      "difficulty": "SIMPLE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"valid\":true,\"subjectIds\":[],\"discovery\":{\"accepted\":[\"DISC:VEHICLE:INVOICE\",\"DISC:EQUIPMENT:NOTICE\"],\"rejected\":[]}}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-02T20:41:35.929Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : T6 / FORMULATE — lot 106B : invitations de découverte GÉNÉRIQUES acceptées sans référence de preuve ni bien correspondant (compte « logement seul » → véhicule et objet).",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T6-DISC-02-AFFIRMATION-PERSONNELLE",
+      "sourceCaseId": "P-T6-DISC-02",
+      "file": "src/services/home/mascot/__fixtures__/p-t6-disc-02-affirmation-personnelle.json",
+      "operationCode": "t6_formulate",
+      "treatment": "T6",
+      "contract": null,
+      "schema": "T6FormulateOutput",
+      "riskFamily": "T6_INFORMATION_UTILE",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"valid\":true,\"subjectIds\":[],\"discovery\":{\"accepted\":[],\"rejected\":[\"discovery_personal_claim\",\"discovery_with_grounds\",\"discovery_over_limit\"]}}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-02T20:41:35.929Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : T6 / FORMULATE — lot 106B (garde) : affirmation personnelle injustifiée (« votre voiture »), référence de preuve fictive et bien du compte cité → invitations rejetées, motifs structurés.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
     }
   ],
   "ledger": [
@@ -8294,6 +8366,8 @@
     "H-P-T3-25-PREUVES-CROISEES-MAISON-SANS-ADRESSE",
     "H-P-T3-26-PREUVES-CROISEES-PREUVE-INVENTEE",
     "H-P-T3-27-PREUVES-CROISEES-RELATION-NON-ETABLIE",
-    "H-P-T3-28-PREUVES-CROISEES-ETABLIE"
+    "H-P-T3-28-PREUVES-CROISEES-ETABLIE",
+    "H-P-T6-DISC-01-INVITATIONS-GENERIQUES",
+    "H-P-T6-DISC-02-AFFIRMATION-PERSONNELLE"
   ]
 }

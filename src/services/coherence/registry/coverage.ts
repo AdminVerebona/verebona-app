@@ -68,10 +68,12 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       // Lot 103E : fournisseurs / intervenants des éléments (preuve propre à l'élément, retraits manuels respectés).
       'COH-AGENDA-SUPPLIERS',
       // Lot 103D : pièces / équipements sans logement rattaché ; faits historiques prouvés restés « à confirmer ».
-      'COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS'],
+      'COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS',
+      // Lot 106A : représentations équivalentes d'un même fait réalisé, toutes origines (fiche, document, T4, projection).
+      'COH-AGENDA-EQUIVALENT-REPRESENTATIONS'],
     // Lot 83E : les échéances calculables issues des Opérations sont contrôlées (projection rejouée sans IA) ; 83B : invariants O-1.
     gap: {
-      what: 'échéances DOCUMENTAIRES décidées par T4 (IA) : décisions non conservées avec leur candidat, rejeu impossible sans IA ; groupes T4 « même document, même date » sans Opération',
+      what: 'échéances DOCUMENTAIRES décidées par T4 (IA) : décisions non conservées avec leur candidat, rejeu impossible sans IA ; groupes de représentations sans Opération à l’identité INCERTAINE (lot 106A : constat qualifié, en attente du contrat T4 106A-t4-representation-sans-operation — les identités certaines sont réparées)',
       existingMechanism: 'T4 à l’analyse (file durable, reprise du même travail) ; signalement 76H',
       planned: 'COH-AGENDA-T4-DOCUMENT-DEADLINES (point d’extension déclaré) — persistance durable des décisions T4 à décider',
     } },

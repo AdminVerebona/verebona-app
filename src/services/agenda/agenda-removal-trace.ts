@@ -29,7 +29,9 @@ type Sql = postgres.Sql;
  */
 type AgendaRemovalReason = 'SOURCE_SYNC' | 'DEDUPE_14_6' | 'OPERATION_PROJECTION' | 'OPERATION_CONSOLIDATION' | 'ORPHAN_ASSET_FIELD'
   /** Lot 83E : événement documentaire automatique, source retirée, sans plus aucun rattachement (contrôle COH-AGENDA-ORPHANS). */
-  | 'ORPHAN_SOURCE_DELETED';
+  | 'ORPHAN_SOURCE_DELETED'
+  /** Lot 106A : représentation équivalente d'un même fait absorbée par l'élément canonique (journal 0591, origine COHERENCE). */
+  | 'EQUIVALENT_REPRESENTATION';
 
 let pret: { ready: boolean; at: number } | null = null;
 

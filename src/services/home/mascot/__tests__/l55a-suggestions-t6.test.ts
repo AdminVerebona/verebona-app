@@ -518,7 +518,8 @@ describe('L87C — contrat des questions fondées (AC01 à AC14)', () => {
     expect(raisons(b, [{ question: 'Quand est prévu le contrôle technique ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' }])).toEqual(['contract_missing_subject']);
     // Mascotte : sans contrat, aucun contexte transmis (questions nulles) et trace « prompt non compatible ».
     const svc = read('src/services/home/mascot/mascot.service.ts');
-    expect(svc).toMatch(/const questionsP = t6SuggestionGroundsAvailable\(\)/);
+    // Lot 106B : capacités lues ensemble (questions fondées, invitations de découverte).
+    expect(svc).toMatch(/const questionsP = capsP\.then\(\(c\) => c\.grounds\)/);
     expect(R.t6SuggestionTraceOf({ status: 'generated', messages: [], promptVersion: 'v' }, { requested: false, promptSupported: false })).toMatchObject({ promptSupported: false, contract: null, accepted: 0 });
   });
 

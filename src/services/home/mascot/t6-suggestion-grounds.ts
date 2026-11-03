@@ -178,7 +178,11 @@ export async function currentSuggestionGroundVersions(accountId: number, grounds
 
 /** Fondements conservés de toutes les questions d'une entrée de cache. */
 export function storedGroundsOfEntry(suggestions: unknown): { perSuggestion: Array<T6StoredGround[] | null>; all: T6StoredGround[] } {
-  const perSuggestion = (Array.isArray(suggestions) ? suggestions : []).map((s) => storedGroundsOf((s as { grounds?: unknown } | null)?.grounds));
+  // Lot 106B : une invitation de découverte (`kind: DISCOVERY`) ne porte aucun
+  // fondement par contrat — jamais comptée comme une question sans fondement.
+  const perSuggestion = (Array.isArray(suggestions) ? suggestions : [])
+    .filter((s) => (s as { kind?: unknown } | null)?.kind !== 'DISCOVERY')
+    .map((s) => storedGroundsOf((s as { grounds?: unknown } | null)?.grounds));
   return { perSuggestion, all: perSuggestion.flatMap((g) => g ?? []) };
 }
 

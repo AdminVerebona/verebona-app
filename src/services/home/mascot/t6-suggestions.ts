@@ -75,6 +75,11 @@ import { EMOJI, TUTOIEMENT } from './t6-contract';
 import type { MascotAgendaRow } from './signals';
 import { daysBetween, normalizeForFingerprint } from './t6-interpellation';
 import { canonicalJson, sha256 } from './hash';
+import {
+  MAX_T6_DISCOVERY, T6_DISCOVERY_REJECTIONS, validateDiscoveryInvitation,
+  type T6DiscoveryContext, type T6DiscoveryRejectReason,
+} from './discovery';
+import type { MascotDiscoveryInvitation } from './types';
 
 /** Lot 87C : contrat des questions fondées (contexte ET sortie). */
 export const T6_SUGGESTION_CONTRACT = 't6-suggestions-v3';
@@ -130,8 +135,10 @@ export const T6_SUGGESTION_REJECTIONS = [
   'prepare_without_identified_action', 'prepare_without_concrete_ground',
   // Relecture du cache et contrôle de cohérence (fondements devenus invalides).
   'ground_unavailable', 'ground_changed', 'contract_outdated',
+  // Lot 106B : invitations de découverte (contrat `t6-discovery-v1`, contrôles propres).
+  ...T6_DISCOVERY_REJECTIONS,
 ] as const;
-type T6SuggestionRejectReason = (typeof T6_SUGGESTION_REJECTIONS)[number];
+type T6SuggestionRejectReason = (typeof T6_SUGGESTION_REJECTIONS)[number] | T6DiscoveryRejectReason;
 
 // ── Contexte transmis ────────────────────────────────────────────────────────
 
@@ -193,6 +200,11 @@ interface T6SuggestionContext {
   accountRefs: Array<T6SuggestionContextGround & { subject: T6SuggestionSubject }>;
   assets: T6SuggestionAssetRef[];
   nextDeadlines: T6SuggestionDeadline[];
+  /**
+   * Lot 106B : invitations de découverte (contrat `t6-discovery-v1`) — présent
+   * seulement si le prompt effectif porte ce contrat. Aucune donnée du compte.
+   */
+  discovery?: T6DiscoveryContext;
 }
 
 // ── Fondements (serveur seulement) ──────────────────────────────────────────
@@ -273,11 +285,13 @@ export interface T6SuggestionBundle {
   groundsDigest?: string;
   /** Lot 87C : contrat appliqué. */
   contract?: typeof T6_SUGGESTION_CONTRACT;
+  /** Lot 106B : invitations de découverte proposées à T6 (prompt porteur de `t6-discovery-v1`). */
+  discovery?: T6DiscoveryContext | null;
 }
 
 /** Portée de validation des questions (sous-ensemble du `T6SuggestionBundle`). */
 type T6SuggestionScope = Pick<T6SuggestionBundle,
-  'deadlineRefs' | 'excludedLabels' | 'deadlines' | 'excludedDeadlines' | 'assetNames' | 'grounds' | 'contract'>;
+  'deadlineRefs' | 'excludedLabels' | 'deadlines' | 'excludedDeadlines' | 'assetNames' | 'grounds' | 'contract' | 'discovery'>;
 
 /**
  * Lot 87C — données canoniques d'une échéance utiles aux fondements, déjà
@@ -322,6 +336,8 @@ export interface SuggestionSourceData {
   signaledIds?: ReadonlySet<number>;
   /** Lot 87C : fondements canoniques par échéance (`agendaItemId`). */
   grounds?: ReadonlyMap<number, T6DeadlineGroundsInput>;
+  /** Lot 106B : section des invitations de découverte (prompt porteur du contrat), ou rien. */
+  discovery?: T6DiscoveryContext | null;
 }
 
 const pos = (n: number | undefined | null) => typeof n === 'number' && n > 0;
@@ -471,6 +487,7 @@ export function buildT6SuggestionContext(d: SuggestionSourceData): T6SuggestionB
     grounds,
     groundsDigest,
     contract: T6_SUGGESTION_CONTRACT,
+    discovery: d.discovery ?? null,
     context: {
       schemaVersion: T6_SUGGESTION_CONTEXT_SCHEMA,
       bubble: { speech: d.speech, attentionToday: d.attentionToday },
@@ -480,6 +497,7 @@ export function buildT6SuggestionContext(d: SuggestionSourceData): T6SuggestionB
         ? assets.map((a) => ({ ...a, hasDeadlinesNext30Days: prochesEligibles.some((r) => r.assetId === assetIds.get(a.ref)) }))
         : assets,
       nextDeadlines,
+      ...(d.discovery ? { discovery: d.discovery } : {}),
     },
   };
 }
@@ -522,9 +540,12 @@ export interface T6SuggestionValidation {
   produced: number;
   accepted: T6Suggestion[];
   rejected: T6SuggestionRejection[];
+  /** Lot 106B : invitations de découverte acceptées (absent : aucune). */
+  acceptedDiscovery?: MascotDiscoveryInvitation[];
 }
 
 type Brut = {
+  kind?: unknown;
   question?: unknown; assetRef?: unknown; deadlineRef?: unknown; purpose?: unknown; subject?: unknown;
   decision?: unknown; groundRefs?: unknown; informationNature?: unknown; grounds?: unknown;
 };
@@ -571,7 +592,11 @@ export function validateT6SuggestionsDetailed(raw: unknown, assetIds: ReadonlyMa
   if (!Array.isArray(raw)) return { produced: 0, accepted: [], rejected: [{ index: -1, reason: 'malformed_list', subject: null, purpose: null, groundRefs: [] }] };
   const accepted: T6Suggestion[] = [];
   const rejected: T6SuggestionRejection[] = [];
+  const acceptedDiscovery: MascotDiscoveryInvitation[] = [];
   const vues = new Set<string>();
+  // Lot 106B : questions et invitations comptées SÉPARÉMENT (chacune son plafond, jamais de substitution).
+  let rangQuestion = 0;
+  let rangInvitation = 0;
   const refs = scope.deadlineRefs ?? new Map<string, T6SuggestionDeadlineRef>();
   const grounds = scope.grounds ?? null;
   const groundsByKey = new Map([...(grounds?.values() ?? [])].map((g) => [g.key, g.version]));
@@ -594,8 +619,24 @@ export function validateT6SuggestionsDetailed(raw: unknown, assetIds: ReadonlyMa
     const purposeDecl = typeof o?.purpose === 'string' ? o.purpose : null;
     const groundRefsDecl = Array.isArray(o?.groundRefs) ? (o!.groundRefs as unknown[]).filter((x): x is string => typeof x === 'string').slice(0, 20) : [];
     const rejeter = (reason: T6SuggestionRejectReason) => { rejected.push({ index, reason, subject: subjectDecl, purpose: purposeDecl, groundRefs: groundRefsDecl }); };
+    // Lot 106B : invitation de découverte — contrôles PROPRES (aucune référence de preuve
+    // exigée ni admise) ; les contrôles des questions ci-dessous ne sont ni allégés ni contournés.
+    if (o?.kind === 'DISCOVERY') {
+      if (rangInvitation++ >= MAX_T6_DISCOVERY) return rejeter('discovery_over_limit');
+      const v = validateDiscoveryInvitation(o, {
+        enabled: !!scope.discovery,
+        assetNames: biens.map((b) => b.norm),
+        deadlineLabels: [...echeances.map((x) => x.norm), ...exclues.map((x) => x.norm)],
+      });
+      if (!v.ok) return rejeter(v.reason);
+      if (acceptedDiscovery.some((x) => x.key === v.invitation.key || forme(x.text) === forme(v.invitation.text))) return rejeter('duplicate');
+      acceptedDiscovery.push(v.invitation);
+      return;
+    }
+    // Un élément d'un autre type déclaré n'est jamais lu comme une question.
+    if (o && o.kind != null && o.kind !== 'QUESTION') return rejeter('format');
     // AC05 : jamais de remplacement — seules les trois premières questions sont examinées.
-    if (index >= MAX_T6_SUGGESTIONS) return rejeter('over_limit');
+    if (rangQuestion++ >= MAX_T6_SUGGESTIONS) return rejeter('over_limit');
     if (!o) return rejeter('not_an_object');
     if (typeof o.question !== 'string' || /[\r\n]/.test(o.question)) return rejeter('format');
     const question = o.question.replace(/\s+/g, ' ').trim();
@@ -703,7 +744,7 @@ export function validateT6SuggestionsDetailed(raw: unknown, assetIds: ReadonlyMa
       grounds: cites.map((g) => ({ ref: g.ref, key: g.key, version: g.version, nature: g.nature, owner: g.owner })),
     });
   });
-  return { produced: raw.length, accepted, rejected };
+  return { produced: raw.length, accepted, rejected, ...(acceptedDiscovery.length ? { acceptedDiscovery } : {}) };
 }
 
 /** Questions acceptées seulement (voir `validateT6SuggestionsDetailed`). */
@@ -726,6 +767,8 @@ export interface T6SuggestionReport {
   reasons: Record<string, number>;
   rejections: Array<{ index: number; reason: string; subject: string | null; purpose: string | null; groundRefs: string[] }>;
   acceptedGrounds: Array<{ subject: string | null; purpose: string | null; groundRefs: string[]; keys: string[] }>;
+  /** Lot 106B : invitations de découverte acceptées (univers et type, jamais le texte). */
+  acceptedDiscovery?: Array<{ key: string; universe: string; documentKind: string }>;
   invalidations?: Array<{ at: string; source: 'CACHE_READ' | 'COHERENCE'; reasons: Record<string, number>; removed: number }>;
 }
 
@@ -743,6 +786,7 @@ export function t6SuggestionReportOf(v: T6SuggestionValidation | null, promptSup
     acceptedGrounds: (v?.accepted ?? []).map((s) => ({
       subject: s.subject ?? null, purpose: s.purpose ?? null, groundRefs: s.groundRefs ?? [], keys: (s.grounds ?? []).map((g) => g.key),
     })),
+    ...(v?.acceptedDiscovery?.length ? { acceptedDiscovery: v.acceptedDiscovery.map((x) => ({ key: x.key, universe: x.universe, documentKind: x.documentKind })) } : {}),
   };
 }
 
@@ -752,6 +796,11 @@ export function storedSuggestionOf(s: T6Suggestion): Record<string, unknown> {
     question: s.question, subject: s.subject ?? null, purpose: s.purpose ?? null, assetRef: s.assetRef ?? null, deadlineRef: s.deadlineRef ?? null,
     decision: s.decision ?? null, groundRefs: s.groundRefs ?? [], informationNature: s.informationNature ?? [], grounds: s.grounds ?? [],
   };
+}
+
+/** Lot 106B : invitation conservée dans le cache (revalidée à la relecture par les mêmes contrôles). */
+export function storedDiscoveryOf(x: MascotDiscoveryInvitation): Record<string, unknown> {
+  return { kind: 'DISCOVERY', text: x.text, universe: x.universe, documentKind: x.documentKind };
 }
 
 /** Questions retenues → éléments secondaires « question » (cliqués : T2, comme aujourd'hui). */
@@ -837,6 +886,8 @@ export async function loadT6SuggestionContext(
     excluded?: readonly MascotAgendaRow[]; signaledIds?: ReadonlySet<number>;
     /** Lot 87C : fondements canoniques des échéances (`suggestionGroundsOf`). */
     grounds?: ReadonlyMap<number, T6DeadlineGroundsInput>;
+    /** Lot 106B : section des invitations de découverte (prompt porteur du contrat). */
+    discovery?: T6DiscoveryContext | null;
   },
 ): Promise<T6SuggestionBundle | null> {
   try {
@@ -855,7 +906,7 @@ export async function loadT6SuggestionContext(
       speech: p.speech, attentionToday: p.attentionToday, state, operations, assets, agenda: futureSuggestionAgenda(p.agenda, p.today),
       labelOf: (r) => deadlineButtonLabel({ ...r, dateRole: roleOf(r) }),
       formatDate: formatDateFr,
-      today: p.today, excluded: p.excluded ?? [], signaledIds: p.signaledIds, grounds: p.grounds,
+      today: p.today, excluded: p.excluded ?? [], signaledIds: p.signaledIds, grounds: p.grounds, discovery: p.discovery ?? null,
     });
   } catch (e) {
     console.error('[mascotte] contexte des questions suggérées indisponible :', (e as Error).message);

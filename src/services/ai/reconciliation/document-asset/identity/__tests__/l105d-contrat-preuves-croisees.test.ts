@@ -145,7 +145,8 @@ describe('L105D-U-COH — cohérence : ASSET_CREATED relayé, contrôle spécial
   it('ASSET_CREATED déclenche le contrôle ciblé ; COH-DOC-PRIMARY-LINK est le dernier contrôle, aucun doublon', () => {
     expect(COHERENCE_BUSINESS_EVENTS.has('ASSET_CREATED')).toBe(true);
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
-    expect(ids[ids.length - 1]).toBe('COH-DOC-PRIMARY-LINK');
+    // Ajouté en fin au lot 105D ; seuls des contrôles plus récents le suivent (106A).
+    expect(ids.slice(ids.indexOf('COH-DOC-PRIMARY-LINK'))).toEqual(['COH-DOC-PRIMARY-LINK', 'COH-AGENDA-EQUIVALENT-REPRESENTATIONS']);
     expect(ids.filter((x) => x === 'COH-DOC-PRIMARY-LINK')).toHaveLength(1);
     const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-DOC-PRIMARY-LINK')!;
     expect(c.triggers).toEqual(expect.arrayContaining(['ASSET_CREATED', 'ASSET_UPDATED', 'SOURCE_ANALYZED']));

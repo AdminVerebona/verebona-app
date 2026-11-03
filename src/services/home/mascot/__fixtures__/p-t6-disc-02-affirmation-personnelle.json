@@ -1,0 +1,114 @@
+{
+  "case": "P-T6-DISC-02",
+  "description": "T6 / FORMULATE — lot 106B (garde) : affirmation personnelle injustifiée (« votre voiture »), référence de preuve fictive et bien du compte cité → invitations rejetées, motifs structurés.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "input": {
+      "schemaVersion": "t6-input-v1",
+      "language": "fr",
+      "subjects": []
+    },
+    "kinds": [],
+    "suggestionContext": {
+      "schemaVersion": "t6-suggestions-v3",
+      "bubble": {
+        "speech": "Rien de particulier à vous signaler pour le moment.",
+        "attentionToday": false
+      },
+      "account": {
+        "hasDocuments": true,
+        "hasDocumentsInAnalysis": false,
+        "hasUnlinkedDocuments": false,
+        "hasPendingToProcess": false,
+        "hasOperations": false,
+        "hasUpcomingDeadlines": false,
+        "hasDeadlinesNext30Days": false,
+        "hasExportsReady": false
+      },
+      "accountRefs": [
+        {
+          "ref": "ACC.DOCUMENTS",
+          "nature": "ACCOUNT_DATA",
+          "subject": "DOCUMENTS"
+        }
+      ],
+      "assets": [
+        {
+          "ref": "A1",
+          "name": "Maison Lilas",
+          "hasDocuments": true,
+          "hasDeadlinesNext30Days": false,
+          "documentsRef": "A1.DOCS"
+        }
+      ],
+      "nextDeadlines": [],
+      "discovery": {
+        "contract": "t6-discovery-v1",
+        "universes": [
+          "VEHICLE",
+          "EQUIPMENT",
+          "HOUSING"
+        ],
+        "documentKinds": [
+          "INVOICE",
+          "CONTRACT",
+          "DIAGNOSTIC",
+          "NOTICE",
+          "WARRANTY",
+          "DOCUMENT"
+        ],
+        "max": 2
+      }
+    },
+    "variables": {
+      "INPUT_JSON": "{\"schemaVersion\": \"t6-input-v1\", \"language\": \"fr\", \"subjects\": []}",
+      "SUGGESTION_CONTEXT": "{\"schemaVersion\": \"t6-suggestions-v3\", \"bubble\": {\"speech\": \"Rien de particulier à vous signaler pour le moment.\", \"attentionToday\": false}, \"account\": {\"hasDocuments\": true, \"hasDocumentsInAnalysis\": false, \"hasUnlinkedDocuments\": false, \"hasPendingToProcess\": false, \"hasOperations\": false, \"hasUpcomingDeadlines\": false, \"hasDeadlinesNext30Days\": false, \"hasExportsReady\": false}, \"accountRefs\": [{\"ref\": \"ACC.DOCUMENTS\", \"nature\": \"ACCOUNT_DATA\", \"subject\": \"DOCUMENTS\"}], \"assets\": [{\"ref\": \"A1\", \"name\": \"Maison Lilas\", \"hasDocuments\": true, \"hasDeadlinesNext30Days\": false, \"documentsRef\": \"A1.DOCS\"}], \"nextDeadlines\": [], \"discovery\": {\"contract\": \"t6-discovery-v1\", \"universes\": [\"VEHICLE\", \"EQUIPMENT\", \"HOUSING\"], \"documentKinds\": [\"INVOICE\", \"CONTRACT\", \"DIAGNOSTIC\", \"NOTICE\", \"WARRANTY\", \"DOCUMENT\"], \"max\": 2}}",
+      "INTERPELLATION_CONTEXT": null
+    }
+  },
+  "recording": {
+    "operationCode": "t6_formulate",
+    "task": "FORMULATE",
+    "output": {
+      "schemaVersion": "t6-output-v2",
+      "messages": [],
+      "suggestions": [
+        {
+          "kind": "DISCOVERY",
+          "universe": "VEHICLE",
+          "documentKind": "INVOICE",
+          "text": "Ajoutez la facture d’entretien de votre voiture pour retrouver son coût."
+        },
+        {
+          "kind": "DISCOVERY",
+          "universe": "HOUSING",
+          "documentKind": "INVOICE",
+          "text": "Une facture de travaux pour Maison Lilas ? Ajoutez-la pour retrouver son coût.",
+          "groundRefs": [
+            "A1"
+          ]
+        },
+        {
+          "kind": "DISCOVERY",
+          "universe": "EQUIPMENT",
+          "documentKind": "WARRANTY",
+          "text": "Ajoutez un document de garantie pour retrouver sa durée et les conditions qu’il prévoit."
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": true,
+    "subjectIds": [],
+    "discovery": {
+      "accepted": [],
+      "rejected": [
+        "discovery_personal_claim",
+        "discovery_with_grounds",
+        "discovery_over_limit"
+      ]
+    }
+  }
+}

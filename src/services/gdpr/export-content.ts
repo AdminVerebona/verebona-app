@@ -67,7 +67,7 @@ export const PERSONAL_TABLES: ReadonlySet<string> = new Set([
   't6_reminder_preferences', 'to_process_digest_state', 'gdpr_requests', 'trial_lifecycle_messages',
   'trial_lifecycle_events', 'signup_contexts', 'funnel_events', 'home_mascot_events', 'withdrawal_requests',
   'scheduled_account_deletions', 'invoices', 'subscription_communication_operations', 'marketing_oppositions',
-  'marketing_collection_proofs', 'notification_preferences', 'notifications',
+  'marketing_collection_proofs', 'notification_preferences', 'notifications', 'home_suggestion_skips',
 ]);
 
 /**

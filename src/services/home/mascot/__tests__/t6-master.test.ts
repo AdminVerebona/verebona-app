@@ -142,7 +142,8 @@ describe('contrat t6-output-v2 et règles serveur', () => {
   });
 
   it('corpus P-T6-01 (§30) : aucun fait supplémentaire, mêmes subjectId et ordre ; cas limites rejetés', () => {
-    expect(fixtures.map((f) => f.case).sort()).toEqual(['P-T6-01', 'P-T6-01b', 'P-T6-01c', 'P-T6-01d', 'P-T6-01e']);
+    // Lot 106B : + gardes des invitations de découverte (P-T6-DISC-*, rejouées aussi par `evaluateDiscoveryCorpusCase`).
+    expect(fixtures.map((f) => f.case).sort()).toEqual(['P-T6-01', 'P-T6-01b', 'P-T6-01c', 'P-T6-01d', 'P-T6-01e', 'P-T6-DISC-01', 'P-T6-DISC-02']);
     for (const f of fixtures) {
       expect(f.recording).toMatchObject({ operationCode: 't6_formulate', task: 'FORMULATE' });
       expect(JSON.parse(f.context.variables.INPUT_JSON)).toEqual(f.context.input);

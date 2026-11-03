@@ -133,7 +133,9 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
     expect(ids.slice(ids.indexOf('COH-EQUIPMENT-IDENTITY'))).toEqual(['COH-EQUIPMENT-IDENTITY', 'COH-AGENDA-SUPPLIERS', 'COH-AGENDA-STRUCTURAL-HOUSING', 'COH-AGENDA-HISTORICAL-STATUS',
       // Lot 105D : rattachement principal récupérable (fin de registre).
-      'COH-DOC-PRIMARY-LINK']);
+      'COH-DOC-PRIMARY-LINK',
+      // Lot 106A : représentations Agenda équivalentes (fin de registre).
+      'COH-AGENDA-EQUIVALENT-REPRESENTATIONS']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

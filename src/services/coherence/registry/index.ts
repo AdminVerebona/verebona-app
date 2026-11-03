@@ -56,6 +56,8 @@ import { agendaStructuralHousingCheck } from './checks/agenda-structural-housing
 import { agendaHistoricalStatusCheck } from './checks/agenda-historical-status';
 // Lot 105D : rattachement principal récupérable des documents (fin de registre).
 import { documentPrimaryLinkCheck } from './checks/document-primary-link';
+// Lot 106A : représentations équivalentes d'un même fait réalisé, toutes origines (fin de registre).
+import { agendaEquivalentRepresentationsCheck } from './checks/agenda-equivalent-representations';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -119,6 +121,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   agendaHistoricalStatusCheck,
   // Lot 105D (ticket « Rattachement rétroactif après création d'un bien », §G) : ajouté EN FIN de registre.
   documentPrimaryLinkCheck,
+  // Lot 106A (ticket « Agenda — doublons DPE non autoréparés ») : ajouté EN FIN de registre.
+  agendaEquivalentRepresentationsCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

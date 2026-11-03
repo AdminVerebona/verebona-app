@@ -481,6 +481,10 @@ jobs:
         run: npm run test:e2e:t4-activation -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t4-activation.xml
       - name: T3 — rattachement rétroactif après création d'un bien (lot 105D)
         run: npm run test:e2e:t3-retroactif -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t3-retroactif.xml
+      - name: Agenda — représentations équivalentes (DPE), autoréparation par la cohérence (lot 106A)
+        run: npm run test:e2e:agenda-doublons -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-agenda-doublons.xml
+      - name: Mascotte — suggestions rétablies et invitations de découverte (lot 106B)
+        run: npm run test:e2e:mascotte-suggestions -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-mascotte-suggestions.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -182,7 +182,7 @@ describe('AC36A-4 — en-tête mascotte', () => {
     expect(s).not.toContain(greetingDateLong(new Date(Date.now() - 86_400_000)));
     expect(s).toMatch(/<h1 [^>]*>(Bonjour|Bonsoir), Geo<\/h1>/);
     const bulle = s.indexOf('data-mascot-bubble');
-    const pastilles = s.indexOf('aria-label="Ou demandez-moi"');
+    const pastilles = s.indexOf('aria-label="Suggestions"');
     expect(bulle).toBeGreaterThan(s.indexOf('<h1'));
     expect(pastilles).toBeGreaterThan(bulle);
     expect(s).toContain('>Quelles échéances arrivent bientôt ?</button>');
@@ -207,7 +207,7 @@ describe('AC36A-4 — en-tête mascotte', () => {
     const bulle = s.indexOf('data-mascot-bubble');
     expect(s.indexOf('Ajouter un premier bien')).toBeGreaterThan(bulle);
     expect(s.indexOf('Déposer un document')).toBeGreaterThan(bulle);
-    expect(s.indexOf('Ajouter un premier bien')).toBeLessThan(s.indexOf('aria-label="Ou demandez-moi"'));
+    expect(s.indexOf('Ajouter un premier bien')).toBeLessThan(s.indexOf('aria-label="Suggestions"'));
   });
 
   it('AC36A-4 — comportement conservé : actions MASC2, choix, télémétrie, retrait immédiat', () => {

@@ -224,7 +224,9 @@ describe('critères d’acceptation (MASC2)', () => {
     expect(s.map((x) => x.label)).toContain('Que dois-je traiter en priorité ?');
     expect(s.map((x) => x.label)).not.toContain('Que dois-je faire aujourd’hui ?');
     const src = MASCOTTE();
-    expect(src.indexOf('aria-label="Sujets à traiter"')).toBeLessThan(src.indexOf('aria-label="Ou demandez-moi"'));
+    // Lot 106B : la zone « Ou demandez-moi » devient « Suggestions » (questions et invitations de découverte).
+    expect(src.indexOf('aria-label="Sujets à traiter"')).toBeGreaterThan(-1);
+    expect(src.indexOf('aria-label="Sujets à traiter"')).toBeLessThan(src.indexOf('aria-label="Suggestions"'));
   });
 });
 

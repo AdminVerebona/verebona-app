@@ -131,7 +131,36 @@ export interface MascotReminderRef {
   hasSeries: boolean;
 }
 
-type MascotSecondaryKind = 'onboarding' | 'recommendation' | 'question';
+type MascotSecondaryKind = 'onboarding' | 'recommendation' | 'question' | 'discovery';
+
+// ── Invitations de découverte (lot 106B) ─────────────────────────────────────
+
+/** Univers des biens Verebona couverts par les invitations de découverte (référentiel FERMÉ). */
+export const MASCOT_DISCOVERY_UNIVERSES = ['HOUSING', 'VEHICLE', 'EQUIPMENT'] as const;
+export type MascotDiscoveryUniverse = (typeof MASCOT_DISCOVERY_UNIVERSES)[number];
+/** Type de document proposé (référentiel FERMÉ : fixe l'appel à l'action, jamais un formulaire différent). */
+export const MASCOT_DISCOVERY_DOCUMENT_KINDS = ['INVOICE', 'CONTRACT', 'DIAGNOSTIC', 'NOTICE', 'WARRANTY', 'DOCUMENT'] as const;
+export type MascotDiscoveryDocumentKind = (typeof MASCOT_DISCOVERY_DOCUMENT_KINDS)[number];
+
+/**
+ * Lot 106B — invitation de découverte : possibilité d'usage (ajouter un type
+ * de document), jamais un constat personnel. `key` STABLE par univers et
+ * type de document (`DISC:VEHICLE:INVOICE`) : une invitation passée n'est
+ * plus proposée pendant la période de repos, quelle que soit sa formulation.
+ * `origin` : rédigée par T6 (`AI`) ou catalogue éditorial serveur (`CATALOG`).
+ */
+export interface MascotDiscoveryInvitation {
+  key: string;
+  universe: MascotDiscoveryUniverse;
+  documentKind: MascotDiscoveryDocumentKind;
+  text: string;
+  /** Appel à l'action (« Ajouter une facture »), déterminé par le serveur depuis `documentKind`. */
+  cta: string;
+  origin: 'AI' | 'CATALOG';
+}
+
+/** Lot 106B : suggestions de l'accueil présentées simultanément, au plus (questions et invitations). */
+export const MAX_HOME_SUGGESTIONS = 2;
 
 export interface MascotSecondary {
   id: string;
@@ -368,6 +397,13 @@ export interface MascotPresentation {
    * Absent : rafraîchissement habituel (10 min, événements).
    */
   refreshAfterMs?: number;
+  /**
+   * Lot 106B : invitations de découverte, dans l'ordre de rotation (les deux
+   * premières d'univers différents, puis une réserve pour « Autre
+   * suggestion », sans nouvel appel). Hors `contextHash`. Absent ou `null` :
+   * aucune (compte non éligible, présentation antérieure).
+   */
+  discovery?: { invitations: MascotDiscoveryInvitation[] } | null;
 }
 
 /**

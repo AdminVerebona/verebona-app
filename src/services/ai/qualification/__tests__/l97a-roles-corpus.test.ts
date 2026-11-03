@@ -80,7 +80,9 @@ describe('L97A-Q03 — une garde est écartée de la qualification réelle', () 
   it('P-T6-01b (fait ajouté, rejet attendu) n’est jamais un cas obligatoire', async () => {
     const set = await buildCaseSet('t6_formulate', { readMasterFile: readMasterFileFromRepo });
     expect(set.cases.map((c) => c.caseId)).toEqual(['corpus:P-T6-01']);
-    expect(set.skipped.filter((s) => /garde/.test(s.reason)).map((s) => s.caseId).sort()).toEqual(['corpus:P-T6-01b', 'corpus:P-T6-01c', 'corpus:P-T6-01d', 'corpus:P-T6-01e']);
+    expect(set.skipped.filter((s) => /garde/.test(s.reason)).map((s) => s.caseId).sort()).toEqual(['corpus:P-T6-01b', 'corpus:P-T6-01c', 'corpus:P-T6-01d', 'corpus:P-T6-01e',
+      // Lot 106B : invitations de découverte, gardes serveur (jamais obligatoires).
+      'corpus:P-T6-DISC-01', 'corpus:P-T6-DISC-02']);
   });
 });
 

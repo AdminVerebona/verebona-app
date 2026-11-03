@@ -12,6 +12,7 @@
 import type { ExtractedField, AgendaCandidate } from '../types';
 import { parseRecurrenceFr, type RecurrenceEnd, type RecurrenceSpec } from '../../agenda/rules/recurrence';
 import { CONTRACT_END_DATE_KEYS, resolveRecurrenceEnd, type ContractEndEvidence } from '../../agenda/rules/recurrence-end';
+import { absorbs, DOSSIER_DATE_FIELDS, normalizeEq, subjectDesignatesType } from '@/services/agenda/equivalence/rules';
 import {
   documentMayCreateEvent,
   getEventEntry,
@@ -228,6 +229,8 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
   const entry = resolveDocumentType(ctx.documentType) ?? resolveDocumentType(ctx.documentTypeCode);
   const documentType = entry?.code ?? ctx.documentType ?? ctx.documentTypeCode ?? null;
   const out: AgendaCandidate[] = [];
+  // Lot 106A : champ source (clé canonique, sujet) de chaque candidat, aligné sur `out`.
+  const origines: Array<{ key: string | null; subject: string | null; targetLabel?: string | null }> = [];
   const vus = new Set<string>();
   // Champs d'agenda du registre d'abord, puis les événements sans champ de
   // date : un « Achat » porté par acquisitionDate n'est pas doublé par
@@ -314,7 +317,12 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
       mayCreateAgenda: entry ? documentMayCreateEvent(entry, sem) : null,
       sources: [{ fileId: ctx.sourceFileId, role: 'SOURCE' }],
     });
+    origines.push({ key: cleCanonique(field, documentType), subject: field.subject?.trim() || null, targetLabel: field.target?.targetEntityLabel ?? null });
   }
+  // Lot 106A (ticket « doublons DPE ») : prévention à la source.
+  const retenus = withoutDossierGenericEvents(out, origines, { documentTitle: ctx.documentTitle ?? null });
+  out.length = 0;
+  out.push(...retenus);
 
   // D-B (lot 20) : un constat de sinistre crée l'événement HISTORIQUE
   // « sinistre » même si aucun fait ne le porte — daté du document, sur le
@@ -343,6 +351,46 @@ export function buildAgendaCandidatesT4(fields: ExtractedField[], ctx: T4Candida
     });
   }
   return out;
+}
+
+/**
+ * Lot 106A — PRÉVENTION À LA SOURCE (ticket P1 « Agenda — doublons DPE », cas
+ * Maison 22/12/2020 ; fonction PURE).
+ *
+ * CAUSE DÉMONTRÉE : `diagnosticDate` (date d'établissement du DOSSIER de
+ * diagnostic) n'a aucun effet Agenda au registre, mais T1 l'annote d'un
+ * événement `inspection` HISTORICAL : `semantique()` en tirait un candidat
+ * générique « Contrôle réalisé — … » (sans champ d'origine) en plus du « DPE
+ * réalisé » de `dpeDate` — même cible, même date, même document. Le garde
+ * « type déjà couvert » ne comparait que des types IDENTIQUES (`dpe` ≠
+ * `inspection`).
+ *
+ * Règle : un candidat générique HISTORICAL issu d'une date de dossier
+ * (`DOSSIER_DATE_FIELDS`) est retiré quand un fait PRÉCIS du même document
+ * (champ d'origine, type qui l'absorbe — `GENERIC_EVENT_ABSORPTION` —, même
+ * cible, même date) le représente déjà — SAUF si son sujet désigne un AUTRE
+ * diagnostic (« Installation électrique ») : fait distinct, conservé. Un
+ * générique sans champ de dossier (fait libre) n'est jamais retiré ici (le
+ * contrôle de cohérence décide sur preuves, ou T4).
+ */
+export function withoutDossierGenericEvents(
+  candidates: readonly AgendaCandidate[],
+  origins: ReadonlyArray<{ key: string | null; subject: string | null; targetLabel?: string | null }>,
+  ctx: { documentTitle: string | null },
+): AgendaCandidate[] {
+  const precis = candidates.filter((c) => c.originFieldKey && c.nature === 'HISTORICAL');
+  return candidates.filter((c, i) => {
+    if (c.originFieldKey || c.nature !== 'HISTORICAL') return true;
+    const o = origins[i];
+    if (!o || !o.key || !DOSSIER_DATE_FIELDS.includes(o.key)) return true;
+    const couvrant = precis.find((p) => absorbs(p.businessType, c.businessType) && p.date === c.date
+      && (p.target?.type ?? null) === (c.target?.type ?? null) && (p.target?.id ?? null) === (c.target?.id ?? null));
+    if (!couvrant) return true;
+    const sujet = o.subject;
+    const autreDiagnostic = !!sujet && !subjectDesignatesType(sujet, couvrant.businessType!)
+      && normalizeEq(sujet) !== normalizeEq(ctx.documentTitle) && normalizeEq(sujet) !== normalizeEq(o.targetLabel);
+    return autreDiagnostic;
+  });
 }
 
 /**

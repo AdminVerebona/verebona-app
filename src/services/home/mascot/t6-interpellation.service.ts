@@ -1475,7 +1475,51 @@ export interface T6FormulateTrace {
     supported: boolean; contract: string | null; source: 'generated' | 'cache' | 'none';
     produced: number; accepted: number; rejected: number; invalidated: number; reasons: Record<string, number>;
   } | null;
+  /**
+   * Lot 106B : diagnostic EXPLICITE des suggestions de l'accueil (questions
+   * personnalisées et invitations de découverte) — raison de l'absence
+   * (prompt non compatible, aucune proposition, rejet de validation, cache
+   * obsolète, erreur IA, génération en cours, compte non éligible…), origine
+   * des invitations (T6 ou catalogue éditorial), éléments affichables et
+   * passés. Codes et nombres seulement, jamais de texte.
+   */
+  homeSuggestions?: T6HomeSuggestionsTrace | null;
 }
+
+/** Lot 106B : codes stables du diagnostic des suggestions de l'accueil. */
+export type T6HomeSuggestionDiagnostic =
+  | 'OK' | 'NOT_ELIGIBLE' | 'DATA_UNAVAILABLE' | 'PROMPT_INCOMPATIBLE' | 'FORMULATION_CAPPED' | 'NO_ACCOUNT_CONTEXT'
+  | 'PENDING' | 'AI_ERROR' | 'CACHE_STALE' | 'NO_PROPOSAL' | 'VALIDATION_REJECTED' | 'ALL_SKIPPED';
+
+export interface T6HomeSuggestionsTrace {
+  diagnostic: T6HomeSuggestionDiagnostic;
+  /** Prompt effectif : questions fondées (`t6-suggestions-v3`) et invitations (`t6-discovery-v1`) portées ou non. */
+  promptGrounds: boolean;
+  promptDiscovery: boolean;
+  /** Questions personnalisées affichables après les suggestions passées par l'utilisateur. */
+  questions: number;
+  /** Invitations proposées (affichables + réserve) et leur origine. */
+  invitations: number;
+  invitationSource: 'AI' | 'CATALOG' | 'MIXED' | 'NONE';
+  /** Suggestions au repos (passées par l'utilisateur, période de repos en cours). */
+  skipped: number;
+}
+
+/** Lot 106B : libellé du diagnostic, en mots simples (BO). */
+export const T6_HOME_SUGGESTION_DIAGNOSTIC_LABELS: Readonly<Record<T6HomeSuggestionDiagnostic, string>> = {
+  OK: 'Suggestions personnalisées affichées.',
+  NOT_ELIGIBLE: 'Compte non éligible aux traitements IA : aucune suggestion, aucun appel.',
+  DATA_UNAVAILABLE: 'Données du compte partiellement illisibles : aucune question personnalisée (invitations du catalogue seulement).',
+  PROMPT_INCOMPATIBLE: 'Prompt T6 actif sans le contrat des questions fondées (t6-suggestions-v3) : questions personnalisées désactivées, invitations du catalogue éditorial.',
+  FORMULATION_CAPPED: 'Plafond quotidien de formulation atteint (pré-génération) : aucune question rédigée.',
+  NO_ACCOUNT_CONTEXT: 'Compte sans bien ni document (ou contexte illisible) : invitations du catalogue éditorial seulement.',
+  PENDING: 'Génération T6 en cours en arrière-plan : suggestions personnalisées au prochain affichage.',
+  AI_ERROR: 'T6 indisponible, en erreur ou sortie rejetée : invitations du catalogue éditorial, aucune donnée personnalisée inventée.',
+  CACHE_STALE: 'Questions conservées devenues obsolètes (fondements modifiés) : retirées, nouvelle génération au passage suivant.',
+  NO_PROPOSAL: 'T6 n’a proposé aucune suggestion (issue normale).',
+  VALIDATION_REJECTED: 'Toutes les suggestions de T6 ont été rejetées par les contrôles du serveur (motifs dans la ligne « Questions suggérées »).',
+  ALL_SKIPPED: 'Suggestions personnalisées passées par l’utilisateur (période de repos) : aucune réaffichée.',
+};
 
 /** Lignes FORMULATE du rapport (pure) : sujets transmis et affichés, secours. */
 export function t6FormulateEntries(f: T6FormulateTrace): ReportEntry[] {
@@ -1505,6 +1549,14 @@ export function t6FormulateEntries(f: T6FormulateTrace): ReportEntry[] {
     reason: !q.supported
       ? 'Prompt maître effectif sans le contrat des questions fondées : aucune question publiée.'
       : `${q.accepted} question(s) affichée(s), ${q.rejected} rejetée(s), ${q.invalidated} retirée(s) — aucune question n’est une anomalie.`,
+  }] : []), ...(f.homeSuggestions ? [{
+    // Lot 106B : raison explicite de la présence ou de l'absence des suggestions de l'accueil.
+    section: 'FORMULATE',
+    fieldKey: 'home_suggestions', label: 'Suggestions de l’accueil (questions et invitations de découverte)',
+    value: { ...f.homeSuggestions },
+    recordStatus: f.homeSuggestions.diagnostic, writeResult: 'NOT_WRITTEN' as const,
+    reasonCode: f.homeSuggestions.diagnostic,
+    reason: `${T6_HOME_SUGGESTION_DIAGNOSTIC_LABELS[f.homeSuggestions.diagnostic]} Invitations : ${f.homeSuggestions.invitations} (${f.homeSuggestions.invitationSource}).`,
   }] : [])];
 }
 

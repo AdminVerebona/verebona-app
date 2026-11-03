@@ -217,6 +217,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   home_mascot_acknowledgments: C('extractions-ia'),
   home_mascot_cache: C('extractions-ia'),
   home_mascot_pregen_requests: C('extractions-ia'),
+  // Lot 106B (1005) : suggestions de l'accueil passées par l'utilisateur (préférence personnelle).
+  home_suggestion_skips: C('extractions-ia'),
   verebona_request_runs: C('extractions-ia'),
   verebona_ai_runs: C('extractions-ia'),
   verebona_fact_revalidations: C('extractions-ia'),
@@ -269,6 +271,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   business_operation_targeted_runs: C('rapprochements-agenda-controles'),
   agenda_occurrence_events: C('rapprochements-agenda-controles'),
   agenda_intervention_consolidations: C('rapprochements-agenda-controles'),
+  // Lot 106A : décisions d'équivalence des représentations Agenda (avant / après, remappage, file T4).
+  agenda_equivalence_decisions: C('rapprochements-agenda-controles'),
   agenda_item_removals: C('rapprochements-agenda-controles'),
   annual_renewal_reminder_checks: C('rapprochements-agenda-controles'),
   coherence_object_proofs: C('rapprochements-agenda-controles'),

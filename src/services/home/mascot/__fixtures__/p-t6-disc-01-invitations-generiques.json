@@ -1,0 +1,104 @@
+{
+  "case": "P-T6-DISC-01",
+  "description": "T6 / FORMULATE — lot 106B : invitations de découverte GÉNÉRIQUES acceptées sans référence de preuve ni bien correspondant (compte « logement seul » → véhicule et objet).",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "input": {
+      "schemaVersion": "t6-input-v1",
+      "language": "fr",
+      "subjects": []
+    },
+    "kinds": [],
+    "suggestionContext": {
+      "schemaVersion": "t6-suggestions-v3",
+      "bubble": {
+        "speech": "Rien de particulier à vous signaler pour le moment.",
+        "attentionToday": false
+      },
+      "account": {
+        "hasDocuments": true,
+        "hasDocumentsInAnalysis": false,
+        "hasUnlinkedDocuments": false,
+        "hasPendingToProcess": false,
+        "hasOperations": false,
+        "hasUpcomingDeadlines": false,
+        "hasDeadlinesNext30Days": false,
+        "hasExportsReady": false
+      },
+      "accountRefs": [
+        {
+          "ref": "ACC.DOCUMENTS",
+          "nature": "ACCOUNT_DATA",
+          "subject": "DOCUMENTS"
+        }
+      ],
+      "assets": [
+        {
+          "ref": "A1",
+          "name": "Maison Lilas",
+          "hasDocuments": true,
+          "hasDeadlinesNext30Days": false,
+          "documentsRef": "A1.DOCS"
+        }
+      ],
+      "nextDeadlines": [],
+      "discovery": {
+        "contract": "t6-discovery-v1",
+        "universes": [
+          "VEHICLE",
+          "EQUIPMENT",
+          "HOUSING"
+        ],
+        "documentKinds": [
+          "INVOICE",
+          "CONTRACT",
+          "DIAGNOSTIC",
+          "NOTICE",
+          "WARRANTY",
+          "DOCUMENT"
+        ],
+        "max": 2
+      }
+    },
+    "variables": {
+      "INPUT_JSON": "{\"schemaVersion\": \"t6-input-v1\", \"language\": \"fr\", \"subjects\": []}",
+      "SUGGESTION_CONTEXT": "{\"schemaVersion\": \"t6-suggestions-v3\", \"bubble\": {\"speech\": \"Rien de particulier à vous signaler pour le moment.\", \"attentionToday\": false}, \"account\": {\"hasDocuments\": true, \"hasDocumentsInAnalysis\": false, \"hasUnlinkedDocuments\": false, \"hasPendingToProcess\": false, \"hasOperations\": false, \"hasUpcomingDeadlines\": false, \"hasDeadlinesNext30Days\": false, \"hasExportsReady\": false}, \"accountRefs\": [{\"ref\": \"ACC.DOCUMENTS\", \"nature\": \"ACCOUNT_DATA\", \"subject\": \"DOCUMENTS\"}], \"assets\": [{\"ref\": \"A1\", \"name\": \"Maison Lilas\", \"hasDocuments\": true, \"hasDeadlinesNext30Days\": false, \"documentsRef\": \"A1.DOCS\"}], \"nextDeadlines\": [], \"discovery\": {\"contract\": \"t6-discovery-v1\", \"universes\": [\"VEHICLE\", \"EQUIPMENT\", \"HOUSING\"], \"documentKinds\": [\"INVOICE\", \"CONTRACT\", \"DIAGNOSTIC\", \"NOTICE\", \"WARRANTY\", \"DOCUMENT\"], \"max\": 2}}",
+      "INTERPELLATION_CONTEXT": null
+    }
+  },
+  "recording": {
+    "operationCode": "t6_formulate",
+    "task": "FORMULATE",
+    "output": {
+      "schemaVersion": "t6-output-v2",
+      "messages": [],
+      "suggestions": [
+        {
+          "kind": "DISCOVERY",
+          "universe": "VEHICLE",
+          "documentKind": "INVOICE",
+          "text": "Ajoutez une facture d’entretien automobile pour retrouver les interventions et leur coût."
+        },
+        {
+          "kind": "DISCOVERY",
+          "universe": "EQUIPMENT",
+          "documentKind": "NOTICE",
+          "text": "Une notice d’équipement ? Ajoutez-la pour retrouver ses consignes et ses références."
+        }
+      ]
+    }
+  },
+  "expected": {
+    "valid": true,
+    "subjectIds": [],
+    "discovery": {
+      "accepted": [
+        "DISC:VEHICLE:INVOICE",
+        "DISC:EQUIPMENT:NOTICE"
+      ],
+      "rejected": []
+    }
+  }
+}

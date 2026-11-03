@@ -56,9 +56,11 @@ import {
   type T6Input, type T6Message, type T6SubjectKind,
 } from './t6-contract';
 import {
-  promptSupportsSuggestionGrounds, storedSuggestionOf, t6SuggestionReportOf, validateT6SuggestionsDetailed, T6_SUGGESTION_CONTRACT,
+  promptSupportsSuggestionGrounds, storedDiscoveryOf, storedSuggestionOf, t6SuggestionReportOf, validateT6SuggestionsDetailed, T6_SUGGESTION_CONTRACT,
   type T6Suggestion, type T6SuggestionBundle, type T6SuggestionReport, type T6SuggestionValidation,
 } from './t6-suggestions';
+import { promptSupportsDiscovery } from './discovery';
+import type { MascotDiscoveryInvitation } from './types';
 import {
   T6_ASSESSMENT_REVISION_REMINDER, T6_EVALUATION_SIGNATURE_V2, type T6EvaluationConfig, type T6InterpellationBundle, type T6PersistResult,
 } from './t6-interpellation';
@@ -138,6 +140,8 @@ interface T6Outcome {
   suggestionValidation?: T6SuggestionValidation | null;
   /** Lot 87C : questions retirées à la relecture du cache (fondements devenus invalides). */
   suggestionsInvalidated?: number;
+  /** Lot 106B : invitations de découverte validées de la MÊME sortie (absent : aucune). */
+  discovery?: MascotDiscoveryInvitation[] | null;
 }
 
 // ── Empreintes ───────────────────────────────────────────────────────────────
@@ -337,16 +341,33 @@ async function t6EvaluationBaseline(legacy: string, current: string): Promise<st
  * formulée normalement. Ne lève jamais (échec : `false`).
  */
 export async function t6SuggestionGroundsAvailable(): Promise<boolean> {
+  return (await t6SuggestionCapabilities()).grounds;
+}
+
+/**
+ * Lot 106B — capacités du prompt maître T6 EFFECTIF pour les suggestions de
+ * l'accueil (même résolution que `t6SuggestionGroundsAvailable`) :
+ *   · `grounds` : questions personnalisées fondées (`t6-suggestions-v3`) ;
+ *   · `discovery` : invitations de découverte rédigées par T6
+ *     (`t6-discovery-v1`) — seulement avec `grounds` (même emplacement,
+ *     même sortie `suggestions`).
+ * `source` : version BO ou fichier du dépôt (diagnostic). Ne lève jamais.
+ */
+export async function t6SuggestionCapabilities(): Promise<{ grounds: boolean; discovery: boolean; source: 'bo' | 'repository' | 'unreadable' }> {
   try {
     const config = await resolveOperationConfig(T6_MASTER_OPERATION);
     // Même résolution que la passerelle (`configuredMasterText`) : texte
     // administré en architecture master, sinon fichier du dépôt.
     const bo = config.promptArchitecture === 'master' && config.masterPromptText?.trim() ? config.masterPromptText : null;
-    if (bo != null) return promptSupportsSuggestionGrounds(bo);
-    const { loadMasterTemplate } = await import('@/services/ai/prompts/prompt-loader');
-    return promptSupportsSuggestionGrounds(await loadMasterTemplate(T6_MASTER_PROMPT_CODE).catch(() => null));
+    let texte = bo;
+    if (texte == null) {
+      const { loadMasterTemplate } = await import('@/services/ai/prompts/prompt-loader');
+      texte = await loadMasterTemplate(T6_MASTER_PROMPT_CODE).catch(() => null);
+    }
+    const grounds = promptSupportsSuggestionGrounds(texte);
+    return { grounds, discovery: grounds && promptSupportsDiscovery(texte), source: bo != null ? 'bo' : texte != null ? 'repository' : 'unreadable' };
   } catch {
-    return false;
+    return { grounds: false, discovery: false, source: 'unreadable' };
   }
 }
 
@@ -442,6 +463,7 @@ export async function readT6Cache(accountId: number, cacheKey: string, input: T6
 export async function readT6CacheEntry(
   accountId: number, cacheKey: string, input: T6Input, bundle?: T6SuggestionBundle | null,
 ): Promise<{ messages: T6Message[]; suggestions: T6Suggestion[] | null; validation?: T6SuggestionValidation | null; invalidated?: number } | null> {
+  // Lot 106B : la validation rendue porte aussi les invitations de découverte (`acceptedDiscovery`).
   try {
     const r = (await pgClient.unsafe(
       bundle
@@ -493,6 +515,8 @@ async function writeT6Cache(p: {
   suggestions?: T6Suggestion[] | null;
   /** Lot 87C : trace de la génération (invalidations postérieures). */
   traceId?: string | null;
+  /** Lot 106B : invitations de découverte de la même génération (même colonne, élément `kind: DISCOVERY`). */
+  discovery?: MascotDiscoveryInvitation[] | null;
 }): Promise<void> {
   try {
     if (p.suggestions) {
@@ -505,7 +529,7 @@ async function writeT6Cache(p: {
          ON CONFLICT (account_id, cache_key) DO NOTHING`,
         [p.accountId, p.cacheKey, p.contextHash, p.promptVersion, p.schemaVersion ?? T6_OUTPUT_SCHEMA_VERSION,
           JSON.stringify(p.messages), p.model,
-          JSON.stringify(p.suggestions.map(storedSuggestionOf)), T6_SUGGESTION_CONTRACT, p.traceId ?? null] as never[],
+          JSON.stringify([...p.suggestions.map(storedSuggestionOf), ...(p.discovery ?? []).map(storedDiscoveryOf)]), T6_SUGGESTION_CONTRACT, p.traceId ?? null] as never[],
       );
     } else {
       await pgClient.unsafe(
@@ -704,12 +728,14 @@ async function generateMaster(p: {
       ? validateT6SuggestionsDetailed((res.data as { suggestions?: unknown } | null)?.suggestions, p.suggestions.assetIds, p.suggestions)
       : null;
     const suggestions = suggestionValidation ? suggestionValidation.accepted : null;
+    // Lot 106B : invitations de découverte de la même sortie, validées à part (aucune référence de preuve).
+    const discovery = suggestionValidation?.acceptedDiscovery ?? null;
     await writeT6Cache({
       accountId: p.accountId, cacheKey: p.cacheKey, contextHash: p.contextHash,
       promptVersion: p.promptVersion, messages, model: res.model, schemaVersion: T6_OUTPUT_SCHEMA_VERSION_V2,
-      suggestions, traceId: res.traceId ?? null,
+      suggestions, discovery, traceId: res.traceId ?? null,
     });
-    return { ...base, status: 'generated', messages, adjustments, suggestions, suggestionValidation };
+    return { ...base, status: 'generated', messages, adjustments, suggestions, suggestionValidation, discovery };
   } catch (e) {
     // Lot 22 : plafond IA du mois du compte atteint — texte de secours
     // déterministe, sans compter d'échec au disjoncteur T6 (partagé par tous
@@ -805,7 +831,10 @@ async function formulateWithT6Inner(
   if (cached) {
     return {
       status: 'cache_hit', messages: cached.messages, promptVersion, architecture: 'master',
-      ...(bundle ? { suggestions: cached.suggestions, suggestionValidation: cached.validation ?? null, suggestionsInvalidated: cached.invalidated ?? 0 } : {}),
+      ...(bundle ? {
+        suggestions: cached.suggestions, suggestionValidation: cached.validation ?? null, suggestionsInvalidated: cached.invalidated ?? 0,
+        discovery: cached.validation?.acceptedDiscovery ?? null,
+      } : {}),
     };
   }
 
@@ -832,10 +861,17 @@ async function formulateWithT6Inner(
   if (!breakerAllows()) {
     return { status: 'disabled', messages: null, promptVersion, error: 'disjoncteur T6 ouvert' };
   }
+  // Lot 106B : même contexte en échec il y a peu — à l'AFFICHAGE, aucun nouvel
+  // appel (les relectures de l'accueil ne relancent pas une génération qui
+  // vient d'échouer) ; la pré-génération, elle, peut réessayer.
+  if (p.mode === 'display' && recentFailure(cacheKey)) {
+    return { status: 'error', messages: null, promptVersion, architecture: 'master', error: T6_RECENT_FAILURE_NOTE };
+  }
 
   let run = inflight.get(cacheKey);
   if (!run) {
     run = generateMaster({ accountId: p.accountId, input: p.input, cacheKey, contextHash: p.contextHash, promptVersion, mode: p.mode, kinds: p.kinds, pinned, suggestions: bundle }, deps.execute)
+      .then((o) => { if (o.status === 'error' || o.status === 'validation_failed') noteFailure(cacheKey); else failures.delete(cacheKey); return o; })
       .finally(() => inflight.delete(cacheKey));
     inflight.set(cacheKey, run);
     // La génération qui s'achève après le délai d'affichage est journalisée
@@ -873,6 +909,25 @@ async function formulateWithT6Inner(
 
 /** Générations dont l'affichage n'a pas attendu la fin. */
 const tardive = new WeakSet<Promise<T6Outcome>>();
+
+/** Lot 106B : délai pendant lequel un contexte en échec n'est pas relancé à l'affichage. */
+const T6_FAILURE_COOLDOWN_MS = 10 * 60_000;
+/** Issue d'un affichage qui ne relance pas une génération récemment en échec. */
+export const T6_RECENT_FAILURE_NOTE = 'génération récemment en échec (aucun nouvel appel à l’affichage)';
+const failures = new Map<string, number>();
+function noteFailure(cacheKey: string): void {
+  failures.set(cacheKey, Date.now());
+  if (failures.size > 5_000) failures.clear();
+}
+function recentFailure(cacheKey: string): boolean {
+  const t = failures.get(cacheKey);
+  if (t == null) return false;
+  if (Date.now() - t < T6_FAILURE_COOLDOWN_MS) return true;
+  failures.delete(cacheKey);
+  return false;
+}
+/** Réservé aux tests. */
+export function resetT6RecentFailures(): void { failures.clear(); }
 
 // ══════════════════════════════════════════════════════════════════════════
 // MODE EVALUATE (lot 61) — pertinence des interpellations

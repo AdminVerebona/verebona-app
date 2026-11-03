@@ -397,7 +397,14 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
   // nuances) : `evaluateT6CorpusCase` du contrat T6 (C).
   async t6_formulate(c, output) {
     const { evaluateT6CorpusCase } = await import('@/services/home/mascot/t6-contract');
-    return evaluateT6CorpusCase(c.context as never, output, c.expected as never);
+    const errs = evaluateT6CorpusCase(c.context as never, output, c.expected as never);
+    // Lot 106B : invitations de découverte (contrat `t6-discovery-v1`) — validation serveur réelle.
+    const attendu = (c.expected as { discovery?: { accepted?: string[]; rejected?: string[] } } | null)?.discovery;
+    if (attendu) {
+      const { evaluateDiscoveryCorpusCase } = await import('@/services/home/mascot/discovery');
+      errs.push(...evaluateDiscoveryCorpusCase((c.context as { suggestionContext?: unknown }).suggestionContext, output, attendu));
+    }
+    return errs;
   },
   // Lot 61 — MODE=EVALUATE : contrat `t6-evaluation-v1` (Zod strict) et
   // contrôles métier (une décision par candidat, ordre, motifs, preuves, dates).

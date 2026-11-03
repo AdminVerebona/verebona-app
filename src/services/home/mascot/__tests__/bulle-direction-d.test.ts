@@ -176,15 +176,16 @@ describe('pose et suggestions', () => {
     }
   });
 
-  it('3 pastilles : questions du moteur, puis catalogue de la page ; compte vide : questions d’amorce', () => {
+  // Lot 106B (ticket « Mascotte — suggestions ») : au plus DEUX suggestions simultanées (zone compacte).
+  it('2 pastilles : questions du moteur, puis catalogue de la page ; compte vide : questions d’amorce', () => {
     const p = presentationOf({
       paragraphs: [],
       secondaries: [{ id: 'q', kind: 'question', sourceCode: 'Q:home_asset_docs', occurrenceKey: 'q', action: { actionId: 'q', label: 'Quels sont les documents de Ferrari ?', target: { kind: 'ask', question: 'Quels sont les documents de Ferrari ?', context: { intent: 'ACCOUNT_SEARCH_DOCUMENT', assetId: 3 } } } }],
     });
     const s = homeSuggestions(p, false, ['Comment transférer un bien ?', 'Quels sont les documents de Ferrari ?', 'Mes échéances', 'Autre']);
-    expect(s.map((x) => x.label)).toEqual(['Quels sont les documents de Ferrari ?', 'Comment transférer un bien ?', 'Mes échéances']);
+    expect(s.map((x) => x.label)).toEqual(['Quels sont les documents de Ferrari ?', 'Comment transférer un bien ?']);
     expect(s[0].context).toEqual({ intent: 'ACCOUNT_SEARCH_DOCUMENT', assetId: 3 });
-    expect(homeSuggestions(p, true, []).map((x) => x.label)).toEqual(EMPTY_ACCOUNT_SUGGESTIONS);
+    expect(homeSuggestions(p, true, []).map((x) => x.label)).toEqual(EMPTY_ACCOUNT_SUGGESTIONS.slice(0, 2));
     // Lot 34 : compte vide = questions d'aide du catalogue unique (intention déterministe).
     expect(EMPTY_ACCOUNT_SUGGESTIONS).toEqual(['Comment ajouter un bien ?', 'Comment ajouter un document ?', 'L’analyse automatique, c’est quoi ?']);
   });
@@ -195,8 +196,8 @@ describe('pose et suggestions', () => {
     const p = presentationOf({ paragraphs: [], secondaries: [onb, q(1), q(2), q(3), q(4)] });
     expect(secondaryActions(p, false).map((x) => x.id)).toEqual(['onb']);
     expect(secondaryActions(p, true)).toEqual([]);
-    // 3 pastilles seulement : la 4e question n'est pas affichée, donc pas comptée.
-    expect(displayedSecondaries(p, false).map((x) => x.id)).toEqual(['onb', 'q1', 'q2', 'q3']);
+    // Lot 106B : 2 suggestions seulement — la 3e question n'est pas affichée, donc pas comptée.
+    expect(displayedSecondaries(p, false).map((x) => x.id)).toEqual(['onb', 'q1', 'q2']);
     expect(homeSuggestions(p, false, [])[0].secondary?.occurrenceKey).toBe('q1');
     expect(displayedSecondaries(p, true)).toEqual([]);
   });
@@ -205,6 +206,7 @@ describe('pose et suggestions', () => {
     const src = readFileSync(join(process.cwd(), 'src/components/home/MascotSpeaks.tsx'), 'utf8');
     expect(src).toMatch(/run\(it\.secondary\.action, it\.secondary, 'secondary'\)/);
     expect(src).toMatch(/run\(s\.secondary\.action, s\.secondary, 'secondary'\)/);
-    expect(src).toMatch(/useMascotPresentation\(\(p\) => displayedSecondaries\(p, emptyRef\.current\)\)/);
+    // Lot 106B : la télémétrie « affiché » tient compte des suggestions passées pendant la visite.
+    expect(src).toMatch(/useMascotPresentation\(\(p\) => displayedSecondaries\(p, emptyRef\.current, passeesRef\.current\)\)/);
   });
 });

@@ -45,7 +45,7 @@ type Row = Record<string, unknown>;
 
 /** Espace du verrou consultatif des consolidations d'agenda (distinct de 39101, Opérations). */
 export const AGENDA_CONSOLIDATION_LOCK_SPACE = 39102;
-type ConsolidationOrigin = 'PROJECTION' | 'REPRISE';
+type ConsolidationOrigin = 'PROJECTION' | 'REPRISE' | 'COHERENCE';
 
 const intArray = (v: readonly number[]): string => `{${[...new Set(v)].filter((x) => Number.isSafeInteger(x)).join(',')}}`;
 
@@ -167,62 +167,8 @@ export async function consolidateInTx(tx: Tx, p: ConsolidationInput): Promise<Co
     const ok = gardes.map((g) => Number((g.item as Row).id));
     const absorbed: number[] = [];
     for (const g of gardes) {
-      const item = g.item as Row;
-      const id = Number(item.id);
-      const links = await tx.unsafe<Row[]>(
-        `SELECT
-           COALESCE((SELECT jsonb_agg(asset_id ORDER BY asset_id) FROM agenda_asset_links WHERE agenda_item_id = $1), '[]') AS assets,
-           COALESCE((SELECT jsonb_agg(asset_file_id ORDER BY asset_file_id) FROM agenda_file_links WHERE agenda_item_id = $1), '[]') AS files,
-           COALESCE((SELECT jsonb_object_agg(asset_file_id::text, provenances) FROM agenda_file_links WHERE agenda_item_id = $1), '{}') AS file_provenances,
-           COALESCE((SELECT jsonb_agg(substructure_id ORDER BY substructure_id) FROM agenda_room_links WHERE agenda_item_id = $1), '[]') AS rooms,
-           COALESCE((SELECT jsonb_agg(equipment_id ORDER BY equipment_id) FROM agenda_equipment_links WHERE agenda_item_id = $1), '[]') AS equipments,
-           COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id) FROM agenda_occurrence_events e WHERE e.agenda_item_id = $1), '[]') AS occurrence_events`,
-        [id] as never[],
-      );
-      const added = {
-        assets: (await tx.unsafe<Row[]>(`INSERT INTO agenda_asset_links (agenda_item_id, asset_id)
-            SELECT $1, asset_id FROM agenda_asset_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING asset_id`, [p.principalId, id] as never[])).map((r) => Number(r.asset_id)),
-        // Lot 82D : provenances reprises (un élément absorbé n'est jamais principal : aucune propagation copiée).
-        files: (await tx.unsafe<Row[]>(`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id, provenances)
-            SELECT $1, asset_file_id, CASE WHEN cardinality(array_remove(provenances, 'OPERATION_PRINCIPAL')) > 0
-                                           THEN array_remove(provenances, 'OPERATION_PRINCIPAL') ELSE ARRAY['AI_DIRECT']::text[] END
-              FROM agenda_file_links WHERE agenda_item_id = $2
-               -- Lot 86D : un lien détaché par l'utilisateur de l'élément retenu n'y est jamais recopié.
-               AND NOT ${linkRejectedSql('$1::int', 'asset_file_id')}
-             ON CONFLICT DO NOTHING RETURNING asset_file_id`, [p.principalId, id] as never[])).map((r) => Number(r.asset_file_id)),
-        rooms: (await tx.unsafe<Row[]>(`INSERT INTO agenda_room_links (agenda_item_id, substructure_id)
-            SELECT $1, substructure_id FROM agenda_room_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING substructure_id`, [p.principalId, id] as never[])).map((r) => Number(r.substructure_id)),
-        equipments: (await tx.unsafe<Row[]>(`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id)
-            SELECT $1, equipment_id FROM agenda_equipment_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING equipment_id`, [p.principalId, id] as never[])).map((r) => Number(r.equipment_id)),
-      };
-      // Preuves : déplacées vers le principal (une même source déjà citée par
-      // le principal reste attachée à sa ligne : elle devient orpheline au
-      // retrait — ON DELETE SET NULL — et est rattachée à la restauration).
-      const moved = (await tx.unsafe<Row[]>(
-        `UPDATE agenda_item_sources s SET agenda_item_id = $1
-          WHERE s.agenda_item_id = $2
-            AND NOT EXISTS (SELECT 1 FROM agenda_item_sources t WHERE t.agenda_item_id = $1
-                             AND t.asset_file_id = s.asset_file_id AND t.source_role IS NOT DISTINCT FROM s.source_role)
-          RETURNING s.id`, [p.principalId, id] as never[])).map((r) => Number(r.id));
-      const kept = (await tx.unsafe<Row[]>(`SELECT id FROM agenda_item_sources WHERE agenda_item_id = $1`, [id] as never[])).map((r) => Number(r.id));
-      const cartes = (await tx.unsafe<Row[]>(
-        `UPDATE to_process_actions SET resolved_at = now(), resolution_reason = 'OBSOLETE', updated_at = now()
-          WHERE account_id = $1 AND upper(target_type) IN ('AGENDA_ITEM', 'AGENDA') AND target_id = $2 AND resolved_at IS NULL
-          RETURNING id, target_type, relation_key, rule_code`, [p.accountId, id] as never[]));
-      for (const c of cartes) {
-        await tx.unsafe(
-          `INSERT INTO to_process_action_events (action_id, account_id, event, actor_user_id, target_type, target_id, field_key, details, created_at)
-           VALUES ($1, $2, 'OBSOLETE', NULL, $3, $4, $5, $6::text::jsonb, now())`,
-          [c.id, p.accountId, c.target_type, id, c.relation_key ?? null,
-            JSON.stringify({ ruleCode: c.rule_code, reason: 'AGENDA_CONSOLIDATED', principalItemId: p.principalId })] as never[],
-        );
-      }
-      await journal(tx, p, 'ABSORB', id, {
-        item, links: links[0] ?? {}, added, movedSourceIds: moved, orphanedSourceIds: kept, closedCardIds: cartes.map((c) => Number(c.id)),
-      });
-      const gone = await removeAgendaItemsTraced(tx as unknown as Sql, { accountId: p.accountId, ids: [id], reason: 'OPERATION_CONSOLIDATION' });
-      if (!gone.includes(id)) throw new Error(`consolidation : retrait tracé de l'élément ${id} impossible (garde ou trace 0223 absente) — transaction annulée`);
-      absorbed.push(id);
+      await absorbItemInTx(tx, p, g.item as Row, 'OPERATION_CONSOLIDATION');
+      absorbed.push(Number((g.item as Row).id));
     }
     if (absorbed.length) {
       await tx.unsafe(
@@ -241,13 +187,198 @@ export async function consolidateInTx(tx: Tx, p: ConsolidationInput): Promise<Co
   }
 }
 
-async function journal(tx: Tx, p: ConsolidationInput, kind: 'ABSORB' | 'LINK' | 'RETITLE', absorbed: number | null, detail: Record<string, unknown>): Promise<void> {
+/**
+ * Absorption d'UN élément (relu sous verrou, gardes vérifiées par l'appelant)
+ * par l'élément conservé : liens AJOUTÉS au conservé (bien, document — sauf un
+ * lien détaché par l'utilisateur —, pièce, équipement, fournisseurs 103E),
+ * preuves DÉPLACÉES, cartes « À traiter » ouvertes closes (OBSOLETE, tracé),
+ * image complète au journal 0591, retrait tracé 0223. Lève si le retrait est
+ * refusé (transaction de l'appelant annulée). Lot 106A : extrait de
+ * `consolidateInTx` pour être partagé avec la consolidation des
+ * représentations équivalentes (sans Opération).
+ */
+async function absorbItemInTx(
+  tx: Tx,
+  p: { accountId: number; operationId: number | null; principalId: number; reason: string; origin: ConsolidationOrigin; runId?: string | null; correlationId?: string | null },
+  item: Row,
+  removalReason: 'OPERATION_CONSOLIDATION' | 'EQUIVALENT_REPRESENTATION',
+): Promise<void> {
+  const id = Number(item.id);
+  const links = await tx.unsafe<Row[]>(
+    `SELECT
+       COALESCE((SELECT jsonb_agg(asset_id ORDER BY asset_id) FROM agenda_asset_links WHERE agenda_item_id = $1), '[]') AS assets,
+       COALESCE((SELECT jsonb_agg(asset_file_id ORDER BY asset_file_id) FROM agenda_file_links WHERE agenda_item_id = $1), '[]') AS files,
+       COALESCE((SELECT jsonb_object_agg(asset_file_id::text, provenances) FROM agenda_file_links WHERE agenda_item_id = $1), '{}') AS file_provenances,
+       COALESCE((SELECT jsonb_agg(substructure_id ORDER BY substructure_id) FROM agenda_room_links WHERE agenda_item_id = $1), '[]') AS rooms,
+       COALESCE((SELECT jsonb_agg(equipment_id ORDER BY equipment_id) FROM agenda_equipment_links WHERE agenda_item_id = $1), '[]') AS equipments,
+       COALESCE((SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id) FROM agenda_occurrence_events e WHERE e.agenda_item_id = $1), '[]') AS occurrence_events`,
+    [id] as never[],
+  );
+  const added = {
+    assets: (await tx.unsafe<Row[]>(`INSERT INTO agenda_asset_links (agenda_item_id, asset_id)
+        SELECT $1, asset_id FROM agenda_asset_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING asset_id`, [p.principalId, id] as never[])).map((r) => Number(r.asset_id)),
+    // Lot 82D : provenances reprises (un élément absorbé n'est jamais principal : aucune propagation copiée).
+    files: (await tx.unsafe<Row[]>(`INSERT INTO agenda_file_links (agenda_item_id, asset_file_id, provenances)
+        SELECT $1, asset_file_id, CASE WHEN cardinality(array_remove(provenances, 'OPERATION_PRINCIPAL')) > 0
+                                       THEN array_remove(provenances, 'OPERATION_PRINCIPAL') ELSE ARRAY['AI_DIRECT']::text[] END
+          FROM agenda_file_links WHERE agenda_item_id = $2
+           -- Lot 86D : un lien détaché par l'utilisateur de l'élément retenu n'y est jamais recopié.
+           AND NOT ${linkRejectedSql('$1::int', 'asset_file_id')}
+         ON CONFLICT DO NOTHING RETURNING asset_file_id`, [p.principalId, id] as never[])).map((r) => Number(r.asset_file_id)),
+    rooms: (await tx.unsafe<Row[]>(`INSERT INTO agenda_room_links (agenda_item_id, substructure_id)
+        SELECT $1, substructure_id FROM agenda_room_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING substructure_id`, [p.principalId, id] as never[])).map((r) => Number(r.substructure_id)),
+    equipments: (await tx.unsafe<Row[]>(`INSERT INTO agenda_equipment_links (agenda_item_id, equipment_id)
+        SELECT $1, equipment_id FROM agenda_equipment_links WHERE agenda_item_id = $2 ON CONFLICT DO NOTHING RETURNING equipment_id`, [p.principalId, id] as never[])).map((r) => Number(r.equipment_id)),
+    // Lot 106A : fournisseurs / intervenants (103E) repris — jamais un fournisseur retiré à la main du conservé.
+    suppliers: await copySuppliersInTx(tx, p.accountId, p.principalId, id),
+  };
+  // Preuves : déplacées vers le principal (une même source déjà citée par
+  // le principal reste attachée à sa ligne : elle devient orpheline au
+  // retrait — ON DELETE SET NULL — et est rattachée à la restauration).
+  const moved = (await tx.unsafe<Row[]>(
+    `UPDATE agenda_item_sources s SET agenda_item_id = $1
+      WHERE s.agenda_item_id = $2
+        AND NOT EXISTS (SELECT 1 FROM agenda_item_sources t WHERE t.agenda_item_id = $1
+                         AND t.asset_file_id = s.asset_file_id AND t.source_role IS NOT DISTINCT FROM s.source_role)
+      RETURNING s.id`, [p.principalId, id] as never[])).map((r) => Number(r.id));
+  const kept = (await tx.unsafe<Row[]>(`SELECT id FROM agenda_item_sources WHERE agenda_item_id = $1`, [id] as never[])).map((r) => Number(r.id));
+  const cartes = (await tx.unsafe<Row[]>(
+    `UPDATE to_process_actions SET resolved_at = now(), resolution_reason = 'OBSOLETE', updated_at = now()
+      WHERE account_id = $1 AND upper(target_type) IN ('AGENDA_ITEM', 'AGENDA') AND target_id = $2 AND resolved_at IS NULL
+      RETURNING id, target_type, relation_key, rule_code`, [p.accountId, id] as never[]));
+  for (const c of cartes) {
+    await tx.unsafe(
+      `INSERT INTO to_process_action_events (action_id, account_id, event, actor_user_id, target_type, target_id, field_key, details, created_at)
+       VALUES ($1, $2, 'OBSOLETE', NULL, $3, $4, $5, $6::text::jsonb, now())`,
+      [c.id, p.accountId, c.target_type, id, c.relation_key ?? null,
+        JSON.stringify({ ruleCode: c.rule_code, reason: 'AGENDA_CONSOLIDATED', principalItemId: p.principalId })] as never[],
+    );
+  }
+  await journal(tx, { ...p, absorbedIds: [id], linkPrincipal: false }, 'ABSORB', id, {
+    item, links: links[0] ?? {}, added, movedSourceIds: moved, orphanedSourceIds: kept, closedCardIds: cartes.map((c) => Number(c.id)),
+  });
+  const gone = await removeAgendaItemsTraced(tx as unknown as Sql, { accountId: p.accountId, ids: [id], reason: removalReason });
+  if (!gone.includes(id)) throw new Error(`consolidation : retrait tracé de l'élément ${id} impossible (garde ou trace 0223 absente) — transaction annulée`);
+}
+
+/** Lot 106A : fournisseurs de l'élément absorbé recopiés sur le conservé (table 0950 absente : aucun). */
+async function copySuppliersInTx(tx: Tx, accountId: number, principalId: number, absorbedId: number): Promise<number[]> {
+  const [t] = await tx.unsafe<Row[]>(`SELECT to_regclass('agenda_item_suppliers') IS NOT NULL AND to_regclass('agenda_item_supplier_suppressions') IS NOT NULL AS ok`);
+  if (t?.ok !== true) return [];
+  return (await tx.unsafe<Row[]>(
+    `INSERT INTO agenda_item_suppliers (account_id, agenda_item_id, supplier_id, provenance, evidence, source_document_id, correlation_id)
+     SELECT $1, $2, s.supplier_id, s.provenance, s.evidence, s.source_document_id, 'agenda-consolidation'
+       FROM agenda_item_suppliers s
+      WHERE s.agenda_item_id = $3 AND s.account_id = $1
+        AND NOT EXISTS (SELECT 1 FROM agenda_item_supplier_suppressions x WHERE x.agenda_item_id = $2 AND x.supplier_id = s.supplier_id)
+     ON CONFLICT (agenda_item_id, supplier_id) DO NOTHING RETURNING supplier_id`,
+    [accountId, principalId, absorbedId] as never[])).map((r) => Number(r.supplier_id));
+}
+
+type JournalInput = Omit<ConsolidationInput, 'operationId'> & { operationId: number | null };
+
+async function journal(tx: Tx, p: JournalInput, kind: 'ABSORB' | 'LINK' | 'RETITLE', absorbed: number | null, detail: Record<string, unknown>): Promise<void> {
   await tx.unsafe(
     `INSERT INTO agenda_intervention_consolidations
        (account_id, run_id, origin, kind, operation_id, principal_item_id, absorbed_item_id, reason, correlation_id, detail)
      VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10::text::jsonb)`,
     [p.accountId, p.runId ?? null, p.origin, kind, p.operationId, p.principalId, absorbed, p.reason, p.correlationId ?? null, JSON.stringify(detail)] as never[],
   );
+}
+
+/**
+ * Lot 106A — gardes d'un élément absorbable par la consolidation des
+ * REPRÉSENTATIONS ÉQUIVALENTES (alias `i`) : élément automatique jamais touché
+ * par l'utilisateur (même règle que `isUserTouched` / `agendaUntouchedSql`),
+ * sans statut, sans geste tracé, non projeté, non prévisionnel, sans conflit
+ * de données en attente, non lié à une Opération ACTIVE, jamais restauré.
+ * Diffère d'`ABSORBABLE_SQL` sur un point : la qualification de catégorie
+ * (`requires_qualification`, « Donnée à qualifier ») ne protège pas — c'est
+ * une métadonnée interne, jamais un choix de l'utilisateur (décision PO
+ * lot 105) ; un « statut à confirmer » n'est pas un statut posé.
+ */
+export const EQUIVALENT_ABSORBABLE_SQL = `
+  i.is_automatic AND NOT COALESCE(i.is_automatic_modified, false)
+  AND (i.manual_status IS NULL OR i.manual_status = '')
+  AND i.confirmation_mode IS DISTINCT FROM 'USER'
+  AND i.projection_origin IS NULL
+  AND i.occurrence_nature IS DISTINCT FROM 'FORECAST'
+  AND NOT EXISTS (SELECT 1 FROM agenda_occurrence_events e WHERE e.agenda_item_id = i.id
+                   AND e.event_type IN ('STATUS_CHANGED', 'USER_MODIFIED', 'USER_CONFIRMED'))
+  AND NOT EXISTS (SELECT 1 FROM agenda_data_conflicts c WHERE c.agenda_item_id = i.id AND c.current_decision = 'pending')
+  AND NOT EXISTS (SELECT 1 FROM business_operations lo WHERE lo.id = i.business_operation_id
+                   AND lo.invalidated_at IS NULL AND lo.merged_into_operation_id IS NULL)
+  AND NOT EXISTS (SELECT 1 FROM agenda_intervention_consolidations k
+                   WHERE k.account_id = i.account_id AND k.restored_at IS NOT NULL
+                     AND (k.absorbed_item_id = i.id OR (k.kind <> 'ABSORB' AND k.principal_item_id = i.id)))`;
+
+/**
+ * Lot 106A — absorbe des représentations ÉQUIVALENTES (identité CERTAINE
+ * établie par le contrôle de cohérence) par l'élément canonique, DANS la
+ * transaction de l'appelant, sous le verrou consultatif du compte (39102) :
+ * même mécanisme et même journal 0591 que les consolidations 76H / 87B
+ * (origine COHERENCE, `operation_id` nul) — restauration ligne à ligne, et
+ * mémoire anti-recréation T4 (`absorbedOccurrenceKeeper`). Un élément qui ne
+ * passe plus les gardes (touché entre-temps) est écarté et rendu protégé.
+ */
+export async function absorbEquivalentItemsInTx(tx: Tx, p: {
+  accountId: number; principalId: number; absorbedIds: readonly number[]; reason: string; runId?: string | null; correlationId?: string | null;
+}): Promise<{ absorbed: number[]; protectedIds: number[]; functionalKeys: string[]; skipped?: 'PRINCIPAL_GONE' }> {
+  const absorbes = [...new Set(p.absorbedIds.filter((x) => Number.isSafeInteger(x) && x > 0 && x !== p.principalId))];
+  await tx`SELECT pg_advisory_xact_lock(${AGENDA_CONSOLIDATION_LOCK_SPACE}::int, ${p.accountId}::int)`;
+  const [principal] = await tx<Row[]>`SELECT id FROM agenda_items WHERE id = ${p.principalId} AND account_id = ${p.accountId} FOR UPDATE`;
+  if (!principal) return { absorbed: [], protectedIds: absorbes, functionalKeys: [], skipped: 'PRINCIPAL_GONE' };
+  const gardes = absorbes.length ? await tx.unsafe<Row[]>(
+    `SELECT to_jsonb(i) AS item FROM agenda_items i
+      WHERE i.account_id = $1 AND i.id = ANY($2::int[]) AND ${EQUIVALENT_ABSORBABLE_SQL}
+      ORDER BY i.id FOR UPDATE OF i`,
+    [p.accountId, intArray(absorbes)] as never[],
+  ) : [];
+  const absorbed: number[] = [];
+  const functionalKeys: string[] = [];
+  const ctx = { accountId: p.accountId, operationId: null, principalId: p.principalId, reason: p.reason, origin: 'COHERENCE' as const, runId: p.runId ?? null, correlationId: p.correlationId ?? null };
+  for (const g of gardes) {
+    const item = g.item as Row;
+    await absorbItemInTx(tx, ctx, item, 'EQUIVALENT_REPRESENTATION');
+    absorbed.push(Number(item.id));
+    if (typeof item.functional_key === 'string' && item.functional_key) functionalKeys.push(item.functional_key);
+  }
+  if (absorbed.length) {
+    await tx.unsafe(
+      `INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json) VALUES ($1, $2, 'DUPLICATE_CONSOLIDATED', $3::text::jsonb)`,
+      [p.principalId, p.accountId, JSON.stringify({ reasonCode: p.reason, operationId: null, absorbedItemIds: absorbed, origin: 'COHERENCE', runId: p.runId ?? null, correlationId: p.correlationId ?? null })] as never[],
+    );
+  }
+  return { absorbed, protectedIds: absorbes.filter((x) => !absorbed.includes(x)), functionalKeys };
+}
+
+/**
+ * Lot 106A — intitulé NON INFORMATIF du canonique (« DPE réalisé — DPE »)
+ * remplacé par « DPE réalisé — <bien> », dans la transaction de l'appelant :
+ * élément automatique intact (gardes de `EQUIVALENT_ABSORBABLE_SQL` hors
+ * statut automatique), intitulé d'origine relu, journal 0591 RETITLE
+ * (restaurable). Rend vrai si écrit.
+ */
+export async function retitleEquivalentInTx(tx: Tx, p: {
+  accountId: number; itemId: number; from: string; to: string; reason: string; runId?: string | null; correlationId?: string | null;
+}): Promise<boolean> {
+  const r = await tx.unsafe<Row[]>(
+    `UPDATE agenda_items i SET title = $3, updated_at = now()
+      WHERE i.id = $1 AND i.account_id = $2 AND i.title = $4
+        AND i.is_automatic AND NOT COALESCE(i.is_automatic_modified, false) AND i.confirmation_mode IS DISTINCT FROM 'USER'
+        AND NOT EXISTS (SELECT 1 FROM agenda_occurrence_events e WHERE e.agenda_item_id = i.id
+                         AND e.event_type IN ('STATUS_CHANGED', 'USER_MODIFIED', 'USER_CONFIRMED'))
+      RETURNING i.id`,
+    [p.itemId, p.accountId, p.to, p.from] as never[],
+  );
+  if (!r.length) return false;
+  await journal(tx, { accountId: p.accountId, operationId: null, principalId: p.itemId, absorbedIds: [], linkPrincipal: false, reason: p.reason, origin: 'COHERENCE', runId: p.runId ?? null, correlationId: p.correlationId ?? null },
+    'RETITLE', null, { from: p.from, to: p.to });
+  await tx.unsafe(
+    `INSERT INTO agenda_occurrence_events (agenda_item_id, account_id, event_type, detail_json) VALUES ($1, $2, 'TITLE_FROM_EQUIVALENCE', $3::text::jsonb)`,
+    [p.itemId, p.accountId, JSON.stringify({ from: p.from, to: p.to, reasonCode: p.reason, correlationId: p.correlationId ?? null })] as never[],
+  );
+  return true;
 }
 
 /**

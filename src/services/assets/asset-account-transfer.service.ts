@@ -160,6 +160,7 @@ export const ACCOUNT_OWNED_TABLES: Readonly<Record<string, string>> = {
   ai_output_replays: 'rejeu technique des sorties IA',
   ai_execution_reports: 'rapport d’exécution T1 / T3 figé du compte qui a analysé (diagnostic BO, lot 58C) — jamais déplacé',
   document_identity_decisions: 'décision d’identité documentaire de l’utilisateur (lot 105D) : clé de groupe propre aux documents du compte d’origine — jamais déplacée ; le bien parti n’est plus candidat dans ce compte',
+  agenda_equivalence_decisions: 'journal des décisions d’équivalence Agenda du compte qui les a prises (lot 106A, diagnostic, avant / après) — jamais déplacé ; le nouveau compte recontrôle le bien à sa campagne',
   export_generation: 'archive générée et téléchargée par l’ancien titulaire',
   cdc15_migration_backups: 'sauvegarde de migration historique (restauration)',
   cdc15_migration_report: 'rapport de migration historique',

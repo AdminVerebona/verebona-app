@@ -44,6 +44,8 @@ export const ADDED_AFTER_LOT88 = new Set([
 export const DEVELOPER_FIXTURES = new Set([
   'p-t3-24-preuves-croisees-facturation.json', 'p-t3-25-preuves-croisees-maison-sans-adresse.json', 'p-t3-26-preuves-croisees-preuve-inventee.json',
   'p-t3-27-preuves-croisees-relation-non-etablie.json', 'p-t3-28-preuves-croisees-etablie.json',
+  // Lot 106B : invitations de découverte de l'accueil (contrat `t6-discovery-v1`), gardes serveur.
+  'p-t6-disc-01-invitations-generiques.json', 'p-t6-disc-02-affirmation-personnelle.json',
 ]);
 
 /**

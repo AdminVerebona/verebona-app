@@ -670,6 +670,26 @@ async function processOne(
 
   // ── Étape 2 : interprétation de la date ────────────────────────────────
   const date = interpretDate(candidate.date);
+  if (date.qualification === 'out_of_range') {
+    // Lot 106A (ticket « doublons DPE », cause DÉMONTRÉE par reproduction) : un
+    // fait de plus de cinq ans (DPE réalisé le 22/12/2020, analysé fin 2026)
+    // sortait ICI, AVANT la comparaison aux événements existants (§4.4.3
+    // étape 3) et AVANT le droit de création de la source (T4-04) : chaque
+    // document créait sa propre représentation (dossier de diagnostic ET
+    // compromis, pourtant non autorisé à créer), sans aucun rapprochement.
+    // Désormais : doublon certain → jamais recréé ; source non autorisée →
+    // proposition (carte), jamais un élément ; sinon comportement inchangé.
+    const dup = findDuplicate({ title: candidate.title, date: candidate.date, originFieldKey: candidate.originFieldKey }, input.existing);
+    if (dup.kind === 'exact' && dup.item && dup.item.nature !== 'FORECAST') {
+      return {
+        ...base, action: 'skip_duplicate', category: dup.item.category ?? 'information',
+        reasonCode: 'EXACT_DUPLICATE', existingItemId: dup.item.id, deterministic: true,
+      };
+    }
+    if ((candidate as T4AgendaCandidate).mayCreateAgenda === false) {
+      return { ...base, action: 'propose', category: 'information', reasonCode: 'SOURCE_TYPE_NOT_AUTHORIZED', deterministic: true };
+    }
+  }
   if (date.qualification !== 'explicit') {
     return {
       ...base, action: 'propose', category: 'information',
