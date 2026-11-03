@@ -159,8 +159,19 @@ jobs:
           ecrire "$ASC_API_KEY_P8_BASE64" "$KEY" "BEGIN PRIVATE KEY"
           ecrire "$GOOGLE_SERVICE_INFO_PLIST_BASE64" mobile/ios/App/App/GoogleService-Info.plist "<?xml"
           ok=1
-          if ! [[ "$ASC_API_KEY_ID" =~ ^[A-Z0-9]{10}$ ]]; then echo "::error::ASC_API_KEY_ID : 10 caractères (lettres majuscules et chiffres) attendus — c'est le Key ID affiché sur la ligne de la clé dans App Store Connect › Utilisateurs et accès › Intégrations."; ok=0; fi
-          if ! [[ "$ASC_API_ISSUER_ID" =~ ^[0-9a-fA-F-]{36}$ ]]; then echo "::error::ASC_API_ISSUER_ID : identifiant de la forme xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx attendu (Issuer ID, en haut de la liste des clés)."; ok=0; fi
+          # Lot 107-bis : espaces, retours à la ligne et guillemets collés avec la
+          # valeur sont retirés ; diagnostic sans jamais afficher la valeur.
+          nettoyer() { printf '%s' "$1" | tr -d ' \t\r\n"'"'"; }
+          ASC_API_KEY_ID="$(nettoyer "$ASC_API_KEY_ID")"
+          ASC_API_ISSUER_ID="$(nettoyer "$ASC_API_ISSUER_ID")"
+          if ! [[ "$ASC_API_KEY_ID" =~ ^[A-Z0-9]{10}$ ]]; then echo "::error::ASC_API_KEY_ID : 10 caractères (lettres majuscules et chiffres) attendus — c'est le Key ID affiché sur la ligne de la clé dans App Store Connect › Utilisateurs et accès › Intégrations (valeur reçue : ${#ASC_API_KEY_ID} caractères)."; ok=0; fi
+          if ! [[ "$ASC_API_ISSUER_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+            n=${#ASC_API_ISSUER_ID}; t=$(printf '%s' "$ASC_API_ISSUER_ID" | tr -cd '-' | wc -c | tr -d ' ')
+            if [ "$n" = 0 ]; then why="secret vide ou absent pour l'environnement GitHub « mobile-preprod » / « production-mobile » (un secret d'environnement remplace celui du dépôt)"
+            elif [[ "$ASC_API_ISSUER_ID" =~ ^[A-Z0-9]{10}$ ]]; then why="la valeur a 10 caractères : c'est probablement le Key ID ou le Team ID, pas l'Issuer ID"
+            else why="valeur reçue : $n caractères dont $t tirets (attendu : 36 caractères dont 4 tirets)"; fi
+            echo "::error::ASC_API_ISSUER_ID : identifiant de la forme xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx attendu (Issuer ID, en haut de la page App Store Connect › Utilisateurs et accès › Intégrations › Clés d'équipe) — $why."; ok=0
+          fi
           if ! head -1 "$KEY" | grep -q -- "-----BEGIN PRIVATE KEY-----" || ! openssl pkey -in "$KEY" -noout 2>/dev/null; then
             if head -c 64 "$KEY" | grep -q "<?xml\|plist"; then echo "::error::ASC_API_KEY_P8_BASE64 contient un fichier plist (GoogleService-Info.plist ?) au lieu de la clé AuthKey_….p8 de l'API App Store Connect."
             else echo "::error::ASC_API_KEY_P8_BASE64 ne contient pas une clé privée lisible : utiliser le fichier AuthKey_<KeyID>.p8 de la clé d'API App Store Connect (pas celle de Sign in with Apple), en base64 ou collé tel quel."; fi
@@ -168,19 +179,17 @@ jobs:
           fi
           if ! plutil -lint -s mobile/ios/App/App/GoogleService-Info.plist >/dev/null 2>&1; then echo "::error::GOOGLE_SERVICE_INFO_PLIST_BASE64 ne contient pas un fichier GoogleService-Info.plist valide (Firebase › Paramètres du projet › app iOS)."; ok=0; fi
           [ "$ok" = 1 ] || exit 1
+          echo "::add-mask::$ASC_API_ISSUER_ID"
           echo "ASC_KEY_PATH=$KEY" >> "$GITHUB_ENV"
+          # Valeurs nettoyées transmises aux étapes suivantes (sans env: d'étape qui les écraserait).
+          echo "ASC_API_KEY_ID=$ASC_API_KEY_ID" >> "$GITHUB_ENV"
+          echo "ASC_API_ISSUER_ID=$ASC_API_ISSUER_ID" >> "$GITHUB_ENV"
           echo "Clé d'API et fichier Firebase contrôlés."
           plutil -replace teamID -string "$APPLE_TEAM_ID" mobile/ios/ExportOptions.plist
       - name: Appareil iOS pour la signature automatique (créé une fois si l'équipe n'en a aucun)
-        env:
-          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
-          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
         run: node mobile/scripts/asc-ensure-device.mjs
       - name: Archiver (signature automatique, App Store Connect)
         working-directory: mobile/ios/App
-        env:
-          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
-          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
         run: |
           xcodebuild -project App.xcodeproj -scheme App -configuration Release \
             -destination 'generic/platform=iOS' -archivePath "$RUNNER_TEMP/App.xcarchive" \
@@ -192,9 +201,6 @@ jobs:
       - name: Envoyer à App Store Connect (TestFlight)
         if: github.event_name == 'push' || inputs.publish
         working-directory: mobile/ios/App
-        env:
-          ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
-          ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
         run: |
           xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/App.xcarchive" \
             -exportOptionsPlist ../ExportOptions.plist -exportPath "$RUNNER_TEMP/export" \
