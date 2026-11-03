@@ -16,8 +16,10 @@ describe('barre d’état iOS — encart haut réservé', () => {
   });
 
   it('la barre haute, le panneau du compte et l’espace Verebona réservent l’encart', () => {
-    expect(read('src/components/DashboardLayout.tsx')).toMatch(/pt-\[max\(8px,env\(safe-area-inset-top\)\)\]/);
-    expect(read('src/components/mobile/mobile-account-panel.tsx')).toMatch(/env\(safe-area-inset-top\)/);
-    expect(read('src/components/verebona/space/VerebonaField.tsx')).toMatch(/env\(safe-area-inset-top\)/);
+    // Lot 107B : encart lu via la variable partagée `--vb-safe-top` (env() +
+    // relais natif), jamais env() directement.
+    expect(read('src/components/DashboardLayout.tsx')).toMatch(/pt-\[max\(8px,var\(--vb-safe-top\)\)\]/);
+    expect(read('src/components/mobile/mobile-account-panel.tsx')).toMatch(/var\(--vb-safe-top\)/);
+    expect(read('src/components/verebona/space/VerebonaField.tsx')).toMatch(/var\(--vb-safe-top\)/);
   });
 });

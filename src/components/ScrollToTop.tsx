@@ -43,7 +43,7 @@ export function ScrollToTop() {
             // Au-dessus du bandeau de la barre basse (z-50) : jamais recouvert.
             "fixed z-[60] touch-manipulation",
             // mobile : au-dessus de la barre basse (marge sûre + hauteur de la barre)
-            "right-4 bottom-[calc(max(20px,env(safe-area-inset-bottom))+96px)]",
+            "right-4 bottom-[calc(max(20px,var(--vb-safe-bottom))+96px)]",
             "md:right-6 md:bottom-6",      // desktop: coin bas-droit
             "w-10 h-10 rounded-full p-0",
             "bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)]",

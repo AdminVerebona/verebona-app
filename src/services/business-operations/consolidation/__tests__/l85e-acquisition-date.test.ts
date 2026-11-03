@@ -166,7 +166,7 @@ describe('L85E — registre de cohérence (C-Q11)', () => {
     expect(ordre.indexOf('COH-OPS-ACQUISITION-DATE')).toBeGreaterThan(ordre.indexOf('COH-OPS-RECURRING-SERIES'));
     expect(activeChecks().map((c) => c.id)).toContain('COH-OPS-ACQUISITION-DATE');
     const c = getCheck('COH-OPS-ACQUISITION-DATE')!;
-    expect(c).toMatchObject({ version: 1, status: 'ACTIVE', objectType: 'operation', domain: 'operations' });
+    expect(c).toMatchObject({ version: 2, status: 'ACTIVE', objectType: 'operation', domain: 'operations' }); // Lot 107C : v2 (acquisitions datées)
     expect(c.services).toEqual(expect.arrayContaining([
       'business-operations/consolidation/asset-data-consolidator#consolidateAssetData', 'business-operations/agenda-projection/service#projectAccountOperations',
     ]));

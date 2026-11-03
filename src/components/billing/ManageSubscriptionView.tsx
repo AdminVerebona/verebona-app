@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { ParentBackLink } from '@/components/shell/ParentBackLink';
 import { Loader2, ExternalLink } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
 import { Button } from '@/components/ui/button';
@@ -64,6 +65,8 @@ export function ManageSubscriptionView({ accountRef }: { accountRef?: string | n
 
   return (
     <div className="mx-auto w-full max-w-xl px-4 py-8 sm:py-12" data-testid="manage-subscription-page">
+      {/* Lot 107B : retour déterministe vers Mon compte, avant le titre. */}
+      <ParentBackLink to="monCompte" className="mb-2" />
       <div className="rounded-xl border bg-card p-5 sm:p-6 space-y-4">
         <h1 className="vb-app-section">Gérer mon abonnement</h1>
 

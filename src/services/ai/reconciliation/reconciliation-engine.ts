@@ -28,6 +28,8 @@ import { listRetiredEvidenceValues } from '../evidence/field-evidence.service';
 import { writeConflict, resolveObsoleteConflict } from './conflict-writer';
 import { openRun, closeRun, recordDecisions, failRun } from './reconciliation-run.repository';
 import { syncReconciliationToProcess } from '@/services/to-process/reconciliation-bridge';
+import { nonAttributableDecision } from './multi-article-evidence';
+import { guardDecisionAgainstUser } from '@/services/to-process/arbitration-memory';
 import type { ReconciliationDecision, ReconciliationRun } from './types';
 import type { CollectedField } from './evidence-collector';
 import { assertJobActive } from '../queue/execution-control';
@@ -247,12 +249,16 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
     // Lot 81A : garde finale — jamais un conflit entre valeurs équivalentes.
     decision = withoutEquivalentProposals(decision);
     if (memoire) decision = await memoire.filter(decision);
+    // Lot 107D : arbitrage déjà tranché par l'utilisateur sur les mêmes preuves (CONTENU, pas identifiants) → conservé.
+    decision = await guardDecisionAgainstUser(input.accountId, 'ASSET', input.assetId, decision);
+    if (decision.reasonCode === 'USER_DECISION_SAME_EVIDENCE' && rec) rec.userArbitrationsKept++;
 
     decisions.push(decision);
     // Lot 99A : `aiCalls` = appels RÉELS au fournisseur (compté ci-dessus) ;
     // une décision assistée servie par le cache ou la mémoire n'en est pas un.
     if (!decision.deterministic && rec) rec.aiAssisted++;
-    const trace = { fieldKey: decision.fieldKey, current: field.input.current, candidates: field.input.candidates, decision, registry: isRegistryKey(decision.fieldKey) } as import('../execution-report/t3-report').T3FieldRecord;
+    const trace = { fieldKey: decision.fieldKey, current: field.input.current, candidates: field.input.candidates, decision, registry: isRegistryKey(decision.fieldKey),
+      ...(field.excluded?.length ? { excluded: field.excluded } : {}) } as import('../execution-report/t3-report').T3FieldRecord;
     rec?.fields.push(trace);
 
     await executer(decision, trace, field.input.candidates, field.input.current?.origin);
@@ -392,6 +398,10 @@ async function runEngine(input: ReconcileInput, runId: number, traceId: string, 
  * réconciliation négative (T3-04), date révisée par T4 (D-M).
  */
 function decideCollectedField(field: CollectedField): ReconciliationDecision {
+  // Lot 107D : seules preuves = total d'un ticket à plusieurs articles (écartées) → aucune contradiction.
+  if (field.input.candidates.length === 0 && field.excluded?.length) {
+    return nonAttributableDecision(field.fieldKey, field.input.current, field.excluded);
+  }
   // D-M (lot 20) : date tranchée par T4 → la preuve révisée corrige la
   // valeur automatique qu'elle remplace (jamais une valeur USER/ADMIN).
   const revision = isT4DateRevision(field.unproven, field.input);

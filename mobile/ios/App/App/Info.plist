@@ -46,7 +46,7 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Verebona utilise le micro uniquement si vous filmez une vidéo à joindre à un bien.</string>
 	<key>NSFaceIDUsageDescription</key>
-	<string>Face ID permet de déverrouiller Verebona si vous l’avez activé.</string>
+	<string>Face ID sert uniquement à déverrouiller Verebona sur cet iPhone, si vous l’avez activé. Aucune donnée de votre visage n’est transmise à Verebona.</string>
 	<!-- Push : jeton demandé seulement après l'accord de l'utilisateur (PUSH-02). -->
 	<key>FirebaseMessagingAutoInitEnabled</key>
 	<false/>

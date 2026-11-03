@@ -8,8 +8,10 @@
  *   · contrôle d'environnement : un binaire de préproduction ne fonctionne
  *     qu'avec le serveur de préproduction, et inversement (§27, M7, REC-063/064) ;
  *   · « Connexion Internet requise » (NET-01/02) ;
- *   · verrouillage après 5 min en arrière-plan, déverrouillage biométrique
- *     facultatif (AUTH-05/06/09) ;
+ *   · verrouillage après 5 min en arrière-plan ; lot 107A : Face ID / Touch ID
+ *     / biométrie Android lancé AUTOMATIQUEMENT si activé, écran de secours
+ *     seulement en cas d'échec (`useNativeUnlock`), proposition unique
+ *     d'activation après connexion (`useBiometricOffer`) (AUTH-05/06/09) ;
  *   · liens universels / App Links et retour Google / Apple (§19, M1) ;
  *   · notifications : enregistrement, demande contextualisée, ouverture de
  *     l'écran ciblé (PUSH-02/04/09) ;
@@ -20,11 +22,10 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Lock, WifiOff, Bell, ShieldAlert } from 'lucide-react';
+import { WifiOff, Bell, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/hooks/useSession';
-import { apiClient } from '@/lib/api-client';
 import { mobileClientHeaders } from '@/lib/mobile/native-shell';
 import { CREATE_FLOW_HOST_READY, isCreateFlowHostReady, openCreateFlow } from '@/lib/create-flows';
 import { utiliserEnvoiNatif } from '@/lib/upload-queue';
@@ -32,15 +33,15 @@ import { NATIVE_PLUGINS, listenNative, nativePlugin } from '@/lib/native/bridge'
 import { appBuildEnv, appUrlContext, expectedServerEnvironment, initInstallationId } from '@/lib/native/shell-info';
 import { resolveAppUrl, pushTargetPath } from '@/lib/native/deep-links';
 import { abandonNativeOAuth, completeNativeOAuth, nativeOAuthErrorMessage } from '@/lib/native/oauth';
-import {
-  biometricsEnabled, biometryAvailability, clearBackgroundAt, readBackgroundAt, rememberBackgroundAt,
-  shouldLockOnResume, unlockPath, verifyUser,
-} from '@/lib/native/app-lock';
 import { enableNativePush, nativePushPermission, syncNativePush, watchPushOpens, watchPushTokenRotation } from '@/lib/native/push';
 import { readSharedFile, triageSharedFiles } from '@/lib/native/share-in';
 import { nativeUploadSender } from '@/lib/native/native-upload';
 import { setNativeFeatures, setNativeOAuthReturn } from '@/lib/native/features';
 import { NATIVE_COMMERCE_INFO_PATH, NATIVE_COMMERCE_MESSAGE, isCommercePath } from '@/lib/native/commerce';
+import { useNativeUnlock } from './useNativeUnlock';
+import { useBiometricOffer } from './useBiometricOffer';
+import { NativeUnlockScreen } from './NativeUnlockScreen';
+import { BiometricOfferCard } from './BiometricOfferCard';
 
 type Features = Record<string, boolean>;
 const PUSH_PROMPT_DISMISSED_KEY = 'verebona:native:push-prompt-dismissed';
@@ -66,22 +67,18 @@ export default function NativeBridgeRuntime() {
   const [features, setFeatures] = useState<Features | null>(null);
   const [envMismatch, setEnvMismatch] = useState(false);
   const [offline, setOffline] = useState(false);
-  const [lockDue, setLockDue] = useState(false);
-  const [unlocking, setUnlocking] = useState(false);
   const [pushPrompt, setPushPrompt] = useState(false);
 
-  const lockRef = useRef(false);
-  const pendingNav = useRef<string | null>(null);
   const pendingFiles = useRef<File[] | null>(null);
   const featuresRef = useRef<Features | null>(null);
 
-  const setLock = useCallback((v: boolean) => { lockRef.current = v; setLockDue(v); }, []);
+  // Lot 107A : verrou après 5 min en arrière-plan, déverrouillage automatique.
+  const unlock = useNativeUnlock(featuresRef);
+  const lockRef = useRef(false);
+  lockRef.current = unlock.locked;
 
   // Navigation interne validée, différée tant que l'app est verrouillée (PUSH-04, AG-03).
-  const ouvrir = useCallback((path: string) => {
-    if (lockRef.current) { pendingNav.current = path; return; }
-    router.push(path);
-  }, [router]);
+  const ouvrir = unlock.open;
 
   // ── Démarrage : installation, configuration, envoi natif ────────────────
   const lireConfig = useCallback(async () => {
@@ -105,8 +102,7 @@ export default function NativeBridgeRuntime() {
   useEffect(() => {
     void initInstallationId();
     void lireConfig();
-    if (shouldLockOnResume(readBackgroundAt(), Date.now())) setLock(true);
-  }, [lireConfig, setLock]);
+  }, [lireConfig]);
 
   useEffect(() => {
     const on = featureOn(features, 'background_upload');
@@ -125,51 +121,15 @@ export default function NativeBridgeRuntime() {
     return () => { void off.then((f) => f()); };
   }, [lireConfig]);
 
-  // ── Cycle de vie : arrière-plan / retour (AUTH-09, HOME-04) ─────────────
+  // ── Cycle de vie : retour au premier plan (HOME-04) ─────────────────────
+  // Le verrou (AUTH-09) est géré par `useNativeUnlock` ; ici, relecture de la
+  // configuration seulement.
   useEffect(() => {
     const off = listenNative<{ isActive: boolean }>(nativePlugin(NATIVE_PLUGINS.app), 'appStateChange', (s) => {
-      if (!s.isActive) { rememberBackgroundAt(); return; }
-      if (shouldLockOnResume(readBackgroundAt(), Date.now())) setLock(true);
-      else clearBackgroundAt();
-      void lireConfig();
+      if (s.isActive) void lireConfig();
     });
     return () => { void off.then((f) => f()); };
-  }, [lireConfig, setLock]);
-
-  // Hors session : aucun verrou (l'écran de connexion fait foi).
-  useEffect(() => {
-    if (status === 'unauthenticated' && lockRef.current) { setLock(false); clearBackgroundAt(); }
-  }, [status, setLock]);
-
-  const deverrouiller = useCallback(async () => {
-    setUnlocking(true);
-    try {
-      const [enabled, dispo] = await Promise.all([biometricsEnabled(), biometryAvailability()]);
-      const voie = unlockPath({
-        biometricsEnabled: enabled && featureOn(featuresRef.current, 'biometrics'),
-        biometryAvailable: dispo.available,
-        deviceSecure: dispo.deviceSecure,
-      });
-      if (voie === 'full_sign_in') {
-        // Aucune vérification locale possible : connexion complète (AUTH-06).
-        await apiClient.signOut();
-        setLock(false);
-        clearBackgroundAt();
-        window.location.assign(`/login?returnUrl=${encodeURIComponent(pathname || '/accueil')}`);
-        return;
-      }
-      const r = await verifyUser({ biometryOnly: voie === 'biometry', reason: 'Déverrouiller Verebona' });
-      if (r === 'ok') {
-        setLock(false);
-        clearBackgroundAt();
-        const next = pendingNav.current;
-        pendingNav.current = null;
-        if (next) router.push(next);
-      }
-    } finally {
-      setUnlocking(false);
-    }
-  }, [pathname, router, setLock]);
+  }, [lireConfig]);
 
   // ── Liens entrants (§19) et retour Google / Apple (M1) ──────────────────
   useEffect(() => {
@@ -269,7 +229,7 @@ export default function NativeBridgeRuntime() {
     const onReady = () => livrerFichiers();
     window.addEventListener(CREATE_FLOW_HOST_READY, onReady);
     return () => window.removeEventListener(CREATE_FLOW_HOST_READY, onReady);
-  }, [livrerFichiers, lockDue, pathname]);
+  }, [livrerFichiers, unlock.locked, pathname]);
 
   // ── Pages commerciales (lot 97B, COM-01/05, STORE-08) ───────────────────
   // Deuxième barrière (la première est le middleware) : aussi pour l'interface
@@ -279,6 +239,10 @@ export default function NativeBridgeRuntime() {
   useEffect(() => {
     if (commerce) router.replace(NATIVE_COMMERCE_INFO_PATH);
   }, [commerce, router]);
+
+  // ── Proposition d'activation biométrique (lot 107A, #640) ───────────────
+  const locked = unlock.locked && status !== 'unauthenticated';
+  const offer = useBiometricOffer(features, locked || commerce || envMismatch);
 
   // ── Rendu ───────────────────────────────────────────────────────────────
   if (commerce) {
@@ -306,25 +270,30 @@ export default function NativeBridgeRuntime() {
     );
   }
 
-  const locked = lockDue && status !== 'unauthenticated';
   return (
     <>
       {offline && !locked && (
         <div
           role="status"
           className="fixed inset-x-0 top-0 z-[999] flex items-center justify-center gap-2 bg-[color:var(--accent)] px-4 py-2 text-sm text-[color:var(--on-accent)]"
-          style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top))' }}
+          style={{ paddingTop: 'max(0.5rem, var(--vb-safe-top))' }}
         >
           <WifiOff className="h-4 w-4" aria-hidden /> Connexion Internet requise
         </div>
       )}
 
-      {pushPrompt && !locked && (
+      {offer.visible && (
+        <BiometricOfferCard type={offer.type} busy={offer.busy} onActivate={offer.activate} onLater={offer.later} />
+      )}
+
+      {/* Une seule invitation par lancement : pas de demande de notifications
+          empilée sur la proposition biométrique. */}
+      {pushPrompt && !locked && !offer.shownThisRun && (
         <div
           role="dialog"
           aria-labelledby="vb-push-title"
           className="fixed inset-x-3 z-[998] rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 shadow-lg"
-          style={{ bottom: 'max(1rem, calc(env(safe-area-inset-bottom) + 4.5rem))' }}
+          style={{ bottom: 'max(1rem, calc(var(--vb-safe-bottom) + 4.5rem))' }}
         >
           <div className="flex items-start gap-3">
             <Bell className="mt-0.5 h-5 w-5 shrink-0 text-[color:var(--accent)]" aria-hidden />
@@ -340,24 +309,10 @@ export default function NativeBridgeRuntime() {
         </div>
       )}
 
-      {locked && (
-        <div
-          role="alertdialog"
-          aria-modal="true"
-          aria-labelledby="vb-lock-title"
-          className="fixed inset-0 z-[1000] flex items-center justify-center bg-background p-6"
-          style={{ paddingTop: 'max(1.5rem, env(safe-area-inset-top))', paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}
-        >
-          <div className="w-full max-w-sm space-y-4 text-center">
-            <Lock className="mx-auto h-10 w-10 text-[color:var(--accent)]" aria-hidden />
-            <h1 id="vb-lock-title" className="vb-app-title">Verebona est verrouillé</h1>
-            <p className="text-sm text-muted-foreground">Pour protéger vos documents, l’application se verrouille après 5 minutes sans utilisation.</p>
-            <Button className="w-full" onClick={() => void deverrouiller()} disabled={unlocking || status === 'checking'}>
-              Déverrouiller
-            </Button>
-          </div>
-        </div>
-      )}
+      {/* Lot 107A : plus d'écran statique de verrouillage dans le parcours normal — voile
+          neutre pendant la vérification automatique, écran de secours sobre
+          seulement après un échec, une annulation ou sans biométrie. */}
+      <NativeUnlockScreen state={unlock.state} shortLabel={unlock.shortLabel} retryLabel={unlock.retryLabel} onAction={unlock.onAction} />
     </>
   );
 }

@@ -45,6 +45,7 @@ import { getRule } from './rules-catalog';
 import { sortActions, type OrderMode } from './priority';
 import { presentCardLabels, targetFallbackLabel } from './card-labels';
 import { publishableCardCondition } from './publishability';
+import { resolveCardLinks, type CardLinks } from './card-links';
 
 /** Contexte objet affiché sur la carte (§8.4). */
 interface ActionTargetContext {
@@ -96,6 +97,12 @@ export interface ToProcessActionView {
    * application (identité lue, documents inclus et preuve, exceptions et motif).
    */
   scope?: { label: string; documents: Array<{ id: number; title: string; evidence: string }>; exceptions: Array<{ id: number; title: string; reason: string }> };
+  /**
+   * Lot 107E — liens directs (objet, justificatifs exacts, source de chaque
+   * proposition, événement lié), calculés à la lecture (`card-links.ts`).
+   * Fournis seulement sur demande (`withLinks`, page « À traiter »).
+   */
+  links?: CardLinks;
 }
 
 /** Périmètre d'une carte groupée lu dans son contexte (pure, borné). */
@@ -141,6 +148,8 @@ export async function getToProcessPage(
      * la pastille, l'accueil et la mascotte ne les affichent pas.
      */
     withThumbnails?: boolean;
+    /** Lot 107E — liens directs des cartes (page « À traiter »). */
+    withLinks?: boolean;
   } = {},
 ): Promise<ToProcessPage> {
   // §8.2 : « Par priorité » est la vue par défaut à CHAQUE visite ; le choix
@@ -217,6 +226,30 @@ export async function getToProcessPage(
       ...(scope ? { scope } : {}),
     }, getRule(row.ruleCode)?.question ?? null);
   });
+
+  // Lot 107E : liens directs, depuis les propositions BRUTES affichées (la
+  // reformulation des libellés peut retirer un contexte de source) et le
+  // contexte de la carte — relations de preuve existantes, lecture groupée.
+  if (options.withLinks && rows.length) {
+    try {
+      const links = await resolveCardLinks(accountId, rows.map((row) => ({
+        publicId: row.publicId,
+        ruleCode: row.ruleCode,
+        actionKind: row.actionKind as ActionKind,
+        targetType: row.targetType as TargetType,
+        targetId: row.targetId,
+        fieldKey: row.fieldKey,
+        relationKey: row.relationKey,
+        proposals: selectDisplayedProposals((row.proposalsJson as ActionProposal[] | null) ?? []),
+        triggerContext: row.triggerContext,
+        supplierId: contexts.get(`${row.targetType}:${row.targetId}`)?.supplierId ?? null,
+      })));
+      views = views.map((v) => (links.has(v.publicId) ? { ...v, links: links.get(v.publicId)! } : v));
+    } catch (e) {
+      // Des liens absents valent mieux qu'une file qui ne s'affiche plus.
+      console.error('[to-process] liens directs indisponibles :', (e as Error).message);
+    }
+  }
 
   // Le filtre « bien » porte sur la CIBLE, pas sur l'action : une action
   // documentaire concerne le bien auquel le document est rattaché. Il ne peut
@@ -461,7 +494,7 @@ export function toPreviewRow(d: {
  * Dans tous les cas le fournisseur retenu doit appartenir au compte et ne pas
  * être supprimé.
  */
-async function hydrateSupplierTargets(
+export async function hydrateSupplierTargets(
   accountId: number,
   ids: number[],
 ): Promise<Map<string, ActionTargetContext>> {

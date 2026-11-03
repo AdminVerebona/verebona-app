@@ -280,8 +280,9 @@ function InformationsTabContent({ beforeDangerZone }: { beforeDangerZone?: React
     try {
       const data = await apiClient.patch<any>('/api/account/calendar-token/toggle', { active });
       if (data.error) throw new Error(data.error);
+      // Lot 107B : l'interrupteur montre l'état enregistré ; pas de toast de
+      // simple confirmation (seule l'erreur est signalée).
       setCalActive(active);
-      toast.success(active ? 'Synchronisation activée' : 'Synchronisation désactivée');
     } catch {
       toast.error('Erreur lors de la mise à jour');
     } finally {

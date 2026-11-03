@@ -1,25 +1,28 @@
 /**
  * Verrouillage local de l'application — lot 95 (CDC 12 AUTH-05, AUTH-06, AUTH-09,
  * ACC-06, REC-007/008/056/057 ; aperçu multitâche masqué AUTH-15 par le plugin
- * natif `PrivacyScreen`, activé dans capacitor.config.ts).
+ * natif `PrivacyScreen`, activé dans capacitor.config.ts), revu au lot 107A
+ * (déverrouillage AUTOMATIQUE, voir `unlock-machine.ts`).
  *
  * ══════════════════════════════════════════════════════════════════════════
  * RÈGLES
- *   · Après 5 minutes passées en arrière-plan (seuil inclus), l'app se
+ *   · Après 5 minutes passées en ARRIÈRE-PLAN (seuil inclus), l'app se
  *     verrouille au retour (REC-056 : 4 min → pas de verrou ; REC-057 :
- *     6 min → verrou). Le moment du passage en arrière-plan est conservé
- *     localement (valeur non sensible) : un redémarrage à froid après un
- *     arrêt par le système applique la même règle.
- *   · Déverrouillage : Face ID / Touch ID / empreinte si l'utilisateur l'a
- *     activé (opt-in, AUTH-05) ; sinon `UNLOCK_WITHOUT_BIOMETRICS`.
+ *     6 min → verrou). La lecture au premier plan sans toucher l'écran ne
+ *     verrouille JAMAIS (aucun minuteur d'inactivité). Le moment du passage
+ *     en arrière-plan est conservé localement (valeur non sensible) : un
+ *     redémarrage à froid après un arrêt par le système applique la même
+ *     règle. Horloge du téléphone reculée : verrou (prudence).
+ *   · Déverrouillage : Face ID / Touch ID / biométrie Android lancé
+ *     automatiquement si l'utilisateur l'a activé pour CE compte sur CET
+ *     appareil (`biometric-consent.ts`) ; sinon `UNLOCK_WITHOUT_BIOMETRICS`.
  *   · La biométrie ne fait que déverrouiller LOCALEMENT une session encore
- *     valide (AUTH-06) : aucun secret biométrique, aucun mot de passe stocké ;
- *     si la session serveur a expiré, la connexion complète est demandée
- *     (comportement habituel de l'interface).
+ *     valide (AUTH-06) : aucun secret biométrique, aucun mot de passe, aucun
+ *     jeton stocké ; la session serveur est relue avant d'afficher l'app ;
+ *     si elle a expiré ou a été révoquée, la connexion complète est demandée.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NATIVE_PLUGINS, nativePlugin } from './bridge';
-import { SECURE_KEYS, secureGet, secureRemove, secureSet } from './secure-store';
 
 /** Seuil du verrouillage (AUTH-09). */
 export const LOCK_AFTER_BACKGROUND_MS = 5 * 60 * 1000;
@@ -37,9 +40,15 @@ export const UNLOCK_WITHOUT_BIOMETRICS: 'device_credential' | 'password' = 'devi
 /** Clé locale (non sensible) : instant du passage en arrière-plan. */
 export const BACKGROUND_AT_KEY = 'verebona:native:background-at';
 
-/** Verrouiller au retour ? (pur, testé) */
+/**
+ * Verrouiller au retour ? (pur, testé) — 5 min passées en arrière-plan.
+ * Lot 107A : horloge reculée depuis le passage en arrière-plan (réglage
+ * manuel de l'heure) → verrou, pour qu'on ne puisse pas contourner la règle.
+ */
 export function shouldLockOnResume(backgroundAt: number | null, now: number, threshold = LOCK_AFTER_BACKGROUND_MS): boolean {
-  return backgroundAt !== null && Number.isFinite(backgroundAt) && now - backgroundAt >= threshold;
+  if (backgroundAt === null || !Number.isFinite(backgroundAt)) return false;
+  const elapsed = now - backgroundAt;
+  return elapsed < 0 || elapsed >= threshold;
 }
 
 export function rememberBackgroundAt(now: number = Date.now()): void {
@@ -59,49 +68,29 @@ export function clearBackgroundAt(): void {
   try { globalThis.localStorage?.removeItem(BACKGROUND_AT_KEY); } catch { /* rien */ }
 }
 
-// ── Biométrie ──────────────────────────────────────────────────────────────
+// ── Biométrie (plugin @aparajita/capacitor-biometric-auth) ─────────────────
 
-interface BiometricPlugin {
+export interface BiometricPlugin {
   checkBiometry(): Promise<{ isAvailable: boolean; deviceIsSecure: boolean; biometryType: number }>;
   internalAuthenticate(o: Record<string, unknown>): Promise<void>;
 }
 
-function biometric(): BiometricPlugin | null {
+export function biometric(): BiometricPlugin | null {
   return nativePlugin<BiometricPlugin>(NATIVE_PLUGINS.biometric);
 }
 
-export interface BiometryAvailability { available: boolean; deviceSecure: boolean }
+export interface BiometryAvailability { available: boolean; deviceSecure: boolean; type: number | null }
 
 export async function biometryAvailability(): Promise<BiometryAvailability> {
   const b = biometric();
-  if (!b) return { available: false, deviceSecure: false };
+  if (!b) return { available: false, deviceSecure: false, type: null };
   try {
     const r = await b.checkBiometry();
-    return { available: !!r.isAvailable, deviceSecure: !!r.deviceIsSecure };
+    return { available: !!r.isAvailable, deviceSecure: !!r.deviceIsSecure, type: typeof r.biometryType === 'number' ? r.biometryType : null };
   } catch {
-    return { available: false, deviceSecure: false };
+    return { available: false, deviceSecure: false, type: null };
   }
 }
-
-export async function biometricsEnabled(): Promise<boolean> {
-  return (await secureGet(SECURE_KEYS.biometricsEnabled)) === '1';
-}
-
-/**
- * Activation explicite (Mon compte › Sécurité, ACC-06) : une vérification
- * réussie est exigée avant d'enregistrer le choix. Refus : rien ne change.
- */
-export async function setBiometricsEnabled(enabled: boolean): Promise<boolean> {
-  const r = await changeBiometrics(enabled);
-  return r === 'enabled' || r === 'disabled';
-}
-
-// ── Réglage Mon compte › Sécurité › Biométrie (lot 97B, ACC-06) ────────────
-//
-// AUCUN EFFET SERVEUR : le choix reste sur ce téléphone (Keychain / Keystore)
-// et ne sert qu'à déverrouiller l'app localement. Il ne remplace JAMAIS la
-// confirmation d'identité de 5 minutes exigée par le serveur pour les
-// réglages de sécurité (lot 92).
 
 /** Nom affiché du capteur (`BiometryType` du plugin : 1 Touch ID, 2 Face ID, 3 empreinte, 4 visage, 5 iris). */
 export function biometryLabel(type: number | null | undefined, platform: 'ios' | 'android' | null): string {
@@ -115,57 +104,60 @@ export function biometryLabel(type: number | null | undefined, platform: 'ios' |
   }
 }
 
-export interface BiometricSetting {
-  /** L'app peut-elle interroger le téléphone (plugin présent) ? */
-  supported: boolean;
-  /** Biométrie configurée et utilisable sur le téléphone, maintenant. */
-  available: boolean;
-  /** Code de verrouillage du téléphone défini. */
-  deviceSecure: boolean;
-  /** Choix enregistré sur ce téléphone. */
-  enabled: boolean;
-  /** Capteur, pour les libellés (« Face ID », « l’empreinte digitale »…). */
-  label: string;
+/**
+ * Lot 107A — libellés courts des boutons et de la proposition :
+ * « Face ID » / « Touch ID » sur iPhone, « la biométrie » sur Android (le
+ * système choisit lui-même empreinte ou visage).
+ */
+export function biometryShortLabel(type: number | null | undefined, platform: 'ios' | 'android' | null): string {
+  if (type === 2) return 'Face ID';
+  if (type === 1) return 'Touch ID';
+  return platform === 'ios' ? 'Face ID' : 'la biométrie';
 }
 
-/** État RÉEL : relu à chaque affichage (l'utilisateur a pu changer les réglages du téléphone). */
-export async function readBiometricSetting(platform: 'ios' | 'android' | null = null): Promise<BiometricSetting> {
-  const b = biometric();
-  if (!b) return { supported: false, available: false, deviceSecure: false, enabled: false, label: biometryLabel(null, platform) };
-  let available = false;
-  let deviceSecure = false;
-  let type: number | null = null;
-  try {
-    const r = await b.checkBiometry();
-    available = !!r.isAvailable;
-    deviceSecure = !!r.deviceIsSecure;
-    type = typeof r.biometryType === 'number' ? r.biometryType : null;
-  } catch { /* indisponible */ }
-  return { supported: true, available, deviceSecure, enabled: await biometricsEnabled(), label: biometryLabel(type, platform) };
+/** Libellé du bouton de nouvelle tentative (pur, testé). */
+export function retryLabel(type: number | null | undefined, platform: 'ios' | 'android' | null): string {
+  const short = biometryShortLabel(type, platform);
+  return short === 'la biométrie' ? 'Réessayer avec la biométrie' : `Réessayer ${short}`;
 }
-
-export type BiometricsChange = 'enabled' | 'disabled' | 'refused' | 'unavailable' | 'storage_error';
 
 /**
- * Active / désactive le déverrouillage biométrique. Activation : une
- * vérification biométrique RÉUSSIE est exigée (refus ou annulation → rien ne
- * change) ; désactivation : immédiate, sans vérification.
+ * Résultat détaillé d'une vérification locale (lot 107A) :
+ *   ok           vérification réussie ;
+ *   cancelled    annulée par l'utilisateur (« Annuler », bouton de repli) ;
+ *   failed       visage / doigt non reconnu ;
+ *   lockout      biométrie bloquée par le système après trop d'échecs ;
+ *   interrupted  fenêtre fermée par le système (app quittée, appel…) ;
+ *   unavailable  aucun moyen utilisable (biométrie / code absents).
  */
-export async function changeBiometrics(enabled: boolean): Promise<BiometricsChange> {
-  if (!enabled) {
-    await secureRemove(SECURE_KEYS.biometricsEnabled);
-    return 'disabled';
+export type PromptOutcome = 'ok' | 'cancelled' | 'failed' | 'lockout' | 'interrupted' | 'unavailable';
+
+/** Code d'erreur du plugin → résultat (pur, testé). Jamais de boucle : tout échec est final pour la tentative. */
+export function promptOutcomeFromError(err: unknown): Exclude<PromptOutcome, 'ok'> {
+  const code = (err as { code?: unknown } | null)?.code;
+  switch (code) {
+    case 'userCancel':
+    case 'userFallback':
+      return 'cancelled';
+    case 'biometryLockout':
+      return 'lockout';
+    case 'systemCancel':
+    case 'appCancel':
+    case 'notInteractive':
+    case 'invalidContext':
+      return 'interrupted';
+    case 'biometryNotAvailable':
+    case 'biometryNotEnrolled':
+    case 'passcodeNotSet':
+    case 'noDeviceCredential':
+      return 'unavailable';
+    default:
+      return 'failed';
   }
-  const ok = await verifyUser({ biometryOnly: true, reason: 'Activer le déverrouillage de Verebona' });
-  if (ok === 'unavailable') return 'unavailable';
-  if (ok !== 'ok') return 'refused';
-  return (await secureSet(SECURE_KEYS.biometricsEnabled, '1')) ? 'enabled' : 'storage_error';
 }
 
-export type VerifyOutcome = 'ok' | 'cancelled' | 'unavailable';
-
-/** Vérification locale de l'utilisateur (biométrie, ou code du téléphone si autorisé). */
-export async function verifyUser(o: { biometryOnly: boolean; reason: string }): Promise<VerifyOutcome> {
+/** Vérification locale détaillée (biométrie seule, ou biométrie / code du téléphone). */
+export async function verifyUserDetailed(o: { biometryOnly: boolean; reason: string }): Promise<PromptOutcome> {
   const b = biometric();
   if (!b) return 'unavailable';
   const { available, deviceSecure } = await biometryAvailability();
@@ -181,9 +173,17 @@ export async function verifyUser(o: { biometryOnly: boolean; reason: string }): 
       androidConfirmationRequired: false,
     });
     return 'ok';
-  } catch {
-    return 'cancelled';
+  } catch (err) {
+    return promptOutcomeFromError(err);
   }
+}
+
+export type VerifyOutcome = 'ok' | 'cancelled' | 'unavailable';
+
+/** Vérification locale de l'utilisateur (forme simple, lot 95). */
+export async function verifyUser(o: { biometryOnly: boolean; reason: string }): Promise<VerifyOutcome> {
+  const r = await verifyUserDetailed(o);
+  return r === 'ok' || r === 'unavailable' ? r : 'cancelled';
 }
 
 export type UnlockPath = 'biometry' | 'device_credential' | 'full_sign_in';

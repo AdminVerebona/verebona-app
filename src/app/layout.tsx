@@ -3,6 +3,7 @@ import { ReactNode } from 'react';
 import { Viewport, Metadata } from 'next';
 import { ClientShell } from '@/components/ClientShell';
 import { THEME_PAGE_COLOR, themeBootScript } from '@/lib/theme';
+import { nativeLockBootScript } from '@/lib/native/lock-boot';
 import { PWA_APPLE_TOUCH_ICON_180, PWA_ICON_ANY_192, PWA_ICON_ANY_512 } from '@/lib/pwa/icons';
 
 /** Version des favicons (onglet du navigateur) : à incrémenter à chaque refonte.
@@ -91,6 +92,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <script
           suppressHydrationWarning
           dangerouslySetInnerHTML={{ __html: themeBootScript() }}
+        />
+        {/* Lot 107A : application iOS / Android relancée après 5 min en
+            arrière-plan → contenu masqué AVANT tout rendu (aucune donnée
+            visible avant le déverrouillage). Sans effet dans un navigateur. */}
+        <script
+          suppressHydrationWarning
+          dangerouslySetInnerHTML={{ __html: nativeLockBootScript() }}
         />
       </head>
       <body suppressHydrationWarning>

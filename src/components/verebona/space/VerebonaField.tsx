@@ -266,7 +266,7 @@ export function VerebonaMobileSpace() {
         aria-modal="true"
         aria-label="Verebona"
         data-field-position="top"
-        className="fixed inset-0 z-[70] flex flex-col bg-[color:var(--bg-page)] pt-[env(safe-area-inset-top)] [animation:vb-slide-up_.3s_cubic-bezier(.16,1,.3,1)]"
+        className="fixed inset-0 z-[70] flex flex-col bg-[color:var(--bg-page)] pt-[var(--vb-safe-top)] [animation:vb-slide-up_.3s_cubic-bezier(.16,1,.3,1)]"
         style={{ height: '100dvh' }}
       >
         <header className="flex flex-shrink-0 flex-col gap-2 border-b border-[color:var(--border-subtle)] px-3.5 pb-2.5 pt-2">
@@ -313,7 +313,7 @@ export function VerebonaMobileSpace() {
             </div>
           )}
         </header>
-        <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-[18px] pb-[max(16px,env(safe-area-inset-bottom))] pt-4">
+        <div ref={scrollRef} className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain px-[18px] pb-[max(16px,var(--vb-safe-bottom))] pt-4">
           <SpaceBody variant="mobile" scrollRef={scrollRef} />
         </div>
       </section>

@@ -133,7 +133,7 @@ describe('point 2 — champ Verebona mobile en haut, comme desktop', () => {
     const html = renderToStaticMarkup(h(VerebonaMobileSpace));
     expect(html).toMatch(/<input[^>]*text-\[16px\]/);
     expect(html).toMatch(/enterkeyhint="send"/i);
-    expect(html).toContain('env(safe-area-inset-top)');
+    expect(html).toContain('var(--vb-safe-top)'); // lot 107B : variable partagée
     expect(html.indexOf('<input')).toBeLessThan(html.indexOf('Nouvelle demande'));
   });
 

@@ -139,6 +139,10 @@ export type AdminActionType =
   // traitements, option renforcée, résultat, taille, identifiant de génération.
   | 'TECH_DIAGNOSTIC_VIEW'
   | 'TECH_DIAGNOSTIC_EXPORT'
+  // Lot 107G : diagnostic DURABLE — demande (mise en file), relance, annulation,
+  // et téléchargement de l'archive stockée ou d'un fichier (identifiant du travail).
+  | 'TECH_DIAGNOSTIC_JOB'
+  | 'TECH_DIAGNOSTIC_DOWNLOAD'
   // Lot 78C : BO › Supervision — reprise explicite des évaluations T6 en
   // échec, en attente d'essai ou indisponibles d'un compte (nombre relancé).
   | 'T6_EVALUATION_RETRY'

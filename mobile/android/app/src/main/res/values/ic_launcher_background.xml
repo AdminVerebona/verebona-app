@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Charte Sérénité 2026 : fond pétrole (production). La préprod a son fond ivoire dans src/preprod/res. -->
+    <color name="ic_launcher_background">#17474D</color>
 </resources>

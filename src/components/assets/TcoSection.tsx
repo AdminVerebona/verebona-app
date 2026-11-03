@@ -86,14 +86,31 @@ function ansFr(n: number): string {
   return `${v} an${n >= 2 ? 's' : ''}`;
 }
 
-/** Lot 76G / 81D : explication du TCO moyen annuel (calculé ou motif de non-calcul) — aucun seuil de durée. */
+/** Lot 107C : date au format JJ/MM/AAAA (« Depuis l'achat du bien le 15/03/2020 »). */
+function dateNum(d: string | null | undefined): string {
+  return d && /^\d{4}-\d{2}-\d{2}/.test(d) ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : '—';
+}
+
+/**
+ * Lot 107C : point de départ affiché — date et nature fournies par le moteur
+ * (`period.start`, `startKind`) : achat du bien, ou début de possession sans
+ * achat (location, prêt, don). Aucune règle de date ici.
+ */
+function depuis(start: string | null | undefined, kind: string | null | undefined): string {
+  return kind === 'POSSESSION' ? `Depuis le début de la possession le ${dateNum(start)} (sans achat)` : `Depuis l’achat du bien le ${dateNum(start)}`;
+}
+
+/** Lot 76G / 81D / 107C : explication du TCO moyen annuel (calculé ou motif de non-calcul) — aucun seuil de durée. */
 function moyenneExplication(a: Annual['average'], endSource: string): string {
   switch (a.status) {
     case 'COMPUTED': {
-      const fin = endSource === 'TODAY' ? 'à aujourd’hui' : `au ${dateFr(a.end)}`;
-      return `Sur ${a.days === 1 ? '1 jour' : (a.days ?? 0) < 365 ? `${a.days} jours` : ansFr(a.years ?? 0)} de possession (du ${dateFr(a.start)} ${fin}).`;
+      const fin = endSource === 'TODAY' ? 'jusqu’à aujourd’hui' : `jusqu’à la cession le ${dateNum(a.end)}`;
+      const duree = a.days === 1 ? '1 jour' : (a.days ?? 0) < 365 ? `${a.days} jours` : ansFr(a.years ?? 0);
+      return `${depuis(a.start, a.startKind)} : ${duree} (${fin}).`;
     }
     case 'ACQUISITION_DATE_MISSING': return 'Date d’achat inconnue : moyenne non calculée. Renseignez la date d’achat de la fiche.';
+    // Lot 107C : contradiction bloquante identifiable — jamais masquée derrière « Données manquantes ».
+    case 'ACQUISITION_DATE_UNDETERMINED': return 'Date d’achat du bien incertaine (plusieurs dates possibles se contredisent) : moyenne non calculée. Confirmez la date d’achat sur la fiche du bien.';
     case 'ACQUISITION_DATE_INCOHERENT':
       return a.incoherence === 'INVALID_DATE' ? 'Date d’achat impossible (jour inexistant) : moyenne non calculée. Corrigez la date d’achat de la fiche.'
         : a.incoherence === 'AFTER_DISPOSAL' ? 'Date d’achat postérieure à la cession : moyenne non calculée. Vérifiez les dates de la fiche.'
@@ -471,9 +488,11 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
               <div className="rounded-lg border border-primary/20 bg-primary/5 p-4" data-tco-summary>
                 <p className="text-[13px] font-semibold text-primary mb-1">Coût cumulé documenté</p>
                 <p className="text-2xl font-bold text-[color:var(--text-primary)] tabular-nums">{eur(t.summary.cumulativeCostCents)}</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  {t.annual?.average.incoherence ? 'Date d’acquisition incohérente — ' : t.period.start ? `Du ${dateFr(t.period.start)} ` : 'Date d’acquisition non renseignée — '}
-                  {t.period.endSource === 'TODAY' ? 'à aujourd’hui' : `au ${dateFr(t.period.end)} (cession)`}
+                <p className="text-xs text-muted-foreground mt-1" data-tco-start-status={t.period.startStatus ?? (t.period.start ? 'RESOLVED' : 'MISSING')}>
+                  {t.annual?.average.incoherence ? 'Date d’acquisition incohérente — '
+                    : t.period.startStatus === 'UNDETERMINED' ? 'Date d’achat du bien incertaine — '
+                      : t.period.start ? `${depuis(t.period.start, t.period.startKind)} ` : 'Date d’acquisition non renseignée — '}
+                  {t.period.endSource === 'TODAY' ? (t.period.start && !t.annual?.average.incoherence ? 'jusqu’à aujourd’hui' : 'à aujourd’hui') : `jusqu’à la cession le ${dateNum(t.period.end)}`}
                 </p>
                 <div className="mt-3 divide-y divide-border">
                   <Ligne label="Coût d’acquisition" value={t.summary.acquisitionStatus === 'MISSING' ? 'non renseigné' : t.summary.acquisitionStatus === 'NOT_APPLICABLE' ? 'sans objet (aucun achat)' : eur(t.summary.acquisitionCents)} muted={t.summary.acquisitionStatus !== 'DOCUMENTED'} />
@@ -500,7 +519,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                       <p className="text-xs text-muted-foreground">TCO total</p>
                       <p className="text-lg font-semibold text-[color:var(--text-primary)] tabular-nums">{eur(annual.average.totalCents)}</p>
                       <p className="text-xs text-muted-foreground mt-1">
-                        Coût cumulé {t.period.start && !annual.average.incoherence ? `depuis le ${dateFr(t.period.start)}` : 'documenté'}{t.period.endSource === 'TODAY' ? '' : ` jusqu’à la cession (${dateFr(t.period.end)})`}.
+                        Coût cumulé {t.period.start && !annual.average.incoherence ? `depuis le ${dateNum(t.period.start)}` : 'documenté'}{t.period.endSource === 'TODAY' ? '' : ` jusqu’à la cession (${dateNum(t.period.end)})`}.
                       </p>
                     </div>
                     <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="average" data-tco-average-status={annual.average.status}>

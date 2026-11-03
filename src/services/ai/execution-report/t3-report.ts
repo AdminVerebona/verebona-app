@@ -41,6 +41,8 @@ export interface T3FieldRecord {
   retraction?: boolean;
   /** Clé du registre (journal 0216) ou clé hors registre (key_characteristics). */
   registry?: boolean;
+  /** Lot 107D : preuves écartées avant décision (total d'un justificatif à plusieurs articles). */
+  excluded?: import('../reconciliation/multi-article-evidence').ExcludedAmountEvidence[];
 }
 
 export class T3ExecutionRecorder {
@@ -137,6 +139,8 @@ export async function buildT3Entries(rec: T3ExecutionRecorder, p: {
       candidates: f.candidates.map((c) => ({ evidenceId: c.evidenceId, value: c.value, confidence: c.confidence, authority: c.authorityScore, sourceId: c.sourceId, documentDate: c.documentDate })),
       // Lot 81A : toutes les valeurs proposées d'un conflit (aucune masquée).
       ...(d.alternatives?.length ? { alternatives: d.alternatives.map((a) => ({ value: a.value, evidenceIds: a.evidenceIds, authority: a.sourcePriority ?? null })) } : {}),
+      // Lot 107D : preuves écartées (document, montant, rôle du montant, motif) — jamais un prix d'article.
+      ...(f.excluded?.length ? { excluded: f.excluded.map((x) => ({ evidenceId: x.evidenceId, sourceFileId: x.sourceId, cents: x.cents, roles: x.summaryRoles, reason: x.reason, rule: x.projectionRule })) } : {}),
     };
     const isWrite = d.action === 'apply' || d.action === 'update';
     const j = byKey.get(f.fieldKey);

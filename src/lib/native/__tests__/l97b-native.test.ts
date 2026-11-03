@@ -10,7 +10,7 @@
  *             PKCE, erreurs de retour, adresse d'ouverture contrôlée ;
  *   L97B-BIO  réglage Biométrie : état réel du téléphone, activation après
  *             vérification réussie, refus géré, désactivation immédiate,
- *             AUCUN appel serveur.
+ *             AUCUN appel serveur. Lot 107A : choix par compte (`biometric-consent`).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NextRequest } from 'next/server';
@@ -29,7 +29,9 @@ import {
   NATIVE_COMMERCE_API_PATHS, NATIVE_COMMERCE_INFO_PATH, NATIVE_COMMERCE_MESSAGE, NATIVE_COMMERCE_PATHS, isCommerceApiPath,
   isCommercePath, isNativeAppUserAgent, nativeCommerceHidden,
 } from '@/lib/native/commerce';
-import { biometryLabel, changeBiometrics, readBiometricSetting, setBiometricsEnabled, unlockPath } from '@/lib/native/app-lock';
+import { biometryLabel, unlockPath } from '@/lib/native/app-lock';
+// Lot 107A : réglage PAR COMPTE (identité 7 dans ces tests).
+import { changeBiometrics, readBiometricSetting } from '@/lib/native/biometric-consent';
 import { setNativeFeatures } from '@/lib/native/features';
 import { APP_LINK_EXCLUSIONS, OAUTH_APP_RETURN_PATH } from '@/lib/mobile/app-links';
 import { SOCIAL_ERROR_MESSAGES } from '@/lib/auth/oauth/messages';
@@ -334,59 +336,65 @@ describe('L97B-BIO — réglage Biométrie (Mon compte › Sécurité, app seule
 
   it('Web : non pris en charge (le bloc n’y est jamais affiché)', async () => {
     installWeb();
-    expect(await readBiometricSetting()).toMatchObject({ supported: false, available: false, enabled: false });
+    expect(await readBiometricSetting(null, 7)).toMatchObject({ supported: false, available: false, enabled: false });
   });
 
   it('état réel du téléphone, relu à chaque lecture', async () => {
     const bio = fakeBiometric({ available: true, type: 2 });
     installNative({ plugins: { SecureStorage: fakeSecureStorage(), BiometricAuthNative: bio } });
-    expect(await readBiometricSetting('ios')).toEqual({ supported: true, available: true, deviceSecure: true, enabled: false, label: 'Face ID' });
+    expect(await readBiometricSetting('ios', 7)).toEqual({
+      supported: true, available: true, deviceSecure: true, enabled: false, label: 'Face ID', state: 'never', stored: 'never', shortLabel: 'Face ID', type: 2,
+    });
     bio.checkBiometry.mockResolvedValueOnce({ isAvailable: false, deviceIsSecure: true, biometryType: 0 });
-    expect(await readBiometricSetting('ios')).toMatchObject({ available: false, label: 'Face ID ou Touch ID' });
+    expect(await readBiometricSetting('ios', 7)).toMatchObject({ available: false, label: 'Face ID ou Touch ID' });
     bio.checkBiometry.mockRejectedValueOnce(new Error('plugin'));
-    expect(await readBiometricSetting('ios')).toMatchObject({ supported: true, available: false });
+    expect(await readBiometricSetting('ios', 7)).toMatchObject({ supported: true, available: false });
   });
 
   it('activer : vérification réussie exigée, choix enregistré sur le téléphone', async () => {
     const sec = fakeSecureStorage();
     const bio = fakeBiometric();
     installNative({ plugins: { SecureStorage: sec, BiometricAuthNative: bio } });
-    expect(await changeBiometrics(true)).toBe('enabled');
+    expect(await changeBiometrics(true, 7)).toBe('enabled');
     expect(bio.internalAuthenticate).toHaveBeenCalledWith(expect.objectContaining({ allowDeviceCredential: false }));
-    expect((await readBiometricSetting('ios')).enabled).toBe(true);
+    expect((await readBiometricSetting('ios', 7)).enabled).toBe(true);
     expect(unlockPath({ biometricsEnabled: true, biometryAvailable: true, deviceSecure: true })).toBe('biometry');
   });
 
   it('refus / annulation : rien ne change', async () => {
     const sec = fakeSecureStorage();
     installNative({ plugins: { SecureStorage: sec, BiometricAuthNative: fakeBiometric({ refuse: true }) } });
-    expect(await changeBiometrics(true)).toBe('refused');
-    expect((await readBiometricSetting('ios')).enabled).toBe(false);
-    expect(await setBiometricsEnabled(true)).toBe(false);
+    expect(await changeBiometrics(true, 7)).toBe('refused');
+    expect((await readBiometricSetting('ios', 7)).enabled).toBe(false);
   });
 
   it('aucune biométrie configurée : activation impossible ; désactivation toujours possible', async () => {
     const sec = fakeSecureStorage();
     const bio = fakeBiometric({ available: false });
     installNative({ plugins: { SecureStorage: sec, BiometricAuthNative: bio } });
-    expect(await changeBiometrics(true)).toBe('unavailable');
+    expect(await changeBiometrics(true, 7)).toBe('unavailable');
     expect(bio.internalAuthenticate).not.toHaveBeenCalled();
-    await secureSet(SECURE_KEYS.biometricsEnabled, '1');
-    expect(await changeBiometrics(false)).toBe('disabled');
-    expect((await readBiometricSetting('ios')).enabled).toBe(false);
+    await secureSet(SECURE_KEYS.biometricsEnabled, '1'); // ancienne préférence (lot 97B), reprise pour le compte
+    expect((await readBiometricSetting('ios', 7)).stored).toBe('active');
+    expect(await changeBiometrics(false, 7)).toBe('disabled');
+    expect((await readBiometricSetting('ios', 7)).enabled).toBe(false);
   });
 
   it('stockage sécurisé en échec : signalé, jamais présenté comme activé', async () => {
     installNative({ plugins: { SecureStorage: fakeSecureStorage({ failSet: true }), BiometricAuthNative: fakeBiometric() } });
-    expect(await changeBiometrics(true)).toBe('storage_error');
+    expect(await changeBiometrics(true, 7)).toBe('storage_error');
   });
 
   it('textes d’état (bloc)', () => {
-    const base = { supported: true, available: true, deviceSecure: true, enabled: true, label: 'Face ID' };
-    expect(biometricsStatusText(base, true)).toBe('Activée : Face ID déverrouille Verebona sur ce téléphone.');
-    expect(biometricsStatusText({ ...base, enabled: false }, true)).toMatch(/^Désactivée/);
-    expect(biometricsStatusText({ ...base, available: false }, true)).toMatch(/n’est plus configurée/);
-    expect(biometricsStatusText({ ...base, available: false, enabled: false }, true)).toMatch(/Aucune biométrie/);
+    const base = {
+      supported: true, available: true, deviceSecure: true, enabled: true, label: 'Face ID', shortLabel: 'Face ID', type: 2,
+      state: 'active' as const, stored: 'active' as const,
+    };
+    expect(biometricsStatusText(base, true)).toBe('Activé : Face ID déverrouille Verebona sur ce téléphone.');
+    expect(biometricsStatusText({ ...base, enabled: false, state: 'deferred', stored: 'deferred' }, true)).toMatch(/^Désactivé/);
+    expect(biometricsStatusText({ ...base, available: false, state: 'unavailable' }, true)).toMatch(/n’est plus disponible/);
+    expect(biometricsStatusText({ ...base, available: false, state: 'unavailable', stored: 'never' }, true)).toMatch(/Aucune biométrie/);
+    expect(biometricsStatusText({ ...base, state: 'reactivate', stored: 'reactivate' }, true)).toMatch(/^À réactiver/);
     expect(biometricsStatusText(base, false)).toMatch(/momentanément indisponible/);
     expect(biometricsStatusText({ ...base, supported: false }, true)).toMatch(/ne permet pas/);
   });

@@ -22,8 +22,18 @@ export const SECURE_PREFIX = 'verebona.';
 export const SECURE_KEYS = {
   /** Identifiant d'installation (X-Verebona-Installation-Id) — non secret, lié à l'appareil. */
   installationId: 'installation-id',
-  /** Préférence « Déverrouiller avec Face ID / empreinte » (AUTH-05, ACC-06). */
+  /**
+   * Ancienne préférence « Déverrouiller avec Face ID / empreinte » (lot 97B,
+   * unique pour l'appareil). Lot 107A : reprise une fois dans
+   * `biometricsState` puis effacée.
+   */
   biometricsEnabled: 'biometrics-enabled',
+  /**
+   * Lot 107A : déverrouillage biométrique PAR COMPTE sur cet appareil
+   * (jamais proposé / reporté / actif / à réactiver), avec l'empreinte NON
+   * biométrique de l'enrôlement (`biometric-consent.ts`). Aucun secret.
+   */
+  biometricsState: 'biometrics-state',
   /** Vérificateur PKCE d'un parcours Google / Apple en cours (10 min max). */
   oauthVerifier: 'oauth-verifier',
 } as const;

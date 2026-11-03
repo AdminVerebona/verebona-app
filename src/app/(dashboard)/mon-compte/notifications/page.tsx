@@ -9,6 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { ParentBackLink } from '@/components/shell/ParentBackLink';
+import { saveNewsConsent } from '@/lib/notifications/news-consent-toggle';
 
 interface ChannelState { enabled: boolean; locked: boolean; available?: boolean }
 interface CategoryPref {
@@ -30,6 +32,9 @@ export default function NotificationsSettingsPage() {
   const { setBreadcrumbs } = useBreadcrumb();
   const [mounted, setMounted] = useState(false);
   const [matrix, setMatrix] = useState<Matrix | null>(null);
+  // Enregistrement du consentement actualités en cours : l'interrupteur est
+  // inactif le temps de la réponse (pas de double envoi, pas de faux état).
+  const [newsSaving, setNewsSaving] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([{ label: 'Mon compte', href: '/mon-compte' }, { label: 'Notifications' }]);
@@ -70,20 +75,26 @@ export default function NotificationsSettingsPage() {
     }
   };
 
+  // Lot 107B (recette iOS du 02/11/2026) : plus de toast de succès « Vous
+  // recevrez nos actualités » — l'interrupteur montre déjà l'état, et le
+  // bandeau passait sous la barre d'état et sur « Demander à Verebona ».
+  // L'état affiché est celui que le SERVEUR a enregistré (réponse puis
+  // relecture) ; en cas d'échec, retour à l'état précédent et erreur utile.
   const toggleNewsConsent = async (next: boolean) => {
-    if (!matrix) return;
+    if (!matrix || newsSaving) return;
     const snapshot = matrix;
+    setNewsSaving(true);
     setMatrix({ ...matrix, newsConsent: { ...matrix.newsConsent, consented: next } });
-    try {
-      await apiClient.post('/api/notification-preferences/news-consent', {
-        consented: next, source: 'mon-compte/notifications',
-      });
-      toast.success(next ? 'Vous recevrez nos actualités' : 'Vous ne recevrez plus nos actualités');
+    const result = await saveNewsConsent(next, (url, body) => apiClient.post(url, body));
+    if (result.ok) {
+      const saved = result.consent;
+      if (saved) setMatrix((m) => (m ? { ...m, newsConsent: saved } : m));
       await refresh(); // reflète le verrou de gating côté serveur
-    } catch {
+    } else {
       setMatrix(snapshot);
-      toast.error('Consentement non enregistré. Réessayez.');
+      toast.error(result.error);
     }
+    setNewsSaving(false);
   };
 
   // Au moins une catégorie attend un push (hors actualités, qui exigent en
@@ -99,6 +110,8 @@ export default function NotificationsSettingsPage() {
   return (
     <div className="w-full max-w-3xl space-y-6">
       <div>
+        {/* Lot 107B : retour déterministe vers Mon compte, avant le titre. */}
+        <ParentBackLink to="monCompte" className="mb-1" />
         <h1 className="vb-app-title">Notifications</h1>
         <p className="mt-1 text-muted-foreground">
           Choisissez ce que vous recevez par notification sur vos appareils et par email.
@@ -187,6 +200,7 @@ export default function NotificationsSettingsPage() {
                         <Switch
                           checked={matrix.newsConsent.consented}
                           onCheckedChange={toggleNewsConsent}
+                          disabled={newsSaving}
                           aria-label="Recevoir les actualités"
                         />
                       ) : !cat.digest && (

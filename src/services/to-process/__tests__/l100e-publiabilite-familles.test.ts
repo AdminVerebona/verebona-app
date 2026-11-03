@@ -168,7 +168,9 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
       // Lot 105D : rattachement principal récupérable (fin de registre).
       'COH-DOC-PRIMARY-LINK',
       // Lot 106A : représentations Agenda équivalentes (fin de registre).
-      'COH-AGENDA-EQUIVALENT-REPRESENTATIONS']);
+      'COH-AGENDA-EQUIVALENT-REPRESENTATIONS',
+      // Lot 107D : prix multi-articles et arbitrages rouverts (fin de registre).
+      'COH-PRICE-MULTI-ARTICLE']);
     const c = getCheck(PUBLISHABILITY_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'to_process_action' });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur']));

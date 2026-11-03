@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
+import { ParentBackLink } from '@/components/shell/ParentBackLink';
 import { apiClient } from '@/lib/api-client';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
@@ -103,6 +104,8 @@ export default function EnrichissementsPage() {
 
   return (
     <div className="space-y-6 w-full max-w-full">
+      {/* Lot 107B : retour déterministe vers Mon compte, avant le titre. */}
+      <ParentBackLink to="monCompte" className="-mb-4" />
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>

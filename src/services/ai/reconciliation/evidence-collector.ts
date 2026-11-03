@@ -32,6 +32,12 @@ export interface CollectedField {
    * mémorisée de la preuve disparue ne doit plus la protéger.
    */
   unproven: boolean;
+  /**
+   * Lot 107D : preuves ÉCARTÉES avant décision — montant de transaction d'un
+   * justificatif à plusieurs articles (jamais le prix d'un article). Tracées
+   * (rapport T3, contrôle COH-PRICE-MULTI-ARTICLE), jamais supprimées.
+   */
+  excluded?: import('./multi-article-evidence').ExcludedAmountEvidence[];
 }
 
 /** Bien lu par le collecteur (lot 76J : inventaire exhaustif de l'onglet « Informations »). */
@@ -64,6 +70,9 @@ export async function collectAssetEvidenceState(
   const lire = currentValueReader(kc, row);
   const fieldKeys = await listFieldsWithEvidence(accountId, assetId);
   const collected: CollectedField[] = [];
+  // Lot 107D : profils des justificatifs lus une fois par passage.
+  const { screenAmountEvidence } = await import('./multi-article-evidence');
+  const profils = new Map();
 
   for (const fieldKey of fieldKeys) {
     // D-D (lot 20) : un champ de saisie seule n'est jamais réconcilié depuis
@@ -72,7 +81,9 @@ export async function collectAssetEvidenceState(
     // Lot 32 (L32-1) : champ sans objet pour ce bien (immatriculation d'un
     // vélo) — aucune décision, donc ni écriture, ni proposition « À traiter ».
     if (!isFieldApplicableToAsset(fieldKey, { category: asset.category, subtype: asset.subtype })) continue;
-    const evidences = await getActiveEvidence(accountId, assetId, fieldKey);
+    const actives = await getActiveEvidence(accountId, assetId, fieldKey);
+    // Lot 107D : total d'un ticket à plusieurs articles écarté AVANT toute décision.
+    const { kept: evidences, excluded } = await screenAmountEvidence(accountId, fieldKey, actives, profils);
 
     const candidates = toEvidenceCandidates(fieldKey, evidences);
 
@@ -86,6 +97,7 @@ export async function collectAssetEvidenceState(
         isCritical: isCriticalField(fieldKey),
       },
       unproven: isUnprovenAutomaticValue(current, candidates, fieldKey),
+      ...(excluded.length ? { excluded } : {}),
     });
   }
 

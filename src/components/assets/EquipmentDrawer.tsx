@@ -138,17 +138,14 @@ const STATUS_COLORS: Record<string, string> = {
   INACTIF: 'bg-muted text-muted-foreground border-border',
 };
 
-// Type de document : étiquette NEUTRE (brume + pétrole), le type est écrit.
-// Le cuivre et le rouge restent réservés à l'attention et aux retards.
-const DOC_TYPE_NEUTRE = 'bg-[color:var(--accent-soft)] text-[color:var(--accent)] border-[color:var(--border-info)]';
-const DOC_TYPE_COLORS: Record<string, string> = {
-  FACTURE: DOC_TYPE_NEUTRE,
-  GARANTIE: DOC_TYPE_NEUTRE,
-  MANUEL: DOC_TYPE_NEUTRE,
-  CONTRAT: DOC_TYPE_NEUTRE,
-  CERTIFICAT: DOC_TYPE_NEUTRE,
-  AUTRE: 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border-[color:var(--border)]',
-};
+// Type de document : UNE seule étiquette neutre pour tous les types (lot 107B).
+// Le type est une CATÉGORIE, pas un statut : aucune couleur ne doit
+// distinguer « Facture d'achat » de « Garantie » ou « Photo ». L'ancienne
+// table par code historique (FACTURE, GARANTIE…) accentuait certains types
+// selon `documentType` alors que le libellé affiché est celui du Type V2 :
+// supprimée, sans nouveau mapping. Les couleurs d'état restent réservées aux
+// statuts (équipement, agenda).
+const DOC_TYPE_PILL = 'bg-[color:var(--bg-subtle)] text-[color:var(--text-secondary)] border-[color:var(--border)]';
 
 function AgendaStatusIcon({ status }: { status: string }) {
   if (status === 'realise') return <CheckCircle2 className="w-3.5 h-3.5 text-[color:var(--text-success)] flex-shrink-0" />;
@@ -685,8 +682,6 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
         ) : (
           <div className="space-y-1.5">
             {equipmentDocuments.map(doc => {
-              const typeCode = doc.documentType ?? 'AUTRE';
-              const typeColor = DOC_TYPE_COLORS[typeCode] ?? DOC_TYPE_COLORS.AUTRE;
               return (
                 <EntityCard
                   key={doc.id}
@@ -697,7 +692,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   meta={(doc.documentTypeLabel || doc.documentDate) ? (
                     <span className="flex items-center gap-1.5 flex-wrap">
                       {doc.documentTypeLabel && (
-                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${typeColor}`}>
+                        <span data-testid="equipment-doc-type-pill" className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${DOC_TYPE_PILL}`}>
                           {doc.documentTypeLabel}
                         </span>
                       )}

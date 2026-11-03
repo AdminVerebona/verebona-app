@@ -26,7 +26,7 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import { BusinessOperationReadService, type AssistantOperationRead } from '../read-service';
-import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipmentPrice, type TcoOperation, type TcoResult, type UsageBudget } from './model';
+import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipmentPrice, type TcoInput, type TcoOperation, type TcoResult, type UsageBudget } from './model';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
 import { TCO_STABLE_SOURCE_KINDS, type TcoUserDecision } from './user-decisions';
 import { civilDateParis, type LedgerComponent } from '../finance/engine';
@@ -85,12 +85,35 @@ async function operationIdsOfAsset(r: Runner, accountId: number, assetId: number
  * détail du bien. Jamais la date d'ajout dans Verebona (`created_at`). Valeur
  * brute rendue telle quelle : la validation stricte est celle du moteur.
  */
-function assetTcoDatesOf(row: AssetRowJson): { acquisitionDate: string | null; saleDate: string | null } {
+function assetTcoDatesOf(row: AssetRowJson): { acquisitionDate: string | null; saleDate: string | null; acquisitionMeta: NonNullable<TcoInput['assetAcquisitionDateMeta']> | null } {
   const v = (k: string): string | null => {
     const x = readCanonicalValue(row, k)?.value;
     return typeof x === 'string' && x.trim() ? x.trim() : null;
   };
-  return { acquisitionDate: v('acquisitionDate'), saleDate: v('saleDate') };
+  // Lot 107C : provenance de la date d'achat (origine : autorité de la saisie ; clé, alias ou colonne lue).
+  const st = readCanonicalValue(row, 'acquisitionDate');
+  const acquisitionMeta = st ? {
+    origin: st.origin ?? null, from: st.from ?? null, fromName: st.fromName ?? null, source: st.source ?? null, updatedAt: st.updatedAt ?? null,
+  } : null;
+  return { acquisitionDate: v('acquisitionDate'), saleDate: v('saleDate'), acquisitionMeta };
+}
+
+/**
+ * Lot 107C — dernière écriture JOURNALISÉE de la date d'achat du bien
+ * (`canonical_field_writes`, primitive canonique unique) : valeur, origine,
+ * provenance (fiche, assistant, document, réconciliation, agenda…) et
+ * instant. Diagnostic BO de la date retenue — permet d'identifier d'où vient
+ * une date (ex. 21/09/2007) sans accès SQL. Null : aucune écriture tracée
+ * (valeur historique, colonne, import antérieur au journal).
+ */
+async function lastAcquisitionDateWrite(r: Runner, accountId: number, assetId: number): Promise<NonNullable<TcoInput['assetAcquisitionDateMeta']>['lastWrite']> {
+  const [w] = await rows<{ v: unknown; origin: string; st: string | null; sid: string | null; at: string }>(r, sql`
+    SELECT new_value AS v, origin, source_type AS st, source_id AS sid, created_at::text AS at FROM canonical_field_writes
+     WHERE account_id = ${accountId} AND asset_id = ${assetId} AND canonical_key = 'acquisitionDate' AND outcome = 'written' AND NOT dry_run
+     ORDER BY id DESC LIMIT 1`);
+  if (!w) return null;
+  const v = typeof w.v === 'string' ? w.v : w.v == null ? null : JSON.stringify(w.v);
+  return { value: v, origin: w.origin, sourceType: w.st, sourceId: w.sid, at: w.at };
 }
 
 /**
@@ -188,6 +211,8 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
   const result = computeTco({
     assetId, today: opts.today ?? civilDateParis(), operations, equipmentAssets,
     assetAcquisitionDate: dates.acquisitionDate, assetSaleDate: dates.saleDate, assetStatus: txt(asset.status),
+    // Lot 107C : provenance de la date d'achat (autorité USER / automatique ; dernière écriture journalisée).
+    ...(dates.acquisitionMeta ? { assetAcquisitionDateMeta: { ...dates.acquisitionMeta, lastWrite: dates.acquisitionDate ? await lastAcquisitionDateWrite(r, accountId, assetId) : null } } : {}),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete && equipementsComplets,
     documents: doc.documents, assetPrice, equipmentPrices, acquisitionExpected,
     assetCategory: txt(asset.category), componentProvenance, userDecisions,

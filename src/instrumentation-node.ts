@@ -308,6 +308,13 @@ export async function registerNode(): Promise<void> {
   const { startExportWorker } = await import('@/services/exports/v12/generation/worker');
   startExportWorker();
 
+  // 9 bis. Lot 107G : diagnostics BO DURABLES (file `admin_export_generations`,
+  //    mode 'job') — bail, reprise après arrêt du processus, un diagnostic à
+  //    la fois sur l'ensemble des instances. DIAG_JOB_WORKER_DISABLED=true le
+  //    retire de cette instance.
+  const { startDiagnosticWorker } = await import('@/services/admin/diagnostic-jobs/worker');
+  startDiagnosticWorker();
+
   // 10. Lot 34G : corpus du Centre d'aide préchargé (sans bloquer le
   //     démarrage) — la première question d'aide ne paie pas le
   //     téléchargement, et l'environnement lu est journalisé : une

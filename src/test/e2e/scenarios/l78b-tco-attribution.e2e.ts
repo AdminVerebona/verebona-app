@@ -23,6 +23,10 @@ import { scenario } from '../scenario';
 import { cand, cible, fh, operationsKit, ref } from '../datasets/operations-v1';
 import type { AccountRow, AssetRow } from '../factories';
 
+// Lot 107G : la génération synchrone dans la requête HTTP est retirée par défaut (410) ; ce scénario
+// vérifie le CONTENU du moteur par la route historique : activation explicite réservée aux tests.
+process.env.DIAG_SYNC_HTTP = 'on';
+
 const session = vi.hoisted(() => ({ userId: 0, currentAccountId: 0, role: 'USER', email: '' }));
 const TODAY = '2026-10-21';
 type Json = Record<string, any>;

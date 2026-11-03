@@ -41,7 +41,11 @@ vi.mock('@/services/verebona-assistant/events/business-events', async (o) => ({
 type Compte = { id: number; ownerUserId: number };
 
 const jour = (decalage: number) => {
-  const d = new Date(Date.now() + decalage * 86_400_000);
+  // Jour du mois > 12 : une date « JJ/MM » ou « JJ.MM » ne peut pas être relue
+  // en « MM/JJ » (sinon, selon le jour où la CI tourne, PROCHE et PROCHE2
+  // deviennent la même date inversée — cas du 03/11/2026 : 02.01 / 01.02).
+  let d = new Date(Date.now() + decalage * 86_400_000);
+  while (d.getUTCDate() <= 12) d = new Date(d.getTime() + 86_400_000);
   const iso = d.toISOString().slice(0, 10);
   const [y, m, j] = iso.split('-');
   return { iso, slash: `${j}/${m}/${y}`, point: `${j}.${m}.${y}` };

@@ -37,6 +37,9 @@ import { ACTION_KIND_LABELS, INTERVENTION_CARD_LABEL, MICROCOPY } from '@/lib/re
 import { PRIORITY_LABELS } from '@/services/to-process/priority';
 import type { ActionKind, ActionPriority } from '@/services/to-process/action-model';
 import { openCardDocumentPreview, previewAriaLabel } from './document-preview';
+import type { CardLinks as CardLinksData } from '@/services/to-process/card-links';
+import { CardLinks } from './CardLinks';
+import { clearDraft, getDraft, setDraft } from './return-state';
 
 export interface ActionProposalView {
   value: string | number | boolean | null;
@@ -70,6 +73,8 @@ export interface ActionView {
   };
   /** Lot 105D — carte groupée : périmètre exact (documents, exceptions) visible avant de répondre. */
   scope?: { label: string; documents: Array<{ id: number; title: string; evidence: string }>; exceptions: Array<{ id: number; title: string; reason: string }> };
+  /** Lot 107E — liens directs (objet, justificatifs exacts, source de chaque proposition). */
+  links?: CardLinksData;
 }
 
 interface Handlers {
@@ -82,6 +87,8 @@ interface Handlers {
    * évidence, le temps que l'utilisateur la repère.
    */
   focused?: boolean;
+  /** Lot 107E — navigation de l'application pour les liens vers une page (bien, fournisseur). */
+  navigate?: (href: string) => void;
 }
 
 /** Ancre DOM d'une carte, par l'ID de l'action — jamais par son libellé. */
@@ -263,7 +270,8 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
  * « Annuler »). « Ouvrir » ouvre toujours l'objet.
  */
 function InlineCompletion({ action, onChoose, onOpenTarget, busy }: { action: ActionView } & Handlers) {
-  const [value, setValue] = useState('');
+  // Lot 107E : la saisie non validée survit à l'aller-retour vers une fiche.
+  const [value, setValue] = useState(() => getDraft(action.publicId));
   const trimmed = value.trim();
   const label = action.inputType === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
     ? trimmed.split('-').reverse().join('/')
@@ -273,13 +281,13 @@ function InlineCompletion({ action, onChoose, onOpenTarget, busy }: { action: Ac
       className="flex flex-wrap items-center gap-2"
       onSubmit={(e) => {
         e.preventDefault();
-        if (trimmed) onChoose(action, { value: trimmed, label });
+        if (trimmed) { clearDraft(action.publicId); onChoose(action, { value: trimmed, label }); }
       }}
     >
       <Input
         type={action.inputType === 'date' ? 'date' : 'text'}
         value={value}
-        onChange={(e) => setValue(e.target.value)}
+        onChange={(e) => { setValue(e.target.value); setDraft(action.publicId, e.target.value); }}
         disabled={busy}
         aria-label={action.question}
         className="h-9 w-auto min-w-[10rem]"
@@ -336,6 +344,9 @@ export function GroupScope({ scope }: { scope: NonNullable<ActionView['scope']> 
 
 /** Source affichée « légèrement », et ouvrable quand elle existe (§8.4, UX-03). */
 function Source({ action, onOpenTarget }: { action: ActionView; onOpenTarget: Handlers['onOpenTarget'] }) {
+  // Lot 107E : avec les liens directs, la source est désignée proposition par
+  // proposition (lien exact) ; ce libellé, qui ouvrait l'objet, ferait doublon.
+  if (action.links) return null;
   const source = action.proposals.find((p) => p.sourceContext)?.sourceContext;
   if (!source) return null;
   return (
@@ -400,9 +411,13 @@ function CardBody({ action, ...handlers }: { action: ActionView } & Handlers) {
         <Controls action={action} {...handlers} />
       </div>
 
-      <div className="mt-2">
-        <Source action={action} onOpenTarget={handlers.onOpenTarget} />
-      </div>
+      {!action.links && (
+        <div className="mt-2">
+          <Source action={action} onOpenTarget={handlers.onOpenTarget} />
+        </div>
+      )}
+      {/* Lot 107E : liens directs, hors des boutons de choix (aucun effet de décision). */}
+      <CardLinks cardId={action.publicId} proposals={action.proposals} links={action.links} navigate={handlers.navigate} />
       {action.scope && <GroupScope scope={action.scope} />}
     </>
   );

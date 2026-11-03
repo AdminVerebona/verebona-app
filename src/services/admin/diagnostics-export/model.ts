@@ -398,6 +398,8 @@ export interface DiagManifest {
   couverture?: import('./engine').EngineManifestPart['couverture'];
   exclusionsVolontaires?: import('./engine').EngineManifestPart['exclusionsVolontaires'];
   autoControle?: import('./engine').EngineManifestPart['autoControle'];
+  /** Lot 107G — bilan PAR TABLE : attendu, exporté, écart, statut, exclusions motivées, SHA-256. */
+  parTable?: import('./collect').DiagTableManifest[];
 }
 
 export const MASKING_NOTES: readonly string[] = [

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useSession } from '@/hooks/useSession';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
+import { ParentBackLink } from '@/components/shell/ParentBackLink';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { apiClient } from '@/lib/api-client';
@@ -491,6 +492,8 @@ export default function OffresPage() {
       <div className="space-y-5 w-full max-w-full">
 
         <div>
+          {/* Lot 107B : retour déterministe vers Mon compte, avant le titre. */}
+          <ParentBackLink to="monCompte" className="mb-1" />
           <h1 className="vb-app-title">
             {essaiTermine ? 'Votre essai gratuit est terminé' : 'Choisissez votre abonnement'}
           </h1>

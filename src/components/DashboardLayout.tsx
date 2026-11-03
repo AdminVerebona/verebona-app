@@ -424,7 +424,12 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
     <VerebonaSpaceProvider
       onOpenHelp={() => setHelpModalOpen(true)}
     >
-    <div className="flex h-screen overflow-hidden bg-[color:var(--bg-page)]">
+    {/* Lot 107B — zones sûres de la coquille, UNE seule fois : à partir de
+        768 px (iPad, iPhone en paysage) la coquille réserve l'encart haut
+        au-dessus du menu latéral et de la TopBar, et l'encart bas ; les
+        encarts latéraux (encoche en paysage) partout. Sous 768 px, la barre
+        haute mobile et la barre basse réservent elles-mêmes haut et bas. */}
+    <div className="flex h-screen overflow-hidden bg-[color:var(--bg-page)] pl-[var(--vb-safe-left)] pr-[var(--vb-safe-right)] md:pt-[var(--vb-safe-top)] md:pb-[var(--vb-safe-bottom)]" data-testid="app-shell">
       {/* Indicateur de navigation : un seul, monté par ClientShell (APP-PERF-39). */}
 
       {/* Menu latéral — desktop (§3.1) */}
@@ -456,7 +461,9 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
             au champ unique. Les notifications et les réglages sont dans le
             panneau du compte, ouvert par l'avatar.
             ══════════════════════════════════════════════════════════════ */}
-        <div className="flex flex-shrink-0 items-center gap-2.5 bg-[color:var(--bg-page)] px-3.5 pb-2 pt-[max(8px,env(safe-area-inset-top))] md:hidden">
+        {/* Hauteur = max(8px, encart haut) + 44 px (champ) + 8 px : reprise
+            par `--vb-header-bottom` (globals.css) pour placer les toasts. */}
+        <div data-testid="mobile-topbar" className="flex flex-shrink-0 items-center gap-2.5 bg-[color:var(--bg-page)] px-3.5 pb-2 pt-[max(8px,var(--vb-safe-top))] md:hidden">
           <VerebonaMobileField />
           <button
             onClick={() => setIsMobileMenuOpen(true)}

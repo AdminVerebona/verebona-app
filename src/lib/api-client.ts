@@ -6,6 +6,7 @@ import { clientPlatformHeaders } from '@/lib/client-platform';
 import { FRESH_HEADER, isDataMutation, lastAccountMutationAt, markAccountDataMutated, mutatedSince, resetDataFreshness } from './data-freshness';
 import { notifyAppUpdateRequired } from '@/lib/mobile/native-shell';
 import { nativeSignOutPush } from '@/lib/native/push';
+import { nativeSignOutBiometrics } from '@/lib/native/biometric-consent';
 import {
   LOGOUT_REASON_HEADER,
   classifyAuthExit,
@@ -939,10 +940,24 @@ export const apiClient = {
    * laissée à l'appelant : en cas d'échec serveur, il propose de réessayer
    * plutôt que d'annoncer une révocation non obtenue.
    */
-  signOut(opts: { unsubscribePush?: (signal: AbortSignal) => Promise<void> } = {}): Promise<SignOutResult> {
+  signOut(opts: {
+    unsubscribePush?: (signal: AbortSignal) => Promise<void>;
+    /**
+     * Lot 107A : « Se reconnecter » depuis l'écran de déverrouillage — la
+     * préférence biométrique de l'appareil est conservée (ce n'est pas une
+     * déconnexion demandée). Par défaut (« Se déconnecter ») : elle repasse
+     * à « reporté », plus aucune réouverture par biométrie.
+     */
+    keepBiometrics?: boolean;
+  } = {}): Promise<SignOutResult> {
     if (pendingSignOut) return pendingSignOut;
     pendingSignOut = (async (): Promise<SignOutResult> => {
       this.purgeLocalSession('logout');
+
+      // Lot 107A (#640) : déconnexion volontaire dans l'app → déverrouillage
+      // biométrique désactivé sur cet appareil (Keychain / Keystore). Web : rien.
+      const clearBiometrics = opts.keepBiometrics ? undefined : nativeSignOutBiometrics();
+      if (clearBiometrics) await clearBiometrics().catch(() => undefined);
 
       // Lot 95 : dans l'application iOS / Android, désinscription push de CET
       // appareil (AUTH-10) ; sur le Web, rien (aucun Web Push, M3).

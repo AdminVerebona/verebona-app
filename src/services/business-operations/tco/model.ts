@@ -78,6 +78,15 @@
  * (`economicDate` : fondement, provenance, justification, dates disponibles)
  * — diagnostic BO (`tracabilite/montants.json`) et tiroir (`dateLabel`).
  *
+ * Lot 107C (ticket P1 « date d'achat du bien prioritaire ») — la date de
+ * DÉPART (période, durée, TCO moyen annuel) est la date d'achat DU bien
+ * (`./acquisition-start`) : date canonique saisie / corrigée par
+ * l'utilisateur d'abord ; sinon l'Opération identifiée comme l'achat de ce
+ * bien (date de réalisation seule) ; contradiction sans autorité → date
+ * indéterminée (`ACQUISITION_DATE_UNDETERMINED`, moyenne non calculée).
+ * Jamais la plus ancienne ACQUISITION, jamais `startDate`. Le TOTAL ne
+ * dépend pas de cette date.
+ *
  *   Coût cumulé documenté = Σ coûts réalisés − Σ réductions − Σ remboursements
  *                           − Σ indemnités attribuables
  *   En possession         : coût net estimé = cumulé − valeur actuelle FIABLE
@@ -100,6 +109,10 @@ import {
   type EconomicLineReason, type EconomicLineSource, type EconomicLineStatus,
 } from '../finance/economic-lines';
 import { computeTcoAnnual, type TcoAnnual } from './annual';
+import {
+  resolveAcquisitionStart, type AcquisitionOperationRole, type AcquisitionStartBasis, type AcquisitionStartKind, type AcquisitionStartResolution,
+  type AcquisitionStartStatus, type CanonicalAcquisitionDateInput,
+} from './acquisition-start';
 import {
   presumedDuplicateComponents, purchaseIsOwnershipCost, unjustifiedComponent, type ComponentProvenance, type PresumedDuplicate,
 } from './fact-identity';
@@ -174,6 +187,12 @@ export interface TcoInput {
   equipmentAssets?: ReadonlyMap<number, number>;
   /** Date d'acquisition saisie sur la fiche (date réelle ; jamais la date d'ajout dans Verebona). */
   assetAcquisitionDate: string | null;
+  /**
+   * Lot 107C : provenance canonique de cette date (origine, clé / alias /
+   * colonne lue, dernière écriture journalisée). Absente : valeur historique
+   * sans origine tracée — USER (règle commune `readOrigin`).
+   */
+  assetAcquisitionDateMeta?: Omit<CanonicalAcquisitionDateInput, 'raw'>;
   /** Date de cession saisie sur la fiche (repli si la Cession n'est pas datée). */
   assetSaleDate: string | null;
   /** Statut de la fiche (VENDU, TRANSMIS…). */
@@ -255,7 +274,9 @@ export type TcoWarning =
   // date d'acquisition future, impossible ou postérieure à la cession.
   | 'NOT_REALIZED_EXPENSES' | 'STATUS_CONTRADICTIONS' | 'INVALID_DATES' | 'ACQUISITION_DATE_INCOHERENT'
   // Lot 86F : dépenses retenues dont la date économique n'est pas établie (comptées, rattachées à aucune année).
-  | 'ECONOMIC_DATE_UNDETERMINED';
+  | 'ECONOMIC_DATE_UNDETERMINED'
+  // Lot 107C : dates d'achat du bien contradictoires sans autorité décisive (moyenne annuelle non calculée).
+  | 'ACQUISITION_DATE_UNDETERMINED';
 
 /** Lot 75D (H) : état du coût d'acquisition (distingue absence de dépense et information manquante). */
 type TcoAcquisitionStatus = 'DOCUMENTED' | 'MISSING' | 'NOT_APPLICABLE';
@@ -325,7 +346,19 @@ export interface TcoResult {
     start: string | null; startSource: 'OPERATION' | 'ASSET_DATA' | null; end: string; endSource: 'TODAY' | 'OPERATION' | 'ASSET_DATA'; days: number | null;
     /** Lot 81D : date d'acquisition fournie mais impossible (ex. 29/02/2025) — ignorée, jamais normalisée. */
     startRejected?: string | null;
+    /** Lot 107C : résolution de la date de départ (RESOLVED, MISSING, UNDETERMINED : contradiction sans autorité, REJECTED). */
+    startStatus?: AcquisitionStartStatus;
+    /** Lot 107C : fondement de la date retenue (fiche saisie, fiche automatique, achat du bien). */
+    startBasis?: AcquisitionStartBasis | null;
+    /** Lot 107C : achat du bien, ou début de possession (location, prêt, don). */
+    startKind?: AcquisitionStartKind;
   };
+  /**
+   * Lot 107C : résolution complète de la date de départ (candidats, rejetés,
+   * motifs, contradictions, réparation proposée, date de l'ancienne règle) —
+   * diagnostic BO et contrôle de cohérence ; jamais transmise à la fiche.
+   */
+  acquisitionStart?: AcquisitionStartResolution;
   summary: {
     /** Coût cumulé documenté (C17), centimes EUR. */
     cumulativeCostCents: number;
@@ -393,7 +426,6 @@ export interface TcoResult {
 // ── Règles ─────────────────────────────────────────────────────────────────
 
 const latest = (dates: Array<string | null | undefined>): string | null => dates.filter(isIsoDate).map((d) => d.slice(0, 10)).sort().pop() ?? null;
-const earliest = (dates: Array<string | null | undefined>): string | null => dates.filter(isIsoDate).map((d) => d.slice(0, 10)).sort()[0] ?? null;
 
 /**
  * Catégorie TCO d'une Opération. Lot 83D (CDC v5 §18.4, AC39) : plus
@@ -712,16 +744,42 @@ export function computeTco(input: TcoInput): TcoResult {
     }
   }
 
-  // Acquisition : date réelle (achat du bien consolidé, sinon fiche) — jamais la date d'ajout.
-  const achatsDates = ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status === 'REALIZED' && !achatEquipement(o) && (!prix || achatsDuBien.has(o.id) || !achatsDuBien.size));
-  const dateAchatOp = earliest(achatsDates.map((o) => o.realizedDate ?? o.startDate));
-  const start = dateAchatOp ?? (isIsoDate(input.assetAcquisitionDate) ? input.assetAcquisitionDate.slice(0, 10) : null);
+  // ── Lot 107C : date de départ = date d'achat DU bien (`./acquisition-start`) ──
+  // Date canonique humaine prioritaire ; sinon l'Opération qui EST l'achat du bien (identité établie ci-dessus,
+  // date de réalisation seule) ; contradiction sans autorité → indéterminée. Jamais la plus ancienne ACQUISITION,
+  // jamais `startDate`, jamais la date d'ajout. L'ancienne règle n'est plus que restituée (`legacyDate`, diagnostic).
+  const acquisitionsDuBien = ops.filter((o) => o.typeCode === 'ACQUISITION' && o.status !== 'CANCELLED');
+  const sansCout = (o: TcoOperation) => !o.components.some((x) => x.kind === 'REALIZED_COST');
+  const achatProuve = (o: TcoOperation) => !!o.userLinked || (o.sourceKinds ?? []).includes('ASSET_DATA') || o.documents.some((d) => preuves.has(d.fileId));
+  const roleAchat = (o: TcoOperation): AcquisitionOperationRole => {
+    // Achat d'un équipement (cible) ou rattaché à un équipement du bien sans preuve qu'il soit l'achat du bien : jamais sa date.
+    if (achatEquipement(o) || (o.equipmentLinked && !achatProuve(o))) return 'EQUIPMENT';
+    if (achatsDuBien.has(o.id)) return 'ASSET_PURCHASE';
+    if (o.assetIds.some((a) => a !== input.assetId)) return 'MULTI_ASSET';
+    if (!sansCout(o)) return 'OTHER_PURCHASE';
+    // Acquisition sans montant : l'achat du bien seulement si elle est la seule du bien, rattachée à lui seul, et
+    // fondée sur la fiche ou rattachée par l'utilisateur — sinon rien ne l'établit.
+    const seule = acquisitionsDuBien.filter((x) => !achatEquipement(x) && !x.equipmentLinked).length === 1;
+    return seule && (o.userLinked || (o.sourceKinds ?? []).includes('ASSET_DATA')) ? 'ASSET_PURCHASE' : 'UNQUALIFIED';
+  };
+  const acquisitionStart = resolveAcquisitionStart({
+    today: input.today, disposalDate: dateCession, acquisitionExpected: input.acquisitionExpected !== false,
+    canonical: typeof input.assetAcquisitionDate === 'string' && input.assetAcquisitionDate.trim()
+      ? { ...(input.assetAcquisitionDateMeta ?? {}), raw: input.assetAcquisitionDate } : null,
+    operations: acquisitionsDuBien.map((o) => ({
+      id: o.id, label: o.label, status: o.status, realizedDate: o.realizedDate, startDate: o.startDate, role: roleAchat(o),
+      strongProof: achatProuve(o),
+      legacyEligible: !achatEquipement(o) && (!prix || achatsDuBien.has(o.id) || !achatsDuBien.size),
+    })),
+  });
+  const start = acquisitionStart.date;
   // Lot 81D : date fournie mais impossible (29/02/2025) — jamais normalisée ni remplacée par une autre date.
-  const startRejected = !start && input.assetAcquisitionDate && !isIsoDate(input.assetAcquisitionDate) ? input.assetAcquisitionDate : null;
+  const startRejected = acquisitionStart.rejected;
   const end = dateCession ?? input.today;
   // Lot 81D : date d'acquisition COHÉRENTE (ni future, ni postérieure à la cession) — seule utilisée pour dater l'achat.
   const startCoherent = start && start <= input.today && start <= end ? start : null;
-  if (!start && !startRejected) warnings.add('ACQUISITION_DATE_MISSING');
+  if (acquisitionStart.status === 'UNDETERMINED') warnings.add('ACQUISITION_DATE_UNDETERMINED');
+  else if (!start && !startRejected) warnings.add('ACQUISITION_DATE_MISSING');
   else if (!startCoherent) warnings.add('ACQUISITION_DATE_INCOHERENT');
 
   const assetLineId = `asset:${input.assetId}:acquisitionPrice`;
@@ -1055,14 +1113,16 @@ export function computeTco(input: TcoInput): TcoResult {
     'PRESUMED_DUPLICATES', 'UNJUSTIFIED_AMOUNTS', 'STATUS_CONTRADICTIONS'] as const)
     .some((w) => warnings.has(w));
   const status: ReadStatus = !input.readComplete ? 'PARTIAL'
-    : (!totals.complete || docIncomplet || warnings.has('ACQUISITION_DATE_MISSING') || warnings.has('ACQUISITION_DATE_INCOHERENT') || warnings.has('DISPOSAL_PRICE_MISSING') || warnings.has('DISPOSAL_DATE_MISSING')) ? 'INCOMPLETE' : 'COMPLETE';
+    : (!totals.complete || docIncomplet || warnings.has('ACQUISITION_DATE_MISSING') || warnings.has('ACQUISITION_DATE_INCOHERENT') || warnings.has('ACQUISITION_DATE_UNDETERMINED') || warnings.has('DISPOSAL_PRICE_MISSING') || warnings.has('DISPOSAL_DATE_MISSING')) ? 'INCOMPLETE' : 'COMPLETE';
 
   const acquisitionCents = postes.get('ACQUISITION')?.costsCents ?? 0;
   const period: TcoResult['period'] = {
-    start, startSource: dateAchatOp ? 'OPERATION' : start ? 'ASSET_DATA' : null,
+    start, startSource: acquisitionStart.basis === 'OPERATION' ? 'OPERATION' : start ? 'ASSET_DATA' : null,
     end, endSource: dateCession ? (dateCessionOp ? 'OPERATION' : 'ASSET_DATA') : 'TODAY',
     days: start ? daysInclusive(start, end) : null,
     startRejected,
+    // Lot 107C : état de la résolution, fondement et nature (achat / début de possession) — libellés de la fiche.
+    startStatus: acquisitionStart.status, startBasis: acquisitionStart.basis, startKind: acquisitionStart.kind,
   };
 
   const parIdLigne = new Map<string, TcoEconomicLine[]>();
@@ -1073,6 +1133,7 @@ export function computeTco(input: TcoInput): TcoResult {
     status,
     disposed,
     period,
+    acquisitionStart,
     summary: {
       cumulativeCostCents: cumul, acquisitionCents, additionalCostsCents: totals.costsEurMinor - acquisitionCents, acquisitionStatus,
       currentValue: disposed ? null : valeur, netEstimatedCents: netEstime, netFinalCents: netFinal,

@@ -78,7 +78,7 @@ export function BottomNavigation({ toProcessCount }: { toProcessCount?: number |
       {/* Lot 34 (point 8) : le bandeau (dégradé + marges) laisse passer les
           touchers — seuls le « + » et la barre les captent. Il recouvrait
           la flèche « Retour en haut », dont le clic ne faisait rien. */}
-      <div data-mobile-bottom-nav className="pointer-events-none fixed inset-x-0 bottom-0 z-50 bg-gradient-to-t from-[color:var(--bg-page)] via-[color:var(--bg-page)] via-60% to-transparent px-3.5 pb-[max(20px,env(safe-area-inset-bottom))] pt-2 md:hidden">
+      <div data-mobile-bottom-nav className="pointer-events-none fixed inset-x-0 bottom-0 z-50 bg-gradient-to-t from-[color:var(--bg-page)] via-[color:var(--bg-page)] via-60% to-transparent px-3.5 pb-[max(20px,var(--vb-safe-bottom))] pt-2 md:hidden">
         <div className="flex flex-col items-center">
           {/* « + » détaché, au-dessus de la barre, centré (2b). */}
           <button

@@ -185,7 +185,8 @@ export interface GenerationRow {
   targetId: number | null;
   targetAccountId: number | null;
   perimeter: Record<string, unknown>;
-  status: ExtractionStatus | 'RUNNING';
+  /** Lot 107G : QUEUED / CANCELLED (diagnostics durables) s'ajoutent. */
+  status: ExtractionStatus | 'RUNNING' | 'QUEUED' | 'CANCELLED';
   /** RUNNING depuis plus de `STALE_RUNNING_MS` : interrompue (processus arrêté), jamais complète. */
   interrupted: boolean;
   snapshotAt: string | null;
@@ -194,6 +195,11 @@ export interface GenerationRow {
   batches: number | null;
   bytes: number | null;
   files: number | null;
+  /**
+   * Bilan par section ou fichier — LOURD (un élément par fichier d'un
+   * diagnostic global) : rendu seulement pour UNE génération (`id`), jamais
+   * dans la liste (lot 107G : cause du 502 de « Générations d'export »).
+   */
   sections: unknown[];
   error: string | null;
   fileName: string | null;
@@ -202,40 +208,100 @@ export interface GenerationRow {
   /** Lot 82E : génération stockée (préfixe) et dernier signe de vie. */
   storagePrefix: string | null;
   heartbeatAt: string | null;
+  /** Lot 107G — diagnostics durables (null / défauts pour les autres générations ou sans migration 1035). */
+  phase: string | null;
+  progress: Record<string, unknown> | null;
+  attempt: number;
+  maxAttempts: number | null;
+  errorCode: string | null;
+  errorPhase: string | null;
+  errorAt: string | null;
+  parentId: string | null;
+  requestId: string | null;
+  buildCommit: string | null;
+  cancelRequested: boolean;
+  runStartedAt: string | null;
+  nextAttemptAt: string | null;
+  expiresAt: string | null;
+  purgedAt: string | null;
+  lockedUntil: string | null;
+  /** Bail expiré d'un travail RUNNING (processus arrêté) : repris ou close au prochain tour du worker. */
+  leaseExpired: boolean;
+  /** Worker (instance:processus), sans suffixe aléatoire. */
+  worker: string | null;
+  /** Historique des tentatives (détail d'UNE génération seulement). */
+  attemptsLog: unknown[];
 }
 
-/** Générations récentes (pagination technique : `pageSize` ≤ 100, toutes les pages accessibles). */
-export async function listGenerations(opts: { page?: number; pageSize?: number; kind?: ExportKind | null; now?: Date; id?: string | null } = {}): Promise<{ items: GenerationRow[]; total: number; page: number; pageSize: number }> {
+const LIGHT_COLUMNS = `id::text, kind, mode, admin_user_id, target_type, target_id, target_account_id, perimeter, status, snapshot_at, rows_expected, rows_exported,
+              batches, bytes, files, left(error, 1000) AS error, file_name, started_at, finished_at, storage_prefix, heartbeat_at`;
+const JOB_COLUMNS = `, phase, progress, attempt, max_attempts, error_code, error_phase, error_at, parent_id::text AS parent_id, request_id, build_commit,
+              cancel_requested, run_started_at, next_attempt_at, expires_at, purged_at, locked_until, locked_by`;
+
+/**
+ * Générations récentes (pagination technique : `pageSize` ≤ 100, toutes les pages accessibles).
+ *
+ * Lot 107G : liste LÉGÈRE — colonnes scalaires seulement (jamais `sections`,
+ * `resume_state` ni `attempts_log`, qui peuvent peser des mégaoctets par
+ * ligne pour un diagnostic global), erreur coupée à 1 000 caractères, aucun
+ * calcul à la volée. `id` : une seule génération, détail complet.
+ */
+export async function listGenerations(opts: { page?: number; pageSize?: number; kind?: ExportKind | null; now?: Date; id?: string | null; status?: string | null } = {}): Promise<{ items: GenerationRow[]; total: number; page: number; pageSize: number }> {
   const { readOnlyExecutor } = await import('@/services/business-operations/diagnostics/service');
   const pageSize = Math.min(100, Math.max(1, Math.floor(opts.pageSize ?? 20)));
   const page = Math.max(1, Math.floor(opts.page ?? 1));
   const now = (opts.now ?? new Date()).getTime();
+  const detail = !!opts.id;
   return readOnlyExecutor(async (q) => {
-    const where = `($1::text IS NULL OR kind = $1) AND ($2::uuid IS NULL OR id = $2::uuid)`;
-    const params = [opts.kind ?? null, opts.id ?? null];
+    const where = `($1::text IS NULL OR kind = $1) AND ($2::uuid IS NULL OR id = $2::uuid) AND ($3::text IS NULL OR status = $3)`;
+    const params = [opts.kind ?? null, opts.id ?? null, opts.status ?? null];
     const [c] = await q(`SELECT count(*)::int AS n FROM admin_export_generations WHERE ${where}`, params);
-    const rows = await q(
-      `SELECT id::text, kind, mode, admin_user_id, target_type, target_id, target_account_id, perimeter, status, snapshot_at, rows_expected, rows_exported,
-              batches, bytes, files, sections, error, file_name, started_at, finished_at, storage_prefix, heartbeat_at
+    const select = (job: boolean) => q(
+      `SELECT ${LIGHT_COLUMNS}${job ? JOB_COLUMNS : ''}${detail ? `, sections${job ? ', attempts_log' : ''}` : ''}
          FROM admin_export_generations WHERE ${where}
         ORDER BY started_at DESC, id LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, params);
+    // Migration 1035 absente (déploiement partiel) : la liste reste lisible, sans les champs des travaux durables.
+    const rows = await q('SAVEPOINT vb_list').then(() => select(true)).then(async (r) => { await q('RELEASE SAVEPOINT vb_list'); return r; }, async (e) => {
+      if ((e as { code?: string })?.code !== '42703') throw e;
+      await q('ROLLBACK TO SAVEPOINT vb_list');
+      return select(false);
+    });
     const iso = (v: unknown) => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
     const n = (v: unknown) => (v == null ? null : Number(v));
+    const obj = (v: unknown) => (v == null ? null : (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown>);
     return {
       total: Number(c?.n ?? 0), page, pageSize,
       items: rows.map((r) => {
         const startedAt = iso(r.started_at)!;
         const heartbeatAt = iso(r.heartbeat_at);
-        const interrupted = isInterrupted({ status: String(r.status), startedAt, heartbeatAt }, now);
+        const isJob = r.mode === 'job';
+        // Les travaux durables (107G) ont leur propre rattrapage persistant (bail) : jamais « interrompus » par calcul.
+        const interrupted = !isJob && isInterrupted({ status: String(r.status), startedAt, heartbeatAt }, now);
+        const lockedUntil = iso(r.locked_until);
+        const legacyDiag = interrupted && r.kind === 'TECH_DIAGNOSTIC';
+        const sections = detail && r.sections != null ? ((typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections) as unknown[]) : [];
         return {
           id: String(r.id), kind: r.kind as ExportKind, mode: String(r.mode), adminUserId: n(r.admin_user_id), targetType: r.target_type == null ? null : String(r.target_type),
-          targetId: n(r.target_id), targetAccountId: n(r.target_account_id), perimeter: (r.perimeter ?? {}) as Record<string, unknown>,
+          targetId: n(r.target_id), targetAccountId: n(r.target_account_id), perimeter: (obj(r.perimeter) ?? {}) as Record<string, unknown>,
           status: interrupted ? 'FAILED' : (String(r.status) as GenerationRow['status']), interrupted,
           snapshotAt: iso(r.snapshot_at), rowsExpected: n(r.rows_expected), rowsExported: n(r.rows_exported), batches: n(r.batches), bytes: n(r.bytes), files: n(r.files),
-          sections: Array.isArray(r.sections) ? r.sections : [],
-          error: interrupted ? 'génération interrompue (processus arrêté avant la fin) — relancer la génération' : (r.error == null ? null : String(r.error)),
+          sections: Array.isArray(sections) ? sections : [],
+          error: interrupted
+            ? (legacyDiag
+              ? 'génération interrompue (processus arrêté avant la fin) — ancien moteur : diagnostic produit dans la requête HTTP du processus web, arrêté (redémarrage, déploiement ou mémoire) avant sa clôture ; relancer la génération (désormais durable)'
+              : 'génération interrompue (processus arrêté avant la fin) — relancer la génération')
+            : (r.error == null ? null : String(r.error)),
           fileName: r.file_name == null ? null : String(r.file_name), startedAt, finishedAt: iso(r.finished_at),
           storagePrefix: r.storage_prefix == null ? null : String(r.storage_prefix), heartbeatAt,
+          phase: r.phase == null ? null : String(r.phase), progress: obj(r.progress), attempt: Number(r.attempt ?? 0), maxAttempts: n(r.max_attempts),
+          errorCode: legacyDiag ? 'LEGACY_HTTP_INTERRUPTED' : (r.error_code == null ? null : String(r.error_code)),
+          errorPhase: r.error_phase == null ? null : String(r.error_phase), errorAt: iso(r.error_at),
+          parentId: r.parent_id == null ? null : String(r.parent_id), requestId: r.request_id == null ? null : String(r.request_id),
+          buildCommit: r.build_commit == null ? null : String(r.build_commit), cancelRequested: r.cancel_requested === true,
+          runStartedAt: iso(r.run_started_at), nextAttemptAt: iso(r.next_attempt_at), expiresAt: iso(r.expires_at), purgedAt: iso(r.purged_at), lockedUntil,
+          leaseExpired: r.status === 'RUNNING' && !!lockedUntil && Date.parse(lockedUntil) < now,
+          worker: r.locked_by == null ? null : String(r.locked_by).split(':').slice(0, 2).join(':'),
+          attemptsLog: detail && r.attempts_log != null ? ((typeof r.attempts_log === 'string' ? JSON.parse(r.attempts_log) : r.attempts_log) as unknown[]) : [],
         };
       }),
     };

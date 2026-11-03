@@ -3561,6 +3561,10 @@ export const toProcessActions = pgTable('to_process_actions', {
    */
   triggerContextHash: text('trigger_context_hash'),
   triggerContext: jsonb('trigger_context'),
+  /** Lot 107D (migration 1025) : clés de CONTENU des preuves des propositions (indépendantes des identifiants). */
+  evidenceKeys: jsonb('evidence_keys'),
+  /** Lot 107D (migration 1025) : motif expliqué d'un nouvel arbitrage après une décision de l'utilisateur. */
+  reopenReason: jsonb('reopen_reason'),
 
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),

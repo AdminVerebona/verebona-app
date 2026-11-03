@@ -58,6 +58,7 @@ import { agendaHistoricalStatusCheck } from './checks/agenda-historical-status';
 import { documentPrimaryLinkCheck } from './checks/document-primary-link';
 // Lot 106A : représentations équivalentes d'un même fait réalisé, toutes origines (fin de registre).
 import { agendaEquivalentRepresentationsCheck } from './checks/agenda-equivalent-representations';
+import { priceMultiArticleCheck } from './checks/price-multi-article';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -123,6 +124,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   documentPrimaryLinkCheck,
   // Lot 106A (ticket « Agenda — doublons DPE non autoréparés ») : ajouté EN FIN de registre.
   agendaEquivalentRepresentationsCheck,
+  // Lot 107D (ticket « Draisienne : total multi-articles, arbitrage rouvert ») : ajouté EN FIN de registre.
+  priceMultiArticleCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

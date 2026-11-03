@@ -146,7 +146,8 @@ describe('L105D-U-COH — cohérence : ASSET_CREATED relayé, contrôle spécial
     expect(COHERENCE_BUSINESS_EVENTS.has('ASSET_CREATED')).toBe(true);
     const ids = COHERENCE_REGISTRY.map((c) => c.id);
     // Ajouté en fin au lot 105D ; seuls des contrôles plus récents le suivent (106A).
-    expect(ids.slice(ids.indexOf('COH-DOC-PRIMARY-LINK'))).toEqual(['COH-DOC-PRIMARY-LINK', 'COH-AGENDA-EQUIVALENT-REPRESENTATIONS']);
+    // Lot 107D : COH-PRICE-MULTI-ARTICLE ajouté en fin de registre.
+    expect(ids.slice(ids.indexOf('COH-DOC-PRIMARY-LINK'))).toEqual(['COH-DOC-PRIMARY-LINK', 'COH-AGENDA-EQUIVALENT-REPRESENTATIONS', 'COH-PRICE-MULTI-ARTICLE']);
     expect(ids.filter((x) => x === 'COH-DOC-PRIMARY-LINK')).toHaveLength(1);
     const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-DOC-PRIMARY-LINK')!;
     expect(c.triggers).toEqual(expect.arrayContaining(['ASSET_CREATED', 'ASSET_UPDATED', 'SOURCE_ANALYZED']));

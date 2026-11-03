@@ -192,6 +192,7 @@ export async function materializeAcquisitionPrices(p: { accountId: number; asset
     [p.accountId, p.assetId],
   ).catch(() => []);
 
+  const profils = new Map();
   for (const c of candidats) {
     const row: OperationCandidateRow = {
       id: Number(c.id), fileId: Number(c.file_id), analysisRunId: c.analysis_run_id == null ? null : Number(c.analysis_run_id),
@@ -200,6 +201,17 @@ export async function materializeAcquisitionPrices(p: { accountId: number; asset
     };
     const sel = selectAcquisitionPrice(row, { assetId: p.assetId, category: bien.category, equipmentIds: equipementsDuBien });
     if (!sel.ok) { out.skipped.push({ candidateId: row.id, reason: sel.reason }); continue; }
+    // Lot 107D (cause démontrée) : le coût TOTAL de l'Opération d'un ticket à plusieurs articles est le montant du
+    // panier, jamais le prix de l'article ciblé — aucune preuve de prix (la ligne de l'article reste seule juge).
+    {
+      const { loadReceiptProfile } = await import('../multi-article-evidence');
+      const { isBasketAmountOfMultiArticle } = await import('@/services/ai/source-analysis/projection/amount-roles');
+      const profil = await loadReceiptProfile(p.accountId, row.fileId, profils);
+      if (profil && isBasketAmountOfMultiArticle(profil, sel.amountMinor)) {
+        out.skipped.push({ candidateId: row.id, reason: 'BASKET_TOTAL_MULTI_ARTICLE' });
+        continue;
+      }
+    }
     // Provenance unique : ce document porte déjà une preuve ACTIVE du champ pour cette cible.
     const [deja] = await q<{ id: number; rule: string | null }>(
       `SELECT id, projection_rule AS rule FROM field_evidence

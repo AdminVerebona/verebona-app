@@ -43,6 +43,14 @@ export const NATIVE_PLUGINS = {
   share: 'Share',
   /** Plugin local de l'app iOS (ASWebAuthenticationSession) — mobile/ios/App/App/VerebonaAuthSession.swift. */
   authSession: 'VerebonaAuthSession',
+  /**
+   * Lot 107A : plugin local (mobile/ios/App/App/VerebonaBiometricState.swift,
+   * mobile/android/…/VerebonaBiometricStatePlugin.java) — empreinte de
+   * l'enrôlement biométrique, pour suspendre le déverrouillage quand les
+   * visages / doigts du téléphone changent. Absent des binaires antérieurs :
+   * le code partagé fonctionne sans (contrôle simplement non fait).
+   */
+  biometricState: 'VerebonaBiometricState',
 } as const;
 
 export type NativePluginName = typeof NATIVE_PLUGINS[keyof typeof NATIVE_PLUGINS];

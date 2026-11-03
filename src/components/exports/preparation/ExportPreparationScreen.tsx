@@ -506,7 +506,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
 
       {/* ── Actions fixes (mobile, PREP-MOB-004) ── */}
       {!['generating', 'generated_pdf', 'generated_zip', 'generated_partial', 'expired', 'file_deleted'].includes(state.status) && (
-        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-background px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3 lg:hidden">
+        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-background px-4 pb-[max(12px,var(--vb-safe-bottom))] pt-3 lg:hidden">
           <GenerateButtons state={state} onGenerate={onGenerate} onCancel={requestClose} layout="bar" />
         </div>
       )}

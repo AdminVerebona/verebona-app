@@ -1,49 +1,65 @@
 'use client';
 
 /**
- * Mon compte › Sécurité — bloc « Biométrie » (CDC 18 §27.3 ; CDC 12 AUTH-05,
- * AUTH-06, ACC-06 ; lot 97B). Affiché UNIQUEMENT dans l'application iOS /
- * Android (détection `lib/native/bridge`).
+ * Mon compte › Sécurité — réglage « Déverrouillage biométrique » (CDC 18
+ * §27.3 ; CDC 12 AUTH-05, AUTH-06, ACC-06 ; lot 97B, revu au lot 107A).
+ * Affiché UNIQUEMENT dans l'application iOS / Android.
  *
- *   · état RÉEL du téléphone, relu à l'ouverture et au retour dans l'app
- *     (biométrie configurée ou non, code du téléphone) ;
- *   · activer : une vérification Face ID / Touch ID / empreinte réussie est
- *     exigée (refus ou annulation : rien ne change) ; désactiver : immédiat ;
+ *   · PAR APPAREIL ET PAR COMPTE (lot 107A, #640) : le choix d'un compte ne
+ *     vaut jamais pour un autre compte du même téléphone ;
+ *   · état RÉEL du téléphone, relu à l'ouverture et au retour dans l'app :
+ *     jamais proposé / reporté / actif / indisponible / à réactiver ;
+ *   · activer (ou réactiver) : une vérification Face ID / Touch ID /
+ *     biométrie réussie est exigée (refus ou annulation : rien ne change) ;
+ *     désactiver : immédiat ;
  *   · AUCUN appel serveur : le choix reste sur ce téléphone et sert seulement
  *     à déverrouiller l'app. Il ne remplace jamais la confirmation d'identité
- *     de 5 minutes demandée pour les réglages de sécurité ;
+ *     de 5 minutes demandée pour les réglages de sécurité ; ce n'est pas une
+ *     double authentification ;
  *   · interrupteur serveur `biometrics` coupé : réglage indisponible.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 import { Switch } from '@/components/ui/switch';
+import { useSession } from '@/hooks/useSession';
 import { nativePlatform } from '@/lib/native/bridge';
-import { changeBiometrics, readBiometricSetting, type BiometricSetting } from '@/lib/native/app-lock';
+import {
+  BIOMETRIC_SHARED_DEVICE_NOTE, changeBiometrics, readBiometricSetting, type BiometricSetting,
+} from '@/lib/native/biometric-consent';
 import { nativeFeatureOn } from '@/lib/native/features';
+
+function capital(s: string): string {
+  return `${s.charAt(0).toUpperCase()}${s.slice(1)}`;
+}
 
 /** Texte d'état (pur, testé). */
 export function biometricsStatusText(s: BiometricSetting, featureOn: boolean): string {
   if (!featureOn) return 'Le déverrouillage biométrique est momentanément indisponible. L’application reste protégée par le code du téléphone.';
   if (!s.supported) return 'Ce téléphone ne permet pas à Verebona d’utiliser la biométrie.';
+  if (s.state === 'reactivate') {
+    return `À réactiver : les visages ou empreintes enregistrés dans ce téléphone ont changé. Réactivez l’option pour utiliser de nouveau ${s.label}.`;
+  }
   if (!s.available) {
-    return s.enabled
-      ? `La biométrie n’est plus configurée sur ce téléphone : le code du téléphone sera demandé pour déverrouiller Verebona. Réactivez ${s.label} dans les réglages du téléphone, ou désactivez cette option.`
+    return s.stored === 'active'
+      ? `${capital(s.label)} n’est plus disponible sur ce téléphone : le code du téléphone sera proposé pour déverrouiller Verebona. Réactivez ${s.label} dans les réglages du téléphone, ou désactivez cette option.`
       : 'Aucune biométrie n’est configurée sur ce téléphone. Ajoutez-en une dans les réglages du téléphone pour utiliser cette option.';
   }
-  return s.enabled
-    ? `Activée : ${s.label} déverrouille Verebona sur ce téléphone.`
-    : `Désactivée : le code du téléphone est demandé pour déverrouiller Verebona.`;
+  return s.state === 'active'
+    ? `Activé : ${s.label} déverrouille Verebona sur ce téléphone.`
+    : 'Désactivé : le code du téléphone est demandé pour déverrouiller Verebona.';
 }
 
 export function BiometricsBlock() {
+  const { user } = useSession();
+  const userId = user?.id ?? null;
   const [setting, setSetting] = useState<BiometricSetting | null>(null);
   const [busy, setBusy] = useState(false);
   const featureOn = nativeFeatureOn('biometrics');
 
   const reload = useCallback(async () => {
-    setSetting(await readBiometricSetting(nativePlatform()));
-  }, []);
+    setSetting(await readBiometricSetting(nativePlatform(), userId, featureOn));
+  }, [userId, featureOn]);
 
   useEffect(() => {
     void reload();
@@ -54,12 +70,13 @@ export function BiometricsBlock() {
   }, [reload]);
 
   const toggle = async (next: boolean) => {
-    if (busy || !setting) return;
+    if (busy || !setting || userId === null) return;
     setBusy(true);
     try {
-      const r = await changeBiometrics(next);
-      if (r === 'enabled') toast.success(`${setting.label.charAt(0).toUpperCase()}${setting.label.slice(1)} déverrouillera Verebona sur ce téléphone.`);
-      else if (r === 'disabled') toast.success('Déverrouillage biométrique désactivé sur ce téléphone.');
+      const r = await changeBiometrics(next, userId);
+      if (r === 'enabled') toast.success(`${capital(setting.label)} déverrouillera Verebona sur ce téléphone.`);
+      // Désactivation : l'interrupteur relu montre l'état ; pas de toast de confirmation redondant (107B).
+      else if (r === 'disabled') { /* état visible sur l'interrupteur */ }
       else if (r === 'refused') toast.message('Vérification non aboutie : rien n’a été modifié.');
       else if (r === 'unavailable') toast.error('Aucune biométrie n’est utilisable sur ce téléphone pour le moment.');
       else toast.error('Le réglage n’a pas pu être enregistré sur ce téléphone. Réessayez.');
@@ -69,18 +86,18 @@ export function BiometricsBlock() {
     }
   };
 
-  if (!setting) {
+  if (!setting || userId === null) {
     return <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="w-4 h-4 animate-spin" />Lecture des réglages du téléphone…</div>;
   }
 
-  // Désactiver reste toujours possible ; activer exige une biométrie utilisable.
-  const canToggle = featureOn && setting.supported && (setting.enabled || setting.available);
-  const checked = setting.enabled && featureOn;
+  // Désactiver reste toujours possible ; activer / réactiver exige une biométrie utilisable.
+  const checked = setting.state === 'active';
+  const canToggle = featureOn && setting.supported && (setting.stored === 'active' || setting.available);
   return (
-    <div className="space-y-2" data-testid="biometrics-block">
+    <div className="space-y-2" data-testid="biometrics-block" data-state={setting.state}>
       <div className="flex items-start justify-between gap-3">
         <label htmlFor="biometrics-switch" className="min-w-0 text-sm">
-          <span className="block font-medium text-[color:var(--text-primary)]">Déverrouiller avec {setting.label}</span>
+          <span className="block font-medium text-[color:var(--text-primary)]">Déverrouillage biométrique</span>
           <span className="block text-[color:var(--text-muted)]" data-testid="biometrics-status">{biometricsStatusText(setting, featureOn)}</span>
         </label>
         <Switch
@@ -88,12 +105,12 @@ export function BiometricsBlock() {
           checked={checked}
           disabled={!canToggle || busy}
           onCheckedChange={(v) => void toggle(v)}
-          aria-label={`Déverrouiller avec ${setting.label}`}
+          aria-label={`Déverrouillage biométrique avec ${setting.label}`}
         />
       </div>
       <p className="text-xs text-[color:var(--text-muted)]">
-        Ce réglage ne concerne que ce téléphone. Verebona ne reçoit jamais vos données biométriques, et la biométrie ne remplace
-        pas la confirmation d’identité demandée pour les réglages de sécurité.
+        Ce réglage ne concerne que ce téléphone et votre compte. {BIOMETRIC_SHARED_DEVICE_NOTE} Verebona ne reçoit jamais vos
+        données biométriques, et la biométrie ne remplace pas la confirmation d’identité demandée pour les réglages de sécurité.
       </p>
     </div>
   );

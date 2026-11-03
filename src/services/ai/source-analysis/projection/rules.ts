@@ -111,6 +111,21 @@ export const PROJECTION_RULES = {
    * sans date d'acquisition, sans changer le statut de l'Opération.
    */
   PROPERTY_EVIDENCE_WITHOUT_REALIZATION: 'PROPERTY_EVIDENCE_WITHOUT_REALIZATION',
+  /**
+   * Lot 107D : montant de TRANSACTION (total, sous-total, paiement, somme des
+   * lignes) d'un justificatif à plusieurs articles, annoncé comme prix d'un
+   * bien ou d'un équipement, sans être le montant d'aucune ligne — retiré
+   * des preuves canoniques (connaissance générique), jamais le prix d'un
+   * article identifié (`amount-roles.ts`).
+   */
+  ACQUISITION_PRICE_BASKET_TOTAL: 'ACQUISITION_PRICE_BASKET_TOTAL',
+  /**
+   * Lot 107D : prix d'acquisition tiré de LA ligne du justificatif qui
+   * désigne l'objet (désignation, marque / modèle / référence), quand T1 n'a
+   * produit aucun fait d'achat par ligne : montant de ligne, net d'une remise
+   * de ligne explicite, ou prix unitaire écrit — abstention sinon.
+   */
+  PURCHASE_LINE_ATTRIBUTED: 'PURCHASE_LINE_ATTRIBUTED',
 } as const;
 export type ProjectionRuleCode = (typeof PROJECTION_RULES)[keyof typeof PROJECTION_RULES];
 

@@ -310,6 +310,16 @@ export function historyAnswer(a: AssetRow, entries: AssetHistoryEntry[], theme: 
 }
 
 /**
+ * Lot 107C — point de départ cité par T2 : date d'achat du bien retenue par le
+ * moteur TCO (`period.start`, `startKind`), jamais recalculée ; location, prêt,
+ * don : début de la possession.
+ */
+function depuisAchat(t: import('@/services/business-operations/tco/model').TcoResult): string {
+  if (!t.period.start) return '';
+  return t.period.startKind === 'POSSESSION' ? `, depuis le début de la possession le ${formatDateFr(t.period.start)}` : `, depuis l’achat du bien le ${formatDateFr(t.period.start)}`;
+}
+
+/**
  * Lot 54D (§4.3) — réponse « coût de possession » : chiffres du service TCO
  * (moteur partagé), jamais recalculés ici. La source porte chaque montant cité
  * (vérifiable par `claim-support`) ; une couverture incomplète est dite.
@@ -319,7 +329,9 @@ export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-
   if (t.reductionsCents) postes.push(`avoirs − ${formatEur(t.reductionsCents)}`);
   if (t.refundsCents) postes.push(`remboursements − ${formatEur(t.refundsCents)}`);
   if (t.indemnitiesCents) postes.push(`indemnités − ${formatEur(t.indemnitiesCents)}`);
-  const phrases = [`Coût de possession de ${a.name} : coût cumulé documenté ${formatEur(t.summary.cumulativeCostCents)}${postes.length ? ` (${postes.join(', ')})` : ''}${t.period.start ? `, depuis le ${formatDateFr(t.period.start)}` : ''}.`];
+  const phrases = [`Coût de possession de ${a.name} : coût cumulé documenté ${formatEur(t.summary.cumulativeCostCents)}${postes.length ? ` (${postes.join(', ')})` : ''}${depuisAchat(t)}.`];
+  // Lot 107C : même date de départ que la fiche (`period.start`, date d'achat du bien) ; contradiction sans autorité dite.
+  if (t.period.startStatus === 'UNDETERMINED') phrases.push('La date d’achat du bien est incertaine (plusieurs dates possibles se contredisent) : le coût moyen annuel n’est pas calculé.');
   if (t.disposed) {
     phrases.push(t.summary.netFinalCents != null
       ? `Après la vente (prix réalisé ${formatEur(t.disposal.realizedPriceCents ?? 0)}), coût net final : ${formatEur(t.summary.netFinalCents)}.`

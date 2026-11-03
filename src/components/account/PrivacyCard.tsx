@@ -50,7 +50,8 @@ export function PrivacyCard() {
     setSaving(true);
     try {
       await apiClient.put('/api/users/me/data-use', { optOut, channel: isNativeApp() ? 'mobile' : 'web' });
-      toast.success(optOut ? 'Opposition enregistrée.' : 'Opposition retirée.');
+      // Lot 107B : pas de toast de simple confirmation — l'interrupteur et la
+      // mention « Opposition enregistrée le … » relue du serveur font foi.
       await load();
     } catch (e) {
       toast.error((e instanceof ApiClientError && e.serverMessage) || 'Le réglage n’a pas pu être enregistré. Réessayez.');

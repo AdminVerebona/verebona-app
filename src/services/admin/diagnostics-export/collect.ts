@@ -69,7 +69,19 @@ interface GenerateOptions {
   partRows?: number;
   /** Lignes par lot (tests). */
   batchRows?: number;
+  /** Lot 107G : identifiant imposé (diagnostic durable : identifiant du travail). */
+  generationId?: string;
+  /** Lot 107G : délai par requête de la session (worker, hors requête HTTP). */
+  statementTimeoutMs?: number;
 }
+
+/**
+ * Lot 107G — lignes de traçabilité reprises dans `rapport.txt` (SYNTHÈSE
+ * lisible) : au-delà, le rapport le dit et renvoie au détail intégral
+ * (`tracabilite/montants.json`). Borne de MÉMOIRE du rapport, jamais une
+ * troncature de données : toutes les traces sont dans l'archive.
+ */
+export const DIAG_REPORT_TRACE_LINES = 5_000;
 
 const ids = (rows: Row[], k = 'id'): number[] => [...new Set(rows.map((r) => Number(r[k])).filter((n) => Number.isSafeInteger(n) && n > 0))];
 const N = (v: unknown) => Number(v ?? 0);
@@ -242,7 +254,7 @@ export interface DiagPlan {
  */
 export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: GenerateOptions): Promise<DiagPlan> {
   const now = (opts.now ?? (() => new Date()))();
-  const generationId = randomUUID();
+  const generationId = opts.generationId ?? randomUUID();
   const partRows = Math.max(1, opts.partRows ?? DIAG_LIMITS.partRows);
   const batchRows = Math.max(1, opts.batchRows ?? DIAG_LIMITS.batchRows);
   const { isSensitiveCanonicalKey } = await import('@/services/admin/account-data/dossier');
@@ -265,6 +277,7 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   const warnings: string[] = [];
   const unavailable: DiagUnavailable[] = [...per.missing];
   const traceLines: string[] = [];
+  let traceLinesOmitted = 0;
   const counts: Record<string, number> = {};
   let fatal: string | null = null;
   const fileSections = new Map<string, DiagSectionCode>();
@@ -428,7 +441,10 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   const writeTrace = async (w: (c: string) => Promise<void>, t: AmountTrace, first: boolean) => {
     const masked = M(t) as AmountTrace;
     await w(`${first ? '' : ','}\n  ${safeJson(masked)}`);
-    traceLines.push(...(maskForExport(traceReportLines(masked).join('\n'), maskOpts) as string).split('\n'));
+    const lines = (maskForExport(traceReportLines(masked).join('\n'), maskOpts) as string).split('\n');
+    // Lot 107G : mémoire du rapport bornée (synthèse) — le détail intégral reste dans tracabilite/montants.json.
+    if (traceLines.length + lines.length <= DIAG_REPORT_TRACE_LINES) traceLines.push(...lines);
+    else traceLinesOmitted += lines.length;
     nTraces++;
     if (t.rupture) nRuptures++;
     if (String(t.ligne.id ?? '').startsWith('c:')) {
@@ -629,6 +645,11 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
       ['Avertissements', warnings.length],
       ['Sections complètes', `${sections.filter((x) => x.status === 'COMPLETE').length} / ${sections.filter((x) => x.status !== 'NOT_APPLICABLE').length} (non applicables : ${sections.filter((x) => x.status === 'NOT_APPLICABLE').length})`],
     ];
+    if (traceLinesOmitted) {
+      traceLines.push('', `[synthèse] ${traceLinesOmitted} ligne(s) de traçabilité supplémentaires non reprises dans ce rapport (borne de lisibilité ${DIAG_REPORT_TRACE_LINES} lignes) : détail INTÉGRAL dans tracabilite/montants.json.`);
+      finalManifest.truncations = [...(finalManifest.truncations ?? []), `rapport.txt : synthèse limitée à ${DIAG_REPORT_TRACE_LINES} lignes de traçabilité (${traceLinesOmitted} non reprises) — aucune donnée manquante : tracabilite/montants.json est intégral.`];
+    }
+    finalManifest.parTable = tableManifest(infos, enginePart.couverture.horsFiltre, enginePart.exclusionsVolontaires.tables);
     finalReport = maskForExport(buildReportTextFromLines(finalManifest, summary, traceLines), maskOpts) as string;
     if (leaksSecretOrEmail(finalReport)) finalReport = maskText(finalReport);
     return finalManifest;
@@ -656,6 +677,67 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
   };
 }
 
+// ── Lot 107G : manifeste PAR TABLE ──────────────────────────────────────────
+
+const TABLE_PATH = /^donnees\/([a-z-]+)\/([a-z0-9_]+)(?:\.part-(\d{4}))?\.json$/;
+
+/** Bilan d'une table dans le manifeste (pur). */
+export interface DiagTableManifest {
+  table: string;
+  section: string;
+  /** EXPORTED : lignes dans l'archive ; EXCLUDED : exclue avec motif ; NOT_APPLICABLE : hors de ce filtre (motif). */
+  role: 'EXPORTED' | 'EXCLUDED' | 'NOT_APPLICABLE';
+  fichiers: string[];
+  /** Lignes citées par la fermeture transitive (`donnees/fermeture/`), en plus du filtre direct. */
+  fermeture: string[];
+  attendu: number | null;
+  exporte: number;
+  ecart: number | null;
+  statut: ExtractionStatus | 'EXCLUDED' | 'NOT_APPLICABLE';
+  erreurs: string[];
+  motif: string | null;
+  /** SHA-256 (contenu non compressé) de chaque fichier, dans l'ordre des parties. */
+  sha256: string[];
+}
+
+/**
+ * Manifeste par table (pur) : attendu (décompte dans l'instantané), exporté,
+ * écart, statut, exclusions motivées, empreintes. Une table dont un attendu
+ * n'est pas calculé n'est jamais COMPLETE (« n sur ? » interdit).
+ */
+export function tableManifest(
+  infos: readonly DiagFileInfo[], horsFiltre: ReadonlyArray<{ table: string; motif: string }>, exclues: ReadonlyArray<{ table: string; categorie: string; motif: string }>,
+): DiagTableManifest[] {
+  const by = new Map<string, DiagTableManifest>();
+  for (const f of infos) {
+    const m = TABLE_PATH.exec(f.path);
+    if (!m) continue;
+    const [, section, table] = m;
+    const closure = section === 'fermeture';
+    const t = by.get(table) ?? { table, section: closure ? (f.section ?? 'fermeture') : section, role: 'EXPORTED' as const, fichiers: [], fermeture: [], attendu: 0, exporte: 0, ecart: 0, statut: 'COMPLETE' as ExtractionStatus, erreurs: [], motif: null, sha256: [] };
+    if (!closure) t.section = section;
+    (closure ? t.fermeture : t.fichiers).push(f.path);
+    if (f.sha256) t.sha256.push(f.sha256);
+    t.exporte += f.count ?? 0;
+    if (f.expected === null || f.expected === undefined) t.attendu = null;
+    else if (t.attendu !== null) t.attendu += f.expected;
+    if (f.error) t.erreurs.push(`${f.path} : ${f.error}`);
+    if (f.status && f.status !== 'COMPLETE') t.statut = 'FAILED';
+    by.set(table, t);
+  }
+  for (const t of by.values()) {
+    // Un fichier en échec : FAILED si rien n'a été exporté, sinon PARTIAL (jamais COMPLETE).
+    if (t.statut === 'FAILED' && t.exporte > 0) t.statut = 'PARTIAL';
+    t.ecart = t.attendu === null ? null : t.attendu - t.exporte;
+    if (t.attendu === null && t.statut === 'COMPLETE') { t.statut = 'PARTIAL'; t.erreurs.push('attendu non calculé'); }
+    else if (t.ecart !== null && t.ecart !== 0 && t.statut === 'COMPLETE') t.statut = 'PARTIAL';
+  }
+  const out = [...by.values()];
+  for (const h of horsFiltre) if (!by.has(h.table)) out.push({ table: h.table, section: '', role: 'NOT_APPLICABLE', fichiers: [], fermeture: [], attendu: null, exporte: 0, ecart: null, statut: 'NOT_APPLICABLE', erreurs: [], motif: h.motif, sha256: [] });
+  for (const x of exclues) if (!by.has(x.table)) out.push({ table: x.table, section: '', role: 'EXCLUDED', fichiers: [], fermeture: [], attendu: null, exporte: 0, ecart: null, statut: 'EXCLUDED', erreurs: [], motif: `${x.categorie} — ${x.motif}`, sha256: [] });
+  return out.sort((a, b) => a.table.localeCompare(b.table));
+}
+
 // ── Exécutions ──────────────────────────────────────────────────────────────
 
 /** Ouvre la session, établit le plan, exécute `run`, ferme la session (place de génération réservée). */
@@ -664,7 +746,7 @@ export async function withDiagnosticPlan<T>(req: DiagRequest, opts: GenerateOpti
   const slot = tryAcquireExportSlot('TECH_DIAGNOSTIC');
   if (!slot) throw new DiagBusyError();
   const own = !opts.session;
-  const s = opts.session ?? await openReadSession().catch((e) => { slot.release(); throw e; });
+  const s = opts.session ?? await openReadSession({}, { statementTimeoutMs: opts.statementTimeoutMs }).catch((e) => { slot.release(); throw e; });
   try {
     const plan = await planDiagnostic(req, s, opts);
     return await run(plan, s);

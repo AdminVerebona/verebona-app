@@ -1,7 +1,7 @@
 "use client";
 
 import { ReactNode } from 'react';
-import { Toaster } from 'sonner';
+import { AppToaster } from '@/components/AppToaster';
 import { ScrollToTop } from '@/components/ScrollToTop';
 import { NavigationProgress } from '@/components/NavigationProgress';
 import { ServiceWorkerRegistration } from '@/components/ServiceWorkerRegistration';
@@ -35,7 +35,9 @@ export function ClientShell({ children }: { children: ReactNode }) {
           <NativeBridgeHost />
         </EntitlementsProvider>
       </SessionProvider>
-      <Toaster closeButton position="top-center" richColors />
+      {/* Lot 107B : conteneur de toasts sous la barre d'état et sous l'en-tête
+          (zones sûres partagées, voir AppToaster). */}
+      <AppToaster />
       {/* Lot 97 : application mobile native trop ancienne — écran bloquant (jamais dans un navigateur). */}
       <AppUpdateRequiredGate />
       <ScrollToTop />

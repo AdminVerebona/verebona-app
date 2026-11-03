@@ -36,6 +36,10 @@ import { scenario } from '../scenario';
 import { cand, cible, fh, operationsKit, ref } from '../datasets/operations-v1';
 import type { AccountRow } from '../factories';
 
+// Lot 107G : la génération synchrone dans la requête HTTP est retirée par défaut (410) ; ce scénario
+// vérifie le CONTENU du moteur par la route historique : activation explicite réservée aux tests.
+process.env.DIAG_SYNC_HTTP = 'on';
+
 type Json = Record<string, unknown>;
 
 scenario('L77C', 'BO Diagnostics techniques : périmètres, ZIP, traçabilité TCO Tikamoon, sécurité', ({ sql, make }) => {

@@ -35,6 +35,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
@@ -45,6 +46,7 @@ import type { OrderMode } from '@/services/to-process/priority';
 import { ActionCard, todoCardDomId, type ActionView } from './ActionCard';
 import { useToProcessResolution } from './useToProcessResolution';
 import { SaleDetailsDialog } from '@/components/assets/SaleDetailsDialog';
+import { consumeReturnState, saveReturnState, TO_PROCESS_LEAVING_EVENT, type ReturnState } from './return-state';
 
 /**
  * Ancienne préférence Cartes / Liste (§8.2, supprimée au lot 60A) : plus
@@ -71,6 +73,15 @@ interface PageResponse {
   shown: number;
 }
 
+/** Stockage de session de l'onglet (retour depuis une fiche, lot 107E), s'il est disponible. */
+function sessionStore(): Storage | null {
+  try {
+    return typeof window !== 'undefined' ? window.sessionStorage : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Carte ciblée par l'URL (`?todo=<publicId>`), lue côté client seulement. */
 function focusFromUrl(): string | null {
   if (typeof window === 'undefined') return null;
@@ -84,8 +95,14 @@ function focusFromUrl(): string | null {
 
 export function ToProcessQueue() {
   const { setBreadcrumbs } = useBreadcrumb();
-  // §8.2 / ATP-02 : la vue par défaut est « Par priorité » à chaque visite.
-  const [orderMode, setOrderMode] = useState<OrderMode>('BY_PRIORITY');
+  const router = useRouter();
+  // Lot 107E : retour depuis une fiche ouverte par un lien direct — état noté
+  // au départ, relu UNE fois (ce n'est pas une préférence mémorisée).
+  const retour = useRef<ReturnState | null | undefined>(undefined);
+  if (retour.current === undefined) retour.current = consumeReturnState(sessionStore());
+  // §8.2 / ATP-02 : la vue par défaut est « Par priorité » à chaque visite
+  // (un RETOUR depuis un lien direct reprend l'ordre que l'utilisateur avait).
+  const [orderMode, setOrderMode] = useState<OrderMode>(() => retour.current?.orderMode ?? 'BY_PRIORITY');
   const [page, setPage] = useState<PageResponse | null>(null);
   const [loading, setLoading] = useState(true);
   // Carte ciblée par son ID (mascotte) : positionnée et mise en évidence.
@@ -157,6 +174,40 @@ export function ToProcessQueue() {
       if (!el) return;
       el.scrollIntoView({ block: 'center', behavior: 'smooth' });
       el.querySelector<HTMLElement>('input, button:not([disabled])')?.focus({ preventScroll: true });
+    });
+  }, [page]);
+
+  // Lot 107E : un lien direct quitte la page (fiche d'un bien, fournisseur) :
+  // l'état de la file est noté pour le retour (écoute synchrone, avant la navigation).
+  useEffect(() => {
+    const onLeaving = (e: Event) => {
+      const d = (e as CustomEvent<{ cardId?: string; linkKey?: string }>).detail ?? {};
+      saveReturnState(sessionStore(), {
+        orderMode,
+        scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+        cardId: d.cardId ?? null,
+        linkKey: d.linkKey ?? null,
+      });
+    };
+    window.addEventListener(TO_PROCESS_LEAVING_EVENT, onLeaving);
+    return () => window.removeEventListener(TO_PROCESS_LEAVING_EVENT, onLeaving);
+  }, [orderMode]);
+
+  // Lot 107E : au retour, la carte revient à l'écran (sans mise en évidence)
+  // et le lien touché reprend le focus ; à défaut, la position de défilement.
+  useEffect(() => {
+    const r = retour.current;
+    if (!r || !page) return;
+    retour.current = null;
+    requestAnimationFrame(() => {
+      const card = r.cardId ? document.getElementById(todoCardDomId(r.cardId)) : null;
+      if (card) {
+        card.scrollIntoView({ block: 'center' });
+        const link = r.linkKey ? card.querySelector<HTMLElement>(`[data-card-link="${CSS.escape(r.linkKey)}"]`) : null;
+        link?.focus({ preventScroll: true });
+      } else {
+        window.scrollTo({ top: r.scrollY });
+      }
     });
   }, [page]);
 
@@ -263,6 +314,7 @@ export function ToProcessQueue() {
               onOpenTarget={openTarget}
               busy={busyId === action.publicId}
               focused={focusId === action.publicId}
+              navigate={(href) => router.push(href)}
               // Lot 34, point 11 : vignette du document / icône de la cible.
               visual
             />

@@ -24,7 +24,7 @@ import { CGUV_FULL_LABEL, legalPublicUrl } from '@/lib/legal/public-legal';
 import { LegalLink } from '@/components/legal/LegalLink';
 import type { ReacceptanceState } from '@/lib/legal/reacceptance-gate';
 
-const cadre = 'min-h-screen flex items-start md:items-center justify-center bg-[color:var(--bg-page)] p-4 md:p-6 pt-[max(16px,env(safe-area-inset-top))]';
+const cadre = 'min-h-screen flex items-start md:items-center justify-center bg-[color:var(--bg-page)] p-4 md:p-6 pt-[max(16px,var(--vb-safe-top))]';
 const carte = 'w-full max-w-lg space-y-5 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-5 md:p-6 shadow-relief-md';
 
 function dateFr(iso: string | null): string | null {

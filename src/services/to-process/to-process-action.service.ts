@@ -64,7 +64,11 @@ interface UpsertActionInput {
 export interface UpsertActionResult {
   status: 'CREATED' | 'UPDATED' | 'SKIPPED';
   /** Motif machine d'un SKIPPED, quand il y en a un. */
-  code?: 'NOT_APPLICABLE_UNCHANGED' | 'NO_REAL_ALTERNATIVE' | 'NO_LONGER_USEFUL';
+  code?: 'NOT_APPLICABLE_UNCHANGED' | 'NO_REAL_ALTERNATIVE' | 'NO_LONGER_USEFUL'
+    /** Lot 107D : même arbitrage déjà tranché par l'utilisateur, sans preuve nouvelle indépendante et fiable. */
+    | 'ALREADY_DECIDED';
+  /** Lot 107D : verdict de la mémoire des arbitrages (SAME_EVIDENCE, NEW_INDEPENDENT_EVIDENCE…). */
+  memory?: string;
   actionId?: number;
   priority?: ActionPriority;
   /** Action rétrogradée pour faire place à l'entrante (§9.3). */
@@ -216,6 +220,55 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
   const existing = actives.find((a) => a.actionKind === input.actionKind);
   const otherKind = actives.filter((a) => a.actionKind !== input.actionKind);
 
+  // ══════════════════════════════════════════════════════════════════════
+  // LOT 107D — DÉCISION DE L'UTILISATEUR PERSISTANTE (cible + propriété)
+  //
+  // Un arbitrage de DONNÉE déjà tranché par l'utilisateur (USER_ARBITRATED,
+  // USER_COMPLETED) n'est reproposé que sur une preuve NOUVELLE,
+  // INDÉPENDANTE (autre document) et FIABLE — jugée sur le CONTENU des
+  // preuves, jamais sur leurs identifiants (une réanalyse recrée les lignes).
+  // Sinon : rien n'est créé, et une carte rouverte à tort est close (tracée).
+  // ══════════════════════════════════════════════════════════════════════
+  let memoire: { infos: import('./arbitration-memory').EvidenceKeyInfo[]; verdict: import('./arbitration-memory').MemoryVerdict } | null = null;
+  // Cartes de DONNÉE produites par T3 (bien : pont de réconciliation ; équipement / pièce : champs d'entité) — leurs
+  // propositions citent des identifiants de `field_evidence` (les autres familles ont leur propre mémoire).
+  if (input.actionKind === 'ARBITRATE' && fieldKey && (rule.producer === 'RECONCILIATION_BRIDGE' || rule.producer === 'T3_ENTITY_FIELDS')) {
+    try {
+      const m = await import('./arbitration-memory');
+      const infos = await m.evidenceKeyInfos(input.accountId, m.proposalEvidenceIds(displayed));
+      const decision = await m.loadUserDecisionMemory(input.accountId, input.targetType, input.targetId, fieldKey);
+      memoire = { infos, verdict: m.judgeAgainstUserDecision(decision, infos) };
+    } catch (e) {
+      console.error('[to-process] mémoire des arbitrages illisible (comportement antérieur) :', (e as Error).message);
+    }
+  }
+  if (memoire && !memoire.verdict.reopen && memoire.verdict.code !== 'NO_USER_DECISION') {
+    const verdict = memoire.verdict;
+    if (existing) {
+      await db.transaction(async (tx) => {
+        const fermee = await tx.update(toProcessActions)
+          .set({ resolvedAt: now, resolutionReason: 'OBSOLETE' satisfies ResolutionReason, updatedAt: now })
+          .where(and(eq(toProcessActions.id, existing.id), isNull(toProcessActions.resolvedAt)))
+          .returning({ id: toProcessActions.id });
+        if (fermee.length) {
+          await tx.insert(toProcessActionEvents).values({
+            actionId: existing.id, accountId: input.accountId, event: 'OBSOLETE', targetType: existing.targetType, targetId: existing.targetId,
+            fieldKey: existing.fieldKey, details: { reason: 'ALREADY_DECIDED_SAME_EVIDENCE', memory: verdict.code, decidedActionId: verdict.decidedActionId, ruleCode: input.ruleCode },
+            createdAt: now,
+          });
+        }
+      });
+    }
+    return {
+      status: 'SKIPPED', code: 'ALREADY_DECIDED', memory: verdict.code, ...(existing ? { actionId: existing.id } : {}),
+      reason: 'Arbitrage déjà tranché par l’utilisateur, sans preuve nouvelle indépendante et fiable : aucune nouvelle carte (lot 107D).',
+    };
+  }
+  const memoireCles = memoire ? (await import('./arbitration-memory')).storedKeys(memoire.infos) : null;
+  const motifReouverture = memoire?.verdict.reopen
+    ? { code: memoire.verdict.code, decidedActionId: memoire.verdict.decidedActionId, sources: memoire.verdict.sources, at: now.toISOString() }
+    : null;
+
   // ── Problème déjà connu : mise à jour, jamais duplication (§7.3, AI-04) ──
   if (existing) {
     // Doublon historique d'une autre nature (antérieur à cette règle) :
@@ -249,6 +302,9 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
         dueDate: input.dueDate ?? existing.dueDate,
         triggerContextHash: contextHash,
         triggerContext: (input.triggerContext ?? null) as never,
+        // Lot 107D : clés de contenu des preuves ; motif de réouverture conservé (le premier fait foi).
+        ...(memoireCles ? { evidenceKeys: memoireCles as never } : {}),
+        ...(motifReouverture && !existing.reopenReason ? { reopenReason: motifReouverture as never } : {}),
         lastSeenAt: now,
         updatedAt: now,
       })
@@ -394,10 +450,20 @@ async function upsertActionOnce(input: UpsertActionInput): Promise<UpsertActionR
         cycleNumber: Number(maxCycle) + 1,
         triggerContextHash: contextHash,
         triggerContext: (input.triggerContext ?? null) as never,
+        ...(memoireCles ? { evidenceKeys: memoireCles as never } : {}),
+        ...(motifReouverture ? { reopenReason: motifReouverture as never } : {}),
         createdAt: now,
         updatedAt: now,
       })
       .returning({ id: toProcessActions.id });
+
+    // Lot 107D : nouvel arbitrage après une décision de l'utilisateur — motif expliqué et tracé.
+    if (motifReouverture) {
+      await tx.insert(toProcessActionEvents).values({
+        actionId: row.id, accountId: input.accountId, event: 'REOPENED_NEW_EVIDENCE', targetType: input.targetType, targetId: input.targetId,
+        fieldKey, details: { ...motifReouverture, ruleCode: input.ruleCode, cycleNumber: Number(maxCycle) + 1 }, createdAt: now,
+      });
+    }
 
     return row;
   });

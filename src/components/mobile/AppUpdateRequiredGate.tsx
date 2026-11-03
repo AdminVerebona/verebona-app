@@ -59,7 +59,7 @@ export function AppUpdateRequiredGate() {
       aria-modal="true"
       aria-labelledby="vb-update-title"
       className="fixed inset-0 z-[1000] flex items-center justify-center bg-background p-6"
-      style={{ paddingTop: 'max(1.5rem, env(safe-area-inset-top))', paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom))' }}
+      style={{ paddingTop: 'max(1.5rem, var(--vb-safe-top))', paddingBottom: 'max(1.5rem, var(--vb-safe-bottom))' }}
     >
       <div className="w-full max-w-sm space-y-4 text-center">
         <Download className="mx-auto h-10 w-10 text-[color:var(--accent)]" aria-hidden />

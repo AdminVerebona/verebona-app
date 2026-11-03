@@ -54,7 +54,7 @@ export function PwaRecovery() {
     <div
       role={bloquant ? 'alert' : 'status'}
       aria-live={bloquant ? 'assertive' : 'polite'}
-      className="fixed inset-x-3 bottom-[max(16px,env(safe-area-inset-bottom))] z-[10000] mx-auto flex max-w-lg flex-col gap-2 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 text-sm text-[color:var(--text-primary)] shadow-2xl md:bottom-6"
+      className="fixed inset-x-3 bottom-[max(16px,var(--vb-safe-bottom))] z-[10000] mx-auto flex max-w-lg flex-col gap-2 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 text-sm text-[color:var(--text-primary)] shadow-2xl md:bottom-6"
     >
       <p className="font-semibold">{msg.title}</p>
       <p className="text-[color:var(--text-muted)]">{msg.detail}</p>

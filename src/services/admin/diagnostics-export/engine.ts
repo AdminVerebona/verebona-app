@@ -549,7 +549,8 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
     await w(`${JSON.stringify({
       regle: 'Toute table est couverte (section) ou exclue avec motif (sécurité, contenu personnel) — registre src/services/admin/diagnostics-export/coverage.ts, vérifié par les tests de non-régression (Drizzle et base réelle). « Ensemble de l’application » exporte toutes les tables couvertes ; un filtre n’exporte qu’une partie de leurs lignes.',
       filtre: filterLabel,
-      couvertes: dumped.map((t) => ({ table: t, section: sectionOfTable(t), filtre: filterOf.get(t), globale: !!covOf(t)?.global, transversale: !!covOf(t)?.transversal, nonClassee: cls.unclassified.includes(t), colonnesExclues: meta.get(t)?.excluded ?? [], clePrimaire: meta.get(t)?.pk ?? [] })),
+      // Lot 107G : mapping table → section → fichier de l'archive (parties `…part-NNNN.json` au-delà du découpage).
+      couvertes: dumped.map((t) => ({ table: t, section: sectionOfTable(t), fichier: `donnees/${sectionOfTable(t)}/${t}.json`, filtre: filterOf.get(t), globale: !!covOf(t)?.global, transversale: !!covOf(t)?.transversal, nonClassee: cls.unclassified.includes(t), colonnesExclues: meta.get(t)?.excluded ?? [], clePrimaire: meta.get(t)?.pk ?? [] })),
       horsFiltre,
       exclues: cls.excluded,
       nonClassees: cls.unclassified,

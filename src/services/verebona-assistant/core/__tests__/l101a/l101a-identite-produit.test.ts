@@ -135,7 +135,9 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
       // Lot 105D : rattachement principal récupérable (fin de registre).
       'COH-DOC-PRIMARY-LINK',
       // Lot 106A : représentations Agenda équivalentes (fin de registre).
-      'COH-AGENDA-EQUIVALENT-REPRESENTATIONS']);
+      'COH-AGENDA-EQUIVALENT-REPRESENTATIONS',
+      // Lot 107D : prix multi-articles et arbitrages rouverts (fin de registre).
+      'COH-PRICE-MULTI-ARTICLE']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

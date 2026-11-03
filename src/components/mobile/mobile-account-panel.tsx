@@ -87,7 +87,7 @@ export function MobileAccountPanel({
             className="fixed inset-y-0 right-0 flex w-[86%] max-w-sm flex-col overflow-y-auto rounded-l-[24px] border-l border-[color:var(--border-subtle)] bg-[color:var(--sidebar)] shadow-[var(--vb-shadow-card)] [animation:vb-slide-in-right_.18s_cubic-bezier(.2,.7,.2,1)]"
           >
             {/* En-tête : cloche et fermeture, alignées à droite (lot 26). */}
-            <div className="flex items-center justify-end gap-1 px-3 pb-2 pt-[max(12px,env(safe-area-inset-top))]">
+            <div className="flex items-center justify-end gap-1 px-3 pb-2 pt-[max(12px,var(--vb-safe-top))]">
               {showBell && <NotificationBell />}
               <button
                 onClick={() => onClose()}
@@ -162,7 +162,7 @@ export function MobileAccountPanel({
                 (fenêtre Radix en z-50, panneau en z-[60]) tout en rendant le
                 reste de la page inerte (pointer-events: none sur <body>,
                 piège du focus) : « le clic ne fait rien et l'app freeze ». */}
-            <div className="border-t border-[color:var(--border-subtle)] p-3 pb-[max(12px,env(safe-area-inset-bottom))]">
+            <div className="border-t border-[color:var(--border-subtle)] p-3 pb-[max(12px,var(--vb-safe-bottom))]">
               {entries.filter((e) => e.id === 'logout').map((e) => (
                 <button
                   key={e.id}

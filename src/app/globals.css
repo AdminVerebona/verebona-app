@@ -145,6 +145,30 @@
   --vb-safe-right: max(var(--safe-area-inset-right, 0px), env(safe-area-inset-right, 0px));
   --vb-safe-bottom: max(var(--safe-area-inset-bottom, 0px), env(safe-area-inset-bottom, 0px));
   --vb-safe-left: max(var(--safe-area-inset-left, 0px), env(safe-area-inset-left, 0px));
+
+  /* Surfaces superposées (lot 107B, recette iOS du 02/11/2026 : le toast
+     « Vous recevrez nos actualités » s'affichait sous l'heure et sur le champ
+     « Demander à Verebona »). Bas de l'en-tête de la coquille connectée,
+     calculé à partir des MÊMES encarts `--vb-safe-*` (jamais une valeur par
+     modèle d'iPhone, jamais env() ajouté une seconde fois) :
+       · mobile : barre haute = max(8px, encart haut) + rangée du champ
+         (44 px) + marge basse (8 px) — DashboardLayout ;
+       · à partir de 768 px : encart haut (réservé par la coquille) + en-tête
+         de 60 px (TopBar).
+     Les messages flottants (sonner, ClientShell) se placent SOUS cette ligne :
+     ni sous la barre d'état ou la Dynamic Island, ni sur le champ Assistant,
+     ni sur l'avatar. Encarts latéraux pris en compte (paysage). */
+  --vb-mobile-topbar-row: 52px;
+  --vb-header-bottom: calc(max(8px, var(--vb-safe-top)) + var(--vb-mobile-topbar-row));
+  --vb-toast-top: calc(var(--vb-header-bottom) + 8px);
+  --vb-toast-bottom: calc(var(--vb-safe-bottom) + 16px);
+  --vb-toast-inline: calc(max(var(--vb-safe-left), var(--vb-safe-right)) + 16px);
+}
+
+@media (min-width: 48rem) {
+  :root {
+    --vb-header-bottom: calc(var(--vb-safe-top) + var(--app-header));
+  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -984,3 +1008,26 @@ html[data-theme="blue"] .vb-social-btn--apple:hover { filter: brightness(.92); }
   pointer-events: none;
 }
 .vb-auth-shell .min-h-screen { min-height: calc(100dvh - var(--vb-safe-top) - var(--vb-safe-bottom)); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Lot 107A — verrou de l'application native (Face ID automatique).
+   `data-vb-lock` sur <html> (script de démarrage `nativeLockBootScript`, puis
+   module d'exécution natif) : un voile opaque de la couleur de la page couvre
+   TOUT, et le contenu est retiré de l'arbre d'accessibilité (VoiceOver /
+   TalkBack ne lisent rien). La mise en page est conservée (position de
+   lecture intacte au déverrouillage). Seul l'écran de secours
+   (`data-vb-lock-screen`) reste visible, au-dessus du voile.
+   Jamais posé dans un navigateur ni dans la PWA.
+   ══════════════════════════════════════════════════════════════════════════ */
+html[data-vb-lock]::after {
+  content: "";
+  position: fixed; inset: 0; z-index: 2147483646;
+  background-color: var(--bg-page);
+}
+html[data-vb-lock] body > *:not([data-vb-lock-screen]) { visibility: hidden !important; }
+[data-vb-lock-screen] { position: fixed; z-index: 2147483647; }
+#vb-lock-rescue {
+  left: 50%; top: 50%; transform: translate(-50%, -50%);
+  padding: 12px 20px; border-radius: 12px; border: 1px solid var(--border-subtle);
+  background-color: var(--bg-card); color: var(--text-primary); font-size: 15px;
+}

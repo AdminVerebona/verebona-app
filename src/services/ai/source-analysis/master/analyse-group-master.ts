@@ -53,6 +53,17 @@ export interface MasterGroupAnalysis {
   valueDecisions?: PreparedValueDecision[];
 }
 
+/** Lot 107D — désignation des biens (nom, modèle, n° de série connus) et équipements (nom) du contexte. */
+function targetDescriptorsOf(ctx: AnalysisContext): NonNullable<import('../projection/document-projection').ProjectionContext['targetDescriptors']> {
+  const ids = new Map((ctx.assetIdentifiers ?? []).map((r) => [r.assetId, r.values]));
+  return {
+    assets: new Map(ctx.assets.map((a) => [a.id, {
+      name: a.name, model: ids.get(a.id)?.model ?? ids.get(a.id)?.modelName ?? null, serialNumber: ids.get(a.id)?.serialNumber ?? null,
+    }])),
+    equipments: new Map(ctx.equipments.map((e) => [e.id, { name: e.name }])),
+  };
+}
+
 export async function analyseGroupWithMaster(
   input: SourceInput,
   groupIndices: number[],
@@ -80,6 +91,8 @@ export async function analyseGroupWithMaster(
     documentAssetId: analysed.documentAssetId,
     assetFamilies,
     verifiedIds: analysed.verifiedIds,
+    // Lot 107D : désignations connues (attribution d'une ligne de ticket à plusieurs articles, jamais le total).
+    targetDescriptors: targetDescriptorsOf(ctx),
   });
   // Lot 101A (E, F, G) : identité produit — libellé générique ≠ modèle,
   // produit connexe d'une page fournisseur jamais rattaché, modèles

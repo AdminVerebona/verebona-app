@@ -90,7 +90,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   },
   {
     domain: 'biens', label: 'Biens',
-    checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-OPS-ACQUISITION-DATE', 'COH-MISSING-PROPERTIES'],
+    checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-OPS-ACQUISITION-DATE', 'COH-MISSING-PROPERTIES',
+      // Lot 107D : prix d'achat jamais alimenté par le total d'un justificatif à plusieurs articles (bien et équipements).
+      'COH-PRICE-MULTI-ARTICLE'],
     // Lot 85E : la date d'acquisition du bien est reportée sur l'achat réalisé resté sans date (et son événement de référence).
     // Lot 88B : toute propriété canonique VIDE du bien (prix d'acquisition compris) est reprise à partir des documents, Opérations,
     // montants, Agenda et preuves connus — arbitrage T3, écriture canonique ou abstention tracée (COH-MISSING-PROPERTIES).
@@ -112,6 +114,8 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       'COH-T1-KNOWLEDGE-CONSUMPTION',
       // Lot 100E (A7) : cartes devenues inutiles, TOUTES familles (contrat commun de publication).
       'COH-TODO-PUBLISHABILITY',
+      // Lot 107D : arbitrages déjà tranchés par l'utilisateur rouverts sans preuve nouvelle indépendante.
+      'COH-PRICE-MULTI-ARTICLE',
     ],
     // Lot 83E : la campagne de pertinence l76 est devenue COH-TODO-STALE-DECISIONS + COH-TODO-RELEVANCE-CARDS (moteur retiré).
     // Lot 85B : la campagne automatique 81A des faux arbitrages est devenue COH-TODO-T3-FIELD-CARDS (même réexamen).

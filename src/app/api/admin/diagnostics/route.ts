@@ -12,6 +12,12 @@ export const maxDuration = 900;
  * GET /api/admin/diagnostics — BO › Dashboard › Supervision › « Diagnostics »
  * (lots 77C, 81C, 88A, 91A).
  *
+ * Lot 107G : RETIRÉ par défaut (410 SYNC_GENERATION_DISABLED) — la génération
+ * dans la requête HTTP du processus web est la cause démontrée des
+ * générations « interrompues (processus arrêté avant la fin) ». Le BO passe
+ * par `POST /api/admin/diagnostics/jobs` (travail durable). Activation
+ * explicite `DIAG_SYNC_HTTP=on` réservée aux tests du moteur.
+ *
  * Lot 91A : UN diagnostic, UN moteur. `scope=global` (défaut) = « Ensemble de
  * l'application », niveau maximal (tous les comptes, tables transversales) ;
  * `scope=account|user|asset|document|operation` + `id` = FILTRE du même
@@ -50,6 +56,18 @@ export async function GET(request: NextRequest) {
     targetId: req?.id ?? null, result,
     details: { scope: req?.scope ?? sp.get('scope'), id: req?.id ?? null, reinforced: req?.reinforced ?? false, format: format ?? 'json', ...details },
   });
+
+  // Lot 107G : AUCUNE génération dans la requête HTTP. La production passe par un travail durable
+  // (POST /api/admin/diagnostics/jobs, worker, stockage). Ce chemin synchrone (même moteur) ne reste
+  // disponible que sur activation explicite `DIAG_SYNC_HTTP=on` (tests de non-régression du moteur,
+  // secours) — jamais en préproduction par défaut : c'est lui qui laissait des générations orphelines.
+  if (process.env.DIAG_SYNC_HTTP !== 'on') {
+    await audit('DENIED', null, { code: 'SYNC_GENERATION_DISABLED' });
+    return NextResponse.json({
+      error: 'La génération dans la requête HTTP est retirée : demandez un diagnostic durable (BO › Diagnostics › « Générer le diagnostic »).',
+      code: 'SYNC_GENERATION_DISABLED', jobsUrl: '/api/admin/diagnostics/jobs',
+    }, { status: 410, headers: NO_STORE });
+  }
 
   const parsed = parseDiagRequest(sp);
   if (!parsed.ok) {

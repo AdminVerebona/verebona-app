@@ -40,6 +40,7 @@ export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
   INVALID_DATES: 'Des dates impossibles ou incohérentes ont été ignorées : les dépenses concernées ne sont rattachées à aucune année.',
   ECONOMIC_DATE_UNDETERMINED: 'Des dépenses n’ont pas de date de paiement ou de facture établie : elles sont comptées dans le TCO total mais rattachées à aucune année (les montants par année peuvent être incomplets). Elles seront datées dès qu’un justificatif le permettra.',
   ACQUISITION_DATE_INCOHERENT: 'Date d’acquisition incohérente (impossible, future ou postérieure à la cession) : la moyenne annuelle n’est pas calculée.',
+  ACQUISITION_DATE_UNDETERMINED: 'Date d’achat du bien incertaine : plusieurs dates possibles se contredisent. Le TCO moyen annuel n’est pas calculé tant que la date d’achat n’est pas confirmée sur la fiche du bien.',
 };
 
 /** Lot 61 : libellé du motif d'une ligne économique (moteur ou qualification documentaire). */
@@ -130,7 +131,7 @@ export function tcoUserView(lines: readonly TcoEconomicLine[]): { lines: TcoUser
   return { lines: out.filter((l) => !hidden[l.id]), hidden };
 }
 
-export type TcoDto = Omit<TcoResult, 'entries' | 'lines' | 'citedOnlyDocuments'> & {
+export type TcoDto = Omit<TcoResult, 'entries' | 'lines' | 'citedOnlyDocuments' | 'acquisitionStart'> & {
   /** Lot 68 : lignes utiles à l'utilisateur pour CE bien (`tcoUserView`), les plus utiles d'abord. */
   lines: TcoUserLine[];
   /** Lot 68 : lignes examinées non montrées sur la fiche (autre bien, justificatif déjà porté) — visibles au BO. */
@@ -176,8 +177,9 @@ export function parseTcoLinesPage(params: { get(k: string): string | null }): { 
 }
 
 export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?: number; linesYear?: number } = {}): TcoDto {
-  // `citedOnlyDocuments` : diagnostic BO seulement (lot 68), jamais transmis à la fiche.
-  const { entries, lines: toutes, citedOnlyDocuments: _bo, ...rest } = t;
+  // `citedOnlyDocuments` : diagnostic BO seulement (lot 68), jamais transmis à la fiche. Lot 107C : idem pour la
+  // résolution complète de la date de départ (`acquisitionStart`) — la fiche reçoit `period.startStatus / startKind`.
+  const { entries, lines: toutes, citedOnlyDocuments: _bo, acquisitionStart: _depart, ...rest } = t;
   const vue = tcoUserView(toutes);
   // Lot 81D : détail d'une année = lignes retenues rattachées à cette année par le moteur (aucune règle ailleurs).
   const lines = page.linesYear != null ? vue.lines.filter((l) => RETENUE(l.status) && l.annualYear === page.linesYear) : vue.lines;

@@ -43,6 +43,10 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { adminUrlFromEnv, bootstrapE2eDatabase, dropE2eDatabase } from '../db-bootstrap';
 import { factories, type AccountRow, type Factories } from '../factories';
 
+// Lot 107G : la génération synchrone dans la requête HTTP est retirée par défaut (410) ; ce scénario
+// vérifie le CONTENU du moteur par la route historique : activation explicite réservée aux tests.
+process.env.DIAG_SYNC_HTTP = 'on';
+
 type Json = Record<string, any>;
 
 const ADMIN = adminUrlFromEnv();

@@ -6,5 +6,7 @@ import Capacitor
 class VerebonaBridgeViewController: CAPBridgeViewController {
     override open func capacitorDidLoad() {
         bridge?.registerPluginInstance(VerebonaAuthSessionPlugin())
+        // Lot 107A : empreinte de l'enrôlement Face ID / Touch ID (invalidation du déverrouillage).
+        bridge?.registerPluginInstance(VerebonaBiometricStatePlugin())
     }
 }

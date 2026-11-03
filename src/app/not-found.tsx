@@ -19,7 +19,7 @@ export default function NotFound() {
   }, [pathname]);
 
   return (
-    <main className="flex min-h-[100dvh] flex-col items-center justify-center bg-[color:var(--bg-page)] px-4 pb-[max(24px,env(safe-area-inset-bottom))] pt-[max(24px,env(safe-area-inset-top))] text-center">
+    <main className="flex min-h-[100dvh] flex-col items-center justify-center bg-[color:var(--bg-page)] px-4 pb-[max(24px,var(--vb-safe-bottom))] pt-[max(24px,var(--vb-safe-top))] text-center">
       <div className="flex w-full max-w-[420px] flex-col items-center gap-5 rounded-[16px] border border-[color:var(--border)] bg-[color:var(--bg-card)] px-6 pb-7 pt-8 md:px-8">
         <span className="relative flex items-center justify-center">
           <MascotPose pose="questioning" size={112} priority className="relative" />

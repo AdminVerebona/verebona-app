@@ -24,6 +24,11 @@
  *                        un an ». Pas de valeur si la date est absente,
  *                        impossible (29/02/2025), future ou postérieure à la
  *                        cession (motif distinct). Aucune borne d'ancienneté.
+ *                        Lot 107C : date de départ = date d'achat DU bien
+ *                        (`./acquisition-start` : saisie utilisateur
+ *                        prioritaire, jamais la plus ancienne ACQUISITION) ;
+ *                        contradiction sans autorité → non calculée
+ *                        (ACQUISITION_DATE_UNDETERMINED).
  *   Dépenses de l'année = Σ des coûts réalisés RETENUS datés dans l'année
  *                        civile (date réelle de la dépense) = montant BRUT ;
  *                        avoirs, remboursements et indemnités de l'année à
@@ -50,7 +55,8 @@ export const TCO_DAYS_PER_YEAR = 365.25;
 /** Lot 81D : libellé d'une moyenne calculée sur moins d'un an de possession. */
 const TCO_EXTRAPOLATED_LABEL = 'Valeur extrapolée sur une durée de possession inférieure à un an';
 
-type TcoAnnualAverageStatus = 'COMPUTED' | 'ACQUISITION_DATE_MISSING' | 'ACQUISITION_DATE_INCOHERENT';
+// Lot 107C : ACQUISITION_DATE_UNDETERMINED — dates d'achat du bien contradictoires sans autorité décisive.
+type TcoAnnualAverageStatus = 'COMPUTED' | 'ACQUISITION_DATE_MISSING' | 'ACQUISITION_DATE_INCOHERENT' | 'ACQUISITION_DATE_UNDETERMINED';
 /** Lot 81D : motif d'une date d'acquisition incohérente. */
 type TcoAcquisitionIncoherence = 'INVALID_DATE' | 'FUTURE' | 'AFTER_DISPOSAL';
 
@@ -96,6 +102,11 @@ export interface TcoAnnual {
     incoherence: TcoAcquisitionIncoherence | null;
     /** Le TCO total est incomplet (données manquantes) : la moyenne l'est aussi. */
     incomplete: boolean;
+    /**
+     * Lot 107C : nature de la date de départ — achat du bien (« Depuis l'achat
+     * du bien le… ») ou début de possession (location, prêt, don).
+     */
+    startKind: 'PURCHASE' | 'POSSESSION';
   };
   /** Années consultables (croissantes), de l'achat (ou de la première dépense datée) à la date de référence ou à la cession. */
   years: TcoYearExpenses[];
@@ -130,7 +141,7 @@ const anneeDe = (d: string) => Number(d.slice(0, 4));
 /** Calcul des indicateurs annuels à partir de la trace du moteur TCO (pure, testée L76G-* / L81D-*). */
 export function computeTcoAnnual(input: {
   lines: readonly TcoAnnualLine[];
-  period: { start: string | null; end: string; endSource: string; startRejected?: string | null };
+  period: { start: string | null; end: string; endSource: string; startRejected?: string | null; startStatus?: string; startKind?: 'PURCHASE' | 'POSSESSION' };
   cumulativeCostCents: number;
   status: ReadStatus;
   today: string;
@@ -149,6 +160,8 @@ export function computeTcoAnnual(input: {
   let incoherence: TcoAcquisitionIncoherence | null = null;
   let days: number | null = null;
   if (!start && (input.period.startRejected || brut)) { status = 'ACQUISITION_DATE_INCOHERENT'; incoherence = 'INVALID_DATE'; }
+  // Lot 107C : contradiction sans autorité — jamais une moyenne précise trompeuse, motif distinct de « date absente ».
+  else if (!start && input.period.startStatus === 'UNDETERMINED') status = 'ACQUISITION_DATE_UNDETERMINED';
   else if (!start) status = 'ACQUISITION_DATE_MISSING';
   else if (start > today) { status = 'ACQUISITION_DATE_INCOHERENT'; incoherence = 'FUTURE'; }
   else if (start > end) { status = 'ACQUISITION_DATE_INCOHERENT'; incoherence = 'AFTER_DISPOSAL'; }
@@ -168,6 +181,7 @@ export function computeTcoAnnual(input: {
     extrapolationLabel: extrapolated ? TCO_EXTRAPOLATED_LABEL : null,
     incoherence,
     incomplete: input.status !== 'COMPLETE',
+    startKind: input.period.startKind ?? 'PURCHASE',
   };
 
   // ── Dépenses par année civile (lignes RETENUES par le moteur, une fois chacune) ──

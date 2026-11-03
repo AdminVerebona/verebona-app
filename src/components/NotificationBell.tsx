@@ -660,8 +660,8 @@ export function NotificationBell() {
             aria-label="Notifications"
             className="fixed left-3 right-3 z-[61] bg-[color:var(--bg-card)] border border-[color:var(--border-subtle)] rounded-2xl shadow-relief-lg flex flex-col overflow-hidden"
             style={{
-              top: 'calc(env(safe-area-inset-top, 0px) + 4.5rem)',
-              maxHeight: 'calc(100dvh - env(safe-area-inset-top, 0px) - 4.5rem - 6.5rem)',
+              top: 'calc(var(--vb-safe-top) + 4.5rem)',
+              maxHeight: 'calc(100dvh - var(--vb-safe-top) - 4.5rem - 6.5rem)',
             }}
           >
             {contenuPanneau}

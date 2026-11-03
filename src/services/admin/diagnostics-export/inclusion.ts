@@ -34,8 +34,18 @@ export function canonical(v: Json): string {
 
 const TABLE_FILE = /^donnees\/([a-z-]+)\/([a-z0-9_]+)(?:\.part-\d{4})?\.json$/;
 const PART = /\.part-\d{4}(?=\.json$)/;
-const META_FILES = new Set(['manifeste.json', 'rapport.txt', 'LISEZMOI-ANALYSE.md', 'controle/references.json', 'couverture/tables.json']);
+// Lot 107G : fichiers d'intégrité de l'archive durable (empreintes des autres fichiers).
+const META_FILES = new Set(['manifeste.json', 'rapport.txt', 'LISEZMOI-ANALYSE.md', 'controle/references.json', 'couverture/tables.json', 'integrite.json', 'SHA256SUMS.txt']);
 const RESTRICTED_ANNEX = new Set(['ia/sorties-modele.json']);
+/**
+ * Lot 107G — journal VOLATIL : une génération encore en file ou en cours
+ * (dont le diagnostic durable lui-même, visible dans son propre instantané)
+ * évolue entre deux instantanés. Sa ligne doit exister au global ; ses
+ * valeurs ne sont comparées qu'une fois la génération terminée.
+ */
+const VOLATILE_ROWS: Readonly<Record<string, (r: Row) => boolean>> = {
+  admin_export_generations: (r) => r.status === 'QUEUED' || r.status === 'RUNNING',
+};
 
 const parse = (s: string | undefined): Json => (s === undefined ? undefined : JSON.parse(s));
 /** Contenu d'un fichier logique (toutes ses parties concaténées pour une liste). */
@@ -94,7 +104,7 @@ export function filteredIncludedInGlobal(filtered: Record<string, string>, globa
       let why = '';
       if (keys.length) {
         const g = (idx as Map<string, Row>).get(canonical(keys.map((k) => r[k])));
-        if (!g) { ok = false; why = 'ligne absente du global'; } else {
+        if (!g) { ok = false; why = 'ligne absente du global'; } else if (!VOLATILE_ROWS[t]?.(r)) {
           for (const [c, val] of Object.entries(r)) if (canonical(val) !== canonical(g[c])) { ok = false; why = `colonne ${c} différente`; break; }
         }
       } else if (!(idx as Set<string>).has(canonical(r))) { ok = false; why = 'ligne (sans clé primaire) absente du global'; }

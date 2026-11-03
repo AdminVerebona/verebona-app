@@ -9,6 +9,7 @@
  */
 import Link from 'next/link';
 import type { TcoEconomicLine, TcoResult } from '@/services/business-operations/tco/model';
+import { ACQUISITION_CANDIDATE_REASON_LABELS, ACQUISITION_START_BASIS_LABELS } from '@/services/business-operations/tco/acquisition-start';
 
 export interface TcoDiagnosticResponse {
   accountId: number;
@@ -46,6 +47,72 @@ function Badge({ l, labels }: { l: TcoEconomicLine; labels: TcoDiagnosticRespons
   );
 }
 
+const STATUT_DEPART: Record<string, string> = {
+  RESOLVED: 'Date retenue', MISSING: 'Date inconnue', UNDETERMINED: 'Indéterminée (contradiction sans autorité)', REJECTED: 'Date de la fiche impossible',
+};
+const CONTRADICTION: Record<string, string> = {
+  OPERATION_VS_USER_DATE: 'Achat daté autrement que la date saisie sur la fiche',
+  OPERATION_VS_AUTOMATIC_DATE: 'Achat daté autrement que la date automatique de la fiche',
+  OPERATIONS_DISAGREE: 'Plusieurs achats possibles aux dates différentes',
+};
+const ORIGINE_LUE: Record<string, string> = { key: 'clé canonique', alias: 'alias historique', column: 'colonne historique' };
+const jj = (d: string | null | undefined) => (d && /^\d{4}-\d{2}-\d{2}/.test(d) ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : '—');
+
+/**
+ * Lot 107C — diagnostic de la date de DÉPART du TCO : date retenue, source et
+ * origine, candidats (fiche, Opérations ACQUISITION) retenus ou rejetés avec
+ * leur motif, contradictions, réparation proposée, date que l'ancienne règle
+ * aurait retenue (avant / après). Desktop et mobile : liste empilée.
+ */
+function DepartDiagnostic({ t, accountId }: { t: TcoDiagnosticResponse['tco']; accountId: number }) {
+  const r = t.acquisitionStart;
+  if (!r) return null;
+  const c = r.canonical;
+  return (
+    <div className="rounded-lg border p-3 text-xs space-y-2" data-bo-tco-start={r.status}>
+      <p className="font-medium text-sm">Date de départ du TCO annuel</p>
+      <p>
+        <span className="font-medium">{STATUT_DEPART[r.status] ?? r.status}</span>
+        {r.date ? <> : {jj(r.date)}</> : null}
+        {r.basis ? <> · {ACQUISITION_START_BASIS_LABELS[r.basis]}</> : null}
+        {r.operationId ? <> · <Link className="underline" href={`/admin/operations/${r.operationId}?accountId=${accountId}`}>Opération #{r.operationId}</Link></> : null}
+        {` · ${r.kind === 'POSSESSION' ? 'début de possession (aucun achat)' : 'achat du bien'}`}
+      </p>
+      {c && (
+        <p className="text-muted-foreground break-words" data-bo-tco-start-canonical>
+          Fiche : « {c.raw} » · origine {c.origin}{c.human ? ' (saisie humaine, prioritaire)' : ' (automatique)'} · lue depuis {ORIGINE_LUE[c.from ?? 'key'] ?? c.from}{c.fromName ? ` (${c.fromName})` : ''}
+          {c.lastWrite ? ` · dernière écriture : ${c.lastWrite.value ?? '—'} (${c.lastWrite.origin}, ${c.lastWrite.sourceType ?? 'source inconnue'}${c.lastWrite.sourceId ? ` #${c.lastWrite.sourceId}` : ''}, ${c.lastWrite.at.slice(0, 16)})` : ' · aucune écriture journalisée (valeur historique)'}
+        </p>
+      )}
+      {r.legacyDate !== r.date && (
+        <p className="text-[color:var(--text-warning-soft)]" data-bo-tco-start-legacy>Ancienne règle (plus ancienne acquisition) : {jj(r.legacyDate)} — date retenue désormais : {jj(r.date)}.</p>
+      )}
+      {r.contradictions.length > 0 && (
+        <ul className="list-disc pl-5 space-y-0.5 text-[color:var(--text-warning-soft)]" data-bo-tco-start-contradictions>
+          {r.contradictions.map((x, i) => (
+            <li key={i} className="break-words">{CONTRADICTION[x.code] ?? x.code} : {x.dates.map(jj).join(' / ')}{x.operationIds.length ? ` (Opération(s) #${x.operationIds.join(', #')})` : ''} — {x.resolvedBy === 'USER_AUTHORITY' ? 'tranchée par la saisie de l’utilisateur' : x.resolvedBy === 'PROOF' ? 'tranchée par la preuve de l’achat' : 'non tranchée'}</li>
+          ))}
+        </ul>
+      )}
+      {r.repair && (
+        <p data-bo-tco-start-repair>Réparation proposée (contrôle COH-OPS-ACQUISITION-DATE) : {r.repair.kind === 'ENRICH_CANONICAL' ? 'renseigner' : 'corriger la valeur automatique de'} la date d’achat de la fiche avec {jj(r.repair.value)} (Opération #{r.repair.operationId}).</p>
+      )}
+      {r.candidates.length > 0 && (
+        <ul className="space-y-1" data-bo-tco-start-candidates>
+          {r.candidates.map((x, i) => (
+            <li key={`${x.kind}:${x.operationId ?? i}`} className="rounded border p-2 break-words" data-bo-tco-start-candidate={x.reason}>
+              <span className="font-medium">{x.kind === 'CANONICAL' ? 'Fiche du bien' : <>Opération <Link className="underline" href={`/admin/operations/${x.operationId}?accountId=${accountId}`}>#{x.operationId}</Link> · {x.label}</>}</span>
+              {' · '}{x.date ? jj(x.date) : x.rawDate ? `« ${x.rawDate} »` : 'sans date'}{x.dateField ? ` (${x.dateField})` : ''}
+              {x.role ? ` · rôle ${x.role}` : ''}{x.strongProof ? ' · achat prouvé' : ''}
+              <p className={x.accepted ? 'text-[color:var(--text-success)]' : 'text-muted-foreground'}>{ACQUISITION_CANDIDATE_REASON_LABELS[x.reason] ?? x.reason}</p>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
   const t = data.tco;
   const { labels } = data;
@@ -65,6 +132,8 @@ export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
       {t.reliability.anomalies.length > 0 && (
         <p className="text-xs text-[color:var(--text-danger)]">Anomalies de contrôle : {t.reliability.anomalies.map((a) => `${a.code}${a.detail ? ` (${a.detail})` : ''}`).join(', ')}</p>
       )}
+
+      <DepartDiagnostic t={t} accountId={data.accountId} />
 
       {(t.citedOnlyDocuments?.length ?? 0) > 0 && (
         <div className="rounded-lg border p-3 text-xs space-y-1" data-bo-tco-cited>

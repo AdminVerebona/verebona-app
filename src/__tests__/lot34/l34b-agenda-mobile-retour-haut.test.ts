@@ -133,7 +133,7 @@ describe('Retour en haut (lot 34, point 8)', () => {
     const btn = lire('src/components/ScrollToTop.tsx');
     expect(btn).toContain('"fixed z-[60] touch-manipulation"');
     expect(btn).not.toContain('"fixed z-40"');
-    expect(btn).toContain('bottom-[calc(max(20px,env(safe-area-inset-bottom))+96px)]');
+    expect(btn).toContain('bottom-[calc(max(20px,var(--vb-safe-bottom))+96px)]');
     expect(btn).toContain('md:right-6 md:bottom-6');
     expect(btn).toContain('scrollAllToTop(document, window, !reduce)');
     expect(btn).toContain('type="button"');

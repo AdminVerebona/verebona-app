@@ -31,6 +31,7 @@ import { decide, withoutEquivalentProposals } from './decision/decision-matrix';
 import { isCriticalField } from './decision/critical-fields';
 import { normalize } from './decision/normalizers';
 import { toEvidenceCandidates, isUnprovenAutomaticValue } from './evidence-collector';
+import { nonAttributableDecision } from './multi-article-evidence';
 import {
   planRetractions, retractionDecision, withoutStaleAuthority, NEGATIVE_REASON, isT4DateRevision, T4_REVISION_REASON,
 } from './negative-reconciliation';
@@ -108,6 +109,17 @@ export function entityCurrentValue(state: CanonicalEntityState, key: string): Cu
   };
 }
 
+/**
+ * Lot 107D — preuves du prix écartées quand elles sont le total d'un ticket à
+ * plusieurs articles (même règle que le bien). Dépendances injectées (tests
+ * unitaires) : aucun accès base, rien n'est écarté.
+ */
+async function screenEntity(accountId: number, key: string, evidences: import('../evidence/evidence.types').FieldEvidence[], injected: boolean) {
+  if (injected) return { kept: evidences, excluded: [] as import('./multi-article-evidence').ExcludedAmountEvidence[] };
+  const { screenAmountEvidence } = await import('./multi-article-evidence');
+  return screenAmountEvidence(accountId, key, evidences);
+}
+
 export async function reconcileEntity(input: ReconcileEntityInput, deps?: EntityReconcileDeps): Promise<ReconcileEntityResult> {
   const vide = (skipped = true): ReconcileEntityResult => ({
     target: input.target, skipped, decisions: [], written: [], retracted: [], protectedKeys: [],
@@ -133,7 +145,7 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
     // Champ hors registre ou d'une autre cible : jamais appliqué à l'entité.
     // Champ de saisie seule (D-D, lot 20) : jamais réconcilié depuis une preuve.
     if (!def || !fieldTargetsEntity(def, input.target.type) || def.inputOnly) continue;
-    const evidences = await d.activeEvidence(input.accountId, rawKey, input.target);
+    const { kept: evidences, excluded } = await screenEntity(input.accountId, def.key, await d.activeEvidence(input.accountId, rawKey, input.target), !!deps);
     const candidates = toEvidenceCandidates(def.key, evidences);
     if (candidates.length) prouves.push(def.key);
     const current = entityCurrentValue(state, def.key);
@@ -141,7 +153,9 @@ export async function reconcileEntity(input: ReconcileEntityInput, deps?: Entity
     const entree = { fieldKey: def.key, current, candidates, isCritical: isCriticalField(def.key) };
     // D-M (lot 20) : date tranchée par T4 → la preuve révisée corrige la valeur automatique.
     const revision = isT4DateRevision(unproven, entree);
-    let decision = unproven || revision ? decide(withoutStaleAuthority(entree)) : decide(entree);
+    // Lot 107D : seules preuves = total d'un ticket à plusieurs articles → aucune contradiction, aucune écriture.
+    let decision = candidates.length === 0 && excluded.length ? nonAttributableDecision(def.key, current, excluded)
+      : unproven || revision ? decide(withoutStaleAuthority(entree)) : decide(entree);
     if (revision && decision.action === 'update') decision = { ...decision, reasonCode: T4_REVISION_REASON };
     else if (unproven && decision.action === 'update') decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
     // Lot 81A : jamais un conflit entre valeurs équivalentes.
@@ -246,13 +260,15 @@ export async function evaluateEntityField(
   for (const rawKey of await d.evidenceKeys(accountId, target)) {
     const def = resolveEntityDef(rawKey);
     if (!def || def.key !== key || !fieldTargetsEntity(def, target.type) || def.inputOnly) continue;
-    const candidates = toEvidenceCandidates(def.key, await d.activeEvidence(accountId, rawKey, target));
+    const { kept, excluded } = await screenEntity(accountId, def.key, await d.activeEvidence(accountId, rawKey, target), !!deps);
+    const candidates = toEvidenceCandidates(def.key, kept);
     tous.push(...candidates);
     const current = entityCurrentValue(state, def.key);
     const unproven = isUnprovenAutomaticValue(current, candidates, def.key);
     const entree = { fieldKey: def.key, current, candidates, isCritical: isCriticalField(def.key) };
     const revision = isT4DateRevision(unproven, entree);
-    let decision = unproven || revision ? decide(withoutStaleAuthority(entree)) : decide(entree);
+    let decision = candidates.length === 0 && excluded.length ? nonAttributableDecision(def.key, current, excluded)
+      : unproven || revision ? decide(withoutStaleAuthority(entree)) : decide(entree);
     if (revision && decision.action === 'update') decision = { ...decision, reasonCode: T4_REVISION_REASON };
     else if (unproven && decision.action === 'update') decision = { ...decision, reasonCode: NEGATIVE_REASON.REPLACE };
     decisions.push(withoutEquivalentProposals(decision));

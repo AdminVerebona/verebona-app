@@ -50,6 +50,11 @@ export const REASON_CODES = {
   // Lot 81A : proposition équivalente à la valeur en place après normalisation
   // métier — aucun arbitrage (ni carte, ni fermeture d'une carte existante).
   EQUIVALENT_VALUES: 'Valeurs équivalentes après normalisation : aucun arbitrage',
+  // Lot 107D : seules preuves du prix = montant de transaction d'un justificatif à plusieurs articles
+  // (total, sous-total, paiement) — jamais le prix d'un article : valeur en place conservée, arbitrage clos.
+  NON_ATTRIBUTABLE_AMOUNT: 'Montant total d’un justificatif à plusieurs articles : jamais le prix d’un article',
+  // Lot 107D : même arbitrage déjà tranché par l'utilisateur sur les mêmes preuves (contenu, pas identifiants).
+  USER_DECISION_SAME_EVIDENCE: 'Arbitrage déjà tranché par l’utilisateur sur ces mêmes preuves : décision conservée',
   // Historique : observation de la réconciliation négative (mode retiré au
   // lot 16b-3) — libellés conservés pour relire les décisions déjà en base.
   SHADOW_WOULD_RETRACT: 'Observation : cette valeur automatique serait retirée',

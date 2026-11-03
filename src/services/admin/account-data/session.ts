@@ -74,7 +74,7 @@ interface Reserved {
 }
 
 /** Ouvre une session de lecture cohérente ; `close()` termine la transaction et rend la connexion. */
-export async function openReadSession(wrap: SessionWrap = {}): Promise<ReadSession & { close(): Promise<void> }> {
+export async function openReadSession(wrap: SessionWrap = {}, opts: { statementTimeoutMs?: number } = {}): Promise<ReadSession & { close(): Promise<void> }> {
   const { pgClient } = await import('@/db');
   const conn = (await (pgClient as unknown as { reserve: () => Promise<Reserved> }).reserve());
   let open = true;
@@ -86,7 +86,9 @@ export async function openReadSession(wrap: SessionWrap = {}): Promise<ReadSessi
   };
   try {
     await conn.unsafe('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    await conn.unsafe(`SET LOCAL statement_timeout = ${DIAG_STATEMENT_TIMEOUT_MS}`);
+    // Lot 107G : un diagnostic DURABLE (worker, hors requête HTTP) peut demander un délai par requête plus long.
+    const timeout = opts.statementTimeoutMs && opts.statementTimeoutMs > 0 ? Math.floor(opts.statementTimeoutMs) : DIAG_STATEMENT_TIMEOUT_MS;
+    await conn.unsafe(`SET LOCAL statement_timeout = ${timeout}`);
     await conn.unsafe(`SET LOCAL idle_in_transaction_session_timeout = ${IDLE_IN_TRANSACTION_MS}`);
     const [i] = await conn.unsafe(`SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at, pg_current_snapshot()::text AS snap`);
     const baseQ: DiagQuery = async (sql, params = []) => (await conn.unsafe(sql, params as never[])) as Row[];

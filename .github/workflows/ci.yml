@@ -337,6 +337,8 @@ jobs:
         run: npm run test:e2e:diagnostic -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic.xml
       - name: Exports BO, export de recette et restauration (lots 75N, 82E)
         run: npm run test:e2e:bo-exports -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-bo-exports.xml
+      - name: Diagnostics BO durables — file, reprise, validation, historique (lot 107G)
+        run: npm run test:e2e:diagnostics-bo -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostics-bo.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -373,6 +375,8 @@ jobs:
         run: npm ci
       - name: Contrôle de cohérence, réparations, cartes « À traiter » (lots 81A à 98B)
         run: npm run test:e2e:coherence -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-coherence.xml
+      - name: « À traiter » — liens directs vers l'objet et les justificatifs (lot 107E)
+        run: npm run test:e2e:a-traiter-liens -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-a-traiter-liens.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -485,6 +489,10 @@ jobs:
         run: npm run test:e2e:agenda-doublons -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-agenda-doublons.xml
       - name: Mascotte — suggestions rétablies et invitations de découverte (lot 106B)
         run: npm run test:e2e:mascotte-suggestions -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-mascotte-suggestions.xml
+      - name: Prix d'un article sur ticket multi-articles, mémoire d'arbitrage (lot 107D)
+        run: npm run test:e2e:prix-multi-articles -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-prix-multi-articles.xml
+      - name: TCO — date d'achat du bien prioritaire (lot 107C)
+        run: npm run test:e2e:tco-date-achat -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-date-achat.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

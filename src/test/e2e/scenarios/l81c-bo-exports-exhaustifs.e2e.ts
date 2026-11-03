@@ -32,6 +32,10 @@ import JSZip from 'jszip';
 import { scenario } from '../scenario';
 import type { AccountRow } from '../factories';
 
+// Lot 107G : la génération synchrone dans la requête HTTP est retirée par défaut (410) ; ce scénario
+// vérifie le CONTENU du moteur par la route historique : activation explicite réservée aux tests.
+process.env.DIAG_SYNC_HTTP = 'on';
+
 type Json = Record<string, unknown>;
 type Section = { id: string; table?: { rows: Json[]; total: number | null; complete: boolean; columns: string[] }; relations?: Json[]; window?: Json; extraction?: Json };
 

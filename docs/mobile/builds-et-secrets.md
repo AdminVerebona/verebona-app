@@ -155,11 +155,17 @@ version minimale d'iOS décidée. L'app n'a rien à reconstruire : le serveur an
 
 ## 7. Icônes et nom
 
-Nom affiché : « Verebona Préprod » / « Verebona » (variantes Gradle, `Verebona.xcconfig`). Icône : celle
-de Capacitor par défaut pour l'instant ; décision B5 : nouvelle icône et variante « PRÉPROD » conçues par
-le graphiste, livrées directement aux développeurs, selon `docs/design/brief-graphiste-icone-et-mascotte.md`
-(fichiers attendus et procédure d'intégration § 8).
-Génération des tailles : `npx @capacitor/assets generate` à partir d'une image 1024 × 1024 par variante.
+Nom affiché : « Verebona Préprod » / « Verebona » (variantes Gradle, `Verebona.xcconfig`).
+
+Icône (lot 107F) : symbole du design system « Verebona Sérénité » (8 carrés ivoire + carré cuivre
+incliné). Production : fond pétrole `#17474D`. Préprod : fond ivoire `#F8F6F1` + bandeau cuivre
+« PRÉPROD » (deux différences cumulées, brief § 2.3, repère présent aussi dans le calque monochrome).
+Android : `src/main/res` (prod) et `src/preprod/res` (préprod, prioritaire pour la variante) ; iOS :
+`AppIcon.appiconset` / `AppIcon-Preprod.appiconset` (PNG 1024 RVB sans alpha). Écrans de démarrage : fond
+ivoire, symbole pétrole. Fichiers générés par `mobile/scripts/generate-icons.cjs` (outil de développeur,
+non lancé par la CI) ; contrôlés par `mobile/test/l107f-icones.test.mjs`. Décision B5 inchangée : les
+fichiers du graphiste remplaceront ceux-ci dès leur livraison (`docs/design/brief-graphiste-icone-et-mascotte.md` § 8).
+Une nouvelle icône n'apparaît sur les téléphones qu'avec un **nouveau build** de l'application.
 
 ## Signature iOS en CI : appareil technique et rôle de la clé d'API (lot 101-septies)
 

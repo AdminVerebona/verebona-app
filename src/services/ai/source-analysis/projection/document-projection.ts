@@ -94,6 +94,10 @@ import {
   type DocumentPurpose,
   type ProjectionRuleCode,
 } from './rules';
+import {
+  ATTRIBUTION_REFUSAL_LABELS, attributeArticle, buildReceiptProfile, classifyAmount, linesOfT1Tables, linesOfTranscription,
+  type ReceiptProfile, type TargetDescriptor,
+} from './amount-roles';
 
 /** Types d'entité dont l'identifiant est vérifié en base. */
 export type VerifiableTargetType = 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'SUPPLIER';
@@ -110,6 +114,15 @@ export interface ProjectionContext {
   assetFamilies: ReadonlyMap<number, AssetFamily | undefined>;
   /** Identifiants VÉRIFIÉS en base pour le compte, par type de cible. */
   verifiedIds: Readonly<Record<VerifiableTargetType, ReadonlySet<number>>>;
+  /**
+   * Lot 107D : désignation des biens / équipements du compte (nom, marque,
+   * modèle, référence) — attribution d'une ligne de ticket à plusieurs
+   * articles. Absente : aucune attribution par désignation (abstention).
+   */
+  targetDescriptors?: {
+    assets?: ReadonlyMap<number, TargetDescriptor>;
+    equipments?: ReadonlyMap<number, TargetDescriptor>;
+  };
 }
 
 export type ProjectionWarningCode =
@@ -474,9 +487,48 @@ export function projectDocumentFacts(
     serviceEvents: facts.filter((f) => (f.semanticEvent?.type === 'repair' || f.semanticEvent?.type === 'maintenance')
       && f.semanticEvent.nature === 'HISTORICAL').length,
   });
-  const projected = applyPurposeRules(facts, analysis, ctx, { purpose, multiAsset, autreBienMentionne }, warnings, noteRule);
+  // Lot 107D : rôles des montants du justificatif (lignes, total, paiement…).
+  const receipt = receiptProfileOf(analysis);
+  // Lot 107D : le total d'un ticket à plusieurs articles n'est JAMAIS le prix d'un article — faits du modèle écartés
+  // AVANT les règles d'acquisition (la ligne de l'objet peut alors être attribuée), puis faits dérivés par une règle.
+  const avant = guardBasketTotals(facts, receipt, warnings, noteRule);
+  const projected = applyPurposeRules(avant, analysis, ctx, { purpose, multiAsset, autreBienMentionne, receipt }, warnings, noteRule);
+  const gardes = guardBasketTotals(projected, receipt, warnings, noteRule);
 
-  return { facts: projected, warnings, purpose, multiAsset, appliedRules };
+  return { facts: gardes, warnings, purpose, multiAsset, appliedRules };
+}
+
+/** Lot 107D — profil des montants (tableaux T1, sinon transcription ; montant du document). */
+function receiptProfileOf(analysis: ProjectableAnalysis): ReceiptProfile {
+  const tables = analysis.tables ?? [];
+  const lignes = tables.length > 0 ? [...linesOfT1Tables(tables), ...linesOfTranscription(analysis.transcription)] : linesOfTranscription(analysis.transcription);
+  const montant = analysis.document.amountCents?.value;
+  return buildReceiptProfile(lignes, Number.isInteger(montant) ? (montant as number) : null);
+}
+
+const enCentimes = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? Math.round(v * 100) : null);
+
+/**
+ * Lot 107D — un prix d'acquisition (bien ou équipement) égal à un montant de
+ * TRANSACTION d'un justificatif à plusieurs articles, et au montant d'aucune
+ * ligne, est requalifié en connaissance générique (jamais perdu, jamais une
+ * preuve de champ) : ACQUISITION_PRICE_BASKET_TOTAL.
+ */
+function guardBasketTotals(
+  facts: ProjectedFact[], receipt: ReceiptProfile, warnings: ProjectionWarning[], noteRule: (c: ProjectionRuleCode) => void,
+): ProjectedFact[] {
+  if (!receipt.multiArticle) return facts;
+  return facts.map((f) => {
+    if (f.canonicalKey !== 'acquisitionPrice') return f;
+    const cents = enCentimes(f.value);
+    if (cents === null) return f;
+    const c = classifyAmount(receipt, cents);
+    if (c.role !== 'BASKET') return f;
+    noteRule(PROJECTION_RULES.ACQUISITION_PRICE_BASKET_TOTAL);
+    warnings.push({ code: 'FACT_REQUALIFIED_BY_RULE', target: 'acquisitionPrice', ruleCode: PROJECTION_RULES.ACQUISITION_PRICE_BASKET_TOTAL,
+      message: `Montant de la transaction (${c.summaryRoles.join(', ')}) d’un justificatif à plusieurs articles : jamais le prix d’un article (connaissance générique).` });
+    return versGenerique(f, PROJECTION_RULES.ACQUISITION_PRICE_BASKET_TOTAL);
+  });
 }
 
 function isVerified(ctx: ProjectionContext, type: VerifiableTargetType, id: number): boolean {
@@ -683,7 +735,7 @@ function applyPurposeRules(
   facts: ProjectedFact[],
   analysis: ProjectableAnalysis,
   ctx: ProjectionContext,
-  doc: { purpose: DocumentPurpose; multiAsset: boolean; autreBienMentionne?: boolean },
+  doc: { purpose: DocumentPurpose; multiAsset: boolean; autreBienMentionne?: boolean; receipt?: ReceiptProfile },
   warnings: ProjectionWarning[],
   noteRule: (c: ProjectionRuleCode) => void,
 ): ProjectedFact[] {
@@ -912,8 +964,13 @@ function applyPurposeRules(
     // Nombre de lignes : établi par un tableau ou par des faits d'achat par
     // ligne ; sinon estimé sur la transcription (heuristique `countArticleLines`).
     const lignesTranscription = tables.length === 0 ? countArticleLines(analysis.transcription) : 0;
-    const nombreEtabli = tables.length > 0 || achats.length > 0;
-    const uneSeuleLigne = lignesTableau <= 1 && achats.length <= 1 && achats.every(surLeBien) && lignesTranscription <= 1;
+    // Lot 107D : un fait d'achat par ligne n'établit le nombre de lignes que si la transcription le CONFIRME (une
+    // ligne article lisible) — le modèle n'énonce l'achat que des objets connus ; sans transcription lisible, les
+    // autres articles du ticket peuvent exister : le prix tiré du total reste une proposition (`probable`).
+    const nombreEtabli = tables.length > 0 || (achats.length > 0 && lignesTranscription === 1);
+    // Lot 107D : plusieurs articles (ou exemplaires) lus sur le justificatif → le total n'est jamais le prix.
+    const uneSeuleLigne = lignesTableau <= 1 && achats.length <= 1 && achats.every(surLeBien) && lignesTranscription <= 1
+      && !doc.receipt?.multiArticle;
     const lignesDuBien = achats.filter((f) => surLeBien(f) && f.canonicalKey === null
       && (f.valueType === 'money_eur' || f.valueType === 'money_cents') && f.evidence.excerpt?.trim());
 
@@ -960,10 +1017,24 @@ function applyPurposeRules(
         warnings.push({ code: 'RULE_APPLIED', target: 'acquisitionPrice', ruleCode: PROJECTION_RULES.PURCHASE_LINE_ACQUISITION_PRICE,
           message: 'Ticket à plusieurs articles : prix d’acquisition tiré de la ligne d’achat du bien.' });
       }
-    } else if (amount) {
-      noteRule(PROJECTION_RULES.ACQUISITION_PRICE_NOT_ATTRIBUTABLE);
-      warnings.push({ code: 'RULE_APPLIED', target: 'acquisitionPrice', ruleCode: PROJECTION_RULES.ACQUISITION_PRICE_NOT_ATTRIBUTABLE,
-        message: 'Plusieurs articles achetés : le total du document n’est pas attribuable au seul bien.' });
+    } else {
+      // Lot 107D : la ligne qui DÉSIGNE le bien (désignation, référence), si elle est démontrable ; sinon abstention.
+      const descripteur = assetId !== null ? ctx.targetDescriptors?.assets?.get(assetId) : undefined;
+      const attribution = doc.receipt && doc.receipt.multiArticle && descripteur ? attributeArticle(doc.receipt, descripteur) : null;
+      if (attribution?.ok && !(amount && devise && !isEurAmount(devise))) {
+        const a = attribution.article;
+        out.push(deRegle({ key: 'acquisitionPrice', value: centsToEur(attribution.cents), rawValue: a.text, rawKey: 'ligneArticle',
+          rule: PROJECTION_RULES.PURCHASE_LINE_ATTRIBUTED, confidence: attribution.confidence,
+          evidence: { excerpt: a.text.slice(0, 2000), section: `receipt-line:${a.index}:${attribution.basis}` } }));
+        noteRule(PROJECTION_RULES.PURCHASE_LINE_ATTRIBUTED);
+        warnings.push({ code: 'RULE_APPLIED', target: 'acquisitionPrice', ruleCode: PROJECTION_RULES.PURCHASE_LINE_ATTRIBUTED,
+          message: `Ticket à plusieurs articles : prix d’acquisition tiré de la ligne qui désigne le bien (${attribution.matchedBy === 'REFERENCE' ? 'référence' : 'désignation'}, ${attribution.basis}).` });
+      } else if (amount) {
+        noteRule(PROJECTION_RULES.ACQUISITION_PRICE_NOT_ATTRIBUTABLE);
+        const motif = attribution && !attribution.ok ? ` (${ATTRIBUTION_REFUSAL_LABELS[attribution.reason]})` : '';
+        warnings.push({ code: 'RULE_APPLIED', target: 'acquisitionPrice', ruleCode: PROJECTION_RULES.ACQUISITION_PRICE_NOT_ATTRIBUTABLE,
+          message: `Plusieurs articles achetés : le total du document n’est pas attribuable au seul bien${motif}.` });
+      }
     }
   }
 
