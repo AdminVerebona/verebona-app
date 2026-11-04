@@ -39,6 +39,43 @@ const VERIFICATION_REASON_LABEL: Readonly<Record<string, string>> = {
   backfill: 'couverture reconstruite d’une analyse antérieure, jamais confrontée au fichier',
 };
 
+/**
+ * Lot 109K (COR-01) : motif exact PAR PAGE (`PageVerification.reason`) →
+ * libellé BO. Une page MISSING est une omission objectivée (le texte original
+ * de la page n'est pas dans la lecture T1) ; une page UNVERIFIABLE est un
+ * échec technique du contrôle, jamais une perte prouvée.
+ */
+export const PAGE_REASON_LABEL: Readonly<Record<string, string>> = {
+  text_matched: 'texte original retrouvé dans la lecture',
+  empty_page: 'page vide',
+  targeted_reread: 'page relue par une reprise ciblée',
+  partial_match_cited: 'texte original partiellement retrouvé, page citée',
+  single_page_partial_match: 'document d’une page, texte original partiellement retrouvé',
+  text_absent_from_transcription: 'texte original absent de la lecture (omission)',
+  page_absent_from_paginated_transcription: 'page absente de la lecture paginée (omission)',
+  scanned_no_text_layer: 'page scannée sans couche texte : rien à confronter',
+  text_not_decodable: 'texte de la page non décodable (police non lisible)',
+  no_text_layer: 'page sans texte décodable (image ou dessin)',
+  partial_match_not_cited: 'texte original trop partiellement retrouvé pour conclure',
+  beyond_probe_limit: 'page au-delà de la limite de contrôle',
+  probe_failed: 'contrôle de la page en échec technique',
+};
+
+interface PageDetailInput { page: number; status: string; reason: string; method?: string }
+
+/** Pages non vérifiées regroupées par motif, en mots simples (pure). */
+export function pageReasonsText(details: readonly PageDetailInput[] | null | undefined): string | null {
+  const groupes = new Map<string, number[]>();
+  for (const d of details ?? []) {
+    if (d.status === 'VERIFIED') continue;
+    const l = groupes.get(d.reason) ?? [];
+    l.push(d.page);
+    groupes.set(d.reason, l);
+  }
+  if (groupes.size === 0) return null;
+  return [...groupes.entries()].map(([r, pages]) => `${pages.length > 1 ? 'pages' : 'page'} ${pages.slice(0, 10).join(', ')}${pages.length > 10 ? '…' : ''} : ${PAGE_REASON_LABEL[r] ?? r}`).join(' ; ');
+}
+
 /** Motifs pour lesquels une relecture AUTOMATIQUE du fichier peut lever l'incertitude. */
 const AUTO_RETRY_REASONS: ReadonlySet<string> = new Set(['source_unreadable']);
 
@@ -52,6 +89,8 @@ interface VerificationFollowupInput {
   maxRetries?: number;
   /** Reprise automatique déjà programmée (`next_retry_at`). */
   retryScheduled?: boolean;
+  /** Lot 109K : verdict par page (statut, motif). */
+  pageDetails?: readonly PageDetailInput[] | null;
 }
 
 interface VerificationFollowup {
@@ -67,6 +106,8 @@ interface VerificationFollowup {
   autoRetry: boolean;
   /** Reprise manuelle proposée dans le BO. */
   manualRetry: boolean;
+  /** Lot 109K : motif exact page par page (null : vérification antérieure, sans détail). */
+  pageReasons: string | null;
 }
 
 /** Reprise automatique due pour ce document ? (pure) */
@@ -88,8 +129,9 @@ export function needsSourceRetryDue(p: { needsSourceUnits: number; retryAttempts
 export function verificationFollowup(p: VerificationFollowupInput): VerificationFollowup | null {
   if (p.qualityState !== 'VERIFICATION_INCOMPLETE') return null;
   const motif = p.verificationReason ?? (p.sourceVerification === 'RECONSTRUCTED' ? 'backfill' : null);
-  const reason = (motif && VERIFICATION_REASON_LABEL[motif])
-    ?? (p.sourceVerification === 'UNVERIFIABLE' ? 'source non vérifiable' : 'couverture de la source non vérifiée');
+  const pageReasons = pageReasonsText(p.pageDetails);
+  const reason = (motif === 'pages_unverified' && pageReasons) || ((motif && VERIFICATION_REASON_LABEL[motif])
+    ?? (p.sourceVerification === 'UNVERIFIABLE' ? 'source non vérifiable' : 'couverture de la source non vérifiée'));
   const pages = p.pagesUnverified && p.pagesUnverified.length > 0 ? [...p.pagesUnverified].sort((a, b) => a - b) : null;
   const autoRetry = verificationAutoRetryDue({
     qualityState: p.qualityState, verificationReason: motif, retryAttempts: p.retryAttempts, maxRetries: p.maxRetries,
@@ -110,6 +152,6 @@ export function verificationFollowup(p: VerificationFollowupInput): Verification
   }
   return {
     status: autoRetry ? 'vérification incomplète — reprise automatique' : 'vérification incomplète — contrôle manuel',
-    reason, pages, nextAction, autoRetry, manualRetry: true,
+    reason, pages, nextAction, autoRetry, manualRetry: true, pageReasons,
   };
 }

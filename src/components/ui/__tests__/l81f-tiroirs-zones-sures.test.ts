@@ -138,7 +138,6 @@ describe('L81F — correctif à la source, hérité par tous les tiroirs', () =>
       'src/components/assets/TcoSection.tsx',
       'src/components/agenda/AgendaItemDrawer.tsx',
       'src/components/agenda/CreateAgendaItemDrawer.tsx',
-      'src/components/suppliers/SupplierDrawer.tsx',
       'src/components/documents/unified-document-dialog.tsx',
       'src/components/AssetFormDialog.tsx',
       'src/app/admin/accounts/[id]/_components/account-data/EntityDrawer.tsx',

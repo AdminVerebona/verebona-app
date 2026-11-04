@@ -28,6 +28,7 @@ import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { claimNextGeneration, renewGenerationLease, LEASE_SECONDS } from './repository';
 import { runGeneration, failTimedOutGeneration, jobTimeoutMs } from './job';
+import { admitHeavyTask, trackMemory } from '@/lib/runtime/memory-monitor';
 
 const EXPORT_WORKER_ID = `${(() => { try { return hostname(); } catch { return 'local'; } })()}:${process.pid}:${randomUUID().slice(0, 8)}`;
 
@@ -42,6 +43,9 @@ function state(): WorkerState {
 export async function drainExportQueue(workerId = EXPORT_WORKER_ID): Promise<number> {
   let done = 0;
   for (;;) {
+    // Lot 109H : mémoire du conteneur au-delà du seuil d'admission → la
+    // génération attend le tour suivant (au plus MEMORY_ADMISSION_MAX_WAIT_MS).
+    if (!admitHeavyTask('export:v12')) return done;
     const row = await claimNextGeneration(workerId);
     if (!row) return done;
     let active = true;
@@ -56,7 +60,7 @@ export async function drainExportQueue(workerId = EXPORT_WORKER_ID): Promise<num
     heartbeat.unref?.();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const run = runGeneration(row, workerId, { isActive: () => active, signal: controller.signal })
+      const run = trackMemory('export:v12', () => runGeneration(row, workerId, { isActive: () => active, signal: controller.signal }))
         .catch((e) => { console.error(`[exports-v12] génération ${row.id} : erreur inattendue du worker :`, (e as Error).message); return 'failed' as const; });
       const outcome = await Promise.race([
         run,
@@ -79,8 +83,9 @@ export async function drainExportQueue(workerId = EXPORT_WORKER_ID): Promise<num
 /** Lot 103C : une génération RGPD « Mes données » (jamais bloquant pour la file V12). */
 async function drainGdprExportsSafely(): Promise<number> {
   try {
+    if (!admitHeavyTask('export:gdpr')) return 0;
     const { drainGdprExportQueue } = await import('@/services/gdpr/gdpr-export.job');
-    return await drainGdprExportQueue(EXPORT_WORKER_ID, { maxJobs: 1 });
+    return await trackMemory('export:gdpr', () => drainGdprExportQueue(EXPORT_WORKER_ID, { maxJobs: 1 }));
   } catch (e) {
     console.error('[exports-v12] file RGPD « Mes données » en échec (non bloquant) :', (e as Error).message);
     return 0;

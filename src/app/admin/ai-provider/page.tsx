@@ -31,6 +31,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { ModelCatalog } from './_components/ModelCatalog';
+import { PricingPanel } from './_components/PricingPanel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -345,11 +346,14 @@ export default function AiProviderPage() {
         </div>
 
         <p className="text-xs text-[color:var(--text-muted)]">
-          Tarifs synchronisés automatiquement depuis la page officielle Google (toutes les 6 h, ou
-          « Actualiser le catalogue »). Un modèle au tarif UNKNOWN reste utilisable : ses coûts sont
-          marqués non calculables, jamais estimés.
+          Tarifs synchronisés automatiquement depuis la page officielle Google (synchronisation du
+          catalogue, ou « Synchroniser les tarifs » ci-dessous). Un modèle au tarif UNKNOWN reste
+          utilisable : ses coûts sont marqués non calculables, jamais estimés.
         </p>
       </div>
+
+      {/* Lot 109L : état tarifaire distinct du catalogue modèles, saisie documentée, historique. */}
+      <PricingPanel />
     </div>
   );
 }

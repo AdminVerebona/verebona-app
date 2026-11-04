@@ -21,6 +21,7 @@ import { apiClient } from "@/lib/api-client";
 import { openDrawer } from "@/lib/drawers";
 import { useWriteGuard } from "@/contexts/WriteGuardContext";
 import { AGENDA_SUPPLIER_BUCKET_LABELS, type AgendaSupplierTimeBucket } from "@/lib/agenda/agenda-suppliers-rules";
+import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
 
 interface SupplierAgendaItem {
   id: number; title: string; startDate: string | null; manualStatus: string | null; bucket: AgendaSupplierTimeBucket;
@@ -92,7 +93,7 @@ export function SupplierAgendaSection({ supplierId, supplierName }: { supplierId
       <CardHeader className="pb-3">
         <CardTitle className="flex flex-wrap items-center gap-2">
           <CalendarDays className="w-4 h-4 text-muted-foreground" aria-hidden />
-          Événements d’agenda
+          {AGENDA_EVENT_LABELS.linkedEvents}
           <span className="text-sm font-normal text-muted-foreground">({total})</span>
           <Button size="sm" variant="outline" className="ml-auto" onClick={() => { if (autorise()) setAdding((v) => !v); }}>
             <Link2 className="mr-1.5 h-4 w-4" aria-hidden />Associer un événement
@@ -104,7 +105,7 @@ export function SupplierAgendaSection({ supplierId, supplierName }: { supplierId
           <div className="space-y-2 rounded-md border border-[color:var(--border-subtle)] p-3">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Rechercher un événement de l’agenda" className="pl-9" aria-label="Rechercher un événement de l’agenda" />
+              <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder={AGENDA_EVENT_LABELS.searchEvent} className="pl-9" aria-label={AGENDA_EVENT_LABELS.searchEvent} />
             </div>
             {candidates.length === 0
               ? <p className="text-xs text-muted-foreground">Aucun événement à associer.</p>
@@ -126,7 +127,7 @@ export function SupplierAgendaSection({ supplierId, supplierName }: { supplierId
           </div>
         )}
         {failed && <p className="text-sm text-muted-foreground">Les événements n’ont pas pu être chargés.</p>}
-        {!failed && items && total === 0 && <p className="text-sm text-muted-foreground">Aucun événement d’agenda n’est associé à ce fournisseur.</p>}
+        {!failed && items && total === 0 && <p className="text-sm text-muted-foreground">{AGENDA_EVENT_LABELS.supplierNoLinkedEvent}</p>}
         {!failed && items && ORDRE.map((b) => {
           const groupe = items.filter((i) => i.bucket === b);
           if (!groupe.length) return null;

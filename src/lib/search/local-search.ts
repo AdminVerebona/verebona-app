@@ -45,17 +45,17 @@ export function readLocalQuery(params: Pick<URLSearchParams, 'get'> | null | und
 }
 
 const nom = (kind: LocalSearchKind, n: number) =>
-  kind === 'document' ? `document${n > 1 ? 's' : ''}` : `élément${n > 1 ? 's' : ''}`;
+  kind === 'document' ? `document${n > 1 ? 's' : ''}` : `événement${n > 1 ? 's' : ''}`;
 
 /** Nombre RÉEL de résultats (compteur serveur), annoncé sous le champ. */
 export function localSearchStatus(kind: LocalSearchKind, count: number): string {
-  if (count === 0) return kind === 'document' ? 'Aucun document trouvé' : 'Aucun élément trouvé';
+  if (count === 0) return kind === 'document' ? 'Aucun document trouvé' : 'Aucun événement trouvé';
   return `${count} ${nom(kind, count)} ${count > 1 ? 'trouvés' : 'trouvé'}`;
 }
 
 /** Message spécifique « aucun résultat » (§3.1), distinct de la liste vide. */
 export function localSearchNoResult(kind: LocalSearchKind, q: string, filtered: boolean): string {
-  const quoi = kind === 'document' ? 'Aucun document' : 'Aucun élément';
+  const quoi = kind === 'document' ? 'Aucun document' : 'Aucun événement';
   return filtered
     ? `${quoi} ne correspond à « ${q} » avec ces filtres.`
     : `${quoi} ne correspond à « ${q} ».`;

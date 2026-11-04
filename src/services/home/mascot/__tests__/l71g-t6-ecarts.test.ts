@@ -64,7 +64,8 @@ const evaluation = (agendaItemId: number, fingerprint: string, o: Partial<Stored
 const deps = (loaders: Partial<import('../t6-interpellation.service').T6Loaders>, o: Partial<import('../t6-interpellation.service').PrepareDeps> = {}) => ({
   aiCapable: async () => true, thresholdDays: async () => 60, loaders, ...o,
 });
-const fp = (r: Row, e: Evidence | undefined) => S.fingerprintWithEvidence({ title: r.title, date: r.date, forecast: r.forecast, requiresQualification: r.requiresQualification }, e);
+// Lot 109E : décision prise sur le contexte COURANT = empreinte `v5:` du contexte transmis (une empreinte antérieure est ambiguë).
+const fp = (r: Row, e: Evidence | undefined) => S.t6ContextFingerprint(r, e);
 
 beforeEach(() => { unsafe.mockReset(); unsafe.mockImplementation(async () => []); });
 
@@ -92,7 +93,8 @@ describe('T6-01 — réévaluer après modification des données significatives'
     const a = evaluation(1, legacy);
     expect(I.assessmentFreshness(a, c, TODAY, 60)).toEqual({ status: 'FRESH', reason: null });
     expect(I.assessmentFreshness(a, { ...c, hasEvidence: true }, TODAY, 60)).toEqual({ status: 'AGED', reason: 'LEGACY_FINGERPRINT' });
-    expect(I.assessmentFreshness(evaluation(1, 'v2:autre'), c, TODAY, 60)).toEqual({ status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED' });
+    // Lot 109E : la cause du changement est désormais tracée (`change`).
+    expect(I.assessmentFreshness(evaluation(1, 'v2:autre'), c, TODAY, 60)).toMatchObject({ status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED', change: { cause: 'CONTENT_CHANGED', storedFormat: 'v2' } });
     expect(I.sameT6Context(legacy, c)).toBe(true);
     expect(I.sameT6Context(c.fingerprint, c)).toBe(true);
     // Preuves illisibles : l'évaluation reste utilisable (jamais de réévaluation sur un contexte incomplet).
@@ -273,11 +275,19 @@ describe('T6-06 — préférences respectées en mode dégradé', () => {
   });
   it('T6-06 — preuves illisibles : décision conservée, aucune réévaluation sur un contexte incomplet', async () => {
     const p = await S.prepareT6Interpellation({ accountId: 7, userId: null, raw: raw([r]) }, deps({
-      assessments: async () => new Map([[1, evaluation(1, 'v2:ancienne')]]), evidence: async () => { throw new Error('panne'); }, dueReminders: async () => new Map(),
+      assessments: async () => new Map([[1, evaluation(1, 'v5:courante')]]), evidence: async () => { throw new Error('panne'); }, dueReminders: async () => new Map(),
     }));
     expect(p.decisions[0].decision).toBe('SHOW_NOW');
     expect(p.bundle).toBeNull();
     expect(p.failedSources).toEqual(['evidence']);
+    // Lot 109E (AC05) : décision à empreinte ANTÉRIEURE (ambiguë) — jamais réutilisée,
+    // même en panne des preuves, et jamais réévaluée sur un contexte illisible.
+    const q = await S.prepareT6Interpellation({ accountId: 7, userId: null, raw: raw([r]) }, deps({
+      assessments: async () => new Map([[1, evaluation(1, 'v2:ancienne')]]), evidence: async () => { throw new Error('panne'); }, dueReminders: async () => new Map(),
+    }));
+    expect(q.decisions[0]).toMatchObject({ decision: 'DEFER', code: 'AI_ASSESSMENT_PENDING', reevaluationReason: 'FINGERPRINT_UPGRADE' });
+    expect(q.shown).toEqual([]);
+    expect(q.bundle).toBeNull();
   });
 });
 

@@ -57,6 +57,9 @@ const ECRIVAINS: Record<string, string> = {
   'src/services/business-operations/finance/economic-date.service.ts': 'trace de la date économique retenue (0744) par le dépôt, sous le verrou du compte (lot 86F)',
   // Lot 97A : décision T3 d'identité multi-sources — décisions de rattachement `AI_IDENTITY` par le dépôt
   // (`recordMatchDecision`, sous le verrou du compte) ; la séparation elle-même est faite par la consolidation T3.
+  // Lot 109A : SEUL écrivain de `business_operation_suppliers` et de son historique (migration 1100) — liens
+  // Opération ↔ fournisseur dérivés des preuves T3 ou décidés par l'utilisateur, toujours sous le verrou d'écriture.
+  'src/services/relations/operation-suppliers.ts': 'relations 109A : liens Opération ↔ fournisseur (preuves T3, décisions utilisateur, fusion de fiches) sous withBusinessOperationWrite',
   'src/services/business-operations/semantic/identity-apply.ts': 'T3 identité multi-sources : décisions de rattachement AI_IDENTITY par le dépôt (lot 97A) — métier délégué à T3',
 };
 

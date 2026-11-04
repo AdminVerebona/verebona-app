@@ -27,6 +27,8 @@ export const REASON_CODES = {
   AUTO_VALUE_CONFIRMED: 'Valeur automatique confirmée par une nouvelle preuve',
   IDENTICAL_VALUE: 'Preuve identique à la valeur en place',
   WEAKER_EVIDENCE: 'Preuve moins autoritaire que la source actuelle',
+  // Lot 109J : champ « dernière occurrence » — preuve d'un événement antérieur (justificatif ancien).
+  OLDER_OCCURRENCE: 'Événement antérieur à la date en place : historique, aucune contradiction',
 
   // ── Conflits ────────────────────────────────────────────────────────────
   MANUAL_VALUE_CONTRADICTED: 'Valeur saisie contredite par un document',

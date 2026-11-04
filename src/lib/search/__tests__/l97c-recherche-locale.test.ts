@@ -49,9 +49,9 @@ describe('paramètres de recherche', () => {
   it('nombre réel de résultats et message « aucun résultat » distinct', () => {
     expect(localSearchStatus('document', 12)).toBe('12 documents trouvés');
     expect(localSearchStatus('document', 1)).toBe('1 document trouvé');
-    expect(localSearchStatus('agenda', 0)).toBe('Aucun élément trouvé');
+    expect(localSearchStatus('agenda', 0)).toBe('Aucun événement trouvé');
     expect(localSearchNoResult('document', 'Homiris', false)).toBe('Aucun document ne correspond à « Homiris ».');
-    expect(localSearchNoResult('agenda', 'fenetre', true)).toBe('Aucun élément ne correspond à « fenetre » avec ces filtres.');
+    expect(localSearchNoResult('agenda', 'fenetre', true)).toBe('Aucun événement ne correspond à « fenetre » avec ces filtres.');
   });
 
   it('compteur de la barre d’outils : « trouvés » pendant une recherche, « sur N » avec un filtre', () => {
@@ -206,7 +206,7 @@ describe('recherche générale : « Voir tous » avec la recherche préremplie (
     ];
     expect(seeAllLinks('Homiris', rows)).toEqual([
       { id: 'voir-documents', label: 'Voir tous les documents', href: '/documents?q=Homiris' },
-      { id: 'voir-agenda', label: 'Voir tous les éléments d’agenda', href: '/agenda?q=Homiris&view=list' },
+      { id: 'voir-agenda', label: 'Voir tous les événements', href: '/agenda?q=Homiris&view=list' },
     ]);
     expect(seeAllLinks('Homiris', [rows[0]])).toHaveLength(1);
     expect(seeAllLinks('H', rows)).toEqual([]);

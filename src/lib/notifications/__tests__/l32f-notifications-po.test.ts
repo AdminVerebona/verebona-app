@@ -120,7 +120,7 @@ describe('PO-Q23 — aucun plafond mensuel de coût IA par compte par défaut', 
     expect(effectiveCap({ offerCapMicros: 3_000_000, overrideMicros: null })).toEqual({ capMicros: 3_000_000, source: 'offer' });
     expect(costCapLevel(3_000_000, 3_000_000)).toBe('reached');
     // Le suivi des coûts n'est pas conditionné au plafond (cumul lu en base).
-    expect(read('src/services/ai/gateway/account-cost-cap.ts')).toContain('SELECT COALESCE(SUM(cost_micros), 0)::bigint AS spent');
+    expect(read('src/services/ai/gateway/account-cost-cap.ts')).toContain('COALESCE(c.corrected_cost_micros, u.cost_micros)');
   });
 });
 

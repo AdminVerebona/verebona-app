@@ -159,17 +159,39 @@ export async function evaluateBudgetAlerts(now: Date = new Date(), raise: Raise 
   const { pgClient } = await import('@/db');
   const settings = await getCostSettings();
   if (!settings.budgets.some((b) => b.monthlyBudgetMicros != null)) return [];
-  const rows = (await pgClient.unsafe(
-    `SELECT ${treatmentCaseSql('e')} AS t, COALESCE(SUM(e.cost_micros), 0)::bigint AS spent
-       FROM ai_usage_event e
-      WHERE e.is_billable AND e.created_at >= date_trunc('month', NOW())
-      GROUP BY 1`,
-    [] as never[],
-  )) as unknown as Array<{ t: string | null; spent: string | number }>;
+  // Lot 109L : coût EFFECTIF (correction de régularisation active sinon coût
+  // initial, jamais les deux) et appels au coût INCONNU, signalés avec l'alerte.
+  let rows: Array<{ t: string | null; spent: string | number; unknown?: string | number }>;
+  try {
+    const { activeCorrectionJoin, unknownCostSql } = await import('../telemetry/cost-status');
+    rows = (await pgClient.unsafe(
+      `SELECT ${treatmentCaseSql('e')} AS t, COALESCE(SUM(COALESCE(c.corrected_cost_micros, e.cost_micros)), 0)::bigint AS spent,
+              COUNT(*) FILTER (WHERE c.id IS NULL AND ${unknownCostSql('e')})::int AS unknown
+         FROM ai_usage_event e
+         ${activeCorrectionJoin('e', 'c')}
+        WHERE e.is_billable AND e.created_at >= date_trunc('month', NOW())
+        GROUP BY 1`,
+      [] as never[],
+    )) as unknown as typeof rows;
+  } catch (e) {
+    if ((e as { code?: string }).code !== '42P01' && (e as { code?: string }).code !== '42703') throw e;
+    rows = (await pgClient.unsafe(
+      `SELECT ${treatmentCaseSql('e')} AS t, COALESCE(SUM(e.cost_micros), 0)::bigint AS spent
+         FROM ai_usage_event e
+        WHERE e.is_billable AND e.created_at >= date_trunc('month', NOW())
+        GROUP BY 1`,
+      [] as never[],
+    )) as unknown as typeof rows;
+  }
   const spent: Record<string, number> = { global: 0 };
+  const unknown: Record<string, number> = { global: 0 };
   for (const r of rows) {
     spent.global += Number(r.spent);
-    if (r.t) spent[r.t] = (spent[r.t] ?? 0) + Number(r.spent);
+    unknown.global += Number(r.unknown ?? 0);
+    if (r.t) {
+      spent[r.t] = (spent[r.t] ?? 0) + Number(r.spent);
+      unknown[r.t] = (unknown[r.t] ?? 0) + Number(r.unknown ?? 0);
+    }
   }
   const month = now.toISOString().slice(0, 7);
   const verdicts = evaluateBudgets(settings.budgets, spent);
@@ -180,8 +202,9 @@ export async function evaluateBudgetAlerts(now: Date = new Date(), raise: Raise 
       treatment: v.scope === 'global' ? null : v.scope,
       severity: 'warning',
       message: `Budget ${v.scope === 'global' ? 'global' : v.scope} dépassé pour ${month} : `
-        + `${euros(v.spentMicros)} dépensés pour ${euros(v.budgetMicros)} prévus. Aucun traitement n'est interrompu.`,
-      details: { month, ...v },
+        + `${euros(v.spentMicros)} dépensés pour ${euros(v.budgetMicros)} prévus. Aucun traitement n'est interrompu.`
+        + ((unknown[v.scope] ?? 0) > 0 ? ` Dépense PARTIELLE : ${unknown[v.scope]} appel(s) non chiffré(s), le montant réel peut être supérieur.` : ''),
+      details: { month, ...v, unknownCostCalls: unknown[v.scope] ?? 0 },
       drilldownHref: v.scope === 'global' ? '/admin/ai-costs?period=month' : `/admin/ai-costs?period=month&treatment=${v.scope}`,
       dedupeKey: `budget:${v.scope}:${month}`,
     });

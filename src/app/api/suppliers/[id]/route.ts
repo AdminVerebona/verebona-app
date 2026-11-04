@@ -1,21 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
-import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
-import { suppliers, documentSuppliers, assetFiles, assets, supplierReviewItems } from '@/db/schema';
-import { eq, and } from 'drizzle-orm';
+import { suppliers } from '@/db/schema';
+import { eq, and, ne } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
 import { normalizeName } from '@/services/suppliers/supplier-service';
+import { getSupplierDetail } from '@/services/suppliers/supplier-detail.service';
+import { validateSupplierPatch } from '@/services/suppliers/supplier-validation';
 
-// Lot 49 (SEC-06) : fournisseur du compte actif ; documents liés et
-// éléments de revue re-filtrés sur le compte (une relation incorrecte en
-// base n'expose rien d'un autre compte) ; mise à jour bornée au compte dans
-// son SQL.
+// Lot 49 (SEC-06) : fournisseur du compte actif ; objets liés re-filtrés sur
+// le compte (une relation incorrecte en base n'expose rien d'un autre compte) ;
+// mise à jour bornée au compte dans son SQL.
+//
+// Lot 109B : la fiche `/fournisseurs/[id]` est l'UNIQUE interface (le tiroir
+// fournisseur est supprimé). GET rend la même lecture que `/overview`
+// (sections paginées avec total exact, conflits avec preuve, IBAN masqué) —
+// plus de liste de documents plafonnée à 50, plus d'IBAN en clair, plus de
+// statut global de vérification.
 
-// GET /api/suppliers/[id] — full detail including iban (for drawer)
+// GET /api/suppliers/[id] — fiche (identique à /overview)
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -28,72 +33,11 @@ export async function GET(
     if (!accountId) return apiError(401, 'UNAUTHORIZED', 'No account selected');
 
     const { id } = await params;
-    const supplierId = parseInt(id);
-    if (isNaN(supplierId)) return apiError(400, 'INVALID_INPUT', 'Invalid supplier id');
+    if (!/^\d{1,10}$/.test(id)) return apiError(400, 'INVALID_INPUT', 'Invalid supplier id');
 
-    const [supplier] = await db
-      .select()
-      .from(suppliers)
-      .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId)))
-      .limit(1);
-
-    if (!supplier) return apiError(404, 'NOT_FOUND', 'Supplier not found');
-
-    // Fetch linked documents
-    const linkedDocs = await db
-      .select({
-        documentId: documentSuppliers.documentId,
-        role: documentSuppliers.role,
-        isConfirmed: documentSuppliers.isConfirmed,
-        filename: assetFiles.originalFilename,
-        // Lot 87D : sources du titre affiché (règle unique de toutes les vues).
-        retainedTitle: assetFiles.retainedTitle,
-        webLinkTitle: assetFiles.webLinkTitle,
-        storageName: assetFiles.filename,
-        s3Key: assetFiles.s3Key,
-        publicId: assetFiles.publicId,
-        documentType: assetFiles.documentType,
-        // Lot 108D : Type V2 enregistré (sous-titre des lignes de documents).
-        documentTypeCode: assetFiles.documentTypeCode,
-        documentDate: assetFiles.documentDate,
-        assetId: assetFiles.assetId,
-        assetName: assets.name,
-      })
-      .from(documentSuppliers)
-      .innerJoin(assetFiles, and(eq(assetFiles.id, documentSuppliers.documentId), eq(assetFiles.accountId, accountId)))
-      .leftJoin(assets, and(eq(assets.id, assetFiles.assetId), eq(assets.accountId, accountId)))
-      .where(eq(documentSuppliers.supplierId, supplierId))
-      .limit(50);
-
-    // Fetch open review items
-    const reviewItems = await db
-      .select({
-        id: supplierReviewItems.id,
-        publicId: supplierReviewItems.publicId,
-        itemType: supplierReviewItems.itemType,
-        conflictingField: supplierReviewItems.conflictingField,
-        currentValue: supplierReviewItems.currentValue,
-        detectedValue: supplierReviewItems.detectedValue,
-        detectedName: supplierReviewItems.detectedName,
-        documentId: supplierReviewItems.documentId,
-        status: supplierReviewItems.status,
-      })
-      .from(supplierReviewItems)
-      .where(and(
-        eq(supplierReviewItems.supplierId, supplierId),
-        eq(supplierReviewItems.accountId, accountId),
-        eq(supplierReviewItems.status, 'open'),
-      ))
-      .limit(20);
-
-    // Full supplier data including iban (drawer only)
-    // Lot 87D : chaque document porte son titre AFFICHÉ (le même que la liste, la fiche et la recherche).
-    const documents = linkedDocs.map(({ retainedTitle, webLinkTitle, storageName, s3Key, publicId, ...d }) => ({
-      ...d,
-      documentTypeLabel: documentTypeLabelOrNull(d.documentTypeCode),
-      title: documentTitleFromRecord({ retainedTitle, webLinkTitle, originalFilename: d.filename, filename: storageName, s3Key, publicId: publicId == null ? null : String(publicId) }),
-    }));
-    return NextResponse.json({ supplier, documents, reviewItems });
+    const detail = await getSupplierDetail(accountId, Number(id));
+    if (!detail) return apiError(404, 'NOT_FOUND', 'Supplier not found');
+    return NextResponse.json(detail);
   } catch (err) {
     return SessionService.handleSessionError(err);
   }
@@ -115,40 +59,32 @@ export async function PATCH(
     if (refus) return refus;
 
     const { id } = await params;
-    const supplierId = parseInt(id);
-    if (isNaN(supplierId)) return apiError(400, 'INVALID_INPUT', 'Invalid supplier id');
+    if (!/^\d{1,10}$/.test(id)) return apiError(400, 'INVALID_INPUT', 'Invalid supplier id');
+    const supplierId = Number(id);
 
     const [existing] = await db
       .select({ id: suppliers.id })
       .from(suppliers)
-      .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId)))
+      .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId), ne(suppliers.status, 'deleted')))
       .limit(1);
 
     if (!existing) return apiError(404, 'NOT_FOUND', 'Supplier not found');
 
-    const body = await request.json();
-    const allowedFields = ['name', 'email', 'phone', 'website', 'addressLine1', 'addressLine2',
-      'postalCode', 'city', 'country', 'siren', 'siret', 'vatNumber', 'iban', 'ibanHolderName'];
+    const body = await request.json().catch(() => null);
+    const v = validateSupplierPatch(body);
+    if (!v.ok) return apiError(400, 'INVALID_INPUT', v.message, { field: v.field });
 
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
-    for (const field of allowedFields) {
-      if (field in body) {
-        updates[field] = body[field]?.trim?.() || null;
-      }
-    }
+    const updates: Record<string, unknown> = { ...v.updates, updatedAt: new Date() };
+    if (typeof v.updates.name === 'string') updates.normalizedName = normalizeName(v.updates.name);
 
-    if (body.name) {
-      updates.normalizedName = normalizeName(body.name.trim());
-    }
-
-    const [updated] = await db.update(suppliers)
+    await db.update(suppliers)
       .set(updates as Partial<typeof suppliers.$inferInsert>)
-      .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId)))
-      .returning();
+      .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId)));
 
     // CDC Assistant §31.7 : modification d'un fournisseur.
     await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId, entityId: supplierId });
-    return NextResponse.json({ supplier: updated });
+    // Fiche relue (IBAN masqué) : la réponse n'expose jamais la valeur bancaire.
+    return NextResponse.json({ supplier: (await getSupplierDetail(accountId, supplierId))?.supplier ?? null });
   } catch (err) {
     return SessionService.handleSessionError(err);
   }

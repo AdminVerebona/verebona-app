@@ -16,6 +16,7 @@
 import { toast } from 'sonner';
 import { openDrawer } from '@/lib/drawers';
 import { supplierHref } from '@/lib/supplier-routes';
+import { captureSupplierOrigin, navigateToSupplier } from '@/lib/suppliers/supplier-return';
 import type { CardLinkRef } from '@/services/to-process/card-links';
 import { DOCUMENT_GONE_MESSAGE, DOCUMENT_OPEN_FAILED_MESSAGE } from './document-preview';
 import { notifyToProcessChanged } from './useToProcessResolution';
@@ -106,6 +107,12 @@ export async function openCardLink(
     }
     // Page : la file note son état pour le retour, puis on navigue (historique conservé).
     notifyLeaving(cardId, linkKey);
+    // Lot 109B : fiche fournisseur ouverte dans l'application avec mémoire de la
+    // carte quittée (« Retour à « À traiter » » la rétablit, défilement compris).
+    if (ref.kind === 'supplier') {
+      if (!deps.navigate) { navigateToSupplier(ref.id); return 'opened'; }
+      captureSupplierOrigin(ref.id);
+    }
     const go = deps.navigate ?? ((href: string) => { if (typeof window !== 'undefined') window.location.assign(href); });
     go(dest.href);
     return 'opened';

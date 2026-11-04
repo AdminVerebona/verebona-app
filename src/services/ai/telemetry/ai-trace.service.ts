@@ -18,6 +18,8 @@ import { getExecutionContext, type ModelRank } from './execution-context';
 import { currentJobContext } from '../queue/job-context';
 import { currentSyncConfigSnapshot, snapshotTrace } from '../config/execution-snapshot';
 import { getCachedPrice } from '../gateway/pricing/pricing.repository';
+import { priceCall } from '../gateway/cost-catalog';
+import { alertMissingPrice, computeTracePricing, writeTracePricing } from './trace-pricing';
 import type { ProviderAttemptTrace, ProviderRequestTrace } from '../gateway/diagnostics/taxonomy';
 import type { CallCaptureInput } from './call-capture';
 import type { AiAttachment } from '../gateway/types';
@@ -231,7 +233,11 @@ function jobAttemptMetadata(t: Pick<CallTrace, 'jobId'>): { jobAttempt?: number 
  * (`ai_usage_event.id`, lot 33D : rattachement du diagnostic), `null` s'il
  * n'a pas pu être écrit.
  */
-export async function recordCallTrace(t: CallTrace): Promise<number | null> {
+export async function recordCallTrace(t0: CallTrace): Promise<number | null> {
+  // Lot 109L (point C) : tarification figée à la trace — statut explicite, coût
+  // exact, jetons de raisonnement facturés en sortie (voir trace-pricing.ts).
+  const tarif = computeTracePricing(t0, { priceCall });
+  const t: CallTrace = tarif.costMicros === t0.costMicros ? t0 : { ...t0, costMicros: tarif.costMicros };
   // Version IA effective et commit déployé (§9.1, GEN-008). Lus ici plutôt
   // que demandés à chaque appelant : une information de traçabilité qu'il
   // faut penser à passer finit par manquer là où elle compte le plus.
@@ -299,6 +305,11 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
         // le tarif appliqué reste lisible même après une révision de grille.
         // `null` = aucun tarif connu (coût non calculable, COST-008).
         pricing: pricingRef(t.provider, t.model),
+        // Lot 109L : compteurs utiles au prix et statut tarifaire, figés.
+        pricingStatus: tarif.status,
+        ...(tarif.exactMicros !== null ? { costExactMicros: tarif.exactMicros } : {}),
+        ...(tarif.usage.thoughts !== null ? { pricingUsage: tarif.usage } : {}),
+        ...(tarif.recomputed ? { costIncludesThoughts: true, gatewayCostMicros: t0.costMicros } : {}),
         ...(t.callerMode ? { callerMode: t.callerMode } : {}),
         ...configMetadata(t),
         ...(t.callKind && t.callKind !== 'analysis' ? { callKind: t.callKind } : {}),
@@ -338,6 +349,9 @@ export async function recordCallTrace(t: CallTrace): Promise<number | null> {
     } as never), aiUsageEvent.id);
     await writeMasterFields('ai_usage_event', rows?.[0]?.id, master);
     const id = rows?.[0]?.id ?? null;
+    await writeTracePricing(id, tarif);
+    if (tarif.status === 'missing') void alertMissingPrice(t.provider, t.model);
+    void refreshPricing();
     await writeBusinessExecution(id, execution.id);
     await captureOf(t, id, execution.id);
     return id;
@@ -415,13 +429,30 @@ async function writeMasterFields(
 /** Tarif en cache au moment de l'appel, sous forme de référence figée (COST-007). */
 export function pricingRef(provider: string, model: string): {
   inputMicros: number; outputMicros: number; currency: string; source: string; verified: boolean;
+  id?: number; effectiveFrom?: string; stale?: boolean; ref?: string; tiers?: unknown;
 } | null {
   try {
     const p = getCachedPrice(provider, model);
     return p
-      ? { inputMicros: p.inputMicros, outputMicros: p.outputMicros, currency: p.currency, source: String(p.source), verified: p.verified }
+      ? {
+        inputMicros: p.inputMicros, outputMicros: p.outputMicros, currency: p.currency, source: String(p.source), verified: p.verified,
+        // Lot 109L : version du tarif appliqué (ligne, date, statut non confirmé, paliers).
+        ...(p.id !== undefined ? { id: p.id } : {}),
+        ...(p.effectiveFrom ? { effectiveFrom: p.effectiveFrom.toISOString() } : {}),
+        ...(p.stale ? { stale: true } : {}),
+        ...(p.sourceReference ? { ref: p.sourceReference } : {}),
+        ...(p.tiers && p.tiers.length ? { tiers: p.tiers } : {}),
+      }
       : null;
   } catch {
     return null;
   }
+}
+
+/** Lot 109L : relecture opportuniste de la clé tarifaire partagée (≤ 30 s). Ne lève jamais. */
+async function refreshPricing(): Promise<void> {
+  try {
+    const { refreshPricingCacheIfStale } = await import('../gateway/pricing/pricing.repository');
+    if (typeof refreshPricingCacheIfStale === 'function') await refreshPricingCacheIfStale();
+  } catch { /* double de test sans cette fonction */ }
 }

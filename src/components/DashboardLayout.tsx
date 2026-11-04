@@ -39,6 +39,8 @@ import { CguvCheckUnavailableNotice } from './shell/CguvCheckUnavailableNotice';
 import { CGUV_CHECK_UNAVAILABLE_EVENT, CGUV_REACCEPTANCE_EVENT, reacceptanceStatusOf } from '@/lib/legal/reacceptance-gate';
 import { switchToAccount } from './account/AccountSwitcher';
 import { readSpaceParam } from '@/lib/shell/space-link';
+import { CLOSE_ALL_DRAWERS_EVENT } from '@/lib/drawers';
+const SupplierReturnManager = dynamic(() => import('./suppliers/SupplierReturnManager').then(m => ({ default: m.SupplierReturnManager })), { ssr: false });
 const GlobalDrawerHost = dynamic(() => import('./drawers/GlobalDrawerHost').then(m => ({ default: m.GlobalDrawerHost })), { ssr: false });
 // Lot 34G : parcours de création (document, bien, échéance) ouverts depuis n'importe quel écran (src/lib/create-flows.ts).
 const GlobalCreateFlowHost = dynamic(() => import('./drawers/GlobalCreateFlowHost').then(m => ({ default: m.GlobalCreateFlowHost })), { ssr: false });
@@ -171,7 +173,14 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
       }
     };
     window.addEventListener('open-document-drawer', handler);
-    return () => window.removeEventListener('open-document-drawer', handler);
+    // Lot 109B : la fiche fournisseur s'affiche — le tiroir document global se ferme
+    // (il est rouvert au retour par l'instantané de l'écran quitté).
+    const closeAll = () => setGlobalDocDrawerOpen(false);
+    window.addEventListener(CLOSE_ALL_DRAWERS_EVENT, closeAll);
+    return () => {
+      window.removeEventListener('open-document-drawer', handler);
+      window.removeEventListener(CLOSE_ALL_DRAWERS_EVENT, closeAll);
+    };
   }, []);
 
   // ══════════════════════════════════════════════════════════════════════
@@ -560,6 +569,8 @@ export function DashboardLayout({ children, user: userProp }: DashboardLayoutPro
 
     {/* Échéance, équipement, pièce : tiroirs ouverts depuis n'importe quel écran (src/lib/drawers.ts). */}
     <GlobalDrawerHost />
+    {/* Lot 109B : retour contextuel depuis la fiche fournisseur (aucun rendu). */}
+    <SupplierReturnManager />
     {/* Ajouter un document / un bien / créer une échéance, ouverts directement (actions de l'assistant). */}
     <GlobalCreateFlowHost />
 

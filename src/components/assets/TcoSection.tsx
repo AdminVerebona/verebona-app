@@ -50,6 +50,15 @@
  *     indicateurs) ; moyenne sans seuil (« Valeur extrapolée… » fournie par le
  *     moteur) ; actualisation automatique sur les événements de mutation
  *     existants, regroupés (`./tco-refresh`), année choisie conservée.
+ *   · Lot 109C : plus de paragraphes d’alertes génériques empilés —
+ *     « Points à vérifier » (seulement s'il existe un cas OUVERT : anomalie à
+ *     corriger ou information manquante, regroupée, avec nombre exact et accès
+ *     à chaque source), lecture du montant en cours (108B, ton neutre), puis
+ *     « Bon à savoir » (exclusions normales, déduplication prouvée, vos
+ *     choix). Diagnostics calculés par le serveur (`tco/diagnostics.ts`).
+ *     « Dépenses non retenues » : des LIGNES et leurs motifs (à revoir /
+ *     exclusions normales), pas des erreurs. « Aucune anomalie détectée » ne
+ *     veut jamais dire « toutes les dépenses possibles sont connues ».
  *
  * Aucun bouton « Modifier » du total : les corrections se font sur les
  * sources (fiche, document) ou par « Ajouter / Retirer du TCO » ligne par
@@ -67,6 +76,8 @@ import { toast } from 'sonner';
 import { TCO_CALCULATION_INFO, type TcoDto } from '@/services/business-operations/tco/dto';
 import { TcoJustificatif } from './tco-justificatif';
 import { TcoAmountRecoveryNotice } from './tco-amount-recovery';
+import { TcoInformationDiagnostics, TcoOpenDiagnostics } from './tco-diagnostics';
+import type { TcoDiagnosticSource } from '@/services/business-operations/tco/diagnostics';
 import { TcoUsageSection } from './TcoUsageSection';
 import { createCoalescedRefresh, type CoalescedRefresh } from '@/lib/home/coalesced-refresh';
 import { tcoKeptYear, TCO_REFRESH_WINDOW_MS, watchTcoMutations } from './tco-refresh';
@@ -163,10 +174,33 @@ function Ligne({ label, value, muted, strong }: { label: string; value: string; 
   );
 }
 
+/**
+ * Lot 109D : détail consultable d'une dépense (composition du prix net, méthode de calcul, contexte de rattachement)
+ * — fermé par défaut : la ligne principale reste « intitulé — date — montant ».
+ */
+function TcoLigneDetail({ l }: { l: Line }) {
+  const c = l.composition;
+  if (!c && !l.context) return null;
+  const m = (v: number) => (c ? minor(v, c.currency) : '');
+  return (
+    <details className="mt-0.5 text-xs text-muted-foreground" data-tco-line-detail>
+      <summary className="cursor-pointer select-none min-h-[32px] md:min-h-0 inline-flex items-center text-primary">Détail du calcul</summary>
+      <div className="mt-1 space-y-0.5 pl-1">
+        {c && c.linesMinor > 0 && <p data-tco-composition="lines">Articles : {m(c.linesMinor)}</p>}
+        {c && c.feesMinor > 0 && <p data-tco-composition="fees">Frais (livraison, port…) : + {m(c.feesMinor)}</p>}
+        {c && c.discountsMinor > 0 && <p data-tco-composition="discounts">Remises : − {m(c.discountsMinor)} (intégrées au prix, pas un avoir)</p>}
+        {c && <p data-tco-composition="net" className="text-[color:var(--text-primary)]">Prix net TTC : {m(c.netMinor)}</p>}
+        {c && <p data-tco-composition="method">{c.method}</p>}
+        {l.context && <p data-tco-line-context>{l.context}</p>}
+      </div>
+    </details>
+  );
+}
+
 /** Lot 80A : geste « Ajouter / Retirer du TCO » demandé sur une ligne (confirmé dans la ligne). */
 type Decide = (l: Line, action: 'INCLUDE' | 'EXCLUDE', confirmDuplicate: boolean) => Promise<{ ok: true } | { ok: false; duplicateWarning?: string }>;
 
-function LigneDepense({ l, t, canEdit = false, onDecide }: { l: Line; t: TcoDto; canEdit?: boolean; onDecide?: Decide }) {
+function LigneDepense({ l, t, canEdit = false, onDecide, review = false, focused = false }: { l: Line; t: TcoDto; canEdit?: boolean; onDecide?: Decide; review?: boolean; focused?: boolean }) {
   const retenue = RETENUE.has(l.status);
   // Lot 80A : confirmation légère dans la ligne (pas de fenêtre), avertissement de doublon présumé explicite.
   const [confirm, setConfirm] = useState<null | { action: 'INCLUDE' | 'EXCLUDE'; duplicateWarning: string | null }>(null);
@@ -189,7 +223,10 @@ function LigneDepense({ l, t, canEdit = false, onDecide }: { l: Line; t: TcoDto;
   // Lot 75D (D) : montant inconnu — jamais « 0,00 € ».
   const valeur = l.amountUnknown ? 'Montant inconnu' : montant != null ? `${signe}${eur(montant)}` : minor(l.amountMinor, l.currency);
   return (
-    <div className="py-2 text-sm" data-tco-line={l.id} data-tco-line-status={l.status}>
+    <div
+      className={`py-2 text-sm outline-none ${focused ? 'rounded-md ring-2 ring-primary/40 bg-primary/5 px-2 -mx-2' : ''}`}
+      tabIndex={-1} data-tco-line={l.id} data-tco-line-status={l.status} {...(review ? { 'data-tco-line-review': true } : {})}
+    >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-[color:var(--text-primary)] break-words">{l.label}</p>
@@ -203,6 +240,8 @@ function LigneDepense({ l, t, canEdit = false, onDecide }: { l: Line; t: TcoDto;
         </div>
         <span className={`shrink-0 tabular-nums ${l.amountUnknown ? 'text-muted-foreground' : ''}`}>{valeur}</span>
       </div>
+      {/* Lot 109C : ligne concernée par un point à vérifier (mention écrite, pas seulement une couleur). */}
+      {review && <p className="text-xs font-medium text-[color:var(--attention-on-soft)] mt-0.5" data-tco-line-review-label>À revoir — voir « Points à vérifier »</p>}
       {!retenue && (
         <p className="text-xs text-muted-foreground mt-0.5" data-tco-line-reason>
           {l.reason === 'USER_EXCLUDED' ? t.lineReasonLabels[l.reason] : <>{t.lineStatusLabels[l.status]}{l.reason ? ` — ${t.lineReasonLabels[l.reason]}` : ''}</>}
@@ -218,6 +257,7 @@ function LigneDepense({ l, t, canEdit = false, onDecide }: { l: Line; t: TcoDto;
             {parUtilisateur === 'INCLUDE' ? l.note.replace(/^Ajoutée au coût de possession par vous\. /, '') : l.note}
           </p>
         )}
+      <TcoLigneDetail l={l} />
       <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
         <TcoJustificatif fileId={l.fileId} />
         {/* Lot 68 : justificatifs repris par cette dépense consolidée (plus listés dans les non retenues). */}
@@ -280,6 +320,8 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const [retainedOpen, setRetainedOpen] = useState(false); // L76G : sous-tiroir fermé par défaut
   const [retainedFilter, setRetainedFilter] = useState<'ALL' | 'YEAR'>('ALL');
   const [excludedOpen, setExcludedOpen] = useState(false); // L80A : sous-tiroir des non retenues fermé par défaut
+  // Lot 109C : ligne à montrer depuis un point à vérifier (sous-tiroir ouvert, ligne mise en évidence et focalisée).
+  const [focusLine, setFocusLine] = useState<string | null>(null);
 
   // Lot 81D : lecture du TCO par le mécanisme existant de rafraîchissement regroupé (une lecture par rafale
   // d'événements, réponses anciennes écartées, données affichées conservées pendant la relecture).
@@ -376,6 +418,27 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
     }
   };
 
+  // Lot 109C : « Voir la dépense » — ouvre le sous-tiroir de la ligne (retenue ou non), toutes années.
+  const showLine = useCallback((src: TcoDiagnosticSource) => {
+    if (!src.lineId) return;
+    setFocusLine(src.lineId);
+    if (src.retained) { setRetainedFilter('ALL'); setExcludedOpen(false); setRetainedOpen(true); } else { setRetainedOpen(false); setExcludedOpen(true); }
+  }, []);
+  useEffect(() => {
+    if (!focusLine || !(retainedOpen || excludedOpen)) return;
+    let essais = 10;
+    let h: ReturnType<typeof setTimeout> | null = null;
+    const viser = () => {
+      const el = document.querySelector<HTMLElement>(`[data-tco-line="${typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(focusLine) : focusLine}"]`);
+      if (el) { el.scrollIntoView({ block: 'center' }); el.focus({ preventScroll: true }); return; }
+      if (essais-- > 0) h = setTimeout(viser, 60);
+    };
+    h = setTimeout(viser, 60);
+    return () => { if (h) clearTimeout(h); };
+  }, [focusLine, retainedOpen, excludedOpen]);
+  // Sous-tiroirs refermés : plus de ligne mise en évidence (une réouverture normale ne la vise plus).
+  useEffect(() => { if (!retainedOpen && !excludedOpen) setFocusLine(null); }, [retainedOpen, excludedOpen]);
+
   const t = data;
   // Lot 108C : complément estimé des dépenses d'usage (moteur) — distingue le réel documenté du TCO avec estimations.
   const estime = t?.summary.estimatedUsageComplementCents ?? 0;
@@ -391,6 +454,15 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   // Lot 68 : le serveur ne transmet que les lignes utiles pour CE bien (`tcoUserView`) — ni « autre bien », ni
   // justificatif déjà porté par une dépense consolidée affichée (tous restent au diagnostic BO). Garde défensive.
   const ecartees = toutes.filter((l) => !RETENUE.has(l.status) && l.status !== 'OUT_OF_SCOPE');
+  // Lot 109C : diagnostics du serveur — lignes « à revoir » (cas ouverts) vs exclusions normales.
+  const diag = t?.diagnostics ?? null;
+  const aRevoir = new Set(diag?.reviewLineIds ?? []);
+  const ecarteesARevoir = ecartees.filter((l) => aRevoir.has(l.id));
+  const ecarteesNormales = ecartees.filter((l) => !aRevoir.has(l.id));
+  const motifs = t?.otherLinesByReason ?? [];
+  const lignesARevoir = motifs.reduce((n, m) => n + m.review, 0);
+  const lignesNonRetenues = motifs.reduce((n, m) => n + m.count, 0);
+  const enCours = t?.amountRecovery ? { ...t.amountRecovery, items: t.amountRecovery.items.filter((i) => i.state === 'IN_PROGRESS') } : null;
   // Lot 76G : indicateurs annuels calculés par le moteur (aucun recalcul ici).
   const annual = t?.annual ?? null;
   const anneeSel = annual ? tcoKeptYear(year, annual.years, annual.defaultYear) : null;
@@ -479,10 +551,13 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                     Dont {eur(estime)} estimés à partir de vos forfaits d’usage, pour les périodes écoulées sans justificatif suffisant : ce ne sont ni des factures ni des preuves de paiement.
                   </p>
                 )}
+                {/* Lot 109C : « aucune anomalie détectée » ≠ « toutes les dépenses possibles sont connues ». */}
                 <p className={`text-xs mt-2 ${t.status === 'COMPLETE' ? 'text-muted-foreground' : 'text-[color:var(--attention-on-soft)]'}`} data-tco-completeness={t.status}>
-                  {t.status === 'COMPLETE' ? `Calcul complet : ${t.reliability.operationsCounted + t.reliability.documentsCounted} élément(s) documenté(s).`
+                  {t.status === 'COMPLETE' ? `Aucune anomalie détectée sur ${t.reliability.operationsCounted + t.reliability.documentsCounted} élément(s) documenté(s). Le coût ne comprend que les dépenses connues de Verebona.`
                     : t.status === 'PARTIAL' ? 'Résultat partiel : seule une partie des éléments a pu être lue.'
-                      : 'Couverture incomplète : voir les alertes ci-dessous.'}
+                      : (diag?.open.families ?? 0) > 0 ? 'Couverture incomplète : voir les points à vérifier ci-dessous.'
+                        : (diag?.inProgress ?? 0) > 0 ? 'Couverture incomplète : lecture automatique en cours (voir ci-dessous).'
+                          : 'Couverture incomplète : certaines informations manquent.'}
                 </p>
               </div>
 
@@ -512,7 +587,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                         <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-average-extrapolated>{annual.average.extrapolationLabel}.</p>
                       )}
                       {annual.average.cents != null && annual.average.incomplete && (
-                        <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5">Données manquantes : valeur incomplète (voir les alertes).</p>
+                        <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5">Données manquantes : valeur incomplète (voir les points à vérifier).</p>
                       )}
                     </div>
                     <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="year">
@@ -646,6 +721,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                     onClick={() => setExcludedOpen(true)}
                     aria-expanded={excludedOpen}
                     aria-haspopup="dialog"
+                    aria-label={`Dépenses non retenues : ${lignesNonRetenues || ecartees.length} ligne(s) examinée(s) et non comptée(s), avec leur motif${lignesARevoir ? `, dont ${lignesARevoir} à revoir` : ''}`}
                     className="w-full min-h-[44px] md:min-h-[36px] flex items-center justify-between gap-3 rounded-lg border border-border px-4 py-2.5 text-left hover:bg-muted/50 transition-colors"
                     data-tco-excluded-trigger
                   >
@@ -655,18 +731,18 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 </section>
               )}
 
-              {/* ── Lot 108B : justificatifs sans montant (lecture en cours, à confirmer, introuvable) ── */}
-              <TcoAmountRecoveryNotice recovery={t.amountRecovery} />
-
-              {/* ── Alertes ── */}
-              {(t.warningLabels.length > 0 || t.reliability.unconverted.length > 0) && (
-                <Bloc title="Alertes de couverture" data-tco-warnings>
-                  {t.warningLabels.map((w) => <p key={w} className="text-xs text-[color:var(--attention-on-soft)]">{w}</p>)}
-                  {t.reliability.unconverted.length > 0 && (
-                    <p className="text-xs text-muted-foreground">Non converti : {t.reliability.unconverted.map((u) => minor(u.amountMinor, u.currency)).join(', ')}.</p>
-                  )}
+              {/* ── Lot 109C : points à vérifier — seulement s'il existe un cas OUVERT (anomalie, information manquante) ── */}
+              {diag && diag.open.families > 0 && (
+                <Bloc title={`Points à vérifier (${diag.open.families})`} data-tco-warnings>
+                  <TcoOpenDiagnostics diagnostics={diag} assetId={assetId} onShowLine={showLine} />
                 </Bloc>
               )}
+
+              {/* ── Lot 108B : lecture automatique du montant en cours (ton neutre, rien à faire) ; échecs : points à vérifier ── */}
+              <TcoAmountRecoveryNotice recovery={enCours} />
+
+              {/* ── Lot 109C : informations neutres (exclusions normales, déduplication prouvée, vos choix) ── */}
+              {diag && <TcoInformationDiagnostics diagnostics={diag} onShowLine={showLine} />}
               {/* Lot 108A (§D) : information neutre (texte exact de la décision PO) — jamais une alerte. */}
               <p className="text-xs text-muted-foreground" role="note" data-tco-calculation-info>{TCO_CALCULATION_INFO}</p>
             </>
@@ -710,7 +786,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 {!chargementAnnee && depensesFiltrees.length === 0 && (
                   <p className="text-sm text-muted-foreground py-1.5">{retainedFilter === 'YEAR' ? 'Aucune dépense retenue datée de cette année.' : 'Aucune dépense retenue.'}</p>
                 )}
-                {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} />)}
+                {depensesFiltrees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} review={aRevoir.has(l.id)} focused={focusLine === l.id} />)}
               </div>
               {/* Lot 81D : avoirs, remboursements et indemnités de l'année (net de l'indicateur, même sélection). */}
               {creditsAnnee.length > 0 && (
@@ -753,14 +829,43 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
               </button>
               <SheetTitle>{`Dépenses non retenues ou non attribuées (${ecartees.length}${t.linesTruncated ? ' · liste abrégée' : ''})`}</SheetTitle>
               <SheetDescription>
-                Dépenses examinées mais non comptées dans le coût cumulé, avec leur motif.{canEdit ? ' « Ajouter au TCO » les compte : votre choix prime sur le traitement automatique et reste réversible.' : ''}
+                Dépenses examinées mais non comptées dans le coût cumulé, avec leur motif : ce sont des lignes, pas des erreurs.{canEdit ? ' « Ajouter au TCO » les compte : votre choix prime sur le traitement automatique et reste réversible.' : ''}
               </SheetDescription>
             </SheetHeader>
             <div className="flex-1 overflow-y-auto px-5 py-3">
-              <div className="divide-y divide-border">
-                {ecartees.length === 0 && <p className="text-sm text-muted-foreground py-1.5">Aucune dépense non retenue.</p>}
-                {ecartees.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} />)}
-              </div>
+              {/* Lot 109C : synthèse par motif sur TOUTES les lignes (pas seulement la page) — exclusions normales vs à revoir. */}
+              {motifs.length > 0 && (
+                <div className="pb-3 border-b border-border space-y-1" data-tco-excluded-summary>
+                  <p className="text-xs text-muted-foreground" data-tco-excluded-summary-counts>
+                    {lignesNonRetenues} ligne(s) : {lignesNonRetenues - lignesARevoir} exclusion(s) normale(s){lignesARevoir ? `, ${lignesARevoir} à revoir` : ''}.
+                  </p>
+                  <ul className="text-xs text-muted-foreground space-y-0.5">
+                    {motifs.map((m) => (
+                      <li key={`${m.status}|${m.reason ?? ''}`} className="flex items-start justify-between gap-3" data-tco-excluded-reason={m.reason ?? m.status}>
+                        <span className="min-w-0 break-words">{m.label}{m.review ? ` (dont ${m.review} à revoir)` : ''}</span>
+                        <span className="shrink-0 tabular-nums">{m.count}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {ecartees.length === 0 && <p className="text-sm text-muted-foreground py-1.5">Aucune dépense non retenue.</p>}
+              {ecarteesARevoir.length > 0 && (
+                <div className="pt-3" data-tco-excluded-review>
+                  <p className="vb-app-subsection m-0">{`À revoir (${ecarteesARevoir.length})`}</p>
+                  <div className="divide-y divide-border">
+                    {ecarteesARevoir.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} review focused={focusLine === l.id} />)}
+                  </div>
+                </div>
+              )}
+              {ecarteesNormales.length > 0 && (
+                <div className="pt-3" data-tco-excluded-normal>
+                  {ecarteesARevoir.length > 0 && <p className="vb-app-subsection m-0">{`Exclusions normales (${ecarteesNormales.length})`}</p>}
+                  <div className="divide-y divide-border">
+                    {ecarteesNormales.map((l) => <LigneDepense key={l.id} l={l} t={t} canEdit={canEdit} onDecide={decide} focused={focusLine === l.id} />)}
+                  </div>
+                </div>
+              )}
               {t.linesTruncated && restantes > 0 && (
                 <div className="pt-3 space-y-2">
                   <p className="text-xs text-muted-foreground">Liste abrégée : {affichees} ligne(s) présentée(s) sur {t.linesTotal}. Les totaux portent sur toutes les lignes.</p>

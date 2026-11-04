@@ -139,7 +139,13 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
       // Lot 107D : prix multi-articles et arbitrages rouverts (fin de registre).
       'COH-PRICE-MULTI-ARTICLE',
       // Lot 108 : contrôles A, B et D ajoutés en fin de registre.
-      'COH-TCO-SAME-FACT', 'COH-TCO-AMOUNT-RECOVERY', 'COH-DOC-DATE-FALLBACK']);
+      'COH-TCO-SAME-FACT', 'COH-TCO-AMOUNT-RECOVERY', 'COH-DOC-DATE-FALLBACK',
+      // Lot 109A : relations métier autour de l'Opération pivot (fin de registre).
+      'COH-OPERATION-RELATIONS',
+      // Lot 109D : remises jamais lues comme des avoirs (fin de registre).
+      'COH-TCO-COMMERCIAL-ADJUSTMENTS',
+      // Lot 109K : couverture PDF (fin de registre).
+      'COH-T1-PDF-COVERAGE']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

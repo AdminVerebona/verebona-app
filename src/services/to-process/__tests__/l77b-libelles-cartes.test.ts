@@ -117,7 +117,7 @@ describe('L77B-02 — cible : jamais « #id »', () => {
   });
 
   it('L77B-02b « À quelle date « Contrôle technique » a-t-il lieu ? » : « Événement d’agenda » si le titre manque', () => {
-    expect(L.targetFallbackLabel('AGENDA_ITEM')).toBe('Événement d’agenda');
+    expect(L.targetFallbackLabel('AGENDA_ITEM')).toBe('Événement'); // lot 109I
   });
 
   it('L77B-02c un titre saisi qui CONTIENT un numéro (« Facture #123 ») est conservé', () => {
@@ -132,7 +132,7 @@ describe('L77B-02 — cible : jamais « #id »', () => {
       { id: 10, title: '  ', linkId: null, assetId: null, assetName: null },
     ]);
     expect(r.find((x) => x.id === 9)!.context).toEqual({ label: 'Contrôle technique', assetId: 1, assetName: 'Clio' });
-    expect(r.find((x) => x.id === 10)!.context).toEqual({ label: 'Événement d’agenda', assetId: null, assetName: null });
+    expect(r.find((x) => x.id === 10)!.context).toEqual({ label: 'Événement', assetId: null, assetName: null });
   });
 });
 
@@ -239,7 +239,7 @@ describe('L77B-03 — toutes les familles : aucun libellé technique', () => {
     expect(lien.proposals[1]).not.toHaveProperty('sourceContext');
     expect(lien.proposals[1].label).toBe('Bien sans nom');
     const agenda = presenter(familles.find(([n]) => n.startsWith('DATA-AGENDA-DATE'))![1]);
-    expect(agenda.target.label).toBe('Événement d’agenda');
+    expect(agenda.target.label).toBe('Événement');
     expect(agenda.question).toBe('À quelle date « Contrôle technique » a-t-il lieu ?');
     const prix = presenter(familles.find(([n]) => n.startsWith('DATA-ACQUISITION-PRICE'))![1]);
     expect(prix.proposals.map((p) => p.label.replace(/\s/g, ' '))).toEqual(['245 000,5 €', '250 000 €']);

@@ -26,6 +26,7 @@ import { areBusinessEquivalent, realAlternatives } from './equivalence';
 import { AUTHORITY_EQUIVALENCE_MARGIN, isAtLeast, weakestConfidence, confidenceRank } from './confidence';
 import { checkCriticalGate } from './critical-fields';
 import { canRequestAiReview } from './ai-exclusion';
+import { isLatestOccurrenceField, isYearlyRecurringDeadline, planLatestOccurrence } from './latest-occurrence';
 
 export function decide(input: DecisionInput): ReconciliationDecision {
   const base = {
@@ -45,6 +46,19 @@ export function decide(input: DecisionInput): ReconciliationDecision {
     return { ...base, proposedValue: null, action: 'ignore',
       reasonCode: 'UNNORMALIZABLE_VALUE', confidence: 'conflictual',
       evidenceIds: input.candidates.map((c) => c.evidenceId) };
+  }
+
+  // ── Lot 109J : champ « dernière occurrence » (dernier entretien, dernier
+  //    contrôle…) ou échéance annuelle renouvelée — des événements SUCCESSIFS
+  //    ne sont pas une contradiction ; un justificatif antérieur ne remplace
+  //    jamais une date plus récente (`latest-occurrence.ts`). ──
+  if (isLatestOccurrenceField(input.fieldKey) || isYearlyRecurringDeadline(input.fieldKey)) {
+    const plan = planLatestOccurrence(isEmpty(input.current) ? null : input.current, usable, { yearlyAligned: isYearlyRecurringDeadline(input.fieldKey) });
+    if (plan.kind === 'KEEP_CURRENT') {
+      return { ...base, proposedValue: input.current!.value, action: 'keep', reasonCode: 'OLDER_OCCURRENCE',
+        confidence: 'certain', evidenceIds: plan.olderEvidenceIds };
+    }
+    if (plan.kind === 'DECIDE') return decide({ ...input, candidates: plan.candidates });
   }
 
   // ── Étapes 2 à 4 : autorité, puis date ─────────────────────────────────

@@ -49,7 +49,8 @@ import type { AnalysisContext, ExtractedTable, SourceInput, VisualObservation } 
 import type { AccountCapabilities } from '@/services/account-capabilities.service';
 import type { AssetFamily as V2AssetFamily } from '@/lib/referential/v2';
 import type { SourceRereadCall, SourceRereadResult } from './source-reread';
-import type { T1AnalyzeDocumentOutput, T1Fact } from '../master/t1-contract';
+import type { ProjectedFact, T1AnalyzeDocumentOutput, T1Fact } from '../master/t1-contract';
+import type { RepairPropagationOutcome } from '../operation-candidates/repair-propagation.store';
 
 type Row = Record<string, unknown>;
 const num = (v: unknown, def: number) => {
@@ -338,6 +339,10 @@ function storedDiagnostics(v: Record<string, unknown> | null | undefined) {
     }
     : null;
   if (verification && Array.isArray(d.pagesCitedUnverified)) (verification as { citedUnverified?: number[] }).citedUnverified = nums(d.pagesCitedUnverified);
+  // Lot 109K (COR-01) : le verdict par page survit aux reprises (jamais perdu par une réécriture de la couverture).
+  if (verification && Array.isArray(d.pageDetails)) Object.assign(verification, { pageDetails: d.pageDetails });
+  if (verification && d.verifierVersion) Object.assign(verification, { verifierVersion: d.verifierVersion });
+  if (verification && d.textLayer) Object.assign(verification, { textLayer: d.textLayer });
   return {
     verification,
     normalisation: {
@@ -348,6 +353,17 @@ function storedDiagnostics(v: Record<string, unknown> | null | undefined) {
     continuationRuns: Number(d.continuationRuns ?? 0),
     // Lot 54G : relectures du fichier (cumul du document).
     sourceReread: { runs: Number(d.sourceRereads ?? 0), failed: Number(d.sourceRereadsFailed ?? 0), resolved: Number(d.sourceRereadResolved ?? 0) },
+    // Lot 109K (COR-02) : dernière propagation d'une réparation (conservée d'une reprise à l'autre).
+    repairPropagation: (d.repairPropagation ?? null) as Record<string, unknown> | null,
+  };
+}
+
+/** Lot 109K (COR-02) : résumé borné d'une propagation pour le diagnostic de couverture. */
+function propagationSummary(o: RepairPropagationOutcome): Record<string, unknown> {
+  return {
+    decision: o.decision, reason: o.reason, newFacts: o.newFactIds.length, categories: o.categories,
+    candidates: o.candidates.slice(0, 10).map((c) => ({ key: c.candidateKey, decision: c.decision, from: c.previousId, to: c.newId, changes: c.changes.slice(0, 12) })),
+    t3: o.t3, at: new Date().toISOString(),
   };
 }
 
@@ -420,6 +436,13 @@ async function retryDocument(p: {
       ? selectSourceRereadUnits((await loadDocumentSourceUnits(p.fileId, { accountId: p.accountId, kinds: ['VISUAL_OBSERVATION'], limit: 5_000 })).map(toCovered), sourceRereadCap(p.env))
       : [];
     if (aRelire.length === 0) {
+      // Lot 109K (COR-01) : avant tout contrôle manuel, confrontation DÉTERMINISTE des pages au texte original
+      // déjà persisté (aucune IA, empreinte : jamais rejouée à l'identique).
+      const { reverificationDue, reverifyStoredCoverage } = await import('./stored-reverification');
+      if (reverificationDue({ qualityState: p.qualityState, verification: cov?.verification })) {
+        const rv = await reverifyStoredCoverage({ accountId: p.accountId, fileId: p.fileId, maxRetries: p.maxRetries });
+        if (rv.result !== 'SKIPPED') return issue(rv.requeued ? 'requeued' : 'repaired', `REVERIFIED_${rv.result}`);
+      }
       await pgClient.unsafe(
         `UPDATE document_extraction_coverage SET next_retry_at = NULL, last_retry_at = NOW(), last_retry_result = 'MANUAL_CHECK_REQUIRED' WHERE file_id = $1`,
         [p.fileId] as never[],
@@ -493,7 +516,9 @@ async function retryDocument(p: {
 
   // Faits ajoutés : projection (registre, cibles vérifiées), provenance, écriture.
   const linker = new SourceUnitLinker(units);
-  const ajout = facts.length > 0 ? await appendRepairedFacts({ ...p, facts, linker }) : { inserted: [], all: [] };
+  const ajout: Awaited<ReturnType<typeof appendRepairedFacts>> = facts.length > 0
+    ? await appendRepairedFacts({ ...p, facts, linker, propagationOrigin: p.textOnly ? 'coherence-control' : 't1-completeness-retry' })
+    : { inserted: [], all: [] };
   const nouveaux = ajout.inserted;
   // Couverture : faits de la réparation, y compris ceux déjà écrits par une reprise interrompue (TC11).
   const couvertes = new Set(ajout.all.flatMap((f) => f.sourceUnitIds ?? []).map((id) => id.replace(/:cell:\d+$/, '')));
@@ -568,6 +593,11 @@ async function retryDocument(p: {
     },
   });
   if (report.diagnostics) (report.diagnostics as T1CoverageDiagnostics & { continuationRuns?: number }).continuationRuns = runs;
+  // Lot 109K (COR-02) : diagnostic de la propagation de CETTE reprise (sinon le précédent est conservé).
+  if (report.diagnostics) {
+    const pr = ajout.propagation ? propagationSummary(ajout.propagation) : diag.repairPropagation;
+    if (pr) report.diagnostics.repairPropagation = pr;
+  }
   // Unités en attente avec progression : continuation rapprochée ; sinon délai croissant.
   // Lot 54G (point 2) : relecture du fichier encore due (NEEDS_SOURCE, tentatives restantes) : reprise programmée.
   const relectureDue = needsSourceRetryDue({ needsSourceUnits: report.diagnostics!.needsSourceUnits, retryAttempts: tentativesStockees, maxRetries: p.maxRetries });
@@ -713,10 +743,17 @@ async function rereadSource(p: {
   });
 }
 
-/** Projette et AJOUTE les faits d'une reprise (les faits existants ne sont pas réécrits). */
+/**
+ * Projette et AJOUTE les faits d'une reprise (les faits existants ne sont pas réécrits).
+ * Lot 109K (COR-02) : faits réellement ajoutés → propagation CIBLÉE vers les
+ * candidats du document et T3 (`operation-candidates/repair-propagation.store`),
+ * pour toute réparation (reprise de couverture, réexamen des décisions).
+ */
 export async function appendRepairedFacts(p: {
   fileId: number; accountId: number; extractionId: number | null; assetId: number | null; facts: T1Fact[]; linker: SourceUnitLinker;
-}) {
+  /** Origine consignée de la propagation (défaut : `t1-repair`). */
+  propagationOrigin?: string;
+}): Promise<{ inserted: ProjectedFact[]; all: ProjectedFact[]; propagation?: RepairPropagationOutcome }> {
   const [{ projectDocumentFacts }, { toFact }, { projectedFactToExtractedField }, step, { insertFactRows }, { documentFactsCanonicalReady }, registry] = await Promise.all([
     import('../projection/document-projection'),
     import('../../knowledge/document-knowledge'),
@@ -769,6 +806,9 @@ export async function appendRepairedFacts(p: {
   if (neufs.length === 0) return { inserted: [], all: projection.facts };
   const records = neufs.map((f) => toFact(projectedFactToExtractedField(f)));
   const canonical = await documentFactsCanonicalReady();
+  // Lot 109K (COR-02) : faits actifs AVANT l'ajout (diff avant / après de la propagation).
+  const { activeFactIds, propagateRepairToCandidates } = await import('../operation-candidates/repair-propagation.store');
+  const avant = await activeFactIds(p.fileId, p.accountId);
   await pgClient.begin(async (tx) => {
     await insertFactRows(tx as never, {
       accountId: p.accountId, fileId: p.fileId, sourceType: ext.source_type === 'web_link' ? 'web_link' : 'asset_file',
@@ -778,5 +818,7 @@ export async function appendRepairedFacts(p: {
     await tx.unsafe(`UPDATE document_extractions SET fact_count = fact_count + $2, updated_at = NOW() WHERE id = $1`,
       [Number(ext.id), records.length] as never[]);
   });
-  return { inserted: neufs, all: projection.facts };
+  // Après commit des faits : la propagation ne peut jamais les emporter (elle ne lève pas).
+  const propagation = await propagateRepairToCandidates({ accountId: p.accountId, fileId: p.fileId, beforeFactIds: avant, origin: p.propagationOrigin ?? 't1-repair' });
+  return { inserted: neufs, all: projection.facts, propagation };
 }

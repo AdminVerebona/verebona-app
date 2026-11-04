@@ -20,8 +20,18 @@
  */
 import { z, type ZodType } from 'zod';
 import { splitPipe } from './field-validation';
+import { geminiSchemaAcceptable, geminiSchemaIssues, schemaIssueCodes } from '../providers/gemini-schema-contract';
 
 const MAX_PROVIDER_SCHEMA_NODES = 900;
+/**
+ * Lot 109J — borne de liste conservée dans le schéma fournisseur. Au-delà,
+ * `maxItems` n'est PAS transmis (vérifié par Verebona à la validation) :
+ * une borne élevée, surtout imbriquée (`families[≤100].document_ids[≤200]`
+ * de T3 DOCUMENT_NAMING, 20 000 états), multiplie les états de la contrainte
+ * de décodage — cause documentée de refus 400 INVALID_ARGUMENT par Gemini
+ * (incident T3:6033, appel 7345). Les petites bornes (≤ 20) restent utiles.
+ */
+export const PROVIDER_MAX_ITEMS_KEPT = 20;
 
 type Json = Record<string, unknown>;
 
@@ -33,8 +43,10 @@ interface ProviderSchema {
   /** Mots-clés retirés (contraintes vérifiées par Verebona seulement). */
   dropped: string[];
   nodes: number;
-  /** Raison d'absence de schéma (`too_complex`, `unrepresentable`). */
+  /** Raison d'absence de schéma (`too_complex`, `unrepresentable`, `provider_contract` — lot 109J). */
   omitted: string | null;
+  /** Lot 109J : écarts au contrat du fournisseur (`gemini-schema-contract`), codes compacts. */
+  issues?: string[];
 }
 
 function reduce(node: unknown, dropped: Set<string>, count: { n: number }): unknown {
@@ -51,6 +63,7 @@ function reduce(node: unknown, dropped: Set<string>, count: { n: number }): unkn
     if (!KEEP.has(k)) { dropped.add(k); continue; }
     if (k === 'format' && !['date', 'date-time'].includes(String(v))) { dropped.add('format'); continue; }
     if ((k === 'minimum' || k === 'maximum') && Math.abs(Number(v)) >= SAFE_BOUND) continue;
+    if (k === 'maxItems' && Number(v) > PROVIDER_MAX_ITEMS_KEPT) { dropped.add('maxItems'); continue; }
     if (k === 'properties' && v && typeof v === 'object') {
       out.properties = Object.fromEntries(Object.entries(v as Json).map(([pk, pv]) => [pk, reduce(pv, dropped, count)]));
       continue;
@@ -73,9 +86,17 @@ export function providerJsonSchema(schema: ZodType): ProviderSchema {
     const count = { n: 0 };
     const reduced = reduce(json, dropped, count) as Json;
     dropped.delete('$schema');
+    // Lot 109J : contrat du fournisseur vérifié AVANT tout appel — un schéma
+    // non conforme n'est pas envoyé (aucun 400 payé puis masqué par un repli
+    // en JSON libre) : l'appel garde le mode JSON, schéma du contrat dans le
+    // prompt, motif `provider_contract` et écarts tracés.
+    const issues = geminiSchemaIssues(reduced);
+    const codes = schemaIssueCodes(issues);
     res = count.n > MAX_PROVIDER_SCHEMA_NODES
-      ? { schema: null, dropped: [...dropped].sort(), nodes: count.n, omitted: 'too_complex' }
-      : { schema: reduced, dropped: [...dropped].sort(), nodes: count.n, omitted: null };
+      ? { schema: null, dropped: [...dropped].sort(), nodes: count.n, omitted: 'too_complex', issues: codes }
+      : !geminiSchemaAcceptable(issues)
+        ? { schema: null, dropped: [...dropped].sort(), nodes: count.n, omitted: 'provider_contract', issues: codes }
+        : { schema: reduced, dropped: [...dropped].sort(), nodes: count.n, omitted: null, issues: codes };
   } catch {
     res = { schema: null, dropped: [], nodes: 0, omitted: 'unrepresentable' };
   }

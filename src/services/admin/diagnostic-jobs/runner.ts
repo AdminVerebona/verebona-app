@@ -25,7 +25,7 @@
  * vérifiés entre deux fichiers ET à chaque écriture (une grande table ne
  * retarde pas l'arrêt).
  */
-import { readFileSync } from 'node:fs';
+import { readContainerMemory } from '@/lib/runtime/memory-monitor';
 import type { S3Client } from '@aws-sdk/client-s3';
 import {
   DIAG_JOB_PREFIX, DiagJobError, classifyDiagJobError, diagJobSettings, isTransientError, memoryGuardMb, phaseOfPath, sanitizeErrorMessage,
@@ -77,17 +77,13 @@ class SinkAbort extends Error {
 
 const MB = 1024 * 1024;
 
-/** Limite mémoire du conteneur (cgroup v2 puis v1), en Mo ; null si inconnue. */
+/**
+ * Limite mémoire du conteneur, en Mo ; null si inconnue. Lot 109H : lecture
+ * partagée (`lib/runtime/memory-monitor`) — `CONTAINER_MEMORY` posée par
+ * Scalingo d'abord, puis cgroup v2 et v1 (comme avant).
+ */
 export function containerMemoryLimitMb(): number | null {
-  for (const p of ['/sys/fs/cgroup/memory.max', '/sys/fs/cgroup/memory/memory.limit_in_bytes']) {
-    try {
-      const v = readFileSync(p, 'utf8').trim();
-      if (!/^\d+$/.test(v)) continue;
-      const mb = Math.floor(Number(v) / MB);
-      if (mb > 0 && mb < 1024 * 1024) return mb;
-    } catch { /* absent */ }
-  }
-  return null;
+  return readContainerMemory().containerLimitMb;
 }
 
 /** Mesure mémoire du processus, reportée dans la progression (pic compris). */

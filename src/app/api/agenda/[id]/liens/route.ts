@@ -15,22 +15,22 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
-import { GROUPING_CANDIDATE_KINDS, isGroupingAction, type GroupingCandidateKind } from '@/lib/agenda/grouping-view';
+import { AGENDA_EVENT_LABELS, GROUPING_CANDIDATE_KINDS, isGroupingAction, type GroupingCandidateKind } from '@/lib/agenda/grouping-view';
 import { HOUSING_SCOPE_LABELS } from '@/lib/agenda/housing-scope';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 /** Message affiché pour une erreur technique du regroupement (jamais le code interne). */
 const MESSAGES: Record<string, { status: number; message: string }> = {
-  ITEM_NOT_FOUND: { status: 404, message: 'Élément introuvable.' },
-  CROSS_ACCOUNT: { status: 404, message: 'Élément introuvable.' },
+  ITEM_NOT_FOUND: { status: 404, message: AGENDA_EVENT_LABELS.notFound },
+  CROSS_ACCOUNT: { status: 404, message: AGENDA_EVENT_LABELS.notFound },
   DOCUMENT_NOT_FOUND: { status: 404, message: 'Document introuvable.' },
-  OPERATION_NOT_FOUND: { status: 409, message: 'Cet élément n’est relié à rien pour le moment.' },
+  OPERATION_NOT_FOUND: { status: 409, message: 'Cet événement n’est relié à rien pour le moment.' },
   OPERATION_INACTIVE: { status: 409, message: 'Cet ensemble a changé entre-temps. Rechargez le tiroir.' },
-  NOT_GROUPED: { status: 409, message: 'Cet élément n’est relié à rien pour le moment.' },
-  SAME_ITEM: { status: 400, message: 'Un élément ne peut pas être relié à lui-même.' },
-  MERGE_REFUSED: { status: 409, message: 'Ces deux éléments ne peuvent pas être réunis automatiquement.' },
-  LINKED_ELSEWHERE: { status: 409, message: 'Cet élément est déjà relié à un autre ensemble.' },
+  NOT_GROUPED: { status: 409, message: 'Cet événement n’est relié à rien pour le moment.' },
+  SAME_ITEM: { status: 400, message: 'Un événement ne peut pas être relié à lui-même.' },
+  MERGE_REFUSED: { status: 409, message: 'Ces deux événements ne peuvent pas être réunis automatiquement.' },
+  LINKED_ELSEWHERE: { status: 409, message: 'Cet événement est déjà relié à un autre ensemble.' },
   // Lot 103D : règle « logement rattaché » (lib/agenda/housing-scope) — codes stables, rien n'est écrit.
   AGENDA_STRUCTURAL_LINK_INCOMPATIBLE: { status: 409, message: HOUSING_SCOPE_LABELS.refused },
   AGENDA_HOUSING_REMOVAL_HAS_DEPENDENTS: { status: 409, message: HOUSING_SCOPE_LABELS.dependents },

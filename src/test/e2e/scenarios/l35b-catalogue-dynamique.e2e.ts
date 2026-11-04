@@ -266,19 +266,22 @@ scenario('L35B', 'Catalogue IA dynamique : découverte, qualification, preview, 
     expect(n).toBe(2);
   });
 
-  it('CAT-07 — correspondance devenue ambiguë : tarif retiré (UNKNOWN), coût non calculable, historique intact', async () => {
+  // Lot 109L (ticket P1 « Tarifs Gemini », point A) : une lecture ambiguë n'est
+  // plus une preuve de retrait — le tarif est CONSERVÉ en STALE (non confirmé,
+  // visible au BO), jamais invalidé ; la page redevenue certaine le confirme.
+  it('CAT-07 — correspondance devenue ambiguë : tarif conservé non confirmé (STALE), aucun retrait, historique intact', async () => {
     const ambigue = `${PAGE}\n## Doublon\n\n*[\`gemini-3.6-flash\`](x)*\n\n|  | Free | Paid |\n|---|---|---|\n| Input price | Free | $9.00 |\n| Output price | Free | $9.00 |\n`;
     await sync([...CONNUS.filter((m) => m !== 'gemini-3.5-flash'), 'gemini-9-flash'], async () => ambigue);
     const [st] = await sql<{ status: string; reason: string }[]>`SELECT status, reason FROM ai_model_price_status WHERE model = 'gemini-3.6-flash'`;
-    expect(st).toMatchObject({ status: 'UNKNOWN', reason: expect.stringMatching(/plusieurs sections/) });
+    expect(st).toMatchObject({ status: 'STALE', reason: expect.stringMatching(/plusieurs sections/) });
     const { calcCostMicros } = await import('@/services/ai/gateway/cost-catalog');
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(calcCostMicros('gemini-3.6-flash', 1000, 100)).toBeNull();
+    // Dernier montant documenté (2,00 $ depuis CAT-15) toujours appliqué, jamais 9 $.
+    expect(calcCostMicros('gemini-3.6-flash', 1_000_000, 0)).toBe(2_000_000);
     const [{ n }] = await sql<{ n: number }[]>`SELECT COUNT(*)::int AS n FROM ai_model_pricing WHERE model = 'gemini-3.6-flash' AND invalidated_at IS NOT NULL`;
-    expect(n).toBe(2);
+    expect(n).toBe(0);
     // Le modèle reste utilisable (le tarif n'est jamais un motif de refus).
     expect((((await catalogues()).body.modelsByTreatment.T3) as Array<{ model: string }>).map((m) => m.model)).toContain('gemini-3.6-flash');
-    // Page à nouveau certaine : tarif rétabli (nouvelle ligne, historique conservé).
+    // Page à nouveau certaine : tarif confirmé (nouvelle ligne, historique conservé).
     await sync([...CONNUS.filter((m) => m !== 'gemini-3.5-flash'), 'gemini-9-flash'], async () => PAGE);
     expect(calcCostMicros('gemini-3.6-flash', 1_000_000, 0)).toBe(1_500_000);
   });

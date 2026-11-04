@@ -19,8 +19,8 @@ import { usePathname } from 'next/navigation';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import {
-  DRAWER_PARAM, OPEN_ENTITY_DRAWER, closeDrawerEntry, drawerKey, openDrawer, parseDrawerParam,
-  pushDrawerEntry, type DrawerTarget,
+  CLOSE_ALL_DRAWERS_EVENT, DRAWER_PARAM, OPEN_ENTITY_DRAWER, RESTORE_DRAWER_STACK_EVENT, closeDrawerEntry, drawerKey,
+  openDrawer, parseDrawerParam, pushDrawerEntry, type DrawerTarget,
 } from '@/lib/drawers';
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import type { EquipmentDrawerItem } from '@/components/assets/EquipmentDrawer';
@@ -71,28 +71,65 @@ export function GlobalDrawerHost() {
 
   const push = useCallback((entry: Opened) => setStack((s) => pushDrawerEntry(s, entry)), []);
 
-  const open = useCallback(async (t: DrawerTarget) => {
+  /** Fiche chargée pour la pile (null : introuvable ou inaccessible). */
+  const load = useCallback(async (t: DrawerTarget): Promise<Opened | null> => {
     const key = drawerKey(t);
+    if (t.kind === 'document') {
+      // Le tiroir document charge lui-même sa fiche à partir de l'identifiant.
+      return { key, kind: 'document', id: t.id, showAnalysisResults: !!t.showAnalysisResults };
+    }
+    if (t.kind === 'echeance') {
+      const { item } = await apiClient.get<{ item: AgendaItemFull }>(`/api/agenda/${t.id}`);
+      return { key, kind: 'echeance', item, initialMode: t.initialMode ?? 'view' };
+    }
+    if (t.kind === 'equipement') {
+      const { equipment } = await apiClient.get<{
+        equipment: EquipmentDrawerItem & { assetName: string };
+      }>(`/api/equipments/${t.id}`);
+      return { key, kind: 'equipement', assetId: equipment.assetId, assetName: equipment.assetName, equipment };
+    }
+    if (t.kind === 'piece') {
+      const { room } = await apiClient.get<{ room: RoomDrawerItem & { assetId: number } }>(`/api/substructures/${t.id}`);
+      return { key, kind: 'piece', assetId: room.assetId, room };
+    }
+    return null;
+  }, []);
+
+  const open = useCallback(async (t: DrawerTarget) => {
     try {
-      if (t.kind === 'document') {
-        // Le tiroir document charge lui-même sa fiche à partir de l'identifiant.
-        push({ key, kind: 'document', id: t.id, showAnalysisResults: !!t.showAnalysisResults });
-      } else if (t.kind === 'echeance') {
-        const { item } = await apiClient.get<{ item: AgendaItemFull }>(`/api/agenda/${t.id}`);
-        push({ key, kind: 'echeance', item, initialMode: t.initialMode ?? 'view' });
-      } else if (t.kind === 'equipement') {
-        const { equipment } = await apiClient.get<{
-          equipment: EquipmentDrawerItem & { assetName: string };
-        }>(`/api/equipments/${t.id}`);
-        push({ key, kind: 'equipement', assetId: equipment.assetId, assetName: equipment.assetName, equipment });
-      } else if (t.kind === 'piece') {
-        const { room } = await apiClient.get<{ room: RoomDrawerItem & { assetId: number } }>(`/api/substructures/${t.id}`);
-        push({ key, kind: 'piece', assetId: room.assetId, room });
-      }
+      const entry = await load(t);
+      if (entry) push(entry);
     } catch {
       if (t.kind !== 'document') toast.error(MESSAGES[t.kind]);
     }
-  }, [push]);
+  }, [load, push]);
+
+  // Lot 109B : retour depuis une fiche fournisseur — la pile quittée est
+  // rouverte DANS SON ORDRE (chargements successifs), puis affichée d'un coup ;
+  // une fiche devenue inaccessible est simplement omise.
+  useEffect(() => {
+    const onRestore = (e: Event) => {
+      const targets = (e as CustomEvent<DrawerTarget[]>).detail;
+      if (!Array.isArray(targets) || targets.length === 0) return;
+      void (async () => {
+        const entries: Opened[] = [];
+        for (const t of targets) {
+          try {
+            const entry = await load({ kind: t.kind, id: t.id });
+            if (entry) entries.push(entry);
+          } catch { /* fiche supprimée ou d'un autre compte : omise */ }
+        }
+        if (entries.length) setStack((s) => entries.reduce((acc, en) => pushDrawerEntry(acc, en), s));
+      })();
+    };
+    const onCloseAll = () => setStack([]);
+    window.addEventListener(RESTORE_DRAWER_STACK_EVENT, onRestore);
+    window.addEventListener(CLOSE_ALL_DRAWERS_EVENT, onCloseAll);
+    return () => {
+      window.removeEventListener(RESTORE_DRAWER_STACK_EVENT, onRestore);
+      window.removeEventListener(CLOSE_ALL_DRAWERS_EVENT, onCloseAll);
+    };
+  }, [load]);
 
   // Ouverture depuis le code : openDrawer({ kind, id }) — et, pour un
   // document, openDrawer({ kind: 'document', id }, { stack: true }).

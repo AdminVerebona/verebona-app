@@ -30,7 +30,7 @@ vi.mock('@/services/suppliers/supplier-detail.service', async (orig) => ({
   ...(await orig<typeof import('../supplier-detail.service')>()),
   getSupplierDetail: (...a: unknown[]) => svc.getSupplierDetail(...a),
 }));
-const { getSupplierDetail } = await vi.importActual<typeof import('../supplier-detail.service')>('../supplier-detail.service');
+const { getSupplierDetail, listSupplierSection, normalizeSectionPage } = await vi.importActual<typeof import('../supplier-detail.service')>('../supplier-detail.service');
 const { resolveActions } = await import('@/services/verebona-assistant/core/action-resolver.service');
 const { findNavigationTarget } = await import('@/services/verebona-assistant/core/navigation-targets');
 const { hrefSource } = await import('@/services/verebona-assistant/core/entity-ref');
@@ -40,18 +40,20 @@ const { routeForIntent } = await import('@/services/verebona-assistant/core/inte
 // ── Base simulée : deux comptes, un fournisseur chacun ─────────────────────
 // Chaque ligne porte son compte ; le faux exécutant ne rend que les lignes du
 // compte passé en paramètre $2 — ce qui vérifie que le service transmet le
-// compte de la session à CHAQUE requête.
+// compte de la session à CHAQUE requête. Lot 109B : plus de `contactStatus`,
+// sections paginées (LIMIT $3 OFFSET $4) avec total exact (count).
 const SUPPLIERS = [
   { id: 4, accountId: 10, name: 'Plomberie Martin', email: 'contact@martin.fr', phone: null, website: null, addressLine1: null, addressLine2: null,
-    postalCode: '69003', city: 'Lyon', country: null, siren: null, siret: null, vatNumber: null, hasIban: true,
-    source: 'document_extraction', contactStatus: 'unverified', status: 'active' },
+    postalCode: '69003', city: 'Lyon', country: null, siren: null, siret: null, vatNumber: null, iban: 'FR7630006000011234567890189', ibanHolderName: 'M. Martin',
+    source: 'document_extraction', status: 'active' },
   { id: 9, accountId: 20, name: 'Garage d’un autre compte', email: 'x@y.fr', phone: null, website: null, addressLine1: null, addressLine2: null,
-    postalCode: null, city: null, country: null, siren: null, siret: null, vatNumber: null, hasIban: false,
-    source: 'manual', contactStatus: 'verified', status: 'active' },
+    postalCode: null, city: null, country: null, siren: null, siret: null, vatNumber: null, iban: null, ibanHolderName: null,
+    source: 'manual', status: 'active' },
 ];
 const LIES: Record<string, Array<Record<string, unknown>>> = {
   documents: [
-    { accountId: 10, supplierId: 4, id: 100, title: 'Facture chaudière', documentType: 'FACTURE', documentDate: '2025-03-12', role: 'issuer', isConfirmed: true, assetId: 1, assetName: 'Maison', available: true },
+    { accountId: 10, supplierId: 4, id: 100, title: 'Facture chaudière', documentType: 'FACTURE', documentDate: '2025-03-12', role: 'issuer', isConfirmed: true, confidenceScore: '1', assetId: 1, assetName: 'Maison', available: true },
+    { accountId: 10, supplierId: 4, id: 101, title: 'Devis', documentType: 'DEVIS', documentDate: '2025-01-02', role: null, isConfirmed: false, confidenceScore: '0.7', assetId: 1, assetName: 'Maison', available: true },
     { accountId: 20, supplierId: 4, id: 999, title: 'Document d’un autre compte', documentType: null, documentDate: null, role: null, isConfirmed: false, assetId: null, assetName: null, available: true },
   ],
   assets: [
@@ -60,37 +62,68 @@ const LIES: Record<string, Array<Record<string, unknown>>> = {
   ],
   equipments: [{ accountId: 10, supplierId: 4, id: 7, name: 'Chaudière', type: 'CHAUDIERE', relationshipType: 'installer', isPrimary: true, assetId: 1, assetName: 'Maison', available: true }],
   agenda: [{ accountId: 10, supplierId: 4, id: 55, title: 'Entretien chaudière', startDate: '2026-10-01', manualStatus: null }],
+  conflicts: [
+    { accountId: 10, supplierId: 4, id: 31, field: 'iban', currentValue: 'FR7630006000011234567890189', detectedValue: 'FR7612345000019876543210987', createdAt: null, documentId: 100, titleRetained: 'Facture chaudière', documentDate: '2025-03-12' },
+    { accountId: 10, supplierId: 4, id: 32, field: 'phone', currentValue: '0102030405', detectedValue: '0607080910', createdAt: null, documentId: null, documentDate: null },
+  ],
 };
 
 const requetes: Array<{ sql: string; params: unknown[] }> = [];
 const run = async (sql: string, params: unknown[]) => {
   requetes.push({ sql, params });
-  const [supplierId, accountId] = params as [number, number];
+  const [supplierId, accountId, limit, offset] = params as [number, number, number?, number?];
   const q = sql.replace(/\s+/g, ' ');
-  const pour = (rows: Array<Record<string, unknown>>) =>
-    rows.filter((r) => r.accountId === accountId && r.supplierId === supplierId).map(({ accountId: _a, supplierId: _s, ...r }) => r);
+  const pour = (rows: Array<Record<string, unknown>>) => {
+    const all = rows.filter((r) => r.accountId === accountId && r.supplierId === supplierId).map(({ accountId: _a, supplierId: _s, ...r }) => r);
+    if (q.startsWith('SELECT count(*)')) return [{ n: all.length }];
+    return limit == null ? all : all.slice(offset ?? 0, (offset ?? 0) + limit);
+  };
   if (q.includes('FROM suppliers')) return SUPPLIERS.filter((s) => s.id === supplierId && s.accountId === accountId).map(({ accountId: _a, ...s }) => s);
-  if (q.startsWith('SELECT a.id, a.name')) return pour(LIES.assets);
-  if (q.startsWith('SELECT f.id')) return pour(LIES.documents);
+  if (q.includes('FROM supplier_review_items r')) return pour(LIES.conflicts);
+  if (q.includes('FROM supplier_review_items')) return [{ n: 0 }];
+  if (q.includes('FROM assets a WHERE a.account_id = $2')) return pour(LIES.assets);
+  if (q.includes('FROM document_suppliers ds JOIN asset_files f')) return pour(LIES.documents);
   if (q.includes('FROM equipment_suppliers es JOIN equipments')) return pour(LIES.equipments);
   if (q.includes('FROM agenda_item_suppliers l')) return pour(LIES.agenda);
-  if (q.includes('FROM supplier_review_items')) return accountId === 10 && supplierId === 4 ? [{ n: 2 }] : [{ n: 0 }];
   throw new Error(`requête inattendue : ${q.slice(0, 60)}`);
 };
 
 beforeEach(() => { requetes.length = 0; session.current = { userId: 1, currentAccountId: 10 }; });
 
 describe('service de la fiche : isolation entre comptes', () => {
-  it('fournisseur du compte : fiche complète, objets liés du compte seulement, sans IBAN', async () => {
+  it('fournisseur du compte : fiche complète, objets liés du compte seulement, IBAN jamais en clair', async () => {
     const d = await getSupplierDetail(10, 4, run);
     expect(d?.supplier.name).toBe('Plomberie Martin');
-    expect(d?.documents.map((x) => x.id)).toEqual([100]);
-    expect(d?.assets.map((x) => [x.id, x.available])).toEqual([[1, true], [2, false]]);
-    expect(d?.equipments.map((x) => x.id)).toEqual([7]);
+    expect(d?.documents.items.map((x) => x.id)).toEqual([100, 101]);
+    expect(d?.documents.total).toBe(2);
+    expect(d?.assets.items.map((x) => [x.id, x.available])).toEqual([[1, true], [2, false]]);
+    expect(d?.equipments.items.map((x) => x.id)).toEqual([7]);
     expect(d?.agendaItems.map((x) => x.id)).toEqual([55]);
-    expect(d?.openReviewCount).toBe(2);
     expect(d?.supplier.hasIban).toBe(true);
-    expect(JSON.stringify(d)).not.toMatch(/"iban"/);
+    expect(d?.supplier.ibanMasked).toBe('FR76 •••• •••• 0189');
+    const json = JSON.stringify(d);
+    expect(json).not.toMatch(/"iban":/);
+    expect(json).not.toContain('FR7630006000011234567890189');
+    expect(json).not.toContain('FR7612345000019876543210987');
+  });
+
+  it('lot 109B : aucun statut global de vérification ; preuve LOCALE de la relation conservée', async () => {
+    const d = await getSupplierDetail(10, 4, run);
+    expect(JSON.stringify(d)).not.toMatch(/contactStatus|contact_status|verified/i);
+    expect(requetes.every((r) => !/contact_status/.test(r.sql))).toBe(true);
+    // Un rattachement incertain reste incertain (aucune promotion par l'affichage).
+    expect(d?.documents.items.map((x) => [x.id, x.isConfirmed, x.confidenceScore])).toEqual([[100, true, 1], [101, false, 0.7]]);
+  });
+
+  it('lot 109B : conflits ouverts avec preuve ; IBAN masqué et non applicable d’un clic', async () => {
+    const d = await getSupplierDetail(10, 4, run);
+    const iban = d!.conflicts.find((c) => c.field === 'iban')!;
+    expect(iban.masked).toBe(true);
+    expect(iban.currentValue).toBe('FR76 •••• •••• 0189');
+    expect(iban.detectedValue).toBe('FR76 •••• •••• 0987');
+    expect(iban.source).toEqual({ documentId: 100, title: 'Facture chaudière', documentDate: '2025-03-12' });
+    const tel = d!.conflicts.find((c) => c.field === 'phone')!;
+    expect([tel.masked, tel.detectedValue, tel.source]).toEqual([false, '0607080910', null]);
   });
 
   it('fournisseur d’un autre compte : null, et AUCUNE requête sur ses objets liés', async () => {
@@ -109,7 +142,7 @@ describe('service de la fiche : isolation entre comptes', () => {
     await getSupplierDetail(10, 4, run);
     expect(requetes.length).toBeGreaterThan(1);
     for (const r of requetes) {
-      expect(r.params).toEqual([4, 10]);
+      expect(r.params.slice(0, 2)).toEqual([4, 10]);
       const q = r.sql.replace(/\s+/g, ' ');
       // Toute table portant un compte est filtrée sur $2 (compte de la session).
       for (const [table, alias] of [['asset_files', 'f'], ['assets', 'a'], ['agenda_items', 'i']] as const) {
@@ -120,7 +153,23 @@ describe('service de la fiche : isolation entre comptes', () => {
       if (/\basset_files f\b/.test(q)) expect(q).toContain('f.deleted_at IS NULL');
       if (/\bassets a\b/.test(q)) expect(q).toContain('a.deleted_at IS NULL');
       if (/\bequipments e\b/.test(q)) expect(q).toContain('e.archived_at IS NULL');
+      // Plus aucun plafond silencieux : la limite est un paramètre de page, jamais une constante.
+      expect(q).not.toMatch(/LIMIT 50\b/);
     }
+  });
+
+  it('lot 109B : pagination — total exact et page suivante ; même périmètre pour lignes et total', async () => {
+    const d = await getSupplierDetail(10, 4, run, 1);
+    expect(d?.documents).toMatchObject({ total: 2, offset: 0, limit: 1, nextOffset: 1 });
+    expect(d?.documents.items.map((x) => x.id)).toEqual([100]);
+    const p2 = await listSupplierSection(10, 4, 'documents', { offset: 1, limit: 1 }, run);
+    expect(p2).toMatchObject({ total: 2, offset: 1, nextOffset: null });
+    expect(p2?.items.map((x) => x.id)).toEqual([101]);
+    // Autre compte : null (comme une fiche inexistante).
+    expect(await listSupplierSection(10, 9, 'documents', {}, run)).toBeNull();
+    // Page demandée bornée.
+    expect(normalizeSectionPage({ offset: -5, limit: 100000 })).toEqual({ offset: 0, limit: 100 });
+    expect(normalizeSectionPage({ offset: 'x', limit: 0 })).toEqual({ offset: 0, limit: 25 });
   });
 });
 

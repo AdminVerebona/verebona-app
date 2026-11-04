@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
-import { agendaItems, agendaEquipmentLinks } from '@/db/schema';
+import { agendaItems } from '@/db/schema';
 import { eq, and, inArray } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
@@ -27,17 +27,18 @@ export async function GET(
     if (isNaN(equipmentId)) return apiError(400, 'INVALID_INPUT', 'Invalid equipment id');
     if (!(await equipmentInAccount(accountId, equipmentId))) return apiError(404, 'NOT_FOUND', 'Equipment not found');
 
-    // Get agenda item IDs linked to this equipment
-    const linkedIds = await db
-      .selectDistinct({ agendaItemId: agendaEquipmentLinks.agendaItemId })
-      .from(agendaEquipmentLinks)
-      .where(eq(agendaEquipmentLinks.equipmentId, equipmentId));
+    // Lot 109A (ticket « Relations métier », §6) : CONTRAT DE LECTURE UNIQUE — éléments
+    // DIRECTEMENT liés (`agenda_equipment_links`) et éléments des Opérations actives de
+    // l'équipement (VIA_OPERATION), chacun une fois, liste exhaustive (toutes les pages).
+    const { listAll, listEntityAgendaItems } = await import('@/services/relations/read-contract');
+    const relations = await listAll((p) => listEntityAgendaItems(accountId, { kind: 'equipment', id: equipmentId }, { page: p, pageSize: 200 }));
+    const provenance = new Map((relations?.items ?? []).map((r) => [r.id, r]));
 
-    if (linkedIds.length === 0) {
-      return NextResponse.json({ items: [] });
+    if (provenance.size === 0) {
+      return NextResponse.json({ items: [], total: 0, totals: relations?.totals ?? { all: 0, direct: 0, viaOperationOnly: 0 } });
     }
 
-    const ids = linkedIds.map(r => r.agendaItemId);
+    const ids = [...provenance.keys()];
 
     const rows = await db
       .select({
@@ -90,6 +91,9 @@ export async function GET(
       originType: item.originType,
       // Lot 77A : tâche « Sans échéance » (mention dans la fiche équipement).
       noDeadline: item.noDeadline === true,
+      // Lot 109A : provenance (DIRECT / VIA_OPERATION) et Opérations de contexte.
+      provenance: provenance.get(item.id)?.provenance ?? 'DIRECT',
+      viaOperations: provenance.get(item.id)?.viaOperations ?? [],
     }));
 
     // Sort: upcoming first, then past
@@ -102,7 +106,7 @@ export async function GET(
       return da.localeCompare(db2);
     });
 
-    return NextResponse.json({ items });
+    return NextResponse.json({ items, total: items.length, totals: relations?.totals });
   } catch (err) {
     return SessionService.handleSessionError(err);
   }

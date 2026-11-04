@@ -25,6 +25,7 @@ import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import { documentTypeLabelOrNull, userFacingLabel } from '@/lib/referential/user-facing-labels';
+import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
 export type TransferUsage = 'EXPORT_BRUT' | 'TRANSMISSION';
 
@@ -214,7 +215,7 @@ export function TransferExportDrawer({ assetId, usage, planType, assetCategory, 
                     onToggle={(id) => setSelEquips((s) => toggleIn(s, id))} onToggleAll={() => setSelEquips((s) => (s.size === equips.length ? new Set() : new Set(equips.map((x) => x.id))))} />
                 )}
                 {isTransmission && (
-                  <Group icon={CalendarDays} label="Agenda" rows={agenda} selected={selAgenda} emptyLabel="Aucun élément d’agenda"
+                  <Group icon={CalendarDays} label="Agenda" rows={agenda} selected={selAgenda} emptyLabel={AGENDA_EVENT_LABELS.noEvent}
                     onToggle={(id) => setSelAgenda((s) => toggleIn(s, id))} onToggleAll={() => setSelAgenda((s) => (s.size === agenda.length ? new Set() : new Set(agenda.map((x) => x.id))))} />
                 )}
               </div>

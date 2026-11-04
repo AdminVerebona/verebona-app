@@ -85,8 +85,23 @@ function followupOf(r: Pick<Row, 'qualityState' | 'sourceVerification' | 'verifi
     qualityState: r.qualityState, sourceVerification: r.sourceVerification ?? null, verificationReason: d.verificationReason ?? null,
     pagesUnverified: d.pagesUnverified ?? null, pagesExpected: d.pagesExpected ?? null,
     retryAttempts: r.retryAttempts, maxRetries, retryScheduled: !!r.nextRetryAt,
+    // Lot 109K (COR-01) : motif exact page par page.
+    pageDetails: (d as { pageDetails?: Array<{ page: number; status: string; reason: string }> }).pageDetails ?? null,
   });
 }
+
+/** Lot 109K (COR-02) : décision de la propagation d'une réparation T1 (journal 1145). */
+const PROPAGATION_LABEL: Record<string, string> = {
+  NO_NEW_FACT: 'aucun fait nouveau',
+  NO_BUSINESS_IMPACT: 'sans incidence métier',
+  NO_CANDIDATE: 'aucun candidat établi',
+  UNCHANGED: 'candidats inchangés',
+  DUPLICATE_STATE: 'état déjà signalé',
+  RATE_LIMITED: 'plafond de fréquence atteint',
+  SUPERSEDED: 'candidat réévalué (nouvelle version)',
+  DISABLED: 'désactivée',
+  ERROR: 'en échec',
+};
 
 const VERIFICATION_LABEL: Record<string, string> = {
   VERIFIED: 'source vérifiée',
@@ -117,6 +132,13 @@ export function diagnosticsText(r: Pick<Row, 'sourceVerification' | 'verificatio
   if (d.tablesResolved) parts.push(`${d.tablesResolved} tableau(x) vérifié(s)`);
   if (d.truncations) parts.push(`${d.originalsPreserved ?? 0}/${d.truncations} original(aux) conservé(s)`);
   if (d.normalisationLosses) parts.push(`${d.normalisationLosses} perte(s) non compensée(s)`);
+  // Lot 109K (COR-02) : dernière propagation d'une réparation vers les candidats et T3 (décision, faits, statut T3).
+  const prop = (d as { repairPropagation?: { decision?: string; newFacts?: number; categories?: string[]; candidates?: unknown[]; t3?: { status?: string } } }).repairPropagation;
+  if (prop?.decision) {
+    parts.push(`propagation de la réparation : ${PROPAGATION_LABEL[prop.decision] ?? prop.decision}${prop.newFacts ? `, ${prop.newFacts} fait(s) nouveau(x)` : ''}`
+      + `${prop.categories?.length ? ` (${prop.categories.join(', ').toLowerCase()})` : ''}${prop.candidates?.length ? `, ${prop.candidates.length} candidat(s) examiné(s)` : ''}`
+      + `${prop.t3?.status && prop.t3.status !== 'NONE' ? `, T3 ${prop.t3.status === 'REQUESTED' ? 'demandé' : 'à son prochain passage'}` : ''}`);
+  }
   if (r.lastRetryAt) parts.push(`dernière reprise ${new Date(r.lastRetryAt).toLocaleString('fr-FR')}${r.lastRetryResult ? ` (${r.lastRetryResult})` : ''}`);
   return parts.join(' · ');
 }

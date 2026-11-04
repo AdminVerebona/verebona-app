@@ -42,6 +42,6 @@ export async function appliquerFournisseurs(accountId: number, itemId: number, u
   } catch (e) {
     const code = e instanceof AgendaSupplierError ? `AGENDA_SUPPLIERS_${e.code}` : 'AGENDA_SUPPLIERS_FAILED';
     console.error(JSON.stringify({ event: 'agenda_suppliers.apply_failed', accountId, itemId, code, message: (e as Error).message.slice(0, 200) }));
-    return { ok: false as const, error: 'L’élément est enregistré, mais les fournisseurs n’ont pas pu être associés. Réessayez depuis sa fiche.', code };
+    return { ok: false as const, error: 'L’événement est enregistré, mais les fournisseurs n’ont pas pu être associés. Réessayez depuis sa fiche.', code };
   }
 }

@@ -157,8 +157,9 @@ describe('L76A-T6 P1 — empreinte des preuves transmises à EVALUATE', () => {
       base,
       // Réextraction : nouveaux identifiants de faits et d'extraction, même contenu.
       preuves([fait({ id: 31, extractionId: 300 }), fait({ id: 32, extractionId: 300, key: 'noticePeriod', label: 'Préavis', value: '1 mois', excerpt: 'Préavis d’un mois.' })]),
-      // Cosmétique : casse, accents, ponctuation, espaces, article.
-      preuves([fait({ excerpt: '  ENTRETIEN deja pris en charge par le prestataire !' }), fait({ id: 2, key: 'noticePeriod', label: 'préavis', value: '1 MOIS', excerpt: 'Le préavis d’un mois' })]),
+      // Cosmétique : casse, espaces (insécables compris), apostrophe typographique, point final.
+      // Lot 109E : accents et articles ne sont PLUS cosmétiques (« ou » / « où », « un » numéral…).
+      preuves([fait({ excerpt: '  ENTRETIEN DÉJÀ   pris en charge\u00a0par le prestataire' }), fait({ id: 2, key: 'noticePeriod', label: 'préavis', value: '1 MOIS', excerpt: 'Préavis d\'un mois' })]),
       // Ordre de lecture inversé.
       preuves([fait({ id: 2, key: 'noticePeriod', label: 'Préavis', value: '1 mois', excerpt: 'Préavis d’un mois.' }), fait()]),
       // Document réimporté (identifiant technique différent, même intitulé).
@@ -180,7 +181,7 @@ describe('L76A-T6 P1 — empreinte des preuves transmises à EVALUATE', () => {
     expect(p.decisions[0]).toMatchObject({ decision: 'SHOW_NOW', needsAssessment: false });
   });
 
-  it('AC10 — transition : décisions v3 (lot 75E) et v2 (lot 71G) relues sans réévaluation de masse, puis rebasées', async () => {
+  it('AC10 — transition : décisions v3 (lot 75E) et v2 (lot 71G) — lot 109E : ambiguës, jamais réutilisées ni rebasées, réévaluées', async () => {
     const e = preuves([fait()]);
     const ligneFp = { title: r.title, date: r.date, forecast: false, requiresQualification: false };
     const v3 = S.fingerprintWithEvidence(ligneFp, e);
@@ -189,20 +190,16 @@ describe('L76A-T6 P1 — empreinte des preuves transmises à EVALUATE', () => {
     for (const ancien of [v3, v2]) {
       rebase.mockClear();
       const p = await preparer([r], { assessments: async () => new Map([[1, evaluation(ancien)]]), evidence: async () => new Map([[1, e]]) });
-      expect(p.decisions[0]).toMatchObject({ decision: 'SHOW_NOW', needsAssessment: false, assessmentFresh: true });
-      expect(p.bundle).toBeNull();
-      // Rebasée sur l'empreinte courante (v4) : un changement ULTÉRIEUR sera vu.
-      expect(rebase).toHaveBeenCalledWith(7, [{ agendaItemId: 1, from: ancien, to: p.decisions[0].fingerprint }]);
-      expect(p.decisions[0].fingerprint!.startsWith('v4:')).toBe(true);
+      // Lot 109E (AC05) : l'ancienne normalisation assimilait des preuves de sens différent.
+      expect(p.decisions[0]).toMatchObject({ decision: 'DEFER', needsAssessment: true, assessmentFresh: false, reevaluationReason: 'FINGERPRINT_UPGRADE' });
+      expect(p.shown).toEqual([]);
+      expect(rebase).not.toHaveBeenCalled();
+      expect(p.decisions[0].fingerprint!.startsWith('v5:')).toBe(true);
     }
-    // Ancienne empreinte qui ne correspond plus : jamais rebasée (invalidée).
-    rebase.mockClear();
+    // Ancienne empreinte qui ne correspond plus : contexte changé (cause tracée).
     const q = await preparer([r], { assessments: async () => new Map([[1, evaluation(v3)]]), evidence: async () => new Map([[1, preuves([fait({ excerpt: 'Aucun entretien.' })])]]) });
-    expect(q.decisions[0]).toMatchObject({ code: 'AI_ASSESSMENT_PENDING', reevaluationReason: 'CONTEXT_CHANGED' });
+    expect(q.decisions[0]).toMatchObject({ code: 'AI_ASSESSMENT_PENDING', reevaluationReason: 'CONTEXT_CHANGED', contextChange: { cause: 'CONTENT_CHANGED', storedFormat: 'v3' } });
     expect(rebase).not.toHaveBeenCalled();
-    // Rebasage en échec : sans effet sur la décision (jamais bloquant).
-    const panne = await preparer([r], { assessments: async () => new Map([[1, evaluation(v3)]]), evidence: async () => new Map([[1, e]]), rebaseFingerprints: async () => { throw new Error('base'); } });
-    expect(panne.decisions[0]).toMatchObject({ decision: 'SHOW_NOW', needsAssessment: false });
   });
 
   it('AC10 — traçabilité BO : invalidations par motif, rebasages et signature courante dans le rapport T6', async () => {
@@ -218,7 +215,9 @@ describe('L76A-T6 P1 — empreinte des preuves transmises à EVALUATE', () => {
     }, { evaluationConfig: async () => ({ signature: 'e2:courante', masterVersion: null }) });
     await S.writeT6InterpellationReport({ accountId: 7, userId: null, mode: 'pregen', prep: p });
     const [rapport] = writes[0] as [{ counters: Record<string, number>; steps: Array<{ step: string; detail: Record<string, unknown> }> }];
-    expect(rapport.counters).toMatchObject({ invalidatedContext: 1, invalidatedConfig: 0, rebased: 1 });
+    // Lot 109E : décision v3 inchangée selon son empreinte = reprise (FINGERPRINT_UPGRADE),
+    // jamais rebasée ; v4 différente = contexte changé.
+    expect(rapport.counters).toMatchObject({ invalidatedContext: 1, invalidatedConfig: 0, rebased: 0, invalidatedLegacyFingerprint: 1, invalidatedContent: 1 });
     expect(rapport.steps.find((s) => s.step === 'decision')!.detail).toMatchObject({ evaluationSignature: 'e2:courante' });
     rebase.mockImplementation(async () => 0);
   });

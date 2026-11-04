@@ -50,9 +50,9 @@ export function describeMoves(m: MovePreview["moves"]): string[] {
   const out: string[] = []
   if (m.equipments) out.push(plural(m.equipments, "équipement", "équipements"))
   if (m.rooms) out.push(plural(m.rooms, "pièce", "pièces"))
-  if (m.agendaItems) out.push(plural(m.agendaItems, "élément d’agenda", "éléments d’agenda"))
+  if (m.agendaItems) out.push(plural(m.agendaItems, "événement", "événements"))
   if (m.events + m.deadlines) out.push(plural(m.events + m.deadlines, "événement ou échéance de l’historique", "événements et échéances de l’historique"))
-  if (m.operations) out.push(plural(m.operations, "opération (intervention, sinistre…)", "opérations (interventions, sinistres…)"))
+  if (m.operations) out.push(plural(m.operations, "événement de référence (intervention, sinistre…)", "événements de référence (interventions, sinistres…)"))
   if (m.toProcessActions) out.push(plural(m.toProcessActions, "action « À traiter »", "actions « À traiter »"))
   if (m.suppliersCopied) out.push(plural(m.suppliersCopied, "fiche fournisseur recopiée (sans coordonnées bancaires)", "fiches fournisseur recopiées (sans coordonnées bancaires)"))
   return out
@@ -60,8 +60,8 @@ export function describeMoves(m: MovePreview["moves"]): string[] {
 
 export function describeStays(s: MovePreview["stays"]): string[] {
   const out: string[] = s.sharedDocuments.map((d) => `${d.title} (aussi rattaché à un autre bien : son lien avec ce bien est retiré)`)
-  if (s.sharedAgendaItems) out.push(plural(s.sharedAgendaItems, "élément d’agenda partagé avec un autre bien (lien retiré)", "éléments d’agenda partagés avec d’autres biens (lien retiré)"))
-  if (s.sharedOperations) out.push(plural(s.sharedOperations, "opération partagée avec un autre bien (lien retiré)", "opérations partagées avec d’autres biens (lien retiré)"))
+  if (s.sharedAgendaItems) out.push(plural(s.sharedAgendaItems, "événement partagé avec un autre bien (lien retiré)", "événements partagés avec d’autres biens (lien retiré)"))
+  if (s.sharedOperations) out.push(plural(s.sharedOperations, "événement de référence partagé avec un autre bien (lien retiré)", "événements de référence partagés avec d’autres biens (lien retiré)"))
   if (s.pendingTransmissionsCancelled) out.push(plural(s.pendingTransmissionsCancelled, "transmission en attente annulée", "transmissions en attente annulées"))
   return out
 }

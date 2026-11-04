@@ -36,6 +36,13 @@ export interface DrawerTarget {
 export const OPEN_DOCUMENT_DRAWER = 'open-document-drawer';
 export const OPEN_ENTITY_DRAWER = 'open-entity-drawer';
 export const DRAWER_PARAM = 'tiroir';
+/**
+ * Lot 109B — retour vers l'écran quitté pour une fiche fournisseur : rouvre
+ * une PILE de tiroirs dans l'ordre (`detail` : `{ kind, id }[]`), et ferme
+ * les tiroirs globaux restés ouverts quand la fiche s'affiche.
+ */
+export const RESTORE_DRAWER_STACK_EVENT = 'verebona:restore-drawer-stack';
+export const CLOSE_ALL_DRAWERS_EVENT = 'verebona:close-all-drawers';
 
 /** Synonymes acceptés dans l'URL — le code, lui, n'utilise que les noms canoniques. */
 const ALIASES: Record<string, DrawerKind> = {

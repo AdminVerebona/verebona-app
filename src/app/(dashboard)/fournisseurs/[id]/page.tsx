@@ -1,62 +1,85 @@
 "use client";
 /**
- * Fiche fournisseur — `/fournisseurs/[id]`.
+ * Fiche fournisseur — `/fournisseurs/[id]` : l'UNIQUE interface fournisseur
+ * (lot 109B — le tiroir fournisseur est supprimé).
  *
- * Point d'arrivée des cartes « Fournisseur » de l'assistant (OPEN_SUPPLIER),
- * du tiroir fournisseur (« Voir la fiche ») et de la liste `/fournisseurs`.
- * Lecture seule : coordonnées, puis ce qui relie le fournisseur au compte
- * (biens, documents, équipements, événements d'Agenda). La modification des
- * coordonnées reste dans le tiroir existant.
+ * Point d'arrivée de tous les accès : document, équipement, Agenda, bien,
+ * liste `/fournisseurs`, recherche générale, Assistant (OPEN_SUPPLIER) et
+ * cartes « À traiter ». En haut, un « Retour » contextualisé ramène à l'écran
+ * quitté, tiroir compris (`lib/suppliers/supplier-return.ts`).
+ *
+ * Sur la fiche même : identité et coordonnées (consultation ET modification),
+ * IBAN protégé, conflits de coordonnées à arbitrer avec leur preuve,
+ * archivage / réactivation, puis ce qui relie le fournisseur au compte —
+ * biens, documents, équipements (pagination jusqu'à la totalité, total exact)
+ * et événements d'Agenda (association / dissociation, lot 103E). Aucun statut
+ * global « vérifié / non vérifié ».
  *
  * Les droits sont ceux des biens, appliqués côté serveur
  * (`/api/suppliers/[id]/overview`) : un fournisseur d'un autre compte est
  * introuvable ; un bien archivé ou verrouillé par l'offre est listé sans lien.
  */
-import { useCallback, useEffect, useState } from 'react';
-import dynamic from 'next/dynamic';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams } from 'next/navigation';
+import { useParams, usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
-  Building2, Mail, Phone, Globe, MapPin, FileText, Wrench, Home, Pencil, AlertTriangle, ChevronRight,
+  AlertTriangle, Archive, ArchiveRestore, Building2, ChevronRight, FileText, Home, Loader2, Pencil, Wrench,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useBreadcrumb } from '@/contexts/BreadcrumbContext';
+import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { apiClient } from '@/lib/api-client';
 import { openDrawer } from '@/lib/drawers';
 import { userFacingLabel } from '@/lib/referential/user-facing-labels';
 import { DocumentDateCell } from '@/components/documents/DocumentDateCell';
 import { DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET } from '@/lib/documents/document-row-date';
 import { SUPPLIERS_ROUTE } from '@/lib/supplier-routes';
-import type { SupplierDetail } from '@/services/suppliers/supplier-detail.service';
+import { peekPendingRestore, registerReturnViewState } from '@/lib/suppliers/supplier-return';
+import type {
+  SupplierAssetRow, SupplierDetail, SupplierDocumentRow, SupplierEquipmentRow,
+} from '@/services/suppliers/supplier-detail.service';
 import { SupplierAgendaSection } from '@/components/suppliers/SupplierAgendaSection';
+import { SupplierBackButton } from '@/components/suppliers/SupplierBackButton';
+import { SupplierCoordinatesCard } from '@/components/suppliers/SupplierCoordinatesCard';
+import { SupplierConflictsCard } from '@/components/suppliers/SupplierConflictsCard';
+import { useSupplierSection } from '@/components/suppliers/useSupplierSection';
+import { useUnsavedChangesGuard } from '@/components/suppliers/useUnsavedChangesGuard';
 
-const SupplierDrawer = dynamic(
-  () => import('@/components/suppliers/SupplierDrawer').then((m) => ({ default: m.SupplierDrawer })),
-  { ssr: false },
-);
+type Overview = SupplierDetail;
 
-const CONTACT_STATUS: Record<string, string> = {
-  unverified: 'Coordonnées non vérifiées',
-  partially_verified: 'Coordonnées partiellement vérifiées',
-  verified: 'Coordonnées vérifiées',
-};
-
-function Section({ icon: Icon, title, count, children, empty }: {
-  icon: React.ElementType; title: string; count: number; children: React.ReactNode; empty: string;
+function Section({ icon: Icon, title, total, shown, children, empty, nextOffset, loading, failed, onMore, testId }: {
+  icon: React.ElementType; title: string; total: number; shown: number; children: React.ReactNode; empty: string;
+  nextOffset: number | null; loading: boolean; failed: boolean; onMore: () => void; testId: string;
 }) {
   return (
-    <Card>
+    <Card data-testid={testId}>
       <CardHeader className="pb-3">
         <CardTitle className="flex items-center gap-2">
           <Icon className="w-4 h-4 text-muted-foreground" aria-hidden />
           {title}
-          <span className="text-sm font-normal text-muted-foreground">({count})</span>
+          <span className="text-sm font-normal text-muted-foreground" data-testid={`${testId}-total`}>({total})</span>
         </CardTitle>
       </CardHeader>
       <CardContent>
-        {count === 0 ? <p className="text-sm text-muted-foreground">{empty}</p> : <ul className="divide-y">{children}</ul>}
+        {total === 0 ? <p className="text-sm text-muted-foreground">{empty}</p> : <ul className="divide-y">{children}</ul>}
+        {failed && <p className="mt-2 text-xs text-muted-foreground">La suite n’a pas pu être chargée. Réessayez.</p>}
+        {nextOffset != null && (
+          <div className="mt-3 flex flex-col items-center gap-1 sm:flex-row sm:justify-between">
+            <span className="text-xs text-muted-foreground">{shown} sur {total}</span>
+            <Button variant="outline" size="sm" onClick={onMore} disabled={loading} className="h-11 w-full sm:h-9 sm:w-auto">
+              {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden />}
+              Afficher plus
+            </Button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
@@ -88,11 +111,22 @@ function Row({ title, subtitle, aside, onOpen, href, unavailable }: {
 
 export default function SupplierPage() {
   const params = useParams();
+  const pathname = usePathname() ?? '';
+  const searchParams = useSearchParams();
+  const search = searchParams ? `?${searchParams.toString()}` : '';
+  const router = useRouter();
   const { setBreadcrumbs } = useBreadcrumb();
-  const [data, setData] = useState<SupplierDetail | null>(null);
+  const { garder } = useWriteGuard();
+  const [data, setData] = useState<Overview | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'not_found' | 'error'>('loading');
-  const [editOpen, setEditOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiving, setArchiving] = useState(false);
   const id = String(params.id ?? '');
+  const supplierId = /^\d{1,10}$/.test(id) ? Number(id) : 0;
+
+  const guard = useUnsavedChangesGuard(dirty, (href) => router.push(href));
 
   const load = useCallback(async () => {
     try {
@@ -106,7 +140,7 @@ export default function SupplierPage() {
     }
   }, [id]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { setState('loading'); setEditing(false); setDirty(false); void load(); }, [load]);
 
   useEffect(() => {
     setBreadcrumbs([
@@ -114,6 +148,50 @@ export default function SupplierPage() {
       { label: data?.supplier.name ?? 'Fournisseur' },
     ]);
   }, [data, setBreadcrumbs]);
+
+  const docs = useSupplierSection<SupplierDocumentRow>(supplierId, 'documents', data?.documents ?? null);
+  const assets = useSupplierSection<SupplierAssetRow>(supplierId, 'assets', data?.assets ?? null);
+  const equipments = useSupplierSection<SupplierEquipmentRow>(supplierId, 'equipments', data?.equipments ?? null);
+
+  // Retour sur cette fiche depuis une autre (document → autre fournisseur) :
+  // les sections déjà dépliées sont rechargées jusqu'au même nombre de lignes.
+  const counts = useRef({ documents: 0, assets: 0, equipments: 0 });
+  counts.current = { documents: docs.items.length, assets: assets.items.length, equipments: equipments.items.length };
+  useEffect(() => registerReturnViewState(pathname, () => ({ sections: { ...counts.current } })), [pathname]);
+  const restoreView = useRef(peekPendingRestore(pathname)?.view ?? null);
+  useEffect(() => {
+    const v = restoreView.current as { sections?: Record<string, number> } | null;
+    if (!v?.sections || state !== 'ready') return;
+    restoreView.current = null;
+    void docs.ensureLoaded(Number(v.sections.documents) || 0);
+    void assets.ensureLoaded(Number(v.sections.assets) || 0);
+    void equipments.ensureLoaded(Number(v.sections.equipments) || 0);
+  }, [state, docs, assets, equipments]);
+
+  // Tiroir (document, équipement) qui modifie une relation : la fiche est relue.
+  useEffect(() => {
+    const h = () => { void load(); };
+    window.addEventListener('refresh-a-traiter', h);
+    return () => window.removeEventListener('refresh-a-traiter', h);
+  }, [load]);
+
+  const archive = (restore: boolean) => garder(() => {
+    void (async () => {
+      setArchiving(true);
+      try {
+        await apiClient.post(`/api/suppliers/${supplierId}/archive`, restore ? { restore: true } : {});
+        toast.success(restore ? 'Fournisseur réactivé' : 'Fournisseur archivé');
+        setArchiveOpen(false);
+        await load();
+      } catch {
+        toast.error('L’opération n’a pas abouti. Réessayez.');
+      } finally {
+        setArchiving(false);
+      }
+    })();
+  });
+
+  const back = <SupplierBackButton search={search} confirmLeave={guard.confirmLeave} />;
 
   if (state === 'loading') {
     return (
@@ -127,7 +205,8 @@ export default function SupplierPage() {
 
   if (state !== 'ready' || !data) {
     return (
-      <div className="p-4 md:p-6">
+      <div className="space-y-4 p-4 md:p-6">
+        {back}
         <Card>
           <CardContent className="flex flex-col items-start gap-3 pt-6">
             <AlertTriangle className="w-5 h-5 text-muted-foreground" aria-hidden />
@@ -149,12 +228,14 @@ export default function SupplierPage() {
     );
   }
 
-  const { supplier: s, assets, documents, equipments } = data;
-  const adresse = [s.addressLine1, s.addressLine2, [s.postalCode, s.city].filter(Boolean).join(' '), s.country]
-    .filter((x) => x && String(x).trim()).join(', ');
+  const s = data.supplier;
+  const archived = s.status === 'archived';
+  const via = data.documentsViaOperation;
 
   return (
-    <div className="space-y-6 p-4 md:p-6">
+    <div className="space-y-6 p-4 md:p-6" data-testid="supplier-page">
+      {back}
+
       <Card>
         <CardContent className="pt-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -163,67 +244,93 @@ export default function SupplierPage() {
                 <Building2 className="h-5 w-5 text-[color:var(--accent)]" aria-hidden />
               </div>
               <div className="min-w-0">
-                <h1 className="vb-app-title truncate">{s.name}</h1>
+                <h1 className="vb-app-title [overflow-wrap:anywhere]">{s.name}</h1>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {s.status === 'archived' && <Badge variant="secondary">Archivé</Badge>}
-                  <Badge variant="outline">{CONTACT_STATUS[s.contactStatus] ?? 'Coordonnées'}</Badge>
-                  {data.openReviewCount > 0 && (
-                    <Badge variant="outline" className="border-[color:var(--attention-edge)] text-[color:var(--attention-on-soft)]">
-                      {data.openReviewCount} information{data.openReviewCount > 1 ? 's' : ''} à vérifier
-                    </Badge>
+                  {archived && <Badge variant="secondary">Archivé</Badge>}
+                  {data.conflicts.length > 0 && (
+                    <a href="#conflits">
+                      <Badge variant="outline" className="border-[color:var(--attention-edge)] text-[color:var(--attention-on-soft)]">
+                        {data.conflicts.length} coordonnée{data.conflicts.length > 1 ? 's' : ''} à arbitrer
+                      </Badge>
+                    </a>
                   )}
                 </div>
               </div>
             </div>
-            <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
-              <Pencil className="mr-2 h-4 w-4" aria-hidden />
-              Modifier les coordonnées
-            </Button>
+            {!editing && (
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <Button variant="outline" size="sm" className="h-11 sm:h-9" onClick={() => garder(() => setEditing(true))} data-testid="supplier-edit">
+                  <Pencil className="mr-2 h-4 w-4" aria-hidden />
+                  Modifier
+                </Button>
+                {archived ? (
+                  <Button variant="outline" size="sm" className="h-11 sm:h-9" onClick={() => archive(true)} disabled={archiving}>
+                    <ArchiveRestore className="mr-2 h-4 w-4" aria-hidden />
+                    Réactiver
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" className="h-11 text-[color:var(--danger)] sm:h-9" onClick={() => garder(() => setArchiveOpen(true))} data-testid="supplier-archive">
+                    <Archive className="mr-2 h-4 w-4" aria-hidden />
+                    Archiver
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
 
-          <dl className="mt-6 grid grid-cols-1 gap-4 border-t pt-4 text-sm md:grid-cols-2">
-            {s.email && (
-              <div className="flex items-center gap-2"><Mail className="h-4 w-4 text-muted-foreground" aria-hidden />
-                <dt className="sr-only">E-mail</dt><dd><a className="hover:underline" href={`mailto:${s.email}`}>{s.email}</a></dd></div>
-            )}
-            {s.phone && (
-              <div className="flex items-center gap-2"><Phone className="h-4 w-4 text-muted-foreground" aria-hidden />
-                <dt className="sr-only">Téléphone</dt><dd><a className="hover:underline" href={`tel:${s.phone.replace(/\s+/g, '')}`}>{s.phone}</a></dd></div>
-            )}
-            {s.website && (
-              <div className="flex items-center gap-2"><Globe className="h-4 w-4 text-muted-foreground" aria-hidden />
-                <dt className="sr-only">Site web</dt><dd className="truncate">{s.website}</dd></div>
-            )}
-            {adresse && (
-              <div className="flex items-center gap-2"><MapPin className="h-4 w-4 text-muted-foreground" aria-hidden />
-                <dt className="sr-only">Adresse</dt><dd>{adresse}</dd></div>
-            )}
-            {(s.siret || s.siren) && (
-              <div><dt className="text-muted-foreground">{s.siret ? 'SIRET' : 'SIREN'}</dt><dd className="font-medium">{s.siret ?? s.siren}</dd></div>
-            )}
-            {s.vatNumber && <div><dt className="text-muted-foreground">N° de TVA</dt><dd className="font-medium">{s.vatNumber}</dd></div>}
-            {s.hasIban && <div><dt className="text-muted-foreground">RIB</dt><dd className="font-medium">Renseigné (visible dans « Modifier les coordonnées »)</dd></div>}
-            {!s.email && !s.phone && !s.website && !adresse && (
-              <p className="text-muted-foreground md:col-span-2">Aucune coordonnée renseignée pour le moment.</p>
-            )}
-          </dl>
+          {archived && (
+            <p className="mt-4 rounded-md bg-[color:var(--bg-subtle)] p-3 text-sm text-muted-foreground">
+              Ce fournisseur est archivé : il n’apparaît plus parmi les fournisseurs actifs. Ses documents, biens,
+              équipements et événements restent rattachés.
+            </p>
+          )}
+
+          <div className="mt-6 border-t pt-4">
+            <SupplierCoordinatesCard
+              supplier={s}
+              editing={editing}
+              onEditingChange={(v) => { if (!v) guard.confirmLeave(() => { setEditing(false); setDirty(false); }); else setEditing(true); }}
+              onDirtyChange={setDirty}
+              onSaved={() => { setDirty(false); setEditing(false); void load(); }}
+            />
+          </div>
         </CardContent>
       </Card>
 
+      <SupplierConflictsCard conflicts={data.conflicts} onResolved={() => { void load(); }} />
+
+      {data.openDeduplicationCount > 0 && (
+        <Card>
+          <CardContent className="flex flex-col gap-2 pt-6 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <span>Une autre fiche pourrait désigner le même fournisseur.</span>
+            <Button variant="outline" size="sm" asChild><Link href="/accueil/a-traiter">Voir dans « À traiter »</Link></Button>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <Section icon={Home} title="Biens" count={assets.length} empty="Aucun bien n’est rattaché à ce fournisseur.">
-          {assets.map((a) => (
+        <Section
+          icon={Home} title="Biens" total={assets.total} shown={assets.items.length} testId="supplier-assets"
+          empty="Aucun bien n’est rattaché à ce fournisseur."
+          nextOffset={assets.nextOffset} loading={assets.loading} failed={assets.failed} onMore={() => { void assets.loadMore(); }}
+        >
+          {assets.items.map((a) => (
             <Row key={a.id} title={a.name} subtitle={a.city} href={`/assets/${a.id}`} unavailable={!a.available} />
           ))}
         </Section>
 
-        <Section icon={FileText} title="Documents" count={documents.length} empty="Aucun document n’est rattaché à ce fournisseur.">
-          {documents.map((d) => (
+        <Section
+          icon={FileText} title="Documents" total={docs.total} shown={docs.items.length} testId="supplier-documents"
+          empty="Aucun document n’est rattaché à ce fournisseur."
+          nextOffset={docs.nextOffset} loading={docs.loading} failed={docs.failed} onMore={() => { void docs.loadMore(); }}
+        >
+          {docs.items.map((d) => (
             <Row
               key={d.id}
               title={d.title}
-              /* Lot 108D : sous-titre = Type seul ; UNE date à droite, la date du document (sinon « – »). */
-              subtitle={[userFacingLabel(d.documentTypeLabel), DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET ? d.assetName : null].filter(Boolean).join(' · ')}
+              /* Lot 108D : sous-titre = Type seul ; UNE date à droite, la date du document (sinon « – »).
+                 Lot 109B : un rattachement non confirmé le reste (preuve locale de la relation). */
+              subtitle={[userFacingLabel(d.documentTypeLabel), DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET ? d.assetName : null, d.isConfirmed ? null : 'Rattachement à confirmer'].filter(Boolean).join(' · ')}
               aside={<DocumentDateCell value={d.documentDate} className="w-[74px] text-xs text-muted-foreground sm:w-[90px]" />}
               onOpen={() => openDrawer({ kind: 'document', id: d.id })}
               unavailable={!d.available}
@@ -231,8 +338,32 @@ export default function SupplierPage() {
           ))}
         </Section>
 
-        <Section icon={Wrench} title="Équipements" count={equipments.length} empty="Aucun équipement n’est rattaché à ce fournisseur.">
-          {equipments.map((e) => (
+        {/* Lot 109B : documents des événements de référence du fournisseur — section affichée
+            seulement quand le contrat de lecture 109A est relié (supplier-operation-documents.ts). */}
+        {via?.wired && via.total > 0 && (
+          <Section
+            icon={FileText} title="Documents des événements de référence" total={via.total} shown={via.items.length}
+            testId="supplier-documents-via" empty="" nextOffset={null} loading={false} failed={false} onMore={() => {}}
+          >
+            {via.items.map((d) => (
+              <Row
+                key={d.id}
+                title={d.title}
+                subtitle={[userFacingLabel(d.documentTypeLabel), d.operationLabel].filter(Boolean).join(' · ')}
+                aside={<DocumentDateCell value={d.documentDate} className="w-[74px] text-xs text-muted-foreground sm:w-[90px]" />}
+                onOpen={() => openDrawer({ kind: 'document', id: d.id })}
+                unavailable={!d.available}
+              />
+            ))}
+          </Section>
+        )}
+
+        <Section
+          icon={Wrench} title="Équipements" total={equipments.total} shown={equipments.items.length} testId="supplier-equipments"
+          empty="Aucun équipement n’est rattaché à ce fournisseur."
+          nextOffset={equipments.nextOffset} loading={equipments.loading} failed={equipments.failed} onMore={() => { void equipments.loadMore(); }}
+        >
+          {equipments.items.map((e) => (
             <Row
               key={e.id}
               title={e.name}
@@ -248,13 +379,38 @@ export default function SupplierPage() {
         <SupplierAgendaSection supplierId={s.id} supplierName={s.name} />
       </div>
 
-      <SupplierDrawer
-        supplierId={s.id}
-        open={editOpen}
-        onOpenChange={setEditOpen}
-        onUpdated={() => { void load(); }}
-        hidePageLink
-      />
+      {/* Archivage confirmé */}
+      <AlertDialog open={archiveOpen} onOpenChange={setArchiveOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Archiver ce fournisseur ?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Il n’apparaîtra plus parmi les fournisseurs actifs. Sa fiche reste consultable et ses documents,
+              biens, équipements et événements restent rattachés. Vous pourrez le réactiver.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction onClick={(e) => { e.preventDefault(); archive(false); }} disabled={archiving} className="bg-[color:var(--danger)] hover:bg-[color:var(--danger)]/90">
+              Archiver
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Saisie non enregistrée : confirmation avant de partir (bouton, lien, retour navigateur ou mobile). */}
+      <AlertDialog open={guard.confirmOpen} onOpenChange={(v) => { if (!v) guard.resolve(false); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Modifications non enregistrées</AlertDialogTitle>
+            <AlertDialogDescription>Vos modifications de ce fournisseur seront perdues.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => guard.resolve(false)}>Continuer la modification</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { setDirty(false); guard.resolve(true); }}>Quitter sans enregistrer</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

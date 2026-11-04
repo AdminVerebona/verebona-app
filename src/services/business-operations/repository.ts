@@ -236,6 +236,9 @@ export class BusinessOperationRepository {
     }
   }
 
+  /** Lot 109A : corrélation de la session d'écriture (traces des écritures déléguées dans la même transaction). */
+  get correlationId(): string { return this.ctx.correlationId; }
+
   // ── Lecture interne (sous verrou) ────────────────────────────────────────
 
   /** Opération du compte, verrouillée en écriture. */

@@ -185,7 +185,7 @@ describe('L108D-U-SRC — aucune substitution date d’ajout ↔ date du documen
   it('toutes les listes de documents réutilisent la même cellule', () => {
     for (const f of [
       'src/components/documents/v2/DocumentsByRubric.tsx', 'src/components/assets/EquipmentDrawer.tsx', 'src/components/assets/RoomAssociations.tsx',
-      'src/components/suppliers/SupplierDrawer.tsx', 'src/app/(dashboard)/fournisseurs/[id]/page.tsx', 'src/components/agenda/AgendaGroupingPanel.tsx',
+      /* Lot 109B : tiroir fournisseur supprimé */ 'src/app/(dashboard)/fournisseurs/[id]/page.tsx', 'src/components/agenda/AgendaGroupingPanel.tsx',
       'src/components/assets/AssetOverviewTab.tsx',
     ]) expect(src(f), f).toMatch(/DocumentDateCell/);
   });

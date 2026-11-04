@@ -210,7 +210,8 @@ describe('L83B-U-REG — registre et couverture', () => {
 
   it('L83B-U-REG-02 — couverture : documents-t1 et opérations couverts par des contrôles actifs ; lacunes restantes déclarées', () => {
     const e = (d: string) => COVERAGE_INVENTORY.find((x) => x.domain === d)!;
-    expect(e('documents-t1').checks).toEqual(['COH-DOC-EXTRACT-CHAIN']);
+    // Lot 109K : couverture PDF ajoutée au domaine documents-t1.
+    expect(e('documents-t1').checks).toEqual(['COH-DOC-EXTRACT-CHAIN', 'COH-T1-PDF-COVERAGE']);
     expect(e('documents-t1').gap?.planned).toMatch(/82B-t1-omissions-extract/);
     expect(e('operations').checks).toEqual(expect.arrayContaining(['COH-OPS-IDENTITY', 'COH-O1-PRINCIPAL-UNIQUE']));
     expect(e('equipements').checks).toContain('COH-ASSET-EQUIPMENT-SEPARATION');

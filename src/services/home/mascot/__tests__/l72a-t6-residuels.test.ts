@@ -87,7 +87,8 @@ const evaluation = (agendaItemId: number, fingerprint: string, o: Partial<Stored
 const deps = (loaders: Partial<import('../t6-interpellation.service').T6Loaders>, o: Partial<import('../t6-interpellation.service').PrepareDeps> = {}) => ({
   aiCapable: async () => true, thresholdDays: async () => 60, loaders: { dueReminders: async () => new Map<number, string>(), ...loaders }, ...o,
 });
-const fp = (r: Row, e: Evidence | undefined) => S.fingerprintWithEvidence({ title: r.title, date: r.date, forecast: r.forecast, requiresQualification: r.requiresQualification }, e);
+// Lot 109E : décision prise sur le contexte COURANT = empreinte `v5:` du contexte transmis (une empreinte antérieure est ambiguë).
+const fp = (r: Row, e: Evidence | undefined) => S.t6ContextFingerprint(r, e);
 const preparer = (r: Row[], loaders: Parameters<typeof deps>[0], o: Parameters<typeof deps>[1] = {}, rawO: Partial<Raw> = {}) =>
   S.prepareT6Interpellation({ accountId: 7, userId: null, raw: raw(r, rawO) }, deps(loaders, o));
 
@@ -173,8 +174,11 @@ describe('AC01 — invalidation documentaire', () => {
       { ...vide(), documents: [doc(10, 'Contrat entretien'), doc(11, 'Avenant 2026')] }, // ajout
       vide(), // suppression
       { ...vide(), documents: [doc(10, 'Attestation de ramonage')] }, // modification (intitulé retenu)
-      { ...vide(), documents: [doc(12, 'Contrat entretien')] }, // autre pièce
     ];
+    // Lot 109E : le contexte transmis à EVALUATE ne porte que l'INTITULÉ des pièces
+    // (jamais leur identifiant) — une pièce réimportée sous le même intitulé est le
+    // même contexte (règle du lot 76A, désormais celle de l'empreinte `v5:`).
+    expect(fp(r, { ...vide(), documents: [doc(12, 'Contrat entretien')] })).toBe(fp(r, base));
     for (const e of variantes) {
       expect(fp(r, e)).not.toBe(fp(r, base));
       const p = await preparer([r], { assessments: async () => new Map([[1, evaluation(1, fp(r, base))]]), evidence: async () => new Map([[1, e]]) });

@@ -37,6 +37,7 @@
  *     par précaution — un masquage déjà appliqué reste inchangé.
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { NOT_CALLED_ERROR_CODES } from '../gateway/fallback-policy';
 import { redact } from '@/services/ai/gateway/redaction';
 import type { ExecutionDetail, ExecutionRow, ExecutionStep } from './execution-log.repository';
 import { buildExecutionDiagnosis, type ExecutionDiagnosis } from './execution-diagnosis';
@@ -161,6 +162,8 @@ interface ExecutionExport {
     totalDurationMs: number;
     calls: number;
     failedCalls: number;
+    /** Lot 109J : rangs non sollicités (refus de secours) — aucune requête. */
+    notCalled: number;
   };
   calls: ReturnType<typeof appel>[];
   steps: ReturnType<typeof etape>[];
@@ -257,8 +260,11 @@ export function buildExecutionExport(
       // Lot 82C : somme des durées PROPRES des appels (sans double comptage) ;
       // pour des appels antérieurs au lot 82C, chaque durée incluait les précédentes.
       totalDurationMs: somme((x) => x.durationMs),
-      calls: calls.length,
-      failedCalls: calls.filter((x) => x.status === 'error').length,
+      // Lot 109J : un rang refusé par la politique de secours (aucune requête)
+      // n'est ni un appel ni une génération échouée — compté à part.
+      calls: calls.filter((x) => !NOT_CALLED_ERROR_CODES.has(x.errorCode ?? '')).length,
+      failedCalls: calls.filter((x) => x.status === 'error' && !NOT_CALLED_ERROR_CODES.has(x.errorCode ?? '')).length,
+      notCalled: calls.filter((x) => NOT_CALLED_ERROR_CODES.has(x.errorCode ?? '')).length,
     },
     calls: calls.map(appel),
     steps: steps.map(etape),

@@ -17,6 +17,7 @@ const MOTIF = /vercel|supabase|orchids/gi;
 
 /** Fichier → occurrences maximales tolérées, et pourquoi. */
 const EXCEPTIONS: Record<string, { max: number; raison: string }> = {
+  'src/lib/auth/disposable-email/data/disposable-domains.json': { max: 10, raison: 'Liste publique de domaines jetables (lot 109F) : noms de domaines tiers sans rapport avec l\'hébergement (vercelli.*, vercelspace.*).' },
   '.gitignore': { max: 3, raison: 'Protection : empêche de versionner les dossiers locaux .vercel/.orchids.' },
   '.env.example': { max: 2, raison: 'Documentation : aucune planification dans le dépôt (ni vercel.json…) ; aucune variable Vercel lue.' },
   'next.config.mjs': { max: 4, raison: 'Commentaires de traçabilité des retraits APP-PERF-38.' },

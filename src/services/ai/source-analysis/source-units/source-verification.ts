@@ -85,6 +85,57 @@ export interface SourceVerification {
   reread?: number[];
   /** Lot 54G : pages citées par T1 (mentionnées / visitées) mais NON vérifiées. */
   citedUnverified?: number[];
+  /**
+   * Lot 109K (COR-01) : verdict PAR PAGE — statut, méthode, motif exact
+   * (codes stables, sans contenu du document). Absent : vérification antérieure.
+   */
+  pageDetails?: PageVerification[];
+  /** Lot 109K : version des règles de vérification (`SOURCE_VERIFIER_VERSION`). */
+  verifierVersion?: number;
+  /** Lot 109K : couche texte déterministe utilisée (absente : sonde seule). */
+  textLayer?: { origin: string; sourceSha256: string } | null;
+}
+
+/**
+ * Lot 109K (COR-01) — version des règles : couche texte pdf.js (polices
+ * composites, encodages propres, formes), contenu des tableaux lus, verdict
+ * par page. Un changement de règle rend une vérification stockée « à revoir ».
+ */
+export const SOURCE_VERIFIER_VERSION = 2;
+
+/** Verdict d'une page : preuve suffisante, omission objectivée, ou contrôle techniquement impossible. */
+export type PageVerificationStatus = 'VERIFIED' | 'MISSING' | 'UNVERIFIABLE';
+/** Méthode qui fonde le verdict. */
+export type PageVerificationMethod = 'PDF_TEXT_LAYER' | 'CONTENT_STREAM_PROBE' | 'EMPTY_PAGE' | 'TARGETED_REREAD' | 'PAGINATION' | 'NONE';
+
+/**
+ * Motifs stables d'un verdict de page (diagnostic BO, jamais de contenu) :
+ *   VERIFIED     text_matched · empty_page · targeted_reread ·
+ *                partial_match_cited · single_page_partial_match
+ *   MISSING      text_absent_from_transcription · page_absent_from_paginated_transcription
+ *   UNVERIFIABLE scanned_no_text_layer · text_not_decodable · no_text_layer ·
+ *                partial_match_not_cited · beyond_probe_limit · probe_failed
+ */
+export const PAGE_VERIFICATION_REASONS = [
+  'text_matched', 'empty_page', 'targeted_reread', 'partial_match_cited', 'single_page_partial_match',
+  'text_absent_from_transcription', 'page_absent_from_paginated_transcription',
+  'scanned_no_text_layer', 'text_not_decodable', 'no_text_layer', 'partial_match_not_cited', 'beyond_probe_limit', 'probe_failed',
+] as const;
+export type PageVerificationReason = (typeof PAGE_VERIFICATION_REASONS)[number];
+
+export interface PageVerification {
+  page: number;
+  status: PageVerificationStatus;
+  method: PageVerificationMethod;
+  reason: PageVerificationReason;
+  /** Part des mots distinctifs de la page retrouvés dans la lecture T1 (0…1), quand un texte original a été comparé. */
+  matchRatio?: number;
+  /** Mots distinctifs comparés. */
+  words?: number;
+  /** La page est citée par la sortie T1 (citée ≠ couverte). */
+  cited?: boolean;
+  /** Page scannée selon la sonde (image seule). */
+  scanned?: boolean;
 }
 
 export const verificationNotApplicable = (reason: string): SourceVerification => ({
@@ -264,7 +315,11 @@ export function citedPages(out: Pick<T1AnalyzeDocumentOutput, 'facts' | 'tables'
 
 /** Part des mots distinctifs d'une page retrouvés dans la transcription (pure). null : échantillon trop pauvre. */
 function pageMatchRatio(sample: string, transcriptionWords: ReadonlySet<string>): { ratio: number; words: number } | null {
-  const distinctifs = [...new Set(mots(sample).filter((w) => w.length >= 5 && !/^\d+$/.test(w)))].slice(0, WORDS_MAX);
+  // Lot 109K : mots distinctifs RÉPARTIS sur toute la page (début, milieu, fin) — une omission
+  // de fin de page n'est plus masquée par un début bien lu. Déterministe.
+  const tous = [...new Set(mots(sample).filter((w) => w.length >= 5 && !/^\d+$/.test(w)))];
+  const pas = tous.length > WORDS_MAX ? tous.length / WORDS_MAX : 1;
+  const distinctifs = pas === 1 ? tous : Array.from({ length: WORDS_MAX }, (_, i) => tous[Math.floor(i * pas)]);
   if (distinctifs.length === 0) return null;
   const trouves = distinctifs.filter((w) => transcriptionWords.has(w)).length;
   return { ratio: trouves / distinctifs.length, words: distinctifs.length };
@@ -273,6 +328,13 @@ function pageMatchRatio(sample: string, transcriptionWords: ReadonlySet<string>)
 /**
  * Vérification d'un PDF (pure) : pages vérifiées, manquantes, non vérifiées,
  * scannées. `reread` : pages relues par une reprise ciblée réussie.
+ *
+ * Lot 109K (COR-01) : texte original de chaque page pris d'abord dans la
+ * COUCHE TEXTE déterministe (`textLayer`, pdf.js : polices composites,
+ * encodages propres, formes), sinon dans l'échantillon de la sonde ; lecture
+ * T1 = transcription + contenu des tableaux lus (`readTexts`) ; verdict par
+ * page (`pageDetails`) avec méthode et motif. Les seuils sont INCHANGÉS :
+ * aucune page n'est promue faute de preuve, aucune omission n'est masquée.
  */
 export function verifyPdfCoverage(p: {
   probe: SourceProbe;
@@ -281,39 +343,66 @@ export function verifyPdfCoverage(p: {
   /** T1 a rendu un contenu (transcription, faits, tableaux ou observations). */
   hasContent: boolean;
   reread?: ReadonlySet<number>;
+  /** Lot 109K : texte de la couche texte, par page ('' : page sans couche texte). */
+  textLayer?: ReadonlyMap<number, string> | null;
+  /** Lot 109K : origine de la couche texte (diagnostic). */
+  textLayerInfo?: { origin: string; sourceSha256: string } | null;
+  /** Lot 109K : autres textes LUS par T1 (cellules et en-têtes des tableaux). */
+  readTexts?: readonly string[];
 }): SourceVerification {
   const { probe, cited } = p;
-  const motsTranscription = new Set(mots(p.transcription).filter((w) => w.length >= 5));
+  const motsTranscription = new Set(mots([p.transcription, ...(p.readTexts ?? [])].join('\n')).filter((w) => w.length >= 5));
   const parPage = new Map(probe.pages.map((x) => [x.page, x]));
   const verified: number[] = [];
   const missing: number[] = [];
   const unverified: number[] = [];
   const scanned: number[] = [];
   const citeesNonVerifiees: number[] = [];
+  const details: PageVerification[] = [];
   for (let page = 1; page <= probe.pageCount; page++) {
     const s = parPage.get(page);
-    if (s?.kind === 'SCANNED') scanned.push(page);
-    if (p.reread?.has(page)) { verified.push(page); continue; }
-    if (s?.kind === 'EMPTY') { verified.push(page); continue; }
-    const m = s?.sample ? pageMatchRatio(s.sample, motsTranscription) : null;
-    // 1. Échantillon textuel exploitable : il fait foi, comparé à la transcription.
-    if (m && m.ratio >= MATCH_VERIFIED) { verified.push(page); continue; }
-    const omission = !!m && m.ratio < MATCH_MISSING && m.words >= MIN_WORDS_FOR_MISSING;
     const citee = cited.pages.has(page);
+    const d = (status: PageVerificationStatus, method: PageVerificationMethod, reason: PageVerificationReason, m?: { ratio: number; words: number } | null) => {
+      details.push({
+        page, status, method, reason,
+        ...(m ? { matchRatio: Math.round(m.ratio * 1000) / 1000, words: m.words } : {}),
+        ...(citee ? { cited: true } : {}), ...(s?.kind === 'SCANNED' ? { scanned: true } : {}),
+      });
+      (status === 'VERIFIED' ? verified : status === 'MISSING' ? missing : unverified).push(page);
+    };
+    if (s?.kind === 'SCANNED') scanned.push(page);
+    if (p.reread?.has(page)) { d('VERIFIED', 'TARGETED_REREAD', 'targeted_reread'); continue; }
+    // Texte original de la page : couche texte d'abord (décodage fiable), sonde ensuite.
+    const couche = p.textLayer?.get(page);
+    const texteCouche = couche !== undefined ? readableSample(couche) : null;
+    const coucheVide = couche !== undefined && !couche.trim();
+    if (s?.kind === 'EMPTY' && (couche === undefined || coucheVide)) { d('VERIFIED', 'EMPTY_PAGE', 'empty_page'); continue; }
+    const echantillon = texteCouche ?? s?.sample ?? null;
+    const methode: PageVerificationMethod = texteCouche ? 'PDF_TEXT_LAYER' : s?.sample ? 'CONTENT_STREAM_PROBE' : 'NONE';
+    const m = echantillon ? pageMatchRatio(echantillon, motsTranscription) : null;
+    // 1. Échantillon textuel exploitable : il fait foi, comparé à la lecture T1.
+    if (m && m.ratio >= MATCH_VERIFIED) { d('VERIFIED', methode, 'text_matched', m); continue; }
+    const omission = !!m && m.ratio < MATCH_MISSING && m.words >= MIN_WORDS_FOR_MISSING;
     if (omission) {
       // Omission démontrée par la source : MANQUANTE même si un fait cite la page (TC13).
-      missing.push(page);
+      d('MISSING', methode, 'text_absent_from_transcription', m);
       if (citee) citeesNonVerifiees.push(page);
       continue;
     }
     // 2. Correspondance partielle ou échantillon trop pauvre : la citation (ou un
     //    document d'une seule page lu) complète un indice textuel réel.
-    if (m && (citee || (probe.pageCount === 1 && p.hasContent))) { verified.push(page); continue; }
+    if (m && citee) { d('VERIFIED', methode, 'partial_match_cited', m); continue; }
+    if (m && probe.pageCount === 1 && p.hasContent) { d('VERIFIED', methode, 'single_page_partial_match', m); continue; }
     // 3. Aucun échantillon (scannée, police illisible) : une citation ne prouve
     //    jamais la page entière (TC14) — NON VÉRIFIÉE, sauf omission paginée.
-    if (cited.markers && s?.kind !== 'SCANNED' && s !== undefined && !citee) { missing.push(page); continue; }
+    if (cited.markers && s?.kind !== 'SCANNED' && s !== undefined && !citee) { d('MISSING', 'PAGINATION', 'page_absent_from_paginated_transcription'); continue; }
     if (citee) citeesNonVerifiees.push(page);
-    unverified.push(page);
+    const motif: PageVerificationReason = m ? 'partial_match_not_cited'
+      : s === undefined ? (page > probe.pages.length ? 'beyond_probe_limit' : 'probe_failed')
+        : s.kind === 'SCANNED' && (couche === undefined || coucheVide) ? 'scanned_no_text_layer'
+          : s.kind === 'TEXT' ? 'text_not_decodable'
+            : 'no_text_layer';
+    d('UNVERIFIABLE', methode, motif, m);
   }
   const status: SourceVerificationStatus = missing.length === 0 && unverified.length === 0 ? 'VERIFIED' : 'PARTIAL';
   return {
@@ -321,7 +410,24 @@ export function verifyPdfCoverage(p: {
     reason: missing.length > 0 ? 'pages_missing' : unverified.length > 0 ? 'pages_unverified' : null,
     ...(p.reread && p.reread.size > 0 ? { reread: [...p.reread].sort((a, b) => a - b) } : {}),
     ...(citeesNonVerifiees.length > 0 ? { citedUnverified: citeesNonVerifiees } : {}),
+    pageDetails: details,
+    verifierVersion: SOURCE_VERIFIER_VERSION,
+    textLayer: p.textLayerInfo ?? null,
   };
+}
+
+/** Textes LUS des tableaux d'une sortie T1 (titre, en-têtes, cellules) — pure. */
+export function tableTexts(out: Pick<T1AnalyzeDocumentOutput, 'tables'>): string[] {
+  const t: string[] = [];
+  for (const x of out.tables ?? []) {
+    if (x.title) t.push(x.title);
+    for (const c of x.columns ?? []) t.push(c.header);
+    for (const r of x.rows ?? []) {
+      if (r.header) t.push(r.header);
+      for (const c of r.cells ?? []) if (typeof c.value === 'string' || typeof c.value === 'number') t.push(String(c.value));
+    }
+  }
+  return t;
 }
 
 /** Plages contiguës d'une liste de pages (pure) : [2,3,4,8] → [[2,4],[8,8]]. */

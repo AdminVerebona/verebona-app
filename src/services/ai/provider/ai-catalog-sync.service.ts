@@ -47,7 +47,15 @@ interface AiCatalogSyncResult {
   /** Lot 85C : fiches de capacités (changements, requalifications marquées). */
   capabilities?: { checked: number; changed: string[]; requalificationMarked: string[] };
   operational: { probed: number; failed: string[] };
-  pricing: Pick<PricingSyncResult, 'status' | 'sourceRead' | 'error'> & { known: number; unknown: number; changed: number };
+  pricing: Pick<PricingSyncResult, 'status' | 'sourceRead' | 'error'> & {
+    known: number; unknown: number; changed: number;
+    /** Lot 109L : tarifs non confirmés, causes par modèle, code d'échec, empreinte / format de la page lue. */
+    stale?: number;
+    unknownModels?: Array<{ model: string; code?: string; reason: string }>;
+    staleModels?: Array<{ model: string; code?: string; reason: string }>;
+    failureCode?: string;
+    page?: { fingerprint: string | null; format: string; finalUrl: string | null; httpStatus: number | null };
+  };
   baseline: boolean;
   anomalies: ActiveModelAnomaly[];
 }
@@ -226,7 +234,14 @@ export async function syncAiCatalog(
         import('../gateway/pricing/pricing-sync.service'), import('../gateway/pricing/refresh-pricing.job'),
       ]);
       const p = await syncPricingCatalog(await modelsToPrice(), deps.pricing ?? {});
-      result.pricing = { status: p.status, sourceRead: p.sourceRead, known: p.known.length, unknown: p.unknown.length, changed: p.changed.length, ...(p.error ? { error: p.error } : {}) };
+      result.pricing = {
+        status: p.status, sourceRead: p.sourceRead, known: p.known.length, unknown: p.unknown.length, changed: p.changed.length,
+        // Lot 109L : détail séparé du catalogue modèles (jamais « réussi » quand seule la découverte a réussi).
+        stale: (p.stale ?? []).length, unknownModels: p.unknown.slice(0, 50), staleModels: (p.stale ?? []).slice(0, 50),
+        ...(p.failureCode ? { failureCode: p.failureCode } : {}),
+        ...(p.capture ? { page: { fingerprint: p.capture.fingerprint, format: p.capture.format, finalUrl: p.capture.finalUrl, httpStatus: p.capture.httpStatus } } : {}),
+        ...(p.error ? { error: p.error } : {}),
+      };
     } catch (e) {
       result.pricing = { status: 'failed', sourceRead: false, known: 0, unknown: 0, changed: 0, error: (e as Error).message };
     }
@@ -273,7 +288,12 @@ export function summaryOf(r: AiCatalogSyncResult): Record<string, unknown> {
     ...(r.qualification.remaining ? { remaining: r.qualification.remaining } : {}),
     ...(r.capabilities ? { capabilities: { checked: r.capabilities.checked, changed: r.capabilities.changed, requalify: r.capabilities.requalificationMarked } } : {}),
     probed: r.operational.probed, notOperational: r.operational.failed,
-    pricing: { status: r.pricing.status, known: r.pricing.known, unknown: r.pricing.unknown, changed: r.pricing.changed, ...(r.pricing.error ? { error: r.pricing.error } : {}) },
+    pricing: {
+      status: r.pricing.status, known: r.pricing.known, unknown: r.pricing.unknown, changed: r.pricing.changed,
+      ...(r.pricing.stale ? { stale: r.pricing.stale } : {}), ...(r.pricing.failureCode ? { failureCode: r.pricing.failureCode } : {}),
+      ...(r.pricing.page ? { fingerprint: r.pricing.page.fingerprint?.slice(0, 16) ?? null, format: r.pricing.page.format } : {}),
+      ...(r.pricing.error ? { error: r.pricing.error } : {}),
+    },
     ...(r.baseline ? { baseline: true } : {}),
     anomalies: r.anomalies.map((a) => `${a.treatment}/${a.rank}/${a.model}`),
     ...(r.anomalies.length ? { unavailableModels: [...new Set(r.anomalies.map((a) => a.model))] } : {}),

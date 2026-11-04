@@ -14,6 +14,7 @@
  */
 import { openDrawer } from '@/lib/drawers';
 import { supplierHref } from '@/lib/supplier-routes';
+import { captureSupplierOrigin } from '@/lib/suppliers/supplier-return';
 
 interface ToProcessTargetRef {
   targetType: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'AGENDA_ITEM' | 'SUPPLIER';
@@ -50,6 +51,8 @@ export function openToProcessTarget(
       break;
     case 'SUPPLIER':
       if (ref.supplierId != null && Number.isSafeInteger(ref.supplierId) && ref.supplierId > 0) {
+        // Lot 109B : point de départ mémorisé (retour contextuel de la fiche).
+        captureSupplierOrigin(ref.supplierId);
         nav.push(supplierHref(ref.supplierId));
         return;
       }

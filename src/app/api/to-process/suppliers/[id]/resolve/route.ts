@@ -7,6 +7,7 @@ import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
 import { refsInAccount } from '@/services/security/account-ownership';
+import { SUPPLIER_CONFLICT_APPLICABLE_FIELDS } from '@/lib/suppliers/supplier-fiche-config';
 
 // POST /api/to-process/suppliers/[id]/resolve
 // Lot 49 (SEC-03, « autres relations fournisseurs ») : la fiche cible d'une
@@ -58,14 +59,10 @@ export async function POST(
 
     // Conflit de coordonnées : l'utilisateur choisit la valeur à garder
     if (resolution === 'use_detected' && item.conflictingField && item.detectedValue && item.supplierId) {
-      const SUPPLIER_FIELD_MAP: Record<string, string> = {
-        email: 'email', phone: 'phone', website: 'website',
-        addressLine1: 'address_line1', addressLine2: 'address_line2',
-        postalCode: 'postal_code', city: 'city', country: 'country',
-        siren: 'siren', siret: 'siret', vatNumber: 'vat_number',
-        ibanHolderName: 'iban_holder_name',
-      };
-      const colName = SUPPLIER_FIELD_MAP[item.conflictingField];
+      // Lot 109B : table centralisée (fiche fournisseur et « À traiter ») ; corrige
+      // les colonnes d'adresse (`address_line_1`/`_2`, l'ancienne table visait
+      // `address_line1` inexistante). L'IBAN reste exclu (jamais appliqué d'un clic).
+      const colName = SUPPLIER_CONFLICT_APPLICABLE_FIELDS[item.conflictingField];
       if (!colName) {
         return apiError(400, 'INVALID_INPUT', 'Champ de conflit non autorisé');
       }
@@ -113,6 +110,14 @@ export async function POST(
       await db.transaction((tx) => mergeAgendaSupplierLinksInTx(tx, {
         accountId, fromSupplierId: item.supplierId!, toSupplierId: Number(targetSupplierId), actorUserId: session.userId ?? null,
       }));
+
+      // Lot 109A : liens Opération ↔ fournisseur reportés sur la fiche conservée (décision de l'utilisateur la
+      // plus forte, sans doublon), puis réévaluation T3 durable des Opérations des documents reportés.
+      const { mergeOperationSuppliersAfterSupplierMerge } = await import('@/services/relations/operation-suppliers');
+      await mergeOperationSuppliersAfterSupplierMerge({
+        accountId, fromSupplierId: item.supplierId!, toSupplierId: Number(targetSupplierId), actorUserId: session.userId ?? null,
+        documentIds: docLinks.map((d) => d.documentId),
+      });
 
       // Archive old supplier
       await db.update(suppliers)

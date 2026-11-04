@@ -118,6 +118,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_tables: { domain: 'extraits-ia', description: 'Tableaux extraits.' },
   document_table_cells: { domain: 'extraits-ia', description: 'Cellules des tableaux extraits.' },
   document_unresolved_facts: { domain: 'extraits-ia', description: 'Faits T1 non résolus.' },
+  document_candidate_repair_propagations: { domain: 'extraits-ia', description: 'Propagation des réparations T1 vers les candidats du document et T3 (faits nouveaux, catégories, décision, supersession, statut T3) — lot 109K.' },
   document_value_review_units: { domain: 'extraits-ia', description: 'Progression du réexamen ciblé des décisions T1, unité par unité (examinée, en échec, trop grande ; statut de la sortie T1 du lot ; lots, tentatives, provenance) — lot 108K.' },
   document_value_decisions: { domain: 'extraits-ia', description: 'Décisions T1 sur les valeurs significatives des unités sources (structurée, composante ou contexte, non retenue avec motif, indéterminée ; provenance, rattachements, validité, historique) — lot 91D.' },
   document_analysis_runs: { domain: 'extraits-ia', description: 'Analyses de documents (exécutions).' },
@@ -227,6 +228,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   agenda_item_suppliers: { domain: 'agenda-timeline', description: 'Fournisseurs / intervenants des éléments d’agenda (provenance utilisateur, document ou mention ; lot 103E).' },
   agenda_item_supplier_suppressions: { domain: 'agenda-timeline', description: 'Retraits manuels d’un fournisseur d’un élément d’agenda — jamais recréés automatiquement (lot 103E).' },
   agenda_item_supplier_history: { domain: 'agenda-timeline', description: 'Historique des liens agenda ↔ fournisseur (provenance, auteur, corrélation ; lot 103E).' },
+  business_operation_suppliers: { domain: 'operations', description: 'Fournisseurs d’une Opération : rôle (prestataire, émetteur d’une pièce…), provenance T3 / USER, preuve, état actif / retiré / refusé (lot 109A).' },
+  business_operation_supplier_history: { domain: 'operations', description: 'Historique des liens Opération ↔ fournisseur : action, motif, provenance, auteur, corrélation, avant / après (lot 109A).' },
   agenda_occurrence_events: { domain: 'agenda-timeline', description: 'Occurrences (récurrences).' },
   agenda_item_removals: { domain: 'agenda-timeline', description: 'Retraits d’éléments d’agenda (traçables, restaurables).' },
   agenda_intervention_consolidations: { domain: 'agenda-timeline', description: 'Consolidations d’interventions (lot 76H) et de représentations équivalentes (origine COHERENCE, lot 106A) — restaurables.' },
@@ -293,6 +296,9 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_usage_event: 'journal des appels IA (diagnostic 77C)',
   ai_usage_events: 'ancien journal des appels IA',
   ai_usage_daily_rollup: 'agrégats de coûts IA',
+  ai_cost_regularization_runs: 'régularisation des coûts IA (exécutions)',
+  ai_cost_regularization_items: 'régularisation des coûts IA (plan)',
+  ai_cost_corrections: 'corrections de coûts IA (régularisation)',
   ai_usage_account_counter: 'compteurs d’usage IA',
   ai_call_diagnostics: 'sorties modèle (accès restreint, diagnostic 77C)',
   ai_call_captures: 'capture des échanges IA (Pilotage IA P1, accès restreint, contenu potentiellement personnel)',
@@ -389,6 +395,8 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   pending_blob_deletions: 'file de suppression des fichiers du stockage', system_files: 'fichiers système', system_logos: 'logos système',
   agenda_intervention_reprise_runs: 'technique : reprise des doublons d’agenda (exécutions)',
   t6_evaluation_signature_baselines: 'technique T6 (références de signature)',
+  // Lot 109F (1125) : compteurs agrégés, sans adresse ni compte.
+  disposable_email_refusals: 'technique : refus d’adresses e-mail jetables (compteurs agrégés)',
 };
 
 interface TableClassification {

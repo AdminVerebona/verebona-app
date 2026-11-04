@@ -8,13 +8,17 @@
  * catalogue ») et par la route manuelle `/api/cron/ai/refresh-model-pricing`.
  */
 import { listLlmOperations } from '../../registry/operations';
-import { syncPricingCatalog, type PricingSyncDeps } from './pricing-sync.service';
+import { modelsActuallyUsed, syncPricingCatalog, type PricingSyncDeps, type PricingSyncResult } from './pricing-sync.service';
 
 interface RefreshResult {
   status: 'completed' | 'partial' | 'failed';
   modelsFound: number;
   modelsUpdated: number;
   modelsMissing: string[];
+  /** Lot 109L : tarifs conservés non confirmés, code d'échec global, capture de la page. */
+  modelsStale?: string[];
+  failureCode?: string;
+  capture?: PricingSyncResult['capture'];
   error?: string;
 }
 
@@ -44,6 +48,11 @@ export async function modelsToPrice(): Promise<string[]> {
     const { getCatalogState } = await import('../../provider/model-catalog.service');
     for (const m of (await getCatalogState()).models) if (m.available) out.add(m.model);
   } catch { /* catalogue illisible */ }
+  // Lot 109L (point B) : modèles RÉELLEMENT appelés (30 jours) — un modèle
+  // utilisé mais absent du référentiel et du catalogue était jamais tarifé.
+  try {
+    for (const m of await modelsActuallyUsed(30)) out.add(m);
+  } catch { /* table illisible */ }
   return [...out].sort();
 }
 
@@ -54,6 +63,9 @@ export async function refreshModelPricing(deps: PricingSyncDeps = {}): Promise<R
     modelsFound: r.known.length,
     modelsUpdated: r.changed.length,
     modelsMissing: r.unknown.map((u) => u.model),
+    modelsStale: (r.stale ?? []).map((u) => u.model),
+    ...(r.failureCode ? { failureCode: r.failureCode } : {}),
+    ...(r.capture ? { capture: r.capture } : {}),
     ...(r.error ? { error: r.error } : {}),
   };
 }

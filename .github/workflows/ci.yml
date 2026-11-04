@@ -507,6 +507,24 @@ jobs:
         run: npm run test:e2e:notifications-documents -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-notifications-documents.xml
       - name: T1, conformité des décisions sur les valeurs (lot 108K)
         run: npm run test:e2e:t1-conformite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t1-conformite.xml
+      - name: Relations métier autour de l'événement de référence (lot 109A)
+        run: npm run test:e2e:relations-metier -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-relations-metier.xml
+      - name: Fiche fournisseur unique (lot 109B)
+        run: npm run test:e2e:fournisseurs-fiche -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-fournisseurs-fiche.xml
+      - name: TCO — points à vérifier contextualisés (lot 109C)
+        run: npm run test:e2e:tco-diagnostics -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-diagnostics.xml
+      - name: TCO — remises et avoirs (lot 109D)
+        run: npm run test:e2e:tco-remises -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-remises.xml
+      - name: T6 — empreinte v5 (lot 109E)
+        run: npm run test:e2e:t6-empreinte -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t6-empreinte.xml
+      - name: Inscription — adresses e-mail jetables refusées (lot 109F)
+        run: npm run test:e2e:emails-jetables -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-emails-jetables.xml
+      - name: T3 — harmonisation des titres, corpus 6033 (lot 109J)
+        run: npm run test:e2e:t3-nommage-6033 -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t3-nommage-6033.xml
+      - name: T1 — couverture PDF et propagation des réparations (lot 109K)
+        run: npm run test:e2e:t1-couverture-propagation -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t1-couverture-propagation.xml
+      - name: Coûts IA — tarifs, statut, régularisation (lot 109L)
+        run: npm run test:e2e:couts-ia -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-couts-ia.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

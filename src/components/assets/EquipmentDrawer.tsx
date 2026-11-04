@@ -20,13 +20,13 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
-import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
 import { EntityCard } from '@/components/drawers/EntityCard';
 import { DocumentDateCell } from '@/components/documents/DocumentDateCell';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { EQUIPMENT_FICHE_FIELDS, equipmentFicheChanges } from '@/lib/asset-detail-rules';
 import { normalizeEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
 import { undatedLabel } from '@/lib/agenda/no-deadline';
+import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 // Lot 75A : champ « Usage énergétique » affiché selon sa pertinence (règle
 // centralisée `isEnergyUsageFieldRelevant`), même composant desktop et mobile.
 import {
@@ -87,7 +87,12 @@ interface EquipmentDocument {
   assetName: string | null;
   webLinkUrl: string | null;
   createdAt: string;
+  /** Lot 109A : DIRECT (preuve propre) ou VIA_OPERATION (document d'un événement de référence de l'équipement). */
+  provenance?: 'DIRECT' | 'VIA_OPERATION';
 }
+
+/** Lot 109A : mention d'un rattachement par l'événement de référence (jamais un lien direct). */
+const VIA_REFERENCE_LABEL = 'Par un événement de référence';
 
 interface EquipmentAgendaItem {
   id: number;
@@ -102,6 +107,8 @@ interface EquipmentAgendaItem {
   originType: string;
   /** Lot 77A : tâche « Sans échéance ». */
   noDeadline?: boolean;
+  /** Lot 109A : DIRECT ou VIA_OPERATION (élément d'un événement de référence de l'équipement). */
+  provenance?: 'DIRECT' | 'VIA_OPERATION';
 }
 
 interface Props {
@@ -220,8 +227,6 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
   // Suppliers
   const [equipmentSuppliers, setEquipmentSuppliers] = useState<{ supplierId: number; name: string; email: string | null; isPrimary: boolean }[]>([]);
   const [loadingSuppliers, setLoadingSuppliers] = useState(false);
-  const [supplierDrawerOpen, setSupplierDrawerOpen] = useState(false);
-  const [supplierDrawerId, setSupplierDrawerId] = useState<number | null>(null);
 
   // Documents
   const [equipmentDocuments, setEquipmentDocuments] = useState<EquipmentDocument[]>([]);
@@ -378,7 +383,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
     return () => window.removeEventListener(ROOM_ASSOCIATIONS_CHANGED, relire);
   }, [open, eq?.id]);
 
-  // Lot 75H : une échéance ouverte depuis la section « Agenda associé »
+  // Lot 75H : une échéance ouverte depuis la section « Événements associés » (ex-« Agenda associé »)
   // s'empile au-dessus ; modifiée ou supprimée, la liste se relit.
   const equipmentId = eq?.id ?? null;
   useEffect(() => {
@@ -659,7 +664,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                     Principal
                   </span>
                 ) : undefined}
-                onOpen={() => { setSupplierDrawerId(s.supplierId); setSupplierDrawerOpen(true); }}
+                /* Lot 109B : la carte ouvre la FICHE fournisseur ; « Retour à l'équipement » rouvre ce tiroir. */
               />
             ))}
           </div>
@@ -690,11 +695,16 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   id={doc.id}
                   title={doc.title}
                   icon={<FileText className="w-3.5 h-3.5" />}
-                  meta={doc.documentTypeLabel ? (
+                  meta={doc.documentTypeLabel || doc.provenance === 'VIA_OPERATION' ? (
                     <span className="flex items-center gap-1.5 flex-wrap">
-                      <span data-testid="equipment-doc-type-pill" className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${DOC_TYPE_PILL}`}>
-                        {doc.documentTypeLabel}
-                      </span>
+                      {doc.documentTypeLabel && (
+                        <span data-testid="equipment-doc-type-pill" className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${DOC_TYPE_PILL}`}>
+                          {doc.documentTypeLabel}
+                        </span>
+                      )}
+                      {doc.provenance === 'VIA_OPERATION' && (
+                        <span data-testid="equipment-doc-via-reference" className="text-[11px] text-muted-foreground">{VIA_REFERENCE_LABEL}</span>
+                      )}
                     </span>
                   ) : undefined}
                   /* Lot 108D : une seule date, la date du document (sinon « – »), à droite. */
@@ -710,7 +720,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
       <div className="mt-5 pt-5 border-t border-border/50 pb-2">
         <div className="flex items-center gap-2 mb-3">
           <CalendarDays className="w-3.5 h-3.5 text-muted-foreground" />
-          <p className="vb-app-subsection">Agenda associé</p>
+          <p className="vb-app-subsection">{AGENDA_EVENT_LABELS.linkedEvents}</p>
           {loadingAgenda && <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />}
           {!loadingAgenda && equipmentAgenda.length > 0 && (
             <span className="ml-auto text-[10px] font-semibold text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded-full">
@@ -719,7 +729,7 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
           )}
         </div>
         {!loadingAgenda && equipmentAgenda.length === 0 ? (
-          <p className="text-xs text-muted-foreground">Aucun élément agenda associé.</p>
+          <p className="text-xs text-muted-foreground">{AGENDA_EVENT_LABELS.noLinkedEvent}</p>
         ) : (
           <div className="space-y-1.5">
             {equipmentAgenda.map(item => (
@@ -730,9 +740,9 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                 title={item.title}
                 icon={<AgendaStatusIcon status={item.effectiveStatus} />}
                 iconStyle="plain"
-                meta={item.startDate
+                meta={`${item.startDate
                   ? `${formatDate(item.startDate)}${item.startTime ? ` · ${item.startTime.slice(0, 5)}` : ''}`
-                  : undatedLabel(item)}
+                  : undatedLabel(item)}${item.provenance === 'VIA_OPERATION' ? ` · ${VIA_REFERENCE_LABEL}` : ''}`}
                 badges={<AgendaStatusBadge item={item} />}
               />
             ))}
@@ -745,7 +755,8 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
   return (
     <>
       <Sheet open={open} onOpenChange={(v) => { if (!v) setIsEditing(false); onOpenChange(v); }}>
-        <SheetContent className="w-full sm:max-w-md flex flex-col p-0">
+        {/* Lot 109B : `data-return-drawer` — tiroir rouvert au retour d'une fiche fournisseur. */}
+        <SheetContent className="w-full sm:max-w-md flex flex-col p-0" data-return-drawer={eq?.id ? `equipement:${eq.id}` : undefined}>
           <SheetHeader className="px-5 pt-5 pb-3">
             <div className="flex items-center gap-2">
               <Settings className="w-5 h-5 text-muted-foreground flex-shrink-0" />
@@ -833,13 +844,6 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      <SupplierDrawer
-        supplierId={supplierDrawerId}
-        open={supplierDrawerOpen}
-        onOpenChange={setSupplierDrawerOpen}
-        onUpdated={() => {}}
-      />
     </>
   );
 }

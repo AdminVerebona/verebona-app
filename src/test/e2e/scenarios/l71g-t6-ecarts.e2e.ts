@@ -196,9 +196,10 @@ scenario('L71G-T6', 'Lot 71G — écarts de décision d’interpellation T6 et r
     modele.candidats.length = 0;
     // Casse, accents, ponctuation, espaces : cosmétique.
     await sql`UPDATE agenda_items SET description = '  entretien ANNUEL obligatoire ', updated_at = now() WHERE id = ${e}`;
-    // Réextraction T1 qui produit les mêmes faits (nouvelle extraction, mêmes valeurs ; extrait reformulé).
+    // Réextraction T1 qui produit les mêmes faits (nouvelle extraction, mêmes valeurs ; casse et espaces).
+    // Lot 109E : une reformulation (« L’entretien est annuel. ») n'est plus cosmétique (normalisation v5).
     await sql`UPDATE document_facts SET status = 'superseded' WHERE file_id = ${doc.fileId}`;
-    await fait(c, doc, { key: 'maintenanceFrequency', label: 'Périodicité', value: 'annuelle', excerpt: 'L’entretien est annuel.' });
+    await fait(c, doc, { key: 'maintenanceFrequency', label: 'Périodicité', value: 'annuelle', excerpt: '  ENTRETIEN   annuel' });
     expect(ids(await passer(c.id))).toEqual([e]);
     expect(evalues()).toEqual([]);
   });

@@ -2,11 +2,64 @@ import { NextRequest, NextResponse } from 'next/server';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { documentSuppliers, assetFiles, suppliers } from '@/db/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, sql, ne, isNull, desc } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
 import { onDocumentEditedByUser } from '@/services/to-process/document-rule-bridge';
+import { requestOperationSupplierResync } from '@/services/relations/operation-suppliers';
+
+// GET /api/documents/[id]/supplier — lot 109B : fournisseur(s) RATTACHÉ(S) au
+// document (relation persistée `document_suppliers`, du compte, non supprimés),
+// avec la preuve locale de la relation (`isConfirmed`, `confidenceScore`).
+// Le tiroir document ouvre la fiche par cet identifiant : plus jamais de
+// recherche par nom, de premier résultat pris au hasard ni de création
+// implicite. Plusieurs rattachements : tous rendus (aucun choix arbitraire).
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const session = await SessionService.getSession(request);
+    if (!session) return apiError(401, 'UNAUTHORIZED', 'Authentication required');
+    const accountId = session.currentAccountId;
+    if (!accountId) return apiError(401, 'UNAUTHORIZED', 'No account selected');
+
+    const { id } = await params;
+    if (!/^\d{1,10}$/.test(id)) return apiError(400, 'INVALID_INPUT', 'Invalid document id');
+    const documentId = Number(id);
+
+    const [doc] = await db
+      .select({ id: assetFiles.id })
+      .from(assetFiles)
+      .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, accountId), isNull(assetFiles.deletedAt)))
+      .limit(1);
+    if (!doc) return apiError(404, 'NOT_FOUND', 'Document not found');
+
+    const rows = await db
+      .select({
+        id: suppliers.id,
+        name: suppliers.name,
+        status: suppliers.status,
+        role: documentSuppliers.role,
+        isConfirmed: documentSuppliers.isConfirmed,
+        confidenceScore: documentSuppliers.confidenceScore,
+      })
+      .from(documentSuppliers)
+      .innerJoin(suppliers, and(eq(suppliers.id, documentSuppliers.supplierId), eq(suppliers.accountId, accountId), ne(suppliers.status, 'deleted')))
+      .where(eq(documentSuppliers.documentId, documentId))
+      .orderBy(desc(documentSuppliers.isConfirmed), suppliers.name, suppliers.id);
+
+    return NextResponse.json({
+      suppliers: rows.map((r) => ({
+        ...r,
+        confidenceScore: r.confidenceScore == null ? null : Number(r.confidenceScore),
+      })),
+    });
+  } catch (err) {
+    return SessionService.handleSessionError(err);
+  }
+}
 
 // PUT /api/documents/[id]/supplier — associate a supplier to a document
 export async function PUT(
@@ -75,6 +128,8 @@ export async function PUT(
 
     // Lot 28 : « À traiter » suit la correction (DATA-SUPPLIER). Ne lève jamais.
     await onDocumentEditedByUser(accountId, documentId);
+    // Lot 109A : fournisseurs des Opérations dont le document est membre réévalués (file T3 durable). Ne lève jamais.
+    await requestOperationSupplierResync(accountId, [documentId]);
 
     // CDC Assistant §25.7, §31.7 : fournisseur du document modifié.
     await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
@@ -126,6 +181,7 @@ export async function DELETE(
       .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, accountId)));
 
     await onDocumentEditedByUser(accountId, documentId);
+    await requestOperationSupplierResync(accountId, [documentId]);
     await emitBusinessEvent({ type: 'DOCUMENT_UPDATED', accountId, entityId: documentId });
     return NextResponse.json({ success: true });
   } catch (err) {

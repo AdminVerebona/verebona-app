@@ -25,6 +25,7 @@ import { assetAgendaChips, isAssetAgendaEmpty } from '@/lib/agenda/asset-agenda-
 import { undatedLabel } from '@/lib/agenda/no-deadline';
 import { LocalSearchField } from '@/components/search/LocalSearchField';
 import { LOCAL_SEARCH_PARAM, localSearchNoResult, readLocalQuery, searchWithLocalQuery } from '@/lib/search/local-search';
+import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -287,16 +288,16 @@ export function AssetAgendaTab({ assetId }: Props) {
       ) : items.length === 0 && activeFiltersCount > 0 ? (
         <div className="text-center py-12 text-muted-foreground">
           <CalendarDays className="h-10 w-10 mx-auto mb-3 opacity-30" />
-          <p className="font-medium">Aucun élément</p>
+          <p className="font-medium">{AGENDA_EVENT_LABELS.noEvent}</p>
           <p className="text-sm mt-1">Aucun résultat avec ces filtres.</p>
         </div>
       ) : items.length === 0 ? (
         <EmptyStateCard
           icon={<CalendarDays className="w-4 h-4 text-[color:var(--text-success)]" />}
           iconClassName="bg-[color:var(--bg-success)]"
-          title="Aucun élément pour le moment"
-          description="Créez votre premier élément d'agenda"
-          actionLabel="Ajouter un élément"
+          title={AGENDA_EVENT_LABELS.noEventYet}
+          description={AGENDA_EVENT_LABELS.createFirst}
+          actionLabel={AGENDA_EVENT_LABELS.add}
           onAction={ouvrirCreation}
         />
       ) : (

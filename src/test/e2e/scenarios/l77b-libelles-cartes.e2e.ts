@@ -61,7 +61,7 @@ scenario('L77B', 'Libellés des cartes « À traiter » : formulations utilisate
     await sql`DELETE FROM agenda_items WHERE id = ${supprime.id}`;
     const cartes = (await page(c.id)).actions.filter((a) => a.targetType === 'AGENDA_ITEM');
     expect(cartes).toHaveLength(1);
-    expect(cartes[0].target.label).toBe('Événement d’agenda');
+    expect(cartes[0].target.label).toBe('Événement'); // lot 109I
     expect(cartes[0].target.assetName ?? null).toBeNull();
   });
 

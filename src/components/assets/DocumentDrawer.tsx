@@ -23,7 +23,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import {
   FileText, Download, Trash2, ExternalLink, Loader2,
-  Calendar, Euro, User, FileQuestion, Pencil, Building2, LayoutGrid, Wrench, Wand2, Check, CalendarPlus, X,
+  Calendar, Euro, FileQuestion, Pencil, Building2, LayoutGrid, Wrench, Wand2, Check, CalendarPlus, X,
   Sparkles, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Lock, RefreshCw, ChevronLeft, ChevronRight, Unlink,
 } from 'lucide-react';
 import dynamic from 'next/dynamic';
@@ -41,7 +41,7 @@ import { toast } from 'sonner';
 import { analyzeErrorFeedback, type AnalyzeFeedback } from './document-analysis-feedback';
 import { apiClient } from '@/lib/api-client';
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
-import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
+import { DocumentSupplierField } from '@/components/assets/DocumentSupplierField';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { openDrawer, restoreFocusOnClose } from '@/lib/drawers';
 import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
@@ -50,7 +50,7 @@ import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
 // Lot 84B (CDC v5 O-3, §8.1, §14.4) : événement de référence + liens précis ; lien manuel vers un élément d'agenda.
 import { ASSOCIATION_BTN, GroupingPicker } from '@/components/agenda/AgendaGroupingPanel';
-import { GROUPING_LABELS } from '@/lib/agenda/grouping-view';
+import { AGENDA_EVENT_LABELS, GROUPING_LABELS } from '@/lib/agenda/grouping-view';
 import { documentStatusLabel } from '@/lib/documents/document-status-label';
 import { DOCUMENT_DATE_PLACEHOLDER } from '@/lib/documents/document-row-date';
 import {
@@ -321,8 +321,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [assetsList, setAssetsList] = useState<{ id: number; name: string; category: string }[]>([]);
   const [substructuresList, setSubstructuresList] = useState<{ id: number; name: string }[]>([]);
   const [equipmentsList, setEquipmentsList] = useState<{ id: number; name: string }[]>([]);
-  const [supplierDrawerOpen, setSupplierDrawerOpen] = useState(false);
-  const [supplierDrawerId, setSupplierDrawerId] = useState<number | null>(null);
 
   // AI analysis — analysisState from DB (live via SSE)
   const [analysisState, setAnalysisState] = useState<string | null>(null);
@@ -1130,6 +1128,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       <Sheet open={open} onOpenChange={handleOpenChange}>
         <SheetContent
           className="w-full sm:max-w-lg flex flex-col p-0"
+          // Lot 109B : tiroir rouvert au retour d'une fiche fournisseur.
+          data-return-drawer={doc?.id ? `document:${doc.id}` : undefined}
           onInteractOutside={isAnalyzing ? (e) => e.preventDefault() : undefined}
           onEscapeKeyDown={isAnalyzing ? (e) => e.preventDefault() : undefined}
           // Lot 76E : focus rendu à l'élément d'origine, s'il est fourni.
@@ -1425,7 +1425,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         {/* Agenda suggestions */}
                         {proposals.filter((p: any) => p.proposalType === 'agenda_suggestion' && p.status !== 'rejected').length > 0 && (
                           <div className="pt-1 border-t border-current/10">
-                            <p className="vb-app-label mb-1.5">Suggestions agenda</p>
+                            <p className="vb-app-label mb-1.5">{AGENDA_EVENT_LABELS.suggested}</p>
                             <div className="space-y-1">
                               {proposals
                                 .filter((p: any) => p.proposalType === 'agenda_suggestion' && p.status !== 'rejected')
@@ -1471,7 +1471,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                     <p className="text-sm font-semibold text-foreground">Analyse automatique</p>
                   </div>
                   <ul className="space-y-1.5 text-xs text-muted-foreground">
-                    {['Détection automatique du type, date, fournisseur', 'Suggestions agenda et équipements', 'Indicateurs de confiance sur chaque champ', 'Détection des doublons lors de l\'upload'].map(f => (
+                    {['Détection automatique du type, date, fournisseur', AGENDA_EVENT_LABELS.suggestedFeature, 'Indicateurs de confiance sur chaque champ', 'Détection des doublons lors de l\'upload'].map(f => (
                       <li key={f} className="flex items-center gap-2">
                         <Sparkles className="w-3 h-3 text-[color:var(--accent)] shrink-0" />
                         {f}
@@ -1575,7 +1575,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 {agendaSuggestions.length > 0 && (
                   <div className="pt-2 border-t">
                     <p className="vb-app-label mb-2 flex items-center gap-1">
-                      <CalendarPlus className="w-3 h-3" />Suggestions agenda
+                      <CalendarPlus className="w-3 h-3" />{AGENDA_EVENT_LABELS.suggested}
                     </p>
                     <div className="space-y-1.5">
                       {agendaSuggestions.map((s, i) => (
@@ -1652,45 +1652,14 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         <span className="font-medium">{fmtAddedDay(fullData?.uploadedAt ?? doc.uploadedAt)}</span>
                       </div>
                     )}
-                    {/* Fournisseur — name only, no coordinates; click opens SupplierDrawer */}
-                    <div className="flex items-center justify-between">
-                      <span className="flex items-center gap-1.5 text-muted-foreground"><User className="w-3.5 h-3.5" />Fournisseur</span>
-                      {fullData?.supplier ? (
-                        <div className="flex items-center gap-1">
-                          <button
-                            className="font-medium text-[color:var(--accent)] hover:underline text-sm"
-                            onClick={async () => {
-                              try {
-                                const data = await apiClient.get<{ suppliers: { id: number; name: string }[] }>(
-                                  `/api/suppliers?search=${encodeURIComponent(fullData.supplier ?? '')}`
-                                );
-                                const match = data.suppliers?.[0];
-                                if (match) {
-                                  setSupplierDrawerId(match.id);
-                                  setSupplierDrawerOpen(true);
-                                } else {
-                                  const created = await apiClient.post<{ supplier: { id: number } }>(
-                                    '/api/suppliers',
-                                    { name: fullData.supplier, source: 'manual' }
-                                  );
-                                  setSupplierDrawerId(created.supplier.id);
-                                  setSupplierDrawerOpen(true);
-                                }
-                              } catch {
-                                toast.error('Impossible d\'ouvrir la fiche fournisseur');
-                              }
-                            }}
-                          >
-                            {fullData.supplier}
-                          </button>
-                          {fullData.lastAnalysisAt && !fullData.userEditedFields?.supplier && (
-                            <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-muted-foreground text-sm">Non renseigné</span>
-                      )}
-                    </div>
+                    {/* Fournisseur — lot 109B : fiche ouverte par l'IDENTIFIANT rattaché au document
+                        (jamais recherche par nom, premier résultat ni création implicite). */}
+                    <DocumentSupplierField
+                      documentId={doc.id}
+                      detectedName={fullData?.supplier ?? null}
+                      detectedByAnalysis={!!fullData?.lastAnalysisAt && !fullData?.userEditedFields?.supplier}
+                      onLinked={() => setRefreshTrigger((n) => n + 1)}
+                    />
                     {/* Montant */}
                     {fullData?.amountCents != null && (
                       <div className="flex items-center justify-between">
@@ -1822,7 +1791,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   {agendaSuggestions.length > 0 && (
                     <div className="pt-2">
                       <p className="vb-app-label mb-2 flex items-center gap-1">
-                        <CalendarPlus className="w-3 h-3" />Suggestions agenda
+                        <CalendarPlus className="w-3 h-3" />{AGENDA_EVENT_LABELS.suggested}
                       </p>
                       <div className="space-y-1.5">
                         {agendaSuggestions.map((s, i) => (
@@ -2014,14 +1983,6 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           }}
         />
       )}
-
-      {/* Supplier drawer — opened by clicking supplier name in view mode */}
-      <SupplierDrawer
-        supplierId={supplierDrawerId}
-        open={supplierDrawerOpen}
-        onOpenChange={setSupplierDrawerOpen}
-        onUpdated={() => {}}
-      />
     </>
   );
 }

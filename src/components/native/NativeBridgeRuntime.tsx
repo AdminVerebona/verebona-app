@@ -14,7 +14,9 @@
  *     d'activation après connexion (`useBiometricOffer`) (AUTH-05/06/09) ;
  *   · liens universels / App Links et retour Google / Apple (§19, M1) ;
  *   · notifications : enregistrement, demande contextualisée, ouverture de
- *     l'écran ciblé (PUSH-02/04/09) ;
+ *     l'écran ciblé (PUSH-02/04/09) ; lot 109G : invitation « Autoriser les
+ *     notifications ? » à la première connexion, par compte et installation,
+ *     prioritaire sur la proposition biométrique (`usePushOnboarding`) ;
  *   · partage entrant → formulaire d'ajout habituel (IMP-02..04) ; lot 108G :
  *     reprise depuis la FILE TECHNIQUE locale (`lib/native/share-inbox`) après
  *     Face ID / connexion — plus de fichiers gardés en mémoire seulement ;
@@ -24,11 +26,11 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { WifiOff, Bell, ShieldAlert, FileInput } from 'lucide-react';
+import { WifiOff, ShieldAlert, FileInput } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/hooks/useSession';
-import { mobileClientHeaders } from '@/lib/mobile/native-shell';
+import { APP_UPDATE_REQUIRED_EVENT, mobileClientHeaders } from '@/lib/mobile/native-shell';
 import {
   CREATE_FLOW_HOST_READY, CREATE_FLOW_SETTLED, isCreateFlowHostReady, openCreateFlow, type CreateFlowSettled,
 } from '@/lib/create-flows';
@@ -38,7 +40,7 @@ import { NATIVE_PLUGINS, listenNative, nativePlugin } from '@/lib/native/bridge'
 import { appBuildEnv, appUrlContext, expectedServerEnvironment, initInstallationId } from '@/lib/native/shell-info';
 import { resolveAppUrl, pushTargetPath } from '@/lib/native/deep-links';
 import { abandonNativeOAuth, completeNativeOAuth, nativeOAuthErrorMessage } from '@/lib/native/oauth';
-import { enableNativePush, nativePushPermission, syncNativePush, watchPushOpens, watchPushTokenRotation } from '@/lib/native/push';
+import { syncNativePush, watchPushOpens, watchPushTokenRotation } from '@/lib/native/push';
 import { readSharedFile } from '@/lib/native/share-in';
 import {
   accountKey, claimInboxItem, claimedBy, loadInbox, nextToPresent, readClaims, recordAndroidShare, removeInboxItem,
@@ -50,11 +52,12 @@ import { setNativeFeatures, setNativeOAuthReturn } from '@/lib/native/features';
 import { NATIVE_COMMERCE_INFO_PATH, NATIVE_COMMERCE_MESSAGE, isCommercePath } from '@/lib/native/commerce';
 import { useNativeUnlock } from './useNativeUnlock';
 import { useBiometricOffer } from './useBiometricOffer';
+import { usePushOnboarding } from './usePushOnboarding';
+import { PushOnboardingCard } from './PushOnboardingCard';
 import { NativeUnlockScreen } from './NativeUnlockScreen';
 import { BiometricOfferCard } from './BiometricOfferCard';
 
 type Features = Record<string, boolean>;
-const PUSH_PROMPT_DISMISSED_KEY = 'verebona:native:push-prompt-dismissed';
 
 interface NetworkPlugin {
   getStatus(): Promise<{ connected: boolean }>;
@@ -83,7 +86,8 @@ export default function NativeBridgeRuntime() {
   const [envMismatch, setEnvMismatch] = useState(false);
   const [offline, setOffline] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const [pushPrompt, setPushPrompt] = useState(false);
+  // Lot 109G : écran bloquant « Mise à jour requise » (AppUpdateRequiredGate) — aucune invitation dessous.
+  const [updateRequired, setUpdateRequired] = useState(false);
 
   // Lot 108G : file technique des partages (persistante), éléments déjà proposés pendant ce lancement.
   const [inbox, setInbox] = useState<InboxItem[]>([]);
@@ -110,8 +114,10 @@ export default function NativeBridgeRuntime() {
       if (!res.ok) return;
       const cfg = await res.json() as {
         environment?: string | null; platforms?: Record<string, { features?: Features }>; auth?: { appOAuthReturn?: unknown };
+        client?: { updateRequired?: boolean };
       };
       setNativeOAuthReturn(cfg.auth?.appOAuthReturn);
+      if (cfg.client?.updateRequired) setUpdateRequired(true);
       const env = appBuildEnv();
       if (env && cfg.environment && cfg.environment !== expectedServerEnvironment(env)) setEnvMismatch(true);
       const platform = mobileClientHeaders()['X-Verebona-Client'] === 'IOS' ? 'ios' : 'android';
@@ -126,6 +132,12 @@ export default function NativeBridgeRuntime() {
     void initInstallationId();
     void lireConfig();
   }, [lireConfig]);
+
+  useEffect(() => {
+    const onUpdate = () => setUpdateRequired(true);
+    window.addEventListener(APP_UPDATE_REQUIRED_EVENT, onUpdate);
+    return () => window.removeEventListener(APP_UPDATE_REQUIRED_EVENT, onUpdate);
+  }, []);
 
   // Lot 108G : lecture de la file technique des partages (iOS : groupe d'apps ; Android : références locales).
   const rafraichirInbox = useCallback(async () => {
@@ -223,25 +235,13 @@ export default function NativeBridgeRuntime() {
     return () => { void offOpen.then((f) => f()); void offToken.then((f) => f()); };
   }, [ouvrir]);
 
+  // Jeton synchronisé à chaque session (autorisation déjà accordée : aucune demande).
+  // Lot 109G : aussi à chaque changement de compte (jeton rattaché à la bonne session).
+  const sessionUserId = authenticated ? (user?.id ?? null) : null;
   useEffect(() => {
-    if (!authenticated || !featureOn(features, 'push')) return;
+    if (sessionUserId === null || !featureOn(features, 'push')) return;
     void syncNativePush();
-    void nativePushPermission().then((p) => {
-      let dismissed = false;
-      try { dismissed = localStorage.getItem(PUSH_PROMPT_DISMISSED_KEY) === '1'; } catch { /* sans stockage */ }
-      setPushPrompt(p === 'prompt' && !dismissed);
-    });
-  }, [authenticated, features]);
-
-  const fermerInvitationPush = (activer: boolean) => {
-    setPushPrompt(false);
-    try { localStorage.setItem(PUSH_PROMPT_DISMISSED_KEY, '1'); } catch { /* sans stockage */ }
-    if (activer) {
-      void enableNativePush().then((r) => {
-        if (r === 'denied') toast.message('Notifications désactivées. Vous pourrez les activer dans les réglages du téléphone.');
-      });
-    }
-  };
+  }, [sessionUserId, features]);
 
   // ── Partage entrant (IMP-02..06, lot 108G) ─────────────────────────────
   // Un élément par partage, gardé dans la file technique locale jusqu'à
@@ -379,7 +379,16 @@ export default function NativeBridgeRuntime() {
 
   // ── Proposition d'activation biométrique (lot 107A, #640) ───────────────
   const locked = unlock.locked && status !== 'unauthenticated';
-  const offer = useBiometricOffer(features, locked || commerce || envMismatch);
+  const blocked = locked || commerce || envMismatch || updateRequired;
+
+  // ── Invitation notifications, prioritaire (lot 109G) ───────────────────
+  // Une seule invitation à la fois : tant que la décision push du compte est
+  // attendue ou que l'invitation est/a été présentée pendant ce lancement, la
+  // proposition biométrique attend le lancement suivant.
+  const [bioVisible, setBioVisible] = useState(false);
+  const push = usePushOnboarding(featureOn(features, 'push'), blocked, offline, bioVisible);
+  const offer = useBiometricOffer(features, blocked, push.holdBiometrics);
+  useEffect(() => { setBioVisible(offer.visible); }, [offer.visible]);
 
   // ── Rendu ───────────────────────────────────────────────────────────────
   if (commerce) {
@@ -457,27 +466,10 @@ export default function NativeBridgeRuntime() {
         <BiometricOfferCard type={offer.type} busy={offer.busy} onActivate={offer.activate} onLater={offer.later} />
       )}
 
-      {/* Une seule invitation par lancement : pas de demande de notifications
-          empilée sur la proposition biométrique. */}
-      {pushPrompt && !locked && !offer.shownThisRun && (
-        <div
-          role="dialog"
-          aria-labelledby="vb-push-title"
-          className="fixed inset-x-3 z-[998] rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 shadow-lg"
-          style={{ bottom: 'max(1rem, calc(var(--vb-safe-bottom) + 4.5rem))' }}
-        >
-          <div className="flex items-start gap-3">
-            <Bell className="mt-0.5 h-5 w-5 shrink-0 text-[color:var(--accent)]" aria-hidden />
-            <div className="space-y-3">
-              <p id="vb-push-title" className="text-sm font-medium">Recevoir vos rappels sur ce téléphone ?</p>
-              <p className="text-xs text-muted-foreground">Échéances, documents à traiter, invitations Duo. Vous choisissez les sujets dans Mon compte › Notifications.</p>
-              <div className="flex gap-2">
-                <Button size="sm" onClick={() => fermerInvitationPush(true)}>Activer</Button>
-                <Button size="sm" variant="outline" onClick={() => fermerInvitationPush(false)}>Plus tard</Button>
-              </div>
-            </div>
-          </div>
-        </div>
+      {/* Lot 109G : une seule invitation à la fois, notifications prioritaires
+          (jamais superposée à la proposition biométrique). */}
+      {push.visible && !offer.visible && (
+        <PushOnboardingCard busy={push.busy} onAllow={push.allow} onLater={push.later} />
       )}
 
       {/* Lot 107A : plus d'écran statique de verrouillage dans le parcours normal — voile

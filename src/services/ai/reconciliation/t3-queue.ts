@@ -530,6 +530,18 @@ async function runAccount(job: QueuedJob, p: T3AccountPayload, guard: ExecutionG
     aiCallsByOperation: result.openActions?.aiCallsByOperation ?? {},
     journal: result.openActions?.journalStatus ?? null,
     decisionsApplied: result.decisionsApplied, conflictsCreated: result.conflictsCreated, errors: result.errors,
+    // Lot 109J : `conflictsCreated` (historique) compte les DÉCISIONS « conflit » du passage, y compris les
+    // arbitrages déjà ouverts et identiques (`conflictsUnchanged`, ni recréés ni réécrits) ; `conflictsNew`
+    // = conflits réellement nouveaux ou modifiés.
+    conflictsNew: Math.max(0, result.conflictsCreated - (result.conflictsUnchanged ?? 0)),
+    // Lot 109J : niveaux de supervision distincts — travail de file terminé techniquement, issue
+    // métier du passage, phases en échec ou différées (avec reprise programmée).
+    supervision: {
+      job: 'COMPLETED', outcome: result.outcome ?? null,
+      failedPhases: Object.entries(result.phases ?? {}).filter(([, ph]) => ph?.status === 'FAILED').map(([n]) => n),
+      deferredPhases: Object.entries(result.phases ?? {}).filter(([, ph]) => ph?.status === 'DEFERRED' || ph?.status === 'PARTIAL').map(([n]) => n),
+      nextRetryAt: result.documentNaming && result.documentNaming.status !== 'DONE' ? result.documentNaming.remaining?.nextRetryAt ?? null : null,
+    },
     ...(result.openKnowledge ? { openKnowledge: result.openKnowledge } : {}),
     // Lot 49B : rapport des lignes « À traiter » ouvertes examinées (borné).
     ...(result.openActions ? { openActions: result.openActions } : {}),
@@ -557,6 +569,12 @@ export function summarizeT3Naming(dn: import('./document-naming/phase').Document
     status: dn.status, promptAvailable: dn.promptAvailable,
     groupsDue: dn.groupsDue, groupsExamined: dn.groupsExamined, groupsCompleted: dn.groupsCompleted,
     proposals: dn.proposals, applied: dn.applied, refused: dn.refused, conflicts: dn.conflicts, failed: dn.failed,
+    // Lot 109J : `failed` = écritures en échec ; `errors` = lots en erreur (appel IA, examen) ; la
+    // phase peut être FAILED avec failed = 0. Décomptes passerelle séparés (refus de secours ≠ génération).
+    errors: dn.errors, phaseFailed: dn.status === 'FAILED', persistentFailures: dn.persistentFailures ?? 0,
+    documentsExamined: dn.documentsExamined, documentsPrefiltered: dn.documentsPrefiltered ?? 0, repartitions: dn.repartitions ?? 0,
+    gateway: dn.gateway ?? null,
+    retry: dn.status === 'DONE' || dn.status === 'DISABLED' ? null : { state: 'SCHEDULED', nextRetryAt: dn.remaining?.nextRetryAt ?? null },
     renamesSectionMissing: dn.renamesSectionMissing, pendingWrites: dn.pendingWrites ?? 0, writesRetried: dn.writesRetried ?? 0,
     aiCalls: dn.aiCalls, reportId: dn.reportId,
     // Lot 76B : décisions non sauvegardées (C2), recalage : migration technique / réexamen attendu / effectué (C5).

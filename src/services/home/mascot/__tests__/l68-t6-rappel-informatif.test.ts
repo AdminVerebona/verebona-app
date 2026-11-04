@@ -374,7 +374,8 @@ describe('Composition de la bulle', () => {
     // Préparation complète (lectures simulées) : évaluations, préférences de CET utilisateur.
     const evaluations = (revision: number) => [VISITE, RAMONAGE].map((x) => ({
       id: x.id, agenda_item_id: x.id, assessed_on: TODAY, priority: x.id === 1 ? 'LOW' : 'MEDIUM', reason: 'r',
-      context_fingerprint: S.agendaFingerprint({ title: x.title, date: x.date, forecast: false, requiresQualification: false }),
+      // Lot 109E : décision prise sur le contexte courant (`v5:`) — une empreinte antérieure est ambiguë, jamais réutilisée.
+      context_fingerprint: S.t6ContextFingerprint(x, undefined),
       interpellation: x.id === 1 ? 'INFORM' : 'ACT_NOW', action_needed: x.id !== 1, action: x.id === 1 ? null : 'Prendre rendez-vous pour le ramonage',
       contract_version: 't6-evaluation-v1', decision: 'SHOW_NOW', category: x.id === 1 ? 'INFORMATION' : 'ACTION_NOW',
       reason_code: x.id === 1 ? 'INFORMATIVE_REMINDER' : 'ACTION_REQUIRED_SOON', evidence_refs: ['C1.dueDate'], uncertainties: [], contract_revision: revision,

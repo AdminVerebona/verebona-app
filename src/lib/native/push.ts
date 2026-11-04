@@ -97,17 +97,76 @@ export async function syncNativePush(): Promise<boolean> {
   }
 }
 
+/** Issue détaillée d'une demande : autorisation OS ET enregistrement du jeton (lot 109G). */
+export interface NativePushRequest {
+  state: NativePushState;
+  /** Jeton enregistré pour cette installation et la session courante. */
+  registered: boolean;
+}
+
+// Lot 109G : une seule demande à la fois (invitation de première connexion et
+// Mon compte › Notifications partagent la même promesse : jamais deux fenêtres
+// système, jamais deux enregistrements concurrents).
+let inFlight: Promise<NativePushRequest> | null = null;
+
+/**
+ * Action de l'utilisateur « Autoriser les notifications » : demande système
+ * puis enregistrement. `registered = false` si l'enregistrement a échoué :
+ * l'interface ne doit jamais annoncer « activé » dans ce cas.
+ */
+export function requestNativePush(): Promise<NativePushRequest> {
+  if (inFlight) return inFlight;
+  const run = (async (): Promise<NativePushRequest> => {
+    const m = messaging();
+    if (!m) return { state: 'unavailable', registered: false };
+    try {
+      const { receive } = await m.requestPermissions();
+      if (receive !== 'granted') return { state: receive === 'denied' ? 'denied' : 'prompt', registered: false };
+      return { state: 'granted', registered: await syncNativePush() };
+    } catch {
+      return { state: 'unavailable', registered: false };
+    }
+  })();
+  inFlight = run;
+  void run.finally(() => { if (inFlight === run) inFlight = null; });
+  return run;
+}
+
 /** Action de l'utilisateur « Activer les notifications » : demande puis enregistre. */
 export async function enableNativePush(): Promise<NativePushState> {
-  const m = messaging();
-  if (!m) return 'unavailable';
+  return (await requestNativePush()).state;
+}
+
+/**
+ * Lot 109G — réglages système des notifications après un refus.
+ * API réellement disponibles dans les binaires actuels (aucun nouveau plugin) :
+ *   · iOS : `AppLauncher.openUrl('app-settings:')` (= `UIApplication.openSettingsURLString`,
+ *     ouvre Réglages › Verebona, qui contient « Notifications ») ;
+ *   · Android : AppLauncher ne lance qu'un `ACTION_VIEW` (ou une app par son
+ *     paquet) ; l'écran `ACTION_APP_NOTIFICATION_SETTINGS` n'est pas joignable
+ *     sans code natif → explication du chemin dans les Paramètres seulement.
+ */
+export const IOS_APP_SETTINGS_URL = 'app-settings:';
+
+interface AppLauncherLike { openUrl(o: { url: string }): Promise<{ completed?: boolean }> }
+
+function appLauncher(): AppLauncherLike | null {
+  const p = nativePlugin<AppLauncherLike>(NATIVE_PLUGINS.appLauncher);
+  return p && typeof p.openUrl === 'function' ? p : null;
+}
+
+export function canOpenNativeNotificationSettings(): boolean {
+  return nativePlatform() === 'ios' && appLauncher() !== null;
+}
+
+/** Ouvre les réglages de l'app (iOS). `false` si impossible. Ne lève jamais. */
+export async function openNativeNotificationSettings(): Promise<boolean> {
+  if (!canOpenNativeNotificationSettings()) return false;
   try {
-    const { receive } = await m.requestPermissions();
-    if (receive !== 'granted') return receive === 'denied' ? 'denied' : 'prompt';
-    await syncNativePush();
-    return 'granted';
+    const r = await appLauncher()!.openUrl({ url: IOS_APP_SETTINGS_URL });
+    return r?.completed !== false;
   } catch {
-    return 'unavailable';
+    return false;
   }
 }
 

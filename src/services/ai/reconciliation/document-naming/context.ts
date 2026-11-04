@@ -623,6 +623,17 @@ export function namingVariables(p: {
   const doc = (d: NamingDoc, role: 'TO_EXAMINE' | 'REFERENCE') => {
     const st = p.states.get(d.id);
     const det = p.details.get(d.id);
+    // Lot 109J — contexte RÉDUIT d'un document de RÉFÉRENCE (jamais renommé,
+    // sert à lire la convention) : noms actuel et d'origine, origine, nature, date, émetteur, bien,
+    // références de contrat ; ni faits, ni extraits, ni passages, ni historique.
+    if (role === 'REFERENCE') {
+      return {
+        documentId: d.id, role, currentName: d.name, originalName: d.originalName ?? null, nameOrigin: st?.origin ?? 'UNKNOWN', renameAllowed: false,
+        documentType: d.typeCode, documentDate: d.documentDate, supplier: d.supplier,
+        asset: d.assetId ? { id: d.assetId, name: d.assetName } : null,
+        ...(det?.contracts?.length ? { contracts: det.contracts } : {}),
+      };
+    }
     return {
       documentId: d.id,
       role,

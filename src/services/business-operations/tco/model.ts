@@ -378,6 +378,14 @@ export interface TcoEconomicLine {
    * verdict, codes stables, ligne de référence. Diagnostic BO et tiroir.
    */
   identity?: { verdict: SameFactAssessment['verdict']; signals: string[]; against: string };
+  /** Lot 109D : contexte de rattachement (détail consultable, jamais sur la ligne principale). */
+  context?: string | null;
+  /** Lot 109D : composition du net de l'achat (lignes, frais, remises, méthode, réconciliation). */
+  composition?: import('../finance/commercial-adjustments').PurchaseCompositionView;
+  /** Lot 109D : composante de calcul de la ligne d'achat désignée (masquée de la liste principale de la fiche). */
+  compositionOf?: string;
+  /** Lot 109D : coûts réunis dans un net d'achat recomposé (clés de décision antérieures). */
+  mergedFacts?: Array<{ kind: string; amountMinor: number; currency: string }>;
 }
 
 export interface TcoResult {
@@ -1006,6 +1014,9 @@ export function computeTco(input: TcoInput): TcoResult {
       id: d.lineId, source: 'DOCUMENT', provenance: d.provenance, label: d.title, kind: d.kind, amountMinor: d.amountMinor, currency: d.currency,
       category, date: d.date, fileId: d.fileId, operationId: d.operationId, operationLabel: d.operationLabel,
       note: d.note, relatedFileId: d.relatedFileId,
+      // Lot 109D : détail consultable de la ligne (contexte, composition du net, composante de calcul).
+      ...(d.context ? { context: d.context } : {}), ...(d.composition ? { composition: d.composition } : {}),
+      ...(d.compositionOf ? { compositionOf: d.compositionOf } : {}), ...(d.mergedFacts?.length ? { mergedFacts: d.mergedFacts } : {}),
     };
     if (d.status !== null || !d.kind) {
       // Lot 75D (D) : montant inconnu — jamais présenté comme 0 €.
@@ -1200,7 +1211,10 @@ export function computeTco(input: TcoInput): TcoResult {
     if (l.status === 'FORECAST' && !l.notRealized && (l.reason === 'FUTURE_INSTALLMENT' || (isIsoDate(l.date) && l.date.slice(0, 10) > input.today))) l.notRealized = true;
   }
   if (toutesLignes.some((l) => l.reason === 'NOT_REALIZED' || l.reason === 'FUTURE_DATED')) warnings.add('NOT_REALIZED_EXPENSES');
-  if (toutesLignes.some((l) => l.contradiction)) warnings.add('STATUS_CONTRADICTIONS');
+  // Lot 109C : une dépense PRÉVUE sans preuve de paiement (PLANNED_WITHOUT_PROOF) est une prévision normale, exclue
+  // (NOT_REALIZED_EXPENSES) — pas une contradiction ; seules « prévue mais payée » et « réalisée mais datée après
+  // aujourd'hui » le sont (la trace `contradiction` de la ligne reste inchangée, diagnostic BO).
+  if (toutesLignes.some((l) => l.contradiction === 'PLANNED_WITH_PAYMENT' || l.contradiction === 'REALIZED_FUTURE_DATE')) warnings.add('STATUS_CONTRADICTIONS');
   if (entries.some((e) => e.dateRejected)) warnings.add('INVALID_DATES');
   // Lot 86F : dépense retenue sans date économique établie — comptée, rattachée à aucune année (signalée).
   if (toutesLignes.some((l) => l.economicDate?.status === 'UNDETERMINED' && !l.date && (l.status === 'RETAINED_CONSOLIDATED' || l.status === 'RETAINED_DIRECT'))) {

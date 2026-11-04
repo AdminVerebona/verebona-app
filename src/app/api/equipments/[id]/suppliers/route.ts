@@ -52,7 +52,6 @@ export async function GET(
         name: suppliers.name,
         email: suppliers.email,
         phone: suppliers.phone,
-        contactStatus: suppliers.contactStatus,
         isPrimary: equipmentSuppliers.isPrimary,
         relationshipType: equipmentSuppliers.relationshipType,
         sourceType: equipmentSuppliers.sourceType,

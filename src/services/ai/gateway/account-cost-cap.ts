@@ -233,13 +233,21 @@ export const dbCostCapStore: CostCapStore = {
   },
   async spent(accountId, start, end) {
     const { pgClient } = await import('@/db');
-    const rows = (await pgClient.unsafe(
-      `SELECT COALESCE(SUM(cost_micros), 0)::bigint AS spent
-         FROM ai_usage_event
-        WHERE account_id = $1 AND created_at >= $2 AND created_at < $3 AND is_billable
-          AND (use_case_code IS NULL OR use_case_code <> 'AI_GOVERNANCE')`,
-      [accountId, start.toISOString(), end.toISOString()] as never[],
-    )) as unknown as Array<{ spent: string | number }>;
+    // Lot 109L : coût EFFECTIF (correction de régularisation active sinon coût
+    // initial — jamais les deux) ; migration 1150 absente : coût initial seul.
+    const sql = (withCorrections: boolean) => `SELECT COALESCE(SUM(${withCorrections ? 'COALESCE(c.corrected_cost_micros, u.cost_micros)' : 'u.cost_micros'}), 0)::bigint AS spent
+         FROM ai_usage_event u
+         ${withCorrections ? `LEFT JOIN ai_cost_corrections c ON c.target_kind = 'event' AND c.target_id = u.id AND c.reverted_at IS NULL` : ''}
+        WHERE u.account_id = $1 AND u.created_at >= $2 AND u.created_at < $3 AND u.is_billable
+          AND (u.use_case_code IS NULL OR u.use_case_code <> 'AI_GOVERNANCE')`;
+    const p = [accountId, start.toISOString(), end.toISOString()] as never[];
+    let rows: Array<{ spent: string | number }>;
+    try {
+      rows = (await pgClient.unsafe(sql(true), p)) as unknown as Array<{ spent: string | number }>;
+    } catch (e) {
+      if ((e as { code?: string }).code !== '42P01') throw e;
+      rows = (await pgClient.unsafe(sql(false), p)) as unknown as Array<{ spent: string | number }>;
+    }
     return Number(rows[0]?.spent ?? 0);
   },
   async raise(a) {

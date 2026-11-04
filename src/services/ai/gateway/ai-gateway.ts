@@ -12,9 +12,9 @@
  */
 import { randomUUID } from 'crypto';
 import type { AiGatewayRequest, AiGatewayResponse } from './types';
-import { AiGatewayError, AiSuspendedError, isAiGatewayError, isDeterministicLocalError, type AiErrorCode } from './errors';
+import { AiGatewayError, AiSuspendedError, isAiGatewayError, isDeterministicLocalError, type AiErrorCode, type GatewayCallStats } from './errors';
 import {
-  admitCandidate, causeOfFailure, chainOutcome, decisionOf, CAUSE_POLICY, ADMISSION_LABELS,
+  admitCandidate, causeOfFailure, chainOutcome, decisionOf, CAUSE_POLICY, ADMISSION_LABELS, ADMITTED_REASONS,
   type CoupleQualification, type FailureCause, type FallbackDecision,
 } from './fallback-policy';
 import { fallbackContext, noteKnownUnavailableSkipped, type CoupleQualificationView, type OperationalHint } from './fallback-context';
@@ -977,7 +977,11 @@ export class AiGateway {
           final = truncatedFailure(final);
         }
 
-        const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens, op.provider);
+        // Lot 109J : les jetons de RAISONNEMENT (`thoughtsTokenCount`, non visibles
+        // dans `candidatesTokenCount`) sont facturés par Gemini au tarif de sortie —
+        // inclus dans le coût ; `outputTokens` reste la sortie VISIBLE (journal),
+        // le raisonnement est tracé à part (`providerMeta.thoughtsTokens`).
+        const costMicros = calcCostMicros(model, out.inputTokens, out.outputTokens + Math.max(0, Number(out.meta?.thoughtsTokens ?? 0) || 0), op.provider);
         const succeeded = final.ok;
         const elapsedAtTrace = Date.now() - startedAt;
         const diag = buildDiagnostic({
@@ -1142,16 +1146,28 @@ export class AiGateway {
         // qu'une fois par fenêtre (`recordChainOutcome`).
         target: req.sourceIds && req.sourceIds.length > 0 ? `sources:${[...req.sourceIds].sort((x, y) => x - y).join(',')}` : null,
       });
+      // Lot 109J : décomptes SÉPARÉS de l'exécution (supervision) — modèles
+      // considérés, modèles réellement sollicités, requêtes réseau (essais sans
+      // schéma et réparations compris), refus de secours (aucune requête :
+      // jamais une génération échouée) ; cause du dernier échec (`failureCause`).
+      const callStats: GatewayCallStats = {
+        modelsConsidered: decisions.length, modelsCalled: attempted, networkRequests: sent.length,
+        fallbackRefused: decisions.filter((d) => !ADMITTED_REASONS.has(d.decision)).length,
+      };
       if (chainOutcome({ lastCause, decisions, attempted }) === 'SUSPEND') {
         const cause = lastCause ?? 'UNKNOWN';
-        throw new AiSuspendedError(operationCode,
+        const susp = new AiSuspendedError(operationCode,
           `Exécution suspendue sans écriture : aucun secours admissible après « ${CAUSE_POLICY[cause].label} ». ${failures.join(' — ')}`,
           cause, decisions as unknown as Array<Record<string, unknown>>, lastFailureCode, treatment);
+        Object.defineProperty(susp, 'callStats', { value: callStats, enumerable: false, configurable: true });
+        throw susp;
       }
       const err = new AiGatewayError('ALL_MODELS_FAILED', operationCode,
         `Tous les modèles ont échoué. ${failures.join(' — ')}`, { recoverable: true, lastFailureCode });
       // Lot 87A : décisions de secours portées par l'erreur (diagnostic des appelants).
       Object.defineProperty(err, 'fallbackDecisions', { value: decisions, enumerable: false, configurable: true });
+      Object.defineProperty(err, 'failureCause', { value: lastCause ?? null, enumerable: false, configurable: true });
+      Object.defineProperty(err, 'callStats', { value: callStats, enumerable: false, configurable: true });
       throw err;
     } finally {
       // Nettoyage systématique des fichiers temporaires (CDC §5.2, §4.1.7).
@@ -1487,7 +1503,7 @@ function providerRequestOf(p: {
   model: string; maxOutputTokens: number | undefined; reasoning: ProviderCallInput['reasoning']; jsonResponse: boolean;
   generation?: ProviderCallInput['generation'];
   sendSchema: Record<string, unknown> | null; attachments: ProviderCallInput['attachments'];
-  psHash: string | null; providerSchema: { nodes: number; dropped: string[] } | null; omittedReason: string | null;
+  psHash: string | null; providerSchema: { nodes: number; dropped: string[]; issues?: string[] } | null; omittedReason: string | null;
 }): ProviderRequestTrace {
   const g = describeGenerationConfig({
     model: p.model, maxOutputTokens: p.maxOutputTokens, reasoning: p.reasoning, jsonResponse: p.jsonResponse,
@@ -1500,6 +1516,7 @@ function providerRequestOf(p: {
     schemaNodes: p.providerSchema ? p.providerSchema.nodes : null,
     droppedKeywords: p.providerSchema ? [...p.providerSchema.dropped].slice(0, 40) : [],
     schemaOmittedReason: p.omittedReason,
+    ...(p.providerSchema?.issues?.length ? { schemaIssues: p.providerSchema.issues.slice(0, 20) } : {}),
     responseMimeType: g.responseMimeType,
     maxOutputTokens: g.maxOutputTokens,
     thinkingConfig: g.thinkingConfig,

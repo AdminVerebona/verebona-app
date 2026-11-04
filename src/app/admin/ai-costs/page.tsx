@@ -56,6 +56,7 @@ import {
   periodBounds, T6_MODES, T6_MODE_LABELS, type CostPeriod,
 } from '@/services/ai/telemetry/execution-filters';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
+import { UnpricedPanel } from './_components/UnpricedPanel';
 
 interface Breakdown {
   key: string; label: string;
@@ -68,7 +69,13 @@ interface Report {
   totals: {
     functionalMicros: number; technicalMicros: number; calls: number;
     failedCalls: number; inputTokens: number; outputTokens: number; unpricedCalls: number;
+    /** Lot 109L : coût initial / régularisé, statuts. */
+    initialMicros?: number; regularizedCalls?: number; regularizedMicros?: number; staleTariffCalls?: number;
+    byStatus?: { applied: number; zeroOrRounded: number; missing: number; insufficientUsage: number; legacyUndetermined: number; regularized: number };
   };
+  completeness?: 'complete' | 'partial' | 'unknown';
+  completenessLabel?: string;
+  averageIsPartial?: boolean;
   byTreatment: Breakdown[];
   byModel: Breakdown[];
   byRank: Breakdown[];
@@ -172,6 +179,8 @@ function AiCostsScreen() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
+  // Lot 109L : détail « Appels non chiffrés » ouvert depuis le bandeau (ou l'URL `unpriced=1`).
+  const [detailOuvert, setDetailOuvert] = useState(sp.get('unpriced') === '1');
 
   const bounds = periodBounds(period, new Date(), custom);
 
@@ -320,13 +329,31 @@ function AiCostsScreen() {
                 <p className="text-xs text-[color:var(--text-muted)]">
                   Le coût de ces appels n&apos;est pas estimé : il serait faux. Rafraîchissez la grille tarifaire depuis l&apos;écran Fournisseur IA.
                 </p>
+                <div className="flex flex-wrap gap-3 mt-1">
+                  <button type="button" className="text-xs text-[color:var(--accent)] hover:underline" onClick={() => setDetailOuvert((v) => !v)}>
+                    {detailOuvert ? 'Masquer le détail' : 'Voir le détail par modèle et par cause'}
+                  </button>
+                  <Link href="/admin/ai-provider#tarifs" className="text-xs text-[color:var(--accent)] hover:underline">État des tarifs</Link>
+                </div>
               </div>
             </div>
+          )}
+          {detailOuvert && (
+            <UnpricedPanel since={report.since} until={report.until} />
+          )}
+          {!report.warning && (
+            <button type="button" className="text-xs text-[color:var(--accent)] hover:underline" onClick={() => setDetailOuvert((v) => !v)}>
+              {detailOuvert ? 'Masquer le diagnostic des coûts' : 'Diagnostic et régularisation des coûts'}
+            </button>
           )}
 
           <div className="grid gap-3 grid-cols-1 sm:grid-cols-3 lg:grid-cols-6">
             {[
-              ['Dépense métier', usd(report.totals.functionalMicros), null],
+              // Lot 109L : complet / partiel / inconnu — jamais une dépense partielle présentée comme un total.
+              ['Dépense métier', `${usd(report.totals.functionalMicros)}${report.completeness && report.completeness !== 'complete' ? ' *' : ''}`,
+                report.completeness && report.completeness !== 'complete'
+                  ? `${report.completenessLabel ?? 'Partiel'}${(report.totals.regularizedCalls ?? 0) > 0 ? ` · dont ${usd(report.totals.regularizedMicros ?? 0)} régularisés (${report.totals.regularizedCalls} appel(s))` : ''}`
+                  : (report.totals.regularizedCalls ?? 0) > 0 ? `dont ${usd(report.totals.regularizedMicros ?? 0)} régularisés (${report.totals.regularizedCalls} appel(s)) · coût initial ${usd(report.totals.initialMicros ?? 0)}` : null],
               ['Technique et tests', usd(report.totals.technicalMicros), 'Sondes, observation, vérifications'],
               // Lot 83C (SEM-05) : statut fournisseur des appels — l'issue métier est la tuile suivante.
               ['Appels modèle', String(report.totals.calls), `${report.totals.failedCalls} en échec (technique) · ${(report.totals.inputTokens + report.totals.outputTokens).toLocaleString('fr-FR')} tokens`],
@@ -341,7 +368,8 @@ function AiCostsScreen() {
               // Lot 99A (point D) : ce qui a répondu SANS appel facturé (0 coût) — distinct des appels modèle.
               ['Sans appel facturé', report.reuse?.available ? String(report.reuse.cacheResponses + report.reuse.decisionsReused) : '—',
                 report.reuse?.available ? `${report.reuse.cacheResponses} réponse(s) du cache · ${report.reuse.decisionsReused} décision(s) réutilisée(s) · 0 coût` : 'Non mesuré (migration 0858 absente)'],
-              ['Coût moyen par appel', report.averageCostPerCall === null ? '—' : usd(report.averageCostPerCall), report.averageCostPerCall === null ? 'Aucun appel tarifé' : null],
+              ['Coût moyen par appel', report.averageCostPerCall === null ? '—' : usd(report.averageCostPerCall),
+                report.averageCostPerCall === null ? 'Aucun appel tarifé' : report.averageIsPartial ? `Sur les appels chiffrés seulement (${report.totals.unpricedCalls} non chiffré(s))` : null],
               ['Requêtes T2', report.t2Usage ? String(report.t2Usage.requests) : '—',
                 report.t2Usage ? `dont ${report.t2Usage.withAi} avec IA · ${report.t2Usage.requests - report.t2Usage.withAi} sans coût` : null],
             ].map(([label, value, hint]) => (
@@ -382,6 +410,11 @@ function AiCostsScreen() {
               Paramètres de cet environnement, hors configuration versionnée. Mois calendaire, dépense métier,
               en $ (devise de la grille tarifaire). Un dépassement crée une alerte, jamais une suspension.
             </p>
+            {report && report.completeness && report.completeness !== 'complete' && (
+              <p className="text-xs text-[color:var(--text-warning-soft)]">
+                Suivi budgétaire et plafonds PARTIELS : {report.totals.unpricedCalls} appel(s) non chiffré(s) sur la période — la dépense réelle peut être supérieure.
+              </p>
+            )}
           </div>
           <div className="grid gap-2 sm:grid-cols-4">
             {settings.budgets.map((b) => (

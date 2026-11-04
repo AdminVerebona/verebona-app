@@ -78,6 +78,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { acquireJobLock, releaseJobLock } from '@/lib/job-lock';
+import { trackMemory } from '@/lib/runtime/memory-monitor';
 import { heureDeParis } from '@/services/backup/database-backup-scheduler';
 import { parseAuditRetentionDays } from '@/services/admin/audit-retention.service';
 import { accountDeletionSweepMode, sweepOptionsFor } from '@/services/account/account-deletion.rules';
@@ -373,7 +374,8 @@ export async function tour(tasks: DailyTask[], now: Date = new Date()): Promise<
     const bail = await acquireJobLock(task.lock, task.leaseMs ?? BAIL_MS).catch(() => null);
     if (!bail) continue;
     try {
-      await task.run();
+      // Lot 109H : pic mémoire de la tâche (journal `[memory]`).
+      await trackMemory(`daily:${task.lock}`, () => task.run());
       // Bail conservé : il cadence la prochaine exécution.
     } catch (e) {
       console.error(`[daily-jobs] ${task.lock} en échec :`, (e as Error).message);

@@ -122,17 +122,27 @@ export function parseMoneyCents(raw: string | number | null | undefined): number
   return m[1] || m[4] ? -cents : cents;
 }
 
+/** Montant final SANS séparateur de milliers (repli quand le groupement lirait une quantité ou un prix unitaire). */
+const MONTANT_FIN_SIMPLE = /(-)?\s*(\d+)[,.](\d{2})\s*(-)?\s*(?:€|eur(?:os?)?)?\s*(?:\b[a-z0-9]\b)?\s*$/i;
+
 /** Montant en fin de ligne et texte qui le précède. */
 function montantFinal(text: string): { cents: number; before: string } | null {
   const t = text.trim();
-  const m = MONTANT_FIN.exec(t);
-  if (!m || m.index === undefined) return null;
-  // Fin d'un numéro (téléphone, SIRET, date, heure) : jamais un montant.
-  const debut = m.index + m[0].indexOf(m[2]);
-  if (debut > 0 && /[\d.,:/]/.test(t[debut - 1])) return null;
-  const cents = parseMoneyCents(m[0]);
-  if (cents === null) return null;
-  return { cents, before: t.slice(0, m.index).trim() };
+  for (const re of [MONTANT_FIN, MONTANT_FIN_SIMPLE]) {
+    const m = re.exec(t);
+    if (!m || m.index === undefined) continue;
+    // Fin d'un numéro (téléphone, SIRET, date, heure) : jamais un montant.
+    const debut = m.index + m[0].indexOf(m[2]);
+    const avant = debut > 0 ? t[debut - 1] : '';
+    if (/[\d.,:/]/.test(avant)) continue;
+    // Lot 109D : « 4 x 69,50 278,00 », « x4 278,00 » — le groupement de milliers lirait la fin du prix unitaire ou la
+    // quantité (« 50 278,00 », « 4 278,00 ») : le montant de ligne est le dernier nombre décimal.
+    if (re === MONTANT_FIN && /[  ]/.test(m[2]) && /[x×*]/i.test(avant)) continue;
+    const cents = parseMoneyCents(m[0]);
+    if (cents === null) return null;
+    return { cents, before: t.slice(0, m.index).trim() };
+  }
+  return null;
 }
 
 // ── Mots de structure (jamais des mots d'objet) ────────────────────────────

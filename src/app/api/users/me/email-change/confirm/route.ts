@@ -26,7 +26,7 @@ import { invalidateUserReadCache, serverCacheDelete } from '@/lib/server-cache';
 import { logUserActivity } from '@/lib/audit-logger';
 import { confirmEmailChange, notifyEmailChanged } from '@/services/auth/email-change.service';
 
-const STATUS = { INVALID_LINK: 400, LINK_EXPIRED: 410, LINK_USED: 409, WRONG_ACCOUNT: 403, ADDRESS_UNAVAILABLE: 409 } as const;
+const STATUS = { INVALID_LINK: 400, LINK_EXPIRED: 410, LINK_USED: 409, WRONG_ACCOUNT: 403, ADDRESS_UNAVAILABLE: 409, DISPOSABLE_EMAIL_NOT_ALLOWED: 400 } as const;
 
 export async function POST(request: NextRequest) {
   let session;

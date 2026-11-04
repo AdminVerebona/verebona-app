@@ -138,6 +138,15 @@ const nextConfig = {
     // Lot 104 (build Scalingo en manque de mémoire, 02/11/2026) : un seul
     // processus de collecte des pages au lieu d'un par cœur.
     cpus: 1,
+    // Lot 109H (conteneur web tué pour quota mémoire, 03/11/2026) : `next
+    // start` NE précharge plus les 596 pages et routes au démarrage. Mesure
+    // locale du build lot 108 (processus au repos, aucune requête) : RSS
+    // 555 Mo → 170-190 Mo, tas V8 439 Mo → 83 Mo ; après appel de TOUTES les
+    // entrées : 322 Mo. Chaque page est chargée à sa première requête (une
+    // fois par conteneur). Lu au démarrage du serveur (pas au build) :
+    // NEXT_PRELOAD_ENTRIES=true remet le préchargement (retour arrière sans
+    // nouveau build, simple redémarrage). Guide : docs/exploitation/memoire-scalingo-109h.md.
+    preloadEntriesOnStart: process.env.NEXT_PRELOAD_ENTRIES === 'true',
     // Le code serveur n'est jamais envoyé au navigateur : sa minification
     // ne sert à rien et coûte une grosse part de la mémoire du build.
     serverMinification: false,

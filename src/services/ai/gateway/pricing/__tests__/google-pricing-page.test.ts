@@ -41,7 +41,8 @@ describe('structure de la page', () => {
 
   it('CAT-07 — page HTML (structure non reconnue) : échec de lecture, aucun tarif produit', () => {
     const html = parseGooglePricingMarkdown(fixture('google-pricing-html-page.html'));
-    expect(html).toEqual({ ok: false, reason: expect.stringMatching(/structure de la page non reconnue/) });
+    // Lot 109L : code et format structurés en plus du motif.
+    expect(html).toMatchObject({ ok: false, reason: expect.stringMatching(/structure de la page non reconnue/), code: 'PAGE_HTML', format: 'html' });
     expect(resolveModelPrice(html, 'gemini-3.6-flash')).toMatchObject({ status: 'UNKNOWN' });
     expect(parseGooglePricingMarkdown('')).toMatchObject({ ok: false });
   });
@@ -51,6 +52,8 @@ describe('tarifs KNOWN : formes reconnues', () => {
   it('montant seul', () => {
     expect(resolveModelPrice(PAGE, 'gemini-3.6-flash', OCT)).toEqual({
       status: 'KNOWN', model: 'gemini-3.6-flash', inputPerMillion: 1.5, outputPerMillion: 7.5, currency: 'USD', tiers: [], section: 'Gemini 3.6 Flash',
+      // Lot 109L : libellé « Output price (including thinking tokens) » relevé.
+      thinkingIncluded: true,
     });
   });
 
@@ -87,7 +90,7 @@ describe('tarifs KNOWN : formes reconnues', () => {
 
 describe('CAT-07 — ambiguïté → UNKNOWN, jamais un tarif inventé', () => {
   it('modèle absent de la page', () => {
-    expect(resolveModelPrice(PAGE, 'gemini-9-flash', OCT)).toEqual({ status: 'UNKNOWN', model: 'gemini-9-flash', reason: 'absent de la page tarifaire officielle' });
+    expect(resolveModelPrice(PAGE, 'gemini-9-flash', OCT)).toEqual({ status: 'UNKNOWN', model: 'gemini-9-flash', reason: 'absent de la page tarifaire officielle', code: 'ABSENT' });
   });
   it('texte et image à des prix différents (modèles Live)', () => {
     expect(resolveModelPrice(PAGE, 'gemini-3.8-live', OCT)).toMatchObject({ status: 'UNKNOWN', reason: expect.stringMatching(/modalité/) });

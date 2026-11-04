@@ -15,6 +15,7 @@ import { acquireJobLock, releaseJobLock } from '@/lib/job-lock';
 import { runDatabaseBackup } from './database-backup.service';
 import { reportBackupFailure, resolveBackupFailure } from '@/services/admin/anomaly.service';
 import { isS3Configured } from '@/lib/s3-config';
+import { trackMemory } from '@/lib/runtime/memory-monitor';
 
 const TOUR_MS = 30 * 60 * 1000;
 const DELAI_INITIAL_MS = 2 * 60 * 1000;
@@ -62,7 +63,8 @@ async function tour(): Promise<void> {
   const bail = await acquireJobLock(BACKUP_DAILY_LOCK, BAIL_MS);
   if (!bail) return;
   try {
-    await runDatabaseBackup('scheduler');
+    // Lot 109H : pic mémoire de la sauvegarde nocturne (journal `[memory]`).
+    await trackMemory('backup:daily', () => runDatabaseBackup('scheduler'));
     await resolveBackupFailure();
     // Bail conservé : il cadence la prochaine sauvegarde.
   } catch (e) {

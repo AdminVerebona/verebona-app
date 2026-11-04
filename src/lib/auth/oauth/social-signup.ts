@@ -154,7 +154,9 @@ export async function checkSignupInvitation(context: TxContext, email: string): 
 
 export type CreateOutcome =
   | { ok: true; userId: number; accountId: number | null; joinedAccountId: number | null }
-  | { ok: false; code: 'EMAIL_TAKEN' | 'OAUTH_IDENTITY_ALREADY_LINKED' };
+  | { ok: false; code: 'EMAIL_TAKEN' | 'OAUTH_IDENTITY_ALREADY_LINKED' }
+  /** Lot 109F : garde finale — le domaine est devenu jetable entre la saisie et la création. */
+  | { ok: false; code: 'DISPOSABLE_EMAIL_NOT_ALLOWED'; message: string };
 
 function uniqueViolation(e: unknown): string | null {
   const err = e as { code?: string; constraint_name?: string; constraint?: string; cause?: { code?: string; constraint_name?: string; constraint?: string } };
@@ -177,6 +179,12 @@ export async function createSocialAccount(input: {
 }): Promise<CreateOutcome> {
   const now = input.now ?? new Date();
   const { claims, profile, invitation } = input;
+  // Lot 109F : GARDE FINALE, juste avant toute écriture (libération d'une
+  // inscription non vérifiée comprise) — le statut du domaine peut avoir
+  // changé depuis la saisie (mise à jour du référentiel, blocage d'urgence).
+  const { checkDisposableEmail } = await import('@/services/auth/disposable-email-guard');
+  const disposable = checkDisposableEmail(profile.email, 'social_final');
+  if (disposable) return { ok: false, ...disposable };
   const username = profileDisplayName(profile) || null;
   await releaseUnverifiedEmail(profile.email);
 

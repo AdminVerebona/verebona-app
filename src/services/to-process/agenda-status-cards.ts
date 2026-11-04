@@ -189,7 +189,7 @@ export async function proposeAgendaStatus(p: {
   const [item] = await db.select({ status: agendaItems.manualStatus, date: agendaItems.startDate })
     .from(agendaItems)
     .where(and(eq(agendaItems.id, p.itemId), eq(agendaItems.accountId, p.accountId))).limit(1);
-  if (!item) return { status: 'SKIPPED', reason: 'Élément d’agenda introuvable dans le compte.' };
+  if (!item) return { status: 'SKIPPED', reason: 'Événement introuvable dans le compte.' };
   if (item.status) return { status: 'SKIPPED', reason: 'Statut déjà posé : rien à proposer.' };
   const rule = RULE_OF[p.kind];
   await closeAgendaStatusCards(p.accountId, p.itemId, 'OBSOLETE', { except: rule });
@@ -362,7 +362,7 @@ export async function proposeAssetStatusChange(p: {
   if (!bien) return { status: 'SKIPPED', reason: 'Bien introuvable, archivé ou verrouillé.' };
   const [item] = await db.select({ title: agendaItems.title, date: agendaItems.startDate }).from(agendaItems)
     .where(and(eq(agendaItems.id, p.agendaItemId), eq(agendaItems.accountId, p.accountId))).limit(1);
-  const libelle = item ? `${item.title}${item.date ? ` (${item.date})` : ''}`.slice(0, 200) : 'Événement de l’agenda';
+  const libelle = item ? `${item.title}${item.date ? ` (${item.date})` : ''}`.slice(0, 200) : 'Événement';
   const proposals = assetStatusProposals(p.businessType, bien.status, libelle, await allowedAssetStatuses());
   if (proposals.length === 0) return { status: 'SKIPPED', reason: 'Aucun statut à proposer (déjà appliqué ou type sans effet).' };
   return upsertAction({

@@ -14,6 +14,25 @@
  * apparié est remonté dans `models_missing` du journal de rafraîchissement, et
  * devra être saisi manuellement en administration — jamais deviné.
  */
+/*
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 109L (ticket P1 « Tarifs Gemini non reconnus », point B) — SOURCE
+ * DÉSACTIVÉE PAR DÉFAUT
+ *
+ * L'audit du 04/11/2026 n'a pas démontré que ce chemin représente la facture
+ * Gemini Developer API : l'API Cloud Billing Catalog (`services.skus`) publie
+ * des prix de LISTE (pas les remises du compte), le rapprochement SKU ↔ modèle
+ * est fait par expressions régulières (`3.5 flash` capturait aussi
+ * `3.5 flash-lite`), le palier retenu était le DERNIER (`tieredRates.at(-1)`,
+ * possiblement « > 200k ») et l'unité n'était pas contrôlée. Ses tarifs
+ * étaient pourtant écrits `verified = true`, donc prioritaires.
+ *
+ * Elle n'est plus lue que si `AI_PRICING_BILLING_SOURCE=validated` est posé,
+ * après validation EXPLICITE (même API, même mode de facturation, remises) —
+ * jamais Vertex AI. Unité contrôlée (`baseUnit` en jetons), premier palier,
+ * motifs exacts ; tout écart → modèle omis (jamais un montant deviné).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
 import type { PricingSource, ModelPrice } from './pricing-source.port';
 
 const CATALOG_API = 'https://cloudbilling.googleapis.com/v1';
@@ -36,19 +55,25 @@ interface CatalogSku {
 
 /** Motifs de reconnaissance d'un SKU, par modèle et par sens (entrée/sortie). */
 const SKU_PATTERNS: Array<{ model: string; input: RegExp; output: RegExp }> = [
-  { model: 'gemini-2.5-flash-lite', input: /2\.5\s*flash[\s-]?lite.*input/i,  output: /2\.5\s*flash[\s-]?lite.*output/i },
-  { model: 'gemini-2.5-flash',      input: /2\.5\s*flash(?!\s*-?lite).*input/i,  output: /2\.5\s*flash(?!\s*-?lite).*output/i },
-  { model: 'gemini-2.5-pro',        input: /2\.5\s*pro.*input/i,                 output: /2\.5\s*pro.*output/i },
-  { model: 'gemini-3.1-flash-lite', input: /3\.1\s*flash[\s-]?lite.*input/i,  output: /3\.1\s*flash[\s-]?lite.*output/i },
-  { model: 'gemini-3.5-flash',      input: /3\.5\s*flash.*input/i,               output: /3\.5\s*flash.*output/i },
+  { model: 'gemini-2.5-flash-lite', input: /2\.5\s*flash[\s-]?lite\b.*input/i,  output: /2\.5\s*flash[\s-]?lite\b.*output/i },
+  { model: 'gemini-2.5-flash',      input: /2\.5\s*flash(?![\s-]*lite).*input/i,  output: /2\.5\s*flash(?![\s-]*lite).*output/i },
+  { model: 'gemini-2.5-pro',        input: /2\.5\s*pro\b.*input/i,                 output: /2\.5\s*pro\b.*output/i },
+  { model: 'gemini-3.1-flash-lite', input: /3\.1\s*flash[\s-]?lite\b.*input/i,  output: /3\.1\s*flash[\s-]?lite\b.*output/i },
+  // Lot 109L : `(?![\s-]*lite)` — « 3.5 Flash-Lite » n'est plus pris pour « 3.5 Flash ».
+  { model: 'gemini-3.5-flash',      input: /3\.5\s*flash(?![\s-]*lite).*input/i,   output: /3\.5\s*flash(?![\s-]*lite).*output/i },
 ];
+
+/** Lot 109L : source lue seulement après validation explicite (voir l'en-tête). */
+export function billingSourceValidated(env: Record<string, string | undefined> = process.env): boolean {
+  return env.AI_PRICING_BILLING_SOURCE === 'validated';
+}
 
 export class GeminiPricingSource implements PricingSource {
   readonly provider = 'gemini';
   readonly name = 'google-cloud-billing-catalog';
 
   isConfigured(): boolean {
-    return Boolean(process.env.GOOGLE_BILLING_API_KEY && GENERATIVE_LANGUAGE_SERVICE);
+    return billingSourceValidated() && Boolean(process.env.GOOGLE_BILLING_API_KEY && GENERATIVE_LANGUAGE_SERVICE);
   }
 
   async fetchPrices(models: string[]): Promise<ModelPrice[]> {
@@ -65,9 +90,12 @@ export class GeminiPricingSource implements PricingSource {
     for (const { model, input, output } of SKU_PATTERNS) {
       if (!models.includes(model)) continue;
 
-      const inputSku = skus.find((s) => input.test(s.description));
-      const outputSku = skus.find((s) => output.test(s.description));
-      if (!inputSku || !outputSku) continue;  // remonté comme manquant par le lot
+      const inputSkus = skus.filter((s) => input.test(s.description));
+      const outputSkus = skus.filter((s) => output.test(s.description));
+      // Lot 109L : un seul SKU par sens, sinon ambigu (Batch, long contexte…) — omis.
+      if (inputSkus.length !== 1 || outputSkus.length !== 1) continue;  // remonté comme manquant par le lot
+      const [inputSku] = inputSkus;
+      const [outputSku] = outputSkus;
 
       const inputPrice = extractMicrosPerToken(inputSku);
       const outputPrice = extractMicrosPerToken(outputSku);
@@ -117,7 +145,11 @@ export class GeminiPricingSource implements PricingSource {
  * dans le calcul de coût.
  */
 function extractMicrosPerToken(sku: CatalogSku): { micros: number; currency: string } | null {
-  const rate = sku.pricingInfo?.[0]?.pricingExpression?.tieredRates?.at(-1)?.unitPrice;
+  const expr = sku.pricingInfo?.[0]?.pricingExpression;
+  // Lot 109L : un seul palier (jamais le dernier par défaut) et unité contrôlée.
+  if (!expr?.tieredRates || expr.tieredRates.length !== 1) return null;
+  if (!/token/i.test(expr.baseUnit ?? '')) return null;
+  const rate = expr.tieredRates[0]?.unitPrice;
   if (!rate) return null;
 
   const units = Number(rate.units ?? 0);

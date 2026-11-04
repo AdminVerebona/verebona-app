@@ -36,6 +36,7 @@ import { FollowTheme } from '@/components/FollowTheme';
 import { ProviderButton, socialStartUrl } from '@/components/auth/SocialSignInButtons';
 import { SOCIAL_ERROR_MESSAGES } from '@/lib/auth/oauth/messages';
 import { ReferralCodeDisclosure } from '@/components/auth/ReferralCodeDisclosure';
+import { DISPOSABLE_EMAIL_MESSAGE, isDisposableEmailRefusal } from '@/lib/auth/disposable-email/messages';
 import {
   DISPLAY_NAME_HELP, DISPLAY_NAME_LABEL, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_PLACEHOLDER, validateDisplayName,
 } from '@/lib/auth/display-name';
@@ -96,6 +97,8 @@ function SocialPending() {
   const [displayName, setDisplayName] = useState('');
   const [displayNameError, setDisplayNameError] = useState('');
   const [email, setEmail] = useState('');
+  // Lot 109F : refus « adresse jetable », affiché sous le champ e-mail.
+  const [emailError, setEmailError] = useState('');
   const [referral, setReferral] = useState('');
   const [accepted, setAccepted] = useState(false);
   // Lot 102C : choix sur les relances commerciales (bloc fourni par le serveur selon le réglage BO).
@@ -159,6 +162,7 @@ function SocialPending() {
     e.preventDefault();
     setError('');
     setDisplayNameError('');
+    setEmailError('');
     const dn = validateDisplayName(displayName);
     if (!dn.ok) { setDisplayNameError(dn.message); return; }
     if (!accepted) { setError('Vous devez accepter les CGUV pour créer un compte.'); return; }
@@ -176,6 +180,7 @@ function SocialPending() {
     if (r?.ok) return finish(r.data);
     if (r?.status === 410) { setView('expired'); return; }
     if (r?.data.code === 'ACCOUNT_ALREADY_EXISTS') { setView('existing'); }
+    if (r && isDisposableEmailRefusal(r.data)) { setEmailError(DISPOSABLE_EMAIL_MESSAGE); return; }
     if (r && ['MISSING_DISPLAY_NAME', 'DISPLAY_NAME_TOO_LONG', 'INVALID_DISPLAY_NAME'].includes(String(r.data.code))) {
       setDisplayNameError(messageOf(r.data));
       return;
@@ -189,6 +194,8 @@ function SocialPending() {
     const r = await post({ action: 'verify-code', code }).catch(() => null);
     if (r?.ok) return finish(r.data);
     setBusy(false);
+    // Lot 109F : domaine refusé entre la saisie et la confirmation → retour à l'adresse.
+    if (r && isDisposableEmailRefusal(r.data)) { setEmailError(DISPOSABLE_EMAIL_MESSAGE); setView('profile'); return; }
     if (r?.status === 410 || (r?.status === 429 && r.data.code === 'RATE_LIMIT_EXCEEDED' && !r.data.retryAfterSeconds)) { setView('expired'); }
     setError(r ? messageOf(r.data) : 'Connexion au serveur impossible. Vérifiez votre réseau.');
   };
@@ -196,6 +203,7 @@ function SocialPending() {
   const resend = async () => {
     setError(''); setInfo('');
     const r = await post({ action: 'resend-code' }).catch(() => null);
+    if (r && isDisposableEmailRefusal(r.data)) { setEmailError(DISPOSABLE_EMAIL_MESSAGE); setView('profile'); return; }
     if (r?.ok) setInfo('Un nouveau code vient d’être envoyé.');
     else setError(r ? messageOf(r.data) : 'Connexion au serveur impossible.');
   };
@@ -308,7 +316,14 @@ function SocialPending() {
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="sp-email">Adresse e-mail principale *</Label>
-                  <Input id="sp-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={busy} autoComplete="email" />
+                  <Input
+                    id="sp-email" type="email" value={email}
+                    onChange={(e) => { setEmail(e.target.value); if (emailError) setEmailError(''); }}
+                    required disabled={busy} autoComplete="email"
+                    aria-invalid={emailError ? true : undefined}
+                    aria-describedby={emailError ? 'sp-email-error' : undefined}
+                  />
+                  {emailError && <p id="sp-email-error" role="alert" className="text-sm text-destructive" data-testid="social-email-error">{emailError}</p>}
                   <p className="text-xs text-[color:var(--text-muted)]">
                     {state.isPrivateRelay
                       ? 'Adresse masquée par Apple : vous pouvez la garder, ou indiquer votre adresse habituelle (un code de confirmation vous sera envoyé).'

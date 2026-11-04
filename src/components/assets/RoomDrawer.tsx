@@ -141,7 +141,8 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
   return (
     <>
       <Sheet open={open} onOpenChange={(v) => { if (!v) setIsEditing(false); onOpenChange(v); }}>
-        <SheetContent className="w-full sm:max-w-md flex flex-col p-0">
+        {/* Lot 109B : `data-return-drawer` — tiroir rouvert au retour d'une fiche fournisseur. */}
+        <SheetContent className="w-full sm:max-w-md flex flex-col p-0" data-return-drawer={room?.id ? `piece:${room.id}` : undefined}>
           <SheetHeader className="px-5 pt-5 pb-3">
             <div className="flex items-center gap-2">
               <Home className="w-5 h-5 text-muted-foreground flex-shrink-0" />

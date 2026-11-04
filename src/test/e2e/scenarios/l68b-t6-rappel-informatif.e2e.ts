@@ -244,9 +244,10 @@ scenario('L68B-T6RAP', 'Lot 68 — rappel informatif T6 et bulle d’accueil all
                 'Préparer la visite expert bois pour la maison', 't6-evaluation-v1', 'SHOW_NOW', 'TO_ANTICIPATE', 'PREPARATION_NEEDED_NOW', '["C1.dueDate"]'::jsonb)`;
     expect((await sql`SELECT contract_revision FROM t6_interpellation_assessments WHERE account_id = ${c.id}`)[0]).toEqual({ contract_revision: 1 });
     modele.juger = () => RAPPEL;
-    // Affichage : le sujet reste présenté (sans la préparation artificielle) pendant la réévaluation en arrière-plan.
+    // Lot 109E (AC05) : décision à empreinte HISTORIQUE (lot 60), ambiguë — plus présentée
+    // pendant sa réévaluation en arrière-plan (jamais réutilisée), puis remplacée.
     const d = await (await svc()).getMascotPresentation(c.id, 'display', c.ownerUserId);
-    expect(ids(d)).toEqual([visite]);
+    expect(ids(d)).toEqual([]);
     expect(await affiche(d)).not.toMatch(/préparer|À prévoir :/i);
     await vi.waitFor(async () => {
       expect(await sql`SELECT interpellation, contract_revision FROM t6_interpellation_assessments WHERE account_id = ${c.id}`)

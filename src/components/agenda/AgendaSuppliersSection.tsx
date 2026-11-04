@@ -24,6 +24,7 @@ import { Label } from "@/components/ui/label";
 import { apiClient } from "@/lib/api-client";
 import { supplierHref } from "@/lib/supplier-routes";
 import type { AgendaSuppliersPayload } from "@/lib/agenda/agenda-suppliers-rules";
+import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
 
 export interface SupplierChip { id: number; name: string }
 export interface PendingSupplier { name: string; confirmNew: boolean }
@@ -91,6 +92,8 @@ export function AgendaSuppliersField({ itemId, value, onChange, idPrefix = "agen
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SupplierChip[]>([]);
+  // Lot 109B : total exact du référentiel pour la saisie (la liste n'en montre qu'une partie).
+  const [resultsTotal, setResultsTotal] = useState(0);
   const [searching, setSearching] = useState(false);
   const [checking, setChecking] = useState(false);
   const [proche, setProche] = useState<{ name: string; candidates: SupplierChip[] } | null>(null);
@@ -104,7 +107,7 @@ export function AgendaSuppliersField({ itemId, value, onChange, idPrefix = "agen
     charge.current = itemId;
     apiClient.get<{ suppliers: SupplierChip[] }>(`/api/agenda/${itemId}/fournisseurs`)
       .then((r) => onChange({ selected: (r?.suppliers ?? []).map((s) => ({ id: s.id, name: s.name })), pending: [] }, true))
-      .catch(() => setError("Les fournisseurs de cet élément n’ont pas pu être chargés."));
+      .catch(() => setError(AGENDA_EVENT_LABELS.suppliersLoadFailed));
   }, [itemId, onChange]);
 
   // Recherche dans les fournisseurs du compte (référentiel existant).
@@ -114,9 +117,14 @@ export function AgendaSuppliersField({ itemId, value, onChange, idPrefix = "agen
     const q = query.trim();
     setSearching(true);
     const t = setTimeout(() => {
-      apiClient.get<{ suppliers: SupplierChip[] }>(q ? `/api/suppliers?search=${encodeURIComponent(q)}` : "/api/suppliers")
-        .then((r) => { if (actif) setResults((r?.suppliers ?? []).map((s) => ({ id: s.id, name: s.name }))); })
-        .catch(() => { if (actif) setResults([]); })
+      apiClient.get<{ suppliers: SupplierChip[]; total?: number }>(q ? `/api/suppliers?search=${encodeURIComponent(q)}` : "/api/suppliers")
+        .then((r) => {
+          if (!actif) return;
+          const rows = (r?.suppliers ?? []).map((s) => ({ id: s.id, name: s.name }));
+          setResults(rows);
+          setResultsTotal(typeof r?.total === "number" ? r.total : rows.length);
+        })
+        .catch(() => { if (actif) { setResults([]); setResultsTotal(0); } })
         .finally(() => { if (actif) setSearching(false); });
     }, 200);
     return () => { actif = false; clearTimeout(t); };
@@ -213,6 +221,11 @@ export function AgendaSuppliersField({ itemId, value, onChange, idPrefix = "agen
               {r.name}
             </button>
           ))}
+          {resultsTotal - choisis.size > visibles.length && visibles.length > 0 && (
+            <p className="px-2 py-1.5 text-xs text-muted-foreground" data-testid="agenda-suppliers-more">
+              {resultsTotal - choisis.size - visibles.length} autre{resultsTotal - choisis.size - visibles.length > 1 ? "s" : ""} fournisseur{resultsTotal - choisis.size - visibles.length > 1 ? "s" : ""} : précisez la recherche.
+            </p>
+          )}
           {peutCreer && (
             <button type="button" onClick={() => { void creer(); }} disabled={checking}
               className="w-full flex items-center gap-2 text-left px-2 py-1.5 rounded text-sm text-[color:var(--accent)] hover:bg-[color:var(--accent-soft)] disabled:opacity-50">

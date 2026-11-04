@@ -139,7 +139,6 @@ export async function feedSupplierFromAnalysis(p: {
         siren,
         siret,
         source: 'document_extraction',
-        contactStatus: 'unverified',
         status: 'active',
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -217,6 +216,9 @@ export async function feedSupplierFromAnalysis(p: {
     // Hors transaction (exécutant global) : portée Duo, liens équipement, caches.
     if (scope) await propagateScopeIfNeeded(res.supplierId, scope);
     await recalculateEquipmentSuppliers(p.documentId);
+    // Lot 109A : document déjà membre d'une Opération (analyse T3 passée avant ce lien) → fournisseurs réévalués (file T3).
+    const { requestOperationSupplierResync } = await import('@/services/relations/operation-suppliers');
+    await requestOperationSupplierResync(p.accountId, [p.documentId]);
     try {
       const { emitBusinessEvent } = await import('@/services/verebona-assistant/events/business-events');
       await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId: p.accountId, entityId: res.supplierId });

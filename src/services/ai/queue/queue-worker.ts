@@ -73,6 +73,7 @@ import { noteWorkerClaim, noteWorkerError, noteScheduleEvaluation, writeWorkerHe
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { envNumber } from '@/lib/env-number';
+import { admitHeavyTask, trackMemory } from '@/lib/runtime/memory-monitor';
 
 /** Identité de ce processus, portée par les jobs qu'il prélève (supervision). */
 export const WORKER_ID = `${(() => { try { return hostname(); } catch { return 'local'; } })()}:${process.pid}:${randomUUID().slice(0, 8)}`;
@@ -255,7 +256,8 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
   try {
     // Contexte d'exécution : version figée et job parent, lus par la
     // passerelle (config-resolver) et la trace (§9.1 : job_id, version).
-    execution = runInJobContext(
+    // Lot 109H : pic mémoire observé pendant l'exécution (journal `[memory]`).
+    execution = trackMemory(`queue:${treatment}`, () => runInJobContext(
       {
         jobId: job.id, treatment, configVersionId: job.configVersionId ?? configVersionId,
         // Révision figée au prélèvement (même lecture que la version écrite sur le job).
@@ -295,7 +297,7 @@ export async function runOne(treatment: Treatment, onClaimed?: () => void): Prom
         }
         return handler(job, guard);
       },
-    );
+    ));
     const rendu = await (deadline ? Promise.race([execution, deadline]) : execution);
     const result = isBusinessResult(rendu) ? rendu : null;
     // Dernier contrôle : une exécution interrompue ne clôt jamais le job
@@ -598,6 +600,10 @@ async function runNextAvailable(onClaimed: () => void): Promise<boolean> {
 export function fillSlots(): void {
   const p = pool();
   if (p.active >= queueConcurrency()) return;
+  // Lot 109H : mémoire du conteneur au-delà du seuil d'admission — pas de
+  // place SUPPLÉMENTAIRE (celles en cours continuent ; une place reste
+  // toujours possible quand aucune ne tourne).
+  if (p.active > 0 && !admitHeavyTask('queue:extra-slot')) return;
   p.active++;
   void (async () => {
     try {

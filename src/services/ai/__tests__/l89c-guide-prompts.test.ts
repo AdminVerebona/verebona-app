@@ -130,7 +130,9 @@ describe('L89C-U01 — blocs du guide', () => {
       // Lot 106B : étape 13 (T6 invitations de découverte, rejouée par l106b-mascotte-suggestions.test.ts).
       't6-discovery-v1',
       // Lot 107D : étape 14 (T1 tickets à plusieurs articles, FACULTATIVE, rejouée par l107d-guide-etape14.test.ts).
-      't1-receipt-lines-v1']);
+      't1-receipt-lines-v1',
+      // Lot 109D : étape 15 (T1 remises / total net, FACULTATIVE, rejouée par l109d-guide-etape15.test.ts).
+      't1-commercial-adjustments-v1']);
     // Aucun bloc n'introduit un emplacement {{X}} (bloquant au BO : « emplacement inconnu »).
     for (const b of B) expect(inspectMasterTemplate(b.text).placeholders, b.id).toEqual([]);
   });

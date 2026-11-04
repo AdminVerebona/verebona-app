@@ -192,6 +192,9 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   agenda_item_suppliers: C('relations'),
   agenda_item_supplier_suppressions: C('relations'),
   agenda_item_supplier_history: C('relations'),
+  // Lot 109A : fournisseurs d'une Opération (rôle, provenance, preuve, état) et leur historique.
+  business_operation_suppliers: C('relations'),
+  business_operation_supplier_history: C('relations'),
   // ── Extractions IA ───────────────────────────────────────────────────────
   document_raw_extracts: C('extractions-ia'),
   document_extractions: C('extractions-ia'),
@@ -212,6 +215,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   document_value_decisions: C('extractions-ia'),
   // Lot 108K (1090) : progression du réexamen ciblé des décisions T1 par unité (examinée, en échec, trop grande ; sortie T1).
   document_value_review_units: C('extractions-ia'),
+  // Lot 109K (1145) : propagation des réparations T1 vers les candidats et T3 (décision, faits, catégories, statut T3).
+  document_candidate_repair_propagations: C('extractions-ia'),
   t6_evaluation_runs: C('extractions-ia'),
   t6_interpellation_assessments: C('extractions-ia'),
   home_mascot_generations: C('extractions-ia'),
@@ -416,6 +421,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_retired_treatment_archive: T('technique', 'archives de traitements retirés (multi-comptes)'),
   migration_0250_unpaid_backup: T('technique', 'sauvegarde technique d’une migration'),
   pending_blob_deletions: T('technique', 'file de suppression du stockage'),
+  // Lot 109F (1125) : refus d'adresses jetables, compteurs agrégés (jour, voie, domaine de liste, motif, version) — jamais d'adresse.
+  disposable_email_refusals: T('technique', 'refus d’adresses e-mail jetables : compteurs agrégés multi-comptes, sans adresse'),
   // Lot 102A (0900) : registre minimal des suppressions exécutées (identifiants internes, rejeu après restauration).
   account_deletion_registry: T('historique', 'registre des suppressions exécutées (multi-comptes, identifiants seulement)'),
   job_locks: T('technique', 'baux des tâches'),
@@ -485,6 +492,10 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_model_price_status: T('referentiels', 'tarifs des modèles'),
   ai_model_pricing: T('referentiels', 'tarifs des modèles'),
   ai_model_pricing_refresh_log: T('referentiels', 'tarifs des modèles'),
+  // Lot 109L : régularisation des coûts IA (exécutions, plan, corrections — multi-comptes).
+  ai_cost_regularization_runs: T('technique', 'régularisation des coûts IA'),
+  ai_cost_regularization_items: T('technique', 'régularisation des coûts IA'),
+  ai_cost_corrections: T('technique', 'régularisation des coûts IA'),
   ai_model_qualification: T('referentiels', 'qualification des modèles'),
   ai_model_capability_changes: T('referentiels', 'capacités des modèles'),
   analysis_packs: T('referentiels', 'catalogue commercial'),
@@ -639,6 +650,7 @@ export const DIAG_LOGICAL_REFERENCES: readonly DiagLogicalReference[] = [
   { from: 'document_value_decisions', column: 'analysis_run_id', to: 'document_analysis_runs', role: 'décision T1 sur une valeur → analyse' },
   { from: 'document_value_decisions', column: 'related_fact_ids', to: 'document_facts', kind: 'pg-array', role: 'décision T1 sur une valeur → faits rattachés' },
   { from: 'document_value_review_units', column: 'extraction_id', to: 'document_extractions', role: 'réexamen T1 d’une unité → extraction' },
+  { from: 'document_candidate_repair_propagations', column: 'candidate_id', to: 'document_operation_candidates', role: 'propagation d’une réparation T1 → version du candidat' },
   { from: 'document_extractions', column: 'file_id', to: 'asset_files', role: 'extraction → document' },
   { from: 'document_extractions', column: 'analysis_run_id', to: 'document_analysis_runs', role: 'extraction → analyse' },
   { from: 'document_source_units', column: 'extraction_id', to: 'document_extractions', role: 'unité source → extraction' },
@@ -775,7 +787,7 @@ const CALL_TRACES = ['ai_usage_event', 'ai_call_diagnostics', 'ai_call_captures'
  */
 export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperationCoverage>> = {
   t1_group_upload: { treatment: 'T1', tables: [...CALL_TRACES, 'document_lots', 'document_lot_items', 'document_analysis_runs'] },
-  t1_analyze_document: { treatment: 'T1', tables: [...CALL_TRACES, 'document_raw_extracts', 'document_source_units', 'document_extractions', 'document_facts', 'document_tables', 'document_table_cells', 'document_unresolved_facts', 'document_extraction_coverage', 'document_operation_candidates', 'document_value_decisions', 'document_value_review_units', 'field_evidence', 'ai_execution_reports', 'ai_execution_report_entries'] },
+  t1_analyze_document: { treatment: 'T1', tables: [...CALL_TRACES, 'document_raw_extracts', 'document_source_units', 'document_extractions', 'document_facts', 'document_tables', 'document_table_cells', 'document_unresolved_facts', 'document_extraction_coverage', 'document_operation_candidates', 'document_value_decisions', 'document_value_review_units', 'document_candidate_repair_propagations', 'field_evidence', 'ai_execution_reports', 'ai_execution_report_entries'] },
   collect_evidence: { treatment: 'T1', tables: [...CALL_TRACES, 'field_evidence'] },
   compare_values: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_runs', 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes'] },
   t3_value_conflict: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes', 'ai_execution_reports', 'ai_execution_report_entries', 't3_decision_memory', 'ai_reuse_counters'] },

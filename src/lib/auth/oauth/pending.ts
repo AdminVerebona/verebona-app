@@ -44,10 +44,16 @@ import {
   profileDisplayName, validateProfileInput, type SocialProfile,
 } from './social-signup';
 import { SOCIAL_ERROR_MESSAGES, type SocialErrorCode } from './messages';
+import { checkDisposableEmail } from '@/services/auth/disposable-email-guard';
 
 function err(code: SocialErrorCode | string, status: number, message?: string): NextResponse {
   const m = message ?? (SOCIAL_ERROR_MESSAGES as Record<string, string>)[code] ?? SOCIAL_ERROR_MESSAGES.OAUTH_PROVIDER_ERROR;
   return NextResponse.json({ error: m, code, message: m }, { status });
+}
+
+/** Lot 109F : refus « adresse jetable » (message sous le champ « Adresse e-mail principale »). */
+function disposableErr(refusal: { code: string; message: string }): NextResponse {
+  return NextResponse.json({ error: refusal.message, code: refusal.code, message: refusal.message, field: 'email' }, { status: 400 });
 }
 
 /** Étape en attente de CE navigateur, ou réponse 410 (expirée / inconnue). */
@@ -152,6 +158,10 @@ export async function signup(request: NextRequest, tx: AuthTransaction, body: Re
     const { CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE } = await import('@/services/legal/legal-acceptances.service');
     return err('CGUV_PUBLIC_TEXT_UNAVAILABLE', 503, CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE);
   }
+  // Lot 109F : adresse principale choisie, même attestée par Google / Apple —
+  // avant l'invitation, tout code, toute lecture de compte (domaine seul).
+  const disposable = checkDisposableEmail(v.email, 'social_signup');
+  if (disposable) return disposableErr(disposable);
   const invitation = await checkSignupInvitation(tx.context, v.email);
   if (!invitation.ok) return err(invitation.code, 403);
 
@@ -179,6 +189,7 @@ async function createAndOpen(
   request: NextRequest, tx: AuthTransaction, profile: SocialProfile, invitation: SignupInvitation | null,
 ): Promise<NextResponse> {
   const created = await createSocialAccount({ claims: tx.claims!, profile, invitation, request });
+  if (!created.ok && created.code === 'DISPOSABLE_EMAIL_NOT_ALLOWED') return disposableErr(created);
   if (!created.ok) return err(created.code === 'EMAIL_TAKEN' ? 'ACCOUNT_ALREADY_EXISTS' : created.code, 409);
   return finishWithSession(request, tx, ['awaiting_user'], created.userId, tx.provider, 'json', { signup: true });
 }
@@ -190,6 +201,10 @@ async function createAndOpen(
  * aucun code n'existe.
  */
 async function sendEmailCode(request: NextRequest, tx: AuthTransaction, profile: SocialProfile): Promise<NextResponse> {
+  // Lot 109F : aucun code (ni « vous avez déjà un compte ») vers une adresse
+  // jetable — revérifié à chaque envoi (renvoi compris : la liste peut évoluer).
+  const disposable = checkDisposableEmail(profile.email, 'social_email_code');
+  if (disposable) return disposableErr(disposable);
   if (authRateLimitEnabled()) {
     const d = await getAuthRateLimiter().consume([{ key: limitKey('oauth', 'acct', profile.email), policy: AUTH_LIMITS.socialEmailCodeAccount }]);
     if (!d.allowed) return NextResponse.json(rateLimitBody(d.retryAfterSeconds), { status: 429, headers: { 'Retry-After': String(d.retryAfterSeconds) } });

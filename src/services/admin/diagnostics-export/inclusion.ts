@@ -136,6 +136,8 @@ export function filteredIncludedInGlobal(filtered: Record<string, string>, globa
       case 'api-ui/fiches.json': entries(base, (x) => String(x.bien)); break;
       case 'tracabilite/montants.json': entries(base, (x) => `${x.assetId}|${(x.ligne as Row)?.id}`); break;
       case 'tracabilite/tco.json': entries(base, (x) => String(x.assetId)); break;
+      // Lot 109A : audit des relations métier, une entrée par compte (même instantané, même moteur).
+      case 'tracabilite/relations-metier.json': entries(base, (x) => String(x.compte)); break;
       // Lot 108E : journal T3 DOCUMENT_ASSET — global = compteurs par compte, compte = détail par document ;
       // configuration (variables, prompt) lue en direct : présence seule.
       case 'ia/t3-rattachement-documents.json':
@@ -144,6 +146,9 @@ export function filteredIncludedInGlobal(filtered: Record<string, string>, globa
       // configuration (prompt effectif, variables) lue en direct : présence seule.
       case 'ia/t1-decisions-valeurs.json':
       case 'ia/t1-decisions-valeurs.txt':
+      // Lot 109L : appels IA non chiffrés — agrégats (compte ⊂ global par construction, horodatage de génération) : présence seule.
+      case 'ia/couts-ia-non-chiffres.json':
+      case 'ia/couts-ia-non-chiffres.txt':
         if (!(base in global)) v.push(`${base} : absent du global`);
         break;
       case 'technique/chronologie.json': entries(base, (x) => `${x.table}|${x.id}|${x.type}`); break;

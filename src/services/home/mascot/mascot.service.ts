@@ -156,6 +156,13 @@ export async function getMascotPresentation(
   // Lot 78C : évaluations prenables au-delà du plafond par appel, à l'affichage —
   // la pré-génération durable du compte les prend en charge (sans visite).
   if (mode !== 'pregen' && interpellation.pendingAssessments > 0) scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-pending');
+  // Lot 109E (AC05) : décisions à empreinte antérieure en attente du budget de
+  // reprise — pré-génération DIFFÉRÉE à sa libération (jamais une reprise
+  // immédiate en boucle ; une demande plus tardive n'est pas avancée).
+  if ((interpellation.upgradeDeferred ?? 0) > 0 && t6Permis && !reprise) {
+    const delai = (interpellation.upgradeRetryInMs ?? 60_000) + Math.floor(Math.random() * 15_000);
+    void import('./pregen-queue').then((q) => q.requestMascotPregenerationAt(accountId, 't6-upgrade', delai)).catch(() => {});
+  }
   // Lot 78C : attente anormalement longue constatée à l'affichage — supervision
   // du compte (anomalie BO), même si la tâche planifiée ne tourne plus.
   if ((interpellation.evaluationProgress?.stale ?? 0) > 0) superviseAccountSoon(accountId);

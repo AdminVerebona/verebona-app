@@ -58,6 +58,40 @@ export interface AdminHealthReport {
   schema: AdminSchemaDetail;
   retiredVariablesSet: Array<{ name: string; origin: string; now: string }>;
   runtime: { node: string; nodeEnv: string | null; appEnv: string | null };
+  /** Lot 109H : mémoire de l'instance qui a répondu (tailles seulement, sans secret). */
+  memory?: AdminMemoryView;
+}
+
+export interface AdminMemoryView {
+  process: string;
+  backgroundJobs: boolean;
+  level: string;
+  rssMb: number | null;
+  heapUsedMb: number | null;
+  heapLimitMb: number | null;
+  containerUsedMb: number | null;
+  containerLimitMb: number | null;
+  peakMb: number | null;
+  peakAt: string | null;
+  alertPercent: number;
+  taskPeaks: Array<{ kind: string; runs: number; maxPeakMb: number; maxDeltaMb: number }>;
+}
+
+async function memoryView(env: Record<string, string | undefined>): Promise<AdminMemoryView | undefined> {
+  try {
+    const [{ memorySnapshot }, { processRoleSummary }] = await Promise.all([import('@/lib/runtime/memory-monitor'), import('@/lib/runtime/process-role')]);
+    const m = memorySnapshot();
+    const r = processRoleSummary(env);
+    return {
+      process: r.process, backgroundJobs: r.backgroundJobs, level: m.level,
+      rssMb: m.last?.rssMb ?? null, heapUsedMb: m.last?.heapUsedMb ?? null, heapLimitMb: m.last?.heapLimitMb ?? null,
+      containerUsedMb: m.last?.containerUsedMb ?? null, containerLimitMb: m.last?.containerLimitMb ?? null,
+      peakMb: m.peak?.usedMb ?? null, peakAt: m.peak?.at ?? null, alertPercent: m.settings.alertPercent,
+      taskPeaks: m.taskPeaks.map((p) => ({ kind: p.kind, runs: p.runs, maxPeakMb: p.maxPeakUsedMb, maxDeltaMb: p.maxDeltaMb })),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 async function lireSchemaEnBase(): Promise<AdminSchemaDetail['database']> {
@@ -128,6 +162,7 @@ export async function getAdminHealth(env: Record<string, string | undefined> = p
     },
     retiredVariablesSet: retiredEnvVariables().filter((v) => isSet(env, v.name)),
     runtime: { node: process.version, nodeEnv: env.NODE_ENV ?? null, appEnv: env.NEXT_PUBLIC_APP_ENV ?? null },
+    memory: await memoryView(env),
   };
   return redactDeep(rapport);
 }

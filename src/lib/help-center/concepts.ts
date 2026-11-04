@@ -127,12 +127,13 @@ export const HELP_CONCEPTS: readonly HelpConcept[] = [
   },
   {
     id: 'AGENDA_ITEM_CREATE',
-    label: 'Créer un élément d’agenda',
+    label: 'Créer un événement',
     actionGroup: 'ajouter',
     contextActions: ['creer', 'cree', 'programmer', 'planifier', 'noter', 'mettre', 'enregistrer', 'prevoir'],
-    objects: ['echeance', 'echeances', 'rappel', 'rappels', 'rendez-vous', 'rdv', 'evenement', 'evenements', 'element d agenda', 'tache', 'taches'],
+    objects: ['echeance', 'echeances', 'rappel', 'rappels', 'rendez-vous', 'rdv', 'evenement', 'evenements', 'element d agenda', 'element de l agenda', 'element agenda', 'evenement d agenda', 'tache', 'taches'],
     excludes: ['mettre a jour', 'mise a jour'],
-    queries: ['créer un élément d’agenda', 'ajouter une échéance'],
+    // Lot 109I : l'ancien libellé reste une requête de recherche (titre de l'article d'aide publique).
+    queries: ['créer un élément d’agenda', 'créer un événement', 'ajouter une échéance'],
     appLabels: ['Créer une échéance'],
     action: 'START_ADD_AGENDA_ITEM',
   },

@@ -18,6 +18,7 @@
 import { principalAfterMerge } from './model';
 import { currentPrincipal, recomputePrincipal, stripPrincipalLinks } from './principal';
 import { lockGroupingAccount, type GroupingRunner } from './runner';
+import { reassignOperationSuppliersOnMerge } from '@/services/relations/operation-suppliers';
 
 export async function reassignGroupingOnMerge(r: GroupingRunner, accountId: number, absorbedId: number, canonicalId: number): Promise<void> {
   await lockGroupingAccount(r, accountId);
@@ -62,5 +63,8 @@ export async function reassignGroupingOnMerge(r: GroupingRunner, accountId: numb
               WHERE a.operation_id = $1 AND a.account_id = $3
                 AND NOT EXISTS (SELECT 1 FROM business_operation_room_links c WHERE c.operation_id = $2 AND c.substructure_id = a.substructure_id)`,
   [absorbedId, canonicalId, accountId]);
+  // Lot 109A : fournisseurs de l'Opération — décisions de l'utilisateur rapatriées, liens T3 de l'absorbée
+  // retirés (recalculés sur la canonique par la reconsolidation qui suit) : aucun héritage fantôme.
+  await reassignOperationSuppliersOnMerge(r, accountId, absorbedId, canonicalId, { reasonCode: 'OPERATION_MERGED' });
   await recomputePrincipal(r, accountId, canonicalId);
 }

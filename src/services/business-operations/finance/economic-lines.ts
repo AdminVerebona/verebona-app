@@ -62,6 +62,7 @@ import {
 } from '@/services/verebona-assistant/canonical/expense-classes';
 import type { ExclusionReason } from './engine';
 import { resolveEconomicDate, type EconomicDateResolution } from './economic-date';
+import { compositionView, hintKey, planDocumentAdjustments, type PurchaseCompositionView } from './commercial-adjustments';
 
 // ── Entrées (lues par le service, persistées) ──────────────────────────────
 
@@ -213,7 +214,10 @@ type DocumentLineReason =
   | 'USER_EXCLUDED'
   // Lot 108A : même achat CONFIRMÉ (faisceau de preuves) représenté par une autre source — fiche, justificatif ou
   // événement de référence : une seule contribution, la source reste consultable.
-  | 'SAME_FACT_CROSS_SOURCE';
+  | 'SAME_FACT_CROSS_SOURCE'
+  // Lot 109D : remise / code promo d'une pièce de transaction intégrée au net de l'achat (jamais un avoir) ;
+  // ligne, frais ou remise comprise dans le net d'un achat composé ; remise globale de plusieurs achats non ventilée.
+  | 'COMMERCIAL_ADJUSTMENT_INTEGRATED' | 'PURCHASE_COMPONENT' | 'GLOBAL_DISCOUNT_NOT_ALLOCATED';
 
 export type EconomicLineReason = ExclusionReason | DocumentLineReason;
 
@@ -244,6 +248,9 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   SOURCE_WITHDRAWN: 'Justificatif retiré de la dépense : montant réévalué depuis le justificatif',
   USER_EXCLUDED: 'Retirée du coût de possession par vous',
   SAME_FACT_CROSS_SOURCE: 'Même achat qu’une autre source déjà comptée (fiche, justificatif ou événement de référence) : compté une seule fois',
+  COMMERCIAL_ADJUSTMENT_INTEGRATED: 'Remise intégrée au prix net de l’achat : ni un avoir, ni un remboursement',
+  PURCHASE_COMPONENT: 'Composante du prix net de l’achat (détail du calcul)',
+  GLOBAL_DISCOUNT_NOT_ALLOCATED: 'Remise globale sur plusieurs achats du document : non répartie faute de règle explicite (jamais un avoir)',
 };
 
 /** Ligne documentaire qualifiée, avant le moteur (`status` null : à évaluer par `evaluateComponent`). */
@@ -297,6 +304,17 @@ export interface DocumentLineDraft {
    * date du justificatif sauf facturation anticipée d'une autre année).
    */
   dateResolution?: EconomicDateResolution;
+  /**
+   * Lot 109D : contexte de rattachement (dépense consolidée sans montant, achat du bien sans en porter le prix…) —
+   * détail consultable, jamais un commentaire de la ligne principale.
+   */
+  context?: string | null;
+  /** Lot 109D : composition du net d'un achat (lignes, frais, remises, méthode, réconciliation) — détail consultable. */
+  composition?: PurchaseCompositionView;
+  /** Lot 109D : ligne de l'achat dont cette ligne est une composante de calcul (masquée de la liste principale). */
+  compositionOf?: string;
+  /** Lot 109D : coûts réunis dans le net d'un achat recomposé (décisions « Ajouter / Retirer » antérieures conservées). */
+  mergedFacts?: Array<{ kind: string; amountMinor: number; currency: string }>;
 }
 
 // ── Règles ─────────────────────────────────────────────────────────────────
@@ -360,6 +378,22 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
     const invoiceRefs = [...new Set(d.candidates.flatMap((c) => c.references.filter((r) => r.kind === 'INVOICE').map((r) => normalizeRef(r.value)).filter(Boolean)))];
     const eventRefs = eventRefsOf(d.candidates);
     const linkedOperationIds = [...new Set(d.operations.filter((o) => !o.cancelled).map((o) => o.operationId))];
+    // Lot 109D : qualification des montants du DOCUMENT (toutes sources) — remises intégrées, achats composés.
+    const plan = planDocumentAdjustments(d.userEditedAmount ? [] : d.candidates.filter((c) => c.hints.length)
+      .map((c) => ({ id: c.id, sourceRole: c.sourceRole, statusHint: c.statusHint, hints: c.hints })),
+    { documentTotalMinor: d.amountCents, documentCurrency: d.currency, today: ctx.today });
+    const achats = new Map(plan.purchases.map((p) => [p.candidateId, p]));
+    /** Lot 109D : date économique du net d'un achat (paiement prouvé du document d'abord, même règle que les indices). */
+    const achatDate = (kind: string, amountMinor: number, ownDate: string | null, currency: string): EconomicDateResolution => resolveEconomicDate({
+      kind, amountMinor, currency, ownDate, ownDateOrigin: 'DOCUMENT_HINT', documents: [{ fileId: d.fileId, role: null, date: d.date }],
+      payments: d.candidates.flatMap((c) => c.hints).filter((x) => x.role === 'PAYMENT').map((x) => ({
+        fileId: d.fileId, amountMinor: x.amountMinor, currency: String(x.currency || 'EUR'), date: x.economicDate, periodStart: x.periodStart, periodEnd: x.periodEnd, origin: 'DOCUMENT_HINT',
+      })),
+    });
+    const ligneAchat = (candidateId: number): string => {
+      const p = achats.get(candidateId)!;
+      return p.synthesized ? `doc:${d.fileId}:${candidateId}:net` : `doc:${d.fileId}:${candidateId}:${p.principalHintIndex}`;
+    };
     const base = (over: Partial<DocumentLineDraft>): DocumentLineDraft => {
       const m = documentAmount(d);
       return {
@@ -392,7 +426,8 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
       const [status, reason]: [EconomicLineStatus, DocumentLineReason] = o.inScope
         ? (r.c === 'INCLUDED_IN_TOTAL' ? ['INCLUDED_IN_TOTAL', 'INCLUDED_IN_OPERATION_TOTAL'] : ['CONSOLIDATED_ELSEWHERE', 'COVERED_BY_OPERATION'])
         : !o.hasAssets ? ['UNCONFIRMED_ASSET', 'UNCONFIRMED_ASSET'] : ['OUT_OF_SCOPE', 'COUNTED_FOR_OTHER_ASSET'];
-      out.push(base({ status, reason, operationId: o.operationId, operationLabel: o.label }));
+      // Lot 109D : composition de l'achat consultable depuis la dépense consolidée qui le représente.
+      out.push(base({ status, reason, operationId: o.operationId, operationLabel: o.label, ...(plan.purchases.length === 1 ? { composition: compositionView(plan.purchases[0]) } : {}) }));
       continue;
     }
     // Rattaché seulement à des Opérations qui ne couvrent pas ce fait : la dépense documentaire est conservée.
@@ -400,9 +435,9 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
     const nonCouvert = couverture.find((x) => x.c === 'NOT_COVERED')?.o ?? null;
     const sansMontant = couverture.find((x) => x.c === 'NO_AMOUNT')?.o ?? null;
     const lien = achatDistinct
-      ? { operationId: achatDistinct.operationId, operationLabel: achatDistinct.label, note: 'Rattaché à l’achat du bien sans en porter le prix : dépense distincte (accessoire ou complément).' }
-      : nonCouvert ? { operationId: nonCouvert.operationId, operationLabel: nonCouvert.label, note: 'Rattaché à une dépense consolidée qui n’en reprend pas le montant : le justificatif est compté directement.' }
-        : sansMontant ? { operationId: sansMontant.operationId, operationLabel: sansMontant.label, note: 'Rattaché à une dépense sans montant consolidé : le justificatif fait foi.' } : {};
+      ? { operationId: achatDistinct.operationId, operationLabel: achatDistinct.label, context: 'Rattaché à l’achat du bien sans en porter le prix : dépense distincte (accessoire ou complément).' }
+      : nonCouvert ? { operationId: nonCouvert.operationId, operationLabel: nonCouvert.label, context: 'Rattaché à une dépense consolidée qui n’en reprend pas le montant : le justificatif est compté directement.' }
+        : sansMontant ? { operationId: sansMontant.operationId, operationLabel: sansMontant.label, context: 'Rattaché à une dépense sans montant consolidé : le justificatif fait foi.' } : {};
 
     // 3. Classe du document (barrière : notice, photo, annonce, recette ne portent aucune dépense).
     const nonMetier = !!d.typeCode && NON_EXPENSE_DOCUMENT_TYPES.has(d.typeCode);
@@ -459,6 +494,20 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
           if (role === 'PAYMENT') { out.push({ ...ligne, kind: null, status: 'PAYMENT', reason: 'PAYMENT_PROOF' }); return; }
           if (role === 'LOAN_PRINCIPAL') { out.push({ ...ligne, kind: null, status: 'EXCLUDED', reason: 'LOAN_PRINCIPAL' }); return; }
           if (!ligne.kind) { out.push({ ...ligne, status: 'NOT_QUALIFIED', reason: 'THEME_UNKNOWN' }); return; }
+          // Lot 109D : composante de calcul d'un achat (ligne, frais, remise) — comprise dans son net, jamais une
+          // transaction distincte ; remise globale de plusieurs achats : part indéterminée, jamais un avoir.
+          const tr = plan.treatments.get(hintKey(c.id, i));
+          if (tr?.kind === 'COMPOSITION') {
+            out.push({ ...ligne, status: 'INCLUDED_IN_TOTAL', reason: tr.part === 'DISCOUNT' ? 'COMMERCIAL_ADJUSTMENT_INTEGRATED' : 'PURCHASE_COMPONENT', relatedFileId: d.fileId, compositionOf: ligneAchat(tr.purchase) });
+            return;
+          }
+          if (tr?.kind === 'DISCOUNT_UNALLOCATED') { out.push({ ...ligne, status: 'UNALLOCATED', reason: 'GLOBAL_DISCOUNT_NOT_ALLOCATED' }); return; }
+          if (tr?.kind === 'PURCHASE_NET') {
+            const p = achats.get(tr.purchase)!;
+            const net = p.paidBy ? achatDate('REALIZED_COST', p.netMinor, null, p.currency) : null;
+            out.push({ ...ligne, composition: compositionView(p), ...(net ? { kind: 'REALIZED_COST' as const, role: 'REALIZED_COST', date: net.date, dateResolution: net } : {}) });
+            return;
+          }
           if (role === 'REALIZED_COST' && h.amountScope === 'INSTALLMENT' && (isFuture(h.economicDate, ctx.today) || isFuture(h.periodStart, ctx.today))) {
             out.push({ ...ligne, status: 'FORECAST', reason: 'FUTURE_INSTALLMENT' }); return;
           }
@@ -467,6 +516,19 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
           }
           out.push(ligne);
         });
+        // Lot 109D : achat dont le net n'est pas écrit tel quel (lignes + frais − remises) — UNE ligne nette.
+        const p = achats.get(c.id);
+        if (p?.synthesized) {
+          const h0 = c.hints[p.anchorHintIndex];
+          const dateNet = achatDate(p.kind, p.netMinor, p.paidBy ? null : p.economicDate, p.currency);
+          out.push(base({
+            ...lien, ...cible, lineId: ligneAchat(c.id), candidateId: c.id, role: p.kind, kind: p.kind, amountMinor: p.netMinor, currency: p.currency,
+            amountEurCents: null, date: dateNet.date, dateResolution: dateNet, periodStart: null, periodEnd: null, typeHint: c.typeHint, scope: 'TOTAL',
+            provenance: 'T1', supplierKey: normalizeSupplier(c.provider) ?? supplierKey, composition: compositionView(p),
+            mergedFacts: p.parts.filter((x) => x.part !== 'DISCOUNT').map((x) => ({ kind: x.role, amountMinor: x.amountMinor, currency: String(h0?.currency || p.currency).toUpperCase() })),
+            ...(c.statusHint === 'CANCELLED' ? { status: 'EXCLUDED' as const, reason: 'CANDIDATE_CANCELLED' as const } : {}),
+          }));
+        }
       }
       continue;
     }
@@ -503,7 +565,8 @@ export function qualifyDocumentLines(docs: readonly EconomicDocumentInput[], ctx
 
 /** Lot 75D (E) : T1 a établi des parts par bien — au moins deux candidats chiffrés, chacun ciblant un bien distinct. */
 function isFinanciallySplit(candidats: readonly EconomicDocumentCandidate[]): boolean {
-  const cibles = candidats.filter((c) => c.hints.length).map((c) => {
+  // Lot 109D : un candidat sans coût (remise isolée, règlement) n'est pas une part d'un bien — il ne contredit pas la ventilation.
+  const cibles = candidats.filter((c) => c.hints.some((h) => h.role === 'REALIZED_COST' || h.role === 'FORECAST_COST')).map((c) => {
     const b = [...new Set(c.targets.filter((t) => t.type === 'ASSET' && t.entityId != null).map((t) => t.entityId!))];
     return b.length === 1 ? b[0] : null;
   });

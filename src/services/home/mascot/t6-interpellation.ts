@@ -97,7 +97,38 @@ export type T6DecisionCode =
 export type T6ReevaluationReason =
   | 'FIRST_ASSESSMENT' | 'CONTEXT_CHANGED' | 'AGED' | 'REVIEW_DATE' | 'CONTRACT_CHANGED' | 'SNOOZE_DUE' | 'LEGACY_FINGERPRINT' | 'REMINDER_RENEWAL'
   /** Lot 72A : version effective du prompt EVALUATE ou configuration déterminante changée (invalidation stricte). */
-  | 'CONFIG_CHANGED';
+  | 'CONFIG_CHANGED'
+  /**
+   * Lot 109E : décision portant une empreinte ANTÉRIEURE au format `v5:`
+   * (`v4:`, `v3:`, `v2:`…) que l'ancienne normalisation déclare inchangée —
+   * AMBIGUË (l'ancienne normalisation assimilait des preuves de sens
+   * différent : « et » / « ou », « pour » / « par », « votre » / « notre »…) :
+   * jamais réutilisée, réévaluée par une reprise BORNÉE (`t6-fingerprint-upgrade.ts`).
+   */
+  | 'FINGERPRINT_UPGRADE';
+
+/**
+ * Lot 109E — CAUSE d'une invalidation de contexte (traces, reporting) :
+ *   · `CONTENT_CHANGED` : la représentation transmise à EVALUATE a changé
+ *     (`components` : parties concernées, quand la décision les a conservées) ;
+ *   · `LEGACY_FORMAT` : décision à empreinte antérieure, ambiguë (`FINGERPRINT_UPGRADE`) ;
+ *   · `THRESHOLD_CROSSED` / `DUE_DATE_PASSED` : l'échéance a franchi le seuil
+ *     ou sa date depuis la décision (données inchangées).
+ */
+export type T6ContextChangeCause = 'CONTENT_CHANGED' | 'LEGACY_FORMAT' | 'THRESHOLD_CROSSED' | 'DUE_DATE_PASSED';
+
+/** Lot 109E : parties de la représentation transmise à EVALUATE (cause d'une invalidation). */
+export const T6_CONTEXT_COMPONENTS = ['subject', 'description', 'dates', 'documents', 'facts'] as const;
+export type T6ContextComponent = (typeof T6_CONTEXT_COMPONENTS)[number];
+
+/** Lot 109E : changement d'empreinte constaté (aucune donnée personnelle : préfixes et noms de parties seulement). */
+export interface T6ContextChange {
+  cause: T6ContextChangeCause;
+  /** Format de l'empreinte conservée (`v5`, `v4`, `v3`, `v2`, `v1` historique). */
+  storedFormat: string;
+  /** Parties changées (`CONTENT_CHANGED` entre deux empreintes `v5:` dont la décision a conservé le détail). */
+  components?: T6ContextComponent[];
+}
 
 /**
  * Évaluation d'UN candidat, validée. Lot 61 : issue du contrat
@@ -149,7 +180,11 @@ export interface T6StoredAssessment extends T6Assessment {
    */
   contractRevision?: number | null;
   /** Lot 71G (0507) : preuves citées et leurs versions (références seules). */
-  evidenceSnapshot?: { version?: number; fingerprint?: string; refs?: T6EvidenceVersion[] } | null;
+  evidenceSnapshot?: {
+    version?: number; fingerprint?: string; refs?: T6EvidenceVersion[];
+    /** Lot 109E : empreinte courte de chaque partie du contexte transmis (`v5:`) — cause d'une invalidation ultérieure. */
+    components?: Partial<Record<T6ContextComponent, string>>;
+  } | null;
   /** Lot 71G (0507) : motif de la (ré)évaluation qui a produit cette décision. */
   reevaluationReason?: string | null;
   /**
@@ -220,6 +255,16 @@ export interface T6Candidate {
   v2Fingerprint?: string;
   /** Lot 76A : empreinte du contenu probant du lot 75E (`v3:`) — relecture des évaluations et reports antérieurs. */
   v3Fingerprint?: string;
+  /** Lot 109E : empreinte du lot 76A (`v4:`) — relecture des reports antérieurs ; une DÉCISION `v4:` reste ambiguë. */
+  v4Fingerprint?: string;
+  /** Lot 109E : empreinte courte de chaque partie du contexte transmis (cause d'une invalidation). */
+  fingerprintComponents?: Partial<Record<T6ContextComponent, string>>;
+  /**
+   * Lot 109E : une décision conservée à empreinte antérieure à `v5:` est
+   * AMBIGUË (jamais réutilisée). Posé par la préparation ; absent : déduit de
+   * l'empreinte courante (`v5:` ⇒ oui).
+   */
+  legacyDecisionsAmbiguous?: boolean;
   /**
    * Lot 75E (D) : identité PERSISTANTE du cycle de l'occurrence (`t6CycleKey`),
    * cohérente avec T4. Absente (lecture impossible) : préférences appliquées.
@@ -337,6 +382,8 @@ export interface T6DecisionResult {
   aiDecision: T6Decision | null;
   /** Lot 71G : motif de la réévaluation demandée (`needsAssessment`), sinon null. */
   reevaluationReason: T6ReevaluationReason | null;
+  /** Lot 109E : changement d'empreinte constaté et sa cause (décision conservée invalidée), sinon null. */
+  contextChange: T6ContextChange | null;
 }
 
 // ── Réglages (constantes ; le seuil est réglable dans le BO) ─────────────────
@@ -463,12 +510,38 @@ interface T6FingerprintFact {
   excerpt?: string | null; provenance?: string | null;
 }
 
-/** Mots VIDES d'un extrait (articles, auxiliaires) : leur variation est cosmétique. Négations conservées. */
+/**
+ * Mots retirés des extraits par les empreintes `v3:` / `v4:` — CONSERVÉS
+ * TELS QUELS pour recalculer ces empreintes historiques (relecture des
+ * reports), JAMAIS utilisés par l'empreinte `v5:` (lot 109E).
+ *
+ * Audit du lot 109E (ticket « [P1] T6 EVALUATE — perte de sens dans
+ * l'empreinte des preuves ») : AUCUN de ces mots n'est sûr à effacer.
+ *   · opérateurs logiques : « et », « ou » (cumul ≠ alternative) ;
+ *   · négation / restriction : « n » (« n'est … que »), « que » (« ne … que »),
+ *     « qu » ;
+ *   · condition / finalité / agent : « pour » ≠ « par » (« pour le client » /
+ *     « par le client »), « sur », « avec », « dans », « en », « au », « aux » ;
+ *   · portée / quantification : « tout », « toute », « tous », « toutes »,
+ *     « un », « une » (numéral : « un mois »), « des », « de », « du » ;
+ *   · partie obligée / possession : « votre », « vos », « notre », « nos »,
+ *     « leur », « leurs », « son », « sa », « ses », « il », « elle », « on »
+ *     (« à votre charge » ≠ « à notre charge ») ;
+ *   · obligation / état : « est », « sont », « être », « a » (avoir ≠ « à »),
+ *     « y » (« il y a ») ;
+ *   · référence : « le », « la », « les », « l », « ce », « cet », « cette »,
+ *     « ces », « se », « s », « qui », « c », « j », « d ».
+ * S'y ajoutaient, dans `normalizeForFingerprint`, la suppression des accents
+ * (« ou » / « où », « a » / « à », « du » / « dû ») et de la ponctuation
+ * (« 10 % » / « 10 € », « -10 » / « 10 », « 1,5 » / « 15 »).
+ */
 const MOTS_VIDES_PREUVE = new Set([
   'le', 'la', 'les', 'l', 'un', 'une', 'des', 'de', 'du', 'd', 'et', 'est', 'sont', 'etre', 'a', 'au', 'aux', 'en', 'par', 'pour',
   'que', 'qui', 'qu', 'ce', 'cet', 'cette', 'ces', 'se', 's', 'sa', 'son', 'ses', 'leur', 'leurs', 'il', 'elle', 'on', 'y', 'dans',
   'sur', 'avec', 'ou', 'c', 'j', 'n', 'votre', 'vos', 'notre', 'nos', 'tout', 'toute', 'tous', 'toutes',
 ]);
+/** Lot 109E (audit, tests adversariaux) : corpus des mots effacés par les empreintes `v3:` / `v4:`. */
+export const T6_LEGACY_ELIDED_WORDS: readonly string[] = [...MOTS_VIDES_PREUVE];
 
 /**
  * Lot 75E (C) — représentation STABLE du contenu probant d'un extrait
@@ -582,14 +655,116 @@ export function t6EvaluationSubjectParts(s: T6EvaluationSubjectCore): string {
   ]);
 }
 
+/** Lot 109E : préfixe des empreintes du contexte transmis à EVALUATE, normalisation COSMÉTIQUE seule. */
+export const T6_FINGERPRINT_V5 = 'v5:';
+
+/** Caractères invisibles sans valeur (césure conditionnelle, espaces de largeur nulle, BOM). */
+const INVISIBLES = /[­​-‍⁠﻿]/g;
+
+/**
+ * Lot 109E — normalisation COSMÉTIQUE d'un texte transmis à EVALUATE (pure).
+ * Seules les variations SANS SENS sont neutralisées :
+ *   · Unicode : forme NFKC (espaces insécables, ligatures, pleine chasse,
+ *     « … »), caractères invisibles retirés, variantes typographiques
+ *     d'apostrophes, guillemets et tirets unifiées ;
+ *   · casse ;
+ *   · espaces : répétés, en bord de texte, autour de la ponctuation
+ *     (« 10 % » = « 10% », « préavis : » = « préavis: ») ;
+ *   · ponctuation FINALE d'un texte (« inclus. » = « inclus »).
+ * Tout le reste est CONSERVÉ : chaque mot (« et » / « ou », « pour » /
+ * « par », « votre » / « notre », « ne … que »…), leur ordre, les accents
+ * (« ou » / « où », « a » / « à », « du » / « dû »), les chiffres, signes et
+ * unités (« -10 », « 1,5 », « % » / « € »), la ponctuation intérieure.
+ * Aucune règle propre à un document, un fournisseur ou un exemple.
+ */
+export function cosmeticText(v: string | null | undefined): string {
+  return (v ?? '')
+    .normalize('NFKC')
+    .replace(INVISIBLES, '')
+    .replace(/[‘’‚‛ʼ′´`]/g, '\'')
+    .replace(/[«»“”„‟″]/g, '"')
+    .replace(/[‐-―−]/g, '-')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    // Espace AVANT une ponctuation de clôture, APRÈS une ouvrante, autour
+    // d'une apostrophe — jamais ajouté ni retiré après une virgule (« 1,5 » ≠ « 1, 5 »).
+    .replace(/ ([,.;:!?%)\]])/g, '$1')
+    .replace(/([(\[]) /g, '$1')
+    .replace(/ ?' ?/g, '\'')
+    .trim()
+    .replace(/[\s.,;:!]+$/, '');
+}
+
+/**
+ * Lot 109E — parties de la représentation transmise à EVALUATE (pure), une
+ * chaîne déterministe par partie : le SUJET (titre, bien, catégorie), la
+ * DESCRIPTION, les DATES (échéance, nature, rôle, qualification, récurrence),
+ * les DOCUMENTS (intitulés, rangés par contenu) et les FAITS (document source
+ * par son intitulé, intitulé, valeur, extrait COMPLET dans son ordre, statut,
+ * provenance — rangés par contenu). Construite depuis `T6EvaluationSubjectCore`
+ * — la projection du candidat RÉELLEMENT transmis (`t6SubjectCoreOfCandidate`) —
+ * jamais depuis une seconde sélection de preuves.
+ */
+export function t6EvaluationSubjectComponents(s: T6EvaluationSubjectCore): Record<T6ContextComponent, string> {
+  const docs = s.documents.map((t) => cosmeticText(t));
+  const faits = s.facts.map((f) => JSON.stringify([
+    f.document != null ? docs[f.document] ?? null : null, cosmeticText(f.label), cosmeticText(f.value), cosmeticText(f.excerpt),
+    f.status, provenanceClass(f.provenance),
+  ])).sort();
+  return {
+    subject: JSON.stringify([cosmeticText(s.title), cosmeticText(s.assetName), (s.assetCategory ?? '').trim().toUpperCase() || null]),
+    description: JSON.stringify([cosmeticText(s.description)]),
+    dates: JSON.stringify([s.dueDate, s.dateNature, s.dateRole ?? 'DEADLINE', s.requiresQualification ? 1 : 0, s.recurring ? 1 : 0]),
+    documents: JSON.stringify([...docs].sort()),
+    facts: JSON.stringify(faits),
+  };
+}
+
+/** Lot 109E — parties de l'empreinte `v5:` (pure) : toutes les parties, dans un ordre fixe. */
+export function t6EvaluationSubjectPartsV5(s: T6EvaluationSubjectCore): string {
+  const c = t6EvaluationSubjectComponents(s);
+  return JSON.stringify(['v5', ...T6_CONTEXT_COMPONENTS.map((k) => c[k])]);
+}
+
+/**
+ * Lot 109E — projection STABLE d'un candidat tel que transmis à EVALUATE
+ * (pure) : ce qui est réellement sérialisé dans `INTERPELLATION_CONTEXT`,
+ * sans l'identifiant opaque (`C1…`), les références autorisées ni les
+ * données volatiles (`daysUntilDue`, `overdue`, `dateLabel` dérivé de la
+ * date, `recentlyShownDays`) — le franchissement du seuil ou de la date est
+ * traité par `assessmentFreshness`. Le document source d'un fait est repéré
+ * par sa POSITION dans `documents`.
+ */
+export function t6SubjectCoreOfCandidate(c: import('./t6-contract').T6EvaluationCandidate): T6EvaluationSubjectCore {
+  const position = new Map(c.documents.map((_, n) => [`${c.subjectId}.doc${n + 1}`, n]));
+  return {
+    title: c.title, description: c.description, assetName: c.assetName, assetCategory: c.assetCategory,
+    dueDate: c.dueDate, dateNature: c.dateNature, dateRole: c.dateRole, requiresQualification: c.requiresQualification, recurring: c.recurring,
+    documents: [...c.documents],
+    facts: (c.facts ?? []).map((f) => ({
+      document: f.document != null ? position.get(f.document) ?? null : null, label: f.label, value: f.value, excerpt: f.excerpt, status: f.status, provenance: f.provenance,
+    })),
+  };
+}
+
+/** Format d'une empreinte conservée (`v5`, `v4`, `v3`, `v2`, `v1` : historique du lot 60, sans préfixe). */
+export const fingerprintFormatOf = (fp: string | null | undefined): string => {
+  const m = /^(v\d+):/.exec(fp ?? '');
+  return m ? m[1] : 'v1';
+};
+
 /**
  * Une empreinte conservée (évaluation, report) correspond-elle au candidat ?
  * Empreinte enrichie : comparaison directe ; empreinte historique (lot 60,
  * sans préfixe) : comparée à l'empreinte historique du candidat (pure).
+ * Lot 109E : une DÉCISION à empreinte antérieure à `v5:` n'est jamais
+ * réutilisée sur cette seule égalité (`assessmentFreshness`) ; cette
+ * comparaison sert aux reports et à la cause d'une invalidation.
  */
-export function sameT6Context(stored: string | null | undefined, c: Pick<T6Candidate, 'fingerprint' | 'legacyFingerprint' | 'v2Fingerprint' | 'v3Fingerprint'>): boolean {
+export function sameT6Context(stored: string | null | undefined, c: Pick<T6Candidate, 'fingerprint' | 'legacyFingerprint' | 'v2Fingerprint' | 'v3Fingerprint' | 'v4Fingerprint'>): boolean {
   if (stored == null) return false;
-  if (stored.startsWith(T6_FINGERPRINT_V4)) return stored === c.fingerprint;
+  if (stored.startsWith(T6_FINGERPRINT_V5)) return stored === c.fingerprint;
+  if (stored.startsWith(T6_FINGERPRINT_V4)) return stored === (c.v4Fingerprint ?? c.fingerprint);
   // Lot 76A : décision ou report du lot 75E (`v3:`) — comparés à l'empreinte
   // `v3:` COURANTE (aucune réévaluation de masse au déploiement), puis
   // rebasés sur `v4:` par la préparation (`rebaseFingerprints`).
@@ -676,13 +851,26 @@ function evaluationConfigChanged(a: Pick<T6StoredAssessment, 'evaluationSignatur
 }
 
 /**
+ * Lot 109E — parties changées entre la décision et le contexte courant
+ * (pure) : comparaison des empreintes courtes conservées avec la décision
+ * (`evidence_snapshot.components`). Inconnues (décision sans détail) : rien.
+ */
+function changedComponents(a: Pick<T6StoredAssessment, 'evidenceSnapshot'>, c: Pick<T6Candidate, 'fingerprintComponents'>): { components?: T6ContextComponent[] } {
+  const avant = a.evidenceSnapshot?.components;
+  const maintenant = c.fingerprintComponents;
+  if (!avant || !maintenant) return {};
+  const parties = T6_CONTEXT_COMPONENTS.filter((k) => avant[k] != null && maintenant[k] != null && avant[k] !== maintenant[k]);
+  return parties.length ? { components: parties } : {};
+}
+
+/**
  * Lot 71G : motif détaillé de la fraîcheur (pure) — même règle que
  * `assessmentStatus`, avec la raison d'une réévaluation (reporting).
  */
 export function assessmentFreshness(
   a: T6StoredAssessment | null, c: T6Candidate, today: string, thresholdDays: number,
   opts: { reminderCapable?: boolean; evaluation?: T6EvaluationConfig | null } = {},
-): { status: T6AssessmentStatus; reason: T6ReevaluationReason | null } {
+): { status: T6AssessmentStatus; reason: T6ReevaluationReason | null; change?: T6ContextChange } {
   if (!a) return { status: 'NONE', reason: 'FIRST_ASSESSMENT' };
   // Lot 61 : une évaluation d'un autre contrat (R13 du lot 60) n'est jamais
   // réutilisée — le candidat est réévalué par EVALUATE.
@@ -692,12 +880,27 @@ export function assessmentFreshness(
   if (evaluationConfigChanged(a, opts.evaluation)) return { status: 'CONFIG_CHANGED', reason: 'CONFIG_CHANGED' };
   // Lot 71G : données documentaires illisibles — l'évaluation reste utilisable
   // (aucune réévaluation sur un contexte incomplet).
-  if (!c.fingerprintUnavailable && !sameT6Context(a.fingerprint, c)) return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED' };
+  const format = fingerprintFormatOf(a.fingerprint);
+  // Lot 109E (AC05) : décision à empreinte ANTÉRIEURE (`v4:`, `v3:`…) sous le
+  // contexte `v5:`. Si l'ancienne normalisation la dit changée : contexte
+  // changé. Sinon — ou si les preuves sont illisibles — elle est AMBIGUË
+  // (cette normalisation assimilait des preuves de sens différent) : jamais
+  // réutilisée, jamais rebasée ; réévaluée par une reprise BORNÉE
+  // (`FINGERPRINT_UPGRADE`, `t6-fingerprint-upgrade.ts`), jamais sur un
+  // contexte illisible (la préparation n'évalue pas un tel candidat).
+  if (format !== 'v5' && (c.legacyDecisionsAmbiguous ?? c.fingerprint.startsWith(T6_FINGERPRINT_V5))) {
+    return c.fingerprintUnavailable || sameT6Context(a.fingerprint, c)
+      ? { status: 'CONTEXT_CHANGED', reason: 'FINGERPRINT_UPGRADE', change: { cause: 'LEGACY_FORMAT', storedFormat: format } }
+      : { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED', change: { cause: 'CONTENT_CHANGED', storedFormat: format } };
+  }
+  if (!c.fingerprintUnavailable && !sameT6Context(a.fingerprint, c)) {
+    return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED', change: { cause: 'CONTENT_CHANGED', storedFormat: format, ...changedComponents(a, c) } };
+  }
   if (c.dueDate) {
     const avant = daysBetween(a.assessedOn, c.dueDate);
     const maintenant = daysBetween(today, c.dueDate);
-    if (avant > thresholdDays && maintenant <= thresholdDays) return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED' };
-    if (avant > 0 && maintenant <= 0) return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED' };
+    if (avant > thresholdDays && maintenant <= thresholdDays) return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED', change: { cause: 'THRESHOLD_CROSSED', storedFormat: format } };
+    if (avant > 0 && maintenant <= 0) return { status: 'CONTEXT_CHANGED', reason: 'CONTEXT_CHANGED', change: { cause: 'DUE_DATE_PASSED', storedFormat: format } };
   }
   if (daysBetween(a.assessedOn, today) > T6_ASSESSMENT_MAX_AGE_DAYS) return { status: 'AGED', reason: 'AGED' };
   if (a.reevaluateOn && today >= a.reevaluateOn) return { status: 'AGED', reason: 'REVIEW_DATE' };
@@ -706,7 +909,7 @@ export function assessmentFreshness(
   // Lot 71G : évaluation antérieure à l'empreinte enrichie, sur une échéance
   // documentée — utilisable, renouvelée en arrière-plan (une fois).
   // Lot 75E : une empreinte `v3:` (contenu probant) ou `v2:` n'est pas historique.
-  if (!c.fingerprintUnavailable && !/^v[234]:/.test(a.fingerprint) && c.hasEvidence) return { status: 'AGED', reason: 'LEGACY_FINGERPRINT' };
+  if (!c.fingerprintUnavailable && !/^v[2-9]:/.test(a.fingerprint) && c.hasEvidence) return { status: 'AGED', reason: 'LEGACY_FINGERPRINT' };
   // Lot 68 : renouvellement ciblé (utilisable, réévaluée en arrière-plan).
   if (opts.reminderCapable && assessmentNeedsReminderRenewal(a)) return { status: 'AGED', reason: 'REMINDER_RENEWAL' };
   return { status: 'FRESH', reason: null };
@@ -752,7 +955,7 @@ function result(c: T6Candidate, base: Partial<T6DecisionResult> & Pick<T6Decisio
   return {
     nextReevaluationAt: null, priority: PRIORITY_DEFAULT, deferredBy: null, thresholdApplied: false, thresholdException: false,
     userPreference: null, needsAssessment: false, mode: null, action: null, actionDate: null, assessmentFresh: false, aiDecision: null,
-    reevaluationReason: null,
+    reevaluationReason: null, contextChange: null,
     ...base,
     subjectKey: c.subjectKey, occurrenceKey: c.occurrenceKey, daysUntilDue,
   };
@@ -768,7 +971,9 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
   const { candidate: c, today, thresholdDays, aiCapable } = input;
   const due = c.dueDate;
   const jours = due ? daysBetween(today, due) : null;
-  const r = (b: Parameters<typeof result>[1]) => result(c, b, jours);
+  // Lot 109E : changement d'empreinte constaté (cause), porté par toute décision du candidat.
+  let changement: T6ContextChange | null = null;
+  const r = (b: Parameters<typeof result>[1]) => result(c, { contextChange: changement, ...b }, jours);
 
   // 1. Sujet résolu, supprimé ou obsolète : jamais d'interpellation.
   if (c.state !== 'ACTIVE') {
@@ -799,6 +1004,7 @@ export function decideT6Interpellation(input: T6DecisionInput): T6DecisionResult
   }
 
   const fraicheur = assessmentFreshness(input.assessment, c, today, thresholdDays, { reminderCapable: input.reminderCapable, evaluation: input.evaluationConfig });
+  changement = fraicheur.change ?? null;
   const status = fraicheur.status;
   const a = status === 'FRESH' || status === 'AGED' ? input.assessment : null;
   const fresh = status === 'FRESH';
@@ -1018,6 +1224,8 @@ export interface T6CandidateRef {
   reevaluationReason?: T6ReevaluationReason | null;
   /** Lot 71G : référence → version de la preuve transmise (document, extraction, fait). */
   evidenceVersions?: ReadonlyMap<string, T6EvidenceVersion>;
+  /** Lot 109E : empreintes courtes des parties du contexte transmis (conservées avec la décision). */
+  fingerprintComponents?: Partial<Record<T6ContextComponent, string>>;
 }
 
 /** Lot 71G : version d'une preuve transmise à EVALUATE (aucun texte : références seules). */
@@ -1073,11 +1281,15 @@ export function exceptionEvidenceGrounded(
  * référence, nature et version (document, extraction, fait) — conservé avec
  * l'évaluation (`evidence_snapshot`) et l'empreinte du contexte.
  */
-export function evidenceSnapshotOf(cited: readonly string[], versions: ReadonlyMap<string, T6EvidenceVersion> | undefined, fingerprint: string): {
-  version: 1; fingerprint: string; refs: T6EvidenceVersion[];
+export function evidenceSnapshotOf(
+  cited: readonly string[], versions: ReadonlyMap<string, T6EvidenceVersion> | undefined, fingerprint: string,
+  /** Lot 109E : empreintes courtes des parties du contexte transmis (cause d'une invalidation ultérieure). */
+  components?: Partial<Record<T6ContextComponent, string>> | null,
+): {
+  version: 1; fingerprint: string; refs: T6EvidenceVersion[]; components?: Partial<Record<T6ContextComponent, string>>;
 } {
   const refs = cited.map((r) => versions?.get(r) ?? { ref: r, kind: 'UNKNOWN' });
-  return { version: 1, fingerprint, refs };
+  return { version: 1, fingerprint, refs, ...(components ? { components: { ...components } } : {}) };
 }
 
 /**

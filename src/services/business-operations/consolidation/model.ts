@@ -43,6 +43,7 @@ import {
   type BusinessOperationStatus, type BusinessOperationTypeCode, type Confidence, type FinancialComponentKind,
   type ReferenceKind, type SourceRole, REFERENCE_KINDS, SOURCE_ROLES,
 } from '../model';
+import { hintKey, planDocumentAdjustments } from '../finance/commercial-adjustments';
 
 // ── Entrées persistées ─────────────────────────────────────────────────────
 
@@ -64,6 +65,12 @@ export interface PersistedFinancialHint {
   evidence?: { factId?: number | null } | null;
   /** Lot 78A : rang de l'indice dans le payload persisté (trace composante → indice T1). */
   index?: number;
+  /**
+   * Lot 109D : commande payée — le document prouve le paiement daté du net
+   * (`finance/commercial-adjustments`) : coût RÉALISÉ, jamais une prévision.
+   * Posé à la lecture (jamais persisté par T1).
+   */
+  realizedByPayment?: boolean;
 }
 
 interface PersistedTargetHint {
@@ -98,6 +105,14 @@ export interface CandidateRecord {
 interface IdentityContext {
   /** Bien principal du document (`asset_files.asset_id`, à défaut `linked_asset_id`), s'il existe encore. */
   fileAssetId: number | null;
+  /**
+   * Lot 109D : candidats ACTIFS et établis du MÊME document (celui-ci compris) et montant TTC du document — la
+   * qualification des montants est faite au niveau du document (`finance/commercial-adjustments`). Absent : le
+   * candidat seul (ses propres remises restent intégrées, jamais un avoir).
+   */
+  documentCandidates?: readonly CandidateRecord[];
+  documentTotalMinor?: number | null;
+  today?: string | null;
   /** Biens du compte encore présents (non supprimés). */
   liveAssetIds: ReadonlySet<number>;
   /** Équipement → bien parent (équipements du compte encore présents). */
@@ -238,8 +253,11 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
   }
   const t = p.temporalHints ?? {};
   // Lot 78A : le rang d'origine de chaque indice est conservé (trace composante → indice → fait).
-  const hints = (p.financialHints ?? []).map((h, index) => (h ? { ...h, index } : h))
+  const brutes = (p.financialHints ?? []).map((h, index) => (h ? { ...h, index } : h))
     .filter((h) => h && isMinorAmount(h.amountMinor) && isIsoCurrency(h.currency));
+  // Lot 109D : remises intégrées au net, achats recomposés, commande payée — même règle que le TCO documentaire.
+  const ajuste = applyDocumentAdjustments(c, brutes, ctx);
+  const hints = ajuste.hints;
   // Lot 86C : désignation équivalente (preuves du compte) → clé canonique ; l'origine reste tracée.
   const brute = normalizeProvider(p.provider);
   const canon = brute !== null ? ctx.providerCanonical?.get(brute) ?? brute : null;
@@ -247,10 +265,11 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
     candidateId: c.id,
     candidateKey: c.candidateKey,
     fileId: c.fileId,
-    established: c.established,
+    // Lot 109D : un candidat qui ne porte qu'une remise intégrée au net d'un autre achat du document n'est pas une réalité propre.
+    established: c.established && !ajuste.adjustmentOnly,
     confidence: c.confidence,
     type: normalizeOperationTypeHint(c.typeHint),
-    status: statusOfSource(c.statusHint, role),
+    status: ajuste.paidOrder ? 'REALIZED' : statusOfSource(c.statusHint, role),
     role,
     summary: c.summary,
     provider: p.provider?.trim() || null,
@@ -269,6 +288,44 @@ export function buildCandidateIdentity(c: CandidateRecord, ctx: IdentityContext)
     },
     hints,
   };
+}
+
+/**
+ * Lot 109D — indices d'un candidat après qualification des montants du
+ * DOCUMENT (pure) : composantes de calcul retirées (lignes, frais, remises
+ * compris dans le net), net recomposé quand il n'est pas écrit (porté par
+ * l'indice d'ancrage, preuve conservée), commande payée réalisée, remise
+ * globale de plusieurs achats retirée (jamais une composante `REDUCTION`).
+ */
+function applyDocumentAdjustments(
+  c: CandidateRecord, hints: PersistedFinancialHint[], ctx: Pick<IdentityContext, 'documentCandidates' | 'documentTotalMinor' | 'today'>,
+): { hints: PersistedFinancialHint[]; paidOrder: boolean; adjustmentOnly: boolean } {
+  const freres = (ctx.documentCandidates ?? []).filter((x) => x.fileId === c.fileId && x.established);
+  const tous = freres.some((x) => x.id === c.id) ? freres : [...freres, c];
+  const roleDe = (x: CandidateRecord) => (isRole(x.payload?.sourceRoleHint) ? x.payload.sourceRoleHint : null);
+  const plan = planDocumentAdjustments(tous.map((x) => ({
+    id: x.id, sourceRole: roleDe(x), statusHint: x.statusHint,
+    hints: (x.payload?.financialHints ?? []).map((h) => (h && isMinorAmount(h.amountMinor) && isIsoCurrency(h.currency) ? h
+      : { role: 'INVALID', amountMinor: 0, currency: 'XXX' })),
+  })), { documentTotalMinor: ctx.documentTotalMinor ?? null, today: ctx.today ?? null });
+  if (!plan.costBearing) return { hints, paidOrder: false, adjustmentOnly: false };
+  const achat = plan.purchases.find((x) => x.candidateId === c.id);
+  const out: PersistedFinancialHint[] = [];
+  for (const h of hints) {
+    const t = plan.treatments.get(hintKey(c.id, h.index ?? -1));
+    if (t?.kind === 'COMPOSITION' || t?.kind === 'DISCOUNT_UNALLOCATED') {
+      if (achat?.synthesized && h.index === achat.anchorHintIndex) {
+        out.push({ ...h, role: achat.kind, amountMinor: achat.netMinor, currency: achat.currency, amountScope: 'TOTAL', economicDate: achat.economicDate,
+          ...(achat.paidBy ? { realizedByPayment: true } : {}) });
+      }
+      continue;
+    }
+    if (t?.kind === 'PURCHASE_NET' && achat?.paidBy) { out.push({ ...h, realizedByPayment: true, economicDate: achat.paidBy.date }); continue; }
+    out.push(h);
+  }
+  const integre = plan.adjustmentOnlyCandidates.includes(c.id)
+    && hints.every((h) => h.role === 'PAYMENT' || plan.treatments.get(hintKey(c.id, h.index ?? -1))?.kind === 'COMPOSITION');
+  return { hints: out, paidOrder: !!achat?.paidBy, adjustmentOnly: integre };
 }
 
 // ── Lot 55B : preuve périodique (échéance d'un contrat) ────────────────────
@@ -469,11 +526,12 @@ export function componentsFromIdentity(id: CandidateIdentity): DesiredComponent[
   // sur le document qui porte lui-même le coût est déjà intégrée à son total ;
   // seule une remise APRÈS facturation (avoir) réduit le coût.
   const porteUnCout = id.role !== 'CREDIT_NOTE' && id.hints.some((h) => {
-    const k = componentKindOf(h.role, id.role);
+    const k = h.realizedByPayment ? 'REALIZED_COST' : componentKindOf(h.role, id.role);
     return k === 'REALIZED_COST' || k === 'FORECAST_COST';
   });
   for (const h of id.hints) {
-    const kind = componentKindOf(h.role, id.role);
+    // Lot 109D : commande payée (paiement daté du net prouvé par le document) — coût réalisé.
+    const kind = h.realizedByPayment ? 'REALIZED_COST' : componentKindOf(h.role, id.role);
     if (!kind) continue;
     if (kind === 'REDUCTION' && porteUnCout) continue;
     // Lot 78A : justification exacte (indice T1 et fait persisté), documents seulement.

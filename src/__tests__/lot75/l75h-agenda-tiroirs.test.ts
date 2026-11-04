@@ -10,7 +10,7 @@
  * balisage. Le câblage des écrans est lu dans les sources.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import React, { createElement as h, isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -71,7 +71,7 @@ describe('L75H-1 — vue annuelle : l’en-tête d’un mois ouvre la vue mensue
       monthLabel: 'Janv.', monthKey: '2026-01', count: 4, isCurrentMonth: false, onOpenMonth: () => {},
     }));
     expect(html).toMatch(/^<button type="button"/);
-    expect(html).toContain('aria-label="janvier 2026, 4 éléments — afficher la vue mensuelle"');
+    expect(html).toContain('aria-label="janvier 2026, 4 événements — afficher la vue mensuelle"');
     expect(html).toContain('data-month-header="2026-01"');
     expect(html).toContain('Janv.');
     expect(html).toContain('>4<');
@@ -92,7 +92,7 @@ describe('L75H-1 — vue annuelle : l’en-tête d’un mois ouvre la vue mensue
     expect(el.props.type).toBe('button');
     expect(el.props.tabIndex).toBeUndefined();
     expect(el.props.role).toBeUndefined();
-    expect(el.props['aria-label']).toBe('décembre 2026, aucun élément — afficher la vue mensuelle');
+    expect(el.props['aria-label']).toBe('décembre 2026, aucun événement — afficher la vue mensuelle');
   });
 
   it('L75H-1e — sans gestionnaire : en-tête simple, comme avant (aucun bouton muet)', () => {
@@ -264,7 +264,7 @@ describe('L75H-3 — EntityCard : carte d’entité cliquable générique', () =
 });
 
 describe('L75H-4 — inventaire des tiroirs : chaque carte d’entité ouvre sa fiche', () => {
-  it('L75H-4a — Équipement : Fournisseurs, Documents associés, Agenda associé', () => {
+  it('L75H-4a — Équipement : Fournisseurs, Documents associés, Événements associés (lot 109I)', () => {
     const src = lire('src/components/assets/EquipmentDrawer.tsx');
     expect(src).toMatch(/<EntityCard\s+key=\{s\.supplierId\}\s+kind="fournisseur"/);
     expect(src).toMatch(/<EntityCard\s+key=\{doc\.id\}\s+kind="document"/);
@@ -275,7 +275,7 @@ describe('L75H-4 — inventaire des tiroirs : chaque carte d’entité ouvre sa 
     expect(src).toContain("window.addEventListener('agenda-mutated', reload)");
   });
 
-  it('L75H-4b — Document : éléments agenda (cartes), pièce et équipement (tiroir empilé, statut réel)', () => {
+  it('L75H-4b — Document : événements associés (cartes), pièce et équipement (tiroir empilé, statut réel)', () => {
     const src = lire('src/components/assets/DocumentDrawer.tsx');
     expect(src).toMatch(/<EntityCard\s+key=\{item\.id\}\s+kind="echeance"/);
     expect(src).toContain("openDrawer({ kind: 'piece', id: fullData.substructureId! }, { stack: true })");
@@ -293,8 +293,10 @@ describe('L75H-4 — inventaire des tiroirs : chaque carte d’entité ouvre sa 
     expect(src).toContain('href={`/assets/${l.assetId}`}');
   });
 
-  it('L75H-4d — Fournisseur : documents associés en cartes d’entité', () => {
-    const src = lire('src/components/suppliers/SupplierDrawer.tsx');
-    expect(src).toMatch(/<EntityCard\s+key=\{doc\.documentId\}\s+kind="document"/);
+  it('L75H-4d — Fournisseur : lot 109B, plus de tiroir fournisseur — la fiche unique ouvre ses documents en tiroir', () => {
+    // Décision PO (ticket 109B « fiche unique ») : SupplierDrawer est supprimé.
+    expect(existsSync(join(process.cwd(), 'src/components/suppliers/SupplierDrawer.tsx'))).toBe(false);
+    const src = lire('src/app/(dashboard)/fournisseurs/[id]/page.tsx');
+    expect(src).toContain("openDrawer({ kind: 'document', id: d.id })");
   });
 });

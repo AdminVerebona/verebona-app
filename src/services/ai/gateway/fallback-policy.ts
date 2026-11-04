@@ -247,6 +247,16 @@ export function decisionOf(p: {
   };
 }
 
+/**
+ * Lot 109J : codes d'erreur des lignes d'usage d'un rang NON SOLLICITÉ (refus
+ * de secours, modèle connu indisponible) — aucune requête : ni un appel, ni
+ * une génération échouée dans les décomptes.
+ */
+export const NOT_CALLED_ERROR_CODES: ReadonlySet<string> = new Set(['FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE']);
+
+/** Lot 109J : décisions qui SOLLICITENT le modèle (les autres : aucune requête, jamais une génération échouée). */
+export const ADMITTED_REASONS: ReadonlySet<AdmissionReason> = new Set<AdmissionReason>(['FIRST', 'QUALIFIED', 'MANUAL_UNTESTED']);
+
 /** Motifs de refus qui traduisent l'ABSENCE de secours admissible (et non une limite de la politique). */
 const SANS_SECOURS_ADMISSIBLE: ReadonlySet<AdmissionReason> = new Set<AdmissionReason>([
   'KNOWN_UNAVAILABLE', 'EXCLUDED', 'COUPLE_REFUSED', 'NOT_QUALIFIED_AUTOMATIC',

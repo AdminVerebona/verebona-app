@@ -11,6 +11,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getCostReport, averageCostPerCall } from '@/services/ai/telemetry/cost-report.repository';
+import { COMPLETENESS_LABELS } from '@/services/ai/telemetry/cost-status';
 import { isTreatment } from '@/services/ai/config/treatments';
 import { getAiEnvironment } from '@/services/ai/config/environment';
 import { getT2UsageSummary } from '@/services/ai/telemetry/t2-routing.repository';
@@ -67,18 +68,30 @@ export async function GET(req: NextRequest) {
     let environment: string | null = null;
     try { environment = getAiEnvironment(); } catch { environment = null; }
 
+    const t = report.totals;
+    const s = t.byStatus;
     return NextResponse.json({
       ...report,
       averageCostPerCall: averageCostPerCall(report.totals),
+      // Lot 109L : complétude explicite — jamais une dépense partielle présentée comme un total.
+      completeness: t.completeness ?? (report.incomplete ? 'partial' : 'complete'),
+      completenessLabel: COMPLETENESS_LABELS[t.completeness ?? (report.incomplete ? 'partial' : 'complete')],
+      averageIsPartial: t.unpricedCalls > 0,
       // COST-003 : axe environnement — une instance = un environnement.
       environment,
       t2Usage,
       reuse: reuse ? { available: reuse.available, cacheResponses: reuse.cacheResponses, decisionsReused: reuse.decisionsReused, byKind: reuse.byKind } : null,
       // Signalé explicitement : le SCR-09 demande de « signaler l'incomplétude »
       // plutôt que de rendre un agrégat qui paraîtrait exact.
+      // Lot 109L : le compteur reflète les VRAIS coûts inconnus (tarif absent,
+      // consommation non mesurée, historique sans preuve) — plus les coûts
+      // connus arrondis à zéro ; le détail par cause est sur /costs/unpriced.
       warning: report.incomplete
-        ? `${report.totals.unpricedCalls} appel(s) sans tarif connu : le total est incomplet.`
+        ? `${t.unpricedCalls} appel(s) sans tarif connu : le total est incomplet.${s ? ` (${[
+          s.missing ? `${s.missing} tarif absent` : '', s.insufficientUsage ? `${s.insufficientUsage} consommation non mesurée` : '',
+          s.legacyUndetermined ? `${s.legacyUndetermined} historique sans preuve` : ''].filter(Boolean).join(', ')})` : ''}`
         : null,
+      unpricedDetailHref: report.incomplete ? `/api/admin/ai/costs/unpriced?since=${encodeURIComponent(since.toISOString())}&until=${encodeURIComponent(until.toISOString())}` : null,
     });
   } catch (e) {
     return toErrorResponse(e, 'GET /api/admin/ai/costs');

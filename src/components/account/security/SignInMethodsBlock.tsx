@@ -34,6 +34,7 @@ import { PasswordInput } from '@/components/ui/password-input';
 import { PasswordRequirements } from '@/components/auth/PasswordRequirements';
 import { AppleLogo, GoogleLogo } from '@/components/auth/SocialSignInButtons';
 import { SECURITY_RETURN_MESSAGES, socialErrorMessage } from '@/lib/auth/oauth/messages';
+import { DISPOSABLE_EMAIL_MESSAGE, DISPOSABLE_EMAIL_NOT_ALLOWED } from '@/lib/auth/disposable-email/messages';
 
 type Provider = 'google' | 'apple';
 const LABEL: Record<Provider, string> = { google: 'Google', apple: 'Apple' };
@@ -80,6 +81,8 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
   // Lot 96A (Q8) : changement de l'adresse principale.
   const [emailOpen, setEmailOpen] = useState(false);
   const [newEmail, setNewEmail] = useState('');
+  // Lot 109F : refus « adresse jetable », sous le champ « Nouvelle adresse e-mail ».
+  const [newEmailError, setNewEmailError] = useState('');
   const [pendingEmail, setPendingEmail] = useState<PendingEmailChange | null>(null);
   const reloadPendingEmail = useCallback(async () => {
     try {
@@ -130,7 +133,7 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
   }, [reload, withReauth]);
 
   const askChangeEmail = useCallback(async () => {
-    if (await ensureFresh('Avant de modifier votre adresse e-mail.', 'change-email')) { setNewEmail(''); setEmailOpen(true); }
+    if (await ensureFresh('Avant de modifier votre adresse e-mail.', 'change-email')) { setNewEmail(''); setNewEmailError(''); setEmailOpen(true); }
   }, [ensureFresh]);
 
   const submitEmail = async (e: React.FormEvent) => {
@@ -145,7 +148,8 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
       if (d?.pending) setPendingEmail(d.pending);
       setEmailOpen(false); setNewEmail('');
     } catch (err) {
-      fail(err, 'La demande n’a pas pu être enregistrée.');
+      if (err instanceof ApiClientError && err.code === DISPOSABLE_EMAIL_NOT_ALLOWED) setNewEmailError(DISPOSABLE_EMAIL_MESSAGE);
+      else fail(err, 'La demande n’a pas pu être enregistrée.');
     } finally { setBusy(false); }
   };
 
@@ -304,7 +308,12 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
             </DialogHeader>
             <div className="space-y-2 py-4">
               <Label htmlFor="new-email">Nouvelle adresse e-mail</Label>
-              <Input id="new-email" type="email" autoComplete="email" inputMode="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} required />
+              <Input
+                id="new-email" type="email" autoComplete="email" inputMode="email" value={newEmail}
+                onChange={(e) => { setNewEmail(e.target.value); if (newEmailError) setNewEmailError(''); }} required
+                aria-invalid={newEmailError ? true : undefined} aria-describedby={newEmailError ? 'new-email-error' : undefined}
+              />
+              {newEmailError && <p id="new-email-error" role="alert" className="text-sm text-destructive" data-testid="email-change-error">{newEmailError}</p>}
               <p className="text-xs text-[color:var(--text-muted)]">Vos biens, documents, partages, votre abonnement et vos connexions Google ou Apple ne changent pas.</p>
             </div>
             <DialogFooter className="flex-col-reverse gap-2 sm:flex-row">

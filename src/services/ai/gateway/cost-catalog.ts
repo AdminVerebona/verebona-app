@@ -19,7 +19,8 @@
  */
 import { listLlmOperations } from '../registry/operations';
 import { AI_USE_CASE_CODES } from '../registry/use-cases';
-import { getCachedPrice, getCacheState, loadPricingCache } from './pricing/pricing.repository';
+import { getCachedPrice, getCacheState, loadPricingCache, startPricingCacheWatcher, type CachedPrice } from './pricing/pricing.repository';
+import type { PriceTier } from './pricing/google-pricing-page.adapter';
 
 const warnedModels = new Set<string>();
 
@@ -55,15 +56,62 @@ export function calcCostMicros(
     }
     return null;
   }
-  // Lot 35B : palier de taille d'invite (ex. au-delà de 200 000 jetons) — le
-  // fournisseur facture alors TOUTE la requête au tarif du palier.
-  const palier = (price.tiers ?? [])
-    .filter((t): t is Extract<NonNullable<typeof price.tiers>[number], { kind: 'prompt_tokens_above' }> => t.kind === 'prompt_tokens_above')
+  return Math.round(exactCostMicros(price, inputTokens, outputTokens, 0, new Date()));
+}
+
+/**
+ * Coût EXACT (fraction de micro-dollar) d'une consommation au tarif `price`
+ * (pur, lot 109L). Paliers :
+ *   · taille d'invite (lot 35B) : au-delà du seuil, TOUTE la requête au tarif
+ *     du palier ;
+ *   · montants datés : celui en vigueur à la date de l'appel (`at`), sinon le
+ *     montant de base relevé ;
+ *   · jetons de raisonnement : facturés au tarif de SORTIE (« Output price
+ *     (including thinking tokens) ») — ajoutés seulement s'ils sont connus.
+ */
+export function exactCostMicros(
+  price: Pick<CachedPrice, 'inputMicros' | 'outputMicros' | 'tiers'>,
+  inputTokens: number,
+  outputTokens: number,
+  thoughtsTokens: number,
+  at: Date,
+): number {
+  const tiers = price.tiers ?? [];
+  const palier = tiers
+    .filter((t): t is Extract<PriceTier, { kind: 'prompt_tokens_above' }> => t.kind === 'prompt_tokens_above')
     .filter((t) => inputTokens > t.thresholdTokens)
     .sort((a, b) => b.thresholdTokens - a.thresholdTokens)[0];
-  const inMicros = palier ? palier.inputPerMillion : price.inputMicros;
-  const outMicros = palier ? palier.outputPerMillion : price.outputMicros;
-  return Math.round(inputTokens * inMicros + outputTokens * outMicros);
+  let inMicros = palier ? palier.inputPerMillion : price.inputMicros;
+  let outMicros = palier ? palier.outputPerMillion : price.outputMicros;
+  if (!palier) {
+    const jour = at.toISOString().slice(0, 10);
+    const date = tiers
+      .filter((t): t is Extract<PriceTier, { kind: 'dated' }> => t.kind === 'dated')
+      .find((t) => (t.from === null || t.from <= jour) && (t.to === null || jour <= t.to));
+    if (date && date.inputPerMillion !== null) inMicros = date.inputPerMillion;
+    if (date && date.outputPerMillion !== null) outMicros = date.outputPerMillion;
+  }
+  return inputTokens * inMicros + (outputTokens + Math.max(0, thoughtsTokens || 0)) * outMicros;
+}
+
+export interface CallPricing {
+  /** `null` : aucun tarif applicable (coût non calculable, jamais estimé). */
+  costMicros: number | null;
+  exactMicros: number | null;
+  price: CachedPrice | null;
+}
+
+/**
+ * Coût d'un appel avec jetons de raisonnement (lot 109L) — même cache, même
+ * règle que `calcCostMicros`. Arrondi UNE fois, au micro-dollar, ici.
+ */
+export function priceCall(p: {
+  provider: string; model: string; inputTokens: number; outputTokens: number; thoughtsTokens?: number | null; at?: Date;
+}): CallPricing {
+  const price = getCachedPrice(p.provider, p.model);
+  if (!price) return { costMicros: null, exactMicros: null, price: null };
+  const exact = exactCostMicros(price, p.inputTokens, p.outputTokens, p.thoughtsTokens ?? 0, p.at ?? new Date());
+  return { costMicros: Math.round(exact), exactMicros: exact, price };
 }
 
 /**
@@ -176,6 +224,8 @@ export async function assertPricingReady(): Promise<void> {
   // `loadedAt` et non `size` : un catalogue vide mais chargé est un état connu,
   // pas une raison de réinterroger la base à chaque appel.
   if (getCacheState().loadedAt === null) await loadPricingCache();
+  // Lot 109L : rechargement sur changement écrit par une autre instance.
+  startPricingCacheWatcher();
 
   let state = getPricingReadiness();
 

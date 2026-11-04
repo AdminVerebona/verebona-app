@@ -63,7 +63,8 @@ const evaluation = (fingerprint: string, o: Partial<Stored> = {}): Stored => ({
 const SUPPRIMEE = (fp: string, o: Partial<Stored> = {}) => evaluation(fp, {
   decision: 'SUPPRESS', category: 'INFORMATION', reasonCode: 'NO_ACTION_REQUIRED', interpellation: 'NONE', actionNeeded: false, action: null, priority: 'LOW', ...o,
 });
-const fp = (r: Row, e: Evidence | undefined) => S.fingerprintWithEvidence({ title: r.title, date: r.date, forecast: r.forecast, requiresQualification: r.requiresQualification }, e);
+// Lot 109E : décision prise sur le contexte COURANT = empreinte `v5:` du contexte transmis (une empreinte antérieure est ambiguë).
+const fp = (r: Row, e: Evidence | undefined) => S.t6ContextFingerprint(r, e);
 const deps = (loaders: Partial<import('../t6-interpellation.service').T6Loaders>, o: Partial<import('../t6-interpellation.service').PrepareDeps> = {}) => ({
   aiCapable: async () => true, thresholdDays: async () => 60,
   loaders: { dueReminders: async () => new Map<number, string>(), examinations: async () => 0, cycles: async () => new Map<number, string>(), ...loaders }, ...o,
@@ -170,19 +171,22 @@ describe('L75E-T6-C — empreinte du contenu probant', () => {
     const base = contrat(fait({ excerpt: 'Entretien annuel.' }));
     expect(fp(r, contrat(fait({ excerpt: 'Entretien annuel.', confidence: 'conflictual' })))).not.toBe(fp(r, base));
     expect(fp(r, contrat(fait({ excerpt: 'Entretien annuel.', provenance: 'T3_CONSOLIDATION' })))).not.toBe(fp(r, base));
-    expect(fp(r, contrat(fait({ excerpt: 'L’entretien est annuel.', id: 77, extractionId: 300 })))).toBe(fp(r, base));
+    // Lot 109E : réextraction IDENTIQUE (nouveaux identifiants) : inchangée ; reformulation
+    // (mots ajoutés) : changée — seules casse, espaces et Unicode sont cosmétiques (v5).
+    expect(fp(r, contrat(fait({ excerpt: 'Entretien annuel.', id: 77, extractionId: 300 })))).toBe(fp(r, base));
+    expect(fp(r, contrat(fait({ excerpt: 'L’entretien est annuel.', id: 77, extractionId: 300 })))).not.toBe(fp(r, base));
     expect(fp(r, contrat(fait({ excerpt: '  ENTRETIEN  annuel !' })))).toBe(fp(r, base));
     expect(I.probativeContent('Préavis de trois mois')).not.toBe(I.probativeContent('Préavis d’un mois'));
     expect(I.probativeContent('Résiliation possible')).not.toBe(I.probativeContent('Résiliation impossible'));
     expect(I.probativeContent('Ne pas résilier')).not.toBe(I.probativeContent('Résilier'));
   });
-  it('L75E-T6-C-03 — décision antérieure (empreinte v2 du lot 71G), contexte inchangé : réutilisée, aucune réévaluation de masse', async () => {
+  it('L75E-T6-C-03 — décision antérieure (empreinte v2 du lot 71G), contexte inchangé : lot 109E — ambiguë, jamais réutilisée, réévaluée (reprise bornée)', async () => {
     const e = contrat(fait());
     const v2 = S.fingerprintV2WithEvidence({ title: r.title, date: r.date, forecast: false, requiresQualification: false }, e);
     expect(v2.startsWith('v2:')).toBe(true);
     const p = await preparer([r], { assessments: async () => new Map([[1, evaluation(v2)]]), evidence: async () => new Map([[1, e]]) });
-    expect(p.decisions[0]).toMatchObject({ decision: 'SHOW_NOW', needsAssessment: false, assessmentFresh: true });
-    expect(p.bundle).toBeNull();
+    expect(p.decisions[0]).toMatchObject({ decision: 'DEFER', needsAssessment: true, assessmentFresh: false, reevaluationReason: 'FINGERPRINT_UPGRADE' });
+    expect(p.bundle!.refs.get('C1')!.reevaluationReason).toBe('FINGERPRINT_UPGRADE');
   });
 });
 

@@ -36,8 +36,23 @@ export async function POST(req: NextRequest) {
         { status: 409 },
       );
     }
+    // Lot 109L (point B) : statuts SÉPARÉS — catalogue modèles et tarifs. Un
+    // catalogue modèles réussi n'est jamais présenté comme une réussite tarifaire.
+    const pricingOk = r.pricing.status === 'completed';
     return NextResponse.json({
       ok: r.ok,
+      statuses: {
+        models: { status: r.catalog.ok ? 'ok' : 'failed', seen: r.catalog.modelsSeen, discovered: r.catalog.discovered, disappeared: r.catalog.disappeared, ...(r.catalog.error ? { error: r.catalog.error } : {}) },
+        pricing: {
+          status: r.pricing.status, ok: pricingOk, known: r.pricing.known, unknown: r.pricing.unknown, stale: r.pricing.stale ?? 0, changed: r.pricing.changed,
+          unknownModels: r.pricing.unknownModels ?? [], staleModels: r.pricing.staleModels ?? [],
+          ...(r.pricing.failureCode ? { failureCode: r.pricing.failureCode } : {}), ...(r.pricing.page ? { page: r.pricing.page } : {}),
+          ...(r.pricing.error ? { error: r.pricing.error } : {}),
+        },
+      },
+      message: `Catalogue modèles : ${r.catalog.ok ? 'à jour' : 'en échec'}. Tarifs : ${
+        pricingOk ? 'tous lus' : r.pricing.status === 'partial' ? `partiels (${r.pricing.unknown} inconnu(s), ${r.pricing.stale ?? 0} non confirmé(s))`
+          : r.pricing.status === 'failed' ? `source rejetée${r.pricing.failureCode ? ` (${r.pricing.failureCode})` : ''}, tarifs connus conservés` : 'non synchronisés'}.`,
       modelsSeen: r.catalog.modelsSeen,
       disappeared: r.catalog.disappeared,
       discovered: r.catalog.discovered,

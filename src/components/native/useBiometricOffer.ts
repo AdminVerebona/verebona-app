@@ -30,7 +30,13 @@ export interface BiometricOffer {
   later: () => void;
 }
 
-export function useBiometricOffer(features: Features, blocked: boolean): BiometricOffer {
+/**
+ * `held` (lot 109G) : une invitation prioritaire (notifications) est attendue
+ * ou a été présentée pendant ce lancement — la proposition n'est ni évaluée
+ * ni notée ; le compte reste « jamais proposé » et la reçoit au lancement
+ * suivant. Réglages et règles de sécurité de la biométrie inchangés.
+ */
+export function useBiometricOffer(features: Features, blocked: boolean, held = false): BiometricOffer {
   const pathname = usePathname();
   const { status, user } = useSession();
   const [offer, setOffer] = useState<{ userId: number; type: number | null; label: string } | null>(null);
@@ -49,7 +55,7 @@ export function useBiometricOffer(features: Features, blocked: boolean): Biometr
   currentUser.current = status === 'authenticated' ? userId : null;
 
   useEffect(() => {
-    if (offer || userId === null || status !== 'authenticated' || blocked || legalRequired || !featureOn) return;
+    if (offer || userId === null || status !== 'authenticated' || blocked || held || legalRequired || !featureOn) return;
     if (!isBiometricOfferPath(pathname) || evaluated.current.has(userId)) return;
     evaluated.current.add(userId);
     const input = { featureOn, sessionStatus: status, userId, pathname, legalRequired, blocked };
@@ -62,7 +68,7 @@ export function useBiometricOffer(features: Features, blocked: boolean): Biometr
       setOffer({ userId, type: setting.type, label: setting.shortLabel });
       setShownThisRun(true);
     })();
-  }, [offer, userId, status, blocked, legalRequired, featureOn, pathname]);
+  }, [offer, userId, status, blocked, held, legalRequired, featureOn, pathname]);
 
   // Compte changé ou session terminée : la proposition de l'autre compte disparaît.
   useEffect(() => {

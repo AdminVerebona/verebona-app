@@ -34,6 +34,11 @@ export const SECURE_KEYS = {
    * biométrique de l'enrôlement (`biometric-consent.ts`). Aucun secret.
    */
   biometricsState: 'biometrics-state',
+  /**
+   * Lot 109G : invitation « Autoriser les notifications » PAR COMPTE sur cette
+   * installation (proposée / « Plus tard » / répondue). Aucun secret, aucun jeton.
+   */
+  pushOnboarding: 'push-onboarding',
   /** Vérificateur PKCE d'un parcours Google / Apple en cours (10 min max). */
   oauthVerifier: 'oauth-verifier',
 } as const;

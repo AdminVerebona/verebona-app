@@ -306,9 +306,12 @@ export interface ProviderRequestTrace {
   /**
    * Motif d'absence de `responseSchema` : `not_requested`,
    * `structured_output_off` (AI_STRUCTURED_OUTPUT=off), `too_complex`,
-   * `unrepresentable`, `recent_rejection` (refus mémorisé) ; `null` si transmis.
+   * `unrepresentable`, `recent_rejection` (refus mémorisé), `provider_contract`
+   * (lot 109J : écart au contrat Gemini détecté avant appel) ; `null` si transmis.
    */
   schemaOmittedReason: string | null;
+  /** Lot 109J : écarts du schéma dérivé au contrat Gemini (codes compacts `CODE@chemin`), transmis ou non. */
+  schemaIssues?: string[];
   /** `application/json` ou `null` (texte libre). */
   responseMimeType: string | null;
   maxOutputTokens: number | null;

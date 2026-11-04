@@ -120,7 +120,8 @@ describe('TCO — recette obligatoire (§7)', () => {
         operations: [{ operationId: 60, label: 'Intervention — frein', inScope: true, cancelled: false, hasAssets: true, exploitable: false, citesDocument: false }] })],
     }));
     expect(t.summary.cumulativeCostCents).toBe(18_000);
-    expect(ligne(t, 601)[0]).toMatchObject({ status: 'RETAINED_DIRECT', operationId: 60, note: expect.stringContaining('sans montant consolidé') });
+    // Lot 109D (§3D) : le contexte de rattachement est un détail consultable, plus un commentaire de la ligne principale.
+    expect(ligne(t, 601)[0]).toMatchObject({ status: 'RETAINED_DIRECT', operationId: 60, note: null, context: expect.stringContaining('sans montant consolidé') });
   });
 
   it('TCO-07 — facture en double (même empreinte, sans signalement) → comptée une seule fois', () => {

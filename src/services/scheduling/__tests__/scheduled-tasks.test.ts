@@ -577,3 +577,22 @@ describe('revue M2 — tâche réactivée', () => {
     expect(await checkStaleCriticalTasks(deps)).toEqual(['dispatch']);
   });
 });
+
+describe('lot 109H — admission mémoire des tâches planifiées', () => {
+  it('mémoire au-delà du seuil : tâche ordinaire différée, tâche critique ou à créneau propre lancée', async () => {
+    const run = vi.fn(async () => undefined);
+    const h = harness([
+      task('ordinaire', run),
+      task('critique', run, { critical: { staleAfterMs: 60 * MIN } }),
+      task('envoi', run, { ownSlot: true }),
+    ]);
+    await registerTasks(h.deps('web-1'));
+    const busy = vi.fn(() => true);
+    const launched = await tick({ ...h.deps('web-1'), memoryBusy: busy });
+    await drainInFlight();
+    expect(launched.sort()).toEqual(['critique', 'envoi']);
+    expect(busy).toHaveBeenCalledWith('ordinaire');
+    // Pression retombée : la tâche différée part au tour suivant (toujours échue).
+    expect(await tick({ ...h.deps('web-1'), memoryBusy: () => false })).toEqual(['ordinaire']);
+  });
+});

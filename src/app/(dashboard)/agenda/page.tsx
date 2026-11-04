@@ -32,6 +32,7 @@ import { AgendaSearchPeriodNotice } from '@/components/agenda/AgendaSearchPeriod
 import { NO_DEADLINE_LABEL } from '@/lib/agenda/no-deadline';
 import { LocalSearchField } from '@/components/search/LocalSearchField';
 import { LOCAL_SEARCH_PARAM, localSearchNoResult, readLocalQuery, searchWithLocalQuery } from '@/lib/search/local-search';
+import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
 const AgendaItemDrawer = dynamic(
   () => import('@/components/agenda/AgendaItemDrawer').then(m => ({ default: m.AgendaItemDrawer })),
@@ -314,7 +315,7 @@ function AgendaPageInner() {
             <h1 className="vb-app-title whitespace-nowrap">Mon agenda</h1>
             {/* Même en-tête que « Mes biens » : titre puis décompte. */}
             <p className="text-muted-foreground mt-1">
-              {loading ? '\u00a0' : `${items.length} ${items.length > 1 ? 'éléments' : 'élément'}`}
+              {loading ? '\u00a0' : AGENDA_EVENT_LABELS.total(items.length)}
             </p>
           </div>
           <div className={`flex items-center gap-2 ${masquerCommandes ? 'hidden' : ''}`}>
@@ -438,16 +439,16 @@ function AgendaPageInner() {
           activeFiltersCount > 0 ? (
             <div className="text-center py-16 text-muted-foreground">
               <Calendar className="h-12 w-12 mx-auto mb-3 opacity-30" />
-              <p className="font-medium">Aucun élément</p>
+              <p className="font-medium">{AGENDA_EVENT_LABELS.noEvent}</p>
               <p className="text-sm mt-1">Aucun résultat avec ces filtres.</p>
             </div>
           ) : (
             /* Même bloc que « Mes biens » : une ligne, une explication, une action. */
             <EmptyStateCard
               icon={<Calendar className="w-4 h-4 text-[color:var(--accent)]" />}
-              title="Aucun élément pour le moment"
-              description="Ajoutez votre premier élément pour commencer"
-              actionLabel="Ajouter mon premier élément"
+              title={AGENDA_EVENT_LABELS.noEventYet}
+              description={AGENDA_EVENT_LABELS.addFirst}
+              actionLabel={AGENDA_EVENT_LABELS.addFirstAction}
               onAction={() => setShowCreate(true)}
             />
           )

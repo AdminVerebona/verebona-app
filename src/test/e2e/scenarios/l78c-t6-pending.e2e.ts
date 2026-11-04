@@ -163,7 +163,7 @@ scenario('L78C-T6', 'Lot 78C — évaluations T6 : états réels persistés, rep
     expect(p0.refreshAfterMs).toBeGreaterThanOrEqual(15_000);
     const r0 = await run(c.id, id);
     expect(['PENDING', 'RUNNING']).toContain(r0!.status);
-    expect(r0!.context_fingerprint!.startsWith('v4:')).toBe(true);
+    expect(r0!.context_fingerprint!.startsWith('v5:')).toBe(true); // lot 109E
     const r1 = await attendreFin(c.id, id);
     expect(r1).toMatchObject({ status: 'COMPLETED', attempts: 1, last_error_kind: null, next_attempt_at: null });
     expect(r1!.last_outcome).toBe('SHOW_NOW/ACTION_REQUIRED_SOON');
@@ -185,7 +185,7 @@ scenario('L78C-T6', 'Lot 78C — évaluations T6 : états réels persistés, rep
     const [ligne] = await sql<Array<{ value: Record<string, unknown> }>>`
       SELECT value FROM ai_execution_report_entries WHERE report_id = ${rap.id} AND section = 'EVALUATE'`;
     expect(ligne.value).toMatchObject({ persisted: true, run: { status: 'COMPLETED', attempt: 1, nextAttemptAt: null } });
-    expect(String(ligne.value.contextFingerprint)).toMatch(/^v4:/);
+    expect(String(ligne.value.contextFingerprint)).toMatch(/^v5:/) // lot 109E;
   });
 
   it('L78C-02 — échec IA : RETRY_WAIT persisté, aucun appel avant l’heure, puis reprise réussie', async () => {

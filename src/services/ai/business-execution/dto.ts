@@ -8,6 +8,8 @@ import { NATURE_LABELS, ORIGIN_LABELS, outcomeLabel } from './types';
 export interface ExecutionCallsDto {
   calls: number;
   failedCalls: number;
+  /** Lot 109J : rangs non sollicités (aucune requête). */
+  notCalled?: number;
   repairCalls: number;
   costMicros: number | null;
   models: string[];

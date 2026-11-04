@@ -3,6 +3,7 @@ import { requireAdmin } from '@/lib/auth-guards';
 import { AssetNotFoundForTcoError, readAssetTco } from '@/services/business-operations/tco/service';
 import { ECONOMIC_LINE_REASON_LABELS, TCO_HIDDEN_REASON_LABELS, TCO_WARNING_LABELS, tcoUserView } from '@/services/business-operations/tco/dto';
 import { ECONOMIC_LINE_STATUS_LABELS } from '@/services/business-operations/finance/economic-lines';
+import { computeTcoDiagnostics } from '@/services/business-operations/tco/diagnostics';
 import { diagnosticsError, guardAdmin, NO_STORE } from '../_shared';
 
 export const dynamic = 'force-dynamic';
@@ -33,10 +34,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Paramètres invalides', code: 'INVALID_PARAMS', message: 'Compte et bien requis (identifiants numériques).' }, { status: 400, headers: NO_STORE });
   }
   try {
-    const { entries, ...tco } = await readAssetTco(accountId, assetId);
+    const complet = await readAssetTco(accountId, assetId);
+    const { entries, ...tco } = complet;
     return NextResponse.json({
       accountId, assetId, tco, componentsExamined: entries.length,
       userView: { hidden: tcoUserView(tco.lines).hidden },
+      // Lot 109C : mêmes diagnostics structurés que la fiche (nature, nombre réel, sources, codes stables).
+      diagnostics: computeTcoDiagnostics(complet, { hidden: new Set(Object.keys(tcoUserView(tco.lines).hidden)) }),
       labels: { status: ECONOMIC_LINE_STATUS_LABELS, reason: ECONOMIC_LINE_REASON_LABELS, warning: TCO_WARNING_LABELS, hidden: TCO_HIDDEN_REASON_LABELS },
     }, { headers: NO_STORE });
   } catch (e) {

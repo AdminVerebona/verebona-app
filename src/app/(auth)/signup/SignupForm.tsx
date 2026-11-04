@@ -29,6 +29,7 @@ import { SocialSignInButtons } from '@/components/auth/SocialSignInButtons';
 import { socialErrorMessage } from '@/lib/auth/oauth/messages';
 import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
 import { ReferralCodeDisclosure } from '@/components/auth/ReferralCodeDisclosure';
+import { DISPOSABLE_EMAIL_MESSAGE, isDisposableEmailRefusal } from '@/lib/auth/disposable-email/messages';
 import {
   DISPLAY_NAME_HELP, DISPLAY_NAME_LABEL, DISPLAY_NAME_MAX_LENGTH, DISPLAY_NAME_PLACEHOLDER, validateDisplayName,
 } from '@/lib/auth/display-name';
@@ -309,6 +310,9 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
           if (!response.ok) {
             if (data.code === 'DUPLICATE_EMAIL') {
               setError('Cette adresse email est déjà utilisée. Connectez-vous pour continuer.');
+            } else if (isDisposableEmailRefusal(data)) {
+              // Lot 109F : sous le champ e-mail, message unique du serveur.
+              setErrors({ email: DISPOSABLE_EMAIL_MESSAGE });
             } else if (['MISSING_DISPLAY_NAME', 'DISPLAY_NAME_TOO_LONG', 'INVALID_DISPLAY_NAME'].includes(String(data.code))) {
               // Lot 103B : refus du « Prénom ou pseudo » (mêmes règles que le client).
               setErrors({ username: data.error || 'Indiquez votre prénom ou un pseudo.' });
@@ -455,7 +459,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   disabled={isLoading}
                 />
                 {errors.email && (
-                  <p role="alert" className="text-sm text-destructive">{errors.email}</p>
+                  <p role="alert" className="text-sm text-destructive" data-testid="signup-email-error">{errors.email}</p>
                 )}
               </div>
 

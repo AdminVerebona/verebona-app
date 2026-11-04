@@ -120,7 +120,8 @@ describe('TCO-R — recette obligatoire (§4)', () => {
     ] }));
     expect(t.summary.cumulativeCostCents).toBe(30_000 + 22_000);
     expect(ligne(t, 301)[0]).toMatchObject({ status: 'CONSOLIDATED_ELSEWHERE' });
-    expect(ligne(t, 302)[0]).toMatchObject({ status: 'RETAINED_DIRECT', operationId: 30, note: expect.stringContaining('n’en reprend pas le montant') });
+    // Lot 109D (§3D) : le contexte de rattachement est un détail consultable, plus un commentaire de la ligne principale.
+    expect(ligne(t, 302)[0]).toMatchObject({ status: 'RETAINED_DIRECT', operationId: 30, note: null, context: expect.stringContaining('n’en reprend pas le montant') });
   });
 
   it('TCO-R-03b (B) — composante prévisionnelle, autre bien, saisie de même nature, acompte d’un total consolidé', () => {

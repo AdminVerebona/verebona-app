@@ -101,11 +101,16 @@ import {
 import {
   docSnapshotHash, documentFingerprint, examinedContextHash, groupFingerprint, groupMembers, groupSnapshot, isProtected, legacyGroupFingerprint,
   linkKeysOf, membersFingerprint, NAMING_CONTEXT_VERSION, NAMING_CONTEXT_VERSION_V1, NAMING_CONTEXT_VERSION_V2, nameHash, namingVariables, orderDocs,
-  planChunks, reviewTargets, textHintRefs, upgradeEvidence, v2DocumentFingerprint, v2GroupFingerprint,
+  reviewTargets, textHintRefs, upgradeEvidence, v2DocumentFingerprint, v2GroupFingerprint,
   type MemberGroup, type NamingDoc, type NamingDocDetail, type NamingDocState,
 } from './context';
 import type { GroupProgress, GroupState, NameTrace, RenameEvent, SaveGroupState } from './repository';
 import type { NamingCall, NamingCallResult, NamingPromptStatus } from './model';
+import {
+  conformantFamilies, estimatePromptTokens, maxTargetsForOutput, namingBudget, namingRetryDelayMs, planFamilyChunks, reducedChunkSize,
+  NAMING_MIN_CHUNK_DOCS, NAMING_PERSISTENT_FAILURE_ATTEMPTS,
+} from './adaptive';
+import type { GatewayCallStats } from '../../gateway/errors';
 
 const namingEnabled = () => envNumber('T3_DOCUMENT_NAMING_ENABLED', 1) !== 0;
 const namingCallsPerPass = () => Math.min(20, Math.floor(envNumber('T3_NAMING_MAX_CALLS_PER_PASS', 3, { min: 0 })));
@@ -217,6 +222,18 @@ export interface DocumentNamingPhaseResult {
   documentsRevalidated?: number;
   /** Lot 76B (C5). */
   upgrade?: NamingUpgradeReport;
+  /** Lot 109J : documents écartés de l'IA par le préfiltre déterministe (titres déjà conformes). */
+  documentsPrefiltered?: number;
+  /** Lot 109J : re-partitions (budget d'entrée, sortie tronquée, contexte trop grand). */
+  repartitions?: number;
+  /** Lot 109J : lots en échec persistant (alerte BO). */
+  persistentFailures?: number;
+  /**
+   * Lot 109J : décomptes passerelle des appels EN ÉCHEC — modèles sollicités,
+   * requêtes réseau, refus de secours (aucune requête : jamais une génération
+   * échouée). `aiCalls` reste le nombre d'appels demandés par la phase.
+   */
+  gateway?: { modelsCalled: number; networkRequests: number; fallbackRefused: number };
   /**
    * Lot 99C : représentation temporelle des factures périodiques (contrat
    * `t3-naming-period-v1`) — appels, décisions acceptées / refusées, titres
@@ -616,6 +633,39 @@ async function scanStep(accountId: number, mp: MarkerProgress, c: {
   return out;
 }
 
+/** Lot 109J : cumul des décomptes passerelle des appels en échec (pure). */
+function noteGatewayStats(res: DocumentNamingPhaseResult, st: GatewayCallStats | null): void {
+  if (!st) return;
+  const g = (res.gateway ??= { modelsCalled: 0, networkRequests: 0, fallbackRefused: 0 });
+  g.modelsCalled += st.modelsCalled;
+  g.networkRequests += st.networkRequests;
+  g.fallbackRefused += st.fallbackRefused;
+}
+
+/** Empreinte de l'anomalie BO d'un lot en échec persistant. */
+const namingAnomalyFingerprint = async (accountId: number, key: string) =>
+  (await import('@/services/admin/anomaly.service')).buildFingerprint('ai', 't3-document-naming', accountId, key);
+
+/**
+ * Lot 109J — échec PERSISTANT d'un lot (≥ `NAMING_PERSISTENT_FAILURE_ATTEMPTS`
+ * tentatives) : anomalie BO consolidée (domaine IA), résolue automatiquement
+ * quand le lot aboutit. Jamais avant : un échec isolé est repris en silence.
+ * Ne lève pas.
+ */
+async function notePersistentFailure(res: DocumentNamingPhaseResult, rec: NamingRecorder, accountId: number, key: string, attempts: number, motif: string, retryAt: string): Promise<void> {
+  res.persistentFailures = (res.persistentFailures ?? 0) + 1;
+  rec.steps.push({ step: `ECHEC PERSISTANT ${key}`, status: 'FAILED', error: motif.slice(0, 200), detail: { attempts, nextRetryAt: retryAt } });
+  console.error(`[t3-naming] NAMING_PERSISTENT_FAILURE compte ${accountId}, lot ${key} : ${attempts} tentative(s), prochaine ${retryAt}`);
+  try {
+    const { reportAnomaly } = await import('@/services/admin/anomaly.service');
+    await reportAnomaly({
+      domain: 'ai', fingerprint: await namingAnomalyFingerprint(accountId, key), accountId,
+      title: 'T3 — harmonisation documentaire : lot en échec persistant',
+      detail: { code: 'NAMING_PERSISTENT_FAILURE', groupKey: key, attempts, nextRetryAt: retryAt, cause: motif.slice(0, 300) },
+    });
+  } catch { /* supervision : jamais bloquante */ }
+}
+
 interface ExamCtx {
   repo: typeof import('./repository');
   rec: NamingRecorder;
@@ -805,11 +855,14 @@ async function examineDueGroups(accountId: number, items: Item[], p: {
       res.errors++;
       const motif = (e as Error).message?.slice(0, 300) ?? 'erreur';
       rec.steps.push({ step: `LOT ${it.group.key}`, status: 'FAILED', error: motif });
-      rec.notExamined(it, 'AI_ERROR', `Erreur pendant l’examen du lot (${motif}) : repris dans 6 h`);
+      const n = (it.st?.attempts ?? 0) + 1;
+      const retryAt = new Date(now().getTime() + namingRetryDelayMs(n)).toISOString();
+      rec.notExamined(it, 'AI_ERROR', `Erreur pendant l’examen du lot (${motif}) : repris le ${retryAt} (tentative ${n})`);
+      if (n >= NAMING_PERSISTENT_FAILURE_ATTEMPTS) await notePersistentFailure(res, rec, accountId, it.group.key, n, motif, retryAt);
       await p.save({
         key: it.group.key, status: 'ERROR', fingerprint: it.st?.fingerprint ?? null, progress: it.st?.progress ?? null,
         snapshot: it.st?.snapshot ?? null, conventions: it.st?.conventions ?? it.inherited, promptVersion: prompt.version,
-        retryAfter: new Date(now().getTime() + 6 * HEURE).toISOString(), attempts: (it.st?.attempts ?? 0) + 1,
+        retryAfter: retryAt, attempts: n,
         documentCount: it.ids.length, lastError: motif, contextVersion: it.st?.contextVersion ?? null,
       }).catch(() => undefined);
       console.error(`[t3-naming] lot ${it.group.key} du compte ${accountId} en erreur :`, motif);
@@ -936,8 +989,27 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
       } });
     }
   }
-  const cibles = reviewTargets(g.docs, it.st?.snapshot ?? null, c.maxDocs).filter((d) => !examines.has(d.id));
-  const chunks = planChunks(g.docs, cibles, c.maxDocs);
+  let cibles = reviewTargets(g.docs, it.st?.snapshot ?? null, c.maxDocs).filter((d) => !examines.has(d.id));
+  // Lot 109J — préfiltre DÉTERMINISTE : familles dont tous les titres suivent
+  // déjà une même forme — aucun appel IA pour elles (références seulement).
+  const pre = conformantFamilies(g.docs, (d) => c.repo.deriveNameOrigin(d, traces.get(d.id)));
+  if (pre.conformant.size) {
+    const avant = cibles.length;
+    cibles = cibles.filter((d) => !pre.conformant.has(d.id));
+    if (avant > cibles.length) {
+      res.documentsPrefiltered = (res.documentsPrefiltered ?? 0) + (avant - cibles.length);
+      rec.steps.push({ step: `PREFILTRE ${g.key}`, status: 'OK', error: null, detail: {
+        skipped: avant - cibles.length, remainingToExamine: cibles.length,
+        families: pre.families.map((f) => ({ documentIds: f.ids, shape: f.shape })).slice(0, 20),
+      } });
+    }
+  }
+  // Lot 109J — taille d'appel ADAPTATIVE : plafond configuré, budget de sortie,
+  // et réduction mémorisée après une sortie tronquée (jamais l'appel identique).
+  const budget = namingBudget();
+  const memo = it.st?.progress?.chunkDocs;
+  let taille = Math.max(NAMING_MIN_CHUNK_DOCS, Math.min(c.maxDocs, maxTargetsForOutput(budget), typeof memo === 'number' && memo > 0 ? memo : c.maxDocs));
+  let chunks = planFamilyChunks(g.docs, cibles, taille);
   // Noms en mémoire, mis à jour au fil des écritures confirmées (empreinte finale).
   const courants = new Map<number, NamingDoc>(g.docs.map((d) => [d.id, d]));
   let examineQuelqueChose = false;
@@ -947,14 +1019,24 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
 
   const etatEnCours = (status: GroupState['status'], extra: Partial<SaveGroupState> = {}): SaveGroupState => ({
     key: g.key, status, fingerprint: it.st?.fingerprint ?? null,
-    progress: { nextChunk: 0, chunks: chunks.length, examined: [...examines], startedAt, ctx: { ...ctx } } satisfies GroupProgress,
+    progress: { nextChunk: 0, chunks: chunks.length, examined: [...examines], startedAt, ctx: { ...ctx }, ...(taille < c.maxDocs ? { chunkDocs: taille } : {}) } satisfies GroupProgress,
     snapshot: it.st?.snapshot ?? null, conventions, promptVersion: c.prompt.version, retryAfter: null,
     attempts: it.st?.attempts ?? 0, documentCount: g.docs.length, contextVersion: versionEnCours,
     lastError: null, ...extra,
   });
   const sauver = (status: GroupState['status'], extra: Partial<SaveGroupState> = {}) => c.save(etatEnCours(status, extra));
 
-  for (const chunk of chunks) {
+  let idx = 0;
+  /** Re-partition des documents restant à examiner (taille réduite), progression conservée. */
+  const replanifier = (nouvelle: number, cause: string, depuis: number) => {
+    rec.steps.push({ step: `REPARTITION ${g.key}`, status: 'OK', error: null, detail: { cause, fromDocs: depuis, toDocs: nouvelle } });
+    res.repartitions = (res.repartitions ?? 0) + 1;
+    taille = nouvelle;
+    chunks = planFamilyChunks([...courants.values()], cibles.filter((d) => !examines.has(d.id)), taille);
+    idx = 0;
+  };
+  while (idx < chunks.length) {
+    const chunk = chunks[idx];
     const cap = c.plafond();
     if (cap) {
       // Reprise exacte (documents déjà examinés conservés), datée au plafond journalier.
@@ -979,29 +1061,57 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
       group: { key: g.key, docs: [...courants.values()] }, chunk: { ...chunk, targets: chunk.targets.map((d) => courants.get(d.id) ?? d), references: chunk.references.map((d) => courants.get(d.id) ?? d) },
       conventions, states: etats, details, maxLength: NAMING_MAX_LENGTH,
     });
+    // Lot 109J — budget d'ENTRÉE : un appel estimé hors budget est redécoupé avant envoi.
+    const estimation = estimatePromptTokens(variables, budget);
+    if (estimation > budget.inputTokens && appel.length > NAMING_MIN_CHUNK_DOCS) {
+      const r = reducedChunkSize(Math.min(taille, appel.length));
+      if (r !== null && r < taille) { replanifier(r, `INPUT_BUDGET ${estimation}>${budget.inputTokens}`, appel.length); continue; }
+    }
     res.aiCalls++;
     let sortie: NamingCallResult;
     try {
       sortie = await c.callModel({ accountId, sourceIds: appel.map((d) => d.id).sort((a, b) => a - b), variables });
     } catch (e) {
       if (isExecutionCancelled(e)) throw e;
-      const { isAiGatewayError } = await import('../../gateway/errors');
+      const { isAiGatewayError, gatewayFailureFacts } = await import('../../gateway/errors');
       const code = isAiGatewayError(e) ? e.code : 'UNKNOWN';
-      const motif = `${code} : ${((e as Error).message ?? '').slice(0, 200)}`;
+      const faits = gatewayFailureFacts(e);
+      noteGatewayStats(res, faits.stats);
+      const motif = `${code}${faits.cause ? ` (${faits.cause})` : ''} : ${((e as Error).message ?? '').slice(0, 200)}`;
       if (code === 'MASTER_PROMPT_INVALID') {
         await sauver('PROMPT_UNAVAILABLE', { lastError: motif });
         rec.notExamined(it, 'PROMPT_WITHOUT_DOCUMENT_NAMING', `Prompt T3 refusé par la passerelle (${motif}) : aucun renommage`);
         res.deferred++;
         return;
       }
-      const delai = code === 'COST_CAP_REACHED' ? 24 * HEURE : code === 'AI_BLOCKED' ? HEURE : 6 * HEURE;
+      rec.steps.push({ step: `APPEL ${g.key} ${chunk.index + 1}/${chunk.count}`, status: 'FAILED', error: motif, detail: {
+        toExamine: chunk.targets.map((d) => d.id), references: chunk.references.map((d) => d.id), estimatedInputTokens: estimation,
+        cause: faits.cause, ...(faits.stats ? { gateway: faits.stats } : {}),
+      } });
+      // Lot 109J — sortie TRONQUÉE / contexte trop grand : jamais le même appel
+      // rejoué — lot réduit et rejoué (dans les plafonds), sinon taille réduite
+      // mémorisée pour la reprise.
+      if (faits.cause === 'OUTPUT_TRUNCATED' || faits.cause === 'MODEL_LIMIT') {
+        const r = reducedChunkSize(appel.length);
+        if (r !== null) {
+          if (!c.plafond()) { replanifier(r, faits.cause, appel.length); continue; }
+          taille = r;
+          await sauver('IN_PROGRESS', { lastError: `${faits.cause} : lots réduits à ${r} document(s)` });
+          res.deferred++;
+          rec.notExamined(it, 'REPARTITION_PENDING', `${faits.cause} : lot redécoupé (${r} document(s) par appel), repris au passage suivant`);
+          if (examineQuelqueChose) res.groupsExamined++;
+          return;
+        }
+      }
       const reporte = code === 'COST_CAP_REACHED' || code === 'AI_BLOCKED';
-      await sauver(reporte ? 'DEFERRED' : 'ERROR', {
-        retryAfter: new Date(c.now().getTime() + delai).toISOString(), lastError: motif, attempts: (it.st?.attempts ?? 0) + (reporte ? 0 : 1),
-      });
+      const n = (it.st?.attempts ?? 0) + (reporte ? 0 : 1);
+      // Reprise BORNÉE et croissante (30 min, 1 h, 2 h… 24 h au plus) ; plafond de coût : 24 h ; arrêt d'urgence : 1 h.
+      const delai = code === 'COST_CAP_REACHED' ? 24 * HEURE : code === 'AI_BLOCKED' ? HEURE : namingRetryDelayMs(n);
+      const retryAt = new Date(c.now().getTime() + delai).toISOString();
+      await sauver(reporte ? 'DEFERRED' : 'ERROR', { retryAfter: retryAt, lastError: motif, attempts: n });
       if (reporte) res.deferred++; else res.errors++;
-      rec.steps.push({ step: `APPEL ${g.key} ${chunk.index + 1}/${chunk.count}`, status: 'FAILED', error: motif });
-      rec.notExamined(it, reporte ? String(code) : 'AI_ERROR', `Appel IA impossible (${motif}) : lot repris plus tard, aucun renommage`);
+      if (!reporte && n >= NAMING_PERSISTENT_FAILURE_ATTEMPTS) await notePersistentFailure(res, rec, accountId, g.key, n, motif, retryAt);
+      rec.notExamined(it, reporte ? String(code) : 'AI_ERROR', `Appel IA impossible (${motif}) : lot repris le ${retryAt} (tentative ${n}), aucun renommage`);
       if (examineQuelqueChose) res.groupsExamined++;
       return;
     }
@@ -1075,6 +1185,7 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
     echecs += await applyDecisions(accountId, jugement.accepted, persistees, { it, courants, traces, c });
     // Noms écrits par cet examen : empreinte examinée à jour (aucune réinscription à la reprise).
     for (const d of chunk.targets) ctx[String(d.id)] = examinedContextHash(courants.get(d.id) ?? d);
+    idx++;
   }
 
   // Examen IA terminé. Écritures restantes lues en BASE, tous passages confondus (C1) :
@@ -1094,7 +1205,17 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
   await c.save(final);
   if (upgradeFait) res.upgrade!.reviewed++;
   res.groupsExamined++;
-  if (restantes === 0) { res.groupsCompleted++; return; }
+  if (restantes === 0) {
+    res.groupsCompleted++;
+    // Lot 109J : un lot qui avait atteint l'échec persistant aboutit — anomalie BO résolue.
+    if ((it.st?.attempts ?? 0) >= NAMING_PERSISTENT_FAILURE_ATTEMPTS - 1) {
+      try {
+        const { autoResolveAnomaly } = await import('@/services/admin/anomaly.service');
+        await autoResolveAnomaly(await namingAnomalyFingerprint(accountId, g.key), { origin: 't3_document_naming_group_done' });
+      } catch { /* supervision : jamais bloquante */ }
+    }
+    return;
+  }
   if (echecs === 0) {
     // Décisions d'un passage antérieur (ou d'une interruption) : reprises tout de suite, sans appel IA.
     if (c.guard) await c.guard.assertActive(`T3 harmonisation documentaire — reprise d’écriture ${g.key}`);

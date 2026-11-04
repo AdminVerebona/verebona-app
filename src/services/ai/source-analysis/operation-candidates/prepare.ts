@@ -39,6 +39,12 @@
  *     elle seule (C2 : « probable seulement pour enrichir ») ;
  *   · devis / commande : coût PRÉVU seulement, jamais REALIZED ;
  *   · avoir : réduction ; facture d'acompte : portée DEPOSIT ;
+ *   · lot 109D : sur une pièce de transaction (commande, facture), une
+ *     remise / un code promo n'est JAMAIS un avoir ni un remboursement : un
+ *     candidat qui ne porte qu'une remise est rattaché à l'unique achat du
+ *     document (sa remise rejoint cet achat) et n'est pas établi ; plusieurs
+ *     achats → remise non ventilée, candidat non établi (règle commune
+ *     `finance/commercial-adjustments`) ;
  *   · indice financier sans fait localisable → retiré (T1-OP-004) ;
  *   · cible : identifiant non vérifié en base → null (U9) ; pièce /
  *     équipement hors capacités du compte → retirée (U7) ;
@@ -50,6 +56,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { currenciesNextToAmount, detectDocumentCurrency, isCurrencyEstablished, UNDETERMINED_CURRENCY } from '@/lib/document-currency';
+import { planDocumentAdjustments } from '@/services/business-operations/finance/commercial-adjustments';
 import { factFingerprint } from '../source-units/merge';
 import { plat } from '../source-units/text';
 import {
@@ -347,11 +354,39 @@ export function gateOperationCandidates(
     });
 
     if (!c.established && !c.exclusionReason) { omitted++; continue; }
-    c.adjustments = [...new Set(c.adjustments)];
     out.push(c);
   }
+  integrateCommercialAdjustments(out);
+  for (const c of out) c.adjustments = [...new Set(c.adjustments)];
   const truncated = Math.max(0, out.length - T1_MAX_OPERATION_CANDIDATES);
   return { candidates: out.slice(0, T1_MAX_OPERATION_CANDIDATES), omitted, truncated };
+}
+
+/**
+ * Lot 109D — remises d'une pièce de transaction (EN PLACE, pure sur les
+ * candidats de la sortie) : jamais de candidat avoir / remboursement établi
+ * depuis le simple montant négatif d'une commande ou d'une facture. Même
+ * plan que le TCO et T3 (`planDocumentAdjustments`).
+ */
+function integrateCommercialAdjustments(cands: AnchoredOperationCandidate[]): void {
+  const etablis = cands.map((c, id) => ({ c, id })).filter((x) => x.c.established);
+  const plan = planDocumentAdjustments(etablis.map(({ c, id }) => ({ id, sourceRole: c.sourceRoleHint, statusHint: c.statusHint, hints: c.financialHints })));
+  if (!plan.costBearing) return;
+  for (const p of plan.purchases) if (p.parts.some((x) => x.part === 'DISCOUNT')) cands[p.candidateId].adjustments.push('COMMERCIAL_ADJUSTMENT_INTEGRATED');
+  for (const id of plan.adjustmentOnlyCandidates) {
+    const c = cands[id];
+    const achat = plan.purchases.find((p) => p.parts.some((x) => x.candidateId === id && x.part === 'DISCOUNT'));
+    if (achat) {
+      // Remise rejointe à l'unique achat du document (preuve conservée : fait porteur cité par l'achat).
+      const cible = cands[achat.candidateId];
+      for (const h of c.financialHints.filter((x) => x.role === 'REDUCTION' || x.role === 'REFUND')) {
+        if (!cible.financialHints.some((x) => x.role === h.role && x.amountMinor === h.amountMinor && x.factRef === h.factRef)) cible.financialHints.push({ ...h });
+        if (!cible.evidenceFactRefs.includes(h.factRef)) cible.evidenceFactRefs.push(h.factRef);
+      }
+      cible.adjustments.push('COMMERCIAL_ADJUSTMENT_MERGED');
+    }
+    exclure(c, 'UNQUALIFIED_AMOUNT', achat ? 'COMMERCIAL_ADJUSTMENT_NOT_A_CREDIT' : 'GLOBAL_DISCOUNT_NOT_ALLOCATED');
+  }
 }
 
 // ── Lot 53D : devise et nature des montants (retours PO D2, Q16) ───────────

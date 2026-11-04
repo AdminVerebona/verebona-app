@@ -176,6 +176,26 @@ export async function analyseGroupWithMaster(
     console.info(`[t1-operation-candidates] fichier ${input.sourceIds[groupIndices[0]]} : ${gate.candidates.length} candidat(s) retenu(s), `
       + `${gate.omitted} non établi(s) sans motif omis, ${gate.truncated} au-delà de 20.`);
   }
+  // Lot 109K (COR-02) : faits apportés par la réparation ciblée de CETTE analyse — réévaluation déterministe des
+  // candidats (même barrière) AVANT leur persistance ; jamais un candidat créé, jamais une contribution écrasée.
+  if (draft && draft.repairFacts.size > 0 && gate.candidates.length > 0) {
+    const { enrichCandidatesWithRepairFacts } = await import('../operation-candidates/repair-propagation');
+    const repares = new Set(draft.repairFacts);
+    const caps = analysed.extraction?.capabilities ?? ctx.capabilities;
+    const enrichi = enrichCandidatesWithRepairFacts(gate.candidates, {
+      baseFacts: (a.facts as T1FactWithRef[]).filter((f) => !repares.has(f)),
+      repairFacts: (a.facts as T1FactWithRef[]).filter((f) => repares.has(f) && f.t1FactRef),
+      gate: {
+        documentTypeCode: a.document.classification?.documentTypeCode ?? null, verifiedIds: analysed.verifiedIds,
+        capabilities: { rooms: caps?.rooms ?? false, equipments: caps?.equipments ?? false },
+      },
+    });
+    gate.candidates = enrichi.candidates;
+    if (enrichi.report.length) {
+      console.info(`[t1-repair-propagation] fichier ${input.sourceIds[groupIndices[0]]} : ${enrichi.report.length} candidat(s) enrichi(s) par la réparation `
+        + `(${enrichi.categories.join(',')}) — ${enrichi.report.map((r) => `${r.candidateKey}: ${r.changes.join(',')}`).join(' ; ')}`.slice(0, 1_000));
+    }
+  }
 
   // Lot 91D : décisions sur les valeurs significatives — exploitées SEULEMENT si le prompt T1 effectif porte le
   // contrat (marqueur) et que la version qui a répondu est bien celle-là ; validées contre les unités de la source.

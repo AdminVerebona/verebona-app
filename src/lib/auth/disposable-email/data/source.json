@@ -1,0 +1,14 @@
+{
+  "schema": "verebona-disposable-domains/1",
+  "name": "disposable-email-domains",
+  "repository": "https://github.com/disposable-email-domains/disposable-email-domains",
+  "file": "disposable_email_blocklist.conf",
+  "license": "CC0-1.0",
+  "licenseFile": "LICENSE-disposable-email-domains.txt",
+  "ref": "fe48a3092fd7749893732f1c089730acccd78817",
+  "version": "dea-fe48a30",
+  "fetchedAt": "2026-11-04T09:21:16.148Z",
+  "count": 10123,
+  "sha256": "8ac12e714144d8a89e20a8e6f3baaf5063001c0ac14d77aaea7f182e298c3c36",
+  "updateCommand": "npm run disposable-domains:update -- --ref fe48a3092fd7749893732f1c089730acccd78817"
+}

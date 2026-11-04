@@ -113,7 +113,7 @@ export const GROUPING_LABELS = {
   makeMain: 'En faire l’événement de référence',
   releaseMain: 'Ne plus en faire l’événement de référence',
   releaseTitle: 'Ne plus en faire l’événement de référence ?',
-  releaseBody: 'Les éléments, documents, biens, pièces et équipements restent reliés entre eux : rien n’est supprimé. Verebona ne rétablira pas cet événement de référence de lui-même ; vous pourrez en désigner un autre à tout moment.',
+  releaseBody: 'Les événements, documents, biens, pièces et équipements restent reliés entre eux : rien n’est supprimé. Verebona ne rétablira pas cet événement de référence de lui-même ; vous pourrez en désigner un autre à tout moment.',
   leave: 'Retirer de cet ensemble',
   withdrawnNote: 'Aucun événement de référence : vous l’avez retiré.',
   categories: {
@@ -190,6 +190,57 @@ export const GROUPING_LABELS = {
   detachItemFromDocument: (title: string) => `Retirer l’association avec « ${title} »`,
   removeFromEnsemble: (title: string) => `Retirer « ${title} » de l’ensemble`,
   detachedToast: 'Association retirée. Le document reste disponible dans vos documents.',
+} as const;
+
+/**
+ * Lot 109I (ticket « Vocabulaire événement », extension du #614) — libellés
+ * VISIBLES d'une entrée de l'Agenda hors du tiroir de regroupement : fiches
+ * (équipement, fournisseur, bien, document), Agenda, création, recherche,
+ * transfert, Duo, Assistant, erreurs.
+ *
+ * Convention : « événement » est le terme générique visible d'une entrée de
+ * l'Agenda ; « élément (de l')agenda », « élément d'agenda », « agenda
+ * associé » et « événement d'agenda » ne sont plus affichés. « Agenda » reste
+ * le nom du module (« Mon agenda », « Associer à l'agenda ») ; échéance,
+ * rendez-vous, contrôle… restent des types précis. Les termes déjà validés
+ * dans GROUPING_LABELS sont REPRIS (aucune seconde convention). Les anciens
+ * termes restent compris par la recherche et l'Assistant (synonymes).
+ */
+export const AGENDA_EVENT_LABELS = {
+  event: 'Événement',
+  events: 'Événements',
+  /** Rubrique d'une fiche (équipement, fournisseur…) : événements reliés à CETTE entité. */
+  linkedEvents: GROUPING_LABELS.sectionLinked,
+  noLinkedEvent: GROUPING_LABELS.emptyLinkedEvents,
+  supplierNoLinkedEvent: 'Aucun événement n’est associé à ce fournisseur.',
+  searchEvent: GROUPING_LABELS.pickerSearch.elements,
+  noEvent: 'Aucun événement',
+  noEventYet: 'Aucun événement pour le moment',
+  createFirst: 'Créez votre premier événement',
+  addFirst: 'Ajoutez votre premier événement pour commencer',
+  addFirstAction: 'Ajouter mon premier événement',
+  add: 'Ajouter un événement',
+  create: GROUPING_LABELS.createAgendaItem,
+  newEvent: 'Nouvel événement',
+  titlePlaceholder: 'Titre de l’événement',
+  edit: 'Modifier l’événement',
+  createdToast: 'Événement créé',
+  deletedToast: 'Événement supprimé',
+  deleteTitle: 'Supprimer cet événement ?',
+  deleteBody: 'Cette action est définitive et irréversible. L’événement sera supprimé de votre agenda.',
+  noAssetHint: 'Sans bien associé, cet événement apparaîtra dans « À traiter ».',
+  seeAll: 'Voir tous les événements',
+  /** Fiche document : propositions d'événements détectées (chaque ligne ouvre la création prérenseignée). */
+  suggested: 'Événements suggérés',
+  suggestedFeature: 'Suggestions d’événements et d’équipements',
+  suppliersLoadFailed: 'Les fournisseurs de cet événement n’ont pas pu être chargés.',
+  notFound: 'Événement introuvable.',
+  notFoundInAccount: 'Événement introuvable dans le compte.',
+  invalid: 'Événement invalide.',
+  /** « 3 événements », « aucun événement » (minuscule : milieu de phrase). */
+  count: (n: number) => (n === 0 ? 'aucun événement' : `${n} ${n > 1 ? 'événements' : 'événement'}`),
+  /** Décompte d'en-tête (« 0 événement », « 4 événements »). */
+  total: (n: number) => `${n} ${n > 1 ? 'événements' : 'événement'}`,
 } as const;
 
 /** Lot 103D : message de confirmation d'un geste réussi du tiroir (pur). */

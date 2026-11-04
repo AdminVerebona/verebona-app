@@ -9,6 +9,7 @@
  */
 import type { DrawerTarget } from '@/lib/drawers';
 import { LOCAL_SEARCH_PARAM, localSearchHref, normalizeLocalQuery } from '@/lib/search/local-search';
+import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
 export interface LiveResult {
   id: string;
@@ -183,7 +184,7 @@ export function seeAllLinks(q: string, rows: ApiSearchRow[] | null | undefined, 
   } else if (cats.has('Document')) {
     out.push({ id: 'voir-documents', label: SEE_ALL_DOCUMENTS_LABEL, href, ...(documents.status === 'loading' ? { pending: true as const } : {}) });
   }
-  if (cats.has('Agenda')) out.push({ id: 'voir-agenda', label: 'Voir tous les éléments d’agenda', href: localSearchHref('agenda', saisie) });
+  if (cats.has('Agenda')) out.push({ id: 'voir-agenda', label: AGENDA_EVENT_LABELS.seeAll, href: localSearchHref('agenda', saisie) });
   return out;
 }
 

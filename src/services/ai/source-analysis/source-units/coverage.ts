@@ -340,7 +340,8 @@ export interface ReportInput {
    * Lot 49B (DEV-01) : vérification de la source. Absente : non contrôlée
    * (appel direct) — l'état n'est pas dégradé.
    */
-  verification?: Pick<SourceVerification, 'status' | 'reason' | 'pagesExpected' | 'verified' | 'missing' | 'unverified' | 'scanned'> & { reread?: number[]; citedUnverified?: number[] } | null;
+  verification?: Pick<SourceVerification, 'status' | 'reason' | 'pagesExpected' | 'verified' | 'missing' | 'unverified' | 'scanned'> & { reread?: number[]; citedUnverified?: number[] }
+    & Partial<Pick<SourceVerification, 'pageDetails' | 'verifierVersion' | 'textLayer'>> | null;
   /** Lot 49B (DEV-03) : réductions comptées, originaux conservés, pertes non compensées ; lot 54G : champs retirés. */
   normalisation?: { truncations: number; originalsPreserved: number; losses: number; prunedFields?: number; prunedOriginalsPreserved?: number };
   /** Lot 54G (point 2) : relectures du fichier (cumul du document). */
@@ -453,6 +454,10 @@ export function buildCompletenessReport(units: readonly CoveredSourceUnit[], p: 
       prunedOriginalsPreserved: p.normalisation?.prunedOriginalsPreserved ?? 0,
       tablesUncertain: tablesIncertains,
       tablesResolved: units.filter((u) => u.kind === 'TABLE' && u.status === 'COVERED' && u.reason === 'table_verified').length,
+      // Lot 109K (COR-01) : verdict par page (statut, méthode, motif), version des règles, couche texte utilisée.
+      ...(v?.pageDetails ? { pageDetails: v.pageDetails } : {}),
+      ...(v?.verifierVersion ? { verifierVersion: v.verifierVersion } : {}),
+      ...(v?.textLayer ? { textLayer: v.textLayer } : {}),
     },
   };
 }

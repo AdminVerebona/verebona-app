@@ -36,6 +36,21 @@ export async function registerNode(): Promise<void> {
     formatRuntimeLogLine(runtimeNode),
   );
 
+  // 00 bis. Lot 109H : rôle du processus (web / worker) et mesure mémoire.
+  //     `BACKGROUND_JOBS_PROCESS` absente → traitements de fond dans le
+  //     conteneur web, comme avant. Les abonnements aux événements restent
+  //     câblés partout ; seuls les planificateurs et files (étapes marquées
+  //     « fond ») sont réservés au processus qui porte les traitements.
+  const { processRoleSummary } = await import('@/lib/runtime/process-role');
+  const role = processRoleSummary();
+  console.info(`[process] ${JSON.stringify(role)}`);
+  const { startMemoryMonitor } = await import('@/lib/runtime/memory-monitor');
+  startMemoryMonitor({
+    processType: role.process,
+    onAlert: (s, ctx) => { void import('@/services/admin/memory-supervision').then((m) => m.reportMemoryPressure(s, ctx)).catch(() => undefined); },
+    onRecover: (s, ctx) => { void import('@/services/admin/memory-supervision').then((m) => m.resolveMemoryPressure(s, ctx)).catch(() => undefined); },
+  });
+
   // 0. Secrets de signature des liens envoyés par e-mail (vérification
   //    d'adresse, réinitialisation du mot de passe). En production, sans
   //    secret, ces fonctions LÈVENT : le démarrage échoue volontairement.
@@ -92,7 +107,8 @@ export async function registerNode(): Promise<void> {
   const { ensureMigrations, startIndexMaintenance } = await import('@/db');
   const { assertMigrationBootPolicy } = await import('@/db/migration-boot');
   assertMigrationBootPolicy(await ensureMigrations());
-  startIndexMaintenance();
+  // Fond (109H) : construction des index en arrière-plan.
+  if (role.backgroundJobs) startIndexMaintenance();
 
   // 1 bis. Lot 100C : runtime non corrigé → anomalie de Supervision ;
   //    corrigé → résolution automatique. Sans attente, ne lève jamais.
@@ -253,7 +269,8 @@ export async function registerNode(): Promise<void> {
   const { startAnalysisRecoveryScheduler } = await import(
     '@/services/document-ai/analysis-recovery-scheduler'
   );
-  startAnalysisRecoveryScheduler();
+  // Fond (109H) : étapes 6 à 9 bis réservées au processus des traitements.
+  if (role.backgroundJobs) startAnalysisRecoveryScheduler();
 
   //    Boucleur de la file IA (CDC BO IA GEN-004, NFR-003). Il ne porte aucun
   //    état : tout est en base, donc un redéploiement ne perd aucun travail.
@@ -267,7 +284,7 @@ export async function registerNode(): Promise<void> {
   registerSourceAnalysisHandler();
 
   const { startQueueWorker } = await import('@/services/ai/queue/queue-worker');
-  startQueueWorker();
+  if (role.backgroundJobs) startQueueWorker();
 
   // 7. Sauvegarde quotidienne de la base.
   //
@@ -277,7 +294,7 @@ export async function registerNode(): Promise<void> {
   const { startDatabaseBackupScheduler } = await import(
     '@/services/backup/database-backup-scheduler'
   );
-  startDatabaseBackupScheduler();
+  if (role.backgroundJobs) startDatabaseBackupScheduler();
 
   // 8. Tâches quotidiennes de maintenance — même modèle que la sauvegarde
   //    (fenêtre horaire à Paris, bail en base, une exécution par jour) :
@@ -288,7 +305,7 @@ export async function registerNode(): Promise<void> {
   const { startDailyMaintenanceScheduler } = await import(
     '@/services/scheduling/daily-maintenance-scheduler'
   );
-  startDailyMaintenanceScheduler();
+  if (role.backgroundJobs) startDailyMaintenanceScheduler();
 
   // 8 bis. Tâches planifiées internes (lot 25) — plus AUCUN planificateur
   //    externe : envoi des notifications (chaque minute), « À traiter »,
@@ -299,28 +316,38 @@ export async function registerNode(): Promise<void> {
   //    instances, dernière exécution (écran Exploitation). Arrêt d'urgence :
   //    SCHEDULED_TASKS_DISABLED=true ou SCHEDULED_TASK_<CODE>=off.
   const { startScheduledTasks } = await import('@/services/scheduling/scheduled-task-runner');
-  startScheduledTasks();
+  if (role.backgroundJobs) startScheduledTasks();
 
   // 9. Dossiers prêts à l'emploi V12 (CDC Exports V12 §15.3) : worker de la
   //    file durable `export_generation` (rendu HTML/CSS + Chromium, une
   //    génération à la fois par instance). EXPORTS_WORKER_DISABLED=true le
   //    retire de cette instance.
   const { startExportWorker } = await import('@/services/exports/v12/generation/worker');
-  startExportWorker();
+  if (role.backgroundJobs) startExportWorker();
 
   // 9 bis. Lot 107G : diagnostics BO DURABLES (file `admin_export_generations`,
   //    mode 'job') — bail, reprise après arrêt du processus, un diagnostic à
   //    la fois sur l'ensemble des instances. DIAG_JOB_WORKER_DISABLED=true le
   //    retire de cette instance.
   const { startDiagnosticWorker } = await import('@/services/admin/diagnostic-jobs/worker');
-  startDiagnosticWorker();
+  if (role.backgroundJobs) startDiagnosticWorker();
+
+  // 9 ter. Lot 109H : séparation activée (BACKGROUND_JOBS_PROCESS=worker) —
+  //     le conteneur web vérifie qu'un worker bat (sinon anomalie de
+  //     Supervision : plus rien ne tournerait en arrière-plan).
+  if (!role.backgroundJobs && role.process === 'web') {
+    const check = () => { void import('@/services/admin/memory-supervision').then((m) => m.checkBackgroundWorkerPresence()).catch(() => undefined); };
+    setTimeout(check, 3 * 60_000).unref?.();
+    setInterval(check, 5 * 60_000).unref?.();
+    console.info('[process] traitements de fond confiés au conteneur worker (BACKGROUND_JOBS_PROCESS=worker) : planificateurs et files non démarrés ici.');
+  }
 
   // 10. Lot 34G : corpus du Centre d'aide préchargé (sans bloquer le
   //     démarrage) — la première question d'aide ne paie pas le
   //     téléchargement, et l'environnement lu est journalisé : une
   //     préproduction branchée sur l'aide de production se voit au démarrage
   //     (HELP_CORPUS_WRONG_ENVIRONMENT), pas à la première question.
-  void import('@/services/verebona-assistant/core/help-corpus.service')
+  if (role.process === 'web') void import('@/services/verebona-assistant/core/help-corpus.service')
     .then((m) => m.warmHelpCorpus())
     .catch((e) => console.error('[startup] corpus du Centre d’aide non préchargé :', (e as Error).message));
 

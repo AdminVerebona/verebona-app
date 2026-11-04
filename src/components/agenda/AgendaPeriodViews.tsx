@@ -27,6 +27,7 @@ import { Calendar, List, CalendarRange, ChevronLeft, ChevronRight } from 'lucide
 import type { AgendaItemFull } from '@/services/agenda/AgendaQueryService';
 import { EFFECTIVE_STATUS_LABELS, type AgendaEffectiveStatus } from '@/lib/agenda/effective-status';
 import { NO_DEADLINE_LABEL } from '@/lib/agenda/no-deadline';
+import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
 // Lot 53 (D17) : cinq états distincts, libellés partagés (desktop et mobile : même ligne).
 type EffectiveStatus = AgendaEffectiveStatus;
@@ -284,7 +285,7 @@ export function MonthCardHeader({ monthLabel, monthKey, count, isCurrentMonth, o
   );
   const layout = 'px-4 pt-4 pb-3 flex items-center justify-between border-b border-border/40';
   if (!onOpenMonth) return <div className={layout}>{content}</div>;
-  const n = count === 0 ? 'aucun élément' : `${count} élément${count > 1 ? 's' : ''}`;
+  const n = AGENDA_EVENT_LABELS.count(count);
   return (
     <button
       type="button"

@@ -40,6 +40,7 @@ import {
   type AgendaSupplierEvidence, type AgendaSupplierProvenance, type AgendaSupplierSyncPlan, type AgendaSuppliersPayload,
 } from '@/lib/agenda/agenda-suppliers-rules';
 import { assessMatch, findCandidates, normalizeName, type SupplierQueryRunner } from '@/services/suppliers/supplier-service';
+import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
 type Row = Record<string, unknown>;
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -159,7 +160,7 @@ export async function resolveSupplierForUser(
   if (decision === 'certain') return { supplierId: candidats[0].id, outcome: 'reused' };
   const [cree] = await tx.insert(suppliers).values({
     accountId: p.accountId, createdByUserId: p.userId, name: nom, normalizedName,
-    source: 'manual', contactStatus: 'unverified', status: 'active', createdAt: new Date(), updatedAt: new Date(),
+    source: 'manual', status: 'active', createdAt: new Date(), updatedAt: new Date(),
   }).returning({ id: suppliers.id });
   if (decision === 'uncertain' && !p.confirmNew) {
     await tx.insert(supplierReviewItems).values({
@@ -260,7 +261,7 @@ export async function applyAgendaItemSuppliers(p: {
   const correlationId = p.correlationId ?? `agenda-suppliers:user:${p.itemId}`;
   return db.transaction(async (tx) => {
     const [item] = await rows(tx, sql`SELECT id FROM agenda_items WHERE id = ${p.itemId} AND account_id = ${p.accountId} FOR UPDATE`);
-    if (!item) throw new AgendaSupplierError('ITEM_NOT_FOUND', 'Élément introuvable.');
+    if (!item) throw new AgendaSupplierError('ITEM_NOT_FOUND', AGENDA_EVENT_LABELS.notFound);
     const voulus = new Set(p.payload.supplierIds);
     const created: ApplySuppliersResult['created'] = [];
     if (p.payload.newSuppliers.length) {
@@ -295,7 +296,7 @@ export async function applyAgendaItemSuppliers(p: {
 /** Association depuis la fiche fournisseur (même relation que depuis l'Agenda). */
 export async function linkSupplierByUser(p: { accountId: number; itemId: number; supplierId: number; actorUserId: number | null }): Promise<boolean> {
   return db.transaction(async (tx) => {
-    if (!(await itemInAccount(tx, p.accountId, p.itemId))) throw new AgendaSupplierError('ITEM_NOT_FOUND', 'Élément introuvable.');
+    if (!(await itemInAccount(tx, p.accountId, p.itemId))) throw new AgendaSupplierError('ITEM_NOT_FOUND', AGENDA_EVENT_LABELS.notFound);
     const [s] = await rows(tx, sql`SELECT id FROM suppliers WHERE id = ${p.supplierId} AND account_id = ${p.accountId} AND status = 'active'`);
     if (!s) throw new AgendaSupplierError('SUPPLIER_NOT_FOUND', 'Fournisseur introuvable.');
     return lierParUtilisateur(tx, p.accountId, p.itemId, p.supplierId, p.actorUserId, `agenda-suppliers:supplier-page:${p.supplierId}`);
@@ -305,7 +306,7 @@ export async function linkSupplierByUser(p: { accountId: number; itemId: number;
 /** Dissociation depuis la fiche fournisseur : aucune entité supprimée ; retrait mémorisé. */
 export async function unlinkSupplierByUser(p: { accountId: number; itemId: number; supplierId: number; actorUserId: number | null }): Promise<boolean> {
   return db.transaction(async (tx) => {
-    if (!(await itemInAccount(tx, p.accountId, p.itemId))) throw new AgendaSupplierError('ITEM_NOT_FOUND', 'Élément introuvable.');
+    if (!(await itemInAccount(tx, p.accountId, p.itemId))) throw new AgendaSupplierError('ITEM_NOT_FOUND', AGENDA_EVENT_LABELS.notFound);
     const [s] = await rows(tx, sql`SELECT id FROM suppliers WHERE id = ${p.supplierId} AND account_id = ${p.accountId}`);
     if (!s) throw new AgendaSupplierError('SUPPLIER_NOT_FOUND', 'Fournisseur introuvable.');
     return retirerParUtilisateur(tx, p.accountId, p.itemId, p.supplierId, p.actorUserId, `agenda-suppliers:supplier-page:${p.supplierId}`);

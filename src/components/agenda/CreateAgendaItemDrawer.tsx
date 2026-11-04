@@ -35,6 +35,7 @@ import { NoDeadlineField } from "@/components/agenda/NoDeadlineField";
 // Lot 103E : « Fournisseur / intervenant » (facultatif) — composant dédié.
 import { AgendaSuppliersField, EMPTY_SUPPLIERS_SELECTION, suppliersPayload, type AgendaSuppliersSelection } from "@/components/agenda/AgendaSuppliersSection";
 import { toggleNoDeadline, withDateEntry, type AgendaDateFormState } from "@/lib/agenda/no-deadline";
+import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
 
 interface Asset {
   id: number;
@@ -280,7 +281,7 @@ export function CreateAgendaItemDrawer({
         // Lot 103E : sélection vide → champ absent (aucune contrainte, aucun lien).
         ...(suppliers.selected.length || suppliers.pending.length ? { suppliers: suppliersPayload(suppliers) } : {}),
       });
-      toast.success("Élément créé");
+      toast.success(AGENDA_EVENT_LABELS.createdToast);
       if (created?.suppliers && created.suppliers.ok === false) toast.error(created.suppliers.error ?? "Les fournisseurs n’ont pas pu être associés.");
       if (onCreated && typeof created?.item?.id === "number") await onCreated(created.item.id);
       window.dispatchEvent(new CustomEvent('agenda-mutated'));
@@ -305,7 +306,7 @@ export function CreateAgendaItemDrawer({
       <SheetContent className="w-full sm:max-w-[480px] overflow-y-auto">
         <div className="px-6">
           <SheetHeader>
-            <SheetTitle>Nouvel élément d'agenda</SheetTitle>
+            <SheetTitle>{AGENDA_EVENT_LABELS.newEvent}</SheetTitle>
           </SheetHeader>
 
           <div className="mt-6 space-y-5">
@@ -313,7 +314,7 @@ export function CreateAgendaItemDrawer({
             {!hasContext && (
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Info className="h-3.5 w-3.5 shrink-0" />
-                Sans bien associé, cet élément apparaîtra dans « À traiter ».
+                {AGENDA_EVENT_LABELS.noAssetHint}
               </p>
             )}
 
@@ -326,7 +327,7 @@ export function CreateAgendaItemDrawer({
                   setTitle(e.target.value);
                   setError(null);
                 }}
-                placeholder="Titre de l'élément"
+                placeholder={AGENDA_EVENT_LABELS.titlePlaceholder}
               />
             </div>
 

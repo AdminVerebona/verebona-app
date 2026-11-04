@@ -772,7 +772,7 @@ async function tryStructured(
         }
         const first = rows[0];
         const label = `votre ${terms.join(' ')}`;
-        const answer = formatDeadline(label, first.date, today) + (first.title && plain(first.title) !== plain(terms.join(' ')) ? ` Élément d’agenda : « ${first.title} ».` : '')
+        const answer = formatDeadline(label, first.date, today) + (first.title && plain(first.title) !== plain(terms.join(' ')) ? ` Événement : « ${first.title} ».` : '')
           + (first.forecast ? ' Cette date est prévisionnelle, calculée à partir de la récurrence : elle n’est pas encore confirmée.' : '');
         const sources = [agendaSource(first)];
         return { strategy: 'structured.deadline_of', answer, sources, claims: [claim('deadline', answer, sources, 'direct')], kind: 'exact' };

@@ -104,7 +104,7 @@ export async function cancelEmailChange(userId: number, reason = 'USER_CANCELLED
 
 export type RequestEmailChangeResult =
   | { ok: true; pending: PendingEmailChange; /** Usage interne et tests : jamais renvoyé au client. */ delivered: 'link' | 'in_use_notice' | 'in_use_throttled' | 'failed' }
-  | { ok: false; code: 'INVALID_EMAIL' | 'SAME_EMAIL' | 'RATE_LIMITED'; message: string; retryAfterSeconds?: number };
+  | { ok: false; code: 'INVALID_EMAIL' | 'SAME_EMAIL' | 'RATE_LIMITED' | 'DISPOSABLE_EMAIL_NOT_ALLOWED'; message: string; retryAfterSeconds?: number };
 
 /**
  * Enregistre la demande et envoie le lien (ou, adresse prise, l'information au
@@ -122,6 +122,14 @@ export async function requestEmailChange(input: {
   if (!me) throw new Error('USER_NOT_FOUND');
   if (normalizeEmail(me.email) === newEmail) {
     return { ok: false, code: 'SAME_EMAIL', message: 'C’est déjà l’adresse de votre compte.' };
+  }
+  // Lot 109F : pas de contournement par changement d'adresse. Avant le
+  // limiteur et toute lecture d'un autre compte : refus identique que
+  // l'adresse soit prise ou non ; aucune demande enregistrée, aucun e-mail.
+  {
+    const { checkDisposableEmail } = await import('@/services/auth/disposable-email-guard');
+    const refusal = checkDisposableEmail(newEmail, 'email_change_request');
+    if (refusal) return { ok: false, ...refusal };
   }
   if (authRateLimitEnabled()) {
     const d = await getAuthRateLimiter().consume([{ key: limitKey('email-change', 'user', String(input.userId)), policy: AUTH_LIMITS.emailChangeRequestUser }]);
@@ -196,7 +204,7 @@ export async function requestEmailChange(input: {
 
 export type ConfirmEmailChangeResult =
   | { ok: true; oldEmail: string; newEmail: string }
-  | { ok: false; code: 'INVALID_LINK' | 'LINK_EXPIRED' | 'LINK_USED' | 'WRONG_ACCOUNT' | 'ADDRESS_UNAVAILABLE'; message: string };
+  | { ok: false; code: 'INVALID_LINK' | 'LINK_EXPIRED' | 'LINK_USED' | 'WRONG_ACCOUNT' | 'ADDRESS_UNAVAILABLE' | 'DISPOSABLE_EMAIL_NOT_ALLOWED'; message: string };
 
 export const CONFIRM_MESSAGES = {
   INVALID_LINK: 'Ce lien n’est pas valable. Demandez un nouveau changement d’adresse depuis Mon compte › Sécurité.',
@@ -204,6 +212,8 @@ export const CONFIRM_MESSAGES = {
   LINK_USED: 'Ce lien a déjà été utilisé ou remplacé par une demande plus récente.',
   WRONG_ACCOUNT: 'Ce lien concerne un autre compte que celui avec lequel vous êtes connecté. Connectez-vous avec le bon compte, puis rouvrez le lien.',
   ADDRESS_UNAVAILABLE: 'Cette adresse ne peut pas être utilisée pour votre compte. Votre adresse n’a pas changé.',
+  // Lot 109F : message unique du refus « adresse jetable » (identique à DISPOSABLE_EMAIL_MESSAGE).
+  DISPOSABLE_EMAIL_NOT_ALLOWED: 'Les adresses e-mail temporaires ne sont pas acceptées. Utilisez une adresse e-mail que vous conservez.',
 } as const;
 
 /**
@@ -223,6 +233,17 @@ export async function confirmEmailChange(input: { userId: number; token: unknown
   if (Number(req.user_id) !== input.userId) return fail('WRONG_ACCOUNT');
   if (req.consumed_at || req.cancelled_at) return fail('LINK_USED');
   if (new Date(req.expires_at) <= now) return fail('LINK_EXPIRED');
+
+  // Lot 109F : domaine devenu jetable depuis la demande (ou demande d'avant le
+  // lot) → refus, demande annulée, adresse actuelle conservée. Avant la
+  // recherche d'un autre compte : réponse identique que l'adresse soit prise ou non.
+  {
+    const { checkDisposableEmail } = await import('@/services/auth/disposable-email-guard');
+    if (checkDisposableEmail(req.new_email, 'email_change_confirm')) {
+      await pgClient`UPDATE email_change_requests SET cancelled_at = ${now.toISOString()}, cancel_reason = 'DISPOSABLE_EMAIL' WHERE id = ${req.id} AND consumed_at IS NULL`;
+      return fail('DISPOSABLE_EMAIL_NOT_ALLOWED');
+    }
+  }
 
   // Adresse prise entre-temps par un AUTRE compte actif : refus, sans fusion ni transfert.
   const [taken] = await pgClient`SELECT 1 FROM users WHERE email = ${req.new_email} AND id <> ${input.userId} AND is_active = true LIMIT 1`;

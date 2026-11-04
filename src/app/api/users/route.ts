@@ -40,8 +40,9 @@ const VALID_PLAN_TYPES = ['STANDARD', 'PREMIUM', 'PREMIUM_DUO', 'PREMIUM_PRO'];
  *     un compte » au propriétaire de la boîte (au plus un par heure) ;
  *     journal SIGNUP_EXISTING_EMAIL.
  * Ordre des contrôles choisi pour qu'aucun refus ne dépende de l'existence
- * du compte : champs (dont « Prénom ou pseudo »), CGVU, mot de passe,
- * invitation — puis seulement l'adresse. Même coût bcrypt dans les deux cas ; l'e-mail
+ * du compte : champs (dont « Prénom ou pseudo »), CGVU, adresse jetable
+ * (lot 109F, domaine seul), mot de passe, invitation — puis seulement
+ * l'adresse. Même coût bcrypt dans les deux cas ; l'e-mail
  * part après la réponse dans les deux cas.
  *
  * Exception assumée : une INVITATION valide pour cette adresse (compte
@@ -229,6 +230,23 @@ export async function POST(request: NextRequest) {
     // Validate email format
     if (!email.includes('@')) {
       return NextResponse.json({ error: 'Invalid email format', code: 'INVALID_EMAIL_FORMAT' }, { status: 400 });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 109F — ADRESSE E-MAIL JETABLE (`services/auth/disposable-email-guard.ts`)
+    //
+    // Après les champs et les CGUV (lot 108L), AVANT toute lecture de compte,
+    // invitation consommée, insertion, essai ou e-mail : le refus ne dépend
+    // que du domaine, la réponse est donc identique que l'adresse ait un
+    // compte ou non (anti-énumération 53A). Les invitations (Duo, compte
+    // partagé, transmission) restent intactes.
+    // ══════════════════════════════════════════════════════════════════════
+    {
+      const { checkDisposableEmail } = await import('@/services/auth/disposable-email-guard');
+      const refusal = checkDisposableEmail(email, 'signup');
+      if (refusal) {
+        return NextResponse.json({ error: refusal.message, message: refusal.message, code: refusal.code, field: 'email' }, { status: 400 });
+      }
     }
 
     // ✅ OWASP ASVS: Validate password strength

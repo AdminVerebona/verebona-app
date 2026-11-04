@@ -893,5 +893,8 @@ export async function detachCrossAccountGroupingInTx(r: GroupingRunner, accountI
        FROM assets a
       WHERE a.id = l.asset_id AND l.account_id = ANY($1::int[]) AND a.account_id <> l.account_id AND l.active
      RETURNING l.id`, [comptes]);
+  // Lot 109A : liens Opération ↔ fournisseur devenus intercomptes (Opération déplacée, fiche restée) retirés, tracés.
+  const { detachCrossAccountOperationSuppliers } = await import('@/services/relations/operation-suppliers');
+  await detachCrossAccountOperationSuppliers(r, accountIds);
   return { agendaItems: items.length, documents: docs.length, rooms: rooms.length };
 }

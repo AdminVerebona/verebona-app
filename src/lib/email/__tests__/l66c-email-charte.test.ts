@@ -71,7 +71,8 @@ const PAIRS: Array<[string, string, string]> = [
   ...Object.entries(T.EMAIL_HTML_TEMPLATES_L66).map(([type, body]) => [`base ${type}`, fx.db[type].body, body] as [string, string, string]),
   ['défaut WELCOME', fx.defaults.WELCOME.body, DEFAULT_EMAIL_TEMPLATES.WELCOME.body],
   ['défaut PREMIUM_CONFIRMATION', fx.defaults.PREMIUM_CONFIRMATION.body, DEFAULT_EMAIL_TEMPLATES.PREMIUM_CONFIRMATION.body],
-  ['défaut DUO_INVITATION', fx.defaults.DUO_INVITATION.body, DEFAULT_EMAIL_TEMPLATES.DUO_INVITATION.body],
+  // Lot 109I (vocabulaire « événement ») : seule différence admise, « éléments d'agenda » → « événements ».
+  ['défaut DUO_INVITATION', fx.defaults.DUO_INVITATION.body.replace("documents et éléments d'agenda", 'documents et événements'), DEFAULT_EMAIL_TEMPLATES.DUO_INVITATION.body],
   // Lot 100G (E2) : le défaut TRIAL_CONFIRMATION annonçait un essai de 60 jours et un
   // passage automatique à 59 € — texte volontairement CORRIGÉ (essai de 7 jours, sans
   // prélèvement), contrôlé par `services/trial-lifecycle/__tests__/l100g-fin-essai.test.ts`.

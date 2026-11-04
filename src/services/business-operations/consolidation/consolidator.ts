@@ -81,6 +81,8 @@ import { computeProvenance, isDurableRelationType, type AttributeProvenance, typ
 import { rejectedSubjects } from '../grouping/decisions';
 import { runnerContext, structuralTargetAllowedFor, syncOperationRoomsFromT3 } from '../grouping/service';
 import { drizzleRunner } from '../grouping/runner';
+// Lot 109A : relation Opération ↔ fournisseur (preuves documentaires), écrite par T3 dans sa transaction.
+import { syncOperationSuppliers } from '@/services/relations/operation-suppliers';
 
 /**
  * Sources AGENDA actives dont l'élément n'existe plus dans le compte (lot
@@ -171,14 +173,15 @@ export class Changes {
 
 // ── Lecture du contexte (sous verrou, dans la transaction) ─────────────────
 
-interface FileRow { id: number; accountId: number; deleted: boolean; assetId: number | null; documentTypeCode: string | null }
+interface FileRow { id: number; accountId: number; deleted: boolean; assetId: number | null; documentTypeCode: string | null; amountCents?: number | null }
 
 async function loadFile(tx: DbTx, accountId: number, fileId: number): Promise<FileRow | null> {
-  const [f] = await rows<{ id: number; account_id: number; deleted: boolean; asset_id: number | null; document_type_code: string | null }>(tx, sql`
-    SELECT id, account_id, deleted_at IS NOT NULL AS deleted, COALESCE(asset_id, linked_asset_id) AS asset_id, document_type_code
+  const [f] = await rows<{ id: number; account_id: number; deleted: boolean; asset_id: number | null; document_type_code: string | null; amount_cents: number | string | null }>(tx, sql`
+    SELECT id, account_id, deleted_at IS NOT NULL AS deleted, COALESCE(asset_id, linked_asset_id) AS asset_id, document_type_code, amount_cents
       FROM asset_files WHERE id = ${fileId}`);
   if (!f || Number(f.account_id) !== accountId) return null;
-  return { id: Number(f.id), accountId: Number(f.account_id), deleted: f.deleted, assetId: num(f.asset_id), documentTypeCode: f.document_type_code };
+  // Lot 109D : montant TTC du document (réconciliation des achats composés, `finance/commercial-adjustments`).
+  return { id: Number(f.id), accountId: Number(f.account_id), deleted: f.deleted, assetId: num(f.asset_id), documentTypeCode: f.document_type_code, amountCents: num(f.amount_cents) };
 }
 
 interface CandidateRow extends CandidateRecord {
@@ -206,6 +209,24 @@ async function loadCandidates(tx: DbTx, accountId: number, fileId: number): Prom
 }
 
 /**
+ * Lot 109D : contexte DOCUMENTAIRE de l'identité d'un candidat — candidats actifs et établis du même document,
+ * montant TTC du document, date de référence (qualification des montants au niveau du document).
+ */
+function documentIdentityContext(file: FileRow | null, candidats: readonly CandidateRow[], today: string) {
+  return { documentCandidates: candidats.filter((x) => x.status === 'ACTIVE' && x.established), documentTotalMinor: file?.amountCents ?? null, today };
+}
+
+/** Lot 109D : candidats actifs d'un document, en LECTURE (aucun verrou) — contexte documentaire de l'identité. */
+async function loadActiveCandidatesRead(tx: DbTx, accountId: number, fileId: number): Promise<CandidateRow[]> {
+  const r = await rows<Row>(tx, sql`
+    SELECT ${CANDIDATE_COLUMNS}
+      FROM document_operation_candidates c JOIN asset_files f ON f.id = c.file_id
+     WHERE c.file_id = ${fileId} AND c.account_id = ${accountId} AND c.status = 'ACTIVE'
+     ORDER BY c.candidate_key, c.id`);
+  return r.map(toCandidateRow);
+}
+
+/**
  * Contexte M3 d'un candidat en attente (lot 42), relu dans une transaction
  * de LECTURE (aucun verrou d'écriture) : mêmes constructeurs que la
  * consolidation, donc même empreinte si rien n'a changé. `null` : candidat
@@ -226,7 +247,8 @@ export async function prepareOperationMatch(accountId: number, candidateId: numb
     if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) return null;
     const ids = targetIdsOf([c], file.assetId);
     const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers });
+    const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+      ...documentIdentityContext(file, await loadActiveCandidatesRead(tx, accountId, c.fileId), todayUtc()) });
     // Lot 53 (D7) : le LOT courant de l'examen progressif (au plus 5 Opérations),
     // à défaut (trace antérieure au lot 53) les Opérations plausibles.
     const lot = (c.t3Detail?.m3Batch ?? c.t3Detail?.plausible) as unknown[] | undefined;
@@ -647,14 +669,17 @@ async function contributionOf(tx: DbTx, accountId: number, s: OpSource, agenda?:
   const fileId = Number(s.entityKey);
   const file = await loadFile(tx, accountId, fileId);
   if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) return null;
-  const [c] = (await loadCandidates(tx, accountId, fileId)).filter((x) => x.status === 'ACTIVE' && x.candidateKey === s.key && x.established);
+  const tousCandidats = await loadCandidates(tx, accountId, fileId);
+  const [c] = tousCandidats.filter((x) => x.status === 'ACTIVE' && x.candidateKey === s.key && x.established);
   if (!c || c.confidence === 'conflictual') return null;
   const ids = targetIdsOf([c], file.assetId);
   const actx = await loadAssetContext(tx, accountId, ids.assets, ids.equipments, ids.rooms);
-  return {
-    sourceId: s.id,
-    identity: buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers }),
-  };
+  const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+    ...documentIdentityContext(file, tousCandidats, agenda?.today ?? todayUtc()) });
+  // Lot 109D : candidat qui ne porte qu'une remise intégrée au net d'un autre achat du document — jamais une réalité
+  // propre (faux avoir historique) : sa source est retirée (tracée), l'Opération n'est maintenue que par ses autres preuves.
+  if (!identity.established) return { withdrawn: 'COMMERCIAL_ADJUSTMENT_INTEGRATED' };
+  return { sourceId: s.id, identity };
 }
 
 /**
@@ -840,6 +865,9 @@ export async function reconsolidateOperation(
   await syncDetails(repo, tx, operationId, state, changes, userSaisie);
   // Lot 53D (D9) : frais annexes et écarts document / saisie, conservés hors total.
   await syncSideAmounts(tx, repo.accountId, operationId, state.sideAmounts ?? []);
+  // Lot 109A : fournisseurs PROUVÉS de l'Opération (émetteurs fiables de ses documents), même
+  // transaction et même verrou ; décisions de l'utilisateur respectées ; aucune écriture si inchangé.
+  changes.track((await syncOperationSuppliers(drizzleRunner(tx), accountId, [operationId], { correlationId: repo.correlationId, reasonCode: 'T3_OPERATION_SUPPLIERS' })).changed);
 
 
   // Lot 42 (B19, ch. 20) : montant contradictoire de même rôle entre preuves
@@ -1458,7 +1486,8 @@ export async function previewSeriesGrouping(accountId: number, fileIds: readonly
       const tids = targetIdsOf(actifs, file.assetId);
       const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
       for (const c of actifs) {
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers });
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+          ...documentIdentityContext(file, actifs, todayUtc()) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
         const dec = await loadDecisions(tx, accountId, fileId, c.candidateKey);
@@ -1562,12 +1591,14 @@ export async function previewOperationDuplicates(accountId: number, operationIds
         const fileId = Number(src.file_id);
         const file = await loadFile(tx, accountId, fileId);
         if (!file || file.deleted || (file.documentTypeCode && NON_BUSINESS_DOCUMENT_TYPES.has(file.documentTypeCode))) continue;
-        const [c] = (await loadCandidates(tx, accountId, fileId)).filter((x) => x.status === 'ACTIVE' && x.established && x.candidateKey === src.key);
+        const candidatsDoc = await loadCandidates(tx, accountId, fileId);
+        const [c] = candidatsDoc.filter((x) => x.status === 'ACTIVE' && x.established && x.candidateKey === src.key);
         if (!c || c.confidence === 'conflictual') continue;
         const docSources = await loadDocumentSources(tx, accountId, fileId);
         const tids = targetIdsOf([c], file.assetId);
         const actx = await loadAssetContext(tx, accountId, tids.assets, tids.equipments, tids.rooms);
-        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers });
+        const identity = buildCandidateIdentity(c, { fileAssetId: file.assetId, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+          ...documentIdentityContext(file, candidatsDoc, todayUtc()) });
         const memeSource = docSources.filter((s) => s.key === c.candidateKey && s.active && !s.opMerged && !s.opInvalidated);
         if (!memeSource.length) continue;
         const dec = await loadDecisions(tx, accountId, fileId, c.candidateKey);
@@ -1760,7 +1791,8 @@ export async function consolidateDocument(accountId: number, fileId: number, opt
       cards.reviewedFiles.push(fileId);
       // Lot 78A (§2A) : identités de tous les candidats actifs du document, et
       // Opérations où chacun a déjà sa source (doublons d'un même document à la réanalyse).
-      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers })]));
+      const identites = new Map(actifs.map((c) => [c.id, buildCandidateIdentity(c, { fileAssetId: file?.assetId ?? null, liveAssetIds: actx.live, equipmentAssets: actx.equipments, roomAssets: actx.rooms, providerCanonical: actx.providers,
+        ...documentIdentityContext(file, actifs, today) })]));
       const opsDuDocument = new Map<number, CandidateIdentity[]>();
       for (const s of docSources.filter((x) => x.active && !x.opMerged && !x.opInvalidated)) {
         const autre = actifs.find((x) => x.candidateKey === s.key);

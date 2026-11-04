@@ -167,7 +167,7 @@ export const ACCOUNT_OWNERSHIP_TRANSFERRED_HTML = doc('Transfert de propriété 
 /** DUO_INVITATION des défauts du code (la base garde son gabarit texte, mis en page par l'enveloppe). */
 export const DUO_INVITATION_DEFAULT_HTML = doc('Invitation Verebona Premium Duo', [
   p(`${strong('{{ownerFullName}}')} vous invite à rejoindre son espace Verebona Premium Duo.`),
-  p('Premium Duo vous permet de rejoindre un espace Verebona partagé à deux pour gérer des biens, documents et éléments d\'agenda dans un même compte.'),
+  p('Premium Duo vous permet de rejoindre un espace Verebona partagé à deux pour gérer des biens, documents et événements dans un même compte.'),
   emailButton('{{inviteUrl}}', "Accepter l'invitation"),
   muted('Ce lien est valable {{expiresIn}}. Si vous n\'êtes pas à l\'origine de cette demande, ne cliquez pas sur le lien. En cas de doute sur la sécurité de votre compte, modifiez votre mot de passe depuis Verebona.'),
 ].join('\n'), foot(FOOT_COPYRIGHT));

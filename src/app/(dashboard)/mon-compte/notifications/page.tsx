@@ -11,6 +11,7 @@ import { Separator } from '@/components/ui/separator';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { ParentBackLink } from '@/components/shell/ParentBackLink';
 import { saveNewsConsent } from '@/lib/notifications/news-consent-toggle';
+import { NativePushDeviceSettings } from '@/components/native/NativePushDeviceSettings';
 
 interface ChannelState { enabled: boolean; locked: boolean; available?: boolean }
 interface CategoryPref {
@@ -148,6 +149,8 @@ export default function NotificationsSettingsPage() {
               </p>
             </>
           )}
+          {/* Lot 109G : autorisation de CE téléphone (app native uniquement), distincte des préférences. */}
+          <NativePushDeviceSettings onChanged={refresh} />
         </CardContent>
       </Card>
 

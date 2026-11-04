@@ -204,6 +204,14 @@ export interface T1CoverageDiagnostics {
   /** Tableaux encore incertains / résolus par la vérification de leurs lignes. */
   tablesUncertain?: number;
   tablesResolved?: number;
+  // ── Lot 109K (COR-01) : verdict PAR PAGE — VERIFIED / MISSING / UNVERIFIABLE, méthode, motif (codes stables) ──
+  pageDetails?: import('./source-verification').PageVerification[];
+  /** Version des règles de vérification qui ont produit ces diagnostics (`SOURCE_VERIFIER_VERSION`). */
+  verifierVersion?: number;
+  /** Couche texte déterministe utilisée (origine, empreinte des octets). */
+  textLayer?: { origin: string; sourceSha256: string };
+  /** Lot 109K (COR-02) : dernière propagation d'une réparation vers les candidats / T3 (résumé borné). */
+  repairPropagation?: Record<string, unknown>;
 }
 
 export const T1_COMPLETENESS_ANOMALIES = [

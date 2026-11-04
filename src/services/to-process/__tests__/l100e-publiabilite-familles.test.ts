@@ -172,7 +172,13 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
       // Lot 107D : prix multi-articles et arbitrages rouverts (fin de registre).
       'COH-PRICE-MULTI-ARTICLE',
       // Lot 108 : contrôles A, B et D ajoutés en fin de registre.
-      'COH-TCO-SAME-FACT', 'COH-TCO-AMOUNT-RECOVERY', 'COH-DOC-DATE-FALLBACK']);
+      'COH-TCO-SAME-FACT', 'COH-TCO-AMOUNT-RECOVERY', 'COH-DOC-DATE-FALLBACK',
+      // Lot 109A : relations métier autour de l'Opération pivot (fin de registre).
+      'COH-OPERATION-RELATIONS',
+      // Lot 109D : remises jamais lues comme des avoirs (fin de registre).
+      'COH-TCO-COMMERCIAL-ADJUSTMENTS',
+      // Lot 109K : couverture PDF (fin de registre).
+      'COH-T1-PDF-COVERAGE']);
     const c = getCheck(PUBLISHABILITY_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'to_process_action' });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur']));

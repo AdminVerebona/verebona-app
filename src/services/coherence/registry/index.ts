@@ -65,6 +65,12 @@ import { tcoSameFactCheck } from './checks/tco-same-fact';
 import { tcoAmountRecoveryCheck } from './checks/tco-amount-recovery';
 // Lot 108D : date du document posée par repli sur le jour d'import (fin de registre).
 import { documentDateFallbackCheck } from './checks/document-date-fallback';
+// Lot 109A : relations métier autour de l'Opération pivot — fournisseurs prouvés, héritages après fusion (fin de registre).
+import { operationRelationsCheck } from './checks/operation-relations';
+// Lot 109D : remises lues comme des avoirs, achats fragmentés persistés par T3 (fin de registre).
+import { tcoCommercialAdjustmentsCheck } from './checks/tco-commercial-adjustments';
+// Lot 109K : couverture des PDF confrontée au texte original déterministe (fin de registre).
+import { t1PdfCoverageCheck } from './checks/t1-pdf-coverage';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -138,6 +144,12 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   tcoAmountRecoveryCheck,
   // Lot 108D (ticket « Listes de documents : une seule date documentaire ») : ajouté EN FIN de registre.
   documentDateFallbackCheck,
+  // Lot 109A (ticket « Relations métier — Opération pivot ») : ajouté EN FIN de registre.
+  operationRelationsCheck,
+  // Lot 109D (ticket « TCO — remises vs avoirs, 1 document → 1..N achats ») : ajouté EN FIN de registre.
+  tcoCommercialAdjustmentsCheck,
+  // Lot 109K (ticket « T1 couverture PDF », COR-01) : ajouté EN FIN de registre.
+  t1PdfCoverageCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

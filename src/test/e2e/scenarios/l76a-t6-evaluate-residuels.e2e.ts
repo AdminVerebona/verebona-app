@@ -160,14 +160,15 @@ scenario('L76A-T6', 'Lot 76A — invalidation EVALUATE complète et suggestions 
     expect(evalues()[0].facts![0]).toMatchObject({ value: 'Annuel', excerpt: 'Entretien à organiser par le client ; aucune prise en charge.' });
     expect(affichees(p1)).toEqual([id]);
     const d1 = (await decision(c.id, id))!;
-    expect(d1.context_fingerprint.startsWith('v4:')).toBe(true);
+    expect(d1.context_fingerprint.startsWith('v5:')).toBe(true); // lot 109E
     expect(d1.evaluation_signature!.startsWith('e2:')).toBe(true);
 
     // AC03 : relecture, réextraction identique (nouveaux identifiants), variation cosmétique : aucun appel.
     await passer(c.id);
     await extraire(c, doc, 'Entretien à organiser par le client ; aucune prise en charge.');
     await passer(c.id);
-    await extraire(c, doc, '  ENTRETIEN à organiser par le CLIENT, aucune prise en charge !');
+    // Lot 109E : casse, espaces et point final seulement — la ponctuation intérieure n'est plus cosmétique.
+    await extraire(c, doc, '  ENTRETIEN à organiser   par le CLIENT ; aucune prise en charge');
     const p2 = await passer(c.id);
     expect(evalues()).toHaveLength(1);
     expect(affichees(p2)).toEqual([id]);
@@ -253,7 +254,7 @@ scenario('L76A-T6', 'Lot 76A — invalidation EVALUATE complète et suggestions 
     }
   });
 
-  it('AC10 — transition : signature e1 et empreinte v3 enregistrées — aucune réévaluation de masse, rebasage, puis invalidation au changement', async () => {
+  it('AC10 — transition : signature e1 et empreinte v3 enregistrées — lot 109E : empreinte ambiguë réévaluée une fois (jamais rebasée), puis invalidation au changement', async () => {
     try {
       await configurerT6({ fallback1: 'gemini-3.1-flash-lite', reasoningPrimary: 'minimal', maxOutputTokens: 3000 });
       const R = await import('@/services/home/mascot/t6-runner');
@@ -274,23 +275,28 @@ scenario('L76A-T6', 'Lot 76A — invalidation EVALUATE complète et suggestions 
       await sql`UPDATE t6_interpellation_assessments SET context_fingerprint = ${v3}, evaluation_signature = ${cfg0.legacySignature!} WHERE account_id = ${c.id} AND agenda_item_id = ${id}`;
       R.resetT6EvaluationState();
       const p = await passer(c.id);
-      expect(evalues()).toHaveLength(1); // aucune réévaluation au déploiement
+      // Lot 109E (AC05) : la signature e1 reste valable (configuration de référence
+      // inchangée), mais l'empreinte v3 est AMBIGUË — décision réévaluée UNE fois
+      // (reprise bornée), jamais rebasée ; la nouvelle décision est présentée.
+      expect(evalues()).toHaveLength(2);
       expect(affichees(p)).toEqual([id]);
       const d = (await decision(c.id, id))!;
-      expect(d.context_fingerprint.startsWith('v4:')).toBe(true); // rebasée
-      expect(d.evaluation_signature).toBe(cfg0.legacySignature);
+      expect(d.context_fingerprint.startsWith('v5:')).toBe(true);
+      expect(d.evaluation_signature!.startsWith('e2:')).toBe(true);
       const [ref] = await sql<[{ signature: string }]>`SELECT signature FROM t6_evaluation_signature_baselines WHERE legacy_signature = ${cfg0.legacySignature!}`;
       expect(ref.signature).toBe(cfg0.signature);
-      // Après rebasage : une modification que v3 ne voyait pas (ordre des mots) invalide.
+      await passer(c.id);
+      expect(evalues()).toHaveLength(2); // aucune réévaluation répétitive
+      // Une modification que v3 ne voyait pas (ordre des mots) invalide.
       await extraire(c, doc, 'Révision annuelle à la charge du prestataire et non du client.');
       await passer(c.id);
-      expect(evalues()).toHaveLength(2);
+      expect(evalues()).toHaveLength(3);
       // Décision e1 et repli changé depuis la référence : invalidée (CONFIG_CHANGED).
       await sql`UPDATE t6_interpellation_assessments SET evaluation_signature = ${cfg0.legacySignature!} WHERE account_id = ${c.id} AND agenda_item_id = ${id}`;
       await configurerT6({ fallback1: 'gemini-3.5-flash-lite', reasoningPrimary: 'minimal', maxOutputTokens: 3000 });
       R.resetT6EvaluationState();
       const prep = await passer(c.id);
-      expect(evalues()).toHaveLength(3);
+      expect(evalues()).toHaveLength(4);
       expect(affichees(prep)).toEqual([id]);
       expect((await decision(c.id, id))!.evaluation_signature!.startsWith('e2:')).toBe(true);
     } finally {

@@ -47,7 +47,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   },
   {
     domain: 'operations', label: 'Opérations (identité économique, montants, regroupements)',
-    checks: [...O1, 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', 'COH-OPS-ACQUISITION-DATE', 'COH-OPS-CONTRACT-DATES'],
+    checks: [...O1, 'COH-OPS-IDENTITY', 'COH-OPS-RECURRING-SERIES', 'COH-OPS-ACQUISITION-DATE', 'COH-OPS-CONTRACT-DATES',
+      // Lot 109A : fournisseurs prouvés des Opérations persistés, sans héritage fantôme après fusion.
+      'COH-OPERATION-RELATIONS'],
     // Lot 86C : doublons ENTRE Opérations d'une même relation contractuelle (COH-OPS-IDENTITY v2, réexamen T3)
     // et dates de contrat issues de périodes facturées (COH-OPS-CONTRACT-DATES) — contrôlés et réparés.
     // Lot 85E : acquisition réalisée sans date alors que la date du bien est connue — contrôlée et réparée (T3 du bien puis T4).
@@ -65,7 +67,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   // Lot 108A : un même achat représenté par plusieurs sources compté une seule fois (faisceau de preuves).
   { domain: 'tco', label: 'TCO et dépenses', checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-TCO-ECONOMIC-DATES', 'COH-TCO-SAME-FACT',
     // Lot 108B : montants inconnus des justificatifs récupérés automatiquement avant toute alerte.
-    'COH-TCO-AMOUNT-RECOVERY'] },
+    'COH-TCO-AMOUNT-RECOVERY',
+    // Lot 109D : remises jamais lues comme des avoirs, un coût net par achat (stock T3 réparé).
+    'COH-TCO-COMMERCIAL-ADJUSTMENTS'] },
   { domain: 'agenda', label: 'Agenda (occurrences, échéances calculables des Opérations, événements obsolètes, échéances de fiche, appartenance aux Opérations)',
     checks: ['COH-AGENDA-OCCURRENCES', 'COH-AGENDA-ORPHANS', 'COH-AGENDA-OPERATION-PROJECTION', 'COH-AGENDA-PROJECTION-ORPHANS', 'COH-OPS-CONTRACT-DATES', ...O1.filter((id) => /AGENDA|PRINCIPAL|LINK-PROVENANCE/.test(id)), 'COH-DOC-AGENDA-LINKS',
       // Lot 99D : séries récurrentes arrêtées à tort par l'ancienne règle « mot-clé » (rétablies, T4 relancé).
@@ -107,7 +111,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   { domain: 'equipements', label: 'Équipements (documents rattachés, séparation bien / équipement, propriétés manquantes, identité produit)', checks: ['COH-DOC-LINKS', 'COH-ASSET-EQUIPMENT-SEPARATION', 'COH-MISSING-PROPERTIES-EQUIPMENT', 'COH-EQUIPMENT-IDENTITY'],
     gap: { what: 'situations de séparation SUSPECTES (constat seul) ; document d’équipement rattaché au seul bien sans preuve propre au document (constat seul — réparé par la reconsolidation ciblée O-6 dès que le document désigne l’équipement, lot 84E) ; liens d’un équipement déplacé vers un autre bien', existingMechanism: 'rattrapage BO « equipment-separation » (même code) ; file EQUIPMENT_DOCUMENT au déplacement et reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' } },
   { domain: 'documents-liens', label: 'Liens documentaires (documents ↔ biens / équipements, documents ↔ agenda)',
-    checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS', 'COH-DOC-PRIMARY-LINK'],
+    checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS', 'COH-DOC-PRIMARY-LINK',
+      // Lot 109A : documents ↔ fournisseurs par l'Opération (lecture VIA_OPERATION, jamais de lien direct artificiel).
+      'COH-OPERATION-RELATIONS'],
     // Lot 86D : un lien Document ↔ Agenda automatique sans preuve propre reste un constat (jugement de pertinence : contrat IA demandé).
     gap: { what: 'pertinence SÉMANTIQUE d’un lien Document ↔ Agenda automatique sans preuve propre au couple (constat AUTOMATIC_LINK_UNPROVEN, aucune écriture)', existingMechanism: 'détachement par l’utilisateur depuis les tiroirs de l’élément et du document (décision mémorisée)', planned: 'contrat IA 86D-t4-pertinence-lien-document-agenda' } },
   { domain: 'a-traiter', label: 'Cartes « À traiter »',
@@ -153,7 +159,8 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   },
   {
     domain: 'documents-t1', label: 'Chaîne document → extract → T1 → aval (C-Q7)',
-    checks: ['COH-DOC-EXTRACT-CHAIN'],
+    // Lot 109K : couverture des PDF confrontée au texte original déterministe (COH-T1-PDF-COVERAGE).
+    checks: ['COH-DOC-EXTRACT-CHAIN', 'COH-T1-PDF-COVERAGE'],
     // Lot 91D : décisions T1 par valeur (document_value_decisions) exploitées dès que le prompt T1 porte le contrat.
     gap: { what: 'tant que le prompt T1 actif ne porte pas le contrat t1-value-decisions-v1 : valeur de l’extract absente de T1 sur une unité COUVERTE = constat seul (volontaire ou accidentelle) ; documents analysés sans couche A', existingMechanism: 'décisions T1 par valeur validées et persistées (lot 91D), réexamen ciblé une fois par diagnostic, constats qualifiés en Supervision ; t1-source-units-backfill (couche A historique)', planned: 'activation par le PO du texte T1 du guide des prompts (demande 82B-t1-omissions-extract, contrat t1-value-decisions-v1)' },
   },

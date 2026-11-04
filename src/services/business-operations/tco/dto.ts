@@ -12,6 +12,7 @@ import {
 } from './model';
 import { tcoAddDuplicateRisk, tcoLineAddable, tcoLineRemovable } from './user-decisions';
 import { USAGE_BUDGET_STATUS_LABELS, USAGE_COMPLEMENT_WARNING_LABELS } from './usage-complement';
+import { computeTcoDiagnostics, type TcoDiagnostics } from './diagnostics';
 
 export const TCO_PREMIUM_MESSAGE = 'Le coût de possession est disponible avec Premium et Premium Duo.';
 
@@ -45,7 +46,8 @@ export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
   NOT_OWNERSHIP_COSTS: 'Des achats d’objets distincts rattachés à ce bien ne sont pas comptés dans son coût de possession (rattachez-les comme équipements pour les inclure).',
   USER_DECISIONS: 'Vous avez ajouté ou retiré des dépenses : le coût de possession reflète vos choix (réversibles depuis les listes de dépenses).',
   USER_INCLUDED_DUPLICATES: 'Une dépense que vous avez ajoutée ressemble à une dépense déjà comptée : vérifiez qu’il ne s’agit pas du même paiement.',
-  NOT_REALIZED_EXPENSES: 'Des dépenses prévues ou datées après aujourd’hui ne sont pas encore réalisées : elles ne sont comptées dans aucun indicateur (elles le seront à leur date de paiement).',
+  // Lot 109C : plus de promesse de prise en compte automatique « à leur date de paiement » sans preuve de réalisation.
+  NOT_REALIZED_EXPENSES: 'Des dépenses prévues ou datées après aujourd’hui ne sont pas encore réalisées : elles ne sont comptées dans aucun indicateur tant qu’aucun paiement daté et justifié ne l’établit.',
   STATUS_CONTRADICTIONS: 'Des dépenses ont un statut et une date contradictoires (prévue mais payée, réalisée mais datée après aujourd’hui) : vérifiez-les.',
   INVALID_DATES: 'Des dates impossibles ou incohérentes ont été ignorées : les dépenses concernées ne sont rattachées à aucune année.',
   ECONOMIC_DATE_UNDETERMINED: 'Des dépenses n’ont pas de date de paiement ou de facture établie : elles sont comptées dans le TCO total mais rattachées à aucune année (les montants par année peuvent être incomplets). Elles seront datées dès qu’un justificatif le permettra.',
@@ -69,11 +71,13 @@ const TCO_DTO_MAX_PAGE = 1000;
  *   · CONSOLIDATED_SHOWN : justificatif repris par une dépense consolidée déjà
  *     affichée — le justificatif est ouvrable depuis cette ligne.
  */
-type TcoHiddenReason = 'OTHER_ASSET' | 'CONSOLIDATED_SHOWN';
+type TcoHiddenReason = 'OTHER_ASSET' | 'CONSOLIDATED_SHOWN' | 'COMPOSITION_SHOWN';
 
 export const TCO_HIDDEN_REASON_LABELS: Readonly<Record<TcoHiddenReason, string>> = {
   OTHER_ASSET: 'Masquée sur la fiche : attribuée à un autre bien',
   CONSOLIDATED_SHOWN: 'Masquée sur la fiche : justificatif ouvrable depuis la dépense consolidée',
+  // Lot 109D : ligne, frais ou remise compris dans le net d'un achat — détail du calcul de la ligne d'achat.
+  COMPOSITION_SHOWN: 'Masquée sur la fiche : composante du prix net, consultable dans le détail de l’achat',
 };
 
 /**
@@ -137,7 +141,12 @@ export function tcoUserView(lines: readonly TcoEconomicLine[]): { lines: TcoUser
     if (l.fileId != null && l.fileId !== p.fileId && !(p.supportingDocuments ?? []).some((d) => d.fileId === l.fileId)) {
       p.supportingDocuments = [...(p.supportingDocuments ?? []), { fileId: l.fileId, title: l.label }];
     }
+    // Lot 109D : composition de l'achat consultable depuis la dépense consolidée de même montant net.
+    if (l.composition && !p.composition && p.amountMinor === l.composition.netMinor && p.currency === l.composition.currency) p.composition = l.composition;
   }
+  // Lot 109D : composantes de calcul (lignes, frais, remises) d'un achat montré — jamais des transactions distinctes.
+  const montrees = new Set(out.filter((l) => !hidden[l.id]).map((l) => l.id));
+  for (const l of out) if (l.compositionOf && montrees.has(l.compositionOf) && !RETENUE(l.status)) hidden[l.id] = 'COMPOSITION_SHOWN';
   return { lines: out.filter((l) => !hidden[l.id]), hidden };
 }
 
@@ -164,7 +173,20 @@ export type TcoDto = Omit<TcoResult, 'entries' | 'lines' | 'citedOnlyDocuments' 
   linesTruncated: boolean;
   retainedLinesTotal: number;
   otherLinesTotal: number;
+  /** Libellés des signalements (rétrocompatibilité : consommateurs existants, T2, e2e) — la fiche affiche `diagnostics`. */
   warningLabels: string[];
+  /**
+   * Lot 109C : diagnostics structurés (code, nature anomalie / couverture /
+   * information, statut, nombre réel d'occurrences, sources, action), dérivés
+   * de la trace du moteur (`./diagnostics`).
+   */
+  diagnostics: TcoDiagnostics;
+  /**
+   * Lot 109C : lignes NON RETENUES montrables, par motif, sur TOUTES les
+   * lignes (pas seulement la page) — `review` : au moins une ligne de ce
+   * motif relève d'un cas ouvert (« À revoir ») ; sinon exclusion normale.
+   */
+  otherLinesByReason: Array<{ status: EconomicLineStatus; reason: EconomicLineReason | null; label: string; count: number; review: number }>;
   usageLabels: {
     categories: typeof USAGE_BUDGET_CATEGORY_LABELS; periodicities: typeof USAGE_BUDGET_PERIODICITY_LABELS;
     /** Lot 108C : état de chaque forfait et signalements du complément estimé. */
@@ -205,6 +227,21 @@ export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?
   const limit = Math.min(Math.max(page.linesLimit ?? TCO_DTO_MAX_LINES, 1), TCO_DTO_MAX_PAGE);
   const pageLignes = tri.slice(offset, offset + limit).map((l) => ({ ...l, actions: tcoLineActions(l, lines) }));
   const retenues = lines.filter((l) => RETENUE(l.status)).length;
+  // Lot 109C : diagnostics dérivés de la trace COMPLÈTE (jamais de la page), lignes masquées connues (liens).
+  const diagnostics = computeTcoDiagnostics(t, { hidden: new Set(Object.keys(vue.hidden)) });
+  const aRevoir = new Set(diagnostics.reviewLineIds);
+  const parMotif = new Map<string, TcoDto['otherLinesByReason'][number]>();
+  for (const l of vue.lines) {
+    if (RETENUE(l.status) || l.status === 'OUT_OF_SCOPE') continue;
+    const k = `${l.status}|${l.reason ?? ''}`;
+    const g = parMotif.get(k) ?? {
+      status: l.status, reason: l.reason, count: 0, review: 0,
+      label: l.reason ? ECONOMIC_LINE_REASON_LABELS[l.reason] : ECONOMIC_LINE_STATUS_LABELS[l.status],
+    };
+    g.count += 1;
+    if (aRevoir.has(l.id)) g.review += 1;
+    parMotif.set(k, g);
+  }
   return {
     ...rest,
     lines: pageLignes,
@@ -221,6 +258,8 @@ export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?
     excludedLabels: { ...EXCLUSION_LABELS },
     // Lot 108B : la lecture en cours d'un montant n'est pas une alerte (bloc dédié de la fiche).
     warningLabels: t.reliability.warnings.filter((w) => w !== 'AMOUNTS_RECOVERY_PENDING').map((w) => TCO_WARNING_LABELS[w]),
+    diagnostics,
+    otherLinesByReason: [...parMotif.values()].sort((a, b) => b.review - a.review || b.count - a.count || a.label.localeCompare(b.label)),
     usageLabels: {
       categories: USAGE_BUDGET_CATEGORY_LABELS, periodicities: USAGE_BUDGET_PERIODICITY_LABELS,
       budgetStatuses: USAGE_BUDGET_STATUS_LABELS, warnings: USAGE_COMPLEMENT_WARNING_LABELS,

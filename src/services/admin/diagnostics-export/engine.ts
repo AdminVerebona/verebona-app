@@ -656,6 +656,9 @@ export async function planDiagnosticEngine(kit: DiagPlanKit, f: DiagFilter): Pro
   const assetsSql = assetsFilter ? `SELECT t.id, t.account_id FROM assets t WHERE (${assetsFilter}) ORDER BY t.id` : null;
   const { planPropertyFiles } = await import('./properties');
   await planPropertyFiles(kit, assetsSql);
+  // Lot 109A : rapport avant / après des relations métier (Opération pivot), comptes du filtre.
+  const { planRelationsReport } = await import('@/services/relations/diagnostic');
+  planRelationsReport(kit, accountsInScope);
 
   kit.limitations.set('api-ui', ['Projection API → écran : fiche du bien (onglet « Informations », GET /api/assets/[id]/details, même fonction buildSections) ; équipements et autres écrans : valeurs persistées et chaîne de traçabilité, sans projection d’écran.']);
   kit.limitations.set('extractions-ia', ['Sorties brutes du modèle et prompts : longueur et SHA-256 (contenu restreint) ; lisibles par le diagnostic renforcé (accès réservé et journalisé). Les sorties STRUCTURÉES persistées (faits, extractions, candidats, décisions) sont exportées intégralement.']);

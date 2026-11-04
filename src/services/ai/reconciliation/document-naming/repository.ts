@@ -504,6 +504,8 @@ export interface GroupProgress {
   ctx?: Record<string, string>;
   /** Lot 76B (C5) : empreinte (v3) du lot au moment où son réexamen a été programmé. */
   upgradeFp?: string;
+  /** Lot 109J : taille d'appel réduite (sortie tronquée, contexte trop grand) — reprise sans rejouer l'appel identique. */
+  chunkDocs?: number;
 }
 /** Lot 76B (C5) : recalage d'un lot d'une version antérieure du contexte. */
 export type UpgradeState = 'TECHNICAL' | 'EXPECTED' | 'REVIEWED';

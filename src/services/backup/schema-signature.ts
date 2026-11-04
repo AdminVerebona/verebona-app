@@ -65,6 +65,8 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'account_data_use_preferences', 'account_data_use_preference_events',
   'admin_anomalies', 'admin_anomaly_occurrences',
   'ai_usage_event', 'ai_usage_events', 'ai_usage_daily_rollup', 'ai_usage_account_counter', 'ai_call_diagnostics', 'ai_operation',
+  // Lot 109L : corrections de coûts IA (régularisation) — suivent les traces IA, conservées.
+  'ai_cost_regularization_runs', 'ai_cost_regularization_items', 'ai_cost_corrections',
   'ai_pipeline_step', 'ai_log_archives', 'ai_admin_audit_log', 'ai_t2_content_access_log', 'ai_execution_reports', 'ai_execution_report_entries',
   'ai_call_captures', 'ai_call_capture_state',
   'ai_evaluator_runs', 'ai_master_corpus_runs', 'ai_master_prompt_test_runs', 'ai_prompt_test_runs', 'ai_model_qualification',

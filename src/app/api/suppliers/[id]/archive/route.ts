@@ -8,6 +8,10 @@ import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { apiError } from '@/lib/api-errors';
 
 // POST /api/suppliers/[id]/archive — logical archive
+// Lot 109B : archivage depuis la fiche (confirmation côté écran). Les relations
+// historiques (documents, biens, équipements, Agenda) sont CONSERVÉES ; la
+// fiche reste consultable et affiche « Archivé ». `{ "restore": true }`
+// réactive la fiche. Écriture bornée au compte dans son SQL.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -34,13 +38,17 @@ export async function POST(
 
     if (!existing) return apiError(404, 'NOT_FOUND', 'Supplier not found');
 
+    if (existing.status === 'deleted') return apiError(404, 'NOT_FOUND', 'Supplier not found');
+    const body = await request.json().catch(() => ({})) as { restore?: unknown };
+    const status = body?.restore === true ? 'active' : 'archived';
+
     await db.update(suppliers)
-      .set({ status: 'archived', updatedAt: new Date() })
-      .where(eq(suppliers.id, supplierId));
+      .set({ status, updatedAt: new Date() })
+      .where(and(eq(suppliers.id, supplierId), eq(suppliers.accountId, accountId)));
 
     // CDC Assistant §31.7 : fournisseur archivé.
     await emitBusinessEvent({ type: 'SUPPLIER_CHANGED', accountId, entityId: supplierId });
-    return NextResponse.json({ success: true });
+    return NextResponse.json({ success: true, status });
   } catch (err) {
     return SessionService.handleSessionError(err);
   }

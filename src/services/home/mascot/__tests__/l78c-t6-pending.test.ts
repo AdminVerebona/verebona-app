@@ -225,7 +225,7 @@ describe('L78C-C — préparation : demande durable, transmission des seules év
     expect(request).toHaveBeenCalledTimes(1);
     const sujets = (request.mock.calls[0] as unknown as [number, Array<{ agendaItemId: number; fingerprint: string; signature: string }>])[1];
     expect(sujets.map((x) => x.agendaItemId)).toEqual([1, 2, 3]);
-    expect(sujets.every((x) => x.fingerprint.startsWith('v4:') && x.signature === 'e2:sig')).toBe(true);
+    expect(sujets.every((x) => x.fingerprint.startsWith('v5:') && x.signature === 'e2:sig')).toBe(true);
     expect([...p.bundle!.refs.values()].map((x) => x.agendaItemId)).toEqual([3]);
     expect(p.bundle!.evaluationSignature).toBe('e2:sig');
     expect(p.evaluationProgress).toMatchObject({ eligible: 3, claimable: 1, inBundle: 1, waiting: 2, failed: 0, waitingUntil: min(4) });

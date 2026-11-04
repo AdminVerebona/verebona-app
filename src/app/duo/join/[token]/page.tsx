@@ -296,7 +296,7 @@ function DuoJoinContent() {
                 : 'Vous avez été invité à rejoindre une offre Premium Duo.'}
             </p>
             <p className="text-sm text-[color:var(--text-muted)] leading-relaxed">
-              Premium Duo vous permet de gérer à deux un même espace Verebona pour vos biens, documents et éléments d'agenda. Le titulaire conserve la gestion de l'abonnement et du paiement.
+              Premium Duo vous permet de gérer à deux un même espace Verebona pour vos biens, documents et événements. Le titulaire conserve la gestion de l'abonnement et du paiement.
             </p>
           </div>
         </div>

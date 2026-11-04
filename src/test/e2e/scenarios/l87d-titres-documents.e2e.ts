@@ -329,7 +329,7 @@ scenario('L87D', 'Titres homogènes des factures périodiques, même titre parto
     await sql`INSERT INTO document_suppliers (document_id, supplier_id, is_confirmed) VALUES (${f.id}, ${sup.id}, true)`;
     const { getSupplierDetail } = await import('@/services/suppliers/supplier-detail.service');
     const det = await getSupplierDetail(c.id, Number(sup.id));
-    const ds = det?.documents.find((d) => d.id === f.id);
+    const ds = det?.documents.items.find((d) => d.id === f.id);
     expect(ds?.documentTypeLabel).toBe(libelle);
     expect(ds?.title).toBe('Déclaration préalable - Pose de fenêtres de toit Ville Caluire et Cuire');
   });

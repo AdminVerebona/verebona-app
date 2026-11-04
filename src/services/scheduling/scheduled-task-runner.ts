@@ -51,6 +51,7 @@ import {
   findTask, isTaskEnabled, schedulerDisabled, SCHEDULED_TASKS, type ScheduledTaskDef, type TaskEnv, type TaskRunResult,
 } from './scheduled-tasks.catalog';
 import type { TaskStateRow, TaskStateStore, TaskTrigger } from './scheduled-task-state';
+import { admitHeavyTask, trackMemory } from '@/lib/runtime/memory-monitor';
 
 const TICK_MS = 30_000;
 const FIRST_TICK_MS = 45_000;
@@ -148,6 +149,12 @@ export interface RunnerDeps {
   watchdogLock: () => Promise<{ release: () => Promise<void> } | null>;
   /** Pool de connexions saturé (requêtes en attente) : ne rien lancer. */
   poolBusy?: () => Promise<boolean>;
+  /**
+   * Lot 109H : mémoire du conteneur au-delà du seuil d'admission — la tâche
+   * (ni critique, ni à créneau propre) attend le tour suivant, au plus
+   * MEMORY_ADMISSION_MAX_WAIT_MS. Absent : aucune admission.
+   */
+  memoryBusy?: (code: string) => boolean;
   /** Démarrage du moteur dans ce processus (défaut : chargement du module). */
   startedAt?: Date;
   /** Période de renouvellement du bail (tests). */
@@ -172,6 +179,7 @@ export function defaultDeps(): RunnerDeps {
       const { getPoolMetrics } = await import('@/db/pool-metrics');
       return getPoolMetrics().waiting > 0;
     },
+    memoryBusy: (code) => !admitHeavyTask(`task:${code}`),
   };
 }
 
@@ -235,7 +243,8 @@ async function executeClaimed(
   let timedOut = false;
 
   activeLeases.set(runId, { code: def.code, store: deps.store });
-  const work = Promise.resolve().then(() => def.run({ deadline: started + def.timeoutMs, trigger }));
+  // Lot 109H : pic mémoire observé pendant la tâche (journal `[memory]`).
+  const work = trackMemory(`task:${def.code}`, () => Promise.resolve().then(() => def.run({ deadline: started + def.timeoutMs, trigger })));
   // Renouvellement du bail tant que le travail n'a pas rendu la main, au plus
   // 2 × le délai après le début (un travail figé finit par libérer la tâche).
   let settled = false;
@@ -343,6 +352,7 @@ export async function tick(deps: RunnerDeps): Promise<string[]> {
     const def = findTask(row.code, deps.tasks);
     if (!def || !isTaskEnabled(def.code, deps.env) || inFlight.has(def.code)) continue;
     if (!def.ownSlot && [...inFlight.values()].filter((f) => !f.ownSlot).length >= limit) continue;
+    if (!def.ownSlot && !def.critical && deps.memoryBusy?.(def.code)) continue;
     try {
       const now = deps.now();
       if (!isSlotStillValid(def.schedule, row.nextRunAt, now)) {

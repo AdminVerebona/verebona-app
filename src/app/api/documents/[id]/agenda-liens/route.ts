@@ -16,6 +16,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
+import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -63,7 +64,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
     if (refus) return refus;
     const body = await req.json().catch(() => null) as { itemId?: unknown } | null;
     const itemId = Number(body?.itemId);
-    if (!Number.isSafeInteger(itemId) || itemId <= 0) return NextResponse.json({ error: 'Élément invalide.' }, { status: 400 });
+    if (!Number.isSafeInteger(itemId) || itemId <= 0) return NextResponse.json({ error: AGENDA_EVENT_LABELS.invalid }, { status: 400 });
     const { applyAgendaDrawerAction } = await import('@/services/business-operations/grouping/drawer-actions');
     const { GroupingError } = await import('@/services/business-operations/grouping/service');
     try {
@@ -71,7 +72,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
     } catch (e) {
       if (e instanceof GroupingError) {
         const introuvable = e.code === 'ITEM_NOT_FOUND' || e.code === 'CROSS_ACCOUNT' || e.code === 'DOCUMENT_NOT_FOUND';
-        return NextResponse.json({ error: introuvable ? 'Élément ou document introuvable.' : 'Ce lien n’a pas pu être créé.', code: e.code }, { status: introuvable ? 404 : 409 });
+        return NextResponse.json({ error: introuvable ? 'Événement ou document introuvable.' : 'Ce lien n’a pas pu être créé.', code: e.code }, { status: introuvable ? 404 : 409 });
       }
       throw e;
     }
@@ -92,7 +93,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     const refus = await refuserSiLectureSeule(c.accountId);
     if (refus) return refus;
     const itemId = Number(new URL(req.url).searchParams.get('itemId'));
-    if (!Number.isSafeInteger(itemId) || itemId <= 0) return NextResponse.json({ error: 'Élément invalide.' }, { status: 400 });
+    if (!Number.isSafeInteger(itemId) || itemId <= 0) return NextResponse.json({ error: AGENDA_EVENT_LABELS.invalid }, { status: 400 });
     const { applyAgendaDrawerAction } = await import('@/services/business-operations/grouping/drawer-actions');
     const { GroupingError } = await import('@/services/business-operations/grouping/service');
     let changed = false;
@@ -101,7 +102,7 @@ export async function DELETE(req: NextRequest, context: RouteContext) {
     } catch (e) {
       if (e instanceof GroupingError) {
         const introuvable = e.code === 'ITEM_NOT_FOUND' || e.code === 'CROSS_ACCOUNT' || e.code === 'DOCUMENT_NOT_FOUND';
-        return NextResponse.json({ error: introuvable ? 'Élément ou document introuvable.' : 'Ce lien n’a pas pu être retiré.', code: e.code }, { status: introuvable ? 404 : 409 });
+        return NextResponse.json({ error: introuvable ? 'Événement ou document introuvable.' : 'Ce lien n’a pas pu être retiré.', code: e.code }, { status: introuvable ? 404 : 409 });
       }
       throw e;
     }

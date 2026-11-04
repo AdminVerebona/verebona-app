@@ -1,18 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/db';
-import { assetFiles, assets } from '@/db/schema';
 import { documentTypeDisplayLabel } from '@/lib/referential/v2';
-import { eq, and, isNull, or, sql } from 'drizzle-orm';
 import { SessionService } from '@/lib/session-service';
 import { apiError } from '@/lib/api-errors';
-import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 import { equipmentInAccount } from '@/services/security/account-ownership';
+import { listAll, listEntityDocuments, pageOptionsFromSearch, type RelatedDocument } from '@/services/relations/read-contract';
 
-// GET /api/equipments/[id]/documents — documents linked to an equipment
-// Lot 71A (point B) : colonne historique `equipment_id` OU lien N-N actif
-// (`document_asset_links`, cible équipement, rôle PRIMARY / SECONDARY —
-// rapprochement automatique, plusieurs équipements possibles). Chaque document
-// une seule fois (condition d'appartenance, pas de jointure).
+// GET /api/equipments/[id]/documents — documents d'un équipement.
+// Lot 109A (ticket « Relations métier », §6) : CONTRAT DE LECTURE UNIQUE
+// (`services/relations/read-contract.ts`) —
+//   · DIRECT : colonne historique `equipment_id` OU lien N-N actif
+//     (`document_asset_links`, cible équipement, rôle PRIMARY / SECONDARY) ;
+//   · VIA_OPERATION : document membre d'une Opération active liée à
+//     l'équipement — consultable par l'Opération, JAMAIS transformé en lien
+//     direct (aucun produit cartésien).
+// Chaque document une seule fois ; `total` / `totals` exacts avant
+// pagination ; sans `page`, la liste est EXHAUSTIVE (toutes les pages).
 // Lot 49 (SEC-06) : équipement du compte vérifié AVANT la lecture ; documents
 // et bien joint bornés au compte.
 export async function GET(
@@ -31,49 +33,20 @@ export async function GET(
     if (isNaN(equipmentId)) return apiError(400, 'INVALID_INPUT', 'Invalid equipment id');
     if (!(await equipmentInAccount(accountId, equipmentId))) return apiError(404, 'NOT_FOUND', 'Equipment not found');
 
-    const rows = await db
-      .select({
-        id: assetFiles.id,
-        publicId: assetFiles.publicId,
-        fileName: assetFiles.filename,
-        originalFilename: assetFiles.originalFilename,
-        retainedTitle: assetFiles.retainedTitle,
-        // Lot 87D : mêmes sources du titre affiché que toutes les vues.
-        webLinkTitle: assetFiles.webLinkTitle,
-        s3Key: assetFiles.s3Key,
-        documentType: assetFiles.documentType,
-        retainedFunctionCode: assetFiles.retainedFunctionCode,
-        documentTypeCode: assetFiles.documentTypeCode,
-        documentDate: assetFiles.documentDate,
-        mimeType: assetFiles.mimeType,
-        assetId: assetFiles.assetId,
-        assetName: assets.name,
-        webLinkUrl: assetFiles.webLinkUrl,
-        createdAt: assetFiles.createdAt,
-      })
-      .from(assetFiles)
-      .leftJoin(assets, and(eq(assetFiles.assetId, assets.id), eq(assets.accountId, accountId)))
-      .where(
-        and(
-          eq(assetFiles.accountId, accountId),
-          or(
-            eq(assetFiles.equipmentId, equipmentId),
-            sql`${assetFiles.id} IN (SELECT l.file_id FROM document_asset_links l
-                                     WHERE l.account_id = ${accountId} AND l.equipment_id = ${equipmentId}
-                                       AND l.status = 'ACTIVE' AND l.link_role IN ('PRIMARY', 'SECONDARY'))`,
-          ),
-          or(eq(assetFiles.uploadStatus, 'COMPLETED'), isNull(assetFiles.uploadStatus)),
-          isNull(assetFiles.deletedAt)
-        )
-      );
+    const search = new URL(request.url).searchParams;
+    const opts = pageOptionsFromSearch(search);
+    const entity = { kind: 'equipment' as const, id: equipmentId };
+    const page = search.has('page')
+      ? await listEntityDocuments(accountId, entity, opts)
+      : await listAll((p) => listEntityDocuments(accountId, entity, { ...opts, page: p, pageSize: 200 }));
+    if (!page) return apiError(404, 'NOT_FOUND', 'Equipment not found');
 
-    const documents = rows.map(doc => ({
+    const documents = page.items.map((doc: RelatedDocument) => ({
       id: doc.id,
       publicId: doc.publicId,
-      title: documentTitleFromRecord({ ...doc, filename: doc.fileName, publicId: doc.publicId == null ? null : String(doc.publicId) }, 'Document'),
-      documentType: doc.retainedFunctionCode ?? doc.documentType,
-      // Lot 86E (ticket §5) : libellé du Type V2 ENREGISTRÉ, comme « Mes
-      // documents » — plus le code V1 (« BON_COMMANDE » brut, « Autre »).
+      title: doc.title,
+      documentType: doc.documentType,
+      // Lot 86E (ticket §5) : libellé du Type V2 ENREGISTRÉ, comme « Mes documents ».
       documentTypeCode: doc.documentTypeCode,
       documentTypeLabel: documentTypeDisplayLabel(doc.documentTypeCode),
       documentDate: doc.documentDate,
@@ -82,9 +55,22 @@ export async function GET(
       assetName: doc.assetName,
       webLinkUrl: doc.webLinkUrl,
       createdAt: doc.createdAt,
+      // Lot 109A : provenance du rattachement (DIRECT / VIA_OPERATION), preuves directes, Opérations de contexte.
+      provenance: doc.provenance,
+      direct: doc.direct,
+      viaOperations: doc.viaOperations,
     }));
 
-    return NextResponse.json({ documents });
+    return NextResponse.json({
+      documents,
+      contract: page.contract,
+      total: page.total,
+      totals: page.totals,
+      page: page.page,
+      pageSize: page.pageSize,
+      pageCount: page.pageCount,
+      hasMore: page.hasMore,
+    });
   } catch (err) {
     return SessionService.handleSessionError(err);
   }

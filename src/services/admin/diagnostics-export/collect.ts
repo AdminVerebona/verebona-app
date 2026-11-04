@@ -557,6 +557,30 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
     }, undefined, 'extractions-ia');
   }
 
+  // Lot 109L (ticket P1 « Tarifs Gemini non reconnus, 948 appels », point D) : appels IA NON CHIFFRÉS — rapprochement avec
+  // l'ancienne règle du bandeau, répartition par jour / traitement / modèle / compte (identifiant interne) / statut / cause,
+  // agrégats journaliers à part, dernier état de la synchronisation tarifaire (empreinte et format de la page lue). Tout
+  // l'historique ET les 30 derniers jours (période du bandeau Coûts IA). Même instantané, lecture seule, aucun appel IA.
+  {
+    const cq = (t: string, p: unknown[]) => s.savepoint(() => s.q(t, p)) as Promise<Array<Record<string, unknown>>>;
+    let couts: import('@/services/ai/telemetry/cost-diagnostic').CostDiagnosticReport | null = null;
+    let couts30: import('@/services/ai/telemetry/cost-diagnostic').CostDiagnosticReport | null = null;
+    entry('ia/couts-ia-non-chiffres.json', 'Coûts IA — appels non chiffrés : rapprochement avec l’ancienne règle du bandeau, causes (tarif absent, cache, invalidation à tort, modèle hors couverture, arrondi, consommation manquante, historique sans preuve), par jour / traitement / modèle / compte, agrégats journaliers, dernière synchronisation tarifaire (empreinte, format)', async (w) => {
+      const { aiCostDiagnostic } = await import('@/services/ai/telemetry/cost-diagnostic');
+      const scope = global ? null : filter.accounts ?? [];
+      couts = await aiCostDiagnostic(cq, { since: new Date('2000-01-01T00:00:00Z'), until: now, accounts: scope });
+      couts30 = await aiCostDiagnostic(cq, { since: new Date(now.getTime() - 30 * 86_400_000), until: now, accounts: scope });
+      await w(`${JSON.stringify(M({ historique: couts, trenteJours: couts30 } as unknown as Row), null, 2)}\n`);
+      const n = couts.byCause.reduce((k, c) => k + c.calls, 0);
+      return { expected: n, count: n, batches: 1, error: null };
+    }, undefined, 'technique');
+    entry('ia/couts-ia-non-chiffres.txt', 'Coûts IA — appels non chiffrés : tableau lisible (30 derniers jours puis tout l’historique) à recopier dans la recette 109L', async (w) => {
+      const { costDiagnosticText } = await import('@/services/ai/telemetry/cost-diagnostic');
+      await w(couts && couts30 ? `${costDiagnosticText(couts30)}\n──────── Tout l’historique ────────\n${costDiagnosticText(couts)}` : 'diagnostic des coûts indisponible (voir ia/couts-ia-non-chiffres.json)\n');
+      return { expected: 1, count: couts ? 1 : 0, batches: 1, error: couts ? null : 'diagnostic des coûts non produit' };
+    }, undefined, 'technique');
+  }
+
   // Lot 103G (ticket P1 « compte technique de qualification », point D) : diagnostic du compte technique — identité
   // technique non sensible, variable déclarée / cohérente, motif CORPUS_ACCOUNT_*, incompatibilités et campagnes
   // affectées, cas du corpus concernés, reprises automatiques. Global seulement (aucune donnée de compte client).

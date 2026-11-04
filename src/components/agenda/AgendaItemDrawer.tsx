@@ -65,6 +65,7 @@ import { NO_DEADLINE_HELP, NO_DEADLINE_LABEL, toggleNoDeadline, undatedLabel, wi
 import { AgendaGroupingSection } from "@/components/agenda/AgendaGroupingSection";
 // Lot 103E : « Fournisseur / intervenant » — composant dédié (consultation et modification).
 import { AgendaSuppliersField, AgendaSuppliersView, suppliersPayload, type AgendaSuppliersSelection } from "@/components/agenda/AgendaSuppliersSection";
+import { AGENDA_EVENT_LABELS } from "@/lib/agenda/grouping-view";
 
 // Lot 53 (D17) : libellés partagés des cinq états.
 type EffectiveStatus = AgendaEffectiveStatus;
@@ -428,7 +429,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
     setDeleting(true);
 
     const confirmDeleted = () => {
-      toast.success("Élément supprimé");
+      toast.success(AGENDA_EVENT_LABELS.deletedToast);
       onClose();
       dispatchAgendaMutated();
       onMutated();
@@ -494,7 +495,8 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
   return (
     <>
       <Sheet open={open} onOpenChange={handleClose}>
-        <SheetContent className="w-full sm:max-w-[520px] overflow-y-auto p-0 flex flex-col">
+        {/* Lot 109B : `data-return-drawer` — tiroir rouvert au retour d'une fiche fournisseur. */}
+        <SheetContent className="w-full sm:max-w-[520px] overflow-y-auto p-0 flex flex-col" data-return-drawer={item?.id ? `echeance:${item.id}` : undefined}>
           {/* ── HERO (view) or compact header (edit) ── */}
           {mode === "view" ? (
             <div className="relative px-7 pt-10 pb-8 border-b border-[color:var(--border-subtle)] bg-[color:var(--bg-card)]">
@@ -588,7 +590,7 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
             </div>
           ) : (
             <div className="px-7 pt-8 pb-5 border-b border-[color:var(--border-subtle)]">
-              <SheetTitle className="sr-only">Modifier l'élément</SheetTitle>
+              <SheetTitle className="sr-only">{AGENDA_EVENT_LABELS.edit}</SheetTitle>
               <p className="vb-app-label mb-2">
                 Titre
               </p>
@@ -1124,9 +1126,9 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
       <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Supprimer cet élément ?</AlertDialogTitle>
+            <AlertDialogTitle>{AGENDA_EVENT_LABELS.deleteTitle}</AlertDialogTitle>
             <AlertDialogDescription>
-              Cette action est définitive et irréversible. L'élément sera supprimé de votre agenda.
+              {AGENDA_EVENT_LABELS.deleteBody}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

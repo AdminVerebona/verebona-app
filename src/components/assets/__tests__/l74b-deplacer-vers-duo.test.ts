@@ -23,7 +23,7 @@ describe('L74B-U01 — confirmation : ce qui part, ce qui reste', () => {
       '1 équipement',
       '2 pièces',
       '2 événements et échéances de l’historique',
-      '1 opération (intervention, sinistre…)',
+      '1 événement de référence (intervention, sinistre…)', // intégration lot 109 : jamais « opération » à l’écran
       '3 actions « À traiter »',
       '1 fiche fournisseur recopiée (sans coordonnées bancaires)',
     ]);
@@ -31,7 +31,7 @@ describe('L74B-U01 — confirmation : ce qui part, ce qui reste', () => {
       sharedDocuments: [{ id: 1, title: 'Assurance.pdf' }], sharedAgendaItems: 1, sharedOperations: 0, pendingTransmissionsCancelled: 1,
     })).toEqual([
       'Assurance.pdf (aussi rattaché à un autre bien : son lien avec ce bien est retiré)',
-      '1 élément d’agenda partagé avec un autre bien (lien retiré)',
+      '1 événement partagé avec un autre bien (lien retiré)', // lot 109I
       '1 transmission en attente annulée',
     ]);
   });

@@ -33,7 +33,7 @@
 // message qui n'évoque en rien une variable manquante.
 import '@/lib/load-env';
 import { pgClient } from '@/db';
-import { findCatalogEntry } from '@/services/ai/gateway/pricing/gemini-public-catalog';
+import { findCatalogEntry, toModelPrice } from '@/services/ai/gateway/pricing/gemini-public-catalog';
 import { AI_OPERATIONS } from '@/services/ai/registry/operations';
 
 /**
@@ -122,6 +122,17 @@ export function toMicrosPerToken(pricePerMillion: number): number {
   return Math.round(pricePerMillion * 1_000_000) / 1_000_000;
 }
 
+/** Le modèle a-t-il déjà été évalué par la synchronisation tarifaire (0304) ? */
+async function alreadyEvaluated(provider: string, model: string): Promise<boolean> {
+  try {
+    const rows = (await pgClient.unsafe(
+      `SELECT 1 FROM ai_model_price_status WHERE provider = $1 AND model = $2 LIMIT 1`,
+      [provider, model] as never[],
+    )) as unknown as unknown[];
+    return rows.length > 0;
+  } catch { return false; /* table absente (0304) */ }
+}
+
 export interface PricingSeedSummary {
   inserted: number;
   skipped: number;
@@ -148,22 +159,33 @@ export async function seedModelPricing(
     )) as unknown as unknown[];
 
     if (rows.length > 0) { skipped++; continue; }
+    // Lot 109L : un modèle déjà ÉVALUÉ par la synchronisation (KNOWN, STALE ou
+    // UNKNOWN) n'est jamais réamorcé depuis le relevé embarqué — même règle
+    // que `cost-catalog.ts` (seedFromPublicCatalog) : une seule grille.
+    if (await alreadyEvaluated(p.provider, p.model)) { skipped++; continue; }
     if (options.dryRun) { inserted++; continue; }
 
+    // Lot 109L : `public_catalog` (contrainte 0114 : billing_api | public_catalog
+    // | manual) — l'ancien `public_list` faisait échouer l'insertion. Référence
+    // unique, celle du catalogue embarqué (date de son relevé).
+    const ref = toModelPrice(findCatalogEntry(p.model)!).sourceReference;
     await pgClient.unsafe(
       `INSERT INTO ai_model_pricing
          (provider, model, input_micros, output_micros, currency,
           source, source_reference, verified, fetched_at, effective_from)
-       VALUES ($1, $2, $3, $4, 'USD', 'public_list',
-               'ai.google.dev/gemini-api/docs/pricing — relevé 2026-07-29',
-               FALSE, NOW(), NOW())`,
+       VALUES ($1, $2, $3, $4, 'USD', 'public_catalog', $5, FALSE, NOW(), NOW())`,
       [
         p.provider, p.model,
         toMicrosPerToken(p.inputPerMillion),
         toMicrosPerToken(p.outputPerMillion),
+        ref ?? null,
       ] as never[],
     );
     inserted++;
+  }
+  if (inserted > 0 && !options.dryRun) {
+    const { bumpPricingVersion } = await import('@/services/ai/gateway/pricing/pricing.repository');
+    await bumpPricingVersion('seed public_catalog');
   }
 
   return {

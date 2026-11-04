@@ -146,7 +146,7 @@ describe('L67-TYPO — typographie de la charte, casse naturelle', () => {
     for (const f of [
       'src/components/assets/DocumentDrawer.tsx', 'src/components/agenda/AgendaItemDrawer.tsx',
       'src/components/agenda/CreateAgendaItemDrawer.tsx', 'src/components/assets/EquipmentDrawer.tsx',
-      'src/components/suppliers/SupplierDrawer.tsx', 'src/components/assets/RoomDrawer.tsx',
+      /* Lot 109B : tiroir fournisseur supprimé (fiche unique). */ 'src/components/assets/RoomDrawer.tsx',
       'src/components/assets/ThumbnailEditDrawer.tsx', 'src/components/AssetFormDialog.tsx',
     ]) {
       const src = read(f);
@@ -161,7 +161,11 @@ describe('L67-TYPO — typographie de la charte, casse naturelle', () => {
     expect(doc).toContain('<p className="vb-app-subsection">Informations</p>');
     expect(doc).toContain('<p className="vb-app-label mb-1">Description</p>');
     const eq = read('src/components/assets/EquipmentDrawer.tsx');
-    for (const t of ['Fournisseurs', 'Documents associés', 'Agenda associé']) expect(eq).toContain(`<p className="vb-app-subsection">${t}</p>`);
+    for (const t of ['Fournisseurs', 'Documents associés']) expect(eq).toContain(`<p className="vb-app-subsection">${t}</p>`);
+    // Lot 109I (vocabulaire « événement », extension du #614) : « Agenda associé » devient
+    // « Événements associés », libellé partagé de `lib/agenda/grouping-view` (même style de titre).
+    expect(eq).toContain('<p className="vb-app-subsection">{AGENDA_EVENT_LABELS.linkedEvents}</p>');
+    expect(eq).not.toMatch(/>\s*Agenda associé|Aucun élément agenda associé/);
     // Étiquettes de type (pastilles) : 11 px, rayon 999, casse naturelle.
     expect(eq).not.toMatch(/text-\[9px\]/);
     expect(eq).toMatch(/text-\[11px\] font-semibold px-2 py-0\.5 rounded-full/);

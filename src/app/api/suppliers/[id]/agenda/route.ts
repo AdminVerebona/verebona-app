@@ -17,6 +17,7 @@ import { SessionService } from '@/lib/session-service';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { agendaTimeBucket } from '@/lib/agenda/agenda-suppliers-rules';
 import { todayParisDateStr } from '@/lib/notifications/time-paris';
+import { AGENDA_EVENT_LABELS } from '@/lib/agenda/grouping-view';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -90,7 +91,7 @@ export async function POST(req: NextRequest, context: RouteContext) {
       return NextResponse.json({ changed });
     } catch (e) {
       if (e instanceof svc.AgendaSupplierError) {
-        return NextResponse.json({ error: e.code === 'ITEM_NOT_FOUND' ? 'Élément introuvable.' : 'Fournisseur introuvable.', code: `AGENDA_SUPPLIERS_${e.code}` }, { status: 404 });
+        return NextResponse.json({ error: e.code === 'ITEM_NOT_FOUND' ? AGENDA_EVENT_LABELS.notFound : 'Fournisseur introuvable.', code: `AGENDA_SUPPLIERS_${e.code}` }, { status: 404 });
       }
       throw e;
     }

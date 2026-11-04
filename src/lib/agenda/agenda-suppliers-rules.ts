@@ -232,7 +232,7 @@ export function parseAgendaSuppliersPayload(raw: unknown): AgendaSuppliersPayloa
     vus.add(cle);
     newSuppliers.push({ name: nom, confirmNew: typeof n === 'object' && (n as { confirmNew?: unknown }).confirmNew === true });
   }
-  if (supplierIds.length + newSuppliers.length > AGENDA_SUPPLIER_RULES.maxPerItem) return { error: 'Fournisseurs : trop de fournisseurs pour un même élément.' };
+  if (supplierIds.length + newSuppliers.length > AGENDA_SUPPLIER_RULES.maxPerItem) return { error: 'Fournisseurs : trop de fournisseurs pour un même événement.' };
   return { supplierIds, newSuppliers };
 }
 

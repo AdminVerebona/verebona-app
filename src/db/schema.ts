@@ -2185,7 +2185,9 @@ export const suppliers = pgTable('suppliers', {
   iban: text('iban'),
   ibanHolderName: text('iban_holder_name'),
   source: text('source').notNull().default('manual'),
-  contactStatus: text('contact_status').notNull().default('unverified'),
+  // Lot 109B : colonne contact_status (statut global « vérifié / non vérifié ») supprimé —
+  // retrait physique de la colonne en deux temps, voir migration 1105 et
+  // docs/exploitation/recette-109b-fournisseurs-fiche-unique.md.
   status: text('status').notNull().default('active'),
   createdAt: tstz('created_at'),
   updatedAt: tstz('updated_at'),
@@ -4118,6 +4120,62 @@ export const businessOperationDocuments = pgTable('business_operation_documents'
   originsChk: check('business_operation_documents_origins_chk', sql`${t.origins} <@ ARRAY['SOURCE', 'USER']::text[]`),
   pairUidx: uniqueIndex('business_operation_documents_pair_uidx').on(t.operationId, t.fileId),
   fileIdx: index('business_operation_documents_file_idx').on(t.accountId, t.fileId).where(sql`active`),
+}));
+
+/**
+ * Lot 109A (1100) — fournisseurs d'une Opération (référentiel `suppliers`),
+ * distincts de l'émetteur légal d'un document (`document_suppliers`) et de la
+ * désignation textuelle (`business_operations.provider`). Une ligne par
+ * couple ; état ACTIVE / REMOVED (retrait automatique) / REJECTED (refus de
+ * l'utilisateur, jamais rétabli automatiquement). Écrite par
+ * `services/relations/operation-suppliers.ts` seulement.
+ */
+export const businessOperationSuppliers = pgTable('business_operation_suppliers', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  supplierId: integer('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  role: text('role').notNull(),
+  origin: text('origin').notNull(),
+  status: text('status').notNull().default('ACTIVE'),
+  evidence: jsonb('evidence').notNull().default({}),
+  reasonCode: text('reason_code'),
+  decidedByUserId: integer('decided_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  decidedAt: tstzOptional('decided_at'),
+  correlationId: text('correlation_id'),
+  createdAt: tstz('created_at'),
+  updatedAt: tstz('updated_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_suppliers_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  roleChk: check('business_operation_suppliers_role_chk', sql`${t.role} IN ('PROVIDER', 'DOCUMENT_ISSUER', 'INTERVENER', 'BRAND')`),
+  originChk: check('business_operation_suppliers_origin_chk', sql`${t.origin} IN ('T3', 'USER')`),
+  statusChk: check('business_operation_suppliers_status_chk', sql`${t.status} IN ('ACTIVE', 'REMOVED', 'REJECTED')`),
+  evidenceChk: check('business_operation_suppliers_evidence_chk', sql`jsonb_typeof(${t.evidence}) = 'object'`),
+  pairKey: unique('business_operation_suppliers_pair_key').on(t.operationId, t.supplierId),
+  supplierIdx: index('business_operation_suppliers_supplier_idx').on(t.supplierId, t.operationId).where(sql`status = 'ACTIVE'`),
+  accountIdx: index('business_operation_suppliers_account_idx').on(t.accountId, t.status),
+}));
+
+/** Lot 109A (1100) — historique des liens Opération ↔ fournisseur (motif, provenance, auteur, corrélation). */
+export const businessOperationSupplierHistory = pgTable('business_operation_supplier_history', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  operationId: bigint('operation_id', { mode: 'number' }).notNull(),
+  supplierId: integer('supplier_id').notNull().references(() => suppliers.id, { onDelete: 'cascade' }),
+  action: text('action').notNull(),
+  role: text('role'),
+  origin: text('origin'),
+  reasonCode: text('reason_code').notNull(),
+  actorUserId: integer('actor_user_id').references(() => users.id, { onDelete: 'set null' }),
+  correlationId: text('correlation_id'),
+  beforeJson: jsonb('before_json'),
+  afterJson: jsonb('after_json'),
+  createdAt: tstz('created_at'),
+}, (t) => ({
+  operationFk: foreignKey({ name: 'business_operation_supplier_history_operation_fk', columns: [t.operationId, t.accountId], foreignColumns: [businessOperations.id, businessOperations.accountId] }).onDelete('cascade').onUpdate('cascade'),
+  actionChk: check('business_operation_supplier_history_action_chk', sql`${t.action} IN ('LINKED', 'UPDATED', 'REMOVED', 'RESTORED', 'REJECTED', 'TRANSFERRED')`),
+  operationIdx: index('business_operation_supplier_history_operation_idx').on(t.operationId, t.createdAt),
+  accountIdx: index('business_operation_supplier_history_account_idx').on(t.accountId, t.createdAt),
 }));
 
 /** C12 / C20 — faits économiques consolidés (montant ≥ 0, signe porté par `kind`). */

@@ -55,8 +55,16 @@ import { BACKUP_EXCLUDED_TABLES, readSchemaSignature, signatureFingerprint, type
 export const BACKUP_PREFIX = 'backups/';
 /** Nombre de jours conservés. */
 const RETENTION_JOURS = Math.max(1, Number(process.env.BACKUP_RETENTION_DAYS) || 30);
-/** Lignes lues par tour de curseur. */
-const LOT_LIGNES = 500;
+/**
+ * Lignes lues par tour de curseur. Lot 109H : réglable (`BACKUP_BATCH_ROWS`,
+ * 10 à 5000, défaut inchangé 500) — un lot de lignes volumineuses (textes
+ * extraits des documents, traces IA) est entièrement en mémoire le temps de
+ * son écriture : baisser la valeur si le pic `backup:daily` le justifie.
+ */
+const LOT_LIGNES = (() => {
+  const n = Number((process.env.BACKUP_BATCH_ROWS ?? '').trim());
+  return Number.isInteger(n) && n >= 10 && n <= 5000 ? n : 500;
+})();
 /** Délai par lecture dans la session de sauvegarde (une table volumineuse est lue par lots). */
 const SAUVEGARDE_STATEMENT_TIMEOUT_MS = 10 * 60_000;
 

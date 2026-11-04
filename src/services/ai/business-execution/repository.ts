@@ -11,6 +11,7 @@
  * (`PROJECTION_ROW_CAP`) ; un dépassement est SIGNALÉ (`truncated`), jamais
  * tu. Les exports volumineux relèvent de la phase P3 (collecteur 77C).
  */
+import { NOT_CALLED_ERROR_CODES } from '../gateway/fallback-policy';
 import { pgClient } from '@/db';
 import { historyExecutionColumnReady } from '../history-reclassification/columns';
 import { getAssistantConfig } from '@/services/verebona-assistant/config/assistant-config';
@@ -566,8 +567,11 @@ export async function businessExecutionsOfJobs(jobIds: readonly number[], now: D
 }
 
 export interface ExecutionCalls {
+  /** Appels RÉELS (lot 109J : un rang refusé par la politique de secours n'en est pas un). */
   calls: number;
   failedCalls: number;
+  /** Lot 109J : rangs non sollicités (refus de secours, modèle connu indisponible) — aucune requête. */
+  notCalled?: number;
   repairCalls: number;
   /** null : au moins un appel sans tarif connu (jamais compté zéro, COST-008). */
   costMicros: number | null;
@@ -583,7 +587,7 @@ export interface ExecutionCalls {
 export async function callsOfExecutions(xs: readonly Pick<BusinessExecution, 'id' | 'traceIds'>[], q: Query = defaultQuery): Promise<Map<string, ExecutionCalls>> {
   const out = new Map<string, ExecutionCalls>();
   if (xs.length === 0) return out;
-  const vide = (): ExecutionCalls => ({ calls: 0, failedCalls: 0, repairCalls: 0, costMicros: 0, models: [], usageEventIds: [] });
+  const vide = (): ExecutionCalls => ({ calls: 0, failedCalls: 0, notCalled: 0, repairCalls: 0, costMicros: 0, models: [], usageEventIds: [] });
   for (const x of xs) out.set(x.id, vide());
   const ids = xs.map((x) => x.id);
   const traces = new Map<string, string>();
@@ -591,7 +595,7 @@ export async function callsOfExecutions(xs: readonly Pick<BusinessExecution, 'id
   // Lot 89A (P8, MIG-03) : appels historiques rattachés par le reclassement prouvé (0776).
   const hist = await historyExecutionColumnReady(q);
   const rows = await q(`
-    SELECT e.id, e.business_execution_id, e.metadata->>'traceId' AS trace_id, e.status, e.cost_micros, e.model, e.metadata->>'callKind' AS call_kind
+    SELECT e.id, e.business_execution_id, e.metadata->>'traceId' AS trace_id, e.status, e.error_code, e.cost_micros, e.model, e.metadata->>'callKind' AS call_kind
            ${hist ? ', e.history_execution_id' : ''}
       FROM ai_usage_event e
      WHERE e.business_execution_id = ANY($1::text[])
@@ -602,12 +606,14 @@ export async function callsOfExecutions(xs: readonly Pick<BusinessExecution, 'id
     const id = str(r.business_execution_id) ?? str(r.history_execution_id) ?? traces.get(String(r.trace_id)) ?? null;
     const c = id ? out.get(id) : undefined;
     if (!c) continue;
+    c.usageEventIds.push(num(r.id));
+    // Lot 109J : rang non sollicité — ni appel, ni échec (aucune requête émise).
+    if (NOT_CALLED_ERROR_CODES.has(String(r.error_code ?? ''))) { c.notCalled = (c.notCalled ?? 0) + 1; continue; }
     c.calls += 1;
     if (r.status !== 'success') c.failedCalls += 1;
     if (r.call_kind === 'repair') c.repairCalls += 1;
     c.costMicros = c.costMicros === null || r.cost_micros === null || r.cost_micros === undefined ? null : c.costMicros + num(r.cost_micros);
     if (r.model && !c.models.includes(String(r.model))) c.models.push(String(r.model));
-    c.usageEventIds.push(num(r.id));
   }
   return out;
 }

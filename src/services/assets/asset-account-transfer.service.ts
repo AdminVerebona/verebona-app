@@ -129,6 +129,8 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['document_value_review_units', 'file_id'],
   // Lot 108B : récupération du montant du justificatif (état, preuve, provenance, 1045) — suit le document.
   ['document_amount_recoveries', 'file_id'],
+  // Lot 109K : journal de propagation des réparations T1 vers les candidats et T3 (1145) — suit le document.
+  ['document_candidate_repair_propagations', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */
@@ -546,10 +548,10 @@ async function transferSuppliers(
         const [c] = await rows<{ id: number }>(tx, sql`
           INSERT INTO suppliers (account_id, created_by_user_id, scope, name, normalized_name, email, phone, website,
                                  address_line_1, address_line_2, postal_code, city, country, siren, siret, vat_number,
-                                 source, contact_status, status)
+                                 source, status)
           SELECT ${p.to}, created_by_user_id, 'personal', name, normalized_name, email, phone, website,
                  address_line_1, address_line_2, postal_code, city, country, siren, siret, vat_number,
-                 source, contact_status, status
+                 source, status
             FROM suppliers WHERE id = ${ancien}
           RETURNING id`);
         id = num(c.id);

@@ -25,6 +25,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { navigateToSupplier, registerAssistantReturnPort, supplierIdFromHref } from '@/lib/suppliers/supplier-return';
 import { usePathname, useRouter } from 'next/navigation';
 import { useVerebona } from '@/lib/verebona/useVerebona';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
@@ -320,7 +321,27 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
     else leaveForOverlay();
   }, [autorise, leaveForOverlay]);
 
+  // Lot 109B : retour depuis une fiche fournisseur — l'Assistant (ouvert, fil
+  // affiché, recherche saisie) est rétabli tel qu'il était au départ.
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const isOpenRef = useRef(isOpen);
+  isOpenRef.current = isOpen;
+  useEffect(() => registerAssistantReturnPort({
+    snapshot: () => ({ open: isOpenRef.current, threadShown: threadShownRef.current, draft: draftRef.current }),
+    restore: (st) => { setIsOpen(true); setThreadShown(st.threadShown); if (st.draft) setDraft(st.draft); },
+  }), [setDraft]);
+
   const openLive = useCallback((r: LiveResult) => {
+    // Lot 109B : résultat « fournisseur » de la recherche générale — la fiche
+    // s'ouvre avec mémoire de la recherche (« Retour à la recherche »).
+    const fournisseur = r.drawer ? null : supplierIdFromHref(r.href);
+    if (fournisseur) {
+      navigateToSupplier(fournisseur, { assistant: { open: true, threadShown: threadShownRef.current, draft: draftRef.current } });
+      setDraft('');
+      close();
+      return;
+    }
     setDraft('');
     close();
     if (r.drawer) openDrawer(r.drawer);

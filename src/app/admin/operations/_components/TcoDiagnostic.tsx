@@ -11,6 +11,7 @@ import Link from 'next/link';
 import type { TcoEconomicLine, TcoResult } from '@/services/business-operations/tco/model';
 import { ACQUISITION_CANDIDATE_REASON_LABELS, ACQUISITION_START_BASIS_LABELS } from '@/services/business-operations/tco/acquisition-start';
 import { TcoUsageDiagnostic } from './TcoUsageDiagnostic';
+import type { TcoDiagnostics } from '@/services/business-operations/tco/diagnostics';
 
 export interface TcoDiagnosticResponse {
   accountId: number;
@@ -20,6 +21,34 @@ export interface TcoDiagnosticResponse {
   /** Lot 68 : lignes non montrées sur la fiche du bien (motif). Absent : réponse antérieure. */
   userView?: { hidden: Record<string, string> };
   labels: { status: Record<string, string>; reason: Record<string, string>; warning: Record<string, string>; hidden?: Record<string, string> };
+  /** Lot 109C : diagnostics structurés (mêmes que la fiche). Absent : réponse antérieure. */
+  diagnostics?: TcoDiagnostics;
+}
+
+const NATURE_BO: Record<string, string> = { ANOMALY: 'Anomalie', COVERAGE: 'Couverture', INFORMATION: 'Information' };
+
+/** Lot 109C : code stable, nature, statut, nombre réel d'occurrences et sources (identifiants) de chaque diagnostic. */
+function DiagnosticsBo({ d }: { d: TcoDiagnostics }) {
+  if (!d.items.length) return <p className="text-xs text-muted-foreground" data-bo-tco-diagnostics="0">Aucun diagnostic (aucune anomalie détectée — ne signifie pas que toutes les dépenses possibles sont connues).</p>;
+  return (
+    <div className="rounded-lg border p-3 text-xs space-y-1.5" data-bo-tco-diagnostics={d.items.length}>
+      <p className="font-medium text-sm">Diagnostics ({d.open.families} ouvert(s), {d.inProgress} en cours, {d.information} information(s))</p>
+      <ul className="space-y-1">
+        {d.items.map((x) => (
+          <li key={x.code} className="break-words" data-bo-tco-diagnostic={x.code} data-bo-tco-diagnostic-nature={x.nature}>
+            <span className="font-mono">{x.code}</span> · {NATURE_BO[x.nature]} · {x.status} · {x.count ?? 'nombre inconnu'} occurrence(s){x.traced ? '' : ' · sources non retrouvées'}
+            {x.amountCents != null ? ` · ${eur(x.amountCents)}` : ''}
+            {x.sources.length > 0 && (
+              <span className="block text-muted-foreground">
+                {x.sources.map((s) => [s.lineId, s.fileId != null ? `fichier #${s.fileId}` : null, s.operationId != null ? `opération #${s.operationId}` : null, s.assetField].filter(Boolean).join(' / ')).join(' ; ')}
+                {x.sourcesTruncated ? ' ; …' : ''}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 /** Lot 68 : mention « masquée sur la fiche » d'une ligne (toutes les lignes restent listées ici). */
@@ -130,6 +159,7 @@ export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
           {t.reliability.warnings.map((w) => <li key={w}>{labels.warning[w] ?? w}</li>)}
         </ul>
       )}
+      {data.diagnostics && <DiagnosticsBo d={data.diagnostics} />}
       {t.reliability.anomalies.length > 0 && (
         <p className="text-xs text-[color:var(--text-danger)]">Anomalies de contrôle : {t.reliability.anomalies.map((a) => `${a.code}${a.detail ? ` (${a.detail})` : ''}`).join(', ')}</p>
       )}

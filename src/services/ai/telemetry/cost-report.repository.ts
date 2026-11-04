@@ -33,6 +33,7 @@ import type { Treatment } from '../config/treatments';
 import { TREATMENT_DEFINITIONS } from '../config/treatments';
 import { t6ModeSql } from './execution-log.repository';
 import type { T6ModeFilter } from './execution-filters';
+import { activeCorrectionJoin, completenessOf, pricingStatusSql, unknownCostSql, type CostCompleteness } from './cost-status';
 
 type Row = Record<string, unknown>;
 
@@ -59,8 +60,19 @@ interface CostTotals {
   failedCalls: number;
   inputTokens: number;
   outputTokens: number;
-  /** Appels dont le tarif était inconnu : coût non calculable, jamais inventé. */
+  /** Appels dont le coût reste INCONNU (après régularisation) : jamais inventé. */
   unpricedCalls: number;
+  /** Lot 109L : coût initial figé à l'appel (avant régularisation). */
+  initialMicros?: number;
+  /** Lot 109L : appels régularisés et leur coût corrigé (compris dans les totaux, une seule fois). */
+  regularizedCalls?: number;
+  regularizedMicros?: number;
+  /** Lot 109L : ventilation par statut tarifaire effectif. */
+  byStatus?: { applied: number; zeroOrRounded: number; missing: number; insufficientUsage: number; legacyUndetermined: number; regularized: number };
+  /** Lot 109L : appels chiffrés sur un tarif non confirmé (STALE). */
+  staleTariffCalls?: number;
+  /** Lot 109L : complet / partiel / inconnu. */
+  completeness?: CostCompleteness;
 }
 
 interface CostBreakdownRow {
@@ -70,6 +82,9 @@ interface CostBreakdownRow {
   technicalMicros: number;
   calls: number;
   unpricedCalls: number;
+  /** Lot 109L. */
+  regularizedCalls?: number;
+  completeness?: CostCompleteness;
 }
 
 interface CostReport {
@@ -122,37 +137,79 @@ function params(f: CostFilters, since: Date, until: Date): unknown[] {
 }
 
 /**
- * Un appel est « non tarifé » quand il a consommé des tokens sans produire de
- * coût. Zéro token et zéro coût est un appel en échec avant facturation, pas un
- * tarif manquant — les confondre ferait croire à une grille incomplète à chaque
- * panne fournisseur.
+ * Lot 109L (point C) : l'heuristique `cost_micros = 0 AND input_tokens > 0`
+ * est REMPLACÉE par le statut tarifaire effectif (`cost-status.ts`) — écrit à
+ * la trace, déduit pour les traces anciennes. Un coût connu arrondi à zéro
+ * n'est plus « sans tarif » ; un appel à jetons de sortie seuls l'est s'il n'a
+ * pas de tarif. Conservée pour le mode dégradé (migration 1150 absente).
  */
-const UNPRICED = `(cost_micros IS NULL OR (cost_micros = 0 AND COALESCE(input_tokens, 0) > 0))`;
+const LEGACY_UNPRICED = `(cost_micros IS NULL OR (cost_micros = 0 AND COALESCE(input_tokens, 0) > 0))`;
 
 /**
  * Source normalisée : appels en base (≤ 90 jours) + agrégats journaliers des
  * appels archivés sur S3 (`ai_usage_daily_rollup`, WF-25). Chaque ligne porte
  * son nombre d'appels (`n`) : les agrégats se somment, ils ne se comptent pas.
  * Sans elle, l'écran Coûts perdrait tout ce qui a plus de 90 jours.
+ *
+ * Lot 109L : coût EFFECTIF = correction active (régularisation) sinon coût
+ * initial — jamais les deux (aucun double comptage) ; un appel régularisé
+ * n'est plus inconnu. Les agrégats journaliers anciens portent le compteur de
+ * l'ancienne heuristique : leurs « sans tarif » sont « historique sans preuve »
+ * tant qu'une correction d'agrégat ne les a pas reconstitués.
  */
-const SOURCE = `(
+function sourceSql(mode: 'v1150' | 'legacy'): string {
+  if (mode === 'legacy') {
+    return `(
     SELECT created_at, use_case_code, account_id, config_version_id, model, model_rank, is_billable,
-           cost_micros, input_tokens, output_tokens, 1 AS n,
-           (u.status = 'error')::int AS failed_n, (${UNPRICED})::int AS unpriced_n,
+           cost_micros, cost_micros AS initial_cost, 0::bigint AS regularized_cost, 0 AS regularized_n,
+           input_tokens, output_tokens, 1 AS n,
+           (u.status = 'error')::int AS failed_n, (${LEGACY_UNPRICED})::int AS unpriced_n,
+           0 AS applied_n, 0 AS zero_n, (${LEGACY_UNPRICED})::int AS missing_n, 0 AS unmeasured_n, 0 AS legacy_n, 0 AS stale_n,
            ${t6ModeSql('u')} AS t6_mode
       FROM ai_usage_event u
     UNION ALL
     SELECT (day::timestamp AT TIME ZONE 'UTC') AS created_at, use_case_code, account_id, config_version_id, model,
-           model_rank, is_billable, cost_micros, input_tokens, output_tokens, calls AS n,
-           failed_calls AS failed_n, unpriced_calls AS unpriced_n, NULL::text AS t6_mode
+           model_rank, is_billable, cost_micros, cost_micros, 0::bigint, 0, input_tokens, output_tokens, calls AS n,
+           failed_calls AS failed_n, unpriced_calls AS unpriced_n, 0, 0, 0, 0, unpriced_calls, 0, NULL::text AS t6_mode
       FROM ai_usage_daily_rollup
   ) e`;
+  }
+  const st = pricingStatusSql('u');
+  return `(
+    SELECT u.created_at, u.use_case_code, u.account_id, u.config_version_id, u.model, u.model_rank, u.is_billable,
+           COALESCE(c.corrected_cost_micros, u.cost_micros) AS cost_micros, u.cost_micros AS initial_cost,
+           COALESCE(c.corrected_cost_micros, 0) AS regularized_cost, (c.id IS NOT NULL)::int AS regularized_n,
+           u.input_tokens, u.output_tokens, 1 AS n,
+           (u.status = 'error')::int AS failed_n, (c.id IS NULL AND ${unknownCostSql('u')})::int AS unpriced_n,
+           (c.id IS NULL AND ${st} = 'applied')::int AS applied_n,
+           (c.id IS NULL AND ${st} = 'zero_or_rounded')::int AS zero_n,
+           (c.id IS NULL AND ${st} = 'missing')::int AS missing_n,
+           (c.id IS NULL AND ${st} = 'insufficient_usage')::int AS unmeasured_n,
+           (c.id IS NULL AND ${st} = 'legacy_undetermined')::int AS legacy_n,
+           (c.id IS NULL AND COALESCE(u.metadata->'pricing'->>'stale', 'false') = 'true')::int AS stale_n,
+           ${t6ModeSql('u')} AS t6_mode
+      FROM ai_usage_event u
+      ${activeCorrectionJoin('u', 'c')}
+    UNION ALL
+    SELECT (r.day::timestamp AT TIME ZONE 'UTC') AS created_at, r.use_case_code, r.account_id, r.config_version_id, r.model,
+           r.model_rank, r.is_billable, COALESCE(rc.corrected_cost_micros, r.cost_micros) AS cost_micros, r.cost_micros AS initial_cost,
+           COALESCE(rc.corrected_cost_micros, 0) AS regularized_cost, CASE WHEN rc.id IS NOT NULL THEN r.unpriced_calls ELSE 0 END AS regularized_n,
+           r.input_tokens, r.output_tokens, r.calls AS n,
+           r.failed_calls AS failed_n, CASE WHEN rc.id IS NULL THEN r.unpriced_calls ELSE 0 END AS unpriced_n,
+           r.calls - r.unpriced_calls AS applied_n, 0 AS zero_n, 0 AS missing_n, 0 AS unmeasured_n,
+           CASE WHEN rc.id IS NULL THEN r.unpriced_calls ELSE 0 END AS legacy_n, 0 AS stale_n,
+           NULL::text AS t6_mode
+      FROM ai_usage_daily_rollup r
+      LEFT JOIN ai_cost_corrections rc ON rc.target_kind = 'rollup' AND rc.target_id = r.id AND rc.reverted_at IS NULL
+  ) e`;
+}
 
 const AGG = `
   COALESCE(SUM(e.cost_micros) FILTER (WHERE e.is_billable), 0)::bigint      AS functional,
   COALESCE(SUM(e.cost_micros) FILTER (WHERE NOT e.is_billable), 0)::bigint  AS technical,
   COALESCE(SUM(e.n), 0)::int                                               AS calls,
-  COALESCE(SUM(e.unpriced_n), 0)::int                                      AS unpriced`;
+  COALESCE(SUM(e.unpriced_n), 0)::int                                      AS unpriced,
+  COALESCE(SUM(e.regularized_n), 0)::int                                   AS regularized`;
 
 function toBreakdown(r: Row, label?: string): CostBreakdownRow {
   const key = r.key == null ? '—' : String(r.key);
@@ -163,6 +220,8 @@ function toBreakdown(r: Row, label?: string): CostBreakdownRow {
     technicalMicros: Number(r.technical),
     calls: Number(r.calls),
     unpricedCalls: Number(r.unpriced),
+    regularizedCalls: Number(r.regularized ?? 0),
+    completeness: completenessOf(Number(r.calls), Number(r.unpriced)),
   };
 }
 
@@ -173,17 +232,35 @@ const RANK_LABELS: Record<string, string> = {
 };
 
 export async function getCostReport(f: CostFilters = {}): Promise<CostReport> {
+  try {
+    return await costReportIn('v1150', f);
+  } catch (e) {
+    // Migration 1150 absente (colonne ou table) : lecture historique, signalée.
+    const code = (e as { code?: string }).code;
+    if (code !== '42P01' && code !== '42703') throw e;
+    console.warn('[ai-costs] migration 1150 absente — rapport des coûts en lecture historique (heuristique « sans tarif »).');
+    return costReportIn('legacy', f);
+  }
+}
+
+async function costReportIn(mode: 'v1150' | 'legacy', f: CostFilters): Promise<CostReport> {
   const until = f.until ?? new Date();
   const since = f.since ?? new Date(until.getTime() - 30 * 86_400_000);
   const p = params(f, since, until);
   const where = whereClause();
+  const SOURCE = sourceSql(mode);
 
   const [totalsRows, treatmentRows, modelRows, rankRows, versionRows, accountRows] = await Promise.all([
     pgClient.unsafe(
       `SELECT ${AGG},
               COALESCE(SUM(e.failed_n), 0)::int               AS failed,
               COALESCE(SUM(e.input_tokens), 0)::bigint        AS input_tokens,
-              COALESCE(SUM(e.output_tokens), 0)::bigint       AS output_tokens
+              COALESCE(SUM(e.output_tokens), 0)::bigint       AS output_tokens,
+              COALESCE(SUM(e.initial_cost), 0)::bigint        AS initial_cost,
+              COALESCE(SUM(e.regularized_cost), 0)::bigint    AS regularized_cost,
+              COALESCE(SUM(e.applied_n), 0)::int AS applied_n, COALESCE(SUM(e.zero_n), 0)::int AS zero_n,
+              COALESCE(SUM(e.missing_n), 0)::int AS missing_n, COALESCE(SUM(e.unmeasured_n), 0)::int AS unmeasured_n,
+              COALESCE(SUM(e.legacy_n), 0)::int AS legacy_n, COALESCE(SUM(e.stale_n), 0)::int AS stale_n
          FROM ${SOURCE} ${where}`,
       p as never[],
     ),
@@ -230,7 +307,16 @@ export async function getCostReport(f: CostFilters = {}): Promise<CostReport> {
     inputTokens: Number(t.input_tokens ?? 0),
     outputTokens: Number(t.output_tokens ?? 0),
     unpricedCalls: Number(t.unpriced ?? 0),
+    initialMicros: Number(t.initial_cost ?? 0),
+    regularizedCalls: Number(t.regularized ?? 0),
+    regularizedMicros: Number(t.regularized_cost ?? 0),
+    byStatus: {
+      applied: Number(t.applied_n ?? 0), zeroOrRounded: Number(t.zero_n ?? 0), missing: Number(t.missing_n ?? 0),
+      insufficientUsage: Number(t.unmeasured_n ?? 0), legacyUndetermined: Number(t.legacy_n ?? 0), regularized: Number(t.regularized ?? 0),
+    },
+    staleTariffCalls: Number(t.stale_n ?? 0),
   };
+  totals.completeness = completenessOf(totals.calls, totals.unpricedCalls);
 
   const treatmentLabel = (code: string): string => {
     const d = Object.values(TREATMENT_DEFINITIONS).find((x) => x.useCaseCode === code);
@@ -264,7 +350,7 @@ export async function getCostReport(f: CostFilters = {}): Promise<CostReport> {
  * d'appels ferait baisser la moyenne à chaque tarif manquant, et donnerait
  * l'illusion d'une économie là où il y a un trou de mesure.
  */
-export function averageCostPerCall(totals: CostTotals): number | null {
+export function averageCostPerCall(totals: Pick<CostTotals, 'calls' | 'unpricedCalls' | 'functionalMicros' | 'technicalMicros'>): number | null {
   const priced = totals.calls - totals.unpricedCalls;
   if (priced <= 0) return null;
   return Math.round((totals.functionalMicros + totals.technicalMicros) / priced);

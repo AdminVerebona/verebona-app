@@ -19,9 +19,10 @@ import { lastPageSeen, mergeChunkOutput, offsetPages } from './merge';
 import { pageMarker, paginationFooter } from './text';
 import type { PageGap, SourceUnitOrigin, TextSegment } from './types';
 import {
-  citedPages, pageRanges, probePdf, verificationUnverifiable, verifyNonPdf, verifyPdfCoverage,
+  citedPages, pageRanges, probePdf, tableTexts, verificationUnverifiable, verifyNonPdf, verifyPdfCoverage,
   type SourceProbe, type SourceVerification,
 } from './source-verification';
+import { loadPageTextLayer, type PageTextLayer } from './page-text-layer';
 
 type Out = T1AnalyzeDocumentOutput;
 
@@ -73,6 +74,11 @@ export async function continueByPages(p: {
   firstOutputTokens: number;
   firstReport: T1NormalisationReport | null;
   call: ChunkCall;
+  /**
+   * Lot 109K (COR-01) : couche texte déterministe du PDF (défaut : extract brut
+   * persisté de même empreinte, sinon extraction en mémoire). Remplaçable en test.
+   */
+  textLayer?: (bytes: Uint8Array) => Promise<PageTextLayer | null>;
 }): Promise<ContinuationResult> {
   const base: ContinuationResult = {
     output: p.first,
@@ -109,6 +115,10 @@ export async function continueByPages(p: {
     return { ...base, verification, truncatedSections: 1, notContinuable: 'document illisible pour le découpage par pages' };
   }
   const probe = sonde ?? { pageCount, pages: [] };
+  // Lot 109K (COR-01) : couche texte pdf.js (réutilisée par empreinte) — aucune IA.
+  const couche = await (p.textLayer ?? ((b) => loadPageTextLayer({ accountId: p.input.accountId, fileId: p.input.sourceIds[idx] ?? null, bytes: b })))(bytes)
+    .catch(() => null);
+  const final = (o: Out, segs: TextSegment[], pr: SourceProbe, relues: ReadonlySet<number>) => finalVerification(o, segs, pr, relues, couche);
   const { chunkPages, maxChunks } = pages.chunkSettings();
 
   let plan: { chunks: Array<{ start: number; end: number }>; beyond: { start: number; end: number } | null };
@@ -179,13 +189,16 @@ function hasContent(o: Out): boolean {
   return !!o.transcription?.trim() || (o.facts?.length ?? 0) > 0 || (o.tables?.length ?? 0) > 0 || (o.visual?.observations?.length ?? 0) > 0;
 }
 
-/** Vérification après lecture (passe + lots relus). */
-function final(o: Out, segments: TextSegment[], probe: SourceProbe, relues: ReadonlySet<number>): SourceVerification {
+/** Vérification après lecture (passe + lots relus). Lot 109K : couche texte et tableaux lus. */
+function finalVerification(o: Out, segments: TextSegment[], probe: SourceProbe, relues: ReadonlySet<number>, couche: PageTextLayer | null): SourceVerification {
   const cited = citedPages(o);
   // Marques des segments relus (texte d'un lot numéroté 1…k, recalé).
   for (const s of segments.slice(1)) for (const x of citedPages({ facts: [], tables: [], transcription: s.text }, s.pageOffset).pages) cited.pages.add(x);
   return verifyPdfCoverage({
     probe, cited, transcription: segments.map((s) => s.text).join('\n'), hasContent: hasContent(o), reread: relues,
+    textLayer: couche?.pages ?? null,
+    textLayerInfo: couche ? { origin: couche.origin, sourceSha256: couche.sourceSha256 } : null,
+    readTexts: tableTexts(o),
   });
 }
 

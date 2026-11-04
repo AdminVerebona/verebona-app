@@ -137,7 +137,12 @@ const { buildSecondaries, selectSubjects } = await import('../selector');
 const { buildPresentation } = await import('../presentation');
 const { buildTodoBlock } = await import('../todo-items');
 const { getMascotPresentation, scheduleMascotPregeneration, pendingPregenerations } = await import('../mascot.service');
-empreinte = (await import('../t6-interpellation.service')).agendaFingerprint;
+// Lot 109E : décision simulée sur le contexte COURANT (empreinte `v5:` du candidat transmis, sans preuve).
+{
+  const { t6ContextFingerprint } = await import('../t6-interpellation.service');
+  // Rôle de la date tel que lu par le collecteur simulé (événement planifié).
+  empreinte = (x) => t6ContextFingerprint({ ...x, assetName: null, assetCategory: null, seriesKey: null, dateRole: 'SCHEDULED_EVENT' } as Parameters<typeof t6ContextFingerprint>[0], undefined);
+}
 const { t6CacheKey, readT6Cache, formulateWithT6, logT6, gatewayCallerMode, resetT6Breaker } = await import('../t6-runner');
 const { buildT6Input } = await import('../t6-contract');
 const { openToProcessTarget } = await import('@/lib/to-process-target');

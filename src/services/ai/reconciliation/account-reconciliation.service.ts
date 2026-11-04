@@ -130,7 +130,11 @@ type PhaseStatus = 'DONE' | 'PARTIAL' | 'FAILED' | 'NOT_RUN' | 'NOT_CONFIGURED' 
  * jamais un échec du passage. `state` : état détaillé de la phase, identique
  * à celui du rapport d'exécution et de la synthèse du job.
  */
-export interface PhaseReport { status: PhaseStatus; error: string | null; counts?: Record<string, number>; state?: string }
+export interface PhaseReport {
+  status: PhaseStatus; error: string | null; counts?: Record<string, number>; state?: string;
+  /** Lot 109J : prochaine reprise programmée de la phase (null / absent : immédiate ou rien à reprendre). */
+  nextRetryAt?: string | null;
+}
 export type RunPhaseName = 'ASSETS' | 'OPEN_KNOWLEDGE' | 'OPEN_ACTIONS' | 'JOURNAL';
 /**
  * Lot 61 : phase FACULTATIVE `DOCUMENT_NAMING` (harmonisation du nommage
@@ -243,7 +247,12 @@ export function documentNamingPhaseReport(dn: import('./document-naming/phase').
       documents: dn.documents, scanComplete: dn.scan?.complete ? 1 : 0,
       decisionsUnsaved: dn.decisionsUnsaved ?? 0, documentsRevalidated: dn.documentsRevalidated ?? 0,
       upgradeTechnical: dn.upgrade?.totals.technical ?? 0, upgradeExpected: dn.upgrade?.totals.expected ?? 0, upgradeReviewed: dn.upgrade?.totals.reviewed ?? 0,
+      // Lot 109J : lots en erreur (≠ `failed`, écritures en échec), échecs persistants, préfiltre, re-partitions.
+      errors: dn.errors, persistentFailures: dn.persistentFailures ?? 0, documentsPrefiltered: dn.documentsPrefiltered ?? 0,
+      repartitions: dn.repartitions ?? 0,
     },
+    // Lot 109J : reprise programmée de la phase, visible dans les phases du passage.
+    ...(dn.remaining?.nextRetryAt ? { nextRetryAt: dn.remaining.nextRetryAt } : {}),
   };
 }
 

@@ -203,6 +203,31 @@ export class AiCostCapReachedError extends AiGatewayError {
  * `failureCause` : cause établie de la dernière panne (`fallback-policy`) ;
  * `decisions` : chaque choix ou refus de la chaîne (rang, modèle, motif).
  */
+/**
+ * Lot 109J — décomptes séparés d'une exécution de passerelle en échec
+ * (portés, non énumérables, par `ALL_MODELS_FAILED` et `AI_SUSPENDED`).
+ */
+export interface GatewayCallStats {
+  /** Rangs de la chaîne considérés (sollicités ou refusés). */
+  modelsConsidered: number;
+  /** Modèles réellement sollicités (au moins une requête). */
+  modelsCalled: number;
+  /** Requêtes réseau émises (essai sans schéma et réparation compris). */
+  networkRequests: number;
+  /** Rangs refusés par la politique de secours : AUCUNE requête, jamais une génération échouée. */
+  fallbackRefused: number;
+}
+
+/** Décomptes et cause d'échec d'une erreur de passerelle (null si absents). */
+export function gatewayFailureFacts(e: unknown): { cause: string | null; stats: GatewayCallStats | null } {
+  if (typeof e !== 'object' || e === null) return { cause: null, stats: null };
+  const x = e as { failureCause?: unknown; callStats?: unknown };
+  return {
+    cause: typeof x.failureCause === 'string' ? x.failureCause : null,
+    stats: x.callStats && typeof x.callStats === 'object' ? x.callStats as GatewayCallStats : null,
+  };
+}
+
 export class AiSuspendedError extends AiGatewayError {
   constructor(
     operationCode: string,

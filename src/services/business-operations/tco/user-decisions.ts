@@ -83,7 +83,8 @@ export interface TcoLineUserDecision {
 
 const RETENUE = (s: EconomicLineStatus) => s === 'RETAINED_DIRECT' || s === 'RETAINED_CONSOLIDATED';
 
-type KeyLine = Pick<TcoEconomicLine, 'id' | 'source' | 'kind' | 'amountMinor' | 'currency' | 'fileId' | 'sourceFileIds' | 'operationId' | 'sourceIdentities'>;
+type KeyLine = Pick<TcoEconomicLine, 'id' | 'source' | 'kind' | 'amountMinor' | 'currency' | 'fileId' | 'sourceFileIds' | 'operationId' | 'sourceIdentities'>
+  & Partial<Pick<TcoEconomicLine, 'mergedFacts'>>;
 
 /**
  * Lot 85A (O-9) — natures de sources non documentaires dont l'identité
@@ -126,9 +127,11 @@ export function tcoLineKeys(l: KeyLine): { primary: string; secondary: string[] 
   } else fichiers = l.fileId != null ? [l.fileId] : [];
   if (!fichiers.length) return { primary: l.id, secondary: [] };
   const principal = l.fileId != null && fichiers.includes(l.fileId) ? l.fileId : [...fichiers].sort((a, b) => a - b)[0];
+  // Lot 109D : net d'un achat recomposé — une décision prise sur l'une de ses anciennes lignes de coût le suit.
+  const reunis = (l.mergedFacts ?? []).map((m) => `f:${principal}:${m.kind}:${m.amountMinor}:${String(m.currency ?? '').trim().toUpperCase()}`);
   return {
     primary: `f:${principal}:${fait}`,
-    secondary: fichiers.filter((f) => f !== principal).sort((a, b) => a - b).map((f) => `f:${f}:${fait}`),
+    secondary: [...fichiers.filter((f) => f !== principal).sort((a, b) => a - b).map((f) => `f:${f}:${fait}`), ...reunis.filter((k) => k !== `f:${principal}:${fait}`)],
   };
 }
 
@@ -141,7 +144,7 @@ export function tcoLineRemovable(l: Pick<TcoEconomicLine, 'status' | 'kind'>): b
 export function tcoLineAddable(l: Pick<TcoEconomicLine, 'status' | 'kind' | 'eurCents' | 'amountUnknown' | 'notRealized'>): { ok: true } | { ok: false; reason: string } {
   if (RETENUE(l.status)) return { ok: false, reason: 'Déjà retenue dans le coût de possession.' };
   // Lot 81D : une dépense non réalisée ne contribue à aucun indicateur, même sur décision (jamais de date de réalisation inventée).
-  if (l.notRealized) return { ok: false, reason: 'Dépense non encore réalisée : elle sera comptée à sa date de paiement, une fois réalisée.' };
+  if (l.notRealized) return { ok: false, reason: 'Dépense non encore réalisée : elle ne peut être comptée qu’une fois réalisée (paiement daté et justifié).' };
   if (l.amountUnknown) return { ok: false, reason: 'Montant inconnu : renseignez le montant du document pour pouvoir l’ajouter.' };
   if (l.status === 'OUT_OF_SCOPE') return { ok: false, reason: 'Dépense attribuée à un autre bien.' };
   if (l.status === 'CONSOLIDATED_ELSEWHERE') return { ok: false, reason: 'Déjà comptée par une autre dépense : utilisez la dépense qui la porte.' };

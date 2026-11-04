@@ -17,6 +17,7 @@
  * `DIAG_JOB_WORKER_DISABLED=true` (ou `EXPORTS_WORKER_DISABLED=true`) : aucun
  * diagnostic sur cette instance.
  */
+import { admitHeavyTask, trackMemory } from '@/lib/runtime/memory-monitor';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { DIAG_JOB_PREFIX, diagJobSettings, sanitizeErrorMessage, type DiagJobStatus } from './state';
@@ -76,6 +77,9 @@ export async function drainDiagnosticJobs(opts: DrainOptions = {}): Promise<Arra
   const out: Array<DiagJobStatus | null> = [];
   const maxJobs = opts.maxJobs ?? 1;
   while (out.length < maxJobs) {
+    // Lot 109H : mémoire du conteneur au-delà du seuil d'admission → le
+    // diagnostic attend le tour suivant (au plus MEMORY_ADMISSION_MAX_WAIT_MS).
+    if (!opts.onlyId && !admitHeavyTask('diagnostic:job')) break;
     const job = await claimNextDiagnosticJob(workerId, commit, { onlyId: opts.onlyId });
     if (!job) break;
     state().currentJobId = job.id;
@@ -94,10 +98,10 @@ export async function drainDiagnosticJobs(opts: DrainOptions = {}): Promise<Arra
     }, beatMs);
     heartbeat.unref?.();
     try {
-      const status = await runDiagnosticJob(job, {
+      const status = await trackMemory('diagnostic:job', () => runDiagnosticJob(job, {
         workerId, isActive: () => active, cancelRequested: () => cancel, deadline: startedAt + settings.timeoutMs, progress,
         storage: opts.storage, partRows: opts.partRows, batchRows: opts.batchRows, rssMb: opts.rssMb,
-      }).catch((e) => { console.error(`[diagnostic-job] ${job.id} : erreur inattendue du worker :`, sanitizeErrorMessage(e)); return null; });
+      })).catch((e) => { console.error(`[diagnostic-job] ${job.id} : erreur inattendue du worker :`, sanitizeErrorMessage(e)); return null; });
       out.push(status);
       state().processed++;
     } finally {

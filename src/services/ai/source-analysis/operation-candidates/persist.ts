@@ -33,7 +33,9 @@
  *
  * Reprise ciblée (lot 34F, `insertFactRows` seul) : elle AJOUTE des faits et
  * ne supersède rien — les ancres existantes restent valides ; elle ne crée
- * ni ne modifie aucun candidat.
+ * aucun candidat. Lot 109K (COR-02) : si un fait ajouté porte une incidence
+ * métier nouvelle, le candidat concerné est RÉÉVALUÉ et supersédé par une
+ * nouvelle version (`repair-propagation.store.ts`), T3 signalé une fois.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { missingFromPresenceFlags } from '@/lib/schema-readiness-log';

@@ -353,7 +353,9 @@ describe('L80A-UI — sous-tiroirs et gestes (desktop et mobile, même composant
     expect(ui).toMatch(/canEdit && onDecide && actions && !confirm/);
     // Les deux sous-tiroirs et les ajustements passent les gestes.
     // Lot 81D : + avoirs / remboursements / indemnités de l'année dans le sous-tiroir des retenues.
-    expect((ui.match(/canEdit=\{canEdit\} onDecide=\{decide\}/g) ?? []).length).toBe(4);
+    // Lot 109C (ticket « alertes contextualisées » §C) : non retenues présentées en deux listes (« À revoir » /
+    // « Exclusions normales »), toutes deux avec les gestes → 5 appels.
+    expect((ui.match(/canEdit=\{canEdit\} onDecide=\{decide\}/g) ?? []).length).toBe(5);
   });
 });
 

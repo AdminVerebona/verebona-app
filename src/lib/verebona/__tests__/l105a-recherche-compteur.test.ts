@@ -71,14 +71,14 @@ describe('L105A — libellé « Voir tous les documents (N) »', () => {
 
   it('total connu sans document dans les suggestions (hors aperçu) : le lien apparaît quand même', () => {
     expect(seeAllLinks('homiris', [agenda], pret(4)).map((l) => l.label))
-      .toEqual(['Voir tous les documents (4)', 'Voir tous les éléments d’agenda']);
+      .toEqual(['Voir tous les documents (4)', 'Voir tous les événements']);
   });
 
   it('mélange de types : le lien des documents ne compte que les documents (le total vient du décompte documentaire)', () => {
     const rows = [doc, agenda, { id: 'asset-1', category: 'Bien', label: 'Homiris', href: '/assets/1' }];
     const liens = seeAllLinks('homiris', rows, pret(2));
     expect(liens[0]).toMatchObject({ id: 'voir-documents', count: 2 });
-    expect(liens[1]).toEqual({ id: 'voir-agenda', label: 'Voir tous les éléments d’agenda', href: '/agenda?q=homiris&view=list' });
+    expect(liens[1]).toEqual({ id: 'voir-agenda', label: 'Voir tous les événements', href: '/agenda?q=homiris&view=list' });
   });
 
   it('appelant historique (sans décompte) : comportement du lot 97C inchangé', () => {

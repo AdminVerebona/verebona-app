@@ -12,6 +12,7 @@
  *   · le diagnostic final, construit uniquement sur des constats (§12).
  * Pur : aucune lecture en base (testé).
  */
+import { NOT_CALLED_ERROR_CODES } from '../gateway/fallback-policy';
 import type { ExecutionRow } from './execution-log.repository';
 import type { StoredCallDiagnostic } from '../gateway/diagnostics/diagnostic.repository';
 import { cascadeDiagnosis, finalDiagnosis, type CascadeDiagnosis } from '../gateway/diagnostics/classify';
@@ -114,7 +115,7 @@ function legacyDiagnostic(c: ExecutionRow): CallDiagnostic | null {
 }
 
 /** Lot 87 (P7, 87A) : codes d'un rang SAUTÉ par la politique de secours (tracé, jamais appelé). */
-const NOT_CALLED_CODES: ReadonlySet<string> = new Set(['FALLBACK_NOT_ADMISSIBLE', 'MODEL_KNOWN_UNAVAILABLE']);
+const NOT_CALLED_CODES: ReadonlySet<string> = NOT_CALLED_ERROR_CODES;
 
 export function buildExecutionDiagnosis(p: {
   treatment: string | null;

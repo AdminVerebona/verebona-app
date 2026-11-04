@@ -75,7 +75,7 @@ const TARGET_FALLBACK_LABELS: Readonly<Record<TargetType, string>> = {
   ASSET: 'Bien',
   EQUIPMENT: 'Équipement',
   ROOM: 'Pièce',
-  AGENDA_ITEM: 'Événement d’agenda',
+  AGENDA_ITEM: 'Événement',
   SUPPLIER: 'Fournisseur',
 };
 
