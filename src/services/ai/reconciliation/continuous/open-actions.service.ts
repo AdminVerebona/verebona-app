@@ -601,14 +601,15 @@ export async function reconcileOpenToProcessActions(accountId: number, opts: {
     runRef: opts.accountRunId ? `t3_run:${opts.accountRunId}${opts.queueJobId ? `/job:${opts.queueJobId}` : ''}` : opts.queueJobId ? `job:${opts.queueJobId}` : null,
   };
   // Lot 105D : graphe d'identité (groupes, décisions) construit à la première carte LINK-ASSET, partagé par la phase.
-  let graphe: Promise<import('../document-asset/identity/graph').AccountIdentityGraph | null> | null = null;
+  // Lot 108E (A5) : l'ISSUE (panne comprise) est transmise — une panne n'est jamais confondue avec « aucun groupe ».
+  let graphe: Promise<import('../document-asset/identity/load').IdentityGraphOutcome> | null = null;
   const grapheIdentite = () => {
     graphe ??= (async () => {
-      const [{ loadAccountMatchingIndex }, { identityGraphFor }] = await Promise.all([
+      const [{ loadAccountMatchingIndex }, { identityGraphOutcomeFor }] = await Promise.all([
         import('../document-asset/matching-index'), import('../document-asset/identity/load'),
       ]);
-      return identityGraphFor(accountId, opts.indexes ? await opts.indexes.get(accountId) : await loadAccountMatchingIndex(accountId));
-    })().catch(() => null);
+      return identityGraphOutcomeFor(accountId, opts.indexes ? await opts.indexes.get(accountId) : await loadAccountMatchingIndex(accountId));
+    })().catch((e) => ({ status: 'UNAVAILABLE' as const, graph: null, error: (e as Error).message.slice(0, 300), migrations: null, durationMs: 0 }));
     return graphe;
   };
   let curseur = 0;
@@ -716,7 +717,7 @@ function candidateOriginsOf(ev: { candidateSources?: Record<string, string[]>; s
 async function reexamineDocument(accountId: number, row: ActionRow, base: Base, o: {
   guard?: ExecutionGuard; triggerCode?: string | null; indexes?: MatchingIndexCache; d: OpenActionsDeps; trace?: Trace; out?: OpenActionsResult;
   /** Lot 105D : graphe d'identité du compte, construit à la première carte LINK-ASSET de la phase. */
-  identity?: () => Promise<import('../document-asset/identity/graph').AccountIdentityGraph | null>;
+  identity?: () => Promise<import('../document-asset/identity/load').IdentityGraphOutcome>;
 }): Promise<OpenActionEntry> {
   const fileId = Number(row.target_id);
   const cle = { actionId: base.actionId, ruleCode: base.ruleCode, targetType: base.targetType, targetId: base.targetId };
@@ -743,12 +744,12 @@ async function reexamineDocument(accountId: number, row: ActionRow, base: Base, 
   etape(o.trace, 'KNOWLEDGE');
   const index = o.indexes ? await o.indexes.get(accountId) : undefined;
   // Lot 105D : graphe d'identité construit UNE fois pour la phase (jamais un par carte).
-  const identityGraph = o.identity ? await o.identity() : undefined;
+  const identityOutcome = o.identity ? await o.identity() : undefined;
   const avant = await cardSnapshot(Number(row.id));
   etape(o.trace, 'RESOLVER');
   const r = await o.d.resolveDocumentAsset({
     accountId, fileId, guard: o.guard, triggerCode: o.triggerCode ?? 'schedule_hourly', reprocessReason: 'OPEN_ACTION',
-    openActionId: Number(row.id), rearbitration: 'allow', ...(index ? { index } : {}), ...(identityGraph !== undefined ? { identityGraph } : {}),
+    openActionId: Number(row.id), rearbitration: 'allow', ...(index ? { index } : {}), ...(identityOutcome !== undefined ? { identityOutcome } : {}),
   });
   etape(o.trace, 'DECISION');
   const ev = r.evaluation;

@@ -1,13 +1,16 @@
 # Gate 0 — comparaison des architectures de mutualisation de l'interface (lot 95)
 
-> **DÉCISION PO B1 du 27/10/2026 : option B retenue** — application hybride avec **interface mobile
-> embarquée** et composants natifs ciblés (pas une WebView du site distant). Décisions liées : **B2**
-> session au Keychain / Android Keystore (§ 5 : « jeton mobile », désormais requis), **B3** code du
-> téléphone après 5 minutes sans biométrie (§ 10 n° 2), **B4** retour Google / Apple par le schéma
-> `fr.verebona.app[.preprod]://retour`. La proposition « A renforcé » ci-dessous (§ 0, § 7.2) **n'est pas
-> retenue** ; ce document reste la trace de l'analyse et de l'inventaire du code. Plan du lot :
-> `docs/mobile/plan-architecture-embarquee.md`. Le mode A du prototype reste utilisable pour le
-> diagnostic, il n'est plus la cible.
+> **DÉCISION PO DU 03/11/2026 (en vigueur) : interface DISTANTE (option A) = cible V1 iOS et Android.**
+> Elle **remplace la décision B1 du 27/10/2026** (option B, interface embarquée) : **décision remplacée /
+> plan abandonné** (`docs/mobile/plan-architecture-embarquee.md`, conservé pour l'historique). La
+> proposition « A renforcé » du § 7.2 est donc retenue ; son industrialisation (durcissements du § 7.2,
+> remplacement du montage de prototype `server.url` + chemin, garde de navigation natif, CSP de l'app,
+> extension de partage intégrée) est décrite dans `docs/mobile/architecture-distante.md` (lot 108G).
+> Décisions B2, B3, B4 et A9 : maintenues, adaptées au mode distant
+> (`docs/mobile/decision-interface-distante-108g.md` § 3).
+>
+> *Historique* : le 27/10/2026, B1 avait retenu l'option B (interface embarquée) avec B2 « jeton
+> mobile » au Keychain / Keystore, B3 code du téléphone, B4 schéma `…://retour`.
 
 Référence : CDC 12 « Application mobile iOS & Android V1 » §3 et §3.2 (G0-01 à G0-10) ; décisions PO
 du 26/10/2026 M1 à M10 (elles priment) ; CDC 18 (sessions, Google / Apple). Statut : **document de
@@ -270,7 +273,7 @@ prototype** (`server.errorPath`, écrans locaux).
 
 **Option D** (React Native / natif) : pour mémoire, écartée par le CDC et M5 sauf échec démontré.
 
-### 7.2 Proposition pour la production (non retenue — décision B1 : option B)
+### 7.2 Proposition pour la production (retenue le 03/11/2026 ; un temps écartée par B1 du 27/10/2026)
 
 **Retenir A « renforcé » pour la V1**, **sous condition** que le Gate 0 apporte les preuves listées au § 8.
 Arguments :
@@ -326,7 +329,7 @@ téléphone et prononce la validation finale. Grille : `docs/mobile/gate0-grille
 | Sujet | État | Suite |
 |---|---|---|
 | Compilation iOS / Android | Projets générés et configurés **sans compilation** (pas de Mac ni de SDK Android ici) | 1er passage CI ; corrections éventuelles du code natif (Swift, Gradle) |
-| Extension de partage iOS | Code fourni, **cible Xcode à créer sur un Mac** (procédure dans builds-et-secrets.md) | Gate 0 |
+| Extension de partage iOS | Lot 108G : **cible versionnée dans App.xcodeproj**, contrôlée dans l'archive par la CI | Recette iPhone (G0-07) |
 | Envoi de fond, app tuée par le système | Transfert natif continue ; la **confirmation** n'a lieu qu'à la réouverture et la file actuelle demande alors de resélectionner le fichier (UPL-08) | Si G0-05 l'exige : persister le chemin du fichier natif et confirmer à la reprise |
 | Icônes préprod | Icône identique (copie) en attendant le visuel « Préprod » | Fournir l'icône (M7) |
 | Masquage des achats dans l'app (COM-01) | Non fait (indépendant de l'architecture) | Industrialisation |
@@ -339,8 +342,9 @@ téléphone et prononce la validation finale. Grille : `docs/mobile/gate0-grille
 ## 10. Décisions à demander au PO (après les essais)
 
 > **Tranchées le 27/10/2026** : n° 1 → **Keychain / Keystore exigé** (B2) ; n° 2 → **code du téléphone**
-> (B3, réglage `UNLOCK_WITHOUT_BIOMETRICS = 'device_credential'` déjà en place) ; n° 3 → **option B**
-> (B1). Mise en œuvre : `docs/mobile/plan-architecture-embarquee.md`.
+> (B3, réglage `UNLOCK_WITHOUT_BIOMETRICS = 'device_credential'` déjà en place) ; n° 3 → option B (B1).
+> **03/11/2026 : n° 3 révisée → interface distante (A)** ; B1 remplacée. Conséquence pour n° 1 (B2) en
+> mode distant : voir `docs/mobile/architecture-distante.md` § 7 (arbitrage PO A-1).
 
 1. **Connexion conservée sur le téléphone** : accepter que la connexion soit gardée dans l'espace
    protégé de l'application (comme le fait le navigateur, chiffré par le téléphone, non sauvegardé) ?

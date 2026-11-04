@@ -92,7 +92,7 @@ describe('L59-1 — compte vide : les tuiles ouvrent directement les formulaires
     // Rendu (desktop et mobile : même grille) : les deux tuiles dans la bulle, rien ouvert au rendu.
     const { MascotSpeaks } = await import('@/components/home/MascotSpeaks');
     mascot.presentation = null;
-    const html = renderToStaticMarkup(h(MascotSpeaks, { greetingName: 'Test', empty: true, onCreateAsset: noop, onUploadDocument: noop, pageSuggestions: [] }));
+    const html = renderToStaticMarkup(h(MascotSpeaks, { greetingName: 'Test', empty: true, onCreateAsset: noop, onUploadDocument: noop }));
     expect(html).toContain('Ajouter un premier bien');
     expect(html).toContain('Déposer un document');
     expect(space.askLocal).not.toHaveBeenCalled();

@@ -389,6 +389,8 @@ export function buildKnowledgeFromSourceAnalysis(
     operationCandidates?: AnchoredOperationCandidate[];
     /** Lot 91D — décisions validées (`MasterGroupAnalysis.valueDecisions`). */
     valueDecisions?: PreparedValueDecision[];
+    /** Lot 108K (§C) — conformité de la sortie T1 au contrat (`metadata.valueDecisionsOutput`). */
+    valueDecisionsOutput?: unknown;
   },
 ): DocumentKnowledge {
   // Lot 34F : une observation enregistrée comme fait garde son unité source.
@@ -453,6 +455,7 @@ export function buildKnowledgeFromSourceAnalysis(
         agendaCandidates: result.agendaCandidates.map((a) => ({ title: a.title, date: a.date, confidence: a.confidence })),
         // Trace des tableaux (le détail est dans document_tables / document_table_cells).
         tables: (d.tables ?? []).map((t) => ({ index: t.index, title: t.title, pages: [t.pageStart, t.pageEnd], rows: t.rowCount, columns: t.columnCount, uncertain: t.uncertain, issues: t.issues })),
+        ...(ctx.valueDecisionsOutput ? { valueDecisionsOutput: ctx.valueDecisionsOutput } : {}),
       },
       provider: result.operationTrace.usedFallback ? 'fallback' : 'gemini',
       model: result.operationTrace.models[0] ?? null,

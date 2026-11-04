@@ -34,7 +34,9 @@ import { eq } from 'drizzle-orm';
 import { getCurrentVersion } from './legal-versions.service';
 import { recordAcceptance } from './legal-acceptances.service';
 import { sendLegalConfirmationEmail } from './legal-confirmation.service';
-import { versionProofInfo } from './cguv-referential.service';
+import { superviseCurrentPublicText, versionConsultationUrl } from './cguv-referential.service';
+import { publicSiteBase } from './cguv-manifest';
+import { cguvVersionPath } from '@/lib/legal/public-legal';
 import { linkImmediateStartRequest } from './immediate-start.service';
 
 interface PaidSubscriptionAcceptanceInput {
@@ -131,13 +133,17 @@ export async function recordPaidSubscriptionAcceptance(
     });
 
     const now = new Date();
+    if (!versionConsultationUrl(version)) await superviseCurrentPublicText(version.versionCode);
     const email = await sendLegalConfirmationEmail({
       to: owner.email,
       userId: owner.id,
       firstName: owner.firstName ?? '',
       versionCode: version.versionCode,
-      // Lot 102B : permalien PUBLIC de la version (site public = source unique).
-      permalink: versionProofInfo(version).permalinkUrl,
+      // Lot 108L : URL de CONSULTATION sur le site public de l'environnement
+      // (`/legal/cguv/versions/{code}`), jamais l'archive de l'application ni
+      // /cgvu. Texte pas encore vérifié sur le site : même adresse stable
+      // (publiée à vie par le site, contrat § 3.2) et Supervision ouverte.
+      permalink: versionConsultationUrl(version) ?? `${publicSiteBase()}${cguvVersionPath(version.versionCode)}`,
       subscription: {
         offerLabel: OFFER_LABELS[offerCode ?? ''] ?? 'Verebona',
         priceLabel:

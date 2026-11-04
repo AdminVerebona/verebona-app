@@ -21,6 +21,7 @@ import { UNFILED_COLORS, rubricColors } from '@/lib/referential/v2/rubrics';
 import { equipmentFilterParam, isEquipmentFilterActive } from '@/lib/filters/equipment-filter';
 import { isRoomFilterActive, roomFilterParam } from '@/lib/filters/room-filter';
 import { dateFilterChipLabel, isDateFilterActive, type DateFilterDim, type DateFilterValue } from '@/lib/filters/date-filter';
+import { DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET, documentRowDateLabel } from '@/lib/documents/document-row-date';
 
 /** Identifiant de la zone « Sans rubrique » — le même que côté serveur. */
 export const UNFILED = '__UNFILED__';
@@ -492,14 +493,22 @@ export function formatDateFr(value: string | null | undefined): string {
   return `${d} ${MOIS[m - 1]} ${y}`;
 }
 
-/** Date montrée sur la ligne : celle du tri quand on trie par date du document, sinon la date d'ajout. */
-export function displayedDate(d: DocumentItem, sort: SortKey): string {
-  return formatDateFr(sort === 'docDate' ? d.documentDate : d.uploadedAt);
+/**
+ * Date montrée sur la ligne — lot 108D : TOUJOURS la date métier du document
+ * (`documentDate`, le champ des filtres et tris « Date du document »), quel
+ * que soit le tri, sinon « – ». Jamais la date d'ajout, même triée par ajout
+ * (elle reste visible dans le détail du document).
+ */
+export function displayedDate(d: DocumentItem): string {
+  return documentRowDateLabel(d.documentDate);
 }
 
-/** Sous-titre : Type · date · bien (le bien seulement sur « Mes documents »). */
-export function documentSubtitle(d: DocumentItem, sort: SortKey, context: DocumentsContext): string {
-  return [typeLabel(d), displayedDate(d, sort), context === 'mes-documents' ? bienLabel(d) : null]
+/**
+ * Sous-titre — lot 108D : le Type documentaire seul, sans aucune date (la
+ * date unique est à droite de la ligne).
+ */
+export function documentSubtitle(d: DocumentItem, context: DocumentsContext): string {
+  return [typeLabel(d), DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET && context === 'mes-documents' ? bienLabel(d) : null]
     .filter(Boolean)
     .join(' · ');
 }
@@ -508,7 +517,11 @@ export function documentSubtitle(d: DocumentItem, sort: SortKey, context: Docume
 export function countLabel(shown: number, scopeTotal: number, filtered: boolean, context: DocumentsContext, searching = false): string {
   const base = `${shown} document${shown > 1 ? 's' : ''}`;
   // Lot 97C : recherche locale active — le périmètre EST l'ensemble trouvé.
-  if (searching) return filtered ? `${base} sur ${scopeTotal} trouvé${scopeTotal > 1 ? 's' : ''}` : `${base} trouvé${shown > 1 ? 's' : ''}`;
+  if (searching) {
+    if (filtered) return `${base} sur ${scopeTotal} trouvé${scopeTotal > 1 ? 's' : ''}`;
+    // Lot 108D : compteur unique de la recherche — libellé adapté à zéro.
+    return shown === 0 ? 'Aucun document trouvé' : `${base} trouvé${shown > 1 ? 's' : ''}`;
+  }
   if (filtered) return `${base} sur ${scopeTotal}`;
   return context === 'fiche-bien' ? `${base} ${shown > 1 ? 'rattachés' : 'rattaché'} à ce bien` : base;
 }

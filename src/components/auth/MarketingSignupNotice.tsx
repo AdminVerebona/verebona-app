@@ -12,6 +12,7 @@
  * rien activé. Le choix (et l'empreinte du bloc affiché, preuve) est
  * transmis avec l'inscription : `{ marketing: { checked, noticeSha256 } }`.
  */
+import { LegalLink } from '@/components/legal/LegalLink';
 import { useEffect, useState } from 'react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -70,9 +71,10 @@ export function MarketingSignupNotice({ onChange, disabled = false }: { onChange
       )}
       <p className="text-xs text-[color:var(--text-muted)]">
         {notice.help}{' '}
-        <a href={notice.privacyUrl} target="_blank" rel="noopener noreferrer" className="underline">
+        {/* Lot 108L : texte juridique — navigateur système dans l'app (open-external). */}
+        <LegalLink href={notice.privacyUrl} target="_blank" className="underline">
           {notice.privacyLabel}
-        </a>
+        </LegalLink>
       </p>
     </div>
   );

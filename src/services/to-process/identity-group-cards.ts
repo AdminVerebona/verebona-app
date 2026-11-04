@@ -49,7 +49,8 @@ export interface GroupCardInput {
   fingerprint: string;
   family: 'PROPERTY' | 'VEHICLE';
   label: string;
-  members: Array<{ fileId: number; via: 'OWN_IDENTITY' | 'CONTRACT' }>;
+  /** Lot 108E : OPERATION — même événement de référence qu'un document du groupe (un saut). */
+  members: Array<{ fileId: number; via: 'OWN_IDENTITY' | 'CONTRACT' | 'OPERATION' }>;
   excluded: Array<{ fileId: number; reason: string }>;
   candidateAssetIds: number[];
   /** Natures de preuves (ADDRESS, CADASTRAL, CONTRACT_REF…) par document. */
@@ -67,7 +68,7 @@ export interface GroupCardContext {
   memberFileIds: number[];
   scope: {
     label: string;
-    documents: Array<{ id: number; title: string; via: 'OWN_IDENTITY' | 'CONTRACT'; evidence: string }>;
+    documents: Array<{ id: number; title: string; via: 'OWN_IDENTITY' | 'CONTRACT' | 'OPERATION'; evidence: string }>;
     exceptions: Array<{ id: number; title: string; reason: string }>;
   };
 }
@@ -88,6 +89,7 @@ export const EXCLUSION_LABELS: Readonly<Record<string, string>> = {
 const EVIDENCE_LABELS: Readonly<Record<string, string>> = {
   ADDRESS: 'adresse du bien', CADASTRAL: 'référence cadastrale', REGISTRATION: 'immatriculation', VIN: 'numéro VIN',
   CONTRACT_REF: 'même numéro de contrat qu’un document du groupe', DPE_REF: 'même numéro de DPE qu’un document du groupe',
+  OPERATION: 'même événement de référence qu’un document du groupe',
 };
 
 const borne = (s: string, n = 70) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -129,7 +131,7 @@ export function groupCardContext(g: GroupCardInput, assetId: number, titles: Rea
       label: g.label.slice(0, 160),
       documents: g.members.map((m) => ({
         id: m.fileId, title: borne(titles.get(m.fileId) ?? 'Document', 90), via: m.via,
-        evidence: m.via === 'CONTRACT' ? EVIDENCE_LABELS.CONTRACT_REF
+        evidence: m.via === 'CONTRACT' ? EVIDENCE_LABELS.CONTRACT_REF : m.via === 'OPERATION' ? EVIDENCE_LABELS.OPERATION
           : [...new Set((kinds.get(m.fileId) ?? ['ADDRESS']).map((k) => EVIDENCE_LABELS[k] ?? k))].join(', '),
       })),
       exceptions: g.excluded.slice(0, 30).map((x) => ({ id: x.fileId, title: borne(titles.get(x.fileId) ?? 'Document', 90), reason: EXCLUSION_LABELS[x.reason] ?? x.reason })),
@@ -204,6 +206,19 @@ async function closeCard(accountId: number, actionId: number, reason: Resolution
     });
     return true;
   });
+}
+
+/**
+ * Lot 108E (T3 A6) : carte LINK-ASSET NÉE D'UNE PANNE technique (issue T3
+ * précédente technique) fermée — OBSOLETE, motif tracé dans l'historique de
+ * la carte. Jamais une carte d'ambiguïté réelle (l'appelant le vérifie).
+ */
+export async function closeTechnicalLinkCard(accountId: number, actionId: number, detail: string): Promise<boolean> {
+  const [r] = (await pgClient.unsafe(
+    `SELECT id FROM to_process_actions WHERE id = $1 AND account_id = $2 AND rule_code = 'LINK-ASSET' AND resolved_at IS NULL`,
+    [actionId, accountId] as never[],
+  )) as unknown as Array<{ id: number }>;
+  return r ? closeCard(accountId, actionId, 'OBSOLETE', detail) : false;
 }
 
 /**

@@ -64,8 +64,10 @@ scenario('L105D', 'T3 : rattachement rétroactif après création d’un bien (i
      WHERE account_id = ${compte.id} AND rule_code = ${rule} AND resolved_at IS NULL ORDER BY id`;
   const lienIndividuel = async (fileId: number) => (await sql<{ n: number }[]>`
     SELECT count(*)::int AS n FROM to_process_actions WHERE target_type = 'DOCUMENT' AND target_id = ${fileId} AND rule_code = 'LINK-ASSET' AND resolved_at IS NULL`)[0].n;
+  // Lot 108E : groupes de LOGEMENT / véhicule (les groupes d'appareils, ajoutés au lot 108E, sont vérifiés à part).
   const groupes = async (compte: Compte) => sql<{ group_key: string; status: string; identity_label: string; member_file_ids: number[]; excluded: Array<{ fileId: number; reason: string }>; target_asset_id: number | null; active: boolean; card_action_id: number | null }[]>`
-    SELECT group_key, status, identity_label, member_file_ids, excluded, target_asset_id, active, card_action_id FROM document_identity_groups WHERE account_id = ${compte.id} AND active ORDER BY id`;
+    SELECT group_key, status, identity_label, member_file_ids, excluded, target_asset_id, active, card_action_id FROM document_identity_groups
+     WHERE account_id = ${compte.id} AND active AND identity_family <> 'EQUIPMENT' ORDER BY id`;
   const evaluation = async (fileId: number) => (await sql<{ status: string; reason_code: string | null; e: Record<string, unknown> | null }[]>`
     SELECT status, reason_code, last_evaluation AS e FROM document_asset_resolutions WHERE file_id = ${fileId}`)[0];
 
@@ -146,7 +148,9 @@ scenario('L105D', 'T3 : rattachement rétroactif après création d’un bien (i
       const e = await evaluation(m);
       expect(e.reason_code, `doc ${m}`).toBe('GROUP_CONFIRMATION_PENDING');
     }
-    expect(p1.run.phases?.OPEN_KNOWLEDGE?.counts).toMatchObject({ identityGroups: 1, identityToConfirm: 1 });
+    // Lot 108E : le logement (à confirmer) + l'appareil Bosch (facture + garantie, même série, aucune fiche d'équipement).
+    expect(p1.run.phases?.OPEN_KNOWLEDGE?.counts).toMatchObject({ identityGroups: 2, identityToConfirm: 1 });
+    expect(p1.run.phases?.IDENTITY_GROUPS).toMatchObject({ status: 'DONE', state: 'DONE', counts: expect.objectContaining({ family_PROPERTY: 1, family_EQUIPMENT: 1 }) });
     // Même contexte rejoué : aucun appel modèle, aucune carte de plus.
     const p2 = await passage(w.compte);
     expect(appels(p2.replay, 't3_link_ambiguity')).toBe(0);
@@ -184,7 +188,10 @@ scenario('L105D', 'T3 : rattachement rétroactif après création d’un bien (i
     expect(dec).toEqual({ decision: 'CONFIRMED', status: 'ACTIVE' });
     // Passage suivant : groupe CONFIRMED au journal, rien de plus (idempotence).
     await passage(w.compte);
-    expect((await groupes(w.compte))[0]?.status ?? 'CONFIRMED').toMatch(/CONFIRMED|DEMONSTRABLE/);
+    // Lot 108E (A9, assertion stricte) : tous les membres sont rattachés — plus aucun groupe de documents SANS bien
+    // n'est actif (le journal ne garde que les groupes qui ont encore des membres) ; la décision reste ACTIVE.
+    expect(await groupes(w.compte)).toEqual([]);
+    expect((await sql<{ status: string }[]>`SELECT status FROM document_identity_decisions WHERE account_id = ${w.compte.id}`).map((x) => x.status)).toEqual(['ACTIVE']);
     // Annuler : décision UNDONE, liens d'origine IA posés par la confirmation retirés, même carte rouverte.
     const u = await undoArbitration(w.compte.id, carte.public_id, r.previousValue);
     expect(u.ok).toBe(true);
@@ -241,8 +248,8 @@ scenario('L105D', 'T3 : rattachement rétroactif après création d’un bien (i
     const compte = await make.account();
     const autre = await make.asset(compte, { category: 'IMMOBILIER', name: 'Studio' });
     const user = await analyser(compte, sortie({ title: 'Taxe foncière', texte: [`Adresse du bien : ${ADR}`] }));
-    await analyser(compte, sortie({ title: 'DPE', texte: [`Adresse du logement : ${ADR}`] }));
-    await analyser(compte, sortie({ title: 'Assurance', texte: [`Adresse du risque : ${ADR}`] }));
+    const dpe = await analyser(compte, sortie({ title: 'DPE', texte: [`Adresse du logement : ${ADR}`] }));
+    const assu = await analyser(compte, sortie({ title: 'Assurance', texte: [`Adresse du risque : ${ADR}`] }));
     // L'utilisateur a rattaché lui-même un document au Studio : intouchable.
     const { linkDocumentToAsset } = await import('@/services/documents/document-asset-links');
     await linkDocumentToAsset({ accountId: compte.id, fileId: user, target: { assetId: autre.id }, role: 'PRIMARY', origin: 'USER' });
@@ -257,10 +264,14 @@ scenario('L105D', 'T3 : rattachement rétroactif après création d’un bien (i
     const [carte] = await cartesOuvertes(compte, 'LINK-ASSET-GROUP');
     // Le document rattaché par l'utilisateur est une ANCRE (Studio) : groupe attesté pour le Studio, jamais déplacé vers Maison.
     expect(await principal(user)).toBe(autre.id);
-    const { resolveArbitration } = await import('@/services/to-process/resolve-action.service');
-    if (carte) await resolveArbitration(compte.id, carte.public_id, `CONFIRM:${maison.id}`, { userId: compte.ownerUserId });
+    // Lot 108E (A9, assertion stricte) : le document de l'utilisateur ATTESTE le logement « Studio » — aucune
+    // carte groupée vers « Maison », les autres documents du logement suivent le Studio, jamais la Maison.
+    expect(carte).toBeUndefined();
     await drainQueues();
     expect(await principal(user)).toBe(autre.id);
+    expect(await principal(dpe)).toBe(autre.id);
+    expect(await principal(assu)).toBe(autre.id);
+    void maison;
     // Isolation : rien dans l'autre compte n'a bougé.
     expect(await principal(vDoc)).toBeNull();
     expect(await principal(vDoc)).not.toBe(maison.id);
@@ -311,7 +322,8 @@ scenario('L105D', 'T3 : rattachement rétroactif après création d’un bien (i
     expect((await preuve(ticket)).last_result).toBe('AMBIGUOUS');
     // COH-DOC-LINKS ne déclare plus le bien principal « conforme » : renvoi explicite.
     const dl = await preuve(docs[0], 'COH-DOC-LINKS');
-    if (dl?.last_result === 'CONSISTENT') expect(JSON.stringify(dl.finding ?? {})).not.toMatch(/PRIMARY_PRESENT/);
+    expect(dl).toBeDefined();
+    expect(JSON.stringify(dl.finding ?? {})).not.toMatch(/PRIMARY_PRESENT/);
   }, 240_000);
 
   it('H13 — panne technique : échec T3 → constat Supervision (FINDING), jamais une question métier ; coupure T3_IDENTITY_GROUPS_ENABLED=0 → comportement antérieur', async () => {
@@ -322,9 +334,12 @@ scenario('L105D', 'T3 : rattachement rétroactif après création d’un bien (i
               VALUES ('T3', ${compte.id}, 'document', ${String(d1)}, 'e2e', 'FAILED', 5, '{"payloadVersion":1,"kind":"document_asset"}'::jsonb, now(), ${`e2e-l105d-${d1}`})`;
     const { documentPrimaryLinkCheck } = await import('@/services/coherence/registry/checks/document-primary-link');
     const { pgClient } = await import('@/db');
+    const cartesAvant = await lienIndividuel(d1);
     const insp = await documentPrimaryLinkCheck.inspect!({ sql: pgClient as never, now: new Date(), today: '2026-11-02', mode: 'DRY_RUN', correlationId: 'e2e' }, compte.id, [d1, d2]);
     expect(insp.get(d1)).toMatchObject({ verdict: 'FINDING', anomaly: 'PRIMARY_LINK_TREATMENT_FAILED' });
-    expect(await lienIndividuel(d1)).toBeLessThanOrEqual(1);
+    // Lot 108E (A9) : ZÉRO carte engendrée par la panne (plus de tolérance « ≤ 1 ») — la carte « aucun bien »
+    // éventuelle préexiste à la panne (compte sans bien lors de l'analyse) ; le constat n'en crée aucune.
+    expect(await lienIndividuel(d1)).toBe(cartesAvant);
     process.env.T3_IDENTITY_GROUPS_ENABLED = '0';
     try {
       await make.asset(compte, { category: 'IMMOBILIER', name: 'Maison' });
@@ -347,10 +362,12 @@ scenario('L105D', 'T3 : rattachement rétroactif après création d’un bien (i
     await resolveDocumentAsset({ accountId: w.compte.id, fileId: w.d.brandt1, triggerCode: 'manual' }, { callModel, crossContractActive: async () => false, aiConfigSignature: async () => 'sig' });
     const avec = vus.find((v) => String(v.SUBJECT_CONTEXT).includes('crossDocument'));
     const sans = vus.filter((v) => !String(v.SUBJECT_CONTEXT).includes('crossDocument'));
-    if (avec) {
-      expect(String(avec.SUBJECT_CONTEXT)).not.toMatch(/rables|69000/i);
-      expect(JSON.parse(String(avec.SUBJECT_CONTEXT)).document.fileId).toBe(w.d.bosch1);
-    }
+    // Lot 108E (A3, A9) : transmission OBLIGATOIRE (recherche sémantique comprise) — plus de vérification sous condition.
+    expect(avec).toBeDefined();
+    expect(String(avec!.SUBJECT_CONTEXT)).not.toMatch(/rables|69000/i);
+    expect(JSON.parse(String(avec!.SUBJECT_CONTEXT)).document.fileId).toBe(w.d.bosch1);
+    expect(JSON.parse(String(avec!.SUBJECT_CONTEXT)).crossDocument.documentIdentity).toMatchObject({ status: 'EXCLUDED', exclusionReason: 'EQUIPMENT_DOCUMENT' });
+    expect(sans.length).toBeGreaterThan(0);
     for (const v of sans) expect(JSON.parse(String(v.SUBJECT_CONTEXT)).document.fileId).toBeUndefined();
   }, 300_000);
 });

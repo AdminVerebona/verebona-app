@@ -159,8 +159,14 @@ export interface MascotDiscoveryInvitation {
   origin: 'AI' | 'CATALOG';
 }
 
-/** Lot 106B : suggestions de l'accueil présentées simultanément, au plus (questions et invitations). */
-export const MAX_HOME_SUGGESTIONS = 2;
+/**
+ * Suggestions présentées simultanément, au plus — lot 108J : TROIS, les
+ * mêmes à l'accueil et dans « Demander à Verebona » (service unique
+ * `src/services/suggestions/shared`). Indépendant des deux sujets
+ * prioritaires « À traiter » de la bulle (`MAX_TODO_ITEMS`), règle distincte
+ * et inchangée.
+ */
+export const MAX_HOME_SUGGESTIONS = 3;
 
 export interface MascotSecondary {
   id: string;
@@ -397,13 +403,10 @@ export interface MascotPresentation {
    * Absent : rafraîchissement habituel (10 min, événements).
    */
   refreshAfterMs?: number;
-  /**
-   * Lot 106B : invitations de découverte, dans l'ordre de rotation (les deux
-   * premières d'univers différents, puis une réserve pour « Autre
-   * suggestion », sans nouvel appel). Hors `contextHash`. Absent ou `null` :
-   * aucune (compte non éligible, présentation antérieure).
-   */
-  discovery?: { invitations: MascotDiscoveryInvitation[] } | null;
+  // Lot 108J : plus aucune suggestion dans la prise de parole de la mascotte —
+  // les suggestions de l'accueil et de « Demander à Verebona » viennent du
+  // service unique (`src/services/suggestions/shared`, GET /api/suggestions),
+  // indépendant de T6 et de la bulle.
 }
 
 /**

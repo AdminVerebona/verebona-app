@@ -241,7 +241,7 @@ export function onCguvReferentialChanged(): void {
 
 export type AcceptCurrentResult =
   | { ok: true; versionCode: string; permalinkUrl: string; textSha256: string | null; acceptedAt: Date; alreadyRecorded: boolean }
-  | { ok: false; code: 'NO_CURRENT_VERSION' | 'VERSION_CHANGED'; current?: { versionCode: string; permalinkUrl: string } };
+  | { ok: false; code: 'NO_CURRENT_VERSION' | 'VERSION_CHANGED' | 'CGUV_PUBLIC_TEXT_UNAVAILABLE'; current?: { versionCode: string; permalinkUrl: string | null } };
 
 /**
  * Acceptation explicite de la version EN VIGUEUR (celle affichée à l'écran,
@@ -259,6 +259,8 @@ export async function acceptCurrentCguv(input: {
   if (current.versionCode !== input.presentedVersionCode) {
     return { ok: false, code: 'VERSION_CHANGED', current: { versionCode: current.versionCode, permalinkUrl: current.permalinkUrl } };
   }
+  // Lot 108L : jamais d'acceptation d'un texte non consultable sur le site public.
+  if (current.publicText !== 'VERIFIED') return { ok: false, code: 'CGUV_PUBLIC_TEXT_UNAVAILABLE' };
   const proof = await recordAcceptance({
     userId: input.userId,
     versionCode: current.versionCode,

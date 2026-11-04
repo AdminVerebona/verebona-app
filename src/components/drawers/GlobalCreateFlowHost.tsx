@@ -17,7 +17,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useSession } from '@/hooks/useSession';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import {
-  OPEN_CREATE_FLOW, createFlowView, declareCreateFlowHost, parseCreateFlowRequest, type CreateFlowRequest,
+  OPEN_CREATE_FLOW, createFlowView, declareCreateFlowHost, parseCreateFlowRequest, settleCreateFlow, type CreateFlowRequest,
 } from '@/lib/create-flows';
 import {
   LazyAssetFormDialog, LazyCreateAgendaItemDrawer, LazyUnifiedDocumentDialog, preloadAddForm,
@@ -52,7 +52,12 @@ export function GlobalCreateFlowHost() {
     return () => { window.removeEventListener(OPEN_CREATE_FLOW, handler); retirer(); };
   }, [ouvrir]);
 
-  const fermer = () => setOuvert(null);
+  // Lot 108G : l'issue est signalée à l'appelant qui l'a demandée (`requestId` : partage entrant).
+  useEffect(() => {
+    if (ouvert) settleCreateFlow(ouvert.requestId, 'opened');
+  }, [ouvert]);
+
+  const fermer = () => { settleCreateFlow(ouvert?.requestId, 'closed'); setOuvert(null); };
   if (!ouvert) return null;
   const vue = createFlowView(ouvert);
   const assetId = vue.preselectedAssetId ?? undefined;
@@ -64,7 +69,7 @@ export function GlobalCreateFlowHost() {
         onOpenChange={(v) => { if (!v) fermer(); }}
         preselectedAssetId={assetId}
         initialFiles={vue.initialFiles}
-        onSuccess={() => { fermer(); signalMutation(); }}
+        onSuccess={() => { settleCreateFlow(ouvert.requestId, 'success'); setOuvert(null); signalMutation(); }}
       />
     );
   }

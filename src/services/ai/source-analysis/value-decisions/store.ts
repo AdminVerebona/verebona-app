@@ -117,6 +117,8 @@ export interface ActiveValueDecision {
   unitFingerprint: string | null;
   kind: string | null;
   normalizedValue: string | null;
+  /** Lot 108K : valeur telle que citée par T1 (réévaluation du motif). */
+  rawValue?: string;
   decision: string | null;
   reason: string;
   confidence: string | null;
@@ -131,7 +133,7 @@ export async function loadActiveValueDecisions(sql: Tx, accountId: number, fileI
   if (fileIds.length === 0 || !(await valueDecisionsTableReady(sql))) return [];
   return ((await sql.unsafe(
     `SELECT id::float8 AS id, file_id AS "fileId", origin, source_unit_id AS "sourceUnitId", unit_fingerprint AS "unitFingerprint",
-            value_kind AS kind, normalized_value AS "normalizedValue", decision, reason, confidence,
+            value_kind AS kind, normalized_value AS "normalizedValue", raw_value AS "rawValue", decision, reason, confidence,
             coalesce(related_fact_ids, '{}')::float8[] AS "relatedFactIds", related_candidate_keys AS "relatedCandidateKeys",
             validity, invalid_reason AS "invalidReason"
        FROM document_value_decisions

@@ -121,6 +121,15 @@ export async function acceptedTermsVersion(presented: string | null): Promise<st
   return presented ?? current.versionCode;
 }
 
+/**
+ * Lot 108L : la version retenue est-elle consultable sur le site public ?
+ * `false` → refus explicite `CGUV_PUBLIC_TEXT_UNAVAILABLE` (Supervision ouverte).
+ */
+export async function termsVersionAcceptable(code: string): Promise<boolean> {
+  const { assertCguvAcceptable } = await import('@/services/legal/legal-acceptances.service');
+  return (await assertCguvAcceptable(code)).ok;
+}
+
 /** Adresse déjà portée par un compte actif (ou clôturé / suspendu) ? */
 export async function emailHasAccount(email: string): Promise<{ id: number; firstName: string | null } | null> {
   const rows = await pgClient<{ id: number; first_name: string | null }[]>`

@@ -23,5 +23,8 @@ export function sanitizePageContext(raw: unknown): PageContext | undefined {
   }
   if (typeof r.intent === 'string' && /^[A-Za-z_]{1,60}$/.test(r.intent)) out.intent = r.intent;
   if (r.platform === 'web' || r.platform === 'mobile') out.platform = r.platform;
+  // Lot 108J : référence de suggestion partagée (revalidée ensuite côté serveur).
+  if (typeof r.suggestionId === 'string' && /^[a-z][a-z0-9_]{1,60}$/.test(r.suggestionId)) out.suggestionId = r.suggestionId;
+  if (typeof r.suggestionVersion === 'string' && /^[a-f0-9]{8,64}$/.test(r.suggestionVersion)) out.suggestionVersion = r.suggestionVersion;
   return Object.keys(out).length ? out : undefined;
 }

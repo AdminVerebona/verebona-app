@@ -45,7 +45,8 @@ describe('L107B-1 — pastilles de type de document : un seul style neutre', () 
     expect(pills[0]).not.toMatch(/documentType/);
     // Le libellé affiché reste le libellé V2 ; date inchangée.
     expect(drawer).toMatch(/\{doc\.documentTypeLabel\}/);
-    expect(drawer).toMatch(/formatDate\(doc\.documentDate\)/);
+    // Lot 108D : la date passe par la cellule de date documentaire partagée.
+    expect(drawer).toMatch(/<DocumentDateCell value=\{doc\.documentDate\}/);
   });
 
   it('les couleurs d’état (équipement, agenda) ne sont pas touchées', () => {

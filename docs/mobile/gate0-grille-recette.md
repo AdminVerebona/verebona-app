@@ -3,9 +3,12 @@
 Exigences G0-01 à G0-10 **au libellé exact du CDC 12 §3.2**, complétées des vérifications des décisions
 PO M1, M2 et M9 et des mesures d'architecture (`docs/mobile/gate0-comparaison-architectures.md` § 8).
 
-> Décision B1 du 27/10/2026 (option B, interface embarquée) : les critères complémentaires GB-01 à GB-18
-> (B1 à B4) sont dans `docs/mobile/plan-architecture-embarquee.md` § 4 ; la section 5 ci-dessous (mesures
-> de l'option A) ne sert plus qu'au diagnostic.
+> **Décision PO du 03/11/2026 (lot 108G) : interface DISTANTE = cible V1 iOS et Android.** Elle remplace
+> la décision B1 du 27/10/2026 (interface embarquée) — **décision remplacée / plan abandonné**. Les
+> critères GB-01 à GB-18 du plan embarqué ne sont plus la grille de sortie : ceux qui restent utiles sont
+> repris, adaptés au mode distant, dans `docs/exploitation/recette-108g-mobile-distant.md` (CA01–CA06 ;
+> classement : `docs/mobile/decision-interface-distante-108g.md`). La section 5 ci-dessous (mesures de
+> l'option A) redevient la référence technique ; la ligne « Sonde B » n'est plus qu'un diagnostic.
 
 **Répartition des rôles (décision M10)** — organisation de recette, pas exigence fonctionnelle :
 - **Développeur (Dév)** : prépare les versions installables (TestFlight, Google Play tests internes),
@@ -69,7 +72,7 @@ envisagé qu'en cas d'échec démontré. »
 | G0-04 | Formulaire d'ajout › « Scanner un document » ; 3 pages ; PDF unique dans « Mes documents » ; **rejouer** l'envoi (coupure réseau pendant la confirmation) : un seul document. |
 | G0-05 | Lancer un envoi (~20 Mo), revenir à l'écran d'accueil du téléphone, attendre ; puis variante arrêt forcé pendant le transfert : noter le comportement (limite UPL-08 connue). |
 | G0-06 | Autoriser les notifications (invitation dans l'app) ; déclencher un rappel d'échéance en préprod ; clic app fermée, app en arrière-plan, app verrouillée (> 5 min) : l'échéance s'ouvre après déverrouillage. |
-| G0-07 | Depuis Photos, Fichiers, Mail et une messagerie : partager 1 PDF, puis 3 images ; un fichier non pris en charge (ZIP) affiche son nom et le motif. |
+| G0-07 | **Lot 108G (extension iOS intégrée au projet, file technique)** — iOS : vérifier d'abord dans le run GitHub que l'étape « Garde-fou — binaire distribuable » a confirmé `ShareExtension.appex` (identifiant `<app>.ShareExtension`, groupe d'apps signé). Puis, sur iPhone, depuis **Photos, Fichiers, Mail, Gmail et Outlook** (si installés) : « Verebona Préprod » apparaît dans « Partager » pour un PDF et pour une photo ; l'extension affiche « Document prêt à importer dans Verebona » (jamais « enregistré ») ; ouvrir Verebona : le formulaire d'ajout habituel s'ouvre avec le(s) fichier(s) (aperçu, retrait possible, confirmation), puis l'analyse T1 a lieu après l'ajout. Cas : app fermée / ouverte / verrouillée (Face ID d'abord) / session expirée (connexion d'abord, le document attend) ; 1 PDF puis 3 images ; **deux partages successifs** avant d'ouvrir l'app (aucun écrasé, chacun proposé) ; gros PDF (> 20 Mo) ; photo HEIC (convertie en JPEG, message affiché) ; format refusé (ZIP, DOCX : nom + motif dans l'extension) ; sans réseau (le document reste en attente, aucun faux succès) ; « Annuler » le formulaire puis « Abandonner » dans le bandeau (copie effacée) ; quota atteint (fenêtre de refus habituelle, le document reste en attente). Noter le numéro de build ; joindre captures / vidéo. Android : intents SEND / SEND_MULTIPLE, mêmes cas (partage gardé dans la file technique). |
 | G0-08 | Inventaire du stockage de l'app (préprod, débogage) : identifiant d'installation, préférence biométrique, vérificateur Google / Apple au Keychain / Keystore ; **aucun jeton dans localStorage / IndexedDB** ; emplacement réel des cookies de session noté (magasin de la WebView) → décision n° 1 du document de comparaison. |
 | G0-09 | Lien du run GitHub Actions, numéro de build visible dans TestFlight et dans la piste de tests internes. |
 | G0-10 | Revue de code : aucun écran dupliqué ; liste des fichiers ajoutés côté site (`src/lib/native`, `src/components/native`). |
@@ -131,12 +134,15 @@ Préalable : `APP_OAUTH_RETURN_URL` posée en préprod (voir `docs/mobile/builds
 | Démarrage à froid jusqu'à l'accueil affiché (réseau 4G / Wi-Fi) | iOS / Android | < 3 s (PERF-01) | | | | | |
 | Retour au premier plan | iOS / Android | < 1,5 s (PERF-02) | | | | | |
 | Session conservée après arrêt forcé et redémarrage du téléphone | iOS / Android | Oui | | | | | |
-| Page protégée après 15 min d'inactivité (relais `server.url` Android) | Android | Pas de retour à la connexion | | | | | |
+| Page protégée après 15 min d'inactivité | Android | Pas de retour à la connexion (lot 108G : plus de relais `server.url` sur une WebView ≥ 100) | | | | | |
 | Lecture d'un fichier natif depuis la page distante (scan / partage) | iOS | Voie rapide ou repli `Filesystem` | | | | | |
 | Violations CSP observées dans l'app (inspecteur Safari / Chrome) | iOS / Android | Aucune bloquante | | | | | |
-| Sonde B : connexion par l'API depuis l'interface embarquée | iOS / Android | Constat (refus CSRF attendu sans changement serveur) | | | | | |
+| (Diagnostic seulement — B1 abandonnée) Sonde B : connexion par l'API depuis l'interface embarquée | iOS / Android | Constat ; build de préprod non distribué | | | | | |
 | Revue bêta TestFlight (groupe externe) | iOS | Acceptée | | | | | |
-| Hors réseau au lancement puis retour du réseau | iOS / Android | Page « Connexion Internet requise » puis reprise | | | | | |
+| Hors réseau au lancement puis retour du réseau | iOS / Android | Page « Connexion Internet indisponible » + « Réessayer », puis reprise | | | | | |
+| Lot 108G — lien vers un autre domaine (site public, e-mail) | iOS / Android | Ouvert dans Safari / Chrome, jamais dans la vue | | | | | |
+| Lot 108G — domaines « app-bound » iOS : pont natif actif sur l'origine, scanner / partage / Face ID fonctionnels | iOS | Oui | | | | | |
+| Lot 108G — Android System WebView trop ancienne (si un appareil le permet) | Android | Page « Mise à jour nécessaire » | | | | | |
 
 ---
 
@@ -148,7 +154,7 @@ Préalable : `APP_OAUTH_RETURN_URL` posée en préprod (voir `docs/mobile/builds
 | Builds testés (iOS / Android) | |
 | Appareils | |
 | Anomalies critiques ou majeures ouvertes | |
-| Architecture retenue | B — interface embarquée (décision PO B1 du 27/10/2026) |
+| Architecture retenue | **Interface distante (mode A industrialisé) — décision PO du 03/11/2026** ; B1 du 27/10/2026 remplacée (plan embarqué abandonné) |
 | Décisions PO n° 1 et n° 2 (document de comparaison § 10) | |
 | Décision Gate 0 | Validé / Validé avec réserves / Non validé |
 | Validation PO (nom, date) | |

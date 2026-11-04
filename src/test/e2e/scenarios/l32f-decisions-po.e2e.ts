@@ -234,33 +234,10 @@ scenario('L32F', 'Décisions PO du 07/10 : rétractation, statuts, notifications
 
   // ── PO-Q18/Q19 ─────────────────────────────────────────────────────────────
 
-  it('PO-Q18/Q19 — compte Standard : une notification par lot d’envoi (fichiers ou lien web), jamais pour un dépôt inachevé', async () => {
-    const acc = await make.account({ plan: 'standard' });
-    const f1 = await make.assetFile(acc);
-    const f2 = await make.assetFile(acc);
-    const enCours = await make.assetFile(acc);
-    await sql`UPDATE asset_files SET upload_status = 'PENDING' WHERE id = ${enCours.id}`;
-    const { notifyUploadCompleted } = await import('@/services/documents/upload-notification.service');
-    expect(await notifyUploadCompleted({ userId: acc.ownerUserId, accountId: acc.id, fileIds: [f1.id, f2.id, enCours.id], lotId: 'lot-e2e-1' }))
-      .toEqual({ emitted: true, count: 2 });
-    // Reprise tardive d'un fichier du même lot : pas de seconde notification.
-    await notifyUploadCompleted({ userId: acc.ownerUserId, accountId: acc.id, fileIds: [f2.id], lotId: 'lot-e2e-1' });
-    const lignes = await sql<{ payload_json: { count: number }; recipient_user_id: number }[]>`
-      SELECT payload_json, recipient_user_id FROM notification_outbox
-       WHERE event_type = 'DOCUMENT_UPLOAD_COMPLETED' AND account_id = ${acc.id}`;
-    expect(lignes).toHaveLength(1);
-    expect(lignes[0]).toMatchObject({ recipient_user_id: acc.ownerUserId, payload_json: { count: 2 } });
-
-    // Lien web : sa propre notification ; un autre compte ne peut rien annoncer.
-    await sql`UPDATE asset_files SET is_web_link = true, original_filename = 'Notice en ligne' WHERE id = ${enCours.id}`;
-    await sql`UPDATE asset_files SET upload_status = 'COMPLETED' WHERE id = ${enCours.id}`;
-    await notifyUploadCompleted({ userId: acc.ownerUserId, accountId: acc.id, fileIds: [enCours.id], lotId: `wl-${enCours.id}` });
-    const [lien] = await sql<{ payload_json: { kind: string; documentTitle: string } }[]>`
-      SELECT payload_json FROM notification_outbox WHERE event_type = 'DOCUMENT_UPLOAD_COMPLETED' AND dedupe_key LIKE ${`%wl-${enCours.id}%`}`;
-    expect(lien.payload_json).toMatchObject({ kind: 'web_link', documentTitle: 'Notice en ligne' });
-    const autre = await make.account();
-    expect(await notifyUploadCompleted({ userId: autre.ownerUserId, accountId: autre.id, fileIds: [f1.id] })).toEqual({ emitted: false, count: 0 });
-  });
+  // Lot 108I (décision PO explicite, ticket « Notifications documents ») : la
+  // notification d'ajout n'est plus émise (confirmation dans l'interface) —
+  // couvert par `l108i-notifications-documents.e2e.ts`. Le scénario lot 32
+  // « une notification par lot d'envoi » est retiré.
 
   // ── PO-Q25 ─────────────────────────────────────────────────────────────────
 

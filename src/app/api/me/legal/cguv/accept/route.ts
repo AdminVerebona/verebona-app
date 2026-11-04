@@ -42,6 +42,10 @@ export async function POST(req: NextRequest) {
         current: result.current,
       }, { status: 409 });
     }
+    if (result.code === 'CGUV_PUBLIC_TEXT_UNAVAILABLE') {
+      const { CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE } = await import('@/services/legal/legal-acceptances.service');
+      return NextResponse.json({ code: result.code, message: CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE }, { status: 503 });
+    }
     return NextResponse.json({ code: 'NO_CURRENT_VERSION', message: 'Les CGUV sont momentanément indisponibles. Réessayez dans un instant.' }, { status: 503 });
   }
   invalidateUserReadCache(session.userId);

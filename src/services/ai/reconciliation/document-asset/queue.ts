@@ -58,6 +58,7 @@ import { compactKnowledgeChanges, getAccountKnowledgeRevision, knowledgeChangedS
 import { MatchingIndexCache } from './matching-index';
 import { T1_SETTLED_STATES } from './question-gate';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
+import { T3_TECHNICAL_RETRY_MINUTES, TECHNICAL_FAILURE_REASON } from './technical-failure';
 
 /** Type de cible des travaux T3 DOCUMENT_ASSET dans `ai_job_queue`. */
 const T3_TARGET_DOCUMENT = 'document';
@@ -343,7 +344,8 @@ export const SWEEP_SQL = `
           AND r.context_fingerprint IS NOT NULL) AS context_check,
          r.context_fingerprint, r.knowledge_revision,
          (r.file_id IS NOT NULL AND r.resolution_version IS DISTINCT FROM $5::int) AS engine_changed,
-         (r.file_id IS NOT NULL AND (r.extraction_at IS NULL OR r.extraction_at < date_trunc('milliseconds', e.extracted_at))) AS analysis_changed
+         (r.file_id IS NOT NULL AND (r.extraction_at IS NULL OR r.extraction_at < date_trunc('milliseconds', e.extracted_at))) AS analysis_changed,
+         (r.reason_code = '${TECHNICAL_FAILURE_REASON}') AS technical_retry
     FROM asset_files f
     JOIN document_extractions e ON e.file_id = f.id AND e.account_id = f.account_id
     LEFT JOIN document_asset_resolutions r ON r.file_id = f.id
@@ -370,9 +372,13 @@ export const SWEEP_SQL = `
           (r.status = 'USER_DECIDED'
             AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at))
        OR (r.status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET')
+            AND r.reason_code IS DISTINCT FROM '${TECHNICAL_FAILURE_REASON}'
             AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at)
             AND r.resolution_version IS NOT DISTINCT FROM $5::int
             AND NOT ${knowledgeChangedSql('f.account_id', 'r.knowledge_revision')})
+       -- Lot 108E (A6) : panne technique — relance DURABLE après le délai de reprise (jamais une décision valable).
+       OR (r.status = 'ABSTAINED' AND r.reason_code = '${TECHNICAL_FAILURE_REASON}'
+            AND r.evaluated_at > now() - ($7 || ' minutes')::interval)
        OR (r.status = 'PENDING' AND r.requested_at > now() - ($1 || ' minutes')::interval)), false))
    ORDER BY f.id
    LIMIT $2`;
@@ -387,7 +393,7 @@ interface SweepCandidate {
   contextFingerprint: string | null;
   knowledgeRevision: number | null;
   /** Motif de la reprise (monitoring). */
-  reprocessReason: 'FIRST_EVALUATION' | 'ENGINE_VERSION' | 'NEW_ANALYSIS' | 'KNOWLEDGE_CHANGED' | 'LOST_REQUEST';
+  reprocessReason: 'FIRST_EVALUATION' | 'ENGINE_VERSION' | 'NEW_ANALYSIS' | 'KNOWLEDGE_CHANGED' | 'LOST_REQUEST' | 'TECHNICAL_RETRY';
 }
 
 async function listDocumentsWithoutPrimary(q: {
@@ -398,16 +404,17 @@ async function listDocumentsWithoutPrimary(q: {
   const { pgClient } = await import('@/db');
   const rows = (await pgClient.unsafe(SWEEP_SQL, [
     String(LOST_REQUEST_MINUTES), q.limit, q.accountId ?? null, q.afterFileId ?? 0, DOCUMENT_ASSET_RESOLUTION_VERSION,
-    q.fileIds ? [...q.fileIds] : null,
+    q.fileIds ? [...q.fileIds] : null, String(T3_TECHNICAL_RETRY_MINUTES),
   ] as never[])) as unknown as Array<{
     id: number; account_id: number; user_id: number | null; context_check: boolean | null; context_fingerprint: string | null;
-    knowledge_revision: string | number | null; engine_changed: boolean | null; analysis_changed: boolean | null;
+    knowledge_revision: string | number | null; engine_changed: boolean | null; analysis_changed: boolean | null; technical_retry: boolean | null;
   }>;
   return rows.map((r) => ({
     fileId: Number(r.id), accountId: Number(r.account_id), userId: r.user_id == null ? null : Number(r.user_id),
     contextCheck: r.context_check === true, contextFingerprint: r.context_fingerprint ?? null,
     knowledgeRevision: r.knowledge_revision == null ? null : Number(r.knowledge_revision),
-    reprocessReason: r.context_check === true ? 'KNOWLEDGE_CHANGED'
+    reprocessReason: r.technical_retry === true ? 'TECHNICAL_RETRY'
+      : r.context_check === true ? 'KNOWLEDGE_CHANGED'
       : r.engine_changed === true ? 'ENGINE_VERSION'
         : r.analysis_changed === true ? 'NEW_ANALYSIS'
           : r.context_fingerprint == null && r.knowledge_revision == null ? 'FIRST_EVALUATION' : 'LOST_REQUEST',

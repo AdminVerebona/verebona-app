@@ -23,8 +23,16 @@
  *               PRIMARY_LINK_REFUSED_BY_USER (biens refusés)
  *   FINDING     PRIMARY_LINK_PENDING (traitement T3 / T1 en file ou en cours)
  *               · PRIMARY_LINK_TREATMENT_FAILED (échec technique : Supervision,
- *               jamais une question métier) · PRIMARY_LINK_NO_KNOWLEDGE
- *               (aucune connaissance T1 persistée)
+ *               jamais une question métier ; relance durable par T3) ·
+ *               PRIMARY_LINK_NO_KNOWLEDGE (aucune connaissance T1 persistée)
+ *               · PRIMARY_LINK_IDENTITY_GRAPH_FAILED (lot 108E : graphe
+ *               d'identité illisible ou migration absente — jamais jugé)
+ *   REPAIRABLE  (lot 108E, A6) PRIMARY_LINK_TECHNICAL_CARD : carte « À quel
+ *               bien… » OUVERTE alors que la dernière issue T3 est une PANNE
+ *               (modèle indisponible, erreur du fournisseur) — la carte est
+ *               née d'une panne : réexamen T3 forcé (vraie ambiguïté →
+ *               carte maintenue ; panne persistante → carte fermée, aucune
+ *               question ; rattachement prouvé → carte fermée)
  *
  * JUGER / RÉPARER = T3 : l'inspection reconstruit le contexte DOCUMENT_ASSET
  * (connaissance persistée, Candidate Builder, graphe d'identité) et rejoue
@@ -54,6 +62,8 @@ interface DocState {
   id: number; orphan: boolean; userDecided: boolean; draft: boolean; analysisState: string | null; hasExtraction: boolean;
   status: string | null; reasonCode: string | null; version: number | null; fingerprint: string | null; aiStatus: string | null;
   jobStatus: string | null; jobError: boolean; linkCard: boolean; groupCard: boolean;
+  /** Lot 108E : origine de la carte d'une issue technique (TECHNICAL : née d'une panne ; BUSINESS : vraie question). */
+  cardOrigin: string | null;
 }
 
 async function states(sql: Parameters<NonNullable<CoherenceCheck['inspect']>>[0]['sql'], accountId: number, ids: readonly number[]): Promise<Map<number, DocState>> {
@@ -63,6 +73,7 @@ async function states(sql: Parameters<NonNullable<CoherenceCheck['inspect']>>[0]
            (COALESCE(f.is_draft, false) OR COALESCE(f.is_ignored, false)) AS draft, f.analysis_state,
            EXISTS (SELECT 1 FROM document_extractions e WHERE e.file_id = f.id AND e.account_id = f.account_id) AS has_extraction,
            r.status, r.reason_code, r.resolution_version, r.context_fingerprint, r.last_evaluation -> 'ai' ->> 'status' AS ai_status,
+           r.last_evaluation -> 'technicalFailure' ->> 'cardOrigin' AS card_origin,
            (SELECT q.status FROM ai_job_queue q WHERE q.treatment = 'T3' AND q.target_type = 'document' AND q.target_id = f.id::text
              ORDER BY q.id DESC LIMIT 1) AS job_status,
            EXISTS (SELECT 1 FROM ai_job_queue q WHERE q.treatment = 'T3' AND q.target_type = 'document' AND q.target_id = f.id::text
@@ -82,13 +93,13 @@ async function states(sql: Parameters<NonNullable<CoherenceCheck['inspect']>>[0]
     status: (x.status as string | null) ?? null, reasonCode: (x.reason_code as string | null) ?? null,
     version: x.resolution_version == null ? null : Number(x.resolution_version), fingerprint: (x.context_fingerprint as string | null) ?? null,
     aiStatus: (x.ai_status as string | null) ?? null, jobStatus: (x.job_status as string | null) ?? null, jobError: x.job_error === true,
-    linkCard: x.link_card === true, groupCard: x.group_card === true,
+    linkCard: x.link_card === true, groupCard: x.group_card === true, cardOrigin: (x.card_origin as string | null) ?? null,
   }]));
 }
 
 export const documentPrimaryLinkCheck: CoherenceCheck = {
   id: 'COH-DOC-PRIMARY-LINK',
-  version: 1,
+  version: 2,
   status: 'ACTIVE',
   title: 'Rattachement principal récupérable des documents',
   domain: 'documents-liens',
@@ -100,8 +111,9 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
   applicability: 'compte éligible (actif et modifiable) ; document visible, analysé, non brouillon / ignoré',
   invariant: 'un document sans bien principal a été examiné par T3 dans le contexte ACTUEL du compte, et rien de démontrable sans IA ne reste non rattaché ; sinon son état (identité à confirmer, décision utilisateur attendue, aucun candidat, traitement en attente ou en échec) est explicite',
   anomalies: ['PRIMARY_LINK_RECOVERABLE', 'PRIMARY_LINK_NOT_EXAMINED', 'PRIMARY_LINK_IDENTITY_TO_CONFIRM', 'PRIMARY_LINK_AWAITING_USER',
-    'PRIMARY_LINK_NO_CANDIDATE', 'PRIMARY_LINK_REFUSED_BY_USER', 'PRIMARY_LINK_PENDING', 'PRIMARY_LINK_TREATMENT_FAILED', 'PRIMARY_LINK_NO_KNOWLEDGE'],
-  autoRepairWhen: 'T3 rattacherait le document SANS IA dans le contexte actuel, ou le document n’a pas été examiné dans ce contexte : remise dans la file durable T3 DOCUMENT_ASSET (déterministe d’abord)',
+    'PRIMARY_LINK_NO_CANDIDATE', 'PRIMARY_LINK_REFUSED_BY_USER', 'PRIMARY_LINK_PENDING', 'PRIMARY_LINK_TREATMENT_FAILED', 'PRIMARY_LINK_NO_KNOWLEDGE',
+    'PRIMARY_LINK_TECHNICAL_CARD', 'PRIMARY_LINK_IDENTITY_GRAPH_FAILED'],
+  autoRepairWhen: 'T3 rattacherait le document SANS IA dans le contexte actuel, ou le document n’a pas été examiné dans ce contexte, ou une carte « À traiter » ouverte est née d’une panne technique : remise dans la file durable T3 DOCUMENT_ASSET (déterministe d’abord ; réexamen forcé pour une carte née d’une panne)',
   forbiddenRepairs: ['appeler l’IA depuis le contrôle', 'écrire un lien directement', 'attribuer un document au seul bien du compte, à un nom générique, à une catégorie ou à un fournisseur',
     'remplacer un rattachement de l’utilisateur', 'créer une question métier pour une panne technique'],
   services: ['ai/reconciliation/document-asset/queue#requestDocumentAssetResolution', 'ai/reconciliation/document-asset/context#computeDocumentAssetContext'],
@@ -109,7 +121,7 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
   triggers: ['ASSET_CREATED', 'ASSET_UPDATED', 'ASSET_DELETED', 'SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'DOCUMENT_UPLOADED'],
   frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque création / modification de bien et de document',
   criticality: 'HIGH',
-  tests: ['L105D-U-COH', 'L105D-E2E-G1', 'L105D-E2E-G2'],
+  tests: ['L105D-U-COH', 'L105D-E2E-G1', 'L105D-E2E-G2', 'L108E-E2E-PANNE'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `
@@ -137,14 +149,15 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
     const orphelins = [...etats.values()].filter((s) => s.orphan && !s.userDecided && !s.draft);
     // Contexte T3 reconstruit (lecture seule, aucune IA) : un index et un graphe pour tout le lot.
     let index: import('@/services/ai/reconciliation/document-asset/matching-index').AccountMatchingIndex | null = null;
-    let graph: import('@/services/ai/reconciliation/document-asset/identity/graph').AccountIdentityGraph | null = null;
+    let issue: import('@/services/ai/reconciliation/document-asset/identity/load').IdentityGraphOutcome | null = null;
     if (orphelins.length) {
-      const [{ loadAccountMatchingIndex }, { identityGraphFor }] = await Promise.all([
+      const [{ loadAccountMatchingIndex }, { identityGraphOutcomeFor }] = await Promise.all([
         import('@/services/ai/reconciliation/document-asset/matching-index'), import('@/services/ai/reconciliation/document-asset/identity/load'),
       ]);
       index = await loadAccountMatchingIndex(accountId);
-      graph = await identityGraphFor(accountId, index);
+      issue = await identityGraphOutcomeFor(accountId, index);
     }
+    const graphePanne = issue?.status === 'UNAVAILABLE' || issue?.status === 'MIGRATION_MISSING';
     const { DOCUMENT_ASSET_RESOLUTION_VERSION } = await import('@/services/ai/reconciliation/document-asset/version');
     for (const id of ids) {
       const s = etats.get(id);
@@ -167,8 +180,20 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
         out.set(id, constat('FINDING', 'PRIMARY_LINK_PENDING', { jobStatus: s.jobStatus }));
         continue;
       }
-      if (s.jobError || s.reasonCode === 'AI_UNAVAILABLE' || s.aiStatus === 'ERROR') {
-        out.set(id, constat('FINDING', 'PRIMARY_LINK_TREATMENT_FAILED', { jobStatus: s.jobStatus, aiStatus: s.aiStatus }));
+      // Lot 108E (A6) : issue technique (panne du modèle, erreur fournisseur, panne du graphe) — jamais une question.
+      // `AI_UNAVAILABLE` SANS erreur d'appel = T3 inactif par configuration (carte légitime), pas une panne.
+      const technique = s.reasonCode === 'TECHNICAL_FAILURE' || s.aiStatus === 'ERROR';
+      const carteDePanne = s.reasonCode === 'TECHNICAL_FAILURE' ? s.cardOrigin === 'TECHNICAL' : s.aiStatus === 'ERROR';
+      if (carteDePanne && s.linkCard) {
+        out.set(id, constat('REPAIRABLE', 'PRIMARY_LINK_TECHNICAL_CARD', { aiStatus: s.aiStatus, cardBornFromFailure: true }));
+        continue;
+      }
+      if (s.jobError || technique) {
+        out.set(id, constat('FINDING', 'PRIMARY_LINK_TREATMENT_FAILED', { jobStatus: s.jobStatus, aiStatus: s.aiStatus, durableRetry: s.reasonCode === 'TECHNICAL_FAILURE' }));
+        continue;
+      }
+      if (graphePanne) {
+        out.set(id, constat('FINDING', 'PRIMARY_LINK_IDENTITY_GRAPH_FAILED', { graphStatus: issue?.status ?? null, cause: issue?.error ?? null }));
         continue;
       }
       // Contexte ACTUEL : règles déterministes de T3 rejouées (aucune IA).
@@ -181,7 +206,7 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
       ]);
       const etat = await readAttachmentState(accountId, id);
       const resolution = await getResolution(id);
-      const c = await computeDocumentAssetContext({ accountId, fileId: id, state: etat, resolution, index: index!, identityGraph: graph });
+      const c = await computeDocumentAssetContext({ accountId, fileId: id, state: etat, resolution, index: index!, ...(issue ? { identityOutcome: issue } : { identityGraph: null }) });
       const d = dec.decideDeterministic(c.identification, { multiAssetDeclared: c.multiAssetDeclared })
         ?? dec.decideContextualDeterministic(c.candidates, c.identification, { multiAssetDeclared: c.multiAssetDeclared })
         ?? idd.decideFromIdentity(c.identity ?? null, c.candidates, { multiAssetDeclared: c.multiAssetDeclared, identifiedAssetIds: c.identification.assetIds });
@@ -213,8 +238,11 @@ export const documentPrimaryLinkCheck: CoherenceCheck = {
     const out = new Map<number, RepairResult>();
     const { requestDocumentAssetResolution } = await import('@/services/ai/reconciliation/document-asset/queue');
     for (const { id, inspection } of items) {
+      // `userId: null` : aucun utilisateur initiateur — T3 projette en CONTEXTE TECHNIQUE journalisé (lot 108E, A7).
       const jobId = await requestDocumentAssetResolution({
-        accountId, userId: null, fileId: id, triggerCode: 'coherence', reprocessReason: inspection.anomaly === 'PRIMARY_LINK_RECOVERABLE' ? 'COHERENCE_RECOVERABLE' : 'COHERENCE_NOT_EXAMINED',
+        accountId, userId: null, fileId: id, triggerCode: 'coherence',
+        reprocessReason: inspection.anomaly === 'PRIMARY_LINK_RECOVERABLE' ? 'COHERENCE_RECOVERABLE'
+          : inspection.anomaly === 'PRIMARY_LINK_TECHNICAL_CARD' ? 'TECHNICAL_CARD_REVIEW' : 'COHERENCE_NOT_EXAMINED',
       });
       out.set(id, {
         called: true, service: 'requestDocumentAssetResolution', aiCalls: 0, pending: true, reevaluation: 'TECHNICAL_REBUILD',

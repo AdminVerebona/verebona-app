@@ -35,6 +35,7 @@ import { fullTextOf } from '../source-units/build-units';
 import type { T1ExtractionExtras } from '../source-units/complete-extraction';
 import { anchorOperationCandidates, mergeOperationCandidates, type AnchoredOperationCandidate, type CandidateOrigin } from '../operation-candidates/prepare';
 import { anchorValueDecisions, type AnchoredValueDecision } from '../value-decisions/validate';
+import { valueDecisionsOutputStatus, type ValueDecisionsPass } from '../value-decisions/output-conformity';
 import { catalogForPrompts } from '@/services/canonical/registry';
 import { checkFactEvidence, factLabel } from '../master/fact-evidence';
 import { verifyCandidates, type VerifiableEntity } from '../identifier-verifier';
@@ -86,6 +87,12 @@ export interface AnalyzeDocumentResult {
    * Validées et filtrées par le marqueur du prompt dans `analyseGroupWithMaster`.
    */
   valueDecisions?: AnchoredValueDecision[] | null;
+  /**
+   * Lot 108K (§C) — statut de `valueDecisions` dans CHAQUE réponse T1
+   * (passe principale, lots de pages) : présent, vide, absent, mal formé,
+   * tronqué. Jugé contre le contrat dans `analyseGroupWithMaster`.
+   */
+  valueDecisionsPasses?: ValueDecisionsPass[];
 }
 
 /**
@@ -139,7 +146,12 @@ export async function callAnalyzeDocument(p: {
     console.info(`[t1-operation-candidates] fichier(s) ${p.groupIndices.map((i) => p.input.sourceIds[i]).join(',')} : `
       + `${report.droppedCandidates ?? 0} candidat(s) mal formé(s) écarté(s), ${report.truncatedCandidates ?? 0} au-delà de 20.`);
   }
-  return { output, report, res, batches, operationCandidates, valueDecisions };
+  // Lot 108K (§C) : présent / vide / absent / mal formé / tronqué — jamais confondus.
+  const valueDecisionsPass: ValueDecisionsPass = {
+    origin: p.candidateOrigin === 'CHUNK' || (!p.candidateOrigin && p.sources) ? 'CHUNK' : 'PASS_1',
+    ...valueDecisionsOutputStatus(output, report, res.prunedValues ?? []),
+  };
+  return { output, report, res, batches, operationCandidates, valueDecisions, valueDecisionsPass };
 }
 
 /** Compteurs de plusieurs lectures tolérantes (passe principale et lots de pages). */
@@ -175,6 +187,7 @@ export async function analyzeDocument(
   let operationCandidates = first.operationCandidates;
   // Lot 91D : décisions de la passe principale puis des lots de pages (null : aucune sortie ne porte le contrat).
   let valueDecisions: AnchoredValueDecision[] | null = first.valueDecisions;
+  const valueDecisionsPasses: ValueDecisionsPass[] = [first.valueDecisionsPass];
 
   // ── Lot 34F : poursuite par lots de pages si la sortie est saturée ──────
   // (document normal : aucun effet, aucun appel). Puis fusion idempotente.
@@ -185,6 +198,7 @@ export async function analyzeDocument(
       // Lot 40 : candidats d'un lot de pages fusionnés (dédoublonnés, clés uniques).
       operationCandidates = mergeOperationCandidates(operationCandidates, r.operationCandidates);
       if (r.valueDecisions) valueDecisions = [...(valueDecisions ?? []), ...r.valueDecisions];
+      valueDecisionsPasses.push(r.valueDecisionsPass);
       return { output: r.output, report: r.report, batches: r.batches, outputTokens: r.res.outputTokens ?? 0, pruned: r.res.prunedValues ?? [] };
     },
   });
@@ -469,6 +483,7 @@ export async function analyzeDocument(
     },
     operationCandidates,
     valueDecisions,
+    valueDecisionsPasses,
   };
 }
 

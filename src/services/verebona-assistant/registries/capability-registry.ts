@@ -415,6 +415,16 @@ function render(s: SuggestionEntry, ctx: SuggestionContext | null): RenderedSugg
 }
 
 /**
+ * Lot 108J : rendu d'UNE entrée du catalogue dans un contexte serveur (même
+ * règle que `suggestionsForRoute`) — utilisé par le service unique des
+ * suggestions partagées (accueil et « Demander à Verebona »).
+ */
+export function renderSuggestionEntry(id: string, ctx: SuggestionContext | null): RenderedSuggestion | null {
+  const s = ALL_SUGGESTIONS.find((x) => x.id === id);
+  return s ? render(s, ctx) : null;
+}
+
+/**
  * Suggestions d'une route (§8.1 / §8.2) : la liste de la page (les
  * génériques pour une page sans liste propre), puis l'état du compte quand
  * il est connu — au plus 3, sans sujet répété, JAMAIS complétées pour

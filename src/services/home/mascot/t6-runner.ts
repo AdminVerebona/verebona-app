@@ -372,6 +372,19 @@ export async function t6SuggestionCapabilities(): Promise<{ grounds: boolean; di
 }
 
 /**
+ * Lot 108J — diagnostic du prompt maître T6 ACTIF (BO › Exécutions & logs,
+ * rapport « Suggestions partagées ») : version effective, contrats des
+ * questions fondées (`t6-suggestions-v3`) et des invitations
+ * (`t6-discovery-v1`) portés ou non, origine du texte. Depuis le lot 108J,
+ * T6 ne fabrique plus de suggestions pour l'accueil (bulle seulement) : ces
+ * contrats sont INFORMATIFS. Ne lève jamais.
+ */
+export async function t6PromptDiagnostic(): Promise<{ promptVersion: string | null; suggestionsV3: boolean; discoveryV1: boolean; source: 'bo' | 'repository' | 'unreadable' }> {
+  const [version, caps] = await Promise.all([getT6MasterPromptVersion().catch(() => null), t6SuggestionCapabilities()]);
+  return { promptVersion: version, suggestionsV3: caps.grounds, discoveryV1: caps.discovery, source: caps.source };
+}
+
+/**
  * Lot 61 — le texte master EFFECTIF porte-t-il la branche EVALUATE ? `null` :
  * fichier du dépôt (qui la porte). Une version BO antérieure (lot 60 : R13
  * dans FORMULATE, sans branche EVALUATE) ne la porte pas.

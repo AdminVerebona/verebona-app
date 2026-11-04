@@ -15,13 +15,15 @@
  * GitHub (mobile-preprod / production-mobile) : un build de production ne
  * contient aucune adresse de préproduction (REC-064).
  *
- * Mode d'affichage (Gate 0, M5) — VEREBONA_UI_MODE :
- *   remote (A) : la WebView charge le site de l'environnement (prototype) ;
- *   local  (B) : la WebView charge l'interface embarquée (`www/`), qui
- *                appelle l'API de l'environnement. Au Gate 0, `www/` ne
- *                contient qu'une SONDE technique (auth, cookies, CSRF) :
- *                l'interface Next.js n'est pas exportable telle quelle
- *                (docs/mobile/gate0-comparaison-architectures.md).
+ * Mode d'affichage — VEREBONA_UI_MODE (décision PO du 03/11/2026, lot 108G :
+ * l'interface DISTANTE est la cible V1 iOS / Android ; elle remplace B1) :
+ *   remote (A) : CIBLE. La vue charge l'interface depuis l'origine de
+ *                l'environnement ; la coque locale (`www/`) ne contient que
+ *                les pages de secours (« Connexion Internet indisponible »).
+ *                Architecture et durcissements : docs/mobile/architecture-distante.md ;
+ *   local  (B) : SONDE TECHNIQUE du Gate 0 (`sonde-b/`), conservée pour le
+ *                diagnostic. JAMAIS distribuée : refusée en production et à
+ *                tout envoi TestFlight / Google Play (`checkDistribution`).
  *
  * Module JavaScript pur (aucune dépendance) : lu par capacitor.config.ts,
  * par les scripts de configuration native et par les tests (`node --test`).
@@ -60,6 +62,25 @@ export const ENVIRONMENTS = Object.freeze({
 });
 
 export const UI_MODES = Object.freeze(['remote', 'local']);
+
+/** Mode des builds distribués (TestFlight, Google Play) : le seul admis. */
+export const DISTRIBUTABLE_UI_MODE = 'remote';
+
+/**
+ * Origines de la coque LOCALE (pages de secours embarquées) : iOS sert `www/`
+ * sous `capacitor://localhost`, Android sous `https://localhost`.
+ */
+export const LOCAL_ORIGINS = Object.freeze({ ios: 'capacitor://localhost', android: 'https://localhost' });
+
+/**
+ * Version minimale du moteur Android System WebView (Chromium). En dessous,
+ * Capacitor affiche la page de secours au lieu du site : les versions plus
+ * anciennes n'ont pas les mécanismes qui limitent le pont natif à l'origine
+ * de l'environnement (WEB_MESSAGE_LISTENER, DOCUMENT_START_SCRIPT) et
+ * Capacitor se replierait sur un pont ouvert à tous les cadres.
+ * Point unique à ajuster (voir docs/mobile/architecture-distante.md § 4).
+ */
+export const ANDROID_MIN_WEBVIEW_VERSION = 100;
 
 /** Chemin d'ouverture de l'app (mode A) : l'accueil ; sans session, le middleware renvoie à la connexion. */
 export const START_PATH = '/accueil';
@@ -139,6 +160,18 @@ export function resolveBuildConfig(env) {
     uiMode: /** @type {UiMode} */ (uiMode),
     version,
     build,
+    /**
+     * Adresse chargée par la vue (`server.url`) : l'ORIGINE seule, sans chemin.
+     * Lot 108G : avec un chemin (`…/accueil`), Android refusait la règle
+     * d'origine du pont (`addWebMessageListener` n'accepte qu'une origine) et
+     * Capacitor se repliait sur `addJavascriptInterface`, joignable depuis
+     * TOUT cadre et toute page. La racine du site redirige vers l'accueil
+     * (session) ou la connexion.
+     */
+    serverUrl: origin,
+    /** Nom d'hôte seul (domaine « app-bound » iOS, App Links). */
+    hostname: new URL(origin).hostname,
+    /** Page d'accueil (bouton « Réessayer » de la page de secours). */
     startUrl: `${origin}${START_PATH}`,
     oauthReturnUrl: `${origin}${OAUTH_RETURN_PATH}`,
     /**
@@ -148,4 +181,23 @@ export function resolveBuildConfig(env) {
      */
     userAgentMarker: `VerebonaApp/${version} (${build}; ${variant.env})`,
   });
+}
+
+/**
+ * Garde-fou de distribution (lot 108G, CA02) : un build envoyé à TestFlight /
+ * Google Play, ou un build de production, est TOUJOURS en mode distant.
+ * La sonde technique (mode local) ne peut être produite qu'en préproduction,
+ * en compilation seule (artefact GitHub), jamais publiée.
+ *
+ * @param {{ env: MobileEnv, uiMode: UiMode }} b  configuration résolue
+ * @param {{ publish?: boolean }} [opts]
+ * @returns {string[]} problèmes (vide = build admis)
+ */
+export function checkDistribution(b, opts = {}) {
+  const problems = [];
+  if (b.uiMode !== DISTRIBUTABLE_UI_MODE) {
+    if (b.env === 'prod') problems.push('Sonde technique (mode local) interdite pour l’application de production : seul le mode distant est admis.');
+    if (opts.publish) problems.push('Sonde technique (mode local) : envoi à TestFlight / Google Play refusé. Relancer avec « publish » décoché (artefact seul) ou en mode distant.');
+  }
+  return problems;
 }

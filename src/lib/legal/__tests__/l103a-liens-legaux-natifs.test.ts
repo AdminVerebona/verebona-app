@@ -40,10 +40,6 @@ describe('MOB-LEGAL-08/10 — liste blanche HTTPS par environnement', () => {
     'https://verebona.fr/mentions-legales',
     'https://www.verebona.fr/cgu',
     'https://legal.verebona.fr/cguv',
-    // Archive figée d'une version acceptée, servie par l'app (lot 102B).
-    'https://app.preprod.verebona.fr/cguv/versions/2026-07-30-v1',
-    'https://app.preprod.verebona.fr/cgvu/versions/2026-07-30-v1',
-    '/cguv/versions/2026-07-30-v1',
   ])('autorisée : %s', (url) => {
     expect(checkLegalUrl(url, PREPROD).ok).toBe(true);
   });
@@ -55,6 +51,12 @@ describe('MOB-LEGAL-08/10 — liste blanche HTTPS par environnement', () => {
     ['https://app.preprod.verebona.fr/accueil', 'domain'],
     ['https://app.preprod.verebona.fr/api/auth/logout', 'domain'],
     ['https://app.preprod.verebona.fr/cguv/versions/../../accueil', 'domain'],
+    // Lot 108L (ticket « livraison des informations légales ») : l'archive de
+    // l'application et ses anciennes adresses ne sont JAMAIS une cible de lien.
+    ['https://app.preprod.verebona.fr/cguv/versions/2026-07-30-v1', 'domain'],
+    ['https://app.preprod.verebona.fr/cgvu/versions/2026-07-30-v1', 'domain'],
+    ['https://app.preprod.verebona.fr/cgvu', 'domain'],
+    ['/cguv/versions/2026-07-30-v1', 'domain'],
     ['https://user:pw@www.verebona.fr/cgu', 'credentials'],
     ['https://www.verebona.fr/cgu?token=abc', 'sensitive_data'],
     ['https://www.verebona.fr/cgu?sid=abc', 'sensitive_data'],
@@ -75,7 +77,7 @@ describe('MOB-LEGAL-08/10 — liste blanche HTTPS par environnement', () => {
     expect(checkLegalUrl('http://localhost:3001/cgu', prod)).toEqual({ ok: false, reason: 'insecure' });
   });
 
-  it('chemins juridiques de l’application : redirection publique ou archive, rien d’autre', () => {
+  it('chemins juridiques historiques de l’application (jamais une cible de lien, lot 108L)', () => {
     expect(APP_LEGAL_PATH.test('/cguv')).toBe(true);
     expect(APP_LEGAL_PATH.test('/cguv/versions/2026-07-30-v1')).toBe(true);
     expect(APP_LEGAL_PATH.test('/cguv/versions/2026-07-30-v1/download')).toBe(false);
@@ -101,12 +103,16 @@ describe('MOB-LEGAL-01/04/07 — sélection de la stratégie', () => {
   it('iOS : AppLauncher.openUrl (navigateur système), jamais Browser.open ni la vue', async () => {
     const openUrl = vi.fn(async () => ({ completed: true }));
     const windowOpen = vi.fn(() => true);
-    const r = await openLegalLink('https://app.preprod.verebona.fr/cguv/versions/2026-07-30-v1', {
+    const r = await openLegalLink('https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1', {
       policy: PREPROD, platform: 'ios', appLauncher: { openUrl }, windowOpen,
     });
-    expect(r).toEqual({ ok: true, strategy: 'native-external', url: 'https://app.preprod.verebona.fr/cguv/versions/2026-07-30-v1' });
-    expect(openUrl).toHaveBeenCalledWith({ url: 'https://app.preprod.verebona.fr/cguv/versions/2026-07-30-v1' });
+    expect(r).toEqual({ ok: true, strategy: 'native-external', url: 'https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1' });
+    expect(openUrl).toHaveBeenCalledWith({ url: 'https://www.verebona.fr/legal/cguv/versions/2026-07-30-v1' });
     expect(windowOpen).not.toHaveBeenCalled();
+    // Lot 108L : un ancien lien vers l'archive de l'application n'est jamais ouvert.
+    const refused = await openLegalLink('https://app.preprod.verebona.fr/cguv/versions/2026-07-30-v1', { policy: PREPROD, platform: 'ios', appLauncher: { openUrl } });
+    expect(refused).toMatchObject({ ok: false, reason: 'domain' });
+    expect(openUrl).toHaveBeenCalledTimes(1);
   });
 
   it('MOB-LEGAL-02/09 : la version acceptée est ouverte telle quelle (aucune substitution par la courante)', async () => {
@@ -130,10 +136,11 @@ describe('MOB-LEGAL-01/04/07 — sélection de la stratégie', () => {
     expect(legalOpenFailureMessage(r1 as Extract<typeof r1, { ok: false }>)).toMatch(/Copiez le lien officiel/);
     const r2 = await openLegalLink('https://www.verebona.fr/cgu', { policy: PREPROD, platform: 'ios', appLauncher: { openUrl: async () => { throw new Error('x'); } } });
     expect(r2).toMatchObject({ ok: false, reason: 'open_failed' });
-    // Binaire sans AppLauncher + archive de l'app : pas de chargement dans la vue.
+    // Binaire sans AppLauncher + adresse de l'origine de l'app : pas de chargement
+    // dans la vue (lot 108L : refusée dès la liste blanche, rien n'est ouvert).
     const windowOpen = vi.fn(() => true);
     const r3 = await openLegalLink('https://app.preprod.verebona.fr/cguv/versions/2026-07-30-v1', { policy: PREPROD, platform: 'ios', appLauncher: null, windowOpen });
-    expect(r3).toMatchObject({ ok: false, reason: 'unavailable', copyUrl: 'https://app.preprod.verebona.fr/cguv/versions/2026-07-30-v1' });
+    expect(r3).toMatchObject({ ok: false, reason: 'domain' });
     expect(windowOpen).not.toHaveBeenCalled();
   });
 
@@ -169,18 +176,25 @@ describe('MOB-LEGAL-05/06 — inventaire des points d’entrée', () => {
     expect(src).not.toMatch(/<a\s[^>]*href=\{[^}]*permalink/i);
   });
 
-  it('Mon compte › Informations légales : version acceptée = permalien EXACT (repli seulement s’il manque)', () => {
+  // Lot 108L : lien PUBLIC de la version acceptée (jamais la version courante en
+  // repli, jamais l'URL de preuve) ; absent → état « en cours de reprise ».
+  it('Mon compte › Informations légales : version acceptée = son texte EXACT sur le site public, sans repli sur la courante', () => {
     const src = read('src/components/account/LegalInformationCard.tsx');
-    expect(src).toMatch(/<LegalLink\s+href=\{latest\.permalinkUrl\}\s+fallbackHref=\{legal\.cguv\}/);
-    expect(src).toMatch(/<LegalLink\s+href=\{a\.permalinkUrl\}\s+fallbackHref=\{legal\.cguv\}/);
+    expect(src).toMatch(/<LegalLink href=\{latest\.consultationUrl\}/);
+    expect(src).toMatch(/<LegalLink href=\{a\.consultationUrl\}/);
+    expect(src).not.toMatch(/fallbackHref=\{legal\.cguv\}/);
   });
 
   it('LegalLink : navigation de la vue toujours empêchée dans l’app ; jamais Browser.open', () => {
     const src = read('src/components/legal/LegalLink.tsx');
     expect(src).toMatch(/if \(isNativeApp\(\)\) \{\s*\n\s*\/\/[^\n]*\n\s*e\.preventDefault\(\);/);
+    // Lot 108H : l'ouverture est déléguée à la brique générique `lib/native/open-external`.
     const lib = read('src/lib/legal/open-legal-link.ts');
-    expect(lib).toMatch(/NATIVE_PLUGINS\.appLauncher/);
+    expect(lib).toMatch(/openExternalUrl\(check\.url/);
     expect(lib).not.toMatch(/NATIVE_PLUGINS\.browser/);
+    const ext = read('src/lib/native/open-external.ts');
+    expect(ext).toMatch(/NATIVE_PLUGINS\.appLauncher/);
+    expect(ext).not.toMatch(/NATIVE_PLUGINS\.browser/);
     expect(NATIVE_PLUGINS.appLauncher).toBe('AppLauncher');
   });
 

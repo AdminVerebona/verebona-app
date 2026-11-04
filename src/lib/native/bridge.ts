@@ -51,6 +51,12 @@ export const NATIVE_PLUGINS = {
    * le code partagé fonctionne sans (contrôle simplement non fait).
    */
   biometricState: 'VerebonaBiometricState',
+  /**
+   * Lot 108G : plugin local iOS (mobile/ios/App/App/VerebonaShareInbox.swift) —
+   * file technique des partages déposés par l'extension de partage
+   * (`lib/native/share-inbox`). Absent des binaires antérieurs : rien à reprendre.
+   */
+  shareInbox: 'VerebonaShareInbox',
 } as const;
 
 export type NativePluginName = typeof NATIVE_PLUGINS[keyof typeof NATIVE_PLUGINS];

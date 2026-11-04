@@ -13,6 +13,9 @@ public class MainActivity extends BridgeActivity {
     public void onCreate(Bundle savedInstanceState) {
         // Lot 107A : plugins LOCAUX de l'application (non publiés sur npm),
         // à enregistrer avant l'initialisation du pont Capacitor.
+        // Lot 108G : garde de navigation (seule l'origine de l'environnement
+        // est chargée dans la vue ; tout autre lien → navigateur du téléphone).
+        registerPlugin(VerebonaNavigationGuardPlugin.class);
         registerPlugin(VerebonaBiometricStatePlugin.class);
         super.onCreate(savedInstanceState);
     }

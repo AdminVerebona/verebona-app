@@ -268,9 +268,13 @@ describe('TCO — recette obligatoire (§7)', () => {
     expect(section).toContain('<TcoJustificatif fileId={l.fileId} />');
     // Responsive : mêmes jetons que les autres sections ; un seul composant pour desktop et mobile.
     expect(section).toMatch(/flex items-start justify-between gap-3/);
-    expect(section).toContain('grid grid-cols-1 sm:grid-cols-2');
+    // Lot 108C : le formulaire des forfaits vit dans « Dépenses d'usage » (`TcoUsageSection`), même section.
+    const usage = lire('src/components/assets/TcoUsageSection.tsx');
+    expect(section).toContain('<TcoUsageSection');
+    expect(usage).toContain('grid grid-cols-1 sm:grid-cols-2');
     // Aucun import serveur / registre dans le paquet client (types seulement).
     expect(section).not.toMatch(/from '@\/db'|from '@\/services\/business-operations\/tco\/model'/);
+    expect(usage).not.toMatch(/from '@\/db'|from '@\/services\/business-operations\/tco\/(model|usage-complement)'/);
   });
 
   it('TCO-17 — Standard : présentation verrouillée sans montant ; lecture seule : aucune écriture ; route contrôlée côté serveur', () => {
@@ -284,7 +288,9 @@ describe('TCO — recette obligatoire (§7)', () => {
     // Montant dans l'en-tête seulement avec des données (jamais en verrouillé) ; forfaits modifiables seulement si droit d'écriture et hors lecture seule.
     expect(section).toMatch(/open && t && !locked/);
     expect(section).toContain('setCanEdit(!!r.canEdit && !readOnly)');
-    expect(section).toMatch(/\{canEdit && \(/);
+    // Lot 108C : forfaits et classements dans `TcoUsageSection`, qui reçoit le même droit d'écriture.
+    expect(section).toContain('canEdit={canEdit}');
+    expect(lire('src/components/assets/TcoUsageSection.tsx')).toMatch(/\{canEdit && \(/);
   });
 });
 

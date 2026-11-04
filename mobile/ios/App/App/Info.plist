@@ -23,6 +23,17 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<!-- Lot 108G : groupe d'apps partagé avec l'extension de partage (file technique). -->
+	<key>VBAppGroup</key>
+	<string>$(VB_APP_GROUP)</string>
+	<!-- Lot 108G : domaines « app-bound » — WebKit n'exécute scripts injectés et
+	     gestionnaires de messages (pont natif) que sur l'origine de l'environnement
+	     et la coque locale (capacitor.config.ts › ios.limitsNavigationsToAppBoundDomains). -->
+	<key>WKAppBoundDomains</key>
+	<array>
+		<string>$(VB_APP_BOUND_DOMAIN)</string>
+		<string>localhost</string>
+	</array>
 	<!-- Retour Google / Apple par schéma privé (RFC 8252) — accepté seulement pour `<schéma>:/oauth`. -->
 	<key>CFBundleURLTypes</key>
 	<array>

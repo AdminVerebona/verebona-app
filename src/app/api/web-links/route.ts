@@ -5,6 +5,7 @@ import { eq, and, isNull } from 'drizzle-orm';
 import { getSession } from '@/lib/auth-guards';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { AccountService } from '@/services/account-service';
+import { resolveUploadDocumentDate } from '@/services/documents/upload-document-date';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,9 +69,9 @@ export async function POST(request: NextRequest) {
     try { body = await request.json(); }
     catch { return NextResponse.json({ error: 'INVALID_BODY' }, { status: 400 }); }
 
-    const { url, title, documentType, assetId, documentDate, description, supplier, amountCents } = body as {
+    const { url, title, documentType, assetId, documentDate, documentDateSource, description, supplier, amountCents } = body as {
       url?: string; title?: string; documentType?: string; assetId?: number | string | null;
-      documentDate?: string; description?: string; supplier?: string; amountCents?: number;
+      documentDate?: string; documentDateSource?: string; description?: string; supplier?: string; amountCents?: number;
     };
 
     if (!url || !url.trim()) return NextResponse.json({ error: 'MISSING_URL', message: 'URL requise' }, { status: 400 });
@@ -91,6 +92,8 @@ export async function POST(request: NextRequest) {
     }
 
     const now = new Date();
+    // Lot 108D : jamais le jour d'import pré-rempli comme date du document (voir upload-document-date).
+    const dateDepot = resolveUploadDocumentDate({ documentDate, documentDateSource }, now);
     const [newWebLink] = await db.insert(assetFiles).values({
       userId: session.userId,
       accountId,
@@ -108,7 +111,8 @@ export async function POST(request: NextRequest) {
       s3Bucket: 'weblink',
       s3Region: 'weblink',
       documentType: (typeof documentType === 'string' && documentType) ? documentType : 'AUTRE',
-      documentDate: documentDate || null,
+      documentDate: dateDepot.documentDate,
+      ...(dateDepot.markUserEdited ? { userEditedFields: { documentDate: true } } : {}),
       description: description || null,
       supplier: supplier || null,
       amountCents: amountCents || null,

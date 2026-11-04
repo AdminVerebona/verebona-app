@@ -94,7 +94,7 @@ describe('L87D-U-CODES — audit statique des vues utilisateur : aucun repli sur
       'components/assets/DocumentDrawer.tsx', 'components/assets/EquipmentDrawer.tsx', 'components/documents/v2/DocumentsByRubric.tsx',
       'services/search/global-search.service.ts', 'components/agenda/AgendaItemDrawer.tsx', 'components/assets/timeline/AssetTimeline.tsx',
       'services/to-process/operation-cards.ts', 'services/home/HomeSummaryService.ts', 'services/home/mascot/collector.ts',
-      'services/verebona-assistant/core/target-answer.ts', 'services/exports/v12/data/documents.ts', 'services/documents/upload-notification.service.ts',
+      'services/verebona-assistant/core/target-answer.ts', 'services/exports/v12/data/documents.ts', 'lib/upload-confirmation-client.ts', // lot 108I : remplace upload-notification.service
     ]) expect(rels.has(f), f).toBe(true);
     expect(SOURCES.some((s) => s.rel.startsWith('lib/email/'))).toBe(true);
     expect(SOURCES.some((s) => s.rel.startsWith('components/mobile/'))).toBe(true);

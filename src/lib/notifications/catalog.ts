@@ -219,6 +219,8 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     defaults: { push: true, email: false }, retentionDays: 90,
     // Lot 79C : une notification par lot (fin d'un traitement asynchrone),
     // push facultatif, jamais d'e-mail — même avec une ancienne préférence.
+    // Lot 108I : émise seulement pour un PREMIER succès d'analyse, non suivi
+    // dans l'application ; une seule par document (`document-notification-policy`).
     retiredChannels: { email: RETIRED_ANALYSIS_EMAIL },
     // Le document est nommé ; un seul document s'ouvre directement en tiroir.
     render: (p) => content(
@@ -239,10 +241,11 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     }),
   },
   // ── Lot 32 (décision PO Q18/Q19) : envoi réussi ─────────────────────────
-  // Une notification par lot d'envoi (fichiers ou lien web), pour tous les
-  // comptes. Cloche toujours ; push et e-mail selon les préférences de la
-  // catégorie « Documents » (désactivés par défaut : l'utilisateur vient
-  // d'agir, il est dans l'application). Le push reste générique (§4.3).
+  // Lot 108I : PLUS ÉMISE. Un ajout réussi est confirmé discrètement dans le
+  // parcours d'ajout (`lib/upload-confirmation-client.ts`) ; la route de
+  // signalement ne crée plus rien. L'entrée reste au catalogue pour afficher
+  // les notifications déjà reçues (historique intact) — sa cloche n'est pas
+  // « supprimée » (lot 101B : ce serait masquer l'historique).
   [T.DOCUMENT_UPLOAD_COMPLETED]: {
     type: T.DOCUMENT_UPLOAD_COMPLETED,
     category: 'documents', priority: 'low', deliveryMode: 'immediate',

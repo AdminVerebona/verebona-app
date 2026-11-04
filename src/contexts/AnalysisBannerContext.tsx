@@ -2,10 +2,24 @@
 
 import { createContext, useContext, useState, useEffect, useCallback, useRef, ReactNode } from 'react';
 import { isSettledProcessingStatus } from '@/lib/ai/processing-status';
+import { ANALYSIS_DONE_CUE_MS, ANALYSIS_FOLLOW_POLL_MS, analysisStatusUrl } from '@/lib/notifications/document-notification-policy';
 
 const TERMINAL_STATES = ['ANALYZED', 'VALIDATION_REQUIRED', 'CONFLICT_DETECTED', 'ANALYSIS_FAILED'];
-/** Délai entre deux polls de vérification (quand une analyse est en cours) */
-const POLL_INTERVAL_MS = 4_000;
+const SUCCESS_STATES = ['ANALYZED', 'VALIDATION_REQUIRED', 'CONFLICT_DETECTED'];
+/**
+ * Délai entre deux polls de vérification (quand une analyse est en cours).
+ * Lot 108I : ce poll, page visible, est aussi le SIGNAL DE SUIVI de
+ * l'analyse — un résultat suivi à l'écran n'est pas notifié
+ * (`document-notification-policy`).
+ */
+const POLL_INTERVAL_MS = ANALYSIS_FOLLOW_POLL_MS;
+
+/** Fin d'analyse RÉUSSIE vue par ce poll (statut fonctionnel, sinon état brut) — pure. */
+export function isSuccessfulCompletion(data: { processingStatus?: unknown; analysisState?: unknown } | null | undefined): boolean {
+  if (!data) return false;
+  if (typeof data.processingStatus === 'string') return data.processingStatus === 'COMPLETED';
+  return typeof data.analysisState === 'string' && SUCCESS_STATES.includes(data.analysisState);
+}
 /** Au-delà de ce délai sans completion, forcer un poll même si pas de SSE */
 const MAX_WAIT_MS = 5 * 60_000; // 5 min
 
@@ -14,9 +28,15 @@ interface AnalysisBannerContextType {
   analyzingFileIds: number[];
   /** Timestamp (ms) auquel chaque fileId a commencé son analyse */
   analysisStartTimes: Record<number, number>;
+  /**
+   * Lot 108I : document dont l'analyse SUIVIE vient de réussir — le bandeau
+   * affiche brièvement « Analyse terminée · Voir » (mise à jour de
+   * l'interface à la place d'une notification).
+   */
+  recentlyCompletedFileId?: number | null;
 }
 
-const AnalysisBannerContext = createContext<AnalysisBannerContextType>({ analyzingCount: 0, analyzingFileIds: [], analysisStartTimes: {} });
+const AnalysisBannerContext = createContext<AnalysisBannerContextType>({ analyzingCount: 0, analyzingFileIds: [], analysisStartTimes: {}, recentlyCompletedFileId: null });
 
 export function useAnalysisBanner() {
   return useContext(AnalysisBannerContext);
@@ -25,6 +45,14 @@ export function useAnalysisBanner() {
 export function AnalysisBannerProvider({ children }: { children: ReactNode }) {
   const [analyzingFileIds, setAnalyzingFileIds] = useState<number[]>([]);
   const [analysisStartTimes, setAnalysisStartTimes] = useState<Record<number, number>>({});
+  const [recentlyCompletedFileId, setRecentlyCompletedFileId] = useState<number | null>(null);
+  const cueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showDoneCue = useCallback((fileId: number) => {
+    setRecentlyCompletedFileId(fileId);
+    if (cueTimerRef.current) clearTimeout(cueTimerRef.current);
+    cueTimerRef.current = setTimeout(() => setRecentlyCompletedFileId(null), ANALYSIS_DONE_CUE_MS);
+  }, []);
+  useEffect(() => () => { if (cueTimerRef.current) clearTimeout(cueTimerRef.current); }, []);
   const analyzingFileIdsRef = useRef<number[]>([]);
   const analysisStartTimesRef = useRef<Record<number, number>>({});
 
@@ -129,7 +157,9 @@ export function AnalysisBannerProvider({ children }: { children: ReactNode }) {
         // Vérifier l'état de chaque doc en cours via l'API analysis-status
         await Promise.all(ids.map(async (fileId) => {
           try {
-            const res = await fetch(`/api/documents/${fileId}/analysis-status`, {
+            // Lot 108I : page visible = analyse suivie à l'écran (signal de suivi).
+            const visible = typeof document !== 'undefined' && document.visibilityState === 'visible';
+            const res = await fetch(analysisStatusUrl(fileId, visible), {
       credentials: 'include',
             });
             if (!res.ok) return;
@@ -142,6 +172,7 @@ export function AnalysisBannerProvider({ children }: { children: ReactNode }) {
               ? isSettledProcessingStatus(data.processingStatus)
               : Boolean(state && TERMINAL_STATES.includes(state));
             if (termine) {
+              if (isSuccessfulCompletion(data)) showDoneCue(fileId);
               window.dispatchEvent(new CustomEvent('document-analysis-complete', { detail: { fileId } }));
             }
             // Si le doc est bloqué depuis trop longtemps (> MAX_WAIT_MS), forcer completion aussi
@@ -174,12 +205,12 @@ export function AnalysisBannerProvider({ children }: { children: ReactNode }) {
     }
 
     return stopPolling;
-  }, [analyzingFileIds.length]);
+  }, [analyzingFileIds.length, showDoneCue]);
 
   const analyzingCount = analyzingFileIds.length;
 
   return (
-    <AnalysisBannerContext.Provider value={{ analyzingCount, analyzingFileIds, analysisStartTimes }}>
+    <AnalysisBannerContext.Provider value={{ analyzingCount, analyzingFileIds, analysisStartTimes, recentlyCompletedFileId }}>
       {children}
     </AnalysisBannerContext.Provider>
   );

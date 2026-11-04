@@ -22,6 +22,7 @@ import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { SupplierDrawer } from '@/components/suppliers/SupplierDrawer';
 import { EntityCard } from '@/components/drawers/EntityCard';
+import { DocumentDateCell } from '@/components/documents/DocumentDateCell';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { EQUIPMENT_FICHE_FIELDS, equipmentFicheChanges } from '@/lib/asset-detail-rules';
 import { normalizeEquipmentEnergyUsage } from '@/lib/cil/energy-equipment';
@@ -689,16 +690,15 @@ export function EquipmentDrawer({ open, onOpenChange, assetId, equipment: eq, su
                   id={doc.id}
                   title={doc.title}
                   icon={<FileText className="w-3.5 h-3.5" />}
-                  meta={(doc.documentTypeLabel || doc.documentDate) ? (
+                  meta={doc.documentTypeLabel ? (
                     <span className="flex items-center gap-1.5 flex-wrap">
-                      {doc.documentTypeLabel && (
-                        <span data-testid="equipment-doc-type-pill" className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${DOC_TYPE_PILL}`}>
-                          {doc.documentTypeLabel}
-                        </span>
-                      )}
-                      {doc.documentDate && <span>{formatDate(doc.documentDate)}</span>}
+                      <span data-testid="equipment-doc-type-pill" className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${DOC_TYPE_PILL}`}>
+                        {doc.documentTypeLabel}
+                      </span>
                     </span>
                   ) : undefined}
+                  /* Lot 108D : une seule date, la date du document (sinon « – »), à droite. */
+                  badges={<DocumentDateCell value={doc.documentDate} className="text-[11px] text-muted-foreground" />}
                 />
               );
             })}

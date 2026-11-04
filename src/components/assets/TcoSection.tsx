@@ -13,7 +13,10 @@
  *   · Détail : ventilation par catégorie (montant, nombre), dépenses
  *     retenues (intitulé, date, montant, justificatif ouvrable, dépense
  *     consolidée éventuelle), avoirs / remboursements / indemnités ;
- *   · Valeur et cession, budget d'usage (estimation, séparé du réalisé) ;
+ *   · Valeur et cession ; lot 108C : « Dépenses d'usage » (`TcoUsageSection`) —
+ *     forfaits = estimation COMPLÉMENTAIRE du réel par catégorie et période
+ *     échue ; la synthèse distingue coût réel documenté, complément estimé et
+ *     TCO avec estimations (aucun calcul ici, tout vient du moteur) ;
  *   · Dépenses non retenues ou non attribuées, avec leur motif ; alertes.
  *     Lot 68 : seulement ce qui est utile pour CE bien (non qualifiée, devise,
  *     non ventilée, prévision…) ; les justificatifs repris par une dépense
@@ -55,19 +58,16 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Label } from '@/components/ui/label';
-import { Input } from '@/components/ui/input';
-import { DatePicker } from '@/components/ui/date-picker';
-import { NumberInput } from '@/components/ui/number-input';
-import { formatNumberForInput, MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet';
-import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Loader2, Lock, MinusCircle, Pencil, Plus, PlusCircle, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ChevronDown, ChevronRight, ChevronUp, Loader2, Lock, MinusCircle, PlusCircle } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
 // Types seulement : les libellés viennent de la réponse (aucun module serveur ni registre dans le paquet client).
-import type { TcoDto } from '@/services/business-operations/tco/dto';
+import { TCO_CALCULATION_INFO, type TcoDto } from '@/services/business-operations/tco/dto';
 import { TcoJustificatif } from './tco-justificatif';
+import { TcoAmountRecoveryNotice } from './tco-amount-recovery';
+import { TcoUsageSection } from './TcoUsageSection';
 import { createCoalescedRefresh, type CoalescedRefresh } from '@/lib/home/coalesced-refresh';
 import { tcoKeptYear, TCO_REFRESH_WINDOW_MS, watchTcoMutations } from './tco-refresh';
 
@@ -134,11 +134,16 @@ function dateFr(d: string | null | undefined): string {
   try { return new Date(`${d.slice(0, 10)}T00:00:00Z`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }); } catch { return d; }
 }
 
+/** Lot 108C : complément estimé de l'année affichée (moteur : `usage.complement.byYear`), 0 si aucun. */
+function anneeSelEstime(c: TcoDto['usage']['complement'] | null, annual: Annual | null, year: number | null): number {
+  if (!c || !annual) return 0;
+  const y = tcoKeptYear(year, annual.years, annual.defaultYear);
+  return c.byYear.find((x) => x.year === y)?.complementCents ?? 0;
+}
+
 const NEGATIVE = new Set(['REDUCTION', 'REFUND', 'INDEMNITY']);
 const RETENUE = new Set(['RETAINED_DIRECT', 'RETAINED_CONSOLIDATED']);
 
-type BudgetForm = { id: number | null; category: string; label: string; /** Texte saisi en euros (lot 58A). */ amount: string; periodicity: string; validFrom: string | null; validTo: string | null };
-const VIDE: BudgetForm = { id: null, category: 'FUEL', label: '', amount: '', periodicity: 'MONTHLY', validFrom: null, validTo: null };
 
 function Bloc({ title, children, ...rest }: { title: string; children: React.ReactNode } & Record<`data-${string}`, boolean | string>) {
   return (
@@ -265,10 +270,6 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const [locked, setLocked] = useState(false);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [form, setForm] = useState<BudgetForm | null>(null);
-  const [amountError, setAmountError] = useState(false);
-  useEffect(() => { if (!form) setAmountError(false); }, [form]);
-  const [saving, setSaving] = useState(false);
   // Lot 75D (J) : lignes des pages suivantes (chargement complémentaire), remises à zéro à chaque recalcul.
   const [extra, setExtra] = useState<Line[]>([]);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -350,31 +351,6 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
     }
   };
 
-  const saveBudget = async () => {
-    if (!form) return;
-    const montant = parseMoneyInputToCents(form.amount);
-    if (!montant.ok) { setAmountError(true); toast.error(`Montant : ${montant.error}`); return; }
-    if (montant.cents == null) { toast.error('Le montant est requis'); return; }
-    setSaving(true);
-    ownWrite.current = true;
-    try {
-      const body = {
-        category: form.category, label: form.label.trim() || null, amountMinor: montant.cents, currency: 'EUR',
-        periodicity: form.periodicity, validFrom: form.validFrom, validTo: form.validTo,
-      };
-      if (form.id) await apiClient.patch(`/api/assets/${assetId}/usage-budgets/${form.id}`, body);
-      else await apiClient.post(`/api/assets/${assetId}/usage-budgets`, body);
-      setForm(null);
-      await load();
-      toast.success('Forfait enregistré');
-    } catch (e) {
-      toast.error((e as { serverMessage?: string }).serverMessage ?? 'Erreur lors de l’enregistrement');
-    } finally {
-      ownWrite.current = false;
-      setSaving(false);
-    }
-  };
-
   // Lot 80A : « Ajouter / Retirer du TCO » — décision persistée ; le serveur rend le TCO recalculé (totaux à jour).
   const decide: Decide = async (l, action, confirmDuplicate) => {
     ownWrite.current = true;
@@ -400,22 +376,12 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
     }
   };
 
-  const removeBudget = async (id: number) => {
-    ownWrite.current = true;
-    try {
-      await apiClient.delete(`/api/assets/${assetId}/usage-budgets/${id}`);
-      await load();
-      toast.success('Forfait supprimé');
-    } catch {
-      toast.error('Suppression impossible');
-    } finally {
-      ownWrite.current = false;
-    }
-  };
-
   const t = data;
-  const catLabels = t?.usageLabels.categories ?? ({} as TcoDto['usageLabels']['categories']);
-  const perLabels = t?.usageLabels.periodicities ?? ({} as TcoDto['usageLabels']['periodicities']);
+  // Lot 108C : complément estimé des dépenses d'usage (moteur) — distingue le réel documenté du TCO avec estimations.
+  const estime = t?.summary.estimatedUsageComplementCents ?? 0;
+  const avecEstimations = estime > 0;
+  const usageC = t?.usage.complement ?? null;
+  const estimeAnnee = anneeSelEstime(usageC, t?.annual ?? null, year);
   const toutes = t ? [...t.lines, ...extra] : [];
   const affichees = toutes.length;
   const restantes = t ? Math.max(0, t.linesTotal - t.linesOffset - affichees) : 0;
@@ -460,7 +426,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
         <span className="flex items-center gap-2 min-w-0">
           <span className="font-medium text-sm">Coût total de possession</span>
           {open && t && !locked && (
-            <span className="text-[10px] font-medium text-primary bg-primary/10 rounded-full px-1.5 py-0.5 shrink-0 tabular-nums">{eur(t.summary.cumulativeCostCents)}</span>
+            <span className="text-[10px] font-medium text-primary bg-primary/10 rounded-full px-1.5 py-0.5 shrink-0 tabular-nums">{eur(avecEstimations ? t.summary.totalWithEstimatesCents : t.summary.cumulativeCostCents)}</span>
           )}
           {locked && <Lock className="w-3.5 h-3.5 text-muted-foreground shrink-0" aria-label="Fonction Premium" />}
         </span>
@@ -486,8 +452,9 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
             <>
               {/* ── Synthèse ── */}
               <div className="rounded-lg border border-primary/20 bg-primary/5 p-4" data-tco-summary>
-                <p className="text-[13px] font-semibold text-primary mb-1">Coût cumulé documenté</p>
-                <p className="text-2xl font-bold text-[color:var(--text-primary)] tabular-nums">{eur(t.summary.cumulativeCostCents)}</p>
+                {/* Lot 108C : un total qui inclut des estimations n'est jamais intitulé « Coût cumulé documenté ». */}
+                <p className="text-[13px] font-semibold text-primary mb-1" data-tco-summary-title>{avecEstimations ? 'Coût total de possession (estimations incluses)' : 'Coût cumulé documenté'}</p>
+                <p className="text-2xl font-bold text-[color:var(--text-primary)] tabular-nums" data-tco-summary-total>{eur(avecEstimations ? t.summary.totalWithEstimatesCents : t.summary.cumulativeCostCents)}</p>
                 <p className="text-xs text-muted-foreground mt-1" data-tco-start-status={t.period.startStatus ?? (t.period.start ? 'RESOLVED' : 'MISSING')}>
                   {t.annual?.average.incoherence ? 'Date d’acquisition incohérente — '
                     : t.period.startStatus === 'UNDETERMINED' ? 'Date d’achat du bien incertaine — '
@@ -495,14 +462,23 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                   {t.period.endSource === 'TODAY' ? (t.period.start && !t.annual?.average.incoherence ? 'jusqu’à aujourd’hui' : 'à aujourd’hui') : `jusqu’à la cession le ${dateNum(t.period.end)}`}
                 </p>
                 <div className="mt-3 divide-y divide-border">
+                  {avecEstimations && <Ligne label="Coût réel documenté (justificatifs et fiche)" value={eur(t.summary.cumulativeCostCents)} strong />}
+                  {avecEstimations && <Ligne label="Complément estimé (dépenses d’usage sans justificatif)" value={eur(estime)} muted />}
                   <Ligne label="Coût d’acquisition" value={t.summary.acquisitionStatus === 'MISSING' ? 'non renseigné' : t.summary.acquisitionStatus === 'NOT_APPLICABLE' ? 'sans objet (aucun achat)' : eur(t.summary.acquisitionCents)} muted={t.summary.acquisitionStatus !== 'DOCUMENTED'} />
                   <Ligne label="Dépenses complémentaires" value={eur(t.summary.additionalCostsCents)} />
                   {t.reductionsCents + t.refundsCents + t.indemnitiesCents > 0 && (
                     <Ligne label="Avoirs, remboursements et indemnités" value={`− ${eur(t.reductionsCents + t.refundsCents + t.indemnitiesCents)}`} />
                   )}
                   {!t.disposed && <Ligne label="Coût net estimé (après valeur actuelle)" value={t.summary.netEstimatedCents != null ? eur(t.summary.netEstimatedCents) : 'non calculable'} strong />}
+                  {!t.disposed && avecEstimations && usageC?.netEstimatedWithEstimatesCents != null && <Ligne label="Coût net estimé, estimations d’usage incluses" value={eur(usageC.netEstimatedWithEstimatesCents)} muted />}
                   {t.disposed && <Ligne label="Coût net final (après cession)" value={t.summary.netFinalCents != null ? eur(t.summary.netFinalCents) : 'non établi'} strong />}
+                  {t.disposed && avecEstimations && usageC?.netFinalWithEstimatesCents != null && <Ligne label="Coût net final, estimations d’usage incluses" value={eur(usageC.netFinalWithEstimatesCents)} muted />}
                 </div>
+                {avecEstimations && (
+                  <p className="text-xs mt-2 text-muted-foreground" data-tco-summary-estimates>
+                    Dont {eur(estime)} estimés à partir de vos forfaits d’usage, pour les périodes écoulées sans justificatif suffisant : ce ne sont ni des factures ni des preuves de paiement.
+                  </p>
+                )}
                 <p className={`text-xs mt-2 ${t.status === 'COMPLETE' ? 'text-muted-foreground' : 'text-[color:var(--attention-on-soft)]'}`} data-tco-completeness={t.status}>
                   {t.status === 'COMPLETE' ? `Calcul complet : ${t.reliability.operationsCounted + t.reliability.documentsCounted} élément(s) documenté(s).`
                     : t.status === 'PARTIAL' ? 'Résultat partiel : seule une partie des éléments a pu être lue.'
@@ -516,17 +492,21 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                   <h3 className="vb-app-subsection m-0">Indicateurs annuels</h3>
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="total">
-                      <p className="text-xs text-muted-foreground">TCO total</p>
-                      <p className="text-lg font-semibold text-[color:var(--text-primary)] tabular-nums">{eur(annual.average.totalCents)}</p>
+                      <p className="text-xs text-muted-foreground">{avecEstimations ? 'TCO total (estimations incluses)' : 'TCO total'}</p>
+                      <p className="text-lg font-semibold text-[color:var(--text-primary)] tabular-nums">{eur(avecEstimations ? t.summary.totalWithEstimatesCents : annual.average.totalCents)}</p>
                       <p className="text-xs text-muted-foreground mt-1">
                         Coût cumulé {t.period.start && !annual.average.incoherence ? `depuis le ${dateNum(t.period.start)}` : 'documenté'}{t.period.endSource === 'TODAY' ? '' : ` jusqu’à la cession (${dateNum(t.period.end)})`}.
+                        {avecEstimations ? ` Réel documenté ${eur(annual.average.totalCents)} + complément estimé ${eur(estime)}.` : ''}
                       </p>
                     </div>
                     <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="average" data-tco-average-status={annual.average.status}>
-                      <p className="text-xs text-muted-foreground">TCO moyen annuel</p>
+                      <p className="text-xs text-muted-foreground">{avecEstimations ? 'TCO moyen annuel (estimations incluses)' : 'TCO moyen annuel'}</p>
                       <p className={`text-lg font-semibold tabular-nums ${annual.average.cents == null ? 'text-muted-foreground' : 'text-[color:var(--text-primary)]'}`}>
-                        {annual.average.cents != null ? `${eur(annual.average.cents)} / an` : 'Non calculé'}
+                        {annual.average.cents != null ? `${eur(avecEstimations && usageC?.averageWithEstimatesCents != null ? usageC.averageWithEstimatesCents : annual.average.cents)} / an` : 'Non calculé'}
                       </p>
+                      {avecEstimations && annual.average.cents != null && (
+                        <p className="text-xs text-muted-foreground mt-0.5" data-tco-average-documented>Réel documenté seul : {eur(annual.average.cents)} / an.</p>
+                      )}
                       <p className="text-xs text-muted-foreground mt-1 break-words">{moyenneExplication(annual.average, t.period.endSource)}</p>
                       {annual.average.extrapolationLabel && (
                         <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-average-extrapolated>{annual.average.extrapolationLabel}.</p>
@@ -551,6 +531,12 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                           ? `Aucune dépense datée du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)}.`
                           : `${anneeCourante.count} dépense(s) réellement constatée(s) du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)} (montant brut).`}
                       </p>
+                      {/* Lot 108C : complément estimé de l'année (périodes écoulées), à part des dépenses réellement constatées. */}
+                      {estimeAnnee > 0 && (
+                        <p className="text-xs text-muted-foreground mt-0.5" data-tco-year-estimated={estimeAnnee}>
+                          Complément estimé des dépenses d’usage : + {eur(estimeAnnee)} · avec estimations {eur(anneeCourante.costsCents + estimeAnnee)}.
+                        </p>
+                      )}
                       {/* Lot 81D : brut et net de l'année, tels que calculés par le moteur. */}
                       {anneeCourante.creditsCents !== 0 && (
                         <p className="text-xs text-muted-foreground mt-0.5" data-tco-year-net={anneeCourante.netCents}>
@@ -566,7 +552,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                   </div>
                   <p className="text-xs text-muted-foreground">
                     Le TCO moyen annuel est un coût annualisé : l’achat initial y est inclus, ce n’est donc pas le budget annuel récurrent d’utilisation.
-                    Les dépenses de l’année sont les dépenses réellement constatées, à leur date, pendant l’année choisie.
+                    Les dépenses de l’année sont les dépenses réellement constatées, à leur date, pendant l’année choisie{avecEstimations ? ' ; le complément estimé des dépenses d’usage est indiqué à part' : ''}.
                   </p>
                   {(annual.undated.count > 0 || annual.undated.creditsCents > 0) && (
                     <p className="text-xs text-[color:var(--attention-on-soft)]" data-tco-annual-undated>
@@ -589,7 +575,9 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                   {t.reductionsCents > 0 && <Ligne label="Avoirs et réductions" value={`− ${eur(t.reductionsCents)}`} />}
                   {t.refundsCents > 0 && <Ligne label="Remboursements" value={`− ${eur(t.refundsCents)}`} />}
                   {t.indemnitiesCents > 0 && <Ligne label="Indemnités reçues" value={`− ${eur(t.indemnitiesCents)}`} />}
-                  <Ligne label="Coût cumulé" value={eur(t.summary.cumulativeCostCents)} strong />
+                  <Ligne label={avecEstimations ? 'Coût réel documenté' : 'Coût cumulé'} value={eur(t.summary.cumulativeCostCents)} strong />
+                  {avecEstimations && <Ligne label="Complément estimé — dépenses d’usage (voir « Dépenses d’usage »)" value={`+ ${eur(estime)}`} muted />}
+                  {avecEstimations && <Ligne label="TCO cumulé, estimations incluses" value={eur(t.summary.totalWithEstimatesCents)} strong />}
                 </div>
               </Bloc>
 
@@ -643,76 +631,12 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 </Bloc>
               )}
 
-              {/* ── Budget d'usage ── */}
-              <Bloc title="Budget d’usage (estimation)" data-tco-usage>
-                <p className="text-xs text-muted-foreground">Forfaits estimés, distincts des coûts réels : ils ne sont jamais ajoutés au coût cumulé.</p>
-                <div className="divide-y divide-border">
-                  {t.usage.items.map((b) => (
-                    <div key={b.id} className="py-2 flex items-start justify-between gap-3 text-sm">
-                      <div className="min-w-0">
-                        <p className="text-[color:var(--text-primary)]">{b.label || catLabels[b.category]}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {minor(b.amountMinor, b.currency)} {perLabels[b.periodicity]}
-                          {b.validFrom || b.validTo ? ` · ${b.validFrom ? `du ${dateFr(b.validFrom)}` : ''}${b.validTo ? ` au ${dateFr(b.validTo)}` : ''}` : ''}
-                          {!b.activeNow ? ' · hors validité' : ''}
-                        </p>
-                      </div>
-                      {canEdit && (
-                        <div className="flex shrink-0 gap-1">
-                          <Button variant="ghost" size="sm" aria-label="Modifier le forfait" onClick={() => setForm({ id: b.id, category: b.category, label: b.label ?? '', amount: formatNumberForInput(b.amountMinor / 100), periodicity: b.periodicity, validFrom: b.validFrom, validTo: b.validTo })}><Pencil className="w-3.5 h-3.5" /></Button>
-                          <Button variant="ghost" size="sm" aria-label="Supprimer le forfait" onClick={() => removeBudget(b.id)}><Trash2 className="w-3.5 h-3.5" /></Button>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                  {t.usage.items.length > 0 && <Ligne label="Estimation annuelle (forfaits en cours)" value={eur(t.usage.annualEstimateCents)} muted />}
-                </div>
-                {canEdit && !form && (
-                  <Button variant="outline" size="sm" className="w-full" onClick={() => setForm({ ...VIDE })}>
-                    <Plus className="w-3.5 h-3.5 mr-1.5" /> Ajouter un forfait
-                  </Button>
-                )}
-                {form && (
-                  <div className="rounded-lg border border-border p-4 space-y-3" data-tco-budget-form>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Objet</Label>
-                      <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>{(Object.keys(catLabels) as Array<keyof typeof catLabels>).map((c) => <SelectItem key={c} value={c}>{catLabels[c]}</SelectItem>)}</SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-1">
-                      <Label className="text-xs text-muted-foreground">Libellé (facultatif)</Label>
-                      <Input value={form.label} maxLength={120} onChange={(e) => setForm({ ...form, label: e.target.value })} />
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground">Montant (€) *</Label>
-                        <NumberInput value={form.amount} onValueChange={(text) => setForm((prev) => (prev ? { ...prev, amount: text } : prev))} parseOptions={MONEY_INPUT} showError={amountError} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground">Périodicité</Label>
-                        <Select value={form.periodicity} onValueChange={(v) => setForm({ ...form, periodicity: v })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
-                          <SelectContent>{(Object.keys(perLabels) as Array<keyof typeof perLabels>).map((p) => <SelectItem key={p} value={p}>{perLabels[p]}</SelectItem>)}</SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground">Début de validité</Label>
-                        <DatePicker value={form.validFrom ?? undefined} onChange={(v) => setForm({ ...form, validFrom: v ?? null })} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label className="text-xs text-muted-foreground">Fin de validité</Label>
-                        <DatePicker value={form.validTo ?? undefined} onChange={(v) => setForm({ ...form, validTo: v ?? null })} />
-                      </div>
-                    </div>
-                    <div className="flex gap-2 justify-end">
-                      <Button variant="ghost" size="sm" onClick={() => setForm(null)} disabled={saving}>Annuler</Button>
-                      <Button size="sm" onClick={saveBudget} disabled={saving}>{saving && <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />}Enregistrer</Button>
-                    </div>
-                  </div>
-                )}
-              </Bloc>
+              {/* ── Lot 108C : dépenses d'usage (forfaits = estimation complémentaire du réel) ── */}
+              <TcoUsageSection
+                t={t} assetId={assetId} canEdit={canEdit} reload={load}
+                applyTco={(tco) => { coordinator.current?.supersede(); setData(tco); setExtra([]); setYearLines(null); }}
+                setOwnWrite={(v) => { ownWrite.current = v; }}
+              />
 
               {/* ── Lot 80A : non retenues, non attribuées — déclencheur fermé par défaut, liste dans un sous-tiroir ── */}
               {ecartees.length > 0 && (
@@ -731,6 +655,9 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                 </section>
               )}
 
+              {/* ── Lot 108B : justificatifs sans montant (lecture en cours, à confirmer, introuvable) ── */}
+              <TcoAmountRecoveryNotice recovery={t.amountRecovery} />
+
               {/* ── Alertes ── */}
               {(t.warningLabels.length > 0 || t.reliability.unconverted.length > 0) && (
                 <Bloc title="Alertes de couverture" data-tco-warnings>
@@ -740,7 +667,8 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                   )}
                 </Bloc>
               )}
-              <p className="text-xs text-muted-foreground">Ce total est calculé : pour le corriger, modifiez le prix d’achat de la fiche ou le document concerné.</p>
+              {/* Lot 108A (§D) : information neutre (texte exact de la décision PO) — jamais une alerte. */}
+              <p className="text-xs text-muted-foreground" role="note" data-tco-calculation-info>{TCO_CALCULATION_INFO}</p>
             </>
           )}
         </div>

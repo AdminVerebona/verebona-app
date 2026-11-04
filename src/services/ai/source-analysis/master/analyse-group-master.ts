@@ -22,7 +22,8 @@ import type { ProjectedFact, T1AnalyzeDocumentOutput, T1FactWithRef } from './t1
 import { currencyEvidenceOf, gateOperationCandidates, type AnchoredOperationCandidate } from '../operation-candidates/prepare';
 import { transactionNature } from '../projection/rules';
 import type { AnalysisContext, SourceAnalysisResult, SourceInput } from '../types';
-import { validateValueDecisions, type PreparedValueDecision } from '../value-decisions/validate';
+import { factContextOf, validateValueDecisions, type PreparedValueDecision } from '../value-decisions/validate';
+import type { ValueDecisionsOutputRecord } from '../value-decisions/output-conformity';
 
 export interface MasterGroupAnalysis {
   result: SourceAnalysisResult;
@@ -51,6 +52,8 @@ export interface MasterGroupAnalysis {
    * n'est persisté, aucune décision n'est simulée.
    */
   valueDecisions?: PreparedValueDecision[];
+  /** Lot 108K (§C) — conformité de la sortie au contrat `t1-value-decisions-v1` (consignée avec l'extraction). */
+  valueDecisionsOutput?: ValueDecisionsOutputRecord;
 }
 
 /** Lot 107D — désignation des biens (nom, modèle, n° de série connus) et équipements (nom) du contexte. */
@@ -177,14 +180,34 @@ export async function analyseGroupWithMaster(
   // Lot 91D : décisions sur les valeurs significatives — exploitées SEULEMENT si le prompt T1 effectif porte le
   // contrat (marqueur) et que la version qui a répondu est bien celle-là ; validées contre les unités de la source.
   let valueDecisions: PreparedValueDecision[] | undefined;
+  // Lot 108K (§C) : conformité de la sortie au contrat (présent / vide / absent / mal formé / tronqué), consignée avec
+  // l'extraction — jamais une décision inventée, jamais un blocage.
+  let valueDecisionsOutput: ValueDecisionsOutputRecord | undefined;
+  if (sourceLayer && analysed.valueDecisionsPasses?.length) {
+    const { valueDecisionsCapability } = await import('../value-decisions/contract');
+    const { valueDecisionsOutputRecord } = await import('../value-decisions/output-conformity');
+    const cap = await valueDecisionsCapability();
+    valueDecisionsOutput = valueDecisionsOutputRecord({
+      contract: cap.reason, carried: cap.carried, effectiveVersion: cap.version, promptVersion: analysed.promptVersion ?? null,
+      passes: analysed.valueDecisionsPasses,
+    });
+    if (!valueDecisionsOutput.conforming) {
+      console.warn(`[t1-value-decisions] fichier ${input.sourceIds[groupIndices[0]]} : sortie non conforme au contrat (${valueDecisionsOutput.status}, `
+        + `version ${analysed.promptVersion}) — constat COH-DOC-EXTRACT-CHAIN, réexamen ciblé des valeurs omises.`);
+    }
+  }
   if (analysed.valueDecisions && sourceLayer) {
     const { valueDecisionsCapability } = await import('../value-decisions/contract');
     const cap = await valueDecisionsCapability();
     if (cap.carried && (cap.version === null || cap.version === analysed.promptVersion)) {
+      // Lot 108K (§A) : contexte des faits conservés (valeur, libellé, preuve, unités) et preuves des candidats retenus.
+      const kept = (a.facts as T1FactWithRef[]).filter((f) => f.t1FactRef);
       valueDecisions = validateValueDecisions(analysed.valueDecisions, {
         units: sourceLayer.units,
-        keptFactRefs: new Set((a.facts as T1FactWithRef[]).flatMap((f) => (f.t1FactRef ? [f.t1FactRef] : []))),
+        keptFactRefs: new Set(kept.map((f) => f.t1FactRef!)),
         candidateKeys: new Set(gate.candidates.map((c) => c.candidateKey)),
+        facts: factContextOf(kept, sourceLayer.units),
+        candidateFacts: new Map(gate.candidates.map((c) => [c.candidateKey, c.evidenceFactRefs ?? []])),
       });
     } else if (analysed.valueDecisions.length > 0) {
       console.info(`[t1-value-decisions] fichier ${input.sourceIds[groupIndices[0]]} : ${analysed.valueDecisions.length} décision(s) ignorée(s) `
@@ -208,6 +231,7 @@ export async function analyseGroupWithMaster(
     ...(sourceLayer ? { sourceLayer } : {}),
     operationCandidates: gate.candidates,
     ...(valueDecisions ? { valueDecisions } : {}),
+    ...(valueDecisionsOutput ? { valueDecisionsOutput } : {}),
   };
 }
 

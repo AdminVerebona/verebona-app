@@ -51,6 +51,8 @@ import { emit } from '@/lib/notifications';
 import { lotFailurePayload, lotNotificationPayload,
   type LotDocument, type LotOutcomeType,
 } from './lot-notification-text';
+import { decideLotSuccessNotification, lotSuccessDedupeKey, type LotSkipReason } from '@/lib/notifications/document-notification-policy';
+import { readLotSuccessFacts, traceLotSkipReason } from './lot-success-facts';
 
 interface LotNotificationInput {
   accountId: number;
@@ -200,10 +202,34 @@ async function evaluateLotNotification(lotId: number, opts: { retryExpected?: Re
     if (!outcome.final) return 'awaiting';
 
     if (!outcome.type || lot.notification_user_id == null) {
-      await pgClient.unsafe(
-        `UPDATE document_lots SET notification_state = 'silent', notification_settled_at = now() WHERE id = $1 AND notification_state = 'awaiting'`,
-        [lotId] as never[]);
+      await settleSilently(lotId, !outcome.type ? 'no_outcome' : 'no_recipient');
       return 'silent';
+    }
+
+    // Lot 108I : une RÉUSSITE n'est notifiée qu'une fois par document, hors
+    // réanalyse / reprise / relance technique, et seulement si le demandeur
+    // ne suit pas l'analyse dans l'application (`document-notification-policy`).
+    // Échecs (total ou partiel) : inchangés (lot 81E).
+    let succes: { documents: LotDocument[]; dedupeKey: string } | null = null;
+    if (outcome.type === 'DOCUMENT_BATCH_COMPLETED') {
+      const faits = await readLotSuccessFacts(lotId, outcome.analysed.map((d) => d.assetFileId));
+      if (faits) {
+        const decision = decideLotSuccessNotification({
+          lotId,
+          followedRecently: faits.followedRecently,
+          analysed: outcome.analysed.map((d) => ({
+            ...d,
+            firstSuccess: faits.byFile.get(d.assetFileId)?.firstSuccess ?? true,
+            userVisible: faits.byFile.get(d.assetFileId)?.userVisible ?? true,
+          })),
+        });
+        if (!decision.notify) {
+          const r = await settleSilently(lotId, decision.reason);
+          console.info(`[source-analysis] résultat du lot ${lotId} non notifié (${decision.reason}).`);
+          return r ? 'silent' : 'skipped';
+        }
+        succes = { documents: decision.documents, dedupeKey: decision.dedupeKey };
+      }
     }
 
     // Prise atomique : une seule évaluation concurrente émet.
@@ -213,8 +239,9 @@ async function evaluateLotNotification(lotId: number, opts: { retryExpected?: Re
       [lotId, outcome.type.replace('DOCUMENT_BATCH_', '')] as never[]);
     if (prise.length === 0) return 'skipped';
 
+    const annonces = succes?.documents ?? outcome.analysed;
     const payload = outcome.type === 'DOCUMENT_BATCH_COMPLETED'
-      ? { ...lotNotificationPayload(lotId, outcome.analysed.length, outcome.analysed), ...(outcome.duplicates ? { duplicateCount: outcome.duplicates } : {}) }
+      ? { ...lotNotificationPayload(lotId, annonces.length, annonces), ...(outcome.duplicates ? { duplicateCount: outcome.duplicates } : {}) }
       : lotFailurePayload(lotId, outcome.analysed.length, outcome.failed);
     try {
       await emit({
@@ -226,7 +253,8 @@ async function evaluateLotNotification(lotId: number, opts: { retryExpected?: Re
         payload: payload as never,
         // Stable : un rejeu du même lot ne produit pas une seconde
         // notification (§7.2, et défaut de la route supprimée au lot 0).
-        dedupeKey: `document:lot-result:${lotId}`,
+        // Lot 108I : réussite d'un seul document → clé stable document × T1.
+        dedupeKey: succes?.dedupeKey ?? lotSuccessDedupeKey(lotId),
       });
     } catch (e) {
       // Rien n'est perdu : le lot repasse en attente, le filet le reprendra.
@@ -240,6 +268,16 @@ async function evaluateLotNotification(lotId: number, opts: { retryExpected?: Re
     console.error(`[source-analysis] résultat du lot ${lotId} non notifié :`, (e as Error).message);
     return 'skipped';
   }
+}
+
+/** Clôt un lot en attente sans notification, motif tracé (lot 108I). */
+async function settleSilently(lotId: number, reason: LotSkipReason): Promise<boolean> {
+  const { pgClient } = await import('@/db');
+  const r = await pgClient.unsafe<{ id: number }[]>(
+    `UPDATE document_lots SET notification_state = 'silent', notification_settled_at = now() WHERE id = $1 AND notification_state = 'awaiting' RETURNING id`,
+    [lotId] as never[]);
+  if (r.length > 0) await traceLotSkipReason(lotId, reason);
+  return r.length > 0;
 }
 
 /**

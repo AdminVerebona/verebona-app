@@ -60,6 +60,8 @@ export const QUALIFICATION_LABELS: Readonly<Record<string, string>> = {
   REPAIR_TECHNICAL: 'problèmes techniques de reprise',
   EXTRACT_TECHNICAL: 'extraction incomplète',
   DOWNSTREAM: 'exploitation aval',
+  // Lot 108K (§C) : réponse T1 sans tableau valueDecisions (ou mal formé, tronqué) alors que le contrat est porté.
+  OUTPUT_NONCONFORMITY: 'sorties T1 non conformes au contrat des décisions',
 };
 
 export const fingerprintOf = (checkId: string, nature: string) => `${COHERENCE_ANOMALY_PREFIX}${checkId.toLowerCase()}:${nature}`;

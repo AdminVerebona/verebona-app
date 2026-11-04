@@ -1920,6 +1920,9 @@ export const documentLots = pgTable('document_lots', {
   notificationOutcome: text('notification_outcome'),
   notificationSettledAt: pgTimestamp('notification_settled_at', { withTimezone: true }),
   notificationAbsorbedInto: integer('notification_absorbed_into'),
+  // Lot 108I (1080) : suivi de l'analyse dans l'application + motif d'un résultat non notifié.
+  followedAt: pgTimestamp('followed_at', { withTimezone: true }),
+  notificationSkipReason: text('notification_skip_reason'),
 }, (table) => ({
   accountIdIdx: index('document_lots_account_id_idx').on(table.accountId),
   notificationStateCheck: check('document_lots_notification_state_check', sql`${table.notificationState} IS NULL OR ${table.notificationState} IN ('awaiting','notified','absorbed','silent','expired')`),

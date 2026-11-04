@@ -68,7 +68,6 @@ import {
   activeFilterCount,
   countLabel,
   defaultDirection,
-  displayedDate,
   documentSubtitle,
   effectiveSort,
   emptyRubricsLine,
@@ -76,7 +75,6 @@ import {
   groupDocuments,
   hasActiveFilters,
   isToClassify,
-  libelleResultats,
   parseSearchResults,
   setDateFilter,
   setEquipmentFilter,
@@ -86,7 +84,6 @@ import {
   type DocumentItem,
   type DocumentsContext,
   type RubricRef,
-  type SortKey,
   type ViewFilters,
 } from './documents-view';
 import { DEFAULT_PREFS, loadPrefs, savePrefs, type ViewPrefs } from './view-prefs';
@@ -97,6 +94,7 @@ import { buildEquipmentFilterModel } from '@/lib/filters/equipment-filter';
 import { buildRoomFilterModel } from '@/lib/filters/room-filter';
 import { ROOM_ASSOCIATIONS_CHANGED } from '@/lib/rooms/room-associations';
 import { LocalSearchField } from '@/components/search/LocalSearchField';
+import { DocumentDateCell } from '@/components/documents/DocumentDateCell';
 import { localSearchNoResult, readLocalQuery, searchWithLocalQuery } from '@/lib/search/local-search';
 
 /**
@@ -168,20 +166,19 @@ function ToClassifyBadge({ onPreview = false }: { onPreview?: boolean }) {
  * Ligne de la vue liste — maquette 1a.
  *
  * Miniature (photo réelle pour une image, mini-page sinon), titre, sous-titre
- * « Type · date · bien », puis à droite : la Rubrique quand les titres de
- * section ne la disent pas, « À classer » pour un document sans Rubrique, et
- * la date du tri.
+ * = Type documentaire seul (lot 108D), puis à droite : la Rubrique quand les
+ * titres de section ne la disent pas, « À classer » pour un document sans
+ * Rubrique, et UNE date — la date du document, sinon « – » (jamais la date
+ * d'ajout, quel que soit le tri ; desktop et téléphone).
  */
 function DocumentRow({
   document,
-  sort,
   context,
   showRubric,
   rubricLabel,
   onOpen,
 }: {
   document: DocumentItem;
-  sort: SortKey;
   context: DocumentsContext;
   showRubric: boolean;
   rubricLabel: string;
@@ -213,17 +210,19 @@ function DocumentRow({
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium">{document.title}</span>
-          <span className="mt-0.5 block truncate text-xs text-[color:var(--text-muted)]">
-            {documentSubtitle(document, sort, context)}
+          <span className="mt-0.5 block truncate text-xs text-[color:var(--text-muted)]" data-testid="document-row-subtitle">
+            {documentSubtitle(document, context)}
           </span>
         </span>
         {showRubric && !isToClassify(document) && (
           <span className="hidden shrink-0 text-xs text-[color:var(--text-muted)] md:block">{rubricLabel}</span>
         )}
         {isToClassify(document) && <ToClassifyBadge />}
-        <span className="hidden w-[90px] shrink-0 text-right text-xs text-[color:var(--text-muted)] sm:block">
-          {displayedDate(document, sort)}
-        </span>
+        {/* Lot 108D : UNE date, la date du document (sinon « – »), visible aussi sur téléphone. */}
+        <DocumentDateCell
+          value={document.documentDate}
+          className="block w-[74px] text-xs text-[color:var(--text-muted)] sm:w-[90px]"
+        />
       </button>
     </li>
   );
@@ -242,12 +241,10 @@ function DocumentRow({
  */
 function DocumentTile({
   document,
-  sort,
   context,
   onOpen,
 }: {
   document: DocumentItem;
-  sort: SortKey;
   context: DocumentsContext;
   onOpen: (doc: DocumentItem) => void;
 }) {
@@ -299,8 +296,10 @@ function DocumentTile({
         </span>
         <span className="min-w-0">
           <span className="block truncate text-[13px] font-medium">{document.title}</span>
-          <span className="mt-0.5 block truncate text-[11.5px] text-[color:var(--text-muted)]">
-            {documentSubtitle(document, sort, context)}
+          {/* Lot 108D : Type à gauche, la date du document (ou « – ») à droite — une seule date. */}
+          <span className="mt-0.5 flex min-w-0 items-baseline gap-2 text-[11.5px] text-[color:var(--text-muted)]">
+            <span className="min-w-0 flex-1 truncate" data-testid="document-row-subtitle">{documentSubtitle(document, context)}</span>
+            <DocumentDateCell value={document.documentDate} />
           </span>
         </span>
       </button>
@@ -668,7 +667,9 @@ export function DocumentsByRubric({
         value={q}
         onCommit={changerRecherche}
         busy={!!q && (feedState.pending?.kind === 'first' || (!meta && feedState.status !== 'error'))}
-        resultCount={q && meta ? total : null}
+        /* Lot 108D (ticket « compteur affiché deux fois ») : pas de resultCount — le nombre n'est plus
+           répété sous le champ ; UN seul compteur, celui de la barre au-dessus de la liste (countLabel,
+           même total serveur, annoncé aux lecteurs d'écran par sa zone aria-live). */
         className="mb-1"
       />
 
@@ -707,11 +708,8 @@ export function DocumentsByRubric({
       )}
       {resultIds && !q && (
         <div className="mb-3 flex flex-wrap items-center gap-2 text-sm text-[color:var(--text-secondary)]" data-testid="search-results-filter">
-          {/* Compte des documents réellement trouvés dans le compte, pas des identifiants de l'URL. */}
-          <span>
-            Résultats de la recherche Verebona
-            {meta ? ` · ${libelleResultats(scopeTotal)}` : ''}
-          </span>
+          {/* Lot 108D : le nombre n'est plus répété ici — compteur unique dans la barre au-dessus de la liste. */}
+          <span>Résultats de la recherche Verebona</span>
           <Button size="sm" variant="ghost" onClick={effacerResultats}>Tout afficher</Button>
         </div>
       )}
@@ -808,7 +806,6 @@ export function DocumentsByRubric({
                     <DocumentRow
                       key={doc.publicId}
                       document={doc}
-                      sort={sort}
                       context={context}
                       showRubric={!prefs.grouped}
                       rubricLabel={doc.rubricCode ? (rubricLabels.get(doc.rubricCode) ?? '') : ''}
@@ -822,7 +819,7 @@ export function DocumentsByRubric({
                   className="m-0 grid list-none grid-cols-2 gap-4 p-0 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5"
                 >
                   {group.docs.map((doc) => (
-                    <DocumentTile key={doc.publicId} document={doc} sort={sort} context={context} onOpen={openDocument} />
+                    <DocumentTile key={doc.publicId} document={doc} context={context} onOpen={openDocument} />
                   ))}
                 </ul>
               ))}

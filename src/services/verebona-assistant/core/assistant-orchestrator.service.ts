@@ -602,7 +602,8 @@ export async function runAssistant(
     // COMMANDE MÉTIER — préparation et aperçu, AUCUNE ÉCRITURE ICI
     // ══════════════════════════════════════════════════════════════════════
     // Compte en lecture seule (fin d'essai, §6.5) : aucune commande d'écriture.
-    if (ports.prepareCommand && !input.resume && !input.planLimit) {
+    // Lot 108J : une suggestion d'aide ou de découverte est une QUESTION, jamais une commande.
+    if (ports.prepareCommand && !input.resume && !input.planLimit && !input.suggestion?.forceIntent) {
       const prep = await ports.prepareCommand(input).catch((e) => {
         console.error('[verebona] préparation de commande impossible :', (e as Error).message);
         return null;
@@ -660,9 +661,14 @@ export async function runAssistant(
 
     // Reprise après clarification : la demande initiale garde son intention —
     // elle n'est ni re-routée ni re-classée par le modèle.
+    // Lot 108J : suggestion partagée revalidée par le serveur — question d'aide
+    // ou de découverte : son intention canonique est IMPOSÉE (jamais lue comme
+    // une recherche dans les documents du compte).
     let outcome: ReturnType<typeof routeDeterministic> = input.resume
       ? { kind: 'route' as const, route: routeForIntent(input.resume.intent, input.planType, 'reprise après clarification') }
-      : routeDeterministic({
+      : input.suggestion?.forceIntent
+        ? { kind: 'route' as const, route: routeForIntent(input.suggestion.canonicalIntent, input.planType, `suggestion partagée ${input.suggestion.id}`) }
+        : routeDeterministic({
           message: input.message,
           planType: input.planType,
           hasPendingClarification: await ports.hasPendingClarification(input.accountId, input.userId, input.conversationId),

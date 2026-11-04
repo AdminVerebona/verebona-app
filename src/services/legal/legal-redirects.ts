@@ -65,6 +65,8 @@ export async function respondCguvVersion(code: string, opts: { download?: boolea
     target = isCguvVersionCode(code) ? { kind: 'unknown' } : { kind: 'invalid' };
   }
   if (target.kind === 'redirect') return NextResponse.redirect(target.url, { status: 307, headers: NO_STORE });
+  // Lot 108L : lien « version en vigueur » de la page d'erreur = site public (jamais /cguv de l'app).
+  const currentUrl = target.kind === 'archive' ? null : await serverLegalUrl('cguv').catch(() => null);
   if (target.kind === 'unknown') {
     return new NextResponse(
       renderLegalErrorPage({
@@ -72,6 +74,7 @@ export async function respondCguvVersion(code: string, opts: { download?: boolea
         message: "Aucune version des CGUV ne porte cet identifiant. Elle ne sera jamais remplacée par une autre version : si ce lien vous a été transmis, contactez-nous.",
         requestedVersion: code,
         offerCurrentLink: true,
+        currentUrl,
       }),
       { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8', ...NO_STORE } },
     );
@@ -83,6 +86,7 @@ export async function respondCguvVersion(code: string, opts: { download?: boolea
         message: "L'identifiant de version indiqué n'a pas le format attendu (AAAA-MM-JJ-vN). Vérifiez le lien que vous avez suivi.",
         requestedVersion: code,
         offerCurrentLink: true,
+        currentUrl,
       }),
       { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8', ...NO_STORE } },
     );

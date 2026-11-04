@@ -60,7 +60,7 @@ function accueil(r: Raw, shown: Decided[], o: Partial<Parameters<typeof buildPre
 }
 const rendu = (p: MascotPresentation) => {
   mascot.presentation = p;
-  return renderToStaticMarkup(h(MascotSpeaks, { greetingName: 'Fabien', empty: false, onCreateAsset: () => {}, onUploadDocument: () => {}, pageSuggestions: [] }));
+  return renderToStaticMarkup(h(MascotSpeaks, { greetingName: 'Fabien', empty: false, onCreateAsset: () => {}, onUploadDocument: () => {} }));
 };
 /** Texte VISIBLE de la bulle (balises et attributs retirés). */
 const bulleVisible = (html: string) => {

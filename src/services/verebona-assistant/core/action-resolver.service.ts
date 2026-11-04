@@ -28,7 +28,7 @@ import { DOSSIER_CODES, normalizeExportCode } from '@/services/exports/catalog';
 import type { ActionIntent, VerebonaAction, VerebonaActionType } from '../types/actions';
 import type { VerebonaIntent } from '../types/intents';
 import { getActionDefinition, allowedActionsFor } from '../registries/action-registry';
-import { HELP_CONTACT_PATH, integratedHelpHref, isHelpPath } from '@/lib/help-center/open';
+import { HELP_CONTACT_PATH, integratedHelpHref, isHelpPath, isResourcePath } from '@/lib/help-center/open';
 import {
   parseEntityRef, hrefBien, ROUTES,
   type EntityKind, type EntityRef, type OngletBien,
@@ -162,6 +162,8 @@ function buildHref(
     // jamais par le modèle, et revalidé ici (`isHelpPath`).
     case 'OPEN_HELP': {
       const path = typeof params?.path === 'string' ? params.path.split('#')[0] : '';
+      // Lot 108J : article Ressources — son chemin public, jamais le Centre d'aide.
+      if (path && isResourcePath(path)) return path;
       return path && isHelpPath(path) ? integratedHelpHref(path) : ROUTES.AIDE;
     }
     case 'OPEN_CONTACT':
@@ -334,7 +336,8 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
       // « Lire l'article » pour un article précis ; « Ouvrir l'aide » pour
       // l'accueil ou la recherche du Centre d'aide (§10.6, D-J4).
       label: ai.type === 'OPEN_HELP'
-        ? (ai.params?.search === true || !href || href === ROUTES.AIDE ? 'Ouvrir l’aide' : 'Lire l’article')
+        ? (href && isResourcePath(href) ? 'Lire la Ressource'
+          : ai.params?.search === true || !href || href === ROUTES.AIDE ? 'Ouvrir l’aide' : 'Lire l’article')
         : tiroirCle ? (tiroirCle.kind === 'piece' ? 'Ouvrir la pièce' : 'Ouvrir l’équipement')
           : LABELS[ai.type],
       href,

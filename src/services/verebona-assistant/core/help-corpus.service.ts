@@ -255,6 +255,16 @@ interface HelpCorpusConfig {
  * mélangerait les corpus (ENV-02).
  */
 export function resolveHelpCorpusConfig(): HelpCorpusConfig {
+  return resolvePublicCorpusConfig(HELP_T2_CORPUS_PATH);
+}
+
+/**
+ * Lot 108J : même résolution (variables lues à l'exécution, refus ENV-02)
+ * pour tout fichier de données publié par le site public de l'environnement
+ * — `/aide/corpus-t2.json` (Centre d'aide) et `/ressources/corpus-t2.json`
+ * (Ressources) suivent ainsi exactement la même règle.
+ */
+export function resolvePublicCorpusConfig(corpusPath: string): HelpCorpusConfig {
   const applicationEnvironment = helpApplicationEnvironment();
   const surcharge = runtimeEnv('HELP_CENTER_URL');
   const site = runtimeEnv('NEXT_PUBLIC_PUBLIC_SITE_URL') ?? (BUILD_PUBLIC_SITE_URL?.trim() || undefined);
@@ -262,7 +272,7 @@ export function resolveHelpCorpusConfig(): HelpCorpusConfig {
   const base = (surcharge ?? site ?? PRODUCTION_HELP_SITE).replace(/\/+$/, '');
   let url: string | null = null;
   try {
-    const u = new URL(`${base}${HELP_T2_CORPUS_PATH}`);
+    const u = new URL(`${base}${corpusPath}`);
     url = u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : null;
   } catch {
     url = null;
@@ -1015,6 +1025,12 @@ export async function retrieveHelpSources(question: string, planType?: string, l
 
 /** Article publié dans l'environnement (contrôle d'accès de l'action OPEN_HELP). */
 export async function helpArticlePublished(id: string): Promise<boolean> {
+  // Lot 108J : article des Ressources (`RES-<ID>`) — publié dans le corpus
+  // Ressources de l'environnement (jamais un lien vers le Centre d'aide).
+  if (id.startsWith('RES-')) {
+    const { resourceArticlePublished } = await import('./resources-corpus.service');
+    return resourceArticlePublished(id);
+  }
   const corpus = await loadHelpCorpus();
   return Boolean(corpus?.articles.some((a) => a.id === id));
 }

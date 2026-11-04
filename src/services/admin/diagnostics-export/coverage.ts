@@ -210,6 +210,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   ai_reuse_counters: C('extractions-ia'),
   // Lot 91D : décisions de T1 sur les valeurs significatives des unités sources (historique SUPERSEDED compris).
   document_value_decisions: C('extractions-ia'),
+  // Lot 108K (1090) : progression du réexamen ciblé des décisions T1 par unité (examinée, en échec, trop grande ; sortie T1).
+  document_value_review_units: C('extractions-ia'),
   t6_evaluation_runs: C('extractions-ia'),
   t6_interpellation_assessments: C('extractions-ia'),
   home_mascot_generations: C('extractions-ia'),
@@ -219,10 +221,14 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   home_mascot_pregen_requests: C('extractions-ia'),
   // Lot 106B (1005) : suggestions de l'accueil passées par l'utilisateur (préférence personnelle).
   home_suggestion_skips: C('extractions-ia'),
+  // Lot 108J (1085) : suggestions partagées consultées (rotation seulement, préférence personnelle).
+  shared_suggestion_consultations: C('extractions-ia'),
   verebona_request_runs: C('extractions-ia'),
   verebona_ai_runs: C('extractions-ia'),
   verebona_fact_revalidations: C('extractions-ia'),
   ai_output_replays: C('extractions-ia'),
+  // Lot 108B (1045) : récupération automatique des montants inconnus (état, provenance, tentatives T1).
+  document_amount_recoveries: C('extractions-ia'),
   // ── Preuves ──────────────────────────────────────────────────────────────
   field_evidence: C('preuves'),
   // ── Candidats ────────────────────────────────────────────────────────────
@@ -262,6 +268,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   // ── Corrections utilisateur ──────────────────────────────────────────────
   data_separation_corrections: C('corrections-utilisateur'),
   asset_cost_line_decisions: C('corrections-utilisateur'),
+  // Lot 108C : classement d'une dépense réelle en dépense d'usage (choix utilisateur, relu par le TCO).
+  asset_usage_line_assignments: C('corrections-utilisateur'),
   asset_cost_line_decision_events: C('corrections-utilisateur'),
   to_process_decisions: C('corrections-utilisateur'),
   document_classification_feedback: C('corrections-utilisateur', { filter: `t.file_id IN ${FILES}` }),
@@ -630,6 +638,7 @@ export const DIAG_LOGICAL_REFERENCES: readonly DiagLogicalReference[] = [
   { from: 'document_value_decisions', column: 'extraction_id', to: 'document_extractions', role: 'décision T1 sur une valeur → extraction' },
   { from: 'document_value_decisions', column: 'analysis_run_id', to: 'document_analysis_runs', role: 'décision T1 sur une valeur → analyse' },
   { from: 'document_value_decisions', column: 'related_fact_ids', to: 'document_facts', kind: 'pg-array', role: 'décision T1 sur une valeur → faits rattachés' },
+  { from: 'document_value_review_units', column: 'extraction_id', to: 'document_extractions', role: 'réexamen T1 d’une unité → extraction' },
   { from: 'document_extractions', column: 'file_id', to: 'asset_files', role: 'extraction → document' },
   { from: 'document_extractions', column: 'analysis_run_id', to: 'document_analysis_runs', role: 'extraction → analyse' },
   { from: 'document_source_units', column: 'extraction_id', to: 'document_extractions', role: 'unité source → extraction' },
@@ -766,7 +775,7 @@ const CALL_TRACES = ['ai_usage_event', 'ai_call_diagnostics', 'ai_call_captures'
  */
 export const DIAG_AI_OPERATION_COVERAGE: Readonly<Record<string, DiagAiOperationCoverage>> = {
   t1_group_upload: { treatment: 'T1', tables: [...CALL_TRACES, 'document_lots', 'document_lot_items', 'document_analysis_runs'] },
-  t1_analyze_document: { treatment: 'T1', tables: [...CALL_TRACES, 'document_raw_extracts', 'document_source_units', 'document_extractions', 'document_facts', 'document_tables', 'document_table_cells', 'document_unresolved_facts', 'document_extraction_coverage', 'document_operation_candidates', 'document_value_decisions', 'field_evidence', 'ai_execution_reports', 'ai_execution_report_entries'] },
+  t1_analyze_document: { treatment: 'T1', tables: [...CALL_TRACES, 'document_raw_extracts', 'document_source_units', 'document_extractions', 'document_facts', 'document_tables', 'document_table_cells', 'document_unresolved_facts', 'document_extraction_coverage', 'document_operation_candidates', 'document_value_decisions', 'document_value_review_units', 'field_evidence', 'ai_execution_reports', 'ai_execution_report_entries'] },
   collect_evidence: { treatment: 'T1', tables: [...CALL_TRACES, 'field_evidence'] },
   compare_values: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_runs', 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes'] },
   t3_value_conflict: { treatment: 'T3', tables: [...CALL_TRACES, 'reconciliation_decisions', 'inconsistency_registry', 'canonical_field_writes', 'ai_execution_reports', 'ai_execution_report_entries', 't3_decision_memory', 'ai_reuse_counters'] },

@@ -14,6 +14,7 @@
  * lien reste visible dans le compte ». Un incident d'envoi ne peut pas
  * invalider une déclaration déjà écrite.
  */
+import { serverLegalUrl } from '@/services/legal/cguv-referential.service';
 import { emailService } from '@/lib/email/email-service';
 import { LIFECYCLE_DURATIONS } from '@/lib/account-lifecycle/retention-policy';
 import { markReceiptSent } from './withdrawal.service';
@@ -60,7 +61,8 @@ export async function sendWithdrawalReceipt(input: ReceiptInput): Promise<{ sent
         amountLabel: input.summary.amountLabel,
         retentionDays: String(LIFECYCLE_DURATIONS.restrictedRetentionDays),
         accountUrl: `${base}/mon-compte`,
-        legalPermalinkUrl: `${base}/cgvu`,
+        // Lot 108L : CGUV sur le SITE PUBLIC de l'environnement (jamais app.*/cgvu).
+        legalPermalinkUrl: await serverLegalUrl('cguv'),
         contactEmail: process.env.CONTACT_EMAIL || 'contact@verebona.com',
       },
     });

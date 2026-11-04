@@ -118,7 +118,9 @@ scenario('L75E-MASC', 'Lot 75E — mascotte : classificateur unique, aucun bloc 
     const n0 = modele.formulate;
     const p = await pregen(a.id);
     expect(await blocs(p)).toEqual([ONB]);
-    expect(modele.formulate).toBeGreaterThan(n0);
+    // Lot 108J : plus de contexte de questions — la bulle inchangée peut reprendre ses textes figés (R8)
+    // sans nouvel appel ; l'entrée fautive est de toute façon supprimée et jamais servie.
+    expect(modele.formulate).toBeGreaterThanOrEqual(n0);
     expect(await cacheAvec(a.id, '%deux sujets pour vous%')).toBe(0);
   });
 

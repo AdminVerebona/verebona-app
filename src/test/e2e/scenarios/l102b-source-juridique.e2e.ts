@@ -150,13 +150,18 @@ scenario('L102B', 'Source juridique unique (site public) et preuves d’acceptat
     const u = await compte();
     expect(await ecritureRefusee(u.cookie)).toBeNull();
 
-    // Inscription : version courante connue, permalien d'archive, statut « en attente du site public ».
+    // Lot 108L (ticket « livraison des informations légales ») : une version dont
+    // le texte n'est pas consultable sur le site public n'est JAMAIS acceptée
+    // (acceptation non opposable) — refus explicite avant toute création,
+    // Supervision ouverte. Remplace l'inscription « en attente du site public ».
     const { POST } = await import('@/app/api/users/route');
     const email = `${uid('l102b-att')}@test.invalid`;
-    expect((await POST(req('/api/users', { body: { email, password: 'NouveauMdp1!x', firstName: 'Ana', lastName: 'Attente', acceptedTerms: true, termsVersion: LEGACY } }))).status).toBe(201);
-    const [p] = await sql<{ version_code: string; permalink_url: string; text_sha256: string; proof_status: string }[]>`
-      SELECT la.version_code, la.permalink_url, la.text_sha256, la.proof_status FROM legal_acceptances la JOIN users us ON us.id = la.user_id WHERE us.email = ${email}`;
-    expect(p).toEqual({ version_code: LEGACY, permalink_url: `${ORIGIN}/cguv/versions/${LEGACY}`, text_sha256: sha('9'), proof_status: 'EN_ATTENTE_SITE_PUBLIC' });
+    const refused = await POST(req('/api/users', { body: { email, password: 'NouveauMdp1!x', firstName: 'Ana', lastName: 'Attente', acceptedTerms: true, termsVersion: LEGACY } }));
+    expect(refused.status).toBe(503);
+    expect((await refused.json()).code).toBe('CGUV_PUBLIC_TEXT_UNAVAILABLE');
+    expect(await sql`SELECT 1 FROM users WHERE email = ${email}`).toHaveLength(0);
+    const [an] = await sql<{ status: string }[]>`SELECT status FROM admin_anomalies WHERE fingerprint = 'other:legal-cguv:public-text-unavailable' ORDER BY id DESC LIMIT 1`;
+    expect(an?.status).toBeTruthy();
     // Le permalien d'archive répond (aucun 404).
     expect((await page(new Request(`${ORIGIN}/x`), ctx(LEGACY))).status).toBe(200);
   });

@@ -168,6 +168,8 @@
   },
   "legacyRedirects": {
     "/cgu": "/legal/cguv",
+    "/cguv": "/legal/cguv",
+    "/cgvu": "/legal/cguv",
     "/comment-ca-marche": "/#how",
     "/confidentialite": "/legal/confidentialite",
     "/legal": "/legal/mentions-legales",

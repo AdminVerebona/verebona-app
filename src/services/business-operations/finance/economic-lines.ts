@@ -210,7 +210,10 @@ type DocumentLineReason =
   // achat d'un objet distinct non incorporé au coût de possession du bien.
   | 'SAME_FACT_OTHER_DOCUMENT' | 'NOT_OWNERSHIP_COST' | 'SOURCE_WITHDRAWN'
   // Lot 80A : dépense retirée du coût de possession par l'utilisateur (décision persistée, réversible).
-  | 'USER_EXCLUDED';
+  | 'USER_EXCLUDED'
+  // Lot 108A : même achat CONFIRMÉ (faisceau de preuves) représenté par une autre source — fiche, justificatif ou
+  // événement de référence : une seule contribution, la source reste consultable.
+  | 'SAME_FACT_CROSS_SOURCE';
 
 export type EconomicLineReason = ExclusionReason | DocumentLineReason;
 
@@ -240,6 +243,7 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   NOT_OWNERSHIP_COST: 'Achat distinct, non incorporé au coût de possession du bien',
   SOURCE_WITHDRAWN: 'Justificatif retiré de la dépense : montant réévalué depuis le justificatif',
   USER_EXCLUDED: 'Retirée du coût de possession par vous',
+  SAME_FACT_CROSS_SOURCE: 'Même achat qu’une autre source déjà comptée (fiche, justificatif ou événement de référence) : compté une seule fois',
 };
 
 /** Ligne documentaire qualifiée, avant le moteur (`status` null : à évaluer par `evaluateComponent`). */
@@ -315,7 +319,8 @@ const ACOMPTE = /\b(acompte|arrhes)\b/i;
 const SOLDE = /\bsolde\b/i;
 const INVOICE_LIKE = /(INVOICE|FACTURE|TICKET)/i;
 
-const normalizeSupplier = (s: string | null | undefined): string | null => {
+/** Clé de fournisseur normalisée (lot 108A : exportée, même normalisation pour le rapprochement des faits du TCO). */
+export const normalizeSupplier = (s: string | null | undefined): string | null => {
   const v = (s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\b(SARL|SAS|SA|EURL|SASU|SNC|ETS|STE)\b/g, '').replace(/[^A-Z0-9]/g, '');
   return v.length >= 2 ? v : null;
 };
@@ -616,6 +621,12 @@ function crossDocumentRules(lines: DocumentLineDraft[]): void {
   const vivantes = () => lines.filter((l) => l.status === null && (l.kind === 'REALIZED_COST' || l.kind === 'REDUCTION'));
   // Même facture : même référence, même montant, même devise, même nature, fournisseur compatible.
   const vues = new Map<string, DocumentLineDraft>();
+  // Lot 108A : une facture déjà REPRÉSENTÉE par un événement de référence fait aussi référence — sa copie non
+  // citée (autre fichier, même référence, même montant) n'est pas une seconde dépense, quel que soit l'ordre d'import.
+  for (const l of lines) {
+    if (l.status !== 'CONSOLIDATED_ELSEWHERE' || (l.kind !== 'REALIZED_COST' && l.kind !== 'REDUCTION')) continue;
+    for (const r of l.invoiceRefs) { const k = `${r}|${l.kind}|${l.currency}|${l.amountMinor}`; if (!vues.has(k)) vues.set(k, l); }
+  }
   for (const l of vivantes()) {
     for (const r of l.invoiceRefs) {
       const k = `${r}|${l.kind}|${l.currency}|${l.amountMinor}`;

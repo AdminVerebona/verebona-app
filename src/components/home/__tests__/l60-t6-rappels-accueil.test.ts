@@ -49,7 +49,7 @@ const pres = (paragraphs: unknown[]): MascotPresentation => ({
 });
 const rendu = (p: MascotPresentation) => {
   mascot.presentation = p;
-  return renderToStaticMarkup(h(MascotSpeaks, { greetingName: 'Fabien', empty: false, onCreateAsset: () => {}, onUploadDocument: () => {}, pageSuggestions: [] }));
+  return renderToStaticMarkup(h(MascotSpeaks, { greetingName: 'Fabien', empty: false, onCreateAsset: () => {}, onUploadDocument: () => {} }));
 };
 
 describe('Cartes T6 de l’accueil — commandes de rappel', () => {

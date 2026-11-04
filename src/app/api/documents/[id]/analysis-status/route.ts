@@ -8,6 +8,8 @@ import { getSession } from '@/lib/auth-guards';
 import { db } from '@/db';
 import { assetFiles, documentAnalysisRuns, documentAnalysisProposals } from '@/db/schema';
 import { eq, and, count } from 'drizzle-orm';
+import { ANALYSIS_FOLLOW_QUERY } from '@/lib/notifications/document-notification-policy';
+import { markAnalysisFollowed } from '@/services/documents/analysis-follow.service';
 
 export async function GET(
   request: NextRequest,
@@ -27,6 +29,13 @@ export async function GET(
       .where(and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId)))
       .limit(1);
     if (!file) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
+
+    // Lot 108I : relève VISIBLE du bandeau d'analyse = l'utilisateur suit
+    // l'analyse dans l'application ; son résultat lui sera montré à l'écran,
+    // sans notification de succès (`document-notification-policy`).
+    if (request.nextUrl?.searchParams?.get(ANALYSIS_FOLLOW_QUERY) === '1') {
+      await markAnalysisFollowed({ accountId, userId: session.userId, assetFileId });
+    }
 
     const [run] = await db.select({ status: documentAnalysisRuns.status })
       .from(documentAnalysisRuns)

@@ -1,0 +1,26 @@
+-- ──────────────────────────────────────────────────────────────────────────────
+-- Migration 1080 : une seule notification maximum par document pour le cycle
+-- normal d'import et d'analyse (lot 108I, ticket « Notifications documents »).
+--
+--   document_lots.followed_at
+--       Dernier SUIVI de l'analyse par le demandeur dans l'application : posé
+--       par le suivi de l'analyse (bandeau « Analyse en cours… », relève
+--       toutes les 4 s) uniquement quand la page est VISIBLE et seulement sur
+--       les lots en attente du compte de la session dont il est le
+--       destinataire. Lu à l'issue du lot : un suivi récent (fenêtre courte,
+--       `document-notification-policy.ts`) = l'utilisateur voit le résultat
+--       dans l'interface, aucune notification de succès.
+--
+--   document_lots.notification_skip_reason
+--       Traçabilité technique d'un résultat NON notifié (état `silent`) :
+--         followed_in_app  analyse suivie dans l'application jusqu'au bout ;
+--         reanalysis       document(s) déjà analysé(s) avec succès avant ce
+--                          lot (réanalyse, reprise, relance par la cohérence) ;
+--         technical        traitement technique (jamais présenté) ;
+--         no_recipient / no_outcome  (valeurs du lot 81E, désormais nommées).
+--       Aucune ligne historique n'est modifiée.
+--
+-- Additive, idempotente, rejouable. Aucune donnée détruite ni réécrite.
+-- ──────────────────────────────────────────────────────────────────────────────
+ALTER TABLE document_lots ADD COLUMN IF NOT EXISTS followed_at timestamptz;
+ALTER TABLE document_lots ADD COLUMN IF NOT EXISTS notification_skip_reason text;

@@ -136,6 +136,16 @@ export function filteredIncludedInGlobal(filtered: Record<string, string>, globa
       case 'api-ui/fiches.json': entries(base, (x) => String(x.bien)); break;
       case 'tracabilite/montants.json': entries(base, (x) => `${x.assetId}|${(x.ligne as Row)?.id}`); break;
       case 'tracabilite/tco.json': entries(base, (x) => String(x.assetId)); break;
+      // Lot 108E : journal T3 DOCUMENT_ASSET — global = compteurs par compte, compte = détail par document ;
+      // configuration (variables, prompt) lue en direct : présence seule.
+      case 'ia/t3-rattachement-documents.json':
+      case 'ia/t3-rattachement-documents.txt':
+      // Lot 108K : décisions T1 sur les valeurs — global = compteurs par compte, compte = bilan par document ;
+      // configuration (prompt effectif, variables) lue en direct : présence seule.
+      case 'ia/t1-decisions-valeurs.json':
+      case 'ia/t1-decisions-valeurs.txt':
+        if (!(base in global)) v.push(`${base} : absent du global`);
+        break;
       case 'technique/chronologie.json': entries(base, (x) => `${x.table}|${x.id}|${x.type}`); break;
       case 'api-ui/correspondance-champs.json':
         if (canonical(parse(filtered[base])) !== canonical(parse(global[base]))) v.push(`${base} : différent du global`);

@@ -237,6 +237,16 @@ export const REFERRAL_TEXT = Object.freeze({
   referredNotice: `Votre parrain recevra ${mois(REFERRAL_RULES.rewardMonths)} si vous souscrivez un abonnement annuel, une fois votre premier paiement encaissé et votre délai de rétractation terminé.`,
   /** Lien vers les conditions publiques. */
   termsLinkLabel: 'Conditions du parrainage',
+  /**
+   * Lot 108H — bloc Mon compte › Parrainage, texte court (décision PO) : une
+   * accroche, le bénéfice (au parrain seul : « Recevez ») avec la condition
+   * « abonnement annuel », et le lien vers les conditions complètes de la
+   * page publique. Les conditions détaillées (`conditions`) restent celles
+   * du BO ; elles ne sont plus reproduites dans ce bloc.
+   */
+  accountIntro: 'Invitez vos proches à découvrir Verebona.',
+  accountReward: `Recevez ${REFERRAL_RULES.rewardMonths} mois d’abonnement offert${REFERRAL_RULES.rewardMonths > 1 ? 's' : ''} pour chaque proche qui souscrit un abonnement annuel.`,
+  accountTermsLinkLabel: 'Voir les conditions du parrainage',
 });
 
 /** Motifs d'inéligibilité ou d'annulation, en clair (BO). */

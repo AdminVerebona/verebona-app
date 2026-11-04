@@ -7,7 +7,9 @@
  * compilation, dans l'environnement GitHub visé (mobile-preprod ou
  * production-mobile). Il vérifie que les variables et secrets nécessaires
  * existent (présence seulement : AUCUNE valeur n'est affichée) et que la
- * configuration se résout (origine https, version 1.2.3, isolation préprod/prod).
+ * configuration se résout (origine https, version 1.2.3, isolation préprod/prod),
+ * et (lot 108G) qu'aucune sonde technique locale n'est destinée à la production
+ * ou à un envoi TestFlight / Google Play (`checkDistribution`).
  *
  *   · sans --strict (push sur main) : si quelque chose manque, le build est
  *     simplement SAUTÉ (ready=false) avec la liste des éléments manquants dans
@@ -16,7 +18,7 @@
  *     demandé alors que la configuration n'est pas posée.
  */
 import { appendFileSync } from 'node:fs';
-import { resolveBuildConfig } from '../config/environments.mjs';
+import { checkDistribution, resolveBuildConfig } from '../config/environments.mjs';
 
 /** Éléments requis par plateforme : [nom, type, seulement si publication]. */
 export const REQUIRED = Object.freeze({
@@ -55,7 +57,9 @@ export function checkReadiness(platform, env, opts = {}) {
   }
   if ((env.VEREBONA_APP_ORIGIN ?? '').trim()) {
     try {
-      resolveBuildConfig(env);
+      // Lot 108G (CA02) : jamais de sonde technique (mode local) en production
+      // ni vers TestFlight / Google Play — refus même sur un push.
+      problems.push(...checkDistribution(resolveBuildConfig(env), { publish: !!opts.publish }));
     } catch (e) {
       problems.push(...String(e.message).split('\n- ').slice(1));
     }

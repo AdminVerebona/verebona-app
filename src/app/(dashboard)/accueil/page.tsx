@@ -32,7 +32,6 @@ import { prefetchMascotPresentation } from '@/components/home/useMascotPresentat
 // Mêmes chunks et même préchargement que le panneau « Ajouter » (APP-PERF-05).
 import { LazyAssetFormDialog as AssetFormDialog, LazyUnifiedDocumentDialog as UnifiedDocumentDialog } from '@/components/mobile/add-forms';
 import { orderByRecentViews, readRecentAssetIds } from '@/lib/home/recent-assets';
-import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 
 // Fenêtre affichée seulement après un retour de paiement interrompu : son
 // code n'a rien à faire dans le chargement initial de l'accueil.
@@ -236,7 +235,6 @@ export default function DashboardPage() {
     signalerRefus(info);
   }, [signalerRefus]);
 
-  const pageSuggestions = useMemo(() => suggestionsForRoute('/accueil').map((x) => x.label), []);
   const orderedAssets = useMemo(
     () => orderByRecentViews(summary?.assets.items ?? [], recentIds),
     [summary, recentIds],
@@ -269,7 +267,6 @@ export default function DashboardPage() {
         <MascotSpeaks
           greetingName={greetingName}
           empty={isEmpty}
-          pageSuggestions={pageSuggestions}
           onCreateAsset={() => setShowAssetDialog(true)}
           onUploadDocument={(assetId) => { setUploadAssetId(assetId ?? null); setShowUploadDialog(true); }}
         />

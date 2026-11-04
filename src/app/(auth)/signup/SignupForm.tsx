@@ -19,6 +19,7 @@ import { Crown, Users } from 'lucide-react';
 import { FollowTheme } from '@/components/FollowTheme';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
 import { LegalLink } from '@/components/legal/LegalLink';
+import { CguvPublicTextNotice, cguvAcceptable } from '@/components/legal/CguvPublicTextNotice';
 import { z } from 'zod';
 import { MIN_PASSWORD_LENGTH, checkPassword } from '@/lib/auth/password-rules';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -123,7 +124,10 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
   const legalLinks = useLegalLinks();
   const [legalVersion, setLegalVersion] = useState<{
     versionCode: string;
-    permalink: string;
+    /** Lot 108L : URL PUBLIQUE de la version exacte présentée, `null` si non disponible. */
+    permalink: string | null;
+    /** Lot 108L : texte vérifié sur le site public (sinon aucune acceptation possible). */
+    available: boolean;
   } | null>(null);
   // ══════════════════════════════════════════════════════════════════════════
   // AUCUNE OFFRE N'EST CHOISIE A L'INSCRIPTION — CDC tarification §3.1
@@ -196,7 +200,8 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data?.versionCode) {
-          setLegalVersion({ versionCode: data.versionCode, permalink: data.permalinkUrl ?? data.permalink });
+          const available = cguvAcceptable(data);
+          setLegalVersion({ versionCode: data.versionCode, permalink: available ? (data.permalinkUrl ?? data.permalink) : null, available });
         }
       })
       .catch(() => {
@@ -539,29 +544,33 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                   </Label>
                 </div>
                 <div className="flex flex-wrap justify-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    asChild
-                    disabled={isLoading}
-                  >
-                    {/* Ouvre la version EXACTE proposée à cet instant (§8.1),
-                        sur le site public (lot 102B : source juridique unique). */}
-                    <LegalLink
-                      href={legalVersion?.permalink ?? legalLinks.cguv}
-                      fallbackHref={legalLinks.cguv}
-                      target="_blank"
+                  {legalVersion?.available !== false && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      asChild
+                      disabled={isLoading}
                     >
-                      Lire les CGUV
-                    </LegalLink>
-                  </Button>
+                      {/* Ouvre la version EXACTE proposée à cet instant (§8.1),
+                          sur le site public de l'environnement (lot 108L : jamais
+                          le domaine de l’application ni /cgvu, jamais une autre version). */}
+                      <LegalLink
+                        href={legalVersion ? legalVersion.permalink : legalLinks.cguv}
+                        target="_blank"
+                        data-testid="signup-read-cguv"
+                      >
+                        Lire les CGUV
+                      </LegalLink>
+                    </Button>
+                  )}
                   <Button type="button" variant="ghost" size="sm" asChild disabled={isLoading}>
                     <LegalLink href={legalLinks.confidentialite} target="_blank">
                       Confidentialité
                     </LegalLink>
                   </Button>
                 </div>
+                {legalVersion?.available === false && <CguvPublicTextNotice versionCode={legalVersion.versionCode} />}
                 {errors.acceptedTerms && (
                   <p className="text-sm text-destructive">{errors.acceptedTerms}</p>
                 )}
@@ -585,7 +594,7 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                 </div>
               )}
 
-              <Button type="submit" className="w-full" disabled={isLoading}>
+              <Button type="submit" className="w-full" disabled={isLoading || legalVersion?.available === false}>
                 {isLoading
                   ? 'Création...'
                   : isDuoInvite

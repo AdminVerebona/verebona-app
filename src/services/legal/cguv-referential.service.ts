@@ -24,7 +24,7 @@ import { legalDocumentVersions, legalManifestSyncState } from '@/db/schema';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import { getAppBaseUrl } from '@/lib/app-url';
 import {
-  CGUV_FULL_LABEL, LEGAL_DOCUMENT_KEYS, LEGAL_URL_ENV, decideLegalLinksMode, legalLinksList, resolveLegalLinks,
+  CGUV_FULL_LABEL, LEGAL_DOCUMENT_KEYS, cguvVersionPath, LEGAL_URL_ENV, decideLegalLinksMode, legalLinksList, resolveLegalLinks,
   type LegalDocumentKey, type LegalLinks, type LegalLinksMode,
 } from '@/lib/legal/public-legal';
 import { serverCacheDelete, serverCacheGet, serverCacheSet } from '@/lib/server-cache';
@@ -147,6 +147,42 @@ export function hasVerifiedPublicLink(v: Pick<LegalVersion, 'sha256' | 'publicPe
 }
 
 /**
+ * ══════════════════════════════════════════════════════════════════════════
+ * LOT 108L — CONSULTATION ≠ PREUVE
+ *
+ * L'URL de CONSULTATION d'une version (lien montré à l'utilisateur : inscription,
+ * Mon compte, e-mails, réacceptation) est TOUJOURS sur le site public de
+ * l'environnement (`NEXT_PUBLIC_PUBLIC_SITE_URL`) : `/legal/cguv/versions/{code}`,
+ * et SEULEMENT si le texte de cette version y est vérifié (version publiée par
+ * le site, ou archive APP_LEGACY republiée avec l'empreinte d'origine). Sinon :
+ * `null` = « texte non disponible sur le site public » — jamais une autre
+ * version, jamais l'archive de l'application (app.*), jamais `/cgvu`.
+ *
+ * L'identifiant de PREUVE (`versionProofInfo`, figé dans `legal_acceptances`)
+ * est distinct et n'est jamais réécrit ; pour une archive APP_LEGACY il peut
+ * désigner l'archive technique de l'application, qui n'est jamais un lien
+ * présenté à l'utilisateur.
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export type PublicTextAvailability = 'VERIFIED' | 'NOT_ON_PUBLIC_SITE';
+
+/** Pur : le texte de cette version est-il vérifié sur le site public ? */
+export function publicTextAvailability(v: Pick<LegalVersion, 'source' | 'sha256' | 'publicPermalink' | 'publicSha256'>): PublicTextAvailability {
+  if (v.source === 'APP_LEGACY') return hasVerifiedPublicLink(v) ? 'VERIFIED' : 'NOT_ON_PUBLIC_SITE';
+  // PUBLIC_SITE / BO_MANUAL : importées seulement après vérification positive des octets (lot 104A).
+  return v.sha256 ? 'VERIFIED' : 'NOT_ON_PUBLIC_SITE';
+}
+
+/** Pur : URL publique de consultation d'une version, ou `null` (texte non disponible). */
+export function versionConsultationUrl(
+  v: Pick<LegalVersion, 'versionCode' | 'source' | 'sha256' | 'publicPermalink' | 'publicSha256'>,
+  siteBase: string = publicSiteBase(),
+): string | null {
+  if (publicTextAvailability(v) !== 'VERIFIED') return null;
+  return `${siteBase.replace(/\/+$/, '')}${cguvVersionPath(v.versionCode)}`;
+}
+
+/**
  * Permalien et empreinte qui IDENTIFIENT une version dans une preuve.
  *   · version publique (manifeste, saisie BO) : permalien et empreinte du site ;
  *   · archive APP_LEGACY republiée par le site : correspondance publique ;
@@ -178,7 +214,14 @@ export function proofStatusFor(v: Pick<LegalVersion, 'source' | 'sha256' | 'publ
 export interface PublicCurrentCguv {
   versionCode: string;
   title: string;
-  permalinkUrl: string;
+  /**
+   * Lot 108L : URL PUBLIQUE de consultation de cette version exacte
+   * (`/legal/cguv/versions/{code}` du site de l'environnement), ou `null` si
+   * son texte n'est pas vérifié sur le site public — jamais app.*, jamais /cgvu.
+   */
+  permalinkUrl: string | null;
+  /** Lot 108L : texte vérifié sur le site public ? (sinon acceptation refusée, fail-closed). */
+  publicText: PublicTextAvailability;
   sha256: string | null;
   effectiveAt: Date | null;
   publishedAt: Date | null;
@@ -194,7 +237,8 @@ export async function getPublicCurrentCguv(): Promise<PublicCurrentCguv | null> 
   return {
     versionCode: current.versionCode,
     title: current.source === 'APP_LEGACY' ? CGUV_FULL_LABEL : current.title,
-    permalinkUrl: proof.permalinkUrl,
+    permalinkUrl: versionConsultationUrl(current),
+    publicText: publicTextAvailability(current),
     sha256: proof.sha256,
     effectiveAt: current.effectiveAt,
     publishedAt: current.publishedAt,
@@ -574,6 +618,7 @@ export async function syncCguvManifest(opts: {
   } else {
     await autoResolveAnomaly(MANIFEST_ANOMALY_FINGERPRINT, { origin: 'legal_manifest_sync', cause: 'aucun écart' });
   }
+  await superviseCurrentPublicText();
   if (applied.imported.length > 0 || applied.refused.length > 0 || applied.current !== lastKnownCurrent || opts.trigger === 'bo' || opts.trigger === 'manual') {
     await recordLegalAudit({
       action: 'MANIFEST_SYNCED', actorUserId: opts.actorUserId, versionCode: applied.current,
@@ -585,6 +630,39 @@ export async function syncCguvManifest(opts: {
     current: applied.current, anomalies: applied.anomalies,
     lastKnown: { current: applied.current, lastSuccessAt: now },
   };
+}
+
+/** Lot 108L : anomalie Supervision « version en vigueur sans texte vérifié sur le site public ». */
+export const CURRENT_PUBLIC_TEXT_FINGERPRINT = 'other:legal-cguv:public-text-unavailable';
+
+/**
+ * Lot 108L — Supervision de la disponibilité juridique : la version en vigueur
+ * doit être consultable sur le site public (sinon aucune nouvelle acceptation
+ * n'est enregistrée : `assertCguvAcceptable`). Résolue d'elle-même au retour.
+ * Ne lève jamais.
+ */
+export async function superviseCurrentPublicText(versionCode?: string | null): Promise<void> {
+  try {
+    const current = await getCurrentVersion(DOCUMENT_TYPE_CGVU);
+    const { reportAnomaly, autoResolveAnomaly } = await supervision();
+    if (current && publicTextAvailability(current) === 'VERIFIED') {
+      await autoResolveAnomaly(CURRENT_PUBLIC_TEXT_FINGERPRINT, { origin: 'legal_public_text', cause: `CGUV ${current.versionCode} vérifiées sur le site public` });
+      return;
+    }
+    await reportAnomaly({
+      domain: 'other',
+      fingerprint: CURRENT_PUBLIC_TEXT_FINGERPRINT,
+      title: 'CGUV : la version présentée à l’acceptation n’est pas disponible sur le site public — inscriptions et acceptations suspendues',
+      detail: {
+        versionEnVigueur: current?.versionCode ?? null,
+        versionDemandee: versionCode ?? null,
+        effet: 'Aucune acceptation non opposable : l’inscription (classique, Google / Apple), la réacceptation et la demande de démarrage immédiat sont refusées (CGUV_PUBLIC_TEXT_UNAVAILABLE) ; aucun lien vers l’application (app.*) ni vers une autre version n’est proposé.',
+        action: 'Publier le texte de cette version sur le site public (ou y reprendre l’archive octet pour octet), puis BO › CGUV › « Relire le manifeste ». Reprise automatique.',
+      },
+    });
+  } catch (e) {
+    console.error('[legal] supervision du texte public impossible :', (e as Error).message);
+  }
 }
 
 /* ── Lecture BO et saisie de secours ──────────────────────────────────────── */

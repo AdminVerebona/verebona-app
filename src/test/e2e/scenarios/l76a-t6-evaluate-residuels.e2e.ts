@@ -26,7 +26,6 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scenario } from '../scenario';
 import { useTargetState } from '../chain';
-import { activerContratQuestions, fondee } from '../t6-suggestions-v3';
 
 interface Fait { ref: string; excerpt: string | null; value: string | null }
 interface Candidat { subjectId: string; title: string; assetName: string | null; facts?: Fait[]; evidence: Array<{ ref: string; kind: string }> }
@@ -103,7 +102,6 @@ scenario('L76A-T6', 'Lot 76A — invalidation EVALUATE complète et suggestions 
   const passer = async (accountId: number, userId: number | null = null) => (await svc()).getMascotPresentation(accountId, 'pregen', userId);
   const affichees = (p: import('@/services/home/mascot/types').MascotPresentation) => p.paragraphs.filter((x) => x.reminder != null).map((x) => x.reminder!.agendaItemId);
   const evalues = () => modele.candidats.flat();
-  const questions = (p: import('@/services/home/mascot/types').MascotPresentation) => p.secondaries.filter((s) => s.action.target.kind === 'ask').map((s) => s.action.label);
 
   async function compte(nom = 'Maison Lilas') {
     const a = await make.account({ plan: 'premium' });
@@ -327,58 +325,8 @@ scenario('L76A-T6', 'Lot 76A — invalidation EVALUATE complète et suggestions 
     }
   });
 
-  it('AC06–AC09 — suggestions : exclue sous D1, incitation CONSULT, bien incohérent : jamais proposées (génération et cache)', async () => {
-    const c = await compte();
-    const ct = await echeance(c, 'Contrôle technique', await plus(12));
-    await echeance(c, 'Assurance habitation', await plus(14));
-    const ramonage = await echeance(c, 'Ramonage', await plus(200)); // hors horizon : jamais évalué, consultable, non signalé
-    modele.juger = (x) => (x.title === 'Contrôle technique' ? AGIR : AUCUNE);
-    // Lot 87C : la démarche du contrôle technique est étayée par une description concrète (fondement D1.DESC).
-    await sql`UPDATE agenda_items SET description = 'Contre-visite exigée : rendez-vous à prendre au centre agréé.' WHERE id = ${ct}`;
-    await activerContratQuestions(true);
-    const D = (ctx: Record<string, unknown>, label: string) => (ctx.nextDeadlines as Array<{ ref: string; label: string; identifiedAction: { ref: string } | null; description: { ref: string } | null }>)
-      .find((x) => x.label === label)!;
-    const preparerCT = (ctx: Record<string, unknown>, question: string, o: { assetRef?: string | null } = {}) => {
-      const d = D(ctx, 'Contrôle technique');
-      return fondee(ctx, question, [d.ref, ...(d.identifiedAction ? [d.identifiedAction.ref] : []), ...(d.description ? [d.description.ref] : [])],
-        { purpose: 'PREPARE', deadlineRef: d.ref, ...o });
-    };
-    modele.questions = (ctx) => [
-      // Cas du ticket 76A : texte sur l'échéance exclue, référence autorisée vers une autre.
-      preparerCT(ctx, 'Comment préparer le renouvellement de l’assurance habitation ?'),
-      // Préparation étayée (démarche identifiée + description) : légitime, conservée.
-      preparerCT(ctx, 'Que dois-je préparer pour le contrôle technique ?', { assetRef: 'A1' }),
-      fondee(ctx, 'Quand est prévu le ramonage ?', [D(ctx, 'Ramonage').ref]),
-    ];
-    await passer(c.id);
-    const p = await passer(c.id);
-    expect(affichees(p)).toEqual([ct]);
-    const attendues = ['Que dois-je préparer pour le contrôle technique ?', 'Quand est prévu le ramonage ?'];
-    expect(questions(p)).toEqual(attendues);
-    // Relecture du cache (aucune nouvelle formulation) : mêmes contrôles.
-    const n = modele.formulations;
-    const relue = await (await svc()).getMascotPresentation(c.id, 'display', c.ownerUserId);
-    expect(modele.formulations).toBe(n);
-    expect(questions(relue)).toEqual(attendues);
-    // Bien incohérent (autre bien du compte), incitation CONSULT, paraphrase : rejetées.
-    const clio = await make.asset(c as never, { category: 'VEHICULE', name: 'Clio' });
-    await sql`UPDATE assets SET status = 'EN_SERVICE' WHERE id = ${clio.id}`;
-    modele.questions = (ctx) => [
-      preparerCT(ctx, 'Que dois-je préparer pour le contrôle technique de la Clio ?', { assetRef: null }),
-      fondee(ctx, 'Comment préparer le ramonage ?', [D(ctx, 'Ramonage').ref]),
-      fondee(ctx, 'Quand passer le CT ?', [D(ctx, 'Contrôle technique').ref]),
-    ];
-    // (le nouveau bien change le contexte des questions : nouvelle formulation, mêmes contrôles)
-    const q = await passer(c.id);
-    expect(questions(q)).toEqual([]);
-    // Lot 87C (AC14) : rejets distinctement tracés sur la génération, sans texte.
-    // (journal T6 écrit en arrière-plan : attente bornée de la ligne de cette génération)
-    const derniere = async () => (await sql<Array<{ r: { accepted: number; rejected: number; reasons: Record<string, number> } }>>`
-      SELECT suggestion_report AS r FROM home_mascot_generations WHERE account_id = ${c.id} AND status = 'generated' AND suggestion_report IS NOT NULL ORDER BY id DESC LIMIT 1`)[0];
-    for (let i = 0; i < 100 && (await derniere())?.r.accepted !== 0; i += 1) await new Promise((r) => setTimeout(r, 50));
-    const g = await derniere();
-    expect(g.r).toMatchObject({ accepted: 0, rejected: 3, reasons: { other_asset_cited: 1, consult_incites_unsignaled: 1, label_not_cited: 1 } });
-    expect(JSON.stringify(g.r)).not.toMatch(/Clio|ramonage|Quand passer/);
-    expect(ramonage).toBeGreaterThan(0);
-  });
+  // Lot 108J : cas retiré (décision PO du ticket « Suggestions de l'accueil et de T2 ») — la mascotte ne
+  // demande plus de questions à T6 (service unique `src/services/suggestions/shared`) ; le contrat T6 des
+  // questions reste couvert par les tests unitaires (l55a-suggestions-t6, l106b).
+
 });

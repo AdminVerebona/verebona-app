@@ -112,8 +112,11 @@ export interface IdentityAssessment {
 const AMOUNT_INCOMPATIBLE_RATIO = 10;
 /** Tolérance de concordance des montants (1 %, au moins une unité mineure). */
 const AMOUNT_COHERENT_TOLERANCE = 0.01;
-/** Écart (jours) en deçà duquel une date de fiche et une date de document désignent le même jour économique. */
-const SAME_DATE_DAYS = 7;
+/**
+ * Écart (jours) en deçà duquel une date de fiche et une date de document désignent le même jour économique.
+ * Lot 108A : exporté — même paramètre pour le rapprochement des faits du TCO (`tco/fact-matching.ts`).
+ */
+export const SAME_DATE_DAYS = 7;
 
 const PRINCIPAL_ROLES = new Set(['REALIZED_COST', 'FORECAST_COST', 'PROCEED']);
 const principalScope = (h: Pick<PersistedFinancialHint, 'amountScope'>) => h.amountScope === null || h.amountScope === undefined || h.amountScope === 'TOTAL';

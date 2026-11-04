@@ -143,6 +143,92 @@ export function significantValues(text: string | null | undefined, opts: { ident
   return out;
 }
 
+// ── Lot 108K (ticket 91D bis, §E) : identifiants hors couples libellé / valeur ──
+
+/**
+ * Libellés qui DÉSIGNENT un identifiant d'objet ou d'acte (référence de
+ * facture, de contrat, de police, de dossier, de client, de commande ; n° de
+ * série, VIN, IMEI, immatriculation, châssis). Paramètre centralisé : il dit
+ * seulement « le jeton qui suit est un identifiant » (lecture structurelle),
+ * jamais si cet identifiant est utile — T1 en décide. Volontairement ABSENTS :
+ * « réf. », « code », « article », « quantité » (codes accessoires d'une
+ * ligne de ticket, quantités), adresses — limités aux couples libellé /
+ * valeur comme avant.
+ */
+export const IDENTIFIER_CUES: readonly string[] = [
+  'facture', 'avoir', 'contrat', 'police', 'dossier', 'sinistre', 'client', 'adherent', 'adhérent', 'commande', 'devis', 'bon de commande',
+  'serie', 'série', 'numero de serie', 'numéro de série', 'serial', 'serial number', 's/n', 'sn', 'vin', 'chassis', 'châssis', 'imei',
+  'immatriculation', 'pdl', 'pce', 'prm',
+];
+const CUES_RE = IDENTIFIER_CUES.slice().sort((a, b) => b.length - a.length).map((c) => c.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&').replace(/\s+/g, '\\s+')).join('|');
+/** Libellé désignant, « n° / numéro / # » facultatif, séparateur facultatif, puis le jeton (même ligne). */
+const CUE_IDENTIFIANT = new RegExp(
+  `(?<![\\p{L}\\d])(?:n[°o]\\.?\\s*(?:de\\s+|d['’]\\s*)?)?(${CUES_RE})(?![\\p{L}])[^\\S\\n]*(?:n[°o]\\.?|num(?:[ée]ro)?\\.?|#)?[^\\S\\n]*(?:[:：]|-(?=\\s))?[^\\S\\n]*([A-Z0-9][A-Z0-9\\-./]{3,40})(?![\\p{L}\\d])`,
+  'giu',
+);
+const DEVISE_APRES = /^\s?(?:€|eur\b|euros?\b)/i;
+
+/**
+ * Identifiants DÉSIGNÉS par un libellé (`IDENTIFIER_CUES`) dans un texte
+ * libre, une ligne de tableau ou un champ de formulaire (pure) : jeton d'au
+ * moins 6 caractères utiles portant un chiffre, qui n'est ni une date, ni un
+ * montant, ni un numéro de téléphone. Le libellé est rendu (`context`) :
+ * l'association cellule / ligne / libellé reste lisible dans la preuve.
+ */
+export function cueIdentifiers(text: string | null | undefined): Array<SignificantValue & { context: string }> {
+  if (!text) return [];
+  const out: Array<SignificantValue & { context: string }> = [];
+  const vus = new Set<string>();
+  const dates = [...text.matchAll(DATE_NUM), ...text.matchAll(DATE_MOIS)].map((m) => [m.index ?? 0, (m.index ?? 0) + m[0].length] as const);
+  for (const m of text.matchAll(CUE_IDENTIFIANT)) {
+    const raw = m[2].replace(/[.\-/]+$/, '');
+    const debut = (m.index ?? 0) + m[0].length - m[2].length;
+    if (dates.some(([a, b]) => debut >= a && debut < b)) continue;
+    if (DEVISE_APRES.test(text.slice(debut + raw.length))) continue;
+    if (TEL.test(raw) && /^[\d\s.+-]+$/.test(raw)) continue;
+    const c = compactIdentifier(raw);
+    if (c.length < 6 || !/\d/.test(c) || vus.has(c)) continue;
+    vus.add(c);
+    out.push({ kind: 'IDENTIFIER', raw, normalized: c, context: m[1].toLowerCase() });
+  }
+  return out;
+}
+
+/**
+ * Valeurs significatives d'une UNITÉ telles que les lit le contrôle (pure) :
+ * montants et dates partout ; identifiants de tout jeton lettres + chiffres
+ * dans un couple libellé / valeur (comme avant) ; identifiants DÉSIGNÉS par
+ * un libellé dans un texte libre, une ligne de tableau, un champ de
+ * formulaire (lot 108K).
+ */
+export function unitSignificantValues(text: string | null | undefined, unitKind: string): SignificantValue[] {
+  const base = significantValues(text, { identifiers: unitKind === 'LABEL_VALUE' });
+  if (unitKind === 'LABEL_VALUE' || !text) return base;
+  const vus = new Set(base.map((v) => `${v.kind}:${v.normalized}`));
+  return [...base, ...cueIdentifiers(text).filter((v) => !vus.has(`IDENTIFIER:${v.normalized}`)).map(({ context: _c, ...v }) => v)];
+}
+
+/** Toutes les valeurs lisibles d'un texte (identifiants compris, désignés ou non) — lecture des décisions et de T1. */
+export function allSignificantValues(text: string | null | undefined): SignificantValue[] {
+  const base = significantValues(text, { identifiers: true });
+  const vus = new Set(base.map((v) => `${v.kind}:${v.normalized}`));
+  return [...base, ...cueIdentifiers(text).filter((v) => !vus.has(`IDENTIFIER:${v.normalized}`)).map(({ context: _c, ...v }) => v)];
+}
+
+/**
+ * Lot 108K (§B) — CONTEXTE d'une occurrence : texte de l'unité sans ses
+ * valeurs significatives ni chiffres, en forme de comparaison (pure). Deux
+ * occurrences d'une même valeur au même contexte (« Total TTC » répété en
+ * page 1 et en récapitulatif) sont une RÉPÉTITION ; deux contextes
+ * différents désignent deux occurrences distinctes.
+ */
+export function occurrenceContext(text: string | null | undefined): string {
+  if (!text) return '';
+  let t = text;
+  for (const v of allSignificantValues(text)) t = t.split(v.raw).join(' ');
+  return plat(t).replace(/\d+/g, '');
+}
+
 /**
  * Couple « Libellé : valeur » sur une ligne. Le libellé contient une lettre,
  * n'est ni une URL ni une heure (« 12:30 »), et la valeur n'est pas vide.

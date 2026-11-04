@@ -156,6 +156,9 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
     const doc = await make.assetFile(compte, { assetId: null });
     await analyser(compte, doc.id, sortie({ title: 'Facture fibre internet' }));
     expect(await resolution(doc.id)).toMatchObject({ status: 'NO_CANDIDATE' });
+    // Lot 108E (A6) : la recherche sémantique de l'analyse reçoit désormais une vraie réponse « aucun bien » (harnais e2e)
+    // au lieu d'une panne implicite ; état de départ du scénario inchangé : aucune décision du modèle mémorisée.
+    await sql`UPDATE document_asset_resolutions SET last_evaluation = last_evaluation - 'aiMemory' WHERE file_id = ${doc.id}`;
     const [carte] = await ouvertes(doc.id);
     const empreinte = await figer(compte, doc.id);
     const avant = await resolution(doc.id);
@@ -264,6 +267,9 @@ scenario('L49B', 'T3 : À traiter ouverts réexaminés à chaque passage ; couch
       disparu: await ligne('DATA-ACQUISITION-PRICE', 'ASSET', parti.id, { field: 'purchasePrice' }),
     };
     await sql`UPDATE assets SET deleted_at = now() WHERE id = ${parti.id}`;
+    // Lot 108E (A6) : la recherche sémantique de l'analyse reçoit désormais une vraie réponse « aucun bien » (harnais e2e)
+    // au lieu d'une panne implicite ; état de départ du scénario inchangé : aucune décision du modèle mémorisée.
+    await sql`UPDATE document_asset_resolutions SET last_evaluation = last_evaluation - 'aiMemory' WHERE file_id = ${doc.id}`;
     const [carte] = await ouvertes(doc.id);
     const [{ n: total }] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM to_process_actions WHERE account_id = ${compte.id} AND resolved_at IS NULL`;
     const r = await passage(compte);

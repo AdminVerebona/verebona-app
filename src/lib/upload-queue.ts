@@ -81,6 +81,11 @@ export interface MetaConfirmation {
   equipmentId: number | null;
   documentType: string | null;
   documentDate: string | null;
+  /**
+   * Lot 108D : `'USER'` quand la date a été SAISIE par l'utilisateur (jamais
+   * pré-remplie) — le serveur la pose comme correction prioritaire.
+   */
+  documentDateSource?: 'USER' | null;
   description: string | null;
   supplier: string | null;
   amountCents: number | null;
@@ -611,6 +616,7 @@ export class FileDepot {
       equipmentId: e.meta.equipmentId,
       documentType: e.meta.documentType,
       documentDate: e.meta.documentDate,
+      ...(e.meta.documentDate && e.meta.documentDateSource === 'USER' ? { documentDateSource: 'USER' } : {}),
       description: e.meta.description,
       supplier: e.meta.supplier,
       amountCents: e.meta.amountCents,

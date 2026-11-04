@@ -41,7 +41,7 @@ import { DOCUMENTS_SEE_ALL_EVENT, clearListSnapshot } from '@/components/documen
 import { openDrawer } from '@/lib/drawers';
 import { openHelpFromLink } from '@/lib/help-center/open';
 import { trackAssistantUsage } from '@/lib/verebona/usage-events';
-import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
+import { useSharedSuggestions, type SharedSuggestionItem } from '@/lib/suggestions/shared-suggestions';
 import { useIsDesktop, useReducedMotion } from '@/hooks/useMediaQuery';
 
 /** Réponse construite par l'interface (sujet de la mascotte, parcours d'ajout). */
@@ -71,7 +71,13 @@ export interface VerebonaSpaceApi {
    * suggestions + recherches récentes), vrai après une question ou une reprise.
    */
   showThread: boolean;
-  suggestions: Array<{ id: string; label: string }>;
+  /**
+   * Lot 108J : suggestions PARTAGÉES — les mêmes trois questions, dans le même
+   * ordre et la même version, que la zone de l'accueil (service unique).
+   */
+  suggestions: SharedSuggestionItem[];
+  /** Lot 108J : pose une suggestion (vraie question, référence revalidée par le serveur) et la remplace partout. */
+  askSuggestion: (s: SharedSuggestionItem) => void;
   /** Saisie du champ, partagée par le champ desktop et le champ mobile. */
   draft: string;
   setDraft: (text: string) => void;
@@ -174,29 +180,12 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
     if (!threadShownRef.current && turnsCountRef.current > 0) await v.newConversation();
   }, [v]);
 
-  // « Par exemple » (§6.5 état 1) : catalogue unique (`suggestionsForRoute`),
-  // rendu par le serveur avec le contexte de la page (bien de la fiche NOMMÉ,
-  // état du compte) dès la première ouverture ; en attendant, les seuls
-  // exemples qui ne dépendent d'aucune donnée (lot 32, point 8).
-  const [suggestionsCompte, setSuggestionsCompte] = useState<{ route: string; items: Array<{ id: string; label: string }> } | null>(null);
-  useEffect(() => {
-    if (!isOpen || suggestionsCompte?.route === pageContext.route) return;
-    let annule = false;
-    void (async () => {
-      const res = await fetch(`/api/verebona/suggestions?route=${encodeURIComponent(pageContext.route)}`).catch(() => null);
-      const data = res && res.ok ? await res.json().catch(() => null) : null;
-      if (!annule && Array.isArray(data?.suggestions) && data.suggestions.length > 0) {
-        setSuggestionsCompte({ route: pageContext.route, items: data.suggestions });
-      }
-    })();
-    return () => { annule = true; };
-  }, [isOpen, pageContext.route, suggestionsCompte?.route]);
-  const suggestions = useMemo(() => {
-    const items = suggestionsCompte?.route === pageContext.route
-      ? suggestionsCompte.items
-      : suggestionsForRoute(pageContext.route).map((s) => ({ id: s.id, label: s.label }));
-    return items.slice(0, 3);
-  }, [suggestionsCompte, pageContext.route]);
+  // « Par exemple » (§6.5 état 1) — lot 108J : la sélection PARTAGÉE avec
+  // l'accueil (GET /api/suggestions), lue à la première ouverture si elle
+  // n'est pas déjà en mémoire ; identique sur toutes les pages (un changement
+  // de route ne produit jamais une seconde liste incohérente).
+  const shared = useSharedSuggestions({ active: isOpen });
+  const suggestions = shared.items;
 
   // ── Saisie et suggestions pendant la frappe ──────────────────────────────
   const [draft, setDraftState] = useState('');
@@ -445,8 +434,13 @@ export function VerebonaSpaceProvider({ children, onOpenHelp }: ProviderProps) {
     return () => window.removeEventListener('verebona:report', handler);
   }, [onOpenHelp, leaveForOverlay]);
 
+  const askSuggestion = useCallback((s: SharedSuggestionItem) => {
+    const ctx = shared.pick(s);
+    void envoyer(s.label, ctx);
+  }, [shared, envoyer]);
+
   const api: VerebonaSpaceApi = {
-    v, turns, isOpen, isDesktop, reducedMotion, pose, recent, removeRecent, showThread, suggestions,
+    v, turns, isOpen, isDesktop, reducedMotion, pose, recent, removeRecent, showThread, suggestions, askSuggestion,
     draft, setDraft, live, liveSeeAll, openSeeAll, liveLoading, activeLive, moveLive, openLive,
     open, close, toggle, leaveForOverlay, ask: envoyer, askLocal, runLocal, guard, newRequest, resume, registerInput, focusInput,
   };

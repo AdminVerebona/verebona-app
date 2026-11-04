@@ -125,6 +125,10 @@ export const FILE_SCOPED_TABLES: ReadonlyArray<readonly [table: string, column: 
   ['t3_knowledge_queries', 'file_id'],
   // Lot 91D : décisions T1 sur les valeurs significatives du document (0798) — suivent le document.
   ['document_value_decisions', 'file_id'],
+  // Lot 108K : progression du réexamen ciblé des décisions T1 par unité (1090) — suit le document.
+  ['document_value_review_units', 'file_id'],
+  // Lot 108B : récupération du montant du justificatif (état, preuve, provenance, 1045) — suit le document.
+  ['document_amount_recoveries', 'file_id'],
 ];
 
 /** Tables des données du BIEN (colonne `asset_id`) qui suivent le bien. */
@@ -146,6 +150,8 @@ export const ASSET_SCOPED_TABLES: readonly string[] = [
   // Lot 99A : mémoire des décisions T3 du bien — suit le bien (historique des décisions et des réutilisations conservé ;
   // l'empreinte inclut le compte : une seule réévaluation au premier passage dans le nouveau compte).
   't3_decision_memory',
+  // Lot 108C : classements « dépense d'usage » du bien (clés portées par ses justificatifs) — suivent le bien.
+  'asset_usage_line_assignments',
 ];
 
 /**

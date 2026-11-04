@@ -22,7 +22,40 @@ import { and, desc, eq } from 'drizzle-orm';
 import type { AcceptanceChannel } from '@/lib/legal/public-legal';
 import { recordLegalAudit } from './legal-audit.service';
 import { DOCUMENT_TYPE_CGVU, LegalVersionError, getCurrentVersion } from './legal-versions.service';
-import { proofStatusFor, versionProofInfo, type ProofStatus } from './cguv-referential.service';
+import {
+  proofStatusFor, publicTextAvailability, superviseCurrentPublicText, versionConsultationUrl, versionProofInfo, type ProofStatus,
+} from './cguv-referential.service';
+
+/**
+ * Lot 108L — contextes où l'utilisateur ACCEPTE à l'écran : la version doit être
+ * consultable sur le site public, sinon l'acceptation serait non opposable
+ * (refus `CGUV_PUBLIC_TEXT_UNAVAILABLE`). `PAID_SUBSCRIPTION` est la TRACE
+ * post-paiement d'un webhook (jamais refusée : le paiement est déjà encaissé).
+ */
+const INTERACTIVE_CONTEXTS: ReadonlySet<string> = new Set(['ACCOUNT_CREATION', 'SOCIAL_SIGNUP', 'TRIAL_START', 'VERSION_UPDATE', 'IMMEDIATE_START_REQUEST']);
+
+export const CGUV_PUBLIC_TEXT_UNAVAILABLE = 'CGUV_PUBLIC_TEXT_UNAVAILABLE';
+export const CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE =
+  'Les CGUV en vigueur sont en cours de publication sur le site Verebona. L’inscription et l’acceptation reprendront dès leur mise en ligne. Réessayez un peu plus tard.';
+
+export type AcceptableCheck = { ok: true } | { ok: false; code: typeof CGUV_PUBLIC_TEXT_UNAVAILABLE | 'VERSION_NOT_FOUND'; message: string };
+
+/**
+ * Lot 108L — la version présentée peut-elle être acceptée ? (texte vérifié sur
+ * le site public). Refus → Supervision. Ne lève jamais sur une erreur de base :
+ * c'est l'appelant qui gère l'indisponibilité (503).
+ */
+export async function assertCguvAcceptable(versionCode: string, documentType = DOCUMENT_TYPE_CGVU): Promise<AcceptableCheck> {
+  const [v] = await db.select({
+    versionCode: legalDocumentVersions.versionCode, source: legalDocumentVersions.source, sha256: legalDocumentVersions.sha256,
+    publicPermalink: legalDocumentVersions.publicPermalink, publicSha256: legalDocumentVersions.publicSha256,
+  }).from(legalDocumentVersions)
+    .where(and(eq(legalDocumentVersions.documentType, documentType), eq(legalDocumentVersions.versionCode, versionCode))).limit(1);
+  if (!v) return { ok: false, code: 'VERSION_NOT_FOUND', message: `Version ${versionCode} inconnue.` };
+  if (publicTextAvailability({ ...v, source: v.source as 'APP_LEGACY' | 'PUBLIC_SITE' | 'BO_MANUAL' }) === 'VERIFIED') return { ok: true };
+  await superviseCurrentPublicText(versionCode);
+  return { ok: false, code: CGUV_PUBLIC_TEXT_UNAVAILABLE, message: CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE };
+}
 
 /**
  * Contexte d'une preuve (lot 102B) : inscription (ACCOUNT_CREATION), connexion
@@ -135,6 +168,11 @@ export async function recordAcceptance(
   const acceptedAt = input.acceptedAt ?? new Date();
   // Preuve complète (lot 102B) : version + permalien + empreinte + date + contexte + canal.
   const typed = { ...version, source: version.source as 'APP_LEGACY' | 'PUBLIC_SITE' | 'BO_MANUAL' };
+  // Lot 108L : jamais d'acceptation interactive d'un texte non consultable sur le site public.
+  if (INTERACTIVE_CONTEXTS.has(input.context) && publicTextAvailability(typed) !== 'VERIFIED') {
+    await superviseCurrentPublicText(version.versionCode);
+    throw new LegalVersionError(CGUV_PUBLIC_TEXT_UNAVAILABLE, CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE);
+  }
   const proof = versionProofInfo(typed);
   // Site public pas encore livré : preuve « en attente du site public »
   // (permalien d'archive et empreinte d'origine de la version présentée).
@@ -217,8 +255,10 @@ interface UserAcceptance {
   versionId: string;
   title: string;
   permalink: string | null;
-  /** Lot 102B : permalien à consulter (figé dans la preuve, sinon celui de la version). */
+  /** Lot 102B : identifiant de PREUVE figé (URL initiale) — jamais réécrit, jamais un lien utilisateur (lot 108L). */
   permalinkUrl: string;
+  /** Lot 108L : URL PUBLIQUE de consultation de la version acceptée, ou `null` (texte pas encore sur le site public). */
+  consultationUrl: string | null;
   textSha256: string | null;
   proofStatus: ProofStatus;
   channel: string;
@@ -276,6 +316,7 @@ export async function listUserAcceptances(
     title: r.title,
     permalink: r.permalink,
     permalinkUrl: r.proofPermalinkUrl ?? fallback.permalinkUrl,
+    consultationUrl: versionConsultationUrl({ ...r, source: r.source as 'APP_LEGACY' | 'PUBLIC_SITE' | 'BO_MANUAL' }),
     textSha256: r.proofSha256 ?? null,
     proofStatus: (['HISTORIQUE', 'EN_ATTENTE_SITE_PUBLIC'].includes(r.proofStatus) ? r.proofStatus : 'COMPLETE') as ProofStatus,
     channel: r.channel,

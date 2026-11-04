@@ -176,6 +176,13 @@ export interface PageContext {
   supplierId?: string;
   /** Plateforme d'affichage (choix des articles d'aide — T2-05). */
   platform?: 'web' | 'mobile';
+  /**
+   * Lot 108J : suggestion partagée cliquée (identifiant stable et version de
+   * la sélection). N'accorde AUCUN droit : la route la revalide côté serveur
+   * (`resolveSuggestionForMessage`) avant d'en tirer intention et cible.
+   */
+  suggestionId?: string;
+  suggestionVersion?: string;
 }
 
 /** Requête d'entrée normalisée côté serveur. */
@@ -249,6 +256,22 @@ export interface AssistantRequestInput {
    * autorisées d'une requête mixte (historique fidèle).
    */
   originalMessage?: string;
+  /**
+   * Lot 108J : suggestion partagée REVALIDÉE par le serveur (jamais fournie
+   * telle quelle par le client) — intention canonique, corpus attendu,
+   * objectif. `forceIntent` : l'intention est imposée (questions d'aide et de
+   * découverte, dont le libellé seul pourrait être lu comme une recherche
+   * dans les documents du compte) ; sinon le routage déterministe, vérifié par
+   * le test contractuel du catalogue, s'applique.
+   */
+  suggestion?: {
+    id: string;
+    version: string | null;
+    objective: 'EXPLOIT' | 'ANTICIPATE' | 'GUIDE';
+    canonicalIntent: import('./intents').VerebonaIntent;
+    corpus: 'ACCOUNT' | 'HELP' | 'RESOURCES';
+    forceIntent: boolean;
+  } | null;
   resume?: {
     clarificationId: string;
     intent: import('./intents').VerebonaIntent;

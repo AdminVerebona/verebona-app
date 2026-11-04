@@ -30,6 +30,7 @@
  */
 import type { BusinessOperationTypeCode } from '../model';
 import type { LedgerComponent } from '../finance/engine';
+import { assessSamePurchase, type SameFactAssessment } from './fact-matching';
 
 /** Provenance lue d'une composante active (service TCO). */
 export interface ComponentProvenance {
@@ -65,11 +66,54 @@ const RECURRENTES: ReadonlySet<string> = new Set<BusinessOperationTypeCode>(['CO
 
 const jour = (d: string | null | undefined): string | null => (d && /^\d{4}-\d{2}-\d{2}/.test(d) ? d.slice(0, 10) : null);
 
+/** Lot 108A : composante portée par la seule donnée STRUCTURÉE de la fiche (bien ou équipement), sans justificatif. */
+const structureeSeule = (p: ComponentProvenance): boolean =>
+  !p.documentFileIds.length && p.otherSourceKinds.some((k) => k === 'ASSET_DATA' || k === 'EQUIPMENT_DATA');
+
+/**
+ * Lot 108A (§A, cause racine démontrée L108A-U-RC-02) — dans un ACHAT consolidé
+ * par T3, la donnée de la fiche (prix et date d'achat saisis) et le
+ * justificatif du même achat (date de PIÈCE) forment deux composantes dès que
+ * leurs dates diffèrent (empreinte T3 sans référence = date exacte). Même
+ * montant, même nature, même cible (groupe), réunis dans le même événement de
+ * référence ET identité confirmée par le faisceau (`assessSamePurchase` : dates
+ * proches) : un seul achat (pure). Dates inconnues ou éloignées : la règle
+ * antérieure s'applique (deux composantes, T3 arbitre).
+ */
+export function structuredDocumentSamePurchase(
+  a: LedgerComponent, b: LedgerComponent, pa: ComponentProvenance | undefined, pb: ComponentProvenance | undefined,
+  operationType: BusinessOperationTypeCode | null,
+): boolean {
+  return structuredDocumentPurchaseAssessment(a, b, pa, pb, operationType)?.verdict === 'SAME';
+}
+
+/**
+ * Lot 108A — verdict du faisceau pour une paire « donnée de la fiche /
+ * justificatif » d'un même achat consolidé (null : paire non concernée). Un
+ * verdict INCERTAIN (dates inconnues) laisse les deux composantes comptées,
+ * l'ambiguïté signalée par le TCO (pure).
+ */
+export function structuredDocumentPurchaseAssessment(
+  a: LedgerComponent, b: LedgerComponent, pa: ComponentProvenance | undefined, pb: ComponentProvenance | undefined,
+  operationType: BusinessOperationTypeCode | null,
+): SameFactAssessment | null {
+  if (operationType !== 'ACQUISITION' || !pa || !pb) return null;
+  if (a.kind !== b.kind || a.amountMinor !== b.amountMinor || String(a.currency).trim().toUpperCase() !== String(b.currency).trim().toUpperCase()
+    || (a.targetAssetId ?? null) !== (b.targetAssetId ?? null) || (a.targetEquipmentId ?? null) !== (b.targetEquipmentId ?? null)) return null;
+  const [sa, sb] = [structureeSeule(pa), structureeSeule(pb)];
+  if (sa === sb) return null;
+  if (!(sa ? pb : pa).documentFileIds.length) return null;
+  const fait = (c: LedgerComponent) => ({ eurCents: c.amountMinor, date: c.economicDate ?? null, supplier: null, explicitTarget: true, equipment: c.targetEquipmentId != null });
+  return assessSamePurchase(fait(a), fait(b));
+}
+
 /** Preuve de transactions distinctes entre deux composantes de même nature, montant, devise et cible (pure). */
 export function distinctTransactions(
   a: LedgerComponent, b: LedgerComponent, pa: ComponentProvenance | undefined, pb: ComponentProvenance | undefined,
   operationType: BusinessOperationTypeCode | null,
 ): boolean {
+  // Lot 108A : fiche + justificatif du même achat dans le même événement de référence (identité confirmée).
+  if (structuredDocumentSamePurchase(a, b, pa, pb, operationType)) return false;
   // Provenance non lue, ou composante non documentaire : aucune présomption (la consolidation T3 arbitre).
   if (!pa || !pb || !pa.documentFileIds.length || !pb.documentFileIds.length) return true;
   // Un même justificatif porte les deux montants : deux lignes réelles du document.
@@ -89,6 +133,12 @@ export interface PresumedDuplicate {
   keptComponentId: number;
   /** Justificatifs de la composante comptée (traçabilité). */
   keptFileIds: readonly number[];
+  /**
+   * Lot 108A : identité CONFIRMÉE (donnée de la fiche et justificatif du même
+   * achat, `structuredDocumentSamePurchase`) — pas un doublon « présumé » à
+   * vérifier : aucune alerte, total non dégradé.
+   */
+  confirmed?: true;
 }
 
 /**
@@ -115,7 +165,12 @@ export function presumedDuplicateComponents(
     const comptees: LedgerComponent[] = [];
     for (const c of tries) {
       const meme = comptees.find((k) => !distinctTransactions(c, k, provenance.get(c.id), provenance.get(k.id), op.typeCode));
-      if (meme) out.set(c.id, { keptComponentId: meme.id, keptFileIds: provenance.get(meme.id)?.documentFileIds ?? [] });
+      if (meme) {
+        out.set(c.id, {
+          keptComponentId: meme.id, keptFileIds: provenance.get(meme.id)?.documentFileIds ?? [],
+          ...(structuredDocumentSamePurchase(c, meme, provenance.get(c.id), provenance.get(meme.id), op.typeCode) ? { confirmed: true as const } : {}),
+        });
+      }
       else comptees.push(c);
     }
   }

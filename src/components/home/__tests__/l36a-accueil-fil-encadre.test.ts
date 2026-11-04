@@ -170,7 +170,7 @@ describe('AC36A-3 — carrousels', () => {
 });
 
 describe('AC36A-4 — en-tête mascotte', () => {
-  const props = { greetingName: 'Geo', empty: false, onCreateAsset: noop, onUploadDocument: noop, pageSuggestions: ['Quelles échéances arrivent bientôt ?'] };
+  const props = { greetingName: 'Geo', empty: false, onCreateAsset: noop, onUploadDocument: noop };
 
   it('AC36A-4 — date du jour, « Bonjour/Bonsoir, Geo » en h1, bulle puis pastilles SOUS la bulle', () => {
     mascot.presentation = { contextHash: 'h', subjects: [], secondaries: [], todo: null };
@@ -182,10 +182,10 @@ describe('AC36A-4 — en-tête mascotte', () => {
     expect(s).not.toContain(greetingDateLong(new Date(Date.now() - 86_400_000)));
     expect(s).toMatch(/<h1 [^>]*>(Bonjour|Bonsoir), Geo<\/h1>/);
     const bulle = s.indexOf('data-mascot-bubble');
-    const pastilles = s.indexOf('aria-label="Suggestions"');
+    // Lot 108J : zone des suggestions partagées (chargement au rendu serveur) SOUS la bulle.
+    const pastilles = s.indexOf('data-home-suggestions');
     expect(bulle).toBeGreaterThan(s.indexOf('<h1'));
     expect(pastilles).toBeGreaterThan(bulle);
-    expect(s).toContain('>Quelles échéances arrivent bientôt ?</button>');
     // Mobile : mascotte 72 px et salutation à côté ; desktop : mascotte 112 px.
     expect(s).toContain('grid-cols-[72px_minmax(0,1fr)]');
     expect(s).toContain('md:grid-cols-[112px_minmax(0,1fr)]');
@@ -207,7 +207,7 @@ describe('AC36A-4 — en-tête mascotte', () => {
     const bulle = s.indexOf('data-mascot-bubble');
     expect(s.indexOf('Ajouter un premier bien')).toBeGreaterThan(bulle);
     expect(s.indexOf('Déposer un document')).toBeGreaterThan(bulle);
-    expect(s.indexOf('Ajouter un premier bien')).toBeLessThan(s.indexOf('aria-label="Suggestions"'));
+    expect(s.indexOf('Ajouter un premier bien')).toBeLessThan(s.indexOf('data-home-suggestions'));
   });
 
   it('AC36A-4 — comportement conservé : actions MASC2, choix, télémétrie, retrait immédiat', () => {
@@ -215,7 +215,8 @@ describe('AC36A-4 — en-tête mascotte', () => {
     expect(src).toContain('aria-label="Sujets à traiter"');
     expect(src).toContain('onClick={() => openItem(it)}');
     expect(src).toContain('<TodoChoicesDialog');
-    expect(src).toMatch(/run\(s\.secondary\.action, s\.secondary, 'secondary'\)/);
+    // Lot 108J : suggestions partagées — vraie question posée avec sa référence.
+    expect(src).toContain('void space?.ask(s.label, ctx)');
     expect(src).toContain("{now ? greetingWord(now) : 'Bonjour'}{greetingName ? `, ${greetingName}` : ''}");
     expect(src).toContain('useGreetingNow()');
   });

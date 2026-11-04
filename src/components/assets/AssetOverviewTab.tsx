@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { DocumentDateCell } from '@/components/documents/DocumentDateCell';
 import { Skeleton } from '@/components/ui/skeleton';
 import { FileText, ChevronRight, Clock, CheckCircle2, AlertCircle, CalendarDays, LayoutGrid, Wrench, Download, Package, RefreshCw } from 'lucide-react';
 import {
@@ -496,11 +497,8 @@ export function AssetOverviewTab({ assetId, onTabChange, readOnly = false }: Pro
                           {userFacingLabel(doc.documentTypeLabel)}
                         </Badge>
                       )}
-                      {doc.documentDate && (
-                        <span className="text-xs text-muted-foreground flex-shrink-0">
-                          {formatDate(doc.documentDate)}
-                        </span>
-                      )}
+                      {/* Lot 108D : une seule date, la date du document (sinon « – »), en colonne. */}
+                      <DocumentDateCell value={doc.documentDate} className="w-[74px] text-xs text-muted-foreground sm:w-[90px]" />
                     </div>
                   ))}
                 </div>

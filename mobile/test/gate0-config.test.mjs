@@ -28,6 +28,8 @@ test('configuration de build : valeurs résolues, marqueur d’agent utilisateur
   const b = resolveBuildConfig({ ...PREPROD, VEREBONA_APP_VERSION: '1.4.0', VEREBONA_APP_BUILD: '52' });
   assert.equal(b.uiMode, 'remote');
   assert.equal(b.startUrl, 'https://app.preprod.verebona.fr/accueil');
+  // Lot 108G : la vue charge l'ORIGINE seule (règle d'origine du pont Android).
+  assert.equal(b.serverUrl, 'https://app.preprod.verebona.fr');
   assert.equal(b.oauthReturnUrl, `https://app.preprod.verebona.fr${OAUTH_RETURN_PATH}`);
   assert.equal(b.userAgentMarker, 'VerebonaApp/1.4.0 (52; preprod)');
   assert.equal(resolveBuildConfig({ ...PROD, VEREBONA_UI_MODE: 'local' }).uiMode, 'local');
@@ -47,7 +49,9 @@ test('isolation préprod / prod : aucun build croisé, aucune valeur devinée (R
   assert.equal(parseOrigin('https://app.verebona.fr/'), 'https://app.verebona.fr');
 });
 
-test('capacitor.config.ts : mode A (site distant, domaine restreint, page hors connexion) et mode B', async () => {
+// Lot 108G (décision PO du 03/11/2026) : mise à jour — server.url = origine seule,
+// aucun domaine supplémentaire, coque locale sans sonde ; sonde B dans `sonde-b/`.
+test('capacitor.config.ts : interface distante (cible V1, origine exacte, page hors connexion) et sonde B', async () => {
   const load = async (env) => {
     const saved = { ...process.env };
     Object.assign(process.env, env);
@@ -60,8 +64,11 @@ test('capacitor.config.ts : mode A (site distant, domaine restreint, page hors c
   };
   const a = await load(PREPROD);
   assert.equal(a.appId, 'fr.verebona.app.preprod');
-  assert.equal(a.server.url, 'https://app.preprod.verebona.fr/accueil');
-  assert.deepEqual(a.server.allowNavigation, ['app.preprod.verebona.fr']);
+  assert.equal(a.server.url, 'https://app.preprod.verebona.fr');
+  assert.deepEqual(a.server.allowNavigation, []);
+  assert.equal(a.webDir, 'www');
+  assert.equal(a.ios.limitsNavigationsToAppBoundDomains, true);
+  assert.ok(a.android.minWebViewVersion >= 100);
   assert.equal(a.server.errorPath, 'offline.html');
   assert.equal(a.server.cleartext, false);
   assert.equal(a.plugins.PrivacyScreen.enable, true);
@@ -71,6 +78,7 @@ test('capacitor.config.ts : mode A (site distant, domaine restreint, page hors c
 
   const prod = await load({ ...PROD, VEREBONA_UI_MODE: 'local' });
   assert.equal(prod.server.url, undefined);
+  assert.equal(prod.webDir, 'sonde-b');
   assert.equal(prod.plugins.CapacitorHttp.enabled, true);
   assert.equal(prod.ios.webContentsDebuggingEnabled, false);
   assert.equal(prod.loggingBehavior, 'none');
@@ -79,7 +87,10 @@ test('capacitor.config.ts : mode A (site distant, domaine restreint, page hors c
 
 test('fichiers générés par build : identifiants, version, domaine, aucune donnée secrète', () => {
   const f = generatedFiles(resolveBuildConfig({ ...PROD, VEREBONA_APP_VERSION: '2.0.1', VEREBONA_APP_BUILD: '7' }));
-  assert.match(f['ios/Verebona.xcconfig'], /PRODUCT_BUNDLE_IDENTIFIER = fr\.verebona\.app\n/);
+  assert.match(f['ios/Verebona.xcconfig'], /VB_APP_ID = fr\.verebona\.app\n/);
+  assert.match(f['ios/Verebona.xcconfig'], /PRODUCT_BUNDLE_IDENTIFIER = \$\(VB_APP_ID\)\n/);
+  assert.match(f['ios/Verebona.xcconfig'], /VB_SHARE_EXTENSION_ID = fr\.verebona\.app\.ShareExtension\n/);
+  assert.match(f['ios/Verebona.xcconfig'], /VB_APP_BOUND_DOMAIN = app\.verebona\.fr\n/);
   assert.match(f['ios/Verebona.xcconfig'], /VB_DISPLAY_NAME = Verebona\n/);
   assert.match(f['ios/Verebona.xcconfig'], /ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon\n/);
   assert.match(f['ios/Verebona.xcconfig'], /TARGETED_DEVICE_FAMILY = 1\n/);
@@ -115,7 +126,8 @@ test('schémas privés identiques côté app native et code web partagé', () =>
 
 test('iOS : projet branché sur Verebona.xcconfig, droits paramétrés, plugin local enregistré', () => {
   const pbx = readFileSync(resolve(here, '../ios/App/App.xcodeproj/project.pbxproj'), 'utf8');
-  assert.equal((pbx.match(/baseConfigurationReference = 95B0E0012F0A000000000001/g) ?? []).length, 2);
+  // Lot 108G : 2 configurations de l'app + 2 de l'extension de partage (même xcconfig).
+  assert.equal((pbx.match(/baseConfigurationReference = 95B0E0012F0A000000000001/g) ?? []).length, 4);
   assert.ok(!/PRODUCT_BUNDLE_IDENTIFIER = fr\.verebona/.test(pbx), 'identifiant lu dans le xcconfig de l’environnement');
   assert.match(pbx, /VerebonaAuthSession\.swift in Sources/);
   const ent = readFileSync(resolve(here, '../ios/App/App/App.entitlements'), 'utf8');

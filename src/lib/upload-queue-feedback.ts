@@ -9,9 +9,13 @@
  * porté par des mécanismes existants :
  *   · la modale d'ajout montre la progression du lot qu'elle a lancé ;
  *   · après confirmation, l'indicateur « Analyse(s) en cours… Voir » du
- *     header (bandeau mobile) puis la notification de fin de lot (cloche) ;
+ *     header (bandeau mobile), puis « Analyse terminée · Voir » ; la
+ *     notification de fin d'analyse ne part que si l'utilisateur ne suit
+ *     plus l'analyse (lot 108I) ;
  *   · le document apparaît dans les listes (`document-added`).
- * Aucun toast de succès « document ajouté ».
+ * Lot 108I : une confirmation BRÈVE et neutre de l'ajout, dans le parcours
+ * (`upload-confirmation-client.ts`), remplace la notification « Document
+ * ajouté » du lot 32 — toujours pas de toast de succès appuyé.
  *
  * Un ÉCHEC reste toujours signalé, de façon visible :
  *   · fin de lot avec échecs : message d'erreur (la modale reste ouverte sur

@@ -65,7 +65,8 @@ describe('T3RV-AC3 / AC7 / AC9 — sélection du balayage', () => {
   it('décision ouverte exclue seulement si même analyse + version COURANTE + connaissance du compte inchangée ; NULL = ancienne version', () => {
     const sql = SWEEP_SQL.replace(/\s+/g, ' ');
     // Même analyse ET même version ET aucune évolution de la connaissance depuis la révision évaluée (34E).
-    expect(sql).toContain("r.status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET') AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at) AND r.resolution_version IS NOT DISTINCT FROM $5::int AND NOT EXISTS (SELECT 1 FROM account_knowledge_changes kc WHERE kc.account_id = f.account_id AND kc.id > COALESCE(r.knowledge_revision, 0))");
+    // Lot 108E (A6) : une issue TECHNIQUE (panne) n'est jamais une décision valable — relance durable après délai.
+    expect(sql).toContain("r.status IN ('ABSTAINED', 'NO_CANDIDATE', 'MULTI_ASSET') AND r.reason_code IS DISTINCT FROM 'TECHNICAL_FAILURE' AND r.extraction_at IS NOT NULL AND r.extraction_at >= date_trunc('milliseconds', e.extracted_at) AND r.resolution_version IS NOT DISTINCT FROM $5::int AND NOT EXISTS (SELECT 1 FROM account_knowledge_changes kc WHERE kc.account_id = f.account_id AND kc.id > COALESCE(r.knowledge_revision, 0))");
     // NULL (ligne historique) : `IS NOT DISTINCT FROM` est FAUX, jamais NULL — sous `NOT (…)`, une
     // comparaison `=` à NULL rendrait la condition NULL et écarterait la ligne au lieu de la reprendre.
     expect(sql).not.toMatch(/r\.resolution_version = /);

@@ -112,8 +112,8 @@ scenario('L96A', 'Identité et compte — CDC 18 Q7, Q8, Q9 (R01, R02, R08-R11, 
     if (cur) return cur.version_code;
     const code = `E2E-${uid('cgvu')}`;
     await sql`INSERT INTO legal_document_versions
-      (document_type, version_code, title, status, change_summary, published_at, effective_at, html_content, sha256, permalink, html_storage_key)
-      VALUES ('CGVU', ${code}, 'CGVU e2e', 'CURRENT', 'e2e', now(), now(), '<p>CGVU</p>', ${'0'.repeat(64)}, ${`/cgvu/${code}`}, ${`legal/${code}.html`})`;
+      (document_type, version_code, title, status, change_summary, published_at, effective_at, html_content, sha256, permalink, html_storage_key, source)
+      VALUES ('CGVU', ${code}, 'CGVU e2e', 'CURRENT', 'e2e', now(), now(), '<p>CGVU</p>', ${'0'.repeat(64)}, ${`/cgvu/${code}`}, ${`legal/${code}.html`}, 'PUBLIC_SITE')`; // lot 108L : version consultable sur le site public (sinon inscription refusée)
     return code;
   }
   async function inscrire(email: string, password: string, firstName = 'Vic') {

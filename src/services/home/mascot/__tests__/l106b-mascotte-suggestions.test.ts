@@ -20,6 +20,17 @@
  *  L106B-U09  cohérence : une invitation n'est jamais une question sans fondement ;
  *  L106B-U10  rendu : formulaire d'ajout existant (garde, quota), aucune couleur brute ;
  *  L106B-U11  trace BO « Suggestions de l'accueil » et relecture ciblée.
+ *
+ * Lot 108J (décision PO du ticket « Suggestions de l'accueil et de T2 ») :
+ * les cas U04 (rotation des invitations), U05 (zone à deux suggestions,
+ * « Autre suggestion »), U06 (diagnostic de la zone par la mascotte), U10
+ * (invitation → formulaire d'ajout, route « Autre suggestion ») et U11
+ * (ligne T6 « Suggestions de l'accueil », relecture 20 s) sont RETIRÉS : ils
+ * décrivaient le dispositif remplacé (trois QUESTIONS servies par le service
+ * unique `src/services/suggestions/shared`, aucun « Autre suggestion », T6
+ * limité à la bulle). Restent les contrôles du CONTRAT T6 (prompt, validation
+ * serveur, cache, guide du PO, corpus), toujours en vigueur pour la
+ * qualification. Remplacement : `l108j-suggestions-partagees.test.ts`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
@@ -36,22 +47,16 @@ vi.mock('@/services/ai/config/config-resolver', () => ({
 const R = await import('../t6-runner');
 const S = await import('../t6-suggestions');
 const D = await import('../discovery');
-const { DISCOVERY_CATALOG } = await import('../discovery-catalog');
-const B = await import('../bubble');
-const { homeSuggestionDiagnosticOf, mascotRefreshHintMs, withoutSkippedQuestions } = await import('../mascot.service');
 const { buildCandidates } = await import('../signals');
 const { selectSubjects } = await import('../selector');
 const { buildT6Input } = await import('../t6-contract');
 const { storedGroundsOfEntry } = await import('../t6-suggestion-grounds');
-const { t6FormulateEntries } = await import('../t6-interpellation.service');
 const { checkMasterPromptContent } = await import('@/services/ai/master-prompts/master-prompt-checks');
 const { renderMasterPrompt, inspectMasterTemplate } = await import('@/services/ai/prompts/prompt-loader');
 const { listMasterTasks } = await import('@/services/ai/registry/operations');
 const { parseGuideBlocks } = await import('@/services/ai/prompt-conformity/guide-blocks');
 const { MARKER_CONTRACT_DECLARATIONS } = await import('@/services/ai/prompt-conformity/contracts');
 type Row = import('../signals').MascotAgendaRow;
-type Inv = import('../types').MascotDiscoveryInvitation;
-type P = import('../types').MascotPresentation;
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8');
 const LIVRE = read('src/services/ai/prompts/mascot/t6_master_v1.txt');
@@ -120,19 +125,6 @@ describe('L106B-U01 — cause démontrée : le prompt T6 livré ne porte pas le 
 });
 
 describe('L106B-U02 — contrat des invitations de découverte', () => {
-  it('catalogue éditorial : chaque entrée passe le validateur réel, trois univers équilibrés, clés uniques', () => {
-    const c = D.catalogInvitations();
-    expect(c).toHaveLength(DISCOVERY_CATALOG.length);
-    const parUnivers = (u: string) => c.filter((x) => x.universe === u).length;
-    expect([parUnivers('HOUSING'), parUnivers('VEHICLE'), parUnivers('EQUIPMENT')]).toEqual([3, 3, 3]);
-    expect(new Set(c.map((x) => x.key)).size).toBe(c.length);
-    for (const x of c) {
-      expect(x.origin).toBe('CATALOG');
-      expect(x.cta).toBe(D.DISCOVERY_CTA[x.documentKind]);
-      expect(x.text).not.toMatch(/\bvotre\b|\bvos\b|il vous manque/i);
-    }
-  });
-
   it('invitation générique ACCEPTÉE sans bien correspondant ni référence de preuve (compte « logement seul » → véhicule)', () => {
     const b = maisonSeule(true);
     const v = S.validateT6SuggestionsDetailed([VOITURE, NOTICE], b.assetIds, b);
@@ -204,114 +196,6 @@ describe('L106B-U03 — les contrôles des questions personnalisées ne sont pas
     expect(v.accepted.map((x) => x.question)).toEqual(qs);
     expect(v.acceptedDiscovery).toHaveLength(2);
     expect(v.rejected.map((r) => r.reason)).toEqual(['over_limit']);
-  });
-});
-
-describe('L106B-U04 — rotation équitable entre les trois univers', () => {
-  it('univers du jour qui change chaque jour ; les deux premières invitations d’univers différents', () => {
-    const vus = new Set<string>();
-    for (let day = 0; day < 3; day += 1) {
-      const l = D.rotateDiscovery({ seed: 7, day });
-      expect(l.length).toBe(D.DISCOVERY_LIST_MAX);
-      expect(l[0].universe).not.toBe(l[1].universe);
-      vus.add(l[0].universe);
-      expect(new Set(l.map((x) => x.key)).size).toBe(l.length);
-    }
-    expect(vus).toEqual(new Set(['HOUSING', 'VEHICLE', 'EQUIPMENT']));
-  });
-
-  it('sur 30 jours, chaque univers apparaît autant dans les deux invitations affichées (jamais de surpondération du logement)', () => {
-    const n: Record<string, number> = { HOUSING: 0, VEHICLE: 0, EQUIPMENT: 0 };
-    for (let day = 0; day < 30; day += 1) for (const x of D.rotateDiscovery({ seed: 1234, day }).slice(0, 2)) n[x.universe] += 1;
-    expect(n).toEqual({ HOUSING: 20, VEHICLE: 20, EQUIPMENT: 20 });
-  });
-
-  it('compte « logement seul » : une invitation véhicule ou objet figure TOUJOURS parmi les deux affichées', () => {
-    for (let day = 0; day < 9; day += 1) {
-      const deux = D.rotateDiscovery({ seed: 99, day }).slice(0, 2);
-      expect(deux.some((x) => x.universe !== 'HOUSING')).toBe(true);
-    }
-  });
-
-  it('suggestion passée exclue (pas de réaffichage immédiat) ; invitations de T6 d’abord, sans doublon de type', () => {
-    const l = D.rotateDiscovery({ seed: 0, day: 0 });
-    const sans = D.rotateDiscovery({ seed: 0, day: 0, skipped: new Set([l[0].key]) });
-    expect(sans.map((x) => x.key)).not.toContain(l[0].key);
-    const ia: Inv = { key: 'DISC:VEHICLE:INVOICE', universe: 'VEHICLE', documentKind: 'INVOICE', text: VOITURE.text, cta: 'Ajouter une facture', origin: 'AI' };
-    const avec = D.rotateDiscovery({ seed: 0, day: 0, ai: [ia] });
-    expect(avec[0]).toEqual(ia);
-    expect(avec.filter((x) => x.key === ia.key)).toHaveLength(1);
-    expect(avec[1].universe).not.toBe('VEHICLE');
-    // Tout passé : zéro invitation est une issue normale.
-    expect(D.rotateDiscovery({ seed: 0, day: 0, skipped: new Set(D.catalogInvitations().map((x) => x.key)) })).toEqual([]);
-  });
-});
-
-describe('L106B-U05 — zone des suggestions : au plus deux, même emplacement', () => {
-  const question = (i: number) => ({ id: `q${i}`, kind: 'question' as const, sourceCode: 'Q:T6', occurrenceKey: `Q:T6:q${i}`, action: { actionId: `q${i}`, label: `Question ${i} ?`, target: { kind: 'ask' as const, question: `Question ${i} ?`, context: { intent: 'HOME_T6_SUGGESTION' } } } });
-  const pres = (over: Partial<P>): P => ({ schemaVersion: 'mascot-presentation-v1', status: 'ok', source: 'fallback', contextHash: 'h', paragraphs: [], secondaries: [], degradedNotice: null, computedAt: '', ...over } as P);
-  const invitations = D.rotateDiscovery({ seed: 3, day: 3 });
-
-  it('question personnalisée + invitation ; sans question : deux invitations d’univers différents', () => {
-    const p = pres({ secondaries: [question(1), question(2)], discovery: { invitations } });
-    const s = B.homeSuggestionSlots(p, false, ['Comment ajouter un document ?']);
-    expect(s.map((x) => x.kind)).toEqual(['question', 'invitation']);
-    expect(s[0].key).toBe('Q:T6:q1');
-    const sansQ = B.homeSuggestionSlots(pres({ discovery: { invitations } }), false, ['Comment ajouter un document ?']);
-    expect(sansQ.map((x) => x.kind)).toEqual(['invitation', 'invitation']);
-    expect(sansQ[0].kind === 'invitation' && sansQ[1].kind === 'invitation' && sansQ[0].invitation.universe !== sansQ[1].invitation.universe).toBe(true);
-  });
-
-  it('« Autre suggestion » : la suivante prend la place, sans relecture ; jamais celle qui vient d’être passée', () => {
-    const p = pres({ secondaries: [question(1), question(2)], discovery: { invitations } });
-    const avant = B.homeSuggestionSlots(p, false, []);
-    const passee = new Set([avant[1].key]);
-    const apres = B.homeSuggestionSlots(p, false, [], passee);
-    expect(apres).toHaveLength(2);
-    expect(apres.map((x) => x.key)).not.toContain(avant[1].key);
-    expect(apres[1].kind).toBe('invitation');
-    // Question passée : la question suivante prend la 1re place.
-    expect(B.homeSuggestionSlots(p, false, [], new Set(['Q:T6:q1']))[0].key).toBe('Q:T6:q2');
-    // Côté serveur : la question passée est retirée des secondaires (repos), sans régénération.
-    expect(withoutSkippedQuestions([question(1), question(2)], new Set(['Q:T6:q1'])).map((x) => x.id)).toEqual(['q2']);
-  });
-
-  it('compte vide : invitations ; sans invitations (compte non éligible) : amorce ; jamais plus de deux', () => {
-    const vide = B.homeSuggestionSlots(pres({ discovery: { invitations } }), true, []);
-    expect(vide.map((x) => x.kind)).toEqual(['invitation', 'invitation']);
-    const amorce = B.homeSuggestionSlots(pres({ discovery: null }), true, []);
-    expect(amorce.map((x) => x.kind === 'question' && x.label)).toEqual(B.EMPTY_ACCOUNT_SUGGESTIONS.slice(0, 2));
-    expect(B.homeSuggestionSlots(pres({ secondaries: [question(1), question(2), question(3)], discovery: { invitations } }), false, ['a', 'b'])).toHaveLength(2);
-  });
-
-  it('invitation → formulaire d’ajout existant sans bien présélectionné ; jamais dans la bulle ; télémétrie de ce qui est affiché', () => {
-    const p = pres({ secondaries: [question(1)], discovery: { invitations } });
-    const s = B.homeSuggestionSlots(p, false, []);
-    const i = s.find((x) => x.kind === 'invitation')!;
-    expect(i.secondary.action.target).toEqual({ kind: 'upload_document', assetId: null });
-    expect(i.secondary.kind).toBe('discovery');
-    expect(B.secondaryActions({ ...p, secondaries: [...p.secondaries, i.secondary] }, false)).toEqual([]);
-    expect(B.displayedSecondaries(p, false).map((x) => x.occurrenceKey)).toEqual(['Q:T6:q1', i.key]);
-  });
-});
-
-describe('L106B-U06 — diagnostic explicite des suggestions de l’accueil', () => {
-  const base = { eligible: true, degraded: false, promptCompatible: true, formulate: true, contextRequested: true, displayedQuestions: 1, acceptedQuestions: 1 };
-  const ok = { status: 'generated', produced: 2, accepted: 2, invalidated: 0 };
-  it('chaque raison a son code stable, dans l’ordre de la chaîne', () => {
-    expect(homeSuggestionDiagnosticOf({ ...base, eligible: false, outcome: ok })).toBe('NOT_ELIGIBLE');
-    expect(homeSuggestionDiagnosticOf({ ...base, degraded: true, outcome: ok })).toBe('DATA_UNAVAILABLE');
-    expect(homeSuggestionDiagnosticOf({ ...base, promptCompatible: false, outcome: ok })).toBe('PROMPT_INCOMPATIBLE');
-    expect(homeSuggestionDiagnosticOf({ ...base, formulate: false, outcome: ok })).toBe('FORMULATION_CAPPED');
-    expect(homeSuggestionDiagnosticOf({ ...base, contextRequested: false, outcome: ok })).toBe('NO_ACCOUNT_CONTEXT');
-    expect(homeSuggestionDiagnosticOf({ ...base, outcome: { status: 'fallback', error: R.T6_BACKGROUND_NOTE } })).toBe('PENDING');
-    expect(homeSuggestionDiagnosticOf({ ...base, outcome: { status: 'error', error: 'x' } })).toBe('AI_ERROR');
-    expect(homeSuggestionDiagnosticOf({ ...base, outcome: { status: 'disabled' } })).toBe('AI_ERROR');
-    expect(homeSuggestionDiagnosticOf({ ...base, outcome: { status: 'cache_hit', produced: 2, accepted: 0, invalidated: 2 } })).toBe('CACHE_STALE');
-    expect(homeSuggestionDiagnosticOf({ ...base, outcome: { status: 'generated', produced: 0, accepted: 0 } })).toBe('NO_PROPOSAL');
-    expect(homeSuggestionDiagnosticOf({ ...base, outcome: { status: 'generated', produced: 3, accepted: 0 } })).toBe('VALIDATION_REJECTED');
-    expect(homeSuggestionDiagnosticOf({ ...base, displayedQuestions: 0, outcome: ok })).toBe('ALL_SKIPPED');
-    expect(homeSuggestionDiagnosticOf({ ...base, outcome: ok })).toBe('OK');
   });
 });
 
@@ -414,54 +298,6 @@ describe('L106B-U09 — cohérence COH-T6-SUGGESTIONS : une invitation n’est j
     const r = storedGroundsOfEntry([{ question: 'Q ?', grounds: [g] }, { kind: 'DISCOVERY', text: VOITURE.text, universe: 'VEHICLE', documentKind: 'INVOICE' }]);
     expect(r.perSuggestion).toHaveLength(1);
     expect(r.all.map((x) => x.key)).toEqual(['account:hasUpcomingDeadlines']);
-  });
-});
-
-describe('L106B-U10 — rendu : parcours existants, charte', () => {
-  const src = read('src/components/home/MascotSpeaks.tsx');
-  it('invitation → garde d’écriture + quota « documents » + formulaire d’ajout existant SANS bien ; question → Assistant', () => {
-    expect(src).toMatch(/garder\(\(\) => onUploadDocument\(null\), 'documents'\)/);
-    expect(src).toMatch(/run\(s\.secondary\.action, s\.secondary, 'secondary'\)/);
-    expect(src).toContain('aria-label="Autre suggestion"');
-    expect(src).toContain("'/api/home/mascot/suggestions/skip'");
-    // Aucune création de bien depuis une invitation.
-    const bloc = src.slice(src.indexOf('const openSuggestion'), src.indexOf('const skipSuggestion'));
-    expect(bloc).not.toMatch(/onCreateAsset/);
-  });
-  it('charte Sérénité : aucune couleur brute, jamais « Opération » visible ; cibles tactiles 44 px sur mobile', () => {
-    const zone = src.slice(src.indexOf('data-home-suggestions'), src.indexOf('<TodoChoicesDialog'));
-    expect(zone).not.toMatch(/#[0-9a-f]{3,8}\b|rgb\(|hsl\(/i);
-    expect(zone).not.toMatch(/Opération/);
-    expect(zone).toMatch(/min-h-\[44px\]/);
-    expect(zone).toMatch(/h-11 w-11/);
-  });
-  it('route « Autre suggestion » : session du compte, clé contrôlée, aucune donnée métier ni tâche « À traiter »', () => {
-    const r = read('src/app/api/home/mascot/suggestions/skip/route.ts');
-    expect(r).toContain('mascotSession(req)');
-    expect(r).toContain('SKIP_KEY_PATTERN');
-    expect(r).not.toMatch(/to_process|toProcess/);
-    expect(D.SKIP_KEY_PATTERN.test('DISC:VEHICLE:INVOICE')).toBe(true);
-    expect(D.SKIP_KEY_PATTERN.test('Q:T6:quelle est ma prochaine échéance ?')).toBe(true);
-    expect(D.SKIP_KEY_PATTERN.test('ATP:123')).toBe(false);
-    expect(D.SKIP_KEY_PATTERN.test('DISC:vehicle:x; DROP')).toBe(false);
-  });
-});
-
-describe('L106B-U11 — trace BO et relecture ciblée', () => {
-  it('ligne « Suggestions de l’accueil » : code du diagnostic, origine des invitations, aucun texte', () => {
-    const lignes = t6FormulateEntries({
-      promptVersion: 'v', contract: 't6-output-v2', transmitted: [], displayed: [], source: 'fallback', status: null, presentation: null,
-      homeSuggestions: { diagnostic: 'PROMPT_INCOMPATIBLE', promptGrounds: false, promptDiscovery: false, questions: 0, invitations: 8, invitationSource: 'CATALOG', skipped: 1 },
-    });
-    const l = lignes.find((x) => x.fieldKey === 'home_suggestions')!;
-    expect(l).toMatchObject({ recordStatus: 'PROMPT_INCOMPATIBLE', reasonCode: 'PROMPT_INCOMPATIBLE' });
-    expect(l.reason).toMatch(/t6-suggestions-v3/);
-    expect(JSON.stringify(l.value)).not.toMatch(/Ajoutez/);
-  });
-  it('suggestions en génération d’arrière-plan : une relecture ciblée (cache), rien sinon', () => {
-    const now = new Date();
-    expect(mascotRefreshHintMs({ evaluation: 'OK', progress: null, analysing: false, now })).toBeNull();
-    expect(mascotRefreshHintMs({ evaluation: 'OK', progress: null, analysing: false, now, suggestionsPending: true })).toBe(20_000);
   });
 });
 

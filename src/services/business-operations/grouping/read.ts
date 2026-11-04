@@ -9,6 +9,7 @@
  */
 import { db } from '@/db';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
+import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 import type {
   AgendaGroupingView, GroupingCandidate, GroupingCandidateKind, GroupingCounts, GroupingDocumentRef, GroupingItemRef, GroupingNamedRef,
 } from '@/lib/agenda/grouping-view';
@@ -44,8 +45,8 @@ async function ensembleItems(r: GroupingRunner, accountId: number, op: number, e
 
 /** Documents de l'ensemble (appartenance active) + liens directs de l'élément, avec la nature du lien de l'élément. */
 async function ensembleDocuments(r: GroupingRunner, accountId: number, op: number, itemId: number): Promise<GroupingDocumentRef[]> {
-  const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; prov: string[] | null }>(
-    `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d,
+  const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; tc: string | null; prov: string[] | null }>(
+    `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d, f.document_type_code AS tc,
             (SELECT l.provenances FROM agenda_file_links l WHERE l.agenda_item_id = $3 AND l.asset_file_id = f.id) AS prov
        FROM asset_files f
       WHERE f.account_id = $1 AND f.deleted_at IS NULL
@@ -55,21 +56,21 @@ async function ensembleDocuments(r: GroupingRunner, accountId: number, op: numbe
   return x.map((y) => {
     const prov = y.prov ?? null;
     const direct = !!prov && prov.some((p) => p === 'MANUAL_DIRECT' || p === 'AI_DIRECT');
-    return { id: Number(y.id), title: titreDoc(y), documentDate: y.d, link: prov === null ? null : direct ? 'DIRECT' as const : 'GROUP' as const };
+    return { id: Number(y.id), title: titreDoc(y), documentDate: y.d, typeLabel: documentTypeLabelOrNull(y.tc), link: prov === null ? null : direct ? 'DIRECT' as const : 'GROUP' as const };
   });
 }
 
 /** Lot 86D : documents reliés à CET élément (agenda_file_links, documents du compte non supprimés), avec la nature du lien. */
 async function itemDocuments(r: GroupingRunner, accountId: number, itemId: number): Promise<GroupingDocumentRef[]> {
-  const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; prov: string[] | null }>(
-    `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d, l.provenances AS prov
+  const x = await r.q<{ id: number; retained_title: string | null; original_filename: string | null; filename: string | null; s3_key: string | null; public_id: string | null; d: string | null; tc: string | null; prov: string[] | null }>(
+    `SELECT f.id, f.retained_title, f.web_link_title, f.original_filename, f.filename, f.s3_key, f.public_id::text AS public_id, f.document_date::text AS d, f.document_type_code AS tc, l.provenances AS prov
        FROM agenda_file_links l JOIN asset_files f ON f.id = l.asset_file_id AND f.account_id = $1 AND f.deleted_at IS NULL
       WHERE l.agenda_item_id = $2
       ORDER BY f.document_date DESC NULLS LAST, f.id`, [accountId, itemId]);
   return x.map((y) => {
     const prov = y.prov ?? [];
     const direct = prov.length === 0 || prov.some((p) => p === 'MANUAL_DIRECT' || p === 'AI_DIRECT');
-    return { id: Number(y.id), title: titreDoc(y), documentDate: y.d, link: direct ? 'DIRECT' as const : 'GROUP' as const };
+    return { id: Number(y.id), title: titreDoc(y), documentDate: y.d, typeLabel: documentTypeLabelOrNull(y.tc), link: direct ? 'DIRECT' as const : 'GROUP' as const };
   });
 }
 

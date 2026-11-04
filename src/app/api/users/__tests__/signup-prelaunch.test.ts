@@ -50,7 +50,7 @@ const grantTrial = vi.fn(async () => ({ granted: true }));
 vi.mock('@/services/trial.service', () => ({ grantTrial: (...a: unknown[]) => grantTrial(...(a as [])) }));
 vi.mock('@/services/referral-attribution.service', () => ({ recordSignupReferral: async () => null }));
 vi.mock('@/services/legal', () => ({ getCurrentVersion: async () => ({ versionCode: 'CGVU-2026-01' }) }));
-vi.mock('@/services/legal/legal-acceptances.service', () => ({ recordAcceptance: async () => undefined }));
+vi.mock('@/services/legal/legal-acceptances.service', () => ({ recordAcceptance: async () => undefined, assertCguvAcceptable: async () => ({ ok: true }) }));
 
 const { POST } = await import('../route');
 const { SIGNUP_CLOSED_CODE } = await import('@/lib/prelaunch');

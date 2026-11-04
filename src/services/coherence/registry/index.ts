@@ -59,6 +59,12 @@ import { documentPrimaryLinkCheck } from './checks/document-primary-link';
 // Lot 106A : représentations équivalentes d'un même fait réalisé, toutes origines (fin de registre).
 import { agendaEquivalentRepresentationsCheck } from './checks/agenda-equivalent-representations';
 import { priceMultiArticleCheck } from './checks/price-multi-article';
+// Lot 108A : un même achat représenté par plusieurs sources compté une seule fois (fin de registre).
+import { tcoSameFactCheck } from './checks/tco-same-fact';
+// Lot 108B : montants inconnus des justificatifs de dépense récupérés avant toute alerte du TCO (fin de registre).
+import { tcoAmountRecoveryCheck } from './checks/tco-amount-recovery';
+// Lot 108D : date du document posée par repli sur le jour d'import (fin de registre).
+import { documentDateFallbackCheck } from './checks/document-date-fallback';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -126,6 +132,12 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   agendaEquivalentRepresentationsCheck,
   // Lot 107D (ticket « Draisienne : total multi-articles, arbitrage rouvert ») : ajouté EN FIN de registre.
   priceMultiArticleCheck,
+  // Lot 108A (ticket « TCO — correctifs globaux » §A) : ajouté EN FIN de registre.
+  tcoSameFactCheck,
+  // Lot 108B (ticket TCO-646 §B « montant illisible » : récupération automatique avant alerte) : ajouté EN FIN de registre.
+  tcoAmountRecoveryCheck,
+  // Lot 108D (ticket « Listes de documents : une seule date documentaire ») : ajouté EN FIN de registre.
+  documentDateFallbackCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

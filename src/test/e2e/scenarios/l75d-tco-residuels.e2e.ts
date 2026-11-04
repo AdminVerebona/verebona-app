@@ -134,7 +134,10 @@ scenario('L75D', 'TCO — écarts résiduels : identité économique, couverture
     const f = await k.document(compte, v.id, [], { type: 'MAINTENANCE_INVOICE', title: 'Révision (illisible)', amountCents: null });
     const t = await tco(compte, v.id);
     expect(ligneDoc(t, f)).toMatchObject({ status: 'NOT_QUALIFIED', reason: 'AMOUNT_UNKNOWN', amountUnknown: true, eurCents: null, includedCents: 0 });
-    expect(t.reliability.warnings).toContain('AMOUNTS_UNKNOWN');
+    // Lot 108B (ticket TCO-646 §B, décision PO « récupération automatique AVANT l'alerte ») : tant que la
+    // récupération n'a pas échoué, état neutre à la place de l'alerte — le TCO reste incomplet, jamais 0 €.
+    expect(t.reliability.warnings).not.toContain('AMOUNTS_UNKNOWN');
+    expect(t.reliability.warnings).toContain('AMOUNTS_RECOVERY_PENDING');
     expect(t.status).toBe('INCOMPLETE');
     expect(t.summary.cumulativeCostCents).toBe(30_000);
     as(compte);

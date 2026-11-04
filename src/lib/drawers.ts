@@ -20,7 +20,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 
-import { openHelpFromLink } from '@/lib/help-center/open';
+import { openHelpFromLink, openResourceFromLink } from '@/lib/help-center/open';
 
 export type DrawerKind = 'document' | 'echeance' | 'equipement' | 'piece';
 
@@ -144,6 +144,8 @@ export function openDrawerFromLink(
   // Lot 59 (point 3) : un lien vers le Centre d'aide s'ouvre dans un nouvel
   // onglet (site public), jamais dans l'application.
   if (openHelpFromLink(e, href)) return true;
+  // Lot 108J : article Ressources cité par l'assistant — site public, nouvel onglet.
+  if (openResourceFromLink(e, href)) return true;
   const t = drawerFromHref(href);
   if (!t) return false;
   e.preventDefault();

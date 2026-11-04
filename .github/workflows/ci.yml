@@ -200,7 +200,7 @@ jobs:
         run: node scripts/check-node-runtime.mjs
       - name: Installation
         run: npm ci
-      - name: Scénarios E2E TCO (lots 61, 75D, 76G, 78B, 80A, 81D)
+      - name: Scénarios E2E TCO (lots 61, 75D, 76G, 78B, 80A, 81D, 108C)
         run: npm run test:e2e:tco
 
   conformity-report:
@@ -487,12 +487,26 @@ jobs:
         run: npm run test:e2e:t3-retroactif -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t3-retroactif.xml
       - name: Agenda — représentations équivalentes (DPE), autoréparation par la cohérence (lot 106A)
         run: npm run test:e2e:agenda-doublons -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-agenda-doublons.xml
-      - name: Mascotte — suggestions rétablies et invitations de découverte (lot 106B)
+      - name: Suggestions partagées accueil / « Demander à Verebona » (lots 106B, 108J)
         run: npm run test:e2e:mascotte-suggestions -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-mascotte-suggestions.xml
       - name: Prix d'un article sur ticket multi-articles, mémoire d'arbitrage (lot 107D)
         run: npm run test:e2e:prix-multi-articles -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-prix-multi-articles.xml
       - name: TCO — date d'achat du bien prioritaire (lot 107C)
         run: npm run test:e2e:tco-date-achat -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-date-achat.xml
+      - name: TCO — même achat compté une seule fois (lot 108A)
+        run: npm run test:e2e:tco-anti-double-comptage -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-anti-double-comptage.xml
+      - name: TCO — montants illisibles récupérés avant l'alerte (lot 108B)
+        run: npm run test:e2e:tco-montants -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-montants.xml
+      - name: Documents — une seule date documentaire (lot 108D)
+        run: npm run test:e2e:documents-date -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-documents-date.xml
+      - name: T3 — rattachement documents ↔ biens, correctif (lot 108E)
+        run: npm run test:e2e:t3-rattachement -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t3-rattachement.xml
+      - name: Parrainage simplifié et liens juridiques (lot 108H)
+        run: npm run test:e2e:parrainage-liens -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-parrainage-liens.xml
+      - name: Notifications des documents, une seule au maximum (lot 108I)
+        run: npm run test:e2e:notifications-documents -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-notifications-documents.xml
+      - name: T1, conformité des décisions sur les valeurs (lot 108K)
+        run: npm run test:e2e:t1-conformite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t1-conformite.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

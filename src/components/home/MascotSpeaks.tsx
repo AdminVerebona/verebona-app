@@ -17,8 +17,11 @@
  * mise en scène change :
  *   · une phrase naturelle à partir des sujets (au lieu d'un paragraphe par
  *     sujet) ;
- *   · suggestions sous la bulle (lot 106B : au plus deux — question
- *     personnalisée et invitation de découverte —, « Autre suggestion »).
+ *   · suggestions sous la bulle — lot 108J : TROIS questions du service
+ *     unique (`useSharedSuggestions`, les mêmes que « Demander à Verebona »),
+ *     indépendantes de T6 et de la bulle ; un clic pose la vraie question à
+ *     l'Assistant et la remplace par une autre déjà disponible. Plus
+ *     d'« Autre suggestion » ni d'invitation d'ajout déguisée.
  *
  * ── LOT 32 (ticket MASC2) : DEUX NIVEAUX ───────────────────────────────────
  *
@@ -52,7 +55,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { ArrowRight, CalendarDays, CircleAlert, Clock, Download, FilePlus2, FileText, Plus, RefreshCw } from 'lucide-react';
+import { ArrowRight, CalendarDays, CircleAlert, Clock, Download, FileText, Plus } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { openDrawer } from '@/lib/drawers';
 import { openToProcessTarget } from '@/lib/to-process-target';
@@ -61,9 +64,11 @@ import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { preloadAddForm } from '@/components/mobile/add-forms';
 import type { MascotAction, MascotParagraph, MascotPresentation, MascotTile, MascotTodoItem } from '@/services/home/mascot/types';
 import {
-  bubbleLead, displayedSecondaries, duoInviteHomeItem, homeItems, homePose, homePoseLabel, homeSuggestionSlots, splitHighlights, structuredSubjectText,
-  subjectBlocks, subjectText, type HomeItem, type HomeSuggestionSlot, type SubjectBlock,
+  bubbleLead, displayedSecondaries, duoInviteHomeItem, homeItems, homePose, homePoseLabel, splitHighlights, structuredSubjectText,
+  subjectBlocks, subjectText, type HomeItem, type SubjectBlock,
 } from '@/services/home/mascot/bubble';
+import { SharedSuggestionList } from '@/components/suggestions/SharedSuggestionList';
+import { useSharedSuggestions, type SharedSuggestionItem } from '@/lib/suggestions/shared-suggestions';
 import { MascotPose } from '@/components/verebona/space/MascotPose';
 import { useVerebonaSpace } from '@/components/verebona/space/VerebonaSpaceProvider';
 import { useMascotPresentation } from './useMascotPresentation';
@@ -138,8 +143,6 @@ interface MascotSpeaksProps {
   empty: boolean;
   onCreateAsset: () => void;
   onUploadDocument: (assetId?: number | null) => void;
-  /** Suggestions du catalogue pour l'accueil, en complément du moteur. */
-  pageSuggestions: string[];
 }
 
 const TILE_ICONS: Record<MascotTile['icon'], typeof CircleAlert> = {
@@ -158,20 +161,18 @@ const TILE_TONES: Record<MascotTile['tone'], { bg: string; fg: string }> = {
 const BUBBLE_BG = 'var(--bubble)';
 const BUBBLE_EDGE = 'var(--bubble-edge)';
 
-export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocument, pageSuggestions }: MascotSpeaksProps) {
+export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocument }: MascotSpeaksProps) {
   const router = useRouter();
   const space = useVerebonaSpace();
   const { garder } = useWriteGuard();
   // Télémétrie « affiché » : seulement les secondaires que la bulle montre.
   const emptyRef = useRef(empty);
   emptyRef.current = empty;
-  // Lot 106B : suggestions passées pendant la visite (« Autre suggestion ») —
-  // retirées aussitôt, la suivante prend la place sans relecture ni appel IA ;
-  // le serveur ne les repropose plus pendant leur période de repos.
-  const [passees, setPassees] = useState<ReadonlySet<string>>(() => new Set());
-  const passeesRef = useRef(passees);
-  passeesRef.current = passees;
-  const { presentation: brute, failed, refresh, trackClick } = useMascotPresentation((p) => displayedSecondaries(p, emptyRef.current, passeesRef.current));
+  const { presentation: brute, failed, refresh, trackClick } = useMascotPresentation((p) => displayedSecondaries(p, emptyRef.current));
+  // Lot 108J : suggestions partagées — service unique, indépendant de la
+  // bulle et de T6 : elles s'affichent dès l'accueil, même si la prise de
+  // parole est en cours, en panne ou sans question personnalisée.
+  const shared = useSharedSuggestions({ track: true });
   // Lot 78C : date et salutation du jour, renouvelées à minuit, à 18:00 et
   // au retour au premier plan (jamais celles du dernier rendu).
   const now = useGreetingNow();
@@ -331,33 +332,16 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   );
   // Compte encore vide : « Inviter quelqu'un » avant les tuiles d'amorce (lot 49A).
   const emptyInvite = empty ? duoInviteHomeItem(presentation) : null;
-  const suggestions = homeSuggestionSlots(presentation, empty, pageSuggestions, passees);
-
-  /** Lot 106B : clic sur une suggestion — question → Assistant ; invitation → formulaire d'ajout existant. */
-  const openSuggestion = (s: HomeSuggestionSlot) => {
-    if (s.kind === 'invitation') {
-      trackClick(s.secondary.occurrenceKey, s.secondary.sourceCode, 'secondary', s.secondary.action.actionId);
-      // Comme « Déposer un document » : garde d'écriture et quota habituels,
-      // formulaire d'ajout existant SANS bien présélectionné (aucun bien
-      // créé, aucun rattachement imposé).
-      space?.close();
-      preloadAddForm('file');
-      garder(() => onUploadDocument(null), 'documents');
-      return;
-    }
-    // Question du moteur : même parcours (et même télémétrie) qu'avant.
-    if (s.secondary) { void run(s.secondary.action, s.secondary, 'secondary'); return; }
-    void space?.ask(s.label);
-  };
-  /** Lot 106B : « Autre suggestion » — préférence personnelle, jamais une tâche « À traiter ». */
-  const skipSuggestion = (s: HomeSuggestionSlot) => {
-    setPassees((h) => new Set(h).add(s.key));
-    if (s.secondary) trackClick(s.secondary.occurrenceKey, s.secondary.sourceCode, 'secondary', `${s.key}:skip`);
-    if (s.kind === 'question' && !s.secondary) return; // aide de la page : masquée pour la visite seulement
-    void fetch('/api/home/mascot/suggestions/skip', {
-      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: s.key }), keepalive: true,
-    }).catch(() => {});
+  /**
+   * Lot 108J : clic sur une suggestion — la VRAIE question part à l'Assistant
+   * avec sa référence (intention et cible revalidées par le serveur) ; elle
+   * est aussitôt remplacée, ici et dans « Demander à Verebona », par une
+   * autre déjà disponible. Aucune écriture métier, aucun appel IA de
+   * suggestion.
+   */
+  const askSuggestion = (s: SharedSuggestionItem) => {
+    const ctx = shared.pick(s);
+    void space?.ask(s.label, ctx);
   };
 
   // Lot 36 (maquette 2a/2b « Fil encadré ») : mascotte à gauche ; à droite
@@ -455,47 +439,15 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
         )}
       </div>
 
-      {/* Lot 106B : suggestions sous la bulle — au plus deux (question personnalisée,
-          invitation de découverte), zone compacte, une ligne par suggestion sur
-          mobile comme sur ordinateur ; « Autre suggestion » discret par ligne. */}
-      {suggestions.length > 0 && (
-        <ul className="col-span-2 m-0 flex list-none flex-col gap-2 p-0 md:col-span-1 md:col-start-2 md:mt-1" aria-label="Suggestions" data-home-suggestions>
-          {suggestions.map((s) => (
-            <li key={s.key} className="flex min-w-0 items-center gap-1" data-suggestion-kind={s.kind}>
-              {s.kind === 'invitation' ? (
-                <button
-                  type="button"
-                  onClick={() => openSuggestion(s)}
-                  data-discovery-key={s.key}
-                  className="group flex min-h-[44px] min-w-0 flex-1 items-center gap-2.5 rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] px-3 py-2 text-left text-[color:var(--text-primary)] transition-colors duration-[180ms] hover:border-[color:var(--accent)] md:min-h-[40px]"
-                >
-                  <FilePlus2 className="h-4 w-4 flex-shrink-0 text-[color:var(--accent)]" aria-hidden />
-                  <span className="min-w-0 flex-1 break-words text-[13px] leading-[1.45] md:text-[13.5px]">{s.invitation.text}</span>
-                  <span className="flex-shrink-0 text-[12.5px] font-semibold text-[color:var(--accent)]">{s.invitation.cta}</span>
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => openSuggestion(s)}
-                  className="min-h-[44px] min-w-0 flex-1 break-words rounded-2xl border border-[color:var(--border)] px-3.5 py-2 text-left text-[13px] leading-[1.45] text-[color:var(--text-primary)] transition-colors duration-[180ms] hover:border-[color:var(--accent)] hover:text-[color:var(--accent)] md:min-h-[36px] md:flex-none md:rounded-full md:py-1.5"
-                >
-                  {s.label}
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={() => skipSuggestion(s)}
-                aria-label="Autre suggestion"
-                title="Autre suggestion"
-                data-suggestion-skip={s.key}
-                className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full text-[color:var(--text-muted)] transition-colors duration-[180ms] hover:text-[color:var(--accent)] md:h-8 md:w-8"
-              >
-                <RefreshCw className="h-3.5 w-3.5" aria-hidden />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* Lot 108J : trois suggestions partagées sous la bulle, séparées des
+          éléments « À faire d'abord » — une colonne pleine largeur sur mobile
+          (zones de 44 px, retour à la ligne naturel), compactes sur ordinateur. */}
+      <SharedSuggestionList
+        items={shared.items}
+        loading={shared.status === 'loading' || shared.status === 'idle'}
+        onAsk={askSuggestion}
+        className="col-span-2 md:col-span-1 md:col-start-2 md:mt-1"
+      />
 
       <TodoChoicesDialog
         item={choices}

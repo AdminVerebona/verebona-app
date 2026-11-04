@@ -173,6 +173,11 @@ export async function POST(request: NextRequest) {
             channel: channelFrom(readClientContext(request).client, request.headers.get('user-agent')),
         });
         if (!immediate.ok) {
+            // Lot 108L : CGUV non consultables sur le site public → état explicite (Supervision ouverte).
+            if (immediate.code === 'CGUV_PUBLIC_TEXT_UNAVAILABLE') {
+                const { CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE } = await import('@/services/legal/legal-acceptances.service');
+                return NextResponse.json({ code: immediate.code, message: CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE }, { status: 503 });
+            }
             return NextResponse.json(
                 { code: 'NO_CURRENT_LEGAL_VERSION', message: 'Les CGUV sont momentanément indisponibles. Réessayez dans quelques instants.' },
                 { status: 503 },

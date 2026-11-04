@@ -32,9 +32,29 @@ export interface CreateFlowRequest {
    * format, rattachement, quota) : aucun parcours parallèle (PO M9).
    */
   files?: File[];
+  /**
+   * Lot 108G : identifiant opaque fourni par l'appelant (partage entrant de
+   * l'app native) pour savoir comment la demande s'est terminée
+   * (`CREATE_FLOW_SETTLED`) : formulaire ouvert, ajout confirmé, ou fermé
+   * sans ajout. Sans effet sur le formulaire lui-même.
+   */
+  requestId?: string;
 }
 
 export const OPEN_CREATE_FLOW = 'open-create-flow';
+
+/** Lot 108G : issue d'une demande portant `requestId` (événement `window`). */
+export const CREATE_FLOW_SETTLED = 'create-flow-settled';
+export type CreateFlowOutcome = 'opened' | 'success' | 'closed';
+export interface CreateFlowSettled { requestId: string; outcome: CreateFlowOutcome }
+
+const REQUEST_ID = /^[A-Za-z0-9_-]{1,80}$/;
+
+/** Signale l'issue d'une demande (hôte des parcours). Sans `requestId` : rien. */
+export function settleCreateFlow(requestId: string | undefined, outcome: CreateFlowOutcome): void {
+  if (typeof window === 'undefined' || !requestId) return;
+  window.dispatchEvent(new CustomEvent<CreateFlowSettled>(CREATE_FLOW_SETTLED, { detail: { requestId, outcome } }));
+}
 
 /** Quota vérifié par la garde d'écriture avant l'ouverture. */
 const CREATE_FLOW_QUOTA: Readonly<Record<CreateFlowKind, 'documents' | 'assets' | undefined>> = {
@@ -49,7 +69,8 @@ export function parseCreateFlowRequest(v: unknown): CreateFlowRequest | null {
   if (!r || (r.flow !== 'document' && r.flow !== 'asset' && r.flow !== 'agenda_item')) return null;
   const assetId = r.assetId == null ? null : Number(r.assetId);
   const files = r.flow === 'document' ? fichiersValides(r.files) : null;
-  const avecFichiers = files ? { files } : {};
+  const requestId = typeof r.requestId === 'string' && REQUEST_ID.test(r.requestId) ? r.requestId : null;
+  const avecFichiers = { ...(files ? { files } : {}), ...(requestId ? { requestId } : {}) };
   if (assetId !== null && (!Number.isSafeInteger(assetId) || assetId <= 0)) return { flow: r.flow, assetId: null, ...avecFichiers };
   return { flow: r.flow, assetId, ...avecFichiers };
 }

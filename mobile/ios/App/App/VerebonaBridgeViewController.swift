@@ -8,5 +8,9 @@ class VerebonaBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(VerebonaAuthSessionPlugin())
         // Lot 107A : empreinte de l'enrôlement Face ID / Touch ID (invalidation du déverrouillage).
         bridge?.registerPluginInstance(VerebonaBiometricStatePlugin())
+        // Lot 108G : garde de navigation (seule l'origine de l'environnement
+        // accède au pont) et file technique des partages entrants.
+        bridge?.registerPluginInstance(VerebonaNavigationGuardPlugin())
+        bridge?.registerPluginInstance(VerebonaShareInboxPlugin())
     }
 }

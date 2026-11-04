@@ -71,7 +71,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   asset_photos: { domain: 'biens', description: 'Photos des biens (métadonnées et références ; jamais le fichier).' },
   asset_suppliers: { domain: 'biens', description: 'Fournisseurs rattachés aux biens.' },
   asset_transmissions: { domain: 'biens', description: 'Transmissions de biens.' },
-  asset_usage_budgets: { domain: 'biens', description: 'Budgets d’usage des biens (TCO prévisionnel).' },
+  asset_usage_budgets: { domain: 'biens', description: 'Forfaits de dépenses d’usage des biens (estimations complémentaires du TCO, révisions datées).' },
   asset_space_moves: { domain: 'biens', description: 'Déplacements entre espaces.' },
   asset_move_requests: { domain: 'biens', description: 'Demandes de déplacement de bien entre comptes.' },
   asset_delete_requests: { domain: 'biens', description: 'Demandes de suppression de bien.' },
@@ -118,6 +118,7 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   document_tables: { domain: 'extraits-ia', description: 'Tableaux extraits.' },
   document_table_cells: { domain: 'extraits-ia', description: 'Cellules des tableaux extraits.' },
   document_unresolved_facts: { domain: 'extraits-ia', description: 'Faits T1 non résolus.' },
+  document_value_review_units: { domain: 'extraits-ia', description: 'Progression du réexamen ciblé des décisions T1, unité par unité (examinée, en échec, trop grande ; statut de la sortie T1 du lot ; lots, tentatives, provenance) — lot 108K.' },
   document_value_decisions: { domain: 'extraits-ia', description: 'Décisions T1 sur les valeurs significatives des unités sources (structurée, composante ou contexte, non retenue avec motif, indéterminée ; provenance, rattachements, validité, historique) — lot 91D.' },
   document_analysis_runs: { domain: 'extraits-ia', description: 'Analyses de documents (exécutions).' },
   document_analysis_proposals: { domain: 'extraits-ia', description: 'Propositions issues des analyses.' },
@@ -143,7 +144,8 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   home_mascot_acknowledgments: { domain: 'extraits-ia', description: 'Acquittements de l’accueil (T6).' },
   home_mascot_cache: { domain: 'extraits-ia', description: 'Cache de l’accueil (T6).' },
   home_mascot_pregen_requests: { domain: 'extraits-ia', description: 'Demandes de pré-génération de l’accueil.' },
-  home_suggestion_skips: { domain: 'extraits-ia', description: 'Suggestions de l’accueil passées par l’utilisateur (« Autre suggestion »).' },
+  home_suggestion_skips: { domain: 'extraits-ia', description: 'Suggestions de l’accueil passées par l’utilisateur (« Autre suggestion », lot 106B — plus lue depuis le lot 108J).' },
+  shared_suggestion_consultations: { domain: 'extraits-ia', description: 'Suggestions partagées (accueil et « Demander à Verebona ») consultées par l’utilisateur — rotation seulement (lot 108J).' },
   // ── Champs structurés, preuves, décisions ─────────────────────────────
   property_recovery_runs: { domain: 'champs-preuves', description: 'Analyses T3 des propriétés manquantes (contexte : empreinte, résumé borné, troncature ; issue, appels IA) — lot 88B.' },
   property_recovery_decisions: { domain: 'champs-preuves', description: 'Décisions par propriété manquante (écrite / abstention et cause, avant / après, preuves, provenance, traitement) — lot 88B.' },
@@ -211,7 +213,9 @@ export const RECETTE_TABLES: Readonly<Record<string, { domain: Exclude<RecetteDo
   operations_rebuild_snapshots: { domain: 'operations', description: 'Opérations v5 : image avant des lignes d’un compte (tables du périmètre de la reconstruction), restauration exacte par exécution (lot 85A).' },
   // ── TCO ────────────────────────────────────────────────────────────────
   asset_cost_line_decisions: { domain: 'tco', description: 'Décisions utilisateur sur les lignes TCO.' },
+  asset_usage_line_assignments: { domain: 'tco', description: 'Classements utilisateur des dépenses réelles en dépenses d’usage (rapprochement forfait / réel).' },
   asset_cost_line_decision_events: { domain: 'tco', description: 'Historique des décisions sur les lignes TCO.' },
+  document_amount_recoveries: { domain: 'tco', description: 'Récupération automatique des montants inconnus des justificatifs (lot 108B).' },
   // ── Agenda et Timeline ─────────────────────────────────────────────────
   agenda_items: { domain: 'agenda-timeline', description: 'Éléments d’agenda (source de la Timeline).' },
   agenda_asset_links: { domain: 'agenda-timeline', description: 'Liens agenda ↔ bien (Timeline du bien).' },

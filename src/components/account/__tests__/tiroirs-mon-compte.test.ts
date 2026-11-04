@@ -25,7 +25,10 @@ describe('tiroirs de Mon compte', () => {
   it.each(BLOCS)('%s : tiroir avec une ligne de description, sans carte classique', (file) => {
     const src = read(file);
     expect(src).toContain('<CollapsibleCard');
-    expect(src).toMatch(/description=/);
+    // Lot 108H (décision PO) : la carte Parrainage n'a plus de sous-titre (il
+    // répétait le bénéfice et était tronqué sur mobile).
+    if (file.endsWith('ReferralCard.tsx')) expect(src).not.toMatch(/description=/);
+    else expect(src).toMatch(/description=/);
     expect(src).not.toMatch(/<CardHeader|<CardTitle/);
   });
 

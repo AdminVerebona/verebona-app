@@ -52,6 +52,7 @@ import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
 import { ASSOCIATION_BTN, GroupingPicker } from '@/components/agenda/AgendaGroupingPanel';
 import { GROUPING_LABELS } from '@/lib/agenda/grouping-view';
 import { documentStatusLabel } from '@/lib/documents/document-status-label';
+import { DOCUMENT_DATE_PLACEHOLDER } from '@/lib/documents/document-row-date';
 import {
   displayAnalysisState, isProcessingStatus, userMessageText, ANALYSIS_FAILED_FINAL_MESSAGE, type ProcessingStatus,
 } from '@/lib/ai/processing-status';
@@ -139,6 +140,13 @@ const fmt = (d: string | null | undefined) => {
   if (!d) return null;
   try { return new Date(d).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }); }
   catch { return d; }
+};
+/** Lot 108D : jour d'ajout (horodatage) dans le fuseau de présentation. */
+const fmtAddedDay = (d: string | null | undefined) => {
+  if (!d) return null;
+  const t = new Date(d);
+  if (Number.isNaN(t.getTime())) return null;
+  return t.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Europe/Paris' });
 };
 
 const fmtAmount = (cents: number | null) => {
@@ -1627,16 +1635,21 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         <span className="font-medium text-xs">{rubricTypeLabels(fullData).type}</span>
                       </div>
                     )}
-                    {/* Date du document */}
-                    {(fullData?.documentDate ?? doc.documentDate) && (
-                      <div className="flex items-center justify-between">
-                        <span className="flex items-center gap-1.5 text-muted-foreground"><Calendar className="w-3.5 h-3.5" />Date du document</span>
-                        <div className="flex items-center gap-1">
-                          <span className="font-medium">{fmt(fullData?.documentDate ?? doc.documentDate)}</span>
-                          {fullData?.lastAnalysisAt && !fullData?.userEditedFields?.documentDate && (
-                            <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
-                          )}
-                        </div>
+                    {/* Date du document — lot 108D : toujours présente, « – » sans date fiable (jamais la date d'ajout). */}
+                    <div className="flex items-center justify-between" data-testid="document-detail-document-date">
+                      <span className="flex items-center gap-1.5 text-muted-foreground"><Calendar className="w-3.5 h-3.5" />Date du document</span>
+                      <div className="flex items-center gap-1">
+                        <span className="font-medium">{fmt(fullData?.documentDate ?? doc.documentDate) ?? DOCUMENT_DATE_PLACEHOLDER}</span>
+                        {(fullData?.documentDate ?? doc.documentDate) && fullData?.lastAnalysisAt && !fullData?.userEditedFields?.documentDate && (
+                          <Sparkles className="w-2.5 h-2.5 text-[color:var(--accent)] shrink-0" aria-label="Détecté automatiquement" />
+                        )}
+                      </div>
+                    </div>
+                    {/* Date d'ajout — lot 108D : conservée et visible dans le détail (absente des lignes de liste). */}
+                    {(fullData?.uploadedAt ?? doc.uploadedAt) && (
+                      <div className="flex items-center justify-between" data-testid="document-detail-added-date">
+                        <span className="flex items-center gap-1.5 text-muted-foreground"><Calendar className="w-3.5 h-3.5" />Date d’ajout</span>
+                        <span className="font-medium">{fmtAddedDay(fullData?.uploadedAt ?? doc.uploadedAt)}</span>
                       </div>
                     )}
                     {/* Fournisseur — name only, no coordinates; click opens SupplierDrawer */}

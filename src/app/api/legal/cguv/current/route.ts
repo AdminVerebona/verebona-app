@@ -38,9 +38,13 @@ export async function GET() {
     publishedAt: current.publishedAt,
     changeSummary: current.changeSummary,
     requiresReacceptance: current.requiresReacceptance,
-    // Compatibilité : `permalink` = URL absolue du permalien public.
+    // Lot 108L : URL PUBLIQUE de la version exacte (site de l'environnement),
+    // `null` si son texte n'est pas vérifié sur le site public — jamais app.* ni
+    // /cgvu, jamais une autre version. `publicText` : état explicite affiché par
+    // les formulaires (acceptation refusée tant que « NOT_ON_PUBLIC_SITE »).
     permalink: current.permalinkUrl,
     permalinkUrl: current.permalinkUrl,
+    publicText: current.publicText,
     sha256: current.sha256,
     publicUrl,
     links,

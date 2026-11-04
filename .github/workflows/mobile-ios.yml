@@ -1,12 +1,20 @@
-# Application mobile iOS — lot 95 (CDC 12 §28-§29, décisions PO M4, M7, M8).
+# Application mobile iOS — lot 95 (CDC 12 §28-§29, décisions PO M4, M7, M8),
+# lot 108G (décision PO du 03/11/2026 : interface DISTANTE = cible V1).
+#
+# Mode distant par défaut en préproduction ET en production. La sonde technique
+# du Gate 0 (mode local) n'est admise qu'en préproduction, en compilation seule :
+# elle est refusée avant le build (readiness) et le binaire est contrôlé avant
+# tout envoi (scripts/distribution-guard.mjs).
 #
 # Indépendant de la CI web (.github/workflows/ci.yml, inchangé). Compilation sur
 # runner macOS (Xcode), signature automatique par clé d'API App Store Connect
 # (aucun certificat ni profil dans le dépôt), envoi direct à TestFlight.
 #   · préproduction (fr.verebona.app.preprod) → TestFlight, testeurs autorisés ;
 #   · production (fr.verebona.app) → UNIQUEMENT à la main, derrière l'environnement
-#     protégé « production-mobile » ; le build arrive dans TestFlight de l'app de
-#     production, la SOUMISSION à l'App Store reste un geste manuel dans App Store Connect.
+#     protégé « production-mobile » (approbation du PO) ; le build arrive dans
+#     TestFlight de l'app de production. La SOUMISSION à l'App Store et la
+#     PUBLICATION (« publication manuelle » dans App Store Connect) restent deux
+#     gestes manuels distincts du PO : ce workflow ne publie jamais rien.
 # Secrets et variables : docs/mobile/builds-et-secrets.md.
 name: Mobile — iOS
 
@@ -19,7 +27,7 @@ on:
         options: [preprod, prod]
         default: preprod
       ui_mode:
-        description: "Mode d'affichage (Gate 0) : remote = site distant (A), local = sonde interface embarquée (B)"
+        description: "Mode d'affichage : remote = interface distante (cible V1, défaut) ; local = sonde technique Gate 0 (préproduction, compilation seule, jamais envoyée)"
         type: choice
         options: [remote, local]
         default: remote
@@ -103,10 +111,14 @@ jobs:
           ASC_API_KEY_P8_BASE64: ${{ secrets.ASC_API_KEY_P8_BASE64 }}
           ASC_API_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
           ASC_API_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
-        run: node scripts/readiness.mjs ios ${{ github.event_name == 'workflow_dispatch' && '--strict' || '' }}
+        # Lot 108G : --publish → une sonde technique (mode local) est refusée ici.
+        run: >-
+          node scripts/readiness.mjs ios
+          ${{ github.event_name == 'workflow_dispatch' && '--strict' || '' }}
+          ${{ (github.event_name == 'push' || inputs.publish) && '--publish' || '' }}
 
   build:
-    name: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'Production → TestFlight (approbation requise)' || 'Préproduction → TestFlight' }}
+    name: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'Production → TestFlight de l’app de production (approbation requise, aucune publication)' || 'Préproduction → TestFlight' }}
     needs: [checks, readiness]
     if: github.event_name != 'pull_request' && needs.readiness.outputs.ready == 'true'
     runs-on: macos-15
@@ -117,7 +129,8 @@ jobs:
     env:
       VEREBONA_ENV: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'prod' || 'preprod' }}
       VEREBONA_APP_ORIGIN: ${{ vars.VEREBONA_APP_ORIGIN }}
-      VEREBONA_UI_MODE: ${{ inputs.ui_mode || 'remote' }}
+      # Production : toujours le mode distant (la sonde n'existe qu'en préproduction).
+      VEREBONA_UI_MODE: ${{ (github.event_name == 'workflow_dispatch' && inputs.environment == 'prod') && 'remote' || (inputs.ui_mode || 'remote') }}
       VEREBONA_APP_VERSION: ${{ vars.VEREBONA_APP_VERSION }}
       VEREBONA_APP_BUILD: ${{ github.run_number }}
       APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
@@ -198,6 +211,26 @@ jobs:
             -authenticationKeyID "$ASC_API_KEY_ID" -authenticationKeyIssuerID "$ASC_API_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic \
             archive
+      # Lot 108G (CA02) : c'est le BINAIRE archivé qui est contrôlé (configuration
+      # Capacitor réellement embarquée, absence de sonde, extension de partage
+      # intégrée avec son identifiant et son groupe d'apps) avant tout envoi.
+      - name: Garde-fou — binaire distribuable (interface distante, extension de partage)
+        if: github.event_name == 'push' || inputs.publish
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app"
+          node mobile/scripts/distribution-guard.mjs "$APP/capacitor.config.json" "$APP/public"
+          EXT="$APP/PlugIns/ShareExtension.appex"
+          if [ ! -d "$EXT" ]; then echo "::error::Envoi refusé — extension de partage absente du binaire (cible ShareExtension)."; exit 1; fi
+          APP_ID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
+          EXT_ID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$EXT/Info.plist")
+          if [ "$EXT_ID" != "$APP_ID.ShareExtension" ]; then echo "::error::Envoi refusé — identifiant de l'extension ($EXT_ID) non dérivé de celui de l'app ($APP_ID)."; exit 1; fi
+          for b in "$APP" "$EXT"; do
+            if ! codesign -d --entitlements - --xml "$b" 2>/dev/null | grep -q "group.$APP_ID"; then
+              echo "::error::Envoi refusé — groupe d'apps group.$APP_ID absent des droits signés de $(basename "$b")."; exit 1
+            fi
+          done
+          echo "Extension de partage intégrée : $EXT_ID (groupe group.$APP_ID)."
       - name: Envoyer à App Store Connect (TestFlight)
         if: github.event_name == 'push' || inputs.publish
         working-directory: mobile/ios/App
@@ -220,6 +253,14 @@ jobs:
           path: ${{ runner.temp }}/dSYMs.zip
           if-no-files-found: ignore
           retention-days: ${{ env.VEREBONA_ENV == 'prod' && 400 || 90 }}
+      - name: Résumé — ce que ce workflow n'a PAS fait
+        if: success()
+        run: |
+          {
+            echo "### iOS ${VEREBONA_ENV} — interface ${VEREBONA_UI_MODE}"
+            echo "- Build $VEREBONA_APP_VERSION ($VEREBONA_APP_BUILD) : TestFlight uniquement (si « publish »)."
+            echo "- Aucune soumission à la revue App Store, aucune publication : gestes manuels du PO dans App Store Connect (publication manuelle)."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Nettoyer les fichiers sensibles du poste de build
         if: always()
         run: rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP/asc_api_key.p8" mobile/ios/App/App/GoogleService-Info.plist

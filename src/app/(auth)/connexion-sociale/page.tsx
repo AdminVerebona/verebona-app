@@ -30,6 +30,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { MarketingSignupNotice, type MarketingChoiceValue } from '@/components/auth/MarketingSignupNotice';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
 import { LegalLink } from '@/components/legal/LegalLink';
+import { CguvPublicTextNotice, cguvAcceptable } from '@/components/legal/CguvPublicTextNotice';
 import { AuthFooter } from '@/components/LandingFooter';
 import { FollowTheme } from '@/components/FollowTheme';
 import { ProviderButton, socialStartUrl } from '@/components/auth/SocialSignInButtons';
@@ -99,7 +100,8 @@ function SocialPending() {
   const [accepted, setAccepted] = useState(false);
   // Lot 102C : choix sur les relances commerciales (bloc fourni par le serveur selon le réglage BO).
   const [marketingChoice, setMarketingChoice] = useState<MarketingChoiceValue | null>(null);
-  const [legal, setLegal] = useState<{ versionCode: string; permalink: string } | null>(null);
+  // Lot 108L : URL PUBLIQUE de la version exacte présentée (`null` si non disponible sur le site public).
+  const [legal, setLegal] = useState<{ versionCode: string; permalink: string | null; available: boolean } | null>(null);
   const legalLinks = useLegalLinks();
 
   // Code
@@ -130,7 +132,11 @@ function SocialPending() {
     // lot 102B : métadonnées seules, texte sur le site public.
     fetch('/api/legal/cguv/current', { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (d?.versionCode) setLegal({ versionCode: d.versionCode, permalink: d.permalinkUrl ?? d.permalink }); })
+      .then((d) => {
+        if (!d?.versionCode) return;
+        const available = cguvAcceptable(d);
+        setLegal({ versionCode: d.versionCode, permalink: available ? (d.permalinkUrl ?? d.permalink) : null, available });
+      })
       .catch(() => {});
   }, []);
 
@@ -323,14 +329,17 @@ function SocialPending() {
                   <Checkbox id="sp-terms" checked={accepted} onCheckedChange={(v) => setAccepted(v === true)} disabled={busy} className="mt-1" />
                   <Label htmlFor="sp-terms" className="text-sm leading-relaxed cursor-pointer font-normal text-foreground">
                     J’ai lu et j’accepte les CGUV (Conditions générales d’utilisation et de vente) de Verebona, incluant la Politique de confidentialité.{' '}
-                    <LegalLink href={legal?.permalink ?? legalLinks.cguv} fallbackHref={legalLinks.cguv} target="_blank" className="text-primary hover:underline">Lire les CGUV</LegalLink>
+                    {legal?.available !== false && (
+                      <LegalLink href={legal ? legal.permalink : legalLinks.cguv} target="_blank" className="text-primary hover:underline" data-testid="social-read-cguv">Lire les CGUV</LegalLink>
+                    )}
                     {' · '}
                     <LegalLink href={legalLinks.confidentialite} target="_blank" className="text-primary hover:underline">Confidentialité</LegalLink>
                     {legal && <span className="block text-xs text-[color:var(--text-muted)] mt-1">Version {legal.versionCode}</span>}
                   </Label>
                 </div>
+                {legal?.available === false && <CguvPublicTextNotice versionCode={legal.versionCode} />}
                 <MarketingSignupNotice onChange={setMarketingChoice} disabled={busy} />
-                <Button type="submit" className="w-full min-h-11" disabled={busy}>{busy ? 'Création…' : 'Créer mon compte'}</Button>
+                <Button type="submit" className="w-full min-h-11" disabled={busy || legal?.available === false}>{busy ? 'Création…' : 'Créer mon compte'}</Button>
                 <Button type="button" variant="ghost" className="w-full" onClick={() => setView('choice')} disabled={busy}>Retour</Button>
               </form>
             )}

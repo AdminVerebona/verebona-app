@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
+import { documentTypeLabelOrNull } from '@/lib/referential/user-facing-labels';
 import { emitBusinessEvent } from '@/services/verebona-assistant/events/business-events';
 import { db } from '@/db';
 import { suppliers, documentSuppliers, assetFiles, assets, supplierReviewItems } from '@/db/schema';
@@ -52,6 +53,8 @@ export async function GET(
         s3Key: assetFiles.s3Key,
         publicId: assetFiles.publicId,
         documentType: assetFiles.documentType,
+        // Lot 108D : Type V2 enregistré (sous-titre des lignes de documents).
+        documentTypeCode: assetFiles.documentTypeCode,
         documentDate: assetFiles.documentDate,
         assetId: assetFiles.assetId,
         assetName: assets.name,
@@ -87,6 +90,7 @@ export async function GET(
     // Lot 87D : chaque document porte son titre AFFICHÉ (le même que la liste, la fiche et la recherche).
     const documents = linkedDocs.map(({ retainedTitle, webLinkTitle, storageName, s3Key, publicId, ...d }) => ({
       ...d,
+      documentTypeLabel: documentTypeLabelOrNull(d.documentTypeCode),
       title: documentTitleFromRecord({ retainedTitle, webLinkTitle, originalFilename: d.filename, filename: storageName, s3Key, publicId: publicId == null ? null : String(publicId) }),
     }));
     return NextResponse.json({ supplier, documents, reviewItems });

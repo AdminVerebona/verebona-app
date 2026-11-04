@@ -449,7 +449,11 @@ export const BACKFILL_DEFINITIONS: readonly BackfillDefinition[] = [
       + 'qualifie chaque valeur (structurée, composante ou contexte, non retenue avec son motif, indéterminée). Une valeur justifiée '
       + 'n’est plus signalée ; une omission réelle, une décision indéterminée ou invalide reste signalée et qualifiée. Une fois par '
       + 'diagnostic, dans le budget des relances IA (COHERENCE_T1_RELAUNCH_DAILY_MAX). Contrat T1 absent : rien n’est repris. '
-      + 'Simuler : liste des documents, rien n’est écrit. Rejoué : un document déjà réexaminé n’est pas redemandé.',
+      + 'Simuler : liste des documents, rien n’est écrit. Rejoué : un document déjà réexaminé n’est pas redemandé. '
+      // Lot 108K : motifs génériques rejugés, réexamen par lots avec progression par unité.
+      + 'Lot 108K : reprend aussi les documents jugés cohérents avant les règles de qualité des décisions (motif générique, '
+      + 'rattachement incohérent) et les réexamens interrompus ; toutes les unités en constat sont examinées par lots, la '
+      + 'progression est conservée unité par unité (document_value_review_units).',
     actions: ['simulate', 'apply'],
     accountFilter: true,
   },

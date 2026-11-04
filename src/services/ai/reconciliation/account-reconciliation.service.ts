@@ -146,6 +146,13 @@ export type RunPhases = Record<RunPhaseName, PhaseReport> & {
    * sinon ; jamais un échec du passage.
    */
   INFORMATION_BACKFILL?: PhaseReport;
+  /**
+   * Lot 108E (A5) : phase « identités documentaires » de T3 DOCUMENT_ASSET —
+   * état DÉTAILLÉ (DONE, NO_RELEVANT_GROUP, DISABLED, PARTIAL, FAILED), cause,
+   * documents non traités, reprise. Sa panne rend OPEN_KNOWLEDGE partielle
+   * (graphe illisible) ou en échec (migration 0995 absente) : jamais DONE.
+   */
+  IDENTITY_GROUPS?: PhaseReport;
 };
 type RunOutcome = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'BUSINESS_ABSTENTION' | 'TECHNICAL_FAILURE';
 
@@ -162,6 +169,35 @@ export function runOutcome(phases: RunPhases, p: { changes: number; keptOpen: nu
   if (Object.values(phases).some((ph) => ph.status === 'PARTIAL' || ph.status === 'FAILED')) return 'PARTIAL_SUCCESS';
   if (p.keptOpen > 0 && p.changes === 0) return 'BUSINESS_ABSTENTION';
   return 'SUCCESS';
+}
+
+/** Lot 108E (A5) : la phase identité a-t-elle été ignorée pour PANNE ? (pure) */
+export function identityPhaseFailure(idt: import('./document-asset/identity/phase').IdentityPhaseResult | null | undefined): 'PARTIAL' | 'FAILED' | null {
+  if (!idt) return null;
+  if (idt.state === 'FAILED') return 'FAILED';
+  if (idt.state === 'PARTIAL') return 'PARTIAL';
+  // Résultat d'avant le lot 108E (sans état) : GRAPH_UNAVAILABLE n'est jamais un succès.
+  if (!idt.state && idt.skipped && idt.reason === 'GRAPH_UNAVAILABLE') return 'PARTIAL';
+  return null;
+}
+
+/** Lot 108E (A5) : rapport de la phase « identités documentaires » (pure). */
+export function identityPhaseReport(idt: import('./document-asset/identity/phase').IdentityPhaseResult | null | undefined, err: string | null): PhaseReport {
+  if (err) return { status: 'FAILED', state: 'FAILED', error: err };
+  if (!idt) return { status: 'NOT_RUN', state: 'NOT_RUN', error: null };
+  const panne = identityPhaseFailure(idt);
+  const state = idt.state ?? (idt.skipped ? (idt.reason === 'DISABLED' ? 'DISABLED' : 'PARTIAL') : idt.groups > 0 ? 'DONE' : 'NO_RELEVANT_GROUP');
+  return {
+    status: panne ?? (state === 'DISABLED' ? 'NOT_CONFIGURED' : 'DONE'), state,
+    error: panne ? `${idt.reason ?? 'panne'}${idt.error ? ` — ${idt.error}` : ''}` : null,
+    counts: {
+      groups: idt.groups, orphansExamined: idt.orphansExamined, anchorsExamined: idt.anchorsExamined, recoverable: idt.recoverableMembers,
+      untreatedDocuments: Math.max(0, idt.untreatedDocuments ?? 0),
+      ...Object.fromEntries(Object.entries(idt.byStatus).map(([k, v]) => [`status_${k}`, v ?? 0])),
+      ...Object.fromEntries(Object.entries(idt.byFamily ?? {}).map(([k, v]) => [`family_${k}`, v ?? 0])),
+      notJournaled: idt.notJournaled?.length ?? 0,
+    },
+  };
 }
 
 /** Phases mises à jour par l'orchestrateur (pure). */
@@ -563,8 +599,12 @@ export async function reconcileAccount(
         // Lot 105D : compteurs des identités documentaires (groupes, cartes groupées) ; erreur d'une sous-phase = passage partiel.
         const idt = openKnowledge.identity;
         const idtErr = (openKnowledge.errors ?? []).find((x) => x.startsWith('IDENTITY_GROUPS:'));
+        // Lot 108E (A5) : graphe illisible / migration absente = phase ignorée pour erreur — jamais DONE.
+        const idtPanne = identityPhaseFailure(idt);
+        phases.IDENTITY_GROUPS = identityPhaseReport(idt, idtErr ?? null);
         phases.OPEN_KNOWLEDGE = {
-          status: idtErr ? 'PARTIAL' : 'DONE', error: idtErr ?? null,
+          status: idtPanne === 'FAILED' ? 'FAILED' : idtErr || idtPanne === 'PARTIAL' ? 'PARTIAL' : 'DONE',
+          error: idtErr ?? (idtPanne ? `IDENTITY_GROUPS: ${idt?.reason ?? 'panne'}${idt?.error ? ` — ${idt.error}` : ''} ; ${idt?.untreatedDocuments ?? '?'} document(s) sans bien non traité(s) par la phase` : null),
           ...(idt && !idt.skipped ? { counts: {
             identityGroups: idt.groups, identityToConfirm: idt.byStatus.TO_CONFIRM ?? 0, identityRecoverable: idt.recoverableMembers,
             groupCardsOpened: idt.cards.opened, groupCardsClosed: idt.cards.closed, individualCardsCovered: idt.cards.individualClosed,

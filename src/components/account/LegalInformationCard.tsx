@@ -28,15 +28,17 @@ interface AcceptanceItem {
   acceptedAt: string;
   context: string;
   channel?: string;
-  /** Permalien historique de la version acceptée (site public ou archive figée). */
-  permalinkUrl: string | null;
+  /** Lot 108L : lien PUBLIC de consultation de la version acceptée, `null` si pas encore sur le site public. */
+  consultationUrl: string | null;
+  /** Preuve immuable (URL initiale enregistrée, empreinte…) : affichée, jamais un lien. */
+  proof?: { permalinkUrl: string | null; sha256: string | null };
   sha256: string | null;
   proofStatus?: 'COMPLETE' | 'HISTORIQUE' | 'EN_ATTENTE_SITE_PUBLIC';
 }
 
 interface CurrentVersion {
   versionCode: string;
-  permalinkUrl: string;
+  permalinkUrl: string | null;
   publicUrl: string;
   effectiveAt: string | null;
 }
@@ -129,24 +131,35 @@ export function LegalInformationCard() {
                     {latest.proofStatus === 'EN_ATTENTE_SITE_PUBLIC' && (
                       <span className="block text-xs text-muted-foreground mt-1">Version conservée par Verebona, en attente de sa publication sur le site public.</span>
                     )}
-                    {latest.sha256 && (
-                      <span className="block text-xs text-muted-foreground mt-1 break-all">Empreinte du texte : <span className="font-mono">{latest.sha256}</span></span>
-                    )}
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Button variant="outline" size="sm" asChild>
-                      {/* Lot 103A : permalien historique EXACT de la version acceptée ;
-                          dans l'app, navigateur externe du téléphone. */}
-                      <LegalLink
-                        href={latest.permalinkUrl}
-                        fallbackHref={legal.cguv}
-                        target="_blank"
-                        data-testid="legal-accepted-version"
-                      >
-                        <ExternalLink className="w-4 h-4 mr-1.5" />
-                        Consulter
-                      </LegalLink>
-                    </Button>
+                    {/* Lot 108L : « Version que vous avez acceptée » → texte EXACT de
+                        cette version sur le site public (/legal/cguv/versions/{code}),
+                        jamais la version en vigueur par défaut, jamais l'application ;
+                        dans l'app, navigateur externe du téléphone (lot 103A). */}
+                    {latest.consultationUrl ? (
+                      <Button variant="outline" size="sm" asChild>
+                        <LegalLink href={latest.consultationUrl} target="_blank" data-testid="legal-accepted-version">
+                          <ExternalLink className="w-4 h-4 mr-1.5" />
+                          Consulter la version acceptée
+                        </LegalLink>
+                      </Button>
+                    ) : (
+                      <p className="text-xs text-muted-foreground" data-testid="legal-accepted-version-unavailable">
+                        Le texte de cette version est en cours de reprise sur le site Verebona : il sera consultable ici dès sa mise en ligne. Votre acceptation reste enregistrée.
+                      </p>
+                    )}
+                  </div>
+                  {/* Preuve enregistrée, IMMUABLE : affichée à part (jamais un lien, jamais réécrite). */}
+                  <details className="text-xs text-muted-foreground" data-testid="legal-accepted-proof">
+                    <summary className="cursor-pointer">Preuve d’acceptation enregistrée</summary>
+                    <dl className="mt-1 space-y-1">
+                      <div><dt className="inline">Version : </dt><dd className="inline font-mono">{latest.versionCode}</dd></div>
+                      <div><dt className="inline">Date : </dt><dd className="inline">{formatDate(latest.acceptedAt)}</dd></div>
+                      {latest.sha256 && <div className="break-all"><dt className="inline">Empreinte du texte (SHA-256) : </dt><dd className="inline font-mono">{latest.sha256}</dd></div>}
+                      {latest.proof?.permalinkUrl && <div className="break-all"><dt className="inline">Adresse enregistrée à l’acceptation : </dt><dd className="inline font-mono">{latest.proof.permalinkUrl}</dd></div>}
+                    </dl>
+                  </details>
                     {/* ══════════════════════════════════════════════════
                         BOUTON DE TÉLÉCHARGEMENT RETIRÉ
 
@@ -159,7 +172,6 @@ export function LegalInformationCard() {
                         Lot 102B : le site public propose l'enregistrement et
                         l'impression de chaque version (permalien).
                         ══════════════════════════════════════════════════ */}
-                  </div>
                 </div>
               ) : (
                 <p className="text-sm text-muted-foreground">
@@ -178,14 +190,13 @@ export function LegalInformationCard() {
                   <ul className="mt-2 space-y-1 pl-4">
                     {acceptances.slice(1).map((a) => (
                       <li key={a.acceptanceId} className="text-muted-foreground">
-                        <LegalLink
-                          href={a.permalinkUrl}
-                          fallbackHref={legal.cguv}
-                          target="_blank"
-                          className="font-mono hover:underline"
-                        >
-                          {a.versionCode}
-                        </LegalLink>
+                        {a.consultationUrl ? (
+                          <LegalLink href={a.consultationUrl} target="_blank" className="font-mono hover:underline">
+                            {a.versionCode}
+                          </LegalLink>
+                        ) : (
+                          <span className="font-mono" title="Texte en cours de reprise sur le site Verebona">{a.versionCode}</span>
+                        )}
                         {' — '}
                         {formatDate(a.acceptedAt)}
                       </li>
@@ -204,13 +215,14 @@ export function LegalInformationCard() {
                       qui veut simplement lire les conditions en cours. Il
                       reste dans « Conditions que vous avez acceptées », où il
                       identifie ce qui a été signé. */}
+                  {/* Lot 108L : « CGUV actuellement en vigueur » → /legal/cguv du site public. */}
                   <LegalLink
-                    href={current.publicUrl ?? legal.cguv}
-                    fallbackHref={legal.cguv}
+                    href={legal.cguv}
                     target="_blank"
                     className="text-primary hover:underline"
+                    data-testid="legal-current-version"
                   >
-                    Lire les CGUV
+                    Lire les CGUV en vigueur
                   </LegalLink>
                   {latest && latest.versionCode !== current.versionCode && (
                     <span className="block mt-1">

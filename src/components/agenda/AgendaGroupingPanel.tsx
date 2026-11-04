@@ -24,6 +24,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { EntityCard, EntityCardList, type EntityCardKind } from "@/components/drawers/EntityCard";
+import { DocumentDateCell } from "@/components/documents/DocumentDateCell";
 import { restoreFocusOnClose } from "@/lib/drawers";
 import {
   GROUPING_LABELS as L, REMOVE_ACTION, groupingCountsSummary,
@@ -65,7 +66,11 @@ export function visibleMainCategories(view: Pick<AgendaGroupingView, "structural
   return MAIN_CATEGORIES.filter((k) => logement || (k !== "pieces" && k !== "equipements"));
 }
 
-interface Row { id: number; title: string; meta?: string | null; badge?: string | null; /** Lot 86D : document relié à CET élément (détachable). */ linked?: boolean }
+interface Row {
+  id: number; title: string; meta?: string | null; badge?: string | null; /** Lot 86D : document relié à CET élément (détachable). */ linked?: boolean;
+  /** Lot 108D : ligne de document — date du document (colonne de droite, « – » sans date). */
+  documentDate?: string | null;
+}
 
 /** Lignes d'une catégorie de l'ensemble (pure). */
 export function categoryRows(view: AgendaGroupingView, kind: GroupingCandidateKind): Row[] {
@@ -73,7 +78,8 @@ export function categoryRows(view: AgendaGroupingView, kind: GroupingCandidateKi
   if (!e) return [];
   switch (kind) {
     case "elements": return e.items.map((i) => ({ id: i.id, title: i.title, meta: fmtDate(i.startDate), badge: i.isMain ? L.mainBadge : null }));
-    case "documents": return e.documents.map((d) => ({ id: d.id, title: d.title, meta: d.documentDate ? fmtDate(d.documentDate) : null, badge: d.link === "DIRECT" ? L.directLink : null, linked: d.link !== null }));
+    // Lot 108D : sous-titre = Type seul ; la date du document est la colonne de droite.
+    case "documents": return e.documents.map((d) => ({ id: d.id, title: d.title, meta: d.typeLabel ?? null, documentDate: d.documentDate, badge: d.link === "DIRECT" ? L.directLink : null, linked: d.link !== null }));
     case "biens": return e.assets.map((a) => ({ id: a.id, title: a.name }));
     case "pieces": return e.rooms.map((r) => ({ id: r.id, title: r.name }));
     case "equipements": return e.equipments.map((q) => ({ id: q.id, title: q.name }));
@@ -108,7 +114,8 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
         <EntityCardList>
           {view.linkedDocuments.map((d) => (
             <EntityCard key={`doc-${d.id}`} kind="document" id={d.id} title={d.title} icon={<FileText className="w-3.5 h-3.5" />}
-              meta={d.documentDate ? fmtDate(d.documentDate) : undefined}
+              meta={d.typeLabel ?? undefined}
+              badges={<DocumentDateCell value={d.documentDate} className="text-[10px] text-[color:var(--text-muted)]" />}
               onOpen={onOpenDocument ? () => onOpenDocument(d.id) : undefined}
               actions={detachButton(d.id, d.title)} data-testid={`regroupement-document-element-${d.id}`} />
           ))}
@@ -177,7 +184,12 @@ export function AgendaGroupingPanel({ view, busy = false, onAction, onPick, onCr
     return (
       <EntityCard key={`${kind}-${row.id}`} kind={KIND_CARD[kind]} id={row.id} title={row.title} icon={<Icon className="w-3.5 h-3.5" />}
         meta={row.meta ?? undefined} onOpen={ouvrir}
-        badges={row.badge ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)]">{row.badge}</span> : undefined}
+        badges={row.badge || kind === "documents" ? (
+          <>
+            {row.badge ? <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-[color:var(--accent-soft)] text-[color:var(--accent)]">{row.badge}</span> : null}
+            {kind === "documents" ? <DocumentDateCell value={row.documentDate} className="text-[10px] text-[color:var(--text-muted)]" /> : null}
+          </>
+        ) : undefined}
         actions={kind === "documents" && row.linked
           ? <span className="inline-flex items-center gap-1">{detachButton(row.id, row.title)}{removeButton(kind, row)}</span>
           : removeButton(kind, row)} data-testid={`regroupement-${kind}-${row.id}`} />

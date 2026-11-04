@@ -22,7 +22,7 @@ import { buildSecondaries, selectSubjects } from '@/services/home/mascot/selecto
 import { buildPresentation } from '@/services/home/mascot/presentation';
 import { EMPTY_ACCOUNT_STATE, suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
 import {
-  composeSpeech, homeItems, homePose, homeSuggestions, secondaryActions, subjectBlocks,
+  composeSpeech, homeItems, homePose, secondaryActions, subjectBlocks,
 } from '@/services/home/mascot/bubble';
 import * as bulle from '@/services/home/mascot/bubble';
 import type { MascotPresentation } from '@/services/home/mascot/types';
@@ -215,18 +215,12 @@ describe('critères d’acceptation (MASC2)', () => {
     expect(src).not.toMatch(/\{cta && <span className="hidden/);
   });
 
-  it('MASC2-AC12 — « Ou demandez-moi » reste indépendant de la file et secondaire, sous les actions', () => {
-    const p = present(raw([immat()]));
-    const s = homeSuggestions(p, false, ['Comment ajouter un document ?']);
-    expect(s.every((x) => !x.secondary || x.secondary.action.target.kind === 'ask')).toBe(true);
-    // Lot 34 : « Que dois-je traiter en priorité ? » (ACCOUNT_TO_PROCESS) —
-    // jamais « Que dois-je faire aujourd’hui ? » sur la seule file À traiter.
-    expect(s.map((x) => x.label)).toContain('Que dois-je traiter en priorité ?');
-    expect(s.map((x) => x.label)).not.toContain('Que dois-je faire aujourd’hui ?');
+  it('MASC2-AC12 — les suggestions restent indépendantes de la file et secondaires, sous les actions', () => {
+    // Lot 108J : la zone vient du service unique des suggestions partagées ;
+    // elle n'est jamais un « À traiter » bis (aucune question d'action).
     const src = MASCOTTE();
-    // Lot 106B : la zone « Ou demandez-moi » devient « Suggestions » (questions et invitations de découverte).
     expect(src.indexOf('aria-label="Sujets à traiter"')).toBeGreaterThan(-1);
-    expect(src.indexOf('aria-label="Sujets à traiter"')).toBeLessThan(src.indexOf('aria-label="Suggestions"'));
+    expect(src.indexOf('aria-label="Sujets à traiter"')).toBeLessThan(src.indexOf('<SharedSuggestionList'));
   });
 });
 

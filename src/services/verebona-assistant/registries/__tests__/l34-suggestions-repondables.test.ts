@@ -190,6 +190,7 @@ describe('L34-SUGG — mascotte : même catalogue, mêmes règles', () => {
     const t = readFileSync(join(ROOT, 'src/services/home/mascot/mascot.service.ts'), 'utf8');
     expect(t).not.toMatch(/suggestionsForRoute|homeCatalogQuestions/);
     expect(t).toMatch(/buildSecondaries\(candidates, subjects, \[\]\)/);
-    expect(t).toMatch(/suggestionSecondaries\(outcome\.suggestions \?\? \[\]\)/);
+    // Lot 108J : plus aucune question de T6 dans la prise de parole (service unique des suggestions).
+    expect(t).not.toMatch(/suggestionSecondaries\(/);
   });
 });

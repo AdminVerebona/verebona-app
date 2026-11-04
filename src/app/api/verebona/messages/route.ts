@@ -195,6 +195,25 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
     console.warn(`[verebona][${httpId}] réservation de la demande impossible :`, (e as Error).message);
   }
 
+  // Lot 108J : suggestion partagée cliquée — revalidée côté serveur (stock,
+  // libellé exact, données du compte) ; intention et cible en sont tirées,
+  // jamais du client. Invalide : question libre, sans privilège.
+  const pageContext = sanitizePageContext(entree.data.pageContext ?? undefined);
+  let suggestion: AssistantRequestInput['suggestion'] = null;
+  if (pageContext?.suggestionId) {
+    const { resolveSuggestionForMessage } = await import('@/services/suggestions/shared/service');
+    const v = await resolveSuggestionForMessage(accountId, session.userId, pageContext.suggestionId, message, pageContext.suggestionVersion ?? null).catch(() => null);
+    if (v) {
+      suggestion = v.suggestion;
+      // Bien nommé par la question : celui du compte, revalidé (jamais celui envoyé par le client).
+      if (v.assetId) pageContext.assetId = String(v.assetId);
+    } else {
+      console.info(`[verebona][${httpId}] suggestion « ${pageContext.suggestionId.slice(0, 60)} » non reconnue : question libre`);
+    }
+    delete pageContext.suggestionId;
+    delete pageContext.suggestionVersion;
+  }
+
   const input: AssistantRequestInput = {
     accountId,
     userId: session.userId,
@@ -203,8 +222,9 @@ async function traiter(req: NextRequest, httpId: string): Promise<NextResponse> 
     planType: assistantPlanFromEntitlements(entitlements, session.planType),
     message,
     // Contexte de page VALIDÉ (clés et formats connus) — §27.1, §27.6.
-    pageContext: sanitizePageContext(entree.data.pageContext ?? undefined),
+    pageContext,
     clientRequestId,
+    suggestion,
     requestId,
     locale: cfg.locale,
     // Fil de l'utilisateur, résolu côté serveur : la persistance et les

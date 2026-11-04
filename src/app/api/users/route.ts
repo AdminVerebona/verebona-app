@@ -212,6 +212,20 @@ export async function POST(request: NextRequest) {
     // la version courante, qui est celle qu'il a nécessairement vue.
     const acceptedVersionCode = presentedVersionCode ?? currentLegalVersion.versionCode;
 
+    // Lot 108L : la version acceptée doit être consultable sur le site public
+    // (sinon acceptation non opposable) — refus explicite AVANT toute création,
+    // Supervision ouverte ; jamais de substitution par une autre version.
+    {
+      const { assertCguvAcceptable } = await import('@/services/legal/legal-acceptances.service');
+      const acceptable = await assertCguvAcceptable(acceptedVersionCode);
+      if (!acceptable.ok) {
+        return NextResponse.json(
+          { error: acceptable.message, code: acceptable.code === 'VERSION_NOT_FOUND' ? 'NO_CURRENT_LEGAL_VERSION' : acceptable.code },
+          { status: 503 },
+        );
+      }
+    }
+
     // Validate email format
     if (!email.includes('@')) {
       return NextResponse.json({ error: 'Invalid email format', code: 'INVALID_EMAIL_FORMAT' }, { status: 400 });

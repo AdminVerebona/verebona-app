@@ -30,22 +30,15 @@
  * Ce sont des contrôles de CONTRAT et de formulation, jamais un catalogue de
  * phrases imposé à T6.
  *
- * Rotation (pure) : univers servis à tour de rôle (point de départ qui
- * change chaque jour et par utilisateur), les deux premières invitations
- * toujours d'univers différents, une réserve pour « Autre suggestion ». Aucun
- * appel IA : la rotation porte sur des invitations déjà validées (sortie T6
- * en cache, ou catalogue éditorial — `discovery-catalog.ts`).
- *
- * Suggestions passées (« Autre suggestion ») : préférence PERSONNELLE de
- * l'utilisateur (`home_suggestion_skips`, migration 1005), jamais une tâche
- * « À traiter », une alerte ni un retard. Une invitation passée n'est plus
- * proposée pendant `DISCOVERY_SKIP_REST_DAYS` jours.
+ * Lot 108J : les invitations ne sont PLUS affichées à l'accueil (le ticket
+ * « Suggestions de l'accueil et de T2 » ne garde que des questions, servies
+ * par le service unique) ; la rotation, le catalogue éditorial et « Autre
+ * suggestion » sont supprimés. La table `home_suggestion_skips` (1005) est
+ * conservée, plus lue ni écrite.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { DISCOVERY_CATALOG, type DiscoveryCatalogEntry } from './discovery-catalog';
 import { EMOJI, TUTOIEMENT } from './t6-contract';
 import { normalizeForFingerprint } from './t6-interpellation';
-import { sha256 } from './hash';
 import {
   MASCOT_DISCOVERY_DOCUMENT_KINDS, MASCOT_DISCOVERY_UNIVERSES,
   type MascotDiscoveryDocumentKind, type MascotDiscoveryInvitation, type MascotDiscoveryUniverse,
@@ -57,12 +50,6 @@ export const T6_DISCOVERY_CONTRACT = 't6-discovery-v1';
 export const T6_DISCOVERY_OUTPUT_MARKER = '"kind":"DISCOVERY"';
 /** Invitations examinées au plus dans une sortie T6 (les suivantes sont rejetées, jamais substituées). */
 export const MAX_T6_DISCOVERY = 2;
-/** Invitations transmises au client (2 affichables + réserve « Autre suggestion »). */
-export const DISCOVERY_LIST_MAX = 8;
-/** Repos d'une suggestion passée : jours pendant lesquels elle n'est plus proposée. */
-export const DISCOVERY_SKIP_REST_DAYS = 14;
-/** Suggestions passées conservées au plus par utilisateur et par compte (les plus anciennes sont purgées). */
-const SKIPS_MAX_PER_USER = 200;
 const DISCOVERY_TEXT_MIN = 20;
 const DISCOVERY_TEXT_MAX = 160;
 
@@ -171,147 +158,31 @@ export function promptSupportsDiscovery(effectiveText: string | null | undefined
   return !!effectiveText && effectiveText.includes(T6_DISCOVERY_CONTRACT) && effectiveText.includes(T6_DISCOVERY_OUTPUT_MARKER);
 }
 
-// ── Rotation ────────────────────────────────────────────────────────────────
+// Lot 108J : rotation, catalogue éditorial d'invitations et « Autre
+// suggestion » (repos de 14 jours) SUPPRIMÉS — chemins concurrents du service
+// unique des suggestions partagées (`src/services/suggestions/shared`), qui
+// ne propose que des QUESTIONS. Restent ici le contrat et la validation des
+// éléments `DISCOVERY` d'une sortie T6 (prompt maître, corpus rejoué,
+// registre de conformité), sans effet sur l'accueil.
 
-/** Jour (entier) d'une date `AAAA-MM-JJ` : base de la rotation quotidienne. */
+// ── Contexte T6 (contrat `t6-discovery-v1`, corpus et qualification) ───────
+
+/** Jour (entier) d'une date `AAAA-MM-JJ`. */
 export function dayIndexOf(day: string): number {
   const t = Date.parse(`${day}T00:00:00Z`);
   return Number.isFinite(t) ? Math.floor(t / 86_400_000) : 0;
 }
 
-/** Graine stable d'un utilisateur dans un compte (Duo : chacun sa rotation). */
-export function discoverySeedOf(accountId: number, userId: number | null): number {
-  return Number.parseInt(sha256(`${accountId}:${userId ?? 0}`).slice(0, 8), 16);
-}
-
-/** Univers dans l'ordre de rotation du jour (pur). */
+/** Univers dans l'ordre du jour (pur). */
 export function universeOrder(seed: number, day: number): MascotDiscoveryUniverse[] {
   const n = MASCOT_DISCOVERY_UNIVERSES.length;
   const start = ((seed + day) % n + n) % n;
   return MASCOT_DISCOVERY_UNIVERSES.map((_, i) => MASCOT_DISCOVERY_UNIVERSES[(start + i) % n]);
 }
 
-/** Entrées du catalogue converties en invitations validées (une entrée invalide est ignorée). */
-export function catalogInvitations(catalog: readonly DiscoveryCatalogEntry[] = DISCOVERY_CATALOG): MascotDiscoveryInvitation[] {
-  const out: MascotDiscoveryInvitation[] = [];
-  for (const e of catalog) {
-    const v = validateDiscoveryInvitation({ kind: 'DISCOVERY', ...e }, { enabled: true }, 'CATALOG');
-    if (v.ok) out.push(v.invitation);
-  }
-  return out;
-}
-
-/**
- * Ordre des invitations proposées (pur, testé) : invitations de T6 d'abord
- * (déjà validées), puis le catalogue, univers servis À TOUR DE RÔLE à partir
- * de l'univers du jour ; une clé passée récemment est exclue ; une seule
- * invitation par univers et type de document ; les deux premières toujours
- * d'univers différents quand c'est possible.
- */
-export function rotateDiscovery(p: {
-  ai?: readonly MascotDiscoveryInvitation[];
-  catalog?: readonly MascotDiscoveryInvitation[];
-  skipped?: ReadonlySet<string>;
-  seed: number;
-  day: number;
-  max?: number;
-}): MascotDiscoveryInvitation[] {
-  const max = p.max ?? DISCOVERY_LIST_MAX;
-  const skipped = p.skipped ?? new Set<string>();
-  const vues = new Set<string>();
-  const out: MascotDiscoveryInvitation[] = [];
-  const prendre = (x: MascotDiscoveryInvitation) => {
-    if (out.length >= max || skipped.has(x.key) || vues.has(x.key)) return;
-    vues.add(x.key);
-    out.push(x);
-  };
-  (p.ai ?? []).forEach(prendre);
-  const ordre = universeOrder(p.seed, p.day);
-  const catalogue = p.catalog ?? catalogInvitations();
-  const files = new Map(ordre.map((u) => {
-    const l = catalogue.filter((x) => x.universe === u);
-    const k = l.length ? (p.seed + p.day) % l.length : 0;
-    return [u, [...l.slice(k), ...l.slice(0, k)]] as [MascotDiscoveryUniverse, MascotDiscoveryInvitation[]];
-  }));
-  // L'univers qui suit la dernière invitation de T6 commence (alternance continue).
-  let i = 0;
-  const dernier = out.at(-1)?.universe;
-  if (dernier) i = (ordre.indexOf(dernier) + 1) % ordre.length;
-  for (let garde = 0; out.length < max && garde < catalogue.length * ordre.length + ordre.length; garde += 1) {
-    const u = ordre[i % ordre.length];
-    i += 1;
-    const file = files.get(u)!;
-    while (file.length) {
-      const x = file.shift()!;
-      if (!skipped.has(x.key) && !vues.has(x.key)) { prendre(x); break; }
-    }
-    if ([...files.values()].every((f) => f.length === 0)) break;
-  }
-  // Deux premières d'univers différents (une invitation de T6 en double univers recule).
-  if (out.length > 2 && out[0].universe === out[1].universe) {
-    const j = out.findIndex((x, k) => k > 1 && x.universe !== out[0].universe);
-    if (j > 1) out.splice(1, 0, ...out.splice(j, 1));
-  }
-  return out;
-}
-
-/** Section du contexte T6 (pure) : univers du jour, types admis, plafond. */
+/** Section du contexte T6 du contrat (pure) — qualification et corpus seulement depuis le lot 108J. */
 export function discoveryContextOf(seed: number, day: number): T6DiscoveryContext {
   return { contract: T6_DISCOVERY_CONTRACT, universes: universeOrder(seed, day), documentKinds: [...MASCOT_DISCOVERY_DOCUMENT_KINDS], max: MAX_T6_DISCOVERY };
-}
-
-// ── Suggestions passées (préférence personnelle) ────────────────────────────
-
-/** Format admis d'une clé de suggestion passée (invitation ou question T6). */
-export const SKIP_KEY_PATTERN = /^(DISC:[A-Z]+:[A-Z]+|Q:T6:[^\r\n]{1,180})$/;
-
-/**
- * Suggestions passées par l'utilisateur dans ce compte, encore au repos.
- * Table absente ou lecture impossible : aucune (jamais bloquant).
- */
-export async function readSuggestionSkips(accountId: number, userId: number | null): Promise<Set<string>> {
-  if (userId == null) return new Set();
-  try {
-    const { pgClient } = await import('@/db');
-    const r = (await pgClient.unsafe(
-      `SELECT suggestion_key AS k FROM home_suggestion_skips
-        WHERE account_id = $1 AND user_id = $2 AND skipped_at > NOW() - ($3::int * INTERVAL '1 day')`,
-      [accountId, userId, DISCOVERY_SKIP_REST_DAYS] as never[],
-    )) as unknown as Array<{ k: string }>;
-    return new Set(r.map((x) => x.k));
-  } catch {
-    return new Set();
-  }
-}
-
-/**
- * Enregistre une suggestion passée (idempotent : la date de passage est
- * renouvelée). Aucune donnée métier, aucune tâche « À traiter ». Rend
- * `false` si l'écriture est impossible (table absente…).
- */
-export async function recordSuggestionSkip(accountId: number, userId: number, key: string): Promise<boolean> {
-  if (!SKIP_KEY_PATTERN.test(key)) return false;
-  try {
-    const { pgClient } = await import('@/db');
-    await pgClient.unsafe(
-      `INSERT INTO home_suggestion_skips (account_id, user_id, suggestion_key, skipped_at)
-       VALUES ($1, $2, $3, NOW())
-       ON CONFLICT (account_id, user_id, suggestion_key) DO UPDATE SET skipped_at = EXCLUDED.skipped_at`,
-      [accountId, userId, key] as never[],
-    );
-    // Purge bornée : au-delà du repos, ou au-delà du plafond par utilisateur.
-    await pgClient.unsafe(
-      `DELETE FROM home_suggestion_skips s
-        WHERE s.account_id = $1 AND s.user_id = $2
-          AND (s.skipped_at < NOW() - ($3::int * INTERVAL '1 day')
-               OR s.id NOT IN (SELECT id FROM home_suggestion_skips WHERE account_id = $1 AND user_id = $2 ORDER BY skipped_at DESC LIMIT $4))`,
-      [accountId, userId, DISCOVERY_SKIP_REST_DAYS, SKIPS_MAX_PER_USER] as never[],
-    );
-    return true;
-  } catch (e) {
-    console.error('[mascotte] suggestion passée non enregistrée :', (e as Error).message);
-    return false;
-  }
 }
 
 // ── Corpus rejoué (P-T6-DISC-*) ─────────────────────────────────────────────

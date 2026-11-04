@@ -21,7 +21,7 @@ import { decideLinks, LINK_MIN_MARGIN } from '../master/link-ambiguity';
 import type { IdentifierResolution } from './identifiers';
 import { isPromptSafeKey } from './identifiers';
 import type { CandidateSource } from './candidate-builder';
-import { validateCrossDocumentOutput, type CrossDocumentContext } from './identity/decision';
+import { crossTargetAllowed, validateCrossDocumentOutput, type CrossDocumentContext, type CrossServerState } from './identity/decision';
 
 /** Seuil de rattachement automatique par le modèle (et confiance `certain`). */
 export const DOCUMENT_ASSET_AUTO_THRESHOLD = 0.8;
@@ -69,7 +69,14 @@ export type DocumentAssetDecision =
       /** Lot 105D : identité du groupe à confirmer par l'utilisateur (carte groupée) — aucune IA, aucune carte individuelle. */
       | 'GROUP_CONFIRMATION_PENDING'
       /** Lot 105D : seuls des biens REFUSÉS par l'utilisateur pour ce groupe restaient candidats — aucune question répétée. */
-      | 'GROUP_REFUSED';
+      | 'GROUP_REFUSED'
+      /**
+       * Lot 108E (A4) : le modèle a reçu les preuves croisées mais n'a pas rendu la
+       * section `crossDocument` vérifiable — aucun rattachement automatique.
+       */
+      | 'CROSS_DOCUMENT_OUTPUT_MISSING'
+      /** Lot 108E (A6) : panne technique (modèle, graphe, base…) — jamais une question métier. */
+      | 'TECHNICAL_FAILURE';
     /** Candidats proposés à l'utilisateur, du plus au moins probable. */
     ranked: Array<{ assetId: number; score: number; reason: string }>;
   };
@@ -252,12 +259,15 @@ export function decideFromAiOutput(
    * citées en monde fermé ; portée, validation, relation groupe → bien). Absent :
    * comportement d'avant.
    */
-  cross?: { allowedEvidenceIds: ReadonlySet<number>; member: boolean } | null,
+  cross?: { allowedEvidenceIds: ReadonlySet<number>; member: boolean; required?: boolean; server?: CrossServerState | null } | null,
+  /** Lot 108E : trace du contrôle croisé (journal T3, diagnostic). */
+  report?: { cross?: { required: boolean; present: boolean; reasons: string[]; blocked: boolean } },
 ): DocumentAssetDecision {
   const byId = new Map(candidates.map((c) => [c.assetId, c]));
   const { output: out, warnings } = closedWorldLinkAmbiguity(output, new Set(byId.keys()));
   if (warnings.length > 0) return { kind: 'ABSTAIN', reasonCode: 'CLOSED_WORLD_VIOLATION', ranked: rankCandidates(candidates) };
   const croise = cross ? validateCrossDocumentOutput(output.crossDocument ?? null, cross) : null;
+  if (report && cross) report.cross = { required: cross.required === true, present: !!output.crossDocument, reasons: croise?.reasons ?? [], blocked: !!croise?.blockApply };
   if (croise?.violation) return { kind: 'ABSTAIN', reasonCode: 'CLOSED_WORLD_VIOLATION', ranked: rankCandidates(candidates) };
 
   const ranked = (() => {
@@ -273,8 +283,24 @@ export function decideFromAiOutput(
   const eligibles = auDessus.filter((m) => m.confidence === 'certain' && hasEvidence(byId.get(m.candidateId)!));
   const sansPreuve = auDessus.filter((m) => !hasEvidence(byId.get(m.candidateId)!));
 
+  // Lot 108E (A4) : toute décision AUTOMATIQUE (A, A ET B) issue d'un appel enrichi exige une sortie
+  // croisée vérifiable et cohérente avec le serveur ; sinon abstention tracée.
+  const bloque = (ids: number[]) => {
+    if (!cross) return null;
+    if (croise?.missing) return 'CROSS_DOCUMENT_OUTPUT_MISSING' as const;
+    if (croise?.blockApply) return 'INSUFFICIENT_EVIDENCE' as const;
+    const refus = ids.map((id) => crossTargetAllowed(id, cross.server)).find(Boolean);
+    if (refus) {
+      if (report?.cross) { report.cross.blocked = true; report.cross.reasons.push(refus); }
+      return 'INSUFFICIENT_EVIDENCE' as const;
+    }
+    return null;
+  };
   // A ET B : déclaré par le modèle, chaque bien certain et prouvé.
   if (out.documentScope === 'MULTIPLE' && eligibles.length >= 2) {
+    const ids = eligibles.map((m) => m.candidateId).sort((a, b) => a - b);
+    const b = bloque(ids);
+    if (b) return { kind: 'ABSTAIN', reasonCode: b, ranked };
     return {
       kind: 'MULTI_ASSET',
       assetIds: eligibles.map((m) => m.candidateId).sort((a, b) => a - b),
@@ -287,6 +313,7 @@ export function decideFromAiOutput(
   }
   // Lot 105D : le modèle décrit une portée non établie, une validation requise ou une relation groupe → bien
   // non établie (document membre d'un groupe) — aucun rattachement automatique, l'utilisateur tranche.
+  if (croise?.missing) return { kind: 'ABSTAIN', reasonCode: 'CROSS_DOCUMENT_OUTPUT_MISSING', ranked };
   if (croise?.blockApply) return { kind: 'ABSTAIN', reasonCode: 'INSUFFICIENT_EVIDENCE', ranked };
   // A OU B : marge entre les candidats au-dessus du seuil (toutes confiances).
   const { ambiguity } = decideLinks(auDessus, { exclusive: true, threshold: DOCUMENT_ASSET_AUTO_THRESHOLD, minMargin: LINK_MIN_MARGIN });
@@ -295,5 +322,7 @@ export function decideFromAiOutput(
   if (!eligibles.some((m) => m.candidateId === top.candidateId)) {
     return { kind: 'ABSTAIN', reasonCode: 'INSUFFICIENT_EVIDENCE', ranked };
   }
+  const b = bloque([top.candidateId]);
+  if (b) return { kind: 'ABSTAIN', reasonCode: b, ranked };
   return { kind: 'APPLY', assetId: top.candidateId, score: top.score, reason: top.reason, method: 'AI' };
 }

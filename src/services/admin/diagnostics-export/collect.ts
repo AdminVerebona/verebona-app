@@ -515,6 +515,48 @@ export async function planDiagnostic(req: DiagRequest, s: ReadSession, opts: Gen
     return { expected: 1, count: 1, batches: 1, error: null };
   }, undefined, 'tracabilite');
 
+  // Lot 108E (ticket « T3 DOCUMENT_ASSET — correctif #626 bis », §C) : journal du rattachement des documents aux biens —
+  // configuration (version, variables, migrations 0995 / 1060, prompt T3 actif et qualification), contrôles de recette,
+  // compteurs par compte et par phase, Supervision et, par document, sources / groupes / candidats / branche / preuves
+  // croisées / panne / cartes avant-après / projection. Même moteur, même instantané (aucun export parallèle).
+  {
+    let t3: import('@/services/ai/reconciliation/document-asset/diagnostic').T3DocumentAssetDiagnostic | null = null;
+    const t3q = (t: string, p: unknown[]) => s.savepoint(() => s.q(t, p));
+    entry('ia/t3-rattachement-documents.json', 'T3 — rattachement des documents aux biens : configuration (version, variables, migrations, prompt actif, qualification), contrôles, compteurs par compte et par phase, Supervision, détail par document (sources, groupes, candidats, branche, preuves croisées, panne, cartes avant / après, projection)', async (w) => {
+      const { t3DocumentAssetDiagnostic } = await import('@/services/ai/reconciliation/document-asset/diagnostic');
+      t3 = await t3DocumentAssetDiagnostic(t3q, global ? null : filter.accounts ?? []);
+      await w(`${JSON.stringify(M(t3 as unknown as Row), null, 2)}\n`);
+      const n = t3.accounts.reduce((k, a) => k + (a.documents?.length ?? 0), 0);
+      return { expected: n, count: n, batches: 1, error: null };
+    }, undefined, 'extractions-ia');
+    entry('ia/t3-rattachement-documents.txt', 'T3 — rattachement des documents aux biens : tableau lisible (contrôles attendu → constaté, un document par ligne, cartes avant → après) à recopier dans la recette', async (w) => {
+      const { t3DiagnosticText } = await import('@/services/ai/reconciliation/document-asset/diagnostic');
+      await w(t3 ? (M(t3DiagnosticText(t3)) as string) : 'journal T3 indisponible (voir ia/t3-rattachement-documents.json)\n');
+      return { expected: 1, count: t3 ? 1 : 0, batches: 1, error: t3 ? null : 'journal T3 non produit' };
+    }, undefined, 'extractions-ia');
+  }
+
+  // Lot 108K (ticket « Correctifs de conformité du lot 91D », §3) : activation réelle du contrat T1 des décisions sur les
+  // valeurs (marqueur du prompt effectif, interrupteur, migrations, concordance prompt / run), compteurs des décisions,
+  // conformité des sorties T1, constats COH-DOC-EXTRACT-CHAIN, progression et coût des réexamens, rattrapage simulé et,
+  // pour un compte, bilan par document et par unité. Même moteur, même instantané (aucun export parallèle).
+  {
+    let t1d: import('@/services/ai/source-analysis/value-decisions/diagnostic').T1DecisionsDiagnostic | null = null;
+    const t1q = (t: string, p: unknown[]) => s.savepoint(() => s.q(t, p));
+    entry('ia/t1-decisions-valeurs.json', 'T1 — décisions sur les valeurs significatives : configuration (marqueur du prompt effectif, T1_VALUE_DECISIONS_ENABLED, migrations, concordance des versions), contrôles, compteurs par compte (décisions par statut, sorties T1, constats, réexamens, coût IA), rattrapage simulé, bilan par document et par unité (compte)', async (w) => {
+      const { t1DecisionsDiagnostic } = await import('@/services/ai/source-analysis/value-decisions/diagnostic');
+      t1d = await t1DecisionsDiagnostic(t1q, global ? null : filter.accounts ?? []);
+      await w(`${JSON.stringify(M(t1d as unknown as Row), null, 2)}\n`);
+      const n = t1d.accounts.reduce((k, a) => k + (a.documents?.length ?? 0), 0);
+      return { expected: n, count: n, batches: 1, error: t1d.errors.length ? t1d.errors.join(' ; ').slice(0, 500) : null };
+    }, undefined, 'extractions-ia');
+    entry('ia/t1-decisions-valeurs.txt', 'T1 — décisions sur les valeurs significatives : tableau lisible (contrôles attendu → constaté, un document par ligne, unités en omission) à recopier dans la recette 108K', async (w) => {
+      const { t1DecisionsDiagnosticText } = await import('@/services/ai/source-analysis/value-decisions/diagnostic');
+      await w(t1d ? (M(t1DecisionsDiagnosticText(t1d)) as string) : 'journal T1 indisponible (voir ia/t1-decisions-valeurs.json)\n');
+      return { expected: 1, count: t1d ? 1 : 0, batches: 1, error: t1d ? null : 'journal T1 non produit' };
+    }, undefined, 'extractions-ia');
+  }
+
   // Lot 103G (ticket P1 « compte technique de qualification », point D) : diagnostic du compte technique — identité
   // technique non sensible, variable déclarée / cohérente, motif CORPUS_ACCOUNT_*, incompatibilités et campagnes
   // affectées, cas du corpus concernés, reprises automatiques. Global seulement (aucune donnée de compte client).

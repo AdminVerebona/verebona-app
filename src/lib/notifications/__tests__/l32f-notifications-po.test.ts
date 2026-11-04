@@ -23,7 +23,6 @@ vi.mock('../news-consent', () => ({ hasActiveNewsConsent: async () => false }));
 const { NOTIFICATION_CATALOG } = await import('../catalog');
 const { resolveChannels } = await import('../policy-resolver');
 const { uploadNotificationText } = await import('../upload-notification-text');
-const { sanitizeFileIds, uploadDedupeKey } = await import('@/services/documents/upload-notification.service');
 
 const read = (rel: string) => readFileSync(join(process.cwd(), rel), 'utf8');
 
@@ -53,31 +52,25 @@ describe('PO-Q18/Q19 — notification après un envoi réussi', () => {
     expect(entry.payloadSchema.safeParse({ count: 0 }).success).toBe(false);
   });
 
-  it('une seule notification par lot : clé de déduplication par lot (reprise tardive comprise)', () => {
-    expect(uploadDedupeKey(7, 'lot-abc', [3, 1])).toBe(uploadDedupeKey(7, 'lot-abc', [9]));
-    expect(uploadDedupeKey(7, null, [3, 1])).toBe(uploadDedupeKey(7, undefined, [1, 3]));
-    expect(uploadDedupeKey(7, null, [1])).not.toBe(uploadDedupeKey(7, null, [2]));
-    expect(uploadDedupeKey(7, 'x y; drop', [1])).toBe(uploadDedupeKey(7, null, [1]));
-    expect(sanitizeFileIds([1, '2', 2, -3, 'x', 4.5])).toEqual([1, 2]);
-  });
-
-  it('tous les comptes (aucune condition d’offre), aucun toast ; fichiers et lien web', () => {
-    const svc = read('src/services/documents/upload-notification.service.ts');
-    expect(svc).not.toMatch(/isPremium|planType|plan_code|getCommercialPlan/);
-    expect(svc).toContain('recipientUserIds: [input.userId]');
+  // Lot 108I (ticket « Notifications documents ») : la notification d'ajout
+  // n'est PLUS émise — confirmation discrète dans le parcours d'ajout. Les
+  // deux tests « une par lot » et « tous les comptes, aucun toast » du lot 32
+  // sont remplacés par la règle du lot 108I (décision PO explicite).
+  it('lot 108I : plus aucune émission — la fenêtre d’ajout confirme dans l’interface, la route ne crée rien', () => {
     const dialog = read('src/components/documents/unified-document-dialog.tsx');
-    expect(dialog).toContain('signalerEnvoiReussi(bilan.fileIds, bilan.lotId);');
-    expect(dialog).toContain('signalerEnvoiReussi(ids, `wl-${webLink.id}`);');
+    expect(dialog).not.toMatch(/signalerEnvoiReussi|upload-notification/);
+    expect(dialog).toContain("confirmerAjout({ count: bilan.fileIds.length, kind: 'file', analysisStarted: ctx.isPremium })");
+    expect(dialog).toContain("confirmerAjout({ count: ids.length, kind: 'web_link', analysisStarted: ctx.isPremium })");
     expect(dialog).not.toMatch(/toast\.success/);
-    expect(read('src/lib/upload-notification-client.ts')).not.toMatch(/from 'sonner'|toast\(/);
-    // Pas d'affichage forcé dans la cloche (`mustDeliver` réservé aux obligatoires) : pas de toast.
+    const route = read('src/app/api/documents/upload-notification/route.ts');
+    expect(route).not.toMatch(/emit\(|insert\(/);
     expect(entry.mandatoryBell).toBe(false);
   });
 
   it('la cloche sait l’afficher, et le BO le nomme', () => {
     const bell = read('src/components/NotificationBell.tsx');
     expect(bell).toContain("case 'DOCUMENT_UPLOAD_COMPLETED':");
-    expect(read('src/services/admin/communications.service.ts')).toContain("DOCUMENT_UPLOAD_COMPLETED: 'Documents ajoutés (envoi réussi)'");
+    expect(read('src/services/admin/communications.service.ts')).toContain("DOCUMENT_UPLOAD_COMPLETED: 'Documents ajoutés (plus envoyée : confirmation dans l’interface)'");
   });
 });
 

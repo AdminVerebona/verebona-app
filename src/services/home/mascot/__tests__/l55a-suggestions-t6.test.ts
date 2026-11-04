@@ -36,7 +36,18 @@ const { buildCandidates } = await import('../signals');
 const { selectSubjects, buildSecondaries, withSuggestedQuestions } = await import('../selector');
 const { buildPresentation } = await import('../presentation');
 const { buildT6Input } = await import('../t6-contract');
-const { composeSpeech, homeItems, homeSuggestions, tileFor, NOTHING_PRIORITY, actionTiles, subjectBlocks } = await import('../bubble');
+const { composeSpeech, homeItems, tileFor, NOTHING_PRIORITY, actionTiles, subjectBlocks } = await import('../bubble');
+/**
+ * Lot 108J : la zone de l'accueil ne lit plus les questions de la prise de
+ * parole (service unique des suggestions partagées). Les cas ci-dessous
+ * vérifient seulement le CONTRAT T6 des questions (encore qualifié) : on
+ * lit les secondaires « ask » de la présentation, comme le faisait la zone.
+ */
+const homeSuggestions = (p: import('../types').MascotPresentation, _empty: boolean, _page: string[]) =>
+  p.secondaries.filter((s) => s.action.target.kind === 'ask').map((s) => ({
+    label: s.action.target.kind === 'ask' ? s.action.target.question : '',
+    context: s.action.target.kind === 'ask' ? s.action.target.context : undefined, secondary: s,
+  }));
 const { suggestionsForRoute } = await import('@/services/verebona-assistant/registries/capability-registry');
 const { renderMasterPrompt, isOptionalMasterVariable } = await import('@/services/ai/prompts/prompt-loader');
 type Raw = import('../signals').MascotRawData;
@@ -518,8 +529,8 @@ describe('L87C — contrat des questions fondées (AC01 à AC14)', () => {
     expect(raisons(b, [{ question: 'Quand est prévu le contrôle technique ?', assetRef: null, deadlineRef: 'D2', purpose: 'CONSULT' }])).toEqual(['contract_missing_subject']);
     // Mascotte : sans contrat, aucun contexte transmis (questions nulles) et trace « prompt non compatible ».
     const svc = read('src/services/home/mascot/mascot.service.ts');
-    // Lot 106B : capacités lues ensemble (questions fondées, invitations de découverte).
-    expect(svc).toMatch(/const questionsP = capsP\.then\(\(c\) => c\.grounds\)/);
+    // Lot 108J : la mascotte ne transmet plus AUCUN contexte de questions à T6 (bulle seule).
+    expect(svc).not.toMatch(/loadT6SuggestionContext/);
     expect(R.t6SuggestionTraceOf({ status: 'generated', messages: [], promptVersion: 'v' }, { requested: false, promptSupported: false })).toMatchObject({ promptSupported: false, contract: null, accepted: 0 });
   });
 

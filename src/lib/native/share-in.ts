@@ -9,11 +9,14 @@
  *     nom et le motif (REC-026, jamais d'échec silencieux).
  *   · Les fichiers acceptés entrent dans le formulaire d'ajout habituel
  *     (aperçu de la liste avant validation, IMP-03 ; mêmes contrôles, IMP-05/07).
- *   · Sans session : les fichiers sont gardés EN MÉMOIRE le temps de la
- *     connexion puis proposés (IMP-04) ; une connexion qui recharge la page
- *     (ou une app fermée entre-temps) les perd : le message demande alors de
- *     partager à nouveau (« message clair si conservation impossible ») —
- *     aucune copie de documents personnels n'est laissée sur le disque.
+ *   · Lot 108G : les partages sont gardés dans une FILE TECHNIQUE locale
+ *     (`share-inbox.ts` : un élément par partage, conservé jusqu'à l'ajout
+ *     confirmé ou l'abandon explicite, isolé par compte, purgé après 7 jours)
+ *     — plus de perte au rechargement, à la connexion ou au 2e partage.
+ *   · Formats : ceux que le serveur accepte (`lib/file-validation.ts`). Les
+ *     photos HEIC / HEIF sont converties en JPEG par l'extension iOS (et
+ *     signalées) ; reçues telles quelles (Android), elles sont refusées avec
+ *     un motif explicite plutôt qu'échouer plus loin.
  */
 import { readNativeFile } from './files';
 
@@ -24,7 +27,8 @@ export interface ShareTriage {
   refused: Array<{ name: string; reason: string }>;
 }
 
-const ACCEPTES = /^(application\/pdf|image\/(jpeg|png|heic|heif|webp|gif|tiff))$/i;
+const ACCEPTES = /^(application\/pdf|image\/(jpeg|png|webp|gif))$/i;
+const HEIC = /^image\/hei[cf](-sequence)?$/i;
 
 /** Tri des fichiers reçus (pur, testé). */
 export function triageSharedFiles(files: unknown): ShareTriage {
@@ -35,7 +39,8 @@ export function triageSharedFiles(files: unknown): ShareTriage {
     const name = typeof r?.name === 'string' && r.name.trim() ? r.name.trim() : 'Fichier sans nom';
     if (!r || typeof r.uri !== 'string' || !r.uri) { out.refused.push({ name, reason: 'Fichier illisible.' }); continue; }
     const mime = typeof r.mimeType === 'string' ? r.mimeType.toLowerCase() : '';
-    if (!ACCEPTES.test(mime)) { out.refused.push({ name, reason: 'Format non pris en charge : seuls les PDF et les images sont acceptés.' }); continue; }
+    if (HEIC.test(mime)) { out.refused.push({ name, reason: 'Photo HEIC non prise en charge ici : partagez-la au format JPEG (réglage « Plus compatible » de l’appareil photo).' }); continue; }
+    if (!ACCEPTES.test(mime)) { out.refused.push({ name, reason: 'Format non pris en charge : PDF, JPEG, PNG, WEBP ou GIF uniquement.' }); continue; }
     out.accepted.push({ uri: r.uri, name, mimeType: mime });
   }
   return out;

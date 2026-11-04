@@ -11,8 +11,16 @@ import {
   type TcoEconomicLine, type TcoResult, type TcoWarning, type UsageBudget,
 } from './model';
 import { tcoAddDuplicateRisk, tcoLineAddable, tcoLineRemovable } from './user-decisions';
+import { USAGE_BUDGET_STATUS_LABELS, USAGE_COMPLEMENT_WARNING_LABELS } from './usage-complement';
 
 export const TCO_PREMIUM_MESSAGE = 'Le coût de possession est disponible avec Premium et Premium Duo.';
+
+/**
+ * Lot 108A (§D) — information NEUTRE sur le caractère calculé du total (texte
+ * exact de la décision PO) : jamais une alerte, jamais une carte « À traiter » ;
+ * le total n'est pas éditable directement.
+ */
+export const TCO_CALCULATION_INFO = "Le coût total est calculé automatiquement à partir du prix d'achat et des dépenses associées au bien.";
 
 /** Libellés des signalements de fiabilité (aucun terme technique, P09). */
 export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
@@ -20,14 +28,16 @@ export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
   ACQUISITION_COST_MISSING: 'Aucun coût d’acquisition documenté : le coût cumulé peut être incomplet.',
   UNCONVERTED_AMOUNTS: 'Des montants en devise étrangère, sans contre-valeur en euros, ne sont pas comptés.',
   UNALLOCATED_AMOUNTS: 'Des montants communs à plusieurs biens ne sont pas ventilés : ils ne sont pas comptés ici.',
-  NO_RELIABLE_VALUATION: 'Aucune valorisation datée : seul le coût cumulé est affiché, aucune dépréciation n’est estimée.',
   DISPOSAL_PRICE_MISSING: 'Prix de cession réalisé non documenté : le coût net final n’est pas établi.',
   DISPOSAL_DATE_MISSING: 'Date de cession non renseignée.',
   PARTIAL_READ: 'Volume exceptionnel : seule une partie des éléments a pu être lue, résultat partiel.',
   PRORATA_APPLIED: 'Une période payée dépasse la cession : seule la part jusqu’à la cession est comptée (prorata au jour).',
   DOCUMENTS_NOT_QUALIFIED: 'Des justificatifs portent un montant dont la nature n’est pas établie : ils ne sont pas comptés.',
   UNCONFIRMED_ASSET_EXPENSES: 'Des justificatifs de ce bien sont rattachés à une dépense dont le bien n’est pas confirmé : non comptés ici.',
-  AMOUNTS_UNKNOWN: 'Des justificatifs de dépense n’ont pas de montant lisible : leur montant est inconnu, le coût cumulé est incomplet.',
+  // Lot 108B : levée seulement après l'échec réel de la récupération automatique (relecture comprise).
+  AMOUNTS_UNKNOWN: 'Des justificatifs de dépense n’ont pas de montant lisible, même après une nouvelle lecture automatique : leur montant est à confirmer, le coût cumulé est incomplet.',
+  // Lot 108B : état neutre (non montré comme alerte : la fiche présente la lecture en cours, `amountRecovery`).
+  AMOUNTS_RECOVERY_PENDING: 'Lecture automatique du montant de certains justificatifs en cours : le coût sera mis à jour dès qu’elle aboutit.',
   UNCERTAIN_MATCHES: 'Des dépenses ressemblent à une autre dépense sans preuve qu’il s’agisse de la même : elles sont comptées, à vérifier.',
   ACQUISITION_AMBIGUOUS: 'Plusieurs factures d’achat pourraient correspondre à l’achat du bien : renseignez le prix d’achat de la fiche.',
   PRESUMED_DUPLICATES: 'Une même somme figure sur plusieurs justificatifs d’une même dépense : elle n’est comptée qu’une fois. Vérifiez qu’il ne s’agit pas de paiements distincts.',
@@ -155,7 +165,11 @@ export type TcoDto = Omit<TcoResult, 'entries' | 'lines' | 'citedOnlyDocuments' 
   retainedLinesTotal: number;
   otherLinesTotal: number;
   warningLabels: string[];
-  usageLabels: { categories: typeof USAGE_BUDGET_CATEGORY_LABELS; periodicities: typeof USAGE_BUDGET_PERIODICITY_LABELS };
+  usageLabels: {
+    categories: typeof USAGE_BUDGET_CATEGORY_LABELS; periodicities: typeof USAGE_BUDGET_PERIODICITY_LABELS;
+    /** Lot 108C : état de chaque forfait et signalements du complément estimé. */
+    budgetStatuses: typeof USAGE_BUDGET_STATUS_LABELS; warnings: typeof USAGE_COMPLEMENT_WARNING_LABELS;
+  };
   /** Nombre de composantes examinées (trace complète côté serveur). */
   componentsExamined: number;
   /** Lot 81D : année du détail demandé (`linesYear`), ou null (toutes les lignes). */
@@ -205,8 +219,12 @@ export function toTcoDto(t: TcoResult, page: { linesOffset?: number; linesLimit?
     lineStatusLabels: { ...ECONOMIC_LINE_STATUS_LABELS },
     lineReasonLabels: { ...ECONOMIC_LINE_REASON_LABELS },
     excludedLabels: { ...EXCLUSION_LABELS },
-    warningLabels: t.reliability.warnings.map((w) => TCO_WARNING_LABELS[w]),
-    usageLabels: { categories: USAGE_BUDGET_CATEGORY_LABELS, periodicities: USAGE_BUDGET_PERIODICITY_LABELS },
+    // Lot 108B : la lecture en cours d'un montant n'est pas une alerte (bloc dédié de la fiche).
+    warningLabels: t.reliability.warnings.filter((w) => w !== 'AMOUNTS_RECOVERY_PENDING').map((w) => TCO_WARNING_LABELS[w]),
+    usageLabels: {
+      categories: USAGE_BUDGET_CATEGORY_LABELS, periodicities: USAGE_BUDGET_PERIODICITY_LABELS,
+      budgetStatuses: USAGE_BUDGET_STATUS_LABELS, warnings: USAGE_COMPLEMENT_WARNING_LABELS,
+    },
     componentsExamined: entries.length,
     linesYear: page.linesYear ?? null,
   };

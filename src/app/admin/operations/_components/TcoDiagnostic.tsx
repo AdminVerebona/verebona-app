@@ -10,6 +10,7 @@
 import Link from 'next/link';
 import type { TcoEconomicLine, TcoResult } from '@/services/business-operations/tco/model';
 import { ACQUISITION_CANDIDATE_REASON_LABELS, ACQUISITION_START_BASIS_LABELS } from '@/services/business-operations/tco/acquisition-start';
+import { TcoUsageDiagnostic } from './TcoUsageDiagnostic';
 
 export interface TcoDiagnosticResponse {
   accountId: number;
@@ -134,6 +135,9 @@ export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
       )}
 
       <DepartDiagnostic t={t} accountId={data.accountId} />
+
+      {/* Lot 108C : dépenses d'usage — complément estimé (même calcul que la fiche). */}
+      <TcoUsageDiagnostic t={t} />
 
       {(t.citedOnlyDocuments?.length ?? 0) > 0 && (
         <div className="rounded-lg border p-3 text-xs space-y-1" data-bo-tco-cited>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Lot 108G : droits de l'extension de partage — uniquement le groupe d'apps partagé
+     avec l'application (même valeur : $(VB_APP_GROUP), group.<identifiant de l'app>). -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(VB_APP_GROUP)</string>
+	</array>
+</dict>
+</plist>

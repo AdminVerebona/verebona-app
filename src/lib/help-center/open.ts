@@ -92,3 +92,33 @@ export function openHelpFromLink(
 export function helpRedirectTarget(pathname: string, search: string = ''): string {
   return helpPageUrl(helpPathFromAppHref(`${pathname}${search}`) ?? '/aide');
 }
+
+// ── Lot 108J : articles Ressources cités par l'assistant ─────────────────────
+
+/** Chemin d'un article Ressources : `/ressources/<slug>` (jamais un chemin du Centre d'aide). */
+export function isResourcePath(path: string): boolean {
+  return /^\/ressources\/[a-z0-9-]+$/.test(path);
+}
+
+/** Adresse publique d'un article Ressources sûr (`/ressources` à défaut). */
+export function resourcePageUrl(path: string): string {
+  return publicSiteUrl(isResourcePath(path) ? path : '/ressources');
+}
+
+/**
+ * Clic sur un lien vers un article Ressources (`/ressources/<slug>`, réponse
+ * de l'assistant) : ouvert dans un nouvel onglet du navigateur, sur le site
+ * public — comme le Centre d'aide, jamais dans l'application. Rend `true` si
+ * le clic est traité.
+ */
+export function openResourceFromLink(
+  e: { preventDefault(): void } | null | undefined,
+  href: string | null | undefined,
+): boolean {
+  const path = (href ?? '').split('#')[0].split('?')[0];
+  if (!isResourcePath(path)) return false;
+  e?.preventDefault();
+  if (typeof window !== 'undefined') window.open(resourcePageUrl(path), '_blank', 'noopener,noreferrer');
+  return true;
+}
+

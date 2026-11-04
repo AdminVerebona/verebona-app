@@ -24,21 +24,17 @@
 import { isAccountProcessingEligible } from '@/services/account/processing-eligibility';
 import { collectMascotData } from './collector';
 import { buildCandidates, openOverdueCount } from './signals';
-import { buildSecondaries, selectSubjects, withSuggestedQuestions } from './selector';
+import { buildSecondaries, selectSubjects } from './selector';
 import { buildPresentation, contextHashOf } from './presentation';
 import { buildT6Input } from './t6-contract';
 import {
   evaluateWithT6, formulateWithT6, logT6, t6EvaluationConfig, t6EvaluationDefaultDeps, t6EvaluationRecentlyFailed,
-  t6SuggestionCapabilities, t6SuggestionTraceOf, T6_BACKGROUND_NOTE, type T6Mode,
+  type T6Mode,
 } from './t6-runner';
-import type { MascotDiscoveryInvitation, MascotPresentation, MascotSecondary } from './types';
-import { dayIndexOf, discoveryContextOf, discoverySeedOf, readSuggestionSkips, rotateDiscovery } from './discovery';
-import type { T6HomeSuggestionDiagnostic, T6HomeSuggestionsTrace } from './t6-interpellation.service';
-import { composeSpeech, documentsInAnalysis, parisDay, tileFor } from './bubble';
+import type { MascotPresentation } from './types';
+import { documentsInAnalysis, parisDay, tileFor } from './bubble';
 import { MAX_TODO_ITEMS, buildTodoBlock } from './todo-items';
 import { readDuoInvite } from './duo-invite';
-import { loadT6SuggestionContext, suggestionAgendaOf, suggestionSecondaries, type T6SuggestionBundle } from './t6-suggestions';
-import { suggestionGroundsOf } from './t6-suggestion-grounds';
 import {
   T6_RUN_LOADERS, prepareT6Interpellation, t6EvaluationTraceOf, t6ThresholdDays, writeT6EvaluationReport, writeT6InterpellationReport,
   type T6EvaluationProgress, type T6Preparation,
@@ -84,15 +80,10 @@ export async function getMascotPresentation(
     console.error('[mascotte] source « invitation Duo » indisponible :', (e as Error).message);
     return null;
   });
-  // Lot 55A : le prompt T6 en service sait-il rédiger les questions (R12) ?
-  // Lot 87C (AC10) : … selon le contrat des questions FONDÉES (`t6-suggestions-v3`) ?
-  // Non (version BO ou fichier du dépôt antérieurs) : aucune question publiée.
-  // Lot 106B : … et les invitations de découverte (`t6-discovery-v1`) ? Sans
-  // elles, les invitations viennent du catalogue éditorial serveur (sans IA).
-  const capsP = t6SuggestionCapabilities();
-  const questionsP = capsP.then((c) => c.grounds);
-  // Lot 106B : suggestions passées par CET utilisateur (préférence personnelle, Duo : la sienne).
-  const skipsP = readSuggestionSkips(accountId, userId);
+  // Lot 108J : T6 formule la bulle SEULEMENT. Les suggestions (accueil et
+  // « Demander à Verebona ») viennent du service unique
+  // `src/services/suggestions/shared` : plus aucun contexte de questions ni
+  // d'invitations transmis à T6, aucun appel IA de génération de suggestions.
   try {
     raw = await collectMascotData(accountId);
   } catch (e) {
@@ -182,9 +173,8 @@ export async function getMascotPresentation(
   if (mode !== 'pregen' && interpellation.selectionBacklog) scheduleMascotPregeneration(accountId, PREGEN_DEBOUNCE_MS, 't6-selection');
   const candidates = buildCandidates(raw, { interpellation: { shown: interpellation.shown } });
   const subjects = selectSubjects(candidates.candidates);
-  // Lot 55A : actions secondaires seulement (onboarding, recommandations) —
-  // les questions « Ou demandez-moi » ne viennent plus du catalogue
-  // déterministe, mais de T6 (même appel que la bulle, ci-dessous).
+  // Lot 55A : actions secondaires seulement (onboarding, recommandations).
+  // Lot 108J : aucune question — les suggestions viennent du service unique.
   const baseSecondaries = buildSecondaries(candidates, subjects, []);
   // Lot 32 (MASC2) : « À traiter » = niveau 2 de la bulle, depuis la file.
   // Lot 49A (ticket 13) : « Inviter quelqu'un » passe EN PREMIER et compte
@@ -208,158 +198,36 @@ export async function getMascotPresentation(
     deadlinesDegraded: interpellation.degraded,
   };
   // Bulle telle qu'affichée sans reformulation (texte déterministe).
-  const secours0 = buildPresentation({ subjects, secondaries: baseSecondaries, messages: null, ...commun });
-  // Lot 106B : capacités du prompt, suggestions passées, rotation du jour.
-  const [caps, skips] = await Promise.all([capsP, skipsP]);
+  const secours = buildPresentation({ subjects, secondaries: baseSecondaries, messages: null, ...commun });
   const today = raw.today ?? parisDay();
-  const seed = discoverySeedOf(accountId, userId);
-  const day = dayIndexOf(today);
-  /**
-   * Invitations de découverte (lot 106B) : celles de T6 (validées) d'abord,
-   * puis le catalogue éditorial — compte éligible seulement (aucun traitement
-   * ajouté sur un compte inactif, suspendu ou en lecture seule).
-   */
-  const invitationsDe = (ai: readonly MascotDiscoveryInvitation[] | null | undefined): MascotDiscoveryInvitation[] | null =>
-    (t6Permis ? rotateDiscovery({ ai: ai ?? [], skipped: skips, seed, day }) : null);
-  const avecDecouverte = (p: MascotPresentation, inv: MascotDiscoveryInvitation[] | null): MascotPresentation =>
-    ({ ...p, discovery: inv ? { invitations: inv } : null });
-  const secours = avecDecouverte(secours0, invitationsDe(null));
-  const traceAccueil = (o: { diagnostic: T6HomeSuggestionDiagnostic; questions: number; invitations: MascotDiscoveryInvitation[] | null }): T6HomeSuggestionsTrace => {
-    const inv = o.invitations ?? [];
-    const ia = inv.filter((x) => x.origin === 'AI').length;
-    return {
-      diagnostic: o.diagnostic, promptGrounds: caps.grounds, promptDiscovery: caps.discovery, questions: o.questions,
-      invitations: inv.length, invitationSource: inv.length === 0 ? 'NONE' : ia === 0 ? 'CATALOG' : ia === inv.length ? 'AI' : 'MIXED',
-      skipped: skips.size,
-    };
-  };
-  const rapport = (
-    p: import('./types').MascotPresentation, status: string | null, promptVersion: string | null,
-    suggestions: import('./t6-interpellation.service').T6FormulateTrace['suggestions'] = null,
-    homeSuggestions: T6HomeSuggestionsTrace | null = null,
-  ) =>
+  const rapport = (p: MascotPresentation, status: string | null, promptVersion: string | null) =>
     void writeT6InterpellationReport({
       accountId, userId, mode, prep: interpellation,
       formulate: {
         promptVersion, contract: 't6-output-v2', transmitted: subjects.map((x) => x.subjectId),
         displayed: p.paragraphs.filter((x) => x.sourceCode !== 'CLEAR').map((x) => x.subjectId),
-        source: p.source, status, presentation: p.state?.kind ?? null, suggestions, homeSuggestions,
+        source: p.source, status, presentation: p.state?.kind ?? null, suggestions: null, homeSuggestions: null,
       },
     });
 
-  // Lot 55A : contexte des questions suggérées — le MESSAGE AFFICHÉ, l'état
-  // canonique du compte, ses biens et ses échéances. Données partielles
-  // (source en panne) : aucune question plutôt qu'une question trompeuse.
-  let questions: T6SuggestionBundle | null = null;
-  // Lot 81B (A) : formulation plafonnée — ni questions ni FORMULATE.
+  // Lot 81B (A) : formulation plafonnée — pas de FORMULATE.
   const formuler = opts.formulate !== false && t6Permis;
-  const questionsPermises = await questionsP;
-  if (formuler && !candidates.degraded && questionsPermises) {
-    const speech = composeSpeech({ presentation: secours, empty: false }).text;
-    const attentionToday = (secours.state?.actions ?? 0) > 0;
-    // Lot 60 / 61 : questions construites sur la SÉLECTION RETENUE — une
-    // échéance écartée après évaluation (décision T6 validée non retenue) ou
-    // mise en sourdine par l'utilisateur n'est pas proposée en question (elle
-    // reste consultable librement dans T2 : seule la suggestion automatique
-    // est retirée).
-    // Lot 72A (AC06) : les écartées ne sont jamais transmises ni citées ; les
-    // agrégats ne reposent que sur les éligibles ; les retenues sont signalées.
-    const sel = suggestionAgendaOf(raw.agenda ?? [], interpellation);
-    // Échéances lues pour T6 seulement (lointaines, anciennes) : jamais transmises, mais écartées = jamais citées.
-    const ecarteesT6 = suggestionAgendaOf(raw.t6Agenda ?? [], interpellation).excluded;
-    questions = await loadT6SuggestionContext(accountId, {
-      speech, attentionToday, agenda: raw.agenda ? sel.agenda : null, today,
-      excluded: [...sel.excluded, ...ecarteesT6], signaledIds: sel.signaledIds,
-      // Lot 87C : fondements canoniques DÉJÀ lus par la décision T6 du passage
-      // (preuves, décision conservée et fraîche, démarche établie ou non).
-      grounds: suggestionGroundsOf(interpellation),
-      // Lot 106B : invitations de découverte proposées à T6 si son prompt porte le contrat.
-      discovery: caps.discovery ? discoveryContextOf(seed, day) : null,
-    });
-  }
-  const diagnosticDe = (o: Parameters<typeof homeSuggestionDiagnosticOf>[0]['outcome'], questionsAffichees: number, questionsAcceptees: number) =>
-    homeSuggestionDiagnosticOf({
-      eligible: t6Permis, degraded: candidates.degraded, promptCompatible: questionsPermises, formulate: formuler,
-      contextRequested: !!questions, outcome: o, displayedQuestions: questionsAffichees, acceptedQuestions: questionsAcceptees,
-    });
-
-  // RUN-013 : rien à formuler ni à suggérer — pas de FORMULATE. Lot 71G :
-  // évaluation en cours de reprise (pré-génération) — la situation n'est pas
-  // stable, la formulation attend le passage qui l'achève (aucun appel inutile).
-  // Lot 87C : prompt sans le contrat des questions fondées — tracé comme tel.
-  const sansContrat = formuler && !candidates.degraded && !questionsPermises
-    ? { supported: false, contract: null, source: 'none' as const, produced: 0, accepted: 0, rejected: 0, invalidated: 0, reasons: {} }
-    : null;
-  if ((subjects.length === 0 && !questions) || reprise || !formuler) {
-    rapport(secours, null, null, sansContrat, traceAccueil({ diagnostic: diagnosticDe(reprise ? { status: 'fallback', error: T6_BACKGROUND_NOTE } : null, 0, 0), questions: 0, invitations: secours.discovery?.invitations ?? null }));
+  // RUN-013 : rien à formuler — pas de FORMULATE. Lot 71G : évaluation en
+  // cours de reprise (pré-génération) — la situation n'est pas stable, la
+  // formulation attend le passage qui l'achève (aucun appel inutile).
+  if (subjects.length === 0 || reprise || !formuler) {
+    rapport(secours, null, null);
     return withRefreshHint(secours, interpellation);
   }
 
   const input = buildT6Input(subjects);
   // Nature de la tuile de chaque sujet (pose graduée) : nuances R9 du master T6.
   const kinds = subjects.map((s) => tileFor(s, today, tiles).kind);
-  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds, suggestions: questions });
-  void logT6({
-    accountId, contextHash, mode, outcome, input, suggestionContext: questions?.context,
-    // Lot 87C : trace des questions (contrat, produites / acceptées / rejetées, motifs, fondements).
-    suggestionReport: t6SuggestionTraceOf(outcome, { requested: !!questions, promptSupported: questionsPermises }),
-  });
-  // Questions de la MÊME sortie que les textes : indisponibles → aucune.
-  // Zéro question est un résultat normal (jamais de complément ni de catalogue).
-  // Lot 106B : une question passée par l'utilisateur n'est pas réaffichée
-  // pendant son repos — filtrée ici, sans régénération ni appel IA.
-  const questionsT6 = suggestionSecondaries(outcome.suggestions ?? []);
-  const questionsVisibles = withoutSkippedQuestions(questionsT6, skips);
-  const secondaries = withSuggestedQuestions(baseSecondaries, subjects, questionsVisibles);
-  const invitations = invitationsDe(outcome.discovery ?? null);
-  const finale = avecDecouverte(buildPresentation({ subjects, secondaries, messages: outcome.messages, ...commun }), invitations);
-  const v = outcome.suggestionValidation ?? null;
-  const reasons: Record<string, number> = {};
-  for (const x of v?.rejected ?? []) reasons[x.reason] = (reasons[x.reason] ?? 0) + 1;
-  const diagnostic = diagnosticDe(
-    { status: outcome.status, error: outcome.error ?? null, produced: v?.produced ?? 0, accepted: (outcome.suggestions?.length ?? 0) + (outcome.discovery?.length ?? 0), invalidated: outcome.suggestionsInvalidated ?? 0 },
-    questionsVisibles.length, questionsT6.length,
-  );
-  rapport(finale, outcome.status, outcome.promptVersion, sansContrat ?? (questions ? {
-    supported: true, contract: questions.contract ?? null,
-    source: outcome.status === 'generated' ? 'generated' : outcome.status === 'cache_hit' ? 'cache' : 'none',
-    produced: v?.produced ?? 0, accepted: outcome.suggestions?.length ?? 0, rejected: v?.rejected.length ?? 0,
-    invalidated: outcome.suggestionsInvalidated ?? 0, reasons,
-  } : null), traceAccueil({ diagnostic, questions: questionsVisibles.length, invitations }));
-  return withRefreshHint(finale, interpellation, diagnostic === 'PENDING');
-}
-
-/** Lot 106B : questions T6 sans celles que l'utilisateur a passées (période de repos en cours). */
-export function withoutSkippedQuestions(list: readonly MascotSecondary[], skipped: ReadonlySet<string>): MascotSecondary[] {
-  return skipped.size === 0 ? [...list] : list.filter((s) => !skipped.has(s.occurrenceKey));
-}
-
-/**
- * Lot 106B — diagnostic EXPLICITE des suggestions de l'accueil (pur, testé) :
- * la première raison qui s'applique, dans l'ordre de la chaîne (éligibilité,
- * données, prompt, plafond, contexte, génération, cache, propositions,
- * validation, suggestions passées). Trace BO seulement, jamais affiché à
- * l'utilisateur.
- */
-export function homeSuggestionDiagnosticOf(p: {
-  eligible: boolean; degraded: boolean; promptCompatible: boolean; formulate: boolean; contextRequested: boolean;
-  outcome: { status: string; error?: string | null; produced?: number; accepted?: number; invalidated?: number } | null;
-  displayedQuestions: number; acceptedQuestions: number;
-}): T6HomeSuggestionDiagnostic {
-  if (!p.eligible) return 'NOT_ELIGIBLE';
-  if (p.degraded) return 'DATA_UNAVAILABLE';
-  if (!p.promptCompatible) return 'PROMPT_INCOMPATIBLE';
-  if (!p.formulate) return 'FORMULATION_CAPPED';
-  if (!p.contextRequested) return 'NO_ACCOUNT_CONTEXT';
-  const o = p.outcome;
-  if (!o) return 'NO_ACCOUNT_CONTEXT';
-  if (o.status === 'fallback' && o.error === T6_BACKGROUND_NOTE) return 'PENDING';
-  if (o.status !== 'generated' && o.status !== 'cache_hit') return 'AI_ERROR';
-  const acceptees = o.accepted ?? 0;
-  if (o.status === 'cache_hit' && (o.invalidated ?? 0) > 0 && acceptees === 0) return 'CACHE_STALE';
-  if (acceptees === 0) return (o.produced ?? 0) === 0 ? 'NO_PROPOSAL' : 'VALIDATION_REJECTED';
-  if (p.acceptedQuestions > 0 && p.displayedQuestions === 0) return 'ALL_SKIPPED';
-  return 'OK';
+  const outcome = await formulateWithT6({ accountId, input, contextHash, mode, kinds });
+  void logT6({ accountId, contextHash, mode, outcome, input });
+  const finale = buildPresentation({ subjects, secondaries: baseSecondaries, messages: outcome.messages, ...commun });
+  rapport(finale, outcome.status, outcome.promptVersion);
+  return withRefreshHint(finale, interpellation);
 }
 
 /** Bornes de l'actualisation ciblée. */
@@ -376,8 +244,6 @@ const MASCOT_ANALYSIS_REFRESH_MS = 60_000;
  */
 export function mascotRefreshHintMs(p: {
   evaluation: 'OK' | 'PENDING' | 'UNAVAILABLE'; progress: T6EvaluationProgress | null | undefined; analysing: boolean; now: Date;
-  /** Lot 106B : suggestions en cours de génération (arrière-plan) — une relecture les montre, depuis le cache. */
-  suggestionsPending?: boolean;
 }): number | null {
   const borne = (ms: number) => Math.min(MASCOT_REFRESH_HINT_MAX_MS, Math.max(MASCOT_REFRESH_HINT_MIN_MS, Math.round(ms)));
   const candidats: number[] = [];
@@ -388,15 +254,11 @@ export function mascotRefreshHintMs(p: {
     candidats.push(borne(attente + 60_000));
   }
   if (p.analysing) candidats.push(MASCOT_ANALYSIS_REFRESH_MS);
-  if (p.suggestionsPending) candidats.push(MASCOT_SUGGESTIONS_REFRESH_MS);
   return candidats.length ? Math.min(...candidats) : null;
 }
 
-/** Lot 106B : suggestions en génération d'arrière-plan — relecture (cache, aucun nouvel appel) après ce délai. */
-const MASCOT_SUGGESTIONS_REFRESH_MS = 20_000;
-
-function withRefreshHint(p: MascotPresentation, prep: T6Preparation, suggestionsPending = false): MascotPresentation {
-  const ms = mascotRefreshHintMs({ evaluation: prep.evaluation, progress: prep.evaluationProgress, analysing: documentsInAnalysis(p), now: new Date(), suggestionsPending });
+function withRefreshHint(p: MascotPresentation, prep: T6Preparation): MascotPresentation {
+  const ms = mascotRefreshHintMs({ evaluation: prep.evaluation, progress: prep.evaluationProgress, analysing: documentsInAnalysis(p), now: new Date() });
   return ms == null ? p : { ...p, refreshAfterMs: ms };
 }
 

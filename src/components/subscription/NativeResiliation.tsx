@@ -6,9 +6,10 @@
  * aucun tarif, aucun portail de paiement).
  *
  * Bouton « Résilier mon abonnement » → confirmation → `POST
- * /api/billing/stop-renewal` (fin de période, sans remboursement : ce n'est
- * pas une rétractation). Résiliation déjà programmée : rappel de la date de
- * fin. Rendu seulement dans l'app, pour le titulaire d'un abonnement payant
+ * /api/billing/stop-renewal` (non-renouvellement à la fin de la période en
+ * cours ; droits conservés jusqu'à cette date). Résiliation déjà programmée :
+ * rappel de la date de fin. Lot 108F : texte de la confirmation imposé par le
+ * PO (`lib/billing/resiliation-confirmation.ts`) — offre et date réelles. Rendu seulement dans l'app, pour le titulaire d'un abonnement payant
  * en cours (le Web garde le portail Verebona, lot 70B). Desktop et mobile
  * (boutons pleine largeur sous 640 px), charte Sérénité.
  */
@@ -20,21 +21,38 @@ import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { apiClient, ApiClientError } from '@/lib/api-client';
+import {
+  RESILIATION_CONFIRMATION, resiliationConfirmationLines, resiliationEndDate,
+} from '@/lib/billing/resiliation-confirmation';
 
-function dateLongue(iso: string | null | undefined): string | null {
-  if (!iso || Number.isNaN(Date.parse(iso))) return null;
-  return new Intl.DateTimeFormat('fr-FR', { timeZone: 'Europe/Paris', dateStyle: 'long' }).format(new Date(iso));
+/** Corps de la confirmation (lot 108F) : deux phrases, offre et date réelles. */
+export function ResiliationConfirmBody({ planCode, plan, periodEndAt }: {
+  planCode: string | null | undefined;
+  plan?: string | null;
+  periodEndAt: string | null | undefined;
+}) {
+  const [l1, l2] = resiliationConfirmationLines({ planCode, plan, periodEndAt });
+  return (
+    <div className="space-y-2 break-words text-sm text-[color:var(--text-muted)]" data-testid="native-resiliation-body">
+      <p>{l1}</p>
+      <p>{l2}</p>
+    </div>
+  );
 }
 
-export function NativeResiliation({ cancelAtPeriodEnd, periodEndAt, onDone }: {
+export function NativeResiliation({ cancelAtPeriodEnd, periodEndAt, planCode, plan, onDone }: {
   cancelAtPeriodEnd: boolean;
   periodEndAt: string | null;
+  /** Offre de l'abonnement résilié (`subscription.planCode`). */
+  planCode?: string | null;
+  /** Offre des droits, repli si `planCode` est absent. */
+  plan?: string | null;
   onDone?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [scheduledEnd, setScheduledEnd] = useState<string | null | undefined>(undefined);
-  const fin = dateLongue(scheduledEnd ?? periodEndAt);
+  const fin = resiliationEndDate(scheduledEnd ?? periodEndAt);
 
   if (cancelAtPeriodEnd || scheduledEnd !== undefined) {
     return (
@@ -66,26 +84,22 @@ export function NativeResiliation({ cancelAtPeriodEnd, periodEndAt, onDone }: {
         Résilier mon abonnement
       </Button>
       <AlertDialog open={open} onOpenChange={(o) => { if (!busy) setOpen(o); }}>
-        <AlertDialogContent className="max-w-md">
+        {/* 320 px : marge de 1 rem de chaque côté (avant 108F, `max-w-md`
+            écrasait le `max-w-[calc(100%-2rem)]` du composant), boutons
+            pleine largeur empilés, libellés autorisés à passer à la ligne,
+            défilement interne si la hauteur manque (texte agrandi, paysage). */}
+        <AlertDialogContent className="max-w-[calc(100%-2rem)] sm:max-w-md max-h-[calc(100dvh-2rem)] overflow-y-auto" data-testid="native-resiliation-dialog">
           <AlertDialogHeader>
-            <AlertDialogTitle>Résilier votre abonnement ?</AlertDialogTitle>
+            <AlertDialogTitle>{RESILIATION_CONFIRMATION.title}</AlertDialogTitle>
             <AlertDialogDescription asChild>
-              <div className="space-y-2 text-sm text-[color:var(--text-muted)]">
-                <p>
-                  Votre abonnement ne sera pas renouvelé. Vous gardez votre offre {fin ? `jusqu’au ${fin}` : 'jusqu’à la fin de la période en cours'} ;
-                  vos biens et documents restent conservés.
-                </p>
-                <p>
-                  Ce n’est pas une rétractation : la période en cours n’est pas remboursée.
-                </p>
-              </div>
+              <ResiliationConfirmBody planCode={planCode} plan={plan} periodEndAt={periodEndAt} />
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter className="flex-col gap-2 sm:flex-row">
-            <AlertDialogCancel disabled={busy}>Garder mon abonnement</AlertDialogCancel>
-            <Button onClick={confirmer} disabled={busy} className="w-full sm:w-auto">
+            <AlertDialogCancel disabled={busy} className="h-auto min-h-9 w-full whitespace-normal sm:w-auto">{RESILIATION_CONFIRMATION.cancel}</AlertDialogCancel>
+            <Button onClick={confirmer} disabled={busy} className="h-auto min-h-9 w-full whitespace-normal sm:w-auto">
               {busy ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Confirmer la résiliation
+              {RESILIATION_CONFIRMATION.confirm}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

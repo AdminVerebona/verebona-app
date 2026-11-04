@@ -425,6 +425,8 @@ export async function runSourceAnalysis(
         operationCandidates: master.operationCandidates,
         // Lot 91D : décisions T1 sur les valeurs significatives (contrat porté seulement), même transaction.
         ...(master.valueDecisions ? { valueDecisions: master.valueDecisions } : {}),
+        // Lot 108K (§C) : conformité de la sortie au contrat (consignée dans metadata.valueDecisionsOutput).
+        ...(master.valueDecisionsOutput ? { valueDecisionsOutput: master.valueDecisionsOutput } : {}),
       });
       rec.knowledge = knowledge;
       await persistDocumentKnowledgeDetailed(knowledge).then((k) => {

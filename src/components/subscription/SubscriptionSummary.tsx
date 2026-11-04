@@ -278,6 +278,8 @@ export function SubscriptionSummary() {
         <NativeResiliation
           cancelAtPeriodEnd={data.subscription.cancelAtPeriodEnd}
           periodEndAt={data.subscription.currentPeriodEndAt}
+          planCode={data.subscription.planCode}
+          plan={data.plan}
           onDone={() => { void refresh(); }}
         />
       )}

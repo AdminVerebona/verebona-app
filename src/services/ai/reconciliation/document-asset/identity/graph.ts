@@ -38,24 +38,45 @@
  * 4. PORTÉE PAR DOCUMENT : le groupe ne remplace pas la preuve de chaque
  *    document — seul un membre (identité propre ou contrat à un saut) peut
  *    être rattaché ; les exclus restent à leur traitement individuel.
+ *
+ * Lot 108E (ticket « T3 DOCUMENT_ASSET — correctif #626 bis ») :
+ *   · A2 — groupes d'ÉQUIPEMENT / objet : même numéro de série ou IMEI lu par
+ *     chaque document mono-appareil (facture + garantie d'un même appareil) ;
+ *     confrontés aux fiches d'équipement PERSISTÉES (série, bien porteur) et
+ *     aux documents déjà rattachés : DEMONSTRABLE (un seul bien porte
+ *     l'équipement — relation document → équipement → bien), ATTESTED,
+ *     AMBIGUOUS, NO_CANDIDATE ; jamais TO_CONFIRM (aucune carte groupée : une
+ *     marque, un modèle, un fournisseur ne désignent jamais un objet). Un
+ *     document à plusieurs séries (facture multilignes) n'est membre d'AUCUN
+ *     groupe d'équipement (MULTI_ARTICLE_DOCUMENT) ;
+ *   · A1 — relation persistée à un même ÉVÉNEMENT DE RÉFÉRENCE (autorité
+ *     forte) : un seul saut, comme le contrat ; plusieurs appartenances par
+ *     document (logement ET appareil), toutes cohérentes pour décider.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'node:crypto';
 import { normalizePlate, normalizeVin } from '@/lib/vehicle-identifiers';
 import { normalizeCode, normalizeText } from '../identifiers';
-import type { IndexedAsset } from '../matching-index';
-import { addressKey, assetIdentitySignals, IDENTITY_SIGNALS_VERSION, isEquipmentDocument, type DocumentIdentityProfile, type IdentitySignal } from './signals';
+import type { IndexedAsset, IndexedEntity } from '../matching-index';
+import {
+  addressKey, assetIdentitySignals, equipmentIdentitySignals, IDENTITY_SIGNALS_VERSION, isEquipmentDocument, serialKeyOf,
+  type DocumentIdentityProfile, type IdentitySignal,
+} from './signals';
 
 /** Version des règles de groupe et de confrontation (empreintes, mémoire des décisions). */
-export const IDENTITY_GRAPH_VERSION = 1;
+export const IDENTITY_GRAPH_VERSION = 2;
 /** Une carte groupée n'est proposée qu'à partir de ce nombre de documents sans bien (sinon : carte individuelle). */
 export const GROUP_CARD_MIN_DOCUMENTS = 2;
 
-export type GroupFamily = 'PROPERTY' | 'VEHICLE';
+export type GroupFamily = 'PROPERTY' | 'VEHICLE' | 'EQUIPMENT';
 export type GroupStatus = 'DEMONSTRABLE' | 'ATTESTED' | 'CONFIRMED' | 'TO_CONFIRM' | 'REFUSED' | 'AMBIGUOUS' | 'NO_CANDIDATE';
 export type ExclusionReason =
   | 'ADDRESS_ROLE_BILLING' | 'ADDRESS_ROLE_DELIVERY' | 'ADDRESS_ROLE_SUPPLIER' | 'ADDRESS_ROLE_INTERVENTION' | 'ADDRESS_ROLE_UNKNOWN'
-  | 'MULTI_ASSET_DOCUMENT' | 'CONTRADICTORY_DOCUMENT' | 'EQUIPMENT_DOCUMENT' | 'CONTRACT_SPANS_SEVERAL_IDENTITIES' | 'UNCERTAIN_READING';
+  | 'MULTI_ASSET_DOCUMENT' | 'CONTRADICTORY_DOCUMENT' | 'EQUIPMENT_DOCUMENT' | 'CONTRACT_SPANS_SEVERAL_IDENTITIES' | 'UNCERTAIN_READING'
+  /** Lot 108E : facture multilignes (plusieurs appareils) — jamais membre d'un groupe d'équipement. */
+  | 'MULTI_ARTICLE_DOCUMENT'
+  /** Lot 108E : relation à un événement de référence qui touche plusieurs identités. */
+  | 'OPERATION_SPANS_SEVERAL_IDENTITIES';
 
 export interface GraphDocument {
   profile: DocumentIdentityProfile;
@@ -76,7 +97,7 @@ export interface GraphDecision {
 
 export interface GroupMember {
   fileId: number;
-  via: 'OWN_IDENTITY' | 'CONTRACT';
+  via: 'OWN_IDENTITY' | 'CONTRACT' | 'OPERATION';
   /** Signaux (références `<fileId>:<n>`) qui fondent l'appartenance. */
   evidenceRefs: string[];
   /** Saut contractuel : document porteur de l'identité. */
@@ -86,7 +107,7 @@ export interface GroupMember {
 export interface GroupEdge {
   fromFileId: number;
   toFileId: number;
-  via: 'SAME_IDENTITY' | 'SAME_CONTRACT';
+  via: 'SAME_IDENTITY' | 'SAME_CONTRACT' | 'SAME_OPERATION';
   /** Nature de la valeur partagée (ADDRESS, CADASTRAL, CONTRACT_REF…). */
   kind: string;
   evidenceRefs: [string, string];
@@ -114,6 +135,8 @@ export interface IdentityGroup {
   decisionIds: number[];
   /** Carte groupée utile (TO_CONFIRM, au moins `GROUP_CARD_MIN_DOCUMENTS` documents sans bien). */
   cardEligible: boolean;
+  /** Lot 108E : fiches d'équipement qui portent l'identité (groupe EQUIPMENT). */
+  equipmentIds?: number[];
   fingerprint: string;
 }
 
@@ -141,6 +164,10 @@ export interface AccountIdentityGraph {
    * jamais une preuve de rattachement à ces biens (§D1).
    */
   contextOnlyAssets: Map<number, number[]>;
+  /** Lot 108E : documents qui portent une identité d'appareil (série, IMEI, modèle) — projection prudente. */
+  equipmentDocuments?: Set<number>;
+  /** Lot 108E : couverture des sources T1 par document (journal T3, diagnostic). */
+  coverage?: Map<number, unknown>;
 }
 
 const sha = (v: unknown, n = 32) => createHash('sha256').update(typeof v === 'string' ? v : JSON.stringify(v)).digest('hex').slice(0, n);
@@ -179,10 +206,21 @@ export function assetIdentityKeys(a: Pick<IndexedAsset, 'family' | 'record'>): s
 /** Le bien porte-t-il déjà une identité de cette famille (adresse / cadastre, immatriculation / VIN) ? */
 function assetHasIdentity(a: Pick<IndexedAsset, 'family' | 'record'>, family: GroupFamily): boolean {
   const v = a.record.values;
+  if (family === 'EQUIPMENT') return true;
   return family === 'PROPERTY' ? !!(v.address1?.trim() || v.cadastralRef?.trim()) : !!(v.registrationNumber?.trim() || v.vin?.trim());
 }
 
-const compatible = (a: Pick<IndexedAsset, 'family'>, family: GroupFamily) => (family === 'PROPERTY' ? a.family === 'IMMOBILIER' : a.family === 'VEHICULE');
+/** Un appareil peut appartenir à tout bien (logement, véhicule, objet) : seule la fiche d'équipement le relie. */
+const compatible = (a: Pick<IndexedAsset, 'family'>, family: GroupFamily) => (family === 'EQUIPMENT' ? true : family === 'PROPERTY' ? a.family === 'IMMOBILIER' : a.family === 'VEHICULE');
+
+/** Clés d'identité d'OBJET d'une fiche d'équipement (série / IMEI — même normalisation que les documents). Pure. */
+export function entityIdentityKeys(e: Pick<IndexedEntity, 'serial'>): string[] {
+  const k = serialKeyOf(e.serial);
+  if (!k) return [];
+  const out = [identityKeyOf({ family: 'EQUIPMENT', kind: 'SERIAL', key: k })];
+  if (/^\d{15}$/.test(k)) out.push(identityKeyOf({ family: 'EQUIPMENT', kind: 'IMEI', key: k }));
+  return out;
+}
 
 const ROLE_EXCLUSION: Readonly<Record<string, ExclusionReason>> = {
   BILLING: 'ADDRESS_ROLE_BILLING', DELIVERY: 'ADDRESS_ROLE_DELIVERY', SUPPLIER: 'ADDRESS_ROLE_SUPPLIER',
@@ -193,6 +231,14 @@ const ROLE_EXCLUSION: Readonly<Record<string, ExclusionReason>> = {
 function monoBien(p: DocumentIdentityProfile): boolean {
   return !p.multiAssetDeclared && p.contradictions.length === 0;
 }
+
+/** Lot 108E : le document désigne-t-il UN seul appareil (membre possible d'un groupe d'équipement) ? */
+function monoAppareil(p: DocumentIdentityProfile): boolean {
+  return !p.multiAssetDeclared && (p.equipmentContradictions ?? []).length === 0;
+}
+
+/** Document éligible à l'appartenance automatique pour cette famille. */
+const eligible = (p: DocumentIdentityProfile, family: GroupFamily) => (family === 'EQUIPMENT' ? monoAppareil(p) : monoBien(p));
 
 class UnionFind {
   private readonly parent = new Map<string, string>();
@@ -219,20 +265,27 @@ export function buildIdentityGraph(p: {
   documents: readonly GraphDocument[];
   assets: readonly IndexedAsset[];
   decisions?: readonly GraphDecision[];
+  /** Lot 108E : fiches d'équipement / Pièces du compte (index). */
+  entities?: readonly IndexedEntity[];
 }): AccountIdentityGraph {
   const docs = [...p.documents].sort((a, b) => a.profile.fileId - b.profile.fileId);
   const byFile = new Map(docs.map((d) => [d.profile.fileId, d]));
   const assets = new Map(p.assets.map((a) => [a.assetId, a]));
   const uf = new UnionFind();
 
-  // ── 1. Identités de bien par document ; union des clés d'un document MONO-BIEN.
+  // ── 1. Identités de bien (et, lot 108E, d'objet) par document ; union des clés d'une MÊME famille
+  //       dans un document éligible (mono-bien / mono-appareil) — jamais un logement uni à un appareil.
   const idsOf = new Map<number, IdentitySignal[]>();
   for (const d of docs) {
-    const s = assetIdentitySignals(d.profile);
-    idsOf.set(d.profile.fileId, s);
-    const cles = [...new Set(s.map(identityKeyOf))];
-    for (const k of cles) uf.find(k);
-    if (monoBien(d.profile)) for (let i = 1; i < cles.length; i += 1) uf.union(cles[0], cles[i]);
+    const bien = assetIdentitySignals(d.profile);
+    const objet = equipmentIdentitySignals(d.profile);
+    idsOf.set(d.profile.fileId, [...bien, ...objet]);
+    for (const [s, fam] of [[bien, 'ASSET'], [objet, 'EQUIPMENT']] as const) {
+      const cles = [...new Set(s.map(identityKeyOf))];
+      for (const k of cles) uf.find(k);
+      const ok = fam === 'EQUIPMENT' ? monoAppareil(d.profile) : monoBien(d.profile);
+      if (ok) for (let i = 1; i < cles.length; i += 1) uf.union(cles[0], cles[i]);
+    }
   }
 
   // ── 2. Composantes : documents qui portent une identité de la composante.
@@ -255,32 +308,45 @@ export function buildIdentityGraph(p: {
   const composantesDe = new Map<number, Set<string>>();
   for (const dr of drafts.values()) for (const f of dr.own.keys()) (composantesDe.get(f) ?? composantesDe.set(f, new Set()).get(f)!).add(dr.root);
 
-  // ── 3. Saut contractuel unique : référence → composantes des porteurs d'identité.
+  // ── 3. Saut UNIQUE : référence de contrat (familles « bien »), ou — lot 108E — même
+  //       événement de référence persisté (toutes familles) → composantes des porteurs d'identité.
+  const familleDe = new Map([...drafts.values()].map((dr) => [dr.root, dr.family]));
+  const hopFamily = (s: IdentitySignal) => (s.family === 'CONTRACT' ? 'CONTRACT' as const : s.family === 'RELATION' ? 'OPERATION' as const : null);
   const refs = new Map<string, Array<{ fileId: number; ref: string }>>();
   for (const d of docs) {
-    for (const s of d.profile.signals.filter((x) => x.family === 'CONTRACT' && x.reliability !== 'LOW')) {
-      const l = refs.get(s.key) ?? [];
+    for (const s of d.profile.signals.filter((x) => hopFamily(x) && x.reliability !== 'LOW')) {
+      const cle = `${s.family}|${s.key}`;
+      const l = refs.get(cle) ?? [];
       l.push({ fileId: d.profile.fileId, ref: s.ref });
-      refs.set(s.key, l);
+      refs.set(cle, l);
     }
   }
-  const sauts = new Map<number, { root: string; from: number; refs: [string, string]; kind: string } | 'SPANS'>();
+  type Saut = { root: string; from: number; refs: [string, string]; kind: string; via: 'CONTRACT' | 'OPERATION' };
+  const sauts = new Map<number, Saut | 'SPANS' | 'SPANS_OPERATION'>();
   for (const d of docs) {
-    if (!d.orphan || !monoBien(d.profile) || (idsOf.get(d.profile.fileId)?.length ?? 0) > 0) continue;
-    const roots = new Map<string, { from: number; refs: [string, string]; kind: string }>();
-    for (const s of d.profile.signals.filter((x) => x.family === 'CONTRACT' && x.reliability !== 'LOW')) {
-      for (const autre of refs.get(s.key) ?? []) {
+    if (!d.orphan || !monoBien(d.profile)) continue;
+    // Un document qui porte LUI-MÊME une identité de la famille n'y entre jamais par un saut.
+    const propres = new Set((idsOf.get(d.profile.fileId) ?? []).map((x) => (x.family === 'EQUIPMENT' ? 'EQUIPMENT' : 'ASSET')));
+    if (propres.has('ASSET') && propres.has('EQUIPMENT')) continue;
+    const roots = new Map<string, Omit<Saut, 'root'>>();
+    for (const s of d.profile.signals.filter((x) => hopFamily(x) && x.reliability !== 'LOW')) {
+      const via = hopFamily(s)!;
+      for (const autre of refs.get(`${s.family}|${s.key}`) ?? []) {
         if (autre.fileId === d.profile.fileId) continue;
         const porteur = byFile.get(autre.fileId)!;
-        if (!monoBien(porteur.profile)) continue;
         for (const root of composantesDe.get(autre.fileId) ?? []) {
+          const fam = familleDe.get(root)!;
+          // Contrat : familles « bien » seulement (lot 105D, inchangé) ; événement de référence : toutes.
+          if (via === 'CONTRACT' && fam === 'EQUIPMENT') continue;
+          if (propres.has(fam === 'EQUIPMENT' ? 'EQUIPMENT' : 'ASSET')) continue;
+          if (!eligible(porteur.profile, fam)) continue;
           const prev = roots.get(root);
-          if (!prev || autre.fileId < prev.from) roots.set(root, { from: autre.fileId, refs: [s.ref, autre.ref], kind: s.kind });
+          if (!prev || autre.fileId < prev.from) roots.set(root, { from: autre.fileId, refs: [s.ref, autre.ref], kind: s.kind, via });
         }
       }
     }
     if (roots.size === 1) { const [[root, v]] = [...roots]; sauts.set(d.profile.fileId, { root, ...v }); }
-    else if (roots.size > 1) sauts.set(d.profile.fileId, 'SPANS');
+    else if (roots.size > 1) sauts.set(d.profile.fileId, [...roots.values()].some((x) => x.via === 'OPERATION') ? 'SPANS_OPERATION' : 'SPANS');
   }
 
   const decisions = p.decisions ?? [];
@@ -305,7 +371,13 @@ export function buildIdentityGraph(p: {
     for (const [fileId, sigs] of [...dr.own].sort((a, b) => a[0] - b[0])) {
       const d = byFile.get(fileId)!;
       evidence.push(...sigs);
-      if (!monoBien(d.profile)) {
+      if (!eligible(d.profile, dr.family)) {
+        if (dr.family === 'EQUIPMENT' && !d.profile.multiAssetDeclared) {
+          // Lot 108E (A2) : facture multilignes — jamais affectée entière à un appareil du groupe.
+          exclure(fileId, 'MULTI_ARTICLE_DOCUMENT');
+          contradictions.push({ code: 'MULTIPLE_EQUIPMENT_IDENTITIES', fileIds: [fileId] });
+          continue;
+        }
         exclure(fileId, d.profile.multiAssetDeclared || d.profile.contradictions.some((c) => c.startsWith('MULTIPLE')) ? 'MULTI_ASSET_DOCUMENT' : 'CONTRADICTORY_DOCUMENT');
         if (d.profile.contradictions.length) contradictions.push({ code: d.profile.contradictions[0], fileIds: [fileId] });
         continue;
@@ -314,7 +386,7 @@ export function buildIdentityGraph(p: {
       else if (d.primaryAssetIds.length) anchors.push({ fileId, assetIds: [...d.primaryAssetIds].sort((a, b) => a - b) });
     }
     // Arêtes SAME_IDENTITY (provenance : premier signal de chaque document, par clé).
-    const porteurs = [...dr.own.entries()].filter(([f]) => monoBien(byFile.get(f)!.profile)).sort((a, b) => a[0] - b[0]);
+    const porteurs = [...dr.own.entries()].filter(([f]) => eligible(byFile.get(f)!.profile, dr.family)).sort((a, b) => a[0] - b[0]);
     for (let i = 0; i < porteurs.length; i += 1) {
       for (let j = i + 1; j < porteurs.length; j += 1) {
         const commun = porteurs[i][1].find((s) => porteurs[j][1].some((t) => identityKeyOf(t) === identityKeyOf(s)));
@@ -324,16 +396,17 @@ export function buildIdentityGraph(p: {
         }
       }
     }
-    // Membres par contrat (un saut).
+    // Membres par contrat ou par événement de référence (un saut).
     for (const [fileId, saut] of sauts) {
-      if (saut === 'SPANS') {
+      if (saut === 'SPANS' || saut === 'SPANS_OPERATION') {
         const touche = [...refs.values()].some((l) => l.some((x) => x.fileId === fileId) && l.some((x) => composantesDe.get(x.fileId)?.has(dr.root)));
-        if (touche) { exclure(fileId, 'CONTRACT_SPANS_SEVERAL_IDENTITIES'); contradictions.push({ code: 'CONTRACT_SPANS_SEVERAL_IDENTITIES', fileIds: [fileId] }); }
+        const code = saut === 'SPANS' ? 'CONTRACT_SPANS_SEVERAL_IDENTITIES' as const : 'OPERATION_SPANS_SEVERAL_IDENTITIES' as const;
+        if (touche) { exclure(fileId, code); contradictions.push({ code, fileIds: [fileId] }); }
         continue;
       }
       if (saut.root !== dr.root) continue;
-      members.push({ fileId, via: 'CONTRACT', evidenceRefs: [saut.refs[0]], hopFromFileId: saut.from });
-      edges.push({ fromFileId: saut.from, toFileId: fileId, via: 'SAME_CONTRACT', kind: saut.kind, evidenceRefs: [saut.refs[1], saut.refs[0]] });
+      members.push({ fileId, via: saut.via, evidenceRefs: [saut.refs[0]], hopFromFileId: saut.from });
+      edges.push({ fromFileId: saut.from, toFileId: fileId, via: saut.via === 'CONTRACT' ? 'SAME_CONTRACT' : 'SAME_OPERATION', kind: saut.kind, evidenceRefs: [saut.refs[1], saut.refs[0]] });
       const s = byFile.get(fileId)!.profile.signals.find((x) => x.ref === saut.refs[0]);
       if (s) evidence.push(s);
     }
@@ -352,7 +425,13 @@ export function buildIdentityGraph(p: {
 
     // ── Confrontation aux biens actuels.
     const vivants = [...assets.values()];
-    const forts = vivants.filter((a) => assetIdentityKeys(a).some((k) => dr.keys.has(k))).map((a) => a.assetId).sort((a, b) => a - b);
+    // Lot 108E (A2) : un appareil n'est relié à un bien QUE par sa fiche d'équipement persistée (série / IMEI, bien porteur).
+    const fiches = dr.family === 'EQUIPMENT'
+      ? (p.entities ?? []).filter((e) => e.type === 'EQUIPMENT' && assets.has(e.assetId) && entityIdentityKeys(e).some((k) => dr.keys.has(k)))
+      : [];
+    const forts = dr.family === 'EQUIPMENT'
+      ? [...new Set(fiches.map((e) => e.assetId))].sort((a, b) => a - b)
+      : vivants.filter((a) => assetIdentityKeys(a).some((k) => dr.keys.has(k))).map((a) => a.assetId).sort((a, b) => a - b);
     const atteste = new Set<number>();
     for (const an of anchors) {
       for (const id of an.assetIds) {
@@ -377,6 +456,9 @@ export function buildIdentityGraph(p: {
       status = 'AMBIGUOUS'; contradictions.push({ code: 'ANCHORS_DISAGREE', fileIds: anchors.map((x) => x.fileId), assetIds: [...atteste].sort((a, b) => a - b) });
     } else if (atteste.size === 1) {
       status = 'ATTESTED'; target = [...atteste][0];
+    } else if (dr.family === 'EQUIPMENT') {
+      // Aucune fiche d'équipement ni document rattaché ne porte cet appareil : jamais de question groupée.
+      status = 'NO_CANDIDATE';
     } else if (confirmes.length > 0) {
       const ids = [...new Set(confirmes.map((x) => x.assetId))];
       const a = ids.length === 1 ? assets.get(ids[0])! : null;
@@ -398,13 +480,14 @@ export function buildIdentityGraph(p: {
       members: membresTries, anchors, excluded: excluded.sort((a, b) => a.fileId - b.fileId), edges, evidence, contradictions,
       status, targetAssetId: target, candidateAssetIds: candidates, refusedAssetIds,
       decisionIds: actives.map((x) => x.id).sort((a, b) => a - b),
-      cardEligible: status === 'TO_CONFIRM' && membresTries.length >= GROUP_CARD_MIN_DOCUMENTS,
+      cardEligible: dr.family !== 'EQUIPMENT' && status === 'TO_CONFIRM' && membresTries.length >= GROUP_CARD_MIN_DOCUMENTS,
+      ...(dr.family === 'EQUIPMENT' ? { equipmentIds: fiches.map((e) => e.id).sort((a, b) => a - b) } : {}),
       fingerprint: '',
     };
     g.fingerprint = sha({
       v: [IDENTITY_SIGNALS_VERSION, IDENTITY_GRAPH_VERSION], k: keys, f: g.family,
       m: g.members.map((m) => [m.fileId, m.via, m.hopFromFileId]), a: g.anchors, x: g.excluded,
-      s: g.status, t: g.targetAssetId, c: g.candidateAssetIds, r: g.refusedAssetIds, d: g.decisionIds,
+      s: g.status, t: g.targetAssetId, c: g.candidateAssetIds, r: g.refusedAssetIds, d: g.decisionIds, e: g.equipmentIds ?? null,
     });
     groups.push(g);
     for (const m of g.members) (membership.get(m.fileId) ?? membership.set(m.fileId, []).get(m.fileId)!).push({ groupKey, member: m });
@@ -432,6 +515,7 @@ export function buildIdentityGraph(p: {
   return {
     accountId: p.accountId, version: IDENTITY_GRAPH_VERSION, groups, byKey: new Map(groups.map((g) => [g.groupKey, g])), membership, exclusions,
     contextOnlyAssets,
+    equipmentDocuments: new Set(docs.filter((d) => isEquipmentDocument(d.profile)).map((d) => d.profile.fileId)),
     examined: { orphans: docs.filter((d) => d.orphan).length, anchors: docs.filter((d) => !d.orphan).length },
     documents: new Map(docs.map((d) => [d.profile.fileId, { title: d.profile.title, documentType: d.profile.documentType, supplier: d.profile.supplier }])),
   };
@@ -448,7 +532,21 @@ function labelOf(family: GroupFamily, evidence: readonly IdentitySignal[]): stri
   const imm = tri.find((s) => s.kind === 'REGISTRATION');
   if (imm) return imm.display;
   const vin = tri.find((s) => s.kind === 'VIN');
-  return vin ? `VIN ${vin.display}` : 'identité documentaire';
+  if (vin) return `VIN ${vin.display}`;
+  const serie = tri.find((s) => s.kind === 'SERIAL');
+  if (serie) return `appareil n° de série ${serie.display}`;
+  const imei = tri.find((s) => s.kind === 'IMEI');
+  return imei ? `appareil IMEI ${imei.display}` : 'identité documentaire';
+}
+
+/** Lot 108E : TOUTES les appartenances d'un document (logement ET appareil…), ordre stable. Pure. */
+export function membershipsOf(graph: Pick<AccountIdentityGraph, 'membership' | 'byKey'> | null | undefined, fileId: number): Array<{ group: IdentityGroup; member: GroupMember }> {
+  const out: Array<{ group: IdentityGroup; member: GroupMember }> = [];
+  for (const m of graph?.membership.get(fileId) ?? []) {
+    const group = graph!.byKey.get(m.groupKey);
+    if (group) out.push({ group, member: m.member });
+  }
+  return out;
 }
 
 /** Appartenance d'un document (premier groupe, ordre stable). Pure. */
@@ -467,14 +565,18 @@ export function membershipOf(graph: Pick<AccountIdentityGraph, 'membership' | 'b
  */
 export function documentIdentityFingerprint(graph: AccountIdentityGraph | null | undefined, fileId: number): string | null {
   if (!graph) return null;
-  const m = membershipOf(graph, fileId);
+  const ms = membershipsOf(graph, fileId);
   const ex = graph.exclusions.get(fileId) ?? [];
   const hors = graph.contextOnlyAssets?.get(fileId) ?? [];
-  if (!m && ex.length === 0 && hors.length === 0) return null;
+  if (ms.length === 0 && ex.length === 0 && hors.length === 0) return null;
+  const ligne = (m: { group: IdentityGroup; member: GroupMember }) => [m.group.groupKey, m.group.status, m.group.targetAssetId, m.group.candidateAssetIds,
+    m.group.refusedAssetIds, m.group.decisionIds, m.member.via, m.group.cardEligible];
   return sha({
     v: IDENTITY_GRAPH_VERSION,
     ...(hors.length ? { h: hors } : {}),
-    m: m ? [m.group.groupKey, m.group.status, m.group.targetAssetId, m.group.candidateAssetIds, m.group.refusedAssetIds, m.group.decisionIds, m.member.via, m.group.cardEligible] : null,
+    m: ms[0] ? ligne(ms[0]) : null,
+    // Lot 108E : appartenances suivantes (appareil…) — absentes : empreinte d'un seul groupe inchangée dans sa forme.
+    ...(ms.length > 1 ? { mm: ms.slice(1).map(ligne) } : {}),
     x: ex.map((e) => [e.groupKey, e.reason]),
   });
 }

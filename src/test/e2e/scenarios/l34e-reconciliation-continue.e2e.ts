@@ -187,6 +187,9 @@ scenario('L34E', 'Réconciliation T3 continue : révision de connaissance, Candi
     expect(await cartes(a.id)).toHaveLength(1);
     // Phase « open actions » : réexamen réel, empreinte identique. Lot 57B (ticket P0, défaut B) :
     // aucun candidat STRUCTURÉ → recherche sémantique IA (une) ; le modèle s'abstient → NO_CANDIDATE.
+    // Lot 108E (A6) : la recherche sémantique de l'analyse reçoit désormais une vraie réponse « aucun bien » (harnais e2e)
+    // au lieu d'une panne implicite ; état de départ du scénario inchangé : aucune décision du modèle mémorisée.
+    await sql`UPDATE document_asset_resolutions SET last_evaluation = last_evaluation - 'aiMemory' WHERE file_id IN (${a.id}, ${c.id})`;
     const semantique = await rejouer([{ operationCode: 't3_link_ambiguity', task: 'LINK_AMBIGUITY', output: { task: 'LINK_AMBIGUITY', matches: [] }, repeat: true }]);
     const { reconcileOpenToProcessActions } = await import('@/services/ai/reconciliation/continuous/open-actions.service');
     await reconcileOpenToProcessActions(compte.id);

@@ -235,6 +235,8 @@ scenario('L81A', 'À traiter — faux arbitrages entre valeurs identiques', ({ s
     const [apres] = await cartes(m);
     expect(apres).toMatchObject({ id: vraie.id, resolved_at: null });
     expect(apres.proposals_json).toEqual(vraie.proposals_json);
-    expect(await sql`SELECT 1 FROM coherence_repairs WHERE account_id = ${c.id}`).toEqual([]);
+    // Lot 108B : la facture de test n'a pas de montant → COH-TCO-AMOUNT-RECOVERY relance T1 (sans rapport
+    // avec l'arbitrage) ; aucune AUTRE réparation ne doit toucher la carte ni le compte.
+    expect(await sql`SELECT 1 FROM coherence_repairs WHERE account_id = ${c.id} AND check_id <> 'COH-TCO-AMOUNT-RECOVERY'`).toEqual([]);
   });
 });

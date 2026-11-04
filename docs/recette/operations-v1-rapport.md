@@ -116,7 +116,7 @@ Scénarios financiers FIN-A à FIN-H : `src/services/business-operations/finance
 
 1. Compte Premium de recette, un véhicule : déposer une facture d'achat, une facture d'entretien, un avoir, un relevé d'intérêts de prêt ; saisir un sinistre avec indemnité ; ajouter une valorisation datée. Attendre l'analyse.
 2. Fiche du bien › Informations › section Valorisation › **Coût de possession** (desktop puis mobile) : coût cumulé, valeur actuelle, coût net estimé, détail par poste, réductions / indemnités, « Fiabilité » (justificatifs ouvrables, montants exclus).
-3. Ajouter un forfait carburant : il apparaît dans « Budget d'usage », jamais dans le coût cumulé. Le modifier puis le supprimer.
+3. ~~Ajouter un forfait carburant : il apparaît dans « Budget d'usage », jamais dans le coût cumulé.~~ **Règle remplacée (lot 108C, décision PO du 03/11/2026, ticket TCO-646 §E)** : le forfait est une estimation COMPLÉMENTAIRE — par catégorie et période écoulée, le TCO avec estimations retient max(forfait, dépenses réelles) ; le coût réel documenté reste inchangé. Règle : `docs/exploitation/tco-regle-depenses-usage.md` ; recette : `docs/exploitation/recette-108c-depenses-usage.md`.
 4. Déposer un certificat de cession avec prix et frais : après analyse, rouvrir le tiroir — coût net final, « résultat définitif » ; sans prix : « simulation provisoire ».
 5. Assistant : « Quel est le coût de possession de ma voiture ? » → mêmes montants que le tiroir ; fiche Sinistre : brut / indemnité / reste à charge cohérents.
 6. Passer le compte en Standard (BO › Abonnements) : le tiroir affiche « Fonction Premium », aucun montant ; repasser Premium : tout est revenu (forfaits compris). Premium Duo : le second membre voit le même TCO.

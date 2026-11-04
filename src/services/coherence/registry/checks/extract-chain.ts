@@ -75,9 +75,11 @@ import type { ChainLink, CheckContext, CoherenceCheck, Inspection, RepairResult 
 import { hashOf, idsOf, intArray, rows, type Row } from '../util';
 import { OPEN_DOCUMENT_SQL } from './document-links';
 import {
-  amountToCents, compactIdentifier, significantValues, type SignificantKind, type SignificantValue,
+  amountToCents, compactIdentifier, occurrenceContext, plat, significantValues, unitSignificantValues, type SignificantKind, type SignificantValue,
 } from '@/services/ai/source-analysis/source-units/text';
-import { unitFingerprint, valueKey } from '@/services/ai/source-analysis/value-decisions/validate';
+import {
+  UnitNeighbourhood, qualifyDecision, unitFingerprint, valueFormsOf, valueKey, type FactContext, type OccurrenceUnit,
+} from '@/services/ai/source-analysis/value-decisions/validate';
 import type { CatchupCandidate } from '../types';
 
 const EXTRACT_CHAIN_CHECK_ID = 'COH-DOC-EXTRACT-CHAIN';
@@ -87,8 +89,11 @@ export const T1_OMISSIONS_CONTRACT = '82B-t1-omissions-extract';
 const REVIEW_SERVICE = 'reviewDocumentValueDecisions';
 /** Bornes du détail consigné (aucun contenu de document : unités, natures, valeurs normalisées ou empreintes). */
 const DETAIL_MAX = 20;
+/** Lot 108K : tentatives techniques d'un réexamen par version d'unité (même valeur que `review.REVIEW_MAX_ATTEMPTS`). */
+const REVIEW_MAX_ATTEMPTS_CHECK = 3;
 /** Services de relance IA (passe T1 ciblée, nouvelle extraction) — comptés dans le budget. */
-const RELANCES_IA = ['repairDocumentSourceUnits', 'requeueDocumentForReread', REVIEW_SERVICE];
+// Lot 108B : + relance T1 de la récupération des montants inconnus (COH-TCO-AMOUNT-RECOVERY) — même budget.
+const RELANCES_IA = ['repairDocumentSourceUnits', 'requeueDocumentForReread', REVIEW_SERVICE, 'requestAmountRecoveryT1'];
 const DEFAULT_T1_RELAUNCH_DAILY_MAX = 200;
 
 /**
@@ -98,9 +103,11 @@ const DEFAULT_T1_RELAUNCH_DAILY_MAX = 200;
  * COH-DOC-CLASSIFICATION), plus seulement sur celui-ci.
  */
 export async function t1RelaunchBudgetLeft(ctx: Pick<CheckContext, 'sql' | 'now'>): Promise<number> {
+  // Lot 108K : un réexamen par lots compte chacun de ses appels (au-delà du premier) ; les autres services, une relance par ligne.
   const [{ n: relancees }] = await rows(ctx.sql, `
-    SELECT count(*)::int AS n FROM coherence_repairs WHERE service = ANY($1::text[]) AND created_at >= $2`,
-  [RELANCES_IA, new Date(ctx.now.getTime() - 86_400_000)]);
+    SELECT (count(*) + COALESCE(sum(GREATEST(COALESCE(ai_calls, 0) - 1, 0)) FILTER (WHERE service = $3), 0))::int AS n
+      FROM coherence_repairs WHERE service = ANY($1::text[]) AND created_at >= $2`,
+  [RELANCES_IA, new Date(ctx.now.getTime() - 86_400_000), REVIEW_SERVICE]);
   return t1RelaunchDailyMax() - Number(relancees);
 }
 
@@ -140,7 +147,18 @@ interface T1Knowledge {
   amounts: Set<number>;
   dates: Set<string>;
   identifiers: Set<string>;
+  /**
+   * Lot 108K (§B) — REPRÉSENTATIONS par valeur (`NATURE:forme`) : unités où
+   * un fait / une valeur T1 est SITUÉ (provenance ou extrait retrouvé),
+   * faits non situés, valeur de métadonnée ou de candidat (non située).
+   * Fournies : la réconciliation se fait PAR OCCURRENCE ; absentes (entrée
+   * historique) : égalité de valeur à l'échelle du document, comme avant.
+   */
+  reps?: Map<string, ValueRep>;
 }
+
+/** Lot 108K — représentations T1 d'une valeur dans le document. */
+export interface ValueRep { units: Set<string>; unlocatedFacts: number; meta: boolean }
 
 export interface ExtractChainInput {
   fileId: number;
@@ -167,6 +185,21 @@ export interface ExtractChainInput {
   decisions?: ReadonlyMap<string, DecisionView>;
   /** Lot 91D — état du contrat T1 (`CARRIED`, `MARKER_MISSING`, `DISABLED`, `UNREADABLE`), pour le détail. */
   decisionContract?: string;
+  /**
+   * Lot 108K (§D) — progression du réexamen par unité (version courante du
+   * texte seulement : `unitFingerprint`). Absente (entrée historique) : un
+   * réexamen par ensemble de valeurs, comme au lot 91D.
+   */
+  reviewProgress?: ReadonlyMap<string, { fingerprint: string; status: string; outputStatus: string | null; attempts: number }>;
+  /** Lot 108K — réexamens déjà tentés sur ce document (journal des réparations). */
+  reviewAttempts?: number;
+  /** Lot 108K — détail COMPLET (diagnostic BO) : toutes les unités et valeurs, sans borne d'affichage. */
+  fullDetail?: boolean;
+  /** Lot 108K (§C) — conformité de la sortie T1 de l'analyse (`metadata.valueDecisionsOutput`). */
+  valueDecisionsOutput?: {
+    status: string; conforming: boolean; contract: string; promptVersion: string | null; effectiveVersion: string | null; versionsMatch: boolean;
+    analysisRunId: number | null; passes: number;
+  } | null;
 }
 
 /** Lot 91D — décision active de T1 sur une valeur, telle que le contrôle la juge (forme, jamais pertinence). */
@@ -185,8 +218,8 @@ export interface DecisionView {
 /** Lot 91D — qualification d'une valeur absente des faits T1 au regard de la décision de T1. */
 type DecisionState = 'ABSENT' | 'INVALID' | 'STALE' | 'LINK_GONE' | 'UNDETERMINED' | 'JUSTIFIED';
 
-/** Lot 91D — qualification d'un constat pour la Supervision. */
-type Qualification = 'UNJUSTIFIED_OMISSION' | 'UNDETERMINED_DECISION' | 'REPAIR_TECHNICAL' | 'EXTRACT_TECHNICAL' | 'DOWNSTREAM';
+/** Lot 91D — qualification d'un constat pour la Supervision (lot 108K : non-conformité de sortie T1). */
+type Qualification = 'UNJUSTIFIED_OMISSION' | 'UNDETERMINED_DECISION' | 'REPAIR_TECHNICAL' | 'EXTRACT_TECHNICAL' | 'DOWNSTREAM' | 'OUTPUT_NONCONFORMITY';
 
 /** État d'une valeur absente au regard de la décision active (pure). */
 export function decisionStateOf(d: DecisionView | undefined, currentFingerprint: string | null): DecisionState {
@@ -228,6 +261,53 @@ const DOWNSTREAM_OWNERS: Readonly<Record<SignificantKind, readonly string[]>> = 
 };
 
 const valeurTracee = (v: SignificantValue) => ({ kind: v.kind, value: v.kind === 'IDENTIFIER' ? `#${hashOf(v.normalized).slice(0, 10)}` : v.normalized });
+/** Forme d'une valeur dans les représentations (`NATURE:forme`). */
+export const repKey = (v: Pick<SignificantValue, 'kind' | 'normalized'>) => `${v.kind}:${v.normalized}`;
+
+/**
+ * Lot 108K (§B) — RÉCONCILIATION PAR OCCURRENCE (pure). Une occurrence
+ * (unité, valeur) est CONNUE de T1 si :
+ *   · une représentation de cette valeur est SITUÉE dans cette unité ;
+ *   · sinon, elle RÉPÈTE au même contexte (libellé, texte sans valeurs) une
+ *     occurrence située connue (même total répété : pas de faux doublon) ;
+ *   · sinon, des représentations NON situées (fait sans provenance, valeur de
+ *     métadonnée ou de candidat) couvrent au moins autant de contextes
+ *     distincts qu'il en reste (prudence : aucune omission inventée).
+ * Une occurrence d'un autre contexte reste une OMISSION même si la valeur
+ * figure ailleurs (deux montants identiques pour deux objets distincts).
+ * Rend les clés `unité|NATURE:forme` connues et celles devenues ambiguës.
+ */
+export function reconcileOccurrences(
+  occurrences: ReadonlyArray<{ unitId: string; text: string; values: readonly SignificantValue[] }>, reps: ReadonlyMap<string, ValueRep>,
+): { known: Set<string>; ambiguous: Set<string> } {
+  const known = new Set<string>();
+  const ambiguous = new Set<string>();
+  const parValeur = new Map<string, Array<{ unitId: string; ctx: string }>>();
+  for (const o of occurrences) {
+    const ctx = occurrenceContext(o.text);
+    for (const v of o.values) {
+      const k = repKey(v);
+      if (!reps.has(k)) continue;
+      parValeur.set(k, [...(parValeur.get(k) ?? []), { unitId: o.unitId, ctx }]);
+    }
+  }
+  for (const [k, occ] of parValeur) {
+    const r = reps.get(k)!;
+    const connues = occ.filter((o) => r.units.has(o.unitId));
+    const contextesConnus = new Set(connues.map((o) => o.ctx));
+    for (const o of connues) known.add(`${o.unitId}|${k}`);
+    const reste = occ.filter((o) => !r.units.has(o.unitId));
+    const repetitions = reste.filter((o) => contextesConnus.has(o.ctx));
+    for (const o of repetitions) known.add(`${o.unitId}|${k}`);
+    const libres = reste.filter((o) => !contextesConnus.has(o.ctx));
+    if (!libres.length) continue;
+    const groupes = new Set(libres.map((o) => o.ctx));
+    const capacite = r.unlocatedFacts + (r.meta && r.unlocatedFacts === 0 && r.units.size === 0 ? 1 : 0);
+    if (groupes.size <= capacite) for (const o of libres) known.add(`${o.unitId}|${k}`);
+    else if (capacite > 0) for (const o of libres) ambiguous.add(`${o.unitId}|${k}`);
+  }
+  return { known, ambiguous };
+}
 
 /**
  * Diagnostic de la chaîne d'un document (pure, déterministe) — voir l'en-tête.
@@ -262,14 +342,23 @@ export function diagnoseExtractChain(x: ExtractChainInput): Inspection {
   const indeterminees: Array<{ unit: ExtractUnit; values: Absente[] }> = [];
   const justifiees: Array<{ unit: string; value: Absente; decision: string | null; id: number }> = [];
   const etats: Record<DecisionState, number> = { ABSENT: 0, INVALID: 0, STALE: 0, LINK_GONE: 0, UNDETERMINED: 0, JUSTIFIED: 0 };
-  for (const u of x.units) {
-    if (!UNITES_LUES.has(u.kind) || !u.text) continue;
+  // Lot 108K (§E) : identifiants désignés par un libellé aussi en texte libre, ligne de tableau, champ de formulaire.
+  const lues = x.units.filter((u) => UNITES_LUES.has(u.kind) && u.text).map((u) => ({ u, values: unitSignificantValues(u.text, u.kind) }));
+  // Lot 108K (§B) : réconciliation par occurrence quand les représentations T1 sont connues (sinon : document entier).
+  const occ = lues.map((l) => ({ unitId: l.u.unitId, text: l.u.text!, values: l.values }));
+  const parOccurrence = x.t1.reps ? reconcileOccurrences(occ, x.t1.reps) : null;
+  const nonStructOcc = x.t1Unstructured.reps ? reconcileOccurrences(occ, x.t1Unstructured.reps) : null;
+  const connue = (u: ExtractUnit, v: SignificantValue, k: T1Knowledge, r: ReturnType<typeof reconcileOccurrences> | null) =>
+    (r ? r.known.has(`${u.unitId}|${repKey(v)}`) : knownByT1(v, k));
+  let ambigues = 0;
+  for (const { u, values } of lues) {
     const absentes: Absente[] = [];
     const incertaines: Absente[] = [];
     const empreinte = carried ? unitFingerprint(u.text) : null;
-    for (const v of significantValues(u.text, { identifiers: u.kind === 'LABEL_VALUE' })) {
-      if (knownByT1(v, x.t1)) { matched[v.kind]++; continue; }
-      if (knownByT1(v, x.t1Unstructured)) { nonStructurees++; continue; }
+    for (const v of values) {
+      if (connue(u, v, x.t1, parOccurrence)) { matched[v.kind]++; continue; }
+      if (connue(u, v, x.t1Unstructured, nonStructOcc)) { nonStructurees++; continue; }
+      if (parOccurrence?.ambiguous.has(`${u.unitId}|${repKey(v)}`)) ambigues++;
       if (!carried) { absentes.push(v); continue; }
       // Lot 91D : décision de T1 sur CETTE valeur de CETTE unité.
       const d = x.decisions!.get(valueKey(u.unitId, v.kind, v.normalized));
@@ -297,17 +386,49 @@ export function diagnoseExtractChain(x: ExtractChainInput): Inspection {
   // Lot 91D : réexamen ciblé des décisions (contrat porté) — unités couvertes et reprises épuisées, UNE fois par diagnostic.
   const relancablesEpuisees = relancables.length > 0 && !x.coverage.nextRetryAt && x.coverage.retryAttempts >= x.maxRetries;
   const aReexaminer = carried ? [...(relancablesEpuisees ? relancables : []), ...epuisees, ...couvertes] : [];
-  // Empreinte SANS l'état des décisions : un seul réexamen par ensemble de valeurs omises (le réexamen change les états).
+  // Lot 108K (§D) : progression PAR UNITÉ (version courante du texte). Seules les unités non encore examinées sont
+  // demandées ; une unité trop grande ou en échec répété reste EN ATTENTE (raison d'arrêt), jamais déclarée revue.
+  const prog = x.reviewProgress;
+  const etatRevue = (o: (typeof omissions)[number]) => {
+    const r = prog?.get(o.unit.unitId);
+    if (!r || r.fingerprint !== unitFingerprint(o.unit.text)) return 'PENDING' as const;
+    if (r.status === 'EXAMINED') return 'EXAMINED' as const;
+    if (r.status === 'TOO_LARGE') return 'TOO_LARGE' as const;
+    return r.attempts >= REVIEW_MAX_ATTEMPTS_CHECK ? 'FAILED' as const : 'PENDING' as const;
+  };
+  const examinees = prog ? aReexaminer.filter((o) => etatRevue(o) === 'EXAMINED') : [];
+  const bloquees = prog ? aReexaminer.filter((o) => ['TOO_LARGE', 'FAILED'].includes(etatRevue(o))) : [];
+  const enAttente = prog ? aReexaminer.filter((o) => etatRevue(o) === 'PENDING') : aReexaminer;
+  // Empreinte SANS l'état des décisions : un réexamen par ensemble d'unités restant à examiner (le réexamen change les états).
   // L'écriture de l'unité (nouvelle extraction, reprise) en fait partie : une source réécrite peut être réexaminée une fois.
   const valeursSeules = (os: typeof omissions) => os.map((o) => [o.unit.unitId, o.unit.updatedAt, o.values.map((v) => `${v.kind}:${v.normalized}`).sort()]);
-  const reviewHash = aReexaminer.length ? hashOf({ fileId: x.fileId, a: 'DECISION_REVIEW', e: x.extractionId, omis: valeursSeules(aReexaminer) }) : null;
+  const reviewHash = enAttente.length ? hashOf({ fileId: x.fileId, a: 'DECISION_REVIEW', e: x.extractionId, omis: valeursSeules(enAttente) }) : null;
   const reviewTried = reviewHash !== null && x.triedHashes.has(reviewHash);
   const reviewDue = reviewHash !== null && !reviewTried;
+  const arrets = [
+    ...(bloquees.some((o) => etatRevue(o) === 'TOO_LARGE') ? ['UNIT_TOO_LARGE'] : []),
+    ...(bloquees.some((o) => etatRevue(o) === 'FAILED') ? ['REVIEW_FAILED_REPEATEDLY'] : []),
+    ...(reviewTried ? ['REVIEW_ALREADY_TRIED'] : []),
+  ];
+  // Lot 108K (§D) : totaux COMPLETS (le détail affiché est borné, jamais la reprise ni les décomptes).
+  const revueTotaux = carried ? {
+    units: aReexaminer.length, values: aReexaminer.reduce((n, o) => n + o.values.length, 0), examined: examinees.length,
+    remaining: enAttente.length + bloquees.length, blocked: bloquees.length, attempts: x.reviewAttempts ?? 0, stopReasons: arrets,
+    progressKnown: prog !== undefined,
+  } : null;
   const revue = (anomaly: string, link: ChainLink, expected: string, qualification: Qualification): Diagnostic => ({
-    link, anomaly, verdict: 'REPAIRABLE', repair: 'DECISION_REVIEW', hash: reviewHash!, expected, observed: trace(aReexaminer),
-    extra: { qualification, motive: 'DECISION_REVIEW_DUE', decisionReview: 'DUE' },
+    link, anomaly: prog && examinees.length > 0 ? 'FACT_DECISION_REVIEW_IN_PROGRESS' : anomaly, verdict: 'REPAIRABLE', repair: 'DECISION_REVIEW',
+    hash: reviewHash!, expected, observed: trace(enAttente),
+    extra: { qualification, motive: 'DECISION_REVIEW_DUE', decisionReview: 'DUE', reviewUnits: enAttente.map((o) => o.unit.unitId), ...(prog && examinees.length > 0 ? { omissionAnomaly: anomaly } : {}) },
   });
-  const apresRevue = carried ? { decisionReview: reviewTried ? 'TRIED' : 'NONE' } : {};
+  // Après réexamen : « revu » seulement si TOUTES les unités ont été examinées ; sinon incomplet (unités en attente nommées).
+  const revuComplet = prog ? enAttente.length === 0 && bloquees.length === 0 && examinees.length > 0 : reviewTried;
+  const apresRevue = carried ? {
+    // « TRIED » (lot 91D) : toutes les unités en constat ont été réexaminées ; « PARTIAL » : des unités restent en attente.
+    decisionReview: prog ? (revuComplet ? 'TRIED' : examinees.length || reviewTried ? 'PARTIAL' : 'NONE') : reviewTried ? 'TRIED' : 'NONE',
+    ...(prog && !revuComplet && (bloquees.length || enAttente.length) ? { pendingReviewUnits: [...bloquees, ...enAttente].map((o) => o.unit.unitId).slice(0, DETAIL_MAX) } : {}),
+  } : {};
+  const motifApres = (historique: string) => (!carried ? historique : prog && !revuComplet ? 'REVIEW_INCOMPLETE' : 'NO_VALID_DECISION_AFTER_REVIEW');
   if (relancables.length) {
     const hash = hashOf({ fileId: x.fileId, a: 'FACT_OMITTED_BY_T1', e: x.extractionId, omis: cle(relancables) });
     const base = { link: 'T1' as const, hash, expected: 'valeur de l’extract reprise par T1 (fait ou indice)', observed: trace(relancables) };
@@ -315,7 +436,7 @@ export function diagnoseExtractChain(x: ExtractChainInput): Inspection {
     else if (x.coverage.nextRetryAt) diags.push({ ...base, anomaly: 'FACT_OMITTED_RETRY_SCHEDULED', verdict: 'FINDING', extra: { handledBy: 't1-completeness-retry', nextRetryAt: x.coverage.nextRetryAt, qualification: 'UNJUSTIFIED_OMISSION', motive: 'RETRY_SCHEDULED' } });
     else if (x.coverage.retryAttempts >= x.maxRetries) {
       if (reviewDue) diags.push(revue('FACT_OMITTED_REPAIR_EXHAUSTED', 'T1', 'valeur de l’extract reprise par T1, ou décision T1 motivée', 'REPAIR_TECHNICAL'));
-      else diags.push({ ...base, anomaly: 'FACT_OMITTED_REPAIR_EXHAUSTED', verdict: 'FINDING', extra: { qualification: 'REPAIR_TECHNICAL', motive: carried ? 'NO_VALID_DECISION_AFTER_REVIEW' : 'REPAIR_EXHAUSTED', ...apresRevue } });
+      else diags.push({ ...base, anomaly: 'FACT_OMITTED_REPAIR_EXHAUSTED', verdict: 'FINDING', extra: { qualification: 'REPAIR_TECHNICAL', motive: motifApres('REPAIR_EXHAUSTED'), ...apresRevue } });
     } else diags.push({ ...base, anomaly: 'FACT_OMITTED_BY_T1', verdict: 'REPAIRABLE', repair: 'T1_REPAIR', extra: { qualification: 'UNJUSTIFIED_OMISSION', motive: 'T1_REPAIR_DUE' } });
   }
   if (epuisees.length) {
@@ -323,7 +444,7 @@ export function diagnoseExtractChain(x: ExtractChainInput): Inspection {
     else {
       diags.push({ link: 'T1', anomaly: 'FACT_OMITTED_REPAIR_EXHAUSTED', verdict: 'FINDING', hash: hashOf({ fileId: x.fileId, a: 'EXHAUSTED', e: x.extractionId, omis: cle(epuisees) }),
         expected: 'valeur de l’extract reprise par T1', observed: trace(epuisees),
-        extra: { qualification: 'REPAIR_TECHNICAL', motive: carried ? 'NO_VALID_DECISION_AFTER_REVIEW' : 'REPAIR_EXHAUSTED', ...apresRevue } });
+        extra: { qualification: 'REPAIR_TECHNICAL', motive: motifApres('REPAIR_EXHAUSTED'), ...apresRevue } });
     }
   }
   if (couvertes.length) {
@@ -332,7 +453,7 @@ export function diagnoseExtractChain(x: ExtractChainInput): Inspection {
       diags.push({ link: 'T1', anomaly: 'FACT_OMITTED_COVERED_UNIT', verdict: 'FINDING', hash: hashOf({ fileId: x.fileId, a: 'COVERED', e: x.extractionId, omis: cle(couvertes) }),
         expected: 'valeur reprise par T1, ou écartée avec un motif (disposition T1)', observed: trace(couvertes),
         extra: carried
-          ? { qualification: 'UNJUSTIFIED_OMISSION', motive: 'NO_VALID_DECISION_AFTER_REVIEW', ...apresRevue }
+          ? { qualification: 'UNJUSTIFIED_OMISSION', motive: motifApres('NO_VALID_DECISION_AFTER_REVIEW'), ...apresRevue }
           : { pendingContract: T1_OMISSIONS_CONTRACT, qualification: 'UNJUSTIFIED_OMISSION', motive: 'DECISION_CONTRACT_PENDING' } });
     }
   }
@@ -341,6 +462,23 @@ export function diagnoseExtractChain(x: ExtractChainInput): Inspection {
     diags.push({ link: 'T1', anomaly: 'FACT_DECISION_UNDETERMINED', verdict: 'FINDING', hash: hashOf({ fileId: x.fileId, a: 'UNDETERMINED', e: x.extractionId, omis: cle(indeterminees) }),
       expected: 'décision T1 établie (structurée, composante ou contexte, non retenue avec motif)', observed: trace(indeterminees),
       extra: { qualification: 'UNDETERMINED_DECISION', motive: 'T1_UNDETERMINED' } });
+  }
+
+  // Lot 108K (§C) : sortie T1 sans tableau valueDecisions (ou mal formé, tronqué) alors que le contrat était porté par la
+  // version qui a répondu — constat tracé (provenance), jamais une décision valide implicite. Récupéré quand un réexamen
+  // ciblé a rendu le tableau ; persistant quand le réexamen l'omet aussi (Supervision).
+  const sortie = x.valueDecisionsOutput;
+  const sortiesRevue = prog ? [...prog.values()].map((r) => r.outputStatus).filter((o): o is string => !!o) : [];
+  const recuperee = sortiesRevue.some((o) => o === 'PRESENT' || o === 'EMPTY');
+  if (carried && sortie && !sortie.conforming && !recuperee) {
+    const persistante = sortiesRevue.some((o) => o === 'ABSENT' || o === 'MALFORMED');
+    diags.push({
+      link: 'T1', anomaly: 'T1_VALUE_DECISIONS_OUTPUT_MISSING', verdict: 'FINDING',
+      hash: hashOf({ fileId: x.fileId, a: 'OUTPUT_MISSING', e: x.extractionId, s: sortie.status, p: persistante }),
+      expected: 'réponse T1 portant le tableau valueDecisions (vide compris) — contrat t1-value-decisions-v1 porté',
+      observed: { status: sortie.status, extractionId: x.extractionId, analysisRunId: sortie.analysisRunId, promptVersion: sortie.promptVersion, passes: sortie.passes },
+      extra: { qualification: 'OUTPUT_NONCONFORMITY', motive: persistante ? 'OUTPUT_MISSING_PERSISTENT' : omissions.length ? 'OUTPUT_MISSING_REVIEW_TARGETED' : 'OUTPUT_MISSING_NO_VALUE_TO_DECIDE' },
+    });
   }
 
   // (a) aval : faits T1 jamais projetés sur le bien du document.
@@ -355,8 +493,23 @@ export function diagnoseExtractChain(x: ExtractChainInput): Inspection {
   }
 
   const resume = diags.map((d) => ({ link: d.link, anomaly: d.anomaly, verdict: d.verdict }));
+  // Lot 108K (§D) : décomptes complets des omissions (le détail `observed` est borné à DETAIL_MAX unités, 5 valeurs).
+  const omissionTotals = {
+    units: omissions.length, values: omissions.reduce((n, o) => n + o.values.length, 0), displayedUnits: Math.min(DETAIL_MAX, omissions.length),
+    truncatedDisplay: omissions.length > DETAIL_MAX || omissions.some((o) => o.values.length > 5), ambiguousRepresentation: ambigues,
+    reconciliation: parOccurrence ? 'OCCURRENCE' : 'DOCUMENT',
+  };
+  // Lot 108K : détail complet pour l'audit (diagnostic BO seulement — jamais consigné dans la preuve).
+  const complet = x.fullDetail ? {
+    allOmissions: omissions.map((o) => ({ unit: o.unit.unitId, kind: o.unit.kind, status: o.unit.status,
+      review: carried ? etatRevue(o) : null, values: o.values.map(tracer) })),
+    allUndetermined: indeterminees.map((o) => ({ unit: o.unit.unitId, values: o.values.map(tracer) })),
+    allJustified: justifiees.map((j) => ({ unit: j.unit, ...valeurTracee(j.value), decision: j.decision, id: j.id })),
+  } : {};
   const commun = {
-    matched, t1Unstructured: nonStructurees, diagnostics: resume,
+    matched, t1Unstructured: nonStructurees, diagnostics: resume, omissionTotals, ...complet,
+    ...(revueTotaux ? { review: revueTotaux } : {}),
+    ...(sortie ? { valueDecisionsOutput: { status: sortie.status, conforming: sortie.conforming, contract: sortie.contract, versionsMatch: sortie.versionsMatch, recoveredByReview: recuperee } } : {}),
     downstreamOwners: [...new Set((Object.keys(matched) as SignificantKind[]).filter((k) => matched[k] > 0).flatMap((k) => DOWNSTREAM_OWNERS[k]))],
     // Lot 91D : décisions T1 (contrat porté) — décompte par état et échantillon des justifications retenues (motif de résolution).
     ...(carried ? {
@@ -379,6 +532,41 @@ export function diagnoseExtractChain(x: ExtractChainInput): Inspection {
 // ── Lectures (lecture seule) ─────────────────────────────────────────────────
 
 const vide = (): T1Knowledge => ({ amounts: new Set(), dates: new Set(), identifiers: new Set() });
+/** Connaissance vide avec représentations (réconciliation par occurrence). */
+const videSituee = (): T1Knowledge => ({ ...vide(), reps: new Map() });
+
+/** Formes `NATURE:forme` d'une valeur rendue par T1, lues comme le fait `ajouterValeur`. */
+async function formesDe(v: unknown): Promise<string[]> {
+  const k = vide();
+  await ajouterValeur(k, v);
+  return [...[...k.amounts].map((a) => `AMOUNT:${a}`), ...[...k.dates].map((d) => `DATE:${d}`), ...[...k.identifiers].map((i) => `IDENTIFIER:${i}`)];
+}
+
+/**
+ * Lot 108K (§B) — ajoute une représentation (fait, valeur non structurée,
+ * métadonnée, candidat). Situation : unités de provenance, sinon unités dont
+ * le texte contient l'extrait de preuve (forme de comparaison), sinon non
+ * située. Une métadonnée / un candidat n'est jamais situé.
+ */
+function representer(k: T1Knowledge, formes: readonly string[], situation: { units: readonly string[] } | 'META' | null): void {
+  if (!k.reps) return;
+  for (const f of new Set(formes)) {
+    const r = k.reps.get(f) ?? { units: new Set<string>(), unlocatedFacts: 0, meta: false };
+    if (situation === 'META') r.meta = true;
+    else if (situation && situation.units.length) for (const u of situation.units) r.units.add(u);
+    else r.unlocatedFacts++;
+    k.reps.set(f, r);
+  }
+}
+
+/** Unités d'un fait : provenance (cellule → ligne), sinon extrait retrouvé dans le texte d'une unité (pure). */
+export function situerFait(sourceUnitIds: readonly string[] | null, excerpt: string | null, units: readonly ExtractUnit[]): string[] {
+  const ids = (sourceUnitIds ?? []).map((id) => id.replace(/:cell:\d+$/, ''));
+  if (ids.length) return [...new Set(ids)];
+  const ex = excerpt ? plat(excerpt.replace(/\[(?:page|doc):[^\]]+\]\s*/g, '')) : '';
+  if (ex.length < 6) return [];
+  return units.filter((u) => u.text && (plat(u.text).includes(ex) || (plat(u.text).length >= 6 && ex.includes(plat(u.text))))).map((u) => u.unitId);
+}
 
 /** Ajoute à la connaissance les formes normalisées d'une valeur rendue par T1 (texte ou nombre). */
 async function ajouterValeur(k: T1Knowledge, v: unknown): Promise<void> {
@@ -433,9 +621,15 @@ interface Loaded {
   /** Lot 91D : faits ACTIFS et candidats ACTIFS par document (rattachements des décisions). */
   factIds: Map<number, Set<number>>;
   candidateKeys: Map<number, Set<string>>;
+  /** Lot 108K : contexte des faits actifs (valeur, libellé, preuve, unités), par document puis identifiant. */
+  factContexts: Map<number, Map<number, FactContext>>;
+  /** Lot 108K (§C) : conformité de la sortie T1 de l'analyse, par document. */
+  outputs: Map<number, ExtractChainInput['valueDecisionsOutput']>;
+  /** Lot 108K : réexamens tentés par document. */
+  reviewAttempts: Map<number, number>;
 }
 
-async function charger(ctx: CheckContext, accountId: number, ids: readonly number[]): Promise<Loaded> {
+async function charger(ctx: Pick<CheckContext, 'sql' | 'now'>, accountId: number, ids: readonly number[]): Promise<Loaded> {
   const ens = intArray(ids);
   const files = new Map((await rows(ctx.sql, `
     SELECT f.id, f.asset_id, (a.id IS NOT NULL AND a.deleted_at IS NULL) AS asset_live,
@@ -466,37 +660,68 @@ async function charger(ctx: CheckContext, accountId: number, ids: readonly numbe
   const t1 = new Map<number, T1Knowledge>();
   const factIds = new Map<number, Set<number>>();
   const candidateKeys = new Map<number, Set<string>>();
-  const de = (m: Map<number, T1Knowledge>, id: number) => { let k = m.get(id); if (!k) { k = vide(); m.set(id, k); } return k; };
+  const factContexts = new Map<number, Map<number, FactContext>>();
+  // Lot 108K (§B) : connaissance AVEC représentations situées (réconciliation par occurrence).
+  const de = (m: Map<number, T1Knowledge>, id: number) => { let k = m.get(id); if (!k) { k = videSituee(); m.set(id, k); } return k; };
   for (const f of await rows(ctx.sql, `
     SELECT f.id::float8 AS id, f.file_id, f.value_text, f.normalized_value, f.value_number::float8 AS value_number,
            to_char(f.period_start, 'YYYY-MM-DD') AS period_start, to_char(f.period_end, 'YYYY-MM-DD') AS period_end,
-           to_jsonb(f)->>'raw_value' AS raw_value
+           to_jsonb(f)->>'raw_value' AS raw_value, f.label, to_jsonb(f)->>'raw_key' AS raw_key, f.excerpt,
+           to_jsonb(f)->'source_unit_ids' AS source_unit_ids
       FROM document_facts f WHERE f.account_id = $1 AND f.file_id = ANY($2::int[]) AND f.status = 'active'`, [accountId, ens])) {
-    const k = de(t1, Number(f.file_id));
-    factIds.set(Number(f.file_id), (factIds.get(Number(f.file_id)) ?? new Set<number>()).add(Number(f.id)));
-    for (const v of [f.value_text, f.normalized_value, f.raw_value, f.period_start, f.period_end]) await ajouterValeur(k, v);
-    if (f.value_number != null) await ajouterValeur(k, Number(f.value_number));
+    const fileId = Number(f.file_id);
+    const k = de(t1, fileId);
+    factIds.set(fileId, (factIds.get(fileId) ?? new Set<number>()).add(Number(f.id)));
+    const valeurs = [f.value_text, f.normalized_value, f.raw_value, f.period_start, f.period_end, ...(f.value_number != null ? [Number(f.value_number)] : [])];
+    for (const v of valeurs) await ajouterValeur(k, v);
+    const formes = (await Promise.all(valeurs.map(formesDe))).flat();
+    const ids = Array.isArray(f.source_unit_ids) ? (f.source_unit_ids as unknown[]).map(String) : null;
+    const situees = situerFait(ids, (f.excerpt as string | null) ?? null, units.get(fileId) ?? []);
+    representer(k, formes, { units: situees });
+    const fc = factContexts.get(fileId) ?? new Map<number, FactContext>();
+    fc.set(Number(f.id), {
+      forms: new Set([...formes, ...valeurs.flatMap((v) => [...valueFormsOf(v)])]),
+      text: [f.label, f.raw_key, f.excerpt].filter((t): t is string => typeof t === 'string' && t !== '').join(' — '),
+      unitIds: situees,
+    });
+    factContexts.set(fileId, fc);
   }
+  const outputs = new Map<number, ExtractChainInput['valueDecisionsOutput']>();
   for (const e of await rows(ctx.sql, `
-    SELECT file_id, amount_cents::float8 AS amount_cents, to_char(document_date, 'YYYY-MM-DD') AS document_date
+    SELECT file_id, amount_cents::float8 AS amount_cents, to_char(document_date, 'YYYY-MM-DD') AS document_date,
+           analysis_run_id, metadata->'valueDecisionsOutput' AS vdo
       FROM document_extractions WHERE account_id = $1 AND file_id = ANY($2::int[])`, [accountId, ens])) {
     const k = de(t1, Number(e.file_id));
-    if (e.amount_cents != null) k.amounts.add(Number(e.amount_cents));
-    if (e.document_date) k.dates.add(String(e.document_date));
+    if (e.amount_cents != null) { k.amounts.add(Number(e.amount_cents)); representer(k, [`AMOUNT:${Number(e.amount_cents)}`], 'META'); }
+    if (e.document_date) { k.dates.add(String(e.document_date)); representer(k, [`DATE:${String(e.document_date)}`], 'META'); }
+    const o = (typeof e.vdo === 'string' ? JSON.parse(e.vdo) : e.vdo) as Record<string, unknown> | null;
+    if (o && typeof o.status === 'string') {
+      outputs.set(Number(e.file_id), {
+        status: o.status, conforming: o.conforming !== false, contract: String(o.contract ?? ''), promptVersion: (o.promptVersion as string | null) ?? null,
+        effectiveVersion: (o.effectiveVersion as string | null) ?? null, versionsMatch: o.versionsMatch !== false,
+        analysisRunId: e.analysis_run_id == null ? null : Number(e.analysis_run_id), passes: Array.isArray(o.passes) ? o.passes.length : 0,
+      });
+    }
   }
   for (const c of await rows(ctx.sql, `
     SELECT file_id, candidate_key, payload FROM document_operation_candidates WHERE account_id = $1 AND file_id = ANY($2::int[]) AND status = 'ACTIVE'`, [accountId, ens])) {
     const k = de(t1, Number(c.file_id));
     candidateKeys.set(Number(c.file_id), (candidateKeys.get(Number(c.file_id)) ?? new Set<string>()).add(String(c.candidate_key)));
     for (const v of valeursCandidat(c.payload)) {
-      if (v && typeof v === 'object' && 'cents' in (v as Record<string, unknown>)) k.amounts.add(Number((v as { cents: number }).cents));
-      else await ajouterValeur(k, v);
+      if (v && typeof v === 'object' && 'cents' in (v as Record<string, unknown>)) {
+        k.amounts.add(Number((v as { cents: number }).cents));
+        representer(k, [`AMOUNT:${Number((v as { cents: number }).cents)}`], 'META');
+      } else { await ajouterValeur(k, v); representer(k, await formesDe(v), 'META'); }
     }
   }
   const unstructured = new Map<number, T1Knowledge>();
   for (const u of await rows(ctx.sql, `
-    SELECT file_id, raw_value FROM document_unresolved_facts WHERE account_id = $1 AND file_id = ANY($2::int[]) AND raw_value IS NOT NULL`, [accountId, ens])) {
-    await ajouterValeur(de(unstructured, Number(u.file_id)), u.raw_value);
+    SELECT file_id, raw_value, to_jsonb(x)->'source_unit_ids' AS source_unit_ids, to_jsonb(x)->>'excerpt' AS excerpt
+      FROM document_unresolved_facts x WHERE account_id = $1 AND file_id = ANY($2::int[]) AND raw_value IS NOT NULL`, [accountId, ens])) {
+    const k = de(unstructured, Number(u.file_id));
+    await ajouterValeur(k, u.raw_value);
+    const ids = Array.isArray(u.source_unit_ids) ? (u.source_unit_ids as unknown[]).map(String) : null;
+    representer(k, await formesDe(u.raw_value), { units: situerFait(ids, (u.excerpt as string | null) ?? null, units.get(Number(u.file_id)) ?? []) });
   }
   const evidence = new Map<string, number>();
   for (const e of await rows(ctx.sql, `
@@ -505,6 +730,10 @@ async function charger(ctx: CheckContext, accountId: number, ids: readonly numbe
     evidence.set(`${e.source_id}:${e.asset_id}`, Number(e.n));
   }
   const journal = new Map<number, { pending: Set<string>; tried: Set<string> }>();
+  const reviewAttempts = new Map<number, number>();
+  for (const j of await rows(ctx.sql, `
+    SELECT object_id, count(*)::int AS n FROM coherence_repairs WHERE account_id = $1 AND check_id = $2 AND object_id = ANY($3::bigint[]) AND service = $4 GROUP BY 1`,
+  [accountId, EXTRACT_CHAIN_CHECK_ID, ens, REVIEW_SERVICE])) reviewAttempts.set(Number(j.object_id), Number(j.n));
   for (const j of await rows(ctx.sql, `
     SELECT object_id, input_hash, outcome FROM coherence_repairs
      WHERE account_id = $1 AND check_id = $2 AND object_id = ANY($3::bigint[]) AND input_hash IS NOT NULL AND outcome IN ('PENDING', 'INEFFECTIVE', 'REPAIRED')`,
@@ -514,25 +743,51 @@ async function charger(ctx: CheckContext, accountId: number, ids: readonly numbe
     (j.outcome === 'PENDING' ? x.pending : x.tried).add(String(j.input_hash));
     journal.set(id, x);
   }
-  return { files, units, t1, unstructured, evidence, journal, factIds, candidateKeys };
+  return { files, units, t1, unstructured, evidence, journal, factIds, candidateKeys, factContexts, outputs, reviewAttempts };
 }
 
 /**
  * Lot 91D — décisions ACTIVES des documents, par clé de valeur, avec l'état
  * de leurs rattachements (fait ou candidat encore actif). Lecture seule.
  */
-async function chargerDecisions(ctx: CheckContext, accountId: number, ids: readonly number[], d: Loaded): Promise<Map<number, Map<string, DecisionView>>> {
+async function chargerDecisions(ctx: Pick<CheckContext, 'sql' | 'now'>, accountId: number, ids: readonly number[], d: Loaded): Promise<Map<number, Map<string, DecisionView>>> {
   const { loadActiveValueDecisions } = await import('@/services/ai/source-analysis/value-decisions/store');
   const out = new Map<number, Map<string, DecisionView>>();
+  const voisinages = new Map<number, { n: UnitNeighbourhood; byId: Map<string, OccurrenceUnit> }>();
+  const voisinageDe = (fileId: number) => {
+    let v = voisinages.get(fileId);
+    if (!v) {
+      const us = (d.units.get(fileId) ?? []).filter((u) => UNITES_LUES.has(u.kind) && u.text)
+        .map((u): OccurrenceUnit => ({ id: u.unitId, ordinal: u.ordinal, page: null, parent: /:row:\d+$/.test(u.unitId) ? u.unitId.replace(/:row:\d+$/, '') : null, text: u.text }));
+      v = { n: new UnitNeighbourhood(us), byId: new Map(us.map((u) => [u.id, u])) };
+      voisinages.set(fileId, v);
+    }
+    return v;
+  };
   for (const x of await loadActiveValueDecisions(ctx.sql as never, accountId, ids)) {
     if (!x.sourceUnitId || !x.kind || !x.normalizedValue) continue;
     const faits = d.factIds.get(x.fileId);
     const cands = d.candidateKeys.get(x.fileId);
     const linkActive = x.relatedFactIds.some((id) => faits?.has(id)) || x.relatedCandidateKeys.some((k) => cands?.has(k));
+    // Lot 108K (§A) : une décision VALIDE d'avant le correctif est REJUGÉE (motif spécifique, rattachement cohérent) sur
+    // l'unité et les faits ACTUELS — un motif générique n'acquitte plus rien (aucune ligne réécrite : jugement à la lecture).
+    let validity = x.validity;
+    let invalidReason = x.invalidReason;
+    const v = voisinageDe(x.fileId);
+    const unite = v.byId.get(x.sourceUnitId);
+    if (validity === 'VALID' && unite) {
+      const fc = d.factContexts.get(x.fileId);
+      const code = qualifyDecision({
+        decision: x.decision, reason: x.reason, rawValue: x.rawValue ?? '', kind: x.kind, normalized: x.normalizedValue, unit: unite, neighbourhood: v.n,
+        facts: x.relatedFactIds.map((id) => fc?.get(id)).filter((f): f is FactContext => f !== undefined),
+        candidateFacts: null, candidateLinked: x.relatedCandidateKeys.some((k) => cands?.has(k)),
+      });
+      if (code) { validity = 'INVALID'; invalidReason = code; }
+    }
     const m = out.get(x.fileId) ?? new Map<string, DecisionView>();
     // Plusieurs décisions actives pour une valeur (unités ex æquo) : la plus récente prime.
     m.set(valueKey(x.sourceUnitId, x.kind, x.normalizedValue), {
-      id: x.id, decision: x.decision, validity: x.validity, invalidReason: x.invalidReason, confidence: x.confidence,
+      id: x.id, decision: x.decision, validity, invalidReason, confidence: x.confidence,
       unitFingerprint: x.unitFingerprint, linkActive,
     });
     out.set(x.fileId, m);
@@ -564,7 +819,7 @@ export const extractChainCheck: CoherenceCheck = {
   level: 'N3',
   objectType: 'document',
   scope: 'documents visibles du compte dont l’extract existe (couche A : unités sources et couverture)',
-  sources: ['document_source_units', 'document_extraction_coverage', 'document_facts', 'document_unresolved_facts', 'document_extractions', 'document_operation_candidates', 'document_value_decisions', 'field_evidence', 'coherence_repairs'],
+  sources: ['document_source_units', 'document_extraction_coverage', 'document_facts', 'document_unresolved_facts', 'document_extractions', 'document_operation_candidates', 'document_value_decisions', 'document_value_review_units', 'field_evidence', 'coherence_repairs'],
   applicability: 'compte éligible ; document dont la couche A est écrite (sinon : reprise historique t1-source-units-backfill)',
   invariant: 'toute valeur significative de l’extract est reprise par T1 (ou qualifiée par une décision T1 valide et motivée) puis exploitée en aval ; l’extract lui-même est complet',
   anomalies: [
@@ -573,6 +828,8 @@ export const extractChainCheck: CoherenceCheck = {
     'FACTS_NOT_PROJECTED', 'RELAUNCH_ALREADY_TRIED',
     // Lot 91D : décision T1 incertaine sur une valeur (contrat t1-value-decisions-v1 porté).
     'FACT_DECISION_UNDETERMINED',
+    // Lot 108K : réexamen par lots en cours (unités restantes) ; sortie T1 sans tableau valueDecisions avec contrat porté.
+    'FACT_DECISION_REVIEW_IN_PROGRESS', 'T1_VALUE_DECISIONS_OUTPUT_MISSING',
   ],
   autoRepairWhen: 'premier maillon réparable seulement : réextraction (lacune fiable, reprise disponible) ; passe T1 ciblée (unité non couverte, encore réparable) ; réexamen ciblé des décisions T1 (contrat porté, unité couverte ou reprise épuisée, une fois par diagnostic) ; projection aval (faits jamais projetés)',
   forbiddenRepairs: [
@@ -589,7 +846,7 @@ export const extractChainCheck: CoherenceCheck = {
   triggers: ['SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'DOCUMENT_UPLOADED'],
   frequency: 'campagne exhaustive quotidienne (lecture seule, sans IA) + contrôle ciblé après chaque analyse ou modification du document',
   criticality: 'HIGH',
-  tests: ['L83B-U-EXTRACT', 'L83B-E2E-01', 'L83B-E2E-02', 'L83B-E2E-03', 'L83B-E2E-04', 'L83B-E2E-05', 'L83B-E2E-11', 'L91D-U', 'L91D-E2E'],
+  tests: ['L83B-U-EXTRACT', 'L83B-E2E-01', 'L83B-E2E-02', 'L83B-E2E-03', 'L83B-E2E-04', 'L83B-E2E-05', 'L83B-E2E-11', 'L91D-U', 'L91D-E2E', 'L108K-U', 'L108K-E2E'],
   // Lot 91D : rattrapage des documents déjà en constat d'omission dès que le contrat T1 est porté (réexamen ciblé).
   async catchupCandidates(c) {
     return decisionReviewCatchup(c);
@@ -610,6 +867,20 @@ export const extractChainCheck: CoherenceCheck = {
   },
 
   async inspect(ctx, accountId, ids) {
+    return inspectExtractChain(ctx, accountId, ids);
+  },
+
+  async repair(ctx, accountId, items) {
+    return repairExtractChain(ctx, accountId, items);
+  },
+};
+
+/**
+ * Inspection des documents (contrôle) — lot 108K : réutilisée par le
+ * diagnostic BO avec `fullDetail` (toutes les unités, aucune borne).
+ */
+export async function inspectExtractChain(ctx: Pick<CheckContext, 'sql' | 'now'>, accountId: number, ids: readonly number[], opts: { fullDetail?: boolean } = {}): Promise<Map<number, Inspection>> {
+  {
     const out = new Map<number, Inspection>();
     const d = await charger(ctx, accountId, ids);
     const [{ maxCompletenessRetries }, { repairAttemptCap }, { selectRepairUnits }] = await Promise.all([
@@ -624,6 +895,16 @@ export const extractChainCheck: CoherenceCheck = {
     const { valueDecisionsCapability } = await import('@/services/ai/source-analysis/value-decisions/contract');
     const contrat = await valueDecisionsCapability();
     const decisions = contrat.carried ? await chargerDecisions(ctx, accountId, ids, d) : null;
+    // Lot 108K (§D) : progression du réexamen par unité (contrat porté seulement).
+    const progression = new Map<number, Map<string, { fingerprint: string; status: string; outputStatus: string | null; attempts: number }>>();
+    if (contrat.carried) {
+      const { loadReviewProgress } = await import('@/services/ai/source-analysis/value-decisions/review');
+      for (const r of await loadReviewProgress(ctx.sql as never, accountId, ids)) {
+        const m = progression.get(r.fileId) ?? new Map();
+        m.set(r.unitId, { fingerprint: r.fingerprint, status: r.status, outputStatus: r.outputStatus, attempts: r.attempts });
+        progression.set(r.fileId, m);
+      }
+    }
     for (const fileId of ids) {
       const f = d.files.get(fileId);
       if (!f) { out.set(fileId, { verdict: 'GONE' }); continue; }
@@ -647,21 +928,28 @@ export const extractChainCheck: CoherenceCheck = {
         // Projection attendue calculée seulement quand aucune preuve n'existe (coût borné).
         projection: assetId && evidenceCount === 0 ? { assetId, expectedKeys: await projectionAttendue(accountId, fileId, assetId), evidenceCount } : null,
         repairableUnitIds: reparables, maxRetries, pendingHashes: j?.pending ?? new Set(), triedHashes: j?.tried ?? new Set(),
-        ...(decisions ? { decisions: decisions.get(fileId) ?? new Map() } : {}), decisionContract: contrat.reason,
+        ...(decisions ? { decisions: decisions.get(fileId) ?? new Map(), reviewProgress: progression.get(fileId) ?? new Map(), reviewAttempts: d.reviewAttempts.get(fileId) ?? 0 } : {}),
+        decisionContract: contrat.reason, valueDecisionsOutput: d.outputs.get(fileId) ?? null, ...(opts.fullDetail ? { fullDetail: true } : {}),
       });
       // Budget des relances IA : au-delà, MÊME diagnostic en constat (l'anti-boucle reste exact ; relancé plus tard).
       const relance = i.verdict === 'REPAIRABLE' && (i.detail?.repair === 'T1_REPAIR' || i.detail?.repair === 'REEXTRACT' || i.detail?.repair === 'DECISION_REVIEW')
         && i.detail?.awaiting !== true;
-      if (relance && budget <= 0) out.set(fileId, { ...i, verdict: 'FINDING', detail: { ...i.detail, relaunchBudgetReached: true } });
+      if (relance && budget <= 0) {
+        // Lot 108K : raison d'arrêt explicite (budget) dans les totaux du réexamen.
+        const rv = i.detail?.review as { stopReasons?: string[] } | undefined;
+        out.set(fileId, { ...i, verdict: 'FINDING', detail: { ...i.detail, relaunchBudgetReached: true, ...(rv ? { review: { ...rv, stopReasons: [...(rv.stopReasons ?? []), 'RELAUNCH_BUDGET'] } } : {}) } });
+      }
       else {
         if (relance) budget--;
         out.set(fileId, i);
       }
     }
     return out;
-  },
+  }
+}
 
-  async repair(ctx, accountId, items) {
+async function repairExtractChain(ctx: CheckContext, accountId: number, items: ReadonlyArray<{ id: number; inspection: Inspection }>): Promise<Map<number, RepairResult>> {
+  {
     const out = new Map<number, RepairResult>();
     const jobs = await import('@/services/ai/source-analysis/source-units/jobs');
     const { requestTargetedChecks } = await import('../../orchestrator');
@@ -702,14 +990,28 @@ export const extractChainCheck: CoherenceCheck = {
         });
       } else if (quoi === 'DECISION_REVIEW') {
         // Lot 91D : réexamen ciblé des décisions T1 sur les SEULES unités en constat (texte persisté, aucun fichier relu).
-        const unites = [...new Set(((inspection.observed ?? []) as Array<{ unit?: string }>).map((o) => o.unit).filter((u): u is string => typeof u === 'string'))];
+        // Lot 108K (§D) : liste COMPLÈTE des unités à examiner (`detail.reviewUnits`), jamais l'échantillon affiché.
+        const completes = Array.isArray(inspection.detail?.reviewUnits) ? (inspection.detail!.reviewUnits as unknown[]).filter((u): u is string => typeof u === 'string') : null;
+        const unites = completes ?? [...new Set(((inspection.observed ?? []) as Array<{ unit?: string }>).map((o) => o.unit).filter((u): u is string => typeof u === 'string'))];
         const { reviewDocumentValueDecisions } = await import('@/services/ai/source-analysis/value-decisions/review');
-        const r = await reviewDocumentValueDecisions({ accountId, fileId: id, unitIds: unites, origin: 'coherence-control' });
+        // Lots du passage bornés par le budget de relances restant (la ligne du journal compte déjà pour une relance).
+        const reste = Math.max(1, (await t1RelaunchBudgetLeft(ctx)) + 1);
+        const r = await reviewDocumentValueDecisions({ accountId, fileId: id, unitIds: unites, origin: 'coherence-control', maxBatches: reste });
         if (r.outcome === 'FAILED') throw new Error(`réexamen des décisions T1 en échec : ${r.error ?? 'erreur'}`);
         const propagation = r.newFacts > 0 ? await propager() : {};
+        // Unités restantes (plafond de lots / budget) et progrès réel : contrôle ciblé redemandé pour le passage suivant.
+        const suite = (r.progress?.remaining ?? 0) > 0 && (r.progress?.batches ?? 0) > 0 && !(r.progress?.stopReasons ?? []).includes('REVIEW_FAILED');
+        if (suite) {
+          // Passage suivant demandé par le mécanisme ciblé de l'orchestrateur (aucune écriture directe ici).
+          await requestTargetedChecks({
+            accountId, sql: ctx.sql, skipEligibility: true, onlyChecks: [EXTRACT_CHAIN_CHECK_ID],
+            event: { type: 'DECISION_REVIEW_CONTINUE', entityId: id },
+          }).catch(() => ({}));
+        }
         out.set(id, {
           called: r.calls > 0, service: REVIEW_SERVICE, aiCalls: r.calls,
-          result: { outcome: r.outcome, calls: r.calls, units: unites.slice(0, DETAIL_MAX), decisions: r.decisions, newFacts: r.newFacts, propagation },
+          result: { outcome: r.outcome, calls: r.calls, units: unites.slice(0, DETAIL_MAX), unitsRequested: unites.length, progress: r.progress ?? null, continuation: suite,
+            decisions: r.decisions, newFacts: r.newFacts, propagation },
           rollbackRef: `document_value_decisions:file=${id}:origin=REVIEW;document_facts:file=${id}:origin=REPAIR`,
         });
       } else if (quoi === 'PROJECT') {
@@ -727,11 +1029,20 @@ export const extractChainCheck: CoherenceCheck = {
       }
     }
     return out;
-  },
-};
+  }
+}
 
 /** Constats d'omission repris par le rattrapage 91D (documents du diagnostic du 26/10/2026 et suivants). */
-const REVIEW_ANOMALIES = ['FACT_OMITTED_COVERED_UNIT', 'FACT_OMITTED_REPAIR_EXHAUSTED'];
+// Lot 108K : + réexamen interrompu (unités restantes, budget atteint).
+const REVIEW_ANOMALIES = ['FACT_OMITTED_COVERED_UNIT', 'FACT_OMITTED_REPAIR_EXHAUSTED', 'FACT_DECISION_REVIEW_IN_PROGRESS'];
+/**
+ * Lot 108K (§A) — mise en service des règles de qualité des décisions
+ * (motif spécifique, rattachement cohérent) : une preuve COHÉRENTE contrôlée
+ * AVANT cette date peut reposer sur une décision qui n'acquitte plus rien ;
+ * le rattrapage la redemande une fois (contrôle ciblé, aucune écriture si la
+ * décision reste valable).
+ */
+export const DECISION_QUALITY_RULES_SINCE = '2026-11-03T00:00:00Z';
 
 /**
  * Lot 91D — RATTRAPAGE : documents dont la preuve porte encore un constat
@@ -752,7 +1063,14 @@ async function decisionReviewCatchup(c: {
        AND ($3::int IS NULL OR p.account_id = $3)
        AND NOT EXISTS (SELECT 1 FROM coherence_repairs r WHERE r.account_id = p.account_id AND r.check_id = p.check_id AND r.object_id = p.object_id
                           AND r.service = $4 AND r.created_at >= COALESCE(p.first_detected_at, '-infinity'::timestamptz))
-     ORDER BY p.account_id, p.object_id LIMIT $5`, [EXTRACT_CHAIN_CHECK_ID, REVIEW_ANOMALIES, c.accountId ?? null, REVIEW_SERVICE, c.limit]);
+     UNION
+    SELECT p.account_id, p.object_id FROM coherence_object_proofs p
+     WHERE p.check_id = $1 AND p.last_result IN ('CONSISTENT', 'REPAIRED') AND p.requested_at IS NULL
+       AND ($3::int IS NULL OR p.account_id = $3) AND COALESCE(p.last_completed_at, '-infinity'::timestamptz) < $6::timestamptz
+       AND to_regclass('document_value_decisions') IS NOT NULL
+       AND EXISTS (SELECT 1 FROM document_value_decisions d WHERE d.account_id = p.account_id AND d.file_id = p.object_id
+                      AND d.status = 'ACTIVE' AND d.validity = 'VALID' AND d.decision IN ('NOT_RETAINED', 'COMPONENT_OR_CONTEXT', 'STRUCTURED'))
+     ORDER BY 1, 2 LIMIT $5`, [EXTRACT_CHAIN_CHECK_ID, REVIEW_ANOMALIES, c.accountId ?? null, REVIEW_SERVICE, c.limit, DECISION_QUALITY_RULES_SINCE]);
   const out: CatchupCandidate[] = [];
   const eligibles = new Map<number, boolean>();
   for (const l of lignes) {

@@ -78,6 +78,23 @@ export function setDefaultResponder(operationCode: string, task: string | undefi
 }
 
 /**
+ * Lot 108E — T3 RECHERCHE SÉMANTIQUE simulée : le modèle répond « aucun bien
+ * ne correspond » (vraie absence de preuve → NO_CANDIDATE). Depuis le lot 108E
+ * (ticket « correctif #626 bis », A6), une erreur du fournisseur n'est PLUS
+ * convertie en NO_CANDIDATE + carte : les scénarios qui ne portent pas sur
+ * T3 sémantique reçoivent donc une réponse explicite au lieu d'une panne
+ * implicite (sorties enregistrées d'un scénario : toujours prioritaires).
+ * Tout AUTRE appel LINK_AMBIGUITY sans sortie enregistrée échoue comme avant
+ * (simulation d'une panne préservée).
+ */
+export function t3SemanticNoMatchResponder(input: ProviderCallInput): unknown {
+  if (!input.prompt.includes('RECHERCHE SÉMANTIQUE')) {
+    throw new Error(`[replay] aucune sortie enregistrée pour l'opération « ${input.operationCode ?? '?'} » (TASK ${input.task ?? '?'}) — aucun appel réseau n'est permis en E2E.`);
+  }
+  return { task: 'LINK_AMBIGUITY', matches: [] };
+}
+
+/**
  * Lot 54 — T4 CLASSIFY_EVENT simulé : accepte l'événement, reprend la
  * catégorie de l'indice déterministe transmis (sinon `action`) et accepte la
  * récurrence envisagée par le serveur — le comportement antérieur au lot 54.

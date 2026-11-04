@@ -118,7 +118,9 @@ describe('FIN — scénarios chiffrés exacts', () => {
     expect(t.summary.currentValue).toBeNull();
     expect(t.reliability.unconverted).toEqual([{ currency: 'CHF', amountMinor: 45_000, kind: 'REALIZED_COST' }]);
     expect(t.reliability.unallocated).toEqual({ count: 1, eurCents: -80_000 });
-    expect(t.reliability.warnings).toEqual(expect.arrayContaining(['UNCONVERTED_AMOUNTS', 'UNALLOCATED_AMOUNTS', 'NO_RELIABLE_VALUATION']));
+    // Lot 108A (§C, décision PO) : l'absence de valorisation n'est plus un signalement (coût net « non calculable », état neutre).
+    expect(t.reliability.warnings).toEqual(expect.arrayContaining(['UNCONVERTED_AMOUNTS', 'UNALLOCATED_AMOUNTS']));
+    expect(t.reliability.warnings).not.toContain('NO_RELIABLE_VALUATION');
     expect(t.status).toBe('INCOMPLETE');
     expect(t.reliability.excluded.map((x) => x.reason).sort()).toEqual(['UNALLOCATED_MULTI_ASSET', 'UNCONVERTED_CURRENCY']);
   });
@@ -225,8 +227,13 @@ describe('TCO — périodes, attribution, valorisation, forfaits', () => {
     expect(t.reliability.warnings).toContain('DISPOSAL_PRICE_MISSING');
   });
 
-  it('TCO-09 — forfaits d’usage séparés du réel : jamais dans le coût cumulé ; devise étrangère jamais additionnée', () => {
+  // Lot 108C (ticket TCO-646 §E, décision PO) : l'ancienne règle « forfaits jamais dans le coût » (#445 / #474) est
+  // remplacée — le forfait COMPLÈTE le réel de sa catégorie par période échue (max(F, R)). Le coût DOCUMENTÉ reste
+  // strictement réel ; le TCO avec estimations est distinct. Scénarios 0 / 40 / 100 / 140 € et cas complets :
+  // `tco/__tests__/l108c-usage-complement.test.ts`.
+  it('TCO-09 (lot 108C) — forfait = estimation complémentaire : coût documenté inchangé, TCO avec estimations = documenté + max(0, F − R) ; devise étrangère jamais additionnée', () => {
     const t = computeTco(entree([op(120, 'ACQUISITION', [comp('REALIZED_COST', 100_000)])], {
+      assetAcquisitionDate: '2026-01-01',
       budgets: [
         { id: 1, assetId: BIEN, category: 'FUEL', label: null, amountMinor: 12_000, currency: 'EUR', periodicity: 'MONTHLY', validFrom: '2026-01-01', validTo: null },
         { id: 2, assetId: BIEN, category: 'TOLLS', label: null, amountMinor: 30_000, currency: 'EUR', periodicity: 'YEARLY', validFrom: null, validTo: '2025-12-31' },
@@ -234,6 +241,9 @@ describe('TCO — périodes, attribution, valorisation, forfaits', () => {
       ],
     }));
     expect(t.summary.cumulativeCostCents).toBe(100_000);
+    // Neuf mois échus (janvier à septembre ; date de référence 14/10/2026), aucun ticket carburant : 9 × 120 €.
+    expect(t.summary.estimatedUsageComplementCents).toBe(108_000);
+    expect(t.summary.totalWithEstimatesCents).toBe(208_000);
     expect(t.usage.annualEstimateCents).toBe(144_000);
     expect(t.usage.otherCurrencies).toEqual([{ currency: 'CHF', annualEquivalentMinor: 4_000 }]);
     expect(annualEquivalent({ amountMinor: 100, periodicity: 'QUARTERLY' })).toBe(400);

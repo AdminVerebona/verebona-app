@@ -311,10 +311,11 @@ function InitialState({ variant, api }: { variant: SpaceVariant; api: VerebonaSp
         <button
           key={s.id}
           type="button"
-          onClick={() => { void api.ask(s.label); }}
-          className={`flex items-center gap-2.5 rounded-xl border border-[color:var(--border-subtle)] text-left text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)] ${mobile ? 'min-h-11 bg-[color:var(--bg-card)] px-3.5 text-[13.5px]' : 'min-h-10 px-3 text-[13px]'}`}
+          onClick={() => api.askSuggestion(s)}
+          data-suggestion-id={s.id}
+          className={`flex items-center gap-2.5 rounded-xl border border-[color:var(--border-subtle)] py-2 text-left text-[color:var(--text-primary)] transition-colors hover:bg-[color:var(--accent-soft)] ${mobile ? 'min-h-11 bg-[color:var(--bg-card)] px-3.5 text-[13.5px]' : 'min-h-10 px-3 text-[13px]'}`}
         >
-          <span className="font-semibold text-[color:var(--accent)]" aria-hidden>›</span>{s.label}
+          <span className="font-semibold text-[color:var(--accent)]" aria-hidden>›</span><span className="min-w-0 flex-1 break-words">{s.label}</span>
         </button>
       ))}
       {api.recent.length > 0 && (

@@ -101,7 +101,9 @@ export function nativeUploadSender(): ((url: string, file: File, mimeType: strin
             else reject(new Error(`${file.name} : le stockage a refusé le fichier (${code}).`));
           } else if (e.name === 'failed') {
             signal.removeEventListener('abort', surAnnulation);
-            reject(new Error(`${file.name} : transfert interrompu. Il reprendra à la prochaine tentative.`));
+            // Lot 108G : pas de promesse de reprise automatique — état explicite,
+            // reprise sûre par « Reprendre » (même opération, aucun doublon).
+            reject(new Error(`${file.name} : transfert interrompu (connexion perdue ?). Touchez « Reprendre » : le document ne sera pas créé deux fois.`));
           }
         };
         up.startUpload({

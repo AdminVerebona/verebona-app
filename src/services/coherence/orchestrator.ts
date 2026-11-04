@@ -806,12 +806,18 @@ export async function requestTargetedChecks(p: {
   accountId: number; event: { type: string; entityId: number | null; assetId?: number | null }; now?: Date; sql?: Sql; skipEligibility?: boolean;
   /** Lot 83B : contrôles à ne pas redemander (propagation aval demandée par une réparation : jamais le contrôle réparateur lui-même). */
   excludeChecks?: readonly string[];
+  /**
+   * Lot 108K : SEULS ces contrôles sont redemandés, quel que soit leur déclencheur (suite d'une réparation par lots :
+   * le contrôle redemande son propre passage suivant, motif = type de l'événement).
+   */
+  onlyChecks?: readonly string[];
 }): Promise<Record<string, number>> {
   const sql = p.sql ?? pgClient;
   const now = p.now ?? new Date();
   const out: Record<string, number> = {};
   const exclus = new Set(p.excludeChecks ?? []);
-  const checks = activeChecks().filter((c) => c.triggers.includes(p.event.type) && c.objectsForEvent && !exclus.has(c.id));
+  const seuls = p.onlyChecks ? new Set(p.onlyChecks) : null;
+  const checks = activeChecks().filter((c) => (seuls ? seuls.has(c.id) : c.triggers.includes(p.event.type)) && c.objectsForEvent && !exclus.has(c.id));
   if (!checks.length) return out;
   if (!p.skipEligibility && !(await coherenceAccountEligibility(p.accountId, now)).eligible) return out;
   for (const check of checks) {

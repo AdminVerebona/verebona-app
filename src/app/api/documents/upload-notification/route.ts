@@ -1,39 +1,25 @@
 /**
- * POST /api/documents/upload-notification — fin d'un lot d'envoi réussi
- * (lot 32, décisions PO Q18/Q19).
+ * POST /api/documents/upload-notification — CONSERVÉE POUR COMPATIBILITÉ.
  *
- * Appelée par la fenêtre d'ajout à la fin d'un lot (fichiers) ou après la
- * création d'un lien web : `{ fileIds: number[], lotId?: string }`. Émet UNE
- * notification « Documents ajoutés » pour l'utilisateur (tous comptes,
- * Standard compris) — voir `upload-notification.service`. Aucun toast.
- * Réponse 202 : la livraison (cloche, push, e-mail selon les préférences)
- * est asynchrone ; un échec n'affecte pas l'envoi, déjà réussi.
+ * Lot 32 (PO-Q18/Q19) : la fenêtre d'ajout l'appelait en fin de lot d'envoi
+ * pour émettre une notification « Document ajouté ».
+ *
+ * Lot 108I (ticket « Notifications documents ») : un ajout réussi est
+ * confirmé discrètement DANS le parcours d'ajout, sans notification
+ * (`lib/upload-confirmation-client.ts`). La fenêtre d'ajout ne l'appelle
+ * plus ; une interface plus ancienne encore ouverte (onglet, application
+ * native avant rechargement) peut l'appeler : la route répond sans rien
+ * émettre. Les notifications « Document ajouté » déjà reçues restent dans
+ * l'historique (type conservé au catalogue pour leur affichage).
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
-import { notifyUploadCompleted } from '@/services/documents/upload-notification.service';
+
+/** Motif renvoyé (et tracé) : la confirmation est faite dans l'interface. */
+const UPLOAD_NOTIFICATION_RETIRED_REASON = 'ui_confirmation';
 
 export async function POST(request: NextRequest) {
-  let session;
-  try { session = await getSession(request); }
+  try { await getSession(request); }
   catch { return NextResponse.json({ error: 'AUTH_REQUIRED' }, { status: 401 }); }
-  if (!session.currentAccountId) return NextResponse.json({ error: 'NO_ACTIVE_ACCOUNT' }, { status: 400 });
-
-  const body = (await request.json().catch(() => null)) as { fileIds?: unknown; lotId?: unknown } | null;
-  if (!body || !Array.isArray(body.fileIds)) {
-    return NextResponse.json({ error: 'INVALID_INPUT', message: '`fileIds` requis.' }, { status: 400 });
-  }
-
-  try {
-    const r = await notifyUploadCompleted({
-      userId: session.userId,
-      accountId: session.currentAccountId,
-      fileIds: body.fileIds,
-      lotId: body.lotId,
-    });
-    return NextResponse.json(r, { status: 202 });
-  } catch (e) {
-    console.error('[upload-notification] émission impossible :', (e as Error).message);
-    return NextResponse.json({ emitted: false, count: 0 }, { status: 202 });
-  }
+  return NextResponse.json({ emitted: false, count: 0, reason: UPLOAD_NOTIFICATION_RETIRED_REASON }, { status: 202 });
 }

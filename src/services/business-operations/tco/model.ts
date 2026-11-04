@@ -7,8 +7,9 @@
  *
  * Il consomme les composantes CONSOLIDÉES par T3 (Opérations actives, liens
  * biens et équipements), `valuationHistory`, les dates d'acquisition et de
- * cession établies, et les forfaits d'usage (budgets, jamais des coûts
- * réels). Il ne lit aucun PDF, ne crée aucune Opération, ne persiste aucun
+ * cession établies, et les forfaits d'usage (estimations : lot 108C, ils
+ * complètent les dépenses réelles de leur catégorie pour les périodes échues,
+ * `./usage-complement`, sans entrer dans le coût documenté). Il ne lit aucun PDF, ne crée aucune Opération, ne persiste aucun
  * total : il est recalculé à chaque lecture (donc après toute consolidation,
  * correction, fusion, invalidation, remboursement, valorisation ou cession).
  * Toutes les règles économiques viennent du moteur partagé
@@ -87,6 +88,19 @@
  * Jamais la plus ancienne ACQUISITION, jamais `startDate`. Le TOTAL ne
  * dépend pas de cette date.
  *
+ * Lot 108A (ticket P1 « TCO — correctifs globaux » §A) — l'identité d'un même
+ * achat entre fiche, justificatif, événement de référence, composante et
+ * équipement est établie par FAISCEAU DE PREUVES (`./fact-matching`), plus
+ * par l'égalité des jours (`sameDay`, cause racine du double comptage
+ * « fiche au J, facture au J-1 ») : même montant et même objet nécessaires ;
+ * référence commune, ou dates proches avec cible explicite ou fournisseur
+ * commun ; contradiction (fournisseurs, références, dates hors fenêtre) →
+ * distinct ; doute → compté et signalé. Un achat établi n'absorbe qu'un
+ * justificatif ; plusieurs événements de référence du même achat du bien ne
+ * comptent qu'une fois (SAME_FACT_CROSS_SOURCE), comme la fiche et la facture
+ * d'un même achat réunies par T3 en deux composantes (`./fact-identity`).
+ * §C : l'absence de valorisation n'est plus un signalement.
+ *
  *   Coût cumulé documenté = Σ coûts réalisés − Σ réductions − Σ remboursements
  *                           − Σ indemnités attribuables
  *   En possession         : coût net estimé = cumulé − valeur actuelle FIABLE
@@ -97,6 +111,11 @@
  *                           prix réalisé absent : simulation PROVISOIRE au prix
  *                           souhaité, clairement différenciée.
  *   Peut être négatif (aucun plancher).
+ *
+ * Lot 108C (TCO-646 §E, remplace #445 / #474) — dépenses d'usage :
+ *   TCO avec estimations = coût cumulé documenté + Σ max(0, F − R) par
+ *   catégorie d'usage et période échue (`summary.totalWithEstimatesCents`) ;
+ *   le coût documenté reste strictement réel (T2 « dépenses réelles »).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { BusinessOperationTypeCode, FinancialComponentKind } from '../model';
@@ -114,9 +133,11 @@ import {
   type AcquisitionStartStatus, type CanonicalAcquisitionDateInput,
 } from './acquisition-start';
 import {
-  presumedDuplicateComponents, purchaseIsOwnershipCost, unjustifiedComponent, type ComponentProvenance, type PresumedDuplicate,
+  presumedDuplicateComponents, purchaseIsOwnershipCost, structuredDocumentPurchaseAssessment, unjustifiedComponent, type ComponentProvenance, type PresumedDuplicate,
 } from './fact-identity';
 import { applyTcoUserDecisions, type TcoLineUserDecision, type TcoUserDecision } from './user-decisions';
+import { assessSamePurchase, pickSameFact, purchaseDatesCompatible, type PurchaseFact, type SameFactAssessment } from './fact-matching';
+import { computeUsageComplement, type UsageComplement, type UsageLineAssignment } from './usage-complement';
 import {
   economicDateLabel, resolveOperationEconomicDates, type EconomicDateDocument, type EconomicDateEvidence, type EconomicDateResolution, type OwnDateOrigin,
 } from '../finance/economic-date';
@@ -142,6 +163,8 @@ export interface TcoOperation {
   userLinked?: boolean;
   /** Lot 78B (§3C) : l'Opération est rattachée à un équipement de ce bien. */
   equipmentLinked?: boolean;
+  /** Lot 108A : fournisseur consolidé (faisceau d'identité avec le prix de la fiche). */
+  provider?: string | null;
 }
 
 /** Lot 61 : prix d'achat de la fiche (saisi ou extrait d'un justificatif). */
@@ -152,6 +175,8 @@ export interface TcoAssetPrice {
   origin: string | null;
   /** Documents preuves actives du prix (même fait que leur facture d'achat). */
   evidenceFileIds: readonly number[];
+  /** Lot 108A : lieu d'achat saisi sur la fiche — indice positif de fournisseur, jamais une contradiction. */
+  supplier?: string | null;
 }
 
 const USAGE_BUDGET_CATEGORIES = ['FUEL', 'CHARGING', 'TOLLS', 'OTHER'] as const;
@@ -166,7 +191,11 @@ export const USAGE_BUDGET_PERIODICITY_LABELS: Readonly<Record<UsageBudgetPeriodi
   MONTHLY: 'par mois', QUARTERLY: 'par trimestre', YEARLY: 'par an',
 };
 
-/** Forfait d'usage (budget estimé) — jamais un coût réalisé, jamais une Opération (§3.5). */
+/**
+ * Forfait d'usage (estimation) — jamais une Opération (§3.5). Lot 108C : il
+ * COMPLÈTE les dépenses réelles de sa catégorie pour les périodes échues
+ * (`./usage-complement`), sans jamais modifier le coût documenté.
+ */
 export interface UsageBudget {
   id: number;
   assetId: number;
@@ -177,6 +206,8 @@ export interface UsageBudget {
   periodicity: UsageBudgetPeriodicity;
   validFrom: string | null;
   validTo: string | null;
+  /** Lot 108C : version précédente de ce forfait (révision datée : les périodes closes gardent l'ancien montant). */
+  revisesBudgetId?: number | null;
 }
 
 export interface TcoInput {
@@ -233,6 +264,8 @@ export interface TcoInput {
    * priment sur les règles automatiques pour la ligne concernée.
    */
   userDecisions?: readonly TcoUserDecision[];
+  /** Lot 108C : classements « dépense d'usage » de l'utilisateur (clé stable de la ligne). */
+  usageAssignments?: readonly UsageLineAssignment[];
 }
 
 /** Lot 71A : prix d'achat de la fiche d'un équipement du bien. */
@@ -260,7 +293,9 @@ export const TCO_CATEGORY_LABELS: Readonly<Record<TcoCategory, string>> = {
 
 export type TcoWarning =
   | 'ACQUISITION_DATE_MISSING' | 'ACQUISITION_COST_MISSING' | 'UNCONVERTED_AMOUNTS' | 'UNALLOCATED_AMOUNTS'
-  | 'NO_RELIABLE_VALUATION' | 'DISPOSAL_PRICE_MISSING' | 'DISPOSAL_DATE_MISSING' | 'PARTIAL_READ' | 'PRORATA_APPLIED'
+  // Lot 108A (§C) : NO_RELIABLE_VALUATION retiré — l'absence de valeur actuelle n'est pas une anomalie du TCO historique
+  // (coût net estimé « non calculable », état neutre ; aucun consommateur ne dépendait du code).
+  | 'DISPOSAL_PRICE_MISSING' | 'DISPOSAL_DATE_MISSING' | 'PARTIAL_READ' | 'PRORATA_APPLIED'
   // Lot 61 : dépenses documentaires non qualifiées / sans montant, et dépenses dont le bien n'est pas confirmé.
   | 'DOCUMENTS_NOT_QUALIFIED' | 'UNCONFIRMED_ASSET_EXPENSES'
   // Lot 75D : justificatifs sans montant, rapprochements incertains, facture d'achat non identifiable.
@@ -276,7 +311,9 @@ export type TcoWarning =
   // Lot 86F : dépenses retenues dont la date économique n'est pas établie (comptées, rattachées à aucune année).
   | 'ECONOMIC_DATE_UNDETERMINED'
   // Lot 107C : dates d'achat du bien contradictoires sans autorité décisive (moyenne annuelle non calculée).
-  | 'ACQUISITION_DATE_UNDETERMINED';
+  | 'ACQUISITION_DATE_UNDETERMINED'
+  // Lot 108B : montant d'un justificatif en cours de récupération automatique (état neutre, jamais une alerte).
+  | 'AMOUNTS_RECOVERY_PENDING';
 
 /** Lot 75D (H) : état du coût d'acquisition (distingue absence de dépense et information manquante). */
 type TcoAcquisitionStatus = 'DOCUMENTED' | 'MISSING' | 'NOT_APPLICABLE';
@@ -336,6 +373,11 @@ export interface TcoEconomicLine {
   economicDate?: EconomicDateResolution;
   /** Lot 86F : libellé court du fondement de la date (« Date de paiement », « Date non établie »…) — tiroir. */
   dateLabel?: string | null;
+  /**
+   * Lot 108A : rapprochement d'identité avec un autre fait (faisceau de preuves) —
+   * verdict, codes stables, ligne de référence. Diagnostic BO et tiroir.
+   */
+  identity?: { verdict: SameFactAssessment['verdict']; signals: string[]; against: string };
 }
 
 export interface TcoResult {
@@ -359,6 +401,8 @@ export interface TcoResult {
    * diagnostic BO et contrôle de cohérence ; jamais transmise à la fiche.
    */
   acquisitionStart?: AcquisitionStartResolution;
+  /** Lot 108B : état de la récupération automatique des montants inconnus (lu, jamais calculé à la consultation). */
+  amountRecovery?: import('./amount-recovery').TcoAmountRecoveryView;
   summary: {
     /** Coût cumulé documenté (C17), centimes EUR. */
     cumulativeCostCents: number;
@@ -373,6 +417,10 @@ export interface TcoResult {
     netEstimatedCents: number | null;
     /** Après cession, avec prix réalisé. */
     netFinalCents: number | null;
+    /** Lot 108C : complément estimé des dépenses d'usage (périodes échues) — jamais compris dans `cumulativeCostCents`. */
+    estimatedUsageComplementCents: number;
+    /** Lot 108C : TCO cumulé intégrant les estimations = coût documenté + complément estimé. */
+    totalWithEstimatesCents: number;
   };
   breakdown: Array<{ category: TcoCategory; label: string; costsCents: number; count: number }>;
   reductionsCents: number;
@@ -389,10 +437,12 @@ export interface TcoResult {
   };
   usage: {
     items: Array<UsageBudget & { annualEquivalentMinor: number; activeNow: boolean }>;
-    /** Σ des équivalents annuels des forfaits EUR actifs (estimation, jamais un coût réel). */
+    /** Budget annuel PRÉVISIONNEL : Σ des équivalents annuels des forfaits EUR en cours (affiché à part, jamais ajouté pour des mois futurs). */
     annualEstimateCents: number;
     /** Forfaits dans une autre devise : jamais additionnés en euros. */
     otherCurrencies: Array<{ currency: string; annualEquivalentMinor: number }>;
+    /** Lot 108C : complément estimé par catégorie et période (R, F, complément, contribution). */
+    complement: UsageComplement;
   };
   reliability: {
     operationsCounted: number;
@@ -507,11 +557,7 @@ function memeAchatDecritPlusieursFois(lignes: readonly DocumentLineDraft[]): { k
   return { kept: fichiers[0] };
 }
 
-/** Lot 75D : même jour ? `null` si l'une des dates est inconnue (identité non démontrable par la date). */
-function sameDay(a: string | null | undefined, b: string | null | undefined): boolean | null {
-  if (!isIsoDate(a) || !isIsoDate(b)) return null;
-  return a.slice(0, 10) === b.slice(0, 10);
-}
+// Lot 108A : `sameDay` (exigence du même jour) supprimé — identité par faisceau de preuves (`./fact-matching`).
 const opDate = (o: Pick<TcoOperation, 'realizedDate' | 'startDate'>): string | null => {
   const d = o.realizedDate ?? o.startDate;
   return isIsoDate(d) ? d.slice(0, 10) : null;
@@ -620,6 +666,20 @@ export function computeTco(input: TcoInput): TcoResult {
   };
   const doublons = new Map<number, PresumedDuplicate>();
   for (const op of ops) for (const [id, d] of presumedDuplicateComponents(op, prov, force)) doublons.set(id, d);
+  // Lot 108A : fiche + justificatif du même achat consolidé, identité INCERTAINE (dates inconnues) — comptés, signalés.
+  const incertitudesComp = new Map<number, { against: number; signals: string[] }>();
+  for (const op of ops) {
+    if (op.typeCode !== 'ACQUISITION') continue;
+    for (const a of op.components) {
+      for (const b of op.components) {
+        if (a.id >= b.id || doublons.has(a.id) || doublons.has(b.id)) continue;
+        const v = structuredDocumentPurchaseAssessment(a, b, prov.get(a.id), prov.get(b.id), op.typeCode);
+        if (v?.verdict !== 'UNCERTAIN') continue;
+        const [doc, fiche] = (prov.get(a.id)?.documentFileIds.length ?? 0) > 0 ? [a, b] : [b, a];
+        incertitudesComp.set(doc.id, { against: fiche.id, signals: v.signals });
+      }
+    }
+  }
   const nonJustifiees = new Map<number, 'AMOUNT_NOT_ON_SOURCES' | 'SOURCES_WITHDRAWN'>();
   const autresBiens = new Set<number>();
 
@@ -646,7 +706,8 @@ export function computeTco(input: TcoInput): TcoResult {
       const autreBien = e.included && !!prov.get(c.id)?.otherAssetAcquisition && !justifieParPreuve(c.id);
       // §3B : même somme, autre justificatif de la même dépense, sans preuve de transaction distincte — comptée une fois.
       const doublon = e.included && !autreBien && doublons.has(c.id);
-      if (doublon) warnings.add('PRESUMED_DUPLICATES');
+      // Lot 108A : identité CONFIRMÉE (fiche + justificatif du même achat) : une contribution, aucune alerte « à vérifier ».
+      if (doublon && !doublons.get(c.id)!.confirmed) warnings.add('PRESUMED_DUPLICATES');
       if (autreBien) autresBiens.add(c.id);
       if (e.prorata && !doublon && !autreBien) warnings.add('PRORATA_APPLIED');
       const x = autreBien
@@ -681,6 +742,17 @@ export function computeTco(input: TcoInput): TcoResult {
   // mêle plusieurs achats (rapprochement abusif) ne fait jamais du prix d'un autre achat celui du bien, ni l'inverse.
   const achatsIncertains = new Set<number>();
   const compAchat = new Map<number, Set<number>>();
+  // Lot 108A (§A) : faits comparés par faisceau de preuves (montant, objet, cible, fournisseur, références, dates
+  // proches) — jamais le même jour exigé, jamais le montant seul (`./fact-matching`).
+  const ficheFait: PurchaseFact | null = prix && prixEur != null
+    ? { eurCents: prixEur, date: prixDate, supplier: prix.supplier ?? null, supplierHintOnly: true, explicitTarget: true, equipment: false } : null;
+  const opFait = (o: TcoOperation, eur: number, date: string | null): PurchaseFact => ({
+    eurCents: eur, date, supplier: o.provider ?? null, equipment: false,
+    explicitTarget: !!o.userLinked || o.components.some((c) => c.targetAssetId === input.assetId)
+      || (o.assetIds.length === 1 && o.assetIds[0] === input.assetId && !o.equipmentLinked),
+  });
+  const identitesOp = new Map<number, SameFactAssessment>();
+  const incertitudesOp = new Map<number, SameFactAssessment>();
   for (const o of achatsCoutes) {
     const couts = (opEntries.get(o.id) ?? []).filter((e) => e.included && e.effect === 'COST' && !cibleEquipement(o, e.componentId));
     let ids: number[] = [];
@@ -688,20 +760,36 @@ export function computeTco(input: TcoInput): TcoResult {
     else if (o.documents.some((d) => preuves.has(d.fileId))) {
       // Seules les composantes portées par la preuve du prix (ou sans justificatif documentaire connu) sont l'achat du bien.
       ids = couts.filter((e) => { const p = prov.get(e.componentId); return !p || !p.documentFileIds.length || justifieParPreuve(e.componentId); }).map((e) => e.componentId);
-    } else if (prixEur != null && !preuves.size) {
+    } else if (ficheFait && prixEur != null && !preuves.size) {
       if (coutOp(o.id) === prixEur) {
-        const memeJour = sameDay(prixDate, opDate(o));
-        if (memeJour === null) achatsIncertains.add(o.id);
-        if (memeJour === true) ids = couts.map((e) => e.componentId);
+        const v = assessSamePurchase(ficheFait, opFait(o, prixEur, opDate(o)));
+        if (v.verdict === 'UNCERTAIN') { achatsIncertains.add(o.id); incertitudesOp.set(o.id, v); }
+        if (v.verdict === 'SAME') { ids = couts.map((e) => e.componentId); identitesOp.set(o.id, v); }
       } else {
         for (const e of couts.filter((x) => x.eurMinor === prixEur)) {
-          const memeJour = sameDay(prixDate, e.date ?? opDate(o));
-          if (memeJour === null) achatsIncertains.add(o.id);
-          if (memeJour === true) ids.push(e.componentId);
+          const v = assessSamePurchase(ficheFait, opFait(o, prixEur, e.date ?? opDate(o)));
+          if (v.verdict === 'UNCERTAIN') { achatsIncertains.add(o.id); incertitudesOp.set(o.id, v); }
+          if (v.verdict === 'SAME') { ids.push(e.componentId); identitesOp.set(o.id, v); }
         }
       }
     }
     if (ids.length) compAchat.set(o.id, new Set(ids));
+  }
+  // Lot 108A (§A) : plusieurs événements de référence identifiés comme L'ACHAT de ce bien face au prix de la fiche
+  // (donnée de la fiche, preuve du prix, faisceau ; ex. facture importée avant la création du bien puis fiche saisie)
+  // portant le même coût : un seul achat — le mieux établi est compté, les autres restent consultables, non additionnés.
+  const memesAchats = new Map<number, { keptComponentId: number; keptOperationId: number }>();
+  if (prix && compAchat.size > 1) {
+    const cout = (o: TcoOperation) => (opEntries.get(o.id) ?? []).filter((e) => e.included && compAchat.get(o.id)?.has(e.componentId)).reduce((n, e) => n + e.includedEurMinor, 0);
+    const rang = (o: TcoOperation) => ((o.sourceKinds ?? []).includes('ASSET_DATA') ? 0 : o.documents.some((d) => preuves.has(d.fileId)) ? 1 : 2);
+    const identifies = ops.filter((o) => compAchat.has(o.id)).sort((a, b) => rang(a) - rang(b) || a.id - b.id);
+    const garde = identifies[0];
+    const gardeComp = [...compAchat.get(garde.id)!].sort((a, b) => a - b)[0];
+    for (const o of identifies.slice(1)) {
+      if (cout(o) !== cout(garde)) continue;
+      for (const id of compAchat.get(o.id)!) memesAchats.set(id, { keptComponentId: gardeComp, keptOperationId: garde.id });
+      compAchat.delete(o.id);
+    }
   }
   const achatsDuBien = new Set(compAchat.keys());
   // Sans prix dans la fiche, plusieurs achats consolidés distincts pourraient chacun être celui du bien : signalé.
@@ -715,11 +803,17 @@ export function computeTco(input: TcoInput): TcoResult {
       else if (prix || compAchat.has(o.id)) e.category = 'ACCESSORIES';
     }
   }
+  for (const o of ops) {
+    for (const e of opEntries.get(o.id) ?? []) {
+      if (!memesAchats.has(e.componentId) || !e.included) continue;
+      e.included = false; e.includedEurMinor = 0; e.category = null; e.prorata = null;
+    }
+  }
   const coutAchat = (o: TcoOperation) => (opEntries.get(o.id) ?? []).filter((e) => e.included && compAchat.get(o.id)?.has(e.componentId)).reduce((n, e) => n + e.includedEurMinor, 0);
-  /** Montant (EUR) et date des achats du bien établis : fiche, achats consolidés. */
-  const achatsEtablis: Array<{ eur: number; date: string | null }> = [
-    ...(prix && prixEur != null ? [{ eur: prixEur, date: prixDate }] : []),
-    ...ops.filter((o) => achatsDuBien.has(o.id)).map((o) => ({ eur: coutAchat(o), date: opDate(o) })),
+  /** Achats du bien établis (fiche, achats consolidés) — faits comparés par faisceau (lot 108A). */
+  const achatsEtablis: Array<{ id: string; fait: PurchaseFact }> = [
+    ...(ficheFait ? [{ id: `asset:${input.assetId}:acquisitionPrice`, fait: ficheFait }] : []),
+    ...ops.filter((o) => achatsDuBien.has(o.id)).map((o) => ({ id: `op:${o.id}`, fait: opFait(o, coutAchat(o), opDate(o)) })),
   ];
 
   // ── Lot 78B (§3C) : pertinence d'un achat pour le coût de possession du bien ──
@@ -792,7 +886,11 @@ export function computeTco(input: TcoInput): TcoResult {
     };
     if (achatsDuBien.size) {
       const o = ops.find((x) => achatsDuBien.has(x.id))!;
-      lines.push({ ...base, includedCents: 0, operationId: o.id, operationLabel: o.label, status: 'CONSOLIDATED_ELSEWHERE', reason: 'ASSET_PRICE_CONSOLIDATED' });
+      const v = identitesOp.get(o.id);
+      lines.push({
+        ...base, includedCents: 0, operationId: o.id, operationLabel: o.label, status: 'CONSOLIDATED_ELSEWHERE', reason: 'ASSET_PRICE_CONSOLIDATED',
+        ...(v ? { identity: { verdict: v.verdict, signals: v.signals, against: `op:${o.id}` } } : {}),
+      });
     } else {
       const e = evaluateComponent({
         id: 0, lineId: assetLineId, operationId: 0, kind: 'REALIZED_COST', amountMinor: prix.amountMinor, currency: prix.currency, amountEurCents: null,
@@ -840,6 +938,38 @@ export function computeTco(input: TcoInput): TcoResult {
       } else warnings.add('ACQUISITION_AMBIGUOUS');
     }
   }
+  // Lot 108A (§A) : facture d'achat ↔ achats du bien établis (fiche, achats consolidés), par faisceau de preuves.
+  // Un achat établi n'absorbe qu'UN justificatif (le plus proche en date) ; les autres confirmés restent comptés,
+  // signalés incertains. Le jour exact n'est jamais exigé ; le montant seul ne suffit jamais.
+  const identitesDoc = new Map<string, { verdict: SameFactAssessment['verdict']; signals: string[]; against: string }>();
+  if ((prix || achatsDuBien.size) && !preuves.size) {
+    const eligibles = drafts.filter((d) => documentCategory(d) === 'PURCHASE' && d.kind === 'REALIZED_COST' && d.status === null && !docEquipement(d)
+      && componentEurMinor({ amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents }) != null);
+    const docFait = (d: DocumentLineDraft): PurchaseFact => {
+      const c = d.candidateId != null ? docsParId.get(d.fileId)?.candidates.find((x) => x.id === d.candidateId) : undefined;
+      const sansCible = !c || !c.targets.length;
+      return {
+        eurCents: componentEurMinor({ amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents }), date: dateOfDraft(d),
+        supplier: d.supplierKey, invoiceRefs: d.invoiceRefs, equipment: false,
+        explicitTarget: d.targetAssetId === input.assetId || (sansCible && d.assetIds.length === 1 && d.assetIds[0] === input.assetId),
+      };
+    };
+    // Les achats établis représentent le MÊME achat du bien (fiche, achat consolidé) : une contradiction relevée face à
+    // l'un d'eux (fournisseur connu différent, références de facture disjointes, autre objet) écarte l'identité pour tous.
+    const contradiction = (v: SameFactAssessment) => v.signals.some((x) => x === '-SUPPLIER_DIFFERENT' || x === '-REFERENCE_DIFFERENT' || x === '!OBJECT_DIFFERENT');
+    const vetos = new Set(eligibles.filter((d) => achatsEtablis.some((a) => contradiction(assessSamePurchase(a.fait, docFait(d))))).map((d) => d.lineId));
+    for (const a of achatsEtablis) {
+      const examens = eligibles.filter((d) => !vetos.has(d.lineId)).map((d, i) => ({ item: d, assessment: assessSamePurchase(a.fait, docFait(d)), order: i }));
+      const { kept, demoted } = pickSameFact(examens);
+      for (const x of examens) {
+        const cur = identitesDoc.get(x.item.lineId);
+        if (cur?.verdict === 'SAME') continue;
+        const verdict = x.item === kept ? 'SAME' : demoted.includes(x.item) ? 'UNCERTAIN' : x.assessment.verdict;
+        if (verdict === 'DISTINCT' && cur) continue;
+        identitesDoc.set(x.item.lineId, { verdict, signals: x.assessment.signals, against: a.id });
+      }
+    }
+  }
   const docEntries: Array<{ draft: DocumentLineDraft; entry: LedgerEntry & { category: TcoCategory | null } }> = [];
   for (const d of drafts) {
     let category: TcoCategory | null = null;
@@ -852,9 +982,9 @@ export function computeTco(input: TcoInput): TcoResult {
         // Lot 75D (A) : identité établie seulement — preuve T1 du prix, ou montant + date concordants ; jamais le montant seul.
         let memeFait = d.kind === 'REALIZED_COST' && preuves.has(d.fileId);
         if (!memeFait && d.kind === 'REALIZED_COST' && d.status === null && eur != null && !preuves.size && !docEquipement(d)) {
-          const verdicts = achatsEtablis.filter((x) => x.eur === eur).map((x) => sameDay(dateOfDraft(d), x.date));
-          if (verdicts.includes(true)) memeFait = true;
-          else if (verdicts.includes(null)) {
+          const v = identitesDoc.get(d.lineId);
+          if (v?.verdict === 'SAME') memeFait = true;
+          else if (v?.verdict === 'UNCERTAIN') {
             d.uncertain = { relatedFileId: null, note: 'Même montant que l’achat du bien, sans preuve qu’il s’agisse de la même dépense : comptée, à vérifier (renseignez la date d’achat de la fiche ou retirez le doublon).' };
           }
         }
@@ -864,7 +994,7 @@ export function computeTco(input: TcoInput): TcoResult {
       // Lot 78B (§3C) : achat distinct (ni le bien, ni un équipement, ni des frais d'acquisition) — pertinence.
       if (category === 'ACCESSORIES' && d.status === null && (prix || achatsDuBien.size > 0 || factureAchat.size > 0 || input.acquisitionExpected === false)
         && !purchaseIsOwnershipCost({ assetCategory: input.assetCategory ?? null, concernsEquipment: docEquipement(d), acquisitionFee: d.scope === 'FEE' })) {
-        const memeMontant = eur != null && achatsEtablis.some((x) => x.eur === eur);
+        const memeMontant = eur != null && achatsEtablis.some((x) => x.fait.eurCents === eur);
         d.status = 'EXCLUDED'; d.reason = 'NOT_OWNERSHIP_COST'; d.uncertain = null;
         d.note = memeMontant
           ? 'Même montant que l’achat du bien : probablement un autre justificatif de cet achat, déjà compté. Non ajouté au coût de possession.'
@@ -881,7 +1011,12 @@ export function computeTco(input: TcoInput): TcoResult {
       // Lot 75D (D) : montant inconnu — jamais présenté comme 0 €.
       const inconnu = d.reason === 'AMOUNT_UNKNOWN';
       const eur = d.kind && !inconnu ? componentEurMinor({ amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents }) : null;
-      lines.push({ ...ligne, eurCents: eur, includedCents: 0, status: d.status ?? 'EXCLUDED', reason: d.reason, ...(inconnu ? { amountUnknown: true } : {}) });
+      const idDoc = d.reason === 'SAME_AS_ASSET_PRICE' ? identitesDoc.get(d.lineId) : undefined;
+      lines.push({
+        ...ligne, eurCents: eur, includedCents: 0, status: d.status ?? 'EXCLUDED', reason: d.reason, ...(inconnu ? { amountUnknown: true } : {}),
+        // Lot 108A : même achat confirmé — relié à la ligne comptée (fiche ou achat consolidé), justificatif ouvrable.
+        ...(idDoc ? { identity: idDoc, ...(idDoc.against.startsWith('asset:') ? { duplicateOf: idDoc.against } : {}) } : {}),
+      });
       continue;
     }
     const e = evaluateComponent({
@@ -898,12 +1033,17 @@ export function computeTco(input: TcoInput): TcoResult {
     entries.push(x);
     docEntries.push({ draft: d, entry: x });
     const incertaine = e.included && d.uncertain
-      ? { uncertain: true, note: d.uncertain.note, relatedFileId: d.relatedFileId ?? d.uncertain.relatedFileId } : {};
+      ? { uncertain: true, note: d.uncertain.note, relatedFileId: d.relatedFileId ?? d.uncertain.relatedFileId, ...(identitesDoc.get(d.lineId) ? { identity: identitesDoc.get(d.lineId)! } : {}) } : {};
     lines.push({
       ...ligne, date: e.date, eurCents: e.eurMinor, includedCents: e.includedEurMinor, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion, ...incertaine,
       ...dateEco(d.dateResolution, e), ...nonRealisee(e),
     });
   }
+  // Lot 108A : prix de la fiche retenu sans preuve T1 mais facture du même achat confirmée — le justificatif est
+  // ouvrable depuis la ligne comptée (toutes les sources restent consultables et reliées).
+  const ligneFiche = lines.find((l) => l.id === assetLineId && l.fileId == null);
+  const factureFiche = ligneFiche ? lines.find((l) => l.source === 'DOCUMENT' && l.reason === 'SAME_AS_ASSET_PRICE' && l.duplicateOf === assetLineId && l.fileId != null) : undefined;
+  if (ligneFiche && factureFiche) { ligneFiche.fileId = factureFiche.fileId; ligneFiche.identity = { ...factureFiche.identity!, against: factureFiche.id }; }
   // ── Prix d'achat des équipements (lot 71A ; lot 75D F) : dépense du bien, sans doublon ─
   // Jamais additionné à SA facture d'achat ni à l'achat consolidé de l'équipement — identité établie seulement
   // (preuve T1 du prix, donnée structurée, ou rattachement à l'équipement + nature « achat » + même montant + dates
@@ -927,7 +1067,7 @@ export function computeTco(input: TcoInput): TcoResult {
       || (docsParId.get(fileId)?.candidates ?? []).some((c) => c.targets.some((t) => t.type === 'EQUIPMENT' && t.entityId === ep.equipmentId));
     const facture = docEntries.find((x) => x.entry.included && x.draft.kind === 'REALIZED_COST' && preuvesEq.has(x.draft.fileId))
       ?? (preuvesEq.size || eur == null ? undefined : docEntries.find((x) => x.entry.included && x.draft.kind === 'REALIZED_COST' && lieA(x.draft.fileId)
-        && documentCategory(x.draft) === 'PURCHASE' && x.entry.eurMinor === eur && sameDay(dateOfDraft(x.draft), epDate) !== false));
+        && documentCategory(x.draft) === 'PURCHASE' && x.entry.eurMinor === eur && purchaseDatesCompatible(dateOfDraft(x.draft), epDate)));
     if (facture) {
       lines.push({ ...base, includedCents: 0, fileId: facture.draft.fileId, operationId: null, operationLabel: null, status: 'DUPLICATE', reason: 'SAME_AS_EQUIPMENT_DOCUMENT' });
       continue;
@@ -937,7 +1077,7 @@ export function computeTco(input: TcoInput): TcoResult {
     const opCouvrante = ops.find((o) => o.status !== 'CANCELLED' && retenue(o) && (
       drafts.some((dr) => preuvesEq.has(dr.fileId) && dr.status === 'CONSOLIDATED_ELSEWHERE' && dr.operationId === o.id)
       || ((o.sourceKinds ?? []).includes('EQUIPMENT_DATA') && o.components.some((c) => c.targetEquipmentId === ep.equipmentId))
-      || (!preuvesEq.size && eur != null && o.typeCode === 'ACQUISITION' && sameDay(opDate(o), epDate) !== false
+      || (!preuvesEq.size && eur != null && o.typeCode === 'ACQUISITION' && purchaseDatesCompatible(opDate(o), epDate)
         && (opEntries.get(o.id) ?? []).some((e) => e.included && e.kind === 'REALIZED_COST' && e.eurMinor === eur && cibleEq(o, e.componentId)))));
     if (opCouvrante) {
       lines.push({ ...base, includedCents: 0, fileId: fichierPrincipalOp(opCouvrante), operationId: opCouvrante.id, operationLabel: opCouvrante.label, status: 'CONSOLIDATED_ELSEWHERE', reason: 'EQUIPMENT_PRICE_CONSOLIDATED' });
@@ -975,7 +1115,10 @@ export function computeTco(input: TcoInput): TcoResult {
         note: achatsIncertains.has(op.id) && e.category === 'ACCESSORIES' && e.included
           ? 'Même montant que le prix d’achat de la fiche, sans preuve qu’il s’agisse de la même dépense : comptée, à vérifier.' : null,
         relatedFileId: null,
-        ...(achatsIncertains.has(op.id) && e.included ? { uncertain: true } : {}),
+        ...(achatsIncertains.has(op.id) && e.included ? {
+          uncertain: true,
+          ...(incertitudesOp.get(op.id) ? { identity: { verdict: 'UNCERTAIN' as const, signals: incertitudesOp.get(op.id)!.signals, against: `asset:${input.assetId}:acquisitionPrice` } } : {}),
+        } : {}),
         ...(p ? { sourceFileIds: [...p.documentFileIds] } : {}),
         // Lot 85A (O-9) : identités stables des sources non documentaires (clé de décision sans justificatif).
         ...(p?.otherSourceKeys?.length ? { sourceIdentities: [...p.otherSourceKeys] } : {}),
@@ -989,7 +1132,26 @@ export function computeTco(input: TcoInput): TcoResult {
         });
         continue;
       }
+      // Lot 108A : même achat du bien porté par un autre événement de référence (identité établie, même coût).
+      const ma = memesAchats.get(e.componentId);
+      if (ma && !e.included && !e.exclusion) {
+        const gardeOp = ops.find((x) => x.id === ma.keptOperationId)!;
+        opLines.push({
+          ...base, category: null, status: 'DUPLICATE', reason: 'SAME_FACT_CROSS_SOURCE', duplicateOf: `c:${ma.keptComponentId}`,
+          relatedFileId: fichierComposante(gardeOp, ma.keptComponentId),
+          note: `Même achat du bien que « ${gardeOp.label} », déjà compté : cette autre représentation n’est pas additionnée (ses justificatifs restent consultables).`,
+        });
+        continue;
+      }
       const d = doublons.get(e.componentId);
+      if (d?.confirmed && !e.included && !e.exclusion) {
+        // Lot 108A : prix saisi sur la fiche et justificatif du même achat réunis dans le même événement de référence.
+        opLines.push({
+          ...base, category: null, status: 'DUPLICATE', reason: 'SAME_FACT_CROSS_SOURCE', duplicateOf: `c:${d.keptComponentId}`, relatedFileId: fileId,
+          note: 'Même achat que le prix d’achat saisi sur la fiche (même montant, dates concordantes) : compté une seule fois, le justificatif reste consultable.',
+        });
+        continue;
+      }
       if (d && !e.included && !e.exclusion) {
         const gardee = fichierComposante(op, d.keptComponentId);
         opLines.push({
@@ -1010,6 +1172,15 @@ export function computeTco(input: TcoInput): TcoResult {
         opLines.push({
           ...base, category: null, status: 'EXCLUDED', reason: 'SOURCE_WITHDRAWN', relatedFileId: prov.get(e.componentId)?.withdrawnFileIds[0] ?? null,
           note: 'Le justificatif de ce montant a été retiré de la dépense : il n’est plus compté par elle (le justificatif est réévalué seul).',
+        });
+        continue;
+      }
+      const ic = incertitudesComp.get(e.componentId);
+      if (ic && e.included) {
+        warnings.add('UNCERTAIN_MATCHES');
+        opLines.push({
+          ...base, uncertain: true, identity: { verdict: 'UNCERTAIN', signals: ic.signals, against: `c:${ic.against}` },
+          note: 'Même montant que le prix d’achat saisi sur la fiche, dans le même achat, sans date permettant de confirmer qu’il s’agit de la même dépense : comptée, à vérifier (renseignez la date d’achat de la fiche ou retirez le doublon).',
         });
         continue;
       }
@@ -1078,7 +1249,6 @@ export function computeTco(input: TcoInput): TcoResult {
   const prixRealise = proceedsEntries.some((e) => e.included) ? totals.proceedsEurMinor : null;
   if (disposed && prixRealise === null) warnings.add('DISPOSAL_PRICE_MISSING');
   const valeur = reliableValuation(input.valuationHistory, dateCession ?? input.today);
-  if (!disposed && !valeur) warnings.add('NO_RELIABLE_VALUATION');
   const netEstime = !disposed && valeur ? cumul - valeur.cents : null;
   const netFinal = disposed && prixRealise !== null ? cumul - prixRealise : null;
   const provisoire = prixRealise === null && input.desiredSalePriceCents != null ? cumul - input.desiredSalePriceCents : null;
@@ -1087,7 +1257,8 @@ export function computeTco(input: TcoInput): TcoResult {
   if (totals.unallocated.count) warnings.add('UNALLOCATED_AMOUNTS');
   if (!input.readComplete) warnings.add('PARTIAL_READ');
 
-  // Forfaits d'usage : séparés du réel, jamais additionnés au coût cumulé.
+  // Forfaits d'usage : budget annuel prévisionnel (forfaits en cours), affiché à part. Lot 108C : le complément
+  // estimé des périodes échues est calculé plus bas (`computeUsageComplement`), hors du coût documenté.
   const jour = end;
   const items = input.budgets.map((b) => ({ ...b, annualEquivalentMinor: annualEquivalent(b), activeNow: budgetActif(b, jour) }));
   const annualEstimateCents = items.filter((b) => b.activeNow && b.currency === 'EUR').reduce((n, b) => n + b.annualEquivalentMinor, 0);
@@ -1128,6 +1299,20 @@ export function computeTco(input: TcoInput): TcoResult {
   const parIdLigne = new Map<string, TcoEconomicLine[]>();
   for (const l of toutesLignes) parIdLigne.set(l.id, [...(parIdLigne.get(l.id) ?? []), l]);
 
+  // Lot 76G : indicateurs annuels dérivés des MÊMES lignes (montants retenus, dédoublonnés) — aucun second moteur.
+  // Lot 81D : chaque ligne retenue porte son année (détail de l'année = sélection exacte de l'indicateur).
+  const annual = computeTcoAnnual({
+    lines: toutesLignes, period, cumulativeCostCents: cumul, status, today: input.today, disposed,
+    assign: (id, year) => { for (const l of parIdLigne.get(id) ?? []) l.annualYear = year; },
+  });
+  // Lot 108C : dépenses d'usage — complément estimé max(0, F − R) par catégorie et période échue (coût documenté inchangé).
+  const usageComplement = computeUsageComplement({
+    budgets: input.budgets, lines: toutesLignes, assignments: input.usageAssignments ?? [],
+    possession: { start: period.start, end: period.end, disposed }, today: input.today, documentedCents: cumul,
+    averageDays: annual.average.status === 'COMPUTED' ? annual.average.days : null,
+    net: { estimatedCents: netEstime, finalCents: netFinal, provisionalCents: netFinal !== null ? null : provisoire },
+  });
+
   return {
     assetId: input.assetId,
     status,
@@ -1137,6 +1322,7 @@ export function computeTco(input: TcoInput): TcoResult {
     summary: {
       cumulativeCostCents: cumul, acquisitionCents, additionalCostsCents: totals.costsEurMinor - acquisitionCents, acquisitionStatus,
       currentValue: disposed ? null : valeur, netEstimatedCents: netEstime, netFinalCents: netFinal,
+      estimatedUsageComplementCents: usageComplement.estimatedComplementCents, totalWithEstimatesCents: usageComplement.totalWithEstimatesCents,
     },
     breakdown,
     reductionsCents: totals.reductionsEurMinor,
@@ -1153,6 +1339,7 @@ export function computeTco(input: TcoInput): TcoResult {
     usage: {
       items, annualEstimateCents,
       otherCurrencies: [...autres.entries()].map(([currency, annualEquivalentMinor]) => ({ currency, annualEquivalentMinor })),
+      complement: usageComplement,
     },
     reliability: {
       operationsCounted: counted.size,
@@ -1169,12 +1356,7 @@ export function computeTco(input: TcoInput): TcoResult {
     },
     lines: toutesLignes,
     entries,
-    // Lot 76G : indicateurs annuels dérivés des MÊMES lignes (montants retenus, dédoublonnés) — aucun second moteur.
-    // Lot 81D : chaque ligne retenue porte son année (détail de l'année = sélection exacte de l'indicateur).
-    annual: computeTcoAnnual({
-      lines: toutesLignes, period, cumulativeCostCents: cumul, status, today: input.today, disposed,
-      assign: (id, year) => { for (const l of parIdLigne.get(id) ?? []) l.annualYear = year; },
-    }),
+    annual,
     userDecisions: decisionsUtilisateur,
   };
 }

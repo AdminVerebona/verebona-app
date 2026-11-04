@@ -2,8 +2,8 @@
  * GET /api/me/legal/acceptances — CDC 7 §11 et §15 ; lot 102B.
  *
  * Alimente « Mon compte → Informations légales » : version, date, contexte,
- * canal, permalien historique de la version acceptée (site public, ou archive
- * figée d'une version antérieure) et empreinte du texte accepté. Une preuve
+ * canal, lien PUBLIC de consultation de la version acceptée (lot 108L : jamais
+ * l'application) et, à part, la preuve immuable (URL initiale, empreinte). Une preuve
  * antérieure au lot 102B est marquée « historique » (aucune empreinte inventée).
  */
 import { NextRequest, NextResponse } from 'next/server';
@@ -31,8 +31,12 @@ export async function GET(req: NextRequest) {
       context: a.context,
       channel: a.channel,
       offerCode: a.offerCode,
-      permalink: a.permalinkUrl,
-      permalinkUrl: a.permalinkUrl,
+      // Lot 108L : lien de CONSULTATION public vérifié (`/legal/cguv/versions/{code}`),
+      // `null` tant que le texte de cette version n'est pas sur le site public.
+      consultationUrl: a.consultationUrl,
+      // Preuve IMMUABLE (URL initiale, empreinte, date, contexte, canal) : affichée
+      // à part, jamais réécrite, jamais utilisée comme lien.
+      proof: { permalinkUrl: a.permalinkUrl, sha256: a.textSha256, acceptedAt: a.acceptedAt, context: a.context, channel: a.channel },
       sha256: a.textSha256,
       proofStatus: a.proofStatus,
     })),

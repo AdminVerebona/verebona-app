@@ -160,12 +160,12 @@ describe('AC8.5 — noms citables sans ambiguïté', () => {
 describe('AC8.6 — source unique des exemples', () => {
   const ROOT = join(__dirname, '../../../../..');
   const lire = (p: string) => readFileSync(join(ROOT, p), 'utf8');
-  it('desktop et mobile rendent la même liste (`api.suggestions`), servie par le catalogue', () => {
+  it('desktop et mobile rendent la même liste (`api.suggestions`), servie par le service unique (lot 108J)', () => {
     const content = lire('src/components/verebona/space/SpaceContent.tsx');
     expect(content).toMatch(/api\.suggestions\.map/);
     const provider = lire('src/components/verebona/space/VerebonaSpaceProvider.tsx');
-    expect(provider).toMatch(/suggestionsForRoute\(pageContext\.route\)/);
-    expect(provider).toMatch(/\/api\/verebona\/suggestions\?route=/);
+    // Lot 108J : la sélection PARTAGÉE avec l'accueil ; la route historique reste le contrat du catalogue.
+    expect(provider).toMatch(/useSharedSuggestions\(\{ active: isOpen \}\)/);
     expect(lire('src/app/api/verebona/suggestions/route.ts')).toMatch(/suggestionsForRoute\(q\.data\.route, ctx\)/);
   });
   it('aucun libellé du catalogue n’est recopié ailleurs dans l’interface', () => {

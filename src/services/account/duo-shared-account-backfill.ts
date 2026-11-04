@@ -44,7 +44,7 @@ const TECHNICAL_ACCOUNT_TABLES: readonly string[] = [
   'ai_account_cost_caps', 'admin_anomalies', 'admin_anomaly_occurrences', 'subscription_history',
   'account_reconciliation_runs', 't3_reconciliation_states', 'v2_classification_progress', 'duo_shared_account_journal',
   'annual_renewal_reminder_checks', 'ai_usage_account_counter', 'cdc15_migration_report', 'room_merge_runs',
-  'reconciliation_runs', 'impact_queue', 'duo_accounts', 'home_suggestion_skips',
+  'reconciliation_runs', 'impact_queue', 'duo_accounts', 'home_suggestion_skips', 'shared_suggestion_consultations',
 ];
 
 type PersonalCategory = 'D1' | 'D2' | 'D3' | 'D4';

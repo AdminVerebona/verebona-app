@@ -169,7 +169,11 @@ describe('L100D-A9-UI — écrans de l’app : droits présents, aucun prix ni l
     expect(prevue).toContain('Résiliation programmée');
     expect(prevue).toContain('1 décembre 2026');
     const src = read('src/components/subscription/NativeResiliation.tsx');
-    expect(src).toContain('Ce n’est pas une rétractation');
+    // Lot 108F (ticket PO du 03/11/2026) : la mention « Ce n’est pas une
+    // rétractation… » est retirée de la fenêtre ; texte imposé, offre et date
+    // réelles (détail : components/subscription/__tests__/l108f-resiliation-modale.test.ts).
+    expect(src).not.toContain('Ce n’est pas une rétractation');
+    expect(src).toContain('RESILIATION_CONFIRMATION.title');
     expect(src).toContain('w-full sm:w-auto');
     expect(src).not.toMatch(COMMERCE_RE);
     expect(src).not.toMatch(/Opération/);

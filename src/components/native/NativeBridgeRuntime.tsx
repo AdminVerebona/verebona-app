@@ -7,7 +7,7 @@
  *   · identifiant d'installation (Keychain / Keystore) et en-têtes X-Verebona-* ;
  *   · contrôle d'environnement : un binaire de préproduction ne fonctionne
  *     qu'avec le serveur de préproduction, et inversement (§27, M7, REC-063/064) ;
- *   · « Connexion Internet requise » (NET-01/02) ;
+ *   · « Connexion Internet indisponible » + « Réessayer » (NET-01/02, lot 108G) ;
  *   · verrouillage après 5 min en arrière-plan ; lot 107A : Face ID / Touch ID
  *     / biométrie Android lancé AUTOMATIQUEMENT si activé, écran de secours
  *     seulement en cas d'échec (`useNativeUnlock`), proposition unique
@@ -15,26 +15,36 @@
  *   · liens universels / App Links et retour Google / Apple (§19, M1) ;
  *   · notifications : enregistrement, demande contextualisée, ouverture de
  *     l'écran ciblé (PUSH-02/04/09) ;
- *   · partage entrant → formulaire d'ajout habituel (IMP-02..04) ;
+ *   · partage entrant → formulaire d'ajout habituel (IMP-02..04) ; lot 108G :
+ *     reprise depuis la FILE TECHNIQUE locale (`lib/native/share-inbox`) après
+ *     Face ID / connexion — plus de fichiers gardés en mémoire seulement ;
  *   · envoi natif de fond des documents (UPL-01/02).
  * Les interrupteurs serveur (`MOBILE_FEATURES_OFF`, /api/mobile/config) sont
  * respectés : une fonction coupée n'est pas branchée (API-08).
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { WifiOff, Bell, ShieldAlert } from 'lucide-react';
+import { WifiOff, Bell, ShieldAlert, FileInput } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/hooks/useSession';
 import { mobileClientHeaders } from '@/lib/mobile/native-shell';
-import { CREATE_FLOW_HOST_READY, isCreateFlowHostReady, openCreateFlow } from '@/lib/create-flows';
-import { utiliserEnvoiNatif } from '@/lib/upload-queue';
+import {
+  CREATE_FLOW_HOST_READY, CREATE_FLOW_SETTLED, isCreateFlowHostReady, openCreateFlow, type CreateFlowSettled,
+} from '@/lib/create-flows';
+import { fileDepot, utiliserEnvoiNatif } from '@/lib/upload-queue';
+import { onSessionTransition } from '@/lib/session/session-lifecycle';
 import { NATIVE_PLUGINS, listenNative, nativePlugin } from '@/lib/native/bridge';
 import { appBuildEnv, appUrlContext, expectedServerEnvironment, initInstallationId } from '@/lib/native/shell-info';
 import { resolveAppUrl, pushTargetPath } from '@/lib/native/deep-links';
 import { abandonNativeOAuth, completeNativeOAuth, nativeOAuthErrorMessage } from '@/lib/native/oauth';
 import { enableNativePush, nativePushPermission, syncNativePush, watchPushOpens, watchPushTokenRotation } from '@/lib/native/push';
-import { readSharedFile, triageSharedFiles } from '@/lib/native/share-in';
+import { readSharedFile } from '@/lib/native/share-in';
+import {
+  accountKey, claimInboxItem, claimedBy, loadInbox, nextToPresent, readClaims, recordAndroidShare, removeInboxItem,
+  submittedToUploadQueue, visibleFor, type InboxItem,
+} from '@/lib/native/share-inbox';
+import { openExternalUrl } from '@/lib/native/open-external';
 import { nativeUploadSender } from '@/lib/native/native-upload';
 import { setNativeFeatures, setNativeOAuthReturn } from '@/lib/native/features';
 import { NATIVE_COMMERCE_INFO_PATH, NATIVE_COMMERCE_MESSAGE, isCommercePath } from '@/lib/native/commerce';
@@ -50,7 +60,11 @@ interface NetworkPlugin {
   getStatus(): Promise<{ connected: boolean }>;
   addListener?: (event: string, cb: (data: unknown) => void) => unknown;
 }
-interface BrowserPlugin { open(o: { url: string }): Promise<void> }
+
+/** Lot 108G : délai au-delà duquel une demande d'ouverture du formulaire est réputée refusée (quota, droits). */
+const SHARE_OPEN_TIMEOUT_MS = 3000;
+
+interface ShareInFlight { item: InboxItem; files: File[]; since: number; opened: boolean; consumed: boolean }
 
 function featureOn(features: Features | null, name: string): boolean {
   // Configuration pas encore lue : fonction active (défaut serveur) ; une
@@ -61,15 +75,24 @@ function featureOn(features: Features | null, name: string): boolean {
 export default function NativeBridgeRuntime() {
   const router = useRouter();
   const pathname = usePathname();
-  const { status } = useSession();
+  const { status, user } = useSession();
   const authenticated = status === 'authenticated';
+  const account = authenticated ? accountKey(user?.id) : null;
 
   const [features, setFeatures] = useState<Features | null>(null);
   const [envMismatch, setEnvMismatch] = useState(false);
   const [offline, setOffline] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [pushPrompt, setPushPrompt] = useState(false);
 
-  const pendingFiles = useRef<File[] | null>(null);
+  // Lot 108G : file technique des partages (persistante), éléments déjà proposés pendant ce lancement.
+  const [inbox, setInbox] = useState<InboxItem[]>([]);
+  const [shareTick, setShareTick] = useState(0);
+  const presented = useRef<Set<string>>(new Set());
+  const inFlight = useRef<ShareInFlight | null>(null);
+  const loginHintShown = useRef(false);
+  const shareOffHintShown = useRef(false);
+  const lastAccount = useRef<string | null>(null);
   const featuresRef = useRef<Features | null>(null);
 
   // Lot 107A : verrou après 5 min en arrière-plan, déverrouillage automatique.
@@ -104,6 +127,15 @@ export default function NativeBridgeRuntime() {
     void lireConfig();
   }, [lireConfig]);
 
+  // Lot 108G : lecture de la file technique des partages (iOS : groupe d'apps ; Android : références locales).
+  const rafraichirInbox = useCallback(async () => {
+    const { items, expired } = await loadInbox();
+    if (expired > 0) {
+      toast.message(`${expired > 1 ? `${expired} documents partagés` : 'Un document partagé'} il y a plus de 7 jours sans être importé${expired > 1 ? 's ont été effacés' : ' a été effacé'} du téléphone. Partagez-le de nouveau si besoin.`);
+    }
+    setInbox(items);
+  }, []);
+
   useEffect(() => {
     const on = featureOn(features, 'background_upload');
     utiliserEnvoiNatif(on ? nativeUploadSender() : null);
@@ -121,15 +153,31 @@ export default function NativeBridgeRuntime() {
     return () => { void off.then((f) => f()); };
   }, [lireConfig]);
 
+  // « Réessayer » du bandeau : nouvelle mesure du réseau, sans recharger la page.
+  const reessayerReseau = useCallback(async () => {
+    setRetrying(true);
+    try {
+      const net = nativePlugin<NetworkPlugin>(NATIVE_PLUGINS.network);
+      const s = net ? await net.getStatus() : { connected: typeof navigator === 'undefined' || navigator.onLine !== false };
+      setOffline(!s.connected);
+      if (s.connected) void lireConfig();
+      else toast.message('Toujours pas de connexion. Le bandeau disparaîtra dès le retour du réseau.');
+    } catch {
+      /* mesure impossible : bandeau conservé */
+    } finally {
+      setRetrying(false);
+    }
+  }, [lireConfig]);
+
   // ── Cycle de vie : retour au premier plan (HOME-04) ─────────────────────
   // Le verrou (AUTH-09) est géré par `useNativeUnlock` ; ici, relecture de la
   // configuration seulement.
   useEffect(() => {
     const off = listenNative<{ isActive: boolean }>(nativePlugin(NATIVE_PLUGINS.app), 'appStateChange', (s) => {
-      if (s.isActive) void lireConfig();
+      if (s.isActive) { void lireConfig(); void rafraichirInbox(); }
     });
     return () => { void off.then((f) => f()); };
-  }, [lireConfig]);
+  }, [lireConfig, rafraichirInbox]);
 
   // ── Liens entrants (§19) et retour Google / Apple (M1) ──────────────────
   useEffect(() => {
@@ -154,7 +202,11 @@ export default function NativeBridgeRuntime() {
       if (r.kind === 'share') return; // contenu remis par l'événement `shareReceived`
       if (!featureOn(featuresRef.current, 'deep_links')) return;
       if (r.kind === 'route') ouvrir(r.path);
-      else if (r.kind === 'external') void nativePlugin<BrowserPlugin>(NATIVE_PLUGINS.browser)?.open({ url: r.url }).catch(() => undefined);
+      // Lot 108G : lien de l'environnement exclu de l'app (offres, administration…) →
+      // navigateur SYSTÈME, hors de l'app (brique 108H `lib/native/open-external` :
+      // AppLauncher). Plus jamais le plugin Browser (SFSafariViewController /
+      // Custom Tabs, intégrés à l'app).
+      else if (r.kind === 'external') void openExternalUrl(r.url).then((o) => { if (!o.ok) toast.error('Ce lien n’a pas pu être ouvert dans le navigateur.'); });
       else toast.error('Ce lien ne peut pas être ouvert dans l’application.');
     });
     return () => { void off.then((f) => f()); };
@@ -191,45 +243,130 @@ export default function NativeBridgeRuntime() {
     }
   };
 
-  // ── Partage entrant (IMP-02..04) ────────────────────────────────────────
-  const livrerFichiers = useCallback(() => {
-    const files = pendingFiles.current;
-    if (!files || !authenticated || lockRef.current || !isCreateFlowHostReady()) return;
-    pendingFiles.current = null;
-    openCreateFlow({ flow: 'document', files });
-  }, [authenticated]);
+  // ── Partage entrant (IMP-02..06, lot 108G) ─────────────────────────────
+  // Un élément par partage, gardé dans la file technique locale jusqu'à
+  // l'ajout confirmé ou l'abandon explicite ; proposé dans le formulaire
+  // d'ajout habituel après connexion / déverrouillage ; isolé par compte.
+  const relancerPartage = useCallback(() => setShareTick((n) => n + 1), []);
 
+  const presenter = useCallback(async (item: InboxItem, acct: string) => {
+    presented.current.add(item.id);
+    claimInboxItem(item.id, acct);
+    for (const r of item.refused) toast.error(`${r.name} : ${r.reason}`);
+    for (const f of item.files) {
+      if (f.convertedFrom) toast.message(`${f.name} : photo ${f.convertedFrom} convertie en JPEG (qualité maximale).`);
+    }
+    const res = await Promise.allSettled(item.files.map(readSharedFile));
+    const files: File[] = [];
+    res.forEach((r, i) => {
+      if (r.status === 'fulfilled') files.push(r.value);
+      else toast.error(`${item.files[i].name} : fichier plus disponible sur ce téléphone. Partagez-le de nouveau vers Verebona.`);
+    });
+    if (files.length === 0) {
+      await removeInboxItem(item);
+      void rafraichirInbox();
+      return;
+    }
+    inFlight.current = { item, files, since: Date.now(), opened: false, consumed: false };
+    openCreateFlow({ flow: 'document', files, requestId: item.id });
+    // Formulaire non ouvert (fenêtre de refus : quota, essai terminé…) : l'élément
+    // reste en attente, proposé dans le bandeau « Importer / Abandonner ».
+    window.setTimeout(() => {
+      if (inFlight.current?.item.id === item.id && !inFlight.current.opened) { inFlight.current = null; relancerPartage(); }
+    }, SHARE_OPEN_TIMEOUT_MS);
+  }, [rafraichirInbox, relancerPartage]);
+
+  // Démarrage + retour de l'extension iOS (`inboxChanged` au premier plan).
+  useEffect(() => {
+    void rafraichirInbox();
+    const off = listenNative(nativePlugin(NATIVE_PLUGINS.shareInbox), 'inboxChanged', () => { void rafraichirInbox(); });
+    return () => { void off.then((f) => f()); };
+  }, [rafraichirInbox]);
+
+  // Android : intent SEND / SEND_MULTIPLE → élément persistant AVANT toute autre action.
   useEffect(() => {
     const off = listenNative<{ files?: unknown }>(nativePlugin(NATIVE_PLUGINS.shareTarget), 'shareReceived', (e) => {
-      if (!featureOn(featuresRef.current, 'share_in')) {
-        toast.error('Le partage vers Verebona est momentanément indisponible. Ajoutez le document depuis l’application.');
-        return;
-      }
-      const { accepted, refused } = triageSharedFiles(e?.files);
-      for (const r of refused) toast.error(`${r.name} : ${r.reason}`);
-      if (accepted.length === 0) return;
-      void Promise.allSettled(accepted.map(readSharedFile)).then((res) => {
-        const files: File[] = [];
-        res.forEach((r, i) => {
-          if (r.status === 'fulfilled') files.push(r.value);
-          else toast.error(`${accepted[i].name} : fichier illisible.`);
-        });
-        if (files.length === 0) return;
-        pendingFiles.current = files;
-        // IMP-04 : conservés en mémoire ; si la connexion recharge l'app, ils sont perdus → consigne claire.
-        if (!authenticated) toast.message('Connectez-vous pour ajouter ce document. S’il n’apparaît pas ensuite, partagez-le à nouveau vers Verebona.');
-        livrerFichiers();
-      });
+      const r = recordAndroidShare(e?.files);
+      if (!r.added) for (const x of r.refused) toast.error(`${x.name} : ${x.reason}`);
+      void rafraichirInbox();
     });
     return () => { void off.then((f) => f()); };
-  }, [authenticated, livrerFichiers]);
+  }, [rafraichirInbox]);
+
+  // Proposition du prochain élément (session ouverte, app déverrouillée, hôte prêt).
+  useEffect(() => {
+    if (inFlight.current || inbox.length === 0) return;
+    if (!featureOn(features, 'share_in')) {
+      if (!shareOffHintShown.current) {
+        shareOffHintShown.current = true;
+        toast.message('Le partage vers Verebona est momentanément indisponible. Vos documents partagés restent en attente sur ce téléphone.');
+      }
+      return;
+    }
+    if (status === 'unauthenticated') {
+      if (!loginHintShown.current) {
+        loginHintShown.current = true;
+        toast.message('Connectez-vous pour importer le document partagé : il reste en attente sur ce téléphone.');
+      }
+      return;
+    }
+    if (!account || lockRef.current || !isCreateFlowHostReady()) return;
+    const next = nextToPresent(inbox, readClaims(), account, presented.current);
+    if (next) void presenter(next, account);
+  }, [inbox, status, account, features, unlock.locked, pathname, shareTick, presenter]);
 
   useEffect(() => {
-    livrerFichiers();
-    const onReady = () => livrerFichiers();
+    const onReady = () => relancerPartage();
     window.addEventListener(CREATE_FLOW_HOST_READY, onReady);
     return () => window.removeEventListener(CREATE_FLOW_HOST_READY, onReady);
-  }, [livrerFichiers, unlock.locked, pathname]);
+  }, [relancerPartage]);
+
+  // Issue du formulaire : ajout confirmé (ou fichiers remis à la file de dépôt) → copies effacées.
+  useEffect(() => {
+    const consommer = (c: ShareInFlight) => {
+      if (c.consumed) return;
+      c.consumed = true;
+      void removeInboxItem(c.item).then(() => rafraichirInbox());
+    };
+    const onSettled = (e: Event) => {
+      const d = (e as CustomEvent<CreateFlowSettled>).detail;
+      const c = inFlight.current;
+      if (!c || !d || d.requestId !== c.item.id) return;
+      if (d.outcome === 'opened') { c.opened = true; return; }
+      if (d.outcome === 'success' || submittedToUploadQueue(fileDepot.getSnapshot().elements, c.files, c.since)) consommer(c);
+      inFlight.current = null;
+      relancerPartage();
+    };
+    window.addEventListener(CREATE_FLOW_SETTLED, onSettled);
+    const offDepot = fileDepot.subscribe(() => {
+      const c = inFlight.current;
+      if (c && submittedToUploadQueue(fileDepot.getSnapshot().elements, c.files, c.since)) consommer(c);
+    });
+    return () => { window.removeEventListener(CREATE_FLOW_SETTLED, onSettled); offDepot(); };
+  }, [rafraichirInbox, relancerPartage]);
+
+  // Déconnexion EXPLICITE : les partages pris par ce compte sont effacés du téléphone
+  // (une session simplement expirée les conserve pour la reconnexion).
+  useEffect(() => { if (account) lastAccount.current = account; }, [account]);
+  useEffect(() => onSessionTransition((t) => {
+    const acct = lastAccount.current;
+    if (t.reason !== 'logout' || !acct) return;
+    lastAccount.current = null;
+    const ids = new Set(claimedBy(readClaims(), acct));
+    presented.current.clear();
+    loginHintShown.current = false;
+    void Promise.all(inbox.filter((i) => ids.has(i.id)).map(removeInboxItem)).then(() => rafraichirInbox());
+  }), [inbox, rafraichirInbox]);
+
+  const abandonnerPartage = useCallback(async (item: InboxItem) => {
+    await removeInboxItem(item);
+    toast.message('Document partagé retiré du téléphone. Rien n’a été ajouté à votre compte.');
+    void rafraichirInbox();
+  }, [rafraichirInbox]);
+
+  const partagesEnAttente = account && !inFlight.current
+    ? visibleFor(inbox, readClaims(), account).filter((i) => presented.current.has(i.id))
+    : [];
 
   // ── Pages commerciales (lot 97B, COM-01/05, STORE-08) ───────────────────
   // Deuxième barrière (la première est le middleware) : aussi pour l'interface
@@ -278,7 +415,41 @@ export default function NativeBridgeRuntime() {
           className="fixed inset-x-0 top-0 z-[999] flex items-center justify-center gap-2 bg-[color:var(--accent)] px-4 py-2 text-sm text-[color:var(--on-accent)]"
           style={{ paddingTop: 'max(0.5rem, var(--vb-safe-top))' }}
         >
-          <WifiOff className="h-4 w-4" aria-hidden /> Connexion Internet requise
+          <WifiOff className="h-4 w-4 shrink-0" aria-hidden />
+          <span>Connexion Internet indisponible — rien n’est perdu, vos saisies restent à l’écran.</span>
+          <button
+            type="button"
+            className="ml-1 shrink-0 rounded-md border border-current px-2 py-0.5 text-xs font-semibold disabled:opacity-60"
+            disabled={retrying}
+            onClick={() => { void reessayerReseau(); }}
+          >
+            Réessayer
+          </button>
+        </div>
+      )}
+
+      {partagesEnAttente.length > 0 && !locked && (
+        <div
+          role="status"
+          aria-labelledby="vb-share-title"
+          className="fixed inset-x-3 z-[997] rounded-2xl border border-[color:var(--border-subtle)] bg-[color:var(--bg-card)] p-4 shadow-lg"
+          style={{ bottom: 'max(1rem, calc(var(--vb-safe-bottom) + 4.5rem))' }}
+        >
+          <div className="flex items-start gap-3">
+            <FileInput className="mt-0.5 h-5 w-5 shrink-0 text-[color:var(--accent)]" aria-hidden />
+            <div className="min-w-0 space-y-3">
+              <p id="vb-share-title" className="text-sm font-medium">
+                {partagesEnAttente.length > 1 ? `${partagesEnAttente.length} partages en attente d’import` : 'Document partagé en attente d’import'}
+              </p>
+              <p className="truncate text-xs text-muted-foreground">
+                {partagesEnAttente[0].files.map((f) => f.name).join(', ')}
+              </p>
+              <div className="flex gap-2">
+                <Button size="sm" onClick={() => { presented.current.delete(partagesEnAttente[0].id); relancerPartage(); }}>Importer</Button>
+                <Button size="sm" variant="outline" onClick={() => { void abandonnerPartage(partagesEnAttente[0]); }}>Abandonner</Button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

@@ -62,8 +62,10 @@ export function useTargetState(
     // Lot 54 : T4 décide de chaque candidat documentaire. Les scénarios de
     // chaîne dont T4 n'est pas le sujet reçoivent un T4 simulé qui accepte
     // (sorties enregistrées d'un scénario : toujours prioritaires).
-    const { setDefaultResponder, t4AcceptingResponder } = await import('./replay-gateway');
+    const { setDefaultResponder, t4AcceptingResponder, t3SemanticNoMatchResponder } = await import('./replay-gateway');
     setDefaultResponder('t4_classify_event', 'CLASSIFY_EVENT', opts.t4Responder === null ? null : t4AcceptingResponder);
+    // Lot 108E (A6) : recherche sémantique T3 sans sortie enregistrée = « aucun bien » explicite (plus une panne implicite).
+    setDefaultResponder('t3_link_ambiguity', 'LINK_AMBIGUITY', t3SemanticNoMatchResponder);
     const cfg = await import('@/services/ai/config/config-resolver');
     const { emptyTreatmentConfig } = await import('@/services/ai/config/config-types');
     // Version réelle (clé étrangère des travaux en file), contenu simulé.

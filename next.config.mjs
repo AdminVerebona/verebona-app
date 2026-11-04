@@ -63,6 +63,32 @@ const nextConfig = {
           },
         ],
       },
+      // ── Lot 108G : CSP APPLIQUÉE dans l'application iOS / Android ──────────
+      // (interface distante, décision PO du 03/11/2026). Seule la vue de l'app
+      // (marqueur `VerebonaApp/` de l'agent utilisateur, posé par la coque) la
+      // reçoit : le site web garde sa CSP d'observation ci-dessus, inchangé.
+      // Directives qui protègent le pont natif sans casser les scripts de
+      // Next.js : aucun cadre tiers (le pont est joignable depuis un cadre),
+      // aucun plugin `object`, pas de `<base>` détourné, formulaires vers
+      // l'origine seulement, intégration en cadre limitée à l'origine.
+      // `script-src` reste celui du site (scripts en ligne de Next.js) : risque
+      // résiduel documenté dans docs/mobile/architecture-distante.md § 5.
+      {
+        source: "/(.*)",
+        has: [{ type: "header", key: "user-agent", value: ".*VerebonaApp/.*" }],
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value: [
+              "object-src 'none'",
+              "base-uri 'self'",
+              "frame-src 'self' blob: data:",
+              "frame-ancestors 'self'",
+              "form-action 'self'",
+            ].join("; "),
+          },
+        ],
+      },
       // ── Lot 79B : icônes de l'application installée ──────────────────────
       // `public/pwa/` : noms versionnés (src/lib/pwa/icons.ts), un fichier
       // n'est JAMAIS modifié sur place → cache long et immuable.

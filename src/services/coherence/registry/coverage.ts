@@ -36,7 +36,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
       // Lot 88B : propriétés canoniques VIDES des biens et équipements reprises à partir de toutes les preuves (arbitrage T3).
       'COH-MISSING-PROPERTIES', 'COH-MISSING-PROPERTIES-EQUIPMENT',
       // Lot 101A : identité produit des équipements (série, modèle, référence, n° de série ; produits connexes, conflits).
-      'COH-EQUIPMENT-IDENTITY'],
+      'COH-EQUIPMENT-IDENTITY',
+      // Lot 108D : date du document jamais égale au jour d'import par repli (reprise depuis la connaissance T1, sinon « – »).
+      'COH-DOC-DATE-FALLBACK'],
     gap: {
       what: 'valeurs canoniques RENSEIGNÉES des fiches comparées aux preuves sur le stock ; propriétés vides : arbitrage T3 en attente du contrat d’entrée t3-knowledge-query-v2 (constat MISSING_PROPERTY_ARBITRATION_PENDING) ; propriétés des pièces',
       existingMechanism: 'T3 « Informations » 76J par version (t3_information_checks) ; COH-MISSING-PROPERTIES (lot 88B)',
@@ -60,7 +62,10 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
     gap: { what: 'relation document ↔ équipement que le document ne désigne pas lui-même (constat seul, contrat IA 82D-t3-document-equipement — lot 84E : réparée par O-6 quand le document la désigne)', existingMechanism: 'T3 DOCUMENT_ASSET (balayage continu des documents sans bien) ; consolidation M1–M3 ; reconsolidation ciblée O-6', planned: 'contrat IA 82D-t3-document-equipement' },
   },
   // Lot 86F : date économique de chaque dépense justifiée (jamais la date de l'Opération par défaut), stock réparé.
-  { domain: 'tco', label: 'TCO et dépenses', checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-TCO-ECONOMIC-DATES'] },
+  // Lot 108A : un même achat représenté par plusieurs sources compté une seule fois (faisceau de preuves).
+  { domain: 'tco', label: 'TCO et dépenses', checks: ['COH-TCO-EXTRACTED-EXPENSES', 'COH-TCO-ECONOMIC-DATES', 'COH-TCO-SAME-FACT',
+    // Lot 108B : montants inconnus des justificatifs récupérés automatiquement avant toute alerte.
+    'COH-TCO-AMOUNT-RECOVERY'] },
   { domain: 'agenda', label: 'Agenda (occurrences, échéances calculables des Opérations, événements obsolètes, échéances de fiche, appartenance aux Opérations)',
     checks: ['COH-AGENDA-OCCURRENCES', 'COH-AGENDA-ORPHANS', 'COH-AGENDA-OPERATION-PROJECTION', 'COH-AGENDA-PROJECTION-ORPHANS', 'COH-OPS-CONTRACT-DATES', ...O1.filter((id) => /AGENDA|PRINCIPAL|LINK-PROVENANCE/.test(id)), 'COH-DOC-AGENDA-LINKS',
       // Lot 99D : séries récurrentes arrêtées à tort par l'ancienne règle « mot-clé » (rétablies, T4 relancé).

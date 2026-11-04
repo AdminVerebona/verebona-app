@@ -73,7 +73,8 @@ export interface ReportHeader {
   /** Lot 60 : T6 (décision d'interpellation de l'accueil, migration 0432). */
   treatment: 'T1' | 'T3' | 'T6';
   /** Lot 61 : DOCUMENT_NAMING — harmonisation documentaire du passage T3 du compte. */
-  scope: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'HOME' | 'DOCUMENT_NAMING';
+  /** Lot 108J : SUGGESTIONS — diagnostic du service unique des suggestions partagées (T6 = bulle seulement). */
+  scope: 'DOCUMENT' | 'ASSET' | 'EQUIPMENT' | 'ROOM' | 'HOME' | 'DOCUMENT_NAMING' | 'SUGGESTIONS';
   jobId?: number | null;
   jobAttempt?: number | null;
   traceIds?: string[];

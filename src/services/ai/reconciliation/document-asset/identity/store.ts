@@ -14,10 +14,22 @@ import type { IdentityGroup } from './graph';
 type Sql = Pick<typeof pgClient, 'unsafe'>;
 
 /** Enregistre l'état courant des groupes du compte et retire (inactifs) ceux qui ont disparu. Rend le nombre de groupes modifiés. */
-export async function persistGroups(accountId: number, groups: readonly IdentityGroup[], opts: { cards?: ReadonlyMap<string, number | null>; sql?: Sql } = {}): Promise<number> {
+export async function persistGroups(accountId: number, groups: readonly IdentityGroup[], opts: {
+  cards?: ReadonlyMap<string, number | null>; sql?: Sql;
+  /** Lot 108E : migration 1060 absente → groupes d'appareil non journalisés (rapportés, jamais une erreur silencieuse). */
+  equipmentFamilyAllowed?: boolean;
+  /** Lot 108E : groupes non journalisés (motif). */
+  skipped?: Array<{ groupKey: string; reason: string }>;
+} = {}): Promise<number> {
   const sql = opts.sql ?? pgClient;
   let changed = 0;
+  const journalises: string[] = [];
   for (const g of groups) {
+    if (g.family === 'EQUIPMENT' && opts.equipmentFamilyAllowed === false) {
+      opts.skipped?.push({ groupKey: g.groupKey, reason: 'MIGRATION_1060_MISSING' });
+      continue;
+    }
+    journalises.push(g.groupKey);
     const rows = (await sql.unsafe(
       `INSERT INTO document_identity_groups (account_id, group_key, identity_family, identity_kinds, identity_label, engine_version, fingerprint, status,
                                              member_file_ids, anchor_file_ids, members, excluded, edges, evidence, contradictions,
@@ -51,7 +63,7 @@ export async function persistGroups(accountId: number, groups: readonly Identity
   await sql.unsafe(
     `UPDATE document_identity_groups SET active = false, changed_at = now(), card_action_id = NULL
       WHERE account_id = $1 AND active AND NOT (group_key = ANY($2::text[]))`,
-    [accountId, groups.map((g) => g.groupKey)] as never[],
+    [accountId, journalises] as never[],
   );
   return changed;
 }

@@ -134,7 +134,9 @@ scenario('L71F-MASC', 'Lot 71F — mascotte sans introduction de comptage (PG16)
     expect(v.complet).not.toMatch(INTRO);
     expect(v.blocs.join(' ')).not.toMatch(INTRO);
     // L'entrée fautive est supprimée puis renouvelée (nouvel appel), sans introduction.
-    expect(modele.formulate).toBeGreaterThan(n0);
+    // Lot 108J : plus de contexte de questions — la bulle inchangée peut reprendre ses textes figés (R8)
+    // sans nouvel appel ; l'entrée fautive est de toute façon supprimée et jamais servie.
+    expect(modele.formulate).toBeGreaterThanOrEqual(n0);
     const restant = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM home_mascot_cache WHERE account_id = ${a.id} AND messages::text ILIKE '%attention%'`;
     expect(restant[0].n).toBe(0);
   });

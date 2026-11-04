@@ -34,7 +34,7 @@ import { ouvrirRepriseDepots, ACTION_REPRISE } from '@/lib/upload-queue-feedback
 import { parseWriteBlocked, notifyWriteBlocked, WriteBlockedError, isWriteBlockedError } from '@/lib/write-blocked';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { fetchDepot, messageSelonStatut } from '@/lib/upload-http';
-import { signalerEnvoiReussi } from '@/lib/upload-notification-client';
+import { confirmerAjout } from '@/lib/upload-confirmation-client';
 import { agendaItemIdOrNull, linkUploadedDocumentsToAgendaItem } from '@/lib/agenda/document-agenda-link-client';
 import { NativeScanButton } from '@/components/native/NativeScanButton';
 
@@ -219,7 +219,11 @@ export function UnifiedDocumentDialog({
   // ── Form fields ─────────────────────────────────────────────────────────────
   const [title, setTitle] = useState('');
   const [documentType, setDocumentType] = useState('AUTRE');
-  const [documentDate, setDocumentDate] = useState(new Date().toISOString().split('T')[0]);
+  // Lot 108D : AUCUNE date pré-remplie. Le jour courant pré-rempli devenait
+  // la « date du document » de tout dépôt où l'analyse ne lisait pas de date
+  // (cause racine des dates d'import affichées dans les listes). Une date
+  // n'est envoyée que si l'utilisateur l'a saisie.
+  const [documentDate, setDocumentDate] = useState('');
   const [assetId, setAssetId] = useState<string>(preselectedAssetId?.toString() || '0');
   const [supplier, setSupplier] = useState('');
   const [amount, setAmount] = useState('');
@@ -338,14 +342,9 @@ export function UnifiedDocumentDialog({
     }).catch(console.error).finally(() => setLoadingRelations(false));
   }, [open, assetId]);
 
-  // Ouverture depuis un élément d'agenda : la date du document reprend la
-  // sienne (comportement de l'ancien « événement » présélectionné).
-  useEffect(() => {
-    if (!open || agendaItemId === null) return;
-    apiClient.get<{ item?: { startDate?: string | null } }>(`/api/agenda/${agendaItemId}`)
-      .then((r) => { if (r?.item?.startDate) setDocumentDate(r.item.startDate); })
-      .catch(() => {});
-  }, [open, agendaItemId]);
+  // Lot 108D : l'ouverture depuis un élément d'agenda ne pré-remplit plus la
+  // date du document avec celle de l'élément — une date d'intervention n'est
+  // pas la date d'émission du document (facture, rapport…) ; l'analyse la lit.
 
   // Apply pending AI room/equipment references once substructures/equipments are loaded
   useEffect(() => {
@@ -440,7 +439,7 @@ export function UnifiedDocumentDialog({
     setFiles([]);
     setTitle('');
     setDocumentType('AUTRE');
-    setDocumentDate(new Date().toISOString().split('T')[0]);
+    setDocumentDate('');
     setAssetId(preselectedAssetId?.toString() || '0');
     setSupplier('');
     setAmount('');
@@ -456,8 +455,9 @@ export function UnifiedDocumentDialog({
   //
   // `handleClose` annulait l'envoi et vidait le formulaire. L'envoi est
   // désormais porté par la file globale : fermer masque le panneau, le
-  // transfert continue. Plus de suivi flottant ni de toast (lot 31, L31-5) :
-  // l'analyse s'annonce dans le header puis par notification, un échec par
+  // transfert continue. Plus de suivi flottant (lot 31, L31-5) : l'ajout est
+  // confirmé discrètement (lot 108I), l'analyse s'annonce dans le header (une
+  // notification seulement si l'utilisateur ne la suit plus), un échec par
   // un message d'erreur. Annuler est l'action explicite « Annuler l'envoi ».
   // ══════════════════════════════════════════════════════════════════════
   const handleClose = () => {
@@ -510,9 +510,10 @@ export function UnifiedDocumentDialog({
     if (bilan.fileIds.length > 0) {
       await associerEtSignaler(ctx, bilan.fileIds);
       onFilesUploaded?.(bilan.fileIds);
-      // Pas de toast de succès (lot 31, L31-5). Lot 32 (PO-Q18/Q19) : une
-      // notification « Documents ajoutés » par lot, pour tous les comptes.
-      signalerEnvoiReussi(bilan.fileIds, bilan.lotId);
+      // Lot 108I : confirmation discrète dans le parcours, plus de
+      // notification « Document ajouté » (lot 32) ; une reprise tardive d'un
+      // fichier du lot ne confirme pas une seconde fois.
+      if (!bilan.tardif) confirmerAjout({ count: bilan.fileIds.length, kind: 'file', analysisStarted: ctx.isPremium });
     }
     if (bilan.tardif) return;
     if (bilan.echecs.length > 0) {
@@ -578,6 +579,8 @@ export function UnifiedDocumentDialog({
         equipmentId: ctx.equipmentId,
         documentType,
         documentDate: documentDate || null,
+        // Lot 108D : la date n'est jamais pré-remplie — présente, elle est saisie.
+        documentDateSource: documentDate ? 'USER' : null,
         description: title || null,
         supplier: supplier || null,
         amountCents: ctx.amountCents,
@@ -601,6 +604,7 @@ export function UnifiedDocumentDialog({
         documentType,
         assetId: ctx.targetAssetId,
         documentDate: documentDate || null,
+        ...(documentDate ? { documentDateSource: 'USER' } : {}),
         description: title || null,
         supplier: supplier || null,
         amountCents: ctx.amountCents || null,
@@ -612,10 +616,9 @@ export function UnifiedDocumentDialog({
       const ids = [webLink.id as number];
       await associerEtSignaler(ctx, ids);
       onFilesUploaded?.(ids);
-      // Lot 32 (PO-Q19) : notification « Lien web ajouté », pas de toast.
-      signalerEnvoiReussi(ids, `wl-${webLink.id}`);
-      // Pas de toast de succès (lot 31, L31-5) : la modale se ferme et le
-      // lien apparaît dans les listes (`document-added`).
+      // Lot 108I : confirmation discrète « Lien web ajouté », sans notification.
+      confirmerAjout({ count: ids.length, kind: 'web_link', analysisStarted: ctx.isPremium });
+      // La modale se ferme et le lien apparaît dans les listes (`document-added`).
       onSuccess?.();
       resetForm();
       onOpenChange(false);

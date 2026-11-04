@@ -22,6 +22,7 @@
  * s'éditent dans `email-template-editor.service.ts` (remplace COM-013).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { legalPublicUrl } from '@/lib/legal/public-legal';
 import { LIFECYCLE_DURATIONS } from '@/lib/account-lifecycle/retention-policy';
 import { pgClient } from '@/db';
 import {
@@ -47,7 +48,8 @@ import { formatSecurityIncidentDate } from '@/lib/auth/security-email';
 /** Libellé métier des événements du catalogue (le catalogue n'en porte pas). */
 const EVENT_LABELS: Record<string, string> = {
   DEADLINE_DUE_IN_7_DAYS: 'Échéance dans 7 jours',
-  DOCUMENT_UPLOAD_COMPLETED: 'Documents ajoutés (envoi réussi)',
+  // Lot 108I : plus émise (confirmation dans l'interface) ; conservée pour l'historique.
+  DOCUMENT_UPLOAD_COMPLETED: 'Documents ajoutés (plus envoyée : confirmation dans l’interface)',
   DOCUMENT_BATCH_COMPLETED: 'Lot de documents analysé',
   DOCUMENT_BATCH_PARTIALLY_FAILED: 'Lot de documents partiellement analysé',
   DOCUMENT_BATCH_FAILED: 'Échec d’analyse d’un lot de documents',
@@ -922,7 +924,8 @@ export function contextVariables(ctx: SelectedPreviewContext, appUrl: string = a
     // et conservation annoncées (durée = paramètre central), lien Mon compte.
     v.retentionDays = String(LIFECYCLE_DURATIONS.restrictedRetentionDays);
     v.accountUrl = `${base}/mon-compte`;
-    v.legalPermalinkUrl = `${base}/cgvu`;
+    // Lot 108L : CGUV sur le site public (jamais app.*/cgvu).
+    v.legalPermalinkUrl = legalPublicUrl('cguv');
   }
   return v;
 }

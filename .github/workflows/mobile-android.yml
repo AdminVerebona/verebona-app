@@ -1,12 +1,20 @@
-# Application mobile Android — lot 95 (CDC 12 §28-§29, décisions PO M4, M7, M8).
+# Application mobile Android — lot 95 (CDC 12 §28-§29, décisions PO M4, M7, M8),
+# lot 108G (décision PO du 03/11/2026 : interface DISTANTE = cible V1).
+#
+# Mode distant par défaut en préproduction ET en production. La sonde technique
+# du Gate 0 (mode local) n'est admise qu'en préproduction, en artefact seul :
+# refusée avant le build (readiness) et l'AAB est contrôlé avant tout envoi
+# (scripts/distribution-guard.mjs sur base/assets de l'AAB).
 #
 # Indépendant de la CI web (.github/workflows/ci.yml, inchangé) : ne se déclenche
 # que sur le projet mobile ou à la main.
 #   · contrôles (typecheck, tests, App Links) à chaque modification ;
 #   · préproduction (fr.verebona.app.preprod) → Google Play « Tests internes » ;
 #   · production (fr.verebona.app) → UNIQUEMENT à la main, derrière l'environnement
-#     protégé « production-mobile » (approbation explicite) ; la mise en ligne
-#     publique reste confirmée dans la Play Console (version « brouillon »).
+#     protégé « production-mobile » (approbation explicite du PO). Par défaut :
+#     piste « Tests internes » de la fiche de production. Piste « production » :
+#     version en BROUILLON seulement — la mise en ligne publique reste un geste
+#     manuel du PO dans la Play Console. Ce workflow ne publie jamais rien.
 # Secrets et variables : docs/mobile/builds-et-secrets.md (aucun dans le dépôt).
 name: Mobile — Android
 
@@ -19,7 +27,7 @@ on:
         options: [preprod, prod]
         default: preprod
       ui_mode:
-        description: "Mode d'affichage (Gate 0) : remote = site distant (A), local = sonde interface embarquée (B)"
+        description: "Mode d'affichage : remote = interface distante (cible V1, défaut) ; local = sonde technique Gate 0 (préproduction, artefact seul, jamais envoyée)"
         type: choice
         options: [remote, local]
         default: remote
@@ -28,7 +36,7 @@ on:
         type: boolean
         default: true
       prod_track:
-        description: "Production : piste Google Play (internal = version candidate testée sur la fiche de production)"
+        description: "Production : piste Google Play (internal = testeurs internes de la fiche de production ; production = BROUILLON, jamais mis en ligne par ce workflow)"
         type: choice
         options: [internal, production]
         default: internal
@@ -194,6 +202,16 @@ jobs:
           name: android-preprod-${{ env.VEREBONA_APP_VERSION }}-${{ github.run_number }}
           path: mobile/android/app/build/outputs/bundle/preprodRelease/*.aab
           retention-days: 90
+      # Lot 108G (CA02) : contrôle du BINAIRE (configuration Capacitor réellement
+      # embarquée dans l'AAB, absence de sonde) avant tout envoi.
+      - name: Garde-fou — AAB distribuable (interface distante)
+        if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.publish)
+        run: |
+          set -euo pipefail
+          AAB=$(ls mobile/android/app/build/outputs/bundle/preprodRelease/*.aab | head -1)
+          rm -rf "$RUNNER_TEMP/aab" && mkdir -p "$RUNNER_TEMP/aab"
+          unzip -q "$AAB" 'base/assets/*' -d "$RUNNER_TEMP/aab"
+          node mobile/scripts/distribution-guard.mjs "$RUNNER_TEMP/aab/base/assets/capacitor.config.json" "$RUNNER_TEMP/aab/base/assets/public"
       - name: Google Play — piste « Tests internes »
         if: github.event_name != 'pull_request' && (github.event_name == 'push' || inputs.publish)
         uses: r0adkll/upload-google-play@v1
@@ -216,7 +234,8 @@ jobs:
     env:
       VEREBONA_ENV: prod
       VEREBONA_APP_ORIGIN: ${{ vars.VEREBONA_APP_ORIGIN }}
-      VEREBONA_UI_MODE: ${{ inputs.ui_mode }}
+      # Lot 108G : production = toujours l'interface distante (aucune sonde).
+      VEREBONA_UI_MODE: remote
       VEREBONA_APP_VERSION: ${{ vars.VEREBONA_APP_VERSION }}
       VEREBONA_APP_BUILD: ${{ github.run_number }}
       PACKAGE_NAME: fr.verebona.app
@@ -265,6 +284,14 @@ jobs:
           name: android-prod-${{ env.VEREBONA_APP_VERSION }}-${{ github.run_number }}
           path: mobile/android/app/build/outputs/bundle/prodRelease/*.aab
           retention-days: 400
+      - name: Garde-fou — AAB distribuable (interface distante, production)
+        if: inputs.publish
+        run: |
+          set -euo pipefail
+          AAB=$(ls mobile/android/app/build/outputs/bundle/prodRelease/*.aab | head -1)
+          rm -rf "$RUNNER_TEMP/aab" && mkdir -p "$RUNNER_TEMP/aab"
+          unzip -q "$AAB" 'base/assets/*' -d "$RUNNER_TEMP/aab"
+          node mobile/scripts/distribution-guard.mjs "$RUNNER_TEMP/aab/base/assets/capacitor.config.json" "$RUNNER_TEMP/aab/base/assets/public"
       - name: Google Play — production (brouillon) ou version candidate (tests internes)
         if: inputs.publish
         uses: r0adkll/upload-google-play@v1
@@ -277,3 +304,13 @@ jobs:
           # se confirme dans la Play Console. Tests internes : disponible aux testeurs.
           status: ${{ inputs.prod_track == 'production' && 'draft' || 'completed' }}
           releaseName: ${{ env.VEREBONA_APP_VERSION }} (${{ github.run_number }}) — ${{ github.sha }}
+      - name: Résumé — ce que ce workflow n'a PAS fait
+        if: success()
+        env:
+          PROD_TRACK: ${{ inputs.prod_track }}
+        run: |
+          {
+            echo "### Android production — interface distante"
+            if [ "$PROD_TRACK" = production ]; then echo "- Piste production : version en BROUILLON."; else echo "- Piste Tests internes de la fiche de production."; fi
+            echo "- Aucune mise en ligne publique : déploiement à confirmer manuellement par le PO dans la Play Console."
+          } >> "$GITHUB_STEP_SUMMARY"

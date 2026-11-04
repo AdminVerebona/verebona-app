@@ -28,6 +28,8 @@ export interface GroupingDocumentRef {
   id: number;
   title: string;
   documentDate: string | null;
+  /** Lot 108D : libellé du Type documentaire (sous-titre de la ligne), null si inconnu. */
+  typeLabel?: string | null;
   /** Lien de CET élément vers le document : précis (saisi / IA), seulement par l'ensemble, ou aucun. */
   link: 'DIRECT' | 'GROUP' | null;
 }

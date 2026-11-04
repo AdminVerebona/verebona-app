@@ -26,6 +26,8 @@ export const NOTIFICATION_TYPES = {
    * Lot 32 (décision PO Q18/Q19) : envoi réussi (fichiers ou lien web) —
    * une notification par lot d'envoi, pour TOUS les comptes (Standard
    * compris). Remplace les toasts de succès retirés au lot 31.
+   * Lot 108I : plus produit (confirmation dans l'interface) ; conservé pour
+   * l'affichage des lignes historiques.
    */
   DOCUMENT_UPLOAD_COMPLETED: 'DOCUMENT_UPLOAD_COMPLETED',
 

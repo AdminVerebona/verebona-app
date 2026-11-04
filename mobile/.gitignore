@@ -3,6 +3,7 @@ node_modules/
 
 # Fichiers propres à UN build (écrits par scripts/prepare.mjs)
 www/app-config.js
+sonde-b/app-config.js
 android/verebona.properties
 ios/Verebona.xcconfig
 

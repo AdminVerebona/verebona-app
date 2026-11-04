@@ -5,7 +5,8 @@
  *     node scripts/prepare.mjs
  *
  * Écrit les seuls fichiers propres à l'environnement (tous ignorés par git) :
- *   www/app-config.js          configuration publique lue par la page locale (hors connexion, mode B)
+ *   www/app-config.js          configuration publique lue par les pages de secours locales (mode distant)
+ *   sonde-b/app-config.js      idem pour la sonde technique (mode local, jamais distribuée)
  *   android/verebona.properties version, build, domaine des App Links
  *   ios/Verebona.xcconfig      bundle ID, nom affiché, domaine associé, groupe d'apps, version, icône
  * Aucun secret : les clés de signature et fichiers Firebase sont posés par la
@@ -14,7 +15,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveBuildConfig } from '../config/environments.mjs';
+import { ANDROID_MIN_WEBVIEW_VERSION, resolveBuildConfig } from '../config/environments.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -22,19 +23,26 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function generatedFiles(b) {
   const publicConfig = {
     env: b.env, appName: b.appName, origin: b.origin, startUrl: b.startUrl, uiMode: b.uiMode, version: b.version, build: b.build,
+    minWebViewVersion: ANDROID_MIN_WEBVIEW_VERSION,
   };
+  const appConfig = `/* Généré par scripts/prepare.mjs — configuration PUBLIQUE de ce build (${b.env}). Ne pas modifier. */\n`
+    + `window.VEREBONA_APP = Object.freeze(${JSON.stringify(publicConfig, null, 2)});\n`;
   return {
-    'www/app-config.js':
-      `/* Généré par scripts/prepare.mjs — configuration PUBLIQUE de ce build (${b.env}). Ne pas modifier. */\n`
-      + `window.VEREBONA_APP = Object.freeze(${JSON.stringify(publicConfig, null, 2)});\n`,
+    // Dossier web du mode du build (capacitor.config.ts › webDir).
+    [b.uiMode === 'remote' ? 'www/app-config.js' : 'sonde-b/app-config.js']: appConfig,
     'android/verebona.properties':
       `# Généré par scripts/prepare.mjs (${b.env}) — ne pas modifier, ne pas versionner.\n`
       + `versionName=${b.version}\nversionCode=${b.build}\nappHost=${b.host}\n`,
     'ios/Verebona.xcconfig':
       `// Généré par scripts/prepare.mjs (${b.env}) — ne pas modifier, ne pas versionner.\n`
-      + `PRODUCT_BUNDLE_IDENTIFIER = ${b.appId}\n`
+      + `VB_APP_ID = ${b.appId}\n`
+      + `PRODUCT_BUNDLE_IDENTIFIER = $(VB_APP_ID)\n`
+      // Lot 108G : extension de partage — identifiant dérivé de celui de l'app.
+      + `VB_SHARE_EXTENSION_ID = ${b.appId}.ShareExtension\n`
       + `VB_DISPLAY_NAME = ${b.appName}\n`
       + `VB_APP_HOST = ${b.host}\n`
+      // Lot 108G : domaine « app-bound » (WKAppBoundDomains) = nom d'hôte seul.
+      + `VB_APP_BOUND_DOMAIN = ${b.hostname}\n`
       + `VB_URL_SCHEME = ${b.urlScheme}\n`
       + `VB_APP_GROUP = ${b.iosAppGroup}\n`
       + `MARKETING_VERSION = ${b.version}\n`
@@ -56,5 +64,5 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, content);
   }
-  console.log(`Build préparé : ${b.appName} (${b.appId}) → ${b.origin} — mode ${b.uiMode === 'remote' ? 'A (site distant)' : 'B (interface embarquée)'} — ${b.version} (${b.build}).`);
+  console.log(`Build préparé : ${b.appName} (${b.appId}) → ${b.origin} — mode ${b.uiMode === 'remote' ? 'distant (cible V1)' : 'SONDE TECHNIQUE locale (jamais distribuée)'} — ${b.version} (${b.build}).`);
 }

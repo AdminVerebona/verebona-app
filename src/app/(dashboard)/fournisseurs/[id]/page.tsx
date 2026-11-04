@@ -26,6 +26,8 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { openDrawer } from '@/lib/drawers';
 import { userFacingLabel } from '@/lib/referential/user-facing-labels';
+import { DocumentDateCell } from '@/components/documents/DocumentDateCell';
+import { DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET } from '@/lib/documents/document-row-date';
 import { SUPPLIERS_ROUTE } from '@/lib/supplier-routes';
 import type { SupplierDetail } from '@/services/suppliers/supplier-detail.service';
 import { SupplierAgendaSection } from '@/components/suppliers/SupplierAgendaSection';
@@ -40,9 +42,6 @@ const CONTACT_STATUS: Record<string, string> = {
   partially_verified: 'Coordonnées partiellement vérifiées',
   verified: 'Coordonnées vérifiées',
 };
-
-const formatDate = (d: string | null) =>
-  d ? new Date(`${d}T00:00:00`).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) : 'Sans date';
 
 function Section({ icon: Icon, title, count, children, empty }: {
   icon: React.ElementType; title: string; count: number; children: React.ReactNode; empty: string;
@@ -64,8 +63,10 @@ function Section({ icon: Icon, title, count, children, empty }: {
 }
 
 /** Ligne cliquable (ou non, si l'objet n'est pas ouvrable). */
-function Row({ title, subtitle, onOpen, href, unavailable }: {
+function Row({ title, subtitle, aside, onOpen, href, unavailable }: {
   title: string; subtitle?: string | null; onOpen?: () => void; href?: string; unavailable?: boolean;
+  /** Lot 108D : colonne de droite (date du document d'une ligne de document). */
+  aside?: React.ReactNode;
 }) {
   const content = (
     <>
@@ -73,6 +74,7 @@ function Row({ title, subtitle, onOpen, href, unavailable }: {
         <p className="truncate text-sm font-medium">{title}</p>
         {subtitle && <p className="truncate text-xs text-muted-foreground">{subtitle}</p>}
       </div>
+      {aside}
       {unavailable
         ? <span className="text-xs text-muted-foreground">Non disponible</span>
         : <ChevronRight className="w-4 h-4 text-muted-foreground" aria-hidden />}
@@ -220,7 +222,9 @@ export default function SupplierPage() {
             <Row
               key={d.id}
               title={d.title}
-              subtitle={[userFacingLabel(d.documentTypeLabel), d.documentDate ? formatDate(d.documentDate) : null, d.assetName].filter(Boolean).join(' · ')}
+              /* Lot 108D : sous-titre = Type seul ; UNE date à droite, la date du document (sinon « – »). */
+              subtitle={[userFacingLabel(d.documentTypeLabel), DOCUMENT_ROW_SUBTITLE_INCLUDES_ASSET ? d.assetName : null].filter(Boolean).join(' · ')}
+              aside={<DocumentDateCell value={d.documentDate} className="w-[74px] text-xs text-muted-foreground sm:w-[90px]" />}
               onOpen={() => openDrawer({ kind: 'document', id: d.id })}
               unavailable={!d.available}
             />

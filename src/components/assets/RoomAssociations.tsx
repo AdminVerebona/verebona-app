@@ -40,6 +40,7 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { EntityCard, EntityCardList } from '@/components/drawers/EntityCard';
+import { DocumentDateCell } from '@/components/documents/DocumentDateCell';
 import { apiClient } from '@/lib/api-client';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { LazyUnifiedDocumentDialog } from '@/components/mobile/add-forms';
@@ -278,7 +279,6 @@ export function RoomAssociations({ roomId, assetId, onRefresh }: { roomId: numbe
           <EntityCardList>
             {data.documents.map((d) => {
               const provenance = roomDocumentProvenance(d);
-              const date = formatDate(d.documentDate);
               return (
                 <EntityCard
                   key={d.id}
@@ -287,9 +287,11 @@ export function RoomAssociations({ roomId, assetId, onRefresh }: { roomId: numbe
                   title={d.title}
                   icon={<FileText className="w-3.5 h-3.5" />}
                   data-testid="piece-document"
+                  badges={<DocumentDateCell value={d.documentDate} className="text-[10px] text-muted-foreground" />}
                   meta={(
                     <span className="flex flex-wrap items-center gap-1">
-                      {[d.documentTypeLabel, date].filter(Boolean).join(' · ')}
+                      {/* Lot 108D : le Type seul ; la date du document est à droite (badges). */}
+                      {d.documentTypeLabel}
                       {provenance.map((p) => (
                         <span key={p} className={p === 'Pièce' ? PILL_PIECE : PILL_VIA} data-provenance={p === 'Pièce' ? 'piece' : 'via'}>{p}</span>
                       ))}

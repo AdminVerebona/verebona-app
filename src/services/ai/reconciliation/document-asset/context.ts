@@ -44,7 +44,7 @@ import type { DocumentAssetResolution } from './resolution.repository';
 import { DOCUMENT_ASSET_RESOLUTION_VERSION } from './version';
 import { documentIdentityFingerprint } from './identity/graph';
 import { identityContextOf, type DocumentIdentityContext } from './identity/decision';
-import { identityGraphFor } from './identity/load';
+import { identityGraphOutcomeFor, type IdentityGraphOutcome, type IdentityGraphStatus } from './identity/load';
 
 /**
  * Version des règles déterministes (identifiants forts, référence partagée,
@@ -89,6 +89,13 @@ export interface DocumentAssetContext {
    * coupure ou graphe illisible (comportement antérieur).
    */
   identity?: DocumentIdentityContext | null;
+  /**
+   * Lot 108E (A5) : état du graphe pour cette évaluation — OK, DISABLED
+   * (coupure), MIGRATION_MISSING / UNAVAILABLE (PANNE : aucune décision, aucune
+   * carte, reprise), PROVIDED (graphe fourni par l'appelant, tests).
+   */
+  identityGraphStatus?: IdentityGraphStatus | 'PROVIDED';
+  identityGraphError?: string | null;
 }
 
 /** Empreinte du contexte (pure). */
@@ -140,6 +147,8 @@ export async function computeDocumentAssetContext(p: {
   index?: AccountMatchingIndex;
   /** Lot 105D : graphe d'identité déjà construit pour le passage (null : sans identité) ; à défaut, mémorisé par index. */
   identityGraph?: import('./identity/graph').AccountIdentityGraph | null;
+  /** Lot 108E : issue du graphe déjà obtenue pour le passage (statut de panne compris). Prioritaire sur `identityGraph`. */
+  identityOutcome?: IdentityGraphOutcome;
 }): Promise<DocumentAssetContext> {
   const t1Candidates = p.resolution?.t1Candidates ?? [];
   const [sources, index] = await Promise.all([
@@ -148,7 +157,8 @@ export async function computeDocumentAssetContext(p: {
   ]);
   // Lot 105D : identité documentaire (graphe du compte mémorisé par index) — lue AVANT les candidats :
   // une adresse citée comme facturation / livraison n'est jamais une preuve pour le bien qui la porte.
-  const graph = p.identityGraph !== undefined ? p.identityGraph : await identityGraphFor(p.accountId, index);
+  const issue: IdentityGraphOutcome | null = p.identityOutcome ?? (p.identityGraph !== undefined ? null : await identityGraphOutcomeFor(p.accountId, index));
+  const graph = issue ? issue.graph : p.identityGraph ?? null;
   const build = roleAwareBuild(
     buildDocumentAssetCandidates({ index, sources, state: p.state, t1Candidates, fileId: p.fileId }),
     graph?.contextOnlyAssets?.get(p.fileId) ?? [],
@@ -203,6 +213,8 @@ export async function computeDocumentAssetContext(p: {
     t1Candidates,
     matchedSourceUnits,
     identity,
+    identityGraphStatus: issue ? issue.status : 'PROVIDED',
+    identityGraphError: issue?.error ?? null,
   };
 }
 

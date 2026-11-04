@@ -70,7 +70,7 @@ function accueil(r: Raw, shown: Decided[] = [], o: Partial<Parameters<typeof bui
 const rendu = (p: MascotPresentation | null, o: { empty?: boolean; failed?: boolean } = {}) => {
   mascot.presentation = p;
   mascot.failed = o.failed ?? false;
-  return renderToStaticMarkup(h(MascotSpeaks, { greetingName: 'Fabien', empty: o.empty ?? false, onCreateAsset: () => {}, onUploadDocument: () => {}, pageSuggestions: [] }));
+  return renderToStaticMarkup(h(MascotSpeaks, { greetingName: 'Fabien', empty: o.empty ?? false, onCreateAsset: () => {}, onUploadDocument: () => {} }));
 };
 /** Texte VISIBLE de la bulle (balises et attributs retirés). */
 const bulle = (html: string) => {

@@ -34,7 +34,8 @@ import { pgClient } from '@/db';
  * peuvent pas les atteindre (préfixes `assistant:c…` / `assistant:<id>:` —
  * `events/handlers.ts`, `conversation.service.ts`).
  */
-const RESERVED_IDEMPOTENCY_KEY_PREFIXES = ['help-corpus:last-valid:'] as const;
+// Lot 108J : + dernier corpus Ressources valide (même règle que le Centre d'aide).
+const RESERVED_IDEMPOTENCY_KEY_PREFIXES = ['help-corpus:last-valid:', 'resources-corpus:last-valid:'] as const;
 
 /** Prédicat SQL à ajouter à toute purge de `ai_operation_idempotency`. */
 export const NOT_RESERVED_IDEMPOTENCY_KEY_SQL =

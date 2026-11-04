@@ -517,7 +517,9 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
   const recentDocuments: HomeRecentDocument[] = latestDocs.map((d) => {
     const typeLabel = documentTypeLabelOrNull(d.documentTypeCode);
     const rubrique = getRubric(d.rubricCode)?.label ?? null;
-    const dateUtile = d.documentDate ?? (d.uploadedAt ? new Date(d.uploadedAt).toISOString().slice(0, 10) : null);
+    // Lot 108D : la date montrée est la date du DOCUMENT, jamais la date
+    // d'ajout en remplacement (« – » côté affichage quand elle manque).
+    const dateUtile = d.documentDate ?? null;
     return {
       id: d.id,
       title: displayDocumentTitle(d, 'Document'),

@@ -17,12 +17,22 @@
  *      (contrat `t3-document-asset-cross-v1`) — références opaques, AUCUNE
  *      adresse en clair.
  *   4. `validateCrossDocumentOutput` : contrôle serveur de la section
- *      facultative `crossDocument` de la sortie du modèle.
+ *      `crossDocument` de la sortie du modèle.
+ *
+ * Lot 108E (ticket « correctif #626 bis ») :
+ *   · A2 — un document peut appartenir à plusieurs groupes (logement ET
+ *     appareil) : la décision déterministe exige que TOUS désignent le même
+ *     bien (ou ne le contredisent pas) ;
+ *   · A4 — quand le modèle a REÇU les preuves croisées, la section
+ *     `crossDocument` est OBLIGATOIRE pour un rattachement automatique et
+ *     vérifiée face à l'état SERVEUR (statut du groupe, cible, appartenance du
+ *     document, preuves citées) ; absente ou incohérente → abstention tracée.
+ *     Appels non enrichis (prompt sans le bloc) : comportement d'avant.
  */
 import type { CandidateSource } from '../candidate-builder';
 import type { DocumentAssetCandidate, DocumentAssetDecision } from '../decision';
 import type { AccountIdentityGraph, GroupMember, IdentityGroup } from './graph';
-import { membershipOf } from './graph';
+import { membershipOf, membershipsOf } from './graph';
 import { T3_DOCUMENT_ASSET_CROSS_CONTRACT } from './contract';
 
 /** Contexte « identité » d'UN document, porté par le contexte DOCUMENT_ASSET. */
@@ -33,11 +43,38 @@ export interface DocumentIdentityContext {
   exclusions: Array<{ groupKey: string; reason: string }>;
   /** Part « identité » de l'empreinte du contexte (null : hors groupe). */
   fingerprint: string | null;
+  /** Lot 108E : toutes les appartenances du document (logement, véhicule, appareil). */
+  memberships?: Array<{ group: IdentityGroup; member: GroupMember }>;
 }
 
 export function identityContextOf(graph: AccountIdentityGraph, fileId: number, fingerprint: string | null): DocumentIdentityContext {
   const m = membershipOf(graph, fileId);
-  return { graph, group: m?.group ?? null, member: m?.member ?? null, exclusions: graph.exclusions.get(fileId) ?? [], fingerprint };
+  return {
+    graph, group: m?.group ?? null, member: m?.member ?? null, exclusions: graph.exclusions.get(fileId) ?? [], fingerprint,
+    memberships: membershipsOf(graph, fileId),
+  };
+}
+
+const RATTACHABLE = ['DEMONSTRABLE', 'ATTESTED', 'CONFIRMED'];
+
+/**
+ * Lot 108E : cible commune de TOUTES les appartenances (pure) — `null` si
+ * aucune n'établit de bien ou si l'une contredit (autre cible, groupe
+ * AMBIGUOUS, bien hors des candidats d'un groupe à confirmer, bien refusé).
+ */
+export function consistentIdentityTarget(identity: DocumentIdentityContext | null): { group: IdentityGroup; member: GroupMember } | null {
+  const ms = identity?.memberships?.length ? identity.memberships : identity?.group && identity.member ? [{ group: identity.group, member: identity.member }] : [];
+  const porteur = ms.find((m) => m.group.targetAssetId && RATTACHABLE.includes(m.group.status)) ?? null;
+  if (!porteur) return null;
+  const cible = porteur.group.targetAssetId!;
+  for (const m of ms) {
+    const g = m.group;
+    if (RATTACHABLE.includes(g.status) && g.targetAssetId !== cible) return null;
+    if (g.status === 'AMBIGUOUS') return null;
+    if (g.refusedAssetIds.includes(cible)) return null;
+    if (g.status === 'TO_CONFIRM' && !g.candidateAssetIds.includes(cible)) return null;
+  }
+  return porteur;
 }
 
 /** Rattachement déterministe par l'identité du groupe (pure). */
@@ -47,8 +84,9 @@ export function decideFromIdentity(
   opts: { multiAssetDeclared: boolean; identifiedAssetIds: readonly number[] },
 ): DocumentAssetDecision | null {
   if (!identity?.group || !identity.member || opts.multiAssetDeclared) return null;
-  const g = identity.group;
-  if (!g.targetAssetId || !['DEMONSTRABLE', 'ATTESTED', 'CONFIRMED'].includes(g.status)) return null;
+  const porteur = consistentIdentityTarget(identity);
+  if (!porteur) return null;
+  const g = porteur.group;
   // Identifiant fort du document vers un AUTRE bien : jamais tranché ici.
   if (opts.identifiedAssetIds.some((id) => id !== g.targetAssetId)) return null;
   const has = (c: DocumentAssetCandidate, s: CandidateSource) => !!c.sources?.includes(s);
@@ -56,8 +94,8 @@ export function decideFromIdentity(
     && (has(c, 'FACT_TARGET') || has(c, 'STRONG_IDENTIFIER') || has(c, 'SHARED_REFERENCE') || (has(c, 'T1_CANDIDATE') && c.t1?.confidence === 'certain')));
   if (autreDesigne) return null;
   return {
-    kind: 'APPLY', assetId: g.targetAssetId, score: 1, method: 'DETERMINISTIC',
-    reason: `GROUP_IDENTITY_${g.status}:${identity.member.via}`,
+    kind: 'APPLY', assetId: g.targetAssetId!, score: 1, method: 'DETERMINISTIC',
+    reason: `GROUP_IDENTITY_${g.status}:${porteur.member.via}${g.family === 'EQUIPMENT' ? ':EQUIPMENT' : ''}`,
   };
 }
 
@@ -70,8 +108,11 @@ export type IdentityGate =
 export function identityGate(identity: DocumentIdentityContext | null): IdentityGate {
   const g = identity?.group;
   if (!g || !identity?.member) return null;
-  if (g.status === 'TO_CONFIRM' && g.cardEligible) return { kind: 'GROUP_CONFIRMATION_PENDING', groupKey: g.groupKey };
-  if (g.refusedAssetIds.length > 0) return { kind: 'REFUSED_ASSETS', groupKey: g.groupKey, refusedAssetIds: [...g.refusedAssetIds] };
+  const ms = identity.memberships?.length ? identity.memberships : [{ group: g, member: identity.member }];
+  const attente = ms.find((m) => m.group.status === 'TO_CONFIRM' && m.group.cardEligible);
+  if (attente) return { kind: 'GROUP_CONFIRMATION_PENDING', groupKey: attente.group.groupKey };
+  const refus = [...new Set(ms.flatMap((m) => m.group.refusedAssetIds))].sort((a, b) => a - b);
+  if (refus.length > 0) return { kind: 'REFUSED_ASSETS', groupKey: (ms.find((m) => m.group.refusedAssetIds.length) ?? ms[0]).group.groupKey, refusedAssetIds: refus };
   return null;
 }
 
@@ -113,14 +154,20 @@ const MAX_EVIDENCES = 40;
  */
 export function crossDocumentContext(
   identity: DocumentIdentityContext | null, fileId: number, titles?: ReadonlyMap<number, { title: string | null; documentType: string | null; supplier: string | null }>,
-): { context: CrossDocumentContext; allowedEvidenceIds: Set<number> } | null {
+): { context: CrossDocumentContext; allowedEvidenceIds: Set<number>; server: CrossServerState } | null {
   if (!identity) return null;
-  const g = identity.group ?? (identity.exclusions[0] ? identity.graph.byKey.get(identity.exclusions[0].groupKey) ?? null : null);
+  // Contrat v1 : familles PROPERTY / VEHICLE seulement (un groupe d'appareil reste une règle SERVEUR, jamais transmis).
+  const bienFam = (x: IdentityGroup | null | undefined) => (x && x.family !== 'EQUIPMENT' ? x : null);
+  const ms = identity.memberships?.length ? identity.memberships : identity.group && identity.member ? [{ group: identity.group, member: identity.member }] : [];
+  const membre = ms.find((m) => bienFam(m.group)) ?? null;
+  const exclu = identity.exclusions.map((e) => bienFam(identity.graph.byKey.get(e.groupKey))).find(Boolean) ?? null;
+  const g = membre?.group ?? exclu;
   if (!g) return null;
+  const member = membre?.member ?? null;
   const ref = 'I1';
   const meta = (id: number) => titles?.get(id) ?? { title: null, documentType: null, supplier: null };
   const docs: CrossDocumentContext['groupDocuments'] = [
-    ...g.members.map((m) => ({ fileId: m.fileId, ...meta(m.fileId), membership: m.via })),
+    ...g.members.map((m) => ({ fileId: m.fileId, ...meta(m.fileId), membership: m.via === 'OWN_IDENTITY' ? 'OWN_IDENTITY' as const : 'CONTRACT' as const })),
     ...g.anchors.map((a) => ({ fileId: a.fileId, ...meta(a.fileId), membership: 'ANCHOR' as const, linkedAssetIds: a.assetIds })),
     ...g.excluded.map((x) => ({ fileId: x.fileId, ...meta(x.fileId), membership: 'EXCLUDED' as const, exclusionReason: x.reason })),
   ].sort((a, b) => (a.fileId === fileId ? -1 : b.fileId === fileId ? 1 : a.fileId - b.fileId)).slice(0, MAX_GROUP_DOCUMENTS);
@@ -135,21 +182,22 @@ export function crossDocumentContext(
       field: s.field, origin: s.origin, reliability: s.reliability, verifiedByServer: true, thisDocument: s.fileId === fileId,
     });
   }
-  const exclusion = identity.exclusions.find((e) => e.groupKey === g.groupKey) ?? null;
+  const exclusion = member ? null : identity.exclusions.find((e) => e.groupKey === g.groupKey) ?? null;
   const context: CrossDocumentContext = {
     contract: T3_DOCUMENT_ASSET_CROSS_CONTRACT,
     documentIdentity: {
-      status: identity.member ? 'MEMBER' : exclusion ? 'EXCLUDED' : 'NONE',
-      identityRef: identity.member ? ref : null,
-      family: g.family,
-      membership: identity.member?.via ?? null,
+      status: member ? 'MEMBER' : exclusion ? 'EXCLUDED' : 'NONE',
+      identityRef: member ? ref : null,
+      family: g.family as 'PROPERTY' | 'VEHICLE',
+      // Le contrat v1 connaît OWN_IDENTITY et CONTRACT ; un saut par événement de référence est décrit comme un saut contractuel.
+      membership: member ? (member.via === 'OWN_IDENTITY' ? 'OWN_IDENTITY' : 'CONTRACT') : null,
       exclusionReason: exclusion?.reason ?? null,
-      hopFromFileId: identity.member?.hopFromFileId ?? null,
+      hopFromFileId: member?.hopFromFileId ?? null,
     },
     groupDocuments: docs,
     evidences,
     edges: g.edges.slice(0, MAX_EVIDENCES).map((e) => ({
-      fromFileId: e.fromFileId, toFileId: e.toFileId, via: e.via, kind: e.kind,
+      fromFileId: e.fromFileId, toFileId: e.toFileId, via: e.via === 'SAME_OPERATION' ? 'SAME_CONTRACT' : e.via, kind: e.kind,
       evidenceIds: e.evidenceRefs.map((r) => idByRef.get(r)).filter((x): x is number => typeof x === 'number'),
     })),
     contradictions: g.contradictions.slice(0, 10).map((c) => ({ code: c.code, fileIds: c.fileIds, assetIds: c.assetIds ?? [] })),
@@ -158,10 +206,22 @@ export function crossDocumentContext(
       confirmedByUser: g.status === 'CONFIRMED',
     },
   };
-  return { context, allowedEvidenceIds: new Set(evidences.map((e) => e.evidenceId)) };
+  return {
+    context, allowedEvidenceIds: new Set(evidences.map((e) => e.evidenceId)),
+    server: { documentStatus: context.documentIdentity.status, groupStatus: g.status, targetAssetId: g.targetAssetId, candidateAssetIds: [...g.candidateAssetIds], refusedAssetIds: [...g.refusedAssetIds] },
+  };
 }
 
-// ── Sortie du modèle : section facultative `crossDocument` ─────────────────
+/** Lot 108E : état SERVEUR auquel la sortie croisée du modèle est confrontée. */
+export interface CrossServerState {
+  documentStatus: 'MEMBER' | 'EXCLUDED' | 'NONE';
+  groupStatus: string;
+  targetAssetId: number | null;
+  candidateAssetIds: number[];
+  refusedAssetIds: number[];
+}
+
+// ── Sortie du modèle : section `crossDocument` ──────────────────────────────
 
 export interface CrossDocumentOutput {
   documentIdentity: 'ESTABLISHED' | 'UNCERTAIN' | 'NONE';
@@ -176,15 +236,23 @@ export interface CrossDocumentOutput {
  * Contrôle serveur de la section `crossDocument` (pure) :
  *   · `violation` : preuve citée hors de celles fournies (monde fermé U1) ;
  *   · `blockApply` : portée du document non établie, validation demandée,
- *     contradiction signalée, ou relation groupe → bien non établie pour un
- *     document membre d'un groupe — aucun rattachement automatique.
- * Section absente : rien à contrôler (prompt sans le bloc, autres relations).
+ *     contradiction signalée, relation groupe → bien non établie pour un
+ *     membre ; lot 108E (A4) : relation groupe → bien ou appartenance du
+ *     document INCOHÉRENTE avec l'état serveur, aucune preuve citée ;
+ *   · `missing` (lot 108E) : section ABSENTE alors que le modèle a reçu les
+ *     preuves croisées (`required`) — jamais un rattachement automatique.
+ * Section absente sans `required` : rien à contrôler (prompt sans le bloc,
+ * autres relations) — rétrocompatibilité.
  */
 export function validateCrossDocumentOutput(
   out: CrossDocumentOutput | null | undefined,
-  ctx: { allowedEvidenceIds: ReadonlySet<number>; member: boolean },
-): { violation: boolean; blockApply: boolean; reasons: string[] } {
-  if (!out) return { violation: false, blockApply: false, reasons: [] };
+  ctx: { allowedEvidenceIds: ReadonlySet<number>; member: boolean; required?: boolean; server?: CrossServerState | null },
+): { violation: boolean; blockApply: boolean; missing: boolean; reasons: string[] } {
+  if (!out) {
+    return ctx.required
+      ? { violation: false, blockApply: true, missing: true, reasons: ['CROSS_DOCUMENT_OUTPUT_MISSING'] }
+      : { violation: false, blockApply: false, missing: false, reasons: [] };
+  }
   const reasons: string[] = [];
   const inconnues = (out.citedEvidenceIds ?? []).filter((id) => !ctx.allowedEvidenceIds.has(id));
   if (inconnues.length) reasons.push(`UNKNOWN_EVIDENCE_ID:${inconnues.slice(0, 5).join(',')}`);
@@ -192,5 +260,31 @@ export function validateCrossDocumentOutput(
   if (out.userValidationRequired) reasons.push('USER_VALIDATION_REQUIRED');
   if ((out.contradictions ?? []).length > 0) reasons.push('CONTRADICTIONS_REPORTED');
   if (ctx.member && (out.groupToAsset === 'UNCERTAIN' || out.groupToAsset === 'NOT_ESTABLISHED')) reasons.push(`GROUP_TO_ASSET_${out.groupToAsset}`);
-  return { violation: inconnues.length > 0, blockApply: reasons.length > 0, reasons };
+  const sv = ctx.server ?? null;
+  if (ctx.required) {
+    // Une réponse ENRICHIE doit être vérifiable : preuves citées, statuts cohérents avec le serveur.
+    if ((out.citedEvidenceIds ?? []).length === 0) reasons.push('CITED_EVIDENCE_MISSING');
+    if (sv) {
+      const etabli = RATTACHABLE.includes(sv.groupStatus);
+      if (out.groupToAsset === 'ESTABLISHED' && !etabli) reasons.push(`GROUP_TO_ASSET_INCONSISTENT_WITH_SERVER:${sv.groupStatus}`);
+      if (sv.documentStatus === 'MEMBER' && out.groupToAsset === 'NOT_APPLICABLE') reasons.push('GROUP_TO_ASSET_NOT_APPLICABLE_FOR_MEMBER');
+      if (sv.documentStatus === 'MEMBER' && out.documentIdentity !== 'ESTABLISHED') reasons.push(`DOCUMENT_IDENTITY_${out.documentIdentity}_FOR_MEMBER`);
+      if (sv.documentStatus === 'EXCLUDED' && out.documentIdentity === 'ESTABLISHED') reasons.push('DOCUMENT_IDENTITY_INCONSISTENT_WITH_SERVER:EXCLUDED');
+      if (sv.documentStatus !== 'MEMBER' && out.groupToAsset === 'ESTABLISHED') reasons.push('GROUP_TO_ASSET_ESTABLISHED_FOR_NON_MEMBER');
+    }
+  }
+  return { violation: inconnues.length > 0, blockApply: reasons.length > 0, missing: false, reasons };
+}
+
+/**
+ * Lot 108E (A4) : le bien RETENU par le modèle est-il compatible avec l'état
+ * serveur du groupe ? (cible établie → ce bien seul ; bien refusé → jamais ;
+ * groupe à confirmer → jamais sans confirmation). Pure.
+ */
+export function crossTargetAllowed(assetId: number, sv: CrossServerState | null | undefined): string | null {
+  if (!sv || sv.documentStatus !== 'MEMBER') return sv?.refusedAssetIds.includes(assetId) ? 'TARGET_REFUSED_BY_USER' : null;
+  if (sv.refusedAssetIds.includes(assetId)) return 'TARGET_REFUSED_BY_USER';
+  if (RATTACHABLE.includes(sv.groupStatus) && sv.targetAssetId !== null && sv.targetAssetId !== assetId) return 'TARGET_DIFFERS_FROM_GROUP';
+  if (sv.groupStatus === 'TO_CONFIRM' || sv.groupStatus === 'AMBIGUOUS' || sv.groupStatus === 'REFUSED') return `GROUP_${sv.groupStatus}`;
+  return null;
 }

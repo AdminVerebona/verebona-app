@@ -70,7 +70,8 @@ export async function POST(req: NextRequest) {
     );
   } catch (e) {
     if (e instanceof LegalVersionError) {
-      return NextResponse.json({ error: e.message, code: e.code }, { status: 400 });
+      // Lot 108L : texte non consultable sur le site public = indisponibilité (503), pas une erreur de requête.
+      return NextResponse.json({ error: e.message, code: e.code }, { status: e.code === 'CGUV_PUBLIC_TEXT_UNAVAILABLE' ? 503 : 400 });
     }
     console.error('[legal] enregistrement d’acceptation impossible :', (e as Error).message);
     return NextResponse.json(

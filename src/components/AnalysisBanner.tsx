@@ -2,12 +2,37 @@
 
 import { useAnalysisBanner } from '@/contexts/AnalysisBannerContext';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { Check } from 'lucide-react';
+
+/** Lot 108I : libellé bref d'une analyse suivie qui vient de réussir (à la place d'une notification). */
+export const ANALYSIS_DONE_LABEL = 'Analyse terminée';
+
+function ouvrirDocument(fileId: number | null | undefined) {
+  if (!fileId) return;
+  window.dispatchEvent(new CustomEvent('open-document-drawer', { detail: { docId: fileId } }));
+}
 
 /** Desktop — icône + texte court entre la recherche et la cloche */
 export function AnalysisBanner() {
-  const { analyzingCount, analyzingFileIds } = useAnalysisBanner();
+  const { analyzingCount, analyzingFileIds, recentlyCompletedFileId } = useAnalysisBanner();
 
-  if (analyzingCount <= 0) return null;
+  if (analyzingCount <= 0) {
+    if (!recentlyCompletedFileId) return null;
+    return (
+      <div data-analysis-done className="flex items-center gap-1.5 flex-shrink-0 animate-in fade-in duration-300" role="status">
+        <div className="flex items-center gap-1.5 px-2 py-1 text-[color:var(--text-muted)] text-xs whitespace-nowrap select-none">
+          <Check className="w-3.5 h-3.5 text-[color:var(--text-success)] flex-shrink-0" aria-hidden />
+          <span>{ANALYSIS_DONE_LABEL}</span>
+        </div>
+        <button
+          onClick={() => ouvrirDocument(recentlyCompletedFileId)}
+          className="text-xs text-[color:var(--accent)] font-medium hover:underline underline-offset-2 cursor-pointer whitespace-nowrap pr-1"
+        >
+          Voir →
+        </button>
+      </div>
+    );
+  }
 
   const label =
     analyzingCount === 1
@@ -59,9 +84,23 @@ export function AnalysisBanner() {
  * la barre haute réelle n'ayant pas une hauteur fixe — encoche).
  */
 export function MobileAnalysisBanner() {
-  const { analyzingCount, analyzingFileIds } = useAnalysisBanner();
+  const { analyzingCount, analyzingFileIds, recentlyCompletedFileId } = useAnalysisBanner();
 
-  if (analyzingCount <= 0) return null;
+  if (analyzingCount <= 0) {
+    if (!recentlyCompletedFileId) return null;
+    return (
+      <div data-mobile-analysis-banner data-analysis-done role="status" className="md:hidden flex flex-shrink-0 items-center justify-center gap-2 px-4 py-1.5 bg-[color:var(--bg-page)] border-b border-[color:var(--border-subtle)] animate-in fade-in duration-300">
+        <Check className="w-3 h-3 text-[color:var(--text-success)] flex-shrink-0" aria-hidden />
+        <span className="text-[11px] text-[color:var(--text-muted)]">{ANALYSIS_DONE_LABEL}</span>
+        <button
+          onClick={() => ouvrirDocument(recentlyCompletedFileId)}
+          className="text-[11px] text-[color:var(--accent)] font-medium underline-offset-2 hover:underline cursor-pointer"
+        >
+          Voir
+        </button>
+      </div>
+    );
+  }
 
   const label =
     analyzingCount === 1

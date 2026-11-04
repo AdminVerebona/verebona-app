@@ -10,7 +10,7 @@
 import { pgClient } from '@/db';
 import type { AcceptanceChannel } from '@/lib/legal/public-legal';
 import { recordLegalAudit } from './legal-audit.service';
-import { recordAcceptance } from './legal-acceptances.service';
+import { assertCguvAcceptable, recordAcceptance } from './legal-acceptances.service';
 import { getCurrentVersion } from './legal-versions.service';
 
 /** Fenêtre de rattachement d'une demande au paiement confirmé (session Stripe ≤ 24 h). */
@@ -18,7 +18,7 @@ export const IMMEDIATE_START_LINK_WINDOW_HOURS = 48;
 
 export type ImmediateStartResult =
   | { ok: true; acceptanceId: string; versionCode: string; permalinkUrl: string; textSha256: string | null; acceptedAt: Date }
-  | { ok: false; code: 'NO_CURRENT_VERSION' };
+  | { ok: false; code: 'NO_CURRENT_VERSION' | 'CGUV_PUBLIC_TEXT_UNAVAILABLE' };
 
 export async function recordImmediateStartRequest(input: {
   userId: number;
@@ -30,6 +30,8 @@ export async function recordImmediateStartRequest(input: {
 }): Promise<ImmediateStartResult> {
   const current = await getCurrentVersion();
   if (!current) return { ok: false, code: 'NO_CURRENT_VERSION' };
+  // Lot 108L : texte des CGUV non consultable sur le site public → refus explicite (jamais d'acceptation non opposable).
+  if (!(await assertCguvAcceptable(current.versionCode)).ok) return { ok: false, code: 'CGUV_PUBLIC_TEXT_UNAVAILABLE' };
   const proof = await recordAcceptance({
     userId: input.userId,
     versionCode: current.versionCode,

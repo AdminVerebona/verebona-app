@@ -10,11 +10,11 @@ import {
   Gift,
   Copy,
   Send,
-  Users,
   Sparkles,
   Loader2,
   CheckCheck,
   Share2,
+  ExternalLink,
 } from 'lucide-react';
 import { apiClient, ApiClientError } from '@/lib/api-client';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
@@ -34,19 +34,39 @@ export function referralShareText(code: string): string {
 }
 
 /**
- * Lot 102D : conditions du parrainage, issues de la règle centrale
- * (`referral-rules.ts`) — mêmes mots que l'API, l'e-mail et le BO. Libellés
- * factuels ; les conditions complètes sont sur la page publique.
+ * Lot 108H (décision PO) : présentation courte — une accroche, le bénéfice
+ * (au parrain seul) avec la condition « abonnement annuel », et le lien vers
+ * les conditions complètes de la page publique « Légal › Parrainage »
+ * (`useLegalLinks().parrainage`, URL de l'environnement). Plus aucune liste
+ * de conditions ici : la règle complète est sur le site public, la règle
+ * appliquée reste `referral-rules.ts`.
+ *
+ * Le lien passe par `LegalLink` : nouvel onglet sur le Web ; dans l'app
+ * iOS / Android, navigateur SYSTÈME (`lib/native/open-external`, jamais de
+ * vue intégrée), Verebona restant ouvert en arrière-plan.
  */
-export function ReferralConditions() {
+export function ReferralSummary() {
   const legalLinks = useLegalLinks();
+  const label = REFERRAL_TEXT.accountTermsLinkLabel;
+  const cut = label.lastIndexOf(' ');
+  const termsHead = cut > 0 ? label.slice(0, cut) : '';
+  const termsTail = cut > 0 ? label.slice(cut + 1) : label;
   return (
-    <div className="space-y-1" data-testid="referral-conditions">
-      <ul className="list-disc pl-4 space-y-0.5 text-xs text-muted-foreground">
-        {REFERRAL_TEXT.conditions.map((c) => <li key={c}>{c}</li>)}
-      </ul>
-      <LegalLink href={legalLinks.parrainage} target="_blank" className="text-xs text-primary hover:underline">
-        {REFERRAL_TEXT.termsLinkLabel}
+    <div className="space-y-1.5" data-testid="referral-summary">
+      <p className="text-sm text-muted-foreground">{REFERRAL_TEXT.accountIntro}</p>
+      <p className="text-sm text-[color:var(--text-primary)]">{REFERRAL_TEXT.accountReward}</p>
+      <LegalLink
+        href={legalLinks.parrainage}
+        target="_blank"
+        className="inline-block min-h-11 py-2.5 text-sm font-medium text-primary underline underline-offset-2 hover:no-underline"
+        data-testid="referral-terms-link"
+      >
+        {/* Dernier mot et icône insécables : l'icône ne passe jamais seule à la ligne. */}
+        {termsHead}{termsHead && ' '}
+        <span className="whitespace-nowrap">
+          {termsTail}
+          <ExternalLink className="ml-1 inline h-3.5 w-3.5 align-[-2px]" aria-hidden />
+        </span>
       </LegalLink>
     </div>
   );
@@ -218,12 +238,8 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
           <>
             {/* Lot 102D : « offres Premium ou Premium Duo annuelles » contredisait
                 l'API et l'aide. Règle centrale : titulaire d'un abonnement payant. */}
+            <ReferralSummary />
             <p className="text-xs text-muted-foreground">{REFERRAL_TEXT.notEligible}</p>
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Users className="w-3.5 h-3.5 flex-shrink-0" />
-              <span>{REFERRAL_TEXT.reward}</span>
-            </div>
-            <ReferralConditions />
           </>
         )}
       </div>
@@ -241,12 +257,9 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
         </h4>
         )}
         {/* GAP-07 : le parrainage = 1 mois offert AU PARRAIN SEUL (voir
-            referral-reward.service.ts). L'avantage filleul « 3 mois d'essai au
-            lieu de 2 » n'existe plus côté serveur : il est retiré pour que
-            l'interface, l'aide (AID-BILL-010) et la vitrine disent la même chose. */}
-        <p className="text-xs text-muted-foreground">{REFERRAL_TEXT.reward}</p>
-        <ReferralConditions />
-        <Button onClick={handleCreateLink} disabled={creatingLink} size="sm">
+            referral-reward.service.ts). Lot 108H : texte court + lien. */}
+        <ReferralSummary />
+        <Button onClick={handleCreateLink} disabled={creatingLink} size="sm" className="h-auto min-h-9 w-full whitespace-normal py-2 sm:w-auto">
           {creatingLink ? (
             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
           ) : (
@@ -261,26 +274,22 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
   // ── État 3 : lien créé — Wireframe CDC §6.4 ──
   return (
     <div className="space-y-4">
-      {/* Titre + message récompense */}
-      <div className="flex items-start justify-between gap-2">
-        <div>
+      {/* Titre + message récompense — lot 108H : empilés sur petit écran
+          (le badge ne comprime plus le texte). */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-1.5">
           {withHeading && (
           <h4 className="vb-app-subsection flex items-center gap-2">
             <Gift className="w-4 h-4 text-primary" />
             Parrainage
           </h4>
           )}
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Invitez vos proches à découvrir Verebona.
-          </p>
-          {/* GAP-07 : « devient client payant » laissait croire qu'un abonnement
-              mensuel suffit. Condition réelle (referral-eligibility.service.ts) :
-              abonnement annuel, premier paiement encaissé, rétractation expirée. */}
-          <p className="text-xs text-muted-foreground">{REFERRAL_TEXT.reward}</p>
-          <ReferralConditions />
+          {/* Lot 108H : accroche, bénéfice (abonnement annuel) et lien vers les
+              conditions complètes — plus de liste de conditions dans le bloc. */}
+          <ReferralSummary />
         </div>
         {(stats?.validatedCount ?? 0) > 0 && (
-          <Badge variant="secondary" className="flex-shrink-0 text-xs gap-1">
+          <Badge variant="secondary" className="self-start flex-shrink-0 text-xs gap-1">
             <Sparkles className="w-3 h-3" />
             {stats!.monthsEarned} mois offert{stats!.monthsEarned > 1 ? 's' : ''}
           </Badge>
@@ -309,15 +318,16 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
       {/* Votre code — CDC §6.4 */}
       <div className="space-y-1.5">
         <p className="text-xs font-medium text-[color:var(--text-secondary)]">Votre code</p>
-        <div className="flex items-center gap-2">
-          <code className="flex-1 text-sm font-mono font-semibold text-primary bg-muted/50 rounded-md px-3 py-2 select-all">
+        {/* Lot 108H : empilés sous 640 px (le bouton ne déborde plus de la carte). */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <code className="flex-1 min-w-0 break-all text-sm font-mono font-semibold text-primary bg-muted/50 rounded-md px-3 py-2 select-all">
             {data.link.code}
           </code>
           <Button
             variant="outline"
             size="sm"
             onClick={handleCopyCode}
-            className="flex-shrink-0 gap-1.5"
+            className="w-full sm:w-auto flex-shrink-0 gap-1.5"
           >
             {codeCopied ? (
               <CheckCheck className="w-3.5 h-3.5 text-[color:var(--text-success)]" />
@@ -332,18 +342,21 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
       {/* Votre lien — CDC §6.4 */}
       <div className="space-y-1.5">
         <p className="text-xs font-medium text-[color:var(--text-secondary)]">Votre lien</p>
-        <div className="flex items-center gap-2">
-          <Input
-            readOnly
-            value={data.link.url}
-            className="font-mono text-xs bg-muted/50"
-            onFocus={(e) => e.target.select()}
-          />
+        {/* Lot 108H : sous 640 px, champ et bouton empilés (lien lisible en entier). */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          {/* Lot 108H : adresse affichée en entier (retour à la ligne), sélectionnable
+              d'un geste — un champ de saisie la coupait sur mobile. */}
+          <code
+            className="flex-1 min-w-0 break-all font-mono text-xs text-[color:var(--text-primary)] bg-muted/50 rounded-md border px-3 py-2 select-all"
+            data-testid="referral-link-url"
+          >
+            {data.link.url}
+          </code>
           <Button
             variant="outline"
             size="sm"
             onClick={handleCopyLink}
-            className="flex-shrink-0 gap-1.5"
+            className="w-full sm:w-auto flex-shrink-0 gap-1.5"
           >
             {linkCopied ? (
               <CheckCheck className="w-3.5 h-3.5 text-[color:var(--text-success)]" />
@@ -371,7 +384,7 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
       {/* Inviter par email — CDC §6.4 */}
       <div className="space-y-2 pt-1 border-t border-[color:var(--border-subtle)]">
         <p className="text-xs font-medium text-[color:var(--text-secondary)]">Inviter par email</p>
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2 sm:flex-row">
           <Input
             type="email"
             placeholder="Adresse email du filleul"
@@ -389,7 +402,7 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
             size="sm"
             onClick={handleSendInvitation}
             disabled={!email.trim() || sendingEmail}
-            className="flex-shrink-0 gap-1.5"
+            className="w-full sm:w-auto flex-shrink-0 gap-1.5"
           >
             {sendingEmail ? (
               <Loader2 className="w-4 h-4 animate-spin" />

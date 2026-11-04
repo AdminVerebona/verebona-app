@@ -338,18 +338,26 @@ export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-
       : 'Le prix de cession réalisé n’est pas documenté : le coût net final n’est pas établi.');
   } else if (t.summary.currentValue && t.summary.netEstimatedCents != null) {
     phrases.push(`Valeur actuelle ${formatEur(t.summary.currentValue.cents)} (au ${formatDateFr(t.summary.currentValue.date)}) : coût net estimé ${formatEur(t.summary.netEstimatedCents)}.`);
-  } else {
-    phrases.push('Aucune valorisation datée : seul le coût cumulé est indiqué, aucune dépréciation n’est estimée.');
   }
+  // Lot 108A (§C) : l'absence de valeur actuelle n'est pas une anomalie du TCO historique — aucune phrase d'alerte
+  // (le coût net estimé est simplement « non calculable », la fiche l'affiche comme tel).
   if (t.reliability.unconverted.length) phrases.push(`Non comptés (devise sans contre-valeur en euros) : ${t.reliability.unconverted.map((u) => formatMinorAmount(u.amountMinor, u.currency)).join(', ')}.`);
   if (t.reliability.unallocated.count) phrases.push('Des montants communs à plusieurs biens ne sont pas ventilés et ne sont pas comptés.');
   if (t.status !== 'COMPLETE') phrases.push(t.status === 'PARTIAL' ? 'Résultat partiel.' : 'Ce total peut être incomplet.');
-  if (t.usage.annualEstimateCents) phrases.push(`Budget d’usage estimé (forfaits, non compté dans le coût) : ${formatEur(t.usage.annualEstimateCents)} par an.`);
+  // Lot 108C (TCO-646 §E) : le coût documenté (dépenses réelles) reste annoncé tel quel ; le TCO complet estimé
+  // l'ajoute au complément des dépenses d'usage (forfaits, périodes écoulées), en annonçant la part estimée.
+  const estime = t.summary.estimatedUsageComplementCents ?? 0;
+  if (estime > 0) {
+    phrases.push(`En incluant les estimations de dépenses d’usage (${formatEur(estime)} estimés à partir de vos forfaits, pour les périodes écoulées sans justificatif suffisant), le coût total de possession estimé est de ${formatEur(t.summary.totalWithEstimatesCents)}.`);
+  }
+  if (t.usage.annualEstimateCents) phrases.push(`Forfaits d’usage en cours : ${formatEur(t.usage.annualEstimateCents)} par an (prévisionnel, jamais ajouté pour les mois à venir).`);
   const answer = phrases.join(' ');
   const src: RetrievedSource = {
     id: `tco:${a.id}`, type: 'document_extraction', title: `Coût de possession — ${a.name}`, content: answer.slice(0, 1500), relevanceScore: 1,
     meta: {
       assetId: a.id, assetName: a.name, cumulativeCostCents: t.summary.cumulativeCostCents, netEstimatedCents: t.summary.netEstimatedCents,
+      // Lot 108C : part estimée et TCO complet estimé (le coût documenté reste strictement réel).
+      estimatedUsageComplementCents: t.summary.estimatedUsageComplementCents ?? 0, totalWithEstimatesCents: t.summary.totalWithEstimatesCents ?? t.summary.cumulativeCostCents,
       netFinalCents: t.summary.netFinalCents, status: t.status, operationCount: t.reliability.operationsCounted,
       // Lot 61 : justificatifs comptés directement (sans Opération) — même calcul que le tiroir.
       documentCount: t.reliability.documentsCounted ?? 0,

@@ -143,7 +143,8 @@ describe('L58A — composant et formulaires', () => {
       'src/components/AssetFormDialog.tsx',
       'src/components/assets/ValuationHistoryDrawer.tsx',
       'src/components/assets/SaleDetailsDialog.tsx',
-      'src/components/assets/TcoSection.tsx',
+      // Lot 108C : le formulaire des forfaits d'usage a quitté TcoSection pour TcoUsageSection.
+      'src/components/assets/TcoUsageSection.tsx',
       'src/components/assets/DocumentDrawer.tsx',
       'src/components/documents/unified-document-dialog.tsx',
     ];

@@ -26,7 +26,8 @@ import { sql, type SQL } from 'drizzle-orm';
 import { db } from '@/db';
 import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } from '@/lib/documents/document-title-source';
 import { BusinessOperationReadService, type AssistantOperationRead } from '../read-service';
-import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipmentPrice, type TcoInput, type TcoOperation, type TcoResult, type UsageBudget } from './model';
+import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipmentPrice, type TcoInput, type TcoOperation, type TcoResult } from './model';
+import { readUsageAssignments, readUsageBudgets } from './usage-budgets.service';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
 import { TCO_STABLE_SOURCE_KINDS, type TcoUserDecision } from './user-decisions';
 import { civilDateParis, type LedgerComponent } from '../finance/engine';
@@ -178,6 +179,8 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
       sourceKinds: o.sourceKinds ?? [],
       userLinked: liensUtilisateur.has(o.id),
       equipmentLinked: equip.some((e) => Number(e.operation_id) === o.id && Number(e.asset_id) === assetId),
+      // Lot 108A : fournisseur consolidé (faisceau d'identité avec le prix de la fiche).
+      provider: o.provider ?? null,
     };
   });
 
@@ -199,6 +202,8 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     SELECT commercial_json->'desiredSalePriceCents' AS desired FROM asset_additional_infos WHERE asset_id = ${assetId} AND account_id = ${accountId}`);
   const desired = typeof info?.desired === 'number' && Number.isSafeInteger(info.desired) ? info.desired : null;
   const budgets = await readUsageBudgets(accountId, assetId, r);
+  // Lot 108C : classements « dépense d'usage » de l'utilisateur (rapprochement forfait / réel).
+  const usageAssignments = await readUsageAssignments(r, accountId, assetId);
   // Lot 80A : décisions « Ajouter / Retirer du TCO » de l'utilisateur pour ce bien.
   const userDecisions = await readTcoLineDecisions(r, accountId, assetId);
   const historique = Array.isArray(kc.valuationHistory) ? (kc.valuationHistory as Array<Record<string, unknown>>) : [];
@@ -215,10 +220,12 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     ...(dates.acquisitionMeta ? { assetAcquisitionDateMeta: { ...dates.acquisitionMeta, lastWrite: dates.acquisitionDate ? await lastAcquisitionDateWrite(r, accountId, assetId) : null } } : {}),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete && equipementsComplets,
     documents: doc.documents, assetPrice, equipmentPrices, acquisitionExpected,
-    assetCategory: txt(asset.category), componentProvenance, userDecisions,
+    assetCategory: txt(asset.category), componentProvenance, userDecisions, usageAssignments,
   });
   // Lot 68 : diagnostic BO — justificatifs qui CITENT seulement le bien (exclus des sources, expliqués).
-  return { ...result, citedOnlyDocuments: await readCitedOnlyDocuments(r, accountId, assetId) };
+  // Lot 108B : état PERSISTÉ de la récupération des montants inconnus (lecture seule : jamais d'IA à la consultation).
+  const { attachAmountRecovery } = await import('./amount-recovery.service');
+  return attachAmountRecovery(r, accountId, { ...result, citedOnlyDocuments: await readCitedOnlyDocuments(r, accountId, assetId) });
 }
 
 const CITED_MAX = 200;
@@ -226,7 +233,8 @@ const CITED_MAX = 200;
 /** Lot 78B : motifs du TCO qui retirent une composante ou un justificatif du total (règle partagée avec T2). */
 // Lot 80A : + retrait décidé par l'utilisateur (USER_EXCLUDED) — même effet sur T2 que sur le TCO du bien.
 // Lot 81D : + dépense non réalisée (prévue sans paiement daté et justifié, datée après la date de référence).
-const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET', 'USER_EXCLUDED', 'NOT_REALIZED', 'FUTURE_DATED']);
+// Lot 108A : + même achat confirmé représenté par une autre source (SAME_FACT_CROSS_SOURCE) — T2 ne le recompte pas.
+const MOTIFS_78B_COMPOSANTE: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'SOURCE_WITHDRAWN', 'COUNTED_FOR_OTHER_ASSET', 'USER_EXCLUDED', 'NOT_REALIZED', 'FUTURE_DATED', 'SAME_FACT_CROSS_SOURCE']);
 const MOTIFS_78B_DOCUMENT: ReadonlySet<string> = new Set(['SAME_FACT_OTHER_DOCUMENT', 'NOT_OWNERSHIP_COST', 'USER_EXCLUDED', 'FUTURE_DATED']);
 
 /** Lot 80A : dépense ajoutée au TCO du bien par l'utilisateur (T2 la compte si ses propres règles ne la comptent pas). */
@@ -441,7 +449,7 @@ export async function readAssetDocuments(r: Runner, accountId: number, assetId: 
  * Mêmes colonnes, mêmes candidats, mêmes Opérations (périmètre du compte
  * pour une liste de fichiers) : une seule lecture, une seule règle.
  */
-async function readEconomicDocuments(r: Runner, accountId: number, scope: { assetId: number } | { fileIds: readonly number[] }): Promise<{ documents: EconomicDocumentInput[]; complete: boolean }> {
+export async function readEconomicDocuments(r: Runner, accountId: number, scope: { assetId: number } | { fileIds: readonly number[] }): Promise<{ documents: EconomicDocumentInput[]; complete: boolean }> {
   const parFichiers = 'fileIds' in scope;
   const assetId = parFichiers ? null : scope.assetId;
   const filtre = parFichiers
@@ -774,7 +782,15 @@ export async function readAssetAcquisition(r: Runner, accountId: number, assetId
     SELECT DISTINCT source_id AS id FROM field_evidence
      WHERE account_id = ${accountId} AND asset_id = ${assetId} AND status = 'active' AND source_type = 'document'
        AND field_key = ANY(${`{${ACQUISITION_PRICE_KEYS.join(',')}}`}::text[])${actives}`);
-  return { price: { amountMinor: Math.round(eur * 100), currency, origin: st.origin ?? null, evidenceFileIds: preuves.map((p) => Number(p.id)) }, expected };
+  // Lot 108A : lieu d'achat saisi (indice positif de fournisseur pour le rapprochement avec la facture, jamais une contradiction).
+  const lieu = readCanonicalValue(row, 'acquisitionLocation')?.value;
+  return {
+    price: {
+      amountMinor: Math.round(eur * 100), currency, origin: st.origin ?? null, evidenceFileIds: preuves.map((p) => Number(p.id)),
+      supplier: typeof lieu === 'string' && lieu.trim() ? lieu.trim().slice(0, 200) : null,
+    },
+    expected,
+  };
 }
 
 /** Prix d'achat de la fiche seul (compatibilité). */
@@ -837,51 +853,9 @@ export async function readEquipmentPrices(r: Runner, accountId: number, assetId:
 }
 
 // ── Forfaits d'usage (§3.5) ────────────────────────────────────────────────
-
-async function readUsageBudgets(accountId: number, assetId: number, r: Runner = db): Promise<UsageBudget[]> {
-  const [t] = await rows<{ ok: boolean }>(r, sql`SELECT to_regclass('asset_usage_budgets') IS NOT NULL AS ok`);
-  if (!t?.ok) return [];
-  const x = await rows(r, sql`
-    SELECT b.id, b.asset_id, b.category, b.label, b.amount_minor, trim(b.currency) AS currency, b.periodicity,
-           b.valid_from::text AS valid_from, b.valid_to::text AS valid_to
-      FROM asset_usage_budgets b JOIN assets a ON a.id = b.asset_id AND a.account_id = b.account_id
-     WHERE b.account_id = ${accountId} AND b.asset_id = ${assetId} ORDER BY b.id`);
-  return x.map((b) => ({
-    id: Number(b.id), assetId: Number(b.asset_id), category: String(b.category) as UsageBudget['category'], label: txt(b.label),
-    amountMinor: Number(b.amount_minor), currency: String(b.currency), periodicity: String(b.periodicity) as UsageBudget['periodicity'],
-    validFrom: txt(b.valid_from), validTo: txt(b.valid_to),
-  }));
-}
-
-interface UsageBudgetInput {
-  category: UsageBudget['category']; label: string | null; amountMinor: number; currency: string;
-  periodicity: UsageBudget['periodicity']; validFrom: string | null; validTo: string | null;
-}
-
-/** Crée un forfait (le bien doit être du compte). Rend l'identifiant, ou null (bien absent). */
-export async function createUsageBudget(accountId: number, assetId: number, userId: number | null, b: UsageBudgetInput): Promise<number | null> {
-  const [x] = await rows<{ id: string }>(db, sql`
-    INSERT INTO asset_usage_budgets (account_id, asset_id, category, label, amount_minor, currency, periodicity, valid_from, valid_to, created_by, updated_by)
-    SELECT a.account_id, a.id, ${b.category}, ${b.label}, ${b.amountMinor}, ${b.currency}, ${b.periodicity}, ${b.validFrom}::date, ${b.validTo}::date, ${userId}, ${userId}
-      FROM assets a WHERE a.id = ${assetId} AND a.account_id = ${accountId} AND a.deleted_at IS NULL
-    RETURNING id`);
-  return x ? Number(x.id) : null;
-}
-
-/** Modifie un forfait du bien du compte. Rend vrai si une ligne a été modifiée. */
-export async function updateUsageBudget(accountId: number, assetId: number, id: number, userId: number | null, b: UsageBudgetInput): Promise<boolean> {
-  const x = await rows(db, sql`
-    UPDATE asset_usage_budgets SET category = ${b.category}, label = ${b.label}, amount_minor = ${b.amountMinor}, currency = ${b.currency},
-           periodicity = ${b.periodicity}, valid_from = ${b.validFrom}::date, valid_to = ${b.validTo}::date, updated_by = ${userId}, updated_at = now()
-     WHERE id = ${id} AND asset_id = ${assetId} AND account_id = ${accountId} RETURNING id`);
-  return x.length > 0;
-}
-
-/** Supprime un forfait (geste explicite de l'utilisateur ; jamais au changement d'offre). */
-export async function deleteUsageBudget(accountId: number, assetId: number, id: number): Promise<boolean> {
-  const x = await rows(db, sql`DELETE FROM asset_usage_budgets WHERE id = ${id} AND asset_id = ${assetId} AND account_id = ${accountId} RETURNING id`);
-  return x.length > 0;
-}
+// Lot 108C : lecture, révisions datées, arrêt / suppression et classements des dépenses d'usage dans
+// `./usage-budgets.service` (réexportés ici pour les appelants existants).
+export { createUsageBudget, deleteUsageBudget, updateUsageBudget } from './usage-budgets.service';
 
 // ── Lot 80A : décisions « Ajouter / Retirer du TCO » (table 0623) ──────────
 

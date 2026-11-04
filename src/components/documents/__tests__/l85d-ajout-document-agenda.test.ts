@@ -108,8 +108,9 @@ describe('L85D-UI04 — câblage : liens Agenda (84B), plus de modèle « events
     expect(src).toMatch(/linkUploadedDocumentsToAgendaItem\(ctx\.agendaItemId, fileIds, \(url, body\) => fetchDepot\(url, jsonPost\(body\)\)\)/);
     // Fichiers (fin de lot) ET lien web passent par la même association.
     expect(src.match(/await associerEtSignaler\(ctx, /g)).toHaveLength(2);
-    // Date du document reprise de l'élément d'agenda (comme l'ancien événement présélectionné).
-    expect(src).toMatch(/apiClient\.get<[^>]+>\(`\/api\/agenda\/\$\{agendaItemId\}`\)/);
+    // Lot 108D (décision PO, ticket « une seule date documentaire » §2) : la date de l'élément d'agenda
+    // (intervention) n'est plus reprise comme date du document — celle-ci n'est jamais pré-remplie.
+    expect(src).not.toMatch(/apiClient\.get<[^>]+>\(`\/api\/agenda\/\$\{agendaItemId\}`\)/);
   });
   it('aucun écran ne passe plus d’option « événement » au dialogue', () => {
     expect(lire('src/components/documents/v2/DocumentsByRubric.tsx')).not.toMatch(/allowEvent/);

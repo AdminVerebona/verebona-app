@@ -123,7 +123,8 @@ describe('L102D-R07 — sources alignées sur la règle centrale', () => {
 
   it('écrans : Mon compte, carte, inscription, Offres, BO lisent REFERRAL_TEXT (plus de règle écrite en dur)', () => {
     for (const f of [
-      'src/components/account/ReferralBlock.tsx', 'src/components/account/ReferralCard.tsx', 'src/app/(auth)/signup/SignupForm.tsx',
+      // Lot 108H : ReferralCard n'affiche plus de texte (sous-titre supprimé, décision PO).
+      'src/components/account/ReferralBlock.tsx', 'src/app/(auth)/signup/SignupForm.tsx',
       'src/app/(dashboard)/mon-compte/offres/page.tsx', 'src/app/admin/referrals/page.tsx',
     ]) {
       const src = code(read(f));

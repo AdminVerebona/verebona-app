@@ -82,6 +82,24 @@
  *     nouveau bien, décision USER, version ou relance manuelle l'invalident ;
  *   · preuves croisées transmises au modèle (contrat
  *     `t3-document-asset-cross-v1`) seulement si le prompt actif le porte.
+ *
+ * Lot 108E (ticket « T3 DOCUMENT_ASSET — correctif #626 bis ») :
+ *   · A3 — la recherche SÉMANTIQUE reçoit les mêmes preuves croisées et les
+ *     mêmes garde-fous que la branche structurée (biens refuses retirés,
+ *     contrôle serveur de la sortie croisée) ; sans contrat : mode d'avant ;
+ *   · A4 — sortie `crossDocument` OBLIGATOIRE et vérifiée dès que le modèle a
+ *     reçu les preuves croisées (`decideFromAiOutput`) ;
+ *   · A5 / A6 — graphe d'identité en panne, modèle indisponible à la dernière
+ *     tentative, erreur du fournisseur en recherche sémantique : issue
+ *     TECHNICAL_FAILURE (`technical-failure.ts`), Supervision, relance
+ *     durable — JAMAIS une carte « À traiter » créée ni mise à jour par la
+ *     panne ; une carte née d'une panne est fermée ;
+ *   · A7 — projection et recalcul après rattachement déclenchés aussi sans
+ *     utilisateur initiateur, en CONTEXTE TECHNIQUE journalisé
+ *     (`projection-actor.ts`) ; document d'appareil : aucun fait sans cible
+ *     réattribué au bien porteur (ni prix ni garantie d'appareil) ;
+ *   · C — journal par document enrichi : branche, état du graphe, sources,
+ *     appartenances, contrôle croisé, panne, projection, carte avant / après.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { pgClient } from '@/db';
@@ -110,6 +128,12 @@ import { getAccountKnowledgeRevision, knowledgeChangedSince } from '../continuou
 import { crossDocumentContext, decideFromIdentity, identityGate } from './identity/decision';
 import { crossDocumentContractActive, documentAssetAiMemoryEnabled } from './identity/contract';
 import type { AccountIdentityGraph } from './identity/graph';
+import { identityGraphFailed, type IdentityGraphOutcome } from './identity/load';
+import {
+  aiNotConfigured, reportTechnicalFailure, resolveTechnicalFailures, T3_TECHNICAL_RETRY_MINUTES, technicalCategoryOf, TECHNICAL_FAILURE_REASON, wasTechnicalOutcome,
+  type TechnicalFailureCategory, type TechnicalFailureDetail,
+} from './technical-failure';
+import { resolveProjectionActor, type ProjectionEffect } from './projection-actor';
 import { createHash } from 'node:crypto';
 
 /** Issue métier d'une exécution (vocabulaire de la file T3). */
@@ -123,7 +147,9 @@ export type DocumentAssetEvaluationResult =
   | 'CONFIRMED_NO_CHANGE' | 'RESOLVED_DETERMINISTICALLY' | 'RESOLVED_BY_AI' | 'MULTI_ASSET'
   | 'ABSTAINED' | 'NO_CANDIDATE' | 'USER_DECIDED' | 'ALREADY_LINKED' | 'TARGET_GONE'
   /** Lot 49B : réexamen d'une carte ouverte à contexte inchangé, arbitrage IA reporté (plafond). */
-  | 'AI_DEFERRED';
+  | 'AI_DEFERRED'
+  /** Lot 108E (A6) : panne technique — aucune carte, relance durable, Supervision. */
+  | 'TECHNICAL_FAILURE';
 
 /** Action « À traiter » consécutive à l'évaluation. */
 export type ToProcessEffect = 'NONE' | 'CREATED' | 'UPDATED' | 'UNCHANGED' | 'CLOSED' | 'SKIPPED';
@@ -184,6 +210,8 @@ export interface DocumentAssetEvaluation {
   identity?: {
     groupKey: string | null; status: string | null; via: string | null; targetAssetId: number | null; cardEligible: boolean;
     exclusions: Array<{ groupKey: string; reason: string }>;
+    /** Lot 108E : toutes les appartenances (logement, appareil…). */
+    memberships?: Array<{ groupKey: string; family: string; status: string; via: string; targetAssetId: number | null; candidateAssetIds: number[]; equipmentIds: number[] }>;
   } | null;
   /** Lot 105D : mémoire de la dernière décision du modèle (réutilisée à contexte inchangé). */
   aiMemory?: AiMemoryEntry | null;
@@ -191,6 +219,20 @@ export interface DocumentAssetEvaluation {
   aiReused?: boolean;
   /** Lot 105D : preuves croisées transmises au modèle (contrat t3-document-asset-cross-v1). */
   crossDocumentSent?: boolean;
+  /** Lot 108E (C) : branche de décision effectivement suivie. */
+  branch?: 'DETERMINISTIC' | 'IDENTITY' | 'GROUP_GATE' | 'STRUCTURED' | 'SEMANTIC' | 'MEMORY' | 'TECHNICAL' | 'NONE';
+  /** Lot 108E (C, A4) : contrôle serveur de la sortie croisée (obligatoire si les preuves ont été transmises). */
+  crossDocument?: { required: boolean; present: boolean; reasons: string[]; blocked: boolean } | null;
+  /** Lot 108E (C, A5) : état du graphe d'identité pour cette évaluation. */
+  identityGraph?: { status: string; error: string | null } | null;
+  /** Lot 108E (C, A1) : sources T1 exploitées / absentes par le graphe pour ce document. */
+  identitySources?: { counts: Record<string, number>; absent: string[]; transcriptionChars: number } | null;
+  /** Lot 108E (A6) : panne technique (catégorie, relance, carte née d'une panne fermée). */
+  technicalFailure?: TechnicalFailureDetail | null;
+  /** Lot 108E (A7) : effet de la projection après rattachement (acteur, biens, preuves). */
+  projection?: ProjectionEffect | null;
+  /** Lot 108E (C) : carte « À traiter » LINK-ASSET avant l'évaluation (identifiant) — après : `toProcessAction`. */
+  cardBefore?: number | null;
 }
 
 /** Lot 105D — décision du modèle mémorisée (abstention seulement : un rattachement clôt le document). */
@@ -256,6 +298,8 @@ interface ResolveDocumentAssetInput {
   openActionId?: number | null;
   /** Lot 105D : graphe d'identité du passage (phase « open actions ») ; à défaut, mémorisé par index. */
   identityGraph?: AccountIdentityGraph | null;
+  /** Lot 108E : issue du graphe du passage (panne comprise) — prioritaire sur `identityGraph`. */
+  identityOutcome?: IdentityGraphOutcome;
 }
 
 interface ResolveDocumentAssetResult {
@@ -289,9 +333,10 @@ async function defaultAiConfigSignature(): Promise<string> {
   return AiGateway.effectiveConfigSignature('t3_link_ambiguity');
 }
 
-/** Relance explicite (lancement manuel, motif forcé) : la mémoire IA n'est jamais lue. */
+/** Relance explicite (lancement manuel, motif forcé, réexamen d'une carte née d'une panne) : la mémoire IA n'est jamais lue. */
 function forcedReevaluation(input: Pick<ResolveDocumentAssetInput, 'triggerCode' | 'reprocessReason'>): boolean {
-  return input.triggerCode === 'manual' || input.reprocessReason === 'FORCED' || input.reprocessReason === 'MANUAL';
+  return input.triggerCode === 'manual' || input.reprocessReason === 'FORCED' || input.reprocessReason === 'MANUAL'
+    || input.reprocessReason === 'TECHNICAL_CARD_REVIEW' || input.reprocessReason === 'TECHNICAL_RETRY';
 }
 
 /** Carte « À traiter » LINK-ASSET ouverte d'un document (identifiant), ou null. */
@@ -359,7 +404,14 @@ export function evaluationBase(p: {
       groupKey: p.ctx.identity.group?.groupKey ?? null, status: p.ctx.identity.group?.status ?? null, via: p.ctx.identity.member?.via ?? null,
       targetAssetId: p.ctx.identity.group?.targetAssetId ?? null, cardEligible: p.ctx.identity.group?.cardEligible ?? false,
       exclusions: p.ctx.identity.exclusions.slice(0, 5),
+      // Lot 108E : toutes les appartenances (logement, appareil…) et leur statut face aux biens.
+      memberships: (p.ctx.identity.memberships ?? []).slice(0, 10).map((m) => ({
+        groupKey: m.group.groupKey, family: m.group.family, status: m.group.status, via: m.member.via, targetAssetId: m.group.targetAssetId,
+        candidateAssetIds: m.group.candidateAssetIds.slice(0, 10), equipmentIds: (m.group.equipmentIds ?? []).slice(0, 10),
+      })),
     } : null,
+    identityGraph: { status: p.ctx.identityGraphStatus ?? 'PROVIDED', error: p.ctx.identityGraphError ?? null },
+    identitySources: (p.ctx.identity?.graph.coverage?.get(p.fileId) as DocumentAssetEvaluation['identitySources'] | undefined) ?? null,
     // Lot 105D : la mémoire IA suit l'évaluation tant qu'elle n'est pas remplacée.
     aiMemory: previousAiMemory(p.resolution),
   };
@@ -386,10 +438,23 @@ export async function resolveDocumentAsset(
   const revision = await getAccountKnowledgeRevision(accountId);
   const resolution = await getResolution(fileId);
   const ctx = await computeDocumentAssetContext({
-    accountId, fileId, state, resolution, index: input.index, ...(input.identityGraph !== undefined ? { identityGraph: input.identityGraph } : {}),
+    accountId, fileId, state, resolution, index: input.index,
+    ...(input.identityOutcome ? { identityOutcome: input.identityOutcome } : input.identityGraph !== undefined ? { identityGraph: input.identityGraph } : {}),
   });
   const changed = resolution?.knowledgeRevision != null ? await knowledgeChangedSince(accountId, resolution.knowledgeRevision) : [];
   const base = evaluationBase({ fileId, ctx, resolution, revision, changed, triggerCode: input.triggerCode, reprocessReason: input.reprocessReason });
+  const openCard = deps.openAssetLinkAction ?? openAssetLinkActionOf;
+
+  // Lot 108E (A5) : graphe d'identité en PANNE (≠ coupure) — aucune décision (les garde-fous de rôle d'adresse,
+  // de refus et de groupe en dépendent), aucune carte : issue technique, Supervision, relance durable.
+  if (identityGraphFailed({ status: ctx.identityGraphStatus as never })) {
+    const cardBefore = input.openActionId ?? await openCard(accountId, fileId);
+    return technicalOutcome({
+      accountId, fileId, ctx, resolution, revision, g, cardBefore, aiCalled: false, traces: [],
+      evaluation: { ...base, reevaluated: true, openActionId: cardBefore, promptCandidateCount: 0 },
+      category: 'IDENTITY_GRAPH', error: `${ctx.identityGraphStatus}${ctx.identityGraphError ? ` — ${ctx.identityGraphError}` : ''}`,
+    });
+  }
 
   // Contexte pertinent inchangé : sans carte « À traiter » ouverte, la
   // décision ouverte reste valable, sans IA (AC6). Avec une carte ouverte
@@ -397,31 +462,39 @@ export async function resolveDocumentAsset(
   // qu'un historique.
   const inchange = isUnchangedOpenContext(resolution, ctx.fingerprint);
   const openActionId = inchange
-    ? (input.openActionId ?? await (deps.openAssetLinkAction ?? openAssetLinkActionOf)(accountId, fileId))
+    ? (input.openActionId ?? await openCard(accountId, fileId))
     : (input.openActionId ?? null);
   if (inchange && openActionId === null) {
     const evaluation: DocumentAssetEvaluation = {
       ...base, newResolution: resolution!.lastOutcome, aiCalled: false, decision: null, linkedAssetId: null,
-      toProcessAction: 'UNCHANGED', result: 'CONFIRMED_NO_CHANGE', promptCandidateCount: 0, reevaluated: false,
+      toProcessAction: 'UNCHANGED', result: 'CONFIRMED_NO_CHANGE', promptCandidateCount: 0, reevaluated: false, cardBefore: null, branch: 'NONE',
     };
     await g('état de résolution');
     await restoreLastOutcome(fileId, { identifiersFingerprint: ctx.idsFingerprint, knowledgeRevision: revision, lastEvaluation: { ...evaluation } });
     logEvaluation(evaluation);
     return { outcome: 'NO_CHANGE', status: resolution!.lastOutcome, aiCalled: false, evaluation };
   }
-  const reexamen = { ...base, reevaluated: true, openActionId };
+  // Lot 108E (C) : carte LINK-ASSET ouverte AVANT l'évaluation (journal avant / après).
+  const cardBefore = openActionId ?? await openCard(accountId, fileId);
+  const reexamen = { ...base, reevaluated: true, openActionId, cardBefore };
 
   // ── 3. Déterministe : identifiants forts, puis référence partagée / nom distinctif ──
+  let branch: NonNullable<DocumentAssetEvaluation['branch']> = 'NONE';
   let decision = decideDeterministic(ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared })
-    ?? decideContextualDeterministic(ctx.candidates, ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared })
+    ?? decideContextualDeterministic(ctx.candidates, ctx.identification, { multiAssetDeclared: ctx.multiAssetDeclared });
+  if (decision) branch = 'DETERMINISTIC';
+  else {
     // Lot 105D : identité du groupe (identifiant d'un seul bien, documents déjà rattachés, confirmation de l'utilisateur).
-    ?? decideFromIdentity(ctx.identity ?? null, ctx.candidates, { multiAssetDeclared: ctx.multiAssetDeclared, identifiedAssetIds: ctx.identification.assetIds });
+    decision = decideFromIdentity(ctx.identity ?? null, ctx.candidates, { multiAssetDeclared: ctx.multiAssetDeclared, identifiedAssetIds: ctx.identification.assetIds });
+    if (decision) branch = 'IDENTITY';
+  }
   let aiCalled = false;
   let pourModele = promptCandidates(ctx.candidates);
   const traces: string[] = [];
   let aiError: string | null = null;
   let aiReason = decision ? 'DETERMINISTIC_PROOF' : 'NOT_NEEDED';
   let semantic: DocumentAssetEvaluation['semanticSearch'] = null;
+  let crossReport: DocumentAssetEvaluation['crossDocument'] = null;
   const callModel = deps.callModel ?? defaultCallModel;
   const ext0 = ctx.sources?.extraction;
   const subject0: DocumentSubject = {
@@ -433,16 +506,19 @@ export async function resolveDocumentAsset(
   // ── 4 bis. Lot 105D : garde d'identité AVANT tout appel modèle ─────────
   const gate = decision ? null : identityGate(ctx.identity ?? null);
   let candidatsIa = ctx.candidates;
+  let refuses = new Set<number>();
   if (!decision && gate?.kind === 'GROUP_CONFIRMATION_PENDING') {
     // La relation groupe → bien appartient à l'utilisateur (carte groupée) : aucune IA, aucune carte individuelle.
     aiReason = 'GROUP_CONFIRMATION_PENDING';
+    branch = 'GROUP_GATE';
     decision = { kind: 'ABSTAIN', reasonCode: 'GROUP_CONFIRMATION_PENDING', ranked: [] };
   } else if (!decision && gate?.kind === 'REFUSED_ASSETS') {
-    const refuses = new Set(gate.refusedAssetIds);
+    refuses = new Set(gate.refusedAssetIds);
     candidatsIa = ctx.candidates.filter((c) => !refuses.has(c.assetId));
     if (candidatsIa.length === 0) {
-      // Seuls des biens refusés restaient : aucune question répétée, aucune recherche sémantique.
+      // Seuls des biens refuses restaient : aucune question répétée, aucune recherche sémantique.
       aiReason = 'GROUP_REFUSED';
+      branch = 'GROUP_GATE';
       decision = { kind: 'ABSTAIN', reasonCode: 'GROUP_REFUSED', ranked: [] };
     } else pourModele = promptCandidates(candidatsIa);
   }
@@ -468,11 +544,19 @@ export async function resolveDocumentAsset(
     aiMemory = m;
     void import('../../reuse/reuse-counters').then(({ noteReuse }) => noteReuse({ kind: 'DECISION_REUSED', accountId, treatment: 'T3', operationCode: 't3_link_ambiguity' })).catch(() => undefined);
     const ids = new Set(ctx.index.assets.map((a) => a.assetId));
-    return { kind: 'ABSTAIN' as const, reasonCode: m.reasonCode as Extract<DocumentAssetDecision, { kind: 'ABSTAIN' }>['reasonCode'], ranked: m.ranked.filter((r) => ids.has(r.assetId)) };
+    return { kind: 'ABSTAIN' as const, reasonCode: m.reasonCode as Extract<DocumentAssetDecision, { kind: 'ABSTAIN' }>['reasonCode'], ranked: m.ranked.filter((r) => ids.has(r.assetId) && !refuses.has(r.assetId)) };
   };
   const memoriser = (key: string, path: 'STRUCTURED' | 'SEMANTIC', d: DocumentAssetDecision) => {
     if (!key || d.kind !== 'ABSTAIN' || aiError) return;
     aiMemory = { key, path, reasonCode: d.reasonCode, ranked: d.ranked.slice(0, 20), at: new Date().toISOString(), traceId: traces[0] ?? null };
+  };
+  // Lot 105D / 108E (A3) : preuves croisées vérifiées par le serveur, MÊMES pour les deux branches.
+  const croisement = (cross: boolean) => {
+    const croise = cross ? crossDocumentContext(ctx.identity ?? null, fileId, ctx.identity?.graph.documents) : null;
+    return {
+      variables: cross ? { fileId, context: croise?.context ?? null } : null,
+      check: croise ? { allowedEvidenceIds: croise.allowedEvidenceIds, member: croise.server.documentStatus === 'MEMBER', required: true, server: croise.server } : null,
+    };
   };
 
   // ── 4. Modèle (candidats du serveur seulement, monde fermé) ───────────
@@ -485,22 +569,46 @@ export async function resolveDocumentAsset(
       if (m?.reuse) {
         decision = reutiliser(m.reuse);
         aiReason = 'DECISION_REUSED';
+        branch = 'MEMORY';
         semantic = { attempted: false, reason: 'DECISION_REUSED', rounds: 0, presented: 0, matched: m.reuse.ranked.length, origins: {} };
       } else {
+        branch = 'SEMANTIC';
+        const cr = croisement(m?.cross === true);
         const r = await semanticSearch({
           accountId, fileId, userId: input.userId ?? state.userId, ctx, subject: subject0, skipAi: input.skipAi === true,
           guard: input.guard, callModel, supplierHistory: deps.supplierHistory ?? loadSupplierHistory, traces,
+          // Lot 108E (A3) : mêmes garde-fous que la branche structurée.
+          excludedAssetIds: refuses, cross: cr,
         });
         decision = r.decision;
         aiCalled = r.aiCalled;
         aiError = r.aiError;
         semantic = r.semantic;
+        crossSent = r.crossSent;
+        crossReport = r.crossReport;
         aiReason = r.aiCalled ? 'SEMANTIC_SEARCH' : `SEMANTIC_SEARCH_SKIPPED:${r.semantic.reason}`;
         if (r.presented.length) pourModele = r.presented;
-        if (r.aiCalled && m) memoriser(m.key, 'SEMANTIC', decision);
+        if (r.aiException && aiNotConfigured(r.aiException)) {
+          // IA non configurée (opération inactive, compte inéligible) : comme T3 inactif — vraie absence de preuve, pas une panne.
+          aiError = null;
+          aiCalled = false;
+          aiReason = 'AI_NOT_CONFIGURED';
+          semantic = { ...r.semantic, reason: 'AI_NOT_CONFIGURED' };
+          decision = { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] };
+        } else if (r.aiException) {
+          // Lot 108E (A6) : erreur du fournisseur ≠ « aucun bien » — relance par la file, puis issue technique.
+          if (!input.finalAttempt) throw r.aiException;
+          return technicalOutcome({
+            accountId, fileId, ctx, resolution, revision, g, cardBefore, aiCalled: true, traces,
+            evaluation: { ...reexamen, promptCandidateCount: pourModele.length, semanticSearch: semantic, crossDocumentSent: crossSent, branch: 'SEMANTIC', lastAiAt: new Date().toISOString() },
+            category: technicalCategoryOf(r.aiException), error: aiError ?? 'erreur du fournisseur',
+          });
+        }
+        if (aiCalled && m) memoriser(m.key, 'SEMANTIC', decision);
       }
     } else if (input.skipAi) {
       aiReason = 'AI_DISABLED';
+      branch = 'STRUCTURED';
       decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(candidatsIa) };
     } else {
       const m = await memoire('STRUCTURED');
@@ -508,6 +616,7 @@ export async function resolveDocumentAsset(
         // Lot 105D (D4) : même contexte, même configuration IA → décision du modèle réutilisée, aucun appel.
         decision = reutiliser(m.reuse);
         aiReason = 'DECISION_REUSED';
+        branch = 'MEMORY';
       } else {
       // Lot 54A (écart 1) : plus aucun report pour quota T3 interne — une carte
       // ouverte qui demande un arbitrage est TOUJOURS arbitrée (le plafond de
@@ -515,17 +624,19 @@ export async function resolveDocumentAsset(
       // passerelle restent les seuls freins ; `rearbitration` est ignoré).
       await input.guard?.assertActive('T3 DOCUMENT_ASSET — appel du modèle');
       aiReason = 'STRUCTURED_CANDIDATES_NEED_ARBITRATION';
-      // Lot 105D (§E) : preuves croisées vérifiées par le serveur, seulement si le prompt actif porte le contrat.
-      const croise = m.cross ? crossDocumentContext(ctx.identity ?? null, fileId, ctx.identity?.graph.documents) : null;
+      branch = 'STRUCTURED';
+      const cr = croisement(m.cross);
       crossSent = m.cross;
       try {
         aiCalled = true;
         const output = await callModel({
           accountId, userId: input.userId ?? state.userId, fileId,
-          variables: documentAssetVariables(subject0, pourModele, m.cross ? { fileId, context: croise?.context ?? null } : null),
+          variables: documentAssetVariables(subject0, pourModele, cr.variables),
           onTrace: (t) => traces.push(t),
         });
-        decision = decideFromAiOutput(output, pourModele, croise ? { allowedEvidenceIds: croise.allowedEvidenceIds, member: !!ctx.identity?.member } : null);
+        const rapport: { cross?: NonNullable<DocumentAssetEvaluation['crossDocument']> } = {};
+        decision = decideFromAiOutput(output, pourModele, cr.check, rapport);
+        crossReport = rapport.cross ?? null;
         // Candidats découverts au-delà de la borne du prompt : toujours proposés à l'utilisateur.
         if (decision.kind === 'ABSTAIN' && pourModele.length < candidatsIa.length) {
           const vus = new Set(decision.ranked.map((r) => r.assetId));
@@ -534,31 +645,46 @@ export async function resolveDocumentAsset(
         memoriser(m.key, 'STRUCTURED', decision);
       } catch (e) {
         if (isExecutionCancelled(e)) throw e;
+        if (aiNotConfigured(e)) {
+          // IA non configurée : même traitement que T3 inactif (aucune panne, aucune relance, question si utile).
+          aiCalled = false;
+          aiReason = 'AI_NOT_CONFIGURED';
+          decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(candidatsIa) };
+        } else {
         aiError = (e as Error).message.slice(0, 200);
-        // Panne du modèle : nouvelle tentative par la file (backoff) ; à la
-        // dernière, l'utilisateur est sollicité plutôt que de laisser le
-        // document sans bien.
+        // Panne du modèle : nouvelle tentative par la file (backoff). Lot 108E (A6) : à la
+        // dernière, issue TECHNIQUE (Supervision, relance durable) — jamais une question métier.
         if (!input.finalAttempt) throw e;
-        console.warn(`[t3-document-asset] document ${fileId} : modèle indisponible (${(e as Error).message}) — « À traiter ».`);
-        decision = { kind: 'ABSTAIN', reasonCode: 'AI_UNAVAILABLE', ranked: rankCandidates(candidatsIa) };
+        console.warn(`[t3-document-asset] document ${fileId} : modèle indisponible (${(e as Error).message}) — issue technique, relance durable.`);
+        return technicalOutcome({
+          accountId, fileId, ctx, resolution, revision, g, cardBefore, aiCalled: true, traces,
+          evaluation: { ...reexamen, promptCandidateCount: pourModele.length, crossDocumentSent: crossSent, branch: 'STRUCTURED', lastAiAt: new Date().toISOString() },
+          category: technicalCategoryOf(e), error: aiError,
+        });
+        }
       }
       }
     }
   }
+  // Appel réussi : les incidents « modèle » du compte sont résolus (contrôle après correction).
+  if (aiCalled && !aiError) void resolveTechnicalFailures(accountId, ['MODEL', 'QUOTA', 'SCHEMA']);
 
   // ── 5 / 6. Application ────────────────────────────────────────────────
   await input.guard?.assertActive('T3 DOCUMENT_ASSET — écriture');
   const result = await applyDecision({
-    accountId, fileId, userId: input.userId ?? state.userId, decision, ctx, revision, g,
+    accountId, fileId, userId: input.userId ?? null, decision, ctx, revision, g, triggerCode: input.triggerCode ?? null,
     evaluation: {
       ...reexamen, aiCalled, promptCandidateCount: aiCalled ? pourModele.length : 0, ...(aiCalled ? { lastAiAt: new Date().toISOString() } : {}),
-      reasonCode: decision.kind === 'ABSTAIN' ? (aiError && decision.reasonCode === 'NO_CANDIDATE' ? 'AI_UNAVAILABLE' : decision.reasonCode) : 'RESOLVED',
+      reasonCode: decision.kind === 'ABSTAIN' ? decision.reasonCode : 'RESOLVED',
       ai: { operation: 't3_link_ambiguity', traceIds: traces.slice(0, 5), status: aiError ? 'ERROR' : aiCalled ? 'OK' : 'NOT_CALLED', error: aiError, reason: aiReason },
       semanticSearch: semantic,
       // Lot 105D : mémoire IA (nouvelle décision, réutilisée, ou précédente conservée).
       aiMemory: aiMemory ?? reexamen.aiMemory ?? null,
       aiReused,
       crossDocumentSent: crossSent,
+      crossDocument: crossReport,
+      branch,
+      technicalFailure: null,
     },
   });
   console.info(`[t3-document-asset] document ${fileId} : ${decision.kind}${decision.kind === 'ABSTAIN' ? ` (${decision.reasonCode})` : ` [${decision.method}]`} → ${result.outcome}`);
@@ -567,35 +693,89 @@ export async function resolveDocumentAsset(
 }
 
 /**
+ * Lot 108E (A5, A6) — issue TECHNIQUE : aucune carte créée ni mise à jour ;
+ * une carte NÉE D'UNE PANNE (issue précédente technique) est fermée ;
+ * empreinte effacée (jamais « contexte inchangé »), relance durable par le
+ * balayage après `T3_TECHNICAL_RETRY_MINUTES` ; anomalie Supervision.
+ */
+async function technicalOutcome(p: {
+  accountId: number; fileId: number; ctx: DocumentAssetContext; resolution: DocumentAssetResolution | null; revision: number; g: Garde;
+  cardBefore: number | null; aiCalled: boolean; traces: string[];
+  evaluation: Omit<DocumentAssetEvaluation, 'newResolution' | 'aiCalled' | 'decision' | 'linkedAssetId' | 'toProcessAction' | 'result'>;
+  category: TechnicalFailureCategory; error: string;
+}): Promise<ResolveDocumentAssetResult> {
+  const { accountId, fileId } = p;
+  let fermee: number | null = null;
+  if (p.cardBefore !== null && wasTechnicalOutcome(p.resolution)) {
+    await p.g('question « À traiter » née d’une panne');
+    const { closeTechnicalLinkCard } = await import('@/services/to-process/identity-group-cards');
+    if (await closeTechnicalLinkCard(accountId, p.cardBefore, `T3_TECHNICAL_FAILURE:${p.category}`)) fermee = p.cardBefore;
+  }
+  const decision: DocumentAssetDecision = { kind: 'ABSTAIN', reasonCode: 'TECHNICAL_FAILURE', ranked: [] };
+  const evaluation: DocumentAssetEvaluation = {
+    ...p.evaluation, aiCalled: p.aiCalled, decision: `ABSTAIN:${TECHNICAL_FAILURE_REASON}`, linkedAssetId: null, newResolution: 'ABSTAINED',
+    toProcessAction: fermee !== null ? 'CLOSED' : p.cardBefore !== null ? 'UNCHANGED' : 'NONE', result: 'TECHNICAL_FAILURE',
+    reasonCode: p.category === 'IDENTITY_GRAPH' ? 'RESOLVER_FAILED' : 'AI_UNAVAILABLE',
+    ai: { operation: 't3_link_ambiguity', traceIds: p.traces.slice(0, 5), status: p.aiCalled ? 'ERROR' : 'NOT_CALLED', error: p.error.slice(0, 200), reason: `TECHNICAL_FAILURE:${p.category}` },
+    branch: 'TECHNICAL',
+    technicalFailure: {
+      category: p.category, error: p.error.slice(0, 300), retryAfterMinutes: T3_TECHNICAL_RETRY_MINUTES, technicalCardClosed: fermee,
+      cardOrigin: p.cardBefore === null || fermee !== null ? null : 'BUSINESS',
+    },
+  };
+  await p.g('état de résolution');
+  await recordOutcome({
+    accountId, fileId, status: 'ABSTAINED', method: 'NONE', reasonCode: TECHNICAL_FAILURE_REASON,
+    // Candidats d'une issue métier précédente conservés (diagnostic), jamais republiés par la panne.
+    candidates: p.resolution?.candidates ?? [],
+    inputFingerprint: null, extractionAt: p.ctx.extractionAt, identifiersFingerprint: p.ctx.idsFingerprint,
+    knowledgeRevision: p.revision, contextFingerprint: null, lastEvaluation: { ...evaluation },
+  });
+  await reportTechnicalFailure({ accountId, fileId, category: p.category, error: p.error });
+  console.warn(`[t3-document-asset] document ${fileId} : panne technique ${p.category} — aucune carte, relance dans ${T3_TECHNICAL_RETRY_MINUTES} min${fermee ? ` · carte ${fermee} née d'une panne fermée` : ''}.`);
+  logEvaluation(evaluation);
+  return { outcome: 'ABSTAIN', status: 'ABSTAINED', decision, aiCalled: p.aiCalled, evaluation };
+}
+
+/**
  * Lot 57B (défaut B) — recherche sémantique IA quand aucun candidat
  * structuré n'existe (`semantic-search.ts`). Biens du compte seulement
  * (index du compte), sélection progressive, branche IA existante. Ne lève
- * que pour une interruption : une panne du modèle est rendue (AI_UNAVAILABLE),
- * la carte reste ouverte et sera retentée au passage suivant.
+ * que pour une interruption. Lot 108E : une panne du modèle est RENDUE
+ * (`aiException`) — l'appelant relance (file) ou rend une issue technique ;
+ * jamais NO_CANDIDATE. Mêmes garde-fous que la branche structurée (A3) :
+ * biens refuses exclus, preuves croisées et contrôle serveur de la sortie
+ * quand le contrat est actif.
  */
 async function semanticSearch(p: {
   accountId: number; fileId: number; userId: number | null; ctx: DocumentAssetContext; subject: DocumentSubject; skipAi: boolean;
   guard?: ExecutionGuard; callModel: NonNullable<ResolveDocumentAssetDeps['callModel']>;
   supplierHistory: NonNullable<ResolveDocumentAssetDeps['supplierHistory']>; traces: string[];
+  excludedAssetIds?: ReadonlySet<number>;
+  cross?: { variables: { fileId: number; context: import('./identity/decision').CrossDocumentContext | null } | null; check: Parameters<typeof decideFromAiOutput>[2] };
 }): Promise<{
-  decision: DocumentAssetDecision; aiCalled: boolean; aiError: string | null;
+  decision: DocumentAssetDecision; aiCalled: boolean; aiError: string | null; aiException: unknown;
   semantic: NonNullable<DocumentAssetEvaluation['semanticSearch']>; presented: DocumentAssetCandidate[];
+  crossSent: boolean; crossReport: DocumentAssetEvaluation['crossDocument'];
 }> {
+  const crossSent = !!p.cross?.variables;
   const vide = (reason: string) => ({
-    decision: { kind: 'ABSTAIN' as const, reasonCode: 'NO_CANDIDATE' as const, ranked: [] }, aiCalled: false, aiError: null,
-    semantic: { attempted: false, reason, rounds: 0, presented: 0, matched: 0, origins: {} }, presented: [] as DocumentAssetCandidate[],
+    decision: { kind: 'ABSTAIN' as const, reasonCode: 'NO_CANDIDATE' as const, ranked: [] }, aiCalled: false, aiError: null, aiException: null,
+    semantic: { attempted: false, reason, rounds: 0, presented: 0, matched: 0, origins: {} }, presented: [] as DocumentAssetCandidate[], crossSent: false, crossReport: null,
   });
   const { ctx } = p;
   if (!ctx.sources) return vide('NO_T1_KNOWLEDGE');
   if (ctx.index.assets.length === 0) return vide('NO_ASSET_IN_ACCOUNT');
   if (p.skipAi) return vide('AI_DISABLED');
   const historique = await p.supplierHistory(p.accountId, p.fileId, ctx.sources.extraction?.supplier ?? null);
-  const shortlist = semanticShortlist(ctx.index, ctx.sources, historique);
+  // Lot 108E (A3) : un bien refusé par l'utilisateur n'est jamais reproposé, ni en recherche sémantique.
+  const shortlist = semanticShortlist(ctx.index, ctx.sources, historique).filter((h) => !p.excludedAssetIds?.has(h.assetId));
   const pages = semanticPages(shortlist);
   const origins: Record<string, number> = {};
   for (const h of shortlist) for (const o of h.origins) origins[o] = (origins[o] ?? 0) + 1;
   const presented: DocumentAssetCandidate[] = [];
   let rounds = 0;
+  let crossReport: DocumentAssetEvaluation['crossDocument'] = null;
   for (const page of pages) {
     const cands = semanticCandidates(page, ctx.index);
     for (const c of cands) {
@@ -609,7 +789,7 @@ async function semanticSearch(p: {
     try {
       output = await p.callModel({
         accountId: p.accountId, userId: p.userId, fileId: p.fileId,
-        variables: { ...documentAssetVariables(p.subject, cands), RELATION_TYPE: SEMANTIC_RELATION },
+        variables: { ...documentAssetVariables(p.subject, cands, p.cross?.variables ?? null), RELATION_TYPE: SEMANTIC_RELATION },
         onTrace: (t) => p.traces.push(t),
       });
     } catch (e) {
@@ -617,28 +797,31 @@ async function semanticSearch(p: {
       const err = (e as Error).message.slice(0, 200);
       console.warn(`[t3-document-asset] document ${p.fileId} : recherche sémantique — modèle indisponible (${err}).`);
       return {
-        decision: { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] }, aiCalled: true, aiError: err,
-        semantic: { attempted: true, reason: 'AI_UNAVAILABLE', rounds, presented: presented.length, matched: 0, origins }, presented,
+        decision: { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] }, aiCalled: true, aiError: err, aiException: e,
+        semantic: { attempted: true, reason: 'AI_UNAVAILABLE', rounds, presented: presented.length, matched: 0, origins }, presented, crossSent, crossReport,
       };
     }
-    const decision = decideFromAiOutput(output, cands);
+    const rapport: { cross?: NonNullable<DocumentAssetEvaluation['crossDocument']> } = {};
+    const decision = decideFromAiOutput(output, cands, p.cross?.check ?? null, rapport);
+    crossReport = rapport.cross ?? crossReport;
     const retenus = new Set(output.matches.map((m) => m.candidateId).filter((id) => cands.some((c) => c.assetId === id)));
     if (decision.kind !== 'ABSTAIN') {
-      return { decision, aiCalled: true, aiError: null, semantic: { attempted: true, reason: 'RESOLVED', rounds, presented: presented.length, matched: retenus.size, origins }, presented };
+      return { decision, aiCalled: true, aiError: null, aiException: null, semantic: { attempted: true, reason: 'RESOLVED', rounds, presented: presented.length, matched: retenus.size, origins }, presented, crossSent, crossReport };
     }
     if (retenus.size > 0) {
       // Le modèle désigne un ou des biens sans preuve suffisante : proposés à l'utilisateur (justification du modèle).
       const ranked = decision.reasonCode === 'CLOSED_WORLD_VIOLATION' ? [] : decision.ranked.filter((r) => retenus.has(r.assetId));
       return {
         decision: ranked.length ? { ...decision, ranked } : { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] },
-        aiCalled: true, aiError: null,
-        semantic: { attempted: true, reason: decision.reasonCode, rounds, presented: presented.length, matched: retenus.size, origins }, presented,
+        aiCalled: true, aiError: null, aiException: null,
+        semantic: { attempted: true, reason: decision.reasonCode, rounds, presented: presented.length, matched: retenus.size, origins }, presented, crossSent, crossReport,
       };
     }
   }
   return {
-    decision: { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] }, aiCalled: rounds > 0, aiError: null,
+    decision: { kind: 'ABSTAIN', reasonCode: 'NO_CANDIDATE', ranked: [] }, aiCalled: rounds > 0, aiError: null, aiException: null,
     semantic: { attempted: rounds > 0, reason: rounds > 0 ? 'NO_MATCH' : 'NO_ASSET_IN_ACCOUNT', rounds, presented: presented.length, matched: 0, origins }, presented,
+    crossSent: crossSent && rounds > 0, crossReport,
   };
 }
 
@@ -676,8 +859,9 @@ async function stopReason(accountId: number, fileId: number, s: AttachmentState,
 type EvaluationDraft = Omit<DocumentAssetEvaluation, 'newResolution' | 'decision' | 'linkedAssetId' | 'toProcessAction' | 'result'>;
 
 async function applyDecision(p: {
+  /** Lot 108E (A7) : utilisateur INITIATEUR seulement (null : contexte technique — cohérence, balayage). */
   accountId: number; fileId: number; userId: number | null; decision: DocumentAssetDecision;
-  ctx: DocumentAssetContext; revision: number; g: Garde; evaluation: EvaluationDraft;
+  ctx: DocumentAssetContext; revision: number; g: Garde; evaluation: EvaluationDraft; triggerCode?: string | null;
 }): Promise<Omit<ResolveDocumentAssetResult, 'decision' | 'aiCalled'>> {
   const { accountId, fileId, decision, g, ctx } = p;
   const fin = (o: { newResolution: ResolutionStatus | null; linkedAssetId?: number | null; toProcessAction: ToProcessEffect; result: DocumentAssetEvaluationResult }): DocumentAssetEvaluation => ({
@@ -757,7 +941,7 @@ async function applyDecision(p: {
   await g('état du document');
   await setAnalysisState(accountId, fileId, 'VALIDATION_REQUIRED', 'ANALYZED');
   await g('projection et événement document_linked');
-  await afterLink({ accountId, fileId, userId: p.userId, assetIds: cibles });
+  const projection = await afterLink({ accountId, fileId, userId: p.userId, assetIds: cibles, ctx, triggerCode: p.triggerCode ?? null });
 
   const status = decision.kind === 'APPLY' ? 'RESOLVED' : 'MULTI_ASSET';
   // Multi-biens : la décision reste OUVERTE (aucun bien principal). Son
@@ -767,11 +951,14 @@ async function applyDecision(p: {
   const fingerprint = decision.kind === 'MULTI_ASSET'
     ? (await computeDocumentAssetContext({ accountId, fileId, state: apres, resolution: { t1Candidates: ctx.t1Candidates }, index: ctx.index })).fingerprint
     : ctx.fingerprint;
-  const evaluation = fin({
-    newResolution: status, linkedAssetId: decision.kind === 'APPLY' ? decision.assetId : null,
-    toProcessAction: fermees > 0 ? 'CLOSED' : 'NONE',
-    result: decision.kind === 'MULTI_ASSET' ? 'MULTI_ASSET' : decision.method === 'AI' ? 'RESOLVED_BY_AI' : 'RESOLVED_DETERMINISTICALLY',
-  });
+  const evaluation = {
+    ...fin({
+      newResolution: status, linkedAssetId: decision.kind === 'APPLY' ? decision.assetId : null,
+      toProcessAction: fermees > 0 ? 'CLOSED' : 'NONE',
+      result: decision.kind === 'MULTI_ASSET' ? 'MULTI_ASSET' : decision.method === 'AI' ? 'RESOLVED_BY_AI' : 'RESOLVED_DETERMINISTICALLY',
+    }),
+    projection,
+  };
   await g('état de résolution');
   await recordOutcome({
     accountId, fileId, status, method: decision.method, reasonCode: decision.reason.slice(0, 200),
@@ -782,22 +969,44 @@ async function applyDecision(p: {
 
 /**
  * Après un rattachement par T3 : faits persistés projetés sur le bien
- * (preuves, réconciliation T3 du bien — `projectDocumentKnowledgeToAsset`),
- * puis événement `document_linked`. Non bloquant : le lien est posé.
+ * (preuves, réconciliation T3 du bien, équipements, Opérations, Agenda T4 —
+ * `projectDocumentKnowledgeToAsset`), puis événement `document_linked` et
+ * titre SYSTEM. Non bloquant : le lien est posé.
+ *
+ * Lot 108E (A7) : SANS utilisateur initiateur (cohérence, balayage), la
+ * projection a lieu en CONTEXTE TECHNIQUE journalisé (`projection-actor.ts`)
+ * — plus jamais sautée. Document d'appareil (A2) : faits sans cible jamais
+ * réattribués au bien porteur (ni prix ni garantie d'appareil).
  */
-async function afterLink(p: { accountId: number; fileId: number; userId: number | null; assetIds: number[] }): Promise<void> {
+async function afterLink(p: {
+  accountId: number; fileId: number; userId: number | null; assetIds: number[]; ctx?: DocumentAssetContext; triggerCode?: string | null;
+}): Promise<ProjectionEffect> {
   const k = await import('../../knowledge/document-knowledge.service');
   const { enqueueT3ForAssets } = await import('../t3-queue');
+  const acteur = await resolveProjectionActor(p.accountId, p.userId, p.triggerCode ?? null);
+  const appareil = p.ctx ? isEquipmentDocumentContext(p.ctx) : false;
+  const effet: ProjectionEffect = {
+    actor: acteur.kind, reason: acteur.reason, trigger: p.triggerCode ?? null, equipmentDocument: appareil, assets: [],
+  };
+  if (acteur.kind !== 'USER') {
+    console.info(`[t3-document-asset] document ${p.fileId} : projection en contexte technique (${acteur.reason}${acteur.kind === 'TECHNICAL' ? `, titulaire ${acteur.userId}` : ''}, déclencheur ${p.triggerCode ?? '∅'}).`);
+  }
   for (const assetId of p.assetIds) {
+    if (acteur.userId === null) { effet.assets.push({ assetId, status: 'SKIPPED', evidence: null, error: 'NO_ACCOUNT_OWNER' }); continue; }
     try {
-      const projetable = p.userId ? await k.hasProjectableKnowledge(p.fileId) : false;
-      if (projetable && p.userId) {
-        await k.projectDocumentKnowledgeToAsset({ accountId: p.accountId, userId: p.userId, fileId: p.fileId, assetId });
-      } else if (p.userId) {
-        await enqueueT3ForAssets({ accountId: p.accountId, userId: p.userId, assetIds: [assetId], sourceFileId: p.fileId, reason: 'document_linked' });
+      const projetable = await k.hasProjectableKnowledge(p.fileId);
+      if (projetable) {
+        const n = await k.projectDocumentKnowledgeToAsset({
+          accountId: p.accountId, userId: acteur.userId, fileId: p.fileId, assetId, ...(appareil ? { reassignUntargeted: false } : {}),
+        });
+        effet.assets.push({ assetId, status: 'PROJECTED', evidence: n });
+      } else {
+        await enqueueT3ForAssets({ accountId: p.accountId, userId: acteur.userId, assetIds: [assetId], sourceFileId: p.fileId, reason: 'document_linked' });
+        effet.assets.push({ assetId, status: 'T3_ENQUEUED', evidence: null });
       }
     } catch (e) {
       if (isExecutionCancelled(e)) throw e;
+      effet.assets.push({ assetId, status: 'ERROR', evidence: null, error: (e as Error).message.slice(0, 200) });
       console.error(`[t3-document-asset] projection du document ${p.fileId} sur le bien ${assetId} impossible :`, (e as Error).message);
     }
   }
@@ -810,6 +1019,13 @@ async function afterLink(p: { accountId: number; fileId: number; userId: number 
   // Nouvelle connaissance T3 (document → bien) : contrôle ciblé du titre
   // (moteur de titre commun, origine T3 ; un titre USER n'est jamais touché).
   await refreshDocumentTitle(p.accountId, p.fileId);
+  return effet;
+}
+
+/** Lot 108E (A2) : le document porte-t-il une identité d'appareil (série, IMEI, modèle) ? Pure vis-à-vis de la base. */
+function isEquipmentDocumentContext(ctx: DocumentAssetContext): boolean {
+  if (ctx.identity?.graph.equipmentDocuments?.has(ctx.fileId)) return true;
+  return (ctx.sources?.facts ?? []).some((f) => f.canonicalKey === 'serialNumber' || f.canonicalKey === 'imei' || f.canonicalKey === 'modelName');
 }
 
 /** Contrôle ciblé du titre après une nouvelle connaissance T3 (ne lève jamais, sauf interruption). */

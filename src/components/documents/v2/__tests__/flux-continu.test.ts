@@ -15,6 +15,7 @@ import {
   countLabel,
   defaultDirection,
   documentSubtitle,
+  displayedDate,
   effectiveSort,
   emptyRubricsLine,
   filterDocuments,
@@ -229,10 +230,18 @@ describe('textes', () => {
     expect(formatDateFr('n’importe quoi')).toBe('—');
   });
 
-  it('sous-titre : Type · date du tri · bien (pas de bien dans l’onglet d’un bien)', () => {
-    expect(documentSubtitle(acte, 'added', 'mes-documents')).toBe('Acte notarié · 20 sept. 2023 · Appartement Lyon');
-    expect(documentSubtitle(acte, 'docDate', 'fiche-bien')).toBe('Acte notarié · 15 sept. 2023');
-    expect(documentSubtitle(scan, 'added', 'fiche-bien')).toBe('Type à compléter · 12 sept. 2025');
+  // Lot 108D (décision PO du ticket « une seule date documentaire ») : le sous-titre est le Type SEUL —
+  // plus de date (ni d'ajout ni du document) ni de bien ; la date unique est la colonne de droite.
+  it('sous-titre : Type documentaire seul, sans date, quel que soit le contexte (lot 108D)', () => {
+    expect(documentSubtitle(acte, 'mes-documents')).toBe('Acte notarié');
+    expect(documentSubtitle(acte, 'fiche-bien')).toBe('Acte notarié');
+    expect(documentSubtitle(scan, 'fiche-bien')).toBe('Type à compléter');
+  });
+
+  it('date de la ligne : toujours la date du document, jamais la date d’ajout, « – » sans date (lot 108D)', () => {
+    expect(displayedDate(acte)).toBe('15 sept. 2023');
+    expect(displayedDate(scan)).toBe('–');
+    expect(displayedDate({ ...scan, documentDate: null, uploadedAt: '2026-09-24T08:00:00Z' })).toBe('–');
   });
 });
 

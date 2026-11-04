@@ -143,12 +143,19 @@ scenario('L104A', 'Finitions légales : CGUV vérifiées, réacceptation fiable,
     const { GET: links } = await import('@/app/api/legal/links/route');
     expect((await (await links()).json()).links.cguv).toBe(`${SITE}/cgu`);
 
-    // Inscription pendant le repli : archive de l'application, statut « en attente du site public ».
+    // Lot 108L : pendant le repli, la version présentée (archive de l'application)
+    // n'est pas consultable sur le site public → inscription REFUSÉE (état
+    // explicite, aucune acceptation non opposable), reprise après livraison.
     const { POST } = await import('@/app/api/users/route');
     const e1 = `${uid('l104a-rep')}@test.invalid`;
-    expect((await POST(req('/api/users', { body: { email: e1, password: 'NouveauMdp1!x', firstName: 'Ana', lastName: 'Repli', acceptedTerms: true, termsVersion: LEGACY } }))).status).toBe(201);
-    const [p1] = await sql<Json[]>`SELECT la.* FROM legal_acceptances la JOIN users u ON u.id = la.user_id WHERE u.email = ${e1}`;
-    expect(p1).toMatchObject({ version_code: LEGACY, permalink_url: `${ORIGIN}/cguv/versions/${LEGACY}`, text_sha256: shaOfText(LEGACY_HTML), proof_status: 'EN_ATTENTE_SITE_PUBLIC', acceptance_context: 'ACCOUNT_CREATION', channel: 'WEB' });
+    const r1 = await POST(req('/api/users', { body: { email: e1, password: 'NouveauMdp1!x', firstName: 'Ana', lastName: 'Repli', acceptedTerms: true, termsVersion: LEGACY } }));
+    expect([r1.status, (await r1.json()).code]).toEqual([503, 'CGUV_PUBLIC_TEXT_UNAVAILABLE']);
+    expect(await sql`SELECT 1 FROM legal_acceptances la JOIN users u ON u.id = la.user_id WHERE u.email = ${e1}`).toHaveLength(0);
+    // Preuve « en attente du site public » enregistrée AVANT le lot 108L (règle 102B) : elle ne sera jamais réécrite.
+    const ancien = await compte();
+    const [lv] = await sql<Json[]>`SELECT id FROM legal_document_versions WHERE version_code = ${LEGACY}`;
+    const [p1] = await sql<Json[]>`INSERT INTO legal_acceptances (user_id, legal_document_version_id, accepted_at, acceptance_context, version_code, permalink_url, text_sha256, proof_status, channel, created_at)
+      VALUES (${ancien.id}, ${lv.id}, now(), 'ACCOUNT_CREATION', ${LEGACY}, ${`${ORIGIN}/cguv/versions/${LEGACY}`}, ${shaOfText(LEGACY_HTML)}, 'EN_ATTENTE_SITE_PUBLIC', 'WEB', now()) RETURNING *`;
 
     // Le site publie (contrat § 4.3) : archive reprise octet pour octet + version en vigueur.
     TEXTS.set(shaOfText(LEGACY_HTML), LEGACY_HTML);

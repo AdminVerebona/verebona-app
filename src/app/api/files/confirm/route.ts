@@ -19,6 +19,7 @@ import { verifierFichier, verifierLot, MAX_DOCUMENTS_PAR_DEPOT } from '@/lib/upl
 import { deciderConfirm, empreinteConfirm, estCleOperation, uploadOperationLockKey } from '@/lib/upload-idempotence';
 import { verificationObjetActive, verifierObjetDepose } from '@/lib/upload-object-check';
 import { toUserFile } from '@/services/ai/processing-status/user-file';
+import { resolveUploadDocumentDate } from '@/services/documents/upload-document-date';
 
 type LigneFichier = typeof assetFiles.$inferSelect;
 
@@ -76,6 +77,7 @@ export async function POST(request: NextRequest) {
       assetId,
       documentType,
       documentDate,
+      documentDateSource,
       description,
       supplier,
       amountCents,
@@ -266,7 +268,15 @@ export async function POST(request: NextRequest) {
       updateData.assetId = assetId === 0 || assetId === '0' || assetId === null ? null : parseInt(assetId.toString());
     }
     if (documentType) updateData.documentType = documentType;
-    if (documentDate) updateData.documentDate = documentDate;
+    // Lot 108D : la date du document n'est posée que si l'utilisateur l'a
+    // saisie — jamais le jour d'import pré-rempli par un ancien client. Une
+    // saisie est une correction utilisateur prioritaire (T1/T3 ne la
+    // remplacent pas).
+    const dateDepot = resolveUploadDocumentDate({ documentDate, documentDateSource }, new Date());
+    if (dateDepot.documentDate) updateData.documentDate = dateDepot.documentDate;
+    if (dateDepot.markUserEdited) {
+      updateData.userEditedFields = sql`COALESCE(${assetFiles.userEditedFields}, '{}'::jsonb) || '{"documentDate": true}'::jsonb`;
+    }
     // Titre et fournisseur saisis s'appliquent à un dépôt d'UN fichier : sur
     // plusieurs documents distincts, un titre commun serait faux pour tous
     // sauf un. L'analyse les renseigne alors document par document.

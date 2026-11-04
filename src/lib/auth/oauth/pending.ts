@@ -40,7 +40,7 @@ import {
 import { checkSessionEligibility } from './session-bridge';
 import { finishWithSession, notifyIdentityChange } from './flow';
 import {
-  PROFILE_ERROR_MESSAGES, acceptedTermsVersion, checkSignupInvitation, createSocialAccount, emailHasAccount,
+  PROFILE_ERROR_MESSAGES, acceptedTermsVersion, termsVersionAcceptable, checkSignupInvitation, createSocialAccount, emailHasAccount,
   profileDisplayName, validateProfileInput, type SocialProfile,
 } from './social-signup';
 import { SOCIAL_ERROR_MESSAGES, type SocialErrorCode } from './messages';
@@ -147,6 +147,11 @@ export async function signup(request: NextRequest, tx: AuthTransaction, body: Re
   if (!v.ok) return err(v.code, 400, PROFILE_ERROR_MESSAGES[v.code]);
   const termsVersion = await acceptedTermsVersion(v.presentedVersion);
   if (!termsVersion) return err('NO_CURRENT_LEGAL_VERSION', 503, PROFILE_ERROR_MESSAGES.NO_CURRENT_LEGAL_VERSION);
+  // Lot 108L : jamais d'acceptation d'un texte non consultable sur le site public.
+  if (!(await termsVersionAcceptable(termsVersion))) {
+    const { CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE } = await import('@/services/legal/legal-acceptances.service');
+    return err('CGUV_PUBLIC_TEXT_UNAVAILABLE', 503, CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE);
+  }
   const invitation = await checkSignupInvitation(tx.context, v.email);
   if (!invitation.ok) return err(invitation.code, 403);
 

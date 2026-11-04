@@ -12,10 +12,9 @@
  *        · sur le SITE PUBLIC (`NEXT_PUBLIC_PUBLIC_SITE_URL`, variante www /
  *          apex, origines des surcharges `NEXT_PUBLIC_LEGAL_*_URL` et
  *          origines déclarées par le serveur — `LEGAL_PUBLIC_EXTRA_ORIGINS`) ;
- *        · ou, sur l'origine de l'application, UNIQUEMENT les permaliens
- *          historiques des CGUV (`/cguv`, `/cguv/versions/<code>`, anciens
- *          `/cgvu…`) : archive figée d'une version acceptée que le site public
- *          n'a pas encore republiée (lot 102B, `versionProofInfo`).
+ *        · lot 108L : JAMAIS l'origine de l'application (app.*), ni ses
+ *          anciennes adresses `/cguv…` / `/cgvu…` (l'archive technique de
+ *          l'application n'est plus jamais la cible d'un lien utilisateur).
  *      Toute autre adresse est refusée : aucune redirection ouverte.
  *   2. Où tourne l'interface ? (`lib/native/bridge`)
  *   3. Comment ouvrir ?
@@ -35,11 +34,15 @@
  *   Échec : message + adresse officielle à copier — jamais un écran sans issue.
  * ══════════════════════════════════════════════════════════════════════════
  */
-import { NATIVE_PLUGINS, nativePlatform, nativePlugin, type NativePlatform } from '@/lib/native/bridge';
+import { type NativePlatform } from '@/lib/native/bridge';
+import { chooseExternalOpenStrategy, openExternalUrl, type AppLauncherPlugin, type ExternalOpenStrategy } from '@/lib/native/open-external';
 import { appOrigin as nativeAppOrigin } from '@/lib/native/shell-info';
 import { PUBLIC_SITE_URL } from '@/lib/external-urls';
 
-/** Chemins juridiques servis par l'application (redirection publique ou archive figée). */
+/**
+ * Chemins juridiques historiques de l'application (redirection publique ou
+ * archive technique). Lot 108L : jamais une destination de lien utilisateur.
+ */
 export const APP_LEGAL_PATH = /^\/(?:cguv|cgvu)(?:\/versions\/[A-Za-z0-9._-]{1,40})?\/?$/;
 
 /** Paramètres qui ne doivent jamais voyager vers un texte juridique (session, identité, secrets). */
@@ -104,34 +107,20 @@ export function checkLegalUrl(raw: unknown, policy: LegalLinkPolicy): LegalUrlCh
   if (u.username || u.password) return { ok: false, reason: 'credentials' };
   for (const key of u.searchParams.keys()) if (SENSITIVE_QUERY_KEY.test(key)) return { ok: false, reason: 'sensitive_data' };
   if (/(?:^|[&#])(?:access_token|id_token|token|code|sid)=/i.test(u.hash.slice(1))) return { ok: false, reason: 'sensitive_data' };
-  const isPublic = policy.publicOrigins.includes(u.origin);
-  const isAppArchive = !!policy.appOrigin && u.origin === policy.appOrigin && APP_LEGAL_PATH.test(u.pathname);
-  if (!isPublic && !isAppArchive) return { ok: false, reason: 'domain' };
+  // Lot 108L : site public uniquement — l'application (app.*, /cguv, /cgvu) n'est jamais une cible.
+  const isApp = !!policy.appOrigin && u.origin === policy.appOrigin;
+  if (isApp || !policy.publicOrigins.includes(u.origin)) return { ok: false, reason: 'domain' };
   return { ok: true, url: u.toString(), origin: u.origin };
 }
 
-export type LegalOpenStrategy =
-  /** Navigateur : nouvel onglet (comportement historique). */
-  | 'web-new-tab'
-  /** Application : navigateur externe du téléphone (AppLauncher). */
-  | 'native-external'
-  /** Application sans AppLauncher : remise au système par Capacitor (domaine hors app). */
-  | 'native-system-handoff'
-  /** Application : aucune ouverture externe sûre possible. */
-  | 'native-unavailable';
+/**
+ * Méthode d'ouverture — lot 108H : brique générique `lib/native/open-external`
+ * (navigateur système via AppLauncher, jamais `Browser`). Alias conservés.
+ */
+export type LegalOpenStrategy = ExternalOpenStrategy;
 
-/** Choix de la méthode d'ouverture (pur, testé). */
-export function chooseLegalOpenStrategy(ctx: {
-  platform: NativePlatform | null;
-  hasAppLauncher: boolean;
-  urlOrigin: string;
-  appOrigin: string | null;
-}): LegalOpenStrategy {
-  if (!ctx.platform) return 'web-new-tab';
-  if (ctx.hasAppLauncher) return 'native-external';
-  if (ctx.appOrigin && ctx.urlOrigin !== ctx.appOrigin) return 'native-system-handoff';
-  return 'native-unavailable';
-}
+/** Choix de la méthode d'ouverture (pur, testé) — voir `chooseExternalOpenStrategy`. */
+export const chooseLegalOpenStrategy = chooseExternalOpenStrategy;
 
 // ── Contexte d'exécution ───────────────────────────────────────────────────
 
@@ -171,8 +160,6 @@ export function currentLegalLinkPolicy(): LegalLinkPolicy {
   });
 }
 
-interface AppLauncherPlugin { openUrl(o: { url: string }): Promise<{ completed?: boolean }> }
-
 export type LegalOpenResult =
   | { ok: true; strategy: LegalOpenStrategy; url: string }
   | { ok: false; reason: LegalUrlRefusal | 'open_failed' | 'unavailable'; strategy: LegalOpenStrategy | null; copyUrl: string | null };
@@ -192,11 +179,6 @@ function copyable(raw: unknown, fallbackUrl: string | null | undefined, policy: 
   return fb.ok ? fb.url : null;
 }
 
-function defaultWindowOpen(url: string): boolean {
-  // Avec `noopener`, `window.open` rend toujours null : seule une exception signale l'échec.
-  try { window.open(url, '_blank', 'noopener,noreferrer'); return true; } catch { return false; }
-}
-
 /**
  * Ouvre un texte juridique selon le contexte. `fallbackUrl` : adresse
  * officielle de repli à copier si la destination est refusée (ex. page CGUV
@@ -207,26 +189,12 @@ export async function openLegalLink(raw: unknown, opts: { fallbackUrl?: string |
   const check = checkLegalUrl(raw, policy);
   if (!check.ok) return { ok: false, reason: check.reason, strategy: null, copyUrl: copyable(null, opts.fallbackUrl, policy) };
 
-  const platform = opts.platform !== undefined ? opts.platform : nativePlatform();
-  const appLauncher = opts.appLauncher !== undefined ? opts.appLauncher : nativePlugin<AppLauncherPlugin>(NATIVE_PLUGINS.appLauncher);
-  const strategy = chooseLegalOpenStrategy({
-    platform, hasAppLauncher: !!appLauncher && typeof appLauncher.openUrl === 'function', urlOrigin: check.origin, appOrigin: policy.appOrigin,
+  // Lot 108H : ouverture par la brique générique (navigateur système dans l'app).
+  const r = await openExternalUrl(check.url, {
+    platform: opts.platform, appLauncher: opts.appLauncher, appOrigin: policy.appOrigin, windowOpen: opts.windowOpen,
   });
-  const windowOpen = opts.windowOpen ?? defaultWindowOpen;
-
-  try {
-    if (strategy === 'native-external') {
-      const r = await appLauncher!.openUrl({ url: check.url });
-      if (r && r.completed === false) return { ok: false, reason: 'open_failed', strategy, copyUrl: check.url };
-      return { ok: true, strategy, url: check.url };
-    }
-    if (strategy === 'web-new-tab' || strategy === 'native-system-handoff') {
-      return windowOpen(check.url) ? { ok: true, strategy, url: check.url } : { ok: false, reason: 'open_failed', strategy, copyUrl: check.url };
-    }
-    return { ok: false, reason: 'unavailable', strategy, copyUrl: check.url };
-  } catch {
-    return { ok: false, reason: 'open_failed', strategy, copyUrl: check.url };
-  }
+  if (r.ok) return r;
+  return { ok: false, reason: r.reason === 'invalid' ? 'open_failed' : r.reason, strategy: r.strategy, copyUrl: r.url ?? check.url };
 }
 
 /** Message d'un échec (pur, testé). */

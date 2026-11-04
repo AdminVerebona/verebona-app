@@ -13,8 +13,8 @@ import { buildSecondaries, selectSubjects } from '../selector';
 import { buildPresentation } from '../presentation';
 import type { MascotParagraph, MascotPresentation, MascotSubject } from '../types';
 import {
-  NOTHING_TO_REPORT_SPEECH, EMPTY_ACCOUNT_SPEECH, homePoseLabel, EMPTY_ACCOUNT_SUGGESTIONS, actionTiles, composeSpeech, displayedSecondaries, homePose,
-  homeSuggestions, lowerFirst, secondaryActions, splitHighlights, tileFor,
+  NOTHING_TO_REPORT_SPEECH, EMPTY_ACCOUNT_SPEECH, homePoseLabel, actionTiles, composeSpeech, displayedSecondaries, homePose,
+  lowerFirst, secondaryActions, splitHighlights, tileFor,
 } from '../bubble';
 
 const TODAY = '2026-09-21';
@@ -176,37 +176,25 @@ describe('pose et suggestions', () => {
     }
   });
 
-  // Lot 106B (ticket « Mascotte — suggestions ») : au plus DEUX suggestions simultanées (zone compacte).
-  it('2 pastilles : questions du moteur, puis catalogue de la page ; compte vide : questions d’amorce', () => {
-    const p = presentationOf({
-      paragraphs: [],
-      secondaries: [{ id: 'q', kind: 'question', sourceCode: 'Q:home_asset_docs', occurrenceKey: 'q', action: { actionId: 'q', label: 'Quels sont les documents de Ferrari ?', target: { kind: 'ask', question: 'Quels sont les documents de Ferrari ?', context: { intent: 'ACCOUNT_SEARCH_DOCUMENT', assetId: 3 } } } }],
-    });
-    const s = homeSuggestions(p, false, ['Comment transférer un bien ?', 'Quels sont les documents de Ferrari ?', 'Mes échéances', 'Autre']);
-    expect(s.map((x) => x.label)).toEqual(['Quels sont les documents de Ferrari ?', 'Comment transférer un bien ?']);
-    expect(s[0].context).toEqual({ intent: 'ACCOUNT_SEARCH_DOCUMENT', assetId: 3 });
-    expect(homeSuggestions(p, true, []).map((x) => x.label)).toEqual(EMPTY_ACCOUNT_SUGGESTIONS.slice(0, 2));
-    // Lot 34 : compte vide = questions d'aide du catalogue unique (intention déterministe).
-    expect(EMPTY_ACCOUNT_SUGGESTIONS).toEqual(['Comment ajouter un bien ?', 'Comment ajouter un document ?', 'L’analyse automatique, c’est quoi ?']);
-  });
-
+  // Lot 108J : les suggestions ne viennent plus de la prise de parole de la
+  // mascotte (service unique `src/services/suggestions/shared`, testé par
+  // l108j-suggestions-partagees.test.ts) — cas « 2 pastilles » retiré.
   it('secondaires non-questions (onboarding, recommandations) : pastilles d’action ; télémétrie de ce qui est montré', () => {
     const q = (i: number) => ({ id: `q${i}`, kind: 'question' as const, sourceCode: 'Q', occurrenceKey: `q${i}`, action: { actionId: `q${i}`, label: `Q${i} ?`, target: { kind: 'ask' as const, question: `Q${i} ?`, context: { intent: 'Q' } } } });
     const onb = { id: 'onb', kind: 'onboarding' as const, sourceCode: 'ONB-DOC', occurrenceKey: 'ONB-DOC', action: { actionId: 'onb', label: 'Ajouter un document', target: { kind: 'upload_document' as const, assetId: null } } };
     const p = presentationOf({ paragraphs: [], secondaries: [onb, q(1), q(2), q(3), q(4)] });
     expect(secondaryActions(p, false).map((x) => x.id)).toEqual(['onb']);
     expect(secondaryActions(p, true)).toEqual([]);
-    // Lot 106B : 2 suggestions seulement — la 3e question n'est pas affichée, donc pas comptée.
-    expect(displayedSecondaries(p, false).map((x) => x.id)).toEqual(['onb', 'q1', 'q2']);
-    expect(homeSuggestions(p, false, [])[0].secondary?.occurrenceKey).toBe('q1');
+    // Lot 108J : la bulle ne montre plus de questions — seules ses actions sont comptées.
+    expect(displayedSecondaries(p, false).map((x) => x.id)).toEqual(['onb']);
     expect(displayedSecondaries(p, true)).toEqual([]);
   });
 
   it('les clics sur les éléments secondaires (niveau 2, MASC2) passent par le parcours et la télémétrie du moteur', () => {
     const src = readFileSync(join(process.cwd(), 'src/components/home/MascotSpeaks.tsx'), 'utf8');
     expect(src).toMatch(/run\(it\.secondary\.action, it\.secondary, 'secondary'\)/);
-    expect(src).toMatch(/run\(s\.secondary\.action, s\.secondary, 'secondary'\)/);
-    // Lot 106B : la télémétrie « affiché » tient compte des suggestions passées pendant la visite.
-    expect(src).toMatch(/useMascotPresentation\(\(p\) => displayedSecondaries\(p, emptyRef\.current, passeesRef\.current\)\)/);
+    // Lot 108J : suggestions partagées (service unique), posées comme vraies questions.
+    expect(src).toMatch(/useMascotPresentation\(\(p\) => displayedSecondaries\(p, emptyRef\.current\)\)/);
+    expect(src).toContain('useSharedSuggestions');
   });
 });

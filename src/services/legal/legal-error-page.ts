@@ -19,12 +19,17 @@ interface LegalErrorPageInput {
   requestedVersion?: string;
   /** Proposé en lien, jamais servi à la place du document demandé. */
   offerCurrentLink?: boolean;
+  /**
+   * Lot 108L : adresse PUBLIQUE des CGUV en vigueur (site de l'environnement).
+   * Jamais un lien relatif vers l'application (`/cguv`) : sans adresse, aucun lien.
+   */
+  currentUrl?: string | null;
 }
 
 export function renderLegalErrorPage(input: LegalErrorPageInput): string {
-  const currentLink = input.offerCurrentLink
+  const currentLink = input.offerCurrentLink && input.currentUrl && /^https?:\/\//.test(input.currentUrl)
     ? `      <p>
-        <a href="/cguv">Consulter la version des CGUV actuellement en vigueur</a>
+        <a href="${escapeHtml(input.currentUrl)}">Consulter la version des CGUV actuellement en vigueur</a>
       </p>
       <p class="warn">
         Attention : cette version peut différer de celle que vous recherchez.

@@ -22,6 +22,7 @@ import { apiClient } from '@/lib/api-client';
 import Link from 'next/link';
 import { supplierHref } from '@/lib/supplier-routes';
 import { EntityCard } from '@/components/drawers/EntityCard';
+import { DocumentDateCell } from '@/components/documents/DocumentDateCell';
 import type { DocumentDrawerItem } from '@/components/assets/DocumentDrawer';
 
 const DocumentDrawer = dynamic(
@@ -39,6 +40,8 @@ interface SupplierDoc {
   /** Lot 87D : titre affiché (règle unique des vues). */
   title?: string | null;
   documentType: string | null;
+  /** Lot 108D : libellé du Type V2 enregistré (sous-titre de la ligne). */
+  documentTypeLabel?: string | null;
   documentDate: string | null;
   assetId: number | null;
   assetName: string | null;
@@ -515,7 +518,9 @@ export function SupplierDrawer({ supplierId, open, onOpenChange, onUpdated, hide
                             id={doc.documentId}
                             title={doc.title ?? doc.filename ?? `Document #${doc.documentId}`}
                             icon={<FileText className="w-3.5 h-3.5 text-[color:var(--accent)]" />}
-                            meta={doc.documentDate ? new Date(doc.documentDate).toLocaleDateString('fr-FR') : undefined}
+                            /* Lot 108D : Type seul en sous-titre ; UNE date à droite, la date du document (sinon « – »). */
+                            meta={doc.documentTypeLabel ?? undefined}
+                            badges={<DocumentDateCell value={doc.documentDate} className="text-[10px] text-muted-foreground" />}
                             onOpen={() => {
                               setDocDrawerItem({
                                 id: doc.documentId,

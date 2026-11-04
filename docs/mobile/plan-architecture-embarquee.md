@@ -1,5 +1,23 @@
 # Plan du lot mobile — application hybride embarquée (architecture B)
 
+> ## ⚠ DÉCISION REMPLACÉE / PLAN ABANDONNÉ — décision PO du 03/11/2026
+>
+> La décision **B1 du 27/10/2026** (interface React embarquée dans le binaire) est **remplacée** par :
+> **interface DISTANTE = cible V1 iOS et Android**, chargée depuis le serveur de l'environnement dans une
+> application Capacitor dotée de fonctions natives. Ce plan (74 à 113 jours) **n'est pas engagé** : aucun
+> travail destiné uniquement à transposer l'interface web dans le binaire ne doit être lancé. Les fonctions
+> natives ne sont **pas** abandonnées.
+>
+> Ce document est conservé **pour l'historique** (inventaire, exigences de sécurité). Ce qui reste utile
+> est repris et adapté au mode distant, sans suppression tacite d'exigence :
+> - classement des étapes E0–E15 (annuler / adapter / conserver) : `docs/mobile/decision-interface-distante-108g.md` ;
+> - architecture distante et audit de sécurité : `docs/mobile/architecture-distante.md` ;
+> - recette : `docs/exploitation/recette-108g-mobile-distant.md` ; stores : `docs/mobile/conformite-stores.md`.
+>
+> Décisions liées : B2 (Keychain / Keystore), B3 (code du téléphone après 5 min), B4 (retour Google /
+> Apple par schéma propre) et A9 (aucun achat intégré) **restent applicables**, adaptées au mode distant
+> (détail dans le document de décision du lot 108G, § 3).
+
 Version du 29/10/2026 (chantier 100F, documentation seule : aucun code ni migration dans ce chantier).
 Décisions PO du 27/10/2026 appliquées : **B1** (option B : interface mobile embarquée, composants natifs
 ciblés, partage depuis d'autres applications même Verebona fermée, scanner multipage, file d'attente

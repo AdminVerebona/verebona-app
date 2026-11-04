@@ -119,8 +119,9 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     const p = await preuves(c.id);
     // Lot 87D : + titres (COH-DOC-TITLES), titre déjà contrôlé en fin d'analyse → CONSISTENT.
     // Lot 88B : + propriétés manquantes du bien (COH-MISSING-PROPERTIES) — constat tant que le prompt T3 actif ne porte pas le contrat.
+    // Lot 108A : + un même achat compté une seule fois (COH-TCO-SAME-FACT, lecture seule du TCO du bien).
     expect(p.map((x) => [x.check_id, x.object_id])).toEqual([['COH-DOC-CLASSIFICATION', f], ['COH-DOC-LINKS', f], ['COH-DOC-PRIMARY-LINK', f], ['COH-DOC-TITLES', f],
-      ['COH-MISSING-PROPERTIES', m.id], ['COH-TCO-EXTRACTED-EXPENSES', m.id]]);
+      ['COH-MISSING-PROPERTIES', m.id], ['COH-TCO-EXTRACTED-EXPENSES', m.id], ['COH-TCO-SAME-FACT', m.id]]);
     expect(p.find((x) => x.check_id === 'COH-MISSING-PROPERTIES')).toMatchObject({
       campaign: camp.id, last_trigger: 'DAILY', last_result: 'FINDING', finding: expect.objectContaining({ anomaly: 'MISSING_PROPERTY_ARBITRATION_PENDING' }),
     });
@@ -138,14 +139,14 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     expect(row.remaining).toBeNull();
     expect(row.accounts).toMatchObject({ visited: 1, skipped: {} });
     // Lot 86E : + le document au contrôle de classement.
-    expect(row.metrics).toMatchObject({ objectsControlled: 6, // lot 105D : + COH-DOC-PRIMARY-LINK
+    expect(row.metrics).toMatchObject({ objectsControlled: 7, // lot 108A : + COH-TCO-SAME-FACT (bien) ; // lot 105D : + COH-DOC-PRIMARY-LINK
       aiCalls: 0, repairsAttempted: 0 }); // lot 87D : + COH-DOC-TITLES ; lot 88B : + COH-MISSING-PROPERTIES
     expect(row.metrics.runs).toBeGreaterThanOrEqual(1);
     expect(row.metrics.durationMs).toBeGreaterThanOrEqual(0);
     // Le lendemain (nouvelle campagne exhaustive) : les MÊMES objets, inchangés, sont recontrôlés — sans doublon de preuve.
     const camp2 = await campagne([c.id], 'CORRECTIVE');
     const p2 = await preuves(c.id);
-    expect(p2).toHaveLength(6); // lot 86E : + COH-DOC-CLASSIFICATION ; lot 87D : + COH-DOC-TITLES ; lot 88B : + COH-MISSING-PROPERTIES ; lot 105D : + COH-DOC-PRIMARY-LINK
+    expect(p2).toHaveLength(7); // lot 108A : + COH-TCO-SAME-FACT ; lot 86E : + COH-DOC-CLASSIFICATION ; lot 87D : + COH-DOC-TITLES ; lot 88B : + COH-MISSING-PROPERTIES ; lot 105D : + COH-DOC-PRIMARY-LINK
     for (const x of p2) expect(x).toMatchObject({ campaign: camp2.id, last_result: x.check_id === 'COH-MISSING-PROPERTIES' ? 'FINDING' : 'CONSISTENT' });
   });
 
@@ -397,8 +398,9 @@ scenario('L82B', 'Contrôle de cohérence global : registre, orchestrateur, preu
     expect(r0).toMatchObject({ status: 'RUNNING', done: false, controlled: 0 });
     for (let i = 0; i < 30 && !(await o.runCampaignStep(id, { deadline: Date.now() + 60_000 })).done; i++) { /* reprise */ }
     expect(await o.getCampaign(id)).toMatchObject({ status: 'COMPLETE' });
-    // 3 documents × (liens, classement — lot 86E —, titres — lot 87D, bien principal — lot 105D) + 3 biens (TCO, propriétés manquantes — lot 88B).
-    expect((await preuves(c.id)).filter((x) => x.campaign === id)).toHaveLength(18);
+    // 3 documents × (liens, classement — lot 86E —, titres — lot 87D, bien principal — lot 105D) + 3 biens (TCO, propriétés manquantes — lot 88B,
+    // même achat compté une fois — lot 108A).
+    expect((await preuves(c.id)).filter((x) => x.campaign === id)).toHaveLength(21);
     // 2. Échéance dépassée avant la fin : PARTIAL (reste consigné), jamais COMPLETE.
     const passe = await o.startCampaign({ kind: 'MANUAL', trigger: 'e2e', mode: 'CORRECTIVE', scopeAccountIds: [c.id], deadlineAt: new Date(Date.now() - 1000) });
     const r1 = await o.runCampaignStep(passe, { deadline: Date.now() + 60_000 });

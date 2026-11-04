@@ -673,10 +673,16 @@ export async function projectDocumentKnowledgeToAsset(p: {
   userId: number;
   fileId: number;
   assetId: number;
+  /**
+   * Lot 108E (T3, A2) : `false` — document d'APPAREIL rattaché par T3 : un fait
+   * sans cible n'est jamais réattribué au bien porteur (prix, garantie de
+   * l'appareil). Absent : comportement inchangé.
+   */
+  reassignUntargeted?: boolean;
 }): Promise<number> {
   const knowledge = await getDocumentKnowledge(p.accountId, p.fileId);
   if (!knowledge || knowledge.facts.length === 0) return 0;
-  const { fields, allowReassign } = linkedAssetProjection(knowledge, p.assetId);
+  const { fields, allowReassign } = linkedAssetProjection(knowledge, p.assetId, p.reassignUntargeted === false);
 
   const { persistEvidence } = await import('../source-analysis/steps/persist-evidence.step');
   const byField = await persistEvidence({
@@ -839,10 +845,12 @@ async function rebuildAgendaAfterLink(p: {
 function linkedAssetProjection(
   knowledge: { extraction: StoredExtraction; facts: StoredFact[] },
   assetId: number,
+  /** Lot 108E : document d'appareil — aucune réattribution des faits sans cible. */
+  neverReassign = false,
 ): { fields: ExtractedField[]; allowReassign: boolean; previousAssetId: number | null } {
   const ancien = knowledge.extraction.assetIdAtAnalysis != null && Number(knowledge.extraction.assetIdAtAnalysis) !== assetId
     ? Number(knowledge.extraction.assetIdAtAnalysis) : null;
-  const allowReassign = lateLinkAllowsReassignment(knowledge.extraction, knowledge.facts, assetId, ancien);
+  const allowReassign = !neverReassign && lateLinkAllowsReassignment(knowledge.extraction, knowledge.facts, assetId, ancien);
   return {
     fields: fieldsForLinkedAsset(factsToExtractedFields(knowledge.facts), assetId, { allowReassign, previousAssetId: ancien }),
     allowReassign, previousAssetId: ancien,

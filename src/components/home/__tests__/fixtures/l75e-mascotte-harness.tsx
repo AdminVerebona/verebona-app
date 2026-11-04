@@ -23,7 +23,7 @@ w.__mount = () => {
   root = createRoot(document.getElementById('root')!);
   flushSync(() => {
     root!.render(
-      <MascotSpeaks greetingName="Fabien" empty={false} onCreateAsset={() => {}} onUploadDocument={() => { w.__navigations.push('upload'); }} pageSuggestions={[]} />,
+      <MascotSpeaks greetingName="Fabien" empty={false} onCreateAsset={() => {}} onUploadDocument={() => { w.__navigations.push('upload'); }} />,
     );
   });
 };

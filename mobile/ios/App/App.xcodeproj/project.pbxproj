@@ -20,7 +20,35 @@
 		95B0E0012F0A000000000006 /* VerebonaBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 95B0E0012F0A000000000005 /* VerebonaBridgeViewController.swift */; };
 		107A0E0012F0A00000000002 /* VerebonaBiometricState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 107A0E0012F0A00000000001 /* VerebonaBiometricState.swift */; };
 		95B0E0012F0A000000000008 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 95B0E0012F0A000000000007 /* GoogleService-Info.plist */; };
+		1086E0012F0A000000000002 /* VerebonaNavigationGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1086E0012F0A000000000001 /* VerebonaNavigationGuard.swift */; };
+		1086E0012F0A000000000004 /* VerebonaShareInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1086E0012F0A000000000003 /* VerebonaShareInbox.swift */; };
+		1086E0012F0A000000000006 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1086E0012F0A000000000005 /* ShareViewController.swift */; };
+		1086E0012F0A00000000000A /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1086E0012F0A000000000009 /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1086E0012F0A000000000011 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1086E0012F0A00000000000D;
+			remoteInfo = ShareExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		1086E0012F0A00000000000C /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				1086E0012F0A00000000000A /* ShareExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
@@ -40,6 +68,12 @@
 		95B0E0012F0A000000000005 /* VerebonaBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerebonaBridgeViewController.swift; sourceTree = "<group>"; };
 		107A0E0012F0A00000000001 /* VerebonaBiometricState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerebonaBiometricState.swift; sourceTree = "<group>"; };
 		95B0E0012F0A000000000007 /* GoogleService-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "GoogleService-Info.plist"; sourceTree = "<group>"; };
+		1086E0012F0A000000000001 /* VerebonaNavigationGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerebonaNavigationGuard.swift; sourceTree = "<group>"; };
+		1086E0012F0A000000000003 /* VerebonaShareInbox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerebonaShareInbox.swift; sourceTree = "<group>"; };
+		1086E0012F0A000000000005 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
+		1086E0012F0A000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		1086E0012F0A000000000008 /* ShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ShareExtension.entitlements; sourceTree = "<group>"; };
+		1086E0012F0A000000000009 /* ShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -48,6 +82,13 @@
 			buildActionMask = 2147483647;
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1086E0012F0A00000000000F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -60,6 +101,7 @@
 				958DCC722DB07C7200EA8C5F /* debug.xcconfig */,
 				95B0E0012F0A000000000001 /* Verebona.xcconfig */,
 				504EC3061FED79650016851F /* App */,
+				1086E0012F0A00000000000B /* ShareExtension */,
 				504EC3051FED79650016851F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -68,6 +110,7 @@
 			isa = PBXGroup;
 			children = (
 				504EC3041FED79650016851F /* App.app */,
+				1086E0012F0A000000000009 /* ShareExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -81,6 +124,8 @@
 				95B0E0012F0A000000000005 /* VerebonaBridgeViewController.swift */,
 				95B0E0012F0A000000000003 /* VerebonaAuthSession.swift */,
 				107A0E0012F0A00000000001 /* VerebonaBiometricState.swift */,
+				1086E0012F0A000000000001 /* VerebonaNavigationGuard.swift */,
+				1086E0012F0A000000000003 /* VerebonaShareInbox.swift */,
 				95B0E0012F0A000000000002 /* App.entitlements */,
 				95B0E0012F0A000000000007 /* GoogleService-Info.plist */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
@@ -93,6 +138,16 @@
 			path = App;
 			sourceTree = "<group>";
 		};
+		1086E0012F0A00000000000B /* ShareExtension */ = {
+			isa = PBXGroup;
+			children = (
+				1086E0012F0A000000000005 /* ShareViewController.swift */,
+				1086E0012F0A000000000007 /* Info.plist */,
+				1086E0012F0A000000000008 /* ShareExtension.entitlements */,
+			);
+			path = ShareExtension;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -103,10 +158,12 @@
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
+				1086E0012F0A00000000000C /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				1086E0012F0A000000000012 /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (
@@ -115,6 +172,23 @@
 			productName = App;
 			productReference = 504EC3041FED79650016851F /* App.app */;
 			productType = "com.apple.product-type.application";
+		};
+		1086E0012F0A00000000000D /* ShareExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1086E0012F0A000000000015 /* Build configuration list for PBXNativeTarget "ShareExtension" */;
+			buildPhases = (
+				1086E0012F0A00000000000E /* Sources */,
+				1086E0012F0A00000000000F /* Frameworks */,
+				1086E0012F0A000000000010 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ShareExtension;
+			productName = ShareExtension;
+			productReference = 1086E0012F0A000000000009 /* ShareExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -128,6 +202,10 @@
 					504EC3031FED79650016851F = {
 						CreatedOnToolsVersion = 9.2;
 						LastSwiftMigration = 1100;
+						ProvisioningStyle = Automatic;
+					};
+					1086E0012F0A00000000000D = {
+						CreatedOnToolsVersion = 16.0;
 						ProvisioningStyle = Automatic;
 					};
 				};
@@ -149,6 +227,7 @@
 			projectRoot = "";
 			targets = (
 				504EC3031FED79650016851F /* App */,
+				1086E0012F0A00000000000D /* ShareExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -168,6 +247,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		1086E0012F0A000000000010 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -180,10 +266,28 @@
 				95B0E0012F0A000000000006 /* VerebonaBridgeViewController.swift in Sources */,
 				95B0E0012F0A000000000004 /* VerebonaAuthSession.swift in Sources */,
 				107A0E0012F0A00000000002 /* VerebonaBiometricState.swift in Sources */,
+				1086E0012F0A000000000002 /* VerebonaNavigationGuard.swift in Sources */,
+				1086E0012F0A000000000004 /* VerebonaShareInbox.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1086E0012F0A00000000000E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1086E0012F0A000000000006 /* ShareViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1086E0012F0A000000000012 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1086E0012F0A00000000000D /* ShareExtension */;
+			targetProxy = 1086E0012F0A000000000011 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
 		504EC30B1FED79650016851F /* Main.storyboard */ = {
@@ -349,6 +453,56 @@
 			};
 			name = Release;
 		};
+		1086E0012F0A000000000013 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 95B0E0012F0A000000000001 /* Verebona.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VB_SHARE_EXTENSION_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		1086E0012F0A000000000014 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 95B0E0012F0A000000000001 /* Verebona.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGN_ENTITLEMENTS = ShareExtension/ShareExtension.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = ShareExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(VB_SHARE_EXTENSION_ID)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -366,6 +520,15 @@
 			buildConfigurations = (
 				504EC3171FED79650016851F /* Debug */,
 				504EC3181FED79650016851F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1086E0012F0A000000000015 /* Build configuration list for PBXNativeTarget "ShareExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1086E0012F0A000000000013 /* Debug */,
+				1086E0012F0A000000000014 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

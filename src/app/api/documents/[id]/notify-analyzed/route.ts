@@ -1,65 +1,22 @@
 /**
- * POST /api/documents/[id]/notify-analyzed
- * Creates a bell notification for a completed document analysis.
- * Called by the client only when the DocumentDrawer was closed during analysis,
- * meaning the user left the drawer and needs to be informed via the notification bell.
+ * POST /api/documents/[id]/notify-analyzed — CONSERVÉE POUR COMPATIBILITÉ.
+ *
+ * Ancienne route (« analyse terminée », une notification PAR document, écrite
+ * directement dans la cloche avec une clé horodatée — donc jamais dédupliquée,
+ * et affichée en toast). Le lot 0 l'avait retirée de l'interface ; le
+ * résultat d'une analyse est notifié par `lot-notification.ts` (une seule
+ * notification, lot 81E ; une seule par document et seulement si
+ * l'utilisateur ne suit pas l'analyse, lot 108I).
+ *
+ * Lot 108I : la route ne crée plus rien (un appel d'une interface ancienne ou
+ * forgé produisait un doublon « … a été analysé »). Les lignes
+ * `DOCUMENT_ANALYZED` historiques restent affichées dans la cloche.
  */
-
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth-guards';
-import { db } from '@/db';
-import { assetFiles, notifications } from '@/db/schema';
-import { and, eq } from 'drizzle-orm';
-import { documentTitleFromRecord } from '@/lib/documents/document-title-source';
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  try {
-    const session = await getSession(request);
-    const { id: rawId } = await params;
-    const accountId = session.currentAccountId;
-
-    if (!accountId) {
-      return NextResponse.json({ error: 'No account' }, { status: 400 });
-    }
-
-    const assetFileId = parseInt(rawId);
-    if (isNaN(assetFileId)) {
-      return NextResponse.json({ error: 'Invalid id' }, { status: 400 });
-    }
-
-    // Verify file belongs to account
-    // Lot 87D : mêmes sources du titre affiché que toutes les vues.
-    const [file] = await db.select({
-      id: assetFiles.id, retainedTitle: assetFiles.retainedTitle, originalFilename: assetFiles.originalFilename,
-      webLinkTitle: assetFiles.webLinkTitle, filename: assetFiles.filename, s3Key: assetFiles.s3Key, publicId: assetFiles.publicId,
-    }).from(assetFiles).where(
-      and(eq(assetFiles.id, assetFileId), eq(assetFiles.accountId, accountId))
-    ).limit(1);
-
-    if (!file) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
-
-    const documentTitle = documentTitleFromRecord({ ...file, publicId: file.publicId == null ? null : String(file.publicId) }, '') || undefined;
-
-    await db.insert(notifications).values({
-      userId: session.userId,
-      type: 'DOCUMENT_ANALYZED',
-      payloadJson: JSON.stringify({ assetFileId, analysedCount: 1, failedCount: 0, documentTitle }),
-      dedupeKey: `document_analyzed_file_${assetFileId}_${Date.now()}`,
-      mustDeliver: true,
-      createdAt: new Date(),
-    });
-
-    return NextResponse.json({ ok: true });
-  } catch (error) {
-    if (error instanceof Response) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-    console.error('POST /api/documents/[id]/notify-analyzed error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
-  }
+export async function POST(request: NextRequest) {
+  try { await getSession(request); }
+  catch { return NextResponse.json({ error: 'Unauthorized' }, { status: 401 }); }
+  return NextResponse.json({ ok: true, emitted: false }, { status: 202 });
 }

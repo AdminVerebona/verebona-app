@@ -245,7 +245,7 @@ describe('L105D-U-DEC — décision déterministe, garde avant l’IA, contexte 
     expect(sc.crossDocument.contract).toBe('t3-document-asset-cross-v1');
   });
   it('sortie : preuve citée inconnue → monde fermé violé ; relation non établie / validation demandée → aucun rattachement ; section absente → règles d’avant', () => {
-    expect(validateCrossDocumentOutput(null, { allowedEvidenceIds: new Set([1]), member: true })).toEqual({ violation: false, blockApply: false, reasons: [] });
+    expect(validateCrossDocumentOutput(null, { allowedEvidenceIds: new Set([1]), member: true })).toEqual({ violation: false, blockApply: false, missing: false, reasons: [] });
     expect(validateCrossDocumentOutput({ documentIdentity: 'ESTABLISHED', groupToAsset: 'ESTABLISHED', documentApplicability: 'APPLIES', citedEvidenceIds: [7] }, { allowedEvidenceIds: new Set([1]), member: true }).violation).toBe(true);
     const fort = cand({ assetId: 32, serverSignals: ['adresse du bien identique à celle du document (contrôle serveur exact)'] });
     const sortie = (cd: Record<string, unknown> | null) => ({ task: 'LINK_AMBIGUITY' as const, matches: [{ candidateId: 32, score: 0.95, confidence: 'certain' as const, reason: 'adresse' }], ...(cd ? { crossDocument: cd as never } : {}) });

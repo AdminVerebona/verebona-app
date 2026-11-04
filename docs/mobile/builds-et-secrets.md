@@ -7,8 +7,14 @@ Environments**. Le PO ne lance aucune commande : il crée les comptes, dépose l
 publications.
 
 > Création des comptes, dépôt des secrets, tests et reprise des accès : **guide unique**
-> `docs/exploitation/guide-comptes-unique.md` (C3, 29/10/2026). Architecture retenue (B1 : interface
-> embarquée) : `docs/mobile/plan-architecture-embarquee.md`. Icônes : `docs/design/brief-graphiste-icone-et-mascotte.md`.
+> `docs/exploitation/guide-comptes-unique.md` (C3, 29/10/2026). Icônes : `docs/design/brief-graphiste-icone-et-mascotte.md`.
+>
+> **Architecture (décision PO du 03/11/2026, lot 108G) : interface DISTANTE = cible V1 iOS et Android.**
+> Elle remplace la décision B1 du 27/10/2026 (interface embarquée), **décision remplacée / plan
+> abandonné** (`plan-architecture-embarquee.md`, conservé pour l'historique). Architecture et audit de
+> sécurité : `docs/mobile/architecture-distante.md` ; décision et classement E0–E15 :
+> `docs/mobile/decision-interface-distante-108g.md` ; stores : `docs/mobile/conformite-stores.md` ;
+> recette : `docs/exploitation/recette-108g-mobile-distant.md`.
 
 ## 1. Organisation du dépôt
 
@@ -19,10 +25,14 @@ mobile/
   config/environments.mjs           préprod / prod : identifiants, noms, schémas, garde-fous
   scripts/prepare.mjs               fichiers propres à UN build (non versionnés)
   scripts/app-links.mjs             App Links Android générés depuis src/lib/mobile/app-links.ts
-  www/                              pages locales : hors connexion, sonde du mode B
+  config/navigation-policy.mjs      ce que la vue peut ouvrir (appliqué en natif iOS / Android)
+  scripts/distribution-guard.mjs    contrôle du BINAIRE avant envoi TestFlight / Play (lot 108G)
+  www/                              coque locale du mode distant : pages de secours seulement
+                                    (« Connexion Internet indisponible »), aucune donnée métier
+  sonde-b/                          sonde technique du Gate 0 (mode local) — jamais distribuée
   android/                          projet Android (variantes Gradle preprod / prod)
   ios/                              projet iOS (Swift Package Manager, Verebona.xcconfig généré)
-  ios-share-extension/              extension de partage iOS (à ajouter sous Xcode, § 6)
+  ios/App/ShareExtension/           extension de partage iOS — cible Xcode VERSIONNÉE (lot 108G, § 6)
   test/                             tests du projet mobile (`npm test`)
 .github/workflows/mobile-android.yml, mobile-ios.yml   workflows dédiés (ci.yml inchangé)
 ```
@@ -37,8 +47,9 @@ Le site n'est pas concerné : `mobile/` est exclu du typecheck (`tsconfig.json`)
 |---|---|---|
 | Pull request touchant `mobile/**`, `src/lib/native/**`, `src/lib/mobile/app-links.ts` | Contrôles seulement | Contrôles seulement |
 | Push sur `main` (mêmes chemins) | Contrôles → build **préprod** → Google Play **tests internes** | Contrôles → build **préprod** → **TestFlight** |
-| Lancement manuel (« Run workflow ») | Choix préprod / prod, mode A / B, publication oui / non, piste prod | Choix préprod / prod, mode A / B, publication oui / non |
-| Production | Environnement **protégé** `production-mobile` : rien ne part sans l'approbation d'un réviseur. Piste `internal` (version candidate) ou `production` en **brouillon** (le déploiement se confirme dans la Play Console). | Environnement **protégé** `production-mobile` : le build arrive dans TestFlight de l'app de production ; la **soumission à l'App Store** reste un geste manuel dans App Store Connect. |
+| Lancement manuel (« Run workflow ») | Choix préprod / prod, publication oui / non, piste prod ; mode `remote` par défaut (`local` = sonde, préprod, artefact seul) | Choix préprod / prod, publication oui / non ; mode `remote` par défaut (`local` = sonde, préprod, compilation seule) |
+| Production | Environnement **protégé** `production-mobile` : rien ne part sans l'approbation d'un réviseur. **Toujours en mode distant.** Piste `internal` (testeurs de la fiche de production, défaut) ou `production` en **brouillon** (le déploiement public se confirme à la main dans la Play Console). | Environnement **protégé** `production-mobile` : **toujours en mode distant** ; le build arrive dans TestFlight de l'app de production. La **soumission** à la revue et la **publication** (choisir « publication manuelle ») restent deux gestes manuels du PO dans App Store Connect. |
+| Garde-fous (lot 108G, CA02) | `readiness` refuse une sonde locale en production ou avec « publish » ; avant l'envoi, l'**AAB** est ouvert et sa configuration Capacitor réelle contrôlée (`distribution-guard.mjs` : interface distante de l'environnement, aucune sonde, pas de débogage en prod) | Idem sur l'**archive** Xcode, plus : `ShareExtension.appex` présent dans `App.app/PlugIns`, identifiant `<app>.ShareExtension`, groupe d'apps présent dans les droits **signés** de l'app et de l'extension |
 
 Contrôles (BUILD-07) : typecheck de la configuration, tests du projet mobile, App Links à jour, tests
 vitest de `src/lib/native` et `src/lib/mobile`, liste des dépendances (BUILD-09, artefact `sbom`).
@@ -59,7 +70,9 @@ xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release arc
 Les projets natifs sont **versionnés** (générés par `npx cap add android` / `npx cap add ios`, puis
 configurés). Les régénérer n'est utile qu'en cas de montée de version majeure de Capacitor ; il faut
 alors reporter les adaptations (variantes Gradle, manifeste, `Info.plist`, droits, `Verebona.xcconfig`,
-plugin `VerebonaAuthSession.swift`) — les tests `mobile/test/gate0-config.test.mjs` signalent un oubli.
+plugins locaux `VerebonaAuthSession`, `VerebonaBiometricState`, `VerebonaNavigationGuard`,
+`VerebonaShareInbox`, cible `ShareExtension`) — les tests `mobile/test/gate0-config.test.mjs` et
+`mobile/test/l108g-mode-distant.test.mjs` (analyse du `project.pbxproj`) signalent un oubli.
 
 ## 3. Environnements GitHub à créer (Settings › Environments)
 
@@ -129,10 +142,10 @@ Déjà décrites dans `docs/exploitation/application-mobile-serveur.md` (lot 97)
 | `FIREBASE_SERVICE_ACCOUNT_JSON` | compte de service du projet Firebase préprod | Notifications |
 | `APP_OAUTH_RETURN_URL` | `https://<adresse préprod>/app/retour-connexion` (recommandé) — ou `fr.verebona.app.preprod:/oauth` | Retour de la connexion Google / Apple vers l'app (lot 93). L'app accepte les deux formes ; le Gate 0 dira laquelle garder (voir ci-dessous). |
 
-**Décision B4 (27/10/2026)** : schéma propre à l'application, distinct par environnement — cible
-`fr.verebona.app.preprod://retour` / `fr.verebona.app://retour` (adaptation : étape E3 du plan
-`plan-architecture-embarquee.md`) ; la ligne du tableau ci-dessus et le paragraphe suivant décrivent les
-formes acceptées au Gate 0.
+**Décision B4 (27/10/2026)** : schéma propre à l'application, distinct par environnement. Lot 108G :
+l'étape E3 du plan embarqué (cible `…://retour`) est **abandonnée** avec B1 ; la forme en place et
+testée est `fr.verebona.app.preprod:/oauth` (préprod) / `fr.verebona.app:/oauth` (prod), acceptée par
+`resolveAppUrl` (aucun changement). La forme https reste acceptée.
 
 Choix de `APP_OAUTH_RETURN_URL` (Gate 0) : l'adresse **https** (lien d'app vérifié) est la plus sûre ; elle exige
 iOS 17.4 ou plus pour être captée par la session d'authentification d'Apple. Le **schéma privé**
@@ -141,17 +154,29 @@ vérificateur PKCE gardé par l'app. Une seule valeur par environnement : la ret
 version minimale d'iOS décidée. L'app n'a rien à reconstruire : le serveur annonce la **forme** retenue
 (`https` ou `scheme`, jamais l'adresse) dans `GET /api/mobile/config` › `auth.appOAuthReturn`.
 
-## 6. Extension de partage iOS (une fois, sur un Mac — développeur)
+## 6. Extension de partage iOS (lot 108G : plus aucune manipulation Xcode)
 
-1. `cd mobile && VEREBONA_ENV=preprod VEREBONA_APP_ORIGIN=… npm run sync -- ios`, ouvrir
-   `ios/App/App.xcodeproj` dans Xcode.
-2. File › New › Target › **Share Extension**, nom `ShareExtension`, langage Swift.
-3. Remplacer le `ShareViewController.swift` et l'`Info.plist` générés par ceux de
-   `mobile/ios-share-extension/` ; supprimer le storyboard généré.
-4. Réglages de la cible : configuration de base `Verebona.xcconfig` (comme l'app), bundle ID
-   `$(PRODUCT_BUNDLE_IDENTIFIER).share`, capacité **App Groups** = `$(VB_APP_GROUP)`, iPhone uniquement.
-5. Créer les identifiants `fr.verebona.app.preprod.share` et `fr.verebona.app.share` (App Groups cochés).
-6. Commit du projet modifié ; la CI construit ensuite l'app et son extension.
+La cible `ShareExtension` est **versionnée** dans `mobile/ios/App/App.xcodeproj` (sources
+`mobile/ios/App/ShareExtension/` : contrôleur Swift, `Info.plist`, droits). Rien à faire sur un Mac.
+
+| Élément | Préproduction | Production |
+|---|---|---|
+| Identifiant de l'extension (dérivé, `VB_SHARE_EXTENSION_ID`) | `fr.verebona.app.preprod.ShareExtension` | `fr.verebona.app.ShareExtension` |
+| Groupe d'apps (app + extension, `VB_APP_GROUP`) | `group.fr.verebona.app.preprod` | `group.fr.verebona.app` |
+| Nom dans la feuille « Partager » | « Verebona Préprod » | « Verebona » |
+
+- Signature automatique (même clé d'API que l'app) : `xcodebuild -allowProvisioningUpdates` crée les
+  identifiants et profils de l'extension. **À faire par le PO si la CI le signale** : dans Certificates,
+  Identifiers & Profiles › Identifiers, créer le groupe d'apps de l'environnement (App Groups) et le
+  cocher sur l'identifiant de l'app ET sur celui de l'extension.
+- Contrôle CI avant envoi : `App.app/PlugIns/ShareExtension.appex` présent, identifiant dérivé de celui
+  de l'app, groupe d'apps présent dans les droits signés des deux.
+- Fonctionnement : l'extension copie les PDF / images dans une **file technique** du groupe d'apps (un
+  dossier par partage, protection « complète », hors sauvegarde), affiche « Document prêt à importer dans
+  Verebona », sans ouvrir l'app ni rien envoyer. À l'ouverture de Verebona (après Face ID / connexion),
+  l'app propose ces documents dans le formulaire d'ajout habituel ; les copies sont effacées après
+  l'ajout confirmé ou « Abandonner », et au plus tard après 7 jours. Détail :
+  `docs/mobile/architecture-distante.md` § 6.
 
 ## 7. Icônes et nom
 

@@ -108,8 +108,10 @@ describe('le bloc « Mon compte » annonce la bonne récompense', () => {
   });
 
   it('la récompense est un mois d’abonnement (règle centrale, lot 102D)', () => {
-    expect(BLOC).toContain('REFERRAL_TEXT.reward');
     expect(REFERRAL_TEXT.reward).toMatch(/^1 mois offert pour vous/);
+    // Lot 108H : texte court du bloc (décision PO), même règle centrale.
+    expect(BLOC).toContain('REFERRAL_TEXT.accountReward');
+    expect(REFERRAL_TEXT.accountReward).toBe('Recevez 1 mois d’abonnement offert pour chaque proche qui souscrit un abonnement annuel.');
   });
 
   it('le rapport est explicite, pas sous-entendu', () => {
