@@ -82,6 +82,7 @@ const ELIGIBILITY: Record<string, { label: string; tone: 'success' | 'warning' |
 
 const STATUS_LABELS: Record<string, string> = {
   queued: 'en attente', generating: 'en cours', ready: 'prêt', partial: 'partiel', failed: 'échec', expired: 'expiré', deleted: 'fichier supprimé',
+  cancelled: 'annulé, remplacé par une nouvelle génération',
 };
 
 export function ExportPreparationScreen({ assetId, exportType, onClose, api: apiProp, afterLoad }: Props) {
@@ -381,7 +382,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
             </p>
             <div className="mt-2 flex flex-wrap items-center gap-1.5">
               <Pill tone={elig.tone}>{elig.label}</Pill>
-              {state.modified && !['generating', 'generated_pdf', 'generated_zip', 'generated_partial'].includes(state.status) && <Pill tone="info">Préparation modifiée</Pill>}
+              {state.modified && !['generating', 'generated_pdf', 'generated_zip', 'generated_partial', 'replaced'].includes(state.status) && <Pill tone="info">Préparation modifiée</Pill>}
               {hasInfo && <AutosaveBadge status={state.autosave} />}
               {prep.lastGeneration ? (
                 <span className="text-[11px] text-muted-foreground">
@@ -418,7 +419,7 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
           </button>
           {summaryOpen && (
             <div id="prep-mobile-summary" className="px-4 pb-4">
-              <PreparationSummary state={state} assetId={assetId} now={now} onGenerate={onGenerate} onCancel={requestClose} onBackToEdit={() => dispatch({ type: 'BACK_TO_EDIT' })} onRetry={() => dispatch({ type: 'BACK_TO_EDIT' })} onRetryEstimate={() => dispatch({ type: 'RETRY_ESTIMATE' })} showActions={false} />
+              <PreparationSummary state={state} assetId={assetId} now={now} onGenerate={onGenerate} onCancel={requestClose} onBackToEdit={() => dispatch({ type: 'BACK_TO_EDIT' })} onRetry={() => dispatch({ type: 'BACK_TO_EDIT' })} onRetryEstimate={() => dispatch({ type: 'RETRY_ESTIMATE' })} onEditAndRegenerate={() => dispatch({ type: 'EDIT_AND_REGENERATE' })} showActions={false} />
             </div>
           )}
         </div>
@@ -498,14 +499,14 @@ export function ExportPreparationScreen({ assetId, exportType, onClose, api: api
           {/* ── Colonne droite : résumé collant (35 %) ── */}
           <aside aria-label="Résumé et génération" className="hidden lg:block">
             <div className="sticky top-4 max-h-[calc(100vh-2rem)] overflow-y-auto rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-md)]">
-              <PreparationSummary state={state} assetId={assetId} now={now} onGenerate={onGenerate} onCancel={requestClose} onBackToEdit={() => dispatch({ type: 'BACK_TO_EDIT' })} onRetry={() => dispatch({ type: 'BACK_TO_EDIT' })} onRetryEstimate={() => dispatch({ type: 'RETRY_ESTIMATE' })} />
+              <PreparationSummary state={state} assetId={assetId} now={now} onGenerate={onGenerate} onCancel={requestClose} onBackToEdit={() => dispatch({ type: 'BACK_TO_EDIT' })} onRetry={() => dispatch({ type: 'BACK_TO_EDIT' })} onRetryEstimate={() => dispatch({ type: 'RETRY_ESTIMATE' })} onEditAndRegenerate={() => dispatch({ type: 'EDIT_AND_REGENERATE' })} />
             </div>
           </aside>
         </div>
       </div>
 
       {/* ── Actions fixes (mobile, PREP-MOB-004) ── */}
-      {!['generating', 'generated_pdf', 'generated_zip', 'generated_partial', 'expired', 'file_deleted'].includes(state.status) && (
+      {!['generating', 'generated_pdf', 'generated_zip', 'generated_partial', 'expired', 'file_deleted', 'replaced'].includes(state.status) && (
         <div className="fixed inset-x-0 bottom-0 z-20 border-t border-border bg-background px-4 pb-[max(12px,var(--vb-safe-bottom))] pt-3 lg:hidden">
           <GenerateButtons state={state} onGenerate={onGenerate} onCancel={requestClose} layout="bar" />
         </div>

@@ -42,9 +42,15 @@ export interface CandidateVerdict {
   /** Propriété(s) source du candidat (clés du registre), si établies. */
   sourceProperty: string[];
   score: number;
-  decision: 'KEPT' | 'REJECTED';
+  /**
+   * Lot 111K : `UNCERTAIN` — correspondance à la propriété demandée non
+   * établie (validation sémantique bornée seulement, jamais une réponse directe).
+   */
+  decision: 'KEPT' | 'REJECTED' | 'UNCERTAIN';
   /** Motif de sélection (`TARGET`, `LINKED_DOCUMENT`, `ACCOUNT_SCOPE`) ou de rejet. */
   reason: string;
+  /** Lot 111K : dimensions d'adéquation à la question (`evidence-adequacy`), aucun contenu. */
+  adequacy?: import('./evidence-adequacy').AdequacyDimensions;
 }
 
 type Candidate = Pick<FactHit, 'id' | 'fileId' | 'factKey' | 'attribute' | 'label' | 'valueText' | 'valueNumber' | 'valueUnit' | 'matchedTerms'

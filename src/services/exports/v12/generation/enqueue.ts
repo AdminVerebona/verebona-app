@@ -3,6 +3,18 @@
  * synchrones (type, éligibilité, offre, CIL-RULE-002, seuils §6.3), puis mise
  * en file (`status = queued`) — le rendu est asynchrone (worker).
  *
+ * Lot 111B — trois cas distincts :
+ *   · CRÉATION : première demande (ou demande sans `regenerate`) — inchangée ;
+ *   · REJEU IDEMPOTENT : même demande (empreinte `requestHash`) encore active
+ *     dans la fenêtre du double clic → la génération existante est renvoyée,
+ *     rien n'est remplacé (y compris pour un double clic sur « Régénérer ») ;
+ *   · RÉGÉNÉRATION EXPLICITE (`regenerate: true`, bouton « Régénérer ») : les
+ *     générations encore actives de MÊME identité métier (`identity.ts` :
+ *     compte + bien + type + contexte + utilisateur) sont remplacées
+ *     atomiquement — `queued` → `cancelled` (REPLACED_BY_NEW_GENERATION),
+ *     `generating` → annulation persistante observée par le worker. Les
+ *     droits, l'éligibilité, les choix et les seuils sont vérifiés AVANT.
+ *
  * Accepte le payload V12 (`choices` : sections / items / modes /
  * acknowledgements) et, en attendant l'écran de préparation, les options du
  * tiroir historique (`options.customDocIds`, `options.includePhotos`,
@@ -11,8 +23,8 @@
 
 import { createHash } from 'node:crypto';
 import { db } from '@/db';
-import { exportGenerations } from '@/db/schema';
-import { and, desc, eq, gt, inArray, sql } from 'drizzle-orm';
+import { exportGenerations, exportGenerationLogs } from '@/db/schema';
+import { and, desc, eq, gt, inArray, isNull, sql } from 'drizzle-orm';
 import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
 import { familyIneligibilityMessage, isDossierEligibleForFamily, type DossierCode } from '@/services/exports/catalog';
@@ -29,9 +41,18 @@ import { templateVersion } from '../templates';
 import { effectiveChoices, type GenerationRequestSnapshot } from './job';
 import { parisDate } from './clock';
 import { MAX_ACTIVE_PER_ACCOUNT, type GenerationRow } from './repository';
+import { generationIdentityKey, CANCELLED_STEP_QUEUED, REPLACED_BY_NEW_GENERATION } from './identity';
+
+/** Génération remplacée par une régénération explicite. */
+export interface ReplacedGeneration {
+  id: number;
+  publicId: string;
+  /** `cancelled` : retirée de la file ; `stopping` : arrêt demandé au worker. */
+  outcome: 'cancelled' | 'stopping';
+}
 
 export type EnqueueResult =
-  | { ok: true; generation: GenerationRow; warnings: ThresholdAlert[]; reused: boolean }
+  | { ok: true; generation: GenerationRow; warnings: ThresholdAlert[]; reused: boolean; replaced: ReplacedGeneration[] }
   | { ok: false; status: number; code: string; message: string; extra?: Record<string, unknown> };
 
 /** Double-clic : une génération identique encore en file est réutilisée. */
@@ -151,6 +172,11 @@ export async function enqueueGeneration(params: {
   // transactionnel) : deux requêtes simultanées ne dépassent pas le plafond.
   const variant = typeof body.variant === 'string' ? body.variant : null;
   req.requestHash = requestHash(code, req, variant);
+  // Lot 111B : identité métier (≠ requestHash) et intention explicite du client.
+  const identityKey = generationIdentityKey({
+    accountId: asset.accountId, assetId: asset.id, exportType: code, claimOperationId: req.claimOperationId ?? null, variant, userId,
+  });
+  const regenerate = body.regenerate === true;
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`export-enqueue:${asset.accountId}`}))`);
     const [existing] = await tx.select().from(exportGenerations)
@@ -158,21 +184,41 @@ export async function enqueueGeneration(params: {
         eq(exportGenerations.assetId, asset.id),
         inArray(exportGenerations.exportType, [code]),
         inArray(exportGenerations.status, ['queued', 'generating']),
+        isNull(exportGenerations.cancelRequestedAt),
         gt(exportGenerations.createdAt, new Date(Date.now() - DEDUP_WINDOW_MS)),
         sql`${exportGenerations.snapshotJson} -> 'request' ->> 'requestHash' = ${req.requestHash}`,
       ))
       .orderBy(desc(exportGenerations.createdAt)).limit(1);
-    if (existing) return { ok: true as const, generation: existing, warnings, reused: true };
+    if (existing) return { ok: true as const, generation: existing, warnings, reused: true, replaced: [] };
 
+    // Régénération explicite : générations actives de MÊME identité, verrouillées
+    // (le worker ne peut plus les prendre ni les clore pendant le remplacement).
+    const targets = regenerate
+      ? await tx.select({ id: exportGenerations.id, publicId: exportGenerations.publicId, status: exportGenerations.status })
+        .from(exportGenerations)
+        .where(and(
+          eq(exportGenerations.accountId, asset.accountId),
+          eq(exportGenerations.identityKey, identityKey),
+          inArray(exportGenerations.status, ['queued', 'generating']),
+          isNull(exportGenerations.cancelRequestedAt),
+          sql`${exportGenerations.exportType} <> 'EXPORT_BRUT'`,
+        ))
+        .orderBy(exportGenerations.id)
+        .for('update')
+      : [];
+
+    // Plafond : les générations remplacées (ou dont l'annulation est déjà demandée) ne comptent plus.
     const [active] = await tx.select({ n: sql<number>`count(*)::int` }).from(exportGenerations)
       .where(and(
         eq(exportGenerations.accountId, asset.accountId),
         inArray(exportGenerations.status, ['queued', 'generating']),
+        isNull(exportGenerations.cancelRequestedAt),
         sql`${exportGenerations.exportType} <> 'EXPORT_BRUT'`,
       ));
-    if (Number(active?.n ?? 0) >= MAX_ACTIVE_PER_ACCOUNT) {
+    if (Number(active?.n ?? 0) - targets.length >= MAX_ACTIVE_PER_ACCOUNT) {
       return { ok: false as const, status: 429, code: 'TOO_MANY_GENERATIONS', message: TOO_MANY_GENERATIONS_MESSAGE, extra: { limit: MAX_ACTIVE_PER_ACCOUNT } };
     }
+    if (targets.length) req.replacesGenerationIds = targets.map((t) => t.id);
 
     const [row] = await tx.insert(exportGenerations).values({
       assetId: asset.id,
@@ -187,9 +233,68 @@ export async function enqueueGeneration(params: {
       snapshotJson: { request: req },
       templateVersion: templateVersion(code),
       generationAttemptCount: 0,
+      identityKey,
       createdAt: new Date(),
     }).returning();
 
-    return { ok: true as const, generation: row, warnings, reused: false };
+    const replaced = await replaceGenerations(tx, targets, row, userId);
+    return { ok: true as const, generation: row, warnings, reused: false, replaced };
   });
+}
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Remplacement atomique (même transaction que l'insertion, sous le verrou du
+ * compte et le verrou de ligne pris par `FOR UPDATE`) :
+ *   · `queued` → `cancelled` immédiat (retiré de la file de prélèvement) ;
+ *   · `generating` → annulation PERSISTANTE (`cancel_requested_at`) : le
+ *     worker l'observe pendant les étapes, interrompt rendu et transferts,
+ *     nettoie ses fichiers et clôt `cancelled` ; la nouvelle génération
+ *     n'est prise qu'après cet arrêt effectif (`claimNextGeneration`).
+ * Historique : ancienne / nouvelle référence, utilisateur, date, étape, motif.
+ */
+async function replaceGenerations(tx: Tx, targets: Array<{ id: number; publicId: string; status: string }>, replacement: GenerationRow, userId: number): Promise<ReplacedGeneration[]> {
+  if (!targets.length) return [];
+  const now = new Date();
+  const out: ReplacedGeneration[] = [];
+  for (const t of targets) {
+    const queued = t.status === 'queued';
+    const [done] = await tx.update(exportGenerations).set({
+      cancelRequestedAt: now,
+      cancelRequestedByUserId: userId,
+      cancelReason: REPLACED_BY_NEW_GENERATION,
+      replacedByGenerationId: replacement.id,
+      ...(queued ? {
+        status: 'cancelled', cancelledAt: now, completedAt: now, cancelledStep: CANCELLED_STEP_QUEUED,
+        lockedBy: null, lockedUntil: null, nextAttemptAt: null,
+      } : {}),
+    }).where(and(eq(exportGenerations.id, t.id), eq(exportGenerations.status, t.status), isNull(exportGenerations.cancelRequestedAt)))
+      .returning({ id: exportGenerations.id });
+    if (!done) continue;
+    out.push({ id: t.id, publicId: t.publicId, outcome: queued ? 'cancelled' : 'stopping' });
+    await tx.insert(exportGenerationLogs).values({
+      generationId: t.id,
+      level: 'info',
+      step: queued ? CANCELLED_STEP_QUEUED : null,
+      code: REPLACED_BY_NEW_GENERATION,
+      message: queued
+        ? 'Génération retirée de la file : remplacée par une nouvelle génération.'
+        : 'Arrêt demandé : remplacée par une nouvelle génération.',
+      detailsJson: { replacedByGenerationId: replacement.id, replacedByPublicId: replacement.publicId, requestedByUserId: userId, previousStatus: t.status },
+      createdAt: now,
+    });
+  }
+  if (out.length) {
+    await tx.insert(exportGenerationLogs).values({
+      generationId: replacement.id,
+      level: 'info',
+      step: 'validate_request',
+      code: 'REPLACES_PREVIOUS_GENERATION',
+      message: `Régénération : remplace ${out.length} génération(s) encore active(s).`,
+      detailsJson: { replaces: out.map((r) => ({ id: r.id, publicId: r.publicId, outcome: r.outcome })), requestedByUserId: userId },
+      createdAt: now,
+    });
+  }
+  return out;
 }

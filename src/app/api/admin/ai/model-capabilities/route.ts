@@ -11,6 +11,10 @@
  *   · `?versionId=N` : PROFILS EFFECTIFS de cette version, par traitement,
  *     opération et rang — construits par le constructeur de requête UNIQUE
  *     de l'exécution (demandé / hérité / adapté / envoyé, refus avant appel).
+ *   · lot 111M (ticket « budgets IA », §5) : budget d'ENTRÉE de chaque rang
+ *     (limite du modèle − sortie transmise − marge), raisonnement compris
+ *     dans le plafond, et LIMITES APPLICATIVES effectives avec leur origine
+ *     (`applicationLimits`, lecture seule, aucun nouveau réglage).
  * Droits : administrateurs existants (`requireAdminContext`), aucun rôle
  * nouveau (décision 15). Aucun appel fournisseur.
  */
@@ -18,8 +22,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdminContext, toErrorResponse } from '../config-versions/_shared';
 import { listModelCapabilities, ensureModelCapabilitiesLoaded } from '@/services/ai/provider/model-capabilities.repository';
 import {
-  CAPABILITY_REFERENCES_VERSION, TEMPERATURE_PROFILE_BY_FAMILY, thinkingLabel,
+  CAPABILITY_REFERENCES_VERSION, TEMPERATURE_PROFILE_BY_FAMILY, thinkingLabel, capabilitiesOf,
 } from '@/services/ai/provider/model-capabilities';
+import { INPUT_SAFETY_MARGIN_RATIO } from '@/services/ai/gateway/budget-resolution';
 import { treatmentRequestPlan } from '@/services/ai/config/profile-check';
 import { AI_OPERATIONS } from '@/services/ai/registry/operations';
 
@@ -57,12 +62,24 @@ export async function GET(req: NextRequest) {
           temperature: p.result.trace.temperature,
           adaptations: p.result.trace.adaptations,
           refusal: p.result.ok ? null : p.result.refusal,
+          // Lot 111M : entrée disponible pour ce rang (limite déclarée du modèle − sortie transmise − marge).
+          input: (() => {
+            const limite = capabilitiesOf(p.model).inputTokenLimit;
+            const envoye = p.result.trace.maxOutputTokens.sent ?? 0;
+            return { modelLimit: limite, available: limite != null ? Math.max(0, Math.floor(limite * (1 - INPUT_SAFETY_MARGIN_RATIO)) - envoye) : null, reasoningIncludedInCap: true };
+          })(),
         }));
       }
     }
 
+    // Lot 111M : limites applicatives effectives (mêmes fonctions que les traitements).
+    const { effectiveApplicationLimits } = await import('@/services/ai/gateway/application-limits');
+    const { getAssistantConfig } = await import('@/services/verebona-assistant/config/assistant-config');
+    const applicationLimits = effectiveApplicationLimits(process.env, getAssistantConfig());
+
     return NextResponse.json({
       readAt: new Date().toISOString(),
+      applicationLimits,
       referencesVersion: CAPABILITY_REFERENCES_VERSION,
       temperatureProfiles: TEMPERATURE_PROFILE_BY_FAMILY,
       capabilities,

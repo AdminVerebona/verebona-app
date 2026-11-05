@@ -57,8 +57,22 @@
  *     (`NAMING_TEXT_WINDOW`) sert à la sélection IA, aux indices et aux
  *     garde-fous ; les éléments discriminants d'une valeur de fait au-delà de
  *     240 caractères sont conservés ; omissions signalées.
+ *
+ * LOT 111A (T3 nommage — angles morts E1 à E4) :
+ *   · E2 — preuve du recalage : les mutations du BIEN (nom compris, absent
+ *     des empreintes v1 / v2) entrent dans la preuve (horodatage du bien et
+ *     journal de connaissance du compte) ; date inconnue → réexamen attendu ;
+ *     comparaisons de dates normalisées (jamais lexicographiques) ;
+ *   · E3 — indices textuels `x:` : borne appliquée sur la COMPOSANTE après
+ *     chaque union (émetteurs, documents rattachés par indices faibles),
+ *     indices les plus spécifiques d'abord ; liens forts inchangés ;
+ *   · E4 — texte au-delà de la fenêtre : balayage BORNÉ par fenêtres
+ *     successives (`namingTextScanMax`, chevauchement) — passages
+ *     discriminants et indices cherchés dans tout le texte balayé, positions
+ *     absolues ; au-delà du balayage : omission signalée (abstention).
  */
 import { createHash } from 'node:crypto';
+import { envNumber } from '@/lib/env-number';
 import { extractDiscriminants, type NameOrigin } from './guards';
 
 /**
@@ -77,6 +91,39 @@ export const NAMING_CONTEXT_VERSION_V1 = 'naming-v1';
  * signalée au modèle (`context.omissions`).
  */
 export const NAMING_TEXT_WINDOW = 400_000;
+/** Lot 111A (E4) : chevauchement entre deux fenêtres successives (une référence à cheval n'est jamais coupée). */
+export const NAMING_TEXT_WINDOW_OVERLAP = 400;
+/**
+ * Lot 111A (E4) : caractères de texte extrait BALAYÉS au plus pour chercher
+ * passages et indices (`T3_NAMING_TEXT_SCAN_MAX_CHARS`, défaut 2 000 000,
+ * jamais moins que la fenêtre, au plus 20 000 000). Seuls les passages
+ * sélectionnés sont transmis au modèle (budget inchangé) ; au-delà du
+ * balayage, l'omission est signalée.
+ */
+export function namingTextScanMax(env: Record<string, string | undefined> = process.env): number {
+  return Math.min(20_000_000, Math.max(NAMING_TEXT_WINDOW, Math.floor(envNumber('T3_NAMING_TEXT_SCAN_MAX_CHARS', 2_000_000, { min: 1 }, env))));
+}
+/** Lot 111A (E4) : candidats retenus par fenêtre au-delà de la première (sélection finale sous budget). */
+const PASSAGE_CANDIDATES_PER_WINDOW = 40;
+
+/** Fenêtres successives d'un texte (pure, E4) : taille `NAMING_TEXT_WINDOW`, chevauchement, jusqu'à `scanMax` caractères. */
+export function textWindows(text: string, scanMax: number = namingTextScanMax()): Array<{ text: string; offset: number }> {
+  const fin = Math.min(text.length, Math.max(NAMING_TEXT_WINDOW, scanMax));
+  const out: Array<{ text: string; offset: number }> = [{ text: text.slice(0, Math.min(fin, NAMING_TEXT_WINDOW)), offset: 0 }];
+  for (let o = NAMING_TEXT_WINDOW - NAMING_TEXT_WINDOW_OVERLAP; o + NAMING_TEXT_WINDOW_OVERLAP < fin; o += NAMING_TEXT_WINDOW - NAMING_TEXT_WINDOW_OVERLAP) {
+    out.push({ text: text.slice(o, Math.min(fin, o + NAMING_TEXT_WINDOW)), offset: o });
+  }
+  return out;
+}
+
+/** Lot 111A (E2) : `a` postérieure à `b` ? Dates comparées comme instants (formats PostgreSQL et ISO mêlés). */
+export function laterThan(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const x = Date.parse(String(a).replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00'));
+  const y = Date.parse(String(b).replace(' ', 'T').replace(/([+-]\d\d)$/, '$1:00'));
+  if (Number.isNaN(x) || Number.isNaN(y)) return String(a) > String(b);
+  return x > y;
+}
 /** Lot 76B (C6) : indices textuels retenus par document. */
 const TEXT_HINT_MAX_PER_DOC = 20;
 /** Lot 76B (C6) : un indice textuel partagé par plus de documents est générique — ignoré. */
@@ -142,6 +189,8 @@ export interface NamingDoc {
   textVersion?: string | null;
   /** Empreinte des faits selon la formule du lot 72B (recalage prouvé v2 → v3). */
   factsDigestV2?: string | null;
+  /** Lot 111A (E2) : dernière modification connue du bien (horodatage) — preuve du recalage. */
+  assetChangedAt?: string | null;
 }
 
 const LEGAL_FORMS = new Set(['sa', 'sas', 'sasu', 'sarl', 'eurl', 'sci', 'snc', 'scp', 'scm', 'gie', 'ltd', 'llc', 'inc', 'gmbh', 'ag', 'bv', 'nv', 'spa', 'srl', 'plc', 'cie', 'et']);
@@ -198,7 +247,21 @@ export function linkKeysOf(d: Pick<NamingDoc, 'supplier' | 'typeCode' | 'assetId
  * contrat (majuscules, alphanumérique). Jamais un contenu attendu.
  */
 export function textHintRefs(text: string | null | undefined, max: number = TEXT_HINT_MAX_PER_DOC): string[] {
-  const brut = String(text ?? '').slice(0, NAMING_TEXT_WINDOW);
+  const t = String(text ?? '');
+  if (!t.trim()) return [];
+  // Lot 111A (E4) : tout le texte balayé (fenêtres successives), pas seulement la première fenêtre.
+  return mergeHintRefs(textWindows(t).map((w) => windowHintRefs(w.text, max)), max);
+}
+
+/** Ordre des indices (pure) : clé seule (avec lettres, plus longue, alphabétique) — fusion de fenêtres exacte. */
+const hintOrder = (a: string, b: string) => Number(/[A-Z]/.test(b)) - Number(/[A-Z]/.test(a)) || b.length - a.length || (a < b ? -1 : 1);
+
+/** Lot 111A (E4) : fusion des indices de plusieurs fenêtres (pure) — les `max` premiers selon le même ordre. */
+export function mergeHintRefs(listes: ReadonlyArray<readonly string[]>, max: number = TEXT_HINT_MAX_PER_DOC): string[] {
+  return [...new Set(listes.flat())].sort(hintOrder).slice(0, max).sort();
+}
+
+function windowHintRefs(brut: string, max: number): string[] {
   if (!brut.trim()) return [];
   const vus = new Map<string, number>();
   for (const r of extractDiscriminants(brut, { clean: false }).references) {
@@ -210,9 +273,7 @@ export function textHintRefs(text: string | null | undefined, max: number = TEXT
     if (/^[A-Z]{2}[0-9]{2}[A-Z0-9]{10,30}$/.test(k) && k.length >= 14) continue;
     vus.set(k, (vus.get(k) ?? 0) + 1);
   }
-  return [...vus.keys()]
-    .sort((a, b) => Number(/[A-Z]/.test(b)) - Number(/[A-Z]/.test(a)) || b.length - a.length || (a < b ? -1 : 1))
-    .slice(0, max).sort();
+  return [...vus.keys()].sort(hintOrder).slice(0, max).sort();
 }
 
 const sha = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 32);
@@ -311,7 +372,7 @@ export interface MemberGroup { key: string; ids: number[]; keys: string[] }
  * sans clé (contexte insuffisant). Strictement par compte : l'appelant ne
  * fournit que les documents d'un compte.
  */
-export function groupMembers(members: ReadonlyArray<{ id: number; keys: readonly string[] }>): { groups: MemberGroup[]; withoutContext: number[] } {
+export function groupMembers(members: ReadonlyArray<{ id: number; keys: readonly string[] }>): { groups: MemberGroup[]; withoutContext: number[]; refusedHintUnions: number } {
   const parent = members.map((_m, i) => i);
   const find = (i: number): number => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
   const union = (a: number, b: number) => { const ra = find(a); const rb = find(b); if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb); };
@@ -334,10 +395,42 @@ export function groupMembers(members: ReadonlyArray<{ id: number; keys: readonly
   }
   // 2. Lot 76B (C6) — indices du texte extrait : seulement SPÉCIFIQUES (peu de
   //    documents, au plus deux émetteurs) ; une référence générique ne regroupe rien.
-  for (const [k, idx] of parCle) {
-    if (!k.startsWith('x:') || idx.length < 2 || idx.length > TEXT_HINT_MAX_DOCS) continue;
-    if (new Set(idx.map(signature)).size > TEXT_HINT_MAX_ISSUERS) continue;
-    for (let j = 1; j < idx.length; j++) union(idx[0], idx[j]);
+  //    Lot 111A (E3) : borne vérifiée sur la COMPOSANTE après chaque union — une
+  //    chaîne d'indices (A-X-B puis B-Y-C) ne crée jamais une composante à plus de
+  //    `TEXT_HINT_MAX_ISSUERS` émetteurs (sauf si l'union n'en ajoute aucun), ni plus
+  //    de `TEXT_HINT_MAX_DOCS` documents rattachés par indices faibles. Indices les
+  //    plus spécifiques (moins de documents) d'abord, ordre déterministe.
+  const sigs = new Map<number, Set<string>>();
+  const tailles = new Map<number, number>();
+  const faibles = new Map<number, number>();
+  members.forEach((_m, i) => {
+    const r = find(i);
+    const s = sigs.get(r) ?? new Set<string>();
+    s.add(signature(i));
+    sigs.set(r, s);
+    tailles.set(r, (tailles.get(r) ?? 0) + 1);
+  });
+  let refusedHintUnions = 0;
+  const indices = [...parCle].filter(([k, idx]) => k.startsWith('x:') && idx.length >= 2 && idx.length <= TEXT_HINT_MAX_DOCS
+    && new Set(idx.map(signature)).size <= TEXT_HINT_MAX_ISSUERS)
+    .sort((a, b) => a[1].length - b[1].length || (a[0] < b[0] ? -1 : 1));
+  for (const [, idx] of indices) {
+    for (let j = 1; j < idx.length; j++) {
+      const ra = find(idx[0]);
+      const rb = find(idx[j]);
+      if (ra === rb) continue;
+      const sa = sigs.get(ra)!;
+      const sb = sigs.get(rb)!;
+      const fusion = new Set([...sa, ...sb]);
+      const ajouteEmetteur = fusion.size > Math.max(sa.size, sb.size);
+      const rattaches = (faibles.get(ra) ?? 0) + (faibles.get(rb) ?? 0) + Math.min(tailles.get(ra)!, tailles.get(rb)!);
+      if ((ajouteEmetteur && fusion.size > TEXT_HINT_MAX_ISSUERS) || rattaches > TEXT_HINT_MAX_DOCS - 1) { refusedHintUnions++; continue; }
+      union(ra, rb);
+      const r = find(ra);
+      sigs.set(r, fusion);
+      tailles.set(r, tailles.get(ra)! + tailles.get(rb)!);
+      faibles.set(r, rattaches);
+    }
   }
   // 3. Clé FAIBLE (nature + bien) : seulement entre documents restés isolés — jamais un pont.
   const taille = new Map<number, number>();
@@ -374,7 +467,7 @@ export function groupMembers(members: ReadonlyArray<{ id: number; keys: readonly
     vues.set(g.key, n + 1);
     if (n > 0) g.key = `${g.key}#${g.ids[0]}`;
   }
-  return { groups, withoutContext: sans };
+  return { groups, withoutContext: sans, refusedHintUnions };
 }
 
 /** Regroupe des documents (pure) — même algorithme que l'index. */
@@ -516,44 +609,79 @@ export function selectFacts(facts: readonly RawFact[], budget: number = CONTEXT_
   return { selected, omitted };
 }
 
+/** Passage candidat (position absolue dans le texte intégral, score discriminant). */
+export interface PassageCandidate { text: string; offset: number; score: number }
+
 /**
- * Début du texte et passages discriminants (pure) : le début (repère), puis
- * les phrases portant une référence, une adresse, une date ou un montant, où
- * qu'elles soient dans le texte intégral, avec leur position (provenance).
+ * Lot 111A (E4) — candidats d'UNE fenêtre (pure) : phrases (découpées à
+ * `CONTEXT_BUDGET.passage`) portant une information discriminante, position
+ * ABSOLUE (`base` + position dans la fenêtre). `keep` : candidats conservés
+ * au plus (les mieux notés), pour borner la mémoire sur un très gros texte.
  */
-export function selectPassages(text: string | null | undefined, budget: number = CONTEXT_BUDGET.passages): { head: string | null; passages: Passage[]; textChars: number; omittedPassages: number } {
-  // Lot 76B (C6) : même fenêtre que les garde-fous et les indices (jamais plus courte).
-  const brut = String(text ?? '').slice(0, NAMING_TEXT_WINDOW);
-  if (!brut.trim()) return { head: null, passages: [], textChars: 0, omittedPassages: 0 };
-  const head = brut.replace(/\s+/g, ' ').trim().slice(0, CONTEXT_BUDGET.head);
-  const segments: Array<{ text: string; offset: number }> = [];
+export function passageCandidates(windowText: string, base: number, opts: { after?: number; keep?: number } = {}): PassageCandidate[] {
+  const out: PassageCandidate[] = [];
   const re = /[^.;!?\n]+[.;!?\n]?/g;
-  for (let m = re.exec(brut); m; m = re.exec(brut)) {
+  for (let m = re.exec(windowText); m; m = re.exec(windowText)) {
     const s = m[0];
     if (!s.trim()) continue;
     for (let i = 0; i < s.length; i += CONTEXT_BUDGET.passage) {
       const morceau = s.slice(i, i + CONTEXT_BUDGET.passage);
       const debut = morceau.search(/\S/);
-      if (debut >= 0) segments.push({ text: morceau.replace(/\s+/g, ' ').trim(), offset: m.index + i + debut });
+      if (debut < 0) continue;
+      const text = morceau.replace(/\s+/g, ' ').trim();
+      const offset = base + m.index + i + debut;
+      if (opts.after !== undefined && offset + text.length <= opts.after) continue;
+      const score = discriminantScore(text);
+      if (score > 0) out.push({ text, offset, score });
     }
   }
+  out.sort((a, b) => b.score - a.score || a.offset - b.offset);
+  return opts.keep !== undefined ? out.slice(0, opts.keep) : out;
+}
+
+/**
+ * Début du texte et passages discriminants (pure) : le début (repère), puis
+ * les phrases portant une référence, une adresse, une date ou un montant, où
+ * qu'elles soient dans le texte intégral, avec leur position (provenance).
+ *
+ * Lot 111A (E4) : au-delà de la première fenêtre, le texte est BALAYÉ par
+ * fenêtres successives jusqu'à `namingTextScanMax` (meilleurs candidats de
+ * chaque fenêtre) ; `extra` : candidats déjà calculés hors de ce texte
+ * (fenêtres lues séparément en base). Sélection finale sous le MÊME budget.
+ * `textNotScanned` : caractères non balayés (omission signalée).
+ */
+export function selectPassages(text: string | null | undefined, budget: number = CONTEXT_BUDGET.passages, opts: { extra?: readonly PassageCandidate[]; totalChars?: number; scannedChars?: number; scanMax?: number } = {}): {
+  head: string | null; passages: Passage[]; textChars: number; omittedPassages: number; textScanned: number; textNotScanned: number;
+} {
+  const tout = String(text ?? '');
+  const scanMax = opts.scanMax ?? namingTextScanMax();
+  const fenetres = textWindows(tout, scanMax);
+  const brut = fenetres[0].text;
+  const balaye = Math.min(tout.length, Math.max(NAMING_TEXT_WINDOW, scanMax));
+  const total = Math.max(tout.length, opts.totalChars ?? 0);
+  // Caractères balayés : ce texte (fenêtres), ou ce que l'appelant a balayé en base (`scannedChars`).
+  const scanned = Math.min(total, Math.max(balaye, opts.scannedChars ?? 0));
+  if (!brut.trim() && !(opts.extra?.length)) return { head: null, passages: [], textChars: 0, omittedPassages: 0, textScanned: 0, textNotScanned: Math.max(0, total - tout.length) };
+  const head = brut.replace(/\s+/g, ' ').trim().slice(0, CONTEXT_BUDGET.head);
   const finTete = brut.search(/\S/) + CONTEXT_BUDGET.head;
-  const notes = segments.filter((s) => s.offset + s.text.length > finTete)
-    .map((s) => ({ s, score: discriminantScore(s.text) })).filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score || a.s.offset - b.s.offset);
+  const notes: PassageCandidate[] = [
+    ...passageCandidates(brut, 0, { after: finTete }),
+    ...fenetres.slice(1).flatMap((w) => passageCandidates(w.text, w.offset, { keep: PASSAGE_CANDIDATES_PER_WINDOW })),
+    ...(opts.extra ?? []),
+  ].sort((a, b) => b.score - a.score || a.offset - b.offset);
   const vus = new Set<string>();
   const passages: Passage[] = [];
-  let total = 0;
+  let totalPassages = 0;
   let omittedPassages = 0;
-  for (const { s, score } of notes) {
-    if (vus.has(s.text)) continue;
-    vus.add(s.text);
-    if (total + s.text.length > budget) { if (score >= 3) omittedPassages++; continue; }
-    total += s.text.length;
-    passages.push({ text: s.text, offset: s.offset, source: 'EXTRACTION_FULL_TEXT' });
+  for (const c of notes) {
+    if (vus.has(c.text)) continue;
+    vus.add(c.text);
+    if (totalPassages + c.text.length > budget) { if (c.score >= 3) omittedPassages++; continue; }
+    totalPassages += c.text.length;
+    passages.push({ text: c.text, offset: c.offset, source: 'EXTRACTION_FULL_TEXT' });
   }
   passages.sort((a, b) => a.offset - b.offset);
-  return { head: head || null, passages, textChars: brut.length, omittedPassages };
+  return { head: head || null, passages, textChars: tout.length, omittedPassages, textScanned: scanned, textNotScanned: Math.max(0, total - scanned) };
 }
 
 /** Détail d'un document fourni à l'IA (chargé pour les seuls documents de l'appel). */
@@ -569,8 +697,11 @@ export interface NamingDocDetail {
   /** Lot 72B (E5) : ce qui a été transmis ou non ; contexte suffisant ? */
   context?: {
     factsTotal: number; factsProvided: number; textChars: number; passagesProvided: number; sufficient: boolean;
-    /** Lot 76B (C6) : omissions (faits hors budget, valeurs abrégées, passages discriminants non transmis, texte hors fenêtre). */
-    omissions?: { factsOmitted: number; factValuesShortened: number; discriminantPassagesOmitted: number; textBeyondWindow: number; significant: boolean };
+    /**
+     * Lot 76B (C6) : omissions (faits hors budget, valeurs abrégées, passages discriminants non transmis, texte hors fenêtre).
+     * Lot 111A (E4) : `textScanned` — caractères balayés pour la sélection ; `textNotScanned` — au-delà du balayage borné (non couverts).
+     */
+    omissions?: { factsOmitted: number; factValuesShortened: number; discriminantPassagesOmitted: number; textBeyondWindow: number; textScanned?: number; textNotScanned?: number; significant: boolean };
   };
   /** Lot 76B (C6) : indices de rapprochement partagés avec d'autres documents du lot, avec leur provenance. */
   matchHints?: Array<{ reference: string; source: 'EXTRACTION_FULL_TEXT' | 'T1_FACT_OR_OPERATION'; sharedWithDocumentIds: number[] }>;
@@ -690,21 +821,33 @@ interface UpgradeEvidence {
  *     aucune modification de faits du compte journalisée depuis) ;
  *   · rien ne dépasse les limites du contexte de l'ancienne version (nombre
  *     et longueur des faits, taille du texte, Opérations enrichies) ;
- *   · aucun indice textuel ne relie les documents du lot.
+ *   · aucun indice textuel ne relie les documents du lot ;
+ *   · lot 111A (E2) : le BIEN (nom, visible de l'IA mais absent des empreintes
+ *     v1 / v2) n'a pas changé depuis l'examen — horodatage du bien ET journal
+ *     de connaissance du compte (nature ASSET, tenu par déclencheurs : un
+ *     renommage sans mise à jour de l'horodatage y figure) ; sans aucune date
+ *     exploitable : preuve impossible.
  * Faute de preuve (date d'examen inconnue comprise) : réexamen attendu.
+ * Dates comparées comme instants (`laterThan`), jamais comme chaînes.
  */
 export function upgradeEvidence(
   docs: readonly NamingDoc[], fromVersion: string | null | undefined, reviewedAt: string | null | undefined,
   /** Dernière modification de faits du compte (journal de connaissance) : sans date par document, prudence. */
   accountFactsChangedAt?: string | null,
+  /** Lot 111A (E2) : dernières modifications du compte par nature (journal de connaissance). */
+  accountChanges: { assetsChangedAt?: string | null } = {},
 ): UpgradeEvidence {
   const from = fromVersion === NAMING_CONTEXT_VERSION_V2 ? NAMING_CONTEXT_VERSION_V2 : NAMING_CONTEXT_VERSION_V1;
   const lim = LEGACY_CONTEXT_LIMITS[from];
   const motifs = new Set<string>();
   if (!reviewedAt) motifs.add('REVIEW_DATE_UNKNOWN');
-  if (reviewedAt && accountFactsChangedAt && accountFactsChangedAt > reviewedAt) motifs.add('DATA_CHANGED_SINCE_REVIEW');
+  if (reviewedAt && laterThan(accountFactsChangedAt, reviewedAt)) motifs.add('DATA_CHANGED_SINCE_REVIEW');
   for (const d of docs) {
-    if (reviewedAt && d.contextChangedAt && d.contextChangedAt > reviewedAt) motifs.add('DATA_CHANGED_SINCE_REVIEW');
+    if (reviewedAt && laterThan(d.contextChangedAt, reviewedAt)) motifs.add('DATA_CHANGED_SINCE_REVIEW');
+    if (d.assetId != null && reviewedAt) {
+      if (laterThan(accountChanges.assetsChangedAt, reviewedAt) || laterThan(d.assetChangedAt, reviewedAt)) motifs.add('ASSET_CHANGED_SINCE_REVIEW');
+      else if (!accountChanges.assetsChangedAt && !d.assetChangedAt) motifs.add('ASSET_CHANGE_DATE_UNKNOWN');
+    }
     if ((d.factsCount ?? 0) > lim.facts) motifs.add('FACTS_BEYOND_PREVIOUS_CONTEXT');
     if ((d.factMaxLength ?? 0) > lim.factValue) motifs.add('FACT_VALUE_BEYOND_PREVIOUS_CONTEXT');
     if ((d.textChars ?? 0) > lim.textChars) motifs.add('TEXT_BEYOND_PREVIOUS_CONTEXT');
@@ -718,4 +861,16 @@ export function upgradeEvidence(
     for (const k of textuels) if (parDoc.some((autres, j) => j !== i && autres.has(k))) motifs.add('TEXT_HINTS');
   });
   return { safe: motifs.size === 0, reasons: [...motifs].sort() };
+}
+
+/**
+ * Lot 111A (E2) — trace d'une migration TECHNIQUE (pure) : provenance de la
+ * preuve (contrôles passés), date d'examen, noms manuels conservés. Bornée à
+ * la colonne `upgrade_reason` (300 caractères).
+ */
+export function technicalUpgradeTrace(docs: readonly NamingDoc[], from: string, reviewedAt: string | null | undefined): string {
+  const proteges = docs.filter((d) => isProtected(d)).length;
+  const avecBien = docs.some((d) => d.assetId != null);
+  return `NO_NEWLY_EXPLOITABLE_INFORMATION ${from}→${NAMING_CONTEXT_VERSION} · preuve : examen ${reviewedAt ?? '?'} ; données (extraction, faits, Opérations, liens${avecBien ? ', bien' : ''}) non modifiées depuis ; `
+    + `limites du contexte ${from} respectées ; aucun indice textuel · noms manuels conservés : ${proteges}`;
 }

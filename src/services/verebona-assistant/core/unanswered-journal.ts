@@ -38,12 +38,19 @@
  * produite mais source la mieux notée hors sujet). Le repérage automatique
  * des hors-sujet n'est PAS exhaustif : l'alerte qualité est un signal à
  * revoir, pas une mesure complète.
+ *
+ * Lot 111K : les demandes sur les DONNÉES DU COMPTE portent le bloc
+ * `pertinence` (même trace) : motif dans ce vocabulaire, cause précise en
+ * `fallbackReason` (`PERTINENCE:NO_DATA`, `EVIDENCE_REJECTED`,
+ * `EVIDENCE_UNCERTAIN`, `REAL_CONFLICT`, `PRODUCTION_REJECTED`) ; une réponse
+ * rejetée par le contrôle final est une alerte qualité.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { createHash } from 'node:crypto';
 import { HELP_INTENTS } from './help-corpus.service';
 import { classifyUnanswered, expurgerQuestion } from './unanswered-help.repository';
 import type { ResourcesTrace, UnansweredMotive } from './resources-answer';
+import type { PertinenceTrace } from './pertinence-trace';
 
 export const JOURNAL_MOTIVES: readonly UnansweredMotive[] = [
   'COVERAGE_ABSENT', 'PARTIAL_COVERAGE', 'RETRIEVAL_MISSED', 'ACCOUNT_DATA_INSUFFICIENT',
@@ -96,6 +103,8 @@ export interface JournalRow {
   help_article: string | null;
   help_corpus_version: string | null;
   resources: ResourcesTrace | null;
+  /** Lot 111K : pertinence des preuves (données du compte) — motif et cause. */
+  pertinence?: Pick<PertinenceTrace, 'motive' | 'cause' | 'outcome'> | null;
   /** Question posée (encore conservée), expurgée avant tout usage. */
   content: string | null;
 }
@@ -130,6 +139,11 @@ export function classifyJournalRow(r: JournalRow): JournalOccurrence | null {
   let motive: UnansweredMotive | null = null;
   if (res) {
     motive = res.motive ?? (res.qualityAlerts?.length ? 'QUALITY_ALERT' : null);
+  } else if (r.pertinence?.motive) {
+    // Lot 111K : données du compte — motif calculé par la trace de pertinence
+    // (même vocabulaire), la cause distingue absence de donnée, preuve
+    // rejetée ou incertaine, conflit réel, défaut de production.
+    motive = r.pertinence.motive;
   } else if (r.status !== 'pending' && r.state !== 'CANCELLED') {
     if (fb && CORPUS_CODE.test(fb)) motive = 'CORPUS_UNAVAILABLE';
     else if (fb === 'HELP_CONTRADICTION') motive = 'CONTRADICTION_AMBIGUITY';
@@ -154,7 +168,7 @@ export function classifyJournalRow(r: JournalRow): JournalOccurrence | null {
     appRevision: res?.appRevision ?? null,
     motive,
     qualityAlerts: res?.qualityAlerts ?? [],
-    fallbackReason: res?.fallbackReason ?? fb,
+    fallbackReason: res?.fallbackReason ?? (r.pertinence?.cause ? `PERTINENCE:${r.pertinence.cause}` : null) ?? fb,
     examined: (res?.examined ?? []).slice(0, 12).map((x) => ({ articleId: x.articleId, anchor: x.anchor, score: x.score, kept: x.kept, ...(x.reason ? { reason: x.reason } : {}) })),
     selected: res?.selected ?? (r.help_article ? { articleId: r.help_article, anchors: [] } : null),
     evidenceStatus: res?.evidence?.status ?? null,
@@ -286,6 +300,7 @@ export async function listUnansweredJournal(f: JournalFilters = {}) {
             r.retrieval_methods_json->'help'->'observability'->>'articleId' AS help_article,
             r.retrieval_methods_json->'help'->'corpus'->>'version' AS help_corpus_version,
             r.retrieval_methods_json->'resources' AS resources,
+            r.retrieval_methods_json->'pertinence' AS pertinence,
             -- Question encore conservée (fil actif, non expiré) : sinon aucun texte.
             (SELECT m.content FROM verebona_messages m
                JOIN verebona_conversations c ON c.id = m.conversation_id AND c.account_id = m.account_id
@@ -296,6 +311,7 @@ export async function listUnansweredJournal(f: JournalFilters = {}) {
       WHERE r.created_at >= now() - make_interval(days => $1::int)
         AND COALESCE(r.status, 'ok') <> 'pending'
         AND (r.retrieval_methods_json ? 'resources'
+             OR r.retrieval_methods_json->'pertinence'->>'motive' IS NOT NULL
              OR COALESCE(r.source_count, 0) = 0
              OR r.retrieval_methods_json->'help'->>'fallbackReason' IS NOT NULL)
       ORDER BY r.created_at DESC

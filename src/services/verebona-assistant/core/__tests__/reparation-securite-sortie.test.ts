@@ -207,10 +207,11 @@ describe('filtrage de la sortie (§18.7, CA-09, 37.12)', () => {
 });
 
 describe('limites avant appel (§13.9, §17.7, §30.1, §31.2)', () => {
-  it('500 jetons de sortie et 12 s par tentative transmis au fournisseur', async () => {
+  it('plafond de sortie de la configuration effective (lot 111M : plus de borne à 500) et 12 s par tentative', async () => {
     fakeProvider.onAny(ok);
     await generateAssistantAnswerDetailed(ROUTE(), SOURCES, input());
-    expect(fakeProvider.calls[0].maxOutputTokens).toBeLessThanOrEqual(500);
+    const { AI_OPERATIONS } = await import('@/services/ai/registry/operations');
+    expect(fakeProvider.calls[0].maxOutputTokens).toBe(AI_OPERATIONS.t2_answer.defaultMaxOutputTokens);
     expect(fakeProvider.calls[0].timeoutMs).toBeLessThanOrEqual(12_000);
   });
 

@@ -12,7 +12,7 @@
  * coupés, par couche) et jamais conclu « information absente ».
  */
 import { createHash } from 'node:crypto';
-import { boundElement, elementSize, type KnowledgeBounds } from '../knowledge-query/context';
+import { elementSize, segmentElement, type KnowledgeBounds } from '../knowledge-query/context';
 import type { KnowledgeElement } from '../knowledge-query/contract';
 import {
   DOCUMENT_LAYERS, HISTORY_LAYERS, MISSING_PROPERTIES_CONTRACT_VERSION, MISSING_PROPERTIES_RULES_VERSION, SUBJECT_LAYERS,
@@ -53,28 +53,39 @@ export function planPropertyContext(
   let courante: PropertyContextElement[] = [];
   let taille = 0;
   let cut = 0;
+  // Lot 111M (P1 T3) : un texte long est DÉCOUPÉ en segments (aucune perte,
+  // `segmentElement`) ; un élément dont un segment n'est pas transmis est
+  // « coupé » et rend le contexte INCOMPLET (jamais une absence).
+  const attendus = new Map<string, number>();
+  let plein = false;
   for (const { e } of utiles) {
-    if (pages.length >= bounds.maxPages) break;
-    const b = boundElement(e as unknown as KnowledgeElement, bounds.charsPerElement);
-    const el = b.element as unknown as PropertyContextElement;
-    const t = elementSize(el);
-    if (courante.length && (courante.length >= bounds.elementsPerPage || taille + t > bounds.charsPerPage)) {
-      pages.push({ index: pages.length + 1, count: 0, elements: courante });
-      courante = [];
-      taille = 0;
-      if (pages.length >= bounds.maxPages) break;
+    const segs = segmentElement(e as unknown as KnowledgeElement, bounds.charsPerElement) as unknown as PropertyContextElement[];
+    attendus.set(e.ref, segs.length);
+    for (const el of segs) {
+      if (plein || pages.length >= bounds.maxPages) { plein = true; break; }
+      const t = elementSize(el);
+      if (courante.length && (courante.length >= bounds.elementsPerPage || taille + t > bounds.charsPerPage)) {
+        pages.push({ index: pages.length + 1, count: 0, elements: courante });
+        courante = [];
+        taille = 0;
+        if (pages.length >= bounds.maxPages) { plein = true; break; }
+      }
+      courante.push(el);
+      taille += t;
     }
-    courante.push(el);
-    taille += t;
-    if (b.cut) cut += 1;
   }
   if (courante.length && pages.length < bounds.maxPages) pages.push({ index: pages.length + 1, count: 0, elements: courante });
   for (const p of pages) p.count = pages.length;
-  const transmis = new Set(pages.flatMap((p) => p.elements.map((x) => x.ref)));
+  const vus = new Map<string, number>();
+  const racine = (ref: string) => { const i = ref.lastIndexOf('#'); return i > 0 && attendus.has(ref.slice(0, i)) ? ref.slice(0, i) : ref; };
+  for (const p of pages) for (const x of p.elements) vus.set(racine(x.ref), (vus.get(racine(x.ref)) ?? 0) + 1);
   const droppedByLayer: Record<string, number> = {};
-  for (const { e } of utiles) if (!transmis.has(e.ref)) droppedByLayer[e.layer] = (droppedByLayer[e.layer] ?? 0) + 1;
-  const dropped = utiles.length - transmis.size;
-  return { pages, complete: dropped === 0, elements: utiles.length, droppedElements: dropped, cutElements: cut, byLayer, droppedByLayer };
+  let dropped = 0;
+  for (const { e } of utiles) {
+    const n = vus.get(e.ref) ?? 0;
+    if (n === 0) { dropped += 1; droppedByLayer[e.layer] = (droppedByLayer[e.layer] ?? 0) + 1; } else if (n < (attendus.get(e.ref) ?? 1)) cut += 1;
+  }
+  return { pages, complete: dropped === 0 && cut === 0, elements: utiles.length, droppedElements: dropped, cutElements: cut, byLayer, droppedByLayer };
 }
 
 const sha = (v: unknown, n = 24) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, n);

@@ -18,6 +18,17 @@
  * `EXPORTS_WORKER_DISABLED=true` : aucune génération sur cette instance
  * (instance web dédiée, par exemple).
  *
+ * Lot 111B : une génération REMPLACÉE par une régénération explicite est
+ * observée pendant son exécution (interrogation légère de
+ * `cancel_requested_at`, `EXPORTS_CANCEL_POLL_MS`, 2 s) : signal d'abandon
+ * levé (rendu Chromium, téléchargements, envois OVH), arrêt coopératif du
+ * job (statut `cancelled`, bail libéré, temporaires et objets non publiés
+ * nettoyés). Si une étape non interruptible retient l'exécution au-delà de
+ * `EXPORTS_CANCEL_GRACE_MS` (30 s), le worker clôt l'annulation lui-même et
+ * passe à la suite ; l'exécution résiduelle ne peut plus rien publier
+ * (`updateOwnedGeneration`). Une génération à la fois par instance : la
+ * nouvelle version démarre après l'arrêt effectif de l'ancienne.
+ *
  * Lot 103C : la même boucle consomme aussi la file des archives RGPD
  * « Mes données » (`services/gdpr/gdpr-export.job.ts`) — une génération
  * lourde à la fois par instance, dossiers V12 et archives RGPD confondus
@@ -26,7 +37,8 @@
 
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { claimNextGeneration, renewGenerationLease, LEASE_SECONDS } from './repository';
+import { claimNextGeneration, renewGenerationLease, isGenerationCancelRequested, markGenerationCancelled, LEASE_SECONDS } from './repository';
+import { cancelGraceMs, cancelPollMs, CANCELLED_STEP_FORCED } from './identity';
 import { runGeneration, failTimedOutGeneration, jobTimeoutMs } from './job';
 import { admitHeavyTask, trackMemory } from '@/lib/runtime/memory-monitor';
 
@@ -59,14 +71,36 @@ export async function drainExportQueue(workerId = EXPORT_WORKER_ID): Promise<num
     }, Math.max(5_000, (LEASE_SECONDS * 1000) / 3));
     heartbeat.unref?.();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    // Lot 111B : observation de l'annulation (génération remplacée).
+    let cancelled = false;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
+    let onGrace: ((v: 'cancel_grace') => void) | null = null;
+    const grace = new Promise<'cancel_grace'>((resolve) => { onGrace = resolve; });
+    const cancelWatch = setInterval(() => {
+      if (cancelled) return;
+      void isGenerationCancelRequested(row.id).then((c) => {
+        if (!c || cancelled) return;
+        cancelled = true;
+        controller.abort();
+        graceTimer = setTimeout(() => onGrace?.('cancel_grace'), cancelGraceMs());
+        graceTimer.unref?.();
+      }).catch(() => undefined);
+    }, cancelPollMs());
+    cancelWatch.unref?.();
     try {
-      const run = trackMemory('export:v12', () => runGeneration(row, workerId, { isActive: () => active, signal: controller.signal }))
+      const run = trackMemory('export:v12', () => runGeneration(row, workerId, { isActive: () => active, isCancelled: () => cancelled, signal: controller.signal }))
         .catch((e) => { console.error(`[exports-v12] génération ${row.id} : erreur inattendue du worker :`, (e as Error).message); return 'failed' as const; });
       const outcome = await Promise.race([
         run,
         new Promise<'timeout'>((resolve) => { timer = setTimeout(() => resolve('timeout'), timeoutMs); timer.unref?.(); }),
+        grace,
       ]);
-      if (outcome === 'timeout') {
+      if (outcome === 'cancel_grace') {
+        // Étape non interruptible trop longue : annulation close ici, plus aucune écriture de l'exécution.
+        await markGenerationCancelled(row.id, workerId, CANCELLED_STEP_FORCED).catch(() => false);
+        active = false;
+        console.warn(`[exports-v12] génération ${row.id} : annulation close après ${cancelGraceMs()} ms d'attente de l'arrêt coopératif.`);
+      } else if (outcome === 'timeout') {
         controller.abort();
         active = false;
         console.error(`[exports-v12] génération ${row.id} : délai global dépassé (${timeoutMs} ms), exécution abandonnée.`);
@@ -74,6 +108,8 @@ export async function drainExportQueue(workerId = EXPORT_WORKER_ID): Promise<num
       }
     } finally {
       clearTimeout(timer);
+      clearTimeout(graceTimer);
+      clearInterval(cancelWatch);
       clearInterval(heartbeat);
     }
     done++;

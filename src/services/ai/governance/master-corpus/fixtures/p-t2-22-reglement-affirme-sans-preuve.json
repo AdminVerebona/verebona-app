@@ -1,0 +1,49 @@
+{
+  "case": "P-T2-22",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — GARDE (incident 1, non-régression de P-T2-08) — « combien ai-je payé » : le modèle affirme un RÈGLEMENT à partir d’un coût documenté. Affirmation rejetée (un coût ne prouve pas un règlement), insuffisance rendue plutôt qu’une réponse artificiellement étayée.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Combien ai-je payé le plombier pour le mitigeur ?",
+    "sources": [
+      {
+        "id": "doc_1001",
+        "type": "document_extraction",
+        "title": "Facture plomberie — Dupont",
+        "content": "Remplacement mitigeur · Total HT : 700,00 € · TVA 20 % : 140,00 € · Total TTC : 840,00 €",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "Vous avez réglé 840,00 € au plombier pour le mitigeur.",
+          "sourceIds": [
+            "doc_1001"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerNotContains": [
+      "840"
+    ],
+    "exitState": "insufficient",
+    "neverAffirmSettlement": true,
+    "finalControlRejects": [
+      "SETTLEMENT_UNPROVEN"
+    ]
+  }
+}

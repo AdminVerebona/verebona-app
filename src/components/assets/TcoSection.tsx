@@ -26,8 +26,13 @@
  *     (chargement complémentaire ; totaux toujours exacts) ; montant inconnu
  *     jamais affiché « 0 € » ; rapprochement incertain signalé « à vérifier » ;
  *     coût d'acquisition « non renseigné » ou « sans objet ».
- *   · Lot 76G : trois indicateurs distincts — TCO total (cumulatif), TCO
- *     moyen annuel (coût annualisé, achat initial inclus) et dépenses de
+ *   · Lot 111F : synthèse compacte — Coût total, Coût annuel moyen de
+ *     possession (HORS prix d'achat du bien), Coût net estimé (dernière
+ *     estimation admissible postérieure à l'achat ; bien vendu : coût net
+ *     final), Dépenses de l'année ; « – » + icône d'information (survol,
+ *     toucher) avec le motif fourni par le moteur (`indicators`) ; sous-partie
+ *     « Financement » (coût du crédit à date, prévisionnel, prêts) si utile.
+ *   · Lot 76G : indicateurs annuels — dépenses de
  *     l'année (réellement constatées, sélecteur d'année) — DÉRIVÉS par le
  *     moteur (`tco/annual.ts`), jamais recalculés ici. « Dépenses retenues
  *     (N) » est un déclencheur fermé par défaut qui ouvre un SOUS-TIROIR à
@@ -79,6 +84,7 @@ import { TcoAmountRecoveryNotice } from './tco-amount-recovery';
 import { TcoInformationDiagnostics, TcoOpenDiagnostics } from './tco-diagnostics';
 import type { TcoDiagnosticSource } from '@/services/business-operations/tco/diagnostics';
 import { TcoUsageSection } from './TcoUsageSection';
+import { TcoInfoTip } from './tco-info-tip';
 import { createCoalescedRefresh, type CoalescedRefresh } from '@/lib/home/coalesced-refresh';
 import { tcoKeptYear, TCO_REFRESH_WINDOW_MS, watchTcoMutations } from './tco-refresh';
 
@@ -90,12 +96,6 @@ interface Props {
 
 type Line = TcoDto['lines'][number];
 type Annual = TcoDto['annual'];
-
-/** Lot 76G : années de possession, au dixième (« 2,8 ans »). */
-function ansFr(n: number): string {
-  const v = n.toLocaleString('fr-FR', { maximumFractionDigits: 1 });
-  return `${v} an${n >= 2 ? 's' : ''}`;
-}
 
 /** Lot 107C : date au format JJ/MM/AAAA (« Depuis l'achat du bien le 15/03/2020 »). */
 function dateNum(d: string | null | undefined): string {
@@ -111,25 +111,7 @@ function depuis(start: string | null | undefined, kind: string | null | undefine
   return kind === 'POSSESSION' ? `Depuis le début de la possession le ${dateNum(start)} (sans achat)` : `Depuis l’achat du bien le ${dateNum(start)}`;
 }
 
-/** Lot 76G / 81D / 107C : explication du TCO moyen annuel (calculé ou motif de non-calcul) — aucun seuil de durée. */
-function moyenneExplication(a: Annual['average'], endSource: string): string {
-  switch (a.status) {
-    case 'COMPUTED': {
-      const fin = endSource === 'TODAY' ? 'jusqu’à aujourd’hui' : `jusqu’à la cession le ${dateNum(a.end)}`;
-      const duree = a.days === 1 ? '1 jour' : (a.days ?? 0) < 365 ? `${a.days} jours` : ansFr(a.years ?? 0);
-      return `${depuis(a.start, a.startKind)} : ${duree} (${fin}).`;
-    }
-    case 'ACQUISITION_DATE_MISSING': return 'Date d’achat inconnue : moyenne non calculée. Renseignez la date d’achat de la fiche.';
-    // Lot 107C : contradiction bloquante identifiable — jamais masquée derrière « Données manquantes ».
-    case 'ACQUISITION_DATE_UNDETERMINED': return 'Date d’achat du bien incertaine (plusieurs dates possibles se contredisent) : moyenne non calculée. Confirmez la date d’achat sur la fiche du bien.';
-    case 'ACQUISITION_DATE_INCOHERENT':
-      return a.incoherence === 'INVALID_DATE' ? 'Date d’achat impossible (jour inexistant) : moyenne non calculée. Corrigez la date d’achat de la fiche.'
-        : a.incoherence === 'AFTER_DISPOSAL' ? 'Date d’achat postérieure à la cession : moyenne non calculée. Vérifiez les dates de la fiche.'
-          : 'Date d’achat postérieure à aujourd’hui : moyenne non calculée. Vérifiez la date d’achat de la fiche.';
-    default: return '';
-  }
-}
-
+/** Lot 111F : l'explication du coût annuel moyen (calcul ou motif) vient du moteur (`indicators.annualAverage`). */
 function eur(cents: number | null | undefined): string {
   if (cents == null) return '—';
   return (cents / 100).toLocaleString('fr-FR', { style: 'currency', currency: 'EUR' });
@@ -155,6 +137,30 @@ function anneeSelEstime(c: TcoDto['usage']['complement'] | null, annual: Annual 
 const NEGATIVE = new Set(['REDUCTION', 'REFUND', 'INDEMNITY']);
 const RETENUE = new Set(['RETAINED_DIRECT', 'RETAINED_CONSOLIDATED']);
 
+
+/** Lot 111F : libellés des modes de valorisation (mêmes codes que la valorisation du bien). */
+const VALUATION_MODE_LABELS: Record<string, string> = {
+  ESTIMATION_AGENCE: 'Estimation agence', EXPERTISE_NOTARIALE: 'Expertise notariale', EXPERTISE_INDEPENDANTE: 'Expertise indépendante',
+  AVIS_VALEUR: 'Avis de valeur', SIMULATION_OUTIL: 'Simulation outil en ligne', ESTIMATION_PERSONNELLE: 'Estimation personnelle',
+};
+
+/**
+ * Lot 111F : indicateur compact — valeur, ou « – » (non calculable) ; l'icône d'information donne la définition ou le
+ * motif fourni par le moteur (survol desktop, toucher mobile).
+ */
+function Indicateur({ titre, valeur, info, sous, note, ...rest }: { titre: string; valeur: string | null; info: string; sous?: string | null; note?: string | null } & Record<`data-${string}`, string>) {
+  return (
+    <div className="rounded-lg border border-border bg-card p-3 min-w-0" {...rest}>
+      <div className="flex items-center gap-1">
+        <p className="text-xs text-muted-foreground">{titre}</p>
+        <TcoInfoTip label={titre} text={info} />
+      </div>
+      <p className={`text-lg font-semibold tabular-nums ${valeur == null ? 'text-muted-foreground' : 'text-[color:var(--text-primary)]'}`} data-tco-indicator-value>{valeur ?? '–'}</p>
+      {sous && <p className="text-xs text-muted-foreground mt-0.5 break-words">{sous}</p>}
+      {note && <p className="text-xs text-muted-foreground mt-0.5">{note}</p>}
+    </div>
+  );
+}
 
 function Bloc({ title, children, ...rest }: { title: string; children: React.ReactNode } & Record<`data-${string}`, boolean | string>) {
   return (
@@ -440,6 +446,8 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   useEffect(() => { if (!retainedOpen && !excludedOpen) setFocusLine(null); }, [retainedOpen, excludedOpen]);
 
   const t = data;
+  // Lot 111F : indicateurs de la fiche calculés par le moteur (valeurs, motifs « – », financement).
+  const ind = t?.indicators ?? null;
   // Lot 108C : complément estimé des dépenses d'usage (moteur) — distingue le réel documenté du TCO avec estimations.
   const estime = t?.summary.estimatedUsageComplementCents ?? 0;
   const avecEstimations = estime > 0;
@@ -522,123 +530,108 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
             </div>
           ) : (
             <>
-              {/* ── Synthèse ── */}
-              <div className="rounded-lg border border-primary/20 bg-primary/5 p-4" data-tco-summary>
-                {/* Lot 108C : un total qui inclut des estimations n'est jamais intitulé « Coût cumulé documenté ». */}
-                <p className="text-[13px] font-semibold text-primary mb-1" data-tco-summary-title>{avecEstimations ? 'Coût total de possession (estimations incluses)' : 'Coût cumulé documenté'}</p>
-                <p className="text-2xl font-bold text-[color:var(--text-primary)] tabular-nums" data-tco-summary-total>{eur(avecEstimations ? t.summary.totalWithEstimatesCents : t.summary.cumulativeCostCents)}</p>
-                <p className="text-xs text-muted-foreground mt-1" data-tco-start-status={t.period.startStatus ?? (t.period.start ? 'RESOLVED' : 'MISSING')}>
+              {/* ── Lot 111F : synthèse compacte — Coût total, Coût annuel moyen de possession, Coût net estimé, Dépenses de l'année ──
+                  Valeurs et motifs fournis par le moteur (`t.indicators`) ; « – » + icône d'information quand non calculable. */}
+              <section className="rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-3" data-tco-summary data-tco-annual>
+                <p className="text-xs text-muted-foreground" data-tco-start-status={t.period.startStatus ?? (t.period.start ? 'RESOLVED' : 'MISSING')}>
                   {t.annual?.average.incoherence ? 'Date d’acquisition incohérente — '
                     : t.period.startStatus === 'UNDETERMINED' ? 'Date d’achat du bien incertaine — '
                       : t.period.start ? `${depuis(t.period.start, t.period.startKind)} ` : 'Date d’acquisition non renseignée — '}
                   {t.period.endSource === 'TODAY' ? (t.period.start && !t.annual?.average.incoherence ? 'jusqu’à aujourd’hui' : 'à aujourd’hui') : `jusqu’à la cession le ${dateNum(t.period.end)}`}
                 </p>
-                <div className="mt-3 divide-y divide-border">
-                  {avecEstimations && <Ligne label="Coût réel documenté (justificatifs et fiche)" value={eur(t.summary.cumulativeCostCents)} strong />}
-                  {avecEstimations && <Ligne label="Complément estimé (dépenses d’usage sans justificatif)" value={eur(estime)} muted />}
+                {ind && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+                    <Indicateur titre="Coût total" valeur={eur(ind.total.cents)} info={ind.total.info} data-tco-indicator="total"
+                      sous={ind.total.estimatedShareCents > 0 ? `Dont ${eur(ind.total.estimatedShareCents)} estimés (dépenses d’usage)` : t.summary.acquisitionStatus === 'MISSING' ? 'Prix d’achat non renseigné' : null} />
+                    <Indicateur titre="Coût annuel moyen de possession" valeur={ind.annualAverage.cents != null ? `${eur(ind.annualAverage.cents)} / an` : null}
+                      info={ind.annualAverage.unavailableReason ?? ind.annualAverage.info} data-tco-indicator="average" data-tco-average-status={annual?.average.status ?? ''}
+                      sous={ind.annualAverage.cents == null ? null : ind.annualAverage.estimatedShareCents > 0 ? `Hors prix d’achat · dont ${eur(ind.annualAverage.estimatedShareCents)} / an estimés` : 'Hors prix d’achat du bien'}
+                      note={annual?.average.extrapolationLabel ? `${annual.average.extrapolationLabel}.` : null} />
+                    <Indicateur titre={ind.net.kind === 'FINAL' ? 'Coût net final' : 'Coût net estimé'} valeur={ind.net.cents != null ? eur(ind.net.cents) : null}
+                      info={ind.net.unavailableReason ?? ind.net.info} data-tco-indicator="net"
+                      sous={ind.net.valuation ? `Estimation du ${dateNum(ind.net.valuation.date)}${ind.net.valuation.mode ? ` · ${VALUATION_MODE_LABELS[ind.net.valuation.mode] ?? ind.net.valuation.mode}` : ''} · ${ind.net.valuation.ageLabel}`
+                        : ind.net.kind === 'FINAL' && ind.net.realizedPriceCents != null ? `Prix de vente réalisé ${eur(ind.net.realizedPriceCents)}` : null} />
+                    {anneeCourante && annual && (
+                      <div className="rounded-lg border border-border bg-card p-3 min-w-0" data-tco-indicator="year">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-xs text-muted-foreground">Dépenses de l’année</p>
+                          <Select value={String(anneeSel)} onValueChange={(v) => setYear(Number(v))}>
+                            <SelectTrigger className="h-8 w-[6.5rem] shrink-0" aria-label="Année des dépenses" data-tco-year-select><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              {[...annual.years].reverse().map((y) => <SelectItem key={y.year} value={String(y.year)}>{y.year}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <p className="text-lg font-semibold text-[color:var(--text-primary)] tabular-nums" data-tco-year-total={anneeCourante.year}>{eur(anneeCourante.costsCents)}</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {anneeCourante.count === 0
+                            ? `Aucune dépense datée du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)}.`
+                            : `${anneeCourante.count} dépense(s) du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)} (montant brut).`}
+                        </p>
+                        {/* Lot 108C : complément estimé de l'année (périodes écoulées), à part des dépenses réellement constatées. */}
+                        {estimeAnnee > 0 && (
+                          <p className="text-xs text-muted-foreground mt-0.5" data-tco-year-estimated={estimeAnnee}>
+                            Complément estimé des dépenses d’usage : + {eur(estimeAnnee)} · avec estimations {eur(anneeCourante.costsCents + estimeAnnee)}.
+                          </p>
+                        )}
+                        {/* Lot 81D : brut et net de l'année, tels que calculés par le moteur. */}
+                        {anneeCourante.creditsCents !== 0 && (
+                          <p className="text-xs text-muted-foreground mt-0.5" data-tco-year-net={anneeCourante.netCents}>
+                            Avoirs, remboursements et indemnités : − {eur(anneeCourante.creditsCents)} · net de l’année {eur(anneeCourante.netCents)}.
+                          </p>
+                        )}
+                        {anneeCourante.possiblyIncomplete && (
+                          <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-year-incomplete>
+                            {anneeCourante.count === 0 ? 'Absence de dépense non certaine : ' : 'Montant potentiellement incomplet : '}des dépenses sans date ne sont rattachées à aucune année.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="divide-y divide-border">
+                  {avecEstimations && <Ligne label="Coût réel documenté (justificatifs et fiche)" value={eur(t.summary.cumulativeCostCents)} />}
                   <Ligne label="Coût d’acquisition" value={t.summary.acquisitionStatus === 'MISSING' ? 'non renseigné' : t.summary.acquisitionStatus === 'NOT_APPLICABLE' ? 'sans objet (aucun achat)' : eur(t.summary.acquisitionCents)} muted={t.summary.acquisitionStatus !== 'DOCUMENTED'} />
                   <Ligne label="Dépenses complémentaires" value={eur(t.summary.additionalCostsCents)} />
                   {t.reductionsCents + t.refundsCents + t.indemnitiesCents > 0 && (
                     <Ligne label="Avoirs, remboursements et indemnités" value={`− ${eur(t.reductionsCents + t.refundsCents + t.indemnitiesCents)}`} />
                   )}
-                  {!t.disposed && <Ligne label="Coût net estimé (après valeur actuelle)" value={t.summary.netEstimatedCents != null ? eur(t.summary.netEstimatedCents) : 'non calculable'} strong />}
-                  {!t.disposed && avecEstimations && usageC?.netEstimatedWithEstimatesCents != null && <Ligne label="Coût net estimé, estimations d’usage incluses" value={eur(usageC.netEstimatedWithEstimatesCents)} muted />}
-                  {t.disposed && <Ligne label="Coût net final (après cession)" value={t.summary.netFinalCents != null ? eur(t.summary.netFinalCents) : 'non établi'} strong />}
-                  {t.disposed && avecEstimations && usageC?.netFinalWithEstimatesCents != null && <Ligne label="Coût net final, estimations d’usage incluses" value={eur(usageC.netFinalWithEstimatesCents)} muted />}
                 </div>
-                {avecEstimations && (
-                  <p className="text-xs mt-2 text-muted-foreground" data-tco-summary-estimates>
-                    Dont {eur(estime)} estimés à partir de vos forfaits d’usage, pour les périodes écoulées sans justificatif suffisant : ce ne sont ni des factures ni des preuves de paiement.
-                  </p>
-                )}
                 {/* Lot 109C : « aucune anomalie détectée » ≠ « toutes les dépenses possibles sont connues ». */}
-                <p className={`text-xs mt-2 ${t.status === 'COMPLETE' ? 'text-muted-foreground' : 'text-[color:var(--attention-on-soft)]'}`} data-tco-completeness={t.status}>
+                <p className={`text-xs ${t.status === 'COMPLETE' ? 'text-muted-foreground' : 'text-[color:var(--attention-on-soft)]'}`} data-tco-completeness={t.status}>
                   {t.status === 'COMPLETE' ? `Aucune anomalie détectée sur ${t.reliability.operationsCounted + t.reliability.documentsCounted} élément(s) documenté(s). Le coût ne comprend que les dépenses connues de Verebona.`
                     : t.status === 'PARTIAL' ? 'Résultat partiel : seule une partie des éléments a pu être lue.'
                       : (diag?.open.families ?? 0) > 0 ? 'Couverture incomplète : voir les points à vérifier ci-dessous.'
                         : (diag?.inProgress ?? 0) > 0 ? 'Couverture incomplète : lecture automatique en cours (voir ci-dessous).'
                           : 'Couverture incomplète : certaines informations manquent.'}
                 </p>
-              </div>
-
-              {/* ── Lot 76G : indicateurs annuels (TCO total, TCO moyen annuel, dépenses de l'année) ── */}
-              {annual && anneeCourante && (
-                <section className="space-y-2" data-tco-annual>
-                  <h3 className="vb-app-subsection m-0">Indicateurs annuels</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="total">
-                      <p className="text-xs text-muted-foreground">{avecEstimations ? 'TCO total (estimations incluses)' : 'TCO total'}</p>
-                      <p className="text-lg font-semibold text-[color:var(--text-primary)] tabular-nums">{eur(avecEstimations ? t.summary.totalWithEstimatesCents : annual.average.totalCents)}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Coût cumulé {t.period.start && !annual.average.incoherence ? `depuis le ${dateNum(t.period.start)}` : 'documenté'}{t.period.endSource === 'TODAY' ? '' : ` jusqu’à la cession (${dateNum(t.period.end)})`}.
-                        {avecEstimations ? ` Réel documenté ${eur(annual.average.totalCents)} + complément estimé ${eur(estime)}.` : ''}
-                      </p>
-                    </div>
-                    <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="average" data-tco-average-status={annual.average.status}>
-                      <p className="text-xs text-muted-foreground">{avecEstimations ? 'TCO moyen annuel (estimations incluses)' : 'TCO moyen annuel'}</p>
-                      <p className={`text-lg font-semibold tabular-nums ${annual.average.cents == null ? 'text-muted-foreground' : 'text-[color:var(--text-primary)]'}`}>
-                        {annual.average.cents != null ? `${eur(avecEstimations && usageC?.averageWithEstimatesCents != null ? usageC.averageWithEstimatesCents : annual.average.cents)} / an` : 'Non calculé'}
-                      </p>
-                      {avecEstimations && annual.average.cents != null && (
-                        <p className="text-xs text-muted-foreground mt-0.5" data-tco-average-documented>Réel documenté seul : {eur(annual.average.cents)} / an.</p>
-                      )}
-                      <p className="text-xs text-muted-foreground mt-1 break-words">{moyenneExplication(annual.average, t.period.endSource)}</p>
-                      {annual.average.extrapolationLabel && (
-                        <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-average-extrapolated>{annual.average.extrapolationLabel}.</p>
-                      )}
-                      {annual.average.cents != null && annual.average.incomplete && (
-                        <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5">Données manquantes : valeur incomplète (voir les points à vérifier).</p>
-                      )}
-                    </div>
-                    <div className="rounded-lg border border-border p-3 min-w-0" data-tco-indicator="year">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs text-muted-foreground">Dépenses de l’année</p>
-                        <Select value={String(anneeSel)} onValueChange={(v) => setYear(Number(v))}>
-                          <SelectTrigger className="h-8 w-[6.5rem] shrink-0" aria-label="Année des dépenses" data-tco-year-select><SelectValue /></SelectTrigger>
-                          <SelectContent>
-                            {[...annual.years].reverse().map((y) => <SelectItem key={y.year} value={String(y.year)}>{y.year}</SelectItem>)}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <p className="text-lg font-semibold text-[color:var(--text-primary)] tabular-nums" data-tco-year-total={anneeCourante.year}>{eur(anneeCourante.costsCents)}</p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        {anneeCourante.count === 0
-                          ? `Aucune dépense datée du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)}.`
-                          : `${anneeCourante.count} dépense(s) réellement constatée(s) du ${dateFr(anneeCourante.periodStart)} au ${dateFr(anneeCourante.periodEnd)} (montant brut).`}
-                      </p>
-                      {/* Lot 108C : complément estimé de l'année (périodes écoulées), à part des dépenses réellement constatées. */}
-                      {estimeAnnee > 0 && (
-                        <p className="text-xs text-muted-foreground mt-0.5" data-tco-year-estimated={estimeAnnee}>
-                          Complément estimé des dépenses d’usage : + {eur(estimeAnnee)} · avec estimations {eur(anneeCourante.costsCents + estimeAnnee)}.
-                        </p>
-                      )}
-                      {/* Lot 81D : brut et net de l'année, tels que calculés par le moteur. */}
-                      {anneeCourante.creditsCents !== 0 && (
-                        <p className="text-xs text-muted-foreground mt-0.5" data-tco-year-net={anneeCourante.netCents}>
-                          Avoirs, remboursements et indemnités : − {eur(anneeCourante.creditsCents)} · net de l’année {eur(anneeCourante.netCents)}.
-                        </p>
-                      )}
-                      {anneeCourante.possiblyIncomplete && (
-                        <p className="text-xs text-[color:var(--attention-on-soft)] mt-0.5" data-tco-year-incomplete>
-                          {anneeCourante.count === 0 ? 'Absence de dépense non certaine : ' : 'Montant potentiellement incomplet : '}des dépenses sans date ne sont rattachées à aucune année.
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Le TCO moyen annuel est un coût annualisé : l’achat initial y est inclus, ce n’est donc pas le budget annuel récurrent d’utilisation.
-                    Les dépenses de l’année sont les dépenses réellement constatées, à leur date, pendant l’année choisie{avecEstimations ? ' ; le complément estimé des dépenses d’usage est indiqué à part' : ''}.
+                {annual && (annual.undated.count > 0 || annual.undated.creditsCents > 0) && (
+                  <p className="text-xs text-[color:var(--attention-on-soft)]" data-tco-annual-undated>
+                    {annual.undated.count} dépense(s) sans date fiable ({eur(annual.undated.costsCents)}) : comptée(s) dans le coût total, rattachée(s) à aucune année — les montants par année peuvent être incomplets.
                   </p>
-                  {(annual.undated.count > 0 || annual.undated.creditsCents > 0) && (
-                    <p className="text-xs text-[color:var(--attention-on-soft)]" data-tco-annual-undated>
-                      {annual.undated.count} dépense(s) sans date fiable ({eur(annual.undated.costsCents)}) : comptée(s) dans le TCO total, rattachée(s) à aucune année — les montants par année peuvent être incomplets.
-                    </p>
-                  )}
-                  {annual.notRealized.count > 0 && (
-                    <p className="text-xs text-muted-foreground" data-tco-annual-not-realized>
-                      {annual.notRealized.count} dépense(s) prévue(s) ou datée(s) après aujourd’hui{annual.notRealized.costsCents > 0 ? ` (${eur(annual.notRealized.costsCents)})` : ''} : non encore réalisée(s), comptée(s) dans aucun indicateur (voir « Dépenses non retenues »).
-                    </p>
-                  )}
+                )}
+                {annual && annual.notRealized.count > 0 && (
+                  <p className="text-xs text-muted-foreground" data-tco-annual-not-realized>
+                    {annual.notRealized.count} dépense(s) prévue(s) ou datée(s) après aujourd’hui{annual.notRealized.costsCents > 0 ? ` (${eur(annual.notRealized.costsCents)})` : ''} : non encore réalisée(s), comptée(s) dans aucun indicateur (voir « Dépenses non retenues »).
+                  </p>
+                )}
+              </section>
+
+              {/* ── Lot 111F : financement — prêts du bien consolidés (Opérations FINANCING), seulement si des données utiles existent ── */}
+              {ind && ind.financing.loans.length > 0 && (
+                <section className="space-y-2" data-tco-financing>
+                  <div className="flex items-center gap-1.5">
+                    <h3 className="vb-app-subsection m-0">Financement</h3>
+                    <TcoInfoTip label="Financement" text={ind.financing.info} />
+                  </div>
+                  <div className="divide-y divide-border">
+                    <Ligne label="Coût du crédit à date (intérêts, assurance, frais)" value={eur(ind.financing.costToDateCents)} strong />
+                    <Ligne label={`Coût total prévisionnel du crédit${ind.financing.estimated ? ' (échéancier partiel)' : ''}`} value={ind.financing.contractualTotalCents != null ? eur(ind.financing.contractualTotalCents) : '–'} muted />
+                    {ind.financing.loans.length > 1 && ind.financing.loans.map((p) => (
+                      <Ligne key={p.key} label={[p.label, p.lender, p.reference].filter(Boolean).join(' · ')} value={eur(p.costToDateCents)} muted />
+                    ))}
+                  </div>
+                  {ind.financing.basisLabel && <p className="text-xs text-muted-foreground" data-tco-financing-basis>{ind.financing.basisLabel}.</p>}
                 </section>
               )}
 
@@ -695,7 +688,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
               {(t.disposed || t.disposal.desiredPriceCents != null || t.summary.currentValue) && (
                 <Bloc title={t.disposed ? 'Cession' : 'Valeur actuelle et cession'} data-tco-disposal>
                   <div className="divide-y divide-border">
-                    {!t.disposed && <Ligne label="Valeur actuelle" value={t.summary.currentValue ? `${eur(t.summary.currentValue.cents)} · ${dateFr(t.summary.currentValue.date)}` : 'non disponible'} muted />}
+                    {!t.disposed && <Ligne label="Dernière valeur estimée (après l’achat)" value={t.summary.currentValue ? `${eur(t.summary.currentValue.cents)} · ${dateFr(t.summary.currentValue.date)}` : '–'} muted />}
                     {t.disposal.desiredPriceCents != null && <Ligne label="Prix souhaité" value={eur(t.disposal.desiredPriceCents)} muted />}
                     {t.disposed && <Ligne label="Prix réalisé" value={eur(t.disposal.realizedPriceCents)} />}
                     {t.disposal.feesCents > 0 && <Ligne label="Frais de cession (inclus dans les coûts)" value={eur(t.disposal.feesCents)} muted />}

@@ -12,16 +12,28 @@
  * expired) le temps de livrer l'écran de préparation.
  */
 
-import { normalizeExportCode } from '@/services/exports/catalog';
+import { normalizeExportCode, isDossierCode } from '@/services/exports/catalog';
+import { generationReference } from './identity';
+import { REPLACED_LABEL } from '@/lib/exports/regeneration';
+import { parisDate } from './clock';
 import { EXPORT_ERROR_MESSAGES, safeExportErrorMessage } from '@/services/exports/export-errors';
 
-const GENERATION_STATUSES = ['queued', 'generating', 'ready', 'partial', 'failed', 'expired', 'deleted'] as const;
+const GENERATION_STATUSES = ['queued', 'generating', 'ready', 'partial', 'failed', 'expired', 'deleted', 'cancelled'] as const;
 export type GenerationStatus = (typeof GENERATION_STATUSES)[number];
 
 export const PARTIAL_MESSAGE = 'Le dossier a été généré, mais certains fichiers n’ont pas pu être intégrés.'; // MSG-PREP-007
 
-/** Statut V12 d'une ligne (anciennes valeurs comprises ; expiration constatée à la lecture). */
-export function normalizeGenerationStatus(status: string, expiresAt?: Date | string | null, now: Date = new Date()): GenerationStatus {
+/**
+ * Statut V12 d'une ligne (anciennes valeurs comprises ; expiration constatée à la lecture).
+ *
+ * Lot 111B : `cancelled` est un statut à part entière (génération remplacée
+ * par une régénération) — ni échec, ni relance. Une génération dont
+ * l'annulation est demandée (`cancelRequestedAt`) est déjà présentée
+ * annulée pendant que le worker l'arrête. Les anciennes lignes `cancelled`
+ * sans motif (moteur historique) restent présentées en échec, comme avant.
+ */
+export function normalizeGenerationStatus(status: string, expiresAt?: Date | string | null, now: Date = new Date(), cancel?: { requestedAt?: Date | string | null; reason?: string | null }): GenerationStatus {
+  if (cancel?.reason && (cancel.requestedAt || status === 'cancelled') && (status === 'cancelled' || status === 'queued' || status === 'generating')) return 'cancelled';
   const s = status === 'pending' ? 'queued' : status === 'error' || status === 'cancelled' ? 'failed' : status;
   if ((s === 'ready' || s === 'partial') && expiresAt && new Date(expiresAt).getTime() <= now.getTime()) return 'expired';
   return (GENERATION_STATUSES as readonly string[]).includes(s) ? (s as GenerationStatus) : 'failed';
@@ -30,6 +42,7 @@ export function normalizeGenerationStatus(status: string, expiresAt?: Date | str
 /** Statut lu par l'interface historique (`AssetExportsTab`). */
 export function legacyStatus(s: GenerationStatus): string {
   switch (s) {
+    case 'cancelled': return 'cancelled';
     case 'queued': return 'pending';
     case 'partial': return 'ready';
     case 'failed': return 'error';
@@ -70,13 +83,50 @@ interface GenerationRowLike {
   createdAt: Date | string;
   completedAt?: Date | string | null;
   generationAttemptCount?: number;
+  cancelRequestedAt?: Date | string | null;
+  cancelReason?: string | null;
+  cancelledAt?: Date | string | null;
+  replacedByGenerationId?: number | null;
 }
+
+/** Lot 111B : génération qui en remplace une autre (lien d'historique). */
+export interface ReplacementRef { id: number; publicId: string; exportType: string; createdAt: Date | string }
 
 /** URL de téléchargement (endpoint qui revérifie les droits, DRH-010). */
 const downloadPath = (publicId: string, file: 'pdf' | 'zip') => `/api/export-generations/${publicId}/download?file=${file}`;
 
-export function toGenerationDto(row: GenerationRowLike, opts: { authorName?: string | null; now?: Date } = {}) {
-  const generationStatus = normalizeGenerationStatus(row.status, row.expiresAt, opts.now);
+/** Référence imprimée d'une génération remplaçante (« VBN-COMPLET-20261105-000123 »), date de Paris de sa demande. */
+export function replacementReference(r: ReplacementRef): string | null {
+  const code = normalizeExportCode(r.exportType);
+  if (!code || !isDossierCode(code)) return null;
+  return generationReference(code, r.id, parisDate(new Date(r.createdAt)));
+}
+
+/**
+ * Lot 111B : « Annulé — Remplacé par la génération VBN-…, le 05/11/2026 ».
+ * `replacement` absent (ligne supprimée) : libellé sans référence.
+ */
+function cancellationOf(row: GenerationRowLike, replacement: ReplacementRef | null | undefined) {
+  if (!row.cancelReason) return null;
+  const reference = replacement ? replacementReference(replacement) : null;
+  return {
+    reason: row.cancelReason,
+    label: REPLACED_LABEL,
+    /** Arrêt effectif constaté (faux tant que le worker arrête l'exécution en cours). */
+    effective: row.status === 'cancelled',
+    requestedAt: row.cancelRequestedAt ?? null,
+    cancelledAt: row.cancelledAt ?? null,
+    replacedBy: replacement ? {
+      publicId: replacement.publicId,
+      reference,
+      createdAt: replacement.createdAt,
+      pollUrl: `/api/export-generations/${replacement.publicId}`,
+    } : null,
+  };
+}
+
+export function toGenerationDto(row: GenerationRowLike, opts: { authorName?: string | null; now?: Date; replacement?: ReplacementRef | null } = {}) {
+  const generationStatus = normalizeGenerationStatus(row.status, row.expiresAt, opts.now, { requestedAt: row.cancelRequestedAt, reason: row.cancelReason });
   const keys = outputKeys(row.outputPayload);
   const downloadable = isDownloadable(generationStatus);
   const metrics = (row.metricsJson ?? {}) as Record<string, unknown>;
@@ -109,6 +159,8 @@ export function toGenerationDto(row: GenerationRowLike, opts: { authorName?: str
     // DRH-003 : générateur affiché (nom, à défaut identifiant).
     createdBy: { userId: row.userId, name: opts.authorName ?? null },
     generationAttemptCount: row.generationAttemptCount ?? 0,
+    // Lot 111B : génération remplacée (motif, lien vers la nouvelle référence).
+    cancellation: generationStatus === 'cancelled' ? cancellationOf(row, opts.replacement) : null,
     downloadUrl: downloadable && keys.pdf ? downloadPath(row.publicId, 'pdf') : null,
     downloadZipUrl: downloadable && keys.zip ? downloadPath(row.publicId, 'zip') : null,
     pollUrl: `/api/export-generations/${row.publicId}`,

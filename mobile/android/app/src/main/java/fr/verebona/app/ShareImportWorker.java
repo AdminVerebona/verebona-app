@@ -51,7 +51,11 @@ public class ShareImportWorker extends Worker {
 
     /** Lance l'envoi des fichiers non terminés d'un partage, avec le jeton DE SON compte. */
     static void startShare(Context c, String shareId) {
+        // Lot 111P : jeton UTILISABLE = présent, non échu et non refusé par le serveur (pas de renvoi en boucle).
         final JSONObject grant = ShareImportStore.readGrant(c);
+        final String[] gs = ShareImportStore.grantState(c);
+        final String waitMessage = waitingMessage(gs);
+        final boolean[] waiting = { false };
         final java.util.List<String> toEnqueue = new java.util.ArrayList<>();
         ShareImportStore.update(c, shareId, m -> {
             String account = m.isNull("accountKey") ? null : m.optString("accountKey", null);
@@ -68,7 +72,9 @@ public class ShareImportWorker extends Worker {
                 if (ShareImportContract.isFinal(st)) continue;
                 if (!usable) {
                     f.put("state", ShareImportContract.WAITING_AUTH);
-                    f.put("message", "Ouvrez Verebona et connectez-vous pour terminer l’import.");
+                    f.put("code", gs[2] != null ? gs[2] : grant != null ? "LOCAL_OTHER_ACCOUNT" : "LOCAL_" + gs[0].toUpperCase(java.util.Locale.ROOT));
+                    f.put("message", waitMessage);
+                    waiting[0] = true;
                     continue;
                 }
                 if (!ShareImportContract.UPLOADING.equals(st)) {
@@ -79,6 +85,13 @@ public class ShareImportWorker extends Worker {
             }
         });
         for (String op : toEnqueue) enqueue(c, shareId, op);
+        if (waiting[0]) ShareImportStore.diag(c, "UPLOAD_WAIT_" + gs[0].toUpperCase(java.util.Locale.ROOT) + "_" + gs[1]);
+    }
+
+    /** Texte d'attente CONSTATÉ (mêmes textes qu'iOS), jamais « connectez-vous » sans preuve. */
+    static String waitingMessage(String[] gs) {
+        String t = ShareImportContract.notice(ShareImportContract.noticeKey(gs[0], gs[2]));
+        return t != null ? t : ShareImportContract.notice("token_missing");
     }
 
     static void resumeAll(Context c) {
@@ -111,9 +124,11 @@ public class ShareImportWorker extends Worker {
         JSONObject grant = ShareImportStore.readGrant(c);
         String account = m.isNull("accountKey") ? null : m.optString("accountKey", null);
         if (grant == null || account == null || !account.equals(grant.optString("accountKey"))) {
-            setState(c, shareId, operationId, ShareImportContract.WAITING_AUTH, null, "Ouvrez Verebona et connectez-vous pour terminer l’import.", null, false);
+            String[] gs = ShareImportStore.grantState(c);
+            setState(c, shareId, operationId, ShareImportContract.WAITING_AUTH, gs[2] != null ? gs[2] : "LOCAL_" + gs[0].toUpperCase(java.util.Locale.ROOT), waitingMessage(gs), null, false);
             return Result.success(); // repris au prochain jeton (setGrant)
         }
+        final String usedRef = ShareImportStore.ref(grant.optString("token"));
         File copy = ShareImportStore.file(c, shareId, f.optString("path"));
         if (copy == null || !copy.exists()) {
             setState(c, shareId, operationId, ShareImportContract.FAILED, "LOCAL_FILE_MISSING", "Fichier plus disponible sur ce téléphone : partagez-le de nouveau.", null, false);
@@ -172,6 +187,11 @@ public class ShareImportWorker extends Worker {
         }
 
         String outcome = ShareImportContract.outcome(status, bodyOutcome, transport);
+        // Lot 111P : trace expurgée (catégorie + code serveur ou statut ; jamais le jeton ni le nom du fichier).
+        ShareImportStore.diag(c, "imported".equals(outcome) ? "UPLOAD_OK"
+            : "auth".equals(outcome) ? "UPLOAD_AUTH_" + ShareImportContract.safeCode(code)
+            : "refused".equals(outcome) ? "UPLOAD_REFUSED_" + ShareImportContract.safeCode(code)
+            : transport ? "UPLOAD_RETRY_NETWORK" : "UPLOAD_RETRY_HTTP_" + status);
         switch (outcome) {
             case "imported":
                 setState(c, shareId, operationId, ShareImportContract.IMPORTED, null, null, fileId, false);
@@ -180,10 +200,20 @@ public class ShareImportWorker extends Worker {
                 setState(c, shareId, operationId, ShareImportContract.FAILED, code,
                     message != null ? message : "Le document n’a pas pu être importé.", null, false);
                 return Result.success();
-            case "auth":
+            case "auth": {
+                // Jeton refusé par le serveur : marqué (par sa référence) pour l'activité et l'app, qui le renouvelle.
+                ShareImportStore.markRefused(c, usedRef, code);
+                JSONObject fresh = ShareImportStore.readGrant(c);
+                if (fresh != null && !usedRef.equals(ShareImportStore.ref(fresh.optString("token")))
+                    && getRunAttemptCount() + 1 < ShareImportContract.MAX_ATTEMPTS) {
+                    // Jeton PLUS RÉCENT déjà là (renouvelé pendant l'envoi) : nouvel essai avec lui, borné.
+                    setState(c, shareId, operationId, ShareImportContract.QUEUED, code, null, null, true);
+                    return Result.retry();
+                }
                 setState(c, shareId, operationId, ShareImportContract.WAITING_AUTH, code,
-                    message != null ? message : "Ouvrez Verebona et connectez-vous pour terminer l’import.", null, false);
+                    message != null ? message : ShareImportContract.notice("token_refused"), null, false);
                 return Result.success();
+            }
             default:
                 if (getRunAttemptCount() + 1 >= ShareImportContract.MAX_ATTEMPTS) {
                     setState(c, shareId, operationId, ShareImportContract.FAILED, code,

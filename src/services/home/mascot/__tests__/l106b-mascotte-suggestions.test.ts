@@ -188,6 +188,7 @@ describe('L106B-U03 — les contrôles des questions personnalisées ne sont pas
     // Type inconnu : jamais lu comme une question.
     expect(raisons(b, [{ ...fonde(b, 'Quelle est ma prochaine échéance ?', ['ACC.DEADLINES']), kind: 'TIP' }])).toEqual(['format']);
     // Question fondée : toujours acceptée, et ses trois questions examinées malgré deux invitations.
+    // Lot 111L (audit) : validateur T6 historique (fondement des questions), plus utilisé pour l'affichage depuis 108J.
     const qs = ['Quelle est ma prochaine échéance ?', 'Quels sont les documents de Cupra ?', 'Quand a lieu le Contrôle technique ?'];
     const v = S.validateT6SuggestionsDetailed([
       VOITURE, fonde(b, qs[0], ['ACC.DEADLINES']), NOTICE, fonde(b, qs[1], ['A1', 'A1.DOCS'], { assetRef: 'A1' }), fonde(b, qs[2], ['D1']),

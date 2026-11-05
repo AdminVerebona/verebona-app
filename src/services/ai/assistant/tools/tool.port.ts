@@ -13,6 +13,7 @@
  *  3. SOURCÉ — tout élément renvoyé porte une référence vérifiable, faute de
  *     quoi il ne pourra pas être cité dans la réponse (§4.3.6).
  */
+import { ASSISTANT_EXCERPT_READ_CHARS, ASSISTANT_INPUT_SAFETY_TOKENS } from '@/services/verebona-assistant/config/assistant-limits';
 
 /** Référence d'une source citable, revalidée avant affichage. */
 export interface SourceRef {
@@ -50,15 +51,18 @@ export interface AssistantTool<P = Record<string, unknown>, R = unknown> {
 /**
  * Plafonds du CDC Assistant §31.2. Centralisés : un dépassement ne doit jamais
  * dépendre de la vigilance de l'auteur d'un outil.
+ *
+ * Lot 111M (ticket « budgets IA ») : extrait et entrée tirés de la source
+ * UNIQUE (`assistant-limits`) — plus de copie divergente ; plus de plafond
+ * de sortie ici (configuration IA effective seule, CDC 15 T2-43).
  */
 export const ASSISTANT_LIMITS = {
   maxSourcesRetrieved: 8,
   maxSourcesDisplayed: 5,
-  maxExcerptChars: 1500,
+  maxExcerptChars: ASSISTANT_EXCERPT_READ_CHARS,
   maxDisplayedExcerptChars: 240,
   maxAiCallsPerMessage: 2,
-  maxInputTokens: 12_000,
-  maxOutputTokens: 500,
+  maxInputTokens: ASSISTANT_INPUT_SAFETY_TOKENS,
 } as const;
 
 /** Tronque un extrait avant transmission au modèle. */

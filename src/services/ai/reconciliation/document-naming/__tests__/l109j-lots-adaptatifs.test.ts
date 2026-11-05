@@ -9,7 +9,8 @@ import {
   conformantFamilies, estimatePromptTokens, familyKeyOf, maxTargetsForOutput, namingBudget, namingRetryDelayMs, planFamilyChunks,
   reducedChunkSize, titleShape, NAMING_MIN_CHUNK_DOCS,
 } from '../adaptive';
-import { namingVariables, type NamingDoc } from '../context';
+import { docSnapshotHash, namingVariables, type NamingDoc } from '../context';
+import { freshSinceReview } from '../dependencies';
 
 const doc = (id: number, o: Partial<NamingDoc> = {}): NamingDoc => ({
   id, name: `Document ${id}`, originalName: null, filename: null, s3Key: null, publicId: null, titleSource: 'SYSTEM', legacyUserEdit: false,
@@ -126,5 +127,26 @@ describe('L109J-NOM-CTX — contexte réduit des références', () => {
     expect(ref).not.toHaveProperty('excerpt');
     expect(ref).not.toHaveProperty('nameHistory');
     expect(ref).not.toHaveProperty('operations');
+  });
+});
+
+describe('L111A-E1 — préfiltre « titres conformes » : jamais une justification pour ignorer une donnée nouvelle', () => {
+  const MOIS = ['Janvier', 'Février', 'Mars', 'Avril'];
+  const fam = MOIS.map((m, i) => doc(i + 1, { typeCode: 'INVOICE', supplier: 'Homiris', name: `Facture Homiris — ${m} 2024` }));
+  const snapshot = Object.fromEntries(fam.map((d) => [String(d.id), docSnapshotHash(d)]));
+  it('L111A-E1-U6 — famille conforme, nouvelle donnée sur UN document : seul ce document est « frais » (examiné), les autres restent préfiltrés (références)', () => {
+    const modifie = fam.map((d) => (d.id === 3 ? { ...d, factsDigest: 'avenant' } : d));
+    const pre = conformantFamilies(modifie, () => 'T1');
+    expect(pre.conformant.size).toBe(4);
+    const frais = freshSinceReview(modifie, snapshot);
+    expect([...frais]).toEqual([3]);
+    expect([...pre.conformant].filter((id) => !frais.has(id)).sort()).toEqual([1, 2, 4]);
+  });
+  it('L111A-E1-U7 — premier examen (aucun instantané) : préfiltre du lot 109J inchangé ; nouveau membre conforme : frais ; réexamen « contexte enrichi » : tout le lot', () => {
+    expect(freshSinceReview(fam, null).size).toBe(0);
+    const neuf = doc(9, { typeCode: 'INVOICE', supplier: 'Homiris', name: 'Facture Homiris — Mai 2024' });
+    expect([...freshSinceReview([...fam, neuf], snapshot)]).toEqual([9]);
+    expect(freshSinceReview(fam, snapshot, { all: true }).size).toBe(4);
+    expect([...freshSinceReview(fam, snapshot, { extra: [2] })]).toEqual([2]);
   });
 });

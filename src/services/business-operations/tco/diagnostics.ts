@@ -172,13 +172,13 @@ export const TCO_DIAGNOSTIC_MATRIX: Readonly<Record<TcoDiagnosticCode, MatrixEnt
   ACQUISITION_DATE_UNDETERMINED: {
     nature: 'ANOMALY', impact: 'PERIOD',
     title: () => 'Date d’achat du bien incertaine',
-    text: 'Plusieurs dates d’achat possibles se contredisent : le TCO moyen annuel n’est pas calculé (le total n’en dépend pas). Confirmez la date d’achat sur la fiche du bien.',
+    text: 'Plusieurs dates d’achat possibles se contredisent : le coût annuel moyen de possession n’est pas calculé (le total n’en dépend pas). Confirmez la date d’achat sur la fiche du bien.',
     action: champ('acquisitionDate', 'Confirmer la date d’achat'),
   },
   ACQUISITION_DATE_INCOHERENT: {
     nature: 'ANOMALY', impact: 'PERIOD',
     title: () => 'Date d’achat incohérente',
-    text: 'La date d’achat est impossible, future ou postérieure à la cession : le TCO moyen annuel n’est pas calculé. Corrigez la date d’achat de la fiche.',
+    text: 'La date d’achat est impossible, future ou postérieure à la cession : le coût annuel moyen de possession n’est pas calculé. Corrigez la date d’achat de la fiche.',
     action: champ('acquisitionDate', 'Corriger la date d’achat'),
   },
   INVALID_DATES: {
@@ -239,7 +239,7 @@ export const TCO_DIAGNOSTIC_MATRIX: Readonly<Record<TcoDiagnosticCode, MatrixEnt
   ACQUISITION_DATE_MISSING: {
     nature: 'COVERAGE', impact: 'PERIOD',
     title: () => 'Date d’achat non renseignée',
-    text: 'La période de possession n’est pas établie : le TCO moyen annuel n’est pas calculé (le total n’en dépend pas).',
+    text: 'La période de possession n’est pas établie : le coût annuel moyen de possession n’est pas calculé (le total n’en dépend pas).',
     action: champ('acquisitionDate', 'Renseigner la date d’achat'),
   },
   ECONOMIC_DATE_UNDETERMINED: {

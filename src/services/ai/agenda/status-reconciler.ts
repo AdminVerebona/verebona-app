@@ -83,7 +83,9 @@ export interface CompletionDecision {
     | 'DOCUMENT_TYPE_NOT_PROBATIVE' | 'PROOF_FORM_NOT_APPLICABLE' | 'PROOF_FORM_NOT_PROBATIVE'
     | 'PROOF_FORM_UNDETERMINED' | 'OCCURRENCE_UNDATED' | 'OCCURRENCE_MISMATCH'
     | 'COMPLETION_PROVEN' | 'MODEL_NOT_COMPLETED' | 'MODEL_INSUFFICIENT' | 'MODEL_CONFLICTUAL'
-    | 'MODEL_OCCURRENCE_MISMATCH' | 'MODEL_OCCURRENCE_AMBIGUOUS';
+    | 'MODEL_OCCURRENCE_MISMATCH' | 'MODEL_OCCURRENCE_AMBIGUOUS'
+    /** Lot 111M : preuve lue en partie seulement (relecture bornée épuisée) — aucune décision définitive. */
+    | 'EVIDENCE_PARTIALLY_READ';
   reason: string;
   /** Le déterminisme n'a pas pu conclure : la branche VERIFY_COMPLETION est utile. */
   needsModel: boolean;

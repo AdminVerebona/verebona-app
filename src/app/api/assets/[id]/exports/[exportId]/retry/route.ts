@@ -21,7 +21,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { db } from '@/db';
 import { exportGenerations } from '@/db/schema';
-import { eq, and, inArray, lt, sql } from 'drizzle-orm';
+import { eq, and, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { findAccessibleAssetForExport } from '@/services/exports/export-access';
 import { exportRouteError, EXPORT_ERROR_MESSAGES } from '@/services/exports/export-errors';
 import { normalizeExportCode, EXPORT_BRUT_CODE } from '@/services/exports/catalog';
@@ -65,7 +65,8 @@ export async function POST(
       row.lockedUntil ? new Date(row.lockedUntil).getTime() < Date.now()
         : row.generationStartedAt != null && new Date(row.generationStartedAt).getTime() < Date.now() - 5 * 60 * 1000
     );
-    const canRetry = code !== null && code !== EXPORT_BRUT_CODE
+    // Lot 111B : une génération remplacée (annulation demandée ou close) ne se relance pas.
+    const canRetry = code !== null && code !== EXPORT_BRUT_CODE && row.cancelRequestedAt == null
       && (row.status === 'failed' || row.status === 'error' || row.status === 'pending' || stuck);
     if (!canRetry) {
       return NextResponse.json({
@@ -118,6 +119,7 @@ export async function POST(
       eq(exportGenerations.id, exportIdNum),
       inArray(exportGenerations.status, [row.status]),
       lt(exportGenerations.userRetryCount, MAX_USER_RETRIES),
+      isNull(exportGenerations.cancelRequestedAt),
     ))
       .returning();
     if (!updated) return NextResponse.json({ error: 'LOCK_FAILED' }, { status: 409 });

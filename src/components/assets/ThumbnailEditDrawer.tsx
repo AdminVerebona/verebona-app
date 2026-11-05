@@ -9,7 +9,8 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Upload, Check, ImageIcon, X, Loader2 } from 'lucide-react';
+import { Upload, Check, ImageIcon, X } from 'lucide-react';
+import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
@@ -286,15 +287,14 @@ export function ThumbnailEditDrawer({ open, onClose, assetId, currentThumbnailUr
               <span className="text-[12px] font-semibold">Annuler</span>
             </button>
             <div className="w-px bg-border" />
-            <button
-              type="button"
-              className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-primary/10 transition-colors text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+            <FooterPrimaryAction
+              icon={Check}
+              label="Utiliser"
+              busy={saving}
+              busyLabel="Sauvegarde…"
+              disabled={!selectedFileId || uploading}
               onClick={handleSaveSelection}
-              disabled={!selectedFileId || saving || uploading}
-            >
-              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-              <span className="text-[12px] font-semibold">{saving ? 'Sauvegarde…' : 'Utiliser'}</span>
-            </button>
+            />
           </div>
         </div>
       </SheetContent>

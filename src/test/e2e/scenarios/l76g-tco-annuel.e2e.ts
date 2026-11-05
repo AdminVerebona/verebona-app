@@ -74,7 +74,11 @@ scenario('L76G', 'TCO — indicateurs annuels (moyenne annuelle, dépenses de l�
     expect(t.summary.cumulativeCostCents).toBe(30_000 + 5_000 + 8_000 + 20_000 + 4_000);
     expect([annee(t, 2024)?.costsCents, annee(t, 2025)?.costsCents, annee(t, 2026)?.costsCents]).toEqual([30_000, 25_000, 12_000]);
     expect(t.annual.average).toMatchObject({ status: 'COMPUTED', start: '2024-03-01', days: 965 });
-    expect(t.annual.average.cents).toBe(Math.round((67_000 * 365.25) / 965));
+    // Lot 111F (décision PO, remplace #540 / #559) : prix d'achat du bien (300 €) jamais annualisé.
+    expect(t.annual.average).toMatchObject({ acquisitionPriceCents: 30_000 });
+    // Décision PO du 05/11 : années anniversaires (01/03/2024 → 21/10/2026 = 2 ans + 234 j / 365).
+    expect(t.annual.average.duration).toEqual({ fullYears: 2, remainderDays: 234, yearDays: 365 });
+    expect(t.annual.average.cents).toBe(Math.round((37_000 * 365) / (2 * 365 + 234)));
     coherent(t);
     // Consolidation T3 réelle : les justificatifs repris par les dépenses consolidées ne sont jamais comptés deux fois.
     await k.passer(compte, { today: TODAY });
@@ -120,7 +124,7 @@ scenario('L76G', 'TCO — indicateurs annuels (moyenne annuelle, dépenses de l�
     const recent = await velo(compte, '2026-10-12');
     const r = await tco(compte, recent.id);
     expect(r.annual.average).toMatchObject({ status: 'COMPUTED', days: 10, extrapolated: true, extrapolationLabel: 'Valeur extrapolée sur une durée de possession inférieure à un an' });
-    expect(r.annual.average.cents).toBe(Math.round((30_000 * 365.25) / 10));
+    expect(r.annual.average.cents).toBe(0); // Lot 111F : achat seul, prix d'achat jamais annualisé
     const sansDate = await velo(compte, null);
     const s = await tco(compte, sansDate.id);
     expect(s.annual.average).toMatchObject({ status: 'ACQUISITION_DATE_MISSING', cents: null });

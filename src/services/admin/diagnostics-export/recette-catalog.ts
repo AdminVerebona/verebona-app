@@ -355,6 +355,8 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_routing_promotions: 'configuration IA (état de routage subordonné)',
   ai_prompt_change_requests: 'configuration IA (prompts)', ai_prompt_test_runs: 'qualification IA', ai_prompt_versions: 'configuration IA (prompts)',
   ai_provider_credential: 'secret fournisseur IA', ai_queue_worker_heartbeats: 'technique (battements des workers)',
+  // Lot 111C : battements du worker des diagnostics BO (un par processus, sans compte).
+  diagnostic_worker_heartbeats: 'technique (battements du worker des diagnostics)',
   ai_retired_treatment_archive: 'archives IA retirées', ai_t2_content_access_log: 'journal d’accès sensible (T2)', ai_treatment_state: 'configuration IA',
   ai_use_cases: 'configuration IA', analysis_packs: 'catalogue commercial',
   // Assistant T2 (conversations : contenu personnel).

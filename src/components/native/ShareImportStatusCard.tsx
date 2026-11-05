@@ -9,11 +9,17 @@
  * l'import : « Importation en cours », « En attente de connexion »,
  * « Document ajouté » (après accusé serveur), « Échec » avec la cause.
  * Fermée par l'utilisateur une fois l'import terminé (copies locales purgées).
+ *
+ * Lot 111P : pour un import « En attente de connexion », l'application étant
+ * OUVERTE, la carte dit ce que fait l'app (renouvellement de l'autorisation,
+ * nouvel essai, double authentification…) au lieu du texte natif « ouvrez
+ * Verebona » ; le dernier code du journal technique est rappelé (recette).
  */
 import { FileCheck2, FileClock, FileX2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { SHARE_IMPORT_STATUS_LABELS } from '@/lib/mobile/share-import-policy';
 import { isSettled, summarize, trackingPath, type NativeShareItem } from '@/lib/native/share-import';
+import { provisionNotice, type ProvisionStatus } from '@/lib/native/share-grant-provisioner';
 
 /** Titre de la carte (pur, testé). */
 export function shareCardTitle(items: readonly NativeShareItem[]): string {
@@ -26,8 +32,19 @@ export function shareCardTitle(items: readonly NativeShareItem[]): string {
   return s.imported > 1 ? `${s.imported} documents ajoutés à Verebona` : 'Document ajouté à Verebona';
 }
 
-export function ShareImportStatusCard({ items, onOpen, onClose }: {
+/** Ligne d'un fichier (pur, testé) : en attente d'autorisation, l'état de la remise du jeton prime sur le texte natif. */
+export function shareFileLine(f: Pick<NativeShareItem['files'][number], 'state' | 'message'>, provision?: ProvisionStatus | null): string {
+  const label = SHARE_IMPORT_STATUS_LABELS[f.state];
+  if (f.state === 'waiting_auth') return provision ? `${label} — ${provisionNotice(provision)}` : label;
+  if (f.state === 'failed' && f.message) return `${label} — ${f.message}`;
+  if (f.state === 'waiting_network' && f.message) return `${label} — ${f.message}`;
+  return label;
+}
+
+export function ShareImportStatusCard({ items, provision, lastCode, onOpen, onClose }: {
   items: NativeShareItem[];
+  provision?: ProvisionStatus | null;
+  lastCode?: string | null;
   onOpen: (path: string) => void;
   onClose: (id: string) => void;
 }) {
@@ -53,11 +70,14 @@ export function ShareImportStatusCard({ items, onOpen, onClose }: {
             {files.slice(0, 4).map((f) => (
               <li key={f.operationId} className="text-xs text-muted-foreground">
                 <span className="block truncate font-medium text-[color:var(--text-primary)]">{f.name}</span>
-                <span>{SHARE_IMPORT_STATUS_LABELS[f.state]}{f.state === 'failed' && f.message ? ` — ${f.message}` : ''}{f.state === 'waiting_auth' && f.message ? ` — ${f.message}` : ''}</span>
+                <span>{shareFileLine(f, provision)}</span>
               </li>
             ))}
             {files.length > 4 && <li className="text-xs text-muted-foreground">et {files.length - 4} autre{files.length - 4 > 1 ? 's' : ''}</li>}
           </ul>
+          {s.waiting > 0 && lastCode && (
+            <p className="text-[11px] text-muted-foreground">Code technique : {lastCode}</p>
+          )}
           <div className="flex gap-2">
             <Button size="sm" variant="outline" onClick={() => onOpen(trackingPath(last))}>Voir le suivi</Button>
             {settled && (

@@ -40,11 +40,12 @@ describe('L57A — inscription des invités Premium Duo', () => {
     expect(out).not.toMatch(/parrain/i);
     expect(out).not.toContain('referralCode');
     expect(out).not.toContain('Un proche vous a invité');
-    // Champs classiques conservés (lot 103B : « Prénom ou pseudo » remplace prénom / nom).
-    for (const id of ['username', 'email', 'password', 'confirmPassword', 'acceptedTerms']) expect(out).toContain(`id="${id}"`);
+    // Champs classiques conservés (lot 103B : « Prénom ou pseudo » remplace prénom / nom ;
+    // lot 111E : id « displayName » au lieu de « username », ambigu pour les gestionnaires).
+    for (const id of ['displayName', 'email', 'password', 'confirmPassword', 'acceptedTerms']) expect(out).toContain(`id="${id}"`);
     for (const id of ['firstName', 'lastName']) expect(out).not.toContain(`id="${id}"`);
     // Le texte de contexte est en haut : avant le premier champ.
-    expect(out.indexOf(DUO_INVITE_SIGNUP_TEXT)).toBeLessThan(out.indexOf('id="username"'));
+    expect(out.indexOf(DUO_INVITE_SIGNUP_TEXT)).toBeLessThan(out.indexOf('id="displayName"'));
   });
 
   it('DUO-SIGNUP-02 — inscription classique : parrainage facultatif, replié derrière « J’ai un code de parrainage » (lot 103B)', () => {

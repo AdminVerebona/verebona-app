@@ -169,15 +169,23 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
     expect(r.answer).not.toMatch(/300,00\s€/);
   });
 
-  it('F-132 / F-133 / O6-E05 — « payé » vs « coûté » : sans preuve, pas de règlement affirmé ; avec preuve, règlement justifié', async () => {
+  it('F-132 / F-133 / O6-E05 — « payé » vs « coûté » ; lot 111K : « combien ai-je payé » = montant documenté, la question de RÈGLEMENT lit les preuves (jamais un règlement affirmé sans preuve)', async () => {
     const { compte, bien } = await polo(make);
     const f = await doc(make, compte, bien.id, { title: 'Facture révision', type: 'MAINTENANCE_INVOICE', cents: 125000 });
     const opId = await intervention(compte, [bien.id], { docs: [{ fileId: f, role: 'INVOICE' }], comps: [{ kind: 'REALIZED_COST', cents: 125000 }], label: 'Révision 60 000 km' });
 
+    // Lot 111K (ticket « pertinence des preuves », incident 1) : une question de
+    // MONTANT reçoit le montant documenté, sans réserve sur un règlement non demandé.
     const paye = await ask(compte.id, 'Combien ai-je payé pour l’entretien de la Polo ?');
-    expect(paye.strategy).toBe('structured.payments');
-    expect(paye.answer).toContain('aucune preuve de paiement');
-    expect(paye.answer).toMatch(/coût documenté pour Polo \(entretien\) est de 1\s250,00\s€ : ce montant ne prouve pas/);
+    expect(paye.strategy).toBe('structured.sum_qualified');
+    expect(paye.answer).toMatch(/1\s250,00\s€/);
+    expect(paye.answer).not.toMatch(/preuve de paiement|ne prouve pas|réglé/);
+
+    // La question de RÈGLEMENT : sans preuve, pas de règlement affirmé ; le coût est distingué.
+    const sansPreuve = await ask(compte.id, 'L’entretien de la Polo a-t-il été réglé ?');
+    expect(sansPreuve.strategy).toBe('structured.payments');
+    expect(sansPreuve.answer).toContain('aucune preuve de paiement');
+    expect(sansPreuve.answer).toMatch(/coût documenté pour Polo \(entretien\) est de 1\s250,00\s€ : ce montant ne prouve pas/);
 
     const coute = await ask(compte.id, 'Combien m’a coûté la Polo ?');
     expect(coute.strategy).toBe('structured.sum_qualified');
@@ -185,7 +193,7 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
 
     const preuve = await doc(make, compte, bien.id, { title: 'Relevé virement', type: 'WORKS_PAYMENT_PROOF', cents: 125000, date: '2026-03-05' });
     await ecrire(compte, (r) => r.addSource(opId, { kind: 'DOCUMENT', entityKey: preuve, role: 'PAYMENT_PROOF', authority: 'DOCUMENT', confidence: 'certain' } as never));
-    const regle = await ask(compte.id, 'Combien ai-je payé pour l’entretien de la Polo ?');
+    const regle = await ask(compte.id, 'Ai-je déjà payé l’entretien de la Polo ?');
     expect(regle.answer).toMatch(/Règlements justifiés pour Polo \(entretien\) : 1\s250,00\s€ \(1 preuve de paiement : « Relevé virement »\)/);
     expect(regle.sources[0].id).toBe(`doc_${preuve}`);
     // La preuve de paiement n'ajoute aucun coût (P16).

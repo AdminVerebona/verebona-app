@@ -13,7 +13,18 @@
  * dédoublonnée par le moteur ne réapparaît jamais dans une année.
  *
  *   TCO total          = coût cumulé documenté (inchangé, cumulatif).
- *   TCO moyen annuel   = TCO total × 365,25 / jours de possession INCLUS,
+ *   Lot 111F (ticket P1 « coût de possession, financement et valorisation »,
+ *   remplace la formule des lots 76G / 81D, #540, #559) :
+ *   Coût annuel moyen  = (TCO total − prix d'acquisition DU BIEN) ÷ durée en
+ *                        ANNÉES ANNIVERSAIRES (`ownershipDuration`, décision
+ *                        PO du 05/11) — le prix d'achat n'est
+ *                        JAMAIS annualisé ; frais d'acquisition, financement
+ *                        (intérêts, assurance, frais) et toutes les dépenses de
+ *                        possession (travaux, remplacements compris) restent
+ *                        au numérateur, sans amortissement. Prix d'achat
+ *                        attendu mais inconnu : non calculé
+ *                        (ACQUISITION_PRICE_UNKNOWN, jamais un prix fictif).
+ *   (ancien libellé)   = TCO total × 365,25 / jours de possession INCLUS,
  *                        de la date d'acquisition CANONIQUE (achat consolidé,
  *                        sinon fiche : clé, alias, puis colonne historique
  *                        `purchase_date` — jamais la date d'ajout) à la date
@@ -50,13 +61,63 @@
 import { daysInclusive, isIsoDate, type ReadStatus } from '../finance/engine';
 import type { FinancialComponentKind } from '../model';
 
-/** Année moyenne (années bissextiles comprises). */
+/** Année moyenne (années bissextiles comprises) — conservée pour les consommateurs historiques ; la moyenne annuelle utilise `ownershipDuration`. */
 export const TCO_DAYS_PER_YEAR = 365.25;
+
+/**
+ * Lot 111F (décision PO du 05/11) — durée de possession en ANNÉES ANNIVERSAIRES :
+ * nombre d'années pleines entre la date d'acquisition et la date de fin (dates
+ * civiles Europe/Paris), puis le reste en jours rapporté au nombre de jours de
+ * l'année anniversaire en cours. 5 années pleines = exactement 5.
+ * 29 février : dans une année non bissextile, l'anniversaire est le 28 février.
+ * Même jour (achat aujourd'hui) : 1 jour, jamais une durée nulle.
+ * Représentation rationnelle exacte (aucun flottant dans le calcul d'un montant).
+ */
+export interface TcoOwnershipDuration {
+  fullYears: number;
+  /** Jours écoulés depuis le dernier anniversaire. */
+  remainderDays: number;
+  /** Jours de l'année anniversaire en cours (365 ou 366). */
+  yearDays: number;
+}
+
+const estBissextile = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+const jourUtc = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d);
+/** Anniversaire n de la date `start` (AAAA-MM-JJ) en millisecondes UTC ; 29/02 → 28/02 en année non bissextile. */
+function anniversaire(y: number, m: number, d: number, n: number): number {
+  const an = y + n;
+  return jourUtc(an, m, m === 2 && d === 29 && !estBissextile(an) ? 28 : d);
+}
+
+/** Durée de possession en années anniversaires (pure, testée L111F-DUR-*) ; null si `end` < `start`. */
+export function ownershipDuration(start: string, end: string): TcoOwnershipDuration | null {
+  const [y, m, d] = start.slice(0, 10).split('-').map(Number);
+  const [ye, me, de] = end.slice(0, 10).split('-').map(Number);
+  const fin = jourUtc(ye, me, de);
+  if (fin < jourUtc(y, m, d)) return null;
+  let n = Math.max(0, ye - y);
+  while (n > 0 && anniversaire(y, m, d, n) > fin) n -= 1;
+  const debut = anniversaire(y, m, d, n);
+  const suivant = anniversaire(y, m, d, n + 1);
+  const yearDays = Math.round((suivant - debut) / 86_400_000);
+  const remainderDays = Math.round((fin - debut) / 86_400_000);
+  // Achat le jour même : un jour de possession (jamais une division par zéro).
+  return n === 0 && remainderDays === 0 ? { fullYears: 0, remainderDays: 1, yearDays } : { fullYears: n, remainderDays, yearDays };
+}
+
+/** Durée en années (décimale, affichage seulement). */
+export const durationYears = (x: TcoOwnershipDuration): number => x.fullYears + x.remainderDays / x.yearDays;
+
+/** Montant annualisé (centimes, arrondi) = montant ÷ durée, calcul rationnel exact. */
+export function annualizeCents(amountCents: number, x: TcoOwnershipDuration): number {
+  return Math.round((amountCents * x.yearDays) / (x.fullYears * x.yearDays + x.remainderDays));
+}
 /** Lot 81D : libellé d'une moyenne calculée sur moins d'un an de possession. */
 const TCO_EXTRAPOLATED_LABEL = 'Valeur extrapolée sur une durée de possession inférieure à un an';
 
 // Lot 107C : ACQUISITION_DATE_UNDETERMINED — dates d'achat du bien contradictoires sans autorité décisive.
-type TcoAnnualAverageStatus = 'COMPUTED' | 'ACQUISITION_DATE_MISSING' | 'ACQUISITION_DATE_INCOHERENT' | 'ACQUISITION_DATE_UNDETERMINED';
+// Lot 111F : ACQUISITION_PRICE_UNKNOWN — prix d'achat du bien attendu mais inconnu (jamais soustrait un prix fictif).
+type TcoAnnualAverageStatus = 'COMPUTED' | 'ACQUISITION_DATE_MISSING' | 'ACQUISITION_DATE_INCOHERENT' | 'ACQUISITION_DATE_UNDETERMINED' | 'ACQUISITION_PRICE_UNKNOWN';
 /** Lot 81D : motif d'une date d'acquisition incohérente. */
 type TcoAcquisitionIncoherence = 'INVALID_DATE' | 'FUTURE' | 'AFTER_DISPOSAL';
 
@@ -84,12 +145,18 @@ interface TcoAnnualBucket { count: number; costsCents: number; creditsCents: num
 export interface TcoAnnual {
   average: {
     status: TcoAnnualAverageStatus;
-    /** TCO moyen annuel (centimes EUR) ; null si non calculable. */
+    /** Lot 111F : coût annuel moyen de possession (centimes EUR), prix d'achat du bien exclu ; null si non calculable. */
     cents: number | null;
     /** TCO total utilisé (coût cumulé documenté). */
     totalCents: number;
+    /** Lot 111F : prix d'acquisition du bien retiré du numérateur (null : inconnu). */
+    acquisitionPriceCents: number | null;
+    /** Lot 111F : numérateur = TCO total − prix d'acquisition du bien (null : non calculable). */
+    ownershipCostsCents: number | null;
     /** Jours de possession inclus (null : date d'achat inconnue ou incohérente). */
     days: number | null;
+    /** Lot 111F : durée en années anniversaires (années pleines + reste en jours / jours de l'année anniversaire). */
+    duration: TcoOwnershipDuration | null;
     /** Durée en années (2 décimales). */
     years: number | null;
     start: string | null;
@@ -143,6 +210,12 @@ export function computeTcoAnnual(input: {
   lines: readonly TcoAnnualLine[];
   period: { start: string | null; end: string; endSource: string; startRejected?: string | null; startStatus?: string; startKind?: 'PURCHASE' | 'POSSESSION' };
   cumulativeCostCents: number;
+  /**
+   * Lot 111F : prix d'acquisition du bien (centimes EUR) retiré du numérateur
+   * de la moyenne ; 0 sans achat (location, prêt, don) ; null : attendu mais
+   * inconnu → moyenne non calculée.
+   */
+  acquisitionPriceCents: number | null;
   status: ReadStatus;
   today: string;
   disposed: boolean;
@@ -167,13 +240,22 @@ export function computeTcoAnnual(input: {
   else if (start > end) { status = 'ACQUISITION_DATE_INCOHERENT'; incoherence = 'AFTER_DISPOSAL'; }
   else days = daysInclusive(start, end);
   if (status === 'COMPUTED' && !(days && days > 0)) { status = 'ACQUISITION_DATE_INCOHERENT'; incoherence = 'AFTER_DISPOSAL'; days = null; }
-  const ans = days != null ? days / TCO_DAYS_PER_YEAR : null;
-  const extrapolated = status === 'COMPUTED' && days != null && days < TCO_DAYS_PER_YEAR;
+  // Lot 111F : prix d'achat attendu mais inconnu — jamais un prix fictif soustrait (la durée reste restituée).
+  const prixAchat = input.acquisitionPriceCents;
+  if (status === 'COMPUTED' && (prixAchat == null || !Number.isSafeInteger(prixAchat))) status = 'ACQUISITION_PRICE_UNKNOWN';
+  const numerateur = status === 'COMPUTED' ? input.cumulativeCostCents - (prixAchat as number) : null;
+  // Lot 111F : durée en années anniversaires (une seule fonction, partagée par le TCO, T2 et le diagnostic BO).
+  const duree = days != null && start ? ownershipDuration(start, end) : null;
+  const ans = duree ? durationYears(duree) : null;
+  const extrapolated = status === 'COMPUTED' && duree != null && duree.fullYears < 1;
   const average: TcoAnnual['average'] = {
     status,
-    cents: status === 'COMPUTED' && days ? Math.round((input.cumulativeCostCents * TCO_DAYS_PER_YEAR) / days) : null,
+    cents: status === 'COMPUTED' && duree && numerateur != null ? annualizeCents(numerateur, duree) : null,
     totalCents: input.cumulativeCostCents,
+    acquisitionPriceCents: prixAchat ?? null,
+    ownershipCostsCents: numerateur,
     days,
+    duration: duree,
     years: ans != null ? Math.round(ans * 100) / 100 : null,
     start: status === 'COMPUTED' || incoherence !== 'INVALID_DATE' ? start : null,
     end,

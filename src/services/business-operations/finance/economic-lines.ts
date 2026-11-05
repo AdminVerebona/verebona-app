@@ -202,6 +202,8 @@ export const ECONOMIC_LINE_STATUS_LABELS: Readonly<Record<EconomicLineStatus, st
 type DocumentLineReason =
   | 'DUPLICATE_COPY' | 'DUPLICATE_REFERENCE' | 'INCLUDED_IN_TOTAL_SAME_DOCUMENT' | 'INCLUDED_IN_TOTAL_INVOICE'
   | 'COVERED_BY_OPERATION' | 'COUNTED_FOR_OTHER_ASSET' | 'UNCONFIRMED_ASSET' | 'PAYMENT_PROOF' | 'LOAN_PRINCIPAL'
+  // Lot 111F : échéance d'un prêt remplacée par un avenant ou un nouvel échéancier (à partir de sa date d'effet).
+  | 'FINANCING_SCHEDULE_SUPERSEDED'
   | 'FUTURE_INSTALLMENT' | 'QUOTE' | 'NOT_EXPENSE_DOCUMENT' | 'THEME_UNKNOWN' | 'AMOUNT_UNKNOWN'
   | 'SAME_AS_ASSET_PRICE' | 'ASSET_PRICE_CONSOLIDATED' | 'CANDIDATE_CANCELLED' | 'OPERATION_CANCELLED_SOURCE'
   | 'SAME_AS_EQUIPMENT_DOCUMENT' | 'EQUIPMENT_PRICE_CONSOLIDATED'
@@ -231,6 +233,7 @@ export const DOCUMENT_LINE_REASON_LABELS: Readonly<Record<DocumentLineReason, st
   UNCONFIRMED_ASSET: 'Dépense dont le bien n’est pas confirmé',
   PAYMENT_PROOF: 'Preuve de paiement : confirme un règlement, pas un coût de plus',
   LOAN_PRINCIPAL: 'Capital emprunté : une dette, pas une dépense',
+  FINANCING_SCHEDULE_SUPERSEDED: 'Échéance remplacée par un avenant du même prêt (à partir de sa date d’effet)',
   FUTURE_INSTALLMENT: 'Échéance future non encore facturée',
   QUOTE: 'Devis ou commande : prévision, non réalisée',
   NOT_EXPENSE_DOCUMENT: 'Document sans valeur de dépense (notice, photo, annonce, recette…)',

@@ -64,6 +64,9 @@ export async function POST(request: NextRequest) {
     if (!a.ok) {
       const outcome: ShareImportOutcome = a.code === 'FEATURE_OFF' ? 'retry'
         : a.code === 'ACCOUNT_ACCESS_REVOKED' || a.code === 'ACCOUNT_SUSPENDED' || a.code === 'ACCOUNT_PENDING_DELETION' ? 'refused' : 'auth';
+      // Lot 111P : motif du refus du jeton, expurgé (jamais le jeton ni le nom du fichier).
+      const client = (request.headers.get('x-verebona-share-client') ?? '').toUpperCase();
+      console.info(JSON.stringify({ event: 'share_import.grant_rejected', code: a.code, outcome, client: client === 'IOS' || client === 'ANDROID' ? client : null }));
       return reply(outcome, a.code, { operationId });
     }
     // Intégration lot 110 (garde 85D) : compte en lecture seule refusé AVANT tout stockage

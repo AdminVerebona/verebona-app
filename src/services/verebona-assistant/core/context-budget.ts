@@ -15,20 +15,28 @@
  *   5. toujours trop long → AUCUN appel (repli déterministe).
  *
  * L'estimation est volontairement PRUDENTE (≈ 3,5 caractères par jeton pour
- * du français, plus l'enveloppe du prompt maître et le préambule BO) : un
- * dépassement réel est pire qu'une source de moins.
+ * du français, `budget-resolution.estimateTokens`, commune à tous les
+ * traitements) : un dépassement réel est pire qu'une source de moins.
+ *
+ * Lot 111M (ticket « budgets IA ») : la réserve FORFAITAIRE de 3 000 jetons
+ * pour le prompt est remplacée par la taille ESTIMÉE DU PROMPT MAÎTRE ACTIF
+ * (`promptOverheadTokens`, version BO ou fichier du dépôt) ; la réserve
+ * forfaitaire ne sert plus que de repli quand le texte actif est illisible
+ * (origine `fallback`, tracée). Le résultat dit si le contexte a été RÉDUIT
+ * (`reduced`) : une réponse « information insuffisante » sur un contexte
+ * réduit n'est jamais présentée comme une absence (`generation.adapter`).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { RetrievedSource } from '../types/sources';
+import { estimateTokens as estimer } from '@/services/ai/gateway/budget-resolution';
 
-/** Enveloppe fixe : prompt maître t2_master_v1 (~8 Ko). */
-const PROMPT_OVERHEAD_TOKENS = 3000;
-const CHARS_PER_TOKEN = 3.5;
+/** Repli seulement : enveloppe du prompt maître t2_master_v1 (~8 Ko) quand le texte actif est illisible. */
+export const FALLBACK_PROMPT_OVERHEAD_TOKENS = 3000;
 const MIN_SOURCES = 2;
 const MIN_EXCERPT = 300;
 
 function estimateTokens(text: string): number {
-  return Math.ceil(String(text ?? '').length / CHARS_PER_TOKEN);
+  return estimer(String(text ?? ''));
 }
 
 /** Coût d'une source sérialisée (<retrieved_source>, titre, contenu). */
@@ -43,6 +51,8 @@ interface FitInput {
   fixed: string;
   maxInputTokens: number;
   maxExcerptChars: number;
+  /** Lot 111M : jetons estimés du prompt maître ACTIF (consignes + contrat) ; absent : repli forfaitaire. */
+  promptOverheadTokens?: number | null;
 }
 
 interface FitResult {
@@ -52,16 +62,23 @@ interface FitResult {
   estimatedTokens: number;
   /** Réductions appliquées, pour la trace (§17.11). */
   events: string[];
+  /** Lot 111M : sources retirées ou extraits raccourcis (contexte incomplet). */
+  reduced: boolean;
 }
 
 export function fitToInputBudget(p: FitInput): FitResult {
   const events: string[] = [];
+  const mesure = typeof p.promptOverheadTokens === 'number' && p.promptOverheadTokens > 0;
+  const enveloppe = mesure ? Math.ceil(p.promptOverheadTokens!) : FALLBACK_PROMPT_OVERHEAD_TOKENS;
+  events.push(`CONTEXT:PROMPT_TOKENS:${enveloppe}:${mesure ? 'active_prompt' : 'fallback'}`);
   const excerpt = Math.max(MIN_EXCERPT, p.maxExcerptChars);
+  const coupesLecture = p.sources.filter((s) => s.content.length > excerpt).length;
+  if (coupesLecture) events.push(`CONTEXT:EXCERPTS_READ_BOUND:${coupesLecture}`);
   let sources = [...p.sources]
     .sort((a, b) => (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0))
     .map((s) => (s.content.length > excerpt ? { ...s, content: s.content.slice(0, excerpt) } : s));
   let conversation = p.conversation;
-  const total = () => PROMPT_OVERHEAD_TOKENS + estimateTokens(p.fixed) + estimateTokens(conversation)
+  const total = () => enveloppe + estimateTokens(p.fixed) + estimateTokens(conversation)
     + sources.reduce((n, s) => n + sourceTokens(s), 0);
 
   // 2. Moins d'extraits.
@@ -87,9 +104,10 @@ export function fitToInputBudget(p: FitInput): FitResult {
   }
 
   const estimatedTokens = total();
+  const reduced = retirees > 0 || events.includes('CONTEXT:EXCERPTS_SHORTENED') || coupesLecture > 0;
   if (estimatedTokens > p.maxInputTokens) {
     events.push(`CONTEXT:INPUT_TOKENS_EXCEEDED:${estimatedTokens}`);
-    return { ok: false, sources, conversation, estimatedTokens, events };
+    return { ok: false, sources, conversation, estimatedTokens, events, reduced };
   }
-  return { ok: true, sources, conversation, estimatedTokens, events };
+  return { ok: true, sources, conversation, estimatedTokens, events, reduced };
 }

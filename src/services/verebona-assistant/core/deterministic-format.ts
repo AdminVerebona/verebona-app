@@ -133,6 +133,17 @@ export function formatConflict(what: string, values: Array<{ value: string; sour
   return `J’ai trouvé ${nombre} valeurs différentes pour ${what} : ${liste}. Elles proviennent de sources différentes ; vérifiez laquelle est à jour.`;
 }
 
+/**
+ * Lot 111K — informations DISTINCTES (jamais un conflit) : chaque valeur avec
+ * ce qu'elle désigne. « Franchise vol : 300 € ; franchise bris de glace :
+ * 150 €. » ; avec un sujet : « « Contrôle technique » — Polo : 3 mars 2027 ;
+ * Clio : 9 juin 2027. »
+ */
+export function formatDistinctValues(subject: string | null, lines: string[]): string {
+  const corps = lines.join(' ; ');
+  return subject ? `${capitalize(subject)} — ${corps}.` : `${capitalize(corps)}.`;
+}
+
 /** Noms masculins fréquents parmi les attributs extraits (article « le »). */
 const MASCULINS = new Set([
   'numéro', 'numero', 'modèle', 'modele', 'montant', 'prix', 'type', 'niveau', 'nombre', 'code',

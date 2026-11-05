@@ -35,6 +35,7 @@ import { expenseThemeWords, type ExpenseTheme } from './expense-classes';
 import { findReadableFields, purchaseMention } from './field-vocabulary';
 import { semanticResidue, textMatchesTerms } from '../core/semantic-scope';
 import { plain } from '../core/routing-text';
+import { asksSettlement } from '../core/question-focus';
 
 interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null }
 
@@ -177,13 +178,13 @@ const HISTORY_STRIP = /qu['’]?est-ce qu['’]?(il|on) a [ée]t[ée] fait|qu['�
  * coûté la Polo au total ? », « coût de possession », « TCO ») — T2 lit le
  * service TCO, jamais un calcul parallèle.
  */
-export const TCO_Q = /\b(couts? (total|totaux|global|globaux|complet|reel) de (possession|detention)|couts? de (possession|detention)|tco|cout total|cout global|au total (m'?a|a) coute|m'?a coute au total|combien (m'?a|a) coute .*\bau total\b|combien (me|m'?a) coute (de|d') ?(posseder|avoir))\b/;
+export const TCO_Q = /\b(couts? (total|totaux|global|globaux|complet|reel) de (possession|detention)|couts? annuels? (moyens? )?(de (possession|detention))?|couts? nets? (estimes? )?(de (possession|detention))?|couts? de (possession|detention)|tco|cout total|cout global|au total (m'?a|a) coute|m'?a coute au total|combien (m'?a|a) coute .*\bau total\b|combien (me|m'?a) coute (de|d') ?(posseder|avoir))\b/;
 /** Question de coût de possession (pure) : un thème (« coût total des réparations ») ou une année reste un total de dépenses (T2-24). */
 export function isOwnershipCostQuestion(message: string): boolean {
   const m = plain(message);
   return TCO_Q.test(m) && !expenseThemeOf(message) && !/\b(19|20)\d{2}\b/.test(m);
 }
-const TCO_STRIP = /co[uû]ts? (total|totaux|global|globaux|complet|r[ée]el) de (possession|d[ée]tention)|co[uû]ts? de (possession|d[ée]tention)|tco|co[uû]t total|co[uû]t global|au total|combien|m['’]?a|co[uû]t[ée]?|me|de|d['’]|poss[ée]der|avoir|quel|est|le|la|mon|ma/gi;
+const TCO_STRIP = /co[uû]ts? (total|totaux|global|globaux|complet|r[ée]el) de (possession|d[ée]tention)|co[uû]ts? annuels?( moyens?)?|co[uû]ts? nets?( estim[ée]s?)?|co[uû]ts? de (possession|d[ée]tention)|tco|co[uû]t total|co[uû]t global|au total|combien|m['’]?a|co[uû]t[ée]?|me|de|d['’]|poss[ée]der|avoir|quel|est|le|la|mon|ma/gi;
 
 /** « payé / réglé » (C15) — distinct de « coûté / dépensé » (F-132, F-133). */
 export const PAID = /\b(paye|payee|payes|payees|payer|regle|reglee|regles|reglees|regler|acquitte(e|es|s)?|verse|versee|versees)\b/;
@@ -332,12 +333,26 @@ export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-
   const phrases = [`Coût de possession de ${a.name} : coût cumulé documenté ${formatEur(t.summary.cumulativeCostCents)}${postes.length ? ` (${postes.join(', ')})` : ''}${depuisAchat(t)}.`];
   // Lot 107C : même date de départ que la fiche (`period.start`, date d'achat du bien) ; contradiction sans autorité dite.
   if (t.period.startStatus === 'UNDETERMINED') phrases.push('La date d’achat du bien est incertaine (plusieurs dates possibles se contredisent) : le coût moyen annuel n’est pas calculé.');
+  // Lot 111F : mêmes définitions que la fiche (`t.indicators`, moteur TCO) — coût annuel moyen HORS prix d'achat,
+  // coût du crédit selon l'échéancier, coût net seulement avec une estimation postérieure à l'achat.
+  const ind = t.indicators;
+  if (ind?.annualAverage.documentedCents != null) {
+    phrases.push(`Coût annuel moyen de possession (hors prix d’achat du bien) : ${formatEur(ind.annualAverage.documentedCents)} par an.`);
+  } else if (ind?.annualAverage.unavailableReason && t.period.startStatus !== 'UNDETERMINED') {
+    phrases.push(`Coût annuel moyen de possession non calculé : ${ind.annualAverage.unavailableReason.charAt(0).toLowerCase()}${ind.annualAverage.unavailableReason.slice(1)}`);
+  }
+  if (ind && ind.financing.loans.length && (ind.financing.costToDateCents || ind.financing.remainingCents)) {
+    phrases.push(`Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : ${formatEur(ind.financing.costToDateCents)}${ind.financing.basisLabel ? ` — ${ind.financing.basisLabel}` : ''}.`
+      + (ind.financing.contractualTotalCents != null ? ` Coût total prévisionnel du crédit : ${formatEur(ind.financing.contractualTotalCents)}${ind.financing.estimated ? ' (échéancier partiel)' : ''}, non ajouté au coût total.` : ''));
+  }
   if (t.disposed) {
     phrases.push(t.summary.netFinalCents != null
       ? `Après la vente (prix réalisé ${formatEur(t.disposal.realizedPriceCents ?? 0)}), coût net final : ${formatEur(t.summary.netFinalCents)}.`
       : 'Le prix de cession réalisé n’est pas documenté : le coût net final n’est pas établi.');
   } else if (t.summary.currentValue && t.summary.netEstimatedCents != null) {
-    phrases.push(`Valeur actuelle ${formatEur(t.summary.currentValue.cents)} (au ${formatDateFr(t.summary.currentValue.date)}) : coût net estimé ${formatEur(t.summary.netEstimatedCents)}.`);
+    phrases.push(`Valeur estimée ${formatEur(t.summary.currentValue.cents)} (estimation du ${formatDateFr(t.summary.currentValue.date)}) : coût net estimé ${formatEur(t.summary.netEstimatedCents)}.`);
+  } else if (ind?.net.unavailableReason) {
+    phrases.push('Coût net estimé non calculé : aucune estimation de valeur admissible postérieure à l’achat (le prix d’achat n’est jamais une valeur actuelle).');
   }
   // Lot 108A (§C) : l'absence de valeur actuelle n'est pas une anomalie du TCO historique — aucune phrase d'alerte
   // (le coût net estimé est simplement « non calculable », la fiche l'affiche comme tel).
@@ -359,6 +374,8 @@ export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-
       // Lot 108C : part estimée et TCO complet estimé (le coût documenté reste strictement réel).
       estimatedUsageComplementCents: t.summary.estimatedUsageComplementCents ?? 0, totalWithEstimatesCents: t.summary.totalWithEstimatesCents ?? t.summary.cumulativeCostCents,
       netFinalCents: t.summary.netFinalCents, status: t.status, operationCount: t.reliability.operationsCounted,
+      // Lot 111F : coût annuel moyen hors prix d'achat et coût du crédit à date (mêmes valeurs que la fiche).
+      annualAverageCents: t.indicators?.annualAverage.documentedCents ?? null, financingToDateCents: t.indicators?.financing.costToDateCents ?? 0,
       // Lot 61 : justificatifs comptés directement (sans Opération) — même calcul que le tiroir.
       documentCount: t.reliability.documentsCounted ?? 0,
       includedDocuments: t.reliability.documents.slice(0, 50).map((d) => `doc-${d.fileId}`).join(' '),
@@ -700,17 +717,31 @@ async function tryCanonicalStructuredInner(p: {
     }
     const assetIds = scope.assets.map((a) => a.id);
     const pour = `${scope.label ? ` pour ${scope.label}` : ''}${theme ? ` (${EXPENSE_THEME_LABELS[theme]})` : ''}${year ? ` en ${year}` : ''}`;
+    // ══════════════════════════════════════════════════════════════════
+    // LOT 111K — « COMBIEN AI-JE PAYÉ ? » DEMANDE UN MONTANT
+    //
+    // Le verbe « payer » d'une question de MONTANT (« combien ai-je payé
+    // pour l'entretien ? ») ne demande pas la justification du règlement :
+    // la réponse est le montant documenté (prix d'achat, dépenses
+    // qualifiées, coût d'une intervention), avec sa nature, sans réserve
+    // sur un règlement non demandé — et sans jamais l'affirmer réglé.
+    // Seule une question sur le RÈGLEMENT (« est-ce réglé ? », « ai-je déjà
+    // payé ? », « reste-t-il à payer ? », « preuve de paiement ») lit les
+    // preuves de paiement (`asksSettlement`, `core/question-focus`).
+    // ══════════════════════════════════════════════════════════════════
+    const reglement = asksSettlement(message);
     // C15.2 : « J'ai payé combien pour la Polo ? » — prix d'achat d'abord,
     // le cumul des dépenses depuis l'achat à part, jamais additionnés.
-    if ((!theme || theme === 'purchase') && !year && scope.assets.length === 1 && port.readAcquisition) {
+    if (!reglement && (!theme || theme === 'purchase') && !year && scope.assets.length === 1 && port.readAcquisition) {
       const r = await acquisitionAnswer(port, accountId, scope.assets[0], theme === 'purchase');
       if (r) return r;
     }
-    if (port.readPayments) {
+    if (reglement && port.readPayments) {
       const pay = await port.readPayments(accountId, { assetIds, year: year ?? null });
       const q = port.sumQualifiedExpenses ? await port.sumQualifiedExpenses(accountId, { assetIds, year, theme }) : null;
       return paymentsAnswer(pay, q, { pour, scopeLabel: scope.label, assetIds, year, assets: scope.assets });
     }
+    // Question de montant : les dépenses qualifiées ci-dessous répondent.
   }
 
   // ── Dépenses qualifiées (T2-24) ────────────────────────────────────────

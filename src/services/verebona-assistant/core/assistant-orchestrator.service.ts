@@ -57,7 +57,7 @@ import {
   type DataAnswerOutcome,
 } from './data-answer.service';
 import { dedupeLogique } from './source-dedupe';
-import { DEFAULT_THRESHOLDS, type CascadeThresholdsLike } from './sufficiency';
+import { DEFAULT_THRESHOLDS, requiresSynthesis, type CascadeThresholdsLike } from './sufficiency';
 import {
   contradictionAnswer, detectHelpContradiction, fallbackFromHelpSources, helpAnswerFromSources, HELP_EXACT_THRESHOLD,
   HELP_CORPUS_OPEN_BUDGET_MS, HELP_CORPUS_UNAVAILABLE_RESULT, helpCorpusLoadInfo, howToSynthesis,
@@ -114,6 +114,9 @@ import {
   contextFactsOf, validateContextFacts, contextCalculationAnswer, classifySuppliedFacts,
 } from './interaction';
 import { expenseThemeWords } from '../canonical/expense-classes';
+import { analyzeQuestionFocus, type QuestionFocus } from './question-focus';
+import { controlFinalAnswer, FINAL_CONTROL_INSUFFICIENT_MESSAGE } from './final-answer-control';
+import { concludePertinence, finalControlTrace, startPertinenceTrace } from './pertinence-trace';
 import {
   decideNamedEntity, isNamedEntityQuery, namedEntityAnswer, namedEntityChoiceQuestion, namedEntitySource,
   type NamedEntityLookupResult,
@@ -1704,6 +1707,17 @@ export async function runAssistant(
         trace.attempts.push(...data.attempts);
         // Lot 101A (C, D, I) : périmètre exact et verdict de chaque candidat.
         if (data.retrieval) trace.retrieval = data.retrieval;
+        // Lot 111K : ce que la question demande et l'adéquation des preuves
+        // (bloc `pertinence` de la trace existante ; focus gardé pour le contrôle final).
+        if (data.pertinence) {
+          focusDeLaDemande.set(base, data.pertinence.focus);
+          trace.pertinence = startPertinenceTrace({
+            intent: route.intent, focus: data.pertinence.focus,
+            scope: data.retrieval ? { kind: data.retrieval.scope.kind, objectType: data.retrieval.scope.objectType, objectId: data.retrieval.scope.objectId } : null,
+            candidates: data.retrieval?.candidates ?? [], conflicts: data.pertinence.conflicts,
+            sufficiency: { status: data.decision.status, reason: data.decision.reason ?? null, plurality: data.pertinence.plurality },
+          });
+        }
         // Lot 101A (A) : faits retenus portant tous sur UN même équipement /
         // UNE même pièce → cet objet devient l'objet actif du fil (« Et la
         // série ? » au tour suivant), même si la réponse cite des documents.
@@ -2283,6 +2297,8 @@ export async function runAssistant(
           // côté serveur à partir des sources fournies.
           if (gen.events?.length) base.events = clientTimelineEvents(gen.events, sources);
           done('llm', 'llm.generate_answer', trace.escalationReasons.length ? 'INSUFFICIENT' : null, sources.length);
+          // Lot 111K : le contrôle final lit le contenu des sources fournies au modèle.
+          sourcesDeLaDemande.set(base, sources);
           return finalize(base, machine, 'ai', gen.answer, gen.claims, resolved, actions, ports, input, gen.supportLevel);
         }
         trace.escalationReasons.push('N3:GENERATION_UNAVAILABLE');
@@ -2844,20 +2860,79 @@ function fallbackUnknownRoute(): IntentRoute {
   };
 }
 
+/** Lot 111K : focus de la question (lecture des données), par demande — jamais persisté tel quel. */
+const focusDeLaDemande = new WeakMap<AssistantRunResult, QuestionFocus>();
+/** Lot 111K : sources complètes fournies au modèle (contenu), par demande. */
+const sourcesDeLaDemande = new WeakMap<AssistantRunResult, RetrievedSource[]>();
+
+/**
+ * Lot 111K — CONTRÔLE FINAL COMMUN (`final-answer-control`), appliqué au
+ * dernier moment à toute réponse sur les données du compte, quel que soit le
+ * parcours (déterministe, canonique, faits, document, génération). Il
+ * complète — sans les remplacer — le contrôle des `sourceIds`, du soutien
+ * des valeurs (T2-31) et de la fidélité au champ demandé (lot 53). Une
+ * réponse sans affirmation admissible devient une INSUFFISANCE.
+ */
+function controleFinal(
+  base: AssistantRunResult, mode: ResponseMode, input: AssistantRequestInput,
+  r: { answer: string; claims: Claim[]; sources: ResolvedSource[]; supportLevel: AssistantRunResult['supportLevel'] },
+): { answer: string; claims: Claim[]; sources: ResolvedSource[]; supportLevel: AssistantRunResult['supportLevel'] } {
+  const intent = base.route?.intent ?? '';
+  if (!r.claims.length || base.clarification || (mode !== 'deterministic' && mode !== 'ai' && mode !== 'classic_search') || !intent.startsWith('ACCOUNT_')) return r;
+  const message = input.originalMessage ?? input.message ?? '';
+  const focus = focusDeLaDemande.get(base) ?? analyzeQuestionFocus(message, {
+    requestedFacts: base.route?.understanding?.requestedFacts ?? [], requestedTopics: base.route?.understanding?.requestedTopics ?? [],
+    objectNames: (base.route?.entityHints ?? []).filter((h) => h.type === 'asset' || h.type === 'equipment' || h.type === 'room').map((h) => h.value),
+  });
+  const bruts = sourcesDeLaDemande.get(base);
+  const sources = bruts?.length
+    ? bruts.map((x) => ({ id: x.id, type: x.type, title: x.title, content: x.content }))
+    : r.sources.map((x) => ({ id: x.id, type: x.type, title: x.title, content: x.excerpt ?? '' }));
+  const c = controlFinalAnswer({
+    focus, path: mode === 'ai' ? 'generation' : 'deterministic', answer: r.answer, claims: r.claims, sources, rebuild: mode === 'ai',
+    synthesis: SYNTHESIS_INTENTS.has(intent) || requiresSynthesis(message),
+  });
+  const trace = base.cascade;
+  if (trace) {
+    if (!trace.pertinence) {
+      trace.pertinence = startPertinenceTrace({ intent, focus, scope: null, candidates: [], conflicts: [], sufficiency: null });
+    }
+    trace.pertinence.finalControl = finalControlTrace(c);
+    if (c.rejected.length || c.missing.length) trace.escalationReasons.push(`FINAL_CONTROL:${c.verdict}:${[...c.reasons, ...(c.missing.length ? ['MISSING_REQUESTED'] : [])].join('+')}`);
+  }
+  if (c.verdict === 'REJECTED') return { answer: c.answer ?? FINAL_CONTROL_INSUFFICIENT_MESSAGE, claims: [], sources: [], supportLevel: 'insufficient' };
+  // Réserve parasite retirée (réponse complète) ou réponse partielle.
+  if (c.verdict === 'PASS' && c.answer !== null && c.rejected.length) {
+    return { answer: c.answer, claims: c.kept, sources: r.sources, supportLevel: r.supportLevel };
+  }
+  if (c.verdict === 'PARTIAL') {
+    const cites = new Set(c.kept.flatMap((x) => x.sourceIds));
+    return {
+      answer: c.answer ?? r.answer, claims: c.kept,
+      sources: cites.size ? r.sources.filter((x) => cites.has(x.id)) : r.sources,
+      supportLevel: r.supportLevel === 'insufficient' ? r.supportLevel : 'partial',
+    };
+  }
+  return r;
+}
+
 async function finalize(
   base: AssistantRunResult,
   machine: ConversationMachine,
   mode: ResponseMode,
-  answer: string,
-  claims: Claim[],
-  sources: ResolvedSource[],
+  answerBrute: string,
+  claimsBruts: Claim[],
+  sourcesBrutes: ResolvedSource[],
   actions: VerebonaAction[],
   ports: OrchestratorPorts,
   input: AssistantRequestInput,
-  supportLevel: AssistantRunResult['supportLevel'] = null,
+  supportLevelBrut: AssistantRunResult['supportLevel'] = null,
 ): Promise<AssistantRunResult> {
   if (machine.state !== 'VALIDATING') machine.transition('VALIDATING');
   machine.transition('READY');
+  const { answer, claims, sources, supportLevel } = controleFinal(base, mode, input,
+    { answer: answerBrute, claims: claimsBruts, sources: sourcesBrutes, supportLevel: supportLevelBrut });
+  if (claims !== claimsBruts && !claims.length) base.resultGroups = undefined;
 
   // §19.10 — dernier moment utile pour vérifier qu'une source citée existe
   // encore et reste accessible. Une source supprimée entre sa récupération et
@@ -3011,6 +3086,13 @@ export function buildTurnDiagnostic(r: AssistantRunResult, input: AssistantReque
 
 async function safePersist(ports: OrchestratorPorts, r: AssistantRunResult, input: AssistantRequestInput) {
   // Lot 101A (I) : diagnostic du tour ; anomalies visibles aussi dans les motifs.
+  if (r.cascade?.pertinence) {
+    // Lot 111K : issue, cause et motif (vocabulaire du journal « Questions sans réponse »).
+    r.cascade.pertinence = concludePertinence(r.cascade.pertinence, {
+      supportLevel: r.supportLevel ?? null, sourceCount: r.sources.length, strategy: r.cascade.strategy,
+      answeredBy: r.cascade.answeredBy, clarification: Boolean(r.clarification), claimCount: r.claims.length,
+    });
+  }
   if (r.cascade) {
     const tour = buildTurnDiagnostic(r, input);
     if (tour) {

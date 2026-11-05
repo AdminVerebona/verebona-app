@@ -260,8 +260,14 @@ export default function AiProviderPage() {
           l&apos;actuelle qu&apos;après un test réussi.
         </p>
         <div className="flex gap-2">
+          {/* Lot 111E : clé d'API, PAS un identifiant de l'administrateur —
+              « off » (et non current/new-password) pour que les gestionnaires
+              n'y proposent pas le mot de passe Verebona. */}
           <Input
             type="password"
+            name="provider-api-key"
+            aria-label="Nouvelle clé du fournisseur"
+            autoComplete="off"
             placeholder="Clé du fournisseur"
             value={newKey}
             onChange={(e) => setNewKey(e.target.value)}

@@ -182,7 +182,8 @@ describe('L107A-MACH — déverrouillage automatique (machine + contrôleur, pon
     await flush();
     expect(h.phase()).toBe('fallback');
     expect(h.covered).toBe(true);
-    expect(h.c.getState().fallback).toMatchObject({ reason: 'failed', actions: ['retry_biometry', 'other_method'] });
+    // Lot 111D : « Réessayer Face ID », code du téléphone explicite, reconnexion en dernier (ticket #642 bis).
+    expect(h.c.getState().fallback).toMatchObject({ reason: 'failed', actions: ['retry_biometry', 'device_credential', 'sign_in'] });
     // Retour de la fenêtre système (inactive → active) : pas de nouvelle fenêtre.
     h.c.resume(); await flush();
     expect(h.deps.prompt).toHaveBeenCalledTimes(1);

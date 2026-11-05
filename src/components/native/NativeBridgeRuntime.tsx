@@ -478,7 +478,7 @@ export default function NativeBridgeRuntime() {
 
       {/* Lot 110A : état des imports du partage natif (jamais de seconde confirmation). */}
       {!locked && partagesEnAttente.length === 0 && !pathname?.startsWith(SHARE_IMPORT_TRACKING_PATH) && (
-        <ShareImportStatusCard items={shareImport.items} onOpen={ouvrir} onClose={(id) => { void shareImport.acknowledge(id); }} />
+        <ShareImportStatusCard items={shareImport.items} provision={shareImport.provision} lastCode={shareImport.lastCode} onOpen={ouvrir} onClose={(id) => { void shareImport.acknowledge(id); }} />
       )}
 
       {offer.visible && (

@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { AutofillInput } from '@/components/ui/autofill-input';
+import { AUTOFILL, formFieldValue } from '@/lib/auth/autofill';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
@@ -17,8 +18,10 @@ export default function ForgotPasswordPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // Lot 111E : adresse réellement affichée (remplissage automatique compris).
+    const submittedEmail = formFieldValue(e.currentTarget, 'username', email).trim();
     setIsLoading(true);
     setError('');
 
@@ -26,7 +29,7 @@ export default function ForgotPasswordPage() {
       const response = await fetch('/api/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: submittedEmail }),
       });
 
       const data = await response.json();
@@ -89,12 +92,18 @@ export default function ForgotPasswordPage() {
             </CardDescription>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} method="post" className="space-y-4" data-testid="forgot-password-form">
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input
+                <AutofillInput
                   id="email"
+                  name="username"
                   type="email"
+                  inputMode="email"
+                  autoComplete={AUTOFILL.username}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   placeholder="votre.email@exemple.fr"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}

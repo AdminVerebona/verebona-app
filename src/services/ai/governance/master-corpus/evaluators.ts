@@ -366,19 +366,50 @@ export const MASTER_CORPUS_EVALUATORS: Readonly<Record<string, Evaluator>> = {
   async t2_answer(c, output) {
     const { toGeneratedAnswer, validateAnswerForCorpus } = await loadAnswer();
     const { t2AnswerLines } = await import('../../assistant/master/t2-answer');
-    const ctx = c.context as { intent: string; sources: never[] };
+    const { controlFinalAnswer, affirmsSettlement, answerStatesConflict, SYNTHESIS_INTENTS } = await import('@/services/verebona-assistant/core/final-answer-control');
+    const { analyzeQuestionFocus } = await import('@/services/verebona-assistant/core/question-focus');
+    const ctx = c.context as { intent: string; sources: never[]; question?: string; requestedFacts?: string[]; requestedTopics?: string[] };
     const l = t2AnswerLines(output as never);
     const out = toGeneratedAnswer({ claims: l.lines as never, status: l.status, actionIntents: [], derivations: [] }, ctx.sources, [],
       { verifySupport: true, supportEvents: [], separator: l.separator });
-    if (!out) return ['aucune affirmation soutenue'];
-    const v = validateAnswerForCorpus(out, ctx.intent);
-    if (!v) return ['réponse rejetée par le validateur'];
     const errs: string[] = [];
-    if (exp(c, 'answerContains')) errs.push(...ecart(v.answer.includes(String(exp(c, 'answerContains'))), 'valeur attendue absente'));
-    for (const x of exp<string[]>(c, 'answerNotContains') ?? []) errs.push(...ecart(!v.answer.includes(x), `« ${x} » affiché`));
-    if (exp(c, 'supportLevel')) errs.push(...ecart(v.supportLevel === exp(c, 'supportLevel'), `étayage ${v.supportLevel}`));
-    if (exp(c, 'lines')) errs.push(...ecart(v.answer.split('\n').length === exp(c, 'lines'), 'lignes aplaties'));
+    // Lot 111K : état de sortie attendu (répondu, partiel, insuffisant, conflit).
+    const etatAttendu = exp<string>(c, 'exitState');
+    if (!out) return etatAttendu === 'insufficient' ? [] : ['aucune affirmation soutenue'];
+    const v = validateAnswerForCorpus(out, ctx.intent);
+    if (!v) return etatAttendu === 'insufficient' ? [] : ['réponse rejetée par le validateur'];
+    // Lot 111K : CONTRÔLE FINAL COMMUN rejoué (même module que l'orchestrateur) :
+    // la réponse évaluée est celle qui serait réellement rendue.
+    const focus = ctx.question ? analyzeQuestionFocus(ctx.question, { requestedFacts: ctx.requestedFacts ?? [], requestedTopics: ctx.requestedTopics ?? [] }) : null;
+    const { requiresSynthesis } = await import('@/services/verebona-assistant/core/sufficiency');
+    const fc = controlFinalAnswer({ focus, path: 'generation', answer: v.answer, claims: v.claims, sources: ctx.sources as never, rebuild: true,
+      synthesis: SYNTHESIS_INTENTS.has(ctx.intent) || requiresSynthesis(ctx.question ?? '') });
+    const answer = fc.answer ?? v.answer;
+    const kept = fc.verdict === 'REJECTED' ? [] : fc.kept;
+    const support = fc.verdict === 'REJECTED' ? 'insufficient' : fc.verdict === 'PARTIAL' && v.supportLevel === 'supported' ? 'partial' : v.supportLevel;
+    const etat = support === 'insufficient' || l.status === 'insufficient_data' ? 'insufficient'
+      : answerStatesConflict(answer) ? 'conflict' : support === 'partial' ? 'partial' : 'answered';
+    if (exp(c, 'answerContains')) errs.push(...ecart(answer.includes(String(exp(c, 'answerContains'))), 'valeur attendue absente'));
+    for (const x of exp<string[]>(c, 'answerNotContains') ?? []) errs.push(...ecart(!answer.includes(x), `« ${x} » affiché`));
+    if (exp(c, 'supportLevel')) errs.push(...ecart(support === exp(c, 'supportLevel'), `étayage ${support}`));
+    if (exp(c, 'lines')) errs.push(...ecart(answer.split('\n').length === exp(c, 'lines'), 'lignes aplaties'));
     if (exp(c, 'events')) errs.push(...ecart((output as { events?: unknown[] }).events?.length === exp(c, 'events'), 'événements perdus'));
+    // ── Lot 111K : oracles de PERTINENCE (au-delà de « la valeur figure ») ──
+    if (etatAttendu) errs.push(...ecart(etat === etatAttendu, `état de sortie ${etat} ≠ ${etatAttendu}`));
+    // Absence de fausse contradiction : des valeurs voisines ne sont pas un conflit.
+    if (exp(c, 'noFalseConflict')) errs.push(...ecart(!answerStatesConflict(answer), 'fausse contradiction présentée'));
+    // Conclusion fidèle au sens des chiffres : aucun règlement affirmé sans preuve,
+    // même quand le montant cité figure bien dans la source.
+    if (exp(c, 'neverAffirmSettlement')) errs.push(...ecart(!affirmsSettlement(answer), 'règlement affirmé sans preuve'));
+    // Information effectivement demandée : la réponse rendue la désigne.
+    const demandee = exp<string>(c, 'requestedInformation');
+    if (demandee) errs.push(...ecart(answer.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().includes(demandee), `information demandée « ${demandee} » absente`));
+    // Nature des preuves autorisées : seules ces sources soutiennent la réponse.
+    const autorisees = exp<string[]>(c, 'allowedEvidence');
+    if (autorisees) errs.push(...ecart(kept.every((k) => k.sourceIds.every((id) => autorisees.includes(id))), `preuve non autorisée citée (${kept.flatMap((k) => k.sourceIds).filter((id) => !autorisees.includes(id)).join(', ')})`));
+    // Motifs du contrôle final attendus (gardes : affirmation hors sujet rejetée…).
+    const motifs = exp<string[]>(c, 'finalControlRejects');
+    if (motifs) errs.push(...ecart(JSON.stringify([...new Set(fc.rejected.map((r) => r.reason))].sort()) === JSON.stringify([...motifs].sort()), `contrôle final ${JSON.stringify(fc.rejected.map((r) => r.reason))}`));
     return errs;
   },
   async t2_revalidate(c, output) {

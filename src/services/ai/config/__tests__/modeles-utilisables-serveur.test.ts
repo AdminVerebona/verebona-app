@@ -115,8 +115,9 @@ describe('§5 — activation (lot 54 : plus de mise à l’essai)', () => {
     const issues = validateTreatment(entree('T2', { primaryModel: 'gemini-9-pro', maxOutputTokens: 4000 }), {
       availableModels: new Set(['gemini-9-pro']), pricedModels: new Set(['gemini-9-pro']), guardrailCodes: new Set(), triggerCodes: new Set(),
     });
-    // Plafond V1 toujours signalé (min(BO, 500) à l'exécution), aucun refus « Pro ».
-    expect(issues.some((i) => i.field === 'maxOutputTokens' && /plafonné à 500/.test(i.message))).toBe(true);
+    // Lot 111M (arbitrage PO) : plus de plafonnement caché à 500 — la valeur BO est transmise,
+    // donc plus de signalement « plafonné à 500 » ; aucun refus « Pro ».
+    expect(issues.some((i) => i.field === 'maxOutputTokens' && /plafonné à 500/.test(i.message))).toBe(false);
     expect(issues.some((i) => /Pro/.test(i.message))).toBe(false);
     const { assertConfigAtStartup, getAssistantConfig } = await import('@/services/verebona-assistant/config/assistant-config');
     expect(() => assertConfigAtStartup({ ...getAssistantConfig(), maxAiCallsPerRequest: 3 }, {})).toThrow(/> 2/);

@@ -107,8 +107,12 @@ scenario('L33-SRCH', 'Lot 33 — Recherche T2 : correspondance explicable, aucun
 
   it('SRCH-B-E2E — même catégorie : « Annecy » → Maison Annecy ✅, Maison Lyon ❌ ; documents du bien sans le mot ❌', async () => {
     const r = await chercher('Annecy');
-    expect(libelles(r)).toEqual(['Maison Annecy']);
+    // Décision PO du 05/11/2026 (lot 111I) : le nom d'un bien RATTACHÉ suffit à trouver ses documents
+    // (champ « Rattachement ») ; le bien homonyme d'une autre ville reste exclu.
+    expect(libelles(r, 'Bien')).toEqual(['Maison Annecy']);
     expect(r.results[0].match).toMatchObject({ matchedField: 'name' });
+    expect(libelles(r, 'Document').sort()).toEqual(['Relevé de compteur', 'Scan 0001']);
+    expect(libelles(r)).not.toContain('Maison Lyon');
   });
 
   it('SRCH-C-E2E — documents du même bien : « toiture » → Facture toiture ✅, Contrat assurance ❌', async () => {
@@ -125,9 +129,9 @@ scenario('L33-SRCH', 'Lot 33 — Recherche T2 : correspondance explicable, aucun
     const f = await chercher('facture lyon');
     expect(libelles(f)).toEqual(['Facture toiture']);
     // Le bien seul ne fait pas remonter ses documents.
+    // Décision PO du 05/11/2026 (lot 111I) : le bien seul fait désormais remonter ses documents rattachés.
     const l = await chercher('lyon', true);
-    expect(libelles(l, 'Document')).toEqual([]);
-    expect(l.trace!.filter((t) => t.entityType === 'document').map((t) => t.rejectionReason)).toContain('RELATION_ONLY');
+    expect(libelles(l, 'Document').sort()).toEqual(['Contrat assurance', 'Facture toiture']);
     expect(libelles(l, 'Bien')).toEqual(['Maison Lyon']);
   });
 
@@ -137,7 +141,7 @@ scenario('L33-SRCH', 'Lot 33 — Recherche T2 : correspondance explicable, aucun
     expect(r.results.find((x) => x.label === 'Polo')!.match.matchType).toBe('FUZZY');
     expect(libelles(r, 'Bien')).not.toContain('Cupra');
     // Accents et pluriels : « maisons annécy ».
-    expect(libelles(await chercher('maisons annécy'))).toEqual(['Maison Annecy']);
+    expect(libelles(await chercher('maisons annécy'), 'Bien')).toEqual(['Maison Annecy']);
   });
 
   it('SRCH-F-E2E — catégorie explicite : « voitures » → Polo et Cupra (catégorie Voiture), jamais le vélo ni les maisons ; « factures » → documents de type facture', async () => {

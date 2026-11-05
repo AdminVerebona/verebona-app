@@ -1,0 +1,51 @@
+{
+  "case": "P-T2-21",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — GARDE — réponse générée avec une valeur CORRECTE (présente dans la source) mais hors sujet (le prix pour un numéro de série) : affirmation rejetée, insuffisance rendue.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Quel est le numéro de série de la chaudière ?",
+    "sources": [
+      {
+        "id": "doc_1601",
+        "type": "document_extraction",
+        "title": "Facture chaudière Saunier Duval",
+        "content": "Chaudière gaz · Prix TTC : 2 450,00 € · Date de pose : 05/11/2024",
+        "meta": {}
+      }
+    ],
+    "requestedFacts": [
+      "serialNumber"
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "La chaudière a coûté 2 450,00 €.",
+          "sourceIds": [
+            "doc_1601"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerNotContains": [
+      "2 450"
+    ],
+    "exitState": "insufficient",
+    "finalControlRejects": [
+      "OFF_TOPIC"
+    ]
+  }
+}

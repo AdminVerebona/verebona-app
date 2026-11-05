@@ -70,7 +70,7 @@ export function TotpSetup({ start, confirm, onCancel }: {
           </div>
           <div className="space-y-1">
             <Label htmlFor="mfa-totp-code">Code à 6 chiffres</Label>
-            <Input id="mfa-totp-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]*" maxLength={7}
+            <Input id="mfa-totp-code" name="one-time-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]*" maxLength={7}
               value={code} onChange={(e) => setCode(e.target.value)} disabled={busy} autoFocus />
           </div>
         </>

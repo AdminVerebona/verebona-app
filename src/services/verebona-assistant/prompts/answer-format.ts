@@ -20,27 +20,41 @@ type AnswerFormat = 'claims' | 'comparison' | 'timeline';
 interface AnswerFormatRule {
   /** Format de sortie attendu du master T2 (branche ANSWER, T2-35). */
   format: AnswerFormat;
-  /** Phrases au plus (étapes numérotées non comptées) ; `null` = liste, non bornée en phrases. */
+  /**
+   * Phrases REPÈRES (étapes numérotées non comptées) ; `null` = liste.
+   * Lot 111M : repère de concision tracé, plus une coupe de la réponse.
+   */
   maxSentences: number | null;
-  /** Longueur maximale de la réponse rendue, en caractères. */
+  /** Longueur REPÈRE de la réponse rendue, en caractères (lot 111M : tracée, jamais coupée). */
   maxChars: number;
-  /** Éléments au plus d'une liste (chronologie, comparaison) ; `null` sinon. */
+  /** Éléments repères d'une liste (chronologie, comparaison) ; `null` sinon. */
   maxItems: number | null;
 }
 
+/**
+ * Lot 111M (ticket « budgets IA », §4 T2, CA-11) : la concision reste la
+ * RÈGLE par défaut (question factuelle : 4 phrases, 1 200 caractères), mais
+ * ces valeurs sont des REPÈRES : le validateur ne coupe plus une réponse
+ * complète (une coupe retirait des affirmations étayées). Les synthèses et
+ * comparaisons ont un repère adapté. La longueur réelle est bornée par le
+ * plafond de sortie de la configuration IA (BO) et la limite du modèle.
+ */
 const DEFAULT_MAX_SENTENCES = 4;
 const DEFAULT_MAX_ANSWER_CHARS = 1200;
+/** Repère des synthèses, chronologies et comparaisons (longueur adaptée). */
+const SYNTHESIS_MAX_ANSWER_CHARS = 3000;
 
 const DEFAULT_RULE: AnswerFormatRule = {
   format: 'claims', maxSentences: DEFAULT_MAX_SENTENCES, maxChars: DEFAULT_MAX_ANSWER_CHARS, maxItems: null,
 };
 
 const RULES: Partial<Record<VerebonaIntent, AnswerFormatRule>> = {
-  ACCOUNT_TIMELINE: { format: 'timeline', maxSentences: null, maxChars: DEFAULT_MAX_ANSWER_CHARS, maxItems: 12 },
-  ACCOUNT_COMPARISON: { format: 'comparison', maxSentences: null, maxChars: DEFAULT_MAX_ANSWER_CHARS, maxItems: 12 },
+  ACCOUNT_SUMMARY: { format: 'claims', maxSentences: null, maxChars: SYNTHESIS_MAX_ANSWER_CHARS, maxItems: null },
+  ACCOUNT_TIMELINE: { format: 'timeline', maxSentences: null, maxChars: SYNTHESIS_MAX_ANSWER_CHARS, maxItems: 12 },
+  ACCOUNT_COMPARISON: { format: 'comparison', maxSentences: null, maxChars: SYNTHESIS_MAX_ANSWER_CHARS, maxItems: 12 },
 };
 
-/** Règle de format/longueur de l'intention (défaut : 4 phrases, 1 200 caractères). */
+/** Règle de format/longueur de l'intention (défaut : 4 phrases, 1 200 caractères ; repères). */
 export function answerFormatFor(intent: string): AnswerFormatRule {
   return RULES[intent as VerebonaIntent] ?? DEFAULT_RULE;
 }

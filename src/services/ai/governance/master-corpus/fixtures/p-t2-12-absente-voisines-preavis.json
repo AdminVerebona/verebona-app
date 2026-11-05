@@ -1,0 +1,44 @@
+{
+  "case": "P-T2-12",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — information absente (préavis), données voisines présentes (prix, date de début) : abstention, aucune donnée périphérique restituée.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Quel est le délai de préavis du contrat d’entretien de la chaudière ?",
+    "sources": [
+      {
+        "id": "doc_720",
+        "type": "document_extraction",
+        "title": "Contrat d’entretien chaudière",
+        "content": "Contrat d’entretien annuel · Prix annuel : 189,00 € · Date de début : 01/09/2025 · Visite annuelle incluse",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "insufficient_data",
+      "claims": [
+        {
+          "text": "Le contrat d’entretien de la chaudière ne mentionne pas de délai de préavis : je ne peux pas vous l’indiquer.",
+          "sourceIds": [],
+          "derivation": "direct",
+          "factual": false
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerNotContains": [
+      "189",
+      "2025"
+    ],
+    "exitState": "insufficient"
+  }
+}

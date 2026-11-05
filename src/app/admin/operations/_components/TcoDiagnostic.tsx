@@ -153,6 +153,18 @@ export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
         <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Acquisition / complémentaires</p><p className="tabular-nums">{eur(t.summary.acquisitionCents)} / {eur(t.summary.additionalCostsCents)}</p></div>
         <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Statut du calcul</p><p>{t.status}{t.summary.acquisitionStatus && t.summary.acquisitionStatus !== 'DOCUMENTED' ? ` · acquisition ${t.summary.acquisitionStatus === 'MISSING' ? 'inconnue' : 'sans objet'}` : ''}</p></div>
         <div className="rounded-lg border p-3"><p className="text-xs text-muted-foreground">Lignes examinées</p><p>{t.lines.length} ({t.reliability.operationsCounted} opération(s), {t.reliability.documentsCounted} justificatif(s) direct(s) comptés)</p></div>
+        {/* Lot 111F : mêmes indicateurs que la fiche (moteur) — coût annuel moyen hors prix d'achat, coût net, financement. */}
+        {t.indicators && (
+          <div className="rounded-lg border p-3 sm:col-span-2 lg:col-span-4" data-bo-tco-indicators>
+            <p className="text-xs text-muted-foreground">Indicateurs de la fiche (lot 111F)</p>
+            <p className="tabular-nums">
+              Coût annuel moyen : {t.indicators.annualAverage.cents != null ? `${eur(t.indicators.annualAverage.cents)} / an` : `– (${t.indicators.annualAverage.unavailableReason})`}
+              {' · '}prix d’achat retiré : {t.annual.average.acquisitionPriceCents != null ? eur(t.annual.average.acquisitionPriceCents) : '–'}
+              {' · '}{t.indicators.net.kind === 'FINAL' ? 'coût net final' : 'coût net estimé'} : {t.indicators.net.cents != null ? eur(t.indicators.net.cents) : '–'}
+              {' · '}crédit à date : {eur(t.indicators.financing.costToDateCents)} ({t.indicators.financing.loans.length} prêt(s){t.indicators.financing.contractualTotalCents != null ? `, prévisionnel ${eur(t.indicators.financing.contractualTotalCents)}` : ''})
+            </p>
+          </div>
+        )}
       </div>
       {t.reliability.warnings.length > 0 && (
         <ul className="text-xs text-[color:var(--text-warning-soft)] list-disc pl-5 space-y-0.5">

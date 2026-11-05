@@ -113,7 +113,9 @@ export const COVERAGE_INVENTORY: readonly CoverageEntry[] = [
   { domain: 'documents-liens', label: 'Liens documentaires (documents ↔ biens / équipements, documents ↔ agenda)',
     checks: ['COH-DOC-LINKS', 'COH-DOC-EXTRACT-CHAIN', ...O1.filter((id) => /LINK|DOCUMENT/.test(id)), 'COH-DOC-AGENDA-LINKS', 'COH-DOC-PRIMARY-LINK',
       // Lot 109A : documents ↔ fournisseurs par l'Opération (lecture VIA_OPERATION, jamais de lien direct artificiel).
-      'COH-OPERATION-RELATIONS'],
+      'COH-OPERATION-RELATIONS',
+      // Lot 111I : rattachements multiples (biens, pièces, équipements) reflétés par la source canonique.
+      'COH-DOC-TARGETS'],
     // Lot 86D : un lien Document ↔ Agenda automatique sans preuve propre reste un constat (jugement de pertinence : contrat IA demandé).
     gap: { what: 'pertinence SÉMANTIQUE d’un lien Document ↔ Agenda automatique sans preuve propre au couple (constat AUTOMATIC_LINK_UNPROVEN, aucune écriture)', existingMechanism: 'détachement par l’utilisateur depuis les tiroirs de l’élément et du document (décision mémorisée)', planned: 'contrat IA 86D-t4-pertinence-lien-document-agenda' } },
   { domain: 'a-traiter', label: 'Cartes « À traiter »',

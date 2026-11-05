@@ -209,8 +209,14 @@ export function documentSearchLabel(row: DocumentTitleColumns): string {
  * Lot 87D (ticket « type technique ») — sous-titre d'un document : bien
  * associé, sinon libellé français du Type V2 enregistré ; jamais un code.
  */
-export function documentSearchSublabel(row: { assetName?: unknown; documentTypeCode?: unknown }): string | undefined {
-  return str(row.assetName) ?? documentTypeLabelOrNull(str(row.documentTypeCode)) ?? undefined;
+export function documentSearchSublabel(row: { assetName?: unknown; assetNames?: unknown; documentTypeCode?: unknown }): string | undefined {
+  // Lot 111I : document rattaché à plusieurs biens — tous nommés (principal d'abord).
+  const noms = Array.isArray(row.assetNames) ? [...new Set((row.assetNames as unknown[]).map(str).filter((x): x is string => !!x))] : [];
+  const principal = str(row.assetName);
+  if (noms.length > 1 || (noms.length === 1 && principal && noms[0] !== principal)) {
+    return [...new Set([...(principal ? [principal] : []), ...noms])].join(', ');
+  }
+  return principal ?? documentTypeLabelOrNull(str(row.documentTypeCode)) ?? undefined;
 }
 
 /** Références de facture indexées (données de nommage persistées, lot 87D). */
@@ -236,15 +242,31 @@ async function documentCandidates(
   const acc = p.add(accountId);
   // Lot 87D : numéro de facture recherchable (données de nommage persistées), même absent du titre.
   const cols = ['af.retained_title', 'af.web_link_title', 'af.original_filename', 'af.supplier', 'af.description', 'af.notes',
-    'af.document_type', 'af.document_type_code', 'af.extracted_text', 'a.name', "(af.title_basis ->> 'invoiceReferences')"];
+    'af.document_type', 'af.document_type_code', 'af.extracted_text', 'a.name', "(af.title_basis ->> 'invoiceReferences')",
+    // Lot 111I : noms de TOUTES les cibles rattachées (biens, pièces, équipements — liens N-N actifs).
+    "tn.names"];
   const cond = anyTokenLike(mode, p, q, cols, ['af.retained_title', 'af.web_link_title', 'af.original_filename']);
   const snippets = contentSnippets(mode, p, q, 'af.extracted_text');
   const rows = (await pgClient.unsafe(
     `SELECT af.id, ${documentTitleColumnsSql('af')},
             af.mime_type AS "mimeType", af.document_type AS "documentType", af.document_type_code AS "documentTypeCode",
-            af.supplier, af.description, af.notes, af.asset_id AS "assetId", a.name AS "assetName", af.title_basis AS "titleBasis"${snippets ? `, ${snippets}` : ''}
+            af.supplier, af.description, af.notes, af.asset_id AS "assetId", a.name AS "assetName", af.title_basis AS "titleBasis",
+            tn.asset_names AS "assetNames", tn.target_names AS "targetNames"${snippets ? `, ${snippets}` : ''}
        FROM asset_files af
        LEFT JOIN assets a ON a.id = af.asset_id AND a.account_id = af.account_id
+       LEFT JOIN LATERAL (
+         SELECT string_agg(DISTINCT t.name, ' ') AS names,
+                array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL) AS target_names,
+                array_agg(DISTINCT a2.name) FILTER (WHERE a2.name IS NOT NULL) AS asset_names
+           FROM document_asset_links l2
+           LEFT JOIN assets a2 ON a2.id = l2.asset_id AND a2.account_id = af.account_id AND a2.deleted_at IS NULL
+           LEFT JOIN equipments e2 ON e2.id = l2.equipment_id
+                 AND EXISTS (SELECT 1 FROM assets x WHERE x.id = e2.asset_id AND x.account_id = af.account_id AND x.deleted_at IS NULL)
+           LEFT JOIN substructures s2 ON s2.id = l2.substructure_id
+                 AND EXISTS (SELECT 1 FROM assets x WHERE x.id = s2.asset_id AND x.account_id = af.account_id AND x.deleted_at IS NULL)
+           CROSS JOIN LATERAL (VALUES (a2.name), (e2.name), (s2.name)) AS t(name)
+          WHERE l2.file_id = af.id AND l2.account_id = af.account_id AND l2.status = 'ACTIVE'
+            AND l2.link_role IN ('PRIMARY', 'SECONDARY')) tn ON TRUE
       WHERE af.account_id = ${acc}
         AND af.deleted_at IS NULL
         ${opts.exhaustive ? '' : `AND af.upload_status = 'COMPLETED'
@@ -270,6 +292,7 @@ async function documentCandidates(
         notes: str(r.notes),
         content: q.tokens.map((_, i) => str(r[`snip${i}`])),
         assetName: str(r.assetName),
+        targetNames: Array.isArray(r.targetNames) ? (r.targetNames as unknown[]).map(str).filter((x): x is string => !!x) : [],
       },
       retrievalStrategy: 'sql.token_like',
       _label: label,

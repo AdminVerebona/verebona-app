@@ -15,9 +15,6 @@ import { NumberInput } from '@/components/ui/number-input';
 import { formatNumberForInput, MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import { Separator } from '@/components/ui/separator';
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select';
-import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
@@ -26,6 +23,7 @@ import {
   Calendar, Euro, FileQuestion, Pencil, Building2, LayoutGrid, Wrench, Wand2, Check, CalendarPlus, X,
   Sparkles, AlertCircle, CheckCircle2, ChevronDown, ChevronUp, Lock, RefreshCw, ChevronLeft, ChevronRight, Unlink,
 } from 'lucide-react';
+import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import dynamic from 'next/dynamic';
 
 const CreateAgendaItemDrawer = dynamic(
@@ -63,6 +61,11 @@ import {
   type RubricTypeValue,
 } from '@/components/documents/v2/RubricTypeFields';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
+import { DocumentTargetsPicker } from '@/components/documents/targets/DocumentTargetsPicker';
+import { DocumentTargetsSummary, type DocumentTargetsViewDto } from '@/components/documents/targets/DocumentTargetsSummary';
+import {
+  EMPTY_TARGETS, targetsBody, valueFromTargetsView, type TargetOptionGroupView, type TargetsValue,
+} from '@/lib/documents/document-targets-selection';
 import { NativeCommerceNotice } from '@/components/native/NativeCommerceNotice';
 
 export interface DocumentDrawerItem {
@@ -314,10 +317,10 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
   const [editAmountError, setEditAmountError] = useState(false);
   const [editDescription, setEditDescription] = useState('');
   const [editNotes, setEditNotes] = useState('');
-  // Rattachement
-  const [editAssetId, setEditAssetId] = useState<number | null>(null);
-  const [editSubstructureId, setEditSubstructureId] = useState<number | null>(null);
-  const [editEquipmentId, setEditEquipmentId] = useState<number | null>(null);
+  // Rattachement — lot 111I : sélection MULTIPLE (biens, pièces, équipements).
+  const [editTargets, setEditTargets] = useState<TargetsValue>(EMPTY_TARGETS);
+  const [targetGroups, setTargetGroups] = useState<TargetOptionGroupView[]>([]);
+  const [targetsView, setTargetsView] = useState<DocumentTargetsViewDto | null>(null);
   const [assetsList, setAssetsList] = useState<{ id: number; name: string; category: string }[]>([]);
   const [substructuresList, setSubstructuresList] = useState<{ id: number; name: string }[]>([]);
   const [equipmentsList, setEquipmentsList] = useState<{ id: number; name: string }[]>([]);
@@ -544,14 +547,17 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     const load = async () => {
       setIsLoadingPreview(true);
       try {
-        const [fileData, viewData, assetsData, proposalsRes, agendaRes] = await Promise.allSettled([
+        const [fileData, viewData, assetsData, proposalsRes, agendaRes, targetsRes] = await Promise.allSettled([
           apiClient.get<any>(`/api/files/${doc.id}`),
           apiClient.get<{ viewUrl: string }>(`/api/files/${doc.id}/view`),
           apiClient.get<any>('/api/assets?limit=100', { useCache: true }),
           fetch(`/api/documents/${doc.id}/analysis-proposals`, { credentials: 'include' }),
           fetch(`/api/agenda?fileId=${doc.id}&period=all&includeCancelled=false`, { credentials: 'include' }),
+          // Lot 111I : tous les rattachements (biens, pièces, équipements) avec leur provenance.
+          apiClient.get<{ targets: DocumentTargetsViewDto }>(`/api/documents/${doc.id}/targets`),
         ]);
         if (cancelled) return;
+        setTargetsView(targetsRes.status === 'fulfilled' ? (targetsRes.value?.targets ?? null) : null);
         if (fileData.status === 'fulfilled') {
           const f = fileData.value;
           const fd: FullFileData = {
@@ -734,55 +740,21 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     setEditAmountError(false);
     setEditDescription(fullData.description ?? '');
     setEditNotes(fullData.notes ?? '');
-    const currentAssetId = fullData.assetId ?? null;
-    setEditAssetId(currentAssetId);
-    setEditSubstructureId(fullData.substructureId ?? null);
-    setEditEquipmentId(fullData.equipmentId ?? null);
+    // Lot 111I : sélection actuelle (tous les rattachements) ; à défaut, colonnes principales.
+    setEditTargets(targetsView ? valueFromTargetsView(targetsView) : {
+      assetIds: fullData.assetId ? [fullData.assetId] : [],
+      roomIds: fullData.substructureId ? [fullData.substructureId] : [],
+      equipmentIds: fullData.equipmentId ? [fullData.equipmentId] : [],
+    });
     setIsEditing(true);
 
-    // Load user plan + rooms/equipments for current asset (assets already loaded on open)
+    // Cibles proposées : biens du compte, groupés avec leurs pièces et équipements.
     try {
       await apiClient.get('/api/users/me', { useCache: true });
-      if (currentAssetId) {
-        const selectedAsset = assetsList.find((a) => a.id === currentAssetId);
-        if (selectedAsset?.category === 'IMMOBILIER') {
-          // Only reload if not already loaded for this asset
-          if (substructuresList.length === 0 || !substructuresList.some(s => s)) {
-            const [subData, eqData] = await Promise.all([
-              apiClient.get<any>(`/api/assets/${currentAssetId}/substructures`),
-              apiClient.get<any>(`/api/assets/${currentAssetId}/equipments`),
-            ]);
-            setSubstructuresList(Array.isArray(subData) ? subData : (subData?.data ?? []));
-            setEquipmentsList(Array.isArray(eqData) ? eqData : (eqData?.data ?? []));
-          }
-        } else {
-          setSubstructuresList([]);
-          setEquipmentsList([]);
-        }
-      }
+      const opts = await apiClient.get<{ groups: TargetOptionGroupView[] }>('/api/document-targets/options');
+      setTargetGroups(Array.isArray(opts?.groups) ? opts.groups : []);
     } catch { /* ignore */ }
-  }, [fullData]);
-
-  const handleAssetChange = useCallback(async (newAssetIdStr: string) => {
-    const newAssetId = newAssetIdStr === 'none' ? null : parseInt(newAssetIdStr);
-    setEditAssetId(newAssetId);
-    setEditSubstructureId(null);
-    setEditEquipmentId(null);
-    setSubstructuresList([]);
-    setEquipmentsList([]);
-    if (!newAssetId) return;
-    const selectedAsset = assetsList.find(a => a.id === newAssetId);
-    if (selectedAsset?.category === 'IMMOBILIER') {
-      try {
-        const [subData, eqData] = await Promise.all([
-          apiClient.get<any>(`/api/assets/${newAssetId}/substructures`),
-          apiClient.get<any>(`/api/assets/${newAssetId}/equipments`),
-        ]);
-        setSubstructuresList(Array.isArray(subData) ? subData : (subData?.data ?? []));
-        setEquipmentsList(Array.isArray(eqData) ? eqData : (eqData?.data ?? []));
-      } catch { /* ignore */ }
-    }
-  }, [assetsList]);
+  }, [fullData, targetsView]);
 
   const handleSave = useCallback(async () => {
     if (!doc || !fullData) return;
@@ -816,9 +788,8 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
           fileName: editFilename.trim(),
           retainedTitle: editFilename.trim(),
           documentDate: editDocDate || null,
-          assetId: editAssetId,
-          substructureId: editSubstructureId,
-          equipmentId: editEquipmentId,
+          // Lot 111I : listes (plusieurs biens, pièces, équipements).
+          ...targetsBody(editTargets),
           supplier: editSupplier.trim() || null,
           description: editDescription.trim() || null,
           notes: editNotes.trim() || null,
@@ -866,6 +837,20 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
       // Lot 28 : un rattachement ou une donnée corrigés ici ferment l'action
       // « À traiter » correspondante — page et pastille relues.
       window.dispatchEvent(new CustomEvent('refresh-a-traiter'));
+      // Lot 111I : rattachements relus (principal et cibles multiples, provenance).
+      try {
+        const t = await apiClient.get<{ targets: DocumentTargetsViewDto }>(`/api/documents/${doc.id}/targets`);
+        const v = t?.targets ?? null;
+        setTargetsView(v);
+        if (v) {
+          setFullData(prev => prev ? {
+            ...prev,
+            assetId: v.assets.find(a => a.principal)?.id ?? null,
+            substructureId: v.rooms.find(r => r.principal)?.id ?? null,
+            equipmentId: v.equipments.find(e => e.principal)?.id ?? null,
+          } : prev);
+        }
+      } catch { /* relecture au prochain chargement */ }
       toast.success('Document mis à jour');
       setIsEditing(false);
       onRefresh();
@@ -874,7 +859,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
     } finally {
       setIsSaving(false);
     }
-  }, [doc, fullData, editFilename, editClassement, editDocDate, editSupplier, editAmount, editDescription, editNotes, editAssetId, editSubstructureId, editEquipmentId, onRefresh]);
+  }, [doc, fullData, editFilename, editClassement, editDocDate, editSupplier, editAmount, editDescription, editNotes, editTargets, onRefresh]);
 
   const handleAnalyze = useCallback(async () => {
     if (!doc) return;
@@ -1498,47 +1483,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                 {/* Rattachement */}
                 <div className="space-y-3 pb-2 border-b">
                   <p className="text-xs font-medium text-muted-foreground">Rattachement</p>
-                  <div className="space-y-1.5">
-                    <Label>Bien</Label>
-                    <Select value={editAssetId ? String(editAssetId) : 'none'} onValueChange={handleAssetChange}>
-                      <SelectTrigger><SelectValue placeholder="Aucun bien" /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">Aucun bien</SelectItem>
-                        {assetsList.map(a => (
-                          <SelectItem key={a.id} value={String(a.id)}>{a.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {/* Pièce + Équipement : visible si bien IMMOBILIER et compte premium */}
-                  {editAssetId && assetsList.find(a => a.id === editAssetId)?.category === 'IMMOBILIER' && (
-                    <>
-                      <div className="space-y-1.5">
-                        <Label>Pièce</Label>
-                        <Select value={editSubstructureId ? String(editSubstructureId) : 'none'} onValueChange={v => setEditSubstructureId(v === 'none' ? null : parseInt(v))}>
-                          <SelectTrigger><SelectValue placeholder="Aucune pièce" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="none">Aucune pièce</SelectItem>
-                            {substructuresList.map(s => (
-                              <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label>Équipement</Label>
-                        <Select value={editEquipmentId ? String(editEquipmentId) : 'none'} onValueChange={v => setEditEquipmentId(v === 'none' ? null : parseInt(v))}>
-                          <SelectTrigger><SelectValue placeholder="Aucun équipement" /></SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="none">Aucun équipement</SelectItem>
-                            {equipmentsList.map(e => (
-                              <SelectItem key={e.id} value={String(e.id)}>{e.name}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </>
-                  )}
+                  <DocumentTargetsPicker groups={targetGroups} value={editTargets} onChange={setEditTargets} disabled={isSaving} />
                 </div>
 
                 <div className="space-y-1.5">
@@ -1672,6 +1617,14 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         </div>
                       </div>
                     )}
+                    {/* Lot 111I : TOUS les rattachements (biens, pièces, équipements) ; repli : colonnes principales. */}
+                    {targetsView ? (
+                      <DocumentTargetsSummary
+                        targets={targetsView}
+                        onOpenRoom={(id) => openDrawer({ kind: 'piece', id }, { stack: true })}
+                        onOpenEquipment={(id) => openDrawer({ kind: 'equipement', id }, { stack: true })}
+                      />
+                    ) : (<>
                     {/* Bien */}
                     {fullData?.assetId && (
                       <div className="flex items-center justify-between">
@@ -1707,6 +1660,7 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                         </button>
                       </div>
                     )}
+                    </>)}
                   </div>
 
                   {/* Description — courte, 2 lignes max */}
@@ -1878,15 +1832,13 @@ export function DocumentDrawer({ open, onOpenChange, document: doc, onRefresh, a
                   <span className="text-[12px] font-semibold">Annuler</span>
                 </button>
                 <div className="w-px bg-border" />
-                <button
-                  type="button"
-                  className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-primary/10 transition-colors text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                <FooterPrimaryAction
+                  icon={Check}
+                  label="Enregistrer"
+                  busy={isSaving}
+                  busyLabel="Sauvegarde…"
                   onClick={handleSave}
-                  disabled={isSaving}
-                >
-                  {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  <span className="text-[12px] font-semibold">{isSaving ? 'Sauvegarde…' : 'Enregistrer'}</span>
-                </button>
+                />
               </div>
             </div>
           )}

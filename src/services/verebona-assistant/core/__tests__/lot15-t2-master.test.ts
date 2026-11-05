@@ -66,7 +66,8 @@ describe('contrat §24 — t2_master_v1', () => {
     expect(vars).toEqual([...AI_OPERATIONS.t2_answer.promptVariables!].sort());
     for (const op of ['t2_understand', 't2_answer', 't2_revalidate'] as const) {
       expect(AI_OPERATIONS[op]).toMatchObject({ masterPromptCode: 't2_master_v1', taskField: 'mode', billable: op !== 't2_understand' });
-      expect(AI_OPERATIONS[op].defaultMaxOutputTokens).toBe(500);
+      // Lot 111M : valeur initiale du code (jamais une borne) — réponse 2 048, compréhension et revalidation 500.
+      expect(AI_OPERATIONS[op].defaultMaxOutputTokens).toBe(op === 't2_answer' ? 2_048 : 500);
     }
     // Lot 16b-2 : opérations d'étapes et relais de T2 retirés du registre.
     for (const op of ['understand_request', 'generate_answer', 'generate_answer_canonical', 'revalidate_fact', 'legacy_semantic_search', 'legacy_intelligent_search']) {
@@ -103,9 +104,11 @@ describe('contrat §24 — t2_master_v1', () => {
 describe('T2-36 — règle de longueur unique par intention', () => {
   it('registre : défaut 4 phrases, listes bornées en caractères', () => {
     expect(answerFormatFor('ACCOUNT_FACT_ASSET')).toMatchObject({ format: 'claims', maxSentences: 4, maxChars: 1200 });
+    // Lot 111M : synthèse de longueur adaptée (repère, jamais une coupe).
+    expect(answerFormatFor('ACCOUNT_SUMMARY')).toMatchObject({ format: 'claims', maxSentences: null, maxChars: 3000 });
     expect(answerFormatFor('ACCOUNT_TIMELINE')).toMatchObject({ format: 'timeline', maxSentences: null });
     expect(answerFormatFor('ACCOUNT_COMPARISON')).toMatchObject({ format: 'comparison', maxSentences: null });
-    expect(lengthRuleText('ACCOUNT_SUMMARY')).toBe('Tu réponds en 4 phrases maximum.');
+    expect(lengthRuleText('ACCOUNT_FACT_ASSET')).toBe('Tu réponds en 4 phrases maximum.');
   });
 
   it('plus aucune consigne concaténée par intention (lot 16b-2) : règle du registre seule', () => {
@@ -115,10 +118,12 @@ describe('T2-36 — règle de longueur unique par intention', () => {
     expect(lengthRuleText('ACCOUNT_TIMELINE')).not.toMatch(/4 phrases/);
   });
 
-  it('le validateur applique le registre', () => {
+  it('le validateur applique le registre (lot 111M : repère tracé, réponse complète conservée)', () => {
     const cinq = 'Un. Deux. Trois. Quatre. Cinq.';
     const claims = [{ claimKey: 'c1', text: 'Cinq.', sourceIds: ['a'], derivation: 'direct' as const }];
-    expect(validateGeneratedAnswer({ answer: cinq, claims, supportLevel: 'supported' }, 'ACCOUNT_FACT_ASSET')).toBeNull();
+    const v = validateGeneratedAnswer({ answer: cinq, claims, supportLevel: 'supported' }, 'ACCOUNT_FACT_ASSET');
+    expect(v).toMatchObject({ answer: cinq, claims, supportLevel: 'supported' });
+    expect(v!.violations).toContain('SENTENCES_ABOVE_GUIDANCE');
     expect(validateGeneratedAnswer({ answer: cinq, claims, supportLevel: 'supported' }, 'ACCOUNT_TIMELINE')?.answer).toBe(cinq);
   });
 });
@@ -146,7 +151,8 @@ describe('branche ANSWER (master) dans generation.adapter', () => {
     expect(prompt).toContain('MODE = ANSWER');
     expect(prompt).toMatch(/Intention : ACCOUNT_TIMELINE\n/);
     expect(prompt).not.toContain('Consigne propre à cette intention');
-    expect(fakeProvider.calls[0].maxOutputTokens).toBeLessThanOrEqual(500);
+    // Lot 111M : configuration effective (version sans plafond : valeur initiale du code), plus de borne à 500.
+    expect(fakeProvider.calls[0].maxOutputTokens).toBe(AI_OPERATIONS.t2_answer.defaultMaxOutputTokens);
     // Sources structurées, dans l'ordre fourni (B10).
     expect(prompt.indexOf('"sourceId": "agenda_321"')).toBeLessThan(prompt.indexOf('"sourceId": "doc_90"'));
   });

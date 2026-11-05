@@ -27,7 +27,8 @@ import { useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
+import { AUTOFILL, formFieldValue } from '@/lib/auth/autofill';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
@@ -63,13 +64,17 @@ function Contenu() {
   const [enCours, setEnCours] = useState(false);
   const [termine, setTermine] = useState(false);
 
-  const soumettre = async (e: React.FormEvent) => {
+  const soumettre = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setErreur('');
+    // Lot 111E : valeurs réellement présentes (mot de passe généré / rempli
+    // par le gestionnaire sans événement vu par React).
+    const nouveau = formFieldValue(e.currentTarget, 'new-password', motDePasse);
+    const confirme = formFieldValue(e.currentTarget, 'confirm-password', confirmation);
 
     // Vérifié ici ET côté serveur. Le contrôle client évite un aller-retour ;
     // c'est celui du serveur qui fait foi.
-    if (motDePasse !== confirmation) {
+    if (nouveau !== confirme) {
       setErreur('Les deux mots de passe ne correspondent pas.');
       return;
     }
@@ -79,7 +84,7 @@ function Contenu() {
       const reponse = await fetch('/api/auth/reset-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, newPassword: motDePasse }),
+        body: JSON.stringify({ token, newPassword: nouveau }),
       });
       const data = await reponse.json();
 
@@ -185,13 +190,16 @@ function Contenu() {
         <CardDescription>Choisissez un mot de passe pour votre compte.</CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={soumettre} className="space-y-4">
+        <form onSubmit={soumettre} method="post" className="space-y-4" data-testid="reset-password-form">
           <div className="space-y-2">
             <Label htmlFor="motDePasse">Nouveau mot de passe</Label>
-            <Input
+            {/* Lot 111E : PasswordInput (affichage, resynchronisation après
+                génération / remplissage par le gestionnaire). */}
+            <PasswordInput
               id="motDePasse"
-              type="password"
-              autoComplete="new-password"
+              name="new-password"
+              autoComplete={AUTOFILL.newPassword}
+              aria-describedby="regles-mot-de-passe"
               value={motDePasse}
               onChange={(e) => setMotDePasse(e.target.value)}
               required
@@ -201,10 +209,10 @@ function Contenu() {
 
           <div className="space-y-2">
             <Label htmlFor="confirmation">Confirmation</Label>
-            <Input
+            <PasswordInput
               id="confirmation"
-              type="password"
-              autoComplete="new-password"
+              name="confirm-password"
+              autoComplete={AUTOFILL.newPassword}
               value={confirmation}
               onChange={(e) => setConfirmation(e.target.value)}
               required
@@ -215,7 +223,7 @@ function Contenu() {
           {/* Les règles sont annoncées AVANT la saisie, non après un refus :
               découvrir une contrainte au moment de l'échec oblige à tout
               recommencer. */}
-          <ul className="text-xs text-[color:var(--text-muted)] space-y-0.5 pl-4 list-disc">
+          <ul id="regles-mot-de-passe" className="text-xs text-[color:var(--text-muted)] space-y-0.5 pl-4 list-disc">
             {REGLES.map((r) => (
               <li key={r}>{r}</li>
             ))}

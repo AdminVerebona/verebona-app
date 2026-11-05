@@ -16,11 +16,12 @@
  *   1. langue : la réponse est en français (§21.7, CA-27) — sinon repli ;
  *   1 bis. vocabulaire interdit (§21.5) — sinon repli ;
  *   2. longueur : règle UNIQUE par intention (`prompts/answer-format.ts`,
- *      T2-36) — 4 phrases au plus par défaut (§21.2, CA-19), étapes
- *      numérotées non comptées ; chronologie et comparaison (listes) bornées
- *      en caractères seulement (1 200) ;
- *   3. une affirmation coupée par la limite sort aussi des citations, et le
- *      niveau d'étayage passe à « partial » (rien n'est caché).
+ *      T2-36) — repères de concision (4 phrases / 1 200 caractères par
+ *      défaut, 3 000 pour une synthèse, une chronologie ou une comparaison).
+ *      Lot 111M (ticket « budgets IA », CA-11) : un dépassement est TRACÉ
+ *      (`SENTENCES_ABOVE_GUIDANCE`, `LENGTH_ABOVE_GUIDANCE`) mais la réponse
+ *      n'est plus coupée — la coupe retirait des affirmations étayées et
+ *      dégradait l'étayage d'une réponse complète.
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { Claim, SupportLevel } from '../types/sources';
@@ -77,36 +78,9 @@ export function validateGeneratedAnswer(
     violations.push('FORBIDDEN_VOCABULARY');
     return null;
   }
-  let answer = g.answer;
-  let claims = g.claims;
-  let supportLevel = g.supportLevel;
   const regle = answerFormatFor(intent);
-  const maxPhrases = regle.maxSentences;
-
-  if (maxPhrases !== null && countSentences(answer) > maxPhrases) {
-    violations.push('TOO_MANY_SENTENCES');
-    // Coupe à la 4e phrase, en gardant les étapes numérotées qui précèdent.
-    const out: string[] = [];
-    let n = 0;
-    for (const bloc of answer.split(/(?<=[.!?…])\s+/)) {
-      const etape = /^\s*\d+[.)]\s/.test(bloc);
-      if (!etape && n >= maxPhrases) break;
-      out.push(bloc);
-      if (!etape) n += 1;
-    }
-    answer = out.join(' ');
-  }
-  if (answer.length > regle.maxChars) {
-    violations.push('TOO_LONG');
-    const coupe = answer.slice(0, regle.maxChars);
-    const fin = Math.max(coupe.lastIndexOf('. '), coupe.lastIndexOf('\n'));
-    answer = fin > 200 ? coupe.slice(0, fin + 1) : `${coupe.trimEnd()}…`;
-  }
-  if (answer !== g.answer) {
-    const gardees = claims.filter((c) => answer.includes(c.text.trim()));
-    if (gardees.length < claims.length && supportLevel === 'supported') supportLevel = 'partial';
-    claims = gardees;
-    if (claims.length === 0) return null;
-  }
+  if (regle.maxSentences !== null && countSentences(g.answer) > regle.maxSentences) violations.push('SENTENCES_ABOVE_GUIDANCE');
+  if (g.answer.length > regle.maxChars) violations.push('LENGTH_ABOVE_GUIDANCE');
+  const { answer, claims, supportLevel } = g;
   return { answer, claims, supportLevel, violations };
 }

@@ -81,6 +81,21 @@
  *     reporting distinct : migration technique / réexamen attendu /
  *     réexamen effectué.
  *
+ * LOT 111A — angles morts E1 à E4 (ticket « T3 nommage E1–E4 ») :
+ *   · E1 — dépendances de contexte COLLECTIF (`dependencies.ts`) : la
+ *     progression mémorise la composition vue (famille, données) ; à la
+ *     reprise, ajout / retrait / déplacement / donnée nouvelle (y compris d'un
+ *     document vu en référence) réinscrit les membres déjà examinés de la
+ *     famille impactée (IA si elle couvre le document, sinon famille de
+ *     code), dans la borne d'un appel ; un document nouveau ou modifié n'est
+ *     jamais écarté par le préfiltre « titres conformes » ; réexamen d'un lot
+ *     volumineux : la famille impactée est réexaminée avec le document ;
+ *   · E2 — recalage : preuve étendue au bien (horodatage, journal ASSET) ;
+ *     TECHNICAL tracé avec sa preuve ; sinon EXPECTED puis REVIEWED ;
+ *   · E3 — indices textuels bornés sur la composante (`groupMembers`) ;
+ *   · E4 — passages et indices cherchés au-delà de la fenêtre (balayage
+ *     borné) ; passages transmis = preuves admises par les garde-fous.
+ *
  * LOT 99C — REPRÉSENTATION TEMPORELLE (`period-representation.ts`) : quand le
  * prompt actif porte `t3-naming-period-v1`, la même branche décide comment
  * représenter la période facturée dans le titre des factures périodiques
@@ -100,10 +115,13 @@ import {
 } from './guards';
 import {
   docSnapshotHash, documentFingerprint, examinedContextHash, groupFingerprint, groupMembers, groupSnapshot, isProtected, legacyGroupFingerprint,
-  linkKeysOf, membersFingerprint, NAMING_CONTEXT_VERSION, NAMING_CONTEXT_VERSION_V1, NAMING_CONTEXT_VERSION_V2, nameHash, namingVariables, orderDocs,
-  reviewTargets, textHintRefs, upgradeEvidence, v2DocumentFingerprint, v2GroupFingerprint,
+  linkKeysOf, membersFingerprint, NAMING_CONTEXT_VERSION, NAMING_CONTEXT_VERSION_V1, NAMING_CONTEXT_VERSION_V2, NAMING_TEXT_WINDOW, nameHash,
+  namingVariables, orderDocs, reviewTargets, technicalUpgradeTrace, textHintRefs, upgradeEvidence, v2DocumentFingerprint, v2GroupFingerprint,
   type MemberGroup, type NamingDoc, type NamingDocDetail, type NamingDocState,
 } from './context';
+import {
+  conventionFamilies, dependencySnapshot, extendToImpactedFamilies, freshSinceReview, impactedByContext, type ContextImpact, type DependencySnapshot,
+} from './dependencies';
 import type { GroupProgress, GroupState, NameTrace, RenameEvent, SaveGroupState } from './repository';
 import type { NamingCall, NamingCallResult, NamingPromptStatus } from './model';
 import {
@@ -224,6 +242,12 @@ export interface DocumentNamingPhaseResult {
   upgrade?: NamingUpgradeReport;
   /** Lot 109J : documents écartés de l'IA par le préfiltre déterministe (titres déjà conformes). */
   documentsPrefiltered?: number;
+  /** Lot 111A (E1) : documents aux titres « conformes » mais nouveaux / modifiés — jamais préfiltrés, examinés. */
+  documentsPrefilterExempted?: number;
+  /** Lot 111A (E1) : familles impactées par le contexte collectif trop grandes pour un réexamen (signalées, membres en référence). */
+  familiesTooLarge?: number;
+  /** Lot 111A (E3) : unions par indice textuel refusées (composante bornée). */
+  hintUnionsRefused?: number;
   /** Lot 109J : re-partitions (budget d'entrée, sortie tronquée, contexte trop grand). */
   repartitions?: number;
   /** Lot 109J : lots en échec persistant (alerte BO). */
@@ -421,7 +445,8 @@ export async function runDocumentNamingPhase(
   // ── 2. Lots, sur l'index complet (E4) ────────────────────────────────────
   const members = await repo.loadMembers(accountId);
   const hashes = new Map(members.map((m) => [m.id, m.hash]));
-  const { groups, withoutContext } = groupMembers(members);
+  const { groups, withoutContext, refusedHintUnions } = groupMembers(members);
+  res.hintUnionsRefused = refusedHintUnions;
   const multi = groups.filter((g) => g.ids.length >= 2);
   res.documents = members.length;
   res.withoutContext = withoutContext.length;
@@ -605,6 +630,11 @@ async function scanStep(accountId: number, mp: MarkerProgress, c: {
         const avecTexte = docs.filter((d) => aCalculer.has(d.id) && d.extractionId != null).map((d) => d.id);
         const textes = avecTexte.length ? await c.repo.loadTextsForHints(accountId, avecTexte) : new Map<number, string>();
         for (const d of docs) if (aCalculer.has(d.id)) { d.textRefs = textHintRefs(textes.get(d.id)); d.textVersion = c.repo.textVersionOf(d); }
+        // Lot 111A (E4) : texte au-delà de la fenêtre — indices cherchés par fenêtres successives (balayage borné).
+        for (const d of docs) {
+          if (!aCalculer.has(d.id) || d.extractionId == null || (d.textChars ?? 0) <= NAMING_TEXT_WINDOW) continue;
+          d.textRefs = await c.repo.hintRefsBeyondWindow(accountId, d.id, d.textChars ?? 0, d.textRefs ?? []);
+        }
       }
       out.changed += await c.repo.upsertMembers(accountId, docs.map((d) => ({
         id: d.id, keys: linkKeysOf(d), hash: docSnapshotHash(d),
@@ -711,10 +741,12 @@ async function examineDueGroups(accountId: number, items: Item[], p: {
   // C5 — lots examinés avec un contexte ANTÉRIEUR (lot 61 / 72B) et terminés :
   // l'égalité de l'ancienne empreinte ne vaut pas examen du contexte enrichi.
   let faitsModifies: string | null | undefined;
+  let biensModifies: string | null | undefined;
   for (const it of items) {
     const st = it.st;
     if (!st || st.status !== 'DONE' || st.contextVersion === V3 || st.fingerprint === it.fp || st.upgradeState === 'EXPECTED') continue;
     if (faitsModifies === undefined) faitsModifies = await repo.lastFactsChangeAt(accountId);
+    if (biensModifies === undefined) biensModifies = await repo.lastKnowledgeChangeAt(accountId, 'ASSET');
     const from = versionDe(st);
     const docs = await repo.loadNamingDocsByIds(accountId, it.ids);
     if (docs.length !== it.ids.length || legacyFp(docs, from) !== st.fingerprint) {
@@ -724,12 +756,14 @@ async function examineDueGroups(accountId: number, items: Item[], p: {
       up.expected++;
       continue;
     }
-    const preuve = upgradeEvidence(docs, from, st.lastReviewedAt ?? st.updatedAt ?? null, faitsModifies);
+    const examineLe = st.lastReviewedAt ?? st.updatedAt ?? null;
+    const preuve = upgradeEvidence(docs, from, examineLe, faitsModifies, { assetsChangedAt: biensModifies });
     if (preuve.safe) {
       // Migration TECHNIQUE : rien de nouvellement exploitable (démontré) — aucun appel IA.
+      // Lot 111A (E2) : raison tracée avec la provenance de la preuve et les noms manuels conservés.
       const fp = groupFingerprint(docs);
       await p.save({ ...st, fingerprint: fp, snapshot: groupSnapshot(docs), contextVersion: V3, documentCount: docs.length, progress: null,
-        upgrade: { state: 'TECHNICAL', from, reason: 'NO_NEWLY_EXPLOITABLE_INFORMATION' } });
+        upgrade: { state: 'TECHNICAL', from, reason: technicalUpgradeTrace(docs, from, examineLe) } });
       it.st = { ...st, fingerprint: fp, contextVersion: V3, upgradeState: 'TECHNICAL', upgradeFrom: from };
       p.fpNow.set(it.group.key, fp);
       if (fp !== it.fp) await repo.updateMemberHashes(accountId, docs.map((d) => ({ id: d.id, hash: docSnapshotHash(d) })));
@@ -891,9 +925,7 @@ function onlyOwnWrites(docs: readonly NamingDoc[], snapshot: Record<string, stri
 }
 
 /** Identifiants des documents d'une famille mémorisée (conventions décrites par l'IA). */
-const famillesDe = (conventions: unknown[]): number[][] => conventions
-  .map((x) => (x && typeof x === 'object' && Array.isArray((x as { documentIds?: unknown }).documentIds) ? ((x as { documentIds: unknown[] }).documentIds).map(Number) : []))
-  .filter((l) => l.length > 0);
+const famillesDe = (conventions: unknown[]): number[][] => conventionFamilies(conventions);
 
 /**
  * C3 — revalidation, à la reprise, des documents déjà examinés (pure) :
@@ -906,6 +938,13 @@ const famillesDe = (conventions: unknown[]): number[][] => conventions
  *     l'écriture faite par l'examen lui-même (journal : ancien nom = nom
  *     examiné, nouveau nom = nom en place) — justification déterministe.
  * Les documents inchangés gardent leur progression.
+ *
+ * Lot 111A (E1) — contexte COLLECTIF : `deps` (composition vue par l'examen
+ * interrompu) — document ajouté, retiré / déplacé, données modifiées d'un
+ * document vu en référence ; et donnée nouvelle d'un document examiné non
+ * couvert par une famille de l'IA (conventions absentes ou partielles) :
+ * les membres DÉJÀ EXAMINÉS de la famille impactée sont réinscrits
+ * (`impactedByContext`, borne `maxFamily`). Les autres examens restent acquis.
  */
 export function revalidateExamined(p: {
   examined: readonly number[];
@@ -913,12 +952,17 @@ export function revalidateExamined(p: {
   docs: readonly NamingDoc[];
   traces: ReadonlyMap<number, NameTrace>;
   conventions: unknown[];
-}): { keep: number[]; ctx: Record<string, string>; reexamine: number[]; removed: number[]; dataChanged: number[] } {
+  /** Lot 111A (E1) : composition mémorisée (absente : progression antérieure). */
+  deps?: DependencySnapshot | null;
+  /** Lot 111A (E1) : membres examinés d'une famille de code réinscrits au plus (un appel). */
+  maxFamily?: number;
+}): { keep: number[]; ctx: Record<string, string>; reexamine: number[]; removed: number[]; dataChanged: number[]; impact: ContextImpact } {
   const parId = new Map(p.docs.map((d) => [d.id, d]));
   const ctx: Record<string, string> = {};
   const removed: number[] = [];
   const modifies = new Set<number>();
   const donnees: number[] = [];
+  const prouvees: number[] = [];
   for (const id of p.examined) {
     const d = parId.get(id);
     if (!d) { removed.push(id); continue; }
@@ -927,7 +971,7 @@ export function revalidateExamined(p: {
     if (!avant) { modifies.add(id); donnees.push(id); continue; }
     const [dAvant, nAvant] = avant.split(':');
     const [dMaint, nMaint] = maintenant.split(':');
-    if (dAvant !== dMaint) { modifies.add(id); donnees.push(id); continue; }
+    if (dAvant !== dMaint) { modifies.add(id); donnees.push(id); prouvees.push(id); continue; }
     if (nAvant !== nMaint) {
       const h = p.traces.get(id)?.harmonization;
       const parExamen = !!h && h.name.trim() === d.name.trim() && h.oldName != null && nameHash(h.oldName) === nAvant;
@@ -938,9 +982,14 @@ export function revalidateExamined(p: {
   for (const fam of famillesDe(p.conventions)) {
     if (fam.some((x) => donnees.includes(x))) for (const x of fam) if (p.examined.includes(x) && parId.has(x)) modifies.add(x);
   }
+  // Lot 111A (E1) : dépendances collectives (composition, références, familles sans convention).
+  const impact = impactedByContext({
+    docs: p.docs, examined: p.examined, deps: p.deps ?? null, dataChanged: prouvees, conventions: p.conventions, maxFamily: p.maxFamily ?? Infinity,
+  });
+  for (const id of impact.reexamine) modifies.add(id);
   for (const id of modifies) delete ctx[String(id)];
   const keep = p.examined.filter((id) => parId.has(id) && !modifies.has(id));
-  return { keep, ctx, reexamine: [...modifies].sort((a, b) => a - b), removed, dataChanged: donnees };
+  return { keep, ctx, reexamine: [...modifies].sort((a, b) => a - b), removed, dataChanged: donnees, impact };
 }
 
 /** Examen (éventuellement partiel, repris ensuite) d'un lot. */
@@ -973,34 +1022,62 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
   const traces = await repo.loadNameTraces(accountId, g.docs.map((d) => d.id));
   let examines = new Set<number>();
   let ctx: Record<string, string> = {};
+  let revalides: number[] = [];
   if (!reprise) {
     // Examen neuf : les décisions antérieures non appliquées sont remplacées par celles de cet examen (C1, C2).
     await repo.supersedePendingWrites(accountId, [g.key]);
   } else {
     // C3 : revalidation des documents déjà examinés (nouvelle information pendant l'interruption).
-    const r = revalidateExamined({ examined: it.st?.progress?.examined ?? [], ctx: it.st?.progress?.ctx ?? {}, docs: g.docs, traces, conventions });
+    const r = revalidateExamined({
+      examined: it.st?.progress?.examined ?? [], ctx: it.st?.progress?.ctx ?? {}, docs: g.docs, traces, conventions,
+      deps: it.st?.progress?.deps ?? null, maxFamily: c.maxDocs,
+    });
     examines = new Set(r.keep);
     ctx = r.ctx;
-    if (r.reexamine.length || r.removed.length) {
+    revalides = r.reexamine;
+    if (r.impact.familiesTooLarge) res.familiesTooLarge = (res.familiesTooLarge ?? 0) + r.impact.familiesTooLarge;
+    if (r.reexamine.length || r.removed.length || r.impact.added.length || r.impact.familiesTooLarge) {
       await repo.supersedePendingWritesForFiles(accountId, g.key, [...r.reexamine, ...r.removed]);
       res.documentsRevalidated = (res.documentsRevalidated ?? 0) + r.reexamine.length;
       rec.steps.push({ step: `REVALIDATION ${g.key}`, status: 'OK', error: null, detail: {
         reexamined: r.reexamine, dataChanged: r.dataChanged, removed: r.removed, kept: r.keep.length,
+        // Lot 111A (E1) : provenance de l'impact collectif.
+        collective: { added: r.impact.added, removed: r.impact.removed, changed: r.impact.changed, families: r.impact.families,
+          familiesTooLarge: r.impact.familiesTooLarge, dependencies: it.st?.progress?.deps ? 'RECORDED' : 'UNKNOWN_PREVIOUS_PROGRESS' },
       } });
     }
   }
-  let cibles = reviewTargets(g.docs, it.st?.snapshot ?? null, c.maxDocs).filter((d) => !examines.has(d.id));
+  let cibles = reviewTargets(g.docs, it.st?.snapshot ?? null, c.maxDocs);
+  // Lot 111A (E1) : lot volumineux — la famille d'un document nouveau / modifié / retiré est réexaminée avec lui (borne d'un appel).
+  if (g.docs.length > c.maxDocs && it.st?.snapshot) {
+    const ext = extendToImpactedFamilies({ docs: g.docs, targets: cibles, snapshot: it.st.snapshot, conventions, maxFamily: c.maxDocs });
+    if (ext.added.length || ext.familiesTooLarge) {
+      res.familiesTooLarge = (res.familiesTooLarge ?? 0) + ext.familiesTooLarge;
+      rec.steps.push({ step: `FAMILLES IMPACTEES ${g.key}`, status: 'OK', error: null, detail: { changed: cibles.map((d) => d.id).slice(0, 50), addedFamilyMembers: ext.added.slice(0, 50), familiesTooLarge: ext.familiesTooLarge } });
+    }
+    cibles = ext.targets;
+  }
+  cibles = cibles.filter((d) => !examines.has(d.id));
   // Lot 109J — préfiltre DÉTERMINISTE : familles dont tous les titres suivent
   // déjà une même forme — aucun appel IA pour elles (références seulement).
+  // Lot 111A (E1) : un document NOUVEAU ou MODIFIÉ depuis le dernier examen
+  // (ou réinscrit à la reprise, ou réexamen « contexte enrichi ») n'est jamais
+  // préfiltré : « titre déjà conforme » ne justifie pas d'ignorer une donnée nouvelle.
   const pre = conformantFamilies(g.docs, (d) => c.repo.deriveNameOrigin(d, traces.get(d.id)));
   if (pre.conformant.size) {
+    const frais = freshSinceReview(g.docs, it.st?.snapshot ?? null, { extra: revalides, all: it.st?.upgradeState === 'EXPECTED' });
+    const exemptes = [...pre.conformant].filter((id) => frais.has(id));
+    for (const id of exemptes) pre.conformant.delete(id);
     const avant = cibles.length;
     cibles = cibles.filter((d) => !pre.conformant.has(d.id));
-    if (avant > cibles.length) {
+    const exemptesCibles = exemptes.filter((id) => cibles.some((d) => d.id === id));
+    if (exemptesCibles.length) res.documentsPrefilterExempted = (res.documentsPrefilterExempted ?? 0) + exemptesCibles.length;
+    if (avant > cibles.length || exemptesCibles.length) {
       res.documentsPrefiltered = (res.documentsPrefiltered ?? 0) + (avant - cibles.length);
       rec.steps.push({ step: `PREFILTRE ${g.key}`, status: 'OK', error: null, detail: {
         skipped: avant - cibles.length, remainingToExamine: cibles.length,
         families: pre.families.map((f) => ({ documentIds: f.ids, shape: f.shape })).slice(0, 20),
+        ...(exemptesCibles.length ? { newOrChangedExamined: exemptesCibles.slice(0, 50) } : {}),
       } });
     }
   }
@@ -1019,7 +1096,11 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
 
   const etatEnCours = (status: GroupState['status'], extra: Partial<SaveGroupState> = {}): SaveGroupState => ({
     key: g.key, status, fingerprint: it.st?.fingerprint ?? null,
-    progress: { nextChunk: 0, chunks: chunks.length, examined: [...examines], startedAt, ctx: { ...ctx }, ...(taille < c.maxDocs ? { chunkDocs: taille } : {}) } satisfies GroupProgress,
+    progress: {
+      nextChunk: 0, chunks: chunks.length, examined: [...examines], startedAt, ctx: { ...ctx }, ...(taille < c.maxDocs ? { chunkDocs: taille } : {}),
+      // Lot 111A (E1) : composition vue par cet examen (famille, données) — dépendances recontrôlées à la reprise.
+      deps: dependencySnapshot([...courants.values()]),
+    } satisfies GroupProgress,
     snapshot: it.st?.snapshot ?? null, conventions, promptVersion: c.prompt.version, retryAfter: null,
     attempts: it.st?.attempts ?? 0, documentCount: g.docs.length, contextVersion: versionEnCours,
     lastError: null, ...extra,
@@ -1149,7 +1230,7 @@ async function examineGroup(accountId: number, it: Item, c: ExamCtx): Promise<vo
     const conventionsAvant = conventions;
     if (out.families?.length) conventions = mergeConventions(conventions, out.families);
     const jugement = await judgeProposals(accountId, out.document_renames ?? [], {
-      it, appel, cibles: cibleIds, etats, courants, c, traceId: sortie.traceId,
+      it, appel, cibles: cibleIds, etats, courants, c, traceId: sortie.traceId, details,
       callKey: `${it.fp}:${chunk.index}:${[...idsAppel].sort((a, b) => a - b).join(',')}`,
     });
     // C2 : progression (documents examinés + empreinte de leur contexte) et décisions validées
@@ -1276,6 +1357,8 @@ async function judgeProposals(accountId: number, proposals: NamingProposal[], p:
   c: ExamCtx;
   traceId: string | null;
   callKey: string;
+  /** Lot 111A (E4) : détail transmis à l'IA — les passages au-delà de la fenêtre sont des preuves admises par les garde-fous. */
+  details?: ReadonlyMap<number, NamingDocDetail>;
 }): Promise<{ accepted: AcceptedDecision[] }> {
   const { repo, rec, res } = p.c;
   const { redact } = await import('../../gateway/redaction');
@@ -1298,7 +1381,8 @@ async function judgeProposals(accountId: number, proposals: NamingProposal[], p:
     res.proposals++;
     const doc = p.courants.get(prop.document_id);
     const s = doc ? snap.get(doc.id) : undefined;
-    const known = s && s.origin !== 'USER' && s.role === 'TO_EXAMINE' ? await repo.loadKnownData(accountId, doc!) : null;
+    const audela = (p.details?.get(prop.document_id)?.passages ?? []).filter((x) => x.offset + x.text.length > NAMING_TEXT_WINDOW).map((x) => x.text);
+    const known = s && s.origin !== 'USER' && s.role === 'TO_EXAMINE' ? await repo.loadKnownData(accountId, doc!, { transmittedPassages: audela }) : null;
     verdicts.push({ p: prop, v: judgeProposal(prop, { docs: snap, seen: vus, known, now: p.c.now(), cooldownDays: p.c.cooldown }) });
   }
   const collisions = collidingProposals(
@@ -1610,6 +1694,9 @@ class NamingRecorder {
           upgradeTechnical: res.upgrade?.technical ?? 0, upgradeExpected: res.upgrade?.expected ?? 0, upgradeReviewed: res.upgrade?.reviewed ?? 0,
           upgradeTechnicalTotal: res.upgrade?.totals.technical ?? 0, upgradeExpectedTotal: res.upgrade?.totals.expected ?? 0,
           upgradeReviewedTotal: res.upgrade?.totals.reviewed ?? 0,
+          // Lot 111A : préfiltre levé pour une donnée nouvelle (E1), familles impactées trop grandes (E1), unions d'indices refusées (E3).
+          documentsPrefiltered: res.documentsPrefiltered ?? 0, prefilterExempted: res.documentsPrefilterExempted ?? 0,
+          familiesTooLarge: res.familiesTooLarge ?? 0, hintUnionsRefused: res.hintUnionsRefused ?? 0,
           remainingGroups: res.remaining.groups, remainingDocuments: res.remaining.documents,
           scanComplete: res.scan.complete ? 1 : 0, scanned: res.scan.scanned,
         },

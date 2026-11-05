@@ -1,0 +1,48 @@
+{
+  "case": "P-T2-10",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — réponse exacte dans une source : la fin de garantie du lave-linge est restituée directement, sans réserve ni information voisine.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Jusqu’à quand le lave-linge est-il garanti ?",
+    "sources": [
+      {
+        "id": "doc_501",
+        "type": "document_extraction",
+        "title": "Facture lave-linge — Darty",
+        "content": "Lave-linge · Fin de garantie : 14/03/2028 — « Garantie constructeur 2 ans jusqu’au 14/03/2028 » · Prix TTC : 549,00 €",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "La garantie du lave-linge court jusqu’au 14 mars 2028.",
+          "sourceIds": [
+            "doc_501"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "14 mars 2028",
+    "answerNotContains": [
+      "549"
+    ],
+    "supportLevel": "supported",
+    "exitState": "answered",
+    "requestedInformation": "garantie"
+  }
+}

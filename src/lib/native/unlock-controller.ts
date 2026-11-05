@@ -11,10 +11,13 @@
  *     synchrone (`onCover`), avant toute autre réaction ;
  *   · aucune exception d'une dépendance ne laisse l'app bloquée : un échec
  *     de lecture du moyen de déverrouillage mène à l'écran de secours.
+ *   · lot 111D : attente bornée de l'identité (`IDENTITY_WAIT_MS`), état de
+ *     premier plan au démarrage, journal technique de chaque décision (codes
+ *     stables, aucune donnée biométrique, aucun identifiant de compte).
  */
-import type { PromptOutcome } from './app-lock';
+import { shouldLockOnResume, type PromptOutcome } from './app-lock';
 import {
-  INITIAL_UNLOCK_STATE, isCovered, reduceUnlock,
+  IDENTITY_WAIT_MS, INITIAL_UNLOCK_STATE, isCovered, reduceUnlock,
   type PromptMode, type SessionKnown, type UnlockEffect, type UnlockEvent, type UnlockMethod, type UnlockState,
 } from './unlock-machine';
 
@@ -28,12 +31,16 @@ export interface UnlockDeps {
   /** Relit la session serveur (jamais depuis un cache) et rend l'état obtenu. */
   verifySession(): Promise<{ status: SessionKnown; userId: number | null }>;
   navigate(path: string): void;
-  signInAgain(returnPath: string | null): void;
+  signInAgain(returnPath: string | null, reason?: 'mfa_required'): void;
   exitSession(): void;
   /** Masquage du contenu (synchrone). */
   onCover(covered: boolean): void;
   /** Journal sans secret (codes stables) — facultatif. */
   log?(code: string, detail?: Record<string, unknown>): void;
+  /** Lot 111D : la page est-elle visible au démarrage ? (absent = oui). */
+  isForeground?(): boolean;
+  /** Lot 111D : minuterie injectable (tests) ; par défaut `setTimeout`. */
+  setTimer?(ms: number, fn: () => void): void;
 }
 
 export interface UnlockController {
@@ -44,6 +51,8 @@ export interface UnlockController {
   boot(): void;
   background(): void;
   resume(): void;
+  /** Lot 111D : l'état natif lu au démarrage dit « arrière-plan » (vue rechargée par le système). */
+  backgroundProbe(): void;
 }
 
 const NO_METHOD: UnlockMethod = { biometry: false, biometryAvailable: false, deviceSecure: false, whyNot: 'unavailable' };
@@ -61,8 +70,20 @@ export function createUnlockController(deps: UnlockDeps, initial: UnlockState = 
         case 'read_method': {
           const userId = fx.userId;
           void deps.readMethod(userId)
-            .catch(() => NO_METHOD)
-            .then((method) => dispatch({ type: 'METHOD', userId, method }));
+            .catch((): UnlockMethod => ({ ...NO_METHOD, diag: { stored: 'read_failed' } }))
+            .then((method) => {
+              deps.log?.('UNLOCK_METHOD', {
+                biometry: method.biometry, whyNot: method.whyNot ?? null,
+                available: method.biometryAvailable, deviceSecure: method.deviceSecure, ...(method.diag ?? {}),
+              });
+              dispatch({ type: 'METHOD', userId, method });
+            });
+          break;
+        }
+        case 'await_identity': {
+          const attempt = fx.attempt;
+          deps.log?.('UNLOCK_AWAIT_IDENTITY', { attempt, session: state.session });
+          (deps.setTimer ?? ((ms, fn) => { setTimeout(fn, ms); }))(IDENTITY_WAIT_MS, () => dispatch({ type: 'IDENTITY_TIMEOUT', attempt }));
           break;
         }
         case 'verify_session':
@@ -82,7 +103,7 @@ export function createUnlockController(deps: UnlockDeps, initial: UnlockState = 
           break;
         }
         case 'navigate': deps.navigate(fx.path); break;
-        case 'sign_in_again': deps.signInAgain(fx.returnPath); break;
+        case 'sign_in_again': deps.log?.('UNLOCK_SIGN_IN', { reason: fx.reason ?? null }); if (fx.reason) deps.signInAgain(fx.returnPath, fx.reason); else deps.signInAgain(fx.returnPath); break;
         case 'exit_session': deps.exitSession(); break;
       }
     }
@@ -94,7 +115,12 @@ export function createUnlockController(deps: UnlockDeps, initial: UnlockState = 
     state = t.state;
     const c = isCovered(state);
     if (c !== covered) { covered = c; deps.onCover(c); }
-    if (before.phase !== state.phase) deps.log?.('UNLOCK_PHASE', { from: before.phase, to: state.phase, event: e.type });
+    if (before.phase !== state.phase || before.fallback?.reason !== state.fallback?.reason) {
+      deps.log?.('UNLOCK_PHASE', {
+        from: before.phase, to: state.phase, event: e.type, session: state.session, foreground: state.foreground,
+        ...(state.fallback ? { reason: state.fallback.reason, actions: state.fallback.actions.join(',') } : {}),
+      });
+    }
     if (state !== before) for (const fn of [...listeners]) fn(state);
     run(t.effects);
   }
@@ -104,12 +130,17 @@ export function createUnlockController(deps: UnlockDeps, initial: UnlockState = 
     subscribe(fn) { listeners.add(fn); return () => { listeners.delete(fn); }; },
     dispatch,
     boot() {
-      dispatch({ type: 'BOOT', now: deps.now(), backgroundAt: deps.readBackgroundAt() });
+      const foreground = deps.isForeground ? deps.isForeground() : true;
+      const backgroundAt = deps.readBackgroundAt();
+      const now = deps.now();
+      deps.log?.('UNLOCK_BOOT', { foreground, lockDue: shouldLockOnResume(backgroundAt, now) });
+      dispatch({ type: 'BOOT', now, backgroundAt, foreground });
       // Reprend la main sur le masque posé par le script de démarrage (même
       // tâche JavaScript : aucun affichage intermédiaire).
       deps.onCover(covered);
     },
     background() { dispatch({ type: 'BACKGROUND', now: deps.now() }); },
     resume() { dispatch({ type: 'RESUME', now: deps.now(), backgroundAt: deps.readBackgroundAt() }); },
+    backgroundProbe() { dispatch({ type: 'BACKGROUND_PROBE', now: deps.now() }); },
   };
 }

@@ -71,6 +71,7 @@ describe('écran de connexion', () => {
   it('utilise postLogin', () => {
     // Lot 103A : identifiant de corrélation de la tentative en second argument.
     // Lot 110B : destination transmise (reprise après la seconde étape).
-    expect(page).toContain('await postLogin({ email, password, returnUrl }, { attemptId })');
+    // Lot 111E : valeurs réellement présentes dans le formulaire (remplissage automatique).
+    expect(page).toContain('await postLogin({ email: submittedEmail, password: submittedPassword, returnUrl }, { attemptId })');
   });
 });

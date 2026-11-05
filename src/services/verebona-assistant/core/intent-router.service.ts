@@ -216,6 +216,10 @@ const FACT_STRONG = new RegExp(
 const DOC_STRONG = word('documents?|factures?|garanties?|manuels?|notices?|certificats?|devis|justificatifs?|fichiers?|pieces?');
 /** Besoin de valeur (montant, date) : signal faible, jamais un périmètre. */
 const VALUE_NEED = word("combien|montant|prix|tarif|cout|coute|paye|payer|quand|date|fin|finit|termine");
+/** Lot 111K : la question vise le document lui-même (« quel est le dernier document… »), pas une valeur. */
+const DOCUMENT_ITSELF = /^(?:et )?(?:quel|quelle|quels|quelles)\s+(?:est|sont|etait|etaient)\s+(?:le|la|les|l'|l’)\s*(?:dernier|derniere|derniers|dernieres|premier|premiere|plus recent|plus recente|document|documents|facture|factures|contrat|contrats|devis|fichier|fichiers|piece|pieces|statut|etat)\b/;
+/** Lot 111K : forme « quel(le) est le / la … » ou « quelle <propriété> s'applique » (valeur demandée). */
+const PROPERTY_VALUE_QUESTION = /^(?:et )?(?:quel|quelle|quels|quelles)\s+(?:est|sont|etait|etaient|sera|seront)\s+(?:le|la|les|l'|l’)|^(?:quel|quelle)\s+[\p{L}-]+\s+(?:s'applique|s’applique|figure|est prevue?)/u;
 const AGENDA = word('agenda|rendez-vous|planning|calendrier|rappels?');
 const EXPORT = word('export|exporter|dossier|pdf|transmettre');
 const SUPPLIER = word('fournisseurs?|prestataires?|artisans?|reparateurs?');
@@ -503,11 +507,19 @@ export function routeDeterministic(ctx: RouteContext): RouteOutcome {
   if (AGENDA.test(t) || DEADLINE.test(t)) {
     return R('ACCOUNT_SEARCH_AGENDA', 'probable', 'recherche agenda', true, AGENDA.test(t) || DEADLINE_STRONG.test(t) ? undefined : [DEADLINE]);
   }
+  // Lot 111K (§3.1) : « Quel est le délai de préavis du contrat… ? » demande
+  // une VALEUR portée par un document, pas le document lui-même.
+  if (DOC.test(t) && PROPERTY_VALUE_QUESTION.test(t) && !DOCUMENT_ITSELF.test(t)) return R('ACCOUNT_FACT_DOCUMENT', 'probable', 'valeur portée par un document', true);
   if (DOC.test(t)) return R('ACCOUNT_SEARCH_DOCUMENT', 'probable', 'recherche document', true, DOC_STRONG.test(t) ? undefined : [DOC]);
   // En dernier des motifs par type : un message qui cite un document ET un bien
   // porte le plus souvent sur le document (« la facture de la maison »).
   // Lot 49 : un bien + un besoin de valeur (« je paye combien… à la maison »)
   // n'est qu'une cible et un signal : WEAK.
+  // Lot 111K (§3.1) : « Quelle est la franchise de l'assurance habitation ? »
+  // demande la VALEUR d'une propriété ; le mot de bien n'en est que le
+  // contexte. Ce n'est pas une recherche de biens (dont le contrat exclut les
+  // documents, où se trouve la valeur).
+  if (ASSET.test(t) && PROPERTY_VALUE_QUESTION.test(t)) return R('ACCOUNT_FACT_ASSET', 'probable', 'valeur d’une propriété', true);
   if (ASSET.test(t)) return R('ACCOUNT_SEARCH_ASSET', 'probable', 'recherche bien', true, VALUE_NEED.test(t) ? [VALUE_NEED] : undefined);
 
   // Étape 9 bis — Contexte de page (§9.4 étape 5) : une question qui

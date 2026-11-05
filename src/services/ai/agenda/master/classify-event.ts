@@ -118,6 +118,13 @@ export function recurrenceCandidateOf(spec: RecurrenceSpec, history?: string[]):
   };
 }
 
+/** Lot 111M : caractères d'indice transmis à CLASSIFY_EVENT (`T4_CLASSIFY_EVIDENCE_CHARS`, 500, borné 200…4 000). */
+export function t4ClassifyEvidenceChars(env: Record<string, string | undefined> = process.env): number {
+  const v = env.T4_CLASSIFY_EVIDENCE_CHARS;
+  const n = Number(v);
+  return v !== undefined && v.trim() !== '' && Number.isFinite(n) ? Math.min(4_000, Math.max(200, Math.trunc(n))) : 500;
+}
+
 export function classifyEventVariables(input: AgendaClassificationInput, ctx: ClassifyEventContext): Record<string, unknown> {
   const doc = ctx.documentType ? resolveDocumentType(ctx.documentType) : null;
   return {
@@ -137,7 +144,9 @@ export function classifyEventVariables(input: AgendaClassificationInput, ctx: Cl
       ...(ctx.toProcessAssessment ? { toProcessAssessment: ctx.toProcessAssessment } : {}),
     },
     EVENT_CATALOG: eventCatalogForPrompt(),
-    EVIDENCE: (ctx.excerpt ?? input.description ?? '').slice(0, 500) || null,
+    // Lot 111M : borne CONSERVÉE (classification d'après titre, date et nature ;
+    // l'extrait n'est qu'un indice), désormais réglable sans code.
+    EVIDENCE: (ctx.excerpt ?? input.description ?? '').slice(0, t4ClassifyEvidenceChars()) || null,
     // Type documentaire (contexte optionnel de CLASSIFY_EVENT en t4_input_v2 ;
     // ignoré par t4_input_v1).
     DOCUMENT_TYPE: ctx.documentType ? { code: ctx.documentType, label: doc?.label ?? null } : null,

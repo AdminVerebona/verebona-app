@@ -1,0 +1,56 @@
+{
+  "case": "P-T2-13",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — deux sources concordantes (certificat d’immatriculation, facture d’achat) : une réponse unique étayée par les deux, sans conflit.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Combien de chevaux fiscaux fait la Clio ?",
+    "sources": [
+      {
+        "id": "doc_801",
+        "type": "document_extraction",
+        "title": "Certificat d’immatriculation Clio",
+        "content": "Puissance fiscale (P.6) : 5 CV",
+        "meta": {}
+      },
+      {
+        "id": "doc_802",
+        "type": "document_extraction",
+        "title": "Facture d’achat Clio",
+        "content": "Clio Business · Puissance fiscale : 5 CV · Prix : 15 900,00 €",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "La puissance fiscale de la Clio est de 5 CV.",
+          "sourceIds": [
+            "doc_801",
+            "doc_802"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "5 CV",
+    "answerNotContains": [
+      "15 900"
+    ],
+    "supportLevel": "supported",
+    "exitState": "answered",
+    "noFalseConflict": true
+  }
+}

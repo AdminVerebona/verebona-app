@@ -132,7 +132,11 @@ describe('L89C-U01 — blocs du guide', () => {
       // Lot 107D : étape 14 (T1 tickets à plusieurs articles, FACULTATIVE, rejouée par l107d-guide-etape14.test.ts).
       't1-receipt-lines-v1',
       // Lot 109D : étape 15 (T1 remises / total net, FACULTATIVE, rejouée par l109d-guide-etape15.test.ts).
-      't1-commercial-adjustments-v1']);
+      't1-commercial-adjustments-v1',
+      // Lot 111F : étape 16 (T1 échéancier d'un prêt, FACULTATIVE).
+      't1-loan-schedule-v1',
+      // Lot 111K : étape 17 (T2 pertinence des preuves, 3 blocs, FACULTATIVE, rejouée par l111k-guide-etape16.test.ts).
+      't2-evidence-relevance-understand-v1', 't2-evidence-relevance-b12-v1', 't2-evidence-relevance-answer-v1']);
     // Aucun bloc n'introduit un emplacement {{X}} (bloquant au BO : « emplacement inconnu »).
     for (const b of B) expect(inspectMasterTemplate(b.text).placeholders, b.id).toEqual([]);
   });

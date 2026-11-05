@@ -230,9 +230,16 @@ const T6_MAX_DOCUMENTS_PER_CANDIDATE = 5;
  */
 export function evaluationEvidenceOf(subjectId: string, e: T6ItemEvidence | undefined): {
   documents: string[]; facts: T6EvaluationFact[]; refs: T6EvidenceRef[]; versions: Map<string, T6EvidenceVersion>;
+  /**
+   * Lot 111M (ticket « budgets IA », P2 T6) : preuves NON transmises par les
+   * bornes par candidat (8 faits, 5 documents) — tracées (« non examiné »),
+   * jamais réputées absentes. Bornes conservées : elles entrent dans
+   * l'empreinte v5 (les relever réévaluerait toutes les décisions).
+   */
+  omitted: { facts: number; documents: number };
 } {
   const versions = new Map<string, T6EvidenceVersion>();
-  if (!e) return { documents: [], facts: [], refs: [], versions };
+  if (!e) return { documents: [], facts: [], refs: [], versions, omitted: { facts: 0, documents: 0 } };
   const origine = new Set(e.documents.filter((d) => d.origin).map((d) => d.fileId));
   const cleOrigine = e.originFieldKey;
   const faits = [...e.facts].sort((a, b) =>
@@ -269,7 +276,10 @@ export function evaluationEvidenceOf(subjectId: string, e: T6ItemEvidence | unde
       excerpt: texte(f.excerpt, 300), status: STATUT_FAIT[f.confidence ?? ''] ?? 'UNCERTAIN', provenance: f.provenance.slice(0, 40),
     };
   });
-  return { documents, facts, refs, versions };
+  return {
+    documents, facts, refs, versions,
+    omitted: { facts: Math.max(0, e.facts.length - faits.length), documents: Math.max(0, new Set(e.documents.map((d) => d.fileId)).size - retenus.length) },
+  };
 }
 
 /** Données d'une échéance utiles au contexte EVALUATE (ligne de l'agenda de la mascotte). */
@@ -921,6 +931,14 @@ export interface T6EvaluationProgress {
   counters: Record<string, number>;
   /** Lot 81B (B) : T6 indisponible — évaluations non exécutées, état explicite, reprise au rétablissement. */
   t6Unavailable?: boolean;
+  /**
+   * Lot 111M (ticket « budgets IA », P2 T6) : candidats ÉVALUÉS par ce passage,
+   * REPORTÉS (budget de reprise d'empreinte) et NON EXAMINÉS (au-delà du lot
+   * de 8, repris par la pré-génération durable) — jamais confondus.
+   */
+  examination?: { evaluated: number; deferred: number; notExamined: number };
+  /** Lot 111M : preuves non transmises par les bornes par candidat (tracées, jamais une absence). */
+  evidenceOmitted?: { candidates: number; facts: number; documents: number };
 }
 
 type T6EvaluationState = 'OK' | 'PENDING' | 'UNAVAILABLE';
@@ -1268,6 +1286,7 @@ export async function prepareT6Interpellation(
     }
     if (upgradeDeferred > 0) upgradeRetryInMs = budget ? budget.retryInMs() : T6_UPGRADE_WINDOW_MS;
     pendingAssessments = eligibles.length - aEvaluer.length - upgradeDeferred;
+    const examination = { evaluated: aEvaluer.length, deferred: upgradeDeferred, notExamined: Math.max(0, pendingAssessments) };
     if (runStates) {
       const etats = [...runStates.values()];
       const attentes = etats.map((x) => x.waitingUntil).filter((x): x is string => !!x).sort();
@@ -1279,10 +1298,12 @@ export async function prepareT6Interpellation(
         stale: etats.filter((x) => x.stale).length,
         waitingUntil: attentes[0] ?? null,
         counters: runStateCounters(etats),
+        examination,
       };
     }
     if (aEvaluer.length > 0) {
       const refs = new Map<string, T6CandidateRef>();
+      const omis = { candidates: 0, facts: 0, documents: 0 };
       const candidates: T6EvaluationCandidate[] = aEvaluer.map((d, k) => {
         const { candidate: c, row: i } = parId.get(d.agendaItemId)!;
         const subjectId = `C${k + 1}`;
@@ -1290,7 +1311,10 @@ export async function prepareT6Interpellation(
         // Lot 109E : CONSTRUCTION UNIQUE (`evaluationCandidateOf`) — l'empreinte
         // conservée avec la décision est calculée sur CE candidat, tel qu'il est
         // sérialisé pour EVALUATE (jamais une seconde sélection de preuves).
-        const { candidate, versions } = evaluationCandidateOf(subjectId, i, ev, { today, daysUntilDue: d.daysUntilDue, recentlyShownDays: d.displayedDays });
+        const { candidate, versions, preuves } = evaluationCandidateOf(subjectId, i, ev, { today, daysUntilDue: d.daysUntilDue, recentlyShownDays: d.displayedDays });
+        if (preuves.omitted.facts || preuves.omitted.documents) {
+          omis.candidates += 1; omis.facts += preuves.omitted.facts; omis.documents += preuves.omitted.documents;
+        }
         const transmis = t6CandidateFingerprint(candidate);
         if (transmis.fingerprint !== c.fingerprint) {
           // Impossible par construction (même fonction, mêmes données) : tracé, et
@@ -1303,6 +1327,7 @@ export async function prepareT6Interpellation(
         });
         return candidate;
       });
+      if (evaluationProgress) evaluationProgress.evidenceOmitted = omis;
       bundle = {
         context: { schemaVersion: T6_EVALUATION_INPUT_SCHEMA_VERSION, today, thresholdDays, candidates },
         refs,

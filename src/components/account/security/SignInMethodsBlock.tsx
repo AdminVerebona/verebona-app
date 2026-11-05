@@ -31,6 +31,8 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { PasswordInput } from '@/components/ui/password-input';
+import { HiddenUsernameField } from '@/components/auth/HiddenUsernameField';
+import { AUTOFILL, formFieldValue } from '@/lib/auth/autofill';
 import { PasswordRequirements } from '@/components/auth/PasswordRequirements';
 import { AppleLogo, GoogleLogo } from '@/components/auth/SocialSignInButtons';
 import { SECURITY_RETURN_MESSAGES, socialErrorMessage } from '@/lib/auth/oauth/messages';
@@ -75,7 +77,12 @@ function formatDateTime(iso: string): string {
   return new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Europe/Paris' }).format(new Date(iso));
 }
 
-export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.ReactNode }) {
+/**
+ * Lot 111E : `passwordAction` peut recevoir l'adresse du compte (identifiant
+ * invisible du formulaire de changement de mot de passe, pour que le
+ * gestionnaire mette à jour la BONNE entrée).
+ */
+export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.ReactNode | ((accountEmail: string | null) => React.ReactNode) }) {
   const { summary, reload } = useSecuritySummary();
   const { ensureFresh, withReauth } = useReauth();
   // Lot 96A (Q8) : changement de l'adresse principale.
@@ -168,13 +175,16 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
     if (await ensureFresh('Avant d’ajouter un mot de passe.', 'add-password')) setAddPasswordOpen(true);
   }, [ensureFresh]);
 
-  const addPassword = async (e: React.FormEvent) => {
+  const addPassword = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (newPassword !== confirmPassword) { toast.error('Les mots de passe ne correspondent pas.'); return; }
+    // Lot 111E : valeurs réellement présentes (mot de passe généré par le gestionnaire).
+    const nouveau = formFieldValue(e.currentTarget, 'new-password', newPassword);
+    const confirme = formFieldValue(e.currentTarget, 'confirm-password', confirmPassword);
+    if (nouveau !== confirme) { toast.error('Les mots de passe ne correspondent pas.'); return; }
     setBusy(true);
     try {
       const d = await withReauth(
-        () => apiClient.post<{ message?: string }>('/api/users/me/password', { newPassword }),
+        () => apiClient.post<{ message?: string }>('/api/users/me/password', { newPassword: nouveau }),
         'Avant d’ajouter un mot de passe.', 'add-password',
       );
       toast.success(d?.message || 'Mot de passe ajouté.');
@@ -256,7 +266,7 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
           'E-mail et mot de passe',
           summary.password.configured ? <span className="text-[color:var(--text-success)]">Actif</span> : 'Non configuré',
           summary.password.configured
-            ? passwordAction
+            ? (typeof passwordAction === 'function' ? passwordAction(summary.email) : passwordAction)
             : <Button variant="outline" className="rounded-full min-h-11 sm:min-h-9" disabled={busy} onClick={() => void askAddPassword()}>Ajouter</Button>,
           'method-password',
         )}
@@ -329,7 +339,8 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
 
       <Dialog open={addPasswordOpen} onOpenChange={setAddPasswordOpen}>
         <DialogContent>
-          <form onSubmit={addPassword}>
+          <form onSubmit={addPassword} method="post" data-testid="add-password-form">
+            <HiddenUsernameField value={summary.email} />
             <DialogHeader>
               <DialogTitle>Ajouter un mot de passe</DialogTitle>
               <DialogDescription>
@@ -339,12 +350,12 @@ export function SignInMethodsBlock({ passwordAction }: { passwordAction: React.R
             <div className="space-y-4 py-4">
               <div className="space-y-2">
                 <Label htmlFor="add-password-new">Nouveau mot de passe</Label>
-                <PasswordInput id="add-password-new" autoComplete="new-password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
+                <PasswordInput id="add-password-new" name="new-password" autoComplete={AUTOFILL.newPassword} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
                 <PasswordRequirements password={newPassword} confirmPassword={confirmPassword} showConfirmRule={true} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="add-password-confirm">Confirmer le mot de passe</Label>
-                <PasswordInput id="add-password-confirm" autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required />
+                <PasswordInput id="add-password-confirm" name="confirm-password" autoComplete={AUTOFILL.newPassword} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required />
               </div>
             </div>
             <DialogFooter>

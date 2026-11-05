@@ -291,6 +291,10 @@ const defaultDeps: AccountReconciliationDeps = {
   },
   async reconcileDocumentNaming(accountId, opts) {
     const { runDocumentNamingPhase } = await import('./document-naming/phase');
+    // Lot 111M : budgets du nommage tirés de la résolution commune (configuration
+    // IA effective, modèle réellement configuré) — instantané amorcé ici, lu par
+    // `namingBudget()` (synchrone). Jamais bloquant.
+    await (await import('../gateway/budget-resolution')).primeOperationBudget('t3_document_naming');
     return runDocumentNamingPhase(accountId, opts);
   },
 };

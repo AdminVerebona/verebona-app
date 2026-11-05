@@ -84,6 +84,10 @@ const DIAG_TABLE_OMITTED_COLUMNS: Readonly<Record<string, Readonly<Record<string
     running_json: { kind: 'ISOLATION', motif: 'isolation : traitements en cours d’autres comptes' },
     last_error: { kind: 'ISOLATION', motif: 'isolation : erreur possiblement liée à un autre compte' },
   },
+  // Lot 111C : dernière erreur du tour du worker des diagnostics (assainie, possiblement liée à un autre compte).
+  diagnostic_worker_heartbeats: {
+    last_error: { kind: 'ISOLATION', motif: 'isolation : erreur possiblement liée à un autre compte' },
+  },
   scheduled_task_state: {
     last_error: { kind: 'ISOLATION', motif: 'isolation : erreur multi-comptes (voir les erreurs des traitements du compte)' },
     last_note: { kind: 'ISOLATION', motif: 'isolation : note multi-comptes' },

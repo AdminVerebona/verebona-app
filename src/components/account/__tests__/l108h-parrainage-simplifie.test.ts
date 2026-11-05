@@ -68,12 +68,17 @@ describe('L108H-UI-02 — bloc et carte', () => {
     expect(carte).not.toContain('REFERRAL_TEXT');
   });
 
-  it('fonctions opérationnelles conservées : code, copie, lien, partage, e-mail et validations', () => {
+  // Lot 111H (décision PO) : le formulaire « Inviter par email » (envoi
+  // `/api/referral/send-email`, validation d'adresse) est retiré — doublon de
+  // « Partager mon invitation ». Les autres fonctions restent.
+  it('fonctions opérationnelles conservées : code, copie, lien, partage', () => {
     for (const s of [
       'Copier le code', 'Copier le lien', 'data-testid="referral-share"', "'Partager mon invitation'",
-      "'/api/referral/send-email'", 'emailRegex.test(email.trim())', 'Créer mon lien de parrainage',
+      'Créer mon lien de parrainage',
       'Le parrainage n’est pas encore disponible pour votre compte.', 'REFERRAL_TEXT.notEligible',
     ]) expect(bloc, s).toContain(s);
+    expect(bloc).not.toContain("'/api/referral/send-email'");
+    expect(bloc).not.toContain('emailRegex');
   });
 
   it('lien des conditions : LegalLink + useLegalLinks (navigateur système dans l’app)', () => {
@@ -81,7 +86,7 @@ describe('L108H-UI-02 — bloc et carte', () => {
     expect(bloc).toContain('useLegalLinks()');
   });
 
-  it('petits écrans : rangées lien / e-mail empilées sous 640 px, rien de tronqué', () => {
+  it('petits écrans : rangées code / lien empilées sous 640 px, rien de tronqué', () => {
     expect(bloc).not.toMatch(/\btruncate\b/);
     expect(bloc.match(/flex flex-col gap-2 sm:flex-row/g)?.length).toBeGreaterThanOrEqual(2);
   });

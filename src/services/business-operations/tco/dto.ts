@@ -52,7 +52,7 @@ export const TCO_WARNING_LABELS: Readonly<Record<TcoWarning, string>> = {
   INVALID_DATES: 'Des dates impossibles ou incohérentes ont été ignorées : les dépenses concernées ne sont rattachées à aucune année.',
   ECONOMIC_DATE_UNDETERMINED: 'Des dépenses n’ont pas de date de paiement ou de facture établie : elles sont comptées dans le TCO total mais rattachées à aucune année (les montants par année peuvent être incomplets). Elles seront datées dès qu’un justificatif le permettra.',
   ACQUISITION_DATE_INCOHERENT: 'Date d’acquisition incohérente (impossible, future ou postérieure à la cession) : la moyenne annuelle n’est pas calculée.',
-  ACQUISITION_DATE_UNDETERMINED: 'Date d’achat du bien incertaine : plusieurs dates possibles se contredisent. Le TCO moyen annuel n’est pas calculé tant que la date d’achat n’est pas confirmée sur la fiche du bien.',
+  ACQUISITION_DATE_UNDETERMINED: 'Date d’achat du bien incertaine : plusieurs dates possibles se contredisent. Le coût annuel moyen de possession n’est pas calculé tant que la date d’achat n’est pas confirmée sur la fiche du bien.',
 };
 
 /** Lot 61 : libellé du motif d'une ligne économique (moteur ou qualification documentaire). */

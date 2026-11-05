@@ -1,0 +1,49 @@
+{
+  "case": "P-T2-15",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — valeurs de nature différente (montant HT, TVA, total TTC) : le montant de la facture est le total, aucun faux conflit.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Quel est le montant de la facture du plombier ?",
+    "sources": [
+      {
+        "id": "doc_1001",
+        "type": "document_extraction",
+        "title": "Facture plomberie — Dupont",
+        "content": "Remplacement mitigeur · Total HT : 700,00 € · TVA 20 % : 140,00 € · Total TTC : 840,00 €",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "La facture du plombier s’élève à 840,00 € TTC.",
+          "sourceIds": [
+            "doc_1001"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "840,00 €",
+    "answerNotContains": [
+      "700",
+      "140"
+    ],
+    "supportLevel": "supported",
+    "exitState": "answered",
+    "noFalseConflict": true
+  }
+}

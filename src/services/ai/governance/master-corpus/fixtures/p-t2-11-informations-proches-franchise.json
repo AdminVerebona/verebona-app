@@ -1,0 +1,50 @@
+{
+  "case": "P-T2-11",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — plusieurs informations proches (prime, franchise, plafond) dans la même attestation : seule la franchise demandée est restituée, sans conflit.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Quelle franchise s’applique sur l’assurance habitation de la maison ?",
+    "sources": [
+      {
+        "id": "doc_610",
+        "type": "document_extraction",
+        "title": "Attestation assurance habitation",
+        "content": "Assurance habitation · Prime annuelle : 480,00 € · Franchise : 300,00 € · Plafond mobilier : 20 000,00 € — « Franchise générale 300 € par sinistre »",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "La franchise de l’assurance habitation est de 300,00 € par sinistre.",
+          "sourceIds": [
+            "doc_610"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "300,00 €",
+    "answerNotContains": [
+      "480",
+      "20 000"
+    ],
+    "supportLevel": "supported",
+    "exitState": "answered",
+    "noFalseConflict": true,
+    "requestedInformation": "franchise"
+  }
+}

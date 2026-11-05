@@ -122,6 +122,9 @@ describe('L55A-01 — constat : la question du catalogue contredisait la bulle',
   });
 });
 
+// Lot 111L (audit) : depuis 108J, T6 ne produit plus de suggestions affichées (bulle seule) ; ces
+// tests couvrent le validateur historique du contrat t6-suggestions-v3. Aucune de ces questions
+// n'atteint l'accueil ni T2 : la source canonique est le service partagé (critère d'utilité, L111L).
 describe('L55A-02 — questions produites par l’appel T6 existant, avec le contexte du message affiché', () => {
   it('un seul appel t6_formulate : bulle + questions ; contexte = message affiché, compte, biens, échéances', async () => {
     const b = bundleFor();

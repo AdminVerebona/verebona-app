@@ -11,6 +11,12 @@
  *          — saisie de secours (mêmes règles que le manifeste, dont la
  *          vérification des octets du texte figé — lot 104A), jamais une
  *          modification : une version enregistrée est immuable.
+ *   Lot 111O : GET porte aussi `publication` (carte BO › Exploitation › Santé ›
+ *   « CGUV publiées » : URL du manifeste réellement lue et son origine, dernière
+ *   lecture — statut HTTP, motif stable, versions —, version attendue / en
+ *   vigueur, empreinte vérifiée, âge des caches, diagnostic) ; POST
+ *   { action: 'resync' } = « Relire maintenant » : invalidation des caches
+ *   juridiques + même relecture que 'sync', rapport à jour en retour.
  * Aucune édition de texte : le site public publie le texte officiel.
  * Chaque action est tracée dans le journal juridique (`legal_audit_log`).
  */
@@ -27,7 +33,10 @@ export async function GET(request: NextRequest) {
   try {
     await ensureMigrations();
     const svc = await import('@/services/legal/cguv-referential.service');
-    const [versions, state, resolved] = await Promise.all([svc.listCguvReferential(), svc.getManifestSyncState(), svc.getServerLegalLinks()]);
+    const { getCguvPublicationReport } = await import('@/services/legal/cguv-publication-diagnostic');
+    const [versions, state, resolved, publication] = await Promise.all([
+      svc.listCguvReferential(), svc.getManifestSyncState(), svc.getServerLegalLinks(), getCguvPublicationReport(),
+    ]);
     return NextResponse.json({
       versions,
       state,
@@ -35,6 +44,7 @@ export async function GET(request: NextRequest) {
       publicUrl: resolved.links.cguv,
       linksMode: resolved.mode,
       links: resolved.links,
+      publication,
     }, { headers: NO_STORE });
   } catch (e) {
     return opsError(e, 'référentiel CGUV (lecture)', 'LEGAL_REFERENTIAL_READ_FAILED');
@@ -50,8 +60,16 @@ export async function POST(request: NextRequest) {
     await ensureMigrations();
     const svc = await import('@/services/legal/cguv-referential.service');
     if (action === 'sync') {
+      // Lot 111O : caches juridiques de l'instance invalidés avant et après la relecture.
+      await svc.invalidateLegalCaches();
       const result = await svc.syncCguvManifest({ trigger: 'bo', actorUserId: g.adminId });
+      await svc.invalidateLegalCaches();
       return NextResponse.json({ action, result }, { headers: NO_STORE });
+    }
+    if (action === 'resync') {
+      const { resyncCguvNow } = await import('@/services/legal/cguv-publication-diagnostic');
+      const publication = await resyncCguvNow(g.adminId);
+      return NextResponse.json({ action, publication }, { headers: NO_STORE });
     }
     if (action === 'manual') {
       try {

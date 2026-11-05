@@ -17,7 +17,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import { Package, X, Check, Loader2, Info } from 'lucide-react';
+import { Package, X, Check, Info } from 'lucide-react';
+import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import { toast } from 'sonner';
 import { MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import {
@@ -320,15 +321,14 @@ export function AssetFormDialog({
               <span className="text-[12px] font-semibold">Annuler</span>
             </button>
             <div className="w-px bg-border" />
-            <button
+            <FooterPrimaryAction
               type="submit"
               form="asset-form"
-              className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-primary/10 transition-colors text-primary disabled:opacity-40 disabled:cursor-not-allowed"
-              disabled={isSubmitting}
-            >
-              {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-              <span className="text-[12px] font-semibold">{isSubmitting ? 'Création…' : 'Créer le bien'}</span>
-            </button>
+              icon={Check}
+              label="Créer le bien"
+              busy={isSubmitting}
+              busyLabel="Création…"
+            />
           </div>
         </div>
       </SheetContent>

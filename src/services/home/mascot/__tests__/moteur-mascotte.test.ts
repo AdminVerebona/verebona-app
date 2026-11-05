@@ -288,6 +288,8 @@ describe('plafonds et secondaires (§4, §12)', () => {
     expect(p.secondaries.some((s) => discours.has(s.occurrenceKey))).toBe(false);
   });
 
+  // Lot 111L (audit) : `buildSecondaries` reçoit ici un catalogue explicite ; en production la
+  // mascotte n'en reçoit plus (108J : `buildSecondaries(…, [])`). Test du transport d'intention, inchangé.
   it('T2-01 — une question transporte son intention T2 CANONIQUE et, s’il y a lieu, le bien (jamais « Que sais-tu sur X ? »)', () => {
     const p = present(raw({ agenda: [agenda({ date: '2026-09-20', id: 8 })] }), catalogue({}, { id: 1, name: 'Maison', documents: 4 }));
     expect(p.secondaries.some((s) => /Que sais-tu/.test(s.action.label))).toBe(false);

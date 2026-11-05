@@ -13,6 +13,7 @@ import { displayDocumentTitle, isValidBusinessTitle } from '@/lib/documents/docu
 import {
   assertTargetInAccount, isCrossAccountReferenceError, logCrossAccountRefusal, ownedSql, TargetCoherenceError,
 } from '@/services/security/account-ownership';
+import { documentTargetsErrorResponse, prepareTargetLists } from '@/services/documents/document-targets/route-support';
 
 /** Identifiant de cible envoyé : `undefined` (absent), `null` (retiré) ou entier. */
 function cible(v: unknown): number | null | undefined {
@@ -49,7 +50,8 @@ export async function PUT(
     }
 
     const body = await request.json();
-    const { fileName, documentType, assetId, substructureId, equipmentId, webLinkUrl, documentDate, retainedTitle, retainedFunctionCode, supplier, description, notes, amountCents, userEditedFields } = body;
+    const { fileName, documentType, webLinkUrl, documentDate, retainedTitle, retainedFunctionCode, supplier, description, notes, amountCents, userEditedFields } = body;
+    let { assetId, substructureId, equipmentId } = body;
 
     // Lot 86E : le code V1 historique (`document_type`) est FACULTATIF. Le
     // tiroir ne l'envoie plus : il le « normalisait » en « AUTRE » quand la
@@ -83,6 +85,29 @@ export async function PUT(
     }
 
     const oldDoc = existingDoc[0];
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 111I — RATTACHEMENT MULTIPLE (listes `assetIds`, `substructureIds`,
+    // `equipmentIds`). La sélection est validée pour le compte AVANT toute
+    // écriture ; ses colonnes « principal » (triplet cohérent sur un bien)
+    // remplacent les anciens champs à valeur unique, qui suivent ensuite le
+    // chemin historique (contrôle SEC-05, marques, projection, réanalyse).
+    // Les autres cibles deviennent des liens USER dans la MÊME transaction.
+    // Anciens appelants (valeur unique, sans liste) : comportement inchangé.
+    // ══════════════════════════════════════════════════════════════════════
+    let listes: Awaited<ReturnType<typeof prepareTargetLists>> = null;
+    try {
+      listes = await prepareTargetLists(session.currentAccountId, documentId, body);
+    } catch (e) {
+      const r = documentTargetsErrorResponse(e, session.currentAccountId, 'PUT /api/documents/[id]');
+      if (r) return r;
+      throw e;
+    }
+    if (listes) {
+      assetId = listes.columns.assetId;
+      substructureId = listes.columns.substructureId;
+      equipmentId = listes.columns.equipmentId;
+    }
 
     const typeModifie = documentType !== undefined && documentType !== null && documentType !== oldDoc.documentType;
     if (typeModifie) {
@@ -267,6 +292,17 @@ export async function PUT(
       }
     }
 
+    if (listes) {
+      // Lot 111I : colonnes secondaires historiques réalignées sur la sélection ; marques par niveau modifié.
+      updateData.linkedAssetId = listes.columns.linkedAssetId;
+      updateData.linkedRoomId = listes.columns.linkedRoomId;
+      const marques = { ...((updateData.userEditedFields ?? oldDoc.userEditedFields ?? {}) as Record<string, boolean>) };
+      if (listes.changed.assets) marques.assetId = true;
+      if (listes.changed.rooms) marques.substructureId = true;
+      if (listes.changed.equipments) marques.equipmentId = true;
+      updateData.userEditedFields = marques;
+    }
+
     if (oldDoc.isWebLink && webLinkUrl !== undefined) {
       updateData.webLinkUrl = webLinkUrl.trim();
       updateData.webLinkTitle = fileName.trim();
@@ -277,11 +313,27 @@ export async function PUT(
       ...(updateData.substructureId ? [ownedSql('substructure', updateData.substructureId, session.currentAccountId)] : []),
       ...(updateData.equipmentId ? [ownedSql('equipment', updateData.equipmentId, session.currentAccountId)] : []),
     ];
-    const ecrit = await db
-      .update(assetFiles)
-      .set(updateData)
-      .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, session.currentAccountId), ...cibles))
-      .returning({ id: assetFiles.id });
+    const accountIdEcriture = session.currentAccountId;
+    const ecrit = await db.transaction(async (tx) => {
+      const lignes = await tx
+        .update(assetFiles)
+        .set(updateData)
+        .where(and(eq(assetFiles.id, documentId), eq(assetFiles.accountId, accountIdEcriture), ...cibles))
+        .returning({ id: assetFiles.id });
+      // Lot 111I : liens des autres cibles (colonnes déjà écrites ci-dessus, même transaction).
+      if (lignes.length > 0 && listes) {
+        const { applyDocumentTargets } = await import('@/services/documents/document-targets/service');
+        await applyDocumentTargets(tx, {
+          accountId: accountIdEcriture, fileId: documentId, selection: listes.selection, mode: 'replace',
+          columnsManagedByCaller: true,
+          previousColumns: {
+            assetId: oldDoc.assetId, linkedAssetId: oldDoc.linkedAssetId, substructureId: oldDoc.substructureId ?? null,
+            equipmentId: oldDoc.equipmentId ?? null, linkedRoomId: oldDoc.linkedRoomId,
+          },
+        });
+      }
+      return lignes;
+    });
     if (ecrit.length === 0) {
       // Cible devenue étrangère ou supprimée entre le contrôle et l'écriture.
       return NextResponse.json({ error: 'NOT_FOUND', message: 'Document non trouvé' }, { status: 404 });
@@ -303,6 +355,10 @@ export async function PUT(
     if (assetId !== undefined && oldDoc.assetId !== (assetId === null || assetId === 0 ? null : parseInt(assetId))) {
       const newAssetId = assetId === null || assetId === 0 ? 'aucun' : assetId;
       changes.push(`Bien: ${oldDoc.assetId || 'aucun'} → ${newAssetId}`);
+    }
+
+    if (listes && (listes.changed.assets || listes.changed.rooms || listes.changed.equipments)) {
+      changes.push(`Rattachements: biens [${listes.selection.assetIds.join(', ')}], pièces [${listes.selection.roomIds.join(', ')}], équipements [${listes.selection.equipmentIds.join(', ')}]`);
     }
 
     if (changes.length > 0) {

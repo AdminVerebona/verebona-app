@@ -1,0 +1,48 @@
+{
+  "case": "P-T2-17",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — propriété hors registre canonique (capacité d’un ballon d’eau chaude) : comprise, recherchée et restituée depuis le seul fait qui la porte.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Quelle est la capacité du ballon d’eau chaude ?",
+    "sources": [
+      {
+        "id": "doc_1201",
+        "type": "document_extraction",
+        "title": "Notice chauffe-eau Atlantic",
+        "content": "Chauffe-eau · Capacité : 200 L · Puissance : 2 200 W · Classe énergétique : C",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "Le ballon d’eau chaude a une capacité de 200 L.",
+          "sourceIds": [
+            "doc_1201"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "200 L",
+    "answerNotContains": [
+      "2 200"
+    ],
+    "supportLevel": "supported",
+    "exitState": "answered",
+    "requestedInformation": "capacite"
+  }
+}

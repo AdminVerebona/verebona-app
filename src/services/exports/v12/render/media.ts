@@ -33,17 +33,17 @@ export const maxFileBytes = (): number => {
 };
 
 /** Téléchargement d'un objet vers un fichier ; `false` si absent. Lève `TooLargeError` au-delà du plafond. */
-export type FetchToFile = (key: string, bucket: string | null, dest: string, maxBytes: number) => Promise<boolean>;
+export type FetchToFile = (key: string, bucket: string | null, dest: string, maxBytes: number, signal?: AbortSignal) => Promise<boolean>;
 
 class TooLargeError extends Error {}
 
 /** Téléchargement S3 par défaut (flux → disque, plafonné). */
-const s3FetchToFile: FetchToFile = async (key, bucket, dest, maxBytes) => {
+const s3FetchToFile: FetchToFile = async (key, bucket, dest, maxBytes, signal) => {
   // Client dédié avec délais (voir `storage.ts`) : un stockage muet ne bloque pas le worker.
   const [{ client: s3Client, bucket: S3_BUCKET }, { GetObjectCommand }] = await Promise.all([import('../storage').then((m) => m.exportS3()), import('@aws-sdk/client-s3')]);
   let res;
   try {
-    res = await s3Client.send(new GetObjectCommand({ Bucket: bucket || S3_BUCKET, Key: key }));
+    res = await s3Client.send(new GetObjectCommand({ Bucket: bucket || S3_BUCKET, Key: key }), signal ? { abortSignal: signal } : undefined);
   } catch (e) {
     const err = e as { name?: string; $metadata?: { httpStatusCode?: number } };
     if (err?.name === 'NoSuchKey' || err?.name === 'NotFound' || err?.$metadata?.httpStatusCode === 404) return false;
@@ -83,10 +83,10 @@ async function toPrintableImage(src: string, dest: string, maxPx: number): Promi
 
 const safeName = (s: string) => s.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80);
 
-async function fetchOne(fetchToFile: FetchToFile, key: string | null, bucket: string | null, dest: string): Promise<FileStatus> {
+async function fetchOne(fetchToFile: FetchToFile, key: string | null, bucket: string | null, dest: string, signal?: AbortSignal): Promise<FileStatus> {
   if (!key || key === 'temp') return 'missing';
   try {
-    const ok = await fetchToFile(key, bucket, dest, maxFileBytes());
+    const ok = await (signal ? fetchToFile(key, bucket, dest, maxFileBytes(), signal) : fetchToFile(key, bucket, dest, maxFileBytes()));
     if (!ok) return 'missing';
     const st = await fsp.stat(dest).catch(() => null);
     return st && st.size > 0 ? 'ok' : 'missing';
@@ -115,16 +115,20 @@ export async function resolveFiles(params: {
   documents: PlannedDocument[];
   photos: PlannedPhoto[];
   fetchToFile?: FetchToFile;
+  /** Lot 111B : plus aucun téléchargement après l'annulation (génération remplacée). */
+  signal?: AbortSignal;
 }): Promise<ResolvedFiles> {
   const fetchToFile = params.fetchToFile ?? s3FetchToFile;
+  const signal = params.signal;
   const dir = path.join(params.workDir, 'files');
   await fsp.mkdir(dir, { recursive: true });
   const documents = new Map<number, ResolvedDocument>();
   const photos = new Map<number, ResolvedPhoto>();
 
   await pool(params.documents, 3, async ({ doc, mode }) => {
+    signal?.throwIfAborted();
     const local = path.join(dir, `doc-${doc.id}-${safeName(doc.fileName ?? 'fichier')}`);
-    const status = await fetchOne(fetchToFile, doc.s3Key, doc.s3Bucket, local);
+    const status = await fetchOne(fetchToFile, doc.s3Key, doc.s3Bucket, local, signal);
     if (status !== 'ok') { documents.set(doc.id, { id: doc.id, status, pages: null }); return; }
     const fmt = doc.format.toUpperCase();
     if (fmt === 'PDF') {
@@ -148,8 +152,9 @@ export async function resolveFiles(params: {
   });
 
   await pool(params.photos, 3, async ({ photo, mode }) => {
+    signal?.throwIfAborted();
     const local = path.join(dir, `photo-${photo.id}-${safeName(photo.fileName ?? 'photo')}`);
-    const status = await fetchOne(fetchToFile, photo.s3Key, photo.s3Bucket, local);
+    const status = await fetchOne(fetchToFile, photo.s3Key, photo.s3Bucket, local, signal);
     if (status !== 'ok') { photos.set(photo.id, { id: photo.id, status }); return; }
     if (mode === 'ZIP') { photos.set(photo.id, { id: photo.id, status: 'ok', localPath: local }); return; }
     const printable = path.join(dir, `photo-${photo.id}-print.jpg`);

@@ -71,6 +71,8 @@ export async function renderDossier(params: {
   fetchToFile?: FetchToFile;
   timeoutMs?: number;
   onStep?: StepHook;
+  /** Lot 111B : annulation (génération remplacée) ou délai global — interrompt téléchargements et Chromium. */
+  signal?: AbortSignal;
 }): Promise<RenderedDossier> {
   const { code, source, choices, today, workDir } = params;
   const step = async (s: GenerationStep, d?: Record<string, unknown>) => { await params.onStep?.(s, d); };
@@ -80,7 +82,7 @@ export async function renderDossier(params: {
   const plan = planSelection(code, source, choices, today);
   let resolved: ResolvedFiles;
   try {
-    resolved = await resolveFiles({ workDir, documents: plan.documents, photos: plan.photos, fetchToFile: params.fetchToFile });
+    resolved = await resolveFiles({ workDir, documents: plan.documents, photos: plan.photos, fetchToFile: params.fetchToFile, signal: params.signal });
   } catch (e) {
     throw asGenerationError(e, 'resolve_files');
   }
@@ -153,7 +155,7 @@ export async function renderDossier(params: {
     await step('render_pdf', { annexes: attachments.annexes.length });
     const annexLayout = attachments.annexes.map((a) => ({ annexRef: a.annexRef!, pageCount: a.pageCount ?? 1 }));
     try {
-      printed = await printDossier({ workDir, build, annexes: annexLayout, timeoutMs: params.timeoutMs ?? renderTimeoutMs() });
+      printed = await printDossier({ workDir, build, annexes: annexLayout, timeoutMs: params.timeoutMs ?? renderTimeoutMs(), signal: params.signal });
     } catch (e) {
       throw asGenerationError(e, 'render_pdf');
     }

@@ -1,0 +1,52 @@
+{
+  "case": "P-T2-14",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — deux sources sur la MÊME information (fin de garantie du téléviseur, même contexte) donnent des dates incompatibles : contradiction signalée avec ses sources, aucune valeur choisie.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Quand se termine la garantie du téléviseur ?",
+    "sources": [
+      {
+        "id": "doc_901",
+        "type": "document_extraction",
+        "title": "Facture téléviseur",
+        "content": "Téléviseur · Fin de garantie : 12/03/2027",
+        "meta": {}
+      },
+      {
+        "id": "doc_902",
+        "type": "document_extraction",
+        "title": "Certificat d’extension de garantie",
+        "content": "Téléviseur · Fin de garantie : 12/03/2028",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "Les documents donnent deux valeurs différentes pour la fin de garantie du téléviseur : 12 mars 2027 selon la facture, 12 mars 2028 selon le certificat ; vérifiez laquelle est à jour.",
+          "sourceIds": [
+            "doc_901",
+            "doc_902"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "12 mars 2028",
+    "supportLevel": "supported",
+    "exitState": "conflict"
+  }
+}

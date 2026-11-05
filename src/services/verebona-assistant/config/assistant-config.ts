@@ -8,7 +8,7 @@
 
 import { isAssistantFlagOn } from './assistant-flags.server';
 import { onAssistantSettingsChange, overrideForEnv } from './assistant-settings';
-import { ASSISTANT_MAX_OUTPUT_TOKENS } from '@/services/ai/registry/operations';
+import { ASSISTANT_EXCERPT_READ_CHARS, ASSISTANT_INPUT_SAFETY_TOKENS } from './assistant-limits';
 
 // D-J1 (lot 21) : une valeur administrée dans le BO (`assistant-settings.ts`)
 // prime sur la variable d'environnement, qui reste la valeur initiale et le
@@ -73,7 +73,15 @@ interface AssistantConfig {
    */
   writeCommandsEnabled: boolean;
   maxAiCallsPerRequest: number;
+  /**
+   * Lot 111M — plafond de SÉCURITÉ d'entrée (latence §30.1, coût), appliqué
+   * au contexte RÉELLEMENT transmis (prompt maître actif compris, plus de
+   * réserve forfaitaire) et borné par la limite d'entrée du modèle
+   * (`effectiveInputCap`). `maxInputTokensExplicit` : valeur posée au BO ou
+   * dans l'environnement (sinon défaut de sécurité).
+   */
   maxInputTokens: number;
+  maxInputTokensExplicit: boolean;
   maxSources: number;
   maxVisibleSources: number;
   maxExcerptChars: number;
@@ -129,12 +137,18 @@ export function loadAssistantConfig(): AssistantConfig {
     // (`core/model-startup-check.ts`).
     writeCommandsEnabled: areWriteCommandsEnabled(),
     maxAiCallsPerRequest: num('VEREBONA_ASSISTANT_MAX_AI_CALLS_PER_REQUEST', 2),
-    maxInputTokens: num('VEREBONA_ASSISTANT_MAX_INPUT_TOKENS', 12000),
+    maxInputTokens: num('VEREBONA_ASSISTANT_MAX_INPUT_TOKENS', ASSISTANT_INPUT_SAFETY_TOKENS),
+    maxInputTokensExplicit: typeof overrideForEnv('VEREBONA_ASSISTANT_MAX_INPUT_TOKENS') === 'number'
+      || (process.env.VEREBONA_ASSISTANT_MAX_INPUT_TOKENS ?? '').trim() !== '',
     // `maxOutputTokens` retiré (CDC 15 T2-43) : la configuration IA effective
-    // de l'opération le fixe, bornée par `assistantMaxOutputTokensCap()`.
+    // de l'opération le fixe. Lot 111M : plus AUCUN plafond parallèle (ancien
+    // min(BO, 500)) — la valeur BO s'applique, bornée par la limite du modèle.
     maxSources: num('VEREBONA_ASSISTANT_MAX_SOURCES', 8),
     maxVisibleSources: num('VEREBONA_ASSISTANT_MAX_VISIBLE_SOURCES', 5),
-    maxExcerptChars: num('VEREBONA_ASSISTANT_MAX_EXCERPT_CHARS', 1500),
+    // Lot 111M : borne de LECTURE d'un extrait (mémoire, journal), plus une
+    // coupe de preuve : le budget d'entrée raccourcit ensuite les extraits
+    // seulement si le contexte réel dépasse le plafond (`fitToInputBudget`).
+    maxExcerptChars: num('VEREBONA_ASSISTANT_MAX_EXCERPT_CHARS', ASSISTANT_EXCERPT_READ_CHARS),
     aiTimeoutMs: num('VEREBONA_ASSISTANT_AI_TIMEOUT_MS', 12000),
     retrievalTimeoutMs: num('VEREBONA_ASSISTANT_RETRIEVAL_TIMEOUT_MS', 3000),
     totalTimeoutMs: num('VEREBONA_ASSISTANT_TOTAL_TIMEOUT_MS', 20000),
@@ -194,36 +208,28 @@ interface OperationModels { primaryModel: string; fallbackModels: string[] }
  * Les modèles contrôlés sont ceux que la passerelle appelle RÉELLEMENT
  * (`AI_OPERATIONS`), et non plus un registre parallèle jamais lu.
  */
-/**
- * Budget V1 de sortie de l'assistant (CDC Assistant §31.2) — la constante du
- * référentiel des opérations, jamais une seconde valeur (T2-43).
- */
-const ASSISTANT_OUTPUT_TOKENS_BUDGET = ASSISTANT_MAX_OUTPUT_TOKENS;
-
 let varRetireeSignalee = false;
 
 /**
- * Plafond de jetons de sortie de l'assistant, appliqué PAR-DESSUS la
- * configuration IA effective (CDC 15 T2-43, arbitrage PO en attente) :
- * `min(valeur BO, 500)` — une version BO au-delà de 500 est signalée à la
- * validation et plafonnée ici.
+ * CDC 15 T2-43 (lot 15) : SOURCE UNIQUE du plafond de sortie — la
+ * configuration IA effective. `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS` n'est
+ * plus lue du tout ; encore posée, elle est seulement SIGNALÉE (une fois).
  *
- * T2-43 (lot 15) : SOURCE UNIQUE. `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS`
- * n'est plus lue du tout — ni pour relever, ni pour abaisser : une variable
- * d'environnement qui abaisse silencieusement le plafond BO est une seconde
- * source de vérité. Encore posée, elle est seulement SIGNALÉE (une fois).
+ * Lot 111M (ticket « budgets IA », CA-01, CA-11) : l'ancien plafond parallèle
+ * `min(valeur BO, 500)` est SUPPRIMÉ — une valeur BO valide n'est plus jamais
+ * neutralisée par une constante cachée ; seule la limite déclarée du modèle
+ * la borne (constructeur de requête unique, tracé).
  */
-export function assistantMaxOutputTokensCap(env: NodeJS.ProcessEnv = process.env): number {
+export function signalRetiredOutputTokensVariable(env: NodeJS.ProcessEnv = process.env): void {
   const brut = env.VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS;
   if (brut !== undefined && brut.trim() !== '' && !varRetireeSignalee) {
     varRetireeSignalee = true;
     console.warn(
       `[verebona-assistant] VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS=${brut} : variable RETIRÉE et IGNORÉE (CDC 15 T2-43). `
-      + 'Le plafond de sortie vient de la seule configuration IA (BO, traitement T2), borné à 500. '
+      + 'Le plafond de sortie vient de la seule configuration IA (BO, traitement T2), bornée par la limite du modèle. '
       + 'À supprimer de l\'environnement.',
     );
   }
-  return ASSISTANT_OUTPUT_TOKENS_BUDGET;
 }
 
 /** Réservé aux tests. */
@@ -237,7 +243,7 @@ export function assertConfigAtStartup(
 ): void {
   const errors: string[] = [];
   // CDC 15 T2-43 : signale au démarrage une variable retirée encore posée.
-  assistantMaxOutputTokensCap();
+  signalRetiredOutputTokensVariable();
 
   if (cfg.webGroundingEnabled) errors.push('Recherche web interdite en V1 (§15.7)');
   if (cfg.maxAiCallsPerRequest > 2) errors.push('MAX_AI_CALLS_PER_REQUEST > 2 interdit (§15.5)');

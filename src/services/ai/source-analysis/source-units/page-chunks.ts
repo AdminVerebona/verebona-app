@@ -5,10 +5,19 @@
  *   document → passe 1 → saturation constatée → pages restantes en lots
  *   (chunk 1…N) → fusion idempotente → consolidation.
  *
- * Saturation (déterministe, aucun appel) : jetons de sortie au-delà du seuil
- * (`T1_SATURATION_OUTPUT_TOKENS`, 30 000 par défaut ≈ 90 % du plancher de
- * 32 768 de l'opération). Un document normal n'est JAMAIS découpé : aucun
- * téléchargement, aucun appel de plus.
+ * Saturation (déterministe, aucun appel) — lot 111M (ticket « budgets IA »,
+ * P1 T1) : jugée par rapport à la limite RÉELLEMENT appliquée et aux
+ * métadonnées du fournisseur, plus par une constante :
+ *   · motif d'arrêt `MAX_TOKENS` du fournisseur → saturée ;
+ *   · sinon jetons produits (sortie visible + raisonnement, qui consomment le
+ *     même plafond) ≥ `T1_SATURATION_RATIO` (90 %) du plafond TRANSMIS ;
+ *   · `T1_SATURATION_OUTPUT_TOKENS` posée : surcharge EXPLICITE (seuil absolu) ;
+ *   · plafond transmis inconnu (réponse sans métadonnées) : repli historique
+ *     30 000 (≈ 90 % du plancher de 32 768 de l'opération).
+ * Une génération qui sature AVANT de rendre une sortie exploitable est
+ * poursuivie par pages dès la page 1 (`continueByPages`, `initialSaturation`).
+ * Un document normal n'est JAMAIS découpé : aucun téléchargement, aucun appel
+ * de plus.
  *
  * Lots : PDF d'UN fichier (pdf-lib, déjà dépendance), pages `dernière page
  * lue … fin` par paquets de `T1_CHUNK_PAGES` (20), au plus `T1_MAX_CHUNKS`
@@ -21,6 +30,7 @@ import type { AiAttachment } from '../../gateway/types';
 const DEFAULT_CHUNK_PAGES = 20;
 const DEFAULT_MAX_CHUNKS = 50;
 const DEFAULT_SATURATION_OUTPUT_TOKENS = 30_000;
+const DEFAULT_SATURATION_RATIO = 0.9;
 const FETCH_TIMEOUT_MS = 60_000;
 
 const entier = (v: string | undefined, def: number, min: number, max: number) => {
@@ -33,17 +43,36 @@ export function chunkSettings(env: Record<string, string | undefined> = process.
     chunkPages: entier(env.T1_CHUNK_PAGES, DEFAULT_CHUNK_PAGES, 1, 200),
     maxChunks: entier(env.T1_MAX_CHUNKS, DEFAULT_MAX_CHUNKS, 1, 500),
     saturationOutputTokens: entier(env.T1_SATURATION_OUTPUT_TOKENS, DEFAULT_SATURATION_OUTPUT_TOKENS, 1_000, 1_000_000),
+    /** Lot 111M : le seuil absolu est-il une surcharge explicite (variable posée) ? */
+    saturationExplicit: (env.T1_SATURATION_OUTPUT_TOKENS ?? '').trim() !== '' && Number.isFinite(Number(env.T1_SATURATION_OUTPUT_TOKENS)),
+    saturationRatio: Math.min(0.99, Math.max(0.5, Number.isFinite(Number(env.T1_SATURATION_RATIO)) && (env.T1_SATURATION_RATIO ?? '').trim() !== ''
+      ? Number(env.T1_SATURATION_RATIO) : DEFAULT_SATURATION_RATIO)),
   };
 }
+
+/** Motif de saturation (diagnostic) ; `null` : sortie non saturée. */
+export type SaturationCause = 'PROVIDER_MAX_TOKENS' | 'NEAR_APPLIED_LIMIT' | 'EXPLICIT_THRESHOLD' | 'LEGACY_THRESHOLD' | 'INITIAL_NO_OUTPUT';
 
 /**
  * La sortie de la passe a-t-elle atteint la borne de génération (le reste du
  * document peut manquer) ? Une transcription au-delà de 200 000 caractères
  * n'est PAS une saturation : le modèle l'a rendue en entier, elle est
- * réintégrée par le lot de débordement.
+ * réintégrée par le lot de débordement. Lot 111M : par rapport au plafond
+ * transmis et aux métadonnées du fournisseur (voir l'en-tête).
  */
-export function isSaturated(p: { outputTokens: number }, env = process.env): boolean {
-  return p.outputTokens >= chunkSettings(env).saturationOutputTokens;
+export function saturationCause(p: {
+  outputTokens: number; thoughtsTokens?: number | null; maxOutputTokensSent?: number | null; finishReason?: string | null;
+}, env: Record<string, string | undefined> = process.env): SaturationCause | null {
+  if (String(p.finishReason ?? '').toUpperCase() === 'MAX_TOKENS') return 'PROVIDER_MAX_TOKENS';
+  const s = chunkSettings(env);
+  if (s.saturationExplicit) return p.outputTokens >= s.saturationOutputTokens ? 'EXPLICIT_THRESHOLD' : null;
+  const produits = p.outputTokens + Math.max(0, Number(p.thoughtsTokens ?? 0) || 0);
+  if (p.maxOutputTokensSent && p.maxOutputTokensSent > 0) return produits >= s.saturationRatio * p.maxOutputTokensSent ? 'NEAR_APPLIED_LIMIT' : null;
+  return p.outputTokens >= s.saturationOutputTokens ? 'LEGACY_THRESHOLD' : null;
+}
+
+export function isSaturated(p: Parameters<typeof saturationCause>[0], env: Record<string, string | undefined> = process.env): boolean {
+  return saturationCause(p, env) !== null;
 }
 
 /** Lots de pages à analyser à partir de `fromPage` (inclus) ; le surplus au-delà de `maxChunks` est rendu à part. */

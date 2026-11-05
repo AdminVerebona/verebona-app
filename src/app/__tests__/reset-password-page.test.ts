@@ -31,7 +31,9 @@ describe('la page existe et répond au lien envoyé', () => {
   it('elle appelle la bonne route avec les bons champs', () => {
     // L'API attend `{ token, newPassword }` — pas `password`.
     expect(SOURCE).toContain("'/api/auth/reset-password'");
-    expect(SOURCE).toMatch(/newPassword: motDePasse/);
+    // Lot 111E : valeur lue dans le formulaire à l'envoi (mot de passe généré par le gestionnaire).
+    expect(SOURCE).toMatch(/newPassword: nouveau/);
+    expect(SOURCE).toContain("formFieldValue(e.currentTarget, 'new-password', motDePasse)");
   });
 });
 

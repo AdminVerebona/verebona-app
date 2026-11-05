@@ -36,7 +36,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { NATIVE_PLUGINS, isNativeApp, nativePlugin } from './bridge';
-import { SECURE_KEYS, secureGet, secureRemove, secureSet } from './secure-store';
+import { SECURE_KEYS, secureGet, secureRead, secureRemove, secureSet } from './secure-store';
 import { biometryAvailability, biometryLabel, biometryShortLabel, verifyUserDetailed, type PromptOutcome } from './app-lock';
 
 export type BiometricStoredState = 'deferred' | 'active' | 'reactivate';
@@ -79,12 +79,22 @@ async function readDoc(): Promise<BiometricDoc> {
   return parseBiometricDoc(await secureGet(SECURE_KEYS.biometricsState));
 }
 
+/** Lot 111D : null si la lecture a ÉCHOUÉ (≠ document absent). */
+async function readDocChecked(): Promise<BiometricDoc | null> {
+  const r = await secureRead(SECURE_KEYS.biometricsState);
+  return r.ok ? parseBiometricDoc(r.value) : null;
+}
+
 // Écritures en file : la proposition, le réglage et le verrou ne s'écrasent jamais.
 let queue: Promise<unknown> = Promise.resolve();
 
 function mutate<T>(fn: (doc: BiometricDoc) => { doc: BiometricDoc | null; result: T }): Promise<{ ok: boolean; result: T }> {
   const run = queue.then(async () => {
-    const { doc, result } = fn(await readDoc());
+    const current = await readDocChecked();
+    // Lot 111D : lecture en échec → AUCUNE écriture (sinon les choix des autres
+    // comptes, lus comme « vides », seraient écrasés).
+    if (!current) return { ok: false, result: fn(parseBiometricDoc(null)).result };
+    const { doc, result } = fn(current);
     if (!doc) return { ok: true, result };
     return { ok: await secureSet(SECURE_KEYS.biometricsState, JSON.stringify(doc)), result };
   });
@@ -108,12 +118,13 @@ function now(): string {
 export async function readUserRecord(userId: number): Promise<UserRecord | null> {
   const legacy = await secureGet(SECURE_KEYS.biometricsEnabled);
   if (legacy !== null) {
-    const { result } = await mutate((doc) => {
+    const { ok, result } = await mutate((doc) => {
       if (doc.users[key(userId)] || legacy !== '1') return { doc: null, result: doc.users[key(userId)] ?? null };
       const rec: UserRecord = { s: 'active', at: now(), why: 'migrated', tok: null };
       return { doc: { v: 1, users: { ...doc.users, [key(userId)]: rec } }, result: rec };
     });
-    await secureRemove(SECURE_KEYS.biometricsEnabled);
+    // Lot 111D : l'ancienne préférence n'est effacée qu'une fois reprise.
+    if (ok) await secureRemove(SECURE_KEYS.biometricsEnabled);
     if (result) return result;
   }
   return (await readDoc()).users[key(userId)] ?? null;
@@ -227,6 +238,13 @@ export async function deferBiometrics(userId: number, why: DeferReason): Promise
 export interface UnlockBiometry {
   /** Déverrouillage biométrique actif ET utilisable maintenant pour ce compte. */
   active: boolean;
+  /**
+   * Lot 111D (journal technique) : choix enregistré tel que lu — jamais
+   * proposé, reporté, actif, à réactiver, lecture en échec, compte inconnu.
+   */
+  stored?: BiometricStoredState | 'never' | 'read_failed' | 'no_user';
+  /** Lot 111D : plugin local d'empreinte d'enrôlement présent dans ce binaire. */
+  enrollmentPlugin?: boolean;
   /** Choix « actif » enregistré (même si le capteur est indisponible maintenant). */
   enabled: boolean;
   /** Suspendu parce que l'enrôlement a changé (persisté). */
@@ -242,19 +260,23 @@ export interface UnlockBiometry {
  */
 export async function resolveUnlockBiometry(userId: number | null, featureOn = true): Promise<UnlockBiometry> {
   const dev = await biometryAvailability();
-  const base = { available: dev.available, deviceSecure: dev.deviceSecure, type: dev.type };
-  if (userId === null) return { ...base, active: false, enabled: false, reactivate: false };
+  const enrollmentPlugin = nativePlugin(NATIVE_PLUGINS.biometricState) !== null;
+  const base = { available: dev.available, deviceSecure: dev.deviceSecure, type: dev.type, enrollmentPlugin };
+  if (userId === null) return { ...base, active: false, enabled: false, reactivate: false, stored: 'no_user' };
+  // Lot 111D : un échec de lecture n'est pas « non activé » (jamais présenté comme un choix de l'utilisateur).
+  if (!(await readDocChecked())) return { ...base, active: false, enabled: false, reactivate: false, stored: 'read_failed' };
   const record = await readUserRecord(userId);
+  const stored = record?.s ?? 'never';
   const enabled = record?.s === 'active';
-  if (record?.s === 'reactivate') return { ...base, active: false, enabled: false, reactivate: true };
-  if (!enabled || !dev.available || !featureOn) return { ...base, active: false, enabled, reactivate: false };
+  if (record?.s === 'reactivate') return { ...base, active: false, enabled: false, reactivate: true, stored };
+  if (!enabled || !dev.available || !featureOn) return { ...base, active: false, enabled, reactivate: false, stored };
   const cur = await enrollmentToken();
   if (cur && record.tok && cur !== record.tok) {
     await mutate((doc) => ({
       doc: { v: 1, users: { ...doc.users, [key(userId)]: { s: 'reactivate', at: now(), why: 'enrollment_changed' } } },
       result: null,
     }));
-    return { ...base, active: false, enabled: false, reactivate: true };
+    return { ...base, active: false, enabled: false, reactivate: true, stored: 'reactivate' };
   }
   if (cur && !record.tok) {
     // Activé avec un binaire sans plugin d'empreinte : référence adoptée maintenant.
@@ -264,7 +286,7 @@ export async function resolveUnlockBiometry(userId: number | null, featureOn = t
       return { doc: { v: 1, users: { ...doc.users, [key(userId)]: { ...r, tok: cur } } }, result: null };
     });
   }
-  return { ...base, active: true, enabled: true, reactivate: false };
+  return { ...base, active: true, enabled: true, reactivate: false, stored };
 }
 
 /**

@@ -9,6 +9,11 @@
  * (`services/exports/v12/generation`). Plus de PDFMonkey ni de jsPDF
  * (DEC-001/002, MIG-01/02).
  *
+ * Lot 111B : `regenerate: true` (bouton « Régénérer » de l'écran de
+ * préparation) remplace les générations encore actives du MÊME dossier
+ * (même bien, type, contexte métier et utilisateur) ; sans ce paramètre,
+ * création ou rejeu idempotent comme avant (`enqueueGeneration`).
+ *
  * Corps accepté :
  *   - payload V12 (§17.2) : `{ exportType, choices: { outputFormat, sections:
  *     [{ id, enabled, items: [{ sourceType, sourceId, selected, mode }] }],
@@ -46,6 +51,7 @@ import { toGenerationDto } from '@/services/exports/v12/generation/status';
 import { exportRateLimitResponse } from '@/services/exports/v12/generation/rate-limit';
 import { enqueueGeneration } from '@/services/exports/v12/generation/enqueue';
 import { nudgeExportWorker } from '@/services/exports/v12/generation/worker';
+import { loadReplacementRefs } from '@/services/exports/v12/generation/repository';
 import { EXPORT_RETENTION_DAYS } from '@/services/exports/v12/storage';
 
 export async function GET(
@@ -80,7 +86,12 @@ export async function GET(
     const nameOf = new Map(authors.map((a) => [a.id, [a.firstName, a.lastName].filter((x) => x?.trim()).join(' ') || null]));
 
     const now = new Date();
-    const exports = rows.map((row) => toGenerationDto(row, { authorName: nameOf.get(row.userId) ?? null, now }));
+    // Lot 111B : lien des générations remplacées vers la nouvelle référence.
+    const replacements = await loadReplacementRefs(rows, assetId);
+    const exports = rows.map((row) => toGenerationDto(row, {
+      authorName: nameOf.get(row.userId) ?? null, now,
+      replacement: row.replacedByGenerationId ? replacements.get(row.replacedByGenerationId) ?? null : null,
+    }));
     return NextResponse.json({ exports });
   } catch (error) {
     return exportRouteError(error, '[Exports GET]');
@@ -136,6 +147,8 @@ export async function POST(
       downloadZipUrl: null,
       warnings: result.warnings.map((w) => ({ code: w.code, message: w.message })),
       reused: result.reused,
+      // Lot 111B : générations remplacées par cette régénération explicite.
+      replaced: result.replaced.map((r) => ({ publicId: r.publicId, outcome: r.outcome })),
     }, { status: 202 });
   } catch (error) {
     return exportRouteError(error, '[Exports POST]');

@@ -31,6 +31,8 @@ import { getAccountCapabilities, type AccountCapabilities } from '@/services/acc
 import type { AiAttachment } from '../../gateway/types';
 import { applyOverflow } from '../source-units/merge';
 import { continueByPages } from '../source-units/continuation';
+import { isTruncationFailure } from '../source-units/truncation';
+import { T1AnalyzeDocumentOutput as T1AnalyzeDocumentStrict } from '../master/t1-contract';
 import { fullTextOf } from '../source-units/build-units';
 import type { T1ExtractionExtras } from '../source-units/complete-extraction';
 import { anchorOperationCandidates, mergeOperationCandidates, type AnchoredOperationCandidate, type CandidateOrigin } from '../operation-candidates/prepare';
@@ -182,19 +184,43 @@ export async function analyzeDocument(
   // filtrent le contexte transmis ET la sortie (garde-fou ci-dessous).
   const capabilities = ctx.capabilities ?? await getAccountCapabilities(ctx.accountId);
 
-  const first = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, candidateOrigin: 'PASS_1' });
-  const res = first.res;
+  // Lot 111M (ticket « budgets IA », P1 T1, CA-10) : une passe 1 qui SATURE
+  // avant de rendre une sortie exploitable (sortie tronquée sur toute la
+  // chaîne) n'est plus un échec terminal pour un PDF découpable : elle est
+  // poursuivie par pages dès la page 1 ; la couverture est vérifiée sur le
+  // document original, indépendamment de la validité du JSON. Sinon (format
+  // non découpable) : échec explicite, jamais une analyse complète.
+  type Passe = Awaited<ReturnType<typeof callAnalyzeDocument>>;
+  let saturationInitiale: unknown = null;
+  let premiere: Passe | null = null;
+  try {
+    premiere = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, candidateOrigin: 'PASS_1' });
+  } catch (e) {
+    if (!isTruncationFailure(e) || !pageContinuable(input, groupIndices)) throw e;
+    saturationInitiale = e;
+    console.info(`[t1-saturation] fichier(s) ${groupIndices.map((i) => input.sourceIds[i]).join(',')} : sortie tronquée dès la passe 1 — reprise par pages dès la page 1.`);
+  }
+  let resLot: Passe['res'] | null = null;
+  const first: Pick<Passe, 'output' | 'report' | 'batches' | 'operationCandidates' | 'valueDecisions' | 'valueDecisionsPass'> = premiere ?? {
+    output: T1AnalyzeDocumentStrict.parse({ task: 'ANALYZE_DOCUMENT', hasExploitableContent: false }), report: null, batches: 0,
+    operationCandidates: [], valueDecisions: null,
+    valueDecisionsPass: { origin: 'PASS_1', status: 'ABSENT' } as unknown as Passe['valueDecisionsPass'],
+  };
   let operationCandidates = first.operationCandidates;
   // Lot 91D : décisions de la passe principale puis des lots de pages (null : aucune sortie ne porte le contrat).
   let valueDecisions: AnchoredValueDecision[] | null = first.valueDecisions;
-  const valueDecisionsPasses: ValueDecisionsPass[] = [first.valueDecisionsPass];
+  const valueDecisionsPasses: ValueDecisionsPass[] = premiere ? [first.valueDecisionsPass] : [];
 
   // ── Lot 34F : poursuite par lots de pages si la sortie est saturée ──────
   // (document normal : aucun effet, aucun appel). Puis fusion idempotente.
+  // Lot 111M : saturation jugée par rapport au plafond TRANSMIS et au motif
+  // d'arrêt du fournisseur (`generation`), plus par une constante.
   const suite = await continueByPages({
-    input, groupIndices, first: first.output, firstOutputTokens: res.outputTokens ?? 0, firstReport: first.report,
+    input, groupIndices, first: first.output, firstOutputTokens: premiere?.res.outputTokens ?? 0, firstReport: first.report,
+    firstGeneration: premiere?.res.generation ?? null, initialSaturation: !premiere,
     call: async (c) => {
       const r = await callAnalyzeDocument({ input, groupIndices, ctx, capabilities, v2Families, ...c, candidateOrigin: 'CHUNK' });
+      resLot ??= r.res;
       // Lot 40 : candidats d'un lot de pages fusionnés (dédoublonnés, clés uniques).
       operationCandidates = mergeOperationCandidates(operationCandidates, r.operationCandidates);
       if (r.valueDecisions) valueDecisions = [...(valueDecisions ?? []), ...r.valueDecisions];
@@ -202,6 +228,16 @@ export async function analyzeDocument(
       return { output: r.output, report: r.report, batches: r.batches, outputTokens: r.res.outputTokens ?? 0, pruned: r.res.prunedValues ?? [] };
     },
   });
+  // Saturation initiale sans aucun lot lu : échec explicite (cause d'origine), jamais une analyse vide « réussie ».
+  if (!premiere && !resLot) throw saturationInitiale;
+  const res: Passe['res'] = premiere?.res ?? resLot!;
+  if (!premiere) {
+    warnings.push({
+      code: 'PARTIAL_EXTRACTION',
+      message: `Sortie tronquée dès la première lecture : document relu par lots de pages (${suite.chunkCount} lot(s)${suite.gaps.length ? `, ${suite.gaps.length} lacune(s)` : ''}) ; couverture vérifiée sur le document original.`,
+      target: 't1-master:initial-saturation',
+    });
+  }
   const report = sommeRapports([first.report, ...suite.reports]);
   // Texte INTÉGRAL lu (passe + lots de pages) : persisté, contrôlé, découpé en unités.
   const brut: T1AnalyzeDocumentOutput = {
@@ -485,6 +521,19 @@ export async function analyzeDocument(
     valueDecisions,
     valueDecisionsPasses,
   };
+}
+
+/**
+ * Lot 111M — le groupe peut-il être relu par pages (un seul fichier PDF
+ * accessible par URL, source non préextraite) ? Même règle que
+ * `continueByPages`. Pur.
+ */
+function pageContinuable(input: SourceInput, groupIndices: number[]): boolean {
+  if (groupIndices.length !== 1) return false;
+  const i = groupIndices[0];
+  const url = input.contentUrls?.[i];
+  const texte = !!input.extractedContent?.trim() && (input.sourceType === 'web_link' || !input.contentUrls?.length);
+  return !!url && /^https?:/i.test(url) && (input.mimeTypes[i] ?? 'application/pdf').includes('pdf') && !texte;
 }
 
 /**

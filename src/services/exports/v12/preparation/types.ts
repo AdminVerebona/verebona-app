@@ -150,6 +150,12 @@ export interface PreparationDto {
   /** PREP-ELIGIBILITY : prêt, partiellement disponible (à compléter) ou indisponible. */
   eligibility: { status: 'ready' | 'partial' | 'unavailable'; message: string | null };
   lastGeneration: { publicId: string; status: string; createdAt: string; authorName: string | null } | null;
+  /**
+   * Lot 111B : génération de CE dossier (même bien, type, sinistre) lancée par
+   * l'utilisateur courant et encore en file ou en cours. Présente : l'écran
+   * propose « Régénérer » (la génération précédente sera remplacée).
+   */
+  activeGeneration?: { publicId: string; status: string; createdAt: string } | null;
   sections: PrepSection[];
   /** Plafond de photos pré-cochées (§6.2). */
   photoCap: number;

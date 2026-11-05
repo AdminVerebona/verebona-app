@@ -533,6 +533,20 @@ jobs:
         run: npm run test:e2e:arbitrage-operation -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-arbitrage-operation.xml
       - name: Assistant — réponses issues des Ressources, questions sans réponse (lot 110E)
         run: npm run test:e2e:t2-ressources -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t2-ressources.xml
+      - name: Exports, la régénération remplace la génération précédente (lot 111B)
+        run: npm run test:e2e:exports-regeneration -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-exports-regeneration.xml
+      - name: Diagnostic global, file, remplacement et supervision du worker (lot 111C)
+        run: npm run test:e2e:diagnostic-file -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic-file.xml
+      - name: TCO, coût annuel, financement et valorisation (lot 111F)
+        run: npm run test:e2e:tco-financement -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-financement.xml
+      - name: Documents, rattachement à plusieurs biens, pièces et équipements (lot 111I)
+        run: npm run test:e2e:rattachement-multiple -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-rattachement-multiple.xml
+      - name: Assistant, pertinence des preuves (lot 111K)
+        run: npm run test:e2e:t2-pertinence -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t2-pertinence.xml
+      - name: Suggestions, critère d'utilité réelle (lot 111L)
+        run: npm run test:e2e:suggestions-utilite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-suggestions-utilite.xml
+      - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
+        run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

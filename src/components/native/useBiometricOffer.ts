@@ -17,6 +17,7 @@ import { reacceptanceStatusOf } from '@/lib/legal/reacceptance-gate';
 import {
   changeBiometrics, deferBiometrics, isBiometricOfferPath, readBiometricSetting, shouldOfferBiometrics,
 } from '@/lib/native/biometric-consent';
+import { presentationBiometryType, readBiometryTypes } from '@/lib/native/biometric-offer-presentation';
 
 type Features = Record<string, boolean> | null;
 
@@ -24,6 +25,7 @@ export interface BiometricOffer {
   visible: boolean;
   /** Une proposition a été montrée pendant ce lancement (pas d'autre invitation empilée). */
   shownThisRun: boolean;
+  /** `BiometryType` à présenter (lot 111G : null = symbole et textes génériques). */
   type: number | null;
   busy: boolean;
   activate: () => void;
@@ -65,7 +67,12 @@ export function useBiometricOffer(features: Features, blocked: boolean, held = f
       // Proposition UNIQUE : notée dès l'affichage (même si l'app est fermée sans réponse).
       await deferBiometrics(userId, 'offered');
       if (currentUser.current !== userId) return;
-      setOffer({ userId, type: setting.type, label: setting.shortLabel });
+      // Lot 111G (présentation seule) : type affiné pour l'icône et les libellés
+      // de la modale — Android : capteur précis seulement s'il est le seul.
+      const platform = nativePlatform();
+      const types = platform === 'android' ? await readBiometryTypes() : null;
+      if (currentUser.current !== userId) return;
+      setOffer({ userId, type: presentationBiometryType(platform, setting.type, types), label: setting.shortLabel });
       setShownThisRun(true);
     })();
   }, [offer, userId, status, blocked, held, legalRequired, featureOn, pathname]);

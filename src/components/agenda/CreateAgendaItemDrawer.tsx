@@ -24,7 +24,8 @@ import {
 } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DatePicker } from "@/components/ui/date-picker";
-import { Info, Grid2X2, Wrench, ChevronDown, X, Check, Loader2 } from "lucide-react";
+import { Info, Grid2X2, Wrench, ChevronDown, X, Check } from "lucide-react";
+import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import { TimePicker } from "@/components/ui/time-picker";
 import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
@@ -584,15 +585,14 @@ export function CreateAgendaItemDrawer({
                 <span className="text-[12px] font-semibold">Annuler</span>
               </button>
               <div className="w-px bg-border" />
-              <button
-                type="button"
-                className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-primary/10 transition-colors text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+              <FooterPrimaryAction
+                icon={Check}
+                label="Créer"
+                busy={saving}
+                busyLabel="Création…"
+                disabled={!title.trim()}
                 onClick={handleSubmit}
-                disabled={saving || !title.trim()}
-              >
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                <span className="text-[12px] font-semibold">{saving ? "Création…" : "Créer"}</span>
-              </button>
+              />
             </div>
           </div>
         </div>

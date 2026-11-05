@@ -110,7 +110,7 @@ function Verification() {
     <form key="code" onSubmit={submitCode} className="space-y-3">
       <div className="space-y-1">
         <Label htmlFor="mfa-code">Code de votre application d’authentification</Label>
-        <Input id="mfa-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]*" maxLength={7}
+        <Input id="mfa-code" name="one-time-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]*" maxLength={7}
           value={code} onChange={(e) => setCode(e.target.value)} disabled={busy !== null} autoFocus={!passkeyFirst} />
       </div>
       <Button type="submit" className="w-full" variant={passkeyFirst ? 'outline' : 'default'} disabled={busy !== null || code.replace(/\s+/g, '').length !== 6}>

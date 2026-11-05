@@ -59,6 +59,69 @@ export const SHARE_IMPORT_GRANT_TTL_HOURS_MAX = 168;
 export const SHARE_IMPORT_GRANT_RENEW_BEFORE_MS = 24 * 60 * 60 * 1000;
 /** Nombre maximal de requêtes d'import par jeton (rejeux compris). */
 export const SHARE_IMPORT_GRANT_MAX_USES = 100;
+/** Lot 111P : renouvellement anticipé quand il reste moins de 10 usages (lu par la vérification serveur légère). */
+export const SHARE_IMPORT_GRANT_RENEW_USES_LEFT = 10;
+
+/**
+ * Lot 111P — remise FIABLE du jeton par l'application (ticket « partage iOS :
+ * “Vous n'êtes pas connecté” à tort »).
+ *
+ *  · Reprise BORNÉE après un échec passager (réseau, 429, 5xx, session en
+ *    cours de renouvellement) : 4 essais au plus par déclencheur, temporisés ;
+ *    ensuite, plus rien jusqu'au prochain déclencheur (connexion, démarrage,
+ *    retour au premier plan, changement d'espace) — jamais de boucle.
+ *  · Refus définitif (double authentification exigée, fonction coupée,
+ *    session absente, jeton rejeté par le natif, Keychain) : aucun nouvel
+ *    essai automatique ; seul un nouveau déclencheur, espacé d'au moins
+ *    `SHARE_IMPORT_PROVISION_MIN_GAP_MS`, retente.
+ *  · Jeton refusé par le serveur (GRANT_* / SESSION_REVOKED / MFA_REQUIRED) :
+ *    renouvellement par le circuit habituel (route `grant`, garde de session),
+ *    3 fois au plus par 30 minutes.
+ *  · Vérification serveur légère (GET `grant` : référence non secrète du
+ *    jeton actif de la session) au plus toutes les 10 minutes.
+ */
+export const SHARE_IMPORT_PROVISION_RETRY_DELAYS_MS = Object.freeze([5_000, 30_000, 120_000, 600_000]);
+export const SHARE_IMPORT_PROVISION_MIN_GAP_MS = 30_000;
+export const SHARE_IMPORT_REFUSAL_RENEWALS_MAX = 3;
+export const SHARE_IMPORT_REFUSAL_RENEWALS_WINDOW_MS = 30 * 60 * 1000;
+export const SHARE_IMPORT_GRANT_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+/** Référence NON SECRÈTE d'un jeton : 12 premiers caractères hexadécimaux de son empreinte SHA-256 (= `token_hash`). */
+export const SHARE_IMPORT_GRANT_REF_LENGTH = 12;
+
+/** Codes de refus serveur d'un jeton qui justifient un renouvellement par l'application. */
+export const SHARE_IMPORT_RENEWABLE_REFUSALS = Object.freeze([
+  'GRANT_INVALID', 'GRANT_EXPIRED', 'GRANT_REVOKED', 'GRANT_EXHAUSTED', 'SESSION_REVOKED', 'MFA_REQUIRED', 'CGUV_REACCEPTANCE_REQUIRED',
+] as const);
+
+/**
+ * Lot 111P — textes de l'interface native de partage (iOS et Android, mêmes
+ * clés et mêmes textes, contrôlés par mobile/test/l111p-partage-ios-jeton.test.mjs).
+ * Ils ne disent JAMAIS « Vous n'êtes pas connecté » : l'extension ne voit pas
+ * la session de l'application, seulement le jeton d'import local et, le cas
+ * échéant, le dernier refus du serveur pour CE jeton.
+ *   · `ready` : jeton présent, valide localement et non refusé → aucun texte ;
+ *   · `token_missing` : aucun jeton sur le téléphone (jamais remis, retiré) ;
+ *   · `token_expired` : jeton présent mais échu localement ;
+ *   · `token_refused` : le serveur a refusé ce jeton (révoqué, épuisé, remplacé) ;
+ *   · `session_refused` : le serveur a constaté la fin de la session d'origine ;
+ *   · `mfa_required` : le serveur exige la double authentification ;
+ *   · `terms_required` : nouvelles conditions à accepter ;
+ *   · `token_unreadable` : lecture du Keychain / Keystore impossible ;
+ *   · `pending_auth` / `server_unavailable` : lignes d'information sur les
+ *     imports PRÉCÉDENTS (en attente d'autorisation, dernier envoi non abouti).
+ */
+export const SHARE_IMPORT_EXTENSION_NOTICES = Object.freeze({
+  token_missing: 'L’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner.',
+  token_expired: 'L’autorisation d’import de ce téléphone a expiré : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner.',
+  token_refused: 'L’autorisation d’import de ce téléphone doit être renouvelée : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner.',
+  session_refused: 'Verebona a fermé la session de ce téléphone : l’import se terminera après votre reconnexion, sans rien resélectionner.',
+  mfa_required: 'Verebona demande de confirmer votre connexion (double authentification) : l’import se terminera ensuite, sans rien resélectionner.',
+  terms_required: 'Ouvrez Verebona pour accepter les nouvelles conditions : l’import se terminera ensuite, sans rien resélectionner.',
+  token_unreadable: 'L’autorisation d’import n’a pas pu être lue sur ce téléphone : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner.',
+  pending_auth: 'Un import précédent attend aussi la prochaine ouverture de Verebona.',
+  server_unavailable: 'Le dernier envoi n’a pas abouti (réseau ou serveur indisponible) : il reprendra automatiquement.',
+});
+export type ShareImportExtensionNotice = keyof typeof SHARE_IMPORT_EXTENSION_NOTICES;
 
 /** Fichiers par partage : comme le dépôt de l'application. */
 export const SHARE_IMPORT_MAX_FILES = MAX_DOCUMENTS_PAR_DEPOT;
@@ -132,10 +195,11 @@ export interface ShareImportResponseBody {
 
 /** Messages utilisateur (français simple) des codes de refus connus. */
 const MESSAGES: Record<string, string> = {
-  GRANT_INVALID: 'Connexion à Verebona nécessaire : ouvrez l’application pour terminer l’import.',
-  GRANT_EXPIRED: 'Connexion à Verebona nécessaire : ouvrez l’application pour terminer l’import.',
-  GRANT_REVOKED: 'Connexion à Verebona nécessaire : ouvrez l’application pour terminer l’import.',
-  GRANT_EXHAUSTED: 'Connexion à Verebona nécessaire : ouvrez l’application pour terminer l’import.',
+  // Lot 111P : un jeton refusé ne prouve pas une déconnexion de l'application — aucun « connexion nécessaire ».
+  GRANT_INVALID: 'Autorisation d’import à renouveler : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner.',
+  GRANT_EXPIRED: 'Autorisation d’import à renouveler : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner.',
+  GRANT_REVOKED: 'Autorisation d’import à renouveler : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner.',
+  GRANT_EXHAUSTED: 'Autorisation d’import à renouveler : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner.',
   SESSION_REVOKED: 'Votre session Verebona est terminée : reconnectez-vous pour terminer l’import.',
   ACCOUNT_ACCESS_REVOKED: 'Vous n’avez plus accès à cet espace Verebona : le document n’a pas été importé.',
   ACCOUNT_READ_ONLY: 'Cet espace Verebona est en lecture seule : le document n’a pas été importé.',

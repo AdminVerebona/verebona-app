@@ -1,0 +1,58 @@
+{
+  "case": "P-T2-16",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — valeur historique (bail 2023) et valeur actuelle (avenant 2025) : le loyer actuel est restitué avec sa date, l’ancienne valeur n’est ni listée ni présentée comme contradictoire.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Quel est le loyer actuel de l’appartement de Lyon ?",
+    "sources": [
+      {
+        "id": "doc_1101",
+        "type": "document_extraction",
+        "title": "Bail appartement Lyon",
+        "content": "Bail du 01/07/2023 · Loyer mensuel : 750,00 €",
+        "meta": {}
+      },
+      {
+        "id": "doc_1102",
+        "type": "document_extraction",
+        "title": "Avenant au bail",
+        "content": "Avenant du 01/07/2025 · Loyer mensuel : 780,00 €",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "Le loyer actuel de l’appartement de Lyon est de 780,00 € par mois, selon l’avenant du 1er juillet 2025.",
+          "sourceIds": [
+            "doc_1102"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "780,00 €",
+    "answerNotContains": [
+      "750"
+    ],
+    "supportLevel": "supported",
+    "exitState": "answered",
+    "noFalseConflict": true,
+    "allowedEvidence": [
+      "doc_1102"
+    ]
+  }
+}

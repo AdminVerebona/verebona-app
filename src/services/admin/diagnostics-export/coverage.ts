@@ -383,6 +383,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   _migrations: C('technique', { global: true, filter: 'TRUE' }),
   scheduled_task_state: C('technique', { global: true, filter: 'TRUE' }),
   ai_queue_worker_heartbeats: C('technique', { global: true, filter: 'TRUE' }),
+  // Lot 111C (1200) : battements du worker des diagnostics BO (un par processus, sans compte).
+  diagnostic_worker_heartbeats: C('technique', { global: true, filter: 'TRUE' }),
   ai_treatment_state: C('technique', { global: true, filter: 'TRUE' }),
   // ── Référentiels et configuration (globaux, cibles de la fermeture) ──────
   asset_types: C('referentiels', { global: true, filter: 'TRUE' }),

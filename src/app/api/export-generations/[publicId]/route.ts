@@ -21,6 +21,7 @@ import { exportRouteError } from '@/services/exports/export-errors';
 import { findAccessibleGeneration } from '@/services/exports/v12/generation/access';
 import { toGenerationDto } from '@/services/exports/v12/generation/status';
 import { loadGenerationProgress } from '@/services/exports/v12/generation/progress';
+import { loadReplacementRefs } from '@/services/exports/v12/generation/repository';
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ publicId: string }> }) {
   try {
@@ -30,7 +31,10 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     if (!found) return NextResponse.json({ error: 'EXPORT_NOT_FOUND', code: 'EXPORT_NOT_FOUND', message: 'Dossier introuvable.' }, { status: 404 });
     const [author] = await db.select({ firstName: users.firstName, lastName: users.lastName }).from(users).where(eq(users.id, found.row.userId)).limit(1);
     const authorName = author ? [author.firstName, author.lastName].filter((x) => x?.trim()).join(' ') || null : null;
-    const dto = toGenerationDto(found.row, { authorName });
+    const replacement = found.row.replacedByGenerationId
+      ? (await loadReplacementRefs([found.row], found.row.assetId)).get(found.row.replacedByGenerationId) ?? null
+      : null;
+    const dto = toGenerationDto(found.row, { authorName, replacement });
     const progress = await loadGenerationProgress(found.row.id, dto.generationStatus);
     return NextResponse.json({ ...dto, ...progress });
   } catch (error) {

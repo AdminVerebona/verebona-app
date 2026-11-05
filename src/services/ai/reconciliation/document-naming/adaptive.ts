@@ -27,6 +27,7 @@ import { envNumber } from '@/lib/env-number';
 import { isValidBusinessTitle } from '@/lib/documents/document-title-rules';
 import { hasLegacyTitleTypography } from '@/lib/documents/document-title-convention';
 import { isProtected, supplierKey, type NamingDoc } from './context';
+import { budgetSnapshot, type ResolvedBudget } from '../../gateway/budget-resolution';
 
 const MINUTE = 60_000;
 const HEURE = 60 * MINUTE;
@@ -45,16 +46,62 @@ export interface NamingBudget {
   outputTokensPerDoc: number;
   /** Partie fixe estimée du prompt maître et du contrat runtime. */
   promptOverheadTokens: number;
+  /** Lot 111M : origine de chaque valeur (BO, diagnostics). */
+  origins?: Record<'inputTokens' | 'outputTokens' | 'outputTokensPerDoc' | 'promptOverheadTokens', NamingBudgetOrigin>;
 }
 
-export function namingBudget(env: Record<string, string | undefined> = process.env): NamingBudget {
+/** Lot 111M : origine d'une valeur du budget de nommage. */
+export type NamingBudgetOrigin = 'explicit_override' | 'resolved' | 'default';
+
+/** Valeurs de sécurité par défaut (lot 109J), inchangées. */
+const NAMING_DEFAULTS = { inputTokens: 24_000, outputTokens: 3_000, outputTokensPerDoc: 160, promptOverheadTokens: 5_000 } as const;
+/**
+ * Part VISIBLE minimale réservée dans le plafond transmis quand le
+ * raisonnement n'a pas de budget explicite : 40 % (incident 6033, lot 109J :
+ * 7 868 jetons de raisonnement sur un plafond de 8 192). Avec le plafond par
+ * défaut (≥ 7 500), la cible visible reste 3 000 ; un plafond BO plus bas
+ * réduit les lots AVANT envoi au lieu de tronquer la sortie.
+ */
+const NAMING_VISIBLE_SHARE = 0.4;
+/** Enveloppe du contrat runtime ajoutée au prompt maître actif (estimation prudente). */
+const NAMING_CONTRACT_OVERHEAD_TOKENS = 1_500;
+
+/**
+ * Budget d'un appel DOCUMENT_NAMING (lot 109J) — lot 111M (ticket « budgets
+ * IA », étape 6) : branché sur la RÉSOLUTION COMMUNE (`budget-resolution`,
+ * instantané amorcé avant la phase) — plafond de sortie RÉELLEMENT transmis
+ * pour le modèle configuré, budget d'entrée du modèle, taille du prompt maître
+ * ACTIF. Les variables `T3_NAMING_*` restent des SURCHARGES EXPLICITES (elles
+ * priment) ; sans instantané, valeurs par défaut du lot 109J (inchangées).
+ * Aucune logique de lots ni de reprise n'est modifiée ici.
+ */
+export function namingBudget(env: Record<string, string | undefined> = process.env, resolved: ResolvedBudget | null = budgetSnapshot('t3_document_naming')): NamingBudget {
+  const pose = (k: string) => (env[k] ?? '').trim() !== '' && Number.isFinite(Number(env[k]));
   const n = (k: string, d: number, min: number) => Math.floor(envNumber(k, d, { min }, env));
-  return {
-    inputTokens: n('T3_NAMING_INPUT_TOKEN_BUDGET', 24_000, 2_000),
-    outputTokens: n('T3_NAMING_OUTPUT_TOKEN_BUDGET', 3_000, 500),
-    outputTokensPerDoc: n('T3_NAMING_OUTPUT_TOKENS_PER_DOC', 160, 40),
-    promptOverheadTokens: n('T3_NAMING_PROMPT_OVERHEAD_TOKENS', 5_000, 0),
+  const origins: NonNullable<NamingBudget['origins']> = {
+    inputTokens: 'default', outputTokens: 'default', outputTokensPerDoc: 'default', promptOverheadTokens: 'default',
   };
+  // Entrée : défaut de sécurité, borné par le budget d'entrée du modèle.
+  let inputTokens: number = NAMING_DEFAULTS.inputTokens;
+  if (pose('T3_NAMING_INPUT_TOKEN_BUDGET')) { inputTokens = n('T3_NAMING_INPUT_TOKEN_BUDGET', NAMING_DEFAULTS.inputTokens, 2_000); origins.inputTokens = 'explicit_override'; }
+  else if (resolved?.input.available != null && resolved.input.available < inputTokens) { inputTokens = Math.max(2_000, resolved.input.available); origins.inputTokens = 'resolved'; }
+  // Sortie visible : bornée par le plafond TRANSMIS (raisonnement compris).
+  let outputTokens: number = NAMING_DEFAULTS.outputTokens;
+  if (pose('T3_NAMING_OUTPUT_TOKEN_BUDGET')) { outputTokens = n('T3_NAMING_OUTPUT_TOKEN_BUDGET', NAMING_DEFAULTS.outputTokens, 500); origins.outputTokens = 'explicit_override'; }
+  else if (resolved?.output.sent != null) {
+    const visible = resolved.output.visibleOutputAvailable ?? Math.floor(resolved.output.sent * NAMING_VISIBLE_SHARE);
+    if (visible < outputTokens) { outputTokens = Math.max(500, visible); origins.outputTokens = 'resolved'; }
+  }
+  // Partie fixe : prompt maître ACTIF + contrat, au lieu d'une valeur forfaitaire.
+  let promptOverheadTokens: number = NAMING_DEFAULTS.promptOverheadTokens;
+  if (pose('T3_NAMING_PROMPT_OVERHEAD_TOKENS')) { promptOverheadTokens = n('T3_NAMING_PROMPT_OVERHEAD_TOKENS', NAMING_DEFAULTS.promptOverheadTokens, 0); origins.promptOverheadTokens = 'explicit_override'; }
+  else if (resolved?.input.promptTokensEstimate != null) {
+    promptOverheadTokens = resolved.input.promptTokensEstimate + NAMING_CONTRACT_OVERHEAD_TOKENS;
+    origins.promptOverheadTokens = 'resolved';
+  }
+  const outputTokensPerDoc = n('T3_NAMING_OUTPUT_TOKENS_PER_DOC', NAMING_DEFAULTS.outputTokensPerDoc, 40);
+  if (pose('T3_NAMING_OUTPUT_TOKENS_PER_DOC')) origins.outputTokensPerDoc = 'explicit_override';
+  return { inputTokens, outputTokens, outputTokensPerDoc, promptOverheadTokens, origins };
 }
 
 /** Documents à examiner au plus par appel selon le budget de SORTIE. */

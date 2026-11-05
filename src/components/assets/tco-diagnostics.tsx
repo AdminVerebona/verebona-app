@@ -28,7 +28,7 @@ const SOURCES_VISIBLES = 3;
 const IMPACT: Record<TcoDiagnosticImpact, string | null> = {
   TOTAL: 'Peut modifier le coût total',
   SCOPE: 'Peut modifier les dépenses attribuées au bien',
-  PERIOD: 'Concerne la période de possession (TCO moyen annuel)',
+  PERIOD: 'Concerne la période de possession (coût annuel moyen)',
   ANNUAL: 'Concerne la répartition par année',
   NONE: null,
 };

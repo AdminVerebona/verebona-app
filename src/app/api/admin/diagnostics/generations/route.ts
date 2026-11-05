@@ -24,7 +24,18 @@ export async function GET(request: NextRequest) {
   }
   try {
     const r = await listGenerations({ page: Number(sp.get('page') ?? 1) || 1, pageSize: Number(sp.get('pageSize') ?? 20) || 20, kind: kind as never });
-    return NextResponse.json(r, { headers: NO_STORE });
+    // Lot 111C : statut EXPLICITE des diagnostics durables (« En attente — worker désactivé », « Annulé —
+    // remplacé par … ») ; raisons d'attente calculées une fois, seulement si un diagnostic est en file.
+    const diag = r.items.filter((x) => x.kind === 'TECH_DIAGNOSTIC' && x.mode === 'job');
+    if (!diag.length) return NextResponse.json(r, { headers: NO_STORE });
+    const { displayStatus } = await import('@/services/admin/diagnostic-jobs/wait');
+    const waits = diag.some((x) => x.status === 'QUEUED' && !x.cancelRequested)
+      ? await import('@/services/admin/diagnostic-jobs/supervision').then((m) => m.diagnosticQueueWaits()).then((w) => w.waits, () => [])
+      : [];
+    const items = r.items.map((x) => (x.kind === 'TECH_DIAGNOSTIC' && x.mode === 'job'
+      ? { ...x, statusLabel: displayStatus(x, waits.find((w) => w.jobId === x.id)?.diagnosis ?? null) }
+      : x));
+    return NextResponse.json({ ...r, items }, { headers: NO_STORE });
   } catch (e) {
     console.error('[admin/diagnostics] générations :', (e as Error)?.message ?? e);
     return NextResponse.json({ error: 'Lecture impossible.', code: 'READ_FAILED' }, { status: 500, headers: NO_STORE });

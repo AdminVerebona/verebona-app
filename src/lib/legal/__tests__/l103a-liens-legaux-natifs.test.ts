@@ -167,10 +167,14 @@ describe('MOB-LEGAL-05/06 — inventaire des points d’entrée', () => {
     'src/app/(auth)/connexion-sociale/page.tsx',
     'src/app/(dashboard)/mon-compte/offres/page.tsx',
     'src/app/retractation/page.tsx',
+    // Lot 111O : bloc de consentement partagé des deux formulaires d'inscription.
+    'src/components/legal/CguvConsent.tsx',
   ];
+  // Lot 111O : les formulaires d'inscription délèguent leurs liens CGUV / Confidentialité à `CguvConsent`.
+  const VIA_CONSENT = new Set(['src/app/(auth)/signup/SignupForm.tsx', 'src/app/(auth)/connexion-sociale/page.tsx']);
   it.each(FILES)('%s : liens juridiques par `LegalLink`', (f) => {
     const src = read(f);
-    expect(src).toMatch(/<LegalLink\b/);
+    expect(src).toMatch(VIA_CONSENT.has(f) ? /<LegalLink\b|<CguvConsent\b/ : /<LegalLink\b/);
     // Plus aucune balise brute vers un contenu légal résolu.
     expect(src).not.toMatch(/<a\s[^>]*href=\{(?:legal|legalLinks)\.(?:cguv|confidentialite|mentionsLegales|sousTraitants|parrainage)\}/);
     expect(src).not.toMatch(/<a\s[^>]*href=\{[^}]*permalink/i);

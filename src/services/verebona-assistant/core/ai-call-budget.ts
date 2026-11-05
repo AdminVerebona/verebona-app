@@ -24,7 +24,7 @@ import { AiGateway } from '@/services/ai/gateway/ai-gateway';
 import { AiGatewayError } from '@/services/ai/gateway/errors';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
 import type { AiGatewayRequest, AiGatewayResponse } from '@/services/ai/gateway/types';
-import { assistantMaxOutputTokensCap, getAssistantConfig } from '../config/assistant-config';
+import { getAssistantConfig, signalRetiredOutputTokensVariable } from '../config/assistant-config';
 import { isAssistantFlagOn } from '../config/assistant-flags.server';
 import { hashPromptVariables, recordAiRun, type AiRunContext } from './usage-tracking.service';
 import { aliasForRank, resolveAliases } from '../registries/model-registry';
@@ -76,7 +76,8 @@ class AiBudgetExhaustedError extends AiGatewayError {
  *   `fallback_model`) : aucune escalade.
  * - Plafond §30.1 transmis à la passerelle : 12 s par tentative (y compris
  *   `t2_revalidate`, déclarée à 20 s). Jetons de sortie : configuration IA
- *   effective, bornée à 500 (§31.2, CDC 15 T2-43).
+ *   effective seule (CDC 15 T2-43) — lot 111M : plus de borne parallèle à
+ *   500, la limite du modèle est appliquée par la passerelle (tracée).
  * - Réponse issue du cache d'idempotence : aucun appel émis, rien décompté.
  * - Succès sans repli : 1 tentative. Succès après repli : la gateway ne dit
  *   pas combien de replis ont été essayés ; on décompte tout ce qui était
@@ -119,13 +120,14 @@ export async function executeWithinBudget<T>(
   policy: CallPolicy = {},
 ): Promise<AiGatewayResponse<T>> {
   const cfg = getAssistantConfig();
+  // CDC 15 T2-43 : variable retirée encore posée — signalée (une fois), jamais lue.
+  signalRetiredOutputTokensVariable();
   const plafonds = {
     // CDC 15 T2-43 : la valeur vient de la configuration IA effective de
-    // l'opération (version BO, sinon code) ; en attendant l'arbitrage PO, elle
-    // reste bornée au budget V1 (500, §31.2) — et, par compatibilité, à
-    // l'ancienne variable si elle est encore posée. Un plafond explicite
-    // d'appel ne peut que réduire.
-    maxOutputTokensCap: Math.min(policy.maxOutputTokens ?? Number.POSITIVE_INFINITY, assistantMaxOutputTokensCap()),
+    // l'opération (version BO, sinon code). Lot 111M (CA-01, CA-11) : plus de
+    // plafond parallèle (ancien min(BO, 500)) ; seul un plafond explicite
+    // d'appel peut réduire, et il est tracé (`callerCap`).
+    ...(policy.maxOutputTokens ? { maxOutputTokensCap: policy.maxOutputTokens } : {}),
     timeoutMsCap: policy.timeoutMs ?? cfg.aiTimeoutMs,
     // §43 IDEMPOTENCY_TTL_SECONDS : durée de vie de la réponse mise en cache
     // par la passerelle pour une même demande (900 s par défaut).

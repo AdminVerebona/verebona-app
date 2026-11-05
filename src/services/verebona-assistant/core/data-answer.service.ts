@@ -38,7 +38,9 @@ import {
   ANALYSIS_STATUS_LABELS, IN_ANALYSIS_MESSAGE, analysisFailedMessage, documentAnalysisStatus,
 } from './document-status';
 import { buildResultGroups, summarizeGroups, type ResultGroup } from './result-groups';
-import { validateFactCandidate, type CandidateObject, type CandidateVerdict } from './candidate-validation';
+import { type CandidateObject, type CandidateVerdict } from './candidate-validation';
+import { assessFactCandidates, comparableValue, documentQualification, type PluralityGroup } from './evidence-adequacy';
+import { analyzeQuestionFocus, sameRoot, termRoot, type QuestionFocus } from './question-focus';
 import { getIntentDefinition } from '../registries/intent-registry';
 import type { VerebonaIntent } from '../types/intents';
 import type { ActionableTrace } from '../types/contracts';
@@ -56,6 +58,7 @@ import {
   formatCount,
   formatDateFr,
   formatDeadline,
+  formatDistinctValues,
   formatList,
   formatNoResult,
   formatQuantity,
@@ -130,6 +133,14 @@ export interface FactHit {
   assetId?: number | null;
   visualDescription?: string | null;
   page?: number | null;
+  // ── Lot 111K : contexte documentaire et temporel du candidat ──
+  /** Date du document (AAAA-MM-JJ). */
+  documentDate?: string | null;
+  /** Type documentaire V2 (devis, facture, preuve de paiement…). */
+  documentTypeCode?: string | null;
+  /** Période portée par le fait (AAAA-MM-JJ). */
+  periodStart?: string | null;
+  periodEnd?: string | null;
   /**
    * CDC 15 T2-02 (lecture canonique) : valeur CANONIQUE du
    * bien pour la clé du fait (registre), son origine et le conflit ouvert.
@@ -325,6 +336,19 @@ export interface DataAnswerOutcome {
     scope: { kind: 'OBJECT' | 'ASSET' | 'ACCOUNT'; objectType: string | null; objectId: number | null; assetId: number | null; reason: string };
     requestedFacts: string[];
     candidates: CandidateVerdict[];
+  };
+  /**
+   * Lot 111K : ce que la question demande (`question-focus`) et l'issue de
+   * l'adéquation des preuves (admissibles, incertaines, rejetées, pluralité,
+   * conflits établis) — versé dans la trace T2 `pertinence`.
+   */
+  pertinence?: {
+    focus: QuestionFocus;
+    admissible: number;
+    uncertain: number;
+    rejected: number;
+    plurality: string | null;
+    conflicts: Array<{ infoKey: string; factIds: number[] }>;
   };
 }
 
@@ -760,12 +784,23 @@ async function tryStructured(
       if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'DEADLINE_MULTIPLE_ASSETS' };
       const rows = await port.upcomingAgenda(accountId, { assetIds: scope.assets.map((a) => a.id), terms, limit: 5 });
       if (rows.length > 0) {
-        // Même échéance portée par plusieurs éléments à des dates différentes : conflit.
+        // Même échéance, MÊME objet, dates différentes : conflit. Lot 111K : la
+        // même échéance de deux biens différents est deux informations, jamais
+        // un conflit (elles sont listées, chacune avec son bien).
+        const objetDe = (r: AgendaRow) => r.assetNames.map(plain).sort().join('|');
         const sameTitle = rows.filter((r) => plain(r.title) === plain(rows[0].title));
-        const distinctDates = [...new Set(sameTitle.map((r) => r.date))];
+        const sameObject = sameTitle.filter((r) => objetDe(r) === objetDe(rows[0]));
+        const distinctDates = [...new Set(sameObject.map((r) => r.date))];
+        const autresObjets = [...new Map(sameTitle.filter((r) => objetDe(r) !== objetDe(rows[0])).map((r) => [objetDe(r), r])).values()];
+        if (distinctDates.length <= 1 && autresObjets.length > 0 && !scope.label) {
+          const lignes = [rows[0], ...autresObjets].map((r) => `${r.assetNames.join(', ') || 'sans bien'} : ${formatDateFr(r.date)}${r.forecast ? ' (prévisionnelle)' : ''}`);
+          const answer = formatDistinctValues(`« ${rows[0].title} »`, lignes);
+          const sources = [rows[0], ...autresObjets].map(agendaSource);
+          return { strategy: 'structured.deadline_of', answer, sources, claims: [claim('deadline', answer, sources, 'direct')], kind: 'list' };
+        }
         if (distinctDates.length > 1) {
-          const answer = formatConflict(`« ${rows[0].title} »`, sameTitle.map((r) => ({ value: formatDateFr(r.date), source: r.assetNames.join(', ') || 'agenda' })));
-          const sources = sameTitle.map(agendaSource);
+          const answer = formatConflict(`« ${rows[0].title} »`, sameObject.map((r) => ({ value: formatDateFr(r.date), source: r.assetNames.join(', ') || 'agenda' })));
+          const sources = sameObject.map(agendaSource);
           // CA-24 : le conflit est tracé comme une affirmation directe citant
           // chacune des sources en désaccord.
           return { strategy: 'structured.deadline_of', answer, sources, claims: [claim('conflict', answer, sources, 'direct')], kind: 'conflict' };
@@ -805,10 +840,6 @@ async function tryStructured(
 
 // ── Niveau 2 : données T1 et recherche interne ─────────────────────────────
 
-function comparableOf(f: FactHit): string {
-  if (f.valueNumber !== null && f.valueNumber !== undefined && (f.valueUnit || !f.valueText)) return `${Number(f.valueNumber)}|${(f.valueUnit ?? '').toLowerCase()}`;
-  return plain(f.valueText ?? '').trim();
-}
 
 // ══════════════════════════════════════════════════════════════════════════
 // CITATION ≠ OBSERVATION
@@ -861,6 +892,25 @@ function displayValue(f: FactHit): string {
   return formatQuantity(f.valueNumber ?? f.valueText, f.valueUnit);
 }
 
+/** Lot 111K : libellé d'une information (descripteur du fait). */
+function libelleDe(f: FactHit): string {
+  const l = f.attribute ?? f.label ?? f.factKey;
+  return upperFirst(f.subject && f.attribute ? `${l} (${f.subject.toLowerCase()})` : l);
+}
+
+/**
+ * Lot 111K : valeur et sa nature métier quand elle compte pour l'interpréter
+ * — prévue (devis), réglée (preuve de paiement), version la plus récente
+ * datée. Une valeur documentée « simple » est rendue telle quelle.
+ */
+function valeurQualifiee(f: FactHit, g?: PluralityGroup): string {
+  const q = documentQualification(f);
+  const nature = q === 'FORECAST' ? ' (montant prévu, devis)' : q === 'SETTLED' ? ' (montant réglé)' : '';
+  const version = g?.kind === 'SUCCESSIVE_VERSIONS' && (f.periodEnd ?? f.periodStart ?? f.documentDate)
+    ? ` (selon le document le plus récent, du ${formatDateFr((f.periodEnd ?? f.periodStart ?? f.documentDate)!)})` : '';
+  return `${displayValue(f)}${nature}${version}`;
+}
+
 /**
  * L'intention a un contrat de sources (T2-07) qui n'admet aucun document
  * (pure, testée). Sans intention ou sans contrat : non.
@@ -893,6 +943,8 @@ export async function answerFromData(p: {
   object?: CandidateObject | null;
   /** Lot 101A (D) : propriétés normalisées demandées (registre) — filtre de propriété des candidats. */
   requestedFacts?: string[];
+  /** Lot 111K : sujets hors registre rendus par UNDERSTAND (`requestedTopics`). */
+  requestedTopics?: string[];
 }): Promise<DataAnswerOutcome> {
   const attempts: CascadeAttempt[] = [];
   const contextSources: RetrievedSource[] = [];
@@ -932,6 +984,7 @@ export async function answerFromData(p: {
   }
 
   // ── Niveau 1 ─────────────────────────────────────────────────────────────
+  let enAttente: DataAnswerOutcome | null = null;
   const l1r = await tryStructured(p.port, p.accountId, p.message, p.pageAssetId ?? null, p.resolvedAssetId ?? null, p.pageDocumentId ?? null);
   if (l1r && 'ambiguous' in l1r) {
     const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 1, score: 0, threshold: p.thresholds.database, reason: 'AMBIGUOUS_TARGET', detail: `${l1r.ambiguous.length} biens` };
@@ -944,9 +997,18 @@ export async function answerFromData(p: {
     const u = l1r.scopeUnresolved;
     const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 1, score: 0, threshold: p.thresholds.database, reason: 'SEMANTIC_SCOPE_UNRESOLVED', detail: u.terms.join(', ') };
     attempts.push({ level: 1, strategy: u.strategyCandidate as DataAnswerStrategy, status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
-    return { ...noAnswer(decision), semanticScope: { resolved: false, strategyCandidate: u.strategyCandidate, terms: u.terms, assetIds: u.assetIds } };
+    const nonResolu: DataAnswerOutcome = { ...noAnswer(decision), semanticScope: { resolved: false, strategyCandidate: u.strategyCandidate, terms: u.terms, assetIds: u.assetIds } };
+    // Lot 111K (§3.1) : le terme non consommé est la PROPRIÉTÉ demandée
+    // (« la FRANCHISE de l'assurance ») — pas un sujet plus large. Les faits
+    // T1 qui portent CETTE propriété dans leur descripteur (adéquation
+    // `evidence-adequacy`) peuvent répondre ; sinon, la compréhension reprend
+    // exactement comme avant (aucun total, aucune liste plus large).
+    const f0 = analyzeQuestionFocus(p.message, { requestedFacts: p.requestedFacts ?? [], requestedTopics: p.requestedTopics ?? [] });
+    const proprieteVisee = !!f0.headTerm && !f0.yesNo && u.terms.some((t) => sameRoot(termRoot(t), f0.headTerm!));
+    if (!proprieteVisee) return nonResolu;
+    enAttente = nonResolu;
   }
-  const l1 = l1r;
+  const l1 = l1r && !('scopeUnresolved' in l1r) ? l1r : null;
   if (l1) {
     const decision = decideStructured(l1.kind, p.thresholds);
     attempts.push({ level: 1, strategy: l1.strategy, status: decision.status, score: decision.score, threshold: decision.threshold, reason: decision.reason });
@@ -965,6 +1027,7 @@ export async function answerFromData(p: {
   // accès — sinon « retrouve le contrôle technique dans mon agenda »
   // répondait par le procès-verbal. La recherche par adaptateurs, filtrée
   // par le même contrat, prend le relais.
+  if (enAttente && intentionSansDocuments(p.intent)) return enAttente;
   if (intentionSansDocuments(p.intent)) {
     const decision: SufficiencyDecision = { status: 'INSUFFICIENT', level: 2, score: 0, threshold: p.thresholds.text, reason: 'NO_RESULT', detail: 'contrat de sources sans document' };
     attempts.push({ level: 2, strategy: 'none', status: decision.status, score: 0, threshold: decision.threshold, reason: decision.reason });
@@ -974,6 +1037,7 @@ export async function answerFromData(p: {
   // ── Niveau 2 : faits T1 ──────────────────────────────────────────────────
   const terms = knowledgeTerms(p.message);
   if (terms.length === 0) {
+    if (enAttente) return enAttente;
     return noAnswer({ status: 'INSUFFICIENT', level: 2, score: 0, threshold: p.thresholds.text, reason: 'NO_RESULT', detail: 'aucun terme discriminant' });
   }
   const scope = await resolveAssetScope(p.port, p.accountId, p.message, p.pageAssetId ?? null, p.resolvedAssetId ?? null);
@@ -1053,18 +1117,34 @@ export async function answerFromData(p: {
     requestedFacts: [...demandes],
     candidates: [],
   };
-  const avecRetrieval = (o: DataAnswerOutcome): DataAnswerOutcome => ({ ...o, retrieval });
+
+  // Lot 111K : ce que la question DEMANDE (propriété, nature, qualification,
+  // période), indépendamment des mots qui ont servi à trouver les candidats.
+  const focus = analyzeQuestionFocus(p.message, {
+    requestedFacts: demandes, requestedTopics: p.requestedTopics ?? [], today: p.port.today(),
+    objectNames: scope.assets.map((a) => a.name),
+  });
+  let pertinence: DataAnswerOutcome['pertinence'] = { focus, admissible: 0, uncertain: 0, rejected: 0, plurality: null, conflicts: [] };
+  const avecRetrieval = (o: DataAnswerOutcome): DataAnswerOutcome => ({ ...o, retrieval, pertinence });
 
   if (!wantsDocument && !seulementLeBien) {
     const bruts = await p.port.searchFacts(p.accountId, terms, objet ? null : scopedAssetId,
       objet ? { entity: { type: objet.type === 'room' ? 'ROOM' : 'EQUIPMENT', id: objet.id } } : undefined);
     // Lot 101A (D) : objet → propriété → source → valeur, AVANT toute
-    // revalidation. Un candidat rejeté n'est ni retenu, ni revalidé, ni
-    // transmis au modèle (contextSources).
-    const verdicts = bruts.map((f) => validateFactCandidate(f, { object: p.object ?? null, requestedFacts: demandes }));
-    retrieval.candidates = verdicts;
-    const gardes = new Set(verdicts.filter((v) => v.decision === 'KEPT').map((v) => v.factId));
-    const facts = bruts.filter((f) => gardes.has(f.id));
+    // revalidation. Lot 111K : puis ADÉQUATION à la question (propriété hors
+    // registre, nature de la valeur, contexte documentaire, période),
+    // sélection, versions et pluralité. Un candidat rejeté n'est ni retenu,
+    // ni revalidé, ni transmis au modèle (contextSources) ; un candidat
+    // INCERTAIN n'est transmis qu'à la validation sémantique bornée (modèle).
+    const adequation = assessFactCandidates(bruts, focus, { object: p.object ?? null, requestedFacts: demandes });
+    retrieval.candidates = adequation.assessed.map((x) => x.verdict);
+    const facts = adequation.selected;
+    pertinence = {
+      focus, admissible: facts.length, uncertain: adequation.uncertain.length,
+      rejected: adequation.assessed.filter((x) => x.verdict.decision === 'REJECTED').length, plurality: adequation.plurality,
+      conflicts: adequation.groups.filter((g) => g.kind === 'REAL_CONFLICT').map((g) => ({ infoKey: g.infoKey, factIds: g.values.map((f) => f.id) })),
+    };
+    const infoDe = new Map(adequation.assessed.map((x) => [x.fact.id, x]));
 
     // CDC 15 T2-02 : un fait qui porte une clé du registre cède la
     // place à la VALEUR CANONIQUE du bien (fiche, arbitrage T3), avec son
@@ -1089,42 +1169,66 @@ export async function answerFromData(p: {
 
     // CDC 15 T2-30 (lot 15) : une observation VISUELLE peut être revalidée
     // comme un fait lu (VISUAL_RECHECK du master T2, sans citation fabriquée).
-    const decision = decideFacts(
-      facts.map((f) => ({ comparable: comparableOf(f), confidence: f.confidence, matchedTerms: f.matchedTerms, sourceKey: `doc_${f.fileId}` })),
+    // Lot 111K : décision sur les seuls candidats ADMISSIBLES, par information.
+    let decision: ReturnType<typeof decideFacts> = decideFacts(
+      facts.map((f) => ({
+        comparable: comparableValue(f), confidence: f.confidence, matchedTerms: f.matchedTerms, sourceKey: `doc_${f.fileId}`,
+        infoKey: infoDe.get(f.id)?.infoKey, date: infoDe.get(f.id)?.date ?? null, coverage: infoDe.get(f.id)?.dims?.coverage,
+      })),
       terms.length,
       p.thresholds,
     );
+    if (!facts.length && bruts.length) {
+      decision = adequation.uncertain.length
+        ? { ...decision, reason: 'UNCERTAIN_EVIDENCE', detail: `${adequation.uncertain.length} candidat(s) à correspondance incertaine` }
+        : { ...decision, reason: 'NO_ADMISSIBLE_EVIDENCE', detail: `${bruts.length} candidat(s) rejeté(s)` };
+    }
     attempts.push({ level: 2, strategy: 'retrieval.t1_fact', status: decision.status, score: decision.score, threshold: decision.threshold, reason: decision.reason });
     for (const f of facts.slice(0, 6)) {
       contextSources.push(docSource(f.fileId, f.documentTitle ?? 'Document', factSnippet(f), 0.7));
     }
+    // Lot 111K : correspondance INCERTAINE — seule une validation sémantique
+    // bornée à ces sources (ANSWER, budget et cache de l'appel modèle) peut
+    // trancher ; le contrôle final vérifie ensuite chaque affirmation.
+    for (const f of adequation.uncertain.slice(0, 4)) {
+      contextSources.push(docSource(f.fileId, f.documentTitle ?? 'Document', factSnippet(f), 0.5));
+    }
 
     if (decision.status === 'SUFFICIENT_RETRIEVAL') {
-      const best = Math.max(...facts.map((f) => f.matchedTerms));
-      const retained = facts.filter((f) => f.matchedTerms === best && comparableOf(f) === decision.retained);
+      const groupes = adequation.groups.filter((g) => g.retained.length);
+      if (groupes.length > 1) {
+        // Informations DISTINCTES : chacune avec son libellé, jamais un conflit.
+        const answer = formatDistinctValues(null, groupes.map((g) => `${libelleDe(g.retained[0])} : ${valeurQualifiee(g.retained[0], g)}`));
+        const sources = [...new Map(groupes.flatMap((g) => g.retained).map((r) => [r.fileId, docSource(r.fileId, r.documentTitle ?? 'Document', evidenceText(r))])).values()];
+        return avecRetrieval({ handled: true, answer, sources, claims: [claim('fact', answer, sources, 'direct')], decision, strategy: 'retrieval.t1_fact', attempts, contextSources });
+      }
+      const g = groupes[0];
+      const retained = g?.retained ?? facts.filter((f) => comparableValue(f) === decision.retained);
       const f = retained[0];
       const answer = isVisual(f)
         // Observation : jamais formulée comme une information écrite.
         // Lot 33 : sans citer le document ; le caractère OBSERVÉ (T2-30) reste dit.
         ? `${upperFirst(f.visualDescription ?? f.valueText ?? '')}${/[.!?]$/.test((f.visualDescription ?? f.valueText ?? '').trim()) ? '' : '.'} Cette information est observée sur l’image, elle n’est pas écrite dans le document.`
         // Lot 33 : la source n'est plus citée dans le texte (sources et claims la portent).
-        : formatAttributeValue({ subject: f.subject, attribute: f.attribute, label: f.label, value: displayValue(f) });
+        // Lot 111K : la nature métier (prévu, réglé) et la date d'une version sont
+        // dites quand elles sont nécessaires à l'interprétation — rien d'autre.
+        : formatAttributeValue({ subject: f.subject, attribute: f.attribute, label: f.label, value: valeurQualifiee(f, g) });
       const sources = [...new Map(retained.map((r) => [r.fileId, docSource(r.fileId, r.documentTitle ?? 'Document', evidenceText(r))])).values()];
       return avecRetrieval({ handled: true, answer, sources, claims: [claim('fact', answer, sources, 'direct')], decision, strategy: 'retrieval.t1_fact', attempts, contextSources });
     }
     if (decision.status === 'CONFLICTING') {
-      const best = Math.max(...facts.map((f) => f.matchedTerms));
-      const top = facts.filter((f) => f.matchedTerms === best);
-      const byValue = new Map<string, FactHit>();
-      for (const f of top) if (!byValue.has(comparableOf(f))) byValue.set(comparableOf(f), f);
-      const f0 = top[0];
+      // Conflit RÉEL seulement : même information, même objet, contexte
+      // temporel compatible. Les autres informations n'y sont pas mêlées.
+      const g = adequation.groups.find((x) => x.kind === 'REAL_CONFLICT')!;
+      const valeurs = g.values;
+      const f0 = valeurs[0];
       const what = [f0.attribute ?? f0.label ?? f0.factKey, f0.subject ? `de votre ${f0.subject.toLowerCase()}` : ''].filter(Boolean).join(' ');
-      const answer = formatConflict(what, [...byValue.values()].map((f) => ({ value: displayValue(f), source: `« ${f.documentTitle ?? 'document'} »` })));
-      const sources = [...byValue.values()].map((f) => docSource(f.fileId, f.documentTitle ?? 'Document', evidenceText(f)));
+      const answer = formatConflict(what, valeurs.map((f) => ({ value: displayValue(f), source: `« ${f.documentTitle ?? 'document'} »` })));
+      const sources = valeurs.map((f) => docSource(f.fileId, f.documentTitle ?? 'Document', evidenceText(f)));
       // Le conflit est rendu tel quel ; une revalidation ciblée peut le lever.
       return avecRetrieval({
         handled: true, answer, sources, claims: [claim('conflict', answer, sources, 'direct')], decision, strategy: 'retrieval.t1_fact', attempts, contextSources,
-        revalidation: { trigger: 'CONFLICT', factIds: [...byValue.values()].slice(0, 3).map((f) => f.id) },
+        revalidation: { trigger: 'CONFLICT', factIds: valeurs.slice(0, 3).map((f) => f.id) },
       });
     }
     if (decision.status === 'INSUFFICIENT' && decision.reason === 'LOW_CONFIDENCE' && facts.length > 0) {
@@ -1135,6 +1239,10 @@ export async function answerFromData(p: {
       if (low.length) return avecRetrieval({ ...noAnswer(decision, 'retrieval.t1_fact'), revalidation: { trigger: 'LOW_CONFIDENCE', factIds: low.map((f) => f.id) } });
     }
   }
+
+  // Lot 111K : propriété hors registre non consommée par la lecture structurée
+  // et sans fait admissible : la compréhension reprend (lot 49), inchangée.
+  if (enAttente) return avecRetrieval({ ...enAttente, attempts, contextSources });
 
   // Lot 101A (C) : question de VALEUR bornée à un objet résolu — aucun repli
   // vers « le document le plus pertinent » du compte (un document n'est pas

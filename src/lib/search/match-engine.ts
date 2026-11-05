@@ -157,6 +157,9 @@ export const SEARCH_FIELDS: Readonly<Record<SearchEntityType, readonly SearchFie
     F('notes', 'Notes', 'text', 0.6),
     F('content', 'Contenu indexé', 'content', 0.55),
     F('assetName', 'Bien associé', 'relation', 0.4),
+    // Lot 111I (décision PO 05/11) : le nom d'une cible RATTACHÉE (bien, pièce, équipement — liens N-N
+    // actifs du compte) suffit à trouver le document (« Four »), même absent de son titre.
+    F('targetNames', 'Rattachement', 'relation', 0.4, undefined, true),
   ],
   agenda_item: [
     F('title', 'Libellé', 'name', 1),

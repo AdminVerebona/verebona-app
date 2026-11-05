@@ -9,7 +9,8 @@
 import { isExecutionCancelled } from '../../queue/execution-control';
 import { isCostCapReached } from '../../gateway/errors';
 import { isDefinitiveGatewayFailure } from '../failure-policy';
-import type { AiAttachment } from '../../gateway/types';
+import type { AiAttachment, AiGenerationApplied } from '../../gateway/types';
+import { isTruncationFailure } from './truncation';
 import type { T1AnalyzeDocumentOutput } from '../master/t1-contract';
 import type { T1DroppedItem, T1NormalisationReport } from '../master/tolerant-output';
 import type { PrunedFieldValue } from '../../gateway/output-resolution/field-validation';
@@ -49,6 +50,10 @@ interface ContinuationResult {
   reports: T1NormalisationReport[];
   /** Motif quand la saturation n'a pas pu être poursuivie. */
   notContinuable?: string;
+  /** Lot 111M : cause de la saturation constatée (diagnostic), sinon `null`. */
+  saturation?: pages.SaturationCause | null;
+  /** Lot 111M : lots redécoupés après une sortie tronquée (pages restantes reprises en moitiés). */
+  splitChunks?: number;
   pageCount: number | null;
   /** Lot 49B (DEV-01) : couverture réelle de la source (pages vérifiées, manquantes, non vérifiées). */
   verification?: SourceVerification;
@@ -74,6 +79,14 @@ export async function continueByPages(p: {
   firstOutputTokens: number;
   firstReport: T1NormalisationReport | null;
   call: ChunkCall;
+  /** Lot 111M : génération réellement appliquée à la passe 1 (plafond transmis, motif d'arrêt). */
+  firstGeneration?: AiGenerationApplied | null;
+  /**
+   * Lot 111M : la passe 1 a saturé AVANT de rendre une sortie exploitable
+   * (sortie tronquée sur toute la chaîne) — `first` est vide, reprise par pages
+   * dès la page 1.
+   */
+  initialSaturation?: boolean;
   /**
    * Lot 109K (COR-01) : couche texte déterministe du PDF (défaut : extract brut
    * persisté de même empreinte, sinon extraction en mémoire). Remplaçable en test.
@@ -85,7 +98,12 @@ export async function continueByPages(p: {
     segments: [{ text: p.first.transcription ?? '', pageOffset: 0, origin: 'PASS_1' }],
     gaps: [], chunkCount: 0, truncatedSections: 0, batches: 0, dropped: [], reports: [], pageCount: null,
   };
-  const sature = pages.isSaturated({ outputTokens: p.firstOutputTokens });
+  const saturation: pages.SaturationCause | null = p.initialSaturation ? 'INITIAL_NO_OUTPUT' : pages.saturationCause({
+    outputTokens: p.firstOutputTokens, thoughtsTokens: p.firstGeneration?.thoughtsTokens ?? null,
+    maxOutputTokensSent: p.firstGeneration?.maxOutputTokensSent ?? null, finishReason: p.firstGeneration?.finishReason ?? null,
+  });
+  const sature = saturation !== null;
+  base.saturation = saturation;
 
   // Découpage et vérification par pages : un seul fichier PDF accessible.
   const idx = p.groupIndices.length === 1 ? p.groupIndices[0] : -1;
@@ -145,8 +163,15 @@ export async function continueByPages(p: {
   const pruned: NonNullable<ContinuationResult['pruned']> = [];
   const relues = new Set<number>();
   let batches = 0;
+  let splitChunks = 0;
   const name = p.input.displayNames[idx] ?? 'document';
-  for (const c of plan.chunks) {
+  // Lot 111M : un lot dont la sortie est TRONQUÉE est redécoupé en deux moitiés
+  // (borné : jusqu'à une page, `T1_MAX_CHUNKS` appels supplémentaires au plus) ;
+  // une page seule encore tronquée devient une lacune (jamais une perte silencieuse).
+  const file = [...plan.chunks];
+  let budgetDecoupe = maxChunks;
+  while (file.length) {
+    const c = file.shift()!;
     try {
       const sub = await pages.extractPdfPages(bytes, c.start, c.end);
       const k = c.end - c.start + 1;
@@ -166,6 +191,13 @@ export async function continueByPages(p: {
       for (const x of r.pruned ?? []) pruned.push({ ...x, pass: 'CHUNK', pageOffset: c.start - 1 });
     } catch (e) {
       if (isExecutionCancelled(e) || isCostCapReached(e)) throw e;
+      if (isTruncationFailure(e) && c.end > c.start && budgetDecoupe > 0) {
+        const milieu = Math.floor((c.start + c.end) / 2);
+        file.unshift({ start: c.start, end: milieu }, { start: milieu + 1, end: c.end });
+        budgetDecoupe -= 1;
+        splitChunks += 1;
+        continue;
+      }
       gaps.push({ pageStart: c.start, pageEnd: c.end, retryable: !isDefinitiveGatewayFailure(e), message: (e as Error).message ?? 'échec du lot' });
     }
   }
@@ -173,8 +205,8 @@ export async function continueByPages(p: {
     gaps.push({ pageStart: plan.beyond.start, pageEnd: plan.beyond.end, retryable: false, message: `au-delà de ${maxChunks} lots de pages` });
   }
   return {
-    output, segments, gaps, chunkCount: plan.chunks.length, truncatedSections: 0, batches, dropped, reports, pageCount, pruned,
-    verification: final(output, segments, probe, relues),
+    output, segments, gaps, chunkCount: plan.chunks.length + splitChunks * 2, truncatedSections: 0, batches, dropped, reports, pageCount, pruned,
+    verification: final(output, segments, probe, relues), saturation, splitChunks,
   };
 }
 

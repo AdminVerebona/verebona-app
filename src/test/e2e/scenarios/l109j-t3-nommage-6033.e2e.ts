@@ -205,4 +205,25 @@ scenario('L109J-T3-NOM', 'Lot 109J — T3 DOCUMENT_NAMING : lots adaptatifs, pr�
     for (const n of parDoc.values()) expect(n).toBe(1);
     expect(parDoc.has(auto)).toBe(false);
   });
+
+  it('L111A-E1-02 — famille dont tous les titres sont « conformes », puis nouvelle donnée discriminante sur UN document : ce document est examiné (les autres en référence), jamais préfiltré à tort ; puis stable', async () => {
+    const c = await make.account();
+    const ids: number[] = [];
+    for (let i = 0; i < 4; i++) ids.push(await document(c, { nom: `Facture Homiris — ${MOIS[i]} 2024`, fournisseur: 'Homiris', date: `2024-${String(i + 1).padStart(2, '0')}-05` }));
+    const r1 = await passer(c.id);
+    expect(r1).toMatchObject({ aiCalls: 0, documentsPrefiltered: 4, status: 'DONE' });
+    const [e] = await sql<Array<{ id: number }>>`SELECT id FROM document_extractions WHERE file_id = ${ids[2]}`;
+    await sql`INSERT INTO document_facts (account_id, file_id, extraction_id, fact_key, label, value_text, confidence, excerpt, canonical_key)
+              VALUES (${c.id}, ${ids[2]}, ${e.id}, 'avenant', 'avenant', 'Avenant n° AV-2024-7788', 'high', 'Avenant n° AV-2024-7788', NULL)`;
+    const r2 = await passer(c.id);
+    expect(modele.appels).toHaveLength(1);
+    const docs = modele.appels[0].docs;
+    expect(docs.filter((d) => d.role === 'TO_EXAMINE').map((d) => d.documentId)).toEqual([ids[2]]);
+    expect(docs.filter((d) => d.role === 'REFERENCE').map((d) => d.documentId).sort((a, b) => a - b)).toEqual([ids[0], ids[1], ids[3]].sort((a, b) => a - b));
+    expect(r2).toMatchObject({ aiCalls: 1, documentsPrefiltered: 3, status: 'DONE' });
+    expect((await etats(c.id)).map((s) => s.status)).toEqual(['DONE']);
+    const r3 = await passer(c.id);
+    expect(r3.aiCalls).toBe(0);
+    expect(modele.appels).toHaveLength(1);
+  });
 });

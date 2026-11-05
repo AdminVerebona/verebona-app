@@ -339,6 +339,9 @@ scenario('L107G', 'Diagnostics BO durables : file, reprise, historique léger, v
     const id = String(r.json.jobId);
     await sql`UPDATE admin_export_generations SET max_attempts = 1 WHERE id = ${id}::uuid`;
     await repo.claimNextDiagnosticJob('worker-mort:4243:abcd', null, { onlyId: id });
+    // Lot 111C : la génération a DÉMARRÉ (instantané ouvert, extraction) — un arrêt avant
+    // l'ouverture de l'instantané rend désormais la tentative (voir L111C-E08).
+    await repo.setDiagnosticPhase(id, 'worker-mort:4243:abcd', 'EXTRACTION');
     await sql`UPDATE admin_export_generations SET locked_until = now() - interval '1 second' WHERE id = ${id}::uuid`;
     expect((await repo.recoverDiagnosticJobs()).failed).toContain(id);
     expect(await ligne(id)).toMatchObject({ status: 'FAILED', error_code: 'WORKER_LOST_MAX_ATTEMPTS', locked_by: null });

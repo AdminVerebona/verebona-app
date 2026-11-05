@@ -106,11 +106,15 @@ async function fetchSelection(): Promise<void> {
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json() as { version?: string; items?: SharedSuggestionItem[]; reserve?: SharedSuggestionItem[] };
     if (epoch !== getSessionEpoch()) return; // réponse d'une autre session : ignorée
-    const items = Array.isArray(data.items) ? data.items : [];
+    if (!Array.isArray(data.items)) throw new Error('réponse illisible');
+    const items = data.items;
     meta = { at: Date.now(), epoch };
     // Même version : la liste affichée (et ses remplacements) reste en place.
     if (data.version && data.version === state.version && state.status === 'ready') return;
-    emit({ status: items.length ? 'ready' : 'fallback', version: data.version ?? null, items: items.length ? items : fallbackSuggestions(), reserve: Array.isArray(data.reserve) ? data.reserve : [] });
+    // Lot 111L : la sélection CANONIQUE est servie telle quelle, même courte
+    // (moins de trois questions de qualité : jamais de remplissage côté
+    // navigateur). Le repli sûr ne sert qu'en cas d'échec de lecture.
+    emit({ status: 'ready', version: data.version ?? null, items, reserve: Array.isArray(data.reserve) ? data.reserve : [] });
   } catch {
     if (epoch !== getSessionEpoch()) return;
     meta = { at: Date.now(), epoch };
@@ -141,6 +145,11 @@ export function scheduleSharedSuggestionsRefresh(ms = SHARED_SUGGESTIONS_DEBOUNC
     if (activeSurfaces > 0) void ensureSharedSuggestions(true);
     else meta = { ...meta, at: 0 }; // périmée : relue à la prochaine ouverture d'une surface
   }, ms);
+}
+
+/** État courant du magasin (tests et diagnostic ; les surfaces passent par `useSharedSuggestions`). */
+export function sharedSuggestionsSnapshot(): SharedSuggestionsState {
+  return state;
 }
 
 /** Nombre de surfaces actives (tests et diagnostic). */

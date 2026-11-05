@@ -17,8 +17,9 @@ import { AlertTriangle, CheckCircle2, Circle, Clock, Download, FileDown, History
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import {
-  dossierOutline, formatBytes, generateDecision, progressSteps, type PrepState,
+  dossierOutline, formatBytes, generateDecision, isRegeneration, progressSteps, type PrepState,
 } from '@/lib/exports/preparation-state';
+import { REGENERATION_NOTICE, REPLACED_FALLBACK_LABEL } from '@/lib/exports/regeneration';
 import { PREP_MESSAGES } from '@/services/exports/v12/preparation/messages';
 import { cilBlockingMessage, CIL_ACTION_REQUIRED_GENERIC_MESSAGE } from '@/lib/exports/cil-blocking';
 import type { OutputFormat } from '@/services/exports/v12/preparation/types';
@@ -63,25 +64,37 @@ export function GenerateButtons({ state, onGenerate, onCancel, layout = 'stack' 
   const zip = generateDecision(state, 'ZIP');
   const reason = blockedReason(state);
   const reasonId = `prep-generate-reason-${layout}`;
+  // Lot 111B : régénération explicite — libellés « Régénérer » et texte
+  // d'information, sans confirmation supplémentaire.
+  const regen = isRegeneration(state);
+  const noticeId = `prep-regenerate-notice-${layout}`;
+  const describedBy = (extra?: string) => [regen ? noticeId : null, reason ? reasonId : extra ?? null].filter(Boolean).join(' ') || undefined;
   const pdfBtn = (
-    <Button key="pdf" type="button" variant={zipNatural ? 'outline' : 'default'} className={cn(layout === 'stack' && 'w-full')} disabled={pdf === 'blocked'} onClick={() => onGenerate('PDF')} aria-describedby={reason ? reasonId : undefined}>
-      <FileDown aria-hidden />Générer le PDF
+    <Button key="pdf" type="button" variant={zipNatural ? 'outline' : 'default'} className={cn(layout === 'stack' && 'w-full')} disabled={pdf === 'blocked'} onClick={() => onGenerate('PDF')} aria-describedby={describedBy()}>
+      {regen ? <RefreshCw aria-hidden /> : <FileDown aria-hidden />}{regen ? 'Régénérer le PDF' : 'Générer le PDF'}
     </Button>
   );
   const zipBtn = (
-    <Button key="zip" type="button" variant={zipNatural ? 'default' : 'outline'} className={cn(layout === 'stack' && 'w-full')} disabled={zip === 'blocked'} onClick={() => onGenerate('ZIP')} aria-describedby={reason ? reasonId : (!zipNatural ? 'prep-zip-hint' : undefined)}>
-      <Package aria-hidden />Générer PDF + ZIP
+    <Button key="zip" type="button" variant={zipNatural ? 'default' : 'outline'} className={cn(layout === 'stack' && 'w-full')} disabled={zip === 'blocked'} onClick={() => onGenerate('ZIP')} aria-describedby={describedBy(!zipNatural ? 'prep-zip-hint' : undefined)}>
+      {regen ? <RefreshCw aria-hidden /> : <Package aria-hidden />}{regen ? 'Régénérer PDF + ZIP' : 'Générer PDF + ZIP'}
     </Button>
   );
+  const notice = regen ? (
+    <p id={noticeId} role="status" className={cn('flex items-start gap-1.5 text-[12px] leading-snug text-[color:var(--accent)]', layout === 'bar' && 'order-first w-full')}>
+      <Info className="mt-px size-3.5 shrink-0" aria-hidden />{REGENERATION_NOTICE}
+    </p>
+  ) : null;
   return (
     <div className={cn(layout === 'stack' ? 'space-y-2' : 'flex flex-wrap items-center gap-2')}>
       {layout === 'bar' ? (
         <>
+          {notice}
           <Button type="button" variant="ghost" onClick={onCancel} className="shrink-0">Annuler</Button>
           <div className="flex flex-1 justify-end gap-2">{zipNatural ? [pdfBtn, zipBtn] : [pdfBtn]}</div>
         </>
       ) : (
         <>
+          {notice}
           {zipNatural ? <>{zipBtn}{pdfBtn}</> : <>{pdfBtn}{zipBtn}</>}
           {!zipNatural && <p id="prep-zip-hint" className="text-[11px] leading-snug text-muted-foreground">Le ZIP est proposé dès qu’une pièce est en mode ZIP.</p>}
           <Button type="button" variant="ghost" className="w-full" onClick={onCancel}>Annuler</Button>
@@ -92,8 +105,10 @@ export function GenerateButtons({ state, onGenerate, onCancel, layout = 'stack' 
   );
 }
 
-function GenerationPanel({ state, assetId, now, onBackToEdit, onRetry, onClose }: {
+function GenerationPanel({ state, assetId, now, onBackToEdit, onRetry, onClose, onEditAndRegenerate }: {
   state: PrepState; assetId: number; now: number; onBackToEdit: () => void; onRetry: () => void; onClose: () => void;
+  /** Lot 111B : revenir aux choix pour remplacer la génération en cours par une nouvelle version. */
+  onEditAndRegenerate?: () => void;
 }) {
   const g = state.generation;
   const historyHref = `/assets/${assetId}?tab=exports#historique`;
@@ -120,6 +135,19 @@ function GenerationPanel({ state, assetId, now, onBackToEdit, onRetry, onClose }
         {long && <Callout tone="info" icon={<Clock />}>{PREP_MESSAGES['MSG-PREP-008']}</Callout>}
         <p className="text-[11px] leading-snug text-muted-foreground">Vous pouvez fermer cet écran : la génération continue et le dossier apparaîtra dans l’historique des exports.</p>
         <Button type="button" variant="outline" className="w-full" onClick={onClose}>Fermer</Button>
+        {onEditAndRegenerate && g?.publicId && (
+          <Button type="button" variant="ghost" className="w-full" onClick={onEditAndRegenerate}><PencilLine aria-hidden />Modifier et régénérer</Button>
+        )}
+      </div>
+    );
+  }
+  if (state.status === 'replaced') {
+    // Lot 111B : génération remplacée (régénération) — information neutre, jamais une erreur.
+    return (
+      <div className="space-y-3" aria-live="polite">
+        <Callout tone="neutral" icon={<Info />} role="status">{REPLACED_FALLBACK_LABEL}.</Callout>
+        <Button asChild variant="outline" className="w-full"><NextLink href={historyHref}><History aria-hidden />Voir l’historique</NextLink></Button>
+        <Button type="button" variant="ghost" className="w-full" onClick={onBackToEdit}><PencilLine aria-hidden />Revenir à la préparation</Button>
       </div>
     );
   }
@@ -172,7 +200,7 @@ function GenerationPanel({ state, assetId, now, onBackToEdit, onRetry, onClose }
   return null;
 }
 
-export function PreparationSummary({ state, assetId, now, onGenerate, onCancel, onBackToEdit, onRetry, showActions = true, onRetryEstimate }: {
+export function PreparationSummary({ state, assetId, now, onGenerate, onCancel, onBackToEdit, onRetry, showActions = true, onRetryEstimate, onEditAndRegenerate }: {
   state: PrepState;
   assetId: number;
   now: number;
@@ -183,10 +211,12 @@ export function PreparationSummary({ state, assetId, now, onGenerate, onCancel, 
   showActions?: boolean;
   /** Estimation en échec : nouvelle tentative manuelle. */
   onRetryEstimate?: () => void;
+  /** Lot 111B : « Modifier et régénérer » pendant une génération. */
+  onEditAndRegenerate?: () => void;
 }) {
   const e = state.estimate;
   const outline = dossierOutline(state);
-  const inGeneration = ['generating', 'generated_pdf', 'generated_zip', 'generated_partial', 'expired', 'file_deleted'].includes(state.status) || (state.status === 'failed' && !!state.generation);
+  const inGeneration = ['generating', 'generated_pdf', 'generated_zip', 'generated_partial', 'expired', 'file_deleted', 'replaced'].includes(state.status) || (state.status === 'failed' && !!state.generation);
   const alerts = [...(e?.blocking ?? []), ...(e?.warnings ?? [])];
 
   return (
@@ -246,7 +276,7 @@ export function PreparationSummary({ state, assetId, now, onGenerate, onCancel, 
       )}
 
       {inGeneration ? (
-        <GenerationPanel state={state} assetId={assetId} now={now} onBackToEdit={onBackToEdit} onRetry={onRetry} onClose={onCancel} />
+        <GenerationPanel state={state} assetId={assetId} now={now} onBackToEdit={onBackToEdit} onRetry={onRetry} onClose={onCancel} onEditAndRegenerate={onEditAndRegenerate} />
       ) : (
         <div className="space-y-3">
           {state.error && <Callout tone="danger" icon={<XCircle />} role="alert">{state.error.message}</Callout>}

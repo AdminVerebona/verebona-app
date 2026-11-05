@@ -8,8 +8,9 @@ import Capacitor
 /// Pont entre la vue web (`src/lib/native/share-import.ts`) et le cœur
 /// partagé avec l'extension (`Shared/VerebonaShareImportCore.swift`) :
 ///
-///   getState()            → { available, grant: { accountKey, expiresAt } | null, items: [...] }
-///                           (le jeton n'est JAMAIS rendu à la vue)
+///   getState()            → { available, grant: { accountKey, expiresAt, ref, refusedCode? } | null, items: [...],
+///                             grantStatus, storeCode, diagnostics } (lot 111P)
+///                           (le jeton n'est JAMAIS rendu à la vue : `ref` = 12 hex de son empreinte)
 ///   setGrant({ token, expiresAt, accountKey, uploadUrl }) → Keychain du groupe d'apps,
 ///                           puis reprise des imports « En attente de connexion » du compte
 ///   clearGrant()          → jeton retiré du téléphone (déconnexion, changement d'espace)
@@ -50,7 +51,7 @@ public class VerebonaShareImportPlugin: CAPPlugin, CAPBridgedPlugin, Notificatio
     }
 
     @objc func getState(_ call: CAPPluginCall) {
-        let grant = VBShareGrantStore.read()
+        let gs = VBGrantState.current()
         let items: [[String: Any]] = VBShareStore.list().map { m in
             var o: [String: Any] = [
                 "id": m.id,
@@ -69,8 +70,17 @@ public class VerebonaShareImportPlugin: CAPPlugin, CAPBridgedPlugin, Notificatio
             if let h = m.accountHint { o["accountHint"] = h }
             return o
         }
-        var out: [String: Any] = ["available": !VBShareImport.appGroup.isEmpty, "items": items]
-        if let g = grant, g.isValid { out["grant"] = ["accountKey": g.accountKey, "expiresAt": g.expiresAt] }
+        // Lot 111P : état DISTINGUÉ du jeton (present / missing / expired / refused / unreadable),
+        // code du Keychain, référence non secrète, dernier refus serveur, journal natif (codes seuls).
+        var out: [String: Any] = [
+            "available": !VBShareImport.appGroup.isEmpty, "items": items,
+            "grantStatus": gs.status, "storeCode": gs.storeCode, "diagnostics": VBShareDiag.entries(),
+        ]
+        if let g = gs.raw, g.isValid {
+            var gd: [String: Any] = ["accountKey": g.accountKey, "expiresAt": g.expiresAt, "ref": g.ref]
+            if let c = gs.refusedCode { gd["refusedCode"] = c }
+            out["grant"] = gd
+        }
         call.resolve(out)
     }
 
@@ -79,17 +89,22 @@ public class VerebonaShareImportPlugin: CAPPlugin, CAPBridgedPlugin, Notificatio
               let expiresAt = call.getString("expiresAt"), let accountKey = call.getString("accountKey"),
               let uploadUrl = call.getString("uploadUrl"), let u = URL(string: uploadUrl), u.scheme == "https",
               let appOrigin = bridge?.config.serverURL, u.host == appOrigin.host else {
+            VBShareDiag.log("APP_SETGRANT_INVALID", .app)
             call.reject("Jeton d’import invalide", "INVALID_GRANT")
             return
         }
         let grant = VBShareGrant(token: token, expiresAt: expiresAt, accountKey: accountKey, uploadUrl: uploadUrl)
-        guard VBShareGrantStore.write(grant) else { call.reject("Enregistrement impossible", "KEYCHAIN"); return }
+        // Lot 111P : écriture VÉRIFIÉE, motif rendu à la vue (KEYCHAIN_LOCKED, KEYCHAIN_MISSING_ENTITLEMENT…).
+        let written = VBShareGrantStore.write(grant)
+        VBShareDiag.log("APP_SETGRANT_\(written)", .app)
+        guard written == "OK" else { call.reject("Enregistrement impossible", "KEYCHAIN_\(written)"); return }
         VBShareUploader.shared.resumeAll(role: .app)
         call.resolve(["ok": true])
     }
 
     @objc func clearGrant(_ call: CAPPluginCall) {
         VBShareGrantStore.clear()
+        VBShareDiag.log("APP_CLEARGRANT", .app)
         call.resolve(["ok": true])
     }
 

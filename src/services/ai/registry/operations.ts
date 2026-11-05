@@ -213,9 +213,21 @@ const ASSISTANT_FALLBACKS = ['gemini-3.1-flash-lite']; // alias assistant-escala
 /**
  * Plafond de sortie de l'assistant tant qu'aucune version ne fixe le sien
  * (CDC Assistant §31.2). Remplace `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS`,
- * seconde source de vérité supprimée (CDC 15 T2-43).
+ * seconde source de vérité supprimée (CDC 15 T2-43). Lot 111M : VALEUR
+ * INITIALE du code seulement (jamais une borne appliquée par-dessus le BO) —
+ * conservée pour UNDERSTAND et REVALIDATE (sorties JSON courtes, mesurées).
  */
 export const ASSISTANT_MAX_OUTPUT_TOKENS = 500;
+/**
+ * Lot 111M (ticket « budgets IA », CA-04, CA-11) — valeur initiale du code
+ * pour la RÉPONSE T2 (sans version BO). Mesure (corpus local, recette
+ * 111M) : une réponse concise de 1 200 caractères en JSON `claims` (texte,
+ * sources, support) dépasse déjà ≈ 600 jetons, une synthèse de 3 000
+ * caractères ≈ 1 500 ; le raisonnement éventuel consomme le même plafond.
+ * Limite haute de SÉCURITÉ, pas une consommation : une réponse courte reste
+ * courte (coût au jeton réellement produit).
+ */
+export const ASSISTANT_ANSWER_MAX_OUTPUT_TOKENS = 2_048;
 
 /** Famille 3 — gouvernance : raisonnement sur des prompts, hors chemin utilisateur. */
 /** Prompt maître T6 (CDC 15 §28) — même valeur que `T6_MASTER_PROMPT_CODE`. */
@@ -411,7 +423,7 @@ export const AI_OPERATIONS: Record<string, AiOperationDefinition> = {
     promptCode: T2_MASTER, masterPromptCode: T2_MASTER, task: 'ANSWER', taskField: 'mode', promptVariables: T2_MASTER_VARIABLES,
     timeoutMs: 12_000, jsonResponse: true,
     outputSchema: 'T2AnswerOutput', active: true, billable: true,
-    defaultMaxOutputTokens: ASSISTANT_MAX_OUTPUT_TOKENS,
+    defaultMaxOutputTokens: ASSISTANT_ANSWER_MAX_OUTPUT_TOKENS,
   },
   t2_revalidate: {
     operationCode: 't2_revalidate', useCaseCode: 'INTELLIGENT_ASSISTANT',

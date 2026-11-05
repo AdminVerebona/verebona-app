@@ -23,8 +23,9 @@
 
 import { db } from '@/db';
 import { exportGenerations, exportGenerationItems, exportGenerationLogs } from '@/db/schema';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import type { ItemRecord } from '../render/render-dossier';
+import { CANCELLED_STEP_LEASE_EXPIRED, REPLACED_BY_NEW_GENERATION } from './identity';
 
 export type GenerationRow = typeof exportGenerations.$inferSelect;
 
@@ -52,6 +53,10 @@ const UNLEASED_STALE_MINUTES = 30;
  * la plus ancienne demande de chacun des autres comptes.
  */
 export async function claimNextGeneration(workerId: string): Promise<GenerationRow | null> {
+  // Lot 111B : une génération remplacée dont l'exécution s'est arrêtée sans
+  // clore l'annulation (redémarrage, bail expiré) est close `cancelled` —
+  // jamais reprise, jamais classée en échec.
+  await finalizeAbandonedCancellations();
   await db.execute(sql`
     UPDATE export_generation
        SET status = 'failed', error_code = 'RENDER_ERROR', locked_by = NULL, locked_until = NULL,
@@ -59,6 +64,7 @@ export async function claimNextGeneration(workerId: string): Promise<GenerationR
            error_payload = ${JSON.stringify({ code: 'RENDER_ERROR', technicalMessage: 'exécution abandonnée à répétition (arrêt du processus)' })}
      WHERE status = 'generating' AND locked_until IS NOT NULL AND locked_until < NOW()
        AND generation_attempt_count >= ${MAX_ATTEMPTS}
+       AND cancel_requested_at IS NULL
   `);
   await db.execute(sql`
     UPDATE export_generation
@@ -66,6 +72,7 @@ export async function claimNextGeneration(workerId: string): Promise<GenerationR
            error_payload = ${JSON.stringify({ code: 'GENERATION_FAILED', technicalMessage: 'exécution sans bail interrompue (arrêt du processus)' })}
      WHERE status = 'generating' AND locked_by IS NULL
        AND COALESCE(generation_started_at, created_at) < NOW() - make_interval(mins => ${UNLEASED_STALE_MINUTES})
+       AND cancel_requested_at IS NULL
   `);
   // Les conditions de prise sont répétées sur la ligne verrouillée (`e`) :
   // PostgreSQL les réévalue sur sa dernière version après attente du verrou,
@@ -79,16 +86,21 @@ export async function claimNextGeneration(workerId: string): Promise<GenerationR
                               AND r.locked_until IS NOT NULL AND r.locked_until >= NOW()), 0) AS turn
         FROM export_generation g
        WHERE g.export_type <> 'EXPORT_BRUT'
+         AND g.cancel_requested_at IS NULL
          AND (
            (g.status = 'queued' AND (g.next_attempt_at IS NULL OR g.next_attempt_at <= NOW()))
            OR (g.status = 'generating' AND g.locked_until IS NOT NULL AND g.locked_until < NOW())
          )
+         -- Lot 111B : une régénération attend l'arrêt EFFECTIF de la génération qu'elle remplace.
+         AND NOT EXISTS (SELECT 1 FROM export_generation o
+                          WHERE o.replaced_by_generation_id = g.id AND o.status = 'generating')
     ),
     pick AS (
       SELECT e.id
         FROM export_generation e
         JOIN candidates c ON c.id = e.id
        WHERE e.export_type <> 'EXPORT_BRUT'
+         AND e.cancel_requested_at IS NULL
          AND (
            (e.status = 'queued' AND (e.next_attempt_at IS NULL OR e.next_attempt_at <= NOW()))
            OR (e.status = 'generating' AND e.locked_until IS NOT NULL AND e.locked_until < NOW())
@@ -113,11 +125,15 @@ export async function claimNextGeneration(workerId: string): Promise<GenerationR
   return row ?? null;
 }
 
-/** Générations d'un compte en file ou en cours (plafond `MAX_ACTIVE_PER_ACCOUNT`). */
+/**
+ * Générations d'un compte en file ou en cours (plafond `MAX_ACTIVE_PER_ACCOUNT`).
+ * Lot 111B : une génération remplacée (annulation demandée) ne compte plus.
+ */
 export async function countActiveGenerations(accountId: number): Promise<number> {
   const res = await db.execute(sql`
     SELECT COUNT(*)::int AS n FROM export_generation
      WHERE account_id = ${accountId} AND export_type <> 'EXPORT_BRUT' AND status IN ('queued', 'generating')
+       AND cancel_requested_at IS NULL
   `);
   return Number(rowsOf(res)[0]?.n ?? 0);
 }
@@ -132,12 +148,99 @@ export async function renewGenerationLease(id: number, workerId: string): Promis
   return rowsOf(res).length > 0;
 }
 
-/** Mise à jour conditionnée au bail : une exécution dépossédée n'écrit plus rien. */
+/**
+ * Mise à jour conditionnée au bail : une exécution dépossédée n'écrit plus rien.
+ *
+ * Lot 111B — préconditions transactionnelles renforcées (une seule
+ * instruction UPDATE, évaluée sur la dernière version de la ligne) :
+ *   · même worker (`locked_by`) ET bail encore valide (`locked_until`) ;
+ *   · statut toujours actif (`generating`) ;
+ *   · aucune annulation demandée (`cancel_requested_at IS NULL`).
+ * Une génération remplacée ne peut donc JAMAIS être publiée (ready /
+ * partial), remise en file ni classée en échec par une exécution tardive.
+ */
 export async function updateOwnedGeneration(id: number, workerId: string, values: Partial<typeof exportGenerations.$inferInsert>): Promise<boolean> {
   const rows = await db.update(exportGenerations).set(values)
-    .where(and(eq(exportGenerations.id, id), eq(exportGenerations.lockedBy, workerId)))
+    .where(and(
+      eq(exportGenerations.id, id),
+      eq(exportGenerations.lockedBy, workerId),
+      eq(exportGenerations.status, 'generating'),
+      isNull(exportGenerations.cancelRequestedAt),
+      sql`${exportGenerations.lockedUntil} IS NOT NULL AND ${exportGenerations.lockedUntil} >= NOW()`,
+    ))
     .returning({ id: exportGenerations.id });
   return rows.length > 0;
+}
+
+/**
+ * Lot 111B : générations remplaçantes référencées par des lignes annulées
+ * (historique « Annulé — Remplacé par la génération … »), par identifiant.
+ * Même bien que la ligne remplacée (garanti à l'écriture) ; `assetId` borne
+ * malgré tout la lecture au bien consulté.
+ */
+export async function loadReplacementRefs(rows: Array<{ replacedByGenerationId?: number | null }>, assetId: number): Promise<Map<number, { id: number; publicId: string; exportType: string; createdAt: Date }>> {
+  const ids = [...new Set(rows.map((r) => r.replacedByGenerationId).filter((x): x is number => typeof x === 'number' && x > 0))];
+  if (!ids.length) return new Map();
+  const found = await db.select({ id: exportGenerations.id, publicId: exportGenerations.publicId, exportType: exportGenerations.exportType, createdAt: exportGenerations.createdAt })
+    .from(exportGenerations).where(and(inArray(exportGenerations.id, ids), eq(exportGenerations.assetId, assetId)));
+  return new Map(found.map((r) => [r.id, r]));
+}
+
+/** Lot 111B : une annulation a-t-elle été demandée pour cette génération ? (lecture par clé primaire) */
+export async function isGenerationCancelRequested(id: number): Promise<boolean> {
+  const res = await db.execute(sql`SELECT cancel_requested_at IS NOT NULL AS c FROM export_generation WHERE id = ${id}`);
+  const r = rowsOf(res)[0];
+  // Ligne disparue (bien supprimé) : rien à publier non plus.
+  return !r || r.c === true || r.c === 't';
+}
+
+/**
+ * Lot 111B : clôt l'annulation observée par l'exécution qui détient la
+ * génération — statut terminal `cancelled`, étape atteinte, bail libéré.
+ * Conditionné au worker et à la demande d'annulation (sans effet sinon).
+ */
+export async function markGenerationCancelled(id: number, workerId: string, step: string): Promise<boolean> {
+  const res = await db.execute(sql`
+    UPDATE export_generation
+       SET status = 'cancelled', cancelled_at = NOW(), completed_at = NOW(), cancelled_step = ${step},
+           locked_by = NULL, locked_until = NULL, next_attempt_at = NULL
+     WHERE id = ${id} AND locked_by = ${workerId} AND status = 'generating' AND cancel_requested_at IS NOT NULL
+    RETURNING id
+  `);
+  const done = rowsOf(res).length > 0;
+  if (done) {
+    await addGenerationLog(id, {
+      level: 'info', step, code: REPLACED_BY_NEW_GENERATION,
+      message: 'Génération arrêtée : remplacée par une nouvelle génération (annulation volontaire).',
+      details: { workerId },
+    });
+  }
+  return done;
+}
+
+/**
+ * Lot 111B : générations remplacées encore `generating` dont plus personne ne
+ * tient le bail (processus arrêté, redémarrage) → `cancelled`. Les objets
+ * éventuellement envoyés par l'exécution interrompue restent sous le préfixe
+ * de la génération (`exports/…/{id}/a{n}/`), purgé avec le bien / le compte.
+ */
+export async function finalizeAbandonedCancellations(): Promise<number> {
+  const res = await db.execute(sql`
+    UPDATE export_generation
+       SET status = 'cancelled', cancelled_at = NOW(), completed_at = NOW(),
+           cancelled_step = ${CANCELLED_STEP_LEASE_EXPIRED}, locked_by = NULL, locked_until = NULL, next_attempt_at = NULL
+     WHERE status = 'generating' AND cancel_requested_at IS NOT NULL
+       AND (locked_until IS NULL OR locked_until < NOW())
+    RETURNING id
+  `);
+  const ids = rowsOf(res).map((r) => Number(r.id));
+  for (const id of ids) {
+    await addGenerationLog(id, {
+      level: 'info', step: CANCELLED_STEP_LEASE_EXPIRED, code: REPLACED_BY_NEW_GENERATION,
+      message: 'Génération remplacée close après l’arrêt de son exécution (bail expiré).',
+    });
+  }
+  return ids.length;
 }
 
 export async function addGenerationLog(generationId: number, entry: {

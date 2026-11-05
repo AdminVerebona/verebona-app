@@ -231,12 +231,21 @@ export interface GenerationRow {
   worker: string | null;
   /** Historique des tentatives (détail d'UNE génération seulement). */
   attemptsLog: unknown[];
+  /** Lot 111C (migration 1200) : motif d'annulation, demande remplaçante, raison d'attente persistée. */
+  cancelReason: string | null;
+  replacedBy: string | null;
+  cancelRequestedAt: string | null;
+  waitReason: string | null;
+  waitReasonAt: string | null;
+  stallAlertedAt: string | null;
 }
 
 const LIGHT_COLUMNS = `id::text, kind, mode, admin_user_id, target_type, target_id, target_account_id, perimeter, status, snapshot_at, rows_expected, rows_exported,
               batches, bytes, files, left(error, 1000) AS error, file_name, started_at, finished_at, storage_prefix, heartbeat_at`;
 const JOB_COLUMNS = `, phase, progress, attempt, max_attempts, error_code, error_phase, error_at, parent_id::text AS parent_id, request_id, build_commit,
               cancel_requested, run_started_at, next_attempt_at, expires_at, purged_at, locked_until, locked_by`;
+/** Lot 111C (migration 1200) : remplacement et raison d'attente. */
+const REPLACE_COLUMNS = `, cancel_reason, replaced_by::text AS replaced_by, cancel_requested_at, wait_reason, wait_reason_at, stall_alerted_at`;
 
 /**
  * Générations récentes (pagination technique : `pageSize` ≤ 100, toutes les pages accessibles).
@@ -256,16 +265,21 @@ export async function listGenerations(opts: { page?: number; pageSize?: number; 
     const where = `($1::text IS NULL OR kind = $1) AND ($2::uuid IS NULL OR id = $2::uuid) AND ($3::text IS NULL OR status = $3)`;
     const params = [opts.kind ?? null, opts.id ?? null, opts.status ?? null];
     const [c] = await q(`SELECT count(*)::int AS n FROM admin_export_generations WHERE ${where}`, params);
-    const select = (job: boolean) => q(
-      `SELECT ${LIGHT_COLUMNS}${job ? JOB_COLUMNS : ''}${detail ? `, sections${job ? ', attempts_log' : ''}` : ''}
+    const select = (job: boolean, l111c = false) => q(
+      `SELECT ${LIGHT_COLUMNS}${job ? JOB_COLUMNS : ''}${job && l111c ? REPLACE_COLUMNS : ''}${detail ? `, sections${job ? ', attempts_log' : ''}` : ''}
          FROM admin_export_generations WHERE ${where}
         ORDER BY started_at DESC, id LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`, params);
-    // Migration 1035 absente (déploiement partiel) : la liste reste lisible, sans les champs des travaux durables.
-    const rows = await q('SAVEPOINT vb_list').then(() => select(true)).then(async (r) => { await q('RELEASE SAVEPOINT vb_list'); return r; }, async (e) => {
-      if ((e as { code?: string })?.code !== '42703') throw e;
-      await q('ROLLBACK TO SAVEPOINT vb_list');
-      return select(false);
-    });
+    // Migration absente (déploiement partiel) : la liste reste lisible — sans les champs du lot 111C
+    // (1200), puis sans ceux des travaux durables (1035).
+    const attempt = async (job: boolean, l111c: boolean, fallback: () => Promise<Record<string, unknown>[]>) => {
+      await q('SAVEPOINT vb_list');
+      return select(job, l111c).then(async (r) => { await q('RELEASE SAVEPOINT vb_list'); return r; }, async (e) => {
+        if ((e as { code?: string })?.code !== '42703') throw e;
+        await q('ROLLBACK TO SAVEPOINT vb_list');
+        return fallback();
+      });
+    };
+    const rows = await attempt(true, true, () => attempt(true, false, () => select(false)));
     const iso = (v: unknown) => (v == null ? null : v instanceof Date ? v.toISOString() : String(v));
     const n = (v: unknown) => (v == null ? null : Number(v));
     const obj = (v: unknown) => (v == null ? null : (typeof v === 'string' ? JSON.parse(v) : v) as Record<string, unknown>);
@@ -302,6 +316,9 @@ export async function listGenerations(opts: { page?: number; pageSize?: number; 
           leaseExpired: r.status === 'RUNNING' && !!lockedUntil && Date.parse(lockedUntil) < now,
           worker: r.locked_by == null ? null : String(r.locked_by).split(':').slice(0, 2).join(':'),
           attemptsLog: detail && r.attempts_log != null ? ((typeof r.attempts_log === 'string' ? JSON.parse(r.attempts_log) : r.attempts_log) as unknown[]) : [],
+          cancelReason: r.cancel_reason == null ? null : String(r.cancel_reason), replacedBy: r.replaced_by == null ? null : String(r.replaced_by),
+          cancelRequestedAt: iso(r.cancel_requested_at), waitReason: r.wait_reason == null ? null : String(r.wait_reason),
+          waitReasonAt: iso(r.wait_reason_at), stallAlertedAt: iso(r.stall_alerted_at),
         };
       }),
     };

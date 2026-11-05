@@ -71,6 +71,8 @@ import { operationRelationsCheck } from './checks/operation-relations';
 import { tcoCommercialAdjustmentsCheck } from './checks/tco-commercial-adjustments';
 // Lot 109K : couverture des PDF confrontée au texte original déterministe (fin de registre).
 import { t1PdfCoverageCheck } from './checks/t1-pdf-coverage';
+// Lot 111I : rattachements multiples d'un document reflétés par la source canonique (fin de registre).
+import { documentTargetsCheck } from './checks/document-targets';
 
 export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   toProcessDocumentFieldsCheck,
@@ -150,6 +152,8 @@ export const COHERENCE_REGISTRY: readonly CoherenceCheck[] = [
   tcoCommercialAdjustmentsCheck,
   // Lot 109K (ticket « T1 couverture PDF », COR-01) : ajouté EN FIN de registre.
   t1PdfCoverageCheck,
+  // Lot 111I (ticket « rattachement multiple d'un document ») : ajouté EN FIN de registre.
+  documentTargetsCheck,
 ];
 
 /** Contrôles exécutés par l'orchestrateur (les points d'extension PLANNED sont exclus). */

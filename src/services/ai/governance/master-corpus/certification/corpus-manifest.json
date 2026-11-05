@@ -1,6 +1,6 @@
 {
-  "version": 3,
-  "generatedAt": "2026-11-02T20:41:35.929Z",
+  "version": 5,
+  "generatedAt": "2026-11-05T10:24:13.855Z",
   "reference": {
     "ticket": "#601",
     "announcedScenarios": 401,
@@ -4370,11 +4370,11 @@
       "testType": "QUALITE_MODELE",
       "evaluationType": "ORACLE",
       "status": "A_COMPLETER",
-      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "reason": "réponse de référence corrigée au lot 111K (réserve de règlement non demandée retirée, règlement jamais affirmé) : nouvelle approbation humaine individuelle requise (oracle v2)",
       "historicalClass": "REPONSE_UTILISABLE",
       "cdc35Category": null,
       "oracle": {
-        "version": 1,
+        "version": 2,
         "requiredFacts": [
           {
             "key": "reponse_montant",
@@ -4403,6 +4403,18 @@
             "kind": "TEXT",
             "value": "opération",
             "reason": "jamais affiché (attendu du cas)"
+          },
+          {
+            "key": "interdit_3",
+            "kind": "TEXT",
+            "value": "preuve de paiement",
+            "reason": "jamais affiché (attendu du cas)"
+          },
+          {
+            "key": "interdit_4",
+            "kind": "TEXT",
+            "value": "réglé",
+            "reason": "jamais affiché (attendu du cas)"
           }
         ],
         "entities": {
@@ -4427,13 +4439,17 @@
           "answerContains": "1 250,00 €",
           "answerNotContains": [
             "Opération",
-            "opération"
+            "opération",
+            "preuve de paiement",
+            "réglé"
           ],
-          "supportLevel": "supported"
+          "supportLevel": "supported",
+          "exitState": "answered",
+          "neverAffirmSettlement": true
         },
-        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+        "notes": "Révision lot 111K (pertinence des preuves) : « combien ai-je payé » demande un MONTANT — le coût documenté répond, sans réserve parasite sur le règlement ; l’interdiction d’affirmer un paiement non démontré est conservée (`neverAffirmSettlement`, garde P-T2-22). À relire sur les sources du cas et à approuver individuellement au BO (approbation v1 caduque)."
       },
-      "expectedSummary": "{\"answerContains\":\"1 250,00 €\",\"answerNotContains\":[\"Opération\",\"opération\"],\"supportLevel\":\"supported\"}",
+      "expectedSummary": "{\"answerContains\":\"1 250,00 €\",\"answerNotContains\":[\"Opération\",\"opération\",\"preuve de paiement\",\"réglé\"],\"supportLevel\":\"supported\",\"exitState\":\"answered\",\"neverAffirmSettlement\":true}",
       "revisions": [
         {
           "revision": 1,
@@ -4444,6 +4460,18 @@
             "*"
           ],
           "oracleFingerprint": "907f1d10e195a996c3a687d1a460b5421567977ae023a4a0dae85c3384b021dc"
+        },
+        {
+          "revision": 2,
+          "at": "2026-11-05T10:24:05.928Z",
+          "by": "lot111k",
+          "reason": "ticket 111K « T2 : pertinence des preuves » §5.1 : attendu corrigé (montant documenté restitué directement ; `preuve de paiement` et `réglé` interdits ; état de sortie « répondu » ; aucun règlement affirmé) — oracle v1 invalidé, qualifications obsolètes par l’empreinte du corpus",
+          "changes": [
+            "oracle",
+            "reason",
+            "expectedSummary"
+          ],
+          "oracleFingerprint": "5da5c29fc9f06eabe905db79cba202527275ed6fd99b46729f7c1e7e60895c07"
         }
       ]
     },
@@ -8232,6 +8260,1031 @@
           "oracleFingerprint": null
         }
       ]
+    },
+    {
+      "id": "H-P-T2-10-REPONSE-EXACTE-GARANTIE",
+      "sourceCaseId": "P-T2-10",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-10-reponse-exacte-garantie.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [
+          {
+            "key": "reponse_texte",
+            "kind": "TEXT",
+            "value": "14 mars 2028",
+            "critical": true,
+            "evidenceRequired": false,
+            "evidence": [
+              {
+                "source": "contexte du cas (p-t2-10-reponse-exacte-garantie.json)",
+                "excerpt": null
+              }
+            ]
+          }
+        ],
+        "absentFacts": [
+          {
+            "key": "interdit_1",
+            "kind": "TEXT",
+            "value": "549",
+            "reason": "jamais affiché (attendu du cas)"
+          }
+        ],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_501"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerContains": "14 mars 2028",
+          "answerNotContains": [
+            "549"
+          ],
+          "supportLevel": "supported",
+          "exitState": "answered",
+          "requestedInformation": "garantie"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerContains\":\"14 mars 2028\",\"answerNotContains\":[\"549\"],\"supportLevel\":\"supported\",\"exitState\":\"answered\",\"requestedInformation\":\"garantie\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — réponse exacte dans une source : la fin de garantie du lave-linge est restituée directement, sans réserve ni information voisine.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "146f864cb68d6fb56b0681079ccd9fafae9acca6275a69c37274401696a8a563"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-11-INFORMATIONS-PROCHES-FRANCHISE",
+      "sourceCaseId": "P-T2-11",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-11-informations-proches-franchise.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "INTERMEDIAIRE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [
+          {
+            "key": "reponse_montant",
+            "kind": "AMOUNT",
+            "value": 300,
+            "unit": "EUR",
+            "critical": true,
+            "evidenceRequired": false,
+            "evidence": [
+              {
+                "source": "contexte du cas (p-t2-11-informations-proches-franchise.json)",
+                "excerpt": null
+              }
+            ]
+          }
+        ],
+        "absentFacts": [
+          {
+            "key": "interdit_1",
+            "kind": "TEXT",
+            "value": "480",
+            "reason": "jamais affiché (attendu du cas)"
+          },
+          {
+            "key": "interdit_2",
+            "kind": "TEXT",
+            "value": "20 000",
+            "reason": "jamais affiché (attendu du cas)"
+          }
+        ],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_610"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerContains": "300,00 €",
+          "answerNotContains": [
+            "480",
+            "20 000"
+          ],
+          "supportLevel": "supported",
+          "exitState": "answered",
+          "noFalseConflict": true,
+          "requestedInformation": "franchise"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerContains\":\"300,00 €\",\"answerNotContains\":[\"480\",\"20 000\"],\"supportLevel\":\"supported\",\"exitState\":\"answered\",\"noFalseConflict\":true,\"requestedInformation\":\"franchise\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — plusieurs informations proches (prime, franchise, plafond) dans la même attestation : seule la franchise demandée est restituée, sans conflit.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "c9c21c08dbcee63803f70e3409a756f400bfce985dbcc40c617162c0ee412bb4"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-12-ABSENTE-VOISINES-PREAVIS",
+      "sourceCaseId": "P-T2-12",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-12-absente-voisines-preavis.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "DIFFICILE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [],
+        "absentFacts": [
+          {
+            "key": "interdit_1",
+            "kind": "TEXT",
+            "value": "189",
+            "reason": "jamais affiché (attendu du cas)"
+          },
+          {
+            "key": "interdit_2",
+            "kind": "TEXT",
+            "value": "2025",
+            "reason": "jamais affiché (attendu du cas)"
+          }
+        ],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_720"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerNotContains": [
+            "189",
+            "2025"
+          ],
+          "exitState": "insufficient"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerNotContains\":[\"189\",\"2025\"],\"exitState\":\"insufficient\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — information absente (préavis), données voisines présentes (prix, date de début) : abstention, aucune donnée périphérique restituée.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "bede60a7c951ea447f7825b6d65af25f9e746eb09d813b7b7b6a05eeea06dfcd"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-13-SOURCES-CONCORDANTES-PUISSANCE",
+      "sourceCaseId": "P-T2-13",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-13-sources-concordantes-puissance.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "INTERMEDIAIRE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [
+          {
+            "key": "reponse_texte",
+            "kind": "TEXT",
+            "value": "5 CV",
+            "critical": true,
+            "evidenceRequired": false,
+            "evidence": [
+              {
+                "source": "contexte du cas (p-t2-13-sources-concordantes-puissance.json)",
+                "excerpt": null
+              }
+            ]
+          }
+        ],
+        "absentFacts": [
+          {
+            "key": "interdit_1",
+            "kind": "TEXT",
+            "value": "15 900",
+            "reason": "jamais affiché (attendu du cas)"
+          }
+        ],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_801",
+          "doc_802"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerContains": "5 CV",
+          "answerNotContains": [
+            "15 900"
+          ],
+          "supportLevel": "supported",
+          "exitState": "answered",
+          "noFalseConflict": true
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerContains\":\"5 CV\",\"answerNotContains\":[\"15 900\"],\"supportLevel\":\"supported\",\"exitState\":\"answered\",\"noFalseConflict\":true}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — deux sources concordantes (certificat d’immatriculation, facture d’achat) : une réponse unique étayée par les deux, sans conflit.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "56a3926846656f41c4e166069334c0f348a15f18f07879405d935135ad35256b"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-14-CONTRADICTION-REELLE-GARANTIE-TV",
+      "sourceCaseId": "P-T2-14",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-14-contradiction-reelle-garantie-tv.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "DIFFICILE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [
+          {
+            "key": "reponse_texte",
+            "kind": "TEXT",
+            "value": "12 mars 2028",
+            "critical": true,
+            "evidenceRequired": false,
+            "evidence": [
+              {
+                "source": "contexte du cas (p-t2-14-contradiction-reelle-garantie-tv.json)",
+                "excerpt": null
+              }
+            ]
+          }
+        ],
+        "absentFacts": [],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_901",
+          "doc_902"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerContains": "12 mars 2028",
+          "supportLevel": "supported",
+          "exitState": "conflict"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerContains\":\"12 mars 2028\",\"supportLevel\":\"supported\",\"exitState\":\"conflict\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — deux sources sur la MÊME information (fin de garantie du téléviseur, même contexte) donnent des dates incompatibles : contradiction signalée avec ses sources, aucune valeur choisie.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "60772f3ed86256c94fc4de026f673a805dac76c8ef89092b89976536d802f798"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-15-NATURES-DIFFERENTES-HT-TTC",
+      "sourceCaseId": "P-T2-15",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-15-natures-differentes-ht-ttc.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [
+          {
+            "key": "reponse_montant",
+            "kind": "AMOUNT",
+            "value": 840,
+            "unit": "EUR",
+            "critical": true,
+            "evidenceRequired": false,
+            "evidence": [
+              {
+                "source": "contexte du cas (p-t2-15-natures-differentes-ht-ttc.json)",
+                "excerpt": null
+              }
+            ]
+          }
+        ],
+        "absentFacts": [
+          {
+            "key": "interdit_1",
+            "kind": "TEXT",
+            "value": "700",
+            "reason": "jamais affiché (attendu du cas)"
+          },
+          {
+            "key": "interdit_2",
+            "kind": "TEXT",
+            "value": "140",
+            "reason": "jamais affiché (attendu du cas)"
+          }
+        ],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_1001"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerContains": "840,00 €",
+          "answerNotContains": [
+            "700",
+            "140"
+          ],
+          "supportLevel": "supported",
+          "exitState": "answered",
+          "noFalseConflict": true
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerContains\":\"840,00 €\",\"answerNotContains\":[\"700\",\"140\"],\"supportLevel\":\"supported\",\"exitState\":\"answered\",\"noFalseConflict\":true}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — valeurs de nature différente (montant HT, TVA, total TTC) : le montant de la facture est le total, aucun faux conflit.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "cc33839008aedcbadf82bbd2b08b428f0ecff894038d62ba72ba69422200700c"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-16-HISTORIQUE-ACTUEL-LOYER",
+      "sourceCaseId": "P-T2-16",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-16-historique-actuel-loyer.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "DIFFICILE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [
+          {
+            "key": "reponse_montant",
+            "kind": "AMOUNT",
+            "value": 780,
+            "unit": "EUR",
+            "critical": true,
+            "evidenceRequired": false,
+            "evidence": [
+              {
+                "source": "contexte du cas (p-t2-16-historique-actuel-loyer.json)",
+                "excerpt": null
+              }
+            ]
+          }
+        ],
+        "absentFacts": [
+          {
+            "key": "interdit_1",
+            "kind": "TEXT",
+            "value": "750",
+            "reason": "jamais affiché (attendu du cas)"
+          }
+        ],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_1101",
+          "doc_1102"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerContains": "780,00 €",
+          "answerNotContains": [
+            "750"
+          ],
+          "supportLevel": "supported",
+          "exitState": "answered",
+          "noFalseConflict": true,
+          "allowedEvidence": [
+            "doc_1102"
+          ]
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerContains\":\"780,00 €\",\"answerNotContains\":[\"750\"],\"supportLevel\":\"supported\",\"exitState\":\"answered\",\"noFalseConflict\":true,\"allowedEvidence\":[\"doc_1102\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — valeur historique (bail 2023) et valeur actuelle (avenant 2025) : le loyer actuel est restitué avec sa date, l’ancienne valeur n’est ni listée ni présentée comme contradictoire.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "71a22b27fcb8cf2cdfe60dd9b5d8f9e7061437a9d63aeed895fa089b1231288b"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-17-HORS-REGISTRE-CAPACITE",
+      "sourceCaseId": "P-T2-17",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-17-hors-registre-capacite.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_INTENTION",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [
+          {
+            "key": "reponse_texte",
+            "kind": "TEXT",
+            "value": "200 L",
+            "critical": true,
+            "evidenceRequired": false,
+            "evidence": [
+              {
+                "source": "contexte du cas (p-t2-17-hors-registre-capacite.json)",
+                "excerpt": null
+              }
+            ]
+          }
+        ],
+        "absentFacts": [
+          {
+            "key": "interdit_1",
+            "kind": "TEXT",
+            "value": "2 200",
+            "reason": "jamais affiché (attendu du cas)"
+          }
+        ],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_1201"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerContains": "200 L",
+          "answerNotContains": [
+            "2 200"
+          ],
+          "supportLevel": "supported",
+          "exitState": "answered",
+          "requestedInformation": "capacite"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerContains\":\"200 L\",\"answerNotContains\":[\"2 200\"],\"supportLevel\":\"supported\",\"exitState\":\"answered\",\"requestedInformation\":\"capacite\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — propriété hors registre canonique (capacité d’un ballon d’eau chaude) : comprise, recherchée et restituée depuis le seul fait qui la porte.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "02f046a237b23d7c170b31feb8709cda1b1af02e98163cdbe6bdef1300a3189a"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-18-QUESTION-INDIRECTE-COUVERTURE-VOL",
+      "sourceCaseId": "P-T2-18",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-18-question-indirecte-couverture-vol.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_INTENTION",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [
+          {
+            "key": "reponse_texte",
+            "kind": "TEXT",
+            "value": "31 mars 2027",
+            "critical": true,
+            "evidenceRequired": false,
+            "evidence": [
+              {
+                "source": "contexte du cas (p-t2-18-question-indirecte-couverture-vol.json)",
+                "excerpt": null
+              }
+            ]
+          }
+        ],
+        "absentFacts": [
+          {
+            "key": "interdit_1",
+            "kind": "TEXT",
+            "value": "312",
+            "reason": "jamais affiché (attendu du cas)"
+          }
+        ],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_1301"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerContains": "31 mars 2027",
+          "answerNotContains": [
+            "312"
+          ],
+          "supportLevel": "supported",
+          "exitState": "answered"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerContains\":\"31 mars 2027\",\"answerNotContains\":[\"312\"],\"supportLevel\":\"supported\",\"exitState\":\"answered\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — question exprimée indirectement (« jusqu’à quand suis-je couvert pour le vol ») : la date de fin de la garantie vol, pas la prime.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "5aa55a29de6e42ffcc2309e19e85cc7fcb18d3257c4a421b73186d6714e60e25"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-19-RESERVE-PARASITE-RAMONAGE",
+      "sourceCaseId": "P-T2-19",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-19-reserve-parasite-ramonage.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"answerContains\":\"14 octobre 2025\",\"answerNotContains\":[\"paiement\",\"réglé\"],\"supportLevel\":\"supported\",\"exitState\":\"answered\",\"finalControlRejects\":[\"PARASITIC_RESERVE\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : ANSWER (lot 111K, pertinence des preuves) — GARDE — information principale connue (date du ramonage), information accessoire inconnue (montant) : la réserve non demandée est retirée par le contrôle final, la réponse reste directe.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-20-COMPOSITE-PARTIELLE-LAVE-VAISSELLE",
+      "sourceCaseId": "P-T2-20",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-20-composite-partielle-lave-vaisselle.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_ABSTENTION_INJUSTIFIEE",
+      "difficulty": "SIMPLE",
+      "critical": true,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "QUALITE_MODELE",
+      "evaluationType": "ORACLE",
+      "status": "A_COMPLETER",
+      "reason": "réponse potentiellement utilisable : proposition d’oracle prête, approbation humaine individuelle requise (sources du cas)",
+      "historicalClass": "REPONSE_UTILISABLE",
+      "cdc35Category": null,
+      "oracle": {
+        "version": 1,
+        "requiredFacts": [
+          {
+            "key": "reponse_texte",
+            "kind": "TEXT",
+            "value": "2 février 2024",
+            "critical": true,
+            "evidenceRequired": false,
+            "evidence": [
+              {
+                "source": "contexte du cas (p-t2-20-composite-partielle-lave-vaisselle.json)",
+                "excerpt": null
+              }
+            ]
+          }
+        ],
+        "absentFacts": [
+          {
+            "key": "interdit_1",
+            "kind": "TEXT",
+            "value": "429",
+            "reason": "jamais affiché (attendu du cas)"
+          }
+        ],
+        "entities": {
+          "expected": [],
+          "forbidden": []
+        },
+        "decisions": {
+          "allowed": [],
+          "forbidden": []
+        },
+        "abstention": {
+          "expected": "EITHER",
+          "criteria": null
+        },
+        "allowedSources": [
+          "doc_1501"
+        ],
+        "equivalences": [],
+        "amountTolerance": 0,
+        "serverExpected": {
+          "answerContains": "2 février 2024",
+          "answerNotContains": [
+            "429"
+          ],
+          "supportLevel": "partial",
+          "exitState": "partial"
+        },
+        "notes": "Proposition générée au lot 100B depuis l’attendu historique du cas : à relire sur les sources (contexte du cas, pièces), jamais sur une sortie de modèle."
+      },
+      "expectedSummary": "{\"answerContains\":\"2 février 2024\",\"answerNotContains\":[\"429\"],\"supportLevel\":\"partial\",\"exitState\":\"partial\"}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (REPONSE_UTILISABLE) : ANSWER (lot 111K, pertinence des preuves) — question composite (date d’achat ET fin de garantie) partiellement documentée : réponse partielle explicite, ce qui manque est signalé sobrement.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": "22532ed2cb47d995c67caf74d7c80d36ce5a2e5816fbfb9344c4481781f07bfb"
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-21-HORS-SUJET-SERIE-CHAUDIERE",
+      "sourceCaseId": "P-T2-21",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-21-hors-sujet-serie-chaudiere.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"answerNotContains\":[\"2 450\"],\"exitState\":\"insufficient\",\"finalControlRejects\":[\"OFF_TOPIC\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : ANSWER (lot 111K, pertinence des preuves) — GARDE — réponse générée avec une valeur CORRECTE (présente dans la source) mais hors sujet (le prix pour un numéro de série) : affirmation rejetée, insuffisance rendue.",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-22-REGLEMENT-AFFIRME-SANS-PREUVE",
+      "sourceCaseId": "P-T2-22",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-22-reglement-affirme-sans-preuve.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"answerNotContains\":[\"840\"],\"exitState\":\"insufficient\",\"neverAffirmSettlement\":true,\"finalControlRejects\":[\"SETTLEMENT_UNPROVEN\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : ANSWER (lot 111K, pertinence des preuves) — GARDE (incident 1, non-régression de P-T2-08) — « combien ai-je payé » : le modèle affirme un RÈGLEMENT à partir d’un coût documenté. Affirmation rejetée (un coût ne prouve pas un règlement), insuffisance rendue plutôt qu’une réponse artificiellement étayé",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
+    },
+    {
+      "id": "H-P-T2-23-CHIFFRES-JUSTES-CONCLUSION-FAUSSE",
+      "sourceCaseId": "P-T2-23",
+      "file": "src/services/ai/governance/master-corpus/fixtures/p-t2-23-chiffres-justes-conclusion-fausse.json",
+      "operationCode": "t2_answer",
+      "treatment": "T2",
+      "contract": null,
+      "schema": "T2AnswerOutput",
+      "riskFamily": "T2_SOURCES_VERIFIEES",
+      "difficulty": "DIFFICILE",
+      "critical": false,
+      "pair": null,
+      "provenance": "DEVELOPPEUR",
+      "sourcePieces": [],
+      "inputMode": "STRUCTURED",
+      "testType": "GARDE_SERVEUR",
+      "evaluationType": "GARDE_SERVEUR",
+      "status": "GARDE_SERVEUR",
+      "reason": "garde serveur : sortie enregistrée délibérément fautive, contrôle de la réaction du serveur (reste en CI, jamais une référence de promotion)",
+      "historicalClass": "GARDE",
+      "cdc35Category": null,
+      "oracle": null,
+      "expectedSummary": "{\"answerNotContains\":[\"380\"],\"exitState\":\"insufficient\",\"neverAffirmSettlement\":true,\"finalControlRejects\":[\"SETTLEMENT_UNPROVEN\"]}",
+      "revisions": [
+        {
+          "revision": 1,
+          "at": "2026-11-05T10:24:13.855Z",
+          "by": "lot100b",
+          "reason": "reclassement initial (GARDE) : ANSWER (lot 111K, pertinence des preuves) — GARDE — tous les chiffres sont dans les sources mais la conclusion trahit leur sens : le montant du DEVIS présenté comme payé. Rejet ; la nature « prévu » n’est jamais transformée en « réglé ».",
+          "changes": [
+            "*"
+          ],
+          "oracleFingerprint": null
+        }
+      ]
     }
   ],
   "ledger": [
@@ -8368,6 +9421,20 @@
     "H-P-T3-27-PREUVES-CROISEES-RELATION-NON-ETABLIE",
     "H-P-T3-28-PREUVES-CROISEES-ETABLIE",
     "H-P-T6-DISC-01-INVITATIONS-GENERIQUES",
-    "H-P-T6-DISC-02-AFFIRMATION-PERSONNELLE"
+    "H-P-T6-DISC-02-AFFIRMATION-PERSONNELLE",
+    "H-P-T2-10-REPONSE-EXACTE-GARANTIE",
+    "H-P-T2-11-INFORMATIONS-PROCHES-FRANCHISE",
+    "H-P-T2-12-ABSENTE-VOISINES-PREAVIS",
+    "H-P-T2-13-SOURCES-CONCORDANTES-PUISSANCE",
+    "H-P-T2-14-CONTRADICTION-REELLE-GARANTIE-TV",
+    "H-P-T2-15-NATURES-DIFFERENTES-HT-TTC",
+    "H-P-T2-16-HISTORIQUE-ACTUEL-LOYER",
+    "H-P-T2-17-HORS-REGISTRE-CAPACITE",
+    "H-P-T2-18-QUESTION-INDIRECTE-COUVERTURE-VOL",
+    "H-P-T2-19-RESERVE-PARASITE-RAMONAGE",
+    "H-P-T2-20-COMPOSITE-PARTIELLE-LAVE-VAISSELLE",
+    "H-P-T2-21-HORS-SUJET-SERIE-CHAUDIERE",
+    "H-P-T2-22-REGLEMENT-AFFIRME-SANS-PREUVE",
+    "H-P-T2-23-CHIFFRES-JUSTES-CONCLUSION-FAUSSE"
   ]
 }

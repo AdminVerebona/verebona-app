@@ -40,6 +40,8 @@ describe('AC8.1 — jamais « ce bien » ni « sa fiche »', () => {
   });
 });
 
+// Lot 111L (audit #409) : règle de NOMMAGE du catalogue (lot 32), toujours valide ; la suggestion
+// spontanée des listes est refusée en amont par le service partagé (tests L111L).
 describe('AC8.2 — fiche d’un bien : le bien est nommé', () => {
   it('« Quels sont les documents de Cupra ? », « Quelles sont les prochaines échéances de Cupra ? »', () => {
     const l = suggestionsForRoute('/assets/42', { state: vide, pageAsset: { name: 'Cupra', documents: 2, deadlines: 1 } }).map((s) => s.label);

@@ -10,6 +10,7 @@ import { MONEY_INPUT, parseMoneyInputToCents } from '@/lib/number-input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Upload, X, FileIcon, Loader2, Link as LinkIcon, Camera, ImageIcon, LayoutGrid, Settings, Check, ChevronDown, Video } from 'lucide-react';
+import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import dynamic from 'next/dynamic';
 
 const CreateAgendaItemDrawer = dynamic(
@@ -37,6 +38,10 @@ import { fetchDepot, messageSelonStatut } from '@/lib/upload-http';
 import { confirmerAjout } from '@/lib/upload-confirmation-client';
 import { agendaItemIdOrNull, linkUploadedDocumentsToAgendaItem } from '@/lib/agenda/document-agenda-link-client';
 import { NativeScanButton } from '@/components/native/NativeScanButton';
+import { DocumentTargetsPicker } from '@/components/documents/targets/DocumentTargetsPicker';
+import {
+  hasExtraTargets, principalOf, targetsBody, type TargetOptionGroupView, type TargetsValue,
+} from '@/lib/documents/document-targets-selection';
 
 const jsonPost = (body: unknown): RequestInit => ({
   method: 'POST',
@@ -116,6 +121,8 @@ interface ContexteDepot {
   agendaItemId: number | null;
   substructureId: number | null;
   equipmentId: number | null;
+  /** Lot 111I : sélection MULTIPLE complète (null : sélecteurs historiques, options indisponibles). */
+  targets: TargetsValue | null;
   documentType: string;
   documentDate: string;
   supplier: string;
@@ -135,6 +142,16 @@ async function associerEtSignaler(ctx: ContexteDepot, fileIds: number[]): Promis
   // modèle « events ». Couche HTTP du dépôt (`fetchDepot`, lot 24 #12) :
   // budget `write`, renouvellement de session sur 401, aucune nouvelle
   // tentative. Échecs de lien silencieux (le document est enregistré).
+  // Lot 111I : cibles complémentaires (plusieurs biens, pièces, équipements) — le dépôt a posé le
+  // principal ; les autres sont AJOUTÉES (`POST …/targets`, rien n'est retiré). Échec silencieux :
+  // le document est enregistré, le rattachement se complète depuis le tiroir.
+  // Un lien web ne porte que le bien à sa création : ses pièces et équipements sont toujours complémentaires.
+  const pose = { assetId: ctx.targetAssetId, roomId: ctx.isWl ? null : ctx.substructureId, equipmentId: ctx.isWl ? null : ctx.equipmentId };
+  if (ctx.targets && hasExtraTargets(ctx.targets, pose)) {
+    for (const fileId of fileIds) {
+      try { await fetchDepot(`/api/documents/${fileId}/targets`, jsonPost(targetsBody(ctx.targets))); } catch { /* complété depuis le tiroir */ }
+    }
+  }
   if (ctx.agendaItemId !== null) {
     const { linked } = await linkUploadedDocumentsToAgendaItem(ctx.agendaItemId, fileIds, (url, body) => fetchDepot(url, jsonPost(body)));
     if (linked.length > 0) window.dispatchEvent(new CustomEvent('agenda-mutated'));
@@ -238,6 +255,14 @@ export function UnifiedDocumentDialog({
   const [selectedSubstructureId, setSelectedSubstructureId] = useState<string>(preselectedSubstructureId?.toString() || 'none');
   const [selectedEquipmentId, setSelectedEquipmentId] = useState<string>(preselectedEquipmentId?.toString() || 'none');
   const [loadingRelations, setLoadingRelations] = useState(false);
+  // Lot 111I : rattachement MULTIPLE (biens, pièces, équipements), groupé par bien.
+  const selectionInitiale = (): TargetsValue => ({
+    assetIds: preselectedAssetId ? [preselectedAssetId] : [],
+    roomIds: preselectedSubstructureId ? [preselectedSubstructureId] : [],
+    equipmentIds: preselectedEquipmentId ? [preselectedEquipmentId] : [],
+  });
+  const [targets, setTargets] = useState<TargetsValue>(selectionInitiale);
+  const [targetGroups, setTargetGroups] = useState<TargetOptionGroupView[]>([]);
 
   // ── Data from API ───────────────────────────────────────────────────────────
   const [documentTypes, setDocumentTypes] = useState<DocumentType[]>(FALLBACK_DOCUMENT_TYPES);
@@ -368,7 +393,24 @@ export function UnifiedDocumentDialog({
   // Sync preselected asset
   useEffect(() => {
     if (preselectedAssetId) setAssetId(preselectedAssetId.toString());
-  }, [preselectedAssetId]);
+    setTargets(selectionInitiale());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preselectedAssetId, preselectedSubstructureId, preselectedEquipmentId]);
+
+  // Lot 111I : cibles proposées (biens du compte, leurs pièces et équipements).
+  useEffect(() => {
+    if (!open) return;
+    let annule = false;
+    apiClient.get<{ groups: TargetOptionGroupView[] }>('/api/document-targets/options')
+      .then((r) => { if (!annule) setTargetGroups(Array.isArray(r?.groups) ? r.groups : []); })
+      .catch(() => { if (!annule) setTargetGroups([]); });
+    return () => { annule = true; };
+  }, [open]);
+  // Groupes du sélecteur : un dépôt depuis la fiche d'un bien sans choix de bien reste sur ce bien.
+  const groupesCibles = useMemo(
+    () => (!allowAssetSelection && preselectedAssetId ? targetGroups.filter((g) => g.asset.id === preselectedAssetId) : targetGroups),
+    [targetGroups, allowAssetSelection, preselectedAssetId],
+  );
 
 
   const addFiles = (newFiles: File[], existants: FileWithPreview[] = files) => {
@@ -441,6 +483,7 @@ export function UnifiedDocumentDialog({
     setDocumentType('AUTRE');
     setDocumentDate('');
     setAssetId(preselectedAssetId?.toString() || '0');
+    setTargets(selectionInitiale());
     setSupplier('');
     setAmount('');
     setAmountError(false);
@@ -471,14 +514,19 @@ export function UnifiedDocumentDialog({
 
   /** Contexte figé du dépôt : la fin du lot peut survenir panneau fermé. */
   const contexteDepot = (): ContexteDepot => {
-    const targetAssetId = assetId && assetId !== '0' ? parseInt(assetId) : null;
+    // Lot 111I : sélection multiple — le dépôt porte le principal (même règle que le serveur), les autres
+    // cibles sont ajoutées après confirmation. Options indisponibles : sélecteurs historiques.
+    const multi = groupesCibles.length > 0;
+    const principal = multi ? principalOf(groupesCibles, targets) : null;
+    const targetAssetId = principal ? principal.assetId : assetId && assetId !== '0' ? parseInt(assetId) : null;
     const premier = files[0]?.file;
     return {
       isWl: mode === 'weblink',
       isPremium: !!isPremium,
       agendaItemId,
-      substructureId: selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
-      equipmentId: selectedEquipmentId === 'none' ? null : parseInt(selectedEquipmentId),
+      targets: multi ? targets : null,
+      substructureId: principal ? principal.roomId : selectedSubstructureId === 'none' ? null : parseInt(selectedSubstructureId),
+      equipmentId: principal ? principal.equipmentId : selectedEquipmentId === 'none' ? null : parseInt(selectedEquipmentId),
       documentType,
       documentDate,
       supplier,
@@ -817,6 +865,19 @@ export function UnifiedDocumentDialog({
               </div>
             </div>
 
+            {/* Lot 111I : plusieurs biens, pièces et équipements (puces + liste à cocher groupée par bien). */}
+            {groupesCibles.length > 0 ? (
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-[color:var(--text-primary)]">Rattachement</p>
+                <DocumentTargetsPicker
+                  groups={groupesCibles}
+                  value={targets}
+                  onChange={setTargets}
+                  disabled={isUploading || loadingData}
+                  lockedAssetIds={preselectedAssetId ? [preselectedAssetId] : []}
+                />
+              </div>
+            ) : (<>
             {allowAssetSelection && (
               <div className="space-y-2">
                 <Label>Bien associé</Label>
@@ -855,6 +916,8 @@ export function UnifiedDocumentDialog({
               </div>
             )}
 
+            </>)}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Fournisseur</Label>
@@ -876,34 +939,33 @@ export function UnifiedDocumentDialog({
     const noFileYet = mode === 'file' && files.length === 0;
     return (
       <div className="space-y-3">
-        <div className="flex items-stretch rounded-xl border border-border bg-muted/30 overflow-hidden">
-          <button
-            type="button"
-            className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-muted/60 transition-colors text-foreground disabled:opacity-40 disabled:cursor-not-allowed"
-            onClick={() => handleSubmit()}
-            disabled={!canSubmit || isUploading}
-          >
-            {isUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-            <span className="text-[12px] font-semibold">
-              {isUploading
-                ? (uploadProgress && uploadProgress.total > 1 ? `Envoi ${uploadProgress.current}/${uploadProgress.total}…` : 'Envoi…')
-                : mode === 'weblink' ? 'Ajouter'
-                : noFileYet ? 'Importer'
-                : files.length > 1 ? `Importer (${files.length} fichiers)` : 'Importer'}
-            </span>
-          </button>
-        </div>
+        <FooterPrimaryAction
+          layout="block"
+          icon={mode === 'weblink' ? LinkIcon : Upload}
+          onClick={() => handleSubmit()}
+          disabled={!canSubmit}
+          busy={isUploading}
+          busyLabel={uploadProgress && uploadProgress.total > 1 ? `Envoi ${uploadProgress.current}/${uploadProgress.total}…` : 'Envoi…'}
+          label={mode === 'weblink' ? 'Ajouter'
+            : files.length > 1 ? `Importer (${files.length} fichiers)` : 'Importer'}
+          disabledReasonId="ajout-document-pas-pret"
+        />
+        {!canSubmit && !isUploading && (
+          <p id="ajout-document-pas-pret" className="text-center text-[13px] text-[color:var(--text-muted)]">
+            {mode === 'weblink' ? 'Renseignez l’adresse et le titre du lien pour l’ajouter.' : noFileYet ? 'Sélectionnez un fichier pour l’importer.' : null}
+          </p>
+        )}
         {lotActif ? (
           <div className="grid grid-cols-2 gap-2">
-            <Button type="button" variant="ghost" size="sm" onClick={handleClose} className="text-muted-foreground">
+            <Button type="button" variant="outline" onClick={handleClose} className="h-auto min-h-11 whitespace-normal">
               Fermer (l'envoi continue)
             </Button>
-            <Button type="button" variant="ghost" size="sm" onClick={annulerEnvoi} className="text-muted-foreground">
+            <Button type="button" variant="ghost" onClick={annulerEnvoi} className="h-auto min-h-11 whitespace-normal">
               Annuler l'envoi
             </Button>
           </div>
         ) : (
-          <Button type="button" variant="ghost" size="sm" onClick={handleClose} className="w-full text-muted-foreground">
+          <Button type="button" variant="outline" onClick={handleClose} className="w-full h-11">
             {elementsLot.length > 0 ? 'Fermer' : 'Annuler'}
           </Button>
         )}

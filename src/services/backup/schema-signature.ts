@@ -37,6 +37,8 @@ export const BACKUP_EXCLUDED_TABLES: readonly string[] = ['_migrations', 'job_lo
 export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   ...BACKUP_EXCLUDED_TABLES,
   'admin_audit_log', 'admin_export_generations', 'ops_backfill_runs', 'scheduled_task_state', 'ai_queue_worker_heartbeats',
+  // Lot 111C : battements du worker des diagnostics (état courant des processus, jamais restauré).
+  'diagnostic_worker_heartbeats',
   // Lot 83D : journal du nettoyage Sinistres (trace d'une application conservée, comme les autres journaux de rattrapage).
   'claim_legacy_cleanup_runs', 'claim_legacy_cleanup_journal',
   // Lot 84E : journal des reconsolidations ciblées (trace d'exécution, comme les autres journaux).

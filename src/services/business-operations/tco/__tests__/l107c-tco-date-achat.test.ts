@@ -276,7 +276,9 @@ describe('L107C — affichage, T2, BO : même donnée, aucune règle locale', ()
     const ui = lire('src/components/assets/TcoSection.tsx');
     expect(ui).toContain('Depuis l’achat du bien le ${dateNum(start)}');
     expect(ui).toContain('Depuis le début de la possession le');
-    expect(ui).toContain("case 'ACQUISITION_DATE_UNDETERMINED'");
+    // Lot 111F : le motif d'une moyenne non calculée vient du moteur (`indicators.annualAverage.unavailableReason`).
+    expect(ui).toContain('Date d’achat du bien incertaine');
+    expect(lire('src/services/business-operations/tco/ownership-indicators.ts')).toContain('ACQUISITION_DATE_UNDETERMINED:');
     expect(ui).toContain('data-tco-start-status');
     expect(ui).toContain('t.period.startKind');
     expect(ui).not.toMatch(/realizedDate|earliest|ACQUISITION'/);

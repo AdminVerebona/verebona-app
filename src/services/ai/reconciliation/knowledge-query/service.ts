@@ -30,7 +30,7 @@ import {
   CONSTITUENT_VALUE_TYPES, KNOWLEDGE_QUERY_CONTRACT_VERSION, knowledgeQueryVariables,
   type ConstituentRole, type FieldValueType, type KnowledgeConstituent, type KnowledgeQuestion, type T3KnowledgeQueryOutput,
 } from './contract';
-import { contextFingerprint, knowledgeBounds, planKnowledgePages, questionFingerprint, type KnowledgeBounds } from './context';
+import { continuationPageCap, contextFingerprint, knowledgeBounds, planKnowledgePages, questionFingerprint, type KnowledgeBounds } from './context';
 import type { CollectedKnowledge } from './collect';
 import type { KnowledgeCall, KnowledgeCallResult, KnowledgeCapability } from './model';
 import {
@@ -57,6 +57,16 @@ export interface SemanticSummary {
   dropped: number;
   cut: number;
   missing: string[];
+  /** Lot 111M — pages au total (premier passage + continuation). */
+  pagesTotal?: number;
+  /** Lot 111M — pages examinées à ce jour (tous passages). */
+  pagesExamined?: number;
+  /** Lot 111M — éléments longs découpés en segments (aucune perte). */
+  segmented?: number;
+  /** Lot 111M — plafond total de pages (continuation comprise). */
+  pageCap?: number;
+  /** Lot 111M — issues déclarées par page (reprise de la continuation). */
+  declared?: string[];
 }
 
 export interface SemanticResolution {
@@ -196,10 +206,13 @@ export async function interpretT1Knowledge(i: InterpretInput): Promise<SemanticR
   const collected = await d.collect(i.accountId, i.fileId, i.key, { maxLinkedDocuments: bounds.maxLinkedDocuments });
   if (!collected.hasExtraction) return vide({ status: 'NO_T1_KNOWLEDGE' });
   const plan = planKnowledgePages(collected.elements, collected.documents, bounds);
+  // Lot 111M : toutes les pages (premier passage + continuation persistante).
+  const toutes = [...plan.pages, ...plan.continuationPages];
   const summary: SemanticSummary = {
     elements: collected.elements.length, unstructured: plan.unstructured, byLayer: plan.byLayer,
     documents: collected.documents.map((x) => ({ ref: x.ref, fileId: x.fileId, relation: x.relation })),
     pages: plan.pages.length, complete: plan.complete, dropped: plan.droppedElements, cut: plan.cutElements, missing: collected.missing,
+    pagesTotal: toutes.length, pagesExamined: 0, segmented: plan.segmentedElements, pageCap: continuationPageCap(bounds),
   };
   // Aucune connaissance non structurée : les couches structurées ont été examinées par le niveau 1.
   if (plan.unstructured === 0) return vide({ status: 'NOT_NEEDED', summary });
@@ -213,11 +226,16 @@ export async function interpretT1Knowledge(i: InterpretInput): Promise<SemanticR
   if (!(await d.memory.ready())) return vide({ status: 'PENDING', pendingReason: 'MEMORY_UNAVAILABLE', summary, contextFingerprint: cfp, promptVersion: cap.version });
   const cle: KnowledgeEntryKey = { accountId: i.accountId, fileId: i.fileId, fieldKey: i.key, questionFp: qfp, contextFp: cfp, promptVersion: cap.version ?? '' };
   const memo = await d.memory.find(cle);
-  const elementsParRef = new Map(plan.pages.flatMap((p) => p.elements).map((e) => [e.ref, e]));
+  const elementsParRef = new Map(toutes.flatMap((p) => p.elements).map((e) => [e.ref, e]));
   const citees = (fs: readonly ValidatedFinding[]) => [...new Set(fs.flatMap((f) => f.evidenceRefs))]
     .map((r) => elementsParRef.get(r)).filter((e) => !!e && e.layer === 'SOURCE_UNIT' && e.covered === true)
     .map((e) => ({ ref: e!.ref, fileId: e!.fileId, sourceUnitId: e!.sourceUnitId ?? null }));
-  if (memo?.status === 'ANSWERED') {
+  // Lot 111M — continuation persistante : pages déjà examinées (réponse
+  // INCOMPLETE ou panne en cours de route) conservées, reprise à la suivante.
+  const reprise = !!memo && memo.pagesTotal === toutes.length && memo.pagesExamined > 0 && memo.pagesExamined < toutes.length
+    && (memo.status === 'AI_FAILED' || memo.outcome === 'INCOMPLETE');
+  if (memo?.status === 'ANSWERED' && !reprise) {
+    summary.pagesExamined = memo.pagesExamined;
     return vide({
       status: 'ANSWERED', outcome: memo.outcome ?? 'NOT_FOUND', findings: memo.findings, rejected: memo.rejected,
       contradictions: contradictoryTargets(memo.findings), cached: true, traceIds: memo.traceIds, promptVersion: cap.version,
@@ -232,19 +250,25 @@ export async function interpretT1Knowledge(i: InterpretInput): Promise<SemanticR
   }
   if (!i.allowAi) return vide({ status: 'PENDING', pendingReason: 'TRIGGER_NOT_ALLOWED', summary, contextFingerprint: cfp, promptVersion: cap.version });
   const max = i.deps?.dailyMax ?? knowledgeQueryDailyMax();
-  if ((await d.memory.callsLastDay(i.accountId, now)) + plan.pages.length > max) {
+  const depart = reprise ? memo!.pagesExamined : 0;
+  const fenetre = toutes.slice(depart, depart + Math.max(1, bounds.maxPages));
+  if ((await d.memory.callsLastDay(i.accountId, now)) + fenetre.length > max) {
     return vide({ status: 'PENDING', pendingReason: 'BUDGET_EXHAUSTED', summary, contextFingerprint: cfp, promptVersion: cap.version });
   }
 
   const norm = await defaultNormalizers();
-  const lots: ValidatedFinding[][] = [];
-  const rejets: Rejection[] = [];
-  const declares: T3KnowledgeQueryOutput['outcome'][] = [];
+  const lots: ValidatedFinding[][] = reprise && memo!.findings.length ? [memo!.findings] : [];
+  const rejets: Rejection[] = reprise ? [...memo!.rejected] : [];
+  const declares: T3KnowledgeQueryOutput['outcome'][] = reprise ? [...((memo!.declared ?? []) as T3KnowledgeQueryOutput['outcome'][])] : [];
   const traces: string[] = [];
   let calls = 0;
+  let examinees = depart;
   const enregistrer = (r: Omit<KnowledgeQueryRecord, keyof KnowledgeEntryKey | 'ruleCode' | 'trigger' | 'runRef' | 'contextSummary' | 'pagesTotal'>) =>
-    d.memory.save({ ...cle, ruleCode: i.rule.code, trigger: i.trigger, runRef: i.runRef ?? null, contextSummary: summary as never, pagesTotal: plan.pages.length, ...r });
-  for (const page of plan.pages) {
+    d.memory.save({
+      ...cle, ruleCode: i.rule.code, trigger: i.trigger, runRef: i.runRef ?? null,
+      contextSummary: { ...summary, pagesExamined: r.pagesExamined, declared: declares } as never, pagesTotal: toutes.length, ...r,
+    });
+  for (const page of fenetre) {
     try {
       const sourceIds = [...new Set(collected.documents.map((x) => x.fileId))];
       const r = await d.call({ accountId: i.accountId, sourceIds, variables: knowledgeQueryVariables({ question, documents: collected.documents, page, today: i.today }) });
@@ -254,12 +278,14 @@ export async function interpretT1Knowledge(i: InterpretInput): Promise<SemanticR
       lots.push(v.findings);
       rejets.push(...v.rejected);
       declares.push(v.declared);
+      examinees += 1;
     } catch (e) {
       const { isExecutionCancelled } = await import('../../queue/execution-control');
       if (isExecutionCancelled(e)) throw e;
       const cause = String((e as Error)?.message ?? e).slice(0, 300);
       const id = await enregistrer({
-        status: 'AI_FAILED', outcome: null, pagesExamined: lots.length, calls: calls + 1, traceIds: traces, findings: [], rejected: rejets, error: cause,
+        // Lot 111M : constats des pages déjà examinées conservés (reprise sans réexamen).
+        status: 'AI_FAILED', outcome: null, pagesExamined: examinees, calls: calls + 1, traceIds: traces, findings: mergeFindings(lots), rejected: rejets, error: cause,
         retryAt: new Date(now.getTime() + KNOWLEDGE_QUERY_RETRY_MINUTES * 60_000).toISOString(),
       }).catch(() => null);
       return vide({ status: 'PENDING', pendingReason: 'AI_FAILED', aiCalled: true, calls: calls + 1, traceIds: traces, summary, contextFingerprint: cfp, promptVersion: cap.version, queryId: id });
@@ -267,9 +293,12 @@ export async function interpretT1Knowledge(i: InterpretInput): Promise<SemanticR
   }
   const findings = mergeFindings(lots);
   let outcome: SemanticOutcome = effectiveOutcome(findings, declares, rejets.length);
-  // Rien trouvé dans un contexte TRONQUÉ : jamais « information absente ».
-  if (outcome === 'NOT_FOUND' && !plan.complete) outcome = 'INCOMPLETE';
-  const id = await enregistrer({ status: 'ANSWERED', outcome, pagesExamined: lots.length, calls, traceIds: traces, findings, rejected: rejets });
+  summary.pagesExamined = examinees;
+  // Rien trouvé dans un contexte TRONQUÉ ou pas encore entièrement examiné
+  // (lot 111M : élément coupé, pages de continuation restantes) : jamais
+  // « information absente ».
+  if (outcome === 'NOT_FOUND' && (!plan.complete || examinees < toutes.length)) outcome = 'INCOMPLETE';
+  const id = await enregistrer({ status: 'ANSWERED', outcome, pagesExamined: examinees, calls, traceIds: traces, findings, rejected: rejets });
   return vide({
     status: 'ANSWERED', outcome, findings, rejected: rejets, contradictions: contradictoryTargets(findings), aiCalled: true, calls, traceIds: traces,
     promptVersion: cap.version, contextFingerprint: cfp, summary, queryId: id, citedCoveredUnits: citees(findings),

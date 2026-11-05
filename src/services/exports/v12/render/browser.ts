@@ -188,30 +188,47 @@ class RenderTimeoutError extends Error {
   constructor(ms: number) { super(`Rendu Chromium interrompu après ${Math.round(ms / 1000)} s`); }
 }
 
+/** Lot 111B : rendu interrompu par l'appelant (génération remplacée, délai global). */
+export class RenderAbortedError extends Error {
+  constructor() { super('rendu interrompu (génération annulée)'); this.name = 'RenderAbortedError'; }
+}
+
 /**
  * Exécute `fn` avec le navigateur partagé, un rendu à la fois, sous délai
  * global. Au dépassement : navigateur tué, `RenderTimeoutError`.
  */
-export function withBrowser<T>(fn: (browser: Browser) => Promise<T>, timeoutMs: number): Promise<T> {
+export function withBrowser<T>(fn: (browser: Browser) => Promise<T>, timeoutMs: number, signal?: AbortSignal): Promise<T> {
   const st = state();
   const run = async (): Promise<T> => {
+    // Lot 111B : rendu annulé avant son tour (génération remplacée) → pas de lancement.
+    signal?.throwIfAborted();
     st.busy++;
     if (st.idleTimer) { clearTimeout(st.idleTimer); st.idleTimer = null; }
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let onAbort: (() => void) | null = null;
     try {
       const browser = await getBrowser();
       const timeout = new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new RenderTimeoutError(timeoutMs)), timeoutMs);
         timer.unref?.();
       });
+      // Lot 111B : annulation pendant le rendu → navigateur fermé (interrompt
+      // l'impression en cours et libère sa mémoire), erreur d'annulation.
+      const aborted = new Promise<never>((_, reject) => {
+        if (!signal) return;
+        onAbort = () => reject(new RenderAbortedError());
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
       try {
-        return await Promise.race([fn(browser), timeout]);
+        return await Promise.race([fn(browser), timeout, aborted]);
       } catch (e) {
         if (e instanceof RenderTimeoutError) await closeBrowser('délai de rendu dépassé');
+        if (e instanceof RenderAbortedError) await closeBrowser('rendu annulé');
         throw e;
       }
     } finally {
       if (timer) clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
       st.busy--;
       st.renders++;
       if (st.renders >= browserMaxRenders()) await closeBrowser('recyclage');

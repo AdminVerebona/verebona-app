@@ -173,4 +173,23 @@ export interface AiGatewayResponse<T> {
    * document) ; T1 les conserve dans `document_unresolved_facts`.
    */
   prunedValues?: import('./output-resolution/field-validation').PrunedFieldValue[];
+  /**
+   * Lot 111M (ticket « budgets IA ») — génération RÉELLEMENT appliquée à la
+   * tentative retenue : plafond de sortie transmis et son origine, limite du
+   * modèle, motif d'arrêt et jetons de raisonnement du fournisseur, entrée
+   * estimée. Absent : réponse servie par le cache.
+   */
+  generation?: AiGenerationApplied;
+}
+
+export interface AiGenerationApplied {
+  model: string;
+  rank: number;
+  maxOutputTokensSent: number | null;
+  maxOutputTokensOrigin: string | null;
+  modelOutputLimit: number | null;
+  finishReason: string | null;
+  thoughtsTokens: number | null;
+  estimatedInputTokens: number | null;
+  modelInputLimit: number | null;
 }

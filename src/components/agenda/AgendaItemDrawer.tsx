@@ -35,20 +35,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { DatePicker } from "@/components/ui/date-picker";
 import { TimePicker } from "@/components/ui/time-picker";
-import {
-  Clock,
-  Building2,
-  FileText,
-  Grid2X2,
-  Wrench,
-  Edit,
-  Trash2,
-  AlertCircle,
-  ChevronDown,
-  X,
-  Check,
-  Loader2,
-} from "lucide-react";
+import { Clock, Building2, FileText, Grid2X2, Wrench, Edit, Trash2, AlertCircle, ChevronDown, X, Check } from "lucide-react";
+import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import { apiClient } from "@/lib/api-client";
 import { toast } from "sonner";
 import { assetSupportsStructuralFeatures } from "@/types/domain";
@@ -1108,15 +1096,14 @@ export function AgendaItemDrawer({ item: itemProp, open, onClose, onMutated, onO
                   <span className="text-[12px] font-semibold">Annuler</span>
                 </button>
                 <div className="w-px bg-[color:var(--border-subtle)]" />
-                <button
-                  type="button"
-                  className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-primary/10 transition-colors text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                <FooterPrimaryAction
+                  icon={Check}
+                  label="Enregistrer"
+                  busy={saving}
+                  busyLabel="Sauvegarde…"
+                  disabled={!editTitle.trim() || !!temporalError}
                   onClick={() => { void handleSave(); }}
-                  disabled={saving || !editTitle.trim() || !!temporalError}
-                >
-                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
-                  <span className="text-[12px] font-semibold">{saving ? "Sauvegarde…" : "Enregistrer"}</span>
-                </button>
+                />
               </div>
             )}
           </div>

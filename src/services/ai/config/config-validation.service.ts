@@ -207,12 +207,11 @@ function validateTokens(c: TreatmentConfig, cat: ConfigCatalogs): ValidationIssu
   if (borne !== undefined && c.maxOutputTokens > borne) {
     out.push(issue(t, 'maxOutputTokens', `Au-delà de la borne du modèle principal (${borne}).`));
   }
-  // CDC 15 T2-43 : cette valeur est la source du plafond de l'assistant,
-  // bornée au budget V1 (CDC Assistant §31.2 : 500) jusqu'à l'arbitrage PO.
-  // Signalé, sans bloquer.
-  if (t === 'T2' && c.maxOutputTokens > 500) {
-    out.push(issue(t, 'maxOutputTokens', 'Au-delà du budget V1 de l\'assistant (500, CDC Assistant §31.2) : plafonné à 500 à l\'exécution.', false));
-  }
+  // CDC 15 T2-43 : cette valeur est la SOURCE UNIQUE du plafond de
+  // l'assistant. Lot 111M (arbitrage PO, ticket « budgets IA », CA-01) :
+  // l'ancien plafonnement à 500 à l'exécution est supprimé — plus de
+  // signalement « plafonné à 500 », la valeur saisie est celle transmise
+  // (bornée seulement par la limite du modèle, contrôlée ci-dessus).
   return out;
 }
 

@@ -34,12 +34,13 @@ import {
 } from './legal-versions.service';
 import {
   LEGAL_MANIFEST_DEFAULTS, fetchCguvManifest, manifestUrl, parseCguvManifest, publicSiteBase, verifyTextBytes,
-  CGUV_MANIFEST_SCHEMA, type CguvManifest, type FetchLike, type TextVerification, type TextVerificationFailure,
+  CGUV_MANIFEST_SCHEMA, type CguvManifest, type FetchLike, type ManifestFailureReason, type TextVerification, type TextVerificationFailure,
 } from './cguv-manifest';
 
 type Env = Record<string, string | undefined>;
 
-export type SyncTrigger = 'schedule' | 'manual' | 'bo' | 'seed' | 'startup';
+/** Lot 111O : `on_demand` — relecture déclenchée par un formulaire d'inscription bloqué (bornée). */
+export type SyncTrigger = 'schedule' | 'manual' | 'bo' | 'seed' | 'startup' | 'on_demand';
 
 export interface ReferentialAnomaly {
   kind:
@@ -68,6 +69,10 @@ export interface SyncResult {
   current: string | null;
   anomalies: ReferentialAnomaly[];
   error?: string;
+  /** Lot 111O : motif stable de l'échec de lecture (`MANIFEST_*`). */
+  reason?: ManifestFailureReason;
+  /** Lot 111O : statut HTTP observé (null : aucune réponse). */
+  httpStatus?: number | null;
   /** Dernier état connu (toujours servi, même en panne). */
   lastKnown: { current: string | null; lastSuccessAt: Date | null };
 }
@@ -92,6 +97,26 @@ export function serverLegalOverrides(env: Env = process.env): Partial<Record<Leg
 }
 
 const MODE_CACHE_KEY = 'legal-links-mode:v1';
+/** Lot 111O : instant de mise en cache du mode (âge affiché par le BO), par instance. */
+let modeCachedAt: number | null = null;
+
+/** Lot 111O — âge du cache du mode des liens sur CETTE instance (null : rien en cache). */
+export function legalModeCacheAgeMs(now: number = Date.now()): number | null {
+  if (modeCachedAt === null || serverCacheGet<boolean>(MODE_CACHE_KEY) === null) return null;
+  return Math.max(0, now - modeCachedAt);
+}
+
+/**
+ * Lot 111O — invalide les caches juridiques de CETTE instance (mode des liens,
+ * « réacceptation non requise »). La version en vigueur, elle, n'est jamais
+ * mise en cache : elle est relue en base à chaque requête.
+ */
+export async function invalidateLegalCaches(): Promise<void> {
+  serverCacheDelete(MODE_CACHE_KEY);
+  modeCachedAt = null;
+  const { onCguvReferentialChanged } = await import('./cguv-reacceptance.service');
+  onCguvReferentialChanged();
+}
 /** Durée de cache (par instance) de « le manifeste a-t-il déjà été lu ? ». */
 export const LEGAL_MODE_CACHE_MS = 60_000;
 
@@ -111,6 +136,7 @@ export async function getLegalLinksMode(env: Env = process.env): Promise<LegalLi
       .where(eq(legalManifestSyncState.documentType, DOCUMENT_TYPE_CGVU)).limit(1);
     const everRead = Boolean(row?.at);
     serverCacheSet(MODE_CACHE_KEY, everRead, LEGAL_MODE_CACHE_MS);
+    modeCachedAt = Date.now();
     return decideLegalLinksMode(flag, everRead);
   } catch {
     return decideLegalLinksMode(flag, false);
@@ -262,6 +288,38 @@ export interface ManifestSyncState {
   versionsCount: number;
   anomalies: ReferentialAnomaly[];
   lastTrigger: string | null;
+  /** Lot 111O : détail de la dernière lecture (null : jamais lue depuis le lot 111). */
+  lastRead: ManifestLastRead | null;
+}
+
+/**
+ * Lot 111O — détail de la DERNIÈRE lecture du manifeste (BO › Exploitation ›
+ * Santé › « CGUV publiées »). Aucune donnée personnelle, aucun secret.
+ */
+export interface ManifestLastRead {
+  at: string;
+  trigger: string;
+  url: string;
+  finalUrl: string | null;
+  httpStatus: number | null;
+  /** `null` : lecture réussie. */
+  reason: ManifestFailureReason | null;
+  error: string | null;
+  /** Destination d'une redirection refusée. */
+  location: string | null;
+  /** Origines étrangères rencontrées dans les liens du manifeste. */
+  foreignOrigins: string[];
+  /** Codes publiés lus (même si le manifeste est refusé, quand ils sont lisibles). */
+  versions: string[];
+  /** Version désignée « en vigueur » par le site. */
+  manifestCurrent: string | null;
+  /** Version en vigueur de l'application APRÈS cette lecture. */
+  appCurrent: string | null;
+  /** La version désignée par le site est-elle en vigueur ET son texte vérifié dans l'application ? */
+  expectedVerified: boolean;
+  /** Versions refusées faute de texte vérifié (lecture réussie). */
+  refused: string[];
+  durationMs: number;
 }
 
 export async function getManifestSyncState(): Promise<ManifestSyncState> {
@@ -279,7 +337,21 @@ export async function getManifestSyncState(): Promise<ManifestSyncState> {
     versionsCount: row?.versionsCount ?? 0,
     anomalies: Array.isArray(row?.anomalies) ? (row!.anomalies as ReferentialAnomaly[]) : [],
     lastTrigger: row?.lastTrigger ?? null,
+    lastRead: row?.lastRead && typeof row.lastRead === 'object' ? (row.lastRead as ManifestLastRead) : null,
   };
+}
+
+/**
+ * Lot 111O — enregistre le détail de la dernière lecture. Séparé de
+ * `writeState` et sans effet bloquant : si la migration 1270 n'est pas encore
+ * passée, la synchronisation continue exactement comme avant.
+ */
+async function writeLastRead(lastRead: ManifestLastRead): Promise<void> {
+  try {
+    await db.update(legalManifestSyncState).set({ lastRead }).where(eq(legalManifestSyncState.documentType, DOCUMENT_TYPE_CGVU));
+  } catch (e) {
+    console.error('[legal] détail de lecture du manifeste non enregistré :', (e as Error).message);
+  }
 }
 
 async function writeState(patch: Partial<typeof legalManifestSyncState.$inferInsert>): Promise<void> {
@@ -534,6 +606,7 @@ export async function syncCguvManifest(opts: {
   const env = opts.env ?? process.env;
   const before = await getManifestSyncState().catch(() => null);
   const lastKnownCurrent = (await getCurrentVersion(DOCUMENT_TYPE_CGVU).catch(() => null))?.versionCode ?? null;
+  const startedAt = Date.now();
   const fetched = await fetchCguvManifest({ fetchImpl: opts.fetchImpl, env });
   const now = new Date();
 
@@ -547,8 +620,16 @@ export async function syncCguvManifest(opts: {
       manifestUrl: fetched.url, lastAttemptAt: now, lastStatus: status, lastError: fetched.error,
       consecutiveFailures: failures, lastTrigger: opts.trigger,
     }).catch((e) => console.error('[legal] état du manifeste non enregistré :', (e as Error).message));
+    await writeLastRead({
+      at: now.toISOString(), trigger: opts.trigger, url: fetched.url, finalUrl: fetched.finalUrl, httpStatus: fetched.httpStatus,
+      reason: fetched.reason, error: fetched.error, location: fetched.location ?? null, foreignOrigins: fetched.foreignOrigins ?? [],
+      versions: fetched.codes ?? [], manifestCurrent: fetched.manifestCurrent ?? null, appCurrent: lastKnownCurrent,
+      expectedVerified: false, refused: [], durationMs: Date.now() - startedAt,
+    });
+    // Lot 111O : motif journalisé (code stable + statut HTTP), sans secret.
+    console.warn(`[legal] lecture du manifeste des CGUV en échec : ${fetched.reason} (HTTP ${fetched.httpStatus ?? '—'}) ${fetched.url} — ${fetched.error.slice(0, 200)}`);
     if (failures === 1 || opts.trigger === 'bo' || opts.trigger === 'manual') {
-      await recordLegalAudit({ action: 'MANIFEST_SYNC_FAILED', actorUserId: opts.actorUserId, result: 'failure', details: `${status} : ${fetched.error} (${fetched.url})` });
+      await recordLegalAudit({ action: 'MANIFEST_SYNC_FAILED', actorUserId: opts.actorUserId, result: 'failure', details: `${status} : ${fetched.reason} — ${fetched.error} (${fetched.url})` });
     }
     const { reportAnomaly } = await supervision();
     if (awaiting) {
@@ -572,7 +653,7 @@ export async function syncCguvManifest(opts: {
         fingerprint: MANIFEST_UNAVAILABLE_FINGERPRINT,
         title: fetched.kind === 'invalid' ? 'Manifeste public des CGUV invalide' : 'Manifeste public des CGUV indisponible',
         detail: {
-          url: fetched.url, erreur: fetched.error, echecsConsecutifs: failures,
+          url: fetched.url, motif: fetched.reason, statutHttp: fetched.httpStatus, erreur: fetched.error, echecsConsecutifs: failures,
           dernierSucces: before?.lastSuccessAt?.toISOString() ?? null,
           versionCouranteConservee: lastKnownCurrent,
           action: 'Le dernier état connu continue de servir (aucun blocage). Vérifier la publication du manifeste par le site public, puis BO › CGUV › « Relire le manifeste ».',
@@ -581,7 +662,7 @@ export async function syncCguvManifest(opts: {
     }
     return {
       status, url: fetched.url, imported: [], linkedLegacy: [], current: lastKnownCurrent,
-      anomalies: [], error: fetched.error,
+      anomalies: [], error: fetched.error, reason: fetched.reason, httpStatus: fetched.httpStatus,
       lastKnown: { current: lastKnownCurrent, lastSuccessAt: before?.lastSuccessAt ?? null },
     };
   }
@@ -589,12 +670,23 @@ export async function syncCguvManifest(opts: {
   const applied = await applyCguvManifest(fetched.manifest, { actorUserId: opts.actorUserId, fetchImpl: opts.fetchImpl });
   // Bascule automatique des liens légaux sur les nouvelles adresses /legal/….
   serverCacheDelete(MODE_CACHE_KEY);
+  modeCachedAt = null;
   const status = applied.anomalies.length > 0 ? 'ok_with_anomalies' : 'ok';
   await writeState({
     manifestUrl: fetched.url, lastAttemptAt: now, lastSuccessAt: now, lastStatus: status, lastError: null,
     consecutiveFailures: 0, manifestSha256: fetched.sha256, currentVersionCode: applied.current,
     versionsCount: fetched.manifest.versions.length, anomalies: applied.anomalies, lastTrigger: opts.trigger,
   });
+  {
+    const cur = await getCurrentVersion(DOCUMENT_TYPE_CGVU).catch(() => null);
+    await writeLastRead({
+      at: now.toISOString(), trigger: opts.trigger, url: fetched.url, finalUrl: fetched.finalUrl, httpStatus: fetched.httpStatus,
+      reason: null, error: null, location: null, foreignOrigins: [],
+      versions: fetched.manifest.versions.map((v) => v.code), manifestCurrent: fetched.manifest.current, appCurrent: applied.current,
+      expectedVerified: !!cur && cur.versionCode === fetched.manifest.current && publicTextAvailability(cur) === 'VERIFIED',
+      refused: applied.refused, durationMs: Date.now() - startedAt,
+    });
+  }
   const { reportAnomaly, autoResolveAnomaly } = await supervision();
   await autoResolveAnomaly(MANIFEST_UNAVAILABLE_FINGERPRINT, { origin: 'legal_manifest_sync', cause: `manifeste relu (${fetched.url})` });
   await autoResolveAnomaly(MANIFEST_AWAITING_FINGERPRINT, { origin: 'legal_manifest_sync', cause: `site public livré : manifeste lu (${fetched.url})` });
@@ -627,7 +719,7 @@ export async function syncCguvManifest(opts: {
   }
   return {
     status, url: fetched.url, imported: applied.imported, linkedLegacy: applied.linkedLegacy, refused: applied.refused,
-    current: applied.current, anomalies: applied.anomalies,
+    current: applied.current, anomalies: applied.anomalies, httpStatus: fetched.httpStatus,
     lastKnown: { current: applied.current, lastSuccessAt: now },
   };
 }

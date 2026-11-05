@@ -34,6 +34,8 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
 import { PasswordInput } from '@/components/ui/password-input';
+import { HiddenUsernameField } from '@/components/auth/HiddenUsernameField';
+import { AUTOFILL, formFieldValue } from '@/lib/auth/autofill';
 import { PasswordRequirements } from '@/components/auth/PasswordRequirements';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -111,7 +113,7 @@ function SubBlock({ icon, title, children }: { icon: React.ReactNode; title: str
 
 /* ── Bloc 1 : mot de passe ─────────────────────────────────────────────── */
 
-function ChangePasswordAction() {
+function ChangePasswordAction({ accountEmail = null }: { accountEmail?: string | null } = {}) {
   const router = useRouter();
   const { ensureFresh, withReauth } = useReauth();
   const [open, setOpen] = useState(false);
@@ -123,16 +125,19 @@ function ChangePasswordAction() {
     if (await ensureFresh('Avant de modifier votre mot de passe.', 'change-password')) setOpen(true);
   };
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (form.newPassword !== form.confirmPassword) {
+    // Lot 111E : valeurs réellement présentes (mot de passe généré par le gestionnaire).
+    const newPassword = formFieldValue(e.currentTarget, 'new-password', form.newPassword);
+    const confirmPassword = formFieldValue(e.currentTarget, 'confirm-password', form.confirmPassword);
+    if (newPassword !== confirmPassword) {
       toast.error('Les mots de passe ne correspondent pas');
       return;
     }
     setSaving(true);
     try {
       const data = await withReauth(() => apiClient.post<{ reauthRequired?: boolean }>('/api/users/me/change-password', {
-        newPassword: form.newPassword,
+        newPassword,
         keepCurrentSession,
       }), 'Avant de modifier votre mot de passe.', 'change-password');
       if (data?.reauthRequired) {
@@ -158,7 +163,9 @@ function ChangePasswordAction() {
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
-          <form onSubmit={submit}>
+          <form onSubmit={submit} method="post" data-testid="change-password-form">
+            {/* Lot 111E : compte dont le gestionnaire met à jour le mot de passe. */}
+            <HiddenUsernameField value={accountEmail} />
             <DialogHeader>
               <DialogTitle>Modifier le mot de passe</DialogTitle>
               <DialogDescription>Choisissez votre nouveau mot de passe.</DialogDescription>
@@ -166,12 +173,12 @@ function ChangePasswordAction() {
             <div className="space-y-4 py-4">
               <div className="space-y-2">
                 <Label htmlFor="newPassword">Nouveau mot de passe</Label>
-                <PasswordInput id="newPassword" value={form.newPassword} onChange={(e) => setForm({ ...form, newPassword: e.target.value })} autoComplete="new-password" required />
+                <PasswordInput id="newPassword" name="new-password" value={form.newPassword} onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, newPassword: v })); }} autoComplete={AUTOFILL.newPassword} required />
                 <PasswordRequirements password={form.newPassword} confirmPassword={form.confirmPassword} showConfirmRule={true} />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="confirmPassword">Confirmer le nouveau mot de passe</Label>
-                <PasswordInput id="confirmPassword" value={form.confirmPassword} onChange={(e) => setForm({ ...form, confirmPassword: e.target.value })} autoComplete="new-password" required />
+                <PasswordInput id="confirmPassword" name="confirm-password" value={form.confirmPassword} onChange={(e) => { const v = e.target.value; setForm((f) => ({ ...f, confirmPassword: v })); }} autoComplete={AUTOFILL.newPassword} required />
               </div>
               <div className="space-y-1.5 rounded-lg border border-[color:var(--border-subtle)] px-3 py-2.5">
                 <p className="text-xs text-muted-foreground">
@@ -357,7 +364,7 @@ export function SecurityCard() {
     >
       {/* Bloc 1 (lot 93, §27.1) : adresse principale, mot de passe, Google, Apple. */}
       <SubBlock icon={<Key className="w-4 h-4" />} title="Méthodes de connexion">
-        <SignInMethodsBlock passwordAction={<ChangePasswordAction />} />
+        <SignInMethodsBlock passwordAction={(accountEmail) => <ChangePasswordAction accountEmail={accountEmail} />} />
       </SubBlock>
 
       {/* Lot 110B (ticket MFA §7) : clés d'accès, application d'authentification, codes de récupération. */}

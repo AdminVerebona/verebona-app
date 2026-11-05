@@ -14,15 +14,19 @@
  * visible au-dessus du voile (`globals.css`, lot 107A). Accessibilité :
  * `alertdialog` modal, titre et message liés, focus placé sur la première
  * action à l'apparition (VoiceOver / TalkBack l'annoncent).
+ *
+ * Lot 111D : contenu extrait dans `UnlockFallbackView` (rendu testé) ;
+ * hiérarchie des actions : principale (pleine), secondaire (contour),
+ * « Se reconnecter » en dernier, discrète quand une méthode locale existe.
  */
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type Ref } from 'react';
 import { createPortal } from 'react-dom';
 import { ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { LOCK_SCREEN_ATTRIBUTE } from '@/lib/native/lock-boot';
 import {
   UNLOCK_FALLBACK_TITLE, fallbackActionLabel, fallbackMessage,
-  type FallbackAction, type UnlockState,
+  type FallbackAction, type UnlockFallback, type UnlockState,
 } from '@/lib/native/unlock-machine';
 
 interface Props {
@@ -55,15 +59,41 @@ export function NativeUnlockScreen({ state, shortLabel, retryLabel, onAction }: 
     );
   }
 
-  const message = fallbackMessage(fallback, shortLabel);
   return createPortal(
+    <UnlockFallbackView fallback={fallback} shortLabel={shortLabel} retryLabel={retryLabel} onAction={onAction} firstActionRef={firstAction} />,
+    document.body,
+  );
+}
+
+/** Variante visuelle d'une action selon son rang (pur, testé). */
+export function fallbackActionVariant(a: FallbackAction, index: number, count: number): 'default' | 'outline' | 'ghost' {
+  if (index === 0) return 'default';
+  // Reconnexion : toujours possible, jamais présentée comme l'issue normale
+  // quand une méthode locale (Face ID, code du téléphone) est proposée.
+  if (a === 'sign_in' && count > 2) return 'ghost';
+  return 'outline';
+}
+
+interface ViewProps {
+  fallback: UnlockFallback;
+  shortLabel: string;
+  retryLabel: string;
+  onAction: (a: FallbackAction) => void;
+  firstActionRef?: Ref<HTMLButtonElement>;
+}
+
+/** Contenu de l'écran de secours (sans portail : rendu testé côté serveur). */
+export function UnlockFallbackView({ fallback, shortLabel, retryLabel, onAction, firstActionRef }: ViewProps) {
+  const message = fallbackMessage(fallback, shortLabel);
+  return (
     <div
-      {...lockScreen}
+      {...{ [LOCK_SCREEN_ATTRIBUTE]: '' }}
       role="alertdialog"
       aria-modal="true"
       aria-labelledby="vb-unlock-title"
       aria-describedby="vb-unlock-message"
       data-testid="native-unlock-fallback"
+      data-reason={fallback.reason}
       className="inset-0 flex items-center justify-center bg-[color:var(--bg-page)] p-6"
       style={{ paddingTop: 'max(1.5rem, var(--vb-safe-top))', paddingBottom: 'max(1.5rem, var(--vb-safe-bottom))' }}
     >
@@ -75,9 +105,10 @@ export function NativeUnlockScreen({ state, shortLabel, retryLabel, onAction }: 
           {fallback.actions.map((a, i) => (
             <Button
               key={a}
-              ref={i === 0 ? firstAction : undefined}
+              ref={i === 0 ? firstActionRef : undefined}
               className="w-full"
-              variant={i === 0 ? 'default' : 'outline'}
+              variant={fallbackActionVariant(a, i, fallback.actions.length)}
+              data-action={a}
               onClick={() => onAction(a)}
             >
               {fallbackActionLabel(a, retryLabel)}
@@ -85,7 +116,6 @@ export function NativeUnlockScreen({ state, shortLabel, retryLabel, onAction }: 
           ))}
         </div>
       </div>
-    </div>,
-    document.body,
+    </div>
   );
 }

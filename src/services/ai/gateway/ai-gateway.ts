@@ -61,6 +61,8 @@ import { assertAccountCostCap } from './account-cost-cap';
 import { checkAccountProcessingEligibility, INELIGIBILITY_LABELS } from '@/services/account/processing-eligibility';
 import { baseMaxOutputTokens, reasoningAtRank, rankSettings } from './generation-profile';
 import { buildModelRequest, type ModelRequestResult, type RequestTrace } from './request-builder';
+import { estimateTokens, INPUT_SAFETY_MARGIN_RATIO } from './budget-resolution';
+import { capabilitiesOf } from '../provider/model-capabilities';
 import { ensureModelCapabilitiesLoaded } from '../provider/model-capabilities.repository';
 import type { ModelRank } from '../telemetry/execution-context';
 import type { AiProvider, ProviderCallInput, ProviderCallOutput, ProviderResponseMeta } from './providers/provider.port';
@@ -571,6 +573,20 @@ export class AiGateway {
     };
     const subjectRef = subjectRefOfIdempotencyKey(req.idempotencyKey);
     const configuredMax = configuration.maxOutputTokens ?? null;
+    // Lot 111M (§3.B) : budget d'ENTRÉE de la tentative — contexte réellement
+    // transmis (prompt maître actif + contrat + données), estimation prudente
+    // (`budget-resolution`) ; le comptage du fournisseur (jetons d'entrée
+    // réels) est tracé à côté, après l'appel. Pièces jointes : non estimées.
+    let inputEstimate: { estimatedTokens: number; modelLimit: number | null; available: number | null; attachments: number; estimation: 'chars/3.5' } | null = null;
+    const estimerEntree = (model: string, prompt: string, sentOutput: number | null) => {
+      const limite = capabilitiesOf(model).inputTokenLimit;
+      inputEstimate = {
+        estimatedTokens: estimateTokens(prompt), modelLimit: limite,
+        available: limite != null ? Math.max(0, Math.floor(limite * (1 - INPUT_SAFETY_MARGIN_RATIO)) - (sentOutput ?? 0)) : null,
+        attachments: req.attachments?.length ?? 0, estimation: 'chars/3.5',
+      };
+      return inputEstimate;
+    };
     /** Paramètres résolus d'une tentative (rang, raisonnement, plafond demandé / hérité / adapté / envoyé). */
     const paramsOf = (p: { model: string; rankIndex: number; reasoning: ProviderCallInput['reasoning'] | null; timeoutMs: number; soStatus: string | null; requests: CapturedRequest[]; request?: RequestTrace | null }): Record<string, unknown> => {
       const lastCfg = p.requests[p.requests.length - 1]?.generationConfig ?? null;
@@ -591,6 +607,8 @@ export class AiGateway {
           reasoningSent: rt.reasoning.sent, temperature: rt.temperature, family: rt.family,
           adaptations: rt.adaptations, capabilitySources: rt.capabilitySources,
         } : {}),
+        // Lot 111M : budget d'entrée estimé de la tentative (null : aucun prompt construit).
+        ...(inputEstimate && p.requests.length ? { inputBudget: inputEstimate } : {}),
         timeoutMs: p.timeoutMs, jsonResponse, structuredOutput: p.soStatus, providerSchemaHash: psHash,
         contract: { id: contract.contractId, version: contract.contractVersion, schemaVersion: contract.schemaVersion, schemaHash: contract.schemaHash },
         promptVersion, masterPrompt: master ? { code: master.masterPromptCode, version: master.masterPromptVersion, task: master.task } : null,
@@ -780,6 +798,7 @@ export class AiGateway {
         // Structured output transmis à CE modèle ? (refus récent mémorisé : non.)
         const sendSchema = providerSchema?.schema && !schemaRejectedRecently(model, contract.schemaHash) ? providerSchema.schema : null;
         const attemptPrompt = `${withContract(!sendSchema)}${notice}`;
+        const entree = estimerEntree(model, attemptPrompt, maxOutputTokens ?? null);
         const attemptStart = Date.now();
         const attemptFrom = sent.length;
         // Sortie du fournisseur conservée hors du try : si la VALIDATION échoue,
@@ -1107,6 +1126,14 @@ export class AiGateway {
             inputTokens: totalIn, outputTokens: totalOut,
             costMicros: totalCost, durationMs: Date.now() - startedAt, traceId, fromCache: false,
             outputRepairs: final.repairs,
+            // Lot 111M : plafonds RÉELLEMENT appliqués et métadonnées du fournisseur
+            // (saturation jugée par rapport à la limite transmise, jamais à une constante).
+            generation: {
+              model, rank: i + premierRang, maxOutputTokensSent: maxOutputTokens ?? null, maxOutputTokensOrigin: built.trace.maxOutputTokens.origin,
+              modelOutputLimit: built.trace.maxOutputTokens.modelLimit, finishReason: meta.finishReason ?? null,
+              thoughtsTokens: typeof meta.tokenUsage?.thoughts === 'number' ? meta.tokenUsage.thoughts : null,
+              estimatedInputTokens: entree.estimatedTokens, modelInputLimit: entree.modelLimit,
+            },
             // Lot 54G : originaux des champs retirés — en mémoire pour l'appelant, jamais tracés.
             ...(final.pruned?.length ? { prunedValues: final.pruned } : {}),
           };

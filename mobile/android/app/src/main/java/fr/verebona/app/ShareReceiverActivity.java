@@ -236,13 +236,22 @@ public class ShareReceiverActivity extends Activity {
             t.setPadding(0, dp(4), 0, dp(4));
             box.addView(t);
         }
-        boolean signedIn = ShareImportStore.readGrant(this) != null;
-        if (!accepted.isEmpty() && !signedIn) {
-            TextView t = new TextView(this);
-            t.setText("Vous n’êtes pas connecté à Verebona sur ce téléphone : l’import se terminera à la prochaine ouverture de l’application, sans rien resélectionner.");
-            t.setAlpha(0.7f);
-            t.setPadding(0, dp(8), 0, dp(4));
-            box.addView(t);
+        // Lot 111P : état CONSTATÉ du jeton d'import (absent, échu, refusé par le serveur, illisible),
+        // jamais « Vous n'êtes pas connecté » — l'activité ne voit pas la session de l'application.
+        String[] gs = ShareImportStore.grantState(this);
+        ShareImportStore.diag(this, "EXT_SHOWN_" + gs[0].toUpperCase(java.util.Locale.ROOT) + "_" + gs[1]);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        String notice = ShareImportContract.notice(ShareImportContract.noticeKey(gs[0], gs[2]));
+        if (notice != null) lines.add(notice);
+        lines.addAll(ShareImportStore.previousSharesNotices(this, shareId));
+        if (!accepted.isEmpty()) {
+            for (String line : lines) {
+                TextView t = new TextView(this);
+                t.setText(line);
+                t.setAlpha(0.7f);
+                t.setPadding(0, dp(8), 0, dp(4));
+                box.addView(t);
+            }
         }
         if (!accepted.isEmpty()) {
             if (getResources().getBoolean(R.bool.vb_share_open_app)) {

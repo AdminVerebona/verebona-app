@@ -71,7 +71,9 @@ export type DiagJobErrorCode =
   | 'WORKER_LOST' | 'WORKER_LOST_MAX_ATTEMPTS' | 'LEGACY_HTTP_INTERRUPTED'
   | 'STORAGE_UNAVAILABLE' | 'STORAGE_UPLOAD_FAILED' | 'COMPRESSION_FAILED'
   | 'READ_TIMEOUT' | 'DB_CONNECTION_LOST' | 'SNAPSHOT_FAILED' | 'TARGET_NOT_FOUND'
-  | 'MEMORY_GUARD' | 'JOB_TIMEOUT' | 'VALIDATION_FAILED' | 'CANCELLED' | 'GENERATION_FAILED';
+  | 'MEMORY_GUARD' | 'JOB_TIMEOUT' | 'VALIDATION_FAILED' | 'CANCELLED' | 'GENERATION_FAILED'
+  /** Lot 111C : demande globale remplacée par une demande globale plus récente. */
+  | 'REPLACED_BY_NEW_REQUEST';
 
 export const DIAG_JOB_ERROR_LABELS: Readonly<Record<DiagJobErrorCode, string>> = {
   WORKER_LOST: 'Processus du worker arrêté pendant la génération (redémarrage, déploiement ou mémoire) : bail expiré, nouvelle tentative programmée.',
@@ -88,6 +90,7 @@ export const DIAG_JOB_ERROR_LABELS: Readonly<Record<DiagJobErrorCode, string>> =
   JOB_TIMEOUT: 'Délai global de la génération dépassé.',
   VALIDATION_FAILED: 'Validation finale en échec (fichier absent, taille ou empreinte divergente, manifeste incomplet) : résultat NON publié.',
   CANCELLED: 'Génération annulée par un administrateur.',
+  REPLACED_BY_NEW_REQUEST: 'Demande globale remplacée par une demande globale plus récente (la dernière demande est prioritaire) : ancienne génération annulée, résultat jamais publié.',
   GENERATION_FAILED: 'Erreur inattendue de génération.',
 };
 
@@ -119,10 +122,52 @@ export function diagJobSettings(env: Record<string, string | undefined> = proces
     maxRssMb: envInt(env, 'DIAG_JOB_MAX_RSS_MB', 0, 0),
     /** Tour du worker. */
     intervalMs: envInt(env, 'DIAG_JOB_WORKER_INTERVAL_MS', 10_000, 1_000),
-    /** Worker retiré de cette instance. */
-    disabled: env.DIAG_JOB_WORKER_DISABLED === 'true',
+    /** Worker retiré de cette instance (désactivation EXPLICITE : jamais contournée). */
+    disabled: workerMode(env) === 'disabled',
+    /**
+     * Lot 111C : `DIAG_JOB_WORKER_DISABLED=auto` — worker démarré, mais un
+     * diagnostic ne part que si la mémoire du conteneur est sous le seuil
+     * d'admission (aucun départ forcé après attente) : le démarrage sûr
+     * proposé au PO à la place d'une désactivation totale.
+     */
+    memoryGate: workerMode(env) === 'auto' ? 'strict' as const : 'standard' as const,
+    /** Lot 111C : attente au-delà de laquelle une demande jamais démarrée est signalée (s). */
+    stallAlertSeconds: envInt(env, 'DIAG_JOB_STALL_ALERT_SECONDS', 300, 60),
+    /** Lot 111C : lecture de l'annulation pendant une génération (ms). */
+    cancelPollMs: envInt(env, 'DIAG_JOB_CANCEL_POLL_MS', 3_000, 500),
   };
 }
+
+/**
+ * Lot 111C — lecture de `DIAG_JOB_WORKER_DISABLED` (pur) : `true` / `1` /
+ * `yes` / `on` → désactivé ; `auto` → démarrage protégé par la mémoire ;
+ * absent, `false` ou autre → actif.
+ */
+export function workerMode(env: Record<string, string | undefined> = process.env): 'enabled' | 'disabled' | 'auto' {
+  const v = String(env.DIAG_JOB_WORKER_DISABLED ?? '').trim().toLowerCase();
+  if (v === 'auto') return 'auto';
+  if (v === 'true' || v === '1' || v === 'yes' || v === 'on') return 'disabled';
+  return 'enabled';
+}
+
+/**
+ * Lot 111C — variable qui désactive le worker des diagnostics sur ce
+ * processus (pur), ou null. `EXPORTS_WORKER_DISABLED=true` le retire aussi
+ * (contrat du lot 107G, documenté).
+ */
+export function workerDisabledReason(env: Record<string, string | undefined> = process.env): string | null {
+  if (workerMode(env) === 'disabled') return 'DIAG_JOB_WORKER_DISABLED';
+  if (String(env.EXPORTS_WORKER_DISABLED ?? '').trim().toLowerCase() === 'true') return 'EXPORTS_WORKER_DISABLED';
+  return null;
+}
+
+/** Lot 111C : diagnostic GLOBAL (« Ensemble de l'application ») — seul concerné par le remplacement. */
+export function isGlobalRequest(r: { scope: string | null | undefined }): boolean {
+  return (r.scope ?? 'global') === 'global';
+}
+
+/** Lot 111C : motifs STABLES d'annulation. */
+export type DiagCancelReason = 'ADMIN_CANCELLED' | 'REPLACED_BY_NEW_REQUEST';
 
 /** Délai avant la nouvelle tentative n°(attempt + 1) : 1 min, 5 min, 15 min. */
 export function retryDelaySeconds(attempt: number): number {
@@ -210,7 +255,8 @@ export interface DiagJobAttempt {
   commit: string | null;
   startedAt: string;
   endedAt: string | null;
-  outcome: DiagJobStatus | 'RETRY' | 'LOST' | null;
+  /** Lot 111C : LOST_BEFORE_START — processus arrêté avant l'ouverture de l'instantané (tentative rendue). */
+  outcome: DiagJobStatus | 'RETRY' | 'LOST' | 'LOST_BEFORE_START' | null;
   errorCode: DiagJobErrorCode | null;
   phase: DiagJobPhase | null;
   lastProgress?: Pick<DiagJobProgress, 'filesDone' | 'filesPlanned' | 'current' | 'rssMb' | 'peakRssMb'> | null;

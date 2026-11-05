@@ -229,6 +229,7 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
                   <Label htmlFor="reauth-password">Votre mot de passe</Label>
                   <PasswordInput
                     id="reauth-password"
+                    name="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     autoComplete="current-password"
@@ -246,7 +247,7 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
               {totpMethod && (
                 <div className="space-y-2">
                   <Label htmlFor="reauth-totp">Code de votre application d’authentification</Label>
-                  <Input id="reauth-totp" inputMode="numeric" autoComplete="one-time-code" maxLength={7}
+                  <Input id="reauth-totp" name="one-time-code" inputMode="numeric" autoComplete="one-time-code" maxLength={7}
                     value={code} onChange={(e) => setCode(e.target.value)} disabled={submitting} autoFocus={!passkeyMethod} />
                 </div>
               )}

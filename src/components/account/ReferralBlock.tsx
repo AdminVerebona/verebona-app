@@ -3,27 +3,23 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import { toast } from 'sonner';
 import {
   Gift,
   Copy,
-  Send,
   Sparkles,
   Loader2,
   CheckCheck,
   Share2,
   ExternalLink,
 } from 'lucide-react';
-import { apiClient, ApiClientError } from '@/lib/api-client';
+import { apiClient } from '@/lib/api-client';
 import { useNativeCommerceHidden } from '@/hooks/useNativeCommerceHidden';
 import { canShareNatively, shareContent } from '@/lib/native/share';
 import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
 import { LegalLink } from '@/components/legal/LegalLink';
-
-const INVITATION_ERROR = 'L\'invitation n\'a pas pu être envoyée. Réessayez plus tard ou copiez votre lien pour le partager.';
 
 /**
  * Lot 100D (décision PO A9) : texte d'invitation partagé — sans prix ni
@@ -31,6 +27,52 @@ const INVITATION_ERROR = 'L\'invitation n\'a pas pu être envoyée. Réessayez p
  */
 export function referralShareText(code: string): string {
   return `Je vous invite à découvrir Verebona, l’espace qui garde en ordre vos biens et leurs documents. Mon code de parrainage : ${code}`;
+}
+
+/** Titre de l'invitation (feuille de partage, objet de l'e-mail de repli). */
+export const REFERRAL_SHARE_TITLE = 'Invitation Verebona';
+
+/** Invitation complète (texte + lien) : ce qui est copié quand la feuille de partage n'existe pas. */
+export function referralInvitationMessage(code: string, url: string): string {
+  return `${referralShareText(code)}\n${url}`;
+}
+
+/** E-mail préparé (`mailto:`) : dernier repli si le presse-papiers est refusé. */
+export function referralInvitationMailto(code: string, url: string): string {
+  return `mailto:?subject=${encodeURIComponent(REFERRAL_SHARE_TITLE)}&body=${encodeURIComponent(referralInvitationMessage(code, url))}`;
+}
+
+export type ReferralShareResult = 'shared' | 'cancelled' | 'copied' | 'mailto';
+
+/**
+ * Lot 111H — « Partager mon invitation » (seul moyen d'inviter depuis que le
+ * formulaire « Inviter par email » est retiré, décision PO) :
+ *   1. feuille de partage native (app iOS / Android) ou du navigateur
+ *      (`navigator.share`) — Mail, Messages, WhatsApp… ; lien joint, aucune
+ *      ressaisie ;
+ *   2. sinon (navigateur de bureau sans Web Share) : copie de l'invitation
+ *      complète (texte + lien) ;
+ *   3. sinon (presse-papiers refusé) : e-mail préparé dans la messagerie.
+ * Dépendances injectables (tests). Jamais d'exception.
+ */
+export async function shareReferralInvitation(
+  link: { code: string; url: string },
+  deps: {
+    share: typeof shareContent;
+    copy: (text: string) => Promise<void>;
+    openMailto: (href: string) => void;
+  },
+): Promise<ReferralShareResult> {
+  const text = referralShareText(link.code);
+  const outcome = await deps.share({ title: REFERRAL_SHARE_TITLE, text, url: link.url });
+  if (outcome === 'shared' || outcome === 'cancelled') return outcome;
+  try {
+    await deps.copy(referralInvitationMessage(link.code, link.url));
+    return 'copied';
+  } catch {
+    deps.openMailto(referralInvitationMailto(link.code, link.url));
+    return 'mailto';
+  }
 }
 
 /**
@@ -87,8 +129,6 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
   const [creatingLink, setCreatingLink] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
-  const [email, setEmail] = useState('');
-  const [sendingEmail, setSendingEmail] = useState(false);
   const [stats, setStats] = useState<{ validatedCount: number; monthsEarned: number } | null>(null);
   // Lot 100D (A9) : le parrainage reste dans l'application (code visible,
   // copiable, partageable) ; seules les mentions qui poussent à souscrire
@@ -160,52 +200,15 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
     }
   };
 
-  /** Feuille de partage native (app) ou du navigateur ; sinon, copie de l'invitation. */
+  /** Lot 111H : partage natif / navigateur ; sinon copie ; sinon e-mail préparé. */
   const handleShare = async () => {
     if (!data?.link) return;
-    const text = referralShareText(data.link.code);
-    const outcome = await shareContent({ title: 'Invitation Verebona', text, url: data.link.url });
-    if (outcome !== 'unavailable') return;
-    try {
-      await navigator.clipboard.writeText(`${text}\n${data.link.url}`);
-      toast.success('Invitation copiée : collez-la dans le message de votre choix.');
-    } catch {
-      toast.error('Impossible de copier l’invitation');
-    }
-  };
-
-  const handleSendInvitation = async () => {
-    if (!email.trim() || sendingEmail) return;
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email.trim())) {
-      toast.error('L\'adresse email n\'est pas valide.');
-      return;
-    }
-
-    try {
-      setSendingEmail(true);
-      // La route réelle est /api/referral/send-email ({ emails: [] }) :
-      // l'ancien appel visait /api/account/referral/invitations, qui n'existe
-      // pas — l'envoi échouait à chaque fois.
-      // Lot 34I : la route ne répond 200 que si le fournisseur d'e-mail a
-      // ACCEPTÉ l'invitation ; sinon 502 avec un message lisible.
-      const result = await apiClient.post<{ sent: number; total: number }>(
-        '/api/referral/send-email',
-        { emails: [email.trim()] }
-      );
-      if (result.sent > 0) {
-        toast.success('Invitation envoyée.');
-        setEmail('');
-      } else {
-        toast.error(INVITATION_ERROR);
-      }
-    } catch (e) {
-      // Message du serveur seulement s'il en a donné un (jamais « API Error 500 »).
-      const serverMessage = e instanceof ApiClientError ? e.serverMessage : undefined;
-      toast.error(serverMessage || INVITATION_ERROR);
-    } finally {
-      setSendingEmail(false);
-    }
+    const r = await shareReferralInvitation(data.link, {
+      share: shareContent,
+      copy: (t) => navigator.clipboard.writeText(t),
+      openMailto: (href) => { window.location.href = href; },
+    });
+    if (r === 'copied') toast.success('Invitation copiée : collez-la dans le message de votre choix.');
   };
 
   // ── Loading ──
@@ -315,26 +318,59 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
         </div>
       )}
 
+      <ReferralLinkActions
+        code={data.link.code}
+        url={data.link.url}
+        canShare={canShare}
+        codeCopied={codeCopied}
+        linkCopied={linkCopied}
+        onCopyCode={handleCopyCode}
+        onCopyLink={handleCopyLink}
+        onShare={handleShare}
+      />
+    </div>
+  );
+}
+
+/**
+ * Code, lien et actions (CDC §6.4). Lot 111H (décision PO) : le formulaire
+ * « Inviter par email » (titre, champ, bouton, séparateur) est retiré — il
+ * faisait doublon avec « Partager mon invitation ». Le partage est la
+ * DERNIÈRE ligne de la section : ni séparateur ni espace résiduel en bas.
+ */
+export function ReferralLinkActions(p: {
+  code: string;
+  url: string;
+  canShare: boolean;
+  codeCopied: boolean;
+  linkCopied: boolean;
+  onCopyCode: () => void;
+  onCopyLink: () => void;
+  onShare: () => void;
+}) {
+  return (
+    <>
       {/* Votre code — CDC §6.4 */}
       <div className="space-y-1.5">
         <p className="text-xs font-medium text-[color:var(--text-secondary)]">Votre code</p>
         {/* Lot 108H : empilés sous 640 px (le bouton ne déborde plus de la carte). */}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <code className="flex-1 min-w-0 break-all text-sm font-mono font-semibold text-primary bg-muted/50 rounded-md px-3 py-2 select-all">
-            {data.link.code}
+            {p.code}
           </code>
           <Button
             variant="outline"
             size="sm"
-            onClick={handleCopyCode}
+            onClick={p.onCopyCode}
             className="w-full sm:w-auto flex-shrink-0 gap-1.5"
+            data-testid="referral-copy-code"
           >
-            {codeCopied ? (
+            {p.codeCopied ? (
               <CheckCheck className="w-3.5 h-3.5 text-[color:var(--text-success)]" />
             ) : (
               <Copy className="w-3.5 h-3.5" />
             )}
-            {codeCopied ? 'Copié' : 'Copier le code'}
+            {p.codeCopied ? 'Copié' : 'Copier le code'}
           </Button>
         </div>
       </div>
@@ -350,69 +386,38 @@ export function ReferralBlock({ withHeading = true }: { withHeading?: boolean } 
             className="flex-1 min-w-0 break-all font-mono text-xs text-[color:var(--text-primary)] bg-muted/50 rounded-md border px-3 py-2 select-all"
             data-testid="referral-link-url"
           >
-            {data.link.url}
+            {p.url}
           </code>
           <Button
             variant="outline"
             size="sm"
-            onClick={handleCopyLink}
+            onClick={p.onCopyLink}
             className="w-full sm:w-auto flex-shrink-0 gap-1.5"
+            data-testid="referral-copy-link"
           >
-            {linkCopied ? (
+            {p.linkCopied ? (
               <CheckCheck className="w-3.5 h-3.5 text-[color:var(--text-success)]" />
             ) : (
               <Copy className="w-3.5 h-3.5" />
             )}
-            {linkCopied ? 'Copié' : 'Copier le lien'}
+            {p.linkCopied ? 'Copié' : 'Copier le lien'}
           </Button>
         </div>
       </div>
 
       {/* Lot 100D (A9) : partager l'invitation — feuille de partage native dans
-          l'app, celle du navigateur si elle existe, sinon copie. */}
+          l'app, celle du navigateur si elle existe, sinon copie de l'invitation
+          complète (lot 111H : puis e-mail préparé si la copie est refusée). */}
       <Button
         variant="outline"
         size="sm"
-        onClick={handleShare}
+        onClick={p.onShare}
         className="w-full sm:w-auto gap-1.5"
         data-testid="referral-share"
       >
-        {canShare ? <Share2 className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-        {canShare ? 'Partager mon invitation' : 'Copier mon invitation'}
+        {p.canShare ? <Share2 className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+        {p.canShare ? 'Partager mon invitation' : 'Copier mon invitation'}
       </Button>
-
-      {/* Inviter par email — CDC §6.4 */}
-      <div className="space-y-2 pt-1 border-t border-[color:var(--border-subtle)]">
-        <p className="text-xs font-medium text-[color:var(--text-secondary)]">Inviter par email</p>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Input
-            type="email"
-            placeholder="Adresse email du filleul"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            disabled={sendingEmail}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                handleSendInvitation();
-              }
-            }}
-          />
-          <Button
-            size="sm"
-            onClick={handleSendInvitation}
-            disabled={!email.trim() || sendingEmail}
-            className="w-full sm:w-auto flex-shrink-0 gap-1.5"
-          >
-            {sendingEmail ? (
-              <Loader2 className="w-4 h-4 animate-spin" />
-            ) : (
-              <Send className="w-4 h-4" />
-            )}
-            Envoyer l'invitation
-          </Button>
-        </div>
-      </div>
-    </div>
+    </>
   );
 }

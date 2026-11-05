@@ -155,7 +155,9 @@ describe('L105D-U-COH — cohérence : ASSET_CREATED relayé, contrôle spécial
       // Lot 109D : remises jamais lues comme des avoirs (fin de registre).
       'COH-TCO-COMMERCIAL-ADJUSTMENTS',
       // Lot 109K : couverture PDF (fin de registre).
-      'COH-T1-PDF-COVERAGE']);
+      'COH-T1-PDF-COVERAGE',
+      // Lot 111I : rattachements multiples reflétés par la source canonique (fin de registre).
+      'COH-DOC-TARGETS']);
     expect(ids.filter((x) => x === 'COH-DOC-PRIMARY-LINK')).toHaveLength(1);
     const c = COHERENCE_REGISTRY.find((x) => x.id === 'COH-DOC-PRIMARY-LINK')!;
     expect(c.triggers).toEqual(expect.arrayContaining(['ASSET_CREATED', 'ASSET_UPDATED', 'SOURCE_ANALYZED']));

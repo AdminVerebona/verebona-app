@@ -1,0 +1,51 @@
+{
+  "case": "P-T2-20",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — question composite (date d’achat ET fin de garantie) partiellement documentée : réponse partielle explicite, ce qui manque est signalé sobrement.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Quand ai-je acheté le lave-vaisselle et jusqu’à quand est-il garanti ?",
+    "sources": [
+      {
+        "id": "doc_1501",
+        "type": "document_extraction",
+        "title": "Ticket de caisse lave-vaisselle",
+        "content": "Lave-vaisselle Bosch · Date d’achat : 02/02/2024 · Prix : 429,00 €",
+        "meta": {}
+      }
+    ],
+    "requestedFacts": [
+      "acquisitionDate",
+      "warrantyEndDate"
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "Vous avez acheté le lave-vaisselle le 2 février 2024.",
+          "sourceIds": [
+            "doc_1501"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "2 février 2024",
+    "answerNotContains": [
+      "429"
+    ],
+    "supportLevel": "partial",
+    "exitState": "partial"
+  }
+}

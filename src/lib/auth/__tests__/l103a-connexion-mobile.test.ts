@@ -126,7 +126,8 @@ describe('L103A-3 — motif du retour à la connexion', () => {
     expect(page).toMatch(/LOGIN_BANNER_PARAMS\) if \(url\.searchParams\.has\(k\)\)/);
     expect(page).toMatch(/window\.history\.replaceState/);
     // Lot 110B : destination transmise pour reprendre après la seconde étape.
-    expect(page).toMatch(/postLogin\(\{ email, password(, returnUrl)? \}, \{ attemptId \}\)/);
+    // Lot 111E : valeurs lues dans le formulaire à l'envoi (remplissage automatique).
+    expect(page).toMatch(/postLogin\(\{ email: submittedEmail, password: submittedPassword(, returnUrl)? \}, \{ attemptId \}\)/);
     expect(page).toMatch(/apiClient\.get\('\/api\/users\/me', \{ onAuthFailure: 'silent'/);
     expect(page).toMatch(/POST_LOGIN_SESSION_MISSING/);
     expect(page).not.toMatch(/data\.accessToken|data\.refreshToken/);

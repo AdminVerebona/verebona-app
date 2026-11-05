@@ -89,11 +89,13 @@ describe('AC-7.2 — erreurs visibles et non techniques', () => {
     expect(invitationFailureMessage(['EMAILS_DISABLED'])).toMatch(/désactivé/);
   });
 
-  it('le bloc Parrainage n’affiche que le message du serveur, jamais « API Error 500 »', () => {
+  // Lot 111H (décision PO) : le bloc Parrainage n'a plus de formulaire
+  // d'invitation par e-mail (doublon de « Partager mon invitation ») ; il
+  // n'appelle donc plus cette route et n'affiche plus ses messages.
+  it('le bloc Parrainage n’appelle plus l’envoi par e-mail (lot 111H)', () => {
     const src = read('src/components/account/ReferralBlock.tsx');
-    expect(src).toContain('e.serverMessage');
+    expect(src).not.toContain("'/api/referral/send-email'");
     expect(src).not.toMatch(/\(e as \{ message\?: string \}\)\.message/);
-    expect(src).toMatch(/if \(result\.sent > 0\)/);
   });
 });
 

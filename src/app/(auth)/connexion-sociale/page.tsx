@@ -26,11 +26,12 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
 import { PasswordInput } from '@/components/ui/password-input';
-import { Checkbox } from '@/components/ui/checkbox';
+import { AutofillInput } from '@/components/ui/autofill-input';
+import { AUTOFILL, formFieldValue } from '@/lib/auth/autofill';
 import { MarketingSignupNotice, type MarketingChoiceValue } from '@/components/auth/MarketingSignupNotice';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
-import { LegalLink } from '@/components/legal/LegalLink';
-import { CguvPublicTextNotice, cguvAcceptable } from '@/components/legal/CguvPublicTextNotice';
+import { CguvConsent } from '@/components/legal/CguvConsent';
+import { useCurrentCguv } from '@/components/legal/useCurrentCguv';
 import { AuthFooter } from '@/components/LandingFooter';
 import { FollowTheme } from '@/components/FollowTheme';
 import { ProviderButton, socialStartUrl } from '@/components/auth/SocialSignInButtons';
@@ -104,7 +105,10 @@ function SocialPending() {
   // Lot 102C : choix sur les relances commerciales (bloc fourni par le serveur selon le réglage BO).
   const [marketingChoice, setMarketingChoice] = useState<MarketingChoiceValue | null>(null);
   // Lot 108L : URL PUBLIQUE de la version exacte présentée (`null` si non disponible sur le site public).
-  const [legal, setLegal] = useState<{ versionCode: string; permalink: string | null; available: boolean } | null>(null);
+  // Lot 111O : reprise automatique en état de blocage, version figée dès qu'elle est acceptable.
+  const { cguv: legal, checking: legalChecking, retry: retryLegal, markUnavailable: markLegalUnavailable } = useCurrentCguv();
+  const presentedCode = legal?.available ? legal.versionCode : null;
+  useEffect(() => { setAccepted(false); }, [presentedCode]);
   const legalLinks = useLegalLinks();
 
   // Code
@@ -131,16 +135,8 @@ function SocialPending() {
         setView('expired');
       }
     })();
-    // Version des CGUV affichée = celle enregistrée (CDC 7 §18, SIGN-03) ;
-    // lot 102B : métadonnées seules, texte sur le site public.
-    fetch('/api/legal/cguv/current', { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (!d?.versionCode) return;
-        const available = cguvAcceptable(d);
-        setLegal({ versionCode: d.versionCode, permalink: available ? (d.permalinkUrl ?? d.permalink) : null, available });
-      })
-      .catch(() => {});
+    // Version des CGUV affichée = celle enregistrée (CDC 7 §18, SIGN-03) :
+    // chargée par `useCurrentCguv` (lot 111O).
   }, []);
 
   const finish = (data: Record<string, unknown>) => {
@@ -148,10 +144,13 @@ function SocialPending() {
     window.location.assign(to);
   };
 
-  const linkWithPassword = async (e: React.FormEvent) => {
+  const linkWithPassword = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // Lot 111E : valeurs réelles du formulaire (remplissage automatique compris).
+    const submittedEmail = formFieldValue(e.currentTarget, 'username', loginEmail).trim();
+    const submittedPassword = formFieldValue(e.currentTarget, 'password', loginPassword);
     setError(''); setBusy(true);
-    const r = await post({ action: 'link-password', email: loginEmail, password: loginPassword }).catch(() => null);
+    const r = await post({ action: 'link-password', email: submittedEmail, password: submittedPassword }).catch(() => null);
     if (r?.ok) return finish(r.data);
     setBusy(false);
     if (r?.status === 410) { setView('expired'); return; }
@@ -180,6 +179,8 @@ function SocialPending() {
     if (r?.ok) return finish(r.data);
     if (r?.status === 410) { setView('expired'); return; }
     if (r?.data.code === 'ACCOUNT_ALREADY_EXISTS') { setView('existing'); }
+    // Lot 111O : refus serveur des CGUV → état de blocage explicite et reprise automatique.
+    if (r?.data.code === 'CGUV_PUBLIC_TEXT_UNAVAILABLE') { markLegalUnavailable(); return; }
     if (r && isDisposableEmailRefusal(r.data)) { setEmailError(DISPOSABLE_EMAIL_MESSAGE); return; }
     if (r && ['MISSING_DISPLAY_NAME', 'DISPLAY_NAME_TOO_LONG', 'INVALID_DISPLAY_NAME'].includes(String(r.data.code))) {
       setDisplayNameError(messageOf(r.data));
@@ -223,14 +224,15 @@ function SocialPending() {
 
   const existingAccountPanel = (
     <div className="space-y-4" data-testid="social-existing-account">
-      <form onSubmit={linkWithPassword} className="space-y-4">
+      {/* Lot 111E : connexion au compte existant = identifiants enregistrés (username / current-password). */}
+      <form onSubmit={linkWithPassword} method="post" className="space-y-4" data-testid="social-link-form">
         <div className="space-y-2">
           <Label htmlFor="link-email">Adresse e-mail de votre compte Verebona</Label>
-          <Input id="link-email" type="email" autoComplete="email" value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} required disabled={busy} />
+          <AutofillInput id="link-email" name="username" type="email" inputMode="email" autoComplete={AUTOFILL.username} autoCapitalize="none" autoCorrect="off" spellCheck={false} value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} required disabled={busy} />
         </div>
         <div className="space-y-2">
           <Label htmlFor="link-password">Mot de passe</Label>
-          <PasswordInput id="link-password" autoComplete="current-password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} required disabled={busy} />
+          <PasswordInput id="link-password" name="password" autoComplete={AUTOFILL.currentPassword} value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} required disabled={busy} />
         </div>
         <Button type="submit" className="w-full min-h-11" disabled={busy}>
           {busy ? 'Connexion…' : `Me connecter et associer ${label}`}
@@ -340,19 +342,19 @@ function SocialPending() {
                     appliedFromLink={!!state.referralCode} termsHref={legalLinks.parrainage} disabled={busy}
                   />
                 )}
-                <div className="flex items-start gap-3">
-                  <Checkbox id="sp-terms" checked={accepted} onCheckedChange={(v) => setAccepted(v === true)} disabled={busy} className="mt-1" />
-                  <Label htmlFor="sp-terms" className="text-sm leading-relaxed cursor-pointer font-normal text-foreground">
-                    J’ai lu et j’accepte les CGUV (Conditions générales d’utilisation et de vente) de Verebona, incluant la Politique de confidentialité.{' '}
-                    {legal?.available !== false && (
-                      <LegalLink href={legal ? legal.permalink : legalLinks.cguv} target="_blank" className="text-primary hover:underline" data-testid="social-read-cguv">Lire les CGUV</LegalLink>
-                    )}
-                    {' · '}
-                    <LegalLink href={legalLinks.confidentialite} target="_blank" className="text-primary hover:underline">Confidentialité</LegalLink>
-                    {legal && <span className="block text-xs text-[color:var(--text-muted)] mt-1">Version {legal.versionCode}</span>}
-                  </Label>
-                </div>
-                {legal?.available === false && <CguvPublicTextNotice versionCode={legal.versionCode} />}
+                <CguvConsent
+                  id="sp-terms"
+                  checked={accepted}
+                  onCheckedChange={setAccepted}
+                  cguv={legal}
+                  fallbackCguvHref={legalLinks.cguv}
+                  fallbackPrivacyHref={legalLinks.confidentialite}
+                  disabled={busy}
+                  checking={legalChecking}
+                  onRetry={retryLegal}
+                  readTestId="social-read-cguv"
+                  size="sm"
+                />
                 <MarketingSignupNotice onChange={setMarketingChoice} disabled={busy} />
                 <Button type="submit" className="w-full min-h-11" disabled={busy || legal?.available === false}>{busy ? 'Création…' : 'Créer mon compte'}</Button>
                 <Button type="button" variant="ghost" className="w-full" onClick={() => setView('choice')} disabled={busy}>Retour</Button>
@@ -364,7 +366,7 @@ function SocialPending() {
                 <div className="space-y-2">
                   <Label htmlFor="sp-code">Code de confirmation</Label>
                   <Input
-                    id="sp-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]*" maxLength={7}
+                    id="sp-code" name="one-time-code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9 ]*" maxLength={7}
                     value={code} onChange={(e) => setCode(e.target.value)} required disabled={busy}
                     className="text-center text-lg tracking-[.3em]"
                   />

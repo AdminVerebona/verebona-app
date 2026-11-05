@@ -31,6 +31,12 @@
  * constatés (biens, documents déposés par l'utilisateur, documents analysés,
  * questions posées, exports), jamais une ancienneté en jours ni un clic.
  *
+ * Lot 111L : être constructible et répondable ne suffit plus. Chaque entrée
+ * déclare le BESOIN qu'elle sert (`need`) ; une simple liste (« Quels sont
+ * les documents de Maison ? ») ou une information déjà affichée n'est plus
+ * promue spontanément (`utility.ts`). Moins de trois questions de qualité :
+ * le service en rend moins, jamais un remplissage.
+ *
  * Aucun texte n'est généré par une IA ; aucune donnée personnelle n'est
  * inventée (un compte vide ne reçoit que des questions de prise en main).
  * Les libellés ne sont pas des règles métier : ajouter ou retirer une entrée
@@ -39,6 +45,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { VerebonaIntent } from '@/services/verebona-assistant/types/intents';
+import type { SuggestionNeed, SuggestionShownBy } from './utility';
 
 export type SuggestionObjective = 'EXPLOIT' | 'ANTICIPATE' | 'GUIDE';
 /** Étape du guide (objectif C), déduite des usages constatés. */
@@ -85,15 +92,36 @@ export interface AccountStockEntry {
   objective: 'EXPLOIT' | 'ANTICIPATE';
   /** Ordre d'utilité (plus bas = plus utile). */
   priority: number;
+  /**
+   * Lot 111L — besoin d'information que la réponse DÉLIVRE (obligatoire) :
+   * seuls FACT, ANTICIPATION et GUIDANCE sont promus spontanément
+   * (`utility.ts`) ; INVENTORY (liste d'une famille d'objets dans un
+   * périmètre, ce que montre déjà la navigation) et ACTION ne le sont pas.
+   * La déclaration est recoupée par la compréhension déterministe de T2.
+   */
+  need: SuggestionNeed;
+  /** Lot 111L — surface permanente qui rend déjà cette information (complémentarité). */
+  shownBy?: SuggestionShownBy;
+  /** Lot 111L — écran qui donne déjà la réponse (revue du stock, BO). */
+  navigation?: string;
 }
 
+/**
+ * Revue du stock (lot 111L) : chaque entrée reste une question RÉPONDABLE
+ * du catalogue T2 (posée librement, elle fonctionne) ; seules celles dont le
+ * besoin apporte plus que la navigation sont promues en suggestion.
+ */
 export const ACCOUNT_STOCK: readonly AccountStockEntry[] = [
-  { catalogId: 'home_asset_docs', objective: 'EXPLOIT', priority: 1 },
-  { catalogId: 'assets_deadlines', objective: 'ANTICIPATE', priority: 1 },
-  { catalogId: 'home_next_deadline', objective: 'ANTICIPATE', priority: 2 },
-  { catalogId: 'docs_unlinked', objective: 'EXPLOIT', priority: 2 },
-  { catalogId: 'state_exports', objective: 'EXPLOIT', priority: 3 },
-  { catalogId: 'home_analysis', objective: 'EXPLOIT', priority: 4 },
+  // Liste des documents d'un bien : fiche du bien › Documents, filtre « Bien » de Documents.
+  { catalogId: 'home_asset_docs', objective: 'EXPLOIT', priority: 1, need: 'INVENTORY', navigation: 'Fiche du bien › Documents ; Documents › filtre Bien' },
+  { catalogId: 'assets_deadlines', objective: 'ANTICIPATE', priority: 1, need: 'ANTICIPATION' },
+  { catalogId: 'home_next_deadline', objective: 'ANTICIPATE', priority: 2, need: 'FACT' },
+  // Liste des documents sans bien : Documents › filtre Bien « Sans bien ».
+  { catalogId: 'docs_unlinked', objective: 'EXPLOIT', priority: 2, need: 'INVENTORY', navigation: 'Documents › filtre Bien « Sans bien »' },
+  // Liste des exports prêts : page des exports et dossiers.
+  { catalogId: 'state_exports', objective: 'EXPLOIT', priority: 3, need: 'INVENTORY', navigation: 'Exports et dossiers' },
+  // État de l'analyse : la mascotte affiche déjà « N documents sont en cours d'analyse » (même fait, PROC-DOC-ANALYSIS).
+  { catalogId: 'home_analysis', objective: 'EXPLOIT', priority: 4, need: 'FACT', shownBy: 'MASCOT' },
 ];
 
 // ── C : guide éditorial (Centre d'aide puis Ressources) ─────────────────────

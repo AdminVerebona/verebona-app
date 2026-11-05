@@ -11,7 +11,8 @@ import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Home, Pencil, Trash2, Loader2, X, Save, Plus } from 'lucide-react';
+import { Home, Pencil, Trash2, X, Save, Plus } from 'lucide-react';
+import { FooterPrimaryAction } from '@/components/ui/footer-primary-action';
 import { toast } from 'sonner';
 import { apiClient } from '@/lib/api-client';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
@@ -236,15 +237,14 @@ export function RoomDrawer({ open, onOpenChange, assetId, room, onRefresh }: Pro
                   <span className="text-[12px] font-semibold">Annuler</span>
                 </button>
                 <div className="w-px bg-border" />
-                <button
-                  type="button"
-                  className="flex-1 flex flex-col items-center gap-1.5 py-3 px-2 hover:bg-primary/10 transition-colors text-primary disabled:opacity-40 disabled:cursor-not-allowed"
+                <FooterPrimaryAction
+                  icon={isCreateMode ? Plus : Save}
+                  label={isCreateMode ? 'Ajouter' : 'Enregistrer'}
+                  busy={isSaving}
+                  busyLabel="Sauvegarde…"
+                  disabled={!name.trim()}
                   onClick={handleSave}
-                  disabled={isSaving || !name.trim()}
-                >
-                  {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : isCreateMode ? <Plus className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-                  <span className="text-[12px] font-semibold">{isSaving ? 'Sauvegarde…' : isCreateMode ? 'Ajouter' : 'Enregistrer'}</span>
-                </button>
+                />
               </div>
             </div>
           )}

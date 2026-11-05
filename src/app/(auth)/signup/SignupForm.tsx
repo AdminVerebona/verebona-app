@@ -8,6 +8,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { AutofillInput } from '@/components/ui/autofill-input';
+import { AUTOFILL, formFieldValue } from '@/lib/auth/autofill';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
@@ -18,11 +20,10 @@ import { AuthBackHomeLink } from '@/components/auth/AuthBackHomeLink';
 import { Crown, Users } from 'lucide-react';
 import { FollowTheme } from '@/components/FollowTheme';
 import { useLegalLinks } from '@/hooks/useLegalLinks';
-import { LegalLink } from '@/components/legal/LegalLink';
-import { CguvPublicTextNotice, cguvAcceptable } from '@/components/legal/CguvPublicTextNotice';
+import { CguvConsent } from '@/components/legal/CguvConsent';
+import { useCurrentCguv } from '@/components/legal/useCurrentCguv';
 import { z } from 'zod';
 import { MIN_PASSWORD_LENGTH, checkPassword } from '@/lib/auth/password-rules';
-import { Checkbox } from '@/components/ui/checkbox';
 import { MarketingSignupNotice, type MarketingChoiceValue } from '@/components/auth/MarketingSignupNotice';
 import { rememberPendingDuoJoin } from '@/lib/duo/pending-duo-join';
 import { SocialSignInButtons } from '@/components/auth/SocialSignInButtons';
@@ -123,13 +124,10 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
   // enregistrée : « ne pas remplacer silencieusement le document ».
   // ══════════════════════════════════════════════════════════════════════════
   const legalLinks = useLegalLinks();
-  const [legalVersion, setLegalVersion] = useState<{
-    versionCode: string;
-    /** Lot 108L : URL PUBLIQUE de la version exacte présentée, `null` si non disponible. */
-    permalink: string | null;
-    /** Lot 108L : texte vérifié sur le site public (sinon aucune acceptation possible). */
-    available: boolean;
-  } | null>(null);
+  // Lot 111O : version présentée + reprise automatique en état de blocage
+  // (relecture au retour sur l'onglet, au retour du réseau, à intervalles
+  // croissants, ou « Réessayer ») ; figée dès qu'elle est acceptable (§18).
+  const { cguv: legalVersion, checking: legalChecking, retry: retryLegal, markUnavailable: markLegalUnavailable } = useCurrentCguv();
   // ══════════════════════════════════════════════════════════════════════════
   // AUCUNE OFFRE N'EST CHOISIE A L'INSCRIPTION — CDC tarification §3.1
   //
@@ -195,20 +193,8 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
       try { localStorage.setItem('pending_transfer_token', transmission); } catch { /* stockage indisponible */ }
     }
 
-    // La version applicable est figée pour toute la durée du parcours.
-    // Lot 102B : métadonnées seules (le texte est sur le site public).
-    fetch('/api/legal/cguv/current', { credentials: 'include' })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data?.versionCode) {
-          const available = cguvAcceptable(data);
-          setLegalVersion({ versionCode: data.versionCode, permalink: available ? (data.permalinkUrl ?? data.permalink) : null, available });
-        }
-      })
-      .catch(() => {
-        // Sans version chargée, le serveur retiendra la version courante au
-        // moment de la création. Le parcours n'est pas bloqué pour autant.
-      });
+    // La version applicable est chargée par `useCurrentCguv` (lot 111O) et
+    // figée pour toute la durée du parcours dès qu'elle est acceptable.
     if (emailParam) {
       setFormData(prev => ({ ...prev, email: emailParam }));
     } else if (invitation?.kind === 'duo' && invitation.inviteEmail) {
@@ -218,18 +204,31 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps -- lecture unique à l'ouverture du formulaire
   }, []);
 
+  // Lot 111O : la case vaut pour UNE version ; nouvelle version présentée
+  // (ex. reprise après blocage) ou blocage → case décochée, jamais reportée.
+  const presentedCode = legalVersion?.available ? legalVersion.versionCode : null;
+  useEffect(() => {
+    setFormData((prev) => (prev.acceptedTerms ? { ...prev, acceptedTerms: false } : prev));
+  }, [presentedCode]);
+
   // Lot 102C : choix sur les relances commerciales (bloc fourni par le serveur selon le réglage BO).
   const [marketingChoice, setMarketingChoice] = useState<MarketingChoiceValue | null>(null);
 
+  // Lot 111E : clé de l'état lue sur `data-field` (l'id du nom affiché n'est
+  // plus « username », ambigu pour les gestionnaires de mots de passe) ; la
+  // valeur est lue AVANT la mise à jour (deux champs remplis dans le même
+  // instant par un gestionnaire ne s'écrasent pas).
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const key = e.target.dataset.field ?? e.target.id;
+    const value = e.target.value;
     setFormData(prev => ({
       ...prev,
-      [e.target.id]: e.target.value
+      [key]: value
     }));
-    if (errors[e.target.id]) {
+    if (errors[key]) {
       setErrors(prev => {
         const newErrors = { ...prev };
-        delete newErrors[e.target.id];
+        delete newErrors[key];
         return newErrors;
       });
     }
@@ -249,8 +248,22 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
     }
   };
 
-    const handleSubmit = async (e: React.FormEvent) => {
+    // Lot 111E : état du rendu courant (la variable locale `formData` de l'envoi le complète).
+    const formState = formData;
+    const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
+      // Lot 111E : identifiant et mots de passe réellement présents (remplis /
+      // générés par le gestionnaire sans événement vu par React).
+      const form = e.currentTarget;
+      const formData = {
+        ...formState,
+        email: formFieldValue(form, 'username', formState.email),
+        password: formFieldValue(form, 'new-password', formState.password),
+        confirmPassword: formFieldValue(form, 'confirm-password', formState.confirmPassword),
+      };
+      if (formData.email !== formState.email || formData.password !== formState.password || formData.confirmPassword !== formState.confirmPassword) {
+        setFormData(formData);
+      }
       setError('');
       setErrors({});
       setIsLoading(true);
@@ -308,7 +321,10 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
       const data = await response.json();
 
           if (!response.ok) {
-            if (data.code === 'DUPLICATE_EMAIL') {
+            if (data.code === 'CGUV_PUBLIC_TEXT_UNAVAILABLE') {
+              // Lot 111O : refus serveur → état de blocage explicite et reprise automatique.
+              markLegalUnavailable();
+            } else if (data.code === 'DUPLICATE_EMAIL') {
               setError('Cette adresse email est déjà utilisée. Connectez-vous pour continuer.');
             } else if (isDisposableEmailRefusal(data)) {
               // Lot 109F : sous le champ e-mail, message unique du serveur.
@@ -419,12 +435,16 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
               disabled={isLoading}
               className="mb-4"
             />
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} method="post" className="space-y-4" data-testid="signup-form">
               {/* Lot 103B : un seul nom, « Prénom ou pseudo » (non unique, obligatoire). */}
               <div className="space-y-2">
-                <Label htmlFor="username">{DISPLAY_NAME_LABEL} *</Label>
+                {/* Lot 111E : id / name « displayName » (et non « username ») —
+                    l'identifiant de connexion est l'e-mail ci-dessous. */}
+                <Label htmlFor="displayName">{DISPLAY_NAME_LABEL} *</Label>
                 <Input
-                  id="username"
+                  id="displayName"
+                  name="displayName"
+                  data-field="username"
                   type="text"
                   placeholder={DISPLAY_NAME_PLACEHOLDER}
                   value={formData.username}
@@ -445,21 +465,27 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
 
               <div className="space-y-2">
                 <Label htmlFor="email">E-mail *</Label>
-                <Input
+                {/* Lot 111E : identifiant du compte enregistré par le gestionnaire. */}
+                <AutofillInput
                   id="email"
+                  name="username"
+                  data-field="email"
                   type="email"
                   placeholder="votre.email@exemple.fr"
                   value={formData.email}
                   onChange={handleChange}
                   required
-                  autoComplete="email"
+                  autoComplete={AUTOFILL.username}
                   inputMode="email"
                   autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   aria-invalid={errors.email ? true : undefined}
+                  aria-describedby={errors.email ? `${fieldIds}-email-error` : undefined}
                   disabled={isLoading}
                 />
                 {errors.email && (
-                  <p role="alert" className="text-sm text-destructive" data-testid="signup-email-error">{errors.email}</p>
+                  <p id={`${fieldIds}-email-error`} role="alert" className="text-sm text-destructive" data-testid="signup-email-error">{errors.email}</p>
                 )}
               </div>
 
@@ -467,18 +493,20 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                 <Label htmlFor="password">Mot de passe *</Label>
                 <PasswordInput
                   id="password"
-                  autoComplete="new-password"
+                  name="new-password"
+                  data-field="password"
+                  autoComplete={AUTOFILL.newPassword}
                   value={formData.password}
                   onChange={handleChange}
                   onFocus={() => setPasswordFocused(true)}
                   onBlur={() => setPasswordFocused(false)}
                   required
                   aria-invalid={errors.password ? true : undefined}
-                  aria-describedby={`${fieldIds}-password-rules`}
+                  aria-describedby={`${fieldIds}-password-rules${errors.password ? ` ${fieldIds}-password-error` : ''}`}
                   disabled={isLoading}
                 />
                 {errors.password && (
-                  <p role="alert" className="text-sm text-destructive">{errors.password}</p>
+                  <p id={`${fieldIds}-password-error`} role="alert" className="text-sm text-destructive">{errors.password}</p>
                 )}
                 {/* Lot 103B : aide courte, critères détaillés au focus / en saisie / en erreur.
                     Règles inchangées (`password-rules`, vérifiées aussi par le serveur). */}
@@ -496,15 +524,18 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
                 <Label htmlFor="confirmPassword">Confirmer le mot de passe *</Label>
                 <PasswordInput
                   id="confirmPassword"
-                  autoComplete="new-password"
+                  name="confirm-password"
+                  data-field="confirmPassword"
+                  autoComplete={AUTOFILL.newPassword}
                   value={formData.confirmPassword}
                   onChange={handleChange}
                   required
                   aria-invalid={errors.confirmPassword ? true : undefined}
+                  aria-describedby={errors.confirmPassword ? `${fieldIds}-confirm-error` : undefined}
                   disabled={isLoading}
                 />
                 {errors.confirmPassword && (
-                  <p role="alert" className="text-sm text-destructive">{errors.confirmPassword}</p>
+                  <p id={`${fieldIds}-confirm-error`} role="alert" className="text-sm text-destructive">{errors.confirmPassword}</p>
                 )}
               </div>
 
@@ -526,58 +557,22 @@ export function SignupForm(props: { invitation?: SignupFormInvitation | null }) 
               )}
 
               <div className="space-y-3 pt-2">
-                <div className="flex items-start gap-3">
-                  <Checkbox
-                    id="acceptedTerms"
-                    checked={formData.acceptedTerms}
-                    onCheckedChange={handleCheckboxChange}
-                    disabled={isLoading}
-                    className="mt-1"
-                  />
-                  <Label 
-                    htmlFor="acceptedTerms" 
-                    className="text-base leading-relaxed cursor-pointer font-normal text-foreground"
-                  >
-                    J&apos;ai lu et j&apos;accepte les CGUV (Conditions générales d&apos;utilisation
-                    et de vente) de Verebona, incluant la Politique de confidentialité.
-                    {legalVersion && (
-                      <span className="block text-xs text-[color:var(--text-muted)] mt-1">
-                        Version {legalVersion.versionCode}
-                      </span>
-                    )}
-                  </Label>
-                </div>
-                <div className="flex flex-wrap justify-center gap-2">
-                  {legalVersion?.available !== false && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      asChild
-                      disabled={isLoading}
-                    >
-                      {/* Ouvre la version EXACTE proposée à cet instant (§8.1),
-                          sur le site public de l'environnement (lot 108L : jamais
-                          le domaine de l’application ni /cgvu, jamais une autre version). */}
-                      <LegalLink
-                        href={legalVersion ? legalVersion.permalink : legalLinks.cguv}
-                        target="_blank"
-                        data-testid="signup-read-cguv"
-                      >
-                        Lire les CGUV
-                      </LegalLink>
-                    </Button>
-                  )}
-                  <Button type="button" variant="ghost" size="sm" asChild disabled={isLoading}>
-                    <LegalLink href={legalLinks.confidentialite} target="_blank">
-                      Confidentialité
-                    </LegalLink>
-                  </Button>
-                </div>
-                {legalVersion?.available === false && <CguvPublicTextNotice versionCode={legalVersion.versionCode} />}
-                {errors.acceptedTerms && (
-                  <p className="text-sm text-destructive">{errors.acceptedTerms}</p>
-                )}
+                {/* Lot 111O : case, libellé, version, « Lire les CGUV » et « Confidentialité »
+                    sur une même colonne alignée (desktop + mobile) ; encart d'attente
+                    seulement en état de blocage. */}
+                <CguvConsent
+                  id="acceptedTerms"
+                  checked={formData.acceptedTerms}
+                  onCheckedChange={handleCheckboxChange}
+                  cguv={legalVersion}
+                  fallbackCguvHref={legalLinks.cguv}
+                  fallbackPrivacyHref={legalLinks.confidentialite}
+                  disabled={isLoading}
+                  checking={legalChecking}
+                  onRetry={retryLegal}
+                  error={errors.acceptedTerms}
+                  readTestId="signup-read-cguv"
+                />
                 <MarketingSignupNotice onChange={setMarketingChoice} disabled={isLoading} />
               </div>
 

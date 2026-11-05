@@ -16,7 +16,7 @@ import ImageIO
 ///     tout refus affiché avec le nom et le motif ;
 ///  2. affiche une interface native COMPACTE (`ShareImportView`) : nom des
 ///     documents et EXACTEMENT les choix du contrat. Sur iOS :
-///       « Importer sans ouvrir » et « Annuler ».
+///       « Importer dans Verebona » (libellé de l'arbitrage PO du 05/11) et « Annuler ».
 ///     « Importer et ouvrir Verebona » n'est PAS proposé : une extension de
 ///     partage ne peut pas ouvrir son application (Apple DTS, forum 776488 ;
 ///     `NSExtensionContext.open` est réservé aux widgets / iMessage) — aucun
@@ -58,10 +58,11 @@ class ShareViewController: UIViewController {
     private func commit() {
         guard model.phase == .ready, let staging = stagingURL, !model.accepted.isEmpty else { return }
         model.phase = .sending // double toucher : un seul import
-        let grant = VBShareGrantStore.read()
+        // Lot 111P : rattachement au compte du jeton seulement s'il est utilisable (valide, non refusé).
+        let grant = VBGrantState.current().usable
         let manifest = VBShareManifest(
             version: 2, id: shareId, createdAt: Date().timeIntervalSince1970 * 1000,
-            accountKey: (grant?.isValid ?? false) ? grant?.accountKey : nil,
+            accountKey: grant?.accountKey,
             accountHint: VBShareGrantStore.accountHint, notified: false,
             files: model.accepted, refused: model.refused.map { VBShareRefusal(name: $0.name, reason: $0.reason) })
         do {
@@ -129,8 +130,14 @@ class ShareViewController: UIViewController {
         }
         model.accepted = accepted
         model.refused = refused.map { ShareImportModel.Refusal(name: $0.name, reason: $0.reason) }
-        let grant = VBShareGrantStore.read()
-        model.signedIn = grant?.isValid ?? false
+        // Lot 111P : l'extension ne voit PAS la session de l'application ; elle
+        // constate seulement l'état du jeton d'import local (absent, échu,
+        // refusé par le serveur, illisible) et l'annonce tel quel — jamais
+        // « Vous n'êtes pas connecté ». Code expurgé dans le journal natif.
+        let grantState = VBGrantState.current()
+        model.notice = VBShareNotice.text(for: grantState)
+        model.infoLines = VBShareNotice.infoLines(excluding: shareId)
+        VBShareDiag.log("EXT_SHOWN_\(grantState.status.uppercased())_\(grantState.storeCode)", .ext)
         if accepted.isEmpty {
             try? FileManager.default.removeItem(at: staging)
             stagingURL = nil

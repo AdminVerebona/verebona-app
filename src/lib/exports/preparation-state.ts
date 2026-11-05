@@ -11,7 +11,14 @@
  * Statuts (§2.1) : idle, loading_preparation, ready_pristine,
  * ready_modified, estimating, estimation_ready, generating, generated_pdf,
  * generated_zip, generated_partial, blocked_threshold, failed,
- * cancel_confirm, expired, file_deleted.
+ * cancel_confirm, expired, file_deleted ; lot 111B : replaced (la génération
+ * suivie a été remplacée par une régénération).
+ *
+ * Lot 111B — régénération explicite : `replacing` désigne la génération
+ * encore active que la prochaine génération remplacera (reprise à
+ * l'ouverture via `prep.activeGeneration`, ou « Modifier et régénérer »
+ * pendant une génération). Les boutons deviennent « Régénérer… », le texte
+ * `REGENERATION_NOTICE` est affiché et le corps porte `regenerate: true`.
  */
 
 import type {
@@ -22,7 +29,7 @@ import type { PrepMessage } from '@/services/exports/v12/preparation/messages';
 export type PrepStatus =
   | 'idle' | 'loading_preparation' | 'ready_pristine' | 'ready_modified' | 'estimating' | 'estimation_ready' | 'estimate_failed'
   | 'blocked_threshold' | 'generating' | 'generated_pdf' | 'generated_zip' | 'generated_partial' | 'failed'
-  | 'cancel_confirm' | 'expired' | 'file_deleted';
+  | 'cancel_confirm' | 'expired' | 'file_deleted' | 'replaced';
 
 export interface ItemState { selected: boolean; mode: ItemMode | null }
 
@@ -67,12 +74,14 @@ export interface PrepState {
   autosave: AutosaveStatus;
   /** Échecs consécutifs d'estimation (nouvelles tentatives espacées, plafonnées). */
   estimateFailures: number;
+  /** Lot 111B : génération active que la prochaine génération remplacera (« Régénérer »). */
+  replacing: { publicId: string } | null;
 }
 
 export const initialPrepState: PrepState = {
   status: 'idle', returnTo: null, prep: null, items: {}, sections: {}, memory: {}, estimate: null,
   actions: { canGeneratePdf: false, canGenerateZip: false }, messages: [], modified: false, revision: 0,
-  generation: null, error: null, confirmPdfOnly: false, autosave: 'idle', estimateFailures: 0,
+  generation: null, error: null, confirmPdfOnly: false, autosave: 'idle', estimateFailures: 0, replacing: null,
 };
 
 export type PrepAction =
@@ -101,6 +110,8 @@ export type PrepAction =
   | { type: 'GENERATE_REJECTED'; code: string; message: string; blocking?: EstimateDto['blocking']; zipOnlyItems?: EstimateDto['zipOnlyItems'] }
   | { type: 'GENERATION_UPDATE'; dto: Partial<GenerationView> & { generationStatus: string } }
   | { type: 'BACK_TO_EDIT' }
+  /** Lot 111B : pendant une génération, revenir aux choix pour la remplacer par une nouvelle version. */
+  | { type: 'EDIT_AND_REGENERATE' }
   | { type: 'AUTOSAVE'; status: AutosaveStatus };
 
 const EDITABLE: ReadonlySet<PrepStatus> = new Set(['ready_pristine', 'ready_modified', 'estimating', 'estimation_ready', 'estimate_failed', 'blocked_threshold', 'failed']);
@@ -109,7 +120,7 @@ const EDITABLE: ReadonlySet<PrepStatus> = new Set(['ready_pristine', 'ready_modi
 export const MAX_AUTO_ESTIMATE_RETRIES = 3;
 /** Délai avant la n-ième nouvelle tentative : 2 s, 4 s, 8 s. */
 export const estimateRetryDelayMs = (failures: number): number => 2000 * 2 ** Math.max(0, failures - 1);
-const GENERATED: ReadonlySet<PrepStatus> = new Set(['generated_pdf', 'generated_zip', 'generated_partial', 'expired', 'file_deleted']);
+const GENERATED: ReadonlySet<PrepStatus> = new Set(['generated_pdf', 'generated_zip', 'generated_partial', 'expired', 'file_deleted', 'replaced']);
 
 export const isEditable = (s: PrepState): boolean => EDITABLE.has(s.status) && !!s.prep;
 const isGenerated = (s: PrepState): boolean => GENERATED.has(s.status);
@@ -142,6 +153,7 @@ function mapGenerationStatus(g: string, outputFormat: string | null): PrepStatus
     case 'partial': return 'generated_partial';
     case 'expired': return 'expired';
     case 'deleted': return 'file_deleted';
+    case 'cancelled': return 'replaced';
     default: return 'failed';
   }
 }
@@ -159,6 +171,7 @@ export function prepReducer(s: PrepState, a: PrepAction): PrepState {
         ...initialPrepState,
         status: a.prep.estimate.blocking.length ? 'blocked_threshold' : 'ready_pristine',
         prep: a.prep, items, sections, estimate: a.prep.estimate, actions: a.prep.actions, messages: a.prep.messages,
+        replacing: a.prep.activeGeneration ? { publicId: a.prep.activeGeneration.publicId } : null,
       };
     }
 
@@ -321,7 +334,8 @@ export function prepReducer(s: PrepState, a: PrepAction): PrepState {
       };
 
     case 'GENERATE_ACCEPTED':
-      return s.generation ? { ...s, generation: { ...s.generation, publicId: a.publicId, generationStatus: a.generationStatus } } : s;
+      // La nouvelle génération devient la génération suivie (plus rien à remplacer).
+      return s.generation ? { ...s, replacing: null, generation: { ...s.generation, publicId: a.publicId, generationStatus: a.generationStatus } } : s;
 
     case 'GENERATE_REJECTED': {
       // Refus synchrone (seuil, « PDF seul » non confirmé, CIL, plafond…) : message,
@@ -354,6 +368,12 @@ export function prepReducer(s: PrepState, a: PrepAction): PrepState {
 
     case 'BACK_TO_EDIT':
       return s.prep ? { ...s, status: 'ready_modified', generation: null, error: null, revision: s.revision + 1 } : s;
+
+    case 'EDIT_AND_REGENERATE': {
+      const publicId = s.generation?.publicId;
+      if (!s.prep || s.status !== 'generating' || !publicId) return s;
+      return { ...s, status: 'ready_modified', replacing: { publicId }, generation: null, error: null, revision: s.revision + 1 };
+    }
 
     case 'AUTOSAVE': {
       if (a.status === s.autosave) return s;
@@ -420,10 +440,16 @@ export function buildChoices(s: PrepState, outputFormat: OutputFormat, pdfOnlyEx
   };
 }
 
-/** Corps de `POST /api/assets/{id}/exports` (génération, §17.2). */
+/**
+ * Corps de `POST /api/assets/{id}/exports` (génération, §17.2).
+ * Lot 111B : `regenerate: true` seulement pour une régénération explicite.
+ */
 export function buildGenerateBody(s: PrepState, outputFormat: OutputFormat, acknowledged = false) {
-  return { exportType: s.prep?.exportType, choices: buildChoices(s, outputFormat, acknowledged) };
+  return { exportType: s.prep?.exportType, choices: buildChoices(s, outputFormat, acknowledged), ...(s.replacing ? { regenerate: true } : {}) };
 }
+
+/** Lot 111B : la prochaine génération remplace-t-elle une génération encore active ? */
+export const isRegeneration = (s: PrepState): boolean => !!s.replacing;
 
 /** Corps de `POST …/exports/estimate` : format « naturel » calculé par le serveur. */
 export function buildEstimateBody(s: PrepState) {

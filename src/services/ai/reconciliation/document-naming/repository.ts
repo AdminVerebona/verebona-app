@@ -33,7 +33,10 @@ import { isValidBusinessTitle } from '@/lib/documents/document-title-rules';
 import { T1_SETTLED_STATES } from '../document-asset/question-gate';
 import { isDiscriminantReference, REFERENCE_KEYS } from '../document-asset/matching-index';
 import type { KnownDocumentData, NameOrigin } from './guards';
-import { NAMING_TEXT_WINDOW, selectFacts, selectPassages, type NamingDoc, type NamingDocDetail, type RawFact } from './context';
+import {
+  mergeHintRefs, NAMING_TEXT_WINDOW, NAMING_TEXT_WINDOW_OVERLAP, namingTextScanMax, passageCandidates, selectFacts, selectPassages, textHintRefs,
+  type NamingDoc, type NamingDocDetail, type PassageCandidate, type RawFact,
+} from './context';
 
 type Row = Record<string, unknown>;
 const s = (v: unknown): string | null => (v == null ? null : String(v));
@@ -101,7 +104,7 @@ const docSelect = (where: string, tail: string) => `
          COALESCE(f.document_type_code, e.document_type_code, f.document_type) AS type_code, f.rubric_code,
          COALESCE(NULLIF(btrim(f.supplier), ''), NULLIF(btrim(e.supplier_name), '')) AS supplier, e.supplier_siret,
          to_char(COALESCE(f.document_date, e.document_date), 'YYYY-MM-DD') AS document_date,
-         a.id AS asset_id, a.name AS asset_name,
+         a.id AS asset_id, a.name AS asset_name, a.updated_at AS asset_changed_at,
          e.id AS extraction_id, e.extracted_at, e.title AS extraction_title,
          CASE WHEN e.id IS NULL THEN NULL
               ELSE concat_ws('|', e.id, to_char(e.extracted_at, 'YYYY-MM-DD"T"HH24:MI:SS.US'), to_char(e.updated_at, 'YYYY-MM-DD"T"HH24:MI:SS.US'), e.full_text_chars, e.fact_count) END AS extraction_version,
@@ -169,6 +172,7 @@ function mapDoc(r: Row): NamingDoc {
     operationsDigest: s(r.operations_digest), factsDigestV2: s(r.facts_digest_v2),
     factsCount: Number(r.facts_n ?? 0), factMaxLength: Number(r.fact_max_len ?? 0), textChars: Number(r.text_chars ?? 0),
     contextChangedAt: iso(r.context_changed_at),
+    assetChangedAt: iso(r.asset_changed_at),
     textRefs: Array.isArray(r.text_keys) ? (r.text_keys as unknown[]).map(String) : [],
     textVersion: r.text_version == null ? null : String(r.text_version),
   };
@@ -194,6 +198,45 @@ export async function loadTextsForHints(accountId: number, ids: readonly number[
     for (const r of rows) out.set(Number(r.file_id), String(r.txt ?? ''));
   }
   return out;
+}
+
+/**
+ * Lot 111A (E4) — fenêtres SUIVANTES du texte extrait d'un document (au-delà
+ * de la première), lues une à une (mémoire bornée à une fenêtre), jusqu'au
+ * balayage maximal `namingTextScanMax` ; positions absolues, chevauchement
+ * identique à `textWindows`.
+ */
+async function* textWindowsAfterFirst(accountId: number, fileId: number, totalChars: number): AsyncGenerator<{ text: string; offset: number }> {
+  const fin = Math.min(totalChars, namingTextScanMax());
+  const pas = NAMING_TEXT_WINDOW - NAMING_TEXT_WINDOW_OVERLAP;
+  for (let o = pas; o + NAMING_TEXT_WINDOW_OVERLAP < fin; o += pas) {
+    const [r] = (await pgClient.unsafe(
+      `SELECT substr(COALESCE(NULLIF(full_text, ''), description, ''), $3::int, $4::int) AS txt
+         FROM document_extractions WHERE account_id = $1 AND file_id = $2`,
+      [accountId, fileId, o + 1, Math.min(NAMING_TEXT_WINDOW, fin - o)] as never[],
+    )) as unknown as Row[];
+    const txt = String(r?.txt ?? '');
+    if (!txt) return;
+    yield { text: txt, offset: o };
+  }
+}
+
+/** Lot 111A (E4) : indices textuels d'un document long — fenêtres suivantes balayées, fusion exacte avec ceux de la première. */
+export async function hintRefsBeyondWindow(accountId: number, fileId: number, totalChars: number, firstWindowRefs: readonly string[]): Promise<string[]> {
+  const listes: string[][] = [[...firstWindowRefs]];
+  for await (const w of textWindowsAfterFirst(accountId, fileId, totalChars)) listes.push(textHintRefs(w.text));
+  return mergeHintRefs(listes);
+}
+
+/** Lot 111A (E4) : meilleurs passages candidats au-delà de la première fenêtre (bornés), et caractères balayés. */
+async function passageCandidatesBeyondWindow(accountId: number, fileId: number, totalChars: number): Promise<{ candidates: PassageCandidate[]; scanned: number }> {
+  let candidates: PassageCandidate[] = [];
+  let scanned = Math.min(totalChars, NAMING_TEXT_WINDOW);
+  for await (const w of textWindowsAfterFirst(accountId, fileId, totalChars)) {
+    candidates = [...candidates, ...passageCandidates(w.text, w.offset, { keep: 40 })].sort((a, b) => b.score - a.score || a.offset - b.offset).slice(0, 40);
+    scanned = Math.max(scanned, w.offset + w.text.length);
+  }
+  return { candidates, scanned };
 }
 
 /**
@@ -403,7 +446,11 @@ export async function loadDocDetails(accountId: number, ids: readonly number[]):
     const { selected, omitted } = selectFacts(brut);
     d.facts = selected;
     const t = texte.get(id);
-    const { head, passages, textChars, omittedPassages } = selectPassages(t?.txt);
+    // Lot 111A (E4) : texte au-delà de la fenêtre — balayage borné par fenêtres, meilleurs passages sous le même budget.
+    const audela = t && t.chars > NAMING_TEXT_WINDOW ? await passageCandidatesBeyondWindow(accountId, id, t.chars) : null;
+    const { head, passages, textChars, omittedPassages, textScanned, textNotScanned } = selectPassages(t?.txt, undefined, {
+      extra: audela?.candidates, totalChars: t?.chars, scannedChars: audela?.scanned,
+    });
     d.excerpt = head;
     d.passages = passages;
     const contrats = new Map<string, string>();
@@ -411,10 +458,12 @@ export async function loadDocDetails(accountId: number, ids: readonly number[]):
     d.contracts = [...contrats].map(([reference, source]) => ({ reference, source }));
     const total = Math.max(textChars, t?.chars ?? 0);
     // Lot 76B (C6) : omissions signalées au modèle (abstention possible) et au rapport.
+    // Lot 111A (E4) : texte au-delà de la fenêtre BALAYÉ (passages sélectionnés) — seul le texte non balayé reste une omission.
     const omissions = {
       factsOmitted: omitted, factValuesShortened: selected.filter((f) => f.truncated).length,
       discriminantPassagesOmitted: omittedPassages, textBeyondWindow: Math.max(0, total - NAMING_TEXT_WINDOW),
-      significant: omitted > 0 || omittedPassages > 0 || total > NAMING_TEXT_WINDOW,
+      textScanned, textNotScanned,
+      significant: omitted > 0 || omittedPassages > 0 || textNotScanned > 0,
     };
     d.context = {
       factsTotal: brut.length, factsProvided: selected.length, textChars: total, passagesProvided: passages.length,
@@ -443,8 +492,12 @@ export async function loadDocDetails(accountId: number, ids: readonly number[]):
  * 100 000), valeurs de faits entières, noms antérieurs transmis à l'IA
  * (historique) : une information transmise n'est jamais refusée pour être
  * hors de la fenêtre de validation.
+ *
+ * Lot 111A (E4) : `transmittedPassages` — passages situés AU-DELÀ de la
+ * fenêtre et effectivement transmis à l'IA : preuves admises (strictement les
+ * mêmes que celles présentées au modèle, jamais le reste du texte).
  */
-export async function loadKnownData(accountId: number, doc: NamingDoc): Promise<KnownDocumentData> {
+export async function loadKnownData(accountId: number, doc: NamingDoc, opts: { transmittedPassages?: readonly string[] } = {}): Promise<KnownDocumentData> {
   const [faits, ext, ops, histo] = await Promise.all([
     pgClient.unsafe(
       `SELECT COALESCE(value_text, normalized_value, value_number::text) AS v, normalized_value AS nv, label,
@@ -478,6 +531,7 @@ export async function loadKnownData(accountId: number, doc: NamingDoc): Promise<
     ...faits.flatMap((f) => [s(f.v), s(f.nv), s(f.label)]),
     ...ops.map((o) => s(o.r)),
     ...histo.map((h) => s(h.n)),
+    ...(opts.transmittedPassages ?? []),
   ].filter((t): t is string => !!t && t.trim().length > 0);
   return {
     dates: [doc.documentDate, s(e?.d)].filter((x): x is string => !!x),
@@ -506,6 +560,8 @@ export interface GroupProgress {
   upgradeFp?: string;
   /** Lot 109J : taille d'appel réduite (sortie tronquée, contexte trop grand) — reprise sans rejouer l'appel identique. */
   chunkDocs?: number;
+  /** Lot 111A (E1) : composition vue par l'examen en cours (identifiant → `famille:données`), recontrôlée à la reprise. */
+  deps?: Record<string, string>;
 }
 /** Lot 76B (C5) : recalage d'un lot d'une version antérieure du contexte. */
 export type UpgradeState = 'TECHNICAL' | 'EXPECTED' | 'REVIEWED';
@@ -606,6 +662,19 @@ export async function lastFactsChangeAt(accountId: number): Promise<string | nul
   const [r] = (await pgClient.unsafe(
     `SELECT max(changed_at) AS at FROM account_knowledge_changes WHERE account_id = $1 AND kind = 'FACT'`,
     [accountId] as never[],
+  ).catch(() => [{ at: null }])) as unknown as Array<{ at: unknown }>;
+  return iso(r?.at);
+}
+
+/**
+ * Lot 111A (E2) : dernière modification d'une NATURE de connaissance du
+ * compte (journal 0292, tenu par déclencheurs ; compacté en gardant la plus
+ * récente par nature) — ex. ASSET : bien créé, renommé, modifié, supprimé.
+ */
+export async function lastKnowledgeChangeAt(accountId: number, kind: 'ASSET' | 'FACT' | 'LINK' | 'DOCUMENT_LINK'): Promise<string | null> {
+  const [r] = (await pgClient.unsafe(
+    `SELECT max(changed_at) AS at FROM account_knowledge_changes WHERE account_id = $1 AND kind = $2`,
+    [accountId, kind] as never[],
   ).catch(() => [{ at: null }])) as unknown as Array<{ at: unknown }>;
   return iso(r?.at);
 }

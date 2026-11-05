@@ -48,7 +48,7 @@
 import { daysInclusive, isIsoDate } from '../finance/engine';
 import type { TcoCategory, TcoEconomicLine, UsageBudget } from './model';
 import { tcoLineKeys } from './user-decisions';
-import { TCO_DAYS_PER_YEAR } from './annual';
+import { annualizeCents, type TcoOwnershipDuration } from './annual';
 
 type UsageCategory = UsageBudget['category'];
 type Periodicity = UsageBudget['periodicity'];
@@ -102,6 +102,14 @@ export interface UsageComplementInput {
   documentedCents: number;
   /** Jours de possession de la moyenne annuelle (null : moyenne non calculée). */
   averageDays: number | null;
+  /** Lot 111F : durée de possession en années anniversaires (même diviseur que le coût annuel moyen documenté). */
+  averageDuration?: TcoOwnershipDuration | null;
+  /**
+   * Lot 111F : prix d'acquisition du bien retiré de la moyenne annuelle avec
+   * estimations (même base que le coût annuel moyen documenté) ; null : moyenne
+   * non calculée.
+   */
+  averageExcludedCents?: number | null;
   net: { estimatedCents: number | null; finalCents: number | null; provisionalCents: number | null };
 }
 
@@ -201,7 +209,7 @@ export interface UsageComplement {
   matchedRealCents: number;
   /** Σ des forfaits applicables (périodes échues). */
   forfaitCents: number;
-  /** TCO moyen annuel avec estimations (null : moyenne non calculée). */
+  /** Coût annuel moyen de possession avec estimations, prix d'achat du bien exclu (lot 111F ; null : non calculé). */
   averageWithEstimatesCents: number | null;
   /** Coûts nets avec estimations (null : non calculables). */
   netEstimatedWithEstimatesCents: number | null;
@@ -481,7 +489,9 @@ export function computeUsageComplement(input: UsageComplementInput): UsageComple
     totalWithEstimatesCents: total,
     matchedRealCents: reel,
     forfaitCents: forfait,
-    averageWithEstimatesCents: input.averageDays && input.averageDays > 0 ? Math.round((total * TCO_DAYS_PER_YEAR) / input.averageDays) : null,
+    // Lot 111F : même base hors prix d'acquisition du bien que le coût annuel moyen documenté (jamais l'achat annualisé).
+    averageWithEstimatesCents: input.averageDuration && input.averageExcludedCents != null
+      ? annualizeCents(total - input.averageExcludedCents, input.averageDuration) : null,
     netEstimatedWithEstimatesCents: plus(input.net.estimatedCents),
     netFinalWithEstimatesCents: plus(input.net.finalCents),
     provisionalNetWithEstimatesCents: plus(input.net.provisionalCents),

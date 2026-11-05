@@ -93,11 +93,16 @@ describe('L108J-U03 — guide progressif : usages constatés, jamais l’ancienn
   });
 });
 
+// Lot 111L : les candidates « Exploiter » de ce jeu étaient des listes (« Quels
+// sont les documents de Cupra ? », « Quels documents ne sont rattachés à aucun
+// bien ? ») — elles n'atteignent plus la sélection (critère d'utilité,
+// `utility.ts`). Ce test porte sur l'ALGORITHME de sélection (répartition,
+// sujets, version) : il reçoit désormais des candidates de forme concrète.
 const PERSO: AccountCandidate[] = [
-  { catalogId: 'home_asset_docs', label: 'Quels sont les documents de Cupra ?', objective: 'EXPLOIT', priority: 1, canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', topic: 'asset-docs', assetId: 7 },
+  { catalogId: 'exemple_cout_entretien', label: 'Combien m’a coûté l’entretien de Cupra ?', objective: 'EXPLOIT', priority: 1, canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', topic: 'maintenance-cost', assetId: 7 },
   { catalogId: 'assets_deadlines', label: 'Quelles sont les prochaines échéances de Cupra ?', objective: 'ANTICIPATE', priority: 1, canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', topic: 'deadlines', assetId: 7 },
   { catalogId: 'home_next_deadline', label: 'Quelle est ma prochaine échéance ?', objective: 'ANTICIPATE', priority: 2, canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', topic: 'deadlines' },
-  { catalogId: 'docs_unlinked', label: 'Quels documents ne sont rattachés à aucun bien ?', objective: 'EXPLOIT', priority: 2, canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', topic: 'docs_unlinked' },
+  { catalogId: 'exemple_franchise', label: 'Quelle franchise est prévue par mon assurance ?', objective: 'EXPLOIT', priority: 2, canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', topic: 'insurance' },
 ];
 
 describe('L108J-U04 — sélection : trois, répartition libre, sujets uniques, version stable', () => {

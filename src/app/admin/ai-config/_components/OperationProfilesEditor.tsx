@@ -35,6 +35,8 @@ export interface PlanView {
   temperature: { profile: string | null; sent: number | null };
   adaptations: Array<{ parameter: string; reason: string; requested: unknown; sent: unknown }>;
   refusal: { parameter: string; message: string } | null;
+  /** Lot 111M : entrée disponible du rang (limite du modèle − sortie transmise − marge). */
+  input?: { modelLimit: number | null; available: number | null; reasoningIncludedInCap: boolean };
 }
 
 const SLOTS = [['primaryModel', 'Principal'], ['fallback1', 'Repli 1'], ['fallback2', 'Repli 2']] as const;
@@ -158,6 +160,8 @@ export function OperationProfilesEditor({
                             {' '}— raisonnement {l.reasoning.sent ?? 'défaut du modèle'} ({ORIGINE[l.reasoning.origin] ?? l.reasoning.origin})
                             {' '}· sortie {l.maxOutputTokens.sent?.toLocaleString('fr-FR') ?? 'défaut du modèle'} ({ORIGINE[l.maxOutputTokens.origin] ?? l.maxOutputTokens.origin}
                             {l.adaptations.some((a) => a.reason === 'MODEL_OUTPUT_LIMIT') ? `, ramené à la limite du modèle ${l.maxOutputTokens.modelLimit?.toLocaleString('fr-FR')}` : ''})
+                            {l.input?.reasoningIncludedInCap ? ' · raisonnement compris dans ce plafond' : ''}
+                            {' '}· entrée disponible {l.input?.available != null ? l.input.available.toLocaleString('fr-FR') : 'limite du modèle inconnue'}
                             {' '}· délai {l.timeoutMs} ms · température {l.temperature.sent ?? 'défaut du modèle'}
                             {l.adaptations.some((a) => a.reason === 'CAPABILITY_UNKNOWN') ? ' · capacité inconnue : réglage non transmis' : ''}
                           </>

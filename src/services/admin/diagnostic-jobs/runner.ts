@@ -24,6 +24,19 @@
  * GARDES : délai global, annulation, bail perdu, mémoire (seuil de garde) —
  * vérifiés entre deux fichiers ET à chaque écriture (une grande table ne
  * retarde pas l'arrêt).
+ *
+ * Lot 111C — ARRÊT COOPÉRATIF (remplacement d'une demande globale,
+ * annulation) : l'annulation est lue en base toutes les
+ * DIAG_JOB_CANCEL_POLL_MS (3 s) sans attendre le renouvellement du bail ; la
+ * requête SQL en cours de l'instantané est interrompue (`pg_cancel_backend`
+ * sur la connexion réservée de la session) ; l'écriture suivante (extraction,
+ * envoi) s'arrête ; l'envoi en plusieurs parties ouvert est abandonné,
+ * l'instantané fermé (ROLLBACK), les fichiers de la tentative et les envois
+ * OVH incomplets supprimés, le bail libéré, puis CANCELLED (motif stable,
+ * référence de la remplaçante). Aucun fichier temporaire local : tout est
+ * compressé en flux vers le stockage. Une annulation l'emporte sur l'erreur
+ * qu'elle provoque (requête interrompue ≠ délai SQL dépassé). La publication
+ * vérifie atomiquement bail + statut + absence d'annulation.
  */
 import { readContainerMemory } from '@/lib/runtime/memory-monitor';
 import type { S3Client } from '@aws-sdk/client-s3';
@@ -32,7 +45,7 @@ import {
   type DiagJobErrorCode, type DiagJobPhase, type DiagJobProgress, type DiagJobStatus,
 } from './state';
 import {
-  DiagLeaseLostError, failDiagnosticAttempt, publishDiagnosticJob, setDiagnosticPhase, type DiagJobRow,
+  DiagLeaseLostError, failDiagnosticAttempt, publishDiagnosticJob, readDiagnosticControl, setDiagnosticPhase, type DiagJobRow,
 } from './repository';
 
 export interface DiagStorage { client: Pick<S3Client, 'send'>; bucket: string }
@@ -53,6 +66,8 @@ export interface DiagRunContext {
   batchRows?: number;
   /** Tests : mesure mémoire imposée (Mo). */
   rssMb?: () => number;
+  /** Lot 111C : lecture de l'annulation (ms) ; défaut DIAG_JOB_CANCEL_POLL_MS. */
+  cancelPollMs?: number;
 }
 
 /** Fichier stocké d'une tentative. */
@@ -127,6 +142,37 @@ export async function deletePrefix(storage: DiagStorage, prefix: string, keep?: 
   return n;
 }
 
+/**
+ * Lot 111C : abandonne les envois en plusieurs parties INCOMPLETS d'un préfixe
+ * (objets OVH invisibles dans la liste, mais facturés) ; best effort.
+ */
+export async function abortIncompleteUploads(storage: DiagStorage, prefix: string): Promise<number> {
+  const { ListMultipartUploadsCommand, AbortMultipartUploadCommand } = await import('@aws-sdk/client-s3');
+  let n = 0;
+  let keyMarker: string | undefined;
+  let idMarker: string | undefined;
+  for (let page = 0; page < 20; page++) {
+    const r = await storage.client.send(new ListMultipartUploadsCommand({ Bucket: storage.bucket, Prefix: prefix, KeyMarker: keyMarker, UploadIdMarker: idMarker })) as {
+      Uploads?: Array<{ Key?: string; UploadId?: string }>; IsTruncated?: boolean; NextKeyMarker?: string; NextUploadIdMarker?: string;
+    };
+    for (const u of r.Uploads ?? []) {
+      if (!u.Key || !u.UploadId || !u.Key.startsWith(prefix)) continue;
+      await storage.client.send(new AbortMultipartUploadCommand({ Bucket: storage.bucket, Key: u.Key, UploadId: u.UploadId })).catch(() => undefined);
+      n++;
+    }
+    if (!r.IsTruncated) break;
+    keyMarker = r.NextKeyMarker;
+    idMarker = r.NextUploadIdMarker;
+  }
+  return n;
+}
+
+/** Lot 111C : nettoyage complet d'un préfixe (objets + envois incomplets), sans jamais lever. */
+export async function purgeDiagnosticPrefix(storage: DiagStorage, prefix: string, keep?: string): Promise<void> {
+  await deletePrefix(storage, prefix, keep).catch((e) => console.error('[diagnostic-job] suppression des fichiers impossible :', sanitizeErrorMessage(e)));
+  await abortIncompleteUploads(storage, prefix).catch(() => undefined);
+}
+
 const log = (event: string, data: Record<string, unknown>) => console.info(`[diagnostic-job] ${JSON.stringify({ event, ...data })}`);
 
 /**
@@ -146,10 +192,35 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
   const stored: StoredFile[] = [];
   let openUpload: { abort(): Promise<void> } | null = null;
 
+  // ── Lot 111C : annulation lue en base, interruption de la requête SQL en cours ──
+  let cancelSeen = false;
+  let backendPid: number | null = null;
+  /** Début de la transaction de l'instantané : l'interruption ne vise QUE cette transaction (jamais une connexion rendue au pool). */
+  let backendXact: string | null = null;
+  let interrupted = false;
+  const cancelled = () => cancelSeen || ctx.cancelRequested();
+  // Interruption RÉPÉTÉE à chaque lecture tant que l'instantané est ouvert : une requête suivante
+  // (même table, verrou toujours tenu ailleurs) ne peut pas reprendre l'attente.
+  const interrupt = async () => {
+    if (!interrupted) log('interrupt', { jobId: job.id, attempt: job.attempt, phase, current: progress.current, backendPid });
+    interrupted = true;
+    if (backendPid) {
+      const { pgClient } = await import('@/db');
+      await pgClient`SELECT pg_cancel_backend(pid) FROM pg_stat_activity WHERE pid = ${backendPid} AND xact_start::text = ${backendXact}`.catch(() => undefined);
+    }
+  };
+  const poll = setInterval(() => {
+    if (cancelled()) { void interrupt(); return; }
+    void readDiagnosticControl(job.id, ctx.workerId).then((c) => {
+      if (c.cancelRequested) { cancelSeen = true; void interrupt(); }
+    }).catch(() => undefined);
+  }, ctx.cancelPollMs ?? settings.cancelPollMs);
+  poll.unref?.();
+
   /** Garde commune : rend le motif d'arrêt, ou null. */
   const stopReason = (): { code: DiagJobErrorCode | 'LEASE'; message: string } | null => {
     if (!ctx.isActive()) return { code: 'LEASE', message: 'bail perdu' };
-    if (ctx.cancelRequested()) return { code: 'CANCELLED', message: 'annulation demandée' };
+    if (cancelled()) return { code: 'CANCELLED', message: 'annulation demandée' };
     if (Date.now() > ctx.deadline) return { code: 'JOB_TIMEOUT', message: `délai global de ${Math.round(settings.timeoutMs / 60_000)} min dépassé` };
     const rss = sampleMemory(progress, ctx.rssMb);
     if (guardMb && rss > guardMb) return { code: 'MEMORY_GUARD', message: `mémoire ${rss} Mo > seuil ${guardMb} Mo (limite du conteneur ${progress.memoryLimitMb ?? '?'} Mo)` };
@@ -172,7 +243,7 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
     storage = ctx.storage ?? await defaultStorage();
     // Fichiers d'une tentative précédente (interrompue) : supprimés — jamais mélangés à ceux-ci.
     step = 'cleanup';
-    await deletePrefix(storage, root, prefix).catch((e) => console.error('[diagnostic-job] nettoyage des tentatives précédentes impossible :', sanitizeErrorMessage(e)));
+    await purgeDiagnosticPrefix(storage, root, prefix);
     const st = storage;
     const { openGzipUpload } = await import('@/services/backup/s3-gzip-upload');
     const { openReadSession } = await import('@/services/admin/account-data/session');
@@ -205,6 +276,12 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
 
     step = 'snapshot';
     const session = await openReadSession({}, { statementTimeoutMs: settings.statementTimeoutMs });
+    // Lot 111C : connexion réservée de l'instantané — cible de l'interruption en cas d'annulation.
+    await session.q('SELECT pg_backend_pid() AS pid, (SELECT xact_start::text FROM pg_stat_activity WHERE pid = pg_backend_pid()) AS xs').then((r) => {
+      backendXact = r[0]?.xs == null ? null : String(r[0].xs);
+      backendPid = backendXact ? Number(r[0]?.pid) || null : null;
+    }, () => undefined);
+    if (cancelled()) void interrupt();
     let outcome: { status: 'COMPLETE' | 'PARTIAL' | 'FAILED'; manifest: import('@/services/admin/diagnostics-export/model').DiagManifest; fileName: string };
     try {
       await enter('INVENTAIRE');
@@ -225,6 +302,7 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
         },
       );
     } finally {
+      backendPid = null;
       await session.close().catch(() => undefined);
     }
     const m = outcome.manifest;
@@ -270,20 +348,28 @@ export async function runDiagnosticJob(job: DiagJobRow, ctx: DiagRunContext): Pr
     log('published', { jobId: job.id, attempt: job.attempt, status: outcome.status, files: stored.length, compressedBytes: progress.compressedBytes, peakRssMb: progress.peakRssMb });
     return outcome.status;
   } catch (e) {
+    clearInterval(poll);
     await (openUpload as { abort(): Promise<void> } | null)?.abort().catch(() => undefined);
     const lease = e instanceof DiagLeaseLostError || (e as { lease?: boolean })?.lease === true;
     if (lease) {
       log('lease-lost', { jobId: job.id, attempt: job.attempt, phase });
+      // Lot 111C : demande close entre-temps (annulée, remplacée, en échec) — plus personne ne
+      // reprendra ces fichiers : supprimés. Reprise ailleurs (RUNNING) : la suivante s'en charge.
+      const c = await readDiagnosticControl(job.id, ctx.workerId).catch(() => null);
+      if (storage && c && c.status !== 'RUNNING') await purgeDiagnosticPrefix(storage, prefix);
       return null;
     }
-    const code = classifyDiagJobError(e, step);
+    const isCancel = cancelled() || (e as { diagCode?: unknown })?.diagCode === 'CANCELLED';
+    const code = isCancel ? 'CANCELLED' : classifyDiagJobError(e, step);
     const message = sanitizeErrorMessage(e);
-    if (storage) await deletePrefix(storage, prefix).catch(() => undefined);
+    if (storage) await purgeDiagnosticPrefix(storage, prefix);
     const status = await failDiagnosticAttempt(job, ctx.workerId, {
-      code, phase, message, transient: isTransientError(code), progress, cancelled: code === 'CANCELLED',
+      code, phase, message, transient: isTransientError(code), progress, cancelled: isCancel,
     });
-    console.error(`[diagnostic-job] ${JSON.stringify({ event: 'attempt-failed', jobId: job.id, attempt: job.attempt, code, phase, step, status, rssMb: progress.rssMb, peakRssMb: progress.peakRssMb, message })}`);
+    console.error(`[diagnostic-job] ${JSON.stringify({ event: isCancel ? 'attempt-cancelled' : 'attempt-failed', jobId: job.id, attempt: job.attempt, code, phase, step, status, rssMb: progress.rssMb, peakRssMb: progress.peakRssMb, message })}`);
     return status;
+  } finally {
+    clearInterval(poll);
   }
 }
 

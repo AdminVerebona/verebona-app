@@ -50,6 +50,14 @@ export async function registerNode(): Promise<void> {
     onAlert: (s, ctx) => { void import('@/services/admin/memory-supervision').then((m) => m.reportMemoryPressure(s, ctx)).catch(() => undefined); },
     onRecover: (s, ctx) => { void import('@/services/admin/memory-supervision').then((m) => m.resolveMemoryPressure(s, ctx)).catch(() => undefined); },
   });
+  // 00 ter. Lot 111C : superviseur de la file des diagnostics BO, démarré TÔT dans
+  //     chaque processus web — indépendant du worker et des étapes suivantes (un
+  //     démarrage interrompu avant l'étape 9 bis laisse quand même une alerte BO
+  //     « worker indisponible » quand une demande attend).
+  if (role.process === 'web') {
+    const { startDiagnosticSupervisor } = await import('@/services/admin/diagnostic-jobs/supervision');
+    startDiagnosticSupervisor();
+  }
 
   // 0. Secrets de signature des liens envoyés par e-mail (vérification
   //    d'adresse, réinitialisation du mot de passe). En production, sans
@@ -329,8 +337,11 @@ export async function registerNode(): Promise<void> {
   //    mode 'job') — bail, reprise après arrêt du processus, un diagnostic à
   //    la fois sur l'ensemble des instances. DIAG_JOB_WORKER_DISABLED=true le
   //    retire de cette instance.
-  const { startDiagnosticWorker } = await import('@/services/admin/diagnostic-jobs/worker');
+  const { startDiagnosticWorker, markDiagnosticWorkerNotHere } = await import('@/services/admin/diagnostic-jobs/worker');
   if (role.backgroundJobs) startDiagnosticWorker();
+  // Lot 111C : un processus qui ne porte pas le worker le dit en base (battement) ;
+  //    le superviseur de la file est démarré plus haut (étape 00 ter).
+  else markDiagnosticWorkerNotHere();
 
   // 9 ter. Lot 109H : séparation activée (BACKGROUND_JOBS_PROCESS=worker) —
   //     le conteneur web vérifie qu'un worker bat (sinon anomalie de

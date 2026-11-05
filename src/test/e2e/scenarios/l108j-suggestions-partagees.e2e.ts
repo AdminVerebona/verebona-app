@@ -167,9 +167,12 @@ scenario('L108J-SUGG', 'Lot 108J — suggestions partagées : affichée → cliq
     await sql`UPDATE asset_files SET analysis_state = 'ANALYZED' WHERE account_id = ${c.id}`;
     const analyse = await affichees(c);
     expect(analyse.items.map((x) => x.id)).not.toEqual(ajout);
-    // Toujours trois, dont au moins une question personnelle fondée (documents de Cupra).
+    // Toujours trois. Lot 111L : un bien et UN document ne justifient plus
+    // « Quels sont les documents de Cupra ? » (simple inventaire, la fiche du
+    // bien y répond) — le guide vérifié complète, aucune question d'inventaire.
     expect(analyse.items).toHaveLength(3);
-    expect(analyse.items.some((x) => x.id === 'acc_home_asset_docs' && x.label.includes('Cupra'))).toBe(true);
+    expect([...analyse.items, ...analyse.reserve].some((x) => x.id === 'acc_home_asset_docs' || /Quels sont les documents/.test(x.label))).toBe(false);
+    expect(analyse.items.every((x) => x.objective === 'GUIDE')).toBe(true);
     // Standard : la question d'aide reçoit une réponse fondée (droits effectifs, aucune promotion d'offre).
     const guide = analyse.items.find((x) => x.objective === 'GUIDE')!;
     const { r } = await cliquer(c, guide, analyse.version, { planType: 'STANDARD' });
@@ -177,7 +180,7 @@ scenario('L108J-SUGG', 'Lot 108J — suggestions partagées : affichée → cliq
     expect((r.sources ?? []).every((x: { type: string }) => x.type === 'help_entry' || x.type === 'product_rule')).toBe(true);
   });
 
-  it('L108J-E2E-03 — compte établi : Exploiter + Anticiper + Découvrir ; chaque clic → bonne intention, bonnes sources, Ressource citée avec lien', async () => {
+  it('L108J-E2E-03 — compte établi : Anticiper + Découvrir (lot 111L : plus d’inventaire « Exploiter ») ; chaque clic → bonne intention, bonnes sources, Ressource citée avec lien', async () => {
     const c = await compte();
     const cupra = await bien(c, 'Cupra');
     for (let i = 0; i < 6; i += 1) await fichier(c, cupra, `Facture entretien ${i + 1}`);
@@ -185,17 +188,13 @@ scenario('L108J-SUGG', 'Lot 108J — suggestions partagées : affichée → cliq
     const a = await affichees(c);
     expect(a.items).toHaveLength(3);
     const obj = a.items.map((x) => x.objective);
-    expect(obj).toContain('EXPLOIT');
+    // Lot 111L : « Quels sont les documents de Cupra ? » n'est plus promue (simple
+    // inventaire) ; posée librement, elle fonctionne (l111l-suggestions-utilite.e2e.ts).
+    expect(obj).not.toContain('EXPLOIT');
     expect(obj).toContain('ANTICIPATE');
     expect(obj).toContain('GUIDE');
-    const guide = a.items.find((x) => x.objective === 'GUIDE')!;
-    expect(guide.source).toBe('RESOURCES');
-
-    // A. Exploiter : documents du bien NOMMÉ, bien revalidé côté serveur.
-    const exploit = a.items.find((x) => x.objective === 'EXPLOIT')!;
-    const e = await cliquer(c, exploit, a.version);
-    expect(e.v.assetId).toBe(cupra);
-    verifierReponse(e.r, 'ACCOUNT_SEARCH_DOCUMENT', ['document']);
+    const guide = a.items.find((x) => x.objective === 'GUIDE' && x.source === 'RESOURCES')!;
+    expect(guide).toBeDefined();
 
     // B. Anticiper : échéance réelle à venir.
     const anticipe = a.items.find((x) => x.objective === 'ANTICIPATE')!;

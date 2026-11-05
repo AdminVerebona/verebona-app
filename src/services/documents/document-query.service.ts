@@ -197,6 +197,11 @@ async function loadAssociations(fileIds: number[]) {
       linkedAssetId: assetFiles.linkedAssetId,
       otherAssetIds: OTHER_ASSET_IDS_SQL,
       equipmentId: assetFiles.equipmentId,
+      // Lot 111I : équipements liés (liens N-N PRIMARY / SECONDARY actifs), en plus de la colonne principale.
+      otherEquipmentIds: sql<number[]>`(SELECT COALESCE(array_agg(DISTINCT dal.equipment_id ORDER BY dal.equipment_id), '{}'::int[])
+        FROM document_asset_links dal
+       WHERE dal.file_id = ${assetFiles.id} AND dal.status = 'ACTIVE' AND dal.equipment_id IS NOT NULL
+         AND dal.link_role IN ('PRIMARY', 'SECONDARY') AND dal.equipment_id IS DISTINCT FROM ${assetFiles.equipmentId})`,
     })
     .from(assetFiles)
     .where(inArray(assetFiles.id, fileIds));
@@ -204,7 +209,7 @@ async function loadAssociations(fileIds: number[]) {
   const others = (v: unknown): number[] => (Array.isArray(v) ? v : typeof v === 'string' ? v.replace(/[{}]/g, '').split(',') : [])
     .map(Number).filter((n) => Number.isInteger(n) && n > 0);
   const assetIds = [...new Set(rows.flatMap((r) => [r.assetId, r.linkedAssetId, ...others(r.otherAssetIds)]).filter(Boolean))] as number[];
-  const equipmentIds = [...new Set(rows.map((r) => r.equipmentId).filter(Boolean))] as number[];
+  const equipmentIds = [...new Set(rows.flatMap((r) => [r.equipmentId, ...others(r.otherEquipmentIds)]).filter(Boolean))] as number[];
 
   // Lot 53 (retour PO D23) : seuls les biens / équipements du MÊME compte que
   // le document sont associés — une relation intercomptes héritée n'en
@@ -234,13 +239,15 @@ async function loadAssociations(fileIds: number[]) {
       row.fileId,
       ids.map((id) => ({ id, name: assetInfo.get(id)?.name ?? `Bien ${id}`, kind: 'asset' as const })),
     );
-    const equip = row.equipmentId ? equipmentInfo.get(row.equipmentId) : undefined;
-    if (row.equipmentId && equip && equip.accountId === row.accountId) {
-      byFileEquipments.set(row.fileId, [{
-        id: row.equipmentId,
-        name: equip.name ?? `Élément ${row.equipmentId}`,
+    // Lot 111I : TOUS les équipements rattachés (principal d'abord), du même compte seulement.
+    const equipIds = ([...new Set([row.equipmentId, ...others(row.otherEquipmentIds)].filter(Boolean))] as number[])
+      .filter((id) => equipmentInfo.get(id)?.accountId === row.accountId);
+    if (equipIds.length) {
+      byFileEquipments.set(row.fileId, equipIds.map((id) => ({
+        id,
+        name: equipmentInfo.get(id)?.name ?? `Élément ${id}`,
         kind: 'equipment' as const,
-      }]);
+      })));
     }
   }
 

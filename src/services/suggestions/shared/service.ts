@@ -67,6 +67,7 @@ import {
 } from './select';
 import { readConsultedSuggestions, recordSuggestionConsultation } from './consultations';
 import { RESOURCE_QUESTION_CATALOG_VERSION, checkResourceEvidence } from './resource-questions';
+import { SUGGESTION_UTILITY_RULE_VERSION, qualifySuggestion, type UtilityDecision } from './utility';
 import type { SuggestionEvidence } from '@/services/verebona-assistant/types/contracts';
 
 /** Codes stables du diagnostic (BO, jamais affichés à l'utilisateur). */
@@ -92,6 +93,17 @@ export interface SharedSuggestionDiagnostic {
   consulted: number;
   helpCorpus: { available: boolean; version: string | null };
   resourcesCorpus: { available: boolean; version: string | null; articles: number; alert: string | null };
+  /**
+   * Lot 111L : candidates répondables pour ce compte mais NON promues (critère
+   * d'utilité) — simple inventaire, information déjà affichée, action.
+   */
+  notUseful?: Array<{ id: string; decision: UtilityDecision }>;
+  /**
+   * Lot 111L : quota d'affichage (3 au plus) et nombre réellement servi.
+   * `QUALITY_LIMIT` : moins de trois questions de qualité existent — le
+   * service en rend moins, jamais un remplissage dégradé.
+   */
+  quota?: { max: number; served: number; shortfall: 'QUALITY_LIMIT' | null };
   /** Lot 110E : couverture effective de chaque question Ressources du catalogue (preuve de réponse). */
   resourceCoverage?: Array<{ id: string; status: string; articleId: string | null; revision: number | null; revisionChanged: boolean; missingSubjects: string[] }>;
   cache: 'HIT' | 'MISS';
@@ -102,9 +114,15 @@ export interface SharedSuggestionsResult {
   diagnostic: SharedSuggestionDiagnostic;
 }
 
-/** Empreinte des DÉFINITIONS du stock : un stock modifié change la version. */
-const STOCK_VERSION = createHash('sha256')
-  .update(JSON.stringify([ACCOUNT_STOCK, GUIDE_STOCK.map(({ when: _w, ...e }) => e), RESOURCE_QUESTION_CATALOG_VERSION]))
+/**
+ * Empreinte des DÉFINITIONS du stock et de la RÈGLE d'utilité (lot 111L) : un
+ * stock ou une règle modifiés changent la version — au déploiement, toute
+ * sélection mémorisée (cache serveur par empreinte, magasin du navigateur
+ * qui compare la version) est remplacée à sa prochaine lecture, sans
+ * régénération ni appel IA.
+ */
+export const STOCK_VERSION = createHash('sha256')
+  .update(JSON.stringify([ACCOUNT_STOCK, GUIDE_STOCK.map(({ when: _w, ...e }) => e), RESOURCE_QUESTION_CATALOG_VERSION, SUGGESTION_UTILITY_RULE_VERSION]))
   .digest('hex').slice(0, 12);
 
 // ── Lecture des usages (compteurs bornés au compte) ─────────────────────────
@@ -135,16 +153,37 @@ async function readUsage(accountId: number, userId: number | null, ctx: Suggesti
   };
 }
 
-/** Questions personnelles A / B rendues avec le contexte serveur (préconditions du catalogue). */
-export function accountCandidatesOf(ctx: SuggestionContext | null): AccountCandidate[] {
-  if (!ctx?.state) return [];
-  const out: AccountCandidate[] = [];
+/** Nom du bien désigné par une question rendue (retiré par la compréhension : il fixe le périmètre). */
+function targetNameOf(ctx: SuggestionContext, assetId: number | undefined): string | null {
+  if (!assetId) return null;
+  const b = [ctx.accountAsset, ctx.pageAsset].find((x) => x?.id === assetId);
+  return b?.name ?? null;
+}
+
+/**
+ * Questions personnelles A / B (lot 111L) : rendues avec le contexte serveur
+ * (préconditions du catalogue = preuve), PUIS qualifiées par le critère
+ * d'utilité. `rejected` : répondables mais non promues (diagnostic BO).
+ */
+export function reviewAccountCandidates(ctx: SuggestionContext | null): { accepted: AccountCandidate[]; rejected: Array<{ id: string; decision: UtilityDecision }> } {
+  const accepted: AccountCandidate[] = [];
+  const rejected: Array<{ id: string; decision: UtilityDecision }> = [];
+  if (!ctx?.state) return { accepted, rejected };
   for (const e of ACCOUNT_STOCK) {
     const r = renderSuggestionEntry(e.catalogId, ctx);
-    if (!r) continue;
-    out.push({ catalogId: e.catalogId, label: r.label, objective: e.objective, priority: e.priority, canonicalIntent: r.canonicalIntent, topic: r.topic, ...(r.assetId ? { assetId: r.assetId } : {}) });
+    if (!r) continue; // aucune preuve : pas même examinée
+    const q = qualifySuggestion({
+      need: e.need, shownBy: e.shownBy ?? null, label: r.label, canonicalIntent: r.canonicalIntent, targetName: targetNameOf(ctx, r.assetId), proven: true,
+    });
+    if (!q.promotable) { rejected.push({ id: `acc_${e.catalogId}`, decision: q.decision }); continue; }
+    accepted.push({ catalogId: e.catalogId, label: r.label, objective: e.objective, priority: e.priority, canonicalIntent: r.canonicalIntent, topic: r.topic, ...(r.assetId ? { assetId: r.assetId } : {}) });
   }
-  return out;
+  return { accepted, rejected };
+}
+
+/** Questions personnelles A / B promouvables (préconditions ET utilité). */
+export function accountCandidatesOf(ctx: SuggestionContext | null): AccountCandidate[] {
+  return reviewAccountCandidates(ctx).accepted;
 }
 
 /** Questions du guide de l'étape, répondables (pure à mémoïsation près). */
@@ -157,6 +196,8 @@ export function guideCandidatesOf(stage: GuideStage, usage: UsageSignals | null,
   for (const e of entries) {
     const a = guideAnswerability(e, corpora);
     if (a === 'NOT_ANSWERABLE') { notAnswerable.push(e.id); continue; }
+    // Lot 111L : même critère d'utilité que les questions personnelles (une question d'aide sert un besoin d'explication).
+    if (!qualifySuggestion({ need: 'GUIDANCE', label: e.label, canonicalIntent: e.canonicalIntent, proven: true }).promotable) { notAnswerable.push(e.id); continue; }
     const c = e.corpus === 'HELP' ? corpora.help : corpora.resources;
     candidates.push({ entry: e, answerability: a, version: c?.version ?? null });
   }
@@ -195,7 +236,8 @@ export async function getSharedSuggestions(accountId: number, userId: number | n
     usage = null;
   }
   const stage: GuideStage = usage ? guideStageOf(usage) : 'START';
-  const account = usage ? accountCandidatesOf(ctx) : [];
+  const review = usage ? reviewAccountCandidates(ctx) : { accepted: [], rejected: [] };
+  const account = review.accepted;
   const { candidates: guide, notAnswerable } = guideCandidatesOf(stage, usage, corpora);
   const bucket = rotationBucketOf(now);
   const fingerprint = createHash('sha256').update(JSON.stringify([
@@ -220,6 +262,8 @@ export async function getSharedSuggestions(accountId: number, userId: number | n
     guide: selection.items.filter((x) => x.objective === 'GUIDE').length,
     notAnswerable,
     unverified: selection.items.filter((x) => x.answerability === 'UNVERIFIED').map((x) => x.id),
+    notUseful: review.rejected,
+    quota: { max: MAX_HOME_SUGGESTIONS, served: selection.items.length, shortfall: selection.items.length < MAX_HOME_SUGGESTIONS ? 'QUALITY_LIMIT' : null },
     consulted: consulted.size,
     helpCorpus: { available: !!corpora.help, version: corpora.help?.version ?? null },
     resourcesCorpus: { available: !!corpora.resources, version: corpora.resources?.version ?? null, articles: corpora.resources?.articles.length ?? 0, alert: res.alert?.code ?? null },
@@ -275,7 +319,13 @@ export async function resolveSuggestionForMessage(
     if (entry) {
       const ctx = await loadSuggestionContext(accountId, '/accueil').catch(() => null);
       const r = ctx ? renderSuggestionEntry(entry.catalogId, ctx) : null;
-      if (r && r.label === texte) {
+      // Lot 111L : une suggestion d'une sélection périmée (ex. « Quels sont les
+      // documents de X ? » affichée avant le déploiement) n'est plus revalidée :
+      // elle part comme une question LIBRE, à laquelle T2 répond normalement.
+      const utile = r ? qualifySuggestion({
+        need: entry.need, shownBy: entry.shownBy ?? null, label: r.label, canonicalIntent: r.canonicalIntent, targetName: ctx ? targetNameOf(ctx, r.assetId) : null, proven: true,
+      }).promotable : false;
+      if (r && utile && r.label === texte) {
         found = {
           suggestion: { id: suggestionId, version, objective: entry.objective, canonicalIntent: r.canonicalIntent, corpus: 'ACCOUNT', forceIntent: false },
           assetId: r.assetId ?? null,
@@ -365,9 +415,9 @@ async function writeSharedSuggestionsReport(accountId: number, userId: number | 
     await repo.writeExecutionReport({
       accountId, treatment: 'T6', scope: 'SUGGESTIONS', targetType: userId != null ? 'USER' : null, targetId: userId,
       triggerCode: 'display', status: 'NO_CHANGE',
-      counters: { personal: d.personal, guide: d.guide, notAnswerable: d.notAnswerable.length, unverified: d.unverified.length, consulted: d.consulted, reserve: r.selection.reserve.length },
+      counters: { personal: d.personal, guide: d.guide, notAnswerable: d.notAnswerable.length, unverified: d.unverified.length, consulted: d.consulted, reserve: r.selection.reserve.length, notUseful: d.notUseful?.length ?? 0 },
       steps: [
-        { step: 'stock', status: 'OK', detail: { stage: d.stage } },
+        { step: 'stock', status: 'OK', detail: { stage: d.stage, stockVersion: STOCK_VERSION, utilityRule: SUGGESTION_UTILITY_RULE_VERSION } },
         { step: 'corpus', status: d.helpCorpus.available ? 'OK' : 'FAILED', error: d.helpCorpus.available ? null : 'Centre d’aide indisponible', detail: { help: d.helpCorpus, resources: d.resourcesCorpus } },
         { step: 'selection', status: 'OK', detail: { version: r.selection.version, contract: r.selection.contract } },
       ],

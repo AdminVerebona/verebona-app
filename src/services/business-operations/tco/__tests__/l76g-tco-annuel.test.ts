@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { computeTco, type TcoAssetPrice, type TcoEquipmentPrice, type TcoInput, type TcoOperation, type TcoResult } from '../model';
-import { computeTcoAnnual, TCO_DAYS_PER_YEAR } from '../annual';
+import { computeTcoAnnual } from '../annual';
 import { toTcoDto } from '../dto';
 import type { EconomicDocumentCandidate, EconomicDocumentInput, EconomicHint } from '../../finance/economic-lines';
 import type { LedgerComponent } from '../../finance/engine';
@@ -69,7 +69,10 @@ describe('L76G — TCO moyen annuel', () => {
     expect(t.summary.cumulativeCostCents).toBe(30_000 + 25_000);
     const jours = 1016; // du 10/01/2024 au 21/10/2026 inclus
     expect(t.annual.average).toMatchObject({ status: 'COMPUTED', days: jours, start: '2024-01-10', end: TODAY, extrapolated: false, incomplete: false });
-    expect(t.annual.average.cents).toBe(Math.round((55_000 * TCO_DAYS_PER_YEAR) / jours));
+    // Lot 111F (décision PO 04/11, remplace #540 / #559) : coût annuel moyen = (total − prix d’achat du bien) × 365,25 / jours.
+    // Lot 111F (décision PO du 05/11) : durée en années anniversaires — 2 ans + 284 j / 365 (10/01/2026 → 21/10/2026).
+    expect(t.annual.average.duration).toEqual({ fullYears: 2, remainderDays: 284, yearDays: 365 });
+    expect(t.annual.average.cents).toBe(Math.round((25_000 * 365) / (2 * 365 + 284)));
     expect(t.annual.average.years).toBeCloseTo(2.78, 2);
     expect(t.annual.years.map((y) => [y.year, y.costsCents, y.count])).toEqual([[2024, 35_000, 2], [2025, 12_000, 1], [2026, 8_000, 1]]);
     // L'achat initial est dans l'année d'achat (date effective), jamais à la date d'ajout dans Verebona.
@@ -84,7 +87,7 @@ describe('L76G — TCO moyen annuel', () => {
   it('L76G-02 — achat récent : moyenne calculée sans seuil (81D), signalée « extrapolée » sous un an', () => {
     const neuf = computeTco(entree({ assetAcquisitionDate: '2026-10-12' }));
     expect(neuf.annual.average).toMatchObject({ status: 'COMPUTED', days: 10, extrapolated: true });
-    expect(neuf.annual.average.cents).toBe(Math.round((30_000 * TCO_DAYS_PER_YEAR) / 10));
+    expect(neuf.annual.average.cents).toBe(0); // Lot 111F : achat seul → aucun coût de possession annualisé
     expect(neuf.summary.cumulativeCostCents).toBe(30_000);
     expect(annee(neuf, 2026)?.costsCents).toBe(30_000);
     coherent(neuf);
@@ -92,7 +95,7 @@ describe('L76G — TCO moyen annuel', () => {
     expect(jourMeme.annual.average).toMatchObject({ status: 'COMPUTED', days: 1, extrapolated: true });
     const seuil = computeTco(entree({ assetAcquisitionDate: '2026-09-22' }));
     expect(seuil.annual.average).toMatchObject({ status: 'COMPUTED', days: 30, extrapolated: true });
-    expect(seuil.annual.average.cents).toBe(Math.round((30_000 * TCO_DAYS_PER_YEAR) / 30));
+    expect(seuil.annual.average.cents).toBe(0); // Lot 111F : le prix d'achat n'est jamais annualisé
     const sixMois = computeTco(entree({ assetAcquisitionDate: '2026-04-21' }));
     expect(sixMois.annual.average).toMatchObject({ status: 'COMPUTED', extrapolated: true });
   });
@@ -123,7 +126,8 @@ describe('L76G — TCO moyen annuel', () => {
   it('L76G-05 — données manquantes : la moyenne est marquée incomplète comme le total (jamais présentée comme exhaustive)', () => {
     const t = computeTco(entree({ assetPrice: null }));
     expect(t.status).toBe('INCOMPLETE');
-    expect(t.annual.average).toMatchObject({ status: 'COMPUTED', incomplete: true, totalCents: 0 });
+    // Lot 111F : prix d'achat attendu mais inconnu — moyenne non calculée (jamais un prix fictif soustrait).
+    expect(t.annual.average).toMatchObject({ status: 'ACQUISITION_PRICE_UNKNOWN', cents: null, incomplete: true, totalCents: 0 });
   });
 
   it('L76G-06 — cession : la durée s’arrête à la cession, année par défaut = année de cession', () => {
@@ -236,7 +240,7 @@ describe('L76G — dépenses de l’année', () => {
         { id: 'p', status: 'RETAINED_CONSOLIDATED', kind: 'PROCEED', includedCents: 9_999, date: '2026-01-01' },
         { id: 'e', status: 'EXCLUDED', kind: 'REALIZED_COST', includedCents: 0, date: '2026-01-01' },
       ],
-      period: { start: '2025-01-01', end: TODAY, endSource: 'TODAY' }, cumulativeCostCents: 100, status: 'COMPLETE', today: TODAY, disposed: false,
+      period: { start: '2025-01-01', end: TODAY, endSource: 'TODAY' }, cumulativeCostCents: 100, acquisitionPriceCents: 0, status: 'COMPLETE', today: TODAY, disposed: false,
     });
     expect(a.years.find((y) => y.year === 2026)).toMatchObject({ costsCents: 100, count: 1 });
   });
@@ -253,12 +257,14 @@ describe('L76G — tiroir TCO (desktop et mobile, même composant)', () => {
 
   it('L76G-UI-01 — trois valeurs distinctes : TCO total, TCO moyen annuel, dépenses de l’année + sélecteur d’année ; période indiquée', () => {
     expect(ui).toContain('data-tco-annual');
-    expect(ui).toContain('TCO total');
-    expect(ui).toContain('TCO moyen annuel');
+    // Lot 111F : libellés du ticket (Coût total, Coût annuel moyen de possession, Coût net estimé).
+    expect(ui).toContain('Coût total');
+    expect(ui).toContain('Coût annuel moyen de possession');
     expect(ui).toContain('Dépenses de l’année');
     expect(ui).toContain('data-tco-year-select');
-    // Distinction coût annualisé / dépenses constatées et achat initial inclus.
-    expect(ui).toMatch(/achat initial/);
+    // Lot 111F : moyenne HORS prix d'achat (l'ancienne mention « achat initial inclus » est supprimée).
+    expect(ui).not.toMatch(/achat initial y est inclus/);
+    expect(ui).toMatch(/Hors prix d’achat/);
     expect(ui).toMatch(/réellement constatées|réellement engagées/);
   });
 
@@ -418,7 +424,7 @@ describe('L81D — TCO moyen annuel : sans seuil, date canonique et stricte', ()
     for (const [debut, jours] of [[TODAY, 1], ['2026-10-12', 10], ['2026-09-22', 30]] as const) {
       const t = computeTco(entree({ assetAcquisitionDate: debut }));
       expect(t.annual.average).toMatchObject({ status: 'COMPUTED', days: jours, extrapolated: true, extrapolationLabel: 'Valeur extrapolée sur une durée de possession inférieure à un an' });
-      expect(t.annual.average.cents).toBe(Math.round((30_000 * TCO_DAYS_PER_YEAR) / jours));
+      expect(t.annual.average.cents).toBe(0); // Lot 111F : achat seul, prix d'achat jamais annualisé
     }
     const an = computeTco(entree({ assetAcquisitionDate: '2025-10-21' }));
     expect(an.annual.average).toMatchObject({ status: 'COMPUTED', extrapolated: false, extrapolationLabel: null });
@@ -427,7 +433,8 @@ describe('L81D — TCO moyen annuel : sans seuil, date canonique et stricte', ()
   it('L81D-11 — date historique valide (avant 1900) acceptée ; date manquante : aucune moyenne fictive', () => {
     const t = computeTco(entree({ assetAcquisitionDate: '1890-05-01' }));
     expect(t.annual.average).toMatchObject({ status: 'COMPUTED', start: '1890-05-01' });
-    expect(t.annual.average.cents).toBeGreaterThan(0);
+    expect(t.annual.average.cents).toBe(0); // Lot 111F : achat seul, prix d'achat jamais annualisé
+    expect(t.annual.average.days).toBeGreaterThan(0);
     const m = computeTco(entree({ assetAcquisitionDate: null }));
     expect(m.annual.average).toMatchObject({ status: 'ACQUISITION_DATE_MISSING', cents: null });
   });

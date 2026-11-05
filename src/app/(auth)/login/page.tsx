@@ -4,7 +4,7 @@ import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { AutofillInput } from '@/components/ui/autofill-input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LogoWithBaseline } from '@/components/Logo';
@@ -24,6 +24,7 @@ import { isNetworkError, postLogin } from '@/lib/auth/login-request';
 import { SocialSignInButtons } from '@/components/auth/SocialSignInButtons';
 import { socialErrorMessage } from '@/lib/auth/oauth/messages';
 import { KeyRound } from 'lucide-react';
+import { AUTOFILL, formFieldValue } from '@/lib/auth/autofill';
 import { PASSKEY_ERROR_TEXT, getPasskeyAssertion, lastLocalMethod, mfaPost, passkeysUsableHere, rememberLocalMethod } from '@/lib/auth/mfa/client';
 
 function LoginForm() {
@@ -123,8 +124,14 @@ function LoginForm() {
     return () => { cancelled = true; };
   }, [router, returnUrl]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // Lot 111E : valeurs RÉELLES du formulaire (remplissage automatique non vu
+    // par React), lues avant toute désactivation des champs.
+    const submittedEmail = formFieldValue(e.currentTarget, 'username', email).trim();
+    const submittedPassword = formFieldValue(e.currentTarget, 'password', password);
+    if (submittedEmail !== email) setEmail(submittedEmail);
+    if (submittedPassword !== password) setPassword(submittedPassword);
     // Nouvelle tentative : aucun message ni code de la précédente ne subsiste.
     setError('');
     setErrorCode('');
@@ -141,7 +148,7 @@ function LoginForm() {
     try {
       // Une reprise automatique sur coupure réseau (mobile), journalisée sans
       // identifiants — voir `login-request.ts` (rejouer la connexion est sûr).
-      const response = await postLogin({ email, password, returnUrl }, { attemptId });
+      const response = await postLogin({ email: submittedEmail, password: submittedPassword, returnUrl }, { attemptId });
 
       let data: Record<string, string> = {};
       try { data = await response.json(); } catch { /* body vide ou non-JSON */ }
@@ -243,12 +250,20 @@ function LoginForm() {
             )}
             {/* Lot 93 (CDC 18 §9.1) : Google et Apple, puis « ou », puis e-mail + mot de passe. */}
             <SocialSignInButtons mode="login" returnUrl={returnUrl} disabled={isLoading} className="mb-4" />
-            <form onSubmit={handleSubmit} className="space-y-4">
+            <form onSubmit={handleSubmit} method="post" className="space-y-4" data-testid="login-form">
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input
+                {/* Lot 111E : identifiant de connexion reconnu par le système
+                    (iOS AutoFill, Android, navigateurs, gestionnaires tiers). */}
+                <AutofillInput
                   id="email"
+                  name="username"
                   type="email"
+                  inputMode="email"
+                  autoComplete={AUTOFILL.username}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   placeholder="votre.email@exemple.fr"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
@@ -261,8 +276,9 @@ function LoginForm() {
                 <Label htmlFor="password">Mot de passe</Label>
                 <PasswordInput
                   id="password"
+                  name="password"
                   placeholder="••••••••"
-                  autoComplete="current-password"
+                  autoComplete={AUTOFILL.currentPassword}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required

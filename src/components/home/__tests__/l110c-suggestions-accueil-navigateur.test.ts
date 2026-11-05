@@ -71,7 +71,8 @@ function bulle(): MascotPresentation {
 const SELECTION = {
   contract: 'shared-suggestions-v1', version: 'a1b2c3d4e5f60718', generatedAt: '2026-11-04T10:00:00.000Z',
   items: [
-    { id: 'acc_home_asset_docs', label: 'Quels sont les documents de Maison de famille à Saint-Jean-de-Luz ?', objective: 'EXPLOIT', source: 'ACCOUNT_DATA', assetId: 3 },
+    // Lot 111L : libellé long d'une question réellement servie (une liste « Quels sont les documents de… » ne l'est plus).
+    { id: 'acc_assets_deadlines', label: 'Quelles sont les prochaines échéances de Maison de famille à Saint-Jean-de-Luz ?', objective: 'ANTICIPATE', source: 'ACCOUNT_DATA', assetId: 3 },
     { id: 'guide_detected_deadlines', label: 'Comment les échéances sont-elles détectées dans les documents ?', objective: 'GUIDE', source: 'HELP_CENTER' },
     { id: 'res_works_invoices', label: 'Quels documents conserver après des travaux dans un logement ?', objective: 'GUIDE', source: 'RESOURCES' },
   ],

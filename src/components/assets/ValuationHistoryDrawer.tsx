@@ -11,7 +11,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Loader2, Plus, Sparkles, TrendingUp } from 'lucide-react';
 import { apiClient } from '@/lib/api-client';
 import { toast } from 'sonner';
-import type { ValuationEntry } from '@/app/api/assets/[id]/valuations/route';
+import type { ValuationEntryView as ValuationEntry } from '@/services/business-operations/tco/valuation-history';
+// Lot 111F : date du jour à Paris (préremplissage de la date de valorisation) — fonction pure du moteur partagé.
+import { civilDateParis } from '@/services/business-operations/finance/engine';
 
 const MODE_LABELS: Record<string, string> = {
   ESTIMATION_AGENCE:       'Estimation agence',
@@ -60,8 +62,9 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
     if (!open) return;
     setLoading(true);
     try {
+      // Lot 111F : ordre fourni par le serveur — date de valorisation la plus récente d'abord (jamais l'ordre d'ajout).
       const data = await apiClient.get<{ history: ValuationEntry[] }>(`/api/assets/${assetId}/valuations`);
-      setHistory((data.history ?? []).slice().reverse()); // newest first
+      setHistory(data.history ?? []);
     } catch {
       toast.error('Impossible de charger l\'historique');
     } finally {
@@ -75,6 +78,7 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
     const lu = parseNumberInput(formValue, MONEY_INPUT);
     if (!lu.ok) { setValueError(true); toast.error(`Valeur estimée : ${lu.error}`); return; }
     if (lu.value == null) { toast.error('La valeur estimée est requise'); return; }
+    if (!formDate) { toast.error('La date de valorisation est requise'); return; }
     setSaving(true);
     try {
       await apiClient.post(`/api/assets/${assetId}/valuations`, {
@@ -91,15 +95,17 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
       await loadHistory();
       onSaved?.();
       toast.success('Estimation enregistrée');
-    } catch {
-      toast.error('Erreur lors de l\'enregistrement');
+    } catch (e) {
+      const m = (e as { message?: string })?.message;
+      toast.error(m && /date de valorisation/i.test(m) ? m : 'Erreur lors de l\'enregistrement');
     } finally {
       setSaving(false);
     }
   };
 
-  const sorted = history; // already reversed (newest first)
-  const latest = sorted[0];
+  const sorted = history; // trié par date de valorisation (serveur)
+  // Lot 111F : estimation retenue pour le coût net (datée, postérieure à l'achat, non future) — décidée par le serveur.
+  const latest = sorted.find((e) => e.retained) ?? null;
 
   return (
     <Sheet open={open} onOpenChange={v => { if (!v) onClose(); }}>
@@ -116,7 +122,7 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
           {/* Current value summary */}
           {latest && (
             <div className="rounded-xl border border-primary/20 bg-primary/5 p-4">
-              <p className="vb-app-subsection mb-2">Dernière estimation</p>
+              <p className="vb-app-subsection mb-2">Estimation retenue pour le coût net</p>
               <p className="text-2xl font-extrabold tracking-[-.02em] vb-tabular text-[color:var(--text-primary)]">{formatCurrency(latest.value)}</p>
               <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
                 {latest.date && <span>{formatDate(latest.date)}</span>}
@@ -134,7 +140,7 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
 
           {/* Add new valuation */}
           {!showForm ? (
-            <Button variant="outline" size="sm" className="w-full" onClick={() => setShowForm(true)}>
+            <Button variant="outline" size="sm" className="w-full" onClick={() => { setFormDate(civilDateParis()); setShowForm(true); }}>
               <Plus className="w-3.5 h-3.5 mr-1.5" />
               Ajouter une estimation
             </Button>
@@ -154,8 +160,9 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
               </div>
 
               <div className="space-y-1">
-                <Label className="text-xs text-muted-foreground">Date de l'estimation</Label>
+                <Label className="text-xs text-muted-foreground">Date de valorisation *</Label>
                 <DatePicker value={formDate ?? undefined} onChange={v => setFormDate(v ?? null)} />
+                <p className="text-[11px] text-muted-foreground">Date à laquelle la valeur a été estimée (aujourd’hui par défaut), distincte de la date d’ajout.</p>
               </div>
 
               <div className="space-y-1">
@@ -174,7 +181,7 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
 
               <div className="flex gap-2 justify-end pt-1">
                 <Button variant="ghost" size="sm" onClick={() => setShowForm(false)} disabled={saving}>Annuler</Button>
-                <Button size="sm" onClick={handleSave} disabled={saving}>
+                <Button size="sm" onClick={handleSave} disabled={saving || !formDate}>
                   {saving ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
                   Enregistrer
                 </Button>
@@ -193,16 +200,16 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
             <div className="space-y-1">
               <p className="vb-app-subsection mb-3">Toutes les estimations</p>
               <div className="divide-y divide-border">
-                {sorted.map((entry, i) => (
+                {sorted.map((entry) => (
                   <div key={entry.id} className="py-3 flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <span className="font-semibold text-sm vb-tabular text-[color:var(--text-primary)]">
                           {formatCurrency(entry.value)}
                         </span>
-                        {i === 0 && (
+                        {entry.retained && (
                           <span className="text-[10px] font-semibold bg-primary/15 text-primary px-1.5 py-0.5 rounded">
-                            Actuelle
+                            Retenue
                           </span>
                         )}
                         {entry.source === 'AI' && (
@@ -212,13 +219,14 @@ export function ValuationHistoryDrawer({ open, onClose, assetId, assetName, onSa
                           </span>
                         )}
                       </div>
-                      <div className="text-xs text-muted-foreground mt-0.5 flex items-center gap-2">
-                        {entry.date && <span>{formatDate(entry.date)}</span>}
+                      <div className="text-xs text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2">
+                        <span>{entry.date ? `Valorisation du ${formatDate(entry.date)}` : 'Date de valorisation inconnue'}</span>
                         {entry.mode && <span>· {MODE_LABELS[entry.mode] ?? entry.mode}</span>}
                       </div>
+                      {entry.rejectionLabel && <p className="text-[11px] text-muted-foreground mt-0.5" data-valuation-rejection={entry.rejection ?? ''}>{entry.rejectionLabel}</p>}
                     </div>
-                    <span className="text-xs text-muted-foreground shrink-0 mt-0.5">
-                      {new Date(entry.addedAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    <span className="text-xs text-muted-foreground shrink-0 mt-0.5 text-right">
+                      Ajoutée le {new Date(entry.addedAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Europe/Paris' })}
                     </span>
                   </div>
                 ))}

@@ -145,7 +145,9 @@ describe('L101A-U-COH-IDENTITY — contrôle de cohérence de l’identité prod
       // Lot 109D : remises jamais lues comme des avoirs (fin de registre).
       'COH-TCO-COMMERCIAL-ADJUSTMENTS',
       // Lot 109K : couverture PDF (fin de registre).
-      'COH-T1-PDF-COVERAGE']);
+      'COH-T1-PDF-COVERAGE',
+      // Lot 111I : rattachements multiples d'un document (fin de registre).
+      'COH-DOC-TARGETS']);
     expect(COVERAGE_INVENTORY.find((d) => d.domain === 'equipements')!.checks).toContain('COH-EQUIPMENT-IDENTITY');
     expect(equipmentIdentityCheck.forbiddenRepairs.join(' ')).toMatch(/utilisateur/);
   });

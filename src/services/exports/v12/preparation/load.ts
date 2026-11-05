@@ -12,7 +12,7 @@
 
 import { db } from '@/db';
 import { exportGenerations, users } from '@/db/schema';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { isCilEligible, CIL_NOT_ELIGIBLE_MESSAGE } from '@/lib/asset-capabilities';
 import { canUsePremiumFeature } from '@/services/entitlements.service';
 import {
@@ -24,6 +24,7 @@ import { loadExportSource } from '../data/source';
 import { parseChoicesPayload, type ExportChoices } from '../data/choices';
 import { parisDate } from '../generation/clock';
 import { toGenerationDto } from '../generation/status';
+import { generationIdentityKey } from '../generation/identity';
 import { buildPreparation, estimateMessages } from './prepare';
 import { estimateSelection } from './estimate';
 import type { EstimateResponse, PreparationDto } from './types';
@@ -98,7 +99,27 @@ export async function prepareDossier(params: { asset: AccessibleAsset; userId: n
     loadExportSource({ assetId: asset.id, accountId: asset.accountId, userId, exportType: code, ...claimParam(requestedClaim(choices, body)) }),
     lastGenerationOf(asset.id, code),
   ]);
-  return { ok: true, body: buildPreparation(code, source, { today, choices, lastGeneration }) };
+  const activeGeneration = await activeGenerationOf(asset, userId, code, code === 'ASSURANCE_SINISTRE' ? source.claim?.selectedOperationId ?? null : null);
+  return { ok: true, body: buildPreparation(code, source, { today, choices, lastGeneration, activeGeneration }) };
+}
+
+/**
+ * Lot 111B : génération encore active du MÊME dossier (identité métier :
+ * compte, bien, type, sinistre, utilisateur courant). Celle d'un autre membre
+ * du compte Duo n'est jamais proposée au remplacement.
+ */
+async function activeGenerationOf(asset: AccessibleAsset, userId: number, code: DossierCode, claimOperationId: number | null): Promise<PreparationDto['activeGeneration']> {
+  const identityKey = generationIdentityKey({ accountId: asset.accountId, assetId: asset.id, exportType: code, claimOperationId, variant: null, userId });
+  const [row] = await db.select({ publicId: exportGenerations.publicId, status: exportGenerations.status, createdAt: exportGenerations.createdAt })
+    .from(exportGenerations)
+    .where(and(
+      eq(exportGenerations.accountId, asset.accountId),
+      eq(exportGenerations.identityKey, identityKey),
+      inArray(exportGenerations.status, ['queued', 'generating']),
+      isNull(exportGenerations.cancelRequestedAt),
+    ))
+    .orderBy(desc(exportGenerations.createdAt)).limit(1);
+  return row ? { publicId: row.publicId, status: row.status, createdAt: new Date(row.createdAt).toISOString() } : null;
 }
 
 /** `POST …/exports/estimate` : `{ exportType, choices }` → estimation, actions, messages. */

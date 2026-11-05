@@ -15,6 +15,7 @@ import {
 } from '../expenses';
 import { claimAnswer, paymentsAnswer, historyAnswer, contractsAnswer, operationCostAnswer, CLAIM_Q, HISTORY_Q, PAID, CONTRACT_Q } from '../structured-answers';
 import { specificCostTerms } from '../operations';
+import { asksSettlement } from '../../core/question-focus';
 import { parseEntityRef, hrefEntite, hrefSource } from '../../core/entity-ref';
 import { claimSourceId, parseClaimSourceId } from '../source-ids';
 
@@ -184,7 +185,14 @@ describe('O6-06 — intentions et réponses (C15, C15.2)', () => {
     expect(PAID.test(plain('Combien m’a coûté la Polo ?'))).toBe(false);
   });
 
-  it('F-132 — « payé » sans preuve : le règlement n’est pas affirmé, le coût est distingué', () => {
+  it('F-132 / lot 111K — « combien ai-je payé » demande un MONTANT ; seule une question de RÈGLEMENT lit les preuves', () => {
+    expect(asksSettlement('Combien ai-je payé pour l’entretien de la Polo ?')).toBe(false);
+    expect(asksSettlement('J’ai payé combien pour la Polo ?')).toBe(false);
+    expect(asksSettlement('L’entretien de la Polo a-t-il été réglé ?')).toBe(true);
+    expect(asksSettlement('Ai-je déjà payé la révision de la Polo ?')).toBe(true);
+  });
+
+  it('F-132 — question de RÈGLEMENT sans preuve : le règlement n’est pas affirmé, le coût est distingué', () => {
     const q = aggregateExpenses([{ fileId: 1, amountCents: 125000, cls: { kind: 'theme', theme: 'repair' } }], null);
     const r = paymentsAnswer({ proofs: [], sumCents: 0, withoutAmount: 0 }, q, { pour: ' pour la Polo', scopeLabel: 'Polo', assetIds: [20], assets: [] });
     expect(r.answer).toContain('aucune preuve de paiement pour la Polo');

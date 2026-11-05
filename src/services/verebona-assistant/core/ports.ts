@@ -343,6 +343,8 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
             ? { type: input.reference.type, id: input.reference.id } : null,
         requestedFacts: route.understanding?.requestedFacts?.length
           ? route.understanding.requestedFacts : deterministicRequestedFacts(input.message),
+        // Lot 111K : propriétés hors registre comprises par UNDERSTAND.
+        requestedTopics: route.understanding?.requestedTopics ?? [],
       }),
     loadThresholds: () => loadCascadeThresholds(),
     // Étape « base d'aide » du routage (§9.4.7) — corpus en cache (§43 HELP_CACHE_TTL_SECONDS).

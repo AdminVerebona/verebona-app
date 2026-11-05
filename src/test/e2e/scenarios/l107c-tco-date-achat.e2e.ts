@@ -351,6 +351,8 @@ scenario('L107C', 'TCO — date d’achat du bien prioritaire pour le calcul ann
     expect(apres.period.start).toBe('2022-01-10');
     expect(apres.summary.cumulativeCostCents).toBe(avant.summary.cumulativeCostCents);
     expect(apres.annual.average.totalCents).toBe(avant.annual.average.totalCents);
-    expect(apres.annual.average.cents).toBeLessThan(avant.annual.average.cents);
+    // Lot 111F : le prix d'achat n'est plus annualisé (achat seul → 0 €/an) ; la durée, elle, est recalculée immédiatement.
+    expect(apres.annual.average.days).toBeGreaterThan(avant.annual.average.days);
+    expect([avant.annual.average.cents, apres.annual.average.cents]).toEqual([0, 0]);
   });
 });

@@ -35,8 +35,10 @@ import {
 const INTERACTIVE_CONTEXTS: ReadonlySet<string> = new Set(['ACCOUNT_CREATION', 'SOCIAL_SIGNUP', 'TRIAL_START', 'VERSION_UPDATE', 'IMMEDIATE_START_REQUEST']);
 
 export const CGUV_PUBLIC_TEXT_UNAVAILABLE = 'CGUV_PUBLIC_TEXT_UNAVAILABLE';
+// Lot 111O : aucune cause supposée (« en cours de publication » était faux en
+// cas de panne technique) ; la cause précise est au BO (Exploitation › Santé).
 export const CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE =
-  'Les CGUV en vigueur sont en cours de publication sur le site Verebona. L’inscription et l’acceptation reprendront dès leur mise en ligne. Réessayez un peu plus tard.';
+  'L’acceptation des CGUV est momentanément suspendue : la version en vigueur n’a pas encore pu être vérifiée sur le site Verebona. Réessayez dans quelques minutes.';
 
 export type AcceptableCheck = { ok: true } | { ok: false; code: typeof CGUV_PUBLIC_TEXT_UNAVAILABLE | 'VERSION_NOT_FOUND'; message: string };
 
@@ -54,7 +56,24 @@ export async function assertCguvAcceptable(versionCode: string, documentType = D
   if (!v) return { ok: false, code: 'VERSION_NOT_FOUND', message: `Version ${versionCode} inconnue.` };
   if (publicTextAvailability({ ...v, source: v.source as 'APP_LEGACY' | 'PUBLIC_SITE' | 'BO_MANUAL' }) === 'VERIFIED') return { ok: true };
   await superviseCurrentPublicText(versionCode);
+  await logRefusalCause(versionCode);
   return { ok: false, code: CGUV_PUBLIC_TEXT_UNAVAILABLE, message: CGUV_PUBLIC_TEXT_UNAVAILABLE_MESSAGE };
+}
+
+/**
+ * Lot 111O — motif JOURNALISÉ d'un refus (code stable de la dernière lecture
+ * du manifeste, statut HTTP, adresse lue) : l'exploitation lit la cause dans
+ * les journaux Scalingo sans ouvrir le BO. Aucune donnée personnelle.
+ */
+async function logRefusalCause(versionCode: string): Promise<void> {
+  try {
+    const { getManifestSyncState } = await import('./cguv-referential.service');
+    const st = await getManifestSyncState();
+    const lr = st.lastRead;
+    console.warn(`[legal] acceptation refusée CGUV_PUBLIC_TEXT_UNAVAILABLE version=${versionCode} manifeste=${lr?.reason ?? st.lastStatus} http=${lr?.httpStatus ?? '—'} site=${lr?.manifestCurrent ?? '—'} url=${lr?.url ?? st.manifestUrl ?? '—'}`);
+  } catch {
+    console.warn(`[legal] acceptation refusée CGUV_PUBLIC_TEXT_UNAVAILABLE version=${versionCode}`);
+  }
 }
 
 /**

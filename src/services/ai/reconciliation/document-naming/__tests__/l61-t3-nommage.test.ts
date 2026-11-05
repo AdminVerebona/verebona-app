@@ -16,6 +16,7 @@ import {
   type NamingDoc,
 } from '../context';
 import { deriveNameOrigin } from '../repository';
+import { extendToImpactedFamilies } from '../dependencies';
 import { dueRank, groupDue } from '../phase';
 import { namingOutputComplete, T3DocumentNamingOutput, T3MasterOutput, T3_TASKS } from '../../master/t3-contract';
 import { OPTIONAL_MASTER_TASKS, isMasterTaskTextPending } from '@/services/ai/prompts/prompt-loader';
@@ -235,6 +236,26 @@ describe('T3-NOM-11 — Historique : lots volumineux examinés en plusieurs appe
     // Petit lot : toujours la vue complète de la famille.
     expect(reviewTargets(docs.slice(0, 5), snapshot, 40)).toHaveLength(5);
   });
+  it('L111A-E1-U8 — réexamen d’un gros lot (lot 111A) : la famille d’un document nouveau / modifié est réexaminée avec lui si elle tient dans un appel ; famille trop grande : signalée, membres en référence', () => {
+    const autres = Array.from({ length: 6 }, (_x, i) => doc(200 + i, { typeCode: 'CONTRACT', documentDate: `2021-02-${String(i + 1).padStart(2, '0')}` }));
+    const lot = [...docs, ...autres];
+    const instantane = Object.fromEntries(lot.map((d) => [String(d.id), docSnapshotHash(d)]));
+    const contrat = doc(206, { typeCode: 'CONTRACT', documentDate: '2021-03-01' });
+    const base = reviewTargets([...lot, contrat], instantane, 40);
+    expect(base.map((d) => d.id)).toEqual([206]);
+    const ext = extendToImpactedFamilies({ docs: [...lot, contrat], targets: base, snapshot: instantane, conventions: [], maxFamily: 40 });
+    expect(ext.targets.map((d) => d.id).sort((a, b) => a - b)).toEqual([200, 201, 202, 203, 204, 205, 206]);
+    // Famille des 95 factures (> un appel) : le nouveau document seul, famille signalée.
+    const facture = reviewTargets([...lot, nouveauFacture], instantane, 40);
+    const ext2 = extendToImpactedFamilies({ docs: [...lot, nouveauFacture], targets: facture, snapshot: instantane, conventions: [], maxFamily: 40 });
+    expect(ext2.targets.map((d) => d.id)).toEqual([501]);
+    expect(ext2.familiesTooLarge).toBe(1);
+    // Document retiré : seule une famille décrite par l'IA le situe.
+    const sansUn = lot.filter((d) => d.id !== 203);
+    const ext3 = extendToImpactedFamilies({ docs: sansUn, targets: [], snapshot: instantane, conventions: [{ label: 'Contrats', convention: 'c', documentIds: [200, 201, 202, 203] }], maxFamily: 40 });
+    expect(ext3.targets.map((d) => d.id)).toEqual([200, 201, 202]);
+  });
+  const nouveauFacture = doc(501, { documentDate: '2024-06-01' });
 });
 
 describe('T3-NOM-18 — Contrat de sortie T3 : section document_renames facultative, rétrocompatible', () => {

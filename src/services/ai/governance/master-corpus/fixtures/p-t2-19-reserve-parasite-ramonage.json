@@ -1,0 +1,59 @@
+{
+  "case": "P-T2-19",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — GARDE — information principale connue (date du ramonage), information accessoire inconnue (montant) : la réserve non demandée est retirée par le contrôle final, la réponse reste directe.",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Quand a eu lieu le dernier ramonage de la cheminée ?",
+    "sources": [
+      {
+        "id": "doc_1401",
+        "type": "document_extraction",
+        "title": "Certificat de ramonage",
+        "content": "Ramonage conduit cheminée · Date d’intervention : 14/10/2025",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "Le dernier ramonage de la cheminée a eu lieu le 14 octobre 2025.",
+          "sourceIds": [
+            "doc_1401"
+          ],
+          "derivation": "direct",
+          "factual": true
+        },
+        {
+          "text": "Je n’ai pas trouvé de preuve de paiement ni de montant réglé pour ce ramonage.",
+          "sourceIds": [
+            "doc_1401"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "14 octobre 2025",
+    "answerNotContains": [
+      "paiement",
+      "réglé"
+    ],
+    "supportLevel": "supported",
+    "exitState": "answered",
+    "finalControlRejects": [
+      "PARASITIC_RESERVE"
+    ]
+  }
+}

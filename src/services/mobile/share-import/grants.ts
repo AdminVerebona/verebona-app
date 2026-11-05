@@ -28,7 +28,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { pgClient } from '@/db';
 import { envNumber } from '@/lib/env-number';
 import {
-  SHARE_IMPORT_GRANT_MAX_USES, SHARE_IMPORT_GRANT_TTL_HOURS_DEFAULT, SHARE_IMPORT_GRANT_TTL_HOURS_MAX,
+  SHARE_IMPORT_GRANT_MAX_USES, SHARE_IMPORT_GRANT_REF_LENGTH, SHARE_IMPORT_GRANT_TTL_HOURS_DEFAULT, SHARE_IMPORT_GRANT_TTL_HOURS_MAX,
   SHARE_IMPORT_TOKEN_PATTERN, SHARE_IMPORT_TOKEN_PREFIX, shareImportAccountKey,
 } from '@/lib/mobile/share-import-policy';
 
@@ -42,6 +42,16 @@ export function shareImportGrantTtlMs(env: Record<string, string | undefined> = 
 
 export function hashShareImportToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * Lot 111P — référence NON SECRÈTE d'un jeton (12 premiers caractères de son
+ * empreinte) : calculée à l'identique par le natif (Swift, Java) pour
+ * comparer « jeton du téléphone » et « jeton actif côté serveur » sans jamais
+ * transmettre le jeton lui-même. Ne permet ni de le retrouver ni de l'utiliser.
+ */
+export function shareImportGrantRef(tokenHash: string): string {
+  return tokenHash.slice(0, SHARE_IMPORT_GRANT_REF_LENGTH);
 }
 
 export function newShareImportToken(): string {
@@ -145,6 +155,38 @@ export async function revokeShareImportGrants(input: { userId: number; sid: stri
                      WHERE user_id = ${input.userId} AND session_sid IS NULL AND installation_id IS NOT DISTINCT FROM ${input.installationId ?? null}
                        AND revoked_at IS NULL RETURNING id`;
   return rows.length;
+}
+
+export interface ActiveGrantSummary {
+  /** Référence non secrète (`shareImportGrantRef`). */
+  ref: string;
+  expiresAt: string;
+  usesLeft: number;
+}
+
+/**
+ * Lot 111P — vérification serveur LÉGÈRE : jetons encore actifs de la session
+ * appelante (ou, sans `sid`, de l'installation), sans jamais rendre de jeton.
+ * L'application compare la référence de son jeton local et renouvelle s'il
+ * n'est plus actif (révoqué, remplacé, épuisé) ou presque épuisé.
+ */
+export async function listActiveShareImportGrants(input: { userId: number; accountId: number; sid: string | null; installationId: string | null }, now = new Date()): Promise<ActiveGrantSummary[]> {
+  const rows = input.sid
+    ? await pgClient`SELECT token_hash, expires_at, max_uses, uses FROM mobile_share_import_grants
+                     WHERE user_id = ${input.userId} AND account_id = ${input.accountId} AND session_sid = ${input.sid}
+                       AND revoked_at IS NULL AND expires_at > ${now.toISOString()}::timestamptz AND uses < max_uses
+                     ORDER BY created_at DESC LIMIT 5`
+    : input.installationId
+      ? await pgClient`SELECT token_hash, expires_at, max_uses, uses FROM mobile_share_import_grants
+                       WHERE user_id = ${input.userId} AND account_id = ${input.accountId} AND session_sid IS NULL AND installation_id = ${input.installationId}
+                         AND revoked_at IS NULL AND expires_at > ${now.toISOString()}::timestamptz AND uses < max_uses
+                       ORDER BY created_at DESC LIMIT 5`
+      : [];
+  return (rows as Array<Record<string, unknown>>).map((r) => ({
+    ref: shareImportGrantRef(String(r.token_hash)),
+    expiresAt: new Date(r.expires_at as string).toISOString(),
+    usesLeft: Math.max(0, Number(r.max_uses) - Number(r.uses)),
+  }));
 }
 
 async function revokeGrant(id: number, reason: GrantRefusal): Promise<void> {

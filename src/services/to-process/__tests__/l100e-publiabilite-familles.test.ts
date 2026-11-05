@@ -178,7 +178,9 @@ describe('L100E-U-COH — COH-TODO-PUBLISHABILITY (nettoyage rétroactif, point 
       // Lot 109D : remises jamais lues comme des avoirs (fin de registre).
       'COH-TCO-COMMERCIAL-ADJUSTMENTS',
       // Lot 109K : couverture PDF (fin de registre).
-      'COH-T1-PDF-COVERAGE']);
+      'COH-T1-PDF-COVERAGE',
+      // Lot 111I : rattachements multiples d'un document (fin de registre).
+      'COH-DOC-TARGETS']);
     const c = getCheck(PUBLISHABILITY_CHECK_ID)!;
     expect(c).toMatchObject({ status: 'ACTIVE', version: 1, objectType: 'to_process_action' });
     expect(c.forbiddenRepairs).toEqual(expect.arrayContaining(['écrire une valeur de l’objet', 'fermer une carte retenue pour cause technique', 'rouvrir une carte fermée par l’utilisateur']));

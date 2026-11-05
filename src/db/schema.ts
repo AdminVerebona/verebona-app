@@ -2062,6 +2062,18 @@ export const exportGenerations = pgTable('export_generation', {
   nextAttemptAt: tstzOptional('next_attempt_at'),
   /** Relances manuelles (plafonnées ; migration 0212). */
   userRetryCount: integer('user_retry_count').notNull().default(0),
+  // ── Régénération remplaçante (migration 1195, lot 111B) ──────────────────
+  /** Identité métier du dossier (compte, bien, type, contexte, utilisateur) — distincte de requestHash. */
+  identityKey: text('identity_key'),
+  /** Demande d'annulation persistante (observée par le worker). */
+  cancelRequestedAt: tstzOptional('cancel_requested_at'),
+  cancelRequestedByUserId: integer('cancel_requested_by_user_id').references(() => users.id, { onDelete: 'set null' }),
+  /** REPLACED_BY_NEW_GENERATION. */
+  cancelReason: text('cancel_reason'),
+  cancelledAt: tstzOptional('cancelled_at'),
+  cancelledStep: text('cancelled_step'),
+  /** Génération qui la remplace (clé étrangère ON DELETE SET NULL posée par la migration 1195). */
+  replacedByGenerationId: integer('replaced_by_generation_id'),
 }, (table) => ({
   assetIdIdx: index('export_generation_asset_id_idx').on(table.assetId),
   accountIdIdx: index('export_generation_account_id_idx').on(table.accountId),
@@ -3222,6 +3234,8 @@ export const legalManifestSyncState = pgTable('legal_manifest_sync_state', {
   versionsCount: integer('versions_count').notNull().default(0),
   anomalies: jsonb('anomalies').notNull().default([]),
   lastTrigger: text('last_trigger'),
+  /** Lot 111O (migration 1270) : détail de la dernière lecture (statut HTTP, motif, versions). */
+  lastRead: jsonb('last_read'),
   updatedAt: tstz('updated_at'),
 });
 

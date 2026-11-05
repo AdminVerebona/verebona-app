@@ -47,6 +47,7 @@ import { TreatmentStateControl, type TreatmentRuntimeState } from './_components
 import { AssistantSettings } from './_components/AssistantSettings';
 import { ModelRegistry } from './_components/ModelRegistry';
 import { ModelCapabilities } from './_components/ModelCapabilities';
+import { ApplicationLimits } from './_components/ApplicationLimits';
 import { CoupleQualification } from './_components/CoupleQualification';
 import { PromptConformity } from './_components/PromptConformity';
 import { CorpusAccount } from './_components/CorpusAccount';
@@ -1078,6 +1079,7 @@ export default function AiConfigPage() {
 
       {/* Lot 85C (Pilotage IA V2 P4) : capacités des modèles, lecture seule. */}
       <ModelCapabilities />
+      <ApplicationLimits />
 
       {/* Lot 86A (Pilotage IA V2 P5) : qualification par couple, seuils (lecture), candidates, test manuel. */}
       <CoupleQualification key={current?.id ?? 'active'} versionId={current?.id ?? null} />

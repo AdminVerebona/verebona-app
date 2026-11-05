@@ -1,0 +1,56 @@
+{
+  "case": "P-T2-23",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — GARDE — tous les chiffres sont dans les sources mais la conclusion trahit leur sens : le montant du DEVIS présenté comme payé. Rejet ; la nature « prévu » n’est jamais transformée en « réglé ».",
+  "qualification": {
+    "role": "guard"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Combien a coûté la révision de la Clio ?",
+    "sources": [
+      {
+        "id": "doc_1701",
+        "type": "document_extraction",
+        "title": "Devis révision Clio",
+        "content": "Devis révision 60 000 km · Montant prévu : 380,00 €",
+        "meta": {}
+      },
+      {
+        "id": "doc_1702",
+        "type": "document_extraction",
+        "title": "Facture révision Clio",
+        "content": "Révision 60 000 km · Total TTC : 412,00 €",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "La révision de la Clio a été payée 380,00 €.",
+          "sourceIds": [
+            "doc_1701"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerNotContains": [
+      "380"
+    ],
+    "exitState": "insufficient",
+    "neverAffirmSettlement": true,
+    "finalControlRejects": [
+      "SETTLEMENT_UNPROVEN"
+    ]
+  }
+}

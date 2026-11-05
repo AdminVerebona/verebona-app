@@ -74,7 +74,7 @@ const ANOMALY_LABELS: Record<string, string> = {
   LEGACY_LINK_REFUSED: 'Archive historique non rattachée',
 };
 
-const EMPTY_FORM = { code: '', permalink: '', textUrl: '', sha256: '', publishedAt: '', requiresReacceptance: false, makeCurrent: true, changeSummary: '' };
+const EMPTY_FORM = { code: '', permalink: '', textUrl: '', sha256: '', publishedAt: '', effectiveAt: '', requiresReacceptance: false, makeCurrent: true, changeSummary: '' };
 
 export default function CguvReferentialPage() {
   const [data, setData] = useState<Data | null>(null);
@@ -213,10 +213,12 @@ export default function CguvReferentialPage() {
         </p>
         <form
           className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2"
-          onSubmit={(e) => { e.preventDefault(); void post({ action: 'manual', ...form, publishedAt: form.publishedAt ? new Date(form.publishedAt).toISOString() : '' }); }}
+          onSubmit={(e) => { e.preventDefault(); void post({ action: 'manual', ...form, publishedAt: form.publishedAt ? new Date(form.publishedAt).toISOString() : '', effectiveAt: form.effectiveAt ? new Date(form.effectiveAt).toISOString() : null }); }}
         >
           <div className="space-y-1"><Label htmlFor="cg-code">Code</Label><Input id="cg-code" placeholder="2026-10-30-v1" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value.trim() })} /></div>
           <div className="space-y-1"><Label htmlFor="cg-date">Publiée le</Label><Input id="cg-date" type="datetime-local" value={form.publishedAt} onChange={(e) => setForm({ ...form, publishedAt: e.target.value })} /></div>
+          {/* Lot 111O : date d'entrée en vigueur du manifeste (vide : date de publication). */}
+          <div className="space-y-1"><Label htmlFor="cg-eff">En vigueur le (heure de Paris)</Label><Input id="cg-eff" type="datetime-local" value={form.effectiveAt} onChange={(e) => setForm({ ...form, effectiveAt: e.target.value })} /></div>
           <div className="space-y-1 md:col-span-2"><Label htmlFor="cg-link">Permalien (site public)</Label><Input id="cg-link" value={form.permalink} onChange={(e) => setForm({ ...form, permalink: e.target.value.trim() })} /></div>
           <div className="space-y-1 md:col-span-2"><Label htmlFor="cg-text">Texte figé (fichier .html du site public — vide : permalien + « .html »)</Label><Input id="cg-text" value={form.textUrl} onChange={(e) => setForm({ ...form, textUrl: e.target.value.trim() })} /></div>
           <div className="space-y-1 md:col-span-2"><Label htmlFor="cg-sha">Empreinte SHA-256</Label><Input id="cg-sha" className="font-mono" value={form.sha256} onChange={(e) => setForm({ ...form, sha256: e.target.value.trim().toLowerCase() })} /></div>

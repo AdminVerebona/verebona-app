@@ -127,13 +127,14 @@ describe('L103B — formulaire d’inscription court', () => {
   it('exactement quatre champs de saisie (pseudo, e-mail, mot de passe, confirmation), plus de prénom / nom / « Nom d’utilisateur (optionnel) »', () => {
     const out = html(h(SignupForm, {}));
     const inputs = [...out.matchAll(/<input\b[^>]*>/g)].map((m) => m[0]).filter((i) => !/type="(checkbox|hidden)"/.test(i));
-    expect(inputs.map((i) => /id="([^"]+)"/.exec(i)?.[1])).toEqual(['username', 'email', 'password', 'confirmPassword']);
+    // Lot 111E : l'id du pseudo devient « displayName » (« username » était ambigu pour les gestionnaires de mots de passe).
+    expect(inputs.map((i) => /id="([^"]+)"/.exec(i)?.[1])).toEqual(['displayName', 'email', 'password', 'confirmPassword']);
     expect(out).toContain(`${DISPLAY_NAME_LABEL} *`);
     expect(out).toContain(DISPLAY_NAME_HELP);
     expect(out).toContain('placeholder="Sophie"');
     expect(out).not.toMatch(/Nom d'utilisateur|Prénom \*|>Nom \*/);
     // Ordre du ticket : pseudo, e-mail, mot de passe, confirmation, parrainage replié, CGUV, bouton.
-    const order = ['id="username"', 'id="email"', 'id="password"', 'id="confirmPassword"', 'J’ai un code de parrainage', 'id="acceptedTerms"', 'type="submit"'];
+    const order = ['id="displayName"', 'id="email"', 'id="password"', 'id="confirmPassword"', 'J’ai un code de parrainage', 'id="acceptedTerms"', 'type="submit"'];
     const idx = order.map((s) => out.indexOf(s));
     expect(idx.every((v) => v >= 0)).toBe(true);
     expect([...idx].sort((a, b) => a - b)).toEqual(idx);

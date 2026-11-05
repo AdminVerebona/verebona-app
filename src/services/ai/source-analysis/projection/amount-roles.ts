@@ -161,6 +161,15 @@ const M = {
   nbArticles: /\b(\d{1,3})\s*(?:articles?|art\.?|produits?)\b|\b(?:nb|nombre)\.?\s*(?:d.?)?articles?\s*[:=]?\s*(\d{1,3})\b/,
 };
 
+/**
+ * Lot 111K : rôle d'un montant d'après son LIBELLÉ (mots de structure seuls),
+ * réutilisé par T2 pour qualifier un fait candidat (total, sous-total, taxe,
+ * paiement, acompte…) — même vocabulaire que les justificatifs, aucun double.
+ */
+export function amountRoleOfLabel(texte: string | null | undefined): AmountRole | null {
+  return texte ? roleSynthese(texte) : null;
+}
+
 function roleSynthese(texte: string): AmountRole | null {
   const t = plat(texte);
   if (M.rendu.test(t)) return 'CHANGE';

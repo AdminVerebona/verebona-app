@@ -103,6 +103,10 @@ describe('L34-SUGG — contrat de chaque suggestion du catalogue unique', () => 
 });
 
 describe('L34-SUGG — cas 1 à 6 du ticket', () => {
+  // Lot 111L (audit #409) : ce test porte sur le CATALOGUE T2 et sa route d'exemples par page
+  // (`/api/verebona/suggestions`, affichée par aucune surface depuis 108J/110C) : la question est
+  // répondable et nomme le bien. Sa promotion SPONTANÉE est refusée par le service partagé
+  // (critère d'utilité, `suggestions/shared/utility.ts`, tests L111L) — assertions inchangées.
   it('Cas 1 — bien avec documents : « Quels sont les documents de Cupra ? », jamais « Que sais-tu sur Cupra ? »', () => {
     const fiche = labels('/assets/42', { state: etat(), pageAsset: { id: 42, name: 'Cupra', documents: 2, deadlines: 0 } });
     expect(fiche).toContain('Quels sont les documents de Cupra ?');

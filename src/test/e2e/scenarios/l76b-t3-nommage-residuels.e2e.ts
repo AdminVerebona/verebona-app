@@ -334,9 +334,12 @@ scenario('L76B-T3-NOM', 'Lot 76B — T3 : défauts résiduels de reprise, de ré
     const revu = modele.appels.slice(1).find((a) => a.docs.some((d) => d.documentId === vise.id && d.role === 'TO_EXAMINE'));
     expect(revu).toBeDefined();
     expect(revu!.docs.find((d) => d.documentId === vise.id)!.facts.map((f) => f.value)).toContain('CT-2008-445566');
-    // Les autres documents déjà examinés et inchangés gardent leur progression.
+    // Lot 111A (E1, décision du ticket) : aucune convention IA enregistrée → les membres DÉJÀ EXAMINÉS de la
+    // famille du document modifié (ici toute la famille, qui tient dans un appel) sont recontrôlés ; jamais
+    // plus d'un réexamen par document, aucun document hors de cette famille (cf. L111A-E1-01 / E1-03).
     const reexamines = modele.appels.slice(1).flatMap(cibles);
-    expect(premiers.filter((id) => id !== vise.id && reexamines.includes(id))).toEqual([]);
+    expect(premiers.filter((id) => reexamines.includes(id)).sort((x, y) => x - y)).toEqual([...premiers].sort((x, y) => x - y));
+    expect(new Set(reexamines).size).toBe(reexamines.length);
     const { lignes } = await rapport(m.c.id);
     void lignes;
   }, 120_000);
@@ -519,4 +522,141 @@ scenario('L76B-T3-NOM', 'Lot 76B — T3 : défauts résiduels de reprise, de ré
     expect((await evenements(c.id)).filter((e) => e.file_id === a.id).map((e) => e.outcome)).toEqual(['APPLIED']);
     void b;
   }, 120_000);
+
+  // ── Lot 111A — angles morts E1 à E4 (ticket « T3 nommage E1–E4 ») ────────────
+  /** Lot de trois familles (natures distinctes) d'un même émetteur, examiné en plusieurs appels. */
+  async function troisFamilles(c: { id: number; ownerUserId: number }) {
+    const fam = async (type: string, mois0: number) => {
+      const ids: Array<{ id: number; extractionId: number }> = [];
+      for (let i = 0; i < 4; i++) ids.push(await document(c, { nom: `orange ${type.toLowerCase()} ${MOIS[mois0 + i]} 2008`, type, date: `2008-${String(mois0 + i + 1).padStart(2, '0')}-05` }));
+      return ids;
+    };
+    return { x: await fam('INVOICE', 0), y: await fam('CONTRACT', 4), z: await fam('NOTICE', 8) };
+  }
+  const idsDe = (l: Array<{ id: number }>) => l.map((d) => d.id).sort((a, b) => a - b);
+
+  it('L111A-E1-01 — interruption après examen, NOUVEAU document d’une famille déjà examinée (aucune convention IA enregistrée) : la famille impactée est réexaminée, la famille indépendante garde son examen', async () => {
+    process.env.T3_NAMING_MAX_DOCUMENTS_PER_CALL = '6';
+    process.env.T3_NAMING_MAX_CALLS_PER_PASS = '2';
+    const c = await make.account();
+    const { x, y, z } = await troisFamilles(c);
+    const p1 = await passer(c.id);
+    expect(modele.appels.map(cibles).map((l) => l.sort((a, b) => a - b))).toEqual([idsDe(x), idsDe(y)]);
+    expect(p1.documentNaming?.status).not.toBe('DONE');
+    expect((await etat(c.id, 's:orange')).status).toBe('IN_PROGRESS');
+    // Pendant l'interruption : une nouvelle facture rejoint la famille X (contexte collectif modifié).
+    const x5 = await document(c, { nom: 'orange invoice janvier 2009', type: 'INVOICE', date: '2009-01-05' });
+    modele.appels.length = 0;
+    await passer(c.id);
+    const revus = modele.appels.flatMap(cibles);
+    expect(revus.sort((a, b) => a - b)).toEqual([...idsDe(x), x5.id, ...idsDe(z)].sort((a, b) => a - b));
+    expect(revus.filter((id) => idsDe(y).includes(id))).toEqual([]);
+    expect(await etat(c.id, 's:orange')).toMatchObject({ status: 'DONE' });
+    const { r } = await rapport(c.id);
+    expect(r.counters.documentsRevalidated).toBe(4);
+    // Plusieurs passages stables : aucun appel.
+    modele.appels.length = 0;
+    await passer(c.id);
+    expect(modele.appels).toHaveLength(0);
+  }, 180_000);
+
+  it('L111A-E1-03 — conventions IA PARTIELLES (une seule famille décrite) puis nouvelle donnée sur un membre d’une famille non décrite : ses dépendances (famille de code) sont recontrôlées, les documents indépendants ne sont pas relancés', async () => {
+    process.env.T3_NAMING_MAX_DOCUMENTS_PER_CALL = '6';
+    process.env.T3_NAMING_MAX_CALLS_PER_PASS = '2';
+    const c = await make.account();
+    const { x, y, z } = await troisFamilles(c);
+    modele.decider = (_l, docs) => ({
+      task: 'DOCUMENT_NAMING', document_renames: [],
+      families: docs.some((d) => d.documentId === x[0].id) ? [{ label: 'Factures Orange', convention: 'Facture Orange — <mois> <année>', document_ids: idsDe(x), inconsistent: false }] : [],
+    });
+    await passer(c.id);
+    expect(modele.appels.map(cibles).map((l) => l.sort((a, b) => a - b))).toEqual([idsDe(x), idsDe(y)]);
+    await fait(c, y[1], 'avenant', 'Avenant n° AV-2008-5566', { canonical: null });
+    modele.appels.length = 0;
+    await passer(c.id);
+    const revus = modele.appels.flatMap(cibles).sort((a, b) => a - b);
+    expect(revus).toEqual([...idsDe(y), ...idsDe(z)].sort((a, b) => a - b));
+    expect(await etat(c.id, 's:orange')).toMatchObject({ status: 'DONE' });
+  }, 180_000);
+
+  it('L111A-E2-01 — famille examinée en v2, bien RENOMMÉ après l’examen sans changement de faits : jamais TECHNICAL sur la seule égalité de l’ancienne empreinte — EXPECTED puis REVIEWED ; témoin sans renommage : TECHNICAL', async () => {
+    const repo = await import('@/services/ai/reconciliation/document-naming/repository');
+    const ctx = await import('@/services/ai/reconciliation/document-naming/context');
+    const preparer = async () => {
+      const c = await make.account();
+      const bien = await make.asset(c, { name: 'Maison des Lilas' });
+      const docs = [
+        await document(c, { nom: 'Facture EDF — janvier 2003 — Maison des Lilas', fournisseur: 'EDF', date: '2003-01-10', bien: bien.id }),
+        await document(c, { nom: 'Facture EDF — février 2003 — Maison des Lilas', fournisseur: 'EDF', date: '2003-02-10', bien: bien.id }),
+      ];
+      // Toutes les données antérieures à l'examen v2 (horodatages de suivi ramenés en arrière).
+      await sql`UPDATE asset_files SET updated_at = now() - interval '2 days' WHERE account_id = ${c.id}`;
+      await sql`UPDATE document_extractions SET updated_at = now() - interval '2 days', extracted_at = now() - interval '2 days' WHERE account_id = ${c.id}`;
+      await sql`UPDATE assets SET updated_at = now() - interval '2 days', created_at = now() - interval '2 days' WHERE account_id = ${c.id}`;
+      await sql`UPDATE document_asset_links SET created_at = now() - interval '2 days', updated_at = now() - interval '2 days' WHERE account_id = ${c.id}`;
+      await sql`UPDATE account_knowledge_changes SET changed_at = now() - interval '2 days' WHERE account_id = ${c.id}`;
+      const lus = await repo.loadNamingDocsByIds(c.id, docs.map((d) => d.id));
+      await sql`INSERT INTO document_naming_groups (account_id, group_key, status, fingerprint, document_count, context_version, conventions, last_reviewed_at)
+                VALUES (${c.id}, 's:edf', 'DONE', ${ctx.v2GroupFingerprint(lus)}, 2, 'naming-v2',
+                        ${JSON.stringify([{ label: 'Factures EDF', convention: 'Facture EDF — <mois> <année> — <bien>' }])}::jsonb, now() - interval '1 day')`;
+      await sql`INSERT INTO document_naming_groups (account_id, group_key, status, document_count) VALUES (${c.id}, '*', 'DONE', 2)`;
+      return { c, bien, docs };
+    };
+    // Témoin : rien n'a changé depuis l'examen v2 → migration technique prouvée, aucun appel.
+    const t = await preparer();
+    const pt = await passer(t.c.id);
+    expect(modele.appels).toHaveLength(0);
+    expect(pt.documentNaming?.upgrade).toMatchObject({ technical: 1, expected: 0 });
+    expect(await etat(t.c.id, 's:edf')).toMatchObject({ upgrade_state: 'TECHNICAL', context_version: 'naming-v3' });
+    // Bien renommé APRÈS l'examen (sans toucher à updated_at : preuve par le journal de connaissance).
+    const m = await preparer();
+    await sql`UPDATE assets SET name = 'Villa des Pins' WHERE id = ${m.bien.id}`;
+    const pm = await passer(m.c.id);
+    expect(pm.documentNaming?.upgrade).toMatchObject({ technical: 0, expected: 1, reviewed: 1 });
+    expect(modele.appels).toHaveLength(1);
+    expect(JSON.stringify(modele.appels[0].docs)).toContain('Villa des Pins');
+    const e = await sql<Array<{ upgrade_state: string; upgrade_reason: string | null; context_version: string }>>`
+      SELECT upgrade_state, upgrade_reason, context_version FROM document_naming_groups WHERE account_id = ${m.c.id} AND group_key = 's:edf'`;
+    expect(e[0]).toMatchObject({ upgrade_state: 'REVIEWED', context_version: 'naming-v3' });
+    // Noms existants conservés (aucune proposition) ; rien écrit par le recalage.
+    for (const d of m.docs) expect(await nom(d.id)).toMatch(/Maison des Lilas$/);
+  }, 120_000);
+
+  it('L111A-E4-01 — référence située APRÈS 400 000 caractères : sélectionnée, transmise avec sa position, acceptée par les garde-fous ; indice de rapprochement au-delà de la fenêtre ; au-delà du balayage borné : omission signalée et proposition refusée', async () => {
+    const remplissage = (n: number) => 'Conditions générales de vente. '.repeat(Math.ceil(n / 31)).slice(0, n);
+    const c = await make.account();
+    const texte = `Contrat assurance habitation. ${remplissage(450_000)} Contrat n° CT-4500-4500. ${remplissage(2_000)}`;
+    const a = await document(c, { nom: 'Contrat assurance', fournisseur: 'Assureur Sud', type: 'CONTRACT', date: '2024-01-01', texte });
+    await document(c, { nom: 'Avenant assurance 2024', fournisseur: 'Assureur Sud', type: 'CONTRACT', date: '2024-06-01' });
+    // Indice textuel au-delà de la fenêtre : document sans émetteur relié par la seule référence.
+    const d = await document(c, { nom: 'Relance', fournisseur: null, type: 'NOTICE', date: '2024-07-01', texte: `Relance. ${remplissage(410_000)} Dossier DOS-2025-44556.` });
+    const e = await document(c, { nom: 'Courrier cabinet', fournisseur: 'Cabinet Durand', type: 'LETTER', date: '2024-07-02', texte: 'Votre dossier n° DOS-2025-44556 est ouvert.' });
+    const cible = 'Contrat assurance CT-4500-4500';
+    modele.decider = proposer({ [a.id]: cible });
+    await passer(c.id);
+    const appelA = modele.appels.find((x) => x.docs.some((y) => y.documentId === a.id && y.role === 'TO_EXAMINE'))!;
+    const vu = appelA.docs.find((y) => y.documentId === a.id)!;
+    const p = vu.passages?.find((x) => x.text.includes('CT-4500-4500'));
+    expect(p).toBeDefined();
+    expect(p!.offset).toBeGreaterThan(400_000);
+    expect(texte.slice(p!.offset, p!.offset + p!.text.length).replace(/\s+/g, ' ')).toContain('CT-4500-4500');
+    expect(await nom(a.id)).toBe(cible);
+    const ensemble = modele.appels.find((x) => x.docs.some((y) => y.documentId === d.id));
+    expect(ensemble!.docs.map((y) => y.documentId).sort((u, v) => u - v)).toEqual([d.id, e.id].sort((u, v) => u - v));
+    // Balayage borné : au-delà, information NON couverte signalée et jamais acceptée.
+    process.env.T3_NAMING_TEXT_SCAN_MAX_CHARS = '420000';
+    const c2 = await make.account();
+    const f = await document(c2, { nom: 'Contrat assurance', fournisseur: 'Assureur Est', type: 'CONTRACT', date: '2024-01-01', texte });
+    await document(c2, { nom: 'Avenant assurance 2024', fournisseur: 'Assureur Est', type: 'CONTRACT', date: '2024-06-01' });
+    modele.decider = proposer({ [f.id]: cible });
+    modele.appels.length = 0;
+    await passer(c2.id);
+    const vu2 = modele.appels[0].docs.find((y) => y.documentId === f.id)! as DocIA & { context?: { omissions?: { textNotScanned?: number; significant?: boolean } } };
+    expect(vu2.passages?.some((x) => x.text.includes('CT-4500-4500'))).toBe(false);
+    expect(vu2.context?.omissions).toMatchObject({ significant: true });
+    expect(vu2.context?.omissions?.textNotScanned).toBeGreaterThan(0);
+    // Harmonisation refusée (le titre peut être complété par le service de nommage déterministe, hors de ce ticket).
+    expect(await nom(f.id)).not.toContain('CT-4500-4500');
+    expect((await evenements(c2.id)).filter((x) => x.file_id === f.id).map((x) => x.reason_code)).toEqual(['INFORMATION_INVENTED']);
+  }, 180_000);
 });

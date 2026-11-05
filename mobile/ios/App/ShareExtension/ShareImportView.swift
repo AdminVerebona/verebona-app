@@ -15,8 +15,10 @@ final class ShareImportModel: ObservableObject {
     @Published var phase: Phase = .preparing
     @Published var accepted: [VBShareFile] = []
     @Published var refused: [Refusal] = []
-    /// Jeton d'import valide présent : sinon, l'import se terminera à la prochaine ouverture de Verebona.
-    @Published var signedIn = true
+    /// Lot 111P : état CONSTATÉ du jeton d'import (VBShareNotice) ; nil = jeton prêt, aucun texte.
+    @Published var notice: String? = nil
+    /// Lot 111P : imports précédents en attente d'autorisation / dernier envoi non abouti.
+    @Published var infoLines: [String] = []
 }
 
 struct ShareImportView: View {
@@ -63,9 +65,13 @@ struct ShareImportView: View {
                 ForEach(model.refused) { r in
                     Text("Non repris — \(r.name) : \(r.reason)").font(.caption).foregroundColor(.secondary)
                 }
-                if model.phase == .ready && !model.signedIn {
-                    Text("Vous n’êtes pas connecté à Verebona sur ce téléphone : l’import se terminera à la prochaine ouverture de l’application, sans rien resélectionner.")
-                        .font(.caption).foregroundColor(.secondary)
+                if model.phase == .ready, let notice = model.notice {
+                    Text(notice).font(.caption).foregroundColor(.secondary)
+                }
+                if model.phase == .ready {
+                    ForEach(model.infoLines, id: \.self) { line in
+                        Text(line).font(.caption).foregroundColor(.secondary)
+                    }
                 }
                 if model.phase == .ready || model.phase == .sending {
                     Button(action: onImport) {

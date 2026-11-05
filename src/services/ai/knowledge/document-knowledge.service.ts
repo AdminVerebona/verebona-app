@@ -537,6 +537,9 @@ export async function hasProjectableKnowledge(fileId: number): Promise<boolean> 
 interface KnowledgeFactHit extends StoredFact {
   documentTitle: string | null;
   assetId: number | null;
+  /** Lot 111K : date et type documentaire du document du fait (contexte de la preuve). */
+  documentDate?: string | null;
+  documentTypeCode?: string | null;
   /** Lot 101A : le document du fait est rattaché à l'objet demandé (`opts.entity`). */
   linkedToEntity?: boolean | null;
   /** Nombre de termes de la requête retrouvés dans le fait (0 à n). */
@@ -588,6 +591,7 @@ export async function searchDocumentFacts(
        SELECT ${factColumns('f', canonical)},
               ${documentTitleJsonSql('af')} AS "documentTitle",
               coalesce(af.asset_id, af.linked_asset_id) AS "assetId",
+              to_char(af.document_date, 'YYYY-MM-DD') AS "documentDate", af.document_type_code AS "documentTypeCode",
               ${lienObjet.replace('EXISTS', '(EXISTS').concat(')')} AS "linkedToEntity",
               (${scoreSql}) AS "matchedTerms"
          FROM document_facts f

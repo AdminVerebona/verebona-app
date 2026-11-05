@@ -13,8 +13,13 @@ export const dynamic = 'force-dynamic';
  *        202 { jobId, status, duplicate, requestId } : la demande est
  *        ENREGISTRÉE (ligne QUEUED de `admin_export_generations`) et le
  *        worker est réveillé — RIEN n'est généré dans cette requête.
- *        Double clic, requête rejouée ou demande identique en cours → même
- *        travail (`duplicate: true`).
+ *        Double clic ou requête rejouée (même clé) → même travail
+ *        (`duplicate: true`) ; diagnostic ciblé identique en cours → même
+ *        travail. Lot 111C : un diagnostic GLOBAL nouvellement demandé
+ *        REMPLACE les demandes globales actives (`replaced`), et la réponse
+ *        dit tout de suite pourquoi il attend (`wait` : worker désactivé,
+ *        indisponible, autre diagnostic…) — avec alerte BO si la cause est
+ *        une configuration.
  *   GET  → liste légère paginée des diagnostics (`page`, `pageSize` ≤ 100,
  *        `status`) : statut, phase, progression, tentatives, dernière erreur.
  *
@@ -44,17 +49,25 @@ export async function POST(request: NextRequest) {
       adminUserId: g.adminId, request: parsed.value, requestId,
       idempotencyKey: parseIdempotencyKey(request.headers.get('idempotency-key')),
     });
-    await audit('SUCCESS', { jobId: r.job.id, duplicate: r.duplicate, status: r.job.status });
+    await audit('SUCCESS', { jobId: r.job.id, duplicate: r.duplicate, status: r.job.status, replaced: r.replaced.map((x) => ({ id: x.id, from: x.previousStatus, outcome: x.outcome })) });
     const { nudgeDiagnosticWorker } = await import('@/services/admin/diagnostic-jobs/worker');
     nudgeDiagnosticWorker();
-    return NextResponse.json({ jobId: r.job.id, status: r.job.status, duplicate: r.duplicate, requestId }, { status: 202, headers: { ...NO_STORE, 'X-Request-Id': requestId } });
+    // Lot 111C : raison d'attente lue dans les battements PERSISTÉS de toutes les instances ;
+    // cause de configuration (worker désactivé, aucun conteneur worker) → alerte BO immédiate.
+    const sup = await import('@/services/admin/diagnostic-jobs/supervision');
+    const wait = r.job.status === 'QUEUED' ? await sup.diagnosticJobWait(r.job.id) : null;
+    if (wait?.diagnosis.alert) void sup.superviseDiagnosticQueue();
+    return NextResponse.json({
+      jobId: r.job.id, status: r.job.status, duplicate: r.duplicate, requestId, replaced: r.replaced,
+      wait: wait ? { reason: wait.diagnosis.reason, label: wait.label, detail: wait.diagnosis.detail, action: wait.action, blockingJobId: wait.diagnosis.blockingJobId } : null,
+    }, { status: 202, headers: { ...NO_STORE, 'X-Request-Id': requestId } });
   } catch (e) {
     const { sanitizeErrorMessage } = await import('@/services/admin/diagnostic-jobs/state');
     const code = (e as { code?: string })?.code === '42703' ? 'MIGRATION_MISSING' : 'ENQUEUE_FAILED';
     console.error(`[diagnostic-job] ${JSON.stringify({ event: 'enqueue-failed', requestId, code, message: sanitizeErrorMessage(e) })}`);
     await audit('FAILURE', { code });
     return NextResponse.json({
-      error: code === 'MIGRATION_MISSING' ? 'Migration 1035 non appliquée : demande impossible (voir Exploitation › Migrations).' : 'Demande non enregistrée (voir le journal du serveur).',
+      error: code === 'MIGRATION_MISSING' ? 'Migrations 1035 / 1200 non appliquées : demande impossible (voir Exploitation › Migrations).' : 'Demande non enregistrée (voir le journal du serveur).',
       code, requestId,
     }, { status: code === 'MIGRATION_MISSING' ? 503 : 500, headers: NO_STORE });
   }

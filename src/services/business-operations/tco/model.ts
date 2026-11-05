@@ -138,6 +138,9 @@ import {
 import { applyTcoUserDecisions, type TcoLineUserDecision, type TcoUserDecision } from './user-decisions';
 import { assessSamePurchase, pickSameFact, purchaseDatesCompatible, type PurchaseFact, type SameFactAssessment } from './fact-matching';
 import { computeUsageComplement, type UsageComplement, type UsageLineAssignment } from './usage-complement';
+import { consolidateFinancing, planFinancingComponents, TCO_FINANCING_BASIS_LABEL, type FinancingComponentTreatment, type TcoFinancingDetails } from './financing';
+import { assessValuations, assetAcquisitionPrice, computeOwnershipIndicators, type TcoIndicators, type ValuationHistoryInput } from './ownership-indicators';
+import { multiEquipmentPurchaseCoverage } from './multi-equipment-attribution';
 import {
   economicDateLabel, resolveOperationEconomicDates, type EconomicDateDocument, type EconomicDateEvidence, type EconomicDateResolution, type OwnDateOrigin,
 } from '../finance/economic-date';
@@ -228,8 +231,13 @@ export interface TcoInput {
   assetSaleDate: string | null;
   /** Statut de la fiche (VENDU, TRANSMIS…). */
   assetStatus: string | null;
-  /** Historique de valorisation (`valuationHistory`, valeurs en euros). */
-  valuationHistory: ReadonlyArray<{ value: number | null; date: string | null; mode?: string | null; source?: string | null; currency?: string | null }>;
+  /** Historique de valorisation (`valuationHistory`, valeurs en euros ; lot 111F : identifiant et date d'ajout distincts). */
+  valuationHistory: ReadonlyArray<ValuationHistoryInput>;
+  /**
+   * Lot 111F : détails contractuels des prêts (Opérations FINANCING du bien,
+   * `business_operation_financing_details`) — capital, prêteur, dates.
+   */
+  financingDetails?: ReadonlyMap<number, TcoFinancingDetails>;
   /** Prix souhaité (informations commerciales), centimes. */
   desiredSalePriceCents: number | null;
   budgets: readonly UsageBudget[];
@@ -386,6 +394,8 @@ export interface TcoEconomicLine {
   compositionOf?: string;
   /** Lot 109D : coûts réunis dans un net d'achat recomposé (clés de décision antérieures). */
   mergedFacts?: Array<{ kind: string; amountMinor: number; currency: string }>;
+  /** Lot 111F : échéance d'un prêt comptée selon l'échéancier contractuel (présumée honorée, paiement non vérifié). */
+  financingBasis?: 'SCHEDULE';
 }
 
 export interface TcoResult {
@@ -479,6 +489,14 @@ export interface TcoResult {
   annual: TcoAnnual;
   /** Lot 80A : décisions de l'utilisateur appliquées, doublons présumés ajoutés, décisions sans ligne (BO). */
   userDecisions: { applied: number; includedDuplicates: number; orphans: TcoUserDecision[] };
+  /**
+   * Lot 111F : indicateurs de la fiche (coût total, coût annuel moyen de
+   * possession, coût net estimé, financement) et motif de chaque valeur non
+   * calculable — dérivés des MÊMES lignes (`./ownership-indicators`).
+   */
+  indicators: TcoIndicators;
+  /** Lot 111F : admissibilité de chaque valorisation (index de l'historique, motif) — diagnostic BO. */
+  valuations?: import('./ownership-indicators').ValuationAssessment;
 }
 
 // ── Règles ─────────────────────────────────────────────────────────────────
@@ -514,13 +532,14 @@ const budgetActif = (b: Pick<UsageBudget, 'validFrom' | 'validTo'>, day: string)
  * Valeur actuelle FIABLE (C18) : la dernière valorisation DATÉE, en euros,
  * de montant positif, non postérieure à la date de calcul. Sans date, en autre
  * devise ou absente : `null` (aucune dépréciation inventée).
+ * Lot 111F : et STRICTEMENT postérieure à l'acquisition (`acquisitionDate`,
+ * date de départ cohérente du moteur ; inconnue → aucune valeur actuelle), la
+ * plus récente par DATE DE VALORISATION, jamais par ordre d'ajout
+ * (`./ownership-indicators`, règle partagée avec la route des valorisations).
  */
-export function reliableValuation(history: TcoInput['valuationHistory'], asOf: string): TcoResult['summary']['currentValue'] {
-  const ok = history
-    .filter((v) => typeof v.value === 'number' && Number.isFinite(v.value) && v.value >= 0 && isIsoDate(v.date) && v.date!.slice(0, 10) <= asOf
-      && (!v.currency || String(v.currency).toUpperCase() === 'EUR'))
-    .sort((a, b) => a.date!.localeCompare(b.date!));
-  const v = ok[ok.length - 1];
+export function reliableValuation(history: TcoInput['valuationHistory'], asOf: string, acquisitionDate: string | null): TcoResult['summary']['currentValue'] {
+  const r = assessValuations(history, { asOf, acquisitionDate });
+  const v = r.retainedIndex != null ? history[r.retainedIndex] : null;
   return v ? { cents: Math.round((v.value as number) * 100), date: v.date!.slice(0, 10), mode: v.mode ?? null, source: v.source ?? null } : null;
 }
 
@@ -672,8 +691,25 @@ export function computeTco(input: TcoInput): TcoResult {
     return (p.otherAssetAcquisition && !justifieParPreuve(componentId) ? 8 : 0)
       + (justifieParPreuve(componentId) ? 4 : 0) + (p.otherSourceKinds.includes('ASSET_DATA') ? 4 : 0) + (p.explained === true ? 1 : 0);
   };
+  // Lot 111F : prêts — échéancier contractuel à date, capital jamais un coût, avenant à sa date d'effet (`./financing`).
+  // Calculé AVANT les doublons présumés : une échéance remplacée par un avenant n'est jamais « la même somme » comptée.
+  const plansPret = new Map<number, Map<number, FinancingComponentTreatment>>();
+  for (const op of ops) {
+    if (op.typeCode !== 'FINANCING') continue;
+    const res = resolveOperationEconomicDates(op, tcoDateEvidence(op, prov));
+    plansPret.set(op.id, planFinancingComponents({
+      components: op.components, details: input.financingDetails?.get(op.id) ?? null, today: input.today,
+      dateOf: (id) => res.get(id)?.date ?? (isIsoDate(op.components.find((x) => x.id === id)?.economicDate) ? op.components.find((x) => x.id === id)!.economicDate : null),
+      filesOf: (id) => prov.get(id)?.documentFileIds ?? [],
+      documentDates: new Map(op.documents.map((d) => [d.fileId, d.date ?? null])),
+    }));
+  }
+  const horsCoutPret = (op: TcoOperation, id: number) => { const t = plansPret.get(op.id)?.get(id); return t?.kind === 'PRINCIPAL' || t?.kind === 'SUPERSEDED'; };
   const doublons = new Map<number, PresumedDuplicate>();
-  for (const op of ops) for (const [id, d] of presumedDuplicateComponents(op, prov, force)) doublons.set(id, d);
+  for (const op of ops) {
+    const sansPret = plansPret.has(op.id) ? { ...op, components: op.components.filter((c) => !horsCoutPret(op, c.id)) } : op;
+    for (const [id, d] of presumedDuplicateComponents(sansPret, prov, force)) doublons.set(id, d);
+  }
   // Lot 108A : fiche + justificatif du même achat consolidé, identité INCERTAINE (dates inconnues) — comptés, signalés.
   const incertitudesComp = new Map<number, { against: number; signals: string[] }>();
   for (const op of ops) {
@@ -692,23 +728,36 @@ export function computeTco(input: TcoInput): TcoResult {
   const autresBiens = new Set<number>();
 
   const datesEco = new Map<number, EconomicDateResolution>();
+  const traitementsPret = new Map<number, FinancingComponentTreatment>();
   for (const op of ops) {
     const category = tcoCategoryOf(op);
     const hasRefund = op.components.some((c) => c.kind === 'REFUND');
     // Lot 86F : date économique de CHAQUE composante (jamais celle de l'Opération par défaut).
     const resolutions = resolveOperationEconomicDates(op, tcoDateEvidence(op, prov));
+    const planPret = plansPret.get(op.id) ?? null;
     for (const c0 of op.components) {
       const res = resolutions.get(c0.id)!;
       datesEco.set(c0.id, res);
-      const c: LedgerComponent = { ...c0, economicDate: res.date, economicDateResolution: res };
-      const e = evaluateComponent(c, {
-        scope, operationAssetIds: op.assetIds, operationStatus: op.status, equipmentAssets: input.equipmentAssets,
+      const pt0 = planPret?.get(c0.id);
+      // Un coût déjà daté par un paiement prouvé reste un fait payé (jamais rétrogradé en « présumé honoré »).
+      const pt = pt0?.kind === 'CONTRACTUAL_TO_DATE' && c0.kind === 'REALIZED_COST' && res.basis === 'PAYMENT' ? undefined : pt0;
+      if (pt) traitementsPret.set(c0.id, pt);
+      // Échéance contractuelle passée : comptée comme coût réalisé à sa date d'échéance (présumée honorée).
+      const c: LedgerComponent = pt?.kind === 'CONTRACTUAL_TO_DATE'
+        ? { ...c0, kind: 'REALIZED_COST', economicDate: pt.date }
+        : { ...c0, economicDate: res.date, economicDateResolution: res };
+      const contractuel = pt?.kind === 'CONTRACTUAL_TO_DATE';
+      const e0 = evaluateComponent(c, {
+        // Lot 111F : une échéance contractuelle échue ne dépend pas du statut du prêt (sauf annulation) — jamais une contradiction.
+        scope, operationAssetIds: op.assetIds, operationStatus: contractuel && op.status !== 'CANCELLED' ? null : op.status, equipmentAssets: input.equipmentAssets,
         disposalDate: dateCession, isDisposalOperation: op.typeCode === 'DISPOSAL', hasRefund,
         // Lot 81D : date de référence ; preuve de réalisation. Lot 86F : aucun repli vers la date de l'Opération (sa date
         // effective ne sert qu'à constater une non-réalisation).
         asOf: input.today, operationEffectiveDate: op.realizedDate ?? op.startDate,
-        realizationEvidence: (prov.get(c.id)?.documentFileIds.length ?? 0) > 0,
+        realizationEvidence: (prov.get(c.id)?.documentFileIds.length ?? 0) > 0 || pt?.kind === 'CONTRACTUAL_TO_DATE',
       });
+      // Lot 111F : capital emprunté ou échéance remplacée par un avenant — jamais un coût (ligne conservée, motif).
+      const e = pt && pt.kind !== 'CONTRACTUAL_TO_DATE' && e0.included ? { ...e0, included: false, includedEurMinor: 0, prorata: null } : e0;
       // §3A : montant justifié par la preuve du prix d'achat d'un AUTRE bien (et non de celui-ci) — jamais un coût de
       // ce bien, quelle que soit l'Opération qui le porte (ex. prix d'une maison dans une commande de mobilier).
       const autreBien = e.included && !!prov.get(c.id)?.otherAssetAcquisition && !justifieParPreuve(c.id);
@@ -1030,8 +1079,13 @@ export function computeTco(input: TcoInput): TcoResult {
       });
       continue;
     }
+    // Lot 111F : échéance d'un justificatif de prêt (prévision contractuelle) datée au plus tard aujourd'hui — présumée honorée.
+    // Un justificatif rattaché à un prêt consolidé (Opération FINANCING) : ses échéances sont portées par les composantes
+    // du prêt (jamais comptées deux fois, même si la couverture fait par fait n'est pas établie pour une prévision).
+    const echeanceContractuelle = category === 'FINANCING' && d.kind === 'FORECAST_COST' && isIsoDate(d.date) && d.date.slice(0, 10) <= input.today
+      && !(d.operationId != null && plansPret.has(d.operationId));
     const e = evaluateComponent({
-      id: 0, lineId: d.lineId, operationId: 0, kind: d.kind, amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents,
+      id: 0, lineId: d.lineId, operationId: 0, kind: echeanceContractuelle ? 'REALIZED_COST' : d.kind, amountMinor: d.amountMinor, currency: d.currency, amountEurCents: d.amountEurCents,
       economicDate: d.date, periodStart: d.periodStart, periodEnd: d.periodEnd, targetAssetId: d.targetAssetId, targetEquipmentId: d.targetEquipmentId,
       ...(d.dateResolution ? { economicDateResolution: d.dateResolution } : {}),
     }, {
@@ -1048,6 +1102,7 @@ export function computeTco(input: TcoInput): TcoResult {
     lines.push({
       ...ligne, date: e.date, eurCents: e.eurMinor, includedCents: e.includedEurMinor, status: statusOfEntry(e, 'RETAINED_DIRECT'), reason: e.exclusion, ...incertaine,
       ...dateEco(d.dateResolution, e), ...nonRealisee(e),
+      ...(echeanceContractuelle && e.included ? { kind: 'REALIZED_COST' as const, financingBasis: 'SCHEDULE' as const, note: `${TCO_FINANCING_BASIS_LABEL} : échéance présumée honorée (paiement non vérifié).` } : {}),
     });
   }
   // Lot 108A : prix de la fiche retenu sans preuve T1 mais facture du même achat confirmée — le justificatif est
@@ -1060,6 +1115,14 @@ export function computeTco(input: TcoInput): TcoResult {
   // (preuve T1 du prix, donnée structurée, ou rattachement à l'équipement + nature « achat » + même montant + dates
   // concordantes) et dépense couvrante effectivement RETENUE ; une réparation ou un entretien de même montant n'est
   // jamais l'acquisition ; jamais confondu avec l'achat du bien.
+  // Lot 111I : facture d'achat rattachée à PLUSIEURS équipements — couvre la somme exacte de leurs prix (module isolé).
+  const achatMultiEquipements = multiEquipmentPurchaseCoverage(
+    docEntries.filter((x) => x.entry.included && x.draft.kind === 'REALIZED_COST' && documentCategory(x.draft) === 'PURCHASE')
+      .map((x) => ({ fileId: x.draft.fileId, eurMinor: x.entry.eurMinor, date: dateOfDraft(x.draft), linkedEquipmentIds: docsParId.get(x.draft.fileId)?.linkedEquipmentIds ?? [] })),
+    (input.equipmentPrices ?? []).map((ep) => ({
+      equipmentId: ep.equipmentId, eurMinor: componentEurMinor({ amountMinor: ep.amountMinor, currency: ep.currency, amountEurCents: null }),
+      date: isIsoDate(ep.date) ? ep.date.slice(0, 10) : null,
+    })));
   for (const ep of input.equipmentPrices ?? []) {
     if (!(ep.amountMinor > 0)) continue;
     const eur = componentEurMinor({ amountMinor: ep.amountMinor, currency: ep.currency, amountEurCents: null });
@@ -1081,6 +1144,11 @@ export function computeTco(input: TcoInput): TcoResult {
         && documentCategory(x.draft) === 'PURCHASE' && x.entry.eurMinor === eur && purchaseDatesCompatible(dateOfDraft(x.draft), epDate)));
     if (facture) {
       lines.push({ ...base, includedCents: 0, fileId: facture.draft.fileId, operationId: null, operationLabel: null, status: 'DUPLICATE', reason: 'SAME_AS_EQUIPMENT_DOCUMENT' });
+      continue;
+    }
+    const factureMulti = preuvesEq.size ? undefined : achatMultiEquipements.get(ep.equipmentId);
+    if (factureMulti !== undefined) {
+      lines.push({ ...base, includedCents: 0, fileId: factureMulti, operationId: null, operationLabel: null, status: 'DUPLICATE', reason: 'SAME_AS_EQUIPMENT_DOCUMENT' });
       continue;
     }
     const retenue = (o: TcoOperation) => (opEntries.get(o.id) ?? []).some((e) => e.included && e.effect === 'COST');
@@ -1136,6 +1204,23 @@ export function computeTco(input: TcoInput): TcoResult {
         ...dateEco(datesEco.get(e.componentId), e),
         ...nonRealisee(e, op),
       };
+      // Lot 111F : traitements d'un prêt (capital, échéance remplacée par un avenant, échéance contractuelle à date).
+      const tp = traitementsPret.get(e.componentId);
+      if (tp?.kind === 'PRINCIPAL') {
+        opLines.push({ ...base, category: null, status: 'EXCLUDED', reason: 'LOAN_PRINCIPAL', note: 'Capital emprunté : jamais un coût du bien (le prix d’achat est compté une seule fois).' });
+        continue;
+      }
+      if (tp?.kind === 'SUPERSEDED') {
+        opLines.push({
+          ...base, category: null, status: 'EXCLUDED', reason: 'FINANCING_SCHEDULE_SUPERSEDED', relatedFileId: tp.byFileId,
+          note: `Échéance remplacée par un avenant ou un nouvel échéancier du même prêt, à partir du ${tp.effectiveFrom.slice(8, 10)}/${tp.effectiveFrom.slice(5, 7)}/${tp.effectiveFrom.slice(0, 4)}.`,
+        });
+        continue;
+      }
+      if (tp?.kind === 'CONTRACTUAL_TO_DATE' && e.included) {
+        opLines.push({ ...base, financingBasis: 'SCHEDULE', note: `${TCO_FINANCING_BASIS_LABEL} : échéance présumée honorée (paiement non vérifié).` });
+        continue;
+      }
       if (autresBiens.has(e.componentId)) {
         opLines.push({
           ...base, category: null, status: 'OUT_OF_SCOPE', reason: 'COUNTED_FOR_OTHER_ASSET',
@@ -1262,7 +1347,9 @@ export function computeTco(input: TcoInput): TcoResult {
   const proceedsEntries = entries.filter((e) => e.effect === 'PROCEED');
   const prixRealise = proceedsEntries.some((e) => e.included) ? totals.proceedsEurMinor : null;
   if (disposed && prixRealise === null) warnings.add('DISPOSAL_PRICE_MISSING');
-  const valeur = reliableValuation(input.valuationHistory, dateCession ?? input.today);
+  // Lot 111F : valeur actuelle admissible = datée, en euros, non future, STRICTEMENT postérieure à l'acquisition.
+  const evaluationValeurs = assessValuations(input.valuationHistory, { asOf: dateCession ?? input.today, acquisitionDate: startCoherent });
+  const valeur = reliableValuation(input.valuationHistory, dateCession ?? input.today, startCoherent);
   const netEstime = !disposed && valeur ? cumul - valeur.cents : null;
   const netFinal = disposed && prixRealise !== null ? cumul - prixRealise : null;
   const provisoire = prixRealise === null && input.desiredSalePriceCents != null ? cumul - input.desiredSalePriceCents : null;
@@ -1315,8 +1402,10 @@ export function computeTco(input: TcoInput): TcoResult {
 
   // Lot 76G : indicateurs annuels dérivés des MÊMES lignes (montants retenus, dédoublonnés) — aucun second moteur.
   // Lot 81D : chaque ligne retenue porte son année (détail de l'année = sélection exacte de l'indicateur).
+  // Lot 111F : prix d'acquisition DU BIEN (valeur historique) retiré du coût annuel moyen — mêmes lignes que le total.
+  const prixAcquisitionBien = assetAcquisitionPrice({ lines: toutesLignes, acquisitionStatus, assetPriceEurCents: prixEur });
   const annual = computeTcoAnnual({
-    lines: toutesLignes, period, cumulativeCostCents: cumul, status, today: input.today, disposed,
+    lines: toutesLignes, period, cumulativeCostCents: cumul, acquisitionPriceCents: prixAcquisitionBien, status, today: input.today, disposed,
     assign: (id, year) => { for (const l of parIdLigne.get(id) ?? []) l.annualYear = year; },
   });
   // Lot 108C : dépenses d'usage — complément estimé max(0, F − R) par catégorie et période échue (coût documenté inchangé).
@@ -1324,7 +1413,17 @@ export function computeTco(input: TcoInput): TcoResult {
     budgets: input.budgets, lines: toutesLignes, assignments: input.usageAssignments ?? [],
     possession: { start: period.start, end: period.end, disposed }, today: input.today, documentedCents: cumul,
     averageDays: annual.average.status === 'COMPUTED' ? annual.average.days : null,
+    averageDuration: annual.average.status === 'COMPUTED' ? annual.average.duration : null,
+    averageExcludedCents: annual.average.status === 'COMPUTED' ? annual.average.acquisitionPriceCents : null,
     net: { estimatedCents: netEstime, finalCents: netFinal, provisionalCents: netFinal !== null ? null : provisoire },
+  });
+
+  // Lot 111F : prêts du bien consolidés (mêmes lignes) et indicateurs de la fiche, motifs des valeurs non calculables.
+  const financing = consolidateFinancing({ operations: ops, details: input.financingDetails ?? new Map(), lines: toutesLignes, today: input.today });
+  const indicators = computeOwnershipIndicators({
+    today: input.today, disposed, annual, cumulativeCostCents: cumul, estimatedComplementCents: usageComplement.estimatedComplementCents,
+    averageWithEstimatesCents: usageComplement.averageWithEstimatesCents, financing, valuation: disposed ? null : valeur, valuationAssessment: evaluationValeurs,
+    netEstimatedCents: netEstime, netFinalCents: netFinal, realizedPriceCents: prixRealise, disposalFeesCents: postes.get('DISPOSAL')?.costsCents ?? 0,
   });
 
   return {
@@ -1372,6 +1471,8 @@ export function computeTco(input: TcoInput): TcoResult {
     entries,
     annual,
     userDecisions: decisionsUtilisateur,
+    indicators,
+    valuations: evaluationValeurs,
   };
 }
 

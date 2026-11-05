@@ -32,8 +32,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       ? NextResponse.json({ error: 'Diagnostic introuvable.', code: 'NOT_FOUND' }, { status: 404, headers: NO_STORE })
       : NextResponse.json({ error: 'Génération encore en file ou en cours : rien à relancer.', code: 'STILL_ACTIVE' }, { status: 409, headers: NO_STORE });
   }
-  await audit('SUCCESS', { jobId: r.job.id, duplicate: r.duplicate });
+  await audit('SUCCESS', { jobId: r.job.id, duplicate: r.duplicate, replaced: r.replaced.map((x) => ({ id: x.id, from: x.previousStatus, outcome: x.outcome })) });
   const { nudgeDiagnosticWorker } = await import('@/services/admin/diagnostic-jobs/worker');
   nudgeDiagnosticWorker();
-  return NextResponse.json({ jobId: r.job.id, parentId: id, status: r.job.status, duplicate: r.duplicate, requestId }, { status: 202, headers: NO_STORE });
+  return NextResponse.json({ jobId: r.job.id, parentId: id, status: r.job.status, duplicate: r.duplicate, replaced: r.replaced, requestId }, { status: 202, headers: NO_STORE });
 }

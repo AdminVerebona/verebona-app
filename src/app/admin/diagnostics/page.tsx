@@ -18,6 +18,14 @@
  * est léger et paginé ; « Santé du moteur » explique une panne sans générer
  * de diagnostic.
  *
+ * Lot 111C : la dernière demande GLOBALE est prioritaire — une nouvelle
+ * demande globale remplace les demandes globales encore actives (« Annulé —
+ * remplacé par … », « Annulation demandée ») ; la nouvelle est sélectionnée.
+ * Une demande en attente dit POURQUOI (« En attente — worker désactivé
+ * (DIAG_JOB_WORKER_DISABLED) », « — worker indisponible », « — autre
+ * diagnostic »…) avec l'action à mener ; « Santé du moteur » montre le
+ * battement de chaque processus (pas seulement l'instance qui répond).
+ *
  * NAVIGATION : page atteinte depuis Dashboard › Supervision (lien
  * « Diagnostics ») ; « Données du compte » n'y ajoute qu'un RACCOURCI (filtre
  * compte prérempli : `?scope=account&id=12`). Aucune entrée de barre latérale.
@@ -67,8 +75,14 @@ function newKey(): string {
   try { return crypto.randomUUID(); } catch { return `k-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`; }
 }
 
+interface WaitView { reason: string; label: string; detail: string | null; action: string; blockingJobId: string | null; waitedSeconds?: number; alert?: boolean }
+interface ReplacedView { id: string; previousStatus: 'QUEUED' | 'RUNNING'; outcome: 'CANCELLED' | 'CANCEL_REQUESTED' }
+
 interface JobView {
   job: GenerationRow;
+  /** Lot 111C : statut explicite et raison d'attente. */
+  statusLabel?: string;
+  wait?: WaitView | null;
   downloadable: boolean;
   phaseLabel: string | null;
   errorLabel: string | null;
@@ -110,13 +124,19 @@ function Diagnostics() {
       const r = await res.json().catch(() => ({}));
       if (!res.ok) { setError(`${r.error || `Erreur ${res.status}`}${r.code ? ` (code ${r.code})` : ''}${r.requestId ? ` — demande ${String(r.requestId).slice(0, 8)}` : ''}`); return; }
       setSelected(String(r.jobId));
+      const replaced = (r.replaced ?? []) as ReplacedView[];
+      const wait = r.wait as WaitView | null | undefined;
       setNotice(r.duplicate
         ? `Une demande identique est déjà enregistrée : diagnostic ${String(r.jobId).slice(0, 8)} (aucun doublon créé).`
-        : `Diagnostic demandé : ${String(r.jobId).slice(0, 8)}. Il est produit en arrière-plan ; vous pouvez quitter la page et revenir le télécharger.`);
+        : [
+          `Diagnostic demandé : ${String(r.jobId).slice(0, 8)}. Il est produit en arrière-plan ; vous pouvez quitter la page et revenir le télécharger.`,
+          replaced.length ? `Remplace ${replaced.map((x) => `${x.id.slice(0, 8)} (${x.outcome === 'CANCELLED' ? 'annulé' : 'annulation demandée'})`).join(', ')}.` : '',
+          wait && wait.reason !== 'PICKUP_PENDING' ? `${wait.label}.` : '',
+        ].filter(Boolean).join(' '));
       idemKey.current = newKey();
       setTick((t) => t + 1);
     } catch {
-      setError('Erreur réseau — la demande n’a peut-être pas été enregistrée : consultez l’historique avant de recommencer (un nouveau clic ne crée pas de doublon).');
+      setError('Erreur réseau — la demande n’a peut-être pas été enregistrée : « Réessayer » rejoue la MÊME demande (aucun doublon) ; consultez l’historique avant toute nouvelle demande.');
     } finally {
       setBusy(false);
     }
@@ -157,7 +177,7 @@ function Diagnostics() {
         </div>
         <div className="rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground flex items-start gap-2" data-diag-scope-note>
           {scope === 'global'
-            ? <><Globe2 className="h-4 w-4 mt-0.5 shrink-0" /><span><span className="text-foreground font-medium">Niveau maximal.</span> Toutes les tables de tous les comptes et les tables transversales, tout l’historique, sans plafond (fichiers découpés en parties). Seuls les secrets et le contenu des conversations de l’assistant sont exclus (motifs dans le manifeste).</span></>
+            ? <><Globe2 className="h-4 w-4 mt-0.5 shrink-0" /><span><span className="text-foreground font-medium">Niveau maximal.</span> Toutes les tables de tous les comptes et les tables transversales, tout l’historique, sans plafond (fichiers découpés en parties). Seuls les secrets et le contenu des conversations de l’assistant sont exclus (motifs dans le manifeste). <span className="text-foreground">La dernière demande globale est prioritaire :</span> elle remplace toute demande globale encore en attente ou en cours (les diagnostics filtrés ne sont pas touchés).</span></>
             : <><Filter className="h-4 w-4 mt-0.5 shrink-0" /><span><span className="text-foreground font-medium">Filtre du même moteur.</span> Volume réduit aux lignes liées à l’objet (et à celles qu’elles citent) ; aucune information absente de « Ensemble de l’application ». Les tables transversales (multi-comptes) n’y figurent pas.</span></>}
         </div>
         <label className="flex items-start gap-2 text-sm">
@@ -278,8 +298,23 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
       </div>
       {copied && <p className="text-xs text-muted-foreground" role="status">{copied}</p>}
       {err && <p className="text-xs text-destructive">{err}</p>}
+      {v.wait && (
+        <div className="rounded-lg border px-3 py-2 text-xs space-y-0.5" data-diag-wait={v.wait.reason} role="status">
+          <p className={`font-medium flex items-center gap-1.5 ${v.wait.alert ? 'text-destructive' : ''}`}>{v.wait.alert ? <AlertTriangle className="h-3.5 w-3.5" /> : <Loader2 className="h-3.5 w-3.5 animate-spin" />}{v.wait.label}{v.wait.waitedSeconds != null ? ` · depuis ${duree(new Date(Date.now() - v.wait.waitedSeconds * 1000).toISOString(), null)}` : ''}</p>
+          {v.wait.detail && v.wait.reason !== 'RETRY_SCHEDULED' && <p className="text-muted-foreground break-words">{v.wait.detail}</p>}
+          <p className="text-muted-foreground">{v.wait.action}</p>
+          {v.wait.blockingJobId && <p><button type="button" className="underline" onClick={() => onSelect(v.wait!.blockingJobId!)}>Voir le diagnostic {v.wait.blockingJobId.slice(0, 8)}</button></p>}
+        </div>
+      )}
+      {j.replacedBy && (
+        <p className="text-xs" data-diag-replaced-by={j.replacedBy}>
+          {j.status === 'CANCELLED' ? 'Annulé — remplacé par la demande ' : 'Annulation demandée — remplacé par la demande '}
+          <button type="button" className="underline font-mono" onClick={() => onSelect(j.replacedBy!)}>{j.replacedBy.slice(0, 8)}</button>
+          {j.cancelRequestedAt ? ` (${dateFr(j.cancelRequestedAt)})` : ''}
+        </p>
+      )}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-        <Stat label="Statut" value={`${STATUS_LABELS[j.status] ?? j.status}${j.leaseExpired ? ' (sans signe de vie)' : ''}`} warn={!['COMPLETE', 'QUEUED', 'RUNNING'].includes(j.status) || j.leaseExpired} />
+        <Stat label="Statut" value={v.statusLabel ?? `${STATUS_LABELS[j.status] ?? j.status}${j.leaseExpired ? ' (sans signe de vie)' : ''}`} warn={!['COMPLETE', 'QUEUED', 'RUNNING'].includes(j.status) || j.leaseExpired || !!v.wait?.alert || j.cancelRequested} />
         <Stat label="Étape" value={v.phaseLabel ?? '—'} />
         <Stat label="Progression" value={v.progressPercent == null ? '—' : `${v.progressPercent} % (${p.filesDone ?? 0} / ${p.filesPlanned ?? '?'} fichiers)`} />
         <Stat label="Tentatives" value={isJob ? `${j.attempt} / ${j.maxAttempts ?? '?'}` : '—'} />
@@ -366,7 +401,7 @@ function JobPanel({ id, onSelect, onChange }: { id: string; onSelect: (id: strin
  * la liste n'est jamais confondue avec un échec de génération.
  */
 function Generations({ refreshKey, selected, onSelect }: { refreshKey: number; selected: string | null; onSelect: (id: string) => void }) {
-  const [rows, setRows] = useState<GenerationRow[] | null>(null);
+  const [rows, setRows] = useState<Array<GenerationRow & { statusLabel?: string }> | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [err, setErr] = useState<string | null>(null);
@@ -382,7 +417,7 @@ function Generations({ refreshKey, selected, onSelect }: { refreshKey: number; s
         return;
       }
       setErr(null);
-      setRows(body.items as GenerationRow[]);
+      setRows(body.items as Array<GenerationRow & { statusLabel?: string }>);
       setTotal(Number(body.total) || 0);
     } catch {
       setErr('Liste non chargée : erreur réseau (les générations en cours ne sont pas concernées).');
@@ -435,8 +470,8 @@ function Generations({ refreshKey, selected, onSelect }: { refreshKey: number; s
                     <span className="block"><CopyId value={r.id} /></span>
                   </td>
                   <td className="px-3 py-2 text-xs">
-                    <span className={r.status === 'COMPLETE' ? '' : ACTIVE.has(r.status) ? 'text-muted-foreground' : 'text-destructive font-medium'}>
-                      {ACTIVE.has(r.status) ? <span className="inline-flex items-center gap-1">{r.status === 'RUNNING' && <Loader2 className="h-3 w-3 animate-spin" />}{STATUS_LABELS[r.status]}</span> : STATUS_LABELS[r.status] ?? r.status}
+                    <span className={r.status === 'COMPLETE' ? '' : ACTIVE.has(r.status) ? 'text-muted-foreground' : 'text-destructive font-medium'} data-diag-status-label>
+                      {ACTIVE.has(r.status) ? <span className="inline-flex items-center gap-1">{r.status === 'RUNNING' && !r.cancelRequested && <Loader2 className="h-3 w-3 animate-spin" />}{r.statusLabel ?? STATUS_LABELS[r.status]}</span> : r.statusLabel ?? STATUS_LABELS[r.status] ?? r.status}
                     </span>
                     {r.phase && ACTIVE.has(r.status) && <span className="block text-[11px] text-muted-foreground">{r.phase}{p.filesPlanned ? ` · ${p.filesDone ?? 0}/${p.filesPlanned}` : ''}{r.leaseExpired ? ' · sans signe de vie' : ''}</span>}
                     {r.errorCode && <span className="block text-[11px] text-destructive">{r.errorCode}{r.errorPhase ? ` (${r.errorPhase})` : ''}</span>}
@@ -471,6 +506,8 @@ interface Health {
   worker: { workerId: string; started: boolean; running: boolean; startedAt: string | null; lastTickAt: string | null; lastTickError: string | null; currentJobId: string | null; disabledReason: string | null; processed: number };
   process: { rssMb: number; heapUsedMb: number; containerLimitMb: number | null; guardMb: number | null; uptimeSeconds: number };
   storageConfigured: boolean;
+  workers?: Array<{ instance: string; process: string; placement: string; state: string; disabledReason: string | null; alive: boolean; seenAt: string; lastTickAt: string | null; lastClaimAt: string | null; currentJobId: string | null; waitReason: string | null; lastError: string | null; commit: string | null; rssMb: number | null; containerLimitMb: number | null }>;
+  waits?: Array<{ jobId: string; label: string; action: string; alert: boolean; waitedSeconds: number }>;
   queue: null | { migrationApplied: boolean; byStatus?: Record<string, number>; oldestQueuedAgeSeconds?: number | null; running?: Array<{ id: string; phase: string | null; attempt: number; maxAttempts: number; worker: string | null; leaseExpired: boolean; heartbeatAt: string | null }>; recentFailures?: Array<{ id: string; status: string; code: string | null; phase: string | null; at: string | null; message: string | null; attempt: number; maxAttempts: number | null; commit: string | null }> };
   alerts: string[];
 }
@@ -521,12 +558,33 @@ function EngineHealth() {
             ? <ul className="space-y-1">{h.alerts.map((a, i) => <li key={i} className="text-destructive flex items-start gap-1.5"><AlertTriangle className="h-3.5 w-3.5 mt-0.5 shrink-0" /><span className="break-words">{a}</span></li>)}</ul>
             : <p className="flex items-center gap-1.5"><Check className="h-3.5 w-3.5" />Aucune alerte.</p>}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Stat label="Worker (cette instance)" value={h.worker.disabledReason ? `désactivé` : h.worker.started ? (h.worker.currentJobId ? `occupé (${h.worker.currentJobId.slice(0, 8)})` : 'prêt') : 'non démarré'} warn={!h.worker.started} />
+            <Stat label="Worker (instance qui répond)" value={h.worker.disabledReason ? `désactivé (${h.worker.disabledReason})` : h.worker.started ? (h.worker.currentJobId ? `occupé (${h.worker.currentJobId.slice(0, 8)})` : 'prêt') : 'non démarré ici'} warn={!h.worker.started && !(h.workers ?? []).some((w) => w.alive && w.state === 'STARTED')} />
             <Stat label="Dernier tour" value={h.worker.lastTickAt ? dateFr(h.worker.lastTickAt) : '—'} />
             <Stat label="Mémoire du processus" value={`${h.process.rssMb} Mo${h.process.containerLimitMb ? ` / ${h.process.containerLimitMb} Mo` : ''}`} />
             <Stat label="Version" value={`${h.build.version}${h.build.commit ? ` · ${h.build.commit.slice(0, 10)}` : ''}`} />
           </div>
           {h.queue?.byStatus && <p>File : {Object.entries(h.queue.byStatus).map(([k, n]) => `${STATUS_LABELS[k] ?? k} ${n}`).join(' · ') || 'vide'}{h.queue.oldestQueuedAgeSeconds != null ? ` · plus ancien en attente : ${Math.round(h.queue.oldestQueuedAgeSeconds / 60)} min` : ''}</p>}
+          {h.workers && (
+            <div className="overflow-x-auto" data-diag-workers>
+              <p className="font-medium mb-1">Workers de diagnostics (toutes les instances, battements en base)</p>
+              {!h.workers.length && <p className="text-destructive">Aucun battement enregistré : aucun processus n’a démarré la supervision du worker (migration 1200 appliquée ? application redémarrée ?).</p>}
+              {h.workers.length > 0 && (
+                <table className="w-full">
+                  <thead><tr className="text-left text-muted-foreground border-b"><th className="px-2 py-1 font-medium">Instance</th><th className="px-2 py-1 font-medium">État</th><th className="px-2 py-1 font-medium hidden sm:table-cell">Dernier tour</th><th className="px-2 py-1 font-medium hidden md:table-cell">Raison d’attente · erreur</th></tr></thead>
+                  <tbody>{h.workers.map((w) => (
+                    <tr key={w.instance + w.seenAt} className="border-b last:border-b-0 align-top">
+                      <td className="px-2 py-1 font-mono break-all">{w.instance}<span className="block text-muted-foreground">{w.process} · traitements de fond : {w.placement}{w.commit ? ` · ${w.commit.slice(0, 8)}` : ''}</span></td>
+                      <td className={`px-2 py-1 ${!w.alive || w.state !== 'STARTED' ? 'text-destructive' : ''}`}>
+                        {!w.alive ? `sans signe de vie depuis ${dateFr(w.seenAt)}` : w.state === 'STARTED' ? (w.currentJobId ? `occupé (${w.currentJobId.slice(0, 8)})` : 'démarré') : w.state === 'DISABLED' ? `désactivé (${w.disabledReason ?? '?'})` : w.state === 'NOT_THIS_PROCESS' ? 'non porté par ce processus' : w.state}
+                      </td>
+                      <td className="px-2 py-1 hidden sm:table-cell whitespace-nowrap">{dateFr(w.lastTickAt)}{w.lastClaimAt ? <span className="block text-muted-foreground">prélèvement {dateFr(w.lastClaimAt)}</span> : null}</td>
+                      <td className="px-2 py-1 hidden md:table-cell break-words">{w.waitReason ?? '—'}{w.lastError ? <span className="block text-destructive">{w.lastError}</span> : null}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              )}
+            </div>
+          )}
           {(h.queue?.recentFailures?.length ?? 0) > 0 && (
             <div className="overflow-x-auto">
               <p className="font-medium mb-1">Dernières erreurs</p>

@@ -170,6 +170,8 @@ export async function printDossier(params: {
   build: (pageMap: PageMap | null) => RenderedHtml;
   annexes: AnnexLayout[];
   timeoutMs: number;
+  /** Lot 111B : rendu interrompu (navigateur fermé) dès l'annulation. */
+  signal?: AbortSignal;
 }): Promise<PrintResult> {
   const htmlFile = path.join(params.workDir, 'index.html');
   return withBrowser(async (browser) => {
@@ -180,6 +182,7 @@ export async function printDossier(params: {
     let total = 0;
     // Au plus trois passes : la seconde stabilise dans tous les cas observés.
     while (passes < 3) {
+      params.signal?.throwIfAborted();
       await fs.writeFile(htmlFile, params.build(pageMap).html, 'utf8');
       last = await printOnce(browser, params.workDir, passes > 0 || params.annexes.length === 0);
       passes++;
@@ -192,5 +195,5 @@ export async function printDossier(params: {
     const measured = passes > 1 || params.annexes.length === 0;
     assertLayout({ check: last!.check, frames: measured ? last!.frames : null, annexes: params.annexes, total });
     return { pdf: last!.pdf, pageCount: total, pageMap: pageMap!, frames: last!.frames, pageSizes: sizes, passes };
-  }, params.timeoutMs);
+  }, params.timeoutMs, params.signal);
 }

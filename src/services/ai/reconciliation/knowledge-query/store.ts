@@ -50,6 +50,8 @@ export interface StoredKnowledgeQuery {
   retryAt: string | null;
   pagesTotal: number;
   pagesExamined: number;
+  /** Lot 111M — issues déclarées par page (reprise de la continuation), lues du résumé de contexte. */
+  declared?: string[];
 }
 
 const json = <T>(v: unknown, def: T): T => {
@@ -61,7 +63,8 @@ const json = <T>(v: unknown, def: T): T => {
 /** Interprétation mémorisée pour cette entrée, ou null. Lève sur une lecture en échec. */
 export async function findKnowledgeQuery(k: KnowledgeEntryKey): Promise<StoredKnowledgeQuery | null> {
   const [r] = await q<Row>(
-    `SELECT id, status, outcome, findings, rejected, calls, attempts, ai_trace_ids, retry_at, pages_total, pages_examined
+    `SELECT id, status, outcome, findings, rejected, calls, attempts, ai_trace_ids, retry_at, pages_total, pages_examined,
+            context_summary->'declared' AS declared
        FROM t3_knowledge_queries
       WHERE account_id = $1 AND file_id = $2 AND field_key = $3 AND question_fp = $4 AND context_fp = $5 AND prompt_version = $6`,
     [k.accountId, k.fileId, k.fieldKey, k.questionFp, k.contextFp, k.promptVersion],
@@ -73,6 +76,7 @@ export async function findKnowledgeQuery(k: KnowledgeEntryKey): Promise<StoredKn
     calls: Number(r.calls ?? 0), attempts: Number(r.attempts ?? 0), traceIds: (r.ai_trace_ids as string[] | null) ?? [],
     retryAt: r.retry_at ? new Date(r.retry_at as string).toISOString() : null,
     pagesTotal: Number(r.pages_total ?? 0), pagesExamined: Number(r.pages_examined ?? 0),
+    declared: json<string[]>(r.declared, []),
   };
 }
 

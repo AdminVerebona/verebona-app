@@ -457,6 +457,13 @@ export interface CascadeTrace {
    * « Questions sans réponse », sans contenu).
    */
   resources?: import('../core/resources-answer').ResourcesTrace;
+  /**
+   * Lot 111K : pertinence des preuves — intention, propriétés recherchées,
+   * périmètre, candidats acceptés / incertains / rejetés (motifs), suffisance,
+   * conflits établis, chemin de production, contrôle final, issue, cause et
+   * motif (journal « Questions sans réponse »). Aucun contenu.
+   */
+  pertinence?: import('../core/pertinence-trace').PertinenceTrace;
   /** Lot 33 : requête de recherche initiale (texte masqué des données sensibles). */
   retrievalQueryInitial?: string;
   /** Lot 33 : requêtes élargies et reformulées réellement exécutées. */

@@ -110,6 +110,7 @@ async function collectExportConditions(): Promise<Condition[]> {
     `SELECT id, asset_id, account_id, user_id, export_type, status, created_at
        FROM export_generation
       WHERE status IN ('pending', 'queued', 'generating')
+        AND cancel_requested_at IS NULL -- lot 111B : annulation volontaire, jamais une panne
         AND created_at < now() - make_interval(mins => $1)
         AND created_at > now() - make_interval(days => $2)`,
     [EXPORT_STUCK_MINUTES, SWEEP_LOOKBACK_DAYS],

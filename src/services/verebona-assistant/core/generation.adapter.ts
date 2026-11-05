@@ -23,6 +23,9 @@ import {
 } from './model-call-policy';
 import { logSecurityEvents, sanitizeModelText, type SecurityEvent } from './output-safety';
 import { fitToInputBudget } from './context-budget';
+import {
+  budgetSnapshot, effectiveInputCap, estimateTokens, resolveOperationBudget, type ResolvedBudget,
+} from '@/services/ai/gateway/budget-resolution';
 import { applySensitiveDataPolicy, maskSensitiveText, sensitiveNecessityFor } from './sensitive-data.policy';
 import { getAssistantConfig } from '../config/assistant-config';
 import { isAiGatewayError } from '@/services/ai/gateway/errors';
@@ -157,19 +160,38 @@ export async function generateAssistantAnswerDetailed(
     const besoin = sensitiveNecessityFor(input.message);
     const question = maskSensitiveText(input.message, besoin).text;
     const conversationMasquee = maskSensitiveText(conversation, besoin).text;
+    // Lot 111M (ticket « budgets IA », §3.B) : budget calculé sur le contexte
+    // RÉELLEMENT transmis — prompt maître ACTIF (version BO ou fichier) et
+    // contrat, au lieu d'une réserve forfaitaire ; plafond de sécurité borné
+    // par la limite d'entrée du modèle effectivement configuré.
+    const budget = await t2AnswerBudget();
+    const plafond = effectiveInputCap({
+      override: cfg.maxInputTokensExplicit ? cfg.maxInputTokens : null, safetyDefault: cfg.maxInputTokens, budget,
+    });
+    generationEvents.push(`CONTEXT:INPUT_CAP:${plafond.value}:${plafond.origin}`);
     const fit = fitToInputBudget({
       sources: politique.sources, conversation: conversationMasquee,
       fixed: `${question}\n${route.intent}`,
-      maxInputTokens: cfg.maxInputTokens,
+      maxInputTokens: plafond.value,
       maxExcerptChars: cfg.maxExcerptChars,
+      promptOverheadTokens: budget?.input.promptTokensEstimate != null
+        ? budget.input.promptTokensEstimate + estimateTokens(T2_ANSWER_SCHEMA_DESCRIPTION) : null,
     });
     generationEvents.push(...fit.events);
     if (!fit.ok) return echec('INPUT_TOKENS_EXCEEDED');
 
-    return await generateWithT2Master({
+    const r = await generateWithT2Master({
       route, input, kept: ordreFourni(politique.sources, fit.sources), question, conversation: fit.conversation,
       securityEvents, generationEvents, echec,
     });
+    // Lot 111M (CA-07) : « information insuffisante » rendue sur un contexte
+    // RÉDUIT (sources retirées, extraits raccourcis) n'est jamais une absence —
+    // repli déterministe (sources seules), motif tracé.
+    if (!('failed' in r) && r.supportLevel === 'insufficient' && fit.reduced) {
+      generationEvents.push('CONTEXT:INCOMPLETE_SEARCH_NO_ABSENCE');
+      return echec('INCOMPLETE_CONTEXT');
+    }
+    return r;
   } catch (e) {
     // Réparation tentée puis en échec (§18.6) : tracée, pour que la machine
     // à états passe par REPAIRING et que le code VALIDATION_FAILED soit émis.
@@ -187,6 +209,11 @@ export async function generateAssistantAnswerDetailed(
 
 const SYNTHESIS_INTENTS = new Set(['ACCOUNT_SUMMARY', 'ACCOUNT_COMPARISON', 'ACCOUNT_TIMELINE']);
 
+/** Lot 111M : budget résolu de `t2_answer` (instantané, sinon résolution ; jamais bloquant). */
+async function t2AnswerBudget(): Promise<ResolvedBudget | null> {
+  return budgetSnapshot('t2_answer') ?? (await resolveOperationBudget('t2_answer').catch(() => null));
+}
+
 /**
  * Sources retenues par le budget, remises dans l'ORDRE FOURNI par les outils
  * (le budget les trie par pertinence) : la chronologie fournie ne doit pas
@@ -201,7 +228,7 @@ function ordreFourni(fournies: RetrievedSource[], retenues: RetrievedSource[]): 
  * Branche ANSWER du master T2 (CDC 15 §24) : sources déjà filtrées et
  * masquées (§29.4), budget d'entrée appliqué (§13.9), au plus 2 appels
  * modèle par message (CA-07 : réparation OU escalade), plafond de sortie
- * min(BO, 500) et délais par `executeWithinBudget`, clé d'idempotence propre
+ * configuration IA effective (lot 111M : plus de borne à 500) et délais par `executeWithinBudget`, clé d'idempotence propre
  * (`t2_answer` + version du master, ajoutée par la passerelle).
  *
  *   · {{INTENT}} = code d'intention seul (T2-36) ; la longueur est imposée
@@ -268,6 +295,8 @@ async function generateWithT2Master(p: {
     if (interdits.length) securityEvents.push({ code: 'MODEL_FORBIDDEN_VOCABULARY', detail: interdits.join(',').slice(0, 80) });
     const valide = validateGeneratedAnswer(out, route.intent);
     if (!valide) return { out: null, reason: 'QUALITY_RULE' };
+    // Lot 111M : repères de longueur dépassés — tracés, jamais coupés.
+    for (const v of valide.violations) if (!generationEvents.includes(`ANSWER:${v}`)) generationEvents.push(`ANSWER:${v}`);
     // T2-35 : événements structurés, restreints aux lignes validées.
     // Comparaison sur le texte FILTRÉ (§18.7), comme celui des affirmations.
     const gardes = new Set(valide.claims.map((c) => c.text.trim()));

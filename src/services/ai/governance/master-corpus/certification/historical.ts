@@ -46,6 +46,13 @@ export const DEVELOPER_FIXTURES = new Set([
   'p-t3-27-preuves-croisees-relation-non-etablie.json', 'p-t3-28-preuves-croisees-etablie.json',
   // Lot 106B : invitations de découverte de l'accueil (contrat `t6-discovery-v1`), gardes serveur.
   'p-t6-disc-01-invitations-generiques.json', 'p-t6-disc-02-affirmation-personnelle.json',
+  // Lot 111K : pertinence des preuves T2 (familles transversales du ticket §5.2) — réponses de
+  // référence À APPROUVER (rôle `answer`) et gardes serveur (rôle `guard`, contrôle final commun).
+  'p-t2-10-reponse-exacte-garantie.json', 'p-t2-11-informations-proches-franchise.json', 'p-t2-12-absente-voisines-preavis.json',
+  'p-t2-13-sources-concordantes-puissance.json', 'p-t2-14-contradiction-reelle-garantie-tv.json', 'p-t2-15-natures-differentes-ht-ttc.json',
+  'p-t2-16-historique-actuel-loyer.json', 'p-t2-17-hors-registre-capacite.json', 'p-t2-18-question-indirecte-couverture-vol.json',
+  'p-t2-19-reserve-parasite-ramonage.json', 'p-t2-20-composite-partielle-lave-vaisselle.json', 'p-t2-21-hors-sujet-serie-chaudiere.json',
+  'p-t2-22-reglement-affirme-sans-preuve.json', 'p-t2-23-chiffres-justes-conclusion-fausse.json',
 ]);
 
 /**
@@ -66,6 +73,7 @@ const CURRENT_CONTRACT: Readonly<Record<string, string>> = {
 const RISK_BY_CASE: Readonly<Record<string, string>> = {
   'P-T1-01': 'T1_REGROUPEMENT', 'P-T1-02': 'T1_MULTIMODAL', 'P-T1-04': 'T1_RATTACHEMENT', 'T1-03': 'T1_MONTANTS', 'T1-02': 'T1_MONTANTS',
   'F-001 / F-028': 'T1_MONTANTS', 'F-093 (acompte)': 'T1_MONTANTS', 'F-092 / F-093 (solde)': 'T1_MONTANTS', 'F-105': 'T1_MONTANTS', 'F-010': 'T1_CLASSEMENT',
+  'P-T2-17': 'T2_INTENTION', 'P-T2-18': 'T2_INTENTION', 'P-T2-20': 'T2_ABSTENTION_INJUSTIFIEE',
   'P-T2-02': 'T2_CORRECTIONS_UTILISATEUR', 'P-T2-08': 'T2_ABSTENTION_INJUSTIFIEE', 'P-T2-09': 'T2_SOURCES_VERIFIEES', 'P-T2-03': 'T2_SOURCES_VERIFIEES',
   'P-T3-01': 'T3_CORRECTIONS_PRESERVEES', 'P-T3-08': 'T3_IDENTITE_ECONOMIQUE', 'P-T3-09': 'T3_DOUBLE_COMPTE', 'P-T3-12': 'T3_IDENTITE_ECONOMIQUE',
   'P-T3-13': 'T3_IDENTITE_ECONOMIQUE', 'P-T3-ID-01': 'T3_DOUBLE_COMPTE', 'P-T3-ID-02': 'T3_CORRECTIONS_PRESERVEES',

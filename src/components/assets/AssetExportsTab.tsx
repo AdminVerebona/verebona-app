@@ -21,6 +21,7 @@ import { createExportSettleWatcher } from '@/lib/data-freshness';
 import { toast } from 'sonner';
 import { TransferExportDrawer, type TransferUsage } from './TransferExportDrawer';
 import { preparationPath } from '@/lib/exports/dossier-slug';
+import { REPLACED_LABEL, REPLACED_FALLBACK_LABEL } from '@/lib/exports/regeneration';
 import { useWriteGuard } from '@/contexts/WriteGuardContext';
 import { useEntitlements } from '@/hooks/useEntitlements';
 import { isCilEligible } from '@/lib/asset-capabilities';
@@ -89,7 +90,7 @@ interface ExportRecord {
   publicId: string;
   exportType: string;
   status: string;
-  /** Statut V12 (§2.1) : queued, generating, ready, partial, failed, expired, deleted. */
+  /** Statut V12 (§2.1) : queued, generating, ready, partial, failed, expired, deleted ; cancelled (lot 111B, remplacée). */
   generationStatus?: string;
   outputFormat?: string | null;
   requestedOutputs: string[];
@@ -104,6 +105,14 @@ interface ExportRecord {
   downloadUrl: string | null;
   downloadZipUrl: string | null;
   generationAttemptCount?: number;
+  /** Lot 111B : génération remplacée par une régénération (lien vers la nouvelle référence). */
+  cancellation?: {
+    reason: string;
+    label: string;
+    effective: boolean;
+    cancelledAt: string | null;
+    replacedBy: { publicId: string; reference: string | null; createdAt: string } | null;
+  } | null;
 }
 
 interface TransmissionRecord {
@@ -165,6 +174,8 @@ function StatusIcon({ status }: { status: string }) {
   if (status === 'deleted') return <Trash2 className="w-4 h-4 text-muted-foreground flex-shrink-0" />;
   // DRH-006 : expiré, téléchargement impossible.
   if (status === 'expired') return <Hourglass className="w-4 h-4 text-muted-foreground flex-shrink-0" />;
+  // Lot 111B : remplacée par une régénération — annulation volontaire, pas une erreur.
+  if (status === 'cancelled') return <X className="w-4 h-4 text-muted-foreground flex-shrink-0" />;
   return <Clock className="w-4 h-4 text-[color:var(--accent)] flex-shrink-0 animate-pulse" />;
 }
 
@@ -627,7 +638,8 @@ export function AssetExportsTab({ assetId, assetCategory, planType, thumbnailUrl
               return (
                 <div
                   key={exp.id}
-                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg border bg-card text-sm"
+                  id={`export-${exp.publicId}`}
+                  className="flex items-center gap-3 px-3 py-2.5 rounded-lg border bg-card text-sm scroll-mt-24 target:ring-2 target:ring-[color:var(--accent)]"
                 >
                   <StatusIcon status={st} />
                   <div className="flex-1 min-w-0">
@@ -651,6 +663,19 @@ export function AssetExportsTab({ assetId, assetCategory, planType, thumbnailUrl
                     {st === 'queued' && <p className="text-xs text-muted-foreground mt-0.5">En attente de génération…</p>}
                     {st === 'generating' && <p className="text-xs text-muted-foreground mt-0.5">Génération en cours…</p>}
                     {st === 'deleted' && <p className="text-xs text-muted-foreground mt-0.5">Fichier supprimé</p>}
+                    {st === 'cancelled' && (
+                      <p className="text-xs text-muted-foreground mt-0.5 break-words">
+                        {exp.cancellation?.replacedBy ? (
+                          <>
+                            {REPLACED_LABEL}{' '}
+                            <a href={`#export-${exp.cancellation.replacedBy.publicId}`} className="font-medium text-[color:var(--accent)] underline underline-offset-2">
+                              {exp.cancellation.replacedBy.reference ?? 'nouvelle génération'}
+                            </a>
+                            {` du ${formatDateLong(exp.cancellation.replacedBy.createdAt)}`}
+                          </>
+                        ) : REPLACED_FALLBACK_LABEL}
+                      </p>
+                    )}
                     {/* DRH-006 / DRH-007 : expiré, ni téléchargement ni régénération depuis l'historique. */}
                     {st === 'expired' && <p className="text-xs text-muted-foreground mt-0.5">Expiré — relancez une préparation pour obtenir un nouveau dossier</p>}
                     {downloadable && exp.expiresAt && (
@@ -686,7 +711,7 @@ export function AssetExportsTab({ assetId, assetCategory, planType, thumbnailUrl
                         <RefreshCw className="w-3 h-3 animate-spin" />
                       </div>
                     )}
-                    {!active && st !== 'deleted' && st !== 'expired' && (
+                    {!active && st !== 'deleted' && st !== 'expired' && st !== 'cancelled' && (
                       <Button
                         size="icon"
                         variant="ghost"

@@ -281,7 +281,7 @@ interface PromptArchitectureWarning {
 
 /**
  * CDC 15 T2-43 : `VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS` est RETIRÉE et
- * ignorée (source unique : configuration IA, bornée à 500). Encore posée,
+ * ignorée (source unique : configuration IA ; lot 111M : plus de borne à 500). Encore posée,
  * elle est signalée dans /api/health : un environnement qui s'en servait pour
  * abaisser le plafond doit le voir.
  */
@@ -291,7 +291,7 @@ export function retiredOutputTokensWarning(env: Record<string, string | undefine
   return {
     treatment: 'T2', code: 'RETIRED_ENV_VARIABLE', switchName: 'VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', switchMode: v,
     message: `T2 : VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS=${v} est posée mais IGNORÉE (CDC 15 T2-43). `
-      + 'Le plafond de sortie de l’assistant vient de la seule configuration IA (traitement T2), borné à 500 : '
+      + 'Le plafond de sortie de l’assistant vient de la seule configuration IA (traitement T2), bornée par la limite du modèle : '
       + 'régler la version de configuration si une valeur inférieure est voulue, puis supprimer la variable.',
   };
 }

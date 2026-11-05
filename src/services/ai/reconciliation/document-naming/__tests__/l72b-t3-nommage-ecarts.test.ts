@@ -136,7 +136,8 @@ describe('L72B-E5 — contexte IA : sélection pertinente, provenance, au-delà 
     expect(texte.slice(ref.offset, ref.offset + ref.text.length)).toBe(ref.text);
     expect(passages.some((p) => p.text.includes('rue des Lilas'))).toBe(true);
     expect(passages.every((p) => p.source === 'EXTRACTION_FULL_TEXT' && !p.text.startsWith('Conditions'))).toBe(true);
-    expect(selectPassages(null)).toEqual({ head: null, passages: [], textChars: 0, omittedPassages: 0 });
+    // Lot 111A (E4) : caractères balayés / non balayés ajoutés au résultat.
+    expect(selectPassages(null)).toEqual({ head: null, passages: [], textChars: 0, omittedPassages: 0, textScanned: 0, textNotScanned: 0 });
   });
   it('L72B-E5-U3 — variables : provenance, passages, contrats, suffisance du contexte transmis ; REFERENCE jamais renommable', () => {
     const g = { key: 's:orange', docs: [doc(1), doc(2)] };
@@ -250,7 +251,7 @@ describe('L76B — compléments au lot 72B (défauts résiduels)', () => {
   });
   it('L76B-C5-U4 — L72B-E3-U2 complété : l’empreinte v1 reste reproductible, mais son égalité seule ne vaut plus recalage (preuve exigée)', async () => {
     const { upgradeEvidence } = await import('../context');
-    const docs = [doc(1, { textChars: 5_000, contextChangedAt: '2026-01-01T00:00:00.000Z' })];
+    const docs = [doc(1, { textChars: 5_000, contextChangedAt: '2026-01-01T00:00:00.000Z', assetChangedAt: '2026-01-01T00:00:00.000Z' })];
     expect(legacyGroupFingerprint(docs)).toBe(legacyGroupFingerprint([...docs]));
     expect(upgradeEvidence(docs, null, '2026-02-01T00:00:00.000Z')).toMatchObject({ safe: false, reasons: ['TEXT_BEYOND_PREVIOUS_CONTEXT'] });
   });
@@ -261,5 +262,42 @@ describe('L72B-ISO — aucune nomenclature, isolation', () => {
     const k = linkKeysOf(doc(1, { supplier: 'Orange SA', supplierSiret: '380 129 866 00014', contractRefs: ['CT1234'], operationIds: [3] }));
     expect(k).toEqual(['c:CT1234', 'e:380129866', 'o:3', 's:orange', 'x:CT1234']);
     expect(linkKeysOf(doc(2, { supplier: null }))).toEqual(['t:INVOICE|a:1']);
+  });
+});
+
+describe('L111A-E3 — indices textuels : borne appliquée sur la COMPOSANTE, pas seulement par arête', () => {
+  const tailleMax = (g: ReturnType<typeof groupMembers>) => Math.max(...g.groups.map((x) => x.ids.length));
+  it('L111A-E3-U1 — chaîne transitive A-X-B-Y-C (trois émetteurs, chaque indice n’en relie que deux) : aucune composante à trois émetteurs ; correspondance valide A-B conservée', () => {
+    const g = groupMembers([
+      { id: 1, keys: ['s:alpha', 'x:REF111111'] },
+      { id: 2, keys: ['s:beta', 'x:REF111111', 'x:REF222222'] },
+      { id: 3, keys: ['s:gamma', 'x:REF222222'] },
+    ]);
+    const lots = g.groups.map((x) => x.ids);
+    expect(lots.some((l) => l.length === 3)).toBe(false);
+    // Indice le plus spécifique d'abord, ordre déterministe : A-B réunis, C seul.
+    expect(lots).toContainEqual([1, 2]);
+    expect(lots).toContainEqual([3]);
+  });
+  it('L111A-E3-U2 — chaîne d’indices faibles de plus de 50 documents (chaque indice : 2 documents, 1 émetteur) : aucune composante au-delà de 50 documents', () => {
+    const membres = Array.from({ length: 70 }, (_x, i) => ({ id: i + 1, keys: ['t:NOTICE|a:1', `x:CHAIN${String(i).padStart(4, '0')}A`, `x:CHAIN${String(i + 1).padStart(4, '0')}A`] }));
+    const g = groupMembers(membres);
+    expect(tailleMax(g)).toBeLessThanOrEqual(50);
+    expect(g.groups.reduce((n, x) => n + x.ids.length, 0)).toBe(70);
+  });
+  it('L111A-E3-U3 — cas légitimes conservés : document sans émetteur rattaché à un gros émetteur (120 documents) par une référence du texte ; liens FORTS jamais bornés par la nouvelle règle', () => {
+    const gros = Array.from({ length: 120 }, (_x, i) => ({ id: i + 1, keys: ['s:orange', ...(i === 0 ? ['x:DOS202455667'] : [])] }));
+    const g = groupMembers([...gros, { id: 500, keys: ['t:NOTICE|a:-', 'x:DOS202455667'] }]);
+    expect(g.groups.find((x) => x.ids.includes(500))!.ids).toHaveLength(121);
+    // Même contrat (clé forte) partagé par trois émetteurs : toujours réunis (règle du lot 72B).
+    const f = groupMembers([{ id: 1, keys: ['s:a', 'c:CT1'] }, { id: 2, keys: ['s:b', 'c:CT1'] }, { id: 3, keys: ['s:c', 'c:CT1'] }]);
+    expect(f.groups.map((x) => x.ids)).toEqual([[1, 2, 3]]);
+  });
+  it('L111A-E3-U4 — deux émetteurs (formes différentes d’un même émetteur) reliés par une référence : réunis même au-delà de 50 documents cumulés (provenance : indice partagé)', () => {
+    const a = Array.from({ length: 40 }, (_x, i) => ({ id: i + 1, keys: ['s:edf', ...(i === 0 ? ['x:PDL12345678901'] : [])] }));
+    const b = Array.from({ length: 30 }, (_x, i) => ({ id: 100 + i, keys: ['s:electricite de france', ...(i === 0 ? ['x:PDL12345678901'] : [])] }));
+    const g = groupMembers([...a, ...b]);
+    expect(g.groups).toHaveLength(1);
+    expect(g.groups[0].keys).toContain('x:PDL12345678901');
   });
 });

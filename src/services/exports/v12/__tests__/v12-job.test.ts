@@ -21,6 +21,9 @@ vi.mock('../generation/repository', () => ({
   updateOwnedGeneration: async (_id: number, _w: string, values: Row) => { if (!state.owned) return false; state.updates.push(values); return true; },
   addGenerationLog: async (_id: number, entry: Row) => { state.logs.push(entry); },
   replaceGenerationItems: async (_id: number, items: unknown[]) => { state.items = items; },
+  // Lot 111B : aucune annulation dans ces scénarios (voir v12-regeneration-job.test.ts).
+  isGenerationCancelRequested: async () => false,
+  markGenerationCancelled: async () => false,
 }));
 const renderMock = vi.fn((..._a: unknown[]): Promise<unknown> => Promise.resolve(undefined));
 vi.mock('../render/render-dossier', () => ({ renderDossier: (p: unknown) => renderMock(p) }));

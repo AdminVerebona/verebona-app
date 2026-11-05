@@ -155,13 +155,15 @@ describe('validateur de réponse (§18.4, §21.2, §21.7)', () => {
     expect(validateGeneratedAnswer({ answer: en, claims: claims([en]), supportLevel: 'supported' }, 'ACCOUNT_SUMMARY')).toBeNull();
   });
 
-  it('longueur : coupe à 4 phrases, les citations coupées sortent, étayage « partial »', () => {
+  it('L111M — longueur : repère de 4 phrases TRACÉ, réponse complète conservée (plus aucune coupe)', () => {
     const t = ['Phrase un.', 'Phrase deux.', 'Phrase trois.', 'Phrase quatre.', 'Phrase cinq.'];
-    const v = validateGeneratedAnswer({ answer: t.join(' '), claims: claims(t), supportLevel: 'supported' }, 'ACCOUNT_SUMMARY')!;
-    expect(countSentences(v.answer)).toBe(4);
-    expect(v.claims).toHaveLength(4);
-    expect(v.supportLevel).toBe('partial');
-    expect(v.violations).toContain('TOO_MANY_SENTENCES');
+    const v = validateGeneratedAnswer({ answer: t.join(' '), claims: claims(t), supportLevel: 'supported' }, 'ACCOUNT_FACT_ASSET')!;
+    expect(countSentences(v.answer)).toBe(5);
+    expect(v.claims).toHaveLength(5);
+    expect(v.supportLevel).toBe('supported');
+    expect(v.violations).toContain('SENTENCES_ABOVE_GUIDANCE');
+    // Synthèse : longueur adaptée, aucun repère de phrases.
+    expect(validateGeneratedAnswer({ answer: t.join(' '), claims: claims(t), supportLevel: 'supported' }, 'ACCOUNT_SUMMARY')!.violations).toEqual([]);
   });
 
   it('chronologie et comparaison (listes) ne sont pas coupées à 4 phrases', () => {

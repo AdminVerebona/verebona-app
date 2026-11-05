@@ -32,8 +32,10 @@ import { writeDossierZip } from '../zip';
 import { buildExportS3Key, s3UploadFile, EXPORT_RETENTION_DAYS, type UploadFn } from '../storage';
 import { ExportGenerationError, asGenerationError, type GenerationStep } from './errors';
 import {
-  addGenerationLog, replaceGenerationItems, updateOwnedGeneration, MAX_ATTEMPTS, type GenerationRow,
+  addGenerationLog, replaceGenerationItems, updateOwnedGeneration, isGenerationCancelRequested, markGenerationCancelled,
+  MAX_ATTEMPTS, type GenerationRow,
 } from './repository';
+import { GenerationCancelledError, generationReference } from './identity';
 import { parisDate, parisIso } from './clock';
 import { scheduleOrphanedOutputs } from './files';
 
@@ -49,6 +51,8 @@ export interface GenerationRequestSnapshot {
   requestHash?: string;
   /** Lot 44 (O5) : sinistre du dossier Assurance-sinistre retenu à la demande. */
   claimOperationId?: number | null;
+  /** Lot 111B : générations remplacées par cette régénération explicite. */
+  replacesGenerationIds?: number[];
 }
 
 interface JobDeps {
@@ -59,6 +63,10 @@ interface JobDeps {
   /** Objets envoyés mais non rattachés à la génération → file de purge. */
   scheduleOrphans: typeof scheduleOrphanedOutputs;
   now: () => Date;
+  /** Lot 111B : demande d'annulation persistante (lecture en base). */
+  isCancelRequested: (id: number) => Promise<boolean>;
+  /** Lot 111B : clôture `cancelled` conditionnée au bail. */
+  markCancelled: (id: number, workerId: string, step: string) => Promise<boolean>;
 }
 
 const defaultJobDeps = (): JobDeps => ({
@@ -67,15 +75,12 @@ const defaultJobDeps = (): JobDeps => ({
   notifySupport: notifySupportOfExportFailure,
   scheduleOrphans: scheduleOrphanedOutputs,
   now: () => new Date(),
+  isCancelRequested: isGenerationCancelRequested,
+  markCancelled: markGenerationCancelled,
 });
 
-const SHORT: Record<DossierCode, string> = {
-  CIL: 'CIL', DOSSIER_COMPLET: 'COMPLET', VENTE: 'VENTE', LOCATION: 'LOCATION', ASSURANCE_SOUSCRIPTION: 'ASSURANCE', ASSURANCE_SINISTRE: 'SINISTRE',
-};
-
-/** Référence imprimée : « VBN-CIL-20260928-000123 ». */
-export const generationReference = (code: DossierCode, id: number, today: string): string =>
-  `VBN-${SHORT[code]}-${today.replace(/-/g, '')}-${String(id).padStart(6, '0')}`;
+/** Référence imprimée : « VBN-CIL-20260928-000123 » (lot 111B : définie dans `identity.ts`, aussi lue par l'historique). */
+export { generationReference } from './identity';
 
 /** Délai avant nouvelle tentative d'une erreur transitoire : 30 s, 2 min, 8 min. */
 export const retryDelayMs = (attempt: number): number => 30_000 * 4 ** Math.max(0, attempt - 1);
@@ -112,20 +117,39 @@ function buildSnapshot(code: DossierCode, source: ExportSource, choices: ExportC
 /**
  * Exécute une génération prise par le worker (`status = generating`, bail
  * détenu par `workerId`). `isActive()` : faux si le bail a été perdu ;
- * `signal` : délai global dépassé (worker). Dans les deux cas l'exécution
- * s'arrête à l'étape suivante sans rien écrire, et les objets déjà envoyés
- * sont confiés à la file de purge.
+ * `signal` : délai global dépassé ou annulation (worker). Dans les deux cas
+ * l'exécution s'arrête à l'étape suivante sans rien écrire, et les objets
+ * déjà envoyés sont confiés à la file de purge.
+ *
+ * Lot 111B — annulation coopérative (génération remplacée par une
+ * régénération) : `isCancelled()` (observée par le worker) et une relecture
+ * en base avant chaque écriture décisive (envoi, clôture). Le signal est
+ * transmis au rendu Chromium, aux téléchargements des pièces et aux envois
+ * OVH. Issue `cancelled` : statut terminal `cancelled`, bail libéré, objets
+ * non publiés purgés, répertoire temporaire supprimé — ni échec, ni
+ * notification du support.
  */
-export async function runGeneration(row: GenerationRow, workerId: string, opts: { isActive?: () => boolean; signal?: AbortSignal; deps?: Partial<JobDeps> } = {}): Promise<'ready' | 'partial' | 'failed' | 'retry' | 'lost'> {
+export async function runGeneration(row: GenerationRow, workerId: string, opts: { isActive?: () => boolean; isCancelled?: () => boolean; signal?: AbortSignal; deps?: Partial<JobDeps> } = {}): Promise<'ready' | 'partial' | 'failed' | 'retry' | 'lost' | 'cancelled'> {
   const deps = { ...defaultJobDeps(), ...opts.deps };
   const started = deps.now();
   const code = normalizeExportCode(row.exportType);
   const tplVersion = code && isDossierCode(code) ? templateVersion(code) : null;
   const log = (level: 'info' | 'warn' | 'error', step: GenerationStep, message: string, extra?: { code?: string; details?: Record<string, unknown> }) =>
     addGenerationLog(row.id, { level, step, message, code: extra?.code ?? null, details: { exportType: code ?? row.exportType, templateVersion: tplVersion, attempt: row.generationAttemptCount, ...(extra?.details ?? {}) } });
+  const leaseLost = () => !!opts.isActive && !opts.isActive();
   const guard = () => {
-    if (opts.signal?.aborted || (opts.isActive && !opts.isActive())) throw new LeaseLostError();
+    if (leaseLost()) throw new LeaseLostError();
+    if (opts.isCancelled?.()) throw new GenerationCancelledError();
+    if (opts.signal?.aborted) throw new LeaseLostError();
   };
+  /** Relecture en base avant une écriture décisive (n'attend pas le prochain tour du worker). */
+  const checkpoint = async () => {
+    guard();
+    if (await deps.isCancelRequested(row.id).catch(() => false)) throw new GenerationCancelledError();
+  };
+  /** L'annulation est-elle demandée (observée par le worker ou en base) ? */
+  const cancelObserved = async (e?: unknown) =>
+    e instanceof GenerationCancelledError || !!opts.isCancelled?.() || await deps.isCancelRequested(row.id).catch(() => false);
   // Objets S3 envoyés par CETTE exécution, et vrai une fois rattachés à la ligne.
   const uploaded: string[] = [];
   let committed = false;
@@ -179,6 +203,7 @@ export async function runGeneration(row: GenerationRow, workerId: string, opts: 
       code, source, choices, today, workDir,
       meta: { reference: generationReference(code, row.id, today), generatedAt, preparedBy: source.preparedBy },
       fetchToFile: deps.fetchToFile,
+      signal: opts.signal,
       onStep: async (s) => { current = s; guard(); await log('info', s, `Étape ${s}.`); },
     });
     guard();
@@ -210,20 +235,29 @@ export async function runGeneration(row: GenerationRow, workerId: string, opts: 
 
     // ── store_result ────────────────────────────────────────────────────────
     current = 'store_result';
-    guard();
+    await checkpoint();
     const attemptNo = row.generationAttemptCount ?? null;
     const pdfKey = buildExportS3Key(row.accountId, row.assetId, row.id, pdfName, attemptNo);
     const zipKey = zipPath ? buildExportS3Key(row.accountId, row.assetId, row.id, path.basename(zipPath), attemptNo) : null;
+    // Lot 111B : envoi interruptible (signal transmis au client S3) ; un envoi
+    // interrompu peut avoir laissé un objet → sa clé est confiée à la purge.
+    const send = async (local: string, key: string, type: string) => {
+      try {
+        await (opts.signal ? deps.upload(local, key, type, { signal: opts.signal }) : deps.upload(local, key, type));
+        uploaded.push(key);
+      } catch (e) {
+        if (opts.signal?.aborted) { uploaded.push(key); throw e instanceof LeaseLostError || e instanceof GenerationCancelledError ? e : new LeaseLostError(); }
+        throw e;
+      }
+    };
     try {
-      await deps.upload(pdfPath, pdfKey, 'application/pdf');
-      uploaded.push(pdfKey);
+      await send(pdfPath, pdfKey, 'application/pdf');
       guard();
       if (zipPath && zipKey) {
-        await deps.upload(zipPath, zipKey, 'application/zip');
-        uploaded.push(zipKey);
+        await send(zipPath, zipKey, 'application/zip');
       }
     } catch (e) {
-      if (e instanceof LeaseLostError) throw e;
+      if (e instanceof LeaseLostError || e instanceof GenerationCancelledError) throw e;
       throw asGenerationError(e, current);
     }
 
@@ -262,7 +296,7 @@ export async function runGeneration(row: GenerationRow, workerId: string, opts: 
       lockedBy: null,
       lockedUntil: null,
     };
-    guard();
+    await checkpoint();
     let saved = false;
     for (let attempt = 1; attempt <= 3 && !saved; attempt++) {
       try {
@@ -274,6 +308,9 @@ export async function runGeneration(row: GenerationRow, workerId: string, opts: 
       }
     }
     if (!saved) {
+      // Lot 111B : clôture refusée par les préconditions (annulation demandée
+      // entre-temps) → aucune publication, issue « annulée ».
+      if (await cancelObserved()) throw new GenerationCancelledError();
       await log('warn', current, 'Génération dépossédée avant la clôture : fichiers envoyés confiés à la purge.', { details: { pdfKey, zipKey } });
       return 'lost';
     }
@@ -283,7 +320,15 @@ export async function runGeneration(row: GenerationRow, workerId: string, opts: 
     await log('info', current, rendered.partial ? 'Génération partielle terminée.' : 'Génération terminée.', { details: metrics });
     return status;
   } catch (e) {
-    if (e instanceof LeaseLostError || opts.signal?.aborted) {
+    // Lot 111B : annulation volontaire (remplacée) — jamais un échec, jamais de
+    // notification du support. Bail perdu : aucune écriture.
+    if (!leaseLost() && await cancelObserved(e)) {
+      await deps.markCancelled(row.id, workerId, current).catch((x) =>
+        console.error(`[exports-v12] génération ${row.id} : clôture de l'annulation impossible (reprise par le balayage) :`, (x as Error).message));
+      console.info(`[exports-v12] génération ${row.id} : arrêtée à l'étape ${current} (remplacée par une nouvelle génération).`);
+      return 'cancelled';
+    }
+    if (e instanceof LeaseLostError || e instanceof GenerationCancelledError || opts.signal?.aborted) {
       console.warn(`[exports-v12] génération ${row.id} : bail perdu ou délai global dépassé, exécution abandonnée.`);
       return 'lost';
     }
@@ -294,11 +339,20 @@ export async function runGeneration(row: GenerationRow, workerId: string, opts: 
     await log('error', err.step, err.message, { code: err.code, details: { category: err.category, retry, ...(err.details ?? {}) } });
     const errorPayload = JSON.stringify({ code: err.code, message: err.safeMessage, step: err.step, category: err.category, technicalMessage: err.message, attempt });
     if (retry) {
-      await updateOwnedGeneration(row.id, workerId, {
+      const requeued = await updateOwnedGeneration(row.id, workerId, {
         status: 'queued', errorCode: err.code, errorPayload, lockedBy: null, lockedUntil: null,
         nextAttemptAt: new Date(deps.now().getTime() + retryDelayMs(attempt)),
-      }).catch(() => undefined);
+      }).catch(() => false);
+      if (!requeued && await cancelObserved()) {
+        await deps.markCancelled(row.id, workerId, err.step).catch(() => false);
+        return 'cancelled';
+      }
       return 'retry';
+    }
+    // Lot 111B : remplacée pendant l'échec → annulation, pas de panne ni de notification.
+    if (await cancelObserved()) {
+      await deps.markCancelled(row.id, workerId, err.step).catch(() => false);
+      return 'cancelled';
     }
     const supportEmailSent = err.category === 'business' || err.category === 'threshold'
       ? false
@@ -332,7 +386,12 @@ export const jobTimeoutMs = (): number => {
  * été reprise ailleurs. L'exécution en cours, avertie par son signal,
  * s'arrête à l'étape suivante sans plus rien écrire.
  */
-export async function failTimedOutGeneration(row: GenerationRow, workerId: string, deps: Pick<JobDeps, 'notifySupport' | 'now'> = defaultJobDeps()): Promise<boolean> {
+export async function failTimedOutGeneration(row: GenerationRow, workerId: string, deps: Pick<JobDeps, 'notifySupport' | 'now'> & Partial<Pick<JobDeps, 'isCancelRequested' | 'markCancelled'>> = defaultJobDeps()): Promise<boolean> {
+  // Lot 111B : une génération remplacée qui dépasse le délai est ANNULÉE, pas en échec.
+  const isCancelRequested = deps.isCancelRequested ?? isGenerationCancelRequested;
+  if (await isCancelRequested(row.id).catch(() => false)) {
+    return (deps.markCancelled ?? markGenerationCancelled)(row.id, workerId, 'render_pdf').catch(() => false);
+  }
   const err = new ExportGenerationError('RENDER_TIMEOUT', 'render_pdf', `délai global de génération dépassé (${Math.round(jobTimeoutMs() / 1000)} s)`);
   const attempt = row.generationAttemptCount ?? 1;
   await addGenerationLog(row.id, { level: 'error', step: err.step, code: err.code, message: err.message, details: { category: err.category, attempt } });

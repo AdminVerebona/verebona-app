@@ -32,7 +32,8 @@ const downloadUrlTtlSeconds = (): number => {
   return Number.isFinite(n) && n >= 10 && n <= 3600 ? Math.floor(n) : 60;
 };
 
-export type UploadFn = (localPath: string, key: string, contentType: string) => Promise<void>;
+/** Lot 111B : `signal` interrompt l'envoi (génération remplacée, délai global). */
+export type UploadFn = (localPath: string, key: string, contentType: string, opts?: { signal?: AbortSignal }) => Promise<void>;
 
 type S3ClientType = import('@aws-sdk/client-s3').S3Client;
 
@@ -50,8 +51,9 @@ export async function exportS3(): Promise<{ client: S3ClientType; bucket: string
 }
 
 /** Envoi S3 en flux (taille connue : pas de mise en mémoire). */
-export const s3UploadFile: UploadFn = async (localPath, key, contentType) => {
+export const s3UploadFile: UploadFn = async (localPath, key, contentType, opts) => {
   const [{ client: s3Client, bucket: S3_BUCKET }, { PutObjectCommand }] = await Promise.all([exportS3(), import('@aws-sdk/client-s3')]);
+  opts?.signal?.throwIfAborted();
   const size = (await fs.promises.stat(localPath)).size;
   await s3Client.send(new PutObjectCommand({
     Bucket: S3_BUCKET,
@@ -60,7 +62,7 @@ export const s3UploadFile: UploadFn = async (localPath, key, contentType) => {
     ContentLength: size,
     ContentType: contentType,
     Metadata: { 'x-verebona-type': 'export' },
-  }));
+  }), opts?.signal ? { abortSignal: opts.signal } : undefined);
 };
 
 /** En-tête Content-Disposition (RFC 6266) pour un nom de fichier ASCII sûr. */

@@ -5,6 +5,7 @@
  * intégration `computeTco`) ; la même chose sur base réelle :
  * `src/test/e2e/scenarios/l108c-depenses-usage.e2e.ts`.
  */
+import { annualizeCents } from '../annual';
 import { describe, expect, it } from 'vitest';
 import {
   calendarPeriod, computeUsageComplement, usageCategoriesOfText, usageKeyOf, type UsageComplementInput, type UsageLineAssignment,
@@ -278,7 +279,8 @@ describe('L108C — intégration computeTco (remplace TCO-09)', () => {
     expect(t.summary.totalWithEstimatesCents).toBe(1_020_000);
     expect(t.usage.complement.byYear).toEqual([{ year: 2026, complementCents: 16_000, forfaitCents: 20_000, realCents: 4_000 }]);
     expect(t.annual.average.totalCents).toBe(1_004_000);
-    expect(t.usage.complement.averageWithEstimatesCents).toBe(Math.round((1_020_000 * 365.25) / t.annual.average.days!));
+    // Lot 111F : même base hors prix d'achat du bien que le coût annuel moyen documenté.
+    expect(t.usage.complement.averageWithEstimatesCents).toBe(annualizeCents(1_020_000 - t.annual.average.acquisitionPriceCents!, t.annual.average.duration!));
     // Les tickets restent visibles et inchangés ; aucune ligne « estimation » dans la trace des dépenses réelles.
     expect(t.lines.filter((l) => l.status === 'RETAINED_CONSOLIDATED').map((l) => l.includedCents)).toEqual(expect.arrayContaining([1_000_000, 4_000]));
     expect(t.lines).toHaveLength(2);

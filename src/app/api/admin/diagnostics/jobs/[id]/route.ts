@@ -21,8 +21,14 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   if (!job || job.kind !== 'TECH_DIAGNOSTIC') return NextResponse.json({ error: 'Diagnostic introuvable.', code: 'NOT_FOUND' }, { status: 404, headers: NO_STORE });
   const downloadable = job.mode === st.DIAG_JOB_MODE && (job.status === 'COMPLETE' || job.status === 'PARTIAL') && !job.purgedAt && !!job.storagePrefix;
   const status = job.status as import('@/services/admin/diagnostic-jobs/state').DiagJobStatus;
+  // Lot 111C : raison d'attente (battements persistés de toutes les instances) et statut explicite.
+  const sup = job.mode === st.DIAG_JOB_MODE && job.status === 'QUEUED' && !job.cancelRequested ? await import('@/services/admin/diagnostic-jobs/supervision') : null;
+  const wait = sup ? await sup.diagnosticJobWait(job.id) : null;
+  const { displayStatus } = await import('@/services/admin/diagnostic-jobs/wait');
   const view = {
     job,
+    statusLabel: displayStatus(job, wait?.diagnosis ?? null),
+    wait: wait ? { reason: wait.diagnosis.reason, label: wait.label, detail: wait.diagnosis.detail, action: wait.action, blockingJobId: wait.diagnosis.blockingJobId, waitedSeconds: wait.diagnosis.waitedSeconds, alert: wait.diagnosis.alert } : null,
     downloadable,
     phaseLabel: job.phase ? st.DIAG_JOB_PHASE_LABELS[job.phase as keyof typeof st.DIAG_JOB_PHASE_LABELS] ?? job.phase : null,
     errorLabel: job.errorCode ? st.DIAG_JOB_ERROR_LABELS[job.errorCode as keyof typeof st.DIAG_JOB_ERROR_LABELS] ?? null : null,

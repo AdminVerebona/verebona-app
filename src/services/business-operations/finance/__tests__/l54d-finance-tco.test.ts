@@ -213,10 +213,13 @@ describe('TCO — périodes, attribution, valorisation, forfaits', () => {
   });
 
   it('TCO-07 — valorisation fiable : datée, en euros, non postérieure ; sinon aucune', () => {
-    expect(reliableValuation([{ value: 1000, date: null }], '2026-01-01')).toBeNull();
-    expect(reliableValuation([{ value: 1000, date: '2026-02-01' }], '2026-01-01')).toBeNull();
-    expect(reliableValuation([{ value: 1000, date: '2025-02-01', currency: 'CHF' }], '2026-01-01')).toBeNull();
-    expect(reliableValuation([{ value: 900, date: '2024-01-01' }, { value: 1000.5, date: '2025-02-01', mode: 'AVIS_VALEUR' }], '2026-01-01'))
+    // Lot 111F : et STRICTEMENT postérieure à l'acquisition (troisième argument ; inconnue → aucune valeur).
+    expect(reliableValuation([{ value: 1000, date: null }], '2026-01-01', '2020-01-01')).toBeNull();
+    expect(reliableValuation([{ value: 1000, date: '2026-02-01' }], '2026-01-01', '2020-01-01')).toBeNull();
+    expect(reliableValuation([{ value: 1000, date: '2025-02-01', currency: 'CHF' }], '2026-01-01', '2020-01-01')).toBeNull();
+    expect(reliableValuation([{ value: 1000, date: '2025-02-01' }], '2026-01-01', null)).toBeNull();
+    expect(reliableValuation([{ value: 1000, date: '2025-02-01' }], '2026-01-01', '2025-02-01')).toBeNull();
+    expect(reliableValuation([{ value: 900, date: '2024-01-01' }, { value: 1000.5, date: '2025-02-01', mode: 'AVIS_VALEUR' }], '2026-01-01', '2020-01-01'))
       .toEqual({ cents: 100_050, date: '2025-02-01', mode: 'AVIS_VALEUR', source: null });
   });
 

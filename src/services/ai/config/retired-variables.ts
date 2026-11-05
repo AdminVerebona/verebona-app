@@ -18,7 +18,7 @@ interface RetiredVariable {
 
 export const RETIRED_AI_VARIABLES: readonly RetiredVariable[] = [
   // CDC 15 T2-43 (lot 15)
-  { name: 'VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', lot: 'T2-43', now: 'plafond de la configuration IA (T2), borné à 500' },
+  { name: 'VEREBONA_ASSISTANT_MAX_OUTPUT_TOKENS', lot: 'T2-43', now: 'plafond de la configuration IA (T2), borné par la limite du modèle (lot 111M)' },
   // L16b-1
   { name: 'AI_PROMPT_GOVERNANCE', lot: 'L16b-1', now: 'T5 supprimé (lot 49)' },
   { name: 'AI_HOME_MASCOT', lot: 'L16b-1', now: 'T6 toujours en master' },

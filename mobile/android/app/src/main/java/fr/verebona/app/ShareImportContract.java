@@ -69,6 +69,73 @@ final class ShareImportContract {
     }
 
     /**
+     * Lot 111P — textes de l'interface de partage : mêmes clés et mêmes textes
+     * qu'iOS et que SHARE_IMPORT_EXTENSION_NOTICES (contrôlé par
+     * mobile/test/l111p-partage-ios-jeton.test.mjs). Jamais « Vous n'êtes pas
+     * connecté » : le natif ne voit que le jeton d'import, pas la session.
+     */
+    static final String[][] NOTICES = {
+        { "token_missing", "L’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner." },
+        { "token_expired", "L’autorisation d’import de ce téléphone a expiré : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner." },
+        { "token_refused", "L’autorisation d’import de ce téléphone doit être renouvelée : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner." },
+        { "session_refused", "Verebona a fermé la session de ce téléphone : l’import se terminera après votre reconnexion, sans rien resélectionner." },
+        { "mfa_required", "Verebona demande de confirmer votre connexion (double authentification) : l’import se terminera ensuite, sans rien resélectionner." },
+        { "terms_required", "Ouvrez Verebona pour accepter les nouvelles conditions : l’import se terminera ensuite, sans rien resélectionner." },
+        { "token_unreadable", "L’autorisation d’import n’a pas pu être lue sur ce téléphone : l’import se terminera à la prochaine ouverture de Verebona, sans rien resélectionner." },
+        { "pending_auth", "Un import précédent attend aussi la prochaine ouverture de Verebona." },
+        { "server_unavailable", "Le dernier envoi n’a pas abouti (réseau ou serveur indisponible) : il reprendra automatiquement." },
+    };
+
+    /** Mêmes codes que SHARE_IMPORT_RENEWABLE_REFUSALS : refus serveur d'un jeton qui justifient son renouvellement. */
+    static final String[] RENEWABLE_REFUSALS = {
+        "GRANT_INVALID", "GRANT_EXPIRED", "GRANT_REVOKED", "GRANT_EXHAUSTED", "SESSION_REVOKED", "MFA_REQUIRED", "CGUV_REACCEPTANCE_REQUIRED",
+    };
+
+    /** États CONSTATÉS du jeton local (mêmes valeurs qu'iOS et que `NativeGrantStatus`). */
+    static final String GRANT_PRESENT = "present";
+    static final String GRANT_MISSING = "missing";
+    static final String GRANT_EXPIRED = "expired";
+    static final String GRANT_REFUSED = "refused";
+    static final String GRANT_UNREADABLE = "unreadable";
+
+    static boolean isRenewableRefusal(String code) {
+        if (code == null) return false;
+        for (String c : RENEWABLE_REFUSALS) if (c.equals(code)) return true;
+        return false;
+    }
+
+    static String notice(String key) {
+        if (key == null) return null;
+        for (String[] n : NOTICES) if (n[0].equals(key)) return n[1];
+        return null;
+    }
+
+    /** Clé du texte principal pour un état du jeton ; null = jeton prêt (même règle qu'iOS). */
+    static String noticeKey(String grantStatus, String refusedCode) {
+        if (GRANT_PRESENT.equals(grantStatus)) return null;
+        if (GRANT_MISSING.equals(grantStatus)) return "token_missing";
+        if (GRANT_EXPIRED.equals(grantStatus)) return "token_expired";
+        if (GRANT_REFUSED.equals(grantStatus)) {
+            if ("SESSION_REVOKED".equals(refusedCode)) return "session_refused";
+            if ("MFA_REQUIRED".equals(refusedCode)) return "mfa_required";
+            if ("CGUV_REACCEPTANCE_REQUIRED".equals(refusedCode)) return "terms_required";
+            return "token_refused";
+        }
+        return "token_unreadable";
+    }
+
+    /** Code serveur ramené à un jeton de diagnostic sûr (majuscules, chiffres, `_`). */
+    static String safeCode(String code) {
+        if (code == null) return "NONE";
+        StringBuilder b = new StringBuilder();
+        for (char ch : code.toUpperCase(java.util.Locale.ROOT).toCharArray()) {
+            if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_') b.append(ch);
+            if (b.length() >= 32) break;
+        }
+        return b.length() == 0 ? "NONE" : b.toString();
+    }
+
+    /**
      * Catégorie d'une réponse du serveur (mêmes règles qu'iOS et que
      * `classifyDepotStatus`) : seul un 2xx avec accusé vaut « imported ».
      */

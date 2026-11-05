@@ -28,6 +28,7 @@ import { documentTitleColumnsSql, documentTitleOf, type DocumentTitleColumns } f
 import { BusinessOperationReadService, type AssistantOperationRead } from '../read-service';
 import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipmentPrice, type TcoInput, type TcoOperation, type TcoResult } from './model';
 import { readUsageAssignments, readUsageBudgets } from './usage-budgets.service';
+import type { TcoFinancingDetails } from './financing';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
 import { TCO_STABLE_SOURCE_KINDS, type TcoUserDecision } from './user-decisions';
 import { civilDateParis, type LedgerComponent } from '../finance/engine';
@@ -207,11 +208,16 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
   // Lot 80A : décisions « Ajouter / Retirer du TCO » de l'utilisateur pour ce bien.
   const userDecisions = await readTcoLineDecisions(r, accountId, assetId);
   const historique = Array.isArray(kc.valuationHistory) ? (kc.valuationHistory as Array<Record<string, unknown>>) : [];
+  // Lot 111F : date de valorisation et date d'ajout distinctes (sélection par date de valorisation, jamais par ordre d'ajout).
   const valuationHistory = historique.length ? historique.map((v) => ({
-    value: typeof v.value === 'number' ? v.value : null, date: txt(v.date), mode: txt(v.mode), source: txt(v.source), currency: txt(v.currency),
+    id: txt(v.id), value: typeof v.value === 'number' ? v.value : null, date: txt(v.date), mode: txt(v.mode), source: txt(v.source), currency: txt(v.currency),
+    addedAt: txt(v.addedAt),
   })) : (typeof kc.estimatedValue === 'number' ? [{
     value: kc.estimatedValue, date: txt(kc.estimatedValueDate), mode: txt(kc.estimatedValueMode), source: null, currency: txt(kc.estimatedValueCurrency),
   }] : []);
+
+  // Lot 111F : détails contractuels des prêts du bien (Opérations FINANCING existantes, aucun second référentiel).
+  const financingDetails = await readFinancingDetails(r, accountId, lus.filter((o) => o.typeCode === 'FINANCING').map((o) => o.id));
 
   const result = computeTco({
     assetId, today: opts.today ?? civilDateParis(), operations, equipmentAssets,
@@ -220,12 +226,26 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     ...(dates.acquisitionMeta ? { assetAcquisitionDateMeta: { ...dates.acquisitionMeta, lastWrite: dates.acquisitionDate ? await lastAcquisitionDateWrite(r, accountId, assetId) : null } } : {}),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete && equipementsComplets,
     documents: doc.documents, assetPrice, equipmentPrices, acquisitionExpected,
-    assetCategory: txt(asset.category), componentProvenance, userDecisions, usageAssignments,
+    assetCategory: txt(asset.category), componentProvenance, userDecisions, usageAssignments, financingDetails,
   });
   // Lot 68 : diagnostic BO — justificatifs qui CITENT seulement le bien (exclus des sources, expliqués).
   // Lot 108B : état PERSISTÉ de la récupération des montants inconnus (lecture seule : jamais d'IA à la consultation).
   const { attachAmountRecovery } = await import('./amount-recovery.service');
   return attachAmountRecovery(r, accountId, { ...result, citedOnlyDocuments: await readCitedOnlyDocuments(r, accountId, assetId) });
+}
+
+/** Lot 111F : `business_operation_financing_details` des prêts du bien (compte vérifié par l'Opération). */
+async function readFinancingDetails(r: Runner, accountId: number, ids: readonly number[]): Promise<Map<number, TcoFinancingDetails>> {
+  if (!ids.length) return new Map();
+  const lignes = await rows<{ operation_id: string; financing_reference: string | null; lender: string | null; principal_amount_minor: string | null; principal_currency: string | null; effective_from: string | null; effective_to: string | null }>(r, sql`
+    SELECT d.operation_id, d.financing_reference, d.lender, d.principal_amount_minor, d.principal_currency, d.effective_from::text AS effective_from, d.effective_to::text AS effective_to
+      FROM business_operation_financing_details d JOIN business_operations o ON o.id = d.operation_id
+     WHERE o.account_id = ${accountId} AND d.operation_id = ANY(${intArray(ids)}::bigint[])`);
+  return new Map(lignes.map((d) => [Number(d.operation_id), {
+    reference: txt(d.financing_reference), lender: txt(d.lender),
+    principalAmountMinor: d.principal_amount_minor == null ? null : Number(d.principal_amount_minor), principalCurrency: txt(d.principal_currency)?.trim() ?? null,
+    effectiveFrom: txt(d.effective_from), effectiveTo: txt(d.effective_to),
+  }]));
 }
 
 const CITED_MAX = 200;

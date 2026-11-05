@@ -116,6 +116,9 @@ const baseAccountDataRepository: BaseAccountDataPort = {
       evidenceOrigin: h.evidenceOrigin ?? 'TEXT_EXTRACTION',
       visualDescription: h.visualEvidence?.description ?? null,
       page: typeof h.location?.page === 'number' ? h.location.page : null,
+      // Lot 111K : contexte documentaire et temporel (adéquation à la question).
+      documentDate: h.documentDate ?? null, documentTypeCode: h.documentTypeCode ?? null,
+      periodStart: h.periodStart ?? null, periodEnd: h.periodEnd ?? null,
     }));
   },
 

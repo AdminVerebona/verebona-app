@@ -166,7 +166,8 @@ describe('L85F-U04 — le code ne dépend d’aucun mot (compréhension = traite
 });
 
 describe('L85F-U05 — contexte borné, ordre neutre, complétude', () => {
-  const B = { elementsPerPage: 2, charsPerPage: 10_000, maxPages: 2, charsPerElement: 50, maxLinkedDocuments: 5 };
+  // Lot 111M : plafond TOTAL de pages explicite (continuation persistante) — au-delà, contexte incomplet.
+  const B = { elementsPerPage: 2, charsPerPage: 10_000, maxPages: 2, charsPerElement: 50, maxLinkedDocuments: 5, maxContinuationPages: 2 };
   it('document cible d’abord, couches dans l’ordre, pages bornées ; au-delà : contexte INCOMPLET (jamais une absence)', () => {
     const lie = { ref: 'D1', fileId: 11, role: 'LINKED' as const, relation: 'SAME_OPERATION' as const, title: null, documentType: null };
     const els: El[] = [unite('U-5', 'lié', { document: 'D1', fileId: 11 }), unite('U-1', 'a'), fait('F-1', 'N°', 'X1'), { ...unite('N-1', ''), layer: 'UNRESOLVED_FACT', value: 'v', text: null }];
@@ -176,7 +177,9 @@ describe('L85F-U05 — contexte borné, ordre neutre, complétude', () => {
     expect(p).toMatchObject({ complete: true, unstructured: 3 });
     const trop = ctxMod.planKnowledgePages([...els, unite('U-6', 'b'), unite('U-7', 'c')], [...DOCS, lie], B);
     expect(trop).toMatchObject({ complete: false, droppedElements: 2 });
-    expect(ctxMod.planKnowledgePages([unite('U-1', 'x'.repeat(200))], DOCS, B).cutElements).toBe(1);
+    // Lot 111M : un texte long est découpé en segments ; « coupé » = segments au-delà du plafond de pages.
+    expect(ctxMod.planKnowledgePages([unite('U-1', 'x'.repeat(200))], DOCS, B)).toMatchObject({ cutElements: 0, complete: true, segmentedElements: 1 });
+    expect(ctxMod.planKnowledgePages([unite('U-1', 'x'.repeat(1_000))], DOCS, B)).toMatchObject({ cutElements: 1, complete: false });
   });
   it('faits structurés seuls : aucune connaissance non structurée ; empreinte stable du contexte', () => {
     const p = ctxMod.planKnowledgePages([fait('F-1', 'N°', 'X1')], DOCS, B);

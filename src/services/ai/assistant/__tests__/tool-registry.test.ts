@@ -94,15 +94,16 @@ describe('plafonds du budget par demande (§31.2)', () => {
   it('correspondent aux valeurs du cahier des charges', () => {
     expect(ASSISTANT_LIMITS.maxSourcesRetrieved).toBe(8);
     expect(ASSISTANT_LIMITS.maxSourcesDisplayed).toBe(5);
-    expect(ASSISTANT_LIMITS.maxExcerptChars).toBe(1500);
+    // Lot 111M : borne de lecture 4 000 (source unique `assistant-limits`), plus de plafond de sortie parallèle.
+    expect(ASSISTANT_LIMITS.maxExcerptChars).toBe(4000);
     expect(ASSISTANT_LIMITS.maxDisplayedExcerptChars).toBe(240);
     expect(ASSISTANT_LIMITS.maxAiCallsPerMessage).toBe(2);
     expect(ASSISTANT_LIMITS.maxInputTokens).toBe(12_000);
-    expect(ASSISTANT_LIMITS.maxOutputTokens).toBe(500);
+    expect('maxOutputTokens' in ASSISTANT_LIMITS).toBe(false);
   });
 
   it('tronque les extraits avant transmission au modèle', () => {
-    expect(clampExcerpt('x'.repeat(5000)).length).toBeLessThanOrEqual(1501);
+    expect(clampExcerpt('x'.repeat(5000)).length).toBeLessThanOrEqual(4001);
     expect(clampExcerpt('court')).toBe('court');
     expect(clampExcerpt(null)).toBe('');
   });

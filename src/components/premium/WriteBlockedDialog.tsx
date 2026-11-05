@@ -181,7 +181,7 @@ export function WriteBlockedDialog({ open, onOpenChange, info }: WriteBlockedDia
                 {[
                   'Tout Standard +',
                   'Jusqu\u2019à 10 biens et 150 documents',
-                  'Interrogez Verebona sur vos biens et documents',
+                  'Calcul automatique du coût de possession de vos biens',
                   'Dossiers prêts à l\u2019emploi',
                 ].map((texte) => (
                   <div key={texte} className="flex items-center gap-3 text-sm">

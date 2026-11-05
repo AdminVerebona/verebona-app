@@ -70,7 +70,7 @@ function Recovery() {
           <form onSubmit={start} className="space-y-3">
             <div className="space-y-1">
               <Label htmlFor="rc-email">Adresse e-mail du compte</Label>
-              <Input id="rc-email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={busy} />
+              <Input id="rc-email" name="username" type="email" inputMode="email" autoComplete="username" autoCapitalize="none" value={email} onChange={(e) => setEmail(e.target.value)} required disabled={busy} />
             </div>
             <Button type="submit" className="w-full" disabled={busy || !email}>{busy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}Recevoir un code de vérification</Button>
           </form>
@@ -79,12 +79,12 @@ function Recovery() {
             {needsEmailCode && (
               <div className="space-y-1">
                 <Label htmlFor="rc-email-code">Code reçu par e-mail</Label>
-                <Input id="rc-email-code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={emailCode} onChange={(e) => setEmailCode(e.target.value)} required disabled={busy} />
+                <Input id="rc-email-code" name="one-time-code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={emailCode} onChange={(e) => setEmailCode(e.target.value)} required disabled={busy} />
               </div>
             )}
             <div className="space-y-1">
               <Label htmlFor="rc-code">Code de récupération</Label>
-              <Input id="rc-code" autoComplete="off" autoCapitalize="characters" spellCheck={false} placeholder="XXXX-XXXX-XXXX-XXXX"
+              <Input id="rc-code" name="recovery-code" autoComplete="off" autoCapitalize="characters" spellCheck={false} placeholder="XXXX-XXXX-XXXX-XXXX"
                 value={recoveryCode} onChange={(e) => setRecoveryCode(e.target.value)} required disabled={busy} />
             </div>
             <Button type="submit" className="w-full" disabled={busy || !recoveryCode || (needsEmailCode && emailCode.length !== 6)}>

@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { PasswordInput } from '@/components/ui/password-input';
+import { AUTOFILL, formFieldValue } from '@/lib/auth/autofill';
 import { LogoWithBaseline } from '@/components/Logo';
 import { LandingFooter } from '@/components/LandingFooter';
 import { FollowTheme } from '@/components/FollowTheme';
@@ -38,9 +39,13 @@ function ActivateContent() {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
 
-  const submit = async (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    if (!password || busy) return;
+    // Lot 111E : mot de passe réellement présent dans le champ (remplissage
+    // automatique par le gestionnaire qui l'a enregistré à l'inscription).
+    const submitted = formFieldValue(e.currentTarget, 'password', password);
+    if (!submitted || busy) return;
+    if (submitted !== password) setPassword(submitted);
     setBusy(true);
     setFailure(null);
     try {
@@ -48,7 +53,7 @@ function ActivateContent() {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token, password, ...(plan ? { plan } : {}) }),
+        body: JSON.stringify({ token, password: submitted, ...(plan ? { plan } : {}) }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && typeof data.redirectTo === 'string') {
@@ -92,15 +97,15 @@ function ActivateContent() {
       </CardHeader>
       <CardContent className="space-y-4">
         {!dead && (
-          <form onSubmit={submit} className="space-y-3" data-testid="activation-form">
+          <form onSubmit={submit} method="post" className="space-y-3" data-testid="activation-form">
             <div className="space-y-1.5">
               <Label htmlFor="signup-password">Mot de passe choisi à l’inscription</Label>
-              <PasswordInput id="signup-password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus />
+              <PasswordInput id="signup-password" name="password" autoComplete={AUTOFILL.currentPassword} value={password} onChange={(e) => setPassword(e.target.value)} required autoFocus />
             </div>
             {failure && (
               <p role="alert" className="text-sm text-[color:var(--danger)]">{failure.message}</p>
             )}
-            <Button type="submit" className="w-full min-h-11" disabled={busy || !password}>
+            <Button type="submit" className="w-full min-h-11" disabled={busy}>
               {busy ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Activation…</> : 'Activer mon compte'}
             </Button>
           </form>

@@ -288,6 +288,8 @@ interface PrepareContext {
   /** Choix déjà faits (`includeCurrentSelections`) ; sinon pré-sélection du CDC. */
   choices?: ExportChoices | null;
   lastGeneration: PreparationDto['lastGeneration'];
+  /** Lot 111B : génération active du même dossier par l'utilisateur courant. */
+  activeGeneration?: PreparationDto['activeGeneration'];
 }
 
 export function buildPreparation(code: DossierCode, source: ExportSource, ctx: PrepareContext): PreparationDto {
@@ -373,6 +375,7 @@ export function buildPreparation(code: DossierCode, source: ExportSource, ctx: P
       ? { status: 'partial', message: cilActionRequiredMessage(cil?.blockingBlocks) }
       : { status: 'ready', message: null },
     lastGeneration: ctx.lastGeneration,
+    activeGeneration: ctx.activeGeneration ?? null,
     sections,
     photoCap: PHOTO_CAPS[code],
     additionalInfo: { sections: [...DOSSIER_ADDITIONAL_SECTIONS[code]], updatedAt: source.additionalInfo.updatedAt },

@@ -292,7 +292,9 @@ describe('L102B-06 — liens publics, canal, terminologie', () => {
   it('L102B-06e — inscription, connexion sociale, Mon compte : permalien public de la version présentée, plus de lien /cgvu', () => {
     for (const f of ['src/app/(auth)/signup/SignupForm.tsx', 'src/app/(auth)/connexion-sociale/page.tsx', 'src/components/account/LegalInformationCard.tsx']) {
       const src = lire(f);
-      expect(src, f).toContain('/api/legal/cguv/current');
+      // Lot 111O : les deux formulaires d'inscription lisent la version par le hook
+      // partagé `useCurrentCguv` (même endpoint, reprise automatique en blocage).
+      expect(src.includes('/api/legal/cguv/current') || src.includes('useCurrentCguv()'), f).toBe(true);
       expect(src, f).toContain('useLegalLinks()');
       expect(src, f).not.toMatch(/['"]\/cgvu['"]/);
     }

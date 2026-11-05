@@ -11,6 +11,8 @@ vi.mock('../generation/repository', () => ({
   LEASE_SECONDS: 120,
   claimNextGeneration: () => claimMock(),
   renewGenerationLease: () => renewMock(),
+  isGenerationCancelRequested: async () => false,
+  markGenerationCancelled: async () => false,
 }));
 const signals: Array<AbortSignal | undefined> = [];
 const runMock = vi.fn((_row: unknown, _w: string, opts: { signal?: AbortSignal }) => {

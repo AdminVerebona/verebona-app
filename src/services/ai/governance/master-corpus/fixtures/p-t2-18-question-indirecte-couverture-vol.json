@@ -1,0 +1,47 @@
+{
+  "case": "P-T2-18",
+  "description": "ANSWER (lot 111K, pertinence des preuves) — question exprimée indirectement (« jusqu’à quand suis-je couvert pour le vol ») : la date de fin de la garantie vol, pas la prime.",
+  "qualification": {
+    "role": "answer"
+  },
+  "context": {
+    "intent": "ACCOUNT_FACT_ASSET",
+    "question": "Jusqu’à quand suis-je couvert pour le vol de la moto ?",
+    "sources": [
+      {
+        "id": "doc_1301",
+        "type": "document_extraction",
+        "title": "Contrat assurance moto",
+        "content": "Garantie vol : du 01/04/2026 au 31/03/2027 · Prime annuelle : 312,00 €",
+        "meta": {}
+      }
+    ]
+  },
+  "recording": {
+    "operationCode": "t2_answer",
+    "task": "ANSWER",
+    "output": {
+      "mode": "ANSWER",
+      "format": "claims",
+      "status": "answered",
+      "claims": [
+        {
+          "text": "Votre garantie vol de la moto court jusqu’au 31 mars 2027.",
+          "sourceIds": [
+            "doc_1301"
+          ],
+          "derivation": "direct",
+          "factual": true
+        }
+      ]
+    }
+  },
+  "expected": {
+    "answerContains": "31 mars 2027",
+    "answerNotContains": [
+      "312"
+    ],
+    "supportLevel": "supported",
+    "exitState": "answered"
+  }
+}

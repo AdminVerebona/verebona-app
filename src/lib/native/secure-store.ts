@@ -68,6 +68,23 @@ export async function secureGet(key: string): Promise<string | null> {
   }
 }
 
+/**
+ * Lot 111D : lecture qui DISTINGUE « absent » (`ok: true, value: null`) d'un
+ * échec de lecture (`ok: false` : Keystore Android en erreur, plugin absent).
+ * Sur iOS, le plugin rend « absent » pour toute erreur du Keychain : la
+ * machine de déverrouillage ne lit donc le moyen qu'au premier plan.
+ */
+export async function secureRead(key: string): Promise<{ ok: boolean; value: string | null }> {
+  const p = plugin();
+  if (!p) return { ok: false, value: null };
+  try {
+    const { data } = await p.internalGetItem({ prefixedKey: SECURE_PREFIX + key, sync: false });
+    return { ok: true, value: typeof data === 'string' && data !== '' ? data : null };
+  } catch {
+    return { ok: false, value: null };
+  }
+}
+
 export async function secureSet(key: string, value: string): Promise<boolean> {
   const p = plugin();
   if (!p) return false;

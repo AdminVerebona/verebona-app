@@ -5,6 +5,13 @@
  * public, empreinte SHA-256, décision « substantielle », dates, et les URL
  * publiques officielles des cinq contenus légaux. Le formulaire d'inscription
  * enregistre la version effectivement présentée (§18).
+ *
+ * Lot 111O — reprise fiable : tant que la version en vigueur n'est pas
+ * acceptable (texte non vérifié sur le site public), chaque ouverture /
+ * relecture d'un formulaire d'inscription relance la lecture du manifeste
+ * (au plus une fois par intervalle, attente bornée — `refreshCguvIfBlocked`),
+ * puis la version est RELUE en base : jamais de version mise en cache, jamais
+ * de substitution. Toutes les réponses sont `no-store`.
  */
 import { NextResponse } from 'next/server';
 import { ensureMigrations } from '@/db';
@@ -13,23 +20,30 @@ import { getPublicCurrentCguv, getServerLegalLinks, serverLegalLinks } from '@/s
 
 export const dynamic = 'force-dynamic';
 
+const NO_STORE = { 'Cache-Control': 'no-store' };
+
 export async function GET() {
-  // Adresses actuelles du site tant qu'il n'a pas livré, /legal/… ensuite.
-  const [{ mode, links: resolved }, links] = await Promise.all([getServerLegalLinks(), serverLegalLinks()]);
-  const publicUrl = resolved.cguv;
   let current;
   try {
     await ensureMigrations();
     current = await getPublicCurrentCguv();
+    if (!current || current.publicText !== 'VERIFIED') {
+      const { refreshCguvIfBlocked } = await import('@/services/legal/cguv-publication-diagnostic');
+      if ((await refreshCguvIfBlocked()) === 'refreshed') current = await getPublicCurrentCguv();
+    }
   } catch (e) {
     const { reference } = logDatabaseError('CGUV', e);
+    const [{ links: resolved }, links] = await Promise.all([getServerLegalLinks(), serverLegalLinks()]);
     return NextResponse.json(
-      { error: 'Les CGUV sont momentanément indisponibles.', code: 'LEGAL_UNAVAILABLE', reference, publicUrl, links },
-      { status: 503 },
+      { error: 'Les CGUV sont momentanément indisponibles.', code: 'LEGAL_UNAVAILABLE', reference, publicUrl: resolved.cguv, links },
+      { status: 503, headers: NO_STORE },
     );
   }
+  // Liens résolus APRÈS l'éventuelle relecture (bascule /legal/… comprise).
+  const [{ mode, links: resolved }, links] = await Promise.all([getServerLegalLinks(), serverLegalLinks()]);
+  const publicUrl = resolved.cguv;
   if (!current) {
-    return NextResponse.json({ error: 'Aucune version des CGUV n’est connue.', code: 'NO_CURRENT_VERSION', publicUrl, links }, { status: 503 });
+    return NextResponse.json({ error: 'Aucune version des CGUV n’est connue.', code: 'NO_CURRENT_VERSION', publicUrl, links }, { status: 503, headers: NO_STORE });
   }
   return NextResponse.json({
     versionCode: current.versionCode,
@@ -48,6 +62,8 @@ export async function GET() {
     sha256: current.sha256,
     publicUrl,
     links,
+    // Lot 111O : objet résolu (clé → URL) — « Confidentialité » du formulaire lu ici, au même instant.
+    legalLinks: resolved,
     linksMode: mode,
-  }, { headers: { 'Cache-Control': 'no-store' } });
+  }, { headers: NO_STORE });
 }
