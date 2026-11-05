@@ -241,7 +241,9 @@ jobs:
             team=$(plutil -extract com.apple.developer.team-identifier raw -o - "$ent" 2>/dev/null || true)
             teams="$teams $team"
             echo "$name : application-groups=[$(printf '%s ' $groups)] keychain-access-groups=[${kag}] équipe=${team:-?}"
-            echo "- $name : groupe d'apps $GROUP ✓ · keychain-access-groups : ${kag:-aucun (le groupe d'apps sert de groupe Keychain)} · équipe ${team:-?}" >> "$GITHUB_STEP_SUMMARY"
+            # Lot 111 (correctif) : pas d'apostrophe dans ${var:-…} entre guillemets — le bash 3.2 de macOS la prend pour un guillemet ouvrant.
+            kag_txt="$kag"; [ -n "$kag_txt" ] || kag_txt="aucun (le groupe d'apps sert de groupe Keychain)"
+            echo "- $name : groupe d'apps $GROUP ✓ · keychain-access-groups : $kag_txt · équipe ${team:-?}" >> "$GITHUB_STEP_SUMMARY"
           done
           set -- $teams
           if [ "$#" -eq 2 ] && [ "$1" != "$2" ]; then echo "::error::Envoi refusé — app et extension signées par deux équipes différentes ($1 / $2) : Keychain non partagé."; exit 1; fi
