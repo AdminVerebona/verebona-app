@@ -161,6 +161,13 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
   });
   const passage = async () => (await import('@/services/ai/prompt-conformity/service')).runPromptConformityPass({ trigger: 'e2e' }, deps());
   const issue = async () => (await sql<Json[]>`SELECT * FROM ai_prompt_conformity_issues WHERE environment = 'preprod' AND contract_id = ${CONTRAT}`)[0];
+  /** Diagnostic d'un statut inattendu (CI) : décision, motifs de refus, verdicts par opération (sans contenu de prompt). */
+  const pourquoi = (i: Json) => JSON.stringify({
+    status: i?.status, decision: i?.decision, refusal: i?.refusal_reasons,
+    qualification: i?.qualification && { decision: i.qualification.decision, businessDecision: i.qualification.businessDecision, a1Blocked: i.qualification.a1Blocked,
+      campaignStatus: i.qualification.campaignStatus, refusal: i.qualification.refusal, blocking: i.qualification.blockingReasons, refusals: i.qualification.refusalReasons,
+      operations: (i.qualification.operations ?? []).map((o: Json) => ({ op: o.operationCode, d: o.decision, r: o.reasons, def: o.defects, inc: o.inconclusive, reg: o.regressions })) },
+  }).slice(0, 6000);
   const evenements = async (id: number) => (await sql<Json[]>`SELECT kind, status_before, status_after, message, payload FROM ai_prompt_conformity_events WHERE issue_id = ${id} ORDER BY id`);
   const campagnes = async () => Number((await sql`SELECT count(*)::int AS n FROM ai_qualification_campaigns WHERE kind = 'CONFORMITY'`)[0].n);
   const configActive = async () => Number((await sql`SELECT id FROM ai_config_versions WHERE environment = 'preprod' AND status = 'ACTIVE'`)[0].id);
@@ -377,7 +384,7 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
       mode.regressionCandidate = false;
     }
     const i = await issue();
-    expect(i.status).toBe('FAILED');
+    expect(i.status, pourquoi(i)).toBe('FAILED');
     expect(i.qualification.decision).toBe('REFUSED');
     const la = (i.qualification.operations as Json[]).find((o) => o.operationCode === 't3_link_ambiguity')!;
     expect(la.regressions.length).toBeGreaterThan(0);
@@ -405,7 +412,7 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
     // Diagnostic lisible en cas d'échec (motifs précis de refus).
     if (i.qualification.decision !== 'QUALIFIED') console.log('MOTIFS', JSON.stringify(i.refusal_reasons));
     expect(i.qualification.decision).toBe('QUALIFIED');
-    expect(i.status).toBe('ACTIVATED');
+    expect(i.status, pourquoi(i)).toBe('ACTIVATED');
     expect(i.previous_config_version_id).toBe(cfgAvant);
     expect(await configActive()).toBe(Number(i.candidate_config_version_id));
     const actif = await t3Actif();
@@ -465,7 +472,7 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
     expect(inv.n).toBeGreaterThan(0);
     await passage();
     const i = await issue();
-    expect(i.status).toBe('ROLLED_BACK');
+    expect(i.status, pourquoi(i)).toBe('ROLLED_BACK');
     expect(i.decision).toMatch(/Retour arrière automatique/);
     expect(i.post_check.after.invalid).toBeGreaterThan(0);
     expect(await configActive()).toBe(Number(i0.previous_config_version_id));
@@ -499,7 +506,7 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
       await decision(CAS, 'REJETEE');
       await passage();
       const i1 = await issue();
-      expect(i1.status).toBe('BLOCKED');
+      expect(i1.status, pourquoi(i1)).toBe('BLOCKED');
       expect(i1.qualification).toMatchObject({ businessDecision: 'QUALIFIED', a1Blocked: true });
       expect(i1.decision).toMatch(/Qualification métier réussie.*verrou A1.*pas un refus métier/);
       const cand = Number(i1.candidate_config_version_id);
@@ -530,7 +537,7 @@ describe('L99B — Mise en conformité automatique des prompts IA (préproductio
       expect(await campagnes()).toBe(n1 + 1);
       const i4 = await issue();
       if (i4.status !== 'ACTIVATED') console.log('MOTIFS', i4.decision, JSON.stringify(i4.refusal_reasons));
-      expect(i4.status).toBe('ACTIVATED');
+      expect(i4.status, pourquoi(i4)).toBe('ACTIVATED');
       expect(Number(i4.candidate_config_version_id)).toBe(cand);
       expect(await configActive()).toBe(cand);
       const gate = await sql<Json[]>`SELECT allowed, code, reference FROM ai_promotion_events WHERE kind = 'ACTIVATION_GATE' AND candidate_version_id = ${cand} ORDER BY id DESC LIMIT 1`;
