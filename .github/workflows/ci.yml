@@ -525,6 +525,14 @@ jobs:
         run: npm run test:e2e:t1-couverture-propagation -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t1-couverture-propagation.xml
       - name: Coûts IA — tarifs, statut, régularisation (lot 109L)
         run: npm run test:e2e:couts-ia -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-couts-ia.xml
+      - name: Partage natif iOS et Android, jeton d'import (lot 110A)
+        run: npm run test:e2e:partage-natif -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-partage-natif.xml
+      - name: Double authentification, clés d'accès, codes (lot 110B)
+        run: npm run test:e2e:mfa -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-mfa.xml
+      - name: « À traiter » — une question Oui ou Non par événement de référence (lot 110D)
+        run: npm run test:e2e:arbitrage-operation -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-arbitrage-operation.xml
+      - name: Assistant — réponses issues des Ressources, questions sans réponse (lot 110E)
+        run: npm run test:e2e:t2-ressources -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t2-ressources.xml
       - uses: actions/upload-artifact@v4
         if: always()
         with:

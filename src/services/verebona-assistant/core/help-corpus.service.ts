@@ -22,6 +22,7 @@
  * incluse (T2-07) — jamais à pousser un changement d'offre (T2-08).
  * ══════════════════════════════════════════════════════════════════════════
  */
+import { resourceAnswerFromSources } from './resources-answer';
 import { HELP_T2_CORPUS_PATH } from '@/lib/help-center/catalog';
 import { helpScreenForRoute } from '@/lib/help-center/screens';
 import { parseEnvironment, type AiEnvironment } from '@/services/ai/config/environment';
@@ -61,6 +62,8 @@ export interface HelpCorpusArticle {
   validatedAt?: string | null;
   /** Routes de l'application que l'article mentionne (§10.3). */
   allowedRoutes?: string[];
+  /** Lot 110E : révision éditoriale (Ressources) — invalidation de la couverture des questions. */
+  revision?: number;
   /** Actions de l'assistant que l'article autorise (§10.3). */
   allowedActions?: string[];
   /** Version de l'application décrite (§10.3). */
@@ -1120,6 +1123,12 @@ export function helpAnswerFromSources(
 ): string {
   const aide = sources.filter((s) => s.type === 'help_entry');
   if (aide.length === 0) return HELP_FALLBACK_MESSAGE;
+  // Lot 110E : Ressource en tête — la réponse d'abord (passages publiés), les
+  // réserves, le manque éventuel ; jamais « la procédure est dans l'article ».
+  if (String(aide[0].meta?.articleId ?? '').startsWith('RES-')) {
+    const r = resourceAnswerFromSources(aide);
+    if (r) return r;
+  }
   if (intent !== 'PRODUCT_HELP_HOW_TO') return fallbackFromHelpSources(sources);
   const meilleure = aide[0];
   const offre = meilleure.meta?.notIncludedInPlan ? ` Cette fonction n’est pas incluse dans votre offre actuelle (${meilleure.meta.offersLabel}).` : '';

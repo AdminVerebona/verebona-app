@@ -46,6 +46,9 @@ import { sortActions, type OrderMode } from './priority';
 import { presentCardLabels, targetFallbackLabel } from './card-labels';
 import { publishableCardCondition } from './publishability';
 import { resolveCardLinks, type CardLinks } from './card-links';
+import {
+  binaryMatchQuestion, isBinaryMatchContext, loadOperationReferences, referencesForCard, referencesView, type OperationReferencesView,
+} from './operation-match-binary';
 
 /** Contexte objet affiché sur la carte (§8.4). */
 interface ActionTargetContext {
@@ -103,6 +106,13 @@ export interface ToProcessActionView {
    * Fournis seulement sur demande (`withLinks`, page « À traiter »).
    */
   links?: CardLinks;
+  /**
+   * Lot 110D — question « même réalité » BINAIRE : deux réponses (Oui / Non),
+   * aucun « Autre » ; `references` = preuves ACTUELLES de l'Opération
+   * candidate (documents, événements), en contexte cliquable.
+   */
+  choiceMode?: 'BINARY';
+  references?: OperationReferencesView;
 }
 
 /** Périmètre d'une carte groupée lu dans son contexte (pure, borné). */
@@ -227,6 +237,30 @@ export async function getToProcessPage(
     }, getRule(row.ruleCode)?.question ?? null);
   });
 
+  // Lot 110D : questions « même réalité » binaires — références ACTUELLES de
+  // l'Opération candidate (lecture groupée, compte de la session) ; question
+  // reformulée sur ces références (documents / événements).
+  const binaires = rows.filter((row) => row.ruleCode === 'OPERATION-MATCH' && row.targetType === 'DOCUMENT' && isBinaryMatchContext(row.triggerContext));
+  if (binaires.length) {
+    try {
+      const refs = await loadOperationReferences(accountId, binaires.map((row) => (row.triggerContext as { operationId: number }).operationId));
+      const parCarte = new Map(binaires.map((row) => {
+        const ctx = row.triggerContext as { operationId: number; operationType?: string | null };
+        const items = referencesForCard(refs, ctx.operationId, row.targetId);
+        return [row.publicId, { items, type: ctx.operationType ?? null }] as const;
+      }));
+      views = views.map((v) => {
+        const b = parCarte.get(v.publicId);
+        // Aucune référence consultable : la question enregistrée (désignation de l'Opération) est gardée.
+        return b ? { ...v, choiceMode: 'BINARY' as const, references: referencesView(b.items), ...(b.items.length ? { question: binaryMatchQuestion(b.type, b.items) } : {}) } : v;
+      });
+    } catch (e) {
+      console.error('[to-process] références des questions « même réalité » indisponibles :', (e as Error).message);
+      const ids = new Set(binaires.map((row) => row.publicId));
+      views = views.map((v) => (ids.has(v.publicId) ? { ...v, choiceMode: 'BINARY' as const } : v));
+    }
+  }
+
   // Lot 107E : liens directs, depuis les propositions BRUTES affichées (la
   // reformulation des libellés peut retirer un contexte de source) et le
   // contexte de la carte — relations de preuve existantes, lecture groupée.
@@ -244,7 +278,7 @@ export async function getToProcessPage(
         triggerContext: row.triggerContext,
         supplierId: contexts.get(`${row.targetType}:${row.targetId}`)?.supplierId ?? null,
       })));
-      views = views.map((v) => (links.has(v.publicId) ? { ...v, links: links.get(v.publicId)! } : v));
+      views = views.map((v) => (links.has(v.publicId) ? { ...v, links: withoutListedReferences(links.get(v.publicId)!, v.references) } : v));
     } catch (e) {
       // Des liens absents valent mieux qu'une file qui ne s'affiche plus.
       console.error('[to-process] liens directs indisponibles :', (e as Error).message);
@@ -273,6 +307,21 @@ export async function getToProcessPage(
     total: totalRow?.total ?? 0,
     shown: sorted.length,
     orderMode,
+  };
+}
+
+/**
+ * Lot 110D (pur) : les références listées par une question binaire ne sont
+ * pas répétées dans les liens de la carte (événement de référence, justificatifs).
+ */
+export function withoutListedReferences(links: CardLinks, refs: OperationReferencesView | undefined): CardLinks {
+  if (!refs?.items.length) return links;
+  const docs = new Set(refs.items.filter((r) => r.kind === 'document').map((r) => r.id));
+  const evts = new Set(refs.items.filter((r) => r.kind === 'event').map((r) => r.id));
+  return {
+    ...links,
+    cardDocuments: links.cardDocuments.filter((id) => !docs.has(id)),
+    related: links.related.filter((r) => !((r.kind === 'echeance' || r.kind === 'reference') && evts.has(r.id))),
   };
 }
 

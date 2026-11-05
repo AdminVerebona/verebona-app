@@ -61,7 +61,8 @@ export function safeReturnUrl(
   fallback: string = DEFAULT_AFTER_AUTH_PATH,
 ): string {
   const path = safeInternalPath(raw, fallback);
-  const AUTH_PAGES = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email'];
+  // Lot 110B : pages de la seconde étape (vérification, enrôlement, récupération).
+  const AUTH_PAGES = ['/login', '/signup', '/forgot-password', '/reset-password', '/verify-email', '/verification', '/securiser-mon-compte', '/recuperation'];
   return AUTH_PAGES.some((p) => path === p || path.startsWith(`${p}?`) || path.startsWith(`${p}/`))
     ? fallback
     : path;

@@ -212,6 +212,18 @@ export const NEUTRALIZATION_PLAN: readonly NeutralizationStep[] = [
     tables: ['mobile_push_installations'],
   },
   {
+    // Lot 110A : jetons d'import du partage natif — liés à des sessions de production.
+    id: 'mobile_share_import_grants',
+    family: 'effets_externes',
+    label: 'Supprimer les jetons d’import du partage natif',
+    risk:
+      'Un jeton émis en production permettrait d’importer un document dans une copie '
+      + 'de préproduction depuis un téléphone de production.',
+    sql: `DELETE FROM mobile_share_import_grants`,
+    verify: `SELECT count(*) FROM mobile_share_import_grants`,
+    tables: ['mobile_share_import_grants'],
+  },
+  {
     id: 'email_logs',
     family: 'effets_externes',
     label: 'Purger les journaux de courriels',

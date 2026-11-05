@@ -220,7 +220,7 @@ describe('L108J-U08 — « Autre suggestion » supprimé ; trois suggestions ; �
     expect(MAX_TODO_ITEMS).toBe(2);
   });
 
-  it('rendu : zone tactile ≥ 44 px, retour à la ligne, colonne pleine largeur sur mobile, jetons de la charte seulement', () => {
+  it('rendu (lot 110C : une rangée, accueil large seulement) : zone tactile ≥ 44 px, retour à la ligne, jetons de la charte seulement', () => {
     const src = readFileSync(join(ROOT, 'src/components/suggestions/SharedSuggestionList.tsx'), 'utf8');
     expect(src).toContain('min-h-[44px]');
     expect(src).toContain('w-full');

@@ -171,12 +171,12 @@ La cible `ShareExtension` est **versionnée** dans `mobile/ios/App/App.xcodeproj
   cocher sur l'identifiant de l'app ET sur celui de l'extension.
 - Contrôle CI avant envoi : `App.app/PlugIns/ShareExtension.appex` présent, identifiant dérivé de celui
   de l'app, groupe d'apps présent dans les droits signés des deux.
-- Fonctionnement : l'extension copie les PDF / images dans une **file technique** du groupe d'apps (un
-  dossier par partage, protection « complète », hors sauvegarde), affiche « Document prêt à importer dans
-  Verebona », sans ouvrir l'app ni rien envoyer. À l'ouverture de Verebona (après Face ID / connexion),
-  l'app propose ces documents dans le formulaire d'ajout habituel ; les copies sont effacées après
-  l'ajout confirmé ou « Abandonner », et au plus tard après 7 jours. Détail :
-  `docs/mobile/architecture-distante.md` § 6.
+- Fonctionnement (lot 110A, remplace le principe 108G « formulaire puis confirmation ») : l'extension
+  affiche une interface native compacte (iOS : « Importer dans Verebona » / « Annuler », puis notification « Touchez pour l’ouvrir » ; « et ouvrir » non
+  proposé sur iOS faute d'API publique) ; le choix d'import publie le partage dans le groupe d'apps et
+  l'envoie par URLSession d'arrière-plan avec un **jeton d'import** (Keychain du groupe d'apps), sans
+  seconde confirmation. Aucune nouvelle capacité Apple. Réglage après arbitrage PO :
+  `mobile/config/environments.mjs › SHARE_IMPORT`. Détail : `docs/mobile/partage-natif-110a.md`.
 
 ## 7. Icônes et nom
 

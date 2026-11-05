@@ -77,6 +77,8 @@ interface PurgeReport {
    * (`help-corpus:last-valid:`) jamais touchées.
    */
   expiredCacheDeleted?: number;
+  /** Lot 110E : décisions de revue des « Questions sans réponse » au-delà de l'historique. */
+  unansweredReviewsDeleted?: number;
   durationMs: number;
 }
 
@@ -133,12 +135,19 @@ export async function purgeAssistantData(): Promise<PurgeReport> {
   const { purgeExpiredIdempotency } = await import('@/services/ai/idempotency/idempotency.service');
   const expiredCache = await purgeExpiredIdempotency().catch(() => 0);
 
+  // 9. Lot 110E : décisions de revue du journal « Questions sans réponse »
+  //    (`t2_unanswered_reviews`) — même durée que l'historique, dont elles
+  //    commentent les questions. Table absente : rien.
+  const { purgeUnansweredReviews } = await import('@/services/verebona-assistant/core/unanswered-journal');
+  const unansweredReviews = await purgeUnansweredReviews(RETENTION.conversationDays, execute);
+
   return {
     messagesDeleted: messages,
     conversationsDeleted: conversations,
     feedbackDeleted: feedback,
     usageEventsDeleted: usageEvents,
     expiredCacheDeleted: expiredCache,
+    unansweredReviewsDeleted: unansweredReviews,
     durationMs: Date.now() - startedAt,
   };
 }

@@ -279,6 +279,13 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   user_session_revocations: 'sécurité : révocations de sessions',
   user_sessions: 'sécurité : registre des sessions (empreintes de jetons et d’appareils)',
   reauth_proofs: 'sécurité : preuves de réauthentification',
+  user_mfa_state: 'sécurité : double authentification (état de protection)',
+  mfa_passkeys: 'sécurité : clés d’accès (clés publiques)',
+  mfa_totp_factors: 'sécurité : secrets TOTP chiffrés',
+  mfa_recovery_codes: 'sécurité : empreintes des codes de récupération',
+  mfa_challenges: 'sécurité : défis de double authentification',
+  mfa_pending_auth: 'sécurité : contextes de connexion provisoires',
+  mfa_enforcement_settings: 'sécurité : réglage d’obligation de la double authentification',
   email_change_requests: 'sécurité : demandes de changement d’adresse (empreintes de liens)',
   device_trust_legacy_accounts: 'sécurité : appareils reconnus, étiquettes de transition (empreintes)',
   auth_transactions: 'sécurité : transactions OAuth Google / Apple',
@@ -338,6 +345,8 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   ai_corpus_a1_assessments: 'qualification IA (journal du verrou A1 de couverture)',
   // Lot 105B : journal de la promotion automatique IA (identifiants, empreintes, motifs ; aucun contenu de document).
   ai_promotion_events: 'qualification IA (journal de la promotion automatique : revalidation, A1, surveillance, retours arrière)',
+  // Lot 110E : décisions de revue du journal « Questions sans réponse » (empreinte de groupe, statut, note expurgée ; aucun compte).
+  t2_unanswered_reviews: 'assistant T2 (revue des questions sans réponse)',
   // Ancien harnais de mesure (cron `corpus-run`, retiré au lot 86A : absorbé par la qualification par couple) — table inerte, créée à la volée en préproduction.
   ai_corpus_baseline: 'qualification IA (ancien harnais de mesure retiré au lot 86A, table inerte)',
   // Lot 86B (Pilotage IA V2 P6) : imports de la configuration globale, interventions manuelles, routage subordonné.
@@ -373,6 +382,7 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   notification_deliveries: 'livraisons de notifications', notification_events: 'journal des notifications', notification_preferences: 'préférences de notification',
   notifications: 'notifications (cloche)', push_subscriptions: 'anciens abonnements Web Push (table dormante)',
   mobile_push_installations: 'appareils de l’application mobile (jetons push)',
+  mobile_share_import_grants: 'jetons d’import du partage natif (application mobile)',
   // Lot 100G : séquence d'e-mails de fin d'essai.
   trial_lifecycle_messages: 'séquence de fin d’essai : messages par jalon', trial_lifecycle_events: 'séquence de fin d’essai : journal',
   trial_lifecycle_settings: 'séquence de fin d’essai : réglages', marketing_oppositions: 'oppositions aux communications commerciales',

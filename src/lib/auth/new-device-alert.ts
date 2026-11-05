@@ -53,7 +53,9 @@ import { deviceKeyFor, type SessionClientInfo } from './session-client';
 import { isKnownDevice } from './session-registry';
 
 /** Méthodes d'ouverture qui sont de vraies connexions (Q6). */
-export const NEW_DEVICE_ALERT_METHODS: ReadonlySet<string> = new Set(['password', 'google', 'apple', 'email_link']);
+export const NEW_DEVICE_ALERT_METHODS: ReadonlySet<string> = new Set(['password', 'google', 'apple', 'email_link',
+  // Lot 110B : connexion par clé d'accès seule, et après une récupération d'accès.
+  'passkey', 'recovery']);
 
 /**
  * Choix pris par défaut (Q6) : pas d'alerte pour la session qui CRÉE le

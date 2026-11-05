@@ -24,6 +24,10 @@
 		1086E0012F0A000000000004 /* VerebonaShareInbox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1086E0012F0A000000000003 /* VerebonaShareInbox.swift */; };
 		1086E0012F0A000000000006 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1086E0012F0A000000000005 /* ShareViewController.swift */; };
 		1086E0012F0A00000000000A /* ShareExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 1086E0012F0A000000000009 /* ShareExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		110A00012F0A000000000002 /* VerebonaShareImportCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110A00012F0A000000000001 /* VerebonaShareImportCore.swift */; };
+		110A00012F0A000000000003 /* VerebonaShareImportCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110A00012F0A000000000001 /* VerebonaShareImportCore.swift */; };
+		110A00012F0A000000000005 /* VerebonaShareImportPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110A00012F0A000000000004 /* VerebonaShareImportPlugin.swift */; };
+		110A00012F0A000000000007 /* ShareImportView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 110A00012F0A000000000006 /* ShareImportView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -74,6 +78,9 @@
 		1086E0012F0A000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		1086E0012F0A000000000008 /* ShareExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ShareExtension.entitlements; sourceTree = "<group>"; };
 		1086E0012F0A000000000009 /* ShareExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ShareExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		110A00012F0A000000000001 /* VerebonaShareImportCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerebonaShareImportCore.swift; sourceTree = "<group>"; };
+		110A00012F0A000000000004 /* VerebonaShareImportPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VerebonaShareImportPlugin.swift; sourceTree = "<group>"; };
+		110A00012F0A000000000006 /* ShareImportView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareImportView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -102,6 +109,7 @@
 				95B0E0012F0A000000000001 /* Verebona.xcconfig */,
 				504EC3061FED79650016851F /* App */,
 				1086E0012F0A00000000000B /* ShareExtension */,
+				110A00012F0A000000000008 /* Shared */,
 				504EC3051FED79650016851F /* Products */,
 			);
 			sourceTree = "<group>";
@@ -126,6 +134,7 @@
 				107A0E0012F0A00000000001 /* VerebonaBiometricState.swift */,
 				1086E0012F0A000000000001 /* VerebonaNavigationGuard.swift */,
 				1086E0012F0A000000000003 /* VerebonaShareInbox.swift */,
+				110A00012F0A000000000004 /* VerebonaShareImportPlugin.swift */,
 				95B0E0012F0A000000000002 /* App.entitlements */,
 				95B0E0012F0A000000000007 /* GoogleService-Info.plist */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
@@ -142,10 +151,19 @@
 			isa = PBXGroup;
 			children = (
 				1086E0012F0A000000000005 /* ShareViewController.swift */,
+				110A00012F0A000000000006 /* ShareImportView.swift */,
 				1086E0012F0A000000000007 /* Info.plist */,
 				1086E0012F0A000000000008 /* ShareExtension.entitlements */,
 			);
 			path = ShareExtension;
+			sourceTree = "<group>";
+		};
+		110A00012F0A000000000008 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				110A00012F0A000000000001 /* VerebonaShareImportCore.swift */,
+			);
+			path = Shared;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -268,6 +286,8 @@
 				107A0E0012F0A00000000002 /* VerebonaBiometricState.swift in Sources */,
 				1086E0012F0A000000000002 /* VerebonaNavigationGuard.swift in Sources */,
 				1086E0012F0A000000000004 /* VerebonaShareInbox.swift in Sources */,
+				110A00012F0A000000000005 /* VerebonaShareImportPlugin.swift in Sources */,
+				110A00012F0A000000000002 /* VerebonaShareImportCore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -276,6 +296,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				1086E0012F0A000000000006 /* ShareViewController.swift in Sources */,
+				110A00012F0A000000000007 /* ShareImportView.swift in Sources */,
+				110A00012F0A000000000003 /* VerebonaShareImportCore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

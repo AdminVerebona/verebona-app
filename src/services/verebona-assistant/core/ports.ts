@@ -437,6 +437,11 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
     // CDC 15 T2-10, T2-33, T2-34 (lecture canonique) : planificateurs dédiés.
     // Lot 33 : cascade du Centre d'aide (corpus, contexte et rôles lus une fois).
     openHelpSearch: (input: AssistantRequestInput) => openHelpSearch(input),
+    // Lot 110E : question libre documentaire → Ressources (déterministe, sans IA).
+    routeResourceTopic: async (input, outcome) => {
+      const { routeResourceTopic } = await import('./resources-routing');
+      return routeResourceTopic(input, outcome);
+    },
 
     // Lot 49 : sources MÉTIER réelles exposées à l'étape sémantique (opérations
     // d'abord, champs du registre, agenda, documents) et relecture d'une

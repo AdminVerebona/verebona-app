@@ -120,6 +120,8 @@ export const AUTH_EXIT_REASONS = [
   'session_revoked',
   'post_login_rejected',
   'account_suspended',
+  // Lot 110B : session sans double authentification alors qu'elle est obligatoire.
+  'mfa_required',
 ] as const;
 export type AuthExitReason = typeof AUTH_EXIT_REASONS[number];
 
@@ -138,6 +140,7 @@ export const AUTH_EXIT_MESSAGES: Readonly<Record<AuthExitReason, string>> = Obje
     'Votre connexion a bien été acceptée, mais la session n’a pas pu être conservée sur cet appareil. '
     + 'Réessayez. Si le problème continue, contactez l’assistance en indiquant le code de diagnostic ci-dessous.',
   account_suspended: 'Votre compte est suspendu. Contactez l’assistance.',
+  mfa_required: 'Pour protéger vos biens et vos documents, reconnectez-vous puis confirmez votre identité avec votre méthode de sécurité.',
 });
 
 /**

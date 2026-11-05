@@ -10,7 +10,7 @@ import { revokeAllUserSessions, revokeToken, hashToken } from '@/db';
 import { serverCacheDelete } from '@/lib/server-cache';
 import { clearSessionCookies, sessionSubjectFor, sessionCutoffCacheKey } from '@/lib/auth/session-tokens';
 import { issueSession } from '@/lib/auth/session-issuance';
-import { consumeReauthProof, getReauthState, reauthRequiredResponse } from '@/lib/auth/reauth';
+import { consumeReauthProof, getReauthState, reauthRequiredResponse, reauthStateResponse, stepUpNeedsMfa } from '@/lib/auth/reauth';
 import { reauthBlockedResponse, recordReauthFailure, recordReauthSuccess } from '@/lib/auth/reauth-throttle';
 import { logUserActivity } from '@/lib/audit-logger';
 import { REFRESH_TOKEN_TTL_S } from '@/lib/auth/token-lifetimes';
@@ -41,9 +41,12 @@ export async function POST(request: NextRequest) {
     //     dans la requête — même limiteur partagé (lot 53A).
     // Sans l'une ni l'autre : 403 REAUTH_REQUIRED / REAUTH_EXPIRED.
     // ══════════════════════════════════════════════════════════════════════
-    const reauth = currentPassword ? null : await getReauthState(session.userId, session.sid);
+    // Lot 110B : compte soumis à la MFA → le mot de passe actuel du corps
+    // (paramètre historique) ne suffit plus ; preuve FORTE de la session exigée.
+    const strongStepUp = await stepUpNeedsMfa(session.userId);
+    const reauth = currentPassword && !strongStepUp ? null : await getReauthState(session.userId, session.sid);
     if (reauth && reauth.state !== 'fresh') {
-      return reauthRequiredResponse(reauth.state === 'expired' ? 'REAUTH_EXPIRED' : 'REAUTH_REQUIRED');
+      return reauthStateResponse(reauth);
     }
 
     // Get user from DB to check current password

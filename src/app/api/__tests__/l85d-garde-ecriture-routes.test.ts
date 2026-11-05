@@ -40,6 +40,7 @@ const WRITE_GUARD_EXCEPTIONS: Readonly<Record<string, string>> = {
   // ── Sécurité, session ───────────────────────────────────────────────────
   'auth/': 'Sécurité et session (connexion, déconnexion, renouvellement, mot de passe, changement d’espace) : indispensable (82A).',
   'users/me/change-password/route.ts': 'Sécurité : indispensable (82A).',
+  'mobile/share-import/grant/route.ts': 'Partage natif (110A) : émission / révocation d’un jeton d’import, aucune écriture métier ; le dépôt lui-même est gardé par la route d’import.',
   'users/me/security/': 'Sécurité : confirmation d’identité (réauthentification, lot 92) — indispensable (82A).',
   'users/me/sessions/': 'Sécurité : déconnexion d’appareils (registre des sessions, lot 92) — indispensable (82A).',
   'users/me/auth-identities/': 'Sécurité : méthodes de connexion Google / Apple (associer, dissocier, confirmer son identité, lot 93) — indispensable (82A).',

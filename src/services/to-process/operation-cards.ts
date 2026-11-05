@@ -53,6 +53,10 @@ import type { ActionProposal, ResolutionReason } from './action-model';
 import type { DbClient, ResolveOptions, ResolveResult } from './resolve-action.service';
 import { upsertAction } from './to-process-action.service';
 import type { OperationCardNeeds } from '@/services/business-operations/consolidation/card-needs';
+import * as bin from './operation-match-binary';
+import {
+  isBinaryMatchContext, parseBinaryMatchChoice, USER_NOT_SAME_OPERATION_REASON, USER_SAME_OPERATION_REASON, type OperationReference,
+} from './operation-match-binary';
 
 export const OPERATION_MATCH_RULE = 'OPERATION-MATCH';
 const OPERATION_AMOUNT_RULE = 'OPERATION-AMOUNT';
@@ -293,17 +297,24 @@ export async function syncOperationCards(accountId: number, needs: OperationCard
   try {
     const gardees = new Set<string>();
 
-    // (a) Rapprochement document → réalité existante.
+    // (a) Rapprochement document → réalité existante. Lot 110D : UNE question
+    // binaire sur la première Opération candidate (canonique), ses références
+    // en contexte — jamais « A ou B ? » entre documents (`operation-match-binary.ts`).
     for (const n of needs.match) {
-      const labels = await operationLabels(accountId, n.operationIds, n.fileId);
-      const offertes = n.operationIds.filter((id) => labels.has(id)).slice(0, 2).map((id) => ({ id, label: labels.get(id)!.label }));
-      if (!offertes.length) continue;
-      const type = n.typeHint ?? labels.get(offertes[0].id)?.type ?? null;
+      const candidates = await bin.canonicalCandidateOperations(accountId, n.operationIds);
+      const cible = candidates[0];
+      if (!cible) continue;
+      const refs = bin.referencesForCard(await bin.loadOperationReferences(accountId, [cible.id]), cible.id, n.fileId);
+      const ctx = bin.buildBinaryMatchContext({
+        candidateKey: n.candidateKey, basis: n.basis, operationId: cible.id, others: candidates.slice(1).map((c) => c.id),
+        operationType: cible.type, references: refs,
+      });
       const r = await upsertAction({
         accountId, targetType: 'DOCUMENT', targetId: n.fileId, relationKey: matchRelationKey(n.candidateKey),
         actionKind: 'ARBITRATE', ruleCode: OPERATION_MATCH_RULE,
-        question: matchQuestion(type, n.basis, offertes), proposals: matchProposals(type, n.basis, offertes),
-        triggerContext: { kind: 'operation_match', candidateKey: n.candidateKey, basis: n.basis, operationIds: offertes.map((o) => o.id) },
+        question: bin.binaryMatchQuestion(cible.type, refs, { provider: cible.provider, date: cible.date }),
+        proposals: bin.binaryMatchProposals(cible.id),
+        triggerContext: ctx as unknown as Record<string, unknown>,
       });
       compter(r.status);
       gardees.add(`M:${n.fileId}:${matchRelationKey(n.candidateKey)}`);
@@ -402,6 +413,7 @@ interface CurrencyCtx { kind: 'operation_currency'; operationId: number; fingerp
 /** Choix reçu (pur) ; `null` : invalide (une requête forgée ne désigne rien hors de la carte). */
 export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: unknown):
   | { kind: 'SAME'; operationId: number } | { kind: 'DISTINCT' }
+  | { kind: 'NOT_SAME'; operationId: number } | { kind: 'CHANGED' }
   | { kind: 'AMOUNT'; amountMinor: number; currency: string }
   | { kind: 'REINSTATE' } | { kind: 'KEEP_EXCLUDED' } | { kind: 'CURRENCY'; currency: string | null } | null {
   if (typeof value !== 'string' || !ctx || typeof ctx !== 'object') return null;
@@ -409,7 +421,12 @@ export function parseOperationCardChoice(ruleCode: string, value: unknown, ctx: 
     if (value === 'REINSTATE') return { kind: 'REINSTATE' };
     return value === 'KEEP_EXCLUDED' ? { kind: 'KEEP_EXCLUDED' } : null;
   }
+  if (ruleCode === OPERATION_MATCH_RULE && isBinaryMatchContext(ctx)) {
+    // Lot 110D : Oui / Non sur l'Opération affichée.
+    return parseBinaryMatchChoice(value, ctx);
+  }
   if (ruleCode === OPERATION_MATCH_RULE) {
+    // Ancienne carte « A ou B ? » (antérieure au lot 110D) : toujours lisible et répondable.
     const c = ctx as MatchCtx;
     if (value === 'DISTINCT') return c.basis === 'M3' ? { kind: 'DISTINCT' } : null;
     const m = /^SAME:(\d+)$/.exec(value);
@@ -446,6 +463,9 @@ interface Previous {
   decisionIds?: number[]; sourceId?: number | null; operationId?: number; resolvedAt?: string;
   /** Lot 53 (Q17) : bien et documents de l'arbitrage d'une exclusion. */
   assetId?: number; fileIds?: number[];
+  /** Lot 110D : forme de la carte et contexte PRÉSENTÉ au moment de la réponse (provenance). */
+  form?: string;
+  presented?: { references: Array<{ kind: string; id: number }>; contextFingerprint: string; cardFingerprint: string | null };
 }
 
 export async function resolveOperationCard(
@@ -453,6 +473,9 @@ export async function resolveOperationCard(
 ): Promise<ResolveResult & { afterCommit?: () => Promise<void> }> {
   const choice = parseOperationCardChoice(action.ruleCode, value, action.triggerContext);
   if (!choice) return { ok: false, previousValue: null, error: 'INVALID_VALUE' };
+  // Lot 110D : la réponse vise une autre Opération que la carte actuelle (mise à jour entre la lecture
+  // et le clic) — rien n'est écrit, la carte reste ouverte et la file est relue (jamais réinterprétée).
+  if (choice.kind === 'CHANGED') return { ok: false, previousValue: null, error: 'STALE' };
   const t = tx as unknown as Tx;
   const { withBusinessOperationWriteInTx } = await import('@/services/business-operations/write');
   const { USER_DISTINCT_REASON } = await import('@/services/business-operations/consolidation/consolidator');
@@ -465,6 +488,34 @@ export async function resolveOperationCard(
     const repo = session.repository(accountId);
     const { emptyCardNeeds } = await import('@/services/business-operations/consolidation/card-needs');
     const needs = emptyCardNeeds();
+    if ((choice.kind === 'SAME' || choice.kind === 'NOT_SAME') && isBinaryMatchContext(action.triggerContext)) {
+      // Lot 110D — Oui : CONFIRMED sur l'Opération affichée (aucun rejet implicite des autres candidates :
+      // la décision prioritaire M0 suffit, et un doublon éventuel reste traité par ses propres règles) ;
+      // Non : REJECTED de CETTE Opération entière, sans autoriser de création (T3 cherche ensuite
+      // une autre candidate). Décisions durables existantes (`business_operation_match_decisions`).
+      const ctx = action.triggerContext;
+      const opId = await canonicalId(t, accountId, choice.operationId);
+      if (opId === null) { stale = true; return needs; }
+      const op = await repo.load(opId, { allowInactive: true });
+      if (op.invalidatedAt !== null) { stale = true; return needs; }
+      // Provenance : références ACTUELLES présentées (même lecture que la file) et empreintes.
+      const presentees = bin.referencesForCard(await bin.loadOperationReferences(accountId, [opId]), opId, action.targetId);
+      const decisionId = await repo.recordMatchDecision({
+        sourceKind: 'DOCUMENT', entityKey: action.targetId, sourceVersion: ctx.candidateKey, origin: 'USER_ARBITRATION',
+        operationId: opId, decision: choice.kind === 'SAME' ? 'CONFIRMED' : 'REJECTED',
+        reasonCode: choice.kind === 'SAME' ? USER_SAME_OPERATION_REASON : USER_NOT_SAME_OPERATION_REASON,
+      });
+      previous.decisionIds = [decisionId];
+      previous.operationId = opId;
+      previous.form = ctx.form;
+      previous.presented = {
+        references: presentees.map((r: OperationReference) => ({ kind: r.kind, id: r.id })),
+        contextFingerprint: bin.binaryMatchFingerprint(opId, op.typeCode ?? null, presentees),
+        cardFingerprint: ctx.contextFingerprint ?? null,
+      };
+      fileToConsolidate = action.targetId;
+      return needs;
+    }
     if (choice.kind === 'SAME' || choice.kind === 'DISTINCT') {
       const ctx = action.triggerContext as unknown as MatchCtx;
       const ids: number[] = [];

@@ -355,6 +355,9 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   // Lot 97 (0814) : installations de l'application mobile (plateforme, version, statut, activité) —
   // jeton push chiffré, empreinte et session jamais exportés (security.ts).
   mobile_push_installations: C('technique', { filter: `t.user_id IN ${MEMBERS}` }),
+  // Lot 110A (1160) : jetons d'import du partage natif (plateforme, échéance, usages,
+  // révocation) — empreinte du jeton et session jamais exportées (security.ts).
+  mobile_share_import_grants: C('technique', { filter: 't.account_id = {{A}}' }),
   // Lot 100G (0886) : séquence d'e-mails de fin d'essai — messages (jalon, état,
   // motif de non-envoi, modèle et version), journal auditable (envois, échecs,
   // conversions, désinscriptions ; réglages BO : sans compte) et oppositions
@@ -422,6 +425,8 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   migration_0250_unpaid_backup: T('technique', 'sauvegarde technique d’une migration'),
   pending_blob_deletions: T('technique', 'file de suppression du stockage'),
   // Lot 109F (1125) : refus d'adresses jetables, compteurs agrégés (jour, voie, domaine de liste, motif, version) — jamais d'adresse.
+  // Lot 110E (1185) : statut de revue des « Questions sans réponse » par groupe (empreinte, statut, note expurgée) — sans compte.
+  t2_unanswered_reviews: T('technique', 'journal « Questions sans réponse » : décisions de revue (sans compte ni texte de question)'),
   disposable_email_refusals: T('technique', 'refus d’adresses e-mail jetables : compteurs agrégés multi-comptes, sans adresse'),
   // Lot 102A (0900) : registre minimal des suppressions exécutées (identifiants internes, rejeu après restauration).
   account_deletion_registry: T('historique', 'registre des suppressions exécutées (multi-comptes, identifiants seulement)'),
@@ -538,6 +543,14 @@ export const DIAG_TABLE_EXCLUSIONS: Readonly<Record<string, { category: DiagExcl
   // Lot 92 (CDC 18 §20, §18.4) : empreintes de jetons de renouvellement et d'appareils, preuves de réauthentification.
   user_sessions: { category: 'SECURITE', motif: 'registre des sessions (empreintes de jetons et d’appareils)' },
   reauth_proofs: { category: 'SECURITE', motif: 'preuves de réauthentification (5 min)' },
+  // Lot 110B (MFA) : facteurs (clés publiques, secrets TOTP chiffrés, empreintes de codes), défis, contextes provisoires, réglage d'obligation.
+  user_mfa_state: { category: 'SECURITE', motif: 'double authentification : état de protection du compte' },
+  mfa_passkeys: { category: 'SECURITE', motif: 'double authentification : clés d’accès (clés publiques)' },
+  mfa_totp_factors: { category: 'SECURITE', motif: 'double authentification : secrets TOTP chiffrés' },
+  mfa_recovery_codes: { category: 'SECURITE', motif: 'double authentification : empreintes des codes de récupération' },
+  mfa_challenges: { category: 'SECURITE', motif: 'double authentification : défis à usage unique' },
+  mfa_pending_auth: { category: 'SECURITE', motif: 'double authentification : contextes de connexion provisoires' },
+  mfa_enforcement_settings: { category: 'SECURITE', motif: 'double authentification : réglage d’obligation (BO)' },
   // Lot 96A (CDC 18 §11.3) : empreintes des liens de changement d'adresse principale.
   email_change_requests: { category: 'SECURITE', motif: 'demandes de changement d’adresse (empreintes de liens)' },
   // Lot 100D (A3) : étiquette HMAC de l'adresse d'origine (transition des appareils reconnus, 180 jours au plus).

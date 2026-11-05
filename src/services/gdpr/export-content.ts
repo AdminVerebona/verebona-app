@@ -26,6 +26,8 @@ export const EXCLUDED_TABLES: ReadonlySet<string> = new Set([
   'revoked_tokens', 'user_session_revocations', 'withdrawal_verification_tokens',
   // Lot 92 : registre des sessions (empreintes) et preuves de réauthentification.
   'user_sessions', 'reauth_proofs',
+  // Lot 110B : double authentification (secrets chiffrés, clés publiques, empreintes, défis, contextes, réglage).
+  'user_mfa_state', 'mfa_passkeys', 'mfa_totp_factors', 'mfa_recovery_codes', 'mfa_challenges', 'mfa_pending_auth', 'mfa_enforcement_settings',
   // Lot 96A : demandes de changement d'adresse (empreintes de liens).
   'email_change_requests',
   // Lot 100D (A3) : étiquettes de transition des appareils reconnus (empreintes).

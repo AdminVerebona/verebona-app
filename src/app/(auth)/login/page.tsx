@@ -23,6 +23,8 @@ import { safeReturnUrl } from '@/lib/safe-redirect';
 import { isNetworkError, postLogin } from '@/lib/auth/login-request';
 import { SocialSignInButtons } from '@/components/auth/SocialSignInButtons';
 import { socialErrorMessage } from '@/lib/auth/oauth/messages';
+import { KeyRound } from 'lucide-react';
+import { PASSKEY_ERROR_TEXT, getPasskeyAssertion, lastLocalMethod, mfaPost, passkeysUsableHere, rememberLocalMethod } from '@/lib/auth/mfa/client';
 
 function LoginForm() {
   const searchParams = useSearchParams();
@@ -56,6 +58,39 @@ function LoginForm() {
   const [errorCode, setErrorCode] = useState('');
   const [resendState, setResendState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
   const [isLoading, setIsLoading] = useState(false);
+  // Lot 110B : connexion par clé d'accès (selon compatibilité de cette vue) ;
+  // proposée en tête seulement si c'est la dernière méthode employée ICI
+  // (préférence locale, aucun privilège — ticket MFA §3).
+  const [passkeyHere, setPasskeyHere] = useState(false);
+  const [passkeyFirst, setPasskeyFirst] = useState(false);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
+  useEffect(() => {
+    void passkeysUsableHere().then((ok) => {
+      setPasskeyHere(ok);
+      setPasskeyFirst(ok && lastLocalMethod() === 'passkey');
+    });
+  }, []);
+
+  const signInWithPasskey = async () => {
+    if (passkeyBusy || isLoading) return;
+    setPasskeyBusy(true);
+    setError('');
+    setErrorCode('');
+    try {
+      const o = await mfaPost<{ options: unknown; challengeId: string }>('/api/auth/mfa/passkey/options', { mode: 'login' });
+      if (!o.ok) { setError(o.data.message || PASSKEY_ERROR_TEXT.failed); return; }
+      const a = await getPasskeyAssertion(o.data.options);
+      if (!a.ok) { setError(PASSKEY_ERROR_TEXT[a.error]); return; }
+      const v = await mfaPost<{ redirectTo?: string }>('/api/auth/mfa/passkey/verify', { mode: 'login', challengeId: o.data.challengeId, response: a.response, returnUrl });
+      if (!v.ok) { setError(v.data.message || PASSKEY_ERROR_TEXT.failed); setErrorCode(v.data.code ?? ''); return; }
+      rememberLocalMethod('passkey');
+      router.push(typeof v.data.redirectTo === 'string' && v.data.redirectTo.startsWith('/') ? v.data.redirectTo : returnUrl);
+    } catch {
+      setError('Connexion au serveur impossible. Vérifiez votre réseau puis réessayez.');
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
 
   // Si une session valide existe deja (cookie HttpOnly), ne pas afficher le
   // formulaire. L'etat de session n'est plus lisible en JavaScript : on
@@ -106,7 +141,7 @@ function LoginForm() {
     try {
       // Une reprise automatique sur coupure réseau (mobile), journalisée sans
       // identifiants — voir `login-request.ts` (rejouer la connexion est sûr).
-      const response = await postLogin({ email, password }, { attemptId });
+      const response = await postLogin({ email, password, returnUrl }, { attemptId });
 
       let data: Record<string, string> = {};
       try { data = await response.json(); } catch { /* body vide ou non-JSON */ }
@@ -122,6 +157,16 @@ function LoginForm() {
       }
 
       rememberLoginAttempt({ id: attemptId, at: startedAt, ok: true });
+
+      // Lot 110B : double authentification obligatoire pour ce compte — aucune
+      // session n'est encore ouverte ; seconde étape (code ou clé d'accès) ou
+      // premier enrôlement (« Sécurisez votre compte »).
+      if ((data as { mfaRequired?: boolean }).mfaRequired) {
+        rememberLocalMethod('password');
+        const next = typeof data.redirectTo === 'string' && data.redirectTo.startsWith('/') ? data.redirectTo : '/verification';
+        router.push(`${next}?returnUrl=${encodeURIComponent(returnUrl)}`);
+        return;
+      }
 
       // Lot 103A — premier appel authentifié AVANT de quitter l'écran : la
       // session tout juste émise est-elle conservée et transmise par cette vue
@@ -190,6 +235,12 @@ function LoginForm() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {/* Lot 110B : clé d'accès en tête si c'est la dernière méthode employée sur cet appareil. */}
+            {passkeyHere && passkeyFirst && (
+              <Button type="button" className="w-full mb-3" onClick={() => void signInWithPasskey()} disabled={isLoading || passkeyBusy} data-testid="login-passkey-first">
+                <KeyRound className="w-4 h-4 mr-2" />{passkeyBusy ? 'Connexion…' : 'Se connecter avec une clé d’accès'}
+              </Button>
+            )}
             {/* Lot 93 (CDC 18 §9.1) : Google et Apple, puis « ou », puis e-mail + mot de passe. */}
             <SocialSignInButtons mode="login" returnUrl={returnUrl} disabled={isLoading} className="mb-4" />
             <form onSubmit={handleSubmit} className="space-y-4">
@@ -263,6 +314,13 @@ function LoginForm() {
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? 'Connexion...' : 'Se connecter'}
               </Button>
+
+              {/* Lot 110B : option neutre (appareil inconnu) — aucune information sur le compte. */}
+              {passkeyHere && !passkeyFirst && (
+                <Button type="button" variant="outline" className="w-full" onClick={() => void signInWithPasskey()} disabled={isLoading || passkeyBusy} data-testid="login-passkey">
+                  <KeyRound className="w-4 h-4 mr-2" />{passkeyBusy ? 'Connexion…' : 'Se connecter avec une clé d’accès'}
+                </Button>
+              )}
 
               <div className="text-center space-y-2 text-sm">
                 <div className="text-muted-foreground">

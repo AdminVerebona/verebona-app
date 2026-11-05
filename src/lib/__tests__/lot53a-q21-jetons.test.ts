@@ -46,11 +46,14 @@ describe('PO-Q21 — jeton d’accès 15 min, renouvellement 30 jours (ne pas co
     for (const f of ['src/app/api/auth/login/route.ts', 'src/app/api/auth/refresh/route.ts', 'src/app/api/auth/verify-email/route.ts']) {
       const src = read(f);
       // Lot 92 : dépôt par la fonction d'émission unique (`issueSession` → `setSessionCookies`).
-      expect(src).toMatch(/await issueSession\(request, response, \{/);
+      // Lot 110B (ticket MFA §8) : connexion et activation passent par la décision
+      // centrale `concludePrimaryAuthentication`, qui appelle `issueSession`.
+      expect(src).toMatch(/await (issueSession|concludePrimaryAuthentication)\(request, (response|provisional), \{/);
       expect(src).not.toMatch(/cookies\.set\('access_token'/);
       expect(src).not.toMatch(/2 \* 60 \* 60/);
     }
     expect(read('src/lib/auth/session-issuance.ts')).toMatch(/setSessionCookies\(response, \{ accessToken, refreshToken \}\)/);
+    expect(read('src/lib/auth/mfa/primary.ts')).toMatch(/await issueSession\(request, response, \{/);
     expect(read('src/lib/jwt.ts')).toMatch(/const JWT_ACCESS_EXPIRY_S {2}= ACCESS_TOKEN_TTL_S;/);
   });
 

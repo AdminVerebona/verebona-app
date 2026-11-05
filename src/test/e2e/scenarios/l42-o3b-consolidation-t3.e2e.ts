@@ -153,8 +153,9 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
     const [carte, ...autres] = await ouvertes(compte, 'OPERATION-MATCH');
     expect(autres).toEqual([]);
     expect(carte).toMatchObject({ target_id: facture, relation_key: 'operationMatch:op1', priority: 'DO_NEXT' });
-    expect(carte.question).toBe('Ce document concerne-t-il la même intervention que « Devis freinage du 03/06/2026 » ?');
-    expect(carte.proposals_json.map((p) => p.value)).toEqual([`SAME:${op.id}`, 'DISTINCT']);
+    // Lot 110D (décision PO, ticket « Oui / Non au lieu de « A ou B ? » ») : question binaire, références listées à part.
+    expect(carte.question).toBe('Ce document concerne-t-il la même intervention que le document suivant ?');
+    expect(carte.proposals_json.map((p) => p.value)).toEqual([`YES:${op.id}`, `NO:${op.id}`]);
     expect([carte.question, ...carte.proposals_json.map((p) => p.label)].join(' ')).not.toMatch(/op[ée]ration/i);
 
     // Dédoublonnage : un second passage (même contexte) met à jour la même carte, pas de seconde carte ni d'appel.
@@ -164,8 +165,9 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
     const { getToProcessPage } = await import('@/services/to-process/to-process-query.service');
     expect((await getToProcessPage(compte.id)).total).toBe(1);
 
-    expect(await resoudre(compte, carte.public_id, 'DISTINCT')).toMatchObject({ ok: true });
-    expect(await decisions(compte)).toEqual([{ candidate_operation_id: op.id, decision: 'REJECTED', reason_code: 'USER_DISTINCT_OPERATION', active: true, origin: 'USER_ARBITRATION' }]);
+    // Lot 110D : « Non » = refus de CETTE Opération (motif USER_NOT_SAME_OPERATION) ; candidat certain → création par la règle C5.
+    expect(await resoudre(compte, carte.public_id, `NO:${op.id}`)).toMatchObject({ ok: true });
+    expect(await decisions(compte)).toEqual([{ candidate_operation_id: op.id, decision: 'REJECTED', reason_code: 'USER_NOT_SAME_OPERATION', active: true, origin: 'USER_ARBITRATION' }]);
     expect(await actives(compte)).toHaveLength(2);
     expect(await candidat(facture)).toMatchObject({ t3_outcome: 'CREATE_NEW' });
     expect((await cartes(compte, 'OPERATION-MATCH'))[0]).toMatchObject({ resolution_reason: 'USER_ARBITRATED' });
@@ -185,7 +187,7 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
     await useRecordings([m3('AMBIGUOUS', null, 'probable')]);
     await passer(compte);
     const [carte] = await ouvertes(compte, 'OPERATION-MATCH');
-    const r = await resoudre(compte, carte.public_id, `SAME:${op.id}`);
+    const r = await resoudre(compte, carte.public_id, `YES:${op.id}`);
     expect(r.ok).toBe(true);
     expect(await decisions(compte)).toEqual([expect.objectContaining({ candidate_operation_id: op.id, decision: 'CONFIRMED', active: true })]);
     expect(await candidat(facture)).toMatchObject({ t3_outcome: 'MATCH_AND_ENRICH', t3_reason: 'MATCH_M0', t3_operation_id: op.id });
@@ -437,8 +439,9 @@ scenario('L42-O3b', 'Consolidation T3 : M3, décisions durables, fusion, réacti
     await passer(compte, { operationMatch: false });
     const [carte] = await ouvertes(compte, 'OPERATION-MATCH');
     expect(carte).toMatchObject({ target_id: deux });
-    expect(carte.question).toMatch(/^Ce document concerne-t-il la même intervention que « .+ » ou que « .+ » \?$/);
-    expect(carte.proposals_json).toHaveLength(2);
+    // Lot 110D : jamais « … que « A » ou que « B » ? » — une question binaire sur UNE des deux réalités, ses seules références.
+    expect(carte.question).toBe('Ce document concerne-t-il la même intervention que le document suivant ?');
+    expect(carte.proposals_json.map((p) => p.label)).toEqual(['Oui', 'Non']);
     // Le document de B est supprimé : B n'est plus justifiée, le document ne désigne plus qu'une réalité.
     await sql`UPDATE asset_files SET deleted_at = now() WHERE id = ${b}`;
     await passer(compte, { operationMatch: false });

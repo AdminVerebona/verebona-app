@@ -58,26 +58,52 @@
                 <data android:scheme="${urlScheme}" />
             </intent-filter>
 
-            <!-- Partage entrant (IMP-02) : un ou plusieurs PDF / images. -->
+            <!-- Lot 110A : le partage entrant (ACTION_SEND / SEND_MULTIPLE) est reçu par
+                 ShareReceiverActivity (écran de décision léger à trois choix), plus par
+                 cette activité : aucun formulaire « Ajouter un document » après un partage. -->
+        </activity>
+
+        <!-- Lot 110A : réception d'un partage natif (décision PO du 04/11/2026).
+             Formats = formats documentaires acceptés par le serveur (src/lib/mobile/share-import-policy.ts) ;
+             photos HEIC / HEIF (image/*) converties en JPEG. Le texte seul (liens, sélections)
+             ne fait pas apparaître Verebona. Partage MULTIPLE de types mêlés (ex. PDF + photo :
+             type commun « */* ») accepté, chaque fichier d'un format refusé étant signalé.
+             Activité à part (tâche propre, exclue des récents) : « Importer sans ouvrir »
+             la termine et rend la main à l'application source. -->
+        <activity
+            android:name=".ShareReceiverActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity="fr.verebona.app.share"
+            android:launchMode="standard"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode|density"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/pdf" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND" />
-                <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="text/comma-separated-values" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/pdf" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.SEND_MULTIPLE" />
-                <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
+                <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+                <data android:mimeType="application/vnd.ms-excel" />
+                <data android:mimeType="text/csv" />
+                <data android:mimeType="text/comma-separated-values" />
+                <data android:mimeType="*/*" />
             </intent-filter>
         </activity>
 

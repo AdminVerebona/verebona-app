@@ -23,7 +23,11 @@ type ActivityType = 'LOGIN_SUCCESS' | 'LOGIN_FAILED' | 'EMAIL_CHANGE' | 'PROFILE
   'OAUTH_START' | 'OAUTH_CALLBACK_SUCCESS' | 'OAUTH_CALLBACK_FAILED' | 'IDENTITY_LINKED' | 'IDENTITY_UNLINKED' |
   'PASSWORD_CREATED' | 'SOCIAL_SIGNUP' |
   // Lot 100D (décision PO A9) : résiliation (fin de période) demandée depuis l'application.
-  'SUBSCRIPTION_RENEWAL_STOPPED';
+  'SUBSCRIPTION_RENEWAL_STOPPED' |
+  // Lot 110B (MFA, ticket §7) : authentifications fortes, échecs, facteurs,
+  // récupération, réglage d'obligation — jamais un code, un secret ni une clé.
+  'MFA_CHALLENGE_STARTED' | 'MFA_SUCCESS' | 'MFA_FAILED' | 'MFA_THROTTLED' | 'MFA_FACTOR_ADDED' | 'MFA_FACTOR_REMOVED' |
+  'MFA_RECOVERY_CODES_REGENERATED' | 'MFA_RECOVERY_USED' | 'MFA_ENFORCEMENT_CHANGED' | 'MFA_PASSKEY_COUNTER_REGRESSION';
 
 interface LogActivityParams {
   activityType: ActivityType;

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
+import { MFA_REQUIRED_CODE } from '@/lib/auth/mfa/constants';
 import { db } from '@/db';
 import { users } from '@/db/schema';
 import { eq } from 'drizzle-orm';
@@ -42,7 +43,11 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({ authenticated: true, user });
-  } catch {
+  } catch (error) {
+    // Lot 110B : session valide mais sans double authentification alors
+    // qu'elle est obligatoire → 403 MFA_REQUIRED (l'interface renvoie à la
+    // connexion, qui mène à la seconde étape), jamais l'identité.
+    if (error instanceof Error && error.message === MFA_REQUIRED_CODE) return SessionService.handleSessionError(error);
     // Session absente, expiree ou invalide : reponse neutre.
     return NextResponse.json({ authenticated: false }, { status: 401 });
   }

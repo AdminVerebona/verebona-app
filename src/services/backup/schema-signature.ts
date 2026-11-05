@@ -46,6 +46,9 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   'revoked_tokens', 'user_session_revocations', 'auth_rate_limits',
   // Lot 92 : une restauration ne ressuscite ni une session révoquée ni une preuve de réauthentification.
   'user_sessions', 'reauth_proofs',
+  // Lot 110B : une restauration ne ressuscite ni une clé d'accès retirée, ni un code de récupération
+  // utilisé, ni un secret remplacé, ni un défi consommé ; l'obligation MFA n'est jamais remise à un état antérieur.
+  'user_mfa_state', 'mfa_passkeys', 'mfa_totp_factors', 'mfa_recovery_codes', 'mfa_challenges', 'mfa_pending_auth', 'mfa_enforcement_settings',
   // Lot 96A : un lien de changement d'adresse utilisé ou annulé ne redevient jamais valable.
   'email_change_requests',
   // Lot 100D (A3) : une étiquette de transition retirée ne redevient jamais valable.
@@ -53,6 +56,8 @@ export const RESTORE_KEEP_CURRENT_TABLES: readonly string[] = [
   // Lot 97 : appareils mobiles — un appareil déconnecté ou révoqué après le point ne doit jamais
   // redevenir destinataire de notifications (même règle que les révocations de session).
   'mobile_push_installations',
+  // Lot 110A : un jeton d'import révoqué ou expiré après le point ne redevient jamais valable.
+  'mobile_share_import_grants',
   // Lot 100G : une restauration ne lève jamais une opposition aux communications
   // commerciales, et ne rouvre jamais un e-mail de fin d'essai déjà envoyé ou
   // clos (aucun second envoi) ; le journal reste consultable.

@@ -293,8 +293,10 @@ scenario('L96A', 'Identité et compte — CDC 18 Q7, Q8, Q9 (R01, R02, R08-R11, 
     expect(bloque.status).toBe(429);
     expect(JSON.stringify(bloque.body)).not.toMatch(/Limite1/);
     expect((await sql`SELECT is_active FROM users WHERE id = ${u.id}`)[0].is_active).toBe(false);
-    expect(await journal(u.id, 'ACCOUNT_ACTIVATION_THROTTLED')).toHaveLength(1);
-    expect((await journal(u.id, 'ACCOUNT_ACTIVATION_FAILED')).length).toBe(5);
+    // Journal écrit sans attente par la route (`void logUserActivity`) : sur un exécuteur CI lent, la
+    // dernière ligne peut arriver après la réponse — on attend son écriture (borne 10 s), sans assouplir le compte.
+    await expect.poll(async () => (await journal(u.id, 'ACCOUNT_ACTIVATION_THROTTLED')).length, { timeout: 10_000 }).toBe(1);
+    await expect.poll(async () => (await journal(u.id, 'ACCOUNT_ACTIVATION_FAILED')).length, { timeout: 10_000 }).toBe(5);
     // Aucune valeur saisie au journal.
     const all = await sql<{ details: string }[]>`SELECT details FROM user_activity_log WHERE user_id = ${u.id}`;
     expect(JSON.stringify(all)).not.toMatch(/Faux\d|Limite1/);

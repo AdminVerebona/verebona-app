@@ -82,6 +82,66 @@ export const LOCAL_ORIGINS = Object.freeze({ ios: 'capacitor://localhost', andro
  */
 export const ANDROID_MIN_WEBVIEW_VERSION = 100;
 
+/**
+ * Partage natif vers Verebona — lot 110A (décision PO du 04/11/2026).
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ * POINT UNIQUE DE BASCULE APRÈS ARBITRAGE PO (aucun nouveau développement :
+ * un nouveau build suffit, la valeur est figée dans le binaire).
+ *
+ * Contrat : « Importer et ouvrir Verebona » / « Importer sans ouvrir » /
+ * « Annuler » (src/lib/mobile/share-import-policy.ts).
+ *
+ *   android.openAppChoice : true — l'activité de réception fait partie de
+ *       l'app : « Importer et ouvrir Verebona » ouvre réellement Verebona.
+ *   ios.openAppChoice : TOUJOURS false. Une extension de partage ne peut pas
+ *       ouvrir son application avec une API publique (Apple DTS, forum
+ *       776488 ; `NSExtensionContext.open` réservé aux widgets / iMessage).
+ *       Le choix n'est donc PAS affiché (jamais une option qui n'ouvre pas).
+ *       Valeur verrouillée par `resolveShareImportConfig` et par test.
+ *   ios.completionNotification : option B de l'arbitrage — après l'accusé
+ *       serveur, notification locale « Document ajouté à Verebona — Touchez
+ *       pour l'ouvrir » (sans nom de fichier ; autorisation de notifications
+ *       requise). Livré : true (décision PO du 05/11/2026, option B).
+ *   ios.importLabel : libellé du bouton d'import iOS, parmi les libellés
+ *       validés ; livré : « Importer dans Verebona » (décision PO du
+ *       05/11/2026 : pas de référence à l'ouverture, absente sur iOS).
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+export const SHARE_IMPORT = Object.freeze({
+  android: Object.freeze({ openAppChoice: true }),
+  ios: Object.freeze({
+    openAppChoice: false,
+    completionNotification: true,
+    importLabel: 'Importer dans Verebona',
+  }),
+});
+
+/** Libellés d'import iOS admis (validé PO / variante d'arbitrage). */
+export const IOS_SHARE_IMPORT_LABELS = Object.freeze(['Importer sans ouvrir', 'Importer dans Verebona']);
+
+/**
+ * Configuration de partage figée dans le build (pure, testée). Refuse toute
+ * valeur qui afficherait sur iOS une option « et ouvrir » sans effet.
+ * @param {typeof SHARE_IMPORT} [c]
+ */
+export function resolveShareImportConfig(c = SHARE_IMPORT) {
+  const errors = [];
+  if (c.ios.openAppChoice !== false) errors.push('SHARE_IMPORT.ios.openAppChoice : aucune API publique ne permet à une extension de partage iOS d’ouvrir Verebona — option interdite.');
+  if (!IOS_SHARE_IMPORT_LABELS.includes(c.ios.importLabel)) errors.push(`SHARE_IMPORT.ios.importLabel : libellé non validé (${IOS_SHARE_IMPORT_LABELS.join(' / ')}).`);
+  if (typeof c.ios.completionNotification !== 'boolean' || typeof c.android.openAppChoice !== 'boolean') errors.push('SHARE_IMPORT : valeurs booléennes attendues.');
+  if (errors.length > 0) {
+    const e = new Error(`Configuration du partage invalide :\n- ${errors.join('\n- ')}`);
+    e.name = 'MobileBuildConfigError';
+    throw e;
+  }
+  return Object.freeze({
+    iosCompletionNotice: c.ios.completionNotification ? 'YES' : 'NO',
+    iosImportLabel: c.ios.importLabel,
+    androidOpenApp: c.android.openAppChoice ? 'true' : 'false',
+  });
+}
+
 /** Chemin d'ouverture de l'app (mode A) : l'accueil ; sans session, le middleware renvoie à la connexion. */
 export const START_PATH = '/accueil';
 

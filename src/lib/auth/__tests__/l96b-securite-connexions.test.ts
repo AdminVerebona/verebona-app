@@ -94,7 +94,8 @@ describe('L96B-Q6 alerte « connexion depuis un nouvel appareil »', () => {
     await issueSession(req(), NextResponse.json({}), { kind: 'open', method: 'session_reopen', replaceCurrent: true, subject: subject(2) });
     expect(sent).toHaveLength(0);
     expect(lastCreated()).toMatchObject({ newDeviceAlert: 'not_a_login' });
-    expect([...NEW_DEVICE_ALERT_METHODS].sort()).toEqual(['apple', 'email_link', 'google', 'password']);
+    // Lot 110B : la connexion par clé d'accès seule et l'accès après récupération sont des connexions.
+    expect([...NEW_DEVICE_ALERT_METHODS].sort()).toEqual(['apple', 'email_link', 'google', 'passkey', 'password', 'recovery']);
   });
 
   it('Google / Apple et activation : mêmes règles ; la toute première session du compte (création) n’alerte pas', async () => {
@@ -245,17 +246,21 @@ describe('L96B-D1 seuils conservés (Q10) et message de pause (Q11)', () => {
   });
 });
 
-describe('L96B-Q2/Q3/Q4 aucune double authentification en V1', () => {
-  it('Mon compte › Sécurité : ni bloc ni « bientôt disponible » 2FA ; autres blocs intacts', () => {
+// Lot 110B : le ticket MFA REMPLACE la décision 96B (Q2-Q4) « aucune double
+// authentification en V1 » — le bloc existe désormais (réel, pas « bientôt »).
+describe('L96B-Q2/Q3/Q4 (remplacé par le lot 110B) — double authentification réelle, jamais annoncée « bientôt »', () => {
+  it('Mon compte › Sécurité : bloc « Double authentification » réel ; aucun « bientôt disponible » ; autres blocs intacts', () => {
     const card = read('src/components/account/security/SecurityCard.tsx');
-    expect(card).not.toMatch(/title="Double authentification"|code à usage unique/);
+    expect(card).toMatch(/title="Double authentification"/);
+    expect(card).toMatch(/<MfaBlock \/>/);
+    expect(card).not.toMatch(/bientôt disponible|code à usage unique/i);
     for (const t of ['title="Méthodes de connexion"', 'title="Biométrie"', 'title="Appareils connectés"']) expect(card).toContain(t);
     expect(read('src/app/api/users/me/security/route.ts')).not.toMatch(/twoFactor:/);
   });
 
   it('aucun code 2FA inactif ni TODO dans l’authentification', () => {
     for (const f of ['src/lib/auth/oauth/pending.ts', 'src/lib/auth/reauth.ts']) {
-      expect(read(f)).not.toMatch(/TODO\(lot C|second_factor|MFA_REQUIRED/);
+      expect(read(f)).not.toMatch(/TODO\(lot C|second_factor/);
     }
   });
 });

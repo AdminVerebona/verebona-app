@@ -50,7 +50,8 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { NextRequest, NextResponse } from 'next/server';
-import { generateSessionTokens, newSessionId, verifyAccessToken, verifyRefreshToken } from '@/lib/jwt';
+import { generateSessionTokens, newSessionId, verifyAccessToken, verifyRefreshToken, type JWTPayload, type TokenAssurance } from '@/lib/jwt';
+import { assuranceOf } from './mfa/assurance';
 import { hashToken } from '@/db';
 import { logUserActivity } from '@/lib/audit-logger';
 import { setSessionCookies, type SessionSubject } from './session-tokens';
@@ -76,6 +77,19 @@ export interface IssueSessionOptions {
   replaceCurrent?: boolean;
   /** Identifiant `vb_device` qui vient d'être déposé sur cette réponse (connexion). */
   deviceId?: string | null;
+  /**
+   * Lot 110B — niveau de preuve de la session émise :
+   *   · `open` : fourni par le module MFA (`lib/auth/mfa/*`) après une preuve
+   *     forte ; absent = niveau 1. `session_reopen` sans valeur : niveau de la
+   *     session présentée (même utilisateur) ;
+   *   · `reissue` : absent = niveau de la session présentée ; fourni = niveau
+   *     prouvé par l'appelant (enrôlement d'un facteur depuis une session) ;
+   *   · `rotate` : IGNORÉ — le niveau est celui du jeton de renouvellement
+   *     consommé (`previous`), jamais promu.
+   */
+  assurance?: TokenAssurance;
+  /** `rotate` : revendications du jeton de renouvellement consommé (niveau recopié). */
+  previous?: Pick<JWTPayload, 'aal' | 'amr' | 'mfaAt'> | null;
 }
 
 export interface IssuedSession {
@@ -83,18 +97,39 @@ export interface IssuedSession {
   accessToken: string;
   refreshToken: string;
   registry: SessionUpsertOutcome | null;
+  /** Lot 110B : niveau de preuve inscrit dans les jetons émis. */
+  assurance: TokenAssurance;
+}
+
+/** Jeton (accès, sinon renouvellement) de la session présentée par la requête, pour cet utilisateur. */
+async function currentTokenFromRequest(request: Pick<NextRequest, 'headers' | 'cookies'>, userId: number): Promise<JWTPayload | null> {
+  const bearer = request.headers.get('authorization');
+  const access = bearer?.startsWith('Bearer ') ? bearer.slice(7) : request.cookies.get('access_token')?.value;
+  const a = access ? await verifyAccessToken(access).catch(() => null) : null;
+  if (a?.userId === userId) return a;
+  const refresh = request.cookies.get('refresh_token')?.value;
+  const r = refresh ? await verifyRefreshToken(refresh).catch(() => null) : null;
+  if (r?.userId === userId) return r;
+  return null;
 }
 
 /** `sid` de la session présentée par la requête (accès, sinon renouvellement), pour cet utilisateur. */
 export async function currentSidFromRequest(request: Pick<NextRequest, 'headers' | 'cookies'>, userId: number): Promise<string | null> {
-  const bearer = request.headers.get('authorization');
-  const access = bearer?.startsWith('Bearer ') ? bearer.slice(7) : request.cookies.get('access_token')?.value;
-  const a = access ? await verifyAccessToken(access).catch(() => null) : null;
-  if (a?.userId === userId && typeof a.sid === 'string' && a.sid) return a.sid;
-  const refresh = request.cookies.get('refresh_token')?.value;
-  const r = refresh ? await verifyRefreshToken(refresh).catch(() => null) : null;
-  if (r?.userId === userId && typeof r.sid === 'string' && r.sid) return r.sid;
-  return null;
+  const t = await currentTokenFromRequest(request, userId);
+  return t && typeof t.sid === 'string' && t.sid ? t.sid : null;
+}
+
+/**
+ * Lot 110B : niveau de preuve de la session émise — décision UNIQUE.
+ * Aucun chemin ne produit un niveau 2 sans qu'il soit fourni par le module
+ * MFA (`assurance`) ou hérité d'un jeton déjà signé au niveau 2.
+ */
+async function resolveAssurance(request: Pick<NextRequest, 'headers' | 'cookies'>, opts: IssueSessionOptions): Promise<TokenAssurance> {
+  if (opts.kind === 'rotate') return assuranceOf(opts.previous ?? null);
+  if (opts.assurance) return opts.assurance;
+  const inherits = opts.kind === 'reissue' || (opts.kind === 'open' && opts.method === 'session_reopen');
+  if (!inherits) return { aal: 1 };
+  return assuranceOf(await currentTokenFromRequest(request, opts.subject.id));
 }
 
 export async function issueSession(
@@ -107,7 +142,8 @@ export async function issueSession(
   if (opts.kind === 'rotate' && !continued) throw new Error('issueSession: rotation sans sid');
   const sid = continued ?? newSessionId();
 
-  const { accessToken, refreshToken } = await generateSessionTokens(opts.subject, sid);
+  const assurance = await resolveAssurance(request, opts);
+  const { accessToken, refreshToken } = await generateSessionTokens(opts.subject, sid, assurance);
   setSessionCookies(response, { accessToken, refreshToken });
 
   const now = new Date();
@@ -153,10 +189,13 @@ export async function issueSession(
         knownDevice: newDeviceAlert === 'not_a_login' || newDeviceAlert === 'error' ? null : newDeviceAlert === 'known_device',
         newDeviceAlert,
         registry: outcome ?? 'unavailable',
+        // Lot 110B : niveau de preuve et méthodes (jamais un code ni un secret).
+        aal: assurance.aal,
+        ...(assurance.amr?.length ? { amr: assurance.amr } : {}),
       },
       request,
     });
   }
 
-  return { sid, accessToken, refreshToken, registry: outcome };
+  return { sid, accessToken, refreshToken, registry: outcome, assurance };
 }

@@ -2,7 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/db';
 import { assetFiles } from '@/db/schema';
 import { eq, and, inArray, isNull, notInArray, sql } from 'drizzle-orm';
-import { getSession } from '@/lib/auth-guards';
+// Lot 110A : même garde de session, ou identité déléguée par la route d'import du partage natif.
+import { resolveDepotSession } from '@/lib/documents/depot-session';
 import { refuserSiLectureSeule } from '@/lib/write-access-guard';
 import { canConsumeAnalysis } from '@/services/commercial-model.service';
 import { trackFunnelEvent } from '@/services/funnel-analytics.service';
@@ -66,7 +67,7 @@ async function reprendreMiseEnFile(f: LigneFichier, userId: number): Promise<voi
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getSession(request);
+    const session = await resolveDepotSession(request);
     const { userId } = session;
     const sessionAccountId = (session as any).currentAccountId as number | undefined;
 

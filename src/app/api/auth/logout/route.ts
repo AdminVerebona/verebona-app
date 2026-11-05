@@ -6,6 +6,7 @@ import { endSession } from '@/lib/auth/session-registry';
 import { invalidateReauthProofs } from '@/lib/auth/reauth';
 import { withAuthDiag } from '@/lib/auth/auth-diagnostics';
 import { readLoginAttemptId, readLogoutReason } from '@/lib/auth/login-diagnostics';
+import { clearPendingCookie } from '@/lib/auth/mfa/pending';
 
 /**
  * Logout endpoint
@@ -100,6 +101,9 @@ async function logout(request: NextRequest): Promise<NextResponse> {
     maxAge: 0,
     path: '/',
   });
+
+  // Lot 110B : contexte provisoire MFA éventuel (cookie limité aux routes MFA).
+  clearPendingCookie(response);
 
   return response;
 }

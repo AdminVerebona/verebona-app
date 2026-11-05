@@ -47,6 +47,8 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { SessionService, type SessionPayload } from '@/lib/session-service';
 import { logUserActivity } from '@/lib/audit-logger';
 import { getSessionRecord } from './session-registry';
+import { MFA_STEP_UP_REQUIRED_CODE, MFA_MESSAGES, STRONG_REAUTH_METHODS } from './mfa/constants';
+import { mfaRequirementFor } from './mfa/policy';
 
 /** Durée de validité d'une preuve (CDC 18 §18.1, §19.2). */
 export const REAUTH_PROOF_TTL_MS = 5 * 60 * 1000;
@@ -62,6 +64,12 @@ export interface ReauthProofRecord {
   expiresAt: Date;
   consumedAt: Date | null;
   consumedFor: string | null;
+  /**
+   * Lot 110B — niveau de la preuve : 2 si la réauthentification a été faite
+   * avec une clé d'accès ou l'application d'authentification, 1 sinon (mot
+   * de passe, Google, Apple). Absent (preuve antérieure) = 1.
+   */
+  assurance?: number;
 }
 
 export interface ReauthProofStore {
@@ -80,12 +88,13 @@ export interface ReauthProofStore {
 
 interface ProofRow {
   id: string; user_id: number; sid: string; method: string; created_at: Date; expires_at: Date;
-  consumed_at: Date | null; consumed_for: string | null;
+  consumed_at: Date | null; consumed_for: string | null; assurance?: number | null;
 }
 const fromRow = (r: ProofRow): ReauthProofRecord => ({
   id: r.id, userId: Number(r.user_id), sid: r.sid, method: r.method,
   createdAt: new Date(r.created_at), expiresAt: new Date(r.expires_at),
   consumedAt: r.consumed_at ? new Date(r.consumed_at) : null, consumedFor: r.consumed_for,
+  assurance: r.assurance == null ? 1 : Number(r.assurance),
 });
 const sqlClient = async () => (await import('@/db')).pgClient;
 
@@ -95,8 +104,8 @@ const dbStore: ReauthProofStore = {
     await sql.begin(async (tx) => {
       await tx`DELETE FROM reauth_proofs WHERE sid = ${p.sid}`;
       await tx`
-        INSERT INTO reauth_proofs (id, user_id, sid, method, created_at, expires_at)
-        VALUES (${p.id}, ${p.userId}, ${p.sid}, ${p.method}, ${p.createdAt.toISOString()}, ${p.expiresAt.toISOString()})`;
+        INSERT INTO reauth_proofs (id, user_id, sid, method, created_at, expires_at, assurance)
+        VALUES (${p.id}, ${p.userId}, ${p.sid}, ${p.method}, ${p.createdAt.toISOString()}, ${p.expiresAt.toISOString()}, ${p.assurance ?? 1})`;
     });
   },
   async latest(userId, sid) {
@@ -149,8 +158,8 @@ export interface ReauthMethod {
   id: ReauthMethodId;
   /** Libellé du bouton (« Mot de passe », « Continuer avec Google »…). */
   label: string;
-  /** `password` : formulaire vérifié par `verify` ; `redirect` : parcours externe (`startUrl`). */
-  kind: 'password' | 'redirect';
+  /** `password` : formulaire vérifié par `verify` ; `redirect` : parcours externe (`startUrl`) ; lot 110B : `totp` (code) et `passkey` (WebAuthn). */
+  kind: 'password' | 'redirect' | 'totp' | 'passkey';
   /** La méthode est-elle liée à ce compte ? (« une méthode déjà liée », §18.2) */
   isAvailableFor(userId: number): Promise<boolean>;
   verify?(ctx: { request: NextRequest; userId: number; input: Record<string, unknown> }): Promise<ReauthVerifyResult>;
@@ -167,12 +176,19 @@ export function getReauthMethod(id: string): ReauthMethod | null {
   return methods.get(id) ?? null;
 }
 
-export interface ReauthMethodView { id: string; label: string; kind: 'password' | 'redirect'; startUrl?: string }
+export interface ReauthMethodView { id: string; label: string; kind: 'password' | 'redirect' | 'totp' | 'passkey'; startUrl?: string }
 
-/** Méthodes utilisables par cet utilisateur (pour la fenêtre de confirmation). */
+/**
+ * Méthodes utilisables par cet utilisateur (pour la fenêtre de confirmation).
+ * Lot 110B : MFA obligatoire pour lui → clé d'accès et application
+ * d'authentification SEULEMENT (le mot de passe, Google ou Apple seuls ne
+ * produisent plus la preuve renforcée).
+ */
 export async function listReauthMethodsFor(userId: number, returnTo = '/mon-compte#securite'): Promise<ReauthMethodView[]> {
   const out: ReauthMethodView[] = [];
+  const strongOnly = await stepUpNeedsMfa(userId).catch(() => true);
   for (const m of methods.values()) {
+    if (strongOnly && !STRONG_REAUTH_METHODS.has(m.id)) continue;
     if (!(await m.isAvailableFor(userId).catch(() => false))) continue;
     out.push({ id: m.id, label: m.label, kind: m.kind, ...(m.kind === 'redirect' && m.startUrl ? { startUrl: m.startUrl(returnTo) } : {}) });
   }
@@ -240,12 +256,14 @@ export async function issueReauthProof(
   const now = opts.now ?? new Date();
   const max = now.getTime() + REAUTH_PROOF_TTL_MS;
   const expiresAt = new Date(Math.min(max, opts.expiresAt?.getTime() ?? max));
-  await store().insert({ id: randomUUID(), userId, sid, method, createdAt: now, expiresAt, consumedAt: null, consumedFor: null });
+  // Lot 110B : niveau déduit de la méthode VÉRIFIÉE par l'appelant, jamais du client.
+  const assurance = STRONG_REAUTH_METHODS.has(method) ? 2 : 1;
+  await store().insert({ id: randomUUID(), userId, sid, method, createdAt: now, expiresAt, consumedAt: null, consumedFor: null, assurance });
   void logUserActivity({
     activityType: 'REAUTH_SUCCESS',
     userId,
     userEmail: '',
-    details: { method, sid, expiresAt: expiresAt.toISOString() },
+    details: { method, sid, expiresAt: expiresAt.toISOString(), assurance },
     request: opts.request,
   });
   return { expiresAt };
@@ -256,14 +274,35 @@ export function logReauthFailure(request: NextRequest, userId: number, method: s
   void logUserActivity({ activityType: 'REAUTH_FAILED', userId, userEmail: '', details: { method, code }, request });
 }
 
-export type FreshReauthState = { state: 'fresh'; proof: ReauthProofRecord } | { state: 'missing' } | { state: 'expired' };
+export type FreshReauthState =
+  | { state: 'fresh'; proof: ReauthProofRecord }
+  | { state: 'missing'; mfa?: boolean }
+  | { state: 'expired'; mfa?: boolean };
 
-/** État de la preuve de cette session (aucune écriture). */
+/**
+ * Lot 110B : le step-up de cet utilisateur doit-il être FORT (clé d'accès ou
+ * application d'authentification) ? Oui dès que la MFA lui est obligatoire
+ * (facteur enrôlé ou obligation en vigueur). Sinon (avant activation, aucun
+ * facteur) : la preuve de niveau 1 du lot 92 reste valable — rien ne change
+ * pour les comptes non protégés.
+ */
+export async function stepUpNeedsMfa(userId: number): Promise<boolean> {
+  return (await mfaRequirementFor(userId)).required;
+}
+
+/**
+ * État de la preuve de cette session (aucune écriture). Lot 110B : une
+ * preuve de niveau 1 ne vaut pas pour un utilisateur soumis à la MFA
+ * (`state: 'missing', mfa: true`). Contrôle fait ici pour TOUS les appelants
+ * (changement de mot de passe, clôture, adresse, Google / Apple, appareils,
+ * facteurs) — aucun ne peut l'oublier.
+ */
 export async function getReauthState(userId: number, sid: string | null | undefined, now = new Date()): Promise<FreshReauthState> {
   if (!sid) return { state: 'missing' };
   const proof = await store().latest(userId, sid);
-  if (!proof) return { state: 'missing' };
-  if (proof.consumedAt || proof.expiresAt <= now) return { state: 'expired' };
+  if (!proof) return { state: 'missing', ...(await stepUpNeedsMfa(userId) ? { mfa: true } : {}) };
+  if (proof.consumedAt || proof.expiresAt <= now) return { state: 'expired', ...(await stepUpNeedsMfa(userId) ? { mfa: true } : {}) };
+  if ((proof.assurance ?? 1) < 2 && await stepUpNeedsMfa(userId)) return { state: 'missing', mfa: true };
   return { state: 'fresh', proof };
 }
 
@@ -272,8 +311,19 @@ const REAUTH_MESSAGES = {
   REAUTH_EXPIRED: 'Votre confirmation d’identité a expiré. Confirmez de nouveau votre identité pour continuer.',
 } as const;
 
-export function reauthRequiredResponse(code: keyof typeof REAUTH_MESSAGES): NextResponse {
-  return NextResponse.json({ error: code, code, message: REAUTH_MESSAGES[code] }, { status: 403 });
+export function reauthRequiredResponse(code: keyof typeof REAUTH_MESSAGES, opts: { mfa?: boolean } = {}): NextResponse {
+  // Lot 110B : `mfa: true` — seule une clé d'accès ou l'application
+  // d'authentification convient (code public inchangé : REAUTH_REQUIRED,
+  // compris par tous les clients ; `stepUp` précise la méthode attendue).
+  return NextResponse.json(
+    { error: code, code, message: opts.mfa ? MFA_MESSAGES.stepUp : REAUTH_MESSAGES[code], ...(opts.mfa ? { stepUp: MFA_STEP_UP_REQUIRED_CODE } : {}) },
+    { status: 403 },
+  );
+}
+
+/** Réponse de refus pour un état non frais (niveau MFA précisé). */
+export function reauthStateResponse(state: Exclude<FreshReauthState, { state: 'fresh' }>): NextResponse {
+  return reauthRequiredResponse(state.state === 'expired' ? 'REAUTH_EXPIRED' : 'REAUTH_REQUIRED', { mfa: !!state.mfa });
 }
 
 export async function consumeReauthProof(proofId: string, action: string, now = new Date()): Promise<boolean> {
@@ -297,7 +347,7 @@ export async function requireFreshReauth(
   const now = opts.now ?? new Date();
   const state = await getReauthState(session.userId, session.sid, now);
   if (state.state !== 'fresh' || !session.sid) {
-    return { ok: false, response: reauthRequiredResponse(state.state === 'expired' ? 'REAUTH_EXPIRED' : 'REAUTH_REQUIRED') };
+    return { ok: false, response: state.state === 'fresh' ? reauthRequiredResponse('REAUTH_REQUIRED') : reauthStateResponse(state) };
   }
   if (opts.consume && !(await store().consume(state.proof.id, opts.action, now))) {
     return { ok: false, response: reauthRequiredResponse('REAUTH_EXPIRED') };

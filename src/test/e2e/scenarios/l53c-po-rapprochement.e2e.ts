@@ -115,9 +115,10 @@ scenario('L53C-D5-D7', 'Rapprochement factures ↔ interventions : faisceau, D6,
     const [carte, ...autres] = await ouvertes(compte, 'OPERATION-MATCH');
     expect(autres).toEqual([]);
     expect(carte.target_id).toBe(f2);
-    expect(carte.proposals_json.map((p) => p.value)).toEqual([`SAME:${op.id}`, 'DISTINCT']);
+    // Lot 110D : Oui / Non sur l'intervention candidate (« Non » = refus de cette réalité ; candidat certain → création, règle C5).
+    expect(carte.proposals_json.map((p) => p.value)).toEqual([`YES:${op.id}`, `NO:${op.id}`]);
     const { resolveArbitration } = await import('@/services/to-process/resolve-action.service');
-    expect(await resolveArbitration(compte.id, carte.public_id, 'DISTINCT', { userId: compte.ownerUserId })).toMatchObject({ ok: true });
+    expect(await resolveArbitration(compte.id, carte.public_id, `NO:${op.id}`, { userId: compte.ownerUserId })).toMatchObject({ ok: true });
     expect(await actives(compte)).toHaveLength(2);
     expect((await sql`SELECT 1 FROM business_operation_history WHERE account_id = ${compte.id} AND event_type = 'MERGED'`)).toHaveLength(0);
   });

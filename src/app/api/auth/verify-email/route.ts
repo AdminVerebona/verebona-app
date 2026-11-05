@@ -18,9 +18,8 @@ import { AUTH_LIMITS, authRateLimitEnabled, getAuthRateLimiter, limitKey, rateLi
 import { getClientIp } from '@/lib/auth/client-ip';
 import { logUserActivity } from '@/lib/audit-logger';
 import type { UserRole, PlanType, UserStatus } from '@/types/domain';
-import { issueSession } from '@/lib/auth/session-issuance';
-import { rememberTrustedDevice } from '@/lib/auth/device-trust';
 import { deviceAccountOf } from '@/lib/auth/device-account';
+import { concludePrimaryAuthentication } from '@/lib/auth/mfa/primary';
 
 const baseUrl = () =>
   process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
@@ -288,11 +287,17 @@ async function completeActivation(request: NextRequest, response: NextResponse, 
 
     // D1 : le lien reçu par e-mail ET le mot de passe de l'inscription
     // prouvent le contrôle de la boîte et du compte — navigateur reconnu.
-    const deviceId = rememberTrustedDevice(request, response, deviceAccountOf(user));
     // Lot 53A (Q21, CDC 18 §19.3) : mêmes durées que partout ailleurs ;
     // lot 92 : émission unique (jetons + cookies + registre des sessions).
-    await issueSession(request, response, { kind: 'open', method: 'email_link', replaceCurrent: true, deviceId, subject: tokenPayload });
-    return `${targetPath}?${params.toString()}`;
+    // Lot 110B (ticket MFA §2, §5) : MFA obligatoire (obligation en vigueur)
+    // → le lien n'ouvre JAMAIS de session métier : contexte provisoire
+    // d'enrôlement, l'écran « Sécurisez votre compte » s'affiche ensuite.
+    const target = `${targetPath}?${params.toString()}`;
+    const outcome = await concludePrimaryAuthentication(request, response, {
+      subject: tokenPayload, method: 'email_link', deviceAccount: deviceAccountOf(user), returnUrl: target,
+    });
+    if (outcome.kind === 'mfa') return `${outcome.step === 'enroll' ? '/securiser-mon-compte' : '/verification'}?${new URLSearchParams({ returnUrl: target }).toString()}`;
+    return target;
   } catch {
     // Token generation failed — fall back to asking user to log in
     return `/verify-email?status=success${planSuffix}`;

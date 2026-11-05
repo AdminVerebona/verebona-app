@@ -271,7 +271,21 @@ export interface AssistantRequestInput {
     canonicalIntent: import('./intents').VerebonaIntent;
     corpus: 'ACCOUNT' | 'HELP' | 'RESOURCES';
     forceIntent: boolean;
+    /**
+     * Lot 110E : référence CANONIQUE de la question (article et passages
+     * probants), retrouvée côté serveur depuis l'identifiant de suggestion et
+     * revalidée au clic sur le corpus Ressources de l'environnement
+     * (publication, révision, sections, sujets attendus). Jamais fournie par
+     * le client. `status` ≠ VERIFIED / PARTIAL : aucune source n'est imposée.
+     */
+    evidence?: SuggestionEvidence | null;
   } | null;
+  /**
+   * Lot 110E : question LIBRE reconnue comme documentaire (Ressources) par le
+   * serveur (`resources-routing.ts`) — les Ressources sont préférées à la
+   * recherche. Jamais fournie par le client.
+   */
+  corpusPreference?: 'RESOURCES' | null;
   resume?: {
     clarificationId: string;
     intent: import('./intents').VerebonaIntent;
@@ -350,6 +364,23 @@ export interface ActionableTrace {
  * les niveaux précédents n'ont pas suffi. Persistée dans
  * `verebona_request_runs.retrieval_methods_json`.
  */
+/** Lot 110E : preuve de réponse d'une suggestion Ressources, revalidée au clic. */
+export interface SuggestionEvidence {
+  questionId: string;
+  status: import('../../suggestions/shared/resource-questions').EvidenceStatus;
+  /** `RES-<ID>` (identifiant de source de l'assistant). */
+  articleId: string | null;
+  revision: number | null;
+  revisionChanged: boolean;
+  corpusVersion: string | null;
+  environment: string | null;
+  answerSections: string[];
+  reserveSections: string[];
+  missingSubjects: string[];
+  /** Phrases probantes du texte publié (contenu public), dans l'ordre de la réponse. Jamais tracées. */
+  answerSentences: string[];
+}
+
 export interface CascadeTrace {
   /** Lot 49 : périmètre sémantique (STRONG / WEAK, UNDERSTAND, sources, choix). */
   semantic?: import('../core/semantic-scope').SemanticTrace;
@@ -420,6 +451,12 @@ export interface CascadeTrace {
    * trouvées, motif du repli (`core/help-cascade`).
    */
   help?: import('../core/help-cascade').HelpCascadeTrace;
+  /**
+   * Lot 110E : Ressources — routage d'une question libre, preuve de la
+   * suggestion, sources examinées et retenues, issue et motif (journal BO
+   * « Questions sans réponse », sans contenu).
+   */
+  resources?: import('../core/resources-answer').ResourcesTrace;
   /** Lot 33 : requête de recherche initiale (texte masqué des données sensibles). */
   retrievalQueryInitial?: string;
   /** Lot 33 : requêtes élargies et reformulées réellement exécutées. */

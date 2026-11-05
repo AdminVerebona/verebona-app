@@ -20,7 +20,11 @@
  *   · partage entrant → formulaire d'ajout habituel (IMP-02..04) ; lot 108G :
  *     reprise depuis la FILE TECHNIQUE locale (`lib/native/share-inbox`) après
  *     Face ID / connexion — plus de fichiers gardés en mémoire seulement ;
- *   · envoi natif de fond des documents (UPL-01/02).
+ *   · envoi natif de fond des documents (UPL-01/02) ;
+ *   · lot 110A : partage natif à trois choix — l'import est lancé par
+ *     l'interface native (aucune confirmation ici) ; jeton d'import remis au
+ *     natif, état fidèle des imports (`useShareImport`). La file 108G
+ *     ci-dessous ne sert plus qu'aux partages déposés par un binaire antérieur.
  * Les interrupteurs serveur (`MOBILE_FEATURES_OFF`, /api/mobile/config) sont
  * respectés : une fonction coupée n'est pas branchée (API-08).
  */
@@ -56,6 +60,9 @@ import { usePushOnboarding } from './usePushOnboarding';
 import { PushOnboardingCard } from './PushOnboardingCard';
 import { NativeUnlockScreen } from './NativeUnlockScreen';
 import { BiometricOfferCard } from './BiometricOfferCard';
+import { useShareImport } from './useShareImport';
+import { ShareImportStatusCard } from './ShareImportStatusCard';
+import { SHARE_IMPORT_TRACKING_PATH, sessionAccountKey } from '@/lib/native/share-import';
 
 type Features = Record<string, boolean>;
 
@@ -106,6 +113,13 @@ export default function NativeBridgeRuntime() {
 
   // Navigation interne validée, différée tant que l'app est verrouillée (PUSH-04, AG-03).
   const ouvrir = unlock.open;
+
+  // Lot 110A : partage natif (import direct, jeton d'import, état fidèle).
+  const shareImport = useShareImport({
+    account: authenticated ? sessionAccountKey(user?.id, user?.accountId) : null,
+    enabled: featureOn(features, 'share_in'),
+    open: ouvrir,
+  });
 
   // ── Démarrage : installation, configuration, envoi natif ────────────────
   const lireConfig = useCallback(async () => {
@@ -460,6 +474,11 @@ export default function NativeBridgeRuntime() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Lot 110A : état des imports du partage natif (jamais de seconde confirmation). */}
+      {!locked && partagesEnAttente.length === 0 && !pathname?.startsWith(SHARE_IMPORT_TRACKING_PATH) && (
+        <ShareImportStatusCard items={shareImport.items} onOpen={ouvrir} onClose={(id) => { void shareImport.acknowledge(id); }} />
       )}
 
       {offer.visible && (

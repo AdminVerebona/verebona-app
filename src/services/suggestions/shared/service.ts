@@ -60,12 +60,14 @@ import {
   ACCOUNT_STOCK, GUIDE_STOCK, SAFE_FALLBACK_GUIDE_IDS, guideStageOf,
   type GuideStage, type UsageSignals,
 } from './stock';
-import { guideAnswerability, type CorporaForAnswerability } from './answerability';
+import { guideAnswerability, resourceCoverageOf, type CorporaForAnswerability } from './answerability';
 import {
   rotationBucketOf, selectSharedSuggestions, selectionSeedOf,
   type AccountCandidate, type GuideCandidate, type SharedSuggestion, type SharedSuggestionSelection,
 } from './select';
 import { readConsultedSuggestions, recordSuggestionConsultation } from './consultations';
+import { RESOURCE_QUESTION_CATALOG_VERSION, checkResourceEvidence } from './resource-questions';
+import type { SuggestionEvidence } from '@/services/verebona-assistant/types/contracts';
 
 /** Codes stables du diagnostic (BO, jamais affichés à l'utilisateur). */
 export type SharedSuggestionDiagnosticCode =
@@ -90,6 +92,8 @@ export interface SharedSuggestionDiagnostic {
   consulted: number;
   helpCorpus: { available: boolean; version: string | null };
   resourcesCorpus: { available: boolean; version: string | null; articles: number; alert: string | null };
+  /** Lot 110E : couverture effective de chaque question Ressources du catalogue (preuve de réponse). */
+  resourceCoverage?: Array<{ id: string; status: string; articleId: string | null; revision: number | null; revisionChanged: boolean; missingSubjects: string[] }>;
   cache: 'HIT' | 'MISS';
 }
 
@@ -100,7 +104,7 @@ export interface SharedSuggestionsResult {
 
 /** Empreinte des DÉFINITIONS du stock : un stock modifié change la version. */
 const STOCK_VERSION = createHash('sha256')
-  .update(JSON.stringify([ACCOUNT_STOCK, GUIDE_STOCK.map(({ when: _w, ...e }) => e)]))
+  .update(JSON.stringify([ACCOUNT_STOCK, GUIDE_STOCK.map(({ when: _w, ...e }) => e), RESOURCE_QUESTION_CATALOG_VERSION]))
   .digest('hex').slice(0, 12);
 
 // ── Lecture des usages (compteurs bornés au compte) ─────────────────────────
@@ -219,6 +223,10 @@ export async function getSharedSuggestions(accountId: number, userId: number | n
     consulted: consulted.size,
     helpCorpus: { available: !!corpora.help, version: corpora.help?.version ?? null },
     resourcesCorpus: { available: !!corpora.resources, version: corpora.resources?.version ?? null, articles: corpora.resources?.articles.length ?? 0, alert: res.alert?.code ?? null },
+    resourceCoverage: GUIDE_STOCK.filter((e) => e.corpus === 'RESOURCES').map((e) => {
+      const c = resourceCoverageOf(e, corpora.resources);
+      return { id: e.id, status: c.status, articleId: c.articleId, revision: c.revision, revisionChanged: c.revisionChanged, missingSubjects: c.missingSubjects };
+    }),
     cache: 'MISS',
   };
   const result = { selection, diagnostic };
@@ -253,8 +261,13 @@ export async function resolveSuggestionForMessage(
   let found: { suggestion: NonNullable<AssistantRequestInput['suggestion']>; assetId: number | null } | null = null;
   const guide = GUIDE_STOCK.find((e) => e.id === suggestionId);
   if (guide && guide.label === texte) {
+    // Lot 110E : référence canonique (article + passages probants) retrouvée
+    // ICI depuis l'identifiant, revalidée sur le corpus de l'environnement —
+    // jamais un article fourni par le client.
+    const evidence = guide.corpus === 'RESOURCES' ? await suggestionEvidenceOf(guide.id) : null;
     found = {
-      suggestion: { id: guide.id, version, objective: 'GUIDE', canonicalIntent: guide.canonicalIntent, corpus: guide.corpus, forceIntent: true },
+      suggestion: { id: guide.id, version, objective: 'GUIDE', canonicalIntent: guide.canonicalIntent, corpus: guide.corpus, forceIntent: true,
+        ...(guide.corpus === 'RESOURCES' ? { evidence } : {}) },
       assetId: null,
     };
   } else if (suggestionId.startsWith('acc_')) {
@@ -274,6 +287,22 @@ export async function resolveSuggestionForMessage(
   await recordSuggestionConsultation(accountId, userId, suggestionId);
   // La sélection suivante tient compte de la consultation (empreinte).
   return found;
+}
+
+/**
+ * Preuve de réponse d'une question Ressources, revalidée au clic sur le
+ * corpus Ressources servi dans l'environnement (articles publiés seulement,
+ * environnement contrôlé par le chargement — ENV-02). Ne lève jamais.
+ */
+export async function suggestionEvidenceOf(questionId: string): Promise<SuggestionEvidence> {
+  const corpus = await loadResourcesCorpus({ staleWhileRevalidate: true }).catch(() => null);
+  const c = checkResourceEvidence(questionId, corpus && corpus.articles.length > 0 ? corpus : null);
+  return {
+    questionId, status: c.status, articleId: c.articleId, revision: c.revision, revisionChanged: c.revisionChanged,
+    corpusVersion: c.corpusVersion, environment: c.environment,
+    answerSections: c.answerSections, reserveSections: c.reserveSections, missingSubjects: c.missingSubjects,
+    answerSentences: c.answerSentences,
+  };
 }
 
 // ── Diagnostic BO : rapport « Suggestions partagées » ───────────────────────

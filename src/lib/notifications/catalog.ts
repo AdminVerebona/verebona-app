@@ -819,6 +819,18 @@ export const NOTIFICATION_CATALOG: { [K in NotificationType]?: CatalogEntry } = 
     render: (p) => identityContent('unlinked', p?.provider),
     payloadSchema: z.object({ provider: z.enum(['google', 'apple']) }),
   },
+  // Lot 110B (MFA, ticket §1, §7) : e-mail de sécurité OBLIGATOIRE (non
+  // désactivable), au titulaire SEUL — jamais à l'autre membre d'un Duo.
+  // Nature de l'événement et date ; aucun secret, aucun code.
+  [T.MFA_SECURITY_EVENT]: {
+    ...securityInformation(T.MFA_SECURITY_EVENT, 'Sécurité de votre compte modifiée', 'Une méthode de sécurité de votre compte a été modifiée.'),
+    render: (p) => mfaSecurityContent(p),
+    deepLink: () => '/mon-compte#securite',
+    payloadSchema: z.object({
+      event: z.enum(['passkey_added', 'passkey_removed', 'totp_enabled', 'totp_replaced', 'totp_removed', 'recovery_regenerated', 'recovery_used']),
+      at: z.string(),
+    }),
+  },
 
   // ── Actualités Verebona (consentement distinct, jamais dans la cloche) ─────
   [T.NEWS_ANNOUNCEMENT]: {
@@ -993,6 +1005,27 @@ export function otherSessionsRevokedContent(p: unknown): RenderedContent {
 }
 
 /** Lot 93 : texte « Google / Apple associé ou dissocié » (NOTIF-01). */
+/** Lot 110B : textes des e-mails de sécurité MFA (aucun secret, aucun code). */
+const MFA_EVENT_TEXT: Readonly<Record<string, { title: string; body: string }>> = {
+  passkey_added: { title: 'Clé d’accès ajoutée', body: 'Une clé d’accès a été ajoutée à votre compte Verebona' },
+  passkey_removed: { title: 'Clé d’accès retirée', body: 'Une clé d’accès a été retirée de votre compte Verebona' },
+  totp_enabled: { title: 'Application d’authentification activée', body: 'Une application d’authentification a été activée sur votre compte Verebona' },
+  totp_replaced: { title: 'Application d’authentification remplacée', body: 'L’application d’authentification de votre compte Verebona a été remplacée' },
+  totp_removed: { title: 'Application d’authentification retirée', body: 'L’application d’authentification a été retirée de votre compte Verebona' },
+  recovery_regenerated: { title: 'Nouveaux codes de récupération', body: 'De nouveaux codes de récupération ont été créés pour votre compte Verebona ; les anciens ne fonctionnent plus' },
+  recovery_used: { title: 'Code de récupération utilisé', body: 'Un code de récupération a été utilisé pour accéder à votre compte Verebona' },
+};
+
+export function mfaSecurityContent(p: unknown): RenderedContent {
+  const x = (p ?? {}) as { event?: unknown; at?: unknown };
+  const t = (typeof x.event === 'string' && MFA_EVENT_TEXT[x.event]) || { title: 'Sécurité de votre compte modifiée', body: 'Une méthode de sécurité de votre compte Verebona a été modifiée' };
+  const at = typeof x.at === 'string' && !Number.isNaN(Date.parse(x.at)) ? new Date(x.at) : null;
+  const when = at ? ` le ${formatSecurityIncidentDate(at)}` : '';
+  const body = `${t.body}${when}. Si c’est vous, vous n’avez rien à faire. Sinon, ouvrez Mon compte › Sécurité, `
+    + 'vérifiez vos méthodes de sécurité et vos appareils connectés, puis changez votre mot de passe.';
+  return content(t.title, body, undefined, 'notif_security');
+}
+
 function identityContent(kind: 'linked' | 'unlinked', provider: unknown): RenderedContent {
   const name = provider === 'apple' ? 'Apple' : provider === 'google' ? 'Google' : 'Google ou Apple';
   const title = kind === 'linked' ? `Connexion avec ${name} activée` : `Connexion avec ${name} retirée`;

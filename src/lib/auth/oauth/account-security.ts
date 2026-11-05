@@ -12,7 +12,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { runDetached } from '@/lib/auth/anti-enumeration';
 import { SessionService } from '@/lib/session-service';
 import {
-  getReauthMethod, issueReauthProof, listReauthMethodsFor, logReauthFailure, requireFreshReauth, ReauthError,
+  getReauthMethod, issueReauthProof, listReauthMethodsFor, logReauthFailure, requireFreshReauth, ReauthError, stepUpNeedsMfa,
 } from '@/lib/auth/reauth';
 import { getProviderConfig, OAUTH_PROVIDERS, type OAuthProvider } from './config';
 import { decryptProviderToken } from './crypto';
@@ -35,6 +35,13 @@ export async function requireReauth(request: NextRequest, body: Record<string, u
       session = await SessionService.getSession(request);
     } catch (error) {
       return { ok: false, response: SessionService.handleSessionError(error) };
+    }
+    // Lot 110B : compte soumis à la MFA → le mot de passe du corps ne produit
+    // plus de preuve (niveau 1) : preuve FORTE de la session exigée.
+    if (await stepUpNeedsMfa(session.userId)) {
+      const r = await requireFreshReauth(request, { action });
+      if (!r.ok) return r;
+      return { ok: true, userId: r.session.userId, sid: r.session.sid, email: r.session.email, proofId: r.proof.id };
     }
     const method = getReauthMethod('password');
     if (!session.sid || !method?.verify) {

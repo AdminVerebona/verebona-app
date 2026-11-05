@@ -57,6 +57,12 @@ export const NATIVE_PLUGINS = {
    * (`lib/native/share-inbox`). Absent des binaires antérieurs : rien à reprendre.
    */
   shareInbox: 'VerebonaShareInbox',
+  /**
+   * Lot 110A : plugin local iOS / Android (VerebonaShareImportPlugin) —
+   * import DIRECT des partages natifs (3 choix), jeton d'import, états
+   * fidèles (`lib/native/share-import`). Absent des binaires antérieurs.
+   */
+  shareImport: 'VerebonaShareImport',
 } as const;
 
 export type NativePluginName = typeof NATIVE_PLUGINS[keyof typeof NATIVE_PLUGINS];

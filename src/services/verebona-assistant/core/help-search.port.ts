@@ -23,6 +23,16 @@
  *     corpus `RESOURCES`) : les Ressources d'abord, le Centre d'aide réduit.
  * Corpus Ressources indisponible : recherche du Centre d'aide seule
  * (inchangée) ; aucun des deux : 0 résultat technique.
+ *
+ * Lot 110E :
+ *   · question LIBRE routée vers les Ressources par le serveur
+ *     (`input.corpusPreference`, `resources-routing.ts`) : Ressources d'abord,
+ *     comme une suggestion de découverte. Les autres questions libres gardent
+ *     le Centre d'aide en premier (usage de Verebona) ;
+ *   · garde de PERTINENCE sur les seules Ressources (`guardResourceSources`) :
+ *     un article d'une autre nature (coût pour « quand ») est écarté même à
+ *     score lexical maximal ; les sections examinées et leur verdict sont
+ *     exposées pour la trace (`resources.examined`).
  */
 import type { AssistantRequestInput } from '../types/contracts';
 import { getAssistantConfig } from '../config/assistant-config';
@@ -33,6 +43,7 @@ import {
 import { asHelpSearchCorpus, loadResourcesCorpus } from './resources-corpus.service';
 import { helpRolesFor } from './retrieval.service';
 import { mergeHelpSources, type HelpSearchResult, type HelpSearcher, type StagedHelpSource } from './help-cascade';
+import { guardResourceSources, type ResourceGuardDecision } from './resources-answer';
 
 /** Poids d'un corpus secondaire (Ressources pour l'aide, aide pour la découverte). */
 export const SECONDARY_CORPUS_WEIGHT = 0.8;
@@ -67,6 +78,8 @@ export async function openHelpSearch(input: AssistantRequestInput): Promise<{
   search: HelpSearcher;
   article(id: string): HelpCorpusArticle | null;
   corpus: HelpCorpusLoadInfo;
+  /** Lot 110E : corpus Ressources servi et sections examinées (verdict de la garde). */
+  resources: { available: boolean; version: string | null; environment: string | null; examined(): ResourceGuardDecision[] };
 }> {
   const [{ corpus, info }, roles, ressources] = await Promise.all([
     loadHelpCorpusDetailed({ staleWhileRevalidate: true }),
@@ -76,7 +89,8 @@ export async function openHelpSearch(input: AssistantRequestInput): Promise<{
   const res: HelpCorpus | null = ressources && ressources.articles.length > 0 ? asHelpSearchCorpus(ressources) : null;
   const ctx = helpContextFromPage(input.pageContext, roles);
   const limit = getAssistantConfig().maxSources;
-  const prefer = input.suggestion?.corpus === 'RESOURCES' ? 'RESOURCES' : 'HELP';
+  const prefer = input.suggestion?.corpus === 'RESOURCES' || (!input.suggestion && input.corpusPreference === 'RESOURCES') ? 'RESOURCES' : 'HELP';
+  const examinees = new Map<string, ResourceGuardDecision>();
   // Les Ressources ne dépendent ni de l'écran ni de la plateforme : recherche sans contexte de page.
   const corpusInfo: HelpCorpusLoadInfo = !corpus && res
     ? { ...info, corpusAvailable: true, corpusSource: 'live', corpusVersion: res.version, corpusEnvironment: res.environment }
@@ -84,10 +98,24 @@ export async function openHelpSearch(input: AssistantRequestInput): Promise<{
   return {
     search: async (queries, stage) => {
       const aide = corpus ? searchHelpQueries(corpus, queries, stage, { limit, ctx, planType: input.planType }) : null;
-      const ress = res ? searchHelpQueries(res, queries, stage, { limit, planType: input.planType }) : null;
+      const brut = res ? searchHelpQueries(res, queries, stage, { limit, planType: input.planType }) : null;
+      let ress = brut;
+      if (brut) {
+        // La nature de la question est celle du message posé (pas d'une requête élargie).
+        const g = guardResourceSources(input.message, brut.sources);
+        for (const d of g.decisions) {
+          const prev = examinees.get(d.id);
+          if (!prev || d.score > prev.score) examinees.set(d.id, d);
+        }
+        ress = { ...brut, sources: g.kept };
+      }
       return { ...mergeHelpAndResources(aide, ress, prefer, limit), corpus: corpusInfo };
     },
     article: (id) => corpus?.articles.find((a) => a.id === id) ?? res?.articles.find((a) => a.id === id) ?? null,
     corpus: corpusInfo,
+    resources: {
+      available: res != null, version: res?.version ?? null, environment: res?.environment ?? null,
+      examined: () => [...examinees.values()].sort((a, b) => b.score - a.score),
+    },
   };
 }

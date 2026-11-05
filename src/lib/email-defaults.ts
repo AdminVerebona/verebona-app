@@ -182,6 +182,26 @@ L'équipe Verebona`,
     placeholders: JSON.stringify(['firstName', 'code', 'expiresIn'])
   },
 
+  // Lot 110B (migration 1168, ticket MFA §5) : récupération d'accès après la
+  // perte d'un facteur — code à 6 chiffres prouvant la possession de
+  // l'adresse, à saisir AVEC un code de récupération. Aucun lien de connexion.
+  MFA_RECOVERY_EMAIL_CODE: {
+    subject: 'Verebona : votre code de vérification',
+    body: `Bonjour {{firstName}},
+
+Vous avez demandé à retrouver l'accès à votre compte Verebona avec un code de récupération. Saisissez ce code de vérification :
+
+{{code}}
+
+Ce code est valable {{expiresIn}}. Il ne suffit pas à lui seul : un de vos codes de récupération est aussi demandé. Ne le communiquez à personne ; Verebona ne vous le demandera jamais par téléphone ni par e-mail.
+
+Si vous n'êtes pas à l'origine de cette demande, ignorez ce message et vérifiez la sécurité de votre compte.
+
+Cordialement,
+L'équipe Verebona`,
+    placeholders: JSON.stringify(['firstName', 'code', 'expiresIn'])
+  },
+
   // Lot 64A (migration 0459) : fin de l'accès d'un membre à un Premium Duo.
   // Jamais de motif (rétractation, impayé…) ni d'e-mail du titulaire.
   DUO_MEMBERSHIP_ENDED: {

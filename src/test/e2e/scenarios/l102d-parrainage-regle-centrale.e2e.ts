@@ -160,16 +160,20 @@ scenario('L102D-P', 'Parrainage : règle centrale (90 jours, annuel, rétractati
   it('AC-5 — délai de rétractation en cours : attente sans Stripe ; ensuite 1 mois offert puis notification ; rejeu sans effet', async () => {
     const { acc: p, code } = await parrain();
     const { acc } = await filleulInscrit(code);
-    await premierPaiement(acc.id, 'yearly', 'in_l102d_y2');
+    expect(await premierPaiement(acc.id, 'yearly', 'in_l102d_y2')).toBe(true);
     const { runReferralRewards } = await import('@/services/referral/referral-rewards.job');
 
     // 15 jours après le paiement : délai légal clos au plus tôt au 14ᵉ jour + marge d'un jour.
-    await sql`UPDATE referral_events SET first_billed_at = now() - interval '14 days' WHERE referred_account_id = ${acc.id}`;
+    // Instants fixés côté test (et non `now()` de la base) : la présélection du job compare à `now − 14 j`,
+    // une seconde de marge évite toute dépendance à l'horloge ou à la lenteur de l'exécuteur CI.
+    const t0 = new Date();
+    const paye = new Date(t0.getTime() - 14 * DAY - 1_000);
+    await sql`UPDATE referral_events SET first_billed_at = ${paye.toISOString()}::timestamptz WHERE referred_account_id = ${acc.id}`;
     const f1 = fakeStripe();
-    await runReferralRewards(new Date(), { stripe: f1.stripe });
+    const r1 = await runReferralRewards(t0, { stripe: f1.stripe });
     let ev = await evenement(acc.id);
     expect(ev.rewarded_at).toBeNull();
-    expect((ev.metadata_json?.rewardPending as { reason: string }).reason).toBe('WITHDRAWAL_PERIOD_RUNNING');
+    expect((ev.metadata_json?.rewardPending as { reason: string } | undefined)?.reason, JSON.stringify({ r1, ev })).toBe('WITHDRAWAL_PERIOD_RUNNING');
 
     await sql`UPDATE referral_events SET first_billed_at = now() - interval '40 days' WHERE referred_account_id = ${acc.id}`;
     etat.emits.length = 0;

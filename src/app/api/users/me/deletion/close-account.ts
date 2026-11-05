@@ -25,7 +25,7 @@ import {
 } from '@/services/account/voluntary-deletion.service';
 import { PENDING_DELETION_PAGE } from '@/lib/auth/account-closure';
 import { reauthBlockedResponse, recordReauthFailure, recordReauthSuccess } from '@/lib/auth/reauth-throttle';
-import { consumeReauthProof, getReauthState, reauthRequiredResponse } from '@/lib/auth/reauth';
+import { consumeReauthProof, getReauthState, reauthStateResponse, stepUpNeedsMfa } from '@/lib/auth/reauth';
 import { REFRESH_TOKEN_TTL_S } from '@/lib/auth/token-lifetimes';
 import { revokeAppleAuthorizationsForUser } from '@/lib/auth/oauth/account-security';
 
@@ -74,7 +74,10 @@ export async function handleCloseAccount(request: NextRequest): Promise<NextResp
   if (blocked) return blocked;
 
   const body = (await request.json().catch(() => ({}))) as { confirmation?: unknown; password?: unknown };
-  const password = typeof body.password === 'string' && body.password ? body.password : null;
+  // Lot 110B : compte soumis à la MFA → le mot de passe du corps (parcours
+  // historique) est ignoré ; seule la preuve FORTE de la session vaut identité.
+  const strongStepUp = await stepUpNeedsMfa(userId);
+  const password = !strongStepUp && typeof body.password === 'string' && body.password ? body.password : null;
   const confirmation = typeof body.confirmation === 'string' ? body.confirmation : null;
   const now = new Date();
 
@@ -85,7 +88,7 @@ export async function handleCloseAccount(request: NextRequest): Promise<NextResp
   // historique inchangé (clients non mis à jour).
   const reauth = password ? null : await getReauthState(userId, sid, now);
   if (reauth && reauth.state !== 'fresh' && confirmation === ACCOUNT_DELETION_CONFIRMATION) {
-    return reauthRequiredResponse(reauth.state === 'expired' ? 'REAUTH_EXPIRED' : 'REAUTH_REQUIRED');
+    return reauthStateResponse(reauth);
   }
   try {
     const result = await closeAccountForDeletion({

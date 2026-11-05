@@ -790,6 +790,14 @@ export const SCHEDULED_TASKS: readonly ScheduledTaskDef[] = [
       } catch (e) {
         notes.push(`purge des sessions impossible : ${(e as Error)?.message ?? e}`);
       }
+      // Lot 110B : défis MFA, contextes provisoires et secrets TOTP non confirmés expirés depuis plus d'un jour.
+      try {
+        const { purgeMfaChallenges } = await import('@/lib/auth/mfa/challenges');
+        const m = await purgeMfaChallenges();
+        notes.push(`${m} défi(s) ou contexte(s) de double authentification expiré(s) supprimé(s)`);
+      } catch (e) {
+        if ((e as { code?: string })?.code !== '42P01') notes.push(`purge des défis de double authentification impossible : ${(e as Error)?.message ?? e}`);
+      }
       try {
         const { purgeAuthTransactions } = await import('@/lib/auth/oauth/transactions');
         const t = await purgeAuthTransactions();

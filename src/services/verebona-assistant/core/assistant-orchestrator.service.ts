@@ -107,6 +107,8 @@ import {
 import { runSemanticStage, resumeSemanticChoice, type SemanticOutcome } from './semantic-stage';
 import { type ArbitrationCandidate } from './semantic-stage';
 import type { RawSemanticDecision } from './semantic-scope';
+import { applyResourceAnswering, type ResourceGuardDecision, type ResourcesTrace } from './resources-answer';
+import type { ResourceRouteDecision, routeResourceTopic } from './resources-routing';
 import {
   CONTEXT_ONLY_MESSAGE, UPDATE_DISABLED_MESSAGE, UPDATE_READ_ONLY_MESSAGE, interactionHandling, updateFactsOf,
   contextFactsOf, validateContextFacts, contextCalculationAnswer, classifySuppliedFacts,
@@ -240,7 +242,14 @@ export interface OrchestratorPorts {
    * l'environnement, contexte de page et rôles lus UNE fois par demande).
    * Absent : la cascade interroge `retrieve` requête par requête.
    */
-  openHelpSearch?(input: AssistantRequestInput): Promise<{ search: HelpSearcher; article(id: string): HelpCorpusArticle | null; corpus?: HelpCorpusLoadInfo }>;
+  openHelpSearch?(input: AssistantRequestInput): Promise<{ search: HelpSearcher; article(id: string): HelpCorpusArticle | null; corpus?: HelpCorpusLoadInfo;
+    /** Lot 110E : corpus Ressources servi et sections examinées (garde de pertinence). */
+    resources?: { available: boolean; version: string | null; environment: string | null; examined(): ResourceGuardDecision[] } }>;
+  /**
+   * Lot 110E : question LIBRE documentaire → Ressources (`resources-routing.ts`).
+   * Absent : routage inchangé.
+   */
+  routeResourceTopic?(input: AssistantRequestInput, outcome: Parameters<typeof routeResourceTopic>[1]): Promise<ResourceRouteDecision | null>;
   /**
    * Lot 49 : sources MÉTIER réelles d'un périmètre déjà résolu par le serveur
    * (opérations d'abord, champs du registre, agenda, documents) — exposées à
@@ -759,6 +768,29 @@ export async function runAssistant(
           helpCorpus: corpus,
         });
         if (viaAide.kind === 'route') outcome = viaAide;
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // LOT 110E — QUESTION DOCUMENTAIRE LIBRE → RESSOURCES
+    //
+    // « Quand faire la révision d’une voiture ? » posée librement partait en
+    // recherche d'agenda du compte. Une question GÉNÉRALE (aucune marque
+    // personnelle, aucun objet du compte, aucun chiffre) seulement classée en
+    // recherche, à laquelle une Ressource publiée de même nature répond, est
+    // une question documentaire : Ressources d'abord. Faits du compte et usage
+    // de Verebona : inchangés (`resources-routing.ts`).
+    // ══════════════════════════════════════════════════════════════════════
+    let corpusPreference: AssistantRequestInput['corpusPreference'] = null;
+    let resourceRouting: ResourcesTrace['routing'] | undefined;
+    if (!input.resume && !input.suggestion && ports.routeResourceTopic) {
+      const d = await withDeadline(ports.routeResourceTopic(input, outcome), retrievalDeadline()).catch(() => null);
+      if (d) {
+        resourceRouting = d.trace;
+        if (d.route) {
+          outcome = { kind: 'route' as const, route: routeForIntent('PRODUCT_HELP_EXPLAIN', input.planType, 'question documentaire (Ressources)') };
+          corpusPreference = 'RESOURCES';
+        }
       }
     }
 
@@ -1920,7 +1952,7 @@ export async function runAssistant(
       // qui se dirait « corpus disponible » (le repli muet du lot 33).
       let echecOuverture: 'HELP_CORPUS_TIMEOUT' | 'HELP_CORPUS_UNAVAILABLE' | null = null;
       const ouvert = ports.openHelpSearch
-        ? await withDeadline(ports.openHelpSearch(input), Math.min(deadline, Date.now() + Math.max(cfg.retrievalTimeoutMs || 3000, HELP_CORPUS_OPEN_BUDGET_MS)))
+        ? await withDeadline(ports.openHelpSearch(corpusPreference ? { ...input, corpusPreference } : input), Math.min(deadline, Date.now() + Math.max(cfg.retrievalTimeoutMs || 3000, HELP_CORPUS_OPEN_BUDGET_MS)))
           .catch((e) => {
             echecOuverture = (e as Error)?.message === 'REQUEST_TIMEOUT' ? 'HELP_CORPUS_TIMEOUT' : 'HELP_CORPUS_UNAVAILABLE';
             console.warn(`[verebona] ${echecOuverture} — ouverture de la recherche d’aide impossible (${(e as Error)?.message}).`);
@@ -1997,6 +2029,38 @@ export async function runAssistant(
       for (const l of aide.trace.levels) {
         trace.attempts.push({ level: l.level, strategy: l.strategy, status: l.status, score: l.bestScore, threshold: l.threshold, ...(l.reason ? { reason: l.reason } : {}) });
         if (l.status !== 'SUFFICIENT') trace.escalationReasons.push(`HELP:N${l.level}:${l.status === 'EXECUTED' ? 'UNDERSTAND_' + (aide.trace.understanding?.status ?? 'EXECUTED').toUpperCase() : l.reason ?? l.status}`);
+      }
+      // ── Lot 110E : Ressources — preuve de la suggestion, article focalisé ou repli honnête ──
+      const ressources = applyResourceAnswering({
+        message: input.message,
+        input: { suggestion: input.suggestion, corpusPreference },
+        aide,
+        article: ouvert?.article ?? null,
+        examined: ouvert?.resources?.examined() ?? [],
+        corpus: ouvert?.resources
+          ? { available: ouvert.resources.available, version: ouvert.resources.version, environment: ouvert.resources.environment }
+          : { available: false, version: null, environment: null },
+        routing: resourceRouting,
+      });
+      if (ressources.trace) trace.resources = ressources.trace;
+      if (ressources.kind === 'sources') {
+        aide.sources = ressources.sources;
+        aide.sufficient = true;
+        aide.bestScore = Math.max(...ressources.sources.map((x) => x.relevanceScore ?? 0));
+        aide.trace.sufficiency = 'SUFFICIENT';
+        aide.trace.fallbackReason = null;
+        aide.trace.sources = ressources.sources.map((x) => ({ type: x.type, id: x.id, title: x.title, score: x.relevanceScore ?? 0, stage: x.stage }));
+        if (trace.help) {
+          trace.help.sufficiency = 'SUFFICIENT'; trace.help.fallbackReason = null; trace.help.sources = aide.trace.sources;
+          trace.help.observability = helpObservability(trace.help, trace.help.observability?.candidateCount ?? 0);
+        }
+        if (ressources.trace.selection === 'EVIDENCE') trace.escalationReasons.push(`RESOURCES:EVIDENCE:${ressources.trace.selected?.articleId}`);
+      } else if (ressources.kind === 'fallback') {
+        trace.escalationReasons.push(`RESOURCES:FALLBACK:${ressources.reason}`);
+        trace.fallbackReason = ressources.reason;
+        const actions = await ports.resolveActions(route, input, []);
+        done('fallback', 'resources.no_reliable_passage', 'INSUFFICIENT', 0);
+        return finalize(base, machine, 'deterministic', ressources.text, [], [], actions, ports, input, 'insufficient');
       }
       if (aide.sufficient) {
         sources = aide.sources.map(({ stage, query: _q, queryHits: _h, ...src }) => ({ ...src, meta: { ...(src.meta ?? {}), stage } }));

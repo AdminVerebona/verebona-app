@@ -233,8 +233,12 @@ describe('PO-D1 — appareil reconnu (cookie signé, CDC 18 §20.4)', () => {
     expect(DEVICE_TRUST_COOKIE_PATH).toBe('/api/auth');
     const src = read('src/lib/auth/device-trust.ts');
     expect(src).toMatch(/httpOnly: true/);
-    expect(read('src/app/api/auth/login/route.ts')).toMatch(/rememberTrustedDevice\(request, response, deviceAccountOf\(user\)\)/);
-    expect(read('src/app/api/auth/verify-email/route.ts')).toMatch(/rememberTrustedDevice\(request, response, deviceAccountOf\(user\)\)/);
+    // Lot 110B : dépôt par la décision centrale (session complète) ou à la fin
+    // de la seconde étape — jamais pour une simple étape provisoire.
+    expect(read('src/app/api/auth/login/route.ts')).toMatch(/deviceAccount: deviceAccountOf\(user\)/);
+    expect(read('src/app/api/auth/verify-email/route.ts')).toMatch(/deviceAccount: deviceAccountOf\(user\)/);
+    expect(read('src/lib/auth/mfa/primary.ts')).toMatch(/rememberTrustedDevice\(request, response, input\.deviceAccount\)/);
+    expect(read('src/lib/auth/mfa/primary.ts')).toMatch(/rememberTrustedDevice\(request, response, deviceAccountOf\(eligibility\.user\)\)/);
     // Le verrou « adresse bloquée pour tous » du lot 37 a disparu.
     expect(read('src/lib/auth/auth-rate-limit.ts')).not.toMatch(/loginAccount:/);
   });

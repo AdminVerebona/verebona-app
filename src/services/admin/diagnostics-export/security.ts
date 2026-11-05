@@ -121,6 +121,11 @@ const DIAG_TABLE_OMITTED_COLUMNS: Readonly<Record<string, Readonly<Record<string
   document_identity_groups: { identity_label: { kind: 'CONTENU', motif: 'adresse d’un bien lue dans les documents (donnée sensible)' } },
   // Lot 97 : jeton push mobile (chiffré) — capacité d'envoyer sur le téléphone de l'utilisateur.
   mobile_push_installations: { push_token_enc: { kind: 'SECURITE', motif: 'jeton push mobile (chiffré)' } },
+  // Lot 110A : empreinte du jeton d'import du partage natif et session d'origine.
+  mobile_share_import_grants: {
+    token_hash: { kind: 'SECURITE', motif: 'empreinte du jeton d’import (partage natif)' },
+    session_sid: { kind: 'SECURITE', motif: 'session d’origine du jeton d’import' },
+  },
 };
 
 /**

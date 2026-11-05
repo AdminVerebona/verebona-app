@@ -11,9 +11,8 @@ import {
   checkLoginThrottle, loginThrottledBody, recordLoginFailure, recordLoginSuccess,
   type LoginAttemptContext, type ThrottleVerdict,
 } from '@/lib/auth/login-throttle';
-import { rememberTrustedDevice } from '@/lib/auth/device-trust';
 import { deviceAccountOf, trustedDeviceForLogin } from '@/lib/auth/device-account';
-import { issueSession } from '@/lib/auth/session-issuance';
+import { concludePrimaryAuthentication, mfaPendingBody } from '@/lib/auth/mfa/primary';
 import { comparePasswordConstantTime } from '@/lib/auth/anti-enumeration';
 import { EMAIL_NOT_VERIFIED_MESSAGE, INVALID_CREDENTIALS_MESSAGE } from '@/lib/auth/auth-messages';
 import { userGuideProgress } from '@/db/schema';
@@ -90,7 +89,7 @@ function diagDetails(request: NextRequest): Record<string, string> {
 }
 
 async function login(request: NextRequest): Promise<NextResponse> {
-  let body: { email?: string; password?: string } = {};
+  let body: { email?: string; password?: string; returnUrl?: string } = {};
   try {
     body = await request.json();
     const { email, password } = body;
@@ -293,45 +292,48 @@ async function login(request: NextRequest): Promise<NextResponse> {
     // impayé reste connectable sans « abonnement actif » (APP-FUNC-31).
     const isSubscribedOrTrialing = !!defaultAccount && hasActiveSubscriptionStatus(defaultAccount.subscriptionStatus);
 
-    const response = NextResponse.json({
-      success: true,
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        username: user.username,
-        company: user.company,
-        planType: user.planType,
-        role: user.role,
-        status: user.status,
-        locale: user.locale,
-      },
-      // CDC §10.1 : les jetons ne sont JAMAIS renvoyes dans le corps JSON.
-      // Ils sont deposes uniquement en cookies HttpOnly ci-dessous.
-    });
+    const subject = {
+      id: user.id,
+      email: user.email,
+      role: user.role as UserRole,
+      planType: user.planType as PlanType,
+      status: user.status as UserStatus,
+      currentAccountId: defaultAccount?.id,
+      hasActiveAccount: isSubscribedOrTrialing,
+    };
 
-    // D1 : ce navigateur / cette application est désormais reconnu pour ce compte.
-    const deviceId = rememberTrustedDevice(request, response, deviceAccountOf(user));
-    // Lot 92 : émission UNIQUE (jetons + cookies + registre des sessions).
-    // Nouvelle famille (`sid`), conservée par les rotations ; une connexion
-    // n'éjecte jamais un autre appareil — seule l'ancienne session de CE
-    // navigateur est remplacée.
-    await issueSession(request, response, {
-      kind: 'open',
-      method: 'password',
-      replaceCurrent: true,
-      deviceId,
-      subject: {
-        id: user.id,
-        email: user.email,
-        role: user.role as UserRole,
-        planType: user.planType as PlanType,
-        status: user.status as UserStatus,
-        currentAccountId: defaultAccount?.id,
-        hasActiveAccount: isSubscribedOrTrialing,
-      },
+    // Lot 110B (ticket MFA §3) : décision CENTRALE après la preuve du mot de
+    // passe. MFA obligatoire pour ce compte → aucune session complète, seule
+    // l'étape provisoire (application d'authentification ou clé d'accès, ou
+    // premier enrôlement) ; sinon comportement inchangé (session de niveau 1).
+    const provisional = NextResponse.json({ success: true });
+    const outcome = await concludePrimaryAuthentication(request, provisional, {
+      subject, method: 'password', deviceAccount: deviceAccountOf(user),
+      returnUrl: typeof (body as { returnUrl?: unknown }).returnUrl === 'string' ? (body as { returnUrl: string }).returnUrl : null,
     });
+    const response = outcome.kind === 'mfa'
+      ? NextResponse.json(mfaPendingBody(outcome))
+      : NextResponse.json({
+        success: true,
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          username: user.username,
+          company: user.company,
+          planType: user.planType,
+          role: user.role,
+          status: user.status,
+          locale: user.locale,
+        },
+        // CDC §10.1 : les jetons ne sont JAMAIS renvoyes dans le corps JSON.
+        // Ils sont deposes uniquement en cookies HttpOnly (émission unique,
+        // lot 92 : `issueSession`, appelée par `concludePrimaryAuthentication`
+        // — nouvelle famille `sid`, une connexion n'éjecte jamais un autre
+        // appareil ; D1 : appareil reconnu).
+      });
+    for (const c of provisional.cookies.getAll()) response.cookies.set(c);
 
     return response;
   } catch (error) {

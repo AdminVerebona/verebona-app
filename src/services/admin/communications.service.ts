@@ -90,6 +90,7 @@ const EVENT_LABELS: Record<string, string> = {
   OTHER_SESSIONS_REVOKED: 'Autres appareils déconnectés (à la demande du titulaire)',
   AUTH_IDENTITY_LINKED: 'Google / Apple associé',
   AUTH_IDENTITY_UNLINKED: 'Google / Apple dissocié',
+  MFA_SECURITY_EVENT: 'Méthode de sécurité modifiée (clé d’accès, application d’authentification, codes de récupération)',
   NEWS_ANNOUNCEMENT: 'Actualités Verebona',
 };
 
@@ -137,6 +138,8 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   // Lot 93 (migration 0809) : connexion Google / Apple (CDC 18 §10.4, §37).
   { templateCode: 'PASSWORD_RESET_SOCIAL_ONLY', label: 'Mot de passe oublié — compte sans mot de passe (Google / Apple)' },
   { templateCode: 'SOCIAL_SIGNUP_EMAIL_CODE', label: 'Inscription Google / Apple — code de confirmation de l’adresse' },
+  // Lot 110B (migration 1168) : récupération d'accès (double authentification).
+  { templateCode: 'MFA_RECOVERY_EMAIL_CODE', label: 'Double authentification — code de vérification (récupération d’accès)' },
   // Lot 68C (migration 0477) : rappel J−7 avant le renouvellement automatique
   // d'un abonnement ANNUEL (tâche `subscription-annual-renewal-reminders`).
   // Désactivable : une désactivation annule les rappels en file (jamais

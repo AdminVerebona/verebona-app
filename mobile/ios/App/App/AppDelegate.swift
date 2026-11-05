@@ -46,6 +46,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         NotificationCenter.default.post(name: Notification.Name.init("didReceiveRemoteNotification"), object: completionHandler, userInfo: userInfo)
     }
 
+    // Lot 110A : fin d'un envoi du partage natif (lancé par l'extension de partage
+    // ou par l'app) — le système réveille l'app en arrière-plan pour recevoir
+    // l'accusé du serveur (VerebonaShareImportCore.swift). Autres sessions : rendues tout de suite.
+    func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
+                     completionHandler: @escaping () -> Void) {
+        if !VBShareUploader.shared.handleEvents(identifier: identifier, completion: completionHandler) {
+            completionHandler()
+        }
+    }
+
     func application(_ application: UIApplication,
                      configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {

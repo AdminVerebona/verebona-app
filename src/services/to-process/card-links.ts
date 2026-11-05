@@ -657,5 +657,8 @@ export async function checkCardLink(accountId: number, publicId: string, t: { ki
     triggerContext: row.trigger_context, supplierId,
   };
   const links = (await resolveCardLinks(accountId, [card])).get(card.publicId);
-  return links && linksOffer(links, t) ? 'ok' : 'gone';
+  if (links && linksOffer(links, t)) return 'ok';
+  // Lot 110D : référence ACTUELLE de l'Opération d'une question « même réalité » binaire.
+  const { binaryMatchReferenceOffered } = await import('./operation-match-binary');
+  return (await binaryMatchReferenceOffered(accountId, card, t)) ? 'ok' : 'gone';
 }

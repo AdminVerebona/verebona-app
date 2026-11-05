@@ -22,6 +22,9 @@
  *     indépendantes de T6 et de la bulle ; un clic pose la vraie question à
  *     l'Assistant et la remplace par une autre déjà disponible. Plus
  *     d'« Autre suggestion » ni d'invitation d'ajout déguisée.
+ *     Lot 110C : ordinateur / format large SEULEMENT, en une rangée
+ *     horizontale ; sur mobile (app, PWA, navigateur < 768 px) la zone est
+ *     absente et n'est pas lue (`src/lib/suggestions/home-placement.ts`).
  *
  * ── LOT 32 (ticket MASC2) : DEUX NIVEAUX ───────────────────────────────────
  *
@@ -69,6 +72,7 @@ import {
 } from '@/services/home/mascot/bubble';
 import { SharedSuggestionList } from '@/components/suggestions/SharedSuggestionList';
 import { useSharedSuggestions, type SharedSuggestionItem } from '@/lib/suggestions/shared-suggestions';
+import { useHomeSuggestionsPlacement } from '@/lib/suggestions/home-placement';
 import { MascotPose } from '@/components/verebona/space/MascotPose';
 import { useVerebonaSpace } from '@/components/verebona/space/VerebonaSpaceProvider';
 import { useMascotPresentation } from './useMascotPresentation';
@@ -172,7 +176,10 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
   // Lot 108J : suggestions partagées — service unique, indépendant de la
   // bulle et de T6 : elles s'affichent dès l'accueil, même si la prise de
   // parole est en cours, en panne ou sans question personnalisée.
-  const shared = useSharedSuggestions({ track: true });
+  // Lot 110C : lues et affichées seulement là où la rangée existe (ordinateur
+  // / format large) ; sur mobile, aucune lecture ni télémétrie « affiché ».
+  const placement = useHomeSuggestionsPlacement();
+  const shared = useSharedSuggestions({ track: true, active: placement === 'row' });
   // Lot 78C : date et salutation du jour, renouvelées à minuit, à 18:00 et
   // au retour au premier plan (jamais celles du dernier rendu).
   const now = useGreetingNow();
@@ -353,8 +360,9 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
     <section aria-label="Message de Verebona" className="grid grid-cols-[72px_minmax(0,1fr)] items-center gap-x-3.5 gap-y-3 md:grid-cols-[112px_minmax(0,1fr)] md:items-start md:gap-x-7 md:gap-y-3.5">
       {/* Mascotte immobile (§12bis), sans ombre portée (charte 2026 : une
           seule ombre, réservée aux cartes flottantes) ; recoloration cyan
-          appliquée par MascotPose. 112 px desktop, 72 px mobile. */}
-      <div className="flex-shrink-0 self-start md:row-span-3">
+          appliquée par MascotPose. 112 px desktop, 72 px mobile. Lot 110C :
+          deux rangées seulement sans zone de suggestions (aucun écart résiduel). */}
+      <div className={`flex-shrink-0 self-start ${placement === 'none' ? 'md:row-span-2' : 'md:row-span-3'}`}>
         <MascotPose pose={pose} size={112} alt={homePoseLabel(pose)} priority className="hidden md:block" working={travail} />
         <MascotPose pose={pose} size={72} alt={homePoseLabel(pose)} priority className="md:hidden" working={travail} />
         {/* Lot 78C : annonce sobre (une fois, à l'apparition), sans répéter le compteur de la bulle. */}
@@ -439,15 +447,20 @@ export function MascotSpeaks({ greetingName, empty, onCreateAsset, onUploadDocum
         )}
       </div>
 
-      {/* Lot 108J : trois suggestions partagées sous la bulle, séparées des
-          éléments « À faire d'abord » — une colonne pleine largeur sur mobile
-          (zones de 44 px, retour à la ligne naturel), compactes sur ordinateur. */}
-      <SharedSuggestionList
-        items={shared.items}
-        loading={shared.status === 'loading' || shared.status === 'idle'}
-        onAsk={askSuggestion}
-        className="col-span-2 md:col-span-1 md:col-start-2 md:mt-1"
-      />
+      {/* Lot 108J / 110C : au plus trois suggestions partagées sous la bulle,
+          séparées des éléments « À faire d'abord », en UNE rangée compacte —
+          ordinateur / format large seulement. Mobile : rien (ni zone, ni
+          marge, ni lecture). `hidden md:block` garde CSS et règle d'emplacement
+          d'accord pendant un redimensionnement (aucun chevauchement). */}
+      {placement !== 'none' && (
+        <div className="col-span-2 hidden min-w-0 md:col-span-1 md:col-start-2 md:mt-1 md:block" data-home-suggestions-zone>
+          <SharedSuggestionList
+            items={placement === 'row' ? shared.items : []}
+            loading={placement === 'unknown' || shared.status === 'loading' || shared.status === 'idle'}
+            onAsk={askSuggestion}
+          />
+        </div>
+      )}
 
       <TodoChoicesDialog
         item={choices}

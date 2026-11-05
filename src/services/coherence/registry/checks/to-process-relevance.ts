@@ -524,7 +524,8 @@ async function inspectOperationMatch(ctx: CheckContext, accountId: number, id: n
     SELECT DISTINCT s.operation_id AS id FROM business_operation_sources s JOIN business_operations o ON o.id = s.operation_id
      WHERE s.account_id = $1 AND s.active AND s.source_kind = 'DOCUMENT' AND s.source_entity_key = $2::text AND s.locator->>'candidateKey' = $3
        AND o.merged_into_operation_id IS NULL AND o.invalidated_at IS NULL ORDER BY 1`, [accountId, fileId, key]));
-  const kind = choice?.kind === 'SAME' || choice?.kind === 'DISTINCT' ? choice.kind : null;
+  // Lot 110D : « Non » d'une carte binaire (NOT_SAME) = Opération écartée, même contrôle que DISTINCT.
+  const kind = choice?.kind === 'SAME' || choice?.kind === 'DISTINCT' ? choice.kind : choice?.kind === 'NOT_SAME' ? 'DISTINCT' : null;
   const chosenCanonical = decisions.find((d) => d.decision === 'CONFIRMED' && d.active === true)?.canonical;
   const etat = operationMatchPropagation({
     fileAlive: x.file_alive === true, candidateActive: cand?.active === true, candidatePending: cand?.pending === true,

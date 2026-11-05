@@ -16,6 +16,8 @@ import { SessionService } from '@/lib/session-service';
 import { getReauthState, listReauthMethodsFor } from '@/lib/auth/reauth';
 // Lot 93 : enregistre Google / Apple comme méthodes de confirmation (à redirection).
 import '@/lib/auth/oauth/reauth-bridge';
+// Lot 110B : clé d'accès et application d'authentification (preuve forte).
+import '@/lib/auth/mfa/stepup';
 
 export async function GET(request: NextRequest) {
   try {
@@ -32,6 +34,8 @@ export async function GET(request: NextRequest) {
         fresh: state.state === 'fresh',
         freshUntil: state.state === 'fresh' ? state.proof.expiresAt.toISOString() : null,
         methods,
+        // Lot 110B : la confirmation doit être faite avec une clé d'accès ou l'application d'authentification.
+        strongRequired: state.state !== 'fresh' && !!state.mfa ? true : methods.every((m) => m.kind === 'totp' || m.kind === 'passkey') && methods.length > 0,
       },
     }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {

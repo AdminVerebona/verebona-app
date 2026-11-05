@@ -29,6 +29,7 @@ import { isApiAllowedWhilePendingDeletion, isPendingDeletion } from './account-c
 import { SESSION_UNAVAILABLE_CODE } from './session-errors';
 import { hasActiveAccountAccess } from './account-access';
 import { isSessionRevoked } from './session-registry';
+import { assertMfaSatisfied } from './mfa/guard';
 
 /**
  * Jeton émis avant la révocation globale de son utilisateur ? (borne en cache 60 s)
@@ -87,6 +88,10 @@ export async function verifySessionAccessToken(
   if (!payload?.userId) return null;
   if (!sessionStatusAllows(payload.status, request.nextUrl?.pathname ?? '', request.method ?? 'GET')) return null;
   if (await isAccessRevoked(payload)) return null;
+  // Lot 110B : même garde MFA que `SessionService` — LÈVE `MFA_REQUIRED`
+  // (403 via `sessionErrorToResponse`), jamais `null` (qui vaudrait 401 et
+  // relancerait un renouvellement sans effet).
+  await assertMfaSatisfied(payload, request.nextUrl?.pathname ?? '', request.method ?? 'GET');
   // Lot 54 (SEC-01) : droit actif sur le compte du jeton (lu en base, sans
   // cache). Base injoignable : `SESSION_UNAVAILABLE` remonte (503).
   if (payload.currentAccountId != null

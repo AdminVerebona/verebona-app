@@ -20,9 +20,8 @@ import type { NextRequest, NextResponse } from 'next/server';
 import { and, eq } from 'drizzle-orm';
 import { db, pgClient } from '@/db';
 import { userGuideProgress } from '@/db/schema';
-import { issueSession } from '@/lib/auth/session-issuance';
-import { rememberTrustedDevice } from '@/lib/auth/device-trust';
 import { deviceAccountOf } from '@/lib/auth/device-account';
+import { concludePrimaryAuthentication, type PrimaryOutcome } from '@/lib/auth/mfa/primary';
 import { resolveSessionAccount } from '@/lib/auth/account-suspension';
 import { hasActiveSubscriptionStatus } from '@/lib/billing/subscription-status';
 import { AccountService } from '@/services/account-service';
@@ -82,7 +81,7 @@ export async function openSocialSession(
   user: EligibleUser,
   method: OAuthProvider,
   extra: Record<string, unknown> = {},
-): Promise<{ sid: string }> {
+): Promise<PrimaryOutcome> {
   await pgClient`UPDATE users SET last_login_at = NOW(), updated_at = NOW() WHERE id = ${user.id}`;
   await db.delete(userGuideProgress).where(and(eq(userGuideProgress.userId, user.id), eq(userGuideProgress.status, 'skipped')));
 
@@ -101,13 +100,14 @@ export async function openSocialSession(
       .catch(() => {});
   }
 
-  // Appareil reconnu (D1), comme la connexion par mot de passe.
-  const deviceId = rememberTrustedDevice(request, response, deviceAccountOf(user));
-  const { sid } = await issueSession(request, response, {
-    kind: 'open',
+  // Appareil reconnu (D1), comme la connexion par mot de passe. Lot 110B
+  // (ticket MFA §3) : décision CENTRALE — la preuve Google / Apple ne vaut
+  // pas MFA ; obligation applicable → contexte provisoire (clé d'accès ou
+  // application d'authentification du MÊME utilisateur), aucune session.
+  return concludePrimaryAuthentication(request, response, {
     method,
-    replaceCurrent: true,
-    deviceId,
+    deviceAccount: deviceAccountOf(user),
+    returnUrl: typeof extra.returnUrl === 'string' ? extra.returnUrl : null,
     subject: {
       id: user.id,
       email: user.email,
@@ -118,7 +118,12 @@ export async function openSocialSession(
       hasActiveAccount: !!user.account && hasActiveSubscriptionStatus(user.account.subscriptionStatus ?? null),
     },
   });
-  return { sid };
+}
+
+/** Lot 110B : page de la seconde étape (provisoire) après Google / Apple. */
+export function mfaStepPath(outcome: Extract<PrimaryOutcome, { kind: 'mfa' }>, returnUrl: string | undefined): string {
+  const base = outcome.step === 'enroll' ? '/securiser-mon-compte' : '/verification';
+  return returnUrl ? `${base}?${new URLSearchParams({ returnUrl }).toString()}` : base;
 }
 
 /** Page d'arrivée après ouverture de session. */

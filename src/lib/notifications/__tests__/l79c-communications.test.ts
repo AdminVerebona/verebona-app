@@ -134,7 +134,9 @@ describe('L79C-AC07 — indispensables et facultatifs séparés', () => {
       // Lot 93 : association / dissociation Google ou Apple (NOTIF-01, obligatoires).
       // Lot 96B (Q6) : « connexion depuis un nouvel appareil » devient obligatoire.
       // Lot 100D (A2) : « autres appareils déconnectés à votre demande », obligatoire.
-      essential: ['mot de passe modifié', 'changement d’adresse e-mail demandé', 'adresse e-mail modifiée', 'mot de passe réinitialisé', 'connexion depuis un nouvel appareil', 'autres appareils déconnectés à votre demande', 'Google ou Apple associé', 'Google ou Apple dissocié'],
+      essential: ['mot de passe modifié', 'changement d’adresse e-mail demandé', 'adresse e-mail modifiée', 'mot de passe réinitialisé', 'connexion depuis un nouvel appareil', 'autres appareils déconnectés à votre demande', 'Google ou Apple associé', 'Google ou Apple dissocié',
+        // Lot 110B (ticket MFA §7) : e-mail de sécurité obligatoire des facteurs.
+        'méthode de sécurité (clé d’accès, application d’authentification, codes de récupération)'],
       optional: [],
     });
     expect(categoryEmailScope('duo').optional).toEqual(['réponses à vos demandes de transfert ou de suppression']);

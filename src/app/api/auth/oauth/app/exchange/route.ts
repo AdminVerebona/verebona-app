@@ -19,7 +19,7 @@ import { enabledProviders } from '@/lib/auth/oauth/config';
 import { completeAppAccountExchange, notFound } from '@/lib/auth/oauth/flow';
 import { consumeHandoff } from '@/lib/auth/oauth/transactions';
 import { pkceChallenge, safeEqual } from '@/lib/auth/oauth/crypto';
-import { checkSessionEligibility, landingPath, openSocialSession } from '@/lib/auth/oauth/session-bridge';
+import { checkSessionEligibility, landingPath, mfaStepPath, openSocialSession } from '@/lib/auth/oauth/session-bridge';
 import { safeInternalPath } from '@/lib/safe-redirect';
 
 const refused = () => NextResponse.json({ error: 'Lien de connexion invalide ou expiré.', code: 'OAUTH_STATE_INVALID' }, { status: 400 });
@@ -36,7 +36,14 @@ export async function POST(request: NextRequest) {
   if (tx.intent === 'link' || tx.intent === 'reauth') return completeAppAccountExchange(request, tx);
   const eligibility = await checkSessionEligibility(tx.userId);
   if (!eligibility.ok) return NextResponse.json({ error: eligibility.code, code: eligibility.code }, { status: 403 });
-  const res = NextResponse.json({ success: true, redirectTo: safeInternalPath(landingPath(eligibility.user, tx.context.returnUrl)) });
-  await openSocialSession(request, res, eligibility.user, tx.provider, { client: 'app', authTransactionId: tx.id });
+  const target = safeInternalPath(landingPath(eligibility.user, tx.context.returnUrl));
+  // Lot 110B : même décision centrale que le Web — seconde étape dans la vue
+  // de l'application si la MFA est obligatoire (aucune session complète).
+  const carrier = NextResponse.json({ success: true });
+  const outcome = await openSocialSession(request, carrier, eligibility.user, tx.provider, { client: 'app', authTransactionId: tx.id, returnUrl: target });
+  const res = NextResponse.json(outcome.kind === 'mfa'
+    ? { success: true, mfaRequired: true, step: outcome.step, redirectTo: mfaStepPath(outcome, target) }
+    : { success: true, redirectTo: target });
+  for (const c of carrier.cookies.getAll()) res.cookies.set(c);
   return res;
 }

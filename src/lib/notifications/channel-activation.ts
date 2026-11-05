@@ -69,6 +69,8 @@ export const LOCKED_TRANSACTIONAL_EMAILS: Readonly<Record<string, string>> = {
   // Lot 93 : connexion Google / Apple (CDC 18 §10.4, §37).
   PASSWORD_RESET_SOCIAL_ONLY: 'E-mail de sécurité : réponse à « Mot de passe oublié » d’un compte sans mot de passe.',
   SOCIAL_SIGNUP_EMAIL_CODE: 'E-mail de sécurité : seul vecteur du code de confirmation de l’adresse.',
+  // Lot 110B : récupération d'accès (double authentification).
+  MFA_RECOVERY_EMAIL_CODE: 'E-mail de sécurité : seul vecteur du code prouvant la possession de l’adresse lors d’une récupération d’accès.',
 };
 
 export function transactionalLockReason(templateCode: string): string | null {

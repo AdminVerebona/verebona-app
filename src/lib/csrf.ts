@@ -49,6 +49,10 @@ const CSRF_EXEMPT_EXACT = new Set([
   // seul le jeton signé du lien permet de s'opposer aux communications
   // commerciales de SON titulaire (aucune autre action possible).
   '/api/public/marketing/unsubscribe',
+  // Lot 110A : import du partage natif — requête de l'extension iOS / du
+  // service d'envoi Android, SANS cookie (aucune origine de navigateur) :
+  // seul le jeton d'import en en-tête Authorization est lu par la route.
+  '/api/mobile/share-import/upload',
 ]);
 
 /** Construit la liste des origines autorisees a partir de l'environnement. */

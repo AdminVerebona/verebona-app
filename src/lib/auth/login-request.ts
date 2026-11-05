@@ -47,7 +47,7 @@ export function isNetworkError(e: unknown): boolean {
 }
 
 export async function postLogin(
-  credentials: { email: string; password: string },
+  credentials: { email: string; password: string; returnUrl?: string },
   deps: {
     fetchImpl?: typeof fetch;
     sleep?: (ms: number) => Promise<void>;
@@ -70,7 +70,7 @@ export async function postLogin(
       ...clientPlatformHeaders(),
       ...(isLoginAttemptId(deps.attemptId) ? { [LOGIN_ATTEMPT_HEADER]: deps.attemptId } : {}),
     },
-    body: JSON.stringify({ email: credentials.email, password: credentials.password }),
+    body: JSON.stringify({ email: credentials.email, password: credentials.password, ...(credentials.returnUrl ? { returnUrl: credentials.returnUrl } : {}) }),
   });
 
   const maxAttempts = 2;

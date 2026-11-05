@@ -15,12 +15,14 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ANDROID_MIN_WEBVIEW_VERSION, resolveBuildConfig } from '../config/environments.mjs';
+import { ANDROID_MIN_WEBVIEW_VERSION, resolveBuildConfig, resolveShareImportConfig } from '../config/environments.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Contenu des fichiers générés (pur, testé). */
 export function generatedFiles(b) {
+  // Lot 110A : contrat du partage natif (point unique : environments.mjs › SHARE_IMPORT).
+  const share = resolveShareImportConfig();
   const publicConfig = {
     env: b.env, appName: b.appName, origin: b.origin, startUrl: b.startUrl, uiMode: b.uiMode, version: b.version, build: b.build,
     minWebViewVersion: ANDROID_MIN_WEBVIEW_VERSION,
@@ -32,7 +34,8 @@ export function generatedFiles(b) {
     [b.uiMode === 'remote' ? 'www/app-config.js' : 'sonde-b/app-config.js']: appConfig,
     'android/verebona.properties':
       `# Généré par scripts/prepare.mjs (${b.env}) — ne pas modifier, ne pas versionner.\n`
-      + `versionName=${b.version}\nversionCode=${b.build}\nappHost=${b.host}\n`,
+      + `versionName=${b.version}\nversionCode=${b.build}\nappHost=${b.host}\n`
+      + `shareOpenApp=${share.androidOpenApp}\n`,
     'ios/Verebona.xcconfig':
       `// Généré par scripts/prepare.mjs (${b.env}) — ne pas modifier, ne pas versionner.\n`
       + `VB_APP_ID = ${b.appId}\n`
@@ -45,6 +48,9 @@ export function generatedFiles(b) {
       + `VB_APP_BOUND_DOMAIN = ${b.hostname}\n`
       + `VB_URL_SCHEME = ${b.urlScheme}\n`
       + `VB_APP_GROUP = ${b.iosAppGroup}\n`
+      // Lot 110A : partage natif (option B d'arbitrage, libellé du bouton d'import).
+      + `VB_SHARE_COMPLETION_NOTICE = ${share.iosCompletionNotice}\n`
+      + `VB_SHARE_IMPORT_LABEL = ${share.iosImportLabel}\n`
       + `MARKETING_VERSION = ${b.version}\n`
       + `CURRENT_PROJECT_VERSION = ${b.build}\n`
       + `ASSETCATALOG_COMPILER_APPICON_NAME = ${b.env === 'prod' ? 'AppIcon' : 'AppIcon-Preprod'}\n`

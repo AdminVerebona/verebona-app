@@ -130,6 +130,7 @@ export function asHelpSearchCorpus(c: ResourcesCorpus): HelpCorpus {
       sections: a.sections,
       status: 'published',
       validatedAt,
+      revision: a.revision,
     }));
   return { schema: 'verebona-help-t2-v1', version: c.version, environment: c.environment, articles };
 }

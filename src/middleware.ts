@@ -278,6 +278,10 @@ export async function middleware(request: NextRequest) {
       // Lot 104A : suppressions de production lues par la préproduction (serveur à
       // serveur) — requête signée HMAC vérifiée par la route, 404 hors production.
       '/api/internal/production-deletion-signals',
+      // Lot 110A : import du partage natif (extension iOS / envoi de fond
+      // Android) — AUCUN cookie ni jeton de session : jeton d'import (import
+      // seul, un espace, courte durée) vérifié par la route.
+      '/api/mobile/share-import/upload',
     ];
 
     // Cron endpoints utilisent leur propre CRON_SECRET — pas de JWT
@@ -317,7 +321,13 @@ export async function middleware(request: NextRequest) {
       // compte ? », échange de l'application mobile). Chaque route se protège
       // (state, nonce, PKCE, liaison au navigateur) ; 404 tant que les
       // identifiants du fournisseur ne sont pas posés.
-      pathname.startsWith('/api/auth/oauth/');
+      pathname.startsWith('/api/auth/oauth/') ||
+      // Lot 110B (MFA) : seconde étape de connexion, enrôlement provisoire,
+      // connexion par clé d'accès, récupération — SANS jeton d'accès par
+      // construction. Chaque route exige le contexte provisoire signé
+      // (`vb_mfa`, liste fermée `MFA_PENDING_ROUTES`) ou se protège seule
+      // (défi lié au navigateur, réponses non énumérantes).
+      pathname.startsWith('/api/auth/mfa/');
 
     if (publicRoutes.includes(pathname) || isPublicPrefix || isCronRoute) {
       return NextResponse.next();

@@ -84,6 +84,7 @@ import {
 } from '@/services/ai/telemetry/execution-filters';
 import { AiEnvBanner } from '../ai-dashboard/_components/AiEnvBanner';
 import { UnansweredHelpQuestions } from './_components/UnansweredHelpQuestions';
+import { T2UnansweredJournal } from './_components/T2UnansweredJournal';
 import { CopyBlockButton, ExecutionExportButtons } from './_components/CopyJson';
 import {
   ExecutionCardsView, JournalFiltersView, JournalRowsView, JournalSynthesisView, initialJournalListOpen, journalParams, periodLabelOf,
@@ -501,6 +502,7 @@ function AiExecutionsScreen() {
 
         {/* §10.4 : trous de la base d'aide, remontés depuis l'assistant. */}
         {vue === 'technique' && tab === 't2' && <UnansweredHelpQuestions />}
+        {vue === 'technique' && tab === 't2' && <T2UnansweredJournal />}
 
         {/* Incidents d'APPELS (technique) : jamais présentés comme des exécutions en échec (BO-04, BO-11). */}
         {vue === 'technique' && tab === 'calls' && errors.length > 0 && (

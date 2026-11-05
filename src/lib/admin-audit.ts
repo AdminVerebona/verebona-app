@@ -179,13 +179,15 @@ export type AdminActionType =
   // Lot 104A : « Vérifier la propagation » des suppressions de production (bilan chiffré, sans empreinte).
   | 'PRODUCTION_COPY_DELETION_SYNC'
   // Lot 109L : tarif IA saisi / validé manuellement (sourcé) ou retrait vérifié — avant / après, preuve.
-  | 'AI_PRICING_UPDATE';
+  | 'AI_PRICING_UPDATE'
+  // Lot 110B : obligation de double authentification (utilisateurs / administrateurs) — avant / après.
+  | 'MFA_ENFORCEMENT_UPDATE';
 
 export type AdminTargetType = 'ACCOUNT' | 'USER' | 'EXPORT_TEMPLATE' | 'COMMUNICATION_CHANNEL' | 'ANOMALY' | 'GDPR_REQUEST'
   | 'ASSISTANT_SETTING' | 'ASSISTANT_REQUEST' | 'NOTIFICATION' | 'AI_CACHE' | 'AI_METRICS'
   | 'OPS_BACKFILL' | 'SCHEDULED_TASK' | 'AI_EXECUTION' | 'STRIPE_CATALOG' | 'EMAIL_LOG' | 'AI_EXECUTION_REPORT' | 'EMAIL_SETTINGS'
   | 'EMAIL_TEMPLATE' | 'ANNUAL_RENEWAL' | 'TECH_DIAGNOSTIC' | 'OPERATION_IDENTITY_REVIEW' | 'RECETTE_EXPORT'
-  | 'AI_EXECUTIONS_EXPORT' | 'TRIAL_LIFECYCLE' | 'DELETION_REGISTRY' | 'PRODUCTION_COPY' | 'AI_PRICING';
+  | 'AI_EXECUTIONS_EXPORT' | 'TRIAL_LIFECYCLE' | 'DELETION_REGISTRY' | 'PRODUCTION_COPY' | 'AI_PRICING' | 'MFA_ENFORCEMENT';
 
 type Executor = Pick<typeof db, 'insert' | 'select'>;
 

@@ -134,6 +134,7 @@ export const EMAIL_EVENT_USER_LABELS: Partial<Record<string, string>> = {
   OTHER_SESSIONS_REVOKED: 'autres appareils déconnectés à votre demande',
   AUTH_IDENTITY_LINKED: 'Google ou Apple associé',
   AUTH_IDENTITY_UNLINKED: 'Google ou Apple dissocié',
+  MFA_SECURITY_EVENT: 'méthode de sécurité (clé d’accès, application d’authentification, codes de récupération)',
   NEWS_ANNOUNCEMENT: 'actualités',
 };
 

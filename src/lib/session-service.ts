@@ -14,6 +14,7 @@ import {
   isPendingDeletion,
 } from './auth/account-closure';
 import { CGUV_REACCEPTANCE_REQUIRED_CODE, isApiAllowedDuringReacceptance } from './legal/reacceptance-gate';
+import { assertMfaSatisfied } from './auth/mfa/guard';
 
 /**
  * Session payload extrait du JWT.
@@ -28,6 +29,8 @@ export interface SessionPayload {
   currentAccountId?: number;
   /** Lot 92 : famille de session (registre `user_sessions`) ; absente des jetons antérieurs au lot 37. */
   sid?: string;
+  /** Lot 110B : niveau de preuve de la session (2 = authentification forte). */
+  aal?: 1 | 2;
 }
 
 /**
@@ -111,6 +114,13 @@ export class SessionService {
       throw new Error('INVALID_TOKEN');
     }
 
+    // Lot 110B (ticket MFA §6) : double authentification obligatoire pour
+    // cet utilisateur (facteur enrôlé ou obligation globale en vigueur) et
+    // session sans preuve forte → 403 MFA_REQUIRED, hors liste fermée
+    // (déconnexion, résiliation). Anciennes sessions comprises, dès la
+    // première requête. Base injoignable : 503, jamais un accès.
+    await assertMfaSatisfied(payload, request.nextUrl?.pathname ?? '', request.method ?? 'GET');
+
     // Lot 54 (SEC-01) : droit ACTIF sur le compte du jeton, relu en base à
     // chaque requête (sans cache) — un membre retiré ou parti perd l'accès
     // tout de suite, même avec un jeton encore valide. Le renouvellement lui
@@ -157,6 +167,7 @@ export class SessionService {
       planType: payload.planType as PlanType,
       currentAccountId: payload.currentAccountId,
       ...(typeof payload.sid === 'string' && payload.sid ? { sid: payload.sid } : {}),
+      aal: payload.aal === 2 ? 2 : 1,
     };
   }
 

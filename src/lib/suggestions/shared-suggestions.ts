@@ -85,6 +85,14 @@ let meta: { at: number; epoch: number } = { at: 0, epoch: -1 };
 let inflight: Promise<void> | null = null;
 let timer: ReturnType<typeof setTimeout> | null = null;
 const listeners = new Set<() => void>();
+/**
+ * Lot 110C : surfaces qui AFFICHENT les suggestions en ce moment (rangée de
+ * l'accueil large, « Demander à Verebona » ouvert). Sans aucune surface
+ * active (accueil mobile, espace fermé), un événement de données ne relit
+ * pas : la liste est seulement marquée périmée et relue à la prochaine
+ * activation.
+ */
+let activeSurfaces = 0;
 
 function emit(next: SharedSuggestionsState) {
   state = next;
@@ -128,7 +136,16 @@ export function ensureSharedSuggestions(force = false): Promise<void> {
 /** Relecture temporisée (événements de données). */
 export function scheduleSharedSuggestionsRefresh(ms = SHARED_SUGGESTIONS_DEBOUNCE_MS): void {
   if (timer) clearTimeout(timer);
-  timer = setTimeout(() => { timer = null; void ensureSharedSuggestions(true); }, ms);
+  timer = setTimeout(() => {
+    timer = null;
+    if (activeSurfaces > 0) void ensureSharedSuggestions(true);
+    else meta = { ...meta, at: 0 }; // périmée : relue à la prochaine ouverture d'une surface
+  }, ms);
+}
+
+/** Nombre de surfaces actives (tests et diagnostic). */
+export function activeSharedSuggestionSurfaces(): number {
+  return activeSurfaces;
 }
 
 /** Clic : remplacement immédiat dans les deux surfaces (aucun appel). */
@@ -142,6 +159,7 @@ export function resetSharedSuggestions(): void {
   state = { status: 'idle', version: null, items: [], reserve: [] };
   meta = { at: 0, epoch: -1 };
   inflight = null;
+  // `activeSurfaces` reste : il suit les surfaces montées, pas la session.
   if (timer) clearTimeout(timer);
   timer = null;
   listeners.forEach((l) => l());
@@ -171,8 +189,9 @@ function sendEvents(visitId: string, events: Array<{ id: string; objective: stri
 
 /**
  * Suggestions partagées pour une surface. `active` : la surface est visible
- * (l'espace « Demander à Verebona » ouvert, l'accueil monté) — la lecture
- * part alors si nécessaire. `track` : télémétrie « affiché » (accueil).
+ * (l'espace « Demander à Verebona » ouvert, la rangée de l'accueil large —
+ * lot 110C : jamais l'accueil mobile) — la lecture part alors si nécessaire ;
+ * inactive, la surface ne lit RIEN. `track` : télémétrie « affiché » (accueil).
  */
 export function useSharedSuggestions(opts: { active?: boolean; track?: boolean } = {}) {
   const active = opts.active !== false;
@@ -181,7 +200,12 @@ export function useSharedSuggestions(opts: { active?: boolean; track?: boolean }
     () => state,
     () => SERVER_STATE,
   );
-  useEffect(() => { if (active) void ensureSharedSuggestions(); }, [active]);
+  useEffect(() => {
+    if (!active) return;
+    activeSurfaces += 1;
+    void ensureSharedSuggestions();
+    return () => { activeSurfaces -= 1; };
+  }, [active]);
   const visit = useRef<{ id: string; vus: Set<string> } | null>(null);
   useEffect(() => {
     if (!opts.track || !active || snap.items.length === 0) return;

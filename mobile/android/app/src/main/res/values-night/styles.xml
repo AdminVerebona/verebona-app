@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Lot 110A : dialogue de réception d'un partage en mode sombre. -->
+    <style name="VerebonaShareDialog" parent="@android:style/Theme.DeviceDefault.Dialog.Alert" />
+</resources>

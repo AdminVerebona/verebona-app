@@ -9,7 +9,8 @@ import { verifierFichier, MAX_FICHIERS_COMPTE, MAX_FICHIERS_PAR_BIEN } from '@/l
 import { estCleOperation, empreintePresign, deciderPresignRejoue, uploadOperationLockKey } from '@/lib/upload-idempotence';
 import { generateS3Key } from '@/lib/s3-naming';
 import { rateLimiter } from '@/lib/rate-limiter';
-import { getSession } from '@/lib/auth-guards';
+// Lot 110A : même garde de session, ou identité déléguée par la route d'import du partage natif.
+import { resolveDepotSession } from '@/lib/documents/depot-session';
 import { canAddDocument } from '@/services/entitlements.service';
 import { SessionService } from '@/lib/session-service';
 import { s3Client, S3_BUCKET, S3_REGION } from '@/lib/s3-client';
@@ -69,7 +70,7 @@ async function fixerCleS3(fileId: number, cle: string): Promise<string> {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getSession(request);
+    const session = await resolveDepotSession(request);
       const { userId, currentAccountId } = session;
       
       if (!currentAccountId) {

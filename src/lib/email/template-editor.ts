@@ -201,6 +201,11 @@ const DECLARED: Record<string, { variables: TemplateVariable[]; required: Requir
     variables: [FIRST_NAME, v('code', 'Code de confirmation à 6 chiffres'), v('expiresIn', 'Durée de validité du code')],
     required: [req('code de confirmation', 'code')],
   },
+  // Lot 110B (migration 1168) : récupération d'accès MFA — code e-mail.
+  MFA_RECOVERY_EMAIL_CODE: {
+    variables: [FIRST_NAME, v('code', 'Code de vérification à 6 chiffres'), v('expiresIn', 'Durée de validité du code')],
+    required: [req('code de vérification', 'code')],
+  },
   SUBSCRIPTION_ANNUAL_RENEWAL_REMINDER: {
     variables: [FIRST_NAME, v('planLabel', 'Offre'), v('renewalDate', 'Date du renouvellement'), v('renewalDelayLabel', 'Délai avant renouvellement (« dans 7 jours »)'),
       v('amountLabel', 'Montant prévu du renouvellement'), v('manageSubscriptionUrl', 'Lien du portail Stripe (gérer l’abonnement)', 'url'), v('accountUrl', 'Lien « Mon compte »', 'url')],
@@ -283,7 +288,7 @@ export const NOTIFICATION_EMAIL_TEMPLATES: Readonly<Record<string, NotificationE
   NOTIF_GDPR_EXPORT: { label: 'Export de données prêt', events: ['GDPR_EXPORT_READY'] },
   NOTIF_PAYMENT_INCIDENT: { label: 'Incident de paiement', events: ['PAYMENT_FAILED', 'PAYMENT_ACTION_REQUIRED', 'SUBSCRIPTION_SUSPENDED', 'ACCOUNT_READ_ONLY'] },
   NOTIF_ACCOUNT_DELETION: { label: 'Suppression de compte programmée (clôture, rappel J−7)', events: ['ACCOUNT_DELETION_SCHEDULED', 'ACCOUNT_DELETION_REMINDER'] },
-  NOTIF_SECURITY: { label: 'Sécurité du compte', events: ['PASSWORD_CHANGED', 'EMAIL_CHANGE_REQUESTED', 'EMAIL_CHANGED', 'PASSWORD_RESET_COMPLETED', 'AUTH_IDENTITY_LINKED', 'AUTH_IDENTITY_UNLINKED'] },
+  NOTIF_SECURITY: { label: 'Sécurité du compte', events: ['PASSWORD_CHANGED', 'EMAIL_CHANGE_REQUESTED', 'EMAIL_CHANGED', 'PASSWORD_RESET_COMPLETED', 'AUTH_IDENTITY_LINKED', 'AUTH_IDENTITY_UNLINKED', 'MFA_SECURITY_EVENT'] },
   // Lot 96B (CDC 18 Q6, migration 0832) : gabarit dédié, non désactivable.
   NOTIF_NEW_DEVICE_LOGIN: { label: 'Sécurité — connexion depuis un nouvel appareil', events: ['NEW_DEVICE_LOGIN'] },
   // Lot 100D (décision PO A2, migration 0878) : gabarit dédié, non désactivable.

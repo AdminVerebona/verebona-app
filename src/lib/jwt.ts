@@ -52,11 +52,19 @@ import { ACCESS_TOKEN_TTL_S, LEGACY_ACCESS_TOKEN_MAX_S, REFRESH_TOKEN_TTL_S } fr
 const JWT_ACCESS_EXPIRY_S  = ACCESS_TOKEN_TTL_S;   // 15 min
 const JWT_REFRESH_EXPIRY_S = REFRESH_TOKEN_TTL_S;  // 30 j (rotation à chaque renouvellement)
 
-export type TokenUse = 'access' | 'refresh';
+/**
+ * Lot 110B (MFA) : `mfa` = jeton PROVISOIRE d'authentification forte en cours
+ * (après mot de passe / Google / Apple / lien d'activation, avant la preuve
+ * passkey / TOTP). Clé dérivée PROPRE, `kid` propre : il n'est JAMAIS accepté
+ * comme jeton d'accès ni de renouvellement (`verifyAccessToken` /
+ * `verifyRefreshToken` le refusent par construction), seulement par
+ * `verifyMfaPendingToken` (routes `/api/auth/mfa/*`, liste fermée).
+ */
+export type TokenUse = 'access' | 'refresh' | 'mfa';
 
 const JWT_ISSUER = 'verebona';
-export const JWT_AUDIENCE: Readonly<Record<TokenUse, string>> = { access: 'verebona:access', refresh: 'verebona:refresh' };
-export const JWT_KID: Readonly<Record<TokenUse, string>> = { access: 'v2-access', refresh: 'v2-refresh' };
+export const JWT_AUDIENCE: Readonly<Record<TokenUse, string>> = { access: 'verebona:access', refresh: 'verebona:refresh', mfa: 'verebona:mfa' };
+export const JWT_KID: Readonly<Record<TokenUse, string>> = { access: 'v2-access', refresh: 'v2-refresh', mfa: 'v2-mfa' };
 
 /**
  * Au-delà de cette date, plus aucun jeton historique (sans `kid`) n'est lu,
@@ -68,6 +76,8 @@ export const LEGACY_TOKENS_ACCEPTED_UNTIL = Date.parse('2027-03-31T00:00:00Z');
 const LEGACY_MAX_LIFETIME_S: Readonly<Record<TokenUse, number>> = {
   access: LEGACY_ACCESS_TOKEN_MAX_S,
   refresh: JWT_REFRESH_EXPIRY_S,
+  // Lot 110B : aucun jeton provisoire historique n'existe — jamais lu en mode hérité.
+  mfa: 0,
 };
 
 // ── Secret (C5) ─────────────────────────────────────────────────────────────
@@ -165,6 +175,18 @@ export interface JWTPayload {
   /** Identifiant unique du jeton. */
   jti?: string;
   exp?: number;
+  /**
+   * Lot 110B — NIVEAU DE PREUVE de la session (porté par les jetons d'accès
+   * ET de renouvellement, recopié tel quel par la rotation — jamais promu) :
+   * absent ou 1 = authentification primaire seule (mot de passe, Google,
+   * Apple, lien) ; 2 = authentification forte prouvée (passkey avec
+   * vérification de l'utilisateur, ou primaire + TOTP / passkey).
+   */
+  aal?: 1 | 2;
+  /** Lot 110B : méthodes prouvées (`pwd`, `google`, `apple`, `link`, `passkey`, `otp`, `recovery`). */
+  amr?: string[];
+  /** Lot 110B : milliseconde de la preuve forte (aal 2). */
+  mfaAt?: number;
 }
 
 export type AccessTokenPayload = JWTPayload;
@@ -198,7 +220,7 @@ async function derivedKeyBytes(use: TokenUse): Promise<Uint8Array> {
     const master = await hmacKey(enc.encode(secret), 'sign');
     const derive = async (u: TokenUse) =>
       new Uint8Array(await crypto.subtle.sign('HMAC', master, enc.encode(`verebona/jwt/v2/${u}`)));
-    derivedCache = { secret, keys: { access: await derive('access'), refresh: await derive('refresh') } };
+    derivedCache = { secret, keys: { access: await derive('access'), refresh: await derive('refresh'), mfa: await derive('mfa') } };
   }
   return derivedCache.keys[use];
 }
@@ -249,22 +271,30 @@ interface TokenSubject {
   currentAccountId?: number; hasActiveAccount?: boolean;
 }
 
-function subjectClaims(user: TokenSubject, sid: string): Record<string, unknown> {
+/** Lot 110B : niveau de preuve inscrit dans les jetons d'une session. */
+export interface TokenAssurance { aal: 1 | 2; amr?: string[]; mfaAt?: number }
+
+function subjectClaims(user: TokenSubject, sid: string, assurance?: TokenAssurance): Record<string, unknown> {
   return {
     userId: user.id, email: user.email, role: user.role,
     planType: user.planType, status: user.status,
     currentAccountId: user.currentAccountId,
     hasActiveAccount: user.hasActiveAccount,
     sid,
+    // Lot 110B : niveau 2 seulement s'il est explicitement fourni par
+    // l'émetteur (`session-issuance`) ; tout autre cas = niveau 1.
+    ...(assurance?.aal === 2
+      ? { aal: 2, amr: (assurance.amr ?? []).slice(0, 6), ...(typeof assurance.mfaAt === 'number' ? { mfaAt: assurance.mfaAt } : {}) }
+      : { aal: 1, ...(assurance?.amr?.length ? { amr: assurance.amr.slice(0, 6) } : {}) }),
   };
 }
 
-export async function generateAccessToken(user: TokenSubject, opts: { sid?: string } = {}): Promise<string> {
-  return createToken('access', subjectClaims(user, opts.sid ?? newSessionId()), JWT_ACCESS_EXPIRY_S);
+export async function generateAccessToken(user: TokenSubject, opts: { sid?: string; assurance?: TokenAssurance } = {}): Promise<string> {
+  return createToken('access', subjectClaims(user, opts.sid ?? newSessionId(), opts.assurance), JWT_ACCESS_EXPIRY_S);
 }
 
-export async function generateRefreshToken(user: TokenSubject, opts: { sid?: string } = {}): Promise<string> {
-  return createToken('refresh', subjectClaims(user, opts.sid ?? newSessionId()), JWT_REFRESH_EXPIRY_S);
+export async function generateRefreshToken(user: TokenSubject, opts: { sid?: string; assurance?: TokenAssurance } = {}): Promise<string> {
+  return createToken('refresh', subjectClaims(user, opts.sid ?? newSessionId(), opts.assurance), JWT_REFRESH_EXPIRY_S);
 }
 
 /**
@@ -274,10 +304,11 @@ export async function generateRefreshToken(user: TokenSubject, opts: { sid?: str
 export async function generateSessionTokens(
   user: TokenSubject,
   sid: string = newSessionId(),
+  assurance?: TokenAssurance,
 ): Promise<{ accessToken: string; refreshToken: string; sid: string }> {
   const [accessToken, refreshToken] = await Promise.all([
-    generateAccessToken(user, { sid }),
-    generateRefreshToken(user, { sid }),
+    generateAccessToken(user, { sid, assurance }),
+    generateRefreshToken(user, { sid, assurance }),
   ]);
   return { accessToken, refreshToken, sid };
 }
@@ -325,6 +356,8 @@ async function verifyTypedToken(token: string, expected: TokenUse): Promise<JWTP
     if (payload.type !== expected) return null;
 
     if (mode === 'legacy') {
+      // Lot 110B : aucun jeton provisoire MFA « historique » n'est admis.
+      if (expected === 'mfa') return null;
       // Jeton émis avant le lot 37 : usage historique seul, bornes de l'ancien émetteur.
       if (payload.token_use !== undefined || payload.aud !== undefined) return null;
       if (typeof payload.iat !== 'number') return null;
@@ -352,6 +385,31 @@ export async function verifyAccessToken(token: string): Promise<AccessTokenPaylo
 /** Jeton de renouvellement uniquement (`/api/auth/refresh`, déconnexion). */
 export async function verifyRefreshToken(token: string): Promise<JWTPayload | null> {
   return verifyTypedToken(token, 'refresh');
+}
+
+// ── Lot 110B : jeton PROVISOIRE d'authentification forte ────────────────────
+
+/** Revendications du jeton provisoire (aucune donnée d'accès : ni compte, ni rôle). */
+export interface MfaPendingClaims {
+  userId: number;
+  /** Identifiant de la ligne `mfa_pending_auth` (usage unique, révocable). */
+  pid: string;
+  /** Méthode primaire prouvée : `password` | `google` | `apple` | `email_link` | `recovery`. */
+  pm: string;
+}
+
+export type MfaPendingPayload = MfaPendingClaims & { type: 'mfa'; iat?: number; iatMs?: number; exp?: number };
+
+/** Émet le jeton provisoire (`ttlSeconds` court, cf. `lib/auth/mfa/constants`). */
+export async function generateMfaPendingToken(claims: MfaPendingClaims, ttlSeconds: number): Promise<string> {
+  return createToken('mfa', { userId: claims.userId, pid: claims.pid, pm: claims.pm }, ttlSeconds);
+}
+
+/** Jeton provisoire uniquement ; jamais un jeton d'accès / de renouvellement (clés et `kid` distincts). */
+export async function verifyMfaPendingToken(token: string): Promise<MfaPendingPayload | null> {
+  const p = await verifyTypedToken(token, 'mfa') as unknown as MfaPendingPayload | null;
+  if (!p || typeof p.userId !== 'number' || typeof p.pid !== 'string' || typeof p.pm !== 'string') return null;
+  return p;
 }
 
 /**

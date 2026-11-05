@@ -191,6 +191,9 @@ async function refresh(request: NextRequest): Promise<NextResponse> {
     const issued = await issueSession(request, response, {
       kind: 'rotate',
       sid,
+      // Lot 110B : niveau de preuve du jeton CONSOMMÉ, recopié tel quel — un
+      // renouvellement ne promeut jamais une session de niveau 1.
+      previous: payload,
       subject: {
         id: user.id,
         email: user.email,

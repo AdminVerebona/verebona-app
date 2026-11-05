@@ -38,7 +38,8 @@ import { PRIORITY_LABELS } from '@/services/to-process/priority';
 import type { ActionKind, ActionPriority } from '@/services/to-process/action-model';
 import { openCardDocumentPreview, previewAriaLabel } from './document-preview';
 import type { CardLinks as CardLinksData } from '@/services/to-process/card-links';
-import { CardLinks } from './CardLinks';
+import { CardLinkButton, CardLinks } from './CardLinks';
+import type { OperationReferencesView } from '@/services/to-process/operation-match-binary';
 import { clearDraft, getDraft, setDraft } from './return-state';
 
 export interface ActionProposalView {
@@ -75,6 +76,10 @@ export interface ActionView {
   scope?: { label: string; documents: Array<{ id: number; title: string; evidence: string }>; exceptions: Array<{ id: number; title: string; reason: string }> };
   /** Lot 107E — liens directs (objet, justificatifs exacts, source de chaque proposition). */
   links?: CardLinksData;
+  /** Lot 110D — question binaire : Oui / Non seulement, jamais « Autre » (décidé par le serveur). */
+  choiceMode?: 'BINARY';
+  /** Lot 110D — références de l'événement de référence candidat, en contexte cliquable (jamais des réponses). */
+  references?: OperationReferencesView;
 }
 
 interface Handlers {
@@ -250,15 +255,18 @@ function Controls({ action, onChoose, onOpenTarget, busy }: { action: ActionView
           </span>
         </Button>
       ))}
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={busy}
-        onClick={() => onOpenTarget(action)}
-        className="h-9"
-      >
-        {isInterventionCard(action) ? MICROCOPY.open : MICROCOPY.otherChoice}
-      </Button>
+      {/* Lot 110D : question binaire (Oui / Non) — aucun troisième bouton. */}
+      {action.choiceMode !== 'BINARY' && (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => onOpenTarget(action)}
+          className="h-9"
+        >
+          {isInterventionCard(action) ? MICROCOPY.open : MICROCOPY.otherChoice}
+        </Button>
+      )}
     </div>
   );
 }
@@ -342,6 +350,43 @@ export function GroupScope({ scope }: { scope: NonNullable<ActionView['scope']> 
   );
 }
 
+/**
+ * Lot 110D — références de l'événement de référence candidat (question
+ * binaire « même achat que les documents suivants ? ») : CONTEXTE, jamais une
+ * réponse. Chaque référence est un lien natif (tiroir du document ou de
+ * l'événement, revalidé au clic par la route de la carte) : titre complet
+ * (passage à la ligne, aucune troncature), type et date utile dessous. Liste
+ * visible sans dépliage, avant les boutons ; lisible à 320 px. Rendu SEUL :
+ * le serveur fournit titres, types, dates et ordre (aucune règle ici).
+ */
+export function OperationReferences({ cardId, references, navigate }: { cardId: string; references: OperationReferencesView; navigate?: (href: string) => void }) {
+  if (!references.items.length) return null;
+  return (
+    <div data-card-references className="mt-2 max-w-full">
+      <ul className="space-y-1 border-l-2 border-[color:var(--border)] pl-3 [overflow-wrap:anywhere]">
+        {references.items.map((r) => (
+          <li key={`${r.kind}-${r.id}`} data-reference-kind={r.kind} className="flex min-w-0 flex-col">
+            <CardLinkButton
+              cardId={cardId}
+              item={`ref:${r.kind}:${r.id}`}
+              target={{ kind: r.kind === 'event' ? 'echeance' : 'document', id: r.id, label: r.title }}
+              text={r.title}
+              aria={`${r.kind === 'event' ? 'Voir l’événement' : 'Voir le document'} — ${r.title} (${r.meta})`}
+              navigate={navigate}
+            />
+            <span className="text-[11px] leading-snug text-muted-foreground">{r.meta}</span>
+          </li>
+        ))}
+      </ul>
+      {references.hidden > 0 && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          et {references.hidden} autre{references.hidden > 1 ? 's' : ''} élément{references.hidden > 1 ? 's' : ''} de cet événement de référence
+        </p>
+      )}
+    </div>
+  );
+}
+
 /** Source affichée « légèrement », et ouvrable quand elle existe (§8.4, UX-03). */
 function Source({ action, onOpenTarget }: { action: ActionView; onOpenTarget: Handlers['onOpenTarget'] }) {
   // Lot 107E : avec les liens directs, la source est désignée proposition par
@@ -406,6 +451,9 @@ function CardBody({ action, ...handlers }: { action: ActionView } & Handlers) {
           </>
         )}
       </div>
+
+      {/* Lot 110D : références en contexte, entre la question et les réponses. */}
+      {action.references && <OperationReferences cardId={action.publicId} references={action.references} navigate={handlers.navigate} />}
 
       <div className="mt-3">
         <Controls action={action} {...handlers} />

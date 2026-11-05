@@ -86,6 +86,8 @@ export const NOTIFICATION_TYPES = {
   /** Lot 93 (CDC 18 §22, NOTIF-01) : Google / Apple associé ou dissocié. */
   AUTH_IDENTITY_LINKED: 'AUTH_IDENTITY_LINKED',
   AUTH_IDENTITY_UNLINKED: 'AUTH_IDENTITY_UNLINKED',
+  /** Lot 110B (MFA) : clé d'accès, application d'authentification ou codes de récupération modifiés. */
+  MFA_SECURITY_EVENT: 'MFA_SECURITY_EVENT',
 
   // ── Actualités Verebona (consentement distinct, jamais dans la cloche) ───
   NEWS_ANNOUNCEMENT: 'NEWS_ANNOUNCEMENT',
@@ -218,6 +220,8 @@ export interface NotificationPayloadMap {
   OTHER_SESSIONS_REVOKED: { at: string; count: number; deviceLabel?: string; browserLabel?: string };
   AUTH_IDENTITY_LINKED: { provider: 'google' | 'apple' };
   AUTH_IDENTITY_UNLINKED: { provider: 'google' | 'apple' };
+  // Lot 110B : nature de l'événement et date ISO — aucun secret, aucun code, aucun nom d'appareil.
+  MFA_SECURITY_EVENT: { event: 'passkey_added' | 'passkey_removed' | 'totp_enabled' | 'totp_replaced' | 'totp_removed' | 'recovery_regenerated' | 'recovery_used'; at: string };
 
   NEWS_ANNOUNCEMENT: { announcementId?: string; url?: string };
 }

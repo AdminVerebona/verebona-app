@@ -1,4 +1,5 @@
 import { parseWriteBlocked, notifyWriteBlocked } from '@/lib/write-blocked';
+import { MFA_REQUIRED_CODE } from '@/lib/auth/mfa/constants';
 import { CGUV_CHECK_UNAVAILABLE_CODE, CGUV_CHECK_UNAVAILABLE_EVENT, CGUV_REACCEPTANCE_EVENT, CGUV_REACCEPTANCE_REQUIRED_CODE } from '@/lib/legal/reacceptance-gate';
 import { clearPrivateSessionStorage } from '@/lib/session/private-session-storage';
 import { clearLegacyAuthStorage } from '@/lib/auth-migration';
@@ -702,6 +703,14 @@ export const apiClient = {
             // dédié s'affiche (la coquille relit la session).
             if (errorBody?.code === CGUV_REACCEPTANCE_REQUIRED_CODE && typeof window !== 'undefined') {
               window.dispatchEvent(new CustomEvent(CGUV_REACCEPTANCE_EVENT));
+            }
+            // Lot 110B : double authentification exigée (session sans preuve
+            // forte) — retour à la connexion, qui mène à la seconde étape ou à
+            // « Sécurisez votre compte ». Jamais en boucle depuis une page d'authentification.
+            if (errorBody?.code === MFA_REQUIRED_CODE && onAuthFailure !== 'silent' && typeof window !== 'undefined'
+              && !/^\/(login|verification|securiser-mon-compte|recuperation)(\/|$)/.test(window.location.pathname)) {
+              const back = `${window.location.pathname}${window.location.search}`;
+              window.location.assign(`/login?reason=mfa_required&returnUrl=${encodeURIComponent(back)}`);
             }
             report('http_error');
             throw new ApiClientError(

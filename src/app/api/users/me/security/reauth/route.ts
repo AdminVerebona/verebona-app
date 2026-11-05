@@ -11,7 +11,10 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
-import { getReauthMethod, issueReauthProof, logReauthFailure, ReauthError } from '@/lib/auth/reauth';
+import { getReauthMethod, issueReauthProof, logReauthFailure, ReauthError, stepUpNeedsMfa } from '@/lib/auth/reauth';
+// Lot 110B : application d'authentification et clé d'accès (preuve forte).
+import '@/lib/auth/mfa/stepup';
+import { MFA_MESSAGES, MFA_STEP_UP_REQUIRED_CODE, STRONG_REAUTH_METHODS } from '@/lib/auth/mfa/constants';
 
 export async function POST(request: NextRequest) {
   let session;
@@ -29,7 +32,16 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => ({}))) as Record<string, unknown>;
   const methodId = typeof body.method === 'string' && body.method ? body.method : 'password';
   const method = getReauthMethod(methodId);
-  if (!method || method.kind !== 'password' || !method.verify || !(await method.isAvailableFor(session.userId))) {
+  // Lot 110B : compte soumis à la MFA → mot de passe seul refusé (preuve de
+  // niveau 1 sans valeur pour lui) ; seules l'application d'authentification
+  // (ici) et la clé d'accès (`/reauth/passkey`) conviennent.
+  if (!STRONG_REAUTH_METHODS.has(methodId) && await stepUpNeedsMfa(session.userId)) {
+    return NextResponse.json(
+      { error: MFA_STEP_UP_REQUIRED_CODE, code: MFA_STEP_UP_REQUIRED_CODE, message: MFA_MESSAGES.stepUp },
+      { status: 403 },
+    );
+  }
+  if (!method || (method.kind !== 'password' && method.kind !== 'totp') || !method.verify || !(await method.isAvailableFor(session.userId))) {
     return NextResponse.json(
       { error: 'REAUTH_METHOD_UNAVAILABLE', code: 'REAUTH_METHOD_UNAVAILABLE', message: 'Cette méthode de confirmation n’est pas disponible pour votre compte.' },
       { status: 400 },

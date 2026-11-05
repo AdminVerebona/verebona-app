@@ -143,7 +143,8 @@ describe('producteurs et consommateur du lien', () => {
     const post = src.slice(src.indexOf('export async function POST'));
     expect(post.indexOf('bcrypt.compare(password')).toBeGreaterThan(-1);
     expect(post.indexOf('bcrypt.compare(password')).toBeLessThan(post.indexOf('consumeEmailVerification(user.id, user.signupNonce)'));
-    expect(src.indexOf('consumeEmailVerification(user.id, user.signupNonce)')).toBeLessThan(src.indexOf('issueSession('));
+    // Lot 110B : la session (ou l'étape provisoire MFA) vient de la décision centrale.
+    expect(src.indexOf('consumeEmailVerification(user.id, user.signupNonce)')).toBeLessThan(src.indexOf('concludePrimaryAuthentication('));
     // Le GET n'active rien.
     const get = src.slice(src.indexOf('export async function GET'), src.indexOf('export async function POST'));
     expect(get).not.toMatch(/consumeEmailVerification|issueSession/);

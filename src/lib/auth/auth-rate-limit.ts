@@ -128,6 +128,16 @@ export const AUTH_LIMITS = {
    */
   emailChangeRequestUser: { maxAttempts: 5, windowMs: HOUR, lockMs: HOUR },
   emailChangeInUseNotice: { maxAttempts: 1, windowMs: HOUR, lockMs: HOUR },
+  /**
+   * Lot 110B (MFA, ticket §5) : vérification d'un second facteur (TOTP, code
+   * de récupération, clé d'accès) — ÉCHECS par compte (5 / 15 min → pause
+   * progressive 15, 30, 60 min) et par IP (30 / 15 min). Demande de code de
+   * récupération par e-mail : 3 / h par adresse (silencieux), 10 / 15 min par IP.
+   */
+  mfaUser: { maxAttempts: 5, windowMs: 15 * MIN, lockMs: 15 * MIN, progressive: true, maxLockMs: HOUR, levelResetMs: 24 * HOUR },
+  mfaIp: { maxAttempts: 30, windowMs: 15 * MIN, lockMs: 15 * MIN },
+  mfaRecoveryAccount: { maxAttempts: 3, windowMs: HOUR, lockMs: HOUR },
+  mfaRecoveryIp: { maxAttempts: 10, windowMs: 15 * MIN, lockMs: 15 * MIN },
 } as const satisfies Record<string, AuthLimitPolicy>;
 
 /** Lignes sans verrou actif et sans activité depuis cette durée : purgées. */
@@ -402,7 +412,7 @@ export function normalizeEmail(email: unknown): string {
  * en clair (e-mail, IP) dans la table.
  */
 export function limitKey(
-  flow: 'login' | 'forgot' | 'resend' | 'reset' | 'security-email' | 'reauth' | 'signup' | 'oauth' | 'activation' | 'email-change',
+  flow: 'login' | 'forgot' | 'resend' | 'reset' | 'security-email' | 'reauth' | 'signup' | 'oauth' | 'activation' | 'email-change' | 'mfa',
   kind: 'ip' | 'acct' | 'dev' | 'pair' | 'acctu' | 'user',
   value: string,
 ): string {

@@ -214,7 +214,8 @@ test('L108G-XCODE : cible ShareExtension intégrée, embarquée et paramétrée 
   assert.ok(embed.files.some((f) => o[o[f].fileRef].path === 'ShareExtension.appex'));
   // Sources de l'extension et de l'app.
   const sourcesOf = (t) => t.buildPhases.map((id) => o[id]).find((ph) => ph.isa === 'PBXSourcesBuildPhase').files.map((f) => o[o[f].fileRef].path);
-  assert.deepEqual(sourcesOf(ext), ['ShareViewController.swift']);
+  // Lot 110A : interface compacte + cœur partagé avec l'app (mobile/test/l110a-partage-natif.test.mjs).
+  assert.deepEqual(sourcesOf(ext), ['ShareViewController.swift', 'ShareImportView.swift', 'VerebonaShareImportCore.swift']);
   for (const f of ['VerebonaNavigationGuard.swift', 'VerebonaShareInbox.swift', 'VerebonaBridgeViewController.swift']) assert.ok(sourcesOf(app).includes(f), f);
   // Réglages : identifiant dérivé de l'app, droits propres, xcconfig de l'environnement, signature automatique.
   for (const cfgId of o[ext.buildConfigurationList].buildConfigurations) {
@@ -239,21 +240,24 @@ test('L108G-XCODE : cible ShareExtension intégrée, embarquée et paramétrée 
 
 // ── Extension de partage : conformité et file technique ───────────────────
 
-test('L108G-SHARE : extension conforme (aucune ouverture de l’app), formats, confirmation fidèle', () => {
-  const swift = read('ios/App/ShareExtension/ShareViewController.swift');
+test('L108G-SHARE : extension conforme (aucune ouverture de l’app), formats, publication d’un coup', () => {
+  // Lot 110A (décision PO du 04/11/2026) : l'alerte « Document prêt à importer dans
+  // Verebona » + « OK » est SUPPRIMÉE (le choix d'import lance l'import) — assertion
+  // 108G remplacée ; contrat complet dans mobile/test/l110a-partage-natif.test.mjs.
+  const swift = read('ios/App/ShareExtension/ShareViewController.swift') + read('ios/App/ShareExtension/ShareImportView.swift') + read('ios/App/Shared/VerebonaShareImportCore.swift');
   const code = swift.split('\n').filter((l) => !/^\s*\/\/\//.test(l) && !/^\s*\/\//.test(l)).join('\n');
   assert.ok(!/UIApplication|openURL|\.open\(|responder|sel_registerName|perform\(/.test(code), 'aucune ouverture indirecte de l’app');
-  assert.ok(!/share-target-data|UserDefaults/.test(code), 'plus de clé unique écrasée à chaque partage');
-  assert.match(code, /Document prêt à importer dans Verebona/);
-  assert.ok(!/enregistré dans votre compte\./.test(code.replace(/Rien n’est encore enregistré dans votre compte\./, '')), 'jamais « enregistré »');
-  for (const t of ['.pdf', '.jpeg', '.png', '.webP', '.heic', '.heif']) assert.ok(code.includes(t), t);
+  assert.ok(!/share-target-data/.test(code), 'plus de clé unique écrasée à chaque partage');
+  assert.ok(!/Document prêt à importer/.test(code), 'plus d’alerte « Document prêt… OK »');
+  for (const t of ['com.adobe.pdf', 'public.jpeg', 'public.png', 'org.webmproject.webp', '.heic', '.heif']) assert.ok(code.includes(t), t);
   assert.match(code, /convertie en JPEG/);
-  assert.match(code, /FileProtectionType\.complete/);
+  assert.match(code, /FileProtectionType\.completeUntilFirstUserAuthentication/);
   assert.match(code, /isExcludedFromBackup = true/);
   assert.match(code, /moveItem\(at: staging, to: final\)/, 'élément publié d’un coup (jamais à moitié écrit)');
-  // Constantes partagées avec le plugin de l'app.
+  // File 108G (binaires antérieurs) toujours lue par l'app ; nouvelle file v2 du lot 110A.
   const inbox = read('ios/App/App/VerebonaShareInbox.swift');
-  for (const k of ['inboxFolder = "partages-v1"', 'manifestName = "manifest.json"']) { assert.ok(swift.includes(k), k); assert.ok(inbox.includes(k), k); }
+  for (const k of ['inboxFolder = "partages-v1"', 'manifestName = "manifest.json"']) assert.ok(inbox.includes(k), k);
+  assert.match(code, /folder = "partages-v2"/);
   assert.match(inbox, /jsName = "VerebonaShareInbox"/);
   const plist = read('ios/App/ShareExtension/Info.plist');
   assert.match(plist, /com\.apple\.share-services/);

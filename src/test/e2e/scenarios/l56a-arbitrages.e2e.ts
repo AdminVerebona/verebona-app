@@ -190,7 +190,8 @@ scenario('L56A', 'Documents → Opérations — arbitrages inutiles supprimés p
     const [carte] = await cartes(compte);
     expect(carte.target_id).toBe(f2);
     expect(carte.question).toContain('le même contrat');
-    expect(carte.proposals_json.map((p: any) => p.label)).toEqual(['Oui', 'Non, c’est un autre contrat']);
+    // Lot 110D (décision PO) : deux réponses seulement, « Oui » / « Non ».
+    expect(carte.proposals_json.map((p: any) => p.label)).toEqual(['Oui', 'Non']);
     // Sans changement (même contexte, même version du prompt) : aucun rappel du modèle, carte inchangée.
     const avant = appelsM3();
     await passer(compte);
@@ -263,7 +264,11 @@ scenario('L56A', 'Documents → Opérations — arbitrages inutiles supprimés p
     expect(await candidat(fx)).toMatchObject({ t3_outcome: 'ARBITRATION_REQUIRED', t3_reason: 'M3_AMBIGUOUS', t3_operation_id: null });
     const [carte] = await cartes(compte);
     expect(carte.target_id).toBe(fx);
-    expect(carte.proposals_json).toHaveLength(3);
+    // Lot 110D : deux contrats distincts → jamais une question commune « A ou B ? » : Oui / Non sur l'un, l'autre examiné après un « Non ».
+    expect(carte.proposals_json.map((p: any) => p.label)).toEqual(['Oui', 'Non']);
+    const [{ trigger_context: tc }] = await sql<{ trigger_context: any }[]>`SELECT trigger_context FROM to_process_actions WHERE id = ${carte.id}`;
+    expect([opA.id, opB.id]).toContain(tc.operationId);
+    expect(tc.otherCandidateOperationIds).toEqual([opA.id, opB.id].filter((x) => x !== tc.operationId));
     expect((await sources(opA.id)).length).toBe(1);
     expect((await sources(opB.id)).map((s) => s.file)).not.toContain(fx);
   });
@@ -295,7 +300,9 @@ scenario('L56A', 'Documents → Opérations — arbitrages inutiles supprimés p
     await stabiliser(compte);
     const [carte] = await cartes(compte);
     const { resolveArbitration } = await import('@/services/to-process/resolve-action.service');
-    expect(await resolveArbitration(compte.id, carte.public_id, 'DISTINCT', { userId: compte.ownerUserId })).toMatchObject({ ok: true });
+    // Lot 110D : « Non » (refus de l'Opération proposée) remplace « Non, c'est un autre contrat ».
+    const non = carte.proposals_json.find((p: any) => p.label === 'Non').value as string;
+    expect(await resolveArbitration(compte.id, carte.public_id, non, { userId: compte.ownerUserId })).toMatchObject({ ok: true });
     await stabiliser(compte);
     const [op1] = await actives(compte);
     prudent = false;

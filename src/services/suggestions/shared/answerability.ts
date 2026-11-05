@@ -6,10 +6,18 @@
  * (Centre d'aide ou Ressources) ET retrouvé par la recherche MÊME de
  * l'assistant (`searchHelpCorpus`, mêmes seuils de couverture) pour ce
  * libellé. Aucun appel IA. Résultat mémorisé par version de corpus.
+ *
+ * Lot 110E : pour une question RESSOURCES, « retrouvé par la recherche » ne
+ * prouvait pas qu'un passage RÉPONDE (E03 retrouvé, C01 servi). La couverture
+ * est désormais la PREUVE DE RÉPONSE du catalogue (`resource-questions.ts`) :
+ * sections déclarées présentes et sujets attendus retrouvés dans leur texte.
+ * Seul `VERIFIED` est proposé ; partiel, non couvert, article retiré ou
+ * section disparue : la question n'est pas proposée. Les questions du Centre
+ * d'aide gardent la règle du lot 108J (inchangée).
  */
 import { searchHelpCorpus, type HelpCorpus } from '@/services/verebona-assistant/core/help-corpus.service';
-import { RESOURCE_ARTICLE_PREFIX } from '@/services/verebona-assistant/core/resources-corpus.service';
 import type { GuideStockEntry } from './stock';
+import { checkResourceEvidence, type EvidenceCheck } from './resource-questions';
 
 /** Nombre de sections examinées (comme une demande T2). */
 const SEARCH_LIMIT = 4;
@@ -34,7 +42,8 @@ const memo = new Map<string, Answerability>();
 export function guideAnswerability(e: GuideStockEntry, c: CorporaForAnswerability): Answerability {
   const corpus = e.corpus === 'HELP' ? c.help : c.resources;
   if (!corpus) return e.corpus === 'HELP' ? 'UNVERIFIED' : 'NOT_ANSWERABLE';
-  const articleId = e.corpus === 'RESOURCES' ? `${RESOURCE_ARTICLE_PREFIX}${e.articleId}` : e.articleId;
+  if (e.corpus === 'RESOURCES') return resourceCoverageOf(e, corpus).status === 'VERIFIED' ? 'VERIFIED' : 'NOT_ANSWERABLE';
+  const articleId = e.articleId;
   const key = `${e.corpus}:${corpus.version}:${corpus.environment}:${e.id}:${e.label}`;
   const known = memo.get(key);
   if (known) return known;
@@ -46,6 +55,11 @@ export function guideAnswerability(e: GuideStockEntry, c: CorporaForAnswerabilit
   if (memo.size > 2_000) memo.clear();
   memo.set(key, out);
   return out;
+}
+
+/** Preuve de réponse d'une question Ressources sur le corpus présenté (mémoïsée par version et révision). */
+export function resourceCoverageOf(e: Pick<GuideStockEntry, 'id'>, corpus: HelpCorpus | null): EvidenceCheck {
+  return checkResourceEvidence(e.id, corpus);
 }
 
 /** Réservé aux tests. */

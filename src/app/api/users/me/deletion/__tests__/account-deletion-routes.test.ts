@@ -46,7 +46,8 @@ describe('/api/users/me/deletion', () => {
   // dans la requête OU preuve de réauthentification fraîche de la session
   // (lot 93 : Google / Apple, seule voie d'un compte sans mot de passe).
   it('la clôture exige le texte ET une preuve d’identité (mot de passe ou réauthentification fraîche)', () => {
-    expect(close).toContain("const password = typeof body.password === 'string' && body.password ? body.password : null");
+    // Lot 110B : compte soumis à la MFA → mot de passe du corps ignoré (preuve forte seule).
+    expect(close).toContain("const password = !strongStepUp && typeof body.password === 'string' && body.password ? body.password : null");
     expect(close).toContain("const confirmation = typeof body.confirmation === 'string' ? body.confirmation : null");
     expect(close).toContain("reauthProven: reauth?.state === 'fresh'");
     expect(close).toContain("consumeReauthProof(reauth.proof.id, 'account_deletion', now)");

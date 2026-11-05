@@ -1,10 +1,8 @@
 'use client';
 
 /**
- * Mon compte › Sécurité — blocs du CDC 18 §27 retenus en V1 (lot 92 ;
- * lot 96B : décisions PO Q2-Q4, aucune double authentification en V1 — le
- * bloc « Double authentification » et son « bientôt disponible » sont
- * retirés, rien ne l'annonce).
+ * Mon compte › Sécurité — blocs du CDC 18 §27 (lot 92 ; la décision 96B
+ * « aucune double authentification en V1 » est remplacée par le lot 110B).
  *
  *   1. Méthodes de connexion (`SignInMethodsBlock`, lot 93) — adresse e-mail
  *      (modification : bientôt), mot de passe (Modifier / Ajouter, après
@@ -20,6 +18,10 @@
  *      dont celui-ci »). Ancre `#appareils-connectes` (e-mails « nouvel
  *      appareil » / « autres appareils déconnectés », retour de
  *      confirmation d'identité) : ouvre la carte, le sous-bloc, et défile.
+ * Lot 110B (ticket MFA, remplace la décision 96B « pas de 2FA ») : bloc
+ * « Double authentification » (`MfaBlock`) — clés d'accès, application
+ * d'authentification, codes de récupération. La biométrie locale reste un
+ * DÉVERROUILLAGE de l'app sur une session valide : ni clé d'accès, ni MFA.
  * Desktop et mobile (lignes empilées sous 640 px), charte Sérénité.
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -41,6 +43,7 @@ import { isNativeApp } from '@/lib/native/bridge';
 import { useReauth } from './ReauthProvider';
 import { SignInMethodsBlock } from './SignInMethodsBlock';
 import { BiometricsBlock } from './BiometricsBlock';
+import { MfaBlock } from './MfaBlock';
 
 interface DeviceSession {
   id: string;
@@ -355,6 +358,11 @@ export function SecurityCard() {
       {/* Bloc 1 (lot 93, §27.1) : adresse principale, mot de passe, Google, Apple. */}
       <SubBlock icon={<Key className="w-4 h-4" />} title="Méthodes de connexion">
         <SignInMethodsBlock passwordAction={<ChangePasswordAction />} />
+      </SubBlock>
+
+      {/* Lot 110B (ticket MFA §7) : clés d'accès, application d'authentification, codes de récupération. */}
+      <SubBlock icon={<ShieldCheck className="w-4 h-4" />} title="Double authentification">
+        <MfaBlock />
       </SubBlock>
 
       {nativeApp && (

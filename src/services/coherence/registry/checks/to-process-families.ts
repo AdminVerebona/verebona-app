@@ -288,6 +288,11 @@ interface OperationCardState {
   /** OPERATION-MATCH : candidat du document (le plus récent) et réalités proposées vivantes / disparues. */
   candidate?: { status: string; pending: boolean; outcome: string | null } | null;
   offeredGone?: number[];
+  /**
+   * Lot 110D : forme de la question — BINARY (Oui / Non sur une Opération, références en contexte) ou
+   * LEGACY (ancien « A ou B ? » : un bouton par Opération candidate, présentée par un seul document).
+   */
+  form?: 'BINARY' | 'LEGACY';
   /** Autres règles : Opération citée par la carte. */
   operation?: { exists: boolean; merged: boolean; invalidated: boolean; lastReconciledAt: Date | null; documentIsSource: boolean } | null;
 }
@@ -304,6 +309,9 @@ export function operationCardAnomaly(s: OperationCardState): { anomaly: string; 
     if (c.pending) return null;
     if (c.outcome !== 'ARBITRATION_REQUIRED') return { anomaly: 'CARD_NOT_RECONDUCTED', verdict: 'REPAIRABLE' };
     if ((s.offeredGone ?? []).length) return { anomaly: 'OFFERED_OPERATION_GONE', verdict: 'REPAIRABLE' };
+    // Lot 110D : question encore justifiée mais posée sous l'ancienne forme exclusive « A ou B ? » —
+    // convertie par la consolidation du document (même carte, décisions déjà prises conservées).
+    if (s.form === 'LEGACY') return { anomaly: 'LEGACY_EXCLUSIVE_CHOICE', verdict: 'REPAIRABLE' };
     return null;
   }
   const o = s.operation;
@@ -351,6 +359,7 @@ async function operationCardStates(ctx: CheckContext, accountId: number, ids: re
         rule: String(x.rule_code), documentAlive: x.doc_alive === true, lastSeenAt: x.last_seen_at ? new Date(x.last_seen_at as string) : null,
         candidate: cand ? { status: String(cand.status), pending: cand.pending === true, outcome: cand.outcome ?? null } : null,
         offeredGone: ((x.offered_gone as Array<number | string> | null) ?? []).map(Number),
+        form: asJson<Record<string, unknown>>(x.trigger_context, {}).form === 'BINARY' ? 'BINARY' : 'LEGACY',
         operation: x.op_id == null ? { exists: false, merged: false, invalidated: false, lastReconciledAt: null, documentIsSource: false } : {
           exists: true, merged: x.op_merged != null, invalidated: x.op_invalidated != null,
           lastReconciledAt: x.op_reconciled ? new Date(x.op_reconciled as string) : null, documentIsSource: x.doc_source === true,
@@ -363,7 +372,8 @@ async function operationCardStates(ctx: CheckContext, accountId: number, ids: re
 
 const toProcessOperationCardsCheck: CoherenceCheck = {
   id: 'COH-TODO-OPERATION-CARDS',
-  version: 1,
+  // Lot 110D : version 2 — anomalie LEGACY_EXCLUSIVE_CHOICE (reprise des questions « A ou B ? » encore ouvertes).
+  version: 2,
   status: 'ACTIVE',
   title: '« À traiter » : questions de consolidation (même réalité, montant, devise, bien d’un sinistre) devenues sans objet',
   domain: 'a-traiter',
@@ -373,8 +383,8 @@ const toProcessOperationCardsCheck: CoherenceCheck = {
   sources: ['to_process_actions', 'document_operation_candidates', 'business_operations', 'business_operation_sources'],
   applicability: 'compte éligible ; document vivant (sinon : COH-TODO-ORPHAN-CARDS)',
   invariant: 'une question de consolidation ouverte est reconduite par la DERNIÈRE décision de la consolidation T3 de son document ou de son Opération',
-  anomalies: ['MATCH_CANDIDATE_GONE', 'CARD_NOT_RECONDUCTED', 'OFFERED_OPERATION_GONE', 'OPERATION_MERGED', 'OPERATION_INVALIDATED', 'DOCUMENT_NOT_IN_OPERATION', 'OPERATION_MISSING'],
-  autoRepairWhen: 'carte que la consolidation ne reconduirait pas : consolidation du document ou reconsolidation de l’Opération (déterministes, sans M3) ; Opération introuvable : constat',
+  anomalies: ['MATCH_CANDIDATE_GONE', 'CARD_NOT_RECONDUCTED', 'OFFERED_OPERATION_GONE', 'LEGACY_EXCLUSIVE_CHOICE', 'OPERATION_MERGED', 'OPERATION_INVALIDATED', 'DOCUMENT_NOT_IN_OPERATION', 'OPERATION_MISSING'],
+  autoRepairWhen: 'carte que la consolidation ne reconduirait pas, ou question « même réalité » encore posée sous l’ancienne forme exclusive « A ou B ? » (lot 110D) : consolidation du document ou reconsolidation de l’Opération (déterministes, sans M3) ; Opération introuvable : constat',
   forbiddenRepairs: ['fermer une carte directement', 'écrire une décision de rapprochement à la place de l’utilisateur', 'appeler l’IA (M3)', 'relancer T1'],
   services: ['business-operations/consolidation/consolidator#consolidateDocument', 'business-operations/consolidation/consolidator#reconsolidateOperations', 'to-process/operation-cards#syncOperationCards'],
   chain: ['T3', 'TO_PROCESS'],
@@ -416,7 +426,7 @@ const toProcessOperationCardsCheck: CoherenceCheck = {
       out.set(id, {
         verdict: a.verdict, anomaly: a.anomaly, faultyLink: 'T3',
         expected: 'question reconduite par la dernière consolidation, ou close par elle',
-        observed: { candidate: e.state.candidate ?? null, offeredGone: e.state.offeredGone ?? [], operation: e.state.operation ?? null },
+        observed: { candidate: e.state.candidate ?? null, offeredGone: e.state.offeredGone ?? [], operation: e.state.operation ?? null, ...(e.state.rule === 'OPERATION-MATCH' ? { form: e.state.form } : {}) },
         detail: { ...detail, repairWith: e.state.rule === 'OPERATION-MATCH' ? 'consolidateDocument' : 'reconsolidateOperations' },
         inputHash: hashOf({ id, a: a.anomaly, c: e.state.candidate ?? null, g: e.state.offeredGone ?? [], o: e.state.operation
           ? { ...e.state.operation, lastReconciledAt: e.state.operation.lastReconciledAt?.toISOString() ?? null } : null }),

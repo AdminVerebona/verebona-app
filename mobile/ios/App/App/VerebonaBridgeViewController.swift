@@ -12,5 +12,7 @@ class VerebonaBridgeViewController: CAPBridgeViewController {
         // accède au pont) et file technique des partages entrants.
         bridge?.registerPluginInstance(VerebonaNavigationGuardPlugin())
         bridge?.registerPluginInstance(VerebonaShareInboxPlugin())
+        // Lot 110A : partage natif à import direct (jeton d'import, états fidèles).
+        bridge?.registerPluginInstance(VerebonaShareImportPlugin())
     }
 }

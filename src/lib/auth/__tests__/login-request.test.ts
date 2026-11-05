@@ -70,6 +70,7 @@ describe('écran de connexion', () => {
   const page = readFileSync(join(process.cwd(), 'src/app/(auth)/login/page.tsx'), 'utf8');
   it('utilise postLogin', () => {
     // Lot 103A : identifiant de corrélation de la tentative en second argument.
-    expect(page).toContain('await postLogin({ email, password }, { attemptId })');
+    // Lot 110B : destination transmise (reprise après la seconde étape).
+    expect(page).toContain('await postLogin({ email, password, returnUrl }, { attemptId })');
   });
 });

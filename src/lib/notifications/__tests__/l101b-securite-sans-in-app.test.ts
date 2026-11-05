@@ -69,6 +69,8 @@ const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 /** Inventaire du ticket + événement du lot 100D. */
 const SECURITY_EVENTS = [
   'AUTH_IDENTITY_LINKED', 'AUTH_IDENTITY_UNLINKED', 'EMAIL_CHANGED', 'EMAIL_CHANGE_REQUESTED',
+  // Lot 110B (ticket MFA §7) : clé d'accès, application d'authentification, codes de récupération.
+  'MFA_SECURITY_EVENT',
   'NEW_DEVICE_LOGIN', 'OTHER_SESSIONS_REVOKED', 'PASSWORD_CHANGED', 'PASSWORD_RESET_COMPLETED',
 ];
 const all = () => Object.values(NOTIFICATION_CATALOG).filter((e): e is NonNullable<typeof e> => !!e);
@@ -89,7 +91,7 @@ beforeEach(() => {
 });
 
 describe('L101B-U01 — inventaire exhaustif des événements de sécurité', () => {
-  it('la catégorie « Sécurité » contient exactement les 8 événements inventoriés', () => {
+  it('la catégorie « Sécurité » contient exactement les 9 événements inventoriés (lot 110B : + MFA)', () => {
     expect(all().filter((e) => e.category === 'security').map((e) => e.type).sort()).toEqual(SECURITY_EVENTS);
   });
 
@@ -204,7 +206,7 @@ describe('L101B-U04 — réémission : jamais de cloche ni de push de sécurité
 });
 
 describe('L101B-U05 — lecture client : notifications historiques non servies, aucun masquage dans les composants', () => {
-  it('types masqués = exactement les 8 événements de sécurité', () => {
+  it('types masqués = exactement les 9 événements de sécurité (lot 110B : + MFA)', () => {
     expect(bellRetiredTypes(NOTIFICATION_CATALOG)).toEqual(SECURITY_EVENTS);
   });
 
@@ -223,7 +225,8 @@ describe('L101B-U05 — lecture client : notifications historiques non servies, 
 
   it('détection « nouvel appareil » inchangée (méthodes, première connexion, clé d’idempotence)', async () => {
     const m = await import('@/lib/auth/new-device-alert');
-    expect([...m.NEW_DEVICE_ALERT_METHODS].sort()).toEqual(['apple', 'email_link', 'google', 'password']);
+    // Lot 110B : + clé d'accès seule et accès après récupération (vraies connexions).
+    expect([...m.NEW_DEVICE_ALERT_METHODS].sort()).toEqual(['apple', 'email_link', 'google', 'passkey', 'password', 'recovery']);
     expect(m.NEW_DEVICE_ALERT_ON_ACCOUNT_CREATION).toBe(false);
     expect(read('src/lib/auth/new-device-alert.ts')).toContain('dedupeKey: `security:new-device:${input.userId}:${input.client.deviceKey ?? `sid-${input.sid}`}`');
   });

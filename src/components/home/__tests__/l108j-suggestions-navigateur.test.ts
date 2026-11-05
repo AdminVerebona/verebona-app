@@ -6,14 +6,16 @@
  * Sérénité). `GET /api/home/mascot` et `GET /api/suggestions` sont
  * interceptés.
  *
- *  L108J-NAV-01  mobile 320 / 375 px : trois boutons empilés pleine largeur,
- *                ≥ 44 px, textes sur plusieurs lignes sans troncature, aucun
- *                défilement horizontal, sous la bulle sans chevauchement ;
+ *  L108J-NAV-01  RETIRÉ au lot 110C (décision PO du 04/11/2026 : plus de
+ *                suggestions sur l'accueil mobile) — remplacé par
+ *                L110C-NAV-02/03 (`l110c-suggestions-accueil-navigateur.test.ts`) ;
  *  L108J-NAV-02  ordinateur : présentation compacte, sans débordement ;
  *  L108J-NAV-03  clic : vraie question posée avec sa référence, remplacement
  *                immédiat par la réserve, aucune relecture, aucun
  *                « Autre suggestion » ;
  *  L108J-NAV-04  bulle en panne : les suggestions restent affichées.
+ * Lot 110C : NAV-03 et NAV-04 passent sur ordinateur (1280 px), seul support
+ * de l'accueil qui montre encore les suggestions ; règles #657 inchangées.
  * Captures : dossier `L108J_SCREENSHOTS_DIR` s'il est défini.
  *
  * Ignoré (skip) quand aucun Chromium n'est installé.
@@ -152,52 +154,20 @@ describe.skipIf(!EXE)('L108J-NAV — suggestions partagées dans un vrai navigat
     };
   });
 
-  for (const width of [320, 375]) {
-    it(`L108J-NAV-01 (mobile ${width} px) — trois boutons empilés, ≥ 44 px, aucun texte rogné, aucun défilement horizontal`, async () => {
-      const page = await ouvrir(width, true);
-      await page.locator('[data-mascot-bubble] p, [data-subject-block]').first().waitFor({ timeout: 10_000 }).catch(() => {});
-      const m = await mesurer(page);
-      expect(m.boutons).toHaveLength(3);
-      expect(m.scrollX).toBeLessThanOrEqual(0);
-      expect(m.autre).toBe(false);
-      for (const b of m.boutons) {
-        expect(b.height, b.texte).toBeGreaterThanOrEqual(44);
-        expect(b.coupe, b.texte).toBe(false);
-        // Pleine largeur de la colonne (16 px de gouttière de chaque côté).
-        expect(Math.round(b.width)).toBe(Math.round(m.zone.width));
-        expect(b.left).toBeGreaterThanOrEqual(15);
-        expect(b.left + b.width).toBeLessThanOrEqual(width - 15);
-      }
-      // Empilés (un par ligne), dans l'ordre servi, sous la bulle.
-      expect(m.boutons[1].top).toBeGreaterThan(m.boutons[0].top + m.boutons[0].height - 1);
-      expect(m.boutons[2].top).toBeGreaterThan(m.boutons[1].top + m.boutons[1].height - 1);
-      expect(m.boutons.map((b) => b.texte.replace(/^›/, ''))).toEqual(SELECTION.items.map((x) => x.label));
-      if (m.bulleBas != null) expect(m.zone.top).toBeGreaterThanOrEqual(m.bulleBas);
-      // Texte long sur deux lignes : la hauteur s'adapte (aucun texte coupé).
-      expect(Math.max(...m.boutons.map((b) => b.height))).toBeGreaterThan(44);
-      if (SHOTS) await page.screenshot({ path: join(SHOTS, `l108j-accueil-${width}.png`), fullPage: true });
-      // Grande police (200 %) : toujours lisible, sans débordement.
-      await page.evaluate(() => { document.documentElement.style.fontSize = '200%'; document.querySelectorAll<HTMLElement>('[data-home-suggestions] button').forEach((b) => { b.style.fontSize = '28px'; }); });
-      const g = await mesurer(page);
-      expect(g.scrollX).toBeLessThanOrEqual(0);
-      for (const b of g.boutons) expect(b.coupe, b.texte).toBe(false);
-      if (SHOTS) await page.screenshot({ path: join(SHOTS, `l108j-accueil-${width}-grande-police.png`), fullPage: true });
-      await page.context().close();
-    });
-  }
+  // L108J-NAV-01 (mobile, trois boutons empilés) : retiré au lot 110C — voir L110C-NAV-02.
 
-  it('L108J-NAV-02 (ordinateur 1280 px) — pastilles compactes sous la bulle, aucun débordement', async () => {
+  it('L108J-NAV-02 (ordinateur 1280 px) — cartes compactes sous la bulle, aucun débordement (lot 110C : une rangée)', async () => {
     const page = await ouvrir(1280, false);
     const m = await mesurer(page);
     expect(m.boutons).toHaveLength(3);
     expect(m.scrollX).toBeLessThanOrEqual(0);
-    for (const b of m.boutons) { expect(b.height).toBeGreaterThanOrEqual(36); expect(b.coupe).toBe(false); expect(b.width).toBeLessThan(m.zone.width + 1); }
+    for (const b of m.boutons) { expect(b.height).toBeGreaterThanOrEqual(44); expect(b.coupe).toBe(false); expect(b.width).toBeLessThan(m.zone.width + 1); expect(Math.abs(b.top - m.boutons[0].top)).toBeLessThan(1); }
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'l108j-accueil-1280.png') });
     await page.context().close();
   });
 
   it('L108J-NAV-03 — clic : vraie question avec sa référence ; remplacement immédiat par la réserve, sans relecture', async () => {
-    const page = await ouvrir(375, true);
+    const page = await ouvrir(1280, false);
     expect(lecturesSuggestions).toBe(1);
     await page.locator('[data-home-suggestions] button').nth(1).click();
     const asks = await page.evaluate(() => (window as unknown as { __asks: Array<{ question: string; context?: Record<string, string> }> }).__asks);
@@ -211,9 +181,9 @@ describe.skipIf(!EXE)('L108J-NAV — suggestions partagées dans un vrai navigat
   it('L108J-NAV-04 — prise de parole de la mascotte en panne : les trois suggestions restent affichées', async () => {
     mascotteEnPanne = true;
     try {
-      const page = await ouvrir(375, true);
+      const page = await ouvrir(1280, false);
       expect((await mesurer(page)).boutons).toHaveLength(3);
-      if (SHOTS) await page.screenshot({ path: join(SHOTS, 'l108j-accueil-375-bulle-en-panne.png'), fullPage: true });
+      if (SHOTS) await page.screenshot({ path: join(SHOTS, 'l108j-accueil-1280-bulle-en-panne.png'), fullPage: true });
       await page.context().close();
     } finally { mascotteEnPanne = false; }
   });

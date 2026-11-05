@@ -39,7 +39,7 @@ import {
   markFailed, readBinding, setBindingCookie, transition,
   type AuthTransaction, type OAuthIntent, type TxClaims, type TxContext,
 } from './transactions';
-import { checkSessionEligibility, landingPath, openSocialSession } from './session-bridge';
+import { checkSessionEligibility, landingPath, mfaStepPath, openSocialSession } from './session-bridge';
 import { issueReauthProof, ReauthError } from '@/lib/auth/reauth';
 import { emailHasAccount } from './social-signup';
 import { socialErrorMessage, type SocialErrorCode } from './messages';
@@ -509,8 +509,12 @@ export async function finishWithSession(
       : NextResponse.json({ error: 'OAUTH_STATE_INVALID', code: 'OAUTH_STATE_INVALID' }, { status: 409 });
   }
   const target = safeInternalPath(landingPath(eligibility.user, tx.context.returnUrl));
-  const res = mode === 'redirect' ? redirectTo(target) : NextResponse.json({ success: true, redirectTo: target });
-  await openSocialSession(request, res, eligibility.user, method, { authTransactionId: tx.id, ...extra });
+  // Lot 110B : la décision (session complète ou seconde étape) précède la réponse.
+  const carrier = NextResponse.json({ success: true });
+  const outcome = await openSocialSession(request, carrier, eligibility.user, method, { authTransactionId: tx.id, returnUrl: target, ...extra });
+  const finalTarget = outcome.kind === 'mfa' ? mfaStepPath(outcome, target) : target;
+  const res = mode === 'redirect' ? redirectTo(finalTarget) : NextResponse.json({ success: true, redirectTo: finalTarget, ...(outcome.kind === 'mfa' ? { mfaRequired: true, step: outcome.step } : {}) });
+  for (const c of carrier.cookies.getAll()) res.cookies.set(c);
   clearBindingCookie(res);
   return res;
 }

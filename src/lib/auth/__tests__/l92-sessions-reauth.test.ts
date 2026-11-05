@@ -203,7 +203,10 @@ describe('L92-ISSUE fonction d’émission unique', () => {
     expect(issuance).toMatch(/setSessionCookies\(response, \{ accessToken, refreshToken \}\)/);
     expect(issuance).toMatch(/recordSession\(/);
     const social = readFileSync(join(process.cwd(), 'src/lib/auth/oauth/session-bridge.ts'), 'utf8');
-    expect(social).toMatch(/issueSession\(request, response, \{\s*kind: 'open',\s*method,/);
+    // Lot 110B (ticket MFA §8) : Google / Apple → décision centrale, qui émet par issueSession.
+    expect(social).toMatch(/concludePrimaryAuthentication\(request, response, \{\s*method,/);
+    expect(readFileSync(join(process.cwd(), 'src/lib/auth/mfa/primary.ts'), 'utf8'))
+      .toMatch(/issueSession\(request, response, \{\s*kind: 'open', method: input\.method,/);
   });
 
   it('intégration 93 : une seule preuve (92) — plus de cookie vb_reauth, Google / Apple enregistrés comme méthodes à redirection', () => {

@@ -26,6 +26,12 @@
 	<!-- Lot 108G : groupe d'apps partagé avec l'extension de partage (file technique). -->
 	<key>VBAppGroup</key>
 	<string>$(VB_APP_GROUP)</string>
+	<!-- Lot 110A : partage natif — notification « Document ajouté » après accusé serveur
+	     (option B d'arbitrage PO, NO par défaut) ; valeurs de mobile/config/environments.mjs › SHARE_IMPORT. -->
+	<key>VBShareCompletionNotice</key>
+	<string>$(VB_SHARE_COMPLETION_NOTICE)</string>
+	<key>VBShareImportLabel</key>
+	<string>$(VB_SHARE_IMPORT_LABEL)</string>
 	<!-- Lot 108G : domaines « app-bound » — WebKit n'exécute scripts injectés et
 	     gestionnaires de messages (pont natif) que sur l'origine de l'environnement
 	     et la coque locale (capacitor.config.ts › ios.limitsNavigationsToAppBoundDomains). -->

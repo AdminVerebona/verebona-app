@@ -182,8 +182,10 @@ describe('AC36A-4 — en-tête mascotte', () => {
     expect(s).not.toContain(greetingDateLong(new Date(Date.now() - 86_400_000)));
     expect(s).toMatch(/<h1 [^>]*>(Bonjour|Bonsoir), Geo<\/h1>/);
     const bulle = s.indexOf('data-mascot-bubble');
-    // Lot 108J : zone des suggestions partagées (chargement au rendu serveur) SOUS la bulle.
-    const pastilles = s.indexOf('data-home-suggestions');
+    // Lot 108J : zone des suggestions partagées SOUS la bulle. Lot 110C : au
+    // rendu serveur (emplacement inconnu), réservée en CSS ≥ 768 px seulement.
+    const pastilles = s.indexOf('data-home-suggestions-zone');
+    expect(s).toMatch(/class="col-span-2 hidden min-w-0 md:col-span-1 md:col-start-2 md:mt-1 md:block" data-home-suggestions-zone/);
     expect(bulle).toBeGreaterThan(s.indexOf('<h1'));
     expect(pastilles).toBeGreaterThan(bulle);
     // Mobile : mascotte 72 px et salutation à côté ; desktop : mascotte 112 px.

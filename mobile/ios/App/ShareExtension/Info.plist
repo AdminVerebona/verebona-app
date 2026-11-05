@@ -15,15 +15,22 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>VBAppGroup</key>
 	<string>$(VB_APP_GROUP)</string>
+	<!-- Lot 110A : contrat du partage natif (mobile/config/environments.mjs › SHARE_IMPORT). -->
+	<key>VBShareCompletionNotice</key>
+	<string>$(VB_SHARE_COMPLETION_NOTICE)</string>
+	<key>VBShareImportLabel</key>
+	<string>$(VB_SHARE_IMPORT_LABEL)</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionAttributes</key>
 		<dict>
-			<!-- Verebona n'apparaît que si au moins un élément partagé est un PDF ou une image
-			     (prédicat documenté par Apple). Un élément d'un autre format joint au même
-			     partage est refusé AVEC son nom et le motif par l'extension. -->
+			<!-- Lot 110A : Verebona n'apparaît que si au moins un élément partagé est un
+			     document d'un format accepté par le serveur (PDF, image — HEIC converti —,
+			     Word, Excel, CSV ; prédicat documenté par Apple). Le texte seul (liens,
+			     sélections) ne fait PAS apparaître Verebona ; un .txt joint est accepté.
+			     Un élément d'un autre format est refusé AVEC son nom et le motif. -->
 			<key>NSExtensionActivationRule</key>
-			<string>SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "com.adobe.pdf" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.image").@count &gt;= 1).@count &gt;= 1</string>
+			<string>SUBQUERY (extensionItems, $extensionItem, SUBQUERY ($extensionItem.attachments, $attachment, ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "com.adobe.pdf" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.image" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "org.openxmlformats.wordprocessingml.document" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "com.microsoft.word.doc" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "org.openxmlformats.spreadsheetml.sheet" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "com.microsoft.excel.xls" OR ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.comma-separated-values-text").@count &gt;= 1).@count &gt;= 1</string>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>

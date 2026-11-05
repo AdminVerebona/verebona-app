@@ -19,4 +19,8 @@
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
         <item name="android:background">@drawable/splash</item>
     </style>
+
+    <!-- Lot 110A : réception d'un partage — fond transparent au-dessus de l'app source,
+         dialogue léger aux couleurs du système (clair ; sombre : values-night). -->
+    <style name="VerebonaShareDialog" parent="@android:style/Theme.DeviceDefault.Light.Dialog.Alert" />
 </resources>

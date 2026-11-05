@@ -23,7 +23,9 @@
  * besoin — point d'attention du lot 53A).
  */
 import { createContext, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Loader2, ShieldCheck } from 'lucide-react';
+import { KeyRound, Loader2, ShieldCheck } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { PASSKEY_ERROR_TEXT, getPasskeyAssertion } from '@/lib/auth/mfa/client';
 import { apiClient, ApiClientError } from '@/lib/api-client';
 import { Button } from '@/components/ui/button';
 import { ProviderButton } from '@/components/auth/SocialSignInButtons';
@@ -40,7 +42,9 @@ export function isReauthError(e: unknown): boolean {
   return e instanceof ApiClientError && e.status === 403 && REAUTH_ERROR_CODES.has(e.code);
 }
 
-interface ReauthMethodView { id: string; label: string; kind: 'password' | 'redirect'; startUrl?: string }
+// Lot 110B : `totp` (code de l'application) et `passkey` — seules méthodes
+// proposées par le serveur quand la double authentification est obligatoire.
+interface ReauthMethodView { id: string; label: string; kind: 'password' | 'redirect' | 'totp' | 'passkey'; startUrl?: string }
 interface SecurityStatus { reauth: { fresh: boolean; freshUntil: string | null; methods: ReauthMethodView[] } }
 
 /**
@@ -68,6 +72,7 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
   const [expired, setExpired] = useState(false);
   const [methods, setMethods] = useState<ReauthMethodView[] | null>(null);
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [redirecting, setRedirecting] = useState<string | null>(null);
@@ -90,6 +95,7 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
     setReason(why ?? null);
     setExpired(wasExpired);
     setPassword('');
+    setCode('');
     setError(null);
     setOpen(true);
     return new Promise<boolean>((resolve) => { pending.current = resolve; });
@@ -122,7 +128,24 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
 
   const submitPassword = async (ev: React.FormEvent) => {
     ev.preventDefault();
-    if (!password || submitting) return;
+    if (submitting) return;
+    // Lot 110B : code de l'application d'authentification (preuve forte).
+    const cleanCode = code.replace(/\s+/g, '');
+    if (!password && totpMethod && cleanCode.length === 6) {
+      setSubmitting(true);
+      setError(null);
+      try {
+        await apiClient.post('/api/users/me/security/reauth', { method: 'totp', code: cleanCode });
+        finish(true);
+      } catch (e) {
+        setError(e instanceof ApiClientError && e.serverMessage ? e.serverMessage : 'Code incorrect ou expiré.');
+        setCode('');
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
+    if (!password) return;
     setSubmitting(true);
     setError(null);
     try {
@@ -133,6 +156,24 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
         ? (e.code === 'INVALID_CURRENT_PASSWORD' ? 'Mot de passe incorrect.' : (e.serverMessage || 'La confirmation a échoué. Réessayez.'))
         : 'La confirmation a échoué. Réessayez.';
       setError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // Lot 110B : réauthentification par clé d'accès (vérification de l'utilisateur exigée).
+  const confirmWithPasskey = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const o = await apiClient.post<{ options: unknown; challengeId: string }>('/api/users/me/security/reauth/passkey', { stage: 'options' });
+      const a = await getPasskeyAssertion(o.options);
+      if (!a.ok) { setError(PASSKEY_ERROR_TEXT[a.error]); return; }
+      await apiClient.post('/api/users/me/security/reauth/passkey', { stage: 'verify', challengeId: o.challengeId, response: a.response });
+      finish(true);
+    } catch (e) {
+      setError(e instanceof ApiClientError && e.serverMessage ? e.serverMessage : PASSKEY_ERROR_TEXT.failed);
     } finally {
       setSubmitting(false);
     }
@@ -159,6 +200,8 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
   const value = useMemo(() => ({ ensureFresh, withReauth }), [ensureFresh, withReauth]);
   const passwordMethod = methods?.find((m) => m.kind === 'password');
   const redirectMethods = methods?.filter((m) => m.kind === 'redirect' && m.startUrl) ?? [];
+  const totpMethod = methods?.find((m) => m.kind === 'totp');
+  const passkeyMethod = methods?.find((m) => m.kind === 'passkey');
 
   return (
     <ReauthContext.Provider value={value}>
@@ -177,6 +220,7 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
                   : ''}
                 {reason ? `${reason} ` : ''}
                 Cette confirmation reste valable 5 minutes pour les réglages de sécurité.
+                {(totpMethod || passkeyMethod) && !passwordMethod ? ' Utilisez votre clé d’accès ou votre application d’authentification.' : ''}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
@@ -191,6 +235,19 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
                     autoFocus
                     disabled={submitting}
                   />
+                </div>
+              )}
+              {passkeyMethod && (
+                <Button type="button" className="w-full rounded-full" variant="outline" disabled={submitting} onClick={() => void confirmWithPasskey()}>
+                  <KeyRound className="w-4 h-4 mr-2" />Confirmer avec ma clé d’accès
+                </Button>
+              )}
+              {passkeyMethod && totpMethod && <div className="vb-or-separator" role="separator">ou</div>}
+              {totpMethod && (
+                <div className="space-y-2">
+                  <Label htmlFor="reauth-totp">Code de votre application d’authentification</Label>
+                  <Input id="reauth-totp" inputMode="numeric" autoComplete="one-time-code" maxLength={7}
+                    value={code} onChange={(e) => setCode(e.target.value)} disabled={submitting} autoFocus={!passkeyMethod} />
                 </div>
               )}
               {passwordMethod && redirectMethods.length > 0 && <div className="vb-or-separator" role="separator">ou</div>}
@@ -208,8 +265,8 @@ export function ReauthProvider({ children }: { children: ReactNode }) {
             </div>
             <DialogFooter className="gap-2">
               <Button type="button" variant="ghost" onClick={() => finish(false)} disabled={submitting}>Annuler</Button>
-              {passwordMethod && (
-                <button type="submit" disabled={!password || submitting} className="btn-add disabled:opacity-40">
+              {(passwordMethod || totpMethod) && (
+                <button type="submit" disabled={(!password && code.replace(/\s+/g, '').length !== 6) || submitting} className="btn-add disabled:opacity-40">
                   {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
                   {submitting ? 'Vérification…' : 'Confirmer'}
                 </button>

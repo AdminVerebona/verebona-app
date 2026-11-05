@@ -47,6 +47,14 @@ beforeEach(async () => {
     isAccountCreation: async () => false,
     send: async () => {},
   };
+  // Lot 110B : obligation MFA sans base (aucun facteur, obligation non
+  // activée) — même clé globale que `__setMfaPolicyStoreForTests` ; exercée
+  // en base par l'e2e L110B et par ses tests unitaires (store dédié).
+  (globalThis as Record<string, unknown>).__verebonaMfaPolicyStore = {
+    load: async () => ({ role: 'USER', enabledAt: null, settings: { users: null, admins: null } }),
+    readSettings: async () => ({ users: null, admins: null }),
+    writeSetting: async () => {},
+  };
   // Lot 82A (C-Q10) : éligibilité des comptes aux traitements (requête en
   // base) accordée en test unitaire ; exercée par les e2e PostgreSQL
   // (`l82a-eligibilite-comptes`) et par `processing-eligibility.test.ts`.
