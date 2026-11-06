@@ -44,9 +44,38 @@ type Mode =
   | 'ok' | 'prod-404' | 'html' | '401' | 'redirect-prod' | 'origin-prod' | 'sha-wrong' | 'text-401' | 'timeout';
 
 /* ── Faux site public (HTTP réel) ───────────────────────────────────────── */
-// `fetch` réel capturé à la collecte : le harnais interdit tout appel réseau
-// (setup.ts) ; seul le faux site public local est rendu joignable ci-dessous.
-const realFetch = globalThis.fetch;
+// Le harnais interdit tout appel réseau (setup.ts) ; seul le faux site public local est rendu
+// joignable ci-dessous. Lot 111 (correctif 6) : on n'utilise PLUS le `fetch` global capturé à la
+// collecte — dans une exécution complète (un seul processus, ordre des fichiers variable en CI),
+// un fichier précédent peut l'avoir laissé remplacé : la lecture échouait sans statut HTTP
+// (« prod-404 : expected null to be 404 »). Client HTTP minimal sur node:http, indépendant de
+// `globalThis.fetch` : redirections NON suivies (comme `redirect: 'manual'`), abandon par
+// `signal`, erreur réseau portée par `cause.code` (ECONNREFUSED), comme undici.
+function realFetch(url: string, init?: RequestInit): Promise<Response> {
+  return new Promise<Response>((resolve, reject) => {
+    const signal = init?.signal ?? null;
+    if (signal?.aborted) { reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })); return; }
+    const headers: Record<string, string> = {};
+    new Headers(init?.headers ?? {}).forEach((v, k) => { headers[k] = v; });
+    const rq = http.request(url, { method: init?.method ?? 'GET', headers }, (rs) => {
+      const chunks: Buffer[] = [];
+      rs.on('data', (c: Buffer) => chunks.push(c));
+      rs.on('error', reject);
+      rs.on('end', () => {
+        const h = new Headers();
+        for (const [k, v] of Object.entries(rs.headers)) if (v != null) h.set(k, Array.isArray(v) ? v.join(', ') : String(v));
+        const status = rs.statusCode ?? 0;
+        const body = status === 204 || status === 304 ? null : Buffer.concat(chunks);
+        resolve(new Response(body, { status, headers: h }));
+      });
+    });
+    const onAbort = () => { rq.destroy(); reject(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    rq.on('error', (err) => { signal?.removeEventListener('abort', onAbort); reject(new TypeError('fetch failed', { cause: err })); });
+    rq.on('close', () => signal?.removeEventListener('abort', onAbort));
+    rq.end();
+  });
+}
 let mode: Mode = 'ok';
 let SITE = '';
 const server = http.createServer((req, res) => {
@@ -93,7 +122,12 @@ scenario('L111O', 'Inscription bloquée « CGUV en cours de publication » : dia
     Object.assign(process.env, {
       NEXT_PUBLIC_PUBLIC_SITE_URL: SITE, NEXT_PUBLIC_APP_ENV: 'preprod', APP_URL: ORIGIN,
       // Relecture à la demande sans intervalle (chaque relecture du formulaire relit le site), attente large.
-      LEGAL_MANIFEST_ON_DEMAND_INTERVAL_MS: '0', LEGAL_MANIFEST_ON_DEMAND_WAIT_MS: '15000', LEGAL_MANIFEST_TIMEOUT_MS: '800',
+      LEGAL_MANIFEST_ON_DEMAND_INTERVAL_MS: '0', LEGAL_MANIFEST_ON_DEMAND_WAIT_MS: '15000',
+      // Lot 111 (correctif 6) : 800 ms ne suffisaient pas sur un runner GitHub chargé (exécution
+      // complète) : la PREMIÈRE lecture du faux site expirait (« prod-404 : expected null to be 404 »),
+      // puis la bascule vers 2026-10-30-v1 n'avait jamais lieu (E2E-02, E2E-03). Le cas « timeout »
+      // reste exact : le faux site ne répond jamais.
+      LEGAL_MANIFEST_TIMEOUT_MS: '5000',
     });
     await sql`INSERT INTO legal_document_versions (document_type, version_code, title, status, change_summary, published_at, effective_at, html_content, sha256, permalink, html_storage_key, requires_reacceptance)
       VALUES ('CGVU', ${LEGACY}, 'archive', 'CURRENT', 'e2e', '2026-07-30T00:00:00Z', '2026-07-30T00:00:00Z', ${LEGACY_HTML}, ${sha(LEGACY_HTML)}, ${`/cgvu/versions/${LEGACY}`}, ${`legal/${LEGACY}.html`}, false)
@@ -146,7 +180,7 @@ scenario('L111O', 'Inscription bloquée « CGUV en cours de publication » : dia
       // Version bloquée : présentée telle quelle (2026-07-30-v1), sans permalien, jamais une autre.
       expect([c.status, c.body.versionCode, c.body.publicText, c.body.permalinkUrl, c.cache], m).toEqual([200, LEGACY, 'NOT_ON_PUBLIC_SITE', null, 'no-store']);
       const st = await lastRead();
-      expect(st.last_read.httpStatus, m).toBe(http);
+      expect(st.last_read.httpStatus, `${m} ${JSON.stringify(st.last_read)}`).toBe(http);
       expect(st.last_read.reason, m).toBe(reason || null);
       expect(st.last_read.url, m).toBe(`${SITE}/legal/cguv/versions.json`);
       const report = await getCguvPublicationReport();
