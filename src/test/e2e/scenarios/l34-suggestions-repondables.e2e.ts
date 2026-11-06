@@ -6,9 +6,11 @@
  * Pour CHAQUE suggestion du catalogue unique (`ALL_SUGGESTIONS`) :
  *
  *   préconditions satisfaites (données réelles créées pour elle seule)
- *   → suggestion AFFICHÉE (vraie route `/api/verebona/suggestions`, et pour
- *     l'accueil — lot 55A : la mascotte ne reprend plus ce catalogue, ses
- *     questions viennent de T6, cf. l55a-suggestions.e2e.ts)
+ *   → suggestion AFFICHÉE (catalogue de la page rendu avec le contexte serveur
+ *     RÉEL — lot 112C : la route `/api/verebona/suggestions` sert désormais la
+ *     sélection partagée, vérifiée par l112c-suggestions-exploiter.e2e.ts ; le
+ *     catalogue est lu ici avec le même contexte qu'elle, faits « Exploiter »
+ *     prouvés compris)
  *   → CLIQUÉE (le libellé, avec le contexte que le champ / la mascotte envoie)
  *   → intention T2 attendue (`canonicalIntent`)
  *   → sources du domaine attendu (`SUGGESTION_DOMAIN_SOURCES`)
@@ -98,7 +100,7 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
     J = (await import('@/services/verebona-assistant/core/query-period')).aujourdhuiParis();
   });
 
-  const compte = async (): Promise<Compte> => { const a = await make.account({ plan: 'premium' }); return { id: a.id, ownerUserId: a.ownerUserId }; };
+  const compte = async (plan: 'premium' | 'standard' = 'premium'): Promise<Compte> => { const a = await make.account({ plan }); return { id: a.id, ownerUserId: a.ownerUserId }; };
   const bien = async (c: Compte, name: string) => {
     const a = await make.asset(c as never, { name, category: 'VEHICULE' });
     await sql`UPDATE assets SET status = 'EN_SERVICE' WHERE id = ${a.id}`;
@@ -117,8 +119,10 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
 
   /** Compte dont les données satisfont EXACTEMENT les préconditions de l'entrée. */
   const preparer = async (e: Entree): Promise<{ c: Compte; assetId: number | null }> => {
-    const c = await compte();
     const req = new Map((e.requires ?? []).map((r) => [r.fact, r.is]));
+    // Lot 112C : « dépenses d'entretien » partage le sujet du coût de possession (Premium) — compte Standard
+    // pour qu'elle soit la question de son sujet (l'offre ne change pas la réponse calculée).
+    const c = await compte(req.has('asset.maintenanceSpend') && !req.has('ownershipCostAvailable') ? 'standard' : 'premium');
     const sansBien = req.get('assetsTotal') === 'zero';
     const sansDocument = sansBien || req.get('documentsTotal') === 'zero';
     const cupra = sansBien ? null : await bien(c, 'Cupra');
@@ -140,6 +144,19 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
                     VALUES (${cupra}, ${c.id}, ${c.ownerUserId}, 'DOSSIER_COMPLET', 'ready')`;
           break;
         case 'asset.documents': break; // le document de base est rattaché à Cupra
+        // Lot 112C — faits « Exploiter » prouvés par les lectures de T2.
+        case 'asset.spend': case 'asset.maintenanceSpend': case 'yearSpend': {
+          const f = await fichier(c, cupra, 'Facture révision garage');
+          await sql`UPDATE asset_files SET document_type_code = 'MAINTENANCE_INVOICE', amount_cents = 32000, supplier = 'Garage Martin', document_date = ${J} WHERE id = ${f}`;
+          break;
+        }
+        case 'asset.warrantyUpcoming':
+          await sql`UPDATE assets SET key_characteristics = jsonb_set(coalesce(nullif(key_characteristics, '')::jsonb, '{}'::jsonb), '{warrantyEndDate}', to_jsonb(${dans(400)}::text))::text WHERE id = ${cupra}`;
+          break;
+        case 'asset.lastService':
+          await sql`UPDATE assets SET key_characteristics = jsonb_set(coalesce(nullif(key_characteristics, '')::jsonb, '{}'::jsonb), '{lastRevision}', to_jsonb(${dans(-60)}::text))::text WHERE id = ${cupra}`;
+          break;
+        case 'ownershipCostAvailable': break; // compte Premium
         default: throw new Error(`précondition non préparée : ${fact}`);
       }
     }
@@ -149,14 +166,19 @@ scenario('L34-SUGG', 'Lot 34 — chaque suggestion affichée → cliquée → in
   const routeDe = (e: Entree, assetId: number | null) =>
     e.routeExact?.[1] ?? e.routeExact?.[0] ?? e.routePrefix ?? (e.routePattern ? `/assets/${assetId}` : '/fournisseurs');
 
-  /** Exemples d'une page, servis par la VRAIE route. */
+  /**
+   * Exemples d'une page : catalogue rendu avec le contexte serveur RÉEL de la page
+   * (état du compte, biens nommés) ET les faits « Exploiter » prouvés (lot 112C).
+   * Lot 112C : la route `/api/verebona/suggestions` est alignée sur le service
+   * partagé (même sélection que /api/suggestions, l112c-suggestions-exploiter.e2e.ts) ;
+   * ce contrat porte sur le CATALOGUE, lu ici comme elle le lisait.
+   */
   const exemples = async (c: Compte, route: string): Promise<Array<{ id: string; label: string }>> => {
     session.currentAccountId = c.id; session.userId = c.ownerUserId;
-    const { GET } = await import('@/app/api/verebona/suggestions/route');
-    const { NextRequest } = await import('next/server');
-    const res = await GET(new NextRequest(`http://x/api/verebona/suggestions?route=${encodeURIComponent(route)}`));
-    expect(res.status).toBe(200);
-    return ((await res.json()) as { suggestions: Array<{ id: string; label: string }> }).suggestions;
+    const { suggestionsForRoute } = await import('@/services/verebona-assistant/registries/capability-registry');
+    const { loadSharedSuggestionContext } = await import('@/services/suggestions/shared/exploit-facts');
+    const { ctx } = await loadSharedSuggestionContext(c.id, { route, fresh: true });
+    return suggestionsForRoute(route, ctx).map((s) => ({ id: s.id, label: s.label }));
   };
 
   /** Contexte envoyé par le champ « Demander à Verebona ». */

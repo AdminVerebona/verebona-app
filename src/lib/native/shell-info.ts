@@ -17,11 +17,18 @@
  * stockage de la WebView non. Un marqueur non sensible dans le stockage local
  * signale une installation déjà initialisée ; absent, toutes les valeurs
  * sécurisées de l'app sont effacées et un NOUVEL identifiant est tiré.
+ *
+ * LOT 112E : jamais de purge ni de nouvel identifiant sur une lecture
+ * INCERTAINE (téléphone verrouillé, Keystore en erreur, app en arrière-plan
+ * sans sonde native) — la lecture est différée au retour au premier plan /
+ * au déverrouillage (`installation-id.ts`).
  * ══════════════════════════════════════════════════════════════════════════
  */
 import type { VerebonaNativeInfo } from '@/lib/mobile/native-shell';
-import { nativePlatform } from './bridge';
-import { SECURE_KEYS, secureClearAll, secureGet, secureSet } from './secure-store';
+import { NATIVE_PLUGINS, listenNative, nativePlatform, nativePlugin } from './bridge';
+import { SECURE_KEYS, secureClearAll, secureRead, secureSet, secureStatusPlugin } from './secure-store';
+import { INSTALLATION_RETRY_AFTER_ERROR_MS, resolveInstallationId, type InstallationDeferReason } from './installation-id';
+import { appendUnlockJournal } from './unlock-journal';
 
 export type AppBuildEnv = 'preprod' | 'prod';
 
@@ -32,7 +39,6 @@ export interface UserAgentMarker {
 }
 
 const MARKER = /\bVerebonaApp\/(\d{1,4}\.\d{1,4}\.\d{1,4}) \((\d{1,9}); (preprod|prod)\)/;
-const INSTALLATION = /^[A-Za-z0-9_-]{16,64}$/;
 
 /** Marqueur de l'agent utilisateur posé par le build, ou null. */
 export function parseUserAgentMarker(ua: string | null | undefined): UserAgentMarker | null {
@@ -120,33 +126,96 @@ function writeMarker(): void {
   try { globalThis.localStorage?.setItem(INSTALL_MARKER_KEY, '1'); } catch { /* sans marqueur : réinitialisé au prochain lancement */ }
 }
 
+/** Lot 112E : l'identifiant vient d'être obtenu après au moins un report. */
+export const INSTALLATION_ID_READY_EVENT = 'verebona:installation-id-ready';
+
+let inflight: Promise<string | null> | null = null;
+let deferredOnce = false;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryOffs: Array<Promise<() => void>> = [];
+
+async function appForeground(): Promise<boolean | null> {
+  const app = nativePlugin<{ getState?: () => Promise<{ isActive?: unknown }> }>(NATIVE_PLUGINS.app);
+  if (!app || typeof app.getState !== 'function') return null;
+  try {
+    const st = await app.getState();
+    return typeof st?.isActive === 'boolean' ? st.isActive : null;
+  } catch {
+    return null;
+  }
+}
+
+function disarmRetry(): void {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  const offs = retryOffs;
+  retryOffs = [];
+  for (const off of offs) void off.then((f) => f());
+}
+
+/** Nouvelle tentative au premier plan / au déverrouillage (une seule fois armée). */
+function armRetry(reason: InstallationDeferReason): void {
+  if (retryOffs.length === 0) {
+    const relancer = () => { void initInstallationId(); };
+    retryOffs = [
+      listenNative<{ isActive?: boolean }>(nativePlugin(NATIVE_PLUGINS.app), 'appStateChange', (st) => { if (st?.isActive) relancer(); }),
+      listenNative<{ available?: boolean }>(secureStatusPlugin(), 'protectedDataChange', (d) => { if (d?.available) relancer(); }),
+    ];
+  }
+  // Erreur passagère du stockage alors que l'app est au premier plan : pas
+  // de changement d'état à attendre, une relance différée suffit.
+  if (reason === 'storage_error' && !retryTimer) {
+    retryTimer = setTimeout(() => { retryTimer = null; void initInstallationId(); }, INSTALLATION_RETRY_AFTER_ERROR_MS);
+  }
+}
+
+async function loadInstallationId(): Promise<string | null> {
+  const outcome = await resolveInstallationId({
+    readMarker,
+    writeMarker,
+    read: () => secureRead(SECURE_KEYS.installationId),
+    foreground: appForeground,
+    clearAll: secureClearAll,
+    write: (id) => secureSet(SECURE_KEYS.installationId, id),
+    newId: newInstallationId,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    journal: (outcome, detail) => appendUnlockJournal('INSTALL_ID', { outcome, platform: nativePlatform(), ...detail }),
+  });
+  if (outcome.kind === 'deferred') {
+    deferredOnce = true;
+    armRetry(outcome.reason);
+    return null;
+  }
+  disarmRetry();
+  installationId = outcome.id;
+  const info = runtimeShellInfo();
+  if (info && typeof window !== 'undefined') {
+    window.VerebonaNative = info;
+    if (deferredOnce) {
+      deferredOnce = false;
+      try { window.dispatchEvent(new Event(INSTALLATION_ID_READY_EVENT)); } catch { /* sans événement */ }
+    }
+  }
+  return outcome.id;
+}
+
 /**
  * Charge (ou crée) l'identifiant d'installation et l'ajoute au contrat
- * `window.VerebonaNative`. Idempotent. Hors de l'app : null.
+ * `window.VerebonaNative`. Idempotent ; appels concurrents partagés.
+ * Hors de l'app : null. Lot 112E : null aussi tant que le stockage sécurisé
+ * est illisible (aucun identifiant tiré) — nouvelle tentative automatique au
+ * retour au premier plan / au déverrouillage, puis `INSTALLATION_ID_READY_EVENT`.
  */
 export async function initInstallationId(): Promise<string | null> {
   if (!nativePlatform()) return null;
   if (installationId) return installationId;
-  let id: string | null = null;
-  if (readMarker()) {
-    const stored = await secureGet(SECURE_KEYS.installationId);
-    id = stored && INSTALLATION.test(stored) ? stored : null;
-  } else {
-    // Première ouverture après (ré)installation : rien n'est hérité (AUTH-13).
-    await secureClearAll();
-  }
-  if (!id) {
-    id = newInstallationId();
-    await secureSet(SECURE_KEYS.installationId, id);
-  }
-  writeMarker();
-  installationId = id;
-  const info = runtimeShellInfo();
-  if (info && typeof window !== 'undefined') window.VerebonaNative = info;
-  return id;
+  if (!inflight) inflight = loadInstallationId().finally(() => { inflight = null; });
+  return inflight;
 }
 
 /** Tests uniquement. */
 export function __resetShellInfoForTests(): void {
   installationId = null;
+  inflight = null;
+  deferredOnce = false;
+  disarmRetry();
 }

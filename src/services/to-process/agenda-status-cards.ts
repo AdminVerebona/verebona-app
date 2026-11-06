@@ -51,6 +51,7 @@ import type { ActionProposal, ResolutionReason } from './action-model';
 import type { DbClient, FieldWriter } from './resolve-action.service';
 import { upsertAction, type UpsertActionResult } from './to-process-action.service';
 import { ASSET_STATUSES, assetStatusLabel } from '@/lib/asset-status';
+import { PUBLISHABILITY_CONTRACTS } from './publishability';
 
 const AGENDA_DONE_RULE = 'AGENDA-DONE';
 const AGENDA_NOT_DONE_RULE = 'AGENDA-NOT-DONE';
@@ -191,6 +192,10 @@ export async function proposeAgendaStatus(p: {
     .where(and(eq(agendaItems.id, p.itemId), eq(agendaItems.accountId, p.accountId))).limit(1);
   if (!item) return { status: 'SKIPPED', reason: 'Événement introuvable dans le compte.' };
   if (item.status) return { status: 'SKIPPED', reason: 'Statut déjà posé : rien à proposer.' };
+  // Lot 112G : statut effectif COMMUN (111R) — réalisé et prouvé par un document : aucune carte.
+  const { isSettledStatus, loadEffectiveStatus } = await import('@/services/agenda/effective-status-read');
+  const effectif = await loadEffectiveStatus(p.accountId, p.itemId);
+  if (effectif && isSettledStatus(effectif)) return { status: 'SKIPPED', reason: 'Réalisation déjà établie : rien à proposer.' };
   const rule = RULE_OF[p.kind];
   await closeAgendaStatusCards(p.accountId, p.itemId, 'OBSOLETE', { except: rule });
   return upsertAction({
@@ -231,6 +236,8 @@ export async function listOpenNotDoneProposals(
       JOIN agenda_items i ON i.id = t.target_id AND i.account_id = t.account_id
      WHERE t.account_id = ${accountId} AND t.target_type = 'AGENDA_ITEM' AND t.rule_code = ${AGENDA_NOT_DONE_RULE}
        AND t.resolved_at IS NULL AND (i.manual_status IS NULL OR i.manual_status = '')
+       -- Lot 112G : même prémisse que l'affichage (réalisation prouvée comprise).
+       AND NOT ${sql.raw(PUBLISHABILITY_CONTRACTS[AGENDA_NOT_DONE_RULE].noLongerUseful!('t'))}
        ${biens && biens.length
     ? sql`AND EXISTS (SELECT 1 FROM agenda_asset_links l WHERE l.agenda_item_id = i.id AND l.asset_id IN (${sql.join(biens.map((b) => sql`${b}`), sql`, `)}))`
     : sql``}

@@ -119,8 +119,9 @@ export const TRANSACTIONAL_EMAILS: ReadonlyArray<{ templateCode: string; label: 
   { templateCode: 'LEGAL_CONFIRMATION', label: 'Confirmation d’acceptation des conditions' },
   { templateCode: 'WITHDRAWAL_VERIFICATION', label: 'Rétractation — vérification de la demande' },
   { templateCode: 'WITHDRAWAL_RECEIPT', label: 'Rétractation — accusé de réception' },
-  // Lot 34I (migration 0301) : désactivable — le parrain peut toujours copier son lien.
-  { templateCode: 'REFERRAL_INVITATION', label: 'Invitation de parrainage (envoyée par un abonné)' },
+  // Lot 112B : REFERRAL_INVITATION (invitation de parrainage par e-mail, lot 34I)
+  // SUPPRIMÉ avec sa route et son gabarit (migration 1405) — libellé conservé
+  // pour l'historique seulement (`REMOVED_TRANSACTIONAL_EMAIL_LABELS`).
   // Lot 35C (migration 0308) : information préalable d'une revalorisation —
   // envoyée seulement depuis Exploitation › Catalogue Stripe, texte à valider.
   { templateCode: 'PRICE_CHANGE_NOTICE', label: 'Évolution du tarif de l’abonnement (information préalable)' },
@@ -550,8 +551,6 @@ export function resolveTemplateVariables(
     firstName: ctx.firstName,
     lastName: ctx.lastName,
     fullName: `${ctx.firstName} ${ctx.lastName}`.trim(),
-    // REFERRAL_INVITATION (lot 34I) : l'administrateur est l'expéditeur de son test.
-    senderName: `${ctx.firstName} ${ctx.lastName}`.trim(),
     email: ctx.email,
     accountName: ctx.accountName ?? '',
     planType: ctx.planLabel ?? '',
@@ -631,6 +630,15 @@ export function appBaseUrl(): string {
 }
 
 /**
+ * Lot 112B — e-mails transactionnels SUPPRIMÉS du code et de la base (route,
+ * gabarit) : ni listés, ni modifiables, ni testables dans le BO. Seul leur
+ * libellé reste, pour lire l'historique (`email_logs`) des envois passés.
+ */
+export const REMOVED_TRANSACTIONAL_EMAIL_LABELS: Readonly<Record<string, string>> = {
+  REFERRAL_INVITATION: 'Invitation de parrainage par e-mail (supprimée au lot 112B)',
+};
+
+/**
  * Libellé métier d'un type de communication (événement du catalogue ou code
  * de gabarit e-mail), pour l'historique de la fiche utilisateur (COM-014).
  */
@@ -641,6 +649,7 @@ export function communicationTypeLabel(code: string): string {
   const tx = TRANSACTIONAL_EMAILS.find((t) => t.templateCode === upper);
   if (tx) return tx.label;
   if (EVENT_LABELS[upper]) return EVENT_LABELS[upper];
+  if (REMOVED_TRANSACTIONAL_EMAIL_LABELS[upper]) return REMOVED_TRANSACTIONAL_EMAIL_LABELS[upper];
   return code;
 }
 

@@ -22,7 +22,8 @@ const MIG = join(process.cwd(), 'src/db/migrations');
 // Lot 82D : 0656 élargit les objets de la mémoire des décisions (business_operation_match_decisions).
 // Lot 84B : 0684 y ajoute l'objet PRINCIPAL (retrait du rôle principal mémorisé).
 // Lot 86D : 0736 y ajoute l'objet AGENDA_FILE_LINK ; lot 86F : 0744 ajoute la date économique résolue des composantes. Lot 97A : 0836 ajoute l'origine AI_IDENTITY des décisions de rattachement.
-const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^(03(1[6-9]|2[0135]|79)|0609|0656|0684|0736|0744|0836)_.*\.sql$/.test(f)).sort();
+// Lot 112D : 1415 (conditions de prêt saisies sur `business_operation_financing_details`) rejouée avec les migrations du socle.
+const FICHIERS_O1 = readdirSync(MIG).filter((f) => /^(03(1[6-9]|2[0135]|79)|0609|0656|0684|0736|0744|0836|1415)_.*\.sql$/.test(f)).sort();
 
 const svc = () => import('@/services/business-operations/write');
 const lifecycle = () => import('@/services/business-operations/asset-lifecycle');

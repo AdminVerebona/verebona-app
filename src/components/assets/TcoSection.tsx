@@ -95,6 +95,7 @@ import { TcoUsageSection } from './TcoUsageSection';
 import { TcoInfoTip } from './tco-info-tip';
 import { createCoalescedRefresh, type CoalescedRefresh } from '@/lib/home/coalesced-refresh';
 import { tcoKeptYear, TCO_REFRESH_WINDOW_MS, watchTcoMutations } from './tco-refresh';
+import { TcoLoanTermsSheet } from './TcoLoanTermsSheet';
 
 interface Props {
   assetId: number;
@@ -183,6 +184,46 @@ function Bloc({ title, children, ...rest }: { title: string; children: React.Rea
       <h3 className="vb-app-subsection m-0">{title}</h3>
       {children}
     </section>
+  );
+}
+
+/** Lot 112D : capital restant dû des prêts (par prêt si plusieurs) ; « non établi » + ce qui manque, jamais une estimation. */
+function TcoOutstanding({ financing, canEdit = false, onOpenTerms }: { financing: NonNullable<TcoDto['indicators']>['financing']; canEdit?: boolean; onOpenTerms?: (loanKey: string) => void }) {
+  const o = financing.outstanding;
+  if (!o) return null;
+  const loans = financing.loans.filter((p) => p.outstanding);
+  const valeur = (x: { status: string; cents: number | null; asOf: string | null }) =>
+    (x.status === 'ESTABLISHED' && x.cents != null ? `${eur(x.cents)}${x.asOf ? ` au ${x.asOf.slice(8, 10)}/${x.asOf.slice(5, 7)}/${x.asOf.slice(0, 4)}` : ''}` : 'non établi');
+  return (
+    <div className="space-y-1.5" data-tco-outstanding={o.status}>
+      <div className="flex items-center gap-1.5">
+        <span className="text-sm font-medium text-[color:var(--text-primary)]">Capital restant dû</span>
+        <TcoInfoTip label="Capital restant dû" text={o.text} />
+      </div>
+      <div className="divide-y divide-border">
+        {loans.length > 1 && o.cents != null && <Ligne label="Total des prêts" value={eur(o.cents)} strong />}
+        {loans.map((p) => (
+          <div key={p.key} className="py-1" data-tco-outstanding-loan={p.outstanding!.status}>
+            <Ligne label={loans.length > 1 ? [p.label, p.lender, p.reference].filter(Boolean).join(' · ') : 'Montant'} value={valeur(p.outstanding!)} strong={loans.length === 1 && p.outstanding!.status === 'ESTABLISHED'} muted={p.outstanding!.status !== 'ESTABLISHED'} />
+            <p className={`text-xs ${p.outstanding!.status === 'ESTABLISHED' ? 'text-muted-foreground' : 'text-[color:var(--attention-on-soft)]'}`} data-tco-outstanding-label>{p.outstanding!.label}</p>
+            {p.outstanding!.installment && (
+              <p className="text-xs text-muted-foreground" data-tco-outstanding-installment>
+                Échéance hors assurance : {eur(p.outstanding!.installment.cents)}{p.outstanding!.installment.source === 'THEORETICAL' ? ' (calculée)' : ''}
+                {p.outstanding!.installment.insuranceCents != null ? ` · assurance emprunteur : ${eur(p.outstanding!.installment.insuranceCents)} par échéance, distincte du capital` : ''}.
+              </p>
+            )}
+            {p.outstanding!.notes.map((n, i) => <p key={i} className="text-xs text-muted-foreground">{n}</p>)}
+            {/* Lot 112H : conditions du prêt — saisie (Premium / Duo / essai, bien modifiable) ou consultation seule. */}
+            {onOpenTerms && p.operationId != null && p.outstanding!.fields && (
+              <Button type="button" variant="ghost" size="sm" className="min-h-[44px] -ml-2 px-2 text-[color:var(--accent)]" onClick={() => onOpenTerms(p.key)} data-tco-loan-terms-open={p.key}>
+                {!canEdit ? 'Voir les conditions du prêt' : p.outstanding!.status === 'ESTABLISHED' ? 'Modifier les conditions du prêt' : 'Compléter les conditions du prêt'}
+                <ChevronRight className="h-4 w-4" aria-hidden />
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -353,6 +394,7 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
   const [excludedOpen, setExcludedOpen] = useState(false); // L80A : sous-tiroir des non retenues fermé par défaut
   // Lot 109C : ligne à montrer depuis un point à vérifier (sous-tiroir ouvert, ligne mise en évidence et focalisée).
   const [focusLine, setFocusLine] = useState<string | null>(null);
+  const [loanTermsKey, setLoanTermsKey] = useState<string | null>(null); // L112H : feuille « Conditions du prêt »
 
   // Lot 81D : lecture du TCO par le mécanisme existant de rafraîchissement regroupé (une lecture par rafale
   // d'événements, réponses anciennes écartées, données affichées conservées pendant la relecture).
@@ -687,6 +729,9 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
                     ))}
                   </div>
                   {ind.financing.basisLabel && <p className="text-xs text-muted-foreground" data-tco-financing-basis>{ind.financing.basisLabel}.</p>}
+                  {/* Lot 112D : capital restant dû — valeur seulement s'il est établi (lu, saisi ou calculé exactement), sinon « non établi » et ce qui manque.
+                      Information, jamais un coût : n'entre dans aucun total. */}
+                  {ind.financing.outstanding && <TcoOutstanding financing={ind.financing} canEdit={canEdit} onOpenTerms={setLoanTermsKey} />}
                 </section>
               )}
 
@@ -935,6 +980,18 @@ export function TcoSection({ assetId, readOnly = false, defaultOpen = false }: P
             </div>
           </SheetContent>
         </Sheet>
+      )}
+      {/* Lot 112H : conditions du prêt — route PUT 112D, TCO recalculé rendu par le serveur (mise à jour immédiate). */}
+      {t && ind && loanTermsKey && (
+        <TcoLoanTermsSheet
+          open={!!ind.financing.loans.find((p) => p.key === loanTermsKey)}
+          onOpenChange={(v) => { if (!v) setLoanTermsKey(null); }}
+          assetId={assetId}
+          loan={ind.financing.loans.find((p) => p.key === loanTermsKey) ?? null}
+          canEdit={canEdit}
+          onOwnWrite={(w) => { ownWrite.current = w; }}
+          onSaved={(tco) => { coordinator.current?.supersede(); setData(tco); setExtra([]); setYearLines(null); }}
+        />
       )}
     </div>
   );

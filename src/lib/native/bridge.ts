@@ -63,6 +63,14 @@ export const NATIVE_PLUGINS = {
    * fidèles (`lib/native/share-import`). Absent des binaires antérieurs.
    */
   shareImport: 'VerebonaShareImport',
+  /**
+   * Lot 112E : plugin local iOS (mobile/ios/App/App/VerebonaSecureStoreStatus.swift) —
+   * code natif d'une lecture du Keychain (`errSecInteractionNotAllowed` =
+   * téléphone verrouillé ≠ « absent ») et disponibilité des données
+   * protégées (`lib/native/secure-store`, `secureProbe`). Absent d'Android et
+   * des binaires antérieurs : repli sur le premier plan.
+   */
+  secureStoreStatus: 'VerebonaSecureStoreStatus',
 } as const;
 
 export type NativePluginName = typeof NATIVE_PLUGINS[keyof typeof NATIVE_PLUGINS];

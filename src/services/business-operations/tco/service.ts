@@ -29,6 +29,7 @@ import { BusinessOperationReadService, type AssistantOperationRead } from '../re
 import { computeTco, nonRealizedComponentIds, type TcoAssetPrice, type TcoEquipmentPrice, type TcoInput, type TcoOperation, type TcoResult } from './model';
 import { readUsageAssignments, readUsageBudgets } from './usage-budgets.service';
 import type { TcoFinancingDetails } from './financing';
+import { readLoanEvidence } from './loan-terms.service';
 import { presumedDuplicateComponents, unjustifiedComponent, type ComponentProvenance } from './fact-identity';
 import { TCO_COUNTING_DECISIONS, TCO_STABLE_SOURCE_KINDS, type TcoUserDecision } from './user-decisions';
 import { civilDateParis, type LedgerComponent } from '../finance/engine';
@@ -218,6 +219,8 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
 
   // Lot 111F : détails contractuels des prêts du bien (Opérations FINANCING existantes, aucun second référentiel).
   const financingDetails = await readFinancingDetails(r, accountId, lus.filter((o) => o.typeCode === 'FINANCING').map((o) => o.id));
+  // Lot 112D : preuves du capital restant dû (faits et tableaux des justificatifs du prêt, saisies USER / ADMIN) — lecture seule.
+  const loanEvidence = await readLoanEvidence(r, accountId, operations.filter((o) => o.typeCode === 'FINANCING').map((o) => ({ id: o.id, fileIds: o.documents.map((d) => d.fileId) })), financingDetails);
 
   const result = computeTco({
     assetId, today: opts.today ?? civilDateParis(), operations, equipmentAssets,
@@ -226,7 +229,7 @@ export async function readAssetTco(accountId: number, assetId: number, opts: { t
     ...(dates.acquisitionMeta ? { assetAcquisitionDateMeta: { ...dates.acquisitionMeta, lastWrite: dates.acquisitionDate ? await lastAcquisitionDateWrite(r, accountId, assetId) : null } } : {}),
     valuationHistory, desiredSalePriceCents: desired, budgets, readComplete: readComplete && doc.complete && equipementsComplets,
     documents: doc.documents, assetPrice, equipmentPrices, acquisitionExpected,
-    assetCategory: txt(asset.category), componentProvenance, userDecisions, usageAssignments, financingDetails,
+    assetCategory: txt(asset.category), componentProvenance, userDecisions, usageAssignments, financingDetails, loanEvidence,
   });
   // Lot 68 : diagnostic BO — justificatifs qui CITENT seulement le bien (exclus des sources, expliqués).
   // Lot 108B : état PERSISTÉ de la récupération des montants inconnus (lecture seule : jamais d'IA à la consultation).

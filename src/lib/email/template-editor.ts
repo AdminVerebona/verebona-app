@@ -160,12 +160,7 @@ const DECLARED: Record<string, { variables: TemplateVariable[]; required: Requir
       v('accountUrl', 'Lien vers Mon compte', 'url'), v('legalPermalinkUrl', 'Conditions générales', 'url'), v('contactEmail', 'Adresse de contact')],
     required: [req('référence', 'publicReference'), req('date de réception', 'requestedAtLabel')],
   },
-  REFERRAL_INVITATION: {
-    variables: [v('senderName', 'Nom du parrain'), v('referralUrl', 'Lien de parrainage', 'url'), v('actionUrl', 'Lien de parrainage (nom générique)', 'url'),
-      // Lot 102D : paramètres centraux du parrainage (referral-rules.ts).
-      v('referralTermsUrl', 'Conditions du parrainage (site public)', 'url'), v('referralWindowDays', 'Délai d’inscription (jours)'), v('referralReward', 'Récompense du parrain')],
-    required: [req('lien de parrainage', 'referralUrl', 'actionUrl')],
-  },
+  // Lot 112B : REFERRAL_INVITATION supprimé (invitation de parrainage par e-mail, migration 1405).
   PRICE_CHANGE_NOTICE: {
     variables: [FIRST_NAME, v('planLabel', 'Offre'), v('oldAmount', 'Tarif actuel'), v('newAmount', 'Nouveau tarif'), v('effectiveFrom', 'Date d’effet')],
     required: [req('tarif actuel', 'oldAmount'), req('nouveau tarif', 'newAmount'), req('date d’effet', 'effectiveFrom')],

@@ -79,6 +79,16 @@ async function unsafe(sql: string, p: unknown[] = []): Promise<unknown[]> {
     const i = etat.agenda.get(id);
     return i && i.account === account ? [{ manual_status: i.manualStatus }] : [];
   }
+  // Lot 112G : statut effectif commun (revalidation au clic) — lecture `loadEffectiveStatuses`.
+  if (/AS "esCompletionProven" FROM agenda_items i WHERE i\.account_id = \$1 AND i\.id = ANY/.test(sql)) {
+    const [account, ids] = p as [number, number[]];
+    return ids.flatMap((id) => {
+      const i = etat.agenda.get(id);
+      return i && i.account === account
+        ? [{ id, esManualStatus: i.manualStatus, esStartDate: i.date, esStartTime: null, esEndDate: null, esEndTime: null, esCompletionProven: false, esEventNature: 'DEADLINE', esBusinessType: null, esOriginFieldKey: null }]
+        : [];
+    });
+  }
   if (/FROM agenda_items i/.test(sql)) {
     const [account] = p as [number];
     return [...etat.agenda.entries()]

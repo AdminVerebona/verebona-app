@@ -543,14 +543,24 @@ jobs:
         run: npm run test:e2e:diagnostic-cible -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-diagnostic-cible.xml
       - name: Agenda / Timeline, statut effectif commun (lot 111R)
         run: npm run test:e2e:statut-effectif -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-statut-effectif.xml
+      - name: Rappels mascotte, À traiter, J-7 et accueil sur le statut effectif (lot 112G)
+        run: npm run test:e2e:rappels-statut-effectif -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-rappels-statut-effectif.xml
       - name: Acquisition prouvée par facture de bout en bout (lot 111S)
         run: npm run test:e2e:acquisition-bout-en-bout -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-acquisition-bout-en-bout.xml
       - name: TCO, coût annuel, financement et valorisation (lot 111F)
         run: npm run test:e2e:tco-financement -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-financement.xml
       - name: TCO, anomalies corrigeables et arbitrages (lot 111V)
         run: npm run test:e2e:tco-anomalies -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-tco-anomalies.xml
+      - name: TCO, capital restant dû établi, jamais un coût (lot 112D)
+        run: npm run test:e2e:capital-restant-du -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-capital-restant-du.xml
+      - name: TCO, saisie des conditions d’un prêt (lot 112H)
+        run: npm run test:e2e:saisie-pret -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-saisie-pret.xml
       - name: CIL, chaîne DPE et données structurées de bout en bout (lot 111U)
         run: npm run test:e2e:cil-dpe -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-cil-dpe.xml
+      - name: CIL, pastille Partiel identique Informations, préparation et PDF (lot 112A)
+        run: npm run test:e2e:cil-pastille -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-cil-pastille.xml
+      - name: CIL, travaux réalisés posés B5 / B6 et mise à jour depuis les Opérations (lot 112F)
+        run: npm run test:e2e:cil-pose -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-cil-pose.xml
       - name: Fournisseurs, coordonnées documentaires et seconde chance T3 (lot 111X)
         run: npm run test:e2e:fournisseurs-coordonnees -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-fournisseurs-coordonnees.xml
       - name: Documents, rattachement à plusieurs biens, pièces et équipements (lot 111I)
@@ -559,6 +569,8 @@ jobs:
         run: npm run test:e2e:t2-pertinence -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-t2-pertinence.xml
       - name: Suggestions, critère d'utilité réelle (lot 111L)
         run: npm run test:e2e:suggestions-utilite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-suggestions-utilite.xml
+      - name: Suggestions Exploiter concrètes et droits TCO de T2 (lot 112C)
+        run: npm run test:e2e:suggestions-exploiter -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-suggestions-exploiter.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4

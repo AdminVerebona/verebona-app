@@ -162,9 +162,11 @@ describe('L102D-R07 — sources alignées sur la règle centrale', () => {
     expect(code(read('src/services/referral-attribution.service.ts'))).not.toMatch(/REFERRAL_ATTRIBUTION_DAYS\s*=/);
   });
 
-  it('e-mail d’invitation : conditions issues des paramètres et lien public', () => {
-    const mig = read('src/db/migrations/0920_l102d_parrainage_regle_centrale.sql');
-    for (const v of ['{{referralTermsUrl}}', '{{referralWindowDays}}', '{{referralReward}}']) expect(mig).toContain(v);
-    expect(code(read('src/services/referral/referral-invitation.service.ts'))).toContain('referralInvitationRuleVariables()');
+  // Lot 112B (décision PO) : l'e-mail d'invitation de parrainage est supprimé
+  // (gabarit retiré par la migration 1405) ; la migration 0920 reste dans la
+  // chaîne (déjà appliquée) mais n'a plus de gabarit à compléter.
+  it('e-mail d’invitation supprimé (lot 112B) : plus de variables de gabarit côté service', () => {
+    expect(read('src/db/migrations/1405_l112b_parrainage_sans_email.sql')).toMatch(/DELETE FROM email_templates WHERE upper\(type\) = 'REFERRAL_INVITATION'/);
+    expect(code(read('src/services/referral/referral-invitation.service.ts'))).not.toContain('referralInvitationRuleVariables');
   });
 });

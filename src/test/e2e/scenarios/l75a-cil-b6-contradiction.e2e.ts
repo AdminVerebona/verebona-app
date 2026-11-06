@@ -137,9 +137,12 @@ scenario('L75A-B6', 'CIL B6 : déclaration « non applicable » et équipements 
     expect(await resolutions(b.id)).toEqual(avant);
 
     r = await rendu(compte, b.id);
-    expect(r.dto).toMatchObject({ status: 'complete', neutralizedResolution: 'not_applicable', canMarkNotApplicable: false });
+    // Lot 112A (décision PO du 06/11) : la PAC n'a pas d'énergie renseignée → chauffage partiel dans l'état commun CIL :
+    // pastille « Partiel » au PDF ET à la préparation ; statut de bloc « complete » (règle 75A inchangée).
+    expect(r.dto).toMatchObject({ status: 'complete', pillStatus: 'partial', neutralizedResolution: 'not_applicable', canMarkNotApplicable: false });
     expect(r.dto.notice).toBe(e.block.notice);
-    expect(r.mapped).toMatchObject({ status: 'complete', source: '1 équipement', resolution: null });
+    expect(r.mapped).toMatchObject({ status: 'partial', resolution: null });
+    expect(r.mapped.source).toMatch(/^1 équipement · à compléter : Chauffage/);
     expect(r.equipments).toEqual(['Pompe à chaleur du jardin']);
     expect(r.note).toBeNull();
     expect(r.html).toContain('Pompe à chaleur du jardin');

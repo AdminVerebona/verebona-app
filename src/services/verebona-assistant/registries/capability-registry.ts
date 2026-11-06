@@ -126,7 +126,10 @@ export function capabilitiesForPlan(plan: string): { open: AssistantCapability[]
  *   · UNE seule liste (`SUGGESTIONS`, `ACCOUNT_STATE_SUGGESTIONS`) et UNE
  *     seule éligibilité (`suggestionsForRoute`) — champ desktop, espace
  *     mobile, route `/api/verebona/suggestions` ET mascotte d'accueil
- *     (`mascot.service` → `buildSecondaries`) ;
+ *     (`mascot.service` → `buildSecondaries`) ; depuis 108J les surfaces
+ *     lisent le service partagé, et depuis 112C la route historique aussi
+ *     (`suggestions/shared/service.ts`) : ce catalogue reste la source des
+ *     libellés, intentions et préconditions (contrat L34) ;
  *   · chaque entrée déclare son INTENTION T2 CANONIQUE (`canonicalIntent`,
  *     une vraie `VerebonaIntent`), son DOMAINE de réponse (`domain`) et ses
  *     PRÉCONDITIONS explicites (`requires`, sur des compteurs lus côté
@@ -153,6 +156,19 @@ export interface SuggestionAsset {
   documents: number;
   /** Échéances actives à venir (règle canonique `countUpcomingAgenda`). Absent : inconnu. */
   deadlines?: number;
+  /**
+   * Lot 112C — faits « Exploiter » PROUVÉS par les lectures mêmes de T2
+   * (`suggestions/shared/exploit-facts.ts`). Absent : inconnu (précondition
+   * non satisfaite) — seul le service partagé les renseigne.
+   */
+  /** Dépenses d'entretien qualifiées (centimes, `sumQualifiedExpenses`, thème entretien). */
+  maintenanceSpend?: number;
+  /** Dépenses qualifiées tous thèmes (centimes, même lecture). */
+  spend?: number;
+  /** 1 : fin de garantie canonique lisible, aujourd'hui ou plus tard. */
+  warrantyUpcoming?: number;
+  /** 1 : date du dernier entretien canonique lisible. */
+  lastService?: number;
 }
 
 /**
@@ -186,6 +202,10 @@ export interface AccountSuggestionState {
   assetsTotal?: number;
   /** Lot 34 : documents non supprimés du compte. */
   documentsTotal?: number;
+  /** Lot 112C : dépenses qualifiées de l'année civile en cours (centimes, `sumQualifiedExpenses`). */
+  yearSpend?: number;
+  /** Lot 112C : 1 si l'offre ouvre le coût de possession (Premium, Premium Duo — `premiumFeatures`), 0 sinon. */
+  ownershipCostAvailable?: number;
 }
 
 /**
@@ -199,10 +219,20 @@ export interface SuggestionContext {
   pageAsset?: SuggestionAsset | null;
   /** Bien du compte à nommer hors fiche (nommable sans ambiguïté). */
   accountAsset?: SuggestionAsset | null;
+  /**
+   * Lot 112C : biens nommables porteurs d'au moins un fait « Exploiter »
+   * prouvé (du plus récent au plus ancien). Une entrée `asset: 'proven'`
+   * nomme le PREMIER qui satisfait toutes ses préconditions.
+   */
+  provenAssets?: readonly SuggestionAsset[] | null;
+  /** Lot 112C : année civile courante (Europe/Paris), pour `{annee}`. */
+  year?: number | null;
 }
 
 /** Compteur lu par une précondition ; `asset.*` : le bien désigné par l'entrée (`asset`). */
-type SuggestionFact = keyof AccountSuggestionState | 'asset.documents' | 'asset.deadlines';
+type SuggestionFact = keyof AccountSuggestionState | 'asset.documents' | 'asset.deadlines'
+  // Lot 112C : faits « Exploiter » prouvés d'un bien.
+  | 'asset.maintenanceSpend' | 'asset.spend' | 'asset.warrantyUpcoming' | 'asset.lastService';
 
 /**
  * Précondition explicite : `positive` (connu et > 0), `zero` (connu et nul),
@@ -211,7 +241,9 @@ type SuggestionFact = keyof AccountSuggestionState | 'asset.documents' | 'asset.
 interface SuggestionRequirement { fact: SuggestionFact; is: 'positive' | 'zero' | 'notPositive' }
 
 /** Domaine de la réponse attendue (sources admissibles, vérifiées par le test contractuel). */
-type SuggestionDomain = 'ACTIONS' | 'TO_PROCESS' | 'AGENDA' | 'DOCUMENTS' | 'DOCUMENT_STATUS' | 'EXPORTS' | 'HELP' | 'PLAN';
+type SuggestionDomain = 'ACTIONS' | 'TO_PROCESS' | 'AGENDA' | 'DOCUMENTS' | 'DOCUMENT_STATUS' | 'EXPORTS' | 'HELP' | 'PLAN'
+  // Lot 112C : montants calculés (dépenses qualifiées, coût de possession) ; champ d'un bien.
+  | 'COSTS' | 'ASSET_FIELD';
 
 /** Types de sources T2 admissibles pour chaque domaine (aide : article ou règle produit). */
 export const SUGGESTION_DOMAIN_SOURCES: Readonly<Record<SuggestionDomain, readonly string[]>> = {
@@ -223,13 +255,18 @@ export const SUGGESTION_DOMAIN_SOURCES: Readonly<Record<SuggestionDomain, readon
   EXPORTS: ['export_item'],
   HELP: ['help_entry', 'product_rule'],
   PLAN: ['product_rule', 'help_entry'],
+  // Lot 112C : la source qui PORTE le total (`expenseSumSource`, `tco:<id>`), le bien, ses justificatifs.
+  COSTS: ['document_extraction', 'asset_field', 'document'],
+  // Lot 112C : champ canonique du bien (ou lu dans un document, `target.field_document`).
+  ASSET_FIELD: ['asset_field', 'document'],
 };
 
 export interface SuggestionEntry {
   id: string;
   /**
    * Libellé ; `{de_bien}` est remplacé par « de <nom> » (« d’<nom> » devant
-   * une voyelle) du bien désigné par `asset`.
+   * une voyelle) du bien désigné par `asset`. Lot 112C : `{bien}` par le
+   * nom seul, `{annee}` par l'année civile courante du contexte serveur.
    */
   label: string;
   /** Intention T2 canonique que le libellé déclenche (routage déterministe vérifié). */
@@ -248,8 +285,12 @@ export interface SuggestionEntry {
   /** Route en expression régulière (fiche d'un bien : `/assets/:id`). */
   routePattern?: RegExp;
   priority: number;     // plus bas = plus prioritaire
-  /** Bien nommé dans le libellé : celui de la fiche, ou un bien du compte. */
-  asset?: 'page' | 'account';
+  /**
+   * Bien nommé dans le libellé : celui de la fiche, ou un bien du compte.
+   * Lot 112C : `proven` — le premier bien de `provenAssets` qui satisfait
+   * TOUTES les préconditions de l'entrée (le fait demandé existe pour lui).
+   */
+  asset?: 'page' | 'account' | 'proven';
   /** Préconditions sur les données : toutes doivent être vraies. */
   requires?: readonly SuggestionRequirement[];
 }
@@ -277,6 +318,15 @@ export const SUGGESTIONS: SuggestionEntry[] = [
   { id: 'home_todo_priority', label: 'Que dois-je traiter en priorité ?', canonicalIntent: 'ACCOUNT_TO_PROCESS', domain: 'TO_PROCESS', topic: 'actions', routeExact: HOME, priority: 1, requires: [R('toProcessPending'), R('actionsDueToday', 'notPositive')] },
   { id: 'home_next_deadline', label: 'Quelle est ma prochaine échéance ?', canonicalIntent: 'ACCOUNT_SEARCH_AGENDA', domain: 'AGENDA', topic: 'deadlines', routeExact: HOME, priority: 2, requires: [R('deadlinesUpcoming')] },
   { id: 'home_analysis', label: 'Où en est l’analyse de mes documents ?', canonicalIntent: 'ACCOUNT_FACT_DOCUMENT', domain: 'DOCUMENT_STATUS', topic: 'analysis', routeExact: HOME, priority: 3, requires: [R('documentsInAnalysis')] },
+  // Lot 112C — questions « Exploiter » CONCRÈTES : chacune n'est rendue que si
+  // le fait qu'elle demande est PROUVÉ par la lecture même de T2 (préconditions
+  // `asset.*` / `yearSpend` renseignées par `suggestions/shared/exploit-facts.ts`) ;
+  // contrat « affichée → cliquée → intention → source → réponse » : L34 (e2e).
+  { id: 'home_asset_ownership_cost', label: 'Quel est le coût de possession {de_bien} ?', canonicalIntent: 'ACCOUNT_FACT_ASSET', domain: 'COSTS', topic: 'asset-costs', routeExact: HOME, priority: 4, asset: 'proven', requires: [R('ownershipCostAvailable'), R('asset.spend')] },
+  { id: 'home_asset_warranty_end', label: 'Quelle est la date de fin de garantie {de_bien} ?', canonicalIntent: 'ACCOUNT_FACT_DOCUMENT', domain: 'ASSET_FIELD', topic: 'warranty', routeExact: HOME, priority: 4, asset: 'proven', requires: [R('asset.warrantyUpcoming')] },
+  { id: 'home_asset_maintenance_spend', label: 'Combien ai-je dépensé en entretien pour {bien} ?', canonicalIntent: 'ACCOUNT_FACT_ASSET', domain: 'COSTS', topic: 'asset-costs', routeExact: HOME, priority: 4, asset: 'proven', requires: [R('asset.maintenanceSpend')] },
+  { id: 'home_year_spend', label: 'Combien ai-je dépensé en {annee} ?', canonicalIntent: 'ACCOUNT_FACT_ASSET', domain: 'COSTS', topic: 'year-spend', routeExact: HOME, priority: 4, requires: [R('yearSpend')] },
+  { id: 'home_asset_last_service', label: 'Quelle est la date du dernier entretien {de_bien} ?', canonicalIntent: 'ACCOUNT_FACT_ASSET', domain: 'ASSET_FIELD', topic: 'last-service', routeExact: HOME, priority: 4, asset: 'proven', requires: [R('asset.lastService')] },
   { id: 'home_asset_docs', label: 'Quels sont les documents {de_bien} ?', canonicalIntent: 'ACCOUNT_SEARCH_DOCUMENT', domain: 'DOCUMENTS', topic: 'asset-docs', routeExact: HOME, priority: 4, asset: 'account', requires: [R('asset.documents')] },
   // Accueil, premiers pas (compte vide, aucun document) : l'aide d'ajout.
   { id: 'home_add_asset', label: 'Comment ajouter un bien ?', canonicalIntent: 'PRODUCT_HELP_HOW_TO', domain: 'HELP', routeExact: HOME, priority: 5, requires: [R('assetsTotal', 'zero')] },
@@ -373,23 +423,39 @@ const isGeneric = (s: SuggestionEntry) => !s.routeExact && !s.routePrefix && !s.
 
 /** Valeur d'un compteur dans un contexte (`undefined` : inconnue). */
 function factValue(fact: SuggestionFact, ctx: SuggestionContext, asset: SuggestionAsset | null | undefined): number | undefined {
-  if (fact === 'asset.documents') return asset?.documents;
-  if (fact === 'asset.deadlines') return asset?.deadlines;
-  const v = ctx.state?.[fact];
+  if (fact.startsWith('asset.')) {
+    const v = asset?.[fact.slice('asset.'.length) as keyof SuggestionAsset];
+    return typeof v === 'number' ? v : undefined;
+  }
+  const v = ctx.state?.[fact as keyof AccountSuggestionState];
   return typeof v === 'number' ? v : undefined;
+}
+
+function satisfies(s: SuggestionEntry, ctx: SuggestionContext, bien: SuggestionAsset | null | undefined): boolean {
+  return (s.requires ?? []).every((r) => {
+    const v = factValue(r.fact, ctx, bien);
+    if (r.is === 'positive') return v != null && v > 0;
+    if (r.is === 'zero') return v === 0;
+    return v == null || v <= 0;
+  });
+}
+
+/**
+ * Bien désigné par une entrée dans un contexte. Lot 112C (`proven`) : le
+ * premier bien prouvé qui satisfait TOUTES les préconditions de l'entrée.
+ */
+function bienDe(s: SuggestionEntry, ctx: SuggestionContext): SuggestionAsset | null | undefined {
+  if (s.asset === 'page') return ctx.pageAsset;
+  if (s.asset === 'account') return ctx.accountAsset;
+  if (s.asset === 'proven') return (ctx.provenAssets ?? []).find((b) => satisfies(s, ctx, b)) ?? null;
+  return null;
 }
 
 /** Préconditions satisfaites ? (pure, testée) */
 export function requirementsMet(s: SuggestionEntry, ctx: SuggestionContext | null): boolean {
   if (!s.requires?.length) return true;
   if (!ctx) return false;
-  const bien = s.asset === 'page' ? ctx.pageAsset : s.asset === 'account' ? ctx.accountAsset : null;
-  return s.requires.every((r) => {
-    const v = factValue(r.fact, ctx, bien);
-    if (r.is === 'positive') return v != null && v > 0;
-    if (r.is === 'zero') return v === 0;
-    return v == null || v <= 0;
-  });
+  return satisfies(s, ctx, bienDe(s, ctx));
 }
 
 /**
@@ -403,10 +469,15 @@ function render(s: SuggestionEntry, ctx: SuggestionContext | null): RenderedSugg
   let label = s.label;
   let assetId: number | undefined;
   if (s.asset) {
-    const bien = s.asset === 'page' ? ctx!.pageAsset : ctx!.accountAsset;
+    const bien = bienDe(s, ctx!);
     if (!bien?.name) return null;
-    label = label.replace('{de_bien}', deBien(bien.name));
+    label = label.replace('{de_bien}', deBien(bien.name)).replace('{bien}', bien.name.replace(/\s+/g, ' ').trim());
     assetId = bien.id;
+  }
+  // Lot 112C : année civile du contexte SERVEUR (jamais celle du navigateur).
+  if (label.includes('{annee}')) {
+    if (!ctx?.year) return null;
+    label = label.replace('{annee}', String(ctx.year));
   }
   return {
     id: s.id, label, priority: s.priority, canonicalIntent: s.canonicalIntent, domain: s.domain, topic: s.topic ?? s.id,

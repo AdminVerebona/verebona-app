@@ -88,15 +88,16 @@ describe('L34-SUGG — contrat de chaque suggestion du catalogue unique', () => 
   it('chaque entrée est publiable : préconditions minimales satisfaites → affichée sur sa page (sinon elle serait morte)', () => {
     for (const e of ALL_SUGGESTIONS) {
       const state = etat();
-      const bien: { id: number; name: string; documents: number; deadlines: number } = { id: 42, name: 'Cupra', documents: 0, deadlines: 0 };
+      const bien: { id: number; name: string; documents: number; deadlines: number } & Record<string, number | string> = { id: 42, name: 'Cupra', documents: 0, deadlines: 0 };
       for (const r of e.requires ?? []) {
         const v = r.is === 'positive' ? 1 : 0;
-        if (r.fact === 'asset.documents') bien.documents = v;
-        else if (r.fact === 'asset.deadlines') bien.deadlines = v;
+        // Lot 112C : généralisé à TOUS les faits `asset.*` (faits « Exploiter » prouvés d'un bien) — même vérification.
+        if (r.fact.startsWith('asset.')) bien[r.fact.slice('asset.'.length)] = v;
         else (state as unknown as Record<string, number>)[r.fact] = v;
       }
       const route = e.routeExact?.[0] ?? e.routePrefix ?? (e.routePattern ? '/assets/42' : '/fournisseurs');
-      const rendues = suggestionsForRoute(route, { state, pageAsset: bien, accountAsset: bien });
+      // Lot 112C : biens PROUVÉS (`asset: 'proven'`) et année du contexte serveur (`{annee}`).
+      const rendues = suggestionsForRoute(route, { state, pageAsset: bien, accountAsset: bien, provenAssets: [bien], year: 2026 });
       expect(rendues.map((x) => x.id), `${e.id} sur ${route}`).toContain(e.id);
     }
   });

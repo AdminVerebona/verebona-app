@@ -10,6 +10,7 @@
 import type { DossierCode, AdditionalInfoSectionKey, ExportFamily } from '@/services/exports/catalog';
 import type { PrepMessage } from './messages';
 import type { PrepItemType } from './sections';
+import type { CilBlockPillStatus } from '@/lib/cil/cil-block-pill';
 
 export type ItemMode = 'PDF' | 'ZIP';
 export type OutputFormat = 'PDF' | 'ZIP';
@@ -144,6 +145,12 @@ export interface CilBlockDto {
    * CIL commun, même liste que l'onglet Informations) ; vide sinon.
    */
   cilMissing?: string[];
+  /**
+   * Lot 112A : pastille affichée (Renseigné / Partiel / Manquant / À compléter
+   * / Non applicable) — MÊME règle que le PDF (`lib/cil/cil-block-pill.ts`).
+   * `status` reste le statut de bloc (blocage, actions) ; absent = `status`.
+   */
+  pillStatus?: CilBlockPillStatus;
 }
 
 export interface PreparationDto {

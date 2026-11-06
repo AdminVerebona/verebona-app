@@ -16,7 +16,7 @@
  * ══════════════════════════════════════════════════════════════════════════
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { REFERRAL_TEXT } from '@/services/referral/referral-rules';
 
@@ -35,10 +35,10 @@ const sansCommentaires = (source: string) =>
 // planifiée interne ; la route ne fait plus que l'appeler.
 const CRON = sansCommentaires(read('src/services/referral/referral-rewards.job.ts'));
 const SIGNUP = sansCommentaires(read('src/app/(auth)/signup/SignupForm.tsx'));
-// Lot 34I : le texte de l'invitation est le gabarit REFERRAL_INVITATION
-// (migration 0301, modifiable dans le BO), plus du HTML dans la route.
-const INVITATION = sansCommentaires(read('src/app/api/referral/send-email/route.ts'))
-  + read('src/db/migrations/0301_referral_invitation_email_template.sql').replace(/''/g, "'");
+// Lot 112B (décision PO) : l'invitation de parrainage par e-mail (route,
+// gabarit REFERRAL_INVITATION) est supprimée ; le parrain partage son lien
+// depuis Mon compte (texte de partage de `ReferralBlock.tsx`).
+const PARTAGE_SOURCE = sansCommentaires(read('src/components/account/ReferralBlock.tsx'));
 
 describe('la règle : le parrain seul est récompensé', () => {
   it('l’avantage n’est accordé qu’au compte du parrain', () => {
@@ -77,13 +77,15 @@ describe('rien ne promet plus un avantage au filleul', () => {
     expect(REFERRAL_TEXT.referredNotice).toMatch(/^Votre parrain recevra/);
   });
 
-  it('l’email d’invitation ne promet plus trois mois', () => {
-    // Promesse écrite, envoyée nominativement à un tiers.
-    expect(INVITATION).not.toMatch(/3 mois/);
+  it('l’invitation partagée ne promet aucune récompense au filleul', () => {
+    // Texte envoyé à un tiers (feuille de partage, copie, e-mail préparé).
+    const texte = PARTAGE_SOURCE.match(/export function referralShareText[\s\S]*?\n}/)?.[0] ?? '';
+    expect(texte).toContain('Mon code de parrainage');
+    expect(texte).not.toMatch(/3 mois|mois offert|bénéficiera/);
   });
 
-  it('l’email d’invitation nomme le parrain comme bénéficiaire', () => {
-    expect(INVITATION).toMatch(/bénéficiera d'un mois offert/);
+  it('plus d’e-mail d’invitation envoyé par Verebona (lot 112B)', () => {
+    expect(existsSync(join(process.cwd(), 'src/app/api/referral/send-email/route.ts'))).toBe(false);
   });
 });
 

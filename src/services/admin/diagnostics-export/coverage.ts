@@ -472,7 +472,6 @@ export const DIAG_TABLE_COVERAGE: Readonly<Record<string, DiagTableCoverage>> = 
   stripe_catalog_state: T('technique', 'Stripe : état du catalogue'),
   funnel_events: T('technique', 'statistiques de conversion'),
   signup_contexts: T('technique', 'contextes d’inscription'),
-  referral_email_sends: T('technique', 'parrainage : envois'),
   referral_events: T('technique', 'parrainage : événements (deux comptes par ligne)'),
   referral_links: T('technique', 'parrainage : liens (code omis)'),
   news_consents: T('technique', 'consentements de communication'),

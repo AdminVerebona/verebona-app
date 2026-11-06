@@ -137,6 +137,10 @@ export async function getT6ReminderState(p: { accountId: number; userId: number;
     `SELECT i.manual_status, ${historicalSql('i', col0223)} AS historical FROM agenda_items i WHERE i.id = $1 AND i.account_id = $2`,
     [t.id, p.accountId],
   ).catch(() => [] as Row[]);
+  // Lot 112G : statut effectif COMMUN (preuve de réalisation 103D comprise) — un
+  // événement réalisé et prouvé n'affiche plus « Rappel actif ».
+  const effectif = await import('@/services/agenda/effective-status-read')
+    .then((m) => m.loadEffectiveStatus(p.accountId, t.id)).catch(() => null);
   const cles = [agendaSubjectKey(t.id), ...(t.seriesKey ? [seriesSubjectKey(t.seriesKey)] : [])];
   const r = await rows(
     `SELECT subject_key, scope, decision, to_char(remind_at, 'YYYY-MM-DD') AS remind_at, updated_at,
@@ -157,6 +161,7 @@ export async function getT6ReminderState(p: { accountId: number; userId: number;
   ).catch(() => [] as Row[]);
   const relevance = agendaReminderRelevance({
     manualStatus: (etat?.manual_status as string | null | undefined) ?? null,
+    effectiveStatus: effectif,
     historical: etat?.historical === true,
     dueDate: t.date,
     hasPreference: !!occ || !!ser,

@@ -168,7 +168,9 @@ describe('AC8.6 — source unique des exemples', () => {
     const provider = lire('src/components/verebona/space/VerebonaSpaceProvider.tsx');
     // Lot 108J : la sélection PARTAGÉE avec l'accueil ; la route historique reste le contrat du catalogue.
     expect(provider).toMatch(/useSharedSuggestions\(\{ active: isOpen \}\)/);
-    expect(lire('src/app/api/verebona/suggestions/route.ts')).toMatch(/suggestionsForRoute\(q\.data\.route, ctx\)/);
+    // Lot 112C : la route historique est ALIGNÉE sur le service partagé (mêmes règles que /api/suggestions) ;
+    // ce catalogue reste la source des libellés et préconditions, vérifiée ci-dessus et par L34.
+    expect(lire('src/app/api/verebona/suggestions/route.ts')).toMatch(/getSharedSuggestions\(accountId, session\.userId\)/);
   });
   it('aucun libellé du catalogue n’est recopié ailleurs dans l’interface', () => {
     const labels = SUGGESTIONS.filter((s) => !s.asset).map((s) => s.label);

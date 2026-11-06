@@ -2,8 +2,8 @@
  * Lot 32 (32E) — de bout en bout sur PostgreSQL réel.
  *
  * Point 8 — exemples « Par exemple » du champ « Demander à Verebona » :
- * chaque exemple renvoyé par la VRAIE route `/api/verebona/suggestions`
- * (catalogue unique + contexte serveur) est posé à l'orchestrateur réel
+ * chaque exemple du catalogue unique rendu avec le contexte serveur réel
+ * (lot 112C : la route `/api/verebona/suggestions` sert la sélection partagée) est posé à l'orchestrateur réel
  * (`runAssistant` + ports réels), avec le contexte que le champ envoie
  * (`buildPageContext` → `enrichPageContext` → `sanitizePageContext`), sur
  * web et mobile. Le modèle est SIMULÉ (aucun réseau) : UNDERSTAND ne
@@ -105,14 +105,19 @@ scenario('L32E', 'Lot 32E — exemples « Par exemple » répondables, export d�
   };
   const dans = (jours: number) => new Date(Date.now() + jours * 86_400_000).toISOString().slice(0, 10);
 
-  /** Exemples de la page, servis par la VRAIE route. */
+  /**
+   * Exemples de la page : catalogue rendu avec le contexte serveur RÉEL de la page.
+   * Lot 112C : la route `/api/verebona/suggestions` est alignée sur le service
+   * partagé (même sélection que /api/suggestions, sans dépendance à la page —
+   * l112c-suggestions-exploiter.e2e.ts) ; le catalogue par page est lu ici avec
+   * le même contexte qu'elle lisait (faits « Exploiter » prouvés compris).
+   */
   const exemples = async (c: Compte, route: string): Promise<Array<{ id: string; label: string }>> => {
     session.currentAccountId = c.id; session.userId = c.ownerUserId;
-    const { GET } = await import('@/app/api/verebona/suggestions/route');
-    const { NextRequest } = await import('next/server');
-    const res = await GET(new NextRequest(`http://x/api/verebona/suggestions?route=${encodeURIComponent(route)}`));
-    expect(res.status).toBe(200);
-    return ((await res.json()) as { suggestions: Array<{ id: string; label: string }> }).suggestions.slice(0, 3);
+    const { suggestionsForRoute } = await import('@/services/verebona-assistant/registries/capability-registry');
+    const { loadSharedSuggestionContext } = await import('@/services/suggestions/shared/exploit-facts');
+    const { ctx } = await loadSharedSuggestionContext(c.id, { route, fresh: true });
+    return suggestionsForRoute(route, ctx).map((s) => ({ id: s.id, label: s.label })).slice(0, 3);
   };
 
   /** Contexte envoyé par le champ (desktop : web ; espace mobile : mobile). */

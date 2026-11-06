@@ -13,6 +13,7 @@ import { planAttachments } from '../html/selection';
 import { assemble, coverPageLabel } from '../html/layout';
 import type { CilData, RenderContext, RenderedHtml, ToneLabel } from '../types';
 import { isCilBlockingRuleBlock } from '@/lib/exports/cil-blocking';
+import { cilPillIsTodo } from '@/lib/cil/cil-block-pill';
 
 export const TEMPLATE_VERSION = 'cil-v1.0.0';
 export const TEMPLATE_LABEL = 'cil · v1.0';
@@ -48,13 +49,15 @@ export function render(c: CilData, ctx: RenderContext): RenderedHtml {
   const shown = cil.blocks.filter((b) => b.code !== 'B9' || hasDocs('B9') || (b.status !== 'unknown' && !isEmpty(b.source)));
   const count = (s: string) => shown.filter((b) => b.status === s).length;
   const nOk = count('complete');
-  const nTodo = count('unknown') + count('invalid');
+  // Lot 112A : un bloc « Partiel » est compté « à compléter » (même règle que l'écran de préparation).
+  const nPartial = count('partial');
+  const nTodo = shown.filter((b) => cilPillIsTodo(b.status)).length;
   const nNa = count('not_applicable');
   // CIL-RULE-002 (règle partagée) : seuls les blocs RÉELLEMENT manquants sont comptés.
   const nBlocking = shown.filter((b) => isCilBlockingRuleBlock(b.code) && b.status === 'missing').length;
   const blocksSummary = dot(
     `${nOk} sur ${shown.length}`,
-    nTodo ? `${nTodo} à compléter` : '',
+    nTodo ? `${nTodo} à compléter${nPartial ? ` dont ${nPartial} partiel${nPartial > 1 ? 's' : ''}` : ''}` : '',
     nBlocking ? `${nBlocking} manquant${nBlocking > 1 ? 's' : ''}` : '',
     nNa ? `${nNa} non applicable${nNa > 1 ? 's' : ''}` : '',
   );
@@ -103,7 +106,7 @@ export function render(c: CilData, ctx: RenderContext): RenderedHtml {
         ],
         rows: shown,
       }),
-      Note(esc("« À compléter » signale un bloc sans donnée ni document dans Verebona ; il ne préjuge pas de l'existence réelle de ces éléments. Les blocs B1, B3 et B8 conditionnent la génération."), { after: true }),
+      Note(esc(`${nPartial ? '« Partiel » signale un bloc documenté dont une partie des données attendues manque encore (détail dans la colonne Source). ' : ''}« À compléter » signale un bloc sans donnée ni document dans Verebona ; il ne préjuge pas de l'existence réelle de ces éléments. Les blocs B1, B3 et B8 conditionnent la génération.`), { after: true }),
     ].join('\n'),
   });
 
@@ -225,7 +228,10 @@ export function render(c: CilData, ctx: RenderContext): RenderedHtml {
     title: 'Références, méthode et limites',
     exportInfo: ex,
     paragraphs: [
-      { lead: 'Méthode.', text: "Chaque bloc est établi à partir des données de la fiche bien, des équipements, des travaux et des documents importés. Le statut « Renseigné » signifie qu'au moins un élément exploitable existe dans Verebona pour ce bloc." },
+      { lead: 'Méthode.', text: `Chaque bloc est établi à partir des données de la fiche bien, des équipements, des travaux et des documents importés. ${nPartial
+        // Lot 112A : explication de « Partiel » seulement quand une pastille l'affiche (rendu antérieur inchangé sinon).
+        ? "Le statut « Renseigné » signifie que les données attendues du bloc sont présentes dans Verebona ; « Partiel », qu'au moins un élément exploitable existe mais qu'une partie des données attendues manque."
+        : "Le statut « Renseigné » signifie qu'au moins un élément exploitable existe dans Verebona pour ce bloc."}` },
       { lead: 'Limites.', text: "Ce document présente l'état des informations disponibles dans Verebona à la date de génération. Il ne certifie pas la conformité réglementaire du logement et ne constitue pas le carnet d'information du logement au sens légal. Il ne contient aucun conseil juridique." },
       ...(naBlocks.length ? [{ lead: 'Blocs non applicables.', text: `Un bloc marqué non applicable a été explicitement confirmé comme tel par l'utilisateur${isEmpty(cil.notApplicableNote) ? '.' : ` (ici : ${cil.notApplicableNote}).`}` }] : []),
     ],

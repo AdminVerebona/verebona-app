@@ -8,6 +8,9 @@
  * après coup et sur l'appareil, POURQUOI un écran de secours a été affiché
  * (moyen lu, état enregistré, résultat de la fenêtre système, premier plan…).
  *
+ * Lot 112E : le même journal reçoit le code `INSTALL_ID` (identifiant
+ * d'installation chargé, créé ou différé — jamais sa valeur).
+ *
  * Contenu : codes stables et valeurs courtes d'une liste FERMÉE de champs.
  * Jamais de donnée biométrique, d'empreinte d'enrôlement, d'identifiant de
  * compte, d'adresse, de jeton ni de chemin de page. Rien n'est envoyé au
@@ -23,6 +26,8 @@ const ALLOWED_FIELDS = new Set([
   'from', 'to', 'event', 'session', 'foreground', 'reason', 'actions', 'mode', 'attempt', 'outcome',
   'biometry', 'whyNot', 'available', 'deviceSecure', 'stored', 'type', 'lockDue', 'enrollmentPlugin',
   'platform', 'appVersion', 'build', 'env', 'biometricPlugin', 'secureStoragePlugin', 'readError',
+  // Lot 112E : code `INSTALL_ID` (identifiant d'installation chargé / créé / différé).
+  'osStatus', 'protectedData',
 ]);
 
 export interface UnlockJournalEntry {

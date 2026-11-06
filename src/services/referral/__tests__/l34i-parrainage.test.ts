@@ -1,22 +1,19 @@
 /**
- * Lot 34I — parrainage : e-mail d'invitation (point 7) et lien /r/<code>
- * (point 8). Règles pures et câblage, sans base ; le parcours complet sur
- * PostgreSQL est dans `src/test/e2e/scenarios/l34i-parrainage.e2e.ts`.
+ * Lot 34I — parrainage : lien /r/<code> (point 8). Règles pures et câblage,
+ * sans base ; le parcours complet sur PostgreSQL est dans
+ * `src/test/e2e/scenarios/l34i-parrainage.e2e.ts`.
+ *
+ * Lot 112B (décision PO) : le point 7 (invitation PAR E-MAIL : route
+ * `/api/referral/send-email`, gabarit `REFERRAL_INVITATION`, table
+ * `referral_email_sends`) est supprimé ; ses tests (AC-7.x) avec lui. La
+ * suppression est vérifiée par `l112b-parrainage-sans-email.test.ts`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  REFERRAL_INVITATION_TEMPLATE,
-  MAX_RECIPIENTS_PER_SEND,
   buildReferralUrl,
-  classifySendError,
-  invitationFailureMessage,
-  maskEmail,
-  normalizeRecipients,
   referralRedirectPath,
-  referralSenderName,
-  sendReferralInvitations,
 } from '@/services/referral/referral-invitation.service';
 
 const { resolveReferralCode } = vi.hoisted(() => ({ resolveReferralCode: vi.fn() }));
@@ -27,126 +24,14 @@ vi.mock('@/services/referral-attribution.service', async (orig) => ({
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
 
-describe('AC-7.1 — une invitation n’est comptée envoyée que si le service e-mail le confirme', () => {
-  it('succès et refus (réponse sans exception, comme le SDK Resend) sont distingués', async () => {
-    const send = vi.fn(async (o: { to: string }) =>
-      o.to === 'ko@exemple.fr' ? { success: false, error: 'The verebona.fr domain is not verified.' } : { success: true });
-    const r = await sendReferralInvitations({
-      recipients: ['ok@exemple.fr', 'ko@exemple.fr'],
-      senderName: 'Camille Durand',
-      referralUrl: 'https://app.verebona.fr/r/ABCD2345',
-      send,
-    });
-    expect(r.sent).toEqual(['ok@exemple.fr']);
-    expect(r.failed).toEqual([{ email: 'ko@exemple.fr', reason: 'PROVIDER_REJECTED' }]);
-    expect(send).toHaveBeenCalledTimes(2);
-    expect(send.mock.calls[0][0]).toEqual({
-      templateCode: REFERRAL_INVITATION_TEMPLATE,
-      to: 'ok@exemple.fr',
-      variables: {
-        senderName: 'Camille Durand',
-        referralUrl: 'https://app.verebona.fr/r/ABCD2345',
-        actionUrl: 'https://app.verebona.fr/r/ABCD2345',
-        // Lot 102D : conditions issues de la règle centrale. Lien de la
-        // configuration unique 102B : adresse actuelle du site (/cgu) tant
-        // qu'il n'a pas livré, /legal/parrainage ensuite.
-        referralTermsUrl: expect.stringMatching(/\/(legal\/parrainage|cgu)$/),
-        referralWindowDays: '90',
-        referralReward: 'un mois offert',
-      },
-    });
-  });
-
-  it('une exception d’un envoi est un échec de cet envoi, pas de la série', async () => {
-    let n = 0;
-    const send = vi.fn(async () => { n += 1; if (n === 1) throw new Error('réseau'); return { success: true }; });
-    const r = await sendReferralInvitations({ recipients: ['a@x.fr', 'b@x.fr'], senderName: 'X', referralUrl: 'u', send });
-    expect(r.sent).toEqual(['b@x.fr']);
-    expect(r.failed).toEqual([{ email: 'a@x.fr', reason: 'PROVIDER_REJECTED' }]);
-  });
-
-  it('les erreurs du service e-mail sont classées', () => {
-    expect(classifySendError('CHANNEL_DISABLED')).toBe('CHANNEL_DISABLED');
-    expect(classifySendError('Emails disabled')).toBe('EMAILS_DISABLED');
-    expect(classifySendError('Email provider not configured')).toBe('NOT_CONFIGURED');
-    expect(classifySendError('Template REFERRAL_INVITATION not found')).toBe('TEMPLATE_MISSING');
-    expect(classifySendError('rate limit')).toBe('PROVIDER_REJECTED');
-    expect(classifySendError(undefined)).toBe('PROVIDER_REJECTED');
-  });
-});
-
-describe('AC-7.2 — erreurs visibles et non techniques', () => {
-  it('message générique sans détail technique', () => {
-    for (const reasons of [['PROVIDER_REJECTED'], ['NOT_CONFIGURED'], ['TEMPLATE_MISSING'], []] as const) {
-      const m = invitationFailureMessage([...reasons]);
-      expect(m).toMatch(/n’a pas pu être envoyée/);
-      expect(m).not.toMatch(/Resend|API|template|domain|Error/i);
-    }
-  });
-
-  it('canal désactivé dans le BO : le dit et propose de copier le lien', () => {
-    expect(invitationFailureMessage(['CHANNEL_DISABLED'])).toMatch(/désactivé.*Copiez votre lien/);
-    expect(invitationFailureMessage(['EMAILS_DISABLED'])).toMatch(/désactivé/);
-  });
-
-  // Lot 111H (décision PO) : le bloc Parrainage n'a plus de formulaire
-  // d'invitation par e-mail (doublon de « Partager mon invitation ») ; il
-  // n'appelle donc plus cette route et n'affiche plus ses messages.
-  it('le bloc Parrainage n’appelle plus l’envoi par e-mail (lot 111H)', () => {
+describe('AC-7 — supprimé (lot 112B) : plus d’invitation envoyée par e-mail', () => {
+  // Lot 111H : le bloc Parrainage n'appelait déjà plus la route ; lot 112B :
+  // la route elle-même est supprimée.
+  it('le bloc Parrainage n’appelle pas d’envoi par e-mail et la route n’existe plus', () => {
     const src = read('src/components/account/ReferralBlock.tsx');
     expect(src).not.toContain("'/api/referral/send-email'");
     expect(src).not.toMatch(/\(e as \{ message\?: string \}\)\.message/);
-  });
-});
-
-describe('AC-7.3 — la route passe par le service e-mail commun (expéditeur BO, gabarit, journal)', () => {
-  const route = read('src/app/api/referral/send-email/route.ts');
-
-  it('plus d’appel direct au SDK ni d’expéditeur codé en dur, plus de « mode dev » qui simule un succès', () => {
-    expect(route).not.toMatch(/from 'resend'|import\('resend'\)/);
-    expect(route).not.toContain('RESEND_FROM_EMAIL');
-    expect(route).not.toContain('no-reply@verebona.fr');
-    expect(route).not.toContain('DEV MODE');
-    expect(route).toContain('emailService.send');
-  });
-
-  it('aucun envoi accepté → 502 EMAIL_NOT_SENT avec message ; seuls les envois acceptés sont journalisés', () => {
-    expect(route).toMatch(/code: 'EMAIL_NOT_SENT'[\s\S]*status: 502/);
-    expect(route).toMatch(/result\.sent\.map\(\(email\) =>/);
-  });
-
-  it('migration 0301 : gabarit idempotent, sans écraser une retouche BO', () => {
-    const sql = read('src/db/migrations/0301_referral_invitation_email_template.sql');
-    expect(sql).toContain("'REFERRAL_INVITATION'");
-    expect(sql).toContain('ON CONFLICT (type) DO NOTHING');
-    for (const v of ['senderName', 'referralUrl']) expect(sql).toContain(`{{${v}}}`);
-    expect(sql).not.toMatch(/CONCURRENTLY/);
-  });
-
-  it('le gabarit est pilotable dans le BO (Communications) et désactivable', async () => {
-    const { TRANSACTIONAL_EMAILS } = await import('@/services/admin/communications.service');
-    expect(TRANSACTIONAL_EMAILS.map((t) => t.templateCode)).toContain('REFERRAL_INVITATION');
-    const { transactionalLockReason } = await import('@/lib/notifications/channel-activation');
-    expect(transactionalLockReason('REFERRAL_INVITATION')).toBeNull();
-  });
-});
-
-describe('AC-7.4 — destinataires et nom du parrain', () => {
-  it('normalise, dédoublonne et plafonne', () => {
-    expect(normalizeRecipients([' A@X.fr ', 'a@x.fr', 'pas-une-adresse', 3, 'b@x.fr'])).toEqual(['a@x.fr', 'b@x.fr']);
-    const many = Array.from({ length: 15 }, (_, i) => `p${i}@x.fr`);
-    expect(normalizeRecipients(many)).toHaveLength(MAX_RECIPIENTS_PER_SEND);
-    expect(normalizeRecipients('a@x.fr')).toEqual([]);
-  });
-
-  it('retire le balisage du nom (e-mail adressé à un tiers) et a un repli', () => {
-    expect(referralSenderName('Camille', 'Durand')).toBe('Camille Durand');
-    expect(referralSenderName('<img src=x>', '"Bob"')).toBe('img src=x Bob');
-    expect(referralSenderName(null, '  ')).toBe('Un proche');
-  });
-
-  it('les journaux applicatifs masquent l’adresse', () => {
-    expect(maskEmail('jean@exemple.fr')).toBe('j***@exemple.fr');
+    expect(existsSync(join(process.cwd(), 'src/app/api/referral/send-email/route.ts'))).toBe(false);
   });
 });
 
@@ -155,11 +40,10 @@ describe('AC-8.1 — lien généré et route qui le reçoit concordent', () => {
     expect(buildReferralUrl('EDTBB66Q', 'https://app.preprod.verebona.fr/')).toBe('https://app.preprod.verebona.fr/r/EDTBB66Q');
   });
 
-  it('Mon compte › Parrainage et l’e-mail utilisent le même générateur', () => {
+  it('Mon compte › Parrainage utilise le générateur unique', () => {
     const me = read('src/app/api/referral/me/route.ts');
     expect(me).not.toMatch(/\/r\/\$\{/);
     expect((me.match(/buildReferralUrl\(/g) ?? []).length).toBe(3);
-    expect(read('src/app/api/referral/send-email/route.ts')).toContain('buildReferralUrl(link.code)');
   });
 
   it('la route /r/[code] existe et n’est pas protégée par le middleware', () => {

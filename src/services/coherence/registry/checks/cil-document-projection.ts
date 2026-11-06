@@ -24,6 +24,13 @@
  *   FINDING     CIL_STATE_DIVERGENCE — préparation (blocs) et état granulaire
  *               discordants (filet de sécurité : même projection par
  *               construction).
+ * Lot 112F (v3) : matériaux / équipements POSÉS prouvés par la facture ou
+ * l'attestation d'une Opération d'intervention réalisée (B5 « posé », date de
+ * pose ; B6) ; contrôle ciblé aussi déclenché par le bus des Opérations
+ * (`BUSINESS_OPERATION_CHANGED`, relayé par `coherence/events.ts` : création,
+ * réalisation, justificatif, invalidation, fusion, changement de bien) — les
+ * biens de l'Opération (liens actifs ou non) et ceux qui portent déjà une
+ * décision CIL pour elle. Aucune nouvelle file, aucun cron parallèle.
  * Jamais : écraser une saisie USER / ADMIN, créer un travail réalisé depuis une
  * recommandation, supprimer un équipement, relancer T1, appeler une IA.
  */
@@ -35,7 +42,8 @@ const ASSETS_SQL = `a.account_id = $1 AND a.deleted_at IS NULL AND a.category = 
 export const cilDocumentProjectionCheck: CoherenceCheck = {
   id: 'COH-CIL-DOCUMENT-PROJECTION',
   // v2 (lot 111U, deuxième passe) : coefficient U, contexte B2 depuis un fait explicite, travaux B7 réalisés prouvés.
-  version: 2,
+  // v3 (lot 112F) : B5 / B6 posés depuis la facture / l'attestation d'une intervention réalisée ; déclenchement par les Opérations.
+  version: 3,
   status: 'ACTIVE',
   title: 'CIL : faits documentaires reflétés dans les structures spécialisées, l’onglet Informations et l’export',
   domain: 'biens',
@@ -43,20 +51,21 @@ export const cilDocumentProjectionCheck: CoherenceCheck = {
   objectType: 'asset',
   scope: 'biens immobiliers non supprimés du compte',
   sources: ['asset_files', 'document_asset_links', 'document_facts', 'energy_materials', 'equipments', 'equipment_cil_specs', 'asset_cil_profiles',
-    'business_operations', 'business_operation_sources', 'business_operation_documents', 'business_operation_equipment_links', 'cil_projection_journal', 'cil_block_resolutions'],
+    'business_operations', 'business_operation_sources', 'business_operation_documents', 'business_operation_equipment_links', 'business_operation_asset_links', 'cil_projection_journal', 'cil_block_resolutions'],
   applicability: 'compte éligible ; bien immobilier',
-  invariant: 'les faits acceptés des documents énergétiques rattachés sont projetés (ou leur abstention tracée) dans energy_materials / equipments / equipment_cil_specs / asset_cil_profiles ; seules les interventions RÉALISÉES prouvées par facture ou attestation sont des travaux B7 ; une recommandation ou un devis n’est jamais un travail réalisé ; Informations, préparation et PDF lisent le même état',
+  invariant: 'les faits acceptés des documents énergétiques rattachés sont projetés (ou leur abstention tracée) dans energy_materials / equipments / equipment_cil_specs / asset_cil_profiles ; seules les interventions RÉALISÉES prouvées par facture ou attestation sont des travaux B7, et seules leurs pièces probantes renseignent un matériau ou un équipement « posé » (date de pose = date de réalisation) ; une recommandation ou un devis n’est jamais un travail réalisé ni une pose ; Informations, préparation et PDF lisent le même état',
   anomalies: ['CIL_FACTS_NOT_PROJECTED', 'CIL_PROJECTION_TO_CONFIRM', 'CIL_CREATED_EQUIPMENT_SOURCE_REMOVED', 'CIL_STATE_DIVERGENCE'],
   autoRepairWhen: 'projection déterministe différente de l’état en base (faits persistés non projetés, source retirée d’une ligne DOCUMENT)',
   forbiddenRepairs: ['modifier une valeur ou une ligne USER / ADMIN', 'créer un travail réalisé (energy_works) depuis une recommandation',
     'supprimer un équipement', 'relancer une analyse T1 ou appeler une IA', 'trancher une contradiction entre documents de même date',
-    'modifier une Opération ou créer une ligne energy_works', 'modifier un profil CIL USER / ADMIN'],
+    'modifier une Opération ou créer une ligne energy_works', 'modifier un profil CIL USER / ADMIN',
+    'marquer « posé » depuis un devis, un bon de commande ou une recommandation', 'remplacer un équipement existant sans preuve d’identité'],
   services: ['cil/projection/document-projection#projectCilDocumentsForAsset', 'cil/state#getCilState'],
   chain: ['T1', 'T3', 'PERSISTENCE', 'PROJECTION'],
-  triggers: ['SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'DOCUMENT_UPLOADED', 'ASSET_UPDATED'],
-  frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque analyse ou modification de document',
+  triggers: ['SOURCE_ANALYZED', 'DOCUMENT_UPDATED', 'DOCUMENT_UPLOADED', 'ASSET_UPDATED', 'BUSINESS_OPERATION_CHANGED'],
+  frequency: 'campagne exhaustive quotidienne + contrôle ciblé à chaque analyse ou modification de document et à chaque écriture d’une Opération',
   criticality: 'MEDIUM',
-  tests: ['L111U-U-VOCAB', 'L111U-U-STATE', 'L111U-E2E-03', 'L111U-E2E-05', 'L111U-E2E-06'],
+  tests: ['L111U-U-VOCAB', 'L111U-U-STATE', 'L111U-E2E-03', 'L111U-E2E-05', 'L111U-E2E-06', 'L112F-U-INST', 'L112F-E2E-01', 'L112F-E2E-02'],
 
   async listObjects(ctx, accountId, afterId, limit) {
     return idsOf(await rows(ctx.sql, `SELECT a.id FROM assets a WHERE ${ASSETS_SQL} AND a.id > $2 ORDER BY a.id LIMIT $3`, [accountId, afterId, limit]));
@@ -65,6 +74,20 @@ export const cilDocumentProjectionCheck: CoherenceCheck = {
   async objectsForEvent(ctx, accountId, e) {
     if (e.assetId) return idsOf(await rows(ctx.sql, `SELECT a.id FROM assets a WHERE ${ASSETS_SQL} AND a.id = $2`, [accountId, e.assetId]));
     if (e.entityId == null) return [];
+    if (e.type === 'BUSINESS_OPERATION_CHANGED') {
+      // Lot 112F : Opération écrite — ses biens (liens actifs ou non : un détachement retire la pose) et ceux qui portent une décision CIL pour elle.
+      const journal = (await rows(ctx.sql, `SELECT to_regclass('cil_projection_journal') IS NOT NULL AS ok`, []))[0]?.ok === true;
+      return idsOf(await rows(ctx.sql, `
+        SELECT DISTINCT a.id FROM assets a
+         WHERE ${ASSETS_SQL} AND a.id IN (
+           SELECT l.asset_id FROM business_operation_asset_links l
+             JOIN business_operations o ON o.id = l.operation_id AND o.account_id = l.account_id AND o.type_code = 'INTERVENTION'
+            WHERE l.account_id = $1 AND l.operation_id = $2::bigint
+           ${journal ? `UNION SELECT j.asset_id FROM cil_projection_journal j
+            WHERE j.account_id = $1 AND (j.projection_key = 'cil:work:' || ($2::bigint)::text
+               OR j.projection_key LIKE 'cil:inst:' || ($2::bigint)::text || ':%' OR j.projection_key LIKE 'cil:insteq:' || ($2::bigint)::text || ':%')` : ''})`,
+      [accountId, e.entityId]));
+    }
     // Document : ses biens (colonnes et liens actifs).
     return idsOf(await rows(ctx.sql, `
       SELECT DISTINCT a.id FROM assets a

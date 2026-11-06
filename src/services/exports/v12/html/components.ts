@@ -21,6 +21,7 @@
  */
 
 import { markDataUriOnce } from '../static-assets';
+import { CIL_BLOCK_PILL, type CilPillTone } from '@/lib/cil/cil-block-pill';
 import type { Tone, ToneLabel, DocItem, PhotoItem, ExportInfo, Nullable } from '../types';
 
 // ───────────────────────────── Utilitaires ─────────────────────────────
@@ -330,14 +331,17 @@ export function counter(): () => string {
 
 // ───────────────────────────── Statuts ─────────────────────────────
 
-export const STATUS: Record<string, ToneLabel> = {
-  complete: { label: 'Renseigné', tone: 'ok' },
-  unknown: { label: 'À compléter', tone: 'warn' },
-  missing: { label: 'Manquant', tone: 'bad' },
-  // CDC §2.1 « invalid » (ex. travaux sans date) : la maquette n'a que 4 libellés, il est rendu « À compléter ».
-  invalid: { label: 'À compléter', tone: 'warn' },
-  not_applicable: { label: 'Non applicable', tone: '' },
-};
+/** Ton du moteur V12 (classes `.pill.ok/.warn/.bad`) pour un ton sémantique partagé. */
+const PILL_TONE: Record<CilPillTone, Tone> = { ok: 'ok', warn: 'warn', bad: 'bad', neutral: '' };
+
+/**
+ * Pastilles des blocs : libellés TEXTE partagés avec l'écran de préparation
+ * (`lib/cil/cil-block-pill.ts`, lot 112A — dont « Partiel »), couleurs du
+ * moteur V12. Le texte porte le statut : lisible en impression noir et blanc.
+ */
+export const STATUS: Record<string, ToneLabel> = Object.fromEntries(
+  Object.entries(CIL_BLOCK_PILL).map(([k, v]) => [k, { label: v.label, tone: PILL_TONE[v.tone] }]),
+);
 
 /** Pastille de statut. `status` : clé de STATUS ou { label, tone }. */
 export function StatusPill(status: Nullable<string | ToneLabel>, { size }: { size?: string } = {}): string {

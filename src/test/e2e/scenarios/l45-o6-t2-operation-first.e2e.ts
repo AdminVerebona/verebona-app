@@ -113,7 +113,8 @@ scenario('L45-O6', 'T2 Opération d’abord : coûts consolidés, mode mixte, pa
     expect(ids.some((i) => /operation/i.test(i))).toBe(false);
 
     const ent = await ask(compte.id, 'Combien ai-je dépensé en entretien pour la Polo ?');
-    expect(ent.answer).toMatch(/Dépenses de entretien documentées pour Polo : 330,00\s€ \(1 intervention et 1 document\)/);
+    // Lot 112C (reprise, décision PO) : élision correcte « d’entretien ».
+    expect(ent.answer).toMatch(/Dépenses d’entretien documentées pour Polo : 330,00\s€ \(1 intervention et 1 document\)/);
   });
 
   it('C10 / F-115 / F-114 / O6-E02 — facture multi-biens : jamais comptée entière pour chaque bien ; composante ciblée attribuée à son bien', async () => {

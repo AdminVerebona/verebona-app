@@ -103,6 +103,9 @@ export async function listActiveDeadlines(
 ): Promise<DeadlineRow[]> {
   const col = await agendaFunctionalColumnsReady().catch(() => false);
   const ids = opts.assetIds?.length ? opts.assetIds : null;
+  // Lot 112G : statut effectif commun — une échéance réalisée et prouvée par un document n'est plus active.
+  const { notSettledByProofFilter } = await import('@/services/agenda/effective-status-read');
+  const prouve = await notSettledByProofFilter('i').catch(() => '');
   const r = await lignes(
     `SELECT i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date, to_char(i.end_date, 'YYYY-MM-DD') AS "endDate",
             (i.occurrence_nature = 'FORECAST') AS forecast, i.home_category AS "homeCategory", i.origin_type AS "originType",
@@ -114,7 +117,7 @@ export async function listActiveDeadlines(
                         JOIN assets a ON a.id = l.asset_id AND a.account_id = i.account_id AND ${assistantAssetAvailability.sql('a')}
                        WHERE l.agenda_item_id = i.id), '[]'::json) AS assets
        FROM agenda_items i
-      WHERE i.account_id = $1 AND coalesce(trim(i.manual_status), '') = ''
+      WHERE i.account_id = $1 AND coalesce(trim(i.manual_status), '') = ''${prouve}
         AND i.start_date IS NOT NULL
         AND ${NOT_HISTORICAL(col, '$5')}
         AND ($2::date IS NULL OR coalesce(greatest(i.end_date, i.start_date), i.start_date) >= $2::date)

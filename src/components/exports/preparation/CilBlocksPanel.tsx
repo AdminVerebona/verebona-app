@@ -24,14 +24,17 @@ import { cn } from '@/lib/utils';
 import type { CilBlockDto, PreparationDto } from '@/services/exports/v12/preparation/types';
 import type { PreparationApi } from './api';
 import { Callout, Pill, TONE, type Tone } from './ui';
+import { CIL_BLOCK_PILL, cilPillIsTodo, type CilBlockPillStatus, type CilPillTone } from '@/lib/cil/cil-block-pill';
 
-const STATUS: Record<CilBlockDto['status'], { label: string; tone: Tone }> = {
-  complete: { label: 'Renseigné', tone: 'success' },
-  not_applicable: { label: 'Non applicable', tone: 'neutral' },
-  missing: { label: 'À compléter', tone: 'warning' },
-  invalid: { label: 'À corriger', tone: 'warning' },
-  unknown: { label: 'À compléter', tone: 'warning' },
-};
+/** Ton Sérénité d'un ton sémantique partagé. */
+const PILL_TONE: Record<CilPillTone, Tone> = { ok: 'success', warn: 'warning', bad: 'danger', neutral: 'neutral' };
+
+/** Lot 112A : pastille d'un bloc — mêmes libellés et même règle que le PDF CIL (`lib/cil/cil-block-pill.ts`). */
+function pillOf(b: CilBlockDto): { status: CilBlockPillStatus; label: string; tone: Tone } {
+  const status = b.pillStatus ?? b.status;
+  const p = CIL_BLOCK_PILL[status];
+  return { status, label: p.label, tone: PILL_TONE[p.tone] };
+}
 
 /** Lien d'action d'un élément manquant (onglet de la fiche du bien). */
 function cilActionHref(assetId: number, target: { type: string; filter?: string }): string | null {
@@ -111,8 +114,9 @@ export function CilBlocksPanel({ cil, assetId, api, disabled, onChanged }: {
   const [refreshing, setRefreshing] = useState(false);
 
   const counts = {
-    complete: cil.blocks.filter((b) => b.status === 'complete').length,
-    todo: cil.blocks.filter((b) => (b.status === 'missing' || b.status === 'unknown' || b.status === 'invalid') && !b.blocksGeneration).length,
+    complete: cil.blocks.filter((b) => pillOf(b).status === 'complete').length,
+    // Lot 112A : un bloc « Partiel » est à compléter (même compte que le PDF).
+    todo: cil.blocks.filter((b) => (b.status === 'missing' || cilPillIsTodo(pillOf(b).status)) && !b.blocksGeneration).length,
     blocking: cil.blocks.filter((b) => b.blocksGeneration).length,
     na: cil.blocks.filter((b) => b.status === 'not_applicable').length,
   };
@@ -162,7 +166,7 @@ export function CilBlocksPanel({ cil, assetId, api, disabled, onChanged }: {
 
       <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border">
         {cil.blocks.map((b) => {
-          const st = b.blocksGeneration ? { label: 'Bloquant', tone: 'danger' as Tone } : STATUS[b.status];
+          const st = b.blocksGeneration ? { label: 'Bloquant', tone: 'danger' as Tone } : pillOf(b);
           const expandable = b.status !== 'complete' && (b.missingItems.length > 0 || b.canMarkNotApplicable);
           const isOpen = open === b.id && expandable;
           const panelId = `cil-block-${b.id}`;

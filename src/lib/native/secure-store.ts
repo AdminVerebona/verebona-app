@@ -12,6 +12,16 @@
  *
  * Ne contient JAMAIS de mot de passe (AUTH-07). Sur le Web : aucune écriture
  * (toutes les fonctions répondent « absent »).
+ *
+ * Lot 112E — CLASSE D'ACCESSIBILITÉ CONSERVÉE (`whenUnlockedThisDeviceOnly`).
+ * Conséquence connue : téléphone verrouillé, iOS refuse la lecture
+ * (`errSecInteractionNotAllowed`, -25308) et le plugin npm la rend comme
+ * « absent ». On ne baisse PAS la classe (`afterFirstUnlock…`) : l'identifiant
+ * d'installation rattache les jetons d'import du partage (110A) et le choix
+ * biométrique (107A) doit rester illisible appareil verrouillé. À la place,
+ * `secureProbe` (plugin local `VerebonaSecureStoreStatus`, binaire 112E et
+ * suivants) rend le code natif, et les lecteurs DIFFÈRENT au lieu de conclure
+ * « absent » (docs/exploitation/recette-112e-identifiant-installation.md).
  */
 import { NATIVE_PLUGINS, nativePlugin } from './bridge';
 
@@ -69,20 +79,92 @@ export async function secureGet(key: string): Promise<string | null> {
 }
 
 /**
+ * Lot 112E : état d'une valeur du Keychain tel que le rend iOS (code natif),
+ * sans jamais lire la valeur elle-même.
+ *   present  la valeur existe et est lisible ;
+ *   absent   aucune valeur ET données protégées disponibles (appareil déverrouillé) ;
+ *   locked   `errSecInteractionNotAllowed`, ou « introuvable » alors que les
+ *            données protégées sont indisponibles (on ne conclut pas « absent ») ;
+ *   error    autre code du Keychain.
+ */
+export type SecureProbeStatus = 'present' | 'absent' | 'locked' | 'error';
+
+export interface SecureProbe {
+  status: SecureProbeStatus;
+  /** OSStatus natif (0, -25300 introuvable, -25308 interaction interdite…), ou null. */
+  osStatus: number | null;
+  /** `UIApplication.isProtectedDataAvailable`, ou null si inconnu. */
+  protectedDataAvailable: boolean | null;
+}
+
+interface SecureStoreStatusPlugin {
+  probe(o: { prefixedKey: string }): Promise<{ status?: unknown; osStatus?: unknown; protectedDataAvailable?: unknown }>;
+}
+
+/** Plugin local iOS du lot 112E, ou null (Android, Web, binaire antérieur). */
+export function secureStatusPlugin(): (SecureStoreStatusPlugin & { addListener?: (e: string, cb: (d: unknown) => void) => unknown }) | null {
+  return nativePlugin<SecureStoreStatusPlugin>(NATIVE_PLUGINS.secureStoreStatus);
+}
+
+const PROBE_STATUSES: ReadonlySet<string> = new Set(['present', 'absent', 'locked', 'error']);
+
+/** Normalise la réponse native (pur, testé). Réponse inattendue → `error`. */
+export function parseSecureProbe(raw: unknown): SecureProbe {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as { status?: unknown; osStatus?: unknown; protectedDataAvailable?: unknown };
+  const status = typeof r.status === 'string' && PROBE_STATUSES.has(r.status) ? r.status as SecureProbeStatus : 'error';
+  const osStatus = typeof r.osStatus === 'number' && Number.isFinite(r.osStatus) ? Math.trunc(r.osStatus) : null;
+  const protectedDataAvailable = typeof r.protectedDataAvailable === 'boolean' ? r.protectedDataAvailable : null;
+  // Données protégées indisponibles : jamais « absent » (iOS peut répondre « introuvable »).
+  if (status === 'absent' && protectedDataAvailable === false) return { status: 'locked', osStatus, protectedDataAvailable };
+  return { status, osStatus, protectedDataAvailable };
+}
+
+/**
+ * Lot 112E : sonde native d'une clé (code d'erreur du Keychain). Null quand
+ * le plugin local n'est pas embarqué (Android, binaire antérieur au lot 112E) :
+ * l'appelant se rabat alors sur le premier plan (`App.getState`).
+ */
+export async function secureProbe(key: string): Promise<SecureProbe | null> {
+  const p = secureStatusPlugin();
+  if (!p || typeof p.probe !== 'function') return null;
+  try {
+    return parseSecureProbe(await p.probe({ prefixedKey: SECURE_PREFIX + key }));
+  } catch {
+    return { status: 'error', osStatus: null, protectedDataAvailable: null };
+  }
+}
+
+/** Raison d'une lecture impossible (lot 112E). */
+export type SecureReadFailure = 'no_plugin' | 'storage_error' | 'locked';
+
+/**
  * Lot 111D : lecture qui DISTINGUE « absent » (`ok: true, value: null`) d'un
  * échec de lecture (`ok: false` : Keystore Android en erreur, plugin absent).
  * Sur iOS, le plugin rend « absent » pour toute erreur du Keychain : la
  * machine de déverrouillage ne lit donc le moyen qu'au premier plan.
+ *
+ * Lot 112E : quand le plugin rend « absent » et que la sonde native existe
+ * (binaire 112E+), elle tranche : Keychain verrouillé ou en erreur →
+ * `ok: false, failure: 'locked' | 'storage_error'` (jamais « absent »).
  */
-export async function secureRead(key: string): Promise<{ ok: boolean; value: string | null }> {
+export async function secureRead(key: string): Promise<{ ok: boolean; value: string | null; failure?: SecureReadFailure; probe?: SecureProbe | null }> {
   const p = plugin();
-  if (!p) return { ok: false, value: null };
+  if (!p) return { ok: false, value: null, failure: 'no_plugin' };
+  let value: string | null;
   try {
     const { data } = await p.internalGetItem({ prefixedKey: SECURE_PREFIX + key, sync: false });
-    return { ok: true, value: typeof data === 'string' && data !== '' ? data : null };
+    value = typeof data === 'string' && data !== '' ? data : null;
   } catch {
-    return { ok: false, value: null };
+    return { ok: false, value: null, failure: 'storage_error' };
   }
+  if (value !== null) return { ok: true, value };
+  const probe = await secureProbe(key);
+  if (probe?.status === 'locked') return { ok: false, value: null, failure: 'locked', probe };
+  if (probe?.status === 'error') return { ok: false, value: null, failure: 'storage_error', probe };
+  // `present` juste après un « absent » : écriture concurrente ou déverrouillage
+  // entre les deux appels — on ne conclut rien, l'appelant relira.
+  if (probe?.status === 'present') return { ok: false, value: null, failure: 'storage_error', probe };
+  return probe ? { ok: true, value: null, probe } : { ok: true, value: null };
 }
 
 export async function secureSet(key: string, value: string): Promise<boolean> {

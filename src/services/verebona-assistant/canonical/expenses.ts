@@ -25,6 +25,7 @@
  *     date) : comptés UNE SEULE FOIS — voir `dedupePossibleMerges`.
  */
 import { pgClient } from '@/db';
+import { deFr } from '../core/deterministic-format';
 import { ASSET_LIST_LINK_ROLES_SQL } from '@/services/documents/asset-document-scope';
 import {
   EXPENSE_THEME_LABELS, classifyExpenseDocument, dedupePossibleMerges, isCreditNoteTitle, type ExpenseClass, type ExpenseRow, type ExpenseTheme,
@@ -667,7 +668,7 @@ export function expenseSumSource(
   const inclus = [...new Set([...q.byTheme.flatMap((t) => t.fileIds), ...countedOperationFileIds(q)])].slice(0, 50);
   const notes = mixedExpenseNotes(q, { scopeLabel: ctx.scopeLabel, year: ctx.year ?? null }).map((n) => n.replace(/\.$/, ''));
   const content = [
-    `Dépenses qualifiées${q.theme ? ` de ${EXPENSE_THEME_LABELS[q.theme]}` : ''}${pour} : ${eur(q.qualifiedSumCents)} (${expenseTotalItemsLabel(q)})`,
+    `Dépenses qualifiées${q.theme ? ` ${deFr(EXPENSE_THEME_LABELS[q.theme])}` : ''}${pour} : ${eur(q.qualifiedSumCents)} (${expenseTotalItemsLabel(q)})`,
     ...lignes,
     q.complete ? 'total complet' : incompletLibelle(q),
     ...notes,
@@ -678,7 +679,7 @@ export function expenseSumSource(
   return {
     id: `expenses:${q.theme ?? 'all'}:${ctx.assetIds.length ? ctx.assetIds.join('-') : 'account'}${ctx.year ? `:${ctx.year}` : ''}`,
     type: 'document_extraction',
-    title: `Dépenses${q.theme ? ` de ${EXPENSE_THEME_LABELS[q.theme]}` : ''}${pour}`,
+    title: `Dépenses${q.theme ? ` ${deFr(EXPENSE_THEME_LABELS[q.theme])}` : ''}${pour}`,
     content: content.slice(0, 1500),
     relevanceScore: 1,
     meta: {

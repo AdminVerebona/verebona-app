@@ -6,8 +6,12 @@
  * UNE SEULE SOURCE DE CANDIDATES, TROIS OBJECTIFS
  *
  *   A. EXPLOITER — questions personnelles sur ce que le compte contient
- *      vraiment (documents d'un bien NOMMÉ, documents non rattachés, exports
- *      prêts, analyse en cours) ;
+ *      vraiment. Lot 112C : des VALEURS précises (coût de possession, fin de
+ *      garantie, dépenses d'entretien d'un bien, dépenses de l'année, date du
+ *      dernier entretien), proposées seulement quand la lecture de T2 qui y
+ *      répond est prouvée sur les données du compte ; les anciennes listes
+ *      (documents d'un bien, non rattachés, exports) restent dans le stock,
+ *      jamais promues (lot 111L) ;
  *   B. ANTICIPER — échéances réelles à venir (la prochaine, celles d'un bien
  *      nommé) ;
  *   C. ACCOMPAGNER puis FAIRE DÉCOUVRIR — guide progressif : prise en main
@@ -104,6 +108,12 @@ export interface AccountStockEntry {
   shownBy?: SuggestionShownBy;
   /** Lot 111L — écran qui donne déjà la réponse (revue du stock, BO). */
   navigation?: string;
+  /**
+   * Lot 112C — PREUVE DE RÉPONSE déclarée (BO, recette) : la lecture de T2
+   * qui répond, et le fait prouvé avant de proposer la question (précondition
+   * du catalogue renseignée par `exploit-facts.ts` avec CETTE lecture).
+   */
+  proof?: { strategy: string; fact: string };
 }
 
 /**
@@ -122,6 +132,21 @@ export const ACCOUNT_STOCK: readonly AccountStockEntry[] = [
   { catalogId: 'state_exports', objective: 'EXPLOIT', priority: 3, need: 'INVENTORY', navigation: 'Exports et dossiers' },
   // État de l'analyse : la mascotte affiche déjà « N documents sont en cours d'analyse » (même fait, PROC-DOC-ANALYSIS).
   { catalogId: 'home_analysis', objective: 'EXPLOIT', priority: 4, need: 'FACT', shownBy: 'MASCOT' },
+  // ── Lot 112C : « Exploiter » — valeurs PRÉCISES lues dans les données du compte ──
+  // Chaque entrée est une question du catalogue T2 dont la précondition est le
+  // fait demandé, PROUVÉ par la lecture même de T2 (aucune règle hors du stock
+  // et du catalogue ; `exploit-facts.ts` ne fait que lire). Coût de possession :
+  // réservé Premium / Premium Duo (précondition `ownershipCostAvailable`).
+  { catalogId: 'home_asset_ownership_cost', objective: 'EXPLOIT', priority: 1, need: 'FACT',
+    proof: { strategy: 'structured.ownership_cost', fact: 'Offre Premium ou Premium Duo, et dépenses qualifiées du bien > 0 (sumQualifiedExpenses)' } },
+  { catalogId: 'home_asset_warranty_end', objective: 'EXPLOIT', priority: 2, need: 'FACT',
+    proof: { strategy: 'target.asset_field', fact: 'Fin de garantie canonique du bien lisible, aujourd’hui ou plus tard (warrantyEndDate)' } },
+  { catalogId: 'home_asset_maintenance_spend', objective: 'EXPLOIT', priority: 3, need: 'FACT',
+    proof: { strategy: 'structured.sum_qualified', fact: 'Dépenses d’entretien qualifiées du bien > 0 (sumQualifiedExpenses, thème entretien)' } },
+  { catalogId: 'home_year_spend', objective: 'EXPLOIT', priority: 4, need: 'FACT',
+    proof: { strategy: 'structured.sum_qualified', fact: 'Dépenses qualifiées du compte sur l’année civile en cours > 0 (sumQualifiedExpenses, année)' } },
+  { catalogId: 'home_asset_last_service', objective: 'EXPLOIT', priority: 5, need: 'FACT',
+    proof: { strategy: 'target.asset_field', fact: 'Date du dernier entretien canonique du bien lisible (lastRevision)' } },
 ];
 
 // ── C : guide éditorial (Centre d'aide puis Ressources) ─────────────────────

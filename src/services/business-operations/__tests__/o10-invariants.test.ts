@@ -61,6 +61,9 @@ const ECRIVAINS: Record<string, string> = {
   // Opération ↔ fournisseur dérivés des preuves T3 ou décidés par l'utilisateur, toujours sous le verrou d'écriture.
   'src/services/relations/operation-suppliers.ts': 'relations 109A : liens Opération ↔ fournisseur (preuves T3, décisions utilisateur, fusion de fiches) sous withBusinessOperationWrite',
   'src/services/business-operations/semantic/identity-apply.ts': 'T3 identité multi-sources : décisions de rattachement AI_IDENTITY par le dépôt (lot 97A) — métier délégué à T3',
+  // Lot 112D (06/11/2026) : SEUL écrivain des conditions de prêt SAISIES (colonnes 1415 de `business_operation_financing_details`)
+  // et de leur historique — décision utilisateur du domaine financement, sous le verrou d'écriture ; le TCO ne fait que relire.
+  'src/services/business-operations/financing/loan-terms-decisions.ts': 'financement 112D : conditions de prêt saisies par l’utilisateur (origine par champ, historique) sous withBusinessOperationWrite — TCO consommateur',
 };
 
 describe('INV-FINAL-009 / INV-006 / INV-FINAL-013 / INV-031 — T3 seul moteur ; TCO et autres modules consommateurs seulement', () => {

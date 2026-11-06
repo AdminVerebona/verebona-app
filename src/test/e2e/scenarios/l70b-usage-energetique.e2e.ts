@@ -149,7 +149,15 @@ scenario('L70-ENER', 'Usage énergétique des équipements (tiroir, règle B6, C
     const data = mapDossierData('CIL', { source, plan, resolved: null, meta: { reference: 'VBN-E2E-70B', generatedAt: '2026-10-19T09:00:00+02:00', preparedBy: null, templateLabel: 't', zipName: null, label: 'T' }, today }) as { cil: { blocks: Array<{ code: string; status: string; source: string | null }>; equipments: Array<{ equipment: string; usage: string }> } };
     const prep = await b6();
     expect(prep.ids).toEqual([vmc, onduleur, ballon].sort((x, y) => x - y));
-    expect(data.cil.blocks.find((x) => x.code === 'B6')).toMatchObject({ status: 'complete', source: '3 équipements' });
+    // Lot 112A (décision PO du 06/11) : VMC, onduleur et ballon sans énergie renseignée, chauffage non couvert →
+    // pastille « Partiel » (état commun CIL), manques cités ; MÊME pastille à la préparation ; bloc « complete ».
+    expect(prep.status).toBe('complete');
+    const mappedB6 = data.cil.blocks.find((x) => x.code === 'B6')!;
+    expect(mappedB6.status).toBe('partial');
+    expect(mappedB6.source).toMatch(/^3 équipements · à compléter : /);
+    expect(mappedB6.source).toContain('Chauffage');
+    const { buildPreparation } = await import('@/services/exports/v12/preparation/prepare');
+    expect(buildPreparation('CIL', source, { today, lastGeneration: null }).cil!.blocks.find((x) => x.id === 'B6')!.pillStatus).toBe(mappedB6.status);
     expect(data.cil.equipments.map((e) => [e.equipment, e.usage]).sort()).toEqual([
       ['Ballon', 'Eau chaude sanitaire'], ['Onduleur toiture', 'Production d’énergie (solaire…)'], ['VMC', 'VMC simple flux'],
     ].sort());

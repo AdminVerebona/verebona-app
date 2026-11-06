@@ -34,6 +34,7 @@ import {
 } from '@/services/canonical/entity-state/ai-field-updates-target';
 import { displayDocumentTitle } from '@/lib/documents/document-title-rules';
 import { effectiveAnalysisStateSql } from '@/services/ai/processing-status/effective-state-sql';
+import { isSettledStatus, loadEffectiveStatuses, type EffectiveStatus } from '@/services/agenda/effective-status-read';
 
 // Champs visibles par l'utilisateur dans l'UI — les autres champs (techniques)
 // sont filtrés de « Ce que j'ai fait ».
@@ -344,6 +345,14 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
 
   const planType = accountRows[0]?.planType ?? 'STANDARD';
 
+  // Lot 112G : statut effectif COMMUN (111R : `computeEffectiveStatus` + preuve de
+  // réalisation 103D) — une échéance réalisée et prouvée par un document n'est ni
+  // « en retard » ni la « prochaine date » d'un bien. Lecture impossible : la liste
+  // reste celle du statut manuel (jamais un accueil vide sur une panne).
+  const statutsEffectifs = await loadEffectiveStatuses(accountId, agendaRows.map((a) => a.id))
+    .catch((e) => { console.error('[accueil] statut effectif indisponible :', (e as Error).message); return new Map<number, EffectiveStatus>(); });
+  const agendaOuverts = agendaRows.filter((a) => { const st = statutsEffectifs.get(a.id); return !st || !isSettledStatus(st); });
+
   // ── Liens agenda→asset ────────────────────────────────────────────────────
   const agendaIds = agendaRows.map(a => a.id);
   const agendaAssetLinksRows = agendaIds.length > 0
@@ -405,7 +414,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
     });
 
     // Prochaine date par bien (via agenda asset links)
-    agendaRows.forEach(item => {
+    agendaOuverts.forEach(item => {
       if (!item.startDate || item.startDate < today) return;
       const links = agendaAssetMap[item.id] ?? [];
       links.forEach(({ assetId }) => {
@@ -543,7 +552,7 @@ export async function buildHomeSummary(accountId: number): Promise<HomeSummaryPa
   // « Prochaines échéances » : échéances actives du compte (ni réalisées, ni
   // annulées — filtre de la requête), bornées par l'horizon de la requête.
   const upcoming = deriveUpcoming(
-    agendaRows
+    agendaOuverts
       .filter((i) => !!i.startDate)
       .map((i) => ({
         id: i.id,

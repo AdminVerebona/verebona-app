@@ -77,14 +77,16 @@ describe('lecture canonique', () => {
   it('T2-24 : dépenses d’entretien qualifiées, couverture incomplète et exclus signalés', async () => {
     const r = await ask('Combien ai-je dépensé en entretien pour la Clio ?');
     expect(r.strategy).toBe('structured.sum_qualified');
-    expect(r.answer).toMatch(/^Dépenses de entretien documentées pour Clio : 450,00\s€ \(2 documents\)\./);
+    // Lot 112C (reprise, décision PO) : élision correcte « d’entretien » (était « de entretien »).
+    expect(r.answer).toMatch(/^Dépenses d’entretien documentées pour Clio : 450,00\s€ \(2 documents\)\./);
     expect(r.answer).toContain('le total peut être incomplet');
     expect(r.answer).toContain('devis');
   });
 
   it('T2-24 : aucun document qualifié mais des non qualifiés → pas de total affirmé', async () => {
     const r = await ask('Combien ai-je dépensé en assurance pour la Clio ?');
-    expect(r.answer).toContain('Je ne peux pas isoler vos dépenses de assurance');
+    // Lot 112C (reprise, décision PO) : élision correcte « d’assurance ».
+    expect(r.answer).toContain('Je ne peux pas isoler vos dépenses d’assurance');
   });
 
   it('T2-15 : échéances à venir sur une fenêtre ; « bientôt » = 30 jours', async () => {

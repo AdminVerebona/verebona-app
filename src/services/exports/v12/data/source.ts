@@ -149,7 +149,13 @@ export interface SourceEquipmentField {
 interface SourceCil {
   readiness: CilReadiness;
   profile: { triggerType: string | null; triggerDate: string | null; authorizationType: string | null; voluntaryReason: string | null } | null;
-  materials: Array<{ id: number; category: string; materialNature: string | null; brand: string | null; reference: string | null; thermalResistanceR: string | null; lambda: string | null; thicknessMm: number | null; documentId: number | null; uValue?: number | null }>;
+  materials: Array<{ id: number; category: string; materialNature: string | null; brand: string | null; reference: string | null; thermalResistanceR: string | null; lambda: string | null; thicknessMm: number | null; documentId: number | null; uValue?: number | null;
+    /** Lot 112F (1430) : posé depuis une facture / attestation de travaux réalisés — date de pose, intervention source. */
+    installed?: { at: string | null; operationId: number | null } | null }>;
+  /** Lot 112F (1430) : équipements POSÉS (date de pose, intervention source), par équipement. */
+  equipmentInstallations?: Record<number, { at: string | null; operationId: number | null }>;
+  /** Lot 112F : libellé des interventions sources des poses (Opérations du compte, jamais un contenu de document). */
+  installationOperations?: Record<number, { label: string | null; date: string | null }>;
   works: Array<{ id: number; category: string; title: string; description: string | null; completedAt: string | null; companyName: string | null }>;
   resolutions: Array<{ blockId: string; resolution: string; justification: string | null }>;
 }
@@ -522,6 +528,26 @@ async function loadLegacyExportSource(params: LoadParams): Promise<{ source: Exp
       ? (await pgClient.unsafe(`SELECT id, u_value::float8 AS u FROM energy_materials WHERE asset_id = $1 AND u_value IS NOT NULL`, [assetId] as never[])) as unknown as Array<{ id: number; u: number }>
       : [];
     const uOf = new Map(uRows.map((r) => [Number(r.id), Number(r.u)]));
+    // Lot 112F (1430) : poses prouvées par une intervention réalisée (colonnes additives lues en SQL).
+    const { cilInstalledSchemaReady } = await import('@/services/cil/state/load');
+    const ready3 = await cilInstalledSchemaReady();
+    const instRows = ready3
+      ? (await pgClient.unsafe(`SELECT id, to_char(installed_at, 'YYYY-MM-DD') AS at, operation_id::int AS op FROM energy_materials
+           WHERE asset_id = $1 AND installation_state = 'installe'`, [assetId] as never[])) as unknown as Array<{ id: number; at: string | null; op: number | null }>
+      : [];
+    const instOf = new Map(instRows.map((r) => [Number(r.id), { at: r.at ?? null, operationId: r.op == null ? null : Number(r.op) }]));
+    const eqInstRows = ready3
+      ? (await pgClient.unsafe(`SELECT s.equipment_id AS id, to_char(s.installed_at, 'YYYY-MM-DD') AS at, s.installation_operation_id::int AS op
+           FROM equipment_cil_specs s JOIN equipments e ON e.id = s.equipment_id
+          WHERE e.asset_id = $1 AND (s.installed_at IS NOT NULL OR s.installation_operation_id IS NOT NULL)`, [assetId] as never[])) as unknown as Array<{ id: number; at: string | null; op: number | null }>
+      : [];
+    const equipmentInstallations = Object.fromEntries(eqInstRows.map((r) => [Number(r.id), { at: r.at ?? null, operationId: r.op == null ? null : Number(r.op) }]));
+    const opIds = [...new Set([...instRows.map((r) => r.op), ...eqInstRows.map((r) => r.op)].filter((x): x is number => x != null).map(Number))];
+    const opRows = opIds.length
+      ? (await pgClient.unsafe(`SELECT id::int AS id, technical_label, to_char(realized_date, 'YYYY-MM-DD') AS d FROM business_operations
+           WHERE account_id = $1 AND id = ANY($2::bigint[])`, [accountId, `{${opIds.join(',')}}`] as never[])) as unknown as Array<{ id: number; technical_label: string | null; d: string | null }>
+      : [];
+    const installationOperations = Object.fromEntries(opRows.map((o) => [Number(o.id), { label: o.technical_label ?? null, date: o.d ?? null }]));
     cil = {
       readiness,
       profile: p ? { triggerType: p.triggerType, triggerDate: asIso(p.triggerDate), authorizationType: p.authorizationType, voluntaryReason: p.voluntaryReason } : null,
@@ -529,7 +555,10 @@ async function loadLegacyExportSource(params: LoadParams): Promise<{ source: Exp
         id: m.id, category: m.category, materialNature: m.materialNature, brand: m.brand, reference: m.reference,
         thermalResistanceR: m.thermalResistanceR, lambda: m.lambda, thicknessMm: m.thicknessMm, documentId: m.documentId,
         uValue: uOf.get(m.id) ?? null,
+        installed: instOf.get(m.id) ?? null,
       })),
+      equipmentInstallations,
+      installationOperations,
       works: works.map((w) => ({ id: w.id, category: w.category, title: w.title, description: w.description, completedAt: asIso(w.completedAt), companyName: w.companyName })),
       resolutions: resolutions.map((r) => ({ blockId: r.blockId, resolution: r.resolution, justification: r.justification })),
     };

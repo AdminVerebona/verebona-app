@@ -227,7 +227,8 @@ describe('Lot 49 — T2 : périmètre de dépense précis (Cas B)', () => {
     expect(h.classify).not.toHaveBeenCalled();
     expect(h.list).not.toHaveBeenCalled();
     expect(r.cascade?.strategy).toBe('structured.sum_qualified');
-    expect(n(r.answer)).toMatch(/Dépenses de abonnements documentées pour Maison : 53,48/);
+    // Lot 112C (reprise, décision PO) : élision correcte « d’abonnements ».
+    expect(n(r.answer)).toMatch(/Dépenses d’abonnements documentées pour Maison : 53,48/);
     expect(r.cascade?.semantic).toMatchObject({ structuredStrategyExecuted: true, structuredScopeFallbackPrevented: false });
   });
 

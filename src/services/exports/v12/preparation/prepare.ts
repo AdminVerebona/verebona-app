@@ -41,6 +41,7 @@ import { INFO_HOST_SECTION, PREP_SECTIONS, type PrepSectionDef } from './section
 import { saleAds } from '../data/mappers/vente';
 import type { CilBlockDto, Compatibility, EstimateDto, ItemMode, PrepItem, PrepRow, PrepSection, PreparationDto } from './types';
 import { CHARGE_KIND_OPTIONS, CHARGE_PERIOD_OPTIONS, RETAINED_VALUE_SOURCE_OPTIONS } from '@/lib/assets/additional-infos';
+import { cilBlockPillStatus } from '@/lib/cil/cil-block-pill';
 
 const EVENT_KIND_LABELS: Record<ReturnType<typeof eventKind>, string> = {
   ENTRETIEN: 'Entretien', TRAVAUX: 'Travaux', GARANTIE: 'Garantie', SINISTRE: 'Sinistre', AUTRE: 'Événement',
@@ -250,10 +251,12 @@ function cilBlocks(source: ExportSource): PreparationDto['cil'] {
     notice: b.notice ?? null,
     // Lot 111U : détail granulaire du service commun d'état CIL.
     cilMissing: b.cilMissing ?? [],
+    // Lot 112A : pastille commune préparation = PDF (« Partiel » quand une partie des données manque).
+    pillStatus: cilBlockPillStatus(b.status, b.cilStatus),
   }));
   // B2 : contexte de constitution (profil CIL), non bloquant (§20).
   const b2: CilBlockDto = {
-    id: 'B2', label: 'Contexte de constitution du CIL', status: b2Complete ? 'complete' : 'unknown', blocking: false, blocksGeneration: false,
+    id: 'B2', label: 'Contexte de constitution du CIL', status: b2Complete ? 'complete' : 'unknown', pillStatus: b2Complete ? 'complete' : 'unknown', blocking: false, blocksGeneration: false,
     missingItems: [], canMarkNotApplicable: false,
   };
   const at = blocks.findIndex((b) => b.id === 'B3');

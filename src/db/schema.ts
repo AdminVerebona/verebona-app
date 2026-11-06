@@ -1543,17 +1543,8 @@ export const referralEvents = pgTable('referral_events', {
   statusIdx: index('referral_events_status_idx').on(table.status),
 }));
 
-export const referralEmailSends = pgTable('referral_email_sends', {
-  id: serial('id').primaryKey(),
-  referralLinkId: integer('referral_link_id').notNull().references(() => referralLinks.id, { onDelete: 'cascade' }),
-  senderAccountId: integer('sender_account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
-  recipientEmailHash: text('recipient_email_hash').notNull(), // SHA-256 de l'email (RGPD)
-  sentAt: tstz('sent_at'),
-  createdAt: tstz('created_at'),
-}, (table) => ({
-  linkIdIdx: index('referral_email_sends_link_id_idx').on(table.referralLinkId),
-  senderIdx: index('referral_email_sends_sender_idx').on(table.senderAccountId),
-}));
+// Lot 112B : `referral_email_sends` (envois de l'invitation de parrainage par
+// e-mail) supprimée avec la fonction — migration 1405 (DROP TABLE IF EXISTS).
 
 export const promoCodes = pgTable('promo_codes', {
   id: serial('id').primaryKey(),
@@ -4448,10 +4439,29 @@ export const businessOperationFinancingDetails = pgTable('business_operation_fin
   effectiveFrom: pgDate('effective_from', { mode: 'string' }),
   effectiveTo: pgDate('effective_to', { mode: 'string' }),
   updatedAt: tstz('updated_at'),
+  // Lot 112D (1415) : conditions du prêt SAISIES (USER / ADMIN) — jamais recopiées depuis un document ; capital restant dû, jamais un coût.
+  loanPrincipalMinor: bigint('loan_principal_minor', { mode: 'number' }),
+  loanNominalRatePct: numeric('loan_nominal_rate_pct', { precision: 9, scale: 6 }),
+  loanPeriodicity: text('loan_periodicity'),
+  loanDurationMonths: integer('loan_duration_months'),
+  loanFirstInstallmentDate: pgDate('loan_first_installment_date', { mode: 'string' }),
+  loanInstallmentMinor: bigint('loan_installment_minor', { mode: 'number' }),
+  loanInsuranceMinor: bigint('loan_insurance_minor', { mode: 'number' }),
+  loanDeferralMonths: integer('loan_deferral_months'),
+  loanDeferralKind: text('loan_deferral_kind'),
+  loanTermsOrigin: jsonb('loan_terms_origin').notNull().default(sql`'{}'::jsonb`),
+  loanEvents: jsonb('loan_events').notNull().default(sql`'[]'::jsonb`),
 }, (t) => ({
   principalChk: check('business_operation_financing_details_principal_chk', sql`${t.principalAmountMinor} IS NULL OR ${t.principalAmountMinor} >= 0`),
   currencyChk: check('business_operation_financing_details_currency_chk', sql`${t.principalCurrency} IS NULL OR ${t.principalCurrency} ~ '^[A-Z]{3}$'`),
   principalCurrencyChk: check('business_operation_financing_details_principal_currency_chk', sql`${t.principalAmountMinor} IS NULL OR ${t.principalCurrency} IS NOT NULL`),
+  // Lot 112D (1415) : bornes des conditions saisies.
+  loanAmountsChk: check('business_operation_financing_details_loan_amounts_chk', sql`(${t.loanPrincipalMinor} IS NULL OR ${t.loanPrincipalMinor} > 0) AND (${t.loanInstallmentMinor} IS NULL OR ${t.loanInstallmentMinor} > 0) AND (${t.loanInsuranceMinor} IS NULL OR ${t.loanInsuranceMinor} >= 0)`),
+  loanRateChk: check('business_operation_financing_details_loan_rate_chk', sql`${t.loanNominalRatePct} IS NULL OR (${t.loanNominalRatePct} >= 0 AND ${t.loanNominalRatePct} < 100)`),
+  loanPeriodicityChk: check('business_operation_financing_details_loan_periodicity_chk', sql`${t.loanPeriodicity} IS NULL OR ${t.loanPeriodicity} IN ('MONTHLY', 'QUARTERLY', 'SEMIANNUAL', 'ANNUAL')`),
+  loanDurationChk: check('business_operation_financing_details_loan_duration_chk', sql`(${t.loanDurationMonths} IS NULL OR ${t.loanDurationMonths} BETWEEN 1 AND 600) AND (${t.loanDeferralMonths} IS NULL OR ${t.loanDeferralMonths} BETWEEN 0 AND 600)`),
+  loanDeferralChk: check('business_operation_financing_details_loan_deferral_chk', sql`${t.loanDeferralKind} IS NULL OR ${t.loanDeferralKind} IN ('NONE', 'PARTIAL', 'TOTAL')`),
+  loanJsonChk: check('business_operation_financing_details_loan_json_chk', sql`jsonb_typeof(${t.loanTermsOrigin}) = 'object' AND length(${t.loanTermsOrigin}::text) <= 4000 AND jsonb_typeof(${t.loanEvents}) = 'array' AND jsonb_array_length(${t.loanEvents}) <= 50 AND length(${t.loanEvents}::text) <= 20000`),
 }));
 
 /** C14 — CLAIM : statut du dossier distinct du statut de l'Opération (C14.1). */

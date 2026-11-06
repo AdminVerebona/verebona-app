@@ -78,6 +78,8 @@ const SUITES: Readonly<Record<string, readonly string[]>> = {
   business_operation_financial_component_sources: ['0609_l78a_identite_economique.sql'],
   // Lot 44 (O5) : ancre historique du Sinistre et clé stable des lignes de ses listes (0323).
   business_operation_claim_details: ['0323_claim_operations.sql'],
+  // Lot 112D : conditions du prêt saisies (USER / ADMIN) pour le capital restant dû (1415).
+  business_operation_financing_details: ['1415_l112d_financement_conditions_pret.sql'],
   business_operation_claim_damages: ['0323_claim_operations.sql'],
   business_operation_claim_actions: ['0323_claim_operations.sql'],
   business_operation_claim_exchanges: ['0323_claim_operations.sql'],

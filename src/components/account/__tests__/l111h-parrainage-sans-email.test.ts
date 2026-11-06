@@ -11,7 +11,7 @@
  *   L111H-SH-01  partage natif / navigateur : bon lien transmis, sans ressaisie
  *   L111H-SH-02  repli sans Web Share : copie exacte texte + lien
  *   L111H-SH-03  repli si la copie est refusée : e-mail préparé (mailto)
- *   L111H-SRV-01 route d'envoi conservée (BO, gabarit, journal) ; Duo intact
+ *   L111H-SRV-01 route d'envoi supprimée au lot 112B (décision PO) ; Duo intact
  */
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -135,9 +135,12 @@ describe('L111H-SH — « Partager mon invitation »', () => {
   });
 });
 
-describe('L111H-SRV-01 — services non supprimés sans vérification', () => {
-  it('route d’envoi par e-mail conservée (gabarit BO, journal, table) — suppression proposée au PO', () => {
-    expect(existsSync(join(process.cwd(), 'src/app/api/referral/send-email/route.ts'))).toBe(true);
+describe('L111H-SRV-01 — route d’envoi supprimée (lot 112B), lien de parrainage conservé', () => {
+  // Lot 112B (décision PO) : la route d'envoi proposée à la suppression par
+  // 111H est retirée avec son gabarit et sa table (migration 1405). Le service
+  // garde la construction du lien /r/<code>.
+  it('route d’envoi par e-mail supprimée ; service du lien de parrainage conservé', () => {
+    expect(existsSync(join(process.cwd(), 'src/app/api/referral/send-email/route.ts'))).toBe(false);
     expect(existsSync(join(process.cwd(), 'src/services/referral/referral-invitation.service.ts'))).toBe(true);
   });
   it('invitations Premium Duo indépendantes et intactes', () => {

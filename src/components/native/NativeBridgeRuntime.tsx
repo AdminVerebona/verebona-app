@@ -41,7 +41,7 @@ import {
 import { fileDepot, utiliserEnvoiNatif } from '@/lib/upload-queue';
 import { onSessionTransition } from '@/lib/session/session-lifecycle';
 import { NATIVE_PLUGINS, listenNative, nativePlugin } from '@/lib/native/bridge';
-import { appBuildEnv, appUrlContext, expectedServerEnvironment, initInstallationId } from '@/lib/native/shell-info';
+import { INSTALLATION_ID_READY_EVENT, appBuildEnv, appUrlContext, expectedServerEnvironment, initInstallationId } from '@/lib/native/shell-info';
 import { resolveAppUrl, pushTargetPath } from '@/lib/native/deep-links';
 import { abandonNativeOAuth, completeNativeOAuth, nativeOAuthErrorMessage } from '@/lib/native/oauth';
 import { syncNativePush, watchPushOpens, watchPushTokenRotation } from '@/lib/native/push';
@@ -93,6 +93,8 @@ export default function NativeBridgeRuntime() {
   const [envMismatch, setEnvMismatch] = useState(false);
   const [offline, setOffline] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  // Lot 112E : identifiant d'installation obtenu après un report (téléphone verrouillé).
+  const [installationReady, setInstallationReady] = useState(0);
   // Lot 109G : écran bloquant « Mise à jour requise » (AppUpdateRequiredGate) — aucune invitation dessous.
   const [updateRequired, setUpdateRequired] = useState(false);
 
@@ -146,6 +148,12 @@ export default function NativeBridgeRuntime() {
     void initInstallationId();
     void lireConfig();
   }, [lireConfig]);
+
+  useEffect(() => {
+    const onReady = () => setInstallationReady((n) => n + 1);
+    window.addEventListener(INSTALLATION_ID_READY_EVENT, onReady);
+    return () => window.removeEventListener(INSTALLATION_ID_READY_EVENT, onReady);
+  }, []);
 
   useEffect(() => {
     const onUpdate = () => setUpdateRequired(true);
@@ -255,7 +263,7 @@ export default function NativeBridgeRuntime() {
   useEffect(() => {
     if (sessionUserId === null || !featureOn(features, 'push')) return;
     void syncNativePush();
-  }, [sessionUserId, features]);
+  }, [sessionUserId, features, installationReady]);
 
   // ── Partage entrant (IMP-02..06, lot 108G) ─────────────────────────────
   // Un élément par partage, gardé dans la file technique locale jusqu'à

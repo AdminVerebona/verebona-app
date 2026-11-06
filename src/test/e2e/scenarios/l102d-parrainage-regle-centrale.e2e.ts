@@ -221,13 +221,16 @@ scenario('L102D-P', 'Parrainage : règle centrale (90 jours, annuel, rétractati
     expect(f.calls.update).toHaveLength(0);
   });
 
-  it('AC-8 — migration 0920 rejouable ; le gabarit d’invitation porte les paramètres centraux', async () => {
+  // Lot 112B (décision PO) : le gabarit d'invitation par e-mail est supprimé
+  // (migration 1405) ; 0920 reste rejouable et ne le recrée pas (UPDATE ciblé).
+  it('AC-8 — migration 0920 rejouable ; elle ne recrée pas le gabarit d’invitation supprimé (lot 112B)', async () => {
     const migration = await readFile(join(process.cwd(), 'src/db/migrations/0920_l102d_parrainage_regle_centrale.sql'), 'utf8');
     await runMigrationSql(sql, migration);
     await runMigrationSql(sql, migration);
-    const [t] = await sql<Array<{ body: string }>>`SELECT body FROM email_templates WHERE type = 'REFERRAL_INVITATION'`;
-    for (const v of ['{{referralTermsUrl}}', '{{referralWindowDays}}', '{{referralReward}}']) expect(t.body).toContain(v);
-    const { referralInvitationRuleVariables } = await import('@/services/referral/referral-invitation.service');
-    expect(await referralInvitationRuleVariables()).toMatchObject({ referralWindowDays: '90', referralReward: 'un mois offert' });
+    const rows = await sql<Array<{ body: string }>>`SELECT body FROM email_templates WHERE type = 'REFERRAL_INVITATION'`;
+    expect(rows).toHaveLength(0);
+    const [{ n }] = await sql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name = 'signup_contexts' AND column_name = 'code_used_at'`;
+    expect(n).toBe(1);
   });
 });

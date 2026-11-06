@@ -8,10 +8,17 @@
 import { pgClient } from '@/db';
 import { extActionOccurrenceKey } from './signals';
 import type { MascotActionTarget } from './types';
+import { isSettledStatus, loadEffectiveStatus } from '@/services/agenda/effective-status-read';
 
 type Row = Record<string, unknown>;
 const rows = async (sql: string, params: unknown[]): Promise<Row[]> =>
   (await pgClient.unsafe(sql, params as never[])) as unknown as Row[];
+
+/** Lot 112G : échéance close selon le statut effectif commun (réalisée — à la main ou prouvée — ou annulée). */
+async function agendaSettled(accountId: number, id: number): Promise<boolean> {
+  const s = await loadEffectiveStatus(accountId, id);
+  return s != null && isSettledStatus(s);
+}
 
 /** Délai pendant lequel « Annuler » reste proposé (DONE-003). */
 export const UNDO_WINDOW_MS = 60_000;
@@ -47,6 +54,10 @@ export async function acknowledgeOccurrence(p: {
     [agendaId, p.accountId],
   );
   if (!item || item.date !== p.cycleKey) {
+    return { ok: false, code: 'NOT_FOUND', message: 'Cet élément n’est plus disponible.' };
+  }
+  // Lot 112G : déjà réalisée et prouvée (statut effectif commun) — rien à acquitter.
+  if (await agendaSettled(p.accountId, agendaId)) {
     return { ok: false, code: 'NOT_FOUND', message: 'Cet élément n’est plus disponible.' };
   }
   const [r] = await rows(
@@ -96,11 +107,10 @@ export async function checkTarget(accountId: number, target: MascotActionTarget)
       // réalisée ou annulée depuis l'affichage (`manual_status` renseigné)
       // n'ouvre pas le tiroir — le client dit « déjà traitée » puis recalcule.
       if (target.drawer === 'echeance') {
-        const [i] = await rows(
-          `SELECT manual_status FROM agenda_items WHERE id = $1 AND account_id = $2`, [target.id, accountId],
-        );
-        if (!i) return 'gone';
-        return i.manual_status && String(i.manual_status).trim() ? 'resolved' : 'ok';
+        // Lot 112G : statut effectif commun (statut manuel, ou réalisation prouvée par un document).
+        const s = await loadEffectiveStatus(accountId, target.id);
+        if (!s) return 'gone';
+        return isSettledStatus(s) ? 'resolved' : 'ok';
       }
       const sql = {
         document: `SELECT 1 FROM asset_files WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL`,
@@ -132,11 +142,10 @@ export async function checkTarget(accountId: number, target: MascotActionTarget)
     case 'done': {
       const id = parseExtActionKey(target.occurrenceKey);
       if (!id) return 'gone';
-      const [i] = await rows(
-        `SELECT manual_status FROM agenda_items WHERE id = $1 AND account_id = $2`, [id, accountId],
-      );
-      if (!i) return 'gone';
-      return i.manual_status && String(i.manual_status).trim() ? 'resolved' : 'ok';
+      // Lot 112G : statut effectif commun (preuve de réalisation comprise).
+      const s = await loadEffectiveStatus(accountId, id);
+      if (!s) return 'gone';
+      return isSettledStatus(s) ? 'resolved' : 'ok';
     }
     case 'route': {
       const m = /^\/assets\/(\d+)/.exec(target.href);

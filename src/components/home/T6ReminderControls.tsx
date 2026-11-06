@@ -34,6 +34,7 @@ import { Label } from '@/components/ui/label';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { BLOCK_ACTION_SECONDARY } from './bubble-actions';
 import { apiClient } from '@/lib/api-client';
+import { subscribeAgendaStatusSources } from '@/lib/agenda/agenda-status-events';
 import type { MascotReminderRef } from '@/services/home/mascot/types';
 import { T6_MAX_SNOOZE_DAYS, actionSentence, addDays, parisDayOf, snoozeDateError } from '@/services/home/mascot/t6-interpellation';
 import { REMINDER_BLOCK_LABELS, type AgendaReminderRelevance } from '@/lib/agenda/reminder-relevance';
@@ -312,6 +313,9 @@ export function T6ReminderSettings({ agendaItemId, title }: { agendaItemId: numb
     }
   }, [agendaItemId]);
   useEffect(() => { void load(); }, [load]);
+  // Lot 112G : le bloc suit le statut effectif commun — relu quand une preuve de
+  // réalisation peut changer (document supprimé ou dissocié, analyse terminée, statut).
+  useEffect(() => subscribeAgendaStatusSources(() => { void load(); }), [load]);
 
   /** Rend `null` une fois la persistance CONFIRMÉE, sinon le message d'erreur (lot 71G). */
   const apply = async (method: 'POST' | 'DELETE', body: Record<string, unknown>, ok: string): Promise<string | null> => {

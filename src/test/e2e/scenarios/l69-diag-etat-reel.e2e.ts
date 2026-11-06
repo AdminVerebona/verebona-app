@@ -122,10 +122,19 @@ scenario('L69-DIAG', 'Diagnostics construits sur l’état réel (CIL B1/B3/B8, 
     const today = '2026-10-19';
     const plan = planSelection('CIL', source, buildDefaultChoices('CIL', source, { today }), today);
     const data = mapDossierData('CIL', { source, plan, resolved: null, meta: { reference: 'VBN-E2E-69', generatedAt: '2026-10-19T09:00:00+02:00', preparedBy: null, templateLabel: 't', zipName: null, label: 'T' }, today }) as { cil: { blocks: Array<{ code: string; status: string; source: string | null }>; equipments: Array<{ equipment: string }> } };
-    expect(data.cil.blocks.find((b) => b.code === 'B6')).toMatchObject({ status: 'complete', source: '2 équipements' });
+    // Lot 112A (décision PO du 06/11) : la chaudière et le poêle ne couvrent que le chauffage → pastille « Partiel »
+    // (état commun CIL : ECS et ventilation manquent), manques cités ; MÊME pastille à la préparation.
+    // Le statut de BLOC (présence, préparation) reste « complete ».
+    const mappedB6 = data.cil.blocks.find((b) => b.code === 'B6')!;
+    expect(mappedB6.status).toBe('partial');
+    expect(mappedB6.source).toMatch(/^2 équipements · à compléter : /);
+    expect(mappedB6.source).toContain('Eau chaude sanitaire');
+    const { buildPreparation } = await import('@/services/exports/v12/preparation/prepare');
+    expect(buildPreparation('CIL', source, { today, lastGeneration: null }).cil!.blocks.find((b) => b.id === 'B6')).toMatchObject({ status: 'complete', pillStatus: 'partial' });
     expect(data.cil.equipments.map((e) => e.equipment).sort()).toEqual(['Appareil du séjour', 'Chaudière']);
     const html = renderDossierHtml('CIL', data as never, { sys: 'SYS/', asset: () => null, stylesheets: [], pageMap: null }).html;
     expect(html).not.toContain('TV salon');
     expect(html).not.toContain('Chauffage du portail');
+    expect(html).toContain('>Partiel</span>');
   });
 });

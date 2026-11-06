@@ -13,7 +13,11 @@ const h = vi.hoisted(() => ({
   userId: 500,
   accountId: 7000,
   unsafe: vi.fn(async () => [] as unknown[]),
-  suggestionsForRoute: vi.fn((_route: string, _state: unknown) => [{ id: 's1', label: 'Que dois-je traiter ?' }]),
+  // Lot 112C : la route historique lit le service PARTAGÉ (mêmes règles que /api/suggestions).
+  getSharedSuggestions: vi.fn(async (_accountId: number, _userId: number) => ({
+    selection: { contract: 'shared-suggestions-v1', version: 'v1', generatedAt: '2026-11-06T00:00:00.000Z', stage: 'ESTABLISHED', items: [{ id: 's1', label: 'Que dois-je traiter ?', objective: 'ANTICIPATE', source: { kind: 'ACCOUNT_DATA' } }], reserve: [] },
+    diagnostic: { code: 'OK', cache: 'MISS' },
+  })),
 }));
 
 vi.mock('@/db', () => ({ ensureMigrations: vi.fn(async () => {}), pgClient: Object.assign(h.unsafe, { unsafe: h.unsafe }), db: {} }));
@@ -36,8 +40,10 @@ vi.mock('@/services/verebona-assistant/core/source-availability.service', () => 
   reverifierCartesDesMessages: vi.fn(async (m: unknown) => m),
   marquerDisponibilite: vi.fn(async (s: unknown) => s),
 }));
-vi.mock('@/services/verebona-assistant/registries/capability-registry', () => ({ suggestionsForRoute: h.suggestionsForRoute }));
-vi.mock('@/services/verebona-assistant/core/account-state', () => ({ loadSuggestionContext: vi.fn(async () => null) }));
+vi.mock('@/services/suggestions/shared/service', () => ({
+  getSharedSuggestions: h.getSharedSuggestions,
+  publicSelectionOf: (s: { contract: string; version: string; generatedAt: string; items: Array<{ id: string; label: string }>; reserve: unknown[] }) => ({ ...s }),
+}));
 
 const explanation = await import('../messages/[messageId]/explanation/route');
 const sources = await import('../messages/[messageId]/sources/route');
@@ -55,7 +61,7 @@ beforeEach(() => {
   // Un utilisateur neuf par test : le limiteur est un état du processus.
   h.userId = ++utilisateur;
   h.accountId += 1;
-  h.suggestionsForRoute.mockClear();
+  h.getSharedSuggestions.mockClear();
 });
 
 /** Épuise le quota de lecture de l'utilisateur courant. */
@@ -102,17 +108,20 @@ describe('§27 — requestId renvoyé sur les lectures', () => {
 });
 
 describe('§27 — suggestions : schéma zod et x-request-id', () => {
-  it('réponse normale : suggestions du catalogue et x-request-id', async () => {
+  // Lot 112C : la sélection est celle du service partagé (compte et utilisateur de la SESSION) ;
+  // la route reste validée (§27) mais ne change plus la sélection.
+  it('réponse normale : sélection partagée (même forme { suggestions }) et x-request-id', async () => {
     const res = await suggestions.GET(get('http://x/api/verebona/suggestions?route=/biens/12', { 'x-request-id': 'req-sugg-0001' }));
     expect(res.status).toBe(200);
     expect(res.headers.get('x-request-id')).toBe('req-sugg-0001');
-    expect(await res.json()).toEqual({ suggestions: [{ id: 's1', label: 'Que dois-je traiter ?' }] });
-    expect(h.suggestionsForRoute).toHaveBeenCalledWith('/biens/12', null);
+    expect(await res.json()).toEqual({ contract: 'shared-suggestions-v1', version: 'v1', suggestions: [{ id: 's1', label: 'Que dois-je traiter ?' }] });
+    expect(h.getSharedSuggestions).toHaveBeenCalledWith(h.accountId, h.userId);
   });
 
-  it('chemin hors motif interne (URL, caractères spéciaux) → suggestions génériques « / »', async () => {
-    await suggestions.GET(get('http://x/api/verebona/suggestions?route=' + encodeURIComponent('https://evil.example/x')));
-    expect(h.suggestionsForRoute).toHaveBeenCalledWith('/', null);
+  it('chemin hors motif interne (URL, caractères spéciaux) → accepté comme « / », même sélection partagée', async () => {
+    const res = await suggestions.GET(get('http://x/api/verebona/suggestions?route=' + encodeURIComponent('https://evil.example/x')));
+    expect(res.status).toBe(200);
+    expect(h.getSharedSuggestions).toHaveBeenCalledWith(h.accountId, h.userId);
     expect(SuggestionsQuerySchema.parse({}).route).toBe('/');
   });
 

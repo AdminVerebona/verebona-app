@@ -139,7 +139,8 @@ interface CaseBase {
 
 // ─── CIL ────────────────────────────────────────────────────────────────────
 
-export type CilBlockStatus = 'complete' | 'unknown' | 'missing' | 'invalid' | 'not_applicable';
+/** `partial` (lot 112A) : bloc documenté dont une partie des données attendues manque (`lib/cil/cil-block-pill.ts`). */
+export type CilBlockStatus = 'complete' | 'partial' | 'unknown' | 'missing' | 'invalid' | 'not_applicable';
 
 export interface CilData extends CaseBase {
   asset: AssetBase & {

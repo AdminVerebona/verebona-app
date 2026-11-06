@@ -375,7 +375,7 @@ export const RECETTE_EXCLUDED: Readonly<Record<string, string>> = {
   stripe_catalog_products: 'Stripe', stripe_catalog_recoveries: 'Stripe', stripe_catalog_runs: 'Stripe', stripe_catalog_state: 'Stripe',
   stripe_invoice_effects: 'Stripe', stripe_price_migrations: 'Stripe', stripe_price_versions: 'Stripe', stripe_webhook_logs: 'Stripe',
   subscription_communication_operations: 'communications d’abonnement',
-  referral_email_sends: 'parrainage', referral_events: 'parrainage', referral_links: 'parrainage',
+  referral_events: 'parrainage', referral_links: 'parrainage',
   funnel_events: 'statistiques de conversion', signup_contexts: 'statistiques d’inscription', user_activity_log: 'journal d’activité',
   user_guide_progress: 'progression du guide', news_consents: 'consentements de communication',
   // Communications.

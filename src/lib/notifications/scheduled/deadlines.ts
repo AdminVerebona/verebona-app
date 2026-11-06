@@ -3,30 +3,34 @@
  *
  * À 8 h 30 Europe/Paris, pour chaque compte ayant des éléments d'agenda de
  * catégorie « action » dont la date de début tombe exactement 7 jours après la
- * date locale du jour, et qui ne sont ni réalisés ni annulés : une seule
+ * date locale du jour, et qui ne sont ni réalisés ni annulés (statut effectif commun, lot 112G) : une seule
  * notification par utilisateur regroupant les échéances du jour (§7.1 « regroupées
  * en un seul push et un seul email »). Déduplication par date locale.
  */
 
-import { db } from '@/db';
-import { agendaItems } from '@/db/schema';
-import { and, eq, isNull } from 'drizzle-orm';
+import { pgClient } from '@/db';
 import { emit } from '@/lib/notifications';
 import { todayParisDateStr, addDaysToDateStr } from '../time-paris';
+import { effectiveStatusColumns, effectiveStatusOfSelected, isSettledStatus } from '@/services/agenda/effective-status-read';
 
 interface DeadlineRunResult { targetDate: string; accounts: number; emitted: number }
 
 export async function runDeadlineReminders(now: Date = new Date()): Promise<DeadlineRunResult> {
   const targetDate = addDaysToDateStr(todayParisDateStr(now), 7);
 
-  const rows = await db
-    .select({ id: agendaItems.id, accountId: agendaItems.accountId, nature: agendaItems.occurrenceNature })
-    .from(agendaItems)
-    .where(and(
-      eq(agendaItems.startDate, targetDate),
-      eq(agendaItems.homeCategory, 'action'),
-      isNull(agendaItems.manualStatus), // ni 'realise' ni 'annule'
-    ));
+  // Lot 112G : « ni réalisée ni annulée » selon le STATUT EFFECTIF COMMUN (111R :
+  // `computeEffectiveStatus` + preuve de réalisation 103D), plus le seul statut manuel
+  // (un statut manuel vide ou fait d'espaces n'écarte plus l'échéance à tort).
+  const lignes = (await pgClient.unsafe(
+    `SELECT i.id, i.account_id AS "accountId", i.occurrence_nature AS nature, ${await effectiveStatusColumns('i')}
+       FROM agenda_items i
+      WHERE i.start_date = $1::date AND i.home_category = 'action'
+        AND (i.manual_status IS NULL OR trim(i.manual_status) = '')`,
+    [targetDate] as never[],
+  )) as unknown as Array<Record<string, unknown>>;
+  const rows = lignes
+    .filter((r) => !isSettledStatus(effectiveStatusOfSelected(r, now)))
+    .map((r) => ({ id: Number(r.id), accountId: Number(r.accountId), nature: (r.nature as string | null) ?? null }));
 
   const byAccount = new Map<number, number[]>();
   // Occurrences prévisionnelles : le rappel le dit — une prévision n'est

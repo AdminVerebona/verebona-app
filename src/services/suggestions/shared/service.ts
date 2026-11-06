@@ -50,7 +50,6 @@
 import { createHash } from 'node:crypto';
 import { pgClient } from '@/db';
 import { MAX_HOME_SUGGESTIONS } from '@/services/home/mascot/types';
-import { loadSuggestionContext } from '@/services/verebona-assistant/core/account-state';
 import { renderSuggestionEntry, type SuggestionContext } from '@/services/verebona-assistant/registries/capability-registry';
 import { loadHelpCorpus } from '@/services/verebona-assistant/core/help-corpus.service';
 import { asHelpSearchCorpus, loadResourcesCorpus, resourcesCorpusHealth } from '@/services/verebona-assistant/core/resources-corpus.service';
@@ -69,6 +68,7 @@ import { readConsultedSuggestions, recordSuggestionConsultation } from './consul
 import { RESOURCE_QUESTION_CATALOG_VERSION, checkResourceEvidence } from './resource-questions';
 import { SUGGESTION_UTILITY_RULE_VERSION, qualifySuggestion, type UtilityDecision } from './utility';
 import type { SuggestionEvidence } from '@/services/verebona-assistant/types/contracts';
+import { loadSharedSuggestionContext, type ExploitFactsDiagnostic } from './exploit-facts';
 
 /** Codes stables du diagnostic (BO, jamais affichés à l'utilisateur). */
 export type SharedSuggestionDiagnosticCode =
@@ -106,6 +106,11 @@ export interface SharedSuggestionDiagnostic {
   quota?: { max: number; served: number; shortfall: 'QUALITY_LIMIT' | null };
   /** Lot 110E : couverture effective de chaque question Ressources du catalogue (preuve de réponse). */
   resourceCoverage?: Array<{ id: string; status: string; articleId: string | null; revision: number | null; revisionChanged: boolean; missingSubjects: string[] }>;
+  /**
+   * Lot 112C : faits « Exploiter » prouvés (lectures de T2) — offre, biens
+   * examinés, faits trouvés ; `memo` : preuve réutilisée ou recalculée.
+   */
+  exploit?: ExploitFactsDiagnostic;
   cache: 'HIT' | 'MISS';
 }
 
@@ -156,7 +161,7 @@ async function readUsage(accountId: number, userId: number | null, ctx: Suggesti
 /** Nom du bien désigné par une question rendue (retiré par la compréhension : il fixe le périmètre). */
 function targetNameOf(ctx: SuggestionContext, assetId: number | undefined): string | null {
   if (!assetId) return null;
-  const b = [ctx.accountAsset, ctx.pageAsset].find((x) => x?.id === assetId);
+  const b = [ctx.accountAsset, ctx.pageAsset, ...(ctx.provenAssets ?? [])].find((x) => x?.id === assetId);
   return b?.name ?? null;
 }
 
@@ -228,8 +233,10 @@ export async function getSharedSuggestions(accountId: number, userId: number | n
   const [corpora, consulted] = await Promise.all([loadCorpora(), readConsultedSuggestions(accountId, userId)]);
   let ctx: SuggestionContext | null = null;
   let usage: UsageSignals | null = null;
+  let exploit: ExploitFactsDiagnostic | undefined;
   try {
-    ctx = await loadSuggestionContext(accountId, '/accueil');
+    // Lot 112C : état du compte + faits « Exploiter » prouvés par les lectures de T2.
+    ({ ctx, exploit } = await loadSharedSuggestionContext(accountId, { now }));
     usage = await readUsage(accountId, userId, ctx);
   } catch (e) {
     console.warn('[suggestions] usages du compte illisibles — repli éditorial sûr :', (e as Error).message);
@@ -271,6 +278,7 @@ export async function getSharedSuggestions(accountId: number, userId: number | n
       const c = resourceCoverageOf(e, corpora.resources);
       return { id: e.id, status: c.status, articleId: c.articleId, revision: c.revision, revisionChanged: c.revisionChanged, missingSubjects: c.missingSubjects };
     }),
+    ...(exploit ? { exploit } : {}),
     cache: 'MISS',
   };
   const result = { selection, diagnostic };
@@ -317,7 +325,9 @@ export async function resolveSuggestionForMessage(
   } else if (suggestionId.startsWith('acc_')) {
     const entry = ACCOUNT_STOCK.find((e) => `acc_${e.catalogId}` === suggestionId);
     if (entry) {
-      const ctx = await loadSuggestionContext(accountId, '/accueil').catch(() => null);
+      // Lot 112C : preuve RECALCULÉE au clic (jamais la mémoire) — un fait disparu
+      // entre l'affichage et le clic rend la question libre, sans privilège.
+      const ctx = await loadSharedSuggestionContext(accountId, { fresh: true }).then((x) => x.ctx).catch(() => null);
       const r = ctx ? renderSuggestionEntry(entry.catalogId, ctx) : null;
       // Lot 111L : une suggestion d'une sélection périmée (ex. « Quels sont les
       // documents de X ? » affichée avant le déploiement) n'est plus revalidée :

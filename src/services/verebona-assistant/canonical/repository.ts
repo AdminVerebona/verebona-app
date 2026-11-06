@@ -189,7 +189,13 @@ export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort
     readPayments: (accountId, opts) => readPayments(accountId, opts),
     readAcquisition: (accountId, assetId, opts) => readAcquisition(accountId, assetId, opts),
     // Lot 54D (§4.3) : coût de possession → service TCO (aucun calcul parallèle).
-    readOwnershipCost: async (accountId, assetId) => (await import('@/services/business-operations/tco/service')).readAssetTco(accountId, assetId),
+    // Lot 112C (reprise) : TCO réservé Premium / Premium Duo / essai — même droit que GET /api/assets/:id/tco
+    // (`premiumFeatures`). La lecture elle-même refuse (défense en profondeur) ; T2 répond sans montant.
+    readOwnershipCost: async (accountId, assetId) => {
+      if (!(await ownershipCostAllowed(accountId))) throw new OwnershipCostNotAllowedError();
+      return (await import('@/services/business-operations/tco/service')).readAssetTco(accountId, assetId);
+    },
+    ownershipCostAllowed: (accountId) => ownershipCostAllowed(accountId),
     readContracts: (accountId, assetIds, opts) => readContracts(accountId, assetIds, opts),
     findOperationDocuments: (accountId, terms, assetId) => findOperationDocuments(accountId, terms, assetId),
     readOperationCosts: (accountId, terms, assetIds) => readOperationCosts(accountId, terms, assetIds),
@@ -211,6 +217,17 @@ export function createCanonicalAccountDataRepository(legacy: BaseAccountDataPort
       return r as unknown as DocumentHit[];
     },
   };
+}
+
+/** Lot 112C (reprise) : droit au coût de possession (offre). Erreur de lecture : refusé (jamais un montant par défaut). */
+async function ownershipCostAllowed(accountId: number): Promise<boolean> {
+  const { getEntitlements } = await import('@/services/entitlements.service');
+  return getEntitlements(accountId).then((e) => e.premiumFeatures === true).catch(() => false);
+}
+
+/** Lecture du coût de possession refusée par l'offre (Standard, lecture seule). */
+export class OwnershipCostNotAllowedError extends Error {
+  constructor() { super('TCO réservé à Premium / Premium Duo'); this.name = 'OwnershipCostNotAllowedError'; }
 }
 
 export { ORIGIN_LABELS, formatCanonicalValue, getField };

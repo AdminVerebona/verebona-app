@@ -20,6 +20,8 @@ import { effectiveAnalysisStateSql } from '@/services/ai/processing-status/effec
 // Lot 50 : seule une analyse attendue par l'utilisateur est un sujet.
 import { analysisVisibilityColumnReady, userVisibleAnalysisSql } from '@/services/ai/processing-status/processing-visibility';
 import { agendaDateRole } from '@/services/agenda/agenda-date-role';
+// Lot 112G : statut effectif COMMUN (111R) — preuve de réalisation comprise.
+import { effectiveStatusColumns, isAgendaItemSettled, notSettledByProofFilter, statusRowOfSelected } from '@/services/agenda/effective-status-read';
 import { T6_RELEVANT_FACT_PATTERN, T6_ASSESSMENT_MAX_AGE_DAYS } from './t6-interpellation';
 
 /** Un envoi ou une analyse bloqués depuis plus longtemps ne sont plus « en cours ». */
@@ -167,7 +169,7 @@ async function readOnboarding(accountId: number): Promise<MascotRawData['onboard
 }
 
 /** Colonnes d'une échéance lue par la mascotte (alias `i`, bien `a`, lien `l`). */
-const agendaColumns = (t4: boolean) => `i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date,
+const agendaColumns = (t4: boolean, es = '') => `${es ? `${es}, ` : ''}i.id, i.title, to_char(i.start_date, 'YYYY-MM-DD') AS date,
             i.occurrence_nature AS "occurrenceNature", i.requires_qualification AS "requiresQualification",
             i.home_category AS "homeCategory", i.origin_type AS "originType",
             i.origin_field_key AS "originFieldKey",
@@ -189,8 +191,20 @@ const AGENDA_ASSET_JOIN = `LEFT JOIN LATERAL (
        ) l ON TRUE
        LEFT JOIN assets a ON a.id = l.asset_id AND a.account_id = i.account_id AND a.deleted_at IS NULL`;
 
+/**
+ * Lot 112G — l'échéance est-elle CLOSE selon le statut effectif commun
+ * (`computeEffectiveStatus` + preuve valide 103D, colonnes `es*`) ? Réalisée
+ * et prouvée, ou réalisée / annulée à la main : ni rappel, ni « en retard »,
+ * ni « c'est fait ? ». Ligne lue sans ces colonnes : jamais écartée ici.
+ */
+function closedByEffectiveStatus(i: Row, now: Date): boolean {
+  if (!('esCompletionProven' in i)) return false;
+  return isAgendaItemSettled(statusRowOfSelected(i), now);
+}
+
 /** Lignes lues → échéances « action » de la mascotte (classification T4 partagée). */
 function agendaRowsOf(r: Row[]): MascotAgendaRow[] {
+  const now = new Date();
   const classer = (i: Row): HomeAgendaItemForClassification => ({
     homeCategory: (i.homeCategory as string | null) ?? null,
     originType: String(i.originType ?? 'manual'),
@@ -199,7 +213,7 @@ function agendaRowsOf(r: Row[]): MascotAgendaRow[] {
     businessType: (i.businessType as string | null | undefined) ?? null,
     originFieldKey: (i.originFieldKey as string | null | undefined) ?? null,
   });
-  return r.filter((i) => isAgendaActionItemT4(classer(i))).map(agendaRowOf);
+  return r.filter((i) => isAgendaActionItemT4(classer(i)) && !closedByEffectiveStatus(i, now)).map(agendaRowOf);
 }
 
 /** Ligne lue → échéance de la mascotte (sans filtre) — lot 76A : partagée avec l'empreinte T6. */
@@ -255,12 +269,14 @@ async function readAgenda(accountId: number, today: string): Promise<MascotAgend
   // exclus hors prévisions, faute de nature pour écarter les faits passés.
   const filtreT4 = await upcomingDeadlinesSqlFilter('i');
   const t4 = filtreT4 !== '';
+  // Lot 112G : statut effectif commun — colonnes du calcul et pré-filtre des faits prouvés.
+  const [es, prouve] = await Promise.all([effectiveStatusColumns('i'), notSettledByProofFilter('i', '$2::date')]);
   const r = await rows(
-    `SELECT ${agendaColumns(t4)}
+    `SELECT ${agendaColumns(t4, es)}
        FROM agenda_items i
        ${AGENDA_ASSET_JOIN}
       WHERE i.account_id = $1
-        AND (i.manual_status IS NULL OR trim(i.manual_status) = '')
+        AND (i.manual_status IS NULL OR trim(i.manual_status) = '')${prouve}
         ${t4 ? filtreT4 : "AND (i.is_automatic = FALSE OR i.occurrence_nature = 'FORECAST')"}
         AND i.start_date >= ($2::date - $3::int)
         AND i.start_date <= ($2::date + $4::int)
@@ -322,7 +338,9 @@ async function readT6Agenda(accountId: number, today: string, horizonDays = 180)
   const filtreT4 = await upcomingDeadlinesSqlFilter('i');
   const t4 = filtreT4 !== '';
   const ex = await t6ExaminationsReady();
-  const actif = `(i.manual_status IS NULL OR trim(i.manual_status) = '')
+  // Lot 112G : statut effectif commun (preuve de réalisation 103D comprise).
+  const [es, prouve] = await Promise.all([effectiveStatusColumns('i'), notSettledByProofFilter('i', '$2::date')]);
+  const actif = `(i.manual_status IS NULL OR trim(i.manual_status) = '')${prouve}
         ${t4 ? filtreT4 : "AND (i.is_automatic = FALSE OR i.occurrence_nature = 'FORECAST')"}`;
   const documents = `(SELECT l2.asset_file_id AS file_id FROM agenda_file_links l2 WHERE l2.agenda_item_id = i.id
                        UNION SELECT i.origin_ref_id WHERE i.origin_ref_type = 'asset_file' AND i.origin_ref_id IS NOT NULL)`;
@@ -334,7 +352,7 @@ async function readT6Agenda(accountId: number, today: string, horizonDays = 180)
         ORDER BY i.start_date ASC, i.id ASC LIMIT ${AGENDA_LIMIT}
      ),
      base AS (
-       SELECT ${agendaColumns(t4)},
+       SELECT ${agendaColumns(t4, es)},
               (i.start_date < $2::date - $3::int) AS "longOverdue",
               (d.n > 0) AS "hasDocs", (k.faits IS NOT NULL) AS "hasFacts",
               t.id AS "assessmentId", t.decision AS "assessmentDecision",
@@ -420,13 +438,16 @@ const OVERDUE_AGENDA_LIMIT = 200;
 async function readOverdueAgenda(accountId: number, today: string): Promise<Array<{ id: number; date: string }>> {
   const filtreT4 = await upcomingDeadlinesSqlFilter('i');
   const t4 = filtreT4 !== '';
+  // Lot 112G : une échéance réalisée et prouvée n'est jamais « dépassée ».
+  const [es, prouve] = await Promise.all([effectiveStatusColumns('i'), notSettledByProofFilter('i', '$2::date')]);
+  const now = new Date();
   const r = await rows(
-    `SELECT i.id, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.title,
+    `SELECT ${es}, i.id, to_char(i.start_date, 'YYYY-MM-DD') AS date, i.title,
             i.home_category AS "homeCategory", i.origin_type AS "originType", i.origin_field_key AS "originFieldKey"
             ${t4 ? ', i.event_nature AS "eventNature", i.business_type AS "businessType"' : ''}
        FROM agenda_items i
       WHERE i.account_id = $1
-        AND (i.manual_status IS NULL OR trim(i.manual_status) = '')
+        AND (i.manual_status IS NULL OR trim(i.manual_status) = '')${prouve}
         ${t4 ? filtreT4 : "AND (i.is_automatic = FALSE OR i.occurrence_nature = 'FORECAST')"}
         AND coalesce(greatest(i.end_date, i.start_date), i.start_date) < $2::date
       ORDER BY i.start_date DESC, i.id DESC
@@ -434,6 +455,7 @@ async function readOverdueAgenda(accountId: number, today: string): Promise<Arra
     [accountId, today],
   );
   return r
+    .filter((i) => !closedByEffectiveStatus(i, now))
     .filter((i) => isAgendaActionItemT4({
       homeCategory: (i.homeCategory as string | null) ?? null, originType: String(i.originType ?? 'manual'), title: String(i.title ?? ''),
       eventNature: (i.eventNature as string | null | undefined) ?? null, businessType: (i.businessType as string | null | undefined) ?? null,

@@ -116,6 +116,29 @@ export function formatSum(label: string, cents: number, count: number): string {
   return `${capitalize(label)} : ${formatAmountCents(cents)} (${formatNumber(count)} document${count > 1 ? 's' : ''}).`;
 }
 
+/**
+ * Lot 112C (reprise) — mots à H ASPIRÉ courants dans les libellés de l'application
+ * (pas d'élision : « de housse », « de hangar »). Tout autre mot commençant par
+ * « h » est traité comme un h muet (« d’habitation », « d’hébergement »).
+ */
+export const H_ASPIRE_WORDS: ReadonlySet<string> = new Set([
+  'haie', 'haies', 'hall', 'halls', 'hameau', 'hamac', 'hangar', 'hangars', 'harnais', 'haut', 'hauteur', 'hauts', 'havre',
+  'hayon', 'hérisson', 'héros', 'hêtre', 'hibou', 'hockey', 'homard', 'honte', 'hotte', 'hottes', 'housse', 'housses', 'hublot', 'hublots', 'hutte',
+]);
+
+/**
+ * Lot 112C (reprise) — préposition « de » ÉLIDÉE devant une voyelle ou un h muet
+ * (pure, testée) : « d’entretien », « d’assurance », « d’abonnements »,
+ * « d’habitation » ; « de réparations », « de travaux », « de housse ».
+ */
+export function deFr(libelle: string): string {
+  const t = libelle.replace(/\s+/g, ' ').trim();
+  const premier = (t.split(/[\s’'-]/)[0] ?? '').toLowerCase();
+  const voyelle = /^[aeiouyàâäéèêëîïôöùûüœæ]/i.test(t);
+  const hMuet = /^h/i.test(t) && !H_ASPIRE_WORDS.has(premier);
+  return voyelle || hMuet ? `d’${t}` : `de ${t}`;
+}
+
 /** Absence : « Je n’ai trouvé aucune échéance correspondant à ce bien. » */
 export function formatNoResult(what: string, scope?: string): string {
   return `Je n’ai trouvé ${what}${scope ? ` ${scope}` : ''}.`;

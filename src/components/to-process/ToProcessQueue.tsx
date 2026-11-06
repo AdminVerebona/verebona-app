@@ -146,7 +146,8 @@ export function ToProcessQueue() {
   // Une fiche complétée dans un tiroir retire l'action de la file.
   useEffect(() => {
     const reload = () => { void load(orderMode); };
-    const events = ['refresh-a-traiter', 'agenda-mutated', 'document-analysis-complete'];
+    // Lot 112G : `document-deleted` aussi — une preuve de réalisation tombe, une carte liée à l'Agenda peut revenir.
+    const events = ['refresh-a-traiter', 'agenda-mutated', 'document-analysis-complete', 'document-deleted'];
     events.forEach((e) => window.addEventListener(e, reload));
     return () => events.forEach((e) => window.removeEventListener(e, reload));
   }, [orderMode, load]);

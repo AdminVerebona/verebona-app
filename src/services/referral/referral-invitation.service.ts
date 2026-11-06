@@ -1,40 +1,14 @@
 /**
- * Invitations de parrainage par e-mail et lien partagé — lot 34I.
+ * Lien d'invitation au parrainage — lot 34I (lien /r/<code>), lot 112B.
  *
- * ══════════════════════════════════════════════════════════════════════════
- * « TOUT VA BIEN SUR LE FRONT MAIS LE MAIL N'EST PAS REÇU »
- *
- * La route `/api/referral/send-email` appelait le SDK Resend directement et
- * comptait un envoi réussi dès que `resend.emails.send()` rendait la main.
- * Or ce SDK NE LÈVE PAS d'exception sur un refus : il renvoie
- * `{ data: null, error }`. Un expéditeur refusé, une clé invalide, un quota
- * atteint… étaient tous comptés « envoyés » — le front affichait
- * « Invitation envoyée » et rien ne partait.
- *
- * Et un refus était certain : l'expéditeur était codé en dur
- * (`RESEND_FROM_EMAIL`, à défaut `noreply@verebona.com`), alors que tous les
- * autres e-mails — qui arrivent — partent avec l'expéditeur réglé dans le BO
- * (`email_settings`), seul domaine vérifié chez Resend. Sans clé, la route
- * « simulait » même l'envoi et répondait succès.
- *
- * L'invitation passe désormais par le service e-mail commun
- * (`emailService.send`) : même expéditeur que les autres e-mails, gabarit
- * `REFERRAL_INVITATION` en base (migration 0301, modifiable dans le BO),
- * activation du canal depuis l'écran Communications, journal `email_logs`
- * (envoyé / échec / ignoré, motif) consultable dans le BO. Un envoi n'est
- * compté que si le fournisseur l'a ACCEPTÉ.
- * ══════════════════════════════════════════════════════════════════════════
+ * Lot 112B (décision PO) : l'invitation de parrainage PAR E-MAIL est
+ * supprimée (route `POST /api/referral/send-email`, gabarit
+ * `REFERRAL_INVITATION`, table `referral_email_sends`, migration 1405). Le
+ * parrain partage son code ou son lien depuis Mon compte › Parrainage
+ * (« Partager mon invitation », copie, e-mail préparé côté client en repli —
+ * `ReferralBlock.tsx`, lot 111H). Ce module ne garde que la construction du
+ * lien et la destination de `/r/<code>`.
  */
-
-/** Gabarit e-mail de l'invitation (migration 0301). */
-import { REFERRAL_RULES, referralTermsUrl } from './referral-rules';
-
-export const REFERRAL_INVITATION_TEMPLATE = 'REFERRAL_INVITATION';
-
-/** Nombre maximal de destinataires par envoi. */
-export const MAX_RECIPIENTS_PER_SEND = 10;
-
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Origine de l'application (liens de parrainage, liens des e-mails). */
 export function appBaseUrl(): string {
@@ -44,139 +18,11 @@ export function appBaseUrl(): string {
 /**
  * Lien de parrainage partagé : `<app>/r/<CODE>`.
  *
- * Seule source de ce format — Mon compte › Parrainage, l'e-mail d'invitation
- * et la route `src/app/r/[code]/route.ts` qui le reçoit doivent concorder.
+ * Seule source de ce format — Mon compte › Parrainage (`/api/referral/me`) et
+ * la route `src/app/r/[code]/route.ts` qui le reçoit doivent concorder.
  */
 export function buildReferralUrl(code: string, base: string = appBaseUrl()): string {
   return `${base.replace(/\/+$/, '')}/r/${encodeURIComponent(code)}`;
-}
-
-/** Destinataires valides, normalisés, dédoublonnés, plafonnés. */
-export function normalizeRecipients(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  const seen = new Set<string>();
-  for (const e of raw) {
-    if (typeof e !== 'string') continue;
-    const email = e.trim().toLowerCase();
-    if (!EMAIL_RE.test(email) || seen.has(email)) continue;
-    seen.add(email);
-    if (seen.size >= MAX_RECIPIENTS_PER_SEND) break;
-  }
-  return [...seen];
-}
-
-/**
- * Nom du parrain tel qu'il apparaît dans l'objet et le corps de l'e-mail.
- *
- * Le gabarit est rendu en HTML sans échappement des variables : on retire
- * les caractères de balisage, le nom étant saisi librement par l'utilisateur
- * et l'e-mail adressé à un tiers.
- */
-export function referralSenderName(firstName?: string | null, lastName?: string | null): string {
-  const full = `${firstName ?? ''} ${lastName ?? ''}`.replace(/[<>"'`&]/g, '').replace(/\s+/g, ' ').trim();
-  return full ? full.slice(0, 80) : 'Un proche';
-}
-
-type InvitationFailureReason =
-  | 'CHANNEL_DISABLED'
-  | 'EMAILS_DISABLED'
-  | 'NOT_CONFIGURED'
-  | 'TEMPLATE_MISSING'
-  | 'PROVIDER_REJECTED';
-
-/** Classe l'erreur rendue par `emailService.send` (motif journalisé tel quel dans `email_logs`). */
-export function classifySendError(error: string | undefined): InvitationFailureReason {
-  const e = error ?? '';
-  if (e === 'CHANNEL_DISABLED') return 'CHANNEL_DISABLED';
-  if (e === 'Emails disabled') return 'EMAILS_DISABLED';
-  if (e === 'Email provider not configured') return 'NOT_CONFIGURED';
-  if (/^Template .* not found$/.test(e)) return 'TEMPLATE_MISSING';
-  return 'PROVIDER_REJECTED';
-}
-
-/**
- * Message affiché quand AUCUNE invitation n'est partie. Jamais technique :
- * le détail est dans les journaux serveur et `email_logs`.
- */
-export function invitationFailureMessage(reasons: InvitationFailureReason[]): string {
-  if (reasons.length > 0 && reasons.every((r) => r === 'CHANNEL_DISABLED' || r === 'EMAILS_DISABLED')) {
-    return 'L’envoi d’invitations par e-mail est momentanément désactivé. Copiez votre lien pour le partager.';
-  }
-  return 'L’invitation n’a pas pu être envoyée. Réessayez plus tard ou copiez votre lien pour le partager.';
-}
-
-type SendFn = (options: {
-  templateCode: string;
-  to: string;
-  variables: Record<string, string>;
-}) => Promise<{ success: boolean; error?: string }>;
-
-interface InvitationResult {
-  sent: string[];
-  failed: Array<{ email: string; reason: InvitationFailureReason }>;
-}
-
-/**
- * Envoie une invitation par destinataire. N'est compté « envoyé » que ce que
- * le service e-mail confirme (fournisseur ayant accepté le message).
- * Ne lève pas : une exception d'un envoi est un échec de CET envoi.
- */
-export async function sendReferralInvitations(input: {
-  recipients: string[];
-  senderName: string;
-  referralUrl: string;
-  send: SendFn;
-}): Promise<InvitationResult> {
-  const result: InvitationResult = { sent: [], failed: [] };
-  // Lot 102D : conditions factuelles issues de la règle centrale (lien résolu une fois).
-  const ruleVariables = await referralInvitationRuleVariables();
-  for (const email of input.recipients) {
-    try {
-      const r = await input.send({
-        templateCode: REFERRAL_INVITATION_TEMPLATE,
-        to: email,
-        variables: {
-          senderName: input.senderName,
-          referralUrl: input.referralUrl,
-          actionUrl: input.referralUrl,
-          ...ruleVariables,
-        },
-      });
-      if (r.success) result.sent.push(email);
-      else result.failed.push({ email, reason: classifySendError(r.error) });
-    } catch {
-      result.failed.push({ email, reason: 'PROVIDER_REJECTED' });
-    }
-  }
-  return result;
-}
-
-/**
- * Variables du gabarit REFERRAL_INVITATION issues de la règle centrale
- * (lot 102D) : jamais de durée ni de récompense écrite dans le gabarit.
- */
-export async function referralInvitationRuleVariables(): Promise<Record<string, string>> {
-  const n = REFERRAL_RULES.rewardMonths;
-  // Raccord 102B : lien résolu par le serveur (bascule sur /legal/parrainage dès
-  // que le manifeste du site a été lu) ; repli sur la configuration de build.
-  let termsUrl: string;
-  try {
-    const { serverLegalUrl } = await import('@/services/legal/cguv-referential.service');
-    termsUrl = await serverLegalUrl('parrainage');
-  } catch {
-    termsUrl = referralTermsUrl();
-  }
-  return {
-    referralTermsUrl: termsUrl,
-    referralWindowDays: String(REFERRAL_RULES.attributionWindowDays),
-    referralReward: n === 1 ? 'un mois offert' : `${n} mois offerts`,
-  };
-}
-
-/** Masque une adresse pour les journaux applicatifs (`j***@exemple.fr`). */
-export function maskEmail(email: string): string {
-  const [local, domain] = email.split('@');
-  return `${(local ?? '').slice(0, 1)}***@${domain ?? ''}`;
 }
 
 /**

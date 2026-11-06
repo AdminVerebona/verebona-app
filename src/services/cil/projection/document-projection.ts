@@ -14,6 +14,10 @@
  *     plusieurs candidats → ambigu, rien n'est écrit ;
  *   · B7 : RIEN — une recommandation, un scénario ou un projet de travaux est
  *     journalisé `RECOMMENDATION_ONLY`, jamais un travail réalisé.
+ * Lot 112F : une facture / attestation de travaux RÉALISÉS (Opération
+ * INTERVENTION réalisée et prouvée, même identité que B7) renseigne B5
+ * (état « posé », date de pose, performances prouvées) et B6 (équipement posé)
+ * — `projectInstalled` ; jamais depuis un devis, un projet ou une recommandation.
  *
  * Garanties : verrou transactionnel par bien ; idempotence (empreinte des
  * entrées, clé de projection, journal `cil_projection_journal`) ; une ligne
@@ -33,7 +37,7 @@ import {
 } from '@/lib/cil/cil-fact-vocabulary';
 import { classifyCilEnergyEquipment, type CilEnergyUsage } from '@/lib/cil/energy-equipment';
 import { documentKind, type DocKind } from '@/services/exports/v12/data/documents';
-import { CIL_DOCUMENT_SCOPE_SQL, cilProjectionSchemaReady, cilSecondPassSchemaReady } from '../state/load';
+import { CIL_DOCUMENT_SCOPE_SQL, cilInstalledSchemaReady, cilProjectionSchemaReady, cilSecondPassSchemaReady } from '../state/load';
 import { recognizeCilContextFact, type CilTriggerType } from '@/lib/cil/cil-fact-vocabulary';
 
 /** Natures documentaires sources des structures B5 / B6 (matrice, colonne « sources admissibles »). */
@@ -127,6 +131,7 @@ export async function projectCilDocumentsForAsset(p: { accountId: number; assetI
   const out = (s: string) => { report.outcomes[s] = (report.outcomes[s] ?? 0) + 1; };
 
   const ready2 = await cilSecondPassSchemaReady();
+  const ready3 = await cilInstalledSchemaReady();
   const run = async (tx: Tx) => {
     // À blanc (contrôle de cohérence) : lecture seule, aucun verrou.
     const [asset] = await q(tx, `SELECT id FROM assets WHERE id = $1 AND account_id = $2 AND deleted_at IS NULL${p.dryRun ? '' : ' FOR UPDATE'}`, [p.assetId, p.accountId]);
@@ -160,6 +165,7 @@ export async function projectCilDocumentsForAsset(p: { accountId: number; assetI
     const equipRows = await q(tx, `
       SELECT e.id, e.name, e.type, e.category, e.energy_usage, e.key_characteristics, s.id AS specs_id, s.brand, s.model, s.energy_type, s.power_kw,
              s.evacuation_mode, s.heat_network_delivery_station, COALESCE(s.field_origins, '{}'::jsonb) AS field_origins
+             ${ready3 ? ", to_char(s.installed_at, 'YYYY-MM-DD') AS installed_at, s.installation_operation_id" : ', NULL AS installed_at, NULL AS installation_operation_id'}
         FROM equipments e LEFT JOIN equipment_cil_specs s ON s.equipment_id = e.id
        WHERE e.asset_id = $1 AND e.archived_at IS NULL ORDER BY e.id`, [p.assetId]);
     const equipIds = new Set(equipRows.map((e) => Number(e.id)));
@@ -310,7 +316,9 @@ export async function projectCilDocumentsForAsset(p: { accountId: number; assetI
       const candidates = equipRows.filter((e) => classifyCilEnergyEquipment({
         energyUsage: e.energy_usage as string | null, type: e.type as string | null, category: e.category as string | null,
         energyType: e.energy_type as string | null, evacuationMode: e.evacuation_mode as string | null, heatNetworkDeliveryStation: e.heat_network_delivery_station as string | null,
-      })?.usage === usage);
+      })?.usage === usage
+        // Lot 112F : un équipement POSÉ après la date du diagnostic n'est pas celui que le diagnostic décrit.
+        && !(e.installed_at && choice.doc.date && String(e.installed_at) > choice.doc.date));
       const designated = [...(sysTarget.get(usage) ?? [])];
       let target: Row | undefined;
       if (designated.length === 1) target = equipRows.find((e) => Number(e.id) === designated[0]);
@@ -388,7 +396,7 @@ export async function projectCilDocumentsForAsset(p: { accountId: number; assetI
     if (ready2) await projectProfile(tx, p, prev, write);
 
     // 7. B7 — travaux RÉALISÉS et PROUVÉS : Opérations d'intervention existantes (identité économique unique).
-    await projectWorks(tx, p, prev, write, equipRows);
+    await projectWorks(tx, p, prev, write, equipRows, { report, ready2, ready3 });
 
     // 8. Recommandations : tracées, jamais des travaux réalisés.
     for (const [fileId, ids] of recByDoc) {
@@ -513,7 +521,9 @@ const POST_WORK: Record<CilMaterialPost, string> = {
  *     réalisé (journal ABSTAINED / NOT_REALIZED).
  * Le journal (`cil:work:<opération>`) porte la qualification lue par l'état.
  */
-async function projectWorks(tx: Tx, p: { accountId: number; assetId: number }, prev: Prev, write: Write, equipRows: Row[]): Promise<void> {
+interface WorksCtx { report: CilProjectionReport; ready2: boolean; ready3: boolean }
+
+async function projectWorks(tx: Tx, p: { accountId: number; assetId: number; dryRun?: boolean }, prev: Prev, write: Write, equipRows: Row[], ctx: WorksCtx): Promise<void> {
   const ops = await q(tx, `
     SELECT o.id::int AS id, o.status, to_char(o.realized_date, 'YYYY-MM-DD') AS realized
       FROM business_operations o
@@ -522,6 +532,8 @@ async function projectWorks(tx: Tx, p: { accountId: number; assetId: number }, p
      ORDER BY o.id`, [p.assetId, p.accountId]);
   const ids = ops.map((o) => Number(o.id));
   const seen = new Set<string>();
+  const proven: ProvenOp[] = [];
+  let eqLinks: Row[] = [];
   if (ids.length) {
     const arr = `{${ids.join(',')}}`;
     const roles = await q(tx, `SELECT operation_id::int AS op, array_agg(DISTINCT source_role) FILTER (WHERE source_role IS NOT NULL) AS roles
@@ -529,11 +541,17 @@ async function projectWorks(tx: Tx, p: { accountId: number; assetId: number }, p
     const docs = await q(tx, `SELECT operation_id::int AS op, file_id FROM business_operation_documents d JOIN asset_files f ON f.id = d.file_id AND f.deleted_at IS NULL
         WHERE d.account_id = $1 AND d.operation_id = ANY($2::bigint[]) AND d.active`, [p.accountId, arr]);
     const eqs = await q(tx, `SELECT operation_id::int AS op, equipment_id FROM business_operation_equipment_links WHERE account_id = $1 AND operation_id = ANY($2::bigint[]) AND active`, [p.accountId, arr]);
-    const facts = await allDocFacts(tx, p.accountId, [...new Set(docs.map((d) => Number(d.file_id)))]);
-    const usageOf = new Map(equipRows.map((e) => [Number(e.id), classifyCilEnergyEquipment({
-      energyUsage: e.energy_usage as string | null, type: e.type as string | null, category: e.category as string | null,
-      energyType: e.energy_type as string | null, evacuationMode: e.evacuation_mode as string | null, heatNetworkDeliveryStation: e.heat_network_delivery_station as string | null,
-    })?.usage ?? null]));
+    eqLinks = eqs;
+    // Lot 112F : pièces qui PROUVENT la réalisation (facture, rapport / attestation), document ouvert du compte.
+    const proofs = await q(tx, `
+      SELECT DISTINCT s.operation_id::int AS op, s.source_role AS role, f.id AS file_id, to_char(f.document_date, 'YYYY-MM-DD') AS d, x.multi_asset
+        FROM business_operation_sources s
+        JOIN asset_files f ON f.id::text = s.source_entity_key AND f.account_id = s.account_id AND f.deleted_at IS NULL AND f.grouped_into_file_id IS NULL
+        LEFT JOIN document_extractions x ON x.file_id = f.id
+       WHERE s.account_id = $1 AND s.operation_id = ANY($2::bigint[]) AND s.active AND s.source_kind = 'DOCUMENT'
+         AND s.source_entity_key ~ '^[0-9]{1,9}$' AND s.source_role = ANY($3::text[])`, [p.accountId, arr, `{${[...CIL_WORK_PROOF_ROLES].join(',')}}`]);
+    const facts = await allDocFacts(tx, p.accountId, [...new Set([...docs.map((d) => Number(d.file_id)), ...proofs.map((d) => Number(d.file_id))])]);
+    const usageOf = new Map(equipRows.map((e) => [Number(e.id), usageOfRow(e)]));
     for (const o of ops) {
       const id = Number(o.id);
       const key = `cil:work:${id}`;
@@ -559,13 +577,302 @@ async function projectWorks(tx: Tx, p: { accountId: number; assetId: number }, p
       const base = { key, table: 'business_operations', targetId: id, sourceFileIds: fileIds, factIds, fingerprint, detail: { categories, realizedDate: o.realized ?? null, roles: rs } };
       if (o.status !== 'REALIZED') await write({ ...base, status: 'ABSTAINED', reason: o.status === 'CANCELLED' ? 'CANCELLED' : 'NOT_REALIZED' });
       else if (!rs.some((r) => CIL_WORK_PROOF_ROLES.has(r))) await write({ ...base, status: 'ABSTAINED', reason: 'REALIZATION_NOT_PROVEN' });
-      else await write({ ...base, status: 'WRITTEN', reason: 'REALIZED_ENERGY_WORK' });
+      else {
+        await write({ ...base, status: 'WRITTEN', reason: 'REALIZED_ENERGY_WORK' });
+        const files = proofs.filter((x) => Number(x.op) === id).map((x) => ({
+          fileId: Number(x.file_id), role: String(x.role), date: (x.d as string) ?? null, multiAsset: x.multi_asset == null ? null : x.multi_asset === true,
+        }));
+        proven.push({ id, realized: (o.realized as string) ?? null, files, facts: facts.filter((f) => files.some((x) => x.fileId === f.fileId)) });
+      }
     }
   }
   // Opération disparue (invalidée, fusionnée, détachée du bien) : qualification retirée.
   for (const [k, j] of prev) {
     if (k.startsWith('cil:work:') && !seen.has(k) && j.status !== 'RETRACTED') {
       await write({ key: k, table: 'business_operations', targetId: j.target_id == null ? null : Number(j.target_id), status: 'RETRACTED', reason: 'OPERATION_GONE', sourceFileIds: [], factIds: [], fingerprint: null });
+    }
+  }
+  if (ctx.ready3) await projectInstalled(tx, p, prev, write, equipRows, eqLinks, proven, ctx);
+}
+
+const usageOfRow = (e: Row): CilEnergyUsage | null => classifyCilEnergyEquipment({
+  energyUsage: e.energy_usage as string | null, type: e.type as string | null, category: e.category as string | null,
+  energyType: e.energy_type as string | null, evacuationMode: e.evacuation_mode as string | null, heatNetworkDeliveryStation: e.heat_network_delivery_station as string | null,
+})?.usage ?? null;
+
+/** Opération INTERVENTION réalisée ET prouvée (qualifiée WRITTEN en B7), avec ses pièces probantes et leurs faits. */
+interface ProvenOp {
+  id: number;
+  realized: string | null;
+  files: Array<{ fileId: number; role: string; date: string | null; multiAsset: boolean | null }>;
+  facts: CilFactInput[];
+}
+
+/**
+ * Décision sur un poste / un usage pour UNE Opération : toutes ses pièces
+ * probantes décrivent la même pose. Une pièce qui porte plusieurs valeurs pour
+ * un attribut → AMBIGUOUS ; deux pièces (facture et attestation) divergentes
+ * → CONFLICT (à confirmer, rien n'est tranché) ; sinon union des attributs.
+ */
+export function decideInstalled(perDoc: ReadonlyMap<number, Values>):
+  { status: 'OK'; picked: Record<string, string | number>; factIds: number[]; fileIds: number[] } | { status: 'AMBIGUOUS' | 'CONFLICT'; fileIds: number[] } | null {
+  if (!perDoc.size) return null;
+  const fileIds = [...perDoc.keys()].sort((a, b) => a - b);
+  const collapsed = fileIds.map((id) => collapse(perDoc.get(id)!));
+  if (collapsed.some((c) => c.ambiguous.length)) return { status: 'AMBIGUOUS', fileIds };
+  const picked: Record<string, string | number> = {};
+  for (const c of collapsed) {
+    for (const [k, v] of Object.entries(c.picked)) {
+      if (picked[k] !== undefined && !sameCilValue(picked[k], v)) return { status: 'CONFLICT', fileIds };
+      picked[k] ??= v;
+    }
+  }
+  return { status: 'OK', picked, factIds: collapsed.flatMap((c) => c.factIds), fileIds };
+}
+
+/** Pièce citée comme source : la facture d'abord, puis le rapport / l'attestation ; à égalité la plus ancienne. */
+const proofSource = (op: ProvenOp, fileIds: number[]): number =>
+  [...op.files].filter((f) => fileIds.includes(f.fileId)).sort((a, b) => Number(b.role === 'INVOICE') - Number(a.role === 'INVOICE') || a.fileId - b.fileId)[0]?.fileId ?? fileIds[0];
+
+/**
+ * Lot 112F — B5 / B6 depuis une facture ou une attestation de travaux
+ * RÉALISÉS. Seules les Opérations d'intervention qualifiées « réalisées et
+ * prouvées » par `projectWorks` (REALIZED + source INVOICE / REPORT) sont
+ * lues, et seulement les faits de leurs pièces PROBANTES (jamais un devis, un
+ * bon de commande ni une recommandation, même rattachés à la même Opération).
+ *
+ *   · B5 : une ligne DOCUMENT par Opération et poste (`cil:inst:<op>:<poste>`),
+ *     état « installe », `installed_at` = date de réalisation de l'Opération
+ *     (NULL : attestation sans date → date de pose à compléter),
+ *     `operation_id` = l'Opération (même identité que B7, aucune ligne
+ *     `energy_works`), performances prouvées (R, λ, U, épaisseur, surface).
+ *   · B6 : équipement de l'usage RATTACHÉ à l'Opération (lien existant), sinon
+ *     celui déjà retenu pour elle, sinon un équipement existant de même marque
+ *     et modèle ; un autre équipement du même usage sans preuve d'identité →
+ *     AMBIGUOUS (remplacement ou non : à confirmer) ; aucun → création
+ *     (`key_characteristics.__cilProjection`, origines `WORKS`). Complément
+ *     des champs VIDES ou déjà `WORKS` seulement ; date de pose et Opération.
+ *
+ * Protections identiques à la projection diagnostic : USER / ADMIN jamais
+ * modifiés (PROTECTED), ligne supprimée par l'utilisateur non recréée
+ * (USER_REMOVED), pièces divergentes → CONFLICT, idempotent (empreinte).
+ * Opération plus prouvée (invalidée, fusionnée, détachée, justificatif
+ * dissocié, devenue envisagée) → ligne DOCUMENT retirée (RETRACTED) ;
+ * équipement créé jamais supprimé (SOURCE_REMOVED), sa date de pose effacée.
+ */
+async function projectInstalled(tx: Tx, p: { accountId: number; assetId: number; dryRun?: boolean }, prev: Prev, write: Write,
+  equipRows: Row[], eqLinks: Row[], ops: ProvenOp[], ctx: WorksCtx): Promise<void> {
+  const changed = () => { ctx.report.changed = true; };
+  const equipIds = new Set(equipRows.map((e) => Number(e.id)));
+  const matRows = await q(tx, `SELECT id, category, origin, projection_key, material_nature, thermal_resistance_r::float8 AS r, thickness_mm FROM energy_materials WHERE asset_id = $1`, [p.assetId]);
+  const seen = new Set<string>();
+
+  for (const op of ops) {
+    const mat = new Map<CilMaterialPost, Map<number, Values>>();
+    const sys = new Map<CilEnergyUsage, Map<number, Values>>();
+    for (const f of op.facts) {
+      const tt = (f.targetType ?? 'GENERIC').toUpperCase();
+      if (tt === 'ASSET' && f.targetEntityId != null && f.targetEntityId !== p.assetId) continue;
+      if (tt === 'EQUIPMENT' && f.targetEntityId != null && !equipIds.has(f.targetEntityId)) continue;
+      if (op.files.find((x) => x.fileId === f.fileId)?.multiAsset === true && (f.targetEntityId == null || tt === 'GENERIC')) continue;
+      if (f.confidence === 'conflictual') continue;
+      const rec = recognizeCilFact(f);
+      // Devis, projet, recommandation, échéance : jamais « posé ».
+      if (!rec || rec.kind === 'recommendation') continue;
+      if (rec.kind === 'material') {
+        if (rec.attribute === 'uValue' && !ctx.ready2) continue;
+        const byDoc = mat.get(rec.post) ?? new Map<number, Values>(); mat.set(rec.post, byDoc);
+        const vals = byDoc.get(f.fileId) ?? new Map(); byDoc.set(f.fileId, vals);
+        vals.set(rec.attribute, [...(vals.get(rec.attribute) ?? []), { value: rec.value, factId: f.id }]);
+      } else {
+        const byDoc = sys.get(rec.usage) ?? new Map<number, Values>(); sys.set(rec.usage, byDoc);
+        const vals = byDoc.get(f.fileId) ?? new Map(); byDoc.set(f.fileId, vals);
+        vals.set(rec.attribute, [...(vals.get(rec.attribute) ?? []), { value: rec.value, factId: f.id }]);
+      }
+    }
+
+    // B5 — matériaux posés.
+    for (const post of CIL_MATERIAL_POSTS) {
+      const d = decideInstalled(mat.get(post) ?? new Map());
+      if (!d) continue;
+      const key = `cil:inst:${op.id}:${post}`;
+      seen.add(key);
+      const docRow = matRows.find((m) => m.projection_key === key && m.origin === 'DOCUMENT');
+      if (d.status !== 'OK') {
+        // Pièces contradictoires : rien n'est tranché ; une valeur déjà prouvée est conservée (à confirmer).
+        await write({ key, table: 'energy_materials', targetId: docRow ? Number(docRow.id) : null, status: d.status, reason: d.status === 'AMBIGUOUS' ? 'SEVERAL_VALUES_IN_DOCUMENT' : 'PROOF_DOCUMENTS_DIFFER', sourceFileIds: d.fileIds, factIds: [], fingerprint: null, detail: { operationId: op.id } });
+        continue;
+      }
+      const v = d.picked as Partial<Record<CilMaterialAttribute, string | number>>;
+      const src = proofSource(op, d.fileIds);
+      const fingerprint = hash({ post, op: op.id, realized: op.realized, v, src, files: d.fileIds });
+      const base = { key, table: 'energy_materials', sourceFileIds: [src, ...d.fileIds.filter((x) => x !== src)], factIds: d.factIds, fingerprint, detail: { operationId: op.id, installedAt: op.realized } };
+      const userRows = matRows.filter((m) => m.category === post && m.origin !== 'DOCUMENT');
+      if (userRows.length) {
+        const differs = userRows.some((u) => (v.materialNature && u.material_nature && !sameCilValue(String(u.material_nature), v.materialNature))
+          || (v.thermalResistanceR != null && u.r != null && !sameCilValue(Number(u.r), Number(v.thermalResistanceR)))
+          || (v.thicknessMm != null && u.thickness_mm != null && !sameCilValue(Number(u.thickness_mm), Number(v.thicknessMm))));
+        if (docRow) { if (!p.dryRun) await q(tx, `DELETE FROM energy_materials WHERE id = $1 AND origin = 'DOCUMENT'`, [docRow.id]); changed(); }
+        await write({ ...base, targetId: Number(userRows[0].id), status: 'PROTECTED', reason: differs ? 'USER_VALUE_DIFFERS' : 'USER_VALUE_PRESENT' });
+        continue;
+      }
+      const j = prev.get(key);
+      if (!docRow && j && ((['WRITTEN', 'UNCHANGED'].includes(String(j.status)) && j.target_id != null) || (j.status === 'ABSTAINED' && j.reason === 'USER_REMOVED')) && j.fingerprint === fingerprint) {
+        // Ligne posée supprimée par l'utilisateur, pièces inchangées : son geste fait foi.
+        await write({ ...base, targetId: null, status: 'ABSTAINED', reason: 'USER_REMOVED' });
+        continue;
+      }
+      const evidence = { factIds: d.factIds, fileId: src, fileIds: d.fileIds, operationId: op.id, installedAt: op.realized };
+      const cols = [v.materialNature ?? null, v.brand ?? null, v.reference ?? null, v.thermalResistanceR ?? null, v.lambda ?? null, v.thicknessMm ?? null, v.surfaceSqm ?? null];
+      if (docRow) {
+        if (j?.fingerprint === fingerprint) { await write({ ...base, targetId: Number(docRow.id), status: 'UNCHANGED', reason: null }); continue; }
+        if (!p.dryRun) {
+          await q(tx, `UPDATE energy_materials SET material_nature = $2, brand = $3, reference = $4, thermal_resistance_r = $5, lambda = $6, thickness_mm = $7,
+              surface_sqm = $8, document_id = $9, source_file_id = $9, installation_state = 'installe', evidence = $10::jsonb, installed_at = $11::date, operation_id = $12,
+              updated_at = now() WHERE id = $1 AND origin = 'DOCUMENT'`,
+          [docRow.id, ...cols, src, JSON.stringify(evidence), op.realized, op.id]);
+          if (ctx.ready2) await q(tx, `UPDATE energy_materials SET u_value = $2 WHERE id = $1 AND origin = 'DOCUMENT'`, [docRow.id, v.uValue ?? null]);
+        }
+        changed();
+        await write({ ...base, targetId: Number(docRow.id), status: 'WRITTEN', reason: 'SOURCE_UPDATED' });
+      } else {
+        let id: number | null = null;
+        if (!p.dryRun) {
+          const [ins] = await q(tx, `INSERT INTO energy_materials (asset_id, category, material_nature, brand, reference, thermal_resistance_r, lambda, thickness_mm, surface_sqm,
+              document_id, source_file_id, origin, installation_state, projection_key, evidence, installed_at, operation_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, 'DOCUMENT', 'installe', $11, $12::jsonb, $13::date, $14, now(), now()) RETURNING id`,
+          [p.assetId, post, ...cols, src, key, JSON.stringify(evidence), op.realized, op.id]);
+          id = Number(ins.id);
+          if (ctx.ready2 && v.uValue != null) await q(tx, `UPDATE energy_materials SET u_value = $2 WHERE id = $1`, [id, v.uValue]);
+        }
+        changed();
+        await write({ ...base, targetId: id, status: 'WRITTEN', reason: 'INSTALLED' });
+      }
+    }
+
+    // B6 — équipements posés.
+    const linked = eqLinks.filter((x) => Number(x.op) === op.id).map((x) => Number(x.equipment_id));
+    for (const usage of USAGES) {
+      const d = decideInstalled(sys.get(usage) ?? new Map());
+      if (!d) continue;
+      const key = `cil:insteq:${op.id}:${usage}`;
+      seen.add(key);
+      const j = prev.get(key);
+      if (d.status !== 'OK') {
+        await write({ key, table: 'equipments', targetId: null, status: d.status, reason: d.status === 'AMBIGUOUS' ? 'SEVERAL_VALUES_IN_DOCUMENT' : 'PROOF_DOCUMENTS_DIFFER', sourceFileIds: d.fileIds, factIds: [], fingerprint: null, detail: { operationId: op.id } });
+        continue;
+      }
+      const v = d.picked as Partial<Record<CilSystemAttribute, string | number>>;
+      const src = proofSource(op, d.fileIds);
+      const fingerprint = hash({ usage, op: op.id, realized: op.realized, v, src, files: d.fileIds });
+      const base = { key, table: 'equipments', sourceFileIds: [src, ...d.fileIds.filter((x) => x !== src)], factIds: d.factIds, fingerprint, detail: { operationId: op.id, installedAt: op.realized } };
+      const ofUsage = equipRows.filter((e) => usageOfRow(e) === usage);
+      const linkedOfUsage = ofUsage.filter((e) => linked.includes(Number(e.id)));
+      let target: Row | undefined;
+      if (linkedOfUsage.length > 1) { await write({ ...base, targetId: null, status: 'AMBIGUOUS', reason: 'SEVERAL_LINKED_EQUIPMENTS' }); continue; }
+      if (linkedOfUsage.length === 1) target = linkedOfUsage[0];
+      else if (j?.target_id != null && equipRows.some((e) => Number(e.id) === Number(j.target_id))) target = equipRows.find((e) => Number(e.id) === Number(j.target_id));
+      else {
+        // Même équipement prouvé par sa marque ET son modèle ; un autre équipement de l'usage : remplacement ou non → à confirmer.
+        const same = v.brand != null && v.model != null
+          ? ofUsage.filter((e) => e.brand && e.model && sameCilValue(String(e.brand), v.brand!) && sameCilValue(String(e.model), v.model!)) : [];
+        if (same.length === 1) target = same[0];
+        else if (ofUsage.length) { await write({ ...base, targetId: null, status: 'AMBIGUOUS', reason: 'EXISTING_EQUIPMENT_FOR_USAGE' }); continue; }
+      }
+
+      if (!target) {
+        if (j && j.fingerprint === fingerprint && (j.reason === 'CREATED_FROM_WORKS' || (j.status === 'ABSTAINED' && j.reason === 'USER_REMOVED'))) {
+          await write({ ...base, targetId: null, status: 'ABSTAINED', reason: 'USER_REMOVED' });
+          continue;
+        }
+        if (v.type == null && v.energy == null) { await write({ ...base, targetId: null, status: 'ABSTAINED', reason: 'EXISTENCE_NOT_DESCRIBED' }); continue; }
+        let id: number | null = null;
+        if (!p.dryRun) {
+          const name = v.type != null ? String(v.type).slice(0, 200) : USAGE_LABEL[usage];
+          const [ins] = await q(tx, `INSERT INTO equipments (asset_id, name, type, category, status, key_characteristics, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, 'EN_SERVICE', $5::jsonb, now(), now()) RETURNING id`,
+          [p.assetId, name, v.type != null ? String(v.type) : null, usage, JSON.stringify({ __cilProjection: { origin: 'DOCUMENT', fileId: src, usage, operationId: op.id, installed: true } })]);
+          id = Number(ins.id);
+          const origins: Record<string, string> = { installed_at: 'WORKS' };
+          if (v.energy != null) origins.energy_type = 'WORKS';
+          if (v.powerKw != null) origins.power_kw = 'WORKS';
+          if (v.brand != null) origins.brand = 'WORKS';
+          if (v.model != null) origins.model = 'WORKS';
+          await q(tx, `INSERT INTO equipment_cil_specs (equipment_id, energy_type, power_kw, brand, model, field_origins, installed_at, installation_operation_id, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::date, $8, now(), now()) ON CONFLICT (equipment_id) DO NOTHING`,
+          [id, v.energy ?? null, v.powerKw ?? null, v.brand ?? null, v.model ?? null, JSON.stringify(origins), op.realized, op.id]);
+          ctx.report.createdEquipmentIds.push(id);
+        }
+        changed();
+        await write({ ...base, targetId: id, status: 'WRITTEN', reason: 'CREATED_FROM_WORKS' });
+        continue;
+      }
+
+      // Complément : champs VIDES ou déjà posés par une facture (WORKS) ; saisie USER et valeur d'un diagnostic protégées.
+      const origins = (target.field_origins ?? {}) as Record<string, string>;
+      const cols: Array<[string, CilSystemAttribute]> = [['energy_type', 'energy'], ['power_kw', 'powerKw'], ['brand', 'brand'], ['model', 'model']];
+      const sets: Array<[string, string | number | null]> = [];
+      let protectedDiff = false;
+      for (const [col, attr] of cols) {
+        const val = v[attr];
+        if (val == null) continue;
+        const cur = target[col];
+        const empty = cur == null || String(cur).trim() === '';
+        if (empty || origins[col] === 'WORKS') {
+          if (empty || !sameCilValue(typeof val === 'number' ? Number(cur) : String(cur), val)) sets.push([col, val]);
+        } else if (!sameCilValue(typeof val === 'number' ? Number(cur) : String(cur), val)) protectedDiff = true;
+      }
+      // Date de pose : posée par cette Opération, ou vide.
+      const curOp = target.installation_operation_id == null ? null : Number(target.installation_operation_id);
+      if (curOp == null || curOp === op.id) {
+        if ((target.installed_at ?? null) !== op.realized) sets.push(['installed_at', op.realized]);
+        if (curOp !== op.id) sets.push(['installation_operation_id', op.id]);
+      } else protectedDiff = true;
+      const createdByUs = j?.reason === 'CREATED_FROM_WORKS' && Number(j.target_id) === Number(target.id);
+      if (!sets.length) {
+        await write({ ...base, targetId: Number(target.id), status: protectedDiff && !createdByUs ? 'PROTECTED' : 'UNCHANGED', reason: createdByUs ? 'CREATED_FROM_WORKS' : protectedDiff ? 'USER_VALUE_DIFFERS' : null });
+        continue;
+      }
+      if (!p.dryRun) {
+        const next = { ...origins, ...Object.fromEntries(sets.filter(([c]) => c !== 'installation_operation_id').map(([c]) => [c, 'WORKS'])) };
+        const names = sets.map(([c]) => c);
+        const vals = sets.map(([, x]) => x);
+        const cast = (c: string, i: number) => (c === 'installed_at' ? `$${i}::date` : `$${i}`);
+        await q(tx, `INSERT INTO equipment_cil_specs (equipment_id, ${names.join(', ')}, field_origins, created_at, updated_at)
+          VALUES ($1, ${names.map((c, i) => cast(c, i + 2)).join(', ')}, $${names.length + 2}::jsonb, now(), now())
+          ON CONFLICT (equipment_id) DO UPDATE SET ${names.map((c) => `${c} = EXCLUDED.${c}`).join(', ')}, field_origins = EXCLUDED.field_origins, updated_at = now()`,
+        [Number(target.id), ...vals, JSON.stringify(next)]);
+      }
+      changed();
+      await write({ ...base, targetId: Number(target.id), status: 'WRITTEN', reason: createdByUs ? 'CREATED_FROM_WORKS' : protectedDiff ? 'PARTIAL_USER_PROTECTED' : 'INSTALLED' });
+    }
+  }
+
+  // Opération plus prouvée (invalidée, fusionnée, détachée, justificatif dissocié, redevenue envisagée), poste plus décrit : retrait.
+  for (const m of matRows) {
+    const k = String(m.projection_key ?? '');
+    if (m.origin === 'DOCUMENT' && k.startsWith('cil:inst:') && !seen.has(k)) {
+      if (!p.dryRun) await q(tx, `DELETE FROM energy_materials WHERE id = $1 AND origin = 'DOCUMENT'`, [m.id]);
+      changed();
+    }
+  }
+  for (const [k, j] of prev) {
+    if (seen.has(k)) continue;
+    if (k.startsWith('cil:inst:') && j.status !== 'RETRACTED') {
+      await write({ key: k, table: 'energy_materials', targetId: null, status: 'RETRACTED', reason: 'OPERATION_NO_LONGER_PROVES', sourceFileIds: [], factIds: [], fingerprint: null });
+    } else if (k.startsWith('cil:insteq:') && j.status !== 'RETRACTED' && j.status !== 'SOURCE_REMOVED') {
+      const opId = Number(k.split(':')[2]);
+      const t = j.target_id == null ? undefined : equipRows.find((e) => Number(e.id) === Number(j.target_id));
+      // Date de pose effacée si elle venait de cette Opération ; l'équipement n'est jamais supprimé.
+      if (t && Number(t.installation_operation_id) === opId) {
+        if (!p.dryRun) {
+          const origins = { ...((t.field_origins ?? {}) as Record<string, string>) };
+          delete origins.installed_at;
+          await q(tx, `UPDATE equipment_cil_specs SET installed_at = NULL, installation_operation_id = NULL, field_origins = $2::jsonb, updated_at = now() WHERE equipment_id = $1`, [t.id, JSON.stringify(origins)]);
+        }
+        changed();
+      }
+      await write({ key: k, table: 'equipments', targetId: t ? Number(t.id) : null, status: j.reason === 'CREATED_FROM_WORKS' && t ? 'SOURCE_REMOVED' : 'RETRACTED', reason: j.reason === 'CREATED_FROM_WORKS' && t ? 'CREATED_FROM_WORKS' : 'OPERATION_NO_LONGER_PROVES', sourceFileIds: [], factIds: [], fingerprint: null });
     }
   }
 }

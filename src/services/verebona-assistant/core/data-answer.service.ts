@@ -217,6 +217,12 @@ export interface AccountDataPort {
   readOperationCosts?(accountId: number, terms: string[], assetIds: number[]): Promise<import('../canonical/operations').OperationCostRead[]>;
   /** Lot 54D (§4.3) : coût de possession d'un bien — service TCO (moteur partagé), jamais un calcul parallèle. */
   readOwnershipCost?(accountId: number, assetId: number): Promise<import('@/services/business-operations/tco/model').TcoResult>;
+  /**
+   * Lot 112C (reprise) — DROIT au coût de possession : même règle que la fiche
+   * (`premiumFeatures` : Premium, Premium Duo, essai actif). Absent : aucun
+   * contrôle (ports de test historiques) — le port réel le fournit toujours.
+   */
+  ownershipCostAllowed?(accountId: number): Promise<boolean>;
   /** Achat consolidé d'un bien (C15.2). */
   readAcquisition?(accountId: number, assetId: number, opts?: { assetName?: string | null }): Promise<import('../canonical/operations').AcquisitionRead | null>;
   listActionables?(accountId: number, opts: import('../canonical/actionables').ActionableReadOptions): Promise<{

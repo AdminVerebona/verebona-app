@@ -65,6 +65,7 @@
  */
 import { sql, type SQL } from 'drizzle-orm';
 import { PROCESSING_RULES } from './rules-catalog';
+import { settledByProofSql } from '@/services/agenda/effective-status-read';
 
 // ══════════════════════════════════════════════════════════════════════════
 // CONTRAT COMMUN DES FAMILLES (lot 100E, A7)
@@ -126,6 +127,13 @@ export interface PublishabilityContract {
 const agendaItem = (a: string, cond: string) =>
   `EXISTS (SELECT 1 FROM agenda_items i WHERE i.id = ${a}.target_id AND i.account_id = ${a}.account_id AND (${cond}))`;
 
+/**
+ * Lot 112G — élément d'agenda (alias `i`) CLOS : statut posé à la main (non vide), ou
+ * réalisé par preuve de réalisation valide (sous-ensemble certain du statut effectif
+ * commun, `effective-status-read.ts`).
+ */
+const AGENDA_STATUS_SETTLED = `(NULLIF(trim(coalesce(i.manual_status, '')), '') IS NOT NULL OR ${settledByProofSql('i')})`;
+
 /** Identifiant numérique sûr lu dans le contexte de la carte (jamais une erreur de conversion). */
 const idDe = (expr: string) => `CASE WHEN (${expr}) ~ '^[0-9]{1,18}$' THEN (${expr})::bigint END`;
 
@@ -179,14 +187,17 @@ export const PUBLISHABILITY_CONTRACTS: Readonly<Record<string, PublishabilityCon
     cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'produceAgendaActions' },
   },
   'AGENDA-DUPLICATE': parProduction('AGENDA', 'COH-TODO-ORPHAN-CARDS'),
+  // Lot 112G : statut posé à la main, OU réalisation prouvée par un document (statut effectif
+  // commun 111R : preuve valide 103D, pré-filtre `settledByProofSql`, jamais plus large que
+  // `computeEffectiveStatus`) — la question « réalisée ? » / « non réalisée ? » n'a plus d'objet.
   'AGENDA-DONE': {
     family: 'AGENDA', decisions: 'PRODUCTION', reason: 'STATUS_SET_BY_USER', atCreation: true,
-    noLongerUseful: (a) => agendaItem(a, `NULLIF(i.manual_status, '') IS NOT NULL`),
+    noLongerUseful: (a) => agendaItem(a, AGENDA_STATUS_SETTLED),
     cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'closeAgendaStatusCards' },
   },
   'AGENDA-NOT-DONE': {
     family: 'AGENDA', decisions: 'PRODUCTION', reason: 'STATUS_SET_BY_USER', atCreation: true,
-    noLongerUseful: (a) => agendaItem(a, `NULLIF(i.manual_status, '') IS NOT NULL`),
+    noLongerUseful: (a) => agendaItem(a, AGENDA_STATUS_SETTLED),
     cleanup: { by: PUBLISHABILITY_CHECK_ID, service: 'closeAgendaStatusCards' },
   },
   'AGENDA-PROPOSAL': {

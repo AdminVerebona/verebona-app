@@ -466,6 +466,9 @@ export async function enqueueDeadlineSituations(today: string, lookbackDays: num
     const { t6ThresholdDays } = await import('./t6-interpellation.service');
     thresholdDays = await t6ThresholdDays();
   }
+  // Lot 112G : un fait réalisé et prouvé (statut effectif commun) ne déclenche rien.
+  const { notSettledByProofFilter } = await import('@/services/agenda/effective-status-read');
+  const prouve = await notSettledByProofFilter('i', '$1::date');
   // Lot 71G : DISTINCT sur le compte SEUL — avec clock_timestamp() dans la
   // liste, deux échéances du même compte donnaient deux lignes et l'upsert
   // échouait (« ON CONFLICT DO UPDATE command cannot affect row a second time »).
@@ -475,7 +478,7 @@ export async function enqueueDeadlineSituations(today: string, lookbackDays: num
        SELECT DISTINCT i.account_id
          FROM agenda_items i
          JOIN accounts a ON a.id = i.account_id
-        WHERE (i.manual_status IS NULL OR trim(i.manual_status) = '')
+        WHERE (i.manual_status IS NULL OR trim(i.manual_status) = '')${prouve}
           -- Lot 82A (C-Q10) : comptes éligibles seulement.
           AND ${processingEligibleSql('a.id')}
           AND (i.start_date IN ($1::date, $1::date - 1, $1::date - ($2::int + 1))
@@ -521,7 +524,9 @@ interface T6DueReevaluationResult {
 export async function enqueueT6DueReevaluations(today: string, limit = 5_000): Promise<T6DueReevaluationResult> {
   const [ok] = await rows(`SELECT to_regclass('t6_reminder_preferences') IS NOT NULL AND to_regclass('t6_interpellation_assessments') IS NOT NULL AS ok`);
   if (!ok?.ok) return { snoozeDue: 0, reviewDue: 0, requested: 0 };
-  const actif = `trim(coalesce(i.manual_status, '')) = ''`;
+  // Lot 112G : statut effectif commun — réalisée et prouvée par un document : aucune réévaluation T6.
+  const { notSettledByProofFilter } = await import('@/services/agenda/effective-status-read');
+  const actif = `trim(coalesce(i.manual_status, '')) = ''${await notSettledByProofFilter('i', '$1::date')}`;
   // Lot 75E (B) : réexamen programmé de la sélection progressive atteint (curseur persistant).
   const { t6ExaminationsReady } = await import('./collector');
   const examens = (await t6ExaminationsReady()) ? `

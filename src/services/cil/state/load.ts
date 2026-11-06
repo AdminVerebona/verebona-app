@@ -48,8 +48,25 @@ export async function cilSecondPassSchemaReady(): Promise<boolean> {
   return ready;
 }
 
+let schema3: { ready: boolean; at: number } | null = null;
+
+/** Lot 112F — migration 1430 présente ? (date de pose et Opération des matériaux / équipements posés). */
+export async function cilInstalledSchemaReady(): Promise<boolean> {
+  if (schema3 && (schema3.ready || Date.now() - schema3.at < RECONTROLE_MS)) return schema3.ready;
+  let ready = false;
+  try {
+    const rows = await pgClient.unsafe(`
+      SELECT count(*)::int AS n FROM information_schema.columns WHERE table_schema = current_schema()
+         AND ((table_name = 'energy_materials' AND column_name IN ('installed_at', 'operation_id'))
+           OR (table_name = 'equipment_cil_specs' AND column_name IN ('installed_at', 'installation_operation_id')))`);
+    ready = (rows as unknown as Array<{ n: number }>)[0]?.n === 4;
+  } catch { ready = false; }
+  schema3 = { ready, at: Date.now() };
+  return ready;
+}
+
 /** Réservé aux tests. */
-export function __resetCilSchemaForTests(): void { schema = null; schema2 = null; }
+export function __resetCilSchemaForTests(): void { schema = null; schema2 = null; schema3 = null; }
 
 type Row = Record<string, unknown>;
 const q = async (text: string, params: unknown[]): Promise<Row[]> => (await pgClient.unsafe(text, params as never[])) as unknown as Row[];
@@ -76,6 +93,7 @@ export async function loadCilStateInput(ref: CilAssetRef): Promise<CilStateInput
   if (!asset) return null;
   const ready = await cilProjectionSchemaReady();
   const ready2 = await cilSecondPassSchemaReady();
+  const ready3 = await cilInstalledSchemaReady();
 
   const { getCanonicalAssetState } = await import('@/services/canonical/asset-state');
   const [canon, profileRows, resolutions, docRows, matRows, eqRows, workRows, journalRows, evidence] = await Promise.all([
@@ -90,9 +108,11 @@ export async function loadCilStateInput(ref: CilAssetRef): Promise<CilStateInput
     q(`SELECT id, category, material_nature, brand, reference, thermal_resistance_r, lambda, thickness_mm, surface_sqm, document_id
               ${ready ? ', origin, installation_state, source_file_id' : ", 'USER' AS origin, NULL AS installation_state, NULL AS source_file_id"}
               ${ready2 ? ', u_value' : ', NULL AS u_value'}
+              ${ready3 ? ", to_char(installed_at, 'YYYY-MM-DD') AS installed_at, operation_id" : ', NULL AS installed_at, NULL AS operation_id'}
          FROM energy_materials WHERE asset_id = $1 ORDER BY id`, [ref.id]),
     q(`SELECT e.id, e.name, e.type, e.category, e.energy_usage, s.brand, s.model, s.energy_type, s.evacuation_mode,
               s.heat_network_delivery_station, s.power_kw ${ready ? ', s.field_origins' : ", '{}'::jsonb AS field_origins"}
+              ${ready3 ? ", to_char(s.installed_at, 'YYYY-MM-DD') AS installed_at, s.installation_operation_id" : ', NULL AS installed_at, NULL AS installation_operation_id'}
          FROM equipments e LEFT JOIN equipment_cil_specs s ON s.equipment_id = e.id
         WHERE e.asset_id = $1 AND e.archived_at IS NULL ORDER BY e.id`, [ref.id]),
     q(`SELECT id, title, category, to_char(completed_at, 'YYYY-MM-DD') AS completed_at, company_name FROM energy_works WHERE asset_id = $1 ORDER BY completed_at NULLS LAST, id`, [ref.id]),
@@ -155,12 +175,14 @@ export async function loadCilStateInput(ref: CilAssetRef): Promise<CilStateInput
       reference: (m.reference as string) ?? null, thermalResistanceR: n(m.thermal_resistance_r), lambda: n(m.lambda), thicknessMm: n(m.thickness_mm),
       surfaceSqm: n(m.surface_sqm), origin: String(m.origin ?? 'USER'), installationState: (m.installation_state as string) ?? null,
       sourceFileId: n(m.source_file_id), documentId: n(m.document_id), uValue: n(m.u_value),
+      installedAt: (m.installed_at as string) ?? null, operationId: n(m.operation_id),
     })),
     equipments: eqRows.map((e) => ({
       id: Number(e.id), name: String(e.name), type: (e.type as string) ?? null, category: (e.category as string) ?? null, energyUsage: (e.energy_usage as string) ?? null,
       brand: (e.brand as string) ?? null, model: (e.model as string) ?? null, energyType: (e.energy_type as string) ?? null,
       evacuationMode: (e.evacuation_mode as string) ?? null, heatNetworkDeliveryStation: (e.heat_network_delivery_station as string) ?? null,
       powerKw: n(e.power_kw), fieldOrigins: (e.field_origins as Record<string, string>) ?? {},
+      installedAt: (e.installed_at as string) ?? null, installationOperationId: n(e.installation_operation_id),
     })),
     works: workRows.map((w) => ({ id: Number(w.id), title: String(w.title), category: String(w.category), completedAt: iso(w.completed_at), companyName: (w.company_name as string) ?? null })),
     journal: journalRows.map((j) => ({

@@ -167,6 +167,17 @@ export function TcoDiagnosticView({ data }: { data: TcoDiagnosticResponse }) {
               {' · '}{t.indicators.net.kind === 'FINAL' ? 'coût net final' : 'coût net estimé'} : {t.indicators.net.cents != null ? eur(t.indicators.net.cents) : '–'}
               {' · '}crédit à date : {eur(t.indicators.financing.costToDateCents)} ({t.indicators.financing.loans.length} prêt(s){t.indicators.financing.contractualTotalCents != null ? `, prévisionnel ${eur(t.indicators.financing.contractualTotalCents)}` : ''})
             </p>
+            {/* Lot 112D : capital restant dû par prêt (méthode, date, conditions retenues et leur origine, ce qui manque) — jamais un coût. */}
+            {t.indicators.financing.loans.filter((p) => p.outstanding).map((p) => (
+              <p key={p.key} className="text-xs tabular-nums" data-bo-tco-outstanding={p.outstanding!.status}>
+                {p.label} — capital restant dû : {p.outstanding!.cents != null ? eur(p.outstanding!.cents) : 'non établi'}
+                {p.outstanding!.asOf ? ` au ${p.outstanding!.asOf}` : ''}
+                {p.outstanding!.method ? ` · ${p.outstanding!.method}` : ''}
+                {p.outstanding!.computeIssue ? ` · calcul : ${p.outstanding!.computeIssue}` : ''}
+                {Object.keys(p.outstanding!.terms).length ? ` · conditions : ${Object.entries(p.outstanding!.terms).map(([k, v]) => `${k}=${typeof v?.value === 'object' ? JSON.stringify(v?.value) : String(v?.value)} (${v?.origin})`).join(', ')}` : ''}
+                {p.outstanding!.missing.length ? ` · manque : ${p.outstanding!.missing.join(', ')}` : ''}
+              </p>
+            ))}
           </div>
         )}
       </div>

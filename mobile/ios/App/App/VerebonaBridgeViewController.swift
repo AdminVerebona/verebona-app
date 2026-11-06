@@ -14,5 +14,7 @@ class VerebonaBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(VerebonaShareInboxPlugin())
         // Lot 110A : partage natif à import direct (jeton d'import, états fidèles).
         bridge?.registerPluginInstance(VerebonaShareImportPlugin())
+        // Lot 112E : code natif du Keychain (verrouillé ≠ absent) pour l'identifiant d'installation.
+        bridge?.registerPluginInstance(VerebonaSecureStoreStatusPlugin())
     }
 }

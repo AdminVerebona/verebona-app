@@ -139,6 +139,8 @@ import { applyTcoUserDecisions, type TcoLineUserDecision, type TcoUserDecision }
 import { assessSamePurchase, pickSameFact, purchaseDatesCompatible, type PurchaseFact, type SameFactAssessment } from './fact-matching';
 import { computeUsageComplement, type UsageComplement, type UsageLineAssignment } from './usage-complement';
 import { consolidateFinancing, planFinancingComponents, TCO_FINANCING_BASIS_LABEL, type FinancingComponentTreatment, type TcoFinancingDetails } from './financing';
+import { attachOutstandingPrincipal } from './outstanding-principal';
+import type { LoanEvidence } from './loan-evidence';
 import { assessValuations, assetAcquisitionPrice, computeOwnershipIndicators, type TcoIndicators, type ValuationHistoryInput } from './ownership-indicators';
 import { multiEquipmentPurchaseCoverage } from './multi-equipment-attribution';
 import {
@@ -238,6 +240,8 @@ export interface TcoInput {
    * `business_operation_financing_details`) — capital, prêteur, dates.
    */
   financingDetails?: ReadonlyMap<number, TcoFinancingDetails>;
+  /** Lot 112D : preuves du capital restant dû de chaque prêt (lectures documentaires + saisies USER / ADMIN). */
+  loanEvidence?: ReadonlyMap<number, LoanEvidence>;
   /** Prix souhaité (informations commerciales), centimes. */
   desiredSalePriceCents: number | null;
   budgets: readonly UsageBudget[];
@@ -1421,6 +1425,11 @@ export function computeTco(input: TcoInput): TcoResult {
 
   // Lot 111F : prêts du bien consolidés (mêmes lignes) et indicateurs de la fiche, motifs des valeurs non calculables.
   const financing = consolidateFinancing({ operations: ops, details: input.financingDetails ?? new Map(), lines: toutesLignes, today: input.today });
+  // Lot 112D : capital restant dû de chaque prêt, seulement s'il est établi — information, jamais un coût (aucun total modifié).
+  attachOutstandingPrincipal(financing, {
+    evidence: input.loanEvidence, plans: plansPret, today: input.today,
+    documents: new Map(ops.filter((o) => o.typeCode === 'FINANCING').map((o) => [o.id, o.documents.map((d) => ({ fileId: d.fileId, title: d.title ?? null, date: d.date ?? null }))])),
+  });
   const indicators = computeOwnershipIndicators({
     today: input.today, disposed, annual, cumulativeCostCents: cumul, estimatedComplementCents: usageComplement.estimatedComplementCents,
     averageWithEstimatesCents: usageComplement.averageWithEstimatesCents, financing, valuation: disposed ? null : valeur, valuationAssessment: evaluationValeurs,

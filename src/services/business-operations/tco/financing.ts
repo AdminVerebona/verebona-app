@@ -23,9 +23,11 @@
  *     chaque justificatif, capital emprunté (jamais un coût : LOAN_PRINCIPAL),
  *     dates de début et de fin du prêt ;
  *   · NON porté : ventilation du capital par échéance (capital restant dû),
- *     taux et nature (fixe / variable). Le capital restant dû n'est donc pas
- *     affiché ; un taux variable n'est pas inventé (le prévisionnel suit
- *     l'échéancier connu, signalé partiel s'il s'arrête avant le terme).
+ *     taux et nature (fixe / variable). Un taux variable n'est pas inventé
+ *     (le prévisionnel suit l'échéancier connu, signalé partiel s'il
+ *     s'arrête avant le terme). Lot 112D : le capital restant dû est affiché
+ *     quand il est ÉTABLI (lu, saisi ou calculé exactement), voir
+ *     `outstanding-principal.ts`.
  *   Aucune migration n'est nécessaire pour les règles ci-dessous.
  *
  * Règles (`planFinancingComponents`) :
@@ -46,6 +48,7 @@
  */
 import { componentEurMinor, isIsoDate } from '../finance/engine';
 import type { FinancialComponentKind } from '../model';
+import type { TcoFinancingOutstanding, TcoOutstandingPrincipal } from './outstanding-principal';
 
 /** Détails contractuels d'un prêt (`business_operation_financing_details`). */
 export interface TcoFinancingDetails {
@@ -172,6 +175,8 @@ export interface TcoLoan {
   partialSchedule: boolean;
   /** Échéances remplacées par un avenant (à partir de sa date d'effet). */
   supersededCount: number;
+  /** Lot 112D : capital restant dû — affiché seulement s'il est établi (information, jamais un coût). */
+  outstanding?: TcoOutstandingPrincipal | null;
 }
 
 export interface TcoFinancing {
@@ -185,6 +190,8 @@ export interface TcoFinancing {
   estimated: boolean;
   /** Explication (icône d'information). */
   info: string;
+  /** Lot 112D : capital restant dû des prêts (total seulement si tous sont établis) ; null : aucun prêt. */
+  outstanding?: TcoFinancingOutstanding | null;
 }
 
 const RETENUE = (s: string) => s === 'RETAINED_DIRECT' || s === 'RETAINED_CONSOLIDATED';

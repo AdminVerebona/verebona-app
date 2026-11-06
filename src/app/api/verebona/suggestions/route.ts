@@ -1,13 +1,21 @@
 /**
- * GET /api/verebona/suggestions?route=… — suggestions initiales (CDC §8.1, §8.2).
+ * GET /api/verebona/suggestions?route=… — route HISTORIQUE des suggestions
+ * initiales (CDC §8.1, §8.2).
  *
- * Priorité page > compte > générique : le catalogue validé (§8.3) est filtré
- * par la page, puis complété par des suggestions dérivées de l'état du
- * compte (éléments « À traiter » en attente, échéances à moins de 30 jours,
- * documents en analyse ou en erreur, exports prêts, documents non
- * rattachés). Lot 32 : sur la fiche d'un bien, les exemples NOMMENT le bien ;
- * hors fiche, ils peuvent nommer un vrai bien du compte. Tout est lu borné
- * au compte de la session ; seuls des libellés du catalogue sont renvoyés.
+ * Lot 112C : ALIGNÉE sur le service unique des suggestions partagées (lot
+ * 108J, critère d'utilité 111L, questions « Exploiter » prouvées 112C) — la
+ * MÊME sélection que GET /api/suggestions (mêmes éléments, même ordre, même
+ * version, mêmes règles : stock prévalidé, utilité, preuve de réponse,
+ * Standard / Premium). Auparavant elle servait encore le catalogue par page
+ * (`suggestionsForRoute`), donc des simples listes (« Quels sont les documents
+ * de X ? ») que plus aucun écran ne propose. Aucun écran ne l'appelle depuis
+ * 108J / 110C ; elle reste compatible pour un client ancien : même forme
+ * `{ suggestions: [{ id, label }] }` (plus `contract` et `version`).
+ *
+ * Le paramètre `route` reste validé (§27) mais ne change plus la sélection :
+ * la sélection partagée ne dépend pas de la page. Compte et utilisateur de la
+ * SESSION (isolation, Duo) ; aucun appel IA ; seuls des libellés du stock et
+ * du catalogue validé sont renvoyés.
  *
  * Conventions du §27 : entrée validée par schéma (`SuggestionsQuerySchema`),
  * requestId renvoyé (`x-request-id`), débit limité (limiteur des lectures).
@@ -15,8 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { SessionService } from '@/lib/session-service';
 import { ensureMigrations } from '@/db';
-import { suggestionsForRoute } from '@/services/verebona-assistant/registries/capability-registry';
-import { loadSuggestionContext } from '@/services/verebona-assistant/core/account-state';
+import { getSharedSuggestions, publicSelectionOf } from '@/services/suggestions/shared/service';
 import { httpRequestId, parseWith, queryObject, readRateLimited, withRequestId } from '@/lib/verebona/api-guard';
 import { SuggestionsQuerySchema } from '@/lib/verebona/api-schemas';
 
@@ -37,9 +44,11 @@ async function lire(req: NextRequest, httpId: string): Promise<NextResponse> {
   if (!q.ok) return q.response;
 
   await ensureMigrations();
-  // Contexte indisponible : exemples indépendants des données, sans erreur.
-  const ctx = await loadSuggestionContext(accountId, q.data.route).catch(() => null);
-  return NextResponse.json({
-    suggestions: suggestionsForRoute(q.data.route, ctx).map((s) => ({ id: s.id, label: s.label })),
-  });
+  // Même service, mêmes règles que GET /api/suggestions (ne lève jamais : repli éditorial sûr).
+  const { selection } = await getSharedSuggestions(accountId, session.userId);
+  const pub = publicSelectionOf(selection);
+  return NextResponse.json(
+    { contract: pub.contract, version: pub.version, suggestions: pub.items.map((s) => ({ id: s.id, label: s.label })) },
+    { headers: { 'Cache-Control': 'private, no-store' } },
+  );
 }

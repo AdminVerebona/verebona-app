@@ -54,6 +54,10 @@ export interface CilMaterialInput {
   documentId: number | null;
   /** Lot 111U (1301) : coefficient U, W/(m²·K) ; jamais converti en R. */
   uValue?: number | null;
+  /** Lot 112F (1430) : date de pose (Opération d'intervention prouvée) ; NULL = inconnue. */
+  installedAt?: string | null;
+  /** Lot 112F (1430) : Opération INTERVENTION réalisée et prouvée qui porte la pose (même identité que B7). */
+  operationId?: number | null;
 }
 
 export interface CilEquipmentInput extends CilEnergyEquipmentInput {
@@ -63,6 +67,9 @@ export interface CilEquipmentInput extends CilEnergyEquipmentInput {
   model: string | null;
   powerKw: number | null;
   fieldOrigins: Record<string, string>;
+  /** Lot 112F (1430) : équipement posé — date de pose et Opération prouvée. */
+  installedAt?: string | null;
+  installationOperationId?: number | null;
 }
 
 export interface CilWorkInput { id: number; title: string; category: string; completedAt: string | null; companyName: string | null }
@@ -269,12 +276,21 @@ export function evaluateCilState(input: CilStateInput): CilState {
       }
       case 'B5.toiture': case 'B5.murs_exterieurs': case 'B5.parois_vitrees': case 'B5.planchers_bas': {
         const post = c.id.slice(3);
-        const rows = input.materials.filter((m) => m.category === post);
+        // Lot 112F : posés (facture / attestation de travaux réalisés) d'abord, du plus récent au plus ancien.
+        const rows = input.materials.filter((m) => m.category === post)
+          .sort((a, b) => Number(b.installationState === 'installe') - Number(a.installationState === 'installe') || String(b.installedAt ?? '').localeCompare(String(a.installedAt ?? '')));
         const j = journalByKey.get(`cil:mat:${post}`);
+        // Lot 112F : décisions de pose par Opération (`cil:inst:<opération>:<poste>`).
+        const inst = input.journal.filter((x) => x.projectionKey.startsWith('cil:inst:') && x.projectionKey.endsWith(`:${post}`));
+        const instDoubt = inst.find((x) => x.status === 'CONFLICT' || x.status === 'AMBIGUOUS');
+        const instUserDiff = inst.some((x) => x.status === 'PROTECTED' && x.reason === 'USER_VALUE_DIFFERS');
         if (!rows.length) {
           if (j && (j.status === 'AMBIGUOUS' || j.status === 'CONFLICT')) {
             set('a_confirmer', { counted: true, reason: j.status === 'CONFLICT' ? 'Les documents se contredisent sur ce poste : vérifiez et complétez.' : 'Plusieurs descriptions dans un même document : vérifiez et complétez.' });
             j.sourceFileIds.forEach((id) => cite(docById.get(id)));
+          } else if (instDoubt) {
+            set('a_confirmer', { counted: true, reason: 'Les justificatifs des travaux réalisés se contredisent sur ce poste : vérifiez et complétez.' });
+            instDoubt.sourceFileIds.forEach((id) => cite(docById.get(id)));
           } else set('manquant', { missing: [c.label] });
           break;
         }
@@ -294,19 +310,22 @@ export function evaluateCilState(input: CilStateInput): CilState {
           if (m.materialNature) hasNature = true;
           if (m.thermalResistanceR != null || m.thicknessMm != null || m.lambda != null || m.uValue != null) hasPerf = true;
           const nature = [m.materialNature, m.brand, m.reference].filter(Boolean).join(' · ');
-          const state = m.installationState === 'constate' ? ' (décrit par un diagnostic)' : m.installationState === 'prevu' ? ' (prévu)' : '';
+          const state = m.installationState === 'constate' ? ' (décrit par un diagnostic)' : m.installationState === 'prevu' ? ' (prévu)'
+            : m.installationState === 'installe' ? (m.installedAt ? ` (posé le ${fmtDate(m.installedAt) ?? m.installedAt})` : ' (posé, date de pose à compléter)') : '';
           values.push({ label: `${nature || 'Matériau'}${state}`, value: spec || '—', source: src });
         }
-        const missing = [!hasNature ? MATERIAL_ATTR_LABELS.nature : '', !hasPerf ? MATERIAL_ATTR_LABELS.perf : ''].filter(Boolean)
+        // Lot 112F : un matériau posé sans date (attestation non datée) reste partiel.
+        const sansDatePose = rows.some((m) => m.installationState === 'installe' && !m.installedAt);
+        const missing = [!hasNature ? MATERIAL_ATTR_LABELS.nature : '', !hasPerf ? MATERIAL_ATTR_LABELS.perf : '', sansDatePose ? 'Date de pose' : ''].filter(Boolean)
           .map((m) => `${c.label} : ${m.charAt(0).toLowerCase()}${m.slice(1)}`);
         // Valeur DOCUMENT contredite par une autre source de même date : conservée, mais à confirmer.
-        if (rows.every((m) => m.origin === 'DOCUMENT') && j && (j.status === 'CONFLICT' || j.status === 'AMBIGUOUS')) {
-          j.sourceFileIds.forEach((id) => cite(docById.get(id)));
+        if (rows.every((m) => m.origin === 'DOCUMENT') && ((j && (j.status === 'CONFLICT' || j.status === 'AMBIGUOUS')) || instDoubt)) {
+          (j && (j.status === 'CONFLICT' || j.status === 'AMBIGUOUS') ? j : instDoubt!).sourceFileIds.forEach((id) => cite(docById.get(id)));
           set('a_confirmer', { values, missing, reason: 'Les documents se contredisent sur ce poste : la valeur affichée reste à confirmer.' });
           break;
         }
         set(missing.length ? 'partiel' : 'renseigne', { values, missing,
-          reason: j?.status === 'CONFLICT' || (j?.status === 'PROTECTED' && j.reason === 'USER_VALUE_DIFFERS') ? 'Un document décrit ce poste autrement que votre saisie : votre saisie est conservée.' : null });
+          reason: j?.status === 'CONFLICT' || (j?.status === 'PROTECTED' && j.reason === 'USER_VALUE_DIFFERS') || instUserDiff ? 'Un document décrit ce poste autrement que votre saisie : votre saisie est conservée.' : null });
         break;
       }
       case 'B6.chauffage': case 'B6.ecs': case 'B6.ventilation': case 'B6.refroidissement': case 'B6.enr': {
@@ -314,10 +333,17 @@ export function evaluateCilState(input: CilStateInput): CilState {
         const list = classified.filter((x) => x.c?.usage === usage).map((x) => x.e);
         const j = journalByKey.get(`cil:eq:${usage}`);
         const jDoc = j ? docById.get(j.sourceFileIds[0] ?? -1) : undefined;
+        // Lot 112F : équipements POSÉS (facture / attestation), décisions par Opération (`cil:insteq:<opération>:<usage>`).
+        const inst = input.journal.filter((x) => x.projectionKey.startsWith('cil:insteq:') && x.projectionKey.endsWith(`:${usage}`));
+        const instDoubt = inst.find((x) => x.status === 'CONFLICT' || x.status === 'AMBIGUOUS');
+        const INST_DOUBT = 'Un équipement posé est décrit par une facture ou une attestation de travaux : précisez s’il remplace l’équipement existant (ou lequel est concerné).';
         if (!list.length) {
           if (j && (j.status === 'AMBIGUOUS' || j.status === 'CONFLICT')) {
             set('a_confirmer', { reason: 'Plusieurs équipements possibles pour cet usage : précisez lequel est concerné.' });
             cite(jDoc);
+          } else if (instDoubt) {
+            set('a_confirmer', { reason: INST_DOUBT });
+            instDoubt.sourceFileIds.forEach((id) => cite(docById.get(id)));
           } else if (c.applicability === 'IF_PRESENT') {
             set('a_confirmer', { counted: false, reason: 'Présence non connue : ajoutez l’équipement ou déclarez-le non applicable.' });
           } else set('manquant', { missing: [`Équipement de ${c.label.toLowerCase()}`] });
@@ -326,13 +352,23 @@ export function evaluateCilState(input: CilStateInput): CilState {
         const values: CilValue[] = [];
         const missing: string[] = [];
         for (const e of list) {
+          // Lot 112F : un équipement posé cite la facture / l'attestation de son Opération.
+          const ij = inst.find((x) => x.targetId === e.id && (x.status === 'WRITTEN' || x.status === 'UNCHANGED'));
+          const iDoc = ij ? docById.get(ij.sourceFileIds[0] ?? -1) : undefined;
           const fromDoc = Object.values(e.fieldOrigins ?? {}).includes('DOCUMENT') || (j?.targetId === e.id && j.status !== 'PROTECTED');
-          if (fromDoc) cite(jDoc);
-          const src: CilValueSource = fromDoc && jDoc ? docSource(jDoc) : { kind: 'user', label: 'Fiche de l’équipement' };
-          const spec = [e.type, e.energyType ? `énergie : ${e.energyType}` : '', e.powerKw != null ? `${fmtNum(e.powerKw)} kW` : '', [e.brand, e.model].filter(Boolean).join(' ')]
+          if (iDoc) cite(iDoc); else if (fromDoc) cite(jDoc);
+          const src: CilValueSource = iDoc ? docSource(iDoc) : fromDoc && jDoc ? docSource(jDoc) : { kind: 'user', label: 'Fiche de l’équipement' };
+          const spec = [e.type, e.energyType ? `énergie : ${e.energyType}` : '', e.powerKw != null ? `${fmtNum(e.powerKw)} kW` : '', [e.brand, e.model].filter(Boolean).join(' '),
+            e.installedAt ? `posé le ${fmtDate(e.installedAt) ?? e.installedAt}` : '']
             .filter(Boolean).join(' · ');
           values.push({ label: e.name, value: spec || '—', source: src });
           if ((usage === 'chauffage' || usage === 'ecs') && !filled(e.energyType)) missing.push(`Énergie utilisée : ${e.name}`);
+          if (e.installationOperationId != null && !e.installedAt) missing.push(`Date de pose : ${e.name}`);
+        }
+        if (instDoubt) {
+          instDoubt.sourceFileIds.forEach((id) => cite(docById.get(id)));
+          set('a_confirmer', { values, missing, reason: INST_DOUBT });
+          break;
         }
         set(missing.length ? 'partiel' : 'renseigne', { values, missing });
         break;

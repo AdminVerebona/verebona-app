@@ -21,7 +21,7 @@ import { listFields, type CanonicalFieldDef } from '@/services/canonical/registr
 import type { Claim, RetrievedSource } from '../types/sources';
 import type { AccountDataPort, AssetRow } from '../core/data-answer.service';
 import {
-  daysBetween, formatAmountCents, formatDateFr, formatList, formatNoResult, formatRelativeDays, joinFr,
+  daysBetween, deFr, formatAmountCents, formatDateFr, formatList, formatNoResult, formatRelativeDays, joinFr,
 } from '../core/deterministic-format';
 import { assetFieldSource, assetFieldSourceId, type CanonicalFieldReading } from './field-reader';
 import {
@@ -36,6 +36,7 @@ import { findReadableFields, purchaseMention } from './field-vocabulary';
 import { semanticResidue, textMatchesTerms } from '../core/semantic-scope';
 import { plain } from '../core/routing-text';
 import { asksSettlement } from '../core/question-focus';
+import { TCO_PREMIUM_MESSAGE } from '@/services/business-operations/tco/dto';
 
 interface ScopeLike { assets: AssetRow[]; ambiguous: boolean; unresolved: boolean; label: string | null }
 
@@ -345,6 +346,21 @@ export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-
     phrases.push(`Coût du crédit à date (intérêts, assurance, frais ; capital non compté) : ${formatEur(ind.financing.costToDateCents)}${ind.financing.basisLabel ? ` — ${ind.financing.basisLabel}` : ''}.`
       + (ind.financing.contractualTotalCents != null ? ` Coût total prévisionnel du crédit : ${formatEur(ind.financing.contractualTotalCents)}${ind.financing.estimated ? ' (échéancier partiel)' : ''}, non ajouté au coût total.` : ''));
   }
+  // Lot 112D : capital restant dû — seulement s'il est établi (même résultat que la fiche), jamais un coût ni une estimation.
+  const crd = ind?.financing.outstanding ?? null;
+  if (ind && crd) {
+    const prets = ind.financing.loans.filter((p) => p.outstanding);
+    const quand = (d: string | null) => (d ? ` au ${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : '');
+    if (crd.status === 'ESTABLISHED' && crd.cents != null) {
+      phrases.push(prets.length === 1
+        ? `Capital restant dû${quand(prets[0].outstanding!.asOf)} : ${formatEur(crd.cents)} (${prets[0].outstanding!.label.replace(/\.$/, '')}) ; ce n’est pas un coût.`
+        : `Capital restant dû des ${prets.length} prêts : ${formatEur(crd.cents)} ; ce n’est pas un coût.`);
+    } else if (crd.status === 'PARTIAL') {
+      phrases.push(`Capital restant dû établi pour une partie des prêts seulement : ${prets.filter((p) => p.outstanding!.status === 'ESTABLISHED').map((p) => `${p.label} ${formatEur(p.outstanding!.cents ?? 0)}${quand(p.outstanding!.asOf)}`).join(' ; ')}.`);
+    } else {
+      phrases.push(prets.length === 1 ? prets[0].outstanding!.label : `Capital restant dû non établi pour les ${prets.length} prêts.`);
+    }
+  }
   if (t.disposed) {
     phrases.push(t.summary.netFinalCents != null
       ? `Après la vente (prix réalisé ${formatEur(t.disposal.realizedPriceCents ?? 0)}), coût net final : ${formatEur(t.summary.netFinalCents)}.`
@@ -383,6 +399,22 @@ export function ownershipCostAnswer(a: AssetRow, t: import('@/services/business-
   };
   const sources = [src];
   return { strategy: 'structured.ownership_cost', answer, sources, claims: [claim('ownership_cost', answer, sources, 'calculated')], kind: 'exact' };
+}
+
+/**
+ * Lot 112C (reprise) — coût de possession HORS OFFRE (Standard, lecture seule) :
+ * même message que la fiche (`TCO_PREMIUM_MESSAGE`), aucun montant ; les
+ * dépenses documentées restent ouvertes à tous (pure, testée).
+ */
+export function ownershipCostLockedAnswer(a: Pick<AssetRow, 'id' | 'name'> | null): CanonicalLevel1 {
+  const pour = a ? ` Pour ${a.name}, vous pouvez consulter vos dépenses documentées, par exemple : « Combien ai-je dépensé en entretien pour ${a.name} ? ».`
+    : ' Vos dépenses documentées restent consultables, par bien et par thème (entretien, réparations, travaux…).';
+  const answer = `${TCO_PREMIUM_MESSAGE}${pour}`;
+  const src: RetrievedSource = {
+    id: 'product_rule:tco_premium', type: 'product_rule', title: 'Coût de possession — offres Premium', content: TCO_PREMIUM_MESSAGE, relevanceScore: 1,
+    meta: { ruleCode: 'tco_premium', locked: true, ...(a ? { assetId: a.id } : {}) },
+  };
+  return { strategy: 'structured.ownership_cost', answer, sources: [src], claims: [claim('ownership_cost_locked', answer, [src], 'direct')], kind: 'no_result' };
 }
 
 /**
@@ -626,6 +658,14 @@ async function tryCanonicalStructuredInner(p: {
   // ── Lot 54D (§4.3) : coût de possession d'un bien → service TCO ─────────
   if (isOwnershipCostQuestion(message) && port.readOwnershipCost) {
     const scope = await p.resolveScope(message.replace(TCO_STRIP, ' '));
+    // Lot 112C (reprise) — DROITS : le TCO est réservé Premium / Premium Duo / essai (même règle que la
+    // fiche). Hors offre : réponse sans AUCUN montant, avant toute lecture TCO et sans clarification de
+    // bien ; une question qui n'est pas un coût de possession (barrière) reste traitée comme avant.
+    if (port.ownershipCostAllowed && !(await port.ownershipCostAllowed(accountId))) {
+      const b = structuredScopeBarrier('structured.ownership_cost', message, scope.assets.map((a) => a.name));
+      if (!b.semanticScopeResolved) return nonResolu('structured.ownership_cost', b.unresolvedSemanticTerms, scope);
+      return ownershipCostLockedAnswer(scope.assets.length === 1 && !scope.ambiguous ? scope.assets[0] : null);
+    }
     if (scope.ambiguous) return { ambiguous: scope.assets, reason: 'TCO_MULTIPLE_ASSETS' };
     if (!scope.unresolved && scope.assets.length === 1) {
       const a = scope.assets[0];
@@ -804,10 +844,10 @@ async function tryCanonicalStructuredInner(p: {
         kind = 'no_result';
         answer = (q.unqualified.count > 0
           // Couverture incomplète : aucun total affirmé (T2-24).
-          ? `Je ne peux pas isoler vos dépenses de ${EXPENSE_THEME_LABELS[theme]}${pour} : ${motifs}. ${expenseCompletionHint(sansNature, sansDate)}`
-          : formatNoResult(`aucune dépense de ${EXPENSE_THEME_LABELS[theme]} documentée`, pour.trim() || undefined)) + mixte;
+          ? `Je ne peux pas isoler vos dépenses ${deFr(EXPENSE_THEME_LABELS[theme])}${pour} : ${motifs}. ${expenseCompletionHint(sansNature, sansDate)}`
+          : formatNoResult(`aucune dépense ${deFr(EXPENSE_THEME_LABELS[theme])} documentée`, pour.trim() || undefined)) + mixte;
       } else {
-        answer = `Dépenses de ${t.label} documentées${pour} : ${formatAmountCents(t.sumCents)} (${expenseItemsLabel(t, q.operations)}).${incomplet}${mixte}${doublons}${exclus}`;
+        answer = `Dépenses ${deFr(t.label)} documentées${pour} : ${formatAmountCents(t.sumCents)} (${expenseItemsLabel(t, q.operations)}).${incomplet}${mixte}${doublons}${exclus}`;
       }
     } else if (q.byTheme.length === 0) {
       kind = 'no_result';

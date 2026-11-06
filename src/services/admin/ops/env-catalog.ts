@@ -166,6 +166,9 @@ export function retiredEnvVariables(): RetiredEnvDoc[] {
     ...Object.entries(S3_LEGACY_ENV).map(([name, canonique]) => ({ name, origin: 'APP-PERF-26', now: `remplacée par ${canonique}` })),
     // Lot 24b (`src/db/migration-config.ts`, `obsolete`).
     { name: 'MIGRATIONS_REPAIR_ON_BOOT', origin: 'lot 24b', now: 'réparation des index par le postdeploy puis en arrière-plan' },
+    // Lot 112B : l'invitation de parrainage par e-mail est supprimée ; depuis le
+    // lot 34I tous les e-mails partent avec l'expéditeur réglé dans le BO.
+    { name: 'RESEND_FROM_EMAIL', origin: 'lot 112B', now: 'expéditeur réglé dans BO › Communications (email_settings) ; invitation de parrainage par e-mail supprimée' },
     // Lot 35C (CDC lookup_key V4, LK-89, D10) : plus aucune dépendance de
     // fonctionnement ; lues seulement comme preuve par la reprise historique.
     ...LEGACY_PRICE_VARS.map((v) => ({
