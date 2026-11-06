@@ -181,9 +181,14 @@ scenario('L76A-T6', 'Lot 76A — invalidation EVALUATE complète et suggestions 
     const affichage = await (await svc()).getMascotPresentation(c.id, 'display', c.ownerUserId);
     expect(affichees(affichage)).toEqual([]);
     for (let i = 0; i < 50 && modele.candidats.length === avant; i += 1) await new Promise((r) => setTimeout(r, 20));
-    await new Promise((r) => setTimeout(r, 100));
+    // Correctif CI du 06/11 : la décision réévaluée est écrite en arrière-plan APRÈS l'appel au modèle ;
+    // 100 ms fixes ne suffisaient pas sur le runner chargé. Attente bornée de l'écriture (5 s).
+    let d2 = (await decision(c.id, id))!;
+    for (let i = 0; i < 100 && d2.context_fingerprint === d1.context_fingerprint; i += 1) {
+      await new Promise((r) => setTimeout(r, 50));
+      d2 = (await decision(c.id, id))!;
+    }
     expect(evalues().at(-1)!.facts![0]).toMatchObject({ value: 'Annuel', excerpt: 'Entretien déjà pris en charge par le prestataire.' });
-    const d2 = (await decision(c.id, id))!;
     expect(d2.context_fingerprint).not.toBe(d1.context_fingerprint);
     expect(d2.decision).toBe('SUPPRESS');
     expect(affichees(await passer(c.id))).toEqual([]);

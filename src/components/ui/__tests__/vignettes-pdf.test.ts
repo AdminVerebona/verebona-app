@@ -24,7 +24,8 @@ describe('worker pdf.js', () => {
   it('il est recopié avant dev et build', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
     // Lot 101 : le garde-fou de structure du dépôt passe d'abord, puis la copie du worker.
-    expect(pkg.scripts.prebuild).toBe('node scripts/check-repo-structure.mjs && node scripts/sync-pdf-worker.mjs');
+    // Lot 113H (#707) : contrôle hors ligne du référentiel des e-mails jetables entre les deux.
+    expect(pkg.scripts.prebuild).toBe('node scripts/check-repo-structure.mjs && node scripts/update-disposable-domains.mjs --verify && node scripts/sync-pdf-worker.mjs');
     expect(pkg.scripts.predev).toBe('node scripts/sync-pdf-worker.mjs');
   });
 });

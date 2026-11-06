@@ -230,7 +230,15 @@ scenario('L113E', 'BO Données du compte : onglet Fournisseurs (lecture seule, p
     const ids_ = async (q: string) => (await (await r.list(A.id, 'fournisseurs', `q=${encodeURIComponent(q)}`)).json()).items.map((i: { id: number }) => i.id);
     expect(await ids_('plomberie')).toEqual([ids.s]);
     expect(await ids_('123 456 789 00011')).toEqual([ids.s]);
-    expect(await ids_(String(ids.s))).toEqual([ids.s]);
+    // Correctif CI du 06/11 : l'UUID aléatoire d'un autre fournisseur contenait « 136 » (= ids.s). Rendu déterministe.
+    // Restauré aussitôt : l'empreinte « lecture seule » (E07) reste celle d'origine.
+    const [v1] = await sql<{ id: number; public_id: string }[]>`SELECT id, public_id::text FROM suppliers WHERE account_id = ${A.id} AND name = 'Volume 001'`;
+    await sql`UPDATE suppliers SET public_id = ('00000000-0000-4000-8000-' || lpad(${String(ids.s)}, 12, '0'))::uuid WHERE id = ${v1.id}`;
+    try {
+      expect(await ids_(String(ids.s))).toEqual([ids.s]);
+    } finally {
+      await sql`UPDATE suppliers SET public_id = ${v1.public_id}::uuid WHERE id = ${v1.id}`;
+    }
     expect(await ids_(publicId)).toEqual([ids.s]);
     expect(await ids_('Volume 012')).toHaveLength(1);
     expect(await ids_('Volume 12')).toHaveLength(10);

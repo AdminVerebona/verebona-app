@@ -187,13 +187,16 @@ const SQL: Readonly<Record<Exclude<Category, 'operations' | 'echeances'> | 'agen
   },
   // Lot 113E — référentiel fournisseurs du compte. Relations comptées par les liens PERSISTÉS seulement
   // (document_suppliers vers un document non supprimé du compte ; business_operation_suppliers ACTIVE).
+  // Correctif 113E (CI du 06/11) : l'identifiant public (UUID aléatoire) n'est cherché que pour un
+  // fragment d'au moins 8 caractères non purement numérique — « 136 » (identifiant interne) ne doit
+  // jamais trouver un autre fournisseur dont l'UUID contient par hasard « 136 ».
   fournisseurs: {
     from: `FROM suppliers x WHERE x.account_id = $1`,
     stateExpr: SUPPLIER_STATE,
     excludedFromAll: ['deleted'],
     search: `(x.name ILIKE $2 OR x.normalized_name ILIKE $2 OR x.email ILIKE $2 OR x.city ILIKE $2 OR x.vat_number ILIKE $2
               OR replace(x.siren, ' ', '') ILIKE replace($2, ' ', '') OR replace(x.siret, ' ', '') ILIKE replace($2, ' ', '')
-              OR x.public_id::text ILIKE $2 OR x.id = $3::int)`,
+              OR ($2 !~ '^%[0-9 ]*%$' AND length($2) >= 10 AND x.public_id::text ILIKE $2) OR x.id = $3::int)`,
     order: { created: 'x.created_at', id: 'x.id', name: 'lower(x.name)', updated: 'x.updated_at' },
     columns: `x.id, x.public_id::text AS public_id, x.name, x.scope, x.source, x.status, x.email, x.phone, x.website, x.postal_code, x.city,
               x.siren, x.siret, x.vat_number, x.created_at, x.updated_at,
