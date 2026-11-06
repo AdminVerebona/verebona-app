@@ -62,11 +62,13 @@ export function analyse(f) {
       errors.push(`Identifiant d'app « ${identifier} » (${role === 'app' ? 'application' : 'extension de partage'}) introuvable dans Certificates, Identifiers & Profiles › Identifiers : Xcode ne peut créer aucun profil pour lui. Le créer (ou vérifier l'équipe APPLE_TEAM_ID).`);
       continue;
     }
+    if (b.capabilities == null) { infos.push(`« ${identifier} » : identifiant présent (fonctionnalités non lues).`); continue; }
     const missing = REQUIRED_CAPABILITIES[role].filter((c) => !b.capabilities.includes(c));
     if (missing.length) warnings.push(`« ${identifier} » : fonctionnalités non activées dans Identifiers : ${missing.join(', ')} (exigées par les droits signés). Xcode les active d'habitude seul ; s'il échoue, les cocher à la main.`);
     else infos.push(`« ${identifier} » : identifiant présent, fonctionnalités ${REQUIRED_CAPABILITIES[role].join(', ')} activées.`);
   }
-  if (f.devices === 0) errors.push('Aucun appareil iOS actif dans Devices : Apple refuse tout profil de développement (l\'étape « Appareil iOS pour la signature automatique » aurait dû en créer un).');
+  if (f.devices == null) infos.push('Appareils non lus.');
+  else if (f.devices === 0) errors.push('Aucun appareil iOS actif dans Devices : Apple refuse tout profil de développement (l\'étape « Appareil iOS pour la signature automatique » aurait dû en créer un).');
   else infos.push(`${f.devices} appareil(s) iOS actif(s).`);
   const mine = f.profiles.filter((p) => p.bundle === f.ids.appId || p.bundle === f.ids.shareId);
   const invalid = mine.filter((p) => p.state !== 'ACTIVE');
@@ -84,19 +86,28 @@ export async function check(env, xcconfigText, { log = console.log } = {}) {
     if (r.status !== 200) throw new Error(apiError('Identifiants d\'app', r));
     const b = (r.json.data ?? []).find((x) => x.attributes?.identifier === identifier);
     if (!b) { bundles[identifier] = null; continue; }
-    const caps = await call(token, `/bundleIds/${b.id}/bundleIdCapabilities?limit=50`);
-    if (caps.status !== 200) throw new Error(apiError('Fonctionnalités', caps));
+    // Correctif du 06/11 : cette relation n'accepte PAS le paramètre `limit` (400).
+    const caps = await call(token, `/bundleIds/${b.id}/bundleIdCapabilities`);
+    if (caps.status === 401 || caps.status === 403) throw new Error(apiError('Fonctionnalités', caps));
+    if (caps.status !== 200) {
+      // Diagnostic seulement : une réponse inattendue n'empêche jamais l'archivage.
+      log(`::warning::Signature iOS : ${apiError(`Fonctionnalités de « ${identifier} » non lues`, caps)}`);
+      bundles[identifier] = { id: b.id, capabilities: null };
+      continue;
+    }
     bundles[identifier] = { id: b.id, capabilities: (caps.json.data ?? []).map((c) => c.attributes?.capabilityType).filter(Boolean) };
   }
   const dev = await call(token, '/devices?filter[platform]=IOS&filter[status]=ENABLED&limit=200');
-  if (dev.status !== 200) throw new Error(apiError('Appareils', dev));
+  if (dev.status === 401 || dev.status === 403) throw new Error(apiError('Appareils', dev));
+  if (dev.status !== 200) log(`::warning::Signature iOS : ${apiError('Appareils non lus', dev)}`);
   const prof = await call(token, '/profiles?filter[profileType]=IOS_APP_DEVELOPMENT&include=bundleId&limit=200');
-  if (prof.status !== 200) throw new Error(apiError('Profils', prof));
+  if (prof.status === 401 || prof.status === 403) throw new Error(apiError('Profils', prof));
+  if (prof.status !== 200) log(`::warning::Signature iOS : ${apiError('Profils non lus', prof)}`);
   const bundleOf = new Map((prof.json.included ?? []).filter((x) => x.type === 'bundleIds').map((x) => [x.id, x.attributes?.identifier]));
   const profiles = (prof.json.data ?? []).map((p) => ({
     name: p.attributes?.name ?? '?', state: p.attributes?.profileState ?? '?', bundle: bundleOf.get(p.relationships?.bundleId?.data?.id) ?? '',
   }));
-  const r = analyse({ ids, bundles, devices: (dev.json.data ?? []).length, profiles });
+  const r = analyse({ ids, bundles, devices: dev.status === 200 ? (dev.json.data ?? []).length : null, profiles });
   for (const i of r.infos) log(i);
   for (const w of r.warnings) log(`::warning::Signature iOS : ${w}`);
   for (const e of r.errors) log(`::error::Signature iOS : ${e}`);

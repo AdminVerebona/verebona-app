@@ -53,3 +53,39 @@ test('workflow iOS : diagnostic lancé avant l\'archivage, version de Xcode affi
   assert.ok(diag > 0 && archive > diag);
   assert.match(wf, /xcodebuild -version/);
 });
+
+test('appels à l\'API : jamais de « limit » sur une relation (400 du 06/11) ; erreur inattendue = avertissement, pas un échec', async () => {
+  const { check } = await import('../scripts/asc-signing-check.mjs');
+  const { generateKeyPairSync } = await import('node:crypto');
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'asc-'));
+  const key = join(dir, 'AuthKey.p8');
+  writeFileSync(key, generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({ type: 'pkcs8', format: 'pem' }));
+  const urls = [];
+  const saved = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url); urls.push(u);
+    const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+    if (/\/bundleIds\/[^/]+\/bundleIdCapabilities/.test(u)) {
+      if (u.includes('limit=')) return json({ errors: [{ detail: "The parameter 'limit' can not be used with this request" }] }, 400);
+      return json({ data: [{ attributes: { capabilityType: 'APP_GROUPS' } }, { attributes: { capabilityType: 'ASSOCIATED_DOMAINS' } }, { attributes: { capabilityType: 'PUSH_NOTIFICATIONS' } }] });
+    }
+    if (u.includes('/bundleIds?')) {
+      const id = decodeURIComponent(/identifier\]=([^&]+)/.exec(u)[1]);
+      return json({ data: [{ id: `B-${id}`, attributes: { identifier: id } }] });
+    }
+    if (u.includes('/devices?')) return json({ data: [{ id: 'D' }] });
+    if (u.includes('/profiles?')) return json({ errors: [{ detail: 'inattendu' }] }, 500);
+    return json({}, 404);
+  };
+  const out = [];
+  try {
+    const r = await check({ ASC_KEY_PATH: key, ASC_API_KEY_ID: 'ABCDEFGHIJ', ASC_API_ISSUER_ID: '00000000-0000-0000-0000-000000000000' },
+      'VB_APP_ID = fr.verebona.app.preprod\nVB_SHARE_EXTENSION_ID = fr.verebona.app.preprod.ShareExtension\n', { log: (l) => out.push(l) });
+    assert.deepEqual(r.errors, []);
+    assert.ok(urls.filter((u) => u.includes('bundleIdCapabilities')).every((u) => !u.includes('limit=')));
+    assert.match(out.join('\n'), /::warning::.*Profils non lus/);
+  } finally { globalThis.fetch = saved; }
+});
