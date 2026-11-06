@@ -159,7 +159,14 @@ scenario('L109E-T6', 'Lot 109E — empreinte EVALUATE v5 sans perte de sens', ({
     await attendreAppel(avant);
     expect(evalues()).toHaveLength(2);
     expect(evalues()[1].facts![0].excerpt).toBe(OU);
-    const d2 = (await decision(c.id, id))!;
+    // Lot 111 (correctif 5) : la nouvelle décision est écrite APRÈS l'appel au modèle, en tâche de
+    // fond ; sur un runner lent les 150 ms d'attendreAppel ne suffisaient pas (lu : l'ancienne décision
+    // SHOW_NOW / FIRST_ASSESSMENT). On attend l'écriture (empreinte changée), 10 s au plus.
+    let d2 = (await decision(c.id, id))!;
+    for (let i = 0; i < 100 && d2.context_fingerprint === d1.context_fingerprint; i += 1) {
+      await new Promise((r) => setTimeout(r, 100));
+      d2 = (await decision(c.id, id))!;
+    }
     expect(d2).toMatchObject({ decision: 'SUPPRESS', reevaluation_reason: 'CONTEXT_CHANGED' });
     expect(d2.context_fingerprint).not.toBe(d1.context_fingerprint);
     // Seule la partie « faits » a changé (cause conservée avec les décisions).
