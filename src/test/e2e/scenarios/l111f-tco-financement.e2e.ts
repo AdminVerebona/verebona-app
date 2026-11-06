@@ -57,9 +57,17 @@ scenario('L111F', 'TCO — coût annuel hors achat, financement selon l’éché
   const fiche = async (compte: AccountRow, assetId: number, attendu = 200) => {
     connecter(compte);
     const { GET } = await import('@/app/api/assets/[id]/tco/route');
-    const res = await GET(new NextRequest(`http://x/api/assets/${assetId}/tco`), { params: Promise.resolve({ id: String(assetId) }) });
-    expect(res.status).toBe(attendu);
-    return (await res.json()) as Json;
+    // Lot 111 (correctif 4) : la route lit l'horloge réelle ; sans date figée, le test comparait la
+    // fiche du jour (06/11 : 13 992,33 €/an) au calcul figé au 05/11 (14 000,00 €/an). Seule la date
+    // JS est figée (les minuteries restent réelles) le temps de l'appel.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(`${AUJ}T12:00:00+01:00`) });
+    try {
+      const res = await GET(new NextRequest(`http://x/api/assets/${assetId}/tco`), { params: Promise.resolve({ id: String(assetId) }) });
+      expect(res.status).toBe(attendu);
+      return (await res.json()) as Json;
+    } finally {
+      vi.useRealTimers();
+    }
   };
   const valoriser = async (compte: AccountRow, assetId: number, body: Json) => {
     connecter(compte);
