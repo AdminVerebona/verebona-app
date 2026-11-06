@@ -142,6 +142,7 @@
     "test:e2e:parrainage-liens": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l108h-parrainage-liens.e2e.ts src/test/e2e/scenarios/l34i-parrainage.e2e.ts src/test/e2e/scenarios/l112b-parrainage-sans-email.e2e.ts",
     "test:e2e:notifications-documents": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l108i-notifications-documents.e2e.ts src/test/e2e/scenarios/l81e-notifications-residuels.e2e.ts src/test/e2e/scenarios/l79c-notifications.e2e.ts",
     "test:e2e:couts-ia": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109l-couts-ia.e2e.ts src/test/e2e/scenarios/l35b-catalogue-dynamique.e2e.ts",
+    "test:e2e:tarifs-ia-alertes": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113o-tarifs-ia-alertes.e2e.ts src/test/e2e/scenarios/l109l-couts-ia.e2e.ts src/test/e2e/scenarios/l35b-catalogue-dynamique.e2e.ts",
     "test:e2e:t6-empreinte": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109e-t6-empreinte-v5.e2e.ts",
     "test:e2e:t3-nommage-6033": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109j-t3-nommage-6033.e2e.ts",
     "test:e2e:t1-couverture-propagation": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l109k-t1-couverture-propagation.e2e.ts",
