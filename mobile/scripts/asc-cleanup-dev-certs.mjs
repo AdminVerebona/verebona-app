@@ -64,7 +64,13 @@ export async function cleanup(env, { log = console.log } = {}) {
   const left = dev.length - revoked;
   if (left > 0) log(`${left} certificat(s) de développement créé(s) depuis un Mac conservé(s).`);
   if (!revoked && dev.length) log('::warning::Signature iOS : aucun certificat de développement de la CI à révoquer. Si l\'archivage échoue avec « maximum number of certificates », révoquer à la main, dans Certificates, Identifiers & Profiles › Certificates, les certificats de développement qui ne servent plus.');
-  return { dev: dev.length, revoked };
+  // Anticipation (lot 112, correctif 4) : l'envoi à TestFlight peut, lui aussi, créer un certificat
+  // de DISTRIBUTION par exécution si Xcode n'utilise pas la signature gérée par Apple. Ceux-là ne sont
+  // jamais révoqués automatiquement (envoi App Store) : on prévient avant la limite.
+  const dist = all.filter((c) => /DISTRIBUTION/.test(c.attributes?.certificateType ?? ''));
+  log(`Certificats de distribution : ${dist.length}.`);
+  if (dist.length >= 2) log(`::warning::Signature iOS : ${dist.length} certificats de distribution sur le compte. Apple en limite le nombre : à la limite, l'envoi à TestFlight échouera (« maximum number of certificates »). Révoquer alors, dans Certificates, les certificats de distribution « Created via API » inutilisés — sans effet sur les builds déjà envoyés ni sur l'app publiée.`);
+  return { dev: dev.length, revoked, dist: dist.length };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

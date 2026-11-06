@@ -240,28 +240,20 @@ jobs:
           [ -d "$EXT" ] || { echo "::error::Envoi refusé — extension de partage absente du binaire."; exit 1; }
           APP_ID=$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Info.plist")
           GROUP="group.$APP_ID"
-          teams=""
+          # Lot 112 (correctif 4) : les droits sont convertis en JSON et lus par un script Node —
+          # l’extraction par `plutil -extract` prenait les points du nom de
+          # la clé pour des séparateurs de chemin : clé jamais trouvée, envoi refusé à tort.
+          args=""
           for b in "$APP" "$EXT"; do
             name=$(basename "$b")
             ent="$RUNNER_TEMP/ent-$name.plist"
             codesign -d --entitlements - --xml "$b" > "$ent" 2>/dev/null || { echo "::error::Envoi refusé — droits signés illisibles pour $name."; exit 1; }
-            groups=$(plutil -extract com.apple.security.application-groups xml1 -o - "$ent" 2>/dev/null | grep -o '<string>[^<]*</string>' | sed 's/<[^>]*>//g' || true)
-            if ! printf '%s\n' "$groups" | grep -qx "$GROUP"; then
-              echo "::error::Envoi refusé — $GROUP absent de com.apple.security.application-groups (droits signés de $name : ${groups:-aucun}). Cocher le groupe d'apps sur l'identifiant de $name (developer.apple.com › Identifiers)."; exit 1
-            fi
+            plutil -convert json -o "$RUNNER_TEMP/ent-$name.json" "$ent" || { echo "::error::Envoi refusé — droits signés illisibles pour $name."; exit 1; }
             plist_group=$(/usr/libexec/PlistBuddy -c 'Print VBAppGroup' "$b/Info.plist" 2>/dev/null || true)
             if [ "$plist_group" != "$GROUP" ]; then echo "::error::Envoi refusé — VBAppGroup de $name ($plist_group) différent de $GROUP."; exit 1; fi
-            kag=$(plutil -extract keychain-access-groups xml1 -o - "$ent" 2>/dev/null | grep -o '<string>[^<]*</string>' | sed 's/<[^>]*>//g' | tr '\n' ' ' || true)
-            team=$(plutil -extract com.apple.developer.team-identifier raw -o - "$ent" 2>/dev/null || true)
-            teams="$teams $team"
-            echo "$name : application-groups=[$(printf '%s ' $groups)] keychain-access-groups=[${kag}] équipe=${team:-?}"
-            # Lot 111 (correctif) : pas d'apostrophe dans ${var:-…} entre guillemets — le bash 3.2 de macOS la prend pour un guillemet ouvrant.
-            kag_txt="$kag"; [ -n "$kag_txt" ] || kag_txt="aucun (le groupe d'apps sert de groupe Keychain)"
-            echo "- $name : groupe d'apps $GROUP ✓ · keychain-access-groups : $kag_txt · équipe ${team:-?}" >> "$GITHUB_STEP_SUMMARY"
+            args="$args $name=$RUNNER_TEMP/ent-$name.json"
           done
-          set -- $teams
-          if [ "$#" -eq 2 ] && [ "$1" != "$2" ]; then echo "::error::Envoi refusé — app et extension signées par deux équipes différentes ($1 / $2) : Keychain non partagé."; exit 1; fi
-          echo "Droits signés du partage contrôlés : $GROUP dans l'app et l'extension."
+          node mobile/scripts/signed-entitlements-guard.mjs "$GROUP" $args
       # Lot 108G (CA02) : c'est le BINAIRE archivé qui est contrôlé (configuration
       # Capacitor réellement embarquée, absence de sonde, extension de partage
       # intégrée avec son identifiant et son groupe d'apps) avant tout envoi.

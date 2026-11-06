@@ -151,10 +151,13 @@ test('L111P-CI : droits SIGNÉS contrôlés (groupe d’apps des deux binaires, 
   assert.ok(step, 'étape présente');
   assert.ok(WORKFLOW.indexOf('Garde-fou — droits signés du partage') < WORKFLOW.indexOf('- name: Envoyer à App Store Connect (TestFlight)'));
   assert.match(step, /codesign -d --entitlements - --xml "\$b"/);
-  assert.match(step, /plutil -extract com\.apple\.security\.application-groups/);
-  assert.match(step, /plutil -extract keychain-access-groups/);
-  assert.match(step, /com\.apple\.developer\.team-identifier/);
+  // Lot 112 (correctif 4) : lecture des clés par JSON (plutil -extract prenait les points du nom
+  // de la clé pour des séparateurs) ; mêmes contrôles, dans signed-entitlements-guard.mjs.
+  assert.match(step, /plutil -convert json/);
+  assert.doesNotMatch(step, /plutil -extract com\./);
+  assert.match(step, /node mobile\/scripts\/signed-entitlements-guard\.mjs "\$GROUP"/);
   assert.match(step, /Print VBAppGroup/);
   assert.match(step, /for b in "\$APP" "\$EXT"; do/);
-  assert.match(step, /GITHUB_STEP_SUMMARY/);
+  const guard = readFileSync(new URL('../scripts/signed-entitlements-guard.mjs', import.meta.url), 'utf8');
+  for (const k of ['com.apple.security.application-groups', 'keychain-access-groups', 'com.apple.developer.team-identifier', 'GITHUB_STEP_SUMMARY']) assert.ok(guard.includes(k), k);
 });

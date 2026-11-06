@@ -117,7 +117,7 @@ test('certificats : seuls ceux de développement créés par l\'API sont révoqu
   try {
     const r = await cleanup({ ASC_KEY_PATH: key, ASC_API_KEY_ID: 'ABCDEFGHIJ', ASC_API_ISSUER_ID: '00000000-0000-0000-0000-000000000000' }, { log: () => {} });
     assert.deepEqual(deleted, ['1', '2']);
-    assert.deepEqual(r, { dev: 3, revoked: 2 });
+    assert.deepEqual(r, { dev: 3, revoked: 2, dist: 2 });
   } finally { globalThis.fetch = saved; }
 });
 
