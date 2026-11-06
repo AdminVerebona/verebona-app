@@ -201,6 +201,14 @@ jobs:
           plutil -replace teamID -string "$APPLE_TEAM_ID" mobile/ios/ExportOptions.plist
       - name: Appareil iOS pour la signature automatique (créé une fois si l'équipe n'en a aucun)
         run: node mobile/scripts/asc-ensure-device.mjs
+      # Lot 112 (correctif du 06/11) : « No profiles for 'fr.verebona.app.preprod' were found »
+      # sans aucun changement de signature dans le dépôt → cause côté compte Apple ou runner,
+      # que Xcode ne nomme pas. Diagnostic lisible AVANT l'archivage (aucun secret affiché,
+      # aucune création ni modification côté Apple).
+      - name: Diagnostic de signature (identifiants, fonctionnalités, appareils, profils)
+        run: |
+          xcodebuild -version
+          node mobile/scripts/asc-signing-check.mjs
       - name: Archiver (signature automatique, App Store Connect)
         working-directory: mobile/ios/App
         run: |
@@ -210,7 +218,7 @@ jobs:
             -authenticationKeyPath "$ASC_KEY_PATH" \
             -authenticationKeyID "$ASC_API_KEY_ID" -authenticationKeyIssuerID "$ASC_API_ISSUER_ID" \
             DEVELOPMENT_TEAM="$APPLE_TEAM_ID" CODE_SIGN_STYLE=Automatic \
-            archive
+            archive || { echo "::error::Archivage iOS en échec. Si le message est « No profiles … were found », lire les constats de l'étape « Diagnostic de signature » ci-dessus et la recette 112 correctif 1 (docs/exploitation/recette-112-signature-ios.md)."; exit 65; }
       # Lot 111P : jeton d'import partagé app ↔ extension par le Keychain du
       # GROUPE D'APPS (kSecAttrAccessGroup = group.<id de l'app>). Contrôle des
       # droits RÉELLEMENT signés (pas des .entitlements versionnés) : même
