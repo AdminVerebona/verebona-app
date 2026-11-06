@@ -36,6 +36,8 @@ import { isRequestCancelled } from './request-lifecycle.service';
 import { resolveSourcesForDisplay } from './source-resolver.service';
 import { resolveActions, exigeUneCible, type AccessChecker } from './action-resolver.service';
 import { parseEntityRef } from './entity-ref';
+import { PAYLOAD_SOURCES, idsPresentes } from './action-selection';
+import type { Claim } from '../types/sources';
 import { persistResult, loadThreadContext } from './conversation.service';
 import { isPlanAiEligible } from '../registries/capability-registry';
 import { saveClarification } from './clarification.service';
@@ -88,6 +90,15 @@ export function buildAccessChecker(): AccessChecker {
       )) as unknown as Array<{ id: number; name: string | null }>;
       return new Map(rows.filter((r) => r.name).map((r) => [Number(r.id), String(r.name)]));
     },
+    // Lot 113F : libellés « Voir « <titre> » » (plusieurs échéances présentées),
+    // bornés au compte comme `agendaItemInAccount`.
+    agendaItemTitles: async (a, ids) => {
+      const rows = (await pgClient.unsafe(
+        `SELECT id, title FROM agenda_items WHERE account_id = $1 AND id = ANY($2::int[])`,
+        [a, ids] as never[],
+      )) as unknown as Array<{ id: number; title: string | null }>;
+      return new Map(rows.filter((r) => r.title).map((r) => [Number(r.id), String(r.title)]));
+    },
   };
 }
 
@@ -112,14 +123,23 @@ export function buildAccessChecker(): AccessChecker {
  *
  * Rien n'est validé ici : le résolveur reste seul juge de l'appartenance au
  * compte et de la limite du §22.9. Cette fonction ne fait que proposer.
+ *
+ * Lot 113F (#689) : `presentes` — identifiants des sources réellement
+ * PRÉSENTÉES par la réponse (citées par ses affirmations, `idsPresentes`).
+ * Une source récupérée mais non retenue ne produit aucune action d'ouverture.
+ * Chaque action issue d'une source porte ses sources d'origine
+ * (`PAYLOAD_SOURCES`, serveur seulement) pour la sélection finale.
  */
 export function construireActionIntents(
   route: IntentRoute,
   input: AssistantRequestInput,
   sources: RetrievedSource[],
+  presentes: ReadonlySet<string> | null = null,
 ): ActionIntent[] {
   const autorisees = new Set(route.allowedActionTypes);
   const intents: ActionIntent[] = [];
+  const retenues = presentes ? sources.filter((s) => presentes.has(s.id)) : sources;
+  const origine = (...ids: string[]) => ({ [PAYLOAD_SOURCES]: ids.join('|') });
 
   if (route.intent === 'NAVIGATION_OPEN' && sources.length === 0) {
     const nav = findNavigationTarget(input.message);
@@ -151,7 +171,7 @@ export function construireActionIntents(
     intents.push({
       type: 'OPEN_HELP',
       targetId: String(article.meta!.articleId),
-      params: { path: String(article.meta!.path).split('#')[0] },
+      params: { path: String(article.meta!.path).split('#')[0], ...origine(article.id) },
     });
     aideCiblee = true;
   }
@@ -160,25 +180,29 @@ export function construireActionIntents(
   // résultats », qui ouvre Mes documents (ou l'agenda) filtrés sur CES
   // résultats. En tête : c'est l'action utile d'une liste ; le résolveur
   // scelle les identifiants dans un jeton signé, lié au compte.
-  const recherche = searchResultsIntent(route.intent, sources);
-  if (recherche && autorisees.has('OPEN_SEARCH_RESULTS')) intents.push(recherche);
+  // Lot 113F : sur les éléments PRÉSENTÉS ; le résolveur ne la garde que si
+  // la liste dépasse ce que les boutons individuels peuvent couvrir.
+  const recherche = searchResultsIntent(route.intent, retenues);
+  if (recherche && autorisees.has('OPEN_SEARCH_RESULTS')) {
+    intents.push({ ...recherche, params: { ...recherche.params, ...origine(...retenues.map((s) => s.id)) } });
+  }
 
-  for (const source of sources) {
+  for (const source of retenues) {
     const ref = parseEntityRef(source.id);
     if (!ref) continue;
 
     switch (ref.kind) {
       case 'asset':
-        if (autorisees.has('OPEN_ASSET')) intents.push({ type: 'OPEN_ASSET', targetId: source.id });
+        if (autorisees.has('OPEN_ASSET')) intents.push({ type: 'OPEN_ASSET', targetId: source.id, params: origine(source.id) });
         break;
       case 'document':
-        if (autorisees.has('OPEN_DOCUMENT')) intents.push({ type: 'OPEN_DOCUMENT', targetId: source.id });
+        if (autorisees.has('OPEN_DOCUMENT')) intents.push({ type: 'OPEN_DOCUMENT', targetId: source.id, params: origine(source.id) });
         break;
       case 'agenda_item':
-        if (autorisees.has('OPEN_AGENDA_ITEM')) intents.push({ type: 'OPEN_AGENDA_ITEM', targetId: source.id });
+        if (autorisees.has('OPEN_AGENDA_ITEM')) intents.push({ type: 'OPEN_AGENDA_ITEM', targetId: source.id, params: origine(source.id) });
         break;
       case 'supplier':
-        if (autorisees.has('OPEN_SUPPLIER')) intents.push({ type: 'OPEN_SUPPLIER', targetId: source.id });
+        if (autorisees.has('OPEN_SUPPLIER')) intents.push({ type: 'OPEN_SUPPLIER', targetId: source.id, params: origine(source.id) });
         break;
       // Export ou dossier (§12.1) : l'onglet « Exports » de son bien, avec
       // le type d'export pour le contrôle d'offre (§22.7).
@@ -188,7 +212,10 @@ export function construireActionIntents(
           intents.push({
             type: 'OPEN_EXPORT_AREA',
             targetId: `asset_${assetId}`,
-            ...(typeof source.meta?.exportType === 'string' ? { params: { exportType: source.meta.exportType } } : {}),
+            params: {
+              ...(typeof source.meta?.exportType === 'string' ? { exportType: source.meta.exportType } : {}),
+              ...origine(source.id),
+            },
           });
         }
         break;
@@ -208,6 +235,7 @@ export function construireActionIntents(
               // Lot 71 (71D) : entité trouvée par son nom → son TIROIR, sur
               // l'onglet du bien parent (jamais la seule fiche du bien).
               ...(source.meta?.openDrawer === true ? { drawer: `${ref.kind === 'room' ? 'piece' : 'equipement'}:${ref.id}` } : {}),
+              ...origine(source.id),
             },
           });
         }
@@ -352,11 +380,13 @@ export function buildOrchestratorPorts(): OrchestratorPorts {
 
     // Lot 49 (ticket 7) : le bien de la page (ou de la reprise, ou du fil)
     // est REVALIDÉ avant de devenir la cible d'une action.
-    resolveActions: async (route, input, sources) =>
+    // Lot 113F : `claims` — affirmations de la réponse ; seules les sources
+    // qu'elles citent (éléments présentés) produisent une ouverture d'objet.
+    resolveActions: async (route, input, sources, claims?: Claim[] | null) =>
       resolveActions({
         accountId: input.accountId,
         intent: route.intent,
-        actionIntents: construireActionIntents(route, await revalidateActionTargets(input, access), sources),
+        actionIntents: construireActionIntents(route, await revalidateActionTargets(input, access), sources, idsPresentes(claims, sources)),
         access,
         // Offre vérifiée pour chaque action (§22.7 étape 3).
         planType: input.planType,

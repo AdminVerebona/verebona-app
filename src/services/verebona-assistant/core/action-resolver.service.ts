@@ -30,11 +30,13 @@ import type { VerebonaIntent } from '../types/intents';
 import { getActionDefinition, allowedActionsFor } from '../registries/action-registry';
 import { HELP_CONTACT_PATH, integratedHelpHref, isHelpPath, isResourcePath } from '@/lib/help-center/open';
 import {
-  parseEntityRef, hrefBien, ROUTES,
+  parseEntityRef, hrefBien, hrefEntite, ROUTES,
   type EntityKind, type EntityRef, type OngletBien,
 } from './entity-ref';
-import { supplierHref } from '@/lib/supplier-routes';
 import { drawerHref, parseDrawerParam } from '@/lib/drawers';
+import {
+  MAX_ACTIONS_METIER, ajouterSources, destinationDe, rubriqueContextuelle, selectionnerActions, sourcesDeLAction,
+} from './action-selection';
 import { isPlanAiEligible } from '../registries/capability-registry';
 import { createCommandFor } from '@/lib/verebona/assistant-actions';
 
@@ -60,6 +62,12 @@ export interface AccessChecker {
    * générique est conservé.
    */
   assetNames?(accountId: number, assetIds: number[]): Promise<Map<number, string>>;
+  /**
+   * Lot 113F : titres des échéances du compte — libellé « Voir « <titre> » »
+   * quand la réponse présente PLUSIEURS échéances. Facultatif : sans lui,
+   * « Voir cette échéance » est conservé.
+   */
+  agendaItemTitles?(accountId: number, agendaItemIds: number[]): Promise<Map<number, string>>;
 }
 
 /**
@@ -133,21 +141,22 @@ function buildHref(
       const tiroir = tiroirEntite(params);
       return tiroir ? drawerHref(tiroir, hrefBien(ref.id, onglet)) : hrefBien(ref.id, onglet);
     }
+    // Lot 113F : ouverture DIRECTE de l'objet, par les liens profonds
+    // existants (`hrefEntite`) — document et échéance en tiroir
+    // (`?tiroir=document:<id>`, `?tiroir=echeance:<id>`), fournisseur sur sa
+    // fiche. `/documents/[id]` attendait l'identifiant public ; `/agenda`
+    // menait à la liste où il fallait chercher l'échéance.
     case 'OPEN_DOCUMENT':
-      return ref ? `${ROUTES.DOCUMENTS}/${ref.id}` : null;
+    case 'OPEN_AGENDA_ITEM':
+    case 'OPEN_SUPPLIER':
+      return ref ? hrefEntite(ref) : null;
     case 'OPEN_DOCUMENTS_PAGE':
       return ROUTES.DOCUMENTS;
-    // L'agenda n'a pas de page de détail : `/agenda/[id]` n'existe pas, le
-    // détail s'ouvre dans un tiroir. On amène l'utilisateur à l'agenda plutôt
-    // que sur un 404.
     case 'OPEN_AGENDA':
-    case 'OPEN_AGENDA_ITEM':
       return ROUTES.AGENDA;
     case 'OPEN_TO_PROCESS':
       return ROUTES.A_TRAITER;
-    // Fiche fournisseur (`/fournisseurs/[id]`) et liste (`/fournisseurs`).
-    case 'OPEN_SUPPLIER':
-      return ref ? supplierHref(ref.id) : null;
+    // Liste des fournisseurs (`/fournisseurs`).
     case 'OPEN_SUPPLIERS':
       return ROUTES.FOURNISSEURS;
     case 'OPEN_ACCOUNT':
@@ -193,7 +202,7 @@ function buildHref(
 const LABELS: Record<VerebonaActionType, string> = {
   OPEN_ASSET: 'Ouvrir le bien', OPEN_DOCUMENT: 'Ouvrir le document',
   OPEN_DOCUMENTS_PAGE: 'Voir les documents', OPEN_SEARCH_RESULTS: 'Voir les résultats',
-  OPEN_AGENDA: "Ouvrir l'agenda", OPEN_AGENDA_ITEM: "Voir dans l'agenda",
+  OPEN_AGENDA: "Ouvrir l'agenda", OPEN_AGENDA_ITEM: 'Voir cette échéance',
   OPEN_TO_PROCESS: 'Ouvrir « À traiter »', OPEN_SUPPLIERS: 'Voir les fournisseurs',
   OPEN_SUPPLIER: 'Ouvrir le fournisseur', OPEN_ACCOUNT: 'Ouvrir mon compte',
   OPEN_PRICING: 'Voir les offres', OPEN_HELP: "Consulter l'aide", OPEN_CONTACT: 'Contacter le support',
@@ -272,13 +281,21 @@ export function offrePermet(
  *
  * L'ordre d'entrée fait foi : la première action métier retenue est la
  * principale, les suivantes sont secondaires. La limite du §22.9 (1 principale
- * + 2 secondaires) est appliquée sur les actions métier uniquement.
+ * + 2 secondaires) est appliquée sur les actions métier uniquement, APRÈS la
+ * sélection (lot 113F, `selectionnerActions`) : une action par destination
+ * effective, navigation générale retirée quand une action contextuelle de la
+ * même rubrique la couvre, aucune action de remplissage.
  */
 export async function resolveActions(input: ResolveActionsInput): Promise<VerebonaAction[]> {
   const allowed = new Set(allowedActionsFor(input.intent));
   const out: VerebonaAction[] = [];
-  const vues = new Set<string>();
-  let businessCount = 0;
+  // Clé (type + cible) et destination effective → rang dans `out`.
+  const vues = new Map<string, number>();
+  const destinations = new Map<string, number>();
+  // Lot 113F : candidats métier résolus par rubrique — un de plus que la
+  // limite suffit à décider entre boutons individuels et « Voir les
+  // résultats », et borne les contrôles en base.
+  const parRubrique = new Map<string, number>();
 
   for (const ai of input.actionIntents) {
     if (!allowed.has(ai.type)) continue;
@@ -307,9 +324,17 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
     const cle = ref
       ? `${ai.type}:${ref.kind}:${ref.id}${ai.type === 'OPEN_ASSET' ? (tiroirCle ? `:${tiroirCle.kind}:${tiroirCle.id}` : '') : `:${ai.params?.tab ?? ''}`}`
       : `${ai.type}:${ai.targetId ?? ''}:${ai.params?.tab ?? ''}`;
-    if (vues.has(cle)) continue;
+    const sourcesIntent = sourcesDeLAction({ payload: ai.params });
+    const dejaVu = vues.get(cle);
+    if (dejaVu != null) {
+      // Même objet par une autre source : un seul bouton, sources fusionnées
+      // (la restriction aux éléments présentés reste exacte).
+      out[dejaVu] = ajouterSources(out[dejaVu], sourcesIntent);
+      continue;
+    }
 
-    if (def.isBusinessAction && businessCount >= 3) continue;
+    const rubrique = rubriqueContextuelle(ai.type) ?? ai.type;
+    if (def.isBusinessAction && (parRubrique.get(rubrique) ?? 0) > MAX_ACTIONS_METIER) continue;
 
     // Offre (§22.7 étape 3), avant tout accès en base.
     if (!offrePermet(ai.type, ai.params, input.planType, input.planLimit)) continue;
@@ -329,7 +354,7 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
       href = `/api/verebona/search-results?t=${token}`;
     }
 
-    out.push({
+    const action: VerebonaAction = {
       actionId: randomUUID(),
       type: ai.type,
       // Article précis : « Lire l'article » plutôt qu'un renvoi générique.
@@ -351,12 +376,24 @@ export async function resolveActions(input: ResolveActionsInput): Promise<Verebo
       payload: ai.params ? { ...ai.params } : {},
       // Lot 34G : création → commande (parcours + bien contrôlé ci-dessus).
       ...(createCommandFor(ai.type) ? { command: createCommandFor(ai.type, ref ? `${ref.kind}:${ref.id}` : null) } : {}),
-    });
-    vues.add(cle);
-    if (def.isBusinessAction) businessCount++;
+    };
+    // Lot 113F : deux actions vers la MÊME destination effective (types
+    // différents, ou cibles distinctes menant au même lien) → une seule.
+    const dest = destinationDe(action);
+    const memeDestination = destinations.get(dest);
+    if (memeDestination != null) {
+      out[memeDestination] = ajouterSources(out[memeDestination], sourcesIntent);
+      vues.set(cle, memeDestination);
+      continue;
+    }
+    vues.set(cle, out.length);
+    destinations.set(dest, out.length);
+    out.push(action);
+    if (def.isBusinessAction) parRubrique.set(rubrique, (parRubrique.get(rubrique) ?? 0) + 1);
   }
 
-  return libellerBiensMultiples(out, input);
+  const retenues = selectionnerActions(out);
+  return libellerEcheancesMultiples(await libellerBiensMultiples(retenues, input), input);
 }
 
 /** Longueur maximale d'un nom de bien dans un libellé de bouton. */
@@ -392,6 +429,30 @@ async function libellerBiensMultiples(out: VerebonaAction[], input: ResolveActio
     if (tiroirEntite(a.payload as Record<string, unknown> | undefined)) return { ...a, label: libelleOuvrirEntite(a.label, nom) };
     return { ...a, label: libelleOuvrirBien(nom) };
   });
+}
+
+/**
+ * Lot 113F : réponse qui présente PLUSIEURS échéances → un bouton par
+ * échéance, libellé « Voir « <titre> » » (titre lu en base, borné au compte).
+ * Une seule échéance : « Voir cette échéance ».
+ */
+async function libellerEcheancesMultiples(out: VerebonaAction[], input: ResolveActionsInput): Promise<VerebonaAction[]> {
+  const items = out.filter((a) => a.type === 'OPEN_AGENDA_ITEM' && a.targetRef?.startsWith('agenda_item:'));
+  const idDe = (a: VerebonaAction) => Number(a.targetRef!.slice('agenda_item:'.length));
+  const ids = [...new Set(items.map(idDe))].filter((n) => Number.isInteger(n) && n > 0);
+  if (ids.length < 2 || !input.access.agendaItemTitles) return out;
+  const titres = await input.access.agendaItemTitles(input.accountId, ids).catch(() => new Map<number, string>());
+  return out.map((a) => {
+    if (!items.includes(a)) return a;
+    const titre = titres.get(idDe(a));
+    return titre && titre.trim() ? { ...a, label: libelleVoir(titre) } : a;
+  });
+}
+
+/** Libellé d'ouverture d'un élément NOMMÉ (pure) : « Voir « Contrôle technique » ». */
+export function libelleVoir(titre: string): string {
+  const n = titre.trim().replace(/\s+/g, ' ');
+  return `Voir « ${n.length > NOM_BOUTON_MAX ? `${n.slice(0, NOM_BOUTON_MAX - 1).trimEnd()}…` : n} »`;
 }
 
 async function checkAccess(

@@ -120,6 +120,10 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
   // Ni « Voir les sources » ni avis 👍/👎 sous les réponses (décision produit
   // du 2 oct. 2026) : l'action SHOW_SOURCES proposée par le serveur est écartée.
   const serverActions = (msg.actions ?? []).filter((a) => a.type !== 'SHOW_SOURCES');
+  // Lot 113F : action principale identifiable — la première action métier
+  // (ordre du serveur), sauf si une action locale est déjà principale.
+  const rangPrincipal = (msg.local?.actions ?? []).some((a) => a.primary)
+    ? -1 : serverActions.findIndex((a) => assistantActionKind(a.type) !== 'ASSISTANT_UI');
   // §32.3 (D-J7) : clic sur une action — type et rang seulement.
   const clicAction = (a: VerebonaAction, rang: number) =>
     trackAssistantUsage({ type: 'ACTION_CLICK', actionType: a.type, value: rang === 0 ? 'primary' : 'secondary', intent: msg.intent ?? null });
@@ -208,11 +212,11 @@ function Answer({ msg, variant, api }: { msg: VerebonaMessage; variant: SpaceVar
           ))}
           {serverActions.map((a, rang) => (
             a.href && assistantActionKind(a.type) !== 'CREATE' ? (
-              <a key={a.actionId} href={a.href} data-analytics={a.analyticsCode} className={pillClass(false, variant)} onClick={(e) => { clicAction(a, rang); onAction(a, e); }}>
+              <a key={a.actionId} href={a.href} data-analytics={a.analyticsCode} className={pillClass(rang === rangPrincipal, variant)} onClick={(e) => { clicAction(a, rang); onAction(a, e); }}>
                 {a.label}
               </a>
             ) : (
-              <button key={a.actionId} type="button" data-analytics={a.analyticsCode} className={pillClass(a.type === 'RETRY_REQUEST', variant)} onClick={() => { clicAction(a, rang); onAction(a); }}>
+              <button key={a.actionId} type="button" data-analytics={a.analyticsCode} className={pillClass(a.type === 'RETRY_REQUEST' || rang === rangPrincipal, variant)} onClick={() => { clicAction(a, rang); onAction(a); }}>
                 {a.label}
               </button>
             )

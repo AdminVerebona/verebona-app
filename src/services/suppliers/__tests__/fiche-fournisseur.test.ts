@@ -229,8 +229,15 @@ describe('assistant : cartes et actions vers la fiche fournisseur', () => {
     });
     expect(actions.filter((a) => a.type === 'OPEN_SUPPLIER').map((a) => a.href)).toEqual(['/fournisseurs/4']);
     expect(actions.some((a) => a.href === '/fournisseurs/9')).toBe(false);
-    // Repli sans cible : la liste des fournisseurs.
-    expect(actions.find((a) => a.type === 'OPEN_SUPPLIERS')?.href).toBe('/fournisseurs');
+    // Lot 113F (#689, décision PO) : la fiche ouverte couvre le besoin — la
+    // liste générale des fournisseurs n'est plus proposée en plus.
+    expect(actions.find((a) => a.type === 'OPEN_SUPPLIERS')).toBeUndefined();
+    // Aucune fiche autorisée : le repli sans cible (la liste) reste proposé.
+    const repli = await resolveActions({
+      accountId: 10, intent: 'ACCOUNT_SEARCH_SUPPLIER',
+      actionIntents: construireActionIntents(route, input as never, sources), access: access([]),
+    });
+    expect(repli.map((a) => [a.type, a.href])).toEqual([['OPEN_SUPPLIERS', '/fournisseurs']]);
   });
 
   it('vérificateur sans contrôle fournisseur : aucune fiche ouverte (refus par défaut)', async () => {

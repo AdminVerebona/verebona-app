@@ -90,6 +90,7 @@ import { fieldRequestForm } from '../canonical/structured-answers';
 import { requestedFactsMissingMessage, substitutedFieldKeys } from './requested-facts-guard';
 import { getField } from '@/services/canonical/registry';
 import { parseEntityRef } from './entity-ref';
+import { idsPresentes, retenirActionsPresentees } from './action-selection';
 import { ASSET_NO_LONGER_AVAILABLE_MESSAGE } from './asset-availability';
 import { clientTimelineEvents, planTimelineEvents, timelineAnswer, type SynthesisPlan } from './synthesis-planner';
 import { documentSearchFilters, extractSearchTerms, hasDocumentFilters } from './query-terms';
@@ -161,8 +162,13 @@ export interface OrchestratorPorts {
    * les métadonnées (bien parent d'un équipement, par exemple) sont ce qui
    * permet de choisir la bonne action et de contrôler la bonne table (§22.7).
    */
+  /**
+   * Lot 113F (#689) : `claims` — affirmations de la réponse, quand elles sont
+   * connues. Seules les sources qu'elles citent (éléments PRÉSENTÉS) donnent
+   * une action d'ouverture ; absentes, toutes les sources fournies comptent.
+   */
   resolveActions(
-    route: IntentRoute, input: AssistantRequestInput, sources: RetrievedSource[],
+    route: IntentRoute, input: AssistantRequestInput, sources: RetrievedSource[], claims?: Claim[] | null,
   ): Promise<VerebonaAction[]>;
   /** Rend les identifiants enregistrés (fil, message) quand la persistance a eu lieu. */
   persist(
@@ -515,7 +521,7 @@ export async function runAssistant(
       trace.intent = routeLu.intent;
       if (lu.diagnostic) trace.diagnostic = lu.diagnostic;
       if (lu.contextUpdate && !base.contextUpdate) base.contextUpdate = lu.contextUpdate;
-      const actions = await ports.resolveActions(routeLu, input, lu.sources);
+      const actions = await ports.resolveActions(routeLu, input, lu.sources, lu.claims);
       const sansCible = lu.diagnostic === 'TARGET_NOT_FOUND' || lu.diagnostic === 'TARGET_UNAVAILABLE';
       done(sansCible ? 'template' : 'structured', lu.strategy, sansCible ? 'INSUFFICIENT' : 'SUFFICIENT_STRUCTURED', lu.sources.length);
       const resolvedLu = lu.sources.length ? await ports.resolveSources(lu.sources, input.accountId) : [];
@@ -554,7 +560,7 @@ export async function runAssistant(
       base.route = routeSem;
       trace.intent = routeSem.intent;
       if (o.kind === 'answer') {
-        const actions = await ports.resolveActions(routeSem, input, o.sources);
+        const actions = await ports.resolveActions(routeSem, input, o.sources, o.claims);
         done('structured', o.strategy, 'SUFFICIENT_STRUCTURED', o.sources.length);
         trace.fallbackUsed = false;
         const resolvedSem = o.sources.length ? await ports.resolveSources(o.sources, input.accountId) : [];
@@ -603,7 +609,7 @@ export async function runAssistant(
       const route = routeForIntent(early.answer.intent, input.planType, 'référence du fil');
       base.route = route;
       trace.intent = route.intent;
-      const actions = await ports.resolveActions(route, input, early.answer.sources);
+      const actions = await ports.resolveActions(route, input, early.answer.sources, early.answer.claims);
       done('structured', early.answer.strategy, 'SUFFICIENT_STRUCTURED', early.answer.sources.length);
       const resolvedEarly = early.answer.sources.length ? await ports.resolveSources(early.answer.sources, input.accountId) : [];
       return finalize(base, machine, 'deterministic', early.answer.text, early.answer.claims ?? [], resolvedEarly, actions, ports, input,
@@ -648,7 +654,7 @@ export async function runAssistant(
           const route = routeForIntent(lu.intent, input.planType, `cible ${cibles.primary.origin}`);
           base.route = route;
           trace.intent = route.intent;
-          const actions = await ports.resolveActions(route, input, lu.sources);
+          const actions = await ports.resolveActions(route, input, lu.sources, lu.claims);
           done('structured', lu.strategy, 'SUFFICIENT_STRUCTURED', lu.sources.length);
           const resolvedCible = await ports.resolveSources(lu.sources, input.accountId);
           return finalize(base, machine, 'deterministic', lu.text, lu.claims, resolvedCible, actions, ports, input, 'supported');
@@ -743,7 +749,7 @@ export async function runAssistant(
           }
           const sourceNom = namedEntitySource(decision.entity);
           const reponse = namedEntityAnswer(decision.entity);
-          const actionsNom = await ports.resolveActions(routeNom, input, [sourceNom]);
+          const actionsNom = await ports.resolveActions(routeNom, input, [sourceNom], reponse.claims);
           done('structured', 'named_entity.exact', 'SUFFICIENT_STRUCTURED', 1);
           const resolvedNom = await ports.resolveSources([sourceNom], input.accountId);
           return finalize(base, machine, 'deterministic', reponse.text, reponse.claims, resolvedNom, actionsNom, ports, input, 'supported');
@@ -1810,7 +1816,7 @@ export async function runAssistant(
           if (infidele) return infidele;
           if (data.strategy.startsWith('structured.')) semTrace.structuredStrategyExecuted = true;
           const resolvedData = await ports.resolveSources(data.sources, input.accountId);
-          const actions = await ports.resolveActions(route, input, data.sources);
+          const actions = await ports.resolveActions(route, input, data.sources, data.claims);
           done(data.decision.level === 1 ? 'structured' : 'retrieval', data.strategy, data.decision.status, data.sources.length);
           // Listes et document retrouvé : cartes de résultats (§22.2, §22.3).
           if (CARD_STRATEGIES.has(data.strategy)) base.resultGroups = buildResultGroups(data.sources);
@@ -2292,7 +2298,7 @@ export async function runAssistant(
           if (infideleGen) return infideleGen;
           machine.transition('VALIDATING');
           trace.model = gen.model ?? null;
-          const actions = gen.actions.length ? gen.actions : await ports.resolveActions(route, input, sources);
+          const actions = gen.actions.length ? gen.actions : await ports.resolveActions(route, input, sources, gen.claims);
           // T2-35 : chronologie structurée transmise au client, liens résolus
           // côté serveur à partir des sources fournies.
           if (gen.events?.length) base.events = clientTimelineEvents(gen.events, sources);
@@ -2946,6 +2952,14 @@ async function finalize(
     claims,
   );
 
+  // Lot 113F (#689) — sélection DÉFINITIVE des actions, avant de les figer
+  // (réponse et persistance) : une ouverture d'objet seulement pour un
+  // élément présenté par la réponse finale (le contrôle final a pu retirer
+  // affirmations ou sources), une action par destination, navigation
+  // générale couverte retirée. Réponse sans source : seule la sélection.
+  const presentes = sourcesBrutes.length ? (idsPresentes(claims, sources) ?? new Set<string>()) : null;
+  const actionsRetenues = retenirActionsPresentees(actions, presentes);
+
   // Lot 29 (ticket 13 AC08) : une réponse qui porte sur UN seul équipement
   // ou UNE seule pièce en fait la cible courante du fil (« et son numéro de
   // série ? »). Jamais pour une liste d'objets mélangés.
@@ -2966,7 +2980,7 @@ async function finalize(
     // laisser croire que la partie interdite a été évaluée.
     answer: base.partialRefusal ? `${answer}\n\n${base.partialRefusal}` : answer,
     claims,
-    sources: sourcesVerifiees, actions, supportLevel,
+    sources: sourcesVerifiees, actions: actionsRetenues, supportLevel,
   };
   await safePersist(ports, result, input);
   return result;

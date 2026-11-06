@@ -144,7 +144,8 @@
     "test:e2e:cil-pastille": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l112a-cil-pastille-partiel.e2e.ts src/test/e2e/scenarios/l69-diag-etat-reel.e2e.ts src/test/e2e/scenarios/l70b-usage-energetique.e2e.ts src/test/e2e/scenarios/l75a-cil-b6-contradiction.e2e.ts",
     "test:e2e:cil-pose": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l112f-cil-pose.e2e.ts",
     "test:e2e:fournisseurs-coordonnees": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l111x-fournisseurs-coordonnees.e2e.ts",
-    "test:e2e:tco-standard-cta": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113b-tco-standard-cta.e2e.ts src/test/e2e/scenarios/l112c-t2-tco-droits.e2e.ts"
+    "test:e2e:tco-standard-cta": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113b-tco-standard-cta.e2e.ts src/test/e2e/scenarios/l112c-t2-tco-droits.e2e.ts",
+    "test:e2e:assistant-actions": "vitest --run --config vitest.e2e.config.ts src/test/e2e/scenarios/l113f-assistant-actions.e2e.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.934.0",

@@ -573,6 +573,8 @@ jobs:
         run: npm run test:e2e:suggestions-utilite -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-suggestions-utilite.xml
       - name: Suggestions Exploiter concrètes et droits TCO de T2 (lot 112C)
         run: npm run test:e2e:suggestions-exploiter -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-suggestions-exploiter.xml
+      - name: Assistant, actions de navigation sans doublon (lot 113F, Trello #689)
+        run: npm run test:e2e:assistant-actions -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-assistant-actions.xml
       - name: Inscription, CGUV publiées vérifiées et reprise (lot 111O)
         run: npm run test:e2e:inscription-cguv -- --reporter=default --reporter=junit --outputFile.junit=rapports/e2e-inscription-cguv.xml
       - uses: actions/upload-artifact@v4
