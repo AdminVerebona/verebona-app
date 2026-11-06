@@ -386,8 +386,28 @@ export class AuthRateLimiter {
   async consume(entries: LimitEntry[]): Promise<LimitDecision> {
     const pre = await this.check(entries);
     if (!pre.allowed) return pre;
-    const r = await this.recordFailure(entries);
-    return { ...ALLOWED, lockedNow: r.lockedNow };
+    // Correctif 113 (CI du 06/11, L53A PO-Q21) : le verrou est RE-VÉRIFIÉ dans la mise à jour
+    // (ligne verrouillée, `FOR UPDATE`) — deux demandes simultanées ne passent plus toutes deux
+    // entre la lecture et l'écriture (deux e-mails « compte existant » envoyés dans l'heure).
+    const now = this.clock();
+    let lockedNow = false;
+    let refused: LimitDecision | null = null;
+    for (const e of entries) {
+      await this.store.update(e.key, (cur) => {
+        const ms = remainingLockMs(cur ?? undefined, now);
+        if (ms > 0 && cur) {
+          if (!refused || Math.ceil(ms / 1000) > refused.retryAfterSeconds) {
+            refused = { allowed: false, retryAfterSeconds: Math.ceil(ms / 1000), blockedKey: e.key, lockedNow: false };
+          }
+          return cur;
+        }
+        const r = applyHit(cur, e.policy, now);
+        if (r.lockedNow) lockedNow = true;
+        return r.record;
+      });
+    }
+    if (refused) return refused;
+    return { ...ALLOWED, lockedNow };
   }
 
   /** Remise à zéro d'UNE clé (compte qui a prouvé son mot de passe). */
